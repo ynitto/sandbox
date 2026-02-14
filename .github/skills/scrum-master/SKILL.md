@@ -107,12 +107,15 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
    ```bash
    python .github/skills/scrum-master/scripts/validate_plan.py plan.json --skills-json skills.json
    ```
-6. プランをユーザーに提示して承認を得る:
+6. プランをユーザーに表形式で提示して承認を得る:
    ```
-   Sprint N プラン:
-   1. [タスク内容] (skill: xxx)
-   2. [タスク内容] (skill: yyy)
-   3. [タスク内容] (skill: null)
+   **Sprint N プラン**
+
+   | # | タスク | スキル | 依存 |
+   |---|--------|--------|------|
+   | b1 | [action] | [skill] | - |
+   | b2 | [action] | [skill] | b1 |
+   | b3 | [action] | - | b2 |
 
    このプランで進めますか？
    ```
@@ -175,13 +178,15 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
 **ガードレール**: スプリント総数は **最大5** とする。5スプリント消化後もバックログが残っている場合は、残タスクの一覧を提示し「続行 / ゴール縮小 / 完了」をユーザーに確認する。
 
 ```
-Sprint N 完了:
-- 完了: X 件
-- 失敗: Y 件
-- スキップ: Z 件
+**Sprint N 結果** (全体進捗: XX%)
 
-バックログ残り: W 件
-全体進捗: XX%
+| # | タスク | スキル | ステータス | サマリー |
+|---|--------|--------|------------|----------|
+| b1 | [action] | [skill] | 完了 | [result] |
+| b2 | [action] | [skill] | 失敗 | [result] |
+| b3 | [action] | - | スキップ | - |
+
+完了: X 件 / 失敗: Y 件 / スキップ: Z 件 / バックログ残り: W 件
 
 選択肢:
 1. 次のスプリントへ進む
