@@ -20,12 +20,12 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 ```
 ローカル（Windows）
 ─────────────────────────────────────────
-  %USERPROFILE%\.claude\skills\          ← スキルインストール先
+  %USERPROFILE%\.gitlab\skills\          ← スキルインストール先
     ├── skill-a\SKILL.md
     ├── skill-b\SKILL.md
     └── ...
 
-  %USERPROFILE%\.claude\skill-registry.json  ← レジストリ
+  %USERPROFILE%\.gitlab\skill-registry.json  ← レジストリ
 ─────────────────────────────────────────
          │ pull              │ push
          ▼                   ▼
@@ -39,7 +39,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 
 ## レジストリ
 
-パス: `%USERPROFILE%\.claude\skill-registry.json`
+パス: `%USERPROFILE%\.gitlab\skill-registry.json`
 
 ```json
 {
@@ -88,8 +88,8 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 すべての操作で以下のパスを使う。
 
 ```powershell
-$SKILL_HOME   = "$env:USERPROFILE\.claude\skills"
-$REGISTRY     = "$env:USERPROFILE\.claude\skill-registry.json"
+$SKILL_HOME   = "$env:USERPROFILE\.gitlab\skills"
+$REGISTRY     = "$env:USERPROFILE\.gitlab\skill-registry.json"
 $TEMP_WORK    = "$env:TEMP\claude-skill-work"
 ```
 
@@ -114,7 +114,7 @@ git ls-remote $REPO_URL HEAD
 import json, os
 from datetime import datetime, timezone
 
-registry_path = os.path.join(os.environ["USERPROFILE"], ".claude", "skill-registry.json")
+registry_path = os.path.join(os.environ["USERPROFILE"], ".gitlab", "skill-registry.json")
 
 def load_registry():
     if os.path.exists(registry_path):
@@ -154,7 +154,7 @@ import subprocess, shutil, os, re, json, glob
 from datetime import datetime
 
 temp_work = os.path.join(os.environ["TEMP"], "claude-skill-work")
-skill_home = os.path.join(os.environ["USERPROFILE"], ".claude", "skills")
+skill_home = os.path.join(os.environ["USERPROFILE"], ".gitlab", "skills")
 
 def pull_skills(repo_name=None, skill_name=None):
     """
@@ -468,7 +468,7 @@ Claude:
   1. 全リポジトリを shallow clone
   2. 各リポジトリのスキルを走査
   3. 同名競合はコミット日時で新しい方を採用
-  4. %USERPROFILE%\.claude\skills\ にコピー、レジストリ更新
+  4. %USERPROFILE%\.gitlab\skills\ にコピー、レジストリ更新
   5. 結果レポート
 ```
 
