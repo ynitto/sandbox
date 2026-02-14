@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""スキル探索スクリプト。
+
+.github/skills/ 配下の全スキルを走査し、メタデータ一覧をJSON出力する。
+scrum-master自身は一覧から除外する。
+
+使い方:
+    python discover_skills.py [skills-directory]
+
+デフォルト: .github/skills/
+"""
+
+import json
+import os
+import sys
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+
+def parse_frontmatter(content: str) -> dict | None:
+    """YAML フロントマターをパースする。"""
+    if not content.startswith("---"):
+        return None
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return None
+    raw = parts[1].strip()
+    if not raw:
+        return None
+    if yaml:
+        data = yaml.safe_load(raw)
+    else:
+        data = {}
+        current_key = None
+        current_value_lines = []
+        for line in raw.splitlines():
+            if line and not line[0].isspace() and ":" in line:
+                if current_key is not None:
+                    data[current_key] = " ".join(current_value_lines).strip()
+                key, _, value = line.partition(":")
+                current_key = key.strip()
+                current_value_lines = [value.strip()] if value.strip() else []
+            elif current_key is not None:
+                current_value_lines.append(line.strip())
+        if current_key is not None:
+            data[current_key] = " ".join(current_value_lines).strip()
+    return data if isinstance(data, dict) else None
+
+
+def list_dir_files(path: str) -> list[str]:
+    """ディレクトリ内のファイル名一覧を返す。存在しなければ空リスト。"""
+    if not os.path.isdir(path):
+        return []
+    return sorted(
+        f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))
+    )
+
+
+def discover_skills(skills_dir: str) -> list[dict]:
+    """スキルディレクトリを走査してメタデータ一覧を返す。"""
+    skills = []
+
+    if not os.path.isdir(skills_dir):
+        return skills
+
+    for entry in sorted(os.listdir(skills_dir)):
+        skill_path = os.path.join(skills_dir, entry)
+        if not os.path.isdir(skill_path):
+            continue
+
+        # scrum-master自身を除外
+        if entry == "scrum-master":
+            continue
+
+        skill_md = os.path.join(skill_path, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+
+        with open(skill_md, encoding="utf-8") as f:
+            content = f.read()
+
+        fm = parse_frontmatter(content)
+        if fm is None:
+            continue
+
+        name = fm.get("name", entry)
+        description = fm.get("description", "")
+
+        skills.append(
+            {
+                "name": name,
+                "description": description,
+                "path": skill_path,
+                "skill_md": skill_md,
+                "resources": {
+                    "scripts": list_dir_files(os.path.join(skill_path, "scripts")),
+                    "references": list_dir_files(
+                        os.path.join(skill_path, "references")
+                    ),
+                    "assets": list_dir_files(os.path.join(skill_path, "assets")),
+                },
+            }
+        )
+
+    return skills
+
+
+def main() -> None:
+    skills_dir = sys.argv[1] if len(sys.argv) > 1 else ".github/skills"
+    skills = discover_skills(skills_dir)
+    print(json.dumps(skills, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
