@@ -30,18 +30,18 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 ```
 ローカル（Windows）
 ─────────────────────────────────────────
-  %USERPROFILE%\.gitlab\skills\          ← スキルインストール先
+  %USERPROFILE%\.copilot\skills\          ← スキルインストール先
     ├── skill-a\SKILL.md
     ├── skill-b\SKILL.md
     └── ...
 
-  %USERPROFILE%\.gitlab\skill-registry.json  ← レジストリ
+  %USERPROFILE%\.copilot\skill-registry.json  ← レジストリ
 ─────────────────────────────────────────
          │ pull              │ push
          ▼                   ▼
   ┌────────────────┐  ┌────────────────┐
   │ repo: team     │  │ repo: personal │
-  │ (GitHub)       │  │ (GitLab)       │
+  │ (GitLab)       │  │ (GitLab)       │
   └────────────────┘  └────────────────┘
 ```
 
@@ -49,7 +49,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 
 ## レジストリ
 
-パス: `%USERPROFILE%\.gitlab\skill-registry.json`
+パス: `%USERPROFILE%\.copilot\skill-registry.json`
 
 ```json
 {
@@ -98,8 +98,8 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 すべての操作で以下のパスを使う。
 
 ```powershell
-$SKILL_HOME   = "$env:USERPROFILE\.gitlab\skills"
-$REGISTRY     = "$env:USERPROFILE\.gitlab\skill-registry.json"
+$SKILL_HOME   = "$env:USERPROFILE\.copilot\skills"
+$REGISTRY     = "$env:USERPROFILE\.copilot\skill-registry.json"
 $TEMP_WORK    = "$env:TEMP\claude-skill-work"
 ```
 
@@ -124,7 +124,7 @@ git ls-remote $REPO_URL HEAD
 import json, os
 from datetime import datetime, timezone
 
-registry_path = os.path.join(os.environ["USERPROFILE"], ".gitlab", "skill-registry.json")
+registry_path = os.path.join(os.environ["USERPROFILE"], ".copilot", "skill-registry.json")
 
 def load_registry():
     if os.path.exists(registry_path):
@@ -164,7 +164,7 @@ import subprocess, shutil, os, re, json, glob
 from datetime import datetime
 
 temp_work = os.path.join(os.environ["TEMP"], "claude-skill-work")
-skill_home = os.path.join(os.environ["USERPROFILE"], ".gitlab", "skills")
+skill_home = os.path.join(os.environ["USERPROFILE"], ".copilot", "skills")
 
 def pull_skills(repo_name=None, skill_name=None):
     """
@@ -478,7 +478,7 @@ Claude:
   1. 全リポジトリを shallow clone
   2. 各リポジトリのスキルを走査
   3. 同名競合はコミット日時で新しい方を採用
-  4. %USERPROFILE%\.gitlab\skills\ にコピー、レジストリ更新
+  4. %USERPROFILE%\.copilot\skills\ にコピー、レジストリ更新
   5. 結果レポート
 ```
 
