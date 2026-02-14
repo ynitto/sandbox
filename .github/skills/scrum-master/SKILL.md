@@ -135,14 +135,16 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
    3. スプリントを中断する
    ```
 
-### Phase 6: スプリントレビュー
+### Phase 6: スプリントレビュー & レトロスペクティブ
 
-スプリント内の全タスク完了後（またはユーザーが中断を選択後）:
+スプリント内の全タスク完了後（またはユーザーが中断を選択後）、sprint-reviewer にレビューを委譲する。
 
-1. 各タスクの結果をまとめる
-2. 成果物を確認する
-3. sprintsのreviewフィールドに記録する
-4. **スキル成果物の共有**: スプリント内でスキルの作成・改良・分割が行われた場合、ユーザーに共有を提案する:
+1. サブエージェントを起動する（テンプレート「スプリントレビュー時」を使用）
+2. sprint-reviewer の出力をプランJSONに転記する:
+   - タスク判定・ゴール進捗 → sprintsのreviewフィールド
+   - レトロスペクティブ → sprintsのretroフィールド
+   - ブロッカー → sprintsのimpedimentsフィールド
+3. **スキル成果物の共有**: スプリント内でスキルの作成・改良が行われた場合、ユーザーに共有を提案する:
    ```
    このスプリントで以下のスキルが作成/更新されました:
    - [skill-name] (新規作成 / 改良)
@@ -156,15 +158,7 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
    - 対象スキルごとに1回ずつ実行する
    - 結果をreviewフィールドに追記する
 
-### Phase 7: レトロスペクティブ
-
-スプリントのプロセスを振り返る:
-
-1. うまくいったこと / いかなかったことを分析する
-2. 改善点があればsprintsのretroフィールドに記録する
-3. ブロッカーがあればimpedimentsに記録する
-
-### Phase 8: 進捗レポートと継続判断
+### Phase 7: 進捗レポートと継続判断
 
 ユーザーに進捗を報告し、次のアクションを確認する。
 
@@ -224,6 +218,19 @@ skill-creator スキルで既存スキルを改良する。
 配置先: .github/skills/
 分割する場合は、元スキルの機能が漏れなく引き継がれることを確認すること。
 ユーザーに改良方針を確認しながら進めること。
+```
+
+### スプリントレビュー時
+
+```
+sprint-reviewer スキルでスプリントのレビューとレトロスペクティブを実施する。
+
+手順: まず .github/skills/sprint-reviewer/SKILL.md を読んで手順に従ってください。
+ゴール: [goal]
+スプリント番号: [N]
+タスク一覧:
+- [task-id]: action=[action], done_criteria=[done_criteria], status=[status], result=[result]
+- ...
 ```
 
 ### スキル共有時
