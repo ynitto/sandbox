@@ -149,8 +149,8 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
    2. 今は共有しない
    ```
    ユーザーが「共有する」を選んだ場合:
-   - サブエージェントを起動する（テンプレート「スキル共有時」を使用）
-   - 対象スキルごとに1回ずつ実行する
+   - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル共有時」を使用）
+   - 対象スキルごとに1回ずつ直列で実行する
    - 結果をreviewフィールドに追記する
 
 ### Phase 7: 進捗レポートと継続判断
