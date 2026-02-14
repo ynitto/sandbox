@@ -163,7 +163,7 @@ Sprint N 完了:
 ```
 [skill-name] スキルを実行する。
 
-手順: まず [skill-md-path] を読んで手順に従え。
+手順: まず [skill-md-path] を読んで手順に従ってください。
 タスク: [action]
 コンテキスト: [先行タスクのresultを1〜2行で要約]
 完了基準: [done_criteria]
@@ -174,7 +174,7 @@ Sprint N 完了:
 ```
 skill-creator スキルで新しいスキルを作成する。
 
-手順: まず .github/skills/skill-creator/SKILL.md を読んで手順に従え。
+手順: まず .github/skills/skill-creator/SKILL.md を読んで手順に従ってください。
 作成するスキル: [概要]
 配置先: .github/skills/
 ユーザーに要件を確認しながら進めること。
