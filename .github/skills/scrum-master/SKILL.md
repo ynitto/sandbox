@@ -9,7 +9,7 @@ description: ユーザーのプロンプトをタスク分解し、サブエー�
 
 ## 実行ループ
 
-以下のフェーズを順に実行する。
+以下のフェーズを順に実行する。フェーズを遷移するたびにプランJSONの `current_phase` を更新すること。これにより会話が長くなっても現在地を見失わない。
 
 ### Phase 1: スキル探索
 
@@ -35,6 +35,19 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
    - **depends_on**: 先行タスクのID
 4. スキーマ詳細は [references/plan-schema.md](references/plan-schema.md) を参照する
 
+**プランJSON最小スケルトン（この形式で生成すること）:**
+```json
+{
+  "current_phase": 2,
+  "goal": "...",
+  "backlog": [
+    {"id": "b1", "action": "...", "priority": 1, "done_criteria": "...", "skill": "...", "depends_on": [], "status": "pending", "result": null}
+  ],
+  "sprints": [],
+  "velocity": {"completed_per_sprint": [], "remaining": 0}
+}
+```
+
 **タスク分解の粒度:**
 - 1タスク = 1スキルの1回の実行
 - 「AしてBする」は2タスクに分ける
@@ -43,6 +56,8 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
 ### Phase 3: スキルギャップ解決
 
 バックログを精査し、スキルの新規作成・改良が必要なケースを検出する。
+
+**ガードレール**: Phase 3 内でのスキル作成/改良 → Phase 1 再実行は **最大2回** まで。超えた場合はユーザーに「残りのスキルギャップは手動で解決するか、スキルなしで進めるか」を確認する。
 
 #### 3a: スキル不足（skill: null だがスキルが必要）
 
@@ -88,7 +103,7 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
 2. depends_onの制約を考慮し、先行タスクが未完了のタスクは選出しない
 3. 1スプリント = 3〜5タスクを目安にする
 4. プランJSONを生成する
-5. バリデーションを実行する:
+5. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する）:
    ```bash
    python .github/skills/scrum-master/scripts/validate_plan.py plan.json --skills-json skills.json
    ```
@@ -111,8 +126,8 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
 1. タスクのstatusを `in_progress` に更新する
 2. `#tool:agent/runSubagent` を使ってサブエージェントを起動する
    - **skill指定ありの場合** は該当スキルの SKILL.md をサブエージェントに読み込ませる
-   - **skill: null の場合** は該当スキルを指定しない
-   - タスクのactionとコンテキスト（先行タスクのresult等）をプロンプトとして渡す
+   - **skill: null の場合** は該当スキルを指定しない。skill: null で許可する作業は「情報の調査・確認」「ユーザーへの判断依頼」「ファイルの読み取り・軽微な編集」に限定する
+   - タスクのactionとコンテキスト（先行タスクのresult）をプロンプトとして渡す
    - サブエージェントの完了を待つ
 3. 結果をtaskのresultフィールドに記録する
 4. done_criteriaに照らして完了判定する:
@@ -157,6 +172,8 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
 
 ユーザーに進捗を報告し、次のアクションを確認する。
 
+**ガードレール**: スプリント総数は **最大5** とする。5スプリント消化後もバックログが残っている場合は、残タスクの一覧を提示し「続行 / ゴール縮小 / 完了」をユーザーに確認する。
+
 ```
 Sprint N 完了:
 - 完了: X 件
@@ -172,13 +189,15 @@ Sprint N 完了:
 3. ここで完了とする
 ```
 
-- 「次スプリント」→ Phase 4 に戻る（Phase 1を再実行してスキル一覧を更新してもよい）
+- 「次スプリント」→ 前スプリントでスキルの作成・改良が行われた場合は Phase 1 を再実行してからPhase 4 に戻る。それ以外は直接 Phase 4 に戻る
 - 「バックログ見直し」→ ユーザーと対話してバックログを修正 → Phase 4 に戻る
 - 「完了」→ 最終レポートを出力して終了する
 
 ## サブエージェントへの指示テンプレート
 
-**重要**: SKILL.md の内容をプロンプトに埋め込まない。ファイルパスだけ渡し、サブエージェント自身に読ませる。これによりプロンプトを短く保ち、安定性を確保する。
+**重要**:
+- SKILL.md の内容をプロンプトに埋め込まない。ファイルパスだけ渡し、サブエージェント自身に読ませる。これによりプロンプトを短く保ち、安定性を確保する。
+- すべてのテンプレートに戻り値の形式指定を含める。これによりscrum-masterが結果を確実にパースできる。
 
 ### スキル実行時
 
@@ -189,6 +208,10 @@ Sprint N 完了:
 タスク: [action]
 コンテキスト: [先行タスクのresultを1〜2行で要約]
 完了基準: [done_criteria]
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+サマリー: [1〜2文で結果を説明]
 ```
 
 ### スキル作成時
@@ -200,6 +223,11 @@ skill-creator スキルで新しいスキルを作成する。
 作成するスキル: [概要]
 配置先: .github/skills/
 ユーザーに要件を確認しながら進めること。
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+作成されたスキル名: [name]
+サマリー: [1〜2文で結果を説明]
 ```
 
 ### スキル改良時
@@ -213,6 +241,11 @@ skill-creator スキルで既存スキルを改良する。
 配置先: .github/skills/
 分割する場合は、元スキルの機能が漏れなく引き継がれることを確認すること。
 ユーザーに改良方針を確認しながら進めること。
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+変更されたスキル名: [name(s)]
+サマリー: [1〜2文で結果を説明]
 ```
 
 ### スプリントレビュー時
@@ -226,6 +259,11 @@ sprint-reviewer スキルでスプリントのレビューとレトロスペク�
 タスク一覧:
 - [task-id]: action=[action], done_criteria=[done_criteria], status=[status], result=[result]
 - ...
+
+結果を以下の形式で返してください:
+レビュー: [ゴール進捗の評価 1〜2文]
+レトロスペクティブ: [改善点 1〜2文]
+ブロッカー: [あれば列挙、なければ「なし」]
 ```
 
 ### スキル共有時
@@ -237,7 +275,18 @@ git-skill-manager スキルでスキルをリポジトリに共有する。
 対象スキル: [skill-path]
 操作: push
 リポジトリ: [repo-name]
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+サマリー: [1〜2文で結果を説明]
 ```
+
+## 動作環境
+
+- **Copilot Chat on Windows** を前提とする
+- スクリプト実行は `python`（`python3` ではない）
+- パス区切りは `/` を使用する（PowerShellで動作する）
+- ファイル書き出し時の文字コードは **UTF-8 without BOM**
 
 ## エラーハンドリング
 
