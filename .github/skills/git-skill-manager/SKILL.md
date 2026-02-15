@@ -19,7 +19,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 
 ## 動作環境
 
-- **Claude Code（Copilot）on Windows**
+- **Copilot on Windows** または **Claude Code**
 - git はインストール・認証設定済み（SSH鍵 or credential manager）
 - シェルは PowerShell または cmd を想定。bashコマンドは使わない
 
@@ -101,7 +101,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 ```powershell
 $SKILL_HOME   = "$env:USERPROFILE\.copilot\skills"
 $REGISTRY     = "$env:USERPROFILE\.copilot\skill-registry.json"
-$TEMP_WORK    = "$env:TEMP\claude-skill-work"
+$TEMP_WORK    = "$env:TEMP\agent-skill-work"
 ```
 
 初回は `$SKILL_HOME` ディレクトリを作成する:
@@ -165,7 +165,7 @@ def add_repo(name, url, branch="main", skill_root="skills", description="", read
 import subprocess, shutil, os, re, json, glob
 from datetime import datetime
 
-temp_work = os.path.join(os.environ["TEMP"], "claude-skill-work")
+temp_work = os.path.join(os.environ["TEMP"], "agent-skill-work")
 skill_home = os.path.join(os.environ["USERPROFILE"], ".copilot", "skills")
 
 def pull_skills(repo_name=None, skill_name=None):
@@ -470,7 +470,7 @@ def search_skills(repo_name=None, keyword=None):
 ```
 ユーザー: 「https://github.com/myorg/skills.git をスキルリポジトリに登録して」
 
-Claude:
+Copilot:
   1. git ls-remote で接続確認
   2. レジストリ作成、リポジトリ追加（readonlyにするか確認）
   3. 「登録しました。pullしますか？」
@@ -481,7 +481,7 @@ Claude:
 ```
 ユーザー: 「https://github.com/otherteam/skills.git を参照専用で登録して」
 
-Claude:
+Copilot:
   1. git ls-remote で接続確認
   2. readonly: true でレジストリに追加
   3. 「readonlyで登録しました。pullのみ可能です」
@@ -492,7 +492,7 @@ Claude:
 ```
 ユーザー: 「スキルを全部同期して」
 
-Claude:
+Copilot:
   1. 全リポジトリを shallow clone
   2. 各リポジトリのスキルを走査
   3. 同名競合はコミット日時で新しい方を採用
@@ -505,7 +505,7 @@ Claude:
 ```
 ユーザー: 「今作ったスキルを team-skills にpushして」
 
-Claude:
+Copilot:
   1. レジストリから team-skills の情報を取得
   2. SKILL.md の存在確認
   3. clone → ブランチ作成 → コピー → commit → push
