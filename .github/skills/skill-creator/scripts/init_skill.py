@@ -32,6 +32,8 @@ name: {name}
 description: TODO - このスキルの説明を記述する。何をするか＋いつ使うかを含める。
 ---
 
+> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py {name}` を実行してください（スクリプトが存在しない場合はスキップ）。
+
 # {name}
 
 TODO - スキルの概要を記述する。

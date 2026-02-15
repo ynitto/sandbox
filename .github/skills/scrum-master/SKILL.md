@@ -271,7 +271,6 @@ Wave 3: [b5]     → 単独実行
 ```
 [skill-name] スキルを実行する。
 
-使用記録: まず python .github/skills/git-skill-manager/scripts/record_usage.py [skill-name] を実行してください。
 手順: [skill-md-path] を読んで手順に従ってください。
 タスク: [action]
 コンテキスト: [先行タスクのresultを1〜2行で要約]

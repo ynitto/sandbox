@@ -1004,24 +1004,17 @@ python .github/skills/git-skill-manager/scripts/record_usage.py <skill-name>
 
 ### 記録タイミング
 
-| 呼び出し元 | 方法 |
-|------------|------|
-| scrum-master | サブエージェントへの指示テンプレートに `record_usage.py` 呼び出しを組み込む |
-| 直接利用 | 各 SKILL.md のフロントマター直後に記録の指示行を記載する（規約） |
-
-### SKILL.md への記載規約
-
-各スキルの SKILL.md のフロントマター直後に以下の1行を置く:
+各 SKILL.md のフロントマター直後に記録の指示行が記載されている（skill-creator の `init_skill.py` が自動挿入する）。エージェントがスキルを読み込んで手順に従う前にこの行を実行することで使用回数が記録される。
 
 ```markdown
 ---
 name: my-skill
 description: ...
 ---
-> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py my-skill` を実行してください。
+> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py my-skill` を実行してください（スクリプトが存在しない場合はスキップ）。
 ```
 
-skill-creator でスキル生成時にこの行を自動挿入する。
+git-skill-manager がインストールされていない環境ではスクリプトが存在しないため、エージェントはこの行をスキップする。
 
 ### record_usage.py
 
