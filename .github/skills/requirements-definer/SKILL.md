@@ -3,6 +3,8 @@ name: requirements-definer
 description: 要件定義 やりたいこと 実現したいこと を整理してクラウドシステム/Webアプリの要件と受け入れ条件を確定したいときに使う。
 ---
 
+> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py requirements-definer` を実行してください（スクリプトが存在しない場合はスキップ）。
+
 # requirements-definer
 
 クラウドシステム/Webアプリ向けに要件定義をまとめる。

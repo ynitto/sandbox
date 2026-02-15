@@ -3,6 +3,8 @@ name: sprint-reviewer
 description: スプリント完了後のレビューとレトロスペクティブを第三者視点で実施する。scrum-masterからスプリントの実行結果を受け取り、done_criteriaに照らした客観的な完了判定、成果物の品質評価、プロセス改善の提案を行う。読み取り専用で動作し、コードやファイルの変更は行わない。
 ---
 
+> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py sprint-reviewer` を実行してください（スクリプトが存在しない場合はスキップ）。
+
 # sprint-reviewer
 
 スプリントの実行結果を第三者視点でレビューし、レトロスペクティブを実施する。
