@@ -50,23 +50,31 @@ def parse_frontmatter(content: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def validate_skill(skill_path: str) -> list[str]:
-    """スキルを検証してエラーリストを返す。"""
-    errors = []
+SKILL_MD_MAX_LINES = 500
+DESCRIPTION_MIN_CHARS = 20
+DESCRIPTION_MAX_CHARS = 200
+
+
+def validate_skill(skill_path: str) -> tuple[list[str], list[str]]:
+    """スキルを検証してエラーリストと警告リストを返す。"""
+    errors: list[str] = []
+    warnings: list[str] = []
 
     skill_md = os.path.join(skill_path, "SKILL.md")
     if not os.path.isfile(skill_md):
         errors.append("SKILL.md が見つかりません")
-        return errors
+        return errors, warnings
 
     with open(skill_md, encoding="utf-8") as f:
         content = f.read()
+
+    lines = content.splitlines()
 
     # フロントマター検証
     fm = parse_frontmatter(content)
     if fm is None:
         errors.append("YAMLフロントマターが正しくフォーマットされていません（--- で囲む）")
-        return errors
+        return errors, warnings
 
     # 許可されたキーの検査
     unknown_keys = set(fm.keys()) - ALLOWED_FRONTMATTER_KEYS
@@ -96,6 +104,14 @@ def validate_skill(skill_path: str) -> list[str]:
     else:
         if "<" in desc or ">" in desc:
             errors.append("'description' に山括弧（< >）は使用できません")
+        if len(desc) < DESCRIPTION_MIN_CHARS:
+            errors.append(
+                f"'description' は{DESCRIPTION_MIN_CHARS}文字以上にしてください（現在: {len(desc)}文字）"
+            )
+        if len(desc) > DESCRIPTION_MAX_CHARS:
+            warnings.append(
+                f"'description' が長すぎます（{len(desc)}文字 > 推奨{DESCRIPTION_MAX_CHARS}文字）。discover_skills のトークンを節約するため短くしてください"
+            )
         if len(desc) > 1024:
             errors.append("'description' は1024文字以内にしてください")
 
@@ -107,7 +123,34 @@ def validate_skill(skill_path: str) -> list[str]:
         elif len(compat) > 500:
             errors.append("'compatibility' は500文字以内にしてください")
 
-    return errors
+    # SKILL.md 行数チェック
+    line_count = len(lines)
+    if line_count > SKILL_MD_MAX_LINES:
+        warnings.append(
+            f"SKILL.md が長すぎます（{line_count}行 > 推奨{SKILL_MD_MAX_LINES}行）。references/ への分割を検討してください"
+        )
+
+    # references/ リンク整合性チェック
+    refs_dir = os.path.join(skill_path, "references")
+    if os.path.isdir(refs_dir):
+        ref_files = {
+            f for f in os.listdir(refs_dir)
+            if os.path.isfile(os.path.join(refs_dir, f))
+        }
+        for ref_file in sorted(ref_files):
+            if ref_file not in content:
+                warnings.append(
+                    f"references/{ref_file} が SKILL.md から参照されていません"
+                )
+
+    # 使用記録行チェック（scrum-master は除外）
+    skill_name = fm.get("name", "")
+    if skill_name != "scrum-master" and "record_usage.py" not in content:
+        warnings.append(
+            "使用記録行がありません。フロントマター直後に record_usage.py の呼び出しを追加してください"
+        )
+
+    return errors, warnings
 
 
 def main() -> None:
@@ -121,15 +164,20 @@ def main() -> None:
         print(f"エラー: '{skill_path}' はディレクトリではありません")
         sys.exit(1)
 
-    errors = validate_skill(skill_path)
+    errors, warnings = validate_skill(skill_path)
+
+    if warnings:
+        print("警告:")
+        for w in warnings:
+            print(f"  ⚠ {w}")
 
     if errors:
         print("バリデーション失敗:")
         for e in errors:
-            print(f"  - {e}")
+            print(f"  ✗ {e}")
         sys.exit(1)
     else:
-        print("バリデーション成功")
+        print("バリデーション成功" + (" (警告あり)" if warnings else ""))
         sys.exit(0)
 
 

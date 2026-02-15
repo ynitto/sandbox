@@ -32,7 +32,7 @@ name: {name}
 description: TODO - このスキルの説明を記述する。何をするか＋いつ使うかを含める。
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py {name}` を実行してください（スクリプトが存在しない場合はスキップ）。
+> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'{name}']) if os.path.isfile(s) else None"` を実行してください。
 
 # {name}
 

@@ -3,7 +3,7 @@ name: requirements-definer
 description: 要件定義 やりたいこと 実現したいこと を整理してクラウドシステム/Webアプリの要件と受け入れ条件を確定したいときに使う。
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py requirements-definer` を実行してください（スクリプトが存在しない場合はスキップ）。
+> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'requirements-definer']) if os.path.isfile(s) else None"` を実行してください。
 
 # requirements-definer
 

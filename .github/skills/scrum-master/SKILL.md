@@ -204,12 +204,10 @@ Wave 3: [b5]     → 単独実行
 スプリント内の全タスク完了後（またはユーザーが中断を選択後）、sprint-reviewer にレビューを委譲する。
 
 1. サブエージェントを起動する（テンプレート「スプリントレビュー時」を使用）
-2. sprint-reviewer の出力をプランJSONに転記する:
-   - タスク判定・ゴール進捗 → sprintsのreviewフィールド
-   - スプリントプラン/実行プロセスの評価 → sprintsのprocess_reviewフィールド
-   - レトロスペクティブ → sprintsのretroフィールド
-   - 次スプリントで実施する改善アクション（最大3件）→ sprintsのnext_sprint_actionsフィールド
-   - ブロッカー → sprintsのimpedimentsフィールド
+2. sprint-reviewer が出力した JSON をそのままプランJSONに転記する:
+   - `review`（tasks + goal_progress）→ sprintsのreviewフィールド
+   - `retro`（keep/problem/try）→ sprintsのretroフィールド
+   - `impediments` → sprintsのimpedimentsフィールド
 3. **スキル成果物の共有**: スプリント内でスキルの作成・改良が行われた場合、ユーザーに共有を提案する:
    ```
    このスプリントで以下のスキルが作成/更新されました:

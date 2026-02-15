@@ -314,7 +314,7 @@ python .github/skills/git-skill-manager/scripts/record_usage.py <skill-name>
 name: my-skill
 description: ...
 ---
-> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py my-skill` を実行してください（スクリプトが存在しない場合はスキップ）。
+> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'<skill-name>']) if os.path.isfile(s) else None"` を実行してください。
 ```
 
 git-skill-manager がインストールされていない環境ではスクリプトが存在しないため、エージェントはこの行をスキップする。

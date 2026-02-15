@@ -3,7 +3,7 @@ name: react-unit-tester
 description: react-frontend-coderで実装したReactコンポーネント・Zustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。実装完了後のテスト投入フロー。
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py react-unit-tester` を実行してください（スクリプトが存在しない場合はスキップ）。
+> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'react-unit-tester']) if os.path.isfile(s) else None"` を実行してください。
 
 # react-unit-tester
 
