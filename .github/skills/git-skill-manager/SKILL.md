@@ -77,9 +77,19 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
       "source_path": "skills/docx-converter",
       "commit_hash": "a1b2c3d",
       "installed_at": "2026-02-14T12:00:00Z",
-      "enabled": true
+      "enabled": true,
+      "pinned_commit": null
     }
   ],
+  "remote_index": {
+    "team-skills": {
+      "updated_at": "2026-02-15T10:00:00Z",
+      "skills": [
+        {"name": "docx-converter", "description": "Word文書をPDFに変換する..."},
+        {"name": "image-resizer", "description": "画像をリサイズする..."}
+      ]
+    }
+  },
   "profiles": {
     "default": ["*"],
     "frontend": ["react-guide", "css-linter", "storybook"],
@@ -99,6 +109,18 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 **installed_skills[].enabled** (真偽値、デフォルト: true):
 - false のスキルは `discover_skills.py` によるメタデータ収集から除外される
 - ディスク上にはスキルが残るため、再有効化は即座に完了する
+
+**installed_skills[].pinned_commit** (文字列 or null、デフォルト: null):
+- null の場合、pull 時に常に最新（HEAD）を取得する
+- コミットハッシュが設定されている場合、pull 時にそのコミットを checkout して取得する
+- `pin` 操作で現在の commit_hash に固定、`unpin` で解除
+- `lock` で全スキルを一括 pin、`unlock` で全スキルを一括 unpin
+
+**remote_index** (オブジェクト):
+- リポジトリ名 → スキル一覧のキャッシュ。`search` がこのインデックスを参照するため、ネットワーク不要で高速に検索できる
+- `pull` 実行時に自動更新される
+- `search --refresh` で明示的にリモートから更新できる
+- `updated_at` で鮮度を確認可能
 
 **profiles** (オブジェクト):
 - プロファイル名 → スキル名のリスト。`"*"` は「全スキル」を意味する
@@ -120,8 +142,13 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 |**push**       |「スキルをpushして」「スキルを共有」|
 |**list**       |「インストール済みスキル一覧」     |
 |**search**     |「リポジトリにあるスキルを探して」   |
+|**search --refresh**|「最新のスキルを検索して」  |
 |**enable**     |「スキルを有効化して」         |
 |**disable**    |「スキルを無効化して」         |
+|**pin**        |「スキルを固定して」「バージョンをpinして」|
+|**unpin**      |「スキルの固定を解除して」       |
+|**lock**       |「全スキルをロックして」        |
+|**unlock**     |「全スキルのロックを解除して」     |
 |**profile use**|「プロファイルを切り替えて」      |
 |**profile create**|「プロファイルを作成して」    |
 |**profile list**|「プロファイル一覧」         |
@@ -160,12 +187,15 @@ def migrate_registry(reg):
     # repositories: priority フィールド追加
     for repo in reg.get("repositories", []):
         repo.setdefault("priority", 100)
-    # installed_skills: enabled フィールド追加
+    # installed_skills: enabled, pinned_commit フィールド追加
     for skill in reg.get("installed_skills", []):
         skill.setdefault("enabled", True)
+        skill.setdefault("pinned_commit", None)
     # profiles セクション追加
     reg.setdefault("profiles", {"default": ["*"]})
     reg.setdefault("active_profile", None)
+    # remote_index セクション追加
+    reg.setdefault("remote_index", {})
     reg["version"] = 2
     return reg
 ```
@@ -193,6 +223,7 @@ def load_registry():
             reg = json.load(f)
         return migrate_registry(reg)
     return {"version": 2, "repositories": [], "installed_skills": [],
+            "remote_index": {},
             "profiles": {"default": ["*"]}, "active_profile": None}
 
 def save_registry(reg):
@@ -268,6 +299,35 @@ def clone_or_fetch(repo):
     return repo_cache
 
 
+def update_remote_index(reg, repo_name, repo_cache, skill_root):
+    """リモートインデックスを更新する。pull / search --refresh 時に呼ばれる。"""
+    remote_index = reg.setdefault("remote_index", {})
+    root = os.path.join(repo_cache, skill_root)
+    if not os.path.isdir(root):
+        return
+
+    skills_list = []
+    for entry in sorted(os.listdir(root)):
+        skill_md = os.path.join(root, entry, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+        with open(skill_md, encoding="utf-8") as f:
+            content = f.read()
+        desc = ""
+        fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+        if fm_match:
+            for line in fm_match.group(1).splitlines():
+                if line.startswith("description:"):
+                    desc = line[len("description:"):].strip()
+                    break
+        skills_list.append({"name": entry, "description": desc[:200]})
+
+    remote_index[repo_name] = {
+        "updated_at": datetime.now().isoformat(),
+        "skills": skills_list,
+    }
+
+
 def pull_skills(repo_name=None, skill_name=None, interactive=True):
     """
     repo_name=None → 全リポジトリから取得
@@ -290,6 +350,9 @@ def pull_skills(repo_name=None, skill_name=None, interactive=True):
 
     for repo in repos:
         repo_cache = clone_or_fetch(repo)
+
+        # リモートインデックスを更新
+        update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"])
 
         root = os.path.join(repo_cache, repo["skill_root"])
         if not os.path.isdir(root):
@@ -371,16 +434,43 @@ def pull_skills(repo_name=None, skill_name=None, interactive=True):
                 "rejected": [s["repo_name"] for s in sources if s != winner],
             })
 
+        # ---- pinned_commit 対応 ----
+        existing_skill = next(
+            (s for s in reg.get("installed_skills", []) if s["name"] == sname),
+            None,
+        )
+        pinned = existing_skill.get("pinned_commit") if existing_skill else None
+
+        if pinned:
+            # pin されている場合: 指定コミットを checkout してからコピー
+            repo_cache = os.path.join(cache_dir, winner["repo_name"])
+            try:
+                subprocess.run(
+                    ["git", "fetch", "--depth", "1", "origin", pinned],
+                    cwd=repo_cache, check=True,
+                    capture_output=True, text=True,
+                )
+                subprocess.run(
+                    ["git", "checkout", pinned],
+                    cwd=repo_cache, check=True,
+                    capture_output=True, text=True,
+                )
+                # full_path をピン後のパスで上書き
+                winner["full_path"] = os.path.join(
+                    repo_cache, winner["source_path"]
+                )
+                winner["commit_hash"] = pinned[:7]
+                print(f"   📌 {sname}: pinned commit {pinned[:7]} を使用")
+            except subprocess.CalledProcessError:
+                print(f"   ⚠️ {sname}: pinned commit {pinned[:7]} の取得に失敗。最新版を使用します")
+                pinned = None
+
         dest = os.path.join(skill_home, sname)
         if os.path.exists(dest):
             shutil.rmtree(dest)
         shutil.copytree(winner["full_path"], dest)
 
-        # 既存の enabled 状態を保持、新規はデフォルト true
-        existing_skill = next(
-            (s for s in reg.get("installed_skills", []) if s["name"] == sname),
-            None,
-        )
+        # 既存の enabled / pinned_commit 状態を保持
         enabled = existing_skill.get("enabled", True) if existing_skill else True
 
         installed.append({
@@ -390,6 +480,7 @@ def pull_skills(repo_name=None, skill_name=None, interactive=True):
             "commit_hash": winner["commit_hash"],
             "installed_at": datetime.now().isoformat(),
             "enabled": enabled,
+            "pinned_commit": pinned,
         })
 
     # レジストリ更新
@@ -407,8 +498,9 @@ def pull_skills(repo_name=None, skill_name=None, interactive=True):
         for c in conflicts:
             print(f"     {c['skill']}: {c['adopted']} を採用（{', '.join(c['rejected'])} を不採用）")
     for s in installed:
+        pin_mark = f" 📌{s['pinned_commit'][:7]}" if s.get("pinned_commit") else ""
         status = "✅" if s["enabled"] else "⏸️"
-        print(f"   {status} {s['name']} ← {s['source_repo']} ({s['commit_hash']})")
+        print(f"   {status} {s['name']} ← {s['source_repo']} ({s['commit_hash']}){pin_mark}")
 ```
 
 -----
@@ -534,8 +626,10 @@ def list_skills():
         repo = info.get("source_repo", "local")
         hash_ = info.get("commit_hash", "-")
         enabled = is_skill_enabled(entry, reg)
+        pinned = info.get("pinned_commit")
         status = "✅" if enabled else "⏸️"
-        print(f"   {status} {entry:30s}  repo: {repo:20s}  commit: {hash_}")
+        pin_mark = f" 📌{pinned[:7]}" if pinned else ""
+        print(f"   {status} {entry:30s}  repo: {repo:20s}  commit: {hash_}{pin_mark}")
 
 
 def is_skill_enabled(skill_name, reg):
@@ -563,43 +657,53 @@ def is_skill_enabled(skill_name, reg):
 
 ## search
 
+デフォルトではレジストリ内の `remote_index` を検索する（ネットワーク不要、即座に結果を返す）。
+`--refresh` 指定時はリモートから最新情報を取得してインデックスを更新してから検索する。
+インデックスが空の場合（初回）は自動的に `--refresh` と同様の動作をする。
+
 ```python
-def search_skills(repo_name=None, keyword=None):
+def search_skills(repo_name=None, keyword=None, refresh=False):
     reg = load_registry()
     repos = reg["repositories"]
     if repo_name:
         repos = [r for r in repos if r["name"] == repo_name]
 
-    for repo in repos:
-        # キャッシュを活用（pull と同じ clone_or_fetch を使用）
-        repo_cache = clone_or_fetch(repo)
+    remote_index = reg.get("remote_index", {})
 
-        root = os.path.join(repo_cache, repo["skill_root"])
-        if not os.path.isdir(root):
+    # インデックスが空 or --refresh → リモートからインデックスを更新
+    needs_refresh = refresh or not any(
+        repo["name"] in remote_index for repo in repos
+    )
+
+    if needs_refresh:
+        print("🔄 リモートからインデックスを更新中...")
+        for repo in repos:
+            repo_cache = clone_or_fetch(repo)
+            update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"])
+        save_registry(reg)
+        remote_index = reg.get("remote_index", {})
+
+    # インデックスから検索
+    for repo in repos:
+        index_entry = remote_index.get(repo["name"])
+        if not index_entry:
             continue
 
         print(f"\n🔍 {repo['name']} ({repo['url']})")
-        found = False
-        for entry in sorted(os.listdir(root)):
-            skill_md = os.path.join(root, entry, "SKILL.md")
-            if not os.path.isfile(skill_md):
-                continue
-            with open(skill_md, encoding="utf-8") as f:
-                content = f.read()
-            desc = ""
-            match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
-            if match:
-                for line in match.group(1).splitlines():
-                    if line.startswith("description:"):
-                        desc = line[len("description:"):].strip()
-                        break
+        updated = index_entry.get("updated_at", "不明")[:10]
+        print(f"   (インデックス更新日: {updated})")
 
-            if keyword and keyword.lower() not in entry.lower() and keyword.lower() not in desc.lower():
+        found = False
+        for skill in index_entry.get("skills", []):
+            name = skill["name"]
+            desc = skill.get("description", "")
+
+            if keyword and keyword.lower() not in name.lower() and keyword.lower() not in desc.lower():
                 continue
 
             found = True
             short_desc = desc[:80] + "..." if len(desc) > 80 else desc
-            print(f"   {entry:30s}  {short_desc}")
+            print(f"   {name:30s}  {short_desc}")
 
         if not found:
             print("   (該当なし)")
@@ -644,6 +748,97 @@ def disable_skill(skill_name):
     skill["enabled"] = False
     save_registry(reg)
     print(f"⏸️ スキル '{skill_name}' を無効化しました")
+```
+
+-----
+
+## pin / unpin
+
+スキルを特定のコミットハッシュに固定する。pin されたスキルは pull 時にそのコミットの内容を取得し、新しいバージョンには更新されない。
+
+```python
+def pin_skill(skill_name, commit=None):
+    """
+    commit=None → 現在インストール済みの commit_hash に固定
+    commit=指定 → 指定コミットに固定
+    """
+    reg = load_registry()
+    skill = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if not skill:
+        print(f"❌ スキル '{skill_name}' がインストールされていません")
+        return
+
+    target = commit or skill.get("commit_hash")
+    if not target:
+        print(f"❌ コミットハッシュが不明です。先に pull してください")
+        return
+
+    skill["pinned_commit"] = target
+    save_registry(reg)
+    print(f"📌 スキル '{skill_name}' を {target[:7]} に固定しました")
+
+
+def unpin_skill(skill_name):
+    reg = load_registry()
+    skill = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if not skill:
+        print(f"❌ スキル '{skill_name}' がインストールされていません")
+        return
+    if not skill.get("pinned_commit"):
+        print(f"ℹ️ スキル '{skill_name}' は固定されていません")
+        return
+
+    skill["pinned_commit"] = None
+    save_registry(reg)
+    print(f"🔓 スキル '{skill_name}' の固定を解除しました（次回 pull で最新版を取得します）")
+```
+
+-----
+
+## lock / unlock
+
+全インストール済みスキルのバージョンを一括で固定・解除する。チームで同じバージョンのスキルセットを共有するときに使う。
+
+```python
+def lock_all():
+    """全スキルを現在の commit_hash に一括固定する。"""
+    reg = load_registry()
+    skills = reg.get("installed_skills", [])
+    locked = 0
+
+    for skill in skills:
+        hash_ = skill.get("commit_hash")
+        if hash_ and not skill.get("pinned_commit"):
+            skill["pinned_commit"] = hash_
+            locked += 1
+
+    save_registry(reg)
+    print(f"🔒 lock 完了: {locked} 件のスキルを固定しました")
+    for skill in skills:
+        pin = skill.get("pinned_commit")
+        if pin:
+            print(f"   📌 {skill['name']:30s}  {pin[:7]}")
+
+
+def unlock_all():
+    """全スキルの固定を一括解除する。"""
+    reg = load_registry()
+    skills = reg.get("installed_skills", [])
+    unlocked = 0
+
+    for skill in skills:
+        if skill.get("pinned_commit"):
+            skill["pinned_commit"] = None
+            unlocked += 1
+
+    save_registry(reg)
+    print(f"🔓 unlock 完了: {unlocked} 件のスキルの固定を解除しました")
 ```
 
 -----
@@ -811,6 +1006,46 @@ Copilot:
 Copilot:
   1. レジストリの enabled を false に変更
   2. 「legacy-tool を無効化しました。再有効化は 'スキルを有効化して' で可能です」
+```
+
+### 検索（オフライン）
+
+```
+ユーザー: 「converter で検索して」
+
+Copilot:
+  1. レジストリの remote_index から keyword=converter で検索（ネットワーク不要）
+  2. 結果を表示（インデックス更新日も表示）
+```
+
+### 検索（最新を取得）
+
+```
+ユーザー: 「最新のスキルを検索して」
+
+Copilot:
+  1. 全リポジトリから fetch してインデックスを更新
+  2. 更新後のインデックスから検索結果を表示
+```
+
+### スキルのバージョン固定
+
+```
+ユーザー: 「docx-converter を今のバージョンに固定して」
+
+Copilot:
+  1. 現在の commit_hash を pinned_commit に設定
+  2. 「docx-converter を a1b2c3d に固定しました」
+```
+
+### 全スキルのロック
+
+```
+ユーザー: 「全スキルをロックして」
+
+Copilot:
+  1. 全 installed_skills の commit_hash を pinned_commit に設定
+  2. ロックされたスキル一覧を表示
 ```
 
 ### プロファイル切り替え
