@@ -3,6 +3,8 @@ name: react-frontend-coder
 description: React + TypeScriptで、要件・UI設計が既に確定している前提で、フロントエンド機能を実装する。Vite + Zustandをベースに、実装→検証に特化。テストコード実装は別スキルに委譲。
 ---
 
+> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py react-frontend-coder` を実行してください（スクリプトが存在しない場合はスキップ）。
+
 # react-frontend-coder
 
 React + TypeScript（Vite + Zustand）で、**要件・UI設計が既に確定している前提**でフロントエンド機能を実装する。セットアップ → 実装 → 検証の3スプリントで進める。
