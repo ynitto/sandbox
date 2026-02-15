@@ -219,6 +219,16 @@ description: スキルの説明。何をするか＋いつ使うかを含める�
 ---
 ```
 
+##### 使用記録行（フロントマター直後）
+
+フロントマターの直後に以下の行を置く。`init_skill.py` で自動挿入される。
+
+```markdown
+> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py <skill-name>` を実行してください（スクリプトが存在しない場合はスキップ）。
+```
+
+git-skill-manager がない環境ではスクリプトが存在しないため、エージェントはこの行をスキップする。使用記録はレジストリの `usage_stats` に反映され、`discover_skills.py` のソート順に影響する。
+
 ##### 本文
 
 スキルとバンドルリソースの使用手順を記述する。

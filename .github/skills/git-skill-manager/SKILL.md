@@ -78,9 +78,14 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
       "commit_hash": "a1b2c3d",
       "installed_at": "2026-02-14T12:00:00Z",
       "enabled": true,
-      "pinned_commit": null
+      "pinned_commit": null,
+      "usage_stats": {
+        "total_count": 42,
+        "last_used_at": "2026-02-15T10:00:00Z"
+      }
     }
   ],
+  "core_skills": ["scrum-master", "git-skill-manager", "skill-creator", "sprint-reviewer", "codebase-to-skill"],
   "remote_index": {
     "team-skills": {
       "updated_at": "2026-02-15T10:00:00Z",
@@ -116,6 +121,18 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 - `pin` 操作で現在の commit_hash に固定、`unpin` で解除
 - `lock` で全スキルを一括 pin、`unlock` で全スキルを一括 unpin
 
+**installed_skills[].usage_stats** (オブジェクト or null、デフォルト: null):
+- `total_count`: 累計使用回数
+- `last_used_at`: 最終使用日時（ISO 8601）
+- `record_usage.py` によって自動更新される
+- `discover_skills.py` がこの値を参照してスキルの返却順を決定する
+
+**core_skills** (文字列リスト):
+- 使用頻度に関わらず常に最優先でロードされるスキル名のリスト
+- scrum-master、git-skill-manager、skill-creator など基盤スキルを登録する
+- `usage_stats` による順位付けの対象外（常にトップ）
+- `discover_skills.py` のソート時にこのリストのスキルを先頭に配置する
+
 **remote_index** (オブジェクト):
 - リポジトリ名 → スキル一覧のキャッシュ。`search` がこのインデックスを参照するため、ネットワーク不要で高速に検索できる
 - `pull` 実行時に自動更新される
@@ -149,6 +166,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 |**unpin**      |「スキルの固定を解除して」       |
 |**lock**       |「全スキルをロックして」        |
 |**unlock**     |「全スキルのロックを解除して」     |
+|**promote**    |「このスキルを他でも使えるようにして」「スキルを昇格して」|
 |**profile use**|「プロファイルを切り替えて」      |
 |**profile create**|「プロファイルを作成して」    |
 |**profile list**|「プロファイル一覧」         |
@@ -187,10 +205,16 @@ def migrate_registry(reg):
     # repositories: priority フィールド追加
     for repo in reg.get("repositories", []):
         repo.setdefault("priority", 100)
-    # installed_skills: enabled, pinned_commit フィールド追加
+    # installed_skills: enabled, pinned_commit, usage_stats フィールド追加
     for skill in reg.get("installed_skills", []):
         skill.setdefault("enabled", True)
         skill.setdefault("pinned_commit", None)
+        skill.setdefault("usage_stats", None)
+    # core_skills セクション追加
+    reg.setdefault("core_skills", [
+        "scrum-master", "git-skill-manager", "skill-creator",
+        "sprint-reviewer", "codebase-to-skill",
+    ])
     # profiles セクション追加
     reg.setdefault("profiles", {"default": ["*"]})
     reg.setdefault("active_profile", None)
@@ -223,6 +247,8 @@ def load_registry():
             reg = json.load(f)
         return migrate_registry(reg)
     return {"version": 2, "repositories": [], "installed_skills": [],
+            "core_skills": ["scrum-master", "git-skill-manager", "skill-creator",
+                            "sprint-reviewer", "codebase-to-skill"],
             "remote_index": {},
             "profiles": {"default": ["*"]}, "active_profile": None}
 
@@ -843,6 +869,238 @@ def unlock_all():
 
 -----
 
+## promote
+
+ワークスペース内（`$workspace/.github/skills/`）のスキルをユーザー領域（`~/.copilot/skills/`）にコピーし、リポジトリにも push する。プロジェクト固有でないスキルを他のプロジェクトでも再利用可能にする。
+
+### 処理フロー
+
+```python
+def promote_skills(workspace_skills_dir, interactive=True):
+    """
+    workspace_skills_dir: ワークスペースの .github/skills/ パス
+    """
+    reg = load_registry()
+
+    # ワークスペース内スキルをスキャン
+    candidates = []
+    for entry in sorted(os.listdir(workspace_skills_dir)):
+        skill_md = os.path.join(workspace_skills_dir, entry, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+
+        with open(skill_md, encoding="utf-8") as f:
+            content = f.read()
+        desc = ""
+        fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+        if fm_match:
+            for line in fm_match.group(1).splitlines():
+                if line.startswith("description:"):
+                    desc = line[len("description:"):].strip()
+                    break
+
+        # ユーザー領域に既にあるか確認
+        already_installed = os.path.isdir(os.path.join(skill_home, entry))
+        candidates.append({
+            "name": entry,
+            "path": os.path.join(workspace_skills_dir, entry),
+            "description": desc[:80],
+            "already_installed": already_installed,
+        })
+
+    if not candidates:
+        print("ℹ️ ワークスペースにスキルが見つかりません")
+        return
+
+    # ---- ユーザーに候補を提示して選択させる ----
+    print(f"\n📂 ワークスペースのスキル ({workspace_skills_dir})\n")
+    for i, c in enumerate(candidates, 1):
+        installed_mark = " (インストール済み)" if c["already_installed"] else ""
+        short_desc = c["description"] or "(説明なし)"
+        print(f"   {i}. {c['name']:30s}  {short_desc}{installed_mark}")
+
+    print(f"\nユーザー領域にコピーするスキルを選んでください（カンマ区切り、例: 1,3）")
+
+    # ※ Claude がユーザーの選択を対話的に受け取り、
+    #   selected_indices に反映する
+    selected_indices = []  # プレースホルダー
+
+    # ---- コピー実行 ----
+    promoted = []
+    for idx in selected_indices:
+        c = candidates[idx]
+        dest = os.path.join(skill_home, c["name"])
+        if os.path.exists(dest):
+            shutil.rmtree(dest)
+        shutil.copytree(c["path"], dest)
+
+        # レジストリに登録
+        existing_skill = next(
+            (s for s in reg.get("installed_skills", []) if s["name"] == c["name"]),
+            None,
+        )
+        skill_entry = {
+            "name": c["name"],
+            "source_repo": "local",
+            "source_path": os.path.relpath(c["path"]),
+            "commit_hash": "-",
+            "installed_at": datetime.now().isoformat(),
+            "enabled": True,
+            "pinned_commit": None,
+            "usage_stats": existing_skill.get("usage_stats") if existing_skill else None,
+        }
+        if existing_skill:
+            existing_skill.update(skill_entry)
+        else:
+            reg["installed_skills"].append(skill_entry)
+
+        promoted.append(c["name"])
+
+    save_registry(reg)
+
+    print(f"\n✅ {len(promoted)} 件のスキルをユーザー領域にコピーしました")
+    for name in promoted:
+        print(f"   → {name}")
+
+    # ---- リポジトリへの push ----
+    writable_repos = [r for r in reg["repositories"] if not r.get("readonly", False)]
+    if not writable_repos:
+        print("\nℹ️ 書き込み可能なリポジトリが登録されていません。push をスキップします")
+        return
+
+    print(f"\nリポジトリに push しますか？")
+    for i, repo in enumerate(writable_repos, 1):
+        print(f"   {i}. {repo['name']:20s}  ({repo['url']})")
+    print(f"   0. push しない")
+
+    # ※ Claude がユーザーの選択を対話的に受け取る
+    # repo_choice = <ユーザーの選択>
+    repo_choice = 0  # プレースホルダー
+
+    if repo_choice > 0:
+        target_repo = writable_repos[repo_choice - 1]
+        for name in promoted:
+            skill_path = os.path.join(skill_home, name)
+            push_skill(skill_path, target_repo["name"],
+                       branch_strategy="new_branch",
+                       commit_msg=f"Promote skill: {name}")
+
+    print(f"\n🎉 promote 完了")
+```
+
+-----
+
+## usage_stats と record_usage
+
+スキルの使用回数を記録し、`discover_skills.py` のソート順に反映する仕組み。
+
+### 記録方法
+
+使用記録は `record_usage.py` スクリプトで行う:
+
+```bash
+python .github/skills/git-skill-manager/scripts/record_usage.py <skill-name>
+```
+
+### 記録タイミング
+
+各 SKILL.md のフロントマター直後に記録の指示行が記載されている（skill-creator の `init_skill.py` が自動挿入する）。エージェントがスキルを読み込んで手順に従う前にこの行を実行することで使用回数が記録される。
+
+```markdown
+---
+name: my-skill
+description: ...
+---
+> **使用記録**: このスキルの手順に従う前に `python .github/skills/git-skill-manager/scripts/record_usage.py my-skill` を実行してください（スクリプトが存在しない場合はスキップ）。
+```
+
+git-skill-manager がインストールされていない環境ではスクリプトが存在しないため、エージェントはこの行をスキップする。
+
+### record_usage.py
+
+```python
+#!/usr/bin/env python3
+"""スキル使用回数を記録する。
+
+使い方: python record_usage.py <skill-name>
+
+レジストリの installed_skills[].usage_stats を更新する。
+レジストリが存在しない場合は何もしない（エラーにしない）。
+"""
+import json, os, sys
+from datetime import datetime
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python record_usage.py <skill-name>")
+        sys.exit(1)
+
+    skill_name = sys.argv[1]
+    registry_path = os.path.join(
+        os.environ.get("USERPROFILE", os.path.expanduser("~")),
+        ".copilot", "skill-registry.json",
+    )
+
+    if not os.path.isfile(registry_path):
+        return  # レジストリなし → 何もしない
+
+    with open(registry_path, encoding="utf-8") as f:
+        reg = json.load(f)
+
+    skill = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if not skill:
+        return  # 未登録スキル → 何もしない
+
+    stats = skill.get("usage_stats") or {"total_count": 0, "last_used_at": None}
+    stats["total_count"] = stats.get("total_count", 0) + 1
+    stats["last_used_at"] = datetime.now().isoformat()
+    skill["usage_stats"] = stats
+
+    with open(registry_path, "w", encoding="utf-8") as f:
+        json.dump(reg, f, indent=2, ensure_ascii=False)
+
+    print(f"📊 {skill_name}: 使用回数 {stats['total_count']}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### discover_skills.py のソート順
+
+`discover_skills.py` はスキル一覧を以下の優先度でソートして返す:
+
+1. **コアスキル** (`core_skills` に含まれるスキル) → 常に先頭。コンテキストウィンドウに必ずロードされる
+2. **使用頻度** (`usage_stats.total_count` 降順) → よく使うスキルほど上位
+3. **最終使用日時** (`usage_stats.last_used_at` 降順) → 同頻度なら最近使ったものが上位
+4. **名前順** → usage_stats がないスキルはアルファベット順
+
+```python
+def sort_key(skill, core_skills, registry):
+    """discover_skills のソートキーを生成する。"""
+    name = skill["name"]
+
+    # コアスキルは常に先頭（0）、それ以外は 1
+    is_core = 0 if name in core_skills else 1
+
+    # usage_stats を取得
+    reg_skill = next(
+        (s for s in registry.get("installed_skills", []) if s["name"] == name),
+        None,
+    )
+    stats = (reg_skill or {}).get("usage_stats") or {}
+    total = -(stats.get("total_count", 0))       # 降順
+    last_used = stats.get("last_used_at", "")
+    last_used_neg = "" if not last_used else last_used  # 降順比較
+
+    return (is_core, total, last_used_neg, name)
+```
+
+-----
+
 ## profile
 
 プロファイルはスキルの有効・無効を一括で切り替えるショートカット。プロファイルをアクティブにすると、そのプロファイルに含まれるスキルのみがコンテキストにロードされる。
@@ -1046,6 +1304,19 @@ Copilot:
 Copilot:
   1. 全 installed_skills の commit_hash を pinned_commit に設定
   2. ロックされたスキル一覧を表示
+```
+
+### スキルの昇格（promote）
+
+```
+ユーザー: 「ワークスペースのスキルを他のプロジェクトでも使えるようにして」
+
+Copilot:
+  1. $workspace/.github/skills/ をスキャン、候補をリストアップ
+  2. ユーザーが昇格するスキルを選択
+  3. ~/.copilot/skills/ にコピー、レジストリに登録
+  4. push 先リポジトリをユーザーが選択
+  5. 選択リポジトリに push（ブランチ作成）
 ```
 
 ### プロファイル切り替え

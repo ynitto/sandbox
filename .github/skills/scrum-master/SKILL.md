@@ -271,7 +271,7 @@ Wave 3: [b5]     → 単独実行
 ```
 [skill-name] スキルを実行する。
 
-手順: まず [skill-md-path] を読んで手順に従ってください。
+手順: [skill-md-path] を読んで手順に従ってください。
 タスク: [action]
 コンテキスト: [先行タスクのresultを1〜2行で要約]
 完了基準: [done_criteria]
