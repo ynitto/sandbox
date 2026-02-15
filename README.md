@@ -10,6 +10,15 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **scrum-master** | ユーザーのプロンプトをバックログに分解し、スプリント単位でサブエージェントに委譲して実行するオーケストレーター |
 | **git-skill-manager** | Git リポジトリ経由でスキルの取得（pull）・共有（push）・昇格（promote）・バージョン管理を行う |
 
+## インストール
+
+```bash
+git clone https://github.com/myorg/agent-skills.git
+python agent-skills/install.py
+```
+
+コアスキルがユーザー領域（`~/.copilot/skills/`）にコピーされ、ソースリポジトリがレジストリに自動登録される。2回目以降の実行はスキルを上書き更新する（レジストリの既存設定は保持）。
+
 ## クイックスタート
 
 ### 1. スキルリポジトリを登録する
