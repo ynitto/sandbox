@@ -1,6 +1,6 @@
 ---
 name: git-skill-manager
-description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」など、スキルの取得・共有・リポジトリ管理に関するリクエストで使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
+description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
 ---
 
 # Git Skill Manager
@@ -11,7 +11,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 
 | 呼び出し元 | 操作 | 例 |
 |---|---|---|
-| ユーザー直接 | repo add / pull / search / list | 「スキルをpullして」「リポジトリを登録して」 |
+| ユーザー直接 | repo add / pull / search / list / enable / disable / profile | 「スキルをpullして」「リポジトリを登録して」「スキルを無効化して」 |
 | scrum-master サブエージェント | push | Phase 6 のスキル共有時にテンプレート経由で起動される |
 
 - ユーザー直接呼び出しの場合、対話的に確認しながら進める
@@ -32,16 +32,21 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 ─────────────────────────────────────────
   %USERPROFILE%\.copilot\skills\          ← スキルインストール先
     ├── skill-a\SKILL.md
-    ├── skill-b\SKILL.md
-    └── ...
+    ├── skill-b\SKILL.md  (enabled)
+    └── skill-c\SKILL.md  (disabled → メタデータ非ロード)
 
   %USERPROFILE%\.copilot\skill-registry.json  ← レジストリ
+
+  %USERPROFILE%\.copilot\cache\           ← リポジトリキャッシュ（永続）
+    ├── team-skills\                      ← 初回clone、以降はfetch
+    └── personal\
 ─────────────────────────────────────────
          │ pull              │ pull + push
          ▼                   ▼
   ┌────────────────┐  ┌────────────────┐
   │ repo: team     │  │ repo: personal │
   │ (readonly)     │  │ (read/write)   │
+  │ priority: 1    │  │ priority: 2    │
   └────────────────┘  └────────────────┘
 ```
 
@@ -53,7 +58,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "repositories": [
     {
       "name": "team-skills",
@@ -61,7 +66,8 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
       "branch": "main",
       "skill_root": "skills",
       "description": "チーム共有スキル集",
-      "readonly": false
+      "readonly": false,
+      "priority": 1
     }
   ],
   "installed_skills": [
@@ -70,13 +76,36 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
       "source_repo": "team-skills",
       "source_path": "skills/docx-converter",
       "commit_hash": "a1b2c3d",
-      "installed_at": "2026-02-14T12:00:00Z"
+      "installed_at": "2026-02-14T12:00:00Z",
+      "enabled": true
     }
-  ]
+  ],
+  "profiles": {
+    "default": ["*"],
+    "frontend": ["react-guide", "css-linter", "storybook"],
+    "backend": ["api-guide", "db-migration", "auth"]
+  },
+  "active_profile": null
 }
 ```
 
-レジストリが存在しなければ初回操作時に自動作成する。
+### フィールド説明
+
+**repositories[].priority** (整数、デフォルト: 100):
+- 値が小さいほど優先度が高い
+- 同名スキルの競合時、サブエージェント経由（非対話）では優先度の高いリポジトリを自動採用する
+- ユーザー直接呼び出しでは対話的に選択を求める
+
+**installed_skills[].enabled** (真偽値、デフォルト: true):
+- false のスキルは `discover_skills.py` によるメタデータ収集から除外される
+- ディスク上にはスキルが残るため、再有効化は即座に完了する
+
+**profiles** (オブジェクト):
+- プロファイル名 → スキル名のリスト。`"*"` は「全スキル」を意味する
+- `active_profile` が null の場合、個別の enabled フラグに従う
+- `active_profile` が設定されている場合、プロファイル内のスキルのみ enabled として扱う
+
+レジストリが存在しなければ初回操作時に自動作成する。version: 1 のレジストリは自動マイグレーションする（新フィールドにデフォルト値を設定）。
 
 -----
 
@@ -91,6 +120,12 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 |**push**       |「スキルをpushして」「スキルを共有」|
 |**list**       |「インストール済みスキル一覧」     |
 |**search**     |「リポジトリにあるスキルを探して」   |
+|**enable**     |「スキルを有効化して」         |
+|**disable**    |「スキルを無効化して」         |
+|**profile use**|「プロファイルを切り替えて」      |
+|**profile create**|「プロファイルを作成して」    |
+|**profile list**|「プロファイル一覧」         |
+|**profile delete**|「プロファイルを削除して」    |
 
 -----
 
@@ -101,13 +136,38 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 ```powershell
 $SKILL_HOME   = "$env:USERPROFILE\.copilot\skills"
 $REGISTRY     = "$env:USERPROFILE\.copilot\skill-registry.json"
-$TEMP_WORK    = "$env:TEMP\agent-skill-work"
+$CACHE_DIR    = "$env:USERPROFILE\.copilot\cache"
 ```
 
-初回は `$SKILL_HOME` ディレクトリを作成する:
+初回は `$SKILL_HOME` と `$CACHE_DIR` ディレクトリを作成する:
 
 ```powershell
 if (-not (Test-Path $SKILL_HOME)) { New-Item -ItemType Directory -Path $SKILL_HOME -Force }
+if (-not (Test-Path $CACHE_DIR))  { New-Item -ItemType Directory -Path $CACHE_DIR -Force }
+```
+
+-----
+
+## レジストリのマイグレーション
+
+version: 1 のレジストリを読み込んだ場合、以下のマイグレーションを適用する。
+
+```python
+def migrate_registry(reg):
+    """version 1 → 2 へのマイグレーション。"""
+    if reg.get("version", 1) >= 2:
+        return reg
+    # repositories: priority フィールド追加
+    for repo in reg.get("repositories", []):
+        repo.setdefault("priority", 100)
+    # installed_skills: enabled フィールド追加
+    for skill in reg.get("installed_skills", []):
+        skill.setdefault("enabled", True)
+    # profiles セクション追加
+    reg.setdefault("profiles", {"default": ["*"]})
+    reg.setdefault("active_profile", None)
+    reg["version"] = 2
+    return reg
 ```
 
 -----
@@ -130,15 +190,17 @@ registry_path = os.path.join(os.environ["USERPROFILE"], ".copilot", "skill-regis
 def load_registry():
     if os.path.exists(registry_path):
         with open(registry_path, encoding="utf-8") as f:
-            return json.load(f)
-    return {"version": 1, "repositories": [], "installed_skills": []}
+            reg = json.load(f)
+        return migrate_registry(reg)
+    return {"version": 2, "repositories": [], "installed_skills": [],
+            "profiles": {"default": ["*"]}, "active_profile": None}
 
 def save_registry(reg):
     os.makedirs(os.path.dirname(registry_path), exist_ok=True)
     with open(registry_path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)
 
-def add_repo(name, url, branch="main", skill_root="skills", description="", readonly=False):
+def add_repo(name, url, branch="main", skill_root="skills", description="", readonly=False, priority=100):
     reg = load_registry()
     if any(r["name"] == name for r in reg["repositories"]):
         print(f"'{name}' は既に登録済みです")
@@ -150,9 +212,10 @@ def add_repo(name, url, branch="main", skill_root="skills", description="", read
         "skill_root": skill_root,
         "description": description,
         "readonly": readonly,
+        "priority": priority,
     })
     save_registry(reg)
-    print(f"✅ リポジトリ '{name}' を登録しました")
+    print(f"✅ リポジトリ '{name}' を登録しました（priority: {priority}）")
 ```
 
 -----
@@ -165,13 +228,52 @@ def add_repo(name, url, branch="main", skill_root="skills", description="", read
 import subprocess, shutil, os, re, json, glob
 from datetime import datetime
 
-temp_work = os.path.join(os.environ["TEMP"], "agent-skill-work")
+cache_dir = os.path.join(os.environ["USERPROFILE"], ".copilot", "cache")
 skill_home = os.path.join(os.environ["USERPROFILE"], ".copilot", "skills")
 
-def pull_skills(repo_name=None, skill_name=None):
+def clone_or_fetch(repo):
+    """
+    キャッシュディレクトリにリポジトリを取得する。
+    初回: git clone --depth 1
+    2回目以降: git fetch + git reset --hard（高速）
+    キャッシュが破損している場合: 削除して再clone
+    """
+    repo_cache = os.path.join(cache_dir, repo["name"])
+    os.makedirs(cache_dir, exist_ok=True)
+
+    if os.path.isdir(os.path.join(repo_cache, ".git")):
+        # キャッシュあり → fetch で更新（高速）
+        try:
+            subprocess.run(
+                ["git", "fetch", "origin", repo["branch"]],
+                cwd=repo_cache, check=True,
+                capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "reset", "--hard", f"origin/{repo['branch']}"],
+                cwd=repo_cache, check=True,
+                capture_output=True, text=True,
+            )
+            return repo_cache
+        except subprocess.CalledProcessError:
+            # キャッシュ破損 → 削除して再clone
+            shutil.rmtree(repo_cache, ignore_errors=True)
+
+    # 初回 or キャッシュ破損 → clone
+    subprocess.run([
+        "git", "clone", "--depth", "1",
+        "--branch", repo["branch"],
+        repo["url"], repo_cache
+    ], check=True)
+    return repo_cache
+
+
+def pull_skills(repo_name=None, skill_name=None, interactive=True):
     """
     repo_name=None → 全リポジトリから取得
     skill_name=None → リポジトリ内の全スキルを取得
+    interactive=True → ユーザー直接呼び出し（競合時に確認）
+    interactive=False → サブエージェント経由（自動解決）
     """
     reg = load_registry()
     repos = reg["repositories"]
@@ -187,17 +289,9 @@ def pull_skills(repo_name=None, skill_name=None):
     candidates = {}  # skill_name -> [{ repo, path, date, ... }]
 
     for repo in repos:
-        clone_dir = os.path.join(temp_work, repo["name"])
-        if os.path.exists(clone_dir):
-            shutil.rmtree(clone_dir)
+        repo_cache = clone_or_fetch(repo)
 
-        subprocess.run([
-            "git", "clone", "--depth", "1",
-            "--branch", repo["branch"],
-            repo["url"], clone_dir
-        ], check=True)
-
-        root = os.path.join(clone_dir, repo["skill_root"])
+        root = os.path.join(repo_cache, repo["skill_root"])
         if not os.path.isdir(root):
             continue
 
@@ -208,45 +302,86 @@ def pull_skills(repo_name=None, skill_name=None):
             if skill_name and entry != skill_name:
                 continue
 
+            # SKILL.md から description を取得
+            with open(skill_md, encoding="utf-8") as f:
+                content = f.read()
+            desc = ""
+            fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+            if fm_match:
+                for line in fm_match.group(1).splitlines():
+                    if line.startswith("description:"):
+                        desc = line[len("description:"):].strip()
+                        break
+
             # コミット日時を取得
             result = subprocess.run(
                 ["git", "log", "-1", "--format=%aI", "--",
                  os.path.join(repo["skill_root"], entry).replace("\\", "/")],
-                cwd=clone_dir, capture_output=True, text=True
+                cwd=repo_cache, capture_output=True, text=True
             )
             commit_date = result.stdout.strip() or "1970-01-01T00:00:00+00:00"
 
             commit_hash = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],
-                cwd=clone_dir, capture_output=True, text=True
+                cwd=repo_cache, capture_output=True, text=True
             ).stdout.strip()
 
             candidates.setdefault(entry, []).append({
                 "repo_name": repo["name"],
+                "repo_priority": repo.get("priority", 100),
                 "source_path": os.path.join(repo["skill_root"], entry),
                 "full_path": os.path.join(root, entry),
                 "commit_date": commit_date,
                 "commit_hash": commit_hash,
+                "description": desc[:80],
             })
 
-    # 同名スキルの競合解決: コミット日時が新しい方を採用
+    # ---- 競合解決 ----
     installed = []
     conflicts = []
 
     for sname, sources in candidates.items():
+        winner = sources[0]
+
         if len(sources) > 1:
-            sources.sort(key=lambda s: s["commit_date"], reverse=True)
+            if interactive:
+                # ユーザー直接呼び出し → 対話的に選択
+                print(f"\n⚠️ 競合: '{sname}' が複数リポジトリに存在します")
+                for i, s in enumerate(sources, 1):
+                    short_desc = s["description"] or "(説明なし)"
+                    print(f"   {i}. {s['repo_name']:20s}  ({s['commit_date'][:10]})  {short_desc}")
+                print(f"   どちらをインストールしますか？ (1-{len(sources)})")
+
+                # ユーザーの選択を待つ（Claudeが対話的に処理する）
+                # 選択されたインデックスを choice に格納
+                # choice = <ユーザーの選択 (1-based)>
+                # winner = sources[choice - 1]
+
+                # ※ 実際にはClaude が上記メッセージを出力後、
+                #   ユーザーの回答に基づいて winner を決定する
+                winner = sources[0]  # プレースホルダー: Claudeが対話で決定
+            else:
+                # サブエージェント経由 → リポジトリ優先度で自動解決
+                sources.sort(key=lambda s: s["repo_priority"])
+                winner = sources[0]
+
             conflicts.append({
                 "skill": sname,
-                "adopted": sources[0]["repo_name"],
-                "rejected": [s["repo_name"] for s in sources[1:]],
+                "adopted": winner["repo_name"],
+                "rejected": [s["repo_name"] for s in sources if s != winner],
             })
-        winner = sources[0]
 
         dest = os.path.join(skill_home, sname)
         if os.path.exists(dest):
             shutil.rmtree(dest)
         shutil.copytree(winner["full_path"], dest)
+
+        # 既存の enabled 状態を保持、新規はデフォルト true
+        existing_skill = next(
+            (s for s in reg.get("installed_skills", []) if s["name"] == sname),
+            None,
+        )
+        enabled = existing_skill.get("enabled", True) if existing_skill else True
 
         installed.append({
             "name": sname,
@@ -254,6 +389,7 @@ def pull_skills(repo_name=None, skill_name=None):
             "source_path": winner["source_path"],
             "commit_hash": winner["commit_hash"],
             "installed_at": datetime.now().isoformat(),
+            "enabled": enabled,
         })
 
     # レジストリ更新
@@ -263,18 +399,16 @@ def pull_skills(repo_name=None, skill_name=None):
     reg["installed_skills"] = list(existing.values())
     save_registry(reg)
 
-    # クリーンアップ
-    shutil.rmtree(temp_work, ignore_errors=True)
-
     # 結果レポート
     print(f"\n📦 pull 完了")
     print(f"   新規/更新: {len(installed)} 件")
     if conflicts:
         print(f"   競合解決:  {len(conflicts)} 件")
         for c in conflicts:
-            print(f"     {c['skill']}: {c['adopted']} を採用（{', '.join(c['rejected'])} より新しい）")
+            print(f"     {c['skill']}: {c['adopted']} を採用（{', '.join(c['rejected'])} を不採用）")
     for s in installed:
-        print(f"   ✅ {s['name']} ← {s['source_repo']} ({s['commit_hash']})")
+        status = "✅" if s["enabled"] else "⏸️"
+        print(f"   {status} {s['name']} ← {s['source_repo']} ({s['commit_hash']})")
 ```
 
 -----
@@ -306,6 +440,9 @@ def push_skill(skill_path, repo_name, branch_strategy="new_branch", commit_msg=N
         return
 
     skill_name = os.path.basename(skill_path.rstrip("\\/"))
+
+    # push 用は一時ディレクトリを使用（キャッシュとは別）
+    temp_work = os.path.join(os.environ["TEMP"], "agent-skill-push")
     clone_dir = os.path.join(temp_work, f"push-{repo_name}")
     if os.path.exists(clone_dir):
         shutil.rmtree(clone_dir)
@@ -378,8 +515,14 @@ def push_skill(skill_path, repo_name, branch_strategy="new_branch", commit_msg=N
 def list_skills():
     reg = load_registry()
     registry_map = {s["name"]: s for s in reg.get("installed_skills", [])}
+    active_profile = reg.get("active_profile")
+    profiles = reg.get("profiles", {})
 
-    print(f"📂 スキル一覧 ({skill_home})\n")
+    print(f"📂 スキル一覧 ({skill_home})")
+    if active_profile:
+        print(f"   アクティブプロファイル: {active_profile}")
+    print()
+
     if not os.path.isdir(skill_home):
         print("   (スキルなし)")
         return
@@ -390,7 +533,30 @@ def list_skills():
         info = registry_map.get(entry, {})
         repo = info.get("source_repo", "local")
         hash_ = info.get("commit_hash", "-")
-        print(f"   {entry:30s}  repo: {repo:20s}  commit: {hash_}")
+        enabled = is_skill_enabled(entry, reg)
+        status = "✅" if enabled else "⏸️"
+        print(f"   {status} {entry:30s}  repo: {repo:20s}  commit: {hash_}")
+
+
+def is_skill_enabled(skill_name, reg):
+    """スキルが有効かどうかを判定する。プロファイルとenabledフラグの両方を考慮。"""
+    active_profile = reg.get("active_profile")
+    profiles = reg.get("profiles", {})
+
+    if active_profile and active_profile in profiles:
+        profile_skills = profiles[active_profile]
+        if "*" not in profile_skills and skill_name not in profile_skills:
+            return False
+
+    # 個別の enabled フラグ
+    skill_info = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if skill_info and not skill_info.get("enabled", True):
+        return False
+
+    return True
 ```
 
 -----
@@ -405,16 +571,10 @@ def search_skills(repo_name=None, keyword=None):
         repos = [r for r in repos if r["name"] == repo_name]
 
     for repo in repos:
-        clone_dir = os.path.join(temp_work, repo["name"])
-        if os.path.exists(clone_dir):
-            shutil.rmtree(clone_dir)
-        subprocess.run([
-            "git", "clone", "--depth", "1",
-            "--branch", repo["branch"],
-            repo["url"], clone_dir
-        ], check=True)
+        # キャッシュを活用（pull と同じ clone_or_fetch を使用）
+        repo_cache = clone_or_fetch(repo)
 
-        root = os.path.join(clone_dir, repo["skill_root"])
+        root = os.path.join(repo_cache, repo["skill_root"])
         if not os.path.isdir(root):
             continue
 
@@ -443,8 +603,138 @@ def search_skills(repo_name=None, keyword=None):
 
         if not found:
             print("   (該当なし)")
+```
 
-    shutil.rmtree(temp_work, ignore_errors=True)
+-----
+
+## enable / disable
+
+スキルの有効・無効を切り替える。無効化されたスキルはディスク上に残るが、`discover_skills.py` のメタデータ収集から除外される（コンテキストウィンドウを節約）。
+
+```python
+def enable_skill(skill_name):
+    reg = load_registry()
+    skill = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if not skill:
+        print(f"❌ スキル '{skill_name}' がインストールされていません")
+        return
+    if skill.get("enabled", True):
+        print(f"ℹ️ スキル '{skill_name}' は既に有効です")
+        return
+    skill["enabled"] = True
+    save_registry(reg)
+    print(f"✅ スキル '{skill_name}' を有効化しました")
+
+
+def disable_skill(skill_name):
+    reg = load_registry()
+    skill = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if not skill:
+        print(f"❌ スキル '{skill_name}' がインストールされていません")
+        return
+    if not skill.get("enabled", True):
+        print(f"ℹ️ スキル '{skill_name}' は既に無効です")
+        return
+    skill["enabled"] = False
+    save_registry(reg)
+    print(f"⏸️ スキル '{skill_name}' を無効化しました")
+```
+
+-----
+
+## profile
+
+プロファイルはスキルの有効・無効を一括で切り替えるショートカット。プロファイルをアクティブにすると、そのプロファイルに含まれるスキルのみがコンテキストにロードされる。
+
+### profile create
+
+```python
+def profile_create(profile_name, skill_names):
+    """
+    profile_name: プロファイル名
+    skill_names: スキル名のリスト（"*" で全スキル）
+    """
+    reg = load_registry()
+    profiles = reg.setdefault("profiles", {})
+
+    if profile_name in profiles:
+        print(f"⚠️ プロファイル '{profile_name}' を上書きします")
+
+    profiles[profile_name] = skill_names
+    save_registry(reg)
+    print(f"✅ プロファイル '{profile_name}' を作成しました: {', '.join(skill_names)}")
+```
+
+### profile use
+
+```python
+def profile_use(profile_name):
+    """プロファイルをアクティブにする。None を指定すると個別 enabled に戻る。"""
+    reg = load_registry()
+    profiles = reg.get("profiles", {})
+
+    if profile_name is not None and profile_name not in profiles:
+        print(f"❌ プロファイル '{profile_name}' が見つかりません")
+        print(f"   利用可能: {', '.join(profiles.keys())}")
+        return
+
+    reg["active_profile"] = profile_name
+    save_registry(reg)
+
+    if profile_name is None:
+        print("✅ プロファイルを解除しました（個別の enabled 設定に従います）")
+    else:
+        skills = profiles[profile_name]
+        label = "全スキル" if "*" in skills else ", ".join(skills)
+        print(f"✅ プロファイル '{profile_name}' をアクティブにしました: {label}")
+```
+
+### profile list
+
+```python
+def profile_list():
+    reg = load_registry()
+    profiles = reg.get("profiles", {})
+    active = reg.get("active_profile")
+
+    if not profiles:
+        print("   (プロファイルなし)")
+        return
+
+    print("📋 プロファイル一覧\n")
+    for name, skills in profiles.items():
+        marker = " ◀ active" if name == active else ""
+        label = "全スキル" if "*" in skills else ", ".join(skills)
+        print(f"   {name:20s}  [{label}]{marker}")
+```
+
+### profile delete
+
+```python
+def profile_delete(profile_name):
+    reg = load_registry()
+    profiles = reg.get("profiles", {})
+
+    if profile_name not in profiles:
+        print(f"❌ プロファイル '{profile_name}' が見つかりません")
+        return
+
+    if profile_name == "default":
+        print(f"❌ 'default' プロファイルは削除できません")
+        return
+
+    if reg.get("active_profile") == profile_name:
+        reg["active_profile"] = None
+
+    del profiles[profile_name]
+    save_registry(reg)
+    print(f"✅ プロファイル '{profile_name}' を削除しました")
 ```
 
 -----
@@ -455,6 +745,7 @@ def search_skills(repo_name=None, keyword=None):
 |------------------|---------------------------|
 |`git ls-remote` 失敗|URL・認証を確認するよう案内            |
 |clone 失敗          |ブランチ名を `git ls-remote` で確認 |
+|fetch 失敗（キャッシュ破損）|キャッシュを削除して再clone          |
 |push to readonly  |readonlyリポジトリへのpush拒否を通知。別リポジトリを提案する|
 |push rejected     |`git pull --rebase` 後に再push|
 |SKILL.md なし       |スキルフォルダの構成確認を案内            |
@@ -472,7 +763,7 @@ def search_skills(repo_name=None, keyword=None):
 
 Copilot:
   1. git ls-remote で接続確認
-  2. レジストリ作成、リポジトリ追加（readonlyにするか確認）
+  2. レジストリ作成、リポジトリ追加（readonlyにするか確認、priorityを確認）
   3. 「登録しました。pullしますか？」
 ```
 
@@ -487,17 +778,17 @@ Copilot:
   3. 「readonlyで登録しました。pullのみ可能です」
 ```
 
-### pull
+### pull（キャッシュ活用）
 
 ```
 ユーザー: 「スキルを全部同期して」
 
 Copilot:
-  1. 全リポジトリを shallow clone
+  1. 全リポジトリを cache からfetch（初回のみclone）
   2. 各リポジトリのスキルを走査
-  3. 同名競合はコミット日時で新しい方を採用
+  3. 同名競合があればユーザーに確認
   4. %USERPROFILE%\.copilot\skills\ にコピー、レジストリ更新
-  5. 結果レポート
+  5. 結果レポート（有効/無効状態も表示）
 ```
 
 ### push
@@ -510,4 +801,24 @@ Copilot:
   2. SKILL.md の存在確認
   3. clone → ブランチ作成 → コピー → commit → push
   4. コミットハッシュとブランチ名を報告
+```
+
+### スキルの無効化
+
+```
+ユーザー: 「legacy-tool スキルを無効化して」
+
+Copilot:
+  1. レジストリの enabled を false に変更
+  2. 「legacy-tool を無効化しました。再有効化は 'スキルを有効化して' で可能です」
+```
+
+### プロファイル切り替え
+
+```
+ユーザー: 「フロントエンド開発用のプロファイルに切り替えて」
+
+Copilot:
+  1. frontend プロファイルをアクティブに設定
+  2. 「frontend プロファイルをアクティブにしました: react-guide, css-linter, storybook」
 ```
