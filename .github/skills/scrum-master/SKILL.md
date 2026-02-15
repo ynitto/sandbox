@@ -1,6 +1,6 @@
 ---
 name: scrum-master
-description: ユーザーのプロンプトをタスク分解し、サブエージェントにスキルを委譲して実行するオーケストレーター。複雑なリクエスト、複数ステップの作業、「〜を作って〜して」のような複合依頼で発動する。スプリント制で段階的に実行し、各スプリント完了時にユーザーに確認する。スキルが足りない場合はskill-creatorでスキルを作成する。既存スキルの改良や分割もスプリント内で実行できる。作成・更新されたスキルはgit-skill-managerでリポジトリに共有できる。
+description: ユーザーのプロンプトをタスク分解し、サブエージェントにスキルを委譲して実行するオーケストレーター。スクラム開発を依頼されたり、複雑な依頼で発動する。スプリント制で段階的に実行し、各スプリント完了時にレビュー結果を次スプリントへ反映する。スキルが足りない場合はskill-creatorでスキルを作成する。既存スキルの改良や分割もスプリント内で実行できる。作成・更新されたスキルはgit-skill-managerでリポジトリに共有できる。
 ---
 
 # scrum-master
@@ -99,15 +99,16 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
 
 バックログからスプリントに含めるタスクを選出する。
 
-1. priority順にタスクを並べる
-2. depends_onの制約を考慮し、先行タスクが未完了のタスクは選出しない
-3. 1スプリント = 3〜5タスクを目安にする
-4. プランJSONを生成する
-5. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する）:
+1. 直前スプリントの `process_review` と `next_sprint_actions` を確認し、今回のプランに反映する
+2. priority順にタスクを並べる
+3. depends_onの制約を考慮し、先行タスクが未完了のタスクは選出しない
+4. 1スプリント = 3〜5タスクを目安にする
+5. プランJSONを生成する
+6. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する）:
    ```bash
    python .github/skills/scrum-master/scripts/validate_plan.py plan.json --skills-json skills.json
    ```
-6. プランをユーザーに表形式で提示して承認を得る:
+7. プランをユーザーに表形式で提示して承認を得る（反映した改善点も1〜3件で併記）:
    ```
    **Sprint N プラン**
 
@@ -116,6 +117,10 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
    | b1 | [action] | [skill] | - |
    | b2 | [action] | [skill] | b1 |
    | b3 | [action] | - | b2 |
+
+   今回反映した改善点:
+   - [next_sprint_action 1]
+   - [next_sprint_action 2]
 
    このプランで進めますか？
    ```
@@ -155,7 +160,9 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
 1. サブエージェントを起動する（テンプレート「スプリントレビュー時」を使用）
 2. sprint-reviewer の出力をプランJSONに転記する:
    - タスク判定・ゴール進捗 → sprintsのreviewフィールド
+   - スプリントプラン/実行プロセスの評価 → sprintsのprocess_reviewフィールド
    - レトロスペクティブ → sprintsのretroフィールド
+   - 次スプリントで実施する改善アクション（最大3件）→ sprintsのnext_sprint_actionsフィールド
    - ブロッカー → sprintsのimpedimentsフィールド
 3. **スキル成果物の共有**: スプリント内でスキルの作成・改良が行われた場合、ユーザーに共有を提案する:
    ```
@@ -188,13 +195,20 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills
 
 完了: X 件 / 失敗: Y 件 / スキップ: Z 件 / バックログ残り: W 件
 
+進め方レビュー:
+- [process_review]
+
+次スプリント反映アクション:
+- [next_sprint_action 1]
+- [next_sprint_action 2]
+
 選択肢:
 1. 次のスプリントへ進む
 2. バックログを見直す（タスクの追加・削除・優先度変更）
 3. ここで完了とする
 ```
 
-- 「次スプリント」→ 前スプリントでスキルの作成・改良が行われた場合は Phase 1 を再実行してからPhase 4 に戻る。それ以外は直接 Phase 4 に戻る
+- 「次スプリント」→ 前スプリントでスキルの作成・改良が行われた場合は Phase 1 を再実行してからPhase 4 に戻る。それ以外は直接 Phase 4 に戻る。Phase 4 では `next_sprint_actions` を必ず反映する
 - 「バックログ見直し」→ ユーザーと対話してバックログを修正 → Phase 4 に戻る
 - 「完了」→ 最終レポートを出力して終了する
 
@@ -261,13 +275,21 @@ sprint-reviewer スキルでスプリントのレビューとレトロスペク�
 手順: まず .github/skills/sprint-reviewer/SKILL.md を読んで手順に従ってください。
 ゴール: [goal]
 スプリント番号: [N]
+スプリント計画:
+- [計画時に選択したタスクと優先度の要約]
+実行ログサマリー:
+- [予定どおり進んだ点 / 遅延・失敗が出た点]
 タスク一覧:
 - [task-id]: action=[action], done_criteria=[done_criteria], status=[status], result=[result]
 - ...
 
 結果を以下の形式で返してください:
 レビュー: [ゴール進捗の評価 1〜2文]
+進め方レビュー: [スプリントプランと実行プロセスの評価 1〜2文]
 レトロスペクティブ: [改善点 1〜2文]
+次スプリント反映アクション:
+- [改善アクション1]
+- [改善アクション2]
 ブロッカー: [あれば列挙、なければ「なし」]
 ```
 
