@@ -24,8 +24,11 @@
     {
       "sprint": "integer (必須) スプリント番号。1始まり",
       "task_ids": ["string (必須) このスプリントで実行するタスクIDリスト"],
+      "execution_groups": [["string (必須) ウェーブごとのタスクIDリスト。同一配列内は並列実行、配列順は直列実行"]],
       "review": "string|null (任意) スプリントレビューの結果",
+      "process_review": "string|null (任意) スプリントプランと実行プロセスの評価",
       "retro": "string|null (任意) レトロスペクティブの改善点",
+      "next_sprint_actions": ["string (任意) 次スプリントで実施する改善アクション。最大3件"],
       "impediments": ["string (任意) 検出されたブロッカーのリスト"]
     }
   ],
@@ -78,15 +81,21 @@
     {
       "sprint": 1,
       "task_ids": ["b1", "b2"],
+      "execution_groups": [["b1"], ["b2"]],
       "review": null,
+      "process_review": null,
       "retro": null,
+      "next_sprint_actions": [],
       "impediments": []
     },
     {
       "sprint": 2,
       "task_ids": ["b3"],
+      "execution_groups": [["b3"]],
       "review": null,
+      "process_review": null,
       "retro": null,
+      "next_sprint_actions": [],
       "impediments": []
     }
   ],
