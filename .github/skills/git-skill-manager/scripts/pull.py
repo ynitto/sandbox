@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""pull 操作: リポジトリからスキルを取得してインストールする。"""
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+from datetime import datetime
+
+from registry import load_registry, save_registry, _cache_dir, _skill_home
+from repo import clone_or_fetch, update_remote_index
+
+
+def pull_skills(
+    repo_name: str | None = None,
+    skill_name: str | None = None,
+    interactive: bool = True,
+) -> None:
+    """
+    repo_name=None → 全リポジトリから取得
+    skill_name=None → リポジトリ内の全スキルを取得
+    interactive=True → ユーザー直接呼び出し（競合時に確認）
+    interactive=False → サブエージェント経由（自動解決）
+    """
+    cache_dir = _cache_dir()
+    skill_home = _skill_home()
+    reg = load_registry()
+    repos = reg["repositories"]
+    if repo_name:
+        repos = [r for r in repos if r["name"] == repo_name]
+        if not repos:
+            print(f"❌ リポジトリ '{repo_name}' が見つかりません")
+            return
+
+    os.makedirs(skill_home, exist_ok=True)
+
+    # 全リポジトリからスキル候補を収集
+    candidates: dict[str, list[dict]] = {}
+
+    for repo in repos:
+        repo_cache = clone_or_fetch(repo)
+        update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"])
+
+        root = os.path.join(repo_cache, repo["skill_root"])
+        if not os.path.isdir(root):
+            continue
+
+        for entry in os.listdir(root):
+            skill_md = os.path.join(root, entry, "SKILL.md")
+            if not os.path.isfile(skill_md):
+                continue
+            if skill_name and entry != skill_name:
+                continue
+
+            with open(skill_md, encoding="utf-8") as f:
+                content = f.read()
+            desc = ""
+            fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+            if fm_match:
+                for line in fm_match.group(1).splitlines():
+                    if line.startswith("description:"):
+                        desc = line[len("description:"):].strip()
+                        break
+
+            result = subprocess.run(
+                ["git", "log", "-1", "--format=%aI", "--",
+                 os.path.join(repo["skill_root"], entry).replace("\\", "/")],
+                cwd=repo_cache, capture_output=True, text=True,
+            )
+            commit_date = result.stdout.strip() or "1970-01-01T00:00:00+00:00"
+
+            commit_hash = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=repo_cache, capture_output=True, text=True,
+            ).stdout.strip()
+
+            candidates.setdefault(entry, []).append({
+                "repo_name": repo["name"],
+                "repo_priority": repo.get("priority", 100),
+                "source_path": os.path.join(repo["skill_root"], entry),
+                "full_path": os.path.join(root, entry),
+                "commit_date": commit_date,
+                "commit_hash": commit_hash,
+                "description": desc[:80],
+            })
+
+    # ---- 競合解決 ----
+    installed = []
+    conflicts = []
+
+    for sname, sources in candidates.items():
+        winner = sources[0]
+
+        if len(sources) > 1:
+            if interactive:
+                print(f"\n⚠️ 競合: '{sname}' が複数リポジトリに存在します")
+                for i, s in enumerate(sources, 1):
+                    short_desc = s["description"] or "(説明なし)"
+                    print(f"   {i}. {s['repo_name']:20s}  ({s['commit_date'][:10]})  {short_desc}")
+                print(f"   どちらをインストールしますか？ (1-{len(sources)})")
+                winner = sources[0]  # プレースホルダー: エージェントが対話で決定
+            else:
+                sources.sort(key=lambda s: s["repo_priority"])
+                winner = sources[0]
+
+            conflicts.append({
+                "skill": sname,
+                "adopted": winner["repo_name"],
+                "rejected": [s["repo_name"] for s in sources if s != winner],
+            })
+
+        # ---- pinned_commit 対応 ----
+        existing_skill = next(
+            (s for s in reg.get("installed_skills", []) if s["name"] == sname),
+            None,
+        )
+        pinned = existing_skill.get("pinned_commit") if existing_skill else None
+
+        if pinned:
+            repo_cache = os.path.join(cache_dir, winner["repo_name"])
+            try:
+                subprocess.run(
+                    ["git", "fetch", "--depth", "1", "origin", pinned],
+                    cwd=repo_cache, check=True,
+                    capture_output=True, text=True,
+                )
+                subprocess.run(
+                    ["git", "checkout", pinned],
+                    cwd=repo_cache, check=True,
+                    capture_output=True, text=True,
+                )
+                winner["full_path"] = os.path.join(repo_cache, winner["source_path"])
+                winner["commit_hash"] = pinned[:7]
+                print(f"   📌 {sname}: pinned commit {pinned[:7]} を使用")
+            except subprocess.CalledProcessError:
+                print(f"   ⚠️ {sname}: pinned commit {pinned[:7]} の取得に失敗。最新版を使用します")
+                pinned = None
+
+        dest = os.path.join(skill_home, sname)
+        if os.path.exists(dest):
+            shutil.rmtree(dest)
+        shutil.copytree(winner["full_path"], dest)
+
+        enabled = existing_skill.get("enabled", True) if existing_skill else True
+
+        installed.append({
+            "name": sname,
+            "source_repo": winner["repo_name"],
+            "source_path": winner["source_path"],
+            "commit_hash": winner["commit_hash"],
+            "installed_at": datetime.now().isoformat(),
+            "enabled": enabled,
+            "pinned_commit": pinned,
+        })
+
+    # レジストリ更新
+    existing = {s["name"]: s for s in reg.get("installed_skills", [])}
+    for s in installed:
+        existing[s["name"]] = s
+    reg["installed_skills"] = list(existing.values())
+    save_registry(reg)
+
+    # 結果レポート
+    print(f"\n📦 pull 完了")
+    print(f"   新規/更新: {len(installed)} 件")
+    if conflicts:
+        print(f"   競合解決:  {len(conflicts)} 件")
+        for c in conflicts:
+            print(f"     {c['skill']}: {c['adopted']} を採用（{', '.join(c['rejected'])} を不採用）")
+    for s in installed:
+        pin_mark = f" 📌{s['pinned_commit'][:7]}" if s.get("pinned_commit") else ""
+        status = "✅" if s["enabled"] else "⏸️"
+        print(f"   {status} {s['name']} ← {s['source_repo']} ({s['commit_hash']}){pin_mark}")

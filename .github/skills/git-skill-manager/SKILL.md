@@ -197,32 +197,7 @@ if (-not (Test-Path $CACHE_DIR))  { New-Item -ItemType Directory -Path $CACHE_DI
 
 version: 1 のレジストリを読み込んだ場合、以下のマイグレーションを適用する。
 
-```python
-def migrate_registry(reg):
-    """version 1 → 2 へのマイグレーション。"""
-    if reg.get("version", 1) >= 2:
-        return reg
-    # repositories: priority フィールド追加
-    for repo in reg.get("repositories", []):
-        repo.setdefault("priority", 100)
-    # installed_skills: enabled, pinned_commit, usage_stats フィールド追加
-    for skill in reg.get("installed_skills", []):
-        skill.setdefault("enabled", True)
-        skill.setdefault("pinned_commit", None)
-        skill.setdefault("usage_stats", None)
-    # core_skills セクション追加
-    reg.setdefault("core_skills", [
-        "scrum-master", "git-skill-manager", "skill-creator",
-        "sprint-reviewer", "codebase-to-skill",
-    ])
-    # profiles セクション追加
-    reg.setdefault("profiles", {"default": ["*"]})
-    reg.setdefault("active_profile", None)
-    # remote_index セクション追加
-    reg.setdefault("remote_index", {})
-    reg["version"] = 2
-    return reg
-```
+→ 実装: `scripts/registry.py` — `migrate_registry(reg)`
 
 -----
 
@@ -235,45 +210,7 @@ git ls-remote $REPO_URL HEAD
 # 成功したらレジストリに追加
 ```
 
-```python
-import json, os
-from datetime import datetime, timezone
-
-registry_path = os.path.join(os.environ["USERPROFILE"], ".copilot", "skill-registry.json")
-
-def load_registry():
-    if os.path.exists(registry_path):
-        with open(registry_path, encoding="utf-8") as f:
-            reg = json.load(f)
-        return migrate_registry(reg)
-    return {"version": 2, "repositories": [], "installed_skills": [],
-            "core_skills": ["scrum-master", "git-skill-manager", "skill-creator",
-                            "sprint-reviewer", "codebase-to-skill"],
-            "remote_index": {},
-            "profiles": {"default": ["*"]}, "active_profile": None}
-
-def save_registry(reg):
-    os.makedirs(os.path.dirname(registry_path), exist_ok=True)
-    with open(registry_path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
-
-def add_repo(name, url, branch="main", skill_root="skills", description="", readonly=False, priority=100):
-    reg = load_registry()
-    if any(r["name"] == name for r in reg["repositories"]):
-        print(f"'{name}' は既に登録済みです")
-        return
-    reg["repositories"].append({
-        "name": name,
-        "url": url,
-        "branch": branch,
-        "skill_root": skill_root,
-        "description": description,
-        "readonly": readonly,
-        "priority": priority,
-    })
-    save_registry(reg)
-    print(f"✅ リポジトリ '{name}' を登録しました（priority: {priority}）")
-```
+→ 実装: `scripts/registry.py` — `load_registry()`, `save_registry(reg)`, `scripts/repo.py` — `add_repo()`
 
 -----
 
@@ -281,253 +218,11 @@ def add_repo(name, url, branch="main", skill_root="skills", description="", read
 
 ### 処理フロー
 
-```python
-import subprocess, shutil, os, re, json, glob
-from datetime import datetime
+→ 実装: `scripts/repo.py` — `clone_or_fetch(repo)`, `update_remote_index()`、`scripts/pull.py` — `pull_skills()`
 
-cache_dir = os.path.join(os.environ["USERPROFILE"], ".copilot", "cache")
-skill_home = os.path.join(os.environ["USERPROFILE"], ".copilot", "skills")
-
-def clone_or_fetch(repo):
-    """
-    キャッシュディレクトリにリポジトリを取得する。
-    初回: git clone --depth 1
-    2回目以降: git fetch + git reset --hard（高速）
-    キャッシュが破損している場合: 削除して再clone
-    """
-    repo_cache = os.path.join(cache_dir, repo["name"])
-    os.makedirs(cache_dir, exist_ok=True)
-
-    if os.path.isdir(os.path.join(repo_cache, ".git")):
-        # キャッシュあり → fetch で更新（高速）
-        try:
-            subprocess.run(
-                ["git", "fetch", "origin", repo["branch"]],
-                cwd=repo_cache, check=True,
-                capture_output=True, text=True,
-            )
-            subprocess.run(
-                ["git", "reset", "--hard", f"origin/{repo['branch']}"],
-                cwd=repo_cache, check=True,
-                capture_output=True, text=True,
-            )
-            return repo_cache
-        except subprocess.CalledProcessError:
-            # キャッシュ破損 → 削除して再clone
-            shutil.rmtree(repo_cache, ignore_errors=True)
-
-    # 初回 or キャッシュ破損 → clone
-    subprocess.run([
-        "git", "clone", "--depth", "1",
-        "--branch", repo["branch"],
-        repo["url"], repo_cache
-    ], check=True)
-    return repo_cache
-
-
-def update_remote_index(reg, repo_name, repo_cache, skill_root):
-    """リモートインデックスを更新する。pull / search --refresh 時に呼ばれる。"""
-    remote_index = reg.setdefault("remote_index", {})
-    root = os.path.join(repo_cache, skill_root)
-    if not os.path.isdir(root):
-        return
-
-    skills_list = []
-    for entry in sorted(os.listdir(root)):
-        skill_md = os.path.join(root, entry, "SKILL.md")
-        if not os.path.isfile(skill_md):
-            continue
-        with open(skill_md, encoding="utf-8") as f:
-            content = f.read()
-        desc = ""
-        fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
-        if fm_match:
-            for line in fm_match.group(1).splitlines():
-                if line.startswith("description:"):
-                    desc = line[len("description:"):].strip()
-                    break
-        skills_list.append({"name": entry, "description": desc[:200]})
-
-    remote_index[repo_name] = {
-        "updated_at": datetime.now().isoformat(),
-        "skills": skills_list,
-    }
-
-
-def pull_skills(repo_name=None, skill_name=None, interactive=True):
-    """
-    repo_name=None → 全リポジトリから取得
-    skill_name=None → リポジトリ内の全スキルを取得
-    interactive=True → ユーザー直接呼び出し（競合時に確認）
-    interactive=False → サブエージェント経由（自動解決）
-    """
-    reg = load_registry()
-    repos = reg["repositories"]
-    if repo_name:
-        repos = [r for r in repos if r["name"] == repo_name]
-        if not repos:
-            print(f"❌ リポジトリ '{repo_name}' が見つかりません")
-            return
-
-    os.makedirs(skill_home, exist_ok=True)
-
-    # 全リポジトリからスキル候補を収集
-    candidates = {}  # skill_name -> [{ repo, path, date, ... }]
-
-    for repo in repos:
-        repo_cache = clone_or_fetch(repo)
-
-        # リモートインデックスを更新
-        update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"])
-
-        root = os.path.join(repo_cache, repo["skill_root"])
-        if not os.path.isdir(root):
-            continue
-
-        for entry in os.listdir(root):
-            skill_md = os.path.join(root, entry, "SKILL.md")
-            if not os.path.isfile(skill_md):
-                continue
-            if skill_name and entry != skill_name:
-                continue
-
-            # SKILL.md から description を取得
-            with open(skill_md, encoding="utf-8") as f:
-                content = f.read()
-            desc = ""
-            fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
-            if fm_match:
-                for line in fm_match.group(1).splitlines():
-                    if line.startswith("description:"):
-                        desc = line[len("description:"):].strip()
-                        break
-
-            # コミット日時を取得
-            result = subprocess.run(
-                ["git", "log", "-1", "--format=%aI", "--",
-                 os.path.join(repo["skill_root"], entry).replace("\\", "/")],
-                cwd=repo_cache, capture_output=True, text=True
-            )
-            commit_date = result.stdout.strip() or "1970-01-01T00:00:00+00:00"
-
-            commit_hash = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=repo_cache, capture_output=True, text=True
-            ).stdout.strip()
-
-            candidates.setdefault(entry, []).append({
-                "repo_name": repo["name"],
-                "repo_priority": repo.get("priority", 100),
-                "source_path": os.path.join(repo["skill_root"], entry),
-                "full_path": os.path.join(root, entry),
-                "commit_date": commit_date,
-                "commit_hash": commit_hash,
-                "description": desc[:80],
-            })
-
-    # ---- 競合解決 ----
-    installed = []
-    conflicts = []
-
-    for sname, sources in candidates.items():
-        winner = sources[0]
-
-        if len(sources) > 1:
-            if interactive:
-                # ユーザー直接呼び出し → 対話的に選択
-                print(f"\n⚠️ 競合: '{sname}' が複数リポジトリに存在します")
-                for i, s in enumerate(sources, 1):
-                    short_desc = s["description"] or "(説明なし)"
-                    print(f"   {i}. {s['repo_name']:20s}  ({s['commit_date'][:10]})  {short_desc}")
-                print(f"   どちらをインストールしますか？ (1-{len(sources)})")
-
-                # ユーザーの選択を待つ（Claudeが対話的に処理する）
-                # 選択されたインデックスを choice に格納
-                # choice = <ユーザーの選択 (1-based)>
-                # winner = sources[choice - 1]
-
-                # ※ 実際にはClaude が上記メッセージを出力後、
-                #   ユーザーの回答に基づいて winner を決定する
-                winner = sources[0]  # プレースホルダー: Claudeが対話で決定
-            else:
-                # サブエージェント経由 → リポジトリ優先度で自動解決
-                sources.sort(key=lambda s: s["repo_priority"])
-                winner = sources[0]
-
-            conflicts.append({
-                "skill": sname,
-                "adopted": winner["repo_name"],
-                "rejected": [s["repo_name"] for s in sources if s != winner],
-            })
-
-        # ---- pinned_commit 対応 ----
-        existing_skill = next(
-            (s for s in reg.get("installed_skills", []) if s["name"] == sname),
-            None,
-        )
-        pinned = existing_skill.get("pinned_commit") if existing_skill else None
-
-        if pinned:
-            # pin されている場合: 指定コミットを checkout してからコピー
-            repo_cache = os.path.join(cache_dir, winner["repo_name"])
-            try:
-                subprocess.run(
-                    ["git", "fetch", "--depth", "1", "origin", pinned],
-                    cwd=repo_cache, check=True,
-                    capture_output=True, text=True,
-                )
-                subprocess.run(
-                    ["git", "checkout", pinned],
-                    cwd=repo_cache, check=True,
-                    capture_output=True, text=True,
-                )
-                # full_path をピン後のパスで上書き
-                winner["full_path"] = os.path.join(
-                    repo_cache, winner["source_path"]
-                )
-                winner["commit_hash"] = pinned[:7]
-                print(f"   📌 {sname}: pinned commit {pinned[:7]} を使用")
-            except subprocess.CalledProcessError:
-                print(f"   ⚠️ {sname}: pinned commit {pinned[:7]} の取得に失敗。最新版を使用します")
-                pinned = None
-
-        dest = os.path.join(skill_home, sname)
-        if os.path.exists(dest):
-            shutil.rmtree(dest)
-        shutil.copytree(winner["full_path"], dest)
-
-        # 既存の enabled / pinned_commit 状態を保持
-        enabled = existing_skill.get("enabled", True) if existing_skill else True
-
-        installed.append({
-            "name": sname,
-            "source_repo": winner["repo_name"],
-            "source_path": winner["source_path"],
-            "commit_hash": winner["commit_hash"],
-            "installed_at": datetime.now().isoformat(),
-            "enabled": enabled,
-            "pinned_commit": pinned,
-        })
-
-    # レジストリ更新
-    existing = {s["name"]: s for s in reg.get("installed_skills", [])}
-    for s in installed:
-        existing[s["name"]] = s
-    reg["installed_skills"] = list(existing.values())
-    save_registry(reg)
-
-    # 結果レポート
-    print(f"\n📦 pull 完了")
-    print(f"   新規/更新: {len(installed)} 件")
-    if conflicts:
-        print(f"   競合解決:  {len(conflicts)} 件")
-        for c in conflicts:
-            print(f"     {c['skill']}: {c['adopted']} を採用（{', '.join(c['rejected'])} を不採用）")
-    for s in installed:
-        pin_mark = f" 📌{s['pinned_commit'][:7]}" if s.get("pinned_commit") else ""
-        status = "✅" if s["enabled"] else "⏸️"
-        print(f"   {status} {s['name']} ← {s['source_repo']} ({s['commit_hash']}){pin_mark}")
-```
+主要なロジック:
+- `clone_or_fetch`: キャッシュ有 → `git fetch + reset`（高速）、キャッシュ破損 → 削除して再clone
+- `pull_skills`: 全リポジトリからスキル候補を収集 → 競合解決（対話 or priority自動） → pinned_commit 対応 → コピー → レジストリ更新
 
 -----
 
@@ -535,149 +230,17 @@ def pull_skills(repo_name=None, skill_name=None, interactive=True):
 
 ### 処理フロー
 
-```python
-def push_skill(skill_path, repo_name, branch_strategy="new_branch", commit_msg=None):
-    """
-    skill_path: プッシュするスキルフォルダのパス
-    repo_name: プッシュ先リポジトリ名（レジストリの name）
-    branch_strategy: "new_branch" or "direct"
-    """
-    reg = load_registry()
-    repo = next((r for r in reg["repositories"] if r["name"] == repo_name), None)
-    if not repo:
-        print(f"❌ リポジトリ '{repo_name}' が見つかりません")
-        return
+→ 実装: `scripts/push.py` — `push_skill(skill_path, repo_name, branch_strategy, commit_msg)`
 
-    if repo.get("readonly", False):
-        print(f"❌ リポジトリ '{repo_name}' は readonly です。push できません")
-        return
-
-    skill_md = os.path.join(skill_path, "SKILL.md")
-    if not os.path.isfile(skill_md):
-        print(f"❌ SKILL.md が見つかりません: {skill_path}")
-        return
-
-    skill_name = os.path.basename(skill_path.rstrip("\\/"))
-
-    # push 用は一時ディレクトリを使用（キャッシュとは別）
-    temp_work = os.path.join(os.environ["TEMP"], "agent-skill-push")
-    clone_dir = os.path.join(temp_work, f"push-{repo_name}")
-    if os.path.exists(clone_dir):
-        shutil.rmtree(clone_dir)
-
-    # clone
-    subprocess.run([
-        "git", "clone", "--depth", "1",
-        "--branch", repo["branch"],
-        repo["url"], clone_dir
-    ], check=True)
-
-    # ブランチ作成
-    push_branch = repo["branch"]
-    if branch_strategy == "new_branch":
-        push_branch = f"add-skill/{skill_name}"
-        subprocess.run(["git", "checkout", "-b", push_branch], cwd=clone_dir, check=True)
-
-    # スキルをコピー
-    dest = os.path.join(clone_dir, repo["skill_root"], skill_name)
-    if os.path.exists(dest):
-        shutil.rmtree(dest)
-    shutil.copytree(skill_path, dest)
-
-    # 不要ファイル除外
-    for pattern in ["__pycache__", ".DS_Store", "*.pyc", "node_modules"]:
-        for match in glob.glob(os.path.join(dest, "**", pattern), recursive=True):
-            if os.path.isdir(match):
-                shutil.rmtree(match)
-            else:
-                os.remove(match)
-
-    # commit & push
-    if not commit_msg:
-        commit_msg = f"Add skill: {skill_name}"
-
-    subprocess.run(["git", "add", "."], cwd=clone_dir, check=True)
-
-    # 変更があるか確認
-    diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=clone_dir)
-    if diff.returncode == 0:
-        print("ℹ️ 変更がありません。プッシュをスキップします")
-        shutil.rmtree(temp_work, ignore_errors=True)
-        return
-
-    subprocess.run(["git", "commit", "-m", commit_msg], cwd=clone_dir, check=True)
-    subprocess.run(["git", "push", "origin", push_branch], cwd=clone_dir, check=True)
-
-    commit_hash = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        cwd=clone_dir, capture_output=True, text=True
-    ).stdout.strip()
-
-    # クリーンアップ
-    shutil.rmtree(temp_work, ignore_errors=True)
-
-    print(f"\n🚀 push 完了")
-    print(f"   スキル:     {skill_name}")
-    print(f"   リポジトリ: {repo_name} ({repo['url']})")
-    print(f"   ブランチ:   {push_branch}")
-    print(f"   コミット:   {commit_hash}")
-    if branch_strategy == "new_branch":
-        print(f"   💡 PR/MR を作成してマージしてください")
-```
+一時ディレクトリにクローン → スキルフォルダをコピー → 不要ファイル除外 → commit & push。`branch_strategy="new_branch"` でブランチを切り PR/MR を作成するフローを推奨。
 
 -----
 
 ## list
 
-```python
-def list_skills():
-    reg = load_registry()
-    registry_map = {s["name"]: s for s in reg.get("installed_skills", [])}
-    active_profile = reg.get("active_profile")
-    profiles = reg.get("profiles", {})
+→ 実装: `scripts/manage.py` — `list_skills()`、`scripts/registry.py` — `is_skill_enabled()`
 
-    print(f"📂 スキル一覧 ({skill_home})")
-    if active_profile:
-        print(f"   アクティブプロファイル: {active_profile}")
-    print()
-
-    if not os.path.isdir(skill_home):
-        print("   (スキルなし)")
-        return
-
-    for entry in sorted(os.listdir(skill_home)):
-        if not os.path.isfile(os.path.join(skill_home, entry, "SKILL.md")):
-            continue
-        info = registry_map.get(entry, {})
-        repo = info.get("source_repo", "local")
-        hash_ = info.get("commit_hash", "-")
-        enabled = is_skill_enabled(entry, reg)
-        pinned = info.get("pinned_commit")
-        status = "✅" if enabled else "⏸️"
-        pin_mark = f" 📌{pinned[:7]}" if pinned else ""
-        print(f"   {status} {entry:30s}  repo: {repo:20s}  commit: {hash_}{pin_mark}")
-
-
-def is_skill_enabled(skill_name, reg):
-    """スキルが有効かどうかを判定する。プロファイルとenabledフラグの両方を考慮。"""
-    active_profile = reg.get("active_profile")
-    profiles = reg.get("profiles", {})
-
-    if active_profile and active_profile in profiles:
-        profile_skills = profiles[active_profile]
-        if "*" not in profile_skills and skill_name not in profile_skills:
-            return False
-
-    # 個別の enabled フラグ
-    skill_info = next(
-        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
-        None,
-    )
-    if skill_info and not skill_info.get("enabled", True):
-        return False
-
-    return True
-```
+インストール済みスキルの一覧を表示。有効/無効、ソースリポジトリ、コミットハッシュ、pin状態を表示する。
 
 -----
 
@@ -687,53 +250,7 @@ def is_skill_enabled(skill_name, reg):
 `--refresh` 指定時はリモートから最新情報を取得してインデックスを更新してから検索する。
 インデックスが空の場合（初回）は自動的に `--refresh` と同様の動作をする。
 
-```python
-def search_skills(repo_name=None, keyword=None, refresh=False):
-    reg = load_registry()
-    repos = reg["repositories"]
-    if repo_name:
-        repos = [r for r in repos if r["name"] == repo_name]
-
-    remote_index = reg.get("remote_index", {})
-
-    # インデックスが空 or --refresh → リモートからインデックスを更新
-    needs_refresh = refresh or not any(
-        repo["name"] in remote_index for repo in repos
-    )
-
-    if needs_refresh:
-        print("🔄 リモートからインデックスを更新中...")
-        for repo in repos:
-            repo_cache = clone_or_fetch(repo)
-            update_remote_index(reg, repo["name"], repo_cache, repo["skill_root"])
-        save_registry(reg)
-        remote_index = reg.get("remote_index", {})
-
-    # インデックスから検索
-    for repo in repos:
-        index_entry = remote_index.get(repo["name"])
-        if not index_entry:
-            continue
-
-        print(f"\n🔍 {repo['name']} ({repo['url']})")
-        updated = index_entry.get("updated_at", "不明")[:10]
-        print(f"   (インデックス更新日: {updated})")
-
-        found = False
-        for skill in index_entry.get("skills", []):
-            name = skill["name"]
-            desc = skill.get("description", "")
-
-            if keyword and keyword.lower() not in name.lower() and keyword.lower() not in desc.lower():
-                continue
-
-            found = True
-            short_desc = desc[:80] + "..." if len(desc) > 80 else desc
-            print(f"   {name:30s}  {short_desc}")
-
-        if not found:
-            print("   (該当なし)")
-```
+→ 実装: `scripts/manage.py` — `search_skills(repo_name, keyword, refresh)`
 
 -----
 
@@ -741,40 +258,7 @@ def search_skills(repo_name=None, keyword=None, refresh=False):
 
 スキルの有効・無効を切り替える。無効化されたスキルはディスク上に残るが、`discover_skills.py` のメタデータ収集から除外される（コンテキストウィンドウを節約）。
 
-```python
-def enable_skill(skill_name):
-    reg = load_registry()
-    skill = next(
-        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
-        None,
-    )
-    if not skill:
-        print(f"❌ スキル '{skill_name}' がインストールされていません")
-        return
-    if skill.get("enabled", True):
-        print(f"ℹ️ スキル '{skill_name}' は既に有効です")
-        return
-    skill["enabled"] = True
-    save_registry(reg)
-    print(f"✅ スキル '{skill_name}' を有効化しました")
-
-
-def disable_skill(skill_name):
-    reg = load_registry()
-    skill = next(
-        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
-        None,
-    )
-    if not skill:
-        print(f"❌ スキル '{skill_name}' がインストールされていません")
-        return
-    if not skill.get("enabled", True):
-        print(f"ℹ️ スキル '{skill_name}' は既に無効です")
-        return
-    skill["enabled"] = False
-    save_registry(reg)
-    print(f"⏸️ スキル '{skill_name}' を無効化しました")
-```
+→ 実装: `scripts/manage.py` — `enable_skill(skill_name)`, `disable_skill(skill_name)`
 
 -----
 
@@ -782,48 +266,7 @@ def disable_skill(skill_name):
 
 スキルを特定のコミットハッシュに固定する。pin されたスキルは pull 時にそのコミットの内容を取得し、新しいバージョンには更新されない。
 
-```python
-def pin_skill(skill_name, commit=None):
-    """
-    commit=None → 現在インストール済みの commit_hash に固定
-    commit=指定 → 指定コミットに固定
-    """
-    reg = load_registry()
-    skill = next(
-        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
-        None,
-    )
-    if not skill:
-        print(f"❌ スキル '{skill_name}' がインストールされていません")
-        return
-
-    target = commit or skill.get("commit_hash")
-    if not target:
-        print(f"❌ コミットハッシュが不明です。先に pull してください")
-        return
-
-    skill["pinned_commit"] = target
-    save_registry(reg)
-    print(f"📌 スキル '{skill_name}' を {target[:7]} に固定しました")
-
-
-def unpin_skill(skill_name):
-    reg = load_registry()
-    skill = next(
-        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
-        None,
-    )
-    if not skill:
-        print(f"❌ スキル '{skill_name}' がインストールされていません")
-        return
-    if not skill.get("pinned_commit"):
-        print(f"ℹ️ スキル '{skill_name}' は固定されていません")
-        return
-
-    skill["pinned_commit"] = None
-    save_registry(reg)
-    print(f"🔓 スキル '{skill_name}' の固定を解除しました（次回 pull で最新版を取得します）")
-```
+→ 実装: `scripts/manage.py` — `pin_skill(skill_name, commit)`, `unpin_skill(skill_name)`
 
 -----
 
@@ -831,41 +274,7 @@ def unpin_skill(skill_name):
 
 全インストール済みスキルのバージョンを一括で固定・解除する。チームで同じバージョンのスキルセットを共有するときに使う。
 
-```python
-def lock_all():
-    """全スキルを現在の commit_hash に一括固定する。"""
-    reg = load_registry()
-    skills = reg.get("installed_skills", [])
-    locked = 0
-
-    for skill in skills:
-        hash_ = skill.get("commit_hash")
-        if hash_ and not skill.get("pinned_commit"):
-            skill["pinned_commit"] = hash_
-            locked += 1
-
-    save_registry(reg)
-    print(f"🔒 lock 完了: {locked} 件のスキルを固定しました")
-    for skill in skills:
-        pin = skill.get("pinned_commit")
-        if pin:
-            print(f"   📌 {skill['name']:30s}  {pin[:7]}")
-
-
-def unlock_all():
-    """全スキルの固定を一括解除する。"""
-    reg = load_registry()
-    skills = reg.get("installed_skills", [])
-    unlocked = 0
-
-    for skill in skills:
-        if skill.get("pinned_commit"):
-            skill["pinned_commit"] = None
-            unlocked += 1
-
-    save_registry(reg)
-    print(f"🔓 unlock 完了: {unlocked} 件のスキルの固定を解除しました")
-```
+→ 実装: `scripts/manage.py` — `lock_all()`, `unlock_all()`
 
 -----
 
@@ -875,118 +284,12 @@ def unlock_all():
 
 ### 処理フロー
 
-```python
-def promote_skills(workspace_skills_dir, interactive=True):
-    """
-    workspace_skills_dir: ワークスペースの .github/skills/ パス
-    """
-    reg = load_registry()
+→ 実装: `scripts/manage.py` — `promote_skills(workspace_skills_dir, interactive)`
 
-    # ワークスペース内スキルをスキャン
-    candidates = []
-    for entry in sorted(os.listdir(workspace_skills_dir)):
-        skill_md = os.path.join(workspace_skills_dir, entry, "SKILL.md")
-        if not os.path.isfile(skill_md):
-            continue
-
-        with open(skill_md, encoding="utf-8") as f:
-            content = f.read()
-        desc = ""
-        fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
-        if fm_match:
-            for line in fm_match.group(1).splitlines():
-                if line.startswith("description:"):
-                    desc = line[len("description:"):].strip()
-                    break
-
-        # ユーザー領域に既にあるか確認
-        already_installed = os.path.isdir(os.path.join(skill_home, entry))
-        candidates.append({
-            "name": entry,
-            "path": os.path.join(workspace_skills_dir, entry),
-            "description": desc[:80],
-            "already_installed": already_installed,
-        })
-
-    if not candidates:
-        print("ℹ️ ワークスペースにスキルが見つかりません")
-        return
-
-    # ---- ユーザーに候補を提示して選択させる ----
-    print(f"\n📂 ワークスペースのスキル ({workspace_skills_dir})\n")
-    for i, c in enumerate(candidates, 1):
-        installed_mark = " (インストール済み)" if c["already_installed"] else ""
-        short_desc = c["description"] or "(説明なし)"
-        print(f"   {i}. {c['name']:30s}  {short_desc}{installed_mark}")
-
-    print(f"\nユーザー領域にコピーするスキルを選んでください（カンマ区切り、例: 1,3）")
-
-    # ※ Claude がユーザーの選択を対話的に受け取り、
-    #   selected_indices に反映する
-    selected_indices = []  # プレースホルダー
-
-    # ---- コピー実行 ----
-    promoted = []
-    for idx in selected_indices:
-        c = candidates[idx]
-        dest = os.path.join(skill_home, c["name"])
-        if os.path.exists(dest):
-            shutil.rmtree(dest)
-        shutil.copytree(c["path"], dest)
-
-        # レジストリに登録
-        existing_skill = next(
-            (s for s in reg.get("installed_skills", []) if s["name"] == c["name"]),
-            None,
-        )
-        skill_entry = {
-            "name": c["name"],
-            "source_repo": "local",
-            "source_path": os.path.relpath(c["path"]),
-            "commit_hash": "-",
-            "installed_at": datetime.now().isoformat(),
-            "enabled": True,
-            "pinned_commit": None,
-            "usage_stats": existing_skill.get("usage_stats") if existing_skill else None,
-        }
-        if existing_skill:
-            existing_skill.update(skill_entry)
-        else:
-            reg["installed_skills"].append(skill_entry)
-
-        promoted.append(c["name"])
-
-    save_registry(reg)
-
-    print(f"\n✅ {len(promoted)} 件のスキルをユーザー領域にコピーしました")
-    for name in promoted:
-        print(f"   → {name}")
-
-    # ---- リポジトリへの push ----
-    writable_repos = [r for r in reg["repositories"] if not r.get("readonly", False)]
-    if not writable_repos:
-        print("\nℹ️ 書き込み可能なリポジトリが登録されていません。push をスキップします")
-        return
-
-    print(f"\nリポジトリに push しますか？")
-    for i, repo in enumerate(writable_repos, 1):
-        print(f"   {i}. {repo['name']:20s}  ({repo['url']})")
-    print(f"   0. push しない")
-
-    # ※ Claude がユーザーの選択を対話的に受け取る
-    # repo_choice = <ユーザーの選択>
-    repo_choice = 0  # プレースホルダー
-
-    if repo_choice > 0:
-        target_repo = writable_repos[repo_choice - 1]
-        for name in promoted:
-            skill_path = os.path.join(skill_home, name)
-            push_skill(skill_path, target_repo["name"],
-                       branch_strategy="new_branch",
-                       commit_msg=f"Promote skill: {name}")
-
-    print(f"\n🎉 promote 完了")
-```
+1. ワークスペース内スキルをスキャン
+2. ユーザーに候補を提示して選択させる
+3. 選択されたスキルをユーザー領域にコピー + レジストリ登録
+4. 書き込み可能なリポジトリがあれば push を提案
 
 -----
 
@@ -1018,56 +321,7 @@ git-skill-manager がインストールされていない環境ではスクリ�
 
 ### record_usage.py
 
-```python
-#!/usr/bin/env python3
-"""スキル使用回数を記録する。
-
-使い方: python record_usage.py <skill-name>
-
-レジストリの installed_skills[].usage_stats を更新する。
-レジストリが存在しない場合は何もしない（エラーにしない）。
-"""
-import json, os, sys
-from datetime import datetime
-
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python record_usage.py <skill-name>")
-        sys.exit(1)
-
-    skill_name = sys.argv[1]
-    registry_path = os.path.join(
-        os.environ.get("USERPROFILE", os.path.expanduser("~")),
-        ".copilot", "skill-registry.json",
-    )
-
-    if not os.path.isfile(registry_path):
-        return  # レジストリなし → 何もしない
-
-    with open(registry_path, encoding="utf-8") as f:
-        reg = json.load(f)
-
-    skill = next(
-        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
-        None,
-    )
-    if not skill:
-        return  # 未登録スキル → 何もしない
-
-    stats = skill.get("usage_stats") or {"total_count": 0, "last_used_at": None}
-    stats["total_count"] = stats.get("total_count", 0) + 1
-    stats["last_used_at"] = datetime.now().isoformat()
-    skill["usage_stats"] = stats
-
-    with open(registry_path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
-
-    print(f"📊 {skill_name}: 使用回数 {stats['total_count']}")
-
-
-if __name__ == "__main__":
-    main()
-```
+→ 実装: `scripts/record_usage.py`（既存スクリプト）
 
 ### discover_skills.py のソート順
 
@@ -1078,26 +332,7 @@ if __name__ == "__main__":
 3. **最終使用日時** (`usage_stats.last_used_at` 降順) → 同頻度なら最近使ったものが上位
 4. **名前順** → usage_stats がないスキルはアルファベット順
 
-```python
-def sort_key(skill, core_skills, registry):
-    """discover_skills のソートキーを生成する。"""
-    name = skill["name"]
-
-    # コアスキルは常に先頭（0）、それ以外は 1
-    is_core = 0 if name in core_skills else 1
-
-    # usage_stats を取得
-    reg_skill = next(
-        (s for s in registry.get("installed_skills", []) if s["name"] == name),
-        None,
-    )
-    stats = (reg_skill or {}).get("usage_stats") or {}
-    total = -(stats.get("total_count", 0))       # 降順
-    last_used = stats.get("last_used_at", "")
-    last_used_neg = "" if not last_used else last_used  # 降順比較
-
-    return (is_core, total, last_used_neg, name)
-```
+→ 実装: `scripts/manage.py` — `sort_key(skill, core_skills, registry)`
 
 -----
 
@@ -1105,90 +340,7 @@ def sort_key(skill, core_skills, registry):
 
 プロファイルはスキルの有効・無効を一括で切り替えるショートカット。プロファイルをアクティブにすると、そのプロファイルに含まれるスキルのみがコンテキストにロードされる。
 
-### profile create
-
-```python
-def profile_create(profile_name, skill_names):
-    """
-    profile_name: プロファイル名
-    skill_names: スキル名のリスト（"*" で全スキル）
-    """
-    reg = load_registry()
-    profiles = reg.setdefault("profiles", {})
-
-    if profile_name in profiles:
-        print(f"⚠️ プロファイル '{profile_name}' を上書きします")
-
-    profiles[profile_name] = skill_names
-    save_registry(reg)
-    print(f"✅ プロファイル '{profile_name}' を作成しました: {', '.join(skill_names)}")
-```
-
-### profile use
-
-```python
-def profile_use(profile_name):
-    """プロファイルをアクティブにする。None を指定すると個別 enabled に戻る。"""
-    reg = load_registry()
-    profiles = reg.get("profiles", {})
-
-    if profile_name is not None and profile_name not in profiles:
-        print(f"❌ プロファイル '{profile_name}' が見つかりません")
-        print(f"   利用可能: {', '.join(profiles.keys())}")
-        return
-
-    reg["active_profile"] = profile_name
-    save_registry(reg)
-
-    if profile_name is None:
-        print("✅ プロファイルを解除しました（個別の enabled 設定に従います）")
-    else:
-        skills = profiles[profile_name]
-        label = "全スキル" if "*" in skills else ", ".join(skills)
-        print(f"✅ プロファイル '{profile_name}' をアクティブにしました: {label}")
-```
-
-### profile list
-
-```python
-def profile_list():
-    reg = load_registry()
-    profiles = reg.get("profiles", {})
-    active = reg.get("active_profile")
-
-    if not profiles:
-        print("   (プロファイルなし)")
-        return
-
-    print("📋 プロファイル一覧\n")
-    for name, skills in profiles.items():
-        marker = " ◀ active" if name == active else ""
-        label = "全スキル" if "*" in skills else ", ".join(skills)
-        print(f"   {name:20s}  [{label}]{marker}")
-```
-
-### profile delete
-
-```python
-def profile_delete(profile_name):
-    reg = load_registry()
-    profiles = reg.get("profiles", {})
-
-    if profile_name not in profiles:
-        print(f"❌ プロファイル '{profile_name}' が見つかりません")
-        return
-
-    if profile_name == "default":
-        print(f"❌ 'default' プロファイルは削除できません")
-        return
-
-    if reg.get("active_profile") == profile_name:
-        reg["active_profile"] = None
-
-    del profiles[profile_name]
-    save_registry(reg)
-    print(f"✅ プロファイル '{profile_name}' を削除しました")
-```
+→ 実装: `scripts/manage.py` — `profile_create()`, `profile_use()`, `profile_list()`, `profile_delete()`
 
 -----
 
