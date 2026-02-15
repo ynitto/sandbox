@@ -6,6 +6,7 @@
 
 ```json
 {
+  "current_phase": "integer (必須) 現在実行中のフェーズ番号 (1〜7)。フェーズ遷移時に必ず更新する",
   "goal": "string (必須) ユーザーの最終目標",
   "backlog": [
     {
@@ -39,6 +40,7 @@
 
 ```json
 {
+  "current_phase": 4,
   "goal": "画像リサイズのスキルを作成してGitリポジトリにプッシュする",
   "backlog": [
     {

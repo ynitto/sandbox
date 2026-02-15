@@ -37,11 +37,11 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 
   %USERPROFILE%\.copilot\skill-registry.json  ← レジストリ
 ─────────────────────────────────────────
-         │ pull              │ push
+         │ pull              │ pull + push
          ▼                   ▼
   ┌────────────────┐  ┌────────────────┐
   │ repo: team     │  │ repo: personal │
-  │ (GitLab)       │  │ (GitLab)       │
+  │ (readonly)     │  │ (read/write)   │
   └────────────────┘  └────────────────┘
 ```
 
@@ -60,7 +60,8 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
       "url": "https://github.com/myorg/agent-skills.git",
       "branch": "main",
       "skill_root": "skills",
-      "description": "チーム共有スキル集"
+      "description": "チーム共有スキル集",
+      "readonly": false
     }
   ],
   "installed_skills": [
@@ -137,7 +138,7 @@ def save_registry(reg):
     with open(registry_path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)
 
-def add_repo(name, url, branch="main", skill_root="skills", description=""):
+def add_repo(name, url, branch="main", skill_root="skills", description="", readonly=False):
     reg = load_registry()
     if any(r["name"] == name for r in reg["repositories"]):
         print(f"'{name}' は既に登録済みです")
@@ -148,6 +149,7 @@ def add_repo(name, url, branch="main", skill_root="skills", description=""):
         "branch": branch,
         "skill_root": skill_root,
         "description": description,
+        "readonly": readonly,
     })
     save_registry(reg)
     print(f"✅ リポジトリ '{name}' を登録しました")
@@ -292,6 +294,10 @@ def push_skill(skill_path, repo_name, branch_strategy="new_branch", commit_msg=N
     repo = next((r for r in reg["repositories"] if r["name"] == repo_name), None)
     if not repo:
         print(f"❌ リポジトリ '{repo_name}' が見つかりません")
+        return
+
+    if repo.get("readonly", False):
+        print(f"❌ リポジトリ '{repo_name}' は readonly です。push できません")
         return
 
     skill_md = os.path.join(skill_path, "SKILL.md")
@@ -449,6 +455,7 @@ def search_skills(repo_name=None, keyword=None):
 |------------------|---------------------------|
 |`git ls-remote` 失敗|URL・認証を確認するよう案内            |
 |clone 失敗          |ブランチ名を `git ls-remote` で確認 |
+|push to readonly  |readonlyリポジトリへのpush拒否を通知。別リポジトリを提案する|
 |push rejected     |`git pull --rebase` 後に再push|
 |SKILL.md なし       |スキルフォルダの構成確認を案内            |
 |レジストリ破損           |削除して再作成するか、リポジトリから再pull    |
@@ -465,8 +472,19 @@ def search_skills(repo_name=None, keyword=None):
 
 Claude:
   1. git ls-remote で接続確認
-  2. レジストリ作成、リポジトリ追加
+  2. レジストリ作成、リポジトリ追加（readonlyにするか確認）
   3. 「登録しました。pullしますか？」
+```
+
+### readonlyリポジトリの登録
+
+```
+ユーザー: 「https://github.com/otherteam/skills.git を参照専用で登録して」
+
+Claude:
+  1. git ls-remote で接続確認
+  2. readonly: true でレジストリに追加
+  3. 「readonlyで登録しました。pullのみ可能です」
 ```
 
 ### pull
