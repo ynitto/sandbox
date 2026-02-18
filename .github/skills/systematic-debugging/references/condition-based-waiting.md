@@ -66,7 +66,7 @@ async function waitFor<T>(
 }
 ```
 
-ドメイン固有のヘルパー（`waitForEvent`、`waitForEventCount`、`waitForEventMatch`）の完全な実装は、このディレクトリの `condition-based-waiting-example.ts` を参照。
+ドメイン固有のヘルパー（`waitForEvent`、`waitForEventCount`、`waitForEventMatch`）の完全な実装は `assets/condition-based-waiting-example.ts` を参照。
 
 ## よくある間違い
 
