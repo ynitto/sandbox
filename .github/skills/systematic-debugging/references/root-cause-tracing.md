@@ -90,16 +90,16 @@ npm test 2>&1 | Select-String 'DEBUG git init'
 
 テスト中に何かが出現するが、どのテストか分からない場合:
 
-このディレクトリの二分探索スクリプトを使用:
+`scripts/` ディレクトリの二分探索スクリプトを使用:
 
 Unix/macOS:
 ```bash
-./find-polluter.sh '.git' 'src/**/*.test.ts'
+./scripts/find-polluter.sh '.git' 'src/**/*.test.ts'
 ```
 
 Windows (PowerShell):
 ```powershell
-.\find-polluter.ps1 -PollutionCheck '.git' -TestPattern 'src/**/*.test.ts'
+.\scripts\find-polluter.ps1 -PollutionCheck '.git' -TestPattern 'src\**\*.test.ts'
 ```
 
 テストを1つずつ実行し、最初の汚染者で停止する。使い方はスクリプトを参照。

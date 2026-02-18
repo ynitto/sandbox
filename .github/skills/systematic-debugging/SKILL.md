@@ -113,7 +113,7 @@ description: バグ、テスト失敗、予期しない動作に遭遇した際�
 
    **エラーがコールスタックの深い位置にある場合:**
 
-   完全な逆方向トレース技法は、このディレクトリの `root-cause-tracing.md` を参照。
+   完全な逆方向トレース技法は `references/root-cause-tracing.md` を参照。
 
    **簡易版:**
    - 不正な値はどこから発生するか？
@@ -278,11 +278,18 @@ description: バグ、テスト失敗、予期しない動作に遭遇した際�
 
 ## 補助テクニック
 
-これらのテクニックは体系的デバッグの一部であり、このディレクトリで利用可能:
+これらのテクニックは体系的デバッグの一部であり、`references/` ディレクトリで利用可能:
 
-- **`root-cause-tracing.md`** - コールスタックを逆方向にトレースして元のトリガーを見つける
-- **`defense-in-depth.md`** - 根本原因発見後、複数レイヤーにバリデーションを追加
-- **`condition-based-waiting.md`** - 任意のタイムアウトを条件ベースのポーリングに置き換える
+- **`references/root-cause-tracing.md`** - コールスタックを逆方向にトレースして元のトリガーを見つける
+- **`references/defense-in-depth.md`** - 根本原因発見後、複数レイヤーにバリデーションを追加
+- **`references/condition-based-waiting.md`** - 任意のタイムアウトを条件ベースのポーリングに置き換える
+
+**スクリプト（`scripts/` ディレクトリ）:**
+- **`scripts/find-polluter.sh`** - テスト汚染者の二分探索スクリプト（Unix/macOS）
+- **`scripts/find-polluter.ps1`** - 同上のPowerShell版（Windows）
+
+**サンプルコード（`assets/` ディレクトリ）:**
+- **`assets/condition-based-waiting-example.ts`** - 条件ベース待機のTypeScript実装例
 
 ## 実際の効果
 
