@@ -208,26 +208,33 @@ Wave 3: [b5]     → 単独実行
    - `review`（tasks + goal_progress）→ sprintsのreviewフィールド
    - `retro`（keep/problem/try）→ sprintsのretroフィールド
    - `impediments` → sprintsのimpedimentsフィールド
-3. **スキル成果物の共有とスキル発見**: スプリント内でスキルの作成・改良が行われた場合、またはスキル発見の提案タイミングの場合、ユーザーに提案する:
+3. **ワークスペーススキルの棚卸し**: 以下のコマンドで試用中スキルを評価する:
+   ```bash
+   python .github/skills/git-skill-manager/scripts/manage.py list-workspace-eval
    ```
-   このスプリントで以下のスキルが作成/更新されました:
-   - [skill-name] (新規作成 / 改良)
-
-   次のアクションを選んでください:
-   1. リポジトリに共有する（git-skill-manager push）
-   2. このスプリントの使い方パターンから新しいスキル候補を探す（git-skill-manager discover）
-   3. 両方行う
-   4. 今はしない
+   出力例:
    ```
-   - 「共有する」を選んだ場合: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル共有時」を使用）。対象スキルごとに1回ずつ直列で実行する
-   - 「スキル候補を探す」を選んだ場合: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル発見時」を使用）
-   - 結果をreviewフィールドに追記する
+   📋 ワークスペーススキルの評価:
+     skill-A   ok:3 問題:0  → ✅ 昇格推奨
+     skill-B   ok:1 問題:1  → ⚠️  要改良後昇格
+     skill-C   ok:1 問題:0  → 🔄 試用継続
+   ```
+   ユーザーに提示して次のアクションを選んでもらう:
+   ```
+   ワークスペーススキルの状況です。
+   昇格推奨: skill-A → 昇格しますか？（git-skill-manager promote）
+   要改良:   skill-B → 改良しますか？（git-skill-manager refine）
+   ```
+   - 「昇格する」: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル昇格時」を使用）
+   - 「改良する」: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル改良時」を使用）
 
-   **スキルの作成・改良がなかった場合も**、`skill_discovery.last_run_at` から 7日以上経過していれば discover を提案する:
+4. **スキル発見**: `skill_discovery.last_run_at` から 7日以上経過している場合、または今スプリントで新しいスキルが作成された場合に提案する:
    ```
    最近のチャット履歴から新しいスキル候補を発見できるかもしれません。
    git-skill-manager discover を実行しますか？ [y/N]
    ```
+   - 「はい」: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル発見時」を使用）
+   - 結果をreviewフィールドに追記する
 
 ### Phase 7: 進捗レポートと継続判断
 
@@ -362,6 +369,24 @@ sprint-reviewer スキルでスプリントのレビューとレトロスペク�
 - [改善アクション1]
 - [改善アクション2]
 ブロッカー: [あれば列挙、なければ「なし」]
+```
+
+### スキル昇格時
+
+```
+git-skill-manager スキルでワークスペーススキルをユーザー領域に昇格する。
+
+手順: まず .github/skills/git-skill-manager/SKILL.md を読んで promote 操作の手順に従ってください。
+対象スキル: [skill-name]
+操作: promote
+補足: .github/skills/[skill-name]/ を ~/.copilot/skills/ にコピーし、
+      書き込み可能なリポジトリがあれば push も提案してください。
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+昇格先: [~/.copilot/skills/<name>]
+push先: [repo-name または「なし」]
+サマリー: [1〜2文で結果を説明]
 ```
 
 ### スキル共有時

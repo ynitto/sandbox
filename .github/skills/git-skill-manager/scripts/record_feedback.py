@@ -14,9 +14,10 @@ verdict:
 
 レジストリの installed_skills[].feedback_history に追記する。
 needs-improvement / broken の場合は pending_refinement を true にする。
+ワークスペーススキル（.github/skills/ にあり ~/.copilot/skills/ にないもの）は
+レジストリ未登録でも source_repo="workspace" で自動登録する。
 レジストリが存在しない場合は何もしない（エラーにしない）。
 """
-import argparse
 import json
 import os
 import sys
@@ -28,41 +29,99 @@ def _registry_path() -> str:
     return os.path.join(home, ".copilot", "skill-registry.json")
 
 
-def record_feedback(skill_name: str, verdict: str, note: str) -> None:
-    registry_path = _registry_path()
-    if not os.path.isfile(registry_path):
-        return
+def _skill_home() -> str:
+    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    return os.path.join(home, ".copilot", "skills")
 
-    with open(registry_path, encoding="utf-8") as f:
-        reg = json.load(f)
 
+def is_workspace_skill(skill_name: str) -> bool:
+    """ワークスペーススキルかどうかを判定する。
+
+    .github/skills/<name>/SKILL.md が存在し、
+    かつ ~/.copilot/skills/<name>/SKILL.md が存在しない場合に True。
+    """
+    ws_md = os.path.join(".github", "skills", skill_name, "SKILL.md")
+    user_md = os.path.join(_skill_home(), skill_name, "SKILL.md")
+    return os.path.isfile(ws_md) and not os.path.isfile(user_md)
+
+
+def auto_register_workspace_skill(reg: dict, skill_name: str) -> dict:
+    """ワークスペーススキルをレジストリに自動登録する。"""
+    reg.setdefault("installed_skills", []).append({
+        "name": skill_name,
+        "source_repo": "workspace",
+        "source_path": os.path.join(".github", "skills", skill_name),
+        "commit_hash": "-",
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+        "enabled": True,
+        "pinned_commit": None,
+        "feedback_history": [],
+        "pending_refinement": False,
+    })
+    return reg
+
+
+def _evaluate(skill: dict) -> str:
+    """フィードバック履歴から昇格推奨度を返す。promote / refine / continue"""
+    history = skill.get("feedback_history", [])
+    ok_count = sum(1 for e in history if e["verdict"] == "ok")
+    pending = skill.get("pending_refinement", False)
+    has_problems = any(e["verdict"] in ("needs-improvement", "broken") for e in history)
+
+    if pending or has_problems:
+        return "refine"
+    if ok_count >= 2:
+        return "promote"
+    return "continue"
+
+
+def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict:
+    """フィードバックを記録してレジストリを返す。"""
     skill = next(
         (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
         None,
     )
     if not skill:
-        return
+        return reg
 
-    entry = {
+    skill.setdefault("feedback_history", []).append({
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "verdict": verdict,
         "note": note,
         "refined": False,
-    }
-    if "feedback_history" not in skill:
-        skill["feedback_history"] = []
-    skill["feedback_history"].append(entry)
+    })
 
     if verdict in ("needs-improvement", "broken"):
         skill["pending_refinement"] = True
 
-    with open(registry_path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
-
     mark = {"ok": "✅", "needs-improvement": "⚠️", "broken": "❌"}.get(verdict, "📝")
     print(f"{mark} {skill_name}: フィードバックを記録しました ({verdict})")
-    if skill.get("pending_refinement"):
-        print(f"   改善待ち: 'git-skill-manager refine {skill_name}' で改良できます")
+
+    # ワークスペーススキルの場合は評価を表示
+    if skill.get("source_repo") == "workspace":
+        _print_workspace_evaluation(skill)
+
+    return reg
+
+
+def _print_workspace_evaluation(skill: dict) -> None:
+    """ワークスペーススキルの評価結果を出力する。"""
+    rec = _evaluate(skill)
+    history = skill.get("feedback_history", [])
+    ok_count = sum(1 for e in history if e["verdict"] == "ok")
+    prob_count = sum(1 for e in history if e["verdict"] in ("needs-improvement", "broken"))
+    name = skill["name"]
+
+    print()
+    if rec == "promote":
+        print(f"✨ [{name}] 昇格推奨 (ok: {ok_count}回, 問題: {prob_count}回)")
+        print(f"   他のプロジェクトでも使えるよう昇格しませんか？")
+        print(f"   'git-skill-manager promote' で ~/.copilot/skills/ にコピー + リポジトリ共有")
+    elif rec == "refine":
+        print(f"⚠️  [{name}] 改良後に昇格推奨 (ok: {ok_count}回, 問題: {prob_count}回)")
+        print(f"   'git-skill-manager refine {name}' でフィードバックをもとに改良できます")
+    else:
+        print(f"🔄 [{name}] 試用継続 (ok: {ok_count}回) — あと {2 - ok_count} 回の好評価で昇格推奨になります")
 
 
 def check_discovery(reg: dict) -> bool:
@@ -85,6 +144,7 @@ def check_discovery(reg: dict) -> bool:
 
 
 def main():
+    import argparse
     parser = argparse.ArgumentParser(
         description="スキル使用後フィードバックを記録する"
     )
@@ -110,8 +170,7 @@ def main():
         reg = json.load(f)
 
     if args.check_discovery:
-        should_suggest = check_discovery(reg)
-        if should_suggest:
+        if check_discovery(reg):
             print("SUGGEST_DISCOVERY")
             sys.exit(0)
         else:
@@ -120,9 +179,23 @@ def main():
     if not args.verdict:
         parser.error("--verdict が必要です（--check-discovery を使わない場合）")
 
-    record_feedback(args.skill_name, args.verdict, args.note)
+    skill_name = args.skill_name
 
-    # フィードバック記録後に発見提案タイミングを確認
+    # ワークスペーススキルがレジストリ未登録なら自動登録
+    existing = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if not existing and is_workspace_skill(skill_name):
+        reg = auto_register_workspace_skill(reg, skill_name)
+        print(f"📝 {skill_name}: ワークスペーススキルとしてレジストリに登録しました")
+
+    reg = record_feedback(skill_name, args.verdict, args.note, reg)
+
+    with open(registry_path, "w", encoding="utf-8") as f:
+        json.dump(reg, f, indent=2, ensure_ascii=False)
+
+    # スキル発見の提案タイミングを確認
     if check_discovery(reg):
         print()
         print("💡 最近の使い方パターンから新しいスキル候補を発見できるかもしれません。")

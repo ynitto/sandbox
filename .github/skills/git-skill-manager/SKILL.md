@@ -130,6 +130,12 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 - `pin` 操作で現在の commit_hash に固定、`unpin` で解除
 - `lock` で全スキルを一括 pin、`unlock` で全スキルを一括 unpin
 
+**installed_skills[].source_repo** (文字列):
+- `"workspace"`: `.github/skills/` に置かれた試用中スキル（チャット経由で作成）
+- `"local"`: `promote` 操作でユーザー領域に昇格済みのスキル
+- その他: リポジトリ名（`pull` でインストールしたスキル）
+- `"workspace"` のスキルは `evaluate_workspace_skill()` の評価対象になる
+
 **installed_skills[].feedback_history** (配列、デフォルト: []):
 - スキル使用後にユーザーが提供したフィードバックの履歴
 - 各エントリ: `timestamp`（ISO 8601）、`verdict`（ok/needs-improvement/broken）、`note`（コメント）、`refined`（改良済みフラグ）
@@ -310,6 +316,56 @@ git ls-remote $REPO_URL HEAD
 2. ユーザーに候補を提示して選択させる
 3. 選択されたスキルをユーザー領域にコピー + レジストリ登録
 4. 書き込み可能なリポジトリがあれば push を提案
+
+-----
+
+## ワークスペーストライアルフロー
+
+VSCode チャット経由で作成されたスキルは `.github/skills/` に置かれる（ワークスペース領域）。
+ユーザーホームの `~/.copilot/skills/` とは別の場所なので、まず試用してから昇格する。
+
+### スキルのライフサイクル
+
+```
+【作成】 skill-creator → .github/skills/<name>/   (source_repo: "workspace")
+   ↓ 使用するたびにフィードバック収集
+【評価】 record_feedback.py が自動評価
+   ├── ok × 2回以上、問題なし  → ✅ 昇格推奨
+   ├── 問題あり (needs-improvement/broken)  → ⚠️ 要改良後昇格
+   └── ok × 1回  → 🔄 試用継続
+   ↓ 昇格推奨 or ユーザーが判断
+【昇格】 promote → ~/.copilot/skills/<name>/   (source_repo: "local")
+   ↓ 必要なら
+【共有】 push → チームリポジトリ
+```
+
+### 評価基準
+
+| 評価 | 条件 | 推奨アクション |
+|---|---|---|
+| ✅ 昇格推奨 | ok ≥ 2 かつ問題なし | `promote` で昇格 |
+| ⚠️ 要改良後昇格 | `pending_refinement: true` または broken あり | `refine` → 改良後に `promote` |
+| 🔄 試用継続 | ok = 1、問題なし | もう少し使ってみる |
+
+### 評価の実行
+
+**インライン（フィードバック記録時に自動実行）**
+
+`record_feedback.py` がワークスペーススキルを検出すると評価結果を自動表示する:
+```
+✅ my-skill: フィードバックを記録しました (ok)
+
+✨ [my-skill] 昇格推奨 (ok: 2回, 問題: 0回)
+   他のプロジェクトでも使えるよう昇格しませんか？
+   'git-skill-manager promote' で ~/.copilot/skills/ にコピー + リポジトリ共有
+```
+
+**バッチ（スプリント完了時）**
+
+scrum-master の Phase 6 で全ワークスペーススキルを一覧評価する:
+```bash
+python .github/skills/git-skill-manager/scripts/manage.py list-workspace-eval
+```
 
 -----
 

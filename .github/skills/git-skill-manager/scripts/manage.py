@@ -329,6 +329,108 @@ def promote_skills(workspace_skills_dir, interactive=True):
 
 
 # ---------------------------------------------------------------------------
+# workspace skill evaluation
+# ---------------------------------------------------------------------------
+
+def _workspace_skill_dir(skill_name: str) -> str:
+    """ワークスペース内のスキルディレクトリパスを返す。"""
+    return os.path.join(".github", "skills", skill_name)
+
+
+def _user_skill_dir(skill_name: str) -> str:
+    """ユーザー領域のスキルディレクトリパスを返す。"""
+    return os.path.join(_skill_home(), skill_name)
+
+
+def evaluate_workspace_skill(skill_name: str, reg: dict) -> dict:
+    """ワークスペーススキルの昇格推奨度を評価する。
+
+    Returns:
+        {
+            "name": str,
+            "ok_count": int,
+            "problem_count": int,
+            "pending_refinement": bool,
+            "recommendation": "promote" | "refine" | "continue",
+        }
+    """
+    skill = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    history = (skill or {}).get("feedback_history", [])
+    ok_count = sum(1 for e in history if e["verdict"] == "ok")
+    problem_count = sum(1 for e in history if e["verdict"] in ("needs-improvement", "broken"))
+    pending = (skill or {}).get("pending_refinement", False)
+
+    if pending or problem_count > 0:
+        recommendation = "refine"
+    elif ok_count >= 2:
+        recommendation = "promote"
+    else:
+        recommendation = "continue"  # データ不足、試用継続
+
+    return {
+        "name": skill_name,
+        "ok_count": ok_count,
+        "problem_count": problem_count,
+        "pending_refinement": pending,
+        "recommendation": recommendation,
+    }
+
+
+def list_workspace_skills_evaluation() -> list:
+    """ワークスペース内の試用中スキルを評価して一覧を返す。
+
+    source_repo=="workspace" のスキルが対象。
+    Phase 6（スプリント完了時）の棚卸しで使用する。
+    """
+    reg = load_registry()
+    workspace_skills = [
+        s for s in reg.get("installed_skills", [])
+        if s.get("source_repo") == "workspace"
+    ]
+
+    if not workspace_skills:
+        print("ℹ️ 試用中のワークスペーススキルはありません")
+        return []
+
+    results = []
+    print("📋 ワークスペーススキルの評価:\n")
+    for skill in workspace_skills:
+        ev = evaluate_workspace_skill(skill["name"], reg)
+        results.append(ev)
+
+        ok = ev["ok_count"]
+        prob = ev["problem_count"]
+        rec = ev["recommendation"]
+
+        if rec == "promote":
+            mark = "✅ 昇格推奨"
+        elif rec == "refine":
+            mark = "⚠️  要改良後昇格"
+        else:
+            mark = "🔄 試用継続"
+
+        print(f"  {skill['name']:30s}  ok:{ok} 問題:{prob}  → {mark}")
+
+    print()
+    promotable = [e for e in results if e["recommendation"] == "promote"]
+    refinable  = [e for e in results if e["recommendation"] == "refine"]
+
+    if promotable:
+        names = ", ".join(e["name"] for e in promotable)
+        print(f"昇格可能なスキル: {names}")
+        print("  'git-skill-manager promote' で ~/.copilot/skills/ にコピーできます")
+    if refinable:
+        names = ", ".join(e["name"] for e in refinable)
+        print(f"改良が必要なスキル: {names}")
+        print("  'git-skill-manager refine <name>' で改良フローを開始できます")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # sort_key (discover_skills 用)
 # ---------------------------------------------------------------------------
 
