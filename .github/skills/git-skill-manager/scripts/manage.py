@@ -287,7 +287,8 @@ def promote_skills(workspace_skills_dir, interactive=True):
             "installed_at": datetime.now().isoformat(),
             "enabled": True,
             "pinned_commit": None,
-            "usage_stats": existing_skill.get("usage_stats") if existing_skill else None,
+            "feedback_history": existing_skill.get("feedback_history", []) if existing_skill else [],
+            "pending_refinement": existing_skill.get("pending_refinement", False) if existing_skill else False,
         }
         if existing_skill:
             existing_skill.update(skill_entry)
@@ -332,18 +333,142 @@ def promote_skills(workspace_skills_dir, interactive=True):
 # ---------------------------------------------------------------------------
 
 def sort_key(skill, core_skills, registry):
-    """discover_skills のソートキーを生成する。"""
+    """discover_skills のソートキーを生成する。
+
+    優先順:
+      1. コアスキル（常に先頭）
+      2. pending_refinement=False かつ直近フィードバックが ok → 信頼済み
+      3. pending_refinement=True → 改良待ち（後ろ）
+      4. フィードバックなし → アルファベット順
+    """
     name = skill["name"]
     is_core = 0 if name in core_skills else 1
     reg_skill = next(
         (s for s in registry.get("installed_skills", []) if s["name"] == name),
         None,
     )
-    stats = (reg_skill or {}).get("usage_stats") or {}
-    total = -(stats.get("total_count", 0))
-    last_used = stats.get("last_used_at", "")
-    last_used_neg = "" if not last_used else last_used
-    return (is_core, total, last_used_neg, name)
+    if reg_skill:
+        pending = 1 if reg_skill.get("pending_refinement") else 0
+        history = reg_skill.get("feedback_history") or []
+        last_verdict = history[-1]["verdict"] if history else ""
+        # ok が最後なら信頼スコア高（0）、それ以外は中（1）
+        trust = 0 if last_verdict == "ok" else 1
+    else:
+        pending = 0
+        trust = 2  # 情報なし → 最後
+
+    return (is_core, pending, trust, name)
+
+
+# ---------------------------------------------------------------------------
+# refine
+# ---------------------------------------------------------------------------
+
+def refine_skill(skill_name):
+    """pending_refinement のあるスキルの改良フローを開始する。
+
+    このスクリプトはフィードバックを収集・整形して出力する。
+    実際の skill-creator 起動は Claude（エージェント）が行う。
+    """
+    reg = load_registry()
+    skill = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if not skill:
+        print(f"❌ スキル '{skill_name}' がインストールされていません")
+        return
+
+    history = skill.get("feedback_history") or []
+    pending = [e for e in history if not e.get("refined") and e["verdict"] != "ok"]
+
+    if not pending:
+        print(f"ℹ️ '{skill_name}' に未処理の改善フィードバックはありません")
+        return
+
+    print(f"📋 '{skill_name}' の未処理フィードバック ({len(pending)} 件):\n")
+    for i, entry in enumerate(pending, 1):
+        ts = entry.get("timestamp", "")[:10]
+        verdict = entry.get("verdict", "")
+        note = entry.get("note", "(コメントなし)")
+        mark = "⚠️" if verdict == "needs-improvement" else "❌"
+        print(f"  {i}. [{ts}] {mark} {note}")
+
+    print()
+    print("これらのフィードバックを skill-creator に渡してスキルを改良してください。")
+    print(f"改良後は以下で refined フラグを更新してください:")
+    print(f"  python record_feedback.py {skill_name} --mark-refined")
+
+
+def mark_refined(skill_name):
+    """pending_refinement を解除し、feedback_history の refined フラグを立てる。"""
+    reg = load_registry()
+    skill = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if not skill:
+        print(f"❌ スキル '{skill_name}' がインストールされていません")
+        return
+
+    history = skill.get("feedback_history") or []
+    updated = 0
+    for entry in history:
+        if not entry.get("refined") and entry["verdict"] != "ok":
+            entry["refined"] = True
+            updated += 1
+
+    skill["pending_refinement"] = False
+    save_registry(reg)
+    print(f"✅ '{skill_name}': {updated} 件のフィードバックを改良済みにしました")
+
+
+# ---------------------------------------------------------------------------
+# discover
+# ---------------------------------------------------------------------------
+
+def discover_skills_from_history(since=None, workspace=None):
+    """generating-skills-from-copilot-logs を起動するための情報を準備・出力する。
+
+    実際のスクリプト起動は Claude（エージェント）が行う。
+    このスクリプトは引数を組み立て、last_run_at を更新する。
+    """
+    from datetime import datetime, timezone
+
+    reg = load_registry()
+    discovery = reg.get("skill_discovery", {})
+
+    # --since の決定: 引数 > last_run_at > なし
+    since_str = since or discovery.get("last_run_at")
+
+    cmd_parts = [
+        "python",
+        ".github/skills/generating-skills-from-copilot-logs/scripts/extract-copilot-history.py",
+        "--noise-filter",
+    ]
+    if since_str:
+        cmd_parts += ["--since", since_str]
+    if workspace:
+        cmd_parts += ["--workspace", workspace]
+
+    print("🔍 スキル発見分析を開始します\n")
+    if since_str:
+        print(f"   対象期間: {since_str[:10]} 以降")
+    else:
+        print("   対象期間: 全期間")
+    print()
+    print("実行コマンド:")
+    print(f"  {' '.join(cmd_parts)}")
+    print()
+    print("generating-skills-from-copilot-logs のフェーズ 1〜6 に従って分析してください。")
+
+    # last_run_at を更新
+    now = datetime.now(timezone.utc).isoformat()
+    if "skill_discovery" not in reg:
+        reg["skill_discovery"] = {"suggest_interval_days": 7}
+    reg["skill_discovery"]["last_run_at"] = now
+    save_registry(reg)
+    print(f"\n📅 last_run_at を更新しました: {now[:10]}")
 
 
 # ---------------------------------------------------------------------------

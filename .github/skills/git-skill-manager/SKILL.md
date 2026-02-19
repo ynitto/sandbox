@@ -1,6 +1,6 @@
 ---
 name: git-skill-manager
-description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
+description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。また「スキルを改良して」「フィードバックを反映して」「新しいスキル候補を探して」「履歴からスキルを発見して」のようなスキル改良・発見のリクエストでも使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
 ---
 
 # Git Skill Manager
@@ -79,10 +79,15 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
       "installed_at": "2026-02-14T12:00:00Z",
       "enabled": true,
       "pinned_commit": null,
-      "usage_stats": {
-        "total_count": 42,
-        "last_used_at": "2026-02-15T10:00:00Z"
-      }
+      "feedback_history": [
+        {
+          "timestamp": "2026-02-15T10:00:00Z",
+          "verdict": "needs-improvement",
+          "note": "PDF変換時に文字化けが発生した",
+          "refined": false
+        }
+      ],
+      "pending_refinement": true
     }
   ],
   "core_skills": ["scrum-master", "git-skill-manager", "skill-creator", "sprint-reviewer", "codebase-to-skill"],
@@ -100,7 +105,11 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
     "frontend": ["react-guide", "css-linter", "storybook"],
     "backend": ["api-guide", "db-migration", "auth"]
   },
-  "active_profile": null
+  "active_profile": null,
+  "skill_discovery": {
+    "last_run_at": null,
+    "suggest_interval_days": 7
+  }
 }
 ```
 
@@ -121,11 +130,20 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 - `pin` 操作で現在の commit_hash に固定、`unpin` で解除
 - `lock` で全スキルを一括 pin、`unlock` で全スキルを一括 unpin
 
-**installed_skills[].usage_stats** (オブジェクト or null、デフォルト: null):
-- `total_count`: 累計使用回数
-- `last_used_at`: 最終使用日時（ISO 8601）
-- `record_usage.py` によって自動更新される
-- `discover_skills.py` がこの値を参照してスキルの返却順を決定する
+**installed_skills[].feedback_history** (配列、デフォルト: []):
+- スキル使用後にユーザーが提供したフィードバックの履歴
+- 各エントリ: `timestamp`（ISO 8601）、`verdict`（ok/needs-improvement/broken）、`note`（コメント）、`refined`（改良済みフラグ）
+- `record_feedback.py` で記録し、`refine` 操作の入力として使われる
+
+**installed_skills[].pending_refinement** (真偽値、デフォルト: false):
+- `needs-improvement` または `broken` の未対応フィードバックが存在する場合 true
+- `discover_skills.py` がこの値を参照してスキルのソート順を決定する（改良待ちは後ろへ）
+- `refine` 操作完了後に false に戻る
+
+**skill_discovery** (オブジェクト):
+- `last_run_at`: generating-skills-from-copilot-logs を最後に実行した日時（ISO 8601）
+- `suggest_interval_days`: 発見提案を行う間隔（デフォルト: 7日）
+- `discover` 操作実行時に `last_run_at` が更新される
 
 **core_skills** (文字列リスト):
 - 使用頻度に関わらず常に最優先でロードされるスキル名のリスト
@@ -171,6 +189,8 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 |**profile create**|「プロファイルを作成して」    |
 |**profile list**|「プロファイル一覧」         |
 |**profile delete**|「プロファイルを削除して」    |
+|**refine**     |「スキルを改良して」「フィードバックを反映して」「改善待ちを処理して」|
+|**discover**   |「スキル候補を探して」「履歴からスキルを発見して」「新しいスキルを見つけて」|
 
 -----
 
@@ -293,46 +313,107 @@ git ls-remote $REPO_URL HEAD
 
 -----
 
-## usage_stats と record_usage
+## フィードバックループと record_feedback
 
-スキルの使用回数を記録し、`discover_skills.py` のソート順に反映する仕組み。
+スキル使用後にフィードバックを収集し、スキル品質の改良トリガーとスキル発見の起点にする仕組み。
 
-### 記録方法
+### フィードバックの記録
 
-使用記録は `record_usage.py` スクリプトで行う:
+使用後フィードバックは `record_feedback.py` スクリプトで行う:
 
 ```bash
-python .github/skills/git-skill-manager/scripts/record_usage.py <skill-name>
+# 問題なく動作した
+python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict ok
+
+# 改善余地あり
+python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict needs-improvement --note "改善点の説明"
+
+# 動作しなかった
+python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict broken --note "壊れている箇所"
 ```
 
-### 記録タイミング
+### 記録タイミング（SKILL.md の実行後フィードバック節）
 
-各 SKILL.md のフロントマター直後に記録の指示行が記載されている（skill-creator の `init_skill.py` が自動挿入する）。エージェントがスキルを読み込んで手順に従う前にこの行を実行することで使用回数が記録される。
+`skill-creator` の `init_skill.py` が新規スキル作成時に以下の節を自動挿入する。エージェントはスキルの手順を全て完了した後にこの節に従って動作する。
 
 ```markdown
----
-name: my-skill
-description: ...
----
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'<skill-name>']) if os.path.isfile(s) else None"` を実行してください。
+## 実行後フィードバック（必須）
+
+スキルの手順を全て完了したら、ユーザーに確認する:
+
+「[skill-name] の実行はいかがでしたか？
+ 1. 問題なかった (ok)
+ 2. 改善点がある (needs-improvement)
+ 3. うまくいかなかった (broken)」
+
+回答に応じて record_feedback.py を実行する:
+python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+
+フィードバック記録後、スクリプトが「💡 新しいスキル候補を発見できるかもしれません」を
+表示した場合は、ユーザーに `git-skill-manager discover` の実行を提案する。
 ```
 
-git-skill-manager がインストールされていない環境ではスクリプトが存在しないため、エージェントはこの行をスキップする。
-
-### record_usage.py
-
-→ 実装: `scripts/record_usage.py`（既存スクリプト）
+git-skill-manager がインストールされていない環境では `record_feedback.py` が存在しないため、エージェントはフィードバック記録をスキップし、ユーザーへのフィードバック質問のみ行う。
 
 ### discover_skills.py のソート順
 
 `discover_skills.py` はスキル一覧を以下の優先度でソートして返す:
 
-1. **コアスキル** (`core_skills` に含まれるスキル) → 常に先頭。コンテキストウィンドウに必ずロードされる
-2. **使用頻度** (`usage_stats.total_count` 降順) → よく使うスキルほど上位
-3. **最終使用日時** (`usage_stats.last_used_at` 降順) → 同頻度なら最近使ったものが上位
-4. **名前順** → usage_stats がないスキルはアルファベット順
+1. **コアスキル** (`core_skills` に含まれるスキル) → 常に先頭
+2. **改良待ちなし + 直近 ok** (`pending_refinement=false` かつ最新 verdict が ok) → 信頼済み
+3. **改良待ちあり** (`pending_refinement=true`) → 後ろに配置
+4. **フィードバックなし** → アルファベット順
 
 → 実装: `scripts/manage.py` — `sort_key(skill, core_skills, registry)`
+
+-----
+
+## refine
+
+蓄積されたフィードバックをもとに、スキルの改良フローを開始する。
+
+### 処理フロー
+
+→ 実装: `scripts/manage.py` — `refine_skill(skill_name)`, `mark_refined(skill_name)`
+
+1. `feedback_history` から未処理（`refined: false`）の `needs-improvement` / `broken` エントリを収集
+2. フィードバック一覧をユーザーに提示
+3. skill-creator サブエージェントを起動して改良を委譲（scrum-master の「スキル改良時」テンプレートを使用）
+4. 改良完了後、`mark_refined` で `pending_refinement` を false に更新
+
+```
+ユーザー: 「docx-converter を改良して」
+
+エージェント:
+  1. python manage.py refine docx-converter
+  2. フィードバック一覧を表示
+  3. skill-creator に改良を委譲
+  4. 改良後 push を提案
+```
+
+-----
+
+## discover
+
+`generating-skills-from-copilot-logs` を起動し、直近のチャット履歴から新しいスキル候補を発見する。
+
+### 処理フロー
+
+→ 実装: `scripts/manage.py` — `discover_skills_from_history(since, workspace)`
+
+1. `skill_discovery.last_run_at` を読んで `--since` パラメータを決定
+2. ユーザーに同意を確認:
+   ```
+   「[last_run_at 以降] のチャット履歴を分析して新しいスキル候補を探します。
+    続行しますか？」
+   ```
+3. `discover_skills_from_history()` を実行（コマンドを出力）
+4. `generating-skills-from-copilot-logs` のフェーズ 1〜6 に従って分析・スキル生成
+5. `skill_discovery.last_run_at` を現在時刻に更新
+
+### 自動提案タイミング
+
+各スキルの「実行後フィードバック節」内で `record_feedback.py` が `skill_discovery.last_run_at` を確認し、`suggest_interval_days`（デフォルト: 7日）以上経過していれば discover の実行を提案する。
 
 -----
 

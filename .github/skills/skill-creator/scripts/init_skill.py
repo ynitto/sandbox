@@ -32,8 +32,6 @@ name: {name}
 description: TODO - このスキルの説明を記述する。何をするか＋いつ使うかを含める。
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'{name}']) if os.path.isfile(s) else None"` を実行してください。
-
 # {name}
 
 TODO - スキルの概要を記述する。
@@ -54,6 +52,23 @@ TODO - スキルの主要な手順やワークフローを記述する。
 - **assets/**: 出力に使用するファイル（テンプレート、画像等）
 
 不要なディレクトリは削除する。
+
+## 実行後フィードバック（必須）
+
+スキルの手順を全て完了したら、ユーザーに確認する:
+
+「{name} の実行はいかがでしたか？
+ 1. 問題なかった (ok)
+ 2. 改善点がある (needs-improvement)
+ 3. うまくいかなかった (broken)」
+
+回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
+```
+python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'{name}','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+```
+
+スクリプトの出力に「💡 新しいスキル候補を発見できるかもしれません」が含まれる場合は、
+ユーザーに `git-skill-manager discover` の実行を提案する。
 """
     with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
         f.write(skill_md)
