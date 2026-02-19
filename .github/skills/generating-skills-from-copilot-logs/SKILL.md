@@ -33,23 +33,23 @@ workspaceStorage 内の chatSessions（またはフォールバックとして s
 
 同意後、`scripts/extract-copilot-history.py` を使って履歴を取得する:
 
-```bash
+```powershell
 python scripts/extract-copilot-history.py --days 90 --noise-filter
 ```
 
 特定のワークスペースに絞る場合:
 
-```bash
-python scripts/extract-copilot-history.py --workspace "/path/to/project" --days 30
+```powershell
+python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --days 30
 ```
 
 ### 履歴ファイルの場所
 
 | OS | パス |
 |---|---|
+| Windows | `%APPDATA%\Code\User\workspaceStorage\*\chatSessions\` |
 | macOS | `~/Library/Application Support/Code/User/workspaceStorage/*/chatSessions/` |
 | Linux | `~/.config/Code/User/workspaceStorage/*/chatSessions/` |
-| Windows | `%APPDATA%\Code\User\workspaceStorage\*\chatSessions\` |
 
 各ワークスペースフォルダの `workspace.json` でプロジェクトパスを確認できる。
 
