@@ -1,17 +1,28 @@
 ---
 name: generating-skills-from-copilot-logs
-description: VSCode Copilotのチャット履歴を分析し、繰り返しワークフローを検出して新しいスキルを自動生成するメタスキル。「履歴からスキルを作って」「Copilotの使い方パターンをスキル化して」「よく使うワークフローをスキルにして」「チャット履歴を分析してスキル候補を提案して」などのリクエストで使用する。
+description: VSCode Copilot または Claude Code のチャット履歴を分析し、繰り返しワークフローを検出して新しいスキルを自動生成するメタスキル。「履歴からスキルを作って」「Copilotの使い方パターンをスキル化して」「よく使うワークフローをスキルにして」「チャット履歴を分析してスキル候補を提案して」などのリクエストで使用する。git-skill-manager の discover 操作からも自動的に起動される。
 ---
-
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'generating-skills-from-copilot-logs']) if os.path.isfile(s) else None"` を実行してください。
 
 # Generating Skills from Copilot Logs
 
-VSCode Copilot のチャット履歴からAgent Skillを自動生成するメタスキル。
+VSCode Copilot または Claude Code のチャット履歴からAgent Skillを自動生成するメタスキル。
+
+## 起動元
+
+| 呼び出し元 | 起動方法 |
+|---|---|
+| ユーザー直接 | 「履歴からスキルを作って」「パターンをスキル化して」など |
+| git-skill-manager discover | `discover` 操作が `--since last_run_at` でこのスキルを自動起動 |
+| scrum-master Phase 6 | スプリント完了後のスキル共有提案から起動 |
+
+`git-skill-manager discover` 経由の場合、`--since` パラメータが渡されるため、
+前回実行以降の差分のみを分析する（全履歴の再スキャンを回避）。
 
 ## 概要
 
-VSCode Copilotのチャット履歴（`workspaceStorage/*/chatSessions/`）を分析し、繰り返しワークフローを検出してスキルを生成する。パターン抽出は3軸で行う:
+VSCode Copilot のチャット履歴（`workspaceStorage/*/chatSessions/`）または
+Claude Code のセッション履歴（`~/.claude/projects/*/`）を分析し、
+繰り返しワークフローを検出してスキルを生成する。パターン抽出は3軸で行う:
 
 - **WHAT**: ユーザーの目標（「コミットする」「PRレビューを修正する」）
 - **HOW**: 繰り返される手段・手順（「Agentチームで並列実行する」「typecheck → lint の順で進める」）
@@ -34,16 +45,22 @@ workspaceStorage 内の chatSessions（またはフォールバックとして s
 同意後、`scripts/extract-copilot-history.py` を使って履歴を取得する:
 
 ```powershell
+# 通常（過去90日、Copilot + Claude Code 両方）
 python scripts/extract-copilot-history.py --days 90 --noise-filter
-```
 
-特定のワークスペースに絞る場合:
+# git-skill-manager discover 経由（差分のみ）
+python scripts/extract-copilot-history.py --since 2026-02-12T00:00:00Z --noise-filter
 
-```powershell
+# Claude Code 履歴のみ
+python scripts/extract-copilot-history.py --source claude-code --noise-filter
+
+# 特定のワークスペースに絞る場合
 python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --days 30
 ```
 
 ### 履歴ファイルの場所
+
+**VSCode Copilot:**
 
 | OS | パス |
 |---|---|
@@ -54,6 +71,14 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 各ワークスペースフォルダの `workspace.json` でプロジェクトパスを確認できる。
 
 **フォールバック**: `chatSessions/` が存在しない場合は `state.vscdb`（SQLite）の `interactive.sessions` キーから取得する。詳細は [references/copilot-history-guide.md](references/copilot-history-guide.md) 参照。
+
+**Claude Code:**
+
+| OS | パス |
+|---|---|
+| 全OS共通 | `~/.claude/projects/<project-name>/*.jsonl` |
+
+各 `.jsonl` ファイルが1セッションに対応し、`{"role": "user", "content": "..."}` 形式の行が含まれる。`--source claude-code` で Claude Code 履歴のみを対象にできる。
 
 ---
 
