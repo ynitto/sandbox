@@ -13,7 +13,17 @@ verdict:
     broken             - 動作しなかった
 
 レジストリの installed_skills[].feedback_history に追記する。
-needs-improvement / broken の場合は pending_refinement を true にする。
+
+pending_refinement トリガーのしきい値:
+    ワークスペーススキル (source_repo="workspace"): 未改良問題が 1件 → 即トリガー
+    インストール済みスキル (source_repo=その他):    未改良問題が 3件 → トリガー（デフォルト）
+    スキルエントリの refine_threshold フィールドで個別上書き可能。
+    mark_refined() 実行後は未改良カウントがリセットされる。
+
+EVAL_RECOMMEND シグナル:
+    ワークスペーススキル: promote / refine / continue を毎回出力
+    インストール済みスキル: しきい値を超えて pending になったタイミングのみ refine を出力
+
 ワークスペーススキル（.github/skills/ にあり ~/.copilot/skills/ にないもの）は
 レジストリ未登録でも source_repo="workspace" で自動登録する。
 レジストリが存在しない場合は何もしない（エラーにしない）。
@@ -62,6 +72,25 @@ def auto_register_workspace_skill(reg: dict, skill_name: str) -> dict:
 
 
 
+def _refine_threshold(skill: dict) -> int:
+    """スキルの改良トリガーしきい値を返す。
+
+    ワークスペーススキルは 1（即時）、インストール済みスキルは 3（デフォルト）。
+    レジストリの refine_threshold フィールドで個別上書き可能。
+    """
+    source = skill.get("source_repo", "")
+    default = 1 if source == "workspace" else 3
+    return skill.get("refine_threshold", default)
+
+
+def _unrefined_problem_count(skill: dict) -> int:
+    """未改良の問題フィードバック数を返す（mark_refined 後はリセットされる）。"""
+    return sum(
+        1 for e in skill.get("feedback_history", [])
+        if not e.get("refined") and e["verdict"] in ("needs-improvement", "broken")
+    )
+
+
 def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict:
     """フィードバックを記録してレジストリを返す。"""
     skill = next(
@@ -78,14 +107,19 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
         "refined": False,
     })
 
+    # しきい値を超えた未改良の問題が蓄積された場合に pending_refinement を立てる。
+    # workspace: 1件で即トリガー / それ以外: デフォルト3件蓄積でトリガー。
     if verdict in ("needs-improvement", "broken"):
-        skill["pending_refinement"] = True
+        threshold = _refine_threshold(skill)
+        if _unrefined_problem_count(skill) >= threshold:
+            skill["pending_refinement"] = True
 
     mark = {"ok": "✅", "needs-improvement": "⚠️", "broken": "❌"}.get(verdict, "📝")
     print(f"{mark} {skill_name}: フィードバックを記録しました ({verdict})")
 
-    # ワークスペーススキルの場合は評価推奨シグナルを出力（skill-evaluator が受け取る）
-    if skill.get("source_repo") == "workspace":
+    source = skill.get("source_repo", "")
+    if source == "workspace":
+        # ワークスペーススキル: promote / refine / continue を判定して出力
         history = skill.get("feedback_history", [])
         ok_count = sum(1 for e in history if e.get("verdict") == "ok")
         problem_count = sum(1 for e in history if e.get("verdict") in ("needs-improvement", "broken"))
@@ -97,6 +131,10 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
         else:
             rec = "continue"
         print(f"EVAL_RECOMMEND: {rec}")
+    elif skill.get("pending_refinement"):
+        # インストール済みスキル: しきい値を超えて pending になったタイミングのみ出力
+        threshold = _refine_threshold(skill)
+        print(f"EVAL_RECOMMEND: refine  # {threshold}件の問題が蓄積されました")
 
     return reg
 
