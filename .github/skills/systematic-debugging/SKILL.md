@@ -3,8 +3,6 @@ name: systematic-debugging
 description: バグ、テスト失敗、予期しない動作に遭遇した際、修正を提案する前に使用する
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'systematic-debugging']) if os.path.isfile(s) else None"` を実行してください。
-
 # 体系的デバッグ
 
 ## 概要

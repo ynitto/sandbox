@@ -9,8 +9,6 @@ metadata:
   language: ja
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'react-best-practices']) if os.path.isfile(s) else None"` を実行してください。
-
 # React ベストプラクティス（Vercel）
 
 React / Next.js アプリケーション向けの包括的なパフォーマンス最適化ガイド。8カテゴリ・57ルールを影響度順に整理しており、実装・レビュー・自動リファクタリング時の判断基準として使う。

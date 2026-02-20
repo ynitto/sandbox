@@ -3,8 +3,6 @@ name: ui-designer
 description: UI/UX デザインインテリジェンス。Webアプリの画面構成、レイアウト、コンポーネント、スタイル方針をまとめる。50以上のスタイル、97カラーパレット、57フォントペアリング、99 UXガイドライン、25チャートタイプ、9テクノロジースタック対応の検索可能なデザインデータベース付き。
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'ui-designer']) if os.path.isfile(s) else None"` を実行してください。
-
 # ui-designer
 
 Webアプリ・モバイルアプリ向けの包括的デザインガイド。50以上のスタイル、97カラーパレット、57フォントペアリング、99 UXガイドライン、25チャートタイプを9テクノロジースタックにわたって網羅。優先度ベースの推奨を備えた検索可能なデータベース。

@@ -3,8 +3,6 @@ name: codebase-to-skill
 description: 既存のプログラムやコードベースを分析し、アーキテクチャ・コーディング規約・開発ワークフローをSKILL.mdとしてマークダウン化するスキル。「このプロジェクトのアーキテクチャをスキル化して」「コードの規約をスキルにまとめて」「このリポジトリをスキルにして」「コードベースを分析してスキルを作って」などのリクエストで使用する。
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'codebase-to-skill']) if os.path.isfile(s) else None"` を実行してください。
-
 # Codebase to Skill
 
 既存コードベースを分析し、他のAIエージェントが同じ規約・パターンで開発できるようにするSKILL.mdを生成する。
