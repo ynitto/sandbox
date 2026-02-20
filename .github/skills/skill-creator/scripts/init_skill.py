@@ -55,6 +55,8 @@ TODO - スキルの主要な手順やワークフローを記述する。
 
 ## 実行後フィードバック（必須）
 
+> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
+
 スキルの手順を全て完了したら、ユーザーに確認する:
 
 「{name} の実行はいかがでしたか？
@@ -75,8 +77,6 @@ skill-evaluator スキルで {name} を評価する。
 対象スキル: {name}
 ```
 
-スクリプトの出力に「💡 新しいスキル候補を発見できるかもしれません」が含まれる場合は、
-ユーザーに `git-skill-manager discover` の実行を提案する。
 """
     with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
         f.write(skill_md)

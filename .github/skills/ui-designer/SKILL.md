@@ -384,3 +384,27 @@ UIコードを納品する前に以下を確認:
 - [ ] フォーム入力にラベル
 - [ ] 色だけで情報を伝えていない
 - [ ] `prefers-reduced-motion` を尊重
+
+## 実行後フィードバック（必須）
+
+> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
+
+スキルの手順を全て完了したら、ユーザーに確認する:
+
+「ui-designer の実行はいかがでしたか？
+ 1. 問題なかった (ok)
+ 2. 改善点がある (needs-improvement)
+ 3. うまくいかなかった (broken)」
+
+回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
+```
+python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'ui-designer','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+```
+
+スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
+skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
+```
+skill-evaluator スキルで ui-designer を評価する。
+手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+対象スキル: ui-designer
+```

@@ -201,16 +201,29 @@ Wave 3: [b5]     → 単独実行
 
 ### Phase 6: スプリントレビュー & レトロスペクティブ
 
-スプリント内の全タスク完了後（またはユーザーが中断を選択後）、sprint-reviewer にレビューを委譲する。
+スプリント内の全タスク完了後（またはユーザーが中断を選択後）、レビュー・フィードバック収集・スキル評価を順に行う。
 
 1. サブエージェントを起動する（テンプレート「スプリントレビュー時」を使用）
 2. sprint-reviewer が出力した JSON をそのままプランJSONに転記する:
    - `review`（tasks + goal_progress）→ sprintsのreviewフィールド
    - `retro`（keep/problem/try）→ sprintsのretroフィールド
    - `impediments` → sprintsのimpedimentsフィールド
-3. **ワークスペーススキルの棚卸し**: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル評価時」を使用）
+3. **スキルフィードバック収集**: このスプリントで実行したスキルのフィードバックを一括収集する。
+   skill が指定され completed になったタスクからスキル名を重複なく抽出し、ユーザーに一括確認する:
+   ```
+   このスプリントで使用したスキルのフィードバックを収集します:
 
-4. **スキル発見**: 今スプリントで新しいスキルが作成された場合に提案する:
+   - [skill-name1]: 1. 問題なかった (ok) / 2. 改善点がある (needs-improvement) / 3. うまくいかなかった (broken)
+   - [skill-name2]: ...
+   ```
+   各スキルの回答に応じて record_feedback.py を実行する（git-skill-manager がない環境ではスキップ）:
+   ```
+   python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+   ```
+
+4. **ワークスペーススキルの棚卸し**: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル評価時」を使用）
+
+5. **スキル発見**: 今スプリントで新しいスキルが作成された場合に提案する:
    ```
    最近のチャット履歴から新しいスキル候補を発見できるかもしれません。
    git-skill-manager discover を実行しますか？ [y/N]
@@ -269,6 +282,7 @@ Wave 3: [b5]     → 単独実行
 タスク: [action]
 コンテキスト: [先行タスクのresultを1〜2行で要約]
 完了基準: [done_criteria]
+フィードバック: 実行後フィードバック節はスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
 
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗

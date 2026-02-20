@@ -136,3 +136,27 @@ rules/bundle-barrel-imports.md
 ## 完全版ドキュメント
 
 全ルールを展開した完全版は `AGENTS.md` を参照。
+
+## 実行後フィードバック（必須）
+
+> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
+
+スキルの手順を全て完了したら、ユーザーに確認する:
+
+「react-best-practices の実行はいかがでしたか？
+ 1. 問題なかった (ok)
+ 2. 改善点がある (needs-improvement)
+ 3. うまくいかなかった (broken)」
+
+回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
+```
+python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'react-best-practices','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+```
+
+スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
+skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
+```
+skill-evaluator スキルで react-best-practices を評価する。
+手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+対象スキル: react-best-practices
+```

@@ -385,6 +385,8 @@ python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> 
 ```markdown
 ## 実行後フィードバック（必須）
 
+> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
+
 スキルの手順を全て完了したら、ユーザーに確認する:
 
 「[skill-name] の実行はいかがでしたか？
@@ -392,14 +394,16 @@ python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> 
  2. 改善点がある (needs-improvement)
  3. うまくいかなかった (broken)」
 
-回答に応じて record_feedback.py を実行する:
+回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
 python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
 
-フィードバック記録後、スクリプトが「💡 新しいスキル候補を発見できるかもしれません」を
-表示した場合は、ユーザーに `git-skill-manager discover` の実行を提案する。
+スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
+skill-evaluator サブエージェントを起動して評価・昇格フローを進める。
 ```
 
-git-skill-manager がインストールされていない環境では `record_feedback.py` が存在しないため、エージェントはフィードバック記録をスキップし、ユーザーへのフィードバック質問のみ行う。
+- **直接呼び出し時**: スキル完了後にユーザーへフィードバックを確認し、record_feedback.py で記録する
+- **scrum-master 経由時**: フィードバック節をスキップする。スプリント終了時（Phase 6）にまとめて収集される
+- git-skill-manager がインストールされていない環境では record_feedback.py が存在しないため、フィードバック質問のみ行いスクリプト実行はスキップする
 
 ### discover_skills.py のソート順
 
