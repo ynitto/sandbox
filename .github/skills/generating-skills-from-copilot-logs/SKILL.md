@@ -12,7 +12,7 @@ VSCode Copilot または Claude Code のチャット履歴からAgent Skillを�
 | 呼び出し元 | 起動方法 |
 |---|---|
 | ユーザー直接 | 「履歴からスキルを作って」「パターンをスキル化して」など |
-| git-skill-manager discover | `discover` 操作が `--since last_run_at` でこのスキルを自動起動 |
+| git-skill-manager discover | `discover` 操作が `--since` パラメータでこのスキルを自動起動 |
 | scrum-master Phase 6 | スプリント完了後のスキル共有提案から起動 |
 
 `git-skill-manager discover` 経由の場合、`--since` パラメータが渡されるため、

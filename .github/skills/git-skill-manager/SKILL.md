@@ -105,11 +105,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
     "frontend": ["react-guide", "css-linter", "storybook"],
     "backend": ["api-guide", "db-migration", "auth"]
   },
-  "active_profile": null,
-  "skill_discovery": {
-    "last_run_at": null,
-    "suggest_interval_days": 7
-  }
+  "active_profile": null
 }
 ```
 
@@ -146,15 +142,9 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 - `discover_skills.py` がこの値を参照してスキルのソート順を決定する（改良待ちは後ろへ）
 - `refine` 操作完了後に false に戻る
 
-**skill_discovery** (オブジェクト):
-- `last_run_at`: generating-skills-from-copilot-logs を最後に実行した日時（ISO 8601）
-- `suggest_interval_days`: 発見提案を行う間隔（デフォルト: 7日）
-- `discover` 操作実行時に `last_run_at` が更新される
-
 **core_skills** (文字列リスト):
 - 使用頻度に関わらず常に最優先でロードされるスキル名のリスト
 - scrum-master、git-skill-manager、skill-creator など基盤スキルを登録する
-- `usage_stats` による順位付けの対象外（常にトップ）
 - `discover_skills.py` のソート時にこのリストのスキルを先頭に配置する
 
 **remote_index** (オブジェクト):
@@ -395,6 +385,8 @@ python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> 
 ```markdown
 ## 実行後フィードバック（必須）
 
+> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
+
 スキルの手順を全て完了したら、ユーザーに確認する:
 
 「[skill-name] の実行はいかがでしたか？
@@ -402,14 +394,16 @@ python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> 
  2. 改善点がある (needs-improvement)
  3. うまくいかなかった (broken)」
 
-回答に応じて record_feedback.py を実行する:
+回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
 python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
 
-フィードバック記録後、スクリプトが「💡 新しいスキル候補を発見できるかもしれません」を
-表示した場合は、ユーザーに `git-skill-manager discover` の実行を提案する。
+スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
+skill-evaluator サブエージェントを起動して評価・昇格フローを進める。
 ```
 
-git-skill-manager がインストールされていない環境では `record_feedback.py` が存在しないため、エージェントはフィードバック記録をスキップし、ユーザーへのフィードバック質問のみ行う。
+- **直接呼び出し時**: スキル完了後にユーザーへフィードバックを確認し、record_feedback.py で記録する
+- **scrum-master 経由時**: フィードバック節をスキップする。スプリント終了時（Phase 6）にまとめて収集される
+- git-skill-manager がインストールされていない環境では record_feedback.py が存在しないため、フィードバック質問のみ行いスクリプト実行はスキップする
 
 ### discover_skills.py のソート順
 
@@ -457,19 +451,14 @@ git-skill-manager がインストールされていない環境では `record_fe
 
 → 実装: `scripts/manage.py` — `discover_skills_from_history(since, workspace)`
 
-1. `skill_discovery.last_run_at` を読んで `--since` パラメータを決定
+1. ユーザーに `--since` パラメータ（分析開始日時）を確認
 2. ユーザーに同意を確認:
    ```
-   「[last_run_at 以降] のチャット履歴を分析して新しいスキル候補を探します。
+   「指定期間のチャット履歴を分析して新しいスキル候補を探します。
     続行しますか？」
    ```
 3. `discover_skills_from_history()` を実行（コマンドを出力）
 4. `generating-skills-from-copilot-logs` のフェーズ 1〜6 に従って分析・スキル生成
-5. `skill_discovery.last_run_at` を現在時刻に更新
-
-### 自動提案タイミング
-
-各スキルの「実行後フィードバック節」内で `record_feedback.py` が `skill_discovery.last_run_at` を確認し、`suggest_interval_days`（デフォルト: 7日）以上経過していれば discover の実行を提案する。
 
 -----
 

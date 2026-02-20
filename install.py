@@ -90,7 +90,6 @@ def copy_core_skills() -> list[dict]:
             "installed_at": datetime.now().isoformat(),
             "enabled": True,
             "pinned_commit": None,
-            "usage_stats": None,
         })
         print(f"   + {name}")
 
@@ -137,9 +136,6 @@ def setup_registry(installed_skills: list[dict]) -> None:
     # installed_skills を更新（既存エントリは上書き、新規は追加）
     existing = {s["name"]: s for s in reg.get("installed_skills", [])}
     for s in installed_skills:
-        if s["name"] in existing:
-            # usage_stats は保持
-            s["usage_stats"] = existing[s["name"]].get("usage_stats")
         existing[s["name"]] = s
     reg["installed_skills"] = list(existing.values())
 

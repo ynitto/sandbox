@@ -3,8 +3,6 @@ name: codebase-to-skill
 description: 既存のプログラムやコードベースを分析し、アーキテクチャ・コーディング規約・開発ワークフローをSKILL.mdとしてマークダウン化するスキル。「このプロジェクトのアーキテクチャをスキル化して」「コードの規約をスキルにまとめて」「このリポジトリをスキルにして」「コードベースを分析してスキルを作って」などのリクエストで使用する。
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'codebase-to-skill']) if os.path.isfile(s) else None"` を実行してください。
-
 # Codebase to Skill
 
 既存コードベースを分析し、他のAIエージェントが同じ規約・パターンで開発できるようにするSKILL.mdを生成する。
@@ -301,4 +299,28 @@ Copilot:
   2. 差分分析（新ディレクトリ、削除ファイル、パターン変更）
   3. SKILL.md を更新
   4. 変更箇所をレポート
+
+## 実行後フィードバック（必須）
+
+> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
+
+スキルの手順を全て完了したら、ユーザーに確認する:
+
+「codebase-to-skill の実行はいかがでしたか？
+ 1. 問題なかった (ok)
+ 2. 改善点がある (needs-improvement)
+ 3. うまくいかなかった (broken)」
+
+回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
+```
+python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'codebase-to-skill','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+```
+
+スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
+skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
+```
+skill-evaluator スキルで codebase-to-skill を評価する。
+手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+対象スキル: codebase-to-skill
+```
 ```

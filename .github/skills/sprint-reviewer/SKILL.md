@@ -3,8 +3,6 @@ name: sprint-reviewer
 description: スプリント完了後のレビューとレトロスペクティブを第三者視点で実施する。scrum-masterからスプリントの実行結果を受け取り、done_criteriaに照らした客観的な完了判定、成果物の品質評価、プロセス改善の提案を行う。読み取り専用で動作し、コードやファイルの変更は行わない。
 ---
 
-> **使用記録**: このスキルの手順に従う前に `python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_usage.py'); subprocess.run([sys.executable,s,'sprint-reviewer']) if os.path.isfile(s) else None"` を実行してください。
-
 # sprint-reviewer
 
 スプリントの実行結果を第三者視点でレビューし、レトロスペクティブを実施する。
@@ -92,3 +90,27 @@ scrum-master から以下の情報を受け取る:
 ```
 
 `impediments` はブロッカーがない場合は空配列 `[]` にする。
+
+## 実行後フィードバック（必須）
+
+> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
+
+スキルの手順を全て完了したら、ユーザーに確認する:
+
+「sprint-reviewer の実行はいかがでしたか？
+ 1. 問題なかった (ok)
+ 2. 改善点がある (needs-improvement)
+ 3. うまくいかなかった (broken)」
+
+回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
+```
+python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'sprint-reviewer','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+```
+
+スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
+skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
+```
+skill-evaluator スキルで sprint-reviewer を評価する。
+手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+対象スキル: sprint-reviewer
+```
