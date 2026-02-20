@@ -33,12 +33,9 @@ URL とともにスキルルートパスの指定がない場合は `skills` を
 
 ### Phase 2: クローンと検証
 
-**スクリプトの実行コマンド（OS別）:**
-
-| OS | コマンド |
-|---|---|
-| Linux / macOS | `python3 .github/skills/skill-recruiter/scripts/verify_skill.py <URL> [--skill-root <path>]` |
-| Windows (Copilot) | `python .github/skills/skill-recruiter/scripts/verify_skill.py <URL> [--skill-root <path>]` |
+```bash
+python .github/skills/skill-recruiter/scripts/verify_skill.py <URL> [--skill-root <path>]
+```
 
 スクリプトが出力する各行の意味:
 
@@ -160,12 +157,7 @@ URLまたはスキルルートパスを確認して再度お試しください�
 1. **repo add** でリポジトリを登録する
 2. **pull** でスキルをインストールする
 
-**インストール先（OS別）:**
-
-| OS | パス |
-|---|---|
-| Linux / macOS | `~/.copilot/skills/<name>/` |
-| Windows (Copilot) | `%USERPROFILE%\.copilot\skills\<name>\` |
+インストール先: `~/.copilot/skills/<name>/`
 
 -----
 
@@ -175,19 +167,48 @@ URLまたはスキルルートパスを確認して再度お試しください�
 
 #### 5-1. バリデーション
 
-**Linux / macOS:**
 ```bash
-python3 .github/skills/skill-creator/scripts/quick_validate.py ~/.copilot/skills/<name>
-```
-
-**Windows (Copilot):**
-```powershell
-python .github\skills\skill-creator\scripts\quick_validate.py %USERPROFILE%\.copilot\skills\<name>
+python .github/skills/skill-creator/scripts/quick_validate.py ~/.copilot/skills/<name>
 ```
 
 警告があればユーザーに提示する。エラーがある場合は内容を説明し、修正するか続行するかを確認する。
 
-#### 5-2. 実行後フィードバック節の挿入
+#### 5-2. Windows / Copilot 環境への適応
+
+Windows 環境（`os.name == 'nt'`）の場合のみ実行する:
+
+```bash
+python .github/skills/skill-recruiter/scripts/adapt_for_windows.py ~/.copilot/skills/<name>
+```
+
+スクリプトが出力する各行の意味:
+
+| 出力行 | 状態 | 説明 |
+|---|---|---|
+| `ADAPT_SKILL_MD: ok/skip` | SKILL.md の書き換え | ok=変更あり、skip=変更なし |
+| `ADAPT_PYTHON_FILES: ok/skip  N件` | .py shebang の書き換え | ok=変更あり、skip=変更なし |
+| `ADAPT_SHELL_WARNING: ok/warn` | .sh ファイルの存在確認 | warn はユーザーに提示 |
+| `ADAPT_RESULT: ok/warn` | 総合結果 | warn なら内容を説明する |
+
+`ADAPT_SHELL_WARNING: warn` の場合、以下のメッセージをユーザーに提示する:
+
+```
+⚠️ シェルスクリプト (.sh) が含まれています
+
+  <name>/ 内の .sh ファイルは Windows では直接実行できません。
+  該当ファイル: scripts/setup.sh など
+
+  対処方法:
+    1. Git Bash / WSL2 上で実行する
+    2. スクリプトの内容を手動で PowerShell に変換する
+    3. このまま使用する（.sh を呼び出す手順は手動で代替する）
+
+どうしますか？
+  1. このまま続行する（必要に応じて手動対応）
+  2. インストールを取り消す
+```
+
+#### 5-3. 実行後フィードバック節の挿入
 
 インストール済み SKILL.md に「実行後フィードバック（必須）」節がなければ追記する。
 この節はフィードバックループ（record_feedback.py → skill-evaluator）への接続に必要。
@@ -224,13 +245,14 @@ skill-evaluator スキルで <name> を評価する。
 
 追記後、レジストリの `feedback_history` が空のエントリを初期化する（record_feedback.py が自動で行う）。
 
-#### 5-3. 完了報告
+#### 5-4. 完了報告
 
 ```
 ✅ セットアップ完了
    スキル: <name>
-   場所:   ~/.copilot/skills/<name>/  （Windows: %USERPROFILE%\.copilot\skills\<name>\）
+   場所:   ~/.copilot/skills/<name>/
    バリデーション: <結果>
+   Windows 適応: <適用済み / スキップ（非Windows）>
    フィードバック節: <追記済み / 既存>
 
 次回起動時から利用可能です。
@@ -243,4 +265,3 @@ skill-evaluator スキルで <name> を評価する。
 - **ネットワーク通信が検出されたスキルは必ずユーザーの明示的な同意を得てからインストールする**
 - ユーザーはインストール前にスキルの内容を自ら確認することを推奨する
 - LICENSE なしのスキルはライセンスの権利関係が不明確になるため、採用時はユーザーが自己責任で判断する
-- Windows 環境では `python3` の代わりに `python` を使用する（環境によって異なる場合がある）
