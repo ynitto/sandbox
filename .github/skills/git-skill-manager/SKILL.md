@@ -7,6 +7,22 @@ description: Gitリポジトリを使ってエージェントスキルを管理�
 
 Gitリポジトリ経由でエージェントスキルの取得（pull）と共有（push）を行う管理システム。
 
+## skill-recruiter との使い分け
+
+**初めての外部URLからスキルを安全に取り込みたい場合は skill-recruiter を使ってください。**
+skill-recruiter がライセンス・セキュリティ・ネットワーク通信を事前に検証し、
+確認後にこのスキル（git-skill-manager）を自動で呼び出してインストールします。
+
+このスキル（git-skill-manager）は以下の用途に特化しています:
+
+| 操作 | 説明 |
+|---|---|
+| `repo add` / `pull` | 登録済みリポジトリからスキルを取得・更新 |
+| `push` | ローカルスキルをチームリポジトリに共有 |
+| `pin` / `lock` | バージョン固定・スナップショット |
+| `enable` / `disable` / `profile` | スキルの有効化管理 |
+| `feedback` / `promote` / `refine` | 評価・昇格・改良フロー |
+
 ## 利用者
 
 | 呼び出し元 | 操作 | 例 |
