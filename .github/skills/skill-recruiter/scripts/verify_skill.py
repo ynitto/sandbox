@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""スキルリポジトリを検証する: ライセンス・SKILL.md 構造・セキュリティ簡易チェック。
+"""スキルリポジトリを検証する: ライセンス・SKILL.md 構造・セキュリティ・ネットワーク通信チェック。
 
 使い方:
     python verify_skill.py <repo-url> [--skill-root <path>]
@@ -11,8 +11,9 @@
 出力 (エージェントが解析する機械可読行):
     VERIFY_CLONE: ok|fail
     VERIFY_LICENSE: ok|warn|fail  <ライセンス名>
-    VERIFY_SKILL: ok|fail  <name>  <description>
+    VERIFY_SKILL: ok|warn|fail  <name>  <description>
     VERIFY_SECURITY: ok|warn
+    VERIFY_NETWORK: ok|warn  [検出パターン...]
     VERIFY_RESULT: ok|warn|fail  [メッセージ]
 """
 from __future__ import annotations
@@ -46,6 +47,30 @@ SUSPICIOUS_PATTERNS = [
     r"os\.system\s*\(",
     r"__import__\s*\(\s*['\"]os['\"]",
     r"exec\s*\(",
+]
+
+# ネットワーク通信パターン (HTTP リクエスト・外部サービス接続)
+NETWORK_PATTERNS = [
+    # Python
+    r"requests\.(get|post|put|patch|delete|head|request)\s*\(",
+    r"urllib\.request\.",
+    r"urllib2\.",
+    r"http\.client\.",
+    r"aiohttp\.",
+    r"httpx\.",
+    # JavaScript / TypeScript
+    r"\bfetch\s*\(",
+    r"\bXMLHttpRequest\b",
+    r"\baxios\s*\.",
+    r"\bhttp(s)?\.request\s*\(",
+    r"\bgot\s*\(",
+    r"\bnode-fetch\b",
+    # Shell
+    r"\bcurl\s+",
+    r"\bwget\s+",
+    r"\bnc\s+",          # netcat
+    r"\btelnet\s+",
+    r"\bssh\s+",
 ]
 
 SCRIPT_EXTENSIONS = (".py", ".sh", ".bash", ".ps1", ".bat", ".cmd", ".js", ".ts")
@@ -221,6 +246,42 @@ def check_security(repo_dir: str) -> tuple[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# ネットワーク通信チェック
+# ---------------------------------------------------------------------------
+
+def check_network(repo_dir: str) -> tuple[str, list[str]]:
+    """(status, detections) を返す。status: ok / warn
+
+    スクリプトファイルおよび SKILL.md 内で外部通信の可能性があるパターンを検出する。
+    """
+    compiled = [(re.compile(p), p) for p in NETWORK_PATTERNS]
+    detections: list[str] = []
+    target_extensions = SCRIPT_EXTENSIONS + (".md",)
+
+    for dirpath, dirnames, filenames in os.walk(repo_dir):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+
+        for fname in filenames:
+            if not any(fname.endswith(ext) for ext in target_extensions):
+                continue
+
+            fpath = os.path.join(dirpath, fname)
+            try:
+                with open(fpath, encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+            except OSError:
+                continue
+
+            for pattern, pattern_str in compiled:
+                if pattern.search(content):
+                    rel = os.path.relpath(fpath, repo_dir)
+                    detections.append(f"{rel}: {pattern_str}")
+                    break  # ファイルごとに最初の1件のみ報告
+
+    return ("warn", detections) if detections else ("ok", [])
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -256,10 +317,15 @@ def main() -> None:
         for w in sec_warnings:
             print(f"  ⚠️  {w}")
 
-        # 総合判定 — SKILL.md 不正のみ fail（ライセンスは warn 止まりでユーザー選択に委ねる）
+        net_status, net_detections = check_network(tmpdir)
+        print(f"VERIFY_NETWORK: {net_status}")
+        for d in net_detections:
+            print(f"  🌐  {d}")
+
+        # 総合判定 — SKILL.md 不正のみ fail（ライセンス・ネットワークは warn 止まりでユーザー選択）
         if skill_status == "fail":
             print(f"VERIFY_RESULT: fail  {skill_desc}")
-        elif lic_status == "warn" or sec_status == "warn":
+        elif lic_status == "warn" or sec_status == "warn" or net_status == "warn":
             print("VERIFY_RESULT: warn  要確認事項があります")
         else:
             print("VERIFY_RESULT: ok")
