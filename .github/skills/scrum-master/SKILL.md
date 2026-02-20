@@ -208,25 +208,7 @@ Wave 3: [b5]     → 単独実行
    - `review`（tasks + goal_progress）→ sprintsのreviewフィールド
    - `retro`（keep/problem/try）→ sprintsのretroフィールド
    - `impediments` → sprintsのimpedimentsフィールド
-3. **ワークスペーススキルの棚卸し**: 以下のコマンドで試用中スキルを評価する:
-   ```bash
-   python .github/skills/git-skill-manager/scripts/manage.py list-workspace-eval
-   ```
-   出力例:
-   ```
-   📋 ワークスペーススキルの評価:
-     skill-A   ok:3 問題:0  → ✅ 昇格推奨
-     skill-B   ok:1 問題:1  → ⚠️  要改良後昇格
-     skill-C   ok:1 問題:0  → 🔄 試用継続
-   ```
-   ユーザーに提示して次のアクションを選んでもらう:
-   ```
-   ワークスペーススキルの状況です。
-   昇格推奨: skill-A → 昇格しますか？（git-skill-manager promote）
-   要改良:   skill-B → 改良しますか？（git-skill-manager refine）
-   ```
-   - 「昇格する」: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル昇格時」を使用）
-   - 「改良する」: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル改良時」を使用）
+3. **ワークスペーススキルの棚卸し**: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル評価時」を使用）
 
 4. **スキル発見**: `skill_discovery.last_run_at` から 7日以上経過している場合、または今スプリントで新しいスキルが作成された場合に提案する:
    ```
@@ -386,6 +368,23 @@ git-skill-manager スキルでワークスペーススキルをユーザー領�
 ステータス: 成功 / 失敗
 昇格先: [~/.copilot/skills/<name>]
 push先: [repo-name または「なし」]
+サマリー: [1〜2文で結果を説明]
+```
+
+### スキル評価時
+
+```
+skill-evaluator スキルでワークスペーススキルを評価する。
+
+手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+操作: 全ワークスペーススキルを評価して昇格・改良・試用継続を判断する。
+補足: 評価結果をユーザーに提示し、昇格 / 改良 / 継続 のアクションを確認してください。
+      昇格 → git-skill-manager promote、改良 → git-skill-manager refine を実行してください。
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+昇格したスキル: [name1, name2, ...（なければ「なし」）]
+改良を開始したスキル: [name1, name2, ...（なければ「なし」）]
 サマリー: [1〜2文で結果を説明]
 ```
 

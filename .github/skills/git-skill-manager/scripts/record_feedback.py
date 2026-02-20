@@ -61,19 +61,6 @@ def auto_register_workspace_skill(reg: dict, skill_name: str) -> dict:
     return reg
 
 
-def _evaluate(skill: dict) -> str:
-    """フィードバック履歴から昇格推奨度を返す。promote / refine / continue"""
-    history = skill.get("feedback_history", [])
-    ok_count = sum(1 for e in history if e["verdict"] == "ok")
-    pending = skill.get("pending_refinement", False)
-    has_problems = any(e["verdict"] in ("needs-improvement", "broken") for e in history)
-
-    if pending or has_problems:
-        return "refine"
-    if ok_count >= 2:
-        return "promote"
-    return "continue"
-
 
 def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict:
     """フィードバックを記録してレジストリを返す。"""
@@ -97,31 +84,21 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
     mark = {"ok": "✅", "needs-improvement": "⚠️", "broken": "❌"}.get(verdict, "📝")
     print(f"{mark} {skill_name}: フィードバックを記録しました ({verdict})")
 
-    # ワークスペーススキルの場合は評価を表示
+    # ワークスペーススキルの場合は評価推奨シグナルを出力（skill-evaluator が受け取る）
     if skill.get("source_repo") == "workspace":
-        _print_workspace_evaluation(skill)
+        history = skill.get("feedback_history", [])
+        ok_count = sum(1 for e in history if e.get("verdict") == "ok")
+        problem_count = sum(1 for e in history if e.get("verdict") in ("needs-improvement", "broken"))
+        pending = skill.get("pending_refinement", False)
+        if pending or problem_count > 0:
+            rec = "refine"
+        elif ok_count >= 2:
+            rec = "promote"
+        else:
+            rec = "continue"
+        print(f"EVAL_RECOMMEND: {rec}")
 
     return reg
-
-
-def _print_workspace_evaluation(skill: dict) -> None:
-    """ワークスペーススキルの評価結果を出力する。"""
-    rec = _evaluate(skill)
-    history = skill.get("feedback_history", [])
-    ok_count = sum(1 for e in history if e["verdict"] == "ok")
-    prob_count = sum(1 for e in history if e["verdict"] in ("needs-improvement", "broken"))
-    name = skill["name"]
-
-    print()
-    if rec == "promote":
-        print(f"✨ [{name}] 昇格推奨 (ok: {ok_count}回, 問題: {prob_count}回)")
-        print(f"   他のプロジェクトでも使えるよう昇格しませんか？")
-        print(f"   'git-skill-manager promote' で ~/.copilot/skills/ にコピー + リポジトリ共有")
-    elif rec == "refine":
-        print(f"⚠️  [{name}] 改良後に昇格推奨 (ok: {ok_count}回, 問題: {prob_count}回)")
-        print(f"   'git-skill-manager refine {name}' でフィードバックをもとに改良できます")
-    else:
-        print(f"🔄 [{name}] 試用継続 (ok: {ok_count}回) — あと {2 - ok_count} 回の好評価で昇格推奨になります")
 
 
 def check_discovery(reg: dict) -> bool:

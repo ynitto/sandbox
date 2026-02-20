@@ -1,6 +1,6 @@
 ---
 name: git-skill-manager
-description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。また「スキルを改良して」「フィードバックを反映して」「新しいスキル候補を探して」「履歴からスキルを発見して」のようなスキル改良・発見のリクエストでも使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
+description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。また「スキルを改良して」「フィードバックを反映して」「新しいスキル候補を探して」「履歴からスキルを発見して」「スキルを評価して」「試用中スキルを確認して」のようなスキル改良・発見・評価のリクエストでも使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
 ---
 
 # Git Skill Manager
@@ -134,7 +134,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 - `"workspace"`: `.github/skills/` に置かれた試用中スキル（チャット経由で作成）
 - `"local"`: `promote` 操作でユーザー領域に昇格済みのスキル
 - その他: リポジトリ名（`pull` でインストールしたスキル）
-- `"workspace"` のスキルは `evaluate_workspace_skill()` の評価対象になる
+- `"workspace"` のスキルは `skill-evaluator` の評価対象になる
 
 **installed_skills[].feedback_history** (配列、デフォルト: []):
 - スキル使用後にユーザーが提供したフィードバックの履歴
@@ -197,6 +197,7 @@ Gitリポジトリ経由でエージェントスキルの取得（pull）と共�
 |**profile delete**|「プロファイルを削除して」    |
 |**refine**     |「スキルを改良して」「フィードバックを反映して」「改善待ちを処理して」|
 |**discover**   |「スキル候補を探して」「履歴からスキルを発見して」「新しいスキルを見つけて」|
+|**evaluate**   |「スキルを評価して」「試用中スキルを確認して」「ワークスペーススキルを整理して」|
 
 -----
 
@@ -349,22 +350,21 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 
 ### 評価の実行
 
-**インライン（フィードバック記録時に自動実行）**
+**インライン（フィードバック記録時に自動トリガー）**
 
-`record_feedback.py` がワークスペーススキルを検出すると評価結果を自動表示する:
+`record_feedback.py` がワークスペーススキルを検出すると `EVAL_RECOMMEND:` シグナルを出力する:
 ```
 ✅ my-skill: フィードバックを記録しました (ok)
-
-✨ [my-skill] 昇格推奨 (ok: 2回, 問題: 0回)
-   他のプロジェクトでも使えるよう昇格しませんか？
-   'git-skill-manager promote' で ~/.copilot/skills/ にコピー + リポジトリ共有
+EVAL_RECOMMEND: promote
 ```
+
+エージェントはこのシグナルを受けて `skill-evaluator` サブエージェントを起動する（`promote` または `refine` の場合のみ）。
 
 **バッチ（スプリント完了時）**
 
-scrum-master の Phase 6 で全ワークスペーススキルを一覧評価する:
+scrum-master の Phase 6 が `skill-evaluator` サブエージェントを起動して全ワークスペーススキルを一覧評価する:
 ```bash
-python .github/skills/git-skill-manager/scripts/manage.py list-workspace-eval
+python .github/skills/skill-evaluator/scripts/evaluate.py
 ```
 
 -----
@@ -434,7 +434,7 @@ git-skill-manager がインストールされていない環境では `record_fe
 
 1. `feedback_history` から未処理（`refined: false`）の `needs-improvement` / `broken` エントリを収集
 2. フィードバック一覧をユーザーに提示
-3. skill-creator サブエージェントを起動して改良を委譲（scrum-master の「スキル改良時」テンプレートを使用）
+3. skill-creator サブエージェントを起動して改良を委譲
 4. 改良完了後、`mark_refined` で `pending_refinement` を false に更新
 
 ```
@@ -470,6 +470,33 @@ git-skill-manager がインストールされていない環境では `record_fe
 ### 自動提案タイミング
 
 各スキルの「実行後フィードバック節」内で `record_feedback.py` が `skill_discovery.last_run_at` を確認し、`suggest_interval_days`（デフォルト: 7日）以上経過していれば discover の実行を提案する。
+
+-----
+
+## evaluate
+
+ワークスペーススキル（`source_repo: "workspace"`）の昇格推奨度を評価する。`skill-evaluator` スキルを呼び出して実行する。
+
+### トリガー
+
+| トリガー | 説明 |
+|---|---|
+| `record_feedback.py` の `EVAL_RECOMMEND: promote\|refine` 出力 | フィードバック記録後にインラインで自動起動 |
+| scrum-master Phase 6 | スプリント完了時のバッチ棚卸し |
+| ユーザー直接 | 「スキルを評価して」など |
+
+### 処理フロー
+
+→ 実装: `.github/skills/skill-evaluator/scripts/evaluate.py`（skill-evaluator スキルが管理）
+
+1. `skill-evaluator` サブエージェントを起動する:
+   ```
+   skill-evaluator スキルでワークスペーススキルを評価する。
+   手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+   ```
+2. skill-evaluator が評価結果を提示し、promote / refine のアクションをユーザーに確認する
+3. 「昇格する」→ `promote` 操作を実行する
+4. 「改良する」→ `refine` 操作を実行する
 
 -----
 
