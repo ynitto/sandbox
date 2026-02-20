@@ -367,6 +367,7 @@ def refine_skill(skill_name):
 
     このスクリプトはフィードバックを収集・整形して出力する。
     実際の skill-creator 起動は Claude（エージェント）が行う。
+    ワークスペーススキル / インストール済みスキルの両方に対応する。
     """
     reg = load_registry()
     skill = next(
@@ -384,6 +385,15 @@ def refine_skill(skill_name):
         print(f"ℹ️ '{skill_name}' に未処理の改善フィードバックはありません")
         return
 
+    # スキルの実体パスを特定する
+    source = skill.get("source_repo", "")
+    if source == "workspace":
+        skill_path = os.path.join(".github", "skills", skill_name)
+        location_label = "ワークスペーススキル"
+    else:
+        skill_path = os.path.join(_skill_home(), skill_name)
+        location_label = "インストール済みスキル"
+
     print(f"📋 '{skill_name}' の未処理フィードバック ({len(pending)} 件):\n")
     for i, entry in enumerate(pending, 1):
         ts = entry.get("timestamp", "")[:10]
@@ -393,9 +403,10 @@ def refine_skill(skill_name):
         print(f"  {i}. [{ts}] {mark} {note}")
 
     print()
+    print(f"スキルパス: {skill_path}  ({location_label})")
     print("これらのフィードバックを skill-creator に渡してスキルを改良してください。")
     print(f"改良後は以下で refined フラグを更新してください:")
-    print(f"  python record_feedback.py {skill_name} --mark-refined")
+    print(f"  python manage.py mark-refined {skill_name}")
 
 
 def mark_refined(skill_name):

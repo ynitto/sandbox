@@ -363,6 +363,18 @@ python .github/skills/skill-evaluator/scripts/evaluate.py
 
 スキル使用後にフィードバックを収集し、スキル品質の改良トリガーとスキル発見の起点にする仕組み。
 
+### pending_refinement トリガーのしきい値
+
+スキルの種別ごとに `pending_refinement` が立つまでの未改良問題数が異なる。頻度を下げることで、安定稼働しているインストール済みスキルへの過剰な改良提案を防ぐ。
+
+| スキル種別 | source_repo | デフォルトしきい値 |
+|---|---|---|
+| ワークスペーススキル | `workspace` | **1件**（即トリガー）|
+| インストール済みスキル | `local` / リポジトリ名 | **3件**（蓄積してトリガー）|
+
+`mark_refined()` 実行後は未改良カウントがリセットされるため、1サイクルの改良後に再び N 件蓄積するまで提案されない。
+スキルエントリに `refine_threshold` フィールドを設定すれば個別に上書き可能。
+
 ### フィードバックの記録
 
 使用後フィードバックは `record_feedback.py` スクリプトで行う:
@@ -420,25 +432,35 @@ skill-evaluator サブエージェントを起動して評価・昇格フロー�
 
 ## refine
 
-蓄積されたフィードバックをもとに、スキルの改良フローを開始する。
+蓄積されたフィードバックをもとに、スキルの改良フローを開始する。ワークスペーススキルとインストール済みスキル（user-space / リポジトリ管理）の両方に対応する。
 
 ### 処理フロー
 
 → 実装: `scripts/manage.py` — `refine_skill(skill_name)`, `mark_refined(skill_name)`
 
 1. `feedback_history` から未処理（`refined: false`）の `needs-improvement` / `broken` エントリを収集
-2. フィードバック一覧をユーザーに提示
-3. skill-creator サブエージェントを起動して改良を委譲
+2. フィードバック一覧とスキルパスをユーザーに提示
+3. skill-creator サブエージェントを起動して改良を委譲（スキルパスを渡す）
 4. 改良完了後、`mark_refined` で `pending_refinement` を false に更新
+5. インストール済みスキルかつ source_repo がリポジトリの場合は push を提案
+
+### スキルパスの違い
+
+| スキル種別 | 編集対象パス |
+|---|---|
+| ワークスペーススキル | `.github/skills/<name>/` |
+| インストール済みスキル | `~/.copilot/skills/<name>/` |
+
+`refine_skill()` はスクリプト出力に `スキルパス: <path>` を含むため、エージェントはそれを参照して skill-creator に正しいパスを渡す。
 
 ```
 ユーザー: 「docx-converter を改良して」
 
 エージェント:
   1. python manage.py refine docx-converter
-  2. フィードバック一覧を表示
-  3. skill-creator に改良を委譲
-  4. 改良後 push を提案
+  2. フィードバック一覧とスキルパスを表示
+  3. skill-creator に改良を委譲（表示されたパスを渡す）
+  4. 改良後、リポジトリ管理スキルなら push を提案
 ```
 
 -----
