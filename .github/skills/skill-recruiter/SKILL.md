@@ -53,7 +53,9 @@ python .github/skills/skill-recruiter/scripts/verify_skill.py <URL> [--skill-roo
 |---|---|---|
 | ✅ ok | MIT, Apache-2.0, ISC, BSD, Unlicense, CC0 | 自動承認 |
 | ⚠️ warn | GPL, LGPL, AGPL, MPL | ユーザーに提示して判断を求める |
-| ❌ fail | LICENSE ファイルなし | インストール不可（理由を説明） |
+| ⚠️ warn | LICENSE ファイルなし | 警告を提示してユーザー判断で続行可 |
+
+`VERIFY_RESULT` が `fail` になるのは **クローン失敗** または **SKILL.md 不正**（name/description なし）の場合のみ。ライセンスは warn 止まりでユーザーが選択できる。
 
 -----
 
@@ -90,12 +92,25 @@ python .github/skills/skill-recruiter/scripts/verify_skill.py <URL> [--skill-roo
   2. キャンセル
 ```
 
+ライセンスファイルがない場合:
+
+```
+⚠️ 要確認事項があります
+
+  ライセンス: LICENSE ファイルなし（ライセンス不明）
+  ライセンスが明示されていないスキルを追加すると、権利関係が不明確になる場合があります。
+
+それでも追加しますか？
+  1. 理解した上で追加する
+  2. キャンセル
+```
+
 #### `VERIFY_RESULT: fail` の場合
 
 ```
 ❌ 検証に失敗しました
 
-  理由: LICENSE ファイルが見つかりません / SKILL.md が不正です
+  理由: クローンに失敗しました / SKILL.md に name・description がありません
 
 インストールを中止します。
 URLまたはスキルルートパスを確認して再度お試しください。
@@ -110,15 +125,74 @@ URLまたはスキルルートパスを確認して再度お試しください�
 1. **repo add** でリポジトリを登録する
 2. **pull** でスキルをインストールする
 
+インストール先: `~/.copilot/skills/<name>/`
+
+-----
+
+### Phase 5: skill-creator 後処理
+
+インストール後に skill-creator の仕様に従い、スキルを本システムに統合する。
+
+#### 5-1. バリデーション
+
+```bash
+python .github/skills/skill-creator/scripts/quick_validate.py ~/.copilot/skills/<name>
 ```
-✅ インストール完了
+
+警告があればユーザーに提示する。エラーがある場合は内容を説明し、修正するか続行するかを確認する。
+
+#### 5-2. 実行後フィードバック節の挿入
+
+インストール済み SKILL.md に「実行後フィードバック（必須）」節がなければ追記する。
+この節はフィードバックループ（record_feedback.py → skill-evaluator）への接続に必要。
+
+確認パターン: `実行後フィードバック` が SKILL.md に含まれない場合に追記する。
+
+追記するテンプレート（`<name>` を実際のスキル名に置換する）:
+
+```markdown
+## 実行後フィードバック（必須）
+
+> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
+
+スキルの手順を全て完了したら、ユーザーに確認する:
+
+「<name> の実行はいかがでしたか？
+ 1. 問題なかった (ok)
+ 2. 改善点がある (needs-improvement)
+ 3. うまくいかなかった (broken)」
+
+回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
+```
+python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+```
+
+スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
+skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
+```
+skill-evaluator スキルで <name> を評価する。
+手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+対象スキル: <name>
+```
+```
+
+追記後、レジストリの `feedback_history` が空のエントリを初期化する（record_feedback.py が自動で行う）。
+
+#### 5-3. 完了報告
+
+```
+✅ セットアップ完了
    スキル: <name>
    場所:   ~/.copilot/skills/<name>/
-   次回起動時から利用可能です。
+   バリデーション: <結果>
+   フィードバック節: <追記済み / 既存>
+
+次回起動時から利用可能です。
+使用後は実行後フィードバックを記録してください。
 ```
 
 ## 注意事項
 
 - セキュリティチェックはパターンマッチングによる簡易チェックであり、完全な安全保証ではない
 - ユーザーはインストール前にスキルの内容を自ら確認することを推奨する
-- LICENSE なしのスキルは組織のポリシーに依存するためデフォルト不可
+- LICENSE なしのスキルはライセンスの権利関係が不明確になるため、採用時はユーザーが自己責任で判断する

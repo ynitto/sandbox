@@ -113,7 +113,7 @@ def detect_license(repo_dir: str) -> tuple[str, str]:
         else:
             return "warn", f"{name} (要確認)"
 
-    return "fail", "LICENSE ファイルなし"
+    return "warn", "LICENSE ファイルなし（ライセンス不明）"
 
 
 def _identify_license(content: str) -> str:
@@ -256,14 +256,9 @@ def main() -> None:
         for w in sec_warnings:
             print(f"  ⚠️  {w}")
 
-        # 総合判定
-        if lic_status == "fail" or skill_status == "fail":
-            reasons = []
-            if lic_status == "fail":
-                reasons.append(lic_name)
-            if skill_status == "fail":
-                reasons.append(skill_desc)
-            print(f"VERIFY_RESULT: fail  {' / '.join(reasons)}")
+        # 総合判定 — SKILL.md 不正のみ fail（ライセンスは warn 止まりでユーザー選択に委ねる）
+        if skill_status == "fail":
+            print(f"VERIFY_RESULT: fail  {skill_desc}")
         elif lic_status == "warn" or sec_status == "warn":
             print("VERIFY_RESULT: warn  要確認事項があります")
         else:
