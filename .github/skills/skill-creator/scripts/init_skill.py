@@ -67,6 +67,14 @@ TODO - スキルの主要な手順やワークフローを記述する。
 python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'{name}','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
 ```
 
+スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
+skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
+```
+skill-evaluator スキルで {name} を評価する。
+手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+対象スキル: {name}
+```
+
 スクリプトの出力に「💡 新しいスキル候補を発見できるかもしれません」が含まれる場合は、
 ユーザーに `git-skill-manager discover` の実行を提案する。
 """
