@@ -58,8 +58,14 @@ python .github/skills/skill-recruiter/scripts/verify_skill.py <URL またはロ�
 | ✅ ok | MIT, Apache-2.0, ISC, BSD, Unlicense, CC0 | 自動承認 |
 | ⚠️ warn | GPL, LGPL, AGPL, MPL | ユーザーに提示して判断を求める |
 | ⚠️ warn | LICENSE ファイルなし | 警告を提示してユーザー判断で続行可 |
+| ❌ fail | Proprietary, All Rights Reserved, CC-BY-ND, CC-BY-NC-ND 等 | 取り込み不可・即中止 |
 
-`VERIFY_RESULT` が `fail` になるのは **クローン失敗** または **SKILL.md 不正**（name/description なし）の場合のみ。ライセンス・ネットワーク通信は warn 止まりでユーザーが選択できる。
+`VERIFY_RESULT` が `fail` になるのは以下の場合。いずれもインストールを中止する:
+- **クローン失敗**（URLアクセス不可、パス不在）
+- **SKILL.md 不正**（name/description なし）
+- **改変禁止ライセンス**（Proprietary, All Rights Reserved, CC-BY-ND 等）
+
+ライセンス warn（GPL 等）・ネットワーク通信・セキュリティ警告はユーザーが選択できる。
 
 -----
 
@@ -145,10 +151,20 @@ python .github/skills/skill-recruiter/scripts/verify_skill.py <URL またはロ�
 ```
 ❌ 検証に失敗しました
 
-  理由: クローンに失敗しました / SKILL.md に name・description がありません
+  理由（いずれか）:
+    - クローンに失敗しました
+    - SKILL.md に name・description がありません
+    - 改変禁止ライセンスのため取り込み不可: <ライセンス名>
 
 インストールを中止します。
-URLまたはスキルルートパスを確認して再度お試しください。
+```
+
+改変禁止ライセンスの場合は以下のメッセージを追加する:
+
+```
+  このスキルのライセンス（<ライセンス名>）は改変・再配布を禁止しています。
+  スキルとして取り込むことはできません。
+  スキルの作者に連絡してライセンスの変更を依頼するか、別のスキルを探してください。
 ```
 
 -----

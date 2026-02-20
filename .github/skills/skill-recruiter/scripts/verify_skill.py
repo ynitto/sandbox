@@ -37,6 +37,16 @@ WARN_LICENSES = frozenset({
     "GPL-2.0", "GPL-3.0", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0", "MPL-2.0",
 })
 
+# 取り込み禁止ライセンス: プロプライエタリ・改変禁止
+FAIL_LICENSES = frozenset({
+    "Proprietary",
+    "All-Rights-Reserved",
+    "CC-BY-ND",
+    "CC-BY-NC-ND",
+    "CC-BY-NC",
+    "CC-BY-NC-SA",
+})
+
 # 簡易セキュリティパターン (Python / Shell / JS)
 SUSPICIOUS_PATTERNS = [
     r"rm\s+-[rf]+\s+/",
@@ -129,7 +139,22 @@ _LICENSE_SIGNATURES: list[tuple[str, str]] = [
     ("BSD 2-Clause", "BSD-2-Clause"),
     ("ISC License", "ISC"),
     ("ISC license", "ISC"),
+    # 取り込み禁止: プロプライエタリ・改変禁止
+    ("Attribution-NoDerivatives", "CC-BY-ND"),
+    ("Attribution-NonCommercial-NoDerivatives", "CC-BY-NC-ND"),
+    ("Attribution-NonCommercial-ShareAlike", "CC-BY-NC-SA"),
+    ("Attribution-NonCommercial", "CC-BY-NC"),
+    ("NoDerivatives", "CC-BY-ND"),       # 短縮形も捕捉
+    ("NoDerivs", "CC-BY-ND"),
+    ("Proprietary", "Proprietary"),
+    ("proprietary", "Proprietary"),
+    ("PROPRIETARY", "Proprietary"),
 ]
+
+# "All Rights Reserved" はテキスト検索で個別に判定する（署名リストでは捕捉しにくいため）
+_ALL_RIGHTS_RESERVED_PATTERN = re.compile(
+    r'all\s+rights?\s+reserved', re.IGNORECASE
+)
 
 _LICENSE_FILENAMES = (
     "LICENSE", "LICENSE.md", "LICENSE.txt",
@@ -138,7 +163,12 @@ _LICENSE_FILENAMES = (
 
 
 def detect_license(repo_dir: str) -> tuple[str, str]:
-    """(status, license_name) を返す。status: ok / warn / fail"""
+    """(status, license_name) を返す。status: ok / warn / fail
+
+    fail: プロプライエタリ・改変禁止ライセンス（取り込み不可）
+    warn: コピーレフト系・LICENSE なし（ユーザー判断）
+    ok:   MIT・Apache 等の許容ライセンス
+    """
     for fname in _LICENSE_FILENAMES:
         path = os.path.join(repo_dir, fname)
         if not os.path.isfile(path):
@@ -147,9 +177,17 @@ def detect_license(repo_dir: str) -> tuple[str, str]:
         with open(path, encoding="utf-8", errors="ignore") as f:
             content = f.read(8192)
 
+        # "All Rights Reserved" の明示的な記載があり、かつ許容ライセンス署名がない場合
+        if _ALL_RIGHTS_RESERVED_PATTERN.search(content):
+            name = _identify_license(content)
+            if name not in APPROVED_LICENSES:
+                return "fail", "All Rights Reserved（改変・再配布禁止）"
+
         name = _identify_license(content)
 
-        if name in APPROVED_LICENSES:
+        if name in FAIL_LICENSES:
+            return "fail", f"{name}（改変禁止・取り込み不可）"
+        elif name in APPROVED_LICENSES:
             return "ok", name
         elif name in WARN_LICENSES or name.startswith("GPL") or name.startswith("LGPL"):
             return "warn", name
@@ -356,9 +394,13 @@ def main() -> None:
         for d in net_detections:
             print(f"  🌐  {d}")
 
-        # 総合判定 — SKILL.md 不正のみ fail（ライセンス・ネットワークは warn 止まりでユーザー選択）
+        # 総合判定
+        # fail: SKILL.md 不正 / プロプライエタリ・改変禁止ライセンス
+        # warn: コピーレフト系ライセンス / LICENSE なし / セキュリティ・ネットワーク警告
         if skill_status == "fail":
             print(f"VERIFY_RESULT: fail  {skill_desc}")
+        elif lic_status == "fail":
+            print(f"VERIFY_RESULT: fail  {lic_name}")
         elif lic_status == "warn" or sec_status == "warn" or net_status == "warn":
             print("VERIFY_RESULT: warn  要確認事項があります")
         else:
