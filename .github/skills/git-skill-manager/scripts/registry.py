@@ -41,23 +41,21 @@ def migrate_registry(reg: dict) -> dict:
         for skill in reg.get("installed_skills", []):
             skill.setdefault("enabled", True)
             skill.setdefault("pinned_commit", None)
-            skill.setdefault("usage_stats", None)
         reg.setdefault("core_skills", list(CORE_SKILLS_DEFAULT))
         reg.setdefault("profiles", {"default": ["*"]})
         reg.setdefault("active_profile", None)
         reg.setdefault("remote_index", {})
 
-    # v2 → v3: usage_stats を feedback_history に移行、skill_discovery を追加
+    # v2 → v3: feedback_history / pending_refinement を追加
     if version < 3:
         for skill in reg.get("installed_skills", []):
-            # usage_stats を削除し feedback_history を初期化
-            skill.pop("usage_stats", None)
             skill.setdefault("feedback_history", [])
             skill.setdefault("pending_refinement", False)
-        reg.setdefault("skill_discovery", {
-            "last_run_at": None,
-            "suggest_interval_days": 7,
-        })
+
+    # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
+    for skill in reg.get("installed_skills", []):
+        skill.pop("usage_stats", None)
+    reg.pop("skill_discovery", None)
 
     reg["version"] = 3
     return reg
@@ -77,10 +75,6 @@ def load_registry() -> dict:
         "remote_index": {},
         "profiles": {"default": ["*"]},
         "active_profile": None,
-        "skill_discovery": {
-            "last_run_at": None,
-            "suggest_interval_days": 7,
-        },
     }
 
 

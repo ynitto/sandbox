@@ -89,16 +89,6 @@ def is_skill_enabled(skill_name: str, registry: dict | None) -> bool:
     return True
 
 
-def get_usage_stats(skill_name: str, registry: dict | None) -> dict:
-    """レジストリからスキルの usage_stats を取得する。"""
-    if registry is None:
-        return {}
-    for skill in registry.get("installed_skills", []):
-        if skill.get("name") == skill_name:
-            return skill.get("usage_stats") or {}
-    return {}
-
-
 def skill_sort_key(
     skill: dict, core_skills: list[str], registry: dict | None
 ) -> tuple:
@@ -106,18 +96,11 @@ def skill_sort_key(
 
     優先度:
     1. コアスキル (core_skills に含まれる) → 常に先頭
-    2. usage_stats.total_count 降順 → よく使うスキルほど上位
-    3. usage_stats.last_used_at 降順 → 最近使ったものが上位
-    4. 名前順
+    2. 名前順
     """
     name = skill["name"]
     is_core = 0 if name in core_skills else 1
-    stats = get_usage_stats(name, registry)
-    total = -(stats.get("total_count", 0))
-    last_used = stats.get("last_used_at") or ""
-    # last_used を降順にするため反転（空文字は最後尾）
-    last_used_inv = "" if not last_used else last_used
-    return (is_core, total, last_used_inv, name)
+    return (is_core, name)
 
 
 def discover_skills(

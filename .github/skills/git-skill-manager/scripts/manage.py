@@ -287,8 +287,6 @@ def promote_skills(workspace_skills_dir, interactive=True):
             "installed_at": datetime.now().isoformat(),
             "enabled": True,
             "pinned_commit": None,
-            "feedback_history": existing_skill.get("feedback_history", []) if existing_skill else [],
-            "pending_refinement": existing_skill.get("pending_refinement", False) if existing_skill else False,
         }
         if existing_skill:
             existing_skill.update(skill_entry)
@@ -421,54 +419,6 @@ def mark_refined(skill_name):
     skill["pending_refinement"] = False
     save_registry(reg)
     print(f"✅ '{skill_name}': {updated} 件のフィードバックを改良済みにしました")
-
-
-# ---------------------------------------------------------------------------
-# discover
-# ---------------------------------------------------------------------------
-
-def discover_skills_from_history(since=None, workspace=None):
-    """generating-skills-from-copilot-logs を起動するための情報を準備・出力する。
-
-    実際のスクリプト起動は Claude（エージェント）が行う。
-    このスクリプトは引数を組み立て、last_run_at を更新する。
-    """
-    from datetime import datetime, timezone
-
-    reg = load_registry()
-    discovery = reg.get("skill_discovery", {})
-
-    # --since の決定: 引数 > last_run_at > なし
-    since_str = since or discovery.get("last_run_at")
-
-    cmd_parts = [
-        "python",
-        ".github/skills/generating-skills-from-copilot-logs/scripts/extract-copilot-history.py",
-        "--noise-filter",
-    ]
-    if since_str:
-        cmd_parts += ["--since", since_str]
-    if workspace:
-        cmd_parts += ["--workspace", workspace]
-
-    print("🔍 スキル発見分析を開始します\n")
-    if since_str:
-        print(f"   対象期間: {since_str[:10]} 以降")
-    else:
-        print("   対象期間: 全期間")
-    print()
-    print("実行コマンド:")
-    print(f"  {' '.join(cmd_parts)}")
-    print()
-    print("generating-skills-from-copilot-logs のフェーズ 1〜6 に従って分析してください。")
-
-    # last_run_at を更新
-    now = datetime.now(timezone.utc).isoformat()
-    if "skill_discovery" not in reg:
-        reg["skill_discovery"] = {"suggest_interval_days": 7}
-    reg["skill_discovery"]["last_run_at"] = now
-    save_registry(reg)
-    print(f"\n📅 last_run_at を更新しました: {now[:10]}")
 
 
 # ---------------------------------------------------------------------------
