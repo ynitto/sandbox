@@ -11,8 +11,8 @@ description: 必要なスキルが見つからないときに、外部リポジ�
 
 | トリガー | 説明 |
 |---|---|
-| スキル不足 | 要求されたスキルが未インストールで、URLを提示された場合 |
-| ユーザー直接 | 「このURLのスキルを追加して」など |
+| スキル不足 | 要求されたスキルが未インストールで、URLまたはパスを提示された場合 |
+| ユーザー直接 | 「このURLのスキルを追加して」「このパスのスキルを追加して」など |
 
 ## 処理フロー
 
@@ -22,26 +22,29 @@ description: 必要なスキルが見つからないときに、外部リポジ�
 
 ```
 「必要なスキルがインストールされていません。
- 追加したいスキルのGitリポジトリURLを教えてください。
- （GitHub / GitLab / Bitbucket / セルフホスト対応）」
+ 追加したいスキルのGitリポジトリURL、またはローカルのスキルディレクトリパスを教えてください。
+ （URL例: https://github.com/org/repo）
+ （パス例: ~/my-skills, ./local-skill, /path/to/skill）」
 ```
 
-ユーザーが直接 URL を指定した場合はそのまま使用する。
-URL とともにスキルルートパスの指定がない場合は `skills` をデフォルトとして使う。
+ユーザーが直接 URL またはパスを指定した場合はそのまま使用する。
+ソースとともにスキルルートパスの指定がない場合は `skills` をデフォルトとして使う。
 
 -----
 
 ### Phase 2: クローンと検証
 
 ```bash
-python .github/skills/skill-recruiter/scripts/verify_skill.py <URL> [--skill-root <path>]
+python .github/skills/skill-recruiter/scripts/verify_skill.py <URL またはローカルパス> [--skill-root <path>]
 ```
+
+ローカルパスの場合はクローンをスキップして直接検証する。
 
 スクリプトが出力する各行の意味:
 
 | 出力行 | 状態 | 説明 |
 |---|---|---|
-| `VERIFY_CLONE: ok/fail` | クローン成否 | fail なら即中止 |
+| `VERIFY_CLONE: ok/skip/fail` | クローン成否 | skip=ローカルパス、fail なら即中止 |
 | `VERIFY_LICENSE: ok/warn/fail  <名前>` | ライセンス適合性 | 下表参照 |
 | `VERIFY_SKILL: ok/fail  <name>  <desc>` | SKILL.md の妥当性 | fail なら中止 |
 | `VERIFY_SECURITY: ok/warn` | 簡易セキュリティ | warn は内容を提示 |
@@ -65,9 +68,9 @@ python .github/skills/skill-recruiter/scripts/verify_skill.py <URL> [--skill-roo
 #### `VERIFY_RESULT: ok` の場合
 
 ```
-🔍 スキル検証結果: <URL>
+🔍 スキル検証結果: <URL またはローカルパス>
 
-  クローン:      ✅ ok
+  クローン:      ✅ ok（ローカルパスの場合は skip）
   ライセンス:    ✅ MIT
   スキル構造:    ✅ <name> — <description 冒頭>
   セキュリティ:  ✅ ok（懸念なし）
@@ -152,10 +155,31 @@ URLまたはスキルルートパスを確認して再度お試しください�
 
 ### Phase 4: インストール
 
-ユーザーが同意した場合、`.github/skills/git-skill-manager/SKILL.md` の `repo add` → `pull` の手順に従う。
+ソースの種類によってインストール方法が異なる。
+
+#### URL の場合
+
+`.github/skills/git-skill-manager/SKILL.md` の `repo add` → `pull` の手順に従う。
 
 1. **repo add** でリポジトリを登録する
 2. **pull** でスキルをインストールする
+
+#### ローカルパスの場合
+
+`git-skill-manager` は使用せず、直接コピーする:
+
+```python
+python -c "
+import shutil, os, sys
+src = os.path.expanduser('<ローカルパス>')
+dst = os.path.expanduser('~/.copilot/skills/<name>')
+if os.path.exists(dst):
+    print('既にインストール済みです:', dst)
+    sys.exit(1)
+shutil.copytree(src, dst)
+print('コピー完了:', dst)
+"
+```
 
 インストール先: `~/.copilot/skills/<name>/`
 

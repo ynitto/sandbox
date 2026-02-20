@@ -2,14 +2,14 @@
 """スキルリポジトリを検証する: ライセンス・SKILL.md 構造・セキュリティ・ネットワーク通信チェック。
 
 使い方:
-    python verify_skill.py <repo-url> [--skill-root <path>]
+    python verify_skill.py <source> [--skill-root <path>]
 
 引数:
-    repo-url     - Git リポジトリURL
-    --skill-root - リポジトリ内のスキルルートパス (デフォルト: skills)
+    source       - Git リポジトリURL またはローカルディレクトリパス
+    --skill-root - リポジトリ/ディレクトリ内のスキルルートパス (デフォルト: skills)
 
 出力 (エージェントが解析する機械可読行):
-    VERIFY_CLONE: ok|fail
+    VERIFY_CLONE: ok|skip|fail          skip=ローカルパス（クローン不要）
     VERIFY_LICENSE: ok|warn|fail  <ライセンス名>
     VERIFY_SKILL: ok|warn|fail  <name>  <description>
     VERIFY_SECURITY: ok|warn
@@ -74,6 +74,24 @@ NETWORK_PATTERNS = [
 ]
 
 SCRIPT_EXTENSIONS = (".py", ".sh", ".bash", ".ps1", ".bat", ".cmd", ".js", ".ts")
+
+
+# ---------------------------------------------------------------------------
+# ソース判定
+# ---------------------------------------------------------------------------
+
+def is_local_path(source: str) -> bool:
+    """source がローカルパスなら True、URL なら False を返す。"""
+    if source.startswith(("./", "../", "/", "~", "\\")):
+        return True
+    # Windows ドライブレター (例: C:\, D:/)
+    if len(source) >= 2 and source[1] == ":" and source[0].isalpha():
+        return True
+    # URL スキームがある場合は URL
+    if re.match(r'^[a-zA-Z][a-zA-Z0-9+\-.]*://', source):
+        return False
+    # その他は URL として扱う（例: github.com/... 形式）
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -289,35 +307,51 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="スキルリポジトリを検証する",
     )
-    parser.add_argument("url", help="Git リポジトリURL")
+    parser.add_argument(
+        "source",
+        help="Git リポジトリURL またはローカルディレクトリパス",
+    )
     parser.add_argument(
         "--skill-root",
         default="skills",
-        help="リポジトリ内のスキルルートパス (デフォルト: skills)",
+        help="リポジトリ/ディレクトリ内のスキルルートパス (デフォルト: skills)",
     )
     args = parser.parse_args()
 
-    tmpdir = tempfile.mkdtemp(prefix="skill-recruit-")
-    try:
-        print(f"🔄 クローン中: {args.url}")
-        if not clone_repo(args.url, tmpdir):
+    local = is_local_path(args.source)
+    tmpdir: str | None = None
+
+    if local:
+        work_dir = os.path.expandvars(os.path.expanduser(args.source))
+        if not os.path.isdir(work_dir):
+            print("VERIFY_CLONE: fail")
+            print(f"VERIFY_RESULT: fail  ローカルパスが見つかりません: {work_dir}")
+            sys.exit(1)
+        print(f"VERIFY_CLONE: skip  (ローカルパス: {work_dir})")
+    else:
+        tmpdir = tempfile.mkdtemp(prefix="skill-recruit-")
+        print(f"🔄 クローン中: {args.source}")
+        if not clone_repo(args.source, tmpdir):
             print("VERIFY_CLONE: fail")
             print("VERIFY_RESULT: fail  クローンに失敗しました")
+            shutil.rmtree(tmpdir, ignore_errors=True)
             sys.exit(1)
         print("VERIFY_CLONE: ok")
+        work_dir = tmpdir
 
-        lic_status, lic_name = detect_license(tmpdir)
+    try:
+        lic_status, lic_name = detect_license(work_dir)
         print(f"VERIFY_LICENSE: {lic_status}  {lic_name}")
 
-        skill_status, skill_name, skill_desc = check_skill_md(tmpdir, args.skill_root)
+        skill_status, skill_name, skill_desc = check_skill_md(work_dir, args.skill_root)
         print(f"VERIFY_SKILL: {skill_status}  {skill_name}  {skill_desc}")
 
-        sec_status, sec_warnings = check_security(tmpdir)
+        sec_status, sec_warnings = check_security(work_dir)
         print(f"VERIFY_SECURITY: {sec_status}")
         for w in sec_warnings:
             print(f"  ⚠️  {w}")
 
-        net_status, net_detections = check_network(tmpdir)
+        net_status, net_detections = check_network(work_dir)
         print(f"VERIFY_NETWORK: {net_status}")
         for d in net_detections:
             print(f"  🌐  {d}")
@@ -331,7 +365,8 @@ def main() -> None:
             print("VERIFY_RESULT: ok")
 
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":
