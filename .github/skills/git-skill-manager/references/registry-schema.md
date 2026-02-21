@@ -6,7 +6,7 @@
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "repositories": [
     {
       "name": "team-skills",
@@ -53,7 +53,13 @@
     "frontend": ["react-guide", "css-linter", "storybook"],
     "backend": ["api-guide", "db-migration", "auth"]
   },
-  "active_profile": null
+  "active_profile": null,
+  "auto_update": {
+    "enabled": false,
+    "interval_hours": 24,
+    "notify_only": true,
+    "last_checked_at": "2026-02-20T09:00:00+00:00"
+  }
 }
 ```
 
@@ -106,8 +112,15 @@
 - `active_profile` が null の場合、個別の enabled フラグに従う
 - `active_profile` が設定されている場合、プロファイル内のスキルのみ enabled として扱う
 
+**auto_update** (オブジェクト):
+- スキルの自動更新チェック設定
+- `enabled` (真偽値、デフォルト: false): 自動更新チェックの有効/無効
+- `interval_hours` (整数、デフォルト: 24): チェック間隔（時間単位、最小: 1）
+- `notify_only` (真偽値、デフォルト: true): true の場合は更新通知のみ。false の場合は自動で pull を実行する
+- `last_checked_at` (文字列 or null): 最後にチェックした日時（ISO 8601）。null は未チェック
+
 ## マイグレーション
 
-version: 1 のレジストリを読み込んだ場合、新フィールドにデフォルト値を設定して自動マイグレーションする。
+version: 1〜3 のレジストリを読み込んだ場合、新フィールドにデフォルト値を設定して自動マイグレーションする。
 
 → 実装: `scripts/registry.py` — `migrate_registry(reg)`
