@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""スキル管理操作: list / search / enable / disable / pin / unpin / lock / unlock / promote / profile。"""
+"""スキル管理操作: list / search / enable / disable / pin / unpin / lock / unlock / promote / profile / diff / sync。"""
 from __future__ import annotations
 
 import os
 import re
 import shutil
+import subprocess
 from datetime import datetime
 
-from registry import load_registry, save_registry, is_skill_enabled, _skill_home
+from registry import load_registry, save_registry, is_skill_enabled, _skill_home, _cache_dir
 from repo import clone_or_fetch, update_remote_index
 from push import push_skill
 
@@ -430,6 +431,201 @@ def mark_refined(skill_name):
     skill["pending_refinement"] = False
     save_registry(reg)
     print(f"✅ '{skill_name}': {updated} 件のフィードバックを改良済みにしました")
+
+
+# ---------------------------------------------------------------------------
+# diff
+# ---------------------------------------------------------------------------
+
+def diff_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
+    """複数リポジトリ間の同名スキルの実装差分を表示する。
+
+    repo_names=None → 全登録リポジトリのキャッシュを対象にする。
+    """
+    reg = load_registry()
+    cache = _cache_dir()
+
+    repos = reg["repositories"]
+    if repo_names:
+        repos = [r for r in repos if r["name"] in repo_names]
+
+    # 各リポジトリのキャッシュからスキルを検索
+    found: list[dict] = []
+    for repo in repos:
+        skill_path = os.path.join(cache, repo["name"], repo["skill_root"], skill_name)
+        if not (os.path.isdir(skill_path) and os.path.isfile(os.path.join(skill_path, "SKILL.md"))):
+            continue
+
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%aI %h", "--",
+             os.path.join(repo["skill_root"], skill_name).replace("\\", "/")],
+            cwd=os.path.join(cache, repo["name"]),
+            capture_output=True, text=True,
+        )
+        log_out = result.stdout.strip()
+        if log_out:
+            parts = log_out.split(" ", 1)
+            date_str, hash_str = parts[0][:10], parts[1] if len(parts) > 1 else "?"
+        else:
+            date_str, hash_str = "不明", "?"
+
+        found.append({
+            "repo_name": repo["name"],
+            "path": skill_path,
+            "date": date_str,
+            "hash": hash_str,
+        })
+
+    if not found:
+        print(f"❌ スキル '{skill_name}' がキャッシュ内のどのリポジトリにも見つかりません")
+        print("  先に pull または search --refresh を実行してキャッシュを更新してください")
+        return
+
+    if len(found) == 1:
+        print(f"ℹ️ スキル '{skill_name}' は {found[0]['repo_name']} にのみ存在します（差分なし）")
+        return
+
+    print(f"🔍 スキル '{skill_name}' の差分 ({len(found)} リポジトリ)\n")
+    for f in found:
+        print(f"  [{f['repo_name']}]  commit: {f['hash']}  ({f['date']})")
+
+    # ペアワイズ差分
+    for i in range(len(found)):
+        for j in range(i + 1, len(found)):
+            a, b = found[i], found[j]
+            print(f"\n{'─' * 60}")
+            print(f"  {a['repo_name']} ({a['hash']})  vs  {b['repo_name']} ({b['hash']})")
+            print(f"{'─' * 60}")
+
+            stat = subprocess.run(
+                ["git", "diff", "--no-index", "--stat", a["path"], b["path"]],
+                capture_output=True, text=True,
+            )
+            stat_out = stat.stdout.strip()
+
+            if not stat_out:
+                print("  (差分なし: 内容は同一です)")
+                continue
+
+            print(stat_out)
+            print()
+
+            detail = subprocess.run(
+                ["git", "diff", "--no-index", a["path"], b["path"]],
+                capture_output=True, text=True,
+            )
+            lines = detail.stdout.splitlines()
+            if len(lines) > 120:
+                print("\n".join(lines[:120]))
+                print(f"\n  ... (+{len(lines) - 120} 行省略。全差分: git diff --no-index \"{a['path']}\" \"{b['path']}\")")
+            else:
+                print(detail.stdout)
+
+
+# ---------------------------------------------------------------------------
+# sync
+# ---------------------------------------------------------------------------
+
+def sync_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
+    """マージ済みスキルをインストール済みの実体から複数リポジトリへ一括 push する。
+
+    repo_names=None → 書き込み可能な全リポジトリが対象。
+    事前にマージ済み実装を skill_home/<skill_name>/ に配置しておく必要がある。
+    """
+    reg = load_registry()
+    skill_home = _skill_home()
+    skill_path = os.path.join(skill_home, skill_name)
+
+    if not os.path.isdir(skill_path):
+        print(f"❌ スキル '{skill_name}' が {skill_home} にありません")
+        print("  マージ済みの実装をそのパスに配置してから実行してください")
+        return
+
+    repos = [r for r in reg["repositories"] if not r.get("readonly", False)]
+    if repo_names:
+        repos = [r for r in repos if r["name"] in repo_names]
+
+    if not repos:
+        print("❌ push 可能なリポジトリが見つかりません（全リポジトリが readonly、または指定名が不正）")
+        return
+
+    print(f"🔄 '{skill_name}' を {len(repos)} リポジトリへ同期します\n")
+    for repo in repos:
+        print(f"  → {repo['name']}  ({repo['url']})")
+    print()
+
+    results: list[dict] = []
+    for repo in repos:
+        print(f"⬆️  push 中: {repo['name']} ...")
+        try:
+            push_skill(
+                skill_path,
+                repo["name"],
+                branch_strategy="new_branch",
+                commit_msg=f"Sync skill: {skill_name} (cross-repo merge)",
+            )
+            results.append({"repo": repo["name"], "ok": True})
+        except Exception as e:
+            print(f"  ❌ {repo['name']}: push 失敗 — {e}")
+            results.append({"repo": repo["name"], "ok": False, "error": str(e)})
+
+    print(f"\n📋 sync 結果: {skill_name}")
+    for r in results:
+        mark = "✅" if r["ok"] else "❌"
+        detail = f"  ({r.get('error', '')})" if not r["ok"] else ""
+        print(f"  {mark} {r['repo']}{detail}")
+
+    succeeded = [r for r in results if r["ok"]]
+    if succeeded:
+        print("\n💡 各リポジトリで PR/MR を作成してマージしてください")
+
+
+# ---------------------------------------------------------------------------
+# merge
+# ---------------------------------------------------------------------------
+
+def merge_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
+    """クロスリポジトリマージフローの入口。
+
+    diff を表示してエージェントへのガイダンスを出力する。
+    エージェントはその後 skill-creator を起動してマージ実装を生成し、
+    最後に sync_skill() を呼んで全リポジトリへ配信する。
+    """
+    reg = load_registry()
+    skill_home = _skill_home()
+
+    # ステップ1: diff を表示
+    print(f"🔀 クロスリポジトリマージ: '{skill_name}'\n")
+    print("【ステップ 1/3】差分を確認します...\n")
+    diff_skill(skill_name, repo_names)
+
+    # ステップ2: skill-creator へのガイダンスを出力
+    repos = reg["repositories"]
+    if repo_names:
+        repos = [r for r in repos if r["name"] in repo_names]
+
+    repo_list = ", ".join(r["name"] for r in repos)
+    merge_target = os.path.join(skill_home, skill_name)
+    sync_cmd = f"python manage.py sync {skill_name}" + (
+        f" --repos {','.join(repo_names)}" if repo_names else ""
+    )
+
+    print(f"\n{'─' * 60}")
+    print("【ステップ 2/3】skill-creator でマージ実装を生成する")
+    print(f"  対象リポジトリ: {repo_list}")
+    print(f"  編集先: {merge_target}")
+    print()
+    print("MERGE_GUIDANCE:")
+    print(f"  skill-creator サブエージェントを起動し、上記の差分を踏まえて")
+    print(f"  '{skill_name}' の統合実装を次のパスに作成してください:")
+    print(f"  {merge_target}")
+    print()
+    print("  skill-creator への指示例:")
+    print(f"  「上の差分を踏まえて {skill_name} の統合実装を")
+    print(f"   {merge_target} に作成して。どの変更を取り込むか確認しながら進めてください。」")
+    print(f"\n{'─' * 60}")
+    print("【ステップ 3/3】マージ完了後に次のコマンドを実行する:")
+    print(f"  {sync_cmd}")
 
 
 # ---------------------------------------------------------------------------
