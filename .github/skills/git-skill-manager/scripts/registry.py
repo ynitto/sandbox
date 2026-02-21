@@ -52,12 +52,21 @@ def migrate_registry(reg: dict) -> dict:
             skill.setdefault("feedback_history", [])
             skill.setdefault("pending_refinement", False)
 
+    # v3 → v4: auto_update 設定を追加
+    if version < 4:
+        reg.setdefault("auto_update", {
+            "enabled": False,
+            "interval_hours": 24,
+            "notify_only": True,
+            "last_checked_at": None,
+        })
+
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
     for skill in reg.get("installed_skills", []):
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
-    reg["version"] = 3
+    reg["version"] = 4
     return reg
 
 
@@ -68,13 +77,19 @@ def load_registry() -> dict:
             reg = json.load(f)
         return migrate_registry(reg)
     return {
-        "version": 3,
+        "version": 4,
         "repositories": [],
         "installed_skills": [],
         "core_skills": list(CORE_SKILLS_DEFAULT),
         "remote_index": {},
         "profiles": {"default": ["*"]},
         "active_profile": None,
+        "auto_update": {
+            "enabled": False,
+            "interval_hours": 24,
+            "notify_only": True,
+            "last_checked_at": None,
+        },
     }
 
 
