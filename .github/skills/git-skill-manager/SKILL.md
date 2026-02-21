@@ -27,17 +27,17 @@ skill-recruiter がライセンス・セキュリティ・ネットワーク通�
 
 | 呼び出し元 | 操作 | 例 |
 |---|---|---|
-| ユーザー直接 | repo add / pull / search / list / enable / disable / profile | 「スキルをpullして」「リポジトリを登録して」「スキルを無効化して」 |
-| scrum-master サブエージェント | push | Phase 6 のスキル共有時にテンプレート経由で起動される |
+| ユーザー直接 | repo add / pull / push / search / list / enable / disable / profile / promote / evaluate / refine / discover | 「スキルをpullして」「リポジトリを登録して」「スキルを無効化して」「スキルを昇格して」「スキルを評価して」「スキル候補を発見して」 |
+| scrum-master サブエージェント | push / promote / evaluate / discover | Phase 6 のスキル共有・昇格・評価・発見時にテンプレート経由で起動される |
 
 - ユーザー直接呼び出しの場合、対話的に確認しながら進める
 - サブエージェント経由の場合、プロンプトに必要な情報（対象スキル・リポジトリ名・操作）が含まれるため、確認なしで実行する
 
 ## 動作環境
 
-- **Copilot on Windows** または **Claude Code**
+- **GitHub Copilot Chat**（Windows / macOS / Linux）および **Claude Code** で動作する
 - git はインストール・認証設定済み（SSH鍵 or credential manager）
-- シェルは PowerShell または cmd を想定。bashコマンドは使わない
+- シェルは実行環境に依存する（PowerShell、bash、zsh など）
 
 -----
 
@@ -74,7 +74,7 @@ skill-recruiter がライセンス・セキュリティ・ネットワーク通�
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "repositories": [
     {
       "name": "team-skills",
@@ -351,11 +351,7 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 
 ### 評価基準
 
-| 評価 | 条件 | 推奨アクション |
-|---|---|---|
-| ✅ 昇格推奨 | ok ≥ 2 かつ問題なし | `promote` で昇格 |
-| ⚠️ 要改良後昇格 | `pending_refinement: true` または broken あり | `refine` → 改良後に `promote` |
-| 🔄 試用継続 | ok = 1、問題なし | もう少し使ってみる |
+評価基準の詳細は [skill-evaluator/SKILL.md](../skill-evaluator/SKILL.md) を参照してください。
 
 ### 評価の実行
 
@@ -611,8 +607,9 @@ skill-evaluator サブエージェントを起動して評価・昇格フロー�
    「指定期間のチャット履歴を分析して新しいスキル候補を探します。
     続行しますか？」
    ```
+   （ここで同意を取得済みのため、`generating-skills-from-copilot-logs` の Phase 1 同意確認はスキップしてよい）
 3. `discover_skills_from_history()` を実行（コマンドを出力）
-4. `generating-skills-from-copilot-logs` のフェーズ 1〜6 に従って分析・スキル生成
+4. `generating-skills-from-copilot-logs` のフェーズ 2〜6 に従って分析・スキル生成（Phase 1 の同意確認は不要）
 
 -----
 

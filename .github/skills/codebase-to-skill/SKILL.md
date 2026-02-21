@@ -299,6 +299,7 @@ Copilot:
   2. 差分分析（新ディレクトリ、削除ファイル、パターン変更）
   3. SKILL.md を更新
   4. 変更箇所をレポート
+```
 
 ## 実行後フィードバック（必須）
 
@@ -322,5 +323,4 @@ skill-evaluator サブエージェントを起動して評価・昇格フロー�
 skill-evaluator スキルで codebase-to-skill を評価する。
 手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
 対象スキル: codebase-to-skill
-```
 ```
