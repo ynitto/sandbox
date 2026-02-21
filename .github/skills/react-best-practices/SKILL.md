@@ -133,7 +133,7 @@ rules/bundle-barrel-imports.md
 - 良い実装例（Correct）
 - 補足コンテキストと参照リンク
 
-## 完全版ドキュメント
+## セクション構成
 
-全ルールを展開した完全版は `AGENTS.md` を参照。
+全カテゴリの一覧・影響度・説明は `rules/_sections.md` を参照。
 
