@@ -236,6 +236,16 @@ EVAL_RECOMMEND: refine    # 改良推奨（問題が検出された場合）
 
 ### ステップ5: スキルをパッケージする
 
+**description のトリガー動作テスト**には `simulate_trigger.py` を使う:
+
+```bash
+# 特定リクエストでどのスキルが発動するか確認
+python .github/skills/skill-creator/scripts/simulate_trigger.py "ユーザーリクエスト"
+
+# 類似 description を持つスキルペアを検出（競合チェック）
+python .github/skills/skill-creator/scripts/simulate_trigger.py --conflicts
+```
+
 **開発中の素早いチェック**には `quick_validate.py` を使う（パッケージ化なし）:
 
 ```bash
