@@ -1,5 +1,18 @@
 # エージェントへの共通指示
 
+## セッション開始時のスキル自動更新チェック
+
+セッション開始時に、git-skill-manager の自動更新チェックを実行する:
+
+```bash
+python .github/skills/git-skill-manager/scripts/auto_update.py check
+```
+
+`--force` なしの場合、`interval_hours` 未満であればスキップされる（ネットワーク負荷を抑制）。
+git-skill-manager がインストールされていない環境ではスキップしてよい。
+
+-----
+
 ## スキル実行後のフィードバック収集
 
 スキルを単体で実行完了したら、**scrum-master 経由の場合を除き**、

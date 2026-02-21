@@ -225,46 +225,9 @@ git ls-remote $REPO_URL HEAD
 
 ## ワークスペーストライアルフロー
 
-VSCode チャット経由で作成されたスキルは `.github/skills/` に置かれる（ワークスペース領域）。
-ユーザーホームの `~/.copilot/skills/` とは別の場所なので、まず試用してから昇格する。
+VSCode チャット経由で作成されたスキルは `.github/skills/` に置かれ、試用してから昇格する。
 
-### スキルのライフサイクル
-
-```
-【作成】 skill-creator → .github/skills/<name>/   (source_repo: "workspace")
-   ↓ 使用するたびにフィードバック収集
-【評価】 record_feedback.py が自動評価
-   ├── ok × 2回以上、問題なし  → ✅ 昇格推奨
-   ├── 問題あり (needs-improvement/broken)  → ⚠️ 要改良後昇格
-   └── ok × 1回  → 🔄 試用継続
-   ↓ 昇格推奨 or ユーザーが判断
-【昇格】 promote → ~/.copilot/skills/<name>/   (source_repo: "local")
-   ↓ 必要なら
-【共有】 push → チームリポジトリ
-```
-
-### 評価基準
-
-評価基準の詳細は [skill-evaluator/SKILL.md](../skill-evaluator/SKILL.md) を参照してください。
-
-### 評価の実行
-
-**インライン（フィードバック記録時に自動トリガー）**
-
-`record_feedback.py` がワークスペーススキルを検出すると `EVAL_RECOMMEND:` シグナルを出力する:
-```
-✅ my-skill: フィードバックを記録しました (ok)
-EVAL_RECOMMEND: promote
-```
-
-エージェントはこのシグナルを受けて `skill-evaluator` サブエージェントを起動する（`promote` または `refine` の場合のみ）。
-
-**バッチ（スプリント完了時）**
-
-scrum-master の Phase 6 が `skill-evaluator` サブエージェントを起動して全ワークスペーススキルを一覧評価する:
-```bash
-python .github/skills/skill-evaluator/scripts/evaluate.py
-```
+ライフサイクル・評価フロー詳細 → [references/workspace-trial.md](references/workspace-trial.md)
 
 -----
 
@@ -272,62 +235,7 @@ python .github/skills/skill-evaluator/scripts/evaluate.py
 
 スキル使用後にフィードバックを収集し、スキル品質の改良トリガーとスキル発見の起点にする仕組み。
 
-### pending_refinement トリガーのしきい値
-
-スキルの種別ごとに `pending_refinement` が立つまでの未改良問題数が異なる。頻度を下げることで、安定稼働しているインストール済みスキルへの過剰な改良提案を防ぐ。
-
-| スキル種別 | source_repo | デフォルトしきい値 |
-|---|---|---|
-| ワークスペーススキル | `workspace` | **1件**（即トリガー）|
-| インストール済みスキル | `local` / リポジトリ名 | **3件**（蓄積してトリガー）|
-
-`mark_refined()` 実行後は未改良カウントがリセットされるため、1サイクルの改良後に再び N 件蓄積するまで提案されない。
-スキルエントリに `refine_threshold` フィールドを設定すれば個別に上書き可能。
-
-### フィードバックの記録
-
-使用後フィードバックは `feedback` 操作または `record_feedback.py` スクリプトで直接行う。
-
-#### feedback 操作（ユーザー向け）
-
-スキルを直接実行した後（scrum-master 経由でない場合）にフィードバックを記録したいときに使う:
-
-```
-「git-skill-manager で [skill-name] のフィードバックを記録して」
-「[skill-name] に ok のフィードバックを付けて」
-「[skill-name] に needs-improvement を記録して。[改善点の説明]」
-```
-
-処理フロー:
-1. ユーザーにスキル名と verdict（ok / needs-improvement / broken）を確認する
-2. `record_feedback.py` を実行して記録する
-3. 出力に `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` が含まれる場合は、`evaluate` 操作を実行する
-
-#### record_feedback.py（スクリプト直接呼び出し）
-
-使用後フィードバックは `record_feedback.py` スクリプトで行う:
-
-```bash
-# 問題なく動作した
-python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict ok
-
-# 改善余地あり
-python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict needs-improvement --note "改善点の説明"
-
-# 動作しなかった
-python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict broken --note "壊れている箇所"
-```
-
-### discover_skills.py のソート順
-
-`discover_skills.py` はスキル一覧を以下の優先度でソートして返す:
-
-1. **コアスキル** (`core_skills` に含まれるスキル) → 常に先頭
-2. **改良待ちなし + 直近 ok** (`pending_refinement=false` かつ最新 verdict が ok) → 信頼済み
-3. **改良待ちあり** (`pending_refinement=true`) → 後ろに配置
-4. **フィードバックなし** → アルファベット順
-
-→ 実装: `scripts/manage.py` — `sort_key(skill, core_skills, registry)`
+しきい値・スクリプト呼び出し・ソート順の詳細 → [references/feedback-loop.md](references/feedback-loop.md)
 
 -----
 
@@ -458,60 +366,11 @@ python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> 
 ## auto-update
 
 セッション開始時やユーザーの指示で、リポジトリの更新を自動チェックする機能。デフォルトは無効。
+セッション開始時のトリガーは `.github/copilot-instructions.md` で定義されている。
 
 → 実装: `scripts/auto_update.py` — `run_auto_update()`, `check_updates()`, `configure_auto_update()`
 
-### 動作モード
-
-| モード | notify_only | 動作 |
-|--------|------------|------|
-| 通知のみ（デフォルト） | true | 更新があれば一覧表示。pull はユーザーに委ねる |
-| 自動pull | false | 更新検出後に `pull_skills(interactive=False)` を自動実行 |
-
-### トリガー
-
-| トリガー | 説明 |
-|---------|------|
-| セッション開始時 | `run_auto_update()` を呼ぶことで、前回チェックから `interval_hours` 以上経過していればチェックを実行 |
-| ユーザー直接 | 「更新チェックして」で `--force` 付きの即座チェック |
-| 設定変更 | 「自動更新を有効化して」「間隔を12時間にして」等 |
-
-### 設定操作
-
-```
-「自動更新を有効化して」
-→ python auto_update.py configure --enable
-
-「自動更新を無効化して」
-→ python auto_update.py configure --disable
-
-「チェック間隔を12時間にして」
-→ python auto_update.py configure --interval 12
-
-「自動pullも有効にして」
-→ python auto_update.py configure --auto-pull
-
-「通知だけにして」
-→ python auto_update.py configure --notify-only
-
-「自動更新の設定を見せて」
-→ python auto_update.py status
-```
-
-### チェック操作
-
-```
-「更新チェックして」「スキルの更新を確認して」
-→ python auto_update.py check --force
-```
-
-### セッション開始時の統合
-
-エージェントはセッション開始時に以下を実行する:
-```bash
-python .github/skills/git-skill-manager/scripts/auto_update.py check
-```
-`--force` なしの場合、`interval_hours` 未満であればスキップされる（ネットワーク負荷を抑制）。
+動作モード・設定操作・チェック操作の詳細 → [references/auto-update.md](references/auto-update.md)
 
 -----
 
