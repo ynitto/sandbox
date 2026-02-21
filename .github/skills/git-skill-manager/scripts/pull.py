@@ -164,6 +164,25 @@ def pull_skills(
     reg["installed_skills"] = list(existing.values())
     save_registry(reg)
 
+    # copilot-instructions.md のコピー
+    copilot_instruction_parts: list[str] = []
+    for repo in repos:
+        repo_cache = os.path.join(_cache_dir(), repo["name"])
+        src = os.path.join(repo_cache, ".github", "copilot-instructions.md")
+        if os.path.isfile(src):
+            with open(src, encoding="utf-8") as f:
+                copilot_instruction_parts.append(f.read().rstrip())
+
+    if copilot_instruction_parts:
+        home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+        dest_dir = os.path.join(home, ".github")
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, "copilot-instructions.md")
+        merged = "\n\n".join(copilot_instruction_parts) + "\n"
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(merged)
+        print(f"   📋 copilot-instructions.md → {dest}")
+
     # 結果レポート
     print(f"\n📦 pull 完了")
     print(f"   新規/更新: {len(installed)} 件")
