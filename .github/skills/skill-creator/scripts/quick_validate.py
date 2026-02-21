@@ -129,6 +129,10 @@ def validate_skill(skill_path: str) -> tuple[list[str], list[str]]:
         warnings.append(
             f"SKILL.md が長すぎます（{line_count}行 > 推奨{SKILL_MD_MAX_LINES}行）。references/ への分割を検討してください"
         )
+    elif line_count > int(SKILL_MD_MAX_LINES * 0.9):
+        warnings.append(
+            f"SKILL.md が制限の90%に達しています（{line_count}行 / {SKILL_MD_MAX_LINES}行）。references/ への分割を準備してください"
+        )
 
     # references/ リンク整合性チェック
     refs_dir = os.path.join(skill_path, "references")
