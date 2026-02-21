@@ -53,31 +53,6 @@ TODO - スキルの主要な手順やワークフローを記述する。
 - **assets/**: 出力に使用するファイル（テンプレート、画像等）
 
 不要なディレクトリは削除する。
-
-## 実行後フィードバック（必須）
-
-> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
-
-スキルの手順を全て完了したら、ユーザーに確認する:
-
-「{name} の実行はいかがでしたか？
- 1. 問題なかった (ok)
- 2. 改善点がある (needs-improvement)
- 3. うまくいかなかった (broken)」
-
-回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
-```
-python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'{name}','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
-```
-
-スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
-skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
-```
-skill-evaluator スキルで {name} を評価する。
-手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
-対象スキル: {name}
-```
-
 """
     with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
         f.write(skill_md)
