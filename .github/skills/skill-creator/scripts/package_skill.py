@@ -32,13 +32,16 @@ def package_skill(skill_path: str, output_dir: str | None = None) -> str | None:
 
     # バリデーション
     print("バリデーション中...")
-    errors = validate_skill(skill_path)
+    errors, warnings = validate_skill(skill_path)
+    if warnings:
+        for w in warnings:
+            print(f"  ⚠ {w}")
     if errors:
         print("バリデーション失敗:")
         for e in errors:
             print(f"  - {e}")
         return None
-    print("バリデーション成功")
+    print("バリデーション成功" + (" (警告あり)" if warnings else ""))
 
     # パッケージ
     skill_name = os.path.basename(skill_path)

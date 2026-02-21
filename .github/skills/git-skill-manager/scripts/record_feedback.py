@@ -133,8 +133,8 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
         print(f"EVAL_RECOMMEND: {rec}")
     elif skill.get("pending_refinement"):
         # インストール済みスキル: しきい値を超えて pending になったタイミングのみ出力
-        threshold = _refine_threshold(skill)
-        print(f"EVAL_RECOMMEND: refine  # {threshold}件の問題が蓄積されました")
+        count = _unrefined_problem_count(skill)
+        print(f"EVAL_RECOMMEND: refine  # {count}件の問題が蓄積されました")
 
     return reg
 
