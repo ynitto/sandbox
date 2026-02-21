@@ -405,6 +405,6 @@ python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.co
 skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
 ```
 skill-evaluator スキルで ui-designer を評価する。
-手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
 対象スキル: ui-designer
 ```

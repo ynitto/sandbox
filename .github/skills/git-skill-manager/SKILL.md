@@ -632,7 +632,7 @@ skill-evaluator サブエージェントを起動して評価・昇格フロー�
 1. `skill-evaluator` サブエージェントを起動する:
    ```
    skill-evaluator スキルでワークスペーススキルを評価する。
-   手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+   手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
    ```
 2. skill-evaluator が評価結果を提示し、promote / refine のアクションをユーザーに確認する
 3. 「昇格する」→ `promote` 操作を実行する

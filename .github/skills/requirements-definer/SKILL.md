@@ -1,6 +1,6 @@
 ---
 name: requirements-definer
-description: 要件定義 やりたいこと 実現したいこと を整理してクラウドシステム/Webアプリの要件と受け入れ条件を確定したいときに使う。
+description: クラウドシステム/Webアプリの要件・スコープ・受け入れ条件を定義する。「要件定義して」「やりたいことを整理して」「要件をまとめて」「受け入れ条件を定義して」「何を作るか決めたい」などのリクエストで発動する。
 ---
 
 # requirements-definer
@@ -89,6 +89,6 @@ python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.co
 skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
 ```
 skill-evaluator スキルで requirements-definer を評価する。
-手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
 対象スキル: requirements-definer
 ```

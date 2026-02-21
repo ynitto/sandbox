@@ -14,28 +14,24 @@ React + TypeScript（Vite + Zustand）で、**要件・UI設計が既に確定�
 プロジェクトテンプレートを準備し、開発環境を整える。
 
 1. **テンプレートをコピー** - `assets/vite-react-ts-template/` を作業ディレクトリに複製
-2. **依存をインストール** - `npm install`
+2. **依存をインストール** - `npm install`。追加ライブラリが必要なら `npm install [required-libs]` で追加する
 3. **開発サーバー起動確認** - `npm run dev`
 
 ### Sprint 2: 実装
 
 設計に従い、コード実装を進める。
 
-1. **プロジェクトセットアップ**
-   - assets テンプレートをベースに複製（Vite + React + TypeScript + Zustand）
-   - 依存追加: `npm install [required-libs]`
-
-2. **Zustand Store実装**
+1. **Zustand Store実装**
    - state形状を定義
    - action（setter, logic）を実装
    - 必要に応じてdevtools連携
 
-3. **コンポーネント実装**
+2. **コンポーネント実装**
    - 分割されたコンポーネント群を実装
    - イベントハンドラー実装（onClick, onChange等）
    - store連携（useStore hook）
 
-4. **スタイル・UI調整**
+3. **スタイル・UI調整**
    - Tailwind / CSS で見た目を整える
    - レスポンシブ対応（必要に応じて）
    - ダークモード対応（必要に応じて）
@@ -110,6 +106,6 @@ python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.co
 skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
 ```
 skill-evaluator スキルで react-frontend-coder を評価する。
-手順: .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
 対象スキル: react-frontend-coder
 ```
