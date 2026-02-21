@@ -259,44 +259,7 @@ python .github/skills/skill-recruiter/scripts/adapt_for_windows.py ~/.copilot/sk
   2. インストールを取り消す
 ```
 
-#### 5-3. 実行後フィードバック節の挿入
-
-インストール済み SKILL.md に「実行後フィードバック（必須）」節がなければ追記する。
-この節はフィードバックループ（record_feedback.py → skill-evaluator）への接続に必要。
-
-確認パターン: `実行後フィードバック` が SKILL.md に含まれない場合に追記する。
-
-追記するテンプレート（`<name>` を実際のスキル名に置換する）:
-
-```markdown
-## 実行後フィードバック（必須）
-
-> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
-
-スキルの手順を全て完了したら、ユーザーに確認する:
-
-「<name> の実行はいかがでしたか？
- 1. 問題なかった (ok)
- 2. 改善点がある (needs-improvement)
- 3. うまくいかなかった (broken)」
-
-回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
-```
-python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
-```
-
-スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
-skill-evaluator サブエージェントを起動して評価・昇格フローを進める:
-```
-skill-evaluator スキルで <name> を評価する。
-手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
-対象スキル: <name>
-```
-```
-
-追記後、レジストリの `feedback_history` が空のエントリを初期化する（record_feedback.py が自動で行う）。
-
-#### 5-4. 完了報告
+#### 5-3. 完了報告
 
 ```
 ✅ セットアップ完了
@@ -304,10 +267,9 @@ skill-evaluator スキルで <name> を評価する。
    場所:   ~/.copilot/skills/<name>/
    バリデーション: <結果>
    Windows 適応: <適用済み / スキップ（非Windows）>
-   フィードバック節: <追記済み / 既存>
 
 次回起動時から利用可能です。
-使用後は実行後フィードバックを記録してください。
+フィードバックを記録する場合は「git-skill-manager でフィードバックを記録して」と伝えてください。
 ```
 
 ## 注意事項

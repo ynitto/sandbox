@@ -1,6 +1,6 @@
 ---
 name: git-skill-manager
-description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。また「スキルを改良して」「フィードバックを反映して」「新しいスキル候補を探して」「履歴からスキルを発見して」「スキルを評価して」「試用中スキルを確認して」のようなスキル改良・発見・評価のリクエストでも使用する。「スキルをマージして」「リポジトリ間のスキルを統合して配信して」のようなクロスリポジトリマージリクエストでも使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
+description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。また「スキルを改良して」「フィードバックを反映して」「フィードバックを記録して」「[スキル名]にokを付けて」「新しいスキル候補を探して」「履歴からスキルを発見して」「スキルを評価して」「試用中スキルを確認して」のようなスキル改良・フィードバック記録・発見・評価のリクエストでも使用する。「スキルをマージして」「リポジトリ間のスキルを統合して配信して」のようなクロスリポジトリマージリクエストでも使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
 ---
 
 # Git Skill Manager
@@ -392,6 +392,25 @@ python .github/skills/skill-evaluator/scripts/evaluate.py
 
 ### フィードバックの記録
 
+使用後フィードバックは `feedback` 操作または `record_feedback.py` スクリプトで直接行う。
+
+#### feedback 操作（ユーザー向け）
+
+スキルを直接実行した後（scrum-master 経由でない場合）にフィードバックを記録したいときに使う:
+
+```
+「git-skill-manager で [skill-name] のフィードバックを記録して」
+「[skill-name] に ok のフィードバックを付けて」
+「[skill-name] に needs-improvement を記録して。[改善点の説明]」
+```
+
+処理フロー:
+1. ユーザーにスキル名と verdict（ok / needs-improvement / broken）を確認する
+2. `record_feedback.py` を実行して記録する
+3. 出力に `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` が含まれる場合は、`evaluate` 操作を実行する
+
+#### record_feedback.py（スクリプト直接呼び出し）
+
 使用後フィードバックは `record_feedback.py` スクリプトで行う:
 
 ```bash
@@ -404,33 +423,6 @@ python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> 
 # 動作しなかった
 python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict broken --note "壊れている箇所"
 ```
-
-### 記録タイミング（SKILL.md の実行後フィードバック節）
-
-`skill-creator` の `init_skill.py` が新規スキル作成時に以下の節を自動挿入する。エージェントはスキルの手順を全て完了した後にこの節に従って動作する。
-
-```markdown
-## 実行後フィードバック（必須）
-
-> **scrum-master 経由の場合**: このセクションをスキップしてください。フィードバックはスプリント終了時に一括で収集されます。
-
-スキルの手順を全て完了したら、ユーザーに確認する:
-
-「[skill-name] の実行はいかがでしたか？
- 1. 問題なかった (ok)
- 2. 改善点がある (needs-improvement)
- 3. うまくいかなかった (broken)」
-
-回答に応じて以下を実行する（git-skill-manager がない環境ではスキップ）:
-python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
-
-スクリプトの出力に「EVAL_RECOMMEND: promote」または「EVAL_RECOMMEND: refine」が含まれる場合は、
-skill-evaluator サブエージェントを起動して評価・昇格フローを進める。
-```
-
-- **直接呼び出し時**: スキル完了後にユーザーへフィードバックを確認し、record_feedback.py で記録する
-- **scrum-master 経由時**: フィードバック節をスキップする。スプリント終了時（Phase 6）にまとめて収集される
-- git-skill-manager がインストールされていない環境では record_feedback.py が存在しないため、フィードバック質問のみ行いスクリプト実行はスキップする
 
 ### discover_skills.py のソート順
 
