@@ -157,6 +157,9 @@ def pull_skills(
     # レジストリ更新
     existing = {s["name"]: s for s in reg.get("installed_skills", [])}
     for s in installed:
+        old = existing.get(s["name"], {})
+        s["feedback_history"] = old.get("feedback_history", [])
+        s["pending_refinement"] = old.get("pending_refinement", False)
         existing[s["name"]] = s
     reg["installed_skills"] = list(existing.values())
     save_registry(reg)
