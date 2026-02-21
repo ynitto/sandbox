@@ -101,6 +101,7 @@ skill-recruiter がライセンス・セキュリティ・ネットワーク通�
 |**profile create**|「プロファイルを作成して」    |
 |**profile list**|「プロファイル一覧」         |
 |**profile delete**|「プロファイルを削除して」    |
+|**feedback**   |「フィードバックを記録して」「良かった/改善したい/うまくいかなかった」|
 |**refine**     |「スキルを改良して」「フィードバックを反映して」「改善待ちを処理して」|
 |**discover**   |「スキル候補を探して」「履歴からスキルを発見して」「新しいスキルを見つけて」|
 |**evaluate**   |「スキルを評価して」「試用中スキルを確認して」「ワークスペーススキルを整理して」|
@@ -395,6 +396,26 @@ python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> 
    （ここで同意を取得済みのため、`generating-skills-from-copilot-logs` の Phase 1 同意確認はスキップしてよい）
 3. `discover_skills_from_history()` を実行（コマンドを出力）
 4. `generating-skills-from-copilot-logs` のフェーズ 2〜6 に従って分析・スキル生成（Phase 1 の同意確認は不要）
+
+-----
+
+## feedback
+
+直前に実行したスキルの満足度をユーザーに確認し、レジストリに記録する。
+スキル単体起動後に `copilot-instructions.md` の指示で自動的に呼ばれる。
+
+→ 実装: `scripts/record_feedback.py`
+
+1. 対象スキル名を確認（不明な場合はユーザーに確認）
+2. ユーザーに確認:
+   ```
+   「[スキル名] の実行はいかがでしたか？
+    1. 問題なかった (ok)
+    2. 改善点がある (needs-improvement)
+    3. うまくいかなかった (broken)」
+   ```
+3. `python record_feedback.py <name> --verdict <verdict> --note <note>` を実行
+4. 出力に `EVAL_RECOMMEND: promote|refine` が含まれる場合は `evaluate` 操作へ進む
 
 -----
 
