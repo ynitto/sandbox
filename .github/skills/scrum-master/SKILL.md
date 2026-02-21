@@ -16,7 +16,7 @@ description: ユーザーのプロンプトをタスク分解し、サブエー�
 利用可能なスキルを把握する。
 
 ```bash
-python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --registry %USERPROFILE%\.copilot\skill-registry.json
+python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --registry ~/.copilot/skill-registry.json
 ```
 
 `--registry` を指定すると、無効化されたスキルやアクティブプロファイル外のスキルが除外される。レジストリが存在しない場合は全スキルが返される。
@@ -71,8 +71,9 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --r
    選択肢:
    1. 新しいスキルを作成する（skill-creatorを使用）
    2. 既存コードベースからスキルを生成する（codebase-to-skillを使用）
-   3. スキルなしで実行を試みる
-   4. このタスクをスキップする
+   3. 外部URLからスキルを取り込む（skill-recruiterを使用）
+   4. スキルなしで実行を試みる
+   5. このタスクをスキップする
    ```
 2. ユーザーが「作成する」を選んだ場合:
    - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル作成時」を使用）
@@ -81,6 +82,11 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --r
 3. ユーザーが「コードベースから生成する」を選んだ場合:
    - 対象コードベースのパスをユーザーに確認する
    - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「コードベースからスキル生成時」を使用）
+   - 完了後、Phase 1を再実行してスキル一覧を更新する
+   - バックログのskillフィールドを新スキル名で更新する
+4. ユーザーが「外部URLから取り込む」を選んだ場合:
+   - スキルのGitリポジトリURLをユーザーに確認する
+   - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル招募時」を使用）
    - 完了後、Phase 1を再実行してスキル一覧を更新する
    - バックログのskillフィールドを新スキル名で更新する
 
@@ -278,7 +284,7 @@ Wave 3: [b5]     → 単独実行
 ```
 [skill-name] スキルを実行する。
 
-手順: [skill-md-path] を読んで手順に従ってください。
+手順: まず [skill-md-path] を読んで手順に従ってください。
 タスク: [action]
 コンテキスト: [先行タスクのresultを1〜2行で要約]
 完了基準: [done_criteria]
@@ -338,6 +344,21 @@ codebase-to-skill スキルで既存コードベースからスキルを生成�
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗
 作成されたスキル名: [name]
+サマリー: [1〜2文で結果を説明]
+```
+
+### スキル招募時
+
+```
+skill-recruiter スキルで外部リポジトリからスキルを取得・検証する。
+
+手順: まず .github/skills/skill-recruiter/SKILL.md を読んで手順に従ってください。
+取得するスキルのURL: [url]
+用途: [タスクのactionと不足しているスキルの概要]
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+取得されたスキル名: [name]
 サマリー: [1〜2文で結果を説明]
 ```
 
@@ -436,9 +457,9 @@ git-skill-manager スキルの discover 操作で、チャット履歴から新�
 
 ## 動作環境
 
-- **Copilot Chat on Windows** を前提とする
-- スクリプト実行は `python`（`python3` ではない）
-- パス区切りは `/` を使用する（PowerShellで動作する）
+- **GitHub Copilot Chat**（Windows / macOS / Linux）および **Claude Code** で動作する
+- スクリプト実行は `python`（環境によっては `python3`）
+- パス区切りは `/` を使用する（クロスプラットフォームで動作する）
 - ファイル書き出し時の文字コードは **UTF-8 without BOM**
 
 ## エラーハンドリング

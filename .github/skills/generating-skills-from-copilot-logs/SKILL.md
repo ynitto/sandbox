@@ -36,6 +36,8 @@ Claude Code のセッション履歴（`~/.claude/projects/*/`）を分析し、
 
 **必ずユーザーの同意を得てからデータを読む。**
 
+> **git-skill-manager の discover 操作経由で起動された場合**: discover 操作のステップ 2 でユーザーの同意を取得済みのため、このフェーズの同意確認をスキップして直接データ取得に進んでよい。
+
 ```
 「VSCode Copilotのチャット履歴を分析してスキル候補を提案します。
 workspaceStorage 内の chatSessions（またはフォールバックとして state.vscdb）を読み取ります。

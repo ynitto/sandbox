@@ -5,7 +5,6 @@
     python record_feedback.py <skill-name> --verdict ok
     python record_feedback.py <skill-name> --verdict needs-improvement --note "改善点の説明"
     python record_feedback.py <skill-name> --verdict broken --note "壊れている箇所"
-    python record_feedback.py <skill-name> --check-discovery   # 発見トリガー判定のみ
 
 verdict:
     ok                 - 問題なく動作した
@@ -28,6 +27,7 @@ EVAL_RECOMMEND シグナル:
 レジストリ未登録でも source_repo="workspace" で自動登録する。
 レジストリが存在しない場合は何もしない（エラーにしない）。
 """
+import argparse
 import json
 import os
 import sys
@@ -133,33 +133,13 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
         print(f"EVAL_RECOMMEND: {rec}")
     elif skill.get("pending_refinement"):
         # インストール済みスキル: しきい値を超えて pending になったタイミングのみ出力
-        threshold = _refine_threshold(skill)
-        print(f"EVAL_RECOMMEND: refine  # {threshold}件の問題が蓄積されました")
+        count = _unrefined_problem_count(skill)
+        print(f"EVAL_RECOMMEND: refine  # {count}件の問題が蓄積されました")
 
     return reg
 
 
-def check_discovery(reg: dict) -> bool:
-    """skill_discovery の suggest_interval_days が経過しているか判定する。
-    True = 発見提案をすべきタイミング。
-    """
-    discovery = reg.get("skill_discovery", {})
-    last_run = discovery.get("last_run_at")
-    interval_days = discovery.get("suggest_interval_days", 7)
-
-    if not last_run:
-        return True
-
-    try:
-        last_dt = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
-        elapsed = (datetime.now(timezone.utc) - last_dt).days
-        return elapsed >= interval_days
-    except ValueError:
-        return True
-
-
 def main():
-    import argparse
     parser = argparse.ArgumentParser(
         description="スキル使用後フィードバックを記録する"
     )
@@ -167,14 +147,10 @@ def main():
     parser.add_argument(
         "--verdict",
         choices=["ok", "needs-improvement", "broken"],
+        required=True,
         help="フィードバックの種類",
     )
     parser.add_argument("--note", default="", help="補足コメント（任意）")
-    parser.add_argument(
-        "--check-discovery",
-        action="store_true",
-        help="スキル発見の提案タイミングか判定して終了する（終了コード 0=提案すべき, 1=まだ早い）",
-    )
     args = parser.parse_args()
 
     registry_path = _registry_path()
@@ -183,16 +159,6 @@ def main():
 
     with open(registry_path, encoding="utf-8") as f:
         reg = json.load(f)
-
-    if args.check_discovery:
-        if check_discovery(reg):
-            print("SUGGEST_DISCOVERY")
-            sys.exit(0)
-        else:
-            sys.exit(1)
-
-    if not args.verdict:
-        parser.error("--verdict が必要です（--check-discovery を使わない場合）")
 
     skill_name = args.skill_name
 
@@ -209,12 +175,6 @@ def main():
 
     with open(registry_path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)
-
-    # スキル発見の提案タイミングを確認
-    if check_discovery(reg):
-        print()
-        print("💡 最近の使い方パターンから新しいスキル候補を発見できるかもしれません。")
-        print("   'git-skill-manager discover' で分析できます。")
 
 
 if __name__ == "__main__":

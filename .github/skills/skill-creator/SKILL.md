@@ -178,7 +178,7 @@ docx-jsで新規作成。[DOCX-JS.md](DOCX-JS.md) 参照。
 新規作成の場合、`init_skill.py`を実行する:
 
 ```bash
-python scripts/init_skill.py <skill-name> --path <output-directory>
+python .github/skills/skill-creator/scripts/init_skill.py <skill-name> --path <output-directory>
 ```
 
 スクリプトは以下を生成する:
@@ -225,19 +225,25 @@ description: スキルの説明。何をするか＋いつ使うかを含める�
 
 ### ステップ5: スキルをパッケージする
 
-開発完了後、配布用の.skillファイルを作成する:
+**開発中の素早いチェック**には `quick_validate.py` を使う（パッケージ化なし）:
 
 ```bash
-python scripts/package_skill.py <path/to/skill-folder>
+python .github/skills/skill-creator/scripts/quick_validate.py <path/to/skill-folder>
+```
+
+**配布用の.skillファイル作成**には `package_skill.py` を使う（バリデーション + ZIP生成）:
+
+```bash
+python .github/skills/skill-creator/scripts/package_skill.py <path/to/skill-folder>
 ```
 
 出力先指定（任意）:
 
 ```bash
-python scripts/package_skill.py <path/to/skill-folder> ./dist
+python .github/skills/skill-creator/scripts/package_skill.py <path/to/skill-folder> ./dist
 ```
 
-スクリプトは以下を実行する:
+`package_skill.py` は以下を実行する:
 
 1. **バリデーション** - フロントマター、命名規則、ディレクトリ構造、description品質を検査
 2. **パッケージ** - バリデーション通過後、.skillファイル（ZIP形式）を作成

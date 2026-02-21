@@ -143,13 +143,6 @@ def validate_skill(skill_path: str) -> tuple[list[str], list[str]]:
                     f"references/{ref_file} が SKILL.md から参照されていません"
                 )
 
-    # 使用記録行チェック（scrum-master は除外）
-    skill_name = fm.get("name", "")
-    if skill_name != "scrum-master" and "record_usage.py" not in content:
-        warnings.append(
-            "使用記録行がありません。フロントマター直後に record_usage.py の呼び出しを追加してください"
-        )
-
     return errors, warnings
 
 

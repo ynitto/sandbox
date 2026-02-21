@@ -12,6 +12,7 @@
 
 import argparse
 import os
+import re
 import sys
 
 
@@ -122,8 +123,6 @@ def main() -> None:
     args = parser.parse_args()
 
     # 名前のバリデーション
-    import re
-
     if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", args.name):
         print(
             "エラー: スキル名はkebab-case（小文字・数字・ハイフン）で指定してください"
