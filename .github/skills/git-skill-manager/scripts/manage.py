@@ -581,6 +581,54 @@ def sync_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# merge
+# ---------------------------------------------------------------------------
+
+def merge_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
+    """クロスリポジトリマージフローの入口。
+
+    diff を表示してエージェントへのガイダンスを出力する。
+    エージェントはその後 skill-creator を起動してマージ実装を生成し、
+    最後に sync_skill() を呼んで全リポジトリへ配信する。
+    """
+    reg = load_registry()
+    skill_home = _skill_home()
+
+    # ステップ1: diff を表示
+    print(f"🔀 クロスリポジトリマージ: '{skill_name}'\n")
+    print("【ステップ 1/3】差分を確認します...\n")
+    diff_skill(skill_name, repo_names)
+
+    # ステップ2: skill-creator へのガイダンスを出力
+    repos = reg["repositories"]
+    if repo_names:
+        repos = [r for r in repos if r["name"] in repo_names]
+
+    repo_list = ", ".join(r["name"] for r in repos)
+    merge_target = os.path.join(skill_home, skill_name)
+    sync_cmd = f"python manage.py sync {skill_name}" + (
+        f" --repos {','.join(repo_names)}" if repo_names else ""
+    )
+
+    print(f"\n{'─' * 60}")
+    print("【ステップ 2/3】skill-creator でマージ実装を生成する")
+    print(f"  対象リポジトリ: {repo_list}")
+    print(f"  編集先: {merge_target}")
+    print()
+    print("MERGE_GUIDANCE:")
+    print(f"  skill-creator サブエージェントを起動し、上記の差分を踏まえて")
+    print(f"  '{skill_name}' の統合実装を次のパスに作成してください:")
+    print(f"  {merge_target}")
+    print()
+    print("  skill-creator への指示例:")
+    print(f"  「上の差分を踏まえて {skill_name} の統合実装を")
+    print(f"   {merge_target} に作成して。どの変更を取り込むか確認しながら進めてください。」")
+    print(f"\n{'─' * 60}")
+    print("【ステップ 3/3】マージ完了後に次のコマンドを実行する:")
+    print(f"  {sync_cmd}")
+
+
+# ---------------------------------------------------------------------------
 # profile
 # ---------------------------------------------------------------------------
 

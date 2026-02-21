@@ -1,6 +1,6 @@
 ---
 name: git-skill-manager
-description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。また「スキルを改良して」「フィードバックを反映して」「新しいスキル候補を探して」「履歴からスキルを発見して」「スキルを評価して」「試用中スキルを確認して」のようなスキル改良・発見・評価のリクエストでも使用する。「リポジトリ間のスキルの差分を見せて」「同名スキルをマージして配信して」のようなクロスリポジトリマージリクエストでも使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
+description: Gitリポジトリを使ってエージェントスキルを管理するスキル。複数リポジトリの登録、スキルのpull（取得）とpush（共有）、スキルの有効化/無効化、プロファイル管理を行う。「スキルをpullして」「リポジトリからスキルを取ってきて」「スキルをpushして」「リポジトリを登録して」「スキル一覧」「スキルを無効化して」「プロファイルを切り替えて」など、スキルの取得・共有・リポジトリ管理・有効化管理に関するリクエストで使用する。また「スキルを改良して」「フィードバックを反映して」「新しいスキル候補を探して」「履歴からスキルを発見して」「スキルを評価して」「試用中スキルを確認して」のようなスキル改良・発見・評価のリクエストでも使用する。「スキルをマージして」「リポジトリ間のスキルを統合して配信して」のようなクロスリポジトリマージリクエストでも使用する。GitHub/GitLab/Bitbucket/セルフホスト問わず動作する。Copilot + Windows環境で動作し、gitは設定済みの前提。
 ---
 
 # Git Skill Manager
@@ -206,6 +206,7 @@ skill-recruiter がライセンス・セキュリティ・ネットワーク通�
 |**evaluate**   |「スキルを評価して」「試用中スキルを確認して」「ワークスペーススキルを整理して」|
 |**diff**       |「スキルの差分を見せて」「リポジトリ間の違いを確認して」|
 |**sync**       |「マージしたスキルを全リポジトリに配信して」「スキルを同期して」|
+|**merge**      |「スキルをマージして」「リポジトリ間のスキルを統合して配信して」|
 
 -----
 
@@ -566,59 +567,33 @@ skill-evaluator サブエージェントを起動して評価・昇格フロー�
 
 -----
 
-## クロスリポジトリマージフロー
+## merge
 
-複数リポジトリに実装が分岐した同名スキルを統合する手順。
-**ユーザーが入力するプロンプト例**を各ステップに示す。
+複数リポジトリに分岐した同名スキルを統合して全リポジトリへ配信する。
+`diff` → `skill-creator` → `sync` の3ステップを1つのリクエストで処理する。
 
-### ステップ 1: 差分の確認
+### 処理フロー
 
-```
-「docx-converter が team-skills と personal で実装が違うかもしれない。差分を見せて」
-```
+→ 実装: `scripts/manage.py` — `merge_skill(skill_name, repo_names)`
 
-→ `diff_skill("docx-converter")` が実行され、変更ファイルと diff が表示される。
-
-### ステップ 2: skill-creator にマージを依頼
-
-差分を確認したうえで、統合実装を作ってもらう:
+1. `merge_skill()` を実行して差分を表示する（内部で `diff_skill()` を呼び出す）
+2. 出力の `MERGE_GUIDANCE:` ブロックを読み、skill-creator サブエージェントを起動する
+   - ユーザーに統合方針を確認しながらマージ実装を生成させる
+   - 編集先は `~/.copilot/skills/<skill_name>/`（インストール済みスキルを上書き）
+3. skill-creator 完了後に `sync_skill()` を実行して全リポジトリへ配信する
 
 ```
-「上の差分を踏まえて、team-skills 版の引数の柔軟性と、personal 版の
-エラーハンドリングを両方取り込んだ docx-converter を作って。
-編集先は ~/.copilot/skills/docx-converter/ にして」
+ユーザー: 「docx-converter を team-skills と personal でマージして配信して」
+
+エージェント:
+  1. python manage.py merge docx-converter --repos team-skills,personal
+       → 差分を表示 + MERGE_GUIDANCE: を出力
+  2. skill-creator サブエージェントを起動してマージ実装を生成
+  3. python manage.py sync docx-converter --repos team-skills,personal
+       → 各リポジトリに PR ブランチを作成
 ```
 
-skill-creator が `~/.copilot/skills/docx-converter/` を直接編集する。
-
-### ステップ 3: 複数リポジトリへ配信
-
-```
-「マージが終わった docx-converter を team-skills と personal の両方に配信して」
-```
-
-→ `sync_skill("docx-converter", ["team-skills", "personal"])` が実行される。
-
-### ステップ 4: PR/MR の作成とマージ
-
-sync は各リポジトリに `add-skill/docx-converter` ブランチを作成する。
-その後はリポジトリ側で PR/MR をマージしてチームに反映する。
-
-```
-「team-skills に PR を作って」  ← GitHub CLI や別ツールで対応
-```
-
-### まとめ（全体フロー）
-
-```
-git-skill-manager diff docx-converter       ← ①差分確認
-  ↓ 差分内容をユーザーが確認
-skill-creator でマージ実装を生成             ← ②マージ（skill-creator に依頼）
-  ↓ ~/.copilot/skills/docx-converter/ が更新される
-git-skill-manager sync docx-converter       ← ③全リポジトリへ配信
-  ↓ 各リポジトリに PR ブランチが作成される
-各リポジトリで PR/MR をマージ               ← ④チームへ反映
-```
+全リポジトリを対象にする場合は `--repos` を省略する。
 
 -----
 
