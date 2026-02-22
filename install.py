@@ -31,6 +31,7 @@ COPILOT_DIR = os.path.join(HOME, ".copilot")
 SKILL_HOME = os.path.join(COPILOT_DIR, "skills")
 CACHE_DIR = os.path.join(COPILOT_DIR, "cache")
 REGISTRY_PATH = os.path.join(COPILOT_DIR, "skill-registry.json")
+GITHUB_DIR = os.path.join(HOME, ".github")
 
 # このスクリプト自身の位置からリポジトリルートを特定
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -162,6 +163,18 @@ def setup_registry(installed_skills: list[dict]) -> None:
         json.dump(reg, f, indent=2, ensure_ascii=False)
 
 
+def copy_copilot_instructions() -> bool:
+    """copilot-instructions.md をユーザーホームにコピーする。"""
+    src = os.path.join(REPO_ROOT, ".github", "copilot-instructions.md")
+    if not os.path.isfile(src):
+        return False
+    os.makedirs(GITHUB_DIR, exist_ok=True)
+    dest = os.path.join(GITHUB_DIR, "copilot-instructions.md")
+    shutil.copy2(src, dest)
+    print(f"   📋 {dest}")
+    return True
+
+
 def main() -> None:
     print("=" * 50)
     print("Agent Skills インストーラー")
@@ -189,7 +202,12 @@ def main() -> None:
     print("\n3. レジストリを設定...")
     setup_registry(installed)
 
-    # 4. 完了
+    # 4. copilot-instructions.md をコピー
+    print("\n4. copilot-instructions.md をコピー...")
+    if not copy_copilot_instructions():
+        print("   (ファイルが見つかりません、スキップ)")
+
+    # 5. 完了
     print("\n" + "=" * 50)
     print(f"インストール完了: {len(installed)} 件のコアスキル")
     print("=" * 50)
