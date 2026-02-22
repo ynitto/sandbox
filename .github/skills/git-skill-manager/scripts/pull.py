@@ -12,6 +12,68 @@ from registry import load_registry, save_registry, _cache_dir, _skill_home
 from repo import clone_or_fetch, update_remote_index
 
 
+def _merge_copilot_instructions(parts: list[str]) -> str:
+    """複数の copilot-instructions.md を H2 セクション単位でマージする。
+
+    同じ見出しのセクションは内容を重複排除しながら結合し、
+    異なる見出しのセクションはすべて取り込む。
+    """
+    SEP_RE = re.compile(r'\n[ \t]*[-]{3,}[ \t]*$', re.MULTILINE)
+
+    def parse(text: str) -> tuple[str, list[tuple[str, str]]]:
+        """(preamble, [(heading, body), ...]) を返す。"""
+        preamble_lines: list[str] = []
+        sections: list[tuple[str, str]] = []
+        current_heading: str | None = None
+        current_body: list[str] = []
+
+        for line in text.split("\n"):
+            if line.startswith("## "):
+                if current_heading is not None:
+                    body = SEP_RE.sub("", "\n".join(current_body)).strip()
+                    sections.append((current_heading, body))
+                else:
+                    preamble_lines = list(current_body)
+                current_heading = line[3:].strip()
+                current_body = []
+            else:
+                current_body.append(line)
+
+        if current_heading is not None:
+            body = SEP_RE.sub("", "\n".join(current_body)).strip()
+            sections.append((current_heading, body))
+
+        return "\n".join(preamble_lines).strip(), sections
+
+    preamble = ""
+    seen: dict[str, str] = {}  # heading -> merged body
+    order: list[str] = []
+
+    for part in parts:
+        p, sections = parse(part)
+        if not preamble and p:
+            preamble = p
+        for heading, body in sections:
+            if heading not in seen:
+                seen[heading] = body
+                order.append(heading)
+            elif body and body not in seen[heading]:
+                seen[heading] = seen[heading] + "\n\n" + body
+
+    section_chunks = []
+    for heading in order:
+        body = seen[heading]
+        section_chunks.append(f"## {heading}\n\n{body}" if body else f"## {heading}")
+
+    joined_sections = "\n\n-----\n\n".join(section_chunks)
+
+    if preamble and joined_sections:
+        return preamble + "\n\n" + joined_sections + "\n"
+    if joined_sections:
+        return joined_sections + "\n"
+    return preamble + "\n" if preamble else ""
+
+
 def pull_skills(
     repo_name: str | None = None,
     skill_name: str | None = None,
@@ -178,7 +240,7 @@ def pull_skills(
         dest_dir = os.path.join(home, ".github")
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, "copilot-instructions.md")
-        merged = "\n\n".join(copilot_instruction_parts) + "\n"
+        merged = _merge_copilot_instructions(copilot_instruction_parts)
         with open(dest, "w", encoding="utf-8") as f:
             f.write(merged)
         print(f"   📋 copilot-instructions.md → {dest}")
