@@ -31,7 +31,7 @@ CORE_SKILLS_DEFAULT = [
 
 
 def migrate_registry(reg: dict) -> dict:
-    """version 1-2 → 3 へのマイグレーション。"""
+    """最新 version へのマイグレーション。"""
     version = reg.get("version", 1)
 
     # v1 → v2
