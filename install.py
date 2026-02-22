@@ -42,6 +42,7 @@ CORE_SKILLS = [
     "scrum-master",
     "git-skill-manager",
     "skill-creator",
+    "skill-evaluator",
     "sprint-reviewer",
     "codebase-to-skill",
 ]
