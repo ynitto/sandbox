@@ -1,7 +1,6 @@
 ---
 name: ci-cd-configurator
 description: GitHub Actions / GitLab CI のパイプラインを構築・最適化する。「GitHub Actionsを設定して」「CI/CDパイプラインを作って」「デプロイを自動化して」「ビルドパイプラインを最適化して」「ワークフローを作成して」などのリクエストで発動する。React/TS・Python・Go・Docker 対応。
-depends_on: []
 ---
 
 # CI/CD Configurator

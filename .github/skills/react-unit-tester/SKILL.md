@@ -1,7 +1,6 @@
 ---
 name: react-unit-tester
 description: react-frontend-coderで実装したReactコンポーネント・Zustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。実装完了後のテスト投入フロー。
-depends_on: [react-frontend-coder]
 ---
 
 # react-unit-tester
