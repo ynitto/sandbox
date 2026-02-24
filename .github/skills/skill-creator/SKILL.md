@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: スキルの作成・更新を支援するガイドスキル。ユーザーが新しいスキルを作りたい、既存のスキルを改善したいときに使用する。「スキルを作って」「新しいスキルを作成して」「このスキルを改善して」「スキルをパッケージして」などのリクエストで発動する。GitHub Copilot環境向け。
+description: スキルの作成・更新を支援するガイドスキル。ユーザーが新しいスキルを作りたい、既存のスキルを改善したいときに使用する。「スキルを作って」「新しいスキルを作成して」「このスキルを改善して」「スキルをパッケージして」などのリクエストで発動する。GitHub Copilot および Claude Code で動作する。
 ---
 
 # Skill Creator
@@ -9,7 +9,7 @@ description: スキルの作成・更新を支援するガイドスキル。ユ�
 
 ## スキルとは
 
-スキルは、Copilotの能力を拡張するモジュール型のパッケージ。特定ドメインの専門知識、ワークフロー、ツール連携を提供する。汎用エージェントを、手順的知識を備えた専門エージェントに変える「オンボーディングガイド」と考える。
+スキルは、GitHub Copilot / Claude Code などのAIエージェントの能力を拡張するモジュール型のパッケージ。特定ドメインの専門知識、ワークフロー、ツール連携を提供する。汎用エージェントを、手順的知識を備えた専門エージェントに変える「オンボーディングガイド」と考える。
 
 ### スキルが提供するもの
 
@@ -141,12 +141,20 @@ docx-jsで新規作成。[DOCX-JS.md](DOCX-JS.md) 参照。
 
 以下のステップを順に進める:
 
+**新規スキル作成:**
 1. 具体例でスキルを理解する
 2. 再利用可能なリソースを計画する
 3. スキルを初期化する（init_skill.py）
 4. スキルを編集する（リソース実装 + SKILL.md記述）
 5. スキルをパッケージする（package_skill.py）
 6. 実使用に基づいて改善する
+
+**既存スキルの改良:**
+「スキルを改善して」「このスキルを更新して」「フィードバックに基づいて修正して」などのリクエストの場合は、ステップ3（初期化）をスキップして次の手順で進める:
+1. 改良対象のSKILL.mdと関連リソースを読む
+2. 改良内容を明確化する（問題点・追加機能・変更方針をユーザーに確認する）
+3. 変更を実装する（SKILL.mdとリソースを直接編集する）
+4. ステップ5（バリデーション）に進む
 
 ### ステップ1: 具体例でスキルを理解する
 
@@ -175,11 +183,13 @@ docx-jsで新規作成。[DOCX-JS.md](DOCX-JS.md) 参照。
 
 ### ステップ3: スキルを初期化する
 
-新規作成の場合、`init_skill.py`を実行する:
+新規作成の場合、`init_skill.py`を実行する（**作業ディレクトリのルートから実行すること**）:
 
 ```bash
-python .github/skills/skill-creator/scripts/init_skill.py <skill-name> --path <output-directory>
+python .github/skills/skill-creator/scripts/init_skill.py <skill-name> --path .github/skills
 ```
+
+`--path` には出力先ディレクトリを指定する。省略した場合はカレントディレクトリに生成される。標準的な配置先は `.github/skills`。
 
 スクリプトは以下を生成する:
 - スキルディレクトリ
@@ -225,6 +235,12 @@ description: スキルの説明。何をするか＋いつ使うかを含める�
 
 ### ステップ5: スキルをパッケージする
 
+**開発中の素早いチェック**には `quick_validate.py` を使う（パッケージ化なし）:
+
+```bash
+python .github/skills/skill-creator/scripts/quick_validate.py <path/to/skill-folder>
+```
+
 **description のトリガー動作テスト**には `simulate_trigger.py` を使う:
 
 ```bash
@@ -233,12 +249,6 @@ python .github/skills/skill-creator/scripts/simulate_trigger.py "ユーザーリ
 
 # 類似 description を持つスキルペアを検出（競合チェック）
 python .github/skills/skill-creator/scripts/simulate_trigger.py --conflicts
-```
-
-**開発中の素早いチェック**には `quick_validate.py` を使う（パッケージ化なし）:
-
-```bash
-python .github/skills/skill-creator/scripts/quick_validate.py <path/to/skill-folder>
 ```
 
 **配布用の.skillファイル作成**には `package_skill.py` を使う（バリデーション + ZIP生成）:
@@ -262,9 +272,14 @@ python .github/skills/skill-creator/scripts/package_skill.py <path/to/skill-fold
 
 ### ステップ6: 改善する
 
-実使用後にユーザーから改善要求があれば対応する。
+実使用後にフィードバックや問題が発覚した場合に対応する。
 
-1. 実タスクでスキルを使用する
-2. 問題や非効率を発見する
-3. SKILL.mdやリソースの更新方法を特定する
-4. 変更を実装して再テストする
+1. フィードバック/問題を確認する（`needs-improvement` / `broken` の verdict、ユーザーのコメント）
+2. 原因を特定する:
+   - 手順が不明確 → SKILL.mdの該当箇所を書き直す
+   - スクリプトが失敗 → `scripts/` を修正してテストする
+   - description がトリガーしない/誤発動する → `simulate_trigger.py` で検証して description を調整する
+   - スコープが広すぎる → スキルを分割し、それぞれに責務を割り当てる
+3. 変更を実装する（SKILL.mdとリソースを直接編集する）
+4. `quick_validate.py` でバリデーションを確認する
+5. 必要に応じて `package_skill.py` で再パッケージする
