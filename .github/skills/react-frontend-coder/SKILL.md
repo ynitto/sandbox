@@ -1,6 +1,7 @@
 ---
 name: react-frontend-coder
 description: React + TypeScriptで、要件・UI設計が既に確定している前提で、フロントエンド機能を実装する。Vite + Zustandをベースに、実装→検証に特化。テストコード実装は別スキルに委譲。
+depends_on: [requirements-definer, ui-designer]
 ---
 
 # react-frontend-coder
