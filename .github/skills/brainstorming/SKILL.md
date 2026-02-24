@@ -49,12 +49,11 @@ description: "創作作業の前に必ず使うスキル。機能追加・コン
    ↙ No（修正）  ↘ Yes
   設計セクション再提示  設計ドキュメント作成
                     ↓
-             writing-plans スキルを呼び出す
+             実装計画を作成する
 ```
 
-**終了状態は writing-plans の呼び出しである。**
-frontend-design・mcp-builder・その他の実装スキルは呼び出してはならない。
-ブレインストーミング後に呼び出すスキルは writing-plans のみ。
+**終了状態は設計ドキュメントの承認と実装計画の作成である。**
+ブレインストーミング中・完了直後にコードの実装を開始してはならない。
 
 ## プロセス詳細
 
@@ -81,12 +80,11 @@ frontend-design・mcp-builder・その他の実装スキルは呼び出しては
 
 **ドキュメント化：**
 - 確定した設計を `docs/plans/YYYY-MM-DD-<トピック>-design.md` に書き出す
-- 利用可能であれば elements-of-style:writing-clearly-and-concisely スキルを使う
+- 簡潔で明確な文章を心がける
 - 設計ドキュメントを git にコミットする
 
 **実装：**
-- writing-plans スキルを呼び出して詳細な実装計画を作成する
-- 他のスキルは呼び出さない。次のステップは writing-plans のみ。
+- 詳細な実装計画を作成する
 
 ## 主要原則
 

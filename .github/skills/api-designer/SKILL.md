@@ -7,17 +7,11 @@ description: REST / GraphQL API の設計・ドキュメント生成・バリデ
 
 REST / GraphQL API の設計から OpenAPI / GraphQL スキーマ生成まで一貫して支援するスキル。
 
-## スキルエコシステムにおける位置づけ
+## 前後の工程
 
-```
-requirements-definer  →  api-designer  →  react-frontend-coder
-                              ↓
-                       dynamodb-designer
-```
-
-- **requirements-definer**: ユースケース・エンティティ洗い出しが完了した状態で引き継ぐ
-- **react-frontend-coder**: 生成した OpenAPI スキーマをフロントエンド I/F 設計のインプットとして渡す
-- **dynamodb-designer**: エンドポイント設計と DB アクセスパターンを整合させる
+- **前工程**: ユースケース・エンティティ洗い出しが完了した状態で本スキルを開始する
+- **後工程（フロントエンド）**: 生成した OpenAPI スキーマをフロントエンド I/F 設計のインプットとして渡す
+- **後工程（DB）**: エンドポイント設計と DB アクセスパターンを整合させる
 
 ---
 
