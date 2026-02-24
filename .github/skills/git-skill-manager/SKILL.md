@@ -324,7 +324,9 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
     3. うまくいかなかった (broken)」
    ```
 3. ユーザーの選択を `<verdict>` に使って `python record_feedback.py <name> --verdict <verdict> --note <note>` を実行
-4. 出力に `EVAL_RECOMMEND: promote|refine` が含まれる場合は `evaluate` 操作へ進む
+4. 出力に応じて次のアクションを取る:
+   - `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` → `evaluate` 操作へ進む
+   - `EVAL_RECOMMEND: continue` → 「試用継続中です（あと N 回の ok フィードバックで昇格候補になります）」とユーザーに伝えて終了
 
 -----
 

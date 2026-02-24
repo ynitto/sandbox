@@ -30,6 +30,7 @@ EVAL_RECOMMEND シグナル:
 import argparse
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 
@@ -44,13 +45,24 @@ def _skill_home() -> str:
     return os.path.join(home, ".copilot", "skills")
 
 
+def _repo_root() -> str:
+    """git リポジトリルートを返す。git 管理外の場合は CWD を返す。"""
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else os.getcwd()
+
+
 def is_workspace_skill(skill_name: str) -> bool:
     """ワークスペーススキルかどうかを判定する。
 
     .github/skills/<name>/SKILL.md が存在し、
     かつ ~/.copilot/skills/<name>/SKILL.md が存在しない場合に True。
+    リポジトリルートからの絶対パスで判定するため CWD に依存しない。
     """
-    ws_md = os.path.join(".github", "skills", skill_name, "SKILL.md")
+    root = _repo_root()
+    ws_md = os.path.join(root, ".github", "skills", skill_name, "SKILL.md")
     user_md = os.path.join(_skill_home(), skill_name, "SKILL.md")
     return os.path.isfile(ws_md) and not os.path.isfile(user_md)
 
@@ -155,6 +167,8 @@ def main():
 
     registry_path = _registry_path()
     if not os.path.isfile(registry_path):
+        print(f"⚠️  レジストリが見つかりません: {registry_path}")
+        print("   'git-skill-manager repo add' でリポジトリを登録してください")
         sys.exit(1)
 
     with open(registry_path, encoding="utf-8") as f:
