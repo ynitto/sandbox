@@ -122,9 +122,9 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
         # ワークスペーススキル: promote / refine / continue を判定して出力
         history = skill.get("feedback_history", [])
         ok_count = sum(1 for e in history if e.get("verdict") == "ok")
-        problem_count = sum(1 for e in history if e.get("verdict") in ("needs-improvement", "broken"))
+        unrefined_count = _unrefined_problem_count(skill)
         pending = skill.get("pending_refinement", False)
-        if pending or problem_count > 0:
+        if pending or unrefined_count > 0:
             rec = "refine"
         elif ok_count >= 2:
             rec = "promote"
