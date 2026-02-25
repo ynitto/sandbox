@@ -282,6 +282,27 @@ Wave 3: [b5]     → 単独実行
 - SKILL.md の内容をプロンプトに埋め込まない。ファイルパスだけ渡し、サブエージェント自身に読ませる。これによりプロンプトを短く保ち、安定性を確保する。
 - すべてのテンプレートに戻り値の形式指定を含める。これによりscrum-masterが結果を確実にパースできる。
 
+### requirements-definer 呼び出し時
+
+```
+requirements-definer スキルでユーザーと対話して要件を定義する。
+
+手順: まず .github/skills/requirements-definer/SKILL.md を読んで手順に従ってください。
+ユーザーのプロンプト: [元のプロンプト]
+出力先: requirements.json（作業ディレクトリのルート）
+出力スキーマ: .github/skills/requirements-definer/references/requirements-schema.md を参照すること。
+
+完了後、requirements.json を出力して終了してください。計画立案やタスク分解は行わないこと。
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+goal: [requirements.json の goal フィールドの値]
+要件数: 機能要件 [N] 件 / 非機能要件 [M] 件
+サマリー: [1〜2文で結果を説明]
+```
+
+**scrum-master の次の処理**: サブエージェント完了後、`requirements.json` を読み込んでバックログを作成する（Phase 2）。
+
 ### skill: null タスク実行時（スキル不要な調査・判断・軽微な編集）
 
 ```
