@@ -174,6 +174,8 @@ npm install  # 依存関係を再インストール
 
 ### テンプレート2: デベロッパーガイド
 
+OpenAPI サンプル: [references/openapi.yaml](references/openapi.yaml)
+
 ```markdown
 # [API_NAME] デベロッパーガイド
 
