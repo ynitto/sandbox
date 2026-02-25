@@ -38,6 +38,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **systematic-debugging** | 根本原因を特定してから修正する体系的デバッグ手順を提供する |
 | **ui-designer** | デザインシステムに基づいた UI 実装ガイドラインを提供する |
 | **requirements-definer** | 要件定義・スコープ・受入基準を整理する |
+| **deep-research** | 複数の情報源を統合し、引用付きで根拠ある深いリサーチを行う |
 
 ## インストール
 
