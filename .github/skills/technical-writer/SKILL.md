@@ -1,6 +1,6 @@
 ---
 name: technical-writer
-description: 技術ドキュメントを高品質に作成するスキル。README、APIドキュメント、チュートリアル、アーキテクチャ仕様書などの文書作成を支援する。「ドキュメントを書いて」「READMEを作って」「APIドキュメントを書いて」「チュートリアルを作成して」「仕様書を書いて」などで発動する。
+description: 技術ドキュメントを高品質に作成するスキル。README、デベロッパーガイド、チュートリアル、アーキテクチャ仕様書などの文書作成を支援する。「ドキュメントを書いて」「READMEを作って」「デベロッパーガイドを書いて」「APIの使い方をまとめて」「チュートリアルを作成して」「仕様書を書いて」などで発動する。APIの仕様定義（OpenAPI）は api-designer に委ねる。
 ---
 
 # Technical Writer
@@ -10,11 +10,14 @@ description: 技術ドキュメントを高品質に作成するスキル。READ
 ## 適用場面
 
 - プロジェクトの README や Getting Started ガイドを作成する場合
-- API リファレンスやエンドポイント仕様を文書化する場合
+- API の認証・利用手順・コード例をまとめたデベロッパーガイドを作成する場合
 - インストール手順・セットアップガイドを整備する場合
 - ステップバイステップのチュートリアルを作成する場合
 - アーキテクチャ設計・技術仕様を記述する場合
 - トラブルシューティングガイドを作成する場合
+
+> **API 仕様（エンドポイント定義・スキーマ・OpenAPI ファイル）は api-designer に委ねる。**
+> このスキルは「API をどう使うか」を開発者向けに説明するドキュメントを担当する。
 
 ## 5つのコア原則
 
@@ -172,58 +175,115 @@ npm install  # 依存関係を再インストール
 
 ---
 
-### テンプレート2: API ドキュメント
+### テンプレート2: デベロッパーガイド
 
-````markdown
-## `POST /api/ENDPOINT_NAME`
+> API の仕様定義は api-designer が生成する OpenAPI ファイルを参照すること。
+> このテンプレートは「開発者がその API を使い始めるための手引き」を対象とする。
 
-[エンドポイントが何をするかを1文で説明]
+```markdown
+# [API_NAME] デベロッパーガイド
 
-### リクエスト
+[この API が何を解決するか・どんな開発者向けかを2〜3文で説明する]
 
-**Headers**
+## 前提条件
 
-| ヘッダー | 値 | 必須 |
+- アカウント登録と API キーの取得 → [ダッシュボードへのリンク]
+- 対応言語・ランタイムバージョン（例: Python 3.9+, Node.js 18+）
+- 認証方式の理解（Bearer トークン / API キー / OAuth 2.0 等）
+
+## クイックスタート（5分）
+
+### 1. 認証を設定する
+
+**Windows (PowerShell)**
+\`\`\`powershell
+$env:YOUR_API_KEY = "YOUR_API_KEY_HERE"
+\`\`\`
+
+**macOS / Linux**
+\`\`\`bash
+export YOUR_API_KEY="YOUR_API_KEY_HERE"
+\`\`\`
+
+### 2. 最初のリクエストを送る
+
+\`\`\`python
+import httpx
+
+client = httpx.Client(headers={"Authorization": f"Bearer {YOUR_API_KEY}"})
+response = client.get("https://api.example.com/v1/resources")
+print(response.json())
+# → {"items": [...], "total": 42}
+\`\`\`
+
+\`\`\`typescript
+const response = await fetch("https://api.example.com/v1/resources", {
+  headers: { Authorization: `Bearer ${process.env.YOUR_API_KEY}` },
+});
+const data = await response.json();
+\`\`\`
+
+✓ `200 OK` が返れば接続成功です。
+
+## 主要ユースケース
+
+### ユースケース1: [USECASE_TITLE]
+
+[何を達成するかを1文で説明]
+
+\`\`\`python
+# [操作の説明]
+result = client.post("/v1/resources", json={"name": "my-item"})
+print(result.json())  # → {"id": "res_abc123", "name": "my-item"}
+\`\`\`
+
+### ユースケース2: [USECASE_TITLE]
+
+...
+
+## エラーハンドリング
+
+| ステータス | 意味 | 対処方法 |
 |---|---|---|
-| `Authorization` | `Bearer YOUR_TOKEN` | ✓ |
-| `Content-Type` | `application/json` | ✓ |
+| `400` | リクエスト不正 | レスポンスの `message` フィールドを確認する |
+| `401` | 認証失敗 | API キーを再確認する |
+| `429` | レート制限超過 | `Retry-After` ヘッダーの秒数だけ待機して再試行する |
+| `5xx` | サーバーエラー | 指数バックオフで最大3回リトライする |
 
-**Body パラメータ**
+\`\`\`python
+try:
+    response = client.post("/v1/resources", json=payload)
+    response.raise_for_status()
+except httpx.HTTPStatusError as e:
+    if e.response.status_code == 429:
+        time.sleep(int(e.response.headers.get("Retry-After", 60)))
+\`\`\`
 
-| パラメータ | 型 | 必須 | 説明 |
-|---|---|---|---|
-| `name` | string | ✓ | リソース名（1〜64文字） |
-| `tags` | string[] | — | 分類タグ（最大10件） |
+## レート制限と制約
 
-**リクエスト例**
+| 項目 | 制限値 |
+|---|---|
+| リクエスト数 | 1,000 req/分 |
+| ペイロードサイズ | 最大 10 MB |
+| 同時接続数 | 最大 20 |
 
-```json
-{
-  "name": "my-resource",
-  "tags": ["production", "api"]
-}
-```
+## SDK とライブラリ
 
-### レスポンス
-
-**成功 (201 Created)**
-
-```json
-{
-  "id": "res_abc123",
-  "name": "my-resource",
-  "created_at": "2024-01-15T09:30:00Z"
-}
-```
-
-**エラー**
-
-| ステータス | コード | 説明 |
+| 言語 | パッケージ | インストール |
 |---|---|---|
-| 400 | `validation_error` | パラメータが不正 |
-| 401 | `unauthorized` | 認証トークンが無効 |
-| 409 | `conflict` | 同名のリソースが既に存在する |
-````
+| Python | `YOUR_SDK_PYTHON` | `pip install YOUR_SDK_PYTHON` |
+| TypeScript | `YOUR_SDK_TS` | `npm install YOUR_SDK_TS` |
+
+## OpenAPI 仕様書
+
+エンドポイントの完全な仕様は [openapi.yaml](./openapi.yaml) を参照してください。
+
+## サポート・フィードバック
+
+- 公式ドキュメント: [URL]
+- 変更履歴: [CHANGELOG へのリンク]
+- Issue 報告: [GitHub Issues / サポートフォーム]
+```
 
 ---
 
@@ -309,9 +369,11 @@ mkdir my-project && cd my-project
 
 ```
 「[ファイルパス] を読んで、technical-writer スキルに従い README を作成して」
-「このコードの API ドキュメントを日本語で作成して。Windows のコマンド例も含めて」
+「この API のデベロッパーガイドを日本語で作成して。openapi.yaml も参照して」
 「このチュートリアルをレビューして、5つのコア原則に沿って改善点を提案して」
 ```
+
+> **API 仕様の生成**: api-designer で OpenAPI ファイルを作成し、そのファイルを参照しながらデベロッパーガイドを technical-writer に書かせる、という連携フローが推奨。
 
 ---
 
@@ -324,7 +386,7 @@ mkdir my-project && cd my-project
 | 項目 | 評価 | コメント |
 |---|---|---|
 | コア原則の質 | ✅ 優秀 | 5原則は実践的で普遍的 |
-| テンプレートの完成度 | ✅ 良好 | README・API・Tutorial の3種類をカバー |
+| テンプレートの完成度 | ✅ 良好 | README・デベロッパーガイド・Tutorial の3種類をカバー |
 | Windows 対応 | ⚠️ 欠如 → 追加済み | PowerShell/cmd 例を補完 |
 | 日本語対応 | ⚠️ 欠如 → 追加済み | 全文日本語化・スタイルガイドを追補 |
 | Copilot 連携 | ⚠️ 欠如 → 追加済み | プロンプトパターンを補完 |
@@ -335,3 +397,5 @@ mkdir my-project && cd my-project
 - 日本語スタイルガイドを新規追加（ですます調、人称、専門用語の扱い方）
 - GitHub Copilot / Claude Code との連携プロンプトパターンを追加
 - 5原則に「段階的な開示」の構造をより明確に記述
+- API エンドポイント仕様テンプレート（テンプレート2）を削除 → api-designer に委任
+- 代わりに「デベロッパーガイド」テンプレートを追加（認証・ユースケース・エラーハンドリング・SDK・OpenAPI 参照）
