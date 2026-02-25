@@ -99,6 +99,3 @@ requirements-definer が出力する `requirements.json` のスキーマ定義�
 }
 ```
 
-## scrum-master との連携
-
-scrum-master は `requirements.json` を読み込み、`functional_requirements` の各エントリをバックログのタスクに変換する。`goal` フィールドはプランJSONの `goal` にそのまま使用する。
