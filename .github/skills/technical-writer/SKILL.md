@@ -366,27 +366,3 @@ mkdir my-project && cd my-project
 「この API のデベロッパーガイドを日本語で作成して。openapi.yaml も参照して」
 「このチュートリアルをレビューして、5つのコア原則に沿って改善点を提案して」
 ```
-
----
-
-## 評価メモ（取り込み時）
-
-**参照元**: [awesome-llm-apps technical-writer](https://github.com/Shubhamsaboo/awesome-llm-apps/tree/main/awesome_agent_skills/technical-writer) (MIT)
-
-**評価結果**:
-
-| 項目 | 評価 | コメント |
-|---|---|---|
-| コア原則の質 | ✅ 優秀 | 5原則は実践的で普遍的 |
-| テンプレートの完成度 | ✅ 良好 | README・デベロッパーガイド・Tutorial の3種類をカバー |
-| Windows 対応 | ⚠️ 欠如 → 追加済み | PowerShell/cmd 例を補完 |
-| 日本語対応 | ⚠️ 欠如 → 追加済み | 全文日本語化・スタイルガイドを追補 |
-| Copilot 連携 | ⚠️ 欠如 → 追加済み | プロンプトパターンを補完 |
-
-**変更点のサマリー**:
-- 全文を日本語に翻訳（コード例・プレースホルダーは英語のまま）
-- Windows（PowerShell）向けコマンド例をすべてのテンプレートに追加
-- 日本語スタイルガイドを新規追加（ですます調、人称、専門用語の扱い方）
-- GitHub Copilot / Claude Code との連携プロンプトパターンを追加
-- 5原則に「段階的な開示」の構造をより明確に記述
-- テンプレート2 を「デベロッパーガイド」に刷新（認証・ユースケース・エラーハンドリング・SDK・OpenAPI 参照）
