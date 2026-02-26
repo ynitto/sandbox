@@ -1,11 +1,11 @@
 ---
 name: react-unit-tester
-description: react-frontend-coderで実装したReactコンポーネント・Zustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。実装完了後のテスト投入フロー。
+description: ReactコンポーネントとZustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。フロントエンド実装完了後のテスト投入フロー。
 ---
 
 # react-unit-tester
 
-React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネント・ストアのユニットテストを実装する。**react-frontend-coderの実装完了後に投入される**。
+React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネント・ストアのユニットテストを実装する。**フロントエンド実装完了後に投入される**。
 
 ## 責務範囲
 
@@ -78,17 +78,17 @@ React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネン
    目標: **>= 80% statements**
 
 3. **失敗分析・修正**
-   - テスト失敗 → 仕様確認 → react-frontend-coderで実装修正
+   - テスト失敗 → 仕様確認 → 実装側を修正
    - 不十分なカバレッジ → テストケース追加
 
-## react-frontend-coderとの連携
+## フロントエンド実装との連携
 
 |フェーズ|役割|
 |--|--|
 |Plan|要件・UI設計確定|
-|Sprint 1-3|react-frontend-coder: 実装|
-|Sprint 4+|react-unit-tester: テスト投入|
-|テスト失敗|react-unit-tester で問題箇所特定 → react-frontend-coderで実装側修正|
+|実装フェーズ|フロントエンド実装: コンポーネント・ストア実装|
+|テスト投入フェーズ|react-unit-tester: テスト投入|
+|テスト失敗時|react-unit-tester で問題箇所特定 → 実装側を修正|
 
 ## リソース
 

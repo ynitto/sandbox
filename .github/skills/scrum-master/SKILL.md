@@ -36,6 +36,7 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --r
    - **skill**: Phase 1のスキル一覧からマッチするスキル名。該当なしはnull
    - **depends_on**: 先行タスクのID
 4. スキーマ詳細は [references/plan-schema.md](references/plan-schema.md) を参照する
+5. プランJSONは **作業ディレクトリのルートに `plan.json` として保存する**
 
 **プランJSON最小スケルトン（この形式で生成すること）:**
 ```json
@@ -76,17 +77,17 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --r
    5. このタスクをスキップする
    ```
 2. ユーザーが「作成する」を選んだ場合:
-   - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル作成時」を使用）
+   - サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「スキル作成時」を使用）
    - 完了後、Phase 1を再実行してスキル一覧を更新する
    - バックログのskillフィールドを新スキル名で更新する
 3. ユーザーが「コードベースから生成する」を選んだ場合:
    - 対象コードベースのパスをユーザーに確認する
-   - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「コードベースからスキル生成時」を使用）
+   - サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「コードベースからスキル生成時」を使用）
    - 完了後、Phase 1を再実行してスキル一覧を更新する
    - バックログのskillフィールドを新スキル名で更新する
 4. ユーザーが「外部URLから取り込む」を選んだ場合:
    - スキルのGitリポジトリURLをユーザーに確認する
-   - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル招募時」を使用）
+   - サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「スキル招募時」を使用）
    - 完了後、Phase 1を再実行してスキル一覧を更新する
    - バックログのskillフィールドを新スキル名で更新する
 
@@ -106,12 +107,12 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --r
    4. このタスクをスキップする
    ```
 2. ユーザーが「改良する」を選んだ場合:
-   - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル改良時」を使用）
+   - サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「スキル改良時」を使用）
    - 完了後、Phase 1を再実行してスキル一覧を更新する
    - 分割により新スキルが生まれた場合、バックログ内の旧スキル参照を新スキル名で更新する
 3. ユーザーが「コードベースから補強する」を選んだ場合:
    - 参考にするコードベースのパスをユーザーに確認する
-   - `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「コードベースからスキル生成時」を使用。既存スキルの改良である旨と不足点を併せて渡す）
+   - サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「コードベースからスキル生成時」を使用。既存スキルの改良である旨と不足点を併せて渡す）
    - 完了後、Phase 1を再実行してスキル一覧を更新する
    - バックログのskillフィールドを更新後のスキル名で更新する
 
@@ -129,7 +130,7 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --r
    - **Wave N**: Wave N-1 のタスクに依存するタスク
    - 同一ウェーブ内のタスクは**並列実行**される
 6. プランJSONを生成する（`execution_groups` フィールドにウェーブを記録）
-7. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する）:
+7. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する。`plan.json` と `skills.json` はどちらも作業ディレクトリのルートに配置する）:
    ```bash
    python .github/skills/scrum-master/scripts/validate_plan.py plan.json --skills-json skills.json
    ```
@@ -173,7 +174,7 @@ Wave 3: [b5]     → 単独実行
 `execution_groups` の各ウェーブを順に処理する:
 
 1. **ウェーブ開始**: ウェーブ内の全タスクのstatusを `in_progress` に更新する
-2. **並列起動**: ウェーブ内の全タスクについて `#tool:agent/runSubagent` を**同時に**起動する
+2. **並列起動**: ウェーブ内の全タスクについてサブエージェントを**同時に**起動する（Claude Code: Task ツールを複数同時呼び出し / GitHub Copilot: `#tool:agent/runSubagent` を複数同時呼び出し）
    - **skill指定ありの場合** は該当スキルの SKILL.md をサブエージェントに読み込ませる
    - **skill: null の場合** は該当スキルを指定しない。skill: null で許可する作業は「情報の調査・確認」「ユーザーへの判断依頼」「ファイルの読み取り・軽微な編集」に限定する
    - タスクのactionとコンテキスト（先行タスクのresult）をプロンプトとして渡す
@@ -210,10 +211,12 @@ Wave 3: [b5]     → 単独実行
 スプリント内の全タスク完了後（またはユーザーが中断を選択後）、レビュー・フィードバック収集・スキル評価を順に行う。
 
 1. サブエージェントを起動する（テンプレート「スプリントレビュー時」を使用）
-2. sprint-reviewer が出力した JSON をそのままプランJSONに転記する:
-   - `review`（tasks + goal_progress）→ sprintsのreviewフィールド
-   - `retro`（keep/problem/try）→ sprintsのretroフィールド
-   - `impediments` → sprintsのimpedimentsフィールド
+2. sprint-reviewer が出力したテキストをパースしてプランJSONに格納する:
+   - `レビュー:` → sprintsの `review` フィールド（ゴール進捗評価）
+   - `進め方レビュー:` → sprintsの `process_review` フィールド
+   - `レトロスペクティブ:` → sprintsの `retro` フィールド
+   - `次スプリント反映アクション:` → sprintsの `next_sprint_actions` フィールド（配列）
+   - `ブロッカー:` → sprintsの `impediments` フィールド（「なし」の場合は空配列）
 3. **スキルフィードバック収集**: このスプリントで実行したスキルのフィードバックを一括収集する。
    skill が指定され completed になったタスクからスキル名を重複なく抽出し、ユーザーに一括確認する:
    ```
@@ -227,14 +230,14 @@ Wave 3: [b5]     → 単独実行
    python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
    ```
 
-4. **ワークスペーススキルの棚卸し**: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル評価時」を使用）
+4. **ワークスペーススキルの棚卸し**: サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「スキル評価時」を使用）
 
 5. **スキル発見**: 今スプリントで新しいスキルが作成された場合に提案する:
    ```
    最近のチャット履歴から新しいスキル候補を発見できるかもしれません。
    git-skill-manager discover を実行しますか？ [y/N]
    ```
-   - 「はい」: `#tool:agent/runSubagent` を使ってサブエージェントを起動する（テンプレート「スキル発見時」を使用）
+   - 「はい」: サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「スキル発見時」を使用）
    - 結果をreviewフィールドに追記する
 
 ### Phase 7: 進捗レポートと継続判断
@@ -278,6 +281,41 @@ Wave 3: [b5]     → 単独実行
 **重要**:
 - SKILL.md の内容をプロンプトに埋め込まない。ファイルパスだけ渡し、サブエージェント自身に読ませる。これによりプロンプトを短く保ち、安定性を確保する。
 - すべてのテンプレートに戻り値の形式指定を含める。これによりscrum-masterが結果を確実にパースできる。
+
+### requirements-definer 呼び出し時
+
+```
+requirements-definer スキルでユーザーと対話して要件を定義する。
+
+手順: まず .github/skills/requirements-definer/SKILL.md を読んで手順に従ってください。
+ユーザーのプロンプト: [元のプロンプト]
+出力先: requirements.json（作業ディレクトリのルート）
+出力スキーマ: .github/skills/requirements-definer/references/requirements-schema.md を参照すること。
+
+完了後、requirements.json を出力して終了してください。計画立案やタスク分解は行わないこと。
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+goal: [requirements.json の goal フィールドの値]
+要件数: 機能要件 [N] 件 / 非機能要件 [M] 件
+サマリー: [1〜2文で結果を説明]
+```
+
+**scrum-master の次の処理**: サブエージェント完了後、`requirements.json` を読み込んでバックログを作成する（Phase 2）。
+
+### skill: null タスク実行時（スキル不要な調査・判断・軽微な編集）
+
+```
+以下のタスクを実行してください。
+
+タスク: [action]
+コンテキスト: [先行タスクのresultを1〜2行で要約]
+完了基準: [done_criteria]
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+サマリー: [1〜2文で結果を説明]
+```
 
 ### スキル実行時
 
@@ -461,6 +499,15 @@ git-skill-manager スキルの discover 操作で、チャット履歴から新�
 - スクリプト実行は `python`（環境によっては `python3`）
 - パス区切りは `/` を使用する（クロスプラットフォームで動作する）
 - ファイル書き出し時の文字コードは **UTF-8 without BOM**
+
+### サブエージェント起動ツールの環境別対応
+
+| 環境 | サブエージェント起動方法 |
+|------|------------------------|
+| Claude Code | `Task` ツールを使用。`subagent_type: "general-purpose"` を指定する |
+| GitHub Copilot | `#tool:agent/runSubagent` を使用する |
+
+並列実行（同一ウェーブ）は、Claude Code では複数の Task ツール呼び出しを単一メッセージに並べることで実現する。
 
 ## エラーハンドリング
 

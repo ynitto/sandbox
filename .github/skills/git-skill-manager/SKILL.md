@@ -250,7 +250,7 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 1. `feedback_history` から未処理（`refined: false`）の `needs-improvement` / `broken` エントリを収集
 2. フィードバック一覧とスキルパスをユーザーに提示
 3. skill-creator サブエージェントを起動して改良を委譲（スキルパスを渡す）
-4. 改良完了後、`mark_refined` で `pending_refinement` を false に更新
+4. 改良完了後、スクリプト出力の `REFINE_COMPLETE_CMD:` 行に示されたコマンドを**必ず実行する**（`pending_refinement` フラグの解除と `refined` フラグの更新が行われる）
 5. インストール済みスキルかつ source_repo がリポジトリの場合は push を提案
 
 ### スキルパスの違い
@@ -260,7 +260,7 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 | ワークスペーススキル | `.github/skills/<name>/` |
 | インストール済みスキル | `~/.copilot/skills/<name>/` |
 
-`refine_skill()` はスクリプト出力に `スキルパス: <path>` を含むため、エージェントはそれを参照して skill-creator に正しいパスを渡す。
+`refine_skill()` はスクリプト出力に `スキルパス: <path>` および `REFINE_COMPLETE_CMD: python manage.py mark-refined <name>` を含む。エージェントはスキルパスを skill-creator に渡し、改良完了後に `REFINE_COMPLETE_CMD:` のコマンドを実行する。
 
 ```
 ユーザー: 「docx-converter を改良して」
@@ -316,15 +316,17 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 → 実装: `scripts/record_feedback.py`
 
 1. 対象スキル名を確認（不明な場合はユーザーに確認）
-2. ユーザーに確認:
+2. 次の選択肢をユーザーに提示し、**ユーザーの回答を受け取るまで待機する**（ターンを終えてユーザー入力を待つこと。回答前に次のステップへ進んではいけない）:
    ```
    「[スキル名] の実行はいかがでしたか？
     1. 問題なかった (ok)
     2. 改善点がある (needs-improvement)
     3. うまくいかなかった (broken)」
    ```
-3. `python record_feedback.py <name> --verdict <verdict> --note <note>` を実行
-4. 出力に `EVAL_RECOMMEND: promote|refine` が含まれる場合は `evaluate` 操作へ進む
+3. ユーザーの選択を `<verdict>` に使って `python record_feedback.py <name> --verdict <verdict> --note <note>` を実行
+4. 出力に応じて次のアクションを取る:
+   - `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` → `evaluate` 操作へ進む
+   - `EVAL_RECOMMEND: continue` → 「試用継続中です（あと N 回の ok フィードバックで昇格候補になります）」とユーザーに伝えて終了
 
 -----
 

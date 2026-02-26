@@ -406,8 +406,7 @@ def refine_skill(skill_name):
     print()
     print(f"スキルパス: {skill_path}  ({location_label})")
     print("これらのフィードバックを skill-creator に渡してスキルを改良してください。")
-    print(f"改良後は以下で refined フラグを更新してください:")
-    print(f"  python manage.py mark-refined {skill_name}")
+    print(f"REFINE_COMPLETE_CMD: python manage.py mark-refined {skill_name}")
 
 
 def mark_refined(skill_name):
