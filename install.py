@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -164,6 +165,111 @@ def setup_registry(installed_skills: list[dict]) -> None:
         json.dump(reg, f, indent=2, ensure_ascii=False)
 
 
+def _get_vscode_mcp_path() -> str | None:
+    """VS Code ユーザーレベルの mcp.json パスを返す。"""
+    if sys.platform == "darwin":
+        return os.path.join(HOME, "Library", "Application Support", "Code", "User", "mcp.json")
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        base = appdata if appdata else os.path.join(HOME, "AppData", "Roaming")
+        return os.path.join(base, "Code", "User", "mcp.json")
+    else:  # Linux
+        return os.path.join(HOME, ".config", "Code", "User", "mcp.json")
+
+
+def setup_mcp() -> bool:
+    """mcp.json をユーザーレベルの VS Code 設定に配置する。"""
+    src = os.path.join(REPO_ROOT, ".vscode", "mcp.json")
+    if not os.path.isfile(src):
+        return False
+
+    dest = _get_vscode_mcp_path()
+    if not dest:
+        return False
+
+    with open(src, encoding="utf-8") as f:
+        try:
+            src_cfg = json.load(f)
+        except json.JSONDecodeError:
+            return False
+
+    # $(pwd) をリポジトリの絶対パスに置換
+    src_str = json.dumps(src_cfg)
+    src_str = src_str.replace("$(pwd)", REPO_ROOT.replace("\\", "/"))
+    merged_servers = json.loads(src_str).get("servers", {})
+
+    # 既存 mcp.json と統合
+    if os.path.isfile(dest):
+        with open(dest, encoding="utf-8") as f:
+            try:
+                dest_cfg = json.load(f)
+            except json.JSONDecodeError:
+                dest_cfg = {}
+    else:
+        dest_cfg = {}
+
+    dest_cfg.setdefault("servers", {})
+    dest_cfg["servers"].update(merged_servers)
+
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as f:
+        json.dump(dest_cfg, f, indent=4, ensure_ascii=False)
+
+    print(f"   🔌 {dest}")
+    return True
+
+
+def _get_vscode_settings_path() -> str | None:
+    """VS Code ユーザーレベルの settings.json パスを返す。"""
+    if sys.platform == "darwin":
+        return os.path.join(HOME, "Library", "Application Support", "Code", "User", "settings.json")
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        base = appdata if appdata else os.path.join(HOME, "AppData", "Roaming")
+        return os.path.join(base, "Code", "User", "settings.json")
+    else:  # Linux
+        return os.path.join(HOME, ".config", "Code", "User", "settings.json")
+
+
+def setup_vscode_settings() -> bool:
+    """VS Code の settings.json に chat.mcp.autostart: true を設定する。"""
+    import re
+
+    dest = _get_vscode_settings_path()
+    if not dest:
+        return False
+
+    if os.path.isfile(dest):
+        with open(dest, encoding="utf-8") as f:
+            raw = f.read()
+        try:
+            settings = json.loads(raw)
+        except json.JSONDecodeError:
+            stripped = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
+            stripped = re.sub(r"//[^\n]*", "", stripped)
+            stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
+            try:
+                settings = json.loads(stripped)
+            except json.JSONDecodeError:
+                print("   (settings.json のパースに失敗しました、スキップ)")
+                return False
+    else:
+        settings = {}
+
+    if settings.get("chat.mcp.autostart") is True:
+        print("   (chat.mcp.autostart は設定済み、スキップ)")
+        return True
+
+    settings["chat.mcp.autostart"] = True
+
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=4, ensure_ascii=False)
+
+    print(f"   ⚙️  {dest}")
+    return True
+
+
 def copy_copilot_instructions() -> bool:
     """copilot-instructions.md をユーザーホームにコピーする。"""
     src = os.path.join(REPO_ROOT, ".github", "copilot-instructions.md")
@@ -208,7 +314,16 @@ def main() -> None:
     if not copy_copilot_instructions():
         print("   (ファイルが見つかりません、スキップ)")
 
-    # 5. 完了
+    # 5. mcp.json をユーザーレベルに配置
+    print("\n5. mcp.json をユーザーレベルに配置...")
+    if not setup_mcp():
+        print("   (.vscode/mcp.json が見つかりません、スキップ)")
+
+    # 6. VS Code 設定で MCP 自動起動を有効化
+    print("\n6. VS Code の chat.mcp.autostart を有効化...")
+    setup_vscode_settings()
+
+    # 完了
     print("\n" + "=" * 50)
     print(f"インストール完了: {len(installed)} 件のコアスキル")
     print("=" * 50)

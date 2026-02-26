@@ -60,10 +60,10 @@ nosetests.xml
 .ipynb_checkpoints/
 
 # Editor / IDE
-.vscode/
 .idea/
 *.swp
 *.swo
+.serena/
 
 # Environment files
 .env

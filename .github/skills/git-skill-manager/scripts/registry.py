@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 
 
 def _registry_path() -> str:
@@ -98,6 +100,114 @@ def save_registry(reg: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)
+
+
+def _vscode_mcp_path() -> str | None:
+    """VS Code ユーザーレベルの mcp.json パスを返す。"""
+    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "Code", "User", "mcp.json")
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        base = appdata if appdata else os.path.join(home, "AppData", "Roaming")
+        return os.path.join(base, "Code", "User", "mcp.json")
+    else:  # Linux
+        return os.path.join(home, ".config", "Code", "User", "mcp.json")
+
+
+def merge_mcp_config(src_cfg: dict, project_path: str) -> str | None:
+    """mcp.json をユーザーレベルの VS Code 設定にマージする。
+
+    src_cfg: .vscode/mcp.json の内容 (dict)
+    project_path: $(pwd) を置換するプロジェクトの絶対パス
+    戻り値: 書き込み先パス、またはスキップ時 None
+    """
+    dest = _vscode_mcp_path()
+    if not dest:
+        return None
+
+    # $(pwd) をプロジェクトパスに置換
+    src_str = json.dumps(src_cfg)
+    src_str = src_str.replace("$(pwd)", project_path.replace("\\", "/"))
+    merged_servers = json.loads(src_str).get("servers", {})
+
+    # 既存 mcp.json と統合
+    if os.path.isfile(dest):
+        with open(dest, encoding="utf-8") as f:
+            try:
+                dest_cfg = json.load(f)
+            except json.JSONDecodeError:
+                dest_cfg = {}
+    else:
+        dest_cfg = {}
+
+    dest_cfg.setdefault("servers", {})
+    dest_cfg["servers"].update(merged_servers)
+
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as f:
+        json.dump(dest_cfg, f, indent=4, ensure_ascii=False)
+
+    return dest
+
+
+def _vscode_settings_path() -> str | None:
+    """VS Code ユーザーレベルの settings.json パスを返す。"""
+    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "Code", "User", "settings.json")
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        base = appdata if appdata else os.path.join(home, "AppData", "Roaming")
+        return os.path.join(base, "Code", "User", "settings.json")
+    else:  # Linux
+        return os.path.join(home, ".config", "Code", "User", "settings.json")
+
+
+def _parse_jsonc(text: str) -> dict:
+    """JSONC（コメント付き JSON）をパースする。パース失敗時は空 dict を返す。"""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # ブロックコメントと行コメントを除去して再試行
+    stripped = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    stripped = re.sub(r"//[^\n]*", "", stripped)
+    # 末尾カンマを除去 (}, ])
+    stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return {}
+
+
+def set_vscode_autostart_mcp() -> str | None:
+    """VS Code の settings.json に chat.mcp.autostart: true を設定する。
+
+    既に設定済みの場合はスキップする。
+    戻り値: 書き込み先パス、またはスキップ時 None
+    """
+    dest = _vscode_settings_path()
+    if not dest:
+        return None
+
+    if os.path.isfile(dest):
+        with open(dest, encoding="utf-8") as f:
+            raw = f.read()
+        settings = _parse_jsonc(raw)
+    else:
+        settings = {}
+
+    if settings.get("chat.mcp.autostart") is True:
+        return None  # 既に設定済み
+
+    settings["chat.mcp.autostart"] = True
+
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=4, ensure_ascii=False)
+
+    return dest
 
 
 def is_skill_enabled(skill_name: str, reg: dict) -> bool:

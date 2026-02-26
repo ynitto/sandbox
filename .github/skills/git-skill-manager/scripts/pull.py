@@ -2,13 +2,14 @@
 """pull 操作: リポジトリからスキルを取得してインストールする。"""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 from datetime import datetime
 
-from registry import load_registry, save_registry, _cache_dir, _skill_home
+from registry import load_registry, save_registry, _cache_dir, _skill_home, merge_mcp_config, set_vscode_autostart_mcp
 from repo import clone_or_fetch, update_remote_index
 
 
@@ -244,6 +245,27 @@ def pull_skills(
         with open(dest, "w", encoding="utf-8") as f:
             f.write(merged)
         print(f"   📋 copilot-instructions.md → {dest}")
+
+    # mcp.json をユーザーレベルに配置
+    project_path = os.getcwd()
+    for repo in repos:
+        repo_cache = os.path.join(_cache_dir(), repo["name"])
+        mcp_src = os.path.join(repo_cache, ".vscode", "mcp.json")
+        if os.path.isfile(mcp_src):
+            with open(mcp_src, encoding="utf-8") as f:
+                try:
+                    src_cfg = json.load(f)
+                except json.JSONDecodeError:
+                    continue
+            dest = merge_mcp_config(src_cfg, project_path)
+            if dest:
+                print(f"   🔌 mcp.json → {dest}")
+            break
+
+    # chat.mcp.autostart を有効化
+    dest = set_vscode_autostart_mcp()
+    if dest:
+        print(f"   ⚙️  chat.mcp.autostart: true → {dest}")
 
     # 結果レポート
     print(f"\n📦 pull 完了")
