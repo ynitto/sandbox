@@ -44,13 +44,20 @@ def _skill_path(skill_name: str) -> str | None:
 
 
 def _parse_version(content: str) -> str | None:
-    """SKILL.md のフロントマターから version を取り出す。"""
+    """SKILL.md のフロントマターから metadata.version を取り出す。"""
     fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
     if not fm_match:
         return None
+    in_metadata = False
     for line in fm_match.group(1).splitlines():
-        if line.startswith("version:"):
-            return line[len("version:"):].strip().strip("\"'") or None
+        if line.startswith("metadata:"):
+            in_metadata = True
+            continue
+        if in_metadata:
+            if line and not line[0].isspace():
+                in_metadata = False
+            elif line.lstrip().startswith("version:"):
+                return line.split(":", 1)[1].strip().strip("\"'") or None
     return None
 
 
