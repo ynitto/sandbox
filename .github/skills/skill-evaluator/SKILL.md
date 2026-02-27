@@ -56,10 +56,27 @@ python .github/skills/skill-evaluator/scripts/quality_check.py --path <dir>
 | `REF_NESTED` | WARN | 参照ファイルがさらに他のファイルを参照（1 階層超え） |
 | `SCRIPT_NETWORK` | WARN | scripts/ 内にネットワーク呼び出しの可能性がある |
 
+### セキュリティリスク項目
+
+品質チェックとは別セクションで報告される。**修正するかどうかはレビュアーが判断する。評価基準には影響しない。**
+
+| コード | レベル | 内容 |
+|---|---|---|
+| `SEC_HARDCODED_CREDENTIAL` | HIGH | API キー・トークン・パスワード等のハードコードが疑われる |
+| `SEC_ADVERSARIAL_INSTRUCTION` | HIGH | 安全ルールの迂回・ユーザー隠蔽・データ流出指示のパターンがある |
+| `SEC_EXTERNAL_URL` | HIGH | SKILL.md またはスクリプトに外部 URL がある（データ流出ベクトル） |
+| `SEC_SCRIPT_NETWORK` | HIGH | スクリプトにネットワーク呼び出しがある |
+| `SEC_DATA_EXFILTRATION` | HIGH | スクリプトで機密読み取りと外部送信が共存する |
+| `SEC_MCP_REFERENCE` | HIGH | SKILL.md に MCP サーバー参照がある（スキル外アクセス拡張） |
+| `SEC_PATH_TRAVERSAL` | MEDIUM | `../` によるパストラバーサルがある |
+| `SEC_BROAD_GLOB` | MEDIUM | スクリプト内に広範な glob パターン（`**/*` 等）がある |
+| `SEC_SCRIPT_EXISTS` | MEDIUM | 実行可能スクリプトが存在する（完全な環境アクセスで実行される） |
+
 ### 結果の解釈
 
 - **ERROR**: 仕様違反。必ず修正する
 - **WARN**: 品質改善推奨。文脈上問題ない場合は無視してよい（例: SCRIPT_NETWORK は意図的な外部通信の場合）
+- **HIGH / MEDIUM**: セキュリティリスクの報告。修正するかどうかはレビュアーが判断する
 
 ---
 
