@@ -30,6 +30,22 @@ def load_registry() -> dict | None:
         return json.load(f)
 
 
+def _maturity_stage(total_feedback: int) -> str:
+    """総フィードバック数から成熟度ステージを返す。
+
+    Returns:
+        "initial"   : データ不足（< 2件）
+        "evaluable" : 評価可能（2〜4件）
+        "mature"    : 十分な実績（≥ 5件）
+    """
+    if total_feedback < 2:
+        return "initial"
+    elif total_feedback >= 5:
+        return "mature"
+    else:
+        return "evaluable"
+
+
 def evaluate_skill(skill: dict) -> dict:
     """1スキルの評価結果を返す。
 
@@ -38,7 +54,10 @@ def evaluate_skill(skill: dict) -> dict:
             "name": str,
             "source_repo": str,
             "ok_count": int,
-            "problem_count": int,
+            "broken_count": int,
+            "problem_count": int,        # broken + needs-improvement（未改良）
+            "total_feedback": int,
+            "maturity_stage": "initial" | "evaluable" | "mature",
             "pending_refinement": bool,
             "recommendation": "promote" | "refine" | "continue" | "ok",
         }
@@ -48,22 +67,35 @@ def evaluate_skill(skill: dict) -> dict:
         - "refine"   : 改良が必要（ワークスペース・インストール済み共通）
         - "continue" : ワークスペーススキルで試用継続
         - "ok"       : インストール済みスキルが正常稼働中
+
+    評価基準（詳細）:
+        - broken は深刻度「高」。1件でも即要改良（ok 数に関わらず）
+        - needs-improvement は深刻度「中」。問題ありとしてカウント
+        - maturity_stage が "initial" の場合は昇格条件を満たしても試用継続を優先
     """
     source = skill.get("source_repo", "")
     is_workspace = source == "workspace"
 
     history = skill.get("feedback_history", [])
     ok_count = sum(1 for e in history if e.get("verdict") == "ok")
-    problem_count = sum(
+    broken_count = sum(
         1 for e in history
-        if e.get("verdict") in ("needs-improvement", "broken") and not e.get("refined")
+        if e.get("verdict") == "broken" and not e.get("refined")
     )
+    needs_improvement_count = sum(
+        1 for e in history
+        if e.get("verdict") == "needs-improvement" and not e.get("refined")
+    )
+    problem_count = broken_count + needs_improvement_count
+    total_feedback = len(history)
+    maturity = _maturity_stage(total_feedback)
     pending = skill.get("pending_refinement", False)
 
     if is_workspace:
-        if pending or problem_count > 0:
+        # broken は深刻度「高」: ok 数に関わらず即要改良
+        if pending or broken_count > 0 or needs_improvement_count > 0:
             recommendation = "refine"
-        elif ok_count >= 2:
+        elif ok_count >= 2 and maturity != "initial":
             recommendation = "promote"
         else:
             recommendation = "continue"
@@ -78,27 +110,41 @@ def evaluate_skill(skill: dict) -> dict:
         "name": skill["name"],
         "source_repo": source,
         "ok_count": ok_count,
+        "broken_count": broken_count,
         "problem_count": problem_count,
+        "total_feedback": total_feedback,
+        "maturity_stage": maturity,
         "pending_refinement": pending,
         "recommendation": recommendation,
     }
+
+
+_MATURITY_LABEL = {
+    "initial":   "📊 初期",
+    "evaluable": "📊 評価可",
+    "mature":    "📊 実績十分",
+}
 
 
 def _print_workspace_results(results: list) -> None:
     print("📋 ワークスペーススキル（試用中）:\n")
     for ev in results:
         ok = ev["ok_count"]
+        broken = ev["broken_count"]
         prob = ev["problem_count"]
         rec = ev["recommendation"]
+        maturity = _MATURITY_LABEL[ev["maturity_stage"]]
 
         if rec == "promote":
             mark = "✅ 昇格推奨"
         elif rec == "refine":
             mark = "⚠️  要改良後昇格"
+            if broken > 0:
+                mark += f"  ※broken:{broken}"
         else:
             mark = "🔄 試用継続"
 
-        print(f"  {ev['name']:30s}  ok:{ok} 問題:{prob}  → {mark}")
+        print(f"  {ev['name']:30s}  ok:{ok} 問題:{prob}  {maturity}  → {mark}")
 
     print()
     promotable = [e for e in results if e["recommendation"] == "promote"]
@@ -118,13 +164,20 @@ def _print_installed_results(results: list) -> None:
     print("📋 インストール済みスキル（ホーム領域）:\n")
     for ev in results:
         ok = ev["ok_count"]
+        broken = ev["broken_count"]
         prob = ev["problem_count"]
         rec = ev["recommendation"]
         src = ev["source_repo"]
         src_label = f"[{src}]"
+        maturity = _MATURITY_LABEL[ev["maturity_stage"]]
 
-        mark = "⚠️  要改良" if rec == "refine" else "✅ 正常"
-        print(f"  {ev['name']:30s}  ok:{ok} 問題:{prob}  → {mark}  {src_label}")
+        if rec == "refine":
+            mark = "⚠️  要改良"
+            if broken > 0:
+                mark += f"  ※broken:{broken}"
+        else:
+            mark = "✅ 正常"
+        print(f"  {ev['name']:30s}  ok:{ok} 問題:{prob}  {maturity}  → {mark}  {src_label}")
 
     print()
     refinable = [e for e in results if e["recommendation"] == "refine"]
