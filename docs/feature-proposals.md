@@ -255,10 +255,153 @@ steps:
 
 ---
 
-## 3. 優先度マトリクス
+## 3. ノードフェデレーション機能（各ノードでの改善を中央へ選択的集約）
+
+中央リポジトリを信頼の集積点として残しつつ、各ノード（開発環境）での
+ローカル改善を可視化し、価値あるものだけを中央へ貢献できる仕組み。
+
+詳細設計: [docs/node-federation-design.md](./node-federation-design.md)
+
+---
+
+### 3.1 ノードアイデンティティ管理（`node_identity.py`）
+
+**現状**: 誰の環境からのスキル改善かを追跡できない。
+
+**実装**: `registry.json` に `node.id` フィールドを追加。環境ごとに一意IDを付与。
+
+```bash
+python node_identity.py init --name "tokyo-team"
+python node_identity.py show
+```
+
+**効果**: 中央へのPR時に「node-abc123 (tokyo-team) からの貢献」として追跡可能。
+
+---
+
+### 3.2 ローカル差分追跡（`delta_tracker.py`）
+
+**現状**: ノードでスキルを変更しても、中央との差分を追跡する手段がない。
+
+**実装**: SKILL.md のハッシュ比較で `lineage.local_modified` を自動検出。
+
+```bash
+python delta_tracker.py                      # 全スキルをスキャン
+python delta_tracker.py --note my-skill "RSC対応を追加"
+```
+
+**効果**: 「このスキルはローカルで改善済み → 中央への貢献候補」を自動特定。
+
+---
+
+### 3.3 昇格ポリシーエンジン（`promotion_policy.py`）
+
+**現状**: 「ok が3回で昇格候補」という単純な閾値のみ。設定不可・自動通知なし。
+
+**実装**: ポリシーを `registry.json` で設定可能にし、複合条件で昇格適性を自動判定。
+
+```bash
+python promotion_policy.py                   # 全スキルを評価
+python promotion_policy.py --queue           # 適格スキルを貢献キューへ追加
+python promotion_policy.py --set-policy min_ok_count=5
+```
+
+**昇格条件（デフォルト）**:
+- ok 件数 ≥ 3
+- 問題率 ≤ 10%
+- ローカルで何らかの改善あり（`local_modified: true`）
+- 未解決問題なし（`pending_refinement: false`）
+
+---
+
+### 3.4 選択的同期ポリシー（`sync_policy` in `registry.json`）
+
+**現状**: pull 時にローカル改善が中央の更新で上書きされてしまう。
+
+**実装**: `sync_policy.protect_local_modified: true` でローカル改善を保護。
+
+```json
+{
+  "sync_policy": {
+    "auto_accept_patch": true,
+    "auto_accept_minor": false,
+    "protect_local_modified": true
+  }
+}
+```
+
+**効果**: ローカル改善済みスキルは中央の更新があっても上書きされず通知のみ。
+
+---
+
+### 3.5 貢献キュー（`contribution_queue` in `registry.json`）
+
+**現状**: 昇格は「評価→即push」の二択。レビュー待ち機構がない。
+
+**実装**: `contribution_queue` フィールドで昇格候補をステージング。
+
+```json
+{
+  "contribution_queue": [
+    {
+      "skill_name": "react-frontend-coder",
+      "queued_at": "2026-02-27T10:00:00Z",
+      "reason": "ok:5件; ローカル改善あり",
+      "status": "pending_review",
+      "node_id": "node-abc123"
+    }
+  ]
+}
+```
+
+**ステータス**: `pending_review` → `merged` / `rejected`
+
+---
+
+### 3.6 スキル系譜（lineage）追跡
+
+**現状**: スキルの出所（`source_repo`）はあるが、「どの版から派生したか」の記録がない。
+
+**実装**: `installed_skills[].lineage` フィールドで派生元を記録。
+
+```json
+{
+  "lineage": {
+    "origin_repo": "team-skills",
+    "origin_commit": "a1b2c3d",
+    "origin_version": "1.2.0",
+    "local_modified": true,
+    "diverged_at": "2026-02-20T00:00:00Z",
+    "local_changes_summary": "RSC対応を追加"
+  }
+}
+```
+
+---
+
+### 3.7 セマンティックバージョニング（SKILL.md への `version` 追加）
+
+**現状**: コミットハッシュのみでバージョン管理。「新しいか古いか」が直感的でない。
+
+**実装**: SKILL.md フロントマターに `version` フィールドを追加。
+
+```yaml
+---
+name: react-frontend-coder
+description: "..."
+version: 1.3.0
+---
+```
+
+**レジストリ**: `version` (ローカル版) と `central_version` (中央版) を比較し `version_ahead` を設定。
+
+---
+
+## 4. 優先度マトリクス
 
 | 提案 | 実装コスト | ユーザー価値 | 推奨優先度 |
 |------|-----------|-------------|-----------|
+| **ノードフェデレーション（全体）** | 中 | 高 | **★★★** |
 | code-reviewer | 中 | 高 | **★★★** |
 | スキル依存関係管理 | 低 | 高 | **★★★** |
 | スキルコンポジション | 中 | 高 | **★★★** |
@@ -274,4 +417,5 @@ steps:
 | サンドボックス実行環境 | 高 | 中 | **★☆☆** |
 | マーケットプレイス | 高 | 高 | **★☆☆** |
 
-> 推奨: まず ★★★ の4項目を Sprint 1〜2 で実装し、フレームワークの基盤を強化した上で ★★☆ に進む。
+> 推奨: まず ★★★ の項目を Sprint 1〜2 で実装し、フレームワークの基盤を強化した上で ★★☆ に進む。
+> ノードフェデレーションは `docs/node-federation-design.md` の Phase 1 から着手する。

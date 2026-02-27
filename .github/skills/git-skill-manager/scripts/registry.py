@@ -64,12 +64,56 @@ def migrate_registry(reg: dict) -> dict:
             "last_checked_at": None,
         })
 
+    # v4 → v5: ノードフェデレーション機能を追加
+    if version < 5:
+        # ノードアイデンティティ
+        reg.setdefault("node", {
+            "id": None,       # node_identity.py で生成
+            "name": None,
+            "created_at": None,
+        })
+        # 昇格ポリシー（何を中央にあげるかの基準）
+        reg.setdefault("promotion_policy", {
+            "min_ok_count": 3,
+            "max_problem_rate": 0.1,
+            "require_local_modified": True,
+            "auto_pr": False,
+            "notify_on_eligible": True,
+        })
+        # 選択的同期ポリシー（中央→ノード方向の制御）
+        reg.setdefault("sync_policy", {
+            "auto_accept_patch": True,
+            "auto_accept_minor": False,
+            "protect_local_modified": True,
+        })
+        # 貢献キュー（昇格候補のステージング）
+        reg.setdefault("contribution_queue", [])
+        # 各スキルに系譜・バージョン・メトリクスを追加
+        for skill in reg.get("installed_skills", []):
+            skill.setdefault("version", None)
+            skill.setdefault("central_version", None)
+            skill.setdefault("version_ahead", False)
+            skill.setdefault("lineage", {
+                "origin_repo": skill.get("source_repo"),
+                "origin_commit": skill.get("commit_hash"),
+                "origin_version": None,
+                "local_modified": False,
+                "diverged_at": None,
+                "local_changes_summary": "",
+            })
+            skill.setdefault("metrics", {
+                "total_executions": 0,
+                "ok_rate": None,
+                "last_executed_at": None,
+                "central_ok_rate": None,
+            })
+
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
     for skill in reg.get("installed_skills", []):
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
-    reg["version"] = 4
+    reg["version"] = 5
     return reg
 
 
@@ -80,7 +124,12 @@ def load_registry() -> dict:
             reg = json.load(f)
         return migrate_registry(reg)
     return {
-        "version": 4,
+        "version": 5,
+        "node": {
+            "id": None,
+            "name": None,
+            "created_at": None,
+        },
         "repositories": [],
         "installed_skills": [],
         "core_skills": list(CORE_SKILLS_DEFAULT),
@@ -93,6 +142,19 @@ def load_registry() -> dict:
             "notify_only": True,
             "last_checked_at": None,
         },
+        "promotion_policy": {
+            "min_ok_count": 3,
+            "max_problem_rate": 0.1,
+            "require_local_modified": True,
+            "auto_pr": False,
+            "notify_on_eligible": True,
+        },
+        "sync_policy": {
+            "auto_accept_patch": True,
+            "auto_accept_minor": False,
+            "protect_local_modified": True,
+        },
+        "contribution_queue": [],
     }
 
 
