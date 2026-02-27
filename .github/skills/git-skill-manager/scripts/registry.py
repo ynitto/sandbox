@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 
 
@@ -208,6 +209,34 @@ def set_vscode_autostart_mcp() -> str | None:
         json.dump(settings, f, indent=4, ensure_ascii=False)
 
     return dest
+
+
+def _is_uv_required(servers: dict) -> bool:
+    """サーバー設定に uvx/uv コマンドが含まれるか確認する。"""
+    return any(
+        v.get("command") in ("uv", "uvx")
+        for v in servers.values()
+        if isinstance(v, dict)
+    )
+
+
+def _check_uv_installed() -> bool:
+    """uv/uvx がインストール済みかどうかを確認する。"""
+    return shutil.which("uvx") is not None or shutil.which("uv") is not None
+
+
+def _get_new_mcp_servers(src_servers: dict, dest_path: str) -> dict:
+    """新規追加される MCP サーバーを返す（既存 mcp.json に存在しないもの）。"""
+    if dest_path and os.path.isfile(dest_path):
+        try:
+            with open(dest_path, encoding="utf-8") as f:
+                existing = json.load(f)
+            existing_servers = existing.get("servers", {})
+        except (json.JSONDecodeError, OSError):
+            existing_servers = {}
+    else:
+        existing_servers = {}
+    return {k: v for k, v in src_servers.items() if k not in existing_servers}
 
 
 def is_skill_enabled(skill_name: str, reg: dict) -> bool:
