@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""スキル管理操作: list / search / enable / disable / pin / unpin / lock / unlock / promote / profile / diff / sync。"""
+"""スキル管理操作: list / search / enable / disable / pin / unpin / lock / unlock / promote / profile / diff / sync / changelog。"""
 from __future__ import annotations
 
 import os
@@ -11,6 +11,7 @@ from datetime import datetime
 from registry import load_registry, save_registry, is_skill_enabled, _skill_home, _cache_dir
 from repo import clone_or_fetch, update_remote_index
 from push import push_skill
+from changelog import generate_changelog
 
 
 # ---------------------------------------------------------------------------
@@ -698,3 +699,33 @@ def profile_delete(profile_name):
     del profiles[profile_name]
     save_registry(reg)
     print(f"✅ プロファイル '{profile_name}' を削除しました")
+
+
+# ---------------------------------------------------------------------------
+# changelog
+# ---------------------------------------------------------------------------
+
+def changelog_skill(skill_name: str, dry_run: bool = False) -> None:
+    """スキルの CHANGELOG.md を git ログとフロントマターのバージョン変更から生成する。
+
+    スキルのファイルを変更した後に呼び出す。フロントマターの version が変わった
+    タイミングでセクションを区切り、コミットメッセージを箇条書きにまとめる。
+    dry_run=True の場合はファイルに書かずに内容を表示する。
+    """
+    content = generate_changelog(skill_name)
+
+    if dry_run:
+        print(content)
+        return
+
+    from changelog import _skill_path
+    path = _skill_path(skill_name)
+    if not path:
+        print(f"❌ スキル '{skill_name}' が見つかりません")
+        return
+
+    import os
+    out = os.path.join(path, "CHANGELOG.md")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(content)
+    print(f"✅ {out} を生成しました")

@@ -17,6 +17,36 @@ from registry import (
 from repo import clone_or_fetch, update_remote_index
 
 
+def _read_frontmatter_version(skill_path: str) -> str | None:
+    """SKILL.md のフロントマターから version を読み取る。未記載なら None。"""
+    skill_md = os.path.join(skill_path, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return None
+    with open(skill_md, encoding="utf-8") as f:
+        content = f.read()
+    import re as _re
+    fm = _re.match(r'^---\s*\n(.*?)\n---', content, _re.DOTALL)
+    if not fm:
+        return None
+    for line in fm.group(1).splitlines():
+        if line.startswith("version:"):
+            ver = line[len("version:"):].strip().strip("\"'")
+            return ver or None
+    return None
+
+
+def _auto_save_snapshot() -> str | None:
+    """pull 前に自動スナップショットを保存する。失敗しても pull は続行する。"""
+    try:
+        import sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        from snapshot import save_snapshot
+        return save_snapshot(label="pull前自動保存")
+    except Exception as e:
+        print(f"   ⚠️  スナップショット保存をスキップしました: {e}")
+        return None
+
+
 def _merge_copilot_instructions(parts: list[str]) -> str:
     """複数の copilot-instructions.md を H2 セクション単位でマージする。
 
@@ -101,6 +131,9 @@ def pull_skills(
             return
 
     os.makedirs(skill_home, exist_ok=True)
+
+    # pull 前にスナップショットを自動保存（ロールバック用）
+    snap_id = _auto_save_snapshot()
 
     # 全リポジトリからスキル候補を収集
     candidates: dict[str, list[dict]] = {}
@@ -210,6 +243,7 @@ def pull_skills(
         shutil.copytree(winner["full_path"], dest)
 
         enabled = existing_skill.get("enabled", True) if existing_skill else True
+        version = _read_frontmatter_version(dest)
 
         installed.append({
             "name": sname,
@@ -219,14 +253,34 @@ def pull_skills(
             "installed_at": datetime.now().isoformat(),
             "enabled": enabled,
             "pinned_commit": pinned,
+            "version": version,
         })
 
     # レジストリ更新
     existing = {s["name"]: s for s in reg.get("installed_skills", [])}
     for s in installed:
         old = existing.get(s["name"], {})
+        # v3フィールドを引き継ぐ
         s["feedback_history"] = old.get("feedback_history", [])
         s["pending_refinement"] = old.get("pending_refinement", False)
+        # v5フィールドを設定する（pull後はソース追跡情報を更新、統計は引き継ぐ）
+        # s["version"] は installed.append() 時にフロントマターから設定済み
+        s["central_version"] = None
+        s["version_ahead"] = False
+        s["lineage"] = {
+            "origin_repo": s["source_repo"],
+            "origin_commit": s["commit_hash"],
+            "origin_version": None,
+            "local_modified": False,
+            "diverged_at": None,
+            "local_changes_summary": "",
+        }
+        s["metrics"] = old.get("metrics", {
+            "total_executions": 0,
+            "ok_rate": None,
+            "last_executed_at": None,
+            "central_ok_rate": None,
+        })
         existing[s["name"]] = s
     reg["installed_skills"] = list(existing.values())
     save_registry(reg)
@@ -316,3 +370,6 @@ def pull_skills(
         pin_mark = f" 📌{s['pinned_commit'][:7]}" if s.get("pinned_commit") else ""
         status = "✅" if s["enabled"] else "⏸️"
         print(f"   {status} {s['name']} ← {s['source_repo']} ({s['commit_hash']}){pin_mark}")
+    if snap_id and installed:
+        print(f"\n   💡 問題があれば元に戻せます:")
+        print(f"      python snapshot.py restore --latest")
