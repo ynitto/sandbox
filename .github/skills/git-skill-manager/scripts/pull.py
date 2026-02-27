@@ -17,6 +17,24 @@ from registry import (
 from repo import clone_or_fetch, update_remote_index
 
 
+def _read_frontmatter_version(skill_path: str) -> str | None:
+    """SKILL.md のフロントマターから version を読み取る。未記載なら None。"""
+    skill_md = os.path.join(skill_path, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return None
+    with open(skill_md, encoding="utf-8") as f:
+        content = f.read()
+    import re as _re
+    fm = _re.match(r'^---\s*\n(.*?)\n---', content, _re.DOTALL)
+    if not fm:
+        return None
+    for line in fm.group(1).splitlines():
+        if line.startswith("version:"):
+            ver = line[len("version:"):].strip().strip("\"'")
+            return ver or None
+    return None
+
+
 def _auto_save_snapshot() -> str | None:
     """pull 前に自動スナップショットを保存する。失敗しても pull は続行する。"""
     try:
@@ -225,6 +243,7 @@ def pull_skills(
         shutil.copytree(winner["full_path"], dest)
 
         enabled = existing_skill.get("enabled", True) if existing_skill else True
+        version = _read_frontmatter_version(dest)
 
         installed.append({
             "name": sname,
@@ -234,6 +253,7 @@ def pull_skills(
             "installed_at": datetime.now().isoformat(),
             "enabled": enabled,
             "pinned_commit": pinned,
+            "version": version,
         })
 
     # レジストリ更新
@@ -244,7 +264,7 @@ def pull_skills(
         s["feedback_history"] = old.get("feedback_history", [])
         s["pending_refinement"] = old.get("pending_refinement", False)
         # v5フィールドを設定する（pull後はソース追跡情報を更新、統計は引き継ぐ）
-        s["version"] = None
+        # s["version"] は installed.append() 時にフロントマターから設定済み
         s["central_version"] = None
         s["version_ahead"] = False
         s["lineage"] = {
