@@ -2,6 +2,12 @@
 
 パス: `~/.copilot/skill-registry.json`（Windows: `%USERPROFILE%\.copilot\skill-registry.json`）
 
+## 目次
+
+- [完全なJSON例](#完全なjson例)
+- [フィールド説明](#フィールド説明)
+- [マイグレーション](#マイグレーション)
+
 ## 完全なJSON例
 
 ```json
