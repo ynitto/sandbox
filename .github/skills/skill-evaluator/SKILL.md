@@ -24,9 +24,48 @@ description: ワークスペーススキル（.github/skills/）とインスト�
 | ⚠️ 要改良 | `pending_refinement: true` または未改良問題あり | git-skill-manager refine（必要なら push） |
 | ✅ 正常 | 問題なし | 報告のみ |
 
+## スキル品質チェック（静的）
+
+ベストプラクティスガイドラインに基づいてスキルの静的品質を検査する。
+使用履歴の動的評価（`evaluate.py`）と組み合わせて使う。
+
+```bash
+# ワークスペーススキルを全チェック
+python .github/skills/skill-evaluator/scripts/quality_check.py
+
+# 特定スキルのみ
+python .github/skills/skill-evaluator/scripts/quality_check.py --skill <skill-name>
+
+# 任意ディレクトリ
+python .github/skills/skill-evaluator/scripts/quality_check.py --path <dir>
+```
+
+### チェック項目
+
+| コード | 深刻度 | 内容 |
+|---|---|---|
+| `NAME_RESERVED_WORD` | ERROR | name に予約語（anthropic 等）が含まれる |
+| `NAME_AMBIGUOUS` | WARN | name が曖昧・汎用的すぎる（helper, utils, tools 等） |
+| `DESC_XML_TAG` | ERROR | description に XML タグが含まれる |
+| `DESC_FIRST_PERSON` | WARN | description が一人称（「お手伝いします」等）で書かれている |
+| `DESC_NO_TRIGGER` | WARN | description にトリガー条件（「〜の場合」「〜とき」等）がない |
+| `META_NO_VERSION` | WARN | metadata.version が未設定 |
+| `BODY_TOO_LONG` | WARN | SKILL.md 本文が 500 行超 |
+| `PATH_BACKSLASH` | WARN | ファイルパスにバックスラッシュ（Windows スタイル）が使われている |
+| `REF_NO_TOC` | WARN | 100 行以上の参照ファイルに目次がない |
+| `REF_NESTED` | WARN | 参照ファイルがさらに他のファイルを参照（1 階層超え） |
+| `SCRIPT_NETWORK` | WARN | scripts/ 内にネットワーク呼び出しの可能性がある |
+
+### 結果の解釈
+
+- **ERROR**: 仕様違反。必ず修正する
+- **WARN**: 品質改善推奨。文脈上問題ない場合は無視してよい（例: SCRIPT_NETWORK は意図的な外部通信の場合）
+
+---
+
 ## スキル品質評価の詳細基準
 
-skill-creator が作成時の静的品質（構造・フロントマター・説明文）を検証するのに対し、skill-evaluator は**使用履歴に基づく動的評価**を行う。以下が skill-evaluator 固有の観点。
+skill-creator が作成時の基本構造（name・description の有無・行数上限）を検証するのに対し、skill-evaluator は**ガイドラインに基づく静的品質チェック**と**使用履歴に基づく動的評価**の両方を行う。
 
 ### 問題の深刻度分類
 
@@ -69,6 +108,16 @@ verdict の傾向から、スキルの構造的問題を推察して改良提案
 - 改良後も `needs-improvement` / `broken` が続く → 改良効果不十分（再改良を推奨）
 
 ## ワークフロー
+
+### 0. 品質チェックを実行する（任意）
+
+フィードバック評価の前に静的品質チェックを実行して構造的な問題を事前に把握する。
+
+```bash
+python .github/skills/skill-evaluator/scripts/quality_check.py
+```
+
+ERROR が出た場合は修正してから動的評価に進む。
 
 ### 1. 評価スクリプトを実行する
 
