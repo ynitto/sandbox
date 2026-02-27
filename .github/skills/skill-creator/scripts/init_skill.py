@@ -31,6 +31,8 @@ def init_skill(name: str, base_path: str) -> None:
     skill_md = f"""---
 name: {name}
 description: TODO - このスキルの説明を記述する。何をするか＋いつ使うかを含める。
+metadata:
+  version: "1.0"
 ---
 
 # {name}

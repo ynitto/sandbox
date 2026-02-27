@@ -18,7 +18,7 @@ from repo import clone_or_fetch, update_remote_index
 
 
 def _read_frontmatter_version(skill_path: str) -> str | None:
-    """SKILL.md のフロントマターから version を読み取る。未記載なら None。"""
+    """SKILL.md のフロントマターから metadata.version を読み取る。未記載なら None。"""
     skill_md = os.path.join(skill_path, "SKILL.md")
     if not os.path.isfile(skill_md):
         return None
@@ -28,10 +28,17 @@ def _read_frontmatter_version(skill_path: str) -> str | None:
     fm = _re.match(r'^---\s*\n(.*?)\n---', content, _re.DOTALL)
     if not fm:
         return None
+    in_metadata = False
     for line in fm.group(1).splitlines():
-        if line.startswith("version:"):
-            ver = line[len("version:"):].strip().strip("\"'")
-            return ver or None
+        if line.startswith("metadata:"):
+            in_metadata = True
+            continue
+        if in_metadata:
+            if line and not line[0].isspace():
+                in_metadata = False
+            elif line.lstrip().startswith("version:"):
+                ver = line.split(":", 1)[1].strip().strip("\"'")
+                return ver or None
     return None
 
 

@@ -24,9 +24,65 @@ description: ワークスペーススキル（.github/skills/）とインスト�
 | ⚠️ 要改良 | `pending_refinement: true` または未改良問題あり | git-skill-manager refine（必要なら push） |
 | ✅ 正常 | 問題なし | 報告のみ |
 
+## スキル品質チェック（静的）
+
+ベストプラクティスガイドラインに基づいてスキルの静的品質を検査する。
+使用履歴の動的評価（`evaluate.py`）と組み合わせて使う。
+
+```bash
+# ワークスペーススキルを全チェック
+python .github/skills/skill-evaluator/scripts/quality_check.py
+
+# 特定スキルのみ
+python .github/skills/skill-evaluator/scripts/quality_check.py --skill <skill-name>
+
+# 任意ディレクトリ
+python .github/skills/skill-evaluator/scripts/quality_check.py --path <dir>
+```
+
+### チェック項目
+
+| コード | 深刻度 | 内容 |
+|---|---|---|
+| `NAME_RESERVED_WORD` | ERROR | name に予約語（anthropic 等）が含まれる |
+| `NAME_AMBIGUOUS` | WARN | name が曖昧・汎用的すぎる（helper, utils, tools 等） |
+| `DESC_XML_TAG` | ERROR | description に XML タグが含まれる |
+| `DESC_FIRST_PERSON` | WARN | description が一人称（「お手伝いします」等）で書かれている |
+| `DESC_NO_TRIGGER` | WARN | description にトリガー条件（「〜の場合」「〜とき」等）がない |
+| `META_NO_VERSION` | WARN | metadata.version が未設定 |
+| `BODY_TOO_LONG` | WARN | SKILL.md 本文が 500 行超 |
+| `PATH_BACKSLASH` | WARN | ファイルパスにバックスラッシュ（Windows スタイル）が使われている |
+| `REF_NO_TOC` | WARN | 100 行以上の参照ファイルに目次がない |
+| `REF_NESTED` | WARN | 参照ファイルがさらに他のファイルを参照（1 階層超え） |
+| `SCRIPT_NETWORK` | WARN | scripts/ 内にネットワーク呼び出しの可能性がある |
+
+### セキュリティリスク項目
+
+品質チェックとは別セクションで報告される。**修正するかどうかはレビュアーが判断する。評価基準には影響しない。**
+
+| コード | レベル | 内容 |
+|---|---|---|
+| `SEC_HARDCODED_CREDENTIAL` | HIGH | API キー・トークン・パスワード等のハードコードが疑われる |
+| `SEC_ADVERSARIAL_INSTRUCTION` | HIGH | 安全ルールの迂回・ユーザー隠蔽・データ流出指示のパターンがある |
+| `SEC_EXTERNAL_URL` | HIGH | SKILL.md またはスクリプトに外部 URL がある（データ流出ベクトル） |
+| `SEC_SCRIPT_NETWORK` | HIGH | スクリプトにネットワーク呼び出しがある |
+| `SEC_DATA_EXFILTRATION` | HIGH | スクリプトで機密読み取りと外部送信が共存する |
+| `SEC_MCP_REFERENCE` | HIGH | SKILL.md に MCP サーバー参照がある（スキル外アクセス拡張） |
+| `SEC_PATH_TRAVERSAL` | MEDIUM | `../` によるパストラバーサルがある |
+| `SEC_BROAD_GLOB` | MEDIUM | スクリプト内に広範な glob パターン（`**/*` 等）がある |
+| `SEC_SCRIPT_EXISTS` | MEDIUM | 実行可能スクリプトが存在する（完全な環境アクセスで実行される） |
+
+### 結果の解釈
+
+- **ERROR**: 仕様違反。必ず修正する
+- **WARN**: 品質改善推奨。文脈上問題ない場合は無視してよい（例: SCRIPT_NETWORK は意図的な外部通信の場合）
+- **HIGH / MEDIUM**: セキュリティリスクの報告。修正するかどうかはレビュアーが判断する
+
+---
+
 ## スキル品質評価の詳細基準
 
-skill-creator が作成時の静的品質（構造・フロントマター・説明文）を検証するのに対し、skill-evaluator は**使用履歴に基づく動的評価**を行う。以下が skill-evaluator 固有の観点。
+skill-creator が作成時の基本構造（name・description の有無・行数上限）を検証するのに対し、skill-evaluator は**ガイドラインに基づく静的品質チェック**と**使用履歴に基づく動的評価**の両方を行う。
 
 ### 問題の深刻度分類
 
@@ -69,6 +125,16 @@ verdict の傾向から、スキルの構造的問題を推察して改良提案
 - 改良後も `needs-improvement` / `broken` が続く → 改良効果不十分（再改良を推奨）
 
 ## ワークフロー
+
+### 0. 品質チェックを実行する
+
+フィードバック評価の前に必ず静的品質チェックを実行して構造的な問題を事前に把握する。
+
+```bash
+python .github/skills/skill-evaluator/scripts/quality_check.py
+```
+
+ERROR が出た場合は修正してから動的評価に進む。WARN も可能な限り対処する。
 
 ### 1. 評価スクリプトを実行する
 
