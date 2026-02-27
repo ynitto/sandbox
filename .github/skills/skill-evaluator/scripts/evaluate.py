@@ -42,7 +42,8 @@ def evaluate_skill(skill: dict) -> dict:
     history = skill.get("feedback_history", [])
     ok_count = sum(1 for e in history if e.get("verdict") == "ok")
     problem_count = sum(
-        1 for e in history if e.get("verdict") in ("needs-improvement", "broken")
+        1 for e in history
+        if e.get("verdict") in ("needs-improvement", "broken") and not e.get("refined")
     )
     pending = skill.get("pending_refinement", False)
 
