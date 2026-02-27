@@ -240,8 +240,27 @@ def pull_skills(
     existing = {s["name"]: s for s in reg.get("installed_skills", [])}
     for s in installed:
         old = existing.get(s["name"], {})
+        # v3フィールドを引き継ぐ
         s["feedback_history"] = old.get("feedback_history", [])
         s["pending_refinement"] = old.get("pending_refinement", False)
+        # v5フィールドを設定する（pull後はソース追跡情報を更新、統計は引き継ぐ）
+        s["version"] = None
+        s["central_version"] = None
+        s["version_ahead"] = False
+        s["lineage"] = {
+            "origin_repo": s["source_repo"],
+            "origin_commit": s["commit_hash"],
+            "origin_version": None,
+            "local_modified": False,
+            "diverged_at": None,
+            "local_changes_summary": "",
+        }
+        s["metrics"] = old.get("metrics", {
+            "total_executions": 0,
+            "ok_rate": None,
+            "last_executed_at": None,
+            "central_ok_rate": None,
+        })
         existing[s["name"]] = s
     reg["installed_skills"] = list(existing.values())
     save_registry(reg)

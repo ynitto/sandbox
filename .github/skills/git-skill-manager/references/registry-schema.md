@@ -6,7 +6,7 @@
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "repositories": [
     {
       "name": "team-skills",
@@ -35,7 +35,24 @@
           "refined": false
         }
       ],
-      "pending_refinement": true
+      "pending_refinement": true,
+      "version": null,
+      "central_version": null,
+      "version_ahead": false,
+      "lineage": {
+        "origin_repo": "team-skills",
+        "origin_commit": "a1b2c3d",
+        "origin_version": null,
+        "local_modified": false,
+        "diverged_at": null,
+        "local_changes_summary": ""
+      },
+      "metrics": {
+        "total_executions": 12,
+        "ok_rate": 0.75,
+        "last_executed_at": "2026-02-20T10:00:00Z",
+        "central_ok_rate": null
+      }
     }
   ],
   "core_skills": ["scrum-master", "git-skill-manager", "skill-creator", "sprint-reviewer", "codebase-to-skill"],
@@ -59,7 +76,25 @@
     "interval_hours": 24,
     "notify_only": true,
     "last_checked_at": "2026-02-20T09:00:00+00:00"
-  }
+  },
+  "node": {
+    "node_id": "node-abc12345",
+    "hostname": "my-machine",
+    "created_at": "2026-02-01T00:00:00Z",
+    "last_seen_at": "2026-02-27T12:00:00Z"
+  },
+  "promotion_policy": {
+    "min_ok_count": 3,
+    "max_problem_rate": 0.2,
+    "require_local_modified": false,
+    "auto_pr": false,
+    "notify_on_eligible": true
+  },
+  "sync_policy": {
+    "protect_local_modified": true,
+    "auto_pull_on_startup": false
+  },
+  "contribution_queue": []
 }
 ```
 
@@ -96,6 +131,56 @@
 - `discover_skills.py` がこの値を参照してスキルのソート順を決定する（改良待ちは後ろへ）
 - `refine` 操作完了後に false に戻る
 
+**installed_skills[].version** (文字列 or null、デフォルト: null):
+- スキルのセマンティックバージョン（例: `"1.2.0"`）。SKILL.md のフロントマターから読み取る。未記載の場合は null
+- `central_version` と比較してローカルが先行しているか判定する
+
+**installed_skills[].central_version** (文字列 or null、デフォルト: null):
+- リモートリポジトリの最新バージョン。pull 時に取得
+
+**installed_skills[].version_ahead** (真偽値、デフォルト: false):
+- ローカルバージョンがリモートを上回っている場合 true
+
+**installed_skills[].lineage** (オブジェクト):
+- スキルのソース追跡情報
+- `origin_repo`: pull 元リポジトリ名
+- `origin_commit`: pull 時のコミットハッシュ
+- `origin_version`: pull 時のリモートバージョン
+- `local_modified`: ローカルでファイルを編集した場合 true（`delta_tracker.py` が更新）
+- `diverged_at`: ローカル変更が最初に検出された日時（ISO 8601）
+- `local_changes_summary`: ローカル変更の要約テキスト
+
+**installed_skills[].metrics** (オブジェクト):
+- スキルの実行統計（`record_feedback.py` が更新）
+- `total_executions`: 総実行回数
+- `ok_rate`: ok 判定の割合（0.0〜1.0）。データなしは null
+- `last_executed_at`: 最後の実行日時（ISO 8601）。未実行は null
+- `central_ok_rate`: リモートリポジトリ全体の ok 率。null は未取得
+
+**node** (オブジェクト、v5):
+- このマシン固有のノード識別情報（`node_identity.py` が管理）
+- `node_id`: ランダム生成のユニーク ID
+- `hostname`: マシンのホスト名
+- `created_at`: ノード ID 生成日時
+- `last_seen_at`: 最後にスキルを操作した日時
+
+**promotion_policy** (オブジェクト、v5):
+- ワークスペーススキルの昇格推奨判定ポリシー（`promotion_policy.py` が参照）
+- `min_ok_count` (整数、デフォルト: 3): 昇格に必要な ok フィードバック数
+- `max_problem_rate` (実数、デフォルト: 0.2): 許容する問題率の上限
+- `require_local_modified` (真偽値、デフォルト: false): true にするとローカル改善がないスキルを除外
+- `auto_pr` (真偽値、デフォルト: false): 昇格推奨時に自動 PR を作成するか
+- `notify_on_eligible` (真偽値、デフォルト: true): 昇格条件を満たしたときに通知するか
+
+**sync_policy** (オブジェクト、v5):
+- 自動 pull 時のローカル変更保護設定
+- `protect_local_modified` (真偽値、デフォルト: true): true の場合、ローカル改善済みスキルを自動 pull で上書きしない
+- `auto_pull_on_startup` (真偽値、デフォルト: false): 起動時に自動 pull するか
+
+**contribution_queue** (配列、v5):
+- ローカル改善をリモートに貢献するための待ちキュー（`delta_tracker.py` が管理）
+- 各エントリ: `skill_name`、`node_id`、`queued_at`、`status`（pending/in-progress/done）
+
 **core_skills** (文字列リスト):
 - 使用頻度に関わらず常に最優先でロードされるスキル名のリスト
 - scrum-master、git-skill-manager、skill-creator など基盤スキルを登録する
@@ -121,6 +206,13 @@
 
 ## マイグレーション
 
-version: 1〜3 のレジストリを読み込んだ場合、新フィールドにデフォルト値を設定して自動マイグレーションする。
+古いバージョンのレジストリを読み込んだ場合、`migrate_registry(reg)` が自動でフィールドを追加する。
+
+| 旧 ver → 新 ver | 追加されるフィールド |
+|----------------|-----------------|
+| v1 → v2 | `enabled`、`pinned_commit`、`core_skills`、`profiles`、`remote_index` |
+| v2 → v3 | `feedback_history`、`pending_refinement` |
+| v3 → v4 | `auto_update` |
+| v4 → v5 | `version`、`central_version`、`version_ahead`、`lineage`、`metrics`、`node`、`promotion_policy`、`sync_policy`、`contribution_queue` |
 
 → 実装: `scripts/registry.py` — `migrate_registry(reg)`

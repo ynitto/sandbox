@@ -77,7 +77,7 @@ def evaluate_promotion(skill: dict, policy: dict) -> dict:
     else:
         blockers.append(f"問題率超過: {problem_rate:.0%} > {max_prob:.0%}")
 
-    if policy.get("require_local_modified", True):
+    if policy.get("require_local_modified", False):
         if local_modified or version_ahead:
             reasons.append("ローカル改善あり")
         else:
