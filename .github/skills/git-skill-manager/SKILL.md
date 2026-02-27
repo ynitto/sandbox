@@ -325,7 +325,9 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
    ```
 3. ユーザーの選択を `<verdict>` に使って `python record_feedback.py <name> --verdict <verdict> --note <note>` を実行
 4. 出力に応じて次のアクションを取る:
-   - `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` → `evaluate` 操作へ進む
+   - `EVAL_RECOMMEND: promote` → `evaluate` 操作へ進む（ワークスペーススキルの昇格フロー）
+   - `EVAL_RECOMMEND: refine`（コメントなし）→ `evaluate` 操作へ進む（ワークスペーススキルの改良フロー）
+   - `EVAL_RECOMMEND: refine  # N件の問題が蓄積されました`（コメントあり）→ `refine` 操作を**直接**実行する（インストール済みスキルはワークスペーススキルの評価対象外のため `evaluate` を経由しない）
    - `EVAL_RECOMMEND: continue` → 「試用継続中です（あと N 回の ok フィードバックで昇格候補になります）」とユーザーに伝えて終了
 
 -----
