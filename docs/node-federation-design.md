@@ -4,13 +4,29 @@
 
 ---
 
+## 設計哲学
+
+### Push: 気軽に、いつでも
+
+- **プッシュはブランチを切って PR を出すだけ**。複雑なポリシーゲートは不要
+- スキルが「完成していなくても」共有できる。中央でレビューして取り込む
+- `promotion_policy.require_local_modified = false`（デフォルト）: ローカル改善がなくても push 可能
+
+### Pull: 安全に、いつでも戻れる
+
+- **pull 前に自動スナップショット保存**。問題があれば1コマンドで元に戻せる
+- `sync_policy.protect_local_modified = true`（デフォルト）: ローカル改善を上書きしない
+- ロールバックコマンド: `python snapshot.py restore --latest`
+
+---
+
 ## 現状の課題と設計方針
 
 ### 現状フロー
 
 ```
 中央リポジトリ
-   ↓ pull（全スキルをそのまま取得）
+   ↓ pull（全スキルをそのまま取得、ロールバック不可）
 ノード（~/.copilot/skills/）
    ↓ フィードバック記録（ok/needs-improvement/broken）
    ↓ 手動 promote/push（判断基準が曖昧）
@@ -21,11 +37,11 @@
 
 ```
 中央リポジトリ（信頼された知識の集積）
-   ↓ pull（バージョン付き、選択的）
+   ↓ pull（スナップショット自動保存→問題時はロールバック可能）
 ノード（ローカルで改善・試用・評価）
    ├─ ローカル改善（中央との差分を追跡）
-   ├─ 自動評価（ポリシーに基づく昇格判定）
-   └─ 選択的貢献（基準を満たしたスキルのみ push）
+   ├─ 自動評価（ポリシーに基づく昇格通知）
+   └─ 気軽な貢献（ブランチ切って PR → 中央でレビュー）
 中央リポジトリ（ノード貢献のレビュー・統合）
 ```
 
@@ -224,6 +240,42 @@ pull 時に「何を取り込むか」を制御する。
 
 ---
 
+### 8. スナップショット / ロールバック
+
+pull は気軽に行えるが、取り込んだスキルが合わなかった場合に備えて、
+pull 前の状態を自動保存し、1コマンドで元に戻せる。
+
+**pull 時の自動動作:**
+
+```
+pull_skills() 開始
+  ↓ snapshot.py save --label "pull前自動保存"
+  ↓ リポジトリからスキル取得・インストール
+  ↓ 完了後ヒント表示:
+     💡 問題があれば元に戻せます:
+        python snapshot.py restore --latest
+```
+
+**保存先:** `~/.copilot/snapshots/snapshot-{timestamp}/`
+
+```
+snapshot-20260227T103000/
+    ├── meta.json           # 作成日時・スキル一覧
+    ├── skill-registry.json # レジストリの完全コピー
+    └── skills/             # ~/.copilot/skills/ の完全コピー
+```
+
+**ロールバック操作:**
+
+```bash
+python snapshot.py list              # 保存済みスナップショット一覧
+python snapshot.py restore --latest  # 直近スナップショットに戻す
+python snapshot.py restore snapshot-20260227T103000  # 指定して戻す
+python snapshot.py clean --keep 5   # 古いスナップショットを削除
+```
+
+---
+
 ## コンポーネント関係図
 
 ```
@@ -232,11 +284,16 @@ pull 時に「何を取り込むか」を制御する。
 │   スキル v1.2.0 ────────────────────────────────────→   │
 │                                                         │
 │   ← PR: "react-frontend-coder v1.3.0 from node-abc123" │
+│         （ブランチ切るだけ、気軽に push）                  │
 └────────────────────────┬────────────────────────────────┘
-                         │ pull（sync_policy に従う）
+                         │ pull（スナップショット自動保存後）
                          ▼
 ┌─────────────────────────────────────────────────────────┐
 │                  ノード（~/.copilot/）                    │
+│                                                         │
+│  snapshot.py ← pull前に自動実行                          │
+│    └─ ~/.copilot/snapshots/snapshot-{ts}/               │
+│       （問題時: python snapshot.py restore --latest）     │
 │                                                         │
 │  node_identity.py                                       │
 │    └─ node-id: "node-abc123"                            │
@@ -247,14 +304,13 @@ pull 時に「何を取り込むか」を制御する。
 │                                                         │
 │  record_feedback.py                                     │
 │    └─ ok×5, needs-improvement×0                        │
-│    └─ metrics.ok_rate: 0.93                             │
 │                                                         │
 │  promotion_policy.py                                    │
-│    └─ 条件評価: eligible!                                │
-│    └─ contribution_queue に追加                         │
+│    └─ 条件評価: eligible!（通知のみ、ゲートなし）          │
 │                                                         │
 │  push.py（既存）                                        │
 │    └─ PR作成: add-skill/react-frontend-coder            │
+│       （ローカル改善有無を問わず push 可能）               │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -273,15 +329,14 @@ pull 時に「何を取り込むか」を制御する。
   "promotion_policy": {
     "min_ok_count": 3,
     "max_problem_rate": 0.1,
-    "require_local_modified": true,
+    "require_local_modified": false,
     "auto_pr": false,
     "notify_on_eligible": true
   },
   "sync_policy": {
     "auto_accept_patch": true,
     "auto_accept_minor": false,
-    "protect_local_modified": true,
-    "max_version_jump": "minor"
+    "protect_local_modified": true
   },
   "contribution_queue": [],
   "repositories": [ "...既存..." ],

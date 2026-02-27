@@ -109,6 +109,8 @@ skill-recruiter がライセンス・セキュリティ・ネットワーク通�
 |**sync**       |「マージしたスキルを全リポジトリに配信して」「スキルを同期して」|
 |**merge**      |「スキルをマージして」「リポジトリ間のスキルを統合して配信して」|
 |**auto-update**|「自動更新を有効化して」「更新チェックして」「自動更新の設定を見せて」|
+|**snapshot**   |「スナップショットを保存して」「一覧を見せて」|
+|**rollback**   |「元に戻して」「前の状態に戻して」「pullを取り消して」|
 
 -----
 
@@ -373,6 +375,51 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 → 実装: `scripts/auto_update.py` — `run_auto_update()`, `check_updates()`, `configure_auto_update()`
 
 動作モード・設定操作・チェック操作の詳細 → [references/auto-update.md](references/auto-update.md)
+
+-----
+
+## snapshot / rollback
+
+pull 実行時に自動でスナップショットを保存し、問題が発生した場合に元の状態へ復元する。
+
+### pull 時の自動保存
+
+`pull_skills()` の先頭で `snapshot.py save` を自動呼び出し。pull 完了後に復元コマンドをヒント表示する:
+
+```
+💡 問題があれば元に戻せます:
+   python snapshot.py restore --latest
+```
+
+### 手動操作
+
+→ 実装: `scripts/snapshot.py`
+
+```bash
+python snapshot.py save --label "v2移行前"   # ラベル付きで手動保存
+python snapshot.py list                      # スナップショット一覧
+python snapshot.py restore --latest          # 直近のスナップショットに戻す
+python snapshot.py restore snapshot-20260227T103000  # 指定スナップショットに戻す
+python snapshot.py clean --keep 3            # 最新3件のみ保持
+```
+
+### スナップショットの保存内容
+
+```
+~/.copilot/snapshots/snapshot-{timestamp}/
+    ├── meta.json           # 作成日時・ラベル・スキル一覧
+    ├── skill-registry.json # レジストリの完全コピー
+    └── skills/             # ~/.copilot/skills/ の完全コピー
+```
+
+### エージェントの動作
+
+「元に戻して」「pullを取り消して」「前の状態に戻したい」などのユーザー発言で発動:
+
+1. `python snapshot.py list` でスナップショット一覧を表示
+2. ユーザーに復元先を確認（直近1件なら `--latest` でよいか確認）
+3. `python snapshot.py restore --latest` または指定IDで復元
+4. 復元完了を報告
 
 -----
 

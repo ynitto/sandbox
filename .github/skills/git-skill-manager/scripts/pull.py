@@ -17,6 +17,18 @@ from registry import (
 from repo import clone_or_fetch, update_remote_index
 
 
+def _auto_save_snapshot() -> str | None:
+    """pull 前に自動スナップショットを保存する。失敗しても pull は続行する。"""
+    try:
+        import sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        from snapshot import save_snapshot
+        return save_snapshot(label="pull前自動保存")
+    except Exception as e:
+        print(f"   ⚠️  スナップショット保存をスキップしました: {e}")
+        return None
+
+
 def _merge_copilot_instructions(parts: list[str]) -> str:
     """複数の copilot-instructions.md を H2 セクション単位でマージする。
 
@@ -101,6 +113,9 @@ def pull_skills(
             return
 
     os.makedirs(skill_home, exist_ok=True)
+
+    # pull 前にスナップショットを自動保存（ロールバック用）
+    snap_id = _auto_save_snapshot()
 
     # 全リポジトリからスキル候補を収集
     candidates: dict[str, list[dict]] = {}
@@ -316,3 +331,6 @@ def pull_skills(
         pin_mark = f" 📌{s['pinned_commit'][:7]}" if s.get("pinned_commit") else ""
         status = "✅" if s["enabled"] else "⏸️"
         print(f"   {status} {s['name']} ← {s['source_repo']} ({s['commit_hash']}){pin_mark}")
+    if snap_id and installed:
+        print(f"\n   💡 問題があれば元に戻せます:")
+        print(f"      python snapshot.py restore --latest")

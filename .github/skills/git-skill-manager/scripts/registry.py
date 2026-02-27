@@ -73,10 +73,11 @@ def migrate_registry(reg: dict) -> dict:
             "created_at": None,
         })
         # 昇格ポリシー（何を中央にあげるかの基準）
+        # require_local_modified はデフォルト False: push は気軽に行える
         reg.setdefault("promotion_policy", {
             "min_ok_count": 3,
             "max_problem_rate": 0.1,
-            "require_local_modified": True,
+            "require_local_modified": False,
             "auto_pr": False,
             "notify_on_eligible": True,
         })
@@ -145,7 +146,7 @@ def load_registry() -> dict:
         "promotion_policy": {
             "min_ok_count": 3,
             "max_problem_rate": 0.1,
-            "require_local_modified": True,
+            "require_local_modified": False,
             "auto_pr": False,
             "notify_on_eligible": True,
         },
