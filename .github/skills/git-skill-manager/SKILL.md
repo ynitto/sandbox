@@ -325,16 +325,14 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
    ```
 3. ユーザーの選択を `<verdict>` に使って `python record_feedback.py <name> --verdict <verdict> --note <note>` を実行
 4. 出力に応じて次のアクションを取る:
-   - `EVAL_RECOMMEND: promote` → `evaluate` 操作へ進む（ワークスペーススキルの昇格フロー）
-   - `EVAL_RECOMMEND: refine`（コメントなし）→ `evaluate` 操作へ進む（ワークスペーススキルの改良フロー）
-   - `EVAL_RECOMMEND: refine  # N件の問題が蓄積されました`（コメントあり）→ `refine` 操作を**直接**実行する（インストール済みスキルはワークスペーススキルの評価対象外のため `evaluate` を経由しない）
+   - `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` → `evaluate` 操作へ進む（ワークスペース・インストール済み両方に対応）
    - `EVAL_RECOMMEND: continue` → 「試用継続中です（あと N 回の ok フィードバックで昇格候補になります）」とユーザーに伝えて終了
 
 -----
 
 ## evaluate
 
-ワークスペーススキル（`source_repo: "workspace"`）の昇格推奨度を評価する。`skill-evaluator` スキルを呼び出して実行する。
+ワークスペーススキル（試用中）とインストール済みスキル（ホーム領域）の両方の推奨アクションを評価する。`skill-evaluator` スキルを呼び出して実行する。
 
 ### トリガー
 
@@ -350,7 +348,7 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 
 1. `skill-evaluator` サブエージェントを起動する:
    ```
-   skill-evaluator スキルでワークスペーススキルを評価する。
+   skill-evaluator スキルでスキルを評価する。
    手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
    ```
 2. skill-evaluator が評価結果を提示し、promote / refine のアクションをユーザーに確認する
