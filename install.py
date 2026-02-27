@@ -177,6 +177,15 @@ def _get_vscode_mcp_path() -> str | None:
         return os.path.join(HOME, ".config", "Code", "User", "mcp.json")
 
 
+def _is_uv_required(servers: dict) -> bool:
+    """サーバー設定に uvx/uv コマンドが含まれるか確認する。"""
+    return any(
+        v.get("command") in ("uv", "uvx")
+        for v in servers.values()
+        if isinstance(v, dict)
+    )
+
+
 def setup_mcp() -> bool:
     """mcp.json をユーザーレベルの VS Code 設定に配置する。"""
     src = os.path.join(REPO_ROOT, ".vscode", "mcp.json")
@@ -209,6 +218,29 @@ def setup_mcp() -> bool:
         dest_cfg = {}
 
     dest_cfg.setdefault("servers", {})
+
+    # 新規追加されるサーバーを特定
+    new_servers = {k: v for k, v in merged_servers.items() if k not in dest_cfg["servers"]}
+
+    if new_servers:
+        print(f"\n   以下の MCP サーバーを新規登録します:")
+        for name, server in new_servers.items():
+            print(f"     - {name}  (command: {server.get('command', '?')})")
+
+        if _is_uv_required(new_servers):
+            print(f"\n   ⚠️  これらのサーバーは uv を使用します。")
+            if shutil.which("uvx") is not None or shutil.which("uv") is not None:
+                print(f"   ✅ uv はインストール済みです。")
+            else:
+                print(f"   ❌ uv が見つかりません。事前にインストールしてください。")
+                print(f"      インストール方法: https://docs.astral.sh/uv/getting-started/installation/")
+
+        print(f"\n   MCP サーバーを登録しますか？ [y/N]: ", end="", flush=True)
+        answer = input().strip().lower()
+        if answer not in ("y", "yes"):
+            print("   スキップしました")
+            return False
+
     dest_cfg["servers"].update(merged_servers)
 
     os.makedirs(os.path.dirname(dest), exist_ok=True)
