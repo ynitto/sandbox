@@ -31,7 +31,7 @@
 処理フロー:
 1. ユーザーにスキル名と verdict（ok / needs-improvement / broken）を確認する
 2. `record_feedback.py` を実行して記録する
-3. 出力に `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` が含まれる場合は、`evaluate` 操作を実行する
+3. 出力に `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` が含まれる場合は、`evaluate` 操作を実行する（ワークスペース・インストール済み両方に対応）
 
 ### record_feedback.py（スクリプト直接呼び出し）
 
