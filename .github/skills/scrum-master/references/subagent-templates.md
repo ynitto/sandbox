@@ -11,6 +11,7 @@
 - [コードベースからスキル生成時](#コードベースからスキル生成時)
 - [スキル招募時](#スキル招募時)
 - [スプリントレビュー時](#スプリントレビュー時)
+- [スキルフィードバック収集時](#スキルフィードバック収集時)
 - [スキル昇格時](#スキル昇格時)
 - [スキル評価時](#スキル評価時)
 - [スキル共有時](#スキル共有時)
@@ -166,6 +167,31 @@ sprint-reviewer スキルでスプリントのレビューとレトロスペク�
 - [改善アクション2]
 ブロッカー: [あれば列挙、なければ「なし」]
 ```
+
+## スキルフィードバック収集時
+
+```
+以下のスキルについてユーザーにフィードバックを確認し、record_feedback.py を実行してください。
+
+対象スキル: [skill-name1, skill-name2, ...]
+
+手順:
+1. ユーザーに以下の形式で一括確認する:
+   このスプリントで使用したスキルのフィードバックを収集します:
+
+   - [skill-name1]: 1. 問題なかった (ok) / 2. 改善点がある (needs-improvement) / 3. うまくいかなかった (broken)
+   - [skill-name2]: ...
+
+2. 各スキルの回答に応じて record_feedback.py を実行する（git-skill-manager がない環境ではスキップ）:
+   python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+
+結果を以下の形式で返してください:
+ステータス: 成功 / スキップ（git-skill-manager なし）
+収集済みフィードバック数: [N 件]
+サマリー: [1〜2文で結果を説明]
+```
+
+**scrum-master の次の処理**: フィードバック収集完了後、Phase 6 の次のステップ（ワークスペーススキルの棚卸し）へ進む。
 
 ## スキル昇格時
 

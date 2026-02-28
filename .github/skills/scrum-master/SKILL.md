@@ -109,7 +109,7 @@ Step 2-5 へ進む。
 {
   "current_phase": 2,
   "goal": "...",
-  "requirements_source": "requirements-definer | direct",
+  "requirements_source": "direct",
   "backlog": [
     {"id": "b1", "action": "...", "priority": 1, "done_criteria": "...", "skill": "...", "depends_on": [], "status": "pending", "result": null}
   ],
@@ -118,7 +118,7 @@ Step 2-5 へ進む。
 }
 ```
 
-- `requirements_source`: バックログの出自を記録する。`"requirements-definer"` = requirements.json 経由、`"direct"` = プロンプトから直接作成
+- `requirements_source`: バックログの出自を記録する。値は `"requirements-definer"`（requirements.json 経由）または `"direct"`（プロンプトから直接作成）のいずれか
 
 **タスク分解の粒度:**
 - 1タスク = 1スキルの1回の実行
@@ -198,6 +198,10 @@ Step 2-5 へ進む。
    - **Wave 2**: Wave 1 のタスクに依存するタスク
    - **Wave N**: Wave N-1 のタスクに依存するタスク
    - 同一ウェーブ内のタスクは**並列実行**される
+   - **同一ファイル競合の回避**: 以下のいずれかに該当するタスクが同一ウェーブに含まれる場合、ウェーブを分割して直列化する:
+     - action の記述に共通のファイルパスが含まれる（例: 両タスクとも `src/api/users.ts` を編集する）
+     - スキルの責務がほぼ同じで、同一ターゲットファイルを操作する可能性が高い（例: 同一コンポーネントに対して複数のスキルを当てる）
+     - 判断に迷う場合はウェーブを分割することを優先する
 6. プランJSONを生成する（`execution_groups` フィールドにウェーブを記録）
 7. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する。`plan.json` と `skills.json` はどちらも作業ディレクトリのルートに配置する）:
    ```bash
@@ -287,17 +291,7 @@ Wave 3: [b5]     → 単独実行
    - `次スプリント反映アクション:` → sprintsの `next_sprint_actions` フィールド（配列）
    - `ブロッカー:` → sprintsの `impediments` フィールド（「なし」の場合は空配列）
 3. **スキルフィードバック収集**: このスプリントで実行したスキルのフィードバックを一括収集する。
-   skill が指定され completed になったタスクからスキル名を重複なく抽出し、ユーザーに一括確認する:
-   ```
-   このスプリントで使用したスキルのフィードバックを収集します:
-
-   - [skill-name1]: 1. 問題なかった (ok) / 2. 改善点がある (needs-improvement) / 3. うまくいかなかった (broken)
-   - [skill-name2]: ...
-   ```
-   各スキルの回答に応じて record_feedback.py を実行する（git-skill-manager がない環境ではスキップ）:
-   ```
-   python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
-   ```
+   skill が指定され completed になったタスクからスキル名を重複なく抽出し、サブエージェントを起動する（テンプレート「スキルフィードバック収集時」を使用）。
 
 4. **ワークスペーススキルの棚卸し**: サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「スキル評価時」を使用）
 
@@ -365,6 +359,7 @@ Wave 3: [b5]     → 単独実行
 | コードベースからスキル生成時 | codebase-to-skill でスキルを生成 |
 | スキル招募時 | skill-recruiter で外部スキルを取得 |
 | スプリントレビュー時 | sprint-reviewer でレビューを実施 |
+| スキルフィードバック収集時 | 使用スキルのフィードバックを収集・記録 |
 | スキル昇格時 | git-skill-manager promote を実行 |
 | スキル評価時 | skill-evaluator でスキルを評価 |
 | スキル共有時 | git-skill-manager push を実行 |
