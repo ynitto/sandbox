@@ -2,6 +2,10 @@
 
 Vernon の "Implementing Domain-Driven Design"（IDDD, Red Book）を基準とした集約設計ガイド。
 
+## 目次
+
+- [Vernon の4原則](#vernon-の4原則)
+
 ---
 
 ## Vernon の4原則

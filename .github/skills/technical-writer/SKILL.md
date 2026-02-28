@@ -1,6 +1,8 @@
 ---
 name: technical-writer
 description: 技術ドキュメントを高品質に作成するスキル。README、デベロッパーガイド、チュートリアル、アーキテクチャ仕様書などの文書作成を支援する。「ドキュメントを書いて」「READMEを作って」「デベロッパーガイドを書いて」「APIの使い方をまとめて」「チュートリアルを作成して」「仕様書を書いて」などで発動する。
+metadata:
+  version: "1.0"
 ---
 
 # Technical Writer

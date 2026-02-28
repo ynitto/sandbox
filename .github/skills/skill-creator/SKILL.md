@@ -1,6 +1,8 @@
 ---
 name: skill-creator
 description: スキルの作成・更新を支援するガイドスキル。ユーザーが新しいスキルを作りたい、既存のスキルを改善したいときに使用する。「スキルを作って」「新しいスキルを作成して」「このスキルを改善して」「スキルをパッケージして」などのリクエストで発動する。GitHub Copilot および Claude Code で動作する。
+metadata:
+  version: "1.0"
 ---
 
 # Skill Creator

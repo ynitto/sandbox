@@ -72,7 +72,7 @@
 
 ```bash
 ls .github/skills/
-# 例: react-unit-tester, systematic-debugging, ...
+# 例: react-frontend-unit-tester, systematic-debugging, ...
 ```
 
 重複する場合:

@@ -54,7 +54,7 @@
 
 **概要**: プロジェクト全体のテスト戦略（単体・結合・E2E）を設計する。
 
-**背景**: react-unit-tester は React コンポーネントの単体テストに特化しているが、テストピラミッド全体を俯瞰した戦略設計が欠けている。
+**背景**: react-frontend-unit-tester は React コンポーネントの単体テストに特化しているが、テストピラミッド全体を俯瞰した戦略設計が欠けている。
 
 **主な機能**:
 - テストピラミッドに基づくカバレッジ目標の策定
@@ -120,7 +120,7 @@
 
 ```yaml
 ---
-name: react-unit-tester
+name: react-frontend-unit-tester
 description: React コンポーネントのテストを作成する
 depends_on:
   - react-frontend-coder
@@ -192,7 +192,7 @@ steps:
     output: api-spec.yaml
   - skill: react-frontend-coder
     input: api-spec.yaml
-  - skill: react-unit-tester
+  - skill: react-frontend-unit-tester
 ---
 ```
 

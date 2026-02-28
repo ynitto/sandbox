@@ -2,6 +2,10 @@
 
 requirements-definer が出力する `requirements.json` のスキーマ定義。
 
+## 目次
+
+- [スキーマ定義](#スキーマ定義)
+
 ## スキーマ定義
 
 ```json

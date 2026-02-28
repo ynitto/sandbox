@@ -1,6 +1,8 @@
 ---
 name: dynamodb-designer
 description: DynamoDB テーブルを設計し、NoSQLのよくある落とし穴を避けながら効率的なクエリを書くスキル。テーブル設計・インデックス戦略・クエリ最適化・トランザクション・キャパシティ管理に対応。「DynamoDBのテーブルを設計して」「GSIを追加して」「クエリを最適化して」などで発動。
+metadata:
+	version: "1.0"
 ---
 
 ## トリガー

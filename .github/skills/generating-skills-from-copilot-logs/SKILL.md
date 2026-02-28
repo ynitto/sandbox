@@ -1,6 +1,8 @@
 ---
 name: generating-skills-from-copilot-logs
 description: VSCode Copilot または Claude Code のチャット履歴を分析し、繰り返しワークフローを検出して新しいスキルを自動生成するメタスキル。「履歴からスキルを作って」「Copilotの使い方パターンをスキル化して」「よく使うワークフローをスキルにして」「チャット履歴を分析してスキル候補を提案して」などのリクエストで使用する。git-skill-manager の discover 操作からも自動的に起動される。
+metadata:
+   version: "1.0"
 ---
 
 # Generating Skills from Copilot Logs

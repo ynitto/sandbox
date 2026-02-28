@@ -1,11 +1,11 @@
 ---
-name: react-unit-tester
-description: ReactコンポーネントとZustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。フロントエンド実装完了後のテスト投入フロー。テスト実装依頼で発動する。
+name: react-frontend-unit-tester
+description: ReactコンポーネントとZustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。フロントエンド実装完了後のテスト投入フロー。「テストコードを実装して」「Reactコンポーネントをテストして」「Zustandストアのテストを書いて」などのリクエストで発動する。
 metadata:
    version: "1.0"
 ---
 
-# react-unit-tester
+# react-frontend-unit-tester
 
 React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネント・ストアのユニットテストを実装する。**フロントエンド実装完了後に投入される**。
 
@@ -89,8 +89,8 @@ React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネン
 |--|--|
 |Plan|要件・UI設計確定|
 |実装フェーズ|フロントエンド実装: コンポーネント・ストア実装|
-|テスト投入フェーズ|react-unit-tester: テスト投入|
-|テスト失敗時|react-unit-tester で問題箇所特定 → 実装側を修正|
+|テスト投入フェーズ|react-frontend-unit-tester: テスト投入|
+|テスト失敗時|react-frontend-unit-tester で問題箇所特定 → 実装側を修正|
 
 ## リソース
 
@@ -109,5 +109,6 @@ React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネン
 
 ### scripts/
 
-- **setup-vitest.sh** - 依存インストール・基本設定の自動化
+- **setup-vitest.sh** - 依存インストール・基本設定の自動化（macOS / Linux）
+- **setup-vitest.ps1** - 依存インストール・基本設定の自動化（Windows PowerShell）
 

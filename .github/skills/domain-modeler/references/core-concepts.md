@@ -3,6 +3,10 @@
 DDD（Domain-Driven Design）における設計判断の根拠となる原則集。
 各概念の「なぜ」と「どこで失敗するか」に焦点を当てる。
 
+## 目次
+
+- [1. Entity vs Value Object の区別基準](#1-entity-vs-value-object-の区別基準)
+
 ---
 
 ## 1. Entity vs Value Object の区別基準
