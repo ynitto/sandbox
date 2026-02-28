@@ -228,7 +228,21 @@ python .github/skills/skill-creator/scripts/quick_validate.py ~/.copilot/skills/
 
 #### 5-2. 品質チェック
 
-`.github/skills/skill-evaluator/SKILL.md` のステップ 0「品質チェックを実行する」の手順に従い、インストールした `<name>` スキルを対象に品質チェックを実行する。
+サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）:
+
+```
+skill-evaluator スキルでインストールしたスキルの品質チェックを実行する。
+
+手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+操作: ステップ 0（品質チェック）のみを実行する。
+対象スキル: <name>
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+WARN 数: [N 件]
+ERROR 数: [N 件]
+サマリー: [1〜2文で結果を説明]
+```
 
 WARN があればユーザーに提示する。ERROR がある場合は内容を説明し、修正するか続行するかを確認する。
 
