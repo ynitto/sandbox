@@ -1,6 +1,8 @@
 ---
 name: skill-recruiter
 description: 必要なスキルが見つからないときに、外部リポジトリURLからスキルを取得・検証・公開するスキル。「このスキルを追加して」「URLからスキルをインストールして」「スキルが見つからない、このリポジトリを追加して」「このスキルを採用したい」「外部スキルを登録して」などで発動する。要求されたスキルが未インストールの場合に代替手段として自動起動される場合もある。
+metadata:
+  version: "1.0"
 ---
 
 # Skill Recruiter
@@ -212,9 +214,9 @@ print('コピー完了:', dst)
 
 -----
 
-### Phase 5: skill-creator 後処理
+### Phase 5: 後処理
 
-インストール後に skill-creator の仕様に従い、スキルを本システムに統合する。
+インストール後に各スキルの仕様に従い、スキルを本システムに統合する。
 
 #### 5-1. バリデーション
 
@@ -224,7 +226,27 @@ python .github/skills/skill-creator/scripts/quick_validate.py ~/.copilot/skills/
 
 警告があればユーザーに提示する。エラーがある場合は内容を説明し、修正するか続行するかを確認する。
 
-#### 5-2. Windows / Copilot 環境への適応
+#### 5-2. 品質チェック
+
+サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）:
+
+```
+skill-evaluator スキルでインストールしたスキルの品質チェックを実行する。
+
+手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+操作: ステップ 0（品質チェック）のみを実行する。
+対象スキル: <name>
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+WARN 数: [N 件]
+ERROR 数: [N 件]
+サマリー: [1〜2文で結果を説明]
+```
+
+WARN があればユーザーに提示する。ERROR がある場合は内容を説明し、修正するか続行するかを確認する。
+
+#### 5-3. Windows / Copilot 環境への適応
 
 Windows 環境（`os.name == 'nt'`）の場合のみ実行する:
 
@@ -259,14 +281,15 @@ python .github/skills/skill-recruiter/scripts/adapt_for_windows.py ~/.copilot/sk
   2. インストールを取り消す
 ```
 
-#### 5-3. 完了報告
+#### 5-4. 完了報告
 
 ```
 ✅ セットアップ完了
    スキル: <name>
    場所:   ~/.copilot/skills/<name>/
    バリデーション: <結果>
-   Windows 適応: <適用済み / スキップ（非Windows）>
+   品質チェック:   <結果（警告数 / ERROR 数）>
+   Windows 適応:   <適用済み / スキップ（非Windows）>
 
 次回起動時から利用可能です。
 フィードバックを記録する場合は「git-skill-manager でフィードバックを記録して」と伝えてください。
