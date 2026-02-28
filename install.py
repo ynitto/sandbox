@@ -32,7 +32,6 @@ COPILOT_DIR = os.path.join(HOME, ".copilot")
 SKILL_HOME = os.path.join(COPILOT_DIR, "skills")
 CACHE_DIR = os.path.join(COPILOT_DIR, "cache")
 REGISTRY_PATH = os.path.join(COPILOT_DIR, "skill-registry.json")
-GITHUB_DIR = os.path.join(HOME, ".github")
 
 # このスクリプト自身の位置からリポジトリルートを特定
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -307,8 +306,8 @@ def copy_copilot_instructions() -> bool:
     src = os.path.join(REPO_ROOT, ".github", "copilot-instructions.md")
     if not os.path.isfile(src):
         return False
-    os.makedirs(GITHUB_DIR, exist_ok=True)
-    dest = os.path.join(GITHUB_DIR, "copilot-instructions.md")
+    os.makedirs(COPILOT_DIR, exist_ok=True)
+    dest = os.path.join(COPILOT_DIR, "copilot-instructions.md")
     shutil.copy2(src, dest)
     print(f"   📋 {dest}")
     return True

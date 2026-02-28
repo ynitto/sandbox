@@ -303,7 +303,7 @@ def pull_skills(
 
     if copilot_instruction_parts:
         home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-        dest_dir = os.path.join(home, ".github")
+        dest_dir = os.path.join(home, ".copilot")
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, "copilot-instructions.md")
         merged = _merge_copilot_instructions(copilot_instruction_parts)
