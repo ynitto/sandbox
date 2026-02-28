@@ -214,9 +214,9 @@ print('コピー完了:', dst)
 
 -----
 
-### Phase 5: skill-creator 後処理
+### Phase 5: 後処理
 
-インストール後に skill-creator の仕様に従い、スキルを本システムに統合する。
+インストール後に各スキルの仕様に従い、スキルを本システムに統合する。
 
 #### 5-1. バリデーション
 
@@ -226,7 +226,13 @@ python .github/skills/skill-creator/scripts/quick_validate.py ~/.copilot/skills/
 
 警告があればユーザーに提示する。エラーがある場合は内容を説明し、修正するか続行するかを確認する。
 
-#### 5-2. Windows / Copilot 環境への適応
+#### 5-2. 品質チェック
+
+`.github/skills/skill-evaluator/SKILL.md` のステップ 0「品質チェックを実行する」の手順に従い、インストールした `<name>` スキルを対象に品質チェックを実行する。
+
+WARN があればユーザーに提示する。ERROR がある場合は内容を説明し、修正するか続行するかを確認する。
+
+#### 5-3. Windows / Copilot 環境への適応
 
 Windows 環境（`os.name == 'nt'`）の場合のみ実行する:
 
@@ -261,14 +267,15 @@ python .github/skills/skill-recruiter/scripts/adapt_for_windows.py ~/.copilot/sk
   2. インストールを取り消す
 ```
 
-#### 5-3. 完了報告
+#### 5-4. 完了報告
 
 ```
 ✅ セットアップ完了
    スキル: <name>
    場所:   ~/.copilot/skills/<name>/
    バリデーション: <結果>
-   Windows 適応: <適用済み / スキップ（非Windows）>
+   品質チェック:   <結果（警告数 / ERROR 数）>
+   Windows 適応:   <適用済み / スキップ（非Windows）>
 
 次回起動時から利用可能です。
 フィードバックを記録する場合は「git-skill-manager でフィードバックを記録して」と伝えてください。
