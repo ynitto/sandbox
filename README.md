@@ -40,6 +40,7 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **requirements-definer** | 要件定義・スコープ・受入基準を整理する |
 | **deep-research** | 複数の情報源を統合し、引用付きで根拠ある深いリサーチを行う |
 | **technical-writer** | README・デベロッパーガイド・チュートリアルなどを読者中心の5原則で作成する（Windows/Copilot 対応） |
+| **webapp-testing** | Playwright でローカルWebアプリを検証する。画面操作自動化、スクリーンショット、コンソールログ確認を支援する（Windows/Copilot 対応） |
 
 ## インストール
 
