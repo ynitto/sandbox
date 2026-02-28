@@ -29,7 +29,8 @@ def _cache_dir() -> str:
 
 CORE_SKILLS_DEFAULT = [
     "scrum-master", "git-skill-manager", "skill-creator",
-    "sprint-reviewer", "codebase-to-skill",
+    "requirements-definer", "skill-recruiter", "skill-evaluator",
+    "generating-skills-from-copilot-logs", "sprint-reviewer", "codebase-to-skill",
 ]
 
 

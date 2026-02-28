@@ -12,16 +12,12 @@ AIエージェント（GitHub Copilot / Claude Code）の能力を拡張する�
 | **scrum-master** | プロンプトをバックログに分解し、スプリント単位でサブエージェントに委譲して実行するオーケストレーター |
 | **git-skill-manager** | スキルの取得（pull）・共有（push）・昇格（promote）・バージョン管理・フィードバック記録を行う |
 | **skill-creator** | 新しいスキルの作成・既存スキルの改良を支援する |
+| **requirements-definer** | 曖昧な依頼を要件化し、バックログ化しやすい形に整理する |
+| **skill-recruiter** | 外部URLのスキルを安全に取り込み、git-skill-manager に接続する |
+| **skill-evaluator** | ワークスペース/インストール済みスキルを評価し、昇格・改良方針を提案する |
+| **generating-skills-from-copilot-logs** | 履歴から再利用可能なスキル候補を発見・生成する |
 | **sprint-reviewer** | スプリント完了時にタスク結果を評価し、次スプリントへの改善点をまとめる |
 | **codebase-to-skill** | 既存コードベースを解析し、そのプロジェクト専用の SKILL.md を生成する |
-
-### スキル管理
-
-| スキル | 概要 |
-|--------|------|
-| **skill-recruiter** | 外部 URL からスキルを取得・ライセンス/セキュリティ検証・インストールする |
-| **skill-evaluator** | ワークスペーススキルの昇格推奨度を評価し、promote / refine を提案する |
-| **generating-skills-from-copilot-logs** | チャット履歴を分析して再利用可能なスキル候補を発見・生成する |
 
 ### React 開発
 
@@ -182,7 +178,7 @@ verdict の種類:
 ### 使用頻度による優先度
 
 スキルの使用回数が自動記録され、よく使うスキルほどコンテキストに優先的にロードされる。
-基盤スキル（scrum-master、git-skill-manager、skill-creator 等）は使用頻度に関わらず常に最優先。
+基盤スキル（`scrum-master` / `git-skill-manager` とその依存スキル）は使用頻度に関わらず常に最優先。
 
 ### ディレクトリ構成
 
