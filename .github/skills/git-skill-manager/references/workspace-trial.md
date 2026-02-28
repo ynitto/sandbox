@@ -20,7 +20,7 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 
 ## 評価基準
 
-評価基準の詳細は [skill-evaluator/SKILL.md](../skill-evaluator/SKILL.md) を参照してください。
+評価基準の詳細は `skill-evaluator` スキルの SKILL.md を参照してください。
 
 ## 評価の実行
 
