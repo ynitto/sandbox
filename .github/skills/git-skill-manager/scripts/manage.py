@@ -263,10 +263,15 @@ def promote_skills(workspace_skills_dir, interactive=True):
         print(f"   {i}. {c['name']:30s}  {short_desc}{installed_mark}")
 
     print(f"\nユーザー領域にコピーするスキルを選んでください（カンマ区切り、例: 1,3）")
-
-    # ※ Claude がユーザーの選択を対話的に受け取り、
-    #   selected_indices に反映する
-    selected_indices = []  # プレースホルダー
+    raw = input("> ").strip()
+    try:
+        selected_indices = [
+            int(x.strip()) - 1
+            for x in raw.split(",")
+            if x.strip().isdigit() and 1 <= int(x.strip()) <= len(candidates)
+        ]
+    except ValueError:
+        selected_indices = []
 
     # ---- コピー実行 ----
     promoted = []
@@ -313,9 +318,8 @@ def promote_skills(workspace_skills_dir, interactive=True):
     for i, repo in enumerate(writable_repos, 1):
         print(f"   {i}. {repo['name']:20s}  ({repo['url']})")
     print(f"   0. push しない")
-
-    # ※ Claude がユーザーの選択を対話的に受け取る
-    repo_choice = 0  # プレースホルダー
+    raw = input("> ").strip()
+    repo_choice = int(raw) if raw.isdigit() and 0 <= int(raw) <= len(writable_repos) else 0
 
     if repo_choice > 0:
         target_repo = writable_repos[repo_choice - 1]

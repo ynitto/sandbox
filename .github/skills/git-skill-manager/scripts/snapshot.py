@@ -180,23 +180,60 @@ def restore_snapshot(snap_id: str | None = None, latest: bool = False) -> bool:
     print(f"   保存日時: {created}{label_str}")
     print(f"   スキル数: {meta['skill_count']} 件")
 
-    # スキルファイルを復元
+    # アトミックなリストア: 失敗時は元の状態にロールバックする
     skill_home = _skill_home()
     skills_src = os.path.join(snap_dir, "skills")
-
-    if os.path.isdir(skill_home):
-        shutil.rmtree(skill_home)
-    if os.path.isdir(skills_src):
-        shutil.copytree(skills_src, skill_home)
-    else:
-        os.makedirs(skill_home, exist_ok=True)
-
-    # レジストリを復元
     reg_src = os.path.join(snap_dir, "skill-registry.json")
     reg_dest = _registry_path()
-    if os.path.isfile(reg_src):
-        os.makedirs(os.path.dirname(reg_dest), exist_ok=True)
-        shutil.copy2(reg_src, reg_dest)
+
+    backup_skills = skill_home + ".__restore_bak"
+    backup_reg = reg_dest + ".__restore_bak"
+
+    try:
+        # 現在の状態をバックアップ
+        if os.path.isdir(skill_home):
+            shutil.copytree(skill_home, backup_skills)
+        if os.path.isfile(reg_dest):
+            shutil.copy2(reg_dest, backup_reg)
+
+        # スキルファイルを復元
+        if os.path.isdir(skill_home):
+            shutil.rmtree(skill_home)
+        if os.path.isdir(skills_src):
+            shutil.copytree(skills_src, skill_home)
+        else:
+            os.makedirs(skill_home, exist_ok=True)
+
+        # レジストリを復元
+        if os.path.isfile(reg_src):
+            os.makedirs(os.path.dirname(reg_dest), exist_ok=True)
+            shutil.copy2(reg_src, reg_dest)
+
+    except Exception as e:
+        print(f"\n❌ 復元中にエラーが発生しました: {e}")
+        print("   バックアップから元の状態に戻します...")
+        try:
+            if os.path.isdir(skill_home):
+                shutil.rmtree(skill_home)
+            if os.path.isdir(backup_skills):
+                shutil.copytree(backup_skills, skill_home)
+            if os.path.isfile(backup_reg):
+                shutil.copy2(backup_reg, reg_dest)
+            print("   ロールバック完了")
+        except Exception as rb_err:
+            print(f"   ⚠️ ロールバックにも失敗しました: {rb_err}")
+            print(f"   手動でバックアップから復元してください: {backup_skills}")
+        return False
+
+    finally:
+        # バックアップを削除
+        if os.path.isdir(backup_skills):
+            shutil.rmtree(backup_skills, ignore_errors=True)
+        if os.path.isfile(backup_reg):
+            try:
+                os.remove(backup_reg)
+            except OSError:
+                pass
 
     print(f"\n✅ 復元完了")
     print(f"   復元したスキル:")
