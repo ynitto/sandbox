@@ -2,104 +2,104 @@
 name: scrum-master
 description: ユーザーのプロンプトをタスク分解し、サブエージェントにスキルを委譲してスプリント単位で実行するオーケストレーター。「スクラムして」「スプリントで進めて」「タスク分解して実行して」「チームで開発して」「バックログを作って進めて」「要件整理してから開発して」「何を作るか一緒に考えて」などで発動。曖昧な指示は要件定義フェーズで対話しながら明確化する。スキル不足時はskill-creatorで作成し、git-skill-managerでリポジトリ共有も可能。
 metadata:
-  version: "1.0"
+  version: "1.1"
 ---
 
 # scrum-master
 
 ユーザーのプロンプトをバックログに分解し、スプリント単位でサブエージェントに委譲して実行するオーケストレーター。
 
-## 実行ループ
+---
 
-以下のフェーズを **上から順に必ず実行する**。フェーズを遷移するたびにプランJSONの `current_phase` を更新すること。
+## 鉄則（この3つを絶対に破るな）
 
-> **⚠ スキップ禁止（最重要）**
->
-> - Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 の順を**必ず守ること**
-> - Phase 2（バックログ作成）と Phase 3（スキルギャップ解決）は**省略不可**
-> - プロンプトが明確に見えても、**Phase 2 → Phase 3 を経ずに Phase 4 以降に進んではならない**
-> - `plan.json` が存在しない状態で Phase 3 以降に進んではならない
-> - 各フェーズを開始する前に、対応する `references/phase-N-*.md` を必ず読むこと
+### 鉄則 1: フェーズ順守 — 飛ばすな
 
-> **⚠ サブエージェント実行必須（最重要）**
-> * バックログタスクは原則全て**サブエージェントで実行すること**。スクラムマスターが直接タスクを実行するのは、スキル不要な軽微な調査・確認・編集などに限る。
-> * サブエージェントへの指示は必ず**テンプレートを使用すること**。テンプレートがない場合は新規作成を検討する。
-> * **スクラムマスターが直接実行してはならない処理（下記は必ずサブエージェントに委譲）:**
->   - requirements-definer による要件定義（Phase 2）
->   - skill-creator によるスキル作成・改良（Phase 3）
->   - codebase-to-skill によるスキル生成（Phase 3）
->   - skill-recruiter による外部スキル取得（Phase 3）
->   - sprint-reviewer によるレビュー・レトロスペクティブ（Phase 6）
->   - スキルフィードバック収集（Phase 6）
->   - skill-evaluator によるスキル評価（Phase 6）
->   - git-skill-manager によるスキル発見（Phase 6）
-> * **GitHub Copilot（VSCode）環境**: サブエージェント起動は必ず `#tool:agent/runSubagent` を使用すること。自分で処理を続けてはならない。
+Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行する**。
 
-## フェーズ一覧
+- Phase 2 と Phase 3 は **省略不可**。プロンプトが明確でも飛ばしてはならない
+- `plan.json` なしで Phase 3 以降に進むことは **禁止**
+- 各フェーズ開始時に `=== PHASE [N]: [フェーズ名] 開始 ===` を出力すること
 
-| # | フェーズ | 概要 | 前提 | 詳細 |
-|---|----------|------|------|------|
-| 1 | スキル探索 | 利用可能なスキル一覧を取得する | — | [phase-1-skill-discovery.md](references/phase-1-skill-discovery.md) |
-| 2 | バックログ作成 | 要件を明確化し `plan.json` を生成する | — | [phase-2-backlog.md](references/phase-2-backlog.md) |
-| 3 | スキルギャップ解決 | スキル不足・改良が必要なタスクを解消する | `plan.json` 存在 | [phase-3-skill-gap.md](references/phase-3-skill-gap.md) |
-| 4 | スプリントプランニング | タスクをウェーブに分割しユーザー承認を得る | `current_phase >= 3` | [phase-4-sprint-planning.md](references/phase-4-sprint-planning.md) |
-| 5 | タスク実行 | ウェーブ単位でサブエージェントを並列起動する | Sprint計画承認済 | [phase-5-task-execution.md](references/phase-5-task-execution.md) |
-| 6 | スプリントレビュー | レビュー・フィードバック・スキル評価を行う | Sprint完了/中断 | [phase-6-sprint-review.md](references/phase-6-sprint-review.md) |
-| 7 | 進捗レポートと継続判断 | ユーザーに報告し次アクションを確認する | Phase 6 完了 | [phase-7-progress-report.md](references/phase-7-progress-report.md) |
+### 鉄則 2: サブエージェント委譲 — 自分でやるな
+
+以下は **サブエージェントに委譲する**。スクラムマスターが直接実行してはならない:
+
+- 要件定義（Phase 2: requirements-definer）
+- スキル作成・改良（Phase 3: skill-creator / codebase-to-skill / skill-recruiter）
+- タスク実行（Phase 5: 各スキル）
+- レビュー・評価（Phase 6: sprint-reviewer / skill-evaluator）
+
+直接実行してよいのは **スキル不要な軽微な調査・確認・ファイル編集のみ**。
+
+### 鉄則 3: サブエージェント起動方法
+
+| 環境 | 起動方法 |
+|------|---------|
+| **GitHub Copilot (VSCode)** | `#tool:agent/runSubagent` を使用。自分で処理を続けてはならない |
+| **Claude Code** | `Task` ツール（`subagent_type: "general-purpose"`）を使用 |
+
+- プロンプトテンプレート: [references/subagent-templates.md](references/subagent-templates.md) を参照
+- SKILL.md の内容をプロンプトに埋め込むな。ファイルパスだけ渡せ
+- 並列実行: 複数のサブエージェント起動を単一メッセージに並べる
+
+---
+
+## パス解決
+
+このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、その親ディレクトリを `SKILLS_DIR` とする。
+
+| このSKILL.mdのパス | SKILL_DIR | SKILLS_DIR |
+|---|---|---|
+| `~/.copilot/skills/scrum-master/SKILL.md` | `~/.copilot/skills/scrum-master` | `~/.copilot/skills` |
+| `.github/skills/scrum-master/SKILL.md` | `.github/skills/scrum-master` | `.github/skills` |
+
+- スクリプトは `${SKILL_DIR}/scripts/` から実行する
+- 他スキルのSKILL.mdは `${SKILLS_DIR}/[skill-name]/SKILL.md` で解決する
+- 該当スキルが `SKILLS_DIR` に存在しない場合は、もう一方の場所（`~/.copilot/skills/` または `.github/skills/`）を確認する
+
+---
 
 ## フェーズ実行手順
 
-各フェーズを開始する際は、必ず以下の手順に従う:
+**各フェーズは以下の手順で実行する**:
+1. `=== PHASE [N] 開始 ===` を出力する
+2. 対応する `references/phase-N-*.md` を **読んでその手順に従う**
+3. ゲート条件をクリアしてから次のフェーズへ進む
 
-1. 対応する `references/phase-N-*.md` を読む
-2. 前提条件（`plan.json` の存在・`current_phase` の値）を確認する
-3. 詳細手順に従って実行する
-4. 完了チェックをクリアしてから次のフェーズへ進む
+| # | フェーズ | やること | ゲート条件（次へ進む前に満たすこと） | 詳細手順 |
+|---|----------|---------|--------------------------------------|----------|
+| 1 | スキル探索 | `discover_skills.py` を実行しスキル一覧を取得 | スキル一覧JSON取得済み | [phase-1](references/phase-1-skill-discovery.md) |
+| 2 | バックログ作成 | 曖昧度判定 → 要件定義（委譲）→ `plan.json` 生成 | `plan.json` がルートに保存済み | [phase-2](references/phase-2-backlog.md) |
+| 3 | スキルギャップ解決 | スキル不足・改良を検出し解消（委譲） | スキルギャップなし。`current_phase` = 3 | [phase-3](references/phase-3-skill-gap.md) |
+| 4 | スプリントプランニング | タスク選出 → ウェーブ分割 → ユーザー承認 | ユーザーがスプリントプランを承認済み | [phase-4](references/phase-4-sprint-planning.md) |
+| 5 | タスク実行 | ウェーブ単位でサブエージェント並列起動（委譲） | 全ウェーブ実行完了（または中断選択） | [phase-5](references/phase-5-task-execution.md) |
+| 6 | スプリントレビュー | レビュー・フィードバック・スキル評価（全て委譲） | レビューとフィードバック収集完了 | [phase-6](references/phase-6-sprint-review.md) |
+| 7 | 進捗レポート | ユーザーに報告し次アクションを確認 | ユーザーが選択肢を選択済み | [phase-7](references/phase-7-progress-report.md) |
 
-## サブエージェントへの指示テンプレート
+**ガードレール**:
+- スキル作成リトライ: Phase 3 内で最大2回
+- バリデーション: Phase 4 で最大3回
+- スプリント総数: 最大5回
 
-テンプレート本文は [references/subagent-templates.md](references/subagent-templates.md) を参照すること。
+**Phase 7 選択肢別の遷移先**:
+- 「次スプリント」→ スキル作成があった場合は Phase 1 → Phase 4、なければ直接 Phase 4
+- 「バックログ見直し」→ Phase 4
+- 「完了」→ 最終レポート出力して終了
 
-**重要**:
-- SKILL.md の内容をプロンプトに埋め込まない。ファイルパスだけ渡し、サブエージェント自身に読ませる。
-- すべてのテンプレートに戻り値の形式指定を含める。
-
-| テンプレート | 用途 |
-|---|---|
-| requirements-definer 呼び出し時 | 要件定義の実行 |
-| skill: null タスク実行時 | スキル不要な調査・確認・軽微な編集 |
-| スキル実行時 | 既存スキルを使ったタスク実行 |
-| スキル作成時 | skill-creator でスキルを新規作成 |
-| スキル改良時 | skill-creator でスキルを改良・分割 |
-| コードベースからスキル生成時 | codebase-to-skill でスキルを生成 |
-| スキル招募時 | skill-recruiter で外部スキルを取得 |
-| スプリントレビュー時 | sprint-reviewer でレビューを実施 |
-| スキルフィードバック収集時 | 使用スキルのフィードバックを収集・記録 |
-| スキル昇格時 | git-skill-manager promote を実行 |
-| スキル評価時 | skill-evaluator でスキルを評価 |
-| スキル共有時 | git-skill-manager push を実行 |
-| スキル発見時 | git-skill-manager discover を実行 |
-| worktree 並列実行時 | 同一ファイルを独立セクションで並列変更する場合 |
-
-## 動作環境
-
-- **GitHub Copilot Chat**（Windows / macOS / Linux）および **Claude Code** で動作する
-- スクリプト実行は `python`（環境によっては `python3`）
-- パス区切りは `/` を使用する（クロスプラットフォームで動作する）
-- ファイル書き出し時の文字コードは **UTF-8 without BOM**
-
-| 環境 | サブエージェント起動方法 |
-|------|------------------------|
-| Claude Code | `Task` ツールを使用。`subagent_type: "general-purpose"` を指定する |
-| GitHub Copilot | `#tool:agent/runSubagent` を使用する |
-
-並列実行（同一ウェーブ）は、Claude Code では複数の Task ツール呼び出しを単一メッセージに並べることで実現する。
+---
 
 ## エラーハンドリング
 
 | 状況 | 対応 |
-|---|---|
-| discover_skills.py 実行失敗 | .github/skills/ ディレクトリの存在を確認。なければ作成を提案する |
-| validate_plan.py バリデーション失敗 | エラー内容に従ってプランJSONを修正し再検証する |
-| サブエージェント実行失敗 | ユーザーにリトライ/スキップ/中断の選択肢を提示する |
-| 全タスク失敗 | ゴール自体の実現可能性をユーザーと再検討する |
+|------|------|
+| discover_skills.py 失敗 | `${SKILLS_DIR}/` の存在確認。なければ作成提案 |
+| validate_plan.py 失敗 | エラーに従い修正。最大3回で超えたらユーザーに相談 |
+| サブエージェント失敗 | リトライ / スキップ / 中断をユーザーに提示 |
+| 全タスク失敗 | ゴール実現可能性をユーザーと再検討 |
+
+## 動作環境
+
+- **GitHub Copilot Chat** / **Claude Code** で動作
+- スクリプト: `python`（環境によっては `python3`）
+- パス区切り: `/`、文字コード: UTF-8 without BOM
