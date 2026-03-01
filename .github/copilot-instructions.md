@@ -5,7 +5,7 @@
 セッション開始時に、git-skill-manager の自動更新チェックを実行する:
 
 ```bash
-python .github/skills/git-skill-manager/scripts/auto_update.py check
+python ~/.copilot/skills/git-skill-manager/scripts/auto_update.py check
 ```
 
 `--force` なしの場合、`interval_hours` 未満であればスキップされる（ネットワーク負荷を抑制）。
