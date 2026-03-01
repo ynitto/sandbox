@@ -2,6 +2,16 @@
 
 > **開始時出力**: `=== PHASE 2: バックログ作成 開始 ===`
 
+## 目次
+
+- [Step 2-0: requirements.json の存在チェック](#step-2-0-requirementsjson-の存在チェック)
+- [Step 2-1: 曖昧度判定](#step-2-1-曖昧度判定)
+- [Step 2-2: scrum-master がプレインタビューを実施し、requirements-definer に委譲する](#step-2-2-scrum-master-がプレインタビューを実施しrequirements-definer-に委譲する)
+- [Step 2-3: requirements.json → バックログ変換](#step-2-3-requirementsjson--バックログ変換)
+- [Step 2-4: 直接バックログ作成（小さく明示的なタスクのみ）](#step-2-4-直接バックログ作成小さく明示的なタスクのみ)
+- [Step 2-5: plan.json 保存](#step-2-5-planjson-保存)
+- [ゲート条件（Phase 3 に進む前に確認）](#ゲート条件phase-3-に進む前に確認)
+
 ユーザーのプロンプトからバックログを作成する。曖昧な指示の場合は requirements-definer を介して要件を明確化してからバックログに変換する。
 
 ## Step 2-0: requirements.json の存在チェック
@@ -111,7 +121,7 @@ goal: [requirements.json の goal フィールドの値]
 
 ## Step 2-5: plan.json 保存
 
-スキーマ詳細は [plan-schema.md](plan-schema.md) を参照する。作業ディレクトリのルートに `plan.json` として保存する。
+スキーマ詳細は `plan-schema.md` を参照する。作業ディレクトリのルートに `plan.json` として保存する。
 
 ```json
 {

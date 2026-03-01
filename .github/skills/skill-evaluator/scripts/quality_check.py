@@ -12,9 +12,11 @@ agentskills.io のベストプラクティスガイドラインに基づいて
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import re
 import sys
+import tokenize
 
 
 # ──────────────────────────────────────────────
@@ -280,12 +282,27 @@ def check_scripts(skill_dir: str) -> list[dict]:
     scripts_dir = os.path.join(skill_dir, "scripts")
     if not os.path.isdir(scripts_dir):
         return issues
+
+    def strip_python_literals(content: str) -> str:
+        """Python の文字列/コメントを除去して誤検知を抑える。"""
+        tokens: list[tuple[int, str]] = []
+        try:
+            for token in tokenize.generate_tokens(io.StringIO(content).readline):
+                if token.type in (tokenize.STRING, tokenize.COMMENT):
+                    continue
+                tokens.append((token.type, token.string))
+            return tokenize.untokenize(tokens)
+        except (tokenize.TokenError, IndentationError):
+            return content
+
     for fname in sorted(os.listdir(scripts_dir)):
         if not fname.endswith((".py", ".sh")):
             continue
         fpath = os.path.join(scripts_dir, fname)
         with open(fpath, encoding="utf-8", errors="replace") as f:
             content = f.read()
+        if fname.endswith(".py"):
+            content = strip_python_literals(content)
         for pattern in _NETWORK_PATTERNS:
             if re.search(pattern, content):
                 issues.append({
