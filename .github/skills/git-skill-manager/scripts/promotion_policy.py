@@ -177,7 +177,7 @@ def show_policy() -> None:
     print("⚙️  昇格ポリシー設定:")
     print(f"   min_ok_count:          {policy.get('min_ok_count', 3)}")
     print(f"   max_problem_rate:      {policy.get('max_problem_rate', 0.1):.0%}")
-    print(f"   require_local_modified:{policy.get('require_local_modified', True)}")
+    print(f"   require_local_modified:{policy.get('require_local_modified', False)}")
     print(f"   auto_pr:               {policy.get('auto_pr', False)}")
     print(f"   notify_on_eligible:    {policy.get('notify_on_eligible', True)}")
 

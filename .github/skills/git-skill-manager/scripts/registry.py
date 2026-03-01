@@ -27,6 +27,53 @@ def _cache_dir() -> str:
     return os.path.join(home, ".copilot", "cache")
 
 
+def _version_tuple(v: str | None) -> tuple:
+    """バージョン文字列を比較可能な 3 要素タプルに変換する。
+
+    'X.Y.Z' → (X, Y, Z)。要素が不足する場合はゼロ埋め。
+    例: '1.2' → (1, 2, 0)、'1' → (1, 0, 0)
+    プレリリース識別子（'-' を含む部分）はそこで打ち切り無視する。
+    """
+    if not v:
+        return (0, 0, 0)
+    try:
+        parts = []
+        for x in v.split("."):
+            if x.isdigit():
+                parts.append(int(x))
+            else:
+                break  # プレリリース識別子に到達したら打ち切る
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts[:3])
+    except Exception:
+        return (0, 0, 0)
+
+
+def _read_frontmatter_version(skill_path: str) -> str | None:
+    """SKILL.md のフロントマターから metadata.version を読み取る。未記載なら None。"""
+    skill_md = os.path.join(skill_path, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return None
+    with open(skill_md, encoding="utf-8") as f:
+        content = f.read()
+    fm = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+    if not fm:
+        return None
+    in_metadata = False
+    for line in fm.group(1).splitlines():
+        if line.startswith("metadata:"):
+            in_metadata = True
+            continue
+        if in_metadata:
+            if line and not line[0].isspace():
+                in_metadata = False
+            elif line.lstrip().startswith("version:"):
+                ver = line.split(":", 1)[1].strip().strip("\"'")
+                return ver or None
+    return None
+
+
 CORE_SKILLS_DEFAULT = [
     "scrum-master", "git-skill-manager", "skill-creator",
     "requirements-definer", "skill-recruiter", "skill-evaluator",

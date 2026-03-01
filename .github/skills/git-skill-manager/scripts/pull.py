@@ -13,44 +13,10 @@ from registry import (
     load_registry, save_registry, _cache_dir, _skill_home,
     merge_mcp_config, set_vscode_autostart_mcp,
     _vscode_mcp_path, _is_uv_required, _check_uv_installed, _get_new_mcp_servers,
+    _version_tuple, _read_frontmatter_version,
 )
 from repo import clone_or_fetch, update_remote_index
 from delta_tracker import check_sync_protection
-
-
-def _version_tuple(v: str | None) -> tuple:
-    """バージョン文字列を比較可能なタプルに変換する。'1.2.3' → (1, 2, 3)。"""
-    if not v:
-        return (0,)
-    try:
-        return tuple(int(x) for x in v.split(".") if x.isdigit())
-    except Exception:
-        return (0,)
-
-
-def _read_frontmatter_version(skill_path: str) -> str | None:
-    """SKILL.md のフロントマターから metadata.version を読み取る。未記載なら None。"""
-    skill_md = os.path.join(skill_path, "SKILL.md")
-    if not os.path.isfile(skill_md):
-        return None
-    with open(skill_md, encoding="utf-8") as f:
-        content = f.read()
-    import re as _re
-    fm = _re.match(r'^---\s*\n(.*?)\n---', content, _re.DOTALL)
-    if not fm:
-        return None
-    in_metadata = False
-    for line in fm.group(1).splitlines():
-        if line.startswith("metadata:"):
-            in_metadata = True
-            continue
-        if in_metadata:
-            if line and not line[0].isspace():
-                in_metadata = False
-            elif line.lstrip().startswith("version:"):
-                ver = line.split(":", 1)[1].strip().strip("\"'")
-                return ver or None
-    return None
 
 
 def _auto_save_snapshot() -> str | None:
@@ -301,7 +267,7 @@ def pull_skills(
         s["lineage"] = {
             "origin_repo": s["source_repo"],
             "origin_commit": s["commit_hash"],
-            "origin_version": None,
+            "origin_version": s.get("central_version"),
             "local_modified": False,
             "diverged_at": None,
             "local_changes_summary": "",

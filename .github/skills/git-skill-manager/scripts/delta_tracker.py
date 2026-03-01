@@ -20,7 +20,7 @@ import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
-from registry import load_registry, save_registry, _skill_home, _cache_dir
+from registry import load_registry, save_registry, _skill_home, _cache_dir, _version_tuple, _read_frontmatter_version
 
 
 def _hash_skill_content(skill_dir: str) -> str | None:
@@ -132,6 +132,12 @@ def scan_skills(target_skill: str | None = None) -> list:
             lineage["origin_repo"] = skill.get("source_repo")
         if not lineage.get("origin_commit"):
             lineage["origin_commit"] = skill.get("commit_hash")
+
+        # version と version_ahead をローカル SKILL.md から動的に再計算
+        local_ver = _read_frontmatter_version(local_path)
+        central_ver = skill.get("central_version")
+        skill["version"] = local_ver
+        skill["version_ahead"] = _version_tuple(local_ver) > _version_tuple(central_ver)
 
         if detection["local_modified"]:
             modified_count += 1
