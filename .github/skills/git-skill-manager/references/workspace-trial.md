@@ -1,12 +1,12 @@
 # ワークスペーストライアルフロー
 
-VSCode チャット経由で作成されたスキルは `.github/skills/` に置かれる（ワークスペース領域）。
+VSCode チャット経由で作成されたスキルはワークスペースのスキル領域（`<workspace-skill-dir>`）に置かれる。
 ユーザーホームの `~/.copilot/skills/` とは別の場所なので、まず試用してから昇格する。
 
 ## スキルのライフサイクル
 
 ```
-【作成】 skill-creator → .github/skills/<name>/   (source_repo: "workspace")
+【作成】 skill-creator → <workspace-skill-dir>/<name>/   (source_repo: "workspace")
    ↓ 使用するたびにフィードバック収集
 【評価】 record_feedback.py が自動評価
    ├── ok × 2回以上、問題なし  → ✅ 昇格推奨
@@ -40,5 +40,5 @@ EVAL_RECOMMEND: promote
 scrum-master の Phase 6 が `skill-evaluator` サブエージェントを起動して全ワークスペーススキルを一覧評価する:
 
 ```bash
-python .github/skills/skill-evaluator/scripts/evaluate.py
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py
 ```

@@ -37,13 +37,13 @@
 
 ```bash
 # 問題なく動作した
-python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict ok
+python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict ok
 
 # 改善余地あり
-python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict needs-improvement --note "改善点の説明"
+python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict needs-improvement --note "改善点の説明"
 
 # 動作しなかった
-python .github/skills/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict broken --note "壊れている箇所"
+python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict broken --note "壊れている箇所"
 ```
 
 ## discover_skills.py のソート順

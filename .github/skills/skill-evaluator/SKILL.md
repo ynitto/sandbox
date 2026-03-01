@@ -1,6 +1,6 @@
 ---
 name: skill-evaluator
-description: ワークスペーススキル（.github/skills/）とインストール済みスキル（~/.copilot/skills/）の両方を評価し、昇格・改良・試用継続を判断するスキル。「スキルを評価して」「試用中スキルを確認して」「どのスキルを昇格すべき？」「インストール済みスキルの状態を確認して」などで発動する。git-skill-manager の evaluate 操作、scrum-master Phase 6、スキル使用後に EVAL_RECOMMEND 出力があった場合に自動的に起動される。
+description: ワークスペーススキル（ワークスペースのスキル領域）とインストール済みスキル（~/.copilot/skills/）の両方を評価し、昇格・改良・試用継続を判断するスキル。「スキルを評価して」「試用中スキルを確認して」「どのスキルを昇格すべき？」「インストール済みスキルの状態を確認して」などで発動する。git-skill-manager の evaluate 操作、scrum-master Phase 6、スキル使用後に EVAL_RECOMMEND 出力があった場合に自動的に起動される。
 metadata:
   version: "1.0"
 ---
@@ -31,15 +31,17 @@ metadata:
 ベストプラクティスガイドラインに基づいてスキルの静的品質を検査する。
 使用履歴の動的評価（`evaluate.py`）と組み合わせて使う。
 
+`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
+
 ```bash
 # ワークスペーススキルを全チェック
-python .github/skills/skill-evaluator/scripts/quality_check.py
+python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py
 
 # 特定スキルのみ
-python .github/skills/skill-evaluator/scripts/quality_check.py --skill <skill-name>
+python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py --skill <skill-name>
 
 # 任意ディレクトリ
-python .github/skills/skill-evaluator/scripts/quality_check.py --path <dir>
+python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py --path <dir>
 ```
 
 ### チェック項目
@@ -132,8 +134,10 @@ verdict の傾向から、スキルの構造的問題を推察して改良提案
 
 フィードバック評価の前に必ず静的品質チェックを実行して構造的な問題を事前に把握する。
 
+`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
+
 ```bash
-python .github/skills/skill-evaluator/scripts/quality_check.py
+python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py
 ```
 
 ERROR が出た場合は修正してから動的評価に進む。WARN も可能な限り対処する。
@@ -142,16 +146,16 @@ ERROR が出た場合は修正してから動的評価に進む。WARN も可能
 
 ```bash
 # 全スキル（ワークスペース + インストール済み）を評価
-python .github/skills/skill-evaluator/scripts/evaluate.py
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py
 
 # ワークスペーススキルのみ
-python .github/skills/skill-evaluator/scripts/evaluate.py --type workspace
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --type workspace
 
 # インストール済みスキルのみ
-python .github/skills/skill-evaluator/scripts/evaluate.py --type installed
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --type installed
 
 # 特定スキルのみ（種別を問わず検索）
-python .github/skills/skill-evaluator/scripts/evaluate.py --skill <skill-name>
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <skill-name>
 ```
 
 ### 2. 結果をユーザーに提示する
@@ -198,8 +202,8 @@ python .github/skills/skill-evaluator/scripts/evaluate.py --skill <skill-name>
 
 ### 4. 各アクションを実行する
 
-- **昇格**: `.github/skills/git-skill-manager/SKILL.md` を読んで `promote` 操作の手順に従う
-- **改良**: `.github/skills/git-skill-manager/SKILL.md` を読んで `refine` 操作の手順に従う
+- **昇格**: `<SKILLS_BASE>/git-skill-manager/SKILL.md` を読んで `promote` 操作の手順に従う
+- **改良**: `<SKILLS_BASE>/git-skill-manager/SKILL.md` を読んで `refine` 操作の手順に従う
   - インストール済みスキルかつ `source_repo` がリポジトリ名の場合: 改良後に `push` 操作を提案する
 - **試用継続・スキップ**: 報告のみで次へ進む
 

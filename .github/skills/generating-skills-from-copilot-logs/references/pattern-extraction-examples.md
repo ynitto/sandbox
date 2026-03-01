@@ -68,10 +68,10 @@
 
 ## 既存スキルとの重複確認
 
-パターンが検出されたら `.github/skills/` を確認し、既存スキルと比較する:
+パターンが検出されたら `<SKILLS_BASE>/`（`~/.copilot/skills` または `<workspace-skill-dir>`）を確認し、既存スキルと比較する:
 
 ```bash
-ls .github/skills/
+ls <SKILLS_BASE>/
 # 例: react-frontend-unit-tester, systematic-debugging, ...
 ```
 

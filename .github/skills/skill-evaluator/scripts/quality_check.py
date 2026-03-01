@@ -5,7 +5,7 @@ agentskills.io のベストプラクティスガイドラインに基づいて
 スキルの品質を検査する。セキュリティリスクは別セクションで報告する。
 
 使い方:
-    python quality_check.py                        # .github/skills/ 以下を全チェック
+    python quality_check.py                        # 既定のスキルディレクトリを全チェック
     python quality_check.py --skill <skill-name>   # 特定スキルのみ
     python quality_check.py --path <dir>           # 任意ディレクトリのスキルをチェック
 """
@@ -569,12 +569,20 @@ def print_results(results: list[dict]) -> int:
 
 
 def main() -> None:
+    def default_skills_base() -> str:
+        here = os.path.dirname(os.path.abspath(__file__))
+        local_skills = os.path.normpath(os.path.join(here, "..", ".."))
+        if os.path.isdir(local_skills):
+            return local_skills
+        home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+        return os.path.join(home, ".copilot", "skills")
+
     parser = argparse.ArgumentParser(description="スキルの静的品質チェック")
     parser.add_argument("--skill", help="特定スキルのみチェック（スキル名）")
     parser.add_argument(
         "--path",
-        default=".github/skills",
-        help="スキルのベースディレクトリ (default: .github/skills)",
+        default=default_skills_base(),
+        help="スキルのベースディレクトリ（既定: スクリプト配置に応じて自動解決）",
     )
     args = parser.parse_args()
 

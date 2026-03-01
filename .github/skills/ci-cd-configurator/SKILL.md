@@ -9,12 +9,6 @@ metadata:
 
 GitLab CI および Jenkins (Declarative Pipeline) 向けパイプラインを設計・生成する。インフラは **AWS に限定**。
 
-## スキルエコシステム内の位置づけ
-
-- **scrum-master** がスプリントで生成した成果物を本番へ届けるラストワンマイル
-- **react-frontend-coder** が生成した Vite/React アプリのビルド・デプロイ設定を担う
-- **systematic-debugging** と連携してパイプライン失敗を診断する
-
 ## ワークフロー生成フロー
 
 ### Step 1: プロジェクト情報の収集

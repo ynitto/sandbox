@@ -7,7 +7,8 @@
     python init_skill.py <skill-name> --path <output-directory>
 
 例:
-    python init_skill.py my-skill --path .github/skills
+    python init_skill.py my-skill --path ~/.copilot/skills
+    python init_skill.py my-skill --path <workspace-skill-dir>
 """
 
 import argparse

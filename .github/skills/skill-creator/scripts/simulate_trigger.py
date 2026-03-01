@@ -27,7 +27,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def _default_workspace() -> str:
-    """このスクリプトの2階層上（.github/skills/）を返す。"""
+    """このスクリプトの2階層上（現在のスキルベース）を返す。"""
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(here, "..", ".."))
 
@@ -233,7 +233,7 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", dest="include_user",
                         help="ユーザースキル（~/.copilot/skills/）も含める")
     parser.add_argument("--workspace", metavar="DIR",
-                        help="スキルディレクトリを手動で指定（デフォルト: .github/skills/）")
+                        help="スキルディレクトリを手動で指定（デフォルト: スクリプト配置から自動解決）")
     args = parser.parse_args()
 
     workspace = args.workspace if args.workspace else _default_workspace()

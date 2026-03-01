@@ -214,7 +214,7 @@ git ls-remote $REPO_URL HEAD
 
 ## promote
 
-ワークスペース内（`$workspace/.github/skills/`）のスキルをユーザー領域（`~/.copilot/skills/`）にコピーし、リポジトリにも push する。プロジェクト固有でないスキルを他のプロジェクトでも再利用可能にする。
+ワークスペースのスキルディレクトリ（`<workspace-skill-dir>`）のスキルをユーザー領域（`~/.copilot/skills/`）にコピーし、リポジトリにも push する。プロジェクト固有でないスキルを他のプロジェクトでも再利用可能にする。
 
 ### 処理フロー
 
@@ -229,7 +229,7 @@ git ls-remote $REPO_URL HEAD
 
 ## ワークスペーストライアルフロー
 
-VSCode チャット経由で作成されたスキルは `.github/skills/` に置かれ、試用してから昇格する。
+VSCode チャット経由で作成されたスキルはワークスペースのスキルディレクトリ（`<workspace-skill-dir>`）に置かれ、試用してから昇格する。
 
 ライフサイクル・評価フロー詳細 → [references/workspace-trial.md](references/workspace-trial.md)
 
@@ -261,7 +261,7 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 
 | スキル種別 | 編集対象パス |
 |---|---|
-| ワークスペーススキル | `.github/skills/<name>/` |
+| ワークスペーススキル | `<workspace-skill-dir>/<name>/` |
 | インストール済みスキル | `~/.copilot/skills/<name>/` |
 
 `refine_skill()` はスクリプト出力に `スキルパス: <path>` および `REFINE_COMPLETE_CMD: python manage.py mark-refined <name>` を含む。エージェントはスキルパスを skill-creator に渡し、改良完了後に `REFINE_COMPLETE_CMD:` のコマンドを実行する。
@@ -348,12 +348,12 @@ VSCode チャット経由で作成されたスキルは `.github/skills/` に置
 
 ### 処理フロー
 
-→ 実装: `.github/skills/skill-evaluator/scripts/evaluate.py`（skill-evaluator スキルが管理）
+→ 実装: `<SKILLS_BASE>/skill-evaluator/scripts/evaluate.py`（skill-evaluator スキルが管理、`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>`）
 
 1. `skill-evaluator` サブエージェントを起動する:
    ```
    skill-evaluator スキルでスキルを評価する。
-   手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+   手順: まず <SKILLS_BASE>/skill-evaluator/SKILL.md を読んで手順に従ってください。
    ```
 2. skill-evaluator が評価結果を提示し、promote / refine のアクションをユーザーに確認する
 3. 「昇格する」→ `promote` 操作を実行する

@@ -187,11 +187,13 @@ docx-jsで新規作成。[DOCX-JS.md](DOCX-JS.md) 参照。
 
 新規作成の場合、`init_skill.py`を実行する（**作業ディレクトリのルートから実行すること**）:
 
+`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
+
 ```bash
-python .github/skills/skill-creator/scripts/init_skill.py <skill-name> --path .github/skills
+python <SKILLS_BASE>/skill-creator/scripts/init_skill.py <skill-name> --path <SKILLS_BASE>
 ```
 
-`--path` には出力先ディレクトリを指定する。省略した場合はカレントディレクトリに生成される。標準的な配置先は `.github/skills`。
+`--path` には出力先ディレクトリを指定する。省略した場合はカレントディレクトリに生成される。標準的な配置先は `~/.copilot/skills` または `<workspace-skill-dir>`。
 
 スクリプトは以下を生成する:
 - スキルディレクトリ
@@ -242,29 +244,29 @@ metadata:
 **開発中の素早いチェック**には `quick_validate.py` を使う（パッケージ化なし）:
 
 ```bash
-python .github/skills/skill-creator/scripts/quick_validate.py <path/to/skill-folder>
+python <SKILLS_BASE>/skill-creator/scripts/quick_validate.py <path/to/skill-folder>
 ```
 
 **description のトリガー動作テスト**には `simulate_trigger.py` を使う:
 
 ```bash
 # 特定リクエストでどのスキルが発動するか確認
-python .github/skills/skill-creator/scripts/simulate_trigger.py "ユーザーリクエスト"
+python <SKILLS_BASE>/skill-creator/scripts/simulate_trigger.py "ユーザーリクエスト"
 
 # 類似 description を持つスキルペアを検出（競合チェック）
-python .github/skills/skill-creator/scripts/simulate_trigger.py --conflicts
+python <SKILLS_BASE>/skill-creator/scripts/simulate_trigger.py --conflicts
 ```
 
 **配布用の.skillファイル作成**には `package_skill.py` を使う（バリデーション + ZIP生成）:
 
 ```bash
-python .github/skills/skill-creator/scripts/package_skill.py <path/to/skill-folder>
+python <SKILLS_BASE>/skill-creator/scripts/package_skill.py <path/to/skill-folder>
 ```
 
 出力先指定（任意）:
 
 ```bash
-python .github/skills/skill-creator/scripts/package_skill.py <path/to/skill-folder> ./dist
+python <SKILLS_BASE>/skill-creator/scripts/package_skill.py <path/to/skill-folder> ./dist
 ```
 
 `package_skill.py` は以下を実行する:

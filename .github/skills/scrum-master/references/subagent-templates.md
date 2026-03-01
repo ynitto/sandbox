@@ -283,7 +283,7 @@ skill-evaluator スキルで全スキルを評価する（レポートのみモ�
 
 手順: まず ${SKILLS_DIR}/skill-evaluator/SKILL.md を読んで手順に従ってください。
 操作: 全スキル（ワークスペース + インストール済み）を評価する。
-     python .github/skills/skill-evaluator/scripts/evaluate.py --type all を実行すること。
+   python ${SKILLS_DIR}/skill-evaluator/scripts/evaluate.py --type all を実行すること。
 モード: レポートのみ。ユーザーへの確認・promote/refine の実行は行わないこと。
        評価結果と推奨アクションを以下の形式で返すだけでよい。
 

@@ -122,7 +122,7 @@
 - `lock` で全スキルを一括 pin、`unlock` で全スキルを一括 unpin
 
 **installed_skills[].source_repo** (文字列):
-- `"workspace"`: `.github/skills/` に置かれた試用中スキル（チャット経由で作成）
+- `"workspace"`: ワークスペースのスキルディレクトリ（`<workspace-skill-dir>`）に置かれた試用中スキル（チャット経由で作成）
 - `"local"`: `promote` 操作でユーザー領域に昇格済みのスキル
 - その他: リポジトリ名（`pull` でインストールしたスキル）
 - `"workspace"` のスキルは `skill-evaluator` の評価対象になる

@@ -47,6 +47,6 @@
 すべての項目にチェックが入ったら `skill-creator` の手順に従いパッケージ化する:
 
 ```bash
-python .github/skills/skill-creator/scripts/package_skill.py \
-  .github/skills/<skill-name>
+python <SKILLS_BASE>/skill-creator/scripts/package_skill.py \
+  <SKILLS_BASE>/<skill-name>
 ```

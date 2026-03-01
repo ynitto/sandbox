@@ -124,7 +124,7 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 | 頻度 | 3セッション以上で出現 |
 | 一貫性 | 毎回ほぼ同じ手順 |
 | 自動化可能性 | 判断より手順が多い |
-| 既存スキルとの重複 | `.github/skills/` を確認 |
+| 既存スキルとの重複 | `<SKILLS_BASE>/`（`~/.copilot/skills` または `<workspace-skill-dir>`）を確認 |
 
 重複する既存スキルがある場合は候補から除外するか、既存スキルの改善候補として提示する。
 
@@ -159,7 +159,7 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 - ユーザー固有パスをハードコードしない（`/Users/alice/...` → `~/`）
 - CLIコマンドの stdout/stderr をそのまま書かない
 
-出力先: `.github/skills/<skill-name>/SKILL.md`
+出力先: `<SKILLS_BASE>/<skill-name>/SKILL.md`（`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>`）
 
 生成後、`skill-creator` の手順に従いパッケージ化する。
 

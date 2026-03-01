@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """スキル探索スクリプト。
 
-.github/skills/ 配下の全スキルを走査し、メタデータ一覧をJSON出力する。
+スキル配下の全スキルを走査し、メタデータ一覧をJSON出力する。
 scrum-master自身は一覧から除外する。
 レジストリの enabled / プロファイル設定に基づき、無効なスキルを除外できる。
 
 使い方:
     python discover_skills.py [skills-directory] [--registry path/to/skill-registry.json]
 
-デフォルト: .github/skills/
+デフォルト: スクリプト配置に応じて自動解決
 """
 
+import argparse
 import json
 import os
 import sys
@@ -168,15 +169,25 @@ def discover_skills(
     return skills
 
 
-def main() -> None:
-    skills_dir = sys.argv[1] if len(sys.argv) > 1 else ".github/skills"
+def _default_skills_dir() -> str:
+    """スクリプト配置に応じた既定のスキルディレクトリを返す。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    local_skills = os.path.normpath(os.path.join(here, "..", ".."))
+    if os.path.isdir(local_skills):
+        return local_skills
 
-    # --registry オプション対応
-    registry = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--registry" and i + 1 < len(sys.argv):
-            registry = load_registry(sys.argv[i + 1])
-            break
+    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    return os.path.join(home, ".copilot", "skills")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="スキル探索スクリプト")
+    parser.add_argument("skills_dir", nargs="?", help="探索対象のスキルディレクトリ")
+    parser.add_argument("--registry", help="レジストリJSONのパス（任意）")
+    args = parser.parse_args()
+
+    skills_dir = args.skills_dir or _default_skills_dir()
+    registry = load_registry(args.registry) if args.registry else None
 
     skills = discover_skills(skills_dir, registry=registry)
     print(json.dumps(skills, ensure_ascii=False, indent=2))

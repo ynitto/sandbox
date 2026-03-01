@@ -48,7 +48,7 @@ metadata:
 ### Phase 2: クローンと検証
 
 ```bash
-python .github/skills/skill-recruiter/scripts/verify_skill.py <URL またはローカルパス> [--skill-root <path>]
+python <SKILLS_BASE>/skill-recruiter/scripts/verify_skill.py <URL またはローカルパス> [--skill-root <path>]
 ```
 
 ローカルパスの場合はクローンをスキップして直接検証する。
@@ -186,9 +186,11 @@ python .github/skills/skill-recruiter/scripts/verify_skill.py <URL またはロ�
 
 ソースの種類によってインストール方法が異なる。
 
+`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
+
 #### URL の場合
 
-`.github/skills/git-skill-manager/SKILL.md` の `repo add` → `pull` の手順に従う。
+`<SKILLS_BASE>/git-skill-manager/SKILL.md` の `repo add` → `pull` の手順に従う。
 
 1. **repo add** でリポジトリを登録する
 2. **pull** でスキルをインストールする
@@ -221,7 +223,7 @@ print('コピー完了:', dst)
 #### 5-1. バリデーション
 
 ```bash
-python .github/skills/skill-creator/scripts/quick_validate.py ~/.copilot/skills/<name>
+python <SKILLS_BASE>/skill-creator/scripts/quick_validate.py ~/.copilot/skills/<name>
 ```
 
 警告があればユーザーに提示する。エラーがある場合は内容を説明し、修正するか続行するかを確認する。
@@ -233,7 +235,7 @@ python .github/skills/skill-creator/scripts/quick_validate.py ~/.copilot/skills/
 ```
 skill-evaluator スキルでインストールしたスキルの品質チェックを実行する。
 
-手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+手順: まず <SKILLS_BASE>/skill-evaluator/SKILL.md を読んで手順に従ってください。
 操作: ステップ 0（品質チェック）のみを実行する。
 対象スキル: <name>
 
@@ -251,7 +253,7 @@ WARN があればユーザーに提示する。ERROR がある場合は内容を
 Windows 環境（`os.name == 'nt'`）の場合のみ実行する:
 
 ```bash
-python .github/skills/skill-recruiter/scripts/adapt_for_windows.py ~/.copilot/skills/<name>
+python <SKILLS_BASE>/skill-recruiter/scripts/adapt_for_windows.py ~/.copilot/skills/<name>
 ```
 
 スクリプトが出力する各行の意味:

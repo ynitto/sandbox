@@ -127,7 +127,7 @@ Copilot:
 ユーザー: 「ワークスペースのスキルを他のプロジェクトでも使えるようにして」
 
 Copilot:
-  1. $workspace/.github/skills/ をスキャン、候補をリストアップ
+  1. ワークスペースのスキルディレクトリ（例: `$workspace/<workspace-skill-dir>/`）をスキャン、候補をリストアップ
   2. ユーザーが昇格するスキルを選択
   3. ~/.copilot/skills/ にコピー、レジストリに登録
   4. push 先リポジトリをユーザーが選択
