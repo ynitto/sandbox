@@ -15,7 +15,7 @@
 
 | トリガー | 説明 |
 |---------|------|
-| セッション開始時 | `.github/copilot-instructions.md` の指示で `run_auto_update()` を呼ぶ。前回チェックから `interval_hours` 以上経過していればチェックを実行 |
+| セッション開始時 | `~/.copilot/copilot-instructions.md` の指示で `run_auto_update()` を呼ぶ。前回チェックから `interval_hours` 以上経過していればチェックを実行 |
 | ユーザー直接 | 「更新チェックして」で `--force` 付きの即座チェック |
 | 設定変更 | 「自動更新を有効化して」「間隔を12時間にして」等 |
 
