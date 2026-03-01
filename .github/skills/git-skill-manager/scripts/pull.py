@@ -15,6 +15,17 @@ from registry import (
     _vscode_mcp_path, _is_uv_required, _check_uv_installed, _get_new_mcp_servers,
 )
 from repo import clone_or_fetch, update_remote_index
+from delta_tracker import check_sync_protection
+
+
+def _version_tuple(v: str | None) -> tuple:
+    """バージョン文字列を比較可能なタプルに変換する。'1.2.3' → (1, 2, 3)。"""
+    if not v:
+        return (0,)
+    try:
+        return tuple(int(x) for x in v.split(".") if x.isdigit())
+    except Exception:
+        return (0,)
 
 
 def _read_frontmatter_version(skill_path: str) -> str | None:
@@ -244,6 +255,19 @@ def pull_skills(
                 print(f"   ⚠️ {sname}: pinned commit {pinned[:7]} の取得に失敗。最新版を使用します")
                 pinned = None
 
+        # ---- ローカル変更保護チェック ----
+        if existing_skill and check_sync_protection(existing_skill, reg):
+            print(f"   🛡️  {sname}: ローカル変更あり → pull をスキップ（protect_local_modified=true）")
+            print(f"         解除する場合: python manage.py unprotect {sname}")
+            continue
+
+        # ---- バージョン比較（version_ahead の判定） ----
+        local_ver = existing_skill.get("version") if existing_skill else None
+        central_ver = _read_frontmatter_version(winner["full_path"])
+        version_ahead = _version_tuple(local_ver) > _version_tuple(central_ver)
+        if version_ahead:
+            print(f"   ⚠️  {sname}: ローカル v{local_ver} が中央 v{central_ver or '?'} より新しい → pull で上書きします")
+
         dest = os.path.join(skill_home, sname)
         if os.path.exists(dest):
             shutil.rmtree(dest)
@@ -261,6 +285,8 @@ def pull_skills(
             "enabled": enabled,
             "pinned_commit": pinned,
             "version": version,
+            "central_version": central_ver,
+            "version_ahead": version_ahead,
         })
 
     # レジストリ更新
@@ -271,9 +297,7 @@ def pull_skills(
         s["feedback_history"] = old.get("feedback_history", [])
         s["pending_refinement"] = old.get("pending_refinement", False)
         # v5フィールドを設定する（pull後はソース追跡情報を更新、統計は引き継ぐ）
-        # s["version"] は installed.append() 時にフロントマターから設定済み
-        s["central_version"] = None
-        s["version_ahead"] = False
+        # s["version"], s["central_version"], s["version_ahead"] は installed.append() 時に設定済み
         s["lineage"] = {
             "origin_repo": s["source_repo"],
             "origin_commit": s["commit_hash"],
