@@ -7,8 +7,23 @@ import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from registry import load_registry, save_registry, _cache_dir, _skill_home
+from registry import load_registry, save_registry, _cache_dir, _skill_home, _version_tuple, _read_frontmatter_version
 from repo import clone_or_fetch
+
+
+def _bump_type(old_ver: str | None, new_ver: str | None) -> str:
+    """バージョンアップの種別を返す: 'patch', 'minor', 'major', 'unknown'。"""
+    old = _version_tuple(old_ver)
+    new = _version_tuple(new_ver)
+    if new == old:
+        return "unknown"
+    if new[0] > old[0]:
+        return "major"
+    if new[1] > old[1]:
+        return "minor"
+    if new[2] > old[2]:
+        return "patch"
+    return "unknown"
 
 
 def _default_auto_update() -> dict:
@@ -100,10 +115,13 @@ def check_updates(force: bool = False) -> list[dict]:
                             desc = line[len("description:"):].strip()
                             break
 
+                latest_ver = _read_frontmatter_version(os.path.join(root, entry))
                 updates.append({
                     "name": entry,
                     "current_hash": current["commit_hash"],
                     "latest_hash": latest_hash,
+                    "current_version": current.get("version"),
+                    "latest_version": latest_ver,
                     "repo_name": repo["name"],
                     "description": desc[:80],
                 })
@@ -135,20 +153,56 @@ def run_auto_update(force: bool = False) -> None:
             print("✅ すべてのスキルは最新です")
         return
 
-    print(f"\n🔔 {len(updates)} 件のスキル更新があります:")
-    for u in updates:
-        desc = f"  {u['description']}" if u["description"] else ""
-        print(f"   📦 {u['name']} ({u['current_hash']} → {u['latest_hash']}){desc}")
-
+    sync_policy = reg.get("sync_policy", {})
+    auto_patch = sync_policy.get("auto_accept_patch", True)
+    auto_minor = sync_policy.get("auto_accept_minor", False)
     notify_only = au.get("notify_only", True)
 
-    if notify_only:
-        print('\n💡 更新するには「スキルをpullして」と指示してください')
-    else:
-        print("\n⬇️ 自動更新を実行します...")
+    # 更新をバージョン種別で分類
+    auto_pull_updates = []
+    review_updates = []
+    for u in updates:
+        bump = _bump_type(u.get("current_version"), u.get("latest_version"))
+        cur_label = u.get("current_version") or u["current_hash"]
+        new_label = u.get("latest_version") or u["latest_hash"]
+        u["_bump"] = bump
+        u["_cur_label"] = cur_label
+        u["_new_label"] = new_label
+        if not notify_only:
+            if bump == "patch" and auto_patch:
+                auto_pull_updates.append(u)
+            elif bump == "minor" and auto_minor:
+                auto_pull_updates.append(u)
+            elif bump in ("major",):
+                review_updates.append(u)
+            else:
+                # unknown（バージョン情報なし）または上記以外は自動 pull
+                auto_pull_updates.append(u)
+        else:
+            review_updates.append(u)
+
+    if auto_pull_updates or review_updates:
+        print(f"\n🔔 {len(updates)} 件のスキル更新があります:")
+        for u in updates:
+            desc = f"  {u['description']}" if u["description"] else ""
+            bump_label = f" [{u['_bump']}]" if u.get("latest_version") else ""
+            print(f"   📦 {u['name']} ({u['_cur_label']} → {u['_new_label']}){bump_label}{desc}")
+
+    if auto_pull_updates:
+        print(f"\n⬇️  自動更新を実行します ({len(auto_pull_updates)} 件)...")
         from pull import pull_skills
-        pull_skills(interactive=False)
+        for u in auto_pull_updates:
+            pull_skills(repo_name=u["repo_name"], skill_name=u["name"], interactive=False)
         print("✅ 自動更新が完了しました")
+
+    if review_updates:
+        if notify_only:
+            print('\n💡 更新するには「スキルをpullして」と指示してください')
+        else:
+            print(f"\n⚠️  手動確認が必要な更新 ({len(review_updates)} 件):")
+            for u in review_updates:
+                print(f"   📦 {u['name']} ({u['_cur_label']} → {u['_new_label']}, {u['_bump']}アップデート)")
+            print("   💡 更新するには「スキルをpullして」と指示してください")
 
 
 def configure_auto_update(

@@ -84,10 +84,9 @@
     "last_checked_at": "2026-02-20T09:00:00+00:00"
   },
   "node": {
-    "node_id": "node-abc12345",
-    "hostname": "my-machine",
-    "created_at": "2026-02-01T00:00:00Z",
-    "last_seen_at": "2026-02-27T12:00:00Z"
+    "id": "node-abc12345",
+    "name": "my-machine",
+    "created_at": "2026-02-01T00:00:00Z"
   },
   "promotion_policy": {
     "min_ok_count": 3,
@@ -97,8 +96,9 @@
     "notify_on_eligible": true
   },
   "sync_policy": {
-    "protect_local_modified": true,
-    "auto_pull_on_startup": false
+    "auto_accept_patch": true,
+    "auto_accept_minor": false,
+    "protect_local_modified": true
   },
   "contribution_queue": []
 }
@@ -165,10 +165,9 @@
 
 **node** (オブジェクト、v5):
 - このマシン固有のノード識別情報（`node_identity.py` が管理）
-- `node_id`: ランダム生成のユニーク ID
-- `hostname`: マシンのホスト名
-- `created_at`: ノード ID 生成日時
-- `last_seen_at`: 最後にスキルを操作した日時
+- `id`: ランダム生成のユニーク ID（例: "node-a1b2c3d4"）
+- `name`: ノードの識別名（デフォルトはホスト名）
+- `created_at`: ノード ID 生成日時（ISO 8601）
 
 **promotion_policy** (オブジェクト、v5):
 - ワークスペーススキルの昇格推奨判定ポリシー（`promotion_policy.py` が参照）
@@ -179,9 +178,10 @@
 - `notify_on_eligible` (真偽値、デフォルト: true): 昇格条件を満たしたときに通知するか
 
 **sync_policy** (オブジェクト、v5):
-- 自動 pull 時のローカル変更保護設定
+- 自動更新・pull 時の動作制御設定
+- `auto_accept_patch` (真偽値、デフォルト: true): パッチバージョンアップ（X.Y.Z1→X.Y.Z2）を自動 pull するか。`notify_only=false` 時のみ有効
+- `auto_accept_minor` (真偽値、デフォルト: false): マイナーバージョンアップ（X.Y1→X.Y2）を自動 pull するか。`notify_only=false` 時のみ有効。メジャーアップは常に手動確認
 - `protect_local_modified` (真偽値、デフォルト: true): true の場合、ローカル改善済みスキルを自動 pull で上書きしない
-- `auto_pull_on_startup` (真偽値、デフォルト: false): 起動時に自動 pull するか
 
 **contribution_queue** (配列、v5):
 - ローカル改善をリモートに貢献するための待ちキュー（`delta_tracker.py` が管理）
