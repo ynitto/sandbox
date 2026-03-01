@@ -208,7 +208,7 @@ python .github/skills/skill-evaluator/scripts/evaluate.py --skill <skill-name>
 | 起動元 | 対象 | モード |
 |---|---|---|
 | ユーザー直接 / git-skill-manager evaluate | 全スキル（`--type all`） | 通常モード（対話的に進める） |
-| scrum-master Phase 6 | 全ワークスペーススキル（`--type workspace`） | **レポートのみモード** |
+| scrum-master Phase 6 | 全スキル（`--type all`） | **レポートのみモード** |
 | record_feedback.py の EVAL_RECOMMEND 出力 | フィードバック対象のスキル1件（`--skill <name>`） | 通常モード |
 
 ### レポートのみモード（scrum-master Phase 6 から起動された場合）
@@ -220,12 +220,15 @@ VSCode Copilot ではサブエージェントがユーザーと対話できな�
 - 代わりに以下の形式で推奨アクション一覧を返す:
 
 ```
-評価結果:
+評価結果（ワークスペース）:
 - [skill-name]: [推奨アクション（昇格推奨 / 要改良後昇格 / 試用継続）] — [理由1文]
-- ...
+
+評価結果（インストール済み）:
+- [skill-name]: [推奨アクション（要改良 / 正常）] — [理由1文] — source_repo: [repo-name または local]
 ```
 
 ユーザーへの確認・promote/refine の実行は scrum-master が担当する。
+インストール済みスキルで「要改良」かつ source_repo がリポジトリ名の場合、scrum-master が改良後に push も提案する。
 
 `EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` が record_feedback.py から出力された場合、
 そのスキルだけを対象に `--skill <name>` で評価スクリプトを実行する。
