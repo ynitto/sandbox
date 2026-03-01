@@ -40,8 +40,14 @@ def _registry_path() -> str:
     return os.path.join(home, ".copilot", "skill-registry.json")
 
 
-def save_snapshot(label: str = "") -> str:
+def save_snapshot(label: str = "", max_keep: int = 10) -> str:
     """現在のスキル状態をスナップショットとして保存する。
+
+    保存後、max_keep を超えた古いスナップショットは自動的に削除される。
+
+    Args:
+        label: スナップショットのラベル（任意）
+        max_keep: 保持するスナップショットの上限数（デフォルト: 10）
 
     Returns:
         保存したスナップショットのID（ディレクトリ名）
@@ -92,6 +98,9 @@ def save_snapshot(label: str = "") -> str:
     print(f"   スキル数: {len(installed)} 件")
     print(f"   保存先: {snap_dir}")
     print(f"   復元: python snapshot.py restore --latest")
+
+    # 上限を超えた古いスナップショットを自動削除
+    clean_snapshots(keep=max_keep, quiet=True)
 
     return snap_id
 
@@ -198,8 +207,13 @@ def restore_snapshot(snap_id: str | None = None, latest: bool = False) -> bool:
     return True
 
 
-def clean_snapshots(keep: int = 5) -> None:
-    """古いスナップショットを削除する（最新 keep 件を保持）。"""
+def clean_snapshots(keep: int = 5, quiet: bool = False) -> None:
+    """古いスナップショットを削除する（最新 keep 件を保持）。
+
+    Args:
+        keep: 保持するスナップショット数
+        quiet: True の場合、削除対象なしのメッセージを抑制する
+    """
     snap_base = _snapshots_dir()
     if not os.path.isdir(snap_base):
         return
@@ -212,7 +226,8 @@ def clean_snapshots(keep: int = 5) -> None:
 
     to_delete = entries[keep:]
     if not to_delete:
-        print(f"ℹ️  削除対象なし（{len(entries)}/{keep} 件）")
+        if not quiet:
+            print(f"ℹ️  削除対象なし（{len(entries)}/{keep} 件）")
         return
 
     for entry in to_delete:
@@ -228,6 +243,8 @@ def main():
 
     save_p = sub.add_parser("save", help="現在の状態をスナップショット保存する")
     save_p.add_argument("--label", default="", help="スナップショットのラベル（任意）")
+    save_p.add_argument("--max-keep", type=int, default=10, dest="max_keep",
+                        help="保持するスナップショットの上限数（デフォルト: 10）")
 
     sub.add_parser("list", help="スナップショット一覧を表示する")
 
@@ -241,7 +258,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "save":
-        save_snapshot(label=getattr(args, "label", ""))
+        save_snapshot(label=getattr(args, "label", ""), max_keep=getattr(args, "max_keep", 10))
     elif args.command == "list":
         list_snapshots()
     elif args.command == "restore":
