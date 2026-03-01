@@ -119,6 +119,15 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
         "refined": False,
     })
 
+    # メトリクス更新
+    history = skill["feedback_history"]
+    total = len(history)
+    ok_count = sum(1 for e in history if e["verdict"] == "ok")
+    metrics = skill.setdefault("metrics", {})
+    metrics["total_executions"] = total
+    metrics["ok_rate"] = round(ok_count / total, 3) if total > 0 else 0.0
+    metrics["last_executed_at"] = datetime.now(timezone.utc).isoformat()
+
     # しきい値を超えた未改良の問題が蓄積された場合に pending_refinement を立てる。
     # workspace: 1件で即トリガー / それ以外: デフォルト3件蓄積でトリガー。
     if verdict in ("needs-improvement", "broken"):

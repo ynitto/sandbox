@@ -8,6 +8,7 @@ import shutil
 import subprocess
 
 from registry import load_registry
+from node_identity import get_node_id
 
 
 def push_skill(
@@ -73,6 +74,11 @@ def push_skill(
 
     if not commit_msg:
         commit_msg = f"Add skill: {skill_name}"
+
+    # Node IDをコミットメッセージに付与してノード追跡を可能にする
+    node_id = get_node_id()
+    if node_id:
+        commit_msg = f"{commit_msg}\n\nnode-id: {node_id}"
 
     subprocess.run(["git", "add", "."], cwd=clone_dir, check=True)
 
