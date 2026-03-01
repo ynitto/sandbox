@@ -84,7 +84,8 @@ skill-creator スキルで新しいスキルを作成する。
 手順: まず ${SKILLS_DIR}/skill-creator/SKILL.md を読んで手順に従ってください。
 作成するスキル: [概要]
 配置先: ${SKILLS_DIR}/
-ユーザーに要件を確認しながら進めること。
+注意: ユーザーとの対話は行わず、提供された概要と以下の仕様から判断して進めること。
+仕様: [scrum-masterが事前にユーザーから収集した要件・方針]
 
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗
@@ -102,7 +103,7 @@ skill-creator スキルで既存スキルを改良する。
 改良内容: [改善点・追加機能・分割方針の説明]
 配置先: ${SKILLS_DIR}/
 分割する場合は、元スキルの機能が漏れなく引き継がれることを確認すること。
-ユーザーに改良方針を確認しながら進めること。
+注意: ユーザーとの対話は行わず、提供された改良内容をもとに判断して進めること。
 
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗
@@ -120,7 +121,8 @@ codebase-to-skill スキルで既存コードベースからスキルを生成�
 生成するスキルの用途: [タスクのactionと不足しているスキルの概要]
 配置先: ${SKILLS_DIR}/
 既存スキルの改良の場合: [既存スキルのパスと不足点。新規作成の場合は「なし」]
-ユーザーにスコープとフォーカスを確認しながら進めること。
+スコープ: [scrum-masterが事前にユーザーから確認したスコープとフォーカス]
+注意: ユーザーとの対話は行わず、提供されたスコープをもとに判断して進めること。
 
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗
@@ -223,25 +225,32 @@ scrum-master 自身が以下の手順を実行する（サブエージェント�
 ## スキルフィードバック収集時
 
 ```
-以下のスキルについてユーザーにフィードバックを確認し、record_feedback.py を実行してください。
+以下のスキルについて、提供されたフィードバックを record_feedback.py で記録してください。
 
 対象スキル: [skill-name1, skill-name2, ...]
+フィードバック:
+- [skill-name1]: [verdict: ok / needs-improvement / broken] — [note]
+- [skill-name2]: ...
 
-手順:
-1. ユーザーに以下の形式で一括確認する:
-   このスプリントで使用したスキルのフィードバックを収集します:
+注意: ユーザーへの確認は不要。scrum-masterが既に収集済みのフィードバックを記録するだけでよい。
 
-   - [skill-name1]: 1. 問題なかった (ok) / 2. 改善点がある (needs-improvement) / 3. うまくいかなかった (broken)
-   - [skill-name2]: ...
-
-2. 各スキルの回答に応じて record_feedback.py を実行する（git-skill-manager がない環境ではスキップ）:
-   python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
+各スキルについて record_feedback.py を実行する（git-skill-manager がない環境ではスキップ）:
+python -c "import os,sys,subprocess; s=os.path.join(os.path.expanduser('~'),'.copilot','skills','git-skill-manager','scripts','record_feedback.py'); subprocess.run([sys.executable,s,'<skill-name>','--verdict','<verdict>','--note','<note>']) if os.path.isfile(s) else None"
 
 結果を以下の形式で返してください:
 ステータス: 成功 / スキップ（git-skill-manager なし）
-収集済みフィードバック数: [N 件]
+記録済みフィードバック数: [N 件]
 サマリー: [1〜2文で結果を説明]
 ```
+
+**scrum-master の事前作業**: このサブエージェントを起動する前に、scrum-master 自身がユーザーに以下の形式で一括確認する:
+```
+このスプリントで使用したスキルのフィードバックを収集します。
+
+- [skill-name1]: 1. 問題なかった (ok) / 2. 改善点がある (needs-improvement) / 3. うまくいかなかった (broken)
+- [skill-name2]: ...
+```
+回答を収集後、フィードバック内容をテンプレートの「フィードバック:」欄に埋め込んでサブエージェントへ渡す。
 
 **scrum-master の次の処理**: フィードバック収集完了後、Phase 6 の次のステップ（ワークスペーススキルの棚卸し）へ進む。
 
@@ -266,19 +275,21 @@ push先: [repo-name または「なし」]
 ## スキル評価時
 
 ```
-skill-evaluator スキルでワークスペーススキルを評価する。
+skill-evaluator スキルでワークスペーススキルを評価する（レポートのみモード）。
 
 手順: まず ${SKILLS_DIR}/skill-evaluator/SKILL.md を読んで手順に従ってください。
 操作: 全ワークスペーススキルを評価して昇格・改良・試用継続を判断する。
-補足: 評価結果をユーザーに提示し、昇格 / 改良 / 継続 のアクションを確認してください。
-      昇格 → git-skill-manager promote、改良 → git-skill-manager refine を実行してください。
+モード: レポートのみ。ユーザーへの確認・promote/refine の実行は行わないこと。
+       評価結果と推奨アクションを以下の形式で返すだけでよい。
 
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗
-昇格したスキル: [name1, name2, ...（なければ「なし」）]
-改良を開始したスキル: [name1, name2, ...（なければ「なし」）]
-サマリー: [1〜2文で結果を説明]
+評価結果:
+- [skill-name]: [推奨アクション（昇格推奨 / 要改良後昇格 / 試用継続）] — [理由1文]
+サマリー: [1〜2文で全体を説明]
 ```
+
+**scrum-master の次の処理**: 評価結果を受け取り、スクラムマスター自身がユーザーに「[skill-name] を昇格しますか？ 1. 昇格する / 2. 後で / 3. スキップ」を確認する。承認されたアクションのみ「スキル昇格時」「スキル改良時」テンプレートでサブエージェントへ委譲する。
 
 ## スキル共有時
 
