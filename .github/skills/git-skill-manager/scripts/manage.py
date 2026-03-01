@@ -262,11 +262,26 @@ def promote_skills(workspace_skills_dir, interactive=True):
         short_desc = c["description"] or "(説明なし)"
         print(f"   {i}. {c['name']:30s}  {short_desc}{installed_mark}")
 
-    print(f"\nユーザー領域にコピーするスキルを選んでください（カンマ区切り、例: 1,3）")
-
-    # ※ Claude がユーザーの選択を対話的に受け取り、
-    #   selected_indices に反映する
-    selected_indices = []  # プレースホルダー
+    if interactive:
+        raw = input(f"\nユーザー領域にコピーするスキルを選んでください（カンマ区切り、例: 1,3 / 全て: all）: ").strip()
+        if not raw:
+            print("ℹ️ 選択がありませんでした")
+            return
+        if raw.lower() in ("all", "a", "*"):
+            selected_indices = list(range(len(candidates)))
+        else:
+            try:
+                selected_indices = [int(x.strip()) - 1 for x in raw.split(",") if x.strip()]
+                selected_indices = [i for i in selected_indices if 0 <= i < len(candidates)]
+            except ValueError:
+                print("❌ 無効な入力です（数字をカンマ区切りで入力してください）")
+                return
+        if not selected_indices:
+            print("ℹ️ 有効な選択がありませんでした")
+            return
+    else:
+        # 非インタラクティブ時は全スキルを対象にする
+        selected_indices = list(range(len(candidates)))
 
     # ---- コピー実行 ----
     promoted = []
@@ -314,8 +329,18 @@ def promote_skills(workspace_skills_dir, interactive=True):
         print(f"   {i}. {repo['name']:20s}  ({repo['url']})")
     print(f"   0. push しない")
 
-    # ※ Claude がユーザーの選択を対話的に受け取る
-    repo_choice = 0  # プレースホルダー
+    if interactive:
+        raw_choice = input(f"\n選択（0-{len(writable_repos)}）: ").strip()
+        try:
+            repo_choice = int(raw_choice)
+            if not (0 <= repo_choice <= len(writable_repos)):
+                print("❌ 範囲外の選択です")
+                repo_choice = 0
+        except ValueError:
+            print("ℹ️ 無効な入力のため push をスキップします")
+            repo_choice = 0
+    else:
+        repo_choice = 0
 
     if repo_choice > 0:
         target_repo = writable_repos[repo_choice - 1]
@@ -326,6 +351,52 @@ def promote_skills(workspace_skills_dir, interactive=True):
                        commit_msg=f"Promote skill: {name}")
 
     print(f"\n🎉 promote 完了")
+
+
+# ---------------------------------------------------------------------------
+# show_queue
+# ---------------------------------------------------------------------------
+
+def show_queue() -> None:
+    """貢献キュー（contribution_queue）の内容を表示する。"""
+    reg = load_registry()
+    queue = reg.get("contribution_queue", [])
+
+    if not queue:
+        print("ℹ️ 貢献キューは空です")
+        print("   'python promotion_policy.py --queue' で昇格適格スキルをキューに追加できます")
+        return
+
+    status_counts: dict[str, int] = {}
+    for item in queue:
+        s = item.get("status", "unknown")
+        status_counts[s] = status_counts.get(s, 0) + 1
+
+    print(f"📬 貢献キュー: {len(queue)} 件\n")
+    status_icon = {
+        "pending_review": "⏳",
+        "merged": "✅",
+        "rejected": "❌",
+    }
+    for item in queue:
+        icon = status_icon.get(item.get("status", ""), "❓")
+        queued_at = item.get("queued_at", "")[:10]
+        node_id = item.get("node_id", "不明")[:8]
+        reason = item.get("reason", "")[:60]
+        print(f"   {icon} {item['skill_name']:30s}  [{item.get('status', '?')}]  {queued_at}  node:{node_id}")
+        if reason:
+            print(f"       理由: {reason}")
+
+    print()
+    for status, count in sorted(status_counts.items()):
+        icon = status_icon.get(status, "❓")
+        print(f"   {icon} {status}: {count} 件")
+
+    pending = [q for q in queue if q.get("status") == "pending_review"]
+    if pending:
+        names = ", ".join(q["skill_name"] for q in pending)
+        print(f"\n💡 push 待ちスキル: {names}")
+        print("   'python push.py <skill_name>' でリポジトリへ送信できます")
 
 
 # ---------------------------------------------------------------------------

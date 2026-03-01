@@ -15,19 +15,25 @@ from registry import (
     _vscode_mcp_path, _is_uv_required, _check_uv_installed, _get_new_mcp_servers,
 )
 from repo import clone_or_fetch, update_remote_index
+from delta_tracker import check_sync_protection, detect_local_modification
 
 
 def _read_frontmatter_version(skill_path: str) -> str | None:
-    """SKILL.md のフロントマターから metadata.version を読み取る。未記載なら None。"""
+    """SKILL.md のフロントマターから version を読み取る。
+
+    ルートレベルの `version:` と `metadata.version:` の両方に対応。
+    両方存在する場合は `metadata.version` を優先する。
+    """
     skill_md = os.path.join(skill_path, "SKILL.md")
     if not os.path.isfile(skill_md):
         return None
     with open(skill_md, encoding="utf-8") as f:
         content = f.read()
-    import re as _re
-    fm = _re.match(r'^---\s*\n(.*?)\n---', content, _re.DOTALL)
+    fm = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
     if not fm:
         return None
+    root_version: str | None = None
+    metadata_version: str | None = None
     in_metadata = False
     for line in fm.group(1).splitlines():
         if line.startswith("metadata:"):
@@ -38,8 +44,24 @@ def _read_frontmatter_version(skill_path: str) -> str | None:
                 in_metadata = False
             elif line.lstrip().startswith("version:"):
                 ver = line.split(":", 1)[1].strip().strip("\"'")
-                return ver or None
-    return None
+                if ver:
+                    metadata_version = ver
+        if not in_metadata and re.match(r'^version:\s*\S', line):
+            ver = line.split(":", 1)[1].strip().strip("\"'")
+            if ver:
+                root_version = ver
+    return metadata_version or root_version
+
+
+def _version_tuple(ver: str | None) -> tuple:
+    """バージョン文字列を比較用タプルに変換する。パース失敗時は (0, 0, 0)。"""
+    if not ver:
+        return (0, 0, 0)
+    try:
+        parts = ver.lstrip("v").split(".")
+        return tuple(int(x) for x in parts[:3])
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
 
 
 def _auto_save_snapshot() -> str | None:
@@ -245,12 +267,34 @@ def pull_skills(
                 pinned = None
 
         dest = os.path.join(skill_home, sname)
-        if os.path.exists(dest):
-            shutil.rmtree(dest)
-        shutil.copytree(winner["full_path"], dest)
+
+        # ---- セントラル版のバージョンを pull 前に読み取る ----
+        central_ver = _read_frontmatter_version(winner["full_path"])
+
+        # ---- sync_policy による上書き保護チェック ----
+        skip_install = False
+        if existing_skill and os.path.exists(dest):
+            detection = detect_local_modification(existing_skill)
+            existing_skill.setdefault("lineage", {})["local_modified"] = detection["local_modified"]
+            if check_sync_protection(existing_skill, reg):
+                local_ver = _read_frontmatter_version(dest)
+                print(f"   🛡️  {sname}: ローカル改善済みのため中央版（{central_ver or '不明'}）の上書きをスキップしました")
+                print(f"       ローカル版（{local_ver or '不明'}）を保持します。貢献を検討: python promotion_policy.py --queue")
+                skip_install = True
+
+        if not skip_install:
+            if os.path.exists(dest):
+                shutil.rmtree(dest)
+            shutil.copytree(winner["full_path"], dest)
 
         enabled = existing_skill.get("enabled", True) if existing_skill else True
-        version = _read_frontmatter_version(dest)
+
+        # ---- バージョン情報の設定 ----
+        # local_ver: 現在 dest にインストールされているバージョン
+        local_ver = _read_frontmatter_version(dest)
+        # skip_install の場合は元のローカル版が残っているので local_ver はそのまま
+        # 通常の install の場合は central_ver == local_ver
+        version = local_ver
 
         installed.append({
             "name": sname,
@@ -261,6 +305,7 @@ def pull_skills(
             "enabled": enabled,
             "pinned_commit": pinned,
             "version": version,
+            "_central_ver": central_ver,  # 後で central_version に移動（一時フィールド）
         })
 
     # レジストリ更新
@@ -272,8 +317,13 @@ def pull_skills(
         s["pending_refinement"] = old.get("pending_refinement", False)
         # v5フィールドを設定する（pull後はソース追跡情報を更新、統計は引き継ぐ）
         # s["version"] は installed.append() 時にフロントマターから設定済み
-        s["central_version"] = None
-        s["version_ahead"] = False
+        s["central_version"] = s.get("_central_ver")
+        s.pop("_central_ver", None)
+        s["version_ahead"] = (
+            _version_tuple(s["version"]) > _version_tuple(s["central_version"])
+            if s["version"] and s["central_version"]
+            else False
+        )
         s["lineage"] = {
             "origin_repo": s["source_repo"],
             "origin_commit": s["commit_hash"],
