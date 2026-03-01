@@ -49,20 +49,14 @@ python .github/skills/scrum-master/scripts/discover_skills.py .github/skills --r
 
 **判定ルール:**
 
-- **4項目すべて明確** → Step 2-4（従来の直接バックログ作成）へ
-- **1〜3項目が不明確** → Step 2-2（requirements-definer 呼び出し）へ
-- **判断に迷う場合** → ユーザーに選択肢を提示する:
-  ```
-  プロンプトの内容を確認しました。
+- **4項目すべて明確 かつ 既存機能への単純な追加・修正である** → Step 2-4（従来の直接バックログ作成）へ
+- **上記以外（1項目でも不明確、または新規プロダクト・新規機能開発）** → Step 2-2（requirements-definer 呼び出し）へ
 
-  選択肢:
-  1. 要件を整理してから進める（対話で要件を明確化します）
-  2. このまま進める（現在の情報でバックログを作成します）
-  ```
+> **重要**: 迷ったら requirements-definer を発動すること。LLM はプロンプトを「明確」と解釈しがちだが、新規開発・新規機能追加は対象ユーザーやスコープが暗黙的に不明確なケースが多い。Step 2-4 に進んでよいのは「既存ファイルへの具体的な追加・修正」のような小さく明示的なタスクに限る。
 
 #### Step 2-2: requirements-definer 呼び出し
 
-サブエージェントを起動する（テンプレート「requirements-definer 呼び出し時」を使用）。
+サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「requirements-definer 呼び出し時」を使用）。
 
 完了後、`requirements.json` が生成される。Step 2-3 へ進む。
 
