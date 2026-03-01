@@ -29,7 +29,12 @@
 
 ## Step 2-2: requirements-definer 呼び出し
 
-サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「requirements-definer 呼び出し時」を使用）。
+> **⚠ 委譲必須**: スクラムマスター自身が要件定義を実施してはならない。以下の手順でサブエージェントに委譲すること。
+
+**必ず** サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot: `#tool:agent/runSubagent`）（テンプレート「requirements-definer 呼び出し時」を使用）。
+
+- **Claude Code**: `Task` ツールを呼び出す
+- **GitHub Copilot / VSCode**: `#tool:agent/runSubagent` を呼び出す。自分で要件定義の質問を始めてはならない
 
 完了後、`requirements.json` が生成される。Step 2-3 へ進む。
 

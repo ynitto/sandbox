@@ -24,6 +24,16 @@ metadata:
 > **⚠ サブエージェント実行必須（最重要）**
 > * バックログタスクは原則全て**サブエージェントで実行すること**。スクラムマスターが直接タスクを実行するのは、スキル不要な軽微な調査・確認・編集などに限る。
 > * サブエージェントへの指示は必ず**テンプレートを使用すること**。テンプレートがない場合は新規作成を検討する。
+> * **スクラムマスターが直接実行してはならない処理（下記は必ずサブエージェントに委譲）:**
+>   - requirements-definer による要件定義（Phase 2）
+>   - skill-creator によるスキル作成・改良（Phase 3）
+>   - codebase-to-skill によるスキル生成（Phase 3）
+>   - skill-recruiter による外部スキル取得（Phase 3）
+>   - sprint-reviewer によるレビュー・レトロスペクティブ（Phase 6）
+>   - スキルフィードバック収集（Phase 6）
+>   - skill-evaluator によるスキル評価（Phase 6）
+>   - git-skill-manager によるスキル発見（Phase 6）
+> * **GitHub Copilot（VSCode）環境**: サブエージェント起動は必ず `#tool:agent/runSubagent` を使用すること。自分で処理を続けてはならない。
 
 ## フェーズ一覧
 
