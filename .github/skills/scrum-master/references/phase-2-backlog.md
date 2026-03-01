@@ -39,10 +39,10 @@
 ```
 requirements-definer スキルでユーザーと対話して要件を定義する。
 
-手順: まず .github/skills/requirements-definer/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/requirements-definer/SKILL.md を読んで手順に従ってください。
 ユーザーのプロンプト: [元のプロンプト]
 出力先: requirements.json（作業ディレクトリのルート）
-出力スキーマ: .github/skills/requirements-definer/references/requirements-schema.md を参照すること。
+出力スキーマ: ${SKILLS_DIR}/requirements-definer/references/requirements-schema.md を参照すること。
 
 完了後、requirements.json を出力して終了してください。計画立案やタスク分解は行わないこと。
 

@@ -45,6 +45,21 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 
 ---
 
+## パス解決
+
+このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、その親ディレクトリを `SKILLS_DIR` とする。
+
+| このSKILL.mdのパス | SKILL_DIR | SKILLS_DIR |
+|---|---|---|
+| `~/.copilot/skills/scrum-master/SKILL.md` | `~/.copilot/skills/scrum-master` | `~/.copilot/skills` |
+| `.github/skills/scrum-master/SKILL.md` | `.github/skills/scrum-master` | `.github/skills` |
+
+- スクリプトは `${SKILL_DIR}/scripts/` から実行する
+- 他スキルのSKILL.mdは `${SKILLS_DIR}/[skill-name]/SKILL.md` で解決する
+- 該当スキルが `SKILLS_DIR` に存在しない場合は、もう一方の場所（`~/.copilot/skills/` または `.github/skills/`）を確認する
+
+---
+
 ## フェーズ実行手順
 
 **各フェーズは以下の手順で実行する**:
@@ -78,7 +93,7 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 
 | 状況 | 対応 |
 |------|------|
-| discover_skills.py 失敗 | `.github/skills/` の存在確認。なければ作成提案 |
+| discover_skills.py 失敗 | `${SKILLS_DIR}/` の存在確認。なければ作成提案 |
 | validate_plan.py 失敗 | エラーに従い修正。最大3回で超えたらユーザーに相談 |
 | サブエージェント失敗 | リトライ / スキップ / 中断をユーザーに提示 |
 | 全タスク失敗 | ゴール実現可能性をユーザーと再検討 |

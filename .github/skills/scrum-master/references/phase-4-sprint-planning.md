@@ -23,7 +23,7 @@
 6. プランJSONを生成する（`execution_groups` フィールドにウェーブを記録）
 7. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する）:
    ```bash
-   python .github/skills/scrum-master/scripts/validate_plan.py plan.json --skills-json skills.json
+   python ${SKILL_DIR}/scripts/validate_plan.py plan.json --skills-json skills.json
    ```
    - `plan.json` と `skills.json` はどちらも作業ディレクトリのルートに配置する
 8. プランをユーザーに表形式で提示して承認を得る:

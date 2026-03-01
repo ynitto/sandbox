@@ -16,7 +16,7 @@
 ```
 sprint-reviewer スキルでスプリントのレビューとレトロスペクティブを実施する。
 
-手順: まず .github/skills/sprint-reviewer/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/sprint-reviewer/SKILL.md を読んで手順に従ってください。
 ゴール: [goal]
 スプリント番号: [N]
 スプリント計画:

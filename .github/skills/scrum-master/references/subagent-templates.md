@@ -28,10 +28,10 @@
 ```
 requirements-definer スキルでユーザーと対話して要件を定義する。
 
-手順: まず .github/skills/requirements-definer/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/requirements-definer/SKILL.md を読んで手順に従ってください。
 ユーザーのプロンプト: [元のプロンプト]
 出力先: requirements.json（作業ディレクトリのルート）
-出力スキーマ: .github/skills/requirements-definer/references/requirements-schema.md を参照すること。
+出力スキーマ: ${SKILLS_DIR}/requirements-definer/references/requirements-schema.md を参照すること。
 
 完了後、requirements.json を出力して終了してください。計画立案やタスク分解は行わないこと。
 
@@ -81,9 +81,9 @@ goal: [requirements.json の goal フィールドの値]
 ```
 skill-creator スキルで新しいスキルを作成する。
 
-手順: まず .github/skills/skill-creator/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/skill-creator/SKILL.md を読んで手順に従ってください。
 作成するスキル: [概要]
-配置先: .github/skills/
+配置先: ${SKILLS_DIR}/
 ユーザーに要件を確認しながら進めること。
 
 結果を以下の形式で返してください:
@@ -97,10 +97,10 @@ skill-creator スキルで新しいスキルを作成する。
 ```
 skill-creator スキルで既存スキルを改良する。
 
-手順: まず .github/skills/skill-creator/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/skill-creator/SKILL.md を読んで手順に従ってください。
 対象スキル: [skill-md-path]
 改良内容: [改善点・追加機能・分割方針の説明]
-配置先: .github/skills/
+配置先: ${SKILLS_DIR}/
 分割する場合は、元スキルの機能が漏れなく引き継がれることを確認すること。
 ユーザーに改良方針を確認しながら進めること。
 
@@ -115,10 +115,10 @@ skill-creator スキルで既存スキルを改良する。
 ```
 codebase-to-skill スキルで既存コードベースからスキルを生成する。
 
-手順: まず .github/skills/codebase-to-skill/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/codebase-to-skill/SKILL.md を読んで手順に従ってください。
 対象コードベース: [codebase-path]
 生成するスキルの用途: [タスクのactionと不足しているスキルの概要]
-配置先: .github/skills/
+配置先: ${SKILLS_DIR}/
 既存スキルの改良の場合: [既存スキルのパスと不足点。新規作成の場合は「なし」]
 ユーザーにスコープとフォーカスを確認しながら進めること。
 
@@ -133,7 +133,7 @@ codebase-to-skill スキルで既存コードベースからスキルを生成�
 ```
 skill-recruiter スキルで外部リポジトリからスキルを取得・検証する。
 
-手順: まず .github/skills/skill-recruiter/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/skill-recruiter/SKILL.md を読んで手順に従ってください。
 取得するスキルのURL: [url]
 用途: [タスクのactionと不足しているスキルの概要]
 
@@ -148,7 +148,7 @@ skill-recruiter スキルで外部リポジトリからスキルを取得・検�
 ```
 sprint-reviewer スキルでスプリントのレビューとレトロスペクティブを実施する。
 
-手順: まず .github/skills/sprint-reviewer/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/sprint-reviewer/SKILL.md を読んで手順に従ってください。
 ゴール: [goal]
 スプリント番号: [N]
 スプリント計画:
@@ -250,10 +250,10 @@ scrum-master 自身が以下の手順を実行する（サブエージェント�
 ```
 git-skill-manager スキルでワークスペーススキルをユーザー領域に昇格する。
 
-手順: まず .github/skills/git-skill-manager/SKILL.md を読んで promote 操作の手順に従ってください。
+手順: まず ${SKILLS_DIR}/git-skill-manager/SKILL.md を読んで promote 操作の手順に従ってください。
 対象スキル: [skill-name]
 操作: promote
-補足: .github/skills/[skill-name]/ を ~/.copilot/skills/ にコピーし、
+補足: ${SKILLS_DIR}/[skill-name]/ を ~/.copilot/skills/ にコピーし、
       書き込み可能なリポジトリがあれば push も提案してください。
 
 結果を以下の形式で返してください:
@@ -268,7 +268,7 @@ push先: [repo-name または「なし」]
 ```
 skill-evaluator スキルでワークスペーススキルを評価する。
 
-手順: まず .github/skills/skill-evaluator/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/skill-evaluator/SKILL.md を読んで手順に従ってください。
 操作: 全ワークスペーススキルを評価して昇格・改良・試用継続を判断する。
 補足: 評価結果をユーザーに提示し、昇格 / 改良 / 継続 のアクションを確認してください。
       昇格 → git-skill-manager promote、改良 → git-skill-manager refine を実行してください。
@@ -285,7 +285,7 @@ skill-evaluator スキルでワークスペーススキルを評価する。
 ```
 git-skill-manager スキルでスキルをリポジトリに共有する。
 
-手順: まず .github/skills/git-skill-manager/SKILL.md を読んで手順に従ってください。
+手順: まず ${SKILLS_DIR}/git-skill-manager/SKILL.md を読んで手順に従ってください。
 対象スキル: [skill-path]
 操作: push
 リポジトリ: [repo-name]
@@ -300,7 +300,7 @@ git-skill-manager スキルでスキルをリポジトリに共有する。
 ```
 git-skill-manager スキルの discover 操作で、チャット履歴から新しいスキル候補を発見する。
 
-手順: まず .github/skills/git-skill-manager/SKILL.md を読んで discover 操作の手順に従ってください。
+手順: まず ${SKILLS_DIR}/git-skill-manager/SKILL.md を読んで discover 操作の手順に従ってください。
 操作: discover
 補足: ユーザーのチャット履歴を分析し、繰り返しワークフローをスキル候補として提案してください。
       候補が見つかれば、ユーザーに選択させてから skill-creator でスキルを生成してください。
