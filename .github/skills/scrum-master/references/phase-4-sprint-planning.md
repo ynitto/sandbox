@@ -9,6 +9,10 @@
 ## 手順
 
 1. 直前スプリントの `process_review` と `next_sprint_actions` を確認し、今回のプランに反映する
+   - `next_sprint_actions` に「git-skill-manager refine で [skill-name] を改良する」が含まれる場合は、バックログにタスクを追加してこのスプリントで実行する:
+     - `{ action: "git-skill-manager refine で [skill-name] を改良する", skill: "git-skill-manager", done_criteria: "改良が完了し SKILL.md が更新されていること" }`
+   - push も必要な場合（「[repo-name] に push する」が含まれる）は、refine タスクに依存する形で push タスクも追加する:
+     - `{ action: "git-skill-manager push で [skill-name] を [repo-name] に共有する", skill: "git-skill-manager", done_criteria: "リモートリポジトリにスキルの改良版がプッシュされていること", depends_on: [refineタスクID] }`
 2. priority順にタスクを並べる
 3. depends_onの制約を考慮し、先行タスクが未完了のタスクは選出しない
 4. 1スプリント = 3〜5タスクを目安にする

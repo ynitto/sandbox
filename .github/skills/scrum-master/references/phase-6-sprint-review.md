@@ -71,7 +71,9 @@ skill-evaluator はレポートのみ返す（ユーザー確認・promote/refin
 
 **Step 3-2: scrum-master 自身が評価結果をユーザーに提示し、アクションを確認する**:
 
-サブエージェントから受け取った評価結果をもとに、scrum-master が直接ユーザーに確認する:
+サブエージェントから受け取った評価結果をもとに、スキルの種別に応じて処理を分ける。
+
+**ワークスペーススキル**（ユーザーに確認して即実行）:
 ```
 スキル評価結果:
 [skill-evaluator から受け取った評価結果を表示]
@@ -85,9 +87,19 @@ skill-evaluator はレポートのみ返す（ユーザー確認・promote/refin
  1. 今すぐ改良する / 2. 後で / 3. スキップ」
 ```
 
-**Step 3-3: ユーザーが承認したアクションのみサブエージェントへ委譲する**:
+**インストール済みスキル**（確認不要・`next_sprint_actions` に追加して次スプリントで対応）:
+- 要改良スキルが見つかった場合、ユーザーに確認せず `plan.json` の `sprints[N].next_sprint_actions` に追加する:
+  ```
+  「git-skill-manager refine で [skill-name] を改良する（改善待ちフィードバック N 件、source_repo: [repo-name または local]）」
+  「改良後 [repo-name] リポジトリに push して共有する」  ← source_repo がリポジトリ名の場合のみ
+  ```
+- `next_sprint_actions` に追加後、ユーザーに「インストール済みスキル [skill-name] の改良を次スプリントのアクションに追加しました」と通知する
+- Phase 4 がこのアクションをバックログタスクに起こし、次スプリントで実行する
+
+**Step 3-3: ユーザーが承認したワークスペーススキルのアクションをサブエージェントへ委譲する**:
 - 昇格 → テンプレート: `subagent-templates.md`「スキル昇格時」を使用
-- 改良 → テンプレート: `subagent-templates.md`「スキル改良時」を使用
+- 改良 → テンプレート: `subagent-templates.md`「スキル改良時」を使用（`push指示: なし`）
+- インストール済みスキルのアクションは Step 3-2 で `next_sprint_actions` に追加済みのため、ここでは委譲しない
 
 ### Step 4: スキル発見（任意）
 
