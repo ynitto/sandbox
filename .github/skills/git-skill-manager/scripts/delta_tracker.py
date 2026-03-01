@@ -33,7 +33,7 @@ def _hash_skill_content(skill_dir: str) -> str | None:
         return None
     with open(skill_md, encoding="utf-8") as f:
         content = f.read()
-    return hashlib.sha256(content.encode()).hexdigest()[:16]
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 def _get_central_skill_path(skill: dict) -> str | None:

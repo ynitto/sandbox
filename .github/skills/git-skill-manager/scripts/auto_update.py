@@ -193,11 +193,11 @@ if __name__ == "__main__":
     check_cmd.add_argument("--force", action="store_true", help="間隔を無視して即座にチェック")
 
     config_cmd = sub.add_parser("configure", help="自動更新設定を変更する")
-    config_cmd.add_argument("--enable", action="store_true", default=None, help="自動更新を有効化")
-    config_cmd.add_argument("--disable", action="store_true", default=None, help="自動更新を無効化")
+    config_cmd.add_argument("--enable", action="store_const", const=True, default=None, help="自動更新を有効化")
+    config_cmd.add_argument("--disable", action="store_const", const=True, default=None, help="自動更新を無効化")
     config_cmd.add_argument("--interval", type=int, default=None, help="チェック間隔（時間）")
-    config_cmd.add_argument("--notify-only", action="store_true", default=None, help="通知のみ（自動pullしない）")
-    config_cmd.add_argument("--auto-pull", action="store_true", default=None, help="自動pullを有効化")
+    config_cmd.add_argument("--notify-only", action="store_const", const=True, default=None, help="通知のみ（自動pullしない）")
+    config_cmd.add_argument("--auto-pull", action="store_const", const=True, default=None, help="自動pullを有効化")
 
     status_cmd = sub.add_parser("status", help="現在の自動更新設定を表示する")
 
