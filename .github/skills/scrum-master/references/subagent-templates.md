@@ -66,9 +66,6 @@ goal: [requirements.json の goal フィールドの値]
     --category [カテゴリ] --title "[知見タイトル]" --summary "[要約]" \
     --content "[詳細]" --conclusion "[学び]" --tags [タグ]
 
-## ステップ 4: 再指示・修正があった場合
-  python ${LTM}/rate_memory.py --id [記憶ID] --correction --note "[修正内容]"
-
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗
 サマリー: [1〜2文で結果を説明]
@@ -115,10 +112,6 @@ goal: [requirements.json の goal フィールドの値]
   ✅ ハマったポイントと解決方法
   ✅ ツール・API・ライブラリの非自明な挙動
   ❌ コードそのもの / 一時的な作業ログ / ドキュメント済みの情報
-
-## ステップ 4: 再指示・修正があった場合
-  python ${LTM}/rate_memory.py --id [記憶ID] --correction --note "[何が間違っていたか]"
-  python ${LTM}/rate_memory.py --id [記憶ID] --good  # 役立った記憶
 
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗
