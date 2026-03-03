@@ -39,6 +39,7 @@ def load_candidate_memories(src_scope: str, threshold: int) -> list[dict]:
         # フロントマターの share_score も更新
         if meta.get("share_score", 0) != score:
             memory_utils.update_frontmatter_fields(fpath, {"share_score": score})
+            memory_utils.update_index_entry(src_dir, fpath)
         candidates.append({
             "filepath": fpath,
             "rel_cat": rel_cat,
@@ -61,10 +62,13 @@ def promote_file(src_path: str, src_scope: str, target_scope: str) -> str:
     rel = os.path.relpath(src_path, src_dir)
     dst_path = os.path.join(dst_dir, rel)
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    with open(src_path, encoding="utf-8") as f:
+        src_meta, _ = memory_utils.parse_frontmatter(f.read())
+    src_id = src_meta.get("id", "")
     shutil.copy2(src_path, dst_path)
     memory_utils.update_frontmatter_fields(dst_path, {
         "scope": target_scope,
-        "promoted_from": src_path,
+        "promoted_from": src_id,
     })
     return dst_path
 

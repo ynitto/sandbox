@@ -75,7 +75,7 @@ def import_to_home(memories: list[dict], shared_dir: str, home_dir: str) -> int:
         shutil.copy2(m["filepath"], dst)
         memory_utils.update_frontmatter_fields(dst, {
             "scope": "home",
-            "promoted_from": m["filepath"],
+            "promoted_from": m["id"],
         })
         imported += 1
     return imported
