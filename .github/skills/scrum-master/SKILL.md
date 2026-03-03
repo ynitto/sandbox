@@ -98,66 +98,46 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 | サブエージェント失敗 | リトライ / スキップ / 中断をユーザーに提示 |
 | 全タスク失敗 | ゴール実現可能性をユーザーと再検討 |
 
-## 記憶連携（agent-long-term-memory）
+## 記憶連携（ltm-use コアスキル）
 
-`agent-long-term-memory` スキルが `${SKILLS_DIR}/agent-long-term-memory/` に存在する場合、
-以下のフックで記憶を活用して重複調査・決定を防ぐ。
+`ltm-use` はコアスキルとして常に利用可能。以下のフックを**必ず実行**して重複調査・決定を防ぎ知見を蓄積する。
+
+`LTM=${SKILLS_DIR}/ltm-use/scripts`
 
 ### フック定義
 
-| フェーズ | タイミング | 記憶操作 | 対象 |
-|---------|-----------|---------|------|
-| Phase 1 | スキル探索完了後 | **recall**: タスク概要でキーワード検索 | 過去の類似スプリントの知見 |
-| Phase 2 | バックログ作成前 | **recall**: 要件キーワードで検索 | 過去の決定・調査結果 |
-| Phase 5 | 各ウェーブ開始前 | **recall**: ウェーブのタスクキーワードで検索 | 関連する実装知見 |
-| Phase 5 | 各ウェーブ完了後 | **save**: 得られた知見・問題点・解決策 | 次回スプリントへの引き継ぎ |
-| Phase 6 | レビュー完了後 | **save**: レトロスペクティブの学び | チームナレッジとして蓄積 |
-| Phase 7 | 完了選択時 | **promote**: share_score >= 70 の記憶を自動確認 | 価値ある知見をホームへ昇格 |
+| フェーズ | タイミング | 操作 | 対象 |
+|---------|-----------|------|------|
+| Phase 1 | スキル探索完了後 | **recall** | 過去の類似スプリントの知見 |
+| Phase 2 | バックログ作成前 | **recall** | 過去の決定・調査結果 |
+| Phase 5 | サブエージェント起動時 | **recall + save**（テンプレートに組み込み済み） | 実装知見 |
+| Phase 6 | レビュー完了後 | **save + rate** | レトロスペクティブの学び |
+| Phase 7 | 完了選択時 | **promote** | 価値ある知見をホームへ昇格 |
 
-### recall の実行方法（Phase 1, 2, 5）
-
-```bash
-python ${SKILLS_DIR}/agent-long-term-memory/scripts/recall_memory.py "[タスクキーワード]"
-# 見つからない場合は home/shared を自動フォールバック検索する
-```
-
-- 結果が 0件 → 調査不足を補うために続行（記憶なし）
-- 結果が 1件以上 → 回答・計画に記憶の内容を反映し、重複調査を避ける
-- **スコア上位の `summary` を確認し、関連性が高ければ全文を読む**
-
-### save の実行方法（Phase 5, 6）
+### recall（Phase 1, 2）
 
 ```bash
-python ${SKILLS_DIR}/agent-long-term-memory/scripts/save_memory.py \
-  --category [スプリントカテゴリ] \
-  --title "[知見タイトル]" \
-  --summary "[1〜2文の要約]" \
-  --content "[詳細]" \
-  --conclusion "[学び・次回への示唆]" \
-  --tags [タグ]
+python ${LTM}/recall_memory.py "[タスクキーワード]"
+# 0件なら ~/.copilot/memory/home/ → ~/.copilot/memory/shared/ を自動検索
 ```
 
-saveすべき内容:
-- ✅ スプリントで得た技術的知見・設計決定
-- ✅ 試行錯誤の結果（特に失敗から学んだこと）
-- ✅ 外部APIやツールの挙動に関する発見
-- ❌ コードそのもの（コードベースにある）
-- ❌ ユーザーとの会話ログ（一時的な内容）
+- 0件 → 記憶なし、通常通り続行
+- 1件以上 → summary 確認 → 関連があれば全文読み込み → 計画に反映
+
+### save（Phase 6）
+
+```bash
+python ${LTM}/save_memory.py \
+  --category [カテゴリ] --title "[タイトル]" --summary "[要約]" \
+  --content "[詳細]" --conclusion "[学び]" --tags [タグ]
+```
 
 ### promote（Phase 7 完了時）
 
 ```bash
-# 昇格候補を確認
-python ${SKILLS_DIR}/agent-long-term-memory/scripts/promote_memory.py --list
-
-# 自動昇格（share_score >= 85）
-python ${SKILLS_DIR}/agent-long-term-memory/scripts/promote_memory.py --auto
+python ${LTM}/promote_memory.py --list   # 昇格候補確認
+python ${LTM}/promote_memory.py --auto   # share_score >= 85 を自動昇格
 ```
-
-### スキルが存在しない場合
-
-`${SKILLS_DIR}/agent-long-term-memory/SKILL.md` が存在しない場合は記憶連携をスキップする。
-存在確認: `ls ${SKILLS_DIR}/agent-long-term-memory/SKILL.md 2>/dev/null`
 
 ---
 

@@ -1,7 +1,7 @@
 ---
-name: agent-long-term-memory
+name: ltm-use
 description: >
-  エージェントに長期記憶（永続メモリ）を与えるスキル。MCP・Claude Code非依存で、
+  エージェントに長期記憶（永続メモリ）を与えるコアスキル。MCP・Claude Code非依存で、
   Agent Skillsだけで動作する。記憶をMarkdownファイルとして保存・検索・管理する。
   「覚えておいて」「記憶して」「保存して」「メモして」でsave操作、
   「思い出して」「記憶を探して」「以前の」「覚えてる？」「確認して」でrecall操作、
@@ -14,12 +14,12 @@ description: >
   「インデックスを再構築して」「統計を見せて」でbuild_index操作。
   セッションをまたいで知識・調査結果・決定事項を継続させたいときに使用する。
 metadata:
-  version: "2.0"
+  version: "3.0"
 ---
 
-# agent-long-term-memory
+# ltm-use（Long-Term Memory Use）
 
-エージェントにセッションをまたいだ長期記憶を与えるスキル。
+エージェントにセッションをまたいだ長期記憶を与えるコアスキル。
 MCPサーバーやClaude Code専用機能を使わず、**Markdownファイルへの読み書きだけ**で動作する。
 
 ---
@@ -35,9 +35,9 @@ git除外                   ローカル永続              git管理
 
 | スコープ | 保存先 | 用途 | git管理 |
 |---------|--------|------|---------|
-| `workspace` | `${SKILL_DIR}/memories/` | プロジェクト固有の知見 | 除外(.gitignore) |
-| `home` | `~/.agent-memory/workspace/` | 複数プロジェクト横断の知見 | 個人管理 |
-| `shared` | `~/.agent-memory/shared/` | チーム共有すべき知見 | git管理 |
+| `workspace` | `${SKILL_DIR}/memories/` | VSCodeワークスペース固有の知見 | **除外(.gitignore)** |
+| `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
+| `shared` | `~/.copilot/memory/shared/` | チーム共有すべき知見 | **git管理** |
 
 ---
 
@@ -47,8 +47,8 @@ git除外                   ローカル永続              git管理
 
 | このSKILL.mdのパス | SKILL_DIR | MEMORY_DIR(workspace) |
 |---|---|---|
-| `.github/skills/agent-long-term-memory/SKILL.md` | `.github/skills/agent-long-term-memory` | `.github/skills/agent-long-term-memory/memories` |
-| `.claude/skills/agent-long-term-memory/SKILL.md` | `.claude/skills/agent-long-term-memory` | `.claude/skills/agent-long-term-memory/memories` |
+| `.github/skills/ltm-use/SKILL.md` | `.github/skills/ltm-use` | `.github/skills/ltm-use/memories` |
+| `.claude/skills/ltm-use/SKILL.md` | `.claude/skills/ltm-use` | `.claude/skills/ltm-use/memories` |
 
 スクリプトは `${SKILL_DIR}/scripts/` から実行する。
 記憶フォーマット仕様: `${SKILL_DIR}/references/memory-format.md` を参照。

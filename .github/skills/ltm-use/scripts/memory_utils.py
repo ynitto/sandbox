@@ -19,11 +19,11 @@ def get_skill_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-HOME_MEMORY_ROOT = os.path.expanduser("~/.agent-memory")
+HOME_MEMORY_ROOT = os.path.expanduser("~/.copilot/memory")
 
 SCOPE_DIRS = {
     "workspace": os.path.join(get_skill_dir(), "memories"),
-    "home":      os.path.join(HOME_MEMORY_ROOT, "workspace"),
+    "home":      os.path.join(HOME_MEMORY_ROOT, "home"),
     "shared":    os.path.join(HOME_MEMORY_ROOT, "shared"),
 }
 

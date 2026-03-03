@@ -13,9 +13,9 @@ git除外                   ローカル            git管理
 
 | スコープ | 保存先 | 用途 | git管理 |
 |---------|--------|------|---------|
-| `workspace` | `${SKILL_DIR}/memories/` | プロジェクト固有の知見 | 除外（.gitignore） |
-| `home` | `~/.agent-memory/workspace/` | 複数プロジェクト横断の知見 | 個人管理 |
-| `shared` | `~/.agent-memory/shared/` | チーム共有すべき知見 | git管理 |
+| `workspace` | `${SKILL_DIR}/memories/` | VSCodeワークスペース固有の知見 | **除外（.gitignore）** |
+| `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
+| `shared` | `~/.copilot/memory/shared/` | チーム共有すべき知見 | **git管理** |
 
 ---
 

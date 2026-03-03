@@ -1,5 +1,0 @@
-# 記憶ファイルはリポジトリに含めない（個人・セッション固有のため）
-memories/**/*.md
-
-# .gitkeepは除外しない
-!memories/.gitkeep
