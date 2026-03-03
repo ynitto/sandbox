@@ -24,8 +24,11 @@ HOME_MEMORY_ROOT = os.path.expanduser("~/.copilot/memory")
 SCOPE_DIRS = {
     "workspace": os.path.join(get_skill_dir(), "memories"),
     "home":      os.path.join(HOME_MEMORY_ROOT, "home"),
-    "shared":    os.path.join(HOME_MEMORY_ROOT, "shared"),
+    "shared":    os.path.join(HOME_MEMORY_ROOT, "shared"),  # 後方互換用レガシーパス
 }
+
+REGISTRY_PATH = os.path.expanduser("~/.copilot/skill-registry.json")
+SHARED_BASE = os.path.join(HOME_MEMORY_ROOT, "shared")
 
 DEFAULT_CONFIG = {
     "shared_remote": "",
@@ -54,15 +57,107 @@ def save_config(cfg: dict) -> None:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
+# ─── skill-registry.json 連携 ────────────────────────────────
+
+def load_registry() -> dict:
+    """skill-registry.json を読み込む（存在しなければ空を返す）"""
+    if os.path.exists(REGISTRY_PATH):
+        try:
+            with open(REGISTRY_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def get_shared_repos() -> list[dict]:
+    """skill-registry.json の repositories から shared memory 設定を返す。
+
+    skill-registry.json にリポジトリが未登録の場合は、
+    config.json の shared_remote をフォールバックとして使用する。
+
+    各エントリの構造:
+      name        : リポジトリ名
+      url         : git remote URL
+      branch      : ブランチ名
+      readonly    : 読み取り専用フラグ（True の場合は commit/push 不可）
+      memory_root : リポジトリ内のメモリールートパス（省略時: "memories"）
+      local_dir   : ~/.copilot/memory/shared/<name>/  （git clone 先のリポジトリルート）
+      memory_dir  : local_dir/memory_root  （実際の .md ファイルが置かれるディレクトリ）
+    """
+    reg = load_registry()
+    repos = reg.get("repositories", [])
+    if repos:
+        result = []
+        for repo in repos:
+            url = repo.get("url", "")
+            if not url:
+                continue
+            name = repo.get("name", "origin")
+            local_dir = os.path.join(SHARED_BASE, name)
+            memory_root = repo.get("memory_root", "memories")
+            memory_dir = os.path.join(local_dir, memory_root) if memory_root else local_dir
+            result.append({
+                "name": name,
+                "url": url,
+                "branch": repo.get("branch", "main"),
+                "readonly": bool(repo.get("readonly", False)),
+                "memory_root": memory_root,
+                "local_dir": local_dir,
+                "memory_dir": memory_dir,
+                "priority": repo.get("priority", 99),
+            })
+        result.sort(key=lambda r: r["priority"])
+        return result
+
+    # フォールバック: config.json の shared_remote
+    cfg = load_config()
+    remote = cfg.get("shared_remote", "")
+    if remote:
+        # 旧形式の ~/.copilot/memory/shared/ が git リポジトリなら互換パスを使う
+        old_shared = SCOPE_DIRS["shared"]
+        if os.path.isdir(os.path.join(old_shared, ".git")):
+            local_dir, memory_root = old_shared, ""
+        else:
+            local_dir, memory_root = os.path.join(SHARED_BASE, "default"), ""
+        return [{
+            "name": "default",
+            "url": remote,
+            "branch": cfg.get("shared_branch", "main"),
+            "readonly": False,
+            "memory_root": memory_root,
+            "local_dir": local_dir,
+            "memory_dir": local_dir,
+            "priority": 1,
+        }]
+    return []
+
+
+def get_primary_writable_repo() -> dict | None:
+    """書き込み可能な最優先リポジトリを返す（promote/commit のターゲット）"""
+    for repo in get_shared_repos():
+        if not repo["readonly"]:
+            return repo
+    return None
+
+
 def get_memory_dir(scope: str) -> str:
+    """スコープのメモリーディレクトリを返す（shared は書き込み可能な優先リポジトリ）"""
+    if scope == "shared":
+        repo = get_primary_writable_repo()
+        return repo["memory_dir"] if repo else SCOPE_DIRS["shared"]
     return SCOPE_DIRS.get(scope, SCOPE_DIRS["workspace"])
 
 
 def get_memory_dirs(scope: str) -> list[str]:
-    """scope='all' なら全ディレクトリを返す"""
+    """scope='all' なら全スコープ、'shared' なら全リポジトリのディレクトリを返す"""
     if scope == "all":
-        return list(SCOPE_DIRS.values())
-    return [get_memory_dir(scope)]
+        shared_dirs = [r["memory_dir"] for r in get_shared_repos()] or [SCOPE_DIRS["shared"]]
+        return [SCOPE_DIRS["workspace"], SCOPE_DIRS["home"]] + shared_dirs
+    if scope == "shared":
+        repos = get_shared_repos()
+        return [r["memory_dir"] for r in repos] if repos else [SCOPE_DIRS["shared"]]
+    return [SCOPE_DIRS.get(scope, SCOPE_DIRS["workspace"])]
 
 
 # ─── フロントマター ──────────────────────────────────────────
@@ -313,7 +408,12 @@ def update_index_entry(memory_dir: str, filepath: str) -> None:
 def find_memory_dir(filepath: str) -> str | None:
     """ファイルパスからそのスコープのメモリーディレクトリを特定する"""
     abs_path = os.path.abspath(filepath)
-    for memory_dir in SCOPE_DIRS.values():
+    candidates = [SCOPE_DIRS["workspace"], SCOPE_DIRS["home"]]
+    candidates += [r["memory_dir"] for r in get_shared_repos()]
+    # 旧形式の shared ディレクトリも確認
+    if SCOPE_DIRS["shared"] not in candidates:
+        candidates.append(SCOPE_DIRS["shared"])
+    for memory_dir in candidates:
         if abs_path.startswith(os.path.abspath(memory_dir) + os.sep):
             return memory_dir
     return None
@@ -321,20 +421,23 @@ def find_memory_dir(filepath: str) -> str | None:
 
 # ─── Git ヘルパー ────────────────────────────────────────────
 
-def git_pull_shared(shared_dir: str, remote: str, branch: str) -> tuple[bool, str]:
-    """shared_dir を git pull する。存在しなければ clone する"""
+def git_pull_repo(repo: dict) -> tuple[bool, str]:
+    """リポジトリを git pull する。local_dir が存在しなければ clone する。"""
+    local_dir = repo["local_dir"]
+    remote = repo.get("url", "")
+    branch = repo.get("branch", "main")
     if not remote:
-        return False, "shared_remote が設定されていません（~/.agent-memory/config.json を確認）"
+        return False, "URL が設定されていません"
     try:
-        if os.path.isdir(os.path.join(shared_dir, ".git")):
+        if os.path.isdir(os.path.join(local_dir, ".git")):
             result = subprocess.run(
-                ["git", "-C", shared_dir, "pull", "origin", branch],
+                ["git", "-C", local_dir, "pull", "origin", branch],
                 capture_output=True, text=True, timeout=30,
             )
         else:
-            os.makedirs(os.path.dirname(shared_dir), exist_ok=True)
+            os.makedirs(os.path.dirname(local_dir), exist_ok=True)
             result = subprocess.run(
-                ["git", "clone", "--branch", branch, remote, shared_dir],
+                ["git", "clone", "--branch", branch, remote, local_dir],
                 capture_output=True, text=True, timeout=60,
             )
         if result.returncode == 0:
@@ -346,13 +449,18 @@ def git_pull_shared(shared_dir: str, remote: str, branch: str) -> tuple[bool, st
         return False, "git コマンドが見つかりません"
 
 
-def git_commit_shared(shared_dir: str, message: str) -> tuple[bool, str]:
-    """shared_dir の変更を git commit する（push は行わない）"""
+def git_commit_repo(repo: dict, message: str) -> tuple[bool, str]:
+    """リポジトリのメモリー変更を git commit する（push は行わない）"""
+    if repo.get("readonly"):
+        return False, "読み取り専用リポジトリへのコミットはできません"
+    local_dir = repo["local_dir"]
+    memory_root = repo.get("memory_root", "")
+    add_path = memory_root if memory_root else "."
     try:
-        subprocess.run(["git", "-C", shared_dir, "add", "."],
+        subprocess.run(["git", "-C", local_dir, "add", add_path],
                        capture_output=True, timeout=10)
         result = subprocess.run(
-            ["git", "-C", shared_dir, "commit", "-m", message],
+            ["git", "-C", local_dir, "commit", "-m", message],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode == 0:
@@ -362,3 +470,35 @@ def git_commit_shared(shared_dir: str, message: str) -> tuple[bool, str]:
         return False, result.stderr.strip()
     except Exception as e:
         return False, str(e)
+
+
+def git_push_repo(repo: dict) -> tuple[bool, str]:
+    """リポジトリを git push する"""
+    if repo.get("readonly"):
+        return False, "読み取り専用リポジトリへの push はできません"
+    local_dir = repo["local_dir"]
+    branch = repo.get("branch", "main")
+    try:
+        result = subprocess.run(
+            ["git", "-C", local_dir, "push", "origin", branch],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        return False, result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return False, "git コマンドがタイムアウトしました"
+    except FileNotFoundError:
+        return False, "git コマンドが見つかりません"
+
+
+def git_pull_shared(shared_dir: str, remote: str, branch: str) -> tuple[bool, str]:
+    """後方互換ラッパー: git_pull_repo を呼ぶ"""
+    return git_pull_repo({"local_dir": shared_dir, "url": remote, "branch": branch})
+
+
+def git_commit_shared(shared_dir: str, message: str) -> tuple[bool, str]:
+    """後方互換ラッパー: git_commit_repo を呼ぶ"""
+    return git_commit_repo(
+        {"local_dir": shared_dir, "readonly": False, "memory_root": ""}, message
+    )

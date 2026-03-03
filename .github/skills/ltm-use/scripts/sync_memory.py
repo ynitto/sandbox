@@ -2,24 +2,30 @@
 """
 sync_memory.py - git共有領域からナレッジを自動更新するスクリプト
 
-git remote (shared_remote) の記憶を ~/.agent-memory/shared/ に pull し、
-ローカルの home 記憶と差分をレポートする。
+skill-registry.json に登録されたリポジトリ（git-skill-manager と共通）を使用して
+shared 記憶を同期する。複数リポジトリ・readonly 対応。
+
+skill-registry.json に repositories が未登録の場合は、
+~/.copilot/memory/config.json の shared_remote をフォールバックとして使用する。
 
 Usage:
-  # 共有領域を更新して差分を確認
+  # 全リポジトリを pull して差分確認
   python sync_memory.py
 
-  # 新しい記憶を home にも取り込む
+  # 特定リポジトリのみ同期
+  python sync_memory.py --repo origin
+
+  # 新しい shared 記憶を home に取り込む
   python sync_memory.py --import-to-home
 
-  # git remote を設定する（初回）
-  python sync_memory.py --set-remote git@github.com:org/shared-memories.git
+  # git push（readonly でないリポジトリへ）
+  python sync_memory.py --push [--repo origin]
 
-  # 特定キーワードに関連する shared 記憶を検索
+  # 全 shared 記憶をキーワード検索
   python sync_memory.py --search "JWT 認証"
 
-  # push（明示的な許可が必要）
-  python sync_memory.py --push
+  # git remote を config.json に設定（skill-registry.json 未設定時のフォールバック用）
+  python sync_memory.py --set-remote git@github.com:org/shared-memories.git
 """
 
 import argparse
@@ -28,14 +34,6 @@ import shutil
 import sys
 
 import memory_utils
-
-
-def sync_from_remote(cfg: dict) -> tuple[bool, str]:
-    """git remote から shared ディレクトリを更新する"""
-    shared_dir = memory_utils.get_memory_dir("shared")
-    remote = cfg.get("shared_remote", "")
-    branch = cfg.get("shared_branch", "main")
-    return memory_utils.git_pull_shared(shared_dir, remote, branch)
 
 
 def find_new_memories(shared_dir: str, home_dir: str) -> list[dict]:
@@ -81,136 +79,152 @@ def import_to_home(memories: list[dict], shared_dir: str, home_dir: str) -> int:
     return imported
 
 
-def search_shared(query: str, shared_dir: str) -> list[dict]:
-    """shared ディレクトリからキーワード検索する（スコアリング）"""
+def search_shared(query: str, repos: list[dict]) -> list[dict]:
+    """全 shared リポジトリからキーワード検索する"""
     keywords = query.lower().split()
     results = []
-    for fpath, rel_cat in memory_utils.iter_memory_files(shared_dir):
-        with open(fpath, encoding="utf-8") as f:
-            text = f.read()
-        meta, body = memory_utils.parse_frontmatter(text)
-        title = meta.get("title", "").lower()
-        summary = meta.get("summary", "").lower()
-        tags = " ".join(meta.get("tags", [])).lower()
-        full = (title + " " + summary + " " + tags + " " + body.lower())
+    for repo in repos:
+        shared_dir = repo["memory_dir"]
+        if not os.path.isdir(shared_dir):
+            continue
+        for fpath, rel_cat in memory_utils.iter_memory_files(shared_dir):
+            with open(fpath, encoding="utf-8") as f:
+                text = f.read()
+            meta, body = memory_utils.parse_frontmatter(text)
+            title = meta.get("title", "").lower()
+            summary = meta.get("summary", "").lower()
+            tags = " ".join(meta.get("tags", [])).lower()
+            full = title + " " + summary + " " + tags + " " + body.lower()
 
-        score = 0
-        for kw in keywords:
-            if kw in title:
-                score += 10
-            if kw in summary:
-                score += 6
-            if kw in tags:
-                score += 4
-            score += min(full.count(kw), 5)
+            score = 0
+            for kw in keywords:
+                if kw in title:    score += 10
+                if kw in summary:  score += 6
+                if kw in tags:     score += 4
+                score += min(full.count(kw), 5)
 
-        if score > 0:
-            results.append({
-                "filepath": fpath,
-                "title": meta.get("title", ""),
-                "summary": meta.get("summary", ""),
-                "score": score,
-            })
+            if score > 0:
+                results.append({
+                    "filepath": fpath,
+                    "repo": repo["name"],
+                    "title": meta.get("title", ""),
+                    "summary": meta.get("summary", ""),
+                    "score": score,
+                })
     return sorted(results, key=lambda x: x["score"], reverse=True)
-
-
-def push_shared(shared_dir: str, branch: str) -> None:
-    """shared ディレクトリを git push する"""
-    import subprocess
-    result = subprocess.run(
-        ["git", "-C", shared_dir, "push", "origin", branch],
-        capture_output=True, text=True, timeout=30,
-    )
-    if result.returncode == 0:
-        print(f"push 成功: {result.stdout.strip()}")
-    else:
-        print(f"push 失敗: {result.stderr.strip()}", file=sys.stderr)
 
 
 def main():
     parser = argparse.ArgumentParser(description="git共有領域の記憶を同期する")
     parser.add_argument("--set-remote", metavar="URL",
-                        help="git remote URL を設定して終了")
+                        help="git remote URL を config.json に設定して終了"
+                             "（skill-registry.json 未設定時のフォールバック用）")
+    parser.add_argument("--repo", metavar="NAME",
+                        help="対象リポジトリ名を指定（省略時: 全リポジトリ）")
     parser.add_argument("--search", metavar="QUERY",
-                        help="shared 記憶をキーワード検索")
+                        help="全 shared 記憶をキーワード検索")
     parser.add_argument("--import-to-home", action="store_true",
                         help="shared にあって home にない記憶を home に取り込む")
     parser.add_argument("--push", action="store_true",
-                        help="shared の変更を git push する")
+                        help="書き込み可能なリポジトリに git push する")
     parser.add_argument("--no-pull", action="store_true",
                         help="git pull をスキップ（ローカルの shared のみ確認）")
     args = parser.parse_args()
 
-    # remote 設定
+    # remote 設定（フォールバック用: skill-registry.json が未設定の場合に使用）
     if args.set_remote:
         cfg = memory_utils.load_config()
         cfg["shared_remote"] = args.set_remote
         memory_utils.save_config(cfg)
         print(f"shared_remote を設定しました: {args.set_remote}")
         print(f"設定ファイル: ~/.copilot/memory/config.json")
+        print(f"注意: skill-registry.json に repositories が設定されている場合はそちらが優先されます。")
         return
 
-    cfg = memory_utils.load_config()
-    shared_dir = memory_utils.get_memory_dir("shared")
-    home_dir = memory_utils.get_memory_dir("home")
+    # リポジトリ一覧を取得
+    repos = memory_utils.get_shared_repos()
+    if not repos:
+        print("共有リポジトリが設定されていません。")
+        print("skill-registry.json の repositories に追加するか、以下で設定してください:")
+        print("  python sync_memory.py --set-remote <URL>")
+        sys.exit(1)
+
+    # --repo で絞り込み
+    if args.repo:
+        repos = [r for r in repos if r["name"] == args.repo]
+        if not repos:
+            print(f"リポジトリ '{args.repo}' が見つかりません。", file=sys.stderr)
+            sys.exit(1)
 
     # キーワード検索モード（pull なし）
     if args.search:
-        if not os.path.isdir(shared_dir):
-            print("shared ディレクトリが存在しません。先に同期してください。")
-            sys.exit(1)
-        results = search_shared(args.search, shared_dir)
+        results = search_shared(args.search, repos)
         if not results:
             print(f"「{args.search}」に一致する shared 記憶が見つかりませんでした。")
         else:
             print(f"「{args.search}」の shared 検索結果: {len(results)}件\n")
             for i, r in enumerate(results, 1):
-                print(f"[{i}] {r['title']} (score: {r['score']})")
+                repo_label = f" [{r['repo']}]" if len(repos) > 1 else ""
+                print(f"[{i}]{repo_label} {r['title']} (score: {r['score']})")
                 print(f"     {r['summary']}")
         return
 
     # push モード
     if args.push:
-        if not os.path.isdir(os.path.join(shared_dir, ".git")):
-            print("shared ディレクトリが git リポジトリではありません。", file=sys.stderr)
-            sys.exit(1)
-        branch = cfg.get("shared_branch", "main")
-        push_shared(shared_dir, branch)
+        for repo in repos:
+            label = f"[{repo['name']}]"
+            if repo["readonly"]:
+                print(f"{label} readonly のためスキップ")
+                continue
+            local_dir = repo["local_dir"]
+            if not os.path.isdir(os.path.join(local_dir, ".git")):
+                print(f"{label} git リポジトリが見つかりません（先に sync が必要）")
+                continue
+            ok, msg = memory_utils.git_push_repo(repo)
+            print(f"{label} push {'成功' if ok else '失敗'}: {msg}")
         return
 
-    # --- 通常同期 ---
+    # --- 通常同期（pull + 差分確認）---
     if not args.no_pull:
-        remote = cfg.get("shared_remote", "")
-        if not remote:
-            print("shared_remote が未設定です。")
-            print("設定方法: python sync_memory.py --set-remote <URL>")
-            print("\nローカルの shared ディレクトリのみ確認します。\n")
-        else:
-            print(f"git pull: {remote} ({cfg.get('shared_branch', 'main')})")
-            ok, msg = sync_from_remote(cfg)
+        for repo in repos:
+            label = f"[{repo['name']}]"
+            suffix = " (readonly)" if repo["readonly"] else ""
+            print(f"{label} git pull: {repo['url']} ({repo['branch']}){suffix}")
+            ok, msg = memory_utils.git_pull_repo(repo)
             print(f"  {'成功' if ok else '失敗'}: {msg}\n")
 
-    if not os.path.isdir(shared_dir):
-        print("shared ディレクトリが存在しません。")
-        return
-
-    # 差分チェック
+    home_dir = memory_utils.get_memory_dir("home")
     os.makedirs(home_dir, exist_ok=True)
-    new_memories = find_new_memories(shared_dir, home_dir)
 
-    if not new_memories:
+    all_new: list[dict] = []
+    for repo in repos:
+        shared_dir = repo["memory_dir"]
+        if not os.path.isdir(shared_dir):
+            continue
+        new_memories = find_new_memories(shared_dir, home_dir)
+        if new_memories:
+            label = f"[{repo['name']}] " if len(repos) > 1 else ""
+            print(f"{label}新しい shared 記憶: {len(new_memories)}件\n")
+            for m in new_memories:
+                print(f"  [{m['id']}] {m['title']}")
+                print(f"        {m['summary']}")
+            print()
+            all_new.extend(new_memories)
+
+    if not all_new:
         print("新しい shared 記憶はありません（home と同期済み）。")
         return
 
-    print(f"新しい shared 記憶: {len(new_memories)}件\n")
-    for m in new_memories:
-        print(f"  [{m['id']}] {m['title']}")
-        print(f"        {m['summary']}")
-    print()
-
     if args.import_to_home:
-        n = import_to_home(new_memories, shared_dir, home_dir)
-        print(f"{n}件を home に取り込みました。")
+        imported = 0
+        for repo in repos:
+            shared_dir = repo["memory_dir"]
+            repo_new = [m for m in all_new
+                        if m["filepath"].startswith(shared_dir + os.sep)]
+            if repo_new:
+                n = import_to_home(repo_new, shared_dir, home_dir)
+                imported += n
+        print(f"{imported}件を home に取り込みました。")
     else:
         print("home に取り込むには: python sync_memory.py --import-to-home")
 
