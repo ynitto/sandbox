@@ -184,8 +184,8 @@
 - `protect_local_modified` (真偽値、デフォルト: true): true の場合、ローカル改善済みスキルを自動 pull で上書きしない
 
 **contribution_queue** (配列、v5):
-- ローカル改善をリモートに貢献するための待ちキュー（`delta_tracker.py` が管理）
-- 各エントリ: `skill_name`、`node_id`、`queued_at`、`status`（pending/in-progress/done）
+- ローカル改善をリモートに貢献するための待ちキュー（`promotion_policy.py` が管理）
+- 各エントリ: `skill_name`、`node_id`、`queued_at`、`reason`、`status`（pending_review/in-progress/done）
 
 **core_skills** (文字列リスト):
 - 使用頻度に関わらず常に最優先でロードされるスキル名のリスト
