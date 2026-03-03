@@ -6,6 +6,10 @@
 - [requirements-definer 呼び出し時](#requirements-definer-呼び出し時)
 - [skill: null タスク実行時](#skill-null-タスク実行時)
 - [スキル実行時](#スキル実行時)
+- **記憶連携（agent-long-term-memory が存在する場合に使用）**
+  - [記憶統合付きスキル実行時](#記憶統合付きスキル実行時)
+  - [記憶統合付き skill:null タスク実行時](#記憶統合付き-skillnull-タスク実行時)
+  - [記憶フィードバック収集時](#記憶フィードバック収集時)
 - [スキル作成時](#スキル作成時)
 - [スキル改良時](#スキル改良時)
 - [コードベースからスキル生成時](#コードベースからスキル生成時)
@@ -75,6 +79,152 @@ goal: [requirements.json の goal フィールドの値]
 ステータス: 成功 / 失敗
 サマリー: [1〜2文で結果を説明]
 ```
+
+## 記憶統合付きスキル実行時
+
+`agent-long-term-memory` スキルが `${SKILLS_DIR}/agent-long-term-memory/` に存在する場合に使用する。
+存在しない場合は「スキル実行時」テンプレートを使うこと。
+
+`[MEMORY_SCRIPTS]` = `${SKILLS_DIR}/agent-long-term-memory/scripts`
+
+---
+
+```
+[skill-name] スキルを実行する。
+
+## ステップ 1: 記憶参照（開始前に必ず実行）
+以下を実行し、タスクに関連する過去知識を確認する:
+  python [MEMORY_SCRIPTS]/recall_memory.py "[タスクキーワード1] [タスクキーワード2]"
+
+- 結果が 0件 → home/shared を自動フォールバック検索する。それでも 0件なら続行
+- 結果が 1件以上 → summary を確認し、関連性が高い記憶は全文を読んでコンテキストに活用する
+- 重要: 過去に同じ調査・決定がされている場合は重複を避けること
+
+## ステップ 2: タスク実行
+手順: まず [skill-md-path] を読んで手順に従ってください。
+タスク: [action]
+コンテキスト: [先行タスクのresultを1〜2行で要約。ステップ1で得た記憶の知見があれば付記]
+完了基準: [done_criteria]
+フィードバック: 実行後フィードバック節はスキップしてください。
+
+## ステップ 3: 気づきを保存（完了後に必ず実行）
+タスク完了後、以下の知見を保存すること（量より質、価値ある発見のみ）:
+  python [MEMORY_SCRIPTS]/save_memory.py \
+    --category [スプリントカテゴリ] \
+    --title "[知見タイトル]" \
+    --summary "[1〜2文の要約]" \
+    --content "[詳細内容]" \
+    --conclusion "[学び・次回への示唆]" \
+    --tags [タグ]
+
+保存すべき知見の基準:
+  ✅ 新しい技術的発見・調査結果
+  ✅ 設計・実装上の重要な決定とその理由
+  ✅ ハマったポイントと解決方法
+  ✅ ツール・API・ライブラリの非自明な挙動
+  ❌ コードそのもの（コードベースに存在する）
+  ❌ 一時的な中間処理・作業ログ
+  ❌ すでにドキュメントに書かれている情報
+
+## ステップ 4: 再指示・修正があった場合
+実行中にユーザーから修正・再指示を受けた場合、参照した記憶を以下で評価すること:
+  # 誤りがあった記憶
+  python [MEMORY_SCRIPTS]/rate_memory.py --id [記憶ID] --correction --note "[何が間違っていたか]"
+  # 役立った記憶
+  python [MEMORY_SCRIPTS]/rate_memory.py --id [記憶ID] --good
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+サマリー: [1〜2文で結果を説明]
+記憶参照: [参照した記憶のID(s) またはなし]
+記憶保存: [保存したファイルパス(s) またはなし]
+気づき: [この実行で得た知見を1〜2文。次スプリントへの示唆があれば記載]
+```
+
+**scrum-master の処理**: 返ってきた「気づき」を次のウェーブのコンテキストに付け加える。
+
+---
+
+## 記憶統合付き skill:null タスク実行時
+
+`[MEMORY_SCRIPTS]` = `${SKILLS_DIR}/agent-long-term-memory/scripts`
+
+---
+
+```
+以下のタスクを実行してください。
+
+## ステップ 1: 記憶参照
+  python [MEMORY_SCRIPTS]/recall_memory.py "[タスクキーワード]"
+関連する記憶があればコンテキストに活用し、重複調査を避けること。
+
+## ステップ 2: タスク実行
+タスク: [action]
+コンテキスト: [先行タスクのresultを1〜2行で要約]
+完了基準: [done_criteria]
+
+## ステップ 3: 気づきを保存
+  python [MEMORY_SCRIPTS]/save_memory.py \
+    --category [カテゴリ] \
+    --title "[知見タイトル]" \
+    --summary "[要約]" \
+    --content "[詳細]" \
+    --conclusion "[学び]" \
+    --tags [タグ]
+（価値ある発見のみ。なければスキップ可）
+
+## ステップ 4: 再指示・修正があった場合
+  python [MEMORY_SCRIPTS]/rate_memory.py --id [記憶ID] --correction --note "[修正内容]"
+
+結果を以下の形式で返してください:
+ステータス: 成功 / 失敗
+サマリー: [1〜2文で結果を説明]
+記憶参照: [参照した記憶のID(s) またはなし]
+記憶保存: [保存したファイルパス(s) またはなし]
+気づき: [この実行で得た知見を1〜2文]
+```
+
+---
+
+## 記憶フィードバック収集時
+
+スプリント完了後、参照した記憶の品質をまとめて評価する。
+scrum-master が Phase 6 後に収集した情報をサブエージェントに渡して実行する。
+
+`[MEMORY_SCRIPTS]` = `${SKILLS_DIR}/agent-long-term-memory/scripts`
+
+---
+
+```
+今スプリントで参照した記憶を評価してください。
+
+参照した記憶と評価:
+- [記憶ID1] ([title]): [verdict: good / bad / correction]  — [理由 1文]
+- [記憶ID2] ([title]): [verdict]  — [理由]
+
+以下を実行して評価を記録する:
+  # good の場合
+  python [MEMORY_SCRIPTS]/rate_memory.py --id [ID] --good
+
+  # bad の場合
+  python [MEMORY_SCRIPTS]/rate_memory.py --id [ID] --bad
+
+  # correction の場合（記憶の内容が誤っていた・古かった）
+  python [MEMORY_SCRIPTS]/rate_memory.py --id [ID] --correction --note "[何が誤りだったか]"
+
+全記憶の評価が完了したら、昇格候補を確認して報告すること:
+  python [MEMORY_SCRIPTS]/promote_memory.py --list
+
+結果を以下の形式で返してください:
+ステータス: 成功 / スキップ（記憶なし）
+評価済み記憶数: [N件]
+  good: [N件] / bad: [N件] / correction: [N件]
+昇格候補: [件数と記憶タイトル一覧、またはなし]
+```
+
+**scrum-master の処理**: 昇格候補がある場合、Phase 7 で promote_memory.py の実行をユーザーに提案する。
+
+---
 
 ## スキル作成時
 

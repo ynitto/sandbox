@@ -36,6 +36,8 @@ tags: [{tags}]
 related: []
 access_count: 0
 last_accessed: ""
+user_rating: 0
+correction_count: 0
 share_score: 0
 promoted_from: ""
 summary: "{summary}"
@@ -89,7 +91,8 @@ def save_memory(category: str, title: str, summary: str, content: str,
         filepath = f"{base}-{mem_id[-3:]}{ext}"
 
     # share_score を事前計算（保存直後は access_count=0 のため情報量とタグのみ）
-    pseudo_meta = {"tags": tags, "access_count": 0, "status": "active"}
+    pseudo_meta = {"tags": tags, "access_count": 0, "user_rating": 0,
+                   "correction_count": 0, "status": "active"}
     share_score = memory_utils.compute_share_score(pseudo_meta, content)
 
     tags_str = ", ".join(tags)
@@ -109,6 +112,10 @@ def save_memory(category: str, title: str, summary: str, content: str,
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(body)
+
+    # インデックスを更新
+    memory_dir = memory_utils.get_memory_dir(scope)
+    memory_utils.update_index_entry(memory_dir, filepath)
 
     return filepath
 
@@ -137,10 +144,15 @@ def update_memory(filepath: str, summary: str = None, content: str = None,
     # share_score を再計算
     meta, body_text = memory_utils.parse_frontmatter(text)
     new_score = memory_utils.compute_share_score(meta, body_text)
-    text = re.sub(r"^share_score: \d+", f"share_score: {new_score}", text, flags=re.MULTILINE)
+    text = re.sub(r"^share_score: -?\d+", f"share_score: {new_score}", text, flags=re.MULTILINE)
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(text)
+
+    # インデックスを更新
+    memory_dir = memory_utils.find_memory_dir(filepath)
+    if memory_dir:
+        memory_utils.update_index_entry(memory_dir, filepath)
 
 
 def main():

@@ -24,6 +24,11 @@ Wave 3: [b5]     → 単独実行
 
 1. **ウェーブ開始**: ウェーブ内の全タスクのstatusを `in_progress` に更新する
 2. **並列起動**: ウェーブ内の全タスクについてサブエージェントを**同時に**起動する（単一メッセージに並べる）
+   - **agent-long-term-memory が存在する場合** は記憶統合テンプレートを使う（重複調査を防ぎ、気づきを蓄積する）:
+     - skill 指定あり → `subagent-templates.md`「記憶統合付きスキル実行時」
+     - skill: null → `subagent-templates.md`「記憶統合付き skill:null タスク実行時」
+     - 存在確認: `ls ${SKILLS_DIR}/agent-long-term-memory/SKILL.md 2>/dev/null`
+   - **agent-long-term-memory が存在しない場合** は以下の標準テンプレートを使う:
    - **skill 指定あり** → テンプレート（`subagent-templates.md`「スキル実行時」参照）:
      ```
      [skill-name] スキルを実行する。

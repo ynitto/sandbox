@@ -9,7 +9,9 @@ description: >
   「忘れて」「記憶を削除」「アーカイブして」でdelete/archive操作、
   「昇格して」「共有して」「ナレッジを広める」でpromote操作、
   「記憶を整理して」「古い記憶を削除して」でcleanup操作、
-  「共有知識を取り込んで」「チームの記憶を更新して」でsync操作。
+  「共有知識を取り込んで」「チームの記憶を更新して」でsync操作、
+  「役立った」「間違ってた」「修正が必要」でrate操作、
+  「インデックスを再構築して」「統計を見せて」でbuild_index操作。
   セッションをまたいで知識・調査結果・決定事項を継続させたいときに使用する。
 metadata:
   version: "2.0"
@@ -62,9 +64,11 @@ git除外                   ローカル永続              git管理
 | **list** | 「記憶一覧」「何を覚えてる？」 | `list_memories.py` |
 | **update** | 「記憶を更新して」「情報が変わった」 | `save_memory.py --update` |
 | **archive** | 「忘れて」「古い情報」「アーカイブして」 | `save_memory.py --update --status archived` |
+| **rate** | 「役立った」「間違ってた」「修正が必要」 | `rate_memory.py` |
 | **promote** | 「昇格して」「共有知識にして」「チームに広める」 | `promote_memory.py` |
 | **cleanup** | 「記憶を整理して」「古い記憶を削除して」 | `cleanup_memory.py` |
 | **sync** | 「チームの記憶を取り込んで」「共有知識を更新して」 | `sync_memory.py` |
+| **build_index** | 「インデックスを再構築して」「統計を見せて」 | `build_index.py` |
 
 ---
 
@@ -102,6 +106,7 @@ python ${SKILL_DIR}/scripts/save_memory.py --scope home \
 ## recall（記憶を想起する）
 
 recallすると `access_count` が自動加算され `share_score` が再計算される。
+インデックス（`.memory-index.json`）を使った高速検索で、記憶数が増えても性能劣化しない。
 ワークスペースで見つからない場合は、home/shared を自動フォールバック検索する。
 
 ```bash
@@ -116,7 +121,14 @@ python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --full
 
 # access_count を更新しない（参照ログを残さない）
 python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --no-track
+
+# 結果に対してインタラクティブ評価ループを実行
+python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --rate-after
 ```
+
+**検索の仕組み（2段階）**:
+1. インデックスで title/summary/tags を高速スコアリング（ファイル読み込みなし）
+2. 上位候補のみ実ファイルを読み込んで body も含めた精密スコアリング
 
 **手順（スクリプトなし・手動）**:
 1. `${MEMORY_DIR}/` 以下のサブディレクトリを列挙してカテゴリを把握する
@@ -168,6 +180,58 @@ python ${SKILL_DIR}/scripts/sync_memory.py --push
 ```
 workspace → home:  プロジェクト固有 → 個人ナレッジとして永続化
 home → shared:     個人ナレッジ → チーム共有（git commit → push で共有）
+```
+
+---
+
+## rate（ユーザー評価・修正フィードバックを記録する）
+
+recall した記憶が役立ったか、誤りがあったかを記録する。
+`user_rating` と `correction_count` が更新され `share_score` に自動反映される。
+
+```bash
+# 役立った記憶を評価（share_score +10）
+python ${SKILL_DIR}/scripts/rate_memory.py --id mem-20260303-001 --good
+python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md --good
+
+# 誤りがあった・修正が必要な記憶（share_score -15以上）
+python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md \
+  --correction --note "JWTの有効期限を30分に変更した"
+
+# 役に立たなかった記憶（share_score -10）
+python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md --bad
+```
+
+**評価の impact**:
+- `--good`: `user_rating +1` → `share_score` +10点（最大+20まで累積）
+- `--bad`: `user_rating -1` → `share_score` -10点
+- `--correction`: `user_rating -1, correction_count +1` → `share_score` -15〜-20点、修正ログが本文に追記
+
+**recallの `--rate-after` と組み合わせる**:
+```bash
+python ${SKILL_DIR}/scripts/recall_memory.py "JWT認証" --rate-after
+# → 結果表示後にインタラクティブな評価入力ループが開始される
+```
+
+---
+
+## build_index（インデックスを管理する）
+
+インデックスは recall/save/rate 時に自動更新される。
+統計確認や強制再構築に使用する。
+
+```bash
+# 統計を表示（インデックス状況・記憶品質サマリー）
+python ${SKILL_DIR}/scripts/build_index.py --stats
+
+# 全スコープの統計
+python ${SKILL_DIR}/scripts/build_index.py --scope all --stats
+
+# 増分更新（通常は不要）
+python ${SKILL_DIR}/scripts/build_index.py
+
+# 強制完全再構築（インデックス破損時）
+python ${SKILL_DIR}/scripts/build_index.py --force
 ```
 
 ---

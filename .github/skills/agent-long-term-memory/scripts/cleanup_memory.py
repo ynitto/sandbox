@@ -150,10 +150,16 @@ def main():
                 print(f"  スキップ: {t['title']}")
                 continue
         try:
+            memory_dir = memory_utils.find_memory_dir(t["filepath"])
             os.remove(t["filepath"])
+            # インデックスからも削除
+            if memory_dir:
+                memory_utils.update_index_entry(memory_dir, t["filepath"])
             # 空カテゴリディレクトリを削除
             cat_dir = os.path.dirname(t["filepath"])
-            if os.path.isdir(cat_dir) and not os.listdir(cat_dir):
+            if os.path.isdir(cat_dir) and not any(
+                f for f in os.listdir(cat_dir) if not f.startswith(".")
+            ):
                 os.rmdir(cat_dir)
             deleted += 1
         except OSError as e:

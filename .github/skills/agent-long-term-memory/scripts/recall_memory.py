@@ -2,161 +2,227 @@
 """
 recall_memory.py - キーワードで記憶を検索するスクリプト
 
-recall すると access_count が加算され、share_score も自動更新される。
-ワークスペース記憶で見つからない場合、home/shared を自動検索する。
+インデックスを使った高速検索（大量記憶でも O(index) で動作）。
+recall すると access_count が加算され share_score が自動更新される。
+ワークスペース記憶で見つからない場合、home/shared を自動フォールバック検索する。
 
 Usage:
   python recall_memory.py "JWT 認証"
   python recall_memory.py "バグ" --category bug-investigation
-  python recall_memory.py "API" --scope workspace --limit 5
-  python recall_memory.py "デプロイ" --scope all  # 全スコープ検索
+  python recall_memory.py "API" --scope all --limit 5
   python recall_memory.py "デプロイ" --full        # 全文表示
   python recall_memory.py "設計" --no-track        # access_count 更新しない
+  python recall_memory.py "JWT" --rate-after       # 結果表示後に評価入力
 """
 
 import argparse
 import os
 import sys
-from dataclasses import dataclass, field
 
 import memory_utils
 
 
-@dataclass
-class Memory:
-    filepath: str
-    id: str = ""
-    title: str = ""
-    created: str = ""
-    updated: str = ""
-    status: str = "active"
-    scope: str = "workspace"
-    tags: list = field(default_factory=list)
-    access_count: int = 0
-    share_score: int = 0
-    summary: str = ""
-    body: str = ""
-    score: int = 0
-    memory_dir: str = ""   # どのスコープのメモリーディレクトリか
+# ─── インデックス検索 ────────────────────────────────────────
 
-
-def load_memories(scope: str, category: str = None, status_filter: str = None) -> list[Memory]:
-    memories = []
-    for memory_dir in memory_utils.get_memory_dirs(scope):
-        if not os.path.isdir(memory_dir):
-            continue
-        for fpath, rel_cat in memory_utils.iter_memory_files(memory_dir, category):
-            with open(fpath, encoding="utf-8") as f:
-                text = f.read()
-            meta, body = memory_utils.parse_frontmatter(text)
-            status = meta.get("status", "active")
-            if status_filter and status != status_filter:
-                continue
-            tags = meta.get("tags", [])
-            if isinstance(tags, str):
-                tags = [t.strip() for t in tags.split(",") if t.strip()]
-            memories.append(Memory(
-                filepath=fpath,
-                id=meta.get("id", ""),
-                title=meta.get("title", os.path.basename(fpath)),
-                created=meta.get("created", ""),
-                updated=meta.get("updated", ""),
-                status=status,
-                scope=meta.get("scope", "workspace"),
-                tags=tags,
-                access_count=int(meta.get("access_count", 0)),
-                share_score=int(meta.get("share_score", 0)),
-                summary=meta.get("summary", ""),
-                body=body,
-                memory_dir=memory_dir,
-            ))
-    return memories
-
-
-def score_memory(mem: Memory, keywords: list[str]) -> int:
+def _score_index_entry(entry: dict, keywords: list[str]) -> int:
+    """インデックスエントリのスコアを計算する（title/summary/tags のみ、高速）"""
+    title = entry.get("title", "").lower()
+    summary = entry.get("summary", "").lower()
+    tags = " ".join(entry.get("tags", [])).lower()
     score = 0
-    text_title = mem.title.lower()
-    text_summary = mem.summary.lower()
-    text_tags = " ".join(mem.tags).lower()
-    text_body = mem.body.lower()
-
     for kw in keywords:
         kw = kw.lower()
-        if kw in text_title:
-            score += 10
-        if kw in text_summary:
-            score += 6
-        if kw in text_tags:
-            score += 4
-        score += min(text_body.count(kw), 5)
+        if kw in title:    score += 10
+        if kw in summary:  score += 6
+        if kw in tags:     score += 4
     return score
 
 
-def track_access(mem: Memory) -> None:
-    """access_count をインクリメントし share_score を再計算する"""
-    new_count = mem.access_count + 1
-    today = memory_utils.today_str()
-    # 新しい share_score を計算（access_count 更新後）
-    pseudo_meta = {
-        "tags": mem.tags,
-        "access_count": new_count,
-        "status": mem.status,
-    }
-    new_score = memory_utils.compute_share_score(pseudo_meta, mem.body)
-    memory_utils.update_frontmatter_fields(mem.filepath, {
-        "access_count": new_count,
-        "last_accessed": today,
-        "share_score": new_score,
-    })
+def search_with_index(memory_dir: str, keywords: list[str],
+                      status_filter: str | None, limit: int,
+                      category: str | None = None) -> list[dict]:
+    """インデックス優先の2段階検索:
+    1. インデックスで title/summary/tags をスコアリング（ファイル読み込みなし）
+    2. 上位候補のみ実ファイルを読み込み body を追加スコアリング
+    """
+    index = memory_utils.refresh_index(memory_dir)
+    entries = index.get("entries", [])
+
+    # ── ステップ1: インデックスでフィルタ＆スコアリング ──
+    candidates = []
+    for entry in entries:
+        if status_filter and entry.get("status", "active") != status_filter:
+            continue
+        if category:
+            filepath_rel = entry.get("filepath", "")
+            entry_cat = os.path.dirname(filepath_rel).replace("\\", "/")
+            if entry_cat != category:
+                continue
+        score = _score_index_entry(entry, keywords)
+        if score > 0:
+            candidates.append((score, entry))
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    # 上位30件（またはlimit*3件）までフルファイル読み込み対象
+    top = candidates[:max(limit * 3, 30)]
+
+    # ── ステップ2: フルファイル読み込みで body 追加スコア ──
+    results = []
+    for base_score, entry in top:
+        fpath = os.path.join(memory_dir, entry["filepath"])
+        if not os.path.exists(fpath):
+            continue
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                text = f.read()
+            meta, body = memory_utils.parse_frontmatter(text)
+            body_score = sum(
+                min(body.lower().count(kw.lower()), 5) for kw in keywords
+            )
+            results.append({
+                "filepath": fpath,
+                "memory_dir": memory_dir,
+                "score": base_score + body_score,
+                "meta": meta,
+                "body": body,
+                "entry": entry,
+            })
+        except (OSError, IOError):
+            pass
+
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:limit]
 
 
-def format_result(mem: Memory, index: int, memory_dir: str, full: bool = False) -> str:
-    rel_path = os.path.relpath(mem.filepath, memory_dir)
-    scope_label = f"[{mem.scope}]"
-    lines = [
-        f"[{index}] {scope_label} {mem.title} (match_score: {mem.score}, share_score: {mem.share_score})",
-        f"    Path: {rel_path}",
-        f"    Created: {mem.created} | Updated: {mem.updated} | Status: {mem.status}",
-        f"    Tags: {', '.join(mem.tags) if mem.tags else 'なし'} | access_count: {mem.access_count}",
-        f"    Summary: {mem.summary}",
-    ]
-    if full:
-        lines += ["", "    --- 全文 ---"] + [f"    {line}" for line in mem.body.splitlines()]
-    return "\n".join(lines)
+def search_all_scopes(scope: str, keywords: list[str], status_filter: str | None,
+                      limit: int, category: str | None) -> list[dict]:
+    """スコープ横断検索（all の場合は全スコープの結果をマージ）"""
+    all_results = []
+    for memory_dir in memory_utils.get_memory_dirs(scope):
+        if not os.path.isdir(memory_dir):
+            continue
+        results = search_with_index(memory_dir, keywords, status_filter, limit, category)
+        all_results.extend(results)
+    all_results.sort(key=lambda r: r["score"], reverse=True)
+    return all_results[:limit]
 
 
-def auto_sync_and_retry(query: str, keywords: list[str], limit: int) -> list[Memory]:
-    """ワークスペースで見つからない場合、shared を自動同期して検索する"""
+def fallback_search(keywords: list[str], limit: int) -> tuple[list[dict], bool]:
+    """workspace で0件の場合の自動フォールバック（home → shared → git pull）"""
+    # まず home を検索
+    results = search_all_scopes("home", keywords, "active", limit, None)
+    if results:
+        return results, False
+
+    # shared ローカルを検索
+    results = search_all_scopes("shared", keywords, "active", limit, None)
+    if results:
+        return results, False
+
+    # git pull して再検索
     cfg = memory_utils.load_config()
-    shared_dir = memory_utils.get_memory_dir("shared")
-
-    # まず shared のローカルキャッシュから検索
-    if os.path.isdir(shared_dir):
-        memories = load_memories("shared", status_filter="active")
-        for m in memories:
-            m.score = score_memory(m, keywords)
-        results = sorted([m for m in memories if m.score > 0],
-                         key=lambda m: m.score, reverse=True)[:limit]
-        if results:
-            return results
-
-    # shared がない/見つからなければ git pull を試みる
     remote = cfg.get("shared_remote", "")
     if remote:
         print("  → shared を git pull して再検索します...")
+        shared_dir = memory_utils.get_memory_dir("shared")
         ok, msg = memory_utils.git_pull_shared(
             shared_dir, remote, cfg.get("shared_branch", "main")
         )
         if ok:
-            memories = load_memories("shared", status_filter="active")
-            for m in memories:
-                m.score = score_memory(m, keywords)
-            results = sorted([m for m in memories if m.score > 0],
-                             key=lambda m: m.score, reverse=True)[:limit]
+            results = search_all_scopes("shared", keywords, "active", limit, None)
             if results:
-                return results
-    return []
+                return results, True  # True = git sync した
+    return [], False
 
+
+# ─── access_count 追跡 ────────────────────────────────────────
+
+def track_access(result: dict) -> None:
+    """access_count をインクリメントし share_score を再計算してインデックスも更新する"""
+    meta = result["meta"]
+    body = result["body"]
+    filepath = result["filepath"]
+    memory_dir = result["memory_dir"]
+
+    new_count = int(meta.get("access_count", 0)) + 1
+    today = memory_utils.today_str()
+    pseudo_meta = dict(meta, access_count=new_count)
+    new_score = memory_utils.compute_share_score(pseudo_meta, body)
+
+    memory_utils.update_frontmatter_fields(filepath, {
+        "access_count": new_count,
+        "last_accessed": today,
+        "share_score": new_score,
+    })
+    # インデックスも更新
+    if memory_dir:
+        memory_utils.update_index_entry(memory_dir, filepath)
+
+
+# ─── 表示 ────────────────────────────────────────────────────
+
+def format_result(result: dict, index: int, full: bool = False) -> str:
+    meta = result["meta"]
+    memory_dir = result["memory_dir"]
+    rel_path = os.path.relpath(result["filepath"], memory_dir)
+    scope = meta.get("scope", "workspace")
+    tags = meta.get("tags", [])
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+    lines = [
+        f"[{index}] [{scope}] {meta.get('title', '')} "
+        f"(match={result['score']}, share={meta.get('share_score', 0)}, "
+        f"rating={meta.get('user_rating', 0)}, corrections={meta.get('correction_count', 0)})",
+        f"    Path: {rel_path}",
+        f"    Created: {meta.get('created', '')} | Updated: {meta.get('updated', '')} "
+        f"| Status: {meta.get('status', '')}",
+        f"    Tags: {', '.join(tags) if tags else 'なし'} | access_count: {meta.get('access_count', 0)}",
+        f"    Summary: {meta.get('summary', '')}",
+    ]
+    if full:
+        lines += ["", "    --- 全文 ---"] + [f"    {line}" for line in result["body"].splitlines()]
+    return "\n".join(lines)
+
+
+# ─── 評価ループ ──────────────────────────────────────────────
+
+def interactive_rate(results: list[dict]) -> None:
+    """recall 結果を表示した後にユーザーが評価を入力できるループ"""
+    print("\n参照した記憶を評価しますか？ (Enter でスキップ)")
+    for i, r in enumerate(results, 1):
+        mem_id = r["meta"].get("id", "?")
+        title = r["meta"].get("title", "?")
+        ans = input(
+            f"[{i}] {title} ({mem_id})\n"
+            f"     評価: [g=良い / b=悪い / c=修正が必要 / Enter=スキップ] > "
+        ).strip().lower()
+
+        if ans in ("g", "good"):
+            from rate_memory import apply_rating
+            apply_rating(r["filepath"], good=True)
+            if r["memory_dir"]:
+                memory_utils.update_index_entry(r["memory_dir"], r["filepath"])
+            print("  → 良い評価を記録しました ✓")
+        elif ans in ("b", "bad"):
+            from rate_memory import apply_rating
+            apply_rating(r["filepath"], bad=True)
+            if r["memory_dir"]:
+                memory_utils.update_index_entry(r["memory_dir"], r["filepath"])
+            print("  → 悪い評価を記録しました ✗")
+        elif ans in ("c", "correction"):
+            note = input("     修正内容を入力してください: ").strip()
+            from rate_memory import apply_rating
+            apply_rating(r["filepath"], correction=True, note=note)
+            if r["memory_dir"]:
+                memory_utils.update_index_entry(r["memory_dir"], r["filepath"])
+            print("  → 修正フィードバックを記録しました ⚠")
+
+
+# ─── メイン ──────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="記憶をキーワード検索する")
@@ -171,47 +237,44 @@ def main():
     parser.add_argument("--limit", type=int, default=10, help="最大表示件数 (default: 10)")
     parser.add_argument("--full", action="store_true", help="全文を表示する")
     parser.add_argument("--no-track", action="store_true",
-                        help="access_count を更新しない（参照ログを残さない）")
+                        help="access_count を更新しない")
+    parser.add_argument("--rate-after", action="store_true",
+                        help="結果表示後にインタラクティブ評価ループを実行する")
     args = parser.parse_args()
 
     keywords = args.query.split()
     status = None if args.status == "all" else args.status
 
-    memories = load_memories(args.scope, category=args.category, status_filter=status)
-    for mem in memories:
-        mem.score = score_memory(mem, keywords)
+    results = search_all_scopes(args.scope, keywords, status, args.limit, args.category)
 
-    results = sorted([m for m in memories if m.score > 0],
-                     key=lambda m: m.score, reverse=True)[:args.limit]
-
-    # ワークスペース検索で0件の場合は自動フォールバック
-    auto_synced = False
+    # workspace で0件ならフォールバック
+    synced = False
     if not results and args.scope == "workspace":
         print(f"「{args.query}」: ワークスペースに記憶なし → home/shared を検索します...\n")
-        results = auto_sync_and_retry(args.query, keywords, args.limit)
-        auto_synced = bool(results)
+        results, synced = fallback_search(keywords, args.limit)
 
     if not results:
         print(f"「{args.query}」に関連する記憶が見つかりませんでした。")
-        if args.scope == "workspace":
-            print("保存するには: python save_memory.py --title '...' --summary '...'")
+        print("保存するには: python save_memory.py --title '...' --summary '...'")
         sys.exit(0)
 
-    source_note = "（shared からフォールバック）" if auto_synced else ""
-    print(f"「{args.query}」の検索結果: {len(results)}件{source_note}\n")
-
-    for i, mem in enumerate(results, 1):
-        mem_dir = mem.memory_dir if mem.memory_dir else memory_utils.get_memory_dir(mem.scope)
-        print(format_result(mem, i, mem_dir, full=args.full))
+    note = "（git pull して取得）" if synced else ""
+    print(f"「{args.query}」の検索結果: {len(results)}件{note}\n")
+    for i, r in enumerate(results, 1):
+        print(format_result(r, i, full=args.full))
         print()
 
-    # access_count 追跡（--no-track でスキップ）
+    # access_count を追跡
     if not args.no_track:
-        for mem in results:
+        for r in results:
             try:
-                track_access(mem)
+                track_access(r)
             except Exception:
-                pass  # トラッキング失敗はサイレントに無視
+                pass
+
+    # 結果に対してインタラクティブ評価
+    if args.rate_after:
+        interactive_rate(results)
 
 
 if __name__ == "__main__":

@@ -28,13 +28,15 @@ SCOPE_DIRS = {
 }
 
 DEFAULT_CONFIG = {
-    "shared_remote": "",          # git remote URL（空なら git 連携無効）
+    "shared_remote": "",
     "shared_branch": "main",
-    "auto_promote_threshold": 85,      # この値以上で自動昇格
-    "semi_auto_promote_threshold": 70,  # この値以上で昇格候補として提示
-    "cleanup_inactive_days": 30,        # access_count=0 の記憶の保持日数
-    "cleanup_archived_days": 60,        # archived 記憶の保持日数
+    "auto_promote_threshold": 85,
+    "semi_auto_promote_threshold": 70,
+    "cleanup_inactive_days": 30,
+    "cleanup_archived_days": 60,
 }
+
+INDEX_FILENAME = ".memory-index.json"
 
 
 def load_config() -> dict:
@@ -84,7 +86,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
                 if val.startswith("[") and val.endswith("]"):
                     inner = val[1:-1]
                     meta[key] = [v.strip().strip('"') for v in inner.split(",") if v.strip()]
-                # 整数
+                # 整数（負の値も対応）
                 elif re.fullmatch(r"-?\d+", val):
                     meta[key] = int(val)
                 # クォート付き文字列
@@ -107,7 +109,6 @@ def update_frontmatter_fields(filepath: str, updates: dict) -> None:
             replacement = f"{field}: [{inner}]"
         else:
             replacement = f'{field}: "{value}"'
-        # フロントマター内の該当行だけ置換（行頭マッチ）
         text = re.sub(
             rf"^{escaped}:.*",
             replacement,
@@ -119,28 +120,51 @@ def update_frontmatter_fields(filepath: str, updates: dict) -> None:
         f.write(text)
 
 
-# ─── スコアリング ────────────────────────────────────────────
+def update_file_with_body(filepath: str, meta_updates: dict, new_body: str) -> None:
+    """フロントマターと本文を同時に更新する（修正ログ追記などに使用）"""
+    with open(filepath, "r", encoding="utf-8") as f:
+        text = f.read()
+    for field, value in meta_updates.items():
+        escaped = re.escape(field)
+        repl = f"{field}: {value}" if isinstance(value, int) else f'{field}: "{value}"'
+        text = re.sub(rf"^{escaped}:.*", repl, text, flags=re.MULTILINE)
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            text = "---" + parts[1] + "---\n\n" + new_body.lstrip()
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+# ─── スコアリング v2 ─────────────────────────────────────────
 
 def compute_share_score(meta: dict, body: str) -> int:
-    """共有価値スコアを計算する（0〜90点）
+    """共有価値スコアを計算する（0〜100点）
 
-    - 参照頻度  : access_count * 10 点（上限 40）
-    - タグ豊富さ: tags 数 * 5 点（上限 20）
-    - 情報量    : 本文 100 文字ごとに 1 点（上限 20）
-    - アクティブ: status == active なら 10 点
+    参照頻度      : access_count * 8 点（上限 32）
+    タグ豊富さ    : tags 数 * 5 点（上限 20）
+    情報量        : 本文 100 文字ごとに 1 点（上限 18）
+    アクティブ    : status == active なら 10 点
+    ユーザー評価  : user_rating * 10 点（-20〜+20）
+    修正ペナルティ: correction_count * 5 点（最大 -20）
+    合計を [0, 100] にクランプ
     """
     tags = meta.get("tags", [])
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
     access_count = int(meta.get("access_count", 0))
+    user_rating = int(meta.get("user_rating", 0))
+    correction_count = int(meta.get("correction_count", 0))
     status = meta.get("status", "active")
 
     score = 0
-    score += min(access_count * 10, 40)
+    score += min(access_count * 8, 32)
     score += min(len(tags) * 5, 20)
-    score += min(len(body) // 100, 20)
+    score += min(len(body) // 100, 18)
     score += 10 if status == "active" else 0
-    return score
+    score += max(min(user_rating * 10, 20), -20)
+    score -= min(correction_count * 5, 20)
+    return max(0, min(100, score))
 
 
 # ─── 日付ユーティリティ ──────────────────────────────────────
@@ -174,6 +198,125 @@ def iter_memory_files(memory_dir: str, category: str = None):
         for fname in sorted(files):
             if fname.endswith(".md") and fname != ".gitkeep":
                 yield os.path.join(root, fname), rel_cat
+
+
+# ─── インデックス ────────────────────────────────────────────
+
+def get_index_path(memory_dir: str) -> str:
+    return os.path.join(memory_dir, INDEX_FILENAME)
+
+
+def build_index_entry(filepath: str, memory_dir: str) -> dict:
+    """ファイルを読み込んでインデックスエントリを生成する"""
+    rel_path = os.path.relpath(filepath, memory_dir)
+    with open(filepath, encoding="utf-8") as f:
+        text = f.read()
+    meta, _ = parse_frontmatter(text)
+    tags = meta.get("tags", [])
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    return {
+        "filepath": rel_path,
+        "mtime": os.path.getmtime(filepath),
+        "id": meta.get("id", ""),
+        "title": meta.get("title", os.path.basename(filepath)),
+        "summary": meta.get("summary", ""),
+        "tags": tags,
+        "status": meta.get("status", "active"),
+        "scope": meta.get("scope", "workspace"),
+        "share_score": int(meta.get("share_score", 0)),
+        "access_count": int(meta.get("access_count", 0)),
+        "correction_count": int(meta.get("correction_count", 0)),
+        "user_rating": int(meta.get("user_rating", 0)),
+        "created": meta.get("created", ""),
+        "updated": meta.get("updated", ""),
+    }
+
+
+def load_index(memory_dir: str) -> dict:
+    """インデックスファイルを読み込む（存在しなければ空を返す）"""
+    path = get_index_path(memory_dir)
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"version": 2, "built_at": "", "count": 0, "entries": []}
+
+
+def save_index(memory_dir: str, index: dict) -> None:
+    """インデックスをファイルに書き込む"""
+    os.makedirs(memory_dir, exist_ok=True)
+    path = get_index_path(memory_dir)
+    index["built_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+    index["count"] = len(index.get("entries", []))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False, indent=2)
+
+
+def refresh_index(memory_dir: str) -> dict:
+    """インデックスを増分更新して返す（mtime が変わったファイルのみ再読み込み）
+
+    ファイルのstat比較のみで変更を検出し、変更分だけ読み直す。
+    通常のフルスキャンより大幅に高速。
+    """
+    index = load_index(memory_dir)
+    entries_by_rel = {e["filepath"]: e for e in index.get("entries", [])}
+    current_rels: set[str] = set()
+    needs_save = False
+
+    for fpath, _ in iter_memory_files(memory_dir):
+        rel = os.path.relpath(fpath, memory_dir)
+        current_rels.add(rel)
+        try:
+            mtime = os.path.getmtime(fpath)
+        except OSError:
+            continue
+        existing = entries_by_rel.get(rel)
+        if existing and existing.get("mtime", 0) >= mtime:
+            continue  # up to date
+        try:
+            entries_by_rel[rel] = build_index_entry(fpath, memory_dir)
+            needs_save = True
+        except (OSError, IOError):
+            pass
+
+    # 削除されたファイルのエントリを除去
+    removed = set(entries_by_rel.keys()) - current_rels
+    for r in removed:
+        del entries_by_rel[r]
+        needs_save = True
+
+    index["entries"] = list(entries_by_rel.values())
+    if needs_save or not index.get("built_at"):
+        save_index(memory_dir, index)
+    return index
+
+
+def update_index_entry(memory_dir: str, filepath: str) -> None:
+    """単一ファイルのインデックスエントリを更新する（save/rate/delete 後に呼ぶ）"""
+    index = load_index(memory_dir)
+    entries_by_rel = {e["filepath"]: e for e in index.get("entries", [])}
+    rel = os.path.relpath(filepath, memory_dir)
+    if os.path.exists(filepath):
+        try:
+            entries_by_rel[rel] = build_index_entry(filepath, memory_dir)
+        except (OSError, IOError):
+            return
+    else:
+        entries_by_rel.pop(rel, None)
+    index["entries"] = list(entries_by_rel.values())
+    save_index(memory_dir, index)
+
+
+def find_memory_dir(filepath: str) -> str | None:
+    """ファイルパスからそのスコープのメモリーディレクトリを特定する"""
+    abs_path = os.path.abspath(filepath)
+    for memory_dir in SCOPE_DIRS.values():
+        if abs_path.startswith(os.path.abspath(memory_dir) + os.sep):
+            return memory_dir
+    return None
 
 
 # ─── Git ヘルパー ────────────────────────────────────────────
