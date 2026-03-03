@@ -134,7 +134,7 @@ python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --rate-after
 1. `${MEMORY_DIR}/` 以下のサブディレクトリを列挙してカテゴリを把握する
 2. 各 `.md` ファイルの `summary` フィールドをスキャンしてキーワードとの関連を判断する
 3. 関連するファイルを全文読み込みして内容を把握する
-4. 見つからない場合は `~/.agent-memory/` を同様にスキャンする
+4. 見つからない場合は `~/.copilot/memory/home/` や `~/.copilot/memory/shared/` を同様にスキャンする
 5. `access_count` をインクリメントし `last_accessed` を今日の日付に更新する
 
 **recallのタイミング**:
@@ -276,7 +276,7 @@ python ${SKILL_DIR}/scripts/sync_memory.py --search "API設計"
 
 ---
 
-## 設定ファイル（`~/.agent-memory/config.json`）
+## 設定ファイル（`~/.copilot/memory/config.json`）
 
 ```json
 {

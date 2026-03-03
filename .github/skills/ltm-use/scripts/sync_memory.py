@@ -147,7 +147,7 @@ def main():
         cfg["shared_remote"] = args.set_remote
         memory_utils.save_config(cfg)
         print(f"shared_remote を設定しました: {args.set_remote}")
-        print(f"設定ファイル: ~/.agent-memory/config.json")
+        print(f"設定ファイル: ~/.copilot/memory/config.json")
         return
 
     cfg = memory_utils.load_config()

@@ -163,7 +163,7 @@ def main():
             )
             print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
             if ok:
-                print("共有するには: git -C ~/.agent-memory/shared push origin main")
+                print("共有するには: git -C ~/.copilot/memory/shared push origin main")
 
 
 if __name__ == "__main__":
