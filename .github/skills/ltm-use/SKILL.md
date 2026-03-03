@@ -251,7 +251,7 @@ python ${SKILL_DIR}/scripts/cleanup_memory.py
 python ${SKILL_DIR}/scripts/cleanup_memory.py --scope all
 ```
 
-**削除基準**（`~/.agent-memory/config.json` で変更可能）:
+**削除基準**（`~/.copilot/memory/config.json` で変更可能）:
 - `access_count == 0` かつ作成から 30日以上経過
 - `status == archived` かつ更新から 60日以上経過
 - `status == deprecated`
@@ -343,9 +343,9 @@ shared 記憶の保存先（`local_dir/memory_root/`）を変更できる。
   ↓ recall で access_count 加算、share_score 上昇
 [昇格候補] share_score >= 70
   ↓ promote_memory.py で確認
-[home 昇格] workspace → ~/.agent-memory/workspace/
+[home 昇格] workspace → ~/.copilot/memory/home/
   ↓ さらに評価が高まった場合
-[shared 昇格] home → ~/.agent-memory/shared/ + git commit + push
+[shared 昇格] home → ~/.copilot/memory/shared/<repo名>/ + git commit + push
   ↓ チームが sync_memory.py でインポート
 [全員のhome] チーム全員が参照・活用
 

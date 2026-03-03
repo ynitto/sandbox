@@ -728,7 +728,6 @@ def changelog_skill(skill_name: str, dry_run: bool = False) -> None:
         print(f"❌ スキル '{skill_name}' が見つかりません")
         return
 
-    import os
     out = os.path.join(path, "CHANGELOG.md")
     with open(out, "w", encoding="utf-8") as f:
         f.write(content)

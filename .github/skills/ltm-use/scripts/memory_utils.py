@@ -291,7 +291,7 @@ def iter_memory_files(memory_dir: str, category: str = None):
         if category and rel_cat != category:
             continue
         for fname in sorted(files):
-            if fname.endswith(".md") and fname != ".gitkeep":
+            if fname.endswith(".md"):
                 yield os.path.join(root, fname), rel_cat
 
 

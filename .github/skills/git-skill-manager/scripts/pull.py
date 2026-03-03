@@ -221,7 +221,7 @@ def pull_skills(
         # ---- ローカル変更保護チェック ----
         if existing_skill and check_sync_protection(existing_skill, reg):
             print(f"   🛡️  {sname}: ローカル変更あり → pull をスキップ（protect_local_modified=true）")
-            print(f"         解除する場合: python manage.py unprotect {sname}")
+            print(f"         解除する場合: python delta_tracker.py --skill {sname}  # 差分なしなら自動解除")
             continue
 
         # ---- バージョン比較（version_ahead の判定） ----

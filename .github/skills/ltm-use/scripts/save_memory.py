@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 
 import memory_utils
@@ -62,7 +63,6 @@ def slugify(text: str) -> str:
     # 非ASCII をハイフンへ変換
     text = "".join(c if c.isascii() and (c.isalnum() or c == "-") else "-" for c in text)
     # 連続ハイフンをまとめる
-    import re
     text = re.sub(r"-+", "-", text).strip("-")
     return text[:50] or "memory"
 
@@ -108,7 +108,7 @@ def save_memory(category: str, title: str, summary: str, content: str,
         conclusion=conclusion or "(作成時に記録なし)",
     )
     # share_score を埋め込む
-    body = body.replace("share_score: 0", f"share_score: {share_score}", 1)
+    body = re.sub(r"^share_score: \d+", f"share_score: {share_score}", body, count=1, flags=re.MULTILINE)
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(body)
@@ -123,7 +123,6 @@ def save_memory(category: str, title: str, summary: str, content: str,
 def update_memory(filepath: str, summary: str = None, content: str = None,
                   conclusion: str = None, status: str = None) -> None:
     """既存記憶ファイルの updated 日付と各フィールドを更新する"""
-    import re
     with open(filepath, "r", encoding="utf-8") as f:
         text = f.read()
 

@@ -125,7 +125,7 @@ def setup_registry(installed_skills: list[dict]) -> None:
         print("   既存レジストリを更新します")
     else:
         reg = {
-            "version": 4,
+            "version": 5,
             "repositories": [],
             "installed_skills": [],
             "core_skills": list(CORE_SKILLS),

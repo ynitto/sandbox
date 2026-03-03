@@ -134,6 +134,7 @@ def scan_skills(target_skill: str | None = None) -> list:
             lineage["origin_commit"] = skill.get("commit_hash")
 
         # version と version_ahead をローカル SKILL.md から動的に再計算
+        local_path = os.path.join(_skill_home(), skill["name"])
         local_ver = _read_frontmatter_version(local_path)
         central_ver = skill.get("central_version")
         skill["version"] = local_ver
