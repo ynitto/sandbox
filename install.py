@@ -48,6 +48,7 @@ CORE_SKILLS = [
     "generating-skills-from-copilot-logs",
     "sprint-reviewer",
     "codebase-to-skill",
+    "ltm-use",
 ]
 
 
