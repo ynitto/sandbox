@@ -2,7 +2,6 @@
 """pull 操作: リポジトリからスキルを取得してインストールする。"""
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -11,8 +10,6 @@ from datetime import datetime
 
 from registry import (
     load_registry, save_registry, _cache_dir, _skill_home,
-    merge_mcp_config, set_vscode_autostart_mcp,
-    _vscode_mcp_path, _is_uv_required, _check_uv_installed, _get_new_mcp_servers,
     _version_tuple, _read_frontmatter_version,
 )
 from repo import clone_or_fetch, update_remote_index
@@ -300,61 +297,6 @@ def pull_skills(
         with open(dest, "w", encoding="utf-8") as f:
             f.write(merged)
         print(f"   📋 copilot-instructions.md → {dest}")
-
-    # mcp.json をユーザーレベルに配置
-    project_path = os.getcwd()
-    for repo in repos:
-        repo_cache = os.path.join(_cache_dir(), repo["name"])
-        mcp_src = os.path.join(repo_cache, ".vscode", "mcp.json")
-        if os.path.isfile(mcp_src):
-            with open(mcp_src, encoding="utf-8") as f:
-                try:
-                    src_cfg = json.load(f)
-                except json.JSONDecodeError:
-                    continue
-
-            # $(pwd) 置換後のサーバー一覧を取得
-            src_str = json.dumps(src_cfg)
-            src_str = src_str.replace("$(pwd)", project_path.replace("\\", "/"))
-            all_servers = json.loads(src_str).get("servers", {})
-
-            # 新規追加されるサーバーを特定
-            mcp_dest = _vscode_mcp_path()
-            new_servers = _get_new_mcp_servers(all_servers, mcp_dest)
-
-            if new_servers:
-                if interactive:
-                    print(f"\n   以下の MCP サーバーを新規登録します:")
-                    for name, server in new_servers.items():
-                        print(f"     - {name}  (command: {server.get('command', '?')})")
-
-                    if _is_uv_required(new_servers):
-                        print(f"\n   ⚠️  これらのサーバーは uv を使用します。")
-                        if _check_uv_installed():
-                            print(f"   ✅ uv はインストール済みです。")
-                        else:
-                            print(f"   ❌ uv が見つかりません。事前にインストールしてください。")
-                            print(f"      インストール方法: https://docs.astral.sh/uv/getting-started/installation/")
-
-                    print(f"\n   MCP サーバーを登録しますか？ [y/N]: ", end="", flush=True)
-                    answer = input().strip().lower()
-                    if answer not in ("y", "yes"):
-                        print("   MCP サーバーの登録をスキップしました")
-                        break
-                else:
-                    # 非インタラクティブ（サブエージェント）時は自動スキップ
-                    print(f"   ⚠️  新規 MCP サーバーが見つかりましたが、ユーザー確認が必要なためスキップしました: {list(new_servers.keys())}")
-                    break
-
-            dest = merge_mcp_config(src_cfg, project_path)
-            if dest:
-                print(f"   🔌 mcp.json → {dest}")
-            break
-
-    # chat.mcp.autostart を有効化
-    dest = set_vscode_autostart_mcp()
-    if dest:
-        print(f"   ⚙️  chat.mcp.autostart: true → {dest}")
 
     # 結果レポート
     print(f"\n📦 pull 完了")
