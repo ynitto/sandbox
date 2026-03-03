@@ -98,6 +98,49 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 | サブエージェント失敗 | リトライ / スキップ / 中断をユーザーに提示 |
 | 全タスク失敗 | ゴール実現可能性をユーザーと再検討 |
 
+## 記憶連携（ltm-use コアスキル）
+
+`ltm-use` はコアスキルとして常に利用可能。以下のフックを**必ず実行**して重複調査・決定を防ぎ知見を蓄積する。
+
+`LTM=${SKILLS_DIR}/ltm-use/scripts`
+
+### フック定義
+
+| フェーズ | タイミング | 操作 | 対象 |
+|---------|-----------|------|------|
+| Phase 1 | スキル探索完了後 | **recall** | 過去の類似スプリントの知見 |
+| Phase 2 | バックログ作成前 | **recall** | 過去の決定・調査結果 |
+| Phase 5 | サブエージェント起動時 | **recall + save**（テンプレートに組み込み済み） | 実装知見 |
+| Phase 6 | レビュー完了後 | **save + rate** | レトロスペクティブの学び |
+| Phase 7 | 完了選択時 | **promote** | 価値ある知見をホームへ昇格 |
+
+### recall（Phase 1, 2）
+
+```bash
+python ${LTM}/recall_memory.py "[タスクキーワード]"
+# 0件なら ~/.copilot/memory/home/ → ~/.copilot/memory/shared/ を自動検索
+```
+
+- 0件 → 記憶なし、通常通り続行
+- 1件以上 → summary 確認 → 関連があれば全文読み込み → 計画に反映
+
+### save（Phase 6）
+
+```bash
+python ${LTM}/save_memory.py \
+  --category [カテゴリ] --title "[タイトル]" --summary "[要約]" \
+  --content "[詳細]" --conclusion "[学び]" --tags [タグ]
+```
+
+### promote（Phase 7 完了時）
+
+```bash
+python ${LTM}/promote_memory.py --list   # 昇格候補確認
+python ${LTM}/promote_memory.py --auto   # share_score >= 85 を自動昇格
+```
+
+---
+
 ## 動作環境
 
 - **GitHub Copilot Chat** / **Claude Code** で動作

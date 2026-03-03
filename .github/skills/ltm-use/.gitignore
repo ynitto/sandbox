@@ -1,0 +1,8 @@
+# 記憶ファイルはリポジトリに含めない（VSCodeワークスペース固有・個人データ）
+memories/
+
+# .gitkeepは除外しない
+!memories/.gitkeep
+
+# インデックスファイルはワークスペース固有
+.memory-index.json
