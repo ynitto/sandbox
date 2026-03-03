@@ -45,7 +45,9 @@ def search_with_index(memory_dir: str, keywords: list[str],
     1. インデックスで title/summary/tags をスコアリング（ファイル読み込みなし）
     2. 上位候補のみ実ファイルを読み込み body を追加スコアリング
     """
-    index = memory_utils.refresh_index(memory_dir)
+    index = memory_utils.load_index(memory_dir)
+    if not index.get("entries"):
+        index = memory_utils.refresh_index(memory_dir)
     entries = index.get("entries", [])
 
     # ── ステップ1: インデックスでフィルタ＆スコアリング ──
