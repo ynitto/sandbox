@@ -69,7 +69,7 @@ def _scope_label(memory_dir: str) -> str:
         return "workspace"
     if memory_dir.startswith(home_root):
         rel = os.path.relpath(memory_dir, home_root)
-        return f"~/.agent-memory/{rel}"
+        return f"~/.copilot/memory/{rel}"
     return memory_dir
 
 
