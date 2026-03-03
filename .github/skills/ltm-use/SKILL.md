@@ -37,7 +37,7 @@ git除外                   ローカル永続              git管理
 |---------|--------|------|---------|
 | `workspace` | `${SKILL_DIR}/memories/` | VSCodeワークスペース固有の知見 | **除外(.gitignore)** |
 | `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
-| `shared` | `~/.copilot/memory/shared/` | チーム共有すべき知見 | **git管理** |
+| `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
 
 ---
 
@@ -134,7 +134,7 @@ python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --rate-after
 1. `${MEMORY_DIR}/` 以下のサブディレクトリを列挙してカテゴリを把握する
 2. 各 `.md` ファイルの `summary` フィールドをスキャンしてキーワードとの関連を判断する
 3. 関連するファイルを全文読み込みして内容を把握する
-4. 見つからない場合は `~/.agent-memory/` を同様にスキャンする
+4. 見つからない場合は `~/.copilot/memory/home/` や `~/.copilot/memory/shared/` を同様にスキャンする
 5. `access_count` をインクリメントし `last_accessed` を今日の日付に更新する
 
 **recallのタイミング**:
@@ -260,23 +260,66 @@ python ${SKILL_DIR}/scripts/cleanup_memory.py --scope all
 
 ## sync（git共有領域から自動更新する）
 
-```bash
-# git remote を初回設定
-python ${SKILL_DIR}/scripts/sync_memory.py --set-remote git@github.com:org/memories.git
+skill-registry.json に登録されたリポジトリ（git-skill-manager と共通）を使用する。
+複数リポジトリ・readonly 対応。
 
-# shared を更新して差分を確認
+```bash
+# 全リポジトリを pull して差分確認
 python ${SKILL_DIR}/scripts/sync_memory.py
+
+# 特定リポジトリのみ
+python ${SKILL_DIR}/scripts/sync_memory.py --repo origin
 
 # 新しい shared 記憶を home に取り込む
 python ${SKILL_DIR}/scripts/sync_memory.py --import-to-home
 
-# shared からキーワード検索
+# 全 shared からキーワード検索
 python ${SKILL_DIR}/scripts/sync_memory.py --search "API設計"
+
+# push（readonly でないリポジトリへ）
+python ${SKILL_DIR}/scripts/sync_memory.py --push [--repo origin]
+
+# skill-registry.json 未設定時のフォールバック用 remote 設定
+python ${SKILL_DIR}/scripts/sync_memory.py --set-remote git@github.com:org/memories.git
 ```
 
 ---
 
-## 設定ファイル（`~/.agent-memory/config.json`）
+## 設定
+
+### git リポジトリ（`~/.copilot/skill-registry.json`）
+
+git-skill-manager と共通のリポジトリ設定を使用する。
+各リポジトリに `memory_root`（省略時: `"memories"`）を指定すると、
+shared 記憶の保存先（`local_dir/memory_root/`）を変更できる。
+
+```json
+{
+  "repositories": [
+    {
+      "name": "origin",
+      "url": "git@github.com:org/agent-skills.git",
+      "branch": "main",
+      "readonly": false,
+      "priority": 1,
+      "memory_root": "memories"
+    },
+    {
+      "name": "team-b",
+      "url": "git@github.com:team-b/skills.git",
+      "branch": "main",
+      "readonly": true,
+      "priority": 2
+    }
+  ]
+}
+```
+
+- `readonly: true` のリポジトリは pull のみ（commit/push 不可）
+- 複数リポジトリが設定された場合、`priority` 順に処理し、書き込みは最優先リポジトリへ
+- `skill-registry.json` が未設定の場合は `config.json` の `shared_remote` にフォールバック
+
+### メモリー設定（`~/.copilot/memory/config.json`）
 
 ```json
 {
@@ -288,6 +331,8 @@ python ${SKILL_DIR}/scripts/sync_memory.py --search "API設計"
   "cleanup_archived_days": 60
 }
 ```
+
+`shared_remote` は `skill-registry.json` が未設定の場合のフォールバックとして使用される。
 
 ---
 

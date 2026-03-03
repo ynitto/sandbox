@@ -45,7 +45,9 @@ def search_with_index(memory_dir: str, keywords: list[str],
     1. インデックスで title/summary/tags をスコアリング（ファイル読み込みなし）
     2. 上位候補のみ実ファイルを読み込み body を追加スコアリング
     """
-    index = memory_utils.refresh_index(memory_dir)
+    index = memory_utils.load_index(memory_dir)
+    if not index.get("entries"):
+        index = memory_utils.refresh_index(memory_dir)
     entries = index.get("entries", [])
 
     # ── ステップ1: インデックスでフィルタ＆スコアリング ──
@@ -123,15 +125,15 @@ def fallback_search(keywords: list[str], limit: int) -> tuple[list[dict], bool]:
         return results, False
 
     # git pull して再検索
-    cfg = memory_utils.load_config()
-    remote = cfg.get("shared_remote", "")
-    if remote:
+    repos = memory_utils.get_shared_repos()
+    if repos:
         print("  → shared を git pull して再検索します...")
-        shared_dir = memory_utils.get_memory_dir("shared")
-        ok, msg = memory_utils.git_pull_shared(
-            shared_dir, remote, cfg.get("shared_branch", "main")
-        )
-        if ok:
+        synced = False
+        for repo in repos:
+            ok, _ = memory_utils.git_pull_repo(repo)
+            if ok:
+                synced = True
+        if synced:
             results = search_all_scopes("shared", keywords, "active", limit, None)
             if results:
                 return results, True  # True = git sync した

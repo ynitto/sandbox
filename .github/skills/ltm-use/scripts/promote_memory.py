@@ -108,10 +108,14 @@ def main():
         dst = promote_file(args.file, args.scope, target_scope)
         print(f"昇格完了: {args.file} → {dst}")
         if target_scope == "shared":
-            ok, msg = memory_utils.git_commit_shared(
-                dst_dir, f"feat: promote memory from {args.scope}"
-            )
-            print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
+            repo = memory_utils.get_primary_writable_repo()
+            if repo:
+                ok, msg = memory_utils.git_commit_repo(
+                    repo, f"feat: promote memory from {args.scope}"
+                )
+                print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
+            else:
+                print("注意: 書き込み可能な共有リポジトリが設定されていません。git commit をスキップします。")
         return
 
     # --- 候補スキャン ---
@@ -155,15 +159,19 @@ def main():
     print(f"\n結果: 昇格 {len(promoted)}件 / スキップ {len(skipped)}件")
 
     if promoted and target_scope == "shared":
-        ans = "y" if args.auto else input("git commit しますか？ [Y/n] ").strip().lower()
-        if ans != "n":
-            ok, msg = memory_utils.git_commit_shared(
-                dst_dir,
-                f"feat: promote {len(promoted)} memories from {args.scope}"
-            )
-            print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
-            if ok:
-                print("共有するには: git -C ~/.agent-memory/shared push origin main")
+        repo = memory_utils.get_primary_writable_repo()
+        if not repo:
+            print("注意: 書き込み可能な共有リポジトリが設定されていません。git commit をスキップします。")
+        else:
+            ans = "y" if args.auto else input("git commit しますか？ [Y/n] ").strip().lower()
+            if ans != "n":
+                ok, msg = memory_utils.git_commit_repo(
+                    repo,
+                    f"feat: promote {len(promoted)} memories from {args.scope}"
+                )
+                print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
+                if ok:
+                    print(f"共有するには: python sync_memory.py --push --repo {repo['name']}")
 
 
 if __name__ == "__main__":
