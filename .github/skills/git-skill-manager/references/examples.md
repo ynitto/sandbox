@@ -6,6 +6,7 @@
 - [初回セットアップ](#初回セットアップ)
 - [readonlyリポジトリの登録](#readonlyリポジトリの登録)
 - [pull（キャッシュ活用）](#pullキャッシュ活用)
+- [pull（競合あり）](#pull競合あり)
 - [push](#push)
 - [スキルの無効化](#スキルの無効化)
 - [検索（オフライン）](#検索オフライン)
@@ -84,6 +85,8 @@ Copilot:
        docx-converter: personal を採用（team-skills を不採用）
 ```
 
+
+## push
 
 ```
 ユーザー: 「今作ったスキルを team-skills にpushして」
