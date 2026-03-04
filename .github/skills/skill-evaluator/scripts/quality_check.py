@@ -240,8 +240,20 @@ def check_description_format(raw_yaml: str) -> list[dict]:
     return issues
 
 
+_DESC_MAX_LEN = 200
+
+
 def check_description(desc: str) -> list[dict]:
     issues = []
+    if len(desc) > _DESC_MAX_LEN:
+        issues.append({
+            "severity": "warning",
+            "code": "DESC_TOO_LONG",
+            "message": (
+                f"description が {len(desc)} 文字あります（推奨: {_DESC_MAX_LEN} 文字以下）。"
+                " スキル選択に必要な最低限の情報（何をするか・いつ使うか）に絞り、詳細は本文に記述してください"
+            ),
+        })
     if re.search(r"<[a-zA-Z/]", desc):
         issues.append({
             "severity": "error",
