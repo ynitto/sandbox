@@ -305,7 +305,7 @@ def promote_skills(workspace_skills_dir, interactive=True):
         skill_entry = {
             "name": c["name"],
             "source_repo": "local",
-            "source_path": os.path.relpath(c["path"]),
+            "source_path": os.path.abspath(c["path"]),
             "commit_hash": "-",
             "installed_at": datetime.now().isoformat(),
             "enabled": True,
@@ -616,7 +616,7 @@ def merge_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
 
     # ステップ1: diff を表示
     print(f"🔀 クロスリポジトリマージ: '{skill_name}'\n")
-    print("【ステップ 1/3】差分を確認します...\n")
+    print("【ステップ 1/3】差分を確認します\n")
     diff_skill(skill_name, repo_names)
 
     # ステップ2: skill-creator へのガイダンスを出力
