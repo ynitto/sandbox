@@ -1,6 +1,10 @@
-# ノードフェデレーション設計
+# ノードフェデレーション設計 ✅ 実装済み
 
 各ノードでローカル改善を行いつつ、必要なものだけを中央リポジトリへ集約する仕組みの設計。
+すべての設計コンポーネントは `git-skill-manager/scripts/` 以下に実装済み。
+
+> **注記**: このドキュメントは元々の設計仕様書として残しつつ、実装完了状態を反映している。
+> 各セクションは現行実装の仕様リファレンスとしても参照できる。
 
 ---
 
@@ -369,12 +373,12 @@ python snapshot.py clean --keep 5   # 古いスナップショットを削除
 
 ## 実装優先順位
 
-| フェーズ | 対象 | 効果 |
-|---------|------|------|
-| Phase 1 | `registry.py` v5 マイグレーション | 全機能の基盤 |
-| Phase 1 | `node_identity.py` | ノードID付与 |
-| Phase 1 | `promotion_policy.py` | 昇格基準の自動判定 |
-| Phase 2 | `delta_tracker.py` | ローカル変更の検出 |
-| Phase 2 | `sync_policy` を `pull.py` に適用 | 上書き保護 |
-| Phase 3 | メトリクス収集を `record_feedback.py` に追加 | 定量的根拠 |
-| Phase 3 | 貢献キューUIを `manage.py` に追加 | エンドツーエンド |
+| フェーズ | 対象 | 効果 | ステータス |
+|---------|------|------|-----------|
+| Phase 1 | `registry.py` v5 マイグレーション | 全機能の基盤 | ✅ 完了 |
+| Phase 1 | `node_identity.py` | ノードID付与 | ✅ 完了 |
+| Phase 1 | `promotion_policy.py` | 昇格基準の自動判定 | ✅ 完了 |
+| Phase 2 | `delta_tracker.py` | ローカル変更の検出 | ✅ 完了 |
+| Phase 2 | `sync_policy` を `pull.py` に適用 | 上書き保護 | ✅ 完了 |
+| Phase 3 | メトリクス収集を `record_feedback.py` に追加 | 定量的根拠 | ✅ 完了 |
+| Phase 3 | 貢献キューUIを `manage.py` に追加 | エンドツーエンド | ✅ 完了 |
