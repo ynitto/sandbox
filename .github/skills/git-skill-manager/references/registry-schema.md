@@ -38,7 +38,9 @@
           "timestamp": "2026-02-15T10:00:00Z",
           "verdict": "needs-improvement",
           "note": "PDF変換時に文字化けが発生した",
-          "refined": false
+          "refined": false,
+          "duration_sec": 42.5,
+          "co_skills": ["api-designer"]
         }
       ],
       "pending_refinement": true,
@@ -57,7 +59,12 @@
         "total_executions": 12,
         "ok_rate": 0.75,
         "last_executed_at": "2026-02-20T10:00:00Z",
-        "central_ok_rate": null
+        "central_ok_rate": null,
+        "avg_duration_sec": 38.5,
+        "co_occurrence": {
+          "api-designer": 3,
+          "react-frontend-coder": 2
+        }
       }
     }
   ],
@@ -129,7 +136,7 @@
 
 **installed_skills[].feedback_history** (配列、デフォルト: []):
 - スキル使用後にユーザーが提供したフィードバックの履歴
-- 各エントリ: `timestamp`（ISO 8601）、`verdict`（ok/needs-improvement/broken）、`note`（コメント）、`refined`（改良済みフラグ）
+- 各エントリ: `timestamp`（ISO 8601）、`verdict`（ok/needs-improvement/broken）、`note`（コメント）、`refined`（改良済みフラグ）、`duration_sec`（実行時間（秒）、省略可）、`co_skills`（同時使用スキルのリスト、省略可）
 - `record_feedback.py` で記録し、`refine` 操作の入力として使われる
 
 **installed_skills[].pending_refinement** (真偽値、デフォルト: false):
@@ -157,11 +164,13 @@
 - `local_changes_summary`: ローカル変更の要約テキスト
 
 **installed_skills[].metrics** (オブジェクト):
-- スキルの実行統計（`record_feedback.py` が更新）
+- スキルの実行統計（`record_feedback.py` が更新、`metrics.py` で集計表示）
 - `total_executions`: 総実行回数
 - `ok_rate`: ok 判定の割合（0.0〜1.0）。データなしは null
 - `last_executed_at`: 最後の実行日時（ISO 8601）。未実行は null
 - `central_ok_rate`: リモートリポジトリ全体の ok 率。null は未取得
+- `avg_duration_sec`: 平均実行時間（秒）。`--duration-sec` を指定した実行のみ集計。データなしは null
+- `co_occurrence`: 共起スキル集計（`{スキル名: 同時使用回数}` の辞書）。`--co-skills` を指定した実行から集計
 
 **node** (オブジェクト、v5):
 - このマシン固有のノード識別情報（`node_identity.py` が管理）

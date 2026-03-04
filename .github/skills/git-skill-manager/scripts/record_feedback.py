@@ -105,8 +105,19 @@ def _unrefined_problem_count(skill: dict) -> int:
     )
 
 
-def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict:
-    """フィードバックを記録してレジストリを返す。"""
+def record_feedback(
+    skill_name: str,
+    verdict: str,
+    note: str,
+    reg: dict,
+    duration_sec: float | None = None,
+    co_skills: list[str] | None = None,
+) -> dict:
+    """フィードバックを記録してレジストリを返す。
+
+    duration_sec: スキル実行にかかった時間（秒）。省略可能。
+    co_skills:    同時に使用した他のスキル名のリスト。省略可能。
+    """
     skill = next(
         (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
         None,
@@ -114,12 +125,18 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
     if not skill:
         return reg
 
-    skill.setdefault("feedback_history", []).append({
+    entry: dict = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "verdict": verdict,
         "note": note,
         "refined": False,
-    })
+    }
+    if duration_sec is not None:
+        entry["duration_sec"] = duration_sec
+    if co_skills:
+        entry["co_skills"] = co_skills
+
+    skill.setdefault("feedback_history", []).append(entry)
 
     # メトリクス更新
     history = skill["feedback_history"]
@@ -129,6 +146,19 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
     metrics["total_executions"] = total
     metrics["ok_rate"] = round(ok_count / total, 3) if total > 0 else 0.0
     metrics["last_executed_at"] = datetime.now(timezone.utc).isoformat()
+
+    # 実行時間の平均を更新
+    durations = [e["duration_sec"] for e in history if "duration_sec" in e]
+    metrics["avg_duration_sec"] = (
+        round(sum(durations) / len(durations), 2) if durations else None
+    )
+
+    # 共起スキルの集計を更新
+    co_occ: dict[str, int] = {}
+    for e in history:
+        for s in e.get("co_skills", []):
+            co_occ[s] = co_occ.get(s, 0) + 1
+    metrics["co_occurrence"] = co_occ
 
     # しきい値を超えた未改良の問題が蓄積された場合に pending_refinement を立てる。
     # workspace: 1件で即トリガー / それ以外: デフォルト3件蓄積でトリガー。
@@ -174,6 +204,19 @@ def main():
         help="フィードバックの種類",
     )
     parser.add_argument("--note", default="", help="補足コメント（任意）")
+    parser.add_argument(
+        "--duration-sec",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="スキル実行にかかった時間（秒）。任意。",
+    )
+    parser.add_argument(
+        "--co-skills",
+        default="",
+        metavar="SKILL1,SKILL2,...",
+        help="同時に使用した他のスキル名（カンマ区切り）。任意。",
+    )
     args = parser.parse_args()
 
     registry_path = _registry_path()
@@ -196,7 +239,14 @@ def main():
         reg = auto_register_workspace_skill(reg, skill_name)
         print(f"📝 {skill_name}: ワークスペーススキルとしてレジストリに登録しました")
 
-    reg = record_feedback(skill_name, args.verdict, args.note, reg)
+    reg = record_feedback(
+        skill_name,
+        args.verdict,
+        args.note,
+        reg,
+        duration_sec=args.duration_sec,
+        co_skills=[s.strip() for s in args.co_skills.split(",") if s.strip()],
+    )
 
     with open(registry_path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)

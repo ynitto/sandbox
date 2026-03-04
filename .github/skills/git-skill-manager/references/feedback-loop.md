@@ -44,6 +44,15 @@ python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> -
 
 # 動作しなかった
 python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict broken --note "壊れている箇所"
+
+# 実行時間を記録（秒単位）
+python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict ok --duration-sec 45.2
+
+# 同時に使用したスキルを記録（共起データ）
+python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict ok --co-skills "api-designer,react-frontend-coder"
+
+# 実行時間・共起スキルを同時に記録
+python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> --verdict ok --duration-sec 60.0 --co-skills "api-designer"
 ```
 
 ## discover_skills.py のソート順
@@ -56,3 +65,29 @@ python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> -
 4. **フィードバックなし** → アルファベット順
 
 → 実装: `scripts/manage.py` — `sort_key(skill, core_skills, registry)`
+
+## メトリクス集計（metrics.py）
+
+`record_feedback.py` で蓄積されたフィードバック履歴をもとに、スキルの実行メトリクスを集計・可視化する。
+
+```bash
+# 全スキルのサマリー（実行回数・ok率・平均実行時間）
+python <SKILLS_BASE>/git-skill-manager/scripts/metrics.py
+
+# 指定スキルの詳細（共起スキル・直近フィードバック含む）
+python <SKILLS_BASE>/git-skill-manager/scripts/metrics.py react-frontend-coder
+
+# 成功率の時系列トレンド（月次）
+python <SKILLS_BASE>/git-skill-manager/scripts/metrics.py react-frontend-coder --trend
+
+# 全スキルの共起マトリクス
+python <SKILLS_BASE>/git-skill-manager/scripts/metrics.py --co-occurrence
+```
+
+収集されるメトリクス:
+- **実行回数・ok率**: フィードバックの集計（常時記録）
+- **平均実行時間** (`avg_duration_sec`): `--duration-sec` 付きのフィードバックから計算
+- **共起スキル** (`co_occurrence`): `--co-skills` 付きのフィードバックから集計
+- **成功率トレンド**: `feedback_history` の timestamp から月次推移を計算
+
+→ 実装: `scripts/metrics.py`

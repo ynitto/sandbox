@@ -203,6 +203,8 @@ def migrate_registry(reg: dict) -> dict:
                 "ok_rate": None,
                 "last_executed_at": None,
                 "central_ok_rate": None,
+                "avg_duration_sec": None,
+                "co_occurrence": {},
             })
 
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
