@@ -235,12 +235,19 @@ pull 時に「何を取り込むか」を制御する。
     "ok_rate": 0.87,
     "avg_feedback_note_length": 42,
     "last_executed_at": "2026-02-27T09:00:00Z",
-    "central_ok_rate": 0.72
+    "central_ok_rate": 0.72,
+    "avg_duration_sec": 48.5,
+    "co_occurrence": {
+      "api-designer": 5,
+      "ui-designer": 2
+    }
   }
 }
 ```
 
 `ok_rate > central_ok_rate` → ノード改善が効果的である証拠 → 昇格の根拠
+
+**集計・表示**: `scripts/metrics.py` — 全スキルサマリー・時系列トレンド・共起マトリクスを表示
 
 ---
 

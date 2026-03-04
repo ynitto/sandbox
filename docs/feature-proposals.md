@@ -158,7 +158,7 @@ min_framework_version: 2.0.0
 
 ---
 
-### 2.3 スキル実行メトリクスの収集・可視化
+### 2.3 スキル実行メトリクスの収集・可視化 ✅ 実装済み
 
 **現状**: 使用回数と verdict（ok / needs-improvement / broken）のみ記録。
 
@@ -173,6 +173,11 @@ min_framework_version: 2.0.0
 - スキルのパフォーマンスボトルネック特定
 - スキルセットの最適な組み合わせ推薦
 - 改善効果の定量的な測定
+
+**実装内容**:
+- `record_feedback.py` に `--duration-sec`（実行時間）と `--co-skills`（共起スキル）オプションを追加
+- `metrics.py` を新規作成: 全スキルサマリー・詳細表示・時系列トレンド・共起マトリクスを表示
+- レジストリの `metrics` フィールドに `avg_duration_sec`・`co_occurrence` を追加
 
 ---
 
@@ -410,7 +415,7 @@ version: 1.3.0
 | ci-cd-configurator | 中 | 高 | **★★★** | ✅ 実装済み |
 | api-designer | 中 | 中 | **★★☆** | ✅ 実装済み |
 | test-strategy-planner | 低 | 中 | **★★☆** | 未実装 |
-| 実行メトリクス収集 | 中 | 中 | **★★☆** | 未実装 |
+| 実行メトリクス収集 | 中 | 中 | **★★☆** | ✅ 実装済み |
 | セマンティックバージョニング | 低 | 中 | **★★☆** | ✅ 実装済み |
 | db-schema-designer | 中 | 中 | **★★☆** | 未実装 |
 | refactoring-guide | 中 | 中 | **★★☆** | ✅ `code-simplifier` として実装 |
