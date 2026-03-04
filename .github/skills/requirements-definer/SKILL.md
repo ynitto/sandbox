@@ -2,7 +2,7 @@
 name: requirements-definer
 description: ユーザーとの対話を通じて要件リストを作成し、requirements.json として出力する。「要件定義して」「やりたいことを整理して」「要件をまとめて」「受け入れ条件を定義して」「何を作るか決めたい」「ユーザーストーリーを書いて」「ストーリーマッピングして」などのリクエストで発動する。
 metadata:
-  version: "2.0"
+  version: "2.0.0"
 ---
 
 # requirements-definer

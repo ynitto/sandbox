@@ -8,7 +8,10 @@ import shutil
 import subprocess
 from datetime import datetime
 
-from registry import load_registry, save_registry, is_skill_enabled, _skill_home, _cache_dir
+from registry import (
+    load_registry, save_registry, is_skill_enabled, _skill_home, _cache_dir,
+    _read_frontmatter_version, _update_frontmatter_version, _version_tuple,
+)
 from repo import clone_or_fetch, update_remote_index
 from push import push_skill
 from changelog import generate_changelog
@@ -43,7 +46,20 @@ def list_skills():
         pinned = info.get("pinned_commit")
         status = "✅" if enabled else "⏸️"
         pin_mark = f" 📌{pinned[:7]}" if pinned else ""
-        print(f"   {status} {entry:30s}  repo: {repo:20s}  commit: {hash_}{pin_mark}")
+
+        version = info.get("version")
+        central_ver = info.get("central_version")
+        version_ahead = info.get("version_ahead", False)
+        if version:
+            ver_label = f" v{version}"
+            if version_ahead:
+                ver_label += " ⬆️"
+            elif central_ver and central_ver != version:
+                ver_label += f" (central: v{central_ver})"
+        else:
+            ver_label = ""
+
+        print(f"   {status} {entry:30s}  repo: {repo:20s}  commit: {hash_}{pin_mark}{ver_label}")
 
 
 # ---------------------------------------------------------------------------
@@ -732,3 +748,81 @@ def changelog_skill(skill_name: str, dry_run: bool = False) -> None:
     with open(out, "w", encoding="utf-8") as f:
         f.write(content)
     print(f"✅ {out} を生成しました")
+
+
+# ---------------------------------------------------------------------------
+# bump
+# ---------------------------------------------------------------------------
+
+def _find_skill_path(skill_name: str) -> str | None:
+    """ワークスペース → インストール済みの順でスキルパスを返す。"""
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        root = result.stdout.strip()
+        ws_path = os.path.join(root, ".github", "skills", skill_name)
+        if os.path.isdir(ws_path) and os.path.isfile(os.path.join(ws_path, "SKILL.md")):
+            return ws_path
+
+    installed = os.path.join(_skill_home(), skill_name)
+    if os.path.isdir(installed) and os.path.isfile(os.path.join(installed, "SKILL.md")):
+        return installed
+
+    return None
+
+
+def bump_version(skill_name: str, bump_type: str = "patch") -> None:
+    """SKILL.md の metadata.version をセマンティックバージョニングに従ってインクリメントする。
+
+    bump_type:
+        "patch" (デフォルト) — バグ修正・軽微な改善: 1.2.3 → 1.2.4
+        "minor"             — 後方互換の機能追加:     1.2.3 → 1.3.0
+        "major"             — 破壊的変更:             1.2.3 → 2.0.0
+    """
+    if bump_type not in ("major", "minor", "patch"):
+        print(f"❌ bump_type は 'major' / 'minor' / 'patch' のいずれかを指定してください")
+        return
+
+    skill_path = _find_skill_path(skill_name)
+    if not skill_path:
+        print(f"❌ スキル '{skill_name}' が見つかりません")
+        return
+
+    current_ver = _read_frontmatter_version(skill_path)
+    tup = _version_tuple(current_ver)
+
+    if bump_type == "major":
+        new_tup = (tup[0] + 1, 0, 0)
+    elif bump_type == "minor":
+        new_tup = (tup[0], tup[1] + 1, 0)
+    else:
+        new_tup = (tup[0], tup[1], tup[2] + 1)
+
+    new_ver = f"{new_tup[0]}.{new_tup[1]}.{new_tup[2]}"
+
+    if not _update_frontmatter_version(skill_path, new_ver):
+        print(f"❌ SKILL.md の version フィールドが見つかりません: {skill_path}")
+        return
+
+    # レジストリのバージョンも更新
+    reg = load_registry()
+    skill_entry = next(
+        (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
+        None,
+    )
+    if skill_entry:
+        central_ver = skill_entry.get("central_version")
+        skill_entry["version"] = new_ver
+        skill_entry["version_ahead"] = _version_tuple(new_ver) > _version_tuple(central_ver)
+        save_registry(reg)
+
+    cur_label = current_ver or "0.0.0"
+    print(f"✅ {skill_name}: v{cur_label} → v{new_ver} ({bump_type})")
+    print(f"   パス: {skill_path}")
+    print()
+    print(f"   次のステップ:")
+    print(f"     1. スキルを修正する")
+    print(f"     2. python changelog.py {skill_name}  # CHANGELOG.md を更新")
+    print(f"     3. push または promote でリポジトリに反映")
