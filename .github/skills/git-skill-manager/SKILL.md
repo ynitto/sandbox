@@ -160,6 +160,30 @@ git ls-remote $REPO_URL HEAD
 - `clone_or_fetch`: キャッシュ有 → `git fetch + reset`（高速）、キャッシュ破損 → 削除して再clone
 - `pull_skills`: 全リポジトリからスキル候補を収集 → 競合解決（対話 or priority自動） → pinned_commit 対応 → コピー → レジストリ更新
 
+### 競合解決
+
+同名スキルが複数のリポジトリに存在する場合、以下のロジックで解決する。
+
+**ユーザー直接呼び出し（`interactive=True`）**:
+
+```
+⚠️ 競合: 'docx-converter' が複数リポジトリに存在します
+   1. team-skills          (2026-01-10)  v1.2.0  Word文書をPDFに変換する
+   2. personal             (2026-02-01)  v1.3.0  Word文書をPDFに変換する（高速版）
+
+CONFLICT_CHOICE:
+  どちらの 'docx-converter' をインストールしますか？ (1-2, デフォルト: 1)
+  > 2
+```
+
+- 番号を入力してリポジトリを選択（Enter のみで 1 を選択）
+- 無効な入力や非対話環境では `priority` の高いリポジトリを自動採用しフォールバック
+
+**サブエージェント経由（`interactive=False`）**:
+
+- `priority` の低い値（高優先度）のリポジトリを自動採用
+- 採用したリポジトリ名をログ出力: `ℹ️ 競合 'docx-converter': priority の高い 'team-skills' を自動採用します`
+
 -----
 
 ## push

@@ -59,7 +59,31 @@ Copilot:
   5. 結果レポート（有効/無効状態も表示）
 ```
 
-## push
+## pull（競合あり）
+
+```
+ユーザー: 「スキルをpullして」
+
+Copilot:
+  1. python pull.py を実行
+  2. docx-converter が team-skills と personal の両方に存在する場合:
+
+     ⚠️ 競合: 'docx-converter' が複数リポジトリに存在します
+        1. team-skills          (2026-01-10)  v1.2.0  Word文書をPDFに変換する
+        2. personal             (2026-02-01)  v1.3.0  Word文書をPDFに変換する（高速版）
+
+     CONFLICT_CHOICE:
+       どちらの 'docx-converter' をインストールしますか？ (1-2, デフォルト: 1)
+       >
+
+  3. エージェントはユーザーに「1 (team-skills) または 2 (personal) を入力してください」と尋ねる
+  4. ユーザーが「2」と回答 → personal のスキルをインストール
+  5. 結果レポート:
+     ✅ docx-converter ← personal (f4e5d6c)
+     競合解決: 1 件
+       docx-converter: personal を採用（team-skills を不採用）
+```
+
 
 ```
 ユーザー: 「今作ったスキルを team-skills にpushして」
