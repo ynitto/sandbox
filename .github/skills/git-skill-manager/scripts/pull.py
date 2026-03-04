@@ -274,6 +274,8 @@ def pull_skills(
             "ok_rate": None,
             "last_executed_at": None,
             "central_ok_rate": None,
+            "avg_duration_sec": None,
+            "co_occurrence": {},
         })
         existing[s["name"]] = s
     reg["installed_skills"] = list(existing.values())

@@ -219,6 +219,10 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.duration_sec is not None and args.duration_sec < 0:
+        print("❌ --duration-sec には 0 以上の値を指定してください")
+        sys.exit(1)
+
     registry_path = _registry_path()
     if not os.path.isfile(registry_path):
         print(f"⚠️  レジストリが見つかりません: {registry_path}")

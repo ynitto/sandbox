@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
 
 from registry import load_registry
 
@@ -269,6 +268,10 @@ def main() -> None:
 
     if args.co_occurrence:
         show_co_occurrence()
+    elif args.trend and not args.skill_name:
+        print("❌ --trend にはスキル名の指定が必要です")
+        print("   例: python metrics.py react-frontend-coder --trend")
+        sys.exit(1)
     elif args.skill_name and args.trend:
         show_trend(args.skill_name)
     elif args.skill_name:

@@ -212,6 +212,13 @@ def migrate_registry(reg: dict) -> dict:
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
+    # 既存レジストリでもメトリクスの新フィールドを補完してスキーマを統一
+    for skill in reg.get("installed_skills", []):
+        m = skill.get("metrics")
+        if m is not None:
+            m.setdefault("avg_duration_sec", None)
+            m.setdefault("co_occurrence", {})
+
     reg["version"] = 5
     return reg
 
