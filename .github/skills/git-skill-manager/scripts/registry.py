@@ -72,6 +72,56 @@ def _read_frontmatter_version(skill_path: str) -> str | None:
     return None
 
 
+def _update_frontmatter_version(skill_path: str, new_ver: str) -> bool:
+    """SKILL.md のフロントマター内 metadata.version を new_ver に書き換える。
+
+    書き換えに成功した場合は True、フロントマターや version フィールドが
+    見つからない場合は False を返す。
+    """
+    skill_md = os.path.join(skill_path, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return False
+    with open(skill_md, encoding="utf-8") as f:
+        content = f.read()
+
+    fm = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+    if not fm:
+        return False
+
+    fm_text = fm.group(1)
+    lines = fm_text.splitlines()
+    in_metadata = False
+    new_lines = []
+    updated = False
+
+    for line in lines:
+        if line.startswith("metadata:"):
+            in_metadata = True
+            new_lines.append(line)
+        elif in_metadata:
+            if line and not line[0].isspace():
+                in_metadata = False
+                new_lines.append(line)
+            elif re.match(r'^[ \t]+version:', line):
+                indent_match = re.match(r'^([ \t]+)', line)
+                indent = indent_match.group(1) if indent_match else "  "
+                new_lines.append(f'{indent}version: "{new_ver}"')
+                updated = True
+            else:
+                new_lines.append(line)
+        else:
+            new_lines.append(line)
+
+    if not updated:
+        return False
+
+    new_fm = "\n".join(new_lines)
+    new_content = content[:fm.start(1)] + new_fm + content[fm.end(1):]
+    with open(skill_md, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    return True
+
+
 CORE_SKILLS_DEFAULT = [
     "scrum-master", "git-skill-manager", "skill-creator",
     "requirements-definer", "skill-recruiter", "skill-evaluator",

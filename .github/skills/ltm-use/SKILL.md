@@ -2,7 +2,7 @@
 name: ltm-use
 description: "セッションをまたいで知識・調査結果・決定事項を継続させたいときに使用するスキル。「覚えておいて」「メモして」でsave、「思い出して」「以前の」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った」「間違ってた」でrate操作。"
 metadata:
-  version: "3.0"
+  version: "3.0.0"
 ---
 
 # ltm-use（Long-Term Memory Use）
