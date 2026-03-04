@@ -178,12 +178,29 @@ def pull_skills(
                 print(f"\n⚠️ 競合: '{sname}' が複数リポジトリに存在します")
                 for i, s in enumerate(sources, 1):
                     short_desc = s["description"] or "(説明なし)"
-                    print(f"   {i}. {s['repo_name']:20s}  ({s['commit_date'][:10]})  {short_desc}")
-                print(f"   どちらをインストールしますか？ (1-{len(sources)})")
-                winner = sources[0]  # プレースホルダー: エージェントが対話で決定
+                    ver = _read_frontmatter_version(s["full_path"])
+                    ver_label = f"  v{ver}" if ver else ""
+                    print(f"   {i}. {s['repo_name']:20s}  ({s['commit_date'][:10]}){ver_label}  {short_desc}")
+                print()
+                print("CONFLICT_CHOICE:")
+                print(f"  どちらの '{sname}' をインストールしますか？ (1-{len(sources)}, デフォルト: 1)")
+                try:
+                    raw = input("  > ").strip()
+                    choice = int(raw) if raw else 1
+                    if 1 <= choice <= len(sources):
+                        winner = sources[choice - 1]
+                    else:
+                        sources.sort(key=lambda s: s["repo_priority"])
+                        winner = sources[0]
+                        print(f"   ℹ️ 範囲外の番号です。priority の高い '{winner['repo_name']}' を使用します")
+                except (ValueError, EOFError):
+                    sources.sort(key=lambda s: s["repo_priority"])
+                    winner = sources[0]
+                    print(f"   ℹ️ 自動選択: priority の高い '{winner['repo_name']}' を採用します")
             else:
                 sources.sort(key=lambda s: s["repo_priority"])
                 winner = sources[0]
+                print(f"   ℹ️ 競合 '{sname}': priority の高い '{winner['repo_name']}' を自動採用します")
 
             conflicts.append({
                 "skill": sname,
