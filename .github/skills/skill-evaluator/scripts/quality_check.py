@@ -194,6 +194,21 @@ _EXFIL_SEND_PATTERNS = [
 
 def check_name(name: str) -> list[dict]:
     issues = []
+    if not re.match(r'^[a-z0-9]+(-[a-z0-9]+)*$', name):
+        issues.append({
+            "severity": "error",
+            "code": "NAME_FORMAT",
+            "message": (
+                f"name '{name}' が kebab-case ではありません。"
+                " 小文字英数字とハイフンのみ使用可能（先頭・末尾・連続ハイフン不可）"
+            ),
+        })
+    if len(name) > 64:
+        issues.append({
+            "severity": "error",
+            "code": "NAME_TOO_LONG",
+            "message": f"name が {len(name)} 文字あります（上限: 64 文字）",
+        })
     for word in _RESERVED_WORDS:
         if word in name.lower():
             issues.append({
@@ -240,12 +255,59 @@ def check_description_format(raw_yaml: str) -> list[dict]:
     return issues
 
 
+_ALLOWED_FM_KEYS = frozenset({
+    "name", "description", "license", "allowed-tools", "metadata", "compatibility",
+})
+
+
+def check_frontmatter_keys(raw_yaml: str) -> list[dict]:
+    """フロントマターのトップレベルキーを検査する。"""
+    issues = []
+    top_keys: list[str] = []
+    for line in raw_yaml.splitlines():
+        # インデントなし・コメントでない行のキーがトップレベル
+        if not line or line[0] in (' ', '\t', '#'):
+            continue
+        if ':' in line:
+            key = line.split(':')[0].strip()
+            if key:
+                top_keys.append(key)
+    unknown = [k for k in top_keys if k not in _ALLOWED_FM_KEYS]
+    if unknown:
+        issues.append({
+            "severity": "error",
+            "code": "FM_UNKNOWN_KEY",
+            "message": (
+                f"不明なフロントマターキー: {', '.join(unknown)}。"
+                f" 使用可能なキー: {', '.join(sorted(_ALLOWED_FM_KEYS))}"
+            ),
+        })
+    return issues
+
+
+_DESC_MIN_LEN = 20
 _DESC_MAX_LEN = 200
+_DESC_HARD_LIMIT = 1024
 
 
 def check_description(desc: str) -> list[dict]:
     issues = []
-    if len(desc) > _DESC_MAX_LEN:
+    if len(desc) < _DESC_MIN_LEN:
+        issues.append({
+            "severity": "error",
+            "code": "DESC_TOO_SHORT",
+            "message": (
+                f"description が {len(desc)} 文字しかありません（最低: {_DESC_MIN_LEN} 文字）。"
+                " 何をするか・いつ使うかを記述してください"
+            ),
+        })
+    if len(desc) > _DESC_HARD_LIMIT:
+        issues.append({
+            "severity": "error",
+            "code": "DESC_HARD_LIMIT",
+            "message": f"description が {len(desc)} 文字あります（上限: {_DESC_HARD_LIMIT} 文字）",
+        })
+    elif len(desc) > _DESC_MAX_LEN:
         issues.append({
             "severity": "warning",
             "code": "DESC_TOO_LONG",
@@ -305,6 +367,12 @@ def check_body(body: str, skill_dir: str) -> list[dict]:
             "code": "BODY_TOO_LONG",
             "message": f"SKILL.md 本文が {len(lines)} 行あります（推奨: 500 行以下）。references/ への分割を検討してください",
         })
+    elif len(lines) >= 450:
+        issues.append({
+            "severity": "warning",
+            "code": "BODY_NEAR_LIMIT",
+            "message": f"SKILL.md 本文が {len(lines)} 行あります（制限の {len(lines) * 100 // 500}%）。references/ への分割を準備してください",
+        })
     if re.search(r'(?:scripts|references|assets)\\', body):
         issues.append({
             "severity": "warning",
@@ -338,12 +406,60 @@ def check_body(body: str, skill_dir: str) -> list[dict]:
                     "code": "REF_NO_TOC",
                     "message": f"{ref} は {len(ref_lines)} 行ありますが先頭に目次（## 目次）がありません",
                 })
+        word_count = len(ref_content.split())
+        if word_count > 10000 and "grep" not in body.lower():
+            issues.append({
+                "severity": "warning",
+                "code": "REF_LARGE_NO_GREP",
+                "message": (
+                    f"{ref} は約 {word_count:,} 語あります（推奨: 10,000 語超の場合は"
+                    " SKILL.md に grep 検索パターンを記載してください）"
+                ),
+            })
         nested_refs = re.findall(r'\[.*?\]\(([\w./\-]+\.md)\)', ref_content)
         if nested_refs:
             issues.append({
                 "severity": "warning",
                 "code": "REF_NESTED",
                 "message": f"{ref} がさらに他のファイルを参照しています（推奨: SKILL.md から 1 階層のみ）",
+            })
+
+    # references/ にあるが SKILL.md から参照されていないファイルを検出
+    refs_dir = os.path.join(skill_dir, "references")
+    if os.path.isdir(refs_dir):
+        for ref_file in sorted(os.listdir(refs_dir)):
+            if not os.path.isfile(os.path.join(refs_dir, ref_file)):
+                continue
+            if ref_file not in body:
+                issues.append({
+                    "severity": "warning",
+                    "code": "REF_UNREFERENCED",
+                    "message": f"references/{ref_file} が SKILL.md から参照されていません",
+                })
+
+    return issues
+
+
+_EXTRA_DOC_PATTERN = re.compile(
+    r'^(README|CHANGELOG|INSTALL(ATION)?(_GUIDE)?|CONTRIBUTING|AUTHORS?|HISTORY|NOTES?|RELEASE_NOTES?)(\.md|\.txt|\.rst)?$',
+    re.IGNORECASE,
+)
+
+
+def check_skill_structure(skill_dir: str) -> list[dict]:
+    """スキルディレクトリに補助ドキュメントが含まれていないか検査する。"""
+    issues = []
+    for fname in sorted(os.listdir(skill_dir)):
+        if fname == "SKILL.md":
+            continue
+        if _EXTRA_DOC_PATTERN.match(fname):
+            issues.append({
+                "severity": "warning",
+                "code": "EXTRA_DOC",
+                "message": (
+                    f"{fname} はスキルに含めるべきでない補助ドキュメントです。"
+                    " スキルにはエージェントがタスクを遂行するために必要な情報だけを含めてください"
+                ),
             })
     return issues
 
@@ -549,6 +665,15 @@ def check_skill(skill_dir: str) -> dict:
     with open(skill_md, encoding="utf-8") as f:
         content = f.read()
 
+    if not content.startswith("---"):
+        return {
+            "name": os.path.basename(skill_dir),
+            "errors": [{"severity": "error", "code": "FM_NO_FRONTMATTER",
+                        "message": "SKILL.md にフロントマターがありません。ファイル先頭を --- で囲んだ YAML ブロックを追加してください"}],
+            "warnings": [],
+            "security_risks": [],
+        }
+
     fm, body = parse_frontmatter(content)
     raw_yaml = content.split("---", 2)[1] if content.startswith("---") else ""
     all_issues: list[dict] = []
@@ -558,6 +683,7 @@ def check_skill(skill_dir: str) -> dict:
 
     if name:
         all_issues.extend(check_name(name))
+    all_issues.extend(check_frontmatter_keys(raw_yaml))
     all_issues.extend(check_description_format(raw_yaml))
     if desc:
         all_issues.extend(check_description(desc))
@@ -565,6 +691,7 @@ def check_skill(skill_dir: str) -> dict:
     all_issues.extend(check_metadata_version(fm))
     all_issues.extend(check_body(body, skill_dir))
     all_issues.extend(check_scripts(skill_dir))
+    all_issues.extend(check_skill_structure(skill_dir))
 
     errors = [i for i in all_issues if i["severity"] == "error"]
     warnings = [i for i in all_issues if i["severity"] == "warning"]

@@ -48,19 +48,29 @@ python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py --path <dir>
 
 | コード | 深刻度 | 内容 |
 |---|---|---|
+| `FM_NO_FRONTMATTER` | ERROR | SKILL.md にフロントマターがない |
+| `FM_UNKNOWN_KEY` | ERROR | 許可されていないフロントマターキーがある（使用可能: name / description / license / allowed-tools / metadata / compatibility） |
+| `NAME_FORMAT` | ERROR | name が kebab-case でない |
+| `NAME_TOO_LONG` | ERROR | name が 64 文字超 |
 | `NAME_RESERVED_WORD` | ERROR | name に予約語（anthropic 等）が含まれる |
 | `NAME_AMBIGUOUS` | WARN | name が曖昧・汎用的すぎる（helper, utils, tools 等） |
 | `DESC_MULTILINE` | ERROR | description に YAML ブロックスカラー（`>` / `|`）が使われている。一行のダブルクォート形式で記述すること |
 | `DESC_XML_TAG` | ERROR | description に XML タグが含まれる |
+| `DESC_TOO_SHORT` | ERROR | description が 20 文字未満 |
+| `DESC_HARD_LIMIT` | ERROR | description が 1,024 文字超 |
 | `DESC_TOO_LONG` | WARN | description が 200 文字を超えている |
 | `DESC_FIRST_PERSON` | WARN | description が一人称（「お手伝いします」等）で書かれている |
 | `DESC_NO_TRIGGER` | WARN | description にトリガー条件（「〜の場合」「〜とき」等）がない |
 | `META_NO_VERSION` | WARN | metadata.version が未設定 |
 | `BODY_TOO_LONG` | WARN | SKILL.md 本文が 500 行超 |
+| `BODY_NEAR_LIMIT` | WARN | SKILL.md 本文が 450 行以上（制限の 90%） |
 | `PATH_BACKSLASH` | WARN | ファイルパスにバックスラッシュ（Windows スタイル）が使われている |
 | `REF_NO_TOC` | WARN | 100 行以上の参照ファイルに目次がない |
+| `REF_LARGE_NO_GREP` | WARN | 10,000 語以上の参照ファイルがあるのに SKILL.md に grep 検索パターンがない |
+| `REF_UNREFERENCED` | WARN | references/ にファイルがあるが SKILL.md から参照されていない |
 | `REF_NESTED` | WARN | 参照ファイルがさらに他のファイルを参照（1 階層超え） |
 | `SCRIPT_NETWORK` | WARN | scripts/ 内にネットワーク呼び出しの可能性がある |
+| `EXTRA_DOC` | WARN | スキルに含めるべきでない補助ドキュメント（README.md / CHANGELOG.md 等）がある |
 
 ### セキュリティリスク項目
 
