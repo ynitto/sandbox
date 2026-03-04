@@ -70,7 +70,7 @@ python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py --path <dir>
 | `REF_UNREFERENCED` | WARN | references/ にファイルがあるが SKILL.md から参照されていない |
 | `REF_NESTED` | WARN | 参照ファイルがさらに他のファイルを参照（1 階層超え） |
 | `SCRIPT_NETWORK` | WARN | scripts/ 内にネットワーク呼び出しの可能性がある |
-| `EXTRA_DOC` | WARN | スキルに含めるべきでない補助ドキュメント（README.md / CHANGELOG.md 等）がある |
+| `EXTRA_DOC` | WARN | スキルに含めるべきでない補助ドキュメント（README.md 等）がある（CHANGELOG.md は git-skill-manager が生成するため対象外） |
 
 ### セキュリティリスク項目
 

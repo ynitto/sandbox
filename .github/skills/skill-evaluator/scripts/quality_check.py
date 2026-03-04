@@ -441,7 +441,7 @@ def check_body(body: str, skill_dir: str) -> list[dict]:
 
 
 _EXTRA_DOC_PATTERN = re.compile(
-    r'^(README|CHANGELOG|INSTALL(ATION)?(_GUIDE)?|CONTRIBUTING|AUTHORS?|HISTORY|NOTES?|RELEASE_NOTES?)(\.md|\.txt|\.rst)?$',
+    r'^(README|INSTALL(ATION)?(_GUIDE)?|CONTRIBUTING|AUTHORS?|HISTORY|NOTES?|RELEASE_NOTES?)(\.md|\.txt|\.rst)?$',
     re.IGNORECASE,
 )
 
