@@ -41,8 +41,27 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
     fm: dict = {}
     current_parent: str | None = None
     nested: dict = {}
+    block_key: str | None = None      # > / | ブロックスカラー収集中のキー
+    block_lines: list[str] = []
+    block_indent: int = 0
+
+    def _flush_block() -> None:
+        if block_key is not None:
+            fm[block_key] = " ".join(block_lines)
 
     for line in raw.splitlines():
+        # ブロックスカラー収集中
+        if block_key is not None:
+            stripped_line = line.lstrip()
+            indent_here = len(line) - len(stripped_line)
+            if line.strip() == "" or indent_here >= block_indent:
+                block_lines.append(line.strip())
+                continue
+            else:
+                _flush_block()
+                block_key = None
+                block_lines = []
+
         if not line.strip() or line.strip().startswith("#"):
             continue
         stripped = line.lstrip()
@@ -59,7 +78,13 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
                 fm[current_parent] = nested
             current_parent = key
             nested = {}
-            if value:
+            if value in (">", "|", ">-", "|-", ">+", "|+"):
+                # ブロックスカラー開始：次の行から収集
+                block_key = key
+                block_lines = []
+                block_indent = 2  # YAML 慣習的インデント
+                current_parent = None
+            elif value:
                 fm[key] = value
                 current_parent = None
                 nested = {}
@@ -67,6 +92,7 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
             if value:
                 nested[key] = value
 
+    _flush_block()
     if nested and current_parent:
         fm[current_parent] = nested
 
@@ -185,6 +211,35 @@ def check_name(name: str) -> list[dict]:
     return issues
 
 
+def check_description_format(raw_yaml: str) -> list[dict]:
+    """フロントマター生テキストから description の書き方を検査する。
+
+    parse_frontmatter 後の値ではなく生 YAML を見ることで、
+    > / | 形式を確実に検出する。
+    """
+    issues = []
+    for line in raw_yaml.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith("description"):
+            continue
+        key, _, value = stripped.partition(":")
+        if key.strip() != "description":
+            continue
+        value = value.strip()
+        if value in (">", "|", ">-", "|-", ">+", "|+"):
+            issues.append({
+                "severity": "error",
+                "code": "DESC_MULTILINE",
+                "message": (
+                    f"description に YAML ブロックスカラー（{value!r}）が使われています。"
+                    " description は必ず一行のダブルクォート形式で記述してください："
+                    ' description: "スキルの説明..."'
+                ),
+            })
+        break
+    return issues
+
+
 def check_description(desc: str) -> list[dict]:
     issues = []
     if re.search(r"<[a-zA-Z/]", desc):
@@ -244,7 +299,11 @@ def check_body(body: str, skill_dir: str) -> list[dict]:
             "code": "PATH_BACKSLASH",
             "message": "ファイルパスにバックスラッシュが使われています。フォワードスラッシュ（/）を使用してください",
         })
+    # Markdown リンク形式: [text](path/to/file.md)
     ref_links = re.findall(r'\[.*?\]\(([\w./\-]+\.md)\)', body)
+    # バッククォート形式: `references/file.md` や `${VAR}/references/file.md`
+    backtick_refs = re.findall(r'`(?:[^`]*?/)?((?:references|docs)/[\w.\-]+\.md)`', body)
+    ref_links = list(dict.fromkeys(ref_links + backtick_refs))  # 重複除去・順序保持
     checked_refs: set[str] = set()
     for ref in ref_links:
         if ref in checked_refs:
@@ -479,6 +538,7 @@ def check_skill(skill_dir: str) -> dict:
         content = f.read()
 
     fm, body = parse_frontmatter(content)
+    raw_yaml = content.split("---", 2)[1] if content.startswith("---") else ""
     all_issues: list[dict] = []
 
     name = fm.get("name", "")
@@ -486,6 +546,7 @@ def check_skill(skill_dir: str) -> dict:
 
     if name:
         all_issues.extend(check_name(name))
+    all_issues.extend(check_description_format(raw_yaml))
     if desc:
         all_issues.extend(check_description(desc))
 

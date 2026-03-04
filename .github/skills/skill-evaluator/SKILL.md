@@ -50,6 +50,7 @@ python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py --path <dir>
 |---|---|---|
 | `NAME_RESERVED_WORD` | ERROR | name に予約語（anthropic 等）が含まれる |
 | `NAME_AMBIGUOUS` | WARN | name が曖昧・汎用的すぎる（helper, utils, tools 等） |
+| `DESC_MULTILINE` | ERROR | description に YAML ブロックスカラー（`>` / `|`）が使われている。一行のダブルクォート形式で記述すること |
 | `DESC_XML_TAG` | ERROR | description に XML タグが含まれる |
 | `DESC_FIRST_PERSON` | WARN | description が一人称（「お手伝いします」等）で書かれている |
 | `DESC_NO_TRIGGER` | WARN | description にトリガー条件（「〜の場合」「〜とき」等）がない |
