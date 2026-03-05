@@ -422,10 +422,15 @@ def find_memory_dir(filepath: str) -> str | None:
 # ─── Git ヘルパー ────────────────────────────────────────────
 
 def git_pull_repo(repo: dict) -> tuple[bool, str]:
-    """リポジトリを git pull する。local_dir が存在しなければ clone する。"""
+    """リポジトリを git pull する。local_dir が存在しなければ clone する。
+
+    memory_root が設定されている場合は sparse-checkout を使用して
+    そのフォルダのみを取得し、リポジトリ全体のクローンを避ける。
+    """
     local_dir = repo["local_dir"]
     remote = repo.get("url", "")
     branch = repo.get("branch", "main")
+    memory_root = repo.get("memory_root", "")
     if not remote:
         return False, "URL が設定されていません"
     try:
@@ -436,10 +441,36 @@ def git_pull_repo(repo: dict) -> tuple[bool, str]:
             )
         else:
             os.makedirs(os.path.dirname(local_dir), exist_ok=True)
-            result = subprocess.run(
-                ["git", "clone", "--branch", branch, remote, local_dir],
-                capture_output=True, text=True, timeout=60,
-            )
+            if memory_root:
+                # sparse-checkout でメモリフォルダのみ取得（リポジトリ全体を避ける）
+                result = subprocess.run(
+                    ["git", "clone", "--no-checkout", "--filter=blob:none",
+                     "--branch", branch, remote, local_dir],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if result.returncode == 0:
+                    subprocess.run(
+                        ["git", "-C", local_dir, "sparse-checkout", "set", memory_root],
+                        capture_output=True, timeout=10,
+                    )
+                    result = subprocess.run(
+                        ["git", "-C", local_dir, "checkout"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                if result.returncode != 0:
+                    # sparse-checkout 非対応の古い git へのフォールバック
+                    import shutil as _shutil
+                    _shutil.rmtree(local_dir, ignore_errors=True)
+                    os.makedirs(os.path.dirname(local_dir), exist_ok=True)
+                    result = subprocess.run(
+                        ["git", "clone", "--branch", branch, remote, local_dir],
+                        capture_output=True, text=True, timeout=60,
+                    )
+            else:
+                result = subprocess.run(
+                    ["git", "clone", "--branch", branch, remote, local_dir],
+                    capture_output=True, text=True, timeout=60,
+                )
         if result.returncode == 0:
             return True, result.stdout.strip()
         return False, result.stderr.strip()
