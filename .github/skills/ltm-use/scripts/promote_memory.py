@@ -60,6 +60,10 @@ def promote_file(src_path: str, src_scope: str, target_scope: str) -> str:
     src_dir = memory_utils.get_memory_dir(src_scope)
     dst_dir = memory_utils.get_memory_dir(target_scope)
     rel = os.path.relpath(src_path, src_dir)
+    # パストラバーサル防止: src_dir 外への書き込みを拒否
+    if rel.startswith(".."):
+        print(f"エラー: ファイルがスコープ外です: {src_path}", file=sys.stderr)
+        sys.exit(1)
     dst_path = os.path.join(dst_dir, rel)
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     with open(src_path, encoding="utf-8") as f:

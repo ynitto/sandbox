@@ -221,7 +221,13 @@ def update_file_with_body(filepath: str, meta_updates: dict, new_body: str) -> N
         text = f.read()
     for field, value in meta_updates.items():
         escaped = re.escape(field)
-        repl = f"{field}: {value}" if isinstance(value, int) else f'{field}: "{value}"'
+        if isinstance(value, int):
+            repl = f"{field}: {value}"
+        elif isinstance(value, list):
+            inner = ", ".join(f'"{v}"' if " " in v else v for v in value)
+            repl = f"{field}: [{inner}]"
+        else:
+            repl = f'{field}: "{value}"'
         text = re.sub(rf"^{escaped}:.*", repl, text, flags=re.MULTILINE)
     if text.startswith("---"):
         parts = text.split("---", 2)

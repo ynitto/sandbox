@@ -76,6 +76,9 @@ python ${SKILL_DIR}/scripts/save_memory.py --scope home \
   --category architecture --title "[タイトル]" --summary "[要約]" --content "[内容]"
 ```
 
+> **注意**: `--scope shared` は `save_memory.py` では非対応。shared への保存は
+> `promote_memory.py` で workspace/home から昇格する手順を使うこと。
+
 **手順（スクリプトなし・手動）**:
 1. カテゴリを決定する（例: `auth`, `bug-investigation`, `general`）
 2. `${MEMORY_DIR}/[カテゴリ]/[kebab-case-title].md` を作成する
@@ -162,6 +165,9 @@ python ${SKILL_DIR}/scripts/list_memories.py --stats            # 統計のみ
 
 `share_score >= 70` で昇格候補、`>= 85` で自動昇格対象。
 `recall` を繰り返すほど `share_score` が上がり、昇格対象になる。
+
+> **閾値の変更**: `~/.copilot/memory/config.json` の `semi_auto_promote_threshold`（デフォルト70）と
+> `auto_promote_threshold`（デフォルト85）で調整可能。
 
 ```bash
 # 昇格候補を確認（ドライラン）
