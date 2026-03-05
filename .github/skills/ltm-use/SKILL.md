@@ -253,6 +253,9 @@ python ${SKILL_DIR}/scripts/cleanup_memory.py
 
 # 全スコープ
 python ${SKILL_DIR}/scripts/cleanup_memory.py --scope all
+
+# 確認なしで削除（非対話環境・スクリプトから呼ぶ場合）
+python ${SKILL_DIR}/scripts/cleanup_memory.py --yes
 ```
 
 **削除基準**（`~/.copilot/memory/config.json` で変更可能）:

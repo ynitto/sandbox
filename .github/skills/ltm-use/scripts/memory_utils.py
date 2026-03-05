@@ -458,8 +458,10 @@ def git_pull_repo(repo: dict) -> tuple[bool, str]:
                         capture_output=True, text=True, timeout=30,
                     )
                 if result.returncode != 0:
-                    # sparse-checkout 非対応の古い git へのフォールバック
+                    # sparse-checkout 非対応の古い git へのフォールバック（フルclone）
                     import shutil as _shutil
+                    print(f"警告: sparse-checkout に失敗しました。リポジトリ全体をクローンします。"
+                          f"（Git 2.25+ が必要）", file=__import__("sys").stderr)
                     _shutil.rmtree(local_dir, ignore_errors=True)
                     os.makedirs(os.path.dirname(local_dir), exist_ok=True)
                     result = subprocess.run(
