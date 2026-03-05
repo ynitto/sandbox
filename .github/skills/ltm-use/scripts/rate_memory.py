@@ -81,9 +81,10 @@ def apply_rating(filepath: str, good: bool = False, bad: bool = False,
 
 def _scope_label(memory_dir: str) -> str:
     skill_dir = memory_utils.get_skill_dir()
+    home_dir = memory_utils._get_home_dir()
     if memory_dir.startswith(skill_dir):
         return "workspace"
-    return os.path.relpath(memory_dir, os.path.expanduser("~"))
+    return os.path.relpath(memory_dir, home_dir)
 
 
 def main():

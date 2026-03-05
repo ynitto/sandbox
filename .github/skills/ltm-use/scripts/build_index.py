@@ -79,8 +79,9 @@ def main():
     args = parser.parse_args()
 
     for memory_dir in memory_utils.get_memory_dirs(args.scope):
-        rel = (os.path.relpath(memory_dir, os.path.expanduser("~"))
-               if memory_dir.startswith(os.path.expanduser("~")) else memory_dir)
+        home_dir = memory_utils._get_home_dir()
+        rel = (os.path.relpath(memory_dir, home_dir)
+               if memory_dir.startswith(home_dir) else memory_dir)
         print(f"\n=== {rel} ===")
 
         if not os.path.isdir(memory_dir):

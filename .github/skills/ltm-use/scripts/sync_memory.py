@@ -137,7 +137,7 @@ def main():
         cfg["shared_remote"] = args.set_remote
         memory_utils.save_config(cfg)
         print(f"shared_remote を設定しました: {args.set_remote}")
-        print(f"設定ファイル: ~/.copilot/memory/config.json")
+        print(f"設定ファイル: {os.path.join(memory_utils.HOME_MEMORY_ROOT, 'config.json')}")
         print(f"注意: skill-registry.json に repositories が設定されている場合はそちらが優先されます。")
         return
 
