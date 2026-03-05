@@ -69,7 +69,8 @@ def _scope_label(memory_dir: str) -> str:
         return "workspace"
     if memory_dir.startswith(home_root):
         rel = os.path.relpath(memory_dir, home_root)
-        return f"~/.copilot/memory/{rel}"
+        # クロスプラットフォーム対応: ~ は Unix 専用のため $HOME/.copilot 形式を使用
+        return os.path.join("$HOME", ".copilot", "memory", rel)
     return memory_dir
 
 

@@ -14,12 +14,22 @@ import subprocess
 
 # ─── パス定数 ────────────────────────────────────────────────
 
+def _get_home_dir() -> str:
+    """クロスプラットフォーム対応のホームディレクトリを返す。"""
+    return os.environ.get("USERPROFILE", os.path.expanduser("~"))
+
+
 def get_skill_dir() -> str:
     """このファイルの2階層上 = SKILL_DIR"""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-HOME_MEMORY_ROOT = os.path.expanduser("~/.copilot/memory")
+def _get_home_memory_root() -> str:
+    """クロスプラットフォーム対応のメモリールートを返す。"""
+    return os.path.join(_get_home_dir(), ".copilot", "memory")
+
+
+HOME_MEMORY_ROOT = _get_home_memory_root()
 
 SCOPE_DIRS = {
     "workspace": os.path.join(get_skill_dir(), "memories"),
@@ -27,7 +37,7 @@ SCOPE_DIRS = {
     "shared":    os.path.join(HOME_MEMORY_ROOT, "shared"),  # 後方互換用レガシーパス
 }
 
-REGISTRY_PATH = os.path.expanduser("~/.copilot/skill-registry.json")
+REGISTRY_PATH = os.path.join(_get_home_dir(), ".copilot", "skill-registry.json")
 SHARED_BASE = os.path.join(HOME_MEMORY_ROOT, "shared")
 
 DEFAULT_CONFIG = {

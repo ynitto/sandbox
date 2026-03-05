@@ -110,8 +110,9 @@ def main():
             continue
         targets = find_cleanup_targets(memory_dir, inactive_days, archived_days)
         if targets:
-            scope_label = os.path.relpath(memory_dir, os.path.expanduser("~")) \
-                if memory_dir.startswith(os.path.expanduser("~")) else memory_dir
+            home_dir = memory_utils._get_home_dir()
+            scope_label = os.path.relpath(memory_dir, home_dir) \
+                if memory_dir.startswith(home_dir) else memory_dir
             print(f"\n=== {scope_label} ===")
             display_targets(targets, memory_dir)
             all_targets.extend(targets)

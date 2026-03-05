@@ -27,6 +27,8 @@ git除外                   ローカル永続              git管理
 | `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
 | `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
 
+> **Windows の場合**: `~` は `%USERPROFILE%` に読み替えてください（例: `%USERPROFILE%\.copilot\memory\`）。
+
 ---
 
 ## パス解決
