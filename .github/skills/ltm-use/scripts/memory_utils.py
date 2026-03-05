@@ -24,12 +24,7 @@ def get_skill_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _get_home_memory_root() -> str:
-    """クロスプラットフォーム対応のメモリールートを返す。"""
-    return os.path.join(_get_home_dir(), ".copilot", "memory")
-
-
-HOME_MEMORY_ROOT = _get_home_memory_root()
+HOME_MEMORY_ROOT = os.path.join(_get_home_dir(), ".copilot", "memory")
 
 SCOPE_DIRS = {
     "workspace": os.path.join(get_skill_dir(), "memories"),

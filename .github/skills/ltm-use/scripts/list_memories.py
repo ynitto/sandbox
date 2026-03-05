@@ -70,7 +70,8 @@ def _scope_label(memory_dir: str) -> str:
     if memory_dir.startswith(home_root):
         rel = os.path.relpath(memory_dir, home_root)
         # クロスプラットフォーム対応: ~ は Unix 専用のため $HOME/.copilot 形式を使用
-        return os.path.join("$HOME", ".copilot", "memory", rel)
+        # パス区切り文字も / に統一して表示
+        return f"$HOME/.copilot/memory/{rel.replace(os.sep, '/')}"
     return memory_dir
 
 
