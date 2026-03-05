@@ -194,6 +194,9 @@ def format_result(result: dict, index: int, full: bool = False) -> str:
 
 def interactive_rate(results: list[dict]) -> None:
     """recall 結果を表示した後にユーザーが評価を入力できるループ"""
+    # rate_memory は recall_memory と相互依存しないが、起動コストを避けるため遅延インポート
+    from rate_memory import apply_rating
+
     print("\n参照した記憶を評価しますか？ (Enter でスキップ)")
     for i, r in enumerate(results, 1):
         mem_id = r["meta"].get("id", "?")
@@ -204,20 +207,17 @@ def interactive_rate(results: list[dict]) -> None:
         ).strip().lower()
 
         if ans in ("g", "good"):
-            from rate_memory import apply_rating
             apply_rating(r["filepath"], good=True)
             if r["memory_dir"]:
                 memory_utils.update_index_entry(r["memory_dir"], r["filepath"])
             print("  → 良い評価を記録しました ✓")
         elif ans in ("b", "bad"):
-            from rate_memory import apply_rating
             apply_rating(r["filepath"], bad=True)
             if r["memory_dir"]:
                 memory_utils.update_index_entry(r["memory_dir"], r["filepath"])
             print("  → 悪い評価を記録しました ✗")
         elif ans in ("c", "correction"):
             note = input("     修正内容を入力してください: ").strip()
-            from rate_memory import apply_rating
             apply_rating(r["filepath"], correction=True, note=note)
             if r["memory_dir"]:
                 memory_utils.update_index_entry(r["memory_dir"], r["filepath"])

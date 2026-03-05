@@ -155,12 +155,15 @@ def main():
             # インデックスからも削除
             if memory_dir:
                 memory_utils.update_index_entry(memory_dir, t["filepath"])
-            # 空カテゴリディレクトリを削除
+            # 空カテゴリディレクトリを削除（競合を無視して try/except で保護）
             cat_dir = os.path.dirname(t["filepath"])
             if os.path.isdir(cat_dir) and not any(
                 f for f in os.listdir(cat_dir) if not f.startswith(".")
             ):
-                os.rmdir(cat_dir)
+                try:
+                    os.rmdir(cat_dir)
+                except OSError:
+                    pass  # 別プロセスによる割り込みなど競合時は無視
             deleted += 1
         except OSError as e:
             print(f"  削除失敗: {t['filepath']} - {e}", file=sys.stderr)

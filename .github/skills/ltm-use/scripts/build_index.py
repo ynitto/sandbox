@@ -55,7 +55,9 @@ def print_stats(memory_dir: str) -> None:
     total_corrections = sum(e.get("correction_count", 0) for e in entries)
     rated_positive = sum(1 for e in entries if e.get("user_rating", 0) > 0)
     rated_negative = sum(1 for e in entries if e.get("user_rating", 0) < 0)
-    promote_candidates = sum(1 for e in entries if e.get("share_score", 0) >= 70)
+    cfg = memory_utils.load_config()
+    promote_threshold = cfg["semi_auto_promote_threshold"]
+    promote_candidates = sum(1 for e in entries if e.get("share_score", 0) >= promote_threshold)
 
     print(f"  総記憶数   : {total}件 (active: {active}件)")
     print(f"  share_score: avg={avg_score:.1f} / max={top_score} / 昇格候補={promote_candidates}件")
