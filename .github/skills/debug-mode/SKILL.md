@@ -1,6 +1,6 @@
 ---
 name: debug-mode
-description: "ランタイムログによる体系的printfデバッグ。「デバッグして」「バグ調査」「なぜ動かない」「エラーが出る」で発動。複数仮説→計装→ログ分析→CONFIRMED判定の順で修正する。Windows/PowerShell 対応。"
+description: "ランタイムログによる体系的printfデバッグ。「デバッグして」「バグ調査」「なぜ動かない」「ログを仕込んで」「計装して」「何が起きているか確認したい」で発動。バグ修正よりも先にランタイムの動作を観察・調査することが目的。複数仮説→計装→ログ分析→CONFIRMED判定の順で修正する。Windows/PowerShell 対応。"
 metadata:
   version: "1.0.0"
 ---
