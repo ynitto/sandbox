@@ -163,7 +163,18 @@ def get_memory_dirs(scope: str) -> list[str]:
 # ─── フロントマター ──────────────────────────────────────────
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
-    """YAMLフロントマターをパースする（PyYAML不要のシンプル実装）"""
+    """YAMLフロントマターをパースする（PyYAML不要のシンプル実装）
+
+    対応形式:
+      key: value          # 文字列
+      key: "value"        # クォート文字列（コロン等を含む値に使用）
+      key: 42             # 整数（負の値も可）
+      key: [a, b, c]      # 文字列リスト（1行形式のみ）
+      key: ""             # 空文字列
+
+    非対応: 複数行ブロックスカラー、ネストオブジェクト、YAML リスト（- item 形式）
+    → これらが必要な場合は手動で値を1行形式に記述すること
+    """
     meta: dict = {}
     body = text
     if text.startswith("---"):
@@ -172,11 +183,19 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             fm_text = parts[1]
             body = parts[2].strip()
             for line in fm_text.splitlines():
+                # インデント行（リスト項目 "  - item" など）とコメント行はスキップ
+                stripped = line.lstrip()
+                if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+                    continue
                 if ":" not in line:
                     continue
                 key, _, val = line.partition(":")
                 key = key.strip()
                 val = val.strip()
+                # 空値
+                if not val:
+                    meta[key] = ""
+                    continue
                 # 文字列リスト [a, b]
                 if val.startswith("[") and val.endswith("]"):
                     inner = val[1:-1]
@@ -184,9 +203,12 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
                 # 整数（負の値も対応）
                 elif re.fullmatch(r"-?\d+", val):
                     meta[key] = int(val)
-                # クォート付き文字列
+                # クォート付き文字列（コロン等が含まれる値を安全に扱う）
+                elif val.startswith('"') and val.endswith('"'):
+                    meta[key] = val[1:-1]
+                # 非クォート文字列
                 else:
-                    meta[key] = val.strip('"')
+                    meta[key] = val
     return meta, body
 
 
@@ -221,7 +243,13 @@ def update_file_with_body(filepath: str, meta_updates: dict, new_body: str) -> N
         text = f.read()
     for field, value in meta_updates.items():
         escaped = re.escape(field)
-        repl = f"{field}: {value}" if isinstance(value, int) else f'{field}: "{value}"'
+        if isinstance(value, int):
+            repl = f"{field}: {value}"
+        elif isinstance(value, list):
+            inner = ", ".join(f'"{v}"' if " " in v else v for v in value)
+            repl = f"{field}: [{inner}]"
+        else:
+            repl = f'{field}: "{value}"'
         text = re.sub(rf"^{escaped}:.*", repl, text, flags=re.MULTILINE)
     if text.startswith("---"):
         parts = text.split("---", 2)
@@ -422,10 +450,15 @@ def find_memory_dir(filepath: str) -> str | None:
 # ─── Git ヘルパー ────────────────────────────────────────────
 
 def git_pull_repo(repo: dict) -> tuple[bool, str]:
-    """リポジトリを git pull する。local_dir が存在しなければ clone する。"""
+    """リポジトリを git pull する。local_dir が存在しなければ clone する。
+
+    memory_root が設定されている場合は sparse-checkout を使用して
+    そのフォルダのみを取得し、リポジトリ全体のクローンを避ける。
+    """
     local_dir = repo["local_dir"]
     remote = repo.get("url", "")
     branch = repo.get("branch", "main")
+    memory_root = repo.get("memory_root", "")
     if not remote:
         return False, "URL が設定されていません"
     try:
@@ -436,10 +469,38 @@ def git_pull_repo(repo: dict) -> tuple[bool, str]:
             )
         else:
             os.makedirs(os.path.dirname(local_dir), exist_ok=True)
-            result = subprocess.run(
-                ["git", "clone", "--branch", branch, remote, local_dir],
-                capture_output=True, text=True, timeout=60,
-            )
+            if memory_root:
+                # sparse-checkout でメモリフォルダのみ取得（リポジトリ全体を避ける）
+                result = subprocess.run(
+                    ["git", "clone", "--no-checkout", "--filter=blob:none",
+                     "--branch", branch, remote, local_dir],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if result.returncode == 0:
+                    subprocess.run(
+                        ["git", "-C", local_dir, "sparse-checkout", "set", memory_root],
+                        capture_output=True, timeout=10,
+                    )
+                    result = subprocess.run(
+                        ["git", "-C", local_dir, "checkout"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                if result.returncode != 0:
+                    # sparse-checkout 非対応の古い git へのフォールバック（フルclone）
+                    import shutil as _shutil
+                    print(f"警告: sparse-checkout に失敗しました。リポジトリ全体をクローンします。"
+                          f"（Git 2.25+ が必要）", file=__import__("sys").stderr)
+                    _shutil.rmtree(local_dir, ignore_errors=True)
+                    os.makedirs(os.path.dirname(local_dir), exist_ok=True)
+                    result = subprocess.run(
+                        ["git", "clone", "--branch", branch, remote, local_dir],
+                        capture_output=True, text=True, timeout=60,
+                    )
+            else:
+                result = subprocess.run(
+                    ["git", "clone", "--branch", branch, remote, local_dir],
+                    capture_output=True, text=True, timeout=60,
+                )
         if result.returncode == 0:
             return True, result.stdout.strip()
         return False, result.stderr.strip()

@@ -88,7 +88,10 @@ def save_memory(category: str, title: str, summary: str, content: str,
     filepath = os.path.join(category_dir, f"{slug}.md")
     if os.path.exists(filepath):
         base, ext = os.path.splitext(filepath)
-        filepath = f"{base}-{mem_id[-3:]}{ext}"
+        n = 1
+        while os.path.exists(f"{base}-{n:03d}{ext}"):
+            n += 1
+        filepath = f"{base}-{n:03d}{ext}"
 
     # share_score を事前計算（保存直後は access_count=0 のため情報量とタグのみ）
     pseudo_meta = {"tags": tags, "access_count": 0, "user_rating": 0,
