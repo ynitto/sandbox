@@ -32,4 +32,4 @@ AsyncStorage.getItem('debug.log').then(log => {
 //#endregion
 ```
 
-モバイルデバイスからのログ取得方法は [common.md](common.md) を参照。
+実機からのログ取得: Android は `adb shell run-as com.yourapp cat /data/data/com.yourapp/files/debug.log > debug.log`、iOS は Xcode の「Window > Devices and Simulators > Download Container」から行う。

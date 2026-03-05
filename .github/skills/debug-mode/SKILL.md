@@ -1,12 +1,6 @@
 ---
 name: debug-mode
-description: |
-  ランタイム証拠を使った体系的なprintfデバッグスキル。バグの診断と修正を支援する。
-  発動条件: (1)「デバッグして」「バグ調査」「なぜ動かない」などのリクエスト、
-  (2) 予期しない動作やエラーの報告、
-  (3) 推測ではなく証拠に基づくデバッグを求める場合。
-  基本原則: まず観察し、後で修正する。ログ分析前に修正を提案してはならない。
-  GitHub Copilot / Claude Code 両環境で利用可能（Windows/PowerShell 対応）。
+description: "ランタイムログによる体系的printfデバッグ。「デバッグして」「バグ調査」「なぜ動かない」「エラーが出る」で発動。複数仮説→計装→ログ分析→CONFIRMED判定の順で修正する。Windows/PowerShell 対応。"
 metadata:
   version: "1.0.0"
 ---

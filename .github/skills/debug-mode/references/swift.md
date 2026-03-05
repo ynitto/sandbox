@@ -50,4 +50,4 @@ debugProbe("H1", "user_state", ["userId": userId, "cart": cart])
 // endregion
 ```
 
-iOS デバイスからのログ取得方法は [common.md](common.md) を参照。
+iOS デバイスからのログ取得は Xcode の「Window > Devices and Simulators > Download Container」から行う。

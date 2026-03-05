@@ -40,4 +40,4 @@ context.openFileOutput("debug.log", Context.MODE_APPEND).bufferedWriter().use {
 // endregion
 ```
 
-Android デバイスからのログ取得方法は [common.md](common.md) を参照。
+Android デバイスからのログ取得は `adb shell run-as com.yourapp cat /data/data/com.yourapp/files/debug.log > debug.log` で行う。
