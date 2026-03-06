@@ -1,6 +1,6 @@
 ---
 name: ltm-use
-description: "セッションをまたいで知識・調査結果・決定事項を継続させたいときに使用するスキル。「覚えておいて」「メモして」でsave、「思い出して」「以前の」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った」「間違ってた」でrate操作。明示的な指示がなくても、重要な情報・決定・知見を発見したらproactiveにsaveを判断して実行すること。"
+description: "セッションをまたいで知識・決定事項を継続させたいときのスキル。「覚えておいて」でsave、「思い出して」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った／間違ってた」でrate、「Copilotの記憶を同期して」でsync-copilot-memory。重要な知見を発見したら自律的にsaveを実行すること。"
 metadata:
   version: "3.0.0"
 ---
