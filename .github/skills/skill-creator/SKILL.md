@@ -1,148 +1,148 @@
 ---
 name: skill-creator
-description: Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, update or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
+description: 新しいスキルの作成、既存スキルの変更・改善、スキルのパフォーマンス計測を行います。スクラッチからスキルを作りたい、既存スキルを更新・最適化したい、スキルをテストするためにevalを実行したい、分散分析でスキルのパフォーマンスをベンチマークしたい、またはトリガー精度向上のためにスキルの説明文を最適化したい場合に使用してください。
 ---
 
-# Skill Creator
+# Skill Creator（スキルクリエーター）
 
-A skill for creating new skills and iteratively improving them.
+新しいスキルを作成し、反復的に改善するためのスキルです。
 
-At a high level, the process of creating a skill goes like this:
+スキル作成の大まかな流れは次のとおりです：
 
-- Decide what you want the skill to do and roughly how it should do it
-- Write a draft of the skill
-- Create a few test prompts and run claude-with-access-to-the-skill on them
-- Help the user evaluate the results both qualitatively and quantitatively
-  - While the runs happen in the background, draft some quantitative evals if there aren't any (if there are some, you can either use as is or modify if you feel something needs to change about them). Then explain them to the user (or if they already existed, explain the ones that already exist)
-  - Use the `eval-viewer/generate_review.py` script to show the user the results for them to look at, and also let them look at the quantitative metrics
-- Rewrite the skill based on feedback from the user's evaluation of the results (and also if there are any glaring flaws that become apparent from the quantitative benchmarks)
-- Repeat until you're satisfied
-- Expand the test set and try again at larger scale
+- スキルに何をさせたいか、おおよそどう動作させるかを決める
+- スキルの草稿を書く
+- テストプロンプトをいくつか作成し、スキルにアクセスできる状態のClaudeでそれらを実行する
+- 定性的・定量的に結果を一緒に評価する
+  - 実行がバックグラウンドで動いている間に、定量的なevalをまだ作っていなければ草案を作る（すでにある場合はそのまま使うか、変更が必要なら修正する）。そしてそれをユーザーに説明する（すでに存在する場合は、既存のものを説明する）
+  - `eval-viewer/generate_review.py` スクリプトを使って結果をユーザーに表示し、定量的な指標も確認できるようにする
+- ユーザーの評価フィードバックに基づいてスキルを書き直す（定量的ベンチマークで明らかな欠陥が見つかった場合も）
+- 満足するまで繰り返す
+- テストセットを拡大してより大きなスケールで再挑戦する
 
-Your job when using this skill is to figure out where the user is in this process and then jump in and help them progress through these stages. So for instance, maybe they're like "I want to make a skill for X". You can help narrow down what they mean, write a draft, write the test cases, figure out how they want to evaluate, run all the prompts, and repeat.
+このスキルを使う際は、ユーザーがこのプロセスのどこにいるかを把握し、各ステージを前進させる手助けをしてください。例えば「Xのためのスキルを作りたい」という場合、意図を絞り込み、草案を書き、テストケースを作り、評価方法を決め、全プロンプトを実行し、繰り返す、という流れをサポートします。
 
-On the other hand, maybe they already have a draft of the skill. In this case you can go straight to the eval/iterate part of the loop.
+一方、すでにスキルの草案がある場合は、eval・反復のループから直接始められます。
 
-Of course, you should always be flexible and if the user is like "I don't need to run a bunch of evaluations, just vibe with me", you can do that instead.
+もちろん柔軟に対応してください。ユーザーが「大量のevalは不要、気軽にやろう」と言うなら、そうしても構いません。
 
-Then after the skill is done (but again, the order is flexible), you can also run the skill description improver, which we have a whole separate script for, to optimize the triggering of the skill.
+スキルが完成したら（順序は柔軟に）、スキル説明の改善ツールも実行できます。トリガーを最適化するための別スクリプトが用意されています。
 
-Cool? Cool.
+了解！
 
-## Communicating with the user
+## ユーザーとのコミュニケーション
 
-The skill creator is liable to be used by people across a wide range of familiarity with coding jargon. If you haven't heard (and how could you, it's only very recently that it started), there's a trend now where the power of Claude is inspiring plumbers to open up their terminals, parents and grandparents to google "how to install npm". On the other hand, the bulk of users are probably fairly computer-literate.
+Skill Creatorはコーディングの専門知識が幅広いユーザーに使われます。Claudeの力に触発されて、配管工がターミナルを開いたり、親御さんや祖父母が「npmのインストール方法」を検索したりするようになっています。一方で、多くのユーザーはコンピューターにある程度詳しいでしょう。
 
-So please pay attention to context cues to understand how to phrase your communication! In the default case, just to give you some idea:
+**文脈に合わせて言葉を選んでください！** 目安として：
 
-- "evaluation" and "benchmark" are borderline, but OK
-- for "JSON" and "assertion" you want to see serious cues from the user that they know what those things are before using them without explaining them
+- 「評価（evaluation）」「ベンチマーク（benchmark）」は境界線上だが使っても概ねOK
+- 「JSON」「アサーション（assertion）」は、ユーザーがそれらを知っているという明確な手がかりがあるまで、説明なしには使わない
 
-It's OK to briefly explain terms if you're in doubt, and feel free to clarify terms with a short definition if you're unsure if the user will get it.
+疑わしければ、短い定義を添えて用語を説明しても構いません。
 
 ---
 
-## Creating a skill
+## スキルの作成
 
-### Capture Intent
+### 意図の把握
 
-Start by understanding the user's intent. The current conversation might already contain a workflow the user wants to capture (e.g., they say "turn this into a skill"). If so, extract answers from the conversation history first — the tools used, the sequence of steps, corrections the user made, input/output formats observed. The user may need to fill the gaps, and should confirm before proceeding to the next step.
+まずユーザーの意図を理解します。現在の会話がすでにユーザーのキャプチャしたいワークフローを含んでいる場合（例：「これをスキルにして」）、会話履歴から答えを抽出します——使ったツール、ステップの順序、ユーザーが行った修正、観察された入出力形式など。ユーザーはギャップを埋める必要があるかもしれず、次のステップに進む前に確認が必要です。
 
-1. What should this skill enable Claude to do?
-2. When should this skill trigger? (what user phrases/contexts)
-3. What's the expected output format?
-4. Should we set up test cases to verify the skill works? Skills with objectively verifiable outputs (file transforms, data extraction, code generation, fixed workflow steps) benefit from test cases. Skills with subjective outputs (writing style, art) often don't need them. Suggest the appropriate default based on the skill type, but let the user decide.
+1. このスキルはClaudeに何をできるようにすべきか？
+2. このスキルはいつトリガーされるべきか？（どんなユーザーのフレーズ・文脈で）
+3. 期待される出力形式は？
+4. スキルが正しく機能するかを検証するためのテストケースを設定すべきか？客観的に検証可能な出力（ファイル変換、データ抽出、コード生成、固定ワークフローのステップ）を持つスキルはテストケースから恩恵を受けます。主観的な出力（文章スタイル、アート）は通常不要です。スキルの種類に応じた適切なデフォルトを提案し、ユーザーに決めてもらいます。
 
-### Interview and Research
+### インタビューとリサーチ
 
-Proactively ask questions about edge cases, input/output formats, example files, success criteria, and dependencies. Wait to write test prompts until you've got this part ironed out.
+エッジケース、入出力形式、サンプルファイル、成功基準、依存関係について積極的に質問します。この部分が固まるまでテストプロンプトは書きません。
 
-Check available MCPs - if useful for research (searching docs, finding similar skills, looking up best practices), research in parallel via subagents if available, otherwise inline. Come prepared with context to reduce burden on the user.
+利用可能なMCPを確認します——リサーチに役立つ場合（ドキュメント検索、類似スキル探索、ベストプラクティス調査など）、サブエージェントが使える場合は並行してリサーチし、そうでなければインラインで行います。ユーザーの負担を減らすために文脈を準備しておきます。
 
-### Write the SKILL.md
+### SKILL.md の作成
 
-Based on the user interview, fill in these components:
+ユーザーインタビューをもとに、以下のコンポーネントを記入します：
 
-- **name**: Skill identifier
-- **description**: When to trigger, what it does. This is the primary triggering mechanism - include both what the skill does AND specific contexts for when to use it. All "when to use" info goes here, not in the body. Note: currently Claude has a tendency to "undertrigger" skills -- to not use them when they'd be useful. To combat this, please make the skill descriptions a little bit "pushy". So for instance, instead of "How to build a simple fast dashboard to display internal Anthropic data.", you might write "How to build a simple fast dashboard to display internal Anthropic data. Make sure to use this skill whenever the user mentions dashboards, data visualization, internal metrics, or wants to display any kind of company data, even if they don't explicitly ask for a 'dashboard.'"
-- **compatibility**: Required tools, dependencies (optional, rarely needed)
-- **the rest of the skill :)**
+- **name**: スキルの識別子
+- **description**: トリガーするタイミング、何をするか。これがメインのトリガーメカニズムです——スキルが何をするかと、いつ使うべき具体的な文脈の両方を含めます。すべての「使用タイミング」情報はここに書き、本文には書きません。注意：現在Claudeはスキルを「アンダートリガー」する傾向があります——役立つはずなのに使わないことがあります。これに対抗するため、スキルの説明は少し「押しつけ気味」にしてください。例えば「シンプルで高速なダッシュボードの作り方」ではなく、「シンプルで高速なダッシュボードの作り方。ユーザーがダッシュボード、データ可視化、内部指標、または何らかのデータ表示について言及した場合は、たとえ明示的に「ダッシュボード」を求めていなくても、必ずこのスキルを使用してください」のように書きます。
+- **compatibility**: 必要なツール、依存関係（オプション、めったに必要なし）
+- **スキルの残りの部分 :)**
 
-### Skill Writing Guide
+### スキル作成ガイド
 
-#### Anatomy of a Skill
+#### スキルの構造
 
 ```
 skill-name/
-├── SKILL.md (required)
-│   ├── YAML frontmatter (name, description required)
-│   └── Markdown instructions
-└── Bundled Resources (optional)
-    ├── scripts/    - Executable code for deterministic/repetitive tasks
-    ├── references/ - Docs loaded into context as needed
-    └── assets/     - Files used in output (templates, icons, fonts)
+├── SKILL.md（必須）
+│   ├── YAMLフロントマター（name, description は必須）
+│   └── Markdownの指示
+└── バンドルリソース（オプション）
+    ├── scripts/    - 決定論的・反復的タスク用の実行可能コード
+    ├── references/ - 必要に応じてコンテキストに読み込むドキュメント
+    └── assets/     - 出力に使用するファイル（テンプレート、アイコン、フォントなど）
 ```
 
-#### Progressive Disclosure
+#### プログレッシブディスクロージャー
 
-Skills use a three-level loading system:
-1. **Metadata** (name + description) - Always in context (~100 words)
-2. **SKILL.md body** - In context whenever skill triggers (<500 lines ideal)
-3. **Bundled resources** - As needed (unlimited, scripts can execute without loading)
+スキルは3段階のロードシステムを使用します：
+1. **メタデータ**（name + description）- 常にコンテキスト内（約100語）
+2. **SKILL.md本文** - スキルがトリガーされるたびにコンテキスト内（理想は500行未満）
+3. **バンドルリソース** - 必要に応じて（無制限、スクリプトは読み込まずに実行可能）
 
-These word counts are approximate and you can feel free to go longer if needed.
+これらの語数は目安であり、必要であれば長くしても構いません。
 
-**Key patterns:**
-- Keep SKILL.md under 500 lines; if you're approaching this limit, add an additional layer of hierarchy along with clear pointers about where the model using the skill should go next to follow up.
-- Reference files clearly from SKILL.md with guidance on when to read them
-- For large reference files (>300 lines), include a table of contents
+**主なパターン：**
+- SKILL.mdは500行以下に保つ。この制限に近づいた場合は、追加の階層レベルを設け、次にどこを参照すればよいかの明確なポインタを含める
+- SKILL.mdからファイルを明確に参照し、いつ読むべきかのガイダンスを添える
+- 大きな参照ファイル（300行超）には目次を含める
 
-**Domain organization**: When a skill supports multiple domains/frameworks, organize by variant:
+**ドメインの整理**: スキルが複数のドメイン・フレームワークをサポートする場合、バリアントごとに整理します：
 ```
 cloud-deploy/
-├── SKILL.md (workflow + selection)
+├── SKILL.md（ワークフロー + 選択）
 └── references/
     ├── aws.md
     ├── gcp.md
     └── azure.md
 ```
-Claude reads only the relevant reference file.
+Claudeは関連する参照ファイルのみを読みます。
 
-#### Principle of Lack of Surprise
+#### 予測可能性の原則
 
-This goes without saying, but skills must not contain malware, exploit code, or any content that could compromise system security. A skill's contents should not surprise the user in their intent if described. Don't go along with requests to create misleading skills or skills designed to facilitate unauthorized access, data exfiltration, or other malicious activities. Things like a "roleplay as an XYZ" are OK though.
+言うまでもありませんが、スキルにはマルウェア、エクスプロイトコード、またはシステムセキュリティを侵害する可能性のあるコンテンツを含めてはいけません。スキルの内容は、説明されたとおりの意図においてユーザーを驚かせるものであってはなりません。誤解を招くスキルや、不正アクセス、データ流出、その他の悪意ある活動を促進するスキルの作成要求には応じないでください。「XYZとしてロールプレイ」のようなものは問題ありません。
 
-#### Writing Patterns
+#### 作成パターン
 
-Prefer using the imperative form in instructions.
+指示には命令形を使用することをお勧めします。
 
-**Defining output formats** - You can do it like this:
+**出力形式の定義** - 次のようにできます：
 ```markdown
-## Report structure
-ALWAYS use this exact template:
-# [Title]
-## Executive summary
-## Key findings
-## Recommendations
+## レポート構造
+必ずこの正確なテンプレートを使用してください：
+# [タイトル]
+## エグゼクティブサマリー
+## 主な所見
+## 推奨事項
 ```
 
-**Examples pattern** - It's useful to include examples. You can format them like this (but if "Input" and "Output" are in the examples you might want to deviate a little):
+**例のパターン** - 例を含めることは有用です。次のようにフォーマットできます（ただし例の中に「入力」「出力」がある場合は少し変えても構いません）：
 ```markdown
-## Commit message format
-**Example 1:**
-Input: Added user authentication with JWT tokens
-Output: feat(auth): implement JWT-based authentication
+## コミットメッセージのフォーマット
+**例1：**
+入力：JWTトークンによるユーザー認証を追加した
+出力：feat(auth): implement JWT-based authentication
 ```
 
-### Writing Style
+### 文章スタイル
 
-Try to explain to the model why things are important in lieu of heavy-handed musty MUSTs. Use theory of mind and try to make the skill general and not super-narrow to specific examples. Start by writing a draft and then look at it with fresh eyes and improve it.
+重苦しい「MUST」の代わりに、なぜ重要なのかをモデルに説明するようにしてください。心の理論を使って、スキルを特定の例に狭めず汎用的に作ります。まず草案を書き、新鮮な目で見直して改善します。
 
-### Test Cases
+### テストケース
 
-After writing the skill draft, come up with 2-3 realistic test prompts — the kind of thing a real user would actually say. Share them with the user: [you don't have to use this exact language] "Here are a few test cases I'd like to try. Do these look right, or do you want to add more?" Then run them.
+スキルの草案を作成したら、実際のユーザーが言いそうな現実的なテストプロンプトを2〜3個考えます。ユーザーと共有します：「試してみたいテストケースがいくつかあります。これで合っていますか、それとも追加しますか？」と確認してから実行します。
 
-Save test cases to `evals/evals.json`. Don't write assertions yet — just the prompts. You'll draft assertions in the next step while the runs are in progress.
+テストケースは `evals/evals.json` に保存します。まだアサーションは書きません——プロンプトだけで十分です。次のステップで実行中にアサーションを草案します。
 
 ```json
 {
@@ -150,63 +150,63 @@ Save test cases to `evals/evals.json`. Don't write assertions yet — just the p
   "evals": [
     {
       "id": 1,
-      "prompt": "User's task prompt",
-      "expected_output": "Description of expected result",
+      "prompt": "ユーザーのタスクプロンプト",
+      "expected_output": "期待される結果の説明",
       "files": []
     }
   ]
 }
 ```
 
-See `references/schemas.md` for the full schema (including the `assertions` field, which you'll add later).
+完全なスキーマ（後で追加する `assertions` フィールドを含む）については `references/schemas.md` を参照してください。
 
-## Running and evaluating test cases
+## テストケースの実行と評価
 
-This section is one continuous sequence — don't stop partway through. Do NOT use `/skill-test` or any other testing skill.
+このセクションは一連の連続したシーケンスです——途中で止めないでください。`/skill-test` や他のテストスキルは使用しないでください。
 
-Put results in `<skill-name>-workspace/` as a sibling to the skill directory. Within the workspace, organize results by iteration (`iteration-1/`, `iteration-2/`, etc.) and within that, each test case gets a directory (`eval-0/`, `eval-1/`, etc.). Don't create all of this upfront — just create directories as you go.
+結果は `<skill-name>-workspace/` にスキルディレクトリの兄弟として配置します。ワークスペース内では結果をイテレーション別（`iteration-1/`、`iteration-2/` など）に整理し、その中で各テストケースにディレクトリを作ります（`eval-0/`、`eval-1/` など）。これらを全部最初に作るのではなく、必要に応じてディレクトリを作成していきます。
 
-### Step 1: Spawn all runs (with-skill AND baseline) in the same turn
+### ステップ1：同じターンで全実行（with-skillとbaseline両方）を起動する
 
-For each test case, spawn two subagents in the same turn — one with the skill, one without. This is important: don't spawn the with-skill runs first and then come back for baselines later. Launch everything at once so it all finishes around the same time.
+各テストケースに対して、同じターンに2つのサブエージェントを起動します——1つはスキルあり、1つはなし。これは重要：with-skillを先に起動してからbaselineに戻るのではなく、すべてを一度に起動して同時に終わるようにします。
 
-**With-skill run:**
+**With-skillの実行：**
 
 ```
-Execute this task:
-- Skill path: <path-to-skill>
-- Task: <eval prompt>
-- Input files: <eval files if any, or "none">
-- Save outputs to: <workspace>/iteration-<N>/eval-<ID>/with_skill/outputs/
-- Outputs to save: <what the user cares about — e.g., "the .docx file", "the final CSV">
+このタスクを実行してください：
+- スキルパス：<path-to-skill>
+- タスク：<evalプロンプト>
+- 入力ファイル：<evalファイル（あれば）、なければ "none">
+- 出力先：<workspace>/iteration-<N>/eval-<ID>/with_skill/outputs/
+- 保存する出力：<ユーザーが気にするもの——例：".docxファイル"、"最終CSV">
 ```
 
-**Baseline run** (same prompt, but the baseline depends on context):
-- **Creating a new skill**: no skill at all. Same prompt, no skill path, save to `without_skill/outputs/`.
-- **Improving an existing skill**: the old version. Before editing, snapshot the skill (`cp -r <skill-path> <workspace>/skill-snapshot/`), then point the baseline subagent at the snapshot. Save to `old_skill/outputs/`.
+**Baselineの実行**（同じプロンプト、ただしbaselineは文脈による）：
+- **新しいスキルを作成する場合**：スキルなし。同じプロンプト、スキルパスなし、`without_skill/outputs/` に保存。
+- **既存スキルを改善する場合**：古いバージョン。編集前にスキルをスナップショット（`cp -r <skill-path> <workspace>/skill-snapshot/`）し、baselineサブエージェントをスナップショットに向けます。`old_skill/outputs/` に保存。
 
-Write an `eval_metadata.json` for each test case (assertions can be empty for now). Give each eval a descriptive name based on what it's testing — not just "eval-0". Use this name for the directory too. If this iteration uses new or modified eval prompts, create these files for each new eval directory — don't assume they carry over from previous iterations.
+各テストケースに `eval_metadata.json` を書きます（アサーションは今は空で可）。テスト対象を示す説明的な名前をevalに付けます——「eval-0」ではなく。ディレクトリ名にもこの名前を使います。このイテレーションが新規または変更済みのevalプロンプトを使用している場合は、各新しいevalディレクトリにこれらのファイルを作成します——前のイテレーションから引き継がれると想定しないでください。
 
 ```json
 {
   "eval_id": 0,
   "eval_name": "descriptive-name-here",
-  "prompt": "The user's task prompt",
+  "prompt": "ユーザーのタスクプロンプト",
   "assertions": []
 }
 ```
 
-### Step 2: While runs are in progress, draft assertions
+### ステップ2：実行中にアサーションを草案する
 
-Don't just wait for the runs to finish — you can use this time productively. Draft quantitative assertions for each test case and explain them to the user. If assertions already exist in `evals/evals.json`, review them and explain what they check.
+実行が終わるのをただ待つのではなく、この時間を有効活用します。各テストケースの定量的アサーションを草案し、ユーザーに説明します。アサーションがすでに `evals/evals.json` に存在する場合は、それらを確認して何をチェックするかを説明します。
 
-Good assertions are objectively verifiable and have descriptive names — they should read clearly in the benchmark viewer so someone glancing at the results immediately understands what each one checks. Subjective skills (writing style, design quality) are better evaluated qualitatively — don't force assertions onto things that need human judgment.
+良いアサーションは客観的に検証可能で、説明的な名前を持ちます——ベンチマークビューアーで結果を一目見た人が、各アサーションが何をチェックしているかをすぐ理解できるように読める必要があります。主観的なスキル（文章スタイル、デザイン品質）は定性的に評価した方が良い——人間の判断が必要なものに無理にアサーションを付けないでください。
 
-Update the `eval_metadata.json` files and `evals/evals.json` with the assertions once drafted. Also explain to the user what they'll see in the viewer — both the qualitative outputs and the quantitative benchmark.
+草案ができたら `eval_metadata.json` と `evals/evals.json` を更新します。ビューアーで何が見えるか——定性的な出力と定量的なベンチマークの両方——をユーザーに説明します。
 
-### Step 3: As runs complete, capture timing data
+### ステップ3：実行完了時にタイミングデータを取得する
 
-When each subagent task completes, you receive a notification containing `total_tokens` and `duration_ms`. Save this data immediately to `timing.json` in the run directory:
+各サブエージェントのタスクが完了すると、`total_tokens` と `duration_ms` を含む通知が届きます。このデータをすぐに実行ディレクトリの `timing.json` に保存します：
 
 ```json
 {
@@ -216,24 +216,26 @@ When each subagent task completes, you receive a notification containing `total_
 }
 ```
 
-This is the only opportunity to capture this data — it comes through the task notification and isn't persisted elsewhere. Process each notification as it arrives rather than trying to batch them.
+これがこのデータを取得できる唯一の機会です——タスク通知を通じて届き、それ以外では保存されません。まとめて処理しようとせず、通知が届いたらすぐ処理します。
 
-### Step 4: Grade, aggregate, and launch the viewer
+### ステップ4：採点、集計、ビューアーの起動
 
-Once all runs are done:
+全実行が完了したら：
 
-1. **Grade each run** — spawn a grader subagent (or grade inline) that reads `agents/grader.md` and evaluates each assertion against the outputs. Save results to `grading.json` in each run directory. The grading.json expectations array must use the fields `text`, `passed`, and `evidence` (not `name`/`met`/`details` or other variants) — the viewer depends on these exact field names. For assertions that can be checked programmatically, write and run a script rather than eyeballing it — scripts are faster, more reliable, and can be reused across iterations.
+1. **各実行を採点する** — graderサブエージェントを起動（またはインラインで採点）し、`agents/grader.md` を読んで各アサーションを出力に対して評価します。結果を各実行ディレクトリの `grading.json` に保存します。grading.jsonのexpectations配列は `text`、`passed`、`evidence` フィールドを使用する必要があります（`name`/`met`/`details` や他のバリアントではなく）——ビューアーはこれらの正確なフィールド名に依存しています。プログラム的にチェックできるアサーションは、目視ではなくスクリプトを書いて実行します——スクリプトの方が速く、信頼性が高く、イテレーション間で再利用できます。
 
-2. **Aggregate into benchmark** — run the aggregation script from the skill-creator directory:
+2. **ベンチマークに集計する** — skill-creatorディレクトリから集計スクリプトを実行します：
    ```bash
    python -m scripts.aggregate_benchmark <workspace>/iteration-N --skill-name <name>
    ```
-   This produces `benchmark.json` and `benchmark.md` with pass_rate, time, and tokens for each configuration, with mean ± stddev and the delta. If generating benchmark.json manually, see `references/schemas.md` for the exact schema the viewer expects.
-Put each with_skill version before its baseline counterpart.
+   これにより `benchmark.json` と `benchmark.md` が生成され、各設定のpass_rate、時間、トークン数が平均±標準偏差とデルタ付きで表示されます。benchmark.jsonを手動で生成する場合は、ビューアーが期待する正確なスキーマについて `references/schemas.md` を参照してください。
+   各with_skillバージョンをそのbaselineの前に置きます。
 
-3. **Do an analyst pass** — read the benchmark data and surface patterns the aggregate stats might hide. See `agents/analyzer.md` (the "Analyzing Benchmark Results" section) for what to look for — things like assertions that always pass regardless of skill (non-discriminating), high-variance evals (possibly flaky), and time/token tradeoffs.
+3. **アナリストパスを実施する** — ベンチマークデータを読み、集計統計が隠してしまうパターンを浮かび上がらせます。探すべきものについては `agents/analyzer.md`（「ベンチマーク結果の分析」セクション）を参照してください——スキルの有無にかかわらず常にpassするアサーション（識別力なし）、分散の大きいeval（フラキーな可能性）、時間/トークンのトレードオフなど。
 
-4. **Launch the viewer** with both qualitative outputs and quantitative data:
+4. **ビューアーを起動する**（定性的な出力と定量データの両方で）：
+
+   **macOS:**
    ```bash
    nohup python <skill-creator-path>/eval-viewer/generate_review.py \
      <workspace>/iteration-N \
@@ -242,141 +244,172 @@ Put each with_skill version before its baseline counterpart.
      > /dev/null 2>&1 &
    VIEWER_PID=$!
    ```
-   For iteration 2+, also pass `--previous-workspace <workspace>/iteration-<N-1>`.
 
-   **Cowork / headless environments:** If `webbrowser.open()` is not available or the environment has no display, use `--static <output_path>` to write a standalone HTML file instead of starting a server. Feedback will be downloaded as a `feedback.json` file when the user clicks "Submit All Reviews". After download, copy `feedback.json` into the workspace directory for the next iteration to pick up.
+   **Linux:**
+   ```bash
+   nohup python <skill-creator-path>/eval-viewer/generate_review.py \
+     <workspace>/iteration-N \
+     --skill-name "my-skill" \
+     --benchmark <workspace>/iteration-N/benchmark.json \
+     > /dev/null 2>&1 &
+   VIEWER_PID=$!
+   xdg-open http://localhost:3117
+   ```
 
-Note: please use generate_review.py to create the viewer; there's no need to write custom HTML.
+   **Windows（PowerShell）:**
+   ```powershell
+   Start-Process python -ArgumentList "<skill-creator-path>/eval-viewer/generate_review.py", `
+     "<workspace>/iteration-N", `
+     "--skill-name", "my-skill", `
+     "--benchmark", "<workspace>/iteration-N/benchmark.json" `
+     -RedirectStandardOutput NUL -NoNewWindow
+   Start-Process "http://localhost:3117"
+   ```
 
-5. **Tell the user** something like: "I've opened the results in your browser. There are two tabs — 'Outputs' lets you click through each test case and leave feedback, 'Benchmark' shows the quantitative comparison. When you're done, come back here and let me know."
+   イテレーション2以降では、`--previous-workspace <workspace>/iteration-<N-1>` も渡します。
 
-### What the user sees in the viewer
+   **Cowork / ヘッドレス環境:** `webbrowser.open()` が使えない場合やディスプレイがない環境では、サーバーを起動する代わりに `--static <output_path>` でスタンドアロンHTMLファイルを書き出します。ユーザーが「全てのレビューを送信」をクリックすると `feedback.json` がダウンロードされます。ダウンロード後、`feedback.json` をワークスペースディレクトリにコピーして次のイテレーションで使用します。
 
-The "Outputs" tab shows one test case at a time:
-- **Prompt**: the task that was given
-- **Output**: the files the skill produced, rendered inline where possible
-- **Previous Output** (iteration 2+): collapsed section showing last iteration's output
-- **Formal Grades** (if grading was run): collapsed section showing assertion pass/fail
-- **Feedback**: a textbox that auto-saves as they type
-- **Previous Feedback** (iteration 2+): their comments from last time, shown below the textbox
+   注意：generate_review.pyを使ってビューアーを作成してください；カスタムHTMLを書く必要はありません。
 
-The "Benchmark" tab shows the stats summary: pass rates, timing, and token usage for each configuration, with per-eval breakdowns and analyst observations.
+5. **ユーザーに伝える**（例）：「ブラウザに結果を開きました。タブが2つあります——「Outputs」は各テストケースをクリックしてフィードバックを残せます、「Benchmark」は定量的な比較を表示します。終わったら戻ってきて知らせてください。」
 
-Navigation is via prev/next buttons or arrow keys. When done, they click "Submit All Reviews" which saves all feedback to `feedback.json`.
+### ビューアーでユーザーが見るもの
 
-### Step 5: Read the feedback
+「Outputs」タブは一度に1つのテストケースを表示します：
+- **プロンプト**：与えられたタスク
+- **出力**：スキルが生成したファイル（可能な場合はインラインレンダリング）
+- **前回の出力**（イテレーション2以降）：前回のイテレーションの出力を折りたたんで表示
+- **正式な評点**（採点が実行された場合）：アサーションのpass/failを折りたたんで表示
+- **フィードバック**：タイプしながら自動保存されるテキストボックス
+- **前回のフィードバック**（イテレーション2以降）：前回のコメントをテキストボックス下に表示
 
-When the user tells you they're done, read `feedback.json`:
+「Benchmark」タブは統計サマリーを表示します：各設定のpass率、タイミング、トークン使用量（evalごとの内訳とアナリストの所見付き）。
+
+ナビゲーションは前/次ボタンまたは矢印キーで操作します。終了時に「全てのレビューを送信」をクリックすると、全フィードバックが `feedback.json` に保存されます。
+
+### ステップ5：フィードバックを読む
+
+ユーザーが終わったと知らせてきたら、`feedback.json` を読みます：
 
 ```json
 {
   "reviews": [
-    {"run_id": "eval-0-with_skill", "feedback": "the chart is missing axis labels", "timestamp": "..."},
+    {"run_id": "eval-0-with_skill", "feedback": "グラフに軸ラベルがない", "timestamp": "..."},
     {"run_id": "eval-1-with_skill", "feedback": "", "timestamp": "..."},
-    {"run_id": "eval-2-with_skill", "feedback": "perfect, love this", "timestamp": "..."}
+    {"run_id": "eval-2-with_skill", "feedback": "完璧、最高", "timestamp": "..."}
   ],
   "status": "complete"
 }
 ```
 
-Empty feedback means the user thought it was fine. Focus your improvements on the test cases where the user had specific complaints.
+空のフィードバックはユーザーが問題なしと思っていることを意味します。ユーザーが具体的な指摘をしたテストケースに改善を集中させます。
 
-Kill the viewer server when you're done with it:
+ビューアーサーバーが終わったら終了します：
 
+**macOS / Linux:**
 ```bash
 kill $VIEWER_PID 2>/dev/null
 ```
 
----
-
-## Improving the skill
-
-This is the heart of the loop. You've run the test cases, the user has reviewed the results, and now you need to make the skill better based on their feedback.
-
-### How to think about improvements
-
-1. **Generalize from the feedback.** The big picture thing that's happening here is that we're trying to create skills that can be used a million times (maybe literally, maybe even more who knows) across many different prompts. Here you and the user are iterating on only a few examples over and over again because it helps move faster. The user knows these examples in and out and it's quick for them to assess new outputs. But if the skill you and the user are codeveloping works only for those examples, it's useless. Rather than put in fiddly overfitty changes, or oppressively constrictive MUSTs, if there's some stubborn issue, you might try branching out and using different metaphors, or recommending different patterns of working. It's relatively cheap to try and maybe you'll land on something great.
-
-2. **Keep the prompt lean.** Remove things that aren't pulling their weight. Make sure to read the transcripts, not just the final outputs — if it looks like the skill is making the model waste a bunch of time doing things that are unproductive, you can try getting rid of the parts of the skill that are making it do that and seeing what happens.
-
-3. **Explain the why.** Try hard to explain the **why** behind everything you're asking the model to do. Today's LLMs are *smart*. They have good theory of mind and when given a good harness can go beyond rote instructions and really make things happen. Even if the feedback from the user is terse or frustrated, try to actually understand the task and why the user is writing what they wrote, and what they actually wrote, and then transmit this understanding into the instructions. If you find yourself writing ALWAYS or NEVER in all caps, or using super rigid structures, that's a yellow flag — if possible, reframe and explain the reasoning so that the model understands why the thing you're asking for is important. That's a more humane, powerful, and effective approach.
-
-4. **Look for repeated work across test cases.** Read the transcripts from the test runs and notice if the subagents all independently wrote similar helper scripts or took the same multi-step approach to something. If all 3 test cases resulted in the subagent writing a `create_docx.py` or a `build_chart.py`, that's a strong signal the skill should bundle that script. Write it once, put it in `scripts/`, and tell the skill to use it. This saves every future invocation from reinventing the wheel.
-
-This task is pretty important (we are trying to create billions a year in economic value here!) and your thinking time is not the blocker; take your time and really mull things over. I'd suggest writing a draft revision and then looking at it anew and making improvements. Really do your best to get into the head of the user and understand what they want and need.
-
-### The iteration loop
-
-After improving the skill:
-
-1. Apply your improvements to the skill
-2. Rerun all test cases into a new `iteration-<N+1>/` directory, including baseline runs. If you're creating a new skill, the baseline is always `without_skill` (no skill) — that stays the same across iterations. If you're improving an existing skill, use your judgment on what makes sense as the baseline: the original version the user came in with, or the previous iteration.
-3. Launch the reviewer with `--previous-workspace` pointing at the previous iteration
-4. Wait for the user to review and tell you they're done
-5. Read the new feedback, improve again, repeat
-
-Keep going until:
-- The user says they're happy
-- The feedback is all empty (everything looks good)
-- You're not making meaningful progress
+**Windows（PowerShell）:**
+```powershell
+Stop-Process -Id $VIEWER_PID -ErrorAction SilentlyContinue
+```
 
 ---
 
-## Advanced: Blind comparison
+## スキルの改善
 
-For situations where you want a more rigorous comparison between two versions of a skill (e.g., the user asks "is the new version actually better?"), there's a blind comparison system. Read `agents/comparator.md` and `agents/analyzer.md` for the details. The basic idea is: give two outputs to an independent agent without telling it which is which, and let it judge quality. Then analyze why the winner won.
+これがループの核心です。テストケースを実行し、ユーザーが結果をレビューしたので、そのフィードバックをもとにスキルを改善します。
 
-This is optional, requires subagents, and most users won't need it. The human review loop is usually sufficient.
+### 改善の考え方
+
+1. **フィードバックから一般化する。** ここで起きていることの大きな絵は、何百万回も（文字通りかもしれません、もしかしたらそれ以上も）さまざまなプロンプトで使えるスキルを作ろうとしているということです。ユーザーとの間で数例のみを何度も繰り返すのは、速く動けるからです。ユーザーはこれらの例を熟知しており、新しい出力をすぐ評価できます。しかしここで共同開発しているスキルがそれらの例にしか機能しないなら意味がありません。細かすぎる変更や過度に制約的な「MUST」を入れるのではなく、頑固な問題には異なるメタファーや異なる作業パターンを試してみてください。試すのは比較的安価で、何か素晴らしいものに行き着くかもしれません。
+
+2. **プロンプトをスリムに保つ。** 機能していないものは削除します。最終出力だけでなく、トランスクリプトも必ず読んでください——スキルがモデルを非生産的なことに大量の時間を費やさせているように見えたら、そうさせている部分を削除して何が起こるか試してみてください。
+
+3. **「なぜ」を説明する。** 求めていることのすべての「なぜ」を説明するよう努力してください。現代のLLMは*賢い*です。優れた理論的思考能力を持ち、良いハーネスが与えられれば単なる指示のルーティングを超えて本当に物事を実現できます。ユーザーからのフィードバックが素っけなかったり苛立っていたりしても、タスクを実際に理解し、ユーザーが書いた理由を、そして実際に書いたことを、この理解をそのまま指示に伝えることを試みてください。ALWAYSやNEVERを全大文字で書いている自分に気づいたら、黄信号——可能であれば、なぜ求めることが重要なのかを説明するようにリフレームしてください。それはより人道的で、強力で、効果的なアプローチです。
+
+4. **テストケース間の繰り返し作業を探す。** テスト実行のトランスクリプトを読み、サブエージェントが全員独自に似たヘルパースクリプトを書いたり、同じマルチステップのアプローチを取ったりしていないか確認します。3つのテストケース全てでサブエージェントが `create_docx.py` や `build_chart.py` を書いたなら、スキルにそのスクリプトをバンドルすべき強いシグナルです。一度書いて `scripts/` に置き、スキルにそれを使うよう指示します。これにより将来の全ての呼び出しが車輪を再発明せずに済みます。
+
+このタスクはとても重要であり（年間数十億ドルの経済的価値を生み出そうとしています！）、あなたの思考時間はボトルネックではありません；時間をかけてじっくり考えてください。草案の改訂を書いてから、新鮮な目で見直して改善することをお勧めします。ユーザーの頭の中に入り込んで、彼らが何を望み、必要としているかを理解するよう最善を尽くしてください。
+
+### 反復ループ
+
+スキルを改善した後：
+
+1. スキルに改善を適用する
+2. 全テストケースを新しい `iteration-<N+1>/` ディレクトリに再実行（baselineの実行も含む）。新しいスキルを作成している場合、baselineは常に `without_skill`（スキルなし）——イテレーション間で同じです。既存スキルを改善している場合は、ユーザーが持ち込んだ元のバージョンか前のイテレーションかを判断して使用します。
+3. 前のイテレーションを指す `--previous-workspace` 付きでレビュワーを起動する
+4. ユーザーがレビューして終わったと知らせるまで待つ
+5. 新しいフィードバックを読み、再び改善し、繰り返す
+
+以下のいずれかの状態になるまで続けます：
+- ユーザーが満足したと言う
+- フィードバックが全て空（全てが良さそう）
+- 意味のある進歩が見られない
 
 ---
 
-## Description Optimization
+## 上級：ブラインド比較
 
-The description field in SKILL.md frontmatter is the primary mechanism that determines whether Claude invokes a skill. After creating or improving a skill, offer to optimize the description for better triggering accuracy.
+2つのバージョンのスキルをより厳密に比較したい場合（例：「新バージョンは本当に改善されているか？」）、ブラインド比較システムがあります。詳細は `agents/comparator.md` と `agents/analyzer.md` を参照してください。基本的なアイデアは：2つの出力をどちらがどちらかを知らない独立したエージェントに渡し、品質を評価させます。その後、勝者が勝った理由を分析します。
 
-### Step 1: Generate trigger eval queries
+これはオプションで、サブエージェントが必要です。多くのユーザーには不要です。通常は人間によるレビューループで十分です。
 
-Create 20 eval queries — a mix of should-trigger and should-not-trigger. Save as JSON:
+---
+
+## 説明文の最適化
+
+SKILL.mdフロントマターの `description` フィールドは、Claudeがスキルを呼び出すかどうかを決定する主要なメカニズムです。スキルを作成・改善したら、トリガー精度向上のために説明文の最適化を提案します。
+
+### ステップ1：トリガーevalクエリの生成
+
+20個のevalクエリを生成します——should-trigger（トリガーすべき）とshould-not-trigger（トリガーすべきでない）の混合。JSONとして保存します：
 
 ```json
 [
-  {"query": "the user prompt", "should_trigger": true},
-  {"query": "another prompt", "should_trigger": false}
+  {"query": "ユーザープロンプト", "should_trigger": true},
+  {"query": "別のプロンプト", "should_trigger": false}
 ]
 ```
 
-The queries must be realistic and something a Claude Code or Claude.ai user would actually type. Not abstract requests, but requests that are concrete and specific and have a good amount of detail. For instance, file paths, personal context about the user's job or situation, column names and values, company names, URLs. A little bit of backstory. Some might be in lowercase or contain abbreviations or typos or casual speech. Use a mix of different lengths, and focus on edge cases rather than making them clear-cut (the user will get a chance to sign off on them).
+クエリは現実的で、Claude CodeやClaude.aiユーザーが実際に入力するものでなければなりません。抽象的なリクエストではなく、具体的で詳細なリクエストです。例えば、ファイルパス、ユーザーの仕事や状況についての個人的な文脈、列名と値、会社名、URL。少し背景も加えます。小文字や略語、タイポやカジュアルな言葉遣いのものも含めます。長さの異なるものを混ぜ、明確なものではなくエッジケースに焦点を当てます（ユーザーが承認する機会があります）。
 
-Bad: `"Format this data"`, `"Extract text from PDF"`, `"Create a chart"`
+悪い例：`"このデータをフォーマットして"`、`"PDFからテキストを抽出して"`、`"グラフを作成して"`
 
-Good: `"ok so my boss just sent me this xlsx file (its in my downloads, called something like 'Q4 sales final FINAL v2.xlsx') and she wants me to add a column that shows the profit margin as a percentage. The revenue is in column C and costs are in column D i think"`
+良い例：`"上司が今さっきxlsxファイルを送ってきたんだけど（ダウンロードフォルダにあって、名前は'Q4 sales final FINAL v2.xlsx'みたいな感じ）、利益率をパーセントで表示する列を追加してほしいって言ってる。収益はC列でコストはD列だったと思う"`
 
-For the **should-trigger** queries (8-10), think about coverage. You want different phrasings of the same intent — some formal, some casual. Include cases where the user doesn't explicitly name the skill or file type but clearly needs it. Throw in some uncommon use cases and cases where this skill competes with another but should win.
+**should-triggerクエリ（8〜10個）** はカバレッジを意識します。同じ意図の異なる言い方を用意——フォーマルなものとカジュアルなものを混ぜます。ユーザーがスキルやファイルタイプを明示しないが明らかに必要なケースも含めます。珍しいユースケースや、このスキルが別のスキルと競合するが勝つべきケースも加えます。
 
-For the **should-not-trigger** queries (8-10), the most valuable ones are the near-misses — queries that share keywords or concepts with the skill but actually need something different. Think adjacent domains, ambiguous phrasing where a naive keyword match would trigger but shouldn't, and cases where the query touches on something the skill does but in a context where another tool is more appropriate.
+**should-not-triggerクエリ（8〜10個）** で最も価値があるのは、ニアミスです——スキルとキーワードや概念を共有するが実際には別のものを必要とするクエリ。隣接するドメイン、単純なキーワードマッチでトリガーされそうだがすべきでない曖昧な言い回し、スキルが行うことに触れているが別のツールの方が適切な文脈のケース。
 
-The key thing to avoid: don't make should-not-trigger queries obviously irrelevant. "Write a fibonacci function" as a negative test for a PDF skill is too easy — it doesn't test anything. The negative cases should be genuinely tricky.
+避けるべきこと：should-not-triggerクエリを明らかに無関係にしない。「フィボナッチ関数を書いて」をPDFスキルのネガティブテストにするのは簡単すぎ——何もテストしていません。ネガティブケースは本当に難しいものにしてください。
 
-### Step 2: Review with user
+### ステップ2：ユーザーとのレビュー
 
-Present the eval set to the user for review using the HTML template:
+HTMLテンプレートを使ってevalセットをユーザーにレビューしてもらいます：
 
-1. Read the template from `assets/eval_review.html`
-2. Replace the placeholders:
-   - `__EVAL_DATA_PLACEHOLDER__` → the JSON array of eval items (no quotes around it — it's a JS variable assignment)
-   - `__SKILL_NAME_PLACEHOLDER__` → the skill's name
-   - `__SKILL_DESCRIPTION_PLACEHOLDER__` → the skill's current description
-3. Write to a temp file (e.g., `/tmp/eval_review_<skill-name>.html`) and open it: `open /tmp/eval_review_<skill-name>.html`
-4. The user can edit queries, toggle should-trigger, add/remove entries, then click "Export Eval Set"
-5. The file downloads to `~/Downloads/eval_set.json` — check the Downloads folder for the most recent version in case there are multiple (e.g., `eval_set (1).json`)
+1. `assets/eval_review.html` からテンプレートを読む
+2. プレースホルダーを置換：
+   - `__EVAL_DATA_PLACEHOLDER__` → evalアイテムのJSON配列（引用符なし——JS変数代入）
+   - `__SKILL_NAME_PLACEHOLDER__` → スキルの名前
+   - `__SKILL_DESCRIPTION_PLACEHOLDER__` → スキルの現在の説明文
+3. 一時ファイルに書き出して開く（例：`/tmp/eval_review_<skill-name>.html`）
+   - **macOS:** `open /tmp/eval_review_<skill-name>.html`
+   - **Linux:** `xdg-open /tmp/eval_review_<skill-name>.html`
+   - **Windows:** `start "" "%TEMP%\eval_review_<skill-name>.html"` または PowerShell: `Start-Process "$env:TEMP\eval_review_<skill-name>.html"`
+4. ユーザーはクエリを編集、should-triggerのトグル、エントリの追加・削除ができ、「Eval Setをエクスポート」をクリックする
+5. ファイルは `~/Downloads/eval_set.json` にダウンロードされます——複数ある場合（例：`eval_set (1).json`）は最新版をDownloadsフォルダで確認します
 
-This step matters — bad eval queries lead to bad descriptions.
+このステップは重要です——evalクエリの品質が悪いと説明文も悪くなります。
 
-### Step 3: Run the optimization loop
+### ステップ3：最適化ループの実行
 
-Tell the user: "This will take some time — I'll run the optimization loop in the background and check on it periodically."
+ユーザーに伝えます：「これには時間がかかります——バックグラウンドで最適化ループを実行し、定期的に確認します。」
 
-Save the eval set to the workspace, then run in the background:
+evalセットをワークスペースに保存してから、バックグラウンドで実行します：
 
 ```bash
 python -m scripts.run_loop \
@@ -387,91 +420,138 @@ python -m scripts.run_loop \
   --verbose
 ```
 
-Use the model ID from your system prompt (the one powering the current session) so the triggering test matches what the user actually experiences.
+現在のセッションを動かしているモデルIDを使用します（システムプロンプトにある）。これにより、トリガーテストがユーザーが実際に体験するものと一致します。
 
-While it runs, periodically tail the output to give the user updates on which iteration it's on and what the scores look like.
+実行中、定期的に出力をtailして、どのイテレーションにいて、スコアがどうなっているかをユーザーに更新します。
 
-This handles the full optimization loop automatically. It splits the eval set into 60% train and 40% held-out test, evaluates the current description (running each query 3 times to get a reliable trigger rate), then calls Claude with extended thinking to propose improvements based on what failed. It re-evaluates each new description on both train and test, iterating up to 5 times. When it's done, it opens an HTML report in the browser showing the results per iteration and returns JSON with `best_description` — selected by test score rather than train score to avoid overfitting.
+これが完全な最適化ループを自動的に処理します。evalセットを60%のtrainと40%のhold-outテストに分け、現在の説明文を評価し（各クエリを3回実行して信頼性の高いトリガー率を得る）、失敗したものに基づいて改善案を提案するためにextended thinkingでClaudeを呼び出します。trainとtestの両方で各新しい説明文を再評価し、最大5回反復します。完了すると、trainではなくtestスコアで選ばれた `best_description` を含むJSONを返します（オーバーフィッティングを避けるため）。
 
-### How skill triggering works
+### スキルトリガーの仕組み
 
-Understanding the triggering mechanism helps design better eval queries. Skills appear in Claude's `available_skills` list with their name + description, and Claude decides whether to consult a skill based on that description. The important thing to know is that Claude only consults skills for tasks it can't easily handle on its own — simple, one-step queries like "read this PDF" may not trigger a skill even if the description matches perfectly, because Claude can handle them directly with basic tools. Complex, multi-step, or specialized queries reliably trigger skills when the description matches.
+トリガーメカニズムを理解することで、より良いevalクエリを設計できます。スキルはClaudeの `available_skills` リストにname + descriptionで表示され、Claudeはその説明に基づいてスキルを参照するかどうかを決定します。重要なのは、Claudeが自力で簡単に処理できるタスクにはスキルを参照しないということです——「このPDFを読んで」のような単純な1ステップのクエリは、説明が完璧にマッチしていても、Claudeが基本ツールで直接処理できるのでスキルをトリガーしないかもしれません。複雑でマルチステップ、または特化したクエリは、説明がマッチすれば確実にスキルをトリガーします。
 
-This means your eval queries should be substantive enough that Claude would actually benefit from consulting a skill. Simple queries like "read file X" are poor test cases — they won't trigger skills regardless of description quality.
+つまり、evalクエリはClaudeが実際にスキルを参照することで恩恵を受けるくらい実質的なものである必要があります。「ファイルXを読んで」のような単純なクエリは悪いテストケースです——説明の品質に関わらず、スキルをトリガーしません。
 
-### Step 4: Apply the result
+### ステップ4：結果の適用
 
-Take `best_description` from the JSON output and update the skill's SKILL.md frontmatter. Show the user before/after and report the scores.
+JSON出力の `best_description` を取り、スキルのSKILL.mdフロントマターを更新します。前後を比較してユーザーに見せ、スコアを報告します。
 
 ---
 
-### Package and Present (only if `present_files` tool is available)
+### パッケージ化と提供（`present_files` ツールが使える場合のみ）
 
-Check whether you have access to the `present_files` tool. If you don't, skip this step. If you do, package the skill and present the .skill file to the user:
+`present_files` ツールへのアクセスがあるか確認します。ない場合はこのステップを省略します。ある場合は、スキルをパッケージ化して .skill ファイルをユーザーに提供します：
 
 ```bash
 python -m scripts.package_skill <path/to/skill-folder>
 ```
 
-After packaging, direct the user to the resulting `.skill` file path so they can install it.
+パッケージ化後、ユーザーにインストールできるよう `.skill` ファイルのパスを案内します。
 
 ---
 
-## Claude.ai-specific instructions
+## Claude.ai 固有の指示
 
-In Claude.ai, the core workflow is the same (draft → test → review → improve → repeat), but because Claude.ai doesn't have subagents, some mechanics change. Here's what to adapt:
+Claude.aiでは、コアワークフローは同じ（草案→テスト→レビュー→改善→繰り返し）ですが、サブエージェントがないため一部の仕組みが変わります。変更する点は次のとおりです：
 
-**Running test cases**: No subagents means no parallel execution. For each test case, read the skill's SKILL.md, then follow its instructions to accomplish the test prompt yourself. Do them one at a time. This is less rigorous than independent subagents (you wrote the skill and you're also running it, so you have full context), but it's a useful sanity check — and the human review step compensates. Skip the baseline runs — just use the skill to complete the task as requested.
+**テストケースの実行**：サブエージェントがないので並行実行はできません。各テストケースに対して、スキルのSKILL.mdを読んでからその指示に従ってテストプロンプトを自分で実行します。一度に1つずつ実行します。独立したサブエージェントほど厳密ではありませんが（スキルを書いた後に実行するので全文脈を持っている）、有用なサニティチェックになります——そして人間のレビューステップが補完します。ベースラインの実行はスキップします——スキルを使ってタスクを完了するだけです。
 
-**Reviewing results**: If you can't open a browser (e.g., Claude.ai's VM has no display, or you're on a remote server), skip the browser reviewer entirely. Instead, present results directly in the conversation. For each test case, show the prompt and the output. If the output is a file the user needs to see (like a .docx or .xlsx), save it to the filesystem and tell them where it is so they can download and inspect it. Ask for feedback inline: "How does this look? Anything you'd change?"
+**結果のレビュー**：ブラウザを開けない場合（例：Claude.aiのVMにディスプレイがない、またはリモートサーバー）、ブラウザレビュワーを完全にスキップします。代わりに会話内で直接結果を表示します。各テストケースについて、プロンプトと出力を示します。ユーザーが見る必要のあるファイル（.docxや.xlsxなど）は、ファイルシステムに保存してダウンロード・確認できる場所を伝えます。インラインでフィードバックを求めます：「これはどうですか？変えたいところはありますか？」
 
-**Benchmarking**: Skip the quantitative benchmarking — it relies on baseline comparisons which aren't meaningful without subagents. Focus on qualitative feedback from the user.
+**ベンチマーク**：定量的ベンチマークはスキップします——サブエージェントなしではbaselineの比較が意味をなしません。ユーザーからの定性的フィードバックに集中します。
 
-**The iteration loop**: Same as before — improve the skill, rerun the test cases, ask for feedback — just without the browser reviewer in the middle. You can still organize results into iteration directories on the filesystem if you have one.
+**反復ループ**：前と同じ——スキルを改善し、テストケースを再実行し、フィードバックを求めます——ただし途中にブラウザレビュワーはありません。ファイルシステムがある場合は、結果をイテレーションディレクトリに整理することもできます。
 
-**Description optimization**: This section requires the `claude` CLI tool (specifically `claude -p`) which is only available in Claude Code. Skip it if you're on Claude.ai.
+**説明文の最適化**：このセクションは `claude` CLIツール（特に `claude -p`）が必要で、Claude Codeでのみ利用可能です。Claude.aiではスキップします。
 
-**Blind comparison**: Requires subagents. Skip it.
+**ブラインド比較**：サブエージェントが必要です。スキップします。
 
-**Packaging**: The `package_skill.py` script works anywhere with Python and a filesystem. On Claude.ai, you can run it and the user can download the resulting `.skill` file.
-
----
-
-## Cowork-Specific Instructions
-
-If you're in Cowork, the main things to know are:
-
-- You have subagents, so the main workflow (spawn test cases in parallel, run baselines, grade, etc.) all works. (However, if you run into severe problems with timeouts, it's OK to run the test prompts in series rather than parallel.)
-- You don't have a browser or display, so when generating the eval viewer, use `--static <output_path>` to write a standalone HTML file instead of starting a server. Then proffer a link that the user can click to open the HTML in their browser.
-- For whatever reason, the Cowork setup seems to disincline Claude from generating the eval viewer after running the tests, so just to reiterate: whether you're in Cowork or in Claude Code, after running tests, you should always generate the eval viewer for the human to look at examples before revising the skill yourself and trying to make corrections, using `generate_review.py` (not writing your own boutique html code). Sorry in advance but I'm gonna go all caps here: GENERATE THE EVAL VIEWER *BEFORE* evaluating inputs yourself. You want to get them in front of the human ASAP!
-- Feedback works differently: since there's no running server, the viewer's "Submit All Reviews" button will download `feedback.json` as a file. You can then read it from there (you may have to request access first).
-- Packaging works — `package_skill.py` just needs Python and a filesystem.
-- Description optimization (`run_loop.py` / `run_eval.py`) should work in Cowork just fine since it uses `claude -p` via subprocess, not a browser, but please save it until you've fully finished making the skill and the user agrees it's in good shape.
+**パッケージ化**：`package_skill.py` スクリプトはPythonとファイルシステムがある場所ならどこでも動作します。Claude.aiで実行でき、ユーザーは結果の `.skill` ファイルをダウンロードできます。
 
 ---
 
-## Reference files
+## Cowork 固有の指示
 
-The agents/ directory contains instructions for specialized subagents. Read them when you need to spawn the relevant subagent.
+Coworkの場合、主に知っておくべきことは：
 
-- `agents/grader.md` — How to evaluate assertions against outputs
-- `agents/comparator.md` — How to do blind A/B comparison between two outputs
-- `agents/analyzer.md` — How to analyze why one version beat another
-
-The references/ directory has additional documentation:
-- `references/schemas.md` — JSON structures for evals.json, grading.json, etc.
+- サブエージェントがあるので、メインのワークフロー（テストケースを並行して起動、ベースライン実行、採点など）は全て動作します。（ただし、タイムアウトで深刻な問題が発生した場合は、テストプロンプトを直列で実行しても構いません。）
+- ブラウザやディスプレイがないので、evalビューアーを生成する際は、サーバーを起動する代わりに `--static <output_path>` でスタンドアロンHTMLファイルを書き出します。ユーザーがブラウザで開けるリンクを提供します。
+- なぜかCoworkの設定ではテスト実行後にevalビューアーを生成しないことがあります。念のため再度強調します：CoworkでもClaude Codeでも、テスト実行後は必ずevalビューアーを生成してから自分で入力を評価し修正を試みてください。`generate_review.py` を使用します（独自のHTMLコードを書かないでください）。全大文字で申し訳ありませんが：**generate_review.pyを使って評価ビューアーを生成してから**評価してください。人間にできるだけ早く例を見せることが重要です！
+- フィードバックの仕組みが異なります：実行中のサーバーがないため、ビューアーの「全てのレビューを送信」ボタンは `feedback.json` をファイルとしてダウンロードします。そこから読み込めます（最初にアクセスを要求する必要があるかもしれません）。
+- パッケージ化は動作します——`package_skill.py` はPythonとファイルシステムがあれば動きます。
+- 説明文の最適化（`run_loop.py` / `run_eval.py`）は、サブプロセス経由で `claude -p` を使いブラウザは使わないため、Coworkでも問題なく動作するはずです。ただし、スキルが完全に完成しユーザーが良い状態だと同意するまで保留してください。
 
 ---
 
-Repeating one more time the core loop here for emphasis:
+## Windows / GitHub Copilot 固有の指示
 
-- Figure out what the skill is about
-- Draft or edit the skill
-- Run claude-with-access-to-the-skill on test prompts
-- With the user, evaluate the outputs:
-  - Create benchmark.json and run `eval-viewer/generate_review.py` to help the user review them
-  - Run quantitative evals
-- Repeat until you and the user are satisfied
-- Package the final skill and return it to the user.
+Windows環境またはGitHub Copilot（Visual Studio Code内）で作業する場合の変更点：
 
-Please add steps to your TodoList, if you have such a thing, to make sure you don't forget. If you're in Cowork, please specifically put "Create evals JSON and run `eval-viewer/generate_review.py` so human can review test cases" in your TodoList to make sure it happens. Good luck!
+### ファイルパスと操作
+
+- パスの区切り文字には `/`（スラッシュ）を使用します——Python、CLIコマンド、スクリプト引数で動作します。`\` を避けます。
+- 一時ファイルは `%TEMP%` または `$env:TEMP`（PowerShell）に配置します（例：`eval_review.html` 用）。
+- ファイルを開くには `start "" "<path>"` または PowerShell の `Start-Process "<path>"` を使用します（macOSの `open` の代わり）。
+
+### Pythonの実行
+
+- `python` コマンドが使えない場合は `python3` または `py` を試します。
+- バックグラウンドでの実行には `Start-Job` または `Start-Process -NoNewWindow` を使用します（`nohup ... &` の代わり）：
+  ```powershell
+  $job = Start-Job -ScriptBlock {
+    python "<skill-creator-path>/eval-viewer/generate_review.py" `
+      "<workspace>/iteration-N" `
+      --skill-name "my-skill" `
+      --benchmark "<workspace>/iteration-N/benchmark.json"
+  }
+  $VIEWER_PID = $job.Id
+  Start-Process "http://localhost:3117"
+  ```
+
+### GitHub Copilot の制限
+
+GitHub CopilotはClaude Code、Claude.aiとは異なる実行環境です：
+
+- **サブエージェントなし**：テストケースはClaude.aiと同じく直列で実行します。
+- **ブラウザ制御なし**：evalビューアーを起動する場合は `--static <output_path>` フラグでスタンドアロンHTMLを出力し、ユーザーにパスを知らせます。ブラウザを自動で開こうとしないでください。
+- **`claude` CLIなし**：説明文の最適化（`run_loop.py`）はClaude CLIに依存するためスキップします。
+- **ベンチマーク**：定量的ベンチマークはスキップします。
+- **ブラインド比較**：サブエージェントが必要なためスキップします。
+
+### Copilot でのメインワークフロー
+
+1. スキルの草案をSKILL.mdとして作成する
+2. テストプロンプトを考え、スキルの指示に従って自分で実行する
+3. 結果をワークスペースに保存し、`generate_review.py --static` でHTMLを生成する
+4. ユーザーにHTMLファイルのパスを伝え、ブラウザで開いてレビューするよう案内する
+5. フィードバックに基づいてスキルを改善する
+6. 満足するまで繰り返す
+7. `package_skill.py` でスキルをパッケージ化する
+
+---
+
+## 参照ファイル
+
+`agents/` ディレクトリには専門的なサブエージェントの指示が含まれています。関連するサブエージェントを起動する必要があるときに読みます。
+
+- `agents/grader.md` — アサーションを出力に対して評価する方法
+- `agents/comparator.md` — 2つの出力をブラインドA/B比較する方法
+- `agents/analyzer.md` — あるバージョンが別のバージョンを上回った理由を分析する方法
+
+`references/` ディレクトリには追加ドキュメントがあります：
+- `references/schemas.md` — evals.json、grading.jsonなどのJSON構造
+
+---
+
+コアループを最後にもう一度強調します：
+
+- スキルが何についてかを把握する
+- スキルを草案するか編集する
+- スキルにアクセスできる状態のClaudeでテストプロンプトを実行する
+- ユーザーと一緒に出力を評価する：
+  - benchmark.jsonを作成し `eval-viewer/generate_review.py` を実行してユーザーのレビューを助ける
+  - 定量的evalを実行する
+- ユーザーと一緒に満足するまで繰り返す
+- 最終スキルをパッケージ化してユーザーに渡す
+
+Todoリストをお持ちの場合は、忘れずにステップを追加してください。Coworkにいる場合は特に「Evals JSONを作成し `eval-viewer/generate_review.py` を実行してテストケースを人間がレビューできるようにする」をTodoリストに追加してください。頑張ってください！
