@@ -1,5 +1,5 @@
 ---
-name: patent-spec-writer
+name: panent-writer
 description: 日本語の特許明細書（出願書類）を段階的に作成するスキル。発明のアイデアをヒアリングし、請求項・明細書・図面説明を順番にMarkdownで生成する。「特許明細書を書いて」「特許出願書類を作って」「発明を特許化したい」「請求項を書いて」「特許の明細書を作成して」などで発動する。
 metadata:
   version: "1.0.0"
