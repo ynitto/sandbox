@@ -1,6 +1,6 @@
 ---
 name: ltm-use
-description: "セッションをまたいで知識・調査結果・決定事項を継続させたいときに使用するスキル。「覚えておいて」「メモして」でsave、「思い出して」「以前の」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った」「間違ってた」でrate操作。明示的な指示がなくても、重要な情報・決定・知見を発見したらproactiveにsaveを判断して実行すること。"
+description: "セッションをまたいで知識・決定事項を継続させたいときのスキル。「覚えておいて」でsave、「思い出して」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った／間違ってた」でrate、「Copilotの記憶を同期して」でsync-copilot-memory。重要な知見を発見したら自律的にsaveを実行すること。"
 metadata:
   version: "3.0.0"
 ---
@@ -58,6 +58,7 @@ git除外                   ローカル永続              git管理
 | **promote** | 「昇格して」「共有知識にして」「チームに広める」 | `promote_memory.py` |
 | **cleanup** | 「記憶を整理して」「古い記憶を削除して」 | `cleanup_memory.py` |
 | **sync** | 「チームの記憶を取り込んで」「共有知識を更新して」 | `sync_memory.py` |
+| **sync-copilot-memory** | 「Copilotの記憶を同期して」「VSCodeの記憶を取り込んで」「Copilot Memoryをインポートして」 | `sync_copilot_memory.py` |
 | **build_index** | 「インデックスを再構築して」「統計を見せて」 | `build_index.py` |
 
 ---
@@ -270,6 +271,62 @@ python ${SKILL_DIR}/scripts/cleanup_memory.py --yes
 - `access_count == 0` かつ作成から 30日以上経過
 - `status == archived` かつ更新から 60日以上経過
 - `status == deprecated`
+
+---
+
+## sync-copilot-memory（VSCode Copilot Memory を取り込む）
+
+VSCode の Copilot Memory 機能（`%APPDATA%\Code\User\globalStorage\github.copilot-chat\`）に
+保存されたメモリを自動検出し、ltm-use の記憶ファイルへ変換してインポートする。
+
+新規エントリのみを取り込み、重複インポートを避けるため
+`{MEMORY_DIR}/copilot-memory/.copilot-import-log.json` にインポート済みIDを記録する。
+
+```bash
+# 何が見つかるか確認するだけ（ファイルを作成しない）
+python ${SKILL_DIR}/scripts/sync_copilot_memory.py --dry-run
+
+# home スコープに取り込む（デフォルト・プロジェクト横断）
+python ${SKILL_DIR}/scripts/sync_copilot_memory.py
+
+# workspace スコープに取り込む
+python ${SKILL_DIR}/scripts/sync_copilot_memory.py --scope workspace
+
+# globalStorage のパスを明示指定（VSCode Insiders / Cursor 等）
+python ${SKILL_DIR}/scripts/sync_copilot_memory.py --storage "/path/to/globalStorage"
+
+# state.vscdb のキー一覧を表示（フォーマット調査・デバッグ用）
+python ${SKILL_DIR}/scripts/sync_copilot_memory.py --list-keys
+
+# インポート済みIDを無視して強制再インポート
+python ${SKILL_DIR}/scripts/sync_copilot_memory.py --force
+```
+
+**globalStorage の場所:**
+
+| OS | デフォルトパス |
+|---|---|
+| Windows | `%APPDATA%\Code\User\globalStorage\` |
+| macOS | `~/Library/Application Support/Code/User/globalStorage/` |
+| Linux | `~/.config/Code/User/globalStorage/` |
+
+**インポート後の推奨操作:**
+
+```bash
+# インポート結果を確認
+python ${SKILL_DIR}/scripts/recall_memory.py "copilot-memory" --scope home
+
+# 一覧表示
+python ${SKILL_DIR}/scripts/list_memories.py --scope home
+
+# 役立ったものを評価（share_score を上げて昇格候補にする）
+python ${SKILL_DIR}/scripts/rate_memory.py --file memories/copilot-memory/xxx.md --good
+```
+
+**注意事項:**
+- Copilot Memory が有効化されていない / データが少ない場合はエントリが検出されないことがある
+- `--list-keys` で `state.vscdb` の全キーを確認し、メモリデータが存在するか調査できる
+- インポートされた記憶は `category: copilot-memory`、タグ `copilot-memory, imported` で保存される
 
 ---
 
