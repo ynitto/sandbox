@@ -2,7 +2,7 @@
 name: scrum-master
 description: ユーザーのプロンプトをタスク分解し、サブエージェントにスキルを委譲してスプリント単位で実行するオーケストレーター。「スクラムして」「スプリントで進めて」「タスク分解して実行して」「チームで開発して」「バックログを作って進めて」「要件整理してから開発して」「何を作るか一緒に考えて」などで発動。
 metadata:
-  version: "1.1.1"
+  version: "1.2.0"
 ---
 
 # scrum-master
@@ -70,11 +70,11 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 | # | フェーズ | やること | ゲート条件（次へ進む前に満たすこと） | 詳細手順 |
 |---|----------|---------|--------------------------------------|----------|
 | 1 | スキル探索 | `discover_skills.py` を実行しスキル一覧を取得 | スキル一覧JSON取得済み | [phase-1](references/phase-1-skill-discovery.md) |
-| 2 | バックログ作成 | 曖昧度判定 → 要件定義（委譲）→ `plan.json` 生成 | `plan.json` がルートに保存済み | [phase-2](references/phase-2-backlog.md) |
+| 2 | バックログ作成 | 曖昧度判定 → 要件定義（委譲）→ プロダクトゴール/DoD設定 → `plan.json` 生成 | `plan.json` がルートに保存済み（`product_goal`・`definition_of_done` 含む） | [phase-2](references/phase-2-backlog.md) |
 | 3 | スキルギャップ解決 | スキル不足・改良を検出し解消（委譲） | スキルギャップなし。`current_phase` = 3 | [phase-3](references/phase-3-skill-gap.md) |
 | 4 | スプリントプランニング | タスク選出 → ウェーブ分割 → ユーザー承認 | ユーザーがスプリントプランを承認済み | [phase-4](references/phase-4-sprint-planning.md) |
 | 5 | タスク実行 | ウェーブ単位でサブエージェント並列起動（委譲） | 全ウェーブ実行完了（または中断選択） | [phase-5](references/phase-5-task-execution.md) |
-| 6 | スプリントレビュー | レビュー・フィードバック・スキル評価（全て委譲） | レビューとフィードバック収集完了 | [phase-6](references/phase-6-sprint-review.md) |
+| 6 | スプリントレビュー | インクリメント確認（DoD）→ レビュー（委譲）→ フィードバック・スキル評価 | インクリメント確認・レビュー・フィードバック収集完了 | [phase-6](references/phase-6-sprint-review.md) |
 | 7 | 進捗レポート | ユーザーに報告し次アクションを確認 | ユーザーが選択肢を選択済み | [phase-7](references/phase-7-progress-report.md) |
 
 **ガードレール**:
