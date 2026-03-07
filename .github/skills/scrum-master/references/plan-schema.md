@@ -14,6 +14,8 @@
 {
   "current_phase": "integer (必須) 現在実行中のフェーズ番号 (1〜7)。フェーズ遷移時に必ず更新する",
   "goal": "string (必須) ユーザーの最終目標",
+  "product_goal": "string (必須) プロダクトバックログのコミットメント。プロダクトの将来の状態を1文で表す長期目標。goal より大きなビジョン（例: 'チームの生産性を2倍にするCI/CDプラットフォームを提供する'）。スクラムガイド2020の確約。Phase 2 Step 2-5 で設定する",
+  "definition_of_done": "string (必須) インクリメントのコミットメント。スプリントで完成したと見なす共通の品質基準（例: 'テストが全て通過・コードレビュー済み・本番環境にデプロイ可能な状態'）。スクラムガイド2020の確約。Phase 2 Step 2-5 で設定する",
   "requirements_source": "string (任意) バックログの出自。'requirements-definer' = requirements.json 経由、'direct' = プロンプトから直接作成。デフォルト: 'direct'",
   "backlog": [
     {
@@ -30,8 +32,10 @@
   "sprints": [
     {
       "sprint": "integer (必須) スプリント番号。1始まり",
+      "sprint_goal": "string (必須) スプリントバックログのコミットメント。このスプリントで達成する唯一の目標（Why）。スクラムガイド2020の確約",
       "task_ids": ["string (必須) このスプリントで実行するタスクIDリスト"],
       "execution_groups": [["string (必須) ウェーブごとのタスクIDリスト。同一配列内は並列実行、配列順は直列実行"]],
+      "increment": "string|null (任意) このスプリントで完成したインクリメントの説明。DoD を満たすリリース可能な成果物",
       "review": "string|null (任意) スプリントレビューの結果",
       "process_review": "string|null (任意) スプリントプランと実行プロセスの評価",
       "retro": "string|null (任意) レトロスペクティブの改善点",
@@ -52,6 +56,8 @@
 {
   "current_phase": 4,
   "goal": "画像リサイズのスキルを作成してGitリポジトリにプッシュする",
+  "product_goal": "誰でも再利用できる画像処理スキルライブラリをチームに提供する",
+  "definition_of_done": "テストが全て通過し、コードレビュー済みで、ドキュメントが整備されていること",
   "requirements_source": "direct",
   "backlog": [
     {
@@ -88,8 +94,10 @@
   "sprints": [
     {
       "sprint": 1,
+      "sprint_goal": "画像リサイズスキルの要件を固め、SKILL.md を完成させる",
       "task_ids": ["b1", "b2"],
       "execution_groups": [["b1"], ["b2"]],
+      "increment": null,
       "review": null,
       "process_review": null,
       "retro": null,
@@ -98,8 +106,10 @@
     },
     {
       "sprint": 2,
+      "sprint_goal": "スキルをリモートリポジトリに公開し、チームが利用可能な状態にする",
       "task_ids": ["b3"],
       "execution_groups": [["b3"]],
+      "increment": null,
       "review": null,
       "process_review": null,
       "retro": null,
