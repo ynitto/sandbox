@@ -132,7 +132,7 @@ skill-evaluator はレポートのみ返す（ユーザー確認・promote/refin
 **Step 4-3: ユーザーが承認したワークスペーススキルのアクションをサブエージェントへ委譲する**:
 - 昇格 → テンプレート: `subagent-templates.md`「スキル昇格時」を使用
 - 改良 → テンプレート: `subagent-templates.md`「スキル改良時」を使用（`push指示: なし`）
-- インストール済みスキルのアクションは Step 3-2 で `next_sprint_actions` に追加済みのため、ここでは委譲しない
+- インストール済みスキルのアクションは Step 4-2 で `next_sprint_actions` に追加済みのため、ここでは委譲しない
 
 ### Step 5: スキル発見（任意）
 
