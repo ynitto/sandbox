@@ -29,6 +29,16 @@ def validate_plan(plan: dict, known_skills: set[str] | None = None) -> list[str]
     elif not isinstance(plan["goal"], str) or not plan["goal"].strip():
         errors.append("'goal' は空でない文字列が必要です")
 
+    if "product_goal" not in plan:
+        errors.append("'product_goal' フィールドが必須です")
+    elif not isinstance(plan["product_goal"], str) or not plan["product_goal"].strip():
+        errors.append("'product_goal' は空でない文字列が必要です")
+
+    if "definition_of_done" not in plan:
+        errors.append("'definition_of_done' フィールドが必須です")
+    elif not isinstance(plan["definition_of_done"], str) or not plan["definition_of_done"].strip():
+        errors.append("'definition_of_done' は空でない文字列が必要です")
+
     if "backlog" not in plan:
         errors.append("'backlog' フィールドが必須です")
         return errors
@@ -125,6 +135,10 @@ def validate_plan(plan: dict, known_skills: set[str] | None = None) -> list[str]
                 continue
             if "sprint" not in s or not isinstance(s["sprint"], int):
                 errors.append(f"sprints[{i}]: 'sprint' は整数が必要です")
+            if "sprint_goal" not in s:
+                errors.append(f"sprints[{i}]: 'sprint_goal' フィールドが必要です")
+            elif not isinstance(s["sprint_goal"], str) or not s["sprint_goal"].strip():
+                errors.append(f"sprints[{i}]: 'sprint_goal' は空でない文字列が必要です")
             if "task_ids" not in s or not isinstance(s["task_ids"], list):
                 errors.append(f"sprints[{i}]: 'task_ids' はリストが必要です")
             else:

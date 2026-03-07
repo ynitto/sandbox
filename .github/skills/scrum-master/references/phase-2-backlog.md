@@ -2,6 +2,25 @@
 
 > **開始時出力**: `=== PHASE 2: バックログ作成 開始 ===`
 
+## フロー概要
+
+```mermaid
+flowchart TD
+    A[Phase 2 開始] --> B{requirements.json 存在?}
+    B -- あり --> E[Step 2-3: バックログ変換]
+    B -- なし --> C[Step 2-1: 曖昧度判定]
+    C -- 4項目すべて明確\n& 既存機能への修正 --> D[Step 2-4: 直接バックログ作成]
+    C -- それ以外 --> F[Step 2-2a: プレインタビュー]
+    F --> G[Step 2-2b: requirements-definer に委譲]
+    G --> E
+    D --> H[Step 2-5: プロダクトゴール & DoD 設定]
+    E --> H
+    H --> I[Step 2-6: plan.json 保存]
+    I --> J{ゲート条件クリア?}
+    J -- Yes --> K[Phase 3 へ]
+    J -- No --> I
+```
+
 ## 目次
 
 - [Step 2-0: requirements.json の存在チェック](#step-2-0-requirementsjson-の存在チェック)
@@ -59,9 +78,14 @@
 
 回答を収集し、`[収集した情報]` として記録する。
 
+> **未回答チェック**: 3項目のうち1つでもユーザーから回答が得られなかった場合、委譲前に再度確認するか、「不明」として明示的に記録する。未回答項目が残ったまま委譲する場合は、テンプレートの該当欄に `[未回答 — サブエージェントが推定してよい]` と記載すること。
+
 ### Step 2-2b: requirements-definer に委譲する
 
-**サブエージェントを起動する**（GitHub Copilot: `#tool:agent/runSubagent` / Claude Code: `Task` ツール）。
+> **⛔ STOP**: この先、requirements を自分で作成・整理しようとしていないか？  
+> 要件定義はサブエージェントの仕事。自分でやってはならない。
+
+**⚠️ サブエージェントを即時起動する**（GitHub Copilot: `#tool:agent/runSubagent` / Claude Code: `Task` ツール）。
 
 テンプレート（`subagent-templates.md`「requirements-definer 呼び出し時」の完全版を参照）:
 ```
@@ -77,6 +101,9 @@ requirements-definer スキルで要件を定義する。
 出力スキーマ: ${SKILLS_DIR}/requirements-definer/references/requirements-schema.md を参照すること。
 注意: 収集済みコンテキストが提供されているため、ユーザーへの追加質問（Step 1）はスキップして
       Step 2 の規模判定から開始すること。計画立案やタスク分解は行わないこと。
+      ただし、収集済みコンテキストに「未回答」の項目がある場合や、Step 2 以降で情報不足を
+      検出した場合は、合理的に推定して進めてよい。推定した内容は requirements.json 内に
+      明記すること。
 
 結果を以下の形式で返してください:
 ステータス: 成功 / 失敗
