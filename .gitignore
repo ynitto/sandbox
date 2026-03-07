@@ -73,3 +73,4 @@ nosetests.xml
 # skills
 plan.json
 skills.json
+requirements.json
