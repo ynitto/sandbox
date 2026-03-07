@@ -1,8 +1,8 @@
 ---
 name: skill-evaluator
-description: ワークスペーススキル（ワークスペースのスキル領域）とインストール済みスキル（~/.copilot/skills/）の両方を評価し、昇格・改良・試用継続を判断するスキル。「スキルを評価して」「試用中スキルを確認して」「どのスキルを昇格すべき？」「インストール済みスキルの状態を確認して」などで発動する。git-skill-manager の evaluate 操作、scrum-master Phase 6、スキル使用後に EVAL_RECOMMEND 出力があった場合に自動的に起動される。
+description: ワークスペーススキルとインストール済みスキルを評価し、昇格・改良・試用継続を判断するスキル。「スキルを評価して」「試用中スキルを確認して」「どのスキルを昇格すべき？」などで発動する。git-skill-manager の evaluate 操作・scrum-master Phase 6・EVAL_RECOMMEND 出力時にも自動起動される。
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
 ---
 
 # Skill Evaluator
