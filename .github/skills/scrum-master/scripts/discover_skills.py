@@ -162,7 +162,7 @@ def discover_skills(
             }
         )
 
-    # コアスキル優先 + 使用頻度順にソート
+    # コアスキル優先・名前順にソート
     core_skills = (registry or {}).get("core_skills", [])
     skills.sort(key=lambda s: skill_sort_key(s, core_skills, registry))
 
