@@ -9,7 +9,8 @@
 - [Step 2-2: scrum-master がプレインタビューを実施し、requirements-definer に委譲する](#step-2-2-scrum-master-がプレインタビューを実施しrequirements-definer-に委譲する)
 - [Step 2-3: requirements.json → バックログ変換](#step-2-3-requirementsjson--バックログ変換)
 - [Step 2-4: 直接バックログ作成（小さく明示的なタスクのみ）](#step-2-4-直接バックログ作成小さく明示的なタスクのみ)
-- [Step 2-5: plan.json 保存](#step-2-5-planjson-保存)
+- [Step 2-5: プロダクトゴールと完成の定義を設定する](#step-2-5-プロダクトゴールと完成の定義を設定する)
+- [Step 2-6: plan.json 保存](#step-2-6-planjson-保存)
 - [ゲート条件（Phase 3 に進む前に確認）](#ゲート条件phase-3-に進む前に確認)
 
 ユーザーのプロンプトからバックログを作成する。曖昧な指示の場合は requirements-definer を介して要件を明確化してからバックログに変換する。
@@ -119,7 +120,39 @@ goal: [requirements.json の goal フィールドの値]
 
 → Step 2-5 へ進む。
 
-## Step 2-5: plan.json 保存
+## Step 2-5: プロダクトゴールと完成の定義を設定する
+
+スクラムガイド2020の3つの確約（コミットメント）のうち、バックログ作成時に定義できる2つを設定する。
+
+### プロダクトゴール（プロダクトバックログのコミットメント）
+
+`goal` からより大きな視点で「なぜこのプロダクトを作るか」を1文で定義する。
+
+- `goal` がすでに長期的なビジョンを含む場合は `goal` と同じ内容でよい
+- 判断できない場合はユーザーに確認する:
+  ```
+  プロダクトゴール（最終的に何を実現したいか）を教えてください。
+  例: 「チームの開発効率を上げるCI/CD基盤を提供する」
+  （スキップする場合は Enter）
+  ```
+
+### 完成の定義（インクリメントのコミットメント）
+
+リリース可能なインクリメントとみなす共通の品質基準を定義する。プロジェクトのコンテキストから推定し、ユーザーに確認する:
+
+```
+完成の定義（Done の基準）を確認します。以下で問題ありませんか？
+- [推定した基準1]（例: テストが全て通過している）
+- [推定した基準2]（例: コードレビュー済み）
+- [推定した基準3]（例: 動作確認済み）
+
+変更・追加がある場合はお知らせください。
+```
+
+- ソフトウェア開発タスクが含まれる場合の推奨基準: テスト通過・コードレビュー済み・動作確認済み
+- スキル作成・ドキュメント作成など非コーディングタスクの場合: レビュー済み・想定通りに動作すること
+
+## Step 2-6: plan.json 保存
 
 スキーマ詳細は `plan-schema.md` を参照する。作業ディレクトリのルートに `plan.json` として保存する。
 
@@ -127,6 +160,8 @@ goal: [requirements.json の goal フィールドの値]
 {
   "current_phase": 2,
   "goal": "...",
+  "product_goal": "...",
+  "definition_of_done": "...",
   "requirements_source": "direct",
   "backlog": [
     {"id": "b1", "action": "...", "priority": 1, "done_criteria": "...", "skill": "...", "depends_on": [], "status": "pending", "result": null}
@@ -145,6 +180,7 @@ goal: [requirements.json の goal フィールドの値]
 
 - [ ] `plan.json` がルートに保存されている（未保存なら保存してから進む）
 - [ ] `plan.json` に `goal` と `backlog[]` が含まれている
+- [ ] `plan.json` に `product_goal` と `definition_of_done` が設定されている
 
 > **plan.json なしで Phase 3 に進むことは禁止。**
 
