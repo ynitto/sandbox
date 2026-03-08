@@ -71,6 +71,8 @@ def make_initial_plan(goal: str = "") -> dict:
     return {
         "current_phase": 1,
         "goal": goal,
+        "product_goal": "",
+        "definition_of_done": "",
         "requirements_source": "direct",
         "backlog": [],
         "sprints": [],

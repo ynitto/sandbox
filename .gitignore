@@ -69,8 +69,3 @@ nosetests.xml
 .env
 .env.*
 *.local
-
-# skills
-plan.json
-skills.json
-requirements.json
