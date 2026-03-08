@@ -255,8 +255,7 @@ snapshot-20260227T103000/
     "default": ["*"],
     "frontend": ["react-*", "ui-designer", "webapp-testing"],
     "backend": ["api-designer", "domain-modeler", "dynamodb-designer"],
-    "review": ["architecture-reviewer", "code-reviewer", "code-simplifier", "design-reviewer", "document-reviewer", "test-reviewer"],
-    "patent": ["patent-coach", "patent-writer"]
+    "review": ["architecture-reviewer", "code-reviewer", "code-simplifier", "design-reviewer", "document-reviewer", "security-reviewer", "test-reviewer"]
   }
 }
 ```
@@ -276,7 +275,6 @@ snapshot-20260227T103000/
 | React の画面開発 | `frontend`（React 系 + UI + テスト） |
 | API サーバー開発 | `backend`（API 設計 + ドメインモデル） |
 | コードレビュー | `review`（全レビュー系スキル） |
-| 特許明細書作成 | `patent`（コーチング + 明細書ドラフト） |
 | 何でもやる | `default`（全スキル有効） |
 
 ---
