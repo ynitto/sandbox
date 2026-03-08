@@ -87,27 +87,17 @@ flowchart TD
 
 **⚠️ サブエージェントを即時起動する**（GitHub Copilot: `#tool:agent/runSubagent` / Claude Code: `Task` ツール）。
 
-テンプレート（`subagent-templates.md`「requirements-definer 呼び出し時」の完全版を参照）:
+`subagent-templates.md`「requirements-definer 呼び出し時」のテンプレートを使用する。テンプレートに以下のフィールドを追加して起動すること:
 ```
-requirements-definer スキルで要件を定義する。
-
-手順: まず ${SKILLS_DIR}/requirements-definer/SKILL.md を読んで手順に従ってください。
-ユーザーのプロンプト: [元のプロンプト]
 収集済みコンテキスト:
   対象ユーザー: [Step 2-2a で収集した回答]
   スコープ: [Step 2-2a で収集した回答]
   規模感: [Step 2-2a で収集した回答]
-出力先: requirements.json（作業ディレクトリのルート）
-出力スキーマ: ${SKILLS_DIR}/requirements-definer/references/requirements-schema.md を参照すること。
 注意: 収集済みコンテキストが提供されているため、ユーザーへの追加質問（Step 1）はスキップして
-      Step 2 の規模判定から開始すること。計画立案やタスク分解は行わないこと。
+      Step 2 の規模判定から開始すること。
       ただし、収集済みコンテキストに「未回答」の項目がある場合や、Step 2 以降で情報不足を
       検出した場合は、合理的に推定して進めてよい。推定した内容は requirements.json 内に
       明記すること。
-
-結果を以下の形式で返してください:
-ステータス: 成功 / 失敗
-goal: [requirements.json の goal フィールドの値]
 要件数: 機能要件 [N] 件 / 非機能要件 [M] 件
 サマリー: [1〜2文で結果を説明]
 ```
