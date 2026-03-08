@@ -205,12 +205,26 @@ def migrate_registry(reg: dict) -> dict:
                 "central_ok_rate": None,
             })
 
+    # v5 → v6: メトリクス拡張（実行時間・サブエージェント回数・トレンド・共起）
+    if version < 6:
+        for skill in reg.get("installed_skills", []):
+            metrics = skill.setdefault("metrics", {})
+            metrics.setdefault("total_executions", 0)
+            metrics.setdefault("ok_rate", None)
+            metrics.setdefault("last_executed_at", None)
+            metrics.setdefault("central_ok_rate", None)
+            metrics.setdefault("avg_duration_sec", None)
+            metrics.setdefault("p90_duration_sec", None)
+            metrics.setdefault("avg_subagent_calls", None)
+            metrics.setdefault("trend_7d", {"executions": 0, "ok_rate": 0.0})
+            metrics.setdefault("top_co_skills", [])
+
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
     for skill in reg.get("installed_skills", []):
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
-    reg["version"] = 5
+    reg["version"] = 6
     return reg
 
 
@@ -221,7 +235,7 @@ def load_registry() -> dict:
             reg = json.load(f)
         return migrate_registry(reg)
     return {
-        "version": 5,
+        "version": 6,
         "node": {
             "id": None,
             "name": None,

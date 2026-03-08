@@ -31,6 +31,7 @@ EVAL_RECOMMEND シグナル:
 import argparse
 import json
 import os
+import secrets
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -39,6 +40,11 @@ from datetime import datetime, timezone
 def _registry_path() -> str:
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
     return os.path.join(home, ".copilot", "skill-registry.json")
+
+
+def _metrics_log_path() -> str:
+    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    return os.path.join(home, ".copilot", "metrics-log.jsonl")
 
 
 def _skill_home() -> str:
@@ -105,7 +111,83 @@ def _unrefined_problem_count(skill: dict) -> int:
     )
 
 
-def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict:
+def _append_metrics_log(
+    skill_name: str,
+    verdict: str,
+    note: str,
+    duration_sec: float | None,
+    subagent_calls: int | None,
+    co_skills: list[str],
+    sprint_id: str | None,
+    node_id: str | None,
+) -> None:
+    """metrics-log.jsonl に生メトリクスイベントを1行追記する。"""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    event = {
+        "event_id": f"evt-{ts}-{secrets.token_hex(3)}",
+        "skill_name": skill_name,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "duration_sec": duration_sec,
+        "verdict": verdict,
+        "note": note,
+        "subagent_calls": subagent_calls,
+        "co_executed_skills": co_skills,
+        "context": {
+            "sprint_id": sprint_id,
+            "node_id": node_id,
+        },
+    }
+    log_path = _metrics_log_path()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _update_duration_metrics(metrics: dict, duration_sec: float | None) -> None:
+    """実行時間メトリクスをインクリメンタル更新（移動平均）する。"""
+    if duration_sec is None:
+        return
+    total = metrics.get("total_executions", 1)
+    prev_avg = metrics.get("avg_duration_sec")
+    if prev_avg is None:
+        metrics["avg_duration_sec"] = round(duration_sec, 1)
+    else:
+        # 累積移動平均
+        metrics["avg_duration_sec"] = round(
+            prev_avg + (duration_sec - prev_avg) / total, 1
+        )
+    # p90 はバッチ集計(metrics_collector.py)で正確に算出する
+    # ここでは max を近似値として保持
+    prev_max = metrics.get("p90_duration_sec")
+    if prev_max is None or duration_sec > prev_max:
+        metrics["p90_duration_sec"] = round(duration_sec, 1)
+
+
+def _update_subagent_metrics(metrics: dict, subagent_calls: int | None) -> None:
+    """サブエージェント呼び出し回数メトリクスをインクリメンタル更新する。"""
+    if subagent_calls is None:
+        return
+    total = metrics.get("total_executions", 1)
+    prev_avg = metrics.get("avg_subagent_calls")
+    if prev_avg is None:
+        metrics["avg_subagent_calls"] = round(subagent_calls, 1)
+    else:
+        metrics["avg_subagent_calls"] = round(
+            prev_avg + (subagent_calls - prev_avg) / total, 1
+        )
+
+
+def record_feedback(
+    skill_name: str,
+    verdict: str,
+    note: str,
+    reg: dict,
+    *,
+    duration_sec: float | None = None,
+    subagent_calls: int | None = None,
+    co_skills: list[str] | None = None,
+    sprint_id: str | None = None,
+) -> dict:
     """フィードバックを記録してレジストリを返す。"""
     skill = next(
         (s for s in reg.get("installed_skills", []) if s["name"] == skill_name),
@@ -113,6 +195,18 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
     )
     if not skill:
         return reg
+
+    co_skills = co_skills or []
+
+    # ノード ID を取得
+    node_id = reg.get("node", {}).get("id")
+
+    # JSONL に生メトリクスイベントを記録
+    _append_metrics_log(
+        skill_name, verdict, note,
+        duration_sec, subagent_calls, co_skills,
+        sprint_id, node_id,
+    )
 
     skill.setdefault("feedback_history", []).append({
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -129,6 +223,10 @@ def record_feedback(skill_name: str, verdict: str, note: str, reg: dict) -> dict
     metrics["total_executions"] = total
     metrics["ok_rate"] = round(ok_count / total, 3) if total > 0 else 0.0
     metrics["last_executed_at"] = datetime.now(timezone.utc).isoformat()
+
+    # 拡張メトリクスのインクリメンタル更新
+    _update_duration_metrics(metrics, duration_sec)
+    _update_subagent_metrics(metrics, subagent_calls)
 
     # しきい値を超えた未改良の問題が蓄積された場合に pending_refinement を立てる。
     # workspace: 1件で即トリガー / それ以外: デフォルト3件蓄積でトリガー。
@@ -174,6 +272,22 @@ def main():
         help="フィードバックの種類",
     )
     parser.add_argument("--note", default="", help="補足コメント（任意）")
+    parser.add_argument(
+        "--duration", type=float, default=None,
+        help="実行時間（秒）",
+    )
+    parser.add_argument(
+        "--subagent-calls", type=int, default=None,
+        help="サブエージェント呼び出し回数",
+    )
+    parser.add_argument(
+        "--co-skills", nargs="*", default=[],
+        help="同一セッションで使用した他スキル",
+    )
+    parser.add_argument(
+        "--sprint-id", default=None,
+        help="スプリントID（scrum-master経由時）",
+    )
     args = parser.parse_args()
 
     registry_path = _registry_path()
@@ -196,7 +310,13 @@ def main():
         reg = auto_register_workspace_skill(reg, skill_name)
         print(f"📝 {skill_name}: ワークスペーススキルとしてレジストリに登録しました")
 
-    reg = record_feedback(skill_name, args.verdict, args.note, reg)
+    reg = record_feedback(
+        skill_name, args.verdict, args.note, reg,
+        duration_sec=args.duration,
+        subagent_calls=args.subagent_calls,
+        co_skills=args.co_skills,
+        sprint_id=args.sprint_id,
+    )
 
     with open(registry_path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)
