@@ -17,10 +17,16 @@ import os
 import time
 
 import memory_utils
+import similarity
 
 
-def full_rebuild(memory_dir: str) -> dict:
-    """インデックスを完全再構築する（stale チェックなし）"""
+def full_rebuild(memory_dir: str, rebuild_corpus: bool = True) -> dict:
+    """インデックスを完全再構築する（stale チェックなし）
+    
+    Args:
+        memory_dir: メモリーディレクトリのパス
+        rebuild_corpus: コーパスも再構築するか（デフォルト: True）
+    """
     entries = []
     skipped = 0
     for fpath, _ in memory_utils.iter_memory_files(memory_dir):
@@ -34,6 +40,15 @@ def full_rebuild(memory_dir: str) -> dict:
     memory_utils.save_index(memory_dir, index)
     if skipped:
         print(f"  スキップ: {skipped}件")
+    
+    # コーパスも再構築
+    if rebuild_corpus and entries:
+        print("  コーパス再構築中...")
+        try:
+            similarity.build_corpus(memory_dir)
+        except Exception as e:
+            print(f"  警告: コーパス構築失敗 - {e}")
+    
     return index
 
 
@@ -51,6 +66,16 @@ def print_stats(memory_dir: str) -> None:
     active = sum(1 for e in entries if e.get("status") == "active")
     avg_score = sum(e.get("share_score", 0) for e in entries) / total
     top_score = max(e.get("share_score", 0) for e in entries)
+    
+    # コーパス統計
+    corpus = similarity.load_corpus(memory_dir)
+    if corpus.get("doc_vectors"):
+        corpus_docs = len(corpus.get("doc_vectors", {}))
+        corpus_terms = len(corpus.get("df", {}))
+        corpus_built = corpus.get("built_at", "未構築")
+        print(f"  コーパス    : {corpus_docs}件 / 語彙数={corpus_terms} / 更新={corpus_built}")
+    else:
+        print(f"  コーパス    : 未構築（build_index --force で構築）")
     total_access = sum(e.get("access_count", 0) for e in entries)
     total_corrections = sum(e.get("correction_count", 0) for e in entries)
     rated_positive = sum(1 for e in entries if e.get("user_rating", 0) > 0)

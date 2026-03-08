@@ -45,6 +45,7 @@ DEFAULT_CONFIG = {
 }
 
 INDEX_FILENAME = ".memory-index.json"
+CORPUS_FILENAME = ".memory-corpus.json"
 
 
 def load_config() -> dict:

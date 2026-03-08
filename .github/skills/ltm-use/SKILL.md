@@ -2,13 +2,22 @@
 name: ltm-use
 description: "セッションをまたいで知識・決定事項を継続させたいときのスキル。「覚えておいて」でsave、「思い出して」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った／間違ってた」でrate、「Copilotの記憶を同期して」でsync-copilot-memory。重要な知見を発見したら自律的にsaveを実行すること。"
 metadata:
-  version: "3.0.0"
+  version: "4.0.0"
 ---
 
 # ltm-use（Long-Term Memory Use）
 
 エージェントにセッションをまたいだ長期記憶を与えるコアスキル。
 MCPサーバーやClaude Code専用機能を使わず、**Markdownファイルへの読み書きだけ**で動作する。
+
+**v4.0.0 の新機能**:
+- 記憶クラスタリング・類似記憶推薦（TF-IDF + コサイン類似度）
+- save 時の重複検出・統合提案
+- recall ハイブリッドランキング（キーワード + 意味的類似度 + メタデータ）
+- 自動タグ抽出（TF-IDF ベース）
+- cleanup 智的化（重複検出・品質スコア閾値）
+
+アルゴリズム詳細: [`references/algorithms.md`](references/algorithms.md)
 
 ---
 
@@ -27,21 +36,7 @@ git除外                   ローカル永続              git管理
 | `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
 | `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
 
-> **Windows の場合**: `~` は `%USERPROFILE%` に読み替えてください（例: `%USERPROFILE%\.copilot\memory\`）。
-
----
-
-## パス解決
-
-このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、記憶の保存先を `MEMORY_DIR` とする。
-
-| このSKILL.mdのパス | SKILL_DIR | MEMORY_DIR(workspace) |
-|---|---|---|
-| `.github/skills/ltm-use/SKILL.md` | `.github/skills/ltm-use` | `.github/skills/ltm-use/memories` |
-| `.claude/skills/ltm-use/SKILL.md` | `.claude/skills/ltm-use` | `.claude/skills/ltm-use/memories` |
-
-スクリプトは `${SKILL_DIR}/scripts/` から実行する。
-記憶フォーマット仕様: `${SKILL_DIR}/references/memory-format.md` を参照。
+> **Windows の場合**: `~` は `%USERPROFILE%` に読み替えてください。
 
 ---
 
@@ -61,6 +56,8 @@ git除外                   ローカル永続              git管理
 | **sync-copilot-memory** | 「Copilotの記憶を同期して」「VSCodeの記憶を取り込んで」「Copilot Memoryをインポートして」 | `sync_copilot_memory.py` |
 | **build_index** | 「インデックスを再構築して」「統計を見せて」 | `build_index.py` |
 
+詳細オプション: [`references/operations.md`](references/operations.md)
+
 ---
 
 ## save（記憶を保存する）
@@ -77,17 +74,29 @@ python ${SKILL_DIR}/scripts/save_memory.py \
 # ホーム記憶として保存（プロジェクト横断）
 python ${SKILL_DIR}/scripts/save_memory.py --scope home \
   --category architecture --title "[タイトル]" --summary "[要約]" --content "[内容]"
+
+# v4.0.0 新機能: 自動タグ抽出と重複検出
+python ${SKILL_DIR}/scripts/save_memory.py \
+  --category auth --title "JWT認証の実装" \
+  --summary "..." --content "..."
+  # → 自動的にタグを提案し、類似記憶を検出して統合・更新・別保存を選択できる
+
+# 重複検出をスキップ（強制保存）
+python ${SKILL_DIR}/scripts/save_memory.py --no-dedup \
+  --category auth --title "[タイトル]" --summary "[要約]" --content "[内容]"
+
+# 重複検出閾値を調整（デフォルト 0.65）
+python ${SKILL_DIR}/scripts/save_memory.py --dedup-threshold 0.75 \
+  --category auth --title "[タイトル]" --summary "[要約]" --content "[内容]"
+
+# 自動タグ抽出をスキップ（手動タグのみ）
+python ${SKILL_DIR}/scripts/save_memory.py --no-auto-tags \
+  --category auth --title "[タイトル]" --summary "[要約]" --content "[内容]" --tags jwt,auth
 ```
 
 > **注意**: `--scope shared` は `save_memory.py` では非対応。shared への保存は
 > `promote_memory.py` で workspace/home から昇格する手順を使うこと。
 
-**手順（スクリプトなし・手動）**:
-1. カテゴリを決定する（例: `auth`, `bug-investigation`, `general`）
-2. `${MEMORY_DIR}/[カテゴリ]/[kebab-case-title].md` を作成する
-3. フォーマット仕様（`references/memory-format.md`）に従ってフロントマターと本文を書く
-4. **必須**: `summary` フィールドに1〜2文の要約を書く（検索の鍵）
-5. `scope`, `access_count: 0`, `share_score: 0` を設定する
 
 **saveの判断基準**:
 - ✅ セッションをまたいで価値がある情報
@@ -98,6 +107,7 @@ python ${SKILL_DIR}/scripts/save_memory.py --scope home \
 - ✅ 再調査を避けられる「詰まりポイント」の解決策
 - ❌ 一時的な中間出力・作業ログ
 - ❌ コードベースにすでに書かれている情報
+
 
 **プロアクティブなsave（自律的保存）**:
 
@@ -115,41 +125,24 @@ python ${SKILL_DIR}/scripts/save_memory.py --scope home \
 
 ## recall（記憶を想起する）
 
-recallすると `access_count` が自動加算され `share_score` が再計算される。
-インデックス（`.memory-index.json`）を使った高速検索で、記憶数が増えても性能劣化しない。
-ワークスペースで見つからない場合は、home/shared を自動フォールバック検索する。
+recall すると `access_count` が自動加算され `share_score` が再計算される。
+ワークスペースで見つからない場合は home/shared を自動フォールバック検索する。
 
 ```bash
-# ワークスペース検索（見つからなければ home/shared にフォールバック）
 python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード1] [キーワード2]"
-
-# スコープ指定
-python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --scope all
 
 # 全文表示
 python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --full
 
-# access_count を更新しない（参照ログを残さない）
-python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --no-track
-
-# 結果に対してインタラクティブ評価ループを実行
+# 結果に対してインタラクティブ評価
 python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --rate-after
 ```
-
-**検索の仕組み（2段階）**:
-1. インデックスで title/summary/tags を高速スコアリング（ファイル読み込みなし）
-2. 上位候補のみ実ファイルを読み込んで body も含めた精密スコアリング
-
-**手順（スクリプトなし・手動）**:
-1. `${MEMORY_DIR}/` 以下のサブディレクトリを列挙してカテゴリを把握する
-2. 各 `.md` ファイルの `summary` フィールドをスキャンしてキーワードとの関連を判断する
-3. 関連するファイルを全文読み込みして内容を把握する
-4. 見つからない場合は `~/.copilot/memory/home/` や `~/.copilot/memory/shared/` を同様にスキャンする
-5. `access_count` をインクリメントし `last_accessed` を今日の日付に更新する
 
 **recallのタイミング**:
 - 関連するタスクを始める前
 - 同じ問題を調査し始めたとき（重複調査を避ける）
+
+v4.0.0 ハイブリッドランキング詳細: [`references/algorithms.md`](references/algorithms.md)
 
 ---
 
@@ -205,7 +198,6 @@ recall した記憶が役立ったか、誤りがあったかを記録する。
 ```bash
 # 役立った記憶を評価（share_score +10）
 python ${SKILL_DIR}/scripts/rate_memory.py --id mem-20260303-001 --good
-python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md --good
 
 # 誤りがあった・修正が必要な記憶（share_score -15以上）
 python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md \
@@ -213,17 +205,6 @@ python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md \
 
 # 役に立たなかった記憶（share_score -10）
 python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md --bad
-```
-
-**評価の impact**:
-- `--good`: `user_rating +1` → `share_score` +10点（最大+20まで累積）
-- `--bad`: `user_rating -1` → `share_score` -10点
-- `--correction`: `user_rating -1, correction_count +1` → `share_score` -15〜-20点、修正ログが本文に追記
-
-**recallの `--rate-after` と組み合わせる**:
-```bash
-python ${SKILL_DIR}/scripts/recall_memory.py "JWT認証" --rate-after
-# → 結果表示後にインタラクティブな評価入力ループが開始される
 ```
 
 ---
@@ -240,9 +221,6 @@ python ${SKILL_DIR}/scripts/build_index.py --stats
 # 全スコープの統計
 python ${SKILL_DIR}/scripts/build_index.py --scope all --stats
 
-# 増分更新（通常は不要）
-python ${SKILL_DIR}/scripts/build_index.py
-
 # 強制完全再構築（インデックス破損時）
 python ${SKILL_DIR}/scripts/build_index.py --force
 ```
@@ -253,6 +231,8 @@ python ${SKILL_DIR}/scripts/build_index.py --force
 
 参照頻度・経過日数に基づいて不要な記憶を自動判定し削除する。
 
+**v4.0.0 新機能**: 重複検出モードと品質スコア閾値による智的クリーンアップ。
+
 ```bash
 # ドライラン（削除対象を確認）
 python ${SKILL_DIR}/scripts/cleanup_memory.py --dry-run
@@ -260,17 +240,14 @@ python ${SKILL_DIR}/scripts/cleanup_memory.py --dry-run
 # ワークスペース記憶をクリーンアップ
 python ${SKILL_DIR}/scripts/cleanup_memory.py
 
-# 全スコープ
-python ${SKILL_DIR}/scripts/cleanup_memory.py --scope all
+# v4.0.0 重複検出モード（類似度 >= 0.85 のペアを検出）
+python ${SKILL_DIR}/scripts/cleanup_memory.py --duplicates-only --dry-run
 
-# 確認なしで削除（非対話環境・スクリプトから呼ぶ場合）
-python ${SKILL_DIR}/scripts/cleanup_memory.py --yes
+# v4.0.0 品質スコア閾値モード（総合品質 < 30 を削除候補に）
+python ${SKILL_DIR}/scripts/cleanup_memory.py --quality-threshold 30 --dry-run
 ```
 
-**削除基準**（`~/.copilot/memory/config.json` で変更可能）:
-- `access_count == 0` かつ作成から 30日以上経過
-- `status == archived` かつ更新から 60日以上経過
-- `status == deprecated`
+削除基準・品質スコア計算式の詳細: [`references/operations.md`](references/operations.md)
 
 ---
 
@@ -291,42 +268,9 @@ python ${SKILL_DIR}/scripts/sync_copilot_memory.py
 
 # workspace スコープに取り込む
 python ${SKILL_DIR}/scripts/sync_copilot_memory.py --scope workspace
-
-# globalStorage のパスを明示指定（VSCode Insiders / Cursor 等）
-python ${SKILL_DIR}/scripts/sync_copilot_memory.py --storage "/path/to/globalStorage"
-
-# state.vscdb のキー一覧を表示（フォーマット調査・デバッグ用）
-python ${SKILL_DIR}/scripts/sync_copilot_memory.py --list-keys
-
-# インポート済みIDを無視して強制再インポート
-python ${SKILL_DIR}/scripts/sync_copilot_memory.py --force
 ```
 
-**globalStorage の場所:**
-
-| OS | デフォルトパス |
-|---|---|
-| Windows | `%APPDATA%\Code\User\globalStorage\` |
-| macOS | `~/Library/Application Support/Code/User/globalStorage/` |
-| Linux | `~/.config/Code/User/globalStorage/` |
-
-**インポート後の推奨操作:**
-
-```bash
-# インポート結果を確認
-python ${SKILL_DIR}/scripts/recall_memory.py "copilot-memory" --scope home
-
-# 一覧表示
-python ${SKILL_DIR}/scripts/list_memories.py --scope home
-
-# 役立ったものを評価（share_score を上げて昇格候補にする）
-python ${SKILL_DIR}/scripts/rate_memory.py --file memories/copilot-memory/xxx.md --good
-```
-
-**注意事項:**
-- Copilot Memory が有効化されていない / データが少ない場合はエントリが検出されないことがある
-- `--list-keys` で `state.vscdb` の全キーを確認し、メモリデータが存在するか調査できる
-- インポートされた記憶は `category: copilot-memory`、タグ `copilot-memory, imported` で保存される
+globalStorageパス・詳細オプション: [`references/operations.md`](references/operations.md)
 
 ---
 
@@ -339,72 +283,20 @@ skill-registry.json に登録されたリポジトリ（git-skill-manager と共
 # 全リポジトリを pull して差分確認
 python ${SKILL_DIR}/scripts/sync_memory.py
 
-# 特定リポジトリのみ
-python ${SKILL_DIR}/scripts/sync_memory.py --repo origin
-
 # 新しい shared 記憶を home に取り込む
 python ${SKILL_DIR}/scripts/sync_memory.py --import-to-home
 
-# 全 shared からキーワード検索
-python ${SKILL_DIR}/scripts/sync_memory.py --search "API設計"
-
 # push（readonly でないリポジトリへ）
-python ${SKILL_DIR}/scripts/sync_memory.py --push [--repo origin]
-
-# skill-registry.json 未設定時のフォールバック用 remote 設定
-python ${SKILL_DIR}/scripts/sync_memory.py --set-remote git@github.com:org/memories.git
+python ${SKILL_DIR}/scripts/sync_memory.py --push
 ```
 
 ---
 
 ## 設定
 
-### git リポジトリ（`~/.copilot/skill-registry.json`）
+`~/.copilot/skill-registry.json`（git-skill-manager と共通）と `~/.copilot/memory/config.json` で動作をカスタマイズできる。
 
-git-skill-manager と共通のリポジトリ設定を使用する。
-各リポジトリに `memory_root`（省略時: `"memories"`）を指定すると、
-shared 記憶の保存先（`local_dir/memory_root/`）を変更できる。
-
-```json
-{
-  "repositories": [
-    {
-      "name": "origin",
-      "url": "git@github.com:org/agent-skills.git",
-      "branch": "main",
-      "readonly": false,
-      "priority": 1,
-      "memory_root": "memories"
-    },
-    {
-      "name": "team-b",
-      "url": "git@github.com:team-b/skills.git",
-      "branch": "main",
-      "readonly": true,
-      "priority": 2
-    }
-  ]
-}
-```
-
-- `readonly: true` のリポジトリは pull のみ（commit/push 不可）
-- 複数リポジトリが設定された場合、`priority` 順に処理し、書き込みは最優先リポジトリへ
-- `skill-registry.json` が未設定の場合は `config.json` の `shared_remote` にフォールバック
-
-### メモリー設定（`~/.copilot/memory/config.json`）
-
-```json
-{
-  "shared_remote": "git@github.com:org/shared-memories.git",
-  "shared_branch": "main",
-  "auto_promote_threshold": 85,
-  "semi_auto_promote_threshold": 70,
-  "cleanup_inactive_days": 30,
-  "cleanup_archived_days": 60
-}
-```
-
-`shared_remote` は `skill-registry.json` が未設定の場合のフォールバックとして使用される。
+設定詳細: [`references/configuration.md`](references/configuration.md)
 
 ---
 
@@ -427,9 +319,12 @@ shared 記憶の保存先（`local_dir/memory_root/`）を変更できる。
 
 ---
 
-## フォーマット詳細
+## リファレンス
 
-`${SKILL_DIR}/references/memory-format.md` を参照すること。
+- **記憶フォーマット仕様**: [`references/memory-format.md`](references/memory-format.md)
+- **操作の詳細オプション**: [`references/operations.md`](references/operations.md)
+- **アルゴリズム詳細**: [`references/algorithms.md`](references/algorithms.md)
+- **設定ファイル詳細**: [`references/configuration.md`](references/configuration.md)
 
 ---
 

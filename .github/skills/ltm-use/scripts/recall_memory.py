@@ -20,6 +20,7 @@ import os
 import sys
 
 import memory_utils
+import similarity
 
 
 # ─── インデックス検索 ────────────────────────────────────────
@@ -38,17 +39,75 @@ def _score_index_entry(entry: dict, keywords: list[str]) -> int:
     return score
 
 
+def _compute_meta_boost(entry: dict) -> float:
+    """メタデータに基づく boost スコア（0.0〜1.0）
+    
+    よく参照される / 高評価 / 新しい / アクティブ な記憶を優遇する
+    """
+    access_count = entry.get("access_count", 0)
+    user_rating = entry.get("user_rating", 0)
+    status = entry.get("status", "active")
+    updated = entry.get("updated", "")
+    
+    # 参照回数（最大 0.3）
+    access_boost = min(access_count * 0.05, 0.3)
+    
+    # ユーザー評価（最大 0.3）
+    rating_boost = min(user_rating * 0.1, 0.3)
+    
+    # 鮮度（最大 0.2）
+    days_old = memory_utils.days_since(updated) if updated else 999
+    if days_old < 30:
+        freshness = 0.2
+    elif days_old < 90:
+        freshness = 0.1
+    else:
+        freshness = 0.0
+    
+    # ステータス（0.2）
+    status_boost = 0.2 if status == "active" else 0.0
+    
+    return access_boost + rating_boost + freshness + status_boost
+
+
 def search_with_index(memory_dir: str, keywords: list[str],
                       status_filter: str | None, limit: int,
-                      category: str | None = None) -> list[dict]:
-    """インデックス優先の2段階検索:
+                      category: str | None = None,
+                      use_hybrid: bool = True) -> list[dict]:
+    """インデックス優先の2段階検索 (v4: ハイブリッドランキング対応)
+    
     1. インデックスで title/summary/tags をスコアリング（ファイル読み込みなし）
-    2. 上位候補のみ実ファイルを読み込み body を追加スコアリング
+    2. v4: TF-IDF コサイン類似度を計算（コーパスがある場合）
+    3. ハイブリッドスコア = α*keyword_score + β*tfidf_similarity + γ*meta_boost
+    4. 上位候補のみ実ファイルを読み込み body を追加スコアリング
+    
+    Args:
+        memory_dir: メモリーディレクトリ
+        keywords: 検索キーワード
+        status_filter: ステータスフィルタ
+        limit: 最大返却数
+        category: カテゴリフィルタ
+        use_hybrid: ハイブリッドスコアを使用するか（False の場合は v3 互換）
     """
     index = memory_utils.load_index(memory_dir)
     if not index.get("entries"):
         index = memory_utils.refresh_index(memory_dir)
     entries = index.get("entries", [])
+
+    # ── TF-IDF ハイブリッドスコアを使用するか確認 ──
+    corpus = None
+    query_vector = None
+    config = memory_utils.load_config()
+    weights = config.get("recall_hybrid_weights", {"keyword": 0.5, "tfidf": 0.35, "meta": 0.15})
+    
+    if use_hybrid:
+        corpus = similarity.load_corpus(memory_dir)
+        if corpus.get("doc_vectors"):
+            # クエリをベクトル化
+            query_text = " ".join(keywords)
+            query_tokens = similarity.tokenize(query_text)
+            idf = similarity.compute_idf(corpus.get("df", {}), corpus.get("total_docs", 1))
+            query_vector = similarity.compute_tfidf_vector(query_tokens, idf)
 
     # ── ステップ1: インデックスでフィルタ＆スコアリング ──
     candidates = []
@@ -60,9 +119,34 @@ def search_with_index(memory_dir: str, keywords: list[str],
             entry_cat = os.path.dirname(filepath_rel).replace("\\", "/")
             if entry_cat != category:
                 continue
-        score = _score_index_entry(entry, keywords)
-        if score > 0:
-            candidates.append((score, entry))
+        
+        # キーワードスコア
+        kw_score = _score_index_entry(entry, keywords)
+        
+        # ハイブリッドスコア計算
+        if query_vector and corpus:
+            # TF-IDF 類似度
+            mem_id = entry.get("id", "")
+            doc_vec = corpus.get("doc_vectors", {}).get(mem_id, {})
+            tfidf_sim = similarity.cosine_similarity(query_vector, doc_vec) if doc_vec else 0.0
+            
+            # メタデータブースト
+            meta_boost = _compute_meta_boost(entry)
+            
+            # 正規化して合成
+            kw_max = len(keywords) * 20  # 理論最大値
+            kw_norm = min(kw_score / kw_max, 1.0) if kw_max > 0 else 0.0
+            
+            hybrid = (weights["keyword"] * kw_norm +
+                     weights["tfidf"] * tfidf_sim +
+                     weights["meta"] * meta_boost)
+            
+            if hybrid > 0.05:  # 最低閾値
+                candidates.append((hybrid, entry, kw_score))  # kw_score も保持
+        else:
+            # v3 互換モード（コーパスなし）
+            if kw_score > 0:
+                candidates.append((kw_score, entry, kw_score))
 
     if not candidates:
         return []
@@ -73,7 +157,7 @@ def search_with_index(memory_dir: str, keywords: list[str],
 
     # ── ステップ2: フルファイル読み込みで body 追加スコア ──
     results = []
-    for base_score, entry in top:
+    for base_score, entry, kw_score in top:
         fpath = os.path.join(memory_dir, entry["filepath"])
         if not os.path.exists(fpath):
             continue
@@ -84,10 +168,12 @@ def search_with_index(memory_dir: str, keywords: list[str],
             body_score = sum(
                 min(body.lower().count(kw.lower()), 5) for kw in keywords
             )
+            final_score = base_score + body_score if not query_vector else base_score
             results.append({
                 "filepath": fpath,
                 "memory_dir": memory_dir,
-                "score": base_score + body_score,
+                "score": final_score,
+                "keyword_score": kw_score,  # デバッグ用
                 "meta": meta,
                 "body": body,
                 "entry": entry,

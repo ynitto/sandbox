@@ -6,6 +6,8 @@ cleanup_memory.py - 不要な記憶を削除してディスク領域を節約す
   1. access_count == 0 かつ作成から N 日以上経過（デフォルト30日）
   2. status == archived かつ更新から N 日以上経過（デフォルト60日）
   3. status == deprecated
+  4. 重複記憶（--duplicates-only: 類似度 >= 0.85 のペアの低品質側）
+  5. 品質スコア閾値以下（--quality-threshold: 総合品質スコア）
 
 Usage:
   # ドライラン（削除せず対象を表示）
@@ -23,6 +25,12 @@ Usage:
   # 基準日数をカスタマイズ
   python cleanup_memory.py --inactive-days 14 --archived-days 30 --dry-run
 
+  # 重複検出モード（類似度 >= 0.85 のペアを検出、低品質側を削除候補に）
+  python cleanup_memory.py --duplicates-only --dry-run
+
+  # 品質スコア閾値モード（総合品質 < 30 を削除候補に）
+  python cleanup_memory.py --quality-threshold 30 --dry-run
+
   # 非インタラクティブ（CI用）
   python cleanup_memory.py --yes
 """
@@ -32,9 +40,120 @@ import os
 import sys
 
 import memory_utils
+import similarity
 
 
-def find_cleanup_targets(memory_dir: str, inactive_days: int, archived_days: int) -> list[dict]:
+def compute_quality_score(meta: dict, body: str) -> float:
+    """
+    総合品質スコア = share_score * 0.6 + freshness * 0.2 + uniqueness * 0.2
+    
+    - share_score: memory_utils.compute_share_score() (0-100)
+    - freshness: 更新からの日数に基づく減衰スコア (0-100)
+      - 0日: 100, 30日: 50, 180日以上: 0
+    - uniqueness: エントリ長・タグ数から判定 (0-100)
+      - body >= 300文字 && tags >= 3: 100
+      - body >= 150文字 && tags >= 2: 50
+      - 以下: 0
+    """
+    share = memory_utils.compute_share_score(meta, body)
+    
+    # Freshness
+    updated = meta.get("updated", meta.get("created", ""))
+    age = memory_utils.days_since(updated)
+    if age <= 30:
+        freshness = 100 - (age / 30) * 50  # 0日: 100, 30日: 50
+    elif age <= 180:
+        freshness = 50 - ((age - 30) / 150) * 50  # 30日: 50, 180日: 0
+    else:
+        freshness = 0
+    
+    # Uniqueness
+    body_len = len(body.strip())
+    tags_count = len(meta.get("tags", []))
+    if body_len >= 300 and tags_count >= 3:
+        uniqueness = 100
+    elif body_len >= 150 and tags_count >= 2:
+        uniqueness = 50
+    else:
+        uniqueness = 0
+    
+    return share * 0.6 + freshness * 0.2 + uniqueness * 0.2
+
+
+def find_duplicate_targets(memory_dir: str, threshold: float = 0.85) -> list[dict]:
+    """
+    重複記憶ペアを検出し、品質の低い側を削除候補にする。
+    
+    Args:
+        memory_dir: 記憶ディレクトリ
+        threshold: 類似度閾値（デフォルト 0.85）
+    
+    Returns:
+        削除候補のリスト（品質スコアの低い側）
+    """
+    corpus_path = os.path.join(memory_dir, memory_utils.CORPUS_FILENAME)
+    if not os.path.exists(corpus_path):
+        print(f"[警告] コーパスファイルが存在しません: {corpus_path}")
+        print("       build_index.py を実行してコーパスを構築してください。")
+        return []
+    
+    with open(corpus_path, encoding="utf-8") as f:
+        import json
+        corpus_data = json.load(f)
+    
+    documents = corpus_data.get("documents", [])
+    vectors = corpus_data.get("vectors", [])
+    
+    # ペアワイズ類似度計算
+    targets = []
+    seen_pairs = set()
+    
+    for i, doc_i in enumerate(documents):
+        for j, doc_j in enumerate(documents):
+            if i >= j:
+                continue  # 自分自身と重複ペアを避ける
+            
+            pair_key = tuple(sorted([doc_i["filepath"], doc_j["filepath"]]))
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+            
+            sim = similarity.cosine_similarity(vectors[i], vectors[j])
+            if sim >= threshold:
+                # 品質スコアを計算して低い側を削除候補に
+                with open(doc_i["filepath"], encoding="utf-8") as f:
+                    text_i = f.read()
+                meta_i, body_i = memory_utils.parse_frontmatter(text_i)
+                quality_i = compute_quality_score(meta_i, body_i)
+                
+                with open(doc_j["filepath"], encoding="utf-8") as f:
+                    text_j = f.read()
+                meta_j, body_j = memory_utils.parse_frontmatter(text_j)
+                quality_j = compute_quality_score(meta_j, body_j)
+                
+                # 低品質側を削除候補に
+                if quality_i < quality_j:
+                    lower_fp, lower_meta, lower_quality, keep_fp = doc_i["filepath"], meta_i, quality_i, doc_j["filepath"]
+                else:
+                    lower_fp, lower_meta, lower_quality, keep_fp = doc_j["filepath"], meta_j, quality_j, doc_i["filepath"]
+                
+                targets.append({
+                    "filepath": lower_fp,
+                    "title": lower_meta.get("title", os.path.basename(lower_fp)),
+                    "status": lower_meta.get("status", "active"),
+                    "access_count": int(lower_meta.get("access_count", 0)),
+                    "share_score": memory_utils.compute_share_score(lower_meta, body_i if lower_fp == doc_i["filepath"] else body_j),
+                    "quality_score": lower_quality,
+                    "reason": f"重複記憶検出（類似度 {sim:.3f} >= {threshold}、保持: {os.path.basename(keep_fp)}）",
+                    "age_created": memory_utils.days_since(lower_meta.get("created", "")),
+                    "rel_cat": os.path.relpath(os.path.dirname(lower_fp), memory_dir),
+                })
+    
+    return sorted(targets, key=lambda x: x["quality_score"])
+
+
+def find_cleanup_targets(memory_dir: str, inactive_days: int, archived_days: int,
+                        quality_threshold: float | None = None) -> list[dict]:
     """削除対象ファイルを検出して返す"""
     targets = []
     for fpath, rel_cat in memory_utils.iter_memory_files(memory_dir):
@@ -58,6 +177,10 @@ def find_cleanup_targets(memory_dir: str, inactive_days: int, archived_days: int
             reason = f"archived かつ {age_updated}日間更新なし（基準: {archived_days}日）"
         elif access_count == 0 and age_created >= inactive_days:
             reason = f"未参照 かつ 作成から{age_created}日経過（基準: {inactive_days}日）"
+        elif quality_threshold is not None:
+            quality = compute_quality_score(meta, body)
+            if quality < quality_threshold:
+                reason = f"品質スコア {quality:.1f} < 閾値 {quality_threshold}"
 
         if reason:
             targets.append({
@@ -94,6 +217,12 @@ def main():
                         help="未参照記憶の保持日数（省略時: config 値）")
     parser.add_argument("--archived-days", type=int, default=None,
                         help="archived記憶の保持日数（省略時: config 値）")
+    parser.add_argument("--duplicates-only", action="store_true",
+                        help="重複検出モード（類似度 >= 0.85 のペアを検出、低品質側を削除候補に）")
+    parser.add_argument("--dedup-threshold", type=float, default=0.85,
+                        help="重複判定の類似度閾値 (default: 0.85)")
+    parser.add_argument("--quality-threshold", type=float, default=None,
+                        help="品質スコア閾値（この値未満を削除候補に）")
     parser.add_argument("--dry-run", action="store_true",
                         help="削除せず対象を表示するだけ")
     parser.add_argument("--yes", "-y", action="store_true",
@@ -108,7 +237,13 @@ def main():
     for memory_dir in memory_utils.get_memory_dirs(args.scope):
         if not os.path.isdir(memory_dir):
             continue
-        targets = find_cleanup_targets(memory_dir, inactive_days, archived_days)
+        
+        if args.duplicates_only:
+            targets = find_duplicate_targets(memory_dir, args.dedup_threshold)
+        else:
+            targets = find_cleanup_targets(memory_dir, inactive_days, archived_days,
+                                          quality_threshold=args.quality_threshold)
+        
         if targets:
             home_dir = memory_utils._get_home_dir()
             scope_label = os.path.relpath(memory_dir, home_dir) \
