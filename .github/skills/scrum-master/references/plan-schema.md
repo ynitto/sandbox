@@ -23,7 +23,7 @@
       "action": "string (必須) タスクの具体的な説明",
       "priority": "integer (必須) 1が最高優先。スプリント選出の順序に使う",
       "done_criteria": "string (必須) 完了の定義。何をもって完了とするか",
-      "skill": "string|null (必須) 使用するスキル名。汎用タスクはnull",
+      "skill": "string|string[]|null (必須) 使用するスキル名。複数スキルを組み合わせる場合は配列で指定。汎用タスクはnull",
       "depends_on": ["string (任意) 先行タスクのIDリスト。デフォルト: []"],
       "status": "string (任意) pending|in_progress|completed|failed|skipped。デフォルト: pending",
       "result": "string|null (任意) タスク完了時の結果サマリー"
@@ -126,9 +126,10 @@
 
 ## タスク分解の粒度基準
 
-- 1タスク = 1スキルの1回の実行
-- 「AしてBする」は2タスクに分ける
-- スキルが複数の責務を持つ場合でも、1タスクでは1つの責務だけ依頼する
+- 基本は 1タスク = 1スキルの1回の実行
+- 「AしてBする」で責務が異なる場合は2タスクに分ける
+- 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "react-frontend-unit-tester"]`）
+- 配列指定の場合、サブエージェントは先頭スキルから順にSKILL.mdを読んで実行する
 - 汎用タスク（skill: null）は判断・調査・確認など、スキル不要な作業に限定する
 
 ## requirements.json → plan.json 変換ルール
@@ -186,6 +187,25 @@
 {
   "goal": "個人向けTODO管理WebアプリをReactで構築する",
   "requirements_source": "requirements-definer",
+  "backlog": [
+    {
+      "id": "b1",
+      "action": "TODO作成フォームのUIコンポーネントを実装しユニットテストを作成する",
+      "priority": 1,
+      "done_criteria": "フォーム送信でTODOが一覧に追加される。タイトル空送信時にバリデーションエラーが表示される。正常系・バリデーションエラー系のテストがパスする",
+      "skill": ["react-frontend-coder", "react-frontend-unit-tester"],
+      "depends_on": [],
+      "status": "pending",
+      "result": null
+    }
+  ]
+}
+```
+
+> **注**: 上記の例では実装とテストを密接に連携させるため `skill` を配列で指定している。分離したい場合は従来通り個別タスクに分ける:
+
+```json
+{
   "backlog": [
     {
       "id": "b1",

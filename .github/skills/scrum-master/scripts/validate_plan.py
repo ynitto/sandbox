@@ -83,15 +83,31 @@ def validate_plan(plan: dict, known_skills: set[str] | None = None) -> list[str]
         ):
             errors.append(f"{prefix}: 'done_criteria' は文字列が必要です")
 
-        # skill: 文字列 or null
+        # skill: 文字列, 文字列の配列, or null
         skill = task.get("skill")
         if skill is not None:
-            if not isinstance(skill, str):
-                errors.append(f"{prefix}: 'skill' は文字列またはnullが必要です")
-            elif known_skills is not None and skill not in known_skills:
-                errors.append(
-                    f"{prefix}: スキル '{skill}' は利用可能なスキル一覧に存在しません"
-                )
+            if isinstance(skill, str):
+                skills_to_check = [skill]
+            elif isinstance(skill, list):
+                if len(skill) == 0:
+                    errors.append(f"{prefix}: 'skill' が配列の場合、1つ以上のスキル名が必要です")
+                    skills_to_check = []
+                else:
+                    for si, s in enumerate(skill):
+                        if not isinstance(s, str) or not s.strip():
+                            errors.append(
+                                f"{prefix}: 'skill[{si}]' は空でない文字列が必要です"
+                            )
+                    skills_to_check = [s for s in skill if isinstance(s, str) and s.strip()]
+            else:
+                errors.append(f"{prefix}: 'skill' は文字列、文字列の配列、またはnullが必要です")
+                skills_to_check = []
+            if known_skills is not None:
+                for s in skills_to_check:
+                    if s not in known_skills:
+                        errors.append(
+                            f"{prefix}: スキル '{s}' は利用可能なスキル一覧に存在しません"
+                        )
 
         # status
         status = task.get("status", "pending")
