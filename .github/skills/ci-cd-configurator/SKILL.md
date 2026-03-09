@@ -3,6 +3,9 @@ name: ci-cd-configurator
 description: GitLab CI / Jenkins (Pipeline) のパイプラインを構築・最適化する。「GitLab CIを設定して」「Jenkinsfileを作って」「CI/CDパイプラインを作って」「デプロイを自動化して」「ビルドパイプラインを最適化して」「ワークフローを作成して」などのリクエストで発動する。React/TS・Python・Go・Docker 対応、AWS インフラ専用。
 metadata:
   version: "1.0.0"
+  recommends:
+    - name: react-frontend-coder
+      reason: "ビルド対象のフロントエンド実装が存在することを前提"
 ---
 
 # CI/CD Configurator
