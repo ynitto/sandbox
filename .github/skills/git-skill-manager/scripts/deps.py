@@ -4,9 +4,7 @@
 depends_on  : 必須依存（前提スキルが欠如すると失敗リスクあり）
 recommends  : 推奨依存（なくても動くが組み合わせると効果が高い）
 
-依存関係の定義場所（優先順）:
-  1. <skill>/meta.yaml の depends_on / recommends キー
-  2. SKILL.md フロントマターの metadata.depends_on / metadata.recommends（後方互換）
+依存関係は <skill>/meta.yaml の depends_on / recommends キーで定義する。
 
 操作:
   deps check [skill_name]   -- インストール状況を検証
@@ -15,7 +13,6 @@ recommends  : 推奨依存（なくても動くが組み合わせると効果が
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 
 try:
@@ -39,14 +36,18 @@ def _parse_dep_list(raw: list) -> list[dict]:
     return result
 
 
-def _read_deps_from_meta_yaml(skill_path: str) -> dict | None:
+def _read_deps(skill_path: str) -> dict:
     """meta.yaml から depends_on / recommends を読み取る。
 
-    ファイルが存在しない場合は None を返す。
+    Returns:
+        {
+            'depends_on': [{'name': str, 'reason': str}, ...],
+            'recommends': [{'name': str, 'reason': str}, ...],
+        }
     """
     meta_path = os.path.join(skill_path, "meta.yaml")
     if not os.path.isfile(meta_path):
-        return None
+        return {"depends_on": [], "recommends": []}
 
     with open(meta_path, encoding="utf-8") as f:
         raw = f.read()
@@ -65,93 +66,6 @@ def _read_deps_from_meta_yaml(skill_path: str) -> dict | None:
         "depends_on": _parse_dep_list(data.get("depends_on") or []),
         "recommends": _parse_dep_list(data.get("recommends") or []),
     }
-
-
-def _read_deps_from_frontmatter(skill_path: str) -> dict:
-    """SKILL.md フロントマターから depends_on / recommends を読み取る（後方互換）。"""
-    skill_md = os.path.join(skill_path, "SKILL.md")
-    if not os.path.isfile(skill_md):
-        return {"depends_on": [], "recommends": []}
-
-    with open(skill_md, encoding="utf-8") as f:
-        content = f.read()
-
-    fm = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
-    if not fm:
-        return {"depends_on": [], "recommends": []}
-
-    result: dict = {"depends_on": [], "recommends": []}
-    lines = fm.group(1).splitlines()
-    in_metadata = False
-    current_section: str | None = None
-    current_item: dict | None = None
-
-    for line in lines:
-        stripped = line.lstrip()
-        if not stripped:
-            continue
-
-        if line.startswith("metadata:"):
-            in_metadata = True
-            current_section = None
-            current_item = None
-            continue
-
-        if in_metadata:
-            indent = len(line) - len(stripped)
-
-            # metadata ブロック終了（インデントなしの別キー）
-            if indent == 0:
-                in_metadata = False
-                current_section = None
-                current_item = None
-                continue
-
-            # depends_on: / recommends: の開始
-            m = re.match(r"^[ \t]+(depends_on|recommends):\s*$", line)
-            if m:
-                current_section = m.group(1)
-                current_item = None
-                continue
-
-            # リスト項目 "  - name: ..."
-            if current_section and stripped.startswith("-"):
-                item_rest = stripped[1:].strip()
-                if item_rest.startswith("name:"):
-                    name_val = item_rest.split(":", 1)[1].strip().strip("\"'")
-                    current_item = {"name": name_val, "reason": ""}
-                    result[current_section].append(current_item)
-                continue
-
-            # reason フィールド（リスト項目の属性）
-            if current_item and re.match(r"^[ \t]+reason:", line):
-                reason_val = line.split("reason:", 1)[1].strip().strip("\"'")
-                current_item["reason"] = reason_val
-                continue
-
-            # 別の metadata キー → セクション終了
-            if not stripped.startswith("-") and ":" in stripped:
-                key = stripped.split(":")[0]
-                if key in ("version", "tags", "author"):
-                    current_section = None
-                    current_item = None
-
-    return result
-
-
-def _read_deps(skill_path: str) -> dict:
-    """meta.yaml を優先し、なければ SKILL.md フロントマターから依存関係を読み取る。
-
-    Returns:
-        {
-            'depends_on': [{'name': str, 'reason': str}, ...],
-            'recommends': [{'name': str, 'reason': str}, ...],
-        }
-    """
-    meta = _read_deps_from_meta_yaml(skill_path)
-    if meta is not None:
-        return meta
-    return _read_deps_from_frontmatter(skill_path)
 
 
 def _all_skill_paths() -> dict[str, str]:
