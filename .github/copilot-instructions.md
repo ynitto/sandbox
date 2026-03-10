@@ -6,16 +6,33 @@
 
 * 必ず日本語で回答すること
 
-## セッション開始時のスキル自動更新チェック
+## セッション開始時の手順
 
-セッション開始時に、git-skill-manager の自動更新チェックを実行する:
+セッション開始時に、以下を**順番に**実行する:
+
+### 手順 1: スキル自動更新チェック
 
 ```bash
 python ~/.copilot/skills/git-skill-manager/scripts/auto_update.py check
 ```
 
-`--force` なしの場合、`interval_hours` 未満であればスキップされる（ネットワーク負荷を抑制）。
-git-skill-manager がインストールされていない環境ではスキップしてよい。
+`--force` なしの場合、`interval_hours` 未満であればスクリプト側でスキップされる（ネットワーク負荷を抑制）。
+
+### 手順 2: Copilot Memory 同期
+
+VSCode Copilot Memory の内容を ltm-use へ自動インポートする:
+
+```bash
+python ~/.copilot/skills/ltm-use/scripts/sync_copilot_memory.py
+```
+
+### 手順 3: 過去の記憶のリコール
+
+タスクを受け取ったら、作業を始める前に関連する過去の記憶を検索する:
+
+```bash
+python ~/.copilot/skills/ltm-use/scripts/recall_memory.py "キーワード"
+```
 
 -----
 
@@ -32,32 +49,10 @@ git-skill-manager で [スキル名] のフィードバックを記録して
 正確でなくてよい（「約30秒」→ `--duration 30`）。不明な場合は省略してよい。
 
 scrum-master 経由の場合はスプリント終了時に一括収集されるためスキップする。
-git-skill-manager がインストールされていない環境ではスキップしてよい。
 
 -----
 
 ## 長期記憶（ltm-use）
-
-### セッション開始時の Copilot Memory 同期
-
-セッション開始時に、VSCode Copilot Memory の内容を ltm-use へ自動インポートする:
-
-```bash
-python ~/.copilot/skills/ltm-use/scripts/sync_copilot_memory.py
-```
-
-新規エントリのみを取り込む（重複スキップ）。ltm-use がインストールされていない場合、
-または globalStorage が見つからない場合はスキップしてよい。
-
-### セッション開始時のリコール
-
-タスクを受け取ったら、作業を始める前に関連する過去の記憶を検索する:
-
-```bash
-python ~/.copilot/skills/ltm-use/scripts/recall_memory.py "キーワード"
-```
-
-ltm-use がインストールされていない場合はスキップしてよい。
 
 ### 記憶の保存タイミング
 
