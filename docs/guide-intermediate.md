@@ -253,9 +253,10 @@ snapshot-20260227T103000/
 {
   "profiles": {
     "default": ["*"],
-    "frontend": ["react-*", "ui-designer", "webapp-testing"],
+    "frontend": ["react-*", "ui-designer", "webapp-testing", "tdd-executing"],
     "backend": ["api-designer", "domain-modeler", "dynamodb-designer"],
-    "review": ["architecture-reviewer", "code-reviewer", "code-simplifier", "design-reviewer", "document-reviewer", "security-reviewer", "test-reviewer"]
+    "review": ["architecture-reviewer", "code-reviewer", "code-simplifier", "design-reviewer", "document-reviewer", "security-reviewer", "test-reviewer"],
+    "patent": ["patent-coach", "patent-writer"]
   }
 }
 ```
@@ -272,9 +273,10 @@ snapshot-20260227T103000/
 
 | シーン | おすすめプロファイル |
 |--------|-------------------|
-| React の画面開発 | `frontend`（React 系 + UI + テスト） |
+| React の画面開発 | `frontend`（React 系 + UI + テスト + TDD） |
 | API サーバー開発 | `backend`（API 設計 + ドメインモデル） |
 | コードレビュー | `review`（全レビュー系スキル） |
+| 特許・知財 | `patent`（patent-coach + patent-writer） |
 | 何でもやる | `default`（全スキル有効） |
 
 ---
