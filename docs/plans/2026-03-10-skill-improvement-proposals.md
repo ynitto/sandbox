@@ -13,10 +13,10 @@
 | カテゴリ | スキル数 | スキル名 |
 |---------|---------|---------|
 | **オーケストレーション** | 2 | scrum-master (v1.4.0), sprint-reviewer (v1.0.0) |
-| **メタ／管理** | 8 | git-skill-manager (v1.0.1), skill-recruiter (v1.0.0), skill-creator (v1.0.0), skill-evaluator (v1.0.1), skill-selector (版なし), generating-skills-from-copilot-logs (v1.0.0), ltm-use (v4.0.0), codebase-to-skill (v1.0.0) |
+| **メタ／管理** | 8 | git-skill-manager (v1.0.1), skill-recruiter (v1.0.0), skill-creator (v1.0.0), skill-evaluator (v1.0.1), skill-selector (v1.0.0), generating-skills-from-copilot-logs (v1.0.0), ltm-use (v4.0.0), codebase-to-skill (v1.0.0) |
 | **要件／設計** | 6 | requirements-definer (v2.0.0), brainstorming (v2.0.0), domain-modeler (v1.0.0), api-designer (v1.0.0), ui-designer (v1.0.0), doc-coauthoring (v1.0.0) |
 | **実装** | 5 | react-frontend-coder (v1.0.0), react-frontend-unit-tester (v1.0.0), tdd-executing (v1.0.1), ci-cd-configurator (v1.0.0), webapp-testing (v1.0.0) |
-| **レビュー** | 8 | code-reviewer (v2.0.0), code-simplifier (v1.0.0), architecture-reviewer (v1.2.0), design-reviewer (版なし), document-reviewer (v2.0.0), security-reviewer (v1.0.0), test-reviewer (v1.2.0), sprint-reviewer (※オーケストレーションと兼務) |
+| **レビュー** | 8 | code-reviewer (v2.0.0), code-simplifier (v1.0.0), architecture-reviewer (v1.2.0), design-reviewer (v1.0.0), document-reviewer (v2.0.0), security-reviewer (v1.0.0), test-reviewer (v1.2.0), sprint-reviewer (※オーケストレーションと兼務) |
 | **デバッグ** | 2 | debug-mode (v1.0.0), systematic-debugging (v1.0.0) |
 | **調査／文書** | 4 | deep-research (v1.0.0), technical-writer (v1.0.1), patent-coach (v1.0.0), patent-writer (v2.2.0) |
 | **データ** | 1 | dynamodb-designer (v1.0.0) |
@@ -196,7 +196,7 @@ metadata:
 
 | 問題 | 該当スキル |
 |------|-----------|
-| バージョン未記載 | design-reviewer, skill-selector |
+| バージョン未記載 | ~~design-reviewer, skill-selector~~ → **解消済み**（全スキルに `version` 追記完了） |
 | semver ポリシー未定義 | 全体（1.0.0→2.0.0 の基準が不明） |
 | description が YAML フロントマターで multiline 非対応 | skill-evaluator が `DESC_MULTILINE` エラーとして検出するが、修正ガイダンスなし |
 
@@ -427,7 +427,7 @@ Phase 1 — 基盤強化（即効性・低コスト）
   ├─ 全スキルに depends_on / recommends フィールド追加
   ├─ レビュースキル群に Out of Scope セクション追加
   ├─ skill-selector に曖昧トリガー解決マトリクス追加
-  ├─ design-reviewer / skill-selector にバージョン番号追加
+  ├─ ~~design-reviewer / skill-selector にバージョン番号追加~~ → **完了**（skill-selector v1.0.0 追記）
   └─ ci-cd-configurator に GitHub Actions 対応追加
 
 Phase 2 — 高優先度の拡張・新規
