@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""スキル管理操作: list / search / enable / disable / pin / unpin / lock / unlock / promote / profile / diff / sync / changelog。"""
+"""スキル管理操作: list / search / enable / disable / pin / unpin / lock / unlock / promote / profile / diff / sync / changelog / deps。"""
 from __future__ import annotations
 
 import os
@@ -826,3 +826,19 @@ def bump_version(skill_name: str, bump_type: str = "patch") -> None:
     print(f"     1. スキルを修正する")
     print(f"     2. python changelog.py {skill_name}  # CHANGELOG.md を更新")
     print(f"     3. push または promote でリポジトリに反映")
+
+
+# ---------------------------------------------------------------------------
+# deps （依存関係の検証・グラフ出力）
+# ---------------------------------------------------------------------------
+
+def deps_check(skill_name: str | None = None) -> int:
+    """depends_on / recommends の充足状況を検証する。不足があれば終了コード 1。"""
+    from deps import check_deps
+    return check_deps(skill_name)
+
+
+def deps_graph(skill_name: str | None = None) -> None:
+    """スキル依存グラフを Mermaid 形式で出力する。"""
+    from deps import show_graph
+    show_graph(skill_name)

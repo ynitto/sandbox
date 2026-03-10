@@ -147,6 +147,69 @@ def validate_skill(skill_path: str) -> tuple[list[str], list[str]]:
                     f"references/{ref_file} が SKILL.md から参照されていません"
                 )
 
+    # meta.yaml バリデーション（存在する場合）
+    meta_path = os.path.join(skill_path, "meta.yaml")
+    if os.path.isfile(meta_path):
+        meta_errors, meta_warnings = validate_meta_yaml(meta_path)
+        errors.extend(meta_errors)
+        warnings.extend(meta_warnings)
+
+    return errors, warnings
+
+
+ALLOWED_META_KEYS = {"depends_on", "recommends"}
+ALLOWED_DEP_ITEM_KEYS = {"name", "reason"}
+
+
+def validate_meta_yaml(meta_path: str) -> tuple[list[str], list[str]]:
+    """meta.yaml の構造を検証する。"""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    with open(meta_path, encoding="utf-8") as f:
+        raw = f.read()
+
+    if yaml:
+        try:
+            data = yaml.safe_load(raw)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"meta.yaml のパースに失敗しました: {exc}")
+            return errors, warnings
+    else:
+        # yaml 未インストール時はスキップ
+        warnings.append("meta.yaml の詳細バリデーションには PyYAML が必要です（pip install pyyaml）")
+        return errors, warnings
+
+    if data is None:
+        return errors, warnings  # 空ファイルは許容
+
+    if not isinstance(data, dict):
+        errors.append("meta.yaml はマッピング（キーと値）形式である必要があります")
+        return errors, warnings
+
+    unknown_keys = set(data.keys()) - ALLOWED_META_KEYS
+    if unknown_keys:
+        errors.append(f"meta.yaml に不明なキー: {', '.join(sorted(unknown_keys))}")
+
+    for section in ("depends_on", "recommends"):
+        entries = data.get(section)
+        if entries is None:
+            continue
+        if not isinstance(entries, list):
+            errors.append(f"meta.yaml の '{section}' はリスト形式である必要があります")
+            continue
+        for i, item in enumerate(entries):
+            if not isinstance(item, dict):
+                errors.append(f"meta.yaml の '{section}[{i}]' はマッピングである必要があります")
+                continue
+            unknown_item_keys = set(item.keys()) - ALLOWED_DEP_ITEM_KEYS
+            if unknown_item_keys:
+                errors.append(
+                    f"meta.yaml の '{section}[{i}]' に不明なキー: {', '.join(sorted(unknown_item_keys))}"
+                )
+            if "name" not in item or not str(item.get("name", "")).strip():
+                errors.append(f"meta.yaml の '{section}[{i}]' に 'name' が必要です")
+
     return errors, warnings
 
 

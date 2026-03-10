@@ -1,0 +1,5 @@
+recommends:
+  - name: react-frontend-coder
+    reason: "TypeScript/Reactプロジェクトでの言語固有実装スキル"
+  - name: react-frontend-unit-tester
+    reason: "TypeScript/Reactプロジェクトでの言語固有テストスキル"
