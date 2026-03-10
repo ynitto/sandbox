@@ -198,6 +198,7 @@ scrum-master の動き:
 | 品質 | `security-reviewer` | OWASP Top 10 ベースのセキュリティレビュー |
 | 品質 | `systematic-debugging` | 体系的なデバッグ |
 | 品質 | `debug-mode` | ランタイムログを使った printfデバッグ |
+| テスト | `tdd-executing` | Red-Green-Refactor サイクルで TDD を実行 |
 | インフラ | `ci-cd-configurator` | CI/CD パイプライン構築 |
 | 調査・設計 | `brainstorming` | 実装前の要件・設計整理 |
 | 調査・設計 | `deep-research` | 深いリサーチ・調査 |
@@ -205,6 +206,9 @@ scrum-master の動き:
 | ドキュメント | `doc-coauthoring` | 仕様書・設計ドキュメント・RFC等の共同執筆 |
 | テスト | `webapp-testing` | Playwright による Web アプリ検証 |
 | デザイン | `ui-designer` | UI/UX デザイン設計 |
+| 管理・運用 | `skill-selector` | 最適なスキルの組み合わせを選択・推薦 |
+| 特許・知財 | `patent-coach` | 特許出願前の構想・整理・先行技術調査 |
+| 特許・知財 | `patent-writer` | JPO 様式準拠の特許明細書ドラフト作成 |
 
 ---
 
