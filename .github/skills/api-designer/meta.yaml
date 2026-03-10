@@ -1,0 +1,5 @@
+recommends:
+  - name: requirements-definer
+    reason: "APIエンドポイント設計に先立つ要件定義"
+  - name: domain-modeler
+    reason: "エンティティ・集約設計の参照"

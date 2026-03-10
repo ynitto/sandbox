@@ -3,11 +3,6 @@ name: api-designer
 description: REST / GraphQL API の設計・ドキュメント生成・バリデーション方針を支援する。「APIを設計して」「REST APIのエンドポイントを決めて」「OpenAPIスキーマを作って」「GraphQLスキーマを設計して」「APIのバージョニング戦略を決めて」などのリクエストで発動する。Claude Code / GitHub Copilot 両環境で動作する。フロントエンドとバックエンドの両輪を揃え、フルスタック開発のカバレッジを向上させる。
 metadata:
   version: "1.0.0"
-  recommends:
-    - name: requirements-definer
-      reason: "APIエンドポイント設計に先立つ要件定義"
-    - name: domain-modeler
-      reason: "エンティティ・集約設計の参照"
 ---
 
 # API Designer

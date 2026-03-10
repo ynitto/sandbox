@@ -4,6 +4,10 @@
 depends_on  : 必須依存（前提スキルが欠如すると失敗リスクあり）
 recommends  : 推奨依存（なくても動くが組み合わせると効果が高い）
 
+依存関係の定義場所（優先順）:
+  1. <skill>/meta.yaml の depends_on / recommends キー
+  2. SKILL.md フロントマターの metadata.depends_on / metadata.recommends（後方互換）
+
 操作:
   deps check [skill_name]   -- インストール状況を検証
   deps graph [skill_name]   -- Mermaid 形式で依存グラフを出力
@@ -14,22 +18,57 @@ import os
 import re
 import subprocess
 
+try:
+    import yaml as _yaml
+except ImportError:
+    _yaml = None  # type: ignore[assignment]
+
 from registry import load_registry, _skill_home
 
 
 # ---------------------------------------------------------------------------
-# フロントマター解析
+# 依存関係解析
 # ---------------------------------------------------------------------------
 
-def _read_deps(skill_path: str) -> dict:
-    """SKILL.md フロントマターから depends_on / recommends を読み取る。
+def _parse_dep_list(raw: list) -> list[dict]:
+    """YAML リストから depends_on / recommends のエントリを正規化する。"""
+    result = []
+    for item in raw:
+        if isinstance(item, dict):
+            result.append({"name": str(item.get("name", "")), "reason": str(item.get("reason", ""))})
+    return result
 
-    Returns:
-        {
-            'depends_on': [{'name': str, 'reason': str}, ...],
-            'recommends': [{'name': str, 'reason': str}, ...],
-        }
+
+def _read_deps_from_meta_yaml(skill_path: str) -> dict | None:
+    """meta.yaml から depends_on / recommends を読み取る。
+
+    ファイルが存在しない場合は None を返す。
     """
+    meta_path = os.path.join(skill_path, "meta.yaml")
+    if not os.path.isfile(meta_path):
+        return None
+
+    with open(meta_path, encoding="utf-8") as f:
+        raw = f.read()
+
+    if _yaml:
+        data = _yaml.safe_load(raw) or {}
+    else:
+        # yaml 未インストール時の簡易パース（キーのみ抽出、ネスト非対応）
+        data = {}
+        for line in raw.splitlines():
+            if ":" in line and not line.startswith(" "):
+                key, _, val = line.partition(":")
+                data[key.strip()] = val.strip()
+
+    return {
+        "depends_on": _parse_dep_list(data.get("depends_on") or []),
+        "recommends": _parse_dep_list(data.get("recommends") or []),
+    }
+
+
+def _read_deps_from_frontmatter(skill_path: str) -> dict:
+    """SKILL.md フロントマターから depends_on / recommends を読み取る（後方互換）。"""
     skill_md = os.path.join(skill_path, "SKILL.md")
     if not os.path.isfile(skill_md):
         return {"depends_on": [], "recommends": []}
@@ -98,6 +137,21 @@ def _read_deps(skill_path: str) -> dict:
                     current_item = None
 
     return result
+
+
+def _read_deps(skill_path: str) -> dict:
+    """meta.yaml を優先し、なければ SKILL.md フロントマターから依存関係を読み取る。
+
+    Returns:
+        {
+            'depends_on': [{'name': str, 'reason': str}, ...],
+            'recommends': [{'name': str, 'reason': str}, ...],
+        }
+    """
+    meta = _read_deps_from_meta_yaml(skill_path)
+    if meta is not None:
+        return meta
+    return _read_deps_from_frontmatter(skill_path)
 
 
 def _all_skill_paths() -> dict[str, str]:

@@ -3,11 +3,6 @@ name: tdd-executing
 description: TDD（テスト駆動開発）を Red-Green-Refactor サイクルで実行し、C1カバレッジ100%を達成する。実装・テストは言語固有スキルに委譲する。「TDDで実装して」「テスト駆動で開発して」「TDDサイクルを回して」「テストファーストで作って」「カバレッジ100%で実装して」などのリクエストで必ずこのスキルを使う。
 metadata:
   version: "1.0.1"
-  recommends:
-    - name: react-frontend-coder
-      reason: "TypeScript/Reactプロジェクトでの言語固有実装スキル"
-    - name: react-frontend-unit-tester
-      reason: "TypeScript/Reactプロジェクトでの言語固有テストスキル"
 ---
 
 # tdd-executing
