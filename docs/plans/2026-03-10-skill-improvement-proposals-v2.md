@@ -307,8 +307,8 @@ def test_review_results_aggregation():
 
 | 参照元 | 参照先 | 状態 |
 |--------|--------|------|
-| scrum-master (Phase 1) | `skill-selector` | ❌ ディレクトリ不在 |
-| 2026-03-10 レポート概要 | `skill-selector (版なし)` | ❌ 実体なし |
+| scrum-master (Phase 1) | `skill-selector` | ✅ 実装済み（v1.0.0） |
+| 2026-03-10 レポート概要 | `skill-selector (版なし)` | ✅ v1.0.0 追記済み |
 | code-reviewer | `security-reviewer` への委譲 | ✅ 存在 |
 
 ### 改善案
