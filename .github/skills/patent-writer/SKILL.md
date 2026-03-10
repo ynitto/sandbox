@@ -2,7 +2,14 @@
 name: patent-writer
 description: 発明内容が固まった後の書類作成・編集フェーズ専用。JPO様式準拠の特許明細書ドラフトを作成し、三位一体クレーム・AI発明記載・明細書レビューに対応。「特許明細書を書いて」「クレームを書いて」「請求項を作って」「明細書をレビューして」「従属項を追加して」「要約書を書いて」などで発動。構想段階や先行技術調査は patent-coach を使う。
 metadata:
-  version: "2.2.0"
+  version: 2.2.0
+  tier: stable
+  category: research
+  tags:
+    - patent
+    - jpo
+    - claims
+    - specification
 ---
 
 # Patent Writer

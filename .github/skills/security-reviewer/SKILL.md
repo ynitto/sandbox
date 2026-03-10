@@ -2,7 +2,13 @@
 name: security-reviewer
 description: セキュリティレビューを実施するスキル。「セキュリティ診断して」「脆弱性を確認して」「OWASP に準拠してるか確認して」「セキュリティをチェックして」「認証の実装を確認して」「シークレット漏洩がないか確認して」などのリクエストで発動する。OWASP Top 10 に基づく脆弱性パターンを検出し、重要度付きで報告する。
 metadata:
-  version: "1.0.0"
+  version: 1.0.0
+  tier: stable
+  category: review
+  tags:
+    - security
+    - owasp
+    - vulnerability
 ---
 
 # security-reviewer

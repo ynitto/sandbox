@@ -2,7 +2,13 @@
 name: systematic-debugging
 description: バグ修正・テスト失敗解消を依頼された際に発動する方法論スキル。「バグを直して」「テストが落ちてる」「動かない」「エラーが出る」「修正して」などで発動する。修正提案より先に根本原因特定を強制する。
 metadata:
-   version: "1.0.0"
+  version: 1.0.0
+  tier: stable
+  category: debug
+  tags:
+    - root-cause
+    - hypothesis
+    - debugging-methodology
 ---
 
 # 体系的デバッグ

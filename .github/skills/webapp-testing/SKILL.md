@@ -3,7 +3,13 @@ name: webapp-testing
 description: Playwright を使ってローカル Web アプリを検証するスキル。フロントエンド機能の確認、UI 挙動のデバッグ、スクリーンショット取得、ブラウザコンソールログ確認に対応する。「Webアプリをテストして」「画面挙動を検証して」などのリクエストで発動する。GitHub Copilot / Claude Code 両環境で利用可能。
 license: Complete terms in LICENSE.txt
 metadata:
-  version: "1.0.0"
+  version: 1.0.0
+  tier: experimental
+  category: implementation
+  tags:
+    - playwright
+    - e2e
+    - browser-testing
 ---
 
 # webapp-testing

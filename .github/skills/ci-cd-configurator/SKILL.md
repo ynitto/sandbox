@@ -2,7 +2,14 @@
 name: ci-cd-configurator
 description: GitLab CI / Jenkins (Pipeline) のパイプラインを構築・最適化する。「GitLab CIを設定して」「Jenkinsfileを作って」「CI/CDパイプラインを作って」「デプロイを自動化して」「ビルドパイプラインを最適化して」「ワークフローを作成して」などのリクエストで発動する。React/TS・Python・Go・Docker 対応、AWS インフラ専用。
 metadata:
-  version: "1.0.0"
+  version: 1.0.0
+  tier: experimental
+  category: implementation
+  tags:
+    - ci-cd
+    - gitlab-ci
+    - jenkins
+    - aws
 ---
 
 # CI/CD Configurator

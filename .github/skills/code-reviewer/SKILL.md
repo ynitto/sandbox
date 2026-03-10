@@ -2,7 +2,13 @@
 name: code-reviewer
 description: コードレビューを実施するスキル。「コードをレビューして」「このコードの問題点を教えて」「レビューお願い」「コードチェックして」「品質確認して」などで発動する。セキュリティ・パフォーマンス・可読性・並行性・型安全性・AI生成コード特有のアンチパターンを分析し、LGTM / Request Changes を判定する。コーディングルールへの準拠チェックにも対応する。
 metadata:
-  version: "2.0.0"
+  version: 2.0.0
+  tier: stable
+  category: review
+  tags:
+    - code-quality
+    - security
+    - ai-code
 ---
 
 # code-reviewer

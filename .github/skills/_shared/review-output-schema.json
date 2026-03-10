@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Review Output Schema",
+  "description": "レビュースキル共通の出力フォーマット。全レビュースキル（code-reviewer, security-reviewer, architecture-reviewer, design-reviewer, test-reviewer, document-reviewer, sprint-reviewer）はこのスキーマに準拠した JSON を出力できること。",
+  "type": "object",
+  "required": ["skill", "version", "verdict", "findings", "summary"],
+  "properties": {
+    "skill": {
+      "type": "string",
+      "description": "レビューを実行したスキル名",
+      "examples": ["code-reviewer", "security-reviewer"]
+    },
+    "version": {
+      "type": "string",
+      "description": "スキルのバージョン",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "verdict": {
+      "type": "string",
+      "description": "レビュー判定結果",
+      "enum": [
+        "lgtm",
+        "request_changes",
+        "pass",
+        "fail",
+        "approved",
+        "needs_revision",
+        "sprint_passed",
+        "sprint_failed"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "description": "判定の確信度 (0.0〜1.0)",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "findings": {
+      "type": "array",
+      "description": "検出された問題・提案のリスト",
+      "items": {
+        "$ref": "#/definitions/finding"
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "レビュー結果の要約（1〜3文）"
+    },
+    "metrics": {
+      "type": "object",
+      "description": "レビュースキル固有の定量メトリクス（任意）",
+      "additionalProperties": true
+    }
+  },
+  "definitions": {
+    "finding": {
+      "type": "object",
+      "required": ["id", "severity", "category", "message"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "一意の検出ID（例: CR-001, SEC-003）",
+          "pattern": "^[A-Z]+-\\d{3}$"
+        },
+        "severity": {
+          "type": "string",
+          "description": "重要度",
+          "enum": ["critical", "high", "medium", "low", "info"]
+        },
+        "category": {
+          "type": "string",
+          "description": "観点カテゴリ",
+          "examples": [
+            "security",
+            "performance",
+            "readability",
+            "correctness",
+            "architecture",
+            "solid",
+            "test-coverage",
+            "documentation"
+          ]
+        },
+        "file": {
+          "type": "string",
+          "description": "対象ファイルパス（該当する場合）"
+        },
+        "line": {
+          "type": "integer",
+          "description": "対象行番号（該当する場合）",
+          "minimum": 1
+        },
+        "message": {
+          "type": "string",
+          "description": "問題の説明"
+        },
+        "suggestion": {
+          "type": "string",
+          "description": "改善提案"
+        }
+      }
+    }
+  }
+}

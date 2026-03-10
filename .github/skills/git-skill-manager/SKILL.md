@@ -2,7 +2,13 @@
 name: git-skill-manager
 description: Gitリポジトリを使ってエージェントスキルを管理するスキル。スキルのpull/push・リポジトリ登録・有効化/無効化・プロファイル管理・フィードバック記録・改良・評価・発見・クロスリポジトリマージ・自動更新に対応。「スキルをpullして」「スキルをpushして」「リポジトリを登録して」「スキルを改良して」「スキルを評価して」「スキルをマージして」「スキルを自動更新して」などで発動。
 metadata:
-  version: "1.0.1"
+  version: 1.0.1
+  tier: core
+  category: meta
+  tags:
+    - skill-management
+    - git
+    - versioning
 ---
 
 # Git Skill Manager

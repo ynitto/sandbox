@@ -2,7 +2,13 @@
 name: test-reviewer
 description: テストコードを専門的な観点でレビューするスキル。「テストをレビューして」「テストコードの品質を確認して」「テストの網羅性を確認して」「テストが適切か確認して」などのリクエストで発動する。テストコードのみを対象とし、プロダクションコードは対象外。テストの網羅性・設計・可読性・独立性・アサーション品質・非同期正確性・実装詳細への依存・テスト粒度を分析し、LGTM / Request Changes を判定する。
 metadata:
-  version: "1.2.0"
+  version: 1.2.0
+  tier: stable
+  category: review
+  tags:
+    - test-quality
+    - coverage
+    - test-design
 ---
 
 # test-reviewer

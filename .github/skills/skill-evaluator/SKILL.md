@@ -2,7 +2,12 @@
 name: skill-evaluator
 description: ワークスペーススキルとインストール済みスキルを評価し、昇格・改良・試用継続を判断するスキル。「スキルを評価して」「試用中スキルを確認して」「どのスキルを昇格すべき？」などで発動する。git-skill-manager の evaluate 操作・scrum-master Phase 6・EVAL_RECOMMEND 出力時にも自動起動される。
 metadata:
-  version: "1.0.1"
+  version: 1.0.1
+  tier: core
+  category: meta
+  tags:
+    - skill-evaluation
+    - quality-check
 ---
 
 # Skill Evaluator

@@ -2,7 +2,13 @@
 name: code-simplifier
 description: 変更されたコードを再利用性・品質・効率の観点でレビューし、問題を実際に修正するスキル。「コードをシンプルにして」「リファクタして」「コードを整理して」「簡潔にして」「DRYにして」「重複を除去して」「効率化して」「パフォーマンス改善して」などのリクエストで発動する。レポートを出力するだけでなく、コードを直接修正する。
 metadata:
-  version: "1.0.0"
+  version: 1.0.0
+  tier: experimental
+  category: review
+  tags:
+    - refactoring
+    - code-quality
+    - dry
 ---
 
 # code-simplifier

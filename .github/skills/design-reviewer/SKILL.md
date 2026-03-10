@@ -1,6 +1,13 @@
 ---
 name: design-reviewer
 description: クラス・モジュール設計をレビューするスキル。「設計をレビューして」「クラス設計を確認して」「SOLID原則を確認して」「結合度・凝集度を見て」「God Classを検出して」「責任分割を確認して」などで発動。SOLID・結合度・凝集度・依存方向・責任分割を評価し LGTM / Request Changes を判定する。
+metadata:
+  tier: experimental
+  category: review
+  tags:
+    - class-design
+    - solid
+    - cohesion
 ---
 
 # design-reviewer

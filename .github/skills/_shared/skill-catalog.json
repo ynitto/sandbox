@@ -1,0 +1,760 @@
+{
+  "generated_by": "generate_skill_catalog.py",
+  "total_skills": 35,
+  "categories": {
+    "design": 5,
+    "review": 7,
+    "implementation": 6,
+    "meta": 7,
+    "debug": 2,
+    "research": 5,
+    "data": 1,
+    "orchestration": 2
+  },
+  "tiers": {
+    "stable": 16,
+    "experimental": 15,
+    "core": 4
+  },
+  "skills": [
+    {
+      "name": "api-designer",
+      "description": "REST / GraphQL API の設計・ドキュメント生成・バリデーション方針を支援する。「APIを設計して」「REST APIのエンドポイントを決めて」「OpenAPIスキーマを作って」「GraphQLスキーマを設計して」「APIのバージョニング戦略を決めて」などのリクエストで必ずこのスキルを使う。",
+      "version": "1.0.0",
+      "tier": "stable",
+      "category": "design",
+      "tags": [
+        "api",
+        "openapi",
+        "rest",
+        "graphql"
+      ],
+      "triggers": [
+        "APIを設計して",
+        "REST APIのエンドポイントを決めて",
+        "OpenAPIスキーマを作って",
+        "GraphQLスキーマを設計して",
+        "APIのバージョニング戦略を決めて"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "architecture-reviewer",
+      "description": "ソフトウェアアーキテクチャと設計をレビューするスキル。「アーキテクチャをレビューして」「設計を確認して」「依存関係を確認して」「モジュール構成を見て」「設計原則への準拠を確認して」「アーキテクチャの問題点を教えて」などのリクエストで発動する。SOLID・レイヤードアーキテクチャ・依存関係の方向性・モジュール境界・セキュリティ境界・テスタビリティ・障害モデル・可観測性・データフローを分析し、設計の健全性を評価する。",
+      "version": "1.2.0",
+      "tier": "stable",
+      "category": "review",
+      "tags": [
+        "architecture",
+        "solid",
+        "design-review"
+      ],
+      "triggers": [
+        "アーキテクチャをレビューして",
+        "設計を確認して",
+        "依存関係を確認して",
+        "モジュール構成を見て",
+        "設計原則への準拠を確認して",
+        "アーキテクチャの問題点を教えて"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "brainstorming",
+      "description": "創作作業の前に必ず使うスキル。機能追加・コンポーネント構築・動作変更など、実装を始める前にユーザーの意図・要件・設計を整理する。「ブレインストーミングして」「アイデアを整理して」「設計を考えて」「要件を探ろう」などで発動。",
+      "version": "2.0.0",
+      "tier": "stable",
+      "category": "design",
+      "tags": [
+        "ideation",
+        "requirements",
+        "planning"
+      ],
+      "triggers": [
+        "ブレインストーミングして",
+        "アイデアを整理して",
+        "設計を考えて",
+        "要件を探ろう"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "ci-cd-configurator",
+      "description": "GitLab CI / Jenkins (Pipeline) のパイプラインを構築・最適化する。「GitLab CIを設定して」「Jenkinsfileを作って」「CI/CDパイプラインを作って」「デプロイを自動化して」「ビルドパイプラインを最適化して」「ワークフローを作成して」などのリクエストで発動する。React/TS・Python・Go・Docker 対応、AWS インフラ専用。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "implementation",
+      "tags": [
+        "ci-cd",
+        "gitlab-ci",
+        "jenkins",
+        "aws"
+      ],
+      "triggers": [
+        "GitLab CIを設定して",
+        "Jenkinsfileを作って",
+        "CI/CDパイプラインを作って",
+        "デプロイを自動化して",
+        "ビルドパイプラインを最適化して",
+        "ワークフローを作成して"
+      ],
+      "has_scripts": false,
+      "has_references": true
+    },
+    {
+      "name": "code-reviewer",
+      "description": "コードレビューを実施するスキル。「コードをレビューして」「このコードの問題点を教えて」「レビューお願い」「コードチェックして」「品質確認して」などで発動する。セキュリティ・パフォーマンス・可読性・並行性・型安全性・AI生成コード特有のアンチパターンを分析し、LGTM / Request Changes を判定する。コーディングルールへの準拠チェックにも対応する。",
+      "version": "2.0.0",
+      "tier": "stable",
+      "category": "review",
+      "tags": [
+        "code-quality",
+        "security",
+        "ai-code"
+      ],
+      "triggers": [
+        "コードをレビューして",
+        "このコードの問題点を教えて",
+        "レビューお願い",
+        "コードチェックして",
+        "品質確認して"
+      ],
+      "has_scripts": true,
+      "has_references": false
+    },
+    {
+      "name": "code-simplifier",
+      "description": "変更されたコードを再利用性・品質・効率の観点でレビューし、問題を実際に修正するスキル。「コードをシンプルにして」「リファクタして」「コードを整理して」「簡潔にして」「DRYにして」「重複を除去して」「効率化して」「パフォーマンス改善して」などのリクエストで発動する。レポートを出力するだけでなく、コードを直接修正する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "review",
+      "tags": [
+        "refactoring",
+        "code-quality",
+        "dry"
+      ],
+      "triggers": [
+        "コードをシンプルにして",
+        "リファクタして",
+        "コードを整理して",
+        "簡潔にして",
+        "DRYにして",
+        "重複を除去して",
+        "効率化して",
+        "パフォーマンス改善して"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "codebase-to-skill",
+      "description": "既存のプログラムやコードベースを分析し、アーキテクチャ・コーディング規約・開発ワークフローをSKILL.mdとしてマークダウン化するスキル。「このプロジェクトのアーキテクチャをスキル化して」「コードの規約をスキルにまとめて」「このリポジトリをスキルにして」「コードベースを分析してスキルを作って」などのリクエストで使用する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "meta",
+      "tags": [
+        "skill-generation",
+        "codebase-analysis"
+      ],
+      "triggers": [
+        "このプロジェクトのアーキテクチャをスキル化して",
+        "コードの規約をスキルにまとめて",
+        "このリポジトリをスキルにして",
+        "コードベースを分析してスキルを作って"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "debug-mode",
+      "description": "ランタイムログによる体系的printfデバッグ。「デバッグして」「バグ調査」「なぜ動かない」「ログを仕込んで」「計装して」「何が起きているか確認したい」で発動。バグ修正よりも先にランタイムの動作を観察・調査することが目的。複数仮説→計装→ログ分析→CONFIRMED判定の順で修正する。Windows/PowerShell 対応。",
+      "version": "1.0.0",
+      "tier": "stable",
+      "category": "debug",
+      "tags": [
+        "printf-debug",
+        "logging",
+        "runtime-analysis"
+      ],
+      "triggers": [
+        "デバッグして",
+        "バグ調査",
+        "なぜ動かない",
+        "ログを仕込んで",
+        "計装して",
+        "何が起きているか確認したい"
+      ],
+      "has_scripts": false,
+      "has_references": true
+    },
+    {
+      "name": "deep-research",
+      "description": "特定テーマを多角的・体系的に深く調査するスキル。「〜を深く調べて」「〜について詳しく調査して」「〜のリサーチをして」「〜を徹底的に調べて」「ディープリサーチして」などで発動する。複数の情報源を統合し、引用付きの根拠ある分析を提供する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "research",
+      "tags": [
+        "investigation",
+        "analysis",
+        "multi-source"
+      ],
+      "triggers": [
+        "〜を深く調べて",
+        "〜について詳しく調査して",
+        "〜のリサーチをして",
+        "〜を徹底的に調べて",
+        "ディープリサーチして"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "design-reviewer",
+      "description": "クラス・モジュール設計をレビューするスキル。「設計をレビューして」「クラス設計を確認して」「SOLID原則を確認して」「結合度・凝集度を見て」「God Classを検出して」「責任分割を確認して」などで発動。SOLID・結合度・凝集度・依存方向・責任分割を評価し LGTM / Request Changes を判定する。",
+      "version": "unknown",
+      "tier": "experimental",
+      "category": "review",
+      "tags": [
+        "class-design",
+        "solid",
+        "cohesion"
+      ],
+      "triggers": [
+        "設計をレビューして",
+        "クラス設計を確認して",
+        "SOLID原則を確認して",
+        "結合度・凝集度を見て",
+        "God Classを検出して",
+        "責任分割を確認して"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "doc-coauthoring",
+      "description": "意思決定・提案・設計ドキュメントの共同執筆ワークフローを提供するスキル。仕様書・提案書・設計ドキュメント・意思決定ドキュメント・RFC などの構造化された文書をユーザーと共に作る際に使用する。「仕様書を作って」「提案書を書いて」「設計ドキュメントを作成して」「PRDを書いて」「決定ドキュメントを作って」「RFCを書いて」「ADRを書いて」などで発動する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "research",
+      "tags": [
+        "documentation",
+        "rfc",
+        "adr",
+        "collaborative"
+      ],
+      "triggers": [
+        "仕様書を作って",
+        "提案書を書いて",
+        "設計ドキュメントを作成して",
+        "PRDを書いて",
+        "決定ドキュメントを作って",
+        "RFCを書いて",
+        "ADRを書いて"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "document-reviewer",
+      "description": "ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）をレビューするスキル。「ドキュメントをレビューして」「要件定義書を確認して」「設計書をチェックして」「仕様書をレビューお願い」「ドキュメントの問題点を教えて」「要件を確認して」などのリクエストで必ずこのスキルを使う。ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）が対象。",
+      "version": "2.0.0",
+      "tier": "stable",
+      "category": "review",
+      "tags": [
+        "documentation",
+        "requirements",
+        "specifications"
+      ],
+      "triggers": [
+        "ドキュメントをレビューして",
+        "要件定義書を確認して",
+        "設計書をチェックして",
+        "仕様書をレビューお願い",
+        "ドキュメントの問題点を教えて",
+        "要件を確認して"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "domain-modeler",
+      "description": "DDD に基づくドメインモデルを設計し Mermaid classDiagram として出力する。「ドメインモデルを設計して」「DDDで設計して」「集約を設計して」「境界コンテキストを整理して」「ドメインモデル図を作って」「クラス図を描いて」「Entityとバリューオブジェクトを整理して」「ユビキタス言語をまとめて」などで発動。DDD・非DDD 両対応。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "design",
+      "tags": [
+        "ddd",
+        "mermaid",
+        "entity",
+        "aggregate"
+      ],
+      "triggers": [
+        "ドメインモデルを設計して",
+        "DDDで設計して",
+        "集約を設計して",
+        "境界コンテキストを整理して",
+        "ドメインモデル図を作って",
+        "クラス図を描いて",
+        "Entityとバリューオブジェクトを整理して",
+        "ユビキタス言語をまとめて"
+      ],
+      "has_scripts": false,
+      "has_references": true
+    },
+    {
+      "name": "dynamodb-designer",
+      "description": "DynamoDB テーブルを設計し、NoSQLのよくある落とし穴を避けながら効率的なクエリを書くスキル。テーブル設計・インデックス戦略・クエリ最適化・トランザクション・キャパシティ管理に対応。「DynamoDBのテーブルを設計して」「GSIを追加して」「クエリを最適化して」などで発動。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "data",
+      "tags": [
+        "dynamodb",
+        "nosql",
+        "aws"
+      ],
+      "triggers": [
+        "DynamoDBのテーブルを設計して",
+        "GSIを追加して",
+        "クエリを最適化して"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "generating-skills-from-copilot-logs",
+      "description": "VSCode Copilot または Claude Code のチャット履歴を分析し、繰り返しワークフローを検出して新しいスキルを自動生成するメタスキル。「履歴からスキルを作って」「Copilotの使い方パターンをスキル化して」「よく使うワークフローをスキルにして」「チャット履歴を分析してスキル候補を提案して」などのリクエストで使用する。git-skill-manager の discover 操作からも自動的に起動される。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "meta",
+      "tags": [
+        "skill-generation",
+        "chat-history",
+        "workflow-detection"
+      ],
+      "triggers": [
+        "履歴からスキルを作って",
+        "Copilotの使い方パターンをスキル化して",
+        "よく使うワークフローをスキルにして",
+        "チャット履歴を分析してスキル候補を提案して"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "git-skill-manager",
+      "description": "Gitリポジトリを使ってエージェントスキルを管理するスキル。スキルのpull/push・リポジトリ登録・有効化/無効化・プロファイル管理・フィードバック記録・改良・評価・発見・クロスリポジトリマージ・自動更新に対応。「スキルをpullして」「スキルをpushして」「リポジトリを登録して」「スキルを改良して」「スキルを評価して」「スキルをマージして」「スキルを自動更新して」などで発動。",
+      "version": "1.0.1",
+      "tier": "core",
+      "category": "meta",
+      "tags": [
+        "skill-management",
+        "git",
+        "versioning"
+      ],
+      "triggers": [
+        "スキルをpullして",
+        "スキルをpushして",
+        "リポジトリを登録して",
+        "スキルを改良して",
+        "スキルを評価して",
+        "スキルをマージして",
+        "スキルを自動更新して"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "ltm-use",
+      "description": "セッションをまたいで知識・決定事項を継続させたいときのスキル。「覚えておいて」でsave、「思い出して」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った／間違ってた」でrate、「Copilotの記憶を同期して」でsync-copilot-memory。重要な知見を発見したら自律的にsaveを実行すること。",
+      "version": "4.0.0",
+      "tier": "core",
+      "category": "meta",
+      "tags": [
+        "memory",
+        "knowledge-persistence",
+        "recall"
+      ],
+      "triggers": [
+        "覚えておいて",
+        "思い出して",
+        "記憶一覧",
+        "忘れて",
+        "昇格して",
+        "整理して",
+        "役立った／間違ってた",
+        "Copilotの記憶を同期して"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "patent-coach",
+      "description": "特許出願前の構想・整理フェーズ専用。ソクラテス式対話で発明を深掘りし、先行技術調査・新規性確認もこのスキルが担う。「特許アイデアを練りたい」「先行技術調査をして」「新規性を確認したい」「特許コーチングして」「発明のブレストをしたい」「出願すべきか相談」などで発動。明細書・クレーム作成は patent-writer を使う。",
+      "version": "1.0.0",
+      "tier": "stable",
+      "category": "research",
+      "tags": [
+        "patent",
+        "invention",
+        "prior-art"
+      ],
+      "triggers": [
+        "特許アイデアを練りたい",
+        "先行技術調査をして",
+        "新規性を確認したい",
+        "特許コーチングして",
+        "発明のブレストをしたい",
+        "出願すべきか相談"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "patent-writer",
+      "description": "発明内容が固まった後の書類作成・編集フェーズ専用。JPO様式準拠の特許明細書ドラフトを作成し、三位一体クレーム・AI発明記載・明細書レビューに対応。「特許明細書を書いて」「クレームを書いて」「請求項を作って」「明細書をレビューして」「従属項を追加して」「要約書を書いて」などで発動。構想段階や先行技術調査は patent-coach を使う。",
+      "version": "2.2.0",
+      "tier": "stable",
+      "category": "research",
+      "tags": [
+        "patent",
+        "jpo",
+        "claims",
+        "specification"
+      ],
+      "triggers": [
+        "特許明細書を書いて",
+        "クレームを書いて",
+        "請求項を作って",
+        "明細書をレビューして",
+        "従属項を追加して",
+        "要約書を書いて"
+      ],
+      "has_scripts": false,
+      "has_references": true
+    },
+    {
+      "name": "react-best-practices",
+      "description": "Vercel Engineering の React / Next.js パフォーマンス最適化ガイドを日本語で利用するためのスキル。Reactコンポーネント実装、Next.jsページ開発、データ取得、バンドル最適化、リファクタ時の性能改善タスクで使用する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "implementation",
+      "tags": [
+        "react",
+        "nextjs",
+        "performance",
+        "vercel"
+      ],
+      "triggers": [],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "react-frontend-coder",
+      "description": "React + TypeScriptで、要件・UI設計が既に確定している前提で、フロントエンド機能を実装する。Vite + Zustandをベースに、実装→検証に特化。テストコード実装は別スキルに委譲。「フロントエンド機能を実装して」「React画面を作って」「Vite + Zustandで実装して」などのリクエストで発動する。",
+      "version": "1.0.0",
+      "tier": "stable",
+      "category": "implementation",
+      "tags": [
+        "react",
+        "typescript",
+        "vite",
+        "zustand"
+      ],
+      "triggers": [
+        "フロントエンド機能を実装して",
+        "React画面を作って",
+        "Vite + Zustandで実装して"
+      ],
+      "has_scripts": false,
+      "has_references": true
+    },
+    {
+      "name": "react-frontend-unit-tester",
+      "description": "ReactコンポーネントとZustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。フロントエンド実装完了後のテスト投入フロー。「テストコードを実装して」「Reactコンポーネントをテストして」「Zustandストアのテストを書いて」などのリクエストで発動する。",
+      "version": "1.0.0",
+      "tier": "stable",
+      "category": "implementation",
+      "tags": [
+        "react",
+        "testing",
+        "vitest",
+        "rtl"
+      ],
+      "triggers": [
+        "テストコードを実装して",
+        "Reactコンポーネントをテストして",
+        "Zustandストアのテストを書いて"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "requirements-definer",
+      "description": "ユーザーとの対話を通じて要件リストを作成し、requirements.json として出力する。「要件定義して」「やりたいことを整理して」「要件をまとめて」「受け入れ条件を定義して」「何を作るか決めたい」「ユーザーストーリーを書いて」「ストーリーマッピングして」などのリクエストで発動する。",
+      "version": "2.0.0",
+      "tier": "stable",
+      "category": "design",
+      "tags": [
+        "requirements",
+        "user-story",
+        "acceptance-criteria"
+      ],
+      "triggers": [
+        "要件定義して",
+        "やりたいことを整理して",
+        "要件をまとめて",
+        "受け入れ条件を定義して",
+        "何を作るか決めたい",
+        "ユーザーストーリーを書いて",
+        "ストーリーマッピングして"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "scrum-master",
+      "description": "ユーザーのプロンプトをタスク分解し、サブエージェントにスキルを委譲してスプリント単位で実行するオーケストレーター。「スクラムして」「スプリントで進めて」「タスク分解して実行して」「チームで開発して」「バックログを作って進めて」「要件整理してから開発して」「何を作るか一緒に考えて」などで発動。",
+      "version": "1.4.0",
+      "tier": "core",
+      "category": "orchestration",
+      "tags": [
+        "sprint",
+        "task-decomposition",
+        "delegation"
+      ],
+      "triggers": [
+        "スクラムして",
+        "スプリントで進めて",
+        "タスク分解して実行して",
+        "チームで開発して",
+        "バックログを作って進めて",
+        "要件整理してから開発して",
+        "何を作るか一緒に考えて"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "security-reviewer",
+      "description": "セキュリティレビューを実施するスキル。「セキュリティ診断して」「脆弱性を確認して」「OWASP に準拠してるか確認して」「セキュリティをチェックして」「認証の実装を確認して」「シークレット漏洩がないか確認して」などのリクエストで発動する。OWASP Top 10 に基づく脆弱性パターンを検出し、重要度付きで報告する。",
+      "version": "1.0.0",
+      "tier": "stable",
+      "category": "review",
+      "tags": [
+        "security",
+        "owasp",
+        "vulnerability"
+      ],
+      "triggers": [
+        "セキュリティ診断して",
+        "脆弱性を確認して",
+        "OWASP に準拠してるか確認して",
+        "セキュリティをチェックして",
+        "認証の実装を確認して",
+        "シークレット漏洩がないか確認して"
+      ],
+      "has_scripts": true,
+      "has_references": false
+    },
+    {
+      "name": "skill-creator",
+      "description": "スキルの作成・更新を支援するガイドスキル。ユーザーが新しいスキルを作りたい、既存のスキルを改善したいときに使用する。「スキルを作って」「新しいスキルを作成して」「このスキルを改善して」「スキルをパッケージして」などのリクエストで発動する。GitHub Copilot および Claude Code で動作する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "meta",
+      "tags": [
+        "skill-creation",
+        "packaging"
+      ],
+      "triggers": [
+        "スキルを作って",
+        "新しいスキルを作成して",
+        "このスキルを改善して",
+        "スキルをパッケージして"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "skill-evaluator",
+      "description": "ワークスペーススキルとインストール済みスキルを評価し、昇格・改良・試用継続を判断するスキル。「スキルを評価して」「試用中スキルを確認して」「どのスキルを昇格すべき？」などで発動する。git-skill-manager の evaluate 操作・scrum-master Phase 6・EVAL_RECOMMEND 出力時にも自動起動される。",
+      "version": "1.0.1",
+      "tier": "core",
+      "category": "meta",
+      "tags": [
+        "skill-evaluation",
+        "quality-check"
+      ],
+      "triggers": [
+        "スキルを評価して",
+        "試用中スキルを確認して",
+        "どのスキルを昇格すべき？"
+      ],
+      "has_scripts": true,
+      "has_references": false
+    },
+    {
+      "name": "skill-recruiter",
+      "description": "必要なスキルが見つからないときに、外部リポジトリURLからスキルを取得・検証・公開するスキル。「このスキルを追加して」「URLからスキルをインストールして」「スキルが見つからない、このリポジトリを追加して」「このスキルを採用したい」「外部スキルを登録して」などで発動する。要求されたスキルが未インストールの場合に代替手段として自動起動される場合もある。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "meta",
+      "tags": [
+        "skill-acquisition",
+        "external-skills"
+      ],
+      "triggers": [
+        "このスキルを追加して",
+        "URLからスキルをインストールして",
+        "スキルが見つからない、このリポジトリを追加して",
+        "このスキルを採用したい",
+        "外部スキルを登録して"
+      ],
+      "has_scripts": true,
+      "has_references": false
+    },
+    {
+      "name": "sprint-reviewer",
+      "description": "スプリント完了後のレビューとレトロスペクティブを第三者視点で実施する。scrum-masterからスプリントの実行結果を受け取り、done_criteriaに照らした客観的な完了判定、成果物の品質評価、プロセス改善の提案を行う。読み取り専用で動作し、コードやファイルの変更は行わない。「スプリントをレビューして」「スプリント完了判定して」「レトロスペクティブして」などのリクエストで発動する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "orchestration",
+      "tags": [
+        "sprint-review",
+        "retrospective",
+        "quality-gate"
+      ],
+      "triggers": [
+        "スプリントをレビューして",
+        "スプリント完了判定して",
+        "レトロスペクティブして"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "systematic-debugging",
+      "description": "バグ修正・テスト失敗解消を依頼された際に発動する方法論スキル。「バグを直して」「テストが落ちてる」「動かない」「エラーが出る」「修正して」などで発動する。修正提案より先に根本原因特定を強制する。",
+      "version": "1.0.0",
+      "tier": "stable",
+      "category": "debug",
+      "tags": [
+        "root-cause",
+        "hypothesis",
+        "debugging-methodology"
+      ],
+      "triggers": [
+        "バグを直して",
+        "テストが落ちてる",
+        "動かない",
+        "エラーが出る",
+        "修正して"
+      ],
+      "has_scripts": true,
+      "has_references": true
+    },
+    {
+      "name": "tdd-executing",
+      "description": "TDD（テスト駆動開発）を Red-Green-Refactor サイクルで実行し、C1カバレッジ100%を達成する。実装・テストは言語固有スキルに委譲する。「TDDで実装して」「テスト駆動で開発して」「TDDサイクルを回して」「テストファーストで作って」「カバレッジ100%で実装して」などのリクエストで必ずこのスキルを使う。",
+      "version": "1.0.1",
+      "tier": "stable",
+      "category": "implementation",
+      "tags": [
+        "tdd",
+        "red-green-refactor",
+        "coverage"
+      ],
+      "triggers": [
+        "TDDで実装して",
+        "テスト駆動で開発して",
+        "TDDサイクルを回して",
+        "テストファーストで作って",
+        "カバレッジ100%で実装して"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "technical-writer",
+      "description": "外向け技術ドキュメントを高品質に即時作成するスキル。README、デベロッパーガイド、チュートリアル、インストールガイドなどの文書作成を支援する。「READMEを作って」「デベロッパーガイドを書いて」「APIの使い方をまとめて」「チュートリアルを作成して」「インストール手順を書いて」などで発動する。",
+      "version": "1.0.1",
+      "tier": "stable",
+      "category": "research",
+      "tags": [
+        "documentation",
+        "readme",
+        "tutorial"
+      ],
+      "triggers": [
+        "READMEを作って",
+        "デベロッパーガイドを書いて",
+        "APIの使い方をまとめて",
+        "チュートリアルを作成して",
+        "インストール手順を書いて"
+      ],
+      "has_scripts": false,
+      "has_references": true
+    },
+    {
+      "name": "test-reviewer",
+      "description": "テストコードを専門的な観点でレビューするスキル。「テストをレビューして」「テストコードの品質を確認して」「テストの網羅性を確認して」「テストが適切か確認して」などのリクエストで発動する。テストコードのみを対象とし、プロダクションコードは対象外。テストの網羅性・設計・可読性・独立性・アサーション品質・非同期正確性・実装詳細への依存・テスト粒度を分析し、LGTM / Request Changes を判定する。",
+      "version": "1.2.0",
+      "tier": "stable",
+      "category": "review",
+      "tags": [
+        "test-quality",
+        "coverage",
+        "test-design"
+      ],
+      "triggers": [
+        "テストをレビューして",
+        "テストコードの品質を確認して",
+        "テストの網羅性を確認して",
+        "テストが適切か確認して"
+      ],
+      "has_scripts": false,
+      "has_references": false
+    },
+    {
+      "name": "ui-designer",
+      "description": "UI/UX デザインインテリジェンス。Webアプリの画面構成、レイアウト、コンポーネント、スタイル方針をまとめる。50以上のスタイル、97カラーパレット、57フォントペアリング、99 UXガイドライン、25チャートタイプ、9テクノロジースタック対応の検索可能なデザインデータベース付き。「UIを設計して」「UXを改善して」「画面レイアウトを提案して」などのリクエストで発動する。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "design",
+      "tags": [
+        "ui",
+        "ux",
+        "layout",
+        "design-system"
+      ],
+      "triggers": [
+        "UIを設計して",
+        "UXを改善して",
+        "画面レイアウトを提案して"
+      ],
+      "has_scripts": true,
+      "has_references": false
+    },
+    {
+      "name": "webapp-testing",
+      "description": "Playwright を使ってローカル Web アプリを検証するスキル。フロントエンド機能の確認、UI 挙動のデバッグ、スクリーンショット取得、ブラウザコンソールログ確認に対応する。「Webアプリをテストして」「画面挙動を検証して」などのリクエストで発動する。GitHub Copilot / Claude Code 両環境で利用可能。",
+      "version": "1.0.0",
+      "tier": "experimental",
+      "category": "implementation",
+      "tags": [
+        "playwright",
+        "e2e",
+        "browser-testing"
+      ],
+      "triggers": [
+        "Webアプリをテストして",
+        "画面挙動を検証して"
+      ],
+      "has_scripts": true,
+      "has_references": false
+    }
+  ]
+}

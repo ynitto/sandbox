@@ -2,7 +2,14 @@
 name: api-designer
 description: REST / GraphQL API の設計・ドキュメント生成・バリデーション方針を支援する。「APIを設計して」「REST APIのエンドポイントを決めて」「OpenAPIスキーマを作って」「GraphQLスキーマを設計して」「APIのバージョニング戦略を決めて」などのリクエストで必ずこのスキルを使う。
 metadata:
-  version: "1.0.0"
+  version: 1.0.0
+  tier: stable
+  category: design
+  tags:
+    - api
+    - openapi
+    - rest
+    - graphql
 ---
 
 # API Designer

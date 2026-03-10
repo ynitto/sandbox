@@ -2,7 +2,12 @@
 name: codebase-to-skill
 description: 既存のプログラムやコードベースを分析し、アーキテクチャ・コーディング規約・開発ワークフローをSKILL.mdとしてマークダウン化するスキル。「このプロジェクトのアーキテクチャをスキル化して」「コードの規約をスキルにまとめて」「このリポジトリをスキルにして」「コードベースを分析してスキルを作って」などのリクエストで使用する。
 metadata:
-  version: "1.0.0"
+  version: 1.0.0
+  tier: experimental
+  category: meta
+  tags:
+    - skill-generation
+    - codebase-analysis
 ---
 
 # Codebase to Skill

@@ -2,7 +2,13 @@
 name: document-reviewer
 description: ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）をレビューするスキル。「ドキュメントをレビューして」「要件定義書を確認して」「設計書をチェックして」「仕様書をレビューお願い」「ドキュメントの問題点を教えて」「要件を確認して」などのリクエストで必ずこのスキルを使う。ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）が対象。
 metadata:
-  version: "2.0.0"
+  version: 2.0.0
+  tier: stable
+  category: review
+  tags:
+    - documentation
+    - requirements
+    - specifications
 ---
 
 # document-reviewer

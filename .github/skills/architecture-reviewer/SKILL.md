@@ -2,7 +2,13 @@
 name: architecture-reviewer
 description: ソフトウェアアーキテクチャと設計をレビューするスキル。「アーキテクチャをレビューして」「設計を確認して」「依存関係を確認して」「モジュール構成を見て」「設計原則への準拠を確認して」「アーキテクチャの問題点を教えて」などのリクエストで発動する。SOLID・レイヤードアーキテクチャ・依存関係の方向性・モジュール境界・セキュリティ境界・テスタビリティ・障害モデル・可観測性・データフローを分析し、設計の健全性を評価する。
 metadata:
-  version: "1.2.0"
+  version: 1.2.0
+  tier: stable
+  category: review
+  tags:
+    - architecture
+    - solid
+    - design-review
 ---
 
 # architecture-reviewer

@@ -2,7 +2,13 @@
 name: patent-coach
 description: 特許出願前の構想・整理フェーズ専用。ソクラテス式対話で発明を深掘りし、先行技術調査・新規性確認もこのスキルが担う。「特許アイデアを練りたい」「先行技術調査をして」「新規性を確認したい」「特許コーチングして」「発明のブレストをしたい」「出願すべきか相談」などで発動。明細書・クレーム作成は patent-writer を使う。
 metadata:
-  version: "1.0.0"
+  version: 1.0.0
+  tier: stable
+  category: research
+  tags:
+    - patent
+    - invention
+    - prior-art
 ---
 
 # Patent Coach
