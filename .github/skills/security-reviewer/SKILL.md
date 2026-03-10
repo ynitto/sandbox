@@ -274,6 +274,32 @@ app.use(helmet())
 - **文脈を尊重する** — プロジェクトの技術スタック・制約に合った修正案を提示する
 - **優先度を明確にする** — Critical から順に対処できるよう重要度を明記する
 
+## 補助スクリプト
+
+### scripts/
+
+- **scan_vulnerabilities.py** — OWASP Top 10 ベースの脆弱性パターン静的スキャン（grep/正規表現）
+
+```bash
+# カレントディレクトリを再帰スキャン
+python .github/skills/security-reviewer/scripts/scan_vulnerabilities.py
+
+# 対象ディレクトリを指定
+python .github/skills/security-reviewer/scripts/scan_vulnerabilities.py --path src/
+
+# JSON 形式で出力
+python .github/skills/security-reviewer/scripts/scan_vulnerabilities.py --json
+
+# 重要度フィルタ（critical のみ）
+python .github/skills/security-reviewer/scripts/scan_vulnerabilities.py --severity critical
+```
+
+**検出カテゴリ**（17パターン）: ハードコードシークレット、SQLインジェクション、コマンドインジェクション、XSS、JWT脆弱性、CORS設定、デバッグモード、SSRF 等
+
+**終了コード**: 0 = Critical/High なし / 1 = Critical/High 検出 / 2 = 読み取りエラー
+
+---
+
 ## 参考リソース
 
 - [OWASP Top 10](https://owasp.org/www-project-top-ten/)
