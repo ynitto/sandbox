@@ -594,7 +594,7 @@
         "どのスキルを昇格すべき？"
       ],
       "has_scripts": true,
-      "has_references": false
+      "has_references": true
     },
     {
       "name": "skill-recruiter",

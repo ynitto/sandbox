@@ -236,18 +236,24 @@ metadata:
 
 ### 改善案
 
-`.github/skills/_shared/` ディレクトリを導入:
+~~`.github/skills/_shared/` ディレクトリを導入:~~ → **再考**: skills フォルダにはスキルのみを配置する方針とし、共通リソースは各オーナースキルに配置する。§5 で作成した `review-output-schema.json` / `severity-levels.md` は `skill-evaluator/references/` に、`skill-catalog.json` は `git-skill-manager/generated/` に格納済み。
 
 ```
+# 当初案（不採用）
 .github/skills/_shared/
+  review-output-schema.json
+  ...
+
+# 採用方針: オーナースキルに配置
+.github/skills/skill-evaluator/references/
   review-output-schema.json     # レビュースキル共通出力スキーマ
-  mermaid-conventions.md        # Mermaid 記法の共通規約
-  coding-standards-base.md      # 基本コーディング規約（スキルが extends する）
-  severity-levels.md            # 重要度レベルの共通定義（Critical/High/Medium/Low）
+  severity-levels.md            # 重要度レベルの共通定義
+.github/skills/git-skill-manager/generated/
+  skill-catalog.json            # 自動生成カタログ
 ```
 
-- 各スキルは `_shared/` を参照し、スキル固有のオーバーライドのみをローカルに持つ
-- `_` プレフィックスにより `git-skill-manager` がスキルとして誤認しない
+- 各スキルはオーナースキルの `references/` を参照し、スキル固有のオーバーライドのみをローカルに持つ
+- Mermaid 記法・コーディング規約等の追加共通リソースも同様に、最も関連の深いスキルに配置する
 
 ---
 
