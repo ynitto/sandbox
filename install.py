@@ -26,18 +26,22 @@ from datetime import datetime
 
 # ---- パス定義 ----
 
-HOME = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-COPILOT_DIR = os.path.join(HOME, ".copilot")
-SKILL_HOME = os.path.join(COPILOT_DIR, "skills")
-AGENTS_HOME = os.path.join(COPILOT_DIR, "agents")
-CACHE_DIR = os.path.join(COPILOT_DIR, "cache")
-REGISTRY_PATH = os.path.join(COPILOT_DIR, "skill-registry.json")
-
 # このスクリプト自身の位置からリポジトリルートを特定
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = SCRIPT_DIR  # install.py はリポジトリルートに配置
 REPO_SKILLS_DIR = os.path.join(REPO_ROOT, ".github", "skills")
 REPO_AGENTS_DIR = os.path.join(REPO_ROOT, ".github", "agents")
+
+# registry.py のヘルパーでユーザーホームパスを解決（一元管理）
+_SCRIPTS_DIR = os.path.join(REPO_SKILLS_DIR, "git-skill-manager", "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from registry import _skill_home, _agents_home, _cache_dir as _registry_cache_dir
+
+SKILL_HOME = _skill_home()
+AGENTS_HOME = _agents_home()
+CACHE_DIR = _registry_cache_dir()
+REGISTRY_PATH = os.path.join(os.path.dirname(SKILL_HOME), "skill-registry.json")
 
 CORE_SKILLS = [
     "scrum-master",

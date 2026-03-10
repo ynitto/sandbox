@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime
 
 from registry import (
-    load_registry, save_registry, _cache_dir, _skill_home,
+    load_registry, save_registry, _cache_dir, _skill_home, _agents_home,
     _version_tuple, _read_frontmatter_version,
 )
 from repo import clone_or_fetch, update_remote_index
@@ -305,10 +305,8 @@ def pull_skills(
             with open(src, encoding="utf-8") as f:
                 copilot_instruction_parts.append(f.read().rstrip())
 
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    copilot_dir = os.path.join(home, ".copilot")
-
     if copilot_instruction_parts:
+        copilot_dir = os.path.dirname(_agents_home())
         os.makedirs(copilot_dir, exist_ok=True)
         dest = os.path.join(copilot_dir, "copilot-instructions.md")
         merged = _merge_copilot_instructions(copilot_instruction_parts)
@@ -317,7 +315,7 @@ def pull_skills(
         print(f"   📋 copilot-instructions.md → {dest}")
 
     # agents のコピー
-    agents_home = os.path.join(copilot_dir, "agents")
+    agents_home = _agents_home()
     agents_synced = 0
     for repo in repos:
         repo_cache = os.path.join(_cache_dir(), repo["name"])
