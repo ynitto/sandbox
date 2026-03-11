@@ -1,4 +1,4 @@
-# クロスリポジトリ操作（diff / sync / merge / push-direct）
+# クロスリポジトリ操作（diff / sync / merge / push）
 
 複数リポジトリに分岐した同名スキルを比較・統合・配信するための操作群。
 
@@ -7,7 +7,7 @@
 - [diff](#diff)
 - [sync](#sync)
 - [merge](#merge)
-- [push-direct](#push-direct)
+- [push](#push)
 
 ## diff
 
@@ -122,7 +122,7 @@
 
 -----
 
-## push-direct
+## push
 
 ブランチを切らずに main ブランチへ直接 push する。バージョン比較を行い、ローカルが新しいスキルのみを一括でプッシュする。
 
@@ -150,7 +150,7 @@
 ユーザー: 「全リポジトリにブランチを切らずに push して」
 
 エージェント:
-  python manage.py push-direct
+  python manage.py push
 
   → 出力例:
     📦 リポジトリ: team-skills (https://github.com/myorg/agent-skills.git)
@@ -167,10 +167,10 @@
 
 特定スキルのみを push する場合:
 ```
-python manage.py push-direct --skills code-reviewer
+python manage.py push --skills code-reviewer
 ```
 
 特定リポジトリのみを対象にする場合:
 ```
-python manage.py push-direct --repos team-skills
+python manage.py push --repos team-skills
 ```
