@@ -133,13 +133,17 @@ security-reviewer
 
 ## 選択指針
 
+以下はよくある意図とスキル組み合わせの**代表例**。実際には `discover_skills.py --group-by-category` で最新スキル一覧を確認してから選択すること。
+
 | ユーザーの意図 | 最初に使うスキル | 後続の候補 |
 |---|---|---|
 | 「何かを作りたい」 | brainstorming | requirements-definer → scrum-master |
 | 「コードを直したい」 | systematic-debugging | code-reviewer |
 | 「コードを整理したい」 | code-simplifier / code-reviewer | — |
 | 「設計を確認したい」 | architecture-reviewer / design-reviewer | security-reviewer |
-| 「テストを書きたい」 | tdd-executing | react-frontend-unit-tester |
+| 「テストを書きたい」 | tdd-executing | 言語固有テストスキル |
 | 「ドキュメントを書きたい」 | technical-writer / doc-coauthoring | — |
 | 「スキルを作りたい」 | skill-creator / codebase-to-skill | git-skill-manager |
 | 「調査したい」 | deep-research | brainstorming / doc-coauthoring |
+
+**注意**: この表は既知パターンの例示であり網羅的ではない。`description` を読んで最適なスキルを動的に判断し、新しいスキルが追加された場合も `discover_skills.py` の出力を正とする。

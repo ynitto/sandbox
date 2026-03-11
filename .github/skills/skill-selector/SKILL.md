@@ -49,35 +49,48 @@ metadata:
 python <SKILL_DIR>/scripts/discover_skills.py
 ```
 
-このスクリプトは `~/.copilot/skills/` と `.github/skills/` の両方を走査し、各スキルの `name` と `description` を出力する。**Windows・macOS 両対応**。
+このスクリプトは `~/.copilot/skills/` と `.github/skills/` の両方を走査し、各スキルの `name`・`description`・`category`・`tags`・`tier` を出力する。**Windows・macOS 両対応**。新しいスキルが追加されても自動的に検出される。
 
 スクリプトが実行できない環境では、スキルリストを直接 `<SKILLS_DIR>/` のディレクトリ一覧から確認する。
 
-### Step 3: タクソノミーで絞り込む
+### Step 3: カテゴリとタグで動的に絞り込む
 
-タスクのフェーズとカテゴリを以下のタクソノミーに照合し、候補スキルを絞る:
+`--group-by-category` フラグで、実際のスキルメタデータに基づくカテゴリ別一覧を取得する:
 
-| フェーズ | カテゴリ | 代表スキル例 |
-|---|---|---|
-| 構想・設計 | ideation | brainstorming, requirements-definer, domain-modeler, api-designer, ui-designer |
-| 実装 | implementation | react-frontend-coder, ci-cd-configurator, dynamodb-designer |
-| テスト・検証 | testing | tdd-executing, react-frontend-unit-tester, webapp-testing |
-| デバッグ | debugging | debug-mode, systematic-debugging |
-| レビュー・品質 | review | code-reviewer, code-simplifier, design-reviewer, architecture-reviewer, security-reviewer, test-reviewer, document-reviewer |
-| ドキュメント | documentation | technical-writer, doc-coauthoring, patent-coach, patent-writer |
-| オーケストレーション | orchestration | scrum-master, skill-selector |
-| スキル管理 | meta | skill-creator, skill-evaluator, skill-recruiter, git-skill-manager, ltm-use, generating-skills-from-copilot-logs |
-| リサーチ | research | deep-research |
+```
+python <SKILL_DIR>/scripts/discover_skills.py --group-by-category
+```
 
-**重要**: このタクソノミーは参考例。実際に利用可能なスキルは Step 2 で探索した結果を正とする。新しいスキルが追加されても、`description` を読んでタスクへの適合性を判断できる。
+各スキルの `category` と `tags` を使ってタスクに関連する候補を絞り込む。タスクフェーズとカテゴリの対応例（参考）:
+
+| タスクフェーズ | よく対応するカテゴリ |
+|---|---|
+| 構想・設計 | design |
+| 実装 | implementation |
+| テスト・検証 | implementation（testing タグ） |
+| デバッグ | debug |
+| レビュー・品質 | review |
+| ドキュメント | research（documentation タグ） |
+| オーケストレーション | orchestration |
+| スキル管理 | meta |
+| リサーチ | research |
+
+**重要**: タクソノミーのカテゴリ・タグは各スキルの SKILL.md フロントマターから動的に取得する。このテーブルは参考例に過ぎず、`--group-by-category` の出力結果を正とする。新しいスキルの `category` と `tags` を読んでタスクへの適合性を判断すること。
 
 ### Step 4: 組み合わせを評価する
 
-単一スキルで完結するか、複数スキルの連携が必要かを判断する:
+**最初に複合タスクの可能性を検討し、その上で単一スキルを選ぶかどうかを判断する**:
 
-- **単一スキル**: タスクが1つのカテゴリに収まり、description が一致する
-- **シーケンシャル**: フェーズが複数にまたがる（設計→実装→テストなど）
-- **並列**: 独立した側面を同時対応（例: フロントエンド実装と API 設計）
+- **シーケンシャル**: フェーズが複数にまたがる（設計→実装→テストなど）→ 複数スキルを順番に使う
+- **並列**: 独立した側面を同時対応（例: フロントエンド実装と API 設計）→ 複数スキルを並行して使う
+- **単一スキル**: タスクが1つのカテゴリに明確に収まり、他フェーズへの波及がない場合のみ
+
+**複合タスクと判断する基準**:
+- ゴールが2フェーズ以上にまたがる（「設計して実装する」「実装してレビューする」など）
+- タスクに複数の専門観点が必要（機能実装＋セキュリティチェックなど）
+- スキルの `description` に「後続スキルに委譲」「別スキルと組み合わせ」などの記述がある
+
+**⚠️ アンチパターン**: 複合可能性を検討せずにいきなり単一スキルを選ぶのは誤り。必ず複合タスクの可能性を評価してから、単一スキルで本当に十分かを確認する。単一スキルだけで進めた場合、設計フェーズのスキルを省いてテストが不十分になったり、レビュー系スキルを省いてコード品質の問題が残ったりと、後続フェーズで手戻りが発生しやすい。
 
 組み合わせパターンの詳細は [references/combinations.md](references/combinations.md) を参照。
 
