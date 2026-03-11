@@ -13,7 +13,7 @@ from registry import (
     _read_frontmatter_version, _update_frontmatter_version, _version_tuple,
 )
 from repo import clone_or_fetch, update_remote_index
-from push import push_skill
+from push import push_skill, push_all_skills
 from changelog import generate_changelog
 
 
@@ -342,7 +342,6 @@ def promote_skills(workspace_skills_dir, interactive=True):
         for name in promoted:
             skill_path = os.path.join(skill_home, name)
             push_skill(skill_path, target_repo["name"],
-                       branch_strategy="new_branch",
                        commit_msg=f"Promote skill: {name}")
 
     print(f"\n🎉 promote 完了")
@@ -581,7 +580,6 @@ def sync_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
             push_skill(
                 skill_path,
                 repo["name"],
-                branch_strategy="new_branch",
                 commit_msg=f"Sync skill: {skill_name} (cross-repo merge)",
             )
             results.append({"repo": repo["name"], "ok": True})
@@ -597,7 +595,7 @@ def sync_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
 
     succeeded = [r for r in results if r["ok"]]
     if succeeded:
-        print("\n💡 各リポジトリで PR/MR を作成してマージしてください")
+        print(f"\n✅ {len(succeeded)} リポジトリへの同期が完了しました")
 
 
 # ---------------------------------------------------------------------------
@@ -842,3 +840,32 @@ def deps_graph(skill_name: str | None = None) -> None:
     """スキル依存グラフを Mermaid 形式で出力する。"""
     from deps import show_graph
     show_graph(skill_name)
+
+
+# ---------------------------------------------------------------------------
+# push（branch_strategy オプションで PR/MR ブランチ作成も可）
+# ---------------------------------------------------------------------------
+
+def push_to_main(
+    skill_names: list[str] | None = None,
+    repo_names: list[str] | None = None,
+    commit_msg: str | None = None,
+) -> None:
+    """バージョン比較を行い、ローカルが新しいスキルを全リポジトリの main ブランチへ直接 push する。
+
+    処理フロー:
+      1. 書き込み可能なリポジトリを列挙する
+      2. 各リポジトリについて:
+         a. リモートの最新をクローンする
+         b. ローカルとリモートのセマンティックバージョンを比較する
+         c. ローカルが新しい or 新規のスキルのみをコピーする
+         d. 変更をまとめて 1 コミットにして main ブランチへ直接 push する
+
+    skill_names=None → インストール済みスキルを全て対象にする
+    repo_names=None  → 書き込み可能な全リポジトリを対象にする
+    """
+    push_all_skills(
+        skill_names=skill_names,
+        repo_names=repo_names,
+        commit_msg=commit_msg,
+    )

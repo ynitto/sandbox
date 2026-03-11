@@ -1,4 +1,4 @@
-# クロスリポジトリ操作（diff / sync / merge）
+# クロスリポジトリ操作（diff / sync / merge / push）
 
 複数リポジトリに分岐した同名スキルを比較・統合・配信するための操作群。
 
@@ -7,6 +7,7 @@
 - [diff](#diff)
 - [sync](#sync)
 - [merge](#merge)
+- [push](#push)
 
 ## diff
 
@@ -118,3 +119,58 @@
 ```
 
 全リポジトリを対象にする場合は `--repos` を省略する。
+
+-----
+
+## push
+
+ブランチを切らずに main ブランチへ直接 push する。バージョン比較を行い、ローカルが新しいスキルのみを一括でプッシュする。
+
+### 処理フロー
+
+→ 実装: `scripts/push.py` — `push_all_skills(skill_names, repo_names, commit_msg)`、`scripts/manage.py` — `push_to_main(skill_names, repo_names, commit_msg)`
+
+1. 書き込み可能なリポジトリを列挙する
+2. 各リポジトリについて:
+   1. リモートの最新を `git clone --depth 1` で取得する
+   2. スキルごとにローカルとリモートの `metadata.version` を比較する
+   3. `_version_tuple(local_ver) > _version_tuple(remote_ver)` または新規スキルのみをコピー対象とする
+   4. 対象スキルのフォルダを一括コピーし、不要ファイルを除外する
+   5. 変更をまとめて 1 コミットにして `repo["branch"]`（通常は main）へ直接 push する
+
+### 引数
+
+| 引数 | 省略時の挙動 |
+|---|---|
+| `skill_names` | インストール済みスキルを全て対象にする |
+| `repo_names` | 書き込み可能な全リポジトリを対象にする |
+| `commit_msg` | `"Update skills: <skill1>, <skill2>, ..."` を自動生成 |
+
+```
+ユーザー: 「全リポジトリにブランチを切らずに push して」
+
+エージェント:
+  python manage.py push
+
+  → 出力例:
+    📦 リポジトリ: team-skills (https://github.com/myorg/agent-skills.git)
+      🔄 リモートの最新を取得中...
+      📋 バージョン比較結果 — プッシュ対象 (2 件):
+         react-frontend-coder          (新規) → v1.0.0
+         code-reviewer                 v1.2.0 → v1.3.0
+      🚀 push 完了
+         ブランチ: main (direct)
+         コミット: a1b2c3d
+         ✅ react-frontend-coder          (新規) → v1.0.0
+         ✅ code-reviewer                 v1.2.0 → v1.3.0
+```
+
+特定スキルのみを push する場合:
+```
+python manage.py push --skills code-reviewer
+```
+
+特定リポジトリのみを対象にする場合:
+```
+python manage.py push --repos team-skills
+```
