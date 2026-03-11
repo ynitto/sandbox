@@ -144,7 +144,12 @@ git ls-remote $REPO_URL HEAD
 
 → 実装: `scripts/push.py` — `push_skill(skill_path, repo_name, branch_strategy, commit_msg)`
 
-一時ディレクトリにクローン → スキルフォルダをコピー → 不要ファイル除外 → commit & push。`branch_strategy="new_branch"` でブランチを切り PR/MR を作成するフローを推奨。
+一時ディレクトリにクローン → スキルフォルダをコピー → 不要ファイル除外 → commit & push。デフォルトは `branch_strategy="direct"`（main へ直接 push）。ユーザーが「ブランチを切って」「PR を作って」などとブランチ作成を明示的に要求した場合のみ `branch_strategy="new_branch"` を使用する。
+
+| `branch_strategy` | 動作 |
+|---|---|
+| `"direct"`（デフォルト） | `repo["branch"]`（通常 main）へ直接 push |
+| `"new_branch"` | `add-skill/<name>` ブランチを作成して push → PR/MR 作成を促す |
 
 -----
 

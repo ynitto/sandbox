@@ -20,13 +20,13 @@ from node_identity import get_node_id
 def push_skill(
     skill_path: str,
     repo_name: str,
-    branch_strategy: str = "new_branch",
+    branch_strategy: str = "direct",
     commit_msg: str | None = None,
 ) -> None:
     """
     skill_path: プッシュするスキルフォルダのパス
     repo_name: プッシュ先リポジトリ名（レジストリの name）
-    branch_strategy: "new_branch" or "direct"
+    branch_strategy: "direct"（デフォルト: main へ直接 push）or "new_branch"（PR/MR ブランチを作成）
     """
     reg = load_registry()
     repo = next((r for r in reg["repositories"] if r["name"] == repo_name), None)

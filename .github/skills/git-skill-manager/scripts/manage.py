@@ -342,7 +342,6 @@ def promote_skills(workspace_skills_dir, interactive=True):
         for name in promoted:
             skill_path = os.path.join(skill_home, name)
             push_skill(skill_path, target_repo["name"],
-                       branch_strategy="new_branch",
                        commit_msg=f"Promote skill: {name}")
 
     print(f"\n🎉 promote 完了")
@@ -581,7 +580,6 @@ def sync_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
             push_skill(
                 skill_path,
                 repo["name"],
-                branch_strategy="new_branch",
                 commit_msg=f"Sync skill: {skill_name} (cross-repo merge)",
             )
             results.append({"repo": repo["name"], "ok": True})
@@ -597,7 +595,7 @@ def sync_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
 
     succeeded = [r for r in results if r["ok"]]
     if succeeded:
-        print("\n💡 各リポジトリで PR/MR を作成してマージしてください")
+        print(f"\n✅ {len(succeeded)} リポジトリへの同期が完了しました")
 
 
 # ---------------------------------------------------------------------------
