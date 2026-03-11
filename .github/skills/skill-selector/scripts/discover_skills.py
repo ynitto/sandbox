@@ -7,11 +7,15 @@ discover_skills.py — 利用可能なスキルを走査して一覧を出力す
   2. <workspace>/.github/skills/  (ワークスペース優先)
 
 Windows/macOS 両対応。
+
+オプション:
+  --group-by-category  カテゴリ別にグループ化して出力する
 """
 
-import os
-import sys
+import argparse
 import re
+import sys
+from collections import defaultdict
 from pathlib import Path
 
 
@@ -35,7 +39,10 @@ def find_skills_dirs() -> list[Path]:
 
 
 def parse_frontmatter(skill_md_path: Path) -> dict:
-    """SKILL.md から YAML フロントマターの name と description を抽出する。"""
+    """SKILL.md から YAML フロントマターの各フィールドを抽出する。
+
+    抽出対象: name, description, metadata.category, metadata.tags, metadata.tier
+    """
     try:
         content = skill_md_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -49,7 +56,8 @@ def parse_frontmatter(skill_md_path: Path) -> dict:
     yaml_text = match.group(1)
 
     result = {}
-    # シンプルな key: value 抽出（ネストや複数行 description に対応）
+
+    # name
     name_match = re.search(r"^name:\s*(.+)$", yaml_text, re.MULTILINE)
     if name_match:
         result["name"] = name_match.group(1).strip().strip('"\'')
@@ -65,6 +73,35 @@ def parse_frontmatter(skill_md_path: Path) -> dict:
         # 複数行を 1 行に正規化（インデントと改行を除去）
         desc = re.sub(r"\s+", " ", raw_desc).strip().strip('"\'')
         result["description"] = desc
+
+    # metadata ブロック（インデントされた行）を抽出
+    metadata_match = re.search(
+        r"^metadata:\s*\n((?:[ \t]+.+\n?)*)",
+        yaml_text,
+        re.MULTILINE,
+    )
+    if metadata_match:
+        meta_text = metadata_match.group(1)
+
+        # category
+        cat_match = re.search(r"^\s+category:\s*(.+)$", meta_text, re.MULTILINE)
+        if cat_match:
+            result["category"] = cat_match.group(1).strip()
+
+        # tier
+        tier_match = re.search(r"^\s+tier:\s*(.+)$", meta_text, re.MULTILINE)
+        if tier_match:
+            result["tier"] = tier_match.group(1).strip()
+
+        # tags（リスト形式: "    - tag-name"）
+        tags_section = re.search(
+            r"^\s+tags:\s*\n((?:\s+- .+\n?)*)",
+            meta_text,
+            re.MULTILINE,
+        )
+        if tags_section:
+            tags = re.findall(r"^\s+- (.+)$", tags_section.group(1), re.MULTILINE)
+            result["tags"] = [t.strip() for t in tags]
 
     return result
 
@@ -86,6 +123,9 @@ def discover_skills(skills_dirs: list[Path]) -> list[dict]:
             seen[name] = {
                 "name": name,
                 "description": info.get("description", "(説明なし)"),
+                "category": info.get("category", ""),
+                "tags": info.get("tags", []),
+                "tier": info.get("tier", ""),
                 "path": str(skill_md),
                 "source": str(skills_dir),
             }
@@ -93,7 +133,53 @@ def discover_skills(skills_dirs: list[Path]) -> list[dict]:
     return sorted(seen.values(), key=lambda s: s["name"])
 
 
+def print_skills_flat(skills: list[dict]) -> None:
+    """スキル一覧をフラット形式で出力する。"""
+    print(f"# 利用可能なスキル一覧 ({len(skills)} 件)\n")
+    for skill in skills:
+        print(f"## {skill['name']}")
+        print(f"  {skill['description']}")
+        if skill["category"]:
+            print(f"  🏷️  category: {skill['category']}")
+        if skill["tags"]:
+            print(f"  🔖  tags: {', '.join(skill['tags'])}")
+        if skill["tier"]:
+            print(f"  ⭐  tier: {skill['tier']}")
+        print(f"  📁 {skill['path']}")
+        print()
+
+
+def print_skills_by_category(skills: list[dict]) -> None:
+    """スキル一覧をカテゴリ別グループ化で出力する。"""
+    by_category: dict[str, list[dict]] = defaultdict(list)
+    for skill in skills:
+        category = skill["category"] or "uncategorized"
+        by_category[category].append(skill)
+
+    total = len(skills)
+    print(f"# 利用可能なスキル一覧 ({total} 件、カテゴリ別)\n")
+    for category in sorted(by_category.keys()):
+        cat_skills = by_category[category]
+        print(f"## カテゴリ: {category} ({len(cat_skills)} 件)\n")
+        for skill in cat_skills:
+            tags_str = f"  [tags: {', '.join(skill['tags'])}]" if skill["tags"] else ""
+            tier_str = f"  [tier: {skill['tier']}]" if skill["tier"] else ""
+            print(f"  - **{skill['name']}**{tags_str}{tier_str}")
+            print(f"    {skill['description']}")
+        print()
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="利用可能なスキルを走査して一覧を出力する。"
+    )
+    parser.add_argument(
+        "--group-by-category",
+        action="store_true",
+        help="カテゴリ別にグループ化して出力する",
+    )
+    args = parser.parse_args()
+
     skills_dirs = find_skills_dirs()
 
     if not skills_dirs:
@@ -107,12 +193,10 @@ def main():
         print("スキルが見つかりませんでした。", file=sys.stderr)
         sys.exit(1)
 
-    print(f"# 利用可能なスキル一覧 ({len(skills)} 件)\n")
-    for skill in skills:
-        print(f"## {skill['name']}")
-        print(f"  {skill['description']}")
-        print(f"  📁 {skill['path']}")
-        print()
+    if args.group_by_category:
+        print_skills_by_category(skills)
+    else:
+        print_skills_flat(skills)
 
 
 if __name__ == "__main__":
