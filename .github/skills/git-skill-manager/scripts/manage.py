@@ -13,7 +13,7 @@ from registry import (
     _read_frontmatter_version, _update_frontmatter_version, _version_tuple,
 )
 from repo import clone_or_fetch, update_remote_index
-from push import push_skill
+from push import push_skill, push_all_skills
 from changelog import generate_changelog
 
 
@@ -842,3 +842,32 @@ def deps_graph(skill_name: str | None = None) -> None:
     """スキル依存グラフを Mermaid 形式で出力する。"""
     from deps import show_graph
     show_graph(skill_name)
+
+
+# ---------------------------------------------------------------------------
+# push-direct
+# ---------------------------------------------------------------------------
+
+def push_to_main(
+    skill_names: list[str] | None = None,
+    repo_names: list[str] | None = None,
+    commit_msg: str | None = None,
+) -> None:
+    """バージョン比較を行い、ローカルが新しいスキルを全リポジトリの main ブランチへ直接 push する。
+
+    処理フロー:
+      1. 書き込み可能なリポジトリを列挙する
+      2. 各リポジトリについて:
+         a. リモートの最新をクローンする
+         b. ローカルとリモートのセマンティックバージョンを比較する
+         c. ローカルが新しい or 新規のスキルのみをコピーする
+         d. 変更をまとめて 1 コミットにして main ブランチへ直接 push する
+
+    skill_names=None → インストール済みスキルを全て対象にする
+    repo_names=None  → 書き込み可能な全リポジトリを対象にする
+    """
+    push_all_skills(
+        skill_names=skill_names,
+        repo_names=repo_names,
+        commit_msg=commit_msg,
+    )
