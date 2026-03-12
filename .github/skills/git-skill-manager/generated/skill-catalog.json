@@ -1,6 +1,6 @@
 {
   "generated_by": "generate_skill_catalog.py",
-  "total_skills": 35,
+  "total_skills": 36,
   "categories": {
     "design": 5,
     "review": 7,
@@ -9,11 +9,12 @@
     "debug": 2,
     "research": 5,
     "data": 1,
-    "orchestration": 2
+    "orchestration": 2,
+    "integration": 1
   },
   "tiers": {
     "stable": 16,
-    "experimental": 15,
+    "experimental": 16,
     "core": 4
   },
   "skills": [
@@ -755,6 +756,30 @@
       ],
       "has_scripts": true,
       "has_references": false
+    },
+    {
+      "name": "teams-channel",
+      "description": "PowerShell から Microsoft Teams チャンネルにメッセージを投稿・読み取りする。Webhook 不要、Graph API をローカル認証セッション経由で呼び出す。「Teamsに投稿して」「Teams の投稿を読んで」「Teams の最新投稿を見せて」などのリクエストで発動する。",
+      "version": "1.2.0",
+      "tier": "experimental",
+      "category": "integration",
+      "tags": [
+        "teams",
+        "microsoft",
+        "powershell",
+        "notification",
+        "messaging"
+      ],
+      "triggers": [
+        "Teamsに投稿して",
+        "Teams のチャンネルにメッセージを送って",
+        "Teams に通知して",
+        "Teams の投稿を読んで",
+        "Teams の最新投稿を見せて",
+        "Teams の投稿を取得して"
+      ],
+      "has_scripts": true,
+      "has_references": true
     }
   ]
 }
