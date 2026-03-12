@@ -1,4 +1,4 @@
-# Teams Poster セットアップガイド
+# Teams Channel セットアップガイド
 
 ## モジュールインストール
 
@@ -15,13 +15,23 @@ Install-Module Microsoft.Graph -Scope CurrentUser
 
 ## 初回認証フロー
 
+スクリプトの用途に応じて要求するスコープが異なる。
+
 ```powershell
-# インタラクティブ（デスクトップ環境）
+# 投稿のみ（Send-TeamsMessage.ps1）
 Connect-MgGraph -Scopes "ChannelMessage.Send","Team.ReadBasic.All","Channel.ReadBasic.All"
 
-# デバイスコードフロー（SSHセッション / CI 環境）
+# 読み取りのみ（Get-TeamsMessages.ps1）
+Connect-MgGraph -Scopes "ChannelMessage.Read.All","Team.ReadBasic.All","Channel.ReadBasic.All"
+
+# 投稿 + タイトルで返信先検索（Send-TeamsMessage.ps1 で -ReplyToSubject を使う場合）
+Connect-MgGraph -Scopes "ChannelMessage.Send","ChannelMessage.Read.All","Team.ReadBasic.All","Channel.ReadBasic.All"
+
+# デバイスコードフロー（SSHセッション / CI 環境・投稿のみ）
 Connect-MgGraph -Scopes "ChannelMessage.Send" -UseDeviceAuthentication
 ```
+
+> **原則**: 各スクリプトは必要最小限のスコープのみ要求する。読み取り（`Get-TeamsMessages.ps1`）は `ChannelMessage.Send` を要求しない。
 
 認証後、`Get-MgContext` でサインイン状態を確認できる。
 
@@ -30,13 +40,20 @@ Connect-MgGraph -Scopes "ChannelMessage.Send" -UseDeviceAuthentication
 組織のポリシーで委任権限が制限されている場合、Azure AD にアプリ登録が必要:
 
 1. [Azure Portal](https://portal.azure.com) → **Azure Active Directory** → **アプリの登録** → **新規登録**
-2. **API のアクセス許可** → `Microsoft Graph` → **委任されたアクセス許可** → `ChannelMessage.Send` を追加
+2. **API のアクセス許可** → `Microsoft Graph` → **委任されたアクセス許可** → 用途に応じて追加:
+   - 投稿: `ChannelMessage.Send`
+   - 読み取り: `ChannelMessage.Read.All`
 3. **管理者の同意を与える**
 4. クライアント ID を使って接続:
 
 ```powershell
+# 投稿用
 Connect-MgGraph -ClientId "<your-client-id>" -TenantId "<your-tenant-id>" `
     -Scopes "ChannelMessage.Send"
+
+# 読み取り用
+Connect-MgGraph -ClientId "<your-client-id>" -TenantId "<your-tenant-id>" `
+    -Scopes "ChannelMessage.Read.All"
 ```
 
 ## チャット（1:1 / グループ）への投稿
@@ -83,8 +100,9 @@ $credential = New-Object System.Management.Automation.PSCredential($env:CLIENT_I
 
 Connect-MgGraph -ClientSecretCredential $credential -TenantId $env:TENANT_ID
 
-# アプリケーション権限では ChannelMessage.Send ではなく
-# ChannelMessage.Send.All が必要（管理者同意必須）
+# アプリケーション権限（委任ではなく Application 権限）では:
+# 投稿: ChannelMessage.Send ではなく ChannelMessage.Send.All が必要（管理者同意必須）
+# 読み取り: ChannelMessage.Read.All（管理者同意必須）
 ```
 
 ## トークンキャッシュの管理
@@ -150,9 +168,9 @@ Install-Module Microsoft.Graph.Teams -Scope CurrentUser -Force
 
 ---
 
-### 同一セッションで Send-TeamsMessage.ps1 も実行する
+### 同一セッションでスクリプトも実行する
 
-プロキシ設定はセッションに閉じているため、別ウィンドウで `Send-TeamsMessage.ps1` を開くとプロキシが外れる。同一セッションで続けて実行するか、`$env:HTTPS_PROXY` を設定してセッションをまたいで使う。
+プロキシ設定はセッションに閉じているため、別ウィンドウで `Send-TeamsMessage.ps1` や `Get-TeamsMessages.ps1` を開くとプロキシが外れる。同一セッションで続けて実行するか、`$env:HTTPS_PROXY` を設定してセッションをまたいで使う。
 
 ```powershell
 # 環境変数でプロキシを設定（認証なしの場合）
