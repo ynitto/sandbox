@@ -81,7 +81,22 @@ git-skill-manager と共通のリポジトリ設定を使用する。
   "auto_promote_threshold": 85,
   "semi_auto_promote_threshold": 70,
   "cleanup_inactive_days": 30,
-  "cleanup_archived_days": 60
+  "cleanup_archived_days": 60,
+
+  "// v5.0.0 脳構造インスパイア設定": "",
+  "consolidation_threshold": 5,
+  "consolidation_similarity": 0.5,
+  "forgetting_base_half_life": 30,
+  "auto_importance_enabled": true,
+  "auto_memory_type_enabled": true,
+  "context_aware_recall": true,
+  "review_interval_days": 14,
+  "recall_hybrid_weights_v5": {
+    "keyword": 0.4,
+    "tfidf": 0.3,
+    "meta": 0.15,
+    "context": 0.15
+  }
 }
 ```
 
@@ -95,6 +110,14 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 | `semi_auto_promote_threshold` | `70` | 半自動昇格の閾値（この値以上で昇格候補として表示） |
 | `cleanup_inactive_days` | `30` | 未アクセス記憶の削除閾値（日数） |
 | `cleanup_archived_days` | `60` | アーカイブ記憶の削除閾値（日数） |
+| `consolidation_threshold` | `5` | v5: 同カテゴリ内の episodic 記憶がこの数以上で固定化を提案 |
+| `consolidation_similarity` | `0.5` | v5: エピソードクラスタ判定の TF-IDF 類似度閾値 |
+| `forgetting_base_half_life` | `30` | v5: 忘却曲線の基本半減期（日数） |
+| `auto_importance_enabled` | `true` | v5: save 時にキーワードから importance を自動検出 |
+| `auto_memory_type_enabled` | `true` | v5: save 時にコンテンツから memory_type を自動分類 |
+| `context_aware_recall` | `true` | v5: recall で `--context` / `--auto-context` を有効化 |
+| `review_interval_days` | `14` | v5: review の推奨間隔（日数、通知用） |
+| `recall_hybrid_weights_v5` | `{...}` | v5: 4軸ランキングの重み（keyword/tfidf/meta/context） |
 
 ### 昇格閾値のカスタマイズ
 
@@ -125,11 +148,28 @@ git-skill-manager と共通のリポジトリ設定を使用する。
   "auto_promote_threshold": 85,
   "semi_auto_promote_threshold": 70,
   "cleanup_inactive_days": 30,
-  "cleanup_archived_days": 60
+  "cleanup_archived_days": 60,
+  "consolidation_threshold": 5,
+  "consolidation_similarity": 0.5,
+  "forgetting_base_half_life": 30,
+  "auto_importance_enabled": true,
+  "auto_memory_type_enabled": true,
+  "context_aware_recall": true,
+  "review_interval_days": 14,
+  "recall_hybrid_weights_v5": {
+    "keyword": 0.4,
+    "tfidf": 0.3,
+    "meta": 0.15,
+    "context": 0.15
+  }
 }
 ```
 
 `skill-registry.json` が未設定の場合、shared 記憶の管理はスキップされる（workspace / home のみ動作）。
+
+> **v5.0.0 後方互換**: v5 新設定が未定義の場合、上記デフォルト値が自動適用される。
+> v4 の `recall_hybrid_weights`（3軸）と v5 の `recall_hybrid_weights_v5`（4軸）は共存可能。
+> `--context` 未指定時は自動的に v4 互換の3軸ランキングにフォールバックする。
 
 ---
 
