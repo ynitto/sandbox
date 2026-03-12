@@ -71,6 +71,26 @@ scrum-master 経由のスプリント実行中は、スプリント完了後（P
 
 -----
 
+## ワークスペースドキュメントの優先
+
+`docs/` ディレクトリにはプロジェクト固有のルール・設計・ガイドラインが含まれる。
+タスクに関連する `docs/` 内のドキュメントを参照し、その内容を一般的な慣習より**優先して従うこと**。
+
+| ファイル | 内容 |
+|---|---|
+| `docs/project-overview.md` | プロジェクト全体の目的・設計思想・コアパターン |
+| `docs/guide-beginners.md` | 基本的なスキルのインストール・使い方 |
+| `docs/guide-intermediate.md` | スキル作成・フィードバックループ・バージョン管理 |
+| `docs/guide-advanced.md` | 高度なSKILL.md設計・CI/CD統合・セキュリティ |
+| `docs/plans/feature-proposals.md` | 実装済み・未実装のフィーチャー提案一覧 |
+| `docs/designs/` | 個別機能の詳細設計ドキュメント |
+| `docs/plans/` | 設計検討・改善提案のアーカイブ |
+
+- `docs/` の記述が一般的な推奨と異なる場合、`docs/` を優先する
+- 新機能の実装前に `docs/plans/` と `docs/designs/` を確認し、既存の設計方針と整合させる
+
+-----
+
 ## スキルの優先順位
 
 同名のスキルが `~/.copilot/skills/`（ユーザーホーム）と `.github/skills/`（ワークスペース）の
