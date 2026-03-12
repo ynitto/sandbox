@@ -6,9 +6,8 @@
 .DESCRIPTION
     Microsoft Graph API を使い、Webhook なしで Teams チャンネルへメッセージを送信する。
     初回はブラウザ認証が必要。以降はトークンキャッシュを使用する。
-    タイトル（件名）の付与、@channel / @team メンションに対応。
-    メンション機能は既存スコープ（Channel.ReadBasic.All / Team.ReadBasic.All）のみで動作し、
-    追加スコープは不要。
+    タイトル（件名）の付与、@channel / @team メンション、スレッド返信に対応。
+    いずれの機能も追加スコープ不要（ChannelMessage.Send / Team.ReadBasic.All / Channel.ReadBasic.All のみ使用）。
 
 .PARAMETER TeamName
     投稿先チームの表示名（TeamId と排他）。
@@ -38,6 +37,11 @@
 .PARAMETER MentionTeam
     投稿先チームを @メンションする（追加スコープ不要）。
 
+.PARAMETER ReplyToMessageId
+    返信先メッセージの ID。指定するとスレッド返信になる（追加スコープ不要）。
+    メッセージ ID は投稿済みメッセージの WebUrl 末尾数値、または Get-MgTeamChannelMessage で取得できる。
+    返信時は -Subject は無視される（Teams の仕様）。
+
 .EXAMPLE
     .\Send-TeamsMessage.ps1 -TeamName "開発チーム" -ChannelName "一般" -Message "デプロイ完了"
 
@@ -53,6 +57,11 @@
     .\Send-TeamsMessage.ps1 -TeamName "開発チーム" -ChannelName "告知" `
         -Subject "緊急メンテナンス" -Message "本日 22:00 よりメンテナンスを実施します。" `
         -MentionChannel -MentionTeam
+
+.EXAMPLE
+    # スレッド返信（追加スコープ不要）
+    .\Send-TeamsMessage.ps1 -TeamName "開発チーム" -ChannelName "通知" `
+        -ReplyToMessageId "1234567890123" -Message "対応完了しました。"
 #>
 [CmdletBinding()]
 param(
@@ -78,7 +87,9 @@ param(
 
     [switch]$MentionChannel,
 
-    [switch]$MentionTeam
+    [switch]$MentionTeam,
+
+    [string]$ReplyToMessageId
 )
 
 Set-StrictMode -Version Latest
@@ -112,6 +123,12 @@ function Select-FromMatches {
     $hits = @($scored | Select-Object -ExpandProperty Item)
 
     if ($hits.Count -eq 1) {
+        if ($scored[0].Score -eq 3) {
+            # 完全一致（大小無視）→ 確認不要
+            Write-Host "${Label}: 「$($hits[0].DisplayName)」" -ForegroundColor DarkGray
+            return $hits[0]
+        }
+        # 部分一致の1件 → 確認
         Write-Host "${Label}候補: 「$($hits[0].DisplayName)」" -ForegroundColor Cyan
         $ans = ''
         while ($ans -notin @('y', 'n')) {
@@ -242,7 +259,8 @@ $body = @{
     }
 }
 
-if ($Subject) {
+# Subject は新規投稿のみ有効（返信スレッドには設定不可）
+if ($Subject -and -not $ReplyToMessageId) {
     $body['subject'] = $Subject
 }
 
@@ -250,8 +268,16 @@ if ($mentions.Count -gt 0) {
     $body['mentions'] = $mentions
 }
 
-# --- メッセージ投稿 ---
-Write-Verbose "メッセージを投稿中 (Team: $TeamId, Channel: $ChannelId)..."
-$result = New-MgTeamChannelMessage -TeamId $TeamId -ChannelId $ChannelId -BodyParameter $body
+# --- メッセージ投稿 / 返信 ---
+# 返信も ChannelMessage.Send のみで動作し、追加スコープは不要。
+if ($ReplyToMessageId) {
+    Write-Verbose "返信を投稿中 (Team: $TeamId, Channel: $ChannelId, ReplyTo: $ReplyToMessageId)..."
+    $result = New-MgTeamChannelMessageReply `
+        -TeamId $TeamId -ChannelId $ChannelId -ChatMessageId $ReplyToMessageId `
+        -BodyParameter $body
+} else {
+    Write-Verbose "メッセージを投稿中 (Team: $TeamId, Channel: $ChannelId)..."
+    $result = New-MgTeamChannelMessage -TeamId $TeamId -ChannelId $ChannelId -BodyParameter $body
+}
 
 Write-Host "投稿完了: $($result.WebUrl)" -ForegroundColor Green
