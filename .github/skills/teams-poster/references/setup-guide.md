@@ -11,6 +11,8 @@ Install-Module Microsoft.Graph.Teams -Scope CurrentUser
 Install-Module Microsoft.Graph -Scope CurrentUser
 ```
 
+インストールに失敗する場合（社内プロキシ環境等）は後述の「[プロキシ環境でのセットアップ](#プロキシ環境でのセットアップ)」を参照。
+
 ## 初回認証フロー
 
 ```powershell
@@ -94,3 +96,71 @@ Disconnect-MgGraph
 # キャッシュクリア（問題発生時）
 Get-ChildItem "$env:USERPROFILE\.graph" -ErrorAction SilentlyContinue | Remove-Item -Recurse
 ```
+
+## プロキシ環境でのセットアップ
+
+社内プロキシ経由でないと外部通信できない環境では、`Install-Module` が失敗することがある。
+
+### 対話スクリプトを使う（推奨）
+
+[scripts/Setup-Proxy.ps1](../scripts/Setup-Proxy.ps1) を実行すると、プロキシ URL・認証情報を対話入力してセットアップを自動完了できる。
+
+```powershell
+.\Setup-Proxy.ps1
+```
+
+実行すると以下を順に行う:
+
+1. プロキシ URL を入力（例: `http://proxy.example.com:8080`）
+2. 認証要否を確認
+   - 認証あり: ユーザー名とパスワード（マスク入力）を要求
+   - 認証なし: 現在の Windows ログインユーザーの統合認証を使用
+3. PowerShell Gallery への疎通確認
+4. `Microsoft.Graph.Authentication` / `Microsoft.Graph.Teams` をインストール
+
+> セッション内のみ有効。OS のプロキシ設定は変更しない。
+
+---
+
+### 手動でプロキシを設定する
+
+`Install-Module` の前に以下を実行することで同様の効果が得られる。
+
+```powershell
+# ① プロキシ URL を設定
+$proxyUrl = 'http://proxy.example.com:8080'
+$proxy = New-Object System.Net.WebProxy($proxyUrl, $true)
+
+# ② 認証情報を設定（不要な場合は ② を省略し ③ で UseDefaultCredentials = $true を使う）
+$proxyUser = Read-Host 'プロキシ ユーザー名'
+$proxyPass = Read-Host 'プロキシ パスワード' -AsSecureString
+$proxy.Credentials = (New-Object System.Management.Automation.PSCredential($proxyUser, $proxyPass)).GetNetworkCredential()
+
+# ③ 認証不要・統合 Windows 認証を使う場合はこちら（② の代わりに）
+# $proxy.UseDefaultCredentials = $true
+
+# ④ セッションへ適用
+[System.Net.WebRequest]::DefaultWebProxy = $proxy
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
+# ⑤ モジュールインストール
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
+Install-Module Microsoft.Graph.Teams -Scope CurrentUser -Force
+```
+
+---
+
+### 同一セッションで Send-TeamsMessage.ps1 も実行する
+
+プロキシ設定はセッションに閉じているため、別ウィンドウで `Send-TeamsMessage.ps1` を開くとプロキシが外れる。同一セッションで続けて実行するか、`$env:HTTPS_PROXY` を設定してセッションをまたいで使う。
+
+```powershell
+# 環境変数でプロキシを設定（認証なしの場合）
+$env:HTTPS_PROXY = 'http://proxy.example.com:8080'
+$env:HTTP_PROXY  = 'http://proxy.example.com:8080'
+
+# 認証ありの場合は URL に認証情報を埋め込む（パスワードは URLエンコードすること）
+$env:HTTPS_PROXY = 'http://user:p%40ssword@proxy.example.com:8080'
+```
+
+> **注意**: 環境変数にパスワードを埋め込む場合、ログや履歴に残るリスクがある。可能な限りセッション内の `PSCredential` 方式（対話スクリプト）を使用すること。
