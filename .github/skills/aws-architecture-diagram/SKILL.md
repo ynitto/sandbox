@@ -1,6 +1,6 @@
 ---
 name: aws-architecture-diagram
-description: Draw.io XML形式のAWSアーキテクチャ図を生成するスキル。「AWS構成図を作って」「アーキテクチャ図を描いて」「Draw.ioのAWS図を生成して」「構成図を書いて」などで発動する。正確なAWSサービスアイコンを使用してプロフェッショナルな図を作成する。日本語・Windows・GitHub Copilot対応。
+description: Draw.io XML形式のAWSアーキテクチャ図を生成するスキル。「AWS構成図を作って」「アーキテクチャ図を描いて」「Draw.ioのAWS図を生成して」「構成図を書いて」などで発動する。正確なAWSサービスアイコンを使用してプロフェッショナルな図を作成する。日本語・GitHub Copilot対応。
 metadata:
   version: 1.0.0
   tier: stable
@@ -95,7 +95,6 @@ Draw.io XML形式のAWSアーキテクチャ図を、正確なAWSサービスア
 #### 5a. Draw.ioファイルを書き出す
 
 - `docs/<slug>.drawio` に書き出す（例: `docs/realtime-data-pipeline.drawio`）
-- **Windows環境**: パスは `docs\<slug>.drawio` でも可（Draw.ioはどちらも対応）
 
 #### 5b. コンパニオンガイドを書き出す
 
@@ -107,7 +106,7 @@ Draw.io XML形式のAWSアーキテクチャ図を、正確なAWSサービスア
   - **主要な設計判断**: アーキテクチャの選択に関する簡単なメモ（例: サーバーレスにした理由、このDBを選んだ理由）
   - **コスト・スケーリングのメモ**（任意）: 計画に役立つ情報
 - ガイドはユーザーが選んだ言語（デフォルト: 日本語）で書く
-- ユーザーに両方のファイルパスを伝え、`.drawio` をDraw.ioアプリ（デスクトップまたは https://app.diagrams.net）で開くよう案内する
+- ユーザーに両方のファイルパスを伝え、`.drawio` を https://app.diagrams.net で開くよう案内する
 
 ## ルール
 
@@ -123,6 +122,7 @@ Draw.io XML形式のAWSアーキテクチャ図を、正確なAWSサービスア
 10. **アイコンサイズ**: サービス・リソースアイコンとも48×48
 11. **AWS Cloudグループは1つ** — 図全体にわたる1つのAWS Cloudグループを使用する
 12. **全体背景** — タイトル・レーン・凡例の後ろにライトグレー `#F5F5F5` の角丸rectを追加して、PNG書き出し時に黒背景が出ないようにする
+13. **コンパクトレイアウト必須** — 間延びした図にならないよう `references/layout-guidelines.md` の数値を厳守する。アイコン間隔・グループパディング・グループ間隔はすべて規定値内に収める。グループサイズはコンテンツにぴったり合わせ、余白を詰める
 
 ## 非技術者向けモード
 
@@ -179,11 +179,9 @@ rounded=1;whiteSpace=wrap;fillColor=none;strokeColor=#879196;strokeWidth=1;dashe
 | Security | `#DD344C` |
 | General | `#232F3E` |
 
-## Windows環境での注意事項
+## 環境での注意事項
 
-- Draw.ioデスクトップアプリ（Windows）でファイルを開く場合: `docs\<slug>.drawio` をダブルクリックで開ける
-- ファイルパスにスペースが含まれる場合はダブルクォートで囲む
-- Draw.ioオンライン版（https://app.diagrams.net）でも同じXMLが使用可能
+- Draw.ioはオンライン版（https://app.diagrams.net）を使用する
 - PNG書き出し: Draw.ioの「ファイル > エクスポート > PNG」から書き出す（全体背景が設定されていれば黒背景は出ない）
 
 ## GitHub Copilot利用時の注意事項

@@ -7,6 +7,7 @@
 3. **Auxiliary services above/below main flow**
 4. **Japanese text by default** for labels
 5. **Plain text only** - No HTML in labels
+6. **Compact layout** - No unnecessary whitespace; fit groups tightly around their contents
 
 ## Typography
 
@@ -17,9 +18,10 @@
 
 ## Icon Sizing
 
-- **Service icons (resourceIcon)**: 48×48 (`w2` in source)
+- **Service icons (resourceIcon)**: 48×48
 - **Resource icons (dedicated shapes)**: 48×48
-- **Group minimum size**: 130×130
+- **Effective height with label**: 48 (icon) + 4 (gap) + 16 (label) = 68px — use this for vertical spacing calculations
+- **Group minimum size**: 130×110 (width × height)
 
 ## Nesting Order (outermost → innermost)
 
@@ -29,11 +31,19 @@
 4. Subnet group (Public/Private)
 5. Individual resources
 
-## Spacing
+## Spacing (compact — use exact values, never exceed upper bound)
 
-- **Between icons**: 80-120px horizontal, 60-80px vertical
-- **Group padding**: 30px from group border to contained icons
-- **Between groups**: 40-60px
+- **Between icons**: 70px horizontal, 50px vertical
+- **Label clearance**: icons with bottom labels need 20px extra vertical gap to prevent text overlap (icon 48px + label ~16px = 64px effective height)
+- **Group padding**: 20px from group border to contained icons (top: 40px to clear group title)
+- **Between groups**: 30px
+- **Group size**: calculated from contents — `width = left_padding + icons + gaps + right_padding`, never add extra blank space
+
+### Anti-stretch rules
+- Do NOT add extra padding "just in case" — measure and fit exactly
+- Do NOT leave empty rows or columns inside a group
+- Do NOT widen a group to match a sibling group unless they share a visual alignment purpose
+- Icons must not overlap each other or their labels; maintain the exact gaps above
 
 ## Edge/Arrow Rules
 
@@ -121,6 +131,22 @@ rounded=1;whiteSpace=wrap;fillColor=none;strokeColor=#879196;strokeWidth=1;dashe
 ### Managed Services group ID convention
 - Group: `grp-managed`
 - Icons inside: `svc-s3`, `svc-bedrock-kb`, `svc-opensearch`, etc.
+
+## Compact Layout Calculation Example
+
+For a subnet containing 3 icons in a row:
+```
+padding-left(20) + icon(48) + gap(70) + icon(48) + gap(70) + icon(48) + padding-right(20) = 324px wide
+padding-top(40) + icon(48) + label-clearance(20) + padding-bottom(20) = 128px tall
+```
+
+For a VPC containing 2 subnets side by side:
+```
+padding-left(20) + subnet-width + gap(30) + subnet-width + padding-right(20)
+padding-top(40) + subnet-height + padding-bottom(20)
+```
+
+Always compute group dimensions from contents — never guess or add extra space.
 
 ## Cell ID Convention
 
