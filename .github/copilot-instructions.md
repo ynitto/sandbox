@@ -36,6 +36,40 @@ python ~/.copilot/skills/ltm-use/scripts/recall_memory.py "キーワード"
 
 -----
 
+## セッション中の手順
+
+以下の場面では、作業中に随時記憶を保存する:
+
+- 原因の特定が難しかったバグとその解決策
+- ユーザーが明示的に「覚えておいて」「記憶して」と指示したとき
+- 設計上の重要な決定やトレードオフの結論
+
+```bash
+python ~/.copilot/skills/ltm-use/scripts/save_memory.py \
+  --title "タイトル" --summary "要約" --tags tag1,tag2
+```
+
+scrum-master 経由のスプリント実行中は、スプリント完了後（Phase 6 の後）にまとめて保存する。
+
+-----
+
+## セッション終了時の手順
+
+セッション終了前に、そのセッションで得た知識を振り返り記憶として保存する:
+
+```bash
+python ~/.copilot/skills/ltm-use/scripts/save_memory.py \
+  --title "タイトル" --summary "要約" --tags tag1,tag2
+```
+
+保存対象の例:
+- 新たに判明したコードベースの構造・設計意図
+- 採用した実装方針とその理由
+- 解決したエラーと原因・対処法
+- ユーザーの好みや繰り返し出てくる指示のパターン
+
+-----
+
 ## スキル実行後のフィードバック収集
 
 スキルを単体で実行完了したら、**scrum-master 経由の場合を除き**、
@@ -49,25 +83,6 @@ git-skill-manager で [スキル名] のフィードバックを記録して
 正確でなくてよい（「約30秒」→ `--duration 30`）。不明な場合は省略してよい。
 
 scrum-master 経由の場合はスプリント終了時に一括収集されるためスキップする。
-
------
-
-## 長期記憶（ltm-use）
-
-### 記憶の保存タイミング
-
-以下の場面では記憶を保存して次のセッションに活かす:
-
-- 原因の特定が難しかったバグとその解決策
-- ユーザーが明示的に「覚えておいて」「記憶して」と指示したとき
-- 設計上の重要な決定やトレードオフの結論
-
-```bash
-python ~/.copilot/skills/ltm-use/scripts/save_memory.py \
-  --title "タイトル" --summary "要約" --tags tag1,tag2
-```
-
-scrum-master 経由のスプリント実行中は、スプリント完了後（Phase 6 の後）にまとめて保存する。
 
 -----
 
@@ -88,3 +103,9 @@ scrum-master 経由のスプリント実行中は、スプリント完了後（P
 同名のスキルが `~/.copilot/skills/`（ユーザーホーム）と `.github/skills/`（ワークスペース）の
 両方に存在する場合、**ワークスペース側を優先して使用する**。
 ユーザーホーム側のバージョンは無視してよい。
+
+-----
+
+## コーディング行動規範（Karpathy Guidelines）
+
+`~/.copilot/skills/karpathy-guidelines/SKILL.md` を読み込み、すべてのコーディングタスクに常時適用する。
