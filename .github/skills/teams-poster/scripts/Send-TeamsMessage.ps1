@@ -39,8 +39,14 @@
 
 .PARAMETER ReplyToMessageId
     返信先メッセージの ID。指定するとスレッド返信になる（追加スコープ不要）。
-    メッセージ ID は投稿済みメッセージの WebUrl 末尾数値、または Get-MgTeamChannelMessage で取得できる。
+    メッセージ ID は投稿済みメッセージの WebUrl 末尾数値。-ReplyToSubject と排他。
     返信時は -Subject は無視される（Teams の仕様）。
+
+.PARAMETER ReplyToSubject
+    返信先メッセージをタイトル（件名）で検索して ID を特定する。
+    ChannelMessage.Read.All スコープが必要（このパラメータ指定時のみ追加要求）。
+    -ReplyToMessageId と排他。曖昧検索＋確認プロンプトで返信先を選択できる。
+    直近 50 件のメッセージを対象に検索する。
 
 .EXAMPLE
     .\Send-TeamsMessage.ps1 -TeamName "開発チーム" -ChannelName "一般" -Message "デプロイ完了"
@@ -62,6 +68,11 @@
     # スレッド返信（追加スコープ不要）
     .\Send-TeamsMessage.ps1 -TeamName "開発チーム" -ChannelName "通知" `
         -ReplyToMessageId "1234567890123" -Message "対応完了しました。"
+
+.EXAMPLE
+    # タイトルでメッセージを検索して返信（ChannelMessage.Read.All を追加要求）
+    .\Send-TeamsMessage.ps1 -TeamName "開発チーム" -ChannelName "通知" `
+        -ReplyToSubject "リリース完了" -Message "動作確認しました。問題ありません。"
 #>
 [CmdletBinding()]
 param(
@@ -89,11 +100,17 @@ param(
 
     [switch]$MentionTeam,
 
-    [string]$ReplyToMessageId
+    [string]$ReplyToMessageId,
+
+    [string]$ReplyToSubject
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($ReplyToMessageId -and $ReplyToSubject) {
+    throw '-ReplyToMessageId と -ReplyToSubject は同時に指定できません。どちらか一方を使用してください。'
+}
 
 # --- 曖昧検索 + 確認ヘルパー ---
 # 追加スコープ不要。Team.ReadBasic.All / Channel.ReadBasic.All のみ使用。
@@ -160,7 +177,11 @@ function Select-FromMatches {
 }
 
 # --- 認証 ---
+# -ReplyToSubject 指定時のみ ChannelMessage.Read.All を追加要求する
 $requiredScopes = @('ChannelMessage.Send', 'Team.ReadBasic.All', 'Channel.ReadBasic.All')
+if ($ReplyToSubject) {
+    $requiredScopes += 'ChannelMessage.Read.All'
+}
 
 $context = Get-MgContext -ErrorAction SilentlyContinue
 if (-not $context) {
@@ -194,6 +215,72 @@ if ($PSCmdlet.ParameterSetName -eq 'ByName') {
         $channel = Get-MgTeamChannel -TeamId $TeamId -ChannelId $ChannelId
         $channelDisplayName = $channel.DisplayName
         $channelMembershipType = if ($channel.MembershipType) { $channel.MembershipType } else { 'standard' }
+    }
+}
+
+# --- タイトル検索によるメッセージ ID 解決 ---
+# ChannelMessage.Read.All が必要（-ReplyToSubject 指定時のみ追加取得）
+if ($ReplyToSubject) {
+    Write-Host "タイトル '$ReplyToSubject' でメッセージを検索中（直近 50 件）..." -ForegroundColor DarkGray
+    $messages = @(Get-MgTeamChannelMessage -TeamId $TeamId -ChannelId $ChannelId -Top 50 |
+        Where-Object { $_.Subject })  # Subject なし（通常投稿）は除外
+
+    if ($messages.Count -eq 0) {
+        throw "チャンネル内にタイトル付きメッセージが見つかりません。直近 50 件に Subject のある投稿がありません。"
+    }
+
+    $lower = $ReplyToSubject.ToLower()
+    $scored = $messages | ForEach-Object {
+        $s     = $_.Subject
+        $score = if ($s.ToLower() -eq $lower)           { 3 }
+                 elseif ($s.ToLower().StartsWith($lower)) { 2 }
+                 elseif ($s.ToLower().Contains($lower))   { 1 }
+                 else                                      { 0 }
+        [PSCustomObject]@{ Item = $_; Score = $score }
+    } | Where-Object { $_.Score -gt 0 } | Sort-Object Score -Descending
+
+    if ($scored.Count -eq 0) {
+        throw "タイトル '$ReplyToSubject' に一致するメッセージが見つかりません。別のキーワードで再試行してください。"
+    }
+
+    $hits = @($scored | Select-Object -ExpandProperty Item)
+
+    if ($hits.Count -eq 1 -and $scored[0].Score -eq 3) {
+        # 完全一致 → 確認不要
+        $ts = $hits[0].CreatedDateTime.ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+        Write-Host "メッセージ: 「$($hits[0].Subject)」 ($ts)" -ForegroundColor DarkGray
+        $ReplyToMessageId = $hits[0].Id
+    } elseif ($hits.Count -eq 1) {
+        # 部分一致 1件 → 確認
+        $ts = $hits[0].CreatedDateTime.ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+        Write-Host "メッセージ候補: 「$($hits[0].Subject)」 ($ts)" -ForegroundColor Cyan
+        $ans = ''
+        while ($ans -notin @('y', 'n')) {
+            $ans = (Read-Host 'このメッセージに返信しますか？ [y/n]').Trim().ToLower()
+        }
+        if ($ans -ne 'y') {
+            throw "キャンセルされました。-ReplyToSubject のキーワードを変更するか -ReplyToMessageId で直接指定してください。"
+        }
+        $ReplyToMessageId = $hits[0].Id
+    } else {
+        # 複数候補 → 番号選択
+        Write-Host "'$ReplyToSubject' に一致するメッセージが複数見つかりました:" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $hits.Count; $i++) {
+            $ts = $hits[$i].CreatedDateTime.ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+            Write-Host ("  [{0}] 「{1}」 ({2})" -f ($i + 1), $hits[$i].Subject, $ts) -ForegroundColor White
+        }
+        $choice = $null
+        while ($null -eq $choice) {
+            $raw = (Read-Host "番号を選択してください [1-$($hits.Count)]").Trim()
+            if ($raw -match '^\d+$') {
+                $n = [int]$raw
+                if ($n -ge 1 -and $n -le $hits.Count) { $choice = $n }
+            }
+            if ($null -eq $choice) {
+                Write-Host "  1 から $($hits.Count) の数字を入力してください。" -ForegroundColor Yellow
+            }
+        }
+        $ReplyToMessageId = $hits[$choice - 1].Id
     }
 }
 
