@@ -1,61 +1,76 @@
-# Karpathy Guidelines
+---
+name: karpathy-guidelines
+description: LLMのコーディングミスを減らすための行動規範。すべてのコーディングタスクに常時適用する。Andrej Karpathyの観察に基づく4原則（コーディング前に考える・シンプルさを優先・外科的な変更・ゴール駆動の実行）を提供する。
+metadata:
+  version: 1.0.0
+  tier: core
+  category: guidelines
+  tags:
+    - coding-behavior
+    - simplicity
+    - caution
+---
 
-Behavioral guidelines to reduce common LLM coding mistakes, derived from [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls.
+# karpathy-guidelines
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+LLMのコーディングミスを減らすための行動規範。[Andrej Karpathyの観察](https://x.com/karpathy/status/2015883857489522876)に基づく。
 
-## 1. Think Before Coding
+**トレードオフ:** これらのガイドラインはスピードより慎重さを優先する。自明なタスクは判断で柔軟に対応してよい。
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+---
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+## 1. コーディング前に考える
 
-## 2. Simplicity First
+**思い込まない。混乱を隠さない。トレードオフを表面化する。**
 
-**Minimum code that solves the problem. Nothing speculative.**
+実装前に:
+- 前提を明示する。不確かなら聞く。
+- 複数の解釈がある場合は提示する — 黙って選ばない。
+- よりシンプルなアプローチがあれば伝える。必要なら反論する。
+- 不明点があれば止まる。何が分からないかを言語化して聞く。
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
+## 2. シンプルさを優先する
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+**問題を解く最小限のコード。投機的な実装はしない。**
 
-## 3. Surgical Changes
+- 依頼されていない機能を追加しない。
+- 一度しか使わないコードに抽象化を持ち込まない。
+- 依頼されていない「柔軟性」や「設定可能性」を加えない。
+- 起こりえないシナリオのエラーハンドリングを書かない。
+- 200行で書けて50行にできるなら書き直す。
 
-**Touch only what you must. Clean up only your own mess.**
+自問する:「シニアエンジニアはこれを過剰設計と言うか？」答えがYesならシンプルにする。
 
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
+## 3. 外科的な変更
 
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
+**必要な箇所だけ触る。自分が作った散らかしだけ片付ける。**
 
-The test: Every changed line should trace directly to the user's request.
+既存コードを編集するとき:
+- 隣接するコード・コメント・フォーマットを「改善」しない。
+- 壊れていないものをリファクタリングしない。
+- 自分なら違う書き方をするとしても、既存のスタイルに合わせる。
+- 無関係なデッドコードに気づいたら言及する — 削除しない。
 
-## 4. Goal-Driven Execution
+自分の変更によって不要になったものは:
+- 自分の変更が生み出した未使用の import / 変数 / 関数は削除する。
+- 既存のデッドコードは依頼されない限り削除しない。
 
-**Define success criteria. Loop until verified.**
+テスト: 変更された全行がユーザーの依頼に直接トレースできること。
 
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
+## 4. ゴール駆動の実行
 
-For multi-step tasks, state a brief plan:
+**成功基準を定義する。検証できるまでループする。**
+
+タスクを検証可能なゴールに変換する:
+- 「バリデーションを追加して」→「無効な入力のテストを書き、それを通す」
+- 「バグを直して」→「再現するテストを書き、それを通す」
+- 「Xをリファクタリングして」→「前後でテストが通ることを確認する」
+
+複数ステップのタスクでは簡潔なプランを示す:
 ```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
+1. [ステップ] → 確認: [チェック内容]
+2. [ステップ] → 確認: [チェック内容]
+3. [ステップ] → 確認: [チェック内容]
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+強い成功基準があれば自律的にループできる。「うまく動かせて」のような弱い基準は常に確認を必要とする。
