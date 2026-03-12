@@ -112,7 +112,8 @@ Get-MgTeamChannel -TeamId "<team-id>" | Select-Object DisplayName, Id
 | エラー | 対処 |
 |--------|------|
 | `Insufficient privileges` | Azure AD 管理者に `ChannelMessage.Send` 権限付与を依頼 |
-| `Team not found` | チーム名のスペル・大文字小文字を確認、またはIDで指定 |
+| `チームに一致する候補が見つかりません` | 別のキーワードで再試行するか `-TeamId` で GUID を直接指定 |
+| `チャンネルに一致する候補が見つかりません` | 別のキーワードで再試行するか `-ChannelId` で ID を直接指定 |
 | `Connect-MgGraph not found` | `Install-Module Microsoft.Graph -Scope CurrentUser` を実行 |
 | 認証ループ | `Disconnect-MgGraph` 後に再接続 |
 

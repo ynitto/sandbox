@@ -84,6 +84,64 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# --- 曖昧検索 + 確認ヘルパー ---
+# 追加スコープ不要。Team.ReadBasic.All / Channel.ReadBasic.All のみ使用。
+function Select-FromMatches {
+    param(
+        [string]$Query,
+        [object[]]$Candidates,
+        [string]$Label  # 表示用ラベル（例: "チーム" / "チャンネル"）
+    )
+
+    $lower = $Query.ToLower()
+
+    # スコアリング: 完全一致(大小無視)=3 / 前方一致=2 / 部分一致=1 / 不一致=0
+    $scored = $Candidates | ForEach-Object {
+        $dn    = $_.DisplayName
+        $score = if ($dn.ToLower() -eq $lower)           { 3 }
+                 elseif ($dn.ToLower().StartsWith($lower)) { 2 }
+                 elseif ($dn.ToLower().Contains($lower))   { 1 }
+                 else                                      { 0 }
+        [PSCustomObject]@{ Item = $_; Score = $score }
+    } | Where-Object { $_.Score -gt 0 } | Sort-Object -Property Score -Descending
+
+    if ($scored.Count -eq 0) {
+        throw "${Label} '$Query' に一致する候補が見つかりません。スペルを確認するか -${Label}Id で ID を直接指定してください。"
+    }
+
+    $hits = @($scored | Select-Object -ExpandProperty Item)
+
+    if ($hits.Count -eq 1) {
+        Write-Host "${Label}候補: 「$($hits[0].DisplayName)」" -ForegroundColor Cyan
+        $ans = ''
+        while ($ans -notin @('y', 'n')) {
+            $ans = (Read-Host "この${Label}に投稿しますか？ [y/n]").Trim().ToLower()
+        }
+        if ($ans -ne 'y') {
+            throw "キャンセルされました。-${Label}Name を修正するか -${Label}Id で指定してください。"
+        }
+        return $hits[0]
+    }
+
+    # 複数候補 → 番号選択
+    Write-Host "'$Query' に一致する${Label}が複数見つかりました:" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $hits.Count; $i++) {
+        Write-Host ("  [{0}] {1}" -f ($i + 1), $hits[$i].DisplayName) -ForegroundColor White
+    }
+    $choice = $null
+    while ($null -eq $choice) {
+        $raw = (Read-Host "番号を選択してください [1-$($hits.Count)]").Trim()
+        if ($raw -match '^\d+$') {
+            $n = [int]$raw
+            if ($n -ge 1 -and $n -le $hits.Count) { $choice = $n }
+        }
+        if ($null -eq $choice) {
+            Write-Host "  1 から $($hits.Count) の数字を入力してください。" -ForegroundColor Yellow
+        }
+    }
+    return $hits[$choice - 1]
+}
+
 # --- 認証 ---
 $requiredScopes = @('ChannelMessage.Send', 'Team.ReadBasic.All', 'Channel.ReadBasic.All')
 
@@ -95,20 +153,15 @@ if (-not $context) {
 
 # --- チーム / チャンネル ID 解決 + DisplayName 取得 ---
 if ($PSCmdlet.ParameterSetName -eq 'ByName') {
-    Write-Verbose "チーム '$TeamName' を検索中..."
-    $team = Get-MgJoinedTeam -All | Where-Object { $_.DisplayName -eq $TeamName } | Select-Object -First 1
-    if (-not $team) {
-        throw "チーム '$TeamName' が見つかりません。チーム名を確認するか -TeamId で指定してください。"
-    }
+    Write-Host "チーム '$TeamName' を検索中..." -ForegroundColor DarkGray
+    $allTeams = Get-MgJoinedTeam -All
+    $team = Select-FromMatches -Query $TeamName -Candidates $allTeams -Label 'チーム'
     $TeamId = $team.Id
     $teamDisplayName = $team.DisplayName
 
-    Write-Verbose "チャンネル '$ChannelName' を検索中..."
-    $channel = Get-MgTeamChannel -TeamId $TeamId -All |
-        Where-Object { $_.DisplayName -eq $ChannelName } | Select-Object -First 1
-    if (-not $channel) {
-        throw "チャンネル '$ChannelName' が見つかりません。チャンネル名を確認するか -ChannelId で指定してください。"
-    }
+    Write-Host "チャンネル '$ChannelName' を検索中..." -ForegroundColor DarkGray
+    $allChannels = Get-MgTeamChannel -TeamId $TeamId -All
+    $channel = Select-FromMatches -Query $ChannelName -Candidates $allChannels -Label 'チャンネル'
     $ChannelId = $channel.Id
     $channelDisplayName = $channel.DisplayName
     $channelMembershipType = if ($channel.MembershipType) { $channel.MembershipType } else { 'standard' }
