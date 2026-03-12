@@ -31,15 +31,17 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = SCRIPT_DIR  # install.py はリポジトリルートに配置
 REPO_SKILLS_DIR = os.path.join(REPO_ROOT, ".github", "skills")
 REPO_AGENTS_DIR = os.path.join(REPO_ROOT, ".github", "agents")
+REPO_INSTRUCTIONS_DIR = os.path.join(REPO_ROOT, "instructions")
 
 # registry.py のヘルパーでユーザーホームパスを解決（一元管理）
 _SCRIPTS_DIR = os.path.join(REPO_SKILLS_DIR, "git-skill-manager", "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from registry import _skill_home, _agents_home, _cache_dir as _registry_cache_dir
+from registry import _skill_home, _agents_home, _instructions_home, _cache_dir as _registry_cache_dir
 
 SKILL_HOME = _skill_home()
 AGENTS_HOME = _agents_home()
+INSTRUCTIONS_HOME = _instructions_home()
 CACHE_DIR = _registry_cache_dir()
 REGISTRY_PATH = os.path.join(os.path.dirname(SKILL_HOME), "skill-registry.json")
 
@@ -195,6 +197,24 @@ def copy_agents() -> int:
     return count
 
 
+def copy_instructions() -> int:
+    """instructions/ ディレクトリをユーザーホームにコピーする。"""
+    if not os.path.isdir(REPO_INSTRUCTIONS_DIR):
+        return 0
+    os.makedirs(INSTRUCTIONS_HOME, exist_ok=True)
+    count = 0
+    for fname in os.listdir(REPO_INSTRUCTIONS_DIR):
+        if not fname.endswith(".md"):
+            continue
+        src = os.path.join(REPO_INSTRUCTIONS_DIR, fname)
+        dest = os.path.join(INSTRUCTIONS_HOME, fname)
+        if os.path.isfile(src):
+            shutil.copy2(src, dest)
+            print(f"   + {fname}")
+            count += 1
+    return count
+
+
 def copy_copilot_instructions() -> bool:
     """copilot-instructions.md をユーザーホームにコピーする。"""
     src = os.path.join(REPO_ROOT, ".github", "copilot-instructions.md")
@@ -240,8 +260,16 @@ def main() -> None:
     if agent_count == 0:
         print("   (agentsディレクトリが見つかりません、スキップ)")
 
-    # 5. copilot-instructions.md をコピー
-    print("\n5. copilot-instructions.md をコピー...")
+    # 5. instructions をコピー
+    print("\n5. instructions をコピー...")
+    instr_count = copy_instructions()
+    if instr_count == 0:
+        print("   (instructionsディレクトリが見つかりません、スキップ)")
+    else:
+        print(f"   {INSTRUCTIONS_HOME}")
+
+    # 6. copilot-instructions.md をコピー
+    print("\n6. copilot-instructions.md をコピー...")
     if not copy_copilot_instructions():
         print("   (ファイルが見つかりません、スキップ)")
 
@@ -249,8 +277,9 @@ def main() -> None:
     print("\n" + "=" * 50)
     print(f"インストール完了: {len(installed)} 件のコアスキル")
     print("=" * 50)
-    print(f"\nスキル:     {SKILL_HOME}")
-    print(f"レジストリ: {REGISTRY_PATH}")
+    print(f"\nスキル:        {SKILL_HOME}")
+    print(f"instructions: {INSTRUCTIONS_HOME}")
+    print(f"レジストリ:   {REGISTRY_PATH}")
     print(f"\n次のステップ:")
     print(f'  - 「スキルをpullして」で最新スキルを取得')
     print(f'  - 「スクラムして」でscrum-masterを起動')

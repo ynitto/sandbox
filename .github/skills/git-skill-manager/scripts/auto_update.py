@@ -204,6 +204,16 @@ def run_auto_update(force: bool = False) -> None:
                 print(f"   📦 {u['name']} ({u['_cur_label']} → {u['_new_label']}, {u['_bump']}アップデート)")
             print("   💡 更新するには「スキルをpullして」と指示してください")
 
+    # instructions を自動同期
+    if not notify_only:
+        try:
+            from sync_instructions import sync_instructions
+            changed = sync_instructions(force=force)
+            if changed:
+                print(f"\n📄 instructions: {changed} ファイルを更新しました")
+        except Exception as e:
+            print(f"\n⚠️  instructions 同期をスキップしました: {e}")
+
 
 def configure_auto_update(
     enabled: bool | None = None,
