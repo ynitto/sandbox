@@ -155,9 +155,9 @@ Conventional Commits を使用: `feat:`, `fix:`, `docs:`, `chore:`
 
 ## プラットフォーム互換性
 
-### Windows（Claude Code for Windows）
+### Windows
 
-Claude Code on Windows は PowerShell で動作するため、以下の点に注意すること。
+Windows では PowerShell でコマンドを実行するため、以下の点に注意すること。
 
 #### シェル変数構文の差異
 

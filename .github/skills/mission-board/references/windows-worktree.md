@@ -5,7 +5,7 @@ git worktree は Git for Windows でそのまま動作する。以下に PowerSh
 ## 前提条件
 
 - Git for Windows がインストール済みであること（`git --version` で確認）
-- Claude Code が PowerShell で動作していること
+- PowerShell でコマンドを実行できること
 
 ---
 
