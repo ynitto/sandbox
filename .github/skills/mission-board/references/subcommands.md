@@ -18,11 +18,23 @@
 
 以下の変数を全手順で使用する。
 
+**Linux / macOS（sh/bash）:**
+
 ```sh
 MISSIONS_BRANCH=missions
 WORKTREE_PATH=.worktrees/missions
 SKILL_DIR=.github/skills/mission-board
 ```
+
+**Windows（PowerShell）:**
+
+```powershell
+$MISSIONS_BRANCH = "missions"
+$WORKTREE_PATH = ".worktrees/missions"
+$SKILL_DIR = ".github/skills/mission-board"
+```
+
+> **Note**: Windows cmd では `%MISSIONS_BRANCH%` 形式の変数参照になるが、Claude Code on Windows は PowerShell を使用するため PowerShell 構文を優先する。
 
 ## Worktree Setup — ミッションボード worktree のセットアップ（MANDATORY）
 
