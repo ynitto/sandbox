@@ -45,10 +45,22 @@ mission-board <サブコマンド> [引数]
 
 ミッションデータは専用ブランチ（`missions`）を git worktree で管理する。メインブランチは汚さない。
 
-### スキルディレクトリ（メインブランチ）
+### スキルディレクトリ（メインブランチ または ユーザーホーム）
+
+スキルは以下のいずれかの場所に配置できる。起動時に上から順に検索し、最初に見つかった場所を `SKILL_DIR` として使用する。
 
 ```
+# ワークスペース優先（リポジトリ固有のカスタマイズ向け）
 .github/skills/mission-board/
+
+# ユーザーホームフォールバック（全リポジトリ共通設定向け）
+~/.copilot/skills/mission-board/
+```
+
+どちらのディレクトリも同じ構造を持つ:
+
+```
+<SKILL_DIR>/
 ├── SKILL.md
 ├── templates/                   # 新規ミッション用テンプレート
 │   ├── GOAL.md
@@ -149,7 +161,7 @@ Conventional Commits を使用: `feat:`, `fix:`, `docs:`, `chore:`
 ## Permissions
 
 - **Allowed**: `.worktrees/missions/` 配下のファイルの読み書き、worktree 内の GOAL.md / registry.md の更新、worktree 内での git add/commit/push、worktree のセットアップ（`git worktree add`）、troubleshoot 時のシステム調査・サービス操作、status フィールドの更新、PLAN.md の更新
-- **Denied**: ユーザー確認なきファイル削除・アーカイブ、ミッション無関係な設定変更、`.github/` 配下の編集（ユーザーが明示的に依頼した場合を除く）、メインブランチへの missions データのコミット
+- **Denied**: ユーザー確認なきファイル削除・アーカイブ、ミッション無関係な設定変更、`.github/` および `~/.copilot/` 配下のスキルファイルの編集（ユーザーが明示的に依頼した場合を除く）、メインブランチへの missions データのコミット
 
 ---
 
@@ -177,7 +189,14 @@ PowerShell では `$VAR` 形式の変数参照は動作する。ただし `VAR=v
 ```powershell
 $MISSIONS_BRANCH = "missions"
 $WORKTREE_PATH = ".worktrees/missions"
-$SKILL_DIR = ".github/skills/mission-board"
+# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.copilot/ を使用
+if (Test-Path ".github/skills/mission-board") {
+  $SKILL_DIR = ".github/skills/mission-board"
+} elseif (Test-Path "$env:USERPROFILE/.copilot/skills/mission-board") {
+  $SKILL_DIR = "$env:USERPROFILE/.copilot/skills/mission-board"
+} else {
+  $SKILL_DIR = ".github/skills/mission-board"
+}
 ```
 
 #### パス区切り文字

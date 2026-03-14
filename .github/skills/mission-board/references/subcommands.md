@@ -23,7 +23,14 @@
 ```sh
 MISSIONS_BRANCH=missions
 WORKTREE_PATH=.worktrees/missions
-SKILL_DIR=.github/skills/mission-board
+# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.copilot/ を使用
+if [ -d ".github/skills/mission-board" ]; then
+  SKILL_DIR=".github/skills/mission-board"
+elif [ -d "$HOME/.copilot/skills/mission-board" ]; then
+  SKILL_DIR="$HOME/.copilot/skills/mission-board"
+else
+  SKILL_DIR=".github/skills/mission-board"
+fi
 ```
 
 **Windows（PowerShell）:**
@@ -31,7 +38,14 @@ SKILL_DIR=.github/skills/mission-board
 ```powershell
 $MISSIONS_BRANCH = "missions"
 $WORKTREE_PATH = ".worktrees/missions"
-$SKILL_DIR = ".github/skills/mission-board"
+# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.copilot/ を使用
+if (Test-Path ".github/skills/mission-board") {
+  $SKILL_DIR = ".github/skills/mission-board"
+} elseif (Test-Path "$env:USERPROFILE/.copilot/skills/mission-board") {
+  $SKILL_DIR = "$env:USERPROFILE/.copilot/skills/mission-board"
+} else {
+  $SKILL_DIR = ".github/skills/mission-board"
+}
 ```
 
 > **Note**: Windows cmd では `%MISSIONS_BRANCH%` 形式の変数参照になるが、Claude Code on Windows は PowerShell を使用するため PowerShell 構文を優先する。
