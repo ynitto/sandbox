@@ -27,17 +27,11 @@ import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
-from registry import load_registry, save_registry, _skill_home
+from registry import load_registry, save_registry, _skill_home, _agent_skills_home, _registry_path
 
 
 def _snapshots_dir() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "snapshots")
-
-
-def _registry_path() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skill-registry.json")
+    return os.path.join(_agent_skills_home(), "snapshots")
 
 
 def save_snapshot(label: str = "", max_keep: int = 10) -> str:

@@ -768,14 +768,23 @@ def print_results(results: list[dict]) -> int:
     return total_errors
 
 
+def _agent_skills_home() -> str:
+    if "AGENT_SKILLS_HOME" in os.environ:
+        return os.environ["AGENT_SKILLS_HOME"]
+    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    legacy = os.path.join(home, ".copilot")
+    if os.path.isdir(legacy):
+        return legacy
+    return os.path.join(home, ".agent-skills")
+
+
 def main() -> None:
     def default_skills_base() -> str:
         here = os.path.dirname(os.path.abspath(__file__))
         local_skills = os.path.normpath(os.path.join(here, "..", ".."))
         if os.path.isdir(local_skills):
             return local_skills
-        home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-        return os.path.join(home, ".copilot", "skills")
+        return os.path.join(_agent_skills_home(), "skills")
 
     parser = argparse.ArgumentParser(description="スキルの静的品質チェック")
     parser.add_argument("--skill", help="特定スキルのみチェック（スキル名）")
@@ -791,8 +800,7 @@ def main() -> None:
     if args.skill:
         skill_dir = os.path.join(args.path, args.skill)
         if not os.path.isdir(skill_dir):
-            home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-            skill_dir = os.path.join(home, ".copilot", "skills", args.skill)
+            skill_dir = os.path.join(_agent_skills_home(), "skills", args.skill)
             if not os.path.isdir(skill_dir):
                 print(f"[ERROR] スキル '{args.skill}' が見つかりません")
                 sys.exit(1)

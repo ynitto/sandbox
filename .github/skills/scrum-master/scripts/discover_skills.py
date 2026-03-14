@@ -176,8 +176,13 @@ def _default_skills_dir() -> str:
     if os.path.isdir(local_skills):
         return local_skills
 
+    if "AGENT_SKILLS_HOME" in os.environ:
+        return os.path.join(os.environ["AGENT_SKILLS_HOME"], "skills")
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skills")
+    legacy = os.path.join(home, ".copilot", "skills")
+    if os.path.isdir(legacy):
+        return legacy
+    return os.path.join(home, ".agent-skills", "skills")
 
 
 def main() -> None:

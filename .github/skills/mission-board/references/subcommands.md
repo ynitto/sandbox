@@ -24,11 +24,11 @@
 ```sh
 MISSIONS_BRANCH=missions
 WORKTREE_PATH=.worktrees/missions
-# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.copilot/ を使用
+# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.agent-skills/ を使用
 if [ -d ".github/skills/mission-board" ]; then
   SKILL_DIR=".github/skills/mission-board"
-elif [ -d "$HOME/.copilot/skills/mission-board" ]; then
-  SKILL_DIR="$HOME/.copilot/skills/mission-board"
+elif [ -d "$HOME/.agent-skills/skills/mission-board" ]; then
+  SKILL_DIR="$HOME/.agent-skills/skills/mission-board"
 else
   SKILL_DIR=".github/skills/mission-board"
 fi
@@ -39,11 +39,11 @@ fi
 ```powershell
 $MISSIONS_BRANCH = "missions"
 $WORKTREE_PATH = ".worktrees/missions"
-# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.copilot/ を使用
+# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.agent-skills/ を使用
 if (Test-Path ".github/skills/mission-board") {
   $SKILL_DIR = ".github/skills/mission-board"
-} elseif (Test-Path "$env:USERPROFILE/.copilot/skills/mission-board") {
-  $SKILL_DIR = "$env:USERPROFILE/.copilot/skills/mission-board"
+} elseif (Test-Path "$env:USERPROFILE/.agent-skills/skills/mission-board") {
+  $SKILL_DIR = "$env:USERPROFILE/.agent-skills/skills/mission-board"
 } else {
   $SKILL_DIR = ".github/skills/mission-board"
 }

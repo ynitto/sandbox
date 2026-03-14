@@ -1,6 +1,6 @@
 # レジストリスキーマ
 
-パス: `~/.copilot/skill-registry.json`（Windows: `%USERPROFILE%\.copilot\skill-registry.json`）
+パス: `~/.agent-skills/skill-registry.json`（Windows: `%USERPROFILE%\.agent-skills\skill-registry.json`）
 
 ## 目次
 

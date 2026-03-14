@@ -36,7 +36,7 @@ metadata:
 ベストプラクティスガイドラインに基づいてスキルの静的品質を検査する。
 使用履歴の動的評価（`evaluate.py`）と組み合わせて使う。
 
-`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
+`<SKILLS_BASE>` は `~/.agent-skills/skills` または `<workspace-skill-dir>` を指す。
 
 ```bash
 # ワークスペーススキルを全チェック
@@ -169,7 +169,7 @@ refine を提案・実施する際は以下を参考にする:
 
 フィードバック評価の前に必ず静的品質チェックを実行して構造的な問題を事前に把握する。
 
-`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
+`<SKILLS_BASE>` は `~/.agent-skills/skills` または `<workspace-skill-dir>` を指す。
 
 ```bash
 python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py
@@ -221,7 +221,7 @@ python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <skill-name>
 **ワークスペーススキルに昇格推奨がある場合:**
 ```
 「my-skill を昇格しますか？
- 昇格すると ~/.copilot/skills/ にコピーされ、他のプロジェクトでも使えるようになります。
+ 昇格すると ~/.agent-skills/skills/ にコピーされ、他のプロジェクトでも使えるようになります。
  1. 昇格する（git-skill-manager promote）
  2. もう少し試用する
  3. スキップ」

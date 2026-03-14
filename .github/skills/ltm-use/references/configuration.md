@@ -9,7 +9,7 @@
 
 ---
 
-## git リポジトリ設定（`~/.copilot/skill-registry.json`）
+## git リポジトリ設定（`~/.agent-skills/skill-registry.json`）
 
 git-skill-manager と共通のリポジトリ設定を使用する。
 
@@ -56,10 +56,10 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ### ローカルディレクトリ
 
-各リポジトリは `~/.copilot/memory/shared/<name>/` にクローンされる。
+各リポジトリは `~/.agent-skills/memory/shared/<name>/` にクローンされる。
 
 ```
-~/.copilot/memory/shared/
+~/.agent-skills/memory/shared/
 ├── origin/
 │   └── memories/           ← memory_root
 │       ├── auth/
@@ -70,7 +70,7 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ---
 
-## メモリー設定（`~/.copilot/memory/config.json`）
+## メモリー設定（`~/.agent-skills/memory/config.json`）
 
 ### 設定例
 
@@ -141,7 +141,7 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ## デフォルト動作（設定ファイル未作成時）
 
-`~/.copilot/memory/config.json` が存在しない場合、以下のデフォルト値で動作する:
+`~/.agent-skills/memory/config.json` が存在しない場合、以下のデフォルト値で動作する:
 
 ```json
 {
@@ -178,14 +178,14 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 ### パス表記
 
 - `~` は `%USERPROFILE%` に読み替える
-- 例: `~/.copilot/memory/` → `%USERPROFILE%\.copilot\memory\`
+- 例: `~/.agent-skills/memory/` → `%USERPROFILE%\.agent-skills\memory\`
 
 ### 設定ファイル配置場所
 
 | ファイル | パス |
 |---------|------|
-| `config.json` | `%USERPROFILE%\.copilot\memory\config.json` |
-| `skill-registry.json` | `%USERPROFILE%\.copilot\skill-registry.json` |
+| `config.json` | `%USERPROFILE%\.agent-skills\memory\config.json` |
+| `skill-registry.json` | `%USERPROFILE%\.agent-skills\skill-registry.json` |
 
 ### Git 設定
 

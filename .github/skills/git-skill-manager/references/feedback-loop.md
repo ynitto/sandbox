@@ -95,7 +95,7 @@ python <SKILLS_BASE>/git-skill-manager/scripts/record_feedback.py <skill-name> -
 
 ### 処理フロー
 
-→ 実装: `<SKILLS_BASE>/skill-evaluator/scripts/evaluate.py`（skill-evaluator スキルが管理、`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>`）
+→ 実装: `<SKILLS_BASE>/skill-evaluator/scripts/evaluate.py`（skill-evaluator スキルが管理、`<SKILLS_BASE>` は `~/.agent-skills/skills` または `<workspace-skill-dir>`）
 
 1. `skill-evaluator` サブエージェントを起動する:
    ```

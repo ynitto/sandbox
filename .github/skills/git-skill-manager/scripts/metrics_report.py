@@ -29,13 +29,9 @@ from metrics_collector import (  # noqa: E402
 )
 
 
-def _copilot_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot")
-
-
 def _registry_path() -> str:
-    return os.path.join(_copilot_home(), "skill-registry.json")
+    from metrics_collector import _agent_skills_home
+    return os.path.join(_agent_skills_home(), "skill-registry.json")
 
 
 def _load_registry() -> dict:

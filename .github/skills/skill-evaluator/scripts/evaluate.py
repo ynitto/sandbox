@@ -17,9 +17,18 @@ import os
 import sys
 
 
-def _registry_path() -> str:
+def _agent_skills_home() -> str:
+    if "AGENT_SKILLS_HOME" in os.environ:
+        return os.environ["AGENT_SKILLS_HOME"]
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skill-registry.json")
+    legacy = os.path.join(home, ".copilot")
+    if os.path.isdir(legacy):
+        return legacy
+    return os.path.join(home, ".agent-skills")
+
+
+def _registry_path() -> str:
+    return os.path.join(_agent_skills_home(), "skill-registry.json")
 
 
 def load_registry() -> dict | None:

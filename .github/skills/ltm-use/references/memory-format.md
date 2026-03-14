@@ -27,8 +27,8 @@ git除外                   ローカル            git管理
 | スコープ | 保存先 | 用途 | git管理 |
 |---------|--------|------|---------|
 | `workspace` | `${SKILL_DIR}/memories/` | VSCodeワークスペース固有の知見 | **除外（.gitignore）** |
-| `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
-| `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理** |
+| `home` | `~/.agent-skills/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
+| `shared` | `~/.agent-skills/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理** |
 
 ---
 
@@ -163,7 +163,7 @@ share_score = clamp(base_score * importance_multiplier, 0, 100)
 | `importance == critical` | **削除対象外**（v5.0.0） | - |
 | `retention_score < 0.1` かつ `importance != critical/high` | 削除候補（v5.0.0） | - |
 
-設定は `~/.copilot/memory/config.json` で変更可能。
+設定は `~/.agent-skills/memory/config.json` で変更可能。
 
 ### v5.0.0 重要度による保持期間調整
 

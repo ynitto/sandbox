@@ -206,13 +206,13 @@ docx-jsで新規作成。[DOCX-JS.md](DOCX-JS.md) 参照。
 
 新規作成の場合、`init_skill.py`を実行する（**作業ディレクトリのルートから実行すること**）:
 
-`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
+`<SKILLS_BASE>` は `~/.agent-skills/skills` または `<workspace-skill-dir>` を指す。
 
 ```bash
 python <SKILLS_BASE>/skill-creator/scripts/init_skill.py <skill-name> --path <SKILLS_BASE>
 ```
 
-`--path` には出力先ディレクトリを指定する。省略した場合はカレントディレクトリに生成される。標準的な配置先は `~/.copilot/skills` または `<workspace-skill-dir>`。
+`--path` には出力先ディレクトリを指定する。省略した場合はカレントディレクトリに生成される。標準的な配置先は `~/.agent-skills/skills` または `<workspace-skill-dir>`。
 
 スクリプトは以下を生成する:
 - スキルディレクトリ

@@ -10,19 +10,35 @@ import os
 import re
 
 
-def _registry_path() -> str:
+def _agent_skills_home() -> str:
+    """AGENT_SKILLS_HOME 環境変数を返す。未設定なら ~/.agent-skills を使用。
+
+    エージェント別のデフォルトディレクトリ（環境変数で上書き可能）:
+        claude   → ~/.claude
+        codex    → ~/.codex
+        copilot  → ~/.copilot  (後方互換)
+        kiro     → ~/.kiro
+    """
+    if "AGENT_SKILLS_HOME" in os.environ:
+        return os.environ["AGENT_SKILLS_HOME"]
+    # 後方互換: ~/.copilot が存在すればそちらを優先
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skill-registry.json")
+    legacy = os.path.join(home, ".copilot")
+    if os.path.isdir(legacy):
+        return legacy
+    return os.path.join(home, ".agent-skills")
+
+
+def _registry_path() -> str:
+    return os.path.join(_agent_skills_home(), "skill-registry.json")
 
 
 def _skill_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skills")
+    return os.path.join(_agent_skills_home(), "skills")
 
 
 def _cache_dir() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "cache")
+    return os.path.join(_agent_skills_home(), "cache")
 
 
 def _version_tuple(v: str | None) -> tuple:

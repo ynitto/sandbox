@@ -5,14 +5,14 @@
 ```
 ローカル（Windows）
 ─────────────────────────────────────────
-  %USERPROFILE%\.copilot\skills\          ← スキルインストール先
+  %USERPROFILE%\.agent-skills\skills\          ← スキルインストール先
     ├── skill-a\SKILL.md
     ├── skill-b\SKILL.md  (enabled)
     └── skill-c\SKILL.md  (disabled → メタデータ非ロード)
 
-  %USERPROFILE%\.copilot\skill-registry.json  ← レジストリ
+  %USERPROFILE%\.agent-skills\skill-registry.json  ← レジストリ
 
-  %USERPROFILE%\.copilot\cache\           ← リポジトリキャッシュ（永続）
+  %USERPROFILE%\.agent-skills\cache\           ← リポジトリキャッシュ（永続）
     ├── team-skills\                      ← 初回clone、以降はfetch
     └── personal\
 ─────────────────────────────────────────

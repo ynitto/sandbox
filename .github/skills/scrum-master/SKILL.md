@@ -75,12 +75,12 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 
 | このSKILL.mdのパス | SKILL_DIR | SKILLS_DIR |
 |---|---|---|
-| `~/.copilot/skills/scrum-master/SKILL.md` | `~/.copilot/skills/scrum-master` | `~/.copilot/skills` |
+| `~/.agent-skills/skills/scrum-master/SKILL.md` | `~/.agent-skills/skills/scrum-master` | `~/.agent-skills/skills` |
 | `.github/skills/scrum-master/SKILL.md` | `.github/skills/scrum-master` | `.github/skills` |
 
 - スクリプトは `${SKILL_DIR}/scripts/` から実行する
 - 他スキルのSKILL.mdは `${SKILLS_DIR}/[skill-name]/SKILL.md` で解決する
-- 該当スキルが `SKILLS_DIR` に存在しない場合は、もう一方の場所（`~/.copilot/skills/` または `.github/skills/`）を確認する
+- 該当スキルが `SKILLS_DIR` に存在しない場合は、もう一方の場所（`~/.agent-skills/skills/` または `.github/skills/`）を確認する
 
 ---
 
@@ -145,7 +145,7 @@ plan.json のスキーマ詳細 → [references/plan-schema.md](references/plan-
 
 ```bash
 python ${LTM}/recall_memory.py "[タスクキーワード]"
-# 0件なら ~/.copilot/memory/home/ → ~/.copilot/memory/shared/ を自動検索
+# 0件なら ~/.agent-skills/memory/home/ → ~/.agent-skills/memory/shared/ を自動検索
 ```
 
 - 0件 → 記憶なし、通常通り続行

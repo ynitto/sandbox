@@ -13,6 +13,7 @@ Windows/macOS 両対応。
 """
 
 import argparse
+import os
 import re
 import sys
 from collections import defaultdict
@@ -24,7 +25,11 @@ def find_skills_dirs() -> list[Path]:
     candidates = []
 
     # ユーザーホーム
-    home_skills = Path.home() / ".copilot" / "skills"
+    if "AGENT_SKILLS_HOME" in os.environ:
+        home_skills = Path(os.environ["AGENT_SKILLS_HOME"]) / "skills"
+    else:
+        legacy = Path.home() / ".copilot" / "skills"
+        home_skills = legacy if legacy.is_dir() else Path.home() / ".agent-skills" / "skills"
     if home_skills.is_dir():
         candidates.append(home_skills)
 

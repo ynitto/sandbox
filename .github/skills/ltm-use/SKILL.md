@@ -49,8 +49,8 @@ git除外                   ローカル永続              git管理
 | スコープ | 保存先 | 用途 | git管理 |
 |---------|--------|------|---------|
 | `workspace` | `${SKILL_DIR}/memories/` | VSCodeワークスペース固有の知見 | **除外(.gitignore)** |
-| `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
-| `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
+| `home` | `~/.agent-skills/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
+| `shared` | `~/.agent-skills/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
 
 > **Windows の場合**: `~` は `%USERPROFILE%` に読み替えてください。
 
@@ -200,7 +200,7 @@ python ${SKILL_DIR}/scripts/list_memories.py --stats            # 統計のみ
 `share_score >= 70` で昇格候補、`>= 85` で自動昇格対象。
 `recall` を繰り返すほど `share_score` が上がり、昇格対象になる。
 
-> **閾値の変更**: `~/.copilot/memory/config.json` の `semi_auto_promote_threshold`（デフォルト70）と
+> **閾値の変更**: `~/.agent-skills/memory/config.json` の `semi_auto_promote_threshold`（デフォルト70）と
 > `auto_promote_threshold`（デフォルト85）で調整可能。
 
 ```bash
@@ -332,7 +332,7 @@ python ${SKILL_DIR}/scripts/sync_memory.py --push
 
 ## 設定
 
-`~/.copilot/skill-registry.json`（git-skill-manager と共通）と `~/.copilot/memory/config.json` で動作をカスタマイズできる。
+`~/.agent-skills/skill-registry.json`（git-skill-manager と共通）と `~/.agent-skills/memory/config.json` で動作をカスタマイズできる。
 
 設定詳細: [`references/configuration.md`](references/configuration.md)
 

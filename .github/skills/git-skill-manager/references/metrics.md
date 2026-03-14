@@ -20,7 +20,7 @@
 record_feedback.py --duration --subagent-calls --co-skills
         │
         ▼
-~/.copilot/metrics-log.jsonl  ← 生イベント（JSONL 追記）
+~/.agent-skills/metrics-log.jsonl  ← 生イベント（JSONL 追記）
         │
         ▼  metrics_collector.py
 registry.json .metrics        ← サマリ（インクリメンタル + バッチ更新）

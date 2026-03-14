@@ -23,7 +23,7 @@ metadata:
 
 | このSKILL.mdのパス | SKILL_DIR | SKILLS_DIR |
 |---|---|---|
-| `~/.copilot/skills/skill-selector/SKILL.md` | `~/.copilot/skills/skill-selector` | `~/.copilot/skills` |
+| `~/.agent-skills/skills/skill-selector/SKILL.md` | `~/.agent-skills/skills/skill-selector` | `~/.agent-skills/skills` |
 | `.github/skills/skill-selector/SKILL.md` | `.github/skills/skill-selector` | `.github/skills` |
 
 スキルが両方の場所に存在する場合、ワークスペース側（`.github/skills/`）を優先する。
@@ -49,7 +49,7 @@ metadata:
 python <SKILL_DIR>/scripts/discover_skills.py
 ```
 
-このスクリプトは `~/.copilot/skills/` と `.github/skills/` の両方を走査し、各スキルの `name`・`description`・`category`・`tags`・`tier` を出力する。**Windows・macOS 両対応**。新しいスキルが追加されても自動的に検出される。
+このスクリプトは `~/.agent-skills/skills/` と `.github/skills/` の両方を走査し、各スキルの `name`・`description`・`category`・`tags`・`tier` を出力する。**Windows・macOS 両対応**。新しいスキルが追加されても自動的に検出される。
 
 スクリプトが実行できない環境では、スキルリストを直接 `<SKILLS_DIR>/` のディレクトリ一覧から確認する。
 

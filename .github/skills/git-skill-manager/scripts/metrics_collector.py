@@ -36,17 +36,22 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 
 
-def _copilot_home() -> str:
+def _agent_skills_home() -> str:
+    if "AGENT_SKILLS_HOME" in os.environ:
+        return os.environ["AGENT_SKILLS_HOME"]
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot")
+    legacy = os.path.join(home, ".copilot")
+    if os.path.isdir(legacy):
+        return legacy
+    return os.path.join(home, ".agent-skills")
 
 
 def _metrics_log_path() -> str:
-    return os.path.join(_copilot_home(), "metrics-log.jsonl")
+    return os.path.join(_agent_skills_home(), "metrics-log.jsonl")
 
 
 def _registry_path() -> str:
-    return os.path.join(_copilot_home(), "skill-registry.json")
+    return os.path.join(_agent_skills_home(), "skill-registry.json")
 
 
 # ───────────────────────────────────────────
