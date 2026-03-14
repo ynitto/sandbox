@@ -150,3 +150,48 @@ Conventional Commits を使用: `feat:`, `fix:`, `docs:`, `chore:`
 
 - **Allowed**: `.worktrees/missions/` 配下のファイルの読み書き、worktree 内の GOAL.md / registry.md の更新、worktree 内での git add/commit/push、worktree のセットアップ（`git worktree add`）、troubleshoot 時のシステム調査・サービス操作、status フィールドの更新、PLAN.md の更新
 - **Denied**: ユーザー確認なきファイル削除・アーカイブ、ミッション無関係な設定変更、`.github/` 配下の編集（ユーザーが明示的に依頼した場合を除く）、メインブランチへの missions データのコミット
+
+---
+
+## プラットフォーム互換性
+
+### Windows
+
+Windows では PowerShell でコマンドを実行するため、以下の点に注意すること。
+
+#### シェル変数構文の差異
+
+`references/subcommands.md` の変数定義は sh 構文で記載されているが、PowerShell では以下に読み替える:
+
+| sh（Linux/macOS） | PowerShell（Windows） |
+| ----------------- | --------------------- |
+| `VAR=value` | `$VAR = "value"` |
+| `git -C $WORKTREE_PATH <cmd>` | `git -C $WORKTREE_PATH <cmd>`（そのまま使用可） |
+| `cd $WORKTREE_PATH` | `cd $WORKTREE_PATH`（PowerShell では動作する） |
+| `git push origin $MISSIONS_BRANCH` | `git push origin $MISSIONS_BRANCH`（PowerShell では動作する） |
+
+PowerShell では `$VAR` 形式の変数参照は動作する。ただし `VAR=value` の代入構文（`$` なし）は動作しないため、コマンド実行前に変数を定義する。
+
+**PowerShell 版 変数定義例:**
+
+```powershell
+$MISSIONS_BRANCH = "missions"
+$WORKTREE_PATH = ".worktrees/missions"
+$SKILL_DIR = ".github/skills/mission-board"
+```
+
+#### パス区切り文字
+
+Git for Windows は `/` と `\` の両方を受け入れる。本ドキュメントの `/` 区切りパスはそのまま使用できる。
+
+#### `hostname` コマンド
+
+Windows でも `hostname` コマンドは動作する（cmd/PowerShell 両対応）。
+
+#### git worktree
+
+git worktree は Windows でも動作する。詳細は `references/windows-worktree.md` を参照。
+
+#### troubleshoot コマンド対応表
+
+`references/subcommands.md` の「調査深度の基準」および「典型パターン」テーブルに Windows/PowerShell 向けコマンドが記載済み。
