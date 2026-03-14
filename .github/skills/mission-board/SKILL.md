@@ -15,23 +15,80 @@ metadata:
 
 複数の PC 間でのミッション管理・メッセージの投稿・確認を Git リポジトリ経由で行う掲示板管理スキル。
 
-## Usage
+## 操作一覧
 
-```
-ミッションボード <サブコマンド> [引数]
-```
+| 操作 | トリガー例 |
+| ---- | ---------- |
+| **ミッション** | 「ミッションを作って」「〇〇のタスクを各PCに割り当てて」「複数端末でタスクを始めたい」 |
+| **作業** | 「担当タスクを実行して」「作業を始めて」「ボードのタスクをこなして」 |
+| **同期** | 「ボードを同期して」「最新のメッセージを取得して対応して」「ミッションを更新して」 |
+| **投稿** | 「ミッションにメッセージを送って」「ボードに投稿して」「PC-B に連絡して」 |
+| **確認** | 「ボードを確認して」「進捗を見せて」「未読メッセージを表示して」 |
+| **調査** | 「問題を調査して」「トラブルシューティングして」「エラーの原因を調べて」 |
+| **完了** | 「ミッションを完了して」「〇〇ミッションを閉じて」「ミッションを締めて」 |
 
-| サブコマンド | 説明 |
-| ------------ | ---- |
-| `ミッション <テーマ> [タスクリスト]` | タスクを参加端末に分散移譲。タスクリスト省略時はオプションで分解 |
-| `作業` | PLAN.md に基づいて自分担当のタスクを自律実行 |
-| `同期` | git pull → 新着チェック → 対応 → 返信 → push（一気通貫） |
-| `投稿` | ミッション内にメッセージを投稿 |
-| `確認` | ミッション一覧と進捗、未読メッセージを確認 |
-| `調査` | 新着確認 → 調査 → 結果投稿 → push |
-| `完了 <ミッション名>` | ミッション完了：SUMMARY.md 生成 → GOAL.md から除去 → push |
+---
 
-詳細な手順は [references/subcommands.md](references/subcommands.md) を参照。
+## ミッション
+
+タスクリストを受け取り、参加端末の capabilities に基づいて割り当てて移譲メッセージを投稿する。タスクリスト省略時はオプションでタスク分解を実施してから移譲に進む。
+
+- タスクリストあり → capabilities マッチング → 移譲メッセージ → 自端末タスク即実行
+- テーマのみ → ユーザーに分解要否を確認 → 上記へ
+
+→ 詳細: [references/subcommands.md — ミッション](references/subcommands.md)
+
+---
+
+## 作業
+
+PLAN.md を読み込み、自分担当かつ依存が解決済みのタスクを順に実行する。`@any` タスクは先着引き取り。実行結果をメッセージとして投稿し、ミッション完了条件を評価する。
+
+→ 詳細: [references/subcommands.md — 作業](references/subcommands.md)
+
+---
+
+## 同期
+
+git pull → 自分宛の未読メッセージ確認 → priority 順に対応 → 返信投稿 → push を一気通貫で実行する。新着なしの場合は `作業` に自動移行。
+
+- urgent / 調査依頼メッセージ → `deep-research` で RCA 調査（利用不可時は通常対応に fallback）
+- それ以外 → 通常の包括的対応
+
+→ 詳細: [references/subcommands.md — 同期](references/subcommands.md)
+
+---
+
+## 投稿
+
+指定したミッションの `messages/` に新しいメッセージを作成して push する。worktree のセットアップ・pull・Heartbeat を実行してから投稿する。
+
+→ 詳細: [references/subcommands.md — 投稿](references/subcommands.md)
+
+---
+
+## 確認
+
+アクティブミッションの一覧・タスク進捗・未読メッセージを表示する。**read-only**（Heartbeat・commit・push なし）。
+
+→ 詳細: [references/subcommands.md — 確認](references/subcommands.md)
+
+---
+
+## 調査
+
+新着メッセージに含まれる問題をレイヤー順に診断し、結果を投稿する。`deep-research` による事前調査を推奨（利用不可時は通常調査に fallback）。調査コマンドはプロジェクト固有に差し替え可能。
+
+→ 詳細: [references/subcommands.md — 調査](references/subcommands.md)
+→ 調査コマンド集: [references/troubleshoot-patterns.md](references/troubleshoot-patterns.md)
+
+---
+
+## 完了
+
+ミッションを完了扱いにする。未完了タスクがある場合はユーザーに確認してから SUMMARY.md を生成し、GOAL.md のアクティブリストから除去して push する。
+
+→ 詳細: [references/subcommands.md — 完了](references/subcommands.md)
 
 ---
 
