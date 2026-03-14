@@ -173,31 +173,7 @@ Windows では PowerShell でコマンドを実行するため、以下の点に
 
 #### シェル変数構文の差異
 
-`references/subcommands.md` の変数定義は sh 構文で記載されているが、PowerShell では以下に読み替える:
-
-| sh（Linux/macOS） | PowerShell（Windows） |
-| ----------------- | --------------------- |
-| `VAR=value` | `$VAR = "value"` |
-| `git -C $WORKTREE_PATH <cmd>` | `git -C $WORKTREE_PATH <cmd>`（そのまま使用可） |
-| `cd $WORKTREE_PATH` | `cd $WORKTREE_PATH`（PowerShell では動作する） |
-| `git push origin $MISSIONS_BRANCH` | `git push origin $MISSIONS_BRANCH`（PowerShell では動作する） |
-
-PowerShell では `$VAR` 形式の変数参照は動作する。ただし `VAR=value` の代入構文（`$` なし）は動作しないため、コマンド実行前に変数を定義する。
-
-**PowerShell 版 変数定義例:**
-
-```powershell
-$MISSIONS_BRANCH = "missions"
-$WORKTREE_PATH = ".worktrees/missions"
-# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.copilot/ を使用
-if (Test-Path ".github/skills/mission-board") {
-  $SKILL_DIR = ".github/skills/mission-board"
-} elseif (Test-Path "$env:USERPROFILE/.copilot/skills/mission-board") {
-  $SKILL_DIR = "$env:USERPROFILE/.copilot/skills/mission-board"
-} else {
-  $SKILL_DIR = ".github/skills/mission-board"
-}
-```
+`references/subcommands.md` の変数定義は sh/PowerShell 両対応で記載している。PowerShell では `VAR=value` の代入構文は動作しないため `$VAR = "value"` 形式を使用する。詳細は `references/subcommands.md` の「変数定義」セクションを参照。
 
 #### パス区切り文字
 
