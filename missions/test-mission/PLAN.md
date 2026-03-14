@@ -2,4 +2,4 @@
 
 | Task | Status | Assigned | Dependencies |
 | --- | --- | --- | --- |
-| task1 | pending | Mac | [] |
+| task1 | done | Mac | [] |

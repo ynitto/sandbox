@@ -6,13 +6,13 @@ This file is shown at the beginning of workflows.
 
 | Mission | Directory | Status | Summary |
 | --- | --- | --- | --- |
-| test-mission | missions/test-mission | active | Test mission |
+| (none) | - | - | - |
 
 ## Completed
 
 | Mission | Archive | Completed |
 | --- | --- | --- |
-| (none) | - | - |
+| test-mission | missions/test-mission | 2026-03-14 |
 
 ## How to use
 
