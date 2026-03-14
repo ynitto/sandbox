@@ -2,7 +2,7 @@
 name: scrum-master
 description: ユーザーのプロンプトをタスク分解し、サブエージェントにスキルを委譲してスプリント単位で実行するオーケストレーター。「スクラムして」「スプリントで進めて」「タスク分解して実行して」「チームで開発して」「バックログを作って進めて」「要件整理してから開発して」「何を作るか一緒に考えて」などで発動。
 metadata:
-  version: 1.4.0
+  version: 1.5.0
   tier: core
   category: orchestration
   tags:
@@ -107,6 +107,7 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 - スプリント総数: 最大5回
 
 plan.json のスキーマ詳細 → [references/plan-schema.md](references/plan-schema.md)
+
 
 **Phase 7 選択肢別の遷移先**:
 - 「次スプリント」→ スキル作成があった場合は Phase 1 → Phase 4、なければ直接 Phase 4

@@ -26,7 +26,13 @@
       "skill": "string|string[]|null (必須) 使用するスキル名。複数スキルを組み合わせる場合は配列で指定。汎用タスクはnull",
       "depends_on": ["string (任意) 先行タスクのIDリスト。デフォルト: []"],
       "status": "string (任意) pending|in_progress|completed|failed|skipped。デフォルト: pending",
-      "result": "string|null (任意) タスク完了時の結果サマリー"
+      "result": "string|null (任意) タスク完了時の結果サマリー",
+      "review_perspectives": "string[]|null (任意) このタスクに適用するレビュー観点のリスト。省略時はデフォルト（コード変更あり: ['functional', 'ai-antipattern', 'architecture'] / コード変更なし: ['functional']）。タスク特性に応じてカスタマイズ可能（例: セキュリティ重要タスクに 'security' を追加）",
+      "review_results": {
+        "functional": "string|null (任意) 機能レビューの結果サマリー",
+        "ai-antipattern": "string|null (任意) AIアンチパターンレビューの結果サマリー",
+        "architecture": "string|null (任意) アーキテクチャレビューの結果サマリー"
+      }
     }
   ],
   "sprints": [
@@ -131,6 +137,19 @@
 - 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "react-frontend-unit-tester"]`）
 - 配列指定の場合、サブエージェントは先頭スキルから順にSKILL.mdを読んで実行する
 - 汎用タスク（skill: null）は判断・調査・確認など、スキル不要な作業に限定する
+
+## レビュー観点のカスタマイズ
+
+> **TAKT 設計思想**: レビューの着眼点を分離し、独立した観点から並列にレビューすることで、単一レビューでは見逃しがちな品質問題を多角的に検出する。
+
+**デフォルトレビュー観点**:
+- コード変更あり: `["functional", "ai-antipattern", "architecture"]`（3並列）
+- コード変更なし（調査タスク）: `["functional"]`（1件のみ）
+
+**カスタマイズ例**:
+- セキュリティ重要タスク: `["functional", "ai-antipattern", "architecture", "security"]` ※security テンプレートは必要に応じて追加
+- 軽微な修正（typo修正など）: `["functional"]` で十分
+- `review_perspectives` を省略した場合はデフォルトが適用される
 
 ## requirements.json → plan.json 変換ルール
 
