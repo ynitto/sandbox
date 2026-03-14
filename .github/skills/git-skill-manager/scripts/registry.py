@@ -25,11 +25,6 @@ def _cache_dir() -> str:
     return os.path.join(home, ".copilot", "cache")
 
 
-def _agents_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "agents")
-
-
 def _version_tuple(v: str | None) -> tuple:
     """バージョン文字列を比較可能な 3 要素タプルに変換する。
 
