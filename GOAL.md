@@ -6,7 +6,7 @@ This file is shown at the beginning of workflows.
 
 | Mission | Directory | Status | Summary |
 | --- | --- | --- | --- |
-| (none) | - | - | - |
+| test-mission | missions/test-mission | active | Test mission |
 
 ## Completed
 

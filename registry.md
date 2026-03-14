@@ -8,6 +8,7 @@ This file tracks participating machines.
 | --- | --- | --- | --- | --- | --- | --- |
 | PC-A | A | 192.0.2.10 | orchestrator | windows,powershell | 2026-01-01T00:00 | active |
 | PC-B | B | 192.0.2.20 | worker | windows,powershell | 2026-01-01T00:00 | active |
+| Mac | Mac | - | worker | macos,zsh | 2026-03-14T12:00 | active |
 
 ## Notes
 
