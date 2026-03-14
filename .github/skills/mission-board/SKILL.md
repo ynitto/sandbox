@@ -1,6 +1,6 @@
 ---
 name: mission-board
-description: 複数PCの自律協調掲示板をGitリポジトリ経由で管理するスキル。「mission-board」「ミッションを作って」「work」「sync」「pull」「post」「check」「troubleshoot」などで発動する。複数マシン間のタスク分解・メッセージ投稿・進捗管理を一気通貫で行う。
+description: 複数PCへのタスク分散移譲をGitリポジトリ経由で管理するスキル。ミッション作成・タスク割り当て・作業実行・メッセージ同期・進捗確認・トラブル調査・ミッション完了に対応。タスク分解はオプション。「ミッションを作って」「タスクを各PCに割り当てて」「担当タスクを実行して」「ボードを同期して」「ミッションに投稿して」「ボードを確認して」「問題を調査して」「ミッションを完了して」などで発動。
 metadata:
   version: 2.0.0
   tier: experimental
@@ -15,22 +15,80 @@ metadata:
 
 複数の PC 間でのミッション管理・メッセージの投稿・確認を Git リポジトリ経由で行う掲示板管理スキル。
 
-## Usage
+## 操作一覧
 
-```
-mission-board <サブコマンド> [引数]
-```
+| 操作 | トリガー例 |
+| ---- | ---------- |
+| **ミッション** | 「ミッションを作って」「〇〇のタスクを各PCに割り当てて」「複数端末でタスクを始めたい」 |
+| **作業** | 「担当タスクを実行して」「作業を始めて」「ボードのタスクをこなして」 |
+| **同期** | 「ボードを同期して」「最新のメッセージを取得して対応して」「ミッションを更新して」 |
+| **投稿** | 「ミッションにメッセージを送って」「ボードに投稿して」「PC-B に連絡して」 |
+| **確認** | 「ボードを確認して」「進捗を見せて」「未読メッセージを表示して」 |
+| **調査** | 「問題を調査して」「トラブルシューティングして」「エラーの原因を調べて」 |
+| **完了** | 「ミッションを完了して」「〇〇ミッションを閉じて」「ミッションを締めて」 |
 
-| サブコマンド | 説明 |
-| ------------ | ---- |
-| `mission <テーマ>` | テーマからミッション（GOAL + PLAN + ディレクトリ）を生成 |
-| `work` | PLAN.md に基づいて自分担当のタスクを自律実行 |
-| `pull` / `sync` | git pull → 新着チェック → 対応 → 返信 → push（一気通貫） |
-| `post` | ミッション内にメッセージを投稿 |
-| `check` | ミッション一覧と進捗、未読メッセージを確認 |
-| `troubleshoot` | 新着確認 → 調査 → 結果投稿 → push |
+---
 
-詳細な手順は [references/subcommands.md](references/subcommands.md) を参照。
+## ミッション
+
+タスクリストを受け取り、参加端末の capabilities に基づいて割り当てて移譲メッセージを投稿する。タスクリスト省略時はオプションでタスク分解を実施してから移譲に進む。
+
+- タスクリストあり → capabilities マッチング → 移譲メッセージ → 自端末タスク即実行
+- テーマのみ → ユーザーに分解要否を確認 → 上記へ
+
+→ 詳細: [references/subcommands.md — ミッション](references/subcommands.md)
+
+---
+
+## 作業
+
+PLAN.md を読み込み、自分担当かつ依存が解決済みのタスクを順に実行する。`@any` タスクは先着引き取り。実行結果をメッセージとして投稿し、ミッション完了条件を評価する。
+
+→ 詳細: [references/subcommands.md — 作業](references/subcommands.md)
+
+---
+
+## 同期
+
+git pull → 自分宛の未読メッセージ確認 → priority 順に対応 → 返信投稿 → push を一気通貫で実行する。新着なしの場合は `作業` に自動移行。
+
+- urgent / 調査依頼メッセージ → `deep-research` で RCA 調査（利用不可時は通常対応に fallback）
+- それ以外 → 通常の包括的対応
+
+→ 詳細: [references/subcommands.md — 同期](references/subcommands.md)
+
+---
+
+## 投稿
+
+指定したミッションの `messages/` に新しいメッセージを作成して push する。worktree のセットアップ・pull・Heartbeat を実行してから投稿する。
+
+→ 詳細: [references/subcommands.md — 投稿](references/subcommands.md)
+
+---
+
+## 確認
+
+アクティブミッションの一覧・タスク進捗・未読メッセージを表示する。**read-only**（Heartbeat・commit・push なし）。
+
+→ 詳細: [references/subcommands.md — 確認](references/subcommands.md)
+
+---
+
+## 調査
+
+新着メッセージに含まれる問題をレイヤー順に診断し、結果を投稿する。`deep-research` による事前調査を推奨（利用不可時は通常調査に fallback）。調査コマンドはプロジェクト固有に差し替え可能。
+
+→ 詳細: [references/subcommands.md — 調査](references/subcommands.md)
+→ 調査コマンド集: [references/troubleshoot-patterns.md](references/troubleshoot-patterns.md)
+
+---
+
+## 完了
+
+ミッションを完了扱いにする。未完了タスクがある場合はユーザーに確認してから SUMMARY.md を生成し、GOAL.md のアクティブリストから除去して push する。
+
+→ 詳細: [references/subcommands.md — 完了](references/subcommands.md)
 
 ---
 
@@ -160,7 +218,7 @@ Conventional Commits を使用: `feat:`, `fix:`, `docs:`, `chore:`
 
 ## Permissions
 
-- **Allowed**: `.worktrees/missions/` 配下のファイルの読み書き、worktree 内の GOAL.md / registry.md の更新、worktree 内での git add/commit/push、worktree のセットアップ（`git worktree add`）、troubleshoot 時のシステム調査・サービス操作、status フィールドの更新、PLAN.md の更新
+- **Allowed**: `.worktrees/missions/` 配下のファイルの読み書き、worktree 内の GOAL.md / registry.md の更新、worktree 内での git add/commit/push、worktree のセットアップ（`git worktree add`）、`調査` 時のシステム調査・サービス操作、status フィールドの更新、PLAN.md の更新
 - **Denied**: ユーザー確認なきファイル削除・アーカイブ、ミッション無関係な設定変更、`.github/` および `~/.copilot/` 配下のスキルファイルの編集（ユーザーが明示的に依頼した場合を除く）、メインブランチへの missions データのコミット
 
 ---
@@ -173,31 +231,7 @@ Windows では PowerShell でコマンドを実行するため、以下の点に
 
 #### シェル変数構文の差異
 
-`references/subcommands.md` の変数定義は sh 構文で記載されているが、PowerShell では以下に読み替える:
-
-| sh（Linux/macOS） | PowerShell（Windows） |
-| ----------------- | --------------------- |
-| `VAR=value` | `$VAR = "value"` |
-| `git -C $WORKTREE_PATH <cmd>` | `git -C $WORKTREE_PATH <cmd>`（そのまま使用可） |
-| `cd $WORKTREE_PATH` | `cd $WORKTREE_PATH`（PowerShell では動作する） |
-| `git push origin $MISSIONS_BRANCH` | `git push origin $MISSIONS_BRANCH`（PowerShell では動作する） |
-
-PowerShell では `$VAR` 形式の変数参照は動作する。ただし `VAR=value` の代入構文（`$` なし）は動作しないため、コマンド実行前に変数を定義する。
-
-**PowerShell 版 変数定義例:**
-
-```powershell
-$MISSIONS_BRANCH = "missions"
-$WORKTREE_PATH = ".worktrees/missions"
-# SKILL_DIR: ワークスペースの .github/ を優先し、なければユーザーホームの ~/.copilot/ を使用
-if (Test-Path ".github/skills/mission-board") {
-  $SKILL_DIR = ".github/skills/mission-board"
-} elseif (Test-Path "$env:USERPROFILE/.copilot/skills/mission-board") {
-  $SKILL_DIR = "$env:USERPROFILE/.copilot/skills/mission-board"
-} else {
-  $SKILL_DIR = ".github/skills/mission-board"
-}
-```
+`references/subcommands.md` の変数定義は sh/PowerShell 両対応で記載している。PowerShell では `VAR=value` の代入構文は動作しないため `$VAR = "value"` 形式を使用する。詳細は `references/subcommands.md` の「変数定義」セクションを参照。
 
 #### パス区切り文字
 
@@ -211,6 +245,6 @@ Windows でも `hostname` コマンドは動作する（cmd/PowerShell 両対応
 
 git worktree は Windows でも動作する。詳細は `references/windows-worktree.md` を参照。
 
-#### troubleshoot コマンド対応表
+#### `調査` コマンド対応表
 
-`references/subcommands.md` の「調査深度の基準」および「典型パターン」テーブルに Windows/PowerShell 向けコマンドが記載済み。
+`references/troubleshoot-patterns.md` の「調査深度の基準」および「典型パターン」テーブルに Windows/PowerShell 向けコマンドが記載済み。
