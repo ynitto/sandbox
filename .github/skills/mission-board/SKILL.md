@@ -39,25 +39,39 @@ mission-board <サブコマンド> [引数]
 - 必ず日本語で回答すること
 - 参加端末の一覧は `registry.md` で管理する（SSOT）
 - 自分の hostname は `hostname` コマンドで取得し、`registry.md` と照合する
+- ミッションボードのブランチ名は `missions`（既定）、worktree パスは `<repo-root>/.worktrees/missions`
 
 ## ワークスペース構造
 
+ミッションデータは専用ブランチ（`missions`）を git worktree で管理する。メインブランチは汚さない。
+
+### スキルディレクトリ（メインブランチ）
+
 ```
-<repo-root>/
+.github/skills/mission-board/
+├── SKILL.md
+├── templates/                   # 新規ミッション用テンプレート
+│   ├── GOAL.md
+│   ├── PLAN.md
+│   └── SUMMARY.md
+└── references/
+    └── subcommands.md
+```
+
+### ミッションボードブランチ（worktree）
+
+```
+.worktrees/missions/             # git worktree（missions ブランチ）
 ├── GOAL.md                      # アクティブミッション一覧（ポインタ）
 ├── registry.md                  # 参加端末レジストリ（動的管理）
-├── missions/                    # ミッション（テーマ）ごとのディレクトリ
-│   ├── _template/               # 新規ミッション用テンプレート
-│   │   ├── GOAL.md
-│   │   ├── PLAN.md
-│   │   └── SUMMARY.md
-│   └── <mission-name>/          # 各ミッション
-│       ├── GOAL.md              # ゴール定義
-│       ├── PLAN.md              # タスク分解・進捗管理
-│       ├── SUMMARY.md           # 完了サマリー（完了時に作成）
-│       ├── messages/            # ボードやり取り
-│       ├── scripts/             # 関連スクリプト
-│       └── research/            # 調査結果
+└── missions/                    # ミッション（テーマ）ごとのディレクトリ
+    └── <mission-name>/          # 各ミッション
+        ├── GOAL.md              # ゴール定義
+        ├── PLAN.md              # タスク分解・進捗管理
+        ├── SUMMARY.md           # 完了サマリー（完了時に作成）
+        ├── messages/            # ボードやり取り
+        ├── scripts/             # 関連スクリプト
+        └── research/            # 調査結果
 ```
 
 ## メッセージ規約
@@ -115,10 +129,10 @@ created: YYYY-MM-DDTHH:MM
 
 ## エージェント行動指針
 
-1. **missions/ が SSOT**: メッセージの読み書きは必ず `missions/<name>/messages/` で行う
+1. **worktree が SSOT**: ミッション・メッセージの読み書きは必ず `.worktrees/missions/` 内で行う
 2. **ファイル名規約を厳守**: タイムスタンプ + `agent` + slug 形式
 3. **from/to を正確に**: `hostname` で自分の端末を特定し、`registry.md` の `agent` を使用する
-4. **git push は自動実行**: コミット後は自動で push する（リジェクト時は `git pull --no-edit` → 再 push）
+4. **git 操作は worktree 内で実行**: commit/push は `.worktrees/missions/` ディレクトリで行い `missions` ブランチに反映する
 5. **破壊的操作の前に確認**: ファイル削除・アーカイブの前にユーザーに確認する
 6. **日本語で回答**: 会話はカジュアル、成果物は構造化
 7. **常に一気通貫で進行**: pull → 新着確認 → 対応 → status 更新 → 返信投稿 → コミット → push の流れは途中でユーザーに確認を挟まない（破壊的操作を除く）
@@ -134,5 +148,5 @@ Conventional Commits を使用: `feat:`, `fix:`, `docs:`, `chore:`
 
 ## Permissions
 
-- **Allowed**: missions/ 配下のファイルの読み書き、GOAL.md / registry.md の更新、git add/commit/push、troubleshoot 時のシステム調査・サービス操作、status フィールドの更新、PLAN.md の更新
-- **Denied**: ユーザー確認なきファイル削除・アーカイブ、ミッション無関係な設定変更、`.github/` 配下の編集（ユーザーが明示的に依頼した場合を除く）
+- **Allowed**: `.worktrees/missions/` 配下のファイルの読み書き、worktree 内の GOAL.md / registry.md の更新、worktree 内での git add/commit/push、worktree のセットアップ（`git worktree add`）、troubleshoot 時のシステム調査・サービス操作、status フィールドの更新、PLAN.md の更新
+- **Denied**: ユーザー確認なきファイル削除・アーカイブ、ミッション無関係な設定変更、`.github/` 配下の編集（ユーザーが明示的に依頼した場合を除く）、メインブランチへの missions データのコミット
