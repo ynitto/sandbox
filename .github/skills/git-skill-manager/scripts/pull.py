@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime
 
 from registry import (
-    load_registry, save_registry, _cache_dir, _skill_home, _agents_home,
+    load_registry, save_registry, _cache_dir, _skill_home,
     _version_tuple, _read_frontmatter_version,
 )
 from repo import clone_or_fetch, update_remote_index
@@ -306,37 +306,13 @@ def pull_skills(
                 copilot_instruction_parts.append(f.read().rstrip())
 
     if copilot_instruction_parts:
-        copilot_dir = os.path.dirname(_agents_home())
+        copilot_dir = os.path.dirname(_skill_home())
         os.makedirs(copilot_dir, exist_ok=True)
         dest = os.path.join(copilot_dir, "copilot-instructions.md")
         merged = _merge_copilot_instructions(copilot_instruction_parts)
         with open(dest, "w", encoding="utf-8") as f:
             f.write(merged)
         print(f"   📋 copilot-instructions.md → {dest}")
-
-    # agents のコピー
-    agents_home = _agents_home()
-    agents_synced = 0
-    for repo in repos:
-        repo_cache = os.path.join(_cache_dir(), repo["name"])
-        agents_src = os.path.join(repo_cache, ".github", "agents")
-        if not os.path.isdir(agents_src):
-            continue
-        os.makedirs(agents_home, exist_ok=True)
-        for entry in os.listdir(agents_src):
-            src = os.path.join(agents_src, entry)
-            dest = os.path.join(agents_home, entry)
-            if os.path.isdir(src):
-                if os.path.exists(dest):
-                    shutil.rmtree(dest)
-                shutil.copytree(src, dest)
-            elif os.path.isfile(src):
-                shutil.copy2(src, dest)
-            else:
-                continue
-            agents_synced += 1
-    if agents_synced:
-        print(f"   🤖 agents → {agents_home} ({agents_synced} 件)")
 
     # 結果レポート
     print(f"\n📦 pull 完了")

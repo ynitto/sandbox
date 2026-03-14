@@ -30,16 +30,14 @@ from datetime import datetime
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = SCRIPT_DIR  # install.py はリポジトリルートに配置
 REPO_SKILLS_DIR = os.path.join(REPO_ROOT, ".github", "skills")
-REPO_AGENTS_DIR = os.path.join(REPO_ROOT, ".github", "agents")
 
 # registry.py のヘルパーでユーザーホームパスを解決（一元管理）
 _SCRIPTS_DIR = os.path.join(REPO_SKILLS_DIR, "git-skill-manager", "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from registry import _skill_home, _agents_home, _cache_dir as _registry_cache_dir
+from registry import _skill_home, _cache_dir as _registry_cache_dir
 
 SKILL_HOME = _skill_home()
-AGENTS_HOME = _agents_home()
 CACHE_DIR = _registry_cache_dir()
 REGISTRY_PATH = os.path.join(os.path.dirname(SKILL_HOME), "skill-registry.json")
 
@@ -173,28 +171,6 @@ def setup_registry(installed_skills: list[dict]) -> None:
         json.dump(reg, f, indent=2, ensure_ascii=False)
 
 
-def copy_agents() -> int:
-    """agents ディレクトリをユーザーホームにコピーする。"""
-    if not os.path.isdir(REPO_AGENTS_DIR):
-        return 0
-    os.makedirs(AGENTS_HOME, exist_ok=True)
-    count = 0
-    for entry in os.listdir(REPO_AGENTS_DIR):
-        src = os.path.join(REPO_AGENTS_DIR, entry)
-        dest = os.path.join(AGENTS_HOME, entry)
-        if os.path.isdir(src):
-            if os.path.exists(dest):
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
-        elif os.path.isfile(src):
-            shutil.copy2(src, dest)
-        else:
-            continue
-        print(f"   🤖 {entry}")
-        count += 1
-    return count
-
-
 def copy_copilot_instructions() -> bool:
     """copilot-instructions.md をユーザーホームにコピーする。"""
     src = os.path.join(REPO_ROOT, ".github", "copilot-instructions.md")
@@ -234,14 +210,8 @@ def main() -> None:
     print("\n3. レジストリを設定...")
     setup_registry(installed)
 
-    # 4. agents をコピー
-    print("\n4. agents をコピー...")
-    agent_count = copy_agents()
-    if agent_count == 0:
-        print("   (agentsディレクトリが見つかりません、スキップ)")
-
-    # 5. copilot-instructions.md をコピー
-    print("\n5. copilot-instructions.md をコピー...")
+    # 4. copilot-instructions.md をコピー
+    print("\n4. copilot-instructions.md をコピー...")
     if not copy_copilot_instructions():
         print("   (ファイルが見つかりません、スキップ)")
 
