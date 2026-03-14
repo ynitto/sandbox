@@ -59,6 +59,9 @@ nosetests.xml
 # Jupyter
 .ipynb_checkpoints/
 
+# Git worktrees
+.worktrees/
+
 # Editor / IDE
 .idea/
 *.swp
