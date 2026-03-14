@@ -157,7 +157,7 @@ Conventional Commits を使用: `feat:`, `fix:`, `docs:`, `chore:`
 
 ### Windows（Claude Code for Windows）
 
-Claude Code on Windows は PowerShell または cmd で動作するため、以下の点に注意すること。
+Claude Code on Windows は PowerShell で動作するため、以下の点に注意すること。
 
 #### シェル変数構文の差異
 
@@ -188,20 +188,10 @@ Git for Windows は `/` と `\` の両方を受け入れる。本ドキュメン
 
 Windows でも `hostname` コマンドは動作する（cmd/PowerShell 両対応）。
 
+#### git worktree
+
+git worktree は Windows でも動作する。詳細は `references/windows-worktree.md` を参照。
+
 #### troubleshoot コマンド対応表
 
 `references/subcommands.md` の「調査深度の基準」および「典型パターン」テーブルに Windows/PowerShell 向けコマンドが記載済み。
-
-### GitHub Copilot
-
-**このスキルは Claude Code 専用であり、GitHub Copilot では動作しない。**
-
-| 機能 | Claude Code | GitHub Copilot |
-| ---- | ----------- | -------------- |
-| シェルコマンドの自律実行 | ✅ | ❌（手動実行が必要） |
-| git worktree の自律セットアップ | ✅ | ❌ |
-| `deep-research` スキルとの連携 | ✅ | ❌（スキル機構が存在しない） |
-| ファイルの自律読み書き | ✅ | ⚠️（提案のみ、実行はユーザー操作） |
-| missions ブランチへの自律 push | ✅ | ❌ |
-
-Copilot でこのスキルを模倣するには、各ステップをユーザーが手動で実行する必要がある。その場合は `references/subcommands.md` を手順書として参照すること。
