@@ -1,6 +1,6 @@
 ---
 name: mission-board
-description: 複数PCの自律協調掲示板をGitリポジトリ経由で管理するスキル。「mission-board」「ミッションを作って」「work」「sync」「pull」「post」「check」「troubleshoot」などで発動する。複数マシン間のタスク分解・メッセージ投稿・進捗管理を一気通貫で行う。
+description: 分解済みタスクを複数PCに分散移譲するGit掲示板スキル。「mission-board」「ミッションを作って」「work」「sync」「pull」「post」「check」「troubleshoot」「close」などで発動する。タスクを参加端末のcapabilitiesに基づいて割り当て、移譲メッセージをコミット・プッシュするまでを一気通貫で行う。タスク分解はオプション。
 metadata:
   version: 2.0.0
   tier: experimental
@@ -23,7 +23,7 @@ mission-board <サブコマンド> [引数]
 
 | サブコマンド | 説明 |
 | ------------ | ---- |
-| `mission <テーマ>` | テーマからミッション（GOAL + PLAN + ディレクトリ）を生成 |
+| `mission <テーマ> [タスクリスト]` | タスクを参加端末に分散移譲。タスクリスト省略時はオプションで分解 |
 | `work` | PLAN.md に基づいて自分担当のタスクを自律実行 |
 | `pull` / `sync` | git pull → 新着チェック → 対応 → 返信 → push（一気通貫） |
 | `post` | ミッション内にメッセージを投稿 |
