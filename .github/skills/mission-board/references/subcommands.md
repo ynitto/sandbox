@@ -9,6 +9,7 @@
 - [post](#サブコマンド-post)
 - [check](#サブコマンド-check)
 - [troubleshoot](#サブコマンド-troubleshoot)
+- [close \<ミッション名\>](#サブコマンド-close-ミッション名)
 
 ---
 
@@ -138,7 +139,7 @@ git push origin $MISSIONS_BRANCH
 
 ### Step 4: DeepResearch で背景調査（推奨）
 
-即座に分解できるシンプルなタスクでなければ `deep-research` スキルを使用する。
+即座に分解できるシンプルなタスクでなければ `deep-research` スキルを使用する。スキルが利用できない場合は自分の知識と web 検索でタスク分解を行い、その旨をユーザーに通知する。
 
 調査観点:
 1. このテーマで必要な作業の全体像
@@ -233,7 +234,7 @@ git pull → 新着チェック → 対応 → 返信 → push（一気通貫）
 
 ### Step 3A: DeepResearch で RCA 調査
 
-`deep-research` スキルで包括的な RCA 調査を実施。
+`deep-research` スキルで包括的な RCA 調査を実施。スキルが利用できない場合は Step 3B（通常対応）に fallback し、その旨を返信メッセージに明記する。
 
 調査観点:
 1. 根本原因の特定（5 Whys 分析を含む）
@@ -272,11 +273,11 @@ git pull → 新着チェック → 対応 → 返信 → push（一気通貫）
 
 # サブコマンド: `check`
 
-アクティブミッションの一覧・進捗・未読メッセージを表示。
+アクティブミッションの一覧・進捗・未読メッセージを表示。**read-only**（commit/push なし）。
 
 ### 手順
 
-1. 共通手順（Worktree Setup → Preflight & Pull → Heartbeat）を実行
+1. 共通手順（Worktree Setup → Preflight & Pull）を実行。Heartbeat は実行しない。
 2. `$WORKTREE_PATH/GOAL.md` と各ミッションの PLAN.md・messages/ を読み込んで表示
 
 ### 出力フォーマット
@@ -308,7 +309,7 @@ git pull → 新着チェック → 対応 → 返信 → push（一気通貫）
 
 ### Step 2.5: DeepResearch で事前調査（推奨）
 
-初見の問題、複数の原因仮説、公式ドキュメント確認が必要な場合は `deep-research` スキルを使用。
+初見の問題、複数の原因仮説、公式ドキュメント確認が必要な場合は `deep-research` スキルを使用。スキルが利用できない場合は Step 3（通常調査）に進み、その旨を結果メッセージに明記する。
 
 ### Step 3: 調査・診断の実施
 
@@ -323,28 +324,7 @@ git pull → 新着チェック → 対応 → 返信 → push（一気通貫）
 7. **代替手段の事前検証**
 8. **相手への依頼事項を整理**: コピペ可能なコマンド付き
 
-#### 調査深度の基準
-
-| 層 | 内容 | コマンド例（Linux/macOS） | コマンド例（Windows/PowerShell） |
-| -- | ---- | ------------------------- | -------------------------------- |
-| 第1層 | 高レベルAPI | `systemctl status`, `nc -zv` | `Get-Service`, `Test-NetConnection` |
-| 第2層 | 設定ファイル | `cat /etc/...`, `sysctl` | `Get-ItemProperty`, `Get-SmbServerConfiguration` |
-| 第3層 | カーネル・ドライバー | `dmesg`, `lsmod` | `sc.exe query` |
-| 第4層 | プロトコルレベル | `tcpdump`, `ss -tulnp` | RAW TCP socket |
-
-#### 典型パターン
-
-| カテゴリ | Linux/macOS | Windows/PowerShell |
-| -------- | ----------- | ------------------ |
-| 疎通 | `ping`, `traceroute` | `ping`, `Test-NetConnection` |
-| ポート | `nc -zv <host> <port>`, `ss -tulnp` | `Test-NetConnection -Port <n>` |
-| DNS | `dig`, `nslookup` | `nslookup`, `nbtstat -A` |
-| SMB/共有 | `smbclient -L` | `net view`, `Get-SmbShare` |
-| サービス | `systemctl status`, `ps aux` | `Get-Service`, `sc.exe query` |
-| FW | `iptables -L`, `ufw status` | `Get-NetFirewallRule` |
-| ログ | `journalctl`, `tail /var/log/...` | `Get-EventLog`, `Get-WinEvent` |
-
-権限不足時は代替コマンドに切り替える。同じコマンドを繰り返さない。
+調査コマンドの詳細は `$SKILL_DIR/references/troubleshoot-patterns.md` を参照する。プロジェクト固有の診断手順が必要な場合はこのファイルを差し替える。
 
 ### Step 4: 調査結果投稿
 
@@ -355,3 +335,20 @@ git pull → 新着チェック → 対応 → 返信 → push（一気通貫）
 ### Step 6: Commit & Push
 
 共通手順: Commit & Push（コミットメッセージ: `feat: troubleshoot <slug> and post results`）を実行。
+
+---
+
+# サブコマンド: `close <ミッション名>`
+
+ミッションを完了扱いにし、GOAL.md のアクティブリストから除去する。
+
+### 手順
+
+1. 共通手順（Worktree Setup → Preflight & Pull → Heartbeat → Goal）を実行
+2. 対象ミッションの `PLAN.md` で未完了タスク（`todo`/`doing`）がないか確認。残存する場合はユーザーに確認してから続行
+3. `$SKILL_DIR/templates/SUMMARY.md` を参考に `$WORKTREE_PATH/missions/<name>/SUMMARY.md` を作成:
+   - 結果ステータス（✅ Complete / ❌ Unresolved / ⚠️ Partial）
+   - 実施内容（時系列）
+   - 根本原因・学び・再発防止策
+4. `$WORKTREE_PATH/GOAL.md` のアクティブミッション一覧から対象ミッションを除去（またはアーカイブ済みとしてマーク）
+5. 共通手順: Commit & Push（コミットメッセージ: `feat: close mission <name>`）を実行

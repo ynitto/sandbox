@@ -29,6 +29,7 @@ mission-board <サブコマンド> [引数]
 | `post` | ミッション内にメッセージを投稿 |
 | `check` | ミッション一覧と進捗、未読メッセージを確認 |
 | `troubleshoot` | 新着確認 → 調査 → 結果投稿 → push |
+| `close <ミッション名>` | ミッション完了：SUMMARY.md 生成 → GOAL.md から除去 → push |
 
 詳細な手順は [references/subcommands.md](references/subcommands.md) を参照。
 
