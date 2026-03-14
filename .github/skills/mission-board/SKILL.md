@@ -1,6 +1,6 @@
 ---
 name: mission-board
-description: 分解済みタスクを複数PCに分散移譲するGit掲示板スキル。「mission-board」「ミッションを作って」「work」「sync」「pull」「post」「check」「troubleshoot」「close」などで発動する。タスクを参加端末のcapabilitiesに基づいて割り当て、移譲メッセージをコミット・プッシュするまでを一気通貫で行う。タスク分解はオプション。
+description: 分解済みタスクを複数PCに分散移譲するGit掲示板スキル。「ミッションボード」「ミッションを作って」「タスクを割り当てて」「作業開始」「ボードを同期」「ミッションに投稿」「ボードを確認」「ミッション調査」「ミッションを完了」などで発動する。タスクを参加端末のcapabilitiesに基づいて割り当て、移譲メッセージをコミット・プッシュするまでを一気通貫で行う。タスク分解はオプション。
 metadata:
   version: 2.0.0
   tier: experimental
@@ -18,18 +18,18 @@ metadata:
 ## Usage
 
 ```
-mission-board <サブコマンド> [引数]
+ミッションボード <サブコマンド> [引数]
 ```
 
 | サブコマンド | 説明 |
 | ------------ | ---- |
-| `mission <テーマ> [タスクリスト]` | タスクを参加端末に分散移譲。タスクリスト省略時はオプションで分解 |
-| `work` | PLAN.md に基づいて自分担当のタスクを自律実行 |
-| `pull` / `sync` | git pull → 新着チェック → 対応 → 返信 → push（一気通貫） |
-| `post` | ミッション内にメッセージを投稿 |
-| `check` | ミッション一覧と進捗、未読メッセージを確認 |
-| `troubleshoot` | 新着確認 → 調査 → 結果投稿 → push |
-| `close <ミッション名>` | ミッション完了：SUMMARY.md 生成 → GOAL.md から除去 → push |
+| `ミッション <テーマ> [タスクリスト]` | タスクを参加端末に分散移譲。タスクリスト省略時はオプションで分解 |
+| `作業` | PLAN.md に基づいて自分担当のタスクを自律実行 |
+| `同期` | git pull → 新着チェック → 対応 → 返信 → push（一気通貫） |
+| `投稿` | ミッション内にメッセージを投稿 |
+| `確認` | ミッション一覧と進捗、未読メッセージを確認 |
+| `調査` | 新着確認 → 調査 → 結果投稿 → push |
+| `完了 <ミッション名>` | ミッション完了：SUMMARY.md 生成 → GOAL.md から除去 → push |
 
 詳細な手順は [references/subcommands.md](references/subcommands.md) を参照。
 
@@ -161,7 +161,7 @@ Conventional Commits を使用: `feat:`, `fix:`, `docs:`, `chore:`
 
 ## Permissions
 
-- **Allowed**: `.worktrees/missions/` 配下のファイルの読み書き、worktree 内の GOAL.md / registry.md の更新、worktree 内での git add/commit/push、worktree のセットアップ（`git worktree add`）、troubleshoot 時のシステム調査・サービス操作、status フィールドの更新、PLAN.md の更新
+- **Allowed**: `.worktrees/missions/` 配下のファイルの読み書き、worktree 内の GOAL.md / registry.md の更新、worktree 内での git add/commit/push、worktree のセットアップ（`git worktree add`）、`調査` 時のシステム調査・サービス操作、status フィールドの更新、PLAN.md の更新
 - **Denied**: ユーザー確認なきファイル削除・アーカイブ、ミッション無関係な設定変更、`.github/` および `~/.copilot/` 配下のスキルファイルの編集（ユーザーが明示的に依頼した場合を除く）、メインブランチへの missions データのコミット
 
 ---
@@ -188,6 +188,6 @@ Windows でも `hostname` コマンドは動作する（cmd/PowerShell 両対応
 
 git worktree は Windows でも動作する。詳細は `references/windows-worktree.md` を参照。
 
-#### troubleshoot コマンド対応表
+#### `調査` コマンド対応表
 
-`references/subcommands.md` の「調査深度の基準」および「典型パターン」テーブルに Windows/PowerShell 向けコマンドが記載済み。
+`references/troubleshoot-patterns.md` の「調査深度の基準」および「典型パターン」テーブルに Windows/PowerShell 向けコマンドが記載済み。
