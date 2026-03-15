@@ -1,5 +1,5 @@
 ---
-name: agent-mentor
+name: skill-mentor
 description: 1セッション・1ゴールで完結する軽量オーケストレーター。バグ修正・機能追加・リファクタリング・ドキュメント作成・技術調査・コードレビューなどの単発タスクをスキル委譲で完遂する。「これ直して」「デバッグして」「ドキュメント書いて」「レビューして」「リファクタリングして」「調べて」「設計して」などで発動。複数ゴール・スプリント管理は scrum-master へ、複数マシン協調は mission-board へ。
 metadata:
   version: 2.0.0
@@ -12,7 +12,7 @@ metadata:
     - single-task
 ---
 
-# agent-mentor
+# skill-mentor
 
 1セッション・1ゴールで完結する **軽量オーケストレーター**。タスクを明確化し、最適なスキルをサブエージェントに委譲して成果物を届ける。
 
@@ -29,7 +29,7 @@ metadata:
 
 **最初に必ずこの表を確認する。** 条件が合わない場合はユーザーに案内してから終了する。
 
-| 観点 | **agent-mentor** | scrum-master | mission-board |
+| 観点 | **skill-mentor** | scrum-master | mission-board |
 |------|---------------------|--------------|---------------|
 | **ゴール数** | 1つ | 複数・独立 | 複数・分散 |
 | **セッション** | 1セッションで完結 | 複数スプリント・永続化 | 非同期・複数マシン |
@@ -70,9 +70,9 @@ metadata:
 ## パス解決
 
 ```bash
-SKILL_DIR=".github/skills/agent-mentor"   # ワークスペース
+SKILL_DIR=".github/skills/skill-mentor"   # ワークスペース
 # または
-SKILL_DIR="~/.copilot/skills/agent-mentor" # ユーザーホーム
+SKILL_DIR="~/.copilot/skills/skill-mentor" # ユーザーホーム
 
 SKILLS_DIR=".github/skills"                   # 優先
 # なければ
@@ -172,7 +172,7 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 > python ${LTM}/save_memory.py \
 >   --category "session-snapshot" \
 >   --title "[ゴールの要約]" \
->   --summary "agent-mentor セッションスナップショット（Phase 3 完了）" \
+>   --summary "skill-mentor セッションスナップショット（Phase 3 完了）" \
 >   --content "[タスク定義全文 + 実行計画全文]" \
 >   --conclusion "セッション中断時の参照用。再開時に recall_memory で検索すること。" \
 >   --tags session-snapshot,[タスク種別]
@@ -205,7 +205,7 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 
 > ### ⛔ STOP — `runSubagent` を今すぐ起動する
 >
-> **成果物のレビューはサブエージェントが行う。agent-mentor は直接レビューしない。**
+> **成果物のレビューはサブエージェントが行う。skill-mentor は直接レビューしない。**
 > 読み終えたら即座に `runSubagent` を呼び出すこと。理由や条件を考えてはならない。
 >
 > ❌ 以下の理由によるスキップ・自己レビューは禁止:
