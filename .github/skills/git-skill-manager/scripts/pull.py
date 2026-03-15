@@ -10,7 +10,7 @@ from datetime import datetime
 
 from registry import (
     load_registry, save_registry, _cache_dir, _skill_home,
-    _version_tuple, _read_frontmatter_version,
+    _version_tuple, _read_frontmatter_version, update_registry_paths,
 )
 from repo import clone_or_fetch, update_remote_index
 from delta_tracker import check_sync_protection
@@ -294,25 +294,41 @@ def pull_skills(
         })
         existing[s["name"]] = s
     reg["installed_skills"] = list(existing.values())
+
+    # paths.skills / paths.cache をスキルの実際の配置先に合わせて更新
+    paths = reg.get("paths", {})
+    if paths:
+        update_registry_paths(
+            reg,
+            base_dir=paths.get("base", os.path.dirname(skill_home)),
+            skills_dir=skill_home,
+            cache_dir=cache_dir,
+            repo_root=paths.get("repo_root"),
+            instructions=paths.get("instructions"),
+        )
+
     save_registry(reg)
 
-    # copilot-instructions.md のコピー
-    copilot_instruction_parts: list[str] = []
+    # instructions ファイルのコピー
+    # 配置先は reg["paths"]["instructions"] → フォールバック: base/copilot-instructions.md
+    instruction_parts: list[str] = []
     for repo in repos:
         repo_cache = os.path.join(_cache_dir(), repo["name"])
         src = os.path.join(repo_cache, ".github", "copilot-instructions.md")
         if os.path.isfile(src):
             with open(src, encoding="utf-8") as f:
-                copilot_instruction_parts.append(f.read().rstrip())
+                instruction_parts.append(f.read().rstrip())
 
-    if copilot_instruction_parts:
-        copilot_dir = os.path.dirname(_skill_home())
-        os.makedirs(copilot_dir, exist_ok=True)
-        dest = os.path.join(copilot_dir, "copilot-instructions.md")
-        merged = _merge_copilot_instructions(copilot_instruction_parts)
-        with open(dest, "w", encoding="utf-8") as f:
+    if instruction_parts:
+        instructions_dest = reg.get("paths", {}).get("instructions")
+        if not instructions_dest:
+            # フォールバック: base ディレクトリに copilot-instructions.md として配置
+            instructions_dest = os.path.join(os.path.dirname(skill_home), "copilot-instructions.md")
+        os.makedirs(os.path.dirname(instructions_dest), exist_ok=True)
+        merged = _merge_copilot_instructions(instruction_parts)
+        with open(instructions_dest, "w", encoding="utf-8") as f:
             f.write(merged)
-        print(f"   📋 copilot-instructions.md → {dest}")
+        print(f"   📋 instructions → {instructions_dest}")
 
     # 結果レポート
     print(f"\n📦 pull 完了")

@@ -193,7 +193,14 @@ def detect_repo_url() -> str | None:
     return None
 
 
-def setup_registry(registry_path: str, installed_skills: list[dict]) -> None:
+def setup_registry(
+    registry_path: str,
+    installed_skills: list[dict],
+    base_dir: str,
+    skill_home: str,
+    cache_dir: str,
+    instructions_dest: str | None,
+) -> None:
     """レジストリを初期生成または更新する。"""
     if os.path.isfile(registry_path):
         with open(registry_path, encoding="utf-8") as f:
@@ -201,7 +208,7 @@ def setup_registry(registry_path: str, installed_skills: list[dict]) -> None:
         print("   既存レジストリを更新します")
     else:
         reg = {
-            "version": 5,
+            "version": 7,
             "repositories": [],
             "installed_skills": [],
             "core_skills": list(CORE_SKILLS),
@@ -210,6 +217,17 @@ def setup_registry(registry_path: str, installed_skills: list[dict]) -> None:
             "active_profile": None,
         }
         print("   新規レジストリを作成します")
+
+    # paths セクションを書き込む（常に最新の値で上書き）
+    reg["paths"] = {
+        "repo_root": REPO_ROOT,
+        "base": base_dir,
+        "skills": skill_home,
+        "cache": cache_dir,
+        "instructions": instructions_dest,
+    }
+    print(f"   paths.base:    {base_dir}")
+    print(f"   paths.skills:  {skill_home}")
 
     # core_skills を最新に
     reg["core_skills"] = list(CORE_SKILLS)
@@ -291,7 +309,7 @@ def main() -> None:
 
     # 3. レジストリ設定
     print("\n3. レジストリを設定...")
-    setup_registry(registry_path, installed)
+    setup_registry(registry_path, installed, base_dir, skill_home, cache_dir, instructions_dest)
 
     # 4. instructions ファイルをコピー
     print("\n4. エージェント instructions をコピー...")

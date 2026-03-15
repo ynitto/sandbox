@@ -38,12 +38,83 @@ def _registry_path() -> str:
     return os.path.join(_agent_skills_home(), "skill-registry.json")
 
 
+# ---------------------------------------------------------------------------
+# レジストリ paths キャッシュ
+# ---------------------------------------------------------------------------
+
+_PATHS_CACHE: dict | None = None
+
+
+def _get_registry_paths() -> dict:
+    """レジストリの paths セクションをキャッシュして返す。
+
+    レジストリが存在しない場合や paths が未定義の場合は空 dict を返す。
+    install.py / pull.py が paths を書き込んだ後は invalidate_paths_cache() で
+    キャッシュをリセットすること。
+    """
+    global _PATHS_CACHE
+    if _PATHS_CACHE is None:
+        reg_path = _registry_path()
+        if os.path.isfile(reg_path):
+            try:
+                with open(reg_path, encoding="utf-8") as f:
+                    _PATHS_CACHE = json.load(f).get("paths", {}) or {}
+            except Exception:
+                _PATHS_CACHE = {}
+        else:
+            _PATHS_CACHE = {}
+    return _PATHS_CACHE
+
+
+def invalidate_paths_cache() -> None:
+    """paths キャッシュを破棄する（レジストリ書き込み後に呼ぶ）。"""
+    global _PATHS_CACHE
+    _PATHS_CACHE = None
+
+
 def _skill_home() -> str:
+    """スキルディレクトリを返す。レジストリの paths.skills を優先する。"""
+    p = _get_registry_paths().get("skills")
+    if p:
+        return p
     return os.path.join(_agent_skills_home(), "skills")
 
 
 def _cache_dir() -> str:
+    """キャッシュディレクトリを返す。レジストリの paths.cache を優先する。"""
+    p = _get_registry_paths().get("cache")
+    if p:
+        return p
     return os.path.join(_agent_skills_home(), "cache")
+
+
+def update_registry_paths(
+    reg: dict,
+    base_dir: str,
+    skills_dir: str,
+    cache_dir: str,
+    repo_root: str | None = None,
+    instructions: str | None = None,
+) -> None:
+    """レジストリの paths セクションを更新し、キャッシュも同期する。
+
+    Args:
+        reg: load_registry() で取得したレジストリ dict（in-place 更新）
+        base_dir: エージェントのベースディレクトリ（~/.claude 等）
+        skills_dir: スキルのインストールディレクトリ
+        cache_dir: キャッシュディレクトリ
+        repo_root: install.py があるリポジトリルート（任意）
+        instructions: エージェント instructions ファイルの絶対パス（任意）
+    """
+    global _PATHS_CACHE
+    reg["paths"] = {
+        "repo_root": repo_root,
+        "base": base_dir,
+        "skills": skills_dir,
+        "cache": cache_dir,
+        "instructions": instructions,
+    }
+    _PATHS_CACHE = dict(reg["paths"])
 
 
 def _version_tuple(v: str | None) -> tuple:
@@ -245,7 +316,19 @@ def migrate_registry(reg: dict) -> dict:
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
-    reg["version"] = 6
+    # v6 → v7: paths セクション追加（インストール先・リポジトリルートの明示管理）
+    if version < 7:
+        if "paths" not in reg:
+            base = _agent_skills_home()
+            reg["paths"] = {
+                "repo_root": None,
+                "base": base,
+                "skills": os.path.join(base, "skills"),
+                "cache": os.path.join(base, "cache"),
+                "instructions": None,
+            }
+
+    reg["version"] = 7
     return reg
 
 
@@ -255,8 +338,16 @@ def load_registry() -> dict:
         with open(path, encoding="utf-8") as f:
             reg = json.load(f)
         return migrate_registry(reg)
+    base = _agent_skills_home()
     return {
-        "version": 6,
+        "version": 7,
+        "paths": {
+            "repo_root": None,
+            "base": base,
+            "skills": os.path.join(base, "skills"),
+            "cache": os.path.join(base, "cache"),
+            "instructions": None,
+        },
         "node": {
             "id": None,
             "name": None,
@@ -295,6 +386,8 @@ def save_registry(reg: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)
+    # paths が変わった可能性があるのでキャッシュを破棄
+    invalidate_paths_cache()
 
 
 def is_skill_enabled(skill_name: str, reg: dict) -> bool:

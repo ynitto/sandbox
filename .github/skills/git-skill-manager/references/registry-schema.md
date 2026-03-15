@@ -12,7 +12,14 @@
 
 ```json
 {
-  "version": 5,
+  "version": 7,
+  "paths": {
+    "repo_root": "/home/user/projects/agent-skills",
+    "base": "/home/user/.claude",
+    "skills": "/home/user/.claude/skills",
+    "cache": "/home/user/.claude/cache",
+    "instructions": "/home/user/.claude/CLAUDE.md"
+  },
   "repositories": [
     {
       "name": "team-skills",
@@ -105,6 +112,16 @@
 ```
 
 ## フィールド説明
+
+**paths** (オブジェクト、v7 追加):
+- `install.py` 実行時に書き込まれるインストール先パス情報
+- スクリプトはこのセクションを参照してパスを解決する（`__file__` 相対・環境変数より優先）
+- `repo_root`: `install.py` があるリポジトリのルートディレクトリ（スキルのソース）
+- `base`: エージェントのベースディレクトリ（`~/.claude/`、`~/.copilot/` など）
+- `skills`: スキルのインストールディレクトリ（`<base>/skills/`）
+- `cache`: キャッシュディレクトリ（`<base>/cache/`）
+- `instructions`: エージェント instructions ファイルの絶対パス（`pull` 時の更新先）
+- `pull` 実行時にも `skills` / `cache` を最新値で更新する
 
 **repositories[].priority** (整数、デフォルト: 100):
 - 値が小さいほど優先度が高い
@@ -220,5 +237,7 @@
 | v2 → v3 | `feedback_history`、`pending_refinement` |
 | v3 → v4 | `auto_update` |
 | v4 → v5 | `version`、`central_version`、`version_ahead`、`lineage`、`metrics`、`node`、`promotion_policy`、`sync_policy`、`contribution_queue` |
+| v5 → v6 | `metrics` 拡張（`avg_duration_sec`、`p90_duration_sec`、`avg_subagent_calls`、`trend_7d`、`top_co_skills`） |
+| v6 → v7 | `paths`（`repo_root`、`base`、`skills`、`cache`、`instructions`） |
 
 → 実装: `scripts/registry.py` — `migrate_registry(reg)`
