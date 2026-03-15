@@ -14,21 +14,16 @@ applyTo: "**"
 
 このドキュメント中の `{skill_home}` は **`skill-registry.json` の `skill_home` フィールドの値** を指す。
 
-```
-{skill_home} = skill-registry.json["skill_home"]
-             = {agent_home}/skills/   （agent_home はエージェント種別で決まる）
-```
+`skill-registry.json` は `install.py` 実行時にエージェントのホームディレクトリ直下に生成される:
 
-`skill-registry.json` のパスは以下の Python コードで取得できる:
+| エージェント | skill-registry.json の場所 |
+|---|---|
+| GitHub Copilot | `~/.copilot/skill-registry.json` |
+| Claude Code    | `~/.claude/skill-registry.json`  |
+| Codex          | `~/.codex/skill-registry.json`   |
+| Kiro           | `~/.kiro/skill-registry.json`    |
 
-```python
-import sys, os
-_here = os.path.dirname(os.path.abspath(__file__))       # このスクリプトの場所
-_skill_home = os.path.dirname(os.path.dirname(_here))    # scripts/../.. = {skill_home}
-_reg_scripts = os.path.join(_skill_home, "git-skill-manager", "scripts")
-sys.path.insert(0, _reg_scripts)
-from registry import _skill_home, _registry_path         # __file__ ベースで自動解決
-```
+セッション開始時にレジストリを読み、`skill_home` の値を `{skill_home}` として以降の手順で使用する。
 
 -----
 
