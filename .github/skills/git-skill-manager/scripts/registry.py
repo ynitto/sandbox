@@ -9,19 +9,86 @@ import json
 import os
 import re
 
+# エージェント種別とインストール先ディレクトリ名のマッピング
+AGENT_DIRS: dict[str, str] = {
+    "copilot": ".copilot",
+    "claude": ".claude",
+    "codex": ".codex",
+    "kiro": ".kiro",
+}
+
+# レジストリ検索順（copilot を先頭にして既存の動作を維持）
+_REGISTRY_SEARCH_ORDER = ["copilot", "claude", "codex", "kiro"]
+
+
+def _user_home() -> str:
+    """ユーザーホームディレクトリを返す。"""
+    return os.environ.get("USERPROFILE", os.path.expanduser("~"))
+
+
+def _find_registry_path() -> str | None:
+    """既存の skill-registry.json を全エージェントディレクトリから探して返す。
+
+    複数存在する場合は REGISTRY_SEARCH_ORDER の先頭を優先する。
+    見つからない場合は None を返す。
+    """
+    home = _user_home()
+    for agent in _REGISTRY_SEARCH_ORDER:
+        path = os.path.join(home, AGENT_DIRS[agent], "skill-registry.json")
+        if os.path.isfile(path):
+            return path
+    return None
+
 
 def _registry_path() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    """skill-registry.json のパスを返す。
+
+    既存ファイルが見つかればそのパスを、なければデフォルト（copilot）を返す。
+    後方互換性のため関数シグネチャは変えない。
+    """
+    found = _find_registry_path()
+    if found:
+        return found
+    home = _user_home()
     return os.path.join(home, ".copilot", "skill-registry.json")
 
 
 def _skill_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    """スキルインストール先ディレクトリを返す。
+
+    skill-registry.json の skill_home フィールドを優先し、
+    見つからない場合は copilot デフォルトにフォールバックする。
+    """
+    reg_path = _find_registry_path()
+    if reg_path and os.path.isfile(reg_path):
+        try:
+            with open(reg_path, encoding="utf-8") as f:
+                reg = json.load(f)
+            skill_home = reg.get("skill_home")
+            if skill_home:
+                return skill_home
+        except Exception:
+            pass
+    home = _user_home()
     return os.path.join(home, ".copilot", "skills")
 
 
 def _cache_dir() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    """キャッシュディレクトリを返す。
+
+    skill-registry.json の skill_home フィールドから導出する。
+    """
+    reg_path = _find_registry_path()
+    if reg_path and os.path.isfile(reg_path):
+        try:
+            with open(reg_path, encoding="utf-8") as f:
+                reg = json.load(f)
+            skill_home = reg.get("skill_home")
+            if skill_home:
+                return os.path.join(os.path.dirname(skill_home), "cache")
+        except Exception:
+            pass
+    home = _user_home()
     return os.path.join(home, ".copilot", "cache")
 
 
@@ -219,12 +286,26 @@ def migrate_registry(reg: dict) -> dict:
             metrics.setdefault("trend_7d", {"executions": 0, "ok_rate": 0.0})
             metrics.setdefault("top_co_skills", [])
 
+    # v6 → v7: マルチエージェント対応フィールドを追加
+    #   agent_type:  インストール対象エージェント種別
+    #   user_home:   ユーザーホームディレクトリ
+    #   install_dir: スキルリポジトリのルートディレクトリ（自動更新の参照元）
+    #   skill_home:  スキルインストール先ディレクトリ
+    if version < 7:
+        home = _user_home()
+        reg.setdefault("agent_type", "copilot")
+        reg.setdefault("user_home", home)
+        reg.setdefault("install_dir", None)
+        # skill_home は agent_type から導出（デフォルト copilot）
+        agent_dir = AGENT_DIRS.get(reg["agent_type"], ".copilot")
+        reg.setdefault("skill_home", os.path.join(home, agent_dir, "skills"))
+
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
     for skill in reg.get("installed_skills", []):
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
-    reg["version"] = 6
+    reg["version"] = 7
     return reg
 
 
@@ -234,8 +315,13 @@ def load_registry() -> dict:
         with open(path, encoding="utf-8") as f:
             reg = json.load(f)
         return migrate_registry(reg)
+    home = _user_home()
     return {
-        "version": 6,
+        "version": 7,
+        "agent_type": "copilot",
+        "user_home": home,
+        "install_dir": None,
+        "skill_home": os.path.join(home, ".copilot", "skills"),
         "node": {
             "id": None,
             "name": None,
@@ -270,7 +356,12 @@ def load_registry() -> dict:
 
 
 def save_registry(reg: dict) -> None:
-    path = _registry_path()
+    # レジストリに記録された skill_home からパスを導出（なければデフォルト）
+    skill_home = reg.get("skill_home")
+    if skill_home:
+        path = os.path.join(os.path.dirname(skill_home), "skill-registry.json")
+    else:
+        path = _registry_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)
