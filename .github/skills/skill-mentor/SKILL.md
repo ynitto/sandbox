@@ -69,15 +69,7 @@ metadata:
 
 ## パス解決
 
-```bash
-SKILL_DIR=".github/skills/skill-mentor"   # ワークスペース
-# または
-SKILL_DIR="~/.copilot/skills/skill-mentor" # ユーザーホーム
-
-SKILLS_DIR=".github/skills"                   # 優先
-# なければ
-SKILLS_DIR="~/.copilot/skills"               # フォールバック
-```
+このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、その親ディレクトリを `SKILLS_DIR` とする。スクリプトは `${SKILL_DIR}/scripts/` から実行する。他スキルは名前で検索する: `${SKILLS_DIR}/[skill-name]/SKILL.md` を優先し、見つからなければ利用可能なスキルディレクトリを横断して探すこと。
 
 ---
 

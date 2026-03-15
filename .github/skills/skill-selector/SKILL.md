@@ -19,14 +19,7 @@ metadata:
 
 ## パス解決
 
-このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、その親を `SKILLS_DIR` とする。
-
-| このSKILL.mdのパス | SKILL_DIR | SKILLS_DIR |
-|---|---|---|
-| `~/.copilot/skills/skill-selector/SKILL.md` | `~/.copilot/skills/skill-selector` | `~/.copilot/skills` |
-| `.github/skills/skill-selector/SKILL.md` | `.github/skills/skill-selector` | `.github/skills` |
-
-スキルが両方の場所に存在する場合、ワークスペース側（`.github/skills/`）を優先する。
+このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、その親を `SKILLS_DIR` とする。スクリプトは `${SKILL_DIR}/scripts/` から実行する。スキルが複数の場所に存在する場合、ワークスペース側を優先する。
 
 ---
 
@@ -51,7 +44,7 @@ python <SKILL_DIR>/scripts/discover_skills.py
 
 このスクリプトは `~/.copilot/skills/` と `.github/skills/` の両方を走査し、各スキルの `name`・`description`・`category`・`tags`・`tier` を出力する。**Windows・macOS 両対応**。新しいスキルが追加されても自動的に検出される。
 
-スクリプトが実行できない環境では、スキルリストを直接 `<SKILLS_DIR>/` のディレクトリ一覧から確認する。
+スクリプトが実行できない環境では、利用可能なスキルディレクトリを直接確認する。
 
 ### Step 3: カテゴリとタグで動的に絞り込む
 
