@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-engineer-mentor スキル静的検証スクリプト
+agent-mentor スキル静的検証スクリプト
 
 テストシナリオ(test-scenarios.md)の期待動作が
 スキル定義ファイルに実装されているかを検証する。
@@ -156,7 +156,7 @@ passed = sum(1 for _, ok, _ in results if ok)
 failed = sum(1 for _, ok, _ in results if not ok)
 total = len(results)
 
-print(f"\nengineer-mentor スキル検証結果")
+print(f"\nagent-mentor スキル検証結果")
 print("=" * 60)
 
 current_group = ""
