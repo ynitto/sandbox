@@ -239,5 +239,3 @@ Agent Skills が目指すもの:
 これが Agent Skills の根本にある考え方。
 
 ---
-
-*リポジトリ: `ynitto/sandbox` / 主要言語: Markdown (SKILL.md) + Python*
