@@ -19,7 +19,7 @@ metadata:
 
 ## パス解決
 
-このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、その親を `SKILLS_DIR` とする。スクリプトは `${SKILL_DIR}/scripts/` から実行する。スキルが複数の場所に存在する場合、ワークスペース側を優先する。
+このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、その親を `SKILLS_DIR` とする。スクリプトは `scripts/` から実行する。スキルが複数の場所に存在する場合、ワークスペース側を優先する。
 
 ---
 
@@ -39,7 +39,7 @@ metadata:
 `discover_skills.py` を実行して、現在使えるスキルを列挙する:
 
 ```
-python <SKILL_DIR>/scripts/discover_skills.py
+python scripts/discover_skills.py
 ```
 
 このスクリプトは `~/.copilot/skills/` と `.github/skills/` の両方を走査し、各スキルの `name`・`description`・`category`・`tags`・`tier` を出力する。**Windows・macOS 両対応**。新しいスキルが追加されても自動的に検出される。
@@ -51,7 +51,7 @@ python <SKILL_DIR>/scripts/discover_skills.py
 `--group-by-category` フラグで、実際のスキルメタデータに基づくカテゴリ別一覧を取得する:
 
 ```
-python <SKILL_DIR>/scripts/discover_skills.py --group-by-category
+python scripts/discover_skills.py --group-by-category
 ```
 
 各スキルの `category` と `tags` を使ってタスクに関連する候補を絞り込む。タスクフェーズとカテゴリの対応例（参考）:

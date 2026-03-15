@@ -13,7 +13,7 @@
    - `SKILLS_DIR` = `SKILL_DIR` の親ディレクトリ
 2. 以下のコマンドを実行する:
    ```bash
-   python ${SKILL_DIR}/scripts/discover_skills.py ${SKILLS_DIR} --registry ~/.copilot/skill-registry.json
+   python scripts/discover_skills.py ${SKILLS_DIR} --registry ~/.copilot/skill-registry.json
    ```
    - `--registry` を指定すると、無効化されたスキルやアクティブプロファイル外のスキルが除外される
    - レジストリが存在しない場合は全スキルが返される

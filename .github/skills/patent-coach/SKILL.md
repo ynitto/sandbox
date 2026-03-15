@@ -95,8 +95,8 @@ Phase 4: 発明サマリーシート出力 → patent-writer へ引き継ぎ
 2. 先行技術検索スクリプトを実行する:
 
 ```bash
-python <SKILL_DIR>/scripts/search_prior_art.py --keywords "キーワード1" "キーワード2" --lang ja
-python <SKILL_DIR>/scripts/search_prior_art.py --keywords "keyword1" "keyword2" --lang en
+python scripts/search_prior_art.py --keywords "キーワード1" "キーワード2" --lang ja
+python scripts/search_prior_art.py --keywords "keyword1" "keyword2" --lang en
 ```
 
 3. ヒットした特許から**最も近い先行技術を3件以内**に絞る
