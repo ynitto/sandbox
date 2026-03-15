@@ -175,17 +175,18 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ## Windows 環境の注意事項
 
-### パス表記
+### パス解決
 
-- `~` は `%USERPROFILE%` に読み替える
-- 例: `~/.copilot/memory/` → `%USERPROFILE%\.copilot\memory\`
+パスは Python スクリプト内で `USERPROFILE` 環境変数（または `os.path.expanduser("~")`）を使って自動解決されるため、ユーザーが手動で読み替える必要はない。
 
 ### 設定ファイル配置場所
 
 | ファイル | パス |
 |---------|------|
-| `config.json` | `%USERPROFILE%\.copilot\memory\config.json` |
-| `skill-registry.json` | `%USERPROFILE%\.copilot\skill-registry.json` |
+| `config.json` | `{agent_home}/memory/config.json` |
+| `skill-registry.json` | `{agent_home}/skill-registry.json` |
+
+`agent_home` の実際のパスは `skill-registry.json` の `skill_home` フィールドから確認できる。
 
 ### Git 設定
 

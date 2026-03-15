@@ -16,10 +16,14 @@ import json
 import os
 import sys
 
-
-def _registry_path() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skill-registry.json")
+# registry.py の __file__ ベースのパス解決を利用
+# このスクリプト: {skill_home}/skill-evaluator/scripts/evaluate.py
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SKILL_HOME = os.path.dirname(os.path.dirname(_HERE))
+_REG_SCRIPTS = os.path.join(_SKILL_HOME, "git-skill-manager", "scripts")
+if _REG_SCRIPTS not in sys.path:
+    sys.path.insert(0, _REG_SCRIPTS)
+from registry import _registry_path
 
 
 def load_registry() -> dict | None:

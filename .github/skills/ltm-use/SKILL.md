@@ -49,10 +49,10 @@ git除外                   ローカル永続              git管理
 | スコープ | 保存先 | 用途 | git管理 |
 |---------|--------|------|---------|
 | `workspace` | `${SKILL_DIR}/memories/` | VSCodeワークスペース固有の知見 | **除外(.gitignore)** |
-| `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
-| `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
+| `home` | `{agent_home}/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
+| `shared` | `{agent_home}/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
 
-> **Windows の場合**: `~` は `%USERPROFILE%` に読み替えてください。
+`agent_home` はエージェント種別に応じて自動解決される（Windows では `USERPROFILE` 環境変数が使用される）。
 
 ---
 
@@ -82,7 +82,7 @@ git除外                   ローカル永続              git管理
 
 ```bash
 # ワークスペース記憶（デフォルト）
-python ${SKILL_DIR}/scripts/save_memory.py \
+python scripts/save_memory.py \
   --category [カテゴリ] \
   --title "[タイトル]" \
   --summary "[要約（1〜2文）]" \
@@ -90,11 +90,11 @@ python ${SKILL_DIR}/scripts/save_memory.py \
   --tags [タグ1],[タグ2]
 
 # ホーム記憶として保存（プロジェクト横断）
-python ${SKILL_DIR}/scripts/save_memory.py --scope home \
+python scripts/save_memory.py --scope home \
   --category architecture --title "[タイトル]" --summary "[要約]" --content "[内容]"
 
 # v5.0.0 記憶タイプ指定（🧠 脳の記憶分類に対応）
-python ${SKILL_DIR}/scripts/save_memory.py \
+python scripts/save_memory.py \
   --memory-type episodic \       # 海馬: 具体的な経験・イベント
   --importance high \             # 扁桃体: 重要度レベル
   --category auth --title "JWT期限エラーの調査" \
@@ -102,21 +102,21 @@ python ${SKILL_DIR}/scripts/save_memory.py \
   # → memory_type/importance は省略可（コンテンツから自動推定）
 
 # v4.0.0 新機能: 自動タグ抽出と重複検出
-python ${SKILL_DIR}/scripts/save_memory.py \
+python scripts/save_memory.py \
   --category auth --title "JWT認証の実装" \
   --summary "..." --content "..."
   # → 自動的にタグを提案し、類似記憶を検出して統合・更新・別保存を選択できる
 
 # 重複検出をスキップ（強制保存）
-python ${SKILL_DIR}/scripts/save_memory.py --no-dedup \
+python scripts/save_memory.py --no-dedup \
   --category auth --title "[タイトル]" --summary "[要約]" --content "[内容]"
 
 # 重複検出閾値を調整（デフォルト 0.65）
-python ${SKILL_DIR}/scripts/save_memory.py --dedup-threshold 0.75 \
+python scripts/save_memory.py --dedup-threshold 0.75 \
   --category auth --title "[タイトル]" --summary "[要約]" --content "[内容]"
 
 # 自動タグ抽出をスキップ（手動タグのみ）
-python ${SKILL_DIR}/scripts/save_memory.py --no-auto-tags \
+python scripts/save_memory.py --no-auto-tags \
   --category auth --title "[タイトル]" --summary "[要約]" --content "[内容]" --tags jwt,auth
 ```
 
@@ -156,24 +156,24 @@ recall すると `access_count` が自動加算され `share_score` が再計算
 v5.0.0: recall 時に `retention_score` も自動更新（間隔反復効果による忘却曲線リセット）。
 
 ```bash
-python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード1] [キーワード2]"
+python scripts/recall_memory.py "[キーワード1] [キーワード2]"
 
 # 全文表示
-python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --full
+python scripts/recall_memory.py "[キーワード]" --full
 
 # 結果に対してインタラクティブ評価
-python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --rate-after
+python scripts/recall_memory.py "[キーワード]" --rate-after
 
 # v5.0.0 文脈依存想起（🧠 前頭前皮質モデル）
-python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" \
+python scripts/recall_memory.py "[キーワード]" \
   --context "認証システムのリファクタリング"
 # → キーワード一致だけでなく、作業コンテキストとの関連性もランキングに反映
 
 # v5.0.0 自動コンテキスト（git diff / ディレクトリから推定）
-python ${SKILL_DIR}/scripts/recall_memory.py --auto-context
+python scripts/recall_memory.py --auto-context
 
 # v5.0.0 記憶タイプフィルター
-python ${SKILL_DIR}/scripts/recall_memory.py "[キーワード]" --memory-type procedural
+python scripts/recall_memory.py "[キーワード]" --memory-type procedural
 ```
 
 **recallのタイミング**:
@@ -187,10 +187,10 @@ v5.0.0 ハイブリッドランキング（4軸）詳細: [`references/algorithm
 ## list（記憶の一覧を表示する）
 
 ```bash
-python ${SKILL_DIR}/scripts/list_memories.py                    # workspace
-python ${SKILL_DIR}/scripts/list_memories.py --scope all        # 全スコープ
-python ${SKILL_DIR}/scripts/list_memories.py --promote-candidates  # 昇格候補
-python ${SKILL_DIR}/scripts/list_memories.py --stats            # 統計のみ
+python scripts/list_memories.py                    # workspace
+python scripts/list_memories.py --scope all        # 全スコープ
+python scripts/list_memories.py --promote-candidates  # 昇格候補
+python scripts/list_memories.py --stats            # 統計のみ
 ```
 
 ---
@@ -205,19 +205,19 @@ python ${SKILL_DIR}/scripts/list_memories.py --stats            # 統計のみ
 
 ```bash
 # 昇格候補を確認（ドライラン）
-python ${SKILL_DIR}/scripts/promote_memory.py --list
+python scripts/promote_memory.py --list
 
 # 半自動昇格（各記憶を確認しながら workspace → home）
-python ${SKILL_DIR}/scripts/promote_memory.py
+python scripts/promote_memory.py
 
 # 自動昇格（score >= 85 を全て昇格）
-python ${SKILL_DIR}/scripts/promote_memory.py --auto
+python scripts/promote_memory.py --auto
 
 # home → shared（git commit も実施）
-python ${SKILL_DIR}/scripts/promote_memory.py --scope home --target shared --auto
+python scripts/promote_memory.py --scope home --target shared --auto
 
 # git push（共有）
-python ${SKILL_DIR}/scripts/sync_memory.py --push
+python scripts/sync_memory.py --push
 ```
 
 **昇格フロー**:
@@ -235,14 +235,14 @@ recall した記憶が役立ったか、誤りがあったかを記録する。
 
 ```bash
 # 役立った記憶を評価（share_score +10）
-python ${SKILL_DIR}/scripts/rate_memory.py --id mem-20260303-001 --good
+python scripts/rate_memory.py --id mem-20260303-001 --good
 
 # 誤りがあった・修正が必要な記憶（share_score -15以上）
-python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md \
+python scripts/rate_memory.py --file memories/auth/jwt.md \
   --correction --note "JWTの有効期限を30分に変更した"
 
 # 役に立たなかった記憶（share_score -10）
-python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md --bad
+python scripts/rate_memory.py --file memories/auth/jwt.md --bad
 ```
 
 ---
@@ -254,13 +254,13 @@ python ${SKILL_DIR}/scripts/rate_memory.py --file memories/auth/jwt.md --bad
 
 ```bash
 # 統計を表示（インデックス状況・記憶品質サマリー）
-python ${SKILL_DIR}/scripts/build_index.py --stats
+python scripts/build_index.py --stats
 
 # 全スコープの統計
-python ${SKILL_DIR}/scripts/build_index.py --scope all --stats
+python scripts/build_index.py --scope all --stats
 
 # 強制完全再構築（インデックス破損時）
-python ${SKILL_DIR}/scripts/build_index.py --force
+python scripts/build_index.py --force
 ```
 
 ---
@@ -273,16 +273,16 @@ python ${SKILL_DIR}/scripts/build_index.py --force
 
 ```bash
 # ドライラン（削除対象を確認）
-python ${SKILL_DIR}/scripts/cleanup_memory.py --dry-run
+python scripts/cleanup_memory.py --dry-run
 
 # ワークスペース記憶をクリーンアップ
-python ${SKILL_DIR}/scripts/cleanup_memory.py
+python scripts/cleanup_memory.py
 
 # v4.0.0 重複検出モード（類似度 >= 0.85 のペアを検出）
-python ${SKILL_DIR}/scripts/cleanup_memory.py --duplicates-only --dry-run
+python scripts/cleanup_memory.py --duplicates-only --dry-run
 
 # v4.0.0 品質スコア閾値モード（総合品質 < 30 を削除候補に）
-python ${SKILL_DIR}/scripts/cleanup_memory.py --quality-threshold 30 --dry-run
+python scripts/cleanup_memory.py --quality-threshold 30 --dry-run
 ```
 
 削除基準・品質スコア計算式の詳細: [`references/operations.md`](references/operations.md)
@@ -299,13 +299,13 @@ VSCode の Copilot Memory 機能（`%APPDATA%\Code\User\globalStorage\github.cop
 
 ```bash
 # 何が見つかるか確認するだけ（ファイルを作成しない）
-python ${SKILL_DIR}/scripts/sync_copilot_memory.py --dry-run
+python scripts/sync_copilot_memory.py --dry-run
 
 # home スコープに取り込む（デフォルト・プロジェクト横断）
-python ${SKILL_DIR}/scripts/sync_copilot_memory.py
+python scripts/sync_copilot_memory.py
 
 # workspace スコープに取り込む
-python ${SKILL_DIR}/scripts/sync_copilot_memory.py --scope workspace
+python scripts/sync_copilot_memory.py --scope workspace
 ```
 
 globalStorageパス・詳細オプション: [`references/operations.md`](references/operations.md)
@@ -319,13 +319,13 @@ skill-registry.json に登録されたリポジトリ（git-skill-manager と共
 
 ```bash
 # 全リポジトリを pull して差分確認
-python ${SKILL_DIR}/scripts/sync_memory.py
+python scripts/sync_memory.py
 
 # 新しい shared 記憶を home に取り込む
-python ${SKILL_DIR}/scripts/sync_memory.py --import-to-home
+python scripts/sync_memory.py --import-to-home
 
 # push（readonly でないリポジトリへ）
-python ${SKILL_DIR}/scripts/sync_memory.py --push
+python scripts/sync_memory.py --push
 ```
 
 ---
@@ -345,13 +345,13 @@ python ${SKILL_DIR}/scripts/sync_memory.py --push
 
 ```bash
 # 固定化候補を確認
-python ${SKILL_DIR}/scripts/consolidate_memory.py --dry-run
+python scripts/consolidate_memory.py --dry-run
 
 # カテゴリ指定で固定化
-python ${SKILL_DIR}/scripts/consolidate_memory.py --category auth
+python scripts/consolidate_memory.py --category auth
 
 # 特定のエピソード記憶群を固定化
-python ${SKILL_DIR}/scripts/consolidate_memory.py \
+python scripts/consolidate_memory.py \
   --ids mem-20260301-001,mem-20260305-002,mem-20260308-003
 ```
 
@@ -371,13 +371,13 @@ python ${SKILL_DIR}/scripts/consolidate_memory.py \
 
 ```bash
 # 記憶のレビュー
-python ${SKILL_DIR}/scripts/review_memory.py
+python scripts/review_memory.py
 
 # 全スコープ
-python ${SKILL_DIR}/scripts/review_memory.py --scope all
+python scripts/review_memory.py --scope all
 
 # retention_score の一括更新
-python ${SKILL_DIR}/scripts/review_memory.py --update-retention
+python scripts/review_memory.py --update-retention
 ```
 
 **レビューの推奨タイミング**:

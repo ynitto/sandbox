@@ -33,10 +33,13 @@
 7. プランJSONを生成する（`sprint_goal`・`execution_groups` フィールドを記録）
 8. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する）:
    ```bash
-   python ${SKILL_DIR}/scripts/validate_plan.py plan.json --skills-json skills.json
+   python scripts/validate_plan.py plan.json --skills-json skills.json
    ```
    - `plan.json` と `skills.json` はどちらも作業ディレクトリのルートに配置する
-9. プランをユーザーに表形式で提示して承認を得る:
+9. **プランレビュー（サブエージェントへ委譲）**: バリデーション通過後、**⚠️ `runSubagent` を即時起動する**（テンプレート: `subagent-templates.md`「スプリントプランレビュー時」を使用）。自分でレビューしてはならない
+   - レビュー結果に「修正あり」が含まれる場合は修正後の `plan.json` を読み込み直す
+   - 「修正なし」の場合はそのまま次のステップへ進む
+10. プランをユーザーに表形式で提示して承認を得る:
    ```
    Sprint N プラン
 
@@ -60,9 +63,15 @@
 
    このプランで進めますか？
    ```
+   - 修正があった場合は「今回反映した改善点」に続けて「プランレビューによる修正」欄も表示する:
+     ```
+     プランレビューによる修正:
+     - [修正内容の要約]
+     ```
 
 ## ゲート条件（Phase 5 に進む前に確認）
 
+- [ ] プランレビュー（ステップ 9）が完了している
 - [ ] ユーザーがスプリントプランを承認した
 - [ ] `plan.json` の `sprints[]` と `execution_groups` が更新されている
 

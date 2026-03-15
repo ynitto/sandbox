@@ -355,7 +355,7 @@ steps:
 中央リポジトリを信頼の集積点として残しつつ、各ノード（開発環境）での
 ローカル改善を可視化し、価値あるものだけを中央へ貢献できる仕組み。
 
-詳細設計: [docs/node-federation-design.md](./node-federation-design.md)
+詳細設計: [docs/designs/node-federation-design.md](../designs/node-federation-design.md)
 
 ---
 

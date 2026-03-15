@@ -288,16 +288,16 @@ app.use(helmet())
 
 ```bash
 # カレントディレクトリを再帰スキャン
-python .github/skills/security-reviewer/scripts/scan_vulnerabilities.py
+python scripts/scan_vulnerabilities.py
 
 # 対象ディレクトリを指定
-python .github/skills/security-reviewer/scripts/scan_vulnerabilities.py --path src/
+python scripts/scan_vulnerabilities.py --path src/
 
 # JSON 形式で出力
-python .github/skills/security-reviewer/scripts/scan_vulnerabilities.py --json
+python scripts/scan_vulnerabilities.py --json
 
 # 重要度フィルタ（critical のみ）
-python .github/skills/security-reviewer/scripts/scan_vulnerabilities.py --severity critical
+python scripts/scan_vulnerabilities.py --severity critical
 ```
 
 **検出カテゴリ**（17パターン）: ハードコードシークレット、SQLインジェクション、コマンドインジェクション、XSS、JWT脆弱性、CORS設定、デバッグモード、SSRF 等

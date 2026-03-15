@@ -9,25 +9,56 @@ import json
 import os
 import re
 
+# エージェント種別とインストール先ディレクトリ名のマッピング
+AGENT_DIRS: dict[str, str] = {
+    "copilot": ".copilot",
+    "claude": ".claude",
+    "codex": ".codex",
+    "kiro": ".kiro",
+}
+
+
+def _user_home() -> str:
+    """ユーザーホームディレクトリを返す。"""
+    return os.environ.get("USERPROFILE", os.path.expanduser("~"))
+
+
+def _agent_home() -> str:
+    """このファイル（registry.py）の __file__ からエージェントホームを導出する。
+
+    インストール構造:
+        {agent_home}/skills/git-skill-manager/scripts/registry.py
+    よって:
+        scripts/ → git-skill-manager/ → skills/ → agent_home/
+    """
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(      # agent_home/
+        os.path.dirname(         # skills/
+            os.path.dirname(     # git-skill-manager/
+                scripts_dir      # scripts/
+            )
+        )
+    )
+
 
 def _registry_path() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skill-registry.json")
+    """skill-registry.json のパスを __file__ の位置から導出する。"""
+    return os.path.join(_agent_home(), "skill-registry.json")
 
 
 def _skill_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skills")
+    """スキルインストール先ディレクトリを __file__ の位置から導出する。"""
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(      # skills/
+        os.path.dirname(         # git-skill-manager/
+            scripts_dir          # scripts/
+        )
+    )
 
 
 def _cache_dir() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "cache")
-
-
-def _agents_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "agents")
+    """キャッシュディレクトリを __file__ の位置から導出する。"""
+    return os.path.join(_agent_home(), "cache")
 
 
 def _instructions_home() -> str:
@@ -229,12 +260,26 @@ def migrate_registry(reg: dict) -> dict:
             metrics.setdefault("trend_7d", {"executions": 0, "ok_rate": 0.0})
             metrics.setdefault("top_co_skills", [])
 
+    # v6 → v7: マルチエージェント対応フィールドを追加
+    #   agent_type:  インストール対象エージェント種別
+    #   user_home:   ユーザーホームディレクトリ
+    #   install_dir: スキルリポジトリのルートディレクトリ（自動更新の参照元）
+    #   skill_home:  スキルインストール先ディレクトリ
+    if version < 7:
+        home = _user_home()
+        reg.setdefault("agent_type", "copilot")
+        reg.setdefault("user_home", home)
+        reg.setdefault("install_dir", None)
+        # skill_home は agent_type から導出（デフォルト copilot）
+        agent_dir = AGENT_DIRS.get(reg["agent_type"], ".copilot")
+        reg.setdefault("skill_home", os.path.join(home, agent_dir, "skills"))
+
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
     for skill in reg.get("installed_skills", []):
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
-    reg["version"] = 6
+    reg["version"] = 7
     return reg
 
 
@@ -244,8 +289,13 @@ def load_registry() -> dict:
         with open(path, encoding="utf-8") as f:
             reg = json.load(f)
         return migrate_registry(reg)
+    home = _user_home()
     return {
-        "version": 6,
+        "version": 7,
+        "agent_type": "copilot",
+        "user_home": home,
+        "install_dir": None,
+        "skill_home": os.path.join(home, ".copilot", "skills"),
         "node": {
             "id": None,
             "name": None,

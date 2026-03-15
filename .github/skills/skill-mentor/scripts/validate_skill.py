@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-engineer-mentor-agent 静的検証スクリプト
+skill-mentor スキル静的検証スクリプト
 
 テストシナリオ(test-scenarios.md)の期待動作が
-エージェント定義ファイルに実装されているかを検証する。
+スキル定義ファイルに実装されているかを検証する。
 """
 
 import sys
 from pathlib import Path
 
-AGENT_DIR = Path(__file__).parent.parent
-AGENT_MD = AGENT_DIR.parent / "engineer-mentor-agent.md"
-DESIGN_MD = AGENT_DIR / "references" / "agent-design.md"
-TEMPLATES_MD = AGENT_DIR / "references" / "subagent-templates.md"
-SCENARIOS_MD = AGENT_DIR / "references" / "test-scenarios.md"
+SKILL_DIR = Path(__file__).parent.parent
+SKILL_MD = SKILL_DIR / "SKILL.md"
+DESIGN_MD = SKILL_DIR / "references" / "agent-design.md"
+TEMPLATES_MD = SKILL_DIR / "references" / "subagent-templates.md"
+SCENARIOS_MD = SKILL_DIR / "references" / "test-scenarios.md"
 
 
 def read(path: Path) -> str:
@@ -22,7 +22,7 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-agent = read(AGENT_MD)
+agent = read(SKILL_MD)
 design = read(DESIGN_MD)
 templates = read(TEMPLATES_MD)
 scenarios = read(SCENARIOS_MD)
@@ -37,7 +37,7 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 # ──────────────────────────────────────────────
 # ファイル存在確認
 # ──────────────────────────────────────────────
-check("ファイル: engineer-mentor-agent.md", AGENT_MD.exists(), str(AGENT_MD))
+check("ファイル: SKILL.md", SKILL_MD.exists(), str(SKILL_MD))
 check("ファイル: agent-design.md", DESIGN_MD.exists(), str(DESIGN_MD))
 check("ファイル: subagent-templates.md", TEMPLATES_MD.exists(), str(TEMPLATES_MD))
 check("ファイル: test-scenarios.md", SCENARIOS_MD.exists(), str(SCENARIOS_MD))
@@ -156,7 +156,7 @@ passed = sum(1 for _, ok, _ in results if ok)
 failed = sum(1 for _, ok, _ in results if not ok)
 total = len(results)
 
-print(f"\nengineer-mentor-agent 検証結果")
+print(f"\nskill-mentor スキル検証結果")
 print("=" * 60)
 
 current_group = ""

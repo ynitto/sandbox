@@ -36,20 +36,15 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-
-def _registry_path() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skill-registry.json")
+# registry.py の __file__ ベースのパス解決を利用
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from registry import _registry_path, _skill_home, _agent_home
 
 
 def _metrics_log_path() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "metrics-log.jsonl")
-
-
-def _skill_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skills")
+    return os.path.join(_agent_home(), "metrics-log.jsonl")
 
 
 def _repo_root() -> str:

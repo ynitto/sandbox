@@ -33,8 +33,22 @@ def _default_workspace() -> str:
 
 
 def _user_skill_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skills")
+    """registry.py の __file__ ベースでスキルホームを解決する。
+
+    インストール構造: {skill_home}/skill-creator/scripts/simulate_trigger.py
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    # scripts/ → skill-creator/ → skill_home/
+    skill_home = os.path.normpath(os.path.join(here, "..", ".."))
+    # registry.py を経由して正確なパスを取得
+    reg_scripts = os.path.join(skill_home, "git-skill-manager", "scripts")
+    if os.path.isdir(reg_scripts) and reg_scripts not in sys.path:
+        sys.path.insert(0, reg_scripts)
+    try:
+        from registry import _skill_home as _get_skill_home
+        return _get_skill_home()
+    except ImportError:
+        return skill_home
 
 
 # ---------------------------------------------------------------------------
