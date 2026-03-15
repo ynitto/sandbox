@@ -1,5 +1,15 @@
 # リファクタリング手法コード例
 
+## 目次
+
+- [関数の抽出（Extract Method）](#関数の抽出extract-method)
+- [ガード節による平坦化（Replace Nested Conditional with Guard Clauses）](#ガード節による平坦化replace-nested-conditional-with-guard-clauses)
+- [型安全性の向上（Introduce Type Safety）](#型安全性の向上introduce-type-safety)
+- [Strategyパターン（条件分岐の置き換え）](#strategyパターン条件分岐の置き換え)
+- [Chain of Responsibilityパターン（バリデーション処理の分解）](#chain-of-responsibilityパターンバリデーション処理の分解)
+
+---
+
 ## 関数の抽出（Extract Method）
 
 長い関数から意味のある処理のまとまりを関数として切り出す。
