@@ -49,10 +49,10 @@ git除外                   ローカル永続              git管理
 | スコープ | 保存先 | 用途 | git管理 |
 |---------|--------|------|---------|
 | `workspace` | `${SKILL_DIR}/memories/` | VSCodeワークスペース固有の知見 | **除外(.gitignore)** |
-| `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
-| `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
+| `home` | `{agent_home}/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
+| `shared` | `{agent_home}/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理（skill-registry.json のリポジトリを使用）** |
 
-> **Windows の場合**: `~` は `%USERPROFILE%` に読み替えてください。
+`agent_home` はエージェント種別に応じて自動解決される（Windows では `USERPROFILE` 環境変数が使用される）。
 
 ---
 

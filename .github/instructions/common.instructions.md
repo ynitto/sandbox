@@ -21,8 +21,7 @@ applyTo: "**"
 ```
 この位置から `{agent_home}/skills/` が `SKILL_HOME`、`{agent_home}/skill-registry.json` がレジストリパスとなる。
 エージェント種別（copilot/claude/codex/kiro）に関わらず同じロジックで解決される。
-
-> **Windows の場合**: `~` は `%USERPROFILE%` に読み替えてください。
+Windows では `USERPROFILE` 環境変数が自動的に参照されるため、ユーザーがパスを読み替える必要はない。
 
 ### SKILL_HOME の取得（シェルコマンド例）
 
