@@ -62,7 +62,7 @@ def _cache_dir() -> str:
 
 
 def _instructions_home() -> str:
-    return os.path.join(_agent_home(), "cache")
+    return os.path.join(_agent_home(), "instructions")
 
 
 def _version_tuple(v: str | None) -> tuple:
