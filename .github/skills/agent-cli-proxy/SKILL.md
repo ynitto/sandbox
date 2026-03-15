@@ -1,5 +1,5 @@
 ---
-name: ai-cli-caller
+name: agent-cli-proxy
 description: Claude・GitHub Copilot・Codex・Amazon Q・Kiro などの AI CLI ツールを呼び出すスキル。「Claude に聞いて」「Copilot に質問して」「Codex で生成して」「Amazon Q に確認して」「Kiro を使って」「別の AI に聞いて」「他の AI ツールに投げて」「AI CLI を実行して」などのリクエストで発動する。Windows（PowerShell）・macOS・Linux に対応。GitHub Copilot および Claude Code の両エージェントで動作する。
 metadata:
   version: 1.0.0
