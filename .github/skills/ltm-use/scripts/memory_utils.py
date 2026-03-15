@@ -10,21 +10,27 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 
 # ─── パス定数 ────────────────────────────────────────────────
-
-def _get_home_dir() -> str:
-    """クロスプラットフォーム対応のホームディレクトリを返す。"""
-    return os.environ.get("USERPROFILE", os.path.expanduser("~"))
-
 
 def get_skill_dir() -> str:
     """このファイルの2階層上 = SKILL_DIR"""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-HOME_MEMORY_ROOT = os.path.join(_get_home_dir(), ".copilot", "memory")
+# registry.py の __file__ ベースのパス解決を利用
+# このスクリプト: {skill_home}/ltm-use/scripts/memory_utils.py
+# skill_home = scripts/../.. の2段上
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SKILL_HOME = os.path.dirname(os.path.dirname(_HERE))
+_REG_SCRIPTS = os.path.join(_SKILL_HOME, "git-skill-manager", "scripts")
+if _REG_SCRIPTS not in sys.path:
+    sys.path.insert(0, _REG_SCRIPTS)
+from registry import _agent_home, _registry_path as _get_registry_path
+
+HOME_MEMORY_ROOT = os.path.join(_agent_home(), "memory")
 
 SCOPE_DIRS = {
     "workspace": os.path.join(get_skill_dir(), "memories"),
@@ -32,7 +38,7 @@ SCOPE_DIRS = {
     "shared":    os.path.join(HOME_MEMORY_ROOT, "shared"),  # 後方互換用レガシーパス
 }
 
-REGISTRY_PATH = os.path.join(_get_home_dir(), ".copilot", "skill-registry.json")
+REGISTRY_PATH = _get_registry_path()
 SHARED_BASE = os.path.join(HOME_MEMORY_ROOT, "shared")
 
 DEFAULT_CONFIG = {

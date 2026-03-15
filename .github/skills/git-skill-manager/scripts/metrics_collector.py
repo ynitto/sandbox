@@ -36,17 +36,15 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 
 
-def _copilot_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot")
+# registry.py の __file__ ベースのパス解決を利用
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from registry import _agent_home, _registry_path
 
 
 def _metrics_log_path() -> str:
-    return os.path.join(_copilot_home(), "metrics-log.jsonl")
-
-
-def _registry_path() -> str:
-    return os.path.join(_copilot_home(), "skill-registry.json")
+    return os.path.join(_agent_home(), "metrics-log.jsonl")
 
 
 # ───────────────────────────────────────────

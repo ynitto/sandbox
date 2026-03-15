@@ -17,79 +17,48 @@ AGENT_DIRS: dict[str, str] = {
     "kiro": ".kiro",
 }
 
-# レジストリ検索順（copilot を先頭にして既存の動作を維持）
-_REGISTRY_SEARCH_ORDER = ["copilot", "claude", "codex", "kiro"]
-
 
 def _user_home() -> str:
     """ユーザーホームディレクトリを返す。"""
     return os.environ.get("USERPROFILE", os.path.expanduser("~"))
 
 
-def _find_registry_path() -> str | None:
-    """既存の skill-registry.json を全エージェントディレクトリから探して返す。
+def _agent_home() -> str:
+    """このファイル（registry.py）の __file__ からエージェントホームを導出する。
 
-    複数存在する場合は REGISTRY_SEARCH_ORDER の先頭を優先する。
-    見つからない場合は None を返す。
+    インストール構造:
+        {agent_home}/skills/git-skill-manager/scripts/registry.py
+    よって:
+        scripts/ → git-skill-manager/ → skills/ → agent_home/
     """
-    home = _user_home()
-    for agent in _REGISTRY_SEARCH_ORDER:
-        path = os.path.join(home, AGENT_DIRS[agent], "skill-registry.json")
-        if os.path.isfile(path):
-            return path
-    return None
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(      # agent_home/
+        os.path.dirname(         # skills/
+            os.path.dirname(     # git-skill-manager/
+                scripts_dir      # scripts/
+            )
+        )
+    )
 
 
 def _registry_path() -> str:
-    """skill-registry.json のパスを返す。
-
-    既存ファイルが見つかればそのパスを、なければデフォルト（copilot）を返す。
-    後方互換性のため関数シグネチャは変えない。
-    """
-    found = _find_registry_path()
-    if found:
-        return found
-    home = _user_home()
-    return os.path.join(home, ".copilot", "skill-registry.json")
+    """skill-registry.json のパスを __file__ の位置から導出する。"""
+    return os.path.join(_agent_home(), "skill-registry.json")
 
 
 def _skill_home() -> str:
-    """スキルインストール先ディレクトリを返す。
-
-    skill-registry.json の skill_home フィールドを優先し、
-    見つからない場合は copilot デフォルトにフォールバックする。
-    """
-    reg_path = _find_registry_path()
-    if reg_path and os.path.isfile(reg_path):
-        try:
-            with open(reg_path, encoding="utf-8") as f:
-                reg = json.load(f)
-            skill_home = reg.get("skill_home")
-            if skill_home:
-                return skill_home
-        except Exception:
-            pass
-    home = _user_home()
-    return os.path.join(home, ".copilot", "skills")
+    """スキルインストール先ディレクトリを __file__ の位置から導出する。"""
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(      # skills/
+        os.path.dirname(         # git-skill-manager/
+            scripts_dir          # scripts/
+        )
+    )
 
 
 def _cache_dir() -> str:
-    """キャッシュディレクトリを返す。
-
-    skill-registry.json の skill_home フィールドから導出する。
-    """
-    reg_path = _find_registry_path()
-    if reg_path and os.path.isfile(reg_path):
-        try:
-            with open(reg_path, encoding="utf-8") as f:
-                reg = json.load(f)
-            skill_home = reg.get("skill_home")
-            if skill_home:
-                return os.path.join(os.path.dirname(skill_home), "cache")
-        except Exception:
-            pass
-    home = _user_home()
-    return os.path.join(home, ".copilot", "cache")
+    """キャッシュディレクトリを __file__ の位置から導出する。"""
+    return os.path.join(_agent_home(), "cache")
 
 
 def _version_tuple(v: str | None) -> tuple:
@@ -356,12 +325,7 @@ def load_registry() -> dict:
 
 
 def save_registry(reg: dict) -> None:
-    # レジストリに記録された skill_home からパスを導出（なければデフォルト）
-    skill_home = reg.get("skill_home")
-    if skill_home:
-        path = os.path.join(os.path.dirname(skill_home), "skill-registry.json")
-    else:
-        path = _registry_path()
+    path = _registry_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)

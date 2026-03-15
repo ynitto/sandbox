@@ -13,18 +13,28 @@ Windows/macOS 両対応。
 """
 
 import argparse
+import os
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+# registry.py の __file__ ベースのパス解決を利用
+# このスクリプト: {skill_home}/skill-selector/scripts/discover_skills.py
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SKILL_HOME = os.path.dirname(os.path.dirname(_HERE))
+_REG_SCRIPTS = os.path.join(_SKILL_HOME, "git-skill-manager", "scripts")
+if _REG_SCRIPTS not in sys.path:
+    sys.path.insert(0, _REG_SCRIPTS)
+from registry import _skill_home as _get_skill_home
 
 
 def find_skills_dirs() -> list[Path]:
     """探索対象のスキルディレクトリを返す（存在するものだけ）。"""
     candidates = []
 
-    # ユーザーホーム
-    home_skills = Path.home() / ".copilot" / "skills"
+    # ユーザーホーム（registry.py の __file__ ベースで解決）
+    home_skills = Path(_get_skill_home())
     if home_skills.is_dir():
         candidates.append(home_skills)
 

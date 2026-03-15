@@ -170,14 +170,14 @@ def discover_skills(
 
 
 def _default_skills_dir() -> str:
-    """スクリプト配置に応じた既定のスキルディレクトリを返す。"""
-    here = os.path.dirname(os.path.abspath(__file__))
-    local_skills = os.path.normpath(os.path.join(here, "..", ".."))
-    if os.path.isdir(local_skills):
-        return local_skills
+    """スクリプト配置に応じた既定のスキルディレクトリを返す。
 
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "skills")
+    このスクリプトの __file__ から skill_home を導出する。
+    インストール構造: {skill_home}/scrum-master/scripts/discover_skills.py
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    # scripts/ → scrum-master/ → skill_home/
+    return os.path.normpath(os.path.join(here, "..", ".."))
 
 
 def main() -> None:
