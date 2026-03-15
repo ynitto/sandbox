@@ -1,3 +1,7 @@
+---
+applyTo: "**"
+---
+
 # エージェントへの共通指示
 
 > **Windows の場合**: このドキュメント内の `~/.copilot/` は `%USERPROFILE%\.copilot\` に読み替えてください。
