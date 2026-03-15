@@ -1,6 +1,6 @@
 # レジストリスキーマ
 
-パス: `~/.copilot/skill-registry.json`（Windows: `%USERPROFILE%\.copilot\skill-registry.json`）
+パス: `{agent_home}/skill-registry.json`（`agent_home` はエージェント種別により異なる。`install.py --agent <種別>` で決定される）
 
 ## 目次
 

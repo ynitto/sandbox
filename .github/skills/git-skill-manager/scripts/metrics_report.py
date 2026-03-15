@@ -29,13 +29,8 @@ from metrics_collector import (  # noqa: E402
 )
 
 
-def _copilot_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot")
-
-
-def _registry_path() -> str:
-    return os.path.join(_copilot_home(), "skill-registry.json")
+# registry.py の __file__ ベースのパス解決を利用（metrics_collector 経由で既に import 済み）
+from registry import _agent_home, _registry_path
 
 
 def _load_registry() -> dict:
