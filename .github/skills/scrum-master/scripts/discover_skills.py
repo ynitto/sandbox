@@ -176,6 +176,12 @@ def _default_skills_dir() -> str:
     if os.path.isdir(local_skills):
         return local_skills
 
+    # __file__ 相対: <base>/skills/<skill>/scripts/ → 2階層上 = <base>/skills
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.normpath(os.path.join(here, "..", ".."))
+    registry = os.path.join(candidate, "..", "skill-registry.json")
+    if os.path.isfile(registry):
+        return candidate
     if "AGENT_SKILLS_HOME" in os.environ:
         return os.path.join(os.environ["AGENT_SKILLS_HOME"], "skills")
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))

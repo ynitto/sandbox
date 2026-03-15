@@ -769,6 +769,10 @@ def print_results(results: list[dict]) -> int:
 
 
 def _agent_skills_home() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.normpath(os.path.join(here, "..", "..", ".."))
+    if os.path.isdir(os.path.join(candidate, "skills")):
+        return candidate
     if "AGENT_SKILLS_HOME" in os.environ:
         return os.environ["AGENT_SKILLS_HOME"]
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))

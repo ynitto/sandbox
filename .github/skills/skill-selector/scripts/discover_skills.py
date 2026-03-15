@@ -20,24 +20,38 @@ from collections import defaultdict
 from pathlib import Path
 
 
+def _installed_skills_dir() -> Path:
+    """__file__ の相対位置からインストール済みスキルディレクトリを解決する。
+
+    インストール済み構造: <base>/skills/<skill>/scripts/discover_skills.py
+    → 2 階層上 = <base>/skills
+    """
+    script_dir = Path(__file__).resolve().parent
+    candidate = script_dir.parent.parent  # <base>/skills
+    if candidate.is_dir() and (candidate.parent / "skill-registry.json").exists():
+        return candidate
+    # フォールバック: AGENT_SKILLS_HOME → ~/.copilot → ~/.agent-skills
+    if "AGENT_SKILLS_HOME" in os.environ:
+        return Path(os.environ["AGENT_SKILLS_HOME"]) / "skills"
+    legacy = Path.home() / ".copilot" / "skills"
+    if legacy.is_dir():
+        return legacy
+    return Path.home() / ".agent-skills" / "skills"
+
+
 def find_skills_dirs() -> list[Path]:
     """探索対象のスキルディレクトリを返す（存在するものだけ）。"""
     candidates = []
 
-    # ユーザーホーム
-    if "AGENT_SKILLS_HOME" in os.environ:
-        home_skills = Path(os.environ["AGENT_SKILLS_HOME"]) / "skills"
-    else:
-        legacy = Path.home() / ".copilot" / "skills"
-        home_skills = legacy if legacy.is_dir() else Path.home() / ".agent-skills" / "skills"
+    home_skills = _installed_skills_dir()
     if home_skills.is_dir():
         candidates.append(home_skills)
 
-    # このスクリプトの場所から .github/skills/ を特定
+    # このスクリプトの場所から .github/skills/ を特定（ワークスペース優先）
     # discover_skills.py -> scripts/ -> skill-selector/ -> skills/
     script_dir = Path(__file__).resolve().parent
     workspace_skills = script_dir.parent.parent
-    if workspace_skills.is_dir() and workspace_skills.name == "skills":
+    if workspace_skills.is_dir() and workspace_skills.name == "skills" and workspace_skills != home_skills:
         candidates.append(workspace_skills)
 
     return candidates

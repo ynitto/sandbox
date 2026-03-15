@@ -20,10 +20,13 @@ def _get_home_dir() -> str:
 
 
 def _agent_skills_home() -> str:
-    """AGENT_SKILLS_HOME 環境変数を返す。未設定なら ~/.agent-skills を使用。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.normpath(os.path.join(here, "..", "..", ".."))
+    if os.path.isdir(os.path.join(candidate, "skills")):
+        return candidate
     if "AGENT_SKILLS_HOME" in os.environ:
         return os.environ["AGENT_SKILLS_HOME"]
-    home = _get_home_dir()
+    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
     legacy = os.path.join(home, ".copilot")
     if os.path.isdir(legacy):
         return legacy

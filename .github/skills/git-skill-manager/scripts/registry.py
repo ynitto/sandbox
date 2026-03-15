@@ -11,17 +11,22 @@ import re
 
 
 def _agent_skills_home() -> str:
-    """AGENT_SKILLS_HOME 環境変数を返す。未設定なら ~/.agent-skills を使用。
+    """ベースディレクトリを解決する。
 
-    エージェント別のデフォルトディレクトリ（環境変数で上書き可能）:
-        claude   → ~/.claude
-        codex    → ~/.codex
-        copilot  → ~/.copilot  (後方互換)
-        kiro     → ~/.kiro
+    優先順位:
+      1. __file__ の相対位置から推定
+         インストール済み構造: <base>/skills/<skill>/scripts/registry.py
+         → __file__ から 3 階層上 = <base>
+      2. AGENT_SKILLS_HOME 環境変数
+      3. ~/.copilot（後方互換）
+      4. ~/.agent-skills（デフォルト）
     """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.normpath(os.path.join(here, "..", "..", ".."))
+    if os.path.isdir(os.path.join(candidate, "skills")):
+        return candidate
     if "AGENT_SKILLS_HOME" in os.environ:
         return os.environ["AGENT_SKILLS_HOME"]
-    # 後方互換: ~/.copilot が存在すればそちらを優先
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
     legacy = os.path.join(home, ".copilot")
     if os.path.isdir(legacy):

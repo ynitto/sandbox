@@ -33,6 +33,11 @@ def _default_workspace() -> str:
 
 
 def _user_skill_home() -> str:
+    # __file__ 相対: <base>/skills/<skill>/scripts/ → 2階層上 = <base>/skills
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.normpath(os.path.join(here, "..", ".."))
+    if os.path.isfile(os.path.join(candidate, "..", "skill-registry.json")):
+        return candidate
     if "AGENT_SKILLS_HOME" in os.environ:
         return os.path.join(os.environ["AGENT_SKILLS_HOME"], "skills")
     home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
