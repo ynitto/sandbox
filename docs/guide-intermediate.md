@@ -394,4 +394,4 @@ snapshot-20260227T103000/
 
 - 自分のプロジェクトに合ったスキルを `skill-creator` で作ってみましょう
 - チームで使う場合は、ノードフェデレーションの仕組みを活用してスキルの共有・改善サイクルを回しましょう
-- 詳細な設計については [プロジェクト概要](project-overview.md) や [ノードフェデレーション設計](node-federation-design.md) を参照してください
+- 詳細な設計については [プロジェクト概要](project-overview.md) や [ノードフェデレーション設計](designs/node-federation-design.md) を参照してください
