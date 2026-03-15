@@ -7,64 +7,44 @@
 ```mermaid
 flowchart TD
     A[Phase 2 開始] --> B{requirements.json 存在?}
-    B -- あり --> E[Step 2-3: バックログ変換]
-    B -- なし --> C[Step 2-1: 曖昧度判定]
-    C -- 4項目すべて明確\n& 既存機能への修正 --> D[Step 2-4: 直接バックログ作成]
-    C -- それ以外 --> F[Step 2-2a: プレインタビュー]
-    F --> G[Step 2-2b: requirements-definer に委譲]
-    G --> E
-    D --> H[Step 2-5: プロダクトゴール & DoD 設定]
-    E --> H
-    H --> I[Step 2-6: plan.json 保存]
-    I --> J{ゲート条件クリア?}
-    J -- Yes --> K[Phase 3 へ]
-    J -- No --> I
+    B -- あり --> C[Step 2-2: バックログ変換]
+    B -- なし --> D[Step 2-1: プレインタビュー → requirements-definer に委譲]
+    D --> C
+    C --> E[Step 2-3: プロダクトゴール & DoD 設定]
+    E --> F[Step 2-4: plan.json 保存]
+    F --> G{ゲート条件クリア?}
+    G -- Yes --> H[Phase 3 へ]
+    G -- No --> F
 ```
 
 ## 目次
 
 - [Step 2-0: requirements.json の存在チェック](#step-2-0-requirementsjson-の存在チェック)
-- [Step 2-1: 曖昧度判定](#step-2-1-曖昧度判定)
-- [Step 2-2: scrum-master がプレインタビューを実施し、requirements-definer に委譲する](#step-2-2-scrum-master-がプレインタビューを実施しrequirements-definer-に委譲する)
-- [Step 2-3: requirements.json → バックログ変換](#step-2-3-requirementsjson--バックログ変換)
-- [Step 2-4: 直接バックログ作成（小さく明示的なタスクのみ）](#step-2-4-直接バックログ作成小さく明示的なタスクのみ)
-- [Step 2-5: プロダクトゴールと完成の定義を設定する](#step-2-5-プロダクトゴールと完成の定義を設定する)
-- [Step 2-6: plan.json 保存](#step-2-6-planjson-保存)
+- [Step 2-1: scrum-master がプレインタビューを実施し、requirements-definer に委譲する](#step-2-1-scrum-master-がプレインタビューを実施しrequirements-definer-に委譲する)
+- [Step 2-2: requirements.json → バックログ変換](#step-2-2-requirementsjson--バックログ変換)
+- [Step 2-3: プロダクトゴールと完成の定義を設定する](#step-2-3-プロダクトゴールと完成の定義を設定する)
+- [Step 2-4: plan.json 保存](#step-2-4-planjson-保存)
 - [ゲート条件（Phase 3 に進む前に確認）](#ゲート条件phase-3-に進む前に確認)
 
-ユーザーのプロンプトからバックログを作成する。曖昧な指示の場合は requirements-definer を介して要件を明確化してからバックログに変換する。
+ユーザーのプロンプトから **必ず requirements-definer を経由して** バックログを作成する。プロンプトが明確に見えても要件定義は省略しない。requirements.json が存在する場合のみスキップできる。
+
+---
 
 ## Step 2-0: requirements.json の存在チェック
 
 作業ディレクトリのルートに `requirements.json` が存在するか確認する。
 
-- **存在する** → Step 2-3 へスキップ（Step 2-5 は引き続き必ず実行する）
+- **存在する** → Step 2-2 へスキップ（Step 2-3 は引き続き必ず実行する）
 - **存在しない** → Step 2-1 へ進む
 
-## Step 2-1: 曖昧度判定
+---
 
-ユーザーのプロンプトを以下の4項目で評価する:
-
-| # | 判定項目 | 明確の例 | 曖昧の例 |
-|---|----------|---------|---------|
-| a | ゴールが1文で定義可能か | 「REST APIにページネーションを実装して」 | 「ECサイト作って」 |
-| b | 対象ユーザー/利用シーンが特定できるか | 「管理者画面のダッシュボード」 | 「Webアプリで」 |
-| c | スコープ（In/Out）が推定可能か | 「src/api/users.tsに追加」 | 「いい感じに」 |
-| d | 3タスク以内で分解可能か | 「バリデーションを追加してテストを書いて」 | 機能数が不明 |
-
-**判定ルール:**
-
-- **4項目すべて明確 かつ 既存機能への単純な追加・修正** → Step 2-4 へ
-- **それ以外（1項目でも不明確、または新規開発）** → Step 2-2 へ
-
-> **迷ったら Step 2-2**。LLM はプロンプトを「明確」と解釈しがちだが、新規開発・新規機能追加は対象ユーザーやスコープが暗黙的に不明確なケースが多い。Step 2-4 に進んでよいのは「既存ファイルへの具体的な追加・修正」のような小さく明示的なタスクに限る。
-
-## Step 2-2: scrum-master がプレインタビューを実施し、requirements-definer に委譲する
+## Step 2-1: scrum-master がプレインタビューを実施し、requirements-definer に委譲する
 
 > **方針**: サブエージェントはユーザーと対話できない環境（VSCode Copilot など）に対応するため、
 > scrum-master がユーザーから必要情報を収集してからサブエージェントに渡す。
 
-### Step 2-2a: scrum-master 自身が簡易インタビューを実施する
+### Step 2-1a: scrum-master 自身が簡易インタビューを実施する
 
 以下の3点を確認する（ユーザーのプロンプトから自明な場合は省略可）:
 
@@ -80,9 +60,9 @@ flowchart TD
 
 > **未回答チェック**: 3項目のうち1つでもユーザーから回答が得られなかった場合、委譲前に再度確認するか、「不明」として明示的に記録する。未回答項目が残ったまま委譲する場合は、テンプレートの該当欄に `[未回答 — サブエージェントが推定してよい]` と記載すること。
 
-### Step 2-2b: requirements-definer に委譲する
+### Step 2-1b: requirements-definer に委譲する
 
-> **⛔ STOP**: この先、requirements を自分で作成・整理しようとしていないか？  
+> **⛔ STOP**: この先、requirements を自分で作成・整理しようとしていないか？
 > 要件定義はサブエージェントの仕事。自分でやってはならない。
 
 **⚠️ サブエージェントを即時起動する**（GitHub Copilot: `#tool:agent/runSubagent` / Claude Code: `Task` ツール）。
@@ -90,9 +70,9 @@ flowchart TD
 `subagent-templates.md`「requirements-definer 呼び出し時」のテンプレートを使用する。テンプレートに以下のフィールドを追加して起動すること:
 ```
 収集済みコンテキスト:
-  対象ユーザー: [Step 2-2a で収集した回答]
-  スコープ: [Step 2-2a で収集した回答]
-  規模感: [Step 2-2a で収集した回答]
+  対象ユーザー: [Step 2-1a で収集した回答]
+  スコープ: [Step 2-1a で収集した回答]
+  規模感: [Step 2-1a で収集した回答]
 注意: 収集済みコンテキストが提供されているため、ユーザーへの追加質問（Step 1）はスキップして
       Step 2 の規模判定から開始すること。
       ただし、収集済みコンテキストに「未回答」の項目がある場合や、Step 2 以降で情報不足を
@@ -102,9 +82,11 @@ flowchart TD
 サマリー: [1〜2文で結果を説明]
 ```
 
-完了後、`requirements.json` が生成される → Step 2-3 へ進む。
+完了後、`requirements.json` が生成される → Step 2-2 へ進む。
 
-## Step 2-3: requirements.json → バックログ変換
+---
+
+## Step 2-2: requirements.json → バックログ変換
 
 `requirements.json` を読み込み、以下のマッピングルールで `plan.json` のバックログに変換する:
 
@@ -122,22 +104,11 @@ flowchart TD
 - 1タスク = 1スキルの1回の実行
 - acceptance_criteria が複数ある場合、同一タスクの done_criteria に統合するか、テスト用の別タスクに分離する
 
-→ **Step 2-5 へ進む**（requirements.json 経由でここに来た場合も省略しない）。
+→ **Step 2-3 へ進む**（requirements.json 経由でここに来た場合も省略しない）。
 
-## Step 2-4: 直接バックログ作成（小さく明示的なタスクのみ）
+---
 
-1. ゴール（最終目標）を1文で定義する
-2. ゴール達成に必要な全タスクを洗い出す
-3. 各タスクに以下を設定する:
-   - **action**: 具体的な作業内容
-   - **priority**: 実行優先度（1が最高）
-   - **done_criteria**: 完了の定義
-   - **skill**: Phase 1のスキル一覧からマッチするスキル名。複数スキルを組み合わせる場合は配列で指定。該当なしは null
-   - **depends_on**: 先行タスクのID
-
-→ Step 2-5 へ進む。
-
-## Step 2-5: プロダクトゴールと完成の定義を設定する
+## Step 2-3: プロダクトゴールと完成の定義を設定する
 
 スクラムガイド2020の3つの確約（コミットメント）のうち、バックログ作成時に定義できる2つを設定する。
 
@@ -169,7 +140,9 @@ flowchart TD
 - ソフトウェア開発タスクが含まれる場合の推奨基準: テスト通過・コードレビュー済み・動作確認済み
 - スキル作成・ドキュメント作成など非コーディングタスクの場合: レビュー済み・想定通りに動作すること
 
-## Step 2-6: plan.json 保存
+---
+
+## Step 2-4: plan.json 保存
 
 スキーマ詳細は `plan-schema.md` を参照する。作業ディレクトリのルートに `plan.json` として保存する。
 
@@ -179,7 +152,7 @@ flowchart TD
   "goal": "...",
   "product_goal": "...",
   "definition_of_done": "...",
-  "requirements_source": "direct",
+  "requirements_source": "requirements-definer",
   "backlog": [
     {"id": "b1", "action": "...", "priority": 1, "done_criteria": "...", "skill": "...", "depends_on": [], "status": "pending", "result": null}
   ],
@@ -193,6 +166,8 @@ flowchart TD
 - 「AしてBする」で責務が異なる場合は2タスクに分ける
 - 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "react-frontend-unit-tester"]`）
 - 汎用タスク（skill: null）は判断・調査・確認など、スキル不要な軽微な作業に限定する
+
+---
 
 ## ゲート条件（Phase 3 に進む前に確認）
 
