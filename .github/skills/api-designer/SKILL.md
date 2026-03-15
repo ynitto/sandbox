@@ -443,16 +443,16 @@ type User {
 
 ```bash
 # YAML ファイルを検証（PyYAML が必要）
-python .github/skills/api-designer/scripts/validate_openapi.py openapi.yaml
+python scripts/validate_openapi.py openapi.yaml
 
 # JSON ファイルを検証（標準ライブラリのみで動作）
-python .github/skills/api-designer/scripts/validate_openapi.py openapi.json
+python scripts/validate_openapi.py openapi.json
 
 # 警告も表示（descriptions 未設定、servers 未定義等）
-python .github/skills/api-designer/scripts/validate_openapi.py --strict openapi.yaml
+python scripts/validate_openapi.py --strict openapi.yaml
 
 # JSON 形式で出力（CI 連携用）
-python .github/skills/api-designer/scripts/validate_openapi.py --json openapi.yaml
+python scripts/validate_openapi.py --json openapi.yaml
 ```
 
 **検証項目**: openapi/info/paths の必須フィールド、パスパラメータの整合性、セキュリティスキーム参照、HTTPステータスコード形式、servers URL形式

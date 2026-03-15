@@ -57,7 +57,7 @@
 ```
 sprint-reviewer スキルでスプリントのレビューとレトロスペクティブを実施する。
 
-手順: まず ${SKILLS_DIR}/sprint-reviewer/SKILL.md を読んで手順に従ってください。
+手順: まず sprint-reviewer スキルの SKILL.md を読んで手順に従ってください。
 ゴール: [goal]
 プロダクトゴール: [product_goal]
 スプリントゴール: [sprint_goal]

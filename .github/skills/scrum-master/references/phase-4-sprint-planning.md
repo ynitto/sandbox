@@ -33,7 +33,7 @@
 7. プランJSONを生成する（`sprint_goal`・`execution_groups` フィールドを記録）
 8. バリデーションを実行する（**最大3回**。3回失敗したらエラー内容をユーザーに提示して修正方針を相談する）:
    ```bash
-   python ${SKILL_DIR}/scripts/validate_plan.py plan.json --skills-json skills.json
+   python scripts/validate_plan.py plan.json --skills-json skills.json
    ```
    - `plan.json` と `skills.json` はどちらも作業ディレクトリのルートに配置する
 9. **プランレビュー（サブエージェントへ委譲）**: バリデーション通過後、**⚠️ `runSubagent` を即時起動する**（テンプレート: `subagent-templates.md`「スプリントプランレビュー時」を使用）。自分でレビューしてはならない
