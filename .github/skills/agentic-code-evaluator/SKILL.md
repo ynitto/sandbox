@@ -23,11 +23,11 @@ metadata:
 
 # agentic-code-evaluator
 
-エージェントが自身の出力を評価・改善する反復ループのパターンと実装ガイド。単発生成から品質保証付きの反復改善サイクルへ移行する。
+エージェントが自身の出力を評価・改善する反復ループのパターンと実装ガイド。
 
 ## 概要
 
-評価パターンにより、エージェントは自身の出力を評価・改善できる。単発生成から反復改善ループへと発展させる。
+単発生成から品質保証付きの反復改善サイクルへ移行するための評価パターン集。
 
 ```
 生成 → 評価 → 批評 → 改善 → 出力
@@ -52,10 +52,11 @@ def reflect_and_refine(task: str, criteria: list[str], max_iterations: int = 3) 
     """リフレクションループ付き生成。"""
     output = llm(f"このタスクを完了してください:\n{task}")
 
-    for i in range(max_iterations):
-        # 自己批評
+    pending_criteria = criteria  # 未クリアの基準のみ再評価してコストを削減
+    for _ in range(max_iterations):
+        # 自己批評（未クリア基準のみ評価）
         critique = llm(f"""
-        以下の基準に対してこの出力を評価してください: {criteria}
+        以下の基準に対してこの出力を評価してください: {pending_criteria}
         出力: {output}
         各基準を PASS/FAIL とフィードバックで JSON 形式で評価してください。
         """)
@@ -65,8 +66,9 @@ def reflect_and_refine(task: str, criteria: list[str], max_iterations: int = 3) 
         if all_pass:
             return output
 
-        # 批評に基づいて改善
-        failed = {k: v["feedback"] for k, v in critique_data.items() if v["status"] == "FAIL"}
+        # 次のイテレーションでは失敗した基準のみ再評価する
+        pending_criteria = [k for k, v in critique_data.items() if v["status"] == "FAIL"]
+        failed = {k: critique_data[k]["feedback"] for k in pending_criteria}
         output = llm(f"以下の問題を修正してください: {failed}\n元の出力: {output}")
 
     return output
@@ -100,10 +102,17 @@ class EvaluatorOptimizer:
 
     def run(self, task: str, max_iterations: int = 3) -> str:
         output = self.generate(task)
+        history = []
+        prev_score = 0.0
         for _ in range(max_iterations):
             evaluation = self.evaluate(output, task)
-            if evaluation["overall_score"] >= self.score_threshold:
+            score = evaluation["overall_score"]
+            history.append({"score": score, "output": output})
+            if score >= self.score_threshold:
                 break
+            if score <= prev_score:  # スコアが改善しない場合は収束と判定して早期終了
+                break
+            prev_score = score
             output = self.optimize(output, evaluation)
         return output
 ```
@@ -171,6 +180,7 @@ def evaluate_with_rubric(output: str, rubric: dict) -> float:
     scores = json.loads(
         llm(f"各ディメンションを 1-5 で評価してください: {list(rubric.keys())}\n出力: {output}")
     )
+    # 各スコアを最大値 5 で割って 0〜1 に正規化し、重み付き合計を返す
     return sum(scores[d] * rubric[d]["weight"] for d in rubric) / 5
 ```
 
