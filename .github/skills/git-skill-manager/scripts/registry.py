@@ -61,6 +61,10 @@ def _cache_dir() -> str:
     return os.path.join(_agent_home(), "cache")
 
 
+def _instructions_home() -> str:
+    return os.path.join(_agent_home(), "instructions")
+
+
 def _version_tuple(v: str | None) -> tuple:
     """バージョン文字列を比較可能な 3 要素タプルに変換する。
 

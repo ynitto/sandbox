@@ -236,38 +236,35 @@ def setup_registry(
             })
             print(f"   リポジトリ 'origin' を登録: {repo_url}")
         else:
-            print(f"   リポジトリ 'origin' は登録済み")
+            print("   リポジトリ 'origin' は登録済み")
 
     os.makedirs(os.path.dirname(registry_path), exist_ok=True)
     with open(registry_path, "w", encoding="utf-8") as f:
         json.dump(reg, f, indent=2, ensure_ascii=False)
 
 
-def copy_agent_instructions(paths: dict[str, str], agent_type: str) -> bool:
-    """エージェント向け指示ファイルをコピーする。"""
-    agent_home = paths["agent_home"]
-
-    # エージェント種別ごとのコピー先とファイル名
-    candidates = [
-        # エージェント固有指示ファイル（例: claude.instructions.md）
-        (
-            os.path.join(REPO_ROOT, ".github", "instructions", f"{agent_type}.instructions.md"),
-            os.path.join(agent_home, f"{agent_type}-instructions.md"),
-        ),
-        # Copilot 共通指示ファイル（copilot の場合のみ）
-        (
-            os.path.join(REPO_ROOT, ".github", "copilot-instructions.md"),
-            os.path.join(agent_home, "copilot-instructions.md"),
-        ),
-    ]
+def copy_agent_instructions(paths: dict[str, str]) -> bool:
+    """リポジトリ配下の指示ファイルをエージェント領域へコピーする。"""
+    src_dir = os.path.join(REPO_ROOT, ".github", "instructions")
+    dest_dir = os.path.join(paths["agent_home"], "instructions")
 
     copied = False
-    for src, dest in candidates:
-        if os.path.isfile(src):
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.copy2(src, dest)
-            print(f"   {dest}")
-            copied = True
+    if not os.path.isdir(src_dir):
+        return copied
+
+    for name in sorted(os.listdir(src_dir)):
+        if not name.endswith(".md"):
+            continue
+
+        src = os.path.join(src_dir, name)
+        if not os.path.isfile(src):
+            continue
+
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, name)
+        shutil.copy2(src, dest)
+        print(f"   {dest}")
+        copied = True
 
     return copied
 
@@ -305,7 +302,7 @@ def main() -> None:
 
     # 4. 指示ファイルをコピー
     print("\n4. エージェント指示ファイルをコピー...")
-    if not copy_agent_instructions(paths, agent_type):
+    if not copy_agent_instructions(paths):
         print("   (対応するファイルが見つかりません、スキップ)")
 
     # 完了
@@ -316,10 +313,10 @@ def main() -> None:
     print(f"スキル:         {paths['skill_home']}")
     print(f"レジストリ:     {paths['registry_path']}")
     print(f"インストール元: {paths['install_dir']}")
-    print(f"\n次のステップ:")
-    print(f'  - 「スキルをpullして」で最新スキルを取得')
-    print(f'  - 「スクラムして」でscrum-masterを起動')
-    print(f'  - 「スキルを探して」でリポジトリ内のスキルを検索')
+    print("\n次のステップ:")
+    print('  - 「スキルをpullして」で最新スキルを取得')
+    print('  - 「スクラムして」でscrum-masterを起動')
+    print('  - 「スキルを探して」でリポジトリ内のスキルを検索')
 
 
 if __name__ == "__main__":
