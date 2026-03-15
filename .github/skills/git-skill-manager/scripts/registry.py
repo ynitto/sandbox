@@ -62,8 +62,7 @@ def _cache_dir() -> str:
 
 
 def _instructions_home() -> str:
-    home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    return os.path.join(home, ".copilot", "instructions")
+    return os.path.join(_agent_home(), "cache")
 
 
 def _version_tuple(v: str | None) -> tuple:
