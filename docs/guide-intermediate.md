@@ -256,6 +256,7 @@ snapshot-20260227T103000/
     "frontend": ["react-*", "ui-designer", "webapp-testing", "tdd-executing"],
     "backend": ["api-designer", "domain-modeler", "dynamodb-designer"],
     "review": ["architecture-reviewer", "code-reviewer", "code-simplifier", "design-reviewer", "document-reviewer", "security-reviewer", "test-reviewer"],
+    "gitlab": ["gitlab-idd"],
     "patent": ["patent-coach", "patent-writer"]
   }
 }
@@ -276,6 +277,7 @@ snapshot-20260227T103000/
 | React の画面開発 | `frontend`（React 系 + UI + テスト + TDD） |
 | API サーバー開発 | `backend`（API 設計 + ドメインモデル） |
 | コードレビュー | `review`（全レビュー系スキル） |
+| GitLab イシュー駆動開発 | `gitlab`（gitlab-idd） |
 | 特許・知財 | `patent`（patent-coach + patent-writer） |
 | 何でもやる | `default`（全スキル有効） |
 
