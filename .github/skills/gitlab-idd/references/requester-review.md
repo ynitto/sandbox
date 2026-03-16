@@ -16,7 +16,7 @@
 
 ```bash
 # GL ショートハンド（python コマンドは環境に合わせて python3 や py に読み替える）
-GL="python .github/skills/gitlab-idd/scripts/gl.py"
+GL="python scripts/gl.py"
 ```
 
 ---

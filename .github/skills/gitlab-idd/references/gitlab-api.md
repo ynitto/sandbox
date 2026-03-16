@@ -24,7 +24,7 @@ export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
 
 # GL ショートハンド定義（以降の例で使用）
 # python コマンドは環境に合わせて python3 や py に読み替える
-GL="python .github/skills/gitlab-idd/scripts/gl.py"
+GL="python scripts/gl.py"
 
 # 動作確認（git remote から ホスト・プロジェクトを自動取得）
 $GL project-info
