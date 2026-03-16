@@ -8,7 +8,14 @@ Works on Windows, macOS, and Linux.
 GitLab host and project path are parsed from `git remote get-url origin`.
 
 Usage:
-  python gl.py <command> [arguments]
+  python gl.py [--get FIELD] <command> [arguments]
+
+  --get FIELD  Extract a single value from the JSON output using dot-path notation.
+               Examples:
+                 --get username              → string field
+                 --get iid                   → numeric field
+                 --get 0.web_url             → first element's field (for arrays)
+                 --get author.username       → nested field
 
 Environment variables:
   GITLAB_TOKEN or GL_TOKEN   Personal Access Token (required)
@@ -18,6 +25,7 @@ Environment variables:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -100,9 +108,44 @@ def encode_project(project):
     return urllib.parse.quote(project, safe="")
 
 
-def out(obj):
-    """Print JSON to stdout."""
-    print(json.dumps(obj, ensure_ascii=False, indent=2))
+def extract_field(data, field_path):
+    """
+    Extract a nested value using dot-path notation.
+      "username"       → data["username"]
+      "0.web_url"      → data[0]["web_url"]
+      "author.username"→ data["author"]["username"]
+    """
+    current = data
+    for part in field_path.split("."):
+        if isinstance(current, list):
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError) as e:
+                sys.exit(f"ERROR: Cannot index list with '{part}': {e}")
+        elif isinstance(current, dict):
+            if part not in current:
+                sys.exit(f"ERROR: Key '{part}' not found in object")
+            current = current[part]
+        else:
+            sys.exit(f"ERROR: Cannot traverse '{part}' in {type(current).__name__}")
+    return current
+
+
+def out(obj, get_field=None):
+    """Print JSON (or an extracted field) to stdout."""
+    if get_field:
+        val = extract_field(obj, get_field)
+        print(val if isinstance(val, (str, int, float, bool)) else json.dumps(val, ensure_ascii=False))
+    else:
+        print(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+def title_to_slug(title):
+    """Convert an issue title to a URL-safe branch name slug."""
+    slug = title.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = slug.strip("-")[:40]
+    return slug
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +159,12 @@ def cmd_project_info(args, host, project, token):
         "project": project,
         "project_encoded": encode_project(project),
         "base_url": f"https://{host}/{project}",
-    })
+    }, args.get)
 
 
 def cmd_current_user(args, host, project, token):
     """Show the authenticated user."""
-    out(api(host, token, "GET", "/user"))
+    out(api(host, token, "GET", "/user"), args.get)
 
 
 def cmd_list_issues(args, host, project, token):
@@ -134,13 +177,13 @@ def cmd_list_issues(args, host, project, token):
         "assignee_username": args.assignee or None,
         "author_username": args.author or None,
     }
-    out(api(host, token, "GET", f"/projects/{ep}/issues", params=params))
+    out(api(host, token, "GET", f"/projects/{ep}/issues", params=params), args.get)
 
 
 def cmd_get_issue(args, host, project, token):
     """Get a single issue by ID."""
     ep = encode_project(project)
-    out(api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}"))
+    out(api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}"), args.get)
 
 
 def cmd_create_issue(args, host, project, token):
@@ -153,7 +196,7 @@ def cmd_create_issue(args, host, project, token):
         users = api(host, token, "GET", "/users", params={"username": args.assignee})
         if users:
             data["assignee_ids"] = [users[0]["id"]]
-    out(api(host, token, "POST", f"/projects/{ep}/issues", data=data))
+    out(api(host, token, "POST", f"/projects/{ep}/issues", data=data), args.get)
 
 
 def cmd_update_issue(args, host, project, token):
@@ -181,7 +224,7 @@ def cmd_update_issue(args, host, project, token):
     if args.state_event:
         data["state_event"] = args.state_event  # "close" or "reopen"
 
-    out(api(host, token, "PUT", f"/projects/{ep}/issues/{args.issue_id}", data=data))
+    out(api(host, token, "PUT", f"/projects/{ep}/issues/{args.issue_id}", data=data), args.get)
 
 
 def cmd_add_comment(args, host, project, token):
@@ -191,7 +234,7 @@ def cmd_add_comment(args, host, project, token):
         host, token, "POST",
         f"/projects/{ep}/issues/{args.issue_id}/notes",
         data={"body": args.body},
-    ))
+    ), args.get)
 
 
 def cmd_get_comments(args, host, project, token):
@@ -201,7 +244,7 @@ def cmd_get_comments(args, host, project, token):
         host, token, "GET",
         f"/projects/{ep}/issues/{args.issue_id}/notes",
         params={"per_page": 100},
-    ))
+    ), args.get)
 
 
 def cmd_list_mrs(args, host, project, token):
@@ -212,7 +255,7 @@ def cmd_list_mrs(args, host, project, token):
         "per_page": 100,
         "source_branch": args.source_branch or None,
     }
-    out(api(host, token, "GET", f"/projects/{ep}/merge_requests", params=params))
+    out(api(host, token, "GET", f"/projects/{ep}/merge_requests", params=params), args.get)
 
 
 def cmd_create_mr(args, host, project, token):
@@ -227,7 +270,7 @@ def cmd_create_mr(args, host, project, token):
     }
     if args.draft:
         data["draft"] = True
-    out(api(host, token, "POST", f"/projects/{ep}/merge_requests", data=data))
+    out(api(host, token, "POST", f"/projects/{ep}/merge_requests", data=data), args.get)
 
 
 def cmd_merge_mr(args, host, project, token):
@@ -242,7 +285,18 @@ def cmd_merge_mr(args, host, project, token):
         host, token, "PUT",
         f"/projects/{ep}/merge_requests/{args.mr_id}/merge",
         data=data,
-    ))
+    ), args.get)
+
+
+def cmd_make_branch_name(args, host, project, token):
+    """
+    Generate the branch name for an issue.
+    Output: feature/issue-{id}-{slug}
+    """
+    ep = encode_project(project)
+    issue = api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}")
+    slug = title_to_slug(issue["title"])
+    print(f"feature/issue-{args.issue_id}-{slug}")
 
 
 def cmd_check_defer(args, host, project, token):
@@ -273,7 +327,7 @@ def cmd_check_defer(args, host, project, token):
             "reason": "not_my_issue",
             "author": author,
             "me": my_username,
-        })
+        }, args.get)
         return
 
     # Issue was created by me — check age
@@ -283,21 +337,20 @@ def cmd_check_defer(args, host, project, token):
     age_minutes = (now - created_at).total_seconds() / 60
 
     if age_minutes < defer_minutes:
-        remaining = int(defer_minutes - age_minutes)
         out({
             "defer": True,
             "reason": "self_created_too_recent",
             "age_minutes": round(age_minutes, 1),
             "defer_minutes": defer_minutes,
-            "remaining_minutes": remaining,
-        })
+            "remaining_minutes": int(defer_minutes - age_minutes),
+        }, args.get)
     else:
         out({
             "defer": False,
             "reason": "self_created_but_expired",
             "age_minutes": round(age_minutes, 1),
             "defer_minutes": defer_minutes,
-        })
+        }, args.get)
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +362,11 @@ def build_parser():
         description="GitLab REST API client for issue-driven development.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+    )
+    # Global option: extract a field from JSON output
+    parser.add_argument(
+        "--get", metavar="FIELD",
+        help="Extract a field from JSON output using dot-path (e.g. username, 0.web_url)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -362,6 +420,10 @@ def build_parser():
     p.add_argument("--squash", action="store_true")
     p.add_argument("--remove-source-branch", action="store_true")
 
+    p = sub.add_parser("make-branch-name",
+                       help="Generate branch name for an issue (feature/issue-{id}-{slug})")
+    p.add_argument("issue_id", type=int)
+
     p = sub.add_parser("check-defer",
                        help="Check if the worker should skip a self-created issue")
     p.add_argument("issue_id", type=int)
@@ -380,18 +442,19 @@ def build_parser():
 # ---------------------------------------------------------------------------
 
 COMMANDS = {
-    "project-info":  cmd_project_info,
-    "current-user":  cmd_current_user,
-    "list-issues":   cmd_list_issues,
-    "get-issue":     cmd_get_issue,
-    "create-issue":  cmd_create_issue,
-    "update-issue":  cmd_update_issue,
-    "add-comment":   cmd_add_comment,
-    "get-comments":  cmd_get_comments,
-    "list-mrs":      cmd_list_mrs,
-    "create-mr":     cmd_create_mr,
-    "merge-mr":      cmd_merge_mr,
-    "check-defer":   cmd_check_defer,
+    "project-info":    cmd_project_info,
+    "current-user":    cmd_current_user,
+    "list-issues":     cmd_list_issues,
+    "get-issue":       cmd_get_issue,
+    "create-issue":    cmd_create_issue,
+    "update-issue":    cmd_update_issue,
+    "add-comment":     cmd_add_comment,
+    "get-comments":    cmd_get_comments,
+    "list-mrs":        cmd_list_mrs,
+    "create-mr":       cmd_create_mr,
+    "merge-mr":        cmd_merge_mr,
+    "make-branch-name": cmd_make_branch_name,
+    "check-defer":     cmd_check_defer,
 }
 
 

@@ -1,10 +1,10 @@
 # リクエスターロール詳細手順
 
-リクエスターノードはタスクをイシューとして投稿し、ワーカーの成果物を評価してマージまたはリオープンする。
-外部スキルへの依存はない。すべての操作は `scripts/gl.py` を Python で実行する。
+リクエスターノードはタスクをイシューとして投稿し、**自分が発行したイシュー**の成果物を評価してマージまたはリオープンする。
+すべての操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
 ```bash
-# ショートハンド定義
+# GL ショートハンド（python コマンドは環境に合わせて python3 や py に読み替える）
 GL="python .github/skills/gitlab-issue-driven-dev/scripts/gl.py"
 ```
 
@@ -83,15 +83,17 @@ URL: {issue_url}
 
 ## 操作 B: レビュー・クローズ / リオープン
 
-ワーカーが `status:review-ready` に更新したイシューを評価する。
+自分が発行した `status:review-ready` イシューを評価する。他ノードが発行したイシューはレビューしない。
 
 ### ステップ 1 — レビュー対象イシューを取得
 
 ```bash
-$GL list-issues --label "status:review-ready"
+MY_USER=$($GL current-user --get username)
+
+$GL list-issues --label "status:review-ready" --author "$MY_USER"
 ```
 
-レビュー対象が 0 件の場合は「レビュー待ちイシューはありません」と報告して終了。
+レビュー対象が 0 件の場合は「自分が発行したレビュー待ちイシューはありません」と報告して終了。
 複数件ある場合は優先度順（`priority:high` → `normal` → `low`）に処理する。
 
 ### ステップ 2 — 成果物の確認
@@ -99,10 +101,7 @@ $GL list-issues --label "status:review-ready"
 各イシューについて以下を確認する:
 
 ```bash
-# イシュー詳細
 $GL get-issue {issue_id}
-
-# ワーカーのサマリーコメントを確認
 $GL get-comments {issue_id}
 
 # ワーカーが作成したブランチの diff
@@ -135,20 +134,15 @@ $GL list-mrs --source-branch "feature/issue-{issue_id}"
 ### ステップ 4a — 条件充足: クローズ & マージ
 
 ```bash
-# MR ID を取得
-MR_ID=$($GL list-mrs --source-branch "feature/issue-{issue_id}" | python -c \
-  "import sys,json; print(json.load(sys.stdin)[0]['iid'])")
+MR_ID=$($GL list-mrs --source-branch "feature/issue-{issue_id}" --get 0.iid)
 
-# MR を squash マージ
 $GL merge-mr "$MR_ID" --squash --remove-source-branch
 
-# イシューをクローズしてラベル更新
 $GL update-issue {issue_id} \
   --add-labels "status:done" \
   --remove-labels "status:review-ready" \
   --state-event close
 
-# 承認コメント投稿
 $GL add-comment {issue_id} \
   --body "✅ 受け入れ条件をすべて満たしています。マージしてクローズしました。"
 ```
@@ -162,7 +156,6 @@ MR #{mr_id} をマージ済みです。
 ### ステップ 4b — 条件不足: リオープン
 
 ```bash
-# 差し戻しコメントを投稿
 COMMENT=$(cat << 'EOF'
 ## ❌ 差し戻し
 
@@ -180,7 +173,6 @@ EOF
 )
 $GL add-comment {issue_id} --body "$COMMENT"
 
-# リオープンしてラベル更新
 $GL update-issue {issue_id} \
   --add-labels "status:needs-rework" \
   --remove-labels "status:review-ready" \
@@ -213,5 +205,6 @@ $GL update-issue {issue_id} \
 ## 注意事項
 
 - リクエスターは実装を行わない。タスク定義と評価・判定のみ
+- **自分が発行したイシューのみレビューする**。他ノードが発行したイシューは対象外
 - MR が存在しない場合はワーカーに確認コメントを投稿してから評価を保留
 - 複数 MR が存在する場合は最新のものを使用
