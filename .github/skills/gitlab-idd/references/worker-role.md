@@ -1,12 +1,22 @@
 # ワーカーロール詳細手順
 
+## 目次
+
+- [全体フロー](#全体フロー)
+- [Phase 1 — 環境確認](#phase-1--環境確認)
+- [Phase 2 — イシュー取得](#phase-2--イシュー取得)
+- [Phase 3 — イシュー着手](#phase-3--イシュー着手)
+- [Phase 4 — タスク実行（並列評価ループ）](#phase-4--タスク実行並列評価ループ)
+- [Phase 5 — 成果物提出](#phase-5--成果物提出)
+- [ワーカーの行動原則](#ワーカーの行動原則)
+
 ワーカーノードはプロンプトトリガーで起動し、オープンイシューを取得して実行・報告する。ポーリングは行わない。
 
 すべての GitLab API 操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
 ```bash
 # GL ショートハンド（python コマンドは環境に合わせて python3 や py に読み替える）
-GL="python .github/skills/gitlab-issue-driven-dev/scripts/gl.py"
+GL="python .github/skills/gitlab-idd/scripts/gl.py"
 ```
 
 ---

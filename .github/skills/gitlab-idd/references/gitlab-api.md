@@ -1,5 +1,16 @@
 # GitLab API — Python スクリプトリファレンス
 
+## 目次
+
+- [セットアップ](#セットアップ)
+- [--get オプション](#--get-オプション)
+- [認証・ユーザー](#認証ユーザー)
+- [イシュー操作](#イシュー操作)
+- [ブランチ名生成](#ブランチ名生成)
+- [MR（マージリクエスト）操作](#mrマージリクエスト操作)
+- [self-defer チェック](#self-defer-チェック)
+- [トラブルシューティング](#トラブルシューティング)
+
 `scripts/gl.py` を Python で呼び出すコマンド集。`glab` CLI は不要。
 Python 3.8+ と stdlib のみで動作し、Windows・macOS・Linux に対応する。
 
@@ -13,7 +24,7 @@ export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
 
 # GL ショートハンド定義（以降の例で使用）
 # python コマンドは環境に合わせて python3 や py に読み替える
-GL="python .github/skills/gitlab-issue-driven-dev/scripts/gl.py"
+GL="python .github/skills/gitlab-idd/scripts/gl.py"
 
 # 動作確認（git remote から ホスト・プロジェクトを自動取得）
 $GL project-info
