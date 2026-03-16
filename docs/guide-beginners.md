@@ -183,6 +183,7 @@ scrum-master の動き:
 | `skill-creator` | 新しいスキルの作成 |
 | `requirements-definer` | 曖昧な依頼を要件に整理 |
 | `ltm-use` | セッション間の長期記憶 |
+| `karpathy-guidelines` | コーディング時の行動規範（Karpathy の 4 原則）を常時適用 |
 
 ### ドメイン固有スキル（必要に応じて利用）
 
@@ -208,6 +209,9 @@ scrum-master の動き:
 | テスト | `webapp-testing` | Playwright による Web アプリ検証 |
 | デザイン | `ui-designer` | UI/UX デザイン設計 |
 | 管理・運用 | `skill-selector` | 最適なスキルの組み合わせを選択・推薦 |
+| インフラ・図 | `aws-architecture-diagram` | Draw.io XML 形式の AWS アーキテクチャ図を生成 |
+| GitLab 連携 | `gitlab-idd` | GitLab イシュー駆動で複数ノード間のタスクを非同期分散実行 |
+| 品質 | `agentic-code-evaluator` | エージェント出力の自己評価・反復改善ループ |
 | 特許・知財 | `patent-coach` | 特許出願前の構想・整理・先行技術調査 |
 | 特許・知財 | `patent-writer` | JPO 様式準拠の特許明細書ドラフト作成 |
 

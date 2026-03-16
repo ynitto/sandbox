@@ -3,7 +3,7 @@ name: gitlab-idd
 description: GitLab イシューを非同期キューとして使うイシュー駆動開発スキル。リクエスターノードがイシューを投稿し、ワーカーノードがプロンプトトリガーで拾って並列評価ループで実装・報告する。ポーリング不要。REST API（Python スクリプト）で動作し glab 不要。「イシューを立てて」「イシューを拾って実行して」「イシューをレビューして」などで発動。
 metadata:
   version: 3.0.0
-  tier: experimental
+  tier: stable
   category: collaboration
   tags:
     - gitlab
@@ -72,6 +72,7 @@ export GITLAB_SELF_DEFER_MINUTES=60
 ### フロー概要
 
 ```
+0. MY_USER=$(python scripts/gl.py current-user --get username)
 1. list-issues --label "status:review-ready" --author "$MY_USER" でレビュー対象を取得
 2. イシューコメントとブランチの成果物を確認
 3. 受け入れ条件を並列サブエージェントで評価（機能・セキュリティ・アーキテクチャ）

@@ -141,11 +141,15 @@ def out(obj, get_field=None):
 
 
 def title_to_slug(title):
-    """Convert an issue title to a URL-safe branch name slug."""
+    """Convert an issue title to a URL-safe branch name slug.
+
+    Non-ASCII characters (e.g. Japanese) are stripped, so a pure
+    non-ASCII title falls back to "task" to avoid an empty slug.
+    """
     slug = title.lower()
     slug = re.sub(r"[^a-z0-9]+", "-", slug)
     slug = slug.strip("-")[:40]
-    return slug
+    return slug or "task"
 
 
 # ---------------------------------------------------------------------------
