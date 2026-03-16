@@ -1,24 +1,45 @@
-# GitLab API リファレンス
+# GitLab API — Python スクリプトリファレンス
 
-`glab` CLI（GitLab 公式 CLI）を使ったコマンド集。すべてのコマンドは `$GITLAB_PROJECT`（`namespace/repo` 形式）を対象とする。
+`scripts/gl.py` を Python で呼び出すコマンド集。`glab` CLI は不要。
+Python 3.8+ と stdlib のみで動作し、Windows・macOS・Linux に対応する。
 
 ---
 
-## セットアップ・認証確認
+## セットアップ
 
 ```bash
-# 認証状態確認
-glab auth status
+# トークン設定（必須）
+export GITLAB_TOKEN=glpat-xxxxxxxxxxxx   # Linux/macOS
+$env:GITLAB_TOKEN = "glpat-xxxxxxxxxxxx" # Windows PowerShell
 
-# ログイン（初回）
-glab auth login --hostname "$GITLAB_HOST"
+# 動作確認（git remote から ホスト・プロジェクトを自動取得）
+python .github/skills/gitlab-issue-driven-dev/scripts/gl.py project-info
 
-# 現在のユーザー名を取得
-glab api user | jq -r '.username'
+# ショートハンド定義（推奨）
+GL="python .github/skills/gitlab-issue-driven-dev/scripts/gl.py"   # bash
+$GL = "python .github/skills/gitlab-issue-driven-dev/scripts/gl.py" # PowerShell
+```
 
-# 環境変数の設定（セッション開始時に実行）
-export GITLAB_PROJECT="namespace/repo"
-export GITLAB_HOST="gitlab.com"          # セルフホスト時は変更
+`project-info` の出力例:
+```json
+{
+  "host": "gitlab.com",
+  "project": "myteam/myapp",
+  "project_encoded": "myteam%2Fmyapp",
+  "base_url": "https://gitlab.com/myteam/myapp"
+}
+```
+
+---
+
+## 認証・ユーザー
+
+```bash
+# 認証ユーザー情報を取得
+$GL current-user
+
+# ユーザー名だけ抽出
+MY_USER=$($GL current-user | python -c "import sys,json; print(json.load(sys.stdin)['username'])")
 ```
 
 ---
@@ -28,120 +49,115 @@ export GITLAB_HOST="gitlab.com"          # セルフホスト時は変更
 ### 一覧取得
 
 ```bash
-# オープンイシューを全件取得（JSON）
-glab issue list \
-  --label "status:open" \
-  --repo "$GITLAB_PROJECT" \
-  --output json
+# オープンイシューを全件取得
+$GL list-issues --state opened
 
-# ラベル複数指定（AND 条件）
-glab issue list \
-  --label "status:open,assignee:any" \
-  --repo "$GITLAB_PROJECT" \
-  --output json
+# ラベルでフィルタ（AND 条件）
+$GL list-issues --label "status:open"
+$GL list-issues --label "status:open,assignee:any"
+$GL list-issues --label "status:open,priority:high"
 
 # 自分に assign されたイシュー
-glab issue list \
-  --assignee "$(glab api user | jq -r '.username')" \
-  --repo "$GITLAB_PROJECT" \
-  --output json
+$GL list-issues --assignee "$MY_USER" --state opened
 
-# 優先度でフィルタ
-glab issue list \
-  --label "status:open,priority:high" \
-  --repo "$GITLAB_PROJECT" \
-  --output json
+# 自分が作成したイシュー
+$GL list-issues --author "$MY_USER" --state opened
 
 # review-ready のみ
-glab issue list \
-  --label "status:review-ready" \
-  --repo "$GITLAB_PROJECT" \
-  --output json
+$GL list-issues --label "status:review-ready"
+
+# needs-rework で自分担当
+$GL list-issues --label "status:needs-rework" --assignee "$MY_USER"
 ```
 
-### イシュー詳細・コメント取得
+### イシュー詳細・コメント
 
 ```bash
-# 詳細表示（コメント含む）
-glab issue view {issue_id} --repo "$GITLAB_PROJECT"
+# イシュー詳細（JSON）
+$GL get-issue 42
 
-# JSON 形式
-glab issue view {issue_id} \
-  --repo "$GITLAB_PROJECT" \
-  --output json
+# コメント一覧
+$GL get-comments 42
 
-# コメント一覧（REST API 経由）
-glab api "projects/{encoded_project}/issues/{issue_id}/notes" \
-  | jq '.[] | {id: .id, author: .author.username, body: .body, created_at}'
-# ※ encoded_project は namespace%2Frepo 形式
+# タイトルだけ抽出
+TITLE=$($GL get-issue 42 | python -c "import sys,json; print(json.load(sys.stdin)['title'])")
+
+# 作成者だけ抽出
+AUTHOR=$($GL get-issue 42 | python -c "import sys,json; print(json.load(sys.stdin)['author']['username'])")
 ```
 
 ### イシュー作成
 
 ```bash
-# 基本作成
-glab issue create \
-  --title "タイトル" \
-  --description "$(cat /tmp/issue_body.md)" \
-  --label "status:open,assignee:any,priority:normal" \
-  --repo "$GITLAB_PROJECT"
+# 本文をヒアドキュメントで渡す
+BODY=$(cat << 'EOF'
+## 目的
 
-# マイルストーン指定（オプション）
-glab issue create \
-  --title "タイトル" \
-  --description "説明" \
-  --label "status:open" \
-  --milestone "Sprint-1" \
-  --repo "$GITLAB_PROJECT"
+{目的を 1〜3 文で記述}
+
+## 実装スコープ
+
+- {変更点 1}
+- {変更点 2}
+
+## 受け入れ条件
+
+- [ ] {条件 1}
+- [ ] {条件 2}
+
+## 技術制約
+
+特になし
+EOF
+)
+
+$GL create-issue \
+  --title "ログインフォームを実装する" \
+  --body "$BODY" \
+  --labels "status:open,assignee:any,priority:normal"
 ```
 
-### イシュー更新（ラベル・アサイン）
+### イシュー更新（ラベル・アサイン・状態変更）
 
 ```bash
 # ラベル追加・削除
-glab issue update {issue_id} \
-  --label "status:in-progress" \
-  --remove-label "status:open,assignee:any" \
-  --repo "$GITLAB_PROJECT"
+$GL update-issue 42 \
+  --add-labels "status:in-progress" \
+  --remove-labels "status:open,assignee:any"
 
-# assignee 設定
-glab issue update {issue_id} \
-  --assignee "username" \
-  --repo "$GITLAB_PROJECT"
+# 自分に assign
+$GL update-issue 42 --assignee "$MY_USER"
 
-# assignee 削除（先着制に戻す）
-glab issue update {issue_id} \
-  --unassign \
-  --repo "$GITLAB_PROJECT"
+# クローズ
+$GL update-issue 42 --state-event close
+
+# リオープン
+$GL update-issue 42 --state-event reopen
+
+# needs-rework にして差し戻し
+$GL update-issue 42 \
+  --add-labels "status:needs-rework" \
+  --remove-labels "status:review-ready" \
+  --state-event reopen
 ```
 
-### コメント（ノート）投稿
+### コメント投稿
 
 ```bash
 # 短いコメント
-glab issue note {issue_id} \
-  --body "コメント本文" \
-  --repo "$GITLAB_PROJECT"
+$GL add-comment 42 --body "作業開始しました"
 
-# 複数行コメント（ヒアドキュメント）
-glab issue note {issue_id} \
-  --body "$(cat << 'EOF'
-## セクション
+# 複数行コメント（変数経由）
+COMMENT=$(cat << 'EOF'
+## ✅ 実装完了
 
-本文をここに
+受け入れ条件をすべて満たしました。
+
+- [x] 条件 1 → 対応内容
+- [x] 条件 2 → 対応内容
 EOF
-)" \
-  --repo "$GITLAB_PROJECT"
-```
-
-### イシュークローズ・リオープン
-
-```bash
-# クローズ
-glab issue close {issue_id} --repo "$GITLAB_PROJECT"
-
-# リオープン
-glab issue reopen {issue_id} --repo "$GITLAB_PROJECT"
+)
+$GL add-comment 42 --body "$COMMENT"
 ```
 
 ---
@@ -152,121 +168,95 @@ glab issue reopen {issue_id} --repo "$GITLAB_PROJECT"
 
 ```bash
 # オープン MR 一覧
-glab mr list --repo "$GITLAB_PROJECT" --output json
+$GL list-mrs --state opened
 
 # ブランチ名で絞り込み
-glab mr list \
-  --source-branch "feature/issue-42*" \
-  --repo "$GITLAB_PROJECT" \
-  --output json
+$GL list-mrs --source-branch "feature/issue-42-add-login"
 
-# MR の ID を取得
-MR_ID=$(glab mr list \
-  --source-branch "$BRANCH" \
-  --repo "$GITLAB_PROJECT" \
-  --output json | jq -r '.[0].iid')
+# MR の web_url を取得
+MR_URL=$($GL list-mrs --source-branch "$BRANCH" | python -c \
+  "import sys,json; mrs=json.load(sys.stdin); print(mrs[0]['web_url'] if mrs else '')")
 ```
 
 ### MR 作成
 
 ```bash
-# ドラフト MR を作成
-glab mr create \
-  --title "Draft: タイトル" \
-  --description "$(cat /tmp/mr_body.md)" \
-  --source-branch "$BRANCH" \
+$GL create-mr \
+  --title "ログインフォームを実装する" \
+  --source-branch "feature/issue-42-add-login-form" \
   --target-branch main \
-  --draft \
-  --repo "$GITLAB_PROJECT"
-
-# ドラフト解除（レビュー依頼時）
-glab mr update "$MR_ID" \
-  --ready \
-  --repo "$GITLAB_PROJECT"
+  --description "Closes #42" \
+  --draft
 ```
 
 ### MR マージ
 
 ```bash
 # squash マージ（ソースブランチ削除）
-glab mr merge "$MR_ID" \
-  --squash \
-  --remove-source-branch \
-  --repo "$GITLAB_PROJECT"
+MR_ID=$($GL list-mrs --source-branch "$BRANCH" | python -c \
+  "import sys,json; print(json.load(sys.stdin)[0]['iid'])")
 
-# 通常マージ
-glab mr merge "$MR_ID" \
-  --repo "$GITLAB_PROJECT"
-```
-
-### MR の差分確認
-
-```bash
-# MR の diff を表示
-glab mr diff "$MR_ID" --repo "$GITLAB_PROJECT"
-
-# ローカルで確認
-git fetch origin "$BRANCH"
-git diff main..origin/"$BRANCH"
+$GL merge-mr "$MR_ID" --squash --remove-source-branch
 ```
 
 ---
 
-## ブランチ操作
+## self-defer チェック
+
+自分が発行したイシューを猶予期間中にスキップする:
 
 ```bash
-# ブランチ作成
-git fetch origin main
-git checkout -b "feature/issue-{id}-{slug}" origin/main
+DEFER_MINUTES=${GITLAB_SELF_DEFER_MINUTES:-60}
 
-# push
-git push -u origin "feature/issue-{id}-{slug}"
+DEFER=$($GL check-defer 42 --minutes "$DEFER_MINUTES")
+SHOULD_DEFER=$(echo "$DEFER" | python -c "import sys,json; print(json.load(sys.stdin)['defer'])")
 
-# リモートブランチ一覧（issue 関連）
-git branch -r | grep "feature/issue-"
-
-# ブランチ削除（マージ後）
-git push origin --delete "feature/issue-{id}-{slug}"
+if [ "$SHOULD_DEFER" = "True" ]; then
+  REMAINING=$(echo "$DEFER" | python -c "import sys,json; print(json.load(sys.stdin)['remaining_minutes'])")
+  echo "スキップ: 残り ${REMAINING} 分後に実行可能"
+fi
 ```
+
+`check-defer` の出力パターン:
+
+| reason | defer | 意味 |
+|--------|-------|------|
+| `not_my_issue` | false | 他者が作成 → 即取得可 |
+| `self_created_too_recent` | true | 自分作成・猶予中 → スキップ |
+| `self_created_but_expired` | false | 自分作成・猶予切れ → 取得可 |
 
 ---
 
-## REST API 直接呼び出し（`glab api`）
-
-`glab api` は GitLab REST API に直接アクセスできる。プロジェクトパスのエンコードが必要:
+## JSON 値の抽出パターン
 
 ```bash
-# namespace/repo → namespace%2Frepo
-ENCODED_PROJECT=$(echo "$GITLAB_PROJECT" | sed 's/\//%2F/g')
+# イシュー一覧から id と title を取得
+$GL list-issues --label "status:open" | python -c "
+import sys, json
+for issue in json.load(sys.stdin):
+    print(issue['iid'], issue['title'])
+"
 
-# イシュー一覧（ページネーション）
-glab api "projects/${ENCODED_PROJECT}/issues?state=opened&labels=status:open&per_page=20"
+# 優先度順にソートして先頭 1 件の id を取得
+$GL list-issues --label "status:open,assignee:any" | python -c "
+import sys, json
+PRIORITY = {'priority:high': 0, 'priority:normal': 1, 'priority:low': 2}
+issues = json.load(sys.stdin)
+def key(i):
+    p = min((PRIORITY.get(l, 1) for l in i.get('labels', [])), default=1)
+    return (p, i['created_at'])
+issues.sort(key=key)
+if issues:
+    print(issues[0]['iid'])
+"
 
-# イシューの assignee を API で確認
-glab api "projects/${ENCODED_PROJECT}/issues/{issue_id}" \
-  | jq '.assignees[].username'
-
-# MR の CI パイプライン状態確認
-glab api "projects/${ENCODED_PROJECT}/merge_requests/{mr_id}/pipelines" \
-  | jq '.[0] | {status: .status, web_url: .web_url}'
-```
-
----
-
-## よく使う jq パターン
-
-```bash
-# イシュー一覧から id と title だけ抽出
-glab issue list --label "status:open" --repo "$GITLAB_PROJECT" --output json \
-  | jq '.[] | {id: .iid, title: .title, priority: .labels}'
-
-# 最優先イシューを 1 件選ぶ
-glab issue list --label "status:open" --repo "$GITLAB_PROJECT" --output json \
-  | jq 'sort_by(.created_at) | .[0]'
-
-# MR の URL を取得
-glab mr list --source-branch "$BRANCH" --repo "$GITLAB_PROJECT" --output json \
-  | jq -r '.[0].web_url'
+# イシュータイトルからブランチ名スラグを生成
+$GL get-issue 42 | python -c "
+import sys, json, re
+title = json.load(sys.stdin)['title'].lower()
+slug = re.sub(r'[^a-z0-9]+', '-', title).strip('-')[:40]
+print(slug)
+"
 ```
 
 ---
@@ -275,27 +265,10 @@ glab mr list --source-branch "$BRANCH" --repo "$GITLAB_PROJECT" --output json \
 
 | エラー | 原因 | 対処 |
 |--------|------|------|
-| `ERRO 401 Unauthorized` | 認証切れ | `glab auth login` を再実行 |
-| `ERRO 403 Forbidden` | 権限不足 | プロジェクトの Developer 以上の権限が必要 |
-| `ERRO 404 Not Found` | プロジェクトパスが間違っている | `$GITLAB_PROJECT` の値を確認 |
-| `glab: command not found` | `glab` 未インストール | <https://gitlab.com/gitlab-org/cli> を参照してインストール |
-| MR マージ失敗（パイプライン） | CI が失敗している | `glab pipeline list --repo "$GITLAB_PROJECT"` で確認 |
-
----
-
-## `glab` インストール
-
-```bash
-# macOS
-brew install glab
-
-# Linux (apt)
-sudo apt install glab
-
-# Linux (curl)
-curl -s https://packagecloud.io/install/repositories/gitlab/cli/script.deb.sh | sudo bash
-sudo apt install glab
-
-# 公式ドキュメント
-# https://gitlab.com/gitlab-org/cli
-```
+| `Set GITLAB_TOKEN...` | トークン未設定 | `export GITLAB_TOKEN=glpat-...` |
+| `Cannot get git remote 'origin'` | git リポジトリ外 or remote なし | 正しいディレクトリで実行 |
+| `HTTP 401 Unauthorized` | トークン無効・期限切れ | 新しいトークンを発行して再設定 |
+| `HTTP 403 Forbidden` | 権限不足 | GitLab プロジェクトの Developer 以上の権限が必要 |
+| `HTTP 404 Not Found` | remote の URL が間違っている | `git remote get-url origin` で確認 |
+| `python: command not found` | Python 未インストール | `python3` または `py` コマンドを試す（OS による） |
+| `MR マージ失敗` | CI パイプラインが失敗中 | GitLab の MR ページでパイプライン状態を確認 |

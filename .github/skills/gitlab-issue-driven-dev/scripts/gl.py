@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+"""
+gl.py - GitLab REST API client for issue-driven development workflow.
+
+Uses only Python stdlib. No external dependencies required.
+Works on Windows, macOS, and Linux.
+
+GitLab host and project path are parsed from `git remote get-url origin`.
+
+Usage:
+  python gl.py <command> [arguments]
+
+Environment variables:
+  GITLAB_TOKEN or GL_TOKEN   Personal Access Token (required)
+  GITLAB_SELF_DEFER_MINUTES  Default defer period for check-defer (default: 60)
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+
+# ---------------------------------------------------------------------------
+# Core helpers
+# ---------------------------------------------------------------------------
+
+def get_project_info():
+    """Parse git remote origin URL to extract GitLab host and project path."""
+    try:
+        remote_url = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        sys.exit("ERROR: Cannot get git remote 'origin'. Run from inside a git repo.")
+
+    # Supported formats:
+    #   SSH:   git@gitlab.com:namespace/repo.git
+    #   HTTPS: https://gitlab.com/namespace/repo.git
+    #   HTTPS with token: https://oauth2:TOKEN@gitlab.com/namespace/repo.git
+    if remote_url.startswith("git@"):
+        without_prefix = remote_url[4:]
+        host, path = without_prefix.split(":", 1)
+        project = path.rstrip("/")
+        if project.endswith(".git"):
+            project = project[:-4]
+    elif "://" in remote_url:
+        parsed = urllib.parse.urlparse(remote_url)
+        host = parsed.hostname
+        project = parsed.path.lstrip("/")
+        if project.endswith(".git"):
+            project = project[:-4]
+    else:
+        sys.exit(f"ERROR: Unknown remote URL format: {remote_url}")
+
+    return host, project
+
+
+def get_token():
+    token = os.environ.get("GITLAB_TOKEN") or os.environ.get("GL_TOKEN")
+    if not token:
+        sys.exit(
+            "ERROR: Set GITLAB_TOKEN or GL_TOKEN environment variable.\n"
+            "  Example: export GITLAB_TOKEN=glpat-xxxxxxxxxxxx"
+        )
+    return token
+
+
+def api(host, token, method, path, data=None, params=None):
+    """Make a GitLab REST API call and return parsed JSON."""
+    url = f"https://{host}/api/v4{path}"
+    if params:
+        url = url + "?" + urllib.parse.urlencode(
+            {k: v for k, v in params.items() if v is not None}
+        )
+    headers = {
+        "PRIVATE-TOKEN": token,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            content = resp.read()
+            return json.loads(content) if content.strip() else {}
+    except urllib.error.HTTPError as e:
+        msg = e.read().decode("utf-8", errors="replace")
+        sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
+
+
+def encode_project(project):
+    """URL-encode namespace/repo as namespace%2Frepo for API paths."""
+    return urllib.parse.quote(project, safe="")
+
+
+def out(obj):
+    """Print JSON to stdout."""
+    print(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def cmd_project_info(args, host, project, token):
+    """Show parsed project info derived from git remote origin."""
+    out({
+        "host": host,
+        "project": project,
+        "project_encoded": encode_project(project),
+        "base_url": f"https://{host}/{project}",
+    })
+
+
+def cmd_current_user(args, host, project, token):
+    """Show the authenticated user."""
+    out(api(host, token, "GET", "/user"))
+
+
+def cmd_list_issues(args, host, project, token):
+    """List project issues with optional filters."""
+    ep = encode_project(project)
+    params = {
+        "per_page": 100,
+        "state": args.state,
+        "labels": args.label or None,
+        "assignee_username": args.assignee or None,
+        "author_username": args.author or None,
+    }
+    out(api(host, token, "GET", f"/projects/{ep}/issues", params=params))
+
+
+def cmd_get_issue(args, host, project, token):
+    """Get a single issue by ID."""
+    ep = encode_project(project)
+    out(api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}"))
+
+
+def cmd_create_issue(args, host, project, token):
+    """Create a new issue."""
+    ep = encode_project(project)
+    data = {"title": args.title, "description": args.body or ""}
+    if args.labels:
+        data["labels"] = args.labels
+    if args.assignee:
+        users = api(host, token, "GET", "/users", params={"username": args.assignee})
+        if users:
+            data["assignee_ids"] = [users[0]["id"]]
+    out(api(host, token, "POST", f"/projects/{ep}/issues", data=data))
+
+
+def cmd_update_issue(args, host, project, token):
+    """Update issue labels, assignee, or state."""
+    ep = encode_project(project)
+    data = {}
+
+    # Label management: fetch current labels and apply add/remove
+    if args.add_labels or args.remove_labels:
+        issue = api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}")
+        current = set(issue.get("labels", []))
+        if args.add_labels:
+            for lbl in args.add_labels.split(","):
+                current.add(lbl.strip())
+        if args.remove_labels:
+            for lbl in args.remove_labels.split(","):
+                current.discard(lbl.strip())
+        data["labels"] = ",".join(sorted(current))
+
+    if args.assignee:
+        users = api(host, token, "GET", "/users", params={"username": args.assignee})
+        if users:
+            data["assignee_ids"] = [users[0]["id"]]
+
+    if args.state_event:
+        data["state_event"] = args.state_event  # "close" or "reopen"
+
+    out(api(host, token, "PUT", f"/projects/{ep}/issues/{args.issue_id}", data=data))
+
+
+def cmd_add_comment(args, host, project, token):
+    """Post a comment on an issue."""
+    ep = encode_project(project)
+    out(api(
+        host, token, "POST",
+        f"/projects/{ep}/issues/{args.issue_id}/notes",
+        data={"body": args.body},
+    ))
+
+
+def cmd_get_comments(args, host, project, token):
+    """List all comments on an issue."""
+    ep = encode_project(project)
+    out(api(
+        host, token, "GET",
+        f"/projects/{ep}/issues/{args.issue_id}/notes",
+        params={"per_page": 100},
+    ))
+
+
+def cmd_list_mrs(args, host, project, token):
+    """List merge requests."""
+    ep = encode_project(project)
+    params = {
+        "state": args.state,
+        "per_page": 100,
+        "source_branch": args.source_branch or None,
+    }
+    out(api(host, token, "GET", f"/projects/{ep}/merge_requests", params=params))
+
+
+def cmd_create_mr(args, host, project, token):
+    """Create a merge request."""
+    ep = encode_project(project)
+    title = f"Draft: {args.title}" if args.draft else args.title
+    data = {
+        "title": title,
+        "source_branch": args.source_branch,
+        "target_branch": args.target_branch,
+        "description": args.description or "",
+    }
+    if args.draft:
+        data["draft"] = True
+    out(api(host, token, "POST", f"/projects/{ep}/merge_requests", data=data))
+
+
+def cmd_merge_mr(args, host, project, token):
+    """Merge a merge request."""
+    ep = encode_project(project)
+    data = {}
+    if args.squash:
+        data["squash"] = True
+    if args.remove_source_branch:
+        data["should_remove_source_branch"] = True
+    out(api(
+        host, token, "PUT",
+        f"/projects/{ep}/merge_requests/{args.mr_id}/merge",
+        data=data,
+    ))
+
+
+def cmd_check_defer(args, host, project, token):
+    """
+    Check whether the worker should skip (defer) an issue it created itself.
+
+    Output JSON:
+      {"defer": true/false, "reason": "...", ...}
+
+    Defer when:
+      - The issue was created by the authenticated user (me), AND
+      - The issue was created less than --minutes ago.
+
+    After the defer period expires, "defer" becomes false and the worker
+    may take the issue.
+    """
+    ep = encode_project(project)
+    issue = api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}")
+    me = api(host, token, "GET", "/user")
+
+    author = issue.get("author", {}).get("username", "")
+    my_username = me.get("username", "")
+    defer_minutes = args.minutes
+
+    if author != my_username:
+        out({
+            "defer": False,
+            "reason": "not_my_issue",
+            "author": author,
+            "me": my_username,
+        })
+        return
+
+    # Issue was created by me — check age
+    created_at_str = issue.get("created_at", "")
+    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    age_minutes = (now - created_at).total_seconds() / 60
+
+    if age_minutes < defer_minutes:
+        remaining = int(defer_minutes - age_minutes)
+        out({
+            "defer": True,
+            "reason": "self_created_too_recent",
+            "age_minutes": round(age_minutes, 1),
+            "defer_minutes": defer_minutes,
+            "remaining_minutes": remaining,
+        })
+    else:
+        out({
+            "defer": False,
+            "reason": "self_created_but_expired",
+            "age_minutes": round(age_minutes, 1),
+            "defer_minutes": defer_minutes,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="GitLab REST API client for issue-driven development.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("project-info", help="Show host/project parsed from git remote origin")
+    sub.add_parser("current-user", help="Show authenticated user info")
+
+    p = sub.add_parser("list-issues", help="List project issues")
+    p.add_argument("--label", help="Filter by label (comma-separated, AND condition)")
+    p.add_argument("--assignee", help="Filter by assignee username")
+    p.add_argument("--author", help="Filter by author username")
+    p.add_argument("--state", default="opened",
+                   choices=["opened", "closed", "all"])
+
+    p = sub.add_parser("get-issue", help="Get a single issue")
+    p.add_argument("issue_id", type=int)
+
+    p = sub.add_parser("create-issue", help="Create a new issue")
+    p.add_argument("--title", required=True)
+    p.add_argument("--body", default="", help="Issue description (Markdown)")
+    p.add_argument("--labels", help="Comma-separated label names")
+    p.add_argument("--assignee", help="Assignee username")
+
+    p = sub.add_parser("update-issue", help="Update issue labels / assignee / state")
+    p.add_argument("issue_id", type=int)
+    p.add_argument("--add-labels",    help="Labels to add (comma-separated)")
+    p.add_argument("--remove-labels", help="Labels to remove (comma-separated)")
+    p.add_argument("--assignee", help="Set assignee username")
+    p.add_argument("--state-event", choices=["close", "reopen"])
+
+    p = sub.add_parser("add-comment", help="Post a comment on an issue")
+    p.add_argument("issue_id", type=int)
+    p.add_argument("--body", required=True)
+
+    p = sub.add_parser("get-comments", help="List all comments on an issue")
+    p.add_argument("issue_id", type=int)
+
+    p = sub.add_parser("list-mrs", help="List merge requests")
+    p.add_argument("--source-branch", help="Filter by source branch name")
+    p.add_argument("--state", default="opened",
+                   choices=["opened", "closed", "merged", "all"])
+
+    p = sub.add_parser("create-mr", help="Create a merge request")
+    p.add_argument("--title", required=True)
+    p.add_argument("--source-branch", required=True)
+    p.add_argument("--target-branch", default="main")
+    p.add_argument("--description", default="")
+    p.add_argument("--draft", action="store_true")
+
+    p = sub.add_parser("merge-mr", help="Merge a merge request")
+    p.add_argument("mr_id", type=int)
+    p.add_argument("--squash", action="store_true")
+    p.add_argument("--remove-source-branch", action="store_true")
+
+    p = sub.add_parser("check-defer",
+                       help="Check if the worker should skip a self-created issue")
+    p.add_argument("issue_id", type=int)
+    p.add_argument(
+        "--minutes",
+        type=float,
+        default=float(os.environ.get("GITLAB_SELF_DEFER_MINUTES", "60")),
+        help="Defer period in minutes (default: 60, or $GITLAB_SELF_DEFER_MINUTES)",
+    )
+
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+COMMANDS = {
+    "project-info":  cmd_project_info,
+    "current-user":  cmd_current_user,
+    "list-issues":   cmd_list_issues,
+    "get-issue":     cmd_get_issue,
+    "create-issue":  cmd_create_issue,
+    "update-issue":  cmd_update_issue,
+    "add-comment":   cmd_add_comment,
+    "get-comments":  cmd_get_comments,
+    "list-mrs":      cmd_list_mrs,
+    "create-mr":     cmd_create_mr,
+    "merge-mr":      cmd_merge_mr,
+    "check-defer":   cmd_check_defer,
+}
+
+
+def main():
+    args = build_parser().parse_args()
+    host, project = get_project_info()
+    token = get_token()
+    COMMANDS[args.command](args, host, project, token)
+
+
+if __name__ == "__main__":
+    main()
