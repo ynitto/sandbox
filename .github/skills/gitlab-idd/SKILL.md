@@ -134,7 +134,7 @@ feature/issue-{issue-id}-{slug}
 ```bash
 # 動作確認（git remote からホスト・プロジェクトを自動取得）
 # python コマンドは環境に合わせて python3 や py に読み替える
-python .github/skills/gitlab-idd/scripts/gl.py project-info
+python scripts/gl.py project-info
 ```
 
 ---
