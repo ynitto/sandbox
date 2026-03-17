@@ -1,0 +1,5 @@
+recommends:
+  - name: code-reviewer
+    reason: "ワーカーが実装した変更をリクエスターがレビューする際の補助"
+  - name: security-reviewer
+    reason: "MR マージ前にセキュリティ観点での最終確認"
