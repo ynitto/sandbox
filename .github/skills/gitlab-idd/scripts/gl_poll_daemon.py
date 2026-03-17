@@ -414,7 +414,6 @@ def launch_agent_worker(
     try:
         kwargs: dict = {
             "cwd":    cwd,
-            "stdout": open(log_file, "w", encoding="utf-8"),
             "stderr": subprocess.STDOUT,
         }
         match platform.system():
@@ -422,7 +421,9 @@ def launch_agent_worker(
                 kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
             case _:
                 kwargs["start_new_session"] = True
-        subprocess.Popen(cmd, **kwargs)
+        with open(log_file, "w", encoding="utf-8") as log_fh:
+            kwargs["stdout"] = log_fh
+            subprocess.Popen(cmd, **kwargs)
     except Exception as e:
         logging.error("CLI 起動失敗 (イシュー #%s): %s", issue_id, e)
 
