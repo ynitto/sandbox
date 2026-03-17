@@ -11,20 +11,31 @@ gitlab-idd ポーリングデーモンのインストール・管理を行う単
 Requirements: Python 3.11+  /  stdlib only
 
 使い方:
-  python gl_poll_setup.py [--install]       # 対話的インストール（デフォルト）
-  python gl_poll_setup.py --session-start   # セッション開始フック（非対話）
-  python gl_poll_setup.py --add-repo        # カレントリポジトリを追加
-  python gl_poll_setup.py --uninstall       # サービスを削除
-  python gl_poll_setup.py --status          # デーモン状態を表示
-  python gl_poll_setup.py --dry-run         # 副作用なしで動作確認
+  python gl_poll_setup.py [--install]        # 対話的インストール（デフォルト）
+  python gl_poll_setup.py --session-start    # SessionStart フック（非対話）
+  python gl_poll_setup.py --add-repo         # カレントリポジトリを追加
+  python gl_poll_setup.py --restart          # デーモンを再起動
+  python gl_poll_setup.py --set KEY=VALUE    # 設定を変更してデーモンを再起動
+  python gl_poll_setup.py --uninstall        # サービスを削除
+  python gl_poll_setup.py --status           # デーモン状態を表示
+  python gl_poll_setup.py --dry-run          # インストール処理をシミュレート（副作用なし）
 
-  # 別の場所からも実行可能（インストール済み状態）
+  # インストール済みの場所からも実行可能
   python ~/.config/gitlab-idd/gl_poll_setup.py --status
+  python ~/.config/gitlab-idd/gl_poll_setup.py --set mock_cli=true
+
+--set で変更可能なキー:
+  mock_cli=true/false          CLIをモックに切り替え（プロンプトをファイルに保存）
+  preferred_cli=claude/...     使用する CLI を固定
+  poll_interval=300            ポーリング間隔（秒）
+
+--install オプション:
+  --allow-mock-cli    CLI が見つからない場合でもモックCLIモードでインストール
 
 前提条件（インストール時のみ）:
   - Python 3.11+
-  - エージェント CLI が 1 つ以上インストール済み
-    claude / codex / kiro-cli / q のいずれか
+  - エージェント CLI（claude/codex/kiro-cli/q のいずれか）
+    ※ CLI がなくても --allow-mock-cli でモックCLIモードでインストール可能
   - GITLAB_TOKEN または GL_TOKEN が設定済み
 """
 
@@ -58,9 +69,10 @@ class DaemonConfig(TypedDict):
     repos: list[RepoConfig]
     seen_issues: dict[str, list[int]]
     preferred_cli: NotRequired[str]
+    mock_cli: NotRequired[bool]
 
 
-DEFAULT_POLL_INTERVAL = 300  # 5 分
+DEFAULT_POLL_INTERVAL = 300
 SERVICE_NAME = "gitlab-idd-poll"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
@@ -95,9 +107,7 @@ def _verify_cli(binary: str) -> bool:
 
 def _check_wsl_kiro() -> bool:
     try:
-        r = subprocess.run(
-            ["wsl", "kiro-cli", "--version"], capture_output=True, timeout=10
-        )
+        r = subprocess.run(["wsl", "kiro-cli", "--version"], capture_output=True, timeout=10)
         return r.returncode == 0
     except Exception:
         return False
@@ -107,7 +117,6 @@ def find_available_agent_clis() -> list[AgentCLI]:
     """利用可能なすべてのエージェント CLI を検出して返す（優先順）。"""
     system = platform.system()
     found: list[AgentCLI] = []
-
     for name, binary_name, prompt_args in _CLI_CANDIDATES:
         if system == "Windows" and name == "kiro":
             if _check_wsl_kiro():
@@ -116,12 +125,10 @@ def find_available_agent_clis() -> list[AgentCLI]:
             if path := shutil.which(binary_name):
                 if _verify_cli(path):
                     found.append(AgentCLI(name, path, prompt_args))
-
     return found
 
 
 def find_best_agent_cli(preferred: str | None = None) -> AgentCLI | None:
-    """最適なエージェント CLI を 1 つ返す（preferred 指定があればそれを優先）。"""
     clis = find_available_agent_clis()
     if not clis:
         return None
@@ -175,7 +182,9 @@ def save_config(config: DaemonConfig, *, dry_run: bool = False) -> None:
     path = get_config_path()
     if dry_run:
         print(f"  [DRYRUN] 書き込み予定: {path}")
-        print(f"  [DRYRUN] 内容: {json.dumps(config, ensure_ascii=False, indent=2)[:300]}...")
+        preview = json.dumps(config, ensure_ascii=False, indent=2)
+        for line in preview.splitlines()[:20]:
+            print(f"           {line}")
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
@@ -194,7 +203,6 @@ def save_config(config: DaemonConfig, *, dry_run: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 def get_current_repo_info(cwd: str | None = None) -> RepoConfig | None:
-    """カレントディレクトリの git remote origin から GitLab リポジトリ情報を取得する。"""
     try:
         result = subprocess.run(
             ["git", "remote", "get-url", "origin"],
@@ -206,7 +214,6 @@ def get_current_repo_info(cwd: str | None = None) -> RepoConfig | None:
     except Exception:
         return None
 
-    # SSH: git@gitlab.com:namespace/repo.git
     if remote_url.startswith("git@"):
         without_prefix = remote_url[4:]
         if ":" not in without_prefix:
@@ -223,7 +230,6 @@ def get_current_repo_info(cwd: str | None = None) -> RepoConfig | None:
     if not host or not project:
         return None
 
-    # git ルートを local_path として使用
     local_path = str(Path(cwd or ".").resolve())
     try:
         res = subprocess.run(
@@ -253,7 +259,6 @@ def _repo_key(host: str, project: str) -> str:
 def add_repo_to_config(
     repo_info: RepoConfig, config: DaemonConfig, token: str = ""
 ) -> bool:
-    """リポジトリを設定に追加する。既存なら local_path のみ更新。変更があれば True を返す。"""
     host = repo_info["host"]
     project = repo_info["project"]
     local_path = repo_info["local_path"]
@@ -276,30 +281,28 @@ def add_repo_to_config(
 
 
 # ---------------------------------------------------------------------------
-# スクリプトのコピー（インストール先への配置）
+# スクリプト・テンプレートのコピー（インストール先への配置）
 # ---------------------------------------------------------------------------
 
 def copy_scripts_to_config_dir(*, dry_run: bool = False) -> None:
     """
-    デーモン・セットアップスクリプトを設定ディレクトリにコピーする。
-    スキルリポジトリの移動・削除後も動作を継続できる。
-    このスクリプト自身のディレクトリを起点に探す。
+    デーモン・セットアップスクリプトとテンプレートを設定ディレクトリにコピーする。
+    スキルリポジトリの移動・削除後も動作を継続できるようにする。
     """
     config_dir = get_config_dir()
-    src_dir = Path(__file__).parent
+    src_dir = Path(__file__).parent       # scripts/
+    tmpl_src = src_dir.parent / "templates"  # templates/ (skill repo root)
 
+    # スクリプトのコピー
     for name in ("gl_poll_daemon.py", "gl_poll_setup.py"):
         src = src_dir / name
         dst = config_dir / name
-
         if not src.exists():
-            print(f"  警告: {src} が見つかりません（スキルリポジトリ外から実行した場合はスキップ）")
+            print(f"  警告: {src} が見つかりません（スキルリポジトリ外実行の場合はスキップ）")
             continue
-
         if dry_run:
             print(f"  [DRYRUN] コピー予定: {src} → {dst}")
             continue
-
         config_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         if platform.system() != "Windows":
@@ -309,15 +312,27 @@ def copy_scripts_to_config_dir(*, dry_run: bool = False) -> None:
                 pass
         print(f"  コピー: {src} → {dst}")
 
+    # テンプレートディレクトリのコピー
+    if tmpl_src.is_dir():
+        tmpl_dst = config_dir / "templates"
+        if dry_run:
+            print(f"  [DRYRUN] テンプレートコピー予定: {tmpl_src} → {tmpl_dst}")
+        else:
+            tmpl_dst.mkdir(parents=True, exist_ok=True)
+            for f in tmpl_src.glob("*.md"):
+                shutil.copy2(f, tmpl_dst / f.name)
+                print(f"  テンプレートコピー: {f.name}")
+    else:
+        print(f"  警告: テンプレートディレクトリ未発見: {tmpl_src}")
+
 
 # ---------------------------------------------------------------------------
 # OS 別サービスインストール
 # ---------------------------------------------------------------------------
 
 def _run_cmd(cmd: list[str], *, dry_run: bool = False, check: bool = True) -> bool:
-    """コマンドを実行する。dry_run 時は表示のみ。"""
     if dry_run:
-        print(f"  [DRYRUN] 実行予定: {' '.join(cmd)}")
+        print(f"  [DRYRUN] 実行予定: {' '.join(str(c) for c in cmd)}")
         return True
     try:
         r = subprocess.run(cmd, capture_output=True, text=True)
@@ -335,14 +350,13 @@ def _plist_path() -> Path:
 
 def install_service_macos(
     python_exe: str, daemon_path: str, interval: int,
-    cli: AgentCLI, token: str, *, dry_run: bool = False
+    cli: AgentCLI, token: str, *, mock_cli: bool = False, dry_run: bool = False
 ) -> bool:
-    plist_path = _plist_path()
-    env_entries = ""
+    env_entries = f"        <key>GITLAB_IDD_CLI</key>\n        <string>{cli.name}</string>\n"
     if token:
         env_entries += f"        <key>GITLAB_TOKEN</key>\n        <string>{token}</string>\n"
-    # preferred_cli をサービス環境に渡す
-    env_entries += f"        <key>GITLAB_IDD_CLI</key>\n        <string>{cli.name}</string>\n"
+    if mock_cli:
+        env_entries += "        <key>GITLAB_IDD_MOCK_CLI</key>\n        <string>true</string>\n"
 
     plist = textwrap.dedent(f"""\
         <?xml version="1.0" encoding="UTF-8"?>
@@ -368,6 +382,7 @@ def install_service_macos(
         </plist>
     """)
 
+    plist_path = _plist_path()
     if dry_run:
         print(f"  [DRYRUN] plist 作成予定: {plist_path}")
         print(f"  [DRYRUN] launchctl load {plist_path}")
@@ -390,12 +405,13 @@ def _systemd_service_path() -> Path:
 
 def install_service_linux(
     python_exe: str, daemon_path: str, interval: int,
-    cli: AgentCLI, token: str, *, dry_run: bool = False
+    cli: AgentCLI, token: str, *, mock_cli: bool = False, dry_run: bool = False
 ) -> bool:
-    svc_path = _systemd_service_path()
     env_lines = f"Environment=GITLAB_IDD_CLI={cli.name}\n"
     if token:
         env_lines += f"Environment=GITLAB_TOKEN={token}\n"
+    if mock_cli:
+        env_lines += "Environment=GITLAB_IDD_MOCK_CLI=true\n"
 
     svc = textwrap.dedent(f"""\
         [Unit]
@@ -416,6 +432,7 @@ def install_service_linux(
         WantedBy=default.target
     """)
 
+    svc_path = _systemd_service_path()
     if dry_run:
         print(f"  [DRYRUN] service ファイル作成予定: {svc_path}")
         print(f"  [DRYRUN] systemctl --user enable --now {SERVICE_NAME}")
@@ -426,8 +443,7 @@ def install_service_linux(
     print(f"  service ファイル作成: {svc_path}")
 
     check = subprocess.run(
-        ["systemctl", "--user", "daemon-reload"],
-        capture_output=True, text=True,
+        ["systemctl", "--user", "daemon-reload"], capture_output=True, text=True
     )
     if check.returncode != 0:
         print("  systemd 未使用: crontab にフォールバック")
@@ -445,7 +461,7 @@ def _install_cron_linux(
 ) -> bool:
     cron_cmd = f"@reboot {python_exe} {daemon_path} --interval {interval}"
     if dry_run:
-        print(f"  [DRYRUN] crontab に追加予定: {cron_cmd}")
+        print(f"  [DRYRUN] crontab 追加予定: {cron_cmd}")
         return True
     try:
         existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
@@ -484,15 +500,21 @@ def install_service_windows(
 
 def install_service(
     python_exe: str, daemon_path: str, interval: int,
-    cli: AgentCLI, token: str, *, dry_run: bool = False
+    cli: AgentCLI, token: str, *, mock_cli: bool = False, dry_run: bool = False
 ) -> bool:
     system = platform.system()
-    print(f"\n[サービスインストール] OS={system}  CLI={cli.name}")
+    print(f"\n[サービスインストール] OS={system}  CLI={'mock' if mock_cli else cli.name}")
     match system:
         case "Darwin":
-            return install_service_macos(python_exe, daemon_path, interval, cli, token, dry_run=dry_run)
+            return install_service_macos(
+                python_exe, daemon_path, interval, cli, token,
+                mock_cli=mock_cli, dry_run=dry_run
+            )
         case "Linux":
-            return install_service_linux(python_exe, daemon_path, interval, cli, token, dry_run=dry_run)
+            return install_service_linux(
+                python_exe, daemon_path, interval, cli, token,
+                mock_cli=mock_cli, dry_run=dry_run
+            )
         case "Windows":
             return install_service_windows(python_exe, daemon_path, interval, dry_run=dry_run)
         case _:
@@ -526,13 +548,129 @@ def uninstall_service(*, dry_run: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
+# サービス再起動
+# ---------------------------------------------------------------------------
+
+def restart_daemon(*, dry_run: bool = False) -> bool:
+    """デーモンを再起動する。設定変更後に呼び出す。"""
+    system = platform.system()
+    print(f"デーモン再起動 ({system})...")
+    match system:
+        case "Darwin":
+            plist = _plist_path()
+            if not plist.exists():
+                print("  plist が見つかりません。先に --install を実行してください。")
+                return False
+            _run_cmd(["launchctl", "stop",  f"com.{SERVICE_NAME}"], dry_run=dry_run, check=False)
+            ok = _run_cmd(["launchctl", "start", f"com.{SERVICE_NAME}"], dry_run=dry_run)
+            if ok:
+                print("  macOS LaunchAgent 再起動完了")
+            return ok
+        case "Linux":
+            svc = _systemd_service_path()
+            if not svc.exists():
+                print("  service ファイルが見つかりません。先に --install を実行してください。")
+                return False
+            ok = _run_cmd(["systemctl", "--user", "restart", SERVICE_NAME], dry_run=dry_run)
+            if ok:
+                print("  Linux systemd 再起動完了")
+            return ok
+        case "Windows":
+            _run_cmd(["schtasks", "/End", "/TN", SERVICE_NAME], dry_run=dry_run, check=False)
+            ok = _run_cmd(["schtasks", "/Run", "/TN", SERVICE_NAME], dry_run=dry_run)
+            if ok:
+                print("  Windows タスク再起動完了")
+            return ok
+        case _:
+            print(f"  未対応 OS: {system}")
+            return False
+
+
+# ---------------------------------------------------------------------------
+# 設定変更
+# ---------------------------------------------------------------------------
+
+_SETTABLE_KEYS = {
+    "mock_cli":           "bool",
+    "preferred_cli":      "str",
+    "poll_interval":      "int",
+    "poll_interval_seconds": "int",
+}
+
+
+def run_set_config(key_value: str, *, dry_run: bool = False) -> None:
+    """
+    KEY=VALUE 形式で config.json を変更し、デーモンを再起動する。
+    例:
+      --set mock_cli=true
+      --set preferred_cli=claude
+      --set poll_interval=60
+    """
+    if "=" not in key_value:
+        print(f"ERROR: KEY=VALUE 形式で指定してください。例: --set mock_cli=true")
+        print(f"変更可能なキー: {', '.join(_SETTABLE_KEYS)}")
+        sys.exit(1)
+
+    key, value = key_value.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+
+    if key not in _SETTABLE_KEYS:
+        print(f"ERROR: 不明なキー: {key!r}")
+        print(f"変更可能なキー: {', '.join(_SETTABLE_KEYS)}")
+        sys.exit(1)
+
+    config = load_config()
+    vtype = _SETTABLE_KEYS[key]
+
+    # 型変換 & 設定
+    match key:
+        case "mock_cli":
+            parsed = value.lower() in ("true", "1", "yes", "on")
+            config["mock_cli"] = parsed
+            config_key = "mock_cli"
+        case "preferred_cli":
+            valid = {name for name, _, _ in _CLI_CANDIDATES}
+            if value not in valid:
+                print(f"ERROR: 不明な CLI: {value!r}  有効値: {', '.join(sorted(valid))}")
+                sys.exit(1)
+            config["preferred_cli"] = value
+            config_key = "preferred_cli"
+        case "poll_interval" | "poll_interval_seconds":
+            try:
+                secs = int(value)
+            except ValueError:
+                print(f"ERROR: 数値を指定してください: {value!r}")
+                sys.exit(1)
+            config["poll_interval_seconds"] = secs
+            config_key = "poll_interval_seconds"
+        case _:
+            config_key = key
+
+    save_config(config, dry_run=dry_run)
+    print(f"{'[DRYRUN] ' if dry_run else ''}設定変更: {config_key} = {config.get(config_key)}")
+
+    # mock_cli の状態をわかりやすく表示
+    if config_key == "mock_cli":
+        if config.get("mock_cli"):
+            print(
+                "  モック CLI モード ON: イシュー検出時にエージェント CLI は起動せず、\n"
+                f"  プロンプトを {get_config_dir() / 'mock-prompts'} に保存します。"
+            )
+        else:
+            print("  モック CLI モード OFF: 通常の CLI が使用されます。")
+
+    # デーモン再起動
+    restart_daemon(dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
 # SessionStart フック設定
 # ---------------------------------------------------------------------------
 
 def configure_session_hook(
     setup_script_path: str, python_exe: str, *, dry_run: bool = False
 ) -> None:
-    """~/.claude/settings.json に SessionStart フックを追加する。"""
     settings_path = CLAUDE_SETTINGS_PATH
     hook_command = f"{python_exe} {setup_script_path} --session-start"
 
@@ -550,7 +688,7 @@ def configure_session_hook(
     for entry in session_hooks:
         for h in entry.get("hooks", []):
             if h.get("command") == hook_command:
-                print(f"  SessionStart フック: 既に登録済み")
+                print("  SessionStart フック: 既に登録済み")
                 return
 
     session_hooks.append({"hooks": [{"type": "command", "command": hook_command}]})
@@ -581,18 +719,24 @@ def show_status() -> None:
     print("=" * 60)
     print(f"設定ファイル   : {config_path} ({'存在' if config_path.exists() else '未作成'})")
     print(f"デーモンスクリプト: {daemon_path} ({'存在' if daemon_path.exists() else '未コピー'})")
+    print(f"テンプレート   : {get_config_dir() / 'templates'}")
     print(f"ポーリング間隔  : {config.get('poll_interval_seconds', DEFAULT_POLL_INTERVAL)} 秒")
 
+    mock_cli = config.get("mock_cli", False)
+    print(f"モック CLI モード: {'ON ⚠ — CLI は起動せずプロンプトをファイルに保存' if mock_cli else 'OFF'}")
+    if mock_cli:
+        print(f"  mock-prompts: {get_config_dir() / 'mock-prompts'}")
+
     print(f"\n利用可能な CLI ({len(clis)} 件):")
+    preferred = config.get("preferred_cli")
     for cli in clis:
+        tag = " ← 優先" if cli.name == preferred else ""
         wsl_tag = " (WSL2経由)" if cli.via_wsl else ""
-        print(f"  ✓ {cli.name:<10} {cli.binary}{wsl_tag}")
+        print(f"  ✓ {cli.name:<10} {cli.binary}{wsl_tag}{tag}")
     if not clis:
         print("  ✗ なし — claude/codex/kiro-cli/q のいずれかをインストールしてください")
-
-    preferred = config.get("preferred_cli")
-    if preferred:
-        print(f"優先 CLI (config): {preferred}")
+        if mock_cli:
+            print("    ※ モック CLI モード ON のため動作は継続中")
 
     print(f"\nポーリング対象リポジトリ ({len(config.get('repos', []))} 件):")
     for repo in config.get("repos", []):
@@ -624,16 +768,21 @@ def show_status() -> None:
             )
             print("  " + (r.stdout.strip() or "未登録"))
 
+    # --set のヒント
+    print("\n設定変更のヒント:")
+    print("  モック CLI に切り替え : python gl_poll_setup.py --set mock_cli=true")
+    print("  通常 CLI に戻す       : python gl_poll_setup.py --set mock_cli=false")
+    print("  再起動               : python gl_poll_setup.py --restart")
+
 
 # ---------------------------------------------------------------------------
 # セッション開始モード（非対話）
 # ---------------------------------------------------------------------------
 
 def run_session_start() -> None:
-    """SessionStart フック。カレントリポジトリを追加し、デーモンを起動確認する。"""
     repo_info = get_current_repo_info()
     if repo_info is None:
-        return  # git リポジトリでなければ何もしない
+        return
 
     config = load_config()
     token = get_gitlab_token()
@@ -646,7 +795,6 @@ def run_session_start() -> None:
 
 
 def _ensure_daemon_running() -> None:
-    """デーモンが停止中なら再起動を試みる（best-effort）。"""
     if not get_installed_daemon_path().exists():
         return
     try:
@@ -654,14 +802,12 @@ def _ensure_daemon_running() -> None:
             case "Darwin":
                 if _plist_path().exists():
                     subprocess.run(
-                        ["launchctl", "start", f"com.{SERVICE_NAME}"],
-                        capture_output=True,
+                        ["launchctl", "start", f"com.{SERVICE_NAME}"], capture_output=True
                     )
             case "Linux":
                 if _systemd_service_path().exists():
                     subprocess.run(
-                        ["systemctl", "--user", "start", SERVICE_NAME],
-                        capture_output=True,
+                        ["systemctl", "--user", "start", SERVICE_NAME], capture_output=True
                     )
     except Exception:
         pass
@@ -672,7 +818,6 @@ def _ensure_daemon_running() -> None:
 # ---------------------------------------------------------------------------
 
 def run_add_repo(*, dry_run: bool = False) -> None:
-    """カレントリポジトリをポーリング対象に追加する。"""
     repo_info = get_current_repo_info()
     if repo_info is None:
         print("ERROR: git リポジトリではないか remote origin がありません。")
@@ -681,7 +826,6 @@ def run_add_repo(*, dry_run: bool = False) -> None:
     config = load_config()
     token = get_gitlab_token()
     changed = add_repo_to_config(repo_info, config, token)
-
     host = repo_info["host"]
     project = repo_info["project"]
 
@@ -697,10 +841,11 @@ def run_add_repo(*, dry_run: bool = False) -> None:
 # 対話的インストール
 # ---------------------------------------------------------------------------
 
-def run_install(*, dry_run: bool = False) -> None:
+def run_install(*, dry_run: bool = False, allow_mock_cli: bool = False) -> None:
     """
     対話的インストール。
-    SKILL.md の指示に従い、LLM がユーザーの同意を得てから呼び出す。
+    LLM がユーザーの同意を得てから呼び出す（SKILL.md 参照）。
+    CLI が見つからない場合 --allow-mock-cli を付けるとモックCLIでインストール可能。
     """
     tag = "[DRYRUN] " if dry_run else ""
     print("=" * 60)
@@ -710,38 +855,47 @@ def run_install(*, dry_run: bool = False) -> None:
     # 1. エージェント CLI チェック
     print(f"\n[1/5] エージェント CLI の確認...")
     clis = find_available_agent_clis()
-    if not clis:
-        print(
-            "ERROR: 対応エージェント CLI が見つかりません。\n"
-            "以下のいずれかをインストールしてください:\n"
-            "  claude  : npm install -g @anthropic-ai/claude-code\n"
-            "  codex   : npm install -g @openai/codex\n"
-            "  kiro    : kiro-cli --version (または WSL2 経由)\n"
-            "  amazonq : q --version\n"
-        )
-        if not dry_run:
+    use_mock_cli = False
+
+    if clis:
+        for cli in clis:
+            wsl_tag = " (WSL2経由)" if cli.via_wsl else ""
+            print(f"  ✓ {cli.name}{wsl_tag}")
+        best_cli = clis[0]
+        print(f"  使用 CLI: {best_cli.name}")
+    else:
+        if allow_mock_cli:
+            print("  ⚠ エージェント CLI が見つかりません。モック CLI モードでインストールします。")
+            print(f"  プロンプトは {get_config_dir() / 'mock-prompts'} に保存されます。")
+            print("  CLI インストール後: python gl_poll_setup.py --set mock_cli=false --restart")
+            use_mock_cli = True
+            # ダミー CLI（状態確認用）
+            best_cli = AgentCLI("mock", "", [])
+        else:
+            print(
+                "ERROR: 対応エージェント CLI が見つかりません。\n"
+                "以下のいずれかをインストールしてください:\n"
+                "  claude  : npm install -g @anthropic-ai/claude-code\n"
+                "  codex   : npm install -g @openai/codex\n"
+                "  kiro    : インストール後 kiro-cli --version を確認\n"
+                "  amazonq : q --version を確認\n\n"
+                "CLI なしでモックCLIモードでインストールする場合:\n"
+                "  python gl_poll_setup.py --install --allow-mock-cli"
+            )
             sys.exit(1)
-        clis = [AgentCLI("mock", "echo", ["[DRYRUN]"])]
-
-    for cli in clis:
-        wsl_tag = " (WSL2経由)" if cli.via_wsl else ""
-        print(f"  ✓ {cli.name}{wsl_tag}")
-
-    best_cli = clis[0]
-    print(f"  使用 CLI: {best_cli.name}")
 
     # 2. カレントリポジトリ確認
     print(f"\n[2/5] カレントリポジトリの確認...")
     repo_info = get_current_repo_info()
     if repo_info is None:
         print("  警告: git リポジトリではないか remote origin がありません。")
-        print("  リポジトリなしで続行します（後で --add-repo で追加できます）。")
+        print("  後で --add-repo で追加できます。")
     else:
         print(f"  リポジトリ: {repo_info['host']}/{repo_info['project']}")
         print(f"  ローカルパス: {repo_info['local_path']}")
 
-    # 3. スクリプトコピー
-    print(f"\n[3/5] デーモンスクリプトをインストールディレクトリへコピー...")
+    # 3. スクリプト・テンプレートをコピー
+    print(f"\n[3/5] スクリプト・テンプレートをコピー...")
     copy_scripts_to_config_dir(dry_run=dry_run)
 
     # 4. 設定ファイル更新
@@ -749,20 +903,23 @@ def run_install(*, dry_run: bool = False) -> None:
     config = load_config()
     token = get_gitlab_token()
     if not token:
-        print("  警告: GITLAB_TOKEN 未設定。デーモン起動後に環境変数を設定してください。")
+        print("  警告: GITLAB_TOKEN 未設定。後で環境変数を設定してください。")
     if repo_info:
         add_repo_to_config(repo_info, config, token)
-    # preferred_cli を設定
-    config["preferred_cli"] = best_cli.name
+    if not use_mock_cli:
+        config["preferred_cli"] = best_cli.name
+    config["mock_cli"] = use_mock_cli
     save_config(config, dry_run=dry_run)
     print(f"  {tag}設定保存: {get_config_path()}")
 
     # 5. OS サービス登録
-    print(f"\n[5/5] OS サービスへ登録...")
     python_exe = sys.executable
     daemon_path = str(get_installed_daemon_path())
     interval = config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
-    ok = install_service(python_exe, daemon_path, interval, best_cli, token, dry_run=dry_run)
+    ok = install_service(
+        python_exe, daemon_path, interval, best_cli, token,
+        mock_cli=use_mock_cli, dry_run=dry_run,
+    )
 
     # SessionStart フック設定
     setup_path = str(get_installed_setup_path())
@@ -771,14 +928,17 @@ def run_install(*, dry_run: bool = False) -> None:
     print("\n" + "=" * 60)
     if ok:
         print(f"{tag}インストール完了!")
-        print(f"  {tag}デーモンログ    : {get_config_dir() / 'daemon.log'}")
-        print(f"  {tag}設定ファイル    : {get_config_path()}")
-        print(f"  {tag}ポーリング間隔  : {interval} 秒")
-        print(f"  {tag}エージェント CLI: {best_cli.name}")
+        print(f"  {tag}デーモンログ  : {get_config_dir() / 'daemon.log'}")
+        print(f"  {tag}設定ファイル  : {get_config_path()}")
+        print(f"  {tag}CLI モード    : {'モック (プロンプト保存のみ)' if use_mock_cli else best_cli.name}")
         if dry_run:
-            print("\n  ※ DRYRUN モード: 実際には何も変更されていません")
+            print("\n  ※ DRYRUN: 実際には何も変更されていません")
+        if use_mock_cli:
+            print(f"\n  次のステップ:")
+            print(f"    1. CLI をインストール")
+            print(f"    2. python gl_poll_setup.py --set mock_cli=false")
     else:
-        print(f"{tag}インストールに一部問題が発生しました。出力を確認してください。")
+        print(f"{tag}インストールに一部問題が発生しました。")
     print("=" * 60)
 
 
@@ -790,7 +950,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "gitlab-idd polling daemon setup (Python 3.11+, stdlib only)\n"
-            "スキルリポジトリの内外どちらからでも実行できます。"
+            "スキルリポジトリ内外どちらからでも実行できます。"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -798,10 +958,14 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--install",       action="store_true", help="対話的インストール（デフォルト）")
     group.add_argument("--session-start", action="store_true", help="SessionStart フックモード（非対話）")
-    group.add_argument("--add-repo",      action="store_true", help="カレントリポジトリをポーリング対象に追加")
+    group.add_argument("--add-repo",      action="store_true", help="カレントリポジトリを追加")
+    group.add_argument("--restart",       action="store_true", help="デーモンを再起動")
+    group.add_argument("--set",           metavar="KEY=VALUE",  help="設定変更してデーモンを再起動")
     group.add_argument("--uninstall",     action="store_true", help="デーモンサービスを削除")
     group.add_argument("--status",        action="store_true", help="デーモン状態を表示")
-    parser.add_argument("--dry-run",      action="store_true", help="副作用なしで動作確認（install/add-repo/uninstall で有効）")
+
+    parser.add_argument("--dry-run",       action="store_true", help="副作用なしでシミュレート（install/set/add-repo で有効）")
+    parser.add_argument("--allow-mock-cli", action="store_true", help="CLI 未インストールでもモック CLI でインストール（--install と併用）")
 
     args = parser.parse_args()
 
@@ -810,6 +974,10 @@ def main() -> None:
             run_session_start()
         case _ if args.add_repo:
             run_add_repo(dry_run=args.dry_run)
+        case _ if args.restart:
+            restart_daemon(dry_run=args.dry_run)
+        case _ if args.set is not None:
+            run_set_config(args.set, dry_run=args.dry_run)
         case _ if args.uninstall:
             uninstall_service(dry_run=args.dry_run)
             if not args.dry_run:
@@ -818,8 +986,7 @@ def main() -> None:
         case _ if args.status:
             show_status()
         case _:
-            # --install または引数なし
-            run_install(dry_run=args.dry_run)
+            run_install(dry_run=args.dry_run, allow_mock_cli=args.allow_mock_cli)
 
 
 if __name__ == "__main__":
