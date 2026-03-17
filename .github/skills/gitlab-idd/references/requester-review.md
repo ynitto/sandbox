@@ -14,19 +14,22 @@
 他ノードが発行したイシューはレビューしない。
 すべての操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
-```bash
-# GL ショートハンド（python コマンドは環境に合わせて python3 や py に読み替える）
-GL="python scripts/gl.py"
-```
+> **注**: 環境によって `python` を `python3` や `py` に読み替える。
 
 ---
 
 ## ステップ 1 — レビュー対象イシューを取得
 
-```bash
-MY_USER=$($GL current-user --get username)
+自分のユーザー名を取得する:
 
-$GL list-issues --label "status:review-ready" --author "$MY_USER"
+```
+python scripts/gl.py current-user --get username
+```
+
+自分が発行した `status:review-ready` イシューを取得する:
+
+```
+python scripts/gl.py list-issues --label "status:review-ready" --author MY_USER
 ```
 
 レビュー対象が 0 件の場合は「自分が発行したレビュー待ちイシューはありません」と報告して終了。
@@ -38,16 +41,18 @@ $GL list-issues --label "status:review-ready" --author "$MY_USER"
 
 各イシューについて以下を確認する:
 
-```bash
-$GL get-issue {issue_id}
-$GL get-comments {issue_id}
+```
+python scripts/gl.py get-issue {issue_id}
+python scripts/gl.py get-comments {issue_id}
 
-# ワーカーが作成したブランチの diff
+python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}"
+```
+
+ワーカーが作成したブランチの diff を取得する:
+
+```
 git fetch origin
 git diff main...origin/feature/issue-{issue_id}-*
-
-# MR 情報確認
-$GL list-mrs --source-branch "feature/issue-{issue_id}"
 ```
 
 ---
@@ -75,17 +80,23 @@ $GL list-mrs --source-branch "feature/issue-{issue_id}"
 
 ## ステップ 4a — 条件充足: クローズ & マージ
 
-```bash
-MR_ID=$($GL list-mrs --source-branch "feature/issue-{issue_id}" --get 0.iid)
+MR の IID を取得する:
 
-$GL merge-mr "$MR_ID" --squash --remove-source-branch
+```
+python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}" --get 0.iid
+```
 
-$GL update-issue {issue_id} \
+マージしてイシューをクローズする:
+
+```
+python scripts/gl.py merge-mr MR_ID --squash --remove-source-branch
+
+python scripts/gl.py update-issue {issue_id} \
   --add-labels "status:done" \
   --remove-labels "status:review-ready" \
   --state-event close
 
-$GL add-comment {issue_id} \
+python scripts/gl.py add-comment {issue_id} \
   --body "✅ 受け入れ条件をすべて満たしています。マージしてクローズしました。"
 ```
 
@@ -99,8 +110,9 @@ MR #{mr_id} をマージ済みです。
 
 ## ステップ 4b — 条件不足: リオープン
 
-```bash
-COMMENT=$(cat << 'EOF'
+差し戻しコメントを `_rework_comment.md` に書く:
+
+```markdown
 ## ❌ 差し戻し
 
 以下の受け入れ条件が未充足です。修正後に再度 `status:review-ready` に更新してください。
@@ -113,11 +125,14 @@ COMMENT=$(cat << 'EOF'
 ### 具体的な指摘
 
 {修正が必要な箇所・理由を詳しく記述}
-EOF
-)
-$GL add-comment {issue_id} --body "$COMMENT"
+```
 
-$GL update-issue {issue_id} \
+コメントを投稿してリオープンする:
+
+```
+python scripts/gl.py add-comment {issue_id} --body-file _rework_comment.md
+
+python scripts/gl.py update-issue {issue_id} \
   --add-labels "status:needs-rework" \
   --remove-labels "status:review-ready" \
   --state-event reopen
