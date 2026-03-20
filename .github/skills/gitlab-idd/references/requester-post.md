@@ -56,73 +56,40 @@ GL="python scripts/gl.py"
 {関連イシュー・ドキュメント・スクリーンショットなど}
 
 <!-- gitlab-idd: version=4.0.0 role=worker -->
+
+`gitlab-idd` ワーカーロールで処理してください。
+イシューを自分に assign → `feature/issue-{id}-{slug}` ブランチ作成 → 実装（下記スキルデータ参照）→ push + Draft MR（`Closes #{id}` を含める）→ `status:review-ready` に更新。
+
 <details>
-<summary>🤖 Worker Instructions (gitlab-idd v4.0.0)</summary>
+<summary>📋 実装スキルデータ (gitlab-idd v4.0.0)</summary>
 
-このイシューは `gitlab-idd` スキルのワーカーロールで処理します。
-スキル未インストールの場合は以下の手順に従ってください。
-
-**前提**: `GITLAB_TOKEN` 環境変数を設定し、`scripts/gl.py` が使用可能なこと。
+**GitLab API ツール**: `scripts/gl.py`（Python stdlib のみ・glab 不要）
 
 ```bash
 GL="python scripts/gl.py"
-ISSUE_ID={このイシューの番号}   # URL の末尾の数字
+ISSUE_ID={このイシューの番号}        # URL 末尾の数字
+BRANCH=$($GL make-branch-name $ISSUE_ID)  # → "feature/issue-42-..."
 ```
 
-### Step 1 — 着手ロック
+#### イシュー詳細・差し戻しコメントの取得
 
 ```bash
-MY_USER=$($GL current-user --get username)
-$GL update-issue $ISSUE_ID \
-  --assignee "$MY_USER" \
-  --add-labels "status:in-progress" \
-  --remove-labels "status:open,assignee:any"
-
-# 競合確認（別ノードが先取得した場合はスキップ）
-ASSIGNED=$($GL get-issue $ISSUE_ID --get assignees.0.username)
-[ "$ASSIGNED" = "$MY_USER" ] || { echo "競合: 別ノードが先取得"; exit 1; }
+$GL get-issue $ISSUE_ID       # タイトル・本文・ラベル
+$GL get-comments $ISSUE_ID    # 差し戻し時は特に重要
 ```
 
-### Step 2 — ブランチ作成
+#### 実装ループ（最大 5 回）
 
-```bash
-BRANCH=$($GL make-branch-name $ISSUE_ID)
-git fetch origin main
-git checkout -b "$BRANCH" origin/main
-$GL add-comment $ISSUE_ID --body "🚀 着手: ノード \`$(hostname)\` がブランチ \`${BRANCH}\` で作業開始"
-```
+実装 → 並列レビュー → 修正 のサイクルを繰り返す。
+**実装・レビューは必ずサブエージェントに委譲すること。**
 
-### Step 3 — 実装
+| サブエージェント | 観点 | 入力 |
+|----------------|------|------|
+| 機能レビュー | 受け入れ条件チェックリスト全項目・エッジケース | イシュー本文 + diff |
+| セキュリティレビュー | OWASP Top 10・認証・入力検証・機密情報漏洩 | イシュー本文 + diff |
+| アーキテクチャレビュー | SOLID・依存方向・既存設計との一貫性 | イシュー本文 + diff |
 
-上記「受け入れ条件」をすべて満たす実装を行う。
-機能・セキュリティ・アーキテクチャの 3 観点でレビューし、問題がなければコミット。
-
-```bash
-git add -A && git commit -m "feat: {概要} (issue #$ISSUE_ID)"
-```
-
-### Step 4 — 提出
-
-```bash
-git push -u origin "$BRANCH"
-
-ISSUE_TITLE=$($GL get-issue $ISSUE_ID --get title)
-$GL create-mr \
-  --title "$ISSUE_TITLE" \
-  --source-branch "$BRANCH" \
-  --target-branch main \
-  --description "Closes #$ISSUE_ID" \
-  --draft
-
-MR_URL=$($GL list-mrs --source-branch "$BRANCH" --get 0.web_url)
-$GL add-comment $ISSUE_ID --body "## ✅ 実装完了 — レビュー依頼
-**ブランチ**: \`${BRANCH}\`
-**MR**: ${MR_URL}"
-
-$GL update-issue $ISSUE_ID \
-  --add-labels "status:review-ready" \
-  --remove-labels "status:in-progress"
-```
+全レビュー指摘なし or 軽微のみ → 提出へ。修正必要 → 再実装 → 再レビュー。5 回超 → 現状で提出し未解決指摘をコメントに記載。
 
 </details>
 ```
