@@ -1,0 +1,24 @@
+{
+  "inputs": [
+    {
+      "id": "gitlab-token",
+      "type": "promptString",
+      "description": "GitLab Personal Access Token (glpat-...)",
+      "password": true
+    }
+  ],
+  "servers": {
+    "gitlab": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "${env:HOME}/.claude/mcp-servers/gitlab/server.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GITLAB_TOKEN": "${input:gitlab-token}"
+      }
+    }
+  }
+}

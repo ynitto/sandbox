@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "mcp>=1.0.0",
+# ]
+# ///
 """
 GitLab MCP Server for issue-driven development.
 
@@ -7,24 +13,13 @@ The target repository is auto-detected from the git remote of the workspace.
 
 Environment variables:
   GITLAB_TOKEN or GL_TOKEN   Personal Access Token (required)
-  GITLAB_WORKSPACE           Path to workspace git repo (default: current working dir)
+  GITLAB_WORKSPACE           Path to workspace git repo (default: cwd at startup)
 
 Usage:
-  GITLAB_TOKEN=glpat-xxx python server.py
+  uv run server.py
 
-Claude Code configuration (~/.claude.json or workspace .mcp.json):
-  {
-    "mcpServers": {
-      "gitlab": {
-        "command": "python",
-        "args": ["/path/to/mcp-servers/gitlab/server.py"],
-        "cwd": "/path/to/your/workspace",
-        "env": {
-          "GITLAB_TOKEN": "glpat-xxxxxxxxxxxx"
-        }
-      }
-    }
-  }
+VSCode: copy .vscode/mcp.json to your GitLab project, then open the project in VSCode.
+        ${workspaceFolder} is used as cwd, so git remote detection is automatic.
 """
 
 import json
