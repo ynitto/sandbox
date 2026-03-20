@@ -29,6 +29,8 @@ GL="python scripts/gl.py"
 
 ## ステップ 2 — イシュー本文テンプレート
 
+本文末尾には **ワーカー用スキルデータ** を必ず付与する（スキル未インストールのエージェントへの手順ガイド）。
+
 ```markdown
 ## 目的
 
@@ -52,6 +54,77 @@ GL="python scripts/gl.py"
 ## 参考情報
 
 {関連イシュー・ドキュメント・スクリーンショットなど}
+
+<!-- gitlab-idd: version=4.0.0 role=worker -->
+<details>
+<summary>🤖 Worker Instructions (gitlab-idd v4.0.0)</summary>
+
+このイシューは `gitlab-idd` スキルのワーカーロールで処理します。
+スキル未インストールの場合は以下の手順に従ってください。
+
+**前提**: `GITLAB_TOKEN` 環境変数を設定し、`scripts/gl.py` が使用可能なこと。
+
+```bash
+GL="python scripts/gl.py"
+ISSUE_ID={このイシューの番号}   # URL の末尾の数字
+```
+
+### Step 1 — 着手ロック
+
+```bash
+MY_USER=$($GL current-user --get username)
+$GL update-issue $ISSUE_ID \
+  --assignee "$MY_USER" \
+  --add-labels "status:in-progress" \
+  --remove-labels "status:open,assignee:any"
+
+# 競合確認（別ノードが先取得した場合はスキップ）
+ASSIGNED=$($GL get-issue $ISSUE_ID --get assignees.0.username)
+[ "$ASSIGNED" = "$MY_USER" ] || { echo "競合: 別ノードが先取得"; exit 1; }
+```
+
+### Step 2 — ブランチ作成
+
+```bash
+BRANCH=$($GL make-branch-name $ISSUE_ID)
+git fetch origin main
+git checkout -b "$BRANCH" origin/main
+$GL add-comment $ISSUE_ID --body "🚀 着手: ノード \`$(hostname)\` がブランチ \`${BRANCH}\` で作業開始"
+```
+
+### Step 3 — 実装
+
+上記「受け入れ条件」をすべて満たす実装を行う。
+機能・セキュリティ・アーキテクチャの 3 観点でレビューし、問題がなければコミット。
+
+```bash
+git add -A && git commit -m "feat: {概要} (issue #$ISSUE_ID)"
+```
+
+### Step 4 — 提出
+
+```bash
+git push -u origin "$BRANCH"
+
+ISSUE_TITLE=$($GL get-issue $ISSUE_ID --get title)
+$GL create-mr \
+  --title "$ISSUE_TITLE" \
+  --source-branch "$BRANCH" \
+  --target-branch main \
+  --description "Closes #$ISSUE_ID" \
+  --draft
+
+MR_URL=$($GL list-mrs --source-branch "$BRANCH" --get 0.web_url)
+$GL add-comment $ISSUE_ID --body "## ✅ 実装完了 — レビュー依頼
+**ブランチ**: \`${BRANCH}\`
+**MR**: ${MR_URL}"
+
+$GL update-issue $ISSUE_ID \
+  --add-labels "status:review-ready" \
+  --remove-labels "status:in-progress"
+```
+
+</details>
 ```
 
 ---
