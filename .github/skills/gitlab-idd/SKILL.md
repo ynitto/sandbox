@@ -60,9 +60,13 @@ export GITLAB_SELF_DEFER_MINUTES=60
 
 ```
 1. タスク要件を整理（受け入れ条件を必ず定義）
-2. gl.py create-issue でイシュー作成
-3. ラベル "status:open" + "assignee:any" を付与
-4. イシュー URL をユーザーに報告して終了（ポーリング不要）
+2. スキルデータ埋め込みの要否を判断
+   - ワーカーがスキル未対応 / 環境不明 → 埋め込む（不明な場合はユーザーに確認）
+   - ワーカーがスキル対応済み         → 埋め込みスキップ
+3. 埋め込む場合: タスクに適したスキルを選定し SKILL.md・references/ を読んで要約
+4. gl.py create-issue でイシュー作成（スキルデータ付き or なし）
+5. ラベル "status:open" + "assignee:any" を付与
+6. イシュー URL をユーザーに報告して終了（ポーリング不要）
 ```
 
 ---
