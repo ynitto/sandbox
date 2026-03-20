@@ -3,10 +3,7 @@
 タスクをイシューとして投稿し、ワーカーノードへの実行を委譲する。
 すべての操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
-```bash
-# GL ショートハンド（python コマンドは環境に合わせて python3 や py に読み替える）
-GL="python scripts/gl.py"
-```
+> **注**: 環境によって `python` を `python3` や `py` に読み替える。
 
 ---
 
@@ -28,6 +25,8 @@ GL="python scripts/gl.py"
 ---
 
 ## ステップ 2 — イシュー本文テンプレート
+
+以下の内容を `_body.md` というファイルに書く:
 
 ```markdown
 ## 目的
@@ -58,15 +57,12 @@ GL="python scripts/gl.py"
 
 ## ステップ 3 — イシュー作成
 
-```bash
-BODY=$(cat << 'EOF'
-{上記テンプレートを埋めた内容}
-EOF
-)
+`_body.md` を `--body-file` で渡してイシューを作成する:
 
-$GL create-issue \
+```
+python scripts/gl.py create-issue \
   --title "{タイトル}" \
-  --body "$BODY" \
+  --body-file _body.md \
   --labels "status:open,assignee:any,priority:{high|normal|low}"
 ```
 

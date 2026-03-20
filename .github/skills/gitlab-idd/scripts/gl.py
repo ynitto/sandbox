@@ -140,6 +140,26 @@ def out(obj, get_field=None):
         print(json.dumps(obj, ensure_ascii=False, indent=2))
 
 
+def read_body(body, body_file, option_name="--body"):
+    """Return body text from --body or --body-file (cross-platform, no shell needed).
+
+    --body-file - reads from stdin.
+    --body-file PATH reads from the specified file (UTF-8).
+    --body and --body-file are mutually exclusive.
+    """
+    if body_file is not None:
+        if body:
+            sys.exit(f"ERROR: Cannot use both {option_name} and {option_name}-file simultaneously.")
+        if body_file == "-":
+            return sys.stdin.read()
+        try:
+            with open(body_file, encoding="utf-8") as f:
+                return f.read()
+        except OSError as e:
+            sys.exit(f"ERROR: Cannot read file '{body_file}': {e}")
+    return body or ""
+
+
 def title_to_slug(title):
     """Convert an issue title to a URL-safe branch name slug.
 
@@ -193,7 +213,7 @@ def cmd_get_issue(args, host, project, token):
 def cmd_create_issue(args, host, project, token):
     """Create a new issue."""
     ep = encode_project(project)
-    data = {"title": args.title, "description": args.body or ""}
+    data = {"title": args.title, "description": read_body(args.body, args.body_file)}
     if args.labels:
         data["labels"] = args.labels
     if args.assignee:
@@ -237,7 +257,7 @@ def cmd_add_comment(args, host, project, token):
     out(api(
         host, token, "POST",
         f"/projects/{ep}/issues/{args.issue_id}/notes",
-        data={"body": args.body},
+        data={"body": read_body(args.body, args.body_file)},
     ), args.get)
 
 
@@ -270,7 +290,7 @@ def cmd_create_mr(args, host, project, token):
         "title": title,
         "source_branch": args.source_branch,
         "target_branch": args.target_branch,
-        "description": args.description or "",
+        "description": read_body(args.description, args.description_file, "--description"),
     }
     if args.draft:
         data["draft"] = True
@@ -390,6 +410,9 @@ def build_parser():
     p = sub.add_parser("create-issue", help="Create a new issue")
     p.add_argument("--title", required=True)
     p.add_argument("--body", default="", help="Issue description (Markdown)")
+    p.add_argument("--body-file", metavar="FILE",
+                   help="Read issue description from FILE (use - for stdin). "
+                        "Mutually exclusive with --body.")
     p.add_argument("--labels", help="Comma-separated label names")
     p.add_argument("--assignee", help="Assignee username")
 
@@ -402,7 +425,10 @@ def build_parser():
 
     p = sub.add_parser("add-comment", help="Post a comment on an issue")
     p.add_argument("issue_id", type=int)
-    p.add_argument("--body", required=True)
+    p.add_argument("--body", default="", help="Comment body (Markdown)")
+    p.add_argument("--body-file", metavar="FILE",
+                   help="Read comment body from FILE (use - for stdin). "
+                        "Mutually exclusive with --body.")
 
     p = sub.add_parser("get-comments", help="List all comments on an issue")
     p.add_argument("issue_id", type=int)
@@ -416,7 +442,10 @@ def build_parser():
     p.add_argument("--title", required=True)
     p.add_argument("--source-branch", required=True)
     p.add_argument("--target-branch", default="main")
-    p.add_argument("--description", default="")
+    p.add_argument("--description", default="", help="MR description (Markdown)")
+    p.add_argument("--description-file", metavar="FILE",
+                   help="Read MR description from FILE (use - for stdin). "
+                        "Mutually exclusive with --description.")
     p.add_argument("--draft", action="store_true")
 
     p = sub.add_parser("merge-mr", help="Merge a merge request")
