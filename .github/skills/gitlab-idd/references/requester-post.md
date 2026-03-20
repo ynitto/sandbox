@@ -49,18 +49,8 @@
 
 ## ステップ 3 — 実装スキルの選定
 
-タスクの性質に合わせて使用するスキルを選ぶ。複数選んで良い。
-
-| タスクの性質 | 推奨スキル |
-|------------|-----------|
-| 一般的なコード実装 | `code-reviewer`, `architecture-reviewer` |
-| TDD で品質を担保したい | `tdd-executing`, `test-reviewer` |
-| セキュリティが重要 | `security-reviewer` |
-| API 設計・実装 | `api-designer`, `code-reviewer` |
-| React / フロントエンド | `react-frontend-coder`, `react-best-practices` |
-| バグ修正 | `systematic-debugging`, `debug-mode` |
-| 設計の整合性を重視 | `design-reviewer`, `architecture-reviewer` |
-| CI/CD 変更 | `ci-cd-configurator` |
+タスクの内容・技術制約・品質要件をもとに、使用すべきスキルを自由に判断して選ぶ。
+複数選んで良い。利用可能なスキルの一覧は `git-skill-manager` スキルで確認できる。
 
 選定したら、各スキルの **SKILL.md** および **references/** 配下のファイルを読む。
 ワーカーがそのスキルを使わずとも同等の品質で実装できるよう、
@@ -72,8 +62,8 @@
 
 ステップ 3 で選んだ各スキルについて、以下の手順で要約文を作成する:
 
-1. `.github/skills/{スキル名}/SKILL.md` を読む
-2. `.github/skills/{スキル名}/references/` 配下のファイルを必要に応じて読む
+1. `{スキルのインストールパス}/SKILL.md` を読む（パスは `git-skill-manager` で確認）
+2. `{スキルのインストールパス}/references/` 配下のファイルを必要に応じて読む
 3. ワーカーが実装時に参照する部分（手順・チェック項目・判断基準）を自然文で要約する
    - コマンドや技術固有の記法は省略し、**「何をどう行うか」** だけを残す
    - スキル名や発動フレーズは不要。手順の実質的な内容を書く
