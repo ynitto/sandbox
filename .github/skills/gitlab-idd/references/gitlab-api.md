@@ -18,17 +18,19 @@ Python 3.8+ と stdlib のみで動作し、Windows・macOS・Linux に対応す
 
 ## セットアップ
 
-```bash
-# トークン設定（必須）
-export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
+GITLAB_TOKEN 環境変数を設定する（必須）:
 
-# GL ショートハンド定義（以降の例で使用）
-# python コマンドは環境に合わせて python3 や py に読み替える
-GL="python scripts/gl.py"
+- **bash/zsh**: `export GITLAB_TOKEN=glpat-xxxxxxxxxxxx`
+- **PowerShell**: `$env:GITLAB_TOKEN = "glpat-xxxxxxxxxxxx"`
+- **cmd.exe**: `set GITLAB_TOKEN=glpat-xxxxxxxxxxxx`
 
-# 動作確認（git remote から ホスト・プロジェクトを自動取得）
-$GL project-info
+動作確認（git remote からホスト・プロジェクトを自動取得）:
+
 ```
+python scripts/gl.py project-info
+```
+
+> **注**: 環境によって `python` を `python3` や `py` に読み替える。
 
 `project-info` の出力例:
 ```json
@@ -47,23 +49,23 @@ $GL project-info
 すべての読み取りコマンドで `--get FIELD` を使うとフィールドだけを出力できる。
 ドット記法で配列インデックスとネストに対応する。
 
-```bash
-$GL current-user --get username          # → "alice"
-$GL get-issue 42 --get title             # → "ログインフォームを実装する"
-$GL get-issue 42 --get author.username   # → "bob"
-$GL list-mrs --source-branch "$BRANCH" --get 0.web_url   # → "https://..."
-$GL list-mrs --source-branch "$BRANCH" --get 0.iid       # → 7
-$GL check-defer 42 --get defer           # → True or False
-$GL check-defer 42 --get remaining_minutes  # → 47
+```
+python scripts/gl.py current-user --get username
+python scripts/gl.py get-issue 42 --get title
+python scripts/gl.py get-issue 42 --get author.username
+python scripts/gl.py list-mrs --source-branch BRANCH --get 0.web_url
+python scripts/gl.py list-mrs --source-branch BRANCH --get 0.iid
+python scripts/gl.py check-defer 42 --get defer
+python scripts/gl.py check-defer 42 --get remaining_minutes
 ```
 
 ---
 
 ## 認証・ユーザー
 
-```bash
-$GL current-user
-MY_USER=$($GL current-user --get username)
+```
+python scripts/gl.py current-user
+python scripts/gl.py current-user --get username
 ```
 
 ---
@@ -72,30 +74,41 @@ MY_USER=$($GL current-user --get username)
 
 ### 一覧取得
 
-```bash
-$GL list-issues --state opened
-$GL list-issues --label "status:open"
-$GL list-issues --label "status:open,assignee:any"
-$GL list-issues --label "status:open,priority:high"
-$GL list-issues --assignee "$MY_USER" --state opened
-$GL list-issues --author  "$MY_USER" --state opened
-$GL list-issues --label "status:review-ready" --author "$MY_USER"
-$GL list-issues --label "status:needs-rework" --assignee "$MY_USER"
+```
+python scripts/gl.py list-issues --state opened
+python scripts/gl.py list-issues --label "status:open"
+python scripts/gl.py list-issues --label "status:open,assignee:any"
+python scripts/gl.py list-issues --label "status:open,priority:high"
+python scripts/gl.py list-issues --assignee MY_USER --state opened
+python scripts/gl.py list-issues --author  MY_USER --state opened
+python scripts/gl.py list-issues --label "status:review-ready" --author MY_USER
+python scripts/gl.py list-issues --label "status:needs-rework" --assignee MY_USER
 ```
 
 ### イシュー詳細・コメント
 
-```bash
-$GL get-issue 42
-$GL get-comments 42
-$GL get-issue 42 --get title
-$GL get-issue 42 --get author.username
+```
+python scripts/gl.py get-issue 42
+python scripts/gl.py get-comments 42
+python scripts/gl.py get-issue 42 --get title
+python scripts/gl.py get-issue 42 --get author.username
 ```
 
 ### イシュー作成
 
-```bash
-BODY=$(cat << 'EOF'
+複数行のイシュー本文は `--body-file` でファイルから渡す。
+まず本文を Markdown ファイル（例: `_body.md`）に書いてからコマンドを実行する:
+
+```
+python scripts/gl.py create-issue \
+  --title "ログインフォームを実装する" \
+  --body-file _body.md \
+  --labels "status:open,assignee:any,priority:normal"
+```
+
+`_body.md` の内容例:
+
+```markdown
 ## 目的
 
 {目的を 1〜3 文で記述}
@@ -112,52 +125,52 @@ BODY=$(cat << 'EOF'
 ## 技術制約
 
 特になし
-EOF
-)
+```
 
-$GL create-issue \
-  --title "ログインフォームを実装する" \
-  --body "$BODY" \
-  --labels "status:open,assignee:any,priority:normal"
+短い本文は `--body` に直接渡すことも可能:
+
+```
+python scripts/gl.py create-issue --title "タイトル" --body "短い説明" --labels "status:open,assignee:any,priority:normal"
 ```
 
 ### イシュー更新
 
-```bash
-$GL update-issue 42 \
-  --add-labels "status:in-progress" \
-  --remove-labels "status:open,assignee:any"
-
-$GL update-issue 42 --assignee "$MY_USER"
-$GL update-issue 42 --state-event close
-$GL update-issue 42 --state-event reopen
-
-$GL update-issue 42 \
-  --add-labels "status:needs-rework" \
-  --remove-labels "status:review-ready" \
-  --state-event reopen
+```
+python scripts/gl.py update-issue 42 --add-labels "status:in-progress" --remove-labels "status:open,assignee:any"
+python scripts/gl.py update-issue 42 --assignee MY_USER
+python scripts/gl.py update-issue 42 --state-event close
+python scripts/gl.py update-issue 42 --state-event reopen
+python scripts/gl.py update-issue 42 --add-labels "status:needs-rework" --remove-labels "status:review-ready" --state-event reopen
 ```
 
 ### コメント投稿
 
-```bash
-$GL add-comment 42 --body "作業開始しました"
+短いコメントは `--body` に直接渡す:
 
-COMMENT=$(cat << 'EOF'
+```
+python scripts/gl.py add-comment 42 --body "作業開始しました"
+```
+
+複数行のコメントは `--body-file` でファイルから渡す:
+
+```
+python scripts/gl.py add-comment 42 --body-file _comment.md
+```
+
+`_comment.md` の内容例:
+
+```markdown
 ## ✅ 実装完了
 
 受け入れ条件をすべて満たしました。
-EOF
-)
-$GL add-comment 42 --body "$COMMENT"
 ```
 
 ---
 
 ## ブランチ名生成
 
-```bash
-BRANCH=$($GL make-branch-name 42)
+```
+python scripts/gl.py make-branch-name 42
 # → "feature/issue-42-add-login-form"
 ```
 
@@ -165,36 +178,54 @@ BRANCH=$($GL make-branch-name 42)
 
 ## MR（マージリクエスト）操作
 
-```bash
-$GL list-mrs --state opened
-$GL list-mrs --source-branch "feature/issue-42-add-login"
-MR_URL=$($GL list-mrs --source-branch "$BRANCH" --get 0.web_url)
-MR_ID=$( $GL list-mrs --source-branch "$BRANCH" --get 0.iid)
+```
+python scripts/gl.py list-mrs --state opened
+python scripts/gl.py list-mrs --source-branch "feature/issue-42-add-login"
+python scripts/gl.py list-mrs --source-branch BRANCH --get 0.web_url
+python scripts/gl.py list-mrs --source-branch BRANCH --get 0.iid
+```
 
-$GL create-mr \
+MR 作成（本文をファイルから渡す）:
+
+```
+python scripts/gl.py create-mr \
+  --title "ログインフォームを実装する" \
+  --source-branch "feature/issue-42-add-login-form" \
+  --target-branch main \
+  --description-file _mr_body.md \
+  --draft
+```
+
+短い説明なら `--description` に直接渡すことも可能:
+
+```
+python scripts/gl.py create-mr \
   --title "ログインフォームを実装する" \
   --source-branch "feature/issue-42-add-login-form" \
   --target-branch main \
   --description "Closes #42" \
   --draft
+```
 
-$GL merge-mr "$MR_ID" --squash --remove-source-branch
+```
+python scripts/gl.py merge-mr MR_ID --squash --remove-source-branch
 ```
 
 ---
 
 ## self-defer チェック
 
-```bash
-DEFER_MINUTES=${GITLAB_SELF_DEFER_MINUTES:-60}
+自分が作成したイシューを猶予期間中はスキップするためのチェック。
 
-if [ "$($GL check-defer 42 --minutes "$DEFER_MINUTES" --get defer)" = "True" ]; then
-  REMAINING=$($GL check-defer 42 --minutes "$DEFER_MINUTES" --get remaining_minutes)
-  echo "スキップ: 残り ${REMAINING} 分後に実行可能"
-fi
+```
+python scripts/gl.py check-defer 42 --get defer
+# → True または False
+
+python scripts/gl.py check-defer 42 --minutes 60 --get defer
+python scripts/gl.py check-defer 42 --minutes 60 --get remaining_minutes
 ```
 
-`check-defer` の出力パターン:
+`check-defer` の判定結果:
 
 | reason | defer | 意味 |
 |--------|-------|------|
@@ -202,13 +233,16 @@ fi
 | `self_created_too_recent` | true | 自分作成・猶予中 → スキップ |
 | `self_created_but_expired` | false | 自分作成・猶予切れ → 取得可 |
 
+`defer` が `True` の場合はそのイシューをスキップして次の候補へ進む。
+残り猶予時間は `remaining_minutes` で確認できる。
+
 ---
 
 ## トラブルシューティング
 
 | エラー | 原因 | 対処 |
 |--------|------|------|
-| `Set GITLAB_TOKEN...` | トークン未設定 | `export GITLAB_TOKEN=glpat-...` |
+| `Set GITLAB_TOKEN...` | トークン未設定 | GITLAB_TOKEN 環境変数を設定する |
 | `Cannot get git remote 'origin'` | git リポジトリ外 or remote なし | 正しいディレクトリで実行 |
 | `HTTP 401 Unauthorized` | トークン無効・期限切れ | 新しいトークンを発行して再設定 |
 | `HTTP 403 Forbidden` | 権限不足 | GitLab プロジェクトの Developer 以上の権限が必要 |

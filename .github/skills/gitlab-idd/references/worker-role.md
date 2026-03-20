@@ -14,10 +14,7 @@
 
 すべての GitLab API 操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
-```bash
-# GL ショートハンド（python コマンドは環境に合わせて python3 や py に読み替える）
-GL="python scripts/gl.py"
-```
+> **注**: 環境によって `python` を `python3` や `py` に読み替える。
 
 ---
 
@@ -42,13 +39,13 @@ Phase 5  成果物提出 ─── push + MR 作成 + イシューコメント +
 
 ## Phase 1 — 環境確認
 
-```bash
-$GL project-info    # ホスト名・プロジェクトパスを git remote から自動取得
-$GL current-user    # 認証・ユーザー確認
+```
+python scripts/gl.py project-info
+python scripts/gl.py current-user
 ```
 
 `project-info` が失敗する場合: カレントディレクトリが git リポジトリ内にあるか確認する。
-`current-user` が失敗する場合: `export GITLAB_TOKEN=glpat-...` を案内して終了する。
+`current-user` が失敗する場合: GITLAB_TOKEN 環境変数が設定されているか確認して終了する。
 
 ---
 
@@ -56,33 +53,41 @@ $GL current-user    # 認証・ユーザー確認
 
 ### ステップ 2-1: 候補イシューの一覧取得
 
-```bash
-MY_USER=$($GL current-user --get username)
+自分のユーザー名を取得する:
 
+```
+python scripts/gl.py current-user --get username
+```
+
+次の順で候補イシューを取得する:
+
+```
 # 1. 自分に assign されたオープンイシューを優先取得
-$GL list-issues --label "status:open" --assignee "$MY_USER"
+python scripts/gl.py list-issues --label "status:open" --assignee MY_USER
 
 # 2. 誰でも引き受け可のイシューを取得
-$GL list-issues --label "status:open,assignee:any"
+python scripts/gl.py list-issues --label "status:open,assignee:any"
 
 # 3. 差し戻し済みで自分担当のものも対象
-$GL list-issues --label "status:needs-rework" --assignee "$MY_USER"
+python scripts/gl.py list-issues --label "status:needs-rework" --assignee MY_USER
 ```
 
 ### ステップ 2-2: self-defer チェック（自分発行イシューの猶予）
 
 他ノードに実行させるため自分が発行したイシューには猶予期間を設ける。
-猶予期間は `GITLAB_SELF_DEFER_MINUTES`（デフォルト 60 分）。
+猶予期間は `GITLAB_SELF_DEFER_MINUTES` 環境変数（デフォルト 60 分）。
 
-```bash
-DEFER_MINUTES=${GITLAB_SELF_DEFER_MINUTES:-60}
+各候補イシューに対して以下を実行する:
 
-if [ "$($GL check-defer {issue_id} --minutes "$DEFER_MINUTES" --get defer)" = "True" ]; then
-  REMAINING=$($GL check-defer {issue_id} --minutes "$DEFER_MINUTES" --get remaining_minutes)
-  echo "スキップ: 残り ${REMAINING} 分後に実行可能"
-  # 次の候補イシューへ進む
-fi
 ```
+python scripts/gl.py check-defer {issue_id} --get defer
+# → True（スキップ）または False（取得可）
+
+python scripts/gl.py check-defer {issue_id} --get remaining_minutes
+# → スキップ時の残り猶予分数
+```
+
+`defer` が `True` の場合はそのイシューをスキップして次の候補へ進む。
 
 `check-defer` の判定結果:
 
@@ -106,9 +111,9 @@ fi
 
 ### ステップ 2-4: イシュー詳細の読み込み
 
-```bash
-$GL get-issue {issue_id}
-$GL get-comments {issue_id}    # 差し戻し時は特に重要
+```
+python scripts/gl.py get-issue {issue_id}
+python scripts/gl.py get-comments {issue_id}
 ```
 
 `## 受け入れ条件` セクションを必ず確認し、全項目を把握してから Phase 3 へ進む。
@@ -119,34 +124,36 @@ $GL get-comments {issue_id}    # 差し戻し時は特に重要
 
 ### ステップ 3-1: 自分に assign してロック
 
-```bash
-$GL update-issue {issue_id} \
-  --assignee "$MY_USER" \
+MY_USER は `python scripts/gl.py current-user --get username` で取得した値を使う。
+
+```
+python scripts/gl.py update-issue {issue_id} \
+  --assignee MY_USER \
   --add-labels "status:in-progress" \
   --remove-labels "status:open,assignee:any,status:needs-rework"
 ```
 
 assign 直後に再取得して自分が assignee になっていることを確認する（競合防止）:
 
-```bash
-ASSIGNED=$($GL get-issue {issue_id} --get assignees.0.username)
-[ "$ASSIGNED" = "$MY_USER" ] || { echo "競合: 別ノードが先に取得しました"; exit 1; }
+```
+python scripts/gl.py get-issue {issue_id} --get assignees.0.username
+# → MY_USER であることを確認。別のユーザーなら「競合: 別ノードが先に取得しました」として終了する。
 ```
 
 ### ステップ 3-2: 作業ブランチ作成
 
-```bash
-BRANCH=$($GL make-branch-name {issue_id})   # → "feature/issue-42-add-login-form"
+```
+python scripts/gl.py make-branch-name {issue_id}
+# → "feature/issue-42-add-login-form" のようなブランチ名が出力される
 
 git fetch origin main
-git checkout -b "$BRANCH" origin/main
+git checkout -b BRANCH origin/main
 ```
 
 ### ステップ 3-3: 着手コメント投稿
 
-```bash
-$GL add-comment {issue_id} \
-  --body "🚀 **作業開始**: ノード \`$(hostname)\` が着手しました。ブランチ: \`${BRANCH}\`"
+```
+python scripts/gl.py add-comment {issue_id} --body "🚀 **作業開始**: 着手しました。ブランチ: BRANCH"
 ```
 
 ---
@@ -178,7 +185,7 @@ $GL add-comment {issue_id} \
 | セキュリティレビュー | OWASP Top 10・認証・入力検証・機密情報漏洩 |
 | アーキテクチャレビュー | SOLID・依存方向・既存設計との一貫性 |
 
-各エージェントへの入力: イシュー本文（受け入れ条件含む）+ `git diff main...{BRANCH}`
+各エージェントへの入力: イシュー本文（受け入れ条件含む）+ `git diff main...BRANCH`
 
 ### ステップ 4-3: 指摘統合と修正判断
 
@@ -191,7 +198,7 @@ $GL add-comment {issue_id} \
 
 ### ステップ 4-4: 変更のコミット
 
-```bash
+```
 git add -A
 git commit -m "feat: {受け入れ条件の要約} (issue #{issue_id})"
 ```
@@ -202,16 +209,32 @@ git commit -m "feat: {受け入れ条件の要約} (issue #{issue_id})"
 
 ### ステップ 5-1: ブランチを push
 
-```bash
-git push -u origin "$BRANCH"
+```
+git push -u origin BRANCH
 ```
 
 ### ステップ 5-2: MR（ドラフト）作成
 
-```bash
-ISSUE_TITLE=$($GL get-issue {issue_id} --get title)
+イシューのタイトルを取得する:
 
-MR_BODY=$(cat << 'MRBODY'
+```
+python scripts/gl.py get-issue {issue_id} --get title
+```
+
+MR 本文を `_mr_body.md` に書いてから作成する:
+
+```
+python scripts/gl.py create-mr \
+  --title "ISSUE_TITLE" \
+  --source-branch BRANCH \
+  --target-branch main \
+  --description-file _mr_body.md \
+  --draft
+```
+
+`_mr_body.md` の内容:
+
+```markdown
 ## 関連イシュー
 
 Closes #{issue_id}
@@ -227,27 +250,29 @@ Closes #{issue_id}
 ## テスト結果
 
 {実行したテストと結果。未解決の指摘があれば記載}
-MRBODY
-)
-
-$GL create-mr \
-  --title "$ISSUE_TITLE" \
-  --source-branch "$BRANCH" \
-  --target-branch main \
-  --description "$MR_BODY" \
-  --draft
 ```
 
 ### ステップ 5-3: イシューにサマリーコメント投稿
 
-```bash
-MR_URL=$($GL list-mrs --source-branch "$BRANCH" --get 0.web_url)
+MR の URL を取得する:
 
-COMMENT=$(cat << 'COMMENT'
+```
+python scripts/gl.py list-mrs --source-branch BRANCH --get 0.web_url
+```
+
+コメントを `_comment.md` に書いて投稿する:
+
+```
+python scripts/gl.py add-comment {issue_id} --body-file _comment.md
+```
+
+`_comment.md` の内容:
+
+```markdown
 ## ✅ 実装完了 — レビュー依頼
 
-**ブランチ**: `{BRANCH}`
-**MR**: {MR_URL}
+**ブランチ**: `BRANCH`
+**MR**: MR_URL
 
 ### 受け入れ条件の対応状況
 
@@ -257,16 +282,12 @@ COMMENT=$(cat << 'COMMENT'
 ### リクエスターへの申し送り
 
 {未解決の指摘・確認してほしい事項があれば記載}
-COMMENT
-)
-
-$GL add-comment {issue_id} --body "$COMMENT"
 ```
 
 ### ステップ 5-4: ラベル更新
 
-```bash
-$GL update-issue {issue_id} \
+```
+python scripts/gl.py update-issue {issue_id} \
   --add-labels "status:review-ready" \
   --remove-labels "status:in-progress"
 ```
@@ -275,8 +296,8 @@ $GL update-issue {issue_id} \
 
 ```
 ✅ イシュー #{id} の実装が完了しました。
-ブランチ: {BRANCH}
-MR: {MR_URL}
+ブランチ: BRANCH
+MR: MR_URL
 レビュー待ち状態に更新しました。
 ```
 
