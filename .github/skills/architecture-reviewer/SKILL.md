@@ -182,3 +182,36 @@ metadata:
 - **改善の実現可能性を考慮する** — 理想的な設計より、現実的に移行可能な改善案を示す
 - **良い設計判断も伝える** — 問題点だけでなく、適切に設計されている部分にも言及する
 - **根拠を示す** — 設計原則・アーキテクチャパターンの名前を使い、なぜ問題かを説明する
+
+---
+
+## 判定スキーマ（machine-readable）
+
+skill-mentor など呼び出し元が結果を集約するために使用する構造化フォーマット。
+Step 4 の報告時に、テキスト出力に加えて以下のスキーマを JSON ブロックで出力する。
+
+```json
+{
+  "skill": "architecture-reviewer",
+  "verdict": "GOOD | MOSTLY_GOOD | NEEDS_IMPROVEMENT",
+  "severity_summary": {
+    "critical": 0,
+    "warning": 0,
+    "suggestion": 0
+  },
+  "blocking": false,
+  "architecture_style": "推定または確認されたアーキテクチャスタイル",
+  "blocking_issues": [
+    {
+      "severity": "Critical | Warning",
+      "category": "カテゴリ名（依存関係 | レイヤー境界 | SOLID | スケーラビリティ | 一貫性 | セキュリティ | テスタビリティ | 障害モデル | 可観測性 | データフロー）",
+      "summary": "問題の要約（1行）",
+      "location": "モジュール名 / ファイル名"
+    }
+  ]
+}
+```
+
+**出力タイミング**: Step 4 の報告フォーマット末尾に `<!-- verdict-json -->` コメントで囲んで追加する。
+**`blocking`**: Critical が1件以上の場合は `true`。Warning 以下のみの場合は `false`。
+**`verdict`**: `critical=0 && warning=0` → `GOOD`、`critical=0 && warning>0` → `MOSTLY_GOOD`、`critical>0` → `NEEDS_IMPROVEMENT`。
