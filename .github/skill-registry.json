@@ -1,0 +1,118 @@
+{
+  "version": 7,
+  "agent_type": "copilot",
+  "user_home": "/root",
+  "install_dir": null,
+  "skill_home": "/root/.copilot/skills",
+  "node": {
+    "id": null,
+    "name": null,
+    "created_at": null
+  },
+  "repositories": [],
+  "installed_skills": [
+    {
+      "name": "skill-mentor",
+      "source_repo": "workspace",
+      "enabled": true,
+      "pinned_commit": null,
+      "feedback_history": [],
+      "pending_refinement": false,
+      "version": "2.1.0",
+      "central_version": null,
+      "version_ahead": false,
+      "lineage": {
+        "origin_repo": "workspace",
+        "origin_commit": null,
+        "origin_version": null,
+        "local_modified": false,
+        "diverged_at": null,
+        "local_changes_summary": ""
+      },
+      "metrics": {
+        "total_executions": 0,
+        "ok_rate": null,
+        "last_executed_at": null,
+        "central_ok_rate": null,
+        "avg_duration_sec": null,
+        "p90_duration_sec": null,
+        "avg_subagent_calls": null,
+        "trend_7d": {
+          "executions": 0,
+          "ok_rate": 0.0
+        },
+        "top_co_skills": []
+      }
+    },
+    {
+      "name": "scrum-master",
+      "source_repo": "workspace",
+      "enabled": true,
+      "pinned_commit": null,
+      "feedback_history": [],
+      "pending_refinement": false,
+      "version": "2.1.0",
+      "central_version": null,
+      "version_ahead": false,
+      "lineage": {
+        "origin_repo": "workspace",
+        "origin_commit": null,
+        "origin_version": null,
+        "local_modified": false,
+        "diverged_at": null,
+        "local_changes_summary": ""
+      },
+      "metrics": {
+        "total_executions": 0,
+        "ok_rate": null,
+        "last_executed_at": null,
+        "central_ok_rate": null,
+        "avg_duration_sec": null,
+        "p90_duration_sec": null,
+        "avg_subagent_calls": null,
+        "trend_7d": {
+          "executions": 0,
+          "ok_rate": 0.0
+        },
+        "top_co_skills": []
+      }
+    }
+  ],
+  "core_skills": [
+    "scrum-master",
+    "git-skill-manager",
+    "skill-creator",
+    "requirements-definer",
+    "skill-recruiter",
+    "skill-evaluator",
+    "generating-skills-from-copilot-logs",
+    "sprint-reviewer",
+    "codebase-to-skill"
+  ],
+  "remote_index": {},
+  "profiles": {
+    "default": [
+      "*"
+    ]
+  },
+  "active_profile": null,
+  "auto_update": {
+    "enabled": false,
+    "interval_hours": 24,
+    "notify_only": true,
+    "last_checked_at": null
+  },
+  "promotion_policy": {
+    "min_ok_count": 3,
+    "max_problem_rate": 0.1,
+    "require_local_modified": false,
+    "auto_pr": false,
+    "notify_on_eligible": true
+  },
+  "sync_policy": {
+    "auto_accept_patch": true,
+    "auto_accept_minor": false,
+    "protect_local_modified": true
+  },
+  "contribution_queue": []
+}
