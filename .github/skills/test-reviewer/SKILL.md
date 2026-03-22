@@ -177,3 +177,40 @@ metadata:
 - **仕様としてのテストを意識する** — テストは仕様書であり、読んで意図が伝わるかを重視する
 - **確信のある指摘だけをする** — Low 信頼度の推測は報告しない
 - **良い点も伝える** — 適切なテスト設計・丁寧な網羅性にも言及する
+
+---
+
+## 判定スキーマ（machine-readable）
+
+skill-mentor など呼び出し元が結果を集約するために使用する構造化フォーマット。
+Step 4 の報告時に、テキスト出力に加えて以下のスキーマを JSON ブロックで出力する。
+
+```json
+{
+  "skill": "test-reviewer",
+  "verdict": "LGTM | REQUEST_CHANGES",
+  "severity_summary": {
+    "critical": 0,
+    "warning": 0,
+    "suggestion": 0
+  },
+  "blocking": true,
+  "coverage_gaps": {
+    "normal_case": true,
+    "error_case": false,
+    "boundary": false
+  },
+  "blocking_issues": [
+    {
+      "severity": "Critical | Warning",
+      "category": "カテゴリ名（網羅性 | テスト設計 | 独立性 | モック | アサーション | 非同期 | 実装依存）",
+      "summary": "問題の要約（1行）",
+      "location": "ファイル名:行番号"
+    }
+  ]
+}
+```
+
+**出力タイミング**: Step 4 の報告フォーマット末尾に `<!-- verdict-json -->` コメントで囲んで追加する。
+**`blocking`**: `verdict` が `REQUEST_CHANGES` の場合は `true`、`LGTM` の場合は `false`。
+**`coverage_gaps`**: 網羅性チェックの結果。`false` は「不足あり」を示す。

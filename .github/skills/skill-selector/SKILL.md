@@ -2,7 +2,7 @@
 name: skill-selector
 description: 最適なスキルの組み合わせを選択・推薦するメタスキル。「どのスキルを使えばいい？」「スキルを選んで」「スキルの組み合わせを提案して」などのリクエストに加え、複数スキルにまたがる複合タスクと判断した場合も自律的に発動する。Windows/Copilot・macOS/Claude Code 両環境で動作する。
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   tier: stable
   category: orchestration
   tags:
@@ -70,6 +70,25 @@ python scripts/discover_skills.py --group-by-category
 
 **重要**: タクソノミーのカテゴリ・タグは各スキルの SKILL.md フロントマターから動的に取得する。このテーブルは参考例に過ぎず、`--group-by-category` の出力結果を正とする。新しいスキルの `category` と `tags` を読んでタスクへの適合性を判断すること。
 
+### Step 3.5: ltm-use で過去の実績を参照する
+
+Step 3 の絞り込みと並行して、`recall_memory.py` で類似タスクの過去実績を検索する:
+
+```bash
+python ${LTM}/recall_memory.py \
+  --query "[タスクゴール・タスクフェーズのキーワード]" \
+  --category "skill-selection-result" \
+  --limit 5
+```
+
+取得できた場合は以下の情報を抽出する:
+- **成功した組み合わせ**: 以前使われて良い結果を出したスキルセット
+- **失敗・非推奨の組み合わせ**: 試みたが効果が低かったパターン
+- **タスク種別との対応**: 類似ゴールにどのスキルが有効だったか
+
+> **注意**: 実績は参考情報に留め、最終判断はスキルの `description` を読んで行う。
+> 記憶が存在しない場合はスキップして Step 4 へ進む。
+
 ### Step 4: 組み合わせを評価する
 
 **最初に複合タスクの可能性を検討し、その上で単一スキルを選ぶかどうかを判断する**:
@@ -102,11 +121,31 @@ python scripts/discover_skills.py --group-by-category
 ### 補助スキル（任意）
 - `skill-name` — 理由（どの段階で使うか）
 
-### 実行順序
-1. skill-A → 2. skill-B → 3. skill-C
+### 実行順序と並列グループ
+グループA（並列実行可）: skill-A, skill-B
+グループB（グループA完了後）: skill-C
+
+### 過去実績（参考）
+（Step 3.5 で実績が見つかった場合のみ記載）
+- ✅ 類似タスクで成功した組み合わせ: [スキル名] — [概要]
+- ⚠️ 以前効果が低かったパターン: [スキル名] — [理由]
 
 ### 注意
 - [スキルの重複・競合がある場合はここに記載]
+```
+
+#### 推薦後: 実績を ltm-use に保存する
+
+skill-mentor や scrum-master が実行を完了した後、その結果（成功/失敗・使用スキル・タスク種別）を保存するよう呼び出し元に促す。呼び出し元が保存を行う場合の形式:
+
+```bash
+python ${LTM}/save_memory.py \
+  --category "skill-selection-result" \
+  --title "[タスク種別]のスキル組み合わせ実績" \
+  --summary "[使用スキル一覧]: [成功/失敗]" \
+  --content "[タスクゴール]\n使用スキル: [A, B, C]\n結果: [成功/失敗]\n備考: [効果的だった点・課題]" \
+  --conclusion "[このタスク種別に最適なスキル組み合わせの知見]" \
+  --tags skill-selection,[タスク種別],[スキル名]
 ```
 
 ---
