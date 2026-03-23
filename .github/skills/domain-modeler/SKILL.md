@@ -1,8 +1,8 @@
 ---
 name: domain-modeler
-description: DDD に基づくドメインモデルを設計し Mermaid classDiagram として出力する。「ドメインモデルを設計して」「DDDで設計して」「集約を設計して」「境界コンテキストを整理して」「ドメインモデル図を作って」「クラス図を描いて」「Entityとバリューオブジェクトを整理して」「ユビキタス言語をまとめて」などで発動。DDD・非DDD 両対応。
+description: DDD に基づくドメインモデルを設計し Mermaid classDiagram として出力する。また既存コードからドメインモデルを逆引き抽出するリバースエンジニアリングも行う。「ドメインモデルを設計して」「DDDで設計して」「集約を設計して」「境界コンテキストを整理して」「ドメインモデル図を作って」「クラス図を描いて」「Entityとバリューオブジェクトを整理して」「ユビキタス言語をまとめて」などで発動（設計モード）。「既存コードからドメインモデルを抽出して」「コードを解析してクラス図を作って」「リバースエンジニアリングして」「実装からドメインを整理して」などで発動（逆引きモード）。DDD・非DDD 両対応。
 metadata:
-  version: 1.0.0
+  version: 2.0.0
   tier: experimental
   category: design
   tags:
@@ -10,11 +10,36 @@ metadata:
     - mermaid
     - entity
     - aggregate
+    - reverse-engineering
 ---
 
 # domain-modeler
 
 DDD（Domain-Driven Design）に基づいてドメインモデルを設計し、Mermaid `classDiagram` として出力するスキル。
+**2つのモード**を持つ:
+
+| モード | 方向 | 用途 |
+|--------|------|------|
+| **設計モード** | ドメイン知識 → Mermaid 図 | 新規システム・ドメイン再設計 |
+| **逆引きモード** | 既存コード → Mermaid 図 + DDD 評価 | リファクタ計画・技術負債可視化 |
+
+---
+
+## モード判定
+
+```
+ユーザーの依頼を確認:
+  コード/ファイル/ディレクトリを指定している？
+    YES → 逆引きモード（Reverse Engineering Mode）へ
+    NO  → 「設計からですか？既存コードからですか？」と確認
+  既存コードに言及している（「解析」「抽出」「既存」「実装から」）？
+    YES → 逆引きモード（Reverse Engineering Mode）へ
+    NO  → 設計モード（Design Mode）へ
+```
+
+---
+
+## 【設計モード】Design Mode
 
 ## 設計フロー
 
@@ -194,6 +219,217 @@ Mermaid 記法の詳細 → [references/mermaid-notation.md](references/mermaid-
 
 ---
 
+## 【逆引きモード】Reverse Engineering Mode
+
+既存コードからドメインモデルを抽出し、DDD 観点で評価・改善提案を行う。
+
+詳細 → [references/reverse-engineering.md](references/reverse-engineering.md)
+
+### 逆引きフロー
+
+```
+Step R1: コード収集          ← 対象ファイル・ディレクトリを特定
+Step R2: 要素抽出            ← クラス・フィールド・メソッド・依存関係を解析
+Step R3: DDD 分類            ← Entity / Value Object / Service / Repository を識別
+Step R4: 集約境界の推定      ← ライフサイクル・不変条件・トランザクション境界を推定
+Step R5: Mermaid 図生成      ← 現状の構造を As-Is 図として出力
+Step R6: DDD ギャップ評価    ← 問題点を列挙し To-Be 改善案を提示
+```
+
+### Step R1: コード収集
+
+対象を確認する:
+
+- ユーザーが指定したファイル・ディレクトリを読み込む
+- 指定がない場合: `src/domain`, `src/model`, `src/entity`, `domain/`, `models/` などを探索する
+- 複数言語対応: TypeScript / JavaScript / Python / Java / Kotlin / Go / Ruby / C# など
+
+読み込む優先順位:
+1. `domain/`, `model/`, `entity/` フォルダ配下（ドメイン層が明確な場合）
+2. 命名パターンで判断: `*Entity.ts`, `*Model.py`, `*Aggregate.java`, `*VO.*` など
+3. 上記がない場合: `src/` 全体を走査してクラス定義を収集
+
+### Step R2: 要素抽出
+
+各ファイルから以下を抽出する:
+
+```
+クラス/インターフェース名
+  ├── フィールド（名前・型・可視性）
+  ├── メソッド（名前・シグネチャ・可視性）
+  ├── アノテーション/デコレータ（@Entity, @Column, @Aggregate など）
+  └── 継承・実装関係（extends / implements / : BaseClass）
+
+依存関係
+  ├── import / require / using の解析
+  ├── コンストラクタ引数の型
+  └── フィールド型・メソッド引数の型
+```
+
+言語別の抽出ヒント:
+
+| 言語 | Entity の手がかり | VO の手がかり | Repository の手がかり |
+|------|------------------|--------------|----------------------|
+| TypeScript | `@Entity()`, `extends BaseEntity`, `id: string` フィールド | イミュータブル・`readonly` フィールドのみ・`equals()` | `Repository<T>`, `findById()`, `save()` |
+| Java/Kotlin | `@Entity`, `@Id`, `extends AbstractEntity` | `@Embeddable`, `final` フィールドのみ | `extends JpaRepository`, `findById()` |
+| Python | `class *Model(BaseModel)`, `class *Entity` | `@dataclass(frozen=True)`, `NamedTuple` | `class *Repository`, `def find_by_id()` |
+| Go | `type *Entity struct`, `ID` フィールド | `type * struct` + 変換メソッド | `type *Repository interface`, `FindByID()` |
+| C# | `[Entity]`, `: Entity`, `Guid Id` | `record`, `struct`, `sealed class` + `Equals()` | `: IRepository<T>`, `GetById()` |
+| Ruby | `< ActiveRecord::Base`, `< ApplicationRecord` | `include Comparable`, `attr_reader` のみ | `class *Repository`, `def find()` |
+
+### Step R3: DDD 分類
+
+抽出した要素を以下の基準で分類する:
+
+**Entity の判定基準**
+- ID フィールドを持つ（`id`, `userId`, `orderId` など）
+- 状態が変化するメソッドを持つ（`cancel()`, `approve()`, `update*()` など）
+- ライフサイクルを管理するアノテーションがある（`@Entity`, `@Document` など）
+
+**Value Object の判定基準**
+- ID フィールドを持たない
+- すべてのフィールドが `readonly` / `final` / `val` など不変
+- `equals()` / `==` の実装が値の比較になっている
+- `with*()` / `copy()` など新しいインスタンスを返すメソッドを持つ
+- 型が「概念」を表す名前（`Money`, `Address`, `Email`, `PhoneNumber` など）
+
+**Aggregate Root の推定基準**
+- 他のクラスから直接参照・生成されている
+- Repository が存在する（`OrderRepository` → `Order` が集約ルート）
+- ライフサイクルを管理するビジネスメソッドを最も多く持つ
+
+**Domain Service の判定基準**
+- ステートレス（フィールドを持たない、または依存性注入のみ）
+- 複数の Entity / Aggregate を引数に取る
+- `*Service`, `*DomainService`, `*Calculator`, `*Policy` などの命名
+
+**Repository の判定基準**
+- `find*()`, `get*()`, `save()`, `delete()` などの CRUD メソッドを持つ
+- `*Repository`, `*Store`, `*Dao` などの命名
+- インターフェース定義のみ（実装はインフラ層に分離されている）
+
+**判定が困難な場合**
+- 「不明」として出力し、ユーザーに確認する
+- コードコメント・命名の意図を補足として記載する
+
+### Step R4: 集約境界の推定
+
+以下の手がかりから集約境界を推定する:
+
+```
+トランザクション境界
+  ├── @Transactional / transaction.begin~commit の範囲
+  ├── Unit of Work パターン
+  └── 同一 Repository で save() されるオブジェクト群
+
+ライフサイクルの共有
+  ├── 親オブジェクトが削除されると子も削除される（CASCADE DELETE）
+  ├── 子オブジェクトが単独で Repository を持たない
+  └── 子オブジェクトが親の ID を外部キーとして持つのみ
+
+参照パターン
+  ├── 直接オブジェクト参照 → 同一集約の可能性が高い
+  └── ID 参照のみ → 別集約の可能性が高い
+```
+
+### Step R5: Mermaid 図生成（As-Is）
+
+現状のコード構造をそのまま図にする（DDD 的に正しくなくても現実を反映する）:
+
+```
+classDiagram
+  %% ⚠️ As-Is: 現状のコード構造（DDD 評価前）
+
+  %% ── 推定集約: Order ──
+  class Order {
+    <<Aggregate Root?>>
+    +String id
+    +String customerId
+    +List~OrderItem~ items
+    +String status
+    +place() void
+    +cancel() void
+  }
+  class OrderItem {
+    <<Entity?>>
+    +String id
+    +String productId
+    +int quantity
+    +BigDecimal price
+  }
+  class Customer {
+    <<Entity?>>
+    +String id
+    +String email
+    +String name
+  }
+
+  Order "1" *-- "1..*" OrderItem : contains
+  Order --> Customer : references directly ⚠️
+```
+
+注記（⚠️）: DDD 上の問題点を図内にコメントとして記載する。
+
+### Step R6: DDD ギャップ評価
+
+As-Is の図を基に、以下の観点で問題を評価し改善案（To-Be）を提示する:
+
+#### 評価チェックリスト
+
+```
+□ 集約境界の妥当性
+  - 1トランザクションで変更される範囲が1集約に収まっているか
+  - 集約が大きすぎないか（目安: 3〜7クラス）
+
+□ 参照の方向と形式
+  - 集約間でオブジェクト直接参照をしていないか（ID 参照が望ましい）
+  - 双方向参照が多用されていないか
+
+□ Entity vs Value Object の正確さ
+  - ID を持たない Entity になっているものはないか
+  - 変更可能な Value Object はないか（VO はイミュータブルにする）
+
+□ 貧血ドメインモデルの有無
+  - ビジネスロジックがすべてサービス層に流出していないか
+  - Entity / VO がデータのみでメソッドを持たないか
+
+□ Repository の配置
+  - 集約ルート以外に Repository が定義されていないか
+  - ドメイン層の Repository がインフラ詳細を漏洩していないか
+
+□ ユビキタス言語の一貫性
+  - クラス名・メソッド名にドメイン用語が使われているか
+  - 技術用語（UserRecord, OrderDTO）がドメイン層に混在していないか
+```
+
+#### 出力形式
+
+```markdown
+## As-Is ドメインモデル図
+
+[Mermaid classDiagram - 現状]
+
+## DDD ギャップ評価
+
+| # | 問題 | 該当クラス | 深刻度 | 改善方針 |
+|---|------|-----------|--------|---------|
+| 1 | 集約間の直接オブジェクト参照 | Order → Customer | 高 | Customer を CustomerId 参照に変更 |
+| 2 | 貧血ドメインモデル | OrderItem | 中 | subtotal() などのビジネスメソッドを移動 |
+| 3 | 変更可能な Value Object | Money.amount を直接変更 | 高 | Money を immutable に変更 |
+
+## To-Be ドメインモデル図（改善案）
+
+[Mermaid classDiagram - 改善後]
+
+## リファクタリング優先度
+
+1. **即対応**: [深刻度:高の問題点]
+2. **次スプリント**: [深刻度:中の問題点]
+3. **将来的に検討**: [深刻度:低の問題点]
+```
+
+---
+
 ## 参照ドキュメント
 
 - **全体の設計原則・判断基準**: [references/core-concepts.md](references/core-concepts.md)
@@ -203,6 +439,7 @@ Mermaid 記法の詳細 → [references/mermaid-notation.md](references/mermaid-
 - **Domain Events 設計ガイド**: [references/domain-events.md](references/domain-events.md)
 - **Mermaid図の記法と表現方法**: [references/mermaid-notation.md](references/mermaid-notation.md)
 - **DDD パターン総合ガイド**: [references/ddd-patterns.md](references/ddd-patterns.md)
+- **逆引きエンジニアリングガイド**: [references/reverse-engineering.md](references/reverse-engineering.md)
 
 ---
 
