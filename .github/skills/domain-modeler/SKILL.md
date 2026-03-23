@@ -1,8 +1,8 @@
 ---
 name: domain-modeler
-description: DDD に基づくドメインモデルを設計し Mermaid classDiagram として出力する。「ドメインモデルを設計して」「DDDで設計して」「集約を設計して」「境界コンテキストを整理して」「ドメインモデル図を作って」「クラス図を描いて」「Entityとバリューオブジェクトを整理して」「ユビキタス言語をまとめて」などで発動。DDD・非DDD 両対応。
+description: "DDD ドメインモデル設計と Mermaid 出力（設計モード）、既存コードからの DDD モデル抽出・評価（逆引きモード）の2モードを持つ。「ドメインモデルを設計して」「DDDで設計して」「集約を設計して」などで設計モード発動。「既存コードからモデルを抽出して」「リバースエンジニアリングして」などで逆引きモード発動。"
 metadata:
-  version: 1.0.0
+  version: 2.0.0
   tier: experimental
   category: design
   tags:
@@ -10,11 +10,36 @@ metadata:
     - mermaid
     - entity
     - aggregate
+    - reverse-engineering
 ---
 
 # domain-modeler
 
 DDD（Domain-Driven Design）に基づいてドメインモデルを設計し、Mermaid `classDiagram` として出力するスキル。
+**2つのモード**を持つ:
+
+| モード | 方向 | 用途 |
+|--------|------|------|
+| **設計モード** | ドメイン知識 → Mermaid 図 | 新規システム・ドメイン再設計 |
+| **逆引きモード** | 既存コード → Mermaid 図 + DDD 評価 | リファクタ計画・技術負債可視化 |
+
+---
+
+## モード判定
+
+```
+ユーザーの依頼を確認:
+  コード/ファイル/ディレクトリを指定している？
+    YES → 逆引きモード（Reverse Engineering Mode）へ
+    NO  → 「設計からですか？既存コードからですか？」と確認
+  既存コードに言及している（「解析」「抽出」「既存」「実装から」）？
+    YES → 逆引きモード（Reverse Engineering Mode）へ
+    NO  → 設計モード（Design Mode）へ
+```
+
+---
+
+## 【設計モード】Design Mode
 
 ## 設計フロー
 
@@ -194,6 +219,105 @@ Mermaid 記法の詳細 → [references/mermaid-notation.md](references/mermaid-
 
 ---
 
+## 【逆引きモード】Reverse Engineering Mode
+
+既存コードからドメインモデルを抽出し、DDD 観点で評価・改善提案を行う。
+
+詳細 → [references/reverse-engineering.md](references/reverse-engineering.md)
+
+### 逆引きフロー
+
+```
+Step R1: コード収集          ← 対象ファイル・ディレクトリを特定
+Step R2: 要素抽出            ← クラス・フィールド・メソッド・依存関係を解析
+Step R3: DDD 分類            ← Entity / Value Object / Service / Repository を識別
+Step R4: 集約境界の推定      ← ライフサイクル・不変条件・トランザクション境界を推定
+Step R5: Mermaid 図生成      ← 現状の構造を As-Is 図として出力
+Step R6: DDD ギャップ評価    ← 問題点を列挙し To-Be 改善案を提示
+```
+
+### Step R1: コード収集
+
+対象を確認する:
+
+- ユーザーが指定したファイル・ディレクトリを読み込む
+- 指定がない場合: `src/domain`, `src/model`, `src/entity`, `domain/`, `models/` などを探索する
+- 複数言語対応: TypeScript / JavaScript / Python / Java / Kotlin / Go / Ruby / C# など
+
+読み込む優先順位:
+1. `domain/`, `model/`, `entity/` フォルダ配下（ドメイン層が明確な場合）
+2. 命名パターンで判断: `*Entity.ts`, `*Model.py`, `*Aggregate.java`, `*VO.*` など
+3. 上記がない場合: `src/` 全体を走査してクラス定義を収集
+
+### Step R2: 要素抽出
+
+各ファイルからクラス名・フィールド・メソッド・アノテーション・継承/実装関係・依存関係を抽出する。
+言語別の識別パターン（TypeScript / Java / Python / Go / C# / Ruby）→ [references/reverse-engineering.md](references/reverse-engineering.md)
+
+### Step R3: DDD 分類
+
+抽出した要素を分類する（判定困難な場合は「不明」として記載しユーザーに確認）:
+
+| 分類 | 主な手がかり |
+|------|------------|
+| Entity | ID フィールドあり・状態変化メソッドあり・`@Entity` など |
+| Value Object | ID なし・全フィールド不変・`equals()` が値比較 |
+| Aggregate Root | Repository が対応存在・最も多くのビジネスメソッドを持つ |
+| Domain Service | ステートレス・複数集約をまたぐ・`*Service`/`*Policy` 命名 |
+| Repository | `findById()`/`save()` メソッド・`*Repository`/`*Dao` 命名 |
+
+### Step R4: 集約境界の推定
+
+- **トランザクション境界**: `@Transactional` / 同一 Repository で save されるオブジェクト群
+- **ライフサイクル共有**: CASCADE DELETE がある・子が単独 Repository を持たない
+- **参照パターン**: 直接参照 → 同一集約の可能性、ID 参照のみ → 別集約の可能性
+
+### Step R5: Mermaid 図生成（As-Is）
+
+現状のコード構造をそのまま図にする（DDD 的に正しくなくても現実を反映する）。
+DDD 上の問題点は `⚠️` コメントとして図内に記載する:
+
+```
+classDiagram
+  %% ⚠️ As-Is: 現状のコード構造（DDD 評価前）
+  class Order {
+    <<Aggregate Root?>>
+    +String id
+    +place() void
+  }
+  class Customer {
+    <<Entity?>>
+    +String id
+  }
+  Order --> Customer : references directly ⚠️
+```
+
+### Step R6: DDD ギャップ評価
+
+チェック項目（集約境界・参照形式・Entity/VO 正確さ・貧血モデル・Repository 配置・ユビキタス言語）→ [references/reverse-engineering.md](references/reverse-engineering.md)
+
+出力形式:
+
+```markdown
+## As-Is ドメインモデル図
+[Mermaid classDiagram - 現状]
+
+## DDD ギャップ評価
+| # | 問題 | 該当 | 深刻度 | 改善方針 |
+|---|------|------|--------|---------|
+| 1 | 集約間の直接オブジェクト参照 | Order → Customer | 高 | CustomerId 参照に変更 |
+
+## To-Be ドメインモデル図（改善案）
+[Mermaid classDiagram - 改善後]
+
+## リファクタリング優先度
+1. **即対応**: [深刻度:高]
+2. **次スプリント**: [深刻度:中]
+3. **将来的に検討**: [深刻度:低]
+```
+
+---
+
 ## 参照ドキュメント
 
 - **全体の設計原則・判断基準**: [references/core-concepts.md](references/core-concepts.md)
@@ -203,6 +327,7 @@ Mermaid 記法の詳細 → [references/mermaid-notation.md](references/mermaid-
 - **Domain Events 設計ガイド**: [references/domain-events.md](references/domain-events.md)
 - **Mermaid図の記法と表現方法**: [references/mermaid-notation.md](references/mermaid-notation.md)
 - **DDD パターン総合ガイド**: [references/ddd-patterns.md](references/ddd-patterns.md)
+- **逆引きエンジニアリングガイド**: [references/reverse-engineering.md](references/reverse-engineering.md)
 
 ---
 
