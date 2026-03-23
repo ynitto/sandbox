@@ -9,6 +9,17 @@ metadata:
     - requirements
     - user-story
     - acceptance-criteria
+  io_contract:
+    input:
+      - name: user_context
+        format: free-text
+        description: "ユーザーが作りたいものの説明（任意。未指定時は対話で収集）"
+        required: false
+    output:
+      - name: requirements_json
+        format: json
+        schema: "requirements.json (F-/N-/P- prefix, MoSCoW priority)"
+        required: true
 ---
 
 # requirements-definer

@@ -10,6 +10,25 @@ metadata:
     - openapi
     - rest
     - graphql
+  io_contract:
+    input:
+      - name: requirements
+        format: json
+        schema: "requirements.json (F-/N-/P- prefix)"
+        required: false
+      - name: domain_model
+        format: markdown
+        schema: "Mermaid classDiagram"
+        required: false
+      - name: api_description
+        format: free-text
+        description: "API の目的・エンドポイント要件の自由記述（requirements.json がない場合に使用）"
+        required: false
+    output:
+      - name: api_spec
+        format: yaml
+        schema: "OpenAPI 3.x または GraphQL SDL"
+        required: true
 ---
 
 # API Designer
