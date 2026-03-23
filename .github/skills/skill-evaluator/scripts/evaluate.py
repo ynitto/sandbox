@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """スキルを評価する。
 
-レジストリの feedback_history を読み取り、各スキルの推奨アクションを判定する。
+レジストリの feedback_history と metrics を読み取り、各スキルの推奨アクションと
+定量的品質スコアを算出する。
 ワークスペーススキル（試用中）とインストール済みスキル（ホーム領域）の両方に対応。
-git-skill-manager のスクリプトには依存しない（レジストリを直接読む）。
 
 使い方:
     python evaluate.py                          # 全スキルを評価
     python evaluate.py --type workspace         # ワークスペーススキルのみ
     python evaluate.py --type installed         # インストール済みスキルのみ
     python evaluate.py --skill <skill-name>     # 特定スキルのみ評価
+    python evaluate.py --auto-collect           # 評価前にメトリクスを自動集計
 """
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 # registry.py の __file__ ベースのパス解決を利用
@@ -34,6 +36,26 @@ def load_registry() -> dict | None:
         return json.load(f)
 
 
+def run_auto_collect(skill_name: str | None = None) -> None:
+    """metrics_collector.py を実行してレジストリのメトリクスを最新化する。"""
+    collector = os.path.join(_SKILL_HOME, "git-skill-manager", "scripts", "metrics_collector.py")
+    if not os.path.isfile(collector):
+        print("⚠️  metrics_collector.py が見つかりません。スキップします", file=sys.stderr)
+        return
+    cmd = [sys.executable, collector]
+    if skill_name:
+        cmd += ["--skill", skill_name]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"📊 メトリクスを自動集計しました")
+        if result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                print(f"   {line}")
+    else:
+        print(f"⚠️  メトリクス集計に失敗しました: {result.stderr.strip()}", file=sys.stderr)
+    print()
+
+
 def _maturity_stage(total_feedback: int) -> str:
     """総フィードバック数から成熟度ステージを返す。
 
@@ -50,6 +72,37 @@ def _maturity_stage(total_feedback: int) -> str:
         return "evaluable"
 
 
+def compute_quality_score(skill: dict) -> float | None:
+    """metrics フィールドから定量的品質スコア（0〜100）を算出する。
+
+    スコア構成:
+        - Pass率（ok_rate）  : 最大 70 点
+        - 実績（使用回数）   : 最大 20 点（10 回以上で満点）
+        - リトライ少なさ     : 最大 10 点（avg_subagent_calls が低いほど高得点）
+
+    metrics が存在しない、または total_executions = 0 の場合は None を返す。
+    """
+    m = skill.get("metrics")
+    if not m:
+        return None
+    total = m.get("total_executions", 0)
+    if total == 0:
+        return None
+
+    ok_rate = m.get("ok_rate", 0.0)
+    avg_subagent = m.get("avg_subagent_calls")
+
+    pass_score = ok_rate * 70
+    usage_score = min(total / 10, 1.0) * 20
+    if avg_subagent is not None:
+        # リトライ 0 回 → 10 点、5 回以上 → 0 点
+        retry_score = max(0.0, 10.0 - avg_subagent * 2)
+    else:
+        retry_score = 5.0  # データなし: 中間点
+
+    return round(pass_score + usage_score + retry_score, 1)
+
+
 def evaluate_skill(skill: dict) -> dict:
     """1スキルの評価結果を返す。
 
@@ -64,6 +117,8 @@ def evaluate_skill(skill: dict) -> dict:
             "maturity_stage": "initial" | "evaluable" | "mature",
             "pending_refinement": bool,
             "recommendation": "promote" | "refine" | "continue" | "ok",
+            "quality_score": float | None,   # 定量品質スコア 0〜100
+            "metrics_summary": dict | None,  # 集計メトリクスのサマリ
         }
 
     recommendation の意味:
@@ -110,6 +165,20 @@ def evaluate_skill(skill: dict) -> dict:
         else:
             recommendation = "ok"
 
+    # 定量品質スコア（metrics_collector.py で集計済みのデータを使用）
+    quality_score = compute_quality_score(skill)
+
+    # メトリクスサマリ（表示用）
+    m = skill.get("metrics")
+    metrics_summary = None
+    if m and m.get("total_executions", 0) > 0:
+        metrics_summary = {
+            "total_executions": m.get("total_executions", 0),
+            "ok_rate": m.get("ok_rate", 0.0),
+            "avg_subagent_calls": m.get("avg_subagent_calls"),
+            "trend_7d": m.get("trend_7d"),
+        }
+
     return {
         "name": skill["name"],
         "source_repo": source,
@@ -120,6 +189,8 @@ def evaluate_skill(skill: dict) -> dict:
         "maturity_stage": maturity,
         "pending_refinement": pending,
         "recommendation": recommendation,
+        "quality_score": quality_score,
+        "metrics_summary": metrics_summary,
     }
 
 
@@ -130,6 +201,39 @@ _MATURITY_LABEL = {
 }
 
 
+def _format_quality_score(score: float | None) -> str:
+    """品質スコアを表示用文字列にフォーマットする。"""
+    if score is None:
+        return "スコア:-"
+    if score >= 80:
+        grade = "A"
+    elif score >= 60:
+        grade = "B"
+    elif score >= 40:
+        grade = "C"
+    else:
+        grade = "D"
+    return f"スコア:{score:.0f}/100({grade})"
+
+
+def _format_metrics_line(ms: dict | None) -> str:
+    """メトリクスサマリを1行文字列にフォーマットする。"""
+    if not ms:
+        return ""
+    total = ms["total_executions"]
+    ok_rate = ms["ok_rate"]
+    avg_sub = ms.get("avg_subagent_calls")
+    trend = ms.get("trend_7d", {})
+    trend_str = f"7d:{trend.get('executions', 0)}回" if trend else ""
+    sub_str = f"retry:{avg_sub:.1f}" if avg_sub is not None else ""
+    parts = [f"実行:{total}回", f"Pass:{ok_rate:.0%}"]
+    if sub_str:
+        parts.append(sub_str)
+    if trend_str:
+        parts.append(trend_str)
+    return "  [" + " / ".join(parts) + "]"
+
+
 def _print_workspace_results(results: list) -> None:
     print("📋 ワークスペーススキル（試用中）:\n")
     for ev in results:
@@ -138,6 +242,8 @@ def _print_workspace_results(results: list) -> None:
         prob = ev["problem_count"]
         rec = ev["recommendation"]
         maturity = _MATURITY_LABEL[ev["maturity_stage"]]
+        score_str = _format_quality_score(ev["quality_score"])
+        metrics_line = _format_metrics_line(ev["metrics_summary"])
 
         if rec == "promote":
             mark = "✅ 昇格推奨"
@@ -148,7 +254,9 @@ def _print_workspace_results(results: list) -> None:
         else:
             mark = "🔄 試用継続"
 
-        print(f"  {ev['name']:30s}  ok:{ok} 問題:{prob}  {maturity}  → {mark}")
+        print(f"  {ev['name']:30s}  ok:{ok} 問題:{prob}  {maturity}  {score_str}  → {mark}")
+        if metrics_line:
+            print(f"  {'':30s}{metrics_line}")
 
     print()
     promotable = [e for e in results if e["recommendation"] == "promote"]
@@ -174,6 +282,8 @@ def _print_installed_results(results: list) -> None:
         src = ev["source_repo"]
         src_label = f"[{src}]"
         maturity = _MATURITY_LABEL[ev["maturity_stage"]]
+        score_str = _format_quality_score(ev["quality_score"])
+        metrics_line = _format_metrics_line(ev["metrics_summary"])
 
         if rec == "refine":
             mark = "⚠️  要改良"
@@ -181,7 +291,9 @@ def _print_installed_results(results: list) -> None:
                 mark += f"  ※broken:{broken}"
         else:
             mark = "✅ 正常"
-        print(f"  {ev['name']:30s}  ok:{ok} 問題:{prob}  {maturity}  → {mark}  {src_label}")
+        print(f"  {ev['name']:30s}  ok:{ok} 問題:{prob}  {maturity}  {score_str}  → {mark}  {src_label}")
+        if metrics_line:
+            print(f"  {'':30s}{metrics_line}")
 
     print()
     refinable = [e for e in results if e["recommendation"] == "refine"]
@@ -194,8 +306,11 @@ def _print_installed_results(results: list) -> None:
     print()
 
 
-def run_evaluation(target_skill: str = None, skill_type: str = "all") -> list:
+def run_evaluation(target_skill: str = None, skill_type: str = "all", auto_collect: bool = False) -> list:
     """評価を実行して結果リストを返す。"""
+    if auto_collect:
+        run_auto_collect(skill_name=target_skill)
+
     reg = load_registry()
     if reg is None:
         print("[ERROR] レジストリが見つかりません", file=sys.stderr)
@@ -246,9 +361,14 @@ def main():
         default="all",
         help="評価対象のスキル種別 (default: all)",
     )
+    parser.add_argument(
+        "--auto-collect",
+        action="store_true",
+        help="評価前に metrics_collector.py を実行してメトリクスを最新化する",
+    )
     args = parser.parse_args()
 
-    run_evaluation(args.skill, args.type)
+    run_evaluation(args.skill, args.type, auto_collect=args.auto_collect)
 
 
 if __name__ == "__main__":
