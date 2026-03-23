@@ -9,3 +9,7 @@ io_contract:
       format: json
       schema: "requirements.json (F-/N-/P- prefix, MoSCoW priority)"
       required: true
+    - name: traceability_matrix_md
+      format: markdown
+      schema: "traceability-matrix.md (AC × 実装/テスト対応表。Step 9 実行時のみ出力)"
+      required: false
