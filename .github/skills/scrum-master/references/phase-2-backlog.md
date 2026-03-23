@@ -104,6 +104,9 @@ flowchart TD
 - 1タスク = 1スキルの1回の実行
 - acceptance_criteria が複数ある場合、同一タスクの done_criteria に統合するか、テスト用の別タスクに分離する
 
+**スキルの割り当て（`skill` フィールド）:**
+各タスクへのスキル割り当ては **skill-selector に委譲する**。バックログ項目一覧（id / action / done_criteria）を作成した後、skill-selector をサブエージェントとして起動し、各タスクへのスキル推薦を取得する（`subagent-templates.md`「skill-selector 呼び出し時」を参照）。推薦結果をもとに各タスクの `skill` フィールドを設定する。
+
 → **Step 2-3 へ進む**（requirements.json 経由でここに来た場合も省略しない）。
 
 ---
@@ -164,8 +167,9 @@ flowchart TD
 タスク分解の粒度:
 - 基本は 1タスク = 1スキルの1回の実行
 - 「AしてBする」で責務が異なる場合は2タスクに分ける
-- 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "react-frontend-unit-tester"]`）
+- 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "react-frontend-unit-tester"]`）。配列指定も skill-selector が推薦する
 - 汎用タスク（skill: null）は判断・調査・確認など、スキル不要な軽微な作業に限定する
+- **`skill` フィールドの値は Step 2-2 で skill-selector を呼び出して決定する**（scrum-master が自己判断でスキル名を直接記入しない）
 
 ---
 
