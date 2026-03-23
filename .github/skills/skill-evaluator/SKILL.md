@@ -2,7 +2,7 @@
 name: skill-evaluator
 description: ワークスペーススキルとインストール済みスキルを評価し、昇格・改良・試用継続を判断するスキル。「スキルを評価して」「試用中スキルを確認して」「どのスキルを昇格すべき？」などで発動する。git-skill-manager の evaluate 操作・scrum-master Phase 6・EVAL_RECOMMEND 出力時にも自動起動される。
 metadata:
-  version: 1.0.1
+  version: 1.1.0
   tier: core
   category: meta
   tags:
@@ -12,221 +12,41 @@ metadata:
 
 # Skill Evaluator
 
-ワークスペーススキルとインストール済みスキルのフィードバック履歴を読み取り、推奨アクションを判断して実行するスキル。
-
-## 評価基準
-
-### ワークスペーススキル（試用中）
-
-| 評価 | 条件 | アクション |
-|---|---|---|
-| ✅ 昇格推奨 | ok ≥ 2 かつ `pending_refinement: false` かつ broken なし | git-skill-manager promote |
-| ⚠️ 要改良後昇格 | `pending_refinement: true` または broken あり | git-skill-manager refine → 改良後に promote |
-| 🔄 試用継続 | ok = 1、問題なし | 報告のみ（次回のフィードバックを待つ） |
-
-### インストール済みスキル（ホーム領域）
-
-| 評価 | 条件 | アクション |
-|---|---|---|
-| ⚠️ 要改良 | `pending_refinement: true` または未改良問題あり | git-skill-manager refine（必要なら push） |
-| ✅ 正常 | 問題なし | 報告のみ |
-
-## スキル品質チェック（静的）
-
-ベストプラクティスガイドラインに基づいてスキルの静的品質を検査する。
-使用履歴の動的評価（`evaluate.py`）と組み合わせて使う。
+スキルの**静的品質チェック**と**動的評価（フィードバック + メトリクス）**を組み合わせ、
+昇格・改良・試用継続の推奨アクションと定量品質スコアを算出するスキル。
 
 `<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
-
-```bash
-# ワークスペーススキルを全チェック
-python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py
-
-# 特定スキルのみ
-python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py --skill <skill-name>
-
-# 任意ディレクトリ
-python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py --path <dir>
-```
-
-### チェック項目
-
-| コード | 深刻度 | 内容 |
-|---|---|---|
-| `FM_NO_FRONTMATTER` | ERROR | SKILL.md にフロントマターがない |
-| `FM_UNKNOWN_KEY` | ERROR | 許可されていないフロントマターキーがある（使用可能: name / description / license / allowed-tools / metadata / compatibility） |
-| `NAME_FORMAT` | ERROR | name が kebab-case でない |
-| `NAME_TOO_LONG` | ERROR | name が 64 文字超 |
-| `NAME_RESERVED_WORD` | ERROR | name に予約語（anthropic 等）が含まれる |
-| `NAME_AMBIGUOUS` | WARN | name が曖昧・汎用的すぎる（helper, utils, tools 等） |
-| `DESC_MULTILINE` | ERROR | description に YAML ブロックスカラー（`>` / `|`）が使われている。一行のダブルクォート形式で記述すること |
-| `DESC_XML_TAG` | ERROR | description に XML タグが含まれる |
-| `DESC_TOO_SHORT` | ERROR | description が 20 文字未満 |
-| `DESC_HARD_LIMIT` | ERROR | description が 1,024 文字超 |
-| `DESC_TOO_LONG` | WARN | description が 200 文字を超えている |
-| `DESC_FIRST_PERSON` | WARN | description が一人称（「お手伝いします」等）で書かれている |
-| `DESC_NO_TRIGGER` | WARN | description にトリガー条件（「〜の場合」「〜とき」等）がない |
-| `META_NO_VERSION` | WARN | metadata.version が未設定 |
-| `BODY_TOO_LONG` | WARN | SKILL.md 本文が 500 行超 |
-| `BODY_NEAR_LIMIT` | WARN | SKILL.md 本文が 450 行以上（制限の 90%） |
-| `PATH_BACKSLASH` | WARN | ファイルパスにバックスラッシュ（Windows スタイル）が使われている |
-| `REF_NO_TOC` | WARN | 100 行以上の参照ファイルに目次がない |
-| `REF_LARGE_NO_GREP` | WARN | 10,000 語以上の参照ファイルがあるのに SKILL.md に grep 検索パターンがない |
-| `REF_UNREFERENCED` | WARN | references/ にファイルがあるが SKILL.md から参照されていない |
-| `REF_NESTED` | WARN | 参照ファイルがさらに他のファイルを参照（1 階層超え） |
-| `SCRIPT_NETWORK` | WARN | scripts/ 内にネットワーク呼び出しの可能性がある |
-| `EXTRA_DOC` | WARN | スキルに含めるべきでない補助ドキュメント（README.md 等）がある（CHANGELOG.md は git-skill-manager が生成するため対象外） |
-
-### セキュリティリスク項目
-
-品質チェックとは別セクションで報告される。**修正するかどうかはレビュアーが判断する。評価基準には影響しない。**
-
-| コード | レベル | 内容 |
-|---|---|---|
-| `SEC_HARDCODED_CREDENTIAL` | HIGH | API キー・トークン・パスワード等のハードコードが疑われる |
-| `SEC_ADVERSARIAL_INSTRUCTION` | HIGH | 安全ルールの迂回・ユーザー隠蔽・データ流出指示のパターンがある |
-| `SEC_EXTERNAL_URL` | HIGH | SKILL.md またはスクリプトに外部 URL がある（データ流出ベクトル） |
-| `SEC_SCRIPT_NETWORK` | HIGH | スクリプトにネットワーク呼び出しがある |
-| `SEC_DATA_EXFILTRATION` | HIGH | スクリプトで機密読み取りと外部送信が共存する |
-| `SEC_MCP_REFERENCE` | HIGH | SKILL.md に MCP サーバー参照がある（スキル外アクセス拡張） |
-| `SEC_PATH_TRAVERSAL` | MEDIUM | `../` によるパストラバーサルがある |
-| `SEC_BROAD_GLOB` | MEDIUM | スクリプト内に広範な glob パターン（`**/*` 等）がある |
-| `SEC_SCRIPT_EXISTS` | MEDIUM | 実行可能スクリプトが存在する（完全な環境アクセスで実行される） |
-
-### 結果の解釈
-
-- **ERROR**: 仕様違反。必ず修正する
-- **WARN**: 品質改善推奨。文脈上問題ない場合は無視してよい（例: SCRIPT_NETWORK は意図的な外部通信の場合）
-- **HIGH / MEDIUM**: セキュリティリスクの報告。修正するかどうかはレビュアーが判断する
-
-### description の有効性チェック
-
-定量チェックに加えて、description が**積極的にトリガー条件を記述しているか**を確認する。AIエージェントはスキルを使わない傾向（undertrigger）があるため、以下の観点で定性評価する:
-
-- トリガー条件が具体的か（「〜の場合」だけでなく「必ずこのスキルを使う」など積極的な表現があるか）
-- 「いつ使うか」の情報が description に集中しているか（本文のトリガー説明はスキル発動に寄与しない）
-- 類似スキルと競合する場合、どちらが発動すべきかが明確か
-
----
-
-## スキル品質評価の詳細基準
-
-skill-creator が作成時の基本構造（name・description の有無・行数上限）を検証するのに対し、skill-evaluator は**ガイドラインに基づく静的品質チェック**と**使用履歴に基づく動的評価**の両方を行う。
-
-### 問題の深刻度分類
-
-フィードバックの `verdict` を深刻度で区別して評価する:
-
-| verdict | 深刻度 | 評価への影響 |
-|---|---|---|
-| `broken` | 高 | ok 数に関わらず即要改良 |
-| `needs-improvement` | 中 | 問題ありとしてカウント |
-| `ok` | - | 正常動作 |
-
-`broken` が 1 件でもある場合は昇格条件を満たさない。
-
-### 成熟度ステージ
-
-総フィードバック数（ok + 問題）でスキルのデータ充足度を判定する:
-
-| ステージ | 条件 | 評価方針 |
-|---|---|---|
-| 初期（データ不足） | 総フィードバック < 2 | 評価保留。試用継続を優先する |
-| 評価可能 | 総フィードバック 2〜4 | 通常の評価基準を適用する |
-| 十分な実績 | 総フィードバック ≥ 5 | 昇格後も継続的な改良サイクルを推奨する |
-
-### フィードバックパターンからの構造問題推察
-
-verdict の傾向から、スキルの構造的問題を推察して改良提案に含める:
-
-| フィードバックパターン | 推察される原因 | 改良提案 |
-|---|---|---|
-| `needs-improvement` が連続 | SKILL.md の手順・説明が不明確 | 記述の整理・具体例の追加を提案 |
-| `broken` が複数 | scripts/ の実装不備 | スクリプトのデバッグ・テストを提案 |
-| ok が増えない（長期停滞） | スコープが広すぎる可能性 | スキルの分割を提案 |
-| 改良後も同じ問題が続く | 根本的な設計問題 | description・構造の見直しを提案 |
-
-### 改良効果の評価
-
-`refined: true` のフィードバックを除外した上で新規フィードバックを分析し、改良が実際に効果をもたらしたかを判断する:
-
-- 改良後に `ok` が増加 → 改良効果あり（昇格に向けて継続）
-- 改良後も `needs-improvement` / `broken` が続く → 改良効果不十分（再改良を推奨）
-
-### 改良時の指針
-
-refine を提案・実施する際は以下を参考にする:
-
-- **一般化する**: 少数の使用例に過度に合わせず、多様なユーザー・プロンプトで機能するよう一般化する（過学習を避ける）
-- **スリムに保つ**: 効果を発揮していない記述を削除する。非生産的な動作を引き起こす部分をトランスクリプトから特定する
-- **「なぜ」を説明する**: 指示の理由を伝える方が、強制的なMUSTより効果的。「MUST」「NEVER」の多用は黄色信号
-- **繰り返し作業をバンドルする**: 同じ処理が複数ケースで書かれていたら `scripts/` にバンドルすべきサイン
-- **description を見直す**: undertrigger が疑われる場合は、発動条件を積極的・明示的に記述するよう修正する
-
-## 定量品質スコア
-
-`evaluate.py` は `git-skill-manager` の `metrics` フィールド（`metrics_collector.py` で集計）を使い、
-各スキルに 0〜100 の品質スコアを自動算出する。
-
-### スコア構成
-
-| 指標 | 最大点 | 算出方法 |
-|---|---|---|
-| Pass率（ok_rate） | 70 点 | `ok_rate × 70` |
-| 実績（使用回数） | 20 点 | `min(total_executions / 10, 1.0) × 20`（10 回以上で満点） |
-| リトライ少なさ | 10 点 | `max(0, 10 - avg_subagent_calls × 2)`（0 回で 10 点、5 回以上で 0 点） |
-
-### グレード基準
-
-| グレード | スコア | 意味 |
-|---|---|---|
-| A | 80〜100 | 高品質・安定稼働 |
-| B | 60〜79 | 概ね良好 |
-| C | 40〜59 | 改善余地あり |
-| D | 0〜39 | 要改良 |
-
-スコアは推奨アクションの決定には使用しない（既存の ok/broken/pending 基準を維持）。
-品質トレンドの把握と改良優先度の参考として使う。
 
 ## ワークフロー
 
-### 0. 品質チェックを実行する
-
-フィードバック評価の前に必ず静的品質チェックを実行して構造的な問題を事前に把握する。
-
-`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>` を指す。
+### Step 0. 静的品質チェック
 
 ```bash
-python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py
+python <SKILLS_BASE>/skill-evaluator/scripts/quality_check.py [--skill <name>]
 ```
 
-ERROR が出た場合は修正してから動的評価に進む。WARN も可能な限り対処する。
+ERROR がある場合は修正してから次のステップへ進む。WARN は文脈上問題なければ無視してよい。
+チェックコードの一覧と解釈は `references/quality-check-codes.md` を参照。
 
-### 1. 評価スクリプトを実行する
+### Step 1. 動的評価スクリプトを実行する
 
 ```bash
 # 全スキル（ワークスペース + インストール済み）を評価
 python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py
 
-# メトリクスを最新化してから評価（git-skill-manager と連携）
+# メトリクスを最新化してから評価（推奨）
 python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --auto-collect
 
-# ワークスペーススキルのみ
-python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --type workspace
-
-# インストール済みスキルのみ
-python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --type installed
-
-# 特定スキルのみ（種別を問わず検索）
-python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <skill-name>
+# フィルタ
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --type workspace   # ワークスペースのみ
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --type installed   # インストール済みのみ
+python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <name>     # 特定スキルのみ
 ```
 
-`--auto-collect` を指定すると、評価前に `git-skill-manager` の `metrics_collector.py` を実行し、
-`metrics-log.jsonl` から最新のメトリクスをレジストリに反映してから評価する。
+`--auto-collect` を付けると評価前に `git-skill-manager` の `metrics_collector.py` を実行し、
+`metrics-log.jsonl` から使用回数・Pass率・リトライ回数を集計してレジストリに反映する。
 
-### 2. 結果をユーザーに提示する
-
-スクリプトの出力をそのままユーザーに見せる。出力例:
+出力例:
 
 ```
 📊 メトリクスを自動集計しました
@@ -254,9 +74,10 @@ python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <skill-name>
 正常:   image-resizer
 ```
 
-### 3. ユーザーのアクションを確認して実行する
+### Step 2. ユーザーに確認してアクションを実行する
 
-**ワークスペーススキルに昇格推奨がある場合:**
+**昇格推奨がある場合:**
+
 ```
 「my-skill を昇格しますか？
  昇格すると ~/.copilot/skills/ にコピーされ、他のプロジェクトでも使えるようになります。
@@ -265,7 +86,8 @@ python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <skill-name>
  3. スキップ」
 ```
 
-**要改良スキルがある場合（ワークスペース・インストール済み共通）:**
+**要改良がある場合（ワークスペース・インストール済み共通）:**
+
 ```
 「[skill-name] に改善待ちのフィードバックがあります。
  1. 今すぐ改良する（git-skill-manager refine）
@@ -273,40 +95,122 @@ python <SKILLS_BASE>/skill-evaluator/scripts/evaluate.py --skill <skill-name>
  3. スキップ」
 ```
 
-### 4. 各アクションを実行する
+各アクションの実行方法は `<SKILLS_BASE>/git-skill-manager/SKILL.md` の該当操作（`promote` / `refine`）を参照する。
+インストール済みスキルかつ `source_repo` がリポジトリ名の場合、改良後に `push` 操作を提案する。
 
-- **昇格**: `<SKILLS_BASE>/git-skill-manager/SKILL.md` を読んで `promote` 操作の手順に従う
-- **改良**: `<SKILLS_BASE>/git-skill-manager/SKILL.md` を読んで `refine` 操作の手順に従う
-  - インストール済みスキルかつ `source_repo` がリポジトリ名の場合: 改良後に `push` 操作を提案する
-- **試用継続・スキップ**: 報告のみで次へ進む
+---
+
+## 評価基準
+
+### ワークスペーススキル（試用中）
+
+| 評価 | 条件 | アクション |
+|---|---|---|
+| ✅ 昇格推奨 | ok ≥ 2 かつ `pending_refinement: false` かつ broken なし かつ成熟度 ≠ 初期 | git-skill-manager promote |
+| ⚠️ 要改良後昇格 | `pending_refinement: true` または broken あり | git-skill-manager refine → 改良後に promote |
+| 🔄 試用継続 | ok = 1 かつ問題なし（またはデータ不足） | 報告のみ |
+
+### インストール済みスキル（ホーム領域）
+
+| 評価 | 条件 | アクション |
+|---|---|---|
+| ⚠️ 要改良 | `pending_refinement: true` または未改良問題あり | git-skill-manager refine（必要なら push） |
+| ✅ 正常 | 問題なし | 報告のみ |
+
+### verdict の深刻度
+
+| verdict | 深刻度 | 影響 |
+|---|---|---|
+| `broken` | 高 | ok 数に関わらず即要改良。昇格条件を満たさない |
+| `needs-improvement` | 中 | 問題ありとしてカウント |
+| `ok` | — | 正常動作 |
+
+### 成熟度ステージ
+
+| ステージ | 条件 | 方針 |
+|---|---|---|
+| 初期（データ不足） | 総フィードバック < 2 | 評価保留。試用継続を優先 |
+| 評価可能 | 総フィードバック 2〜4 | 通常の評価基準を適用 |
+| 十分な実績 | 総フィードバック ≥ 5 | 昇格後も継続的な改良サイクルを推奨 |
+
+---
+
+## 定量品質スコア（0〜100）
+
+`evaluate.py` が `git-skill-manager` の `metrics` フィールドから自動算出する。
+スコアは推奨アクション（promote / refine）の決定には使用しない。改良優先度の参考として使う。
+
+### スコア構成
+
+| 指標 | 最大点 | 算出方法 |
+|---|---|---|
+| Pass率（ok_rate） | 70 点 | `ok_rate × 70` |
+| 実績（使用回数） | 20 点 | `min(total_executions / 10, 1.0) × 20`（10 回以上で満点） |
+| リトライ少なさ | 10 点 | `max(0, 10 - avg_subagent_calls × 2)`（0 回で 10 点、5 回以上で 0 点） |
+
+### グレード
+
+| グレード | スコア |
+|---|---|
+| A | 80〜100 |
+| B | 60〜79 |
+| C | 40〜59 |
+| D | 0〜39 |
+
+`metrics` が未集計（`--auto-collect` 未実行またはログなし）の場合はスコア `-` で表示される。
+
+---
+
+## 改良ガイドライン
+
+### フィードバックパターンから問題を推察する
+
+| パターン | 推察される原因 | 改良提案 |
+|---|---|---|
+| `needs-improvement` が連続 | SKILL.md の手順・説明が不明確 | 記述の整理・具体例の追加 |
+| `broken` が複数 | scripts/ の実装不備 | スクリプトのデバッグ・テスト |
+| ok が増えない（長期停滞） | スコープが広すぎる | スキルの分割 |
+| 改良後も同じ問題が続く | 根本的な設計問題 | description・構造の見直し |
+
+### 改良効果の評価
+
+`refined: true` のフィードバックを除外した上で新規フィードバックを分析し、改良が効果をもたらしたかを判断する:
+
+- 改良後に `ok` が増加 → 効果あり（昇格に向けて継続）
+- 改良後も `needs-improvement` / `broken` が続く → 再改良を推奨
+
+### refine 実施時の指針
+
+- **一般化する**: 少数の使用例に過度に合わせず、多様なプロンプトで機能するよう一般化する
+- **スリムに保つ**: 効果を発揮していない記述を削除する
+- **「なぜ」を説明する**: MUST / NEVER の多用より、理由の説明のほうが効果的
+- **繰り返し作業をバンドルする**: 同じ処理が複数ケースで書かれていたら `scripts/` へ
+- **description を見直す**: undertrigger が疑われる場合は、発動条件を積極的・明示的に記述する
+
+---
 
 ## 起動元別の動作
 
 | 起動元 | 対象 | モード |
 |---|---|---|
 | ユーザー直接 / git-skill-manager evaluate | 全スキル（`--type all`） | 通常モード（対話的に進める） |
-| scrum-master Phase 6 | 全スキル（`--type all`） | **レポートのみモード** |
-| record_feedback.py の EVAL_RECOMMEND 出力 | フィードバック対象のスキル1件（`--skill <name>`） | 通常モード |
+| scrum-master Phase 6 | 全スキル（`--type all`） | レポートのみモード |
+| record_feedback.py の EVAL_RECOMMEND 出力 | 対象スキル 1 件（`--skill <name>`） | 通常モード |
 
 ### レポートのみモード（scrum-master Phase 6 から起動された場合）
 
-VSCode Copilot ではサブエージェントがユーザーと対話できないため、scrum-master から起動された場合は以下の動作に切り替える:
-
-- Step 0〜2 は通常通り実行する（品質チェック・評価スクリプト・成果物確認）
-- **Step 3（ユーザーへの確認・promote/refine の実行）は行わない**
-- 代わりに以下の形式で推奨アクション一覧を返す:
+VSCode Copilot ではサブエージェントがユーザーと対話できないため、Step 2（確認・実行）は行わない。
+代わりに以下の形式でアクション一覧を返し、scrum-master が判断・実行する:
 
 ```
 評価結果（ワークスペース）:
-- [skill-name]: [推奨アクション（昇格推奨 / 要改良後昇格 / 試用継続）] — スコア:[N]/100([グレード]) — [理由1文]
+- [skill-name]: [昇格推奨 / 要改良後昇格 / 試用継続] — スコア:[N]/100([グレード]) — [理由1文]
 
 評価結果（インストール済み）:
-- [skill-name]: [推奨アクション（要改良 / 正常）] — スコア:[N]/100([グレード]) — [理由1文] — source_repo: [repo-name または local]
+- [skill-name]: [要改良 / 正常] — スコア:[N]/100([グレード]) — [理由1文] — source_repo: [repo-name または local]
 ```
 
-ユーザーへの確認・promote/refine の実行は scrum-master が担当する。
-インストール済みスキルで「要改良」かつ source_repo がリポジトリ名の場合、scrum-master が改良後に push も提案する。
+インストール済みスキルで「要改良」かつ `source_repo` がリポジトリ名の場合、scrum-master が改良後に push も提案する。
 
-`EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` が record_feedback.py から出力された場合、
+`EVAL_RECOMMEND: promote` または `EVAL_RECOMMEND: refine` が `record_feedback.py` から出力された場合、
 そのスキルだけを対象に `--skill <name>` で評価スクリプトを実行する。
-スキルの種別（ワークスペース/インストール済み）は evaluate.py が自動判別する。
