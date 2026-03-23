@@ -2,6 +2,17 @@
 
 既存コードから DDD ドメインモデルを抽出・評価するための詳細リファレンス。
 
+## 目次
+
+- [対象言語別の抽出パターン](#対象言語別の抽出パターン)
+  - [TypeScript / JavaScript](#typescript--javascript)
+  - [Java / Kotlin](#java--kotlin)
+  - [Python](#python)
+  - [Go](#go)
+- [よくある「混合パターン」の解釈](#よくある混合パターンの解釈)
+- [ギャップ評価の深刻度判定基準](#ギャップ評価の深刻度判定基準)
+- [出力テンプレート（逆引きモード）](#出力テンプレート逆引きモード)
+
 ---
 
 ## 対象言語別の抽出パターン
@@ -329,10 +340,6 @@ class OrderService {
 
 ---
 
-## 関連リファレンス
+---
 
-- **DDD コアコンセプト**: [core-concepts.md](core-concepts.md)
-- **集約設計の原則**: [aggregate-design.md](aggregate-design.md)
-- **関係の種類**: [relationships.md](relationships.md)
-- **DDD パターン総合**: [ddd-patterns.md](ddd-patterns.md)
-- **Mermaid 記法**: [mermaid-notation.md](mermaid-notation.md)
+関連リファレンス（SKILL.md から参照）: core-concepts.md / aggregate-design.md / relationships.md / ddd-patterns.md / mermaid-notation.md
