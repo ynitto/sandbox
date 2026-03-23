@@ -3,3 +3,22 @@ recommends:
     reason: "APIエンドポイント設計に先立つ要件定義"
   - name: domain-modeler
     reason: "エンティティ・集約設計の参照"
+io_contract:
+  input:
+    - name: requirements
+      format: json
+      schema: "requirements.json (F-/N-/P- prefix)"
+      required: false
+    - name: domain_model
+      format: markdown
+      schema: "Mermaid classDiagram"
+      required: false
+    - name: api_description
+      format: free-text
+      description: "API の目的・エンドポイント要件の自由記述（requirements.json がない場合に使用）"
+      required: false
+  output:
+    - name: api_spec
+      format: yaml
+      schema: "OpenAPI 3.x または GraphQL SDL"
+      required: true

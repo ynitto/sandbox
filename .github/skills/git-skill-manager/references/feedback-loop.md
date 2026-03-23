@@ -2,6 +2,14 @@
 
 スキル使用後にフィードバックを収集し、スキル品質の改良トリガーとスキル発見の起点にする仕組み。
 
+## 目次
+
+- [pending_refinement トリガーのしきい値](#pending_refinement-トリガーのしきい値)
+- [フィードバックの記録](#フィードバックの記録)
+- [discover_skills.py のソート順](#discover_skillspy-のソート順)
+- [feedback 操作の詳細フロー](#feedback-操作の詳細フロー)
+- [evaluate 操作の詳細フロー](#evaluate-操作の詳細フロー)
+
 ## pending_refinement トリガーのしきい値
 
 スキルの種別ごとに `pending_refinement` が立つまでの未改良問題数が異なる。頻度を下げることで、安定稼働しているインストール済みスキルへの過剰な改良提案を防ぐ。
