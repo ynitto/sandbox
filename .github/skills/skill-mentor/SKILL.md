@@ -151,8 +151,9 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 
 **ゴール**: 最適なスキル構成と実行計画を決定する
 
-1. `#tool:agent/runSubagent` で **skill-selector** スキルを起動し、Phase 2 のタスク定義を渡す
-   - テンプレート: `${SKILL_DIR}/references/subagent-templates.md` の「skill-selector 呼び出し時」
+1. **skill-selector** のSKILL.mdを自身で読み込んで直接実行する（サブエージェント不要）
+   - `${SKILLS_DIR}/skill-selector/SKILL.md` を読み、手順に従って Phase 2 のタスク定義を渡す
+   - 複数スキルが推薦された場合は全スキルを実行計画に含める
 2. skill-selector の推薦結果をもとに実行計画を作成する
 3. **依存関係グラフを付与する**: 各スキルタスクに `depends_on` を明記し、並列実行可能なグループを特定する
 
@@ -310,9 +311,11 @@ Phase 4 の実行結果（変更ファイル一覧）をもとに、以下の観
 Copilot では `#tool:agent/runSubagent` でサブエージェントを起動する。
 
 **自分で実行してはいけない処理:**
-- Phase 3: skill-selector によるスキル選定
 - Phase 4: 各タスクの実行（**例外なし。すべて runSubagent へ**）
 - Phase 5: レビュースキルの実行（**可能な限り並列サブエージェント**）
+
+**自身のエージェントで実行してよい処理:**
+- Phase 3: skill-selector のSKILL.mdを読んでスキル選定（サブエージェント不要）
 
 **重要**: SKILL.md の内容をプロンプトに埋め込まない。ファイルパスだけ渡し、サブエージェント自身に読ませる。
 

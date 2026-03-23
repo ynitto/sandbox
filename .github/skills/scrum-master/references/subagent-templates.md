@@ -4,7 +4,6 @@
 
 - [重要な注意事項](#重要な注意事項)
 - [requirements-definer 呼び出し時](#requirements-definer-呼び出し時)
-- [skill-selector 呼び出し時](#skill-selector-呼び出し時)
 - [skill: null タスク実行時](#skill-null-タスク実行時)
 - [スキル実行時](#スキル実行時)
 - [複数スキル実行時](#複数スキル実行時)
@@ -51,47 +50,6 @@ goal: [requirements.json の goal フィールドの値]
 ```
 
 **scrum-master の次の処理**: サブエージェント完了後、`requirements.json` を読み込んでバックログを作成する（Phase 2）。
-
-## skill-selector 呼び出し時
-
-バックログのスキル割り当て（Phase 2）またはレビュースキル選定（Phase 5）で使用する。
-
-```
-skill-selector スキルを実行する。
-
-手順: まず skill-selector の SKILL.md を読んで手順に従ってください。
-
-用途: [バックログスキル割り当て / レビュースキル選定]
-
-[バックログスキル割り当ての場合]
-タスク一覧:
-  - id: b1, action: "...", done_criteria: "..."
-  - id: b2, action: "...", done_criteria: "..."
-  ...（全バックログ項目を列挙）
-
-出力形式:
-  各タスク id に対して推奨スキル名（またはnull）をJSON形式で返してください。
-  例: {"b1": "react-frontend-coder", "b2": ["react-frontend-coder", "react-frontend-unit-tester"], "b3": null}
-
-[レビュースキル選定の場合]
-対象タスク:
-  id: [task-id]
-  action: "..."
-  変更ファイル: [変更・作成したファイルの一覧]
-
-レビュー観点: [機能レビュー / AIアンチパターンレビュー / アーキテクチャレビュー]
-
-出力形式:
-  推薦スキル名: [スキル名] または なし
-  スキルパス: [SKILL.md の絶対パス] または なし
-  理由: [1文で選定理由]
-```
-
-**scrum-master の処理**:
-- バックログ割り当て: 返却 JSON をもとに各タスクの `skill` フィールドを設定する
-- レビュースキル選定: 推薦スキルパスを各レビューサブエージェントの「レビュースキル」欄に渡す
-
----
 
 ## skill: null タスク実行時
 
