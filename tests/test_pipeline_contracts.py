@@ -15,7 +15,7 @@ import argparse
 import sys
 from pathlib import Path
 
-SKILLS_DIR = Path(__file__).parent / ".github" / "skills"
+SKILLS_DIR = Path(__file__).parent.parent / ".github" / "skills"
 
 # ──────────────────────────────────────────────
 # meta.yaml パーサー
