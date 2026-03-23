@@ -9,21 +9,6 @@ metadata:
     - ideation
     - requirements
     - planning
-  io_contract:
-    input:
-      - name: task_description
-        format: free-text
-        description: "実装したい機能・変更したい動作の概要"
-        required: true
-      - name: existing_codebase
-        format: file-reference
-        description: "既存コードのパス（コンテキスト把握に使用）"
-        required: false
-    output:
-      - name: decision_record
-        format: markdown
-        schema: "設計方針・選択肢・採用理由・実装ステップを含むMarkdown"
-        required: true
 ---
 
 # アイデアを設計に落とし込むブレインストーミング

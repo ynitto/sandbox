@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """スキル間パイプライン契約テスト。
 
-スキルの io_contract に基づいて、上流スキルの出力が
-下流スキルの入力として有効かどうかを検証する。
+各スキルの meta.yaml に定義された io_contract に基づいて、
+上流スキルの出力が下流スキルの入力として有効かどうかを検証する。
 
 使い方:
     python test_pipeline_contracts.py
@@ -12,75 +12,63 @@
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import re
 import sys
 from pathlib import Path
-from typing import Any
 
-SKILLS_DIR = Path(__file__).parent.parent
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
+SKILLS_DIR = Path(__file__).parent / ".github" / "skills"
 
 # ──────────────────────────────────────────────
-# io_contract パーサー
+# meta.yaml パーサー
 # ──────────────────────────────────────────────
 
 def parse_io_contract(skill_name: str) -> dict:
-    """SKILL.md の io_contract フィールドを解析する。"""
-    skill_md = SKILLS_DIR / skill_name / "SKILL.md"
-    if not skill_md.exists():
+    """meta.yaml の io_contract セクションを解析する。"""
+    meta_yaml = SKILLS_DIR / skill_name / "meta.yaml"
+    if not meta_yaml.exists():
         return {}
 
-    content = skill_md.read_text(encoding="utf-8")
-    if not content.startswith("---"):
-        return {}
-
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        return {}
-
-    raw = parts[1]
+    content = meta_yaml.read_text(encoding="utf-8")
     io_contract: dict = {"input": [], "output": []}
     in_io_contract = False
-    in_input = False
-    in_output = False
-    in_item = False
-    current_item: dict = {}
     current_section = None
+    current_item: dict = {}
 
-    for line in raw.splitlines():
+    for line in content.splitlines():
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
 
-        if indent == 2 and stripped.startswith("io_contract:"):
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # io_contract: の開始（indent=0）
+        if indent == 0 and stripped.startswith("io_contract:"):
             in_io_contract = True
+            continue
+
+        # io_contract 以外のトップレベルキーで終了
+        if indent == 0 and in_io_contract and ":" in stripped:
+            in_io_contract = False
             continue
 
         if not in_io_contract:
             continue
 
-        # io_contract の終了判定（indent が 2 以下の他キー）
-        if indent <= 2 and stripped and not stripped.startswith("-") and ":" in stripped:
-            key = stripped.split(":")[0].strip()
-            if key not in ("io_contract", "input", "output") and indent == 2:
-                in_io_contract = False
-                continue
-
-        if indent == 4 and stripped.startswith("input:"):
+        # input: / output: セクション（indent=2）
+        if indent == 2 and stripped.startswith("input:"):
             if current_item and current_section:
                 io_contract[current_section].append(current_item)
                 current_item = {}
             current_section = "input"
             continue
-        if indent == 4 and stripped.startswith("output:"):
+        if indent == 2 and stripped.startswith("output:"):
             if current_item and current_section:
                 io_contract[current_section].append(current_item)
                 current_item = {}
             current_section = "output"
             continue
 
-        if indent == 6 and stripped.startswith("- ") and current_section:
+        # リストアイテム開始（indent=4, "- "）
+        if indent == 4 and stripped.startswith("- ") and current_section:
             if current_item:
                 io_contract[current_section].append(current_item)
             current_item = {}
@@ -90,7 +78,8 @@ def parse_io_contract(skill_name: str) -> dict:
                 current_item[k.strip()] = v.strip().strip('"')
             continue
 
-        if indent == 8 and ":" in stripped and current_section:
+        # アイテム内フィールド（indent=6）
+        if indent == 6 and ":" in stripped and current_section:
             k, _, v = stripped.partition(":")
             current_item[k.strip()] = v.strip().strip('"')
 
@@ -113,15 +102,14 @@ PIPELINES: dict[str, list[str]] = {
 }
 
 # 上流出力→下流入力の互換マッピング
-# (upstream_output_format, downstream_input_format) → compatible
 FORMAT_COMPATIBILITY: dict[tuple[str, str], bool] = {
     ("json", "json"): True,
     ("yaml", "yaml"): True,
     ("markdown", "markdown"): True,
     ("markdown", "free-text"): True,
     ("free-text", "free-text"): True,
-    ("json", "free-text"): True,      # JSON は free-text として渡せる
-    ("yaml", "free-text"): True,      # YAML は free-text として渡せる
+    ("json", "free-text"): True,
+    ("yaml", "free-text"): True,
     ("file-reference", "file-reference"): True,
 }
 
@@ -135,7 +123,7 @@ def validate_io_contract_defined(skill_name: str) -> list[str]:
     errors = []
     contract = parse_io_contract(skill_name)
     if not contract.get("input") and not contract.get("output"):
-        errors.append(f"  [WARN] {skill_name}: io_contract が未定義")
+        errors.append(f"  [WARN] {skill_name}: meta.yaml に io_contract が未定義")
     elif not contract.get("output"):
         errors.append(f"  [WARN] {skill_name}: io_contract.output が未定義")
     return errors
@@ -163,7 +151,6 @@ def validate_pipeline_compatibility(pipeline_name: str, skills: list[str]) -> li
             )
             continue
 
-        # 必須入力フィールドのうち、上流出力で満たせるものを確認
         required_inputs = [f for f in down_contract["input"] if f.get("required") == "true"]
         available_formats = {o["format"] for o in up_contract["output"] if "format" in o}
 
@@ -245,12 +232,11 @@ def run_all_tests(pipeline_filter: str | None = None, verbose: bool = False) -> 
 
     print("=== スキル間パイプライン契約テスト ===\n")
 
-    # 1. io_contract 定義チェック（パイプラインに関わるスキル）
     pipeline_skills: set[str] = set()
     for skills in PIPELINES.values():
         pipeline_skills.update(skills)
 
-    print("[ io_contract 定義チェック ]")
+    print("[ io_contract 定義チェック (meta.yaml) ]")
     for skill in sorted(pipeline_skills):
         suite.run_test(
             f"{skill}: io_contract 定義",
@@ -263,7 +249,6 @@ def run_all_tests(pipeline_filter: str | None = None, verbose: bool = False) -> 
             skill,
         )
 
-    # 2. パイプライン互換性チェック
     print("\n[ パイプライン互換性チェック ]")
     for pipeline_name, skills in PIPELINES.items():
         if pipeline_filter and pipeline_filter not in pipeline_name:

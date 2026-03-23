@@ -9,21 +9,6 @@ metadata:
     - investigation
     - analysis
     - multi-source
-  io_contract:
-    input:
-      - name: research_topic
-        format: free-text
-        description: "調査するテーマ・問い・仮説"
-        required: true
-      - name: scope_constraints
-        format: free-text
-        description: "調査範囲の制約（期間・地域・技術スタック等）"
-        required: false
-    output:
-      - name: research_report
-        format: markdown
-        schema: "エグゼクティブサマリ・詳細分析・引用文献リストを含むMarkdown"
-        required: true
 ---
 
 # Deep Research
