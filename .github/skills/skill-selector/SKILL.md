@@ -1,6 +1,6 @@
 ---
 name: skill-selector
-description: 最適なスキルの組み合わせを選択・推薦するメタスキル。「どのスキルを使えばいい？」「スキルを選んで」「スキルの組み合わせを提案して」などのリクエストに加え、複数スキルにまたがる複合タスクと判断した場合も自律的に発動する。Windows/Copilot・macOS/Claude Code 両環境で動作する。
+description: 最適なスキルの組み合わせを選択・推薦するメタスキル。「どのスキルを使えばいい？」「スキルを選んで」「スキルの組み合わせを提案して」などのリクエストに加え、複数スキルにまたがる複合タスクと判断した場合も自律的に発動する。skill-mentor・scrum-master からサブエージェントとして呼ばれるスキル選定の唯一の担当。Windows/Copilot・macOS/Claude Code 両環境で動作する。
 metadata:
   version: 1.1.0
   tier: stable
