@@ -1,6 +1,6 @@
 ---
 name: codebase-to-skill
-description: 既存のプログラムやコードベースを分析し、アーキテクチャ・コーディング規約・開発ワークフローをSKILL.mdとしてマークダウン化するスキル。「このプロジェクトのアーキテクチャをスキル化して」「コードの規約をスキルにまとめて」「このリポジトリをスキルにして」「コードベースを分析してスキルを作って」などのリクエストで使用する。ゼロから手動作成は skill-creator、チャット履歴からの自動生成は generating-skills-from-copilot-logs を使う。
+description: skill-creator のモードB（コードベース変換）のワークフロー実装。skill-creator から呼び出される。直接起動せず skill-creator を使うこと。
 metadata:
   version: 1.0.0
   tier: experimental
