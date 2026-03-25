@@ -1,0 +1,7 @@
+{
+  "id": "copilot-suggest-git",
+  "name": "Copilot: suggest (git)",
+  "description": "Git コマンドを提案する",
+  "tool": "gh-copilot-suggest-git",
+  "extraArgs": []
+}
