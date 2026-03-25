@@ -69,12 +69,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const config = buildCommand(agent, prompt);
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const config = buildCommand(agent, prompt, workspacePath);
 
     this._currentProcess = runCommand(
       config,
-      workspaceFolder,
       (data) => this._view?.webview.postMessage({ type: 'data', text: data }),
       (data) => this._view?.webview.postMessage({ type: 'error', text: data }),
       (code) => {

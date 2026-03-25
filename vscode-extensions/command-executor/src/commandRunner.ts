@@ -2,20 +2,33 @@ import * as cp from 'child_process';
 import * as os from 'os';
 import { AgentConfig } from './agentConfig';
 import { loadInstructionsFile } from './agentLoader';
+import { toWslPath } from './pathUtils';
 
 export interface CommandConfig {
   cmd: string;
   args: string[];
   label: string;
+  /**
+   * spawn に渡す cwd（OS ネイティブパス）。
+   * kiro-cli on Windows の場合は wsl.exe を起動する Windows 側の cwd。
+   * WSL 内部の cwd は args の --cd で別途指定される。
+   */
+  cwd: string | undefined;
 }
 
 /**
  * エージェント設定とプロンプトから実行するコマンドを組み立てる。
  * agent-cli-proxy SKILL.md の呼び出し方法に従う。
  *
- * instructions が指定されている場合はプロンプトの先頭に付加する。
+ * @param agent        エージェント設定
+ * @param userPrompt   ユーザー入力プロンプト
+ * @param workspacePath VS Code の workspace uri.fsPath（未設定の場合は undefined）
  */
-export function buildCommand(agent: AgentConfig, userPrompt: string): CommandConfig {
+export function buildCommand(
+  agent: AgentConfig,
+  userPrompt: string,
+  workspacePath: string | undefined
+): CommandConfig {
   const isWindows = os.platform() === 'win32';
 
   // システムプロンプト（instructions / instructionsFile）を解決
@@ -33,41 +46,91 @@ export function buildCommand(agent: AgentConfig, userPrompt: string): CommandCon
 
   switch (agent.tool) {
     case 'claude':
-      // 非インタラクティブモード: claude -p "<prompt>"
-      return { cmd: 'claude', args: ['-p', prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'claude',
+        args: ['-p', prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
 
     case 'gh-copilot-suggest':
-      // シェルコマンドを提案: gh copilot suggest -t shell "<prompt>"
-      return { cmd: 'gh', args: ['copilot', 'suggest', '-t', 'shell', prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'gh',
+        args: ['copilot', 'suggest', '-t', 'shell', prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
 
     case 'gh-copilot-suggest-git':
-      return { cmd: 'gh', args: ['copilot', 'suggest', '-t', 'git', prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'gh',
+        args: ['copilot', 'suggest', '-t', 'git', prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
 
     case 'gh-copilot-suggest-gh':
-      return { cmd: 'gh', args: ['copilot', 'suggest', '-t', 'gh', prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'gh',
+        args: ['copilot', 'suggest', '-t', 'gh', prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
 
     case 'gh-copilot-explain':
-      // コマンドの説明: gh copilot explain "<prompt>"
-      return { cmd: 'gh', args: ['copilot', 'explain', prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'gh',
+        args: ['copilot', 'explain', prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
 
     case 'codex':
-      // コード生成: codex "<prompt>"
-      return { cmd: 'codex', args: [prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'codex',
+        args: [prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
 
     case 'q':
-      // 非インタラクティブチャット: q chat -p "<prompt>"
-      return { cmd: 'q', args: ['chat', '-p', prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'q',
+        args: ['chat', '-p', prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
 
     case 'kiro-cli':
-      // 非インタラクティブ: kiro-cli chat --no-interactive "<prompt>"
-      // Windows は WSL2 経由
       if (isWindows) {
-        return { cmd: 'wsl', args: ['kiro-cli', 'chat', '--no-interactive', prompt, ...extra], label: agent.name };
+        // Windows から WSL2 経由で実行。
+        // wsl --cd <linuxPath> で WSL 内カレントディレクトリを明示指定する。
+        // spawn の cwd（Windows 側）には元の fsPath を渡す。
+        const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
+        const wslArgs = wslCwd
+          ? ['--cd', wslCwd, 'kiro-cli', 'chat', '--no-interactive', prompt, ...extra]
+          : ['kiro-cli', 'chat', '--no-interactive', prompt, ...extra];
+        return {
+          cmd: 'wsl',
+          args: wslArgs,
+          label: agent.name,
+          cwd: workspacePath,  // wsl.exe の Windows 側 cwd
+        };
       }
-      return { cmd: 'kiro-cli', args: ['chat', '--no-interactive', prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'kiro-cli',
+        args: ['chat', '--no-interactive', prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
 
     default:
-      return { cmd: 'claude', args: ['-p', prompt, ...extra], label: agent.name };
+      return {
+        cmd: 'claude',
+        args: ['-p', prompt, ...extra],
+        label: agent.name,
+        cwd: workspacePath,
+      };
   }
 }
 
@@ -76,13 +139,12 @@ export function buildCommand(agent: AgentConfig, userPrompt: string): CommandCon
  */
 export function runCommand(
   config: CommandConfig,
-  cwd: string | undefined,
   onData: (chunk: string) => void,
   onError: (chunk: string) => void,
   onClose: (code: number | null) => void
 ): cp.ChildProcess {
   const proc = cp.spawn(config.cmd, config.args, {
-    cwd,
+    cwd: config.cwd,
     env: { ...process.env },
     shell: false,
   });
