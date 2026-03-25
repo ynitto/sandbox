@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
+import { AgentConfig } from './agentConfig';
 import { buildCommand, runCommand } from './commandRunner';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -7,8 +8,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _view?: vscode.WebviewView;
   private _currentProcess?: cp.ChildProcess;
+  private _agents: AgentConfig[];
 
-  constructor(private readonly _context: vscode.ExtensionContext) {}
+  constructor(
+    private readonly _context: vscode.ExtensionContext,
+    agents: AgentConfig[]
+  ) {
+    this._agents = agents;
+  }
+
+  /** エージェント一覧を更新して WebView を再描画する */
+  updateAgents(agents: AgentConfig[]): void {
+    this._agents = agents;
+    if (this._view) {
+      this._view.webview.html = this._getHtml(this._view.webview);
+    }
+  }
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -26,7 +41,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage((msg) => {
       switch (msg.type) {
         case 'run':
-          this._runCommand(msg.tool, msg.prompt);
+          this._runCommand(msg.agentId, msg.prompt);
           break;
         case 'kill':
           this._killCurrentProcess();
@@ -40,15 +55,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private _runCommand(tool: string, prompt: string): void {
+  private _runCommand(agentId: string, prompt: string): void {
     if (!this._view) {
       return;
     }
 
     this._killCurrentProcess();
 
+    const agent = this._agents.find((a) => a.id === agentId);
+    if (!agent) {
+      this._view.webview.postMessage({ type: 'error', text: `エージェント "${agentId}" が見つかりません\n` });
+      this._view.webview.postMessage({ type: 'done', code: 1 });
+      return;
+    }
+
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const config = buildCommand(tool, prompt);
+    const config = buildCommand(agent, prompt);
 
     this._currentProcess = runCommand(
       config,
@@ -71,6 +93,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
+    // エージェント一覧を WebView に埋め込む
+    const agentsJson = JSON.stringify(
+      this._agents.map((a) => ({ id: a.id, name: a.name, description: a.description ?? '' }))
+    );
+
     return /* html */ `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -107,7 +134,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       white-space: nowrap;
     }
 
-    #tool-select {
+    #agent-select {
       flex: 1;
       background: var(--vscode-dropdown-background);
       color: var(--vscode-dropdown-foreground);
@@ -134,6 +161,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     #stop-btn { display: none; }
     #stop-btn.visible { display: block; }
+
+    /* エージェント説明 */
+    #agent-description {
+      padding: 4px 8px;
+      font-size: 0.8em;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      min-height: 22px;
+      flex-shrink: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
     /* メッセージ一覧 */
     #messages {
@@ -254,20 +294,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="toolbar">
-    <label for="tool-select">Tool:</label>
-    <select id="tool-select">
-      <option value="claude">Claude Code</option>
-      <option value="gh-copilot-suggest">Copilot: suggest (shell)</option>
-      <option value="gh-copilot-suggest-git">Copilot: suggest (git)</option>
-      <option value="gh-copilot-suggest-gh">Copilot: suggest (gh)</option>
-      <option value="gh-copilot-explain">Copilot: explain</option>
-      <option value="codex">Codex</option>
-      <option value="q">Amazon Q</option>
-      <option value="kiro-cli">Kiro</option>
-    </select>
+    <label for="agent-select">Agent:</label>
+    <select id="agent-select"></select>
     <button id="stop-btn" title="実行中のコマンドを停止">Stop</button>
     <button id="clear-btn" title="メッセージをクリア">Clear</button>
   </div>
+
+  <div id="agent-description"></div>
 
   <div id="messages"></div>
 
@@ -287,11 +320,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sendBtn = document.getElementById('send-btn');
     const stopBtn = document.getElementById('stop-btn');
     const clearBtn = document.getElementById('clear-btn');
-    const toolSelect = document.getElementById('tool-select');
+    const agentSelect = document.getElementById('agent-select');
+    const agentDescription = document.getElementById('agent-description');
+
+    // エージェント一覧（拡張機能側から埋め込まれる）
+    const AGENTS = ${agentsJson};
 
     let currentAssistantEl = null;
     let currentOutputEl = null;
     let running = false;
+
+    // ドロップダウンにエージェントを追加
+    AGENTS.forEach(function(agent) {
+      const opt = document.createElement('option');
+      opt.value = agent.id;
+      opt.textContent = agent.name;
+      opt.title = agent.description;
+      agentSelect.appendChild(opt);
+    });
+
+    function updateDescription() {
+      const agent = AGENTS.find(function(a) { return a.id === agentSelect.value; });
+      agentDescription.textContent = agent ? agent.description : '';
+    }
+
+    agentSelect.addEventListener('change', updateDescription);
+    updateDescription();
 
     function setRunning(val) {
       running = val;
@@ -302,9 +356,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     function addMessage(type, html) {
       const div = document.createElement('div');
       div.className = 'message ' + type;
-      if (html) {
-        div.innerHTML = html;
-      }
+      if (html) { div.innerHTML = html; }
       messagesEl.appendChild(div);
       scrollToBottom();
       return div;
@@ -325,16 +377,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const prompt = promptInput.value.trim();
       if (!prompt || running) { return; }
 
-      const tool = toolSelect.value;
-      const toolLabel = toolSelect.options[toolSelect.selectedIndex].text;
+      const agentId = agentSelect.value;
+      const agentName = agentSelect.options[agentSelect.selectedIndex].text;
 
-      // ユーザーメッセージ
-      addMessage('user', '<strong>' + escapeHtml(toolLabel) + '</strong><br>' + escapeHtml(prompt));
-
+      addMessage('user', '<strong>' + escapeHtml(agentName) + '</strong><br>' + escapeHtml(prompt));
       promptInput.value = '';
       setRunning(true);
 
-      // アシスタントメッセージ（出力先）
       currentAssistantEl = document.createElement('div');
       currentAssistantEl.className = 'message assistant';
 
@@ -349,19 +398,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       messagesEl.appendChild(currentAssistantEl);
       scrollToBottom();
 
-      vscode.postMessage({ type: 'run', tool, prompt });
+      vscode.postMessage({ type: 'run', agentId: agentId, prompt: prompt });
     }
 
     sendBtn.addEventListener('click', send);
 
-    promptInput.addEventListener('keydown', (e) => {
+    promptInput.addEventListener('keydown', function(e) {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         send();
       }
     });
 
-    stopBtn.addEventListener('click', () => {
+    stopBtn.addEventListener('click', function() {
       vscode.postMessage({ type: 'kill' });
       setRunning(false);
       if (currentAssistantEl) {
@@ -376,17 +425,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       currentOutputEl = null;
     });
 
-    clearBtn.addEventListener('click', () => {
+    clearBtn.addEventListener('click', function() {
       messagesEl.innerHTML = '';
     });
 
-    window.addEventListener('message', (event) => {
+    window.addEventListener('message', function(event) {
       const msg = event.data;
 
       switch (msg.type) {
         case 'data':
           if (currentAssistantEl) {
-            // 初回データ受信時にインジケーターを除去
             const indicator = currentAssistantEl.querySelector('.running-indicator');
             if (indicator) { indicator.remove(); }
             currentOutputEl.textContent += msg.text;

@@ -15,6 +15,11 @@
         "command": "commandExecutor.openChat",
         "title": "Open AI CLI Chat",
         "category": "AI CLI"
+      },
+      {
+        "command": "commandExecutor.reloadAgents",
+        "title": "Reload Agents",
+        "category": "AI CLI"
       }
     ],
     "views": {

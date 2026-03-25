@@ -1,0 +1,8 @@
+{
+  "id": "claude-default",
+  "name": "Claude (デフォルト)",
+  "description": "汎用的な Claude Code エージェント",
+  "tool": "claude",
+  "instructionsFile": "instructions/default.md",
+  "extraArgs": []
+}

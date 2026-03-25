@@ -1,0 +1,7 @@
+{
+  "id": "amazon-q-default",
+  "name": "Amazon Q",
+  "description": "Amazon Q Developer CLI（AWS リソースや AWS 固有の質問に強い）",
+  "tool": "q",
+  "extraArgs": []
+}
