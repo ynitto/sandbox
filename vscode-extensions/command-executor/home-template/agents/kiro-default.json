@@ -1,7 +1,0 @@
-{
-  "id": "kiro-default",
-  "name": "Kiro",
-  "description": "Kiro CLI の非インタラクティブモードでタスクを実行する",
-  "tool": "kiro-cli",
-  "extraArgs": []
-}

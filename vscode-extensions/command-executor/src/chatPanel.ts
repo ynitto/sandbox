@@ -36,8 +36,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
     };
 
-    webviewView.webview.html = this._getHtml(webviewView.webview);
-
     webviewView.webview.onDidReceiveMessage((msg) => {
       switch (msg.type) {
         case 'run':
@@ -46,6 +44,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'kill':
           this._killCurrentProcess();
           break;
+      }
+    });
+
+    webviewView.webview.html = this._getHtml(webviewView.webview);
+
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        webviewView.webview.html = this._getHtml(webviewView.webview);
       }
     });
 
@@ -92,10 +98,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
-    // エージェント一覧を WebView に埋め込む
-    const agentsJson = JSON.stringify(
-      this._agents.map((a) => ({ id: a.id, name: a.name, description: a.description ?? '' }))
-    );
+    const agentOptionsHtml = this._agents
+      .map((agent) => {
+        const id = escapeHtmlAttribute(agent.id);
+        const name = escapeHtmlText(agent.name);
+        const description = escapeHtmlAttribute(agent.description ?? '');
+        return `<option value="${id}" title="${description}">${name}</option>`;
+      })
+      .join('\n      ');
 
     return /* html */ `<!DOCTYPE html>
 <html lang="ja">
@@ -294,7 +304,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <body>
   <div id="toolbar">
     <label for="agent-select">Agent:</label>
-    <select id="agent-select"></select>
+    <select id="agent-select">
+      ${agentOptionsHtml}
+    </select>
     <button id="stop-btn" title="実行中のコマンドを停止">Stop</button>
     <button id="clear-btn" title="メッセージをクリア">Clear</button>
   </div>
@@ -312,167 +324,122 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 
   <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
+    (function() {
+      const vscode = acquireVsCodeApi();
+      const messagesEl = document.getElementById('messages');
+      const promptInput = document.getElementById('prompt-input');
+      const sendBtn = document.getElementById('send-btn');
+      const stopBtn = document.getElementById('stop-btn');
+      const clearBtn = document.getElementById('clear-btn');
+      const agentSelect = document.getElementById('agent-select');
+      const agentDescription = document.getElementById('agent-description');
 
-    const messagesEl = document.getElementById('messages');
-    const promptInput = document.getElementById('prompt-input');
-    const sendBtn = document.getElementById('send-btn');
-    const stopBtn = document.getElementById('stop-btn');
-    const clearBtn = document.getElementById('clear-btn');
-    const agentSelect = document.getElementById('agent-select');
-    const agentDescription = document.getElementById('agent-description');
-
-    // エージェント一覧（拡張機能側から埋め込まれる）
-    const AGENTS = ${agentsJson};
-
-    let currentAssistantEl = null;
-    let currentOutputEl = null;
-    let running = false;
-
-    // ドロップダウンにエージェントを追加
-    AGENTS.forEach(function(agent) {
-      const opt = document.createElement('option');
-      opt.value = agent.id;
-      opt.textContent = agent.name;
-      opt.title = agent.description;
-      agentSelect.appendChild(opt);
-    });
-
-    function updateDescription() {
-      const agent = AGENTS.find(function(a) { return a.id === agentSelect.value; });
-      agentDescription.textContent = agent ? agent.description : '';
-    }
-
-    agentSelect.addEventListener('change', updateDescription);
-    updateDescription();
-
-    function setRunning(val) {
-      running = val;
-      sendBtn.disabled = val;
-      stopBtn.classList.toggle('visible', val);
-    }
-
-    function addMessage(type, html) {
-      const div = document.createElement('div');
-      div.className = 'message ' + type;
-      if (html) { div.innerHTML = html; }
-      messagesEl.appendChild(div);
-      scrollToBottom();
-      return div;
-    }
-
-    function scrollToBottom() {
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    function escapeHtml(text) {
-      return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-    }
-
-    function send() {
-      const prompt = promptInput.value.trim();
-      if (!prompt || running) { return; }
-
-      const agentId = agentSelect.value;
-      const agentName = agentSelect.options[agentSelect.selectedIndex].text;
-
-      addMessage('user', '<strong>' + escapeHtml(agentName) + '</strong><br>' + escapeHtml(prompt));
-      promptInput.value = '';
-      setRunning(true);
-
-      currentAssistantEl = document.createElement('div');
-      currentAssistantEl.className = 'message assistant';
-
-      const indicator = document.createElement('div');
-      indicator.className = 'running-indicator';
-      indicator.innerHTML = '<div class="spinner"></div><span>実行中...</span>';
-      currentAssistantEl.appendChild(indicator);
-
-      currentOutputEl = document.createElement('span');
-      currentAssistantEl.appendChild(currentOutputEl);
-
-      messagesEl.appendChild(currentAssistantEl);
-      scrollToBottom();
-
-      vscode.postMessage({ type: 'run', agentId: agentId, prompt: prompt });
-    }
-
-    sendBtn.addEventListener('click', send);
-
-    promptInput.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        send();
+      if (!messagesEl || !promptInput || !sendBtn || !stopBtn || !clearBtn || !agentSelect || !agentDescription) {
+        return;
       }
-    });
 
-    stopBtn.addEventListener('click', function() {
-      vscode.postMessage({ type: 'kill' });
-      setRunning(false);
-      if (currentAssistantEl) {
-        const indicator = currentAssistantEl.querySelector('.running-indicator');
-        if (indicator) { indicator.remove(); }
-        const stopped = document.createElement('span');
-        stopped.className = 'stderr';
-        stopped.textContent = '\n[停止しました]';
-        currentAssistantEl.appendChild(stopped);
+      let currentAssistantEl = null;
+      let currentOutputEl = null;
+      let running = false;
+
+      function scrollToBottom() {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
       }
-      currentAssistantEl = null;
-      currentOutputEl = null;
-    });
 
-    clearBtn.addEventListener('click', function() {
-      messagesEl.innerHTML = '';
-    });
+      function setRunning(val) {
+        running = val;
+        sendBtn.disabled = val;
+        stopBtn.classList.toggle('visible', val);
+      }
 
-    window.addEventListener('message', function(event) {
-      const msg = event.data;
+      function updateDescription() {
+        const selected = agentSelect.options[agentSelect.selectedIndex];
+        agentDescription.textContent = selected ? (selected.title || '') : '';
+      }
 
-      switch (msg.type) {
-        case 'data':
-          if (currentAssistantEl) {
-            const indicator = currentAssistantEl.querySelector('.running-indicator');
-            if (indicator) { indicator.remove(); }
-            currentOutputEl.textContent += msg.text;
-            scrollToBottom();
-          }
-          break;
+      updateDescription();
+      agentSelect.addEventListener('change', updateDescription);
 
-        case 'error':
-          if (currentAssistantEl) {
-            const indicator = currentAssistantEl.querySelector('.running-indicator');
-            if (indicator) { indicator.remove(); }
-            const errSpan = document.createElement('span');
-            errSpan.className = 'stderr';
-            errSpan.textContent = msg.text;
-            currentAssistantEl.appendChild(errSpan);
-            scrollToBottom();
-          }
-          break;
+      sendBtn.addEventListener('click', function() {
+        const prompt = promptInput.value.trim();
+        const agentId = agentSelect.value;
+        if (!prompt || !agentId || running) { return; }
 
-        case 'done':
-          setRunning(false);
-          if (currentAssistantEl) {
-            const indicator = currentAssistantEl.querySelector('.running-indicator');
-            if (indicator) { indicator.remove(); }
-            if (msg.code !== 0 && msg.code !== null) {
-              const exitSpan = document.createElement('span');
-              exitSpan.className = 'stderr';
-              exitSpan.textContent = '\n[終了コード: ' + msg.code + ']';
-              currentAssistantEl.appendChild(exitSpan);
+        const div = document.createElement('div');
+        div.className = 'message user';
+        div.textContent = prompt;
+        messagesEl.appendChild(div);
+        scrollToBottom();
+
+        setRunning(true);
+        currentAssistantEl = document.createElement('div');
+        currentAssistantEl.className = 'message assistant';
+
+        const indicator = document.createElement('div');
+        indicator.className = 'running-indicator';
+        indicator.innerHTML = '<div class="spinner"></div><span>実行中...</span>';
+        currentAssistantEl.appendChild(indicator);
+
+        currentOutputEl = document.createElement('span');
+        currentAssistantEl.appendChild(currentOutputEl);
+        messagesEl.appendChild(currentAssistantEl);
+        scrollToBottom();
+
+        promptInput.value = '';
+        vscode.postMessage({ type: 'run', agentId: agentId, prompt: prompt });
+      });
+
+      promptInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          sendBtn.click();
+        }
+      });
+
+      stopBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'kill' });
+        setRunning(false);
+        currentAssistantEl = null;
+        currentOutputEl = null;
+      });
+
+      clearBtn.addEventListener('click', function() {
+        messagesEl.innerHTML = '';
+      });
+
+      window.addEventListener('message', function(event) {
+        const msg = event.data || {};
+
+        switch (msg.type) {
+          case 'data':
+            if (currentAssistantEl && currentOutputEl) {
+              const indicator = currentAssistantEl.querySelector('.running-indicator');
+              if (indicator) { indicator.remove(); }
+              currentOutputEl.textContent += msg.text;
+              scrollToBottom();
             }
-            if (!currentOutputEl.textContent && !currentAssistantEl.querySelector('.stderr')) {
-              currentAssistantEl.textContent = '(出力なし)';
+            break;
+
+          case 'error':
+            if (currentAssistantEl) {
+              const indicator = currentAssistantEl.querySelector('.running-indicator');
+              if (indicator) { indicator.remove(); }
+              const err = document.createElement('div');
+              err.className = 'stderr';
+              err.textContent = msg.text;
+              currentAssistantEl.appendChild(err);
+              scrollToBottom();
             }
-          }
-          currentAssistantEl = null;
-          currentOutputEl = null;
-          break;
-      }
-    });
+            break;
+
+          case 'done':
+            setRunning(false);
+            currentAssistantEl = null;
+            currentOutputEl = null;
+            break;
+        }
+      });
+    })();
   </script>
 </body>
 </html>`;
@@ -486,4 +453,17 @@ function getNonce(): string {
     nonce += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return nonce;
+}
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtmlText(value)
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }

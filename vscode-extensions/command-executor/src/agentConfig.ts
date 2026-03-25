@@ -80,7 +80,7 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
   {
     id: 'kiro',
     name: 'Kiro',
-    description: 'Kiro CLI (非インタラクティブ)',
+    description: 'Kiro CLI',
     tool: 'kiro-cli',
   },
 ];

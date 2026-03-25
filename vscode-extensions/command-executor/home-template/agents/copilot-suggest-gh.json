@@ -1,7 +1,0 @@
-{
-  "id": "copilot-suggest-gh",
-  "name": "Copilot: suggest (gh)",
-  "description": "GitHub CLI (gh) コマンドを提案する",
-  "tool": "gh-copilot-suggest-gh",
-  "extraArgs": []
-}

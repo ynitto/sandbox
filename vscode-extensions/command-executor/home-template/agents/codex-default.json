@@ -1,7 +1,0 @@
-{
-  "id": "codex-default",
-  "name": "Codex",
-  "description": "OpenAI Codex CLI でコードを生成・改善する",
-  "tool": "codex",
-  "extraArgs": []
-}

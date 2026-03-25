@@ -1,7 +1,0 @@
-{
-  "id": "copilot-explain",
-  "name": "Copilot: explain",
-  "description": "コマンドや記法を自然言語で説明する",
-  "tool": "gh-copilot-explain",
-  "extraArgs": []
-}

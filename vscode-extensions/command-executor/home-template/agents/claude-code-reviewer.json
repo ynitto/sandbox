@@ -1,8 +1,0 @@
-{
-  "id": "claude-code-reviewer",
-  "name": "Claude: コードレビュー",
-  "description": "コードの品質・バグ・セキュリティを重点的にレビューする",
-  "tool": "claude",
-  "instructionsFile": "instructions/code-review.md",
-  "extraArgs": []
-}

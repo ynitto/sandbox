@@ -149,12 +149,15 @@ export function runCommand(
     shell: false,
   });
 
+  // eslint-disable-next-line no-control-regex
+  const stripAnsi = (s: string) => s.replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]/g, '');
+
   proc.stdout.on('data', (data: Buffer) => {
-    onData(data.toString());
+    onData(stripAnsi(data.toString()));
   });
 
   proc.stderr.on('data', (data: Buffer) => {
-    onError(data.toString());
+    onError(stripAnsi(data.toString()));
   });
 
   proc.on('close', (code) => {

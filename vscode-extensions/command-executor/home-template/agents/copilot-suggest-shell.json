@@ -1,7 +1,0 @@
-{
-  "id": "copilot-suggest-shell",
-  "name": "Copilot: suggest (shell)",
-  "description": "シェルコマンド (bash/zsh/PowerShell) を提案する",
-  "tool": "gh-copilot-suggest",
-  "extraArgs": []
-}

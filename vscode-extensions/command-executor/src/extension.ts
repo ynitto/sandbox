@@ -1,9 +1,14 @@
 import * as vscode from 'vscode';
 import { ChatViewProvider } from './chatPanel';
 import { loadAgents, CONFIG_DIR } from './agentLoader';
+import { filterAvailableAgents } from './cliChecker';
+import { syncCopilotConfig } from './homeSetup';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const agents = loadAgents();
+  const agents = filterAvailableAgents(loadAgents());
+  const availableTools = new Set(agents.map((a) => a.tool));
+  syncCopilotConfig(availableTools);
+
   const provider = new ChatViewProvider(context, agents);
 
   context.subscriptions.push(
@@ -20,7 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // エージェントを再読み込みするコマンド
   context.subscriptions.push(
     vscode.commands.registerCommand('commandExecutor.reloadAgents', () => {
-      const reloaded = loadAgents();
+      const reloaded = filterAvailableAgents(loadAgents());
       provider.updateAgents(reloaded);
       vscode.window.showInformationMessage(
         `AI CLI Executor: エージェントを再読み込みしました (${reloaded.length} 件)`
@@ -33,7 +38,7 @@ export function activate(context: vscode.ExtensionContext): void {
     new vscode.RelativePattern(vscode.Uri.file(CONFIG_DIR), 'agents/*.json')
   );
 
-  const reload = () => provider.updateAgents(loadAgents());
+  const reload = () => provider.updateAgents(filterAvailableAgents(loadAgents()));
   watcher.onDidChange(reload);
   watcher.onDidCreate(reload);
   watcher.onDidDelete(reload);
