@@ -1,0 +1,40 @@
+{
+  "name": "vscode-command-executor",
+  "displayName": "AI CLI Command Executor",
+  "description": "Execute AI CLI commands (Claude Code, GitHub Copilot, Codex, Amazon Q, Kiro) from VS Code chat UI",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "commandExecutor.openChat",
+        "title": "Open AI CLI Chat",
+        "category": "AI CLI"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "commandExecutor.chatView",
+          "name": "AI CLI Chat"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.0.0"
+  }
+}
