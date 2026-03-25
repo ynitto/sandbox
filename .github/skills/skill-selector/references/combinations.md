@@ -80,13 +80,13 @@ systematic-debugging
 ## スキル管理
 
 ```
-skill-creator / codebase-to-skill
+skill-creator（モードA〜D）
   → git-skill-manager    [push/pull]
   → skill-evaluator      ※試用後の評価
 ```
 
-**用途**: 新しいスキルの作成・管理・上申  
-**特徴**: codebase-to-skill は既存コードから、skill-creator はゼロから作る
+**用途**: 新しいスキルの作成・管理・上申
+**特徴**: skill-creator がモードに応じてゼロから作成（A）、コードベースから生成（B）、履歴から生成（C）、外部取得（D）を切り替える
 
 ---
 
@@ -143,7 +143,7 @@ security-reviewer
 | 「設計を確認したい」 | architecture-reviewer / design-reviewer | security-reviewer |
 | 「テストを書きたい」 | tdd-executing | 言語固有テストスキル |
 | 「ドキュメントを書きたい」 | technical-writer / doc-coauthoring | — |
-| 「スキルを作りたい」 | skill-creator / codebase-to-skill | git-skill-manager |
+| 「スキルを作りたい」 | skill-creator | git-skill-manager |
 | 「調査したい」 | deep-research | brainstorming / doc-coauthoring |
 
 **注意**: この表は既知パターンの例示であり網羅的ではない。`description` を読んで最適なスキルを動的に判断し、新しいスキルが追加された場合も `discover_skills.py` の出力を正とする。

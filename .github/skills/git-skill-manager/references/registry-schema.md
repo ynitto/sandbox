@@ -61,7 +61,7 @@
       }
     }
   ],
-  "core_skills": ["scrum-master", "git-skill-manager", "skill-creator", "requirements-definer", "skill-recruiter", "skill-evaluator", "generating-skills-from-copilot-logs", "sprint-reviewer", "codebase-to-skill"],
+  "core_skills": ["scrum-master", "git-skill-manager", "skill-creator", "requirements-definer", "skill-evaluator", "sprint-reviewer"],
   "remote_index": {
     "team-skills": {
       "updated_at": "2026-02-15T10:00:00Z",
@@ -189,7 +189,7 @@
 
 **core_skills** (文字列リスト):
 - 使用頻度に関わらず常に最優先でロードされるスキル名のリスト
-- scrum-master、git-skill-manager とその依存スキル（skill-creator / requirements-definer / skill-recruiter / skill-evaluator / generating-skills-from-copilot-logs / sprint-reviewer / codebase-to-skill）を登録する
+- scrum-master、git-skill-manager とその依存スキル（skill-creator / requirements-definer / skill-evaluator / sprint-reviewer）を登録する（skill-creator のサブモード実装ファイルは skill-creator に同梱されるため個別登録不要）
 - `discover_skills.py` のソート時にこのリストのスキルを先頭に配置する
 
 **remote_index** (オブジェクト):

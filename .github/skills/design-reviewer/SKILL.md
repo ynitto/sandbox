@@ -15,6 +15,7 @@ metadata:
 
 クラス・モジュール設計を SOLID・結合度・凝集度・依存方向・責任分割の観点でレビューし、LGTM または Request Changes を判定する。
 コード行レベルの実装詳細（→ code-reviewer）とシステムレベルのアーキテクチャ構造（→ architecture-reviewer）には踏み込まない。
+SOLID 原則はクラス・モジュール単位での適用を評価する。モジュール・レイヤー間のアーキテクチャレベルの SOLID 評価は architecture-reviewer が担当する。
 
 ## スコープ
 
