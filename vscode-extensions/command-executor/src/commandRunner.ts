@@ -42,11 +42,12 @@ export function buildCommand(tool: string, prompt: string): CommandConfig {
       return { cmd: 'q', args: ['chat', '-p', prompt], label: 'Amazon Q' };
 
     case 'kiro-cli':
-      // Kiro: Windows は WSL2 経由
+      // 非インタラクティブチャット: kiro-cli chat --no-interactive "<prompt>"
+      // Windows は WSL2 経由
       if (isWindows) {
-        return { cmd: 'wsl', args: ['kiro-cli', 'agent', prompt], label: 'Kiro (via WSL2)' };
+        return { cmd: 'wsl', args: ['kiro-cli', 'chat', '--no-interactive', prompt], label: 'Kiro (via WSL2)' };
       }
-      return { cmd: 'kiro-cli', args: ['agent', prompt], label: 'Kiro' };
+      return { cmd: 'kiro-cli', args: ['chat', '--no-interactive', prompt], label: 'Kiro' };
 
     default:
       return { cmd: 'claude', args: ['-p', prompt], label: 'Claude Code' };
