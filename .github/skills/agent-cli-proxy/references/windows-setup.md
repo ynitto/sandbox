@@ -293,12 +293,11 @@ source ~/.bashrc
 # WSL 経由で kiro-cli を実行（PowerShell から直接呼び出せる）
 wsl kiro-cli --version
 
-# エージェントタスクを実行
-wsl kiro-cli agent "src/ ディレクトリのすべての Python ファイルに型ヒントを追加して"
+# タスクを非インタラクティブで実行
+wsl kiro-cli chat --no-interactive "src/ ディレクトリのすべての Python ファイルに型ヒントを追加して"
 
-# Windows のパスを WSL パスに変換して渡す
-$wslPath = (wsl wslpath ($PWD.Path -replace '\\', '/'))
-wsl kiro-cli agent --cwd $wslPath "JSDoc コメントを追加して"
+# ツール承認を自動化（ファイル操作も自動実行）
+wsl kiro-cli chat --no-interactive --trust-all-tools "JSDoc コメントを追加して"
 ```
 
 PowerShell プロファイルにエイリアスを登録しておくと便利:
@@ -312,14 +311,17 @@ Add-Content $PROFILE "`nfunction kiro-cli { wsl kiro-cli @args }"
 
 # 以降は kiro-cli コマンドとして使用可能
 kiro-cli --version
-kiro-cli agent "型ヒントを追加して"
+kiro-cli chat --no-interactive "型ヒントを追加して"
 ```
 
 ### 認証設定
 
 ```bash
-# WSL2 シェル内で認証
-kiro-cli auth login
+# WSL2 シェル内で認証（ブラウザが開く）
+kiro-cli login
+
+# ブラウザが使えない環境（CI/CD など）はデバイスフロー認証
+kiro-cli login --use-device-flow
 
 # 確認
 kiro-cli --version

@@ -92,7 +92,7 @@ class AgentCLI:
 _CLI_CANDIDATES: list[tuple[str, str, list[str]]] = [
     ("claude",   "claude",    ["-p"]),
     ("codex",    "codex",     ["-q"]),
-    ("kiro",     "kiro-cli",  ["agent"]),
+    ("kiro",     "kiro-cli",  ["chat", "--no-interactive", "--trust-all-tools"]),
     ("amazonq",  "q",         ["chat"]),
 ]
 
