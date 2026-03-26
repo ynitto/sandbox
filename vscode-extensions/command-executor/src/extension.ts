@@ -10,7 +10,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const availableTools = new Set(agents.map((a) => a.tool));
   syncCopilotConfig(availableTools);
 
-  const provider = new ChatViewProvider(context, agents);
+  const syncCallback = () => {
+    syncCopilotConfig(availableTools);
+    vscode.window.showInformationMessage('AI CLI Executor: ~/.copilot/ の同期が完了しました');
+  };
+  const provider = new ChatViewProvider(context, agents, syncCallback);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, provider)
