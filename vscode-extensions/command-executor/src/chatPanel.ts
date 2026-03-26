@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { AgentConfig } from './agentConfig';
 import { buildCommand, runCommand } from './commandRunner';
 
@@ -48,6 +50,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'sync':
           this._syncConfig();
           break;
+        case 'addFile': {
+          const editor = vscode.window.activeTextEditor;
+          if (editor) {
+            const filePath = vscode.workspace.asRelativePath(editor.document.uri);
+            this._view?.webview.postMessage({ type: 'insertText', text: `#file:${filePath} ` });
+          }
+          break;
+        }
+        case 'addSelection': {
+          const editor = vscode.window.activeTextEditor;
+          if (editor) {
+            const filePath = vscode.workspace.asRelativePath(editor.document.uri);
+            if (!editor.selection.isEmpty) {
+              const start = editor.selection.start.line + 1;
+              const end = editor.selection.end.line + 1;
+              this._view?.webview.postMessage({ type: 'insertText', text: `#file:${filePath}:${start}-${end} ` });
+            } else {
+              this._view?.webview.postMessage({ type: 'insertText', text: `#file:${filePath} ` });
+            }
+          }
+          break;
+        }
       }
     });
 
@@ -80,7 +104,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const config = buildCommand(agent, prompt, workspacePath);
+    const expandedPrompt = expandFileRefs(prompt, workspacePath);
+    const config = buildCommand(agent, expandedPrompt, workspacePath);
 
     this._currentProcess = runCommand(
       config,
@@ -312,6 +337,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     #send-btn:hover { background: var(--vscode-button-hoverBackground); }
     #send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ファイル参照ボタン */
+    #file-ref-bar {
+      display: flex;
+      gap: 4px;
+    }
+
+    #add-file-btn, #add-selection-btn {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      padding: 2px 8px;
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 0.8em;
+      white-space: nowrap;
+    }
+
+    #add-file-btn:hover, #add-selection-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
   </style>
 </head>
 <body>
@@ -330,7 +376,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="messages"></div>
 
   <div id="input-area">
-    <textarea id="prompt-input" placeholder="プロンプトを入力 (Ctrl+Enter で送信)"></textarea>
+    <div id="file-ref-bar">
+      <button id="add-file-btn" title="アクティブなファイルを参照として追加 (#file:path)">+ File</button>
+      <button id="add-selection-btn" title="選択中の行を参照として追加 (#file:path:start-end)">+ Selection</button>
+    </div>
+    <textarea id="prompt-input" placeholder="プロンプトを入力 (Ctrl+Enter で送信)&#10;#file:path や #file:path:10-20 でファイル参照を挿入できます"></textarea>
     <div id="input-footer">
       <span id="hint">Ctrl+Enter で送信</span>
       <button id="send-btn">Send</button>
@@ -348,6 +398,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const agentSelect = document.getElementById('agent-select');
       const agentDescription = document.getElementById('agent-description');
       const syncBtn = document.getElementById('sync-btn');
+      const addFileBtn = document.getElementById('add-file-btn');
+      const addSelectionBtn = document.getElementById('add-selection-btn');
 
       if (!messagesEl || !promptInput || !sendBtn || !stopBtn || !clearBtn || !agentSelect || !agentDescription || !syncBtn) {
         return;
@@ -428,6 +480,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ type: 'sync' });
       });
 
+      if (addFileBtn) {
+        addFileBtn.addEventListener('click', function() {
+          vscode.postMessage({ type: 'addFile' });
+        });
+      }
+
+      if (addSelectionBtn) {
+        addSelectionBtn.addEventListener('click', function() {
+          vscode.postMessage({ type: 'addSelection' });
+        });
+      }
+
       window.addEventListener('message', function(event) {
         const msg = event.data || {};
 
@@ -463,6 +527,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             syncBtn.disabled = false;
             syncBtn.textContent = 'Sync';
             break;
+
+          case 'insertText': {
+            const pos = promptInput.selectionStart;
+            const before = promptInput.value.slice(0, pos);
+            const after = promptInput.value.slice(promptInput.selectionEnd);
+            promptInput.value = before + msg.text + after;
+            const newPos = pos + msg.text.length;
+            promptInput.selectionStart = promptInput.selectionEnd = newPos;
+            promptInput.focus();
+            break;
+          }
         }
       });
     })();
@@ -492,4 +567,40 @@ function escapeHtmlAttribute(value: string): string {
   return escapeHtmlText(value)
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * プロンプト内の #file:path[:start-end] 参照をファイル内容に展開する。
+ * 読み込みに失敗した参照はそのまま残す。
+ */
+function expandFileRefs(prompt: string, workspacePath: string | undefined): string {
+  return prompt.replace(/#file:([^\s]+)/g, (_match, ref) => {
+    const lineMatch = ref.match(/^(.+):(\d+)(?:-(\d+))?$/);
+    let filePath: string;
+    let startLine: number | undefined;
+    let endLine: number | undefined;
+
+    if (lineMatch) {
+      filePath = lineMatch[1] as string;
+      startLine = parseInt(lineMatch[2], 10);
+      endLine = lineMatch[3] ? parseInt(lineMatch[3], 10) : startLine;
+    } else {
+      filePath = ref as string;
+    }
+
+    const fullPath = workspacePath ? path.resolve(workspacePath, filePath) : filePath;
+
+    let content: string;
+    try {
+      content = fs.readFileSync(fullPath, 'utf8');
+    } catch {
+      return _match;
+    }
+
+    if (startLine !== undefined && endLine !== undefined) {
+      const lines = content.split('\n').slice(startLine - 1, endLine);
+      return `\`\`\`\n// ${filePath} (lines ${startLine}-${endLine})\n${lines.join('\n')}\n\`\`\``;
+    }
+    return `\`\`\`\n// ${filePath}\n${content}\n\`\`\``;
+  });
 }
