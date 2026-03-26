@@ -12,7 +12,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
-    agents: AgentConfig[]
+    agents: AgentConfig[],
+    private readonly _onSync?: () => void
   ) {
     this._agents = agents;
   }
@@ -43,6 +44,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'kill':
           this._killCurrentProcess();
+          break;
+        case 'sync':
+          this._syncConfig();
           break;
       }
     });
@@ -93,6 +97,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this._currentProcess) {
       this._currentProcess.kill();
       this._currentProcess = undefined;
+    }
+  }
+
+  private _syncConfig(): void {
+    if (this._onSync) {
+      this._onSync();
+      this._view?.webview.postMessage({ type: 'syncDone' });
     }
   }
 
@@ -153,7 +164,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       font-size: 0.9em;
     }
 
-    #clear-btn, #stop-btn {
+    #clear-btn, #stop-btn, #sync-btn {
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
       border: none;
@@ -164,9 +175,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       white-space: nowrap;
     }
 
-    #clear-btn:hover, #stop-btn:hover {
+    #clear-btn:hover, #stop-btn:hover, #sync-btn:hover {
       background: var(--vscode-button-secondaryHoverBackground);
     }
+
+    #sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
     #stop-btn { display: none; }
     #stop-btn.visible { display: block; }
@@ -309,6 +322,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </select>
     <button id="stop-btn" title="実行中のコマンドを停止">Stop</button>
     <button id="clear-btn" title="メッセージをクリア">Clear</button>
+    <button id="sync-btn" title="~/.copilot/ を各 CLI ホームへ同期">Sync</button>
   </div>
 
   <div id="agent-description"></div>
@@ -333,8 +347,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const clearBtn = document.getElementById('clear-btn');
       const agentSelect = document.getElementById('agent-select');
       const agentDescription = document.getElementById('agent-description');
+      const syncBtn = document.getElementById('sync-btn');
 
-      if (!messagesEl || !promptInput || !sendBtn || !stopBtn || !clearBtn || !agentSelect || !agentDescription) {
+      if (!messagesEl || !promptInput || !sendBtn || !stopBtn || !clearBtn || !agentSelect || !agentDescription || !syncBtn) {
         return;
       }
 
@@ -407,6 +422,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         messagesEl.innerHTML = '';
       });
 
+      syncBtn.addEventListener('click', function() {
+        syncBtn.disabled = true;
+        syncBtn.textContent = 'Syncing...';
+        vscode.postMessage({ type: 'sync' });
+      });
+
       window.addEventListener('message', function(event) {
         const msg = event.data || {};
 
@@ -436,6 +457,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             setRunning(false);
             currentAssistantEl = null;
             currentOutputEl = null;
+            break;
+
+          case 'syncDone':
+            syncBtn.disabled = false;
+            syncBtn.textContent = 'Sync';
             break;
         }
       });

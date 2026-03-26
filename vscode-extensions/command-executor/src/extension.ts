@@ -3,13 +3,18 @@ import { ChatViewProvider } from './chatPanel';
 import { loadAgents, CONFIG_DIR } from './agentLoader';
 import { filterAvailableAgents } from './cliChecker';
 import { syncCopilotConfig } from './homeSetup';
+import { PeriodicRunner } from './periodicRunner';
 
 export function activate(context: vscode.ExtensionContext): void {
   const agents = filterAvailableAgents(loadAgents());
   const availableTools = new Set(agents.map((a) => a.tool));
   syncCopilotConfig(availableTools);
 
-  const provider = new ChatViewProvider(context, agents);
+  const syncCallback = () => {
+    syncCopilotConfig(availableTools);
+    vscode.window.showInformationMessage('AI CLI Executor: ~/.copilot/ の同期が完了しました');
+  };
+  const provider = new ChatViewProvider(context, agents, syncCallback);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, provider)
@@ -27,6 +32,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('commandExecutor.reloadAgents', () => {
       const reloaded = filterAvailableAgents(loadAgents());
       provider.updateAgents(reloaded);
+      periodicRunner.updateAgents(reloaded);
       vscode.window.showInformationMessage(
         `AI CLI Executor: エージェントを再読み込みしました (${reloaded.length} 件)`
       );
@@ -38,11 +44,30 @@ export function activate(context: vscode.ExtensionContext): void {
     new vscode.RelativePattern(vscode.Uri.file(CONFIG_DIR), 'agents/*.json')
   );
 
-  const reload = () => provider.updateAgents(filterAvailableAgents(loadAgents()));
+  const reload = () => {
+    const reloaded = filterAvailableAgents(loadAgents());
+    provider.updateAgents(reloaded);
+    periodicRunner.updateAgents(reloaded);
+  };
   watcher.onDidChange(reload);
   watcher.onDidCreate(reload);
   watcher.onDidDelete(reload);
   context.subscriptions.push(watcher);
+
+  // 定期プロンプト
+  const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const periodicRunner = new PeriodicRunner(agents, workspacePath);
+  periodicRunner.start();
+  context.subscriptions.push({ dispose: () => periodicRunner.dispose() });
+
+  // 設定変更時に定期プロンプトを再起動
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('commandExecutor.periodicPrompts')) {
+        periodicRunner.start();
+      }
+    })
+  );
 }
 
 export function deactivate(): void {}
