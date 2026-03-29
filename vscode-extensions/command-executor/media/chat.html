@@ -280,6 +280,8 @@
       let toolModelsMap = chatData.toolModels || {};
       // フェッチ済みツールを追跡してセッション内で重複フェッチを防ぐ
       const modelsFetched = new Set();
+      // モデル選択を復元する（globalState 由来の chatData を優先、次に WebView 永続化状態）
+      let desiredModel = chatData.selectedModel || persisted.selectedModel || '';
 
       const messagesEl = document.getElementById('messages');
       const promptInput = document.getElementById('prompt-input');
@@ -307,7 +309,6 @@
       function updateModelSelect(tool) {
         if (!modelSelect) { return; }
         const models = toolModelsMap[tool] || [];
-        const prev = modelSelect.value;
         modelSelect.innerHTML = '';
         const defaultOpt = document.createElement('option');
         defaultOpt.value = '';
@@ -319,7 +320,10 @@
           opt.textContent = id;
           modelSelect.appendChild(opt);
         }
-        if (prev && models.includes(prev)) { modelSelect.value = prev; }
+        // 保存済みのモデル選択を復元する
+        if (desiredModel && models.includes(desiredModel)) {
+          modelSelect.value = desiredModel;
+        }
       }
 
       /**
@@ -345,6 +349,16 @@
 
       updateModelRow();
       agentSelect.addEventListener('change', updateModelRow);
+
+      if (modelSelect) {
+        modelSelect.addEventListener('change', function() {
+          desiredModel = modelSelect.value;
+          // WebView 永続化状態にも保存（HTML 再生成なしの再表示時に備える）
+          const prev = vscode.getState() || {};
+          vscode.setState(Object.assign({}, prev, { selectedModel: desiredModel }));
+          vscode.postMessage({ type: 'modelChanged', model: desiredModel });
+        });
+      }
 
       function notifyAgentChanged() {
         const prev = vscode.getState() || {};

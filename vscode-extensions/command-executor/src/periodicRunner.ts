@@ -12,6 +12,7 @@ export interface PeriodicPromptConfig {
 export class PeriodicRunner {
   private _timers: NodeJS.Timeout[] = [];
   private _runningPrompts = new Set<string>();
+  private _runningPromptTimers = new Map<string, NodeJS.Timeout>();
   private _outputChannel: vscode.OutputChannel;
 
   constructor(
@@ -61,6 +62,12 @@ export class PeriodicRunner {
       clearInterval(timer);
     }
     this._timers = [];
+    // 実行中プロンプトのタイムアウトタイマーをクリアして Set を空にする
+    for (const timerId of this._runningPromptTimers.values()) {
+      clearTimeout(timerId);
+    }
+    this._runningPromptTimers.clear();
+    this._runningPrompts.clear();
   }
 
   dispose(): void {
@@ -86,6 +93,18 @@ export class PeriodicRunner {
     }
 
     this._runningPrompts.add(key);
+
+    // インターバルと同じ時間を上限として、プロセスが完了しない場合はキーを自動解除する
+    const timeoutMs = entry.intervalMinutes * 60 * 1000;
+    const timeoutId = setTimeout(() => {
+      this._runningPrompts.delete(key);
+      this._runningPromptTimers.delete(key);
+      this._outputChannel.appendLine(
+        `[${timestamp()}] タイムアウトによりスキップ制限を解除: ${entry.agentId}`
+      );
+    }, timeoutMs);
+    this._runningPromptTimers.set(key, timeoutId);
+
     const cmdConfig = buildCommand(agent, entry.prompt, this._workspacePath);
     this._outputChannel.appendLine(
       `[${timestamp()}] 定期プロンプト実行: ${agent.name}`
@@ -98,6 +117,12 @@ export class PeriodicRunner {
       (data) => this._outputChannel.append(data),
       (data) => this._outputChannel.append(data),
       (code) => {
+        // 正常完了時はタイムアウトタイマーをキャンセルして即座にキーを解放する
+        const timerId = this._runningPromptTimers.get(key);
+        if (timerId !== undefined) {
+          clearTimeout(timerId);
+          this._runningPromptTimers.delete(key);
+        }
         this._runningPrompts.delete(key);
         this._outputChannel.appendLine(`--- 完了 (終了コード: ${code}) ---\n`);
       }
