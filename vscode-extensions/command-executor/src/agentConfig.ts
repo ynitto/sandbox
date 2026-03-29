@@ -2,7 +2,7 @@
  * エージェント設定の型定義とビルトインエージェント一覧。
  *
  * ユーザー定義エージェントは ~/.config/agent-cli-executor/agents/*.json に置く。
- * Copilot の ~/.github/copilot/agents/*.agent.md に相当。
+ * Copilot の ~/.copilot/copilot/agents/*.agent.md に相当。
  */
 
 export interface AgentConfig {
