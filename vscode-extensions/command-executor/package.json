@@ -34,6 +34,11 @@
     "configuration": {
       "title": "AI CLI Command Executor",
       "properties": {
+        "commandExecutor.syncOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "起動時に ~/.copilot/ の内容を各 CLI ツールのホームディレクトリへ自動同期する"
+        },
         "commandExecutor.periodicPrompts": {
           "type": "array",
           "default": [],

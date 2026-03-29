@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentConfig } from './agentConfig';
 import { buildCommand, runCommand } from './commandRunner';
+import { fetchClaudeModels, fetchKiroModels, FALLBACK_CLAUDE_MODELS, FALLBACK_KIRO_MODELS } from './modelFetcher';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'commandExecutor.chatView';
@@ -11,6 +12,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _currentProcess?: cp.ChildProcess;
   private _agents: AgentConfig[];
+  private _claudeModels: string[] = FALLBACK_CLAUDE_MODELS;
+  private _kiroModels: string[] = FALLBACK_KIRO_MODELS;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -42,7 +45,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage((msg) => {
       switch (msg.type) {
         case 'run':
-          this._runCommand(msg.agentId, msg.prompt);
+          this._runCommand(msg.agentId, msg.prompt, msg.model);
           break;
         case 'kill':
           this._killCurrentProcess();
@@ -72,6 +75,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
+        case 'fetchModels':
+          this._fetchModelsForTool(msg.tool);
+          break;
       }
     });
 
@@ -89,7 +95,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private _runCommand(agentId: string, prompt: string): void {
+  private _runCommand(agentId: string, prompt: string, model?: string): void {
     if (!this._view) {
       return;
     }
@@ -105,7 +111,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const expandedPrompt = expandFileRefs(prompt, workspacePath);
-    const config = buildCommand(agent, expandedPrompt, workspacePath);
+    const config = buildCommand(agent, expandedPrompt, workspacePath, model);
 
     this._currentProcess = runCommand(
       config,
@@ -125,6 +131,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private _fetchModelsForTool(tool: string): void {
+    if (!this._view) { return; }
+    const webview = this._view.webview;
+    const fetch = tool === 'kiro-cli' ? fetchKiroModels : fetchClaudeModels;
+    fetch().then((models) => {
+      if (tool === 'kiro-cli') {
+        this._kiroModels = models;
+      } else {
+        this._claudeModels = models;
+      }
+      webview.postMessage({ type: 'toolModels', toolModels: { [tool]: models } });
+    });
+  }
+
   private _syncConfig(): void {
     if (this._onSync) {
       this._onSync();
@@ -134,12 +154,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
+    // モデルはエージェント選択時に都度フェッチするため初期値は空
+    const toolModelsJson = JSON.stringify({});
     const agentOptionsHtml = this._agents
       .map((agent) => {
         const id = escapeHtmlAttribute(agent.id);
         const name = escapeHtmlText(agent.name);
         const description = escapeHtmlAttribute(agent.description ?? '');
-        return `<option value="${id}" title="${description}">${name}</option>`;
+        const tool = escapeHtmlAttribute(agent.tool);
+        return `<option value="${id}" title="${description}" data-tool="${tool}">${name}</option>`;
       })
       .join('\n      ');
 
@@ -179,7 +202,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       white-space: nowrap;
     }
 
-    #agent-select {
+    #agent-select, #model-select {
       flex: 1;
       background: var(--vscode-dropdown-background);
       color: var(--vscode-dropdown-foreground);
@@ -188,6 +211,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       border-radius: 2px;
       font-size: 0.9em;
     }
+
+    #model-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      flex-shrink: 0;
+    }
+
+    #model-row label {
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+      white-space: nowrap;
+    }
+
+    #model-row.hidden { display: none; }
 
     #clear-btn, #stop-btn, #sync-btn {
       background: var(--vscode-button-secondaryBackground);
@@ -371,6 +411,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <button id="sync-btn" title="~/.copilot/ を各 CLI ホームへ同期">Sync</button>
   </div>
 
+  <div id="model-row" class="hidden">
+    <label for="model-select">Model:</label>
+    <select id="model-select">
+      <option value="">Default</option>
+    </select>
+  </div>
+
   <div id="agent-description"></div>
 
   <div id="messages"></div>
@@ -390,6 +437,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <script nonce="${nonce}">
     (function() {
       const vscode = acquireVsCodeApi();
+      let toolModelsMap = ${toolModelsJson};
       const messagesEl = document.getElementById('messages');
       const promptInput = document.getElementById('prompt-input');
       const sendBtn = document.getElementById('send-btn');
@@ -400,10 +448,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const syncBtn = document.getElementById('sync-btn');
       const addFileBtn = document.getElementById('add-file-btn');
       const addSelectionBtn = document.getElementById('add-selection-btn');
+      const modelRow = document.getElementById('model-row');
+      const modelSelect = document.getElementById('model-select');
 
       if (!messagesEl || !promptInput || !sendBtn || !stopBtn || !clearBtn || !agentSelect || !agentDescription || !syncBtn) {
         return;
       }
+
+      /** ツールに応じてモデルドロップダウンを更新する */
+      function updateModelSelect(tool) {
+        if (!modelSelect) { return; }
+        const models = toolModelsMap[tool] || [];
+        const prev = modelSelect.value;
+        modelSelect.innerHTML = '';
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = 'Default';
+        modelSelect.appendChild(defaultOpt);
+        for (const id of models) {
+          const opt = document.createElement('option');
+          opt.value = id;
+          opt.textContent = id;
+          modelSelect.appendChild(opt);
+        }
+        if (prev && models.includes(prev)) { modelSelect.value = prev; }
+      }
+
+      /** モデル選択をサポートするツールかどうかを判定して表示/非表示・内容を更新 */
+      function updateModelRow() {
+        const selected = agentSelect.options[agentSelect.selectedIndex];
+        const tool = selected ? selected.getAttribute('data-tool') : '';
+        const supportsModel = tool === 'claude' || tool === 'kiro-cli';
+        if (modelRow) { modelRow.classList.toggle('hidden', !supportsModel); }
+        if (!supportsModel) { return; }
+
+        if (toolModelsMap[tool] && toolModelsMap[tool].length > 0) {
+          // キャッシュあり: 即時表示
+          updateModelSelect(tool);
+        } else {
+          // キャッシュなし: Loading 表示してフェッチ依頼
+          if (modelSelect) {
+            modelSelect.innerHTML = '<option value="">Loading...</option>';
+            modelSelect.disabled = true;
+          }
+          vscode.postMessage({ type: 'fetchModels', tool });
+        }
+      }
+
+      updateModelRow();
+      agentSelect.addEventListener('change', updateModelRow);
 
       let currentAssistantEl = null;
       let currentOutputEl = null;
@@ -453,7 +546,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         scrollToBottom();
 
         promptInput.value = '';
-        vscode.postMessage({ type: 'run', agentId: agentId, prompt: prompt });
+        const model = modelSelect ? modelSelect.value : '';
+        vscode.postMessage({ type: 'run', agentId: agentId, prompt: prompt, model: model || undefined });
       });
 
       promptInput.addEventListener('keydown', function(e) {
@@ -527,6 +621,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             syncBtn.disabled = false;
             syncBtn.textContent = 'Sync';
             break;
+
+          case 'toolModels': {
+            if (msg.toolModels && typeof msg.toolModels === 'object') {
+              toolModelsMap = Object.assign(toolModelsMap, msg.toolModels);
+              if (modelSelect) { modelSelect.disabled = false; }
+              // 現在選択中のツールのドロップダウンを再構築
+              updateModelRow();
+            }
+            break;
+          }
 
           case 'insertText': {
             const pos = promptInput.selectionStart;

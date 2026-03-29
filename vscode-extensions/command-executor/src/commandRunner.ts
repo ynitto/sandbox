@@ -23,11 +23,13 @@ export interface CommandConfig {
  * @param agent        エージェント設定
  * @param userPrompt   ユーザー入力プロンプト
  * @param workspacePath VS Code の workspace uri.fsPath（未設定の場合は undefined）
+ * @param model        使用するモデル名（claude ツールのみ有効、未指定の場合はデフォルト）
  */
 export function buildCommand(
   agent: AgentConfig,
   userPrompt: string,
-  workspacePath: string | undefined
+  workspacePath: string | undefined,
+  model?: string
 ): CommandConfig {
   const isWindows = os.platform() === 'win32';
 
@@ -45,13 +47,15 @@ export function buildCommand(
   const extra = agent.extraArgs ?? [];
 
   switch (agent.tool) {
-    case 'claude':
+    case 'claude': {
+      const modelArgs = model ? ['--model', model] : [];
       return {
         cmd: 'claude',
-        args: ['-p', prompt, ...extra],
+        args: ['-p', prompt, ...modelArgs, ...extra],
         label: agent.name,
         cwd: workspacePath,
       };
+    }
 
     case 'gh-copilot-suggest':
       return {
@@ -101,36 +105,37 @@ export function buildCommand(
         cwd: workspacePath,
       };
 
-    case 'kiro-cli':
+    case 'kiro-cli': {
+      const modelArgs = model ? ['--model', model] : [];
       if (isWindows) {
-        // Windows から WSL2 経由で実行。
-        // wsl --cd <linuxPath> で WSL 内カレントディレクトリを明示指定する。
-        // spawn の cwd（Windows 側）には元の fsPath を渡す。
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
         const wslArgs = wslCwd
-          ? ['--cd', wslCwd, 'kiro-cli', 'chat', '--no-interactive', prompt, ...extra]
-          : ['kiro-cli', 'chat', '--no-interactive', prompt, ...extra];
+          ? ['--cd', wslCwd, 'kiro-cli', 'chat', '--no-interactive', ...modelArgs, prompt, ...extra]
+          : ['kiro-cli', 'chat', '--no-interactive', ...modelArgs, prompt, ...extra];
         return {
           cmd: 'wsl',
           args: wslArgs,
           label: agent.name,
-          cwd: workspacePath,  // wsl.exe の Windows 側 cwd
+          cwd: workspacePath,
         };
       }
       return {
         cmd: 'kiro-cli',
-        args: ['chat', '--no-interactive', prompt, ...extra],
+        args: ['chat', '--no-interactive', ...modelArgs, prompt, ...extra],
         label: agent.name,
         cwd: workspacePath,
       };
+    }
 
-    default:
+    default: {
+      const modelArgs = model ? ['--model', model] : [];
       return {
         cmd: 'claude',
-        args: ['-p', prompt, ...extra],
+        args: ['-p', prompt, ...modelArgs, ...extra],
         label: agent.name,
         cwd: workspacePath,
       };
+    }
   }
 }
 
