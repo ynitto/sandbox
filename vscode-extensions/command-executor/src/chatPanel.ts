@@ -75,18 +75,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
+        case 'fetchModels':
+          this._fetchModelsForTool(msg.tool);
+          break;
       }
     });
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
 
-    // モデル一覧を非同期取得して webview に反映
-    this._fetchAndSendModels(webviewView.webview);
-
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
         webviewView.webview.html = this._getHtml(webviewView.webview);
-        this._fetchAndSendModels(webviewView.webview);
       }
     });
 
@@ -132,11 +131,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private _fetchAndSendModels(webview: vscode.Webview): void {
-    Promise.all([fetchClaudeModels(), fetchKiroModels()]).then(([claude, kiro]) => {
-      this._claudeModels = claude;
-      this._kiroModels = kiro;
-      webview.postMessage({ type: 'toolModels', toolModels: { 'claude': claude, 'kiro-cli': kiro } });
+  private _fetchModelsForTool(tool: string): void {
+    if (!this._view) { return; }
+    const webview = this._view.webview;
+    const fetch = tool === 'kiro-cli' ? fetchKiroModels : fetchClaudeModels;
+    fetch().then((models) => {
+      if (tool === 'kiro-cli') {
+        this._kiroModels = models;
+      } else {
+        this._claudeModels = models;
+      }
+      webview.postMessage({ type: 'toolModels', toolModels: { [tool]: models } });
     });
   }
 
@@ -149,11 +154,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
-    // ツール別モデルリストをJS側に埋め込む（初期描画用）
-    const toolModelsJson = JSON.stringify({
-      'claude': this._claudeModels,
-      'kiro-cli': this._kiroModels,
-    });
+    // モデルはエージェント選択時に都度フェッチするため初期値は空
+    const toolModelsJson = JSON.stringify({});
     const agentOptionsHtml = this._agents
       .map((agent) => {
         const id = escapeHtmlAttribute(agent.id);
@@ -478,7 +480,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const tool = selected ? selected.getAttribute('data-tool') : '';
         const supportsModel = tool === 'claude' || tool === 'kiro-cli';
         if (modelRow) { modelRow.classList.toggle('hidden', !supportsModel); }
-        if (supportsModel) { updateModelSelect(tool); }
+        if (!supportsModel) { return; }
+
+        if (toolModelsMap[tool] && toolModelsMap[tool].length > 0) {
+          // キャッシュあり: 即時表示
+          updateModelSelect(tool);
+        } else {
+          // キャッシュなし: Loading 表示してフェッチ依頼
+          if (modelSelect) {
+            modelSelect.innerHTML = '<option value="">Loading...</option>';
+            modelSelect.disabled = true;
+          }
+          vscode.postMessage({ type: 'fetchModels', tool });
+        }
       }
 
       updateModelRow();
@@ -611,6 +625,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           case 'toolModels': {
             if (msg.toolModels && typeof msg.toolModels === 'object') {
               toolModelsMap = Object.assign(toolModelsMap, msg.toolModels);
+              if (modelSelect) { modelSelect.disabled = false; }
               // 現在選択中のツールのドロップダウンを再構築
               updateModelRow();
             }
