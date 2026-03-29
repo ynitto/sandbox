@@ -1,5 +1,5 @@
 {
-  "name": "vscode-command-executor",
+  "name": "vscode-agent-executor",
   "displayName": "Agent CLI Executor",
   "description": "Execute Agent CLI commands (Claude Code, GitHub Copilot, Codex, Amazon Q, Kiro) from VS Code chat UI",
   "version": "0.1.0",
@@ -12,12 +12,12 @@
   "contributes": {
     "commands": [
       {
-        "command": "commandExecutor.openChat",
+        "command": "agentExecutor.openChat",
         "title": "Open Agent CLI Chat",
         "category": "Agent CLI"
       },
       {
-        "command": "commandExecutor.reloadAgents",
+        "command": "agentExecutor.reloadAgents",
         "title": "Reload Agents",
         "category": "Agent CLI"
       }
@@ -26,7 +26,7 @@
       "explorer": [
         {
           "type": "webview",
-          "id": "commandExecutor.chatView",
+          "id": "agentExecutor.chatView",
           "name": "Agent CLI Chat"
         }
       ]
@@ -34,12 +34,12 @@
     "configuration": {
       "title": "Agent CLI Executor",
       "properties": {
-        "commandExecutor.syncOnStartup": {
+        "agentExecutor.syncOnStartup": {
           "type": "boolean",
           "default": true,
           "description": "起動時に ~/.copilot/ の内容を各 CLI ツールのホームディレクトリへ自動同期する"
         },
-        "commandExecutor.periodicPrompts": {
+        "agentExecutor.periodicPrompts": {
           "type": "array",
           "default": [],
           "description": "所定間隔で自動送信する定期プロンプトの設定。結果は Output パネルの「Agent CLI Periodic Prompts」に出力されます。",

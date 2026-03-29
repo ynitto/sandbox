@@ -11,7 +11,7 @@ type ChatHistoryEntry =
   | { role: 'assistant'; stdout: string; stderr: string };
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-  public static readonly viewId = 'commandExecutor.chatView';
+  public static readonly viewId = 'agentExecutor.chatView';
 
   private _view?: vscode.WebviewView;
   private _currentProcess?: cp.ChildProcess;

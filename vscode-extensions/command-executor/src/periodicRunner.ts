@@ -29,7 +29,7 @@ export class PeriodicRunner {
   start(): void {
     this.stop();
 
-    const config = vscode.workspace.getConfiguration('commandExecutor');
+    const config = vscode.workspace.getConfiguration('agentExecutor');
     const periodicPrompts: PeriodicPromptConfig[] = config.get('periodicPrompts') ?? [];
 
     for (const entry of periodicPrompts) {

@@ -11,7 +11,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const agents = filterAvailableAgents(loadAgents());
   const availableTools = new Set(agents.map((a) => a.tool));
 
-  const config = vscode.workspace.getConfiguration('commandExecutor');
+  const config = vscode.workspace.getConfiguration('agentExecutor');
   if (config.get<boolean>('syncOnStartup', true)) {
     syncCopilotConfig(availableTools);
   }
@@ -29,14 +29,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // コマンドパレットからチャットビューにフォーカス
   context.subscriptions.push(
-    vscode.commands.registerCommand('commandExecutor.openChat', () => {
+    vscode.commands.registerCommand('agentExecutor.openChat', () => {
       vscode.commands.executeCommand(`${ChatViewProvider.viewId}.focus`);
     })
   );
 
   // エージェントを再読み込みするコマンド
   context.subscriptions.push(
-    vscode.commands.registerCommand('commandExecutor.reloadAgents', () => {
+    vscode.commands.registerCommand('agentExecutor.reloadAgents', () => {
       const reloaded = filterAvailableAgents(loadAgents());
       provider.updateAgents(reloaded);
       periodicRunner.updateAgents(reloaded);
@@ -70,7 +70,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // 設定変更時に定期プロンプトを再起動
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('commandExecutor.periodicPrompts')) {
+      if (e.affectsConfiguration('agentExecutor.periodicPrompts')) {
         periodicRunner.start();
       }
     })
