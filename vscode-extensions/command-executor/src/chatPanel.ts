@@ -6,6 +6,10 @@ import { AgentConfig } from './agentConfig';
 import { buildCommand, runCommand } from './commandRunner';
 import { fetchClaudeModels, fetchKiroModels, FALLBACK_CLAUDE_MODELS, FALLBACK_KIRO_MODELS } from './modelFetcher';
 
+type ChatHistoryEntry =
+  | { role: 'user'; content: string }
+  | { role: 'assistant'; stdout: string; stderr: string };
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'commandExecutor.chatView';
 
@@ -15,6 +19,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _selectedAgentId?: string;
   private _claudeModels: string[] = FALLBACK_CLAUDE_MODELS;
   private _kiroModels: string[] = FALLBACK_KIRO_MODELS;
+  private _chatHistory: ChatHistoryEntry[];
+  private _currentStdout = '';
+  private _currentStderr = '';
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -23,14 +30,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     this._agents = agents;
     this._selectedAgentId = agents[0]?.id;
+    this._chatHistory = this._context.globalState.get<ChatHistoryEntry[]>('chatHistory', []);
   }
 
   /** エージェント一覧を更新して WebView を再描画する */
   updateAgents(agents: AgentConfig[]): void {
     this._agents = agents;
     if (this._view) {
+      this._killCurrentProcess();
       this._view.webview.html = this._getHtml(this._view.webview);
     }
+  }
+
+  /** 実行中のプロセスを終了する（拡張機能 deactivate 時に呼ばれる） */
+  dispose(): void {
+    this._killCurrentProcess();
   }
 
   resolveWebviewView(
@@ -54,6 +68,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'sync':
           this._syncConfig();
+          break;
+        case 'clearHistory':
+          this._chatHistory = [];
+          void this._context.globalState.update('chatHistory', []);
           break;
         case 'addFile': {
           const editor = vscode.window.activeTextEditor;
@@ -112,15 +130,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    this._chatHistory.push({ role: 'user', content: prompt });
+    this._currentStdout = '';
+    this._currentStderr = '';
+
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const expandedPrompt = expandFileRefs(prompt, workspacePath);
     const config = buildCommand(agent, expandedPrompt, workspacePath, model);
 
     this._currentProcess = runCommand(
       config,
-      (data) => this._view?.webview.postMessage({ type: 'data', text: data }),
-      (data) => this._view?.webview.postMessage({ type: 'error', text: data }),
+      (data) => {
+        this._currentStdout += data;
+        this._view?.webview.postMessage({ type: 'data', text: data });
+      },
+      (data) => {
+        this._currentStderr += data;
+        this._view?.webview.postMessage({ type: 'error', text: data });
+      },
       (code) => {
+        this._chatHistory.push({ role: 'assistant', stdout: this._currentStdout, stderr: this._currentStderr });
+        if (this._chatHistory.length > 100) {
+          this._chatHistory = this._chatHistory.slice(-100);
+        }
+        void this._context.globalState.update('chatHistory', this._chatHistory);
         this._currentProcess = undefined;
         this._view?.webview.postMessage({ type: 'done', code });
       }
@@ -165,8 +198,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
-    // モデルはエージェント選択時に都度フェッチするため初期値は空
-    const toolModelsJson = JSON.stringify({});
+    const chatData = JSON.stringify({
+      history: this._chatHistory,
+      toolModels: { claude: this._claudeModels, 'kiro-cli': this._kiroModels },
+    });
     const selectedAgentId = this._selectedAgentId;
     const agentOptionsHtml = this._agents
       .map((agent, index) => {
@@ -182,503 +217,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       })
       .join('\n      ');
 
-    return /* html */ `<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
-      background: var(--vscode-sideBar-background);
-      color: var(--vscode-sideBar-foreground);
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-      overflow: hidden;
-    }
-
-    /* ツールバー */
-    #toolbar {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 8px;
-      border-bottom: 1px solid var(--vscode-panel-border);
-      flex-shrink: 0;
-    }
-
-    #toolbar label {
-      font-size: 0.85em;
-      color: var(--vscode-descriptionForeground);
-      white-space: nowrap;
-    }
-
-    #agent-select, #model-select {
-      flex: 1;
-      background: var(--vscode-dropdown-background);
-      color: var(--vscode-dropdown-foreground);
-      border: 1px solid var(--vscode-dropdown-border);
-      padding: 3px 6px;
-      border-radius: 2px;
-      font-size: 0.9em;
-    }
-
-    #model-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 8px;
-      border-bottom: 1px solid var(--vscode-panel-border);
-      flex-shrink: 0;
-    }
-
-    #model-row label {
-      font-size: 0.85em;
-      color: var(--vscode-descriptionForeground);
-      white-space: nowrap;
-    }
-
-    #model-row.hidden { display: none; }
-
-    #clear-btn, #stop-btn, #sync-btn {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-      border: none;
-      padding: 3px 8px;
-      border-radius: 2px;
-      cursor: pointer;
-      font-size: 0.85em;
-      white-space: nowrap;
-    }
-
-    #clear-btn:hover, #stop-btn:hover, #sync-btn:hover {
-      background: var(--vscode-button-secondaryHoverBackground);
-    }
-
-    #sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    #stop-btn { display: none; }
-    #stop-btn.visible { display: block; }
-
-    /* エージェント説明 */
-    #agent-description {
-      padding: 4px 8px;
-      font-size: 0.8em;
-      color: var(--vscode-descriptionForeground);
-      border-bottom: 1px solid var(--vscode-panel-border);
-      min-height: 22px;
-      flex-shrink: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    /* メッセージ一覧 */
-    #messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .message {
-      padding: 8px 10px;
-      border-radius: 4px;
-      word-break: break-word;
-      line-height: 1.5;
-    }
-
-    .message.user {
-      background: var(--vscode-inputOption-activeBackground);
-      border-left: 3px solid var(--vscode-focusBorder);
-      font-size: 0.9em;
-      color: var(--vscode-input-foreground);
-    }
-
-    .message.assistant {
-      background: var(--vscode-editor-inactiveSelectionBackground);
-      white-space: pre-wrap;
-      font-family: var(--vscode-editor-font-family);
-      font-size: var(--vscode-editor-font-size);
-    }
-
-    .message.assistant .stderr {
-      color: var(--vscode-errorForeground);
-    }
-
-    .message.system {
-      color: var(--vscode-descriptionForeground);
-      font-style: italic;
-      font-size: 0.85em;
-    }
-
-    /* 実行中インジケーター */
-    .running-indicator {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      color: var(--vscode-descriptionForeground);
-      font-style: italic;
-      font-size: 0.85em;
-    }
-
-    .spinner {
-      width: 12px;
-      height: 12px;
-      border: 2px solid var(--vscode-descriptionForeground);
-      border-top-color: transparent;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      flex-shrink: 0;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* 入力エリア */
-    #input-area {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 8px;
-      border-top: 1px solid var(--vscode-panel-border);
-      flex-shrink: 0;
-    }
-
-    #prompt-input {
-      width: 100%;
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
-      border: 1px solid var(--vscode-input-border, transparent);
-      padding: 6px 8px;
-      border-radius: 2px;
-      resize: vertical;
-      min-height: 72px;
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
-      line-height: 1.4;
-    }
-
-    #prompt-input:focus {
-      outline: none;
-      border-color: var(--vscode-focusBorder);
-    }
-
-    #input-footer {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    #hint {
-      font-size: 0.78em;
-      color: var(--vscode-descriptionForeground);
-    }
-
-    #send-btn {
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
-      border: none;
-      padding: 5px 14px;
-      border-radius: 2px;
-      cursor: pointer;
-      font-size: 0.9em;
-    }
-
-    #send-btn:hover { background: var(--vscode-button-hoverBackground); }
-    #send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    /* ファイル参照ボタン */
-    #file-ref-bar {
-      display: flex;
-      gap: 4px;
-    }
-
-    #add-file-btn, #add-selection-btn {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-      border: none;
-      padding: 2px 8px;
-      border-radius: 2px;
-      cursor: pointer;
-      font-size: 0.8em;
-      white-space: nowrap;
-    }
-
-    #add-file-btn:hover, #add-selection-btn:hover {
-      background: var(--vscode-button-secondaryHoverBackground);
-    }
-  </style>
-</head>
-<body>
-  <div id="toolbar">
-    <label for="agent-select">Agent:</label>
-    <select id="agent-select">
-      ${agentOptionsHtml}
-    </select>
-    <button id="stop-btn" title="実行中のコマンドを停止">Stop</button>
-    <button id="clear-btn" title="メッセージをクリア">Clear</button>
-    <button id="sync-btn" title="~/.copilot/ を各 CLI ホームへ同期">Sync</button>
-  </div>
-
-  <div id="model-row" class="hidden">
-    <label for="model-select">Model:</label>
-    <select id="model-select">
-      <option value="">Default</option>
-    </select>
-  </div>
-
-  <div id="agent-description"></div>
-
-  <div id="messages"></div>
-
-  <div id="input-area">
-    <div id="file-ref-bar">
-      <button id="add-file-btn" title="アクティブなファイルを参照として追加 (#file:path)">+ File</button>
-      <button id="add-selection-btn" title="選択中の行を参照として追加 (#file:path:start-end)">+ Selection</button>
-    </div>
-    <textarea id="prompt-input" placeholder="プロンプトを入力 (Ctrl+Enter で送信)&#10;#file:path や #file:path:10-20 でファイル参照を挿入できます"></textarea>
-    <div id="input-footer">
-      <span id="hint">Ctrl+Enter で送信</span>
-      <button id="send-btn">Send</button>
-    </div>
-  </div>
-
-  <script nonce="${nonce}">
-    (function() {
-      const vscode = acquireVsCodeApi();
-      const persisted = vscode.getState() || {};
-      let toolModelsMap = ${toolModelsJson};
-      const messagesEl = document.getElementById('messages');
-      const promptInput = document.getElementById('prompt-input');
-      const sendBtn = document.getElementById('send-btn');
-      const stopBtn = document.getElementById('stop-btn');
-      const clearBtn = document.getElementById('clear-btn');
-      const agentSelect = document.getElementById('agent-select');
-      const agentDescription = document.getElementById('agent-description');
-      const syncBtn = document.getElementById('sync-btn');
-      const addFileBtn = document.getElementById('add-file-btn');
-      const addSelectionBtn = document.getElementById('add-selection-btn');
-      const modelRow = document.getElementById('model-row');
-      const modelSelect = document.getElementById('model-select');
-
-      if (!messagesEl || !promptInput || !sendBtn || !stopBtn || !clearBtn || !agentSelect || !agentDescription || !syncBtn) {
-        return;
-      }
-
-      // WebView の再読み込み後も前回選択したエージェントを復元する
-      if (persisted.selectedAgentId && Array.from(agentSelect.options).some((o) => o.value === persisted.selectedAgentId)) {
-        agentSelect.value = persisted.selectedAgentId;
-      }
-
-      /** ツールに応じてモデルドロップダウンを更新する */
-      function updateModelSelect(tool) {
-        if (!modelSelect) { return; }
-        const models = toolModelsMap[tool] || [];
-        const prev = modelSelect.value;
-        modelSelect.innerHTML = '';
-        const defaultOpt = document.createElement('option');
-        defaultOpt.value = '';
-        defaultOpt.textContent = 'Default';
-        modelSelect.appendChild(defaultOpt);
-        for (const id of models) {
-          const opt = document.createElement('option');
-          opt.value = id;
-          opt.textContent = id;
-          modelSelect.appendChild(opt);
-        }
-        if (prev && models.includes(prev)) { modelSelect.value = prev; }
-      }
-
-      /** モデル選択をサポートするツールかどうかを判定して表示/非表示・内容を更新 */
-      function updateModelRow() {
-        const selected = agentSelect.options[agentSelect.selectedIndex];
-        const tool = selected ? selected.getAttribute('data-tool') : '';
-        const supportsModel = tool === 'claude' || tool === 'kiro-cli';
-        if (modelRow) { modelRow.classList.toggle('hidden', !supportsModel); }
-        if (!supportsModel) { return; }
-
-        if (toolModelsMap[tool] && toolModelsMap[tool].length > 0) {
-          // キャッシュあり: 即時表示
-          updateModelSelect(tool);
-        } else {
-          // キャッシュなし: Loading 表示してフェッチ依頼
-          if (modelSelect) {
-            modelSelect.innerHTML = '<option value="">Loading...</option>';
-            modelSelect.disabled = true;
-          }
-          vscode.postMessage({ type: 'fetchModels', tool });
-        }
-      }
-
-      updateModelRow();
-      agentSelect.addEventListener('change', updateModelRow);
-
-      function notifyAgentChanged() {
-        const prev = vscode.getState() || {};
-        vscode.setState(Object.assign({}, prev, { selectedAgentId: agentSelect.value }));
-        vscode.postMessage({ type: 'agentChanged', agentId: agentSelect.value });
-      }
-
-      notifyAgentChanged();
-      agentSelect.addEventListener('change', notifyAgentChanged);
-
-      let currentAssistantEl = null;
-      let currentOutputEl = null;
-      let running = false;
-
-      function scrollToBottom() {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-
-      function setRunning(val) {
-        running = val;
-        sendBtn.disabled = val;
-        stopBtn.classList.toggle('visible', val);
-      }
-
-      function updateDescription() {
-        const selected = agentSelect.options[agentSelect.selectedIndex];
-        agentDescription.textContent = selected ? (selected.title || '') : '';
-      }
-
-      updateDescription();
-      agentSelect.addEventListener('change', updateDescription);
-
-      sendBtn.addEventListener('click', function() {
-        const prompt = promptInput.value.trim();
-        const agentId = agentSelect.value;
-        if (!prompt || !agentId || running) { return; }
-
-        const div = document.createElement('div');
-        div.className = 'message user';
-        div.textContent = prompt;
-        messagesEl.appendChild(div);
-        scrollToBottom();
-
-        setRunning(true);
-        currentAssistantEl = document.createElement('div');
-        currentAssistantEl.className = 'message assistant';
-
-        const indicator = document.createElement('div');
-        indicator.className = 'running-indicator';
-        indicator.innerHTML = '<div class="spinner"></div><span>実行中...</span>';
-        currentAssistantEl.appendChild(indicator);
-
-        currentOutputEl = document.createElement('span');
-        currentAssistantEl.appendChild(currentOutputEl);
-        messagesEl.appendChild(currentAssistantEl);
-        scrollToBottom();
-
-        promptInput.value = '';
-        const model = modelSelect ? modelSelect.value : '';
-        vscode.postMessage({ type: 'run', agentId: agentId, prompt: prompt, model: model || undefined });
-      });
-
-      promptInput.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          sendBtn.click();
-        }
-      });
-
-      stopBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'kill' });
-        setRunning(false);
-        currentAssistantEl = null;
-        currentOutputEl = null;
-      });
-
-      clearBtn.addEventListener('click', function() {
-        messagesEl.innerHTML = '';
-      });
-
-      syncBtn.addEventListener('click', function() {
-        syncBtn.disabled = true;
-        syncBtn.textContent = 'Syncing...';
-        vscode.postMessage({ type: 'sync' });
-      });
-
-      if (addFileBtn) {
-        addFileBtn.addEventListener('click', function() {
-          vscode.postMessage({ type: 'addFile' });
-        });
-      }
-
-      if (addSelectionBtn) {
-        addSelectionBtn.addEventListener('click', function() {
-          vscode.postMessage({ type: 'addSelection' });
-        });
-      }
-
-      window.addEventListener('message', function(event) {
-        const msg = event.data || {};
-
-        switch (msg.type) {
-          case 'data':
-            if (currentAssistantEl && currentOutputEl) {
-              const indicator = currentAssistantEl.querySelector('.running-indicator');
-              if (indicator) { indicator.remove(); }
-              currentOutputEl.textContent += msg.text;
-              scrollToBottom();
-            }
-            break;
-
-          case 'error':
-            if (currentAssistantEl) {
-              const indicator = currentAssistantEl.querySelector('.running-indicator');
-              if (indicator) { indicator.remove(); }
-              const err = document.createElement('div');
-              err.className = 'stderr';
-              err.textContent = msg.text;
-              currentAssistantEl.appendChild(err);
-              scrollToBottom();
-            }
-            break;
-
-          case 'done':
-            setRunning(false);
-            currentAssistantEl = null;
-            currentOutputEl = null;
-            break;
-
-          case 'syncDone':
-            syncBtn.disabled = false;
-            syncBtn.textContent = 'Sync';
-            break;
-
-          case 'toolModels': {
-            if (msg.toolModels && typeof msg.toolModels === 'object') {
-              toolModelsMap = Object.assign(toolModelsMap, msg.toolModels);
-              if (modelSelect) { modelSelect.disabled = false; }
-              // 現在選択中のツールのドロップダウンを再構築
-              updateModelRow();
-            }
-            break;
-          }
-
-          case 'insertText': {
-            const pos = promptInput.selectionStart;
-            const before = promptInput.value.slice(0, pos);
-            const after = promptInput.value.slice(promptInput.selectionEnd);
-            promptInput.value = before + msg.text + after;
-            const newPos = pos + msg.text.length;
-            promptInput.selectionStart = promptInput.selectionEnd = newPos;
-            promptInput.focus();
-            break;
-          }
-        }
-      });
-    })();
-  </script>
-</body>
-</html>`;
+    const htmlPath = path.join(__dirname, '..', 'media', 'chat.html');
+    let html = fs.readFileSync(htmlPath, 'utf8');
+    html = html
+      .replace(/__NONCE__/g, nonce)
+      .replace('__AGENT_OPTIONS_HTML__', () => agentOptionsHtml)
+      .replace('__CHAT_DATA_JSON__', () => chatData);
+    return html;
   }
 }
 

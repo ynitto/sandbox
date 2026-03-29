@@ -5,6 +5,8 @@ import { filterAvailableAgents } from './cliChecker';
 import { syncCopilotConfig } from './homeSetup';
 import { PeriodicRunner } from './periodicRunner';
 
+let _chatViewProvider: ChatViewProvider | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
   const agents = filterAvailableAgents(loadAgents());
   const availableTools = new Set(agents.map((a) => a.tool));
@@ -19,6 +21,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.showInformationMessage('Agent CLI Executor: ~/.copilot/ の同期が完了しました');
   };
   const provider = new ChatViewProvider(context, agents, syncCallback);
+  _chatViewProvider = provider;
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, provider)
@@ -74,4 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+  _chatViewProvider?.dispose();
+  _chatViewProvider = undefined;
+}

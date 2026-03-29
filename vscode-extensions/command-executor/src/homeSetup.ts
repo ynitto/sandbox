@@ -45,6 +45,13 @@ const DEFAULT_MAPPINGS: FileMapping[] = [
   { srcDir: 'skills',       destDir: 'skills'       },
 ];
 
+/** kiro-cli 用マッピング: instructions/*.md → steering/*.md */
+const KIRO_MAPPINGS: FileMapping[] = [
+  { srcDir: 'agents',       destDir: 'agents'   },
+  { srcDir: 'instructions', destDir: 'steering', renameFile: (name) => name.endsWith('.md') ? name : null },
+  { srcDir: 'skills',       destDir: 'skills'   },
+];
+
 /**
  * 実行時にプラットフォームを判定して同期設定を構築する。
  * kiro-cli は Windows では WSL ホームへのコピーが必要なため、
@@ -86,7 +93,7 @@ function buildSyncConfigs(): SyncConfig[] {
     configs.push({
       tools: ['kiro-cli'],
       homeDir: kiroHomeDir,
-      mappings: DEFAULT_MAPPINGS,
+      mappings: KIRO_MAPPINGS,
     });
   }
 
