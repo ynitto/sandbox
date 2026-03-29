@@ -39,13 +39,37 @@ applyTo: "**"
 
 `--force` なしの場合、`interval_hours` 未満であればスクリプト側でスキップされる（ネットワーク負荷を抑制）。
 
-### 手順 2: Copilot Memory 同期
+### 手順 2: 記憶の同期
 
-VSCode Copilot Memory の内容を ltm-use へ自動インポートする:
+#### 2-1. サーバから記憶を pull して home に取り込む
+
+共有リポジトリの最新記憶を取得し、未取得のものを home スコープへインポートする:
+
+```
+{skill_home}/ltm-use/scripts/sync_memory.py --import-to-home
+```
+
+共有リポジトリが未設定の場合はスキップしてよい（エラーにならない）。
+
+#### 2-2. 昇格対象の記憶を push する
+
+home スコープの記憶のうち `share_score >= 85` のものを shared へ昇格し、git push まで一括実行する:
+
+```
+{skill_home}/ltm-use/scripts/promote_memory.py --scope home --target shared --auto --push
+```
+
+共有リポジトリが未設定、または昇格候補がない場合はスキップしてよい（エラーにならない）。
+
+#### 2-3. Copilot Memory インポート（任意）
+
+VSCode Copilot Memory が存在する場合は ltm-use へ自動インポートする:
 
 ```
 {skill_home}/ltm-use/scripts/sync_copilot_memory.py
 ```
+
+Copilot Memory が存在しない場合はスキップしてよい（エラーにならない）。
 
 ### 手順 3: 過去の記憶のリコール
 
