@@ -17,6 +17,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _currentProcess?: cp.ChildProcess;
   private _agents: AgentConfig[];
   private _selectedAgentId?: string;
+  private _selectedModel?: string;
   private _claudeModels: string[] = FALLBACK_CLAUDE_MODELS;
   private _kiroModels: string[] = FALLBACK_KIRO_MODELS;
   private _chatHistory: ChatHistoryEntry[];
@@ -30,6 +31,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     this._agents = agents;
     this._selectedAgentId = agents[0]?.id;
+    this._selectedModel = this._context.globalState.get<string>('selectedModel');
     this._chatHistory = this._context.globalState.get<ChatHistoryEntry[]>('chatHistory', []);
   }
 
@@ -101,6 +103,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'agentChanged':
           if (typeof msg.agentId === 'string') {
             this._selectedAgentId = msg.agentId;
+          }
+          break;
+        case 'modelChanged':
+          if (typeof msg.model === 'string') {
+            this._selectedModel = msg.model || undefined;
+            void this._context.globalState.update('selectedModel', this._selectedModel);
           }
           break;
       }
@@ -201,6 +209,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const chatData = JSON.stringify({
       history: this._chatHistory,
       toolModels: { claude: this._claudeModels, 'kiro-cli': this._kiroModels },
+      selectedModel: this._selectedModel ?? '',
     });
     const selectedAgentId = this._selectedAgentId;
     const agentOptionsHtml = this._agents
