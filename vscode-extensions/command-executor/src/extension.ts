@@ -8,7 +8,11 @@ import { PeriodicRunner } from './periodicRunner';
 export function activate(context: vscode.ExtensionContext): void {
   const agents = filterAvailableAgents(loadAgents());
   const availableTools = new Set(agents.map((a) => a.tool));
-  syncCopilotConfig(availableTools);
+
+  const config = vscode.workspace.getConfiguration('commandExecutor');
+  if (config.get<boolean>('syncOnStartup', true)) {
+    syncCopilotConfig(availableTools);
+  }
 
   const syncCallback = () => {
     syncCopilotConfig(availableTools);
