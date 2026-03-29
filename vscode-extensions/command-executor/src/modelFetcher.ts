@@ -11,12 +11,15 @@ export const FALLBACK_CLAUDE_MODELS = [
 
 export const FALLBACK_KIRO_MODELS = [
   'auto',
-  'claude-sonnet-4-6',
-  'claude-sonnet-4-5',
-  'claude-haiku-4-5',
-  'claude-opus-4-6',
-  'deepseek-v3-2',
-  'minimax-m2-1',
+  'claude-opus-4.6',
+  'claude-sonnet-4.6',
+  'claude-opus-4.5',
+  'claude-sonnet-4.5',
+  'claude-sonnet-4',
+  'claude-haiku-4.5',
+  'deepseek-3.2',
+  'minimax-m2.1',
+  'minimax-m2.5',
   'qwen3-coder-next',
 ];
 
