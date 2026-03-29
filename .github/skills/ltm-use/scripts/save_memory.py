@@ -35,6 +35,9 @@ created: "{date}"
 updated: "{date}"
 status: active
 scope: {scope}
+memory_type: {memory_type}
+importance: {importance}
+retention_score: 1.0
 tags: [{tags}]
 related: []
 access_count: 0
@@ -79,7 +82,8 @@ def generate_id(date_str: str, category_dir: str) -> str:
 
 def save_memory(category: str, title: str, summary: str, content: str,
                 tags: list, scope: str = "workspace",
-                context: str = "", conclusion: str = "") -> str:
+                context: str = "", conclusion: str = "",
+                memory_type: str = "", importance: str = "") -> str:
     date_str = memory_utils.today_str()
     slug = slugify(title)
     memory_dir = memory_utils.get_memory_dir(scope)
@@ -95,9 +99,15 @@ def save_memory(category: str, title: str, summary: str, content: str,
             n += 1
         filepath = f"{base}-{n:03d}{ext}"
 
+    # v5: memory_type / importance を自動推定（未指定時）
+    if not memory_type:
+        memory_type = memory_utils.detect_memory_type(content, title, summary)
+    if not importance:
+        importance = memory_utils.detect_importance(content, title, summary)
+
     # share_score を事前計算（保存直後は access_count=0 のため情報量とタグのみ）
     pseudo_meta = {"tags": tags, "access_count": 0, "user_rating": 0,
-                   "correction_count": 0, "status": "active"}
+                   "correction_count": 0, "status": "active", "importance": importance}
     share_score = memory_utils.compute_share_score(pseudo_meta, content)
 
     tags_str = ", ".join(tags)
@@ -106,14 +116,16 @@ def save_memory(category: str, title: str, summary: str, content: str,
         title=title,
         date=date_str,
         scope=scope,
+        memory_type=memory_type,
+        importance=importance,
         tags=tags_str,
         summary=summary,
         context=context or "(作成時に記録なし)",
         content=content,
         conclusion=conclusion or "(作成時に記録なし)",
     )
-    # share_score を埋め込む
-    body = re.sub(r"^share_score: \d+", f"share_score: {share_score}", body, count=1, flags=re.MULTILINE)
+    # share_score を埋め込む（-? で負値にも対応）
+    body = re.sub(r"^share_score: -?\d+", f"share_score: {share_score}", body, count=1, flags=re.MULTILINE)
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(body)
@@ -174,6 +186,11 @@ def main():
     parser.add_argument("--update", help="更新対象ファイルパス")
     parser.add_argument("--status", choices=["active", "archived", "deprecated"],
                         help="ステータス変更（--update と組み合わせて使用）")
+    # v5.0.0 脳構造フィールド（省略時は自動推定）
+    parser.add_argument("--memory-type", choices=["episodic", "semantic", "procedural"],
+                        help="記憶タイプ（省略時: コンテンツから自動推定）")
+    parser.add_argument("--importance", choices=["critical", "high", "normal", "low"],
+                        help="重要度（省略時: コンテンツから自動推定）")
     # v4 新機能
     parser.add_argument("--no-dedup", action="store_true",
                         help="類似チェックをスキップ（自動保存・スクリプト呼び出し時）")
@@ -272,6 +289,8 @@ def main():
         scope=args.scope,
         context=args.context,
         conclusion=args.conclusion,
+        memory_type=args.memory_type or "",
+        importance=args.importance or "",
     )
 
     # コーパスを更新

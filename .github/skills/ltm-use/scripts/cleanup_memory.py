@@ -81,74 +81,82 @@ def compute_quality_score(meta: dict, body: str) -> float:
 
 
 def find_duplicate_targets(memory_dir: str, threshold: float = 0.85) -> list[dict]:
+    """重複記憶ペアを検出し、品質の低い側を削除候補にする。
+
+    コーパス構造: {"doc_vectors": {mem_id: {term: tfidf}}, "df": {...}, "total_docs": N}
     """
-    重複記憶ペアを検出し、品質の低い側を削除候補にする。
-    
-    Args:
-        memory_dir: 記憶ディレクトリ
-        threshold: 類似度閾値（デフォルト 0.85）
-    
-    Returns:
-        削除候補のリスト（品質スコアの低い側）
-    """
+    import json
+
     corpus_path = os.path.join(memory_dir, memory_utils.CORPUS_FILENAME)
     if not os.path.exists(corpus_path):
         print(f"[警告] コーパスファイルが存在しません: {corpus_path}")
-        print("       build_index.py を実行してコーパスを構築してください。")
+        print("       build_index.py --force を実行してコーパスを構築してください。")
         return []
-    
+
     with open(corpus_path, encoding="utf-8") as f:
-        import json
         corpus_data = json.load(f)
-    
-    documents = corpus_data.get("documents", [])
-    vectors = corpus_data.get("vectors", [])
-    
-    # ペアワイズ類似度計算
+
+    doc_vectors = corpus_data.get("doc_vectors", {})
+    if not doc_vectors:
+        print("[警告] コーパスにベクトルデータがありません。build_index.py --force を実行してください。")
+        return []
+
+    # インデックスから mem_id → filepath マッピングを取得
+    index = memory_utils.load_index(memory_dir)
+    id_to_entry = {e["id"]: e for e in index.get("entries", []) if e.get("id")}
+
+    mem_ids = list(doc_vectors.keys())
     targets = []
-    seen_pairs = set()
-    
-    for i, doc_i in enumerate(documents):
-        for j, doc_j in enumerate(documents):
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for i, id_i in enumerate(mem_ids):
+        for j, id_j in enumerate(mem_ids):
             if i >= j:
-                continue  # 自分自身と重複ペアを避ける
-            
-            pair_key = tuple(sorted([doc_i["filepath"], doc_j["filepath"]]))
+                continue
+            pair_key = (min(id_i, id_j), max(id_i, id_j))
             if pair_key in seen_pairs:
                 continue
             seen_pairs.add(pair_key)
-            
-            sim = similarity.cosine_similarity(vectors[i], vectors[j])
-            if sim >= threshold:
-                # 品質スコアを計算して低い側を削除候補に
-                with open(doc_i["filepath"], encoding="utf-8") as f:
-                    text_i = f.read()
-                meta_i, body_i = memory_utils.parse_frontmatter(text_i)
-                quality_i = compute_quality_score(meta_i, body_i)
-                
-                with open(doc_j["filepath"], encoding="utf-8") as f:
-                    text_j = f.read()
-                meta_j, body_j = memory_utils.parse_frontmatter(text_j)
-                quality_j = compute_quality_score(meta_j, body_j)
-                
-                # 低品質側を削除候補に
-                if quality_i < quality_j:
-                    lower_fp, lower_meta, lower_quality, keep_fp = doc_i["filepath"], meta_i, quality_i, doc_j["filepath"]
-                else:
-                    lower_fp, lower_meta, lower_quality, keep_fp = doc_j["filepath"], meta_j, quality_j, doc_i["filepath"]
-                
-                targets.append({
-                    "filepath": lower_fp,
-                    "title": lower_meta.get("title", os.path.basename(lower_fp)),
-                    "status": lower_meta.get("status", "active"),
-                    "access_count": int(lower_meta.get("access_count", 0)),
-                    "share_score": memory_utils.compute_share_score(lower_meta, body_i if lower_fp == doc_i["filepath"] else body_j),
-                    "quality_score": lower_quality,
-                    "reason": f"重複記憶検出（類似度 {sim:.3f} >= {threshold}、保持: {os.path.basename(keep_fp)}）",
-                    "age_created": memory_utils.days_since(lower_meta.get("created", "")),
-                    "rel_cat": os.path.relpath(os.path.dirname(lower_fp), memory_dir),
-                })
-    
+
+            sim = similarity.cosine_similarity(doc_vectors[id_i], doc_vectors[id_j])
+            if sim < threshold:
+                continue
+
+            entry_i = id_to_entry.get(id_i)
+            entry_j = id_to_entry.get(id_j)
+            if not entry_i or not entry_j:
+                continue
+
+            fp_i = os.path.join(memory_dir, entry_i["filepath"])
+            fp_j = os.path.join(memory_dir, entry_j["filepath"])
+            try:
+                with open(fp_i, encoding="utf-8") as f:
+                    meta_i, body_i = memory_utils.parse_frontmatter(f.read())
+                with open(fp_j, encoding="utf-8") as f:
+                    meta_j, body_j = memory_utils.parse_frontmatter(f.read())
+            except OSError:
+                continue
+
+            quality_i = compute_quality_score(meta_i, body_i)
+            quality_j = compute_quality_score(meta_j, body_j)
+
+            if quality_i < quality_j:
+                lower_fp, lower_meta, lower_body, lower_q, keep_fp = fp_i, meta_i, body_i, quality_i, fp_j
+            else:
+                lower_fp, lower_meta, lower_body, lower_q, keep_fp = fp_j, meta_j, body_j, quality_j, fp_i
+
+            targets.append({
+                "filepath": lower_fp,
+                "title": lower_meta.get("title", os.path.basename(lower_fp)),
+                "status": lower_meta.get("status", "active"),
+                "access_count": int(lower_meta.get("access_count", 0)),
+                "share_score": memory_utils.compute_share_score(lower_meta, lower_body),
+                "quality_score": lower_q,
+                "reason": f"重複記憶検出（類似度 {sim:.3f} >= {threshold}、保持: {os.path.basename(keep_fp)}）",
+                "age_created": memory_utils.days_since(lower_meta.get("created", "")),
+                "rel_cat": os.path.relpath(os.path.dirname(lower_fp), memory_dir),
+            })
+
     return sorted(targets, key=lambda x: x["quality_score"])
 
 
