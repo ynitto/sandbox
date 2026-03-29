@@ -12,6 +12,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _currentProcess?: cp.ChildProcess;
   private _agents: AgentConfig[];
+  private _selectedAgentId?: string;
   private _claudeModels: string[] = FALLBACK_CLAUDE_MODELS;
   private _kiroModels: string[] = FALLBACK_KIRO_MODELS;
 
@@ -21,6 +22,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly _onSync?: () => void
   ) {
     this._agents = agents;
+    this._selectedAgentId = agents[0]?.id;
   }
 
   /** エージェント一覧を更新して WebView を再描画する */
@@ -78,16 +80,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'fetchModels':
           this._fetchModelsForTool(msg.tool);
           break;
+        case 'agentChanged':
+          if (typeof msg.agentId === 'string') {
+            this._selectedAgentId = msg.agentId;
+          }
+          break;
       }
     });
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
 
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) {
-        webviewView.webview.html = this._getHtml(webviewView.webview);
-      }
-    });
+    // 可視化のたびに HTML を再生成すると選択状態がリセットされるため再描画しない
 
     webviewView.onDidDispose(() => {
       this._killCurrentProcess();
@@ -142,6 +145,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._claudeModels = models;
       }
       webview.postMessage({ type: 'toolModels', toolModels: { [tool]: models } });
+    }).catch(() => {
+      const fallback = tool === 'kiro-cli' ? FALLBACK_KIRO_MODELS : FALLBACK_CLAUDE_MODELS;
+      if (tool === 'kiro-cli') {
+        this._kiroModels = fallback;
+      } else {
+        this._claudeModels = fallback;
+      }
+      webview.postMessage({ type: 'toolModels', toolModels: { [tool]: fallback } });
     });
   }
 
@@ -156,13 +167,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const nonce = getNonce();
     // モデルはエージェント選択時に都度フェッチするため初期値は空
     const toolModelsJson = JSON.stringify({});
+    const selectedAgentId = this._selectedAgentId;
     const agentOptionsHtml = this._agents
-      .map((agent) => {
+      .map((agent, index) => {
         const id = escapeHtmlAttribute(agent.id);
         const name = escapeHtmlText(agent.name);
         const description = escapeHtmlAttribute(agent.description ?? '');
         const tool = escapeHtmlAttribute(agent.tool);
-        return `<option value="${id}" title="${description}" data-tool="${tool}">${name}</option>`;
+        const shouldSelect = selectedAgentId
+          ? agent.id === selectedAgentId
+          : index === 0;
+        const selectedAttr = shouldSelect ? ' selected' : '';
+        return `<option value="${id}" title="${description}" data-tool="${tool}"${selectedAttr}>${name}</option>`;
       })
       .join('\n      ');
 
@@ -437,6 +453,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <script nonce="${nonce}">
     (function() {
       const vscode = acquireVsCodeApi();
+      const persisted = vscode.getState() || {};
       let toolModelsMap = ${toolModelsJson};
       const messagesEl = document.getElementById('messages');
       const promptInput = document.getElementById('prompt-input');
@@ -453,6 +470,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       if (!messagesEl || !promptInput || !sendBtn || !stopBtn || !clearBtn || !agentSelect || !agentDescription || !syncBtn) {
         return;
+      }
+
+      // WebView の再読み込み後も前回選択したエージェントを復元する
+      if (persisted.selectedAgentId && Array.from(agentSelect.options).some((o) => o.value === persisted.selectedAgentId)) {
+        agentSelect.value = persisted.selectedAgentId;
       }
 
       /** ツールに応じてモデルドロップダウンを更新する */
@@ -497,6 +519,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       updateModelRow();
       agentSelect.addEventListener('change', updateModelRow);
+
+      function notifyAgentChanged() {
+        const prev = vscode.getState() || {};
+        vscode.setState(Object.assign({}, prev, { selectedAgentId: agentSelect.value }));
+        vscode.postMessage({ type: 'agentChanged', agentId: agentSelect.value });
+      }
+
+      notifyAgentChanged();
+      agentSelect.addEventListener('change', notifyAgentChanged);
 
       let currentAssistantEl = null;
       let currentOutputEl = null;

@@ -16,7 +16,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const syncCallback = () => {
     syncCopilotConfig(availableTools);
-    vscode.window.showInformationMessage('AI CLI Executor: ~/.copilot/ の同期が完了しました');
+    vscode.window.showInformationMessage('Agent CLI Executor: ~/.copilot/ の同期が完了しました');
   };
   const provider = new ChatViewProvider(context, agents, syncCallback);
 
@@ -38,12 +38,12 @@ export function activate(context: vscode.ExtensionContext): void {
       provider.updateAgents(reloaded);
       periodicRunner.updateAgents(reloaded);
       vscode.window.showInformationMessage(
-        `AI CLI Executor: エージェントを再読み込みしました (${reloaded.length} 件)`
+        `Agent CLI Executor: エージェントを再読み込みしました (${reloaded.length} 件)`
       );
     })
   );
 
-  // ~/.config/ai-cli-executor/agents/ を監視して自動再読み込み
+  // ~/.config/agent-cli-executor/agents/ を監視して自動再読み込み
   const watcher = vscode.workspace.createFileSystemWatcher(
     new vscode.RelativePattern(vscode.Uri.file(CONFIG_DIR), 'agents/*.json')
   );

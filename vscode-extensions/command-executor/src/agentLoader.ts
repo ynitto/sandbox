@@ -1,5 +1,5 @@
 /**
- * ~/.config/ai-cli-executor/agents/*.json からエージェント設定を読み込む。
+ * ~/.config/agent-cli-executor/agents/*.json からエージェント設定を読み込む。
  * Copilot の ~/.github/copilot/agents/*.agent.md に相当するユーザー設定ディレクトリ。
  *
  * WSL 対応:
@@ -14,7 +14,7 @@ import * as os from 'os';
 import { AgentConfig, BUILTIN_AGENTS } from './agentConfig';
 
 /** エージェント設定のルートディレクトリ（Copilot の ~/.github/copilot/ 相当） */
-export const CONFIG_DIR = path.join(os.homedir(), '.config', 'ai-cli-executor');
+export const CONFIG_DIR = path.join(os.homedir(), '.config', 'agent-cli-executor');
 
 /** エージェント定義ディレクトリ（Copilot の agents/ 相当） */
 const AGENTS_DIR = path.join(CONFIG_DIR, 'agents');

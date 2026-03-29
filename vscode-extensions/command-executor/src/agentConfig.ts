@@ -1,7 +1,7 @@
 /**
  * エージェント設定の型定義とビルトインエージェント一覧。
  *
- * ユーザー定義エージェントは ~/.config/ai-cli-executor/agents/*.json に置く。
+ * ユーザー定義エージェントは ~/.config/agent-cli-executor/agents/*.json に置く。
  * Copilot の ~/.github/copilot/agents/*.agent.md に相当。
  */
 
@@ -25,7 +25,7 @@ export interface AgentConfig {
   instructions?: string;
   /**
    * システムプロンプトファイルのパス。
-   * 絶対パス、または ~/.config/ai-cli-executor/ からの相対パス。
+   * 絶対パス、または ~/.config/agent-cli-executor/ からの相対パス。
    * Copilot の instructions/*.instructions.md に相当。
    */
   instructionsFile?: string;
@@ -33,7 +33,7 @@ export interface AgentConfig {
   extraArgs?: string[];
 }
 
-/** ~/.config/ai-cli-executor/agents/ が存在しない場合のフォールバック */
+/** ~/.config/agent-cli-executor/agents/ が存在しない場合のフォールバック */
 export const BUILTIN_AGENTS: AgentConfig[] = [
   {
     id: 'claude',

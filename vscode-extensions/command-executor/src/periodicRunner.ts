@@ -17,7 +17,7 @@ export class PeriodicRunner {
     private _agents: AgentConfig[],
     private _workspacePath: string | undefined
   ) {
-    this._outputChannel = vscode.window.createOutputChannel('AI CLI Periodic Prompts');
+    this._outputChannel = vscode.window.createOutputChannel('Agent CLI Periodic Prompts');
   }
 
   updateAgents(agents: AgentConfig[]): void {

@@ -11,16 +11,6 @@ export const FALLBACK_CLAUDE_MODELS = [
 
 export const FALLBACK_KIRO_MODELS = [
   'auto',
-  'claude-opus-4.6',
-  'claude-sonnet-4.6',
-  'claude-opus-4.5',
-  'claude-sonnet-4.5',
-  'claude-sonnet-4',
-  'claude-haiku-4.5',
-  'deepseek-3.2',
-  'minimax-m2.1',
-  'minimax-m2.5',
-  'qwen3-coder-next',
 ];
 
 /**
@@ -109,12 +99,66 @@ function runKiroListModels(): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const isWindows = os.platform() === 'win32';
     const cmd = isWindows ? 'wsl' : 'kiro-cli';
-    const args = isWindows
-      ? ['kiro-cli', 'chat', '--list-models', '--format', 'json']
-      : ['chat', '--list-models', '--format', 'json'];
+    const helpArgs = isWindows ? ['kiro-cli', 'chat', '--help'] : ['chat', '--help'];
 
+    runCommand(cmd, helpArgs, 3000)
+      .then(({ code, stdout, stderr }) => {
+        if (code !== 0) {
+          reject(new Error(`kiro-cli help exited with code ${code}: ${stderr}`));
+          return;
+        }
+
+        // 新しい kiro-cli では --list-models が廃止されているため、
+        // 取得不能時は安全に auto のみを返す。
+        if (!stdout.includes('--list-models')) {
+          resolve(FALLBACK_KIRO_MODELS);
+          return;
+        }
+
+        const args = isWindows
+          ? ['kiro-cli', 'chat', '--list-models', '--format', 'json']
+          : ['chat', '--list-models', '--format', 'json'];
+
+        return runCommand(cmd, args, 5000)
+          .then(({ code: listCode, stdout: listStdout, stderr: listStderr }) => {
+            if (listCode !== 0) {
+              reject(new Error(`kiro-cli exited with code ${listCode}: ${listStderr}`));
+              return;
+            }
+
+            // JSON 配列形式: ["model1", "model2", ...] または
+            // OpenAI 互換形式: { "data": [{ "id": "model1" }, ...] } または
+            // Kiro 形式: { "models": [{ "model_id": "model1" }, ...] } または
+            // オブジェクト配列形式: [{ "id": "model1" }, ...]
+            const json = JSON.parse(listStdout);
+            if (Array.isArray(json)) {
+              const ids = json.map((m) => (typeof m === 'string' ? m : (m as { id?: string }).id ?? '')).filter(Boolean);
+              resolve(ids);
+            } else if (json && Array.isArray((json as { data?: unknown[] }).data)) {
+              const ids = ((json as { data: Array<{ id?: string }> }).data)
+                .map((m) => m.id ?? '').filter(Boolean);
+              resolve(ids);
+            } else if (json && Array.isArray((json as { models?: unknown[] }).models)) {
+              const ids = ((json as { models: Array<{ model_id?: string; id?: string }> }).models)
+                .map((m) => m.model_id ?? m.id ?? '').filter(Boolean);
+              resolve(ids);
+            } else {
+              reject(new Error('Unexpected JSON format'));
+            }
+          });
+      })
+      .catch(reject);
+  });
+}
+
+function runCommand(
+  cmd: string,
+  args: string[],
+  timeout: number
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
     const proc = cp.spawn(cmd, args, {
-      timeout: 5000,
+      timeout,
       env: { ...process.env },
       shell: false,
     });
@@ -123,30 +167,7 @@ function runKiroListModels(): Promise<string[]> {
     let stderr = '';
     proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
     proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`kiro-cli exited with code ${code}: ${stderr}`));
-        return;
-      }
-      try {
-        // JSON 配列形式: ["model1", "model2", ...] または
-        // OpenAI 互換形式: { "data": [{ "id": "model1" }, ...] } または
-        // オブジェクト配列形式: [{ "id": "model1" }, ...]
-        const json = JSON.parse(stdout);
-        if (Array.isArray(json)) {
-          const ids = json.map((m) => (typeof m === 'string' ? m : (m as { id?: string }).id ?? '')).filter(Boolean);
-          resolve(ids);
-        } else if (json && Array.isArray((json as { data?: unknown[] }).data)) {
-          const ids = ((json as { data: Array<{ id?: string }> }).data)
-            .map((m) => m.id ?? '').filter(Boolean);
-          resolve(ids);
-        } else {
-          reject(new Error('Unexpected JSON format'));
-        }
-      } catch (e) {
-        reject(e);
-      }
-    });
+    proc.on('close', (code) => resolve({ code, stdout, stderr }));
     proc.on('error', reject);
   });
 }

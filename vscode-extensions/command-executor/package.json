@@ -1,7 +1,7 @@
 {
   "name": "vscode-command-executor",
-  "displayName": "AI CLI Command Executor",
-  "description": "Execute AI CLI commands (Claude Code, GitHub Copilot, Codex, Amazon Q, Kiro) from VS Code chat UI",
+  "displayName": "Agent CLI Executor",
+  "description": "Execute Agent CLI commands (Claude Code, GitHub Copilot, Codex, Amazon Q, Kiro) from VS Code chat UI",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.85.0"
@@ -13,13 +13,13 @@
     "commands": [
       {
         "command": "commandExecutor.openChat",
-        "title": "Open AI CLI Chat",
-        "category": "AI CLI"
+        "title": "Open Agent CLI Chat",
+        "category": "Agent CLI"
       },
       {
         "command": "commandExecutor.reloadAgents",
         "title": "Reload Agents",
-        "category": "AI CLI"
+        "category": "Agent CLI"
       }
     ],
     "views": {
@@ -27,12 +27,12 @@
         {
           "type": "webview",
           "id": "commandExecutor.chatView",
-          "name": "AI CLI Chat"
+          "name": "Agent CLI Chat"
         }
       ]
     },
     "configuration": {
-      "title": "AI CLI Command Executor",
+      "title": "Agent CLI Executor",
       "properties": {
         "commandExecutor.syncOnStartup": {
           "type": "boolean",
@@ -42,7 +42,7 @@
         "commandExecutor.periodicPrompts": {
           "type": "array",
           "default": [],
-          "description": "所定間隔で自動送信する定期プロンプトの設定。結果は Output パネルの「AI CLI Periodic Prompts」に出力されます。",
+          "description": "所定間隔で自動送信する定期プロンプトの設定。結果は Output パネルの「Agent CLI Periodic Prompts」に出力されます。",
           "items": {
             "type": "object",
             "required": ["agentId", "prompt", "intervalMinutes"],
