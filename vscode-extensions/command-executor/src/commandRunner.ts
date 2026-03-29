@@ -105,28 +105,27 @@ export function buildCommand(
         cwd: workspacePath,
       };
 
-    case 'kiro-cli':
+    case 'kiro-cli': {
+      const modelArgs = model ? ['--model', model] : [];
       if (isWindows) {
-        // Windows から WSL2 経由で実行。
-        // wsl --cd <linuxPath> で WSL 内カレントディレクトリを明示指定する。
-        // spawn の cwd（Windows 側）には元の fsPath を渡す。
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
         const wslArgs = wslCwd
-          ? ['--cd', wslCwd, 'kiro-cli', 'chat', '--no-interactive', prompt, ...extra]
-          : ['kiro-cli', 'chat', '--no-interactive', prompt, ...extra];
+          ? ['--cd', wslCwd, 'kiro-cli', 'chat', '--no-interactive', ...modelArgs, prompt, ...extra]
+          : ['kiro-cli', 'chat', '--no-interactive', ...modelArgs, prompt, ...extra];
         return {
           cmd: 'wsl',
           args: wslArgs,
           label: agent.name,
-          cwd: workspacePath,  // wsl.exe の Windows 側 cwd
+          cwd: workspacePath,
         };
       }
       return {
         cmd: 'kiro-cli',
-        args: ['chat', '--no-interactive', prompt, ...extra],
+        args: ['chat', '--no-interactive', ...modelArgs, prompt, ...extra],
         label: agent.name,
         cwd: workspacePath,
       };
+    }
 
     default: {
       const modelArgs = model ? ['--model', model] : [];

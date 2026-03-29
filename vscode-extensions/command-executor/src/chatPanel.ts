@@ -435,12 +435,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      /** claude ツールかどうかを判定してモデル選択行を表示/非表示 */
+      /** モデル選択をサポートするツールかどうかを判定して表示/非表示 */
       function updateModelRowVisibility() {
         const selected = agentSelect.options[agentSelect.selectedIndex];
         const tool = selected ? selected.getAttribute('data-tool') : '';
-        const isClaudeTool = tool === 'claude';
-        if (modelRow) { modelRow.classList.toggle('hidden', !isClaudeTool); }
+        const supportsModel = tool === 'claude' || tool === 'kiro-cli';
+        if (modelRow) { modelRow.classList.toggle('hidden', !supportsModel); }
       }
 
       updateModelRowVisibility();
