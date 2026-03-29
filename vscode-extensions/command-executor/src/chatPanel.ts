@@ -42,7 +42,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage((msg) => {
       switch (msg.type) {
         case 'run':
-          this._runCommand(msg.agentId, msg.prompt);
+          this._runCommand(msg.agentId, msg.prompt, msg.model);
           break;
         case 'kill':
           this._killCurrentProcess();
@@ -89,7 +89,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private _runCommand(agentId: string, prompt: string): void {
+  private _runCommand(agentId: string, prompt: string, model?: string): void {
     if (!this._view) {
       return;
     }
@@ -105,7 +105,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const expandedPrompt = expandFileRefs(prompt, workspacePath);
-    const config = buildCommand(agent, expandedPrompt, workspacePath);
+    const config = buildCommand(agent, expandedPrompt, workspacePath, model);
 
     this._currentProcess = runCommand(
       config,
@@ -139,7 +139,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const id = escapeHtmlAttribute(agent.id);
         const name = escapeHtmlText(agent.name);
         const description = escapeHtmlAttribute(agent.description ?? '');
-        return `<option value="${id}" title="${description}">${name}</option>`;
+        const tool = escapeHtmlAttribute(agent.tool);
+        return `<option value="${id}" title="${description}" data-tool="${tool}">${name}</option>`;
       })
       .join('\n      ');
 
@@ -179,7 +180,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       white-space: nowrap;
     }
 
-    #agent-select {
+    #agent-select, #model-select {
       flex: 1;
       background: var(--vscode-dropdown-background);
       color: var(--vscode-dropdown-foreground);
@@ -188,6 +189,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       border-radius: 2px;
       font-size: 0.9em;
     }
+
+    #model-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      flex-shrink: 0;
+    }
+
+    #model-row label {
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+      white-space: nowrap;
+    }
+
+    #model-row.hidden { display: none; }
 
     #clear-btn, #stop-btn, #sync-btn {
       background: var(--vscode-button-secondaryBackground);
@@ -371,6 +389,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <button id="sync-btn" title="~/.copilot/ を各 CLI ホームへ同期">Sync</button>
   </div>
 
+  <div id="model-row" class="hidden">
+    <label for="model-select">Model:</label>
+    <select id="model-select">
+      <option value="">Default</option>
+      <option value="claude-opus-4-6">claude-opus-4-6</option>
+      <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+      <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>
+    </select>
+  </div>
+
   <div id="agent-description"></div>
 
   <div id="messages"></div>
@@ -400,10 +428,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const syncBtn = document.getElementById('sync-btn');
       const addFileBtn = document.getElementById('add-file-btn');
       const addSelectionBtn = document.getElementById('add-selection-btn');
+      const modelRow = document.getElementById('model-row');
+      const modelSelect = document.getElementById('model-select');
 
       if (!messagesEl || !promptInput || !sendBtn || !stopBtn || !clearBtn || !agentSelect || !agentDescription || !syncBtn) {
         return;
       }
+
+      /** claude ツールかどうかを判定してモデル選択行を表示/非表示 */
+      function updateModelRowVisibility() {
+        const selected = agentSelect.options[agentSelect.selectedIndex];
+        const tool = selected ? selected.getAttribute('data-tool') : '';
+        const isClaudeTool = tool === 'claude';
+        if (modelRow) { modelRow.classList.toggle('hidden', !isClaudeTool); }
+      }
+
+      updateModelRowVisibility();
+      agentSelect.addEventListener('change', updateModelRowVisibility);
 
       let currentAssistantEl = null;
       let currentOutputEl = null;
@@ -453,7 +494,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         scrollToBottom();
 
         promptInput.value = '';
-        vscode.postMessage({ type: 'run', agentId: agentId, prompt: prompt });
+        const model = modelSelect ? modelSelect.value : '';
+        vscode.postMessage({ type: 'run', agentId: agentId, prompt: prompt, model: model || undefined });
       });
 
       promptInput.addEventListener('keydown', function(e) {

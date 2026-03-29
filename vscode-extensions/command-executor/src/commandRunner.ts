@@ -23,11 +23,13 @@ export interface CommandConfig {
  * @param agent        エージェント設定
  * @param userPrompt   ユーザー入力プロンプト
  * @param workspacePath VS Code の workspace uri.fsPath（未設定の場合は undefined）
+ * @param model        使用するモデル名（claude ツールのみ有効、未指定の場合はデフォルト）
  */
 export function buildCommand(
   agent: AgentConfig,
   userPrompt: string,
-  workspacePath: string | undefined
+  workspacePath: string | undefined,
+  model?: string
 ): CommandConfig {
   const isWindows = os.platform() === 'win32';
 
@@ -45,13 +47,15 @@ export function buildCommand(
   const extra = agent.extraArgs ?? [];
 
   switch (agent.tool) {
-    case 'claude':
+    case 'claude': {
+      const modelArgs = model ? ['--model', model] : [];
       return {
         cmd: 'claude',
-        args: ['-p', prompt, ...extra],
+        args: ['-p', prompt, ...modelArgs, ...extra],
         label: agent.name,
         cwd: workspacePath,
       };
+    }
 
     case 'gh-copilot-suggest':
       return {
@@ -124,13 +128,15 @@ export function buildCommand(
         cwd: workspacePath,
       };
 
-    default:
+    default: {
+      const modelArgs = model ? ['--model', model] : [];
       return {
         cmd: 'claude',
-        args: ['-p', prompt, ...extra],
+        args: ['-p', prompt, ...modelArgs, ...extra],
         label: agent.name,
         cwd: workspacePath,
       };
+    }
   }
 }
 
