@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentConfig } from './agentConfig';
 import { buildCommand, runCommand } from './commandRunner';
+import { fetchClaudeModels, FALLBACK_CLAUDE_MODELS } from './modelFetcher';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'commandExecutor.chatView';
@@ -11,6 +12,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _currentProcess?: cp.ChildProcess;
   private _agents: AgentConfig[];
+  private _claudeModels: string[] = FALLBACK_CLAUDE_MODELS;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -77,9 +79,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
 
+    // モデル一覧を非同期取得して webview に反映
+    fetchClaudeModels().then((models) => {
+      this._claudeModels = models;
+      webviewView.webview.postMessage({ type: 'models', models });
+    });
+
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
         webviewView.webview.html = this._getHtml(webviewView.webview);
+        // 可視化時にも最新モデルを再送信
+        fetchClaudeModels().then((models) => {
+          this._claudeModels = models;
+          webviewView.webview.postMessage({ type: 'models', models });
+        });
       }
     });
 
@@ -134,6 +147,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
+    const modelOptionsHtml = ['', ...this._claudeModels]
+      .map((m) => {
+        const val = escapeHtmlAttribute(m);
+        const label = m ? escapeHtmlText(m) : 'Default';
+        return `<option value="${val}">${label}</option>`;
+      })
+      .join('\n      ');
     const agentOptionsHtml = this._agents
       .map((agent) => {
         const id = escapeHtmlAttribute(agent.id);
@@ -392,10 +412,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="model-row" class="hidden">
     <label for="model-select">Model:</label>
     <select id="model-select">
-      <option value="">Default</option>
-      <option value="claude-opus-4-6">claude-opus-4-6</option>
-      <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-      <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>
+      ${modelOptionsHtml}
     </select>
   </div>
 
@@ -569,6 +586,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             syncBtn.disabled = false;
             syncBtn.textContent = 'Sync';
             break;
+
+          case 'models': {
+            if (modelSelect && Array.isArray(msg.models)) {
+              const prev = modelSelect.value;
+              modelSelect.innerHTML = '';
+              const defaultOpt = document.createElement('option');
+              defaultOpt.value = '';
+              defaultOpt.textContent = 'Default';
+              modelSelect.appendChild(defaultOpt);
+              for (const id of msg.models) {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = id;
+                modelSelect.appendChild(opt);
+              }
+              // 以前の選択を維持（存在する場合）
+              if (prev && msg.models.includes(prev)) {
+                modelSelect.value = prev;
+              }
+            }
+            break;
+          }
 
           case 'insertText': {
             const pos = promptInput.selectionStart;
