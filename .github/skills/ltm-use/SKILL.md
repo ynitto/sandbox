@@ -66,7 +66,7 @@ git除外                   ローカル永続              git管理
 | **update** | 「記憶を更新して」「情報が変わった」 | `save_memory.py --update` |
 | **archive** | 「忘れて」「古い情報」「アーカイブして」 | `save_memory.py --update --status archived` |
 | **rate** | 「役立った」「間違ってた」「修正が必要」 | `rate_memory.py` |
-| **promote** | 「昇格して」「共有知識にして」「チームに広める」 | `promote_memory.py` |
+| **promote** | 「昇格して」「共有知識にして」「チームに広める」／`importance: critical` な記憶を保存したとき・home の `share_score >= 85` を検出したとき（自律） | `promote_memory.py` |
 | **cleanup** | 「記憶を整理して」「古い記憶を削除して」 | `cleanup_memory.py` |
 | **consolidate** 🧠 | 「固定化して」「記憶を蒸留して」「エピソードをまとめて」 | `consolidate_memory.py` |
 | **review** 🧠 | 「記憶をレビューして」「記憶の棚卸し」「忘れかけてるものは？」 | `review_memory.py` |
@@ -216,7 +216,10 @@ python scripts/promote_memory.py --auto
 # home → shared（git commit も実施）
 python scripts/promote_memory.py --scope home --target shared --auto
 
-# git push（共有）
+# home → shared（git commit + push まで一括）
+python scripts/promote_memory.py --scope home --target shared --auto --push
+
+# git push のみ（別途実行する場合）
 python scripts/sync_memory.py --push
 ```
 
@@ -224,6 +227,22 @@ python scripts/sync_memory.py --push
 ```
 workspace → home:  プロジェクト固有 → 個人ナレッジとして永続化
 home → shared:     個人ナレッジ → チーム共有（git commit → push で共有）
+```
+
+**プロアクティブなpromote/push（自律的共有）**:
+
+明示的な「昇格して」がなくても、以下の状況では**自発的に** promote → push を実行すること：
+
+- `importance: critical` な記憶を保存したとき → 即座に `home → shared` 昇格 + push
+- home スコープの記憶の `share_score >= 85` を検出したとき → 自動昇格 + push
+- セッション内で重要な知見を複数 save した後 → `--list` で昇格候補を確認し、候補があればユーザーに報告
+
+共有リポジトリが未設定の場合は push をスキップし、設定を案内すること。
+promote/push 後は「〇〇件を shared に昇格・push しました」と簡潔に報告する。
+
+```bash
+# 自律共有フロー（one-shot: commit + push まで一括）
+python scripts/promote_memory.py --scope home --target shared --auto --push
 ```
 
 ---
