@@ -11,6 +11,7 @@ export interface PeriodicPromptConfig {
 
 export class PeriodicRunner {
   private _timers: NodeJS.Timeout[] = [];
+  private _runningPrompts = new Set<string>();
   private _outputChannel: vscode.OutputChannel;
 
   constructor(
@@ -68,6 +69,14 @@ export class PeriodicRunner {
   }
 
   private _runPrompt(entry: PeriodicPromptConfig): void {
+    const key = `${entry.agentId}:::${entry.intervalMinutes}:::${entry.prompt}`;
+    if (this._runningPrompts.has(key)) {
+      this._outputChannel.appendLine(
+        `[${timestamp()}] スキップ (前回の実行が継続中): ${entry.agentId}`
+      );
+      return;
+    }
+
     const agent = this._agents.find((a) => a.id === entry.agentId);
     if (!agent) {
       this._outputChannel.appendLine(
@@ -76,6 +85,7 @@ export class PeriodicRunner {
       return;
     }
 
+    this._runningPrompts.add(key);
     const cmdConfig = buildCommand(agent, entry.prompt, this._workspacePath);
     this._outputChannel.appendLine(
       `[${timestamp()}] 定期プロンプト実行: ${agent.name}`
@@ -88,6 +98,7 @@ export class PeriodicRunner {
       (data) => this._outputChannel.append(data),
       (data) => this._outputChannel.append(data),
       (code) => {
+        this._runningPrompts.delete(key);
         this._outputChannel.appendLine(`--- 完了 (終了コード: ${code}) ---\n`);
       }
     );
