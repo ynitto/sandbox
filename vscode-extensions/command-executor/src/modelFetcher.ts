@@ -1,11 +1,23 @@
 import * as https from 'https';
 import * as cp from 'child_process';
+import * as os from 'os';
 
 /** フォールバック用モデル一覧 */
 export const FALLBACK_CLAUDE_MODELS = [
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-haiku-4-5-20251001',
+];
+
+export const FALLBACK_KIRO_MODELS = [
+  'auto',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-5',
+  'claude-haiku-4-5',
+  'claude-opus-4-6',
+  'deepseek-v3-2',
+  'minimax-m2-1',
+  'qwen3-coder-next',
 ];
 
 /**
@@ -66,6 +78,73 @@ function requestModels(apiKey: string): Promise<string[]> {
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
     req.end();
+  });
+}
+
+/**
+ * kiro-cli から利用可能なモデル一覧を取得する。
+ * `kiro-cli chat --list-models --format json` を実行してパースする。
+ * 取得できない場合は FALLBACK_KIRO_MODELS を返す。
+ */
+export async function fetchKiroModels(): Promise<string[]> {
+  try {
+    const models = await runKiroListModels();
+    if (models.length > 0) {
+      return models;
+    }
+  } catch {
+    // 取得失敗はフォールバックで処理
+  }
+  return FALLBACK_KIRO_MODELS;
+}
+
+/**
+ * `kiro-cli chat --list-models --format json` を実行してモデル ID 一覧を返す。
+ * Windows では WSL 経由で実行する。
+ */
+function runKiroListModels(): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const isWindows = os.platform() === 'win32';
+    const cmd = isWindows ? 'wsl' : 'kiro-cli';
+    const args = isWindows
+      ? ['kiro-cli', 'chat', '--list-models', '--format', 'json']
+      : ['chat', '--list-models', '--format', 'json'];
+
+    const proc = cp.spawn(cmd, args, {
+      timeout: 5000,
+      env: { ...process.env },
+      shell: false,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`kiro-cli exited with code ${code}: ${stderr}`));
+        return;
+      }
+      try {
+        // JSON 配列形式: ["model1", "model2", ...] または
+        // OpenAI 互換形式: { "data": [{ "id": "model1" }, ...] } または
+        // オブジェクト配列形式: [{ "id": "model1" }, ...]
+        const json = JSON.parse(stdout);
+        if (Array.isArray(json)) {
+          const ids = json.map((m) => (typeof m === 'string' ? m : (m as { id?: string }).id ?? '')).filter(Boolean);
+          resolve(ids);
+        } else if (json && Array.isArray((json as { data?: unknown[] }).data)) {
+          const ids = ((json as { data: Array<{ id?: string }> }).data)
+            .map((m) => m.id ?? '').filter(Boolean);
+          resolve(ids);
+        } else {
+          reject(new Error('Unexpected JSON format'));
+        }
+      } catch (e) {
+        reject(e);
+      }
+    });
+    proc.on('error', reject);
   });
 }
 

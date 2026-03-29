@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentConfig } from './agentConfig';
 import { buildCommand, runCommand } from './commandRunner';
-import { fetchClaudeModels, FALLBACK_CLAUDE_MODELS } from './modelFetcher';
+import { fetchClaudeModels, fetchKiroModels, FALLBACK_CLAUDE_MODELS, FALLBACK_KIRO_MODELS } from './modelFetcher';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'commandExecutor.chatView';
@@ -13,6 +13,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _currentProcess?: cp.ChildProcess;
   private _agents: AgentConfig[];
   private _claudeModels: string[] = FALLBACK_CLAUDE_MODELS;
+  private _kiroModels: string[] = FALLBACK_KIRO_MODELS;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -80,19 +81,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this._getHtml(webviewView.webview);
 
     // モデル一覧を非同期取得して webview に反映
-    fetchClaudeModels().then((models) => {
-      this._claudeModels = models;
-      webviewView.webview.postMessage({ type: 'models', models });
-    });
+    this._fetchAndSendModels(webviewView.webview);
 
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
         webviewView.webview.html = this._getHtml(webviewView.webview);
-        // 可視化時にも最新モデルを再送信
-        fetchClaudeModels().then((models) => {
-          this._claudeModels = models;
-          webviewView.webview.postMessage({ type: 'models', models });
-        });
+        this._fetchAndSendModels(webviewView.webview);
       }
     });
 
@@ -138,6 +132,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private _fetchAndSendModels(webview: vscode.Webview): void {
+    Promise.all([fetchClaudeModels(), fetchKiroModels()]).then(([claude, kiro]) => {
+      this._claudeModels = claude;
+      this._kiroModels = kiro;
+      webview.postMessage({ type: 'toolModels', toolModels: { 'claude': claude, 'kiro-cli': kiro } });
+    });
+  }
+
   private _syncConfig(): void {
     if (this._onSync) {
       this._onSync();
@@ -147,13 +149,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
-    const modelOptionsHtml = ['', ...this._claudeModels]
-      .map((m) => {
-        const val = escapeHtmlAttribute(m);
-        const label = m ? escapeHtmlText(m) : 'Default';
-        return `<option value="${val}">${label}</option>`;
-      })
-      .join('\n      ');
+    // ツール別モデルリストをJS側に埋め込む（初期描画用）
+    const toolModelsJson = JSON.stringify({
+      'claude': this._claudeModels,
+      'kiro-cli': this._kiroModels,
+    });
     const agentOptionsHtml = this._agents
       .map((agent) => {
         const id = escapeHtmlAttribute(agent.id);
@@ -412,7 +412,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="model-row" class="hidden">
     <label for="model-select">Model:</label>
     <select id="model-select">
-      ${modelOptionsHtml}
+      <option value="">Default</option>
     </select>
   </div>
 
@@ -435,6 +435,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <script nonce="${nonce}">
     (function() {
       const vscode = acquireVsCodeApi();
+      let toolModelsMap = ${toolModelsJson};
       const messagesEl = document.getElementById('messages');
       const promptInput = document.getElementById('prompt-input');
       const sendBtn = document.getElementById('send-btn');
@@ -452,16 +453,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      /** モデル選択をサポートするツールかどうかを判定して表示/非表示 */
-      function updateModelRowVisibility() {
+      /** ツールに応じてモデルドロップダウンを更新する */
+      function updateModelSelect(tool) {
+        if (!modelSelect) { return; }
+        const models = toolModelsMap[tool] || [];
+        const prev = modelSelect.value;
+        modelSelect.innerHTML = '';
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = 'Default';
+        modelSelect.appendChild(defaultOpt);
+        for (const id of models) {
+          const opt = document.createElement('option');
+          opt.value = id;
+          opt.textContent = id;
+          modelSelect.appendChild(opt);
+        }
+        if (prev && models.includes(prev)) { modelSelect.value = prev; }
+      }
+
+      /** モデル選択をサポートするツールかどうかを判定して表示/非表示・内容を更新 */
+      function updateModelRow() {
         const selected = agentSelect.options[agentSelect.selectedIndex];
         const tool = selected ? selected.getAttribute('data-tool') : '';
         const supportsModel = tool === 'claude' || tool === 'kiro-cli';
         if (modelRow) { modelRow.classList.toggle('hidden', !supportsModel); }
+        if (supportsModel) { updateModelSelect(tool); }
       }
 
-      updateModelRowVisibility();
-      agentSelect.addEventListener('change', updateModelRowVisibility);
+      updateModelRow();
+      agentSelect.addEventListener('change', updateModelRow);
 
       let currentAssistantEl = null;
       let currentOutputEl = null;
@@ -587,24 +608,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             syncBtn.textContent = 'Sync';
             break;
 
-          case 'models': {
-            if (modelSelect && Array.isArray(msg.models)) {
-              const prev = modelSelect.value;
-              modelSelect.innerHTML = '';
-              const defaultOpt = document.createElement('option');
-              defaultOpt.value = '';
-              defaultOpt.textContent = 'Default';
-              modelSelect.appendChild(defaultOpt);
-              for (const id of msg.models) {
-                const opt = document.createElement('option');
-                opt.value = id;
-                opt.textContent = id;
-                modelSelect.appendChild(opt);
-              }
-              // 以前の選択を維持（存在する場合）
-              if (prev && msg.models.includes(prev)) {
-                modelSelect.value = prev;
-              }
+          case 'toolModels': {
+            if (msg.toolModels && typeof msg.toolModels === 'object') {
+              toolModelsMap = Object.assign(toolModelsMap, msg.toolModels);
+              // 現在選択中のツールのドロップダウンを再構築
+              updateModelRow();
             }
             break;
           }
