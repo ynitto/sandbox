@@ -99,7 +99,8 @@ def search_with_index(memory_dir: str, keywords: list[str],
                       status_filter: str | None, limit: int,
                       category: str | None = None,
                       use_hybrid: bool = True,
-                      context_text: str = "") -> list[dict]:
+                      context_text: str = "",
+                      memory_type_filter: str = "") -> list[dict]:
     """インデックス優先の2段階検索（v5: 4軸ハイブリッドランキング対応）。
 
     1. インデックスで title/summary/tags をスコアリング（ファイル読み込みなし）
@@ -134,6 +135,8 @@ def search_with_index(memory_dir: str, keywords: list[str],
     candidates = []
     for entry in entries:
         if status_filter and entry.get("status", "active") != status_filter:
+            continue
+        if memory_type_filter and entry.get("memory_type", "semantic") != memory_type_filter:
             continue
         if category:
             filepath_rel = entry.get("filepath", "")
@@ -204,28 +207,33 @@ def search_with_index(memory_dir: str, keywords: list[str],
 
 def search_all_scopes(scope: str, keywords: list[str], status_filter: str | None,
                       limit: int, category: str | None,
-                      context_text: str = "") -> list[dict]:
+                      context_text: str = "",
+                      memory_type_filter: str = "") -> list[dict]:
     """スコープ横断検索（all の場合は全スコープの結果をマージ）"""
     all_results = []
     for memory_dir in memory_utils.get_memory_dirs(scope):
         if not os.path.isdir(memory_dir):
             continue
         results = search_with_index(memory_dir, keywords, status_filter, limit,
-                                    category, context_text=context_text)
+                                    category, context_text=context_text,
+                                    memory_type_filter=memory_type_filter)
         all_results.extend(results)
     all_results.sort(key=lambda r: r["score"], reverse=True)
     return all_results[:limit]
 
 
-def fallback_search(keywords: list[str], limit: int) -> tuple[list[dict], bool]:
+def fallback_search(keywords: list[str], limit: int,
+                    memory_type_filter: str = "") -> tuple[list[dict], bool]:
     """workspace で0件の場合の自動フォールバック（home → shared → git pull）"""
     # まず home を検索
-    results = search_all_scopes("home", keywords, "active", limit, None)
+    results = search_all_scopes("home", keywords, "active", limit, None,
+                                memory_type_filter=memory_type_filter)
     if results:
         return results, False
 
     # shared ローカルを検索
-    results = search_all_scopes("shared", keywords, "active", limit, None)
+    results = search_all_scopes("shared", keywords, "active", limit, None,
+                                memory_type_filter=memory_type_filter)
     if results:
         return results, False
 
@@ -239,7 +247,8 @@ def fallback_search(keywords: list[str], limit: int) -> tuple[list[dict], bool]:
             if ok:
                 synced = True
         if synced:
-            results = search_all_scopes("shared", keywords, "active", limit, None)
+            results = search_all_scopes("shared", keywords, "active", limit, None,
+                                        memory_type_filter=memory_type_filter)
             if results:
                 return results, True  # True = git sync した
     return [], False
@@ -377,18 +386,16 @@ def main():
     status = None if args.status == "all" else args.status
 
     results = search_all_scopes(args.scope, keywords, status, args.limit, args.category,
-                                context_text=context_text)
-
-    # v5: memory_type フィルタ
-    if args.memory_type:
-        results = [r for r in results if r["meta"].get("memory_type", "") == args.memory_type]
+                                context_text=context_text,
+                                memory_type_filter=args.memory_type or "")
 
     # workspace で0件ならフォールバック
     synced = False
     if not results and args.scope == "workspace":
         query_label = args.query or "(auto-context)"
         print(f"「{query_label}」: ワークスペースに記憶なし → home/shared を検索します...\n")
-        results, synced = fallback_search(keywords, args.limit)
+        results, synced = fallback_search(keywords, args.limit,
+                                          memory_type_filter=args.memory_type or "")
 
     if not results:
         print(f"「{args.query}」に関連する記憶が見つかりませんでした。")
