@@ -46,6 +46,8 @@ user_rating: 0
 correction_count: 0
 share_score: 0
 promoted_from: ""
+consolidated_from: []
+consolidated_to: ""
 summary: "{summary}"
 ---
 

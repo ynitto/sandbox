@@ -435,6 +435,10 @@ def build_index_entry(filepath: str, memory_dir: str) -> dict:
         "user_rating": int(meta.get("user_rating", 0)),
         "created": meta.get("created", ""),
         "updated": meta.get("updated", ""),
+        "memory_type": meta.get("memory_type", "semantic"),
+        "importance": meta.get("importance", "normal"),
+        "retention_score": float(meta.get("retention_score") or 1.0),
+        "last_accessed": meta.get("last_accessed", ""),
     }
 
 

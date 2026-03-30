@@ -248,7 +248,7 @@ def main():
         consolidated_id = c_meta.get("id", "")
         memory_utils.update_frontmatter_fields(consolidated_filepath, {
             "share_score": result["share_score"],
-            "consolidated_from": ", ".join(result["source_ids"]),
+            "consolidated_from": result["source_ids"],
         })
 
         # 元エピソードをアーカイブ
