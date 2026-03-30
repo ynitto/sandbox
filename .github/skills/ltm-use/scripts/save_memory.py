@@ -151,7 +151,8 @@ def save_memory(category: str, title: str, summary: str, content: str,
 
 
 def update_memory(filepath: str, summary: str = None, content: str = None,
-                  conclusion: str = None, status: str = None) -> None:
+                  conclusion: str = None, status: str = None,
+                  memory_type: str = None, importance: str = None) -> None:
     """既存記憶ファイルの updated 日付と各フィールドを更新する"""
     with open(filepath, "r", encoding="utf-8") as f:
         text = f.read()
@@ -161,6 +162,10 @@ def update_memory(filepath: str, summary: str = None, content: str = None,
 
     if status:
         text = re.sub(r"^status: \w+", f"status: {status}", text, flags=re.MULTILINE)
+    if memory_type:
+        text = re.sub(r"^memory_type: \w+", f"memory_type: {memory_type}", text, flags=re.MULTILINE)
+    if importance:
+        text = re.sub(r"^importance: \w+", f"importance: {importance}", text, flags=re.MULTILINE)
     if summary:
         text = re.sub(r'^summary: ".*"', f'summary: "{summary}"', text, flags=re.MULTILINE)
     if content:
@@ -228,6 +233,8 @@ def main():
             content=args.content,
             conclusion=args.conclusion,
             status=args.status,
+            memory_type=args.memory_type,
+            importance=args.importance,
         )
         print(f"Updated: {args.update}")
         return

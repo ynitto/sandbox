@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## v5.2.0（2026-03-30）
+
+### 修正
+
+- **`--no-hybrid` 未実装を解消**: `recall_memory.py` の argparser に `--no-hybrid` を追加し、`search_all_scopes` / `fallback_search` を通じて `search_with_index` の `use_hybrid` フラグに伝播するよう修正
+- **`update_memory` に `memory_type`/`importance` を追加**: `save_memory.py` の `--update` モードで `--memory-type` / `--importance` を指定できるよう対応
+- **`format_result` に v5 フィールドを追加**: recall 結果の表示に `memory_type`, `importance`, `retention_score` を追加し、忘却リスクや記憶タイプを一目で確認できるよう改善
+- **コーパス df ドリフトを修正**: `similarity.py` の `update_corpus_entry` で新規エントリ追加時に `df` と `total_docs` を更新するよう修正し、IDF値の陳腐化を防止
+- **`promote_memory.py` のインデックス活用**: `load_candidate_memories` をインデックスで事前フィルタリングするよう変更し、候補ファイルのみ読み込むことでパフォーマンスを向上
+- **`metadata.version` を 5.1.0 → 5.2.0 に更新**
+
+---
+
 ## v5.1.0（2026-03-30）
 
 ### 修正

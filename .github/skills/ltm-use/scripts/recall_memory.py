@@ -208,14 +208,16 @@ def search_with_index(memory_dir: str, keywords: list[str],
 def search_all_scopes(scope: str, keywords: list[str], status_filter: str | None,
                       limit: int, category: str | None,
                       context_text: str = "",
-                      memory_type_filter: str = "") -> list[dict]:
+                      memory_type_filter: str = "",
+                      use_hybrid: bool = True) -> list[dict]:
     """スコープ横断検索（all の場合は全スコープの結果をマージ）"""
     all_results = []
     for memory_dir in memory_utils.get_memory_dirs(scope):
         if not os.path.isdir(memory_dir):
             continue
         results = search_with_index(memory_dir, keywords, status_filter, limit,
-                                    category, context_text=context_text,
+                                    category, use_hybrid=use_hybrid,
+                                    context_text=context_text,
                                     memory_type_filter=memory_type_filter)
         all_results.extend(results)
     all_results.sort(key=lambda r: r["score"], reverse=True)
@@ -223,17 +225,20 @@ def search_all_scopes(scope: str, keywords: list[str], status_filter: str | None
 
 
 def fallback_search(keywords: list[str], limit: int,
-                    memory_type_filter: str = "") -> tuple[list[dict], bool]:
+                    memory_type_filter: str = "",
+                    use_hybrid: bool = True) -> tuple[list[dict], bool]:
     """workspace で0件の場合の自動フォールバック（home → shared → git pull）"""
     # まず home を検索
     results = search_all_scopes("home", keywords, "active", limit, None,
-                                memory_type_filter=memory_type_filter)
+                                memory_type_filter=memory_type_filter,
+                                use_hybrid=use_hybrid)
     if results:
         return results, False
 
     # shared ローカルを検索
     results = search_all_scopes("shared", keywords, "active", limit, None,
-                                memory_type_filter=memory_type_filter)
+                                memory_type_filter=memory_type_filter,
+                                use_hybrid=use_hybrid)
     if results:
         return results, False
 
@@ -248,7 +253,8 @@ def fallback_search(keywords: list[str], limit: int,
                 synced = True
         if synced:
             results = search_all_scopes("shared", keywords, "active", limit, None,
-                                        memory_type_filter=memory_type_filter)
+                                        memory_type_filter=memory_type_filter,
+                                        use_hybrid=use_hybrid)
             if results:
                 return results, True  # True = git sync した
     return [], False
@@ -294,6 +300,11 @@ def format_result(result: dict, index: int, full: bool = False) -> str:
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
 
+    memory_type = meta.get("memory_type", "semantic")
+    importance = meta.get("importance", "normal")
+    retention = meta.get("retention_score", "")
+    retention_str = f"{float(retention):.2f}" if retention != "" else "N/A"
+
     lines = [
         f"[{index}] [{scope}] {meta.get('title', '')} "
         f"(match={result['score']}, share={meta.get('share_score', 0)}, "
@@ -301,7 +312,9 @@ def format_result(result: dict, index: int, full: bool = False) -> str:
         f"    Path: {rel_path}",
         f"    Created: {meta.get('created', '')} | Updated: {meta.get('updated', '')} "
         f"| Status: {meta.get('status', '')}",
-        f"    Tags: {', '.join(tags) if tags else 'なし'} | access_count: {meta.get('access_count', 0)}",
+        f"    Type: {memory_type} | Importance: {importance} | Retention: {retention_str} "
+        f"| access_count: {meta.get('access_count', 0)}",
+        f"    Tags: {', '.join(tags) if tags else 'なし'}",
         f"    Summary: {meta.get('summary', '')}",
     ]
     if full:
@@ -370,6 +383,8 @@ def main():
     parser.add_argument("--memory-type",
                         choices=["episodic", "semantic", "procedural"],
                         help="記憶タイプでフィルタリング")
+    parser.add_argument("--no-hybrid", action="store_true",
+                        help="TF-IDF/コンテキストを無効化しキーワード一致のみで検索（v3互換モード）")
     args = parser.parse_args()
 
     if not args.query and not args.auto_context:
@@ -385,9 +400,11 @@ def main():
     keywords = args.query.split() if args.query else []
     status = None if args.status == "all" else args.status
 
+    use_hybrid = not args.no_hybrid
     results = search_all_scopes(args.scope, keywords, status, args.limit, args.category,
                                 context_text=context_text,
-                                memory_type_filter=args.memory_type or "")
+                                memory_type_filter=args.memory_type or "",
+                                use_hybrid=use_hybrid)
 
     # workspace で0件ならフォールバック
     synced = False
@@ -395,7 +412,8 @@ def main():
         query_label = args.query or "(auto-context)"
         print(f"「{query_label}」: ワークスペースに記憶なし → home/shared を検索します...\n")
         results, synced = fallback_search(keywords, args.limit,
-                                          memory_type_filter=args.memory_type or "")
+                                          memory_type_filter=args.memory_type or "",
+                                          use_hybrid=use_hybrid)
 
     if not results:
         print(f"「{args.query}」に関連する記憶が見つかりませんでした。")

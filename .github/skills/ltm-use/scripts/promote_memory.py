@@ -28,31 +28,49 @@ import memory_utils
 
 
 def load_candidate_memories(src_scope: str, threshold: int) -> list[dict]:
-    """src_scope から share_score >= threshold の記憶を返す"""
+    """src_scope から share_score >= threshold の記憶を返す。
+
+    インデックスで事前フィルタリングし、候補ファイルのみ読み込むことで
+    記憶数が多い場合のパフォーマンスを向上させる。
+    """
     src_dir = memory_utils.get_memory_dir(src_scope)
+
+    # インデックスから候補を事前絞り込み（全ファイル読み込みを回避）
+    index = memory_utils.load_index(src_dir)
+    if not index.get("entries"):
+        index = memory_utils.refresh_index(src_dir)
+
+    pre_candidates = [
+        e for e in index.get("entries", [])
+        if e.get("share_score", 0) >= threshold
+        and e.get("status", "active") == "active"
+    ]
+
     candidates = []
-    for fpath, rel_cat in memory_utils.iter_memory_files(src_dir):
+    for entry in pre_candidates:
+        fpath = os.path.join(src_dir, entry["filepath"])
+        if not os.path.exists(fpath):
+            continue
         with open(fpath, encoding="utf-8") as f:
             text = f.read()
         meta, body = memory_utils.parse_frontmatter(text)
         score = memory_utils.compute_share_score(meta, body)
-        # フロントマターの share_score も更新
+        # キャッシュと実スコアが乖離していれば更新
         if meta.get("share_score", 0) != score:
             memory_utils.update_frontmatter_fields(fpath, {"share_score": score})
             memory_utils.update_index_entry(src_dir, fpath)
-        candidates.append({
-            "filepath": fpath,
-            "rel_cat": rel_cat,
-            "title": meta.get("title", os.path.basename(fpath)),
-            "summary": meta.get("summary", ""),
-            "score": score,
-            "status": meta.get("status", "active"),
-        })
-    return sorted(
-        [c for c in candidates if c["score"] >= threshold],
-        key=lambda x: x["score"],
-        reverse=True,
-    )
+        if score >= threshold:
+            rel_cat = os.path.relpath(os.path.dirname(fpath), src_dir)
+            candidates.append({
+                "filepath": fpath,
+                "rel_cat": rel_cat,
+                "title": meta.get("title", os.path.basename(fpath)),
+                "summary": meta.get("summary", ""),
+                "score": score,
+                "status": meta.get("status", "active"),
+            })
+
+    return sorted(candidates, key=lambda x: x["score"], reverse=True)
 
 
 def promote_file(src_path: str, src_scope: str, target_scope: str) -> str:
