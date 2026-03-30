@@ -17,21 +17,7 @@ metadata:
 エージェントにセッションをまたいだ長期記憶を与えるコアスキル。
 MCPサーバーやClaude Code専用機能を使わず、**Markdownファイルへの読み書きだけ**で動作する。
 
-**v5.0.0 の新機能**（🧠 脳構造インスパイア設計）:
-- **記憶タイプ分類**: episodic（海馬）/ semantic（新皮質）/ procedural（大脳基底核）の3分類
-- **記憶の固定化（consolidate）**: エピソード記憶群を意味記憶に蒸留（海馬→新皮質モデル）
-- **重要度レベル（importance）**: critical/high/normal/low の扁桃体モデルによる記憶保持力制御
-- **忘却曲線**: エビングハウスモデルによる指数関数的減衰 + 間隔反復効果
-- **文脈依存想起**: `--context` / `--auto-context` による前頭前皮質モデルの選択的活性化
-- **記憶レビュー（review）**: 海馬リプレイモデルによる定期的な記憶の棚卸し
-
-**v4.0.0 の機能**（継続）:
-- 記憶クラスタリング・類似記憶推薦（TF-IDF + コサイン類似度）
-- save 時の重複検出・統合提案
-- recall ハイブリッドランキング（キーワード + 意味的類似度 + メタデータ）
-- 自動タグ抽出（TF-IDF ベース）
-- cleanup 智的化（重複検出・品質スコア閾値）
-
+更新履歴: [`CHANGELOG.md`](CHANGELOG.md)
 アルゴリズム詳細: [`references/algorithms.md`](references/algorithms.md)
 設計思想: [`../../docs/designs/ltm-use-v5-brain-design.md`](../../docs/designs/ltm-use-v5-brain-design.md)
 
@@ -93,7 +79,7 @@ python scripts/save_memory.py \
 python scripts/save_memory.py --scope home \
   --category architecture --title "[タイトル]" --summary "[要約]" --content "[内容]"
 
-# v5.0.0 記憶タイプ指定（🧠 脳の記憶分類に対応）
+# 記憶タイプ指定（🧠 脳の記憶分類に対応）
 python scripts/save_memory.py \
   --memory-type episodic \       # 海馬: 具体的な経験・イベント
   --importance high \             # 扁桃体: 重要度レベル
@@ -101,7 +87,7 @@ python scripts/save_memory.py \
   --summary "..." --content "..."
   # → memory_type/importance は省略可（コンテンツから自動推定）
 
-# v4.0.0 新機能: 自動タグ抽出と重複検出
+# 自動タグ抽出と重複検出
 python scripts/save_memory.py \
   --category auth --title "JWT認証の実装" \
   --summary "..." --content "..."
@@ -153,7 +139,7 @@ python scripts/save_memory.py --no-auto-tags \
 
 recall すると `access_count` が自動加算され `share_score` が再計算される。
 ワークスペースで見つからない場合は home/shared を自動フォールバック検索する。
-v5.0.0: recall 時に `retention_score` も自動更新（間隔反復効果による忘却曲線リセット）。
+recall 時に `retention_score` も自動更新（間隔反復効果による忘却曲線リセット）。
 
 ```bash
 python scripts/recall_memory.py "[キーワード1] [キーワード2]"
@@ -164,15 +150,15 @@ python scripts/recall_memory.py "[キーワード]" --full
 # 結果に対してインタラクティブ評価
 python scripts/recall_memory.py "[キーワード]" --rate-after
 
-# v5.0.0 文脈依存想起（🧠 前頭前皮質モデル）
+# 文脈依存想起（🧠 前頭前皮質モデル）
 python scripts/recall_memory.py "[キーワード]" \
   --context "認証システムのリファクタリング"
 # → キーワード一致だけでなく、作業コンテキストとの関連性もランキングに反映
 
-# v5.0.0 自動コンテキスト（git diff / ディレクトリから推定）
+# 自動コンテキスト（git diff / ディレクトリから推定）
 python scripts/recall_memory.py --auto-context
 
-# v5.0.0 記憶タイプフィルター
+# 記憶タイプフィルター
 python scripts/recall_memory.py "[キーワード]" --memory-type procedural
 ```
 
@@ -180,7 +166,7 @@ python scripts/recall_memory.py "[キーワード]" --memory-type procedural
 - 関連するタスクを始める前
 - 同じ問題を調査し始めたとき（重複調査を避ける）
 
-v5.0.0 ハイブリッドランキング（4軸）詳細: [`references/algorithms.md`](references/algorithms.md)
+ハイブリッドランキング（4軸）詳細: [`references/algorithms.md`](references/algorithms.md)
 
 ---
 
@@ -288,7 +274,7 @@ python scripts/build_index.py --force
 
 参照頻度・経過日数に基づいて不要な記憶を自動判定し削除する。
 
-**v4.0.0 新機能**: 重複検出モードと品質スコア閾値による智的クリーンアップ。
+重複検出モードと品質スコア閾値による智的クリーンアップをサポート。
 
 ```bash
 # ドライラン（削除対象を確認）
@@ -297,10 +283,10 @@ python scripts/cleanup_memory.py --dry-run
 # ワークスペース記憶をクリーンアップ
 python scripts/cleanup_memory.py
 
-# v4.0.0 重複検出モード（類似度 >= 0.85 のペアを検出）
+# 重複検出モード（類似度 >= 0.85 のペアを検出）
 python scripts/cleanup_memory.py --duplicates-only --dry-run
 
-# v4.0.0 品質スコア閾値モード（総合品質 < 30 を削除候補に）
+# 品質スコア閾値モード（総合品質 < 30 を削除候補に）
 python scripts/cleanup_memory.py --quality-threshold 30 --dry-run
 ```
 
@@ -409,7 +395,7 @@ python scripts/review_memory.py --update-retention
 
 ---
 
-## 記憶のライフサイクル（v5.0.0 🧠 脳構造モデル）
+## 記憶のライフサイクル（🧠 脳構造モデル）
 
 ```
 [生の経験] セッション内での発見・決定・失敗
