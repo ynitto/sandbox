@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import os
+import subprocess
 import sys
 
 import memory_utils
@@ -40,74 +41,94 @@ def _score_index_entry(entry: dict, keywords: list[str]) -> int:
 
 
 def _compute_meta_boost(entry: dict) -> float:
-    """メタデータに基づく boost スコア（0.0〜1.0）
-    
-    よく参照される / 高評価 / 新しい / アクティブ な記憶を優遇する
+    """メタデータに基づく boost スコア（0.0〜1.0）。
+
+    v5: retention_score があれば忘却曲線値を使用（なければ鮮度線形補間にフォールバック）。
     """
     access_count = entry.get("access_count", 0)
     user_rating = entry.get("user_rating", 0)
     status = entry.get("status", "active")
-    updated = entry.get("updated", "")
-    
-    # 参照回数（最大 0.3）
-    access_boost = min(access_count * 0.05, 0.3)
-    
-    # ユーザー評価（最大 0.3）
-    rating_boost = min(user_rating * 0.1, 0.3)
-    
-    # 鮮度（最大 0.2）
-    days_old = memory_utils.days_since(updated) if updated else 999
-    if days_old < 30:
-        freshness = 0.2
-    elif days_old < 90:
-        freshness = 0.1
+
+    # 参照回数（最大 0.25）
+    access_boost = min(access_count / 20, 0.25)
+
+    # ユーザー評価（最大 0.25）
+    rating_boost = min(max(user_rating / 3, 0.0), 0.25)
+
+    # v5: retention_score → 0.3 成分 / v4 互換: freshness → 0.2 成分
+    retention_val = entry.get("retention_score", None)
+    if retention_val is not None:
+        retention_component = 0.3 * float(retention_val)
     else:
-        freshness = 0.0
-    
+        updated = entry.get("updated", "")
+        days_old = memory_utils.days_since(updated) if updated else 999
+        if days_old < 30:
+            freshness = 0.2
+        elif days_old < 90:
+            freshness = 0.1
+        else:
+            freshness = 0.0
+        retention_component = freshness
+
     # ステータス（0.2）
     status_boost = 0.2 if status == "active" else 0.0
-    
-    return access_boost + rating_boost + freshness + status_boost
+
+    return access_boost + rating_boost + retention_component + status_boost
+
+
+def _collect_auto_context() -> str:
+    """git diff --stat と cwd からコンテキストを自動収集する（v5 auto-context）。"""
+    parts = [os.path.basename(os.getcwd())]
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--stat", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if "|" in line:
+                    fname = line.split("|")[0].strip()
+                    if fname:
+                        parts.append(os.path.splitext(os.path.basename(fname))[0])
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return " ".join(parts)
 
 
 def search_with_index(memory_dir: str, keywords: list[str],
                       status_filter: str | None, limit: int,
                       category: str | None = None,
-                      use_hybrid: bool = True) -> list[dict]:
-    """インデックス優先の2段階検索 (v4: ハイブリッドランキング対応)
-    
+                      use_hybrid: bool = True,
+                      context_text: str = "") -> list[dict]:
+    """インデックス優先の2段階検索（v5: 4軸ハイブリッドランキング対応）。
+
     1. インデックスで title/summary/tags をスコアリング（ファイル読み込みなし）
-    2. v4: TF-IDF コサイン類似度を計算（コーパスがある場合）
-    3. ハイブリッドスコア = α*keyword_score + β*tfidf_similarity + γ*meta_boost
-    4. 上位候補のみ実ファイルを読み込み body を追加スコアリング
-    
-    Args:
-        memory_dir: メモリーディレクトリ
-        keywords: 検索キーワード
-        status_filter: ステータスフィルタ
-        limit: 最大返却数
-        category: カテゴリフィルタ
-        use_hybrid: ハイブリッドスコアを使用するか（False の場合は v3 互換）
+    2. TF-IDF コサイン類似度を計算（コーパスがある場合）
+    3. v4（3軸）: 0.5*keyword + 0.35*tfidf + 0.15*meta_boost
+       v5（4軸）: 0.4*keyword + 0.3*tfidf + 0.15*meta_boost + 0.15*context_boost
+    4. 上位候補のみ実ファイルを読み込み body キーワードスコアを加算
     """
     index = memory_utils.load_index(memory_dir)
     if not index.get("entries"):
         index = memory_utils.refresh_index(memory_dir)
     entries = index.get("entries", [])
 
-    # ── TF-IDF ハイブリッドスコアを使用するか確認 ──
     corpus = None
     query_vector = None
-    config = memory_utils.load_config()
-    weights = config.get("recall_hybrid_weights", {"keyword": 0.5, "tfidf": 0.35, "meta": 0.15})
-    
+    context_vector = None
+    idf: dict = {}
+
     if use_hybrid:
         corpus = similarity.load_corpus(memory_dir)
         if corpus.get("doc_vectors"):
-            # クエリをベクトル化
+            idf = similarity.compute_idf(corpus.get("df", {}), corpus.get("total_docs", 1))
             query_text = " ".join(keywords)
             query_tokens = similarity.tokenize(query_text)
-            idf = similarity.compute_idf(corpus.get("df", {}), corpus.get("total_docs", 1))
             query_vector = similarity.compute_tfidf_vector(query_tokens, idf)
+            # v5 コンテキストベクトル
+            if context_text:
+                ctx_tokens = similarity.tokenize(context_text)
+                context_vector = similarity.compute_tfidf_vector(ctx_tokens, idf)
 
     # ── ステップ1: インデックスでフィルタ＆スコアリング ──
     candidates = []
@@ -119,30 +140,28 @@ def search_with_index(memory_dir: str, keywords: list[str],
             entry_cat = os.path.dirname(filepath_rel).replace("\\", "/")
             if entry_cat != category:
                 continue
-        
-        # キーワードスコア
+
         kw_score = _score_index_entry(entry, keywords)
-        
-        # ハイブリッドスコア計算
+
         if query_vector and corpus:
-            # TF-IDF 類似度
             mem_id = entry.get("id", "")
             doc_vec = corpus.get("doc_vectors", {}).get(mem_id, {})
             tfidf_sim = similarity.cosine_similarity(query_vector, doc_vec) if doc_vec else 0.0
-            
-            # メタデータブースト
             meta_boost = _compute_meta_boost(entry)
-            
-            # 正規化して合成
-            kw_max = len(keywords) * 20  # 理論最大値
+            kw_max = len(keywords) * 20
             kw_norm = min(kw_score / kw_max, 1.0) if kw_max > 0 else 0.0
-            
-            hybrid = (weights["keyword"] * kw_norm +
-                     weights["tfidf"] * tfidf_sim +
-                     weights["meta"] * meta_boost)
-            
-            if hybrid > 0.05:  # 最低閾値
-                candidates.append((hybrid, entry, kw_score))  # kw_score も保持
+
+            if context_vector and doc_vec:
+                # v5 4軸スコア
+                ctx_boost = similarity.cosine_similarity(context_vector, doc_vec)
+                hybrid = (0.4 * kw_norm + 0.3 * tfidf_sim
+                          + 0.15 * meta_boost + 0.15 * ctx_boost)
+            else:
+                # v4 3軸スコア（context 未指定時）
+                hybrid = 0.5 * kw_norm + 0.35 * tfidf_sim + 0.15 * meta_boost
+
+            if hybrid > 0.05:
+                candidates.append((hybrid, entry, kw_score))
         else:
             # v3 互換モード（コーパスなし）
             if kw_score > 0:
@@ -152,10 +171,9 @@ def search_with_index(memory_dir: str, keywords: list[str],
         return []
 
     candidates.sort(key=lambda x: x[0], reverse=True)
-    # 上位30件（またはlimit*3件）までフルファイル読み込み対象
     top = candidates[:max(limit * 3, 30)]
 
-    # ── ステップ2: フルファイル読み込みで body 追加スコア ──
+    # ── ステップ2: フルファイル読み込みで body キーワードスコアを加算 ──
     results = []
     for base_score, entry, kw_score in top:
         fpath = os.path.join(memory_dir, entry["filepath"])
@@ -165,15 +183,14 @@ def search_with_index(memory_dir: str, keywords: list[str],
             with open(fpath, encoding="utf-8") as f:
                 text = f.read()
             meta, body = memory_utils.parse_frontmatter(text)
-            body_score = sum(
-                min(body.lower().count(kw.lower()), 5) for kw in keywords
-            )
-            final_score = base_score + body_score if not query_vector else base_score
+            body_score = sum(min(body.lower().count(kw.lower()), 5) for kw in keywords)
+            # body のキーワード一致は常に加算（Fix 5: 論理バグ修正）
+            final_score = base_score + body_score
             results.append({
                 "filepath": fpath,
                 "memory_dir": memory_dir,
                 "score": final_score,
-                "keyword_score": kw_score,  # デバッグ用
+                "keyword_score": kw_score,
                 "meta": meta,
                 "body": body,
                 "entry": entry,
@@ -186,13 +203,15 @@ def search_with_index(memory_dir: str, keywords: list[str],
 
 
 def search_all_scopes(scope: str, keywords: list[str], status_filter: str | None,
-                      limit: int, category: str | None) -> list[dict]:
+                      limit: int, category: str | None,
+                      context_text: str = "") -> list[dict]:
     """スコープ横断検索（all の場合は全スコープの結果をマージ）"""
     all_results = []
     for memory_dir in memory_utils.get_memory_dirs(scope):
         if not os.path.isdir(memory_dir):
             continue
-        results = search_with_index(memory_dir, keywords, status_filter, limit, category)
+        results = search_with_index(memory_dir, keywords, status_filter, limit,
+                                    category, context_text=context_text)
         all_results.extend(results)
     all_results.sort(key=lambda r: r["score"], reverse=True)
     return all_results[:limit]
@@ -229,7 +248,10 @@ def fallback_search(keywords: list[str], limit: int) -> tuple[list[dict], bool]:
 # ─── access_count 追跡 ────────────────────────────────────────
 
 def track_access(result: dict) -> None:
-    """access_count をインクリメントし share_score を再計算してインデックスも更新する"""
+    """access_count をインクリメントし share_score と retention_score を再計算する。
+
+    v5: recall 時に retention_score もリセット（間隔反復効果）。
+    """
     meta = result["meta"]
     body = result["body"]
     filepath = result["filepath"]
@@ -237,15 +259,17 @@ def track_access(result: dict) -> None:
 
     new_count = int(meta.get("access_count", 0)) + 1
     today = memory_utils.today_str()
-    pseudo_meta = dict(meta, access_count=new_count)
+    pseudo_meta = dict(meta, access_count=new_count, last_accessed=today)
     new_score = memory_utils.compute_share_score(pseudo_meta, body)
+    # v5: アクセス直後の retention は最高値（忘却曲線リセット）
+    new_retention = memory_utils.compute_retention_score(pseudo_meta)
 
     memory_utils.update_frontmatter_fields(filepath, {
         "access_count": new_count,
         "last_accessed": today,
         "share_score": new_score,
+        "retention_score": round(new_retention, 3),
     })
-    # インデックスも更新
     if memory_dir:
         memory_utils.update_index_entry(memory_dir, filepath)
 
@@ -314,7 +338,8 @@ def interactive_rate(results: list[dict]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="記憶をキーワード検索する")
-    parser.add_argument("query", help="検索クエリ（スペース区切りで複数キーワード）")
+    parser.add_argument("query", nargs="?", default="",
+                        help="検索クエリ（スペース区切りで複数キーワード）")
     parser.add_argument("--category", help="カテゴリを絞り込む")
     parser.add_argument("--scope", default="workspace",
                         choices=["workspace", "home", "shared", "all"],
@@ -328,17 +353,41 @@ def main():
                         help="access_count を更新しない")
     parser.add_argument("--rate-after", action="store_true",
                         help="結果表示後にインタラクティブ評価ループを実行する")
+    # v5.0.0 文脈依存想起
+    parser.add_argument("--context", default="",
+                        help="作業コンテキストを指定して関連性ブースト（v5 4軸ランキング）")
+    parser.add_argument("--auto-context", action="store_true",
+                        help="git diff / cwd からコンテキストを自動収集して使用")
+    parser.add_argument("--memory-type",
+                        choices=["episodic", "semantic", "procedural"],
+                        help="記憶タイプでフィルタリング")
     args = parser.parse_args()
 
-    keywords = args.query.split()
+    if not args.query and not args.auto_context:
+        parser.error("query または --auto-context が必要です")
+
+    # v5 コンテキスト収集
+    context_text = args.context
+    if args.auto_context and not context_text:
+        context_text = _collect_auto_context()
+        if context_text:
+            print(f"[auto-context] {context_text}\n")
+
+    keywords = args.query.split() if args.query else []
     status = None if args.status == "all" else args.status
 
-    results = search_all_scopes(args.scope, keywords, status, args.limit, args.category)
+    results = search_all_scopes(args.scope, keywords, status, args.limit, args.category,
+                                context_text=context_text)
+
+    # v5: memory_type フィルタ
+    if args.memory_type:
+        results = [r for r in results if r["meta"].get("memory_type", "") == args.memory_type]
 
     # workspace で0件ならフォールバック
     synced = False
     if not results and args.scope == "workspace":
-        print(f"「{args.query}」: ワークスペースに記憶なし → home/shared を検索します...\n")
+        query_label = args.query or "(auto-context)"
+        print(f"「{query_label}」: ワークスペースに記憶なし → home/shared を検索します...\n")
         results, synced = fallback_search(keywords, args.limit)
 
     if not results:

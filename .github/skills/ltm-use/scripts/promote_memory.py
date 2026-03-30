@@ -91,6 +91,8 @@ def main():
     parser.add_argument("--file", help="特定ファイルのパスを直接指定して昇格")
     parser.add_argument("--threshold", type=int, default=None,
                         help="昇格候補の最低スコア（省略時は config 値を使用）")
+    parser.add_argument("--push", action="store_true",
+                        help="shared 昇格後に git push まで自動実行（--auto と組み合わせて使用）")
     args = parser.parse_args()
 
     cfg = memory_utils.load_config()
@@ -118,6 +120,9 @@ def main():
                     repo, f"feat: promote memory from {args.scope}"
                 )
                 print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
+                if ok and args.push:
+                    ok2, msg2 = memory_utils.git_push_repo(repo)
+                    print(f"git push: {'成功' if ok2 else '失敗'} - {msg2}")
             else:
                 print("注意: 書き込み可能な共有リポジトリが設定されていません。git commit をスキップします。")
         return
@@ -175,7 +180,11 @@ def main():
                 )
                 print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
                 if ok:
-                    print(f"共有するには: python sync_memory.py --push --repo {repo['name']}")
+                    if args.push:
+                        ok2, msg2 = memory_utils.git_push_repo(repo)
+                        print(f"git push: {'成功' if ok2 else '失敗'} - {msg2}")
+                    else:
+                        print(f"共有するには: python sync_memory.py --push --repo {repo['name']}")
 
 
 if __name__ == "__main__":
