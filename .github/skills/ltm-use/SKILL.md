@@ -321,10 +321,11 @@ VSCode の Copilot Memory 機能（`%APPDATA%\Code\User\globalStorage\github.cop
 python scripts/sync_copilot_memory.py --dry-run
 
 # home スコープに取り込む（デフォルト・プロジェクト横断）
-python scripts/sync_copilot_memory.py
+# ユーザーからの明示的な指示なので --force でインターバルを無視して実行する
+python scripts/sync_copilot_memory.py --force
 
 # workspace スコープに取り込む
-python scripts/sync_copilot_memory.py --scope workspace
+python scripts/sync_copilot_memory.py --scope workspace --force
 ```
 
 globalStorageパス・詳細オプション: [`references/operations.md`](references/operations.md)
