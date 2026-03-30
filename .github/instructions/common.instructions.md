@@ -35,9 +35,18 @@ applyTo: "**"
 
 手順 1・2 は **1日1回のみ** 実行する。以下の方法で判定すること:
 
-1. `~/.claude/session_init_date` ファイルを読む（存在しない場合は空扱い）
+タイムスタンプファイルの場所は `skill-registry.json` と同じディレクトリ内の `session_init_date`:
+
+| エージェント | タイムスタンプファイル |
+|---|---|
+| GitHub Copilot | `~/.copilot/session_init_date` |
+| Claude Code    | `~/.claude/session_init_date`  |
+| Codex          | `~/.codex/session_init_date`   |
+| Kiro           | `~/.kiro/session_init_date`    |
+
+1. 上記のタイムスタンプファイルを読む（存在しない場合は空扱い）
 2. ファイルの内容が今日の日付（`YYYY-MM-DD` 形式）と一致する場合は、**手順 1・2 をスキップ**して手順 3 へ進む
-3. 一致しない場合は手順 1・2 を実行し、完了後に今日の日付を `~/.claude/session_init_date` へ書き込む
+3. 一致しない場合は手順 1・2 を実行し、完了後に今日の日付をタイムスタンプファイルへ書き込む
 
 ### 手順 1: スキル自動更新チェック
 
