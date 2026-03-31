@@ -68,8 +68,6 @@ def validate_skill(skill_path: str) -> tuple[list[str], list[str]]:
     with open(skill_md, encoding="utf-8") as f:
         content = f.read()
 
-    lines = content.splitlines()
-
     # フロントマター検証
     fm = parse_frontmatter(content)
     if fm is None:
@@ -124,7 +122,7 @@ def validate_skill(skill_path: str) -> tuple[list[str], list[str]]:
             errors.append("'compatibility' は500文字以内にしてください")
 
     # SKILL.md 行数チェック
-    line_count = len(lines)
+    line_count = len(content.splitlines())
     if line_count > SKILL_MD_MAX_LINES:
         warnings.append(
             f"SKILL.md が長すぎます（{line_count}行 > 推奨{SKILL_MD_MAX_LINES}行）。references/ への分割を検討してください"

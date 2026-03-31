@@ -552,7 +552,7 @@ python ~/.copilot/skills/git-skill-manager/scripts/audit_log.py \
 
 ```
 1. 各チームがプロジェクト固有スキルを .github/skills/ で開発
-   → codebase-to-skill でプロジェクト規約をスキル化
+   → skill-creator（モードB）でプロジェクト規約をスキル化
 
 2. ok_rate ≥ 0.9 かつ 10 回以上の実績があるスキルを昇格候補にする
    → 「試用中スキルを確認して昇格判定して」（skill-evaluator）
@@ -668,4 +668,4 @@ for s in sorted(skills, key=lambda x: x.get('ok_rate', 1)):
 
 - **スキルエコシステムの設計**に興味がある方 → [ノードフェデレーション設計](designs/node-federation-design.md) を熟読し、組織のトポロジーに合わせたリポジトリ構成を設計してください
 - **自動化・CI/CD 統合**に取り組む方 → `ci-cd-configurator` スキルで GitLab CI / Jenkins パイプラインを構築してください
-- **スキルのオープンソース化**を検討している方 → `skill-recruiter` でスキルをパブリックリポジトリに公開するフローを確認してください
+- **スキルのオープンソース化**を検討している方 → `skill-creator`（モードD）でスキルをパブリックリポジトリに公開するフローを確認してください

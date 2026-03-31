@@ -112,7 +112,7 @@ metadata:
 | `author` | 1/39 (3%) | react-best-practices のみ |
 | `source` | 2/39 (5%) | doc-coauthoring, react-best-practices |
 
-`skill-recruiter` で外部取得したスキルの出自を追跡できない。マーケットプレイス構想（feature-proposals §2.7）の前提条件が欠落。
+`skill-creator`（モードD）で外部取得したスキルの出自を追跡できない。マーケットプレイス構想（feature-proposals §2.7）の前提条件が欠落。
 
 ### 改善案
 
@@ -123,7 +123,7 @@ metadata:
   source: "https://github.com/org/repo"  # 外部取得元（ローカル作成の場合は省略可）
 ```
 
-- `skill-recruiter` が外部スキル取得時に自動でフィールドを埋める
+- `skill-creator`（モードD）が外部スキル取得時に自動でフィールドを埋める
 - `skill-evaluator` が `license` 未記載を WARN として検出
 
 ---

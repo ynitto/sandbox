@@ -46,7 +46,7 @@
 - diff ベースのレビュー（セキュリティ、パフォーマンス、可読性）
 - プロジェクト固有のコーディング規約への準拠チェック
 - LGTM / Request Changes の判定と根拠の明示
-- codebase-to-skill で生成されたプロジェクトスキルとの連携
+- skill-creator（モードB）で生成されたプロジェクトスキルとの連携
 
 ---
 
@@ -112,13 +112,13 @@
 
 ---
 
-### 1.8 `debug-mode` — printfデバッグスキル ✅ 実装済み
+### 1.8 ランタイム計装（`systematic-debugging` に統合済み） ✅ 実装済み
 
-**概要**: ランタイムログを使った体系的なprintfデバッグを支援する。
+**概要**: ランタイムログを使った体系的なprintfデバッグ機能を `systematic-debugging` v2.0.0 に統合。
 
-**背景**: `systematic-debugging` は根本原因特定に焦点を当てた汎用デバッグ手順を提供するが、ランタイムログを駆使した仮説検証型のデバッグをより詳細にガイドするスキルが必要だった。両スキルはトリガー条件が異なり、相互補完的に機能する。
+**背景**: 旧 `debug-mode` スキルとして独立していたが、`systematic-debugging` と密接に連携するため1スキルに統合した。
 
-**主な機能**:
+**主な機能**（`systematic-debugging` の計装プロセスとして提供）:
 - 複数仮説の列挙と証拠収集によるCONFIRMED判定フロー
 - ログ出力箇所の体系的な追加・確認手順
 - Windows / GitHub Copilot 対応
@@ -325,7 +325,7 @@ steps:
 **提案**: 外部から取得したスキルのスクリプトを隔離環境（Docker コンテナ or Python venv）で実行するオプションを追加する。
 
 **効果**:
-- 外部スキルの安全な試用（skill-recruiter との連携強化）
+- 外部スキルの安全な試用（skill-creator モードD との連携強化）
 - 環境汚染の防止
 - 再現可能な実行環境の保証
 
@@ -508,7 +508,7 @@ version: 1.3.0
 | db-schema-designer | 中 | 中 | **★★☆** | 未実装 |
 | refactoring-guide | 中 | 中 | **★★☆** | ✅ `code-simplifier` として実装 |
 | documentation-writer | 低 | 中 | **★★☆** | ✅ `technical-writer` として実装 |
-| debug-mode | 低 | 中 | **★★☆** | ✅ 実装済み（`systematic-debugging` と相互補完） |
+| debug-mode | 低 | 中 | **★★☆** | ✅ `systematic-debugging` v2.0.0 に統合済み |
 | doc-coauthoring | 低 | 中 | **★★☆** | ✅ 実装済み（`technical-writer` と役割分離） |
 | architecture-reviewer | 低 | 高 | **★★☆** | ✅ 実装済み |
 | design-reviewer | 低 | 中 | **★★☆** | ✅ 実装済み |

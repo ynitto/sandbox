@@ -1,26 +1,27 @@
----
-name: generating-skills-from-copilot-logs
-description: skill-creator のモードC（履歴から生成）のワークフロー実装。skill-creator または git-skill-manager の discover 操作から呼び出される。直接起動せず skill-creator を使うこと。
-metadata:
-  version: 1.0.0
-  tier: experimental
-  category: meta
-  tags:
-    - skill-generation
-    - chat-history
-    - workflow-detection
----
+# モードC: 履歴からスキルを生成
 
-# Generating Skills from Copilot Logs
+VSCode Copilot または Claude Code のチャット履歴からAgent Skillを自動生成するワークフロー。
 
-VSCode Copilot または Claude Code のチャット履歴からAgent Skillを自動生成するメタスキル。
+## 目次
+
+- [起動元](#起動元)
+- [概要](#概要)
+- [フェーズ 1: データ収集（同意取得）](#フェーズ-1-データ収集同意取得)
+- [フェーズ 2: パターン抽出](#フェーズ-2-パターン抽出)
+- [フェーズ 3: スコアリング](#フェーズ-3-スコアリング)
+- [フェーズ 4: 候補提示](#フェーズ-4-候補提示)
+- [フェーズ 5: SKILL.md 生成](#フェーズ-5-skillmd-生成)
+- [フェーズ 6: バリデーション](#フェーズ-6-バリデーション)
+- [安全ルール](#安全ルール)
+
+---
 
 ## 起動元
 
 | 呼び出し元 | 起動方法 |
 |---|---|
-| ユーザー直接 | 「履歴からスキルを作って」「パターンをスキル化して」など |
-| git-skill-manager discover | `discover` 操作が `--since` パラメータでこのスキルを自動起動 |
+| skill-creator モードC | 「履歴からスキルを作って」「パターンをスキル化して」など |
+| git-skill-manager discover | `discover` 操作が `--since` パラメータでこのワークフローを自動起動 |
 | scrum-master Phase 6 | スプリント完了後のスキル共有提案から起動 |
 
 `git-skill-manager discover` 経由の場合、`--since` パラメータが渡されるため、
@@ -80,7 +81,7 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 
 各ワークスペースフォルダの `workspace.json` でプロジェクトパスを確認できる。
 
-**フォールバック**: `chatSessions/` が存在しない場合は `state.vscdb`（SQLite）の `interactive.sessions` キーから取得する。詳細は [references/copilot-history-guide.md](references/copilot-history-guide.md) 参照。
+**フォールバック**: `chatSessions/` が存在しない場合は `state.vscdb`（SQLite）の `interactive.sessions` キーから取得する。詳細は `copilot-history-guide.md` 参照。
 
 **Claude Code:**
 
@@ -117,7 +118,7 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 
 **粒度の判断基準**: 同じ手順・判断基準で処理できるセッション群なら粒度は適切。異なる手順を含むなら分割が必要。
 
-パターン抽出の詳細例は [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md) 参照。
+パターン抽出の詳細例は `pattern-extraction-examples.md` 参照。
 
 ---
 
@@ -167,13 +168,13 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 
 出力先: `<SKILLS_BASE>/<skill-name>/SKILL.md`（`<SKILLS_BASE>` は `~/.copilot/skills` または `<workspace-skill-dir>`）
 
-生成後、`skill-creator` の手順に従いパッケージ化する。
+生成後、skill-creator のパッケージ手順に従いパッケージ化する。
 
 ---
 
 ## フェーズ 6: バリデーション
 
-[references/quality-checklist.md](references/quality-checklist.md) に従い品質確認する。
+`quality-checklist.md` に従い品質確認する。
 
 ---
 

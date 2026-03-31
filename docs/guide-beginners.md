@@ -198,8 +198,7 @@ scrum-master の動き:
 | 品質 | `code-reviewer` | コードレビュー |
 | 品質 | `code-simplifier` | リファクタリング・コード改善 |
 | 品質 | `security-reviewer` | OWASP Top 10 ベースのセキュリティレビュー |
-| 品質 | `systematic-debugging` | 体系的なデバッグ |
-| 品質 | `debug-mode` | ランタイムログを使った printfデバッグ |
+| 品質 | `systematic-debugging` | 体系的なデバッグ（ランタイム計装も統合） |
 | テスト | `tdd-executing` | Red-Green-Refactor サイクルで TDD を実行 |
 | インフラ | `ci-cd-configurator` | CI/CD パイプライン構築 |
 | 調査・設計 | `brainstorming` | 実装前の要件・設計整理 |

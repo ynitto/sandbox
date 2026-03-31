@@ -164,8 +164,8 @@ def _update_frontmatter_version(skill_path: str, new_ver: str) -> bool:
 
 CORE_SKILLS_DEFAULT = [
     "scrum-master", "git-skill-manager", "skill-creator",
-    "requirements-definer", "skill-recruiter", "skill-evaluator",
-    "generating-skills-from-copilot-logs", "sprint-reviewer", "codebase-to-skill",
+    "requirements-definer", "skill-evaluator",
+    "sprint-reviewer",
 ]
 
 
