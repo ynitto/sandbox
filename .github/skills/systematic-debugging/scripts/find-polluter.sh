@@ -3,7 +3,7 @@
 # 使い方: ./find-polluter.sh <確認するファイルまたはディレクトリ> <テストパターン>
 # 例: ./find-polluter.sh '.git' 'src/**/*.test.ts'
 
-set -e
+set -euo pipefail
 
 if [ $# -ne 2 ]; then
   echo "使い方: $0 <確認するファイル> <テストパターン>"
@@ -14,19 +14,42 @@ fi
 POLLUTION_CHECK="$1"
 TEST_PATTERN="$2"
 
+# プロジェクトルート外へのアクセスを防ぐ
+if [[ "$TEST_PATTERN" == *".."* ]]; then
+  echo "エラー: テストパターンに '..' は使用できません" >&2
+  exit 1
+fi
+
+PROJECT_ROOT="$(pwd -P)"
+
 echo "検索中: $POLLUTION_CHECK を作成するテスト"
 echo "テストパターン: $TEST_PATTERN"
 echo ""
 
-# テストファイルのリストを取得
-TEST_FILES=$(find . -path "$TEST_PATTERN" | sort)
-TOTAL=$(echo "$TEST_FILES" | wc -l | tr -d ' ')
+# テストファイルのリストを取得し、プロジェクトルート外のパスを除外する
+mapfile -t TEST_FILES < <(find . -path "./$TEST_PATTERN" | sort)
+
+# プロジェクトルート外のパスをフィルタ
+SAFE_FILES=()
+for f in "${TEST_FILES[@]}"; do
+  resolved="$(realpath "$f" 2>/dev/null || echo "")"
+  if [[ -n "$resolved" && "$resolved" == "$PROJECT_ROOT"* ]]; then
+    SAFE_FILES+=("$f")
+  fi
+done
+
+TOTAL="${#SAFE_FILES[@]}"
+
+if [ "$TOTAL" -eq 0 ]; then
+  echo "テストファイルが見つかりませんでした。パターンを確認してください: $TEST_PATTERN"
+  exit 1
+fi
 
 echo "テストファイル数: $TOTAL"
 echo ""
 
 COUNT=0
-for TEST_FILE in $TEST_FILES; do
+for TEST_FILE in "${SAFE_FILES[@]}"; do
   COUNT=$((COUNT + 1))
 
   # 汚染が既に存在する場合スキップ
@@ -38,7 +61,7 @@ for TEST_FILE in $TEST_FILES; do
 
   echo "[$COUNT/$TOTAL] テスト中: $TEST_FILE"
 
-  # テストを実行
+  # テストを実行（テスト自体の失敗は無視して汚染の有無のみ確認する）
   npm test "$TEST_FILE" > /dev/null 2>&1 || true
 
   # 汚染が出現したか確認
