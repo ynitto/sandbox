@@ -25,7 +25,7 @@
 ### 全オプション
 
 ```bash
-# 基本形
+# 基本形（デフォルト: home）
 python scripts/save_memory.py \
   --category [カテゴリ] \
   --title "[タイトル]" \
@@ -33,8 +33,11 @@ python scripts/save_memory.py \
   --content "[詳細内容]" \
   --tags [タグ1],[タグ2]
 
-# スコープ指定（workspace / home）
---scope home
+# 非インタラクティブモード（自動保存・スクリプト呼び出し時）
+--non-interactive        # 全input()プロンプトをスキップ（--no-dedup と併用推奨）
+
+# スコープ指定（home / workspace）
+--scope workspace        # ワークスペース固有（非推奨・廃止予定）
 
 # v4.0.0 自動タグ抽出（デフォルト有効）
 --no-auto-tags          # 自動タグ抽出を無効化
@@ -66,10 +69,10 @@ python scripts/save_memory.py \
 ### 手順（スクリプトなし・手動）
 
 1. カテゴリを決定する（例: `auth`, `bug-investigation`, `general`）
-2. `${MEMORY_DIR}/[カテゴリ]/[kebab-case-title].md` を作成する
+2. `{agent_home}/memory/home/[カテゴリ]/[kebab-case-title].md` を作成する
 3. フォーマット仕様（`memory-format.md`）に従ってフロントマターと本文を書く
 4. **必須**: `summary` フィールドに1〜2文の要約を書く（検索の鍵）
-5. `scope`, `access_count: 0`, `share_score: 0` を設定する
+5. `scope: home`, `access_count: 0`, `share_score: 0` を設定する
 
 ---
 
