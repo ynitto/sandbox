@@ -165,7 +165,7 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 }
 ```
 
-`skill-registry.json` が未設定の場合、shared 記憶の管理はスキップされる（workspace / home のみ動作）。
+`skill-registry.json` が未設定の場合、shared 記憶の管理はスキップされる（home のみ動作）。
 
 > **v5.0.0 後方互換**: v5 新設定が未定義の場合、上記デフォルト値が自動適用される。
 > v4 の `recall_hybrid_weights`（3軸）と v5 の `recall_hybrid_weights_v5`（4軸）は共存可能。

@@ -34,10 +34,11 @@ from registry import _agent_home, _registry_path as _get_registry_path
 HOME_MEMORY_ROOT = os.path.join(_agent_home(), "memory")
 
 SCOPE_DIRS = {
-    "workspace": os.path.join(get_skill_dir(), "memories"),
-    "home":      os.path.join(HOME_MEMORY_ROOT, "home"),
-    "shared":    os.path.join(HOME_MEMORY_ROOT, "shared"),  # 後方互換用レガシーパス
+    "home":   os.path.join(HOME_MEMORY_ROOT, "home"),
+    "shared": os.path.join(HOME_MEMORY_ROOT, "shared"),  # 後方互換用レガシーパス
 }
+
+DEFAULT_MEMORY_TYPE = "semantic"
 
 REGISTRY_PATH = _get_registry_path()
 SHARED_BASE = os.path.join(HOME_MEMORY_ROOT, "shared")
@@ -167,18 +168,18 @@ def get_memory_dir(scope: str) -> str:
     if scope == "shared":
         repo = get_primary_writable_repo()
         return repo["memory_dir"] if repo else SCOPE_DIRS["shared"]
-    return SCOPE_DIRS.get(scope, SCOPE_DIRS["workspace"])
+    return SCOPE_DIRS.get(scope, SCOPE_DIRS["home"])
 
 
 def get_memory_dirs(scope: str) -> list[str]:
     """scope='all' なら全スコープ、'shared' なら全リポジトリのディレクトリを返す"""
     if scope == "all":
         shared_dirs = [r["memory_dir"] for r in get_shared_repos()] or [SCOPE_DIRS["shared"]]
-        return [SCOPE_DIRS["workspace"], SCOPE_DIRS["home"]] + shared_dirs
+        return [SCOPE_DIRS["home"]] + shared_dirs
     if scope == "shared":
         repos = get_shared_repos()
         return [r["memory_dir"] for r in repos] if repos else [SCOPE_DIRS["shared"]]
-    return [SCOPE_DIRS.get(scope, SCOPE_DIRS["workspace"])]
+    return [SCOPE_DIRS.get(scope, SCOPE_DIRS["home"])]
 
 
 # ─── フロントマター ──────────────────────────────────────────
@@ -348,7 +349,7 @@ def compute_retention_score(meta: dict) -> float:
     repetition_factor = 1.0 + math.log(1.0 + access_count)
 
     cfg = load_config()
-    base_half_life = float(cfg.get("retention_base_half_life", 30))
+    base_half_life = float(cfg.get("forgetting_base_half_life", 30))
     half_life = base_half_life * importance_factor * repetition_factor
 
     # 最終アクセス日を優先し、なければ更新日 → 作成日
@@ -428,14 +429,14 @@ def build_index_entry(filepath: str, memory_dir: str) -> dict:
         "summary": meta.get("summary", ""),
         "tags": tags,
         "status": meta.get("status", "active"),
-        "scope": meta.get("scope", "workspace"),
+        "scope": meta.get("scope", "home"),
         "share_score": int(meta.get("share_score", 0)),
         "access_count": int(meta.get("access_count", 0)),
         "correction_count": int(meta.get("correction_count", 0)),
         "user_rating": int(meta.get("user_rating", 0)),
         "created": meta.get("created", ""),
         "updated": meta.get("updated", ""),
-        "memory_type": meta.get("memory_type", "semantic"),
+        "memory_type": meta.get("memory_type", DEFAULT_MEMORY_TYPE),
         "importance": meta.get("importance", "normal"),
         "retention_score": float(meta.get("retention_score") or 1.0),
         "last_accessed": meta.get("last_accessed", ""),
@@ -522,7 +523,7 @@ def update_index_entry(memory_dir: str, filepath: str) -> None:
 def find_memory_dir(filepath: str) -> str | None:
     """ファイルパスからそのスコープのメモリーディレクトリを特定する"""
     abs_path = os.path.abspath(filepath)
-    candidates = [SCOPE_DIRS["workspace"], SCOPE_DIRS["home"]]
+    candidates = [SCOPE_DIRS["home"]]
     candidates += [r["memory_dir"] for r in get_shared_repos()]
     # 旧形式の shared ディレクトリも確認
     if SCOPE_DIRS["shared"] not in candidates:

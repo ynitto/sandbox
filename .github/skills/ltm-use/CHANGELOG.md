@@ -1,5 +1,39 @@
 # CHANGELOG
 
+## v5.3.0（2026-03-31）
+
+### Breaking Changes
+
+- **`workspace` スコープを廃止**。全記憶は `home` スコープに保存する。
+  - `save_memory.py`, `recall_memory.py`, `list_memories.py`, `cleanup_memory.py`,
+    `consolidate_memory.py`, `build_index.py`, `promote_memory.py` の `--scope` 引数から
+    `workspace` オプションを削除。
+  - `memory_utils.py` の `SCOPE_DIRS["workspace"]` を削除。
+  - 既存の `workspace` 記憶（`${SKILL_DIR}/memories/`）を引き続き使用するには
+    `~/.copilot/memory/home/` へ手動でコピーすること。
+- **`promote_memory.py` の昇格フロー変更**。`workspace → home → shared` の2段階から
+  `home → shared` の1段階に統一。`--scope` は `home` のみをサポート。
+
+### Bug Fixes
+
+- **`recall_memory.py`**: body キーワードスコア（0〜20）を base_score（0.0〜1.0）に
+  直接加算していたスケール不整合を修正。`min(body_score/50, 0.2)` で正規化し
+  最大 +0.2 の補正として加算するよう変更。
+
+### Improvements
+
+- **`cleanup_memory.py`**: `retention_score < 0.1` かつ `importance` が
+  `critical`/`high` でない記憶を削除候補に追加（`memory-format.md` 仕様に準拠）。
+- **`consolidate_memory.py`**: `memory_type` 未設定のレガシーファイルに対して
+  `detect_memory_type()` による自動推定を適用し、episodic な記憶を固定化対象に含める。
+- **`memory_utils.py`**: `DEFAULT_MEMORY_TYPE = "semantic"` 定数を追加し、
+  各スクリプトのハードコードを統一。
+- **`memory_utils.py`**: `compute_retention_score()` の config キー名を
+  `retention_base_half_life` → `forgetting_base_half_life` に修正
+  （`configuration.md` の定義と統一）。
+
+---
+
 ## v5.2.0（2026-03-30）
 
 ### 修正

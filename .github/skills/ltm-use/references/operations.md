@@ -25,7 +25,7 @@
 ### 全オプション
 
 ```bash
-# 基本形
+# 基本形（デフォルト: home）
 python scripts/save_memory.py \
   --category [カテゴリ] \
   --title "[タイトル]" \
@@ -33,8 +33,11 @@ python scripts/save_memory.py \
   --content "[詳細内容]" \
   --tags [タグ1],[タグ2]
 
-# スコープ指定（workspace / home）
---scope home
+# 非インタラクティブモード（自動保存・スクリプト呼び出し時）
+--non-interactive        # 全input()プロンプトをスキップ（--no-dedup と併用推奨）
+
+# スコープ指定（home がデフォルト）
+--scope home             # デフォルト（省略可）
 
 # v4.0.0 自動タグ抽出（デフォルト有効）
 --no-auto-tags          # 自動タグ抽出を無効化
@@ -66,10 +69,10 @@ python scripts/save_memory.py \
 ### 手順（スクリプトなし・手動）
 
 1. カテゴリを決定する（例: `auth`, `bug-investigation`, `general`）
-2. `${MEMORY_DIR}/[カテゴリ]/[kebab-case-title].md` を作成する
+2. `{agent_home}/memory/home/[カテゴリ]/[kebab-case-title].md` を作成する
 3. フォーマット仕様（`memory-format.md`）に従ってフロントマターと本文を書く
 4. **必須**: `summary` フィールドに1〜2文の要約を書く（検索の鍵）
-5. `scope`, `access_count: 0`, `share_score: 0` を設定する
+5. `scope: home`, `access_count: 0`, `share_score: 0` を設定する
 
 ---
 
@@ -78,12 +81,11 @@ python scripts/save_memory.py \
 ### 全オプション
 
 ```bash
-# 基本形（workspace → home → shared の順で自動検索）
+# 基本形（home → shared の順で自動検索）
 python scripts/recall_memory.py "[キーワード1] [キーワード2]"
 
 # スコープ指定
---scope workspace       # ワークスペースのみ
---scope home           # ホームのみ
+--scope home           # ホームのみ（デフォルト）
 --scope shared         # 共有のみ
 --scope all            # 全スコープ
 
@@ -112,10 +114,10 @@ python scripts/recall_memory.py "[キーワード1] [キーワード2]"
 
 ### 手順（スクリプトなし・手動）
 
-1. `${MEMORY_DIR}/` 以下のサブディレクトリを列挙してカテゴリを把握する
+1. `~/.copilot/memory/home/` 以下のサブディレクトリを列挙してカテゴリを把握する
 2. 各 `.md` ファイルの `summary` フィールドをスキャンしてキーワードとの関連を判断する
 3. 関連するファイルを全文読み込みして内容を把握する
-4. 見つからない場合は `~/.copilot/memory/home/` や `~/.copilot/memory/shared/` を同様にスキャンする
+4. 見つからない場合は `~/.copilot/memory/shared/` を同様にスキャンする
 5. `access_count` をインクリメントし `last_accessed` を今日の日付に更新する
 
 ---
@@ -125,11 +127,11 @@ python scripts/recall_memory.py "[キーワード1] [キーワード2]"
 ### 全オプション
 
 ```bash
-# 基本形（workspace のみ）
+# 基本形（home のみ・デフォルト）
 python scripts/list_memories.py
 
 # スコープ指定
---scope home           # ホームのみ
+--scope home           # ホームのみ（デフォルト）
 --scope shared         # 共有のみ
 --scope all            # 全スコープ
 
@@ -150,7 +152,7 @@ python scripts/list_memories.py
 ### 全オプション
 
 ```bash
-# 基本形（半自動：各記憶を確認しながら workspace → home）
+# 基本形（半自動：各記憶を確認しながら home → shared）
 python scripts/promote_memory.py
 
 # 昇格候補確認（ドライラン）
@@ -159,13 +161,11 @@ python scripts/promote_memory.py
 # 自動昇格（score >= 85）
 --auto                 # 確認なしで全て昇格
 
-# スコープ・ターゲット指定
---scope workspace --target home     # workspace → home（デフォルト）
---scope home --target shared        # home → shared（git commit も実施）
+# 自動昇格 + push まで一括
+--auto --push
 
 # 個別指定
---id mem-20260303-001  # 特定記憶のみ昇格
---file memories/auth/jwt.md
+--file ~/.copilot/memory/home/auth/jwt.md
 ```
 
 ### 昇格後の push
@@ -237,12 +237,11 @@ python scripts/build_index.py
 # ドライラン（削除対象を確認のみ）
 python scripts/cleanup_memory.py --dry-run
 
-# 基本形（ワークスペースのみ）
+# 基本形（ホームのみ・デフォルト）
 python scripts/cleanup_memory.py
 
 # スコープ指定
---scope home           # ホームのみ
---scope shared         # 共有のみ
+--scope home           # ホームのみ（デフォルト）
 --scope all            # 全スコープ
 
 # 確認スキップ
@@ -292,8 +291,7 @@ python scripts/consolidate_memory.py \
 --output-type procedural    # 手続き記憶として蒸留
 
 # スコープ指定
---scope workspace           # ワークスペース（デフォルト）
---scope home                # ホーム
+--scope home                # ホーム（デフォルト）
 
 # 確認なし
 --yes                       # 確認プロンプトをスキップ
@@ -355,8 +353,7 @@ python scripts/consolidate_memory.py \
 python scripts/review_memory.py
 
 # スコープ指定
---scope workspace           # ワークスペース（デフォルト）
---scope home                # ホーム
+--scope home                # ホーム（デフォルト）
 --scope all                 # 全スコープ
 
 # 特定カテゴリのみ
@@ -374,7 +371,7 @@ python scripts/review_memory.py
 ### レビュー出力例
 
 ```
-=== 🧠 記憶レビュー（workspace: 42件） ===
+=== 🧠 記憶レビュー（home: 42件） ===
 
 📌 固定化候補（エピソード→意味記憶への蒸留推奨）:
   [1] auth カテゴリに 5件のエピソード記憶
@@ -414,7 +411,6 @@ python scripts/sync_copilot_memory.py --dry-run
 python scripts/sync_copilot_memory.py
 
 # スコープ指定
---scope workspace      # ワークスペースにインポート
 --scope home           # ホームにインポート（デフォルト）
 
 # globalStorage パス指定

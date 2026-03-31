@@ -15,19 +15,18 @@
 
 ## スコープ設計
 
-記憶は3つのスコープで管理される。
+記憶は2つのスコープで管理される。
 
 ```
-workspace  →  (昇格)  →  home  →  (昇格)  →  shared
-  ↑                        ↑                      ↑
-プロジェクト固有          ユーザー横断         チーム共有(git)
-git除外                   ローカル            git管理
+home  →  (昇格・git)  →  shared
+  ↑                           ↑
+ユーザー横断               チーム共有(git)
+ローカル永続               git管理
 ```
 
 | スコープ | 保存先 | 用途 | git管理 |
 |---------|--------|------|---------|
-| `workspace` | `${SKILL_DIR}/memories/` | VSCodeワークスペース固有の知見 | **除外（.gitignore）** |
-| `home` | `~/.copilot/memory/home/` | 複数プロジェクト横断の知見 | 個人管理（ローカル） |
+| `home` | `~/.copilot/memory/home/` | 全記憶のデフォルト保存先（複数プロジェクト横断） | 個人管理（ローカル） |
 | `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理** |
 
 ---
@@ -57,7 +56,7 @@ title: "記憶タイトル（一言で内容を表す）"
 created: "YYYY-MM-DD"
 updated: "YYYY-MM-DD"
 status: active          # active | archived | deprecated
-scope: workspace        # workspace | home | shared
+scope: home             # home | shared
 tags: [タグ1, タグ2]
 related: []             # 関連する記憶ファイルのパス
 access_count: 0         # 参照回数（recall時に自動加算）
@@ -101,7 +100,7 @@ retention_score: 1.0        # 忘却曲線に基づく保持率（0.0-1.0、reca
 | `created` | ✓ | 作成日（ISO 8601） |
 | `updated` | ✓ | 最終更新日 |
 | `status` | ✓ | `active` / `archived` / `deprecated` |
-| `scope` | ✓ | `workspace` / `home` / `shared` |
+| `scope` | ✓ | `home` / `shared` |
 | `tags` | - | 検索用タグ（配列） |
 | `related` | - | 関連記憶ファイルのパス（配列） |
 | `access_count` | ✓ | recall 時に自動加算。クリーンアップの判断基準 |

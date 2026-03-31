@@ -23,7 +23,7 @@ git clone https://github.com/myorg/agent-skills.git
 python agent-skills/install.py
 ```
 
-コアスキル（scrum-master, git-skill-manager, skill-creator, sprint-reviewer, codebase-to-skill）がユーザー領域にコピーされ、ソースリポジトリがレジストリに自動登録される。2回目以降の実行はスキルの上書き更新になる（レジストリの既存設定は保持）。
+コアスキル（scrum-master, git-skill-manager, skill-creator, sprint-reviewer）がユーザー領域にコピーされ、ソースリポジトリがレジストリに自動登録される。2回目以降の実行はスキルの上書き更新になる（レジストリの既存設定は保持）。
 
 ## 初回セットアップ
 

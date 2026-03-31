@@ -6,12 +6,13 @@ Usage:
   # 新規作成（インタラクティブ）
   python save_memory.py
 
-  # 引数指定（ワークスペース記憶）
+  # 引数指定（ホーム記憶・デフォルト）
   python save_memory.py --category auth --title "JWTの有効期限設定" \
     --summary "JWTを15分に設定した理由" --tags jwt,auth --content "詳細内容"
 
-  # ホーム記憶として保存（複数プロジェクト横断）
-  python save_memory.py --scope home --category architecture --title "..."
+  # 非インタラクティブモード（自動保存・スクリプト呼び出し時）
+  python save_memory.py --non-interactive --no-dedup --category auth --title "..." \
+    --summary "..." --content "..."
 
   # 既存ファイルを更新
   python save_memory.py --update memories/auth/jwt-expiry.md --summary "新しい要約"
@@ -94,7 +95,7 @@ def generate_id(date_str: str, memory_dir: str) -> str:
 
 
 def save_memory(category: str, title: str, summary: str, content: str,
-                tags: list, scope: str = "workspace",
+                tags: list, scope: str = "home",
                 context: str = "", conclusion: str = "",
                 memory_type: str = "", importance: str = "") -> str:
     date_str = memory_utils.today_str()
@@ -192,9 +193,9 @@ def update_memory(filepath: str, summary: str = None, content: str = None,
 def main():
     parser = argparse.ArgumentParser(description="記憶ファイルを保存・更新する")
     parser.add_argument("--category", default="general", help="カテゴリ名 (default: general)")
-    parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home", "shared"],
-                        help="スコープ: workspace(プロジェクト固有) | home(横断) (default: workspace)")
+    parser.add_argument("--scope", default="home",
+                        choices=["home", "shared"],
+                        help="スコープ: home(デフォルト) | shared(git管理)")
     parser.add_argument("--title", help="記憶タイトル")
     parser.add_argument("--summary", help="要約（1〜2文）")
     parser.add_argument("--content", help="詳細内容")
@@ -218,12 +219,14 @@ def main():
                         help="類似度閾値（この値以上で警告、default: 0.65）")
     parser.add_argument("--no-auto-tags", action="store_true",
                         help="自動タグ付与を無効化")
+    parser.add_argument("--non-interactive", action="store_true",
+                        help="インタラクティブな入力プロンプトをスキップ（自動保存・スクリプト呼び出し時）")
     args = parser.parse_args()
 
     if args.scope == "shared":
         print("エラー: save_memory.py は --scope shared をサポートしていません。", file=sys.stderr)
-        print("shared への保存は promote_memory.py で workspace/home から昇格する手順を使ってください:", file=sys.stderr)
-        print("  python scripts/promote_memory.py --scope workspace --target shared --auto", file=sys.stderr)
+        print("shared への保存は promote_memory.py で home から昇格する手順を使ってください:", file=sys.stderr)
+        print("  python scripts/promote_memory.py --scope home --target shared --auto", file=sys.stderr)
         sys.exit(1)
 
     if args.update:
@@ -240,13 +243,20 @@ def main():
         return
 
     # 入力収集
-    title = args.title or input("タイトル: ").strip()
-    summary = args.summary or input("要約（1〜2文）: ").strip()
-    content = args.content or input("詳細内容: ").strip()
-    tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
-    if not tags and not args.no_auto_tags:
-        raw = input("タグ（カンマ区切り、空欄でOK / 自動補完あり）: ").strip()
-        tags = [t.strip() for t in raw.split(",") if t.strip()]
+    non_interactive = args.non_interactive or not sys.stdin.isatty()
+    if non_interactive:
+        title = args.title or ""
+        summary = args.summary or ""
+        content = args.content or ""
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+    else:
+        title = args.title or input("タイトル: ").strip()
+        summary = args.summary or input("要約（1〜2文）: ").strip()
+        content = args.content or input("詳細内容: ").strip()
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+        if not tags and not args.no_auto_tags:
+            raw = input("タグ（カンマ区切り、空欄でOK / 自動補完あり）: ").strip()
+            tags = [t.strip() for t in raw.split(",") if t.strip()]
 
     # 自動タグ推薦
     auto_tags_used = []
@@ -279,7 +289,7 @@ def main():
                 print(f"    Summary: {sim['summary'][:80]}...")
                 print()
 
-            if sys.stdin.isatty():
+            if not non_interactive and sys.stdin.isatty():
                 choice = input("→ 既存記憶を更新しますか？\n"
                                "  (s=保存 / u=既存を更新 / m=マージ / q=中止) > ").strip().lower()
                 if choice == "q":
