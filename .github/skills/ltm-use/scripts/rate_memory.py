@@ -80,10 +80,7 @@ def apply_rating(filepath: str, good: bool = False, bad: bool = False,
 
 
 def _scope_label(memory_dir: str) -> str:
-    skill_dir = memory_utils.get_skill_dir()
     home_dir = memory_utils._get_home_dir()
-    if memory_dir.startswith(skill_dir):
-        return "workspace"
     return os.path.relpath(memory_dir, home_dir)
 
 
@@ -106,7 +103,7 @@ def main():
     parser.add_argument("--note", default="",
                         help="修正内容メモ（--correction と組み合わせて使用）")
     parser.add_argument("--scope", default="all",
-                        choices=["workspace", "home", "shared", "all"],
+                        choices=["home", "shared", "all"],
                         help="--id 検索時のスコープ (default: all)")
     args = parser.parse_args()
 

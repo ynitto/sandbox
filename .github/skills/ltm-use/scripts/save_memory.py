@@ -194,8 +194,8 @@ def main():
     parser = argparse.ArgumentParser(description="記憶ファイルを保存・更新する")
     parser.add_argument("--category", default="general", help="カテゴリ名 (default: general)")
     parser.add_argument("--scope", default="home",
-                        choices=["workspace", "home", "shared"],
-                        help="スコープ: workspace(プロジェクト固有) | home(横断) (default: home)")
+                        choices=["home", "shared"],
+                        help="スコープ: home(デフォルト) | shared(git管理)")
     parser.add_argument("--title", help="記憶タイトル")
     parser.add_argument("--summary", help="要約（1〜2文）")
     parser.add_argument("--content", help="詳細内容")
@@ -225,8 +225,8 @@ def main():
 
     if args.scope == "shared":
         print("エラー: save_memory.py は --scope shared をサポートしていません。", file=sys.stderr)
-        print("shared への保存は promote_memory.py で workspace/home から昇格する手順を使ってください:", file=sys.stderr)
-        print("  python scripts/promote_memory.py --scope workspace --target shared --auto", file=sys.stderr)
+        print("shared への保存は promote_memory.py で home から昇格する手順を使ってください:", file=sys.stderr)
+        print("  python scripts/promote_memory.py --scope home --target shared --auto", file=sys.stderr)
         sys.exit(1)
 
     if args.update:

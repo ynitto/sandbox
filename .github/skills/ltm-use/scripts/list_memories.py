@@ -3,9 +3,9 @@
 list_memories.py - 記憶一覧を表示するスクリプト
 
 Usage:
-  python list_memories.py                        # ワークスペース記憶（active）
+  python list_memories.py                        # ホーム記憶（active）
   python list_memories.py --scope all            # 全スコープ
-  python list_memories.py --scope home           # ホーム記憶
+  python list_memories.py --scope shared         # 共有記憶
   python list_memories.py --category auth        # カテゴリ絞り込み
   python list_memories.py --status archived      # ステータス絞り込み
   python list_memories.py --tag jwt              # タグ絞り込み
@@ -21,7 +21,7 @@ from collections import defaultdict
 import memory_utils
 
 
-def load_all_memories(scope: str = "workspace", category: str = None,
+def load_all_memories(scope: str = "home", category: str = None,
                       status_filter: str = None, tag: str = None) -> dict:
     """スコープ→カテゴリ→記憶 の入れ子辞書で返す"""
     result = defaultdict(lambda: defaultdict(list))
@@ -52,7 +52,7 @@ def load_all_memories(scope: str = "workspace", category: str = None,
                 "created": meta.get("created", ""),
                 "updated": meta.get("updated", ""),
                 "status": status,
-                "scope": meta.get("scope", "workspace"),
+                "scope": meta.get("scope", "home"),
                 "tags": tags,
                 "access_count": int(meta.get("access_count", 0)),
                 "share_score": int(meta.get("share_score", 0)),
@@ -63,14 +63,9 @@ def load_all_memories(scope: str = "workspace", category: str = None,
 
 
 def _scope_label(memory_dir: str) -> str:
-    skill_dir = memory_utils.get_skill_dir()
     home_root = memory_utils.HOME_MEMORY_ROOT
-    if memory_dir.startswith(skill_dir):
-        return "workspace"
     if memory_dir.startswith(home_root):
         rel = os.path.relpath(memory_dir, home_root)
-        # クロスプラットフォーム対応: ~ は Unix 専用のため $HOME/.copilot 形式を使用
-        # パス区切り文字も / に統一して表示
         return f"$HOME/.copilot/memory/{rel.replace(os.sep, '/')}"
     return memory_dir
 
@@ -129,9 +124,9 @@ def print_list(result: dict, verbose: bool = False,
 
 def main():
     parser = argparse.ArgumentParser(description="記憶の一覧を表示する")
-    parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home", "shared", "all"],
-                        help="スコープ (default: workspace)")
+    parser.add_argument("--scope", default="home",
+                        choices=["home", "shared", "all"],
+                        help="スコープ (default: home)")
     parser.add_argument("--category", help="カテゴリを絞り込む")
     parser.add_argument("--status", default="active",
                         choices=["active", "archived", "deprecated", "all"],

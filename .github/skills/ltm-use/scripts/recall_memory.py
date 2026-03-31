@@ -4,7 +4,7 @@ recall_memory.py - キーワードで記憶を検索するスクリプト
 
 インデックスを使った高速検索（大量記憶でも O(index) で動作）。
 recall すると access_count が加算され share_score が自動更新される。
-ワークスペース記憶で見つからない場合、home/shared を自動フォールバック検索する。
+home で見つからない場合、shared を自動フォールバック検索する。
 
 Usage:
   python recall_memory.py "JWT 認証"
@@ -136,7 +136,7 @@ def search_with_index(memory_dir: str, keywords: list[str],
     for entry in entries:
         if status_filter and entry.get("status", "active") != status_filter:
             continue
-        if memory_type_filter and entry.get("memory_type", "semantic") != memory_type_filter:
+        if memory_type_filter and entry.get("memory_type", memory_utils.DEFAULT_MEMORY_TYPE) != memory_type_filter:
             continue
         if category:
             filepath_rel = entry.get("filepath", "")
@@ -187,8 +187,9 @@ def search_with_index(memory_dir: str, keywords: list[str],
                 text = f.read()
             meta, body = memory_utils.parse_frontmatter(text)
             body_score = sum(min(body.lower().count(kw.lower()), 5) for kw in keywords)
-            # body のキーワード一致は常に加算（Fix 5: 論理バグ修正）
-            final_score = base_score + body_score
+            # body_score を 0-1 スケールに正規化して軽い補正として加算（最大 +0.2）
+            body_boost = min(body_score / 50.0, 0.2)
+            final_score = base_score + body_boost
             results.append({
                 "filepath": fpath,
                 "memory_dir": memory_dir,
@@ -227,14 +228,7 @@ def search_all_scopes(scope: str, keywords: list[str], status_filter: str | None
 def fallback_search(keywords: list[str], limit: int,
                     memory_type_filter: str = "",
                     use_hybrid: bool = True) -> tuple[list[dict], bool]:
-    """workspace で0件の場合の自動フォールバック（home → shared → git pull）"""
-    # まず home を検索
-    results = search_all_scopes("home", keywords, "active", limit, None,
-                                memory_type_filter=memory_type_filter,
-                                use_hybrid=use_hybrid)
-    if results:
-        return results, False
-
+    """home で0件の場合の自動フォールバック（shared → git pull）"""
     # shared ローカルを検索
     results = search_all_scopes("shared", keywords, "active", limit, None,
                                 memory_type_filter=memory_type_filter,
@@ -295,12 +289,12 @@ def format_result(result: dict, index: int, full: bool = False) -> str:
     meta = result["meta"]
     memory_dir = result["memory_dir"]
     rel_path = os.path.relpath(result["filepath"], memory_dir)
-    scope = meta.get("scope", "workspace")
+    scope = meta.get("scope", "home")
     tags = meta.get("tags", [])
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
 
-    memory_type = meta.get("memory_type", "semantic")
+    memory_type = meta.get("memory_type", memory_utils.DEFAULT_MEMORY_TYPE)
     importance = meta.get("importance", "normal")
     retention = meta.get("retention_score", "")
     retention_str = f"{float(retention):.2f}" if retention != "" else "N/A"
@@ -363,9 +357,9 @@ def main():
     parser.add_argument("query", nargs="?", default="",
                         help="検索クエリ（スペース区切りで複数キーワード）")
     parser.add_argument("--category", help="カテゴリを絞り込む")
-    parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home", "shared", "all"],
-                        help="検索スコープ (default: workspace)")
+    parser.add_argument("--scope", default="home",
+                        choices=["home", "shared", "all"],
+                        help="検索スコープ (default: home)")
     parser.add_argument("--status", default="active",
                         choices=["active", "archived", "deprecated", "all"],
                         help="ステータスフィルタ (default: active)")
@@ -406,11 +400,11 @@ def main():
                                 memory_type_filter=args.memory_type or "",
                                 use_hybrid=use_hybrid)
 
-    # workspace で0件ならフォールバック
+    # home で0件ならフォールバック
     synced = False
-    if not results and args.scope == "workspace":
+    if not results and args.scope == "home":
         query_label = args.query or "(auto-context)"
-        print(f"「{query_label}」: ワークスペースに記憶なし → home/shared を検索します...\n")
+        print(f"「{query_label}」: home に記憶なし → shared を検索します...\n")
         results, synced = fallback_search(keywords, args.limit,
                                           memory_type_filter=args.memory_type or "",
                                           use_hybrid=use_hybrid)

@@ -51,8 +51,11 @@ def find_consolidation_clusters(
         with open(fpath, encoding="utf-8") as f:
             text = f.read()
         meta, body = memory_utils.parse_frontmatter(text)
-        # memory_type が未設定の記憶は episodic と看做さない（semantic がデフォルト）
-        if meta.get("memory_type", "") != "episodic":
+        # memory_type が未設定の場合はコンテンツから自動推定する
+        effective_type = meta.get("memory_type") or memory_utils.detect_memory_type(
+            body, meta.get("title", ""), meta.get("summary", "")
+        )
+        if effective_type != "episodic":
             continue
         if meta.get("status", "active") != "active":
             continue
@@ -171,9 +174,9 @@ def generate_consolidated_content(episodes: list[dict], output_type: str) -> dic
 
 def main():
     parser = argparse.ArgumentParser(description="エピソード記憶を意味/手続き記憶に蒸留する")
-    parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home"],
-                        help="対象スコープ (default: workspace)")
+    parser.add_argument("--scope", default="home",
+                        choices=["home"],
+                        help="対象スコープ (default: home)")
     parser.add_argument("--category", help="固定化対象カテゴリ")
     parser.add_argument("--ids", help="固定化対象エピソードID（カンマ区切り）")
     parser.add_argument("--output-type", default="semantic",
@@ -265,7 +268,7 @@ def main():
 
     if consolidated:
         print(f"\n{consolidated}件のクラスタを固定化しました。")
-        print("昇格するには: python promote_memory.py --scope workspace --auto")
+        print("昇格するには: python promote_memory.py --scope home --auto")
 
 
 if __name__ == "__main__":

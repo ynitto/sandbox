@@ -152,7 +152,7 @@ python scripts/save_memory.py --non-interactive --no-dedup \
 ## recall（記憶を想起する）
 
 recall すると `access_count` が自動加算され `share_score` が再計算される。
-ワークスペースで見つからない場合は home/shared を自動フォールバック検索する。
+home で見つからない場合は shared を自動フォールバック検索する。
 recall 時に `retention_score` も自動更新（間隔反復効果による忘却曲線リセット）。
 
 ```bash
@@ -207,7 +207,7 @@ python scripts/list_memories.py --stats            # 統計のみ
 # 昇格候補を確認（ドライラン）
 python scripts/promote_memory.py --list
 
-# 半自動昇格（各記憶を確認しながら workspace → home）
+# 半自動昇格（各記憶を確認しながら home → shared）
 python scripts/promote_memory.py
 
 # 自動昇格（score >= 85 を全て昇格）
@@ -293,7 +293,7 @@ python scripts/build_index.py --force
 # ドライラン（削除対象を確認）
 python scripts/cleanup_memory.py --dry-run
 
-# ワークスペース記憶をクリーンアップ
+# ホーム記憶をクリーンアップ（デフォルト）
 python scripts/cleanup_memory.py
 
 # 重複検出モード（類似度 >= 0.85 のペアを検出）
@@ -323,8 +323,8 @@ python scripts/sync_copilot_memory.py --dry-run
 # ユーザーからの明示的な指示なので --force でインターバルを無視して実行する
 python scripts/sync_copilot_memory.py --force
 
-# workspace スコープに取り込む
-python scripts/sync_copilot_memory.py --scope workspace --force
+# shared スコープに取り込む
+python scripts/sync_copilot_memory.py --scope shared --force
 ```
 
 globalStorageパス・詳細オプション: [`references/operations.md`](references/operations.md)
@@ -487,7 +487,5 @@ python scripts/review_memory.py --update-retention
 
 ユーザー: 「よく参照するナレッジをチームと共有して」
 → list_memories.py --promote-candidates  # 昇格候補を確認
-→ promote_memory.py --auto               # 自動昇格（workspace → home）
-→ promote_memory.py --scope home --target shared --auto  # git管理へ
-→ sync_memory.py --push                  # チームに公開
+→ promote_memory.py --auto --push        # 自動昇格（home → shared） + push まで一括
 ```

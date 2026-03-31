@@ -6,18 +6,16 @@ cleanup_memory.py - 不要な記憶を削除してディスク領域を節約す
   1. access_count == 0 かつ作成から N 日以上経過（デフォルト30日）
   2. status == archived かつ更新から N 日以上経過（デフォルト60日）
   3. status == deprecated
-  4. 重複記憶（--duplicates-only: 類似度 >= 0.85 のペアの低品質側）
-  5. 品質スコア閾値以下（--quality-threshold: 総合品質スコア）
+  4. retention_score < 0.1 かつ importance が critical/high でない（v5.0.0）
+  5. 重複記憶（--duplicates-only: 類似度 >= 0.85 のペアの低品質側）
+  6. 品質スコア閾値以下（--quality-threshold: 総合品質スコア）
 
 Usage:
   # ドライラン（削除せず対象を表示）
   python cleanup_memory.py --dry-run
 
-  # ワークスペース記憶をクリーンアップ
+  # ホーム記憶をクリーンアップ（デフォルト）
   python cleanup_memory.py
-
-  # ホーム記憶もクリーンアップ
-  python cleanup_memory.py --scope home
 
   # 全スコープ
   python cleanup_memory.py --scope all
@@ -179,13 +177,18 @@ def find_cleanup_targets(memory_dir: str, inactive_days: int, archived_days: int
         score = memory_utils.compute_share_score(meta, body)
 
         reason = None
+        importance = meta.get("importance", "normal")
         if status == "deprecated":
-            reason = f"status=deprecated"
+            reason = "status=deprecated"
         elif status == "archived" and age_updated >= archived_days:
             reason = f"archived かつ {age_updated}日間更新なし（基準: {archived_days}日）"
         elif access_count == 0 and age_created >= inactive_days:
             reason = f"未参照 かつ 作成から{age_created}日経過（基準: {inactive_days}日）"
-        elif quality_threshold is not None:
+        elif importance not in ("critical", "high"):
+            retention = memory_utils.compute_retention_score(meta)
+            if retention < 0.1:
+                reason = f"retention_score={retention:.3f} < 0.1 かつ importance={importance}"
+        if reason is None and quality_threshold is not None:
             quality = compute_quality_score(meta, body)
             if quality < quality_threshold:
                 reason = f"品質スコア {quality:.1f} < 閾値 {quality_threshold}"
@@ -218,9 +221,9 @@ def display_targets(targets: list[dict], memory_dir: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="不要な記憶ファイルを削除する")
-    parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home", "all"],
-                        help="対象スコープ (default: workspace)")
+    parser.add_argument("--scope", default="home",
+                        choices=["home", "all"],
+                        help="対象スコープ (default: home)")
     parser.add_argument("--inactive-days", type=int, default=None,
                         help="未参照記憶の保持日数（省略時: config 値）")
     parser.add_argument("--archived-days", type=int, default=None,

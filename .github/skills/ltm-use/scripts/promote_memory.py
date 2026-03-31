@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-promote_memory.py - ワークスペース記憶をホームまたはsharedへ昇格するスクリプト
+promote_memory.py - home 記憶を shared へ昇格するスクリプト
 
 Usage:
   # 昇格候補を表示（share_score >= 70）
@@ -13,10 +13,13 @@ Usage:
   python promote_memory.py --auto
 
   # 特定ファイルを指定して昇格
-  python promote_memory.py --file memories/auth/jwt.md --target home
+  python promote_memory.py --file ~/.copilot/memory/home/auth/jwt.md
 
   # home → shared へ昇格（git commit も実施）
-  python promote_memory.py --scope home --target shared --auto
+  python promote_memory.py --target shared --auto
+
+  # home → shared へ昇格 + push まで一括
+  python promote_memory.py --target shared --auto --push
 """
 
 import argparse
@@ -97,12 +100,12 @@ def promote_file(src_path: str, src_scope: str, target_scope: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="記憶を上位スコープへ昇格する")
-    parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home"],
-                        help="昇格元スコープ (default: workspace)")
-    parser.add_argument("--target", default=None,
-                        choices=["home", "shared"],
-                        help="昇格先スコープ（省略時: workspace→home, home→shared）")
+    parser.add_argument("--scope", default="home",
+                        choices=["home"],
+                        help="昇格元スコープ (default: home)")
+    parser.add_argument("--target", default="shared",
+                        choices=["shared"],
+                        help="昇格先スコープ (default: shared)")
     parser.add_argument("--list", action="store_true", help="昇格候補を表示して終了")
     parser.add_argument("--auto", action="store_true",
                         help="share_score >= auto_promote_threshold を自動昇格")
@@ -117,8 +120,7 @@ def main():
     semi_threshold = args.threshold or cfg["semi_auto_promote_threshold"]
     auto_threshold = cfg["auto_promote_threshold"]
 
-    # target 省略時の自動解決
-    target_scope = args.target or ("shared" if args.scope == "home" else "home")
+    target_scope = args.target
 
     # 昇格先ディレクトリを確認・作成
     dst_dir = memory_utils.get_memory_dir(target_scope)

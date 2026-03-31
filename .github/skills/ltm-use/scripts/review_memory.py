@@ -150,9 +150,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="記憶の定期レビュー（忘却曲線・固定化候補・クリーンアップ候補）"
     )
-    parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home", "all"],
-                        help="対象スコープ (default: workspace)")
+    parser.add_argument("--scope", default="home",
+                        choices=["home", "all"],
+                        help="対象スコープ (default: home)")
     parser.add_argument("--category",
                         help="特定カテゴリのみ（固定化候補検出でのみ使用）")
     parser.add_argument("--consolidation-only", action="store_true",

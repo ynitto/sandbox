@@ -6,7 +6,7 @@ build_index.py - 記憶インデックスを再構築するスクリプト
 インデックスが壊れた場合や大量ファイルを手動追加した後に使用する。
 
 Usage:
-  python build_index.py                   # workspace を増分更新
+  python build_index.py                   # home を増分更新
   python build_index.py --scope all       # 全スコープを増分更新
   python build_index.py --force           # 完全再構築（既存インデックス破棄）
   python build_index.py --stats           # 統計表示のみ（再構築なし）
@@ -94,9 +94,9 @@ def print_stats(memory_dir: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="記憶インデックスを再構築・確認する")
-    parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home", "shared", "all"],
-                        help="対象スコープ (default: workspace)")
+    parser.add_argument("--scope", default="home",
+                        choices=["home", "shared", "all"],
+                        help="対象スコープ (default: home)")
     parser.add_argument("--force", action="store_true",
                         help="既存インデックスを無視して完全再構築")
     parser.add_argument("--stats", action="store_true",
