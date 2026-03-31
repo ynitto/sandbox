@@ -174,8 +174,11 @@ def detect_license(repo_dir: str) -> tuple[str, str]:
         if not os.path.isfile(path):
             continue
 
-        with open(path, encoding="utf-8", errors="ignore") as f:
-            content = f.read(8192)
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                content = f.read(8192)
+        except OSError:
+            continue
 
         # "All Rights Reserved" の明示的な記載があり、かつ許容ライセンス署名がない場合
         if _ALL_RIGHTS_RESERVED_PATTERN.search(content):
@@ -261,11 +264,49 @@ def _parse_frontmatter(md_path: str) -> tuple[str, str]:
 
     fm = fm_match.group(1)
     name_m = re.search(r'^name:\s*(.+)$', fm, re.MULTILINE)
+    # 単一行 description を先に試み、空の場合は次行インデントのブロック形式にフォールバック
     desc_m = re.search(r'^description:\s*(.+)$', fm, re.MULTILINE)
+    if desc_m:
+        desc = desc_m.group(1).strip()
+    else:
+        block_m = re.search(r'^description:\s*\n((?:[ \t].+\n?)+)', fm, re.MULTILINE)
+        desc = " ".join(ln.strip() for ln in block_m.group(1).splitlines()) if block_m else ""
     return (
         name_m.group(1).strip() if name_m else "",
-        desc_m.group(1).strip() if desc_m else "",
+        desc,
     )
+
+
+# ---------------------------------------------------------------------------
+# パターンスキャン共通ヘルパー
+# ---------------------------------------------------------------------------
+
+def _scan_patterns(
+    repo_dir: str,
+    compiled_patterns: list[tuple],
+    extensions: tuple[str, ...],
+) -> tuple[str, list[str]]:
+    """ファイルを行単位で走査しパターンを検索する。ファイルごとに最初の1件のみ記録。"""
+    results: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(repo_dir):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        for fname in filenames:
+            if not any(fname.endswith(ext) for ext in extensions):
+                continue
+            fpath = os.path.join(dirpath, fname)
+            try:
+                with open(fpath, encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        matched = next(
+                            (p_str for pat, p_str in compiled_patterns if pat.search(line)),
+                            None,
+                        )
+                        if matched:
+                            results.append(f"{os.path.relpath(fpath, repo_dir)}: {matched}")
+                            break  # ファイルごとに最初の1件のみ
+            except OSError:
+                continue
+    return ("warn", results) if results else ("ok", [])
 
 
 # ---------------------------------------------------------------------------
@@ -275,30 +316,7 @@ def _parse_frontmatter(md_path: str) -> tuple[str, str]:
 def check_security(repo_dir: str) -> tuple[str, list[str]]:
     """(status, warnings) を返す。status: ok / warn"""
     compiled = [(re.compile(p), p) for p in SUSPICIOUS_PATTERNS]
-    warnings: list[str] = []
-
-    for dirpath, dirnames, filenames in os.walk(repo_dir):
-        # .git ディレクトリは除外
-        dirnames[:] = [d for d in dirnames if d != ".git"]
-
-        for fname in filenames:
-            if not fname.endswith(SCRIPT_EXTENSIONS):
-                continue
-
-            fpath = os.path.join(dirpath, fname)
-            try:
-                with open(fpath, encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-            except OSError:
-                continue
-
-            for pattern, pattern_str in compiled:
-                if pattern.search(content):
-                    rel = os.path.relpath(fpath, repo_dir)
-                    warnings.append(f"{rel}: {pattern_str}")
-                    break  # ファイルごとに最初の1件のみ報告
-
-    return ("warn", warnings) if warnings else ("ok", [])
+    return _scan_patterns(repo_dir, compiled, SCRIPT_EXTENSIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -311,30 +329,7 @@ def check_network(repo_dir: str) -> tuple[str, list[str]]:
     スクリプトファイルおよび SKILL.md 内で外部通信の可能性があるパターンを検出する。
     """
     compiled = [(re.compile(p), p) for p in NETWORK_PATTERNS]
-    detections: list[str] = []
-    target_extensions = SCRIPT_EXTENSIONS + (".md",)
-
-    for dirpath, dirnames, filenames in os.walk(repo_dir):
-        dirnames[:] = [d for d in dirnames if d != ".git"]
-
-        for fname in filenames:
-            if not any(fname.endswith(ext) for ext in target_extensions):
-                continue
-
-            fpath = os.path.join(dirpath, fname)
-            try:
-                with open(fpath, encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-            except OSError:
-                continue
-
-            for pattern, pattern_str in compiled:
-                if pattern.search(content):
-                    rel = os.path.relpath(fpath, repo_dir)
-                    detections.append(f"{rel}: {pattern_str}")
-                    break  # ファイルごとに最初の1件のみ報告
-
-    return ("warn", detections) if detections else ("ok", [])
+    return _scan_patterns(repo_dir, compiled, SCRIPT_EXTENSIONS + (".md",))
 
 
 # ---------------------------------------------------------------------------

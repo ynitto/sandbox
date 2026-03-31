@@ -55,8 +55,6 @@ def adapt_skill_md(skill_dir: str) -> str:
     if patched == original:
         return "skip"
 
-    with open(md_path, encoding="utf-8", newline="") as f:
-        pass  # エンコーディング確認のみ
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(patched)
     return "ok"
@@ -66,10 +64,10 @@ def _replace_in_code_blocks(text: str, pattern: str, replacement: str) -> str:
     """fenced コードブロック（``` ... ```）内のパターンだけ置換する。"""
     result = []
     compiled = re.compile(pattern)
-    # コードブロックを ``` で分割し、奇数インデックスがコードブロック内
-    parts = re.split(r'(```[^\n]*\n[\s\S]*?```)', text)
-    for i, part in enumerate(parts):
-        if i % 2 == 1:  # コードブロック内
+    # 終端 ``` が行頭にあることを保証し、誤マッチを防ぐ
+    parts = re.split(r'(```[^\n]*\n[\s\S]*?\n```)', text)
+    for part in parts:
+        if part.startswith("```"):  # コードブロック内
             result.append(compiled.sub(replacement, part))
         else:
             result.append(part)

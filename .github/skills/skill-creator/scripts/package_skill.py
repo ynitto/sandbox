@@ -25,11 +25,6 @@ def package_skill(skill_path: str, output_dir: str | None = None) -> str | None:
         print(f"エラー: '{skill_path}' はディレクトリではありません")
         return None
 
-    skill_md = os.path.join(skill_path, "SKILL.md")
-    if not os.path.isfile(skill_md):
-        print(f"エラー: SKILL.md が見つかりません: {skill_path}")
-        return None
-
     # バリデーション
     print("バリデーション中...")
     errors, warnings = validate_skill(skill_path)
