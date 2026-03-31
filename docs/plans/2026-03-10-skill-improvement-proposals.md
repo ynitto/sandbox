@@ -13,11 +13,11 @@
 | カテゴリ | スキル数 | スキル名 |
 |---------|---------|---------|
 | **オーケストレーション** | 2 | scrum-master (v1.4.0), sprint-reviewer (v1.0.0) |
-| **メタ／管理** | 8 | git-skill-manager (v1.0.1), skill-recruiter (v1.0.0), skill-creator (v1.0.0), skill-evaluator (v1.0.1), skill-selector (v1.0.0), generating-skills-from-copilot-logs (v1.0.0), ltm-use (v4.0.0), codebase-to-skill (v1.0.0) |
+| **メタ／管理** | 6 | git-skill-manager (v1.0.1), skill-recruiter (v1.0.0), skill-creator (v2.0.0), skill-evaluator (v1.0.1), skill-selector (v1.0.0), ltm-use (v4.0.0) |
 | **要件／設計** | 6 | requirements-definer (v2.0.0), brainstorming (v2.0.0), domain-modeler (v1.0.0), api-designer (v1.0.0), ui-designer (v1.0.0), doc-coauthoring (v1.0.0) |
 | **実装** | 5 | react-frontend-coder (v1.0.0), react-frontend-unit-tester (v1.0.0), tdd-executing (v1.0.1), ci-cd-configurator (v1.0.0), webapp-testing (v1.0.0) |
 | **レビュー** | 8 | code-reviewer (v2.0.0), code-simplifier (v1.0.0), architecture-reviewer (v1.2.0), design-reviewer (v1.0.0), document-reviewer (v2.0.0), security-reviewer (v1.0.0), test-reviewer (v1.2.0), sprint-reviewer (※オーケストレーションと兼務) |
-| **デバッグ** | 2 | debug-mode (v1.0.0), systematic-debugging (v1.0.0) |
+| **デバッグ** | 1 | systematic-debugging (v2.0.0) |
 | **調査／文書** | 4 | deep-research (v1.0.0), technical-writer (v1.0.1), patent-coach (v1.0.0), patent-writer (v2.2.0) |
 | **データ** | 1 | dynamodb-designer (v1.0.0) |
 | **参照** | 1 | react-best-practices (v1.0.0) |
@@ -54,8 +54,7 @@
 メタスキル:
   git-skill-manager ← skill-recruiter（外部取得）
                     ← skill-evaluator（品質評価）
-                    ← generating-skills-from-copilot-logs（自動発見）
-  skill-creator ← codebase-to-skill（既存コードのスキル化）
+  skill-creator（モードB: 既存コードのスキル化、モードC: 履歴から自動発見を内包）
 ```
 
 ### 構造統計
@@ -277,16 +276,9 @@ metadata:
 
 ---
 
-### 2.7 `debug-mode` + `systematic-debugging` — 連携の明文化 ★☆☆
+### 2.7 `debug-mode` + `systematic-debugging` — 統合済み ✅
 
-**現状**: 両スキルの関係は「補完的」とされるが、呼び出し順序の指針がない。
-
-| スキル | フォーカス | タイミング |
-|--------|----------|----------|
-| systematic-debugging | 静的分析・根本原因特定・3-strike ルール | まず最初に使う |
-| debug-mode | ランタイムログ・仮説検証・NDJSON 出力 | 静的分析で特定できない場合に使う |
-
-**改善案**: 両スキルの SKILL.md に「組み合わせフロー」セクションを追加。
+**対応済み**: `debug-mode` を `systematic-debugging` v2.0.0 に統合。計装プロセス（10ステップ）を同一スキル内に取り込み、用途テーブルで使い分けを明示した。
 
 ---
 
@@ -353,8 +345,7 @@ steps:
 
 # debug-workflow
 steps:
-  - skill: systematic-debugging  # 根本原因特定
-  - skill: debug-mode            # ランタイム証拠収集（必要時のみ）
+  - skill: systematic-debugging  # 根本原因特定 + ランタイム計装（統合済み）
   - skill: <implementation-skill> # 修正実施
   - skill: test-reviewer          # 修正検証
 ```
@@ -449,6 +440,6 @@ Phase 4 — 品質・運用の底上げ
   ├─ スクリプト化の拡大（security-reviewer, code-reviewer, api-designer）
   ├─ 長大 SKILL.md の references/ 分割（patent 系, ui-designer）
   ├─ バージョニングポリシーの統一（semver ガイドライン策定）
-  ├─ debug-mode ⟷ systematic-debugging の連携フロー追加
+  ├─ debug-mode ⟷ systematic-debugging の統合（✅ 完了）
   └─ refactoring-guide / infra-as-code 新規作成
 ```
