@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: スキルのライフサイクル全体を担うメタスキル。作成・取得・改善のすべてを扱う。「スキルを作って」「スキルを追加して」「URLからスキルをインストールして」「コードベースをスキル化して」「チャット履歴からスキルを生成して」「このスキルを改善して」「スキルをパッケージして」「外部スキルを登録して」などのリクエストで発動する。GitHub Copilot および Claude Code で動作する。コードベース変換・履歴からの生成・外部スキル取得のワークフローも内包する。
+description: "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。Copilot・Claude Code 対応。"
 metadata:
   version: 3.0.0
   tier: experimental
@@ -30,6 +30,8 @@ metadata:
 | **D: 外部取得** | URL・ローカルパスから外部スキルをインストール | [references/skill-recruiter.md](references/skill-recruiter.md) を読んで手順に従う |
 
 いずれのモードも最終的に `skill-creator` のパッケージ手順（`package_skill.py`）を参照する。
+
+**モードC 補足資料**: [references/copilot-history-guide.md](references/copilot-history-guide.md)（Copilot 履歴の詳細）/ [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md)（パターン抽出例）/ [references/quality-checklist.md](references/quality-checklist.md)（配布前チェックリスト）
 
 ### モード判定フロー
 

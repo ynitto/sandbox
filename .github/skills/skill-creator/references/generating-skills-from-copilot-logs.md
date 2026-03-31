@@ -2,6 +2,20 @@
 
 VSCode Copilot または Claude Code のチャット履歴からAgent Skillを自動生成するワークフロー。
 
+## 目次
+
+- [起動元](#起動元)
+- [概要](#概要)
+- [フェーズ 1: データ収集（同意取得）](#フェーズ-1-データ収集同意取得)
+- [フェーズ 2: パターン抽出](#フェーズ-2-パターン抽出)
+- [フェーズ 3: スコアリング](#フェーズ-3-スコアリング)
+- [フェーズ 4: 候補提示](#フェーズ-4-候補提示)
+- [フェーズ 5: SKILL.md 生成](#フェーズ-5-skillmd-生成)
+- [フェーズ 6: バリデーション](#フェーズ-6-バリデーション)
+- [安全ルール](#安全ルール)
+
+---
+
 ## 起動元
 
 | 呼び出し元 | 起動方法 |
@@ -67,7 +81,7 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 
 各ワークスペースフォルダの `workspace.json` でプロジェクトパスを確認できる。
 
-**フォールバック**: `chatSessions/` が存在しない場合は `state.vscdb`（SQLite）の `interactive.sessions` キーから取得する。詳細は [copilot-history-guide.md](copilot-history-guide.md) 参照。
+**フォールバック**: `chatSessions/` が存在しない場合は `state.vscdb`（SQLite）の `interactive.sessions` キーから取得する。詳細は `copilot-history-guide.md` 参照。
 
 **Claude Code:**
 
@@ -104,7 +118,7 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 
 **粒度の判断基準**: 同じ手順・判断基準で処理できるセッション群なら粒度は適切。異なる手順を含むなら分割が必要。
 
-パターン抽出の詳細例は [pattern-extraction-examples.md](pattern-extraction-examples.md) 参照。
+パターン抽出の詳細例は `pattern-extraction-examples.md` 参照。
 
 ---
 
@@ -160,7 +174,7 @@ python scripts/extract-copilot-history.py --workspace "C:\Users\you\project" --d
 
 ## フェーズ 6: バリデーション
 
-[quality-checklist.md](quality-checklist.md) に従い品質確認する。
+`quality-checklist.md` に従い品質確認する。
 
 ---
 
