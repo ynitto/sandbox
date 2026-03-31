@@ -332,7 +332,7 @@ def save_registry(reg: dict) -> None:
     path = _registry_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
+        json.dump(reg, f, indent=2, ensure_ascii=True)
 
 
 def is_skill_enabled(skill_name: str, reg: dict) -> bool:

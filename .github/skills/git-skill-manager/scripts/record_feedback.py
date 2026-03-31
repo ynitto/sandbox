@@ -314,7 +314,7 @@ def main():
     )
 
     with open(registry_path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
+        json.dump(reg, f, indent=2, ensure_ascii=True)
 
 
 if __name__ == "__main__":

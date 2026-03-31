@@ -246,7 +246,7 @@ def update_registry(aggregated: dict[str, dict]) -> int:
         updated += 1
 
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
+        json.dump(reg, f, indent=2, ensure_ascii=True)
 
     return updated
 
