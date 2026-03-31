@@ -74,12 +74,23 @@ def slugify(text: str) -> str:
     return text[:50] or "memory"
 
 
-def generate_id(date_str: str, category_dir: str) -> str:
+def generate_id(date_str: str, memory_dir: str) -> str:
     base = f"mem-{date_str.replace('-', '')}"
-    n = 1
-    if os.path.isdir(category_dir):
-        n = sum(1 for f in os.listdir(category_dir) if f.endswith(".md")) + 1
-    return f"{base}-{n:03d}"
+    prefix = f"{base}-"
+    max_n = 0
+    # インデックスから同日付のID最大値を探す（削除済みファイルや他カテゴリを含め全体を参照）
+    if os.path.isdir(memory_dir):
+        index = memory_utils.load_index(memory_dir)
+        if not index.get("entries"):
+            index = memory_utils.refresh_index(memory_dir)
+        for entry in index.get("entries", []):
+            mem_id = entry.get("id", "")
+            if mem_id.startswith(prefix):
+                try:
+                    max_n = max(max_n, int(mem_id[len(prefix):]))
+                except ValueError:
+                    pass
+    return f"{base}-{max_n + 1:03d}"
 
 
 def save_memory(category: str, title: str, summary: str, content: str,
@@ -92,7 +103,7 @@ def save_memory(category: str, title: str, summary: str, content: str,
     category_dir = os.path.join(memory_dir, category)
     os.makedirs(category_dir, exist_ok=True)
 
-    mem_id = generate_id(date_str, category_dir)
+    mem_id = generate_id(date_str, memory_dir)
     filepath = os.path.join(category_dir, f"{slug}.md")
     if os.path.exists(filepath):
         base, ext = os.path.splitext(filepath)
@@ -140,7 +151,8 @@ def save_memory(category: str, title: str, summary: str, content: str,
 
 
 def update_memory(filepath: str, summary: str = None, content: str = None,
-                  conclusion: str = None, status: str = None) -> None:
+                  conclusion: str = None, status: str = None,
+                  memory_type: str = None, importance: str = None) -> None:
     """既存記憶ファイルの updated 日付と各フィールドを更新する"""
     with open(filepath, "r", encoding="utf-8") as f:
         text = f.read()
@@ -150,6 +162,10 @@ def update_memory(filepath: str, summary: str = None, content: str = None,
 
     if status:
         text = re.sub(r"^status: \w+", f"status: {status}", text, flags=re.MULTILINE)
+    if memory_type:
+        text = re.sub(r"^memory_type: \w+", f"memory_type: {memory_type}", text, flags=re.MULTILINE)
+    if importance:
+        text = re.sub(r"^importance: \w+", f"importance: {importance}", text, flags=re.MULTILINE)
     if summary:
         text = re.sub(r'^summary: ".*"', f'summary: "{summary}"', text, flags=re.MULTILINE)
     if content:
@@ -177,7 +193,7 @@ def main():
     parser = argparse.ArgumentParser(description="記憶ファイルを保存・更新する")
     parser.add_argument("--category", default="general", help="カテゴリ名 (default: general)")
     parser.add_argument("--scope", default="workspace",
-                        choices=["workspace", "home"],
+                        choices=["workspace", "home", "shared"],
                         help="スコープ: workspace(プロジェクト固有) | home(横断) (default: workspace)")
     parser.add_argument("--title", help="記憶タイトル")
     parser.add_argument("--summary", help="要約（1〜2文）")
@@ -204,6 +220,12 @@ def main():
                         help="自動タグ付与を無効化")
     args = parser.parse_args()
 
+    if args.scope == "shared":
+        print("エラー: save_memory.py は --scope shared をサポートしていません。", file=sys.stderr)
+        print("shared への保存は promote_memory.py で workspace/home から昇格する手順を使ってください:", file=sys.stderr)
+        print("  python scripts/promote_memory.py --scope workspace --target shared --auto", file=sys.stderr)
+        sys.exit(1)
+
     if args.update:
         update_memory(
             args.update,
@@ -211,6 +233,8 @@ def main():
             content=args.content,
             conclusion=args.conclusion,
             status=args.status,
+            memory_type=args.memory_type,
+            importance=args.importance,
         )
         print(f"Updated: {args.update}")
         return
@@ -280,6 +304,9 @@ def main():
                     print(f"Merged: {filepath}")
                     return
                 # "s" または Enter → そのまま保存に進む
+            else:
+                # 非インタラクティブ環境: 確認不要のため新規保存を継続（デフォルト: s=保存）
+                print("(非インタラクティブモード: 類似記憶をスキップして新規保存します)")
 
     # 保存実行
     filepath = save_memory(
