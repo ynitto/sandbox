@@ -36,6 +36,9 @@ created: "{date}"
 updated: "{date}"
 status: active
 scope: {scope}
+memory_type: {memory_type}
+importance: {importance}
+retention_score: 1.0
 tags: [{tags}]
 related: []
 access_count: 0
@@ -44,6 +47,8 @@ user_rating: 0
 correction_count: 0
 share_score: 0
 promoted_from: ""
+consolidated_from: []
+consolidated_to: ""
 summary: "{summary}"
 ---
 
@@ -70,24 +75,36 @@ def slugify(text: str) -> str:
     return text[:50] or "memory"
 
 
-def generate_id(date_str: str, category_dir: str) -> str:
+def generate_id(date_str: str, memory_dir: str) -> str:
     base = f"mem-{date_str.replace('-', '')}"
-    n = 1
-    if os.path.isdir(category_dir):
-        n = sum(1 for f in os.listdir(category_dir) if f.endswith(".md")) + 1
-    return f"{base}-{n:03d}"
+    prefix = f"{base}-"
+    max_n = 0
+    # インデックスから同日付のID最大値を探す（削除済みファイルや他カテゴリを含め全体を参照）
+    if os.path.isdir(memory_dir):
+        index = memory_utils.load_index(memory_dir)
+        if not index.get("entries"):
+            index = memory_utils.refresh_index(memory_dir)
+        for entry in index.get("entries", []):
+            mem_id = entry.get("id", "")
+            if mem_id.startswith(prefix):
+                try:
+                    max_n = max(max_n, int(mem_id[len(prefix):]))
+                except ValueError:
+                    pass
+    return f"{base}-{max_n + 1:03d}"
 
 
 def save_memory(category: str, title: str, summary: str, content: str,
                 tags: list, scope: str = "home",
-                context: str = "", conclusion: str = "") -> str:
+                context: str = "", conclusion: str = "",
+                memory_type: str = "", importance: str = "") -> str:
     date_str = memory_utils.today_str()
     slug = slugify(title)
     memory_dir = memory_utils.get_memory_dir(scope)
     category_dir = os.path.join(memory_dir, category)
     os.makedirs(category_dir, exist_ok=True)
 
-    mem_id = generate_id(date_str, category_dir)
+    mem_id = generate_id(date_str, memory_dir)
     filepath = os.path.join(category_dir, f"{slug}.md")
     if os.path.exists(filepath):
         base, ext = os.path.splitext(filepath)
@@ -96,9 +113,15 @@ def save_memory(category: str, title: str, summary: str, content: str,
             n += 1
         filepath = f"{base}-{n:03d}{ext}"
 
+    # v5: memory_type / importance を自動推定（未指定時）
+    if not memory_type:
+        memory_type = memory_utils.detect_memory_type(content, title, summary)
+    if not importance:
+        importance = memory_utils.detect_importance(content, title, summary)
+
     # share_score を事前計算（保存直後は access_count=0 のため情報量とタグのみ）
     pseudo_meta = {"tags": tags, "access_count": 0, "user_rating": 0,
-                   "correction_count": 0, "status": "active"}
+                   "correction_count": 0, "status": "active", "importance": importance}
     share_score = memory_utils.compute_share_score(pseudo_meta, content)
 
     tags_str = ", ".join(tags)
@@ -107,14 +130,16 @@ def save_memory(category: str, title: str, summary: str, content: str,
         title=title,
         date=date_str,
         scope=scope,
+        memory_type=memory_type,
+        importance=importance,
         tags=tags_str,
         summary=summary,
         context=context or "(作成時に記録なし)",
         content=content,
         conclusion=conclusion or "(作成時に記録なし)",
     )
-    # share_score を埋め込む
-    body = re.sub(r"^share_score: \d+", f"share_score: {share_score}", body, count=1, flags=re.MULTILINE)
+    # share_score を埋め込む（-? で負値にも対応）
+    body = re.sub(r"^share_score: -?\d+", f"share_score: {share_score}", body, count=1, flags=re.MULTILINE)
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(body)
@@ -127,7 +152,8 @@ def save_memory(category: str, title: str, summary: str, content: str,
 
 
 def update_memory(filepath: str, summary: str = None, content: str = None,
-                  conclusion: str = None, status: str = None) -> None:
+                  conclusion: str = None, status: str = None,
+                  memory_type: str = None, importance: str = None) -> None:
     """既存記憶ファイルの updated 日付と各フィールドを更新する"""
     with open(filepath, "r", encoding="utf-8") as f:
         text = f.read()
@@ -137,6 +163,10 @@ def update_memory(filepath: str, summary: str = None, content: str = None,
 
     if status:
         text = re.sub(r"^status: \w+", f"status: {status}", text, flags=re.MULTILINE)
+    if memory_type:
+        text = re.sub(r"^memory_type: \w+", f"memory_type: {memory_type}", text, flags=re.MULTILINE)
+    if importance:
+        text = re.sub(r"^importance: \w+", f"importance: {importance}", text, flags=re.MULTILINE)
     if summary:
         text = re.sub(r'^summary: ".*"', f'summary: "{summary}"', text, flags=re.MULTILINE)
     if content:
@@ -164,7 +194,7 @@ def main():
     parser = argparse.ArgumentParser(description="記憶ファイルを保存・更新する")
     parser.add_argument("--category", default="general", help="カテゴリ名 (default: general)")
     parser.add_argument("--scope", default="home",
-                        choices=["workspace", "home"],
+                        choices=["workspace", "home", "shared"],
                         help="スコープ: workspace(プロジェクト固有) | home(横断) (default: home)")
     parser.add_argument("--title", help="記憶タイトル")
     parser.add_argument("--summary", help="要約（1〜2文）")
@@ -175,6 +205,11 @@ def main():
     parser.add_argument("--update", help="更新対象ファイルパス")
     parser.add_argument("--status", choices=["active", "archived", "deprecated"],
                         help="ステータス変更（--update と組み合わせて使用）")
+    # v5.0.0 脳構造フィールド（省略時は自動推定）
+    parser.add_argument("--memory-type", choices=["episodic", "semantic", "procedural"],
+                        help="記憶タイプ（省略時: コンテンツから自動推定）")
+    parser.add_argument("--importance", choices=["critical", "high", "normal", "low"],
+                        help="重要度（省略時: コンテンツから自動推定）")
     # v4 新機能
     parser.add_argument("--no-dedup", action="store_true",
                         help="類似チェックをスキップ（自動保存・スクリプト呼び出し時）")
@@ -188,6 +223,12 @@ def main():
                         help="インタラクティブな入力プロンプトをスキップ（自動保存・スクリプト呼び出し時）")
     args = parser.parse_args()
 
+    if args.scope == "shared":
+        print("エラー: save_memory.py は --scope shared をサポートしていません。", file=sys.stderr)
+        print("shared への保存は promote_memory.py で workspace/home から昇格する手順を使ってください:", file=sys.stderr)
+        print("  python scripts/promote_memory.py --scope workspace --target shared --auto", file=sys.stderr)
+        sys.exit(1)
+
     if args.update:
         update_memory(
             args.update,
@@ -195,6 +236,8 @@ def main():
             content=args.content,
             conclusion=args.conclusion,
             status=args.status,
+            memory_type=args.memory_type,
+            importance=args.importance,
         )
         print(f"Updated: {args.update}")
         return
@@ -271,6 +314,9 @@ def main():
                     print(f"Merged: {filepath}")
                     return
                 # "s" または Enter → そのまま保存に進む
+            else:
+                # 非インタラクティブ環境: 確認不要のため新規保存を継続（デフォルト: s=保存）
+                print("(非インタラクティブモード: 類似記憶をスキップして新規保存します)")
 
     # 保存実行
     filepath = save_memory(
@@ -282,6 +328,8 @@ def main():
         scope=args.scope,
         context=args.context,
         conclusion=args.conclusion,
+        memory_type=args.memory_type or "",
+        importance=args.importance or "",
     )
 
     # コーパスを更新

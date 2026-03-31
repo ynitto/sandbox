@@ -2,7 +2,7 @@
 name: ltm-use
 description: セッションをまたいで知識・決定事項を継続させたいときのスキル。「覚えておいて」でsave、「思い出して」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った／間違ってた」でrate、「固定化して」でconsolidate、「記憶をレビュー」でreview、「Copilotの記憶を同期して」でsync-copilot-memory。重要な知見を発見したら自律的にsaveを実行すること。
 metadata:
-  version: 5.0.0
+  version: 5.2.0
   tier: core
   category: meta
   tags:
@@ -17,21 +17,7 @@ metadata:
 エージェントにセッションをまたいだ長期記憶を与えるコアスキル。
 MCPサーバーやClaude Code専用機能を使わず、**Markdownファイルへの読み書きだけ**で動作する。
 
-**v5.0.0 の新機能**（🧠 脳構造インスパイア設計）:
-- **記憶タイプ分類**: episodic（海馬）/ semantic（新皮質）/ procedural（大脳基底核）の3分類
-- **記憶の固定化（consolidate）**: エピソード記憶群を意味記憶に蒸留（海馬→新皮質モデル）
-- **重要度レベル（importance）**: critical/high/normal/low の扁桃体モデルによる記憶保持力制御
-- **忘却曲線**: エビングハウスモデルによる指数関数的減衰 + 間隔反復効果
-- **文脈依存想起**: `--context` / `--auto-context` による前頭前皮質モデルの選択的活性化
-- **記憶レビュー（review）**: 海馬リプレイモデルによる定期的な記憶の棚卸し
-
-**v4.0.0 の機能**（継続）:
-- 記憶クラスタリング・類似記憶推薦（TF-IDF + コサイン類似度）
-- save 時の重複検出・統合提案
-- recall ハイブリッドランキング（キーワード + 意味的類似度 + メタデータ）
-- 自動タグ抽出（TF-IDF ベース）
-- cleanup 智的化（重複検出・品質スコア閾値）
-
+更新履歴: [`CHANGELOG.md`](CHANGELOG.md)
 アルゴリズム詳細: [`references/algorithms.md`](references/algorithms.md)
 設計思想: [`../../docs/designs/ltm-use-v5-brain-design.md`](../../docs/designs/ltm-use-v5-brain-design.md)
 
@@ -67,7 +53,7 @@ home  →  (昇格・git)  →  shared
 | **update** | 「記憶を更新して」「情報が変わった」 | `save_memory.py --update` |
 | **archive** | 「忘れて」「古い情報」「アーカイブして」 | `save_memory.py --update --status archived` |
 | **rate** | 「役立った」「間違ってた」「修正が必要」 | `rate_memory.py` |
-| **promote** | 「昇格して」「共有知識にして」「チームに広める」 | `promote_memory.py` |
+| **promote** | 「昇格して」「共有知識にして」「チームに広める」／`importance: critical` な記憶を保存したとき・home の `share_score >= 85` を検出したとき（自律） | `promote_memory.py` |
 | **cleanup** | 「記憶を整理して」「古い記憶を削除して」 | `cleanup_memory.py` |
 | **consolidate** 🧠 | 「固定化して」「記憶を蒸留して」「エピソードをまとめて」 | `consolidate_memory.py` |
 | **review** 🧠 | 「記憶をレビューして」「記憶の棚卸し」「忘れかけてるものは？」 | `review_memory.py` |
@@ -94,13 +80,20 @@ python scripts/save_memory.py \
 python scripts/save_memory.py --non-interactive --no-dedup \
   --category [カテゴリ] --title "[タイトル]" --summary "[要約]" --content "[内容]"
 
-# v5.0.0 記憶タイプ指定（🧠 脳の記憶分類に対応）
+# 記憶タイプ指定（🧠 脳の記憶分類に対応）
 python scripts/save_memory.py \
   --memory-type episodic \       # 海馬: 具体的な経験・イベント
   --importance high \             # 扁桃体: 重要度レベル
   --category auth --title "JWT期限エラーの調査" \
   --summary "..." --content "..."
   # → memory_type/importance は省略可（コンテンツから自動推定）
+
+# 自動タグ抽出と重複検出
+python scripts/save_memory.py \
+  --category auth --title "JWT認証の実装" \
+  --summary "..." --content "..."
+  # → 自動的にタグを提案し、類似記憶を検出して統合・更新・別保存を選択できる
+
 
 # 重複検出をスキップ（強制保存）
 python scripts/save_memory.py --no-dedup \
@@ -160,7 +153,7 @@ python scripts/save_memory.py --non-interactive --no-dedup \
 
 recall すると `access_count` が自動加算され `share_score` が再計算される。
 ワークスペースで見つからない場合は home/shared を自動フォールバック検索する。
-v5.0.0: recall 時に `retention_score` も自動更新（間隔反復効果による忘却曲線リセット）。
+recall 時に `retention_score` も自動更新（間隔反復効果による忘却曲線リセット）。
 
 ```bash
 python scripts/recall_memory.py "[キーワード1] [キーワード2]"
@@ -171,15 +164,15 @@ python scripts/recall_memory.py "[キーワード]" --full
 # 結果に対してインタラクティブ評価
 python scripts/recall_memory.py "[キーワード]" --rate-after
 
-# v5.0.0 文脈依存想起（🧠 前頭前皮質モデル）
+# 文脈依存想起（🧠 前頭前皮質モデル）
 python scripts/recall_memory.py "[キーワード]" \
   --context "認証システムのリファクタリング"
 # → キーワード一致だけでなく、作業コンテキストとの関連性もランキングに反映
 
-# v5.0.0 自動コンテキスト（git diff / ディレクトリから推定）
+# 自動コンテキスト（git diff / ディレクトリから推定）
 python scripts/recall_memory.py --auto-context
 
-# v5.0.0 記憶タイプフィルター
+# 記憶タイプフィルター
 python scripts/recall_memory.py "[キーワード]" --memory-type procedural
 ```
 
@@ -187,7 +180,7 @@ python scripts/recall_memory.py "[キーワード]" --memory-type procedural
 - 関連するタスクを始める前
 - 同じ問題を調査し始めたとき（重複調査を避ける）
 
-v5.0.0 ハイブリッドランキング（4軸）詳細: [`references/algorithms.md`](references/algorithms.md)
+ハイブリッドランキング（4軸）詳細: [`references/algorithms.md`](references/algorithms.md)
 
 ---
 
@@ -223,13 +216,32 @@ python scripts/promote_memory.py --auto
 # home → shared（git commit も実施）
 python scripts/promote_memory.py --scope home --target shared --auto
 
-# git push（共有）
+# home → shared（git commit + push まで一括）
+python scripts/promote_memory.py --scope home --target shared --auto --push
+
+# git push のみ（別途実行する場合）
 python scripts/sync_memory.py --push
 ```
 
 **昇格フロー**:
 ```
 home → shared:     個人ナレッジ → チーム共有（git commit → push で共有）
+```
+
+**プロアクティブなpromote/push（自律的共有）**:
+
+明示的な「昇格して」がなくても、以下の状況では**自発的に** promote → push を実行すること：
+
+- `importance: critical` な記憶を保存したとき → 即座に `home → shared` 昇格 + push
+- home スコープの記憶の `share_score >= 85` を検出したとき → 自動昇格 + push
+- セッション内で重要な知見を複数 save した後 → `--list` で昇格候補を確認し、候補があればユーザーに報告
+
+共有リポジトリが未設定の場合は push をスキップし、設定を案内すること。
+promote/push 後は「〇〇件を shared に昇格・push しました」と簡潔に報告する。
+
+```bash
+# 自律共有フロー（one-shot: commit + push まで一括）
+python scripts/promote_memory.py --scope home --target shared --auto --push
 ```
 
 ---
@@ -275,7 +287,7 @@ python scripts/build_index.py --force
 
 参照頻度・経過日数に基づいて不要な記憶を自動判定し削除する。
 
-**v4.0.0 新機能**: 重複検出モードと品質スコア閾値による智的クリーンアップ。
+重複検出モードと品質スコア閾値による智的クリーンアップをサポート。
 
 ```bash
 # ドライラン（削除対象を確認）
@@ -284,10 +296,10 @@ python scripts/cleanup_memory.py --dry-run
 # ワークスペース記憶をクリーンアップ
 python scripts/cleanup_memory.py
 
-# v4.0.0 重複検出モード（類似度 >= 0.85 のペアを検出）
+# 重複検出モード（類似度 >= 0.85 のペアを検出）
 python scripts/cleanup_memory.py --duplicates-only --dry-run
 
-# v4.0.0 品質スコア閾値モード（総合品質 < 30 を削除候補に）
+# 品質スコア閾値モード（総合品質 < 30 を削除候補に）
 python scripts/cleanup_memory.py --quality-threshold 30 --dry-run
 ```
 
@@ -308,10 +320,11 @@ VSCode の Copilot Memory 機能（`%APPDATA%\Code\User\globalStorage\github.cop
 python scripts/sync_copilot_memory.py --dry-run
 
 # home スコープに取り込む（デフォルト・プロジェクト横断）
-python scripts/sync_copilot_memory.py
+# ユーザーからの明示的な指示なので --force でインターバルを無視して実行する
+python scripts/sync_copilot_memory.py --force
 
 # workspace スコープに取り込む
-python scripts/sync_copilot_memory.py --scope workspace
+python scripts/sync_copilot_memory.py --scope workspace --force
 ```
 
 globalStorageパス・詳細オプション: [`references/operations.md`](references/operations.md)
@@ -395,7 +408,7 @@ python scripts/review_memory.py --update-retention
 
 ---
 
-## 記憶のライフサイクル（v5.0.0 🧠 脳構造モデル）
+## 記憶のライフサイクル（🧠 脳構造モデル）
 
 ```
 [生の経験] セッション内での発見・決定・失敗

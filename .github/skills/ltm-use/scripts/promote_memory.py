@@ -28,31 +28,49 @@ import memory_utils
 
 
 def load_candidate_memories(src_scope: str, threshold: int) -> list[dict]:
-    """src_scope から share_score >= threshold の記憶を返す"""
+    """src_scope から share_score >= threshold の記憶を返す。
+
+    インデックスで事前フィルタリングし、候補ファイルのみ読み込むことで
+    記憶数が多い場合のパフォーマンスを向上させる。
+    """
     src_dir = memory_utils.get_memory_dir(src_scope)
+
+    # インデックスから候補を事前絞り込み（全ファイル読み込みを回避）
+    index = memory_utils.load_index(src_dir)
+    if not index.get("entries"):
+        index = memory_utils.refresh_index(src_dir)
+
+    pre_candidates = [
+        e for e in index.get("entries", [])
+        if e.get("share_score", 0) >= threshold
+        and e.get("status", "active") == "active"
+    ]
+
     candidates = []
-    for fpath, rel_cat in memory_utils.iter_memory_files(src_dir):
+    for entry in pre_candidates:
+        fpath = os.path.join(src_dir, entry["filepath"])
+        if not os.path.exists(fpath):
+            continue
         with open(fpath, encoding="utf-8") as f:
             text = f.read()
         meta, body = memory_utils.parse_frontmatter(text)
         score = memory_utils.compute_share_score(meta, body)
-        # フロントマターの share_score も更新
+        # キャッシュと実スコアが乖離していれば更新
         if meta.get("share_score", 0) != score:
             memory_utils.update_frontmatter_fields(fpath, {"share_score": score})
             memory_utils.update_index_entry(src_dir, fpath)
-        candidates.append({
-            "filepath": fpath,
-            "rel_cat": rel_cat,
-            "title": meta.get("title", os.path.basename(fpath)),
-            "summary": meta.get("summary", ""),
-            "score": score,
-            "status": meta.get("status", "active"),
-        })
-    return sorted(
-        [c for c in candidates if c["score"] >= threshold],
-        key=lambda x: x["score"],
-        reverse=True,
-    )
+        if score >= threshold:
+            rel_cat = os.path.relpath(os.path.dirname(fpath), src_dir)
+            candidates.append({
+                "filepath": fpath,
+                "rel_cat": rel_cat,
+                "title": meta.get("title", os.path.basename(fpath)),
+                "summary": meta.get("summary", ""),
+                "score": score,
+                "status": meta.get("status", "active"),
+            })
+
+    return sorted(candidates, key=lambda x: x["score"], reverse=True)
 
 
 def promote_file(src_path: str, src_scope: str, target_scope: str) -> str:
@@ -91,6 +109,8 @@ def main():
     parser.add_argument("--file", help="特定ファイルのパスを直接指定して昇格")
     parser.add_argument("--threshold", type=int, default=None,
                         help="昇格候補の最低スコア（省略時は config 値を使用）")
+    parser.add_argument("--push", action="store_true",
+                        help="shared 昇格後に git push まで自動実行（--auto と組み合わせて使用）")
     args = parser.parse_args()
 
     cfg = memory_utils.load_config()
@@ -118,6 +138,9 @@ def main():
                     repo, f"feat: promote memory from {args.scope}"
                 )
                 print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
+                if ok and args.push:
+                    ok2, msg2 = memory_utils.git_push_repo(repo)
+                    print(f"git push: {'成功' if ok2 else '失敗'} - {msg2}")
             else:
                 print("注意: 書き込み可能な共有リポジトリが設定されていません。git commit をスキップします。")
         return
@@ -175,7 +198,11 @@ def main():
                 )
                 print(f"git commit: {'OK' if ok else 'FAILED'} - {msg}")
                 if ok:
-                    print(f"共有するには: python sync_memory.py --push --repo {repo['name']}")
+                    if args.push:
+                        ok2, msg2 = memory_utils.git_push_repo(repo)
+                        print(f"git push: {'成功' if ok2 else '失敗'} - {msg2}")
+                    else:
+                        print(f"共有するには: python sync_memory.py --push --repo {repo['name']}")
 
 
 if __name__ == "__main__":

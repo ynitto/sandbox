@@ -256,28 +256,47 @@ q chat --context .\src\handler.py "このコードのバグを見つけて"
 
 **macOS / Linux:**
 ```bash
-# エージェントタスクを実行
-kiro-cli agent "src/ ディレクトリのすべての Python ファイルに型ヒントを追加して"
+# チャット（インタラクティブ）
+kiro-cli chat
 
-# 仕様（スペック）を生成
-kiro-cli spec "ユーザー認証機能の設計書を作って"
+# タスクを指定して起動
+kiro-cli chat "src/ ディレクトリのすべての Python ファイルに型ヒントを追加して"
 
-# コードを自動生成
-kiro-cli generate --spec docs/auth-spec.md
+# 非インタラクティブ（スクリプト・エージェントから呼び出す場合）
+kiro-cli chat --no-interactive "タスクの説明"
 
-# フック設定を確認
-kiro-cli hooks list
+# ツール承認を自動化（ファイル操作なども自動実行）
+kiro-cli chat --no-interactive --trust-all-tools "JSDoc コメントを追加して"
+
+# エージェント設定の管理（タスク実行ではなく設定操作）
+kiro-cli agent list
+kiro-cli agent create my-agent
+kiro-cli agent set-default my-agent
 ```
 
 **Windows（WSL2 経由）:**
 ```powershell
 # wsl コマンド経由で直接実行
-wsl kiro-cli agent "src/ ディレクトリのすべての Python ファイルに型ヒントを追加して"
-wsl kiro-cli spec "ユーザー認証機能の設計書を作って"
+wsl kiro-cli chat --no-interactive "src/ ディレクトリのすべての Python ファイルに型ヒントを追加して"
 
 # PowerShell プロファイルにエイリアスを登録すると kiro-cli コマンドとして使える
 # 登録方法: Add-Content $PROFILE "`nfunction kiro-cli { wsl kiro-cli @args }"
-kiro-cli agent "JSDoc コメントを追加して"
+kiro-cli chat --no-interactive "JSDoc コメントを追加して"
+```
+
+**出力の取得（スクリプトから利用する場合）:**
+```bash
+# 変数に取得
+result=$(kiro-cli chat --no-interactive "設計書を作って" 2>&1)
+echo "$result"
+
+# ファイルに保存
+kiro-cli chat --no-interactive --trust-all-tools \
+  "src/ の Python ファイルに型ヒントを追加して" > kiro-output.txt
+
+# 別ツールにパイプ
+kiro-cli chat --no-interactive "設計書を作って" | \
+  claude -p "この設計書の問題点を指摘して"
 ```
 
 ---
@@ -321,6 +340,8 @@ claude -p "このコマンドを本番環境で実行する前に確認すべき
 | `command not found: codex` | 未インストール | `npm install -g @openai/codex` |
 | `gh copilot: unknown command` | 拡張未インストール | `gh extension install github/gh-copilot` |
 | `q: No credentials` | AWS 認証未設定 | `q login` を実行 |
+| `kiro-cli: unknown command "agent"` | agent はタスク実行ではなく設定管理用 | `kiro-cli chat --no-interactive "..."` を使う |
+| `kiro-cli: unknown command "auth"` | auth サブコマンドは存在しない | `kiro-cli login` を使う |
 | `OPENAI_API_KEY not set` | 環境変数未設定 | `.env` または環境変数に設定 |
 | PowerShell 実行ポリシーエラー | ポリシー制限 | `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
 

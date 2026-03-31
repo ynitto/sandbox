@@ -117,7 +117,7 @@ adjusted_share_score = share_score * importance_multiplier
 
 ### 2.3 記憶の固定化（Consolidate — 海馬→新皮質モデル）
 
-複数のエピソード記憶を統合・抽象化し、意味記憶またはロ手続き記憶に蒸留する操作。
+複数のエピソード記憶を統合・抽象化し、意味記憶または手続き記憶に蒸留する操作。
 
 #### フロー
 

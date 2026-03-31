@@ -7,6 +7,7 @@ Python標準ライブラリのみ使用（外部依存なし）。
 
 import datetime
 import json
+import math
 import os
 import re
 import subprocess
@@ -67,6 +68,14 @@ def save_config(cfg: dict) -> None:
     path = os.path.join(HOME_MEMORY_ROOT, "config.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def _get_home_dir() -> str:
+    """ホームメモリールートを返す（home/shared 共通の親ディレクトリ）。
+
+    build_index / cleanup / rate の scope_label 計算で使用する。
+    """
+    return HOME_MEMORY_ROOT
 
 
 # ─── skill-registry.json 連携 ────────────────────────────────
@@ -319,6 +328,67 @@ def today_str() -> str:
     return datetime.date.today().isoformat()
 
 
+# ─── v5.0.0 脳科学モデル ─────────────────────────────────────
+
+def compute_retention_score(meta: dict) -> float:
+    """エビングハウス忘却曲線に基づく retention スコアを計算する（0.0〜1.0）。
+
+    retention = e^(-0.693 * days_since_access / half_life)
+    half_life = base_half_life * importance_factor * repetition_factor
+
+    importance_factor: critical=∞(→1.0固定), high=3.0, normal=1.0, low=0.5
+    repetition_factor: 1 + ln(1 + access_count)
+    """
+    importance = meta.get("importance", "normal")
+    if importance == "critical":
+        return 1.0
+
+    importance_factor = {"high": 3.0, "normal": 1.0, "low": 0.5}.get(importance, 1.0)
+    access_count = int(meta.get("access_count", 0))
+    repetition_factor = 1.0 + math.log(1.0 + access_count)
+
+    cfg = load_config()
+    base_half_life = float(cfg.get("retention_base_half_life", 30))
+    half_life = base_half_life * importance_factor * repetition_factor
+
+    # 最終アクセス日を優先し、なければ更新日 → 作成日
+    last = (meta.get("last_accessed") or meta.get("updated") or meta.get("created") or "")
+    days = days_since(last) if last else 365
+
+    retention = math.exp(-0.693 * days / half_life)
+    return max(0.0, min(1.0, retention))
+
+
+def detect_memory_type(content: str, title: str = "", summary: str = "") -> str:
+    """コンテンツから memory_type を自動推定する（procedural > episodic > semantic）。
+
+    algorithms.md の分類ルールを実装。
+    """
+    combined = (title + " " + summary + " " + content).lower()
+    procedural_kw = ["手順", "ステップ", "方法", "やり方", "手順書", "ワークフロー"]
+    if any(k in combined for k in procedural_kw) or re.search(r'^\d+\.\s+', content, re.MULTILINE):
+        return "procedural"
+    episodic_kw = ["したとき", "で起きた", "が発生した", "を発見した", "今日", "昨日", "さっき", "先ほど"]
+    if any(k in combined for k in episodic_kw) or re.search(r'\d{4}-\d{2}-\d{2}', content):
+        return "episodic"
+    return "semantic"
+
+
+def detect_importance(content: str, title: str = "", summary: str = "") -> str:
+    """コンテンツから importance を自動推定する（algorithms.md のキーワードルール）。"""
+    combined = (title + " " + summary + " " + content).lower()
+    critical_kw = ["本番障害", "セキュリティ", "データ損失", "脆弱性", "インシデント", "絶対に", "致命的", "重大な"]
+    high_kw = ["設計決定", "アーキテクチャ", "重要", "再発防止", "根本原因", "ベストプラクティス", "パフォーマンス"]
+    low_kw = ["仮", "試し", "とりあえず", "一時的", "wip"]
+    if any(k in combined for k in critical_kw):
+        return "critical"
+    if any(k in combined for k in high_kw):
+        return "high"
+    if any(k in combined for k in low_kw):
+        return "low"
+    return "normal"
+
+
 # ─── ファイルスキャン ────────────────────────────────────────
 
 def iter_memory_files(memory_dir: str, category: str = None):
@@ -365,6 +435,10 @@ def build_index_entry(filepath: str, memory_dir: str) -> dict:
         "user_rating": int(meta.get("user_rating", 0)),
         "created": meta.get("created", ""),
         "updated": meta.get("updated", ""),
+        "memory_type": meta.get("memory_type", "semantic"),
+        "importance": meta.get("importance", "normal"),
+        "retention_score": float(meta.get("retention_score") or 1.0),
+        "last_accessed": meta.get("last_accessed", ""),
     }
 
 

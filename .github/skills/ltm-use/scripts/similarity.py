@@ -264,6 +264,7 @@ def update_corpus_entry(memory_dir: str, mem_id: str, title: str,
     """単一記憶のコーパスエントリを更新する（save/rate 後に呼ぶ）
 
     既存コーパスがない場合は何もしない（build_corpus を先に実行すること）。
+    新規エントリの場合は df と total_docs も更新する。
 
     Args:
         memory_dir: メモリーディレクトリのパス
@@ -277,18 +278,24 @@ def update_corpus_entry(memory_dir: str, mem_id: str, title: str,
         # コーパス未構築の場合はスキップ（次回 build_corpus で再構築）
         return
 
-    # 新規トークンを生成
     text = f"{title} {summary} {' '.join(tags)}"
     tokens = tokenize(text)
 
-    # 既存の df から IDF を再計算（簡易版: 既存 IDF を流用）
+    is_new = mem_id not in corpus.get("doc_vectors", {})
+
+    # 新規エントリの場合は df と total_docs を更新してドリフトを防ぐ
+    if is_new:
+        df = corpus.get("df", {})
+        seen: set[str] = set()
+        for t in tokens:
+            if t not in seen:
+                df[t] = df.get(t, 0) + 1
+                seen.add(t)
+        corpus["df"] = df
+        corpus["total_docs"] = corpus.get("total_docs", 0) + 1
+
     idf = compute_idf(corpus.get("df", {}), corpus.get("total_docs", 1))
-
-    # ベクトル更新
     corpus["doc_vectors"][mem_id] = compute_tfidf_vector(tokens, idf)
-
-    # df の更新（厳密には全体再計算が必要だが、近似として既存 df を維持）
-    # → 正確性が必要な場合は build_corpus を実行すること
 
     save_corpus(memory_dir, corpus)
 

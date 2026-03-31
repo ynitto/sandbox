@@ -1,0 +1,85 @@
+{
+  "name": "vscode-agent-executor",
+  "displayName": "Agent CLI Executor",
+  "description": "Execute Agent CLI commands (Claude Code, GitHub Copilot, Codex, Amazon Q, Kiro) from VS Code chat UI",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentExecutor.openChat",
+        "title": "Open Agent CLI Chat",
+        "category": "Agent CLI"
+      },
+      {
+        "command": "agentExecutor.reloadAgents",
+        "title": "Reload Agents",
+        "category": "Agent CLI"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "agentExecutor.chatView",
+          "name": "Agent CLI Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Agent CLI Executor",
+      "properties": {
+        "agentExecutor.syncOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "起動時に ~/.copilot/ の内容を各 CLI ツールのホームディレクトリへ自動同期する"
+        },
+        "agentExecutor.periodicPrompts": {
+          "type": "array",
+          "default": [],
+          "description": "所定間隔で自動送信する定期プロンプトの設定。結果は Output パネルの「Agent CLI Periodic Prompts」に出力されます。",
+          "items": {
+            "type": "object",
+            "required": ["agentId", "prompt", "intervalMinutes"],
+            "additionalProperties": false,
+            "properties": {
+              "agentId": {
+                "type": "string",
+                "description": "使用するエージェントの ID (例: \"claude\")"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "送信するプロンプト文字列"
+              },
+              "intervalMinutes": {
+                "type": "number",
+                "minimum": 1,
+                "description": "送信間隔（分）"
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "false にするとこのエントリを無効化します"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.0.0"
+  }
+}
