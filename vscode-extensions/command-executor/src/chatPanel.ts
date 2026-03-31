@@ -23,6 +23,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _chatHistory: ChatHistoryEntry[];
   private _currentStdout = '';
   private _currentStderr = '';
+  /** エージェントごとの継続セッション ID（claude: --resume、kiro-cli: --session-id として渡す） */
+  private _agentSessions: Map<string, string> = new Map();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -73,6 +75,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'clearHistory':
           this._chatHistory = [];
+          this._agentSessions.clear();
           void this._context.globalState.update('chatHistory', []);
           break;
         case 'addFile': {
@@ -144,7 +147,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const expandedPrompt = expandFileRefs(prompt, workspacePath);
-    const config = buildCommand(agent, expandedPrompt, workspacePath, model);
+    const sessionId = this._agentSessions.get(agentId);
+    const config = buildCommand(agent, expandedPrompt, workspacePath, model, sessionId);
 
     this._currentProcess = runCommand(
       config,
@@ -156,7 +160,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._currentStderr += data;
         this._view?.webview.postMessage({ type: 'error', text: data });
       },
-      (code) => {
+      (code, newSessionId) => {
+        if (newSessionId) {
+          // claude: stream-json から取得した実際のセッション ID を保存する
+          this._agentSessions.set(agentId, newSessionId);
+        } else if (agent.tool === 'kiro-cli' && !this._agentSessions.has(agentId)) {
+          // kiro-cli: セッション ID は返さないが次回から --resume を渡すためマーカーをセットする
+          this._agentSessions.set(agentId, '__resume__');
+        }
         this._chatHistory.push({ role: 'assistant', stdout: this._currentStdout, stderr: this._currentStderr });
         if (this._chatHistory.length > 100) {
           this._chatHistory = this._chatHistory.slice(-100);

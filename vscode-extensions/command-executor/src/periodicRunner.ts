@@ -116,7 +116,7 @@ export class PeriodicRunner {
       cmdConfig,
       (data) => this._outputChannel.append(data),
       (data) => this._outputChannel.append(data),
-      (code) => {
+      (code, _sessionId) => {
         // 正常完了時はタイムアウトタイマーをキャンセルして即座にキーを解放する
         const timerId = this._runningPromptTimers.get(key);
         if (timerId !== undefined) {

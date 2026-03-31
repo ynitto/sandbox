@@ -14,6 +14,12 @@ export interface CommandConfig {
    * WSL 内部の cwd は args の --cd で別途指定される。
    */
   cwd: string | undefined;
+  /**
+   * true のとき stdout を stream-json として行単位でパースし、
+   * アシスタントのテキストブロックのみ onData に渡す。
+   * セッション ID は onClose の第 2 引数として返す。
+   */
+  streamJson?: boolean;
 }
 
 /**
@@ -23,13 +29,15 @@ export interface CommandConfig {
  * @param agent        エージェント設定
  * @param userPrompt   ユーザー入力プロンプト
  * @param workspacePath VS Code の workspace uri.fsPath（未設定の場合は undefined）
- * @param model        使用するモデル名（claude ツールのみ有効、未指定の場合はデフォルト）
+ * @param model        使用するモデル名（claude / kiro-cli ツールのみ有効、未指定の場合はデフォルト）
+ * @param sessionId    継続するセッション ID（claude: --resume、kiro-cli: --session-id として渡す）
  */
 export function buildCommand(
   agent: AgentConfig,
   userPrompt: string,
   workspacePath: string | undefined,
-  model?: string
+  model?: string,
+  sessionId?: string
 ): CommandConfig {
   const isWindows = os.platform() === 'win32';
 
@@ -49,11 +57,13 @@ export function buildCommand(
   switch (agent.tool) {
     case 'claude': {
       const modelArgs = model ? ['--model', model] : [];
+      const sessionArgs = sessionId ? ['--resume', sessionId] : [];
       return {
         cmd: 'claude',
-        args: ['-p', prompt, ...modelArgs, ...extra],
+        args: ['-p', prompt, '--output-format', 'stream-json', ...modelArgs, ...sessionArgs, ...extra],
         label: agent.name,
         cwd: workspacePath,
+        streamJson: true,
       };
     }
 
@@ -107,11 +117,13 @@ export function buildCommand(
 
     case 'kiro-cli': {
       const modelArgs = model ? ['--model', model] : [];
+      // kiro-cli は --session-id を持たず、--resume で直前セッションを継続する
+      const sessionArgs = sessionId !== undefined ? ['--resume'] : [];
       if (isWindows) {
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
         const wslArgs = wslCwd
-          ? ['--cd', wslCwd, 'kiro-cli', 'chat', '--no-interactive', ...modelArgs, prompt, ...extra]
-          : ['kiro-cli', 'chat', '--no-interactive', ...modelArgs, prompt, ...extra];
+          ? ['--cd', wslCwd, 'kiro-cli', 'chat', '--no-interactive', ...modelArgs, ...sessionArgs, prompt, ...extra]
+          : ['kiro-cli', 'chat', '--no-interactive', ...modelArgs, ...sessionArgs, prompt, ...extra];
         return {
           cmd: 'wsl',
           args: wslArgs,
@@ -121,7 +133,7 @@ export function buildCommand(
       }
       return {
         cmd: 'kiro-cli',
-        args: ['chat', '--no-interactive', ...modelArgs, prompt, ...extra],
+        args: ['chat', '--no-interactive', ...modelArgs, ...sessionArgs, prompt, ...extra],
         label: agent.name,
         cwd: workspacePath,
       };
@@ -141,12 +153,16 @@ export function buildCommand(
 
 /**
  * コマンドをサブプロセスとして実行し、stdout/stderr をコールバックでストリーミングする。
+ *
+ * config.streamJson が true の場合は stdout を stream-json として行単位でパースし、
+ * アシスタントのテキストブロックのみを onData に渡す。
+ * セッション ID が取得できた場合は onClose の第 2 引数として返す。
  */
 export function runCommand(
   config: CommandConfig,
   onData: (chunk: string) => void,
   onError: (chunk: string) => void,
-  onClose: (code: number | null) => void
+  onClose: (code: number | null, sessionId?: string) => void
 ): cp.ChildProcess {
   const proc = cp.spawn(config.cmd, config.args, {
     cwd: config.cwd,
@@ -157,8 +173,51 @@ export function runCommand(
   // eslint-disable-next-line no-control-regex
   const stripAnsi = (s: string) => s.replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]/g, '');
 
+  let lineBuffer = '';
+  let capturedSessionId: string | undefined;
+
+  /**
+   * stream-json の 1 行を解析してテキスト表示とセッション ID 抽出を行う。
+   */
+  function processStreamJsonLine(line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed) { return; }
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      // JSON でない行はそのまま表示する
+      onData(stripAnsi(line) + '\n');
+      return;
+    }
+    // system / result メッセージから session_id を取得する
+    if (typeof obj['session_id'] === 'string') {
+      capturedSessionId = obj['session_id'] as string;
+    }
+    // assistant メッセージからテキストブロックを抽出して表示する
+    if (obj['type'] === 'assistant') {
+      type ContentBlock = { type: string; text?: string };
+      type AssistantMessage = { content?: ContentBlock[] };
+      const msg = obj['message'] as AssistantMessage | undefined;
+      for (const block of msg?.content ?? []) {
+        if (block.type === 'text' && block.text) {
+          onData(block.text);
+        }
+      }
+    }
+  }
+
   proc.stdout.on('data', (data: Buffer) => {
-    onData(stripAnsi(data.toString()));
+    if (config.streamJson) {
+      lineBuffer += data.toString();
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() ?? '';
+      for (const line of lines) {
+        processStreamJsonLine(line);
+      }
+    } else {
+      onData(stripAnsi(data.toString()));
+    }
   });
 
   proc.stderr.on('data', (data: Buffer) => {
@@ -166,7 +225,11 @@ export function runCommand(
   });
 
   proc.on('close', (code) => {
-    onClose(code);
+    // バッファに残った最終行を処理する
+    if (config.streamJson && lineBuffer.trim()) {
+      processStreamJsonLine(lineBuffer);
+    }
+    onClose(code, capturedSessionId);
   });
 
   proc.on('error', (err) => {
