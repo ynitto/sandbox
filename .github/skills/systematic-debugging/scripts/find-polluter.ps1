@@ -29,19 +29,29 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# プロジェクトルート外へのアクセスを防ぐ
+if ($TestPattern -match '\.\.') {
+    Write-Host "エラー: テストパターンに '..' は使用できません" -ForegroundColor Red
+    exit 1
+}
+
+$ProjectRoot = (Resolve-Path .).Path
+
 Write-Host "検索中: $PollutionCheck を作成するテスト" -ForegroundColor Cyan
 Write-Host "テストパターン: $TestPattern" -ForegroundColor Cyan
 Write-Host ""
 
-# テストファイルのリストを取得
+# テストファイルのリストを取得し、プロジェクトルート外のパスを除外する
 $TestFiles = Get-ChildItem -Path . -Filter "*.test.ts" -Recurse |
     Where-Object { $_.FullName -like "*$($TestPattern.Replace('**\', '').Replace('**/', ''))*" -or
                    $_.FullName -match ($TestPattern -replace '\*\*[/\\]', '.*' -replace '\*', '[^/\\]*') } |
+    Where-Object { $_.FullName.StartsWith($ProjectRoot) } |
     Sort-Object FullName
 
 if ($TestFiles.Count -eq 0) {
     # パターンで見つからない場合、直接globで試す
     $TestFiles = Get-ChildItem -Path . -Recurse -Include "*.test.ts", "*.test.js", "*.spec.ts", "*.spec.js" |
+        Where-Object { $_.FullName.StartsWith($ProjectRoot) } |
         Sort-Object FullName
 }
 
@@ -69,7 +79,7 @@ foreach ($TestFile in $TestFiles) {
 
     Write-Host "[$Count/$Total] テスト中: $RelativePath"
 
-    # テストを実行（エラーを抑制）
+    # テストを実行（テスト自体の失敗は無視して汚染の有無のみ確認する）
     try {
         $null = & npm test $RelativePath 2>&1
     }
