@@ -435,7 +435,7 @@ push実行: [実行した / 不要]
 ```
 skill-creator（モードB: コードベース変換）で既存コードベースからスキルを生成する。
 
-手順: まず skill-creator スキルの SKILL.md を読み、モードBのワークフロー（codebase-to-skill/SKILL.md）に従ってください。
+手順: まず skill-creator スキルの SKILL.md を読み、モードBのワークフロー（skill-creator/references/codebase-to-skill.md）に従ってください。
 対象コードベース: [codebase-path]
 生成するスキルの用途: [タスクのactionと不足しているスキルの概要]
 配置先: ${SKILLS_DIR}/
