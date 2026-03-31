@@ -13,7 +13,7 @@
 | カテゴリ | スキル数 | スキル名 |
 |---------|---------|---------|
 | **オーケストレーション** | 2 | scrum-master (v1.4.0), sprint-reviewer (v1.0.0) |
-| **メタ／管理** | 6 | git-skill-manager (v1.0.1), skill-recruiter (v1.0.0), skill-creator (v2.0.0), skill-evaluator (v1.0.1), skill-selector (v1.0.0), ltm-use (v4.0.0) |
+| **メタ／管理** | 5 | git-skill-manager (v1.0.1), skill-creator (v3.0.0), skill-evaluator (v1.0.1), skill-selector (v1.0.0), ltm-use (v4.0.0) |
 | **要件／設計** | 6 | requirements-definer (v2.0.0), brainstorming (v2.0.0), domain-modeler (v1.0.0), api-designer (v1.0.0), ui-designer (v1.0.0), doc-coauthoring (v1.0.0) |
 | **実装** | 5 | react-frontend-coder (v1.0.0), react-frontend-unit-tester (v1.0.0), tdd-executing (v1.0.1), ci-cd-configurator (v1.0.0), webapp-testing (v1.0.0) |
 | **レビュー** | 8 | code-reviewer (v2.0.0), code-simplifier (v1.0.0), architecture-reviewer (v1.2.0), design-reviewer (v1.0.0), document-reviewer (v2.0.0), security-reviewer (v1.0.0), test-reviewer (v1.2.0), sprint-reviewer (※オーケストレーションと兼務) |
@@ -52,9 +52,8 @@
               └── 全 Phase: ltm-use（記憶の save/recall 必須）
 
 メタスキル:
-  git-skill-manager ← skill-recruiter（外部取得）
-                    ← skill-evaluator（品質評価）
-  skill-creator（モードB: 既存コードのスキル化、モードC: 履歴から自動発見を内包）
+  git-skill-manager ← skill-evaluator（品質評価）
+  skill-creator（モードB: 既存コードのスキル化、モードC: 履歴から自動発見、モードD: 外部取得を内包）
 ```
 
 ### 構造統計
@@ -177,7 +176,7 @@ metadata:
 | 区分 | 数 | 代表例 |
 |------|---|-------|
 | 豊富なスクリプト群 | 4 | ltm-use (9本), git-skill-manager (5本+), scrum-master (2本), skill-evaluator (2本) |
-| 最小限のスクリプト | 8 | skill-recruiter (1本), webapp-testing (1本), ui-designer (1本) 等 |
+| 最小限のスクリプト | 7 | webapp-testing (1本), ui-designer (1本) 等（skill-recruiter は skill-creator に統合） |
 | スクリプトなし | 25 | code-reviewer, security-reviewer, requirements-definer 等 |
 
 **スクリプト化で信頼性が向上するスキルの候補**:

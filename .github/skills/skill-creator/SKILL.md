@@ -1,8 +1,8 @@
 ---
 name: skill-creator
-description: スキルのライフサイクル全体を担うメタスキル。作成・取得・改善のすべてを扱う。「スキルを作って」「スキルを追加して」「URLからスキルをインストールして」「コードベースをスキル化して」「チャット履歴からスキルを生成して」「このスキルを改善して」「スキルをパッケージして」「外部スキルを登録して」などのリクエストで発動する。GitHub Copilot および Claude Code で動作する。コードベース変換（モードB）と履歴からの生成（モードC）のワークフローも内包する。
+description: スキルのライフサイクル全体を担うメタスキル。作成・取得・改善のすべてを扱う。「スキルを作って」「スキルを追加して」「URLからスキルをインストールして」「コードベースをスキル化して」「チャット履歴からスキルを生成して」「このスキルを改善して」「スキルをパッケージして」「外部スキルを登録して」などのリクエストで発動する。GitHub Copilot および Claude Code で動作する。コードベース変換・履歴からの生成・外部スキル取得のワークフローも内包する。
 metadata:
-  version: 2.0.0
+  version: 3.0.0
   tier: experimental
   category: meta
   tags:
@@ -10,6 +10,8 @@ metadata:
     - packaging
     - codebase-analysis
     - chat-history
+    - skill-acquisition
+    - external-skills
 ---
 
 # Skill Creator
@@ -25,7 +27,7 @@ metadata:
 | **A: 手動作成** | ゼロから新規作成・既存スキルを改善 | このファイルの「スキル作成プロセス」セクション |
 | **B: コードベース変換** | 既存リポジトリ・コードを分析してスキル化 | [references/codebase-to-skill.md](references/codebase-to-skill.md) を読んで手順に従う |
 | **C: 履歴から生成** | Copilot / Claude Code のチャット履歴を分析 | [references/generating-skills-from-copilot-logs.md](references/generating-skills-from-copilot-logs.md) を読んで手順に従う |
-| **D: 外部取得** | URL・ローカルパスから外部スキルをインストール | `skill-recruiter/SKILL.md` を読んで手順に従う |
+| **D: 外部取得** | URL・ローカルパスから外部スキルをインストール | [references/skill-recruiter.md](references/skill-recruiter.md) を読んで手順に従う |
 
 いずれのモードも最終的に `skill-creator` のパッケージ手順（`package_skill.py`）を参照する。
 
