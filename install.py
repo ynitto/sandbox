@@ -237,7 +237,7 @@ def setup_registry(
 
     os.makedirs(os.path.dirname(registry_path), exist_ok=True)
     with open(registry_path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=False)
+        json.dump(reg, f, indent=2, ensure_ascii=True)
 
 
 def copy_agent_instructions(paths: dict[str, str]) -> bool:
