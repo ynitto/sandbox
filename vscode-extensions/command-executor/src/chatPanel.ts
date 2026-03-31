@@ -162,7 +162,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       (code, newSessionId) => {
         if (newSessionId) {
+          // claude: stream-json から取得した実際のセッション ID を保存する
           this._agentSessions.set(agentId, newSessionId);
+        } else if (agent.tool === 'kiro-cli' && !this._agentSessions.has(agentId)) {
+          // kiro-cli: セッション ID は返さないが次回から --resume を渡すためマーカーをセットする
+          this._agentSessions.set(agentId, '__resume__');
         }
         this._chatHistory.push({ role: 'assistant', stdout: this._currentStdout, stderr: this._currentStderr });
         if (this._chatHistory.length > 100) {

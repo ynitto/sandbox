@@ -117,7 +117,8 @@ export function buildCommand(
 
     case 'kiro-cli': {
       const modelArgs = model ? ['--model', model] : [];
-      const sessionArgs = sessionId ? ['--session-id', sessionId] : [];
+      // kiro-cli は --session-id を持たず、--resume で直前セッションを継続する
+      const sessionArgs = sessionId !== undefined ? ['--resume'] : [];
       if (isWindows) {
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
         const wslArgs = wslCwd
