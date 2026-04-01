@@ -207,6 +207,20 @@ python scripts/gl.py create-mr \
   --draft
 ```
 
+MR 更新（本文の書き換え・ドラフト解除）:
+
+```
+python scripts/gl.py update-mr MR_IID \
+  --description-file _mr_body.md \
+  --no-draft
+```
+
+`--description` に直接渡すことも可能:
+
+```
+python scripts/gl.py update-mr MR_IID --description "更新後の説明" --no-draft
+```
+
 ```
 python scripts/gl.py merge-mr MR_ID --squash --remove-source-branch
 ```

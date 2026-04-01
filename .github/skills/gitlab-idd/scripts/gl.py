@@ -297,6 +297,21 @@ def cmd_create_mr(args, host, project, token):
     out(api(host, token, "POST", f"/projects/{ep}/merge_requests", data=data), args.get)
 
 
+def cmd_update_mr(args, host, project, token):
+    """Update a merge request (description, draft status)."""
+    ep = encode_project(project)
+    data = {}
+    if args.description is not None or args.description_file is not None:
+        data["description"] = read_body(args.description, args.description_file, "--description")
+    if args.no_draft:
+        data["draft"] = False
+        mr = api(host, token, "GET", f"/projects/{ep}/merge_requests/{args.mr_id}")
+        title = mr.get("title", "")
+        if title.startswith("Draft: "):
+            data["title"] = title[len("Draft: "):]
+    out(api(host, token, "PUT", f"/projects/{ep}/merge_requests/{args.mr_id}", data=data), args.get)
+
+
 def cmd_merge_mr(args, host, project, token):
     """Merge a merge request."""
     ep = encode_project(project)
@@ -448,6 +463,14 @@ def build_parser():
                         "Mutually exclusive with --description.")
     p.add_argument("--draft", action="store_true")
 
+    p = sub.add_parser("update-mr", help="Update a merge request")
+    p.add_argument("mr_id", type=int)
+    p.add_argument("--description", default=None, help="MR description (Markdown)")
+    p.add_argument("--description-file", metavar="FILE",
+                   help="Read MR description from FILE (use - for stdin). "
+                        "Mutually exclusive with --description.")
+    p.add_argument("--no-draft", action="store_true", help="Remove draft status")
+
     p = sub.add_parser("merge-mr", help="Merge a merge request")
     p.add_argument("mr_id", type=int)
     p.add_argument("--squash", action="store_true")
@@ -485,6 +508,7 @@ COMMANDS = {
     "get-comments":    cmd_get_comments,
     "list-mrs":        cmd_list_mrs,
     "create-mr":       cmd_create_mr,
+    "update-mr":       cmd_update_mr,
     "merge-mr":        cmd_merge_mr,
     "make-branch-name": cmd_make_branch_name,
     "check-defer":     cmd_check_defer,
