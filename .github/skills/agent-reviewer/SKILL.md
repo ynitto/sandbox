@@ -156,6 +156,38 @@ perspective: [選択した perspective]
 
 ---
 
+## スクリプト
+
+`${SKILL_DIR}/scripts/` に以下のユーティリティスクリプトが含まれる。
+
+| スクリプト | 用途 |
+|---|---|
+| `diff_analyzer.py` | `git diff` 出力を解析し、レビュー対象ファイルと変更行を構造化する |
+| `pr_comment_formatter.py` | レビュー結果 JSON を GitHub PR コメント用 Markdown に変換する |
+
+**diff_analyzer.py の使い方**:
+```bash
+# diff を解析してレビューコンテキストを出力
+git diff HEAD~1 | python ${SKILL_DIR}/scripts/diff_analyzer.py
+
+# サマリーのみ表示
+git diff | python ${SKILL_DIR}/scripts/diff_analyzer.py --summary
+
+# JSON 形式で出力
+git diff HEAD~1 | python ${SKILL_DIR}/scripts/diff_analyzer.py --json
+```
+
+**pr_comment_formatter.py の使い方**:
+```bash
+# レビュー結果 JSON を PR コメント形式に変換
+python ${SKILL_DIR}/scripts/pr_comment_formatter.py --file review_result.json
+
+# stdin から読み込み
+echo '{...}' | python ${SKILL_DIR}/scripts/pr_comment_formatter.py
+```
+
+---
+
 ## ガードレール
 
 | 制限 | 値 |
