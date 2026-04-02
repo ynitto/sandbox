@@ -95,7 +95,7 @@ OWASP: <A0X: カテゴリ名>
 判定スキーマ（`<!-- verdict-json -->` で囲んで出力）:
 ```json
 {
-  "perspective": "セキュリティ",
+  "perspective": "security",
   "verdict": "CLEAN | VULNERABLE",
   "severity_summary": {"critical": 0, "high": 0, "medium": 0, "low": 0},
   "blocking": false,

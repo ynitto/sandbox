@@ -197,13 +197,13 @@ goal: [requirements.json の goal フィールドの値]
 
 > **重要**: サブエージェントからサブエージェントは起動できない。そのため scrum-master が perspectives を決定し、複数の agent-reviewer を並列起動する。各 agent-reviewer は1つの perspective だけを担当する。
 
-### 機能観点テンプレート
+### functional テンプレート
 
 ```
-agent-reviewer スキルで機能観点のレビューを実施してください。
+agent-reviewer スキルで functional 観点のレビューを実施してください。
 
 手順: まず agent-reviewer スキルの SKILL.md（${SKILLS_DIR}/agent-reviewer/SKILL.md）を読み、
-perspective: 機能 として手順に従ってください。
+perspective: functional として手順に従ってください。
 
 コンテキスト:
   タスクID: [task-id]
@@ -216,20 +216,20 @@ perspective: 機能 として手順に従ってください。
 
 結果を以下の形式で返してください:
 タスクID: [task-id]
-perspective: 機能
+perspective: functional
 レビュー結果: LGTM ✅ / Request Changes ❌
 重大な指摘件数: [N件]
 完了条件の充足: 満たす / 満たさない
 主な指摘: [重大な指摘がある場合は要約。なければ「なし」]
 ```
 
-### AIアンチパターン観点テンプレート
+### ai-antipattern テンプレート
 
 ```
-agent-reviewer スキルで AI アンチパターン観点のレビューを実施してください。
+agent-reviewer スキルで ai-antipattern 観点のレビューを実施してください。
 
 手順: まず agent-reviewer スキルの SKILL.md（${SKILLS_DIR}/agent-reviewer/SKILL.md）を読み、
-perspective: AIアンチパターン として手順に従ってください。
+perspective: ai-antipattern として手順に従ってください。
 
 コンテキスト:
   タスクID: [task-id]
@@ -242,19 +242,19 @@ perspective: AIアンチパターン として手順に従ってください。
 
 結果を以下の形式で返してください:
 タスクID: [task-id]
-perspective: AIアンチパターン
+perspective: ai-antipattern
 レビュー結果: LGTM ✅ / Request Changes ❌
 重大な指摘件数: [N件]
 主な指摘: [重大な指摘がある場合は要約。なければ「なし」]
 ```
 
-### アーキテクチャ観点テンプレート
+### architecture テンプレート
 
 ```
-agent-reviewer スキルでアーキテクチャ観点のレビューを実施してください。
+agent-reviewer スキルで architecture 観点のレビューを実施してください。
 
 手順: まず agent-reviewer スキルの SKILL.md（${SKILLS_DIR}/agent-reviewer/SKILL.md）を読み、
-perspective: アーキテクチャ として手順に従ってください。
+perspective: architecture として手順に従ってください。
 
 コンテキスト:
   タスクID: [task-id]
@@ -267,14 +267,14 @@ perspective: アーキテクチャ として手順に従ってください。
 
 結果を以下の形式で返してください:
 タスクID: [task-id]
-perspective: アーキテクチャ
+perspective: architecture
 レビュー結果: LGTM ✅ / Request Changes ❌
 重大な指摘件数: [N件]
 仕様準拠: 適合 / 不適合
 主な指摘: [重大な指摘がある場合は要約。なければ「なし」]
 ```
 
-### その他の観点テンプレート（テスト / セキュリティ / 設計 / ドキュメント）
+### その他のテンプレート（test / security / design / document）
 
 必要に応じて上記テンプレートの `perspective:` と結果フォーマットを変えて使用する。
 

@@ -112,7 +112,7 @@ diff がある場合は**変更行のみ**を対象とする。
 判定スキーマ（`<!-- verdict-json -->` で囲んで出力）:
 ```json
 {
-  "perspective": "機能",
+  "perspective": "functional",
   "verdict": "LGTM | REQUEST_CHANGES",
   "severity_summary": {"critical": 0, "warning": 0, "suggestion": 0},
   "blocking": false,

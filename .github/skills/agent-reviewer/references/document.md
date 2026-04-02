@@ -99,7 +99,7 @@
 判定スキーマ（`<!-- verdict-json -->` で囲んで出力）:
 ```json
 {
-  "perspective": "ドキュメント",
+  "perspective": "document",
   "verdict": "APPROVED | NEEDS_REVISION",
   "severity_summary": {"critical": 0, "warning": 0, "suggestion": 0},
   "blocking": false,

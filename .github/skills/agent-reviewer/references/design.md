@@ -103,7 +103,7 @@
 判定スキーマ（`<!-- verdict-json -->` で囲んで出力）:
 ```json
 {
-  "perspective": "設計",
+  "perspective": "design",
   "verdict": "LGTM | REQUEST_CHANGES",
   "severity_summary": {"critical": 0, "warning": 0, "suggestion": 0},
   "blocking": false,
