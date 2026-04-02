@@ -1,17 +1,22 @@
 ---
 name: architecture-reviewer
-description: ソフトウェアアーキテクチャと設計をレビューするスキル。「アーキテクチャをレビューして」「設計を確認して」「依存関係を確認して」「モジュール構成を見て」「設計原則への準拠を確認して」「アーキテクチャの問題点を教えて」などのリクエストで発動する。SOLID・レイヤードアーキテクチャ・依存関係・モジュール境界・データフローを分析し、設計の健全性を評価する。
+description: "[非推奨] agent-reviewer に統合されました。直接呼び出しは避け、agent-reviewer を使用してください。ソフトウェアアーキテクチャと設計をレビューするスキル。SOLID・レイヤードアーキテクチャ・依存関係・モジュール境界・データフローを分析し、設計の健全性を評価する。"
 metadata:
   version: 1.2.0
-  tier: stable
+  tier: deprecated
   category: review
   tags:
     - architecture
     - solid
     - design-review
+    - deprecated
 ---
 
 # architecture-reviewer
+
+> **⚠️ 非推奨**: このスキルは **agent-reviewer** に統合されました。
+> 直接呼び出しは避け、`agent-reviewer` スキルを使用してください。
+> agent-reviewer が依頼内容に応じてこのスキルを内部的に起動します。
 
 ソフトウェアの設計・アーキテクチャを俯瞰的な観点でレビューし、設計上の問題点と改善案を報告する。個々のコード行ではなく、モジュール・レイヤー・依存関係の構造に焦点を当てる。
 

@@ -1,17 +1,22 @@
 ---
 name: test-reviewer
-description: テストコードを専門的な観点でレビューするスキル。「テストをレビューして」「テストコードの品質を確認して」「テストの網羅性を確認して」「テストが適切か確認して」などのリクエストで発動する。テストコードのみを対象とし、プロダクションコードは対象外。テストの網羅性・設計・可読性・独立性・アサーション品質・非同期正確性・実装詳細への依存を分析し、LGTM / Request Changes を判定する。
+description: "[非推奨] agent-reviewer に統合されました。直接呼び出しは避け、agent-reviewer を使用してください。テストコードを専門的な観点でレビューするスキル。テストの網羅性・設計・可読性・独立性・アサーション品質・非同期正確性・実装詳細への依存を分析し、LGTM / Request Changes を判定する。"
 metadata:
   version: 1.2.0
-  tier: stable
+  tier: deprecated
   category: review
   tags:
     - test-quality
     - coverage
     - test-design
+    - deprecated
 ---
 
 # test-reviewer
+
+> **⚠️ 非推奨**: このスキルは **agent-reviewer** に統合されました。
+> 直接呼び出しは避け、`agent-reviewer` スキルを使用してください。
+> agent-reviewer が依頼内容に応じてこのスキルを内部的に起動します。
 
 テストコードをテスト固有の観点でレビューし、LGTM または Request Changes を判定する。プロダクションコードのレビューは対象外とし、テストコードのみに集中する。
 

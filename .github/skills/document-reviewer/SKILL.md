@@ -1,17 +1,22 @@
 ---
 name: document-reviewer
-description: ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）をレビューするスキル。「ドキュメントをレビューして」「要件定義書を確認して」「設計書をチェックして」「仕様書をレビューお願い」「ドキュメントの問題点を教えて」「要件を確認して」などのリクエストで必ずこのスキルを使う。ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）が対象。
+description: "[非推奨] agent-reviewer に統合されました。直接呼び出しは避け、agent-reviewer を使用してください。ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）をレビューするスキル。完全性・明確性・一貫性・実現可能性・テスト容易性の観点でレビューし、Approved / Needs Revision を判定する。"
 metadata:
   version: 2.0.0
-  tier: stable
+  tier: deprecated
   category: review
   tags:
     - documentation
     - requirements
     - specifications
+    - deprecated
 ---
 
 # document-reviewer
+
+> **⚠️ 非推奨**: このスキルは **agent-reviewer** に統合されました。
+> 直接呼び出しは避け、`agent-reviewer` スキルを使用してください。
+> agent-reviewer が依頼内容に応じてこのスキルを内部的に起動します。
 
 ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）を、完全性・明確性・一貫性・実現可能性・テスト容易性の観点でレビューし、**Approved** または **Needs Revision** を判定する。各指摘には信頼度を付与し、Low は報告しない。
 

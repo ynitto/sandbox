@@ -1,17 +1,22 @@
 ---
 name: security-reviewer
-description: セキュリティレビューを実施する専門スキル。「セキュリティ診断して」「脆弱性を確認して」「OWASP に準拠してるか確認して」「セキュリティをチェックして」「認証の実装を確認して」「シークレット漏洩がないか確認して」などのリクエストで発動する。OWASP Top 10 に基づく全項目チェック・CVSS スコアリング・悪用シナリオ提示を行う。code-reviewer のセキュリティ観点（明らかな問題の指摘）より深い専門的診断が必要な場合に使用する。
+description: "[非推奨] agent-reviewer に統合されました。直接呼び出しは避け、agent-reviewer を使用してください。セキュリティレビューを実施する専門スキル。OWASP Top 10 に基づく全項目チェック・CVSS スコアリング・悪用シナリオ提示を行う。"
 metadata:
   version: 1.1.0
-  tier: stable
+  tier: deprecated
   category: review
   tags:
     - security
     - owasp
     - vulnerability
+    - deprecated
 ---
 
 # security-reviewer
+
+> **⚠️ 非推奨**: このスキルは **agent-reviewer** に統合されました。
+> 直接呼び出しは避け、`agent-reviewer` スキルを使用してください。
+> agent-reviewer が依頼内容に応じてこのスキルを内部的に起動します。
 
 コードを OWASP Top 10 および一般的なセキュリティベストプラクティスの観点でレビューし、脆弱性を重要度付きで報告する。修正が必要な場合は具体的な修正案を提示する。
 
