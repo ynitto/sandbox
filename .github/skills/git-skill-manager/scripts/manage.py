@@ -479,7 +479,7 @@ def diff_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
             ["git", "log", "-1", "--format=%aI %h", "--",
              os.path.join(repo["skill_root"], skill_name).replace("\\", "/")],
             cwd=os.path.join(cache, repo["name"]),
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
         log_out = result.stdout.strip()
         if log_out:
@@ -518,7 +518,7 @@ def diff_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
 
             stat = subprocess.run(
                 ["git", "diff", "--no-index", "--stat", a["path"], b["path"]],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8",
             )
             stat_out = stat.stdout.strip()
 
@@ -531,7 +531,7 @@ def diff_skill(skill_name: str, repo_names: list[str] | None = None) -> None:
 
             detail = subprocess.run(
                 ["git", "diff", "--no-index", a["path"], b["path"]],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8",
             )
             lines = detail.stdout.splitlines()
             if len(lines) > 120:
@@ -756,7 +756,7 @@ def _find_skill_path(skill_name: str) -> str | None:
     """ワークスペース → インストール済みの順でスキルパスを返す。"""
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
     )
     if result.returncode == 0:
         root = result.stdout.strip()

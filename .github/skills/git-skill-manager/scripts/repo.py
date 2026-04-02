@@ -53,12 +53,12 @@ def clone_or_fetch(repo: dict) -> str:
             subprocess.run(
                 ["git", "fetch", "origin", repo["branch"]],
                 cwd=repo_cache, check=True,
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8",
             )
             subprocess.run(
                 ["git", "reset", "--hard", f"origin/{repo['branch']}"],
                 cwd=repo_cache, check=True,
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8",
             )
             return repo_cache
         except subprocess.CalledProcessError:

@@ -88,7 +88,7 @@ def _all_skill_paths() -> dict[str, str]:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, encoding="utf-8", check=False,
         )
         if result.returncode == 0:
             ws_skills = os.path.join(result.stdout.strip(), ".github", "skills")

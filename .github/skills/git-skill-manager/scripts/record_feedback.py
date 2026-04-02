@@ -51,7 +51,7 @@ def _repo_root() -> str:
     """git リポジトリルートを返す。git 管理外の場合は CWD を返す。"""
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
     )
     return result.stdout.strip() if result.returncode == 0 else os.getcwd()
 
