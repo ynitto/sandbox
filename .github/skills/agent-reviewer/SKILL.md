@@ -1,207 +1,117 @@
 ---
 name: agent-reviewer
-description: レビューオーケストレーター。依頼内容を分析し、code-reviewer・test-reviewer・security-reviewer・architecture-reviewer・design-reviewer・document-reviewer の中から適切なスキルを選択してサブエージェントで並列起動し、全結果を集約する。「レビューして」「コードを確認して」「設計をレビューして」「ドキュメントをチェックして」「品質確認して」などの依頼で発動。sprint-reviewer は含まない。skill-mentor・scrum-master の多角レビュー（機能/AIアンチパターン/アーキテクチャ）もこのスキルが担う。
+description: 指定された観点でコード・ドキュメントをレビューし、LGTM / Request Changes を判定する。「レビューして」「コードを確認して」「設計をレビューして」「ドキュメントをチェックして」「品質確認して」などの依頼で発動。観点（perspective）が指定された場合はその観点のみ実行する。複数観点の並列レビューは呼び出し元（skill-mentor / scrum-master）が複数の agent-reviewer サブエージェントを起動して行う。sprint-reviewer は含まない。
 metadata:
-  version: 1.0.0
+  version: 2.0.0
   tier: stable
   category: review
   tags:
-    - orchestration
     - review
-    - parallel
+    - single-perspective
 ---
 
 # agent-reviewer
 
-レビュー依頼の内容を分析し、適切なレビュースキルを選択して **サブエージェントで並列起動**し、全結果を集約して統一レポートを返す。
+指定された **観点（perspective）** に従ってレビューを実施し、判定結果を返す。
 
-**このスキルが直接レビューを行うことはない。** すべてのレビューはサブエージェント（専門レビュースキル）が担う。
+**このスキル自身がサブエージェントを起動することはない。** レビューロジックはすべてこのスキルの参照ファイル内に内包されている。
+
+複数観点での並列レビューは、呼び出し元（skill-mentor / scrum-master）が複数の agent-reviewer サブエージェントを同時起動することで実現する。
 
 ## パス解決
 
-このSKILL.mdが置かれているディレクトリを `SKILL_DIR`、その親ディレクトリを `SKILLS_DIR` とする。
-他スキルは `${SKILLS_DIR}/[skill-name]/SKILL.md` で参照する。
+このSKILL.mdが置かれているディレクトリを `SKILL_DIR` とする。
+各観点の手順は `${SKILL_DIR}/references/perspectives/` 以下の参照ファイルに定義されている。
 
 ---
 
-## Step 1: レビューモードを判定する
+## 観点（perspective）と参照ファイルの対応
 
-受け取った情報から **モード** を決定する:
-
-| モード | 判定条件 |
-|--------|---------|
-| **タスクレビュー** | コンテキストに「タスクゴール」「完了条件」「変更ファイル」が含まれている（skill-mentor / scrum-master から呼ばれる場合） |
-| **直接レビュー** | ユーザーから直接レビュー依頼を受けた場合 |
+| perspective | 参照ファイル | 主な対象 |
+|---|---|---|
+| `機能` | `${SKILL_DIR}/references/perspectives/機能.md` | プロダクションコードの正確性・堅牢性 |
+| `AIアンチパターン` | `${SKILL_DIR}/references/perspectives/AIアンチパターン.md` | AI 生成コード特有の問題 |
+| `アーキテクチャ` | `${SKILL_DIR}/references/perspectives/アーキテクチャ.md` | モジュール・レイヤー間の構造 |
+| `セキュリティ` | `${SKILL_DIR}/references/perspectives/セキュリティ.md` | OWASP Top 10・脆弱性 |
+| `設計` | `${SKILL_DIR}/references/perspectives/設計.md` | クラス・モジュール設計・SOLID |
+| `テスト` | `${SKILL_DIR}/references/perspectives/テスト.md` | テストコードの品質・網羅性 |
+| `ドキュメント` | `${SKILL_DIR}/references/perspectives/ドキュメント.md` | 要件定義書・設計書・仕様書 |
 
 ---
 
-## Step 2: 起動するレビュースキルを選択する
+## 実行プロトコル
 
-以下の選択ルールに従って起動するスキルを決定する。**過剰選択を避け、タスクに必要なスキルのみ選ぶ。**
+### Step 1: perspective を確認する
 
-### タスクレビューモード（skill-mentor / scrum-master 経由）
+呼び出し元から渡された `perspective` パラメータを確認する。
 
-コード変更の有無に応じて起動するスキルを決定する:
+**perspective が指定されている場合（サブエージェントとして呼ばれた場合）**:
+→ 指定された perspective に対応する参照ファイルを読み込み、その手順に従ってレビューを実施する（Step 2 へ）
 
-**コード変更あり** → 以下の3観点を**同時に**並列起動する:
+**perspective が指定されていない場合（ユーザー直接呼び出し）**:
+→ 以下の自動選択ルールに従って perspective を決定し、順次レビューを実施する（Step 1a へ）
 
-1. **機能レビュー** — 変更ファイルの種類に応じて選択:
-   - プロダクションコードあり → **code-reviewer**
-   - テストファイルあり（`*.test.*`・`*.spec.*`・`tests/`・`__tests__/` 等） → **test-reviewer**（プロダクションコードも含む場合は code-reviewer と並列）
-   - ドキュメント/仕様書のみ → **document-reviewer**
+### Step 1a: perspective の自動選択（直接呼び出し時のみ）
 
-2. **AIアンチパターンレビュー** — `${SKILLS_DIR}/agentic-code-evaluator/SKILL.md` を確認:
-   - 見つかった場合 → **agentic-code-evaluator**
-   - 見つからない場合 → **code-reviewer**（AI生成コード特有の臭い観点に絞って実施するよう指示）
+対象ファイル・依頼内容から使用する perspective を決定する:
 
-3. **アーキテクチャレビュー** — **architecture-reviewer**
-
-**コード変更なし（調査・ドキュメントのみ）** → 機能レビュー1件のみ（軽量レビュー）
-
-### 直接レビューモード（ユーザーから直接依頼）
-
-依頼内容と対象ファイルを分析して選択する:
-
-| 対象・依頼内容 | 起動するスキル |
+| 対象・依頼内容 | 使用する perspective |
 |---|---|
-| ドキュメント・仕様書・設計書 | document-reviewer |
-| テストコードのみ | test-reviewer |
-| コード（汎用品質確認） | code-reviewer |
-| コード + セキュリティ重視（認証・DB・API・入力処理を含む） | code-reviewer + security-reviewer |
-| コード + テストコード混在 | code-reviewer + test-reviewer |
-| セキュリティ診断 | security-reviewer |
-| クラス・モジュール設計 | design-reviewer |
-| クラス・モジュール設計 + 複数モジュール間の依存関係 | design-reviewer + architecture-reviewer |
-| アーキテクチャ・システム設計 | architecture-reviewer |
-| 複合依頼（明示的に複数観点の指定あり） | 指定された観点に対応するスキルを全て選択 |
+| ドキュメント・仕様書・設計書 | ドキュメント |
+| テストコードのみ | テスト |
+| プロダクションコード（汎用品質確認） | 機能, AIアンチパターン, アーキテクチャ |
+| セキュリティ診断 | セキュリティ, 機能 |
+| クラス・モジュール設計 | 設計, アーキテクチャ |
+| コード + テストコード混在 | 機能, テスト |
+| 明示的な複数観点指定 | 指定された全 perspective |
 
----
+決定した perspective を順次実行する（並列不可。直接呼び出し時の制約）。
 
-## Step 3: 並列起動する
+### Step 2: レビューを実施する
 
-> ### ⛔ STOP — `runSubagent` を今すぐ起動する
->
-> **レビューはサブエージェントが行う。agent-reviewer は直接レビューしない。**
-> Step 2 で選定したスキルを **単一メッセージに並べて同時起動** すること。
-> 理由や条件を考えてはならない。
+1. 指定された perspective の参照ファイルを読み込む
+2. 参照ファイルの手順に従ってレビューを実施する
+3. 参照ファイルで定義された出力形式で結果を報告する（判定スキーマ含む）
 
-Step 2 で選定した全スキルを **単一メッセージ** で並列起動する:
+複数の perspective を順次実行する場合は、各 perspective の結果を個別に出力した後、Step 3 で集約する。
 
-```
-[runSubagent: skill-A, 以下の指示を渡す]
-[runSubagent: skill-B, 以下の指示を渡す]
-（以降、選定したスキル分だけ並べる）
-```
+### Step 3: 集約（複数 perspective を実行した場合のみ）
 
-### 各サブエージェントへの指示テンプレート
+複数 perspective を実行した場合、全結果を集約して総合判定を報告する:
 
-#### 機能レビュー / 直接レビュー用
+**集約判定ルール**:
+- 全 perspective が LGTM / Approved / GOOD → **総合判定: LGTM ✅**
+- いずれかが Request Changes / Needs Revision / NEEDS_IMPROVEMENT → **総合判定: Request Changes ❌**
+
+**集約レポートフォーマット**:
 
 ```
-[skill-name] スキルで以下をレビューしてください。
+## 総合レビュー結果: [LGTM ✅ | Request Changes ❌]
 
-手順: まず [skill-name] スキルの SKILL.md（${SKILLS_DIR}/[skill-name]/SKILL.md）を読んで手順に従ってください。
+### 実施した観点
 
-レビュー対象:
-  変更ファイル: [変更・作成したファイルの一覧。なければ「なし」]
-
-コンテキスト（タスクレビューモードの場合のみ）:
-  タスクゴール: [タスクの目的・実装内容]
-  完了条件: [done_criteria]
-  タスク結果サマリー: [タスク実行結果のサマリー]
-
-注意: ユーザーへの確認・対話は行わず、レビューのみ実施すること。
-レビュー結果を判定スキーマ（machine-readable）形式で出力すること。
-
-結果を以下の形式で返してください:
-レビュー観点: [機能 / テスト / ドキュメント / セキュリティ / 設計 / アーキテクチャ]
-使用したレビュースキル: [skill-name]
-レビュー結果: LGTM ✅ / Request Changes ❌
-重大な指摘件数: [N件]
-完了条件の充足: 満たす / 満たさない / 該当なし
-主な指摘: [重大な指摘がある場合は要約。なければ「なし」]
-```
-
-#### AIアンチパターンレビュー用
-
-```
-以下のタスクの成果物を AI アンチパターン観点でレビューしてください。
-
-手順: まず agentic-code-evaluator スキルの SKILL.md（${SKILLS_DIR}/agentic-code-evaluator/SKILL.md）を読んで手順に従ってください。
-
-コンテキスト:
-  タスクゴール: [タスクの目的・実装内容]
-  完了条件: [done_criteria]
-  タスク結果サマリー: [タスク実行結果のサマリー]
-  変更ファイル: [変更・作成したファイルの一覧]
-
-注意: ユーザーへの確認・対話は行わず、レビューのみ実施すること。
-
-結果を以下の形式で返してください:
-レビュー観点: AIアンチパターン
-使用したレビュースキル: [スキル名 または「なし（直接レビュー）」]
-レビュー結果: LGTM ✅ / Request Changes ❌
-検出された問題:
-- [種類]: [該当箇所] — [問題の説明] — [修正案]
-（検出なしの場合は「なし」）
-重大な指摘件数: [N件]
-```
-
----
-
-## Step 4: 結果を集約して報告する
-
-全サブエージェントの完了を待ち、以下の手順で集約する。
-
-### 集約判定ルール
-
-- 全スキルが LGTM / Approved / GOOD → **総合判定: LGTM ✅**
-- いずれかが Request Changes / Needs Revision / NEEDS_IMPROVEMENT → **総合判定: Request Changes ❌**（最も厳しい判定を採用）
-
-### 報告フォーマット
-
-```
-## レビュー結果: [LGTM ✅ | Request Changes ❌]
-
-### 実施したレビュー
-
-| スキル | 判定 | Critical | Warning | Suggestion |
-|--------|------|---------|---------|-----------|
-| [skill-name] | LGTM ✅ / Request Changes ❌ | 0 | 0 | 0 |
+| perspective | 判定 | Critical | Warning | Suggestion |
+|---|---|---|---|---|
+| 機能 | LGTM ✅ / Request Changes ❌ | 0 | 0 | 0 |
 
 ### 重大な指摘（Critical / Warning）
 
-#### [skill-name] より
+#### [perspective] より
 - [severity]: [summary] — [location]
 
 （指摘なしの場合は「なし」）
-
-### 各スキルの詳細レポート
-
-<details>
-<summary>[skill-name] レポート</summary>
-
-[各サブエージェントが出力した全文をそのまま展開する]
-
-</details>
-
-### サマリー
-- 実施スキル数: N件
-- 総合判定根拠: [なぜこの判定か]
 ```
 
-### 統合判定スキーマ（machine-readable）
-
-Step 4 の報告フォーマット末尾に `<!-- verdict-json -->` コメントで囲んで追加する。
-
+集約スキーマ（`<!-- verdict-json -->` で囲んで出力）:
 ```json
 {
   "skill": "agent-reviewer",
   "verdict": "LGTM | REQUEST_CHANGES",
   "blocking": false,
-  "review_results": [
+  "perspectives_executed": ["機能", "AIアンチパターン", "アーキテクチャ"],
+  "perspective_results": [
     {
-      "reviewer": "code-reviewer",
+      "perspective": "機能",
       "verdict": "LGTM | REQUEST_CHANGES",
       "blocking": false,
       "severity_summary": {"critical": 0, "warning": 0, "suggestion": 0}
@@ -209,7 +119,7 @@ Step 4 の報告フォーマット末尾に `<!-- verdict-json -->` コメント
   ],
   "aggregated_blocking_issues": [
     {
-      "from_reviewer": "code-reviewer",
+      "from_perspective": "機能",
       "severity": "Critical | Warning",
       "summary": "問題の要約（1行）",
       "location": "ファイル名:行番号"
@@ -218,15 +128,12 @@ Step 4 の報告フォーマット末尾に `<!-- verdict-json -->` コメント
 }
 ```
 
-**`blocking`**: `aggregated_blocking_issues` に Critical が1件以上ある場合は `true`。
-**`verdict`**: `aggregated_blocking_issues` が空の場合は `LGTM`、そうでない場合は `REQUEST_CHANGES`。
-
 ---
 
 ## ガードレール
 
 | 制限 | 値 |
 |---|---|
-| 並列起動スキル数 | 最大5件（超過する場合は依頼観点の優先度でフィルタする） |
-| 直接レビュー | 禁止（必ずサブエージェントに委譲） |
-| タスクレビューモードでのスキップ | 禁止（変更ファイルの有無にかかわらずレビュー必須） |
+| サブエージェント起動 | 禁止（このスキル自身はサブエージェントを起動しない） |
+| スキップ | 禁止（指定された perspective は必ず実施する） |
+| 自動選択時の perspective 数上限 | 最大3件（優先度でフィルタする） |
