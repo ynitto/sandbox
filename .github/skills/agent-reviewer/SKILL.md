@@ -1,6 +1,6 @@
 ---
 name: agent-reviewer
-description: 指定された perspective でコード・ドキュメントをレビューし、LGTM / Request Changes を判定する。perspective が指定されない場合は対象を分析して適切な perspectives を選択し、サブエージェントを並列起動して集約する。「レビューして」「コードを確認して」「設計をレビューして」「ドキュメントをチェックして」「品質確認して」などの依頼で発動。sprint-reviewer は含まない。
+description: perspective を指定してレビューするか、未指定時は対象を分析して適切な perspectives を選択しサブエージェントを並列起動して集約する。「レビューして」「コードを確認して」「設計をレビューして」「ドキュメントをチェックして」「品質確認して」などの依頼で発動。sprint-reviewer は含まない。
 metadata:
   version: 2.1.0
   tier: stable
