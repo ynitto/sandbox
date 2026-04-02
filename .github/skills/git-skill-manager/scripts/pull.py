@@ -328,3 +328,41 @@ def pull_skills(
     if snap_id and installed:
         print(f"\n   💡 問題があれば元に戻せます:")
         print(f"      python snapshot.py restore --latest")
+
+
+# ---------------------------------------------------------------------------
+# CLI エントリポイント
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="リポジトリからスキルを取得・インストールする",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用例:
+  python pull.py                          # 全リポジトリからすべてのスキルをpull
+  python pull.py --skill my-skill         # 特定スキルのみpull
+  python pull.py --repo team-skills       # 特定リポジトリからpull
+  python pull.py --no-interactive         # 非対話モード（競合はpriority自動解決）
+""",
+    )
+    parser.add_argument("--skill", default=None, metavar="SKILL_NAME",
+                        help="取得するスキル名（省略時は全スキル）")
+    parser.add_argument("--repo", default=None, metavar="REPO_NAME",
+                        help="取得元リポジトリ名（省略時は全リポジトリ）")
+    parser.add_argument("--no-interactive", action="store_true",
+                        help="非対話モード: 競合はpriority自動解決")
+    args = parser.parse_args()
+
+    pull_skills(
+        skill_name=args.skill,
+        repo_name=args.repo,
+        interactive=not args.no_interactive,
+    )
+
+
+if __name__ == "__main__":
+    main()

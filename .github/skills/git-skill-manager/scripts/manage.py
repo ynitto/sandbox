@@ -850,7 +850,7 @@ def push_to_main(
     skill_names: list[str] | None = None,
     repo_names: list[str] | None = None,
     commit_msg: str | None = None,
-) -> None:
+) -> None:  # noqa: E501
     """バージョン比較を行い、ローカルが新しいスキルを全リポジトリの main ブランチへ直接 push する。
 
     処理フロー:
@@ -869,3 +869,207 @@ def push_to_main(
         repo_names=repo_names,
         commit_msg=commit_msg,
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI エントリポイント
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="スキル管理操作",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用例:
+  python manage.py list
+  python manage.py search --keyword converter
+  python manage.py search --repo team-skills --refresh
+  python manage.py enable my-skill
+  python manage.py disable my-skill
+  python manage.py pin my-skill
+  python manage.py pin my-skill --commit abc1234
+  python manage.py unpin my-skill
+  python manage.py lock
+  python manage.py unlock
+  python manage.py push
+  python manage.py push --skills skill-a,skill-b --repos team-skills
+  python manage.py promote .github/skills
+  python manage.py profile list
+  python manage.py profile create frontend react-guide,css-linter
+  python manage.py profile use frontend
+  python manage.py profile delete frontend
+  python manage.py refine my-skill
+  python manage.py mark-refined my-skill
+  python manage.py diff my-skill
+  python manage.py diff my-skill --repos team-skills,personal
+  python manage.py sync my-skill
+  python manage.py merge my-skill
+  python manage.py changelog my-skill
+  python manage.py changelog my-skill --dry-run
+  python manage.py bump my-skill
+  python manage.py bump my-skill --type minor
+  python manage.py deps
+  python manage.py deps my-skill
+  python manage.py deps-graph
+""",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # list
+    sub.add_parser("list", help="インストール済みスキル一覧を表示する")
+
+    # search
+    search_p = sub.add_parser("search", help="リポジトリのスキルを検索する")
+    search_p.add_argument("--repo", default=None, help="検索対象リポジトリ名")
+    search_p.add_argument("--keyword", default=None, help="検索キーワード")
+    search_p.add_argument("--refresh", action="store_true",
+                          help="リモートから最新インデックスを取得してから検索する")
+
+    # enable / disable
+    for cmd in ("enable", "disable"):
+        p = sub.add_parser(cmd, help=f"スキルを{'有効' if cmd == 'enable' else '無効'}化する")
+        p.add_argument("skill_name", help="スキル名")
+
+    # pin / unpin
+    pin_p = sub.add_parser("pin", help="スキルをコミットに固定する")
+    pin_p.add_argument("skill_name", help="スキル名")
+    pin_p.add_argument("--commit", default=None, help="固定するコミットハッシュ（省略時は現在のhash）")
+    unpin_p = sub.add_parser("unpin", help="スキルの固定を解除する")
+    unpin_p.add_argument("skill_name", help="スキル名")
+
+    # lock / unlock
+    sub.add_parser("lock", help="全スキルのバージョンを一括固定する")
+    sub.add_parser("unlock", help="全スキルの固定を一括解除する")
+
+    # push
+    push_p = sub.add_parser("push", help="スキルをリポジトリへpushする")
+    push_p.add_argument("--skills", default=None,
+                        help="対象スキル名（カンマ区切り。省略時は全スキル）")
+    push_p.add_argument("--repos", default=None,
+                        help="対象リポジトリ名（カンマ区切り。省略時は全書き込み可能リポジトリ）")
+    push_p.add_argument("--msg", default=None, help="コミットメッセージ")
+
+    # promote
+    promote_p = sub.add_parser("promote", help="ワークスペーススキルをユーザー領域へ昇格する")
+    promote_p.add_argument("workspace_dir", nargs="?", default=".github/skills",
+                           help="ワークスペーススキルのディレクトリ（デフォルト: .github/skills）")
+    promote_p.add_argument("--no-interactive", action="store_true", help="非対話モード")
+
+    # profile
+    prof_p = sub.add_parser("profile", help="プロファイルの管理")
+    prof_sub = prof_p.add_subparsers(dest="profile_command")
+
+    prof_sub.add_parser("list", help="プロファイル一覧")
+    prof_create = prof_sub.add_parser("create", help="プロファイルを作成する")
+    prof_create.add_argument("name", help="プロファイル名")
+    prof_create.add_argument("skills", help="スキル名（カンマ区切り、全スキルは *）")
+    prof_use = prof_sub.add_parser("use", help="プロファイルをアクティブにする")
+    prof_use.add_argument("name", help="プロファイル名")
+    prof_del = prof_sub.add_parser("delete", help="プロファイルを削除する")
+    prof_del.add_argument("name", help="プロファイル名")
+
+    # refine / mark-refined
+    refine_p = sub.add_parser("refine", help="スキルの改良フローを開始する")
+    refine_p.add_argument("skill_name", help="スキル名")
+    mark_p = sub.add_parser("mark-refined", help="スキルを改良済みにマークする")
+    mark_p.add_argument("skill_name", help="スキル名")
+
+    # diff / sync / merge
+    diff_p = sub.add_parser("diff", help="リポジトリ間のスキル差分を表示する")
+    diff_p.add_argument("skill_name", help="スキル名")
+    diff_p.add_argument("--repos", default=None, help="対象リポジトリ名（カンマ区切り）")
+
+    sync_p = sub.add_parser("sync", help="スキルを複数リポジトリへ同期pushする")
+    sync_p.add_argument("skill_name", help="スキル名")
+    sync_p.add_argument("--repos", default=None, help="対象リポジトリ名（カンマ区切り）")
+
+    merge_p = sub.add_parser("merge", help="クロスリポジトリマージフローを開始する")
+    merge_p.add_argument("skill_name", help="スキル名")
+    merge_p.add_argument("--repos", default=None, help="対象リポジトリ名（カンマ区切り）")
+
+    # changelog / bump
+    cl_p = sub.add_parser("changelog", help="CHANGELOG.md を生成する")
+    cl_p.add_argument("skill_name", help="スキル名")
+    cl_p.add_argument("--dry-run", action="store_true", help="ファイルに書かず内容を表示する")
+
+    bump_p = sub.add_parser("bump", help="バージョンをインクリメントする")
+    bump_p.add_argument("skill_name", help="スキル名")
+    bump_p.add_argument("--type", dest="bump_type", default="patch",
+                        choices=["major", "minor", "patch"],
+                        help="バンプ種別（デフォルト: patch）")
+
+    # deps / deps-graph
+    deps_p = sub.add_parser("deps", help="依存関係を検証する")
+    deps_p.add_argument("skill_name", nargs="?", default=None, help="スキル名（省略時は全スキル）")
+
+    deps_g = sub.add_parser("deps-graph", help="依存グラフをMermaid形式で表示する")
+    deps_g.add_argument("skill_name", nargs="?", default=None, help="スキル名（省略時は全スキル）")
+
+    args = parser.parse_args()
+
+    if args.command == "list":
+        list_skills()
+    elif args.command == "search":
+        search_skills(repo_name=args.repo, keyword=args.keyword, refresh=args.refresh)
+    elif args.command == "enable":
+        enable_skill(args.skill_name)
+    elif args.command == "disable":
+        disable_skill(args.skill_name)
+    elif args.command == "pin":
+        pin_skill(args.skill_name, commit=args.commit)
+    elif args.command == "unpin":
+        unpin_skill(args.skill_name)
+    elif args.command == "lock":
+        lock_all()
+    elif args.command == "unlock":
+        unlock_all()
+    elif args.command == "push":
+        skills = [s.strip() for s in args.skills.split(",")] if args.skills else None
+        repos = [r.strip() for r in args.repos.split(",")] if args.repos else None
+        push_to_main(skill_names=skills, repo_names=repos, commit_msg=args.msg)
+    elif args.command == "promote":
+        promote_skills(args.workspace_dir, interactive=not args.no_interactive)
+    elif args.command == "profile":
+        pc = getattr(args, "profile_command", None)
+        if pc == "list":
+            profile_list()
+        elif pc == "create":
+            skill_names = [s.strip() for s in args.skills.split(",")]
+            profile_create(args.name, skill_names)
+        elif pc == "use":
+            profile_use(args.name)
+        elif pc == "delete":
+            profile_delete(args.name)
+        else:
+            profile_list()
+    elif args.command == "refine":
+        refine_skill(args.skill_name)
+    elif args.command == "mark-refined":
+        mark_refined(args.skill_name)
+    elif args.command == "diff":
+        repos = [r.strip() for r in args.repos.split(",")] if args.repos else None
+        diff_skill(args.skill_name, repo_names=repos)
+    elif args.command == "sync":
+        repos = [r.strip() for r in args.repos.split(",")] if args.repos else None
+        sync_skill(args.skill_name, repo_names=repos)
+    elif args.command == "merge":
+        repos = [r.strip() for r in args.repos.split(",")] if args.repos else None
+        merge_skill(args.skill_name, repo_names=repos)
+    elif args.command == "changelog":
+        changelog_skill(args.skill_name, dry_run=args.dry_run)
+    elif args.command == "bump":
+        bump_version(args.skill_name, bump_type=args.bump_type)
+    elif args.command == "deps":
+        sys.exit(deps_check(args.skill_name))
+    elif args.command == "deps-graph":
+        deps_graph(args.skill_name)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
