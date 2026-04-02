@@ -101,7 +101,7 @@ def check_updates(force: bool = False) -> list[dict]:
 
             latest_hash = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],
-                cwd=repo_cache, capture_output=True, text=True,
+                cwd=repo_cache, capture_output=True, text=True, encoding="utf-8",
             ).stdout.strip()
 
             if latest_hash and latest_hash != current.get("commit_hash"):

@@ -99,7 +99,7 @@ def push_skill(
 
     commit_hash = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
-        cwd=clone_dir, capture_output=True, text=True,
+        cwd=clone_dir, capture_output=True, text=True, encoding="utf-8",
     ).stdout.strip()
 
     shutil.rmtree(temp_work, ignore_errors=True)
@@ -179,7 +179,7 @@ def push_all_skills(
                 "git", "clone", "--depth", "1",
                 "--branch", repo["branch"],
                 repo["url"], clone_dir,
-            ], check=True, capture_output=True, text=True)
+            ], check=True, capture_output=True, text=True, encoding="utf-8")
         except subprocess.CalledProcessError as e:
             print(f"  ❌ クローン失敗: {e.stderr.strip()}")
             continue
@@ -254,7 +254,7 @@ def push_all_skills(
 
         commit_hash = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=clone_dir, capture_output=True, text=True,
+            cwd=clone_dir, capture_output=True, text=True, encoding="utf-8",
         ).stdout.strip()
 
         shutil.rmtree(clone_dir, ignore_errors=True)

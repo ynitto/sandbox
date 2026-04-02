@@ -21,7 +21,7 @@ import sys
 def _repo_root() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
     )
     return result.stdout.strip()
 
@@ -65,7 +65,7 @@ def _version_at_commit(commit_hash: str, skill_md_rel: str, repo_root: str) -> s
     """指定コミット時点の SKILL.md からバージョンを読み取る。"""
     result = subprocess.run(
         ["git", "show", f"{commit_hash}:{skill_md_rel}"],
-        cwd=repo_root, capture_output=True, text=True,
+        cwd=repo_root, capture_output=True, text=True, encoding="utf-8",
     )
     if result.returncode != 0:
         return None
@@ -76,7 +76,7 @@ def _get_commits(rel_path: str, repo_root: str) -> list[dict]:
     """スキルに関連するコミット一覧を新しい順で返す。"""
     result = subprocess.run(
         ["git", "log", "--follow", "--format=%aI|%h|%s", "--", rel_path],
-        cwd=repo_root, capture_output=True, text=True,
+        cwd=repo_root, capture_output=True, text=True, encoding="utf-8",
     )
     commits = []
     for line in result.stdout.strip().splitlines():

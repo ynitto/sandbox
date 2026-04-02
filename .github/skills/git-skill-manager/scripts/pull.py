@@ -147,13 +147,13 @@ def pull_skills(
             result = subprocess.run(
                 ["git", "log", "-1", "--format=%aI", "--",
                  os.path.join(repo["skill_root"], entry).replace("\\", "/")],
-                cwd=repo_cache, capture_output=True, text=True,
+                cwd=repo_cache, capture_output=True, text=True, encoding="utf-8",
             )
             commit_date = result.stdout.strip() or "1970-01-01T00:00:00+00:00"
 
             commit_hash = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],
-                cwd=repo_cache, capture_output=True, text=True,
+                cwd=repo_cache, capture_output=True, text=True, encoding="utf-8",
             ).stdout.strip()
 
             candidates.setdefault(entry, []).append({
@@ -221,12 +221,12 @@ def pull_skills(
                 subprocess.run(
                     ["git", "fetch", "--depth", "1", "origin", pinned],
                     cwd=repo_cache, check=True,
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, encoding="utf-8",
                 )
                 subprocess.run(
                     ["git", "checkout", pinned],
                     cwd=repo_cache, check=True,
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, encoding="utf-8",
                 )
                 winner["full_path"] = os.path.join(repo_cache, winner["source_path"])
                 winner["commit_hash"] = pinned[:7]
