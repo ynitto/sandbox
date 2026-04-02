@@ -1,17 +1,22 @@
 ---
 name: code-reviewer
-description: コードレビューを実施するスキル。「コードをレビューして」「このコードの問題点を教えて」「レビューお願い」「コードチェックして」「品質確認して」などで発動する。セキュリティ・パフォーマンス・可読性・並行性・型安全性・AI生成コード特有のアンチパターンを分析し、LGTM / Request Changes を判定する。コーディングルールへの準拠チェックにも対応する。
+description: "[非推奨] agent-reviewer に統合されました。直接呼び出しは避け、agent-reviewer を使用してください。コードレビューを実施するスキル。セキュリティ・パフォーマンス・可読性・並行性・型安全性・AI生成コード特有のアンチパターンを分析し、LGTM / Request Changes を判定する。"
 metadata:
   version: 2.1.0
-  tier: stable
+  tier: deprecated
   category: review
   tags:
     - code-quality
     - security
     - ai-code
+    - deprecated
 ---
 
 # code-reviewer
+
+> **⚠️ 非推奨**: このスキルは **agent-reviewer** に統合されました。
+> 直接呼び出しは避け、`agent-reviewer` スキルを使用してください。
+> agent-reviewer が依頼内容に応じてこのスキルを内部的に起動します。
 
 コードを、セキュリティ・パフォーマンス・可読性の観点でレビューし、LGTM または Request Changes を判定する。コーディングルールがあれば最優先で適用する。各指摘には信頼度を付与し、Low は報告しない。
 

@@ -142,6 +142,39 @@
         },
         "top_co_skills": []
       }
+    },
+    {
+      "name": "agent-reviewer",
+      "source_repo": "workspace",
+      "enabled": true,
+      "pinned_commit": null,
+      "feedback_history": [],
+      "pending_refinement": false,
+      "version": "2.1.0",
+      "central_version": null,
+      "version_ahead": false,
+      "lineage": {
+        "origin_repo": "workspace",
+        "origin_commit": null,
+        "origin_version": null,
+        "local_modified": false,
+        "diverged_at": null,
+        "local_changes_summary": ""
+      },
+      "metrics": {
+        "total_executions": 0,
+        "ok_rate": null,
+        "last_executed_at": null,
+        "central_ok_rate": null,
+        "avg_duration_sec": null,
+        "p90_duration_sec": null,
+        "avg_subagent_calls": null,
+        "trend_7d": {
+          "executions": 0,
+          "ok_rate": 0.0
+        },
+        "top_co_skills": []
+      }
     }
   ],
   "core_skills": [

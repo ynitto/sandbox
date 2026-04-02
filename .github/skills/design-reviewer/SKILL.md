@@ -1,17 +1,22 @@
 ---
 name: design-reviewer
-description: クラス・モジュール設計をレビューするスキル。「設計をレビューして」「クラス設計を確認して」「SOLID原則を確認して」「結合度・凝集度を見て」「God Classを検出して」「責任分割を確認して」などで発動。SOLID・結合度・凝集度・依存方向・責任分割を評価し LGTM / Request Changes を判定する。
+description: "[非推奨] agent-reviewer に統合されました。直接呼び出しは避け、agent-reviewer を使用してください。クラス・モジュール設計をレビューするスキル。SOLID・結合度・凝集度・依存方向・責任分割を評価し LGTM / Request Changes を判定する。"
 metadata:
   version: 1.0.0
-  tier: experimental
+  tier: deprecated
   category: review
   tags:
     - class-design
     - solid
     - cohesion
+    - deprecated
 ---
 
 # design-reviewer
+
+> **⚠️ 非推奨**: このスキルは **agent-reviewer** に統合されました。
+> 直接呼び出しは避け、`agent-reviewer` スキルを使用してください。
+> agent-reviewer が依頼内容に応じてこのスキルを内部的に起動します。
 
 クラス・モジュール設計を SOLID・結合度・凝集度・依存方向・責任分割の観点でレビューし、LGTM または Request Changes を判定する。
 コード行レベルの実装詳細（→ code-reviewer）とシステムレベルのアーキテクチャ構造（→ architecture-reviewer）には踏み込まない。
