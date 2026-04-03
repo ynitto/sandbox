@@ -1,7 +1,5 @@
 recommends:
-  - name: code-reviewer
-    reason: "ワーカーが実装した変更をリクエスターがレビューする際の補助"
-  - name: security-reviewer
-    reason: "MR マージ前にセキュリティ観点での最終確認"
-  - name: simplify
-    reason: "レビュー時にコードの重複・品質・効率を確認してリファクタリング指摘を行う"
+  - name: agent-reviewer
+    reason: "ワーカーが実装した変更をリクエスターがレビューする際の補助（機能・セキュリティ・アーキテクチャ等の多角評価）"
+  - name: code-simplifier
+    reason: "レビュー時にコードの重複・品質・効率を確認してリファクタリング指摘・修正を行う"
