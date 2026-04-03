@@ -175,6 +175,34 @@
         },
         "top_co_skills": []
       }
+    },
+    {
+      "name": "doc-coauthoring",
+      "source_repo": "workspace",
+      "source_path": ".github/skills/doc-coauthoring",
+      "commit_hash": null,
+      "installed_at": "2026-04-03T22:53:39Z",
+      "enabled": true,
+      "pinned_commit": null,
+      "feedback_history": [],
+      "pending_refinement": false,
+      "version": "1.1.0",
+      "central_version": null,
+      "version_ahead": false,
+      "lineage": {
+        "origin_repo": "workspace",
+        "origin_commit": null,
+        "origin_version": null,
+        "local_modified": true,
+        "diverged_at": null,
+        "local_changes_summary": ""
+      },
+      "metrics": {
+        "total_executions": 0,
+        "ok_rate": null,
+        "last_executed_at": null,
+        "central_ok_rate": null
+      }
     }
   ],
   "core_skills": [
