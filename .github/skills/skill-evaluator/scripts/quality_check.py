@@ -187,6 +187,26 @@ _EXFIL_SEND_PATTERNS = [
     r'\b(requests\.(post|put)|urllib|curl|wget|send|upload|transmit)\b',
 ]
 
+# GlassWorm: 不可視 Unicode 文字（ゼロ幅スペース等）
+# U+200B ZERO WIDTH SPACE, U+200C ZWNJ, U+200D ZWJ,
+# U+FEFF BOM/ZWNBSP, U+2060 WORD JOINER, U+00AD SOFT HYPHEN,
+# U+034F COMBINING GRAPHEME JOINER, U+180E MONGOLIAN VOWEL SEPARATOR
+_GLASSWORM_INVISIBLE_CHARS = (
+    "\u200b\u200c\u200d\ufeff\u2060\u00ad\u034f\u180e"
+    "\u2061\u2062\u2063\u2064"   # 数学用不可視演算子
+    "\ue000\ue001"               # Private Use Area（隠しペイロード）
+)
+_GLASSWORM_INVISIBLE_PATTERN = re.compile(
+    "[" + re.escape(_GLASSWORM_INVISIBLE_CHARS) + "]"
+)
+
+# GlassWorm: 双方向テキスト制御文字（Trojan Source / BiDi 攻撃）
+# U+202A–U+202E: LRE/RLE/PDF/LRO/RLO
+# U+2066–U+2069: LRI/RLI/FSI/PDI
+_GLASSWORM_BIDI_PATTERN = re.compile(
+    "[\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069]"
+)
+
 
 # ──────────────────────────────────────────────
 # 品質チェック関数
@@ -643,6 +663,34 @@ def security_check(skill_dir: str) -> list[dict]:
             "code": "SEC_SCRIPT_EXISTS",
             "message": f"実行可能スクリプトが {len(exec_scripts)} 件あります: {', '.join(exec_scripts[:5])}（完全な環境アクセスで実行されます）",
         })
+
+    # ── HIGH: GlassWorm — 不可視 Unicode 文字 ───────────────────
+    for rel, content in texts.items():
+        matches = _GLASSWORM_INVISIBLE_PATTERN.findall(content)
+        if matches:
+            codes = ", ".join(f"U+{ord(c):04X}" for c in dict.fromkeys(matches))
+            risks.append({
+                "level": "HIGH",
+                "code": "SEC_GLASSWORM_INVISIBLE",
+                "message": (
+                    f"{rel} に不可視 Unicode 文字が含まれています（GlassWorm の典型的手法）: {codes}。"
+                    " コードレビューや静的解析をすり抜けるステルス型マルウェアの可能性があります"
+                ),
+            })
+
+    # ── HIGH: GlassWorm — BiDi 制御文字（Trojan Source）────────
+    for rel, content in texts.items():
+        matches = _GLASSWORM_BIDI_PATTERN.findall(content)
+        if matches:
+            codes = ", ".join(f"U+{ord(c):04X}" for c in dict.fromkeys(matches))
+            risks.append({
+                "level": "HIGH",
+                "code": "SEC_GLASSWORM_BIDI",
+                "message": (
+                    f"{rel} に双方向テキスト制御文字が含まれています（Trojan Source / GlassWorm BiDi 攻撃）: {codes}。"
+                    " 表示と実際のコードが異なって見えるよう偽装される可能性があります"
+                ),
+            })
 
     return risks
 
