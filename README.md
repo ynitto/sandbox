@@ -96,7 +96,7 @@ git clone https://github.com/myorg/agent-skills.git
 python agent-skills/install.py
 ```
 
-コアスキルがユーザー領域（`~/.copilot/skills/`）にコピーされ、ソースリポジトリがレジストリに自動登録される。2回目以降の実行はスキルを上書き更新する（レジストリの既存設定は保持）。
+コアスキルがユーザー領域（`<AGENT_HOME>/skills/`）にコピーされ、ソースリポジトリがレジストリに自動登録される。2回目以降の実行はスキルを上書き更新する（レジストリの既存設定は保持）。
 
 ## クイックスタート
 
@@ -269,11 +269,21 @@ verdict の種類:
 スキルの使用回数が自動記録され、よく使うスキルほどコンテキストに優先的にロードされる。
 基盤スキル（`scrum-master` / `git-skill-manager` とその依存スキル）は使用頻度に関わらず常に最優先。
 
+### AGENT_HOME パス対応表
+
+`<AGENT_HOME>` はエージェントごとに異なる。`install.py --agent <種別>` で指定する。
+
+| エージェント | macOS / Linux | Windows (PowerShell) |
+|-------------|---------------|----------------------|
+| GitHub Copilot | `~/.copilot` | `$env:USERPROFILE\.copilot` |
+| Claude Code | `~/.claude` | `$env:USERPROFILE\.claude` |
+| Kiro | `~/.kiro` | `$env:USERPROFILE\.kiro` |
+| OpenAI Codex | `~/.codex` | `$env:USERPROFILE\.codex` |
+
 ### ディレクトリ構成
 
 ```
-~/.copilot/                          # macOS / Linux
-%USERPROFILE%\.copilot\              # Windows
+<AGENT_HOME>/
   ├── skills/              ← インストール済みスキル
   ├── cache/               ← リポジトリキャッシュ（永続）
   └── skill-registry.json  ← レジストリ（リポジトリ・スキル・プロファイル管理）

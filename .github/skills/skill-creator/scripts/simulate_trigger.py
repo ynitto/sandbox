@@ -245,7 +245,7 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=0.4, metavar="FLOAT",
                         help="競合検出の類似度閾値 0.0〜1.0（デフォルト: 0.4）")
     parser.add_argument("--all", action="store_true", dest="include_user",
-                        help="ユーザースキル（~/.copilot/skills/）も含める")
+                        help="ユーザースキル（<AGENT_HOME>/skills/）も含める")
     parser.add_argument("--workspace", metavar="DIR",
                         help="スキルディレクトリを手動で指定（デフォルト: スクリプト配置から自動解決）")
     args = parser.parse_args()

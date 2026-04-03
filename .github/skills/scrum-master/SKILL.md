@@ -162,7 +162,7 @@ plan.json のスキーマ詳細 → [references/plan-schema.md](references/plan-
 
 ```bash
 python ${LTM}/recall_memory.py "[タスクキーワード]"
-# 0件なら ~/.copilot/memory/home/ → ~/.copilot/memory/shared/ を自動検索
+# 0件なら <AGENT_HOME>/memory/home/ → <AGENT_HOME>/memory/shared/ を自動検索
 ```
 
 - 0件 → 記憶なし、通常通り続行

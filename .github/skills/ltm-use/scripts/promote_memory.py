@@ -13,7 +13,7 @@ Usage:
   python promote_memory.py --auto
 
   # 特定ファイルを指定して昇格
-  python promote_memory.py --file ~/.copilot/memory/home/auth/jwt.md
+  python promote_memory.py --file <AGENT_HOME>/memory/home/auth/jwt.md
 
   # home → shared へ昇格（git commit も実施）
   python promote_memory.py --target shared --auto

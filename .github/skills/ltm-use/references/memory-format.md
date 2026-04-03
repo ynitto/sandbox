@@ -26,8 +26,8 @@ home  →  (昇格・git)  →  shared
 
 | スコープ | 保存先 | 用途 | git管理 |
 |---------|--------|------|---------|
-| `home` | `~/.copilot/memory/home/` | 全記憶のデフォルト保存先（複数プロジェクト横断） | 個人管理（ローカル） |
-| `shared` | `~/.copilot/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理** |
+| `home` | `<AGENT_HOME>/memory/home/` | 全記憶のデフォルト保存先（複数プロジェクト横断） | 個人管理（ローカル） |
+| `shared` | `<AGENT_HOME>/memory/shared/<repo名>/memories/` | チーム共有すべき知見 | **git管理** |
 
 ---
 
@@ -162,7 +162,7 @@ share_score = clamp(base_score * importance_multiplier, 0, 100)
 | `importance == critical` | **削除対象外**（v5.0.0） | - |
 | `retention_score < 0.1` かつ `importance != critical/high` | 削除候補（v5.0.0） | - |
 
-設定は `~/.copilot/memory/config.json` で変更可能。
+設定は `<AGENT_HOME>/memory/config.json` で変更可能。
 
 ### v5.0.0 重要度による保持期間調整
 

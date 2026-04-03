@@ -56,7 +56,7 @@ Copilot:
   1. 全リポジトリを cache からfetch（初回のみclone）
   2. 各リポジトリのスキルを走査
   3. 同名競合があればユーザーに確認
-  4. %USERPROFILE%\.copilot\skills\ にコピー、レジストリ更新
+  4. <AGENT_HOME>\skills\ にコピー、レジストリ更新
   5. 結果レポート（有効/無効状態も表示）
 ```
 
@@ -156,7 +156,7 @@ Copilot:
 Copilot:
   1. ワークスペースのスキルディレクトリ（例: `$workspace/<workspace-skill-dir>/`）をスキャン、候補をリストアップ
   2. ユーザーが昇格するスキルを選択
-  3. ~/.copilot/skills/ にコピー、レジストリに登録
+  3. <AGENT_HOME>/skills/ にコピー、レジストリに登録
   4. push 先リポジトリをユーザーが選択
   5. 選択リポジトリに push（ブランチ作成）
 ```

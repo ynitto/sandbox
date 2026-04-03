@@ -114,10 +114,10 @@ python scripts/recall_memory.py "[キーワード1] [キーワード2]"
 
 ### 手順（スクリプトなし・手動）
 
-1. `~/.copilot/memory/home/` 以下のサブディレクトリを列挙してカテゴリを把握する
+1. `<AGENT_HOME>/memory/home/` 以下のサブディレクトリを列挙してカテゴリを把握する
 2. 各 `.md` ファイルの `summary` フィールドをスキャンしてキーワードとの関連を判断する
 3. 関連するファイルを全文読み込みして内容を把握する
-4. 見つからない場合は `~/.copilot/memory/shared/` を同様にスキャンする
+4. 見つからない場合は `<AGENT_HOME>/memory/shared/` を同様にスキャンする
 5. `access_count` をインクリメントし `last_accessed` を今日の日付に更新する
 
 ---
@@ -165,7 +165,7 @@ python scripts/promote_memory.py
 --auto --push
 
 # 個別指定
---file ~/.copilot/memory/home/auth/jwt.md
+--file <AGENT_HOME>/memory/home/auth/jwt.md
 ```
 
 ### 昇格後の push
@@ -261,7 +261,7 @@ python scripts/cleanup_memory.py
 - `status == archived` かつ更新から 60日以上経過
 - `status == deprecated`
 
-設定ファイル（`~/.copilot/memory/config.json`）で閾値を変更可能:
+設定ファイル（`<AGENT_HOME>/memory/config.json`）で閾値を変更可能:
 - `cleanup_inactive_days`: デフォルト 30
 - `cleanup_archived_days`: デフォルト 60
 

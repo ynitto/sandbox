@@ -42,7 +42,7 @@ metadata:
 python scripts/discover_skills.py
 ```
 
-このスクリプトは `~/.copilot/skills/` と `.github/skills/` の両方を走査し、各スキルの `name`・`description`・`category`・`tags`・`tier` を出力する。**Windows・macOS 両対応**。新しいスキルが追加されても自動的に検出される。
+このスクリプトは `<AGENT_HOME>/skills/` と `.github/skills/` の両方を走査し、各スキルの `name`・`description`・`category`・`tags`・`tier` を出力する。**Windows・macOS 両対応**。新しいスキルが追加されても自動的に検出される。
 
 スクリプトが実行できない環境では、利用可能なスキルディレクトリを直接確認する。
 

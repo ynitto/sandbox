@@ -18,7 +18,7 @@
 
 → 実装: `scripts/manage.py` — `diff_skill(skill_name, repo_names)`
 
-1. 登録リポジトリのキャッシュ（`~/.copilot/cache/`）から `skill_name` を検索
+1. 登録リポジトリのキャッシュ（`<AGENT_HOME>/cache/`）から `skill_name` を検索
 2. 見つかったリポジトリ同士をペアワイズで `git diff --no-index` にかける
 3. `--stat`（変更ファイル概要）と詳細差分を表示（120行超は省略）
 
@@ -53,7 +53,7 @@
 
 ## sync
 
-マージ済みスキルをインストール済みの実体（`~/.copilot/skills/<name>/`）から、複数リポジトリへ一括 push する。
+マージ済みスキルをインストール済みの実体（`<AGENT_HOME>/skills/<name>/`）から、複数リポジトリへ一括 push する。
 `diff` で差分を確認し、skill-creator でマージした後に実行する。
 
 ### 処理フロー
@@ -104,7 +104,7 @@
 1. `merge_skill()` を実行して差分を表示する（内部で `diff_skill()` を呼び出す）
 2. 出力の `MERGE_GUIDANCE:` ブロックを読み、skill-creator サブエージェントを起動する
    - ユーザーに統合方針を確認しながらマージ実装を生成させる
-   - 編集先は `~/.copilot/skills/<skill_name>/`（インストール済みスキルを上書き）
+   - 編集先は `<AGENT_HOME>/skills/<skill_name>/`（インストール済みスキルを上書き）
 3. skill-creator 完了後に `sync_skill()` を実行して全リポジトリへ配信する
 
 ```

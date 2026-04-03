@@ -18,7 +18,7 @@ applyTo: "**"
 
 | エージェント | skill-registry.json の場所 |
 |---|---|
-| GitHub Copilot | `~/.copilot/skill-registry.json` |
+| GitHub Copilot | `<AGENT_HOME>/skill-registry.json` |
 | Claude Code    | `~/.claude/skill-registry.json`  |
 | Codex          | `~/.codex/skill-registry.json`   |
 | Kiro           | `~/.kiro/skill-registry.json`    |
@@ -39,7 +39,7 @@ applyTo: "**"
 
 | エージェント | タイムスタンプファイル |
 |---|---|
-| GitHub Copilot | `~/.copilot/session_init_date` |
+| GitHub Copilot | `<AGENT_HOME>/session_init_date` |
 | Claude Code    | `~/.claude/session_init_date`  |
 | Codex          | `~/.codex/session_init_date`   |
 | Kiro           | `~/.kiro/session_init_date`    |
