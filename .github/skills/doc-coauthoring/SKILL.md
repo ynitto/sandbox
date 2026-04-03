@@ -1,13 +1,13 @@
 ---
 name: doc-coauthoring
-description: 意思決定・提案・設計ドキュメントの共同執筆ワークフローを提供するスキル。仕様書・提案書・設計ドキュメント・意思決定ドキュメント・RFC などの構造化された文書をユーザーと共に作る際に使用する。「仕様書を作って」「提案書を書いて」「設計ドキュメントを作成して」「PRDを書いて」「決定ドキュメントを作って」「RFCを書いて」「ADRを書いて」などで発動する。
+description: >-
+  [ユーザーインタラクション必須] 意思決定・提案・設計ドキュメントの共同執筆ワークフローを提供するスキル。各ステージでユーザーの入力・確認・フィードバックを積極的に求めながら進める。
+  仕様書・提案書・設計ドキュメント・意思決定ドキュメント・RFC などの構造化された文書をユーザーと共に作る際に使用する。「仕様書を作って」「提案書を書いて」「設計ドキュメントを作成して」「PRDを書いて」「決定ドキュメントを作って」「RFCを書いて」「ADRを書いて」などで発動する。
 metadata:
   version: 1.1.0
   source: https://skills.sh/anthropics/skills/doc-coauthoring
   tier: experimental
   category: research
-  requires_user_interaction: true
-  interaction_note: このスキルはユーザーとの継続的な対話を必要とする。各ステージでユーザーの入力・確認・フィードバックを積極的に求めること。
   tags:
     - documentation
     - rfc
