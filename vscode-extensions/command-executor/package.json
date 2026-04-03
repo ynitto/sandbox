@@ -7,6 +7,7 @@
     "vscode": "^1.85.0"
   },
   "categories": ["Other"],
+  "extensionKind": ["ui", "workspace"],
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
