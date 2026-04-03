@@ -247,7 +247,7 @@ python {SCRIPTS_DIR}/manage.py promote .github/skills
 python {SCRIPTS_DIR}/manage.py promote <workspace-skill-dir>
 ```
 
-ワークスペースのスキルディレクトリ（`<workspace-skill-dir>`）のスキルをユーザー領域（`~/.copilot/skills/`）にコピーし、リポジトリにも push する。プロジェクト固有でないスキルを他のプロジェクトでも再利用可能にする。
+ワークスペースのスキルディレクトリ（`<workspace-skill-dir>`）のスキルをユーザー領域（`<AGENT_HOME>/skills/`）にコピーし、リポジトリにも push する。プロジェクト固有でないスキルを他のプロジェクトでも再利用可能にする。
 
 → 実装: `scripts/manage.py` — `promote_skills()`
 

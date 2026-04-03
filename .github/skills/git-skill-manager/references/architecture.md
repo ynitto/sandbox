@@ -3,16 +3,16 @@
 ## ディレクトリ構成
 
 ```
-ローカル（Windows）
+ローカル（Windows PowerShell）
 ─────────────────────────────────────────
-  $env:USERPROFILE\.copilot\skills\          ← スキルインストール先
+  <AGENT_HOME>\skills\          ← スキルインストール先
     ├── skill-a\SKILL.md
     ├── skill-b\SKILL.md  (enabled)
     └── skill-c\SKILL.md  (disabled → メタデータ非ロード)
 
-  $env:USERPROFILE\.copilot\skill-registry.json  ← レジストリ
+  <AGENT_HOME>\skill-registry.json  ← レジストリ
 
-  $env:USERPROFILE\.copilot\cache\           ← リポジトリキャッシュ（永続）
+  <AGENT_HOME>\cache\           ← リポジトリキャッシュ（永続）
     ├── team-skills\                      ← 初回clone、以降はfetch
     └── personal\
 ─────────────────────────────────────────
@@ -30,9 +30,10 @@
 すべての操作で以下のパスを使う。
 
 ```powershell
-$SKILL_HOME   = "$env:USERPROFILE\.copilot\skills"
-$REGISTRY     = "$env:USERPROFILE\.copilot\skill-registry.json"
-$CACHE_DIR    = "$env:USERPROFILE\.copilot\cache"
+# <AGENT_HOME> はエージェント別ホームディレクトリ（例: $env:USERPROFILE\.claude）
+$SKILL_HOME   = "<AGENT_HOME>\skills"
+$REGISTRY     = "<AGENT_HOME>\skill-registry.json"
+$CACHE_DIR    = "<AGENT_HOME>\cache"
 ```
 
 初回は `$SKILL_HOME` と `$CACHE_DIR` ディレクトリを作成する:

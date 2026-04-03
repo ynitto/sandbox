@@ -10,7 +10,7 @@
     `workspace` オプションを削除。
   - `memory_utils.py` の `SCOPE_DIRS["workspace"]` を削除。
   - 既存の `workspace` 記憶（`${SKILL_DIR}/memories/`）を引き続き使用するには
-    `~/.copilot/memory/home/` へ手動でコピーすること。
+    `<AGENT_HOME>/memory/home/` へ手動でコピーすること。
 - **`promote_memory.py` の昇格フロー変更**。`workspace → home → shared` の2段階から
   `home → shared` の1段階に統一。`--scope` は `home` のみをサポート。
 

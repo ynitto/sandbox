@@ -24,7 +24,7 @@ EVAL_RECOMMEND シグナル:
     インストール済みスキル: しきい値を超えて pending になったタイミングのみ refine を出力
 
 ワークスペーススキル（ワークスペースのスキルディレクトリ）にあり
-~/.copilot/skills/ にないものは
+<AGENT_HOME>/skills/ にないものは
 レジストリ未登録でも source_repo="workspace" で自動登録する。
 レジストリが存在しない場合は何もしない（エラーにしない）。
 """
@@ -61,7 +61,7 @@ def is_workspace_skill(skill_name: str) -> bool:
 
     ワークスペースのスキルディレクトリに
     <name>/SKILL.md が存在し、
-    かつ ~/.copilot/skills/<name>/SKILL.md が存在しない場合に True。
+    かつ <AGENT_HOME>/skills/<name>/SKILL.md が存在しない場合に True。
     リポジトリルートからの絶対パスで判定するため CWD に依存しない。
     """
     root = _repo_root()

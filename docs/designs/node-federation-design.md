@@ -31,7 +31,7 @@
 ```
 中央リポジトリ
    ↓ pull（全スキルをそのまま取得、ロールバック不可）
-ノード（~/.copilot/skills/）
+ノード（<AGENT_HOME>/skills/）
    ↓ フィードバック記録（ok/needs-improvement/broken）
    ↓ 手動 promote/push（判断基準が曖昧）
 中央リポジトリ
@@ -260,13 +260,13 @@ pull_skills() 開始
         python snapshot.py restore --latest
 ```
 
-**保存先:** `~/.copilot/snapshots/snapshot-{timestamp}/`
+**保存先:** `<AGENT_HOME>/snapshots/snapshot-{timestamp}/`
 
 ```
 snapshot-20260227T103000/
     ├── meta.json           # 作成日時・スキル一覧
     ├── skill-registry.json # レジストリの完全コピー
-    └── skills/             # ~/.copilot/skills/ の完全コピー
+    └── skills/             # <AGENT_HOME>/skills/ の完全コピー
 ```
 
 **ロールバック操作:**
@@ -293,10 +293,10 @@ python snapshot.py clean --keep 5   # 古いスナップショットを削除
                          │ pull（スナップショット自動保存後）
                          ▼
 ┌─────────────────────────────────────────────────────────┐
-│                  ノード（~/.copilot/）                    │
+│                  ノード（<AGENT_HOME>/）                    │
 │                                                         │
 │  snapshot.py ← pull前に自動実行                          │
-│    └─ ~/.copilot/snapshots/snapshot-{ts}/               │
+│    └─ <AGENT_HOME>/snapshots/snapshot-{ts}/               │
 │       （問題時: python snapshot.py restore --latest）     │
 │                                                         │
 │  node_identity.py                                       │

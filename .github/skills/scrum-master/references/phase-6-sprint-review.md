@@ -133,7 +133,7 @@ skill-evaluator はレポートのみ返す（ユーザー確認・promote/refin
 [skill-evaluator から受け取った評価結果を表示]
 
 昇格推奨スキルがある場合:
-「[skill-name] を昇格しますか？（~/.copilot/skills/ にコピーされます）
+「[skill-name] を昇格しますか？（<AGENT_HOME>/skills/ にコピーされます）
  1. 昇格する / 2. 後で / 3. スキップ」
 
 要改良スキルがある場合:

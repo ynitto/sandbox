@@ -76,7 +76,7 @@ def _all_skill_paths() -> dict[str, str]:
     """
     paths: dict[str, str] = {}
 
-    # インストール済み（~/.copilot/skills/）
+    # インストール済み（<AGENT_HOME>/skills/）
     home_dir = _skill_home()
     if os.path.isdir(home_dir):
         for entry in os.listdir(home_dir):

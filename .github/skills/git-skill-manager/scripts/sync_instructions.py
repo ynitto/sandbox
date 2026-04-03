@@ -5,7 +5,7 @@ instructions/ はリポジトリルートに配置された言語・用途別コ
 このスクリプトはレジストリに登録された全リポジトリを対象に:
   1. リポジトリのキャッシュを更新（clone_or_fetch）
   2. `instructions/` ディレクトリを検出
-  3. 変更ファイルのみ ~/.copilot/instructions/ にコピー
+  3. 変更ファイルのみ <AGENT_HOME>/instructions/ にコピー
   4. レジストリに最終同期日時を記録する
 
 使い方:

@@ -55,11 +55,18 @@ python <repo>/install.py
 
 これで以下が自動的に行われます：
 
-1. `~/.copilot/skills/` にコアスキルがコピーされる
-2. `~/.copilot/skill-registry.json` にレジストリが作成される
+1. `<AGENT_HOME>/skills/` にコアスキルがコピーされる
+2. `<AGENT_HOME>/skill-registry.json` にレジストリが作成される
 3. ソースリポジトリが自動登録される
 
-> **Windows の場合**: `~/.copilot/` は `$env:USERPROFILE\.copilot\` に読み替えてください。
+> **`<AGENT_HOME>` パス対応表**
+>
+> | エージェント | macOS / Linux | Windows (PowerShell) |
+> |-------------|---------------|----------------------|
+> | GitHub Copilot | `~/.copilot` | `$env:USERPROFILE\.copilot` |
+> | Claude Code | `~/.claude` | `$env:USERPROFILE\.claude` |
+> | Kiro | `~/.kiro` | `$env:USERPROFILE\.kiro` |
+> | OpenAI Codex | `~/.codex` | `$env:USERPROFILE\.codex` |
 
 ### インストール後の確認
 
@@ -228,7 +235,7 @@ scrum-master の動き:
 
 ### Q: macOS と Windows のどちらでも使えますか？
 
-はい。GitHub Copilot（VS Code 拡張）で利用できます。スキルの保存先は macOS / Linux では `~/.copilot/`、Windows では `$env:USERPROFILE\.copilot\` になります。
+はい。GitHub Copilot・Claude Code・Kiro など複数のエージェントで利用できます。スキルの保存先は `<AGENT_HOME>/skills/` です（エージェントごとのパスは[こちら](#agent-home-パス対応表)を参照）。
 
 ### Q: インストール後にスキルが認識されない場合は？
 

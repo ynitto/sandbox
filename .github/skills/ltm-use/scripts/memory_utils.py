@@ -104,7 +104,7 @@ def get_shared_repos() -> list[dict]:
       branch      : ブランチ名
       readonly    : 読み取り専用フラグ（True の場合は commit/push 不可）
       memory_root : リポジトリ内のメモリールートパス（省略時: "memories"）
-      local_dir   : ~/.copilot/memory/shared/<name>/  （git clone 先のリポジトリルート）
+      local_dir   : <AGENT_HOME>/memory/shared/<name>/  （git clone 先のリポジトリルート）
       memory_dir  : local_dir/memory_root  （実際の .md ファイルが置かれるディレクトリ）
     """
     reg = load_registry()
@@ -136,7 +136,7 @@ def get_shared_repos() -> list[dict]:
     cfg = load_config()
     remote = cfg.get("shared_remote", "")
     if remote:
-        # 旧形式の ~/.copilot/memory/shared/ が git リポジトリなら互換パスを使う
+        # 旧形式の <AGENT_HOME>/memory/shared/ が git リポジトリなら互換パスを使う
         old_shared = SCOPE_DIRS["shared"]
         if os.path.isdir(os.path.join(old_shared, ".git")):
             local_dir, memory_root = old_shared, ""

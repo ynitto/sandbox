@@ -9,7 +9,7 @@
 
 ---
 
-## git リポジトリ設定（`~/.copilot/skill-registry.json`）
+## git リポジトリ設定（`<AGENT_HOME>/skill-registry.json`）
 
 git-skill-manager と共通のリポジトリ設定を使用する。
 
@@ -56,10 +56,10 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ### ローカルディレクトリ
 
-各リポジトリは `~/.copilot/memory/shared/<name>/` にクローンされる。
+各リポジトリは `<AGENT_HOME>/memory/shared/<name>/` にクローンされる。
 
 ```
-~/.copilot/memory/shared/
+<AGENT_HOME>/memory/shared/
 ├── origin/
 │   └── memories/           ← memory_root
 │       ├── auth/
@@ -70,7 +70,7 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ---
 
-## メモリー設定（`~/.copilot/memory/config.json`）
+## メモリー設定（`<AGENT_HOME>/memory/config.json`）
 
 ### 設定例
 
@@ -141,7 +141,7 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ## デフォルト動作（設定ファイル未作成時）
 
-`~/.copilot/memory/config.json` が存在しない場合、以下のデフォルト値で動作する:
+`<AGENT_HOME>/memory/config.json` が存在しない場合、以下のデフォルト値で動作する:
 
 ```json
 {

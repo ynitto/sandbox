@@ -6,7 +6,7 @@ skill-registry.json に登録されたリポジトリ（git-skill-manager と共
 shared 記憶を同期する。複数リポジトリ・readonly 対応。
 
 skill-registry.json に repositories が未登録の場合は、
-~/.copilot/memory/config.json の shared_remote をフォールバックとして使用する。
+<AGENT_HOME>/memory/config.json の shared_remote をフォールバックとして使用する。
 
 Usage:
   # 全リポジトリを pull して差分確認

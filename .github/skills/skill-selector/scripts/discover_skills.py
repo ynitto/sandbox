@@ -3,7 +3,7 @@
 discover_skills.py — 利用可能なスキルを走査して一覧を出力する。
 
 対応探索ディレクトリ:
-  1. ~/.copilot/skills/       (ユーザーホーム)
+  1. <AGENT_HOME>/skills/       (ユーザーホーム)
   2. <workspace>/.github/skills/  (ワークスペース優先)
 
 Windows/macOS 両対応。
@@ -194,7 +194,7 @@ def main():
 
     if not skills_dirs:
         print("スキルディレクトリが見つかりませんでした。", file=sys.stderr)
-        print("探索対象: ~/.copilot/skills/  および  .github/skills/", file=sys.stderr)
+        print("探索対象: <AGENT_HOME>/skills/  および  .github/skills/", file=sys.stderr)
         sys.exit(1)
 
     skills = discover_skills(skills_dirs)

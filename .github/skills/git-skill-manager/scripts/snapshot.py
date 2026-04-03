@@ -12,10 +12,10 @@ pull 前に現在のスキル状態を保存し、問題が発生した場合に
     python snapshot.py clean             # 古いスナップショットを削除（最新5件を保持）
 
 スナップショットの保存先:
-    ~/.copilot/snapshots/snapshot-{timestamp}/
+    <AGENT_HOME>/snapshots/snapshot-{timestamp}/
         ├── meta.json          (作成日時・ラベル・スキル一覧)
         ├── skill-registry.json
-        └── skills/            (~/.copilot/skills/ のコピー)
+        └── skills/            (<AGENT_HOME>/skills/ のコピー)
 """
 from __future__ import annotations
 

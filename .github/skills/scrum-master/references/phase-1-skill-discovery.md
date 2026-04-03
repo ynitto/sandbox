@@ -13,11 +13,11 @@
    - `SKILLS_DIR` = `SKILL_DIR` の親ディレクトリ
 2. 以下のコマンドを実行する:
    ```bash
-   python scripts/discover_skills.py ${SKILLS_DIR} --registry ~/.copilot/skill-registry.json
+   python scripts/discover_skills.py ${SKILLS_DIR} --registry <AGENT_HOME>/skill-registry.json
    ```
    - `--registry` を指定すると、無効化されたスキルやアクティブプロファイル外のスキルが除外される
    - レジストリが存在しない場合は全スキルが返される
-   - ユーザーホーム（`~/.copilot/skills/`）とワークスペースのスキル領域（`<workspace-skill-dir>/`）の両方にスキルがある場合は、`SKILLS_DIR` 以外のディレクトリに対しても追加で実行し、同名スキルは**ワークスペース優先**でマージする（copilot-instructions.md の「スキルの優先順位」に準拠）
+   - ユーザーホーム（`<AGENT_HOME>/skills/`）とワークスペースのスキル領域（`<workspace-skill-dir>/`）の両方にスキルがある場合は、`SKILLS_DIR` 以外のディレクトリに対しても追加で実行し、同名スキルは**ワークスペース優先**でマージする（copilot-instructions.md の「スキルの優先順位」に準拠）
 3. 出力されたJSON一覧を記憶する（以降のフェーズでスキルマッチングに使用する）
 
 ## ゲート条件（Phase 2 に進む前に確認）

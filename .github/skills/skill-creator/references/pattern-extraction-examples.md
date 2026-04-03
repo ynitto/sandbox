@@ -68,7 +68,7 @@
 
 ## 既存スキルとの重複確認
 
-パターンが検出されたら `<SKILLS_BASE>/`（`~/.copilot/skills` または `<workspace-skill-dir>`）を確認し、既存スキルと比較する:
+パターンが検出されたら `<SKILLS_BASE>/`（`<AGENT_HOME>/skills` または `<workspace-skill-dir>`）を確認し、既存スキルと比較する:
 
 ```bash
 ls <SKILLS_BASE>/
