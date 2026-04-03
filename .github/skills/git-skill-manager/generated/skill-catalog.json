@@ -1,6 +1,6 @@
 {
   "generated_by": "generate_skill_catalog.py",
-  "total_skills": 36,
+  "total_skills": 26,
   "categories": {
     "design": 5,
     "review": 7,
@@ -13,8 +13,8 @@
     "integration": 1
   },
   "tiers": {
-    "stable": 16,
-    "experimental": 16,
+    "stable": 10,
+    "experimental": 12,
     "core": 4
   },
   "skills": [
@@ -39,28 +39,6 @@
       ],
       "has_scripts": true,
       "has_references": true
-    },
-    {
-      "name": "architecture-reviewer",
-      "description": "ソフトウェアアーキテクチャと設計をレビューするスキル。「アーキテクチャをレビューして」「設計を確認して」「依存関係を確認して」「モジュール構成を見て」「設計原則への準拠を確認して」「アーキテクチャの問題点を教えて」などのリクエストで発動する。SOLID・レイヤードアーキテクチャ・依存関係の方向性・モジュール境界・セキュリティ境界・テスタビリティ・障害モデル・可観測性・データフローを分析し、設計の健全性を評価する。",
-      "version": "1.2.0",
-      "tier": "stable",
-      "category": "review",
-      "tags": [
-        "architecture",
-        "solid",
-        "design-review"
-      ],
-      "triggers": [
-        "アーキテクチャをレビューして",
-        "設計を確認して",
-        "依存関係を確認して",
-        "モジュール構成を見て",
-        "設計原則への準拠を確認して",
-        "アーキテクチャの問題点を教えて"
-      ],
-      "has_scripts": false,
-      "has_references": false
     },
     {
       "name": "brainstorming",
@@ -104,27 +82,6 @@
       ],
       "has_scripts": false,
       "has_references": true
-    },
-    {
-      "name": "code-reviewer",
-      "description": "コードレビューを実施するスキル。「コードをレビューして」「このコードの問題点を教えて」「レビューお願い」「コードチェックして」「品質確認して」などで発動する。セキュリティ・パフォーマンス・可読性・並行性・型安全性・AI生成コード特有のアンチパターンを分析し、LGTM / Request Changes を判定する。コーディングルールへの準拠チェックにも対応する。",
-      "version": "2.0.0",
-      "tier": "stable",
-      "category": "review",
-      "tags": [
-        "code-quality",
-        "security",
-        "ai-code"
-      ],
-      "triggers": [
-        "コードをレビューして",
-        "このコードの問題点を教えて",
-        "レビューお願い",
-        "コードチェックして",
-        "品質確認して"
-      ],
-      "has_scripts": true,
-      "has_references": false
     },
     {
       "name": "code-simplifier",
@@ -172,28 +129,6 @@
       "has_references": false
     },
     {
-      "name": "design-reviewer",
-      "description": "クラス・モジュール設計をレビューするスキル。「設計をレビューして」「クラス設計を確認して」「SOLID原則を確認して」「結合度・凝集度を見て」「God Classを検出して」「責任分割を確認して」などで発動。SOLID・結合度・凝集度・依存方向・責任分割を評価し LGTM / Request Changes を判定する。",
-      "version": "unknown",
-      "tier": "experimental",
-      "category": "review",
-      "tags": [
-        "class-design",
-        "solid",
-        "cohesion"
-      ],
-      "triggers": [
-        "設計をレビューして",
-        "クラス設計を確認して",
-        "SOLID原則を確認して",
-        "結合度・凝集度を見て",
-        "God Classを検出して",
-        "責任分割を確認して"
-      ],
-      "has_scripts": false,
-      "has_references": false
-    },
-    {
       "name": "doc-coauthoring",
       "description": "意思決定・提案・設計ドキュメントの共同執筆ワークフローを提供するスキル。仕様書・提案書・設計ドキュメント・意思決定ドキュメント・RFC などの構造化された文書をユーザーと共に作る際に使用する。「仕様書を作って」「提案書を書いて」「設計ドキュメントを作成して」「PRDを書いて」「決定ドキュメントを作って」「RFCを書いて」「ADRを書いて」などで発動する。",
       "version": "1.0.0",
@@ -213,28 +148,6 @@
         "決定ドキュメントを作って",
         "RFCを書いて",
         "ADRを書いて"
-      ],
-      "has_scripts": false,
-      "has_references": false
-    },
-    {
-      "name": "document-reviewer",
-      "description": "ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）をレビューするスキル。「ドキュメントをレビューして」「要件定義書を確認して」「設計書をチェックして」「仕様書をレビューお願い」「ドキュメントの問題点を教えて」「要件を確認して」などのリクエストで必ずこのスキルを使う。ソフトウェア開発ドキュメント（要件定義書・設計書・仕様書など）が対象。",
-      "version": "2.0.0",
-      "tier": "stable",
-      "category": "review",
-      "tags": [
-        "documentation",
-        "requirements",
-        "specifications"
-      ],
-      "triggers": [
-        "ドキュメントをレビューして",
-        "要件定義書を確認して",
-        "設計書をチェックして",
-        "仕様書をレビューお願い",
-        "ドキュメントの問題点を教えて",
-        "要件を確認して"
       ],
       "has_scripts": false,
       "has_references": false
@@ -478,28 +391,6 @@
       "has_references": true
     },
     {
-      "name": "security-reviewer",
-      "description": "セキュリティレビューを実施するスキル。「セキュリティ診断して」「脆弱性を確認して」「OWASP に準拠してるか確認して」「セキュリティをチェックして」「認証の実装を確認して」「シークレット漏洩がないか確認して」などのリクエストで発動する。OWASP Top 10 に基づく脆弱性パターンを検出し、重要度付きで報告する。",
-      "version": "1.0.0",
-      "tier": "stable",
-      "category": "review",
-      "tags": [
-        "security",
-        "owasp",
-        "vulnerability"
-      ],
-      "triggers": [
-        "セキュリティ診断して",
-        "脆弱性を確認して",
-        "OWASP に準拠してるか確認して",
-        "セキュリティをチェックして",
-        "認証の実装を確認して",
-        "シークレット漏洩がないか確認して"
-      ],
-      "has_scripts": true,
-      "has_references": false
-    },
-    {
       "name": "skill-creator",
       "description": "スキルのライフサイクル全体を担う統合メタスキル。作成・取得・改善のすべてを扱う。「スキルを作って」「スキルを追加して」「URLからスキルをインストールして」「コードベースをスキル化して」「チャット履歴からスキルを生成して」「このスキルを改善して」「スキルをパッケージして」「外部スキルを登録して」などのリクエストで発動する。コードベース変換・履歴からの生成・外部スキル取得のワークフローも内包する。",
       "version": "3.0.0",
@@ -631,26 +522,6 @@
       ],
       "has_scripts": false,
       "has_references": true
-    },
-    {
-      "name": "test-reviewer",
-      "description": "テストコードを専門的な観点でレビューするスキル。「テストをレビューして」「テストコードの品質を確認して」「テストの網羅性を確認して」「テストが適切か確認して」などのリクエストで発動する。テストコードのみを対象とし、プロダクションコードは対象外。テストの網羅性・設計・可読性・独立性・アサーション品質・非同期正確性・実装詳細への依存・テスト粒度を分析し、LGTM / Request Changes を判定する。",
-      "version": "1.2.0",
-      "tier": "stable",
-      "category": "review",
-      "tags": [
-        "test-quality",
-        "coverage",
-        "test-design"
-      ],
-      "triggers": [
-        "テストをレビューして",
-        "テストコードの品質を確認して",
-        "テストの網羅性を確認して",
-        "テストが適切か確認して"
-      ],
-      "has_scripts": false,
-      "has_references": false
     },
     {
       "name": "ui-designer",

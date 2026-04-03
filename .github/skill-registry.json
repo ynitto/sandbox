@@ -183,7 +183,8 @@
     "skill-creator",
     "requirements-definer",
     "skill-evaluator",
-    "sprint-reviewer"
+    "sprint-reviewer",
+    "ltm-use"
   ],
   "remote_index": {},
   "profiles": {
