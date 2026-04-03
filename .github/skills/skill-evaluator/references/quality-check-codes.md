@@ -45,6 +45,8 @@
 | `SEC_PATH_TRAVERSAL` | MEDIUM | `../` によるパストラバーサルがある |
 | `SEC_BROAD_GLOB` | MEDIUM | スクリプト内に広範な glob パターン（`**/*` 等）がある |
 | `SEC_SCRIPT_EXISTS` | MEDIUM | 実行可能スクリプトが存在する（完全な環境アクセスで実行される） |
+| `SEC_GLASSWORM_INVISIBLE` | HIGH | ゼロ幅スペース等の不可視 Unicode 文字がある（GlassWorm マルウェアの典型手法） |
+| `SEC_GLASSWORM_BIDI` | HIGH | 双方向テキスト制御文字がある（Trojan Source / GlassWorm BiDi 攻撃） |
 
 ## 結果の解釈
 
