@@ -67,11 +67,7 @@ skill-creator がライセンス・セキュリティ・ネットワーク通信
 
 ## スクリプトパス
 
-以降のコマンド例で使う `{SCRIPTS_DIR}` は、このスキルの `scripts/` ディレクトリへの絶対パス（例: `~/.copilot/skills/git-skill-manager/scripts`）。`skill-registry.json` の `skill_home` フィールドから導出できる。
-
-```
-{SCRIPTS_DIR} = <skill_home>/git-skill-manager/scripts
-```
+`{SCRIPTS_DIR}` = `<skill_home>/git-skill-manager/scripts`（`skill_home` は `skill-registry.json` の `skill_home` フィールド）
 
 -----
 
@@ -151,16 +147,7 @@ python {SCRIPTS_DIR}/pull.py --no-interactive         # 非対話モード（サ
 
 → 実装: `scripts/pull.py` — `pull_skills()`
 
-主要なロジック:
-- `clone_or_fetch`: キャッシュ有 → `git fetch + reset`（高速）、キャッシュ破損 → 削除して再clone
-- `pull_skills`: 全リポジトリからスキル候補を収集 → 競合解決（対話 or priority自動） → pinned_commit 対応 → コピー → レジストリ更新
-
-### 競合解決
-
-同名スキルが複数のリポジトリに存在する場合:
-
-- **ユーザー直接呼び出し（`interactive=True`）**: 番号選択で競合リポジトリを選択（Enter のみでデフォルト 1 を選択）。無効な入力や非対話環境では `priority` の高いリポジトリを自動採用。
-- **サブエージェント経由（`interactive=False`）**: `priority` の低い値（高優先度）のリポジトリを自動採用し、採用したリポジトリ名をログ出力。
+競合解決・ロジック詳細 → [references/examples.md](references/examples.md)
 
 -----
 
@@ -176,24 +163,7 @@ python {SCRIPTS_DIR}/manage.py push --skills my-skill --msg "feat: ..." # コミ
 → 実装: `scripts/push.py` — `push_skill()`, `push_all_skills()`
 → `scripts/manage.py` — `push_to_main()`
 
-一時ディレクトリにクローン → スキルフォルダをコピー → 不要ファイル除外 → commit & push。デフォルトは main ブランチへの直接 push。
-
-`push_all_skills` / `push_to_main` を使うとバッチ処理が可能:
-1. 書き込み可能なリポジトリを列挙する
-2. 各リポジトリについて:
-   a. リモートの最新をクローンする（常に最新状態から開始）
-   b. スキルごとにローカルとリモートのセマンティックバージョンを比較する
-   c. ローカルが新しい or リモートに存在しないスキルのみをコピーする
-   d. 変更をまとめて 1 コミットにして main ブランチへ直接 push する
-
-`skill_names` 省略 → インストール済みスキルを全て対象にする。
-`repo_names` 省略 → 書き込み可能な全リポジトリを対象にする。
-
-### オプション: ブランチ push（PR/MR 作成）
-
-→ 実装: `push_skill(skill_path, repo_name, branch_strategy="new_branch", commit_msg)`
-
-ユーザーが「ブランチを切って」「PR を作って」などとブランチ作成を明示的に要求した場合にのみ使用する。`add-skill/<name>` ブランチを作成して push し、PR/MR 作成を促す。
+デフォルトは main ブランチへの直接 push。ユーザーが「ブランチを切って」「PR を作って」と要求した場合のみ `add-skill/<name>` ブランチを作成して push し、PR/MR 作成を促す。
 
 -----
 
@@ -281,11 +251,6 @@ python {SCRIPTS_DIR}/manage.py promote <workspace-skill-dir>
 
 → 実装: `scripts/manage.py` — `promote_skills()`
 
-1. ワークスペース内スキルをスキャン
-2. ユーザーに候補を提示して選択させる
-3. 選択されたスキルをユーザー領域にコピー + レジストリ登録
-4. 書き込み可能なリポジトリがあれば push を提案
-
 -----
 
 ## ワークスペーストライアルフロー
@@ -315,9 +280,7 @@ python {SCRIPTS_DIR}/record_feedback.py <skill-name> broken --note "エラー内
 
 ## evaluate
 
-ワークスペーススキル（試用中）とインストール済みスキル（ホーム領域）の両方の推奨アクションを評価する。`skill-evaluator` スキルを呼び出して実行する。
-
-評価フロー・トリガー詳細 → [references/feedback-loop.md](references/feedback-loop.md)
+`skill-evaluator` スキルを呼び出してワークスペース・インストール済みスキルを評価する。評価フロー詳細 → [references/feedback-loop.md](references/feedback-loop.md)
 
 -----
 
@@ -333,20 +296,7 @@ python {SCRIPTS_DIR}/manage.py mark-refined <skill-name>
 
 → 実装: `scripts/manage.py` — `refine_skill()`, `mark_refined()`
 
-1. `feedback_history` から未処理（`refined: false`）の `needs-improvement` / `broken` エントリを収集
-2. フィードバック一覧とスキルパスをユーザーに提示
-3. skill-creator サブエージェントを起動して改良を委譲（スキルパスを渡す）
-4. 改良完了後、スクリプト出力の `REFINE_COMPLETE_CMD:` 行に示されたコマンドを**必ず実行する**（`pending_refinement` フラグの解除と `refined` フラグの更新が行われる）
-5. インストール済みスキルかつ source_repo がリポジトリの場合は push を提案
-
-### スキルパスの違い
-
-| スキル種別 | 編集対象パス |
-|---|---|
-| ワークスペーススキル | `<workspace-skill-dir>/<name>/` |
-| インストール済みスキル | `{SKILL_HOME}/<name>/`（`SKILL_HOME` は `skill-registry.json` の `skill_home` フィールド） |
-
-`refine_skill()` はスクリプト出力に `スキルパス: <path>` および `REFINE_COMPLETE_CMD: python manage.py mark-refined <name>` を含む。エージェントはスキルパスを skill-creator に渡し、改良完了後に `REFINE_COMPLETE_CMD:` のコマンドを実行する。
+スクリプト出力の `REFINE_COMPLETE_CMD:` 行に示されたコマンドを**必ず実行する**（`pending_refinement` フラグの解除）。
 
 -----
 
@@ -406,16 +356,12 @@ python {SCRIPTS_DIR}/manage.py bump <skill-name> --type major
 
 ```bash
 python {SCRIPTS_DIR}/metrics_report.py
-python {SCRIPTS_DIR}/metrics_report.py --skill <skill-name>     # 特定スキルの詳細
-python {SCRIPTS_DIR}/metrics_report.py --co                     # 共起分析
-python {SCRIPTS_DIR}/metrics_collector.py                       # ログを再集計
+python {SCRIPTS_DIR}/metrics_report.py --skill <skill-name>   # 特定スキルの詳細
+python {SCRIPTS_DIR}/metrics_report.py --co                   # 共起分析
+python {SCRIPTS_DIR}/metrics_collector.py                     # ログを再集計
 ```
 
-スキルの実行メトリクス（実行時間・成功率推移・サブエージェント回数・共起分析）を表示する。
-
-→ 実装: `scripts/metrics_report.py`, `scripts/metrics_collector.py`
-
-サブ操作・データフロー詳細 → [references/metrics.md](references/metrics.md)
+→ 実装: `scripts/metrics_report.py`, `scripts/metrics_collector.py` | 詳細 → [references/metrics.md](references/metrics.md)
 
 -----
 
@@ -462,22 +408,9 @@ python {SCRIPTS_DIR}/snapshot.py restore <snap-id>
 python {SCRIPTS_DIR}/snapshot.py clean --keep 5
 ```
 
-pull 実行時に自動でスナップショットを保存し、問題が発生した場合に元の状態へ復元する。
+pull 実行時に自動でスナップショットを保存し、問題が発生した場合に元の状態へ復元する。「元に戻して」「pullを取り消して」でロールバックを発動する。
 
-`pull_skills()` の先頭で `snapshot.py save` を自動呼び出し。pull 完了後に復元コマンドをヒント表示する:
-
-```
-💡 問題があれば元に戻せます:
-   python snapshot.py restore --latest
-```
-
-「元に戻して」「pullを取り消して」「前の状態に戻したい」などのユーザー発言で発動:
-1. `python {SCRIPTS_DIR}/snapshot.py list` でスナップショット一覧を表示
-2. ユーザーに復元先を確認（直近1件なら `--latest` でよいか確認）
-3. `python {SCRIPTS_DIR}/snapshot.py restore --latest` または指定IDで復元
-4. 復元完了を報告
-
-手動コマンド・上限管理・保存内容の詳細 → [references/snapshot-rollback.md](references/snapshot-rollback.md)
+詳細 → [references/snapshot-rollback.md](references/snapshot-rollback.md)
 
 -----
 
@@ -502,36 +435,19 @@ python {SCRIPTS_DIR}/manage.py deps-graph <skill-name>
 
 スキルを非推奨化し、代替スキルへの移行を促す。
 
-→ 詳細: [references/deprecation.md](references/deprecation.md)
+ライフサイクル: `Active → Deprecated（2スプリント）→ Archived → Removed`
 
-ライフサイクル: `Active → Deprecated（2スプリント通知期間）→ Archived → Removed`
+SKILL.md フロントマターに `tier: deprecated` / `deprecated_by: <代替>` / `deprecated_since: <ver>` を追記し、`skill-registry.json` の `deprecated_skills` に登録する。
 
-```bash
-# 非推奨化: tier を deprecated に変更し、deprecated_by を設定
-# SKILL.md フロントマターに追記:
-# metadata:
-#   tier: deprecated
-#   deprecated_by: <代替スキル名>
-#   deprecated_since: <バージョン>
-```
-
-動作:
-1. 対象スキルの SKILL.md `tier: deprecated` + `deprecated_by: <代替>` に更新
-2. skill-registry.json の `deprecated_skills` リストに追記
-3. skill-selector / scrum-master が呼び出し時に「非推奨です。代わりに X を使用してください」と表示
+詳細 → [references/deprecation.md](references/deprecation.md)
 
 -----
 
 ## archive
 
-Deprecated 期間（2スプリント）終了後にスキルを `.github/skills/_archived/` へ移動する。
+Deprecated 期間（2スプリント）終了後にスキルを `.github/skills/_archived/` へ移動し、レジストリの `archived_skills` へ移す。
 
-→ 詳細: [references/deprecation.md](references/deprecation.md)
-
-動作:
-1. `tier: deprecated` かつ `deprecated_since` から 2 スプリント以上経過したスキルを検出
-2. `.github/skills/_archived/<skill-name>/` へ移動
-3. skill-registry.json から `installed_skills` を削除し `archived_skills` に追記
+詳細 → [references/deprecation.md](references/deprecation.md)
 
 -----
 
