@@ -273,7 +273,7 @@ verdict の種類:
 
 ```
 ~/.copilot/                          # macOS / Linux
-%USERPROFILE%\.copilot\              # Windows
+$env:USERPROFILE\.copilot\           # Windows (PowerShell)
   ├── skills/              ← インストール済みスキル
   ├── cache/               ← リポジトリキャッシュ（永続）
   └── skill-registry.json  ← レジストリ（リポジトリ・スキル・プロファイル管理）

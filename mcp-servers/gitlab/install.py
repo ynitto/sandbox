@@ -24,7 +24,7 @@ GitLab MCP Server (server.py) を共有ディレクトリにコピーし、
 
 server.py の共有インストール先:
     Linux/macOS: ~/.mcp-servers/gitlab/server.py
-    Windows:     %USERPROFILE%\\.mcp-servers\\gitlab\\server.py
+    Windows:     $env:USERPROFILE\\.mcp-servers\\gitlab\\server.py
 """
 from __future__ import annotations
 

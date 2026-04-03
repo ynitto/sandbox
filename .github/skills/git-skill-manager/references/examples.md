@@ -56,7 +56,7 @@ Copilot:
   1. 全リポジトリを cache からfetch（初回のみclone）
   2. 各リポジトリのスキルを走査
   3. 同名競合があればユーザーに確認
-  4. %USERPROFILE%\.copilot\skills\ にコピー、レジストリ更新
+  4. $env:USERPROFILE\.copilot\skills\ にコピー、レジストリ更新
   5. 結果レポート（有効/無効状態も表示）
 ```
 

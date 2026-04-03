@@ -59,7 +59,7 @@ python <repo>/install.py
 2. `~/.copilot/skill-registry.json` にレジストリが作成される
 3. ソースリポジトリが自動登録される
 
-> **Windows の場合**: `~/.copilot/` は `%USERPROFILE%\.copilot\` に読み替えてください。
+> **Windows の場合**: `~/.copilot/` は `$env:USERPROFILE\.copilot\` に読み替えてください。
 
 ### インストール後の確認
 
@@ -228,7 +228,7 @@ scrum-master の動き:
 
 ### Q: macOS と Windows のどちらでも使えますか？
 
-はい。GitHub Copilot（VS Code 拡張）で利用できます。スキルの保存先は macOS / Linux では `~/.copilot/`、Windows では `%USERPROFILE%\.copilot\` になります。
+はい。GitHub Copilot（VS Code 拡張）で利用できます。スキルの保存先は macOS / Linux では `~/.copilot/`、Windows では `$env:USERPROFILE\.copilot\` になります。
 
 ### Q: インストール後にスキルが認識されない場合は？
 

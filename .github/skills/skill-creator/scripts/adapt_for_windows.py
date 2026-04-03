@@ -6,7 +6,7 @@
 
 処理内容:
     1. SKILL.md 内の `python3` → `python` 置換
-    2. SKILL.md 内のコードブロック中の `~/.copilot/` → `%USERPROFILE%\\.copilot\\` 置換
+    2. SKILL.md 内のコードブロック中の `~/.copilot/` → `$env:USERPROFILE\\.copilot\\` 置換
     3. .py ファイルの shebang (#!/usr/bin/env python3) を python に変更
     4. .sh ファイルが存在する場合は警告を出力
 
@@ -45,11 +45,11 @@ def adapt_skill_md(skill_dir: str) -> str:
     # python3 → python（コードブロック内外を問わず置換）
     patched = re.sub(r'\bpython3\b', 'python', patched)
 
-    # ~/.copilot/ → %USERPROFILE%\.copilot\（コードブロック内のみ対象）
+    # ~/.copilot/ → $env:USERPROFILE\.copilot\（コードブロック内のみ対象）
     patched = _replace_in_code_blocks(
         patched,
         r'~/\.copilot/',
-        r'%USERPROFILE%\\.copilot\\',
+        r'$env:USERPROFILE\\.copilot\\',
     )
 
     if patched == original:
