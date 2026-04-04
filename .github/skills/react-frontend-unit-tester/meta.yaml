@@ -2,5 +2,5 @@ depends_on:
   - name: react-frontend-coder
     reason: "テスト対象のコンポーネントが存在する前提"
 recommends:
-  - name: code-reviewer
+  - name: agent-reviewer
     reason: "テスト完了後の品質確認"
