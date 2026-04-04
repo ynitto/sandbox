@@ -103,7 +103,7 @@
 ## ターゲットブランチ
 
 {MR のマージ先ブランチ。デフォルトは main。複数イシューをまとめる統合ブランチがある場合はそのブランチ名を記載}
-例: integrate/feature-xyz
+例: feature/user-auth
 
 ## 依存イシュー
 
@@ -131,11 +131,12 @@
 ```bash
 # 統合ブランチを main から作成して push する（既存の場合はスキップ）
 git fetch origin main
-git checkout -b integrate/{機能名} origin/main
-git push -u origin integrate/{機能名}
+git checkout -b feature/{機能名} origin/main
+git push -u origin feature/{機能名}
 ```
 
-> 統合ブランチ名は `integrate/` プレフィックス推奨（例: `integrate/feature-xyz`）。
+> 統合ブランチ名は `feature/` プレフィックス推奨（例: `feature/user-auth`）。
+> ワーカーが作成するブランチ（`feature/issue-{id}-{slug}`）と区別するため、`issue-` を含めない。
 > 各イシューの `## ターゲットブランチ` にこのブランチ名を記載する。
 
 ### 依存関係なし / 依存イシューがすでに done のイシュー
@@ -184,6 +185,8 @@ python scripts/gl.py create-issue --title "タスク 2" --body-file _body2.md \
 
 作成されたイシューの一覧をユーザーに報告して終了する。
 
+統合ブランチを使用した場合は、最終マージに関する案内も合わせて報告する。
+
 ```
 ✅ 以下のイシューを作成しました。
 
@@ -195,4 +198,15 @@ python scripts/gl.py create-issue --title "タスク 2" --body-file _body2.md \
 依存関係のないイシューからワーカーが順に処理します。
 #42 が完了したら #43 の status:blocked を外してください。
 レビュー時は「イシューをレビューして」と声をかけてください。
+```
+
+統合ブランチ（`feature/{機能名}`）を使用している場合は追加で報告する:
+
+```
+📋 統合ブランチ: feature/{機能名}
+各ワーカーの MR は feature/{機能名} にマージされます。
+
+すべてのイシューが status:done になったら、
+「統合ブランチの最終 MR を作成して」と声をかけてください。
+feature/{機能名} → main の MR を作成します（マージはご自身でレビュー後に行ってください）。
 ```

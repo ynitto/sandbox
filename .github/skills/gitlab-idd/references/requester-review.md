@@ -9,6 +9,7 @@
 - [ステップ 4b — 条件不足: リオープン](#ステップ-4b--条件不足-リオープン)
 - [判定基準](#判定基準)
 - [注意事項](#注意事項)
+- [統合ブランチの最終マージ MR 作成](#統合ブランチの最終マージ-mr-作成)
 
 **自分が発行した** `status:review-ready` イシューを評価し、マージまたはリオープンする。
 他ノードが発行したイシューはレビューしない。
@@ -48,11 +49,11 @@ python scripts/gl.py get-comments {issue_id}
 python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}"
 ```
 
-ワーカーが作成したブランチの diff を取得する:
+ワーカーが作成したブランチの diff を取得する。ターゲットブランチはイシュー本文の `## ターゲットブランチ` から読み取る（記載がなければ `main`）:
 
 ```
 git fetch origin
-git diff main...origin/feature/issue-{issue_id}-*
+git diff {TARGET_BRANCH}...origin/feature/issue-{issue_id}-*
 ```
 
 ---
@@ -89,7 +90,7 @@ git diff main...origin/feature/issue-{issue_id}-*
 
 各サブエージェントへの入力:
 - イシュー本文（受け入れ条件含む）
-- ブランチの diff（`git diff main..feature/issue-{id}*`）
+- ブランチの diff（`git diff {TARGET_BRANCH}..feature/issue-{id}*`）
 - ワーカーのサマリーコメント
 - 使用する perspective 名
 
@@ -194,3 +195,88 @@ python scripts/gl.py update-issue {issue_id} \
 - **自分が発行したイシューのみレビューする**。他ノードが発行したイシューは対象外
 - MR が存在しない場合はワーカーに確認コメントを投稿してから評価を保留
 - 複数 MR が存在する場合は最新のものを使用
+
+---
+
+## 統合ブランチの最終マージ MR 作成
+
+「統合ブランチの最終 MR を作成して」などのフレーズで発動する。
+
+複数のワーカー MR を統合ブランチ（`feature/{機能名}`）にマージし終えた後、
+`feature/{機能名} → main` の最終 MR を作成する。**マージは行わず、人がレビュー・マージする。**
+
+### ステップ F-1: 対象統合ブランチの確認
+
+ユーザーから統合ブランチ名を確認する（明示されている場合はそのまま使用）。
+
+全イシューが完了済みであることを確認する:
+
+```
+python scripts/gl.py list-issues --label "status:open,status:in-progress,status:review-ready,status:blocked"
+```
+
+未完了イシューが残っている場合は「未完了のイシューがあります」と報告して確認を取る。
+
+### ステップ F-2: 統合ブランチの全体レビュー（サブエージェント）
+
+`main` との差分を取得する:
+
+```
+git fetch origin
+git diff main...origin/feature/{機能名}
+```
+
+差分の内容に応じて agent-reviewer サブエージェントを並列起動する（判断基準はステップ 3-2 と同じ）。
+
+各サブエージェントへの入力:
+- 統合ブランチ名・対象イシューの一覧
+- `git diff main...origin/feature/{機能名}`
+- 使用する perspective 名
+
+> レビュー結果が **Request Changes** の場合: 指摘内容をユーザーに報告して判断を委ねる（自動差し戻しはしない）。
+> レビュー結果が **LGTM** の場合: ステップ F-3 へ進む。
+
+### ステップ F-3: 最終マージ MR の作成
+
+MR 本文を `_final_mr_body.md` に書く:
+
+```markdown
+## 統合内容
+
+`feature/{機能名}` を `main` にマージします。
+
+## 含まれるイシュー
+
+- Closes #{id1} {タイトル1}
+- Closes #{id2} {タイトル2}
+（統合ブランチ内でマージ済みのイシューをすべて列挙）
+
+## 変更サマリー
+
+{統合ブランチ全体の変更概要を箇条書き}
+
+## レビューポイント
+
+{確認してほしい箇所・注意点}
+```
+
+MR を作成する（**draft にしない**）:
+
+```
+python scripts/gl.py create-mr \
+  --title "feat: {機能名}" \
+  --source-branch feature/{機能名} \
+  --target-branch main \
+  --description-file _final_mr_body.md
+```
+
+**完了報告**:
+
+```
+✅ 最終マージ MR を作成しました。
+MR: {MR_URL}
+
+内容をご確認の上、マージをお願いします。
+```
+
+> **注意**: この MR のマージはリクエスターまたはプロジェクトオーナーが手動で行う。自動マージは行わない。
