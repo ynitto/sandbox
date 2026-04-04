@@ -6,9 +6,9 @@
 
 ## 補助スキルの付加ガイド
 
-プライマリスキルに対して補助スキルを1つ以上付け加えることで品質を向上させる。詳細な付加基準は `skill-selector/SKILL.md` の Step 4.5 を参照。
+プライマリスキルに対して補助スキルを0個以上付け加えることで品質を向上させる。複数の補助スキルを同時に付加してよい。詳細な付加基準（TDD が有効なケース含む）は `skill-selector/SKILL.md` の Step 4.5 を参照。
 
-複数の補助スキルを同時に付加してよい。詳細な付加基準（TDD が有効なケース含む）は `skill-selector/SKILL.md` の Step 4.5 を参照。
+> **注意**: `category: orchestration` のスキル（scrum-master・skill-mentor・gitlab-idd 等）はこのパターン集の推薦対象外。
 
 | 補助スキル | 主な付加対象 | 効果 |
 |---|---|---|
@@ -24,16 +24,16 @@
 brainstorming
   → requirements-definer
   → (domain-modeler | api-designer | ui-designer)  ※対象次第
-  → scrum-master  [実装フェーズのオーケストレーター]
-    → (tdd-executing)  ※補助スキル: 品質・カバレッジ重視の場合
-    → react-frontend-coder + self-checking  ※補助スキル: 実装成果物の自己評価
-    → code-reviewer → code-simplifier
-  → technical-writer + self-checking  ※補助スキル: ドキュメント成果物の自己評価
+  → react-frontend-coder + tdd-executing（補助）+ self-checking（補助）
+      ※ tdd-executing: 品質・カバレッジ重視の場合に付加
+      ※ self-checking: 実装成果物の自己評価
+  → code-reviewer → code-simplifier
+  → technical-writer + self-checking（補助）  ※ドキュメント成果物の自己評価
   → sprint-reviewer
 ```
 
 **用途**: ゼロから機能・サービスを作る  
-**特徴**: brainstorming が必ず先行、scrum-master がウェーブ実行を管理
+**特徴**: brainstorming が必ず先行。複数スプリントにまたがる場合はオーケストレーターを別途選択する（skill-selector の推薦対象外）
 
 ---
 
@@ -127,15 +127,16 @@ deep-research
 ## テスト駆動開発
 
 ```
-tdd-executing             ※補助スキルとしても機能（実装スキルに先行して付加）
-  → (react-frontend-coder | 言語固有テストスキル) + self-checking
+(react-frontend-coder | 言語固有実装スキル)
+  + tdd-executing（補助）  ※プライマリスキルに先行して設定
+  + self-checking（補助）  ※実装後の自己評価
   → code-reviewer
   → test-reviewer
 ```
 
-**補助スキル**: tdd-executing 自体が品質保証スキルだが、実装後に self-checking を付加することでさらなる品質向上が可能  
+**補助スキル**: tdd-executing はプライマリスキル（実装スキル）に付加する補助スキル。Red-Green-Refactor サイクルを管理し、実装をその中で行う  
 **用途**: TDD サイクルでの実装  
-**特徴**: tdd-executing がオーケストレーター、言語実装は専門スキルに委譲
+**特徴**: tdd-executing が TDD ライフサイクルを管理し、言語実装はプライマリスキルに委譲
 
 ---
 
@@ -159,7 +160,7 @@ security-reviewer
 
 | ユーザーの意図 | 最初に使うスキル | 後続の候補 |
 |---|---|---|
-| 「何かを作りたい」 | brainstorming | requirements-definer → scrum-master |
+| 「何かを作りたい」 | brainstorming | requirements-definer → 実装スキル（オーケストレーターは別途選択） |
 | 「コードを直したい」 | systematic-debugging | code-reviewer |
 | 「コードを整理したい」 | code-simplifier / code-reviewer | — |
 | 「設計を確認したい」 | architecture-reviewer / design-reviewer | security-reviewer |
