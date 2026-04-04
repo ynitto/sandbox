@@ -162,11 +162,22 @@ def _update_frontmatter_version(skill_path: str, new_ver: str) -> bool:
     return True
 
 
-CORE_SKILLS_DEFAULT = [
-    "scrum-master", "git-skill-manager", "skill-creator",
-    "requirements-definer", "skill-evaluator",
-    "sprint-reviewer",
-]
+def _discover_core_skills() -> list[str]:
+    """skill_home の SKILL.md をスキャンして tier: core のスキルを動的収集する。"""
+    skill_home = _skill_home()
+    result = []
+    if not os.path.isdir(skill_home):
+        return result
+    for name in sorted(os.listdir(skill_home)):
+        skill_md = os.path.join(skill_home, name, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+        with open(skill_md, encoding="utf-8") as f:
+            content = f.read()
+        fm = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+        if fm and re.search(r'^\s+tier:\s*core\s*$', fm.group(1), re.MULTILINE):
+            result.append(name)
+    return result
 
 
 def migrate_registry(reg: dict) -> dict:
@@ -180,7 +191,7 @@ def migrate_registry(reg: dict) -> dict:
         for skill in reg.get("installed_skills", []):
             skill.setdefault("enabled", True)
             skill.setdefault("pinned_commit", None)
-        reg.setdefault("core_skills", list(CORE_SKILLS_DEFAULT))
+        reg.setdefault("core_skills", _discover_core_skills())
         reg.setdefault("profiles", {"default": ["*"]})
         reg.setdefault("active_profile", None)
         reg.setdefault("remote_index", {})
@@ -279,6 +290,8 @@ def migrate_registry(reg: dict) -> dict:
     reg.pop("skill_discovery", None)
 
     reg["version"] = 7
+    # tier: core の SKILL.md から常に最新のコアスキル一覧を再計算する
+    reg["core_skills"] = _discover_core_skills()
     return reg
 
 
@@ -302,7 +315,7 @@ def load_registry() -> dict:
         },
         "repositories": [],
         "installed_skills": [],
-        "core_skills": list(CORE_SKILLS_DEFAULT),
+        "core_skills": _discover_core_skills(),
         "remote_index": {},
         "profiles": {"default": ["*"]},
         "active_profile": None,

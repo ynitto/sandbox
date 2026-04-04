@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,15 +44,24 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = SCRIPT_DIR  # install.py はリポジトリルートに配置
 REPO_SKILLS_DIR = os.path.join(REPO_ROOT, ".github", "skills")
 
-CORE_SKILLS = [
-    "scrum-master",
-    "git-skill-manager",
-    "skill-creator",
-    "requirements-definer",
-    "skill-evaluator",
-    "sprint-reviewer",
-    "ltm-use",
-]
+def _discover_core_skills(skills_dir: str) -> list[str]:
+    """SKILL.md の metadata.tier: core を持つスキルを動的収集する。"""
+    result = []
+    if not os.path.isdir(skills_dir):
+        return result
+    for name in sorted(os.listdir(skills_dir)):
+        skill_md = os.path.join(skills_dir, name, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+        with open(skill_md, encoding="utf-8") as f:
+            content = f.read()
+        fm = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+        if fm and re.search(r'^\s+tier:\s*core\s*$', fm.group(1), re.MULTILINE):
+            result.append(name)
+    return result
+
+
+CORE_SKILLS = _discover_core_skills(REPO_SKILLS_DIR)
 
 
 def parse_args() -> argparse.Namespace:

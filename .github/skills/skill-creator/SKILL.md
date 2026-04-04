@@ -3,7 +3,7 @@ name: skill-creator
 description: "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。"
 metadata:
   version: 3.1.0
-  tier: experimental
+  tier: core
   category: meta
   tags:
     - skill-creation
