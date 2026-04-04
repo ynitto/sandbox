@@ -314,7 +314,7 @@ Phase 4 の変更ファイルを確認し、以下の表に従って **perspecti
 
 ## 委譲ルール（鉄則）
 
-Copilot では `#tool:agent/runSubagent` でサブエージェントを起動する。
+Copilot では `#tool:agent/runSubagent`、Kiro では `Run subagents to` でサブエージェントを起動する。
 
 **自分で実行してはいけない処理:**
 - Phase 4: 各タスクの実行（**例外なし。すべて runSubagent へ**）
