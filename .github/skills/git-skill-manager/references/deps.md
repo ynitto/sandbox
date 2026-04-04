@@ -32,7 +32,7 @@ metadata:
 
 ```
 📦 react-frontend-coder
-   ✅ [推奨] tdd-executing
+   ✅ [推奨] test-driven-development
      理由: Red-Green-Refactor を厳密に回したい場合に上位から併用すると効果が高い
    ✅ [推奨] webapp-testing
      理由: ユニットテストでは拾いにくい画面挙動をブラウザで検証できる

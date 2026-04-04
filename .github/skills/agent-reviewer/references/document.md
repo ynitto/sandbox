@@ -83,7 +83,7 @@
 ## 出力形式
 
 ```
-## レビュー結果: [Approved ✅ | Needs Revision ❌]
+## レビュー結果: [LGTM ✅ | Request Changes ❌]
 
 ### ドキュメント概要
 - タイプ: <ドキュメントタイプ>
@@ -109,7 +109,7 @@
 ```json
 {
   "perspective": "document",
-  "verdict": "APPROVED | NEEDS_REVISION",
+  "verdict": "LGTM | REQUEST_CHANGES",
   "severity_summary": {"critical": 0, "warning": 0, "suggestion": 0},
   "blocking": false,
   "blocking_issues": [

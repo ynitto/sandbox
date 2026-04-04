@@ -5,7 +5,29 @@ pr_comment_formatter.py - レビュー結果を GitHub PR コメント形式に�
 agent-reviewer によるレビュー結果（JSON）を受け取り、GitHub PR コメントとして
 貼り付けられる Markdown を生成する。外部依存ゼロ。
 
-入力 JSON スキーマ:
+入力 JSON スキーマ（以下のどちらか）:
+
+    1. 集約レビュー結果:
+    {
+        "verdict": "LGTM" | "REQUEST_CHANGES",
+        "perspective_results": [
+            {
+                "perspective": "functional",
+                "verdict": "LGTM" | "REQUEST_CHANGES",
+                "severity_summary": {"critical": 0, "warning": 0, "suggestion": 0}
+            }
+        ],
+        "aggregated_blocking_issues": [
+            {
+                "from_perspective": "functional",
+                "severity": "Critical" | "Warning",
+                "summary": "...",
+                "location": "src/app.ts:42"
+            }
+        ]
+    }
+
+    2. 単一レビュー結果:
   {
     "verdict": "LGTM" | "REQUEST_CHANGES",
     "coding_rules": [                       // オプション
@@ -79,6 +101,59 @@ _CONFIDENCE_LABEL = {
 }
 
 
+def _is_aggregated_review(data: dict) -> bool:
+    return "perspective_results" in data or "aggregated_blocking_issues" in data
+
+
+def _build_summary_from_perspectives(perspective_results: list[dict]) -> dict[str, int]:
+    summary = {"critical": 0, "warning": 0, "suggestion": 0}
+    for result in perspective_results:
+        severity_summary = result.get("severity_summary", {})
+        for key in summary:
+            summary[key] += int(severity_summary.get(key, 0) or 0)
+    return summary
+
+
+def normalize_input(data: dict) -> dict:
+    if not _is_aggregated_review(data):
+        return data
+
+    perspective_results = data.get("perspective_results", [])
+    aggregated_issues = data.get("aggregated_blocking_issues", [])
+    severity_totals = _build_summary_from_perspectives(perspective_results)
+
+    findings = []
+    for issue in aggregated_issues:
+        findings.append(
+            {
+                "severity": issue.get("severity", "Warning"),
+                "confidence": "High",
+                "category": issue.get("from_perspective", "aggregate"),
+                "summary": issue.get("summary", ""),
+                "location": issue.get("location", ""),
+                "problem": issue.get("summary", ""),
+                "suggestion": issue.get("suggestion", ""),
+            }
+        )
+
+    summary = {
+        "critical": severity_totals["critical"],
+        "warning": severity_totals["warning"],
+        "suggestion": severity_totals["suggestion"],
+        "rationale": data.get("summary", ""),
+        "overall": f"perspectives: {', '.join(result.get('perspective', '?') for result in perspective_results)}"
+        if perspective_results
+        else "",
+    }
+
+    return {
+        "verdict": data.get("verdict", "LGTM"),
+        "findings": findings,
+        "summary": summary,
+        "perspective_results": perspective_results,
+    }
+
+
 # ─── バリデーション ───────────────────────────────────────────
 
 def validate_input(data: dict) -> list[str]:
@@ -87,10 +162,16 @@ def validate_input(data: dict) -> list[str]:
         errors.append("'verdict' フィールドが必須です（LGTM | REQUEST_CHANGES）")
     elif data["verdict"] not in ("LGTM", "REQUEST_CHANGES"):
         errors.append(f"'verdict' は LGTM または REQUEST_CHANGES でなければなりません: {data['verdict']}")
-    if "findings" not in data:
-        errors.append("'findings' フィールドが必須です（空配列でも可）")
-    if "summary" not in data:
-        errors.append("'summary' フィールドが必須です")
+    if _is_aggregated_review(data):
+        if "perspective_results" not in data:
+            errors.append("集約レビュー結果では 'perspective_results' フィールドが必須です")
+        if "aggregated_blocking_issues" not in data:
+            errors.append("集約レビュー結果では 'aggregated_blocking_issues' フィールドが必須です（空配列でも可）")
+    else:
+        if "findings" not in data:
+            errors.append("'findings' フィールドが必須です（空配列でも可）")
+        if "summary" not in data:
+            errors.append("'summary' フィールドが必須です")
     return errors
 
 
@@ -166,14 +247,32 @@ def _format_findings_group(severity: str, findings: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_perspective_results(perspective_results: list[dict]) -> str:
+    if not perspective_results:
+        return ""
+
+    lines = ["### 実施した perspectives\n", "| perspective | verdict | Critical | Warning | Suggestion |", "|---|---|---|---|---|"]
+    for result in perspective_results:
+        severity_summary = result.get("severity_summary", {})
+        lines.append(
+            f"| {result.get('perspective', '?')} | {result.get('verdict', '?')} | "
+            f"{severity_summary.get('critical', 0)} | {severity_summary.get('warning', 0)} | {severity_summary.get('suggestion', 0)} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def format_pr_comment(data: dict) -> str:
     """レビュー結果 dict を GitHub PR コメント Markdown に変換する。"""
+    data = normalize_input(data)
+
     verdict = data.get("verdict", "LGTM")
     verdict_header = _VERDICT_BADGE.get(verdict, f"## {verdict}")
 
     findings_raw = data.get("findings", [])
     summary_info = data.get("summary", {})
     coding_rules = data.get("coding_rules", [])
+    perspective_results = data.get("perspective_results", [])
 
     # severity でグループ分け（大文字小文字を正規化）
     grouped: dict[str, list[dict]] = {"critical": [], "warning": [], "suggestion": []}
@@ -191,6 +290,10 @@ def format_pr_comment(data: dict) -> str:
     rules_section = _format_coding_rules(coding_rules)
     if rules_section:
         parts.append(rules_section)
+
+    perspective_section = _format_perspective_results(perspective_results)
+    if perspective_section:
+        parts.append(perspective_section)
 
     # ── 指摘事項 ──
     has_findings = any(grouped.values())

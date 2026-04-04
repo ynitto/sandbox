@@ -1,8 +1,8 @@
 ---
 name: skill-selector
-description: 単一タスクに最適なプライマリスキルと補助スキルを選択・推薦するメタスキル。「どのスキルを使えばいい？」「スキルを選んで」などで発動し、skill-mentor・scrum-master からインライン実行もされる。self-checking・tdd-executing などの補助スキル付加評価も担う。
+description: 単一タスクに最適なプライマリスキルと補助スキルを選択・推薦するメタスキル。「どのスキルを使えばいい？」「スキルを選んで」などで発動し、skill-mentor・scrum-master からインライン実行もされる。補助スキル（self-checking・test-driven-development 等）の付加評価も担う。
 metadata:
-  version: 1.2.0
+  version: 1.5.0
   tier: core
   category: orchestration
   tags:
@@ -125,33 +125,51 @@ python ${LTM}/recall_memory.py \
 
 #### Step 4.5: 補助スキルを付加する
 
-プライマリスキルが決まったら、以下の基準で **補助スキル（0個以上）** を付け加えるかどうかを判断する。複数の補助スキルを同時に付加してよい。
+プライマリスキルが決まったら、補助スキルは **2種類** に分けて判断する。最大件数は **2件まで** とし、内訳は以下に固定する。
+
+- **原則付加するもの**: `self-checking` を 0 または 1件
+- **条件が合えば付加するもの**: `test-driven-development` / `contract-driven-development` / `risk-driven-development` / `failure-driven-development` の中から 0 または 1件
+
+`agent-reviewer` は skill-selector の推薦対象に含めない。レビューの起動判断と実行は呼び出し元のオーケストレーターが担う。
 
 **補助スキルの種類と付加基準**:
 
-| 補助スキル | 付加するタイミング | 付加しない場合 |
-|---|---|---|
-| `self-checking` | コード・ドキュメント・設計の成果物が生まれる実装系・作成系タスク全般 | 調査・リサーチのみで成果物がないタスク |
-| `tdd-executing` | 下記「TDD が有効なケース」参照 | 下記「TDD を省略するケース」参照 |
-| `agent-reviewer` | レビューの自動化・多角的品質チェックが必要な場合 | 単純な調査・ドキュメント作成のみ |
+| 種類 | 補助スキル | 付加するタイミング | 付加しない場合 |
+|---|---|---|---|
+| 原則付加 | `self-checking` | コード・ドキュメント・設計の成果物が生まれる実装系・作成系タスク全般 | 調査・リサーチのみで成果物がないタスク |
+| 条件付きで1つ選択 | `test-driven-development` | 下記「TDD が有効なケース」参照 | 下記「TDD を省略するケース」参照 |
+| 条件付きで1つ選択 | `contract-driven-development` | 下記「契約駆動が有効なケース」参照 | 下記「契約駆動を省略するケース」参照 |
+| 条件付きで1つ選択 | `risk-driven-development` | 下記「リスク駆動が有効なケース」参照 | 下記「リスク駆動を省略するケース」参照 |
+| 条件付きで1つ選択 | `failure-driven-development` | 下記「失敗駆動が有効なケース」参照 | 下記「失敗駆動を省略するケース」参照 |
 
 **判断フロー**:
 
 ```
 プライマリスキルが実装系・作成系？
-  YES → self-checking を補助スキルに追加する（デフォルト付加）
-  NO  → 省略可
+  YES → self-checking を原則付加する
+         ただしスキルが存在しない場合は
+         「完了後に成果物を自己評価し、問題があれば修正してから次工程へ進む」と自然文で補う
+  NO  → self-checking は付加しない
 
-プライマリスキルがコード新規実装？
-  YES → 下記「TDD が有効なケース」を確認して tdd-executing を追加するか判断する
-  NO  → 省略可
+条件付き補助スキルは 1つだけ選ぶ。判定順は以下:
 
-レビューの自動化・多角的品質チェックが必要？
-  YES → agent-reviewer を補助スキルに追加する
-  NO  → 省略可
+1. プライマリスキルがコード新規実装で、受け入れ条件を先にテスト化できる？
+   YES → test-driven-development を選ぶ
+
+2. プライマリスキルが API・モジュール境界・I/O 契約を含み、先に境界を固定した方が安全？
+  YES → contract-driven-development を選ぶ
+
+3. プライマリスキルが失敗時の振る舞い・回復手段・劣化運転を含み、異常系を先に固めた方が安全？
+  YES → failure-driven-development を選ぶ
+
+4. プライマリスキルが変更系で、順序設計・最小検証・停止条件の明示が重要？
+  YES → risk-driven-development を選ぶ
+
+5. 上記に当てはまらない、または該当スキルが存在しない
+   → 条件付き補助スキルはなし
 ```
 
-**tdd-executing の付加判断**:
+**test-driven-development の付加判断**:
 
 *TDD が有効なケース（付加を推奨）*:
 - **ドメインロジック・ビジネスルール**の新規実装（純粋関数・計算ロジック・バリデーション）
@@ -169,52 +187,164 @@ python ${LTM}/recall_memory.py \
 - **テスト環境が未整備**（テストランナー未設定 / カバレッジツール未導入）
 - タスクのスコープが小さく TDD のオーバーヘッドがコストに見合わない
 
-> **注意**: 補助スキルは「任意」であり、呼び出し元のオーケストレーター（skill-mentor・scrum-master・gitlab-idd）がその使用可否を最終判断する。タスクの制約（時間・コスト）を考慮して、不要な場合はユーザーに確認してから省略してよい。
+**contract-driven-development の付加判断**:
+
+*契約駆動が有効なケース（付加を推奨）*:
+- **API / SDK / ライブラリ / モジュール境界**を持つ実装
+- **外部連携や複数コンポーネント連携**があり、I/O を先に固定したい
+- **request / response / payload / 関数シグネチャ**を先に決めると手戻りが減る
+- **breaking / non-breaking / deprecation** を意識した方がよい変更
+- **契約テストや schema validation** に落とし込める変更
+- ユーザーが **契約から決めたい / API を先に固めたい / I/O を固定して進めたい** と明示している
+
+*契約駆動を省略するケース（付加しない）*:
+- **内部実装のみ**で明確な境界がない
+- **探索的実装**で、先に契約を固定するとむしろ邪魔になる
+- **変更順序や安全停止**が主論点で `risk-driven-development` の方が適切
+- **文書更新のみ**で契約対象が存在しない
+- **異常系・回復戦略**が主論点で `failure-driven-development` 相当の方が適切
+
+**risk-driven-development の付加判断**:
+
+*リスク駆動が有効なケース（付加を推奨）*:
+- **変更や実装はあるが、TDD の前に順序設計が必要**（UI、設定、CI、インフラ、限定リファクタ等）
+- **影響範囲が読みづらい変更**（複数ファイル・複数レイヤー・既存依存が絡む）
+- **仕様不確実性がある**ため、最初に最小検証を置いた方が安全
+- **ロールバックや停止条件を先に決めたい**変更
+- **手動確認・静的チェック・限定実行**で段階的に確かめられる変更
+- ユーザーが **安全に進めたい / 段階導入したい / まず危ないところから潰したい** と明示している
+
+*リスク駆動を省略するケース（付加しない）*:
+- **純粋な調査のみ**で変更が発生しない
+- **文書更新のみ**で実行順序や停止条件が不要
+- **影響範囲が極小**で、順序設計を追加するほどではない
+- **異常系・回復戦略の設計が主論点**で `failure-driven-development` 相当の方が適切
+
+**failure-driven-development の付加判断**:
+
+*失敗駆動が有効なケース（付加を推奨）*:
+- **外部依存・非同期処理・可用性要件**があり、失敗時の振る舞いが重要
+- **再試行、タイムアウト、fallback、degraded mode** を先に定めた方が安全
+- **正常系より異常系の詰め不足が致命的**になりやすい変更
+- **利用者影響や運用影響**を事前に設計へ織り込みたい
+- **エラーレスポンス、異常系 UI、監視・検知**を先に決めたい
+- ユーザーが **異常系から考えたい / 回復手段を先に決めたい / 障害時の振る舞いを先に固めたい** と明示している
+
+*失敗駆動を省略するケース（付加しない）*:
+- **内部ロジックのみ**で異常系が自明
+- **すでに起きた障害の原因調査**が主眼で `systematic-debugging` の方が適切
+- **変更順序や停止条件**が主論点で `risk-driven-development` の方が適切
+- **文書更新のみ**で失敗時挙動の設計が不要
+
+> **注意**: 補助スキルの構成は「self-checking 系 0または1件 + 条件付き 0または1件」に固定する。呼び出し元のオーケストレーター（skill-mentor・scrum-master・gitlab-idd）は、時間・コスト制約に応じて省略を最終判断してよい。
 
 ### Step 5: 推薦を提示する
 
+呼び出し元が安定して扱えるよう、**必ず以下の出力契約で返す**。説明文を自由記述で散らさず、キー名を固定する。
+
+#### 出力契約
+
+```yaml
+selection_status: success | failure
+goal: "タスク要約"
+primary_skills:
+  - name: "skill-name"
+    role: "このスキルが担う役割"
+supporting_skills:
+  principle:
+    mode: skill | fallback | none
+    name: "skill-name または null"
+    instruction: "自然文フォールバックまたは null"
+    timing: "before-primary | after-primary | null"
+    reason: "推薦理由または null"
+  conditional:
+    mode: skill | fallback | none
+    name: "skill-name または null"
+    instruction: "補助指示または null"
+    timing: "before-primary | after-primary | null"
+    reason: "推薦理由または null"
+execution_plan:
+  groups:
+    - id: "A"
+      after: []
+      skills: ["skill-A", "skill-B"]
+notes:
+  - "重複・競合・注意点"
+past_examples:
+  success:
+    - "類似タスクで成功した組み合わせ"
+  warnings:
+    - "以前効果が低かったパターン"
+```
+
+#### 出力ルール
+
+- `primary_skills`: 推薦するプライマリスキルを 1件以上入れる。1件だけなら配列長 1。
+- `supporting_skills.principle`: 原則付加枠。`self-checking` を返す場合は `mode: skill`、スキル不在で自然文指示を返す場合は `mode: fallback`、不要なら `mode: none`。
+- `supporting_skills.conditional`: 条件付き枠。呼び出し元は候補名を解釈せず、このオブジェクトをそのまま扱う。
+- `execution_plan.groups`: 実行順序と並列グループ。呼び出し元はこの順序を壊さずに利用する。
+- `notes` と `past_examples`: なければ空配列を返す。
+
+#### 呼び出し元への契約
+
+- skill-mentor / scrum-master / gitlab-idd は、`primary_skills` から実行対象を作り、`supporting_skills` は**キー構造を保ったまま**保持・伝播する。
+- レビューは skill-selector の返却値ではなく、オーケストレーターが `agent-reviewer` を直接呼び出して実施する。
+- 呼び出し元は `self-checking` や `test-driven-development` などの具体名を前提に独自分岐しない。必要な分岐は `mode` と `timing`、および返却された `name` に対する実行だけで行う。
+
 以下の形式でユーザーに提示する:
 
-```
-## 推薦スキル構成
-
-**ゴール**: [ユーザーのタスク要約]
-
-### プライマリスキル
-- `skill-name` — 理由（このスキルが担う役割）
-
-### 補助スキル（Step 4.5 で判断・0個以上）
-- `self-checking` — 実装成果物の自己評価（[プライマリスキル名] の完了直後に適用）
-- `tdd-executing` — TDD サイクル管理（[プライマリスキル名] に先行して設定）
-- `agent-reviewer` — 多角的品質チェック（[プライマリスキル名] の完了後に並列適用）
-  ※ 補助スキルなしの場合はその理由を記載する（例: 「調査のみのため全省略」）
-
-### 実行順序と並列グループ
-グループA（並列実行可）: skill-A, skill-B
-グループB（グループA完了後）: skill-C + self-checking（補助）
-
-### 過去実績（参考）
-（Step 3.5 で実績が見つかった場合のみ記載）
-- ✅ 類似タスクで成功した組み合わせ: [スキル名] — [概要]
-- ⚠️ 以前効果が低かったパターン: [スキル名] — [理由]
-
-### 注意
-- [スキルの重複・競合がある場合はここに記載]
+```yaml
+selection_status: success
+goal: "[ユーザーのタスク要約]"
+primary_skills:
+  - name: "skill-name"
+    role: "このスキルが担う役割"
+supporting_skills:
+  principle:
+    mode: skill
+    name: "self-checking"
+    instruction: null
+    timing: "after-primary"
+    reason: "実装成果物の自己評価が必要"
+  conditional:
+    mode: skill
+    name: "contract-driven-development"
+    instruction: null
+    timing: "before-primary"
+    reason: "境界条件と I/O 契約を先に固定した方が安全"
+execution_plan:
+  groups:
+    - id: "A"
+      after: []
+      skills: ["contract-driven-development"]
+    - id: "B"
+      after: ["A"]
+      skills: ["skill-name", "self-checking"]
+notes:
+  - "[スキルの重複・競合がある場合はここに記載]"
+past_examples:
+  success:
+    - "[類似タスクで成功した組み合わせ]"
+  warnings:
+    - "[以前効果が低かったパターン]"
 ```
 
 #### 推薦後: 実績を ltm-use に保存する
 
-skill-mentor や scrum-master が実行を完了した後、その結果（成功/失敗・使用スキル・タスク種別）を保存するよう呼び出し元に促す。呼び出し元が保存を行う場合の形式:
+推薦を提示したら、条件に関わらず **skill-selector 自身が直ちに** 実績を保存する:
 
 ```bash
-python ${LTM}/save_memory.py \
+python ${SKILLS_DIR}/ltm-use/scripts/save_memory.py \
+  --non-interactive --no-dedup \
   --category "skill-selection-result" \
   --title "[タスク種別]のスキル組み合わせ実績" \
-  --summary "[使用スキル一覧]: [成功/失敗]" \
-  --content "[タスクゴール]\n使用スキル: [A, B, C]\n結果: [成功/失敗]\n備考: [効果的だった点・課題]" \
+  --summary "[使用スキル一覧]: 選択完了" \
+  --content "[タスクゴール]\n使用スキル: [A, B, C]\n補助スキル: [X]\n備考: [選定理由・注意点]" \
   --conclusion "[このタスク種別に最適なスキル組み合わせの知見]" \
   --tags skill-selection,[タスク種別],[スキル名]
 ```
+
+`${SKILLS_DIR}` は `SKILL_DIR`（このファイルの場所）の親ディレクトリ。`ltm-use/scripts/save_memory.py` が存在しない場合はスキップしてよい。
 
 ---
 

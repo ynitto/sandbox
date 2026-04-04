@@ -23,13 +23,17 @@
 
 ## 補助スキルの付加ガイド
 
-プライマリスキルに対して補助スキルを0個以上付け加えることで品質を向上させる。複数の補助スキルを同時に付加してよい。詳細な付加基準（TDD が有効なケース含む）は `skill-selector/SKILL.md` の Step 4.5 を参照。
+プライマリスキルに対する補助スキルは、`self-checking` 系を 0 または 1件、条件付き補助を 0 または 1件の **最大2件** に固定する。詳細な付加基準は `skill-selector/SKILL.md` の Step 4.5 を参照。
 
-| 補助スキル | 主な付加対象 | 効果 |
-|---|---|---|
-| `self-checking` | 実装・作成系プライマリスキル全般（コード・ドキュメント） | 多角レビュー前の自己評価・改善で指摘件数を削減 |
-| `tdd-executing` | 新規コード実装プライマリスキル（ドメインロジック・API・モジュール等） | Red-Green-Refactor サイクルで品質とカバレッジを保証 |
-| `agent-reviewer` | 成果物レビューが必要な場合 | 機能・セキュリティ・アーキテクチャの多角レビュー |
+| 種類 | 補助スキル | 主な付加対象 | 効果 |
+|---|---|---|---|
+| 原則付加 | `self-checking` | 実装・作成系プライマリスキル全般（コード・ドキュメント） | 多角レビュー前の自己評価・改善で指摘件数を削減 |
+| 条件付きで1つ選択 | `test-driven-development` | 新規コード実装プライマリスキル（ドメインロジック・API・モジュール等） | Red-Green-Refactor サイクルで品質とカバレッジを保証 |
+| 条件付きで1つ選択 | `contract-driven-development` | API・モジュール境界・外部連携を持つ実装系プライマリスキル | 入出力契約、境界条件、互換性ルールを先に固定 |
+| 条件付きで1つ選択 | `risk-driven-development` | UI・設定・CI・段階導入・軽量リファクタなどの変更系プライマリスキル | リスク棚卸し、最小検証、段階適用、停止条件の明確化 |
+| 条件付きで1つ選択 | `failure-driven-development` | 外部依存・非同期・可用性要件を持つ実装系プライマリスキル | 失敗モード、検知、回復手段、劣化運転を先に固定 |
+
+`agent-reviewer` は skill-selector の推薦対象ではない。レビューは orchestrator が直接 `agent-reviewer` を起動して実施する。
 
 ---
 
@@ -124,15 +128,57 @@ deep-research
 
 ```
 (react-frontend-coder | 言語固有実装スキル)
-  + tdd-executing（補助）  ※プライマリスキルに先行して設定
-  + self-checking（補助）  ※実装後の自己評価
+  + test-driven-development（補助）  ※プライマリスキルに先行して設定
+  + self-checking（原則付加）  ※実装後の自己評価
   → code-reviewer
   → test-reviewer
 ```
 
-**補助スキル**: tdd-executing はプライマリスキル（実装スキル）に付加する補助スキル。Red-Green-Refactor サイクルを管理し、実装をその中で行う  
+**補助スキル**: test-driven-development はプライマリスキル（実装スキル）に付加する補助スキル。Red-Green-Refactor サイクルを管理し、実装をその中で行う  
 **用途**: TDD サイクルでの実装  
-**特徴**: tdd-executing が TDD ライフサイクルを管理し、言語実装はプライマリスキルに委譲
+**特徴**: test-driven-development が TDD ライフサイクルを管理し、言語実装はプライマリスキルに委譲
+
+---
+
+## リスク駆動の変更実装
+
+```
+(react-frontend-coder | ci-cd-configurator | code-simplifier | その他変更系スキル)
+  + risk-driven-development（補助）  ※プライマリスキルに先行して設定
+  + self-checking（原則付加）        ※変更後の自己評価
+```
+
+**補助スキル**: risk-driven-development はプライマリスキルの前段で、最大リスク・最小検証・停止条件を定義する補助スキル。  
+**用途**: TDD を厳密に回しにくい変更を安全に進める場合  
+**特徴**: 実装そのものはプライマリスキルが担い、risk-driven-development は順序と安全ゲートを管理する
+
+---
+
+## 契約駆動の境界実装
+
+```
+(api-designer | react-frontend-coder | その他 API / 連携系実装スキル)
+  + contract-driven-development（補助）  ※プライマリスキルに先行して設定
+  + self-checking（原則付加）           ※実装後の自己評価
+```
+
+**補助スキル**: contract-driven-development はプライマリスキルの前段で、I/O 契約、境界条件、互換性ルールを固定する補助スキル。  
+**用途**: API やモジュール境界を先に固めてから実装したい場合  
+**特徴**: 実装そのものはプライマリスキルが担い、contract-driven-development は境界の固定と breaking change 防止を管理する
+
+---
+
+## 失敗駆動の回復設計実装
+
+```
+(api-designer | react-frontend-coder | ci-cd-configurator | その他可用性重視の実装スキル)
+  + failure-driven-development（補助）  ※プライマリスキルに先行して設定
+  + self-checking（原則付加）           ※実装後の自己評価
+```
+
+**補助スキル**: failure-driven-development はプライマリスキルの前段で、失敗モード、検知方法、回復手段、許容劣化を固定する補助スキル。  
+**用途**: 障害時の振る舞いを先に決めてから実装したい場合  
+**特徴**: 実装そのものはプライマリスキルが担い、failure-driven-development は異常系設計と回復戦略を管理する
 
 ---
 
@@ -157,11 +203,11 @@ security-reviewer
 | ユーザーの意図 | 最初に使うスキル | 後続の候補 |
 |---|---|---|
 | 「何かを作りたい（構想段階）」 | brainstorming | requirements-definer |
-| 「何かを実装したい」 | react-frontend-coder 等の実装スキル | tdd-executing（補助）・self-checking（補助） |
+| 「何かを実装したい」 | react-frontend-coder 等の実装スキル | self-checking（原則付加） + test-driven-development / contract-driven-development / risk-driven-development / failure-driven-development のいずれか1つ |
 | 「コードを直したい」 | systematic-debugging | code-reviewer |
 | 「コードを整理したい」 | code-simplifier / code-reviewer | — |
 | 「設計を確認したい」 | architecture-reviewer / design-reviewer | security-reviewer |
-| 「テストを書きたい」 | tdd-executing | 言語固有テストスキル |
+| 「テストを書きたい」 | test-driven-development | 言語固有テストスキル |
 | 「ドキュメントを書きたい」 | technical-writer / doc-coauthoring | — |
 | 「スキルを作りたい」 | skill-creator | git-skill-manager |
 | 「調査したい」 | deep-research | brainstorming / doc-coauthoring |

@@ -105,7 +105,12 @@ flowchart TD
 - acceptance_criteria が複数ある場合、同一タスクの done_criteria に統合するか、テスト用の別タスクに分離する
 
 **スキルの割り当て（`skill` フィールド）:**
-各タスクへのスキル割り当ては **skill-selector を自身で実行して決定する**（サブエージェント不要）。バックログ項目一覧（id / action / done_criteria）を作成した後、`${SKILLS_DIR}/skill-selector/SKILL.md` を読んで手順に従い、各タスクへのスキル推薦を取得する。skill-selector は必要に応じて1タスクに複数スキルを推薦する。推薦結果をもとに各タスクの `skill` フィールドを設定する。
+各タスクへのスキル割り当ては **skill-selector を自身で実行して決定する**（サブエージェント不要）。バックログ項目一覧（id / action / done_criteria）を作成した後、`${SKILLS_DIR}/skill-selector/SKILL.md` を読んで手順に従い、各タスクへのスキル推薦を取得する。推薦結果は役割別に扱う。
+
+- `skill`: skill-selector の `primary_skills[].name` だけを設定する
+- `selection`: skill-selector の `supporting_skills` / `notes` を構造のまま保持する
+
+補助スキルを `skill` 配列へ混在させてはならない。scrum-master 側で具体的な補助スキル名を再判定してはならない。
 
 → **Step 2-3 へ進む**（requirements.json 経由でここに来た場合も省略しない）。
 
@@ -157,7 +162,7 @@ flowchart TD
   "definition_of_done": "...",
   "requirements_source": "requirements-definer",
   "backlog": [
-    {"id": "b1", "action": "...", "priority": 1, "done_criteria": "...", "skill": "...", "depends_on": [], "status": "pending", "result": null}
+    {"id": "b1", "action": "...", "priority": 1, "done_criteria": "...", "skill": "...", "selection": {"source": "skill-selector", "supporting_skills": {"principle": {"mode": "none", "name": null, "instruction": null, "timing": null, "reason": null}, "conditional": {"mode": "none", "name": null, "instruction": null, "timing": null, "reason": null}}, "notes": []}, "depends_on": [], "status": "pending", "result": null}
   ],
   "sprints": [],
   "velocity": {"completed_per_sprint": [], "remaining": 0}
@@ -167,9 +172,10 @@ flowchart TD
 タスク分解の粒度:
 - 基本は 1タスク = 1スキルの1回の実行
 - 「AしてBする」で責務が異なる場合は2タスクに分ける
-- 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "webapp-testing"]`）。配列指定も skill-selector が推薦する
+- 密接に連携する**プライマリスキル同士**を1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "webapp-testing"]`）。配列指定も skill-selector が推薦する
 - 汎用タスク（skill: null）は判断・調査・確認など、スキル不要な軽微な作業に限定する
 - **`skill` フィールドの値は Step 2-2 で skill-selector を自身で実行して決定する**（scrum-master が自己判断でスキル名を直接記入しない）
+- `selection` は skill-selector の出力契約をそのまま保持する。補助スキル名を scrum-master が列挙・再分類してはならない
 
 ---
 

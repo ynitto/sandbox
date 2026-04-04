@@ -106,7 +106,7 @@ skill-mentor が orchestrator として使用する共通リカバリ戦略。
 
 ## スキル種別のフォールバック
 
-### 実装系スキル（tdd-executing, react-frontend-coder 等）
+### 実装系スキル（skill-selector が返したプライマリ / 補助スキル等）
 
 ```
 実装失敗（3回）→ アーキテクチャ見直しを提案
@@ -121,7 +121,7 @@ skill-mentor が orchestrator として使用する共通リカバリ戦略。
 仮説全滅（INCONCLUSIVE）→ 追加ログ収集を提案、または手動調査をガイド
 ```
 
-### レビュー系スキル（code-reviewer, security-reviewer 等）
+### レビュー系スキル（agent-reviewer 等）
 
 ```
 対象ファイル不在 → スコープ外として中断し、対象ファイルをユーザーに確認

@@ -173,7 +173,7 @@
 
 ---
 
-### 1.14 `tdd-executing` — テスト駆動開発スキル ✅ 実装済み
+### 1.14 `test-driven-development` — テスト駆動開発スキル ✅ 実装済み
 
 **概要**: Red-Green-Refactor サイクルで TDD を実行し、C1 カバレッジ 100% を達成する。実装・テストは言語固有スキルに委譲する。
 
@@ -515,7 +515,7 @@ version: 1.3.0
 | document-reviewer | 低 | 中 | **★★☆** | ✅ 実装済み |
 | test-reviewer | 低 | 中 | **★★☆** | ✅ 実装済み |
 | security-reviewer | 低 | 高 | **★★☆** | ✅ 実装済み |
-| tdd-executing | 低 | 中 | **★★☆** | ✅ 実装済み |
+| test-driven-development | 低 | 中 | **★★☆** | ✅ 実装済み |
 | skill-selector | 低 | 高 | **★★☆** | ✅ 実装済み |
 | patent-coach | 低 | 中 | **★★☆** | ✅ 実装済み |
 | patent-writer | 低 | 中 | **★★☆** | ✅ 実装済み |

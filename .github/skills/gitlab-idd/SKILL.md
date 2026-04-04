@@ -82,7 +82,7 @@ export GITLAB_SELF_DEFER_MINUTES=60
 1. list-issues --label "status:review-ready" --author "$MY_USER" でレビュー対象を取得
 2. イシューコメントとブランチの成果物を確認
 3. 環境の利用可能スキルを自ら調べて積極活用
-4. 変更内容に応じて perspectives を決定し agent-reviewer サブエージェントを並列起動
+4. `agent-reviewer` を直接起動し、perspective の決定と並列レビューを委譲
    （functional / ai-antipattern / architecture + 必要に応じて test / security）
 5a. 全観点 LGTM → merge-mr + update-issue --state-event close
 5b. Request Changes → add-comment（全指摘を統合した差し戻しコメント）+ reopen
@@ -107,7 +107,7 @@ export GITLAB_SELF_DEFER_MINUTES=60
 4. イシューを自分に assign してロック（競合防止）
 5. feature/issue-{id} ブランチを作成
 6. 並列評価ループでタスク実行（最大 5 回）
-   └── 実装 → 多角レビュー（機能・セキュリティ・アーキテクチャ）→ 修正
+   └── skill-selector で選定 → primary_skills で実装 → supporting_skills を適用 → agent-reviewer でレビュー → 修正
 7. ブランチを push + MR（draft）作成
 8. イシューにサマリーコメント投稿 + ラベル "status:review-ready" に更新
 ```

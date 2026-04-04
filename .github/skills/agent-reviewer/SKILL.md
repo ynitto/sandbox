@@ -1,23 +1,18 @@
 ---
 name: agent-reviewer
-description: perspective を指定してレビューするか、未指定時は対象を分析して適切な perspectives を選択しサブエージェントを並列起動して集約する。「レビューして」「コードを確認して」「設計をレビューして」「ドキュメントをチェックして」「品質確認して」などの依頼で発動。sprint-reviewer は含まない。
+description: 入力された成果物を分析し、適切な perspectives を自律選択してサブエージェントを並列起動し、集約レビューを返す。「レビューして」「コードを確認して」「設計をレビューして」「ドキュメントをチェックして」「品質確認して」などの依頼で発動。sprint-reviewer は含まない。
 metadata:
-  version: 2.1.0
+  version: 3.0.0
   tier: stable
   category: review
   tags:
     - review
-    - single-perspective
     - orchestration
 ---
 
 # agent-reviewer
 
-**perspective が指定されている場合（サブエージェントとして呼ばれた場合）**:
-指定された perspective のみを実行する。サブエージェントは起動しない。
-
-**perspective が指定されていない場合（ユーザー直接呼び出し）**:
-対象を分析して適切な perspectives を選択し、**perspective ごとに自身をサブエージェントとして並列起動**して結果を集約する。
+入力された成果物を分析して適切な perspectives を選択し、**perspective ごとに自身をサブエージェントとして並列起動**して結果を集約する。
 
 ## パス解決
 
@@ -42,23 +37,14 @@ metadata:
 
 ## 実行プロトコル
 
-### Step 1: perspective の確認
-
-渡された `perspective` パラメータを確認する:
-
-- **perspective が指定されている** → Step 2（単一 perspective 実行）へ
-- **perspective が指定されていない** → Step 1a（perspective 選択と並列起動）へ
-
----
-
-### Step 1a: perspectives の選択と並列起動（直接呼び出し時のみ）
+### Step 1: perspectives の選択と並列起動
 
 > ### ⛔ STOP — `runSubagent` を今すぐ起動する
 >
 > **集約レビューはサブエージェントが行う。このインスタンス自身は直接レビューしない。**
 > perspectives を決定したら即座に `runSubagent` を呼び出すこと。
 
-対象ファイル・依頼内容から perspectives を決定し、**単一メッセージで並列起動**する:
+対象ファイル・依頼内容から perspectives を決定し、**同一ターン内で全 perspective の `runSubagent` をまとめて起動**する:
 
 | 対象・依頼内容 | 使用する perspectives |
 |---|---|
@@ -69,9 +55,8 @@ metadata:
 | セキュリティ診断 | `security` |
 | クラス・モジュール設計 | `design`, `architecture` |
 | ドキュメント・仕様書・設計書 | `document` |
-| 明示的な複数観点指定 | 指定された perspectives |
 
-起動テンプレート（各 perspective ごとに1つ、単一メッセージに並べる）:
+起動テンプレート（各 perspective ごとに `runSubagent` 1 件。全件を同一ターン内で開始する）:
 
 ```
 agent-reviewer スキルで以下をレビューしてください。
@@ -93,15 +78,21 @@ perspective: [選択した perspective]
 
 ---
 
-### Step 2: 単一 perspective のレビュー実行（perspective 指定時）
+### Step 2: 単一 perspective のレビュー実行（内部サブエージェント用）
 
-1. 指定された perspective に対応する参照ファイルを読み込む
+1. 内部的に指定された perspective に対応する参照ファイルを読み込む
 2. 参照ファイルの手順に従ってレビューを実施する
 3. 参照ファイルで定義された出力形式・判定スキーマで結果を返す
 
 ---
 
-### Step 3: 集約（直接呼び出しで複数 perspective を実行した場合のみ）
+### Step 3: 集約
+
+各 perspective は **共通の判定スキーマ** を返す:
+
+- `verdict`: `LGTM | REQUEST_CHANGES`
+- `severity_summary`: `critical` / `warning` / `suggestion`
+- `blocking_issues[*].severity`: `Critical | Warning`
 
 **集約判定ルール**:
 - 全 perspective が LGTM → **総合判定: LGTM ✅**
@@ -192,6 +183,6 @@ echo '{...}' | python ${SKILL_DIR}/scripts/pr_comment_formatter.py
 
 | 制限 | 値 |
 |---|---|
-| perspective 指定時のサブエージェント起動 | 禁止（直接レビューのみ） |
-| perspective 未指定時の並列起動上限 | 最大4 perspectives |
+| 外部呼び出し時の mode | 集約レビューのみ |
+| 並列起動上限 | 最大4 perspectives |
 | スキップ | 禁止（指定 / 選択された perspective は必ず実施） |

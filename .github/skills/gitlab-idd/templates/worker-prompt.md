@@ -27,7 +27,8 @@ SKILL.md の「ワーカー — イシュー取得・実行・報告」フロー
 2. イシュー #${issue_id} を自分に assign してロック（競合防止）
 3. `${branch_name}` ブランチを作成
 4. 受け入れ条件をすべて満たす実装を行う
-5. self-checking スキルが利用可能な場合は自己評価・改善を実施する（任意）
-6. 並列評価ループ（機能・セキュリティ・アーキテクチャ）で品質を確認
-7. ブランチを push して Draft MR を作成（本文に `Closes #${issue_id}` を含める）
-8. イシューに完了コメントを投稿し `status:review-ready` ラベルを設定
+5. skill-selector の出力契約に従い、`primary_skills` / `supporting_skills` / `execution_plan` を構造のまま扱う
+6. `supporting_skills` は `mode` / `timing` / `name` / `instruction` に従ってそのまま適用する
+7. レビューは常に `agent-reviewer` に委譲する。perspective の決定と並列レビューは `agent-reviewer` に任せる
+8. ブランチを push して Draft MR を作成（本文に `Closes #${issue_id}` を含める）
+9. イシューに完了コメントを投稿し `status:review-ready` ラベルを設定

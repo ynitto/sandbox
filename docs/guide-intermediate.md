@@ -253,7 +253,7 @@ snapshot-20260227T103000/
 {
   "profiles": {
     "default": ["*"],
-    "frontend": ["react-*", "ui-designer", "webapp-testing", "tdd-executing"],
+    "frontend": ["react-*", "ui-designer", "webapp-testing", "test-driven-development"],
     "backend": ["api-designer", "domain-modeler", "dynamodb-designer"],
     "review": ["architecture-reviewer", "code-reviewer", "code-simplifier", "design-reviewer", "document-reviewer", "security-reviewer", "test-reviewer"],
     "gitlab": ["gitlab-idd"],

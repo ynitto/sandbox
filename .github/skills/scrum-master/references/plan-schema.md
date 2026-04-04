@@ -23,16 +23,31 @@
       "action": "string (必須) タスクの具体的な説明",
       "priority": "integer (必須) 1が最高優先。スプリント選出の順序に使う",
       "done_criteria": "string (必須) 完了の定義。何をもって完了とするか",
-      "skill": "string|string[]|null (必須) 使用するスキル名。複数スキルを組み合わせる場合は配列で指定。汎用タスクはnull",
+      "skill": "string|string[]|null (必須) プライマリスキル名。skill-selector の primary_skills[].name から導出する。補助スキルは含めない。汎用タスクはnull",
+      "selection": {
+        "source": "string (任意) 推薦元。通常は 'skill-selector'",
+        "supporting_skills": {
+          "principle": {
+            "mode": "string (必須) skill|fallback|none",
+            "name": "string|null (任意) 推薦された補助スキル名",
+            "instruction": "string|null (任意) natural language fallback instruction",
+            "timing": "string|null (任意) before-primary|after-primary",
+            "reason": "string|null (任意) 推薦理由"
+          },
+          "conditional": {
+            "mode": "string (必須) skill|fallback|none",
+            "name": "string|null (任意) 推薦された補助スキル名",
+            "instruction": "string|null (任意) natural language fallback instruction",
+            "timing": "string|null (任意) before-primary|after-primary",
+            "reason": "string|null (任意) 推薦理由"
+          }
+        },
+        "notes": ["string (任意) 注意事項"]
+      },
       "depends_on": ["string (任意) 先行タスクのIDリスト。デフォルト: []"],
       "status": "string (任意) pending|in_progress|completed|failed|skipped。デフォルト: pending",
       "result": "string|null (任意) タスク完了時の結果サマリー",
-      "review_perspectives": "string[]|null (任意) このタスクに適用するレビュー観点のリスト。省略時はデフォルト（コード変更あり: ['functional', 'ai-antipattern', 'architecture'] / コード変更なし: ['functional']）。タスク特性に応じてカスタマイズ可能（例: セキュリティ重要タスクに 'security' を追加）",
-      "review_results": {
-        "functional": "string|null (任意) 機能レビューの結果サマリー",
-        "ai-antipattern": "string|null (任意) AIアンチパターンレビューの結果サマリー",
-        "architecture": "string|null (任意) アーキテクチャレビューの結果サマリー"
-      }
+      "review_result": "object|null (任意) agent-reviewer の集約レビュー結果。verdict-json をそのまま保持してよい"
     }
   ],
   "sprints": [
@@ -72,6 +87,14 @@
       "priority": 1,
       "done_criteria": "対応フォーマット・リサイズ方式・依存ライブラリが決まっていること",
       "skill": null,
+      "selection": {
+        "source": "skill-selector",
+        "supporting_skills": {
+          "principle": {"mode": "none", "name": null, "instruction": null, "timing": null, "reason": null},
+          "conditional": {"mode": "none", "name": null, "instruction": null, "timing": null, "reason": null}
+        },
+        "notes": []
+      },
       "depends_on": [],
       "status": "pending",
       "result": null
@@ -82,6 +105,14 @@
       "priority": 2,
       "done_criteria": "SKILL.md が作成され validate が通ること",
       "skill": "skill-creator",
+      "selection": {
+        "source": "skill-selector",
+        "supporting_skills": {
+          "principle": {"mode": "skill", "name": "self-checking", "instruction": null, "timing": "after-primary", "reason": "成果物の自己評価が必要"},
+          "conditional": {"mode": "none", "name": null, "instruction": null, "timing": null, "reason": null}
+        },
+        "notes": []
+      },
       "depends_on": ["b1"],
       "status": "pending",
       "result": null
@@ -92,6 +123,14 @@
       "priority": 3,
       "done_criteria": "リモートリポジトリにスキルがプッシュされていること",
       "skill": "git-skill-manager",
+      "selection": {
+        "source": "skill-selector",
+        "supporting_skills": {
+          "principle": {"mode": "none", "name": null, "instruction": null, "timing": null, "reason": null},
+          "conditional": {"mode": "none", "name": null, "instruction": null, "timing": null, "reason": null}
+        },
+        "notes": []
+      },
       "depends_on": ["b2"],
       "status": "pending",
       "result": null
@@ -138,16 +177,10 @@
 - 配列指定の場合、サブエージェントは先頭スキルから順にSKILL.mdを読んで実行する
 - 汎用タスク（skill: null）は判断・調査・確認など、スキル不要な作業に限定する
 
-## レビュー観点のカスタマイズ
+## レビュー結果の保持
 
-**デフォルトレビュー観点**:
-- コード変更あり: `["functional", "ai-antipattern", "architecture"]`（3並列）
-- コード変更なし（調査タスク）: `["functional"]`（1件のみ）
-
-**カスタマイズ例**:
-- セキュリティ重要タスク: `["functional", "ai-antipattern", "architecture", "security"]` ※security テンプレートは必要に応じて追加
-- 軽微な修正（typo修正など）: `["functional"]` で十分
-- `review_perspectives` を省略した場合はデフォルトが適用される
+- レビューの perspective 選択は orchestrator ではなく `agent-reviewer` が行う
+- `review_result` には agent-reviewer の集約結果をそのまま保持する
 
 ## requirements.json → plan.json 変換ルール
 
@@ -211,6 +244,14 @@
       "priority": 1,
       "done_criteria": "フォーム送信でTODOが一覧に追加される。タイトル空送信時にバリデーションエラーが表示される。正常系・バリデーションエラー系のテストがパスする",
       "skill": "react-frontend-coder",
+      "selection": {
+        "source": "skill-selector",
+        "supporting_skills": {
+          "principle": {"mode": "skill", "name": "self-checking", "instruction": null, "timing": "after-primary", "reason": "実装成果物の自己評価が必要"},
+          "conditional": {"mode": "skill", "name": "test-driven-development", "instruction": null, "timing": "before-primary", "reason": "受け入れ条件を先にテスト化できる"}
+        },
+        "notes": []
+      },
       "depends_on": [],
       "status": "pending",
       "result": null
@@ -218,6 +259,8 @@
   ]
 }
 ```
+
+> **役割分離**: `skill` はプライマリスキル、`selection` は skill-selector が返した補助スキル・注意事項を表す。レビューは `agent-reviewer` をオーケストレーターが直接起動する。
 
 > **注**: 上記の例では実装とユニットテストを `react-frontend-coder` に統合している。ブラウザ実機確認まで含めたい場合は `webapp-testing` を追加する。分離したい場合は従来通り個別タスクに分ける:
 

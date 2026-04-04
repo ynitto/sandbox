@@ -15,7 +15,7 @@
 | **オーケストレーション** | 2 | scrum-master (v1.4.0), sprint-reviewer (v1.0.0) |
 | **メタ／管理** | 5 | git-skill-manager (v1.0.1), skill-creator (v3.0.0), skill-evaluator (v1.0.1), skill-selector (v1.0.0), ltm-use (v4.0.0) |
 | **要件／設計** | 6 | requirements-definer (v2.0.0), brainstorming (v2.0.0), domain-modeler (v1.0.0), api-designer (v1.0.0), ui-designer (v1.0.0), doc-coauthoring (v1.0.0) |
-| **実装** | 5 | react-frontend-coder (v1.0.0), react-frontend-unit-tester (v1.0.0), tdd-executing (v1.0.1), ci-cd-configurator (v1.0.0), webapp-testing (v1.0.0) |
+| **実装** | 5 | react-frontend-coder (v1.0.0), react-frontend-unit-tester (v1.0.0), test-driven-development (v1.0.1), ci-cd-configurator (v1.0.0), webapp-testing (v1.0.0) |
 | **レビュー** | 8 | code-reviewer (v2.0.0), code-simplifier (v1.0.0), architecture-reviewer (v1.2.0), design-reviewer (v1.0.0), document-reviewer (v2.0.0), security-reviewer (v1.0.0), test-reviewer (v1.2.0), sprint-reviewer (※オーケストレーションと兼務) |
 | **デバッグ** | 1 | systematic-debugging (v2.0.0) |
 | **調査／文書** | 4 | deep-research (v1.0.0), technical-writer (v1.0.1), patent-coach (v1.0.0), patent-writer (v2.2.0) |
@@ -31,7 +31,7 @@
                                                          ↓
                                     react-frontend-coder → react-frontend-unit-tester
                                                          ↓
-                                    tdd-executing (C1 100% ゲート)
+                                    test-driven-development (C1 100% ゲート)
                                                          ↓
                                     ci-cd-configurator → webapp-testing
 
@@ -74,15 +74,15 @@
 
 ### 1.1 スキル依存関係が暗黙的 — **優先度: 高**
 
-**現状**: 36スキル中、他スキルへの委譲を SKILL.md 本文内で記述しているのは約8個（scrum-master, code-reviewer, design-reviewer, patent-coach, tdd-executing 等）。だが YAML フロントマターの `depends_on` として構造化されておらず、**機械的に解決できない**。
+**現状**: 36スキル中、他スキルへの委譲を SKILL.md 本文内で記述しているのは約8個（scrum-master, code-reviewer, design-reviewer, patent-coach, test-driven-development 等）。だが YAML フロントマターの `depends_on` として構造化されておらず、**機械的に解決できない**。
 
 **実際の暗黙依存の例**:
 
 | スキル | 暗黙の前提スキル | SKILL.md での言及 |
 |--------|----------------|-----------------|
 | react-frontend-unit-tester | react-frontend-coder | 「実装完了後のテスト投入」とあるが depends_on なし |
-| tdd-executing | react-frontend-unit-tester 等 | 「言語固有スキルに委譲」とあるが動的選択 |
-| test-reviewer | tdd-executing | テスト品質評価だが連携なし |
+| test-driven-development | react-frontend-unit-tester 等 | 「言語固有スキルに委譲」とあるが動的選択 |
+| test-reviewer | test-driven-development | テスト品質評価だが連携なし |
 | api-designer | requirements-definer, domain-modeler | 入力チェックリストで暗示だが依存宣言なし |
 | ci-cd-configurator | react-frontend-coder 等 | ビルド対象が存在する前提だが未宣言 |
 
@@ -159,7 +159,7 @@ metadata:
 |--------|---------|------|
 | react-frontend-coder | React + TypeScript + Vite + Zustand | フロントエンド |
 | react-frontend-unit-tester | Jest/Vitest + RTL | フロントテスト |
-| tdd-executing | 多言語（TS/Python/Go/Java/Rust/C#） | テスト駆動 |
+| test-driven-development | 多言語（TS/Python/Go/Java/Rust/C#） | テスト駆動 |
 | ci-cd-configurator | GitLab CI / Jenkins + **AWS限定** | CI/CD |
 | webapp-testing | Playwright (Python) | E2E テスト |
 

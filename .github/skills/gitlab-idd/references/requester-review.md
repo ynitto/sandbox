@@ -74,25 +74,14 @@ git diff {TARGET_BRANCH}...origin/feature/issue-{issue_id}-*
 
 レビューに役立つスキルが見つかった場合は、手動でサブエージェントを立てる前にそのスキルを優先して使用する。
 
-### ステップ 3-2: perspectives の決定と並列起動
+### ステップ 3-2: agent-reviewer を直接起動
 
-ブランチの変更内容を確認し、以下の表に従って **perspectives（レビュー観点）** を決定する。
-その後、perspectives ごとに **agent-reviewer サブエージェントを単一メッセージで並列起動** する。
+ブランチの変更内容と受け入れ条件をそのまま `agent-reviewer` に渡す。perspective の決定と並列レビューは `agent-reviewer` 自身が行う。
 
-| 変更内容 | 使用する perspectives |
-|---------|---------------------|
-| プロダクションコードあり | `functional` + `ai-antipattern` + `architecture` |
-| テストファイルあり（`*.test.*` 等） | 上記に加えて `test` を追加 |
-| セキュリティ関連コード（認証・DB・API） | 上記に加えて `security` を追加 |
-| ドキュメント・仕様書のみ | `document` のみ |
-
-各 perspective は独立したサブエージェントとして同時起動する（単一メッセージに並べる）。
-
-各サブエージェントへの入力:
+agent-reviewer への入力:
 - イシュー本文（受け入れ条件含む）
 - ブランチの diff（`git diff {TARGET_BRANCH}..feature/issue-{id}*`）
 - ワーカーのサマリーコメント
-- 使用する perspective 名
 
 ### ステップ 3-3: 結果集約・修正リトライ（最大 5 回）
 
@@ -242,12 +231,11 @@ git fetch origin
 git diff main...origin/feature/{機能名}
 ```
 
-差分の内容に応じて agent-reviewer サブエージェントを並列起動する（判断基準はステップ 3-2 と同じ）。
+差分全体を agent-reviewer に渡して統合レビューを実施する。
 
 各サブエージェントへの入力:
 - 統合ブランチ名・対象イシューの一覧
 - `git diff main...origin/feature/{機能名}`
-- 使用する perspective 名
 
 > レビュー結果が **Request Changes** の場合: 指摘内容をユーザーに報告して判断を委ねる（自動差し戻しはしない）。
 > レビュー結果が **LGTM** の場合: ステップ F-3 へ進む。

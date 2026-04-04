@@ -153,8 +153,11 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 
 1. **skill-selector** のSKILL.mdを自身で読み込んで直接実行する（サブエージェント不要）
    - `${SKILLS_DIR}/skill-selector/SKILL.md` を読み、手順に従って Phase 2 のタスク定義を渡す
-   - 複数スキルが推薦された場合は全スキルを実行計画に含める
+  - 推薦結果は skill-selector の出力契約どおりに `primary_skills` / `supporting_skills` / `execution_plan` / `notes` の構造を保ったまま受け取る
 2. skill-selector の推薦結果をもとに実行計画を作成する
+  - 実行タスクとして並べるのは `primary_skills[].name` のみ
+  - `supporting_skills` は構造を崩さず各タスクへ付帯情報として保持し、そのままサブエージェントへ渡す
+  - レビューは Phase 5 で `agent-reviewer` を直接起動する
 3. **依存関係グラフを付与する**: 各スキルタスクに `depends_on` を明記し、並列実行可能なグループを特定する
 
    ```
@@ -228,11 +231,11 @@ Phase 3 で確定した依存関係グラフを元に、グループ単位で実
 
 **ゴール**: 成果物の品質を検証し、ユーザーにフィードバックする
 
-#### Step 1: 多角レビュー（perspectives を決定して並列起動）
+#### Step 1: agent-reviewer にレビューを委譲する
 
 > ### ⛔ STOP — `runSubagent` を今すぐ起動する
 >
-> **成果物のレビューはサブエージェントが行う。skill-mentor は直接レビューしない。**
+> **成果物レビューは agent-reviewer が行う。skill-mentor は直接レビューしない。**
 > 読み終えたら即座に `runSubagent` を呼び出すこと。理由や条件を考えてはならない。
 >
 > ❌ 以下の理由によるスキップ・自己レビューは禁止:
@@ -241,40 +244,27 @@ Phase 3 で確定した依存関係グラフを元に、グループ単位で実
 > - 「小さい変更だから」
 > - 「内容は把握済みだから」
 
-**スキップ条件: なし — 無条件でレビュー必須**
+**スキップ条件: なし — レビュー必須**
 
-Phase 4 の変更ファイルを確認し、以下の表に従って **perspectives（レビュー観点）** を決定する。
-その後、perspectives ごとに **agent-reviewer サブエージェントを単一メッセージで並列起動**する。
-
-| 変更内容 | 使用する perspectives |
-|---|---|
-| プロダクションコードあり | `functional` + `ai-antipattern` + `architecture` |
-| テストファイルあり（`*.test.*` 等）| 上記に加えて `test` を追加 |
-| セキュリティ関連コード（認証・DB・API）| 上記に加えて `security` を追加 |
-| ドキュメント・仕様書のみ | `document` のみ |
-| コード変更なし（調査のみ）| `functional` のみ（軽量） |
-
-各 perspective は独立した agent-reviewer サブエージェントとして同時起動する（単一メッセージに並べる）。
+Phase 4 の成果物・変更ファイル・完了条件をそのまま `agent-reviewer` に渡す。perspective の決定と並列起動は agent-reviewer 自身が行うため、skill-mentor 側では考えない。
 
 テンプレート: `${SKILL_DIR}/references/subagent-templates.md` の「agent-reviewer サブエージェント起動時」を参照
 
 #### Step 2: 結果集約・修正リトライ（最大5回）
 
-全観点の結果を受け取り、以下の手順で判定する:
+agent-reviewer の集約結果を受け取り、以下の手順で判定する:
 
 **ステップ 2-1: 集約判定（最も厳しい結果を採用）**
-- 全観点が LGTM → 成功確定（Step 3 へ）
-- いずれかの観点が Request Changes → ステップ 2-2 へ
+- 総合判定が LGTM → 成功確定（Step 3 へ）
+- 総合判定が Request Changes → ステップ 2-2 へ
 
 **ステップ 2-2: 修正リトライ**
 
-全 perspective の指摘を統合して「修正リトライ時」テンプレートで修正サブエージェントを起動する:
+agent-reviewer が返した指摘を統合して「修正リトライ時」テンプレートで修正サブエージェントを起動する:
 ```
 ### レビュー指摘（以下を必ず修正すること）:
-- [functional] 指摘 N 件: [要約]
-- [ai-antipattern] 指摘 N 件: [要約]
-- [architecture] 指摘 N 件: [要約]
-（その他起動した perspective があれば追記）
+- [指摘カテゴリ] 指摘 N 件: [要約]
+- [指摘カテゴリ] 指摘 N 件: [要約]
 ```
 修正完了後、再度 Step 1（多角レビュー）を実施する。
 **リトライ上限**: 修正 → レビューのサイクルを最大5回繰り返す。5回目でも Request Changes の場合はユーザーに状況を報告して判断を委ねる。

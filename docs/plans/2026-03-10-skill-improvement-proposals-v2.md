@@ -368,7 +368,7 @@ def check_cross_references(skill_md: str, all_skill_names: set) -> list:
 | スキル | リカバリ対応 | 状態 |
 |--------|------------|------|
 | scrum-master | Phase チェックポイント（state.json に進捗保存） | ✅ 実装済み |
-| tdd-executing | Red-Green-Refactor の各ステップで中間状態を保存 | ⚠️ 部分的 |
+| test-driven-development | Red-Green-Refactor の各ステップで中間状態を保存 | ⚠️ 部分的 |
 | その他 35 スキル | なし | ❌ 未対応 |
 
 ### 改善案

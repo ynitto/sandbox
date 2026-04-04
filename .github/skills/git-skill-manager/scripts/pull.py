@@ -137,12 +137,26 @@ def pull_skills(
             with open(skill_md, encoding="utf-8") as f:
                 content = f.read()
             desc = ""
+            tier = ""
+            deprecated_by = ""
             fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
             if fm_match:
+                in_metadata = False
                 for line in fm_match.group(1).splitlines():
                     if line.startswith("description:"):
                         desc = line[len("description:"):].strip()
-                        break
+                    if line.startswith("metadata:"):
+                        in_metadata = True
+                        continue
+                    if in_metadata:
+                        if line and not line[0].isspace():
+                            in_metadata = False
+                        else:
+                            stripped = line.lstrip()
+                            if stripped.startswith("tier:"):
+                                tier = stripped[len("tier:"):].strip().strip("\"'")
+                            elif stripped.startswith("deprecated_by:"):
+                                deprecated_by = stripped[len("deprecated_by:"):].strip().strip("\"'")
 
             result = subprocess.run(
                 ["git", "log", "-1", "--format=%aI", "--",
@@ -164,11 +178,14 @@ def pull_skills(
                 "commit_date": commit_date,
                 "commit_hash": commit_hash,
                 "description": desc[:80],
+                "tier": tier,
+                "deprecated_by": deprecated_by,
             })
 
     # ---- 競合解決 ----
     installed = []
     conflicts = []
+    removed_deprecated: list[dict] = []
 
     for sname, sources in candidates.items():
         winner = sources[0]
@@ -207,6 +224,20 @@ def pull_skills(
                 "adopted": winner["repo_name"],
                 "rejected": [s["repo_name"] for s in sources if s != winner],
             })
+
+        # ---- deprecated スキルをアンインストール ----
+        if winner.get("tier") == "deprecated":
+            dest = os.path.join(skill_home, sname)
+            dep_by = winner.get("deprecated_by", "")
+            if os.path.isdir(dest):
+                shutil.rmtree(dest)
+                removed_deprecated.append({"name": sname, "deprecated_by": dep_by})
+                successor = f" → {dep_by}" if dep_by else ""
+                print(f"   🗑️  {sname}: deprecated{successor} → ユーザーホームから削除しました")
+            else:
+                successor = f" → {dep_by}" if dep_by else ""
+                print(f"   ℹ️  {sname}: deprecated{successor}（未インストール、スキップ）")
+            continue
 
         # ---- pinned_commit 対応 ----
         existing_skill = next(
@@ -293,6 +324,9 @@ def pull_skills(
             "central_ok_rate": None,
         })
         existing[s["name"]] = s
+    # deprecated により削除されたスキルをレジストリからも除去
+    for r in removed_deprecated:
+        existing.pop(r["name"], None)
     reg["installed_skills"] = list(existing.values())
     save_registry(reg)
 
@@ -317,6 +351,11 @@ def pull_skills(
     # 結果レポート
     print(f"\n📦 pull 完了")
     print(f"   新規/更新: {len(installed)} 件")
+    if removed_deprecated:
+        print(f"   非推奨削除: {len(removed_deprecated)} 件")
+        for r in removed_deprecated:
+            successor = f" → {r['deprecated_by']}" if r.get("deprecated_by") else ""
+            print(f"   🗑️  {r['name']} (deprecated{successor})")
     if conflicts:
         print(f"   競合解決:  {len(conflicts)} 件")
         for c in conflicts:

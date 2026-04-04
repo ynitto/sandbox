@@ -55,12 +55,12 @@ Wave 3: [b5]     → 単独実行
 1. **ウェーブ開始**: ウェーブ内の全タスクのstatusを `in_progress` に更新する
 2. **並列起動** ⚠️ **`runSubagent` を呼び出す前に手を止めて確認**: 自分でタスクを実行しようとしていないか？ → 全タスクについてサブエージェントを**同時に**起動する（単一メッセージに並べる）
    - テンプレートは `subagent-templates.md` を参照（ltm-use コアスキルによる記憶統合が組み込まれている）
-   - **skill 指定あり（文字列）** → `subagent-templates.md`「スキル実行時」。スキル一覧にテスト系スキルがあればプロンプトの `テストスキル` に付記する
-   - **skill 指定あり（配列）** → `subagent-templates.md`「複数スキル実行時」。配列内の全スキルのSKILL.mdパスを渡す
+   - **skill 指定あり（文字列）** → `subagent-templates.md`「スキル実行時」。スキル一覧にテスト系スキルがあればプロンプトの `テストスキル` に付記し、`selection.supporting_skills` をそのまま渡す
+   - **skill 指定あり（配列）** → `subagent-templates.md`「複数スキル実行時」。配列内の全スキルのSKILL.mdパスを渡し、`selection.supporting_skills` をそのまま渡す
    - **skill: null** → `subagent-templates.md`「skill: null タスク実行時」
    - **注意**: Wave 1 ではコンテキストは前スプリントの結果のみ。Wave 2 以降は前ウェーブの結果を含める
 3. **結果収集**: 全サブエージェントの完了を待ち、各タスクの result フィールドに結果を記録する
-4. **タスクレビュー（多角レビュー並列実行）**
+4. **タスクレビュー（agent-reviewer に直接委譲）**
 
    > ### ⛔ STOP — `runSubagent` を今すぐ起動する
    >
@@ -73,44 +73,26 @@ Wave 3: [b5]     → 単独実行
    > - 「小さい変更だから」
    > - 「内容は把握済みだから」
 
-   **スキップ条件: なし — 全タスク無条件でレビュー必須**
+   **スキップ条件: なし — レビュー必須**
 
-   **軽量レビュー**: `変更ファイル: なし` のタスク（調査・確認のみ）は、テンプレートの `変更ファイル` 欄に「なし（調査タスク）」と明記する。レビューサブエージェントは完了基準の充足確認のみを行い、コードレビュースキルの起動は不要とする。
+   **軽量レビュー**: `変更ファイル: なし` のタスク（調査・確認のみ）は、テンプレートの `変更ファイル` 欄に「なし（調査タスク）」と明記する。レビューサブエージェントは完了基準の充足確認のみを行う。
 
-   **多角レビュー**: コード変更を含むタスクは、perspectives（レビュー観点）を決定し、**perspective ごとに agent-reviewer サブエージェントを並列起動**する。
-
-   > **重要**: サブエージェントからサブエージェントは起動できない。そのため scrum-master が perspectives を決定し、複数の agent-reviewer を並列起動する。
-
-   **perspectives の決定**:
-
-   | 変更内容 | 使用する perspectives |
-   |---|---|
-   | プロダクションコードあり | `functional` + `ai-antipattern` + `architecture` |
-   | テストファイルあり（`*.test.*` 等）| 上記に加えて `test` を追加 |
-   | セキュリティ関連コード（認証・DB・API）| 上記に加えて `security` を追加 |
-   | ドキュメント・仕様書のみ | `document` のみ |
-   | コード変更なし（調査タスク）| `functional` のみ（軽量）、変更ファイル欄に「なし（調査タスク）」と明記 |
-
-   `plan.json` の `review_perspectives` が明示指定されている場合はその指定を優先する。
-
-   **レビューの起動**: 決定した perspectives ごとに `subagent-templates.md`「agent-reviewer サブエージェント起動時」テンプレートを使って**単一メッセージで並列起動**する。
+   成果物・変更ファイル・完了条件を `subagent-templates.md`「agent-reviewer サブエージェント起動時」テンプレートで `agent-reviewer` に渡す。perspective の決定と並列起動は `agent-reviewer` が行うため、scrum-master は関与しない。
 
 5. **多角レビュー結果の集約と完了判定**: 全観点の結果を受け取り、以下の手順で判定する:
 
    **ステップ 5-1: 集約判定（最も厳しい結果を採用）**
-   - 全観点が LGTM かつ done_criteria を満たす → **`completed`**（ステップ 5-4 へ）
-   - いずれかの観点が Request Changes → ステップ 5-2 へ
+   - agent-reviewer の総合判定が LGTM かつ done_criteria を満たす → **`completed`**（ステップ 5-4 へ）
+   - agent-reviewer の総合判定が Request Changes → ステップ 5-2 へ
    - done_criteria を満たさない / テスト失敗 → status: `failed`、理由を result に記録して終了
    - レビュー未実施 → status: `failed`（「レビュー未実施」を result に記録）して終了
 
    **ステップ 5-2: 修正リトライ（最大5回）**
-   - 全 perspective の指摘を統合して `subagent-templates.md`「修正リトライ時」テンプレートで修正サブエージェントを起動する:
+    - agent-reviewer が返した指摘を統合して `subagent-templates.md`「修正リトライ時」テンプレートで修正サブエージェントを起動する:
      ```
      ### レビュー指摘（以下を必ず修正すること）:
-     - [functional] 重大な指摘 N 件: [要約]
-     - [ai-antipattern] 重大な指摘 N 件: [要約]
-     - [architecture] 重大な指摘 N 件: [要約]
-     （その他起動した perspective があれば追記）
+       - [指摘カテゴリ] 重大な指摘 N 件: [要約]
+       - [指摘カテゴリ] 重大な指摘 N 件: [要約]
      ```
    - 修正完了後、再度ステップ 4（多角レビュー）を実施する
    - **リトライ上限**: 修正→レビューのサイクルを最大5回繰り返す。5回目でも Request Changes の場合 → status: `failed`（「レビュー5回不合格」と理由を result に記録）
@@ -122,7 +104,7 @@ Wave 3: [b5]     → 単独実行
      ```
 
    **ステップ 5-4: 結果記録**
-   - 各観点のレビュー結果を `plan.json` の `review_results` フィールドに記録する（スキーマ: `plan-schema.md` 参照）
+   - agent-reviewer の集約結果を `plan.json` の `review_result` フィールドに記録する（スキーマ: `plan-schema.md` 参照）
    - `result` フィールドに集約サマリーを記録する
 6. **ウェーブ内失敗時の判断**:
    - 失敗タスクに後続ウェーブのタスクが依存している場合 → ユーザーに報告する:
@@ -167,8 +149,8 @@ Wave [N] 完了。スプリントゴール進捗確認:
 ## ゲート条件（Phase 6 に進む前に確認）
 
 - [ ] 全ウェーブの実行が完了した（またはユーザーが中断を選択した）
-- [ ] **全タスクのレビューが実施された**（変更ファイルの有無にかかわらず、スキップは一切ゲート違反）
-- [ ] **コード変更ありのタスクは agent-reviewer による多角レビューが完了している**
+- [ ] 全タスクで agent-reviewer によるレビューが実施されている
+- [ ] コード変更タスクの review_result が `plan.json` に記録されている
 - [ ] 各タスクの status と result（各観点のレビュー結果含む）が `plan.json` に記録されている
 
 → 条件を満たしたら **Phase 6: スプリントレビュー** へ進む

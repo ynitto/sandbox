@@ -22,7 +22,7 @@ metadata:
 ## 代替
 
 - 実装からユニットテストまで一気通貫で進める: `react-frontend-coder`
-- 厳密な Red-Green-Refactor を回す: `tdd-executing` + `react-frontend-coder`
+- 厳密な Red-Green-Refactor を回す: `test-driven-development` + `react-frontend-coder`
 
 React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネント・ストアのユニットテストを実装する。**フロントエンド実装完了後に投入される**。
 

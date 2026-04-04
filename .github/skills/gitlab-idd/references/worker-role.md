@@ -31,7 +31,7 @@ Phase 2  イシュー取得 ─── オープンイシューをフィルタし
 Phase 3  イシュー着手 ─── assign + ラベル更新 + ブランチ作成 + 空ドラフト MR 作成
    │
 Phase 4  タスク実行 ─── 並列評価ループ（最大 5 回）
-   │         └── スキル選定（skill-selector）→ 実装 → 自己評価（self-checking、任意）→ 多角レビュー（機能・セキュリティ・アーキテクチャ 並列）→ 修正・コミット・push
+  │         └── スキル選定（skill-selector）→ プライマリ実装 → supporting_skills をそのまま適用 → agent-reviewer へレビュー委譲 → 修正・コミット・push
    │
 Phase 5  成果物提出 ─── push 確認 + MR 本文記入 + ドラフト解除 + イシューコメント + ラベル更新
 ```
@@ -223,12 +223,14 @@ cat ${SKILLS_DIR}/skill-selector/SKILL.md
 - イシュータイトル・受け入れ条件（技術スタック・言語・フレームワーク）
 - 差し戻しコメントがある場合はその内容
 
-**skill-selector の推薦結果を使って**:
-1. **プライマリスキル**: 推薦されたプライマリスキル（例: `react-frontend-coder` など）をステップ 4-1 のサブエージェントとして使用する
-2. **補助スキル（self-checking）**: 推薦された場合はステップ 4-2 で使用する（現在の手順と同じ）
-3. **補助スキル（tdd-executing）**: 推薦された場合はプライマリスキルに先行して設定し、TDD サイクル（Red-Green-Refactor）でプライマリスキルを呼び出す形で実装する
+**skill-selector の推薦結果の扱い**:
+1. **worker-role は推薦結果を再解釈しない**。どのプライマリスキルを使うか、どの補助スキルを先行適用するかは、すべて skill-selector の出力を正とする
+2. **出力契約をそのまま保持する**。少なくとも `selection_status` / `primary_skills` / `supporting_skills` / `execution_plan` / `notes` を構造のまま扱う
+3. **プライマリスキル**: `primary_skills[].name` をステップ 4-1 のサブエージェントとして使用する
+4. **補助指示**: `supporting_skills.principle` / `supporting_skills.conditional` は `mode` / `timing` / `name` / `instruction` に従ってそのまま適用する。worker-role 側で個別の補助スキル判定や優先順位付けを追加しない
+5. **レビュー**: レビューは skill-selector の返却値ではなく、worker-role が `agent-reviewer` を直接呼び出して実施する
 
-適切な実装スキルが特定できない場合は汎用実装サブエージェントにフォールバックする（現在の手順）。
+適切な実装スキルが特定できない場合のみ、skill-selector の結論に従って汎用実装サブエージェントへフォールバックする。
 
 ### ステップ 4-1: タスク実装（サブエージェント委譲）
 
@@ -242,28 +244,38 @@ cat ${SKILLS_DIR}/skill-selector/SKILL.md
 - 変更内容のサマリーを出力する
 ```
 
-### ステップ 4-2: 自己評価（self-checking スキルが利用可能な場合）
+### ステップ 4-2: 補助指示の適用（supporting_skills）
 
-実装完了後・多角レビューの前に、自身で成果物を評価・改善する。
+実装の前後で、skill-selector が返した `supporting_skills` をそのまま適用する。
 
-```bash
-# self-checking スキルの存在確認
-ls ${SKILLS_DIR}/self-checking/SKILL.md 2>/dev/null
+```yaml
+supporting_skills:
+  principle:
+    mode: skill | fallback | none
+    name: skill-name | null
+    instruction: string | null
+    timing: before-primary | after-primary | null
+  conditional:
+    mode: skill | fallback | none
+    name: skill-name | null
+    instruction: string | null
+    timing: before-primary | after-primary | null
 ```
 
-- **ファイルが存在する** → `${SKILLS_DIR}/self-checking/SKILL.md` を読んで手順に従い、実装成果物を自己評価・改善する:
-  - 種別: `code`（コード変更の場合）
-  - 成果物: `git diff TARGET_BRANCH...BRANCH` で変更されたファイル
-  - 完了基準: イシューの `## 受け入れ条件` の各項目
-  - PASS になるまで改善を繰り返す（連続 2 回改善幅 < 0.03 の場合は収束とみなす）
-- **ファイルが存在しない** → self-checking スキルなしで自律的に自己評価を実施する:
-  - 受け入れ条件・実装内容をもとに、品質を自身で判断する
-  - （観点: 受け入れ条件の充足・明らかな誤り・抜け漏れ・エッジケース）
-  - 問題が見つかれば修正し、問題がなくなるまで繰り返す
+適用ルール:
+- `timing: before-primary` の項目はステップ 4-1 の前に適用する
+- `mode: skill` の項目は `${SKILLS_DIR}/[name]/SKILL.md` を読んで補助スキルとして実行する
+- `mode: fallback` の項目は `instruction` をそのまま実施する
+- `mode: none` の項目はスキップする
+- `timing: after-primary` の項目は実装成果物に対して適用する
 
-### ステップ 4-3: 多角レビュー（並列サブエージェント）
+`self-checking` が返ってきた場合も、worker-role は特別扱いせず上記ルールで処理する。スキル不在時の自然文フォールバックも `instruction` をそのまま使う。
 
-実装・自己評価完了後、以下の 3 観点を **並列で** レビューする:
+### ステップ 4-3: agent-reviewer にレビューを委譲
+
+実装・補助指示適用完了後、成果物全体を `agent-reviewer` に渡してレビューする。perspective は worker-role 側で決めない。
+
+agent-reviewer は内部で必要な 3 観点以上を **並列で** レビューする:
 
 | エージェント | 観点 |
 |------------|------|
@@ -272,6 +284,8 @@ ls ${SKILLS_DIR}/self-checking/SKILL.md 2>/dev/null
 | アーキテクチャレビュー | SOLID・依存方向・既存設計との一貫性 |
 
 各エージェントへの入力: イシュー本文（受け入れ条件含む）+ `git diff TARGET_BRANCH...BRANCH`
+
+入力はイシュー本文、受け入れ条件、ワーカーの変更サマリー、`git diff TARGET_BRANCH...BRANCH` とする。
 
 ### ステップ 4-4: 指摘統合と修正判断
 
