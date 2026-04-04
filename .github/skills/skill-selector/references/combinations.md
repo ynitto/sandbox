@@ -4,6 +4,18 @@
 
 ---
 
+## 補助スキルの付加ガイド
+
+メインスキルに対して以下の補助スキルを付け加えることで品質を向上させる。詳細な付加基準は `skill-selector/SKILL.md` の Step 4.5 を参照。
+
+| 補助スキル | 主な付加対象 | 効果 |
+|---|---|---|
+| `self-checking` | 実装・作成系スキル全般（コード・ドキュメント） | 多角レビュー前の自己評価・改善で指摘件数を削減 |
+| `tdd-executing` | 新規コード実装スキル（react-frontend-coder 等） | Red-Green-Refactor サイクルで品質とカバレッジを保証 |
+| `agent-reviewer` | 成果物レビューが必要な場合 | 機能・セキュリティ・アーキテクチャの多角レビュー |
+
+---
+
 ## 新機能開発（フルサイクル）
 
 ```
@@ -11,10 +23,10 @@ brainstorming
   → requirements-definer
   → (domain-modeler | api-designer | ui-designer)  ※対象次第
   → scrum-master  [実装フェーズのオーケストレーター]
-    → react-frontend-coder
-    → (tdd-executing)  ※厳密なTDDが必要な場合のみ
+    → (tdd-executing)  ※補助スキル: 品質・カバレッジ重視の場合
+    → react-frontend-coder + self-checking  ※補助スキル: 実装成果物の自己評価
     → code-reviewer → code-simplifier
-  → technical-writer
+  → technical-writer + self-checking  ※補助スキル: ドキュメント成果物の自己評価
   → sprint-reviewer
 ```
 
@@ -32,6 +44,7 @@ code-reviewer
   → (test-reviewer)      ※テストコードも対象の場合
 ```
 
+**補助スキル**: レビュー系は成果物を生まないため self-checking の付加は不要  
 **用途**: PR レビュー、品質チェック  
 **特徴**: code-reviewer が起点、指摘内容に応じて専門スキルを追加
 
@@ -46,6 +59,7 @@ architecture-reviewer
   → (document-reviewer)  ※設計ドキュメントがある場合
 ```
 
+**補助スキル**: 設計ドキュメントを更新する場合は technical-writer に self-checking を付加  
 **用途**: アーキテクチャ・クラス設計の評価  
 **特徴**: 広域（architecture）→ 詳細（design）の順で掘り下げる
 
@@ -56,9 +70,11 @@ architecture-reviewer
 ```
 systematic-debugging
   → (code-reviewer)      ※修正後のレビュー
+  + self-checking         ※補助スキル: 修正コードの自己評価（修正フェーズ後に適用）
 ```
 
-**用途**: バグ原因の特定と修正
+**補助スキル**: コード修正が発生するため self-checking をデフォルト付加  
+**用途**: バグ原因の特定と修正  
 **特徴**: 体系的分析 → ランタイム計装 → 修正の流れ。修正前に根本原因を必ず特定
 
 ---
@@ -67,10 +83,11 @@ systematic-debugging
 
 ```
 (document-reviewer)      ※既存ドキュメントのレビュー
-  → technical-writer     ※README・ガイド
+  → technical-writer + self-checking  ※補助スキル: ドキュメント成果物の自己評価
   → (doc-coauthoring)    ※仕様書・設計書の共同執筆
 ```
 
+**補助スキル**: ドキュメント作成系スキルに self-checking をデフォルト付加  
 **用途**: ドキュメント作成・更新  
 **特徴**: 対象読者（外向け vs 内向け）で使用スキルが変わる
 
@@ -79,12 +96,13 @@ systematic-debugging
 ## スキル管理
 
 ```
-skill-creator（モードA〜D）
+skill-creator（モードA〜D）+ self-checking  ※補助スキル: 作成スキルファイルの自己評価
   → git-skill-manager    [push/pull]
   → skill-evaluator      ※試用後の評価
 ```
 
-**用途**: 新しいスキルの作成・管理・上申
+**補助スキル**: skill-creator（スキル作成系）に self-checking をデフォルト付加  
+**用途**: 新しいスキルの作成・管理・上申  
 **特徴**: skill-creator がモードに応じてゼロから作成（A）、コードベースから生成（B）、履歴から生成（C）、外部取得（D）を切り替える
 
 ---
@@ -95,9 +113,10 @@ skill-creator（モードA〜D）
 deep-research
   → (domain-modeler)     ※ドメイン知識の整理
   → (brainstorming)      ※調査結果をもとに設計へ
-  → (doc-coauthoring)    ※調査結果のドキュメント化
+  → (doc-coauthoring) + self-checking  ※補助スキル: 調査結果ドキュメントの自己評価
 ```
 
+**補助スキル**: ドキュメント化フェーズのみ self-checking を付加（調査フェーズは不要）  
 **用途**: 技術選定、仕様調査、競合分析  
 **特徴**: deep-research が情報収集、後続スキルで成果物化
 
@@ -106,12 +125,13 @@ deep-research
 ## テスト駆動開発
 
 ```
-tdd-executing
-  → (react-frontend-coder | 言語固有テストスキル)
+tdd-executing             ※補助スキルとしても機能（実装スキルに先行して付加）
+  → (react-frontend-coder | 言語固有テストスキル) + self-checking
   → code-reviewer
   → test-reviewer
 ```
 
+**補助スキル**: tdd-executing 自体が品質保証スキルだが、実装後に self-checking を付加することでさらなる品質向上が可能  
 **用途**: TDD サイクルでの実装  
 **特徴**: tdd-executing がオーケストレーター、言語実装は専門スキルに委譲
 
@@ -125,6 +145,7 @@ security-reviewer
   → (architecture-reviewer)  ※アーキテクチャレベルの脆弱性
 ```
 
+**補助スキル**: レビュー系は成果物を生まないため self-checking の付加は不要  
 **用途**: セキュリティ診断、OWASP チェック  
 **特徴**: security-reviewer が主体、必要に応じてスコープ拡大
 
