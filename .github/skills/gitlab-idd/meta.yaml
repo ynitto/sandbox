@@ -1,4 +1,6 @@
 recommends:
+  - name: self-checking
+    reason: "ワーカーが実装完了後・多角レビューの前に成果物を自己評価・改善し、外部レビューの指摘件数を削減する"
   - name: agent-reviewer
     reason: "ワーカーが実装した変更をリクエスターがレビューする際の補助（機能・セキュリティ・アーキテクチャ等の多角評価）"
   - name: code-simplifier
