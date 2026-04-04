@@ -10,7 +10,7 @@ from datetime import datetime
 
 from registry import (
     load_registry, save_registry, _cache_dir, _skill_home,
-    _version_tuple, _read_frontmatter_version,
+    _version_tuple, _read_frontmatter_version, _discover_core_skills,
 )
 from repo import clone_or_fetch, update_remote_index
 from delta_tracker import check_sync_protection
@@ -328,6 +328,8 @@ def pull_skills(
     for r in removed_deprecated:
         existing.pop(r["name"], None)
     reg["installed_skills"] = list(existing.values())
+    # pull後のSKILL.mdを反映してコアスキル一覧を再計算する
+    reg["core_skills"] = _discover_core_skills()
     save_registry(reg)
 
     # copilot-instructions.md のコピー
