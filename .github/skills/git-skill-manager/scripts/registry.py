@@ -62,7 +62,58 @@ def _cache_dir() -> str:
 
 
 def _instructions_home() -> str:
+    try:
+        reg = load_registry()
+        if reg.get("agent_type") == "kiro":
+            return os.path.join(_agent_home(), "steering")
+    except Exception:
+        pass
     return os.path.join(_agent_home(), "instructions")
+
+
+def _transform_frontmatter_for_kiro(content: str) -> str:
+    """Kiro steering 向けにフロントマターの applyTo を inclusion に変換する。
+
+    - applyTo: "**"  → inclusion: always
+    - applyTo: "<pattern>"  → inclusion: fileMatch
+                               fileMatchPattern: "<pattern>"
+    """
+    fm_match = re.match(r'^(---[ \t]*\n)(.*?)(\n---)', content, re.DOTALL)
+    if not fm_match:
+        return content
+
+    fm_body = fm_match.group(2)
+
+    # applyTo の値を抽出（ダブルクォート → シングルクォート → クォートなし の順に試行）
+    apply_to: str | None = None
+    m = re.search(r'^applyTo:\s*"([^"]*)"', fm_body, re.MULTILINE)
+    if m:
+        apply_to = m.group(1)
+    else:
+        m = re.search(r"^applyTo:\s*'([^']*)'", fm_body, re.MULTILINE)
+        if m:
+            apply_to = m.group(1)
+        else:
+            m = re.search(r'^applyTo:\s*(\S.*?)\s*$', fm_body, re.MULTILINE)
+            if m:
+                apply_to = m.group(1).strip()
+
+    if apply_to is None:
+        return content
+
+    if apply_to == "**":
+        new_fm_body = re.sub(
+            r'^applyTo:.*$', 'inclusion: always',
+            fm_body, count=1, flags=re.MULTILINE,
+        )
+    else:
+        replacement = f'inclusion: fileMatch\nfileMatchPattern: "{apply_to}"'
+        new_fm_body = re.sub(
+            r'^applyTo:.*$', replacement,
+            fm_body, count=1, flags=re.MULTILINE,
+        )
+
+    return fm_match.group(1) + new_fm_body + fm_match.group(3) + content[fm_match.end():]
 
 
 def _version_tuple(v: str | None) -> tuple:

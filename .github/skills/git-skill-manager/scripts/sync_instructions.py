@@ -25,7 +25,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 
-from registry import load_registry, save_registry, _instructions_home
+from registry import load_registry, save_registry, _instructions_home, _transform_frontmatter_for_kiro
 from repo import clone_or_fetch
 
 
@@ -82,6 +82,7 @@ def sync_from_repo(
 
     os.makedirs(dest_dir, exist_ok=True)
     results = []
+    is_kiro = load_registry().get("agent_type") == "kiro"
 
     for fname in sorted(os.listdir(src_dir)):
         if not fname.endswith(".md"):
@@ -101,7 +102,13 @@ def sync_from_repo(
 
         action = "added" if not os.path.exists(dest_path) else "updated"
         if not dry_run:
-            shutil.copy2(src_path, dest_path)
+            if is_kiro:
+                with open(src_path, encoding="utf-8") as f:
+                    content = f.read()
+                with open(dest_path, "w", encoding="utf-8") as f:
+                    f.write(_transform_frontmatter_for_kiro(content))
+            else:
+                shutil.copy2(src_path, dest_path)
 
         results.append({"file": fname, "action": action})
 

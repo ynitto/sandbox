@@ -10,7 +10,7 @@ from datetime import datetime
 
 from registry import (
     load_registry, save_registry, _cache_dir, _skill_home,
-    _version_tuple, _read_frontmatter_version,
+    _version_tuple, _read_frontmatter_version, _transform_frontmatter_for_kiro,
 )
 from repo import clone_or_fetch, update_remote_index
 from delta_tracker import check_sync_protection
@@ -392,6 +392,33 @@ def pull_skills(
         with open(dest, "w", encoding="utf-8") as f:
             f.write(merged)
         print(f"   📋 copilot-instructions.md → {dest}")
+
+    # kiro steering ファイルの同期（kiro エージェントのみ）
+    if reg.get("agent_type") == "kiro":
+        steering_dir = os.path.join(os.path.dirname(_skill_home()), "steering")
+        os.makedirs(steering_dir, exist_ok=True)
+        steering_copied: list[str] = []
+        for repo in repos:
+            repo_cache = os.path.join(_cache_dir(), repo["name"])
+            instr_dir = os.path.join(repo_cache, ".github", "instructions")
+            if not os.path.isdir(instr_dir):
+                continue
+            for fname in sorted(os.listdir(instr_dir)):
+                if not fname.endswith(".md"):
+                    continue
+                src = os.path.join(instr_dir, fname)
+                if not os.path.isfile(src):
+                    continue
+                with open(src, encoding="utf-8") as f:
+                    content = f.read()
+                dest = os.path.join(steering_dir, fname)
+                with open(dest, "w", encoding="utf-8") as f:
+                    f.write(_transform_frontmatter_for_kiro(content))
+                steering_copied.append(fname)
+        if steering_copied:
+            print(f"   🚗 Kiro steering → {steering_dir}")
+            for fname in steering_copied:
+                print(f"      + {fname}")
 
     # 結果レポート
     print(f"\n📦 pull 完了")

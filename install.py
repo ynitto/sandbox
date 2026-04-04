@@ -250,10 +250,61 @@ def setup_registry(
         json.dump(reg, f, indent=2, ensure_ascii=True)
 
 
-def copy_agent_instructions(paths: dict[str, str]) -> bool:
-    """リポジトリ配下の指示ファイルをエージェント領域へコピーする。"""
+def _transform_frontmatter_for_kiro(content: str) -> str:
+    """Kiro steering 向けにフロントマターの applyTo を inclusion に変換する。
+
+    - applyTo: "**"       → inclusion: always
+    - applyTo: "<pattern>" → inclusion: fileMatch
+                              fileMatchPattern: "<pattern>"
+    """
+    fm_match = re.match(r'^(---[ \t]*\n)(.*?)(\n---)', content, re.DOTALL)
+    if not fm_match:
+        return content
+
+    fm_body = fm_match.group(2)
+
+    apply_to: str | None = None
+    m = re.search(r'^applyTo:\s*"([^"]*)"', fm_body, re.MULTILINE)
+    if m:
+        apply_to = m.group(1)
+    else:
+        m = re.search(r"^applyTo:\s*'([^']*)'", fm_body, re.MULTILINE)
+        if m:
+            apply_to = m.group(1)
+        else:
+            m = re.search(r'^applyTo:\s*(\S.*?)\s*$', fm_body, re.MULTILINE)
+            if m:
+                apply_to = m.group(1).strip()
+
+    if apply_to is None:
+        return content
+
+    if apply_to == "**":
+        new_fm_body = re.sub(
+            r'^applyTo:.*$', 'inclusion: always',
+            fm_body, count=1, flags=re.MULTILINE,
+        )
+    else:
+        replacement = f'inclusion: fileMatch\nfileMatchPattern: "{apply_to}"'
+        new_fm_body = re.sub(
+            r'^applyTo:.*$', replacement,
+            fm_body, count=1, flags=re.MULTILINE,
+        )
+
+    return fm_match.group(1) + new_fm_body + fm_match.group(3) + content[fm_match.end():]
+
+
+def copy_agent_instructions(paths: dict[str, str], agent_type: str = "copilot") -> bool:
+    """リポジトリ配下の指示ファイルをエージェント領域へコピーする。
+
+    kiro の場合は ~/.kiro/steering/ にコピーし、フロントマターの
+    applyTo を Kiro 形式の inclusion に変換する。
+    """
     src_dir = os.path.join(REPO_ROOT, ".github", "instructions")
-    dest_dir = os.path.join(paths["agent_home"], "instructions")
+    if agent_type == "kiro":
+        dest_dir = os.path.join(paths["agent_home"], "steering")
+    else:
+        dest_dir = os.path.join(paths["agent_home"], "instructions")
 
     copied = False
     if not os.path.isdir(src_dir):
@@ -269,7 +320,14 @@ def copy_agent_instructions(paths: dict[str, str]) -> bool:
 
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, name)
-        shutil.copy2(src, dest)
+        if agent_type == "kiro":
+            with open(src, encoding="utf-8") as f:
+                content = f.read()
+            transformed = _transform_frontmatter_for_kiro(content)
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write(transformed)
+        else:
+            shutil.copy2(src, dest)
         print(f"   {dest}")
         copied = True
 
@@ -309,7 +367,7 @@ def main() -> None:
 
     # 4. 指示ファイルをコピー
     print("\n4. エージェント指示ファイルをコピー...")
-    if not copy_agent_instructions(paths):
+    if not copy_agent_instructions(paths, agent_type):
         print("   (対応するファイルが見つかりません、スキップ)")
 
     # 完了
