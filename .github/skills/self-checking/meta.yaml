@@ -1,0 +1,23 @@
+io_contract:
+  input:
+    - name: artifact_files
+      format: file-reference
+      description: "評価対象の成果物ファイルパス（コード・調査レポート・ドキュメント）"
+      required: true
+    - name: artifact_type
+      format: enum
+      description: "成果物の種別: code / research / document（省略時は自動検出）"
+      required: false
+    - name: criteria
+      format: free-text
+      description: "追加の評価基準・完了条件（省略時はデフォルトルーブリックのみ使用）"
+      required: false
+  output:
+    - name: evaluation_result
+      format: json
+      description: "評価結果（verdict / rubric_score / auto_score / iterations / blocking_issues）"
+      required: true
+    - name: improved_files
+      format: file-reference
+      description: "改善が実施された場合の変更ファイル一覧"
+      required: false

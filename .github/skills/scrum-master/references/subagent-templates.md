@@ -7,6 +7,7 @@
 - [skill: null タスク実行時](#skill-null-タスク実行時)
 - [スキル実行時](#スキル実行時)
 - [複数スキル実行時](#複数スキル実行時)
+- [self-checking 実行時](#self-checking-実行時)
 - [agent-reviewer サブエージェント起動時](#agent-reviewer-サブエージェント起動時)
 - [修正リトライ時](#修正リトライ時)
 - [スプリントプランレビュー時](#スプリントプランレビュー時)
@@ -188,6 +189,43 @@ goal: [requirements.json の goal フィールドの値]
 ```
 
 **scrum-master の処理**: 返ってきた「気づき」を次のウェーブのコンテキストに付け加える。
+
+---
+
+## self-checking 実行時
+
+Phase 5 ステップ 4-0 で使用（self-checking スキルが存在する場合のみ）。タスク実行後・agent-reviewer の前に成果物を自己評価・改善する。
+
+> **前提**: `${SKILLS_DIR}/self-checking/SKILL.md` が存在することを確認してから起動すること。
+
+```
+self-checking スキルで成果物の自己評価を実施してください。
+
+手順: まず self-checking スキルの SKILL.md（${SKILLS_DIR}/self-checking/SKILL.md）を読み、手順に従ってください。
+
+評価対象:
+  タスクID: [task-id]
+  種別: [code / research / document（変更ファイルの種類から判断）]
+  成果物ファイル: [変更・作成したファイルの一覧。なければ「なし（調査タスク）」]
+  完了基準: [done_criteria]
+
+コンテキスト:
+  タスクゴール: [action]
+  タスク結果サマリー: [タスク実行結果のサマリー]
+
+注意: ユーザーへの確認・対話は行わず、自己評価と改善のみ実施すること。
+
+結果を以下の形式で返してください:
+タスクID: [task-id]
+ステータス: PASS ✅ / NEEDS_IMPROVEMENT ⚠️
+ルーブリックスコア: [0.0〜1.0]
+反復回数: [0〜3]
+改善ファイル: [改善した場合のファイル一覧。なければ「なし」]
+主な改善内容: [改善した場合の要約。なければ「なし」]
+残存懸念: [NEEDS_IMPROVEMENT の場合の未解決項目。なければ「なし」]
+```
+
+**scrum-master の処理**: 結果を受け取り、改善済みファイルを agent-reviewer に渡す。NEEDS_IMPROVEMENT でも agent-reviewer を実施する。
 
 ---
 

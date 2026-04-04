@@ -6,6 +6,7 @@
 - [skill-selector 呼び出し時](#skill-selector-呼び出し時)
 - [スキル実行時](#スキル実行時)
 - [brainstorming スキル実行時](#brainstorming-スキル実行時)
+- [self-checking 実行時](#self-checking-実行時)
 - [agent-reviewer サブエージェント起動時](#agent-reviewer-サブエージェント起動時)
 - [修正リトライ時](#修正リトライ時)
 - [フィードバック保存時](#フィードバック保存時)
@@ -128,6 +129,42 @@ brainstorming の「明確化のための質問」フェーズでは、以下の
 ```
 
 **skill-mentor の次の処理**: 結果をユーザーに報告し、次のスキル実行へ進む。
+
+---
+
+## self-checking 実行時
+
+Phase 5 Step 0 で使用（self-checking スキルが存在する場合のみ）。タスク実行後・agent-reviewer の前に成果物を自己評価・改善する。
+
+> **前提**: `${SKILLS_DIR}/self-checking/SKILL.md` が存在することを確認してから起動すること。
+
+```
+self-checking スキルで成果物の自己評価を実施してください。
+
+手順: まず self-checking スキルの SKILL.md（${SKILLS_DIR}/self-checking/SKILL.md）を読み、手順に従ってください。
+
+評価対象:
+  種別: [code / research / document（変更ファイルの種類から判断）]
+  成果物ファイル: [Phase 4 の変更・作成ファイルの一覧。なければ「なし（調査タスク）」]
+  完了基準: [Phase 2 で確定した完了条件]
+
+コンテキスト:
+  タスクゴール: [Phase 2 で確定したゴール]
+  タスク結果サマリー: [Phase 4 の実行結果サマリー]
+  制約: [Phase 2 で確定した制約]
+
+注意: ユーザーへの確認・対話は行わず、自己評価と改善のみ実施すること。
+
+結果を以下の形式で返してください:
+ステータス: PASS ✅ / NEEDS_IMPROVEMENT ⚠️
+ルーブリックスコア: [0.0〜1.0]
+反復回数: [0〜3]
+改善ファイル: [改善した場合のファイル一覧。なければ「なし」]
+主な改善内容: [改善した場合の要約。なければ「なし」]
+残存懸念: [NEEDS_IMPROVEMENT の場合の未解決項目。なければ「なし」]
+```
+
+**skill-mentor の次の処理**: 結果を受け取り、改善済みファイルを agent-reviewer に渡す。NEEDS_IMPROVEMENT でも Step 1（agent-reviewer）を実施する。
 
 ---
 

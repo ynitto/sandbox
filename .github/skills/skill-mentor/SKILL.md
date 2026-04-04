@@ -228,6 +228,20 @@ Phase 3 で確定した依存関係グラフを元に、グループ単位で実
 
 **ゴール**: 成果物の品質を検証し、ユーザーにフィードバックする
 
+#### Step 0: 自己評価（self-checking スキルが利用可能な場合のみ）
+
+```bash
+# self-checking スキルの存在確認
+ls ${SKILLS_DIR}/self-checking/SKILL.md 2>/dev/null
+```
+
+- **ファイルが存在する** → `${SKILL_DIR}/references/subagent-templates.md`「self-checking 実行時」テンプレートでサブエージェントを起動する
+  - self-checking の結果（改善済みファイル・verdict）を Step 1 に渡す
+- **ファイルが存在しない** → ⚠️ self-checking 未インストール: このステップをスキップして Step 1 へ進む
+
+> **STOP — `runSubagent` を今すぐ起動する（self-checking が存在する場合）**
+> 自己評価はサブエージェントが行う。skill-mentor は直接評価しない。
+
 #### Step 1: 多角レビュー（perspectives を決定して並列起動）
 
 > ### ⛔ STOP — `runSubagent` を今すぐ起動する

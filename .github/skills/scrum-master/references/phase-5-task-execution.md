@@ -60,7 +60,25 @@ Wave 3: [b5]     → 単独実行
    - **skill: null** → `subagent-templates.md`「skill: null タスク実行時」
    - **注意**: Wave 1 ではコンテキストは前スプリントの結果のみ。Wave 2 以降は前ウェーブの結果を含める
 3. **結果収集**: 全サブエージェントの完了を待ち、各タスクの result フィールドに結果を記録する
-4. **タスクレビュー（多角レビュー並列実行）**
+4. **タスクレビュー（自己評価 → 多角レビュー並列実行）**
+
+   #### ステップ 4-0: 自己評価（self-checking スキルが利用可能な場合のみ）
+
+   ```bash
+   # self-checking スキルの存在確認
+   ls ${SKILLS_DIR}/self-checking/SKILL.md 2>/dev/null
+   ```
+
+   - **ファイルが存在する** → `subagent-templates.md`「self-checking 実行時」テンプレートで **タスクごとに** サブエージェントを起動する
+     - 複数タスクがある場合は単一メッセージで並列起動する
+     - self-checking の結果（改善済みファイル・verdict）を次のステップに渡す
+   - **ファイルが存在しない** → ⚠️ self-checking 未インストール: 自己評価をスキップしてステップ 4-1 へ進む
+
+   > ### ⛔ STOP — `runSubagent` を今すぐ起動する（self-checking が存在する場合）
+   >
+   > **自己評価はサブエージェントが行う。scrum-master は直接評価しない。**
+
+   #### ステップ 4-1: 多角レビュー（agent-reviewer 並列起動）
 
    > ### ⛔ STOP — `runSubagent` を今すぐ起動する
    >
