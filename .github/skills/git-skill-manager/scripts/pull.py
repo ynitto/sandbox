@@ -10,7 +10,7 @@ from datetime import datetime
 
 from registry import (
     load_registry, save_registry, _cache_dir, _skill_home,
-    _version_tuple, _read_frontmatter_version, _discover_core_skills,
+    _version_tuple, _read_frontmatter_version,
 )
 from repo import clone_or_fetch, update_remote_index
 from delta_tracker import check_sync_protection
@@ -186,6 +186,8 @@ def pull_skills(
     installed = []
     conflicts = []
     removed_deprecated: list[dict] = []
+    pruned: list[str] = []
+    skipped_pinned: list[str] = []
 
     for sname, sources in candidates.items():
         winner = sources[0]
@@ -328,9 +330,37 @@ def pull_skills(
     for r in removed_deprecated:
         existing.pop(r["name"], None)
     reg["installed_skills"] = list(existing.values())
-    # pull後のSKILL.mdを反映してコアスキル一覧を再計算する
-    reg["core_skills"] = _discover_core_skills()
     save_registry(reg)
+
+    # ---- リモートから削除されたスキルをクリーンアップ ----
+    # skill_name 指定時（特定スキルのみpull）はプルーニング対象外
+    if skill_name is None:
+        pulled_repo_names = {r["name"] for r in repos}
+        current_installed = {s["name"]: s for s in reg.get("installed_skills", [])}
+        for sname, skill in current_installed.items():
+            if sname in candidates:
+                continue  # リモートにまだ存在する
+            src_repo = skill.get("source_repo", "local")
+            if src_repo == "local":
+                continue  # ローカル昇格スキルは削除しない
+            if src_repo not in pulled_repo_names:
+                continue  # 今回のpull対象外リポジトリのスキルは触らない
+            if skill.get("pinned_commit"):
+                skipped_pinned.append(sname)
+                print(f"   ⚠️  {sname}: リモートから削除済みですが pin されているためスキップ")
+                continue
+            # リモートから完全に削除されたスキル → ユーザーホームから削除
+            dest = os.path.join(skill_home, sname)
+            if os.path.isdir(dest):
+                shutil.rmtree(dest)
+                print(f"   🗑️  {sname}: リモートから削除済み → ユーザーホームから削除しました")
+            pruned.append(sname)
+
+        if pruned:
+            reg["installed_skills"] = [
+                s for s in reg["installed_skills"] if s["name"] not in pruned
+            ]
+            save_registry(reg)
 
     # copilot-instructions.md のコピー
     copilot_instruction_parts: list[str] = []
@@ -358,6 +388,12 @@ def pull_skills(
         for r in removed_deprecated:
             successor = f" → {r['deprecated_by']}" if r.get("deprecated_by") else ""
             print(f"   🗑️  {r['name']} (deprecated{successor})")
+    if pruned:
+        print(f"   リモート削除除去: {len(pruned)} 件")
+        for name in pruned:
+            print(f"   🗑️  {name} (リモートから削除済み)")
+    if skipped_pinned:
+        print(f"   ⚠️  リモート削除済み・pin のためスキップ: {', '.join(skipped_pinned)}")
     if conflicts:
         print(f"   競合解決:  {len(conflicts)} 件")
         for c in conflicts:
