@@ -1,6 +1,6 @@
 ---
 name: skill-selector
-description: 単一タスクに対して最適なプライマリスキルと補助スキルの組み合わせを選択・推薦するメタスキル。「どのスキルを使えばいい？」「スキルを選んで」「スキルの組み合わせを提案して」などのリクエストに加え、適切なスキルの選定が必要と判断した場合も自律的に発動する。skill-mentor・scrum-master からインライン実行されるスキル選定の唯一の担当。プライマリスキルへ self-checking・tdd-executing などの補助スキルを付加する評価も担う。Windows/Copilot・macOS/Claude Code 両環境で動作する。
+description: 単一タスクに最適なプライマリスキルと補助スキルを選択・推薦するメタスキル。「どのスキルを使えばいい？」「スキルを選んで」などで発動し、skill-mentor・scrum-master からインライン実行もされる。self-checking・tdd-executing などの補助スキル付加評価も担う。
 metadata:
   version: 1.2.0
   tier: core
