@@ -1,6 +1,8 @@
 # スキルコンビネーションパターン集
 
-よく使われるスキルの組み合わせパターン。ユーザーの複合タスクに対して推薦する際の参考にする。
+単一タスクに対してよく使われるプライマリスキルと補助スキルの組み合わせパターン。ユーザーの1つのタスクに対して推薦する際の参考にする。
+
+> **注意**: `category: orchestration` のスキル（scrum-master・skill-mentor・gitlab-idd 等）はこのパターン集の推薦対象外。
 
 ---
 
@@ -8,32 +10,11 @@
 
 プライマリスキルに対して補助スキルを0個以上付け加えることで品質を向上させる。複数の補助スキルを同時に付加してよい。詳細な付加基準（TDD が有効なケース含む）は `skill-selector/SKILL.md` の Step 4.5 を参照。
 
-> **注意**: `category: orchestration` のスキル（scrum-master・skill-mentor・gitlab-idd 等）はこのパターン集の推薦対象外。
-
 | 補助スキル | 主な付加対象 | 効果 |
 |---|---|---|
 | `self-checking` | 実装・作成系プライマリスキル全般（コード・ドキュメント） | 多角レビュー前の自己評価・改善で指摘件数を削減 |
 | `tdd-executing` | 新規コード実装プライマリスキル（ドメインロジック・API・モジュール等） | Red-Green-Refactor サイクルで品質とカバレッジを保証 |
 | `agent-reviewer` | 成果物レビューが必要な場合 | 機能・セキュリティ・アーキテクチャの多角レビュー |
-
----
-
-## 新機能開発（フルサイクル）
-
-```
-brainstorming
-  → requirements-definer
-  → (domain-modeler | api-designer | ui-designer)  ※対象次第
-  → react-frontend-coder + tdd-executing（補助）+ self-checking（補助）
-      ※ tdd-executing: 品質・カバレッジ重視の場合に付加
-      ※ self-checking: 実装成果物の自己評価
-  → code-reviewer → code-simplifier
-  → technical-writer + self-checking（補助）  ※ドキュメント成果物の自己評価
-  → sprint-reviewer
-```
-
-**用途**: ゼロから機能・サービスを作る  
-**特徴**: brainstorming が必ず先行。複数スプリントにまたがる場合はオーケストレーターを別途選択する（skill-selector の推薦対象外）
 
 ---
 
@@ -160,7 +141,8 @@ security-reviewer
 
 | ユーザーの意図 | 最初に使うスキル | 後続の候補 |
 |---|---|---|
-| 「何かを作りたい」 | brainstorming | requirements-definer → 実装スキル（オーケストレーターは別途選択） |
+| 「何かを作りたい（構想段階）」 | brainstorming | requirements-definer |
+| 「何かを実装したい」 | react-frontend-coder 等の実装スキル | tdd-executing（補助）・self-checking（補助） |
 | 「コードを直したい」 | systematic-debugging | code-reviewer |
 | 「コードを整理したい」 | code-simplifier / code-reviewer | — |
 | 「設計を確認したい」 | architecture-reviewer / design-reviewer | security-reviewer |
