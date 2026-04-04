@@ -124,6 +124,8 @@ def remove_repo(name: str) -> None:
     if len(reg["repositories"]) == before:
         print(f"❌ リポジトリ '{name}' が見つかりません")
         return
+    # remote_index の孤立エントリも削除
+    reg.get("remote_index", {}).pop(name, None)
     save_registry(reg)
     print(f"✅ リポジトリ '{name}' を削除しました")
 

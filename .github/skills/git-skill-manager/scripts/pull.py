@@ -360,6 +360,19 @@ def pull_skills(
             reg["installed_skills"] = [
                 s for s in reg["installed_skills"] if s["name"] not in pruned
             ]
+
+        # 登録リポジトリに存在しない remote_index エントリを除去
+        registered_repo_names = {r["name"] for r in reg.get("repositories", [])}
+        stale_repos = [
+            k for k in reg.get("remote_index", {})
+            if k not in registered_repo_names
+        ]
+        if stale_repos:
+            for k in stale_repos:
+                del reg["remote_index"][k]
+            print(f"   🧹 remote_index: 未登録リポジトリのエントリを削除しました ({', '.join(stale_repos)})")
+
+        if pruned or stale_repos:
             save_registry(reg)
 
     # copilot-instructions.md のコピー
