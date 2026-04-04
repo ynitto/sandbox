@@ -81,10 +81,12 @@ export GITLAB_SELF_DEFER_MINUTES=60
 0. MY_USER=$(python scripts/gl.py current-user --get username)
 1. list-issues --label "status:review-ready" --author "$MY_USER" でレビュー対象を取得
 2. イシューコメントとブランチの成果物を確認
-3. 環境で利用可能なスキル（simplify / code-reviewer / security-reviewer 等）を確認・活用
-4. 受け入れ条件を並列サブエージェント（またはスキル）で評価（機能・セキュリティ・アーキテクチャ）
-5a. 条件充足 → merge-mr + update-issue --state-event close
-5b. 条件不足 → add-comment（差し戻し理由）+ update-issue --state-event reopen
+3. 環境の利用可能スキルを自ら調べて積極活用
+4. 変更内容に応じて perspectives を決定し agent-reviewer サブエージェントを並列起動
+   （functional / ai-antipattern / architecture + 必要に応じて test / security）
+5a. 全観点 LGTM → merge-mr + update-issue --state-event close
+5b. Request Changes → add-comment（全指摘を統合した差し戻しコメント）+ reopen
+    → 再提出後に再レビュー（最大 5 回）
 ```
 
 ---
