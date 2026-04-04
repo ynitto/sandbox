@@ -1,25 +1,35 @@
 # スキルコンビネーションパターン集
 
-よく使われるスキルの組み合わせパターン。ユーザーの複合タスクに対して推薦する際の参考にする。
+単一タスクに対してよく使われるプライマリスキルと補助スキルの組み合わせパターン。ユーザーの1つのタスクに対して推薦する際の参考にする。
+
+> **注意**: `category: orchestration` のスキル（scrum-master・skill-mentor・gitlab-idd 等）はこのパターン集の推薦対象外。
 
 ---
 
-## 新機能開発（フルサイクル）
+## 目次
 
-```
-brainstorming
-  → requirements-definer
-  → (domain-modeler | api-designer | ui-designer)  ※対象次第
-  → scrum-master  [実装フェーズのオーケストレーター]
-    → react-frontend-coder
-    → (tdd-executing)  ※厳密なTDDが必要な場合のみ
-    → code-reviewer → code-simplifier
-  → technical-writer
-  → sprint-reviewer
-```
+- [補助スキルの付加ガイド](#補助スキルの付加ガイド)
+- [コードレビュー・品質改善](#コードレビュー品質改善)
+- [設計レビュー](#設計レビュー)
+- [デバッグ・バグ修正](#デバッグバグ修正)
+- [ドキュメント整備](#ドキュメント整備)
+- [スキル管理](#スキル管理)
+- [リサーチ・意思決定](#リサーチ意思決定)
+- [テスト駆動開発](#テスト駆動開発)
+- [セキュリティ監査](#セキュリティ監査)
+- [選択指針](#選択指針)
 
-**用途**: ゼロから機能・サービスを作る  
-**特徴**: brainstorming が必ず先行、scrum-master がウェーブ実行を管理
+---
+
+## 補助スキルの付加ガイド
+
+プライマリスキルに対して補助スキルを0個以上付け加えることで品質を向上させる。複数の補助スキルを同時に付加してよい。詳細な付加基準（TDD が有効なケース含む）は `skill-selector/SKILL.md` の Step 4.5 を参照。
+
+| 補助スキル | 主な付加対象 | 効果 |
+|---|---|---|
+| `self-checking` | 実装・作成系プライマリスキル全般（コード・ドキュメント） | 多角レビュー前の自己評価・改善で指摘件数を削減 |
+| `tdd-executing` | 新規コード実装プライマリスキル（ドメインロジック・API・モジュール等） | Red-Green-Refactor サイクルで品質とカバレッジを保証 |
+| `agent-reviewer` | 成果物レビューが必要な場合 | 機能・セキュリティ・アーキテクチャの多角レビュー |
 
 ---
 
@@ -32,6 +42,7 @@ code-reviewer
   → (test-reviewer)      ※テストコードも対象の場合
 ```
 
+**補助スキル**: レビュー系は成果物を生まないため self-checking の付加は不要  
 **用途**: PR レビュー、品質チェック  
 **特徴**: code-reviewer が起点、指摘内容に応じて専門スキルを追加
 
@@ -46,6 +57,7 @@ architecture-reviewer
   → (document-reviewer)  ※設計ドキュメントがある場合
 ```
 
+**補助スキル**: 設計ドキュメントを更新する場合は technical-writer に self-checking を付加  
 **用途**: アーキテクチャ・クラス設計の評価  
 **特徴**: 広域（architecture）→ 詳細（design）の順で掘り下げる
 
@@ -56,9 +68,11 @@ architecture-reviewer
 ```
 systematic-debugging
   → (code-reviewer)      ※修正後のレビュー
+  + self-checking         ※補助スキル: 修正コードの自己評価（修正フェーズ後に適用）
 ```
 
-**用途**: バグ原因の特定と修正
+**補助スキル**: コード修正が発生するため self-checking をデフォルト付加  
+**用途**: バグ原因の特定と修正  
 **特徴**: 体系的分析 → ランタイム計装 → 修正の流れ。修正前に根本原因を必ず特定
 
 ---
@@ -67,10 +81,11 @@ systematic-debugging
 
 ```
 (document-reviewer)      ※既存ドキュメントのレビュー
-  → technical-writer     ※README・ガイド
+  → technical-writer + self-checking  ※補助スキル: ドキュメント成果物の自己評価
   → (doc-coauthoring)    ※仕様書・設計書の共同執筆
 ```
 
+**補助スキル**: ドキュメント作成系スキルに self-checking をデフォルト付加  
 **用途**: ドキュメント作成・更新  
 **特徴**: 対象読者（外向け vs 内向け）で使用スキルが変わる
 
@@ -79,12 +94,13 @@ systematic-debugging
 ## スキル管理
 
 ```
-skill-creator（モードA〜D）
+skill-creator（モードA〜D）+ self-checking  ※補助スキル: 作成スキルファイルの自己評価
   → git-skill-manager    [push/pull]
   → skill-evaluator      ※試用後の評価
 ```
 
-**用途**: 新しいスキルの作成・管理・上申
+**補助スキル**: skill-creator（スキル作成系）に self-checking をデフォルト付加  
+**用途**: 新しいスキルの作成・管理・上申  
 **特徴**: skill-creator がモードに応じてゼロから作成（A）、コードベースから生成（B）、履歴から生成（C）、外部取得（D）を切り替える
 
 ---
@@ -95,9 +111,10 @@ skill-creator（モードA〜D）
 deep-research
   → (domain-modeler)     ※ドメイン知識の整理
   → (brainstorming)      ※調査結果をもとに設計へ
-  → (doc-coauthoring)    ※調査結果のドキュメント化
+  → (doc-coauthoring) + self-checking  ※補助スキル: 調査結果ドキュメントの自己評価
 ```
 
+**補助スキル**: ドキュメント化フェーズのみ self-checking を付加（調査フェーズは不要）  
 **用途**: 技術選定、仕様調査、競合分析  
 **特徴**: deep-research が情報収集、後続スキルで成果物化
 
@@ -106,14 +123,16 @@ deep-research
 ## テスト駆動開発
 
 ```
-tdd-executing
-  → (react-frontend-coder | 言語固有テストスキル)
+(react-frontend-coder | 言語固有実装スキル)
+  + tdd-executing（補助）  ※プライマリスキルに先行して設定
+  + self-checking（補助）  ※実装後の自己評価
   → code-reviewer
   → test-reviewer
 ```
 
+**補助スキル**: tdd-executing はプライマリスキル（実装スキル）に付加する補助スキル。Red-Green-Refactor サイクルを管理し、実装をその中で行う  
 **用途**: TDD サイクルでの実装  
-**特徴**: tdd-executing がオーケストレーター、言語実装は専門スキルに委譲
+**特徴**: tdd-executing が TDD ライフサイクルを管理し、言語実装はプライマリスキルに委譲
 
 ---
 
@@ -125,6 +144,7 @@ security-reviewer
   → (architecture-reviewer)  ※アーキテクチャレベルの脆弱性
 ```
 
+**補助スキル**: レビュー系は成果物を生まないため self-checking の付加は不要  
 **用途**: セキュリティ診断、OWASP チェック  
 **特徴**: security-reviewer が主体、必要に応じてスコープ拡大
 
@@ -136,7 +156,8 @@ security-reviewer
 
 | ユーザーの意図 | 最初に使うスキル | 後続の候補 |
 |---|---|---|
-| 「何かを作りたい」 | brainstorming | requirements-definer → scrum-master |
+| 「何かを作りたい（構想段階）」 | brainstorming | requirements-definer |
+| 「何かを実装したい」 | react-frontend-coder 等の実装スキル | tdd-executing（補助）・self-checking（補助） |
 | 「コードを直したい」 | systematic-debugging | code-reviewer |
 | 「コードを整理したい」 | code-simplifier / code-reviewer | — |
 | 「設計を確認したい」 | architecture-reviewer / design-reviewer | security-reviewer |
