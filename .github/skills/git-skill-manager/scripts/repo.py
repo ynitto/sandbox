@@ -89,12 +89,26 @@ def update_remote_index(
         with open(skill_md, encoding="utf-8") as f:
             content = f.read()
         desc = ""
+        tier = ""
         fm_match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
         if fm_match:
+            in_metadata = False
             for line in fm_match.group(1).splitlines():
                 if line.startswith("description:"):
                     desc = line[len("description:"):].strip()
-                    break
+                if line.startswith("metadata:"):
+                    in_metadata = True
+                    continue
+                if in_metadata:
+                    if line and not line[0].isspace():
+                        in_metadata = False
+                    else:
+                        stripped = line.lstrip()
+                        if stripped.startswith("tier:"):
+                            tier = stripped[len("tier:"):].strip().strip("\"'")
+        # deprecated スキルはリモートインデックスに載せない
+        if tier == "deprecated":
+            continue
         skills_list.append({"name": entry, "description": desc[:200]})
 
     remote_index[repo_name] = {
