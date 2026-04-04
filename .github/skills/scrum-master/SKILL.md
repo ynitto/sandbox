@@ -84,7 +84,7 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 | 環境 | 起動方法 |
 |------|---------|
 | **GitHub Copilot (VSCode)** | `#tool:agent/runSubagent` を使用。自分で処理を続けてはならない |
-| **Kiro** | `#tool:agent/runSubagent` を使用。自分で処理を続けてはならない |
+| **Kiro** | `Run subagents to` を使用。自分で処理を続けてはならない |
 | **Claude Code** | `Task` ツール（`subagent_type: "general-purpose"`）を使用 |
 
 - プロンプトテンプレート: [references/subagent-templates.md](references/subagent-templates.md) を参照

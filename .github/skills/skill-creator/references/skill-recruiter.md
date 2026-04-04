@@ -237,7 +237,7 @@ python <SKILLS_BASE>/skill-creator/scripts/quick_validate.py <AGENT_HOME>/skills
 
 #### 5-2. 品質チェック
 
-サブエージェントを起動する（Claude Code: Task ツール / GitHub Copilot / Kiro: `#tool:agent/runSubagent`）:
+サブエージェントを起動する（Claude Code: `Task` ツール / GitHub Copilot: `#tool:agent/runSubagent` / Kiro: `Run subagents to`）:
 
 ```
 skill-evaluator スキルでインストールしたスキルの品質チェックを実行する。

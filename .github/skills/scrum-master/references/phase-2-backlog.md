@@ -65,7 +65,7 @@ flowchart TD
 > **⛔ STOP**: この先、requirements を自分で作成・整理しようとしていないか？
 > 要件定義はサブエージェントの仕事。自分でやってはならない。
 
-**⚠️ サブエージェントを即時起動する**（GitHub Copilot / Kiro: `#tool:agent/runSubagent` / Claude Code: `Task` ツール）。
+**⚠️ サブエージェントを即時起動する**（GitHub Copilot: `#tool:agent/runSubagent` / Kiro: `Run subagents to` / Claude Code: `Task` ツール）。
 
 `subagent-templates.md`「requirements-definer 呼び出し時」のテンプレートを使用する。テンプレートに以下のフィールドを追加して起動すること:
 ```

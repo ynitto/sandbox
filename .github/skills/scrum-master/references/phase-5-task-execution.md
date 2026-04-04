@@ -18,7 +18,7 @@
 > 3. `runSubagent` を呼び出さずに手順 2 の「実行」に進んではならない
 >
 > - **GitHub Copilot (VSCode)**: `#tool:agent/runSubagent` を使用
-> - **Kiro**: `#tool:agent/runSubagent` を使用
+> - **Kiro**: `Run subagents to` を使用
 > - **Claude Code**: `Task` ツールを使用
 
 ## 実行フロー

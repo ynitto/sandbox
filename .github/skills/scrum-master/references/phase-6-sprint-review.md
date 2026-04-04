@@ -20,7 +20,7 @@
 >
 > VSCode Copilot ではサブエージェントがユーザーと対話できないため、この役割分担を厳守すること。
 > - **GitHub Copilot (VSCode)**: `#tool:agent/runSubagent` を使用
-> - **Kiro**: `#tool:agent/runSubagent` を使用
+> - **Kiro**: `Run subagents to` を使用
 > - **Claude Code**: `Task` ツールを使用
 
 ## 手順
