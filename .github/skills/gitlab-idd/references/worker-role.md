@@ -167,12 +167,14 @@ python scripts/gl.py get-issue {issue_id} --get assignees.0.username
 
 ### ステップ 3-2: 作業ブランチ作成
 
+イシュー本文の `## ターゲットブランチ` セクションからターゲットブランチを読み取る。セクションがない場合は `main` を使用する（TARGET_BRANCH とする）。
+
 ```
 python scripts/gl.py make-branch-name {issue_id}
 # → "feature/issue-42-add-login-form" のようなブランチ名が出力される
 
-git fetch origin main
-git checkout -b BRANCH origin/main
+git fetch origin TARGET_BRANCH
+git checkout -b BRANCH origin/TARGET_BRANCH
 ```
 
 ### ステップ 3-3: 着手コメント投稿
@@ -193,7 +195,7 @@ python scripts/gl.py get-issue {issue_id} --get title
 python scripts/gl.py create-mr \
   --title "ISSUE_TITLE" \
   --source-branch BRANCH \
-  --target-branch main \
+  --target-branch TARGET_BRANCH \
   --description "" \
   --draft
 ```
@@ -228,7 +230,7 @@ ls ${SKILLS_DIR}/self-checking/SKILL.md 2>/dev/null
 
 - **ファイルが存在する** → `${SKILLS_DIR}/self-checking/SKILL.md` を読んで手順に従い、実装成果物を自己評価・改善する:
   - 種別: `code`（コード変更の場合）
-  - 成果物: `git diff main...BRANCH` で変更されたファイル
+  - 成果物: `git diff TARGET_BRANCH...BRANCH` で変更されたファイル
   - 完了基準: イシューの `## 受け入れ条件` の各項目
   - PASS になるまで改善を繰り返す（連続 2 回改善幅が小さい場合は収束とみなす）
 - **ファイルが存在しない** → self-checking スキルなしで自律的に自己評価を実施する:
@@ -246,7 +248,7 @@ ls ${SKILLS_DIR}/self-checking/SKILL.md 2>/dev/null
 | セキュリティレビュー | OWASP Top 10・認証・入力検証・機密情報漏洩 |
 | アーキテクチャレビュー | SOLID・依存方向・既存設計との一貫性 |
 
-各エージェントへの入力: イシュー本文（受け入れ条件含む）+ `git diff main...BRANCH`
+各エージェントへの入力: イシュー本文（受け入れ条件含む）+ `git diff TARGET_BRANCH...BRANCH`
 
 ### ステップ 4-4: 指摘統合と修正判断
 
@@ -372,7 +374,7 @@ MR: MR_URL
 
 ## ワーカーの行動原則
 
-1. **1 イシュー = 1 ブランチ = 1 MR**: 複数イシューを 1 ブランチに混在させない
+1. **1 イシュー = 1 ブランチ = 1 MR**: 複数イシューの変更を 1 フィーチャーブランチに混在させない。ただし複数のフィーチャーブランチが同じ統合ブランチ（TARGET_BRANCH）を MR のターゲットにすることは許容される
 2. **スコープ厳守**: イシューで定義された範囲外の変更を含めない
 3. **受け入れ条件を読む**: 実装前に必ず受け入れ条件を確認し、全項目をカバーする
 4. **レビューを通す**: 並列レビューを必ず実施する。自己判断でスキップしない
