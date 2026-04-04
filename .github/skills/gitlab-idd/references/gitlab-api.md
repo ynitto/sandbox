@@ -225,6 +225,16 @@ python scripts/gl.py update-mr MR_IID --description "更新後の説明" --no-dr
 python scripts/gl.py merge-mr MR_ID --squash --remove-source-branch
 ```
 
+CI パイプラインの確認（マージ前に実行）:
+
+```
+python scripts/gl.py get-mr-pipeline MR_IID
+python scripts/gl.py get-mr-pipeline MR_IID --get status
+# → "success" / "running" / "pending" / "failed" / "canceled" / "skipped" / "none"
+```
+
+`"none"` は CI が未設定またはまだトリガーされていない場合に返る。
+
 ---
 
 ## self-defer チェック
