@@ -1,22 +1,32 @@
 ---
 name: react-best-practices
-description: Vercel Engineering の React / Next.js パフォーマンス最適化ガイドを日本語で利用するためのスキル。Reactコンポーネント実装、Next.jsページ開発、データ取得、バンドル最適化、リファクタ時の性能改善タスクで使用する。
+description: 【非推奨】react-frontend-coder を使用してください。旧 React / Next.js パフォーマンス最適化ガイド参照スキル。
 license: MIT
 metadata:
   author: vercel
-  version: 1.0.0
+  version: 2.0.0
   source: https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices
   language: ja
-  tier: experimental
+  tier: deprecated
+  deprecated_by: react-frontend-coder
+  deprecated_since: "2.0.0"
   category: implementation
   tags:
     - react
     - nextjs
     - performance
     - vercel
+    - deprecated
 ---
 
-# React ベストプラクティス（Vercel）
+# React ベストプラクティス（非推奨）
+
+このスキルは `react-frontend-coder` に統合された。新規タスクでは単独で使わず、`react-frontend-coder` の最適化フェーズから本ディレクトリの `rules/` を参照する。
+
+## 代替
+
+- 実装 + 最適化 + テストをまとめて進める: `react-frontend-coder`
+- 実測ベースのボトルネック分析が必要: `performance-profiler`
 
 React / Next.js アプリケーション向けの包括的なパフォーマンス最適化ガイド。8カテゴリ・57ルールを影響度順に整理しており、実装・レビュー・自動リファクタリング時の判断基準として使う。
 

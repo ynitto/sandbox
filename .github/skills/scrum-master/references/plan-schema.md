@@ -134,7 +134,7 @@
 
 - 基本は 1タスク = 1スキルの1回の実行
 - 「AしてBする」で責務が異なる場合は2タスクに分ける
-- 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "react-frontend-unit-tester"]`）
+- 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "webapp-testing"]`）
 - 配列指定の場合、サブエージェントは先頭スキルから順にSKILL.mdを読んで実行する
 - 汎用タスク（skill: null）は判断・調査・確認など、スキル不要な作業に限定する
 
@@ -207,10 +207,10 @@
   "backlog": [
     {
       "id": "b1",
-      "action": "TODO作成フォームのUIコンポーネントを実装しユニットテストを作成する",
+      "action": "TODO作成フォームのUIコンポーネントを実装し、内包するユニットテストまで完了する",
       "priority": 1,
       "done_criteria": "フォーム送信でTODOが一覧に追加される。タイトル空送信時にバリデーションエラーが表示される。正常系・バリデーションエラー系のテストがパスする",
-      "skill": ["react-frontend-coder", "react-frontend-unit-tester"],
+      "skill": "react-frontend-coder",
       "depends_on": [],
       "status": "pending",
       "result": null
@@ -219,7 +219,7 @@
 }
 ```
 
-> **注**: 上記の例では実装とテストを密接に連携させるため `skill` を配列で指定している。分離したい場合は従来通り個別タスクに分ける:
+> **注**: 上記の例では実装とユニットテストを `react-frontend-coder` に統合している。ブラウザ実機確認まで含めたい場合は `webapp-testing` を追加する。分離したい場合は従来通り個別タスクに分ける:
 
 ```json
 {
@@ -236,10 +236,10 @@
     },
     {
       "id": "b2",
-      "action": "TODO作成フォームのユニットテストを作成する",
+      "action": "TODO作成フォームのブラウザ挙動を E2E 観点で確認する",
       "priority": 1,
-      "done_criteria": "正常系・バリデーションエラー系のテストがパスする。API応答500ms以内の制約を考慮したモック設計",
-      "skill": "react-frontend-unit-tester",
+      "done_criteria": "正常系・バリデーションエラー系の操作がブラウザ上で成立する。主要エラー表示と入力導線を確認できる",
+      "skill": "webapp-testing",
       "depends_on": ["b1"],
       "status": "pending",
       "result": null

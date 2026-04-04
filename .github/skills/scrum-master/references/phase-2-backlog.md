@@ -167,7 +167,7 @@ flowchart TD
 タスク分解の粒度:
 - 基本は 1タスク = 1スキルの1回の実行
 - 「AしてBする」で責務が異なる場合は2タスクに分ける
-- 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "react-frontend-unit-tester"]`）。配列指定も skill-selector が推薦する
+- 密接に連携するスキルを1タスクで組み合わせたい場合は `skill` を配列で指定できる（例: `["react-frontend-coder", "webapp-testing"]`）。配列指定も skill-selector が推薦する
 - 汎用タスク（skill: null）は判断・調査・確認など、スキル不要な軽微な作業に限定する
 - **`skill` フィールドの値は Step 2-2 で skill-selector を自身で実行して決定する**（scrum-master が自己判断でスキル名を直接記入しない）
 

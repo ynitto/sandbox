@@ -11,8 +11,8 @@ brainstorming
   → requirements-definer
   → (domain-modeler | api-designer | ui-designer)  ※対象次第
   → scrum-master  [実装フェーズのオーケストレーター]
-    → react-frontend-coder | react-best-practices
-    → tdd-executing | react-frontend-unit-tester
+    → react-frontend-coder
+    → (tdd-executing)  ※厳密なTDDが必要な場合のみ
     → code-reviewer → code-simplifier
   → technical-writer
   → sprint-reviewer
@@ -107,7 +107,7 @@ deep-research
 
 ```
 tdd-executing
-  → (react-frontend-unit-tester | 言語固有テストスキル)
+  → (react-frontend-coder | 言語固有テストスキル)
   → code-reviewer
   → test-reviewer
 ```

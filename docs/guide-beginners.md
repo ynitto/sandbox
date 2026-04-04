@@ -196,9 +196,9 @@ scrum-master の動き:
 
 | カテゴリ | スキル | 用途 |
 |---------|--------|------|
-| フロントエンド | `react-frontend-coder` | React + TypeScript で画面実装 |
-| フロントエンド | `react-frontend-unit-tester` | React コンポーネントのテスト |
-| フロントエンド | `react-best-practices` | パフォーマンス最適化ルール |
+| フロントエンド | `react-frontend-coder` | React + TypeScript の画面実装・パフォーマンス最適化・ユニットテスト |
+| フロントエンド | `react-frontend-unit-tester` | 非推奨。`react-frontend-coder` に統合済み |
+| フロントエンド | `react-best-practices` | 非推奨。`react-frontend-coder` に統合済み |
 | バックエンド | `api-designer` | REST / GraphQL API 設計 |
 | データ | `domain-modeler` | DDD ドメインモデル設計 |
 | データ | `dynamodb-designer` | DynamoDB テーブル設計 |

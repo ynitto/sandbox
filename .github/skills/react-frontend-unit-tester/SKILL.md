@@ -1,18 +1,28 @@
 ---
 name: react-frontend-unit-tester
-description: ReactコンポーネントとZustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。フロントエンド実装完了後のテスト投入フロー。「テストコードを実装して」「Reactコンポーネントをテストして」「Zustandストアのテストを書いて」などのリクエストで発動する。
+description: 【非推奨】react-frontend-coder を使用してください。旧 React コンポーネント / Zustand store 向けユニットテスト専用スキル。
 metadata:
-  version: 1.0.0
-  tier: stable
+   version: 2.0.0
+   tier: deprecated
+   deprecated_by: react-frontend-coder
+   deprecated_since: "2.0.0"
   category: implementation
   tags:
     - react
     - testing
     - vitest
     - rtl
+      - deprecated
 ---
 
-# react-frontend-unit-tester
+# react-frontend-unit-tester（非推奨）
+
+このスキルは `react-frontend-coder` に統合された。新規タスクでは `react-frontend-coder` を使用し、本ディレクトリの `references/` / `assets/` / `scripts/` は補助資料として扱う。
+
+## 代替
+
+- 実装からユニットテストまで一気通貫で進める: `react-frontend-coder`
+- 厳密な Red-Green-Refactor を回す: `tdd-executing` + `react-frontend-coder`
 
 React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネント・ストアのユニットテストを実装する。**フロントエンド実装完了後に投入される**。
 
@@ -95,9 +105,9 @@ React + TypeScript（Vite + Zustand）プロジェクトで、コンポーネン
 |フェーズ|役割|
 |--|--|
 |Plan|要件・UI設計確定|
-|実装フェーズ|フロントエンド実装: コンポーネント・ストア実装|
-|テスト投入フェーズ|react-frontend-unit-tester: テスト投入|
-|テスト失敗時|react-frontend-unit-tester で問題箇所特定 → 実装側を修正|
+|実装フェーズ|react-frontend-coder: コンポーネント・ストア実装とユニットテストを一体で実施|
+|補助参照フェーズ|本スキル: テストテンプレートと参考資料の参照のみ|
+|テスト失敗時|react-frontend-coder で問題箇所特定 → 実装側を修正|
 
 ## リソース
 

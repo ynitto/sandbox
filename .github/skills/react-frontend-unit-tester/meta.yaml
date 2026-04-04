@@ -1,6 +1,6 @@
 depends_on:
   - name: react-frontend-coder
-    reason: "テスト対象のコンポーネントが存在する前提"
+    reason: "統合後は react-frontend-coder が React 実装とユニットテストを一体で担う"
 recommends:
   - name: agent-reviewer
     reason: "テスト完了後の品質確認"

@@ -31,17 +31,17 @@ metadata:
 ## 出力例（deps check）
 
 ```
-📦 react-frontend-unit-tester
-   ✅ [必須] react-frontend-coder
-         理由: テスト対象のコンポーネントが存在する前提
-   ✅ [推奨] code-reviewer
-         理由: テスト完了後の品質確認
+📦 react-frontend-coder
+   ✅ [推奨] tdd-executing
+     理由: Red-Green-Refactor を厳密に回したい場合に上位から併用すると効果が高い
+   ✅ [推奨] webapp-testing
+     理由: ユニットテストでは拾いにくい画面挙動をブラウザで検証できる
 ```
 
 未インストールの場合:
 
 ```
-📦 react-frontend-unit-tester
-   ❌ [必須] react-frontend-coder  ← 未インストール
-         理由: テスト対象のコンポーネントが存在する前提
+📦 react-frontend-coder
+   ❌ [推奨] webapp-testing  ← 未インストール
+     理由: 画面挙動の最終確認を補強できる
 ```

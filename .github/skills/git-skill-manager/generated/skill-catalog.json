@@ -290,15 +290,16 @@
     },
     {
       "name": "react-best-practices",
-      "description": "Vercel Engineering の React / Next.js パフォーマンス最適化ガイドを日本語で利用するためのスキル。Reactコンポーネント実装、Next.jsページ開発、データ取得、バンドル最適化、リファクタ時の性能改善タスクで使用する。",
-      "version": "1.0.0",
-      "tier": "experimental",
+      "description": "【非推奨】react-frontend-coder を使用してください。旧 React / Next.js パフォーマンス最適化ガイド参照スキル。",
+      "version": "2.0.0",
+      "tier": "deprecated",
       "category": "implementation",
       "tags": [
         "react",
         "nextjs",
         "performance",
-        "vercel"
+        "vercel",
+        "deprecated"
       ],
       "triggers": [],
       "has_scripts": false,
@@ -306,35 +307,40 @@
     },
     {
       "name": "react-frontend-coder",
-      "description": "React + TypeScriptで、要件・UI設計が既に確定している前提で、フロントエンド機能を実装する。Vite + Zustandをベースに、実装→検証に特化。テストコード実装は別スキルに委譲。「フロントエンド機能を実装して」「React画面を作って」「Vite + Zustandで実装して」などのリクエストで発動する。",
-      "version": "1.0.0",
+      "description": "React + TypeScriptで、要件・UI設計が既に確定している前提で、フロントエンド機能を実装する統合スキル。Vite + Zustandをベースに、実装・Reactベストプラクティス適用・ユニットテスト実装・検証まで一気通貫で進める。「フロントエンド機能を実装して」「React画面を作って」「Vite + Zustandで実装して」「Reactコンポーネントをテストして」「Reactのパフォーマンスを改善して」などのリクエストで発動する。",
+      "version": "2.0.0",
       "tier": "stable",
       "category": "implementation",
       "tags": [
         "react",
         "typescript",
         "vite",
-        "zustand"
+        "zustand",
+        "testing",
+        "performance"
       ],
       "triggers": [
         "フロントエンド機能を実装して",
         "React画面を作って",
-        "Vite + Zustandで実装して"
+        "Vite + Zustandで実装して",
+        "Reactコンポーネントをテストして",
+        "Reactのパフォーマンスを改善して"
       ],
       "has_scripts": false,
       "has_references": true
     },
     {
       "name": "react-frontend-unit-tester",
-      "description": "ReactコンポーネントとZustand storeのテストコード実装に特化。Jest/Vitest + React Testing Libraryを使用し、ユニットテストからカバレッジ確認まで段階的に進める。フロントエンド実装完了後のテスト投入フロー。「テストコードを実装して」「Reactコンポーネントをテストして」「Zustandストアのテストを書いて」などのリクエストで発動する。",
-      "version": "1.0.0",
-      "tier": "stable",
+      "description": "【非推奨】react-frontend-coder を使用してください。旧 React コンポーネント / Zustand store 向けユニットテスト専用スキル。",
+      "version": "2.0.0",
+      "tier": "deprecated",
       "category": "implementation",
       "tags": [
         "react",
         "testing",
         "vitest",
-        "rtl"
+        "rtl",
+        "deprecated"
       ],
       "triggers": [
         "テストコードを実装して",

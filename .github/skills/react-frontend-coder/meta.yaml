@@ -1,0 +1,32 @@
+recommends:
+  - name: ui-designer
+    reason: "画面構成や視覚方針が未確定な場合の事前設計"
+  - name: webapp-testing
+    reason: "ユニットテストでは拾いにくいブラウザ挙動の最終確認"
+io_contract:
+  input:
+    - name: requirements
+      format: json
+      schema: "requirements.json (F-/N-/P- prefix)"
+      required: false
+    - name: api_spec
+      format: yaml
+      schema: "OpenAPI 3.x またはフロント実装に必要なAPI仕様"
+      required: false
+    - name: ui_design
+      format: markdown
+      schema: "画面仕様、コンポーネント構成、スタイル指針を含むMarkdown"
+      required: false
+    - name: frontend_task
+      format: free-text
+      description: "実装対象の画面・状態管理・テスト要件の自由記述"
+      required: true
+  output:
+    - name: frontend_changes
+      format: file-reference
+      schema: "実装・テスト・設定変更を含むフロントエンド成果物一式"
+      required: true
+    - name: verification_summary
+      format: markdown
+      schema: "実装内容、適用した最適化、テスト結果、未解決事項を含むMarkdown"
+      required: true
