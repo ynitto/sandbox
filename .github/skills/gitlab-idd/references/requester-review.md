@@ -114,6 +114,22 @@ MR の IID を取得する:
 python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}" --get 0.iid
 ```
 
+### CI パイプラインの確認
+
+マージ前に CI パイプラインの状態を確認する:
+
+```
+python scripts/gl.py get-mr-pipeline MR_IID --get status
+```
+
+| status | 対応 |
+|--------|------|
+| `success` | そのままマージへ進む |
+| `none` | CI 未設定（スキップしてマージへ進む） |
+| `skipped` | CI スキップ設定済み（スキップしてマージへ進む） |
+| `running` / `pending` | 「パイプライン実行中のため待機中です」と報告して終了。完了後に再度「イシューをレビューして」で再実行する |
+| `failed` / `canceled` | MR の URL をユーザーに提示し、「CI が失敗しています。MR を確認してください」と報告して終了（自動マージしない） |
+
 マージしてイシューをクローズする:
 
 ```

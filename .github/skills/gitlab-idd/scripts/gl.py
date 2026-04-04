@@ -338,6 +338,26 @@ def cmd_make_branch_name(args, host, project, token):
     print(f"feature/issue-{args.issue_id}-{slug}")
 
 
+def cmd_get_mr_pipeline(args, host, project, token):
+    """Get the latest CI pipeline for a merge request.
+
+    Output JSON includes at minimum:
+      {"status": "success"|"running"|"pending"|"failed"|"canceled"|"skipped"|"none", ...}
+
+    "none" is returned when no pipeline exists (CI not configured or not yet triggered).
+    """
+    ep = encode_project(project)
+    pipelines = api(
+        host, token, "GET",
+        f"/projects/{ep}/merge_requests/{args.mr_id}/pipelines",
+        params={"per_page": 1},
+    )
+    if not pipelines:
+        out({"status": "none", "id": None, "web_url": None}, args.get)
+        return
+    out(pipelines[0], args.get)
+
+
 def cmd_check_defer(args, host, project, token):
     """
     Check whether the worker should skip (defer) an issue it created itself.
@@ -476,6 +496,10 @@ def build_parser():
     p.add_argument("--squash", action="store_true")
     p.add_argument("--remove-source-branch", action="store_true")
 
+    p = sub.add_parser("get-mr-pipeline",
+                       help="Get the latest CI pipeline for a merge request")
+    p.add_argument("mr_id", type=int)
+
     p = sub.add_parser("make-branch-name",
                        help="Generate branch name for an issue (feature/issue-{id}-{slug})")
     p.add_argument("issue_id", type=int)
@@ -510,6 +534,7 @@ COMMANDS = {
     "create-mr":       cmd_create_mr,
     "update-mr":       cmd_update_mr,
     "merge-mr":        cmd_merge_mr,
+    "get-mr-pipeline": cmd_get_mr_pipeline,
     "make-branch-name": cmd_make_branch_name,
     "check-defer":     cmd_check_defer,
 }
