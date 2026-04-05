@@ -26,6 +26,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _currentStderr = '';
   /** エージェントごとの継続セッション ID（claude: --resume、kiro-cli: --session-id として渡す） */
   private _agentSessions: Map<string, string> = new Map();
+  /**
+   * 実行ごとに発行する単調増加 ID。
+   * プロセスが kill された後に非同期で発火する onClose コールバックを
+   * 無効化（ゴースト履歴エントリの追加・誤った done 送信を防ぐ）するために使用する。
+   */
+  private _currentRunId = 0;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -81,6 +87,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._chatHistory = [];
           this._agentSessions.clear();
           void this._context.globalState.update('chatHistory', []);
+          // 実行中のプロセスも終了する。runId ガードにより onClose は no-op になるため
+          // WebView には 'done' を明示的に送らず、WebView 側で running 状態をリセットする。
+          this._killCurrentProcess();
           break;
         case 'addFile': {
           const editor = vscode.window.activeTextEditor;
@@ -160,17 +169,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sessionId = this._agentSessions.get(agentId);
     const config = buildCommand(agent, expandedPrompt, workspacePath, model, sessionId);
 
+    // このコマンド実行の ID を固定する。_killCurrentProcess() が呼ばれると
+    // _currentRunId がインクリメントされるため、古いコールバックは runId !== _currentRunId
+    // となって早期リターンする。
+    const runId = ++this._currentRunId;
+
     this._currentProcess = runCommand(
       config,
       (data) => {
+        if (this._currentRunId !== runId) { return; }
         this._currentStdout += data;
         this._view?.webview.postMessage({ type: 'data', text: data });
       },
       (data) => {
+        if (this._currentRunId !== runId) { return; }
         this._currentStderr += data;
         this._view?.webview.postMessage({ type: 'error', text: data });
       },
       (code, newSessionId) => {
+        if (this._currentRunId !== runId) { return; } // kill 済みの古いコールバックを無視する
         if (newSessionId) {
           // claude: stream-json から取得した実際のセッション ID を保存する
           this._agentSessions.set(agentId, newSessionId);
@@ -192,6 +209,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _killCurrentProcess(): void {
     if (this._currentProcess) {
+      // runId を先にインクリメントして、この kill に対応する onClose コールバックを無効化する。
+      // Node.js は kill() 後に非同期で close イベントを発火するため、
+      // インクリメントしないと古いコールバックがゴースト履歴エントリを追加したり
+      // 新しいプロセスの状態を破壊したりする競合状態が生じる。
+      this._currentRunId++;
       this._currentProcess.kill();
       this._currentProcess = undefined;
     }

@@ -555,6 +555,13 @@
       });
 
       stopBtn.addEventListener('click', function() {
+        // running-indicator を DOM から除去してからリファレンスを破棄する。
+        // setRunning(false) 後は currentAssistantEl が null になるため、ここで先に除去しないと
+        // スピナーが永遠に回り続ける。
+        if (currentAssistantEl) {
+          const indicator = currentAssistantEl.querySelector('.running-indicator');
+          if (indicator) { indicator.remove(); }
+        }
         vscode.postMessage({ type: 'kill' });
         setRunning(false);
         currentAssistantEl = null;
@@ -562,6 +569,12 @@
       });
 
       clearBtn.addEventListener('click', function() {
+        // プロセス実行中に Clear を押した場合、DOM はクリアされるが running 状態は残ったまま
+        // になる。拡張ホスト側でプロセスを kill するため、WebView 側でも即座に running をリセットする。
+        // running-indicator も DOM ごとクリアされるため明示的な除去は不要。
+        currentAssistantEl = null;
+        currentOutputEl = null;
+        setRunning(false);
         messagesEl.innerHTML = '';
         vscode.postMessage({ type: 'clearHistory' });
       });
@@ -610,6 +623,12 @@
             break;
 
           case 'done':
+            // 出力が一切なかった場合（空レスポンス）は data/error イベントが発火せず
+            // running-indicator が除去されないため、ここで確実に除去する。
+            if (currentAssistantEl) {
+              const indicator = currentAssistantEl.querySelector('.running-indicator');
+              if (indicator) { indicator.remove(); }
+            }
             setRunning(false);
             currentAssistantEl = null;
             currentOutputEl = null;
