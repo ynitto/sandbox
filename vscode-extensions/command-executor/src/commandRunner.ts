@@ -57,7 +57,7 @@ export function buildCommand(
     ? `${systemPrompt.trimEnd()}\n\n---\n\n${userPrompt}`
     : userPrompt;
 
-  const extra = agent.extraArgs ?? [];
+  const extra = getMergedExtraArgs(agent);
 
   switch (agent.tool) {
     case 'claude': {
@@ -131,9 +131,11 @@ export function buildCommand(
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
         // チェック処理と同様に sh -lc 経由で起動し、WSL 側 PATH 解決を一致させる
         const escapedOptionArgs = [...extra].map(escapePosixShellArg);
+        // modelArgs の値（ユーザー入力のモデル名）もシェルエスケープする
+        const escapedModelArgs = modelArgs.map(escapePosixShellArg);
         const wslShellArgs = [
           '-e', 'sh', '-lc',
-          ['kiro-cli', 'chat', '--no-interactive', '--trust-all-tools', ...modelArgs, ...sessionArgs, ...escapedOptionArgs, '--', '"$1"'].join(' '),
+          ['kiro-cli', 'chat', '--no-interactive', '--trust-all-tools', ...escapedModelArgs, ...sessionArgs, ...escapedOptionArgs, '--', '"$1"'].join(' '),
           'sh', prompt,
         ];
         const wslArgs = wslCwd

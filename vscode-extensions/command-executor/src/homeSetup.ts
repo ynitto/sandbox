@@ -189,15 +189,6 @@ function syncConfig(config: SyncConfig): void {
 
       const destDir = path.join(config.homeDir, mapping.destDir);
 
-      // 同期先が存在し、同期元より新しければスキップ
-      if (fs.existsSync(destDir)) {
-        const srcMtime = fs.statSync(srcDir).mtime;
-        const destMtime = fs.statSync(destDir).mtime;
-        if (srcMtime <= destMtime) {
-          continue;
-        }
-      }
-
       copyDirRecursive(srcDir, destDir, mapping.renameFile);
     }
   } catch (e) {
