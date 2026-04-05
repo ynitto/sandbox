@@ -422,6 +422,25 @@
       }
       if (initialHistory.length > 0) { scrollToBottom(); }
 
+      // タブ切替などで WebView コンテキストが失われた際の進行中ストリームを復元する
+      const pending = chatData.pending;
+      if (pending) {
+        setRunning(true);
+        currentAssistantEl = document.createElement('div');
+        currentAssistantEl.className = 'message assistant';
+        currentOutputEl = document.createElement('span');
+        currentOutputEl.textContent = pending.stdout || '';
+        currentAssistantEl.appendChild(currentOutputEl);
+        if (pending.stderr) {
+          const errEl = document.createElement('div');
+          errEl.className = 'stderr';
+          errEl.textContent = pending.stderr;
+          currentAssistantEl.appendChild(errEl);
+        }
+        messagesEl.appendChild(currentAssistantEl);
+        scrollToBottom();
+      }
+
       sendBtn.addEventListener('click', function() {
         const prompt = promptInput.value.trim();
         const agentId = agentSelect.value;

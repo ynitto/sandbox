@@ -119,7 +119,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
 
-    // 可視化のたびに HTML を再生成すると選択状態がリセットされるため再描画しない
+    // 非表示（タブ切替等）でJSコンテキストが破棄されるため、再表示時にHTMLを再生成して
+    // チャット履歴・進行中ストリームを復元する
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible && this._view) {
+        this._view.webview.html = this._getHtml(this._view.webview);
+      }
+    });
 
     webviewView.onDidDispose(() => {
       this._killCurrentProcess();
@@ -221,6 +227,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       history: this._chatHistory,
       toolModels: { claude: this._claudeModels, 'kiro-cli': this._kiroModels },
       selectedModel: this._selectedModel ?? '',
+      // 処理中に WebView が非表示になった場合、再表示時に進行中のストリームを復元するために使用
+      pending: this._currentProcess
+        ? { stdout: this._currentStdout, stderr: this._currentStderr }
+        : null,
     });
     const selectedAgentId = this._selectedAgentId;
     const agentOptionsHtml = this._agents
