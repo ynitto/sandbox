@@ -280,9 +280,7 @@
       let toolModelsMap = chatData.toolModels || {};
       // フェッチ済みツールを追跡してセッション内で重複フェッチを防ぐ
       const modelsFetched = new Set();
-      // モデル選択を復元する（globalState 由来の chatData を優先、次に WebView 永続化状態）
-      let desiredModel = chatData.selectedModel || persisted.selectedModel || '';
-
+      
       const messagesEl = document.getElementById('messages');
       const promptInput = document.getElementById('prompt-input');
       const sendBtn = document.getElementById('send-btn');
@@ -308,7 +306,7 @@
       }
 
       function getSelectedAgentOption() {
-        return agentSelect.selectedOptions[0] || agentSelect.selectedOptions[agentSelect.selectedIndex] || agentSelect.options[0] || null;
+        return agentSelect.selectedOptions[0] || agentSelect.options[agentSelect.selectedIndex] || agentSelect.options[0] || null;
       }
 
       /** ツールに応じてモデルドロップダウンを更新する */
@@ -327,7 +325,6 @@
           opt.textContent = id;
           modelSelect.appendChild(opt);
         }
-
         if (prev && models.includes(prev)) { modelSelect.value = prev; }
       }
 
@@ -399,39 +396,39 @@
         stopBtn.classList.toggle('visible', val);
       }
 
-      function handleLocalSlashCommands(prompt) {
+      function handleLocalSlashCommand(prompt) {
         if (prompt.startsWith('/model')) {
           return false;
         }
 
         if (!modelSelect || (modelRow && modelRow.classList.contains('hidden'))) {
-          addSystemMessage(`このエージェントはモデル切替に対応していません。`);
+          appendSystemMessage('このエージェントはモデル切替に対応していません。');
           return true;
         }
 
-        const args = prompt.split('/model'.length).trim();
+        const arg = prompt.slice('/model'.length).trim();
         const options = Array.from(modelSelect.options).map((o) => o.value).filter(Boolean);
         
-        if (!args) {
+        if (!arg) {
           const selectedLabel = modelSelect.value || 'Default';
           const list = options.length > 0 ? options.join(', ') : '(モデル一覧は未取得)';
-          addSystemMessage(`現在のモデル: ${selectedLabel}\n利用可能: ${list}`);
+          appendSystemMessage(`現在のモデル: ${selectedLabel}\n利用可能: ${list}`);
           return true;
         }
 
-        if (args.toLowerCase() === 'default') {
+        if (arg.toLowerCase() === 'default') {
           modelSelect.value = '';
-          addSystemMessage(`モデルを Default に設定しました。`);
+          appendSystemMessage('モデルを Default に設定しました。');
           return true;
         }
 
-        if (options.includes(args)) {
-          modelSelect.value = args;
-          addSystemMessage(`モデルを ${args} に設定しました。`);
+        if (options.includes(arg)) {
+          modelSelect.value = arg;
+          appendSystemMessage(`モデルを ${arg} に設定しました。`);
           return true;
         }
 
-        addSystemMessage(`モデル "${args}" は見つかりません。/model で一覧を確認してください。`);
+        appendSystemMessage(`モデル "${arg}" は見つかりません。/model で一覧を確認してください。`);
         return true;
       }
 
@@ -498,7 +495,7 @@
         const agentId = agentSelect.value;
         if (!prompt || !agentId || running) { return; }
 
-        if (handleLocalSlashCommands(prompt)) {
+        if (handleLocalSlashCommand(prompt)) {
           promptInput.value = '';
           return;
         }
