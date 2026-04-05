@@ -12,8 +12,8 @@
 - [スコープ外タスクのイシュー起票](#スコープ外タスクのイシュー起票)
 - [統合ブランチの最終マージ MR 作成](#統合ブランチの最終マージ-mr-作成)
 
-**自分が発行した** `status:review-ready` イシューを評価し、マージまたはリオープンする。
-他ノードが発行したイシューはレビューしない。
+`status:review-ready` イシューを評価し、マージまたはリオープンする。
+自分が実装（アサイン）したイシューは self-defer し、他のレビュアーに委ねる。
 すべての操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
 > **注**: 環境によって `python` を `python3` や `py` に読み替える。
@@ -28,13 +28,21 @@
 python scripts/gl.py current-user --get username
 ```
 
-自分が発行した `status:review-ready` イシューを取得する:
+`status:review-ready` イシューをすべて取得する:
 
 ```
-python scripts/gl.py list-issues --label "status:review-ready" --author MY_USER
+python scripts/gl.py list-issues --label "status:review-ready"
 ```
 
-レビュー対象が 0 件の場合は「自分が発行したレビュー待ちイシューはありません」と報告して終了。
+各イシューについて、自分が実装者（アサイニー）であれば self-defer してスキップする:
+
+```
+python scripts/gl.py check-review-defer {issue_id}
+```
+
+`defer: true` の場合はそのイシューをスキップする。
+
+レビュー対象が 0 件の場合は「レビュー待ちイシューはありません（または全件 self-defer）」と報告して終了。
 複数件ある場合は優先度順（`priority:high` → `normal` → `low`）に処理する。
 
 ---
@@ -198,7 +206,7 @@ python scripts/gl.py update-issue {issue_id} \
 ## 注意事項
 
 - リクエスターは実装を行わない。評価と判定のみ
-- **自分が発行したイシューのみレビューする**。他ノードが発行したイシューは対象外
+- 自分が実装（アサイン）したイシューはレビューしない（self-defer）。他のレビュアーに委ねる
 - MR が存在しない場合はワーカーに確認コメントを投稿してから評価を保留
 - 複数 MR が存在する場合は最新のものを使用
 
