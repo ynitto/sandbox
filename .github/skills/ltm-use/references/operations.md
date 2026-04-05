@@ -12,6 +12,7 @@
 - [consolidate](#consolidate記憶を固定化する)（v5.0.0）
 - [review](#review記憶をレビューする)（v5.0.0）
 - [sync-copilot-memory](#sync-copilot-memoryvscode-copilot-memory-を取り込む)
+- [sync-kiro-memory](#sync-kiro-memorykiro-ステアリング--ide-memory-を取り込む)
 - [sync](#syncgit共有領域から自動更新する)
 
 ---
@@ -446,12 +447,78 @@ python scripts/rate_memory.py --file memories/copilot-memory/xxx.md --good
 
 ---
 
-## sync（git共有領域から自動更新する）
+## sync-kiro-memory（Kiro ステアリング / IDE Memory を取り込む）
+
+Kiro CLI/IDE の記憶を ltm-use にインポートする。
+2 つのソースをサポートする:
+
+1. **Kiro グローバルステアリング**（`~/.kiro/steering/*.md`）
+   全プロジェクト共通の永続ルール・規約・コンベンションを `kiro-steering` カテゴリで取り込む。
+   
+2. **Kiro IDE globalStorage**（Windows `%APPDATA%\Kiro\User\globalStorage\` / WSL 自動検出）
+   VSCode フォークのメモリ拡張機能エントリを `kiro-memory` カテゴリで取り込む。
+
+重複インポートを避けるため `{MEMORY_DIR}/kiro-memory/.kiro-import-log.json` にインポート済みID を記録する。
 
 ### 全オプション
 
 ```bash
-# 基本形（全リポジトリを pull して差分確認）
+# ドライラン（ファイルを作成せず確認のみ）
+python scripts/sync_kiro_memory.py --dry-run
+
+# 基本形（home スコープにインポート）
+python scripts/sync_kiro_memory.py
+
+# ソース指定
+--source steering      # ~/.kiro/steering/ のみ
+--source ide          # Kiro IDE globalStorage のみ
+--source all          # 両方（デフォルト）
+
+# パスを明示指定
+--kiro-home ~/.kiro                        # ~/.kiro/ の代替パス
+--ide-storage "/path/to/Kiro/globalStorage"   # IDE globalStorage の代替パス
+
+# 強制再インポート
+--force                # インポート済みID を無視
+
+# 実行間隔（デフォルト: 72時間 = 3日）
+--interval-hours 24    # 24時間ごとにチェック
+```
+
+### Kiro グローバルステアリングの場所
+
+| 環境 | パス |
+|---|---|
+| Kiro IDE（Windows）/ Kiro CLI（WSL） | `~/.kiro/steering/*.md`（WSL のホーム） |
+| Kiro IDE（Windows，ネイティブ） | `%USERPROFILE%\.kiro\steering\*.md` |
+| ワークスペース固有 | `.kiro/steering/*.md`（プロジェクト内），取り込み対象外） |
+
+ステアリングファイルには YAML フロントマターで `name:` 設定ができる。設定があれば ltm-use のタイトルに使用される。
+
+### Kiro IDE globalStorage の場所
+
+| OS | パス |
+|---|---|
+| Windows | `%APPDATA%\Kiro\User\globalStorage\` |
+| macOS | `~/Library/Application Support/Kiro/User/globalStorage/` |
+| Linux | `~/.config/Kiro/User/globalStorage/` |
+| WSL（Windows Kiro IDE） | `/mnt/c/Users/<user>/AppData/Roaming/Kiro/User/globalStorage/`（自動検出） |
+
+### インポート後の推奨操作
+
+```bash
+# インポート結果を確認
+    python scripts/recall_memory.py 'kiro' --scope home
+
+# 一覧表示
+    python scripts/list_memories.py --scope home
+
+# 役立ったステアリングの記憶を評価（share_score を上げて昇格候補に）
+    python scripts/rate_memory.py --file memories/kiro-steering/xxx.md --good
+```
+
+---
+
 python scripts/sync_memory.py
 
 # リポジトリ指定

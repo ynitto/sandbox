@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 recall_memory.py - キーワードで記憶を検索するスクリプト
 

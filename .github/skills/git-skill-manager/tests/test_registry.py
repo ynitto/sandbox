@@ -116,10 +116,10 @@ class TestUpdateFrontmatterVersion:
 # ---------------------------------------------------------------------------
 
 class TestMigrateRegistry:
-    def test_v1_migrates_to_v6(self):
+    def test_v1_migrates_to_v7(self):
         old = {"version": 1, "repositories": [], "installed_skills": []}
         result = reg_mod.migrate_registry(old)
-        assert result["version"] == 6
+        assert result["version"] == 7
         assert "auto_update" in result
         assert "promotion_policy" in result
 
@@ -145,11 +145,11 @@ class TestMigrateRegistry:
         result = reg_mod.migrate_registry(old)
         assert "usage_stats" not in result["installed_skills"][0]
 
-    def test_already_v6_unchanged(self):
-        reg = reg_mod.load_registry()  # 新規レジストリは v6
-        assert reg["version"] == 6
+    def test_already_v7_unchanged(self):
+        reg = reg_mod.load_registry()  # 新規レジストリは v7
+        assert reg["version"] == 7
         migrated = reg_mod.migrate_registry(reg)
-        assert migrated["version"] == 6
+        assert migrated["version"] == 7
 
 
 # ---------------------------------------------------------------------------
@@ -211,5 +211,5 @@ class TestLoadSaveRegistry:
     def test_load_nonexistent_returns_default(self, tmp_path, monkeypatch):
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         reg = reg_mod.load_registry()
-        assert reg["version"] == 6
+        assert reg["version"] == 7
         assert reg["installed_skills"] == []

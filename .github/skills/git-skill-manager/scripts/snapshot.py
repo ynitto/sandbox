@@ -47,7 +47,8 @@ def save_snapshot(label: str = "", max_keep: int = 10) -> str:
         保存したスナップショットのID（ディレクトリ名）
     """
     now = datetime.now(timezone.utc)
-    snap_id = "snapshot-" + now.strftime("%Y%m%dT%H%M%S")
+    # マイクロ秒まで含めることで同一秒内の連続呼び出しでも衝突しない
+    snap_id = "snapshot-" + now.strftime("%Y%m%dT%H%M%S%f")
     snap_dir = os.path.join(_snapshots_dir(), snap_id)
     os.makedirs(snap_dir, exist_ok=True)
 

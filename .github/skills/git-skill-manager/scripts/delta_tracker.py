@@ -80,10 +80,7 @@ def detect_local_modification(skill: dict) -> dict:
 
     central_path = _get_central_skill_path(skill)
     if not central_path:
-        # キャッシュがない場合は commit_hash の変化で判断
-        stored_hash = skill.get("lineage", {}).get("origin_commit")
-        current_hash = skill.get("commit_hash")
-        # 同一なら変更なしとみなす（保守的な判定）
+        # キャッシュがない場合はローカル変更を検出できないため保守的に False を返す
         return {
             "local_modified": False,
             "local_hash": local_hash,

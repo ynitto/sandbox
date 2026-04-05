@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 consolidate_memory.py - エピソード記憶を意味/手続き記憶に蒸留するスクリプト
 

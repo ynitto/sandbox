@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 
 from registry import (
     load_registry, save_registry, is_skill_enabled, _skill_home, _cache_dir,
@@ -302,19 +302,49 @@ def promote_skills(workspace_skills_dir, interactive=True):
             (s for s in reg.get("installed_skills", []) if s["name"] == c["name"]),
             None,
         )
-        skill_entry = {
-            "name": c["name"],
-            "source_repo": "local",
-            "source_path": os.path.abspath(c["path"]),
-            "commit_hash": "-",
-            "installed_at": datetime.now().isoformat(),
-            "enabled": True,
-            "pinned_commit": None,
-        }
         if existing_skill:
-            existing_skill.update(skill_entry)
+            # 識別情報のみ更新する。feedback_history ・ metrics 等の履歴は保持する。
+            existing_skill["source_repo"] = "local"
+            existing_skill["source_path"] = os.path.abspath(c["path"])
+            existing_skill["commit_hash"] = "-"
+            existing_skill["installed_at"] = datetime.now(timezone.utc).isoformat()
+            existing_skill["pinned_commit"] = None
         else:
-            reg["installed_skills"].append(skill_entry)
+            installed_at = datetime.now(timezone.utc).isoformat()
+            version = _read_frontmatter_version(os.path.join(skill_home, c["name"]))
+            reg["installed_skills"].append({
+                "name": c["name"],
+                "source_repo": "local",
+                "source_path": os.path.abspath(c["path"]),
+                "commit_hash": "-",
+                "installed_at": installed_at,
+                "enabled": True,
+                "pinned_commit": None,
+                "feedback_history": [],
+                "pending_refinement": False,
+                "version": version,
+                "central_version": None,
+                "version_ahead": False,
+                "lineage": {
+                    "origin_repo": "local",
+                    "origin_commit": "-",
+                    "origin_version": None,
+                    "local_modified": True,
+                    "diverged_at": None,
+                    "local_changes_summary": "",
+                },
+                "metrics": {
+                    "total_executions": 0,
+                    "ok_rate": None,
+                    "last_executed_at": None,
+                    "central_ok_rate": None,
+                    "avg_duration_sec": None,
+                    "p90_duration_sec": None,
+                    "avg_subagent_calls": None,
+                    "trend_7d": {"executions": 0, "ok_rate": 0.0},
+                    "top_co_skills": [],
+                },
+            })
 
         promoted.append(c["name"])
 

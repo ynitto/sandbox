@@ -82,6 +82,8 @@ def load_events(
                 ts_str = ev.get("timestamp", "")
                 try:
                     ts = datetime.fromisoformat(ts_str)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
                     if ts < cutoff:
                         continue
                 except (ValueError, TypeError):
@@ -168,6 +170,8 @@ def compute_skill_metrics(events: list[dict]) -> dict:
     for e in events:
         try:
             ts = datetime.fromisoformat(e.get("timestamp", ""))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
             if ts >= cutoff_7d:
                 recent.append(e)
         except (ValueError, TypeError):

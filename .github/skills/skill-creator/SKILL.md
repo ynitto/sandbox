@@ -2,7 +2,7 @@
 name: skill-creator
 description: "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。"
 metadata:
-  version: 3.1.0
+  version: 3.2.0
   tier: core
   category: meta
   tags:
@@ -26,12 +26,12 @@ metadata:
 |---|---|---|
 | **A: 手動作成** | ゼロから新規作成・既存スキルを改善 | このファイルの「スキル作成プロセス」セクション |
 | **B: コードベース変換** | 既存リポジトリ・コードを分析してスキル化 | [references/codebase-to-skill.md](references/codebase-to-skill.md) を読んで手順に従う |
-| **C: 履歴から生成** | AIエージェントのチャット履歴を分析 | [references/generating-skills-from-copilot-logs.md](references/generating-skills-from-copilot-logs.md) を読んで手順に従う |
+| **C: 履歴から生成** | AIエージェントのチャット履歴を分析 | [references/generating-skills-from-logs.md](references/generating-skills-from-logs.md) を読んで手順に従う |
 | **D: 外部取得** | URL・ローカルパスから外部スキルをインストール | [references/skill-recruiter.md](references/skill-recruiter.md) を読んで手順に従う |
 
 いずれのモードも最終的に `skill-creator` の検証手順（ステップ5）を経る。.skillファイルへのパッケージ化はオプションで、ユーザーから明示的な指示があった場合のみ実行する。
 
-**モードC 補足資料**: [references/copilot-history-guide.md](references/copilot-history-guide.md)（チャット履歴の詳細）/ [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md)（パターン抽出例）/ [references/quality-checklist.md](references/quality-checklist.md)（配布前チェックリスト）
+**モードC 補足資料**: [references/copilot-history-guide.md](references/copilot-history-guide.md)（Copilot 履歴の詳細）/ [references/kiro-history-guide.md](references/kiro-history-guide.md)（Kiro IDE/CLI 履歴の詳細）/ [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md)（パターン抽出例）/ [references/quality-checklist.md](references/quality-checklist.md)（配布前チェックリスト）
 
 ### モード判定フロー
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 rate_memory.py - ユーザー評価・修正フィードバックを記憶に記録するスクリプト
 

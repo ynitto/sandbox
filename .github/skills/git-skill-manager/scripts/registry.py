@@ -24,21 +24,27 @@ def _user_home() -> str:
 
 
 def _agent_home() -> str:
-    """このファイル（registry.py）の __file__ からエージェントホームを導出する。
+    """エージェントホームディレクトリを返す。
 
-    インストール構造:
+    通常は __file__ の位置から導出する:
         {agent_home}/skills/git-skill-manager/scripts/registry.py
-    よって:
-        scripts/ → git-skill-manager/ → skills/ → agent_home/
+
+    スクリプトが正規のエージェントディレクトリ外に置かれている場合
+    （ワークスペース・テスト環境など）は USERPROFILE + "/.copilot" へフォールバックする。
     """
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.dirname(      # agent_home/
+    candidate = os.path.dirname(      # agent_home/
         os.path.dirname(         # skills/
             os.path.dirname(     # git-skill-manager/
                 scripts_dir      # scripts/
             )
         )
     )
+    # 正規エージェントディレクトリ名かどうかを確認（.copilot, .claude, .codex, .kiro）
+    if os.path.basename(candidate) in AGENT_DIRS.values():
+        return candidate
+    # ワークスペース・テスト実行時は USERPROFILE から導出する
+    return os.path.join(_user_home(), ".copilot")
 
 
 def _registry_path() -> str:
@@ -47,13 +53,8 @@ def _registry_path() -> str:
 
 
 def _skill_home() -> str:
-    """スキルインストール先ディレクトリを __file__ の位置から導出する。"""
-    scripts_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.dirname(      # skills/
-        os.path.dirname(         # git-skill-manager/
-            scripts_dir          # scripts/
-        )
-    )
+    """スキルインストール先ディレクトリを返す。"""
+    return os.path.join(_agent_home(), "skills")
 
 
 def _cache_dir() -> str:

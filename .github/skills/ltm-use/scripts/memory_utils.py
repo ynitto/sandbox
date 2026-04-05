@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 memory_utils.py - 記憶スクリプト共通ユーティリティ
 

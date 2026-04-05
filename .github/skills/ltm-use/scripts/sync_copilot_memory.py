@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 sync_copilot_memory.py - VSCode Copilot Memory を ltm-use にインポートするスクリプト
 
@@ -378,6 +379,18 @@ def _make_stable_id(entry: dict) -> str:
     return f"copilot:text:{hash(text_key) & 0xFFFFFFFF:08x}"
 
 
+def _make_legacy_stable_id(entry: dict) -> str | None:
+    """コンテンツハッシュ追加前の旧ID形式を返す（後方互換チェック用）。
+
+    `_make_stable_id` がハッシュ付きID（例: copilot:mt:foo-10240cc2c05b）を返す場合に、
+    ハッシュ部分を除いた旧形式ID（例: copilot:mt:foo）もチェックして重複インポートを防ぐ。
+    """
+    import re as _re
+    current = _make_stable_id(entry)
+    legacy = _re.sub(r"-[0-9a-f]{12}$", "", current)
+    return legacy if legacy != current else None
+
+
 def load_import_log(category_dir: Path) -> set[str]:
     """インポート済みIDセットをログから読み込む。"""
     log_path = category_dir / IMPORT_LOG_FILENAME
@@ -631,8 +644,11 @@ def main():
 
     for entry in all_entries:
         stable_id = _make_stable_id(entry)
+        legacy_id = _make_legacy_stable_id(entry)
 
-        if stable_id in imported_ids or stable_id in new_ids:
+        if (stable_id in imported_ids
+                or stable_id in new_ids
+                or (legacy_id and legacy_id in imported_ids)):
             skipped += 1
             continue
 

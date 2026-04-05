@@ -182,3 +182,18 @@ class TestCleanSnapshots:
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         # スナップショットディレクトリが存在しなくてもエラーにならない
         snap_mod.clean_snapshots(keep=5)
+
+
+# ---------------------------------------------------------------------------
+# Bug regression: 同一マイクロ秒レベルの連続呼び出し（タイムスタンプ衝突）
+# ---------------------------------------------------------------------------
+
+class TestSaveSnapshotRapidCalls:
+    def test_rapid_calls_no_collision(self, tmp_path, monkeypatch):
+        """sleep なしで連続呼び出ししてもスナップショット ID が衝突しない。"""
+        _setup_env(tmp_path, monkeypatch, skills=["skill-a"])
+        ids = [snap_mod.save_snapshot() for _ in range(5)]
+        assert len(set(ids)) == 5, "スナップショット ID が重複しています"
+        snap_base = tmp_path / ".copilot" / "snapshots"
+        snaps = [e for e in snap_base.iterdir() if e.is_dir()]
+        assert len(snaps) == 5

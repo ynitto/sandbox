@@ -65,5 +65,5 @@ SKILL.md の `metadata.version` をセマンティックバージョニングに
    「指定期間のチャット履歴を分析して新しいスキル候補を探します。
     続行しますか？」
    ```
-   （ここで同意を取得済みのため、`skill-creator` モードC（references/generating-skills-from-copilot-logs.md）の Phase 1 同意確認はスキップしてよい）
+   （ここで同意を取得済みのため、`skill-creator` モードC（references/generating-skills-from-logs.md）の Phase 1 同意確認はスキップしてよい）
 3. `skill-creator`（モードC）サブエージェントを起動してフェーズ 2〜6 に従って分析・スキル生成（Phase 1 の同意確認は不要）

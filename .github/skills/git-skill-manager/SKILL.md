@@ -2,7 +2,7 @@
 name: git-skill-manager
 description: スキルのインストール（pull）・チーム公開（push）・品質評価・非推奨化・アーカイブなど、Gitリポジトリを介したエージェントスキルのライフサイクル管理を担う。「スキルをpullして」「スキルをpushして」「スキルをインストールして」「スキルを有効化して」「スキルを無効化して」「スキルを非推奨にして」「スキルをアーカイブして」「スキルを昇格して」などのリクエストで発動する。
 metadata:
-  version: "1.2.0"
+  version: 1.2.1
   tier: core
   category: meta
   tags:

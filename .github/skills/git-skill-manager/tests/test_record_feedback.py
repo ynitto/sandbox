@@ -211,3 +211,46 @@ class TestRecordFeedback:
         metrics = reg["installed_skills"][0]["metrics"]
         assert metrics["total_executions"] == 3
         assert round(metrics["ok_rate"], 3) == round(2 / 3, 3)
+
+
+# ---------------------------------------------------------------------------
+# Bug regression: main() が load_registry/save_registry を使う
+# ---------------------------------------------------------------------------
+
+class TestMainUsesLoadRegistry:
+    def test_main_migrates_old_registry(self, tmp_path, monkeypatch, capsys):
+        """main() が古いバージョン（v6）のレジストリを v7 へ昇格させる。"""
+        import json as _json
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        # v6 レジストリを手動作成
+        agent_home = tmp_path / ".copilot"
+        agent_home.mkdir(parents=True, exist_ok=True)
+        reg_path = agent_home / "skill-registry.json"
+        v6_reg = {
+            "version": 6,
+            "repositories": [],
+            "installed_skills": [
+                {
+                    "name": "my-skill",
+                    "source_repo": "local",
+                    "commit_hash": "-",
+                    "enabled": True,
+                    "pinned_commit": None,
+                    "feedback_history": [],
+                    "pending_refinement": False,
+                    "metrics": {},
+                }
+            ],
+        }
+        reg_path.write_text(_json.dumps(v6_reg), encoding="utf-8")
+
+        # main() を実行（--verdict ok で呼び出す）
+        monkeypatch.setattr("sys.argv", ["record_feedback.py", "my-skill", "--verdict", "ok"])
+        with patch.object(rf, "_append_metrics_log"):
+            with patch.object(rf, "is_workspace_skill", return_value=False):
+                rf.main()
+
+        # 保存されたレジストリが v7 に昇格されているか確認
+        saved = _json.loads(reg_path.read_text(encoding="utf-8"))
+        assert saved["version"] == 7, "main() は load_registry() 経由で migration を行う必要があります"

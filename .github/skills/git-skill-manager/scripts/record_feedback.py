@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
-from registry import _registry_path, _skill_home, _agent_home
+from registry import _registry_path, _skill_home, _agent_home, load_registry, save_registry
 
 
 def _metrics_log_path() -> str:
@@ -291,8 +291,9 @@ def main():
         print("   'git-skill-manager repo add' でリポジトリを登録してください")
         sys.exit(1)
 
-    with open(registry_path, encoding="utf-8") as f:
-        reg = json.load(f)
+    # load_registry() は migrate_registry() を内部で呼び出すため、
+    # 古いバージョンのレジストリも自動的に最新スキーマへ昇格される。
+    reg = load_registry()
 
     skill_name = args.skill_name
 
@@ -313,8 +314,7 @@ def main():
         sprint_id=args.sprint_id,
     )
 
-    with open(registry_path, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2, ensure_ascii=True)
+    save_registry(reg)
 
 
 if __name__ == "__main__":

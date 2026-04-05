@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 cleanup_memory.py - 不要な記憶を削除してディスク領域を節約するスクリプト
 

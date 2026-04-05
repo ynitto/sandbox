@@ -84,7 +84,7 @@ def suggest_tags(title: str, summary: str, content: str,
         if len(suggestions) >= max_tags:
             break
 
-    return suggestions
+    return _remove_sub_tokens(suggestions)
 
 
 def _simple_tag_extraction(title: str, summary: str, content: str,
@@ -111,7 +111,25 @@ def _simple_tag_extraction(title: str, summary: str, content: str,
             if len(suggestions) >= max_tags:
                 break
 
-    return suggestions
+    return _remove_sub_tokens(suggestions)
+
+
+def _remove_sub_tokens(tokens: list[str]) -> list[str]:
+    """他のトークンの部分文字列となる短いトークンを除去する。
+
+    バイグラム境界越えノイズ（例: "削除予定" があるときの "除予"）を除外する。
+    例: ["削除予定", "削除", "除予", "予定"] → ["削除予定"]
+
+    Args:
+        tokens: 候補トークンのリスト（順序を保持して返す）
+
+    Returns:
+        サブストリングでないトークンのみのリスト
+    """
+    if len(tokens) <= 1:
+        return tokens
+    token_set = set(tokens)
+    return [t for t in tokens if not any(t != other and t in other for other in token_set)]
 
 
 def merge_tags(manual_tags: list[str], auto_tags: list[str], max_total: int = 10) -> tuple[list[str], list[str]]:

@@ -59,6 +59,7 @@ home  →  (昇格・git)  →  shared
 | **review** 🧠 | 「記憶をレビューして」「記憶の棚卸し」「忘れかけてるものは？」 | `review_memory.py` |
 | **sync** | 「チームの記憶を取り込んで」「共有知識を更新して」 | `sync_memory.py` |
 | **sync-copilot-memory** | 「Copilotの記憶を同期して」「VSCodeの記憶を取り込んで」「Copilot Memoryをインポートして」 | `sync_copilot_memory.py` |
+| **sync-kiro-memory** | 「Kiroの記憶を同期して」「Kiroステアリングを取り込んで」「Kiro IDEの記憶をインポートして」 | `sync_kiro_memory.py` |
 | **build_index** | 「インデックスを再構築して」「統計を見せて」 | `build_index.py` |
 
 詳細オプション: [`references/operations.md`](references/operations.md)
@@ -328,6 +329,33 @@ python scripts/sync_copilot_memory.py --scope shared --force
 ```
 
 globalStorageパス・詳細オプション: [`references/operations.md`](references/operations.md)
+
+---
+
+## sync-kiro-memory（Kiro ステアリング / IDE Memory を取り込む）
+
+Kiro CLI のグローバルステアリングファイル（`~/.kiro/steering/*.md`）および
+Kiro IDE の globalStorage に保存されたメモリを自動検出し、ltm-use へ変換してインポートする。
+
+ステアリングファイルは全プロジェクト共通の永続ルール・規約として特に有用。
+重複インポートを避けるため `{MEMORY_DIR}/kiro-memory/.kiro-import-log.json` に記録する。
+
+```bash
+# 何が見つかるか確認するだけ（ファイルを作成しない）
+python scripts/sync_kiro_memory.py --dry-run
+
+# home スコープに取り込む（デフォルト・プロジェクト横断）
+# ユーザーからの明示的な指示なので --force でインターバルを無視して実行する
+python scripts/sync_kiro_memory.py --force
+
+# ステアリングファイルのみ取り込む
+python scripts/sync_kiro_memory.py --source steering --force
+
+# Kiro IDE globalStorage のみ取り込む
+python scripts/sync_kiro_memory.py --source ide --force
+```
+
+グローバルステアリングパス・詳細オプション: [`references/operations.md`](references/operations.md)
 
 ---
 
