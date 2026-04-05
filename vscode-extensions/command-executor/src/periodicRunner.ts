@@ -17,6 +17,7 @@ export class PeriodicRunner {
   /** 実行中のサブプロセス。stop()/dispose() 時にkillするために保持する */
   private _runningProcesses = new Set<cp.ChildProcess>();
   private _outputChannel: vscode.OutputChannel;
+  private _disposed = false;
 
   constructor(
     private _agents: AgentConfig[],
@@ -79,6 +80,7 @@ export class PeriodicRunner {
   }
 
   dispose(): void {
+    this._disposed = true;
     this.stop();
     this._outputChannel.dispose();
   }
@@ -133,7 +135,9 @@ export class PeriodicRunner {
           this._runningPromptTimers.delete(key);
         }
         this._runningPrompts.delete(key);
-        this._outputChannel.appendLine(`--- 完了 (終了コード: ${code}) ---\n`);
+        if (!this._disposed) {
+          this._outputChannel.appendLine(`--- 完了 (終了コード: ${code}) ---\n`);
+        }
       }
     );
     this._runningProcesses.add(proc);

@@ -431,12 +431,14 @@
 
         if (arg.toLowerCase() === 'default') {
           modelSelect.value = '';
+          vscode.postMessage({ type: 'modelChanged', model: modelSelect.value });
           appendSystemMessage('モデルを Default に設定しました。');
           return true;
         }
 
         if (options.includes(arg)) {
           modelSelect.value = arg;
+          vscode.postMessage({ type: 'modelChanged', model: modelSelect.value });
           appendSystemMessage(`モデルを ${arg} に設定しました。`);
           return true;
         }
@@ -490,6 +492,12 @@
         setRunning(true);
         currentAssistantEl = document.createElement('div');
         currentAssistantEl.className = 'message assistant';
+
+        const indicator = document.createElement('div');
+        indicator.className = 'running-indicator';
+        indicator.innerHTML = '<div class="spinner"></div><span>実行中...</span>';
+        currentAssistantEl.appendChild(indicator);
+
         currentOutputEl = document.createElement('span');
         currentOutputEl.textContent = pending.stdout || '';
         currentAssistantEl.appendChild(currentOutputEl);
