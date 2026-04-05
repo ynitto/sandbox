@@ -399,6 +399,40 @@ def cmd_get_mr_pipeline(args, host, project, token):
     out(pipelines[0], args.get)
 
 
+def cmd_check_review_defer(args, host, project, token):
+    """
+    Check whether the reviewer should skip (defer) an issue they implemented.
+
+    Output JSON:
+      {"defer": true/false, "reason": "...", ...}
+
+    Defer when:
+      - The issue is assigned to the authenticated user (me).
+    """
+    ep = encode_project(project)
+    issue = api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}")
+    me = api(host, token, "GET", "/user")
+
+    assignee = issue.get("assignee") or {}
+    assignee_username = assignee.get("username", "")
+    my_username = me.get("username", "")
+
+    if assignee_username == my_username:
+        out({
+            "defer": True,
+            "reason": "self_implemented",
+            "assignee": assignee_username,
+            "me": my_username,
+        }, args.get)
+    else:
+        out({
+            "defer": False,
+            "reason": "not_my_implementation",
+            "assignee": assignee_username,
+            "me": my_username,
+        }, args.get)
+
+
 def cmd_check_defer(args, host, project, token):
     """
     Check whether the worker should skip (defer) an issue it created itself.
@@ -545,6 +579,10 @@ def build_parser():
                        help="Generate branch name for an issue (feature/issue-{id}-{slug})")
     p.add_argument("issue_id", type=int)
 
+    p = sub.add_parser("check-review-defer",
+                       help="Check if the reviewer should skip an issue they implemented")
+    p.add_argument("issue_id", type=int)
+
     p = sub.add_parser("check-defer",
                        help="Check if the worker should skip a self-created issue")
     p.add_argument("issue_id", type=int)
@@ -577,6 +615,7 @@ COMMANDS = {
     "merge-mr":        cmd_merge_mr,
     "get-mr-pipeline": cmd_get_mr_pipeline,
     "make-branch-name": cmd_make_branch_name,
+    "check-review-defer": cmd_check_review_defer,
     "check-defer":     cmd_check_defer,
 }
 
