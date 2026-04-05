@@ -303,12 +303,19 @@
       // WebView の再読み込み後も前回選択したエージェントを復元する
       if (persisted.selectedAgentId && Array.from(agentSelect.options).some((o) => o.value === persisted.selectedAgentId)) {
         agentSelect.value = persisted.selectedAgentId;
+      } else if (!agentSelect.value && agentSelect.options.length > 0) {
+        agentSelect.selectedIndex = 0;
+      }
+
+      function getSelectedAgentOption() {
+        return agentSelect.selectedOptions[0] || agentSelect.selectedOptions[agentSelect.selectedIndex] || agentSelect.options[0] || null;
       }
 
       /** ツールに応じてモデルドロップダウンを更新する */
       function updateModelSelect(tool) {
         if (!modelSelect) { return; }
         const models = toolModelsMap[tool] || [];
+        const prev = modelSelect.value;
         modelSelect.innerHTML = '';
         const defaultOpt = document.createElement('option');
         defaultOpt.value = '';
@@ -320,10 +327,8 @@
           opt.textContent = id;
           modelSelect.appendChild(opt);
         }
-        // 保存済みのモデル選択を復元する
-        if (desiredModel && models.includes(desiredModel)) {
-          modelSelect.value = desiredModel;
-        }
+
+        if (prev && models.includes(prev)) { modelSelect.value = prev; }
       }
 
       /**
@@ -331,7 +336,7 @@
        * キャッシュがあれば即時表示し、未フェッチの場合はバックグラウンドでフェッチを依頼する。
        */
       function updateModelRow() {
-        const selected = agentSelect.options[agentSelect.selectedIndex];
+        const selected = getSelectedAgentOption();
         const tool = selected ? selected.getAttribute('data-tool') : '';
         const supportsModel = tool === 'claude' || tool === 'kiro-cli';
         if (modelRow) { modelRow.classList.toggle('hidden', !supportsModel); }
@@ -350,16 +355,6 @@
       updateModelRow();
       agentSelect.addEventListener('change', updateModelRow);
 
-      if (modelSelect) {
-        modelSelect.addEventListener('change', function() {
-          desiredModel = modelSelect.value;
-          // WebView 永続化状態にも保存（HTML 再生成なしの再表示時に備える）
-          const prev = vscode.getState() || {};
-          vscode.setState(Object.assign({}, prev, { selectedModel: desiredModel }));
-          vscode.postMessage({ type: 'modelChanged', model: desiredModel });
-        });
-      }
-
       function notifyAgentChanged() {
         const prev = vscode.getState() || {};
         vscode.setState(Object.assign({}, prev, { selectedAgentId: agentSelect.value }));
@@ -372,9 +367,30 @@
       let currentAssistantEl = null;
       let currentOutputEl = null;
       let running = false;
+      const autoScrollThreshold = 24;
+      let shouldAutoScroll = true;
 
-      function scrollToBottom() {
+      function isNearBottom() {
+        return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= autoScrollThreshold;
+      }
+
+      function scrollToBottom(force = false) {
+        if (!force && !shouldAutoScroll) {
+          return;
+        }
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      messagesEl.addEventListener('scroll', function() {
+        shouldAutoScroll = isNearBottom();
+      });
+
+      function appendSystemMessage(text) {
+        const div = document.createElement('div');
+        div.className = 'message system';
+        div.textContent = text;
+        messagesEl.appendChild(div);
+        scrollToBottom();
       }
 
       function setRunning(val) {
@@ -383,8 +399,44 @@
         stopBtn.classList.toggle('visible', val);
       }
 
+      function handleLocalSlashCommands(prompt) {
+        if (prompt.startsWith('/model')) {
+          return false;
+        }
+
+        if (!modelSelect || (modelRow && modelRow.classList.contains('hidden'))) {
+          addSystemMessage(`このエージェントはモデル切替に対応していません。`);
+          return true;
+        }
+
+        const args = prompt.split('/model'.length).trim();
+        const options = Array.from(modelSelect.options).map((o) => o.value).filter(Boolean);
+        
+        if (!args) {
+          const selectedLabel = modelSelect.value || 'Default';
+          const list = options.length > 0 ? options.join(', ') : '(モデル一覧は未取得)';
+          addSystemMessage(`現在のモデル: ${selectedLabel}\n利用可能: ${list}`);
+          return true;
+        }
+
+        if (args.toLowerCase() === 'default') {
+          modelSelect.value = '';
+          addSystemMessage(`モデルを Default に設定しました。`);
+          return true;
+        }
+
+        if (options.includes(args)) {
+          modelSelect.value = args;
+          addSystemMessage(`モデルを ${args} に設定しました。`);
+          return true;
+        }
+
+        addSystemMessage(`モデル "${args}" は見つかりません。/model で一覧を確認してください。`);
+        return true;
+      }
+
       function updateDescription() {
-        const selected = agentSelect.options[agentSelect.selectedIndex];
+        const selected = getSelectedAgentOption();
         agentDescription.textContent = selected ? (selected.title || '') : '';
       }
 
@@ -420,7 +472,7 @@
       for (const entry of initialHistory) {
         renderHistoryEntry(entry);
       }
-      if (initialHistory.length > 0) { scrollToBottom(); }
+      if (initialHistory.length > 0) { scrollToBottom(true); }
 
       // タブ切替などで WebView コンテキストが失われた際の進行中ストリームを復元する
       const pending = chatData.pending;
@@ -446,11 +498,17 @@
         const agentId = agentSelect.value;
         if (!prompt || !agentId || running) { return; }
 
+        if (handleLocalSlashCommands(prompt)) {
+          promptInput.value = '';
+          return;
+        }
+
         const div = document.createElement('div');
         div.className = 'message user';
         div.textContent = prompt;
         messagesEl.appendChild(div);
-        scrollToBottom();
+        shouldAutoScroll = true;
+        scrollToBottom(true);
 
         setRunning(true);
         currentAssistantEl = document.createElement('div');
@@ -464,7 +522,7 @@
         currentOutputEl = document.createElement('span');
         currentAssistantEl.appendChild(currentOutputEl);
         messagesEl.appendChild(currentAssistantEl);
-        scrollToBottom();
+        scrollToBottom(true);
 
         promptInput.value = '';
         const model = modelSelect ? modelSelect.value : '';
