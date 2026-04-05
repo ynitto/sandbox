@@ -297,7 +297,7 @@ def install_service_linux(
 
         [Service]
         Type=simple
-        ExecStart={python_exe} {daemon_path} --interval {interval}
+        ExecStart="{python_exe}" "{daemon_path}" --interval {interval}
         {env_lines.rstrip()}
         Restart=on-failure
         RestartSec=30
@@ -497,7 +497,6 @@ def run_set_config(key_value: str, *, dry_run: bool = False) -> None:
         sys.exit(1)
 
     config = load_config()
-    vtype = _SETTABLE_KEYS[key]
 
     # 型変換 & 設定
     match key:
@@ -517,6 +516,10 @@ def run_set_config(key_value: str, *, dry_run: bool = False) -> None:
                 secs = int(value)
             except ValueError:
                 print(f"ERROR: 数値を指定してください: {value!r}")
+                sys.exit(1)
+            if secs < 60:
+                print(f"ERROR: poll_interval は 60 秒以上を指定してください（指定値: {secs}）。")
+                print("  短すぎるとGitLab API のレートリミットに当たる可能性があります。")
                 sys.exit(1)
             config["poll_interval_seconds"] = secs
             config_key = "poll_interval_seconds"

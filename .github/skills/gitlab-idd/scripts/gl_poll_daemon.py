@@ -36,6 +36,7 @@ Environment:
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import platform
 import subprocess
@@ -50,7 +51,7 @@ from string import Template
 
 from gl_common import (
     RepoConfig, DaemonConfig, DEFAULT_POLL_INTERVAL,
-    AgentCLI, _CLI_CANDIDATES,
+    AgentCLI,
     find_available_agent_clis, find_best_agent_cli,
     get_config_dir, get_config_path,
     load_config, save_config,
@@ -308,15 +309,16 @@ def send_notification(title: str, message: str) -> None:
 # ワーカー起動
 # ---------------------------------------------------------------------------
 
-def _cleanup_old_worker_logs(max_keep: int = 20) -> None:
-    """古いワーカーログファイルを削除し、最新 max_keep 件だけ残す。"""
+def _cleanup_old_worker_files(max_keep: int = 20) -> None:
+    """古いワーカーログ・プロンプトファイルを削除し、最新 max_keep 件だけ残す。"""
     log_dir = get_config_dir()
-    logs = sorted(log_dir.glob("worker-issue-*.log"), key=lambda p: p.stat().st_mtime)
-    for old_log in logs[: max(0, len(logs) - max_keep)]:
-        try:
-            old_log.unlink()
-        except OSError:
-            pass
+    for pattern in ("worker-issue-*.log", "worker-prompt-*.md"):
+        files = sorted(log_dir.glob(pattern), key=lambda p: p.stat().st_mtime)
+        for old_file in files[: max(0, len(files) - max_keep)]:
+            try:
+                old_file.unlink()
+            except OSError:
+                pass
 
 
 def launch_agent_worker(
@@ -329,17 +331,25 @@ def launch_agent_worker(
     """
     イシューを処理するためにエージェント CLI を非同期起動する。
     use_mock=True の場合はプロンプトをファイルに保存するだけ（副作用なし）。
+
+    プロンプトはコマンドライン引数ではなく stdin（ファイルリダイレクト）で渡す。
+    これにより OS の ARG_MAX 制限（Linux: 引数 1 つあたり 128KB）を回避する。
     """
     via_wsl_kiro = cli.via_wsl and cli.name == "kiro"
     prompt = build_worker_prompt(issue, repo, via_wsl_kiro=via_wsl_kiro)
     issue_id = issue.get("iid", "?")
-    _cleanup_old_worker_logs()
+    _cleanup_old_worker_files()
 
     if use_mock:
         run_mock_cli(issue, prompt)
         return
 
-    cmd = cli.build_command(prompt)
+    # プロンプトをファイルに書き出す（stdin として渡す + デバッグ用に残す）
+    prompt_file = get_config_dir() / f"worker-prompt-{issue_id}.md"
+    prompt_file.write_text(prompt, encoding="utf-8")
+
+    # stdin 経由でプロンプトを渡す（コマンドライン引数にプロンプトを含めない）
+    cmd = cli.build_command_stdin()
     # WSL kiro はプロンプト内で clone するため cwd は不要
     cwd = None if cli.via_wsl else (repo.get("local_path") or ".")
     log_file = get_config_dir() / f"worker-issue-{issue_id}.log"
@@ -357,7 +367,12 @@ def launch_agent_worker(
                 kwargs["start_new_session"] = True
         with open(log_file, "w", encoding="utf-8") as log_fh:
             kwargs["stdout"] = log_fh
-            subprocess.Popen(cmd, **kwargs)
+            # stdin にプロンプトファイルを接続する
+            # Unix では子プロセスが fd を継承するため、親が with を抜けて
+            # ファイルを閉じた後も子プロセスは読み続けることができる
+            with open(prompt_file, "r", encoding="utf-8") as prompt_fh:
+                kwargs["stdin"] = prompt_fh
+                subprocess.Popen(cmd, **kwargs)
     except Exception as e:
         logging.error("CLI 起動失敗 (イシュー #%s): %s", issue_id, e)
 
@@ -456,11 +471,18 @@ def run_poll_cycle(
 def setup_logging() -> None:
     log_path = get_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    # RotatingFileHandler: 5MB × 最大 3 世代（計 15MB）でローテーション
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(message)s",
         handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
+            file_handler,
             logging.StreamHandler(sys.stdout),
         ],
     )
@@ -524,12 +546,17 @@ def main() -> None:
         return
 
     interval = config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
+    _cached_preferred: str | None = config.get("preferred_cli")
     while True:
         try:
             config = load_config()  # 毎サイクル再読み込み（設定変更を即反映）
             interval = config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
             use_mock = config.get("mock_cli", False)
-            cli = find_best_agent_cli(config.get("preferred_cli")) or cli
+            # preferred_cli が変更された場合のみ CLI を再検出する（サブプロセス起動コスト節約）
+            new_preferred = config.get("preferred_cli")
+            if new_preferred != _cached_preferred or cli is None:
+                cli = find_best_agent_cli(new_preferred) or cli
+                _cached_preferred = new_preferred
             run_poll_cycle(config, cli, use_mock=use_mock)
         except Exception as e:
             logging.error("予期しないエラー: %s", e)

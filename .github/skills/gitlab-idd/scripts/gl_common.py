@@ -11,6 +11,7 @@ Requirements: Python 3.11+  /  stdlib only
 """
 
 import json
+import logging
 import os
 import platform
 import re
@@ -62,8 +63,7 @@ def retry_on_network_error(
     urllib.error.URLError と OSError（タイムアウト含む）をリトライ対象とする。
     urllib.error.HTTPError（4xx/5xx）はリトライしない。
     """
-    import logging as _logging
-    _log = logger or _logging.getLogger(__name__)
+    _log = logger or logging.getLogger(__name__)
     delay = backoff
     for attempt in range(retries + 1):
         try:
@@ -109,6 +109,17 @@ class AgentCLI:
             # WSL 経由: --cwd は使用しない（プロンプト内の clone 指示で対処）
             return ["wsl", self.binary] + self.prompt_args + [prompt]
         return [self.binary] + self.prompt_args + [prompt]
+
+    def build_command_stdin(self) -> list[str]:
+        """プロンプトを stdin 経由で渡す場合のコマンドリストを返す（引数にプロンプトを含まない）。
+
+        ARG_MAX を超える長いプロンプトの場合に使用する。
+        大半の CLI（claude -p / codex -q / kiro-cli chat / q chat）は
+        引数なしで stdin からプロンプトを読み取ることができる。
+        """
+        if self.via_wsl:
+            return ["wsl", self.binary] + self.prompt_args
+        return [self.binary] + self.prompt_args
 
 
 _CLI_CANDIDATES: list[tuple[str, str, list[str]]] = [
