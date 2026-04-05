@@ -95,7 +95,7 @@ def api(host, token, method, path, data=None, params=None):
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             content = resp.read()
             return json.loads(content) if content.strip() else {}
     except urllib.error.HTTPError as e:
@@ -129,6 +129,40 @@ def extract_field(data, field_path):
         else:
             sys.exit(f"ERROR: Cannot traverse '{part}' in {type(current).__name__}")
     return current
+
+
+def api_list(host, token, path, params=None):
+    """Make paginated GET requests and return all pages combined as a list."""
+    params = dict(params or {})
+    params.setdefault("per_page", 100)
+    all_results = []
+    page = 1
+    while True:
+        params["page"] = page
+        url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(
+            {k: v for k, v in params.items() if v is not None}
+        )
+        headers = {
+            "PRIVATE-TOKEN": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read()
+                page_data = json.loads(content) if content.strip() else []
+                if not isinstance(page_data, list):
+                    return page_data
+                all_results.extend(page_data)
+                next_page = resp.headers.get("X-Next-Page", "").strip()
+                if not next_page:
+                    break
+                page = int(next_page)
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode("utf-8", errors="replace")
+            sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
+    return all_results
 
 
 def out(obj, get_field=None):
@@ -168,7 +202,7 @@ def title_to_slug(title):
     """
     slug = title.lower()
     slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")[:40]
+    slug = slug[:40].strip("-")
     return slug or "task"
 
 
@@ -195,13 +229,12 @@ def cmd_list_issues(args, host, project, token):
     """List project issues with optional filters."""
     ep = encode_project(project)
     params = {
-        "per_page": 100,
         "state": args.state,
         "labels": args.label or None,
         "assignee_username": args.assignee or None,
         "author_username": args.author or None,
     }
-    out(api(host, token, "GET", f"/projects/{ep}/issues", params=params), args.get)
+    out(api_list(host, token, f"/projects/{ep}/issues", params=params), args.get)
 
 
 def cmd_get_issue(args, host, project, token):
@@ -218,8 +251,9 @@ def cmd_create_issue(args, host, project, token):
         data["labels"] = args.labels
     if args.assignee:
         users = api(host, token, "GET", "/users", params={"username": args.assignee})
-        if users:
-            data["assignee_ids"] = [users[0]["id"]]
+        if not users:
+            sys.exit(f"ERROR: GitLab user '{args.assignee}' not found")
+        data["assignee_ids"] = [users[0]["id"]]
     out(api(host, token, "POST", f"/projects/{ep}/issues", data=data), args.get)
 
 
@@ -242,11 +276,18 @@ def cmd_update_issue(args, host, project, token):
 
     if args.assignee:
         users = api(host, token, "GET", "/users", params={"username": args.assignee})
-        if users:
-            data["assignee_ids"] = [users[0]["id"]]
+        if not users:
+            sys.exit(f"ERROR: GitLab user '{args.assignee}' not found")
+        data["assignee_ids"] = [users[0]["id"]]
 
     if args.state_event:
         data["state_event"] = args.state_event  # "close" or "reopen"
+
+    if not data:
+        sys.exit(
+            "ERROR: No update fields specified. "
+            "Use --add-labels, --remove-labels, --assignee, or --state-event."
+        )
 
     out(api(host, token, "PUT", f"/projects/{ep}/issues/{args.issue_id}", data=data), args.get)
 
@@ -264,10 +305,9 @@ def cmd_add_comment(args, host, project, token):
 def cmd_get_comments(args, host, project, token):
     """List all comments on an issue."""
     ep = encode_project(project)
-    out(api(
-        host, token, "GET",
+    out(api_list(
+        host, token,
         f"/projects/{ep}/issues/{args.issue_id}/notes",
-        params={"per_page": 100},
     ), args.get)
 
 
@@ -276,10 +316,9 @@ def cmd_list_mrs(args, host, project, token):
     ep = encode_project(project)
     params = {
         "state": args.state,
-        "per_page": 100,
         "source_branch": args.source_branch or None,
     }
-    out(api(host, token, "GET", f"/projects/{ep}/merge_requests", params=params), args.get)
+    out(api_list(host, token, f"/projects/{ep}/merge_requests", params=params), args.get)
 
 
 def cmd_create_mr(args, host, project, token):

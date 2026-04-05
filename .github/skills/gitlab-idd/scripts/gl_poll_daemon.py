@@ -39,159 +39,31 @@ import logging
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from string import Template
-from typing import NotRequired, TypedDict
+
+from gl_common import (
+    RepoConfig, DaemonConfig, DEFAULT_POLL_INTERVAL,
+    AgentCLI, _CLI_CANDIDATES,
+    find_available_agent_clis, find_best_agent_cli,
+    get_config_dir, get_config_path,
+    load_config, save_config,
+)
 
 
 # ---------------------------------------------------------------------------
-# 型定義
+# デーモン固有のパス管理
 # ---------------------------------------------------------------------------
-
-class RepoConfig(TypedDict):
-    host: str
-    project: str
-    local_path: str
-    token: NotRequired[str]
-
-
-class DaemonConfig(TypedDict):
-    poll_interval_seconds: int
-    repos: list[RepoConfig]
-    seen_issues: dict[str, list[int]]
-    preferred_cli: NotRequired[str]
-    mock_cli: NotRequired[bool]  # True にすると CLI の代わりにモックを使用
-
-
-DEFAULT_POLL_INTERVAL = 300  # 5 分
-
-
-# ---------------------------------------------------------------------------
-# エージェント CLI 検出
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class AgentCLI:
-    """エージェント CLI の呼び出し情報。"""
-    name: str           # "claude" / "codex" / "kiro" / "amazonq"
-    binary: str         # 実行ファイルのフルパス
-    prompt_args: list[str] = field(default_factory=list)  # プロンプト前のオプション
-    via_wsl: bool = False  # Windows + kiro 専用（WSL2 経由）
-
-    def build_command(self, prompt: str) -> list[str]:
-        """CLI を起動するコマンドリストを生成する。WSL kiro は wsl prefix。"""
-        if self.via_wsl:
-            # WSL 経由: --cwd は使用しない（プロンプト内の clone 指示で対処）
-            return ["wsl", self.binary] + self.prompt_args + [prompt]
-        return [self.binary] + self.prompt_args + [prompt]
-
-
-_CLI_CANDIDATES: list[tuple[str, str, list[str]]] = [
-    ("claude",   "claude",    ["-p"]),
-    ("codex",    "codex",     ["-q"]),
-    ("kiro",     "kiro-cli",  ["chat", "--no-interactive", "--trust-all-tools"]),
-    ("amazonq",  "q",         ["chat"]),
-]
-
-
-def _verify_cli(binary: str) -> bool:
-    try:
-        r = subprocess.run([binary, "--version"], capture_output=True, timeout=10)
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
-def _check_wsl_kiro() -> bool:
-    try:
-        r = subprocess.run(["wsl", "kiro-cli", "--version"], capture_output=True, timeout=10)
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
-def find_available_agent_cli(preferred: str | None = None) -> AgentCLI | None:
-    """
-    利用可能なエージェント CLI を自動検出して返す（優先順: claude→codex→kiro→amazonq）。
-    preferred が指定された場合はそれを最優先する。
-    """
-    system = platform.system()
-    found: list[AgentCLI] = []
-
-    for name, binary_name, prompt_args in _CLI_CANDIDATES:
-        if system == "Windows" and name == "kiro":
-            if _check_wsl_kiro():
-                found.append(AgentCLI(name, binary_name, prompt_args, via_wsl=True))
-        else:
-            if path := shutil.which(binary_name):
-                if _verify_cli(path):
-                    found.append(AgentCLI(name, path, prompt_args))
-
-    if not found:
-        return None
-    if preferred:
-        for cli in found:
-            if cli.name == preferred:
-                return cli
-    return found[0]
-
-
-# ---------------------------------------------------------------------------
-# 設定ディレクトリ・ファイル管理
-# ---------------------------------------------------------------------------
-
-def get_config_dir() -> Path:
-    match platform.system():
-        case "Windows":
-            base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        case "Darwin":
-            base = Path.home() / "Library" / "Application Support"
-        case _:
-            base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return base / "gitlab-idd"
-
-
-def get_config_path() -> Path:
-    return get_config_dir() / "config.json"
-
 
 def get_log_path() -> Path:
     return get_config_dir() / "daemon.log"
-
-
-def load_config() -> DaemonConfig:
-    path = get_config_path()
-    if not path.exists():
-        return DaemonConfig(
-            poll_interval_seconds=DEFAULT_POLL_INTERVAL,
-            repos=[],
-            seen_issues={},
-        )
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_config(config: DaemonConfig) -> None:
-    path = get_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    tmp.replace(path)
-    if platform.system() != "Windows":
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -257,15 +129,15 @@ def _find_template_dir() -> Path | None:
     return None
 
 
-def load_template(name: str) -> str:
-    """テンプレートファイルを読み込む。見つからない場合はフォールバック文字列を返す。"""
+def load_template(name: str) -> str | None:
+    """テンプレートファイルを読み込む。見つからない場合は None を返す。"""
     tdir = _find_template_dir()
     if tdir:
         path = tdir / name
         if path.exists():
             return path.read_text(encoding="utf-8")
     logging.debug("テンプレート未発見: %s（フォールバック使用）", name)
-    return None  # type: ignore  # 呼び出し元でフォールバック判定
+    return None
 
 
 def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = False) -> str:
@@ -281,9 +153,14 @@ def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = F
     issue_id = issue.get("iid", "unknown")
     project_name = repo["project"].split("/")[-1]
 
+    # イシュータイトルからブランチ名スラッグを生成（gl.py の title_to_slug と同一ロジック）
+    _title = issue.get("title", "")
+    _slug = re.sub(r"[^a-z0-9]+", "-", _title.lower())
+    _slug = _slug[:40].strip("-") or "task"
+
     variables = {
         "issue_id":     str(issue_id),
-        "issue_title":  issue.get("title", ""),
+        "issue_title":  _title,
         "issue_url":    issue.get("web_url", ""),
         "issue_body":   (issue.get("description") or "（本文なし）").strip(),
         "issue_labels": ", ".join(issue.get("labels") or []),
@@ -291,7 +168,7 @@ def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = F
         "project":      repo["project"],
         "project_name": project_name,
         "local_path":   repo.get("local_path") or ".",
-        "branch_name":  f"feature/issue-{issue_id}",
+        "branch_name":  f"feature/issue-{issue_id}-{_slug}",
         "remote_url":   f"https://{repo['host']}/{repo['project']}.git",
         "clone_dir":    f"/tmp/gitlab-idd-work/{project_name}",
     }
@@ -323,15 +200,46 @@ def gitlab_get(host: str, token: str, path: str, params: dict | None = None) -> 
         return None
 
 
+def gitlab_get_list(host: str, token: str, path: str, params: dict | None = None) -> list[dict]:
+    """GitLab REST API に対してページネーションを行い、全件を返す。失敗時は空リスト。"""
+    params = dict(params or {})
+    params.setdefault("per_page", 100)
+    all_results: list[dict] = []
+    page = 1
+    while True:
+        params["page"] = page
+        url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(
+            {k: v for k, v in params.items() if v is not None}
+        )
+        req = urllib.request.Request(
+            url, headers={"PRIVATE-TOKEN": token, "Accept": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                page_data = json.loads(resp.read())
+                if not isinstance(page_data, list):
+                    break
+                all_results.extend(page_data)
+                next_page = resp.headers.get("X-Next-Page", "").strip()
+                if not next_page:
+                    break
+                page = int(next_page)
+        except urllib.error.HTTPError as e:
+            logging.warning("GitLab API HTTP %s: %s", e.code, path)
+            break
+        except Exception as e:
+            logging.warning("Network error: %s", e)
+            break
+    return all_results
+
+
 def fetch_open_issues(host: str, token: str, project: str) -> list[dict]:
-    """status:open + assignee:any のイシューを取得する（description フィールドを含む）。"""
+    """status:open + assignee:any のイシューを全件取得する（description フィールドを含む）。"""
     ep = urllib.parse.quote(project, safe="")
-    result = gitlab_get(host, token, f"/projects/{ep}/issues", params={
-        "state":    "opened",
-        "labels":   "status:open,assignee:any",
-        "per_page": 100,
+    return gitlab_get_list(host, token, f"/projects/{ep}/issues", params={
+        "state":  "opened",
+        "labels": "status:open,assignee:any",
     })
-    return result if isinstance(result, list) else []
 
 
 # ---------------------------------------------------------------------------
@@ -360,22 +268,28 @@ def send_notification(title: str, message: str) -> None:
     try:
         match platform.system():
             case "Darwin":
-                safe = lambda s: s.replace('"', '\\"')
+                # AppleScript 文字列内の \ と " をエスケープ
+                def _as_escape(s: str) -> str:
+                    return s.replace("\\", "\\\\").replace('"', '\\"')
                 subprocess.run(
                     ["osascript", "-e",
-                     f'display notification "{safe(message)}" with title "{safe(title)}"'],
+                     f'display notification "{_as_escape(message)}" with title "{_as_escape(title)}"'],
                     check=False, capture_output=True,
                 )
             case "Linux":
                 subprocess.run(["notify-send", title, message],
                                check=False, capture_output=True)
             case "Windows":
+                # PowerShell シングルクォート文字列を使用（変数展開なし）
+                # シングルクォート自体は '' でエスケープ
+                def _ps_escape(s: str) -> str:
+                    return s.replace("'", "''")
                 ps = (
                     "Add-Type -AssemblyName System.Windows.Forms;"
                     "$n=New-Object System.Windows.Forms.NotifyIcon;"
                     "$n.Icon=[System.Drawing.SystemIcons]::Information;"
                     "$n.Visible=$true;"
-                    f'$n.ShowBalloonTip(5000,"{title}","{message}",'
+                    f"$n.ShowBalloonTip(5000,'{_ps_escape(title)}','{_ps_escape(message)}',"
                     "[System.Windows.Forms.ToolTipIcon]::Info);"
                     "Start-Sleep -Milliseconds 5500;$n.Dispose()"
                 )
@@ -391,6 +305,17 @@ def send_notification(title: str, message: str) -> None:
 # ワーカー起動
 # ---------------------------------------------------------------------------
 
+def _cleanup_old_worker_logs(max_keep: int = 20) -> None:
+    """古いワーカーログファイルを削除し、最新 max_keep 件だけ残す。"""
+    log_dir = get_config_dir()
+    logs = sorted(log_dir.glob("worker-issue-*.log"), key=lambda p: p.stat().st_mtime)
+    for old_log in logs[: max(0, len(logs) - max_keep)]:
+        try:
+            old_log.unlink()
+        except OSError:
+            pass
+
+
 def launch_agent_worker(
     issue: dict,
     repo: RepoConfig,
@@ -405,6 +330,7 @@ def launch_agent_worker(
     via_wsl_kiro = cli.via_wsl and cli.name == "kiro"
     prompt = build_worker_prompt(issue, repo, via_wsl_kiro=via_wsl_kiro)
     issue_id = issue.get("iid", "?")
+    _cleanup_old_worker_logs()
 
     if use_mock:
         run_mock_cli(issue, prompt)
@@ -565,7 +491,7 @@ def main() -> None:
     # CLI 決定: --dry-run / config.mock_cli は real CLI 不要
     use_mock = args.dry_run or config.get("mock_cli", False)
     preferred = config.get("preferred_cli")
-    cli = find_available_agent_cli(preferred)
+    cli = find_best_agent_cli(preferred)
 
     if cli is None and not use_mock:
         logging.error(
@@ -598,7 +524,7 @@ def main() -> None:
             config = load_config()  # 毎サイクル再読み込み（設定変更を即反映）
             interval = config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
             use_mock = config.get("mock_cli", False)
-            cli = find_available_agent_cli(config.get("preferred_cli")) or cli
+            cli = find_best_agent_cli(config.get("preferred_cli")) or cli
             run_poll_cycle(config, cli, use_mock=use_mock)
         except Exception as e:
             logging.error("予期しないエラー: %s", e)
