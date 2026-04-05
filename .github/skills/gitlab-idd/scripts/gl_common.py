@@ -13,11 +13,14 @@ Requirements: Python 3.11+  /  stdlib only
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
+import time
+import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import Callable, NotRequired, TypedDict
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +43,52 @@ class DaemonConfig(TypedDict):
 
 
 DEFAULT_POLL_INTERVAL = 300  # 5 分
+
+
+# ---------------------------------------------------------------------------
+# 共通ユーティリティ
+# ---------------------------------------------------------------------------
+
+def retry_on_network_error(
+    func: Callable,
+    *args,
+    retries: int = 3,
+    backoff: float = 2.0,
+    logger=None,
+    **kwargs,
+):
+    """一時的なネットワークエラー時に指数バックオフでリトライする。
+
+    urllib.error.URLError と OSError（タイムアウト含む）をリトライ対象とする。
+    urllib.error.HTTPError（4xx/5xx）はリトライしない。
+    """
+    import logging as _logging
+    _log = logger or _logging.getLogger(__name__)
+    delay = backoff
+    for attempt in range(retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except urllib.error.HTTPError:
+            raise  # HTTPエラーはリトライしない
+        except (urllib.error.URLError, OSError) as exc:
+            if attempt == retries:
+                raise
+            _log.warning("ネットワークエラー (試行 %d/%d): %s — %.0fs 後にリトライ",
+                         attempt + 1, retries, exc, delay)
+            time.sleep(delay)
+            delay *= 2
+
+
+def title_to_slug(title: str) -> str:
+    """イシュータイトルを URL セーフなブランチ名スラッグに変換する。
+
+    非 ASCII 文字（日本語など）は除去するため、ASCII 文字を含まないタイトルは
+    空文字になる。その場合は "task" にフォールバックする。
+    """
+    slug = title.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = slug[:40].strip("-")
+    return slug or "task"
 
 
 # ---------------------------------------------------------------------------

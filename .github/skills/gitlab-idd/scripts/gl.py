@@ -25,13 +25,14 @@ Environment variables:
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+
+from gl_common import title_to_slug
 
 
 # ---------------------------------------------------------------------------
@@ -194,18 +195,6 @@ def read_body(body, body_file, option_name="--body"):
     return body or ""
 
 
-def title_to_slug(title):
-    """Convert an issue title to a URL-safe branch name slug.
-
-    Non-ASCII characters (e.g. Japanese) are stripped, so a pure
-    non-ASCII title falls back to "task" to avoid an empty slug.
-    """
-    slug = title.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug[:40].strip("-")
-    return slug or "task"
-
-
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -348,6 +337,8 @@ def cmd_update_mr(args, host, project, token):
         title = mr.get("title", "")
         if title.startswith("Draft: "):
             data["title"] = title[len("Draft: "):]
+        elif title.startswith("WIP: "):
+            data["title"] = title[len("WIP: "):]
     out(api(host, token, "PUT", f"/projects/{ep}/merge_requests/{args.mr_id}", data=data), args.get)
 
 

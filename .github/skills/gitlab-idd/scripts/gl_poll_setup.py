@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -226,14 +227,17 @@ def _plist_path() -> Path:
 
 def install_service_macos(
     python_exe: str, daemon_path: str, interval: int,
-    cli: AgentCLI, token: str, *, mock_cli: bool = False, dry_run: bool = False
+    cli: AgentCLI, *, mock_cli: bool = False, dry_run: bool = False
 ) -> bool:
-    env_entries = f"        <key>GITLAB_IDD_CLI</key>\n        <string>{cli.name}</string>\n"
-    if token:
-        env_entries += f"        <key>GITLAB_TOKEN</key>\n        <string>{token}</string>\n"
+    # トークンはサービスファイルに埋め込まず、config.json または環境変数から読む
+    env_entries = ""
     if mock_cli:
         env_entries += "        <key>GITLAB_IDD_MOCK_CLI</key>\n        <string>true</string>\n"
 
+    env_block = (
+        f"    <key>EnvironmentVariables</key>\n    <dict>\n{env_entries}    </dict>\n"
+        if env_entries else ""
+    )
     plist = textwrap.dedent(f"""\
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -247,10 +251,7 @@ def install_service_macos(
                 <string>{daemon_path}</string>
                 <string>--interval</string><string>{interval}</string>
             </array>
-            <key>EnvironmentVariables</key>
-            <dict>
-        {env_entries}    </dict>
-            <key>KeepAlive</key><true/>
+        {env_block}    <key>KeepAlive</key><true/>
             <key>RunAtLoad</key><true/>
             <key>StandardOutPath</key><string>{get_config_dir() / "daemon.log"}</string>
             <key>StandardErrorPath</key><string>{get_config_dir() / "daemon.err.log"}</string>
@@ -281,11 +282,10 @@ def _systemd_service_path() -> Path:
 
 def install_service_linux(
     python_exe: str, daemon_path: str, interval: int,
-    cli: AgentCLI, token: str, *, mock_cli: bool = False, dry_run: bool = False
+    cli: AgentCLI, *, mock_cli: bool = False, dry_run: bool = False
 ) -> bool:
-    env_lines = f"Environment=GITLAB_IDD_CLI={cli.name}\n"
-    if token:
-        env_lines += f"Environment=GITLAB_TOKEN={token}\n"
+    # トークンはサービスファイルに埋め込まず、config.json または環境変数から読む
+    env_lines = ""
     if mock_cli:
         env_lines += "Environment=GITLAB_IDD_MOCK_CLI=true\n"
 
@@ -376,19 +376,19 @@ def install_service_windows(
 
 def install_service(
     python_exe: str, daemon_path: str, interval: int,
-    cli: AgentCLI, token: str, *, mock_cli: bool = False, dry_run: bool = False
+    cli: AgentCLI, *, mock_cli: bool = False, dry_run: bool = False
 ) -> bool:
     system = platform.system()
     print(f"\n[サービスインストール] OS={system}  CLI={'mock' if mock_cli else cli.name}")
     match system:
         case "Darwin":
             return install_service_macos(
-                python_exe, daemon_path, interval, cli, token,
+                python_exe, daemon_path, interval, cli,
                 mock_cli=mock_cli, dry_run=dry_run
             )
         case "Linux":
             return install_service_linux(
-                python_exe, daemon_path, interval, cli, token,
+                python_exe, daemon_path, interval, cli,
                 mock_cli=mock_cli, dry_run=dry_run
             )
         case "Windows":
@@ -575,8 +575,10 @@ def configure_session_hook(
         return
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(settings_path, "w", encoding="utf-8") as f:
+    tmp = settings_path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
+    tmp.replace(settings_path)
     print(f"  SessionStart フック登録: {settings_path}")
 
 
@@ -685,6 +687,10 @@ def _ensure_daemon_running() -> None:
                     subprocess.run(
                         ["systemctl", "--user", "start", SERVICE_NAME], capture_output=True
                     )
+            case "Windows":
+                subprocess.run(
+                    ["schtasks", "/Run", "/TN", SERVICE_NAME], capture_output=True
+                )
     except Exception:
         pass
 
@@ -793,7 +799,7 @@ def run_install(*, dry_run: bool = False, allow_mock_cli: bool = False) -> None:
     daemon_path = str(get_installed_daemon_path())
     interval = config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
     ok = install_service(
-        python_exe, daemon_path, interval, best_cli, token,
+        python_exe, daemon_path, interval, best_cli,
         mock_cli=use_mock_cli, dry_run=dry_run,
     )
 

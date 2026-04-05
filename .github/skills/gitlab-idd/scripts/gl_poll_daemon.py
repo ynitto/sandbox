@@ -38,7 +38,6 @@ import json
 import logging
 import os
 import platform
-import re
 import subprocess
 import sys
 import time
@@ -55,6 +54,8 @@ from gl_common import (
     find_available_agent_clis, find_best_agent_cli,
     get_config_dir, get_config_path,
     load_config, save_config,
+    title_to_slug,
+    retry_on_network_error,
 )
 
 
@@ -153,10 +154,8 @@ def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = F
     issue_id = issue.get("iid", "unknown")
     project_name = repo["project"].split("/")[-1]
 
-    # イシュータイトルからブランチ名スラッグを生成（gl.py の title_to_slug と同一ロジック）
     _title = issue.get("title", "")
-    _slug = re.sub(r"[^a-z0-9]+", "-", _title.lower())
-    _slug = _slug[:40].strip("-") or "task"
+    _slug = title_to_slug(_title)
 
     variables = {
         "issue_id":     str(issue_id),
@@ -181,27 +180,33 @@ def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = F
 # GitLab API
 # ---------------------------------------------------------------------------
 
-def gitlab_get(host: str, token: str, path: str, params: dict | None = None) -> object:
-    """GitLab REST API に GET して JSON を返す。失敗時は None。"""
-    url = f"https://{host}/api/v4{path}"
-    if params:
-        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+def _http_get(url: str, token: str) -> tuple[bytes, str]:
+    """1 回分の HTTP GET を実行し (body, next_page_header) を返す。"""
     req = urllib.request.Request(
         url, headers={"PRIVATE-TOKEN": token, "Accept": "application/json"}
     )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read(), resp.headers.get("X-Next-Page", "").strip()
+
+
+def gitlab_get(host: str, token: str, path: str, params: dict | None = None) -> object:
+    """GitLab REST API に GET して JSON を返す。一時的なネットワーク障害はリトライ。失敗時は None。"""
+    url = f"https://{host}/api/v4{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
+        body, _ = retry_on_network_error(_http_get, url, token, logger=logging.getLogger(__name__))
+        return json.loads(body)
     except urllib.error.HTTPError as e:
         logging.warning("GitLab API HTTP %s: %s", e.code, path)
         return None
     except Exception as e:
-        logging.warning("Network error: %s", e)
+        logging.warning("ネットワークエラー（リトライ上限）: %s", e)
         return None
 
 
 def gitlab_get_list(host: str, token: str, path: str, params: dict | None = None) -> list[dict]:
-    """GitLab REST API に対してページネーションを行い、全件を返す。失敗時は空リスト。"""
+    """GitLab REST API に対してページネーションを行い、全件を返す。一時的なネットワーク障害はリトライ。失敗時は空リスト。"""
     params = dict(params or {})
     params.setdefault("per_page", 100)
     all_results: list[dict] = []
@@ -211,24 +216,22 @@ def gitlab_get_list(host: str, token: str, path: str, params: dict | None = None
         url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(
             {k: v for k, v in params.items() if v is not None}
         )
-        req = urllib.request.Request(
-            url, headers={"PRIVATE-TOKEN": token, "Accept": "application/json"}
-        )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                page_data = json.loads(resp.read())
-                if not isinstance(page_data, list):
-                    break
-                all_results.extend(page_data)
-                next_page = resp.headers.get("X-Next-Page", "").strip()
-                if not next_page:
-                    break
-                page = int(next_page)
+            body, next_page = retry_on_network_error(
+                _http_get, url, token, logger=logging.getLogger(__name__)
+            )
+            page_data = json.loads(body)
+            if not isinstance(page_data, list):
+                break
+            all_results.extend(page_data)
+            if not next_page:
+                break
+            page = int(next_page)
         except urllib.error.HTTPError as e:
             logging.warning("GitLab API HTTP %s: %s", e.code, path)
             break
         except Exception as e:
-            logging.warning("Network error: %s", e)
+            logging.warning("ネットワークエラー（リトライ上限）: %s", e)
             break
     return all_results
 
@@ -431,16 +434,18 @@ def run_poll_cycle(
             iid = issue.get("iid", "?")
             title = issue.get("title", "")
             logging.info("  %sイシュー #%s: %s", mock_tag, iid, title)
+            # ワーカー起動前に seen に記録することで、複数デーモンインスタンスによる
+            # 重複起動を防ぐ（ベストエフォート）
+            if not use_mock:
+                mark_seen(config, repo, [issue])
+                save_config(config)
             send_notification(
                 f"GitLab 新規イシュー ({host}/{project})",
                 f"#{iid} {title}",
             )
             launch_agent_worker(issue, repo, cli, use_mock=use_mock)
 
-        if not use_mock:
-            mark_seen(config, repo, new_issues)
-            save_config(config)
-        else:
+        if use_mock:
             logging.info("[MOCK CLI] seen_issues は更新しません（再実行でテスト可能）")
 
 
