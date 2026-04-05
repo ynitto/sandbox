@@ -95,7 +95,7 @@ def api(host, token, method, path, data=None, params=None):
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             content = resp.read()
             return json.loads(content) if content.strip() else {}
     except urllib.error.HTTPError as e:
@@ -168,7 +168,7 @@ def title_to_slug(title):
     """
     slug = title.lower()
     slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")[:40]
+    slug = slug[:40].strip("-")
     return slug or "task"
 
 
@@ -218,8 +218,9 @@ def cmd_create_issue(args, host, project, token):
         data["labels"] = args.labels
     if args.assignee:
         users = api(host, token, "GET", "/users", params={"username": args.assignee})
-        if users:
-            data["assignee_ids"] = [users[0]["id"]]
+        if not users:
+            sys.exit(f"ERROR: GitLab user '{args.assignee}' not found")
+        data["assignee_ids"] = [users[0]["id"]]
     out(api(host, token, "POST", f"/projects/{ep}/issues", data=data), args.get)
 
 
@@ -242,11 +243,18 @@ def cmd_update_issue(args, host, project, token):
 
     if args.assignee:
         users = api(host, token, "GET", "/users", params={"username": args.assignee})
-        if users:
-            data["assignee_ids"] = [users[0]["id"]]
+        if not users:
+            sys.exit(f"ERROR: GitLab user '{args.assignee}' not found")
+        data["assignee_ids"] = [users[0]["id"]]
 
     if args.state_event:
         data["state_event"] = args.state_event  # "close" or "reopen"
+
+    if not data:
+        sys.exit(
+            "ERROR: No update fields specified. "
+            "Use --add-labels, --remove-labels, --assignee, or --state-event."
+        )
 
     out(api(host, token, "PUT", f"/projects/{ep}/issues/{args.issue_id}", data=data), args.get)
 

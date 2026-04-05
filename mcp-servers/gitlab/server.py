@@ -327,8 +327,9 @@ def update_issue(
                 params={"username": assignee_username},
                 host=host, token=token,
             )
-            if users:
-                data["assignee_ids"] = [users[0]["id"]]
+            if not users:
+                raise RuntimeError(f"GitLab user '{assignee_username}' not found")
+            data["assignee_ids"] = [users[0]["id"]]
 
     if state_event:
         data["state_event"] = state_event
@@ -464,6 +465,12 @@ def update_merge_request(
         data["state_event"] = state_event
     if draft is not None:
         data["draft"] = draft
+        if not draft and title is None:
+            # draft 解除時: タイトルに "Draft: " プレフィックスが残らないよう除去する
+            mr = gitlab_api("GET", f"/projects/{ep}/merge_requests/{mr_iid}", host=host, token=token)
+            current_title = mr.get("title", "")
+            if current_title.startswith("Draft: "):
+                data["title"] = current_title[len("Draft: "):]
     if target_branch is not None:
         data["target_branch"] = target_branch
 
@@ -609,7 +616,7 @@ def make_branch_name(issue_iid: int) -> str:
     title = issue.get("title", "")
     slug = title.lower()
     slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")[:40]
+    slug = slug[:40].strip("-")
     slug = slug or "task"
     return f"feature/issue-{issue_iid}-{slug}"
 

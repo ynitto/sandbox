@@ -257,15 +257,15 @@ def _find_template_dir() -> Path | None:
     return None
 
 
-def load_template(name: str) -> str:
-    """テンプレートファイルを読み込む。見つからない場合はフォールバック文字列を返す。"""
+def load_template(name: str) -> str | None:
+    """テンプレートファイルを読み込む。見つからない場合は None を返す。"""
     tdir = _find_template_dir()
     if tdir:
         path = tdir / name
         if path.exists():
             return path.read_text(encoding="utf-8")
     logging.debug("テンプレート未発見: %s（フォールバック使用）", name)
-    return None  # type: ignore  # 呼び出し元でフォールバック判定
+    return None
 
 
 def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = False) -> str:
@@ -281,9 +281,14 @@ def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = F
     issue_id = issue.get("iid", "unknown")
     project_name = repo["project"].split("/")[-1]
 
+    # イシュータイトルからブランチ名スラッグを生成（gl.py の title_to_slug と同一ロジック）
+    _title = issue.get("title", "")
+    _slug = re.sub(r"[^a-z0-9]+", "-", _title.lower())
+    _slug = _slug[:40].strip("-") or "task"
+
     variables = {
         "issue_id":     str(issue_id),
-        "issue_title":  issue.get("title", ""),
+        "issue_title":  _title,
         "issue_url":    issue.get("web_url", ""),
         "issue_body":   (issue.get("description") or "（本文なし）").strip(),
         "issue_labels": ", ".join(issue.get("labels") or []),
@@ -291,7 +296,7 @@ def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = F
         "project":      repo["project"],
         "project_name": project_name,
         "local_path":   repo.get("local_path") or ".",
-        "branch_name":  f"feature/issue-{issue_id}",
+        "branch_name":  f"feature/issue-{issue_id}-{_slug}",
         "remote_url":   f"https://{repo['host']}/{repo['project']}.git",
         "clone_dir":    f"/tmp/gitlab-idd-work/{project_name}",
     }
@@ -360,22 +365,28 @@ def send_notification(title: str, message: str) -> None:
     try:
         match platform.system():
             case "Darwin":
-                safe = lambda s: s.replace('"', '\\"')
+                # AppleScript 文字列内の \ と " をエスケープ
+                def _as_escape(s: str) -> str:
+                    return s.replace("\\", "\\\\").replace('"', '\\"')
                 subprocess.run(
                     ["osascript", "-e",
-                     f'display notification "{safe(message)}" with title "{safe(title)}"'],
+                     f'display notification "{_as_escape(message)}" with title "{_as_escape(title)}"'],
                     check=False, capture_output=True,
                 )
             case "Linux":
                 subprocess.run(["notify-send", title, message],
                                check=False, capture_output=True)
             case "Windows":
+                # PowerShell シングルクォート文字列を使用（変数展開なし）
+                # シングルクォート自体は '' でエスケープ
+                def _ps_escape(s: str) -> str:
+                    return s.replace("'", "''")
                 ps = (
                     "Add-Type -AssemblyName System.Windows.Forms;"
                     "$n=New-Object System.Windows.Forms.NotifyIcon;"
                     "$n.Icon=[System.Drawing.SystemIcons]::Information;"
                     "$n.Visible=$true;"
-                    f'$n.ShowBalloonTip(5000,"{title}","{message}",'
+                    f"$n.ShowBalloonTip(5000,'{_ps_escape(title)}','{_ps_escape(message)}',"
                     "[System.Windows.Forms.ToolTipIcon]::Info);"
                     "Start-Sleep -Milliseconds 5500;$n.Dispose()"
                 )
