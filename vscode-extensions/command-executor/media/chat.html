@@ -325,7 +325,13 @@
           opt.textContent = id;
           modelSelect.appendChild(opt);
         }
-        if (prev && models.includes(prev)) { modelSelect.value = prev; }
+        // WebView 再読み込み後も選択モデルを復元する。
+        // 優先順位: 現在の DOM 値 > 拡張ホストから渡された selectedModel（globalState 由来）
+        if (prev && models.includes(prev)) {
+          modelSelect.value = prev;
+        } else if (chatData.selectedModel && models.includes(chatData.selectedModel)) {
+          modelSelect.value = chatData.selectedModel;
+        }
       }
 
       /**
@@ -351,6 +357,13 @@
 
       updateModelRow();
       agentSelect.addEventListener('change', updateModelRow);
+
+      // モデル選択が変わったら拡張ホストへ通知して globalState を更新する
+      if (modelSelect) {
+        modelSelect.addEventListener('change', function() {
+          vscode.postMessage({ type: 'modelChanged', model: modelSelect.value });
+        });
+      }
 
       function notifyAgentChanged() {
         const prev = vscode.getState() || {};

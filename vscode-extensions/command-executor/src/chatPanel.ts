@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as fs from 'fs';
@@ -227,6 +228,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
+    // JSON.stringify は '<' をエスケープしないため、チャット履歴に "</script>" が含まれると
+    // <script type="application/json"> タグが途中で閉じられHTMLが破壊される。
+    // \u003c にエスケープすることで HTML パーサーに誤認されないようにする。
     const chatData = JSON.stringify({
       history: this._chatHistory,
       toolModels: { claude: this._claudeModels, 'kiro-cli': this._kiroModels },
@@ -235,7 +239,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       pending: this._currentProcess
         ? { stdout: this._currentStdout, stderr: this._currentStderr }
         : null,
-    });
+    }).replace(/</g, '\\u003c');
     const selectedAgentId = this._selectedAgentId;
     const agentOptionsHtml = this._agents
       .map((agent, index) => {
@@ -262,12 +266,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 }
 
 function getNonce(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let nonce = '';
-  for (let i = 0; i < 32; i++) {
-    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return nonce;
+  return crypto.randomBytes(16).toString('base64');
 }
 
 function escapeHtmlText(value: string): string {

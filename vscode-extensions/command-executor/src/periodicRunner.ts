@@ -1,3 +1,4 @@
+import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import { AgentConfig } from './agentConfig';
 import { buildCommand, runCommand } from './commandRunner';
@@ -13,6 +14,8 @@ export class PeriodicRunner {
   private _timers: NodeJS.Timeout[] = [];
   private _runningPrompts = new Set<string>();
   private _runningPromptTimers = new Map<string, NodeJS.Timeout>();
+  /** 実行中のサブプロセス。stop()/dispose() 時にkillするために保持する */
+  private _runningProcesses = new Set<cp.ChildProcess>();
   private _outputChannel: vscode.OutputChannel;
 
   constructor(
@@ -56,7 +59,7 @@ export class PeriodicRunner {
     }
   }
 
-  /** 全タイマーを停止する */
+  /** 全タイマーを停止し、実行中のサブプロセスをkillする */
   stop(): void {
     for (const timer of this._timers) {
       clearInterval(timer);
@@ -68,6 +71,11 @@ export class PeriodicRunner {
     }
     this._runningPromptTimers.clear();
     this._runningPrompts.clear();
+    // 実行中のサブプロセスをkillする
+    for (const proc of this._runningProcesses) {
+      proc.kill();
+    }
+    this._runningProcesses.clear();
   }
 
   dispose(): void {
@@ -112,11 +120,12 @@ export class PeriodicRunner {
     this._outputChannel.appendLine(`> ${entry.prompt}`);
     this._outputChannel.appendLine('---');
 
-    runCommand(
+    const proc = runCommand(
       cmdConfig,
       (data) => this._outputChannel.append(data),
       (data) => this._outputChannel.append(data),
       (code, _sessionId) => {
+        this._runningProcesses.delete(proc);
         // 正常完了時はタイムアウトタイマーをキャンセルして即座にキーを解放する
         const timerId = this._runningPromptTimers.get(key);
         if (timerId !== undefined) {
@@ -127,6 +136,7 @@ export class PeriodicRunner {
         this._outputChannel.appendLine(`--- 完了 (終了コード: ${code}) ---\n`);
       }
     );
+    this._runningProcesses.add(proc);
   }
 }
 
