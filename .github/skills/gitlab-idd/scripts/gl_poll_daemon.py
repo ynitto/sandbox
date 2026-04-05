@@ -36,9 +36,9 @@ Environment:
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import platform
-import re
 import subprocess
 import sys
 import time
@@ -51,10 +51,12 @@ from string import Template
 
 from gl_common import (
     RepoConfig, DaemonConfig, DEFAULT_POLL_INTERVAL,
-    AgentCLI, _CLI_CANDIDATES,
+    AgentCLI,
     find_available_agent_clis, find_best_agent_cli,
     get_config_dir, get_config_path,
     load_config, save_config,
+    title_to_slug,
+    retry_on_network_error,
 )
 
 
@@ -153,10 +155,8 @@ def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = F
     issue_id = issue.get("iid", "unknown")
     project_name = repo["project"].split("/")[-1]
 
-    # イシュータイトルからブランチ名スラッグを生成（gl.py の title_to_slug と同一ロジック）
     _title = issue.get("title", "")
-    _slug = re.sub(r"[^a-z0-9]+", "-", _title.lower())
-    _slug = _slug[:40].strip("-") or "task"
+    _slug = title_to_slug(_title)
 
     variables = {
         "issue_id":     str(issue_id),
@@ -181,27 +181,33 @@ def build_worker_prompt(issue: dict, repo: RepoConfig, *, via_wsl_kiro: bool = F
 # GitLab API
 # ---------------------------------------------------------------------------
 
-def gitlab_get(host: str, token: str, path: str, params: dict | None = None) -> object:
-    """GitLab REST API に GET して JSON を返す。失敗時は None。"""
-    url = f"https://{host}/api/v4{path}"
-    if params:
-        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+def _http_get(url: str, token: str) -> tuple[bytes, str]:
+    """1 回分の HTTP GET を実行し (body, next_page_header) を返す。"""
     req = urllib.request.Request(
         url, headers={"PRIVATE-TOKEN": token, "Accept": "application/json"}
     )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read(), resp.headers.get("X-Next-Page", "").strip()
+
+
+def gitlab_get(host: str, token: str, path: str, params: dict | None = None) -> object:
+    """GitLab REST API に GET して JSON を返す。一時的なネットワーク障害はリトライ。失敗時は None。"""
+    url = f"https://{host}/api/v4{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
+        body, _ = retry_on_network_error(_http_get, url, token, logger=logging.getLogger(__name__))
+        return json.loads(body)
     except urllib.error.HTTPError as e:
         logging.warning("GitLab API HTTP %s: %s", e.code, path)
         return None
     except Exception as e:
-        logging.warning("Network error: %s", e)
+        logging.warning("ネットワークエラー（リトライ上限）: %s", e)
         return None
 
 
 def gitlab_get_list(host: str, token: str, path: str, params: dict | None = None) -> list[dict]:
-    """GitLab REST API に対してページネーションを行い、全件を返す。失敗時は空リスト。"""
+    """GitLab REST API に対してページネーションを行い、全件を返す。一時的なネットワーク障害はリトライ。失敗時は空リスト。"""
     params = dict(params or {})
     params.setdefault("per_page", 100)
     all_results: list[dict] = []
@@ -211,24 +217,22 @@ def gitlab_get_list(host: str, token: str, path: str, params: dict | None = None
         url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(
             {k: v for k, v in params.items() if v is not None}
         )
-        req = urllib.request.Request(
-            url, headers={"PRIVATE-TOKEN": token, "Accept": "application/json"}
-        )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                page_data = json.loads(resp.read())
-                if not isinstance(page_data, list):
-                    break
-                all_results.extend(page_data)
-                next_page = resp.headers.get("X-Next-Page", "").strip()
-                if not next_page:
-                    break
-                page = int(next_page)
+            body, next_page = retry_on_network_error(
+                _http_get, url, token, logger=logging.getLogger(__name__)
+            )
+            page_data = json.loads(body)
+            if not isinstance(page_data, list):
+                break
+            all_results.extend(page_data)
+            if not next_page:
+                break
+            page = int(next_page)
         except urllib.error.HTTPError as e:
             logging.warning("GitLab API HTTP %s: %s", e.code, path)
             break
         except Exception as e:
-            logging.warning("Network error: %s", e)
+            logging.warning("ネットワークエラー（リトライ上限）: %s", e)
             break
     return all_results
 
@@ -268,9 +272,12 @@ def send_notification(title: str, message: str) -> None:
     try:
         match platform.system():
             case "Darwin":
-                # AppleScript 文字列内の \ と " をエスケープ
+                # AppleScript 文字列内の \、"、改行をエスケープ
                 def _as_escape(s: str) -> str:
-                    return s.replace("\\", "\\\\").replace('"', '\\"')
+                    return (s.replace("\\", "\\\\")
+                             .replace('"', '\\"')
+                             .replace("\r", "")
+                             .replace("\n", " "))
                 subprocess.run(
                     ["osascript", "-e",
                      f'display notification "{_as_escape(message)}" with title "{_as_escape(title)}"'],
@@ -281,9 +288,11 @@ def send_notification(title: str, message: str) -> None:
                                check=False, capture_output=True)
             case "Windows":
                 # PowerShell シングルクォート文字列を使用（変数展開なし）
-                # シングルクォート自体は '' でエスケープ
+                # シングルクォート自体は '' でエスケープ、改行はスペースに置換
                 def _ps_escape(s: str) -> str:
-                    return s.replace("'", "''")
+                    return (s.replace("'", "''")
+                             .replace("\r", "")
+                             .replace("\n", " "))
                 ps = (
                     "Add-Type -AssemblyName System.Windows.Forms;"
                     "$n=New-Object System.Windows.Forms.NotifyIcon;"
@@ -305,13 +314,22 @@ def send_notification(title: str, message: str) -> None:
 # ワーカー起動
 # ---------------------------------------------------------------------------
 
-def _cleanup_old_worker_logs(max_keep: int = 20) -> None:
-    """古いワーカーログファイルを削除し、最新 max_keep 件だけ残す。"""
+def _cleanup_old_worker_files(max_keep: int = 20) -> None:
+    """古いワーカーログ・プロンプトファイルを削除し、最新 max_keep 件だけ残す。"""
     log_dir = get_config_dir()
-    logs = sorted(log_dir.glob("worker-issue-*.log"), key=lambda p: p.stat().st_mtime)
-    for old_log in logs[: max(0, len(logs) - max_keep)]:
+    for pattern in ("worker-issue-*.log", "worker-prompt-*.md"):
         try:
-            old_log.unlink()
+            # reverse=True で新しい順にソートし、max_keep 件を超えた古いファイルを削除
+            files = sorted(
+                log_dir.glob(pattern),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for old_file in files[max_keep:]:
+                try:
+                    old_file.unlink()
+                except OSError:
+                    pass
         except OSError:
             pass
 
@@ -326,17 +344,25 @@ def launch_agent_worker(
     """
     イシューを処理するためにエージェント CLI を非同期起動する。
     use_mock=True の場合はプロンプトをファイルに保存するだけ（副作用なし）。
+
+    プロンプトはコマンドライン引数ではなく stdin（ファイルリダイレクト）で渡す。
+    これにより OS の ARG_MAX 制限（Linux: 引数 1 つあたり 128KB）を回避する。
     """
     via_wsl_kiro = cli.via_wsl and cli.name == "kiro"
     prompt = build_worker_prompt(issue, repo, via_wsl_kiro=via_wsl_kiro)
     issue_id = issue.get("iid", "?")
-    _cleanup_old_worker_logs()
+    _cleanup_old_worker_files()
 
     if use_mock:
         run_mock_cli(issue, prompt)
         return
 
-    cmd = cli.build_command(prompt)
+    # プロンプトをファイルに書き出す（stdin として渡す + デバッグ用に残す）
+    prompt_file = get_config_dir() / f"worker-prompt-{issue_id}.md"
+    prompt_file.write_text(prompt, encoding="utf-8")
+
+    # stdin 経由でプロンプトを渡す（コマンドライン引数にプロンプトを含めない）
+    cmd = cli.build_command_stdin()
     # WSL kiro はプロンプト内で clone するため cwd は不要
     cwd = None if cli.via_wsl else (repo.get("local_path") or ".")
     log_file = get_config_dir() / f"worker-issue-{issue_id}.log"
@@ -349,12 +375,17 @@ def launch_agent_worker(
         }
         match platform.system():
             case "Windows":
-                kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
+                kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
             case _:
                 kwargs["start_new_session"] = True
         with open(log_file, "w", encoding="utf-8") as log_fh:
             kwargs["stdout"] = log_fh
-            subprocess.Popen(cmd, **kwargs)
+            # stdin にプロンプトファイルを接続する
+            # Unix では子プロセスが fd を継承するため、親が with を抜けて
+            # ファイルを閉じた後も子プロセスは読み続けることができる
+            with open(prompt_file, "r", encoding="utf-8") as prompt_fh:
+                kwargs["stdin"] = prompt_fh
+                subprocess.Popen(cmd, **kwargs)
     except Exception as e:
         logging.error("CLI 起動失敗 (イシュー #%s): %s", issue_id, e)
 
@@ -378,9 +409,10 @@ def get_token_for_repo(repo: RepoConfig) -> str:
 
 def mark_seen(config: DaemonConfig, repo: RepoConfig, issues: list[dict]) -> None:
     key = repo_key(repo)
-    seen = set(config.setdefault("seen_issues", {}).get(key, []))
+    # int() で統一: JSON 復元後は str になる場合があるため型を揃える
+    seen = set(int(i) for i in config.setdefault("seen_issues", {}).get(key, []))
     for issue in issues:
-        seen.add(issue["iid"])
+        seen.add(int(issue["iid"]))
     config["seen_issues"][key] = sorted(seen)
 
 
@@ -431,16 +463,18 @@ def run_poll_cycle(
             iid = issue.get("iid", "?")
             title = issue.get("title", "")
             logging.info("  %sイシュー #%s: %s", mock_tag, iid, title)
+            # ワーカー起動前に seen に記録することで、複数デーモンインスタンスによる
+            # 重複起動を防ぐ（ベストエフォート）
+            if not use_mock:
+                mark_seen(config, repo, [issue])
+                save_config(config)
             send_notification(
                 f"GitLab 新規イシュー ({host}/{project})",
                 f"#{iid} {title}",
             )
             launch_agent_worker(issue, repo, cli, use_mock=use_mock)
 
-        if not use_mock:
-            mark_seen(config, repo, new_issues)
-            save_config(config)
-        else:
+        if use_mock:
             logging.info("[MOCK CLI] seen_issues は更新しません（再実行でテスト可能）")
 
 
@@ -451,11 +485,18 @@ def run_poll_cycle(
 def setup_logging() -> None:
     log_path = get_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    # RotatingFileHandler: 5MB × 最大 3 世代（計 15MB）でローテーション
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(message)s",
         handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
+            file_handler,
             logging.StreamHandler(sys.stdout),
         ],
     )
@@ -519,12 +560,17 @@ def main() -> None:
         return
 
     interval = config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
+    _cached_preferred: str | None = config.get("preferred_cli")
     while True:
         try:
             config = load_config()  # 毎サイクル再読み込み（設定変更を即反映）
             interval = config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
             use_mock = config.get("mock_cli", False)
-            cli = find_best_agent_cli(config.get("preferred_cli")) or cli
+            # preferred_cli が変更された場合のみ CLI を再検出する（サブプロセス起動コスト節約）
+            new_preferred = config.get("preferred_cli")
+            if new_preferred != _cached_preferred or cli is None:
+                cli = find_best_agent_cli(new_preferred) or cli
+                _cached_preferred = new_preferred
             run_poll_cycle(config, cli, use_mock=use_mock)
         except Exception as e:
             logging.error("予期しないエラー: %s", e)
