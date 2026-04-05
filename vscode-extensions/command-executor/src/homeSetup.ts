@@ -162,7 +162,8 @@ function copyDirRecursive(
     if (entry.isDirectory()) {
       copyDirRecursive(
         path.join(srcDir, entry.name),
-        path.join(destDir, entry.name)
+        path.join(destDir, entry.name),
+        renameFile
       );
     } else if (entry.isFile()) {
       const destName = renameFile ? renameFile(entry.name) : entry.name;
@@ -189,15 +190,6 @@ function syncConfig(config: SyncConfig): void {
 
       const destDir = path.join(config.homeDir, mapping.destDir);
 
-      // 同期先が存在し、同期元より新しければスキップ
-      if (fs.existsSync(destDir)) {
-        const srcMtime = fs.statSync(srcDir).mtime;
-        const destMtime = fs.statSync(destDir).mtime;
-        if (srcMtime <= destMtime) {
-          continue;
-        }
-      }
-
       copyDirRecursive(srcDir, destDir, mapping.renameFile);
     }
   } catch (e) {
@@ -217,17 +209,43 @@ function syncConfigToWsl(config: SyncConfig): void {
       continue;
     }
 
-    const srcWsl = toWslPath(srcDir);
     const dstDir = `${config.homeDir.replace(/\/+$/, '')}/${mapping.destDir.replace(/^\/+/, '')}`;
 
-    // UNC 経由ではなく WSL 内でコピーする
-    cp.execFileSync('wsl.exe', [
-      '-e',
-      'sh',
-      '-lc',
-      `mkdir -p ${shellQuote(dstDir)} && cp -a ${shellQuote(`${srcWsl}/.`)} ${shellQuote(`${dstDir}/`)}`
-    ], {
-      stdio: 'ignore',
-    });
+    // renameFile フィルタを適用してファイルを個別にコピーする。
+    // cp -a では renameFile によるフィルタ・リネームが反映されないため、
+    // ファイルごとに wsl.exe cp を呼び出す。
+    copyDirRecursiveToWsl(srcDir, dstDir, mapping.renameFile);
+  }
+}
+
+/**
+ * srcDir 内のファイルを renameFile フィルタを適用しながら WSL 内 dstDir へ再帰コピーする。
+ */
+function copyDirRecursiveToWsl(
+  srcDir: string,
+  dstDir: string,
+  renameFile?: (name: string) => string | null
+): void {
+  // 先にコピー先ディレクトリを作成する
+  cp.execFileSync('wsl.exe', ['-e', 'sh', '-lc', `mkdir -p ${shellQuote(dstDir)}`], { stdio: 'ignore' });
+
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      copyDirRecursiveToWsl(
+        path.join(srcDir, entry.name),
+        `${dstDir}/${entry.name}`,
+        renameFile
+      );
+    } else if (entry.isFile()) {
+      const destName = renameFile ? renameFile(entry.name) : entry.name;
+      if (destName === null) {
+        continue; // スキップ指定
+      }
+      const srcWsl = toWslPath(path.join(srcDir, entry.name));
+      cp.execFileSync('wsl.exe', [
+        '-e', 'sh', '-lc',
+        `cp ${shellQuote(srcWsl)} ${shellQuote(`${dstDir}/${destName}`)}`
+      ], { stdio: 'ignore' });
+    }
   }
 }

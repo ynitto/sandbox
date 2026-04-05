@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as fs from 'fs';
@@ -25,6 +26,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _currentStderr = '';
   /** エージェントごとの継続セッション ID（claude: --resume、kiro-cli: --session-id として渡す） */
   private _agentSessions: Map<string, string> = new Map();
+  /**
+   * 実行ごとに発行する単調増加 ID。
+   * プロセスが kill された後に非同期で発火する onClose コールバックを
+   * 無効化（ゴースト履歴エントリの追加・誤った done 送信を防ぐ）するために使用する。
+   */
+  private _currentRunId = 0;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -40,6 +47,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** エージェント一覧を更新して WebView を再描画する */
   updateAgents(agents: AgentConfig[]): void {
     this._agents = agents;
+    // エージェントが再読み込みされたら古いセッション ID を破棄する。
+    // 同一 ID で設定が変わったエージェントに前のセッションが引き継がれないようにするため。
+    this._agentSessions.clear();
     if (this._view) {
       this._killCurrentProcess();
       this._view.webview.html = this._getHtml(this._view.webview);
@@ -77,6 +87,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this._chatHistory = [];
           this._agentSessions.clear();
           void this._context.globalState.update('chatHistory', []);
+          // 実行中のプロセスも終了する。runId ガードにより onClose は no-op になるため
+          // WebView には 'done' を明示的に送らず、WebView 側で running 状態をリセットする。
+          this._killCurrentProcess();
           break;
         case 'addFile': {
           const editor = vscode.window.activeTextEditor;
@@ -156,22 +169,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sessionId = this._agentSessions.get(agentId);
     const config = buildCommand(agent, expandedPrompt, workspacePath, model, sessionId);
 
+    // このコマンド実行の ID を固定する。_killCurrentProcess() が呼ばれると
+    // _currentRunId がインクリメントされるため、古いコールバックは runId !== _currentRunId
+    // となって早期リターンする。
+    const runId = ++this._currentRunId;
+
     this._currentProcess = runCommand(
       config,
       (data) => {
+        if (this._currentRunId !== runId) { return; }
         this._currentStdout += data;
         this._view?.webview.postMessage({ type: 'data', text: data });
       },
       (data) => {
+        if (this._currentRunId !== runId) { return; }
         this._currentStderr += data;
         this._view?.webview.postMessage({ type: 'error', text: data });
       },
       (code, newSessionId) => {
+        if (this._currentRunId !== runId) { return; } // kill 済みの古いコールバックを無視する
         if (newSessionId) {
           // claude: stream-json から取得した実際のセッション ID を保存する
           this._agentSessions.set(agentId, newSessionId);
-        } else if (agent.tool === 'kiro-cli' && !this._agentSessions.has(agentId)) {
-          // kiro-cli: セッション ID は返さないが次回から --resume を渡すためマーカーをセットする
+        } else if (agent.tool === 'kiro-cli' && code === 0 && !this._agentSessions.has(agentId)) {
+          // kiro-cli: 正常終了時のみ --resume マーカーをセットする。
+          // code が null（スポーン失敗）や非ゼロ（エラー終了）の場合はセッションが作成されていないためスキップする。
           this._agentSessions.set(agentId, '__resume__');
         }
         this._chatHistory.push({ role: 'assistant', stdout: this._currentStdout, stderr: this._currentStderr });
@@ -187,6 +209,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _killCurrentProcess(): void {
     if (this._currentProcess) {
+      // runId を先にインクリメントして、この kill に対応する onClose コールバックを無効化する。
+      // Node.js は kill() 後に非同期で close イベントを発火するため、
+      // インクリメントしないと古いコールバックがゴースト履歴エントリを追加したり
+      // 新しいプロセスの状態を破壊したりする競合状態が生じる。
+      this._currentRunId++;
       this._currentProcess.kill();
       this._currentProcess = undefined;
     }
@@ -223,6 +250,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
+    // JSON.stringify は '<' をエスケープしないため、チャット履歴に "</script>" が含まれると
+    // <script type="application/json"> タグが途中で閉じられHTMLが破壊される。
+    // \u003c にエスケープすることで HTML パーサーに誤認されないようにする。
     const chatData = JSON.stringify({
       history: this._chatHistory,
       toolModels: { claude: this._claudeModels, 'kiro-cli': this._kiroModels },
@@ -231,7 +261,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       pending: this._currentProcess
         ? { stdout: this._currentStdout, stderr: this._currentStderr }
         : null,
-    });
+    }).replace(/</g, '\\u003c');
     const selectedAgentId = this._selectedAgentId;
     const agentOptionsHtml = this._agents
       .map((agent, index) => {
@@ -258,12 +288,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 }
 
 function getNonce(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let nonce = '';
-  for (let i = 0; i < 32; i++) {
-    nonce += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return nonce;
+  return crypto.randomBytes(16).toString('base64');
 }
 
 function escapeHtmlText(value: string): string {
@@ -298,7 +323,21 @@ function expandFileRefs(prompt: string, workspacePath: string | undefined): stri
       filePath = ref as string;
     }
 
+    // 絶対パスは workspacePath を無視して任意ファイルを読めるため拒否する。
+    // 相対パスの場合も workspace 外へのトラバーサル（../..）を防ぐ。
+    if (path.isAbsolute(filePath)) {
+      return _match;
+    }
+
     const fullPath = workspacePath ? path.resolve(workspacePath, filePath) : filePath;
+
+    if (workspacePath) {
+      const normalizedRoot = path.normalize(workspacePath);
+      const normalizedFull = path.normalize(fullPath);
+      if (!normalizedFull.startsWith(normalizedRoot + path.sep) && normalizedFull !== normalizedRoot) {
+        return _match;
+      }
+    }
 
     let content: string;
     try {

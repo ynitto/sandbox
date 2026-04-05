@@ -40,6 +40,21 @@
           "default": true,
           "description": "起動時に ~/.copilot/ の内容を各 CLI ツールのホームディレクトリへ自動同期する"
         },
+        "agentExecutor.cliExtraArgs": {
+          "type": "array",
+          "default": [],
+          "description": "全エージェント共通で追加する CLI オプション（例: [\"--verbose\"]）",
+          "items": { "type": "string" }
+        },
+        "agentExecutor.cliExtraArgsByTool": {
+          "type": "object",
+          "default": {},
+          "description": "ツール別に追加する CLI オプションのマップ（例: { \"claude\": [\"--dangerously-skip-permissions\"] }）",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
         "agentExecutor.periodicPrompts": {
           "type": "array",
           "default": [],
