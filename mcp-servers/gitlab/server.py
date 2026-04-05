@@ -24,6 +24,7 @@ VSCode: copy .vscode/mcp.json to your GitLab project, then open the project in V
 
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -131,6 +132,51 @@ def gitlab_api(
         raise RuntimeError(f"GitLab API error: HTTP {e.code} {e.reason}\n{msg}") from e
 
 
+def gitlab_api_list(
+    path: str,
+    params: dict | None = None,
+    host: str | None = None,
+    token: str | None = None,
+) -> list[Any]:
+    """Make paginated GET requests and return all pages combined as a list."""
+    if host is None or token is None:
+        _host, _ = get_project_info_from_remote()
+        if host is None:
+            host = _host
+        if token is None:
+            token = get_token()
+
+    params = dict(params or {})
+    params.setdefault("per_page", 100)
+    all_results: list[Any] = []
+    page = 1
+    while True:
+        params["page"] = page
+        filtered = {k: v for k, v in params.items() if v is not None}
+        url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(filtered)
+        headers = {
+            "PRIVATE-TOKEN": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                content = resp.read()
+                page_data = json.loads(content) if content.strip() else []
+                if not isinstance(page_data, list):
+                    return all_results
+                all_results.extend(page_data)
+                next_page = resp.headers.get("X-Next-Page", "").strip()
+                if not next_page:
+                    break
+                page = int(next_page)
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"GitLab API error: HTTP {e.code} {e.reason}\n{msg}") from e
+    return all_results
+
+
 def _ctx() -> tuple[str, str, str]:
     """Return (host, encoded_project, token) for the current workspace."""
     host, project = get_project_info_from_remote()
@@ -207,13 +253,12 @@ def list_issues(
     """
     host, ep, token = _ctx()
     params = {
-        "per_page": 100,
         "state": state,
         "labels": labels,
         "assignee_username": assignee_username,
         "author_username": author_username,
     }
-    issues = gitlab_api("GET", f"/projects/{ep}/issues", params=params, host=host, token=token)
+    issues = gitlab_api_list(f"/projects/{ep}/issues", params=params, host=host, token=token)
     return json.dumps(issues, ensure_ascii=False, indent=2)
 
 
@@ -247,10 +292,9 @@ def get_issue_comments(issue_iid: int) -> str:
         Notes are returned in chronological order.
     """
     host, ep, token = _ctx()
-    notes = gitlab_api(
-        "GET",
+    notes = gitlab_api_list(
         f"/projects/{ep}/issues/{issue_iid}/notes",
-        params={"per_page": 100, "sort": "asc"},
+        params={"sort": "asc"},
         host=host,
         token=token,
     )
@@ -361,11 +405,10 @@ def list_merge_requests(
     """
     host, ep, token = _ctx()
     params = {
-        "per_page": 100,
         "state": state,
         "source_branch": source_branch,
     }
-    mrs = gitlab_api("GET", f"/projects/{ep}/merge_requests", params=params, host=host, token=token)
+    mrs = gitlab_api_list(f"/projects/{ep}/merge_requests", params=params, host=host, token=token)
     return json.dumps(mrs, ensure_ascii=False, indent=2)
 
 
@@ -504,10 +547,8 @@ def list_mr_discussions(mr_iid: int) -> str:
           [d for d in discussions if not d["individual_note"] and not d["resolved"]]
     """
     host, ep, token = _ctx()
-    discussions = gitlab_api(
-        "GET",
+    discussions = gitlab_api_list(
         f"/projects/{ep}/merge_requests/{mr_iid}/discussions",
-        params={"per_page": 100},
         host=host,
         token=token,
     )
@@ -610,7 +651,6 @@ def make_branch_name(issue_iid: int) -> str:
     Returns:
         The branch name string, e.g. "feature/issue-42-add-login-page".
     """
-    import re
     host, ep, token = _ctx()
     issue = gitlab_api("GET", f"/projects/{ep}/issues/{issue_iid}", host=host, token=token)
     title = issue.get("title", "")

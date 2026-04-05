@@ -131,6 +131,40 @@ def extract_field(data, field_path):
     return current
 
 
+def api_list(host, token, path, params=None):
+    """Make paginated GET requests and return all pages combined as a list."""
+    params = dict(params or {})
+    params.setdefault("per_page", 100)
+    all_results = []
+    page = 1
+    while True:
+        params["page"] = page
+        url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(
+            {k: v for k, v in params.items() if v is not None}
+        )
+        headers = {
+            "PRIVATE-TOKEN": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read()
+                page_data = json.loads(content) if content.strip() else []
+                if not isinstance(page_data, list):
+                    return page_data
+                all_results.extend(page_data)
+                next_page = resp.headers.get("X-Next-Page", "").strip()
+                if not next_page:
+                    break
+                page = int(next_page)
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode("utf-8", errors="replace")
+            sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
+    return all_results
+
+
 def out(obj, get_field=None):
     """Print JSON (or an extracted field) to stdout."""
     if get_field:
@@ -195,13 +229,12 @@ def cmd_list_issues(args, host, project, token):
     """List project issues with optional filters."""
     ep = encode_project(project)
     params = {
-        "per_page": 100,
         "state": args.state,
         "labels": args.label or None,
         "assignee_username": args.assignee or None,
         "author_username": args.author or None,
     }
-    out(api(host, token, "GET", f"/projects/{ep}/issues", params=params), args.get)
+    out(api_list(host, token, f"/projects/{ep}/issues", params=params), args.get)
 
 
 def cmd_get_issue(args, host, project, token):
@@ -272,10 +305,9 @@ def cmd_add_comment(args, host, project, token):
 def cmd_get_comments(args, host, project, token):
     """List all comments on an issue."""
     ep = encode_project(project)
-    out(api(
-        host, token, "GET",
+    out(api_list(
+        host, token,
         f"/projects/{ep}/issues/{args.issue_id}/notes",
-        params={"per_page": 100},
     ), args.get)
 
 
@@ -284,10 +316,9 @@ def cmd_list_mrs(args, host, project, token):
     ep = encode_project(project)
     params = {
         "state": args.state,
-        "per_page": 100,
         "source_branch": args.source_branch or None,
     }
-    out(api(host, token, "GET", f"/projects/{ep}/merge_requests", params=params), args.get)
+    out(api_list(host, token, f"/projects/{ep}/merge_requests", params=params), args.get)
 
 
 def cmd_create_mr(args, host, project, token):
