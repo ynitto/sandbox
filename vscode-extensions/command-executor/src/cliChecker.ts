@@ -75,14 +75,15 @@ function isWslExecutableAvailable(exe: string): boolean {
 
   for (const wsl of wslCandidates) {
     try {
-      cp.execSync(wsl, ['-e', 'sh', '-c', `command -v ${exe.replace(/'/g, `'\\''`)} >/dev/null 2>&1`], {
+      cp.execFileSync(wsl, ['-e', 'sh', '-c', `command -v ${exe.replace(/'/g, `'\\''`)} >/dev/null 2>&1`], {
         stdio: 'ignore'
       });
       return true;
     } catch {
-      // 続行して次の候補を試す
+      // 次の候補を試す
     }
   }
 
+  console.log(`WSL 内で "${exe}" が見つかりませんでした。`);
   return false;
 }

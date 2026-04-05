@@ -58,7 +58,7 @@ const KIRO_MAPPINGS: FileMapping[] = [
 /**
  * 実行時にプラットフォームを判定して同期設定を構築する。
  * kiro-cli は Windows では WSL ホームへのコピーが必要なため、
- * wsl wslpath -w ~ で WSL ホームの UNC パスを取得する。
+ * WSL 内の HOME を Linux パスで取得する。
  */
 function buildSyncConfigs(): SyncConfig[] {
   const home = os.homedir();
@@ -109,7 +109,7 @@ function buildSyncConfigs(): SyncConfig[] {
  * サブディレクトリ名を結合して返す。
  * WSL が利用できない場合は undefined を返す。
  *
- * 例: resolveWslHomeSubdir('.kiro') → "\\wsl.localhost\Ubuntu\home\user\.kiro"
+ * 例: resolveWslHomeSubdir('.kiro') → "/home/user/.kiro"
  */
 function resolveWslHomeSubdir(subdir: string): string | undefined {
   try {
@@ -202,7 +202,7 @@ function syncConfig(config: SyncConfig): void {
     }
   } catch(e) {
     // 同期失敗はサイレントに無視（CLI が未インストールの場合など）
-    console.error(e instanceof Error ? e.message : String(e));
+    console.log(e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -221,8 +221,7 @@ function syncConfigToWsl(config: SyncConfig): void {
     const dstDir = `${config.homeDir.replace(/\/+$/, '')}/${mapping.destDir.replace(/^\/+/, '')}`;
 
     // UNC 経由でなく WSL 内でコピーする
-
-    cp.execFileSync('wsl.exe',[
+    cp.execFileSync('wsl.exe', [
       '-e',
       'sh',
       '-lc',

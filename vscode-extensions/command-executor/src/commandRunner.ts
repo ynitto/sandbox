@@ -127,9 +127,9 @@ export function buildCommand(
       if (isWindows) {
         // Windows から WSL2 経由で実行
         // wsl --cd <linuxPath> で WSL 内のカレントディレクトリを明示指定する
-        // spawn の cmd (Windows 側) には元の fsPath を渡す
+        // spawn の cmd（Windows 側）には元の fsPath を渡す
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
-        // チェックと同時に wsl -lc 経由で起動し WSL 側 PATH 解決を一致させる
+        // チェック処理と同様に sh -lc 経由で起動し、WSL 側 PATH 解決を一致させる
         const escapedOptionArgs = [...extra].map(escapePosixShellArg);
         const wslShellArgs = [
           '-e', 'sh', '-lc',
@@ -168,7 +168,7 @@ export function buildCommand(
 
 function getMergedExtraArgs(agent: AgentConfig): string[] {
   const config = vscode.workspace.getConfiguration('agentExecutor');
-  const globalExtra= config.get<string[]>('extraArgs', []);
+  const globalExtra= config.get<string[]>('cliExtraArgs', []);
   const toolExtraMap = config.get<Record<string, unknown>>('cliExtraArgsByTool', {});
   const toolExtraRaw = toolExtraMap[agent.tool];
 
@@ -198,6 +198,7 @@ export function runCommand(
     // 拡張ホスト経由で発生しうる systemd user session 起動失敗を回避する
     env.WSL_SYSTEMD_NO_SESSION = '1';
   }
+
   const proc = cp.spawn(config.cmd, config.args, {
     cwd: config.cwd,
     env,

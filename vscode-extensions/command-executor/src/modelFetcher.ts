@@ -98,7 +98,7 @@ export async function fetchKiroModels(): Promise<string[]> {
 function runKiroListModels(): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const isWindows = os.platform() === 'win32';
-    const cmd = isWindows ? 'wsl' : 'kiro-cli';
+    const cmd = isWindows ? 'wsl.exe' : 'kiro-cli';
     const helpArgs = isWindows
       ? ['-e', 'sh', '-lc', 'kiro-cli chat --help']
       : ['chat', '--help'];
@@ -118,7 +118,7 @@ function runKiroListModels(): Promise<string[]> {
         }
 
         const args = isWindows
-          ? ['kiro-cli', 'chat', '--list-models', '--format', 'json']
+          ? ['-e', 'sh', '-lc', 'kiro-cli chat --list-models --format json']
           : ['chat', '--list-models', '--format', 'json'];
 
         return runCommand(cmd, args, 5000)
