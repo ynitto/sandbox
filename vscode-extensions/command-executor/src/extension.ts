@@ -9,7 +9,8 @@ let _chatViewProvider: ChatViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const agents = filterAvailableAgents(loadAgents());
-  const availableTools = new Set(agents.map((a) => a.tool));
+  // availableTools はエージェント再読み込み時に更新するため let で宣言する
+  let availableTools = new Set(agents.map((a) => a.tool));
 
   const config = vscode.workspace.getConfiguration('agentExecutor');
   if (config.get<boolean>('syncOnStartup', true)) {
@@ -38,6 +39,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('agentExecutor.reloadAgents', () => {
       const reloaded = filterAvailableAgents(loadAgents());
+      availableTools = new Set(reloaded.map((a) => a.tool));
       provider.updateAgents(reloaded);
       periodicRunner.updateAgents(reloaded);
       vscode.window.showInformationMessage(
@@ -53,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const reload = () => {
     const reloaded = filterAvailableAgents(loadAgents());
+    availableTools = new Set(reloaded.map((a) => a.tool));
     provider.updateAgents(reloaded);
     periodicRunner.updateAgents(reloaded);
   };

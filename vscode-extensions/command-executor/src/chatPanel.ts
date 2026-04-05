@@ -40,6 +40,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** エージェント一覧を更新して WebView を再描画する */
   updateAgents(agents: AgentConfig[]): void {
     this._agents = agents;
+    // エージェントが再読み込みされたら古いセッション ID を破棄する。
+    // 同一 ID で設定が変わったエージェントに前のセッションが引き継がれないようにするため。
+    this._agentSessions.clear();
     if (this._view) {
       this._killCurrentProcess();
       this._view.webview.html = this._getHtml(this._view.webview);
@@ -170,8 +173,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (newSessionId) {
           // claude: stream-json から取得した実際のセッション ID を保存する
           this._agentSessions.set(agentId, newSessionId);
-        } else if (agent.tool === 'kiro-cli' && !this._agentSessions.has(agentId)) {
-          // kiro-cli: セッション ID は返さないが次回から --resume を渡すためマーカーをセットする
+        } else if (agent.tool === 'kiro-cli' && code === 0 && !this._agentSessions.has(agentId)) {
+          // kiro-cli: 正常終了時のみ --resume マーカーをセットする。
+          // code が null（スポーン失敗）や非ゼロ（エラー終了）の場合はセッションが作成されていないためスキップする。
           this._agentSessions.set(agentId, '__resume__');
         }
         this._chatHistory.push({ role: 'assistant', stdout: this._currentStdout, stderr: this._currentStderr });
@@ -298,7 +302,21 @@ function expandFileRefs(prompt: string, workspacePath: string | undefined): stri
       filePath = ref as string;
     }
 
+    // 絶対パスは workspacePath を無視して任意ファイルを読めるため拒否する。
+    // 相対パスの場合も workspace 外へのトラバーサル（../..）を防ぐ。
+    if (path.isAbsolute(filePath)) {
+      return _match;
+    }
+
     const fullPath = workspacePath ? path.resolve(workspacePath, filePath) : filePath;
+
+    if (workspacePath) {
+      const normalizedRoot = path.normalize(workspacePath);
+      const normalizedFull = path.normalize(fullPath);
+      if (!normalizedFull.startsWith(normalizedRoot + path.sep) && normalizedFull !== normalizedRoot) {
+        return _match;
+      }
+    }
 
     let content: string;
     try {

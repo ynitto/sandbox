@@ -79,6 +79,17 @@ export function loadInstructionsFile(instructionsFile: string): string | undefin
     const resolved = path.isAbsolute(instructionsFile)
       ? instructionsFile
       : path.join(CONFIG_DIR, instructionsFile);
+
+    // 相対パス指定の場合は CONFIG_DIR 外へのトラバーサル（../../etc/passwd 等）を拒否する。
+    // 絶対パス指定は意図的な参照として許容する。
+    if (!path.isAbsolute(instructionsFile)) {
+      const normalizedResolved = path.normalize(resolved);
+      const normalizedConfig = path.normalize(CONFIG_DIR);
+      if (!normalizedResolved.startsWith(normalizedConfig + path.sep) && normalizedResolved !== normalizedConfig) {
+        return undefined;
+      }
+    }
+
     return fs.readFileSync(resolved, 'utf-8');
   } catch {
     return undefined;
