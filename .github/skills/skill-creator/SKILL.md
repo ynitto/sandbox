@@ -2,7 +2,7 @@
 name: skill-creator
 description: "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。"
 metadata:
-  version: 3.2.0
+  version: 3.3.0
   tier: core
   category: meta
   tags:
@@ -32,6 +32,8 @@ metadata:
 いずれのモードも最終的に `skill-creator` の検証手順（ステップ5）を経る。.skillファイルへのパッケージ化はオプションで、ユーザーから明示的な指示があった場合のみ実行する。
 
 **モードC 補足資料**: [references/copilot-history-guide.md](references/copilot-history-guide.md)（Copilot 履歴の詳細）/ [references/kiro-history-guide.md](references/kiro-history-guide.md)（Kiro IDE/CLI 履歴の詳細）/ [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md)（パターン抽出例）/ [references/quality-checklist.md](references/quality-checklist.md)（配布前チェックリスト）
+
+**作成ノウハウ**: [references/creation-pitfalls.md](references/creation-pitfalls.md)（よくある失敗・アンチパターン・効果的な書き方）
 
 ### モード判定フロー
 
@@ -262,6 +264,7 @@ python <SKILLS_BASE>/skill-creator/scripts/init_skill.py <skill-name> --path <SK
 
 - **複数ステップのプロセス**: [references/workflows.md](references/workflows.md) 参照
 - **特定の出力形式や品質基準**: [references/output-patterns.md](references/output-patterns.md) 参照
+- **よくある失敗・アンチパターン**: [references/creation-pitfalls.md](references/creation-pitfalls.md) 参照
 
 #### 再利用リソースから始める
 
