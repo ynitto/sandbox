@@ -272,9 +272,12 @@ def send_notification(title: str, message: str) -> None:
     try:
         match platform.system():
             case "Darwin":
-                # AppleScript 文字列内の \ と " をエスケープ
+                # AppleScript 文字列内の \、"、改行をエスケープ
                 def _as_escape(s: str) -> str:
-                    return s.replace("\\", "\\\\").replace('"', '\\"')
+                    return (s.replace("\\", "\\\\")
+                             .replace('"', '\\"')
+                             .replace("\r", "")
+                             .replace("\n", " "))
                 subprocess.run(
                     ["osascript", "-e",
                      f'display notification "{_as_escape(message)}" with title "{_as_escape(title)}"'],
@@ -285,9 +288,11 @@ def send_notification(title: str, message: str) -> None:
                                check=False, capture_output=True)
             case "Windows":
                 # PowerShell シングルクォート文字列を使用（変数展開なし）
-                # シングルクォート自体は '' でエスケープ
+                # シングルクォート自体は '' でエスケープ、改行はスペースに置換
                 def _ps_escape(s: str) -> str:
-                    return s.replace("'", "''")
+                    return (s.replace("'", "''")
+                             .replace("\r", "")
+                             .replace("\n", " "))
                 ps = (
                     "Add-Type -AssemblyName System.Windows.Forms;"
                     "$n=New-Object System.Windows.Forms.NotifyIcon;"
@@ -313,12 +318,20 @@ def _cleanup_old_worker_files(max_keep: int = 20) -> None:
     """古いワーカーログ・プロンプトファイルを削除し、最新 max_keep 件だけ残す。"""
     log_dir = get_config_dir()
     for pattern in ("worker-issue-*.log", "worker-prompt-*.md"):
-        files = sorted(log_dir.glob(pattern), key=lambda p: p.stat().st_mtime)
-        for old_file in files[: max(0, len(files) - max_keep)]:
-            try:
-                old_file.unlink()
-            except OSError:
-                pass
+        try:
+            # reverse=True で新しい順にソートし、max_keep 件を超えた古いファイルを削除
+            files = sorted(
+                log_dir.glob(pattern),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for old_file in files[max_keep:]:
+                try:
+                    old_file.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
 
 def launch_agent_worker(
@@ -362,7 +375,7 @@ def launch_agent_worker(
         }
         match platform.system():
             case "Windows":
-                kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
+                kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
             case _:
                 kwargs["start_new_session"] = True
         with open(log_file, "w", encoding="utf-8") as log_fh:
@@ -396,9 +409,10 @@ def get_token_for_repo(repo: RepoConfig) -> str:
 
 def mark_seen(config: DaemonConfig, repo: RepoConfig, issues: list[dict]) -> None:
     key = repo_key(repo)
-    seen = set(config.setdefault("seen_issues", {}).get(key, []))
+    # int() で統一: JSON 復元後は str になる場合があるため型を揃える
+    seen = set(int(i) for i in config.setdefault("seen_issues", {}).get(key, []))
     for issue in issues:
-        seen.add(issue["iid"])
+        seen.add(int(issue["iid"]))
     config["seen_issues"][key] = sorted(seen)
 
 

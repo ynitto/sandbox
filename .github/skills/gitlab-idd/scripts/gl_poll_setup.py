@@ -184,7 +184,7 @@ def copy_scripts_to_config_dir(*, dry_run: bool = False) -> None:
         shutil.copy2(src, dst)
         if platform.system() != "Windows":
             try:
-                os.chmod(dst, 0o755)
+                os.chmod(dst, 0o750)
             except OSError:
                 pass
         print(f"  コピー: {src} → {dst}")
@@ -212,10 +212,17 @@ def _run_cmd(cmd: list[str], *, dry_run: bool = False, check: bool = True) -> bo
         print(f"  [DRYRUN] 実行予定: {' '.join(str(c) for c in cmd)}")
         return True
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode != 0 and check:
-            print(f"  警告: {r.stderr.strip() or r.stdout.strip()}")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            detail = r.stderr.strip() or r.stdout.strip()
+            if check:
+                print(f"  エラー: コマンド失敗 ({r.returncode}): {detail}")
+            else:
+                print(f"  警告: {detail}")
         return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(f"  エラー: コマンドタイムアウト: {' '.join(str(c) for c in cmd)}")
+        return False
     except Exception as e:
         print(f"  エラー: {e}")
         return False

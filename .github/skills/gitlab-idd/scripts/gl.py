@@ -45,8 +45,9 @@ def get_project_info():
         remote_url = subprocess.check_output(
             ["git", "remote", "get-url", "origin"],
             stderr=subprocess.DEVNULL,
+            timeout=10,
         ).decode().strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         sys.exit("ERROR: Cannot get git remote 'origin'. Run from inside a git repo.")
 
     # Supported formats:
@@ -100,7 +101,10 @@ def api(host, token, method, path, data=None, params=None):
             content = resp.read()
             return json.loads(content) if content.strip() else {}
     except urllib.error.HTTPError as e:
-        msg = e.read().decode("utf-8", errors="replace")
+        try:
+            msg = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            msg = "(no details)"
         sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
 
 
@@ -161,7 +165,10 @@ def api_list(host, token, path, params=None):
                     break
                 page = int(next_page)
         except urllib.error.HTTPError as e:
-            msg = e.read().decode("utf-8", errors="replace")
+            try:
+                msg = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                msg = "(no details)"
             sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
     return all_results
 
@@ -240,8 +247,10 @@ def cmd_create_issue(args, host, project, token):
         data["labels"] = args.labels
     if args.assignee:
         users = api(host, token, "GET", "/users", params={"username": args.assignee})
-        if not users:
+        if not isinstance(users, list) or not users:
             sys.exit(f"ERROR: GitLab user '{args.assignee}' not found")
+        if len(users) > 1:
+            sys.exit(f"ERROR: Ambiguous username '{args.assignee}' matched {len(users)} users")
         data["assignee_ids"] = [users[0]["id"]]
     out(api(host, token, "POST", f"/projects/{ep}/issues", data=data), args.get)
 
@@ -265,8 +274,10 @@ def cmd_update_issue(args, host, project, token):
 
     if args.assignee:
         users = api(host, token, "GET", "/users", params={"username": args.assignee})
-        if not users:
+        if not isinstance(users, list) or not users:
             sys.exit(f"ERROR: GitLab user '{args.assignee}' not found")
+        if len(users) > 1:
+            sys.exit(f"ERROR: Ambiguous username '{args.assignee}' matched {len(users)} users")
         data["assignee_ids"] = [users[0]["id"]]
 
     if args.state_event:
