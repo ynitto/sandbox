@@ -2,7 +2,7 @@
 name: skill-mentor
 description: 1セッション・1ゴールで完結する軽量委譲オーケストレーター。バグ修正・機能追加・リファクタリング・ドキュメント作成・技術調査・コードレビューなどの単発タスクを適切なスキルへの委譲で完遂する。「直して」「デバッグして」「調べて」「設計して」などで発動。複数ゴール・スプリント管理は scrum-master へ、複数マシン協調は gitlab-idd へ。
 metadata:
-  version: 2.1.0
+  version: 2.1.1
   tier: core
   category: orchestration
   tags:

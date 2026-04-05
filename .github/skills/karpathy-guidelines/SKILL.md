@@ -2,7 +2,7 @@
 name: karpathy-guidelines
 description: LLMのコーディングミスを減らすための行動規範。Andrej Karpathyの観察に基づく4原則（コーディング前に考える・シンプルさを優先・外科的な変更・ゴール駆動の実行）を提供する。コーディングタスクを開始するとき、またはコードを変更するときに常時適用する。
 metadata:
-  version: 1.0.0
+  version: 1.0.1
   tier: core
   category: guidelines
   tags:

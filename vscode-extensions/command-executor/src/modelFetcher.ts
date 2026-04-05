@@ -99,7 +99,9 @@ function runKiroListModels(): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const isWindows = os.platform() === 'win32';
     const cmd = isWindows ? 'wsl' : 'kiro-cli';
-    const helpArgs = isWindows ? ['kiro-cli', 'chat', '--help'] : ['chat', '--help'];
+    const helpArgs = isWindows
+      ? ['-e', 'sh', '-lc', 'kiro-cli chat --help']
+      : ['chat', '--help'];
 
     runCommand(cmd, helpArgs, 3000)
       .then(({ code, stdout, stderr }) => {
@@ -157,9 +159,15 @@ function runCommand(
   timeout: number
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    const env = { ...process.env };
+    if (os.platform() === 'win32' && cmd.toLowerCase() === 'wsl.exe') {
+      // 拡張ホスト経由で発生しうる systemd user session 起動失敗を回避する
+      env.WSL_SYSTEMD_NO_SESSION = '1';
+    }
+
     const proc = cp.spawn(cmd, args, {
       timeout,
-      env: { ...process.env },
+      env,
       shell: false,
     });
 

@@ -70,10 +70,19 @@ function isExecutableAvailable(exe: string): boolean {
 
 /** WSL 内の実行ファイルを確認する（Windows 専用） */
 function isWslExecutableAvailable(exe: string): boolean {
-  try {
-    cp.execSync(`wsl which "${exe}"`, { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
+  const wslCandidates = [`${systemRoot}\\System32\\wsl.exe`, 'wsl.exe'];
+
+  for (const wsl of wslCandidates) {
+    try {
+      cp.execSync(wsl, ['-e', 'sh', '-c', `command -v ${exe.replace(/'/g, `'\\''`)} >/dev/null 2>&1`], {
+        stdio: 'ignore'
+      });
+      return true;
+    } catch {
+      // 続行して次の候補を試す
+    }
   }
+
+  return false;
 }

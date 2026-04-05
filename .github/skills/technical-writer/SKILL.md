@@ -2,7 +2,7 @@
 name: technical-writer
 description: 外向け技術ドキュメントを高品質に即時作成するスキル。README、デベロッパーガイド、チュートリアル、インストールガイドなどの文書作成を支援する。「READMEを作って」「デベロッパーガイドを書いて」「APIの使い方をまとめて」「チュートリアルを作成して」「インストール手順を書いて」などで発動する。
 metadata:
-  version: 1.0.1
+  version: 1.0.2
   tier: stable
   category: research
   tags:

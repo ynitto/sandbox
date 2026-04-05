@@ -1,5 +1,6 @@
 import * as cp from 'child_process';
 import * as os from 'os';
+import * as vscode from 'vscode';
 import { AgentConfig } from './agentConfig';
 import { loadInstructionsFile } from './agentLoader';
 import { toWslPath } from './pathUtils';
@@ -20,6 +21,10 @@ export interface CommandConfig {
    * セッション ID は onClose の第 2 引数として返す。
    */
   streamJson?: boolean;
+}
+
+function escapePosixShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -120,20 +125,30 @@ export function buildCommand(
       // kiro-cli は --session-id を持たず、--resume で直前セッションを継続する
       const sessionArgs = sessionId !== undefined ? ['--resume'] : [];
       if (isWindows) {
+        // Windows から WSL2 経由で実行
+        // wsl --cd <linuxPath> で WSL 内のカレントディレクトリを明示指定する
+        // spawn の cmd (Windows 側) には元の fsPath を渡す
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
+        // チェックと同時に wsl -lc 経由で起動し WSL 側 PATH 解決を一致させる
+        const escapedOptionArgs = [...extra].map(escapePosixShellArg);
+        const wslShellArgs = [
+          '-e', 'sh', '-lc',
+          ['kiro-cli', 'chat', '--no-interactive', '--trust-all-tools', ...modelArgs, ...sessionArgs, ...escapedOptionArgs, '--', '"$1"'].join(' '),
+          'sh', prompt,
+        ];
         const wslArgs = wslCwd
-          ? ['--cd', wslCwd, 'kiro-cli', 'chat', '--no-interactive', ...modelArgs, ...sessionArgs, prompt, ...extra]
-          : ['kiro-cli', 'chat', '--no-interactive', ...modelArgs, ...sessionArgs, prompt, ...extra];
+          ? ['--cd', wslCwd, ...wslShellArgs]
+          : wslShellArgs;
         return {
-          cmd: 'wsl',
+          cmd: 'wsl.exe',
           args: wslArgs,
           label: agent.name,
-          cwd: workspacePath,
+          cwd: workspacePath, // wsl.exe の Windows 側 cwd
         };
       }
       return {
         cmd: 'kiro-cli',
-        args: ['chat', '--no-interactive', ...modelArgs, ...sessionArgs, prompt, ...extra],
+        args: ['chat', '--no-interactive', '--trust-all-tools', ...modelArgs, ...sessionArgs, ...extra, '--', prompt],
         label: agent.name,
         cwd: workspacePath,
       };
@@ -151,6 +166,20 @@ export function buildCommand(
   }
 }
 
+function getMergedExtraArgs(agent: AgentConfig): string[] {
+  const config = vscode.workspace.getConfiguration('agentExecutor');
+  const globalExtra= config.get<string[]>('extraArgs', []);
+  const toolExtraMap = config.get<Record<string, unknown>>('cliExtraArgsByTool', {});
+  const toolExtraRaw = toolExtraMap[agent.tool];
+
+  const toolExtra = Array.isArray(toolExtraRaw)
+    ? toolExtraRaw.filter((x): x is string => typeof x === 'string')
+    : [];
+
+  const agentExtra = agent.extraArgs ?? [];
+  return [...globalExtra, ...toolExtra, ...agentExtra];
+}
+
 /**
  * コマンドをサブプロセスとして実行し、stdout/stderr をコールバックでストリーミングする。
  *
@@ -164,9 +193,14 @@ export function runCommand(
   onError: (chunk: string) => void,
   onClose: (code: number | null, sessionId?: string) => void
 ): cp.ChildProcess {
+  const env = { ...process.env };
+  if (os.platform() === 'win32' && config.cmd.toLowerCase() === 'wsl.exe') {
+    // 拡張ホスト経由で発生しうる systemd user session 起動失敗を回避する
+    env.WSL_SYSTEMD_NO_SESSION = '1';
+  }
   const proc = cp.spawn(config.cmd, config.args, {
     cwd: config.cwd,
-    env: { ...process.env },
+    env,
     shell: false,
   });
 

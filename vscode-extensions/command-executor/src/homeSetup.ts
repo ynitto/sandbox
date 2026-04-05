@@ -10,6 +10,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { toWslPath } from './pathUtils';
 
 /** ~/.copilot/ — 同期元ルート */
 const COPILOT_DIR = path.join(os.homedir(), '.copilot');
@@ -33,6 +34,8 @@ interface SyncConfig {
   tools: string[];
   /** 同期先ルートディレクトリ（絶対パス） */
   homeDir: string;
+  /** Windows から WSL 内へ同期する設定か */
+  isWslTarget?: boolean;
   /** ディレクトリ・ファイル名のマッピング */
   mappings: FileMapping[];
 }
@@ -93,6 +96,7 @@ function buildSyncConfigs(): SyncConfig[] {
     configs.push({
       tools: ['kiro-cli'],
       homeDir: kiroHomeDir,
+      isWslTarget: isWindows,
       mappings: KIRO_MAPPINGS,
     });
   }
@@ -109,8 +113,9 @@ function buildSyncConfigs(): SyncConfig[] {
  */
 function resolveWslHomeSubdir(subdir: string): string | undefined {
   try {
-    const wslHome = cp.execSync('wsl wslpath -w ~', { encoding: 'utf-8' }).trim();
-    return path.join(wslHome, subdir);
+    const wslHome = cp.execSync('wsl.exe -e sh -lc "printf %s \"$HOME\""', { encoding: 'utf-8' }).trim();
+    const cleanSubdir = subdir.replace(/^\/+/, '');
+    return `${wslHome}/${cleanSubdir}`;
   } catch {
     return undefined;
   }
@@ -171,6 +176,11 @@ function copyDirRecursive(
 
 function syncConfig(config: SyncConfig): void {
   try {
+    if (config.isWslTarget && os.platform() === 'win32') {
+      syncConfigToWsl(config);
+      return;
+    }
+
     for (const mapping of config.mappings) {
       const srcDir = path.join(COPILOT_DIR, mapping.srcDir);
       if (!fs.existsSync(srcDir)) {
@@ -190,7 +200,35 @@ function syncConfig(config: SyncConfig): void {
 
       copyDirRecursive(srcDir, destDir, mapping.renameFile);
     }
-  } catch {
+  } catch(e) {
     // 同期失敗はサイレントに無視（CLI が未インストールの場合など）
+    console.error(e instanceof Error ? e.message : String(e));
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function syncConfigToWsl(config: SyncConfig): void {
+  for (const mapping of config.mappings) {
+    const srcDir = path.join(COPILOT_DIR, mapping.srcDir);
+    if (!fs.existsSync(srcDir)) {
+      continue;
+    }
+
+    const srcWsl = toWslPath(srcDir);
+    const dstDir = `${config.homeDir.replace(/\/+$/, '')}/${mapping.destDir.replace(/^\/+/, '')}`;
+
+    // UNC 経由でなく WSL 内でコピーする
+
+    cp.execFileSync('wsl.exe',[
+      '-e',
+      'sh',
+      '-lc',
+      `mkdir -p ${shellQuote(dstDir)} && cp -a ${shellQuote(`${srcWsl}/.`)} ${shellQuote(`${dstDir}/`)}`
+    ], {
+      stdio: 'ignore',
+    });
   }
 }
