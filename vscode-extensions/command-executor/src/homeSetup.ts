@@ -105,7 +105,7 @@ function buildSyncConfigs(): SyncConfig[] {
 }
 
 /**
- * Windows 上で WSL ホームディレクトリの UNC パスを取得し、
+ * Windows 上で WSL ホームディレクトリの Linux パスを取得し、
  * サブディレクトリ名を結合して返す。
  * WSL が利用できない場合は undefined を返す。
  *
@@ -200,7 +200,7 @@ function syncConfig(config: SyncConfig): void {
 
       copyDirRecursive(srcDir, destDir, mapping.renameFile);
     }
-  } catch(e) {
+  } catch (e) {
     // 同期失敗はサイレントに無視（CLI が未インストールの場合など）
     console.log(e instanceof Error ? e.message : String(e));
   }
@@ -220,7 +220,7 @@ function syncConfigToWsl(config: SyncConfig): void {
     const srcWsl = toWslPath(srcDir);
     const dstDir = `${config.homeDir.replace(/\/+$/, '')}/${mapping.destDir.replace(/^\/+/, '')}`;
 
-    // UNC 経由でなく WSL 内でコピーする
+    // UNC 経由ではなく WSL 内でコピーする
     cp.execFileSync('wsl.exe', [
       '-e',
       'sh',

@@ -126,8 +126,8 @@ export function buildCommand(
       const sessionArgs = sessionId !== undefined ? ['--resume'] : [];
       if (isWindows) {
         // Windows から WSL2 経由で実行
-        // wsl --cd <linuxPath> で WSL 内のカレントディレクトリを明示指定する
-        // spawn の cmd（Windows 側）には元の fsPath を渡す
+        // wsl --cd <linuxPath> で WSL 内カレントディレクトリを明示指定する
+        // spawn の cwd（Windows 側）には元の fsPath を渡す
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
         // チェック処理と同様に sh -lc 経由で起動し、WSL 側 PATH 解決を一致させる
         const escapedOptionArgs = [...extra].map(escapePosixShellArg);
@@ -168,7 +168,7 @@ export function buildCommand(
 
 function getMergedExtraArgs(agent: AgentConfig): string[] {
   const config = vscode.workspace.getConfiguration('agentExecutor');
-  const globalExtra= config.get<string[]>('cliExtraArgs', []);
+  const globalExtra = config.get<string[]>('cliExtraArgs', []);
   const toolExtraMap = config.get<Record<string, unknown>>('cliExtraArgsByTool', {});
   const toolExtraRaw = toolExtraMap[agent.tool];
 

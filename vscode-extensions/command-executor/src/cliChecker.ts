@@ -75,7 +75,7 @@ function isWslExecutableAvailable(exe: string): boolean {
 
   for (const wsl of wslCandidates) {
     try {
-      cp.execFileSync(wsl, ['-e', 'sh', '-c', `command -v ${exe.replace(/'/g, `'\\''`)} >/dev/null 2>&1`], {
+      cp.execFileSync(wsl, ['-e', 'sh', '-lc', `command -v '${exe.replace(/'/g, `'\\''`)}' >/dev/null 2>&1`], {
         stdio: 'ignore'
       });
       return true;
