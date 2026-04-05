@@ -212,6 +212,8 @@ export function runCommand(
 
   let lineBuffer = '';
   let capturedSessionId: string | undefined;
+  // error イベントの後に close イベントも発火するため、onClose の二重呼び出しを防ぐ。
+  let closeFired = false;
 
   /**
    * stream-json の 1 行を解析してテキスト表示とセッション ID 抽出を行う。
@@ -262,6 +264,8 @@ export function runCommand(
   });
 
   proc.on('close', (code) => {
+    if (closeFired) { return; }
+    closeFired = true;
     // バッファに残った最終行を処理する
     if (config.streamJson && lineBuffer.trim()) {
       processStreamJsonLine(lineBuffer);
@@ -271,6 +275,8 @@ export function runCommand(
 
   proc.on('error', (err) => {
     onError(`コマンド起動失敗: ${err.message}\n`);
+    if (closeFired) { return; }
+    closeFired = true;
     onClose(null);
   });
 
