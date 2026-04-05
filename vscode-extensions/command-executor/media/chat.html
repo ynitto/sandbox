@@ -397,7 +397,7 @@
       }
 
       function handleLocalSlashCommand(prompt) {
-        if (prompt.startsWith('/model')) {
+        if (!prompt.startsWith('/model')) {
           return false;
         }
 
