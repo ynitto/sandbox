@@ -30,6 +30,43 @@ ERROR がある場合は修正してから次のステップへ進む。WARN は
 
 静的チェックのみでは不十分な場合がある。手動テスト（トリガーテスト・動作テスト）との組み合わせについては `references/testing-guide.md` を参照。
 
+### Step 0.5. トリガー評価スクリプトを実行する（任意）
+
+descriptionが意図通りに発動するかを定量的に評価する。
+
+```bash
+# 環境確認（Claude Code か Copilot/Kiro かを判定）
+python <SKILLS_BASE>/skill-evaluator/scripts/eval_trigger.py --check-env
+
+# 単一クエリでテスト
+python <SKILLS_BASE>/skill-evaluator/scripts/eval_trigger.py \
+    --skill-path <SKILLS_BASE>/<skill-name> \
+    --query "スキルを評価して" --expected true
+
+# eval set JSON に対して一括テスト
+python <SKILLS_BASE>/skill-evaluator/scripts/eval_trigger.py \
+    --skill-path <SKILLS_BASE>/<skill-name> \
+    --eval-set eval.json --verbose
+
+# トリガーのシミュレーション・競合確認
+python <SKILLS_BASE>/skill-evaluator/scripts/simulate_trigger.py "<ユーザーリクエスト>"
+python <SKILLS_BASE>/skill-evaluator/scripts/simulate_trigger.py --conflicts
+```
+
+評価モード:
+- **高精度モード**（Claude Code）: `claude -p` を使って実際のLLM判定を行う
+- **簡易モード**（Copilot/Kiro）: バイグラム類似度でヒューリスティクス判定する
+
+eval set JSON 形式:
+```json
+[
+  {"query": "スキルを評価して", "should_trigger": true},
+  {"query": "スキルを作って", "should_trigger": false}
+]
+```
+
+トリガーテストの詳細手順は `references/testing-guide.md` を参照。
+
 ### Step 1. 動的評価スクリプトを実行する
 
 ```bash
