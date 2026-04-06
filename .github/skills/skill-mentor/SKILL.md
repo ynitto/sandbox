@@ -180,7 +180,7 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 > **状態スナップショット**: Phase 3 承認後、タスク定義と実行計画を ltm-use に一時保存する。
 > セッションが中断した場合、次のセッションで `recall_memory.py` を使い手動で計画を復元できる。
 > ```bash
-> python ${LTM}/save_memory.py \
+> python ${LTM}/save_memory.py --non-interactive --no-dedup \
 >   --category "session-snapshot" \
 >   --title "[ゴールの要約]" \
 >   --summary "skill-mentor セッションスナップショット（Phase 3 完了）" \

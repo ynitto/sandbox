@@ -171,7 +171,7 @@ metadata:
 設計ドキュメントのコミット直後に、Decision Record を長期記憶として自動保存する：
 
 ```bash
-python scripts/save_memory.py \
+python scripts/save_memory.py --non-interactive --no-dedup \
   --scope home \
   --category design \
   --title "[トピック名] の設計決定" \

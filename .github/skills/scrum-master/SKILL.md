@@ -172,7 +172,7 @@ python ${LTM}/recall_memory.py "[タスクキーワード]"
 ### save（Phase 6）
 
 ```bash
-python ${LTM}/save_memory.py \
+python ${LTM}/save_memory.py --non-interactive --no-dedup \
   --category [カテゴリ] --title "[タイトル]" --summary "[要約]" \
   --content "[詳細]" --conclusion "[学び]" --tags [タグ]
 ```
@@ -180,8 +180,8 @@ python ${LTM}/save_memory.py \
 ### promote（Phase 7 完了時）
 
 ```bash
-python ${LTM}/promote_memory.py --list   # 昇格候補確認
-python ${LTM}/promote_memory.py --auto   # share_score >= 85 を自動昇格
+python ${LTM}/promote_memory.py --list              # 昇格候補確認
+python ${LTM}/promote_memory.py --auto --push       # share_score >= 85 を自動昇格 + push
 ```
 
 ---

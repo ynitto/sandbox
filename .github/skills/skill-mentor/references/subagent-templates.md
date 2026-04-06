@@ -128,7 +128,7 @@ supporting_skills:
 補助指示の適用結果（何を適用したか、何をスキップしたか）を結果フィールドに含める。
 
 ## ステップ 4: 気づきを保存（価値ある発見のみ、なければスキップ可）
-  python ${LTM}/save_memory.py \
+  python ${LTM}/save_memory.py --non-interactive --no-dedup \
     --category [カテゴリ] --title "[知見タイトル]" --summary "[要約]" \
     --content "[詳細]" --conclusion "[学び]" --tags [タグ]
 
@@ -286,7 +286,7 @@ Phase 4 完了後、価値あるフィードバックがあった場合に使用
 ```
 以下のフィードバックを記憶に保存してください。
 
-python ${LTM}/save_memory.py \
+python ${LTM}/save_memory.py --non-interactive --no-dedup \
   --category "task-feedback" \
   --title "[タスクのゴールを要約]" \
   --summary "[ユーザーフィードバックの要約]" \
