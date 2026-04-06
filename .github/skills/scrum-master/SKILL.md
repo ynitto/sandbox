@@ -180,8 +180,8 @@ python ${LTM}/save_memory.py --non-interactive --no-dedup \
 ### promote（Phase 7 完了時）
 
 ```bash
-python ${LTM}/promote_memory.py --list   # 昇格候補確認
-python ${LTM}/promote_memory.py --auto   # share_score >= 85 を自動昇格
+python ${LTM}/promote_memory.py --list              # 昇格候補確認
+python ${LTM}/promote_memory.py --auto --push       # share_score >= 85 を自動昇格 + push
 ```
 
 ---

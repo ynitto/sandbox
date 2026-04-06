@@ -148,10 +148,14 @@ def main():
         return
 
     # --- 候補スキャン ---
-    candidates = load_candidate_memories(args.scope, semi_threshold)
+    # --auto 時は auto_threshold でスキャン（semi_threshold の 70〜84 を読み込まない）
+    scan_threshold = auto_threshold if args.auto else semi_threshold
+    candidates = load_candidate_memories(args.scope, scan_threshold)
 
     if not candidates:
-        print(f"昇格候補がありません（score >= {semi_threshold}）")
+        # --auto 時は候補なしを静かにスキップ（セッション開始の自動実行でノイズにしない）
+        if not args.auto:
+            print(f"昇格候補がありません（score >= {scan_threshold}）")
         return
 
     print(f"昇格候補: {len(candidates)}件（{args.scope} → {target_scope}）\n")
