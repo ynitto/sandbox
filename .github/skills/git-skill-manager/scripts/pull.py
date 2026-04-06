@@ -286,6 +286,25 @@ def pull_skills(
             shutil.rmtree(dest)
         shutil.copytree(winner["full_path"], dest)
 
+        # ---- pinned チェックアウト後にリポジトリを最新状態へ戻す ----
+        # git checkout <pinned> でワーキングツリーが変更されているため、
+        # このまま次のスキル処理に進むと同じリポジトリの他スキルが
+        # 古いコミットの内容でコピーされてしまう。
+        if pinned:
+            repo_branch = next(
+                (r["branch"] for r in reg["repositories"] if r["name"] == winner["repo_name"]),
+                "main",
+            )
+            repo_cache_pinned = os.path.join(cache_dir, winner["repo_name"])
+            try:
+                subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{repo_branch}"],
+                    cwd=repo_cache_pinned, check=True,
+                    capture_output=True, text=True, encoding="utf-8",
+                )
+            except subprocess.CalledProcessError as e:
+                print(f"   ⚠️  {sname}: pinned 後のリセットに失敗しました: {e}")
+
         enabled = existing_skill.get("enabled", True) if existing_skill else True
         version = _read_frontmatter_version(dest)
 
