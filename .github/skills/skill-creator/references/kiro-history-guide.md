@@ -2,6 +2,13 @@
 
 Kiro IDE（Windows）および Kiro CLI（WSL/Linux）のチャット履歴の構造と取得方法の詳細。
 
+## 目次
+
+- [Kiro CLI のストレージ](#kiro-cli-のストレージ)
+- [Kiro IDE のストレージ（Windows）](#kiro-ide-のストレージwindows)
+- [スクリプトのオプション早見表](#スクリプトのオプション早見表)
+- [WSL 固有の注意事項](#wsl-固有の注意事項)
+
 ---
 
 ## Kiro CLI のストレージ
