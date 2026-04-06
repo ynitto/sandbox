@@ -172,7 +172,7 @@ python ${LTM}/recall_memory.py "[タスクキーワード]"
 ### save（Phase 6）
 
 ```bash
-python ${LTM}/save_memory.py \
+python ${LTM}/save_memory.py --non-interactive --no-dedup \
   --category [カテゴリ] --title "[タイトル]" --summary "[要約]" \
   --content "[詳細]" --conclusion "[学び]" --tags [タグ]
 ```
