@@ -193,7 +193,8 @@ def pull_skills(
         winner = sources[0]
 
         if len(sources) > 1:
-            if interactive:
+            auto_resolve = reg.get("sync_policy", {}).get("auto_resolve_conflicts", False)
+            if interactive and not auto_resolve:
                 print(f"\n⚠️ 競合: '{sname}' が複数リポジトリに存在します")
                 for i, s in enumerate(sources, 1):
                     short_desc = s["description"] or "(説明なし)"
@@ -219,7 +220,8 @@ def pull_skills(
             else:
                 sources.sort(key=lambda s: s["repo_priority"])
                 winner = sources[0]
-                print(f"   ℹ️ 競合 '{sname}': priority の高い '{winner['repo_name']}' を自動採用します")
+                reason = "sync_policy.auto_resolve_conflicts=true" if auto_resolve else "非対話モード"
+                print(f"   ℹ️ 競合 '{sname}': priority の高い '{winner['repo_name']}' を自動採用します（{reason}）")
 
             conflicts.append({
                 "skill": sname,

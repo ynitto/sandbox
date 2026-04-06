@@ -116,12 +116,42 @@ class TestUpdateFrontmatterVersion:
 # ---------------------------------------------------------------------------
 
 class TestMigrateRegistry:
-    def test_v1_migrates_to_v7(self):
+    def test_v1_migrates_to_v8(self):
         old = {"version": 1, "repositories": [], "installed_skills": []}
         result = reg_mod.migrate_registry(old)
-        assert result["version"] == 7
+        assert result["version"] == 8
         assert "auto_update" in result
         assert "promotion_policy" in result
+
+    def test_v7_migrates_auto_resolve_conflicts(self):
+        old = {
+            "version": 7,
+            "repositories": [],
+            "installed_skills": [],
+            "sync_policy": {
+                "auto_accept_patch": True,
+                "auto_accept_minor": False,
+                "protect_local_modified": True,
+            },
+        }
+        result = reg_mod.migrate_registry(old)
+        assert result["version"] == 8
+        assert result["sync_policy"]["auto_resolve_conflicts"] is True
+
+    def test_v7_preserves_auto_resolve_conflicts_if_set(self):
+        old = {
+            "version": 7,
+            "repositories": [],
+            "installed_skills": [],
+            "sync_policy": {
+                "auto_accept_patch": True,
+                "auto_accept_minor": False,
+                "protect_local_modified": True,
+                "auto_resolve_conflicts": True,
+            },
+        }
+        result = reg_mod.migrate_registry(old)
+        assert result["sync_policy"]["auto_resolve_conflicts"] is True
 
     def test_adds_skill_fields(self):
         old = {
@@ -145,11 +175,11 @@ class TestMigrateRegistry:
         result = reg_mod.migrate_registry(old)
         assert "usage_stats" not in result["installed_skills"][0]
 
-    def test_already_v7_unchanged(self):
-        reg = reg_mod.load_registry()  # 新規レジストリは v7
-        assert reg["version"] == 7
+    def test_already_v8_unchanged(self):
+        reg = reg_mod.load_registry()  # 新規レジストリは v8
+        assert reg["version"] == 8
         migrated = reg_mod.migrate_registry(reg)
-        assert migrated["version"] == 7
+        assert migrated["version"] == 8
 
 
 # ---------------------------------------------------------------------------
@@ -211,5 +241,6 @@ class TestLoadSaveRegistry:
     def test_load_nonexistent_returns_default(self, tmp_path, monkeypatch):
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         reg = reg_mod.load_registry()
-        assert reg["version"] == 7
+        assert reg["version"] == 8
         assert reg["installed_skills"] == []
+        assert reg["sync_policy"]["auto_resolve_conflicts"] is True
