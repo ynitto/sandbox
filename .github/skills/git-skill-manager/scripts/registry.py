@@ -339,7 +339,7 @@ def migrate_registry(reg: dict) -> dict:
     # v7 → v8: 競合自動解決オプションを sync_policy に追加
     if version < 8:
         reg.setdefault("sync_policy", {})
-        reg["sync_policy"].setdefault("auto_resolve_conflicts", False)
+        reg["sync_policy"].setdefault("auto_resolve_conflicts", True)
 
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
     for skill in reg.get("installed_skills", []):
@@ -393,7 +393,7 @@ def load_registry() -> dict:
             "auto_accept_patch": True,
             "auto_accept_minor": False,
             "protect_local_modified": True,
-            "auto_resolve_conflicts": False,
+            "auto_resolve_conflicts": True,
         },
         "contribution_queue": [],
     }

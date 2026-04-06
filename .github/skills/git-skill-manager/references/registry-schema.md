@@ -99,7 +99,7 @@
     "auto_accept_patch": true,
     "auto_accept_minor": false,
     "protect_local_modified": true,
-    "auto_resolve_conflicts": false
+    "auto_resolve_conflicts": true
   },
   "contribution_queue": []
 }
@@ -183,7 +183,7 @@
 - `auto_accept_patch` (真偽値、デフォルト: true): パッチバージョンアップ（X.Y.Z1→X.Y.Z2）を自動 pull するか。`notify_only=false` 時のみ有効
 - `auto_accept_minor` (真偽値、デフォルト: false): マイナーバージョンアップ（X.Y1→X.Y2）を自動 pull するか。`notify_only=false` 時のみ有効。メジャーアップは常に手動確認
 - `protect_local_modified` (真偽値、デフォルト: true): true の場合、ローカル改善済みスキルを自動 pull で上書きしない
-- `auto_resolve_conflicts` (真偽値、デフォルト: false、v8): true の場合、複数リポジトリに同名スキルが存在する競合を、対話モードでもユーザーに確認せず `repositories[].priority` の高い方を自動採用する。`--no-interactive` フラグと同等の挙動をレジストリ設定として永続化できる
+- `auto_resolve_conflicts` (真偽値、デフォルト: true、v8): true の場合、複数リポジトリに同名スキルが存在する競合を、対話モードでもユーザーに確認せず `repositories[].priority` の高い方を自動採用する。`--no-interactive` フラグと同等の挙動をレジストリ設定として永続化できる
 
 **contribution_queue** (配列、v5):
 - ローカル改善をリモートに貢献するための待ちキュー（`promotion_policy.py` が管理）

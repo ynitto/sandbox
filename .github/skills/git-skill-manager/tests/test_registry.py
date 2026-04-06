@@ -136,7 +136,7 @@ class TestMigrateRegistry:
         }
         result = reg_mod.migrate_registry(old)
         assert result["version"] == 8
-        assert result["sync_policy"]["auto_resolve_conflicts"] is False
+        assert result["sync_policy"]["auto_resolve_conflicts"] is True
 
     def test_v7_preserves_auto_resolve_conflicts_if_set(self):
         old = {
@@ -243,4 +243,4 @@ class TestLoadSaveRegistry:
         reg = reg_mod.load_registry()
         assert reg["version"] == 8
         assert reg["installed_skills"] == []
-        assert reg["sync_policy"]["auto_resolve_conflicts"] is False
+        assert reg["sync_policy"]["auto_resolve_conflicts"] is True
