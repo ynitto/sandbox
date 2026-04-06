@@ -2,7 +2,7 @@
 name: skill-creator
 description: "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。"
 metadata:
-  version: 3.4.0
+  version: 3.5.0
   tier: core
   category: meta
   tags:
@@ -18,36 +18,25 @@ metadata:
 
 効果的なスキルを作成するためのガイド。
 
-## モード選択
+## このスキルでできること
 
-このスキルは4つのモードを持つ。ユーザーのリクエストから適切なモードを選び、そのワークフローを実行する:
+リクエストの内容に応じて、以下の参照ファイルを読んで手順を補う。判断に迷う場合はユーザーに確認する。
 
-| モード | 起動条件 | 詳細ワークフロー |
-|---|---|---|
-| **A: 手動作成** | ゼロから新規作成・既存スキルを改善 | このファイルの「スキル作成プロセス」セクション |
-| **B: コードベース変換** | 既存リポジトリ・コードを分析してスキル化 | [references/codebase-to-skill.md](references/codebase-to-skill.md) を読んで手順に従う |
-| **C: 履歴から生成** | AIエージェントのチャット履歴を分析 | [references/generating-skills-from-logs.md](references/generating-skills-from-logs.md) を読んで手順に従う |
-| **D: 外部取得** | URL・ローカルパスから外部スキルをインストール | [references/skill-recruiter.md](references/skill-recruiter.md) を読んで手順に従う |
+| やりたいこと | 参照 |
+|---|---|
+| 既存リポジトリ・コードを分析してスキル化したい | [references/codebase-to-skill.md](references/codebase-to-skill.md) |
+| エージェントログ・チャット履歴からスキルを生成したい | [references/generating-skills-from-logs.md](references/generating-skills-from-logs.md) |
+| URL・ローカルパスから外部スキルをインストールしたい | [references/skill-recruiter.md](references/skill-recruiter.md) |
+| Copilot の履歴・ログを探索したい | [references/copilot-history-guide.md](references/copilot-history-guide.md) |
+| Kiro の履歴・ログを探索したい | [references/kiro-history-guide.md](references/kiro-history-guide.md) |
+| パターン抽出の具体例を確認したい | [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md) |
+| 配布前の品質チェックリストが必要 | [references/quality-checklist.md](references/quality-checklist.md) |
 
-いずれのモードも最終的に `skill-creator` の検証手順（ステップ5）を経る。.skillファイルへのパッケージ化はオプションで、ユーザーから明示的な指示があった場合のみ実行する。
+上記に当てはまらない場合（ゼロから作成・改善）は、以下の「スキル作成プロセス」に従う。最終的にステップ5（検証）を経る点はどのケースも共通。.skillファイルへのパッケージ化はユーザーから明示的な指示があった場合のみ実行する。
 
-**モードC 補足資料**: [references/copilot-history-guide.md](references/copilot-history-guide.md)（Copilot 履歴の詳細）/ [references/kiro-history-guide.md](references/kiro-history-guide.md)（Kiro IDE/CLI 履歴の詳細）/ [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md)（パターン抽出例）/ [references/quality-checklist.md](references/quality-checklist.md)（配布前チェックリスト）
+**エージェントログの探索**はどのケースでも有効な手段。「過去にどう対処したか」「ユーザーが何を期待しているか」を把握するために、必要に応じてログを参照する。
 
 **作成ノウハウ**: [references/creation-pitfalls.md](references/creation-pitfalls.md)（よくある失敗・アンチパターン・効果的な書き方）
-
-### モード判定フロー
-
-```
-ユーザーのリクエストを受け取る
-  ↓
-「インストール」「追加」「URL」「パス」「外部」が含まれる → モード D
-  ↓
-「コードベース」「リポジトリ」「既存プロジェクト」が含まれる → モード B
-  ↓
-「履歴」「チャット」「ログ」「パターン」が含まれる → モード C
-  ↓
-その他（新規作成・改善・パッケージ化など） → モード A
-```
 
 ## スキルとは
 
@@ -200,7 +189,7 @@ docx-jsで新規作成。[DOCX-JS.md](DOCX-JS.md) 参照。
 6. 実使用に基づいて改善する
 
 **既存スキルの改良:**
-「スキルを改善して」「このスキルを更新して」「フィードバックに基づいて修正して」などのリクエストの場合は、ステップ3（初期化）をスキップして次の手順で進める:
+「スキルを改善して」「このスキルを更新して」「フィードバックに基づいて修正して」などのリクエストの場合は、スキルを初期化するステップをスキップして次の手順で進める:
 1. 改良対象のSKILL.mdと関連リソースを読む
 2. 改良内容を明確化する（問題点・追加機能・変更方針をユーザーに確認する）
 3. 変更を実装する（SKILL.mdとリソースを直接編集する）
