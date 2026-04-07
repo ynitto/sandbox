@@ -243,7 +243,16 @@ def main():
         return
 
     # 入力収集
-    non_interactive = args.non_interactive or not sys.stdin.isatty()
+    # VS Code 統合ターミナルは TTY だが、Copilot エージェントが実行する場合は
+    # インタラクティブ入力を求めるべきでないため、VS Code 環境も非インタラクティブとして扱う
+    def _is_vscode_env() -> bool:
+        return (
+            os.environ.get("TERM_PROGRAM") == "vscode"
+            or "VSCODE_PID" in os.environ
+            or "VSCODE_IPC_HOOK_CLI" in os.environ
+        )
+
+    non_interactive = args.non_interactive or not sys.stdin.isatty() or _is_vscode_env()
     if non_interactive:
         title = args.title or ""
         summary = args.summary or ""
