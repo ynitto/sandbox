@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as vscode from 'vscode';
 import { AgentConfig } from './agentConfig';
 import { loadInstructionsFile } from './agentLoader';
-import { toWslPath } from './pathUtils';
+import { toWslPath, isWslWorkspacePath } from './pathUtils';
 
 export interface CommandConfig {
   cmd: string;
@@ -127,7 +127,6 @@ export function buildCommand(
       if (isWindows) {
         // Windows から WSL2 経由で実行
         // wsl --cd <linuxPath> で WSL 内カレントディレクトリを明示指定する
-        // spawn の cwd（Windows 側）には元の fsPath を渡す
         const wslCwd = workspacePath ? toWslPath(workspacePath) : undefined;
         // チェック処理と同様に sh -lc 経由で起動し、WSL 側 PATH 解決を一致させる
         const escapedOptionArgs = [...extra].map(escapePosixShellArg);
@@ -145,7 +144,10 @@ export function buildCommand(
           cmd: 'wsl.exe',
           args: wslArgs,
           label: agent.name,
-          cwd: workspacePath, // wsl.exe の Windows 側 cwd
+          // WSL UNC パス（\\wsl$\... 等）は Windows 側 cwd として無効なため undefined にする。
+          // WSL 内の cwd は --cd オプションで指定済み。
+          cwd: workspacePath && !isWslWorkspacePath(workspacePath) ? workspacePath : undefined,
+          streamJson: true,
         };
       }
       return {
@@ -153,6 +155,7 @@ export function buildCommand(
         args: ['chat', '--no-interactive', '--trust-all-tools', ...modelArgs, ...sessionArgs, ...extra, '--', prompt],
         label: agent.name,
         cwd: workspacePath,
+        streamJson: true,
       };
     }
 
