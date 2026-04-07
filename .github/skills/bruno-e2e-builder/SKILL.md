@@ -1,6 +1,6 @@
 ---
 name: bruno-e2e-builder
-description: "OpenAPI仕様を元にBruno CLI実行可能なE2Eテストファイルを生成するスキル。「BrunoのE2Eテストを作って」「OpenAPIからBrunoテストを生成して」「Bruno用のE2Eを作成して」「APIテストをBrunoで書いて」「bruファイルを生成して」などで発動する。"
+description: OpenAPI仕様を元にBruno CLI実行可能なE2Eテストファイルを生成するスキル。「BrunoのE2Eテストを作って」「OpenAPIからBrunoテストを生成して」「Bruno用のE2Eを作成して」「APIテストをBrunoで書いて」「bruファイルを生成して」などで発動する。
 metadata:
   version: 1.0.0
   tier: experimental
@@ -35,7 +35,7 @@ e2e/
 ```
 
 **ファイル命名規則:** `{連番3桁}. {タイトル}.bru`
-連番の昇順 = Bruno CLIの実行順。
+連番の昇順 = Bruno CLIの実行順 = bru ファイルに記述した `seq` の値。
 
 ## ステップ1: APIテストの自動生成
 
