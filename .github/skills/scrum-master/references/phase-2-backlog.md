@@ -6,9 +6,11 @@
 
 ```mermaid
 flowchart TD
-    A[Phase 2 開始] --> B{requirements.json 存在?}
+    A[Phase 2 開始] --> B{requirements.md 存在?}
     B -- あり --> C[Step 2-2: バックログ変換]
-    B -- なし --> D[Step 2-1: プレインタビュー → requirements-definer に委譲]
+    B -- なし --> B2{requirements.json 存在?（後方互換）}
+    B2 -- あり --> C
+    B2 -- なし --> D[Step 2-1: プレインタビュー → requirements-definer に委譲]
     D --> C
     C --> E[Step 2-3: プロダクトゴール & DoD 設定]
     E --> F[Step 2-4: plan.json 保存]
@@ -19,23 +21,24 @@ flowchart TD
 
 ## 目次
 
-- [Step 2-0: requirements.json の存在チェック](#step-2-0-requirementsjson-の存在チェック)
+- [Step 2-0: requirements.md の存在チェック](#step-2-0-requirementsmd-の存在チェック)
 - [Step 2-1: scrum-master がプレインタビューを実施し、requirements-definer に委譲する](#step-2-1-scrum-master-がプレインタビューを実施しrequirements-definer-に委譲する)
-- [Step 2-2: requirements.json → バックログ変換](#step-2-2-requirementsjson--バックログ変換)
+- [Step 2-2: requirements.md → バックログ変換](#step-2-2-requirementsmd--バックログ変換)
 - [Step 2-3: プロダクトゴールと完成の定義を設定する](#step-2-3-プロダクトゴールと完成の定義を設定する)
 - [Step 2-4: plan.json 保存](#step-2-4-planjson-保存)
 - [ゲート条件（Phase 3 に進む前に確認）](#ゲート条件phase-3-に進む前に確認)
 
-ユーザーのプロンプトから **必ず requirements-definer を経由して** バックログを作成する。プロンプトが明確に見えても要件定義は省略しない。requirements.json が存在する場合のみスキップできる。
+ユーザーのプロンプトから **必ず requirements-definer を経由して** バックログを作成する。プロンプトが明確に見えても要件定義は省略しない。requirements.md（または後方互換として requirements.json）が存在する場合のみスキップできる。
 
 ---
 
-## Step 2-0: requirements.json の存在チェック
+## Step 2-0: requirements.md の存在チェック
 
-作業ディレクトリのルートに `requirements.json` が存在するか確認する。
+作業ディレクトリのルートに `requirements.md` が存在するか確認する。存在しない場合は `requirements.json`（後方互換）を確認する。
 
-- **存在する** → Step 2-2 へスキップ（Step 2-3 は引き続き必ず実行する）
-- **存在しない** → Step 2-1 へ進む
+- **`requirements.md` が存在する** → Step 2-2 へスキップ（Step 2-3 は引き続き必ず実行する）
+- **`requirements.json` が存在する（後方互換）** → Step 2-2 へスキップ（Step 2-3 は引き続き必ず実行する）
+- **どちらも存在しない** → Step 2-1 へ進む
 
 ---
 
@@ -77,28 +80,42 @@ flowchart TD
       Step 2 の規模判定から開始すること。
       ただし、収集済みコンテキストに「未回答」の項目がある場合や、Step 2 以降で情報不足を
       検出した場合は、合理的に推定して進めてよい。推定した内容は requirements.json 内に
-      明記すること。
+      明記すること。推定した内容は requirements.md 内に記録すること。
 要件数: 機能要件 [N] 件 / 非機能要件 [M] 件
 サマリー: [1〜2文で結果を説明]
 ```
 
-完了後、`requirements.json` が生成される → Step 2-2 へ進む。
+完了後、`requirements.md` が生成される → Step 2-2 へ進む。
 
 ---
 
-## Step 2-2: requirements.json → バックログ変換
+## Step 2-2: requirements.md → バックログ変換
 
-`requirements.json` を読み込み、以下のマッピングルールで `plan.json` のバックログに変換する:
+`requirements.md` を読み込み、以下のマッピングルールで `plan.json` のバックログに変換する。後方互換として `requirements.json` が存在する場合もそちらから読み込んで同様に変換する。
 
-| requirements.json | plan.json | 変換ルール |
-|---|---|---|
-| `goal` | `goal` | そのまま転記 |
+### requirements.md からの読み込み方法
+
+| requirements.md セクション | 読み取り方法 |
+|--------------------------|------------|
+| `## プロジェクト概要` の **ゴール**: | プロジェクトの目標文字列を抽出 |
+| `### F-NN:` の H3 セクション | 各機能要件。見出しからIDと名前を取得 |
+| F-NN > **ユーザーストーリー**: | `As a ... I want ... so that ...` 形式の文字列 |
+| F-NN > **MoSCoW**: | Must / Should / Could の文字列 |
+| F-NN > **受け入れ条件** 表 | Given / When / Then の各行 |
+| `## 非機能要件` 表 | ID / 要件名 / 内容の各行 |
+| `## スコープ` > Out スコープ 表 | 除外機能の一覧 |
+
+### plan.json へのマッピング
+
+| 読み取り元 | plan.json フィールド | 変換ルール |
+|-----------|---------------------|-----------|
+| **ゴール**（プロジェクト概要） | `goal` | そのまま転記 |
 | — | `requirements_source` | `"requirements-definer"` を設定 |
-| `functional_requirements[].user_story` or `description` | `backlog[].action` | 具体的な作業内容を導出 |
-| `functional_requirements[].acceptance_criteria` | `backlog[].done_criteria` | 検証可能な完了条件に変換 |
-| `functional_requirements[].moscow` or 出現順 | `backlog[].priority` | must=1, should=2, could=3 |
-| `non_functional_requirements` | 横断タスク or 制約 | パフォーマンス → 専用タスク、それ以外 → done_criteria に付与 |
-| `scope.out` | バックログに含めない | 除外スコープとして記録のみ |
+| F-NN > ユーザーストーリー または H3 見出しの名前 | `backlog[].action` | 具体的な作業内容を導出 |
+| F-NN > 受け入れ条件 表の Then 列 | `backlog[].done_criteria` | 検証可能な完了条件に変換 |
+| F-NN > MoSCoW または出現順 | `backlog[].priority` | Must=1, Should=2, Could=3 |
+| 非機能要件 | 横断タスク or 制約 | パフォーマンス → 専用タスク、それ以外 → done_criteria に付与 |
+| Out スコープ | バックログに含めない | 除外スコープとして記録のみ |
 
 **変換の粒度:**
 - 1タスク = 1スキルの1回の実行
@@ -112,7 +129,7 @@ flowchart TD
 
 補助スキルを `skill` 配列へ混在させてはならない。scrum-master 側で具体的な補助スキル名を再判定してはならない。
 
-→ **Step 2-3 へ進む**（requirements.json 経由でここに来た場合も省略しない）。
+→ **Step 2-3 へ進む**（requirements.md / requirements.json 経由でここに来た場合も省略しない）。
 
 ---
 
