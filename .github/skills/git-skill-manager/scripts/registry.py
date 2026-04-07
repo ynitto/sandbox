@@ -336,12 +336,17 @@ def migrate_registry(reg: dict) -> dict:
         agent_dir = AGENT_DIRS.get(reg["agent_type"], ".copilot")
         reg.setdefault("skill_home", os.path.join(home, agent_dir, "skills"))
 
+    # v7 → v8: 競合自動解決オプションを sync_policy に追加
+    if version < 8:
+        reg.setdefault("sync_policy", {})
+        reg["sync_policy"].setdefault("auto_resolve_conflicts", True)
+
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
     for skill in reg.get("installed_skills", []):
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
-    reg["version"] = 7
+    reg["version"] = 8
     # tier: core の SKILL.md から常に最新のコアスキル一覧を再計算する
     reg["core_skills"] = _discover_core_skills()
     return reg
@@ -355,7 +360,7 @@ def load_registry() -> dict:
         return migrate_registry(reg)
     home = _user_home()
     return {
-        "version": 7,
+        "version": 8,
         "agent_type": "copilot",
         "user_home": home,
         "install_dir": None,
@@ -388,6 +393,7 @@ def load_registry() -> dict:
             "auto_accept_patch": True,
             "auto_accept_minor": False,
             "protect_local_modified": True,
+            "auto_resolve_conflicts": True,
         },
         "contribution_queue": [],
     }

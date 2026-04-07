@@ -2,7 +2,7 @@
 name: ltm-use
 description: セッションをまたいで知識・決定事項を継続させたいときのスキル。「覚えておいて」でsave、「思い出して」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った／間違ってた」でrate、「固定化して」でconsolidate。重要な知見を発見したら自律的にsaveを実行すること。
 metadata:
-  version: 5.2.0
+  version: 5.3.1
   tier: core
   category: meta
   tags:
@@ -70,7 +70,8 @@ home  →  (昇格・git)  →  shared
 
 ```bash
 # ホーム記憶として保存（デフォルト・全記憶はここに入る）
-python scripts/save_memory.py \
+# VSCode Copilot 等のエージェントからは必ず --non-interactive を付けること（タグ入力プロンプト抑止）
+python scripts/save_memory.py --non-interactive \
   --category [カテゴリ] \
   --title "[タイトル]" \
   --summary "[要約（1〜2文）]" \
