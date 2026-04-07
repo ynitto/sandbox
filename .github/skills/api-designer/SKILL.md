@@ -1,127 +1,127 @@
 ---
 name: api-designer
-description: REST / GraphQL API の設計・ドキュメント生成・バリデーション方針を支援する。「APIを設計して」「REST APIのエンドポイントを決めて」「OpenAPIスキーマを作って」「GraphQLスキーマを設計して」「APIのバージョニング戦略を決めて」などのリクエストで必ずこのスキルを使う。
+description: REST API の設計・OpenAPI ドキュメント生成・バリデーション方針を支援する。「APIを設計して」「REST APIのエンドポイントを決めて」「OpenAPIスキーマを作って」「APIのバージョニング戦略を決めて」などのリクエストで必ずこのスキルを使う。
 metadata:
-  version: 1.0.0
+  version: 2.0.0
   tier: stable
   category: design
   tags:
     - api
     - openapi
     - rest
-    - graphql
 ---
 
 # API Designer
 
-REST / GraphQL API の設計から OpenAPI / GraphQL スキーマ生成まで一貫して支援するスキル。
+REST API の設計から OpenAPI スキーマ生成まで一貫して支援するスキル。
+ドメインモデル・既存 OpenAPI 仕様・実装コードを入力として受け取り、それぞれの制約に応じた最適なインターフェースを決定する。
 
 ## 前後の工程
 
-- **前工程**: ユースケース・エンティティ洗い出しが完了した状態で本スキルを開始する
+- **前工程**: ドメインモデル設計、既存 API 仕様・実装コードの収集
 - **後工程（フロントエンド）**: 生成した OpenAPI スキーマをフロントエンド I/F 設計のインプットとして渡す
 - **後工程（DB）**: エンドポイント設計と DB アクセスパターンを整合させる
 
 ---
 
-## API 設計フロー
-
 ## 実行ルール（必須）
 
 - 各 Step は **入力確認 → 実施 → 出力** の順で進める
-- 未入力項目がある場合は、Step 1 の質問テンプレートで補完してから次に進む
-- API 方式の採用判断は、Step 2 の判定マトリクスと「採用しない理由」テンプレートを必ず残す
+- Step 1 の入力収集はユーザーと対話しながら行う。存在を確認し、あれば受け取る
+- Step 2 の制約分析は入力の種類によって判断基準が異なる。必ずテンプレートに従い明示する
 - 互換性ポリシー（breaking / non-breaking / deprecation）は Step 3 と Step 6 の両方で確認する
-- Step 6 のセキュリティ最小チェックは省略しない
+- Step 6 のセキュリティ最小チェックと OpenAPI ドキュメント品質チェックは省略しない
 
-### Step 1: ユースケースと必須入力チェック
+---
 
-#### 入力確認（必須チェックリスト）
+## API 設計フロー
 
-以下を **必須入力項目** として確認する。未入力がある場合は質問して埋める。
+### Step 1: 入力収集とインプット確認
 
-- 主要なエンティティ（User, Order, Product など）
-- 主要なユースケース（CRUD / 検索 / 集計 / バッチ / Webhook など）
-- クライアント種別（SPA / モバイル / サードパーティ / 社内）
-- 想定トラフィック・ピーク特性（RPS、同時接続、バースト）
-- SLA / SLO（可用性、レスポンス目標、エラー予算）
-- 可用性要件（冗長化、フェイルオーバー、RTO/RPO）
-- 監査要件（誰が・いつ・何を変更したかの追跡要否）
-- 非機能要件（性能、拡張性、運用性、可観測性、コスト）
-- 法令 / 規制要件（業法、データ越境、保持期間）
-- PII / 機微情報の分類（氏名、メール、住所、決済情報など）
-- 認証 / 認可方式の制約（OAuth2, JWT, SSO, RBAC/ABAC）
+以下の入力を**ユーザーと対話しながら**確認・収集する。
+複数の入力を受け付けてよい。存在しない場合は「なし」として進める。
 
-#### 未入力時の質問テンプレート（必須）
+#### 確認する入力（優先順位順）
 
-不足項目を次のテンプレートで質問する。
+1. **openapi_spec** — 既存の OpenAPI 仕様ファイル（YAML/JSON）
+   - 「既存の OpenAPI 仕様はありますか？あればファイルまたは内容を共有してください。」
+2. **implementation_code** — 既存の実装コード（ルーティング定義、コントローラ等）
+   - 「既存の実装コードはありますか？ルーティング定義やコントローラのコードがあれば共有してください。」
+3. **domain_model** — ドメインモデル（Mermaid classDiagram 等）
+   - 「ドメインモデルはありますか？Mermaid classDiagram や ER 図があれば共有してください。」
+4. **api_description** — 上記がない場合のフォールバック
+   - 上記いずれもない場合: 「API の目的・概要を自由に教えてください。」
 
-```markdown
-不足している前提を確認します。以下を教えてください（未定は「未定」で可）。
-1. SLA/SLO（例: 可用性 99.9%、p95 300ms）
-2. 可用性要件（RTO/RPO、障害時の許容停止時間）
-3. 監査要件（監査ログ必須項目、保持期間、検索要件）
-4. 非機能要件（性能/スケール/運用/コスト制約）
-5. 法令・規制要件（個人情報、業法、保存場所制約）
-6. PII の有無と項目（例: メール、電話、住所、決済情報）
+#### 追加で確認する情報
+
+入力が揃ったら、不足していれば以下も確認する（「未定」で可）:
+
+```
+以下を確認します（未定は「未定」で可）。
+1. API の利用者（SPA / モバイル / サードパーティ / 社内システム）
+2. 認証・認可方式（JWT / OAuth2 / API Key / Session など）
+3. バージョニング方針（新規 / 既存バージョン継続 / メジャー更新）
+4. PII・機微情報の有無（氏名、メール、決済情報など）
+5. レートリミット・SLA 要件（あれば）
 ```
 
 #### Step 1 の出力
 
-- `前提条件サマリー`
-- `未確定事項リスト`
+- `収集した入力サマリー`（種類・内容・有無）
+- `追加確認事項サマリー`
 
-### Step 2: API 種別の選択（REST vs GraphQL）
+---
 
-| 観点 | REST | GraphQL | 判定時の確認ポイント |
-|------|------|---------|----------------------|
-| 学習コスト | 低 | 中〜高 | チームの経験値と教育コスト |
-| 柔軟なデータ取得 | 難 | 容易 | 画面ごとの取得差分が大きいか |
-| キャッシュ | HTTP キャッシュ標準 | 追加実装が必要 | CDN / ブラウザキャッシュ要件 |
-| N+1 問題 | 設計で回避 | DataLoader 必須 | リレーションの深さ |
-| 型安全性 | OpenAPI で担保 | スキーマで担保 | コード生成運用の有無 |
-| 監査・統制 | 実装しやすい | 設計次第で複雑化 | 監査要件の厳しさ |
-| 外部公開適性 | 高 | 要ガバナンス | サードパーティ公開予定 |
-| 採用場面 | シンプルな CRUD・広い互換性 | 複雑なリレーション・フロントエンド主導 | 実際のユースケース適合 |
+### Step 2: 入力分析と制約判断
 
-#### 「採用しない理由」記録テンプレート（必須）
+収集した入力を分析し、インターフェース設計の**制約レベル**を決定する。
 
-```markdown
-## API 方式の採用判断
-- 採用方式: REST | GraphQL
-- 採用理由:
-  -
-  -
-- 非採用方式: REST | GraphQL
-- 採用しない理由:
-  -
-  -
-- トレードオフ:
-  -
-- 将来再評価の条件:
-  -
+#### 入力種別ごとの制約ルール
+
+| 入力種別 | 制約レベル | 判断方針 |
+|----------|-----------|---------|
+| openapi_spec | **強制（原則変更不可）** | 定義済みパス・メソッド・スキーマは維持する。追加は可。削除・変更は breaking change として扱い、ユーザーの明示的な承認を得る |
+| implementation_code | **コスト考慮（要相談）** | 実装との乖離コストを見積もり、変更量が大きい場合はユーザーに確認してから変更提案する |
+| domain_model | **自由設計** | RESTful インターフェースへ具体化する。命名・構造はドメイン用語に従う |
+| api_description のみ | **自由設計** | ベストプラクティスに従い新規設計する |
+
+#### 複合入力時の優先順位
+
+複数の入力がある場合は以下の順で制約を優先する:
+
+```
+openapi_spec（最優先）> implementation_code > domain_model > api_description
 ```
 
-#### 判定サマリーテンプレート（必須）
+#### 制約分析テンプレート（必須）
 
 ```markdown
-## Step 2 判定サマリー
-- 判定日:
-- 判定者:
-- 前提ユースケース:
-- 判定結果: REST | GraphQL
-- 主な決め手（3点以内）:
-  1.
-  2.
-  3.
+## 制約分析サマリー
+- openapi_spec: あり / なし → [あり: 既存パス一覧と変更可否の判断]
+- implementation_code: あり / なし → [あり: 変更コスト見積もり]
+- domain_model: あり / なし → [あり: RESTful 具体化の方針]
+
+## 変更制約マップ
+| 対象 | 制約レベル | 変更可否 | 備考 |
+|------|-----------|---------|------|
+| （パス / スキーマ / 操作ごとに記載）|  |  |  |
+
+## 設計方針サマリー
+- 固定するインターフェース:
+- 新規追加するインターフェース:
+- 変更提案（ユーザー承認が必要なもの）:
 ```
 
 #### Step 2 の出力
 
-- `API方式判定結果`
-- `採用しない理由メモ`
+- `制約分析サマリー`
+- `設計方針サマリー`（固定・追加・要確認の分類）
 
-### Step 3: エンドポイント / スキーマ境界設計
+---
+
+### Step 3: エンドポイント設計
+
+Step 2 の制約に従いエンドポイントを設計する。
 
 #### REST 命名規約
 
@@ -147,17 +147,17 @@ POST /users/{id}/password-reset
 
 | 方式 | 例 | 特徴 |
 |------|-----|------|
-| URL パス | `/v1/users` | 可視性高・ルーティング容易 |
+| URL パス | `/v1/users` | 可視性高・ルーティング容易（推奨） |
 | ヘッダー | `Accept: application/vnd.api+json;v=1` | URL をクリーンに保てる |
 | クエリパラメータ | `/users?version=1` | テスト容易だがキャッシュしにくい |
 
-推奨: **URL パス方式**（可視性・互換性が最も高い）
+推奨: **URL パス方式**
 
 #### 互換性ポリシー（必須）
 
 - **non-breaking**（同一メジャー内で許可）
   - 省略可能フィールドの追加
-  - 新規エンドポイント / Query の追加
+  - 新規エンドポイントの追加
   - Enum 値の追加（クライアント許容方針がある場合）
 - **breaking**（メジャー更新または明示移行が必須）
   - 必須フィールド追加
@@ -172,8 +172,10 @@ POST /users/{id}/password-reset
 
 #### Step 3 の出力
 
-- `API境界定義（resource / query / mutation）`
+- `エンドポイント一覧（resource・メソッド・説明・認証）`
 - `互換性方針メモ（breaking/non-breaking/deprecation）`
+
+---
 
 ### Step 4: リクエスト / レスポンス設計
 
@@ -223,10 +225,11 @@ POST /users/{id}/password-reset
 | 401 | 未認証 |
 | 403 | 権限不足 |
 | 404 | リソース未発見 |
-| 409 | 競合（重複など） |
+| 409 | 競合（重複・楽観ロック失敗など） |
 | 422 | バリデーションエラー |
 | 429 | レートリミット超過 |
 | 500 | サーバー内部エラー |
+| 503 | サービス一時停止（メンテナンス等） |
 
 #### ページネーション設計
 
@@ -253,20 +256,160 @@ GET /products?page=3&perPage=25
 #### Step 4 の出力
 
 - `リクエスト/レスポンス仕様`
-- `エラー仕様・ステータスコード対応表`
+- `エラーコード定義表`（コード・HTTPステータス・発生条件・説明）
 
-### Step 5: OpenAPI / GraphQL スキーマ生成
+---
 
-**REST の場合** → [references/openapi-guide.md](references/openapi-guide.md) を読み込み、OpenAPI 3.0 YAML を生成する。
+### Step 5: OpenAPI スキーマ生成
 
-**GraphQL の場合** → 以下の GraphQL 設計ガイドに従いスキーマを生成する。
+[references/openapi-guide.md](references/openapi-guide.md) を読み込み、OpenAPI 3.0 YAML を生成する。
+
+#### 生成品質要件（必須）
+
+生成する OpenAPI ファイルは**仕様書として単体で使える品質**にする。以下を必ず含める。
+
+##### 1. 解説（description）
+
+```yaml
+# すべての operation に description を記載する
+paths:
+  /users/{id}:
+    get:
+      summary: ユーザー取得
+      description: |
+        指定された ID のユーザーを取得します。
+        - 本人または管理者ロールのみアクセス可能です。
+        - 削除済みユーザーは 404 を返します。
+
+# すべての schema フィールドに description を記載する
+components:
+  schemas:
+    User:
+      properties:
+        id:
+          type: string
+          description: ユーザーの一意識別子（UUID v4）
+        email:
+          type: string
+          description: ログインに使用するメールアドレス。変更時は確認メールを送信する。
+```
+
+##### 2. スキーマ例（example / examples）
+
+```yaml
+# スキーマレベルの example（単体レスポンス用）
+components:
+  schemas:
+    User:
+      example:
+        id: "550e8400-e29b-41d4-a716-446655440000"
+        email: "alice@example.com"
+        name: "Alice Smith"
+        role: "user"
+        createdAt: "2024-01-15T09:30:00Z"
+
+# operationレベルの examples（複数シナリオ）
+responses:
+  '200':
+    content:
+      application/json:
+        examples:
+          regular_user:
+            summary: 一般ユーザーの例
+            value:
+              data:
+                id: "550e8400-e29b-41d4-a716-446655440000"
+                email: "alice@example.com"
+                role: "user"
+          admin_user:
+            summary: 管理者ユーザーの例
+            value:
+              data:
+                id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+                email: "admin@example.com"
+                role: "admin"
+```
+
+##### 3. エラーバリエーション（responses の網羅）
+
+各 operation に対して発生しうるエラーレスポンスを**全パターン**列挙する。
+
+```yaml
+paths:
+  /users/{id}:
+    get:
+      responses:
+        '200':
+          description: 取得成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: ユーザーが存在しない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                user_not_found:
+                  summary: ユーザーが見つからない場合
+                  value:
+                    type: "https://api.example.com/errors/not-found"
+                    title: "Not Found"
+                    status: 404
+                    detail: "User with id '550e8400' does not exist."
+                    instance: "/users/550e8400"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+# components に共通エラーレスポンスを定義
+components:
+  responses:
+    Unauthorized:
+      description: 認証トークンが無効または未提供
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            missing_token:
+              summary: トークン未提供
+              value:
+                type: "https://api.example.com/errors/unauthorized"
+                title: "Unauthorized"
+                status: 401
+                detail: "Authorization header is missing."
+            expired_token:
+              summary: トークン期限切れ
+              value:
+                type: "https://api.example.com/errors/unauthorized"
+                title: "Unauthorized"
+                status: 401
+                detail: "Token has expired. Please re-authenticate."
+    Forbidden:
+      description: 認証済みだが権限不足
+    TooManyRequests:
+      description: レートリミット超過
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: 次のリクエストが可能になるまでの秒数
+    InternalServerError:
+      description: サーバー内部エラー
+```
 
 #### Step 5 の出力
 
-- `OpenAPI 3.0 YAML` または `GraphQL SDL`
+- `OpenAPI 3.0 YAML`（descriptions・examples・error responses を全て含む）
 - `生成時の前提・制約メモ`
 
-### Step 6: レビューと調整（互換性 + セキュリティ必須）
+---
+
+### Step 6: レビューと調整（互換性 + セキュリティ + ドキュメント品質）
 
 #### 互換性レビュー（必須）
 
@@ -284,6 +427,18 @@ GET /products?page=3&perPage=25
 4. **レート制御**: 乱用対策（IP/トークン単位制限、429設計）があるか
 5. **情報露出**: エラーメッセージやレスポンスに内部情報を含めていないか
 
+#### OpenAPI ドキュメント品質チェック（必須）
+
+| チェック項目 | 基準 |
+|-------------|------|
+| operation description | 全 operation に記載されているか |
+| parameter description | 全パスパラメータ・クエリパラメータに記載されているか |
+| schema フィールド description | 主要フィールドに記載されているか |
+| example | 全 schema に example が定義されているか |
+| エラーレスポンス網羅 | 各 operation の発生しうる 4xx/5xx が列挙されているか |
+| エラー examples | 401/403/404/422/429 にシナリオ別 example があるか |
+| components 共通化 | 繰り返しスキーマが $ref で共通化されているか |
+
 #### 整合性レビュー
 
 - エンドポイント・フィールドの過不足
@@ -291,8 +446,81 @@ GET /products?page=3&perPage=25
 
 #### Step 6 の出力
 
-- `レビュー結果（互換性 / セキュリティ / 整合性）`
+- `レビュー結果（互換性 / セキュリティ / ドキュメント品質）`
 - `修正アクション一覧`
+
+---
+
+## 成果物テンプレート
+
+### 出力フォーマット（必須）
+
+最終出力は次の順で提示する。
+
+1. `収集した入力サマリー`
+2. `制約分析サマリー`（入力種別ごとの制約と設計方針）
+3. `エンドポイント一覧`（メソッド・パス・説明・認証）
+4. `互換性ポリシー`（breaking/non-breaking/deprecation）
+5. `OpenAPI 3.0 YAML`（解説・スキーマ例・エラーバリエーション含む）
+6. `セキュリティ最小チェック結果`
+7. `DoD 判定`
+8. `次工程ハンドオフ`
+
+### エンドポイント一覧表（Markdown）
+
+```markdown
+| メソッド | パス | 説明 | 認証 |
+|--------|------|------|------|
+| GET | /v1/users | ユーザー一覧取得 | JWT |
+| POST | /v1/users | ユーザー作成 | JWT |
+| GET | /v1/users/{id} | ユーザー取得 | JWT |
+| PUT | /v1/users/{id} | ユーザー更新 | JWT（本人/管理者） |
+| DELETE | /v1/users/{id} | ユーザー削除 | JWT（管理者） |
+```
+
+### エラーコード定義表
+
+```markdown
+| コード | HTTP ステータス | 発生条件 | 説明 |
+|--------|----------------|---------|------|
+| USER_NOT_FOUND | 404 | 指定 ID のユーザーが存在しない | ユーザーが見つかりません |
+| EMAIL_ALREADY_EXISTS | 409 | 同一メールアドレスが登録済み | メールアドレスが既に使用中 |
+| INVALID_TOKEN | 401 | JWT が無効または期限切れ | 認証トークンが無効です |
+| INSUFFICIENT_PERMISSION | 403 | 操作に必要なロールがない | 権限が不足しています |
+| VALIDATION_ERROR | 422 | リクエストボディのバリデーション失敗 | 入力値が不正です |
+| RATE_LIMIT_EXCEEDED | 429 | レートリミット超過 | リクエスト上限を超えました |
+```
+
+### Definition of Done（DoD）チェックリスト（必須）
+
+```markdown
+- [ ] 入力を収集し制約分析を完了した
+- [ ] 制約マップに従いエンドポイントを設計した（openapi_spec の既存インターフェースは維持）
+- [ ] 互換性ポリシー（breaking/non-breaking/deprecation）が明記されている
+- [ ] 全 operation に description が記載されている
+- [ ] 全 schema に example が定義されている
+- [ ] 全 operation の 4xx/5xx エラーレスポンスが列挙されている
+- [ ] エラーレスポンスにシナリオ別 example がある
+- [ ] セキュリティ最小チェック5項目が全て確認済み
+- [ ] OpenAPI lint を通過している（validate_openapi.py）
+- [ ] フロントエンド / DB へのハンドオフ項目が整理されている
+```
+
+### 次工程ハンドオフ項目（必須）
+
+```markdown
+## フロントエンド向け
+- 利用エンドポイント一覧:
+- 認証方式・必要スコープ:
+- エラーコードと UI ハンドリング方針:
+- 互換性注意点（deprecation 期限含む）:
+
+## バックエンド / DB 向け
+- 想定アクセスパターン（一覧・検索・集計）:
+- インデックス/キャッシュ検討ポイント:
+- 監査ログ保存要件:
+- PII 取り扱いポリシー:
+```
 
 ---
 
@@ -316,81 +544,6 @@ X-RateLimit-Reset: 1700000000
 
 - GET / PUT / DELETE は冪等に設計する
 - POST で冪等性が必要な場合は `Idempotency-Key` ヘッダーを使う
-
----
-
-## GraphQL 設計ガイド
-
-詳細 → [references/graphql-guide.md](references/graphql-guide.md)
-
----
-
-## 成果物テンプレート
-
-### 出力フォーマット（必須）
-
-最終出力は次の順で提示する。
-
-1. `前提条件サマリー`
-2. `API方式判定結果`（採用しない理由を含む）
-3. `API仕様`（エンドポイントまたはスキーマ）
-4. `互換性ポリシー`（breaking/non-breaking/deprecation）
-5. `セキュリティ最小チェック結果`
-6. `DoD 判定`
-7. `次工程ハンドオフ`
-
-### エンドポイント一覧表（Markdown）
-
-```markdown
-| メソッド | パス | 説明 | 認証 |
-|--------|------|------|------|
-| GET | /v1/users | ユーザー一覧取得 | JWT |
-| POST | /v1/users | ユーザー作成 | JWT |
-| GET | /v1/users/{id} | ユーザー取得 | JWT |
-| PUT | /v1/users/{id} | ユーザー更新 | JWT（本人/管理者） |
-| DELETE | /v1/users/{id} | ユーザー削除 | JWT（管理者） |
-```
-
-### エラーコード定義表
-
-```markdown
-| コード | HTTP ステータス | 説明 |
-|--------|----------------|------|
-| USER_NOT_FOUND | 404 | 指定したユーザーが存在しない |
-| EMAIL_ALREADY_EXISTS | 409 | メールアドレスが既に使用中 |
-| INVALID_TOKEN | 401 | JWT が無効または期限切れ |
-| INSUFFICIENT_PERMISSION | 403 | 操作に必要な権限がない |
-| VALIDATION_ERROR | 422 | リクエストのバリデーション失敗 |
-| RATE_LIMIT_EXCEEDED | 429 | レートリミット超過 |
-```
-
-### Definition of Done（DoD）チェックリスト（必須）
-
-```markdown
-- [ ] Step 1 の必須入力チェックリストが埋まっている
-- [ ] REST/GraphQL 判定マトリクスと「採用しない理由」が記録されている
-- [ ] 互換性ポリシー（breaking/non-breaking/deprecation）が明記されている
-- [ ] セキュリティ最小チェック5項目が全て確認済み
-- [ ] OpenAPI lint を通過している（REST を採用した場合のみ）
-- [ ] GraphQL schema validation を通過している（GraphQL を採用した場合のみ）
-- [ ] フロントエンド / DB へのハンドオフ項目が整理されている
-```
-
-### 次工程ハンドオフ項目（必須）
-
-```markdown
-## フロントエンド向け
-- 利用エンドポイント / クエリ一覧:
-- 認証方式・必要スコープ:
-- エラーコードとUIハンドリング方針:
-- 互換性注意点（deprecation期限含む）:
-
-## バックエンド / DB向け
-- 想定アクセスパターン（一覧・検索・集計）:
-- インデックス/キャッシュ検討ポイント:
-- 監査ログ保存要件:
-- PII 取り扱いポリシー:
-```
 
 ---
 

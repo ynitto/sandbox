@@ -1,24 +1,29 @@
 recommends:
-  - name: requirements-definer
-    reason: "APIエンドポイント設計に先立つ要件定義"
   - name: domain-modeler
     reason: "エンティティ・集約設計の参照"
 io_contract:
   input:
-    - name: requirements
-      format: json
-      schema: "requirements.json (F-/N-/P- prefix)"
-      required: false
     - name: domain_model
       format: markdown
       schema: "Mermaid classDiagram"
+      description: "ドメインモデル。RESTful インターフェースへ具体化する際の基点となる。"
+      required: false
+    - name: openapi_spec
+      format: yaml/json
+      schema: "OpenAPI 3.x"
+      description: "既存の OpenAPI 仕様。定義済みインターフェースは原則変更しない。"
+      required: false
+    - name: implementation_code
+      format: source-code
+      description: "既存の実装コード。変更コストを考慮してインターフェースを判断する。"
       required: false
     - name: api_description
       format: free-text
-      description: "API の目的・エンドポイント要件の自由記述（requirements.json がない場合に使用）"
+      description: "API の目的・概要の自由記述（他の入力がない場合のフォールバック）"
       required: false
   output:
     - name: api_spec
       format: yaml
-      schema: "OpenAPI 3.x または GraphQL SDL"
+      schema: "OpenAPI 3.x"
+      description: "仕様書として使える OpenAPI ファイル。解説・スキーマ例・エラーバリエーションを含む。"
       required: true
