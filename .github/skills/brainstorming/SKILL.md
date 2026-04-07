@@ -2,7 +2,7 @@
 name: brainstorming
 description: 創作作業の前に必ず使うスキル。機能追加・コンポーネント構築・動作変更など、実装を始める前にユーザーの意図・要件・設計を整理する。「ブレインストーミングして」「アイデアを整理して」「設計を考えて」「要件を探ろう」などで発動。
 metadata:
-  version: 2.1.0
+  version: 2.1.1
   tier: stable
   category: design
   tags:

@@ -2,7 +2,7 @@
 name: gitlab-idd
 description: GitLab イシューを非同期キューとして使うイシュー駆動開発スキル。リクエスターノードがイシューを投稿し、ワーカーノードがプロンプトトリガーで拾って並列評価ループで実装・報告する。ポーリング不要。REST API（Python スクリプト）で動作し glab 不要。「イシューを立てて」「イシューを拾って実行して」「イシューをレビューして」「ポーリングデーモンをインストールして」などで発動。
 metadata:
-  version: 4.0.0
+  version: 4.0.1
   tier: stable
   category: collaboration
   tags:
