@@ -70,7 +70,8 @@ home  →  (昇格・git)  →  shared
 
 ```bash
 # ホーム記憶として保存（デフォルト・全記憶はここに入る）
-python scripts/save_memory.py \
+# VSCode Copilot 等のエージェントからは必ず --non-interactive を付けること（タグ入力プロンプト抑止）
+python scripts/save_memory.py --non-interactive \
   --category [カテゴリ] \
   --title "[タイトル]" \
   --summary "[要約（1〜2文）]" \
