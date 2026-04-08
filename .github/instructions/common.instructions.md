@@ -31,23 +31,6 @@ applyTo: "**"
 
 セッション開始時に、以下を**順番に**実行する:
 
-### 手順 0: 日次インターバルチェック
-
-手順 2 は **1日1回のみ** 実行する（手順 1 の `auto_update.py check` は内部でインターバルチェックを行うため対象外）。以下の方法で判定すること:
-
-タイムスタンプファイルの場所は `skill-registry.json` と同じディレクトリ内の `session_init_date`:
-
-| エージェント | タイムスタンプファイル |
-|---|---|
-| GitHub Copilot | `<AGENT_HOME>/session_init_date` |
-| Claude Code    | `~/.claude/session_init_date`  |
-| Codex          | `~/.codex/session_init_date`   |
-| Kiro           | `~/.kiro/session_init_date`    |
-
-1. 上記のタイムスタンプファイルを読む（存在しない場合は空扱い）
-2. ファイルの内容が今日の日付（`YYYY-MM-DD` 形式）と一致する場合は、**手順 2 をスキップ**して手順 3 へ進む
-3. 一致しない場合は手順 2 を実行し、完了後に今日の日付をタイムスタンプファイルへ書き込む
-
 ### 手順 1: スキル自動更新チェック
 
 ```
@@ -58,36 +41,15 @@ applyTo: "**"
 
 ### 手順 2: 記憶の同期
 
-#### 2-1. サーバから記憶を pull して home に取り込む
-
-共有リポジトリの最新記憶を取得し、未取得のものを home スコープへインポートする:
+以下を実行する（インターバルチェックを内包しており、前回実行から `interval_hours` 未満の場合は自動スキップされる）:
 
 ```
-{skill_home}/ltm-use/scripts/sync_memory.py --import-to-home
+{skill_home}/ltm-use/scripts/auto_update.py check
 ```
 
-共有リポジトリが未設定の場合はスキップしてよい（エラーにならない）。
-
-#### 2-2. 昇格対象の記憶を push する
-
-home スコープの記憶のうち `share_score >= 85` のものを shared へ昇格し、git push まで一括実行する:
-
-```
-{skill_home}/ltm-use/scripts/promote_memory.py --scope home --target shared --auto --push
-```
-
-共有リポジトリが未設定、または昇格候補がない場合はスキップしてよい（エラーにならない）。
-
-#### 2-3. Copilot Memory インポート（任意）
-
-VSCode Copilot Memory が存在する場合は ltm-use へ自動インポートする:
-
-```
-{skill_home}/ltm-use/scripts/sync_copilot_memory.py
-```
-
-前回実行から72時間（3日）未満の場合はスクリプト内で自動スキップされる。
-Copilot Memory が存在しない場合もスキップされる（エラーにならない）。
+内部で手順 2-1（shared → home インポート）、2-2（昇格 & push）、2-3（Copilot Memory インポート）を順に実行する。
+共有リポジトリが未設定、または昇格候補がない場合は各ステップが自動スキップされる。
+インターバルは `auto_update.py configure --interval <時間>` で変更可能（デフォルト: 24h）。
 
 ### 手順 3: 過去の記憶のリコール
 
