@@ -72,7 +72,7 @@ Phase 1 → 2 → 3 → 4 → 5 → 6 → 7 を **この順番で必ず実行す
 | スキル評価・フィードバック収集を実行する | skill-evaluator |
 
 **直接実行してよいアクション（具体例）**:
-- `plan.json` / `requirements.json` の読み書き・更新
+- `plan.json` / `requirements.md` の読み書き・更新
 - `discover_skills.py` / `validate_plan.py` などスクリプトの実行
 - ファイルの存在確認・内容確認
 - ユーザーへの報告・選択肢の提示・承認待ち

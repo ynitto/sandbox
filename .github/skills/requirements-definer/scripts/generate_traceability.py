@@ -2,43 +2,211 @@
 """
 generate_traceability.py - 受け入れ条件と実装コード/テストの双方向トレーサビリティマトリクス生成
 
-requirements.json を読み込み、プロジェクトのソースコード・テストファイルを走査して
+requirements.md を読み込み、プロジェクトのソースコード・テストファイルを走査して
 各受け入れ条件がどのファイル/テストでカバーされているかを追跡する。
 
 使い方:
-  # デフォルト（カレントディレクトリを走査）
+  # デフォルト（カレントディレクトリを走査、requirements.md を自動検出）
   python generate_traceability.py
 
   # 対象ディレクトリを指定
   python generate_traceability.py --root path/to/project
 
-  # requirements.json のパスを指定
-  python generate_traceability.py --requirements path/to/requirements.json
-
-  # requirements.json に traceability_matrix フィールドを埋め込む
-  python generate_traceability.py --embed
-
-  # Markdown のみ出力（requirements.json は更新しない）
-  python generate_traceability.py --markdown-only
+  # requirements.md のパスを指定
+  python generate_traceability.py --requirements path/to/requirements.md
 
 出力:
   traceability-matrix.md  — 人間が読みやすいマトリクス
-  requirements.json       — traceability_matrix フィールドを追記（--embed 時のみ）
 
 終了コード:
   0 = 正常完了
   1 = エラーあり
-  2 = requirements.json が見つからない / パースエラー
+  2 = requirements.md が見つからない / パースエラー
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
+
+
+# ─── Markdown パーサー ────────────────────────────────────────
+
+def _is_table_separator(cells: list[str]) -> bool:
+    return bool(cells) and all(re.match(r"^[-: ]+$", c) for c in cells if c.strip())
+
+
+def _split_table_row(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def parse_requirements_md(text: str) -> dict:
+    """
+    requirements.md を解析して requirements dict を返す。
+    JSON スキーマと互換のある形式で返す。
+    """
+    lines = text.splitlines()
+    result: dict = {
+        "goal": "",
+        "functional_requirements": [],
+        "non_functional_requirements": [],
+        "scope": {"in": [], "out": []},
+    }
+
+    section: str | None = None
+    current_req: dict | None = None
+    in_ac_table = False
+    in_scope_in = False
+    in_scope_out = False
+
+    def _save_req() -> None:
+        nonlocal current_req
+        if current_req is not None:
+            result["functional_requirements"].append(current_req)
+            current_req = None
+
+    for line in lines:
+        stripped = line.strip()
+
+        # H2 セクション境界
+        if re.match(r"^## ", stripped):
+            _save_req()
+            in_ac_table = False
+            in_scope_in = False
+            in_scope_out = False
+            title = stripped[3:].strip()
+            if "プロジェクト概要" in title:
+                section = "overview"
+            elif re.search(r"ペルソナ", title):
+                section = "personas"
+                result.setdefault("personas", [])
+            elif "スコープ" in title:
+                section = "scope"
+            elif "機能要件" in title:
+                section = "functional"
+            elif "非機能要件" in title:
+                section = "nonfunctional"
+            else:
+                section = None
+            continue
+
+        # H3: スコープのサブセクション
+        if re.match(r"^### ", stripped) and section == "scope":
+            sub = stripped[4:].strip()
+            in_scope_in = "In" in sub
+            in_scope_out = "Out" in sub
+            continue
+
+        # H3: 機能要件 F-NN
+        if re.match(r"^### ", stripped) and section == "functional":
+            _save_req()
+            in_ac_table = False
+            h3 = stripped[4:].strip()
+            m = re.match(r"(F-\d{2,}):\s*(.+)", h3)
+            if m:
+                current_req = {
+                    "id": m.group(1),
+                    "name": m.group(2).strip(),
+                    "description": "",
+                    "user_story": "",
+                    "moscow": "must",
+                    "acceptance_criteria": [],
+                }
+            continue
+
+        # プロジェクト概要
+        if section == "overview":
+            m = re.match(r"\*\*ゴール\*\*:\s*(.+)", stripped)
+            if m:
+                result["goal"] = m.group(1).strip()
+            continue
+
+        # 機能要件の各フィールド
+        if section == "functional" and current_req is not None:
+            m = re.match(r"\*\*ユーザーストーリー\*\*:\s*(.+)", stripped)
+            if m:
+                val = m.group(1).strip()
+                current_req["user_story"] = val
+                current_req["description"] = val
+                continue
+            m = re.match(r"\*\*MoSCoW\*\*:\s*(.+)", stripped, re.IGNORECASE)
+            if m:
+                current_req["moscow"] = m.group(1).strip().lower()
+                continue
+            m = re.match(r"\*\*ペルソナ\*\*:\s*(.+)", stripped)
+            if m:
+                current_req["persona"] = m.group(1).strip()
+                continue
+            if re.match(r"\*\*受け入れ条件\*\*", stripped):
+                in_ac_table = True
+                continue
+            if in_ac_table and stripped.startswith("|"):
+                cells = _split_table_row(stripped)
+                if _is_table_separator(cells):
+                    continue
+                if cells and cells[0] in ("#", "No", "no", ""):
+                    continue
+                if len(cells) >= 4:
+                    given, when, then = cells[1], cells[2], cells[3]
+                    if any([given, when, then]):
+                        current_req["acceptance_criteria"].append(
+                            {"given": given, "when": when, "then": then}
+                        )
+                continue
+            if in_ac_table and stripped and not stripped.startswith("|"):
+                in_ac_table = False
+
+        # 非機能要件テーブル
+        if section == "nonfunctional" and stripped.startswith("|"):
+            cells = _split_table_row(stripped)
+            if not _is_table_separator(cells) and len(cells) >= 3:
+                if re.match(r"N-\d{2,}", cells[0]):
+                    result["non_functional_requirements"].append(
+                        {"id": cells[0], "name": cells[1], "description": cells[2]}
+                    )
+            continue
+
+        # ペルソナテーブル
+        if section == "personas" and stripped.startswith("|"):
+            cells = _split_table_row(stripped)
+            if not _is_table_separator(cells) and len(cells) >= 3:
+                if re.match(r"P-\d{2,}", cells[0]):
+                    result.setdefault("personas", []).append(
+                        {"id": cells[0], "name": cells[1], "description": cells[2]}
+                    )
+            continue
+
+        # スコープ
+        if section == "scope":
+            if in_scope_in and stripped.startswith("- "):
+                feat = stripped[2:].strip()
+                if feat:
+                    result["scope"]["in"].append(feat)
+            elif in_scope_out and stripped.startswith("|"):
+                cells = _split_table_row(stripped)
+                if not _is_table_separator(cells) and cells:
+                    feat = cells[0]
+                    note = cells[1] if len(cells) > 1 else ""
+                    if feat and feat not in ("機能", ""):
+                        result["scope"]["out"].append({"feature": feat, "note": note})
+
+    _save_req()
+    return result
+
+
+def load_requirements(path: Path) -> dict:
+    """requirements.md を読み込んで dict を返す。"""
+    text = path.read_text(encoding="utf-8")
+    return parse_requirements_md(text)
+
+
+def find_requirements_file(root: Path) -> Path | None:
+    """requirements.md を探す。"""
+    p = root / "requirements.md"
+    return p if p.exists() else None
 
 
 # ─── 定数 ────────────────────────────────────────────────────
@@ -310,7 +478,7 @@ def build_traceability(
     test_files: list[Path],
     root: Path,
 ) -> list[RequirementTrace]:
-    """requirements.json からトレーサビリティマトリクスを構築する。"""
+    """requirements dict からトレーサビリティマトリクスを構築する。"""
     # 要件ID によるインデックス構築
     req_id_src_map = build_req_to_files_map(source_files, root)
     req_id_test_map = build_req_to_tests_map(test_files, root)
@@ -524,33 +692,6 @@ def render_markdown(
     return "\n".join(lines)
 
 
-def traces_to_json(traces: list[RequirementTrace]) -> list[dict]:
-    """トレーサビリティデータを JSON シリアライズ可能な形式に変換する。"""
-    result = []
-    for req_trace in traces:
-        ac_list = []
-        for ac in req_trace.acceptance_criteria:
-            ac_list.append({
-                "index": ac.index,
-                "summary": ac.summary,
-                "implementation": [
-                    {"file": ref.file, "note": ref.note}
-                    for ref in ac.implementation
-                ],
-                "tests": [
-                    {"file": ref.file, "test_name": ref.test_name}
-                    for ref in ac.tests
-                ],
-                "status": ac.status,
-            })
-        result.append({
-            "requirement_id": req_trace.requirement_id,
-            "requirement_name": req_trace.requirement_name,
-            "acceptance_criteria": ac_list,
-        })
-    return result
-
-
 # ─── エントリポイント ──────────────────────────────────────────
 
 def main() -> int:
@@ -564,48 +705,51 @@ def main() -> int:
     )
     parser.add_argument(
         "--requirements",
-        default="requirements.json",
-        help="requirements.json のパス（デフォルト: requirements.json）",
+        default=None,
+        help="requirements.md のパス（デフォルト: 自動検出）",
     )
     parser.add_argument(
         "--output",
         default="traceability-matrix.md",
         help="出力する Markdown ファイルのパス（デフォルト: traceability-matrix.md）",
     )
-    parser.add_argument(
-        "--embed",
-        action="store_true",
-        help="requirements.json に traceability_matrix フィールドを埋め込む",
-    )
-    parser.add_argument(
-        "--markdown-only",
-        action="store_true",
-        help="Markdown のみ出力（requirements.json は更新しない）",
-    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
-    req_path = Path(args.requirements)
-    if not req_path.is_absolute():
-        req_path = root / req_path
     output_path = Path(args.output)
     if not output_path.is_absolute():
         output_path = root / output_path
 
-    # requirements.json を読み込む
+    # requirements ファイルを解決
+    if args.requirements:
+        req_path = Path(args.requirements)
+        if not req_path.is_absolute():
+            req_path = root / req_path
+    else:
+        req_path = find_requirements_file(root)
+        if req_path is None:
+            print("❌ requirements.md が見つかりません", file=sys.stderr)
+            return 2
+
     if not req_path.exists():
-        print(f"❌ requirements.json が見つかりません: {req_path}", file=sys.stderr)
+        print(f"❌ ファイルが見つかりません: {req_path}", file=sys.stderr)
         return 2
+
+    print(f"📄 要件ファイル: {req_path}")
+
+    # 読み込み
     try:
-        with req_path.open(encoding="utf-8") as f:
-            requirements = json.load(f)
-    except json.JSONDecodeError as e:
-        print(f"❌ JSON パースエラー: {e}", file=sys.stderr)
+        requirements = load_requirements(req_path)
+    except Exception as e:
+        print(f"❌ 読み込みエラー: {e}", file=sys.stderr)
         return 2
 
     func_reqs = requirements.get("functional_requirements", [])
     if not func_reqs:
-        print("⚠️  functional_requirements が空です。トレーサビリティを生成するには要件が必要です。")
+        print(
+            "⚠️  機能要件が空です。トレーサビリティを生成するには要件が必要です。\n"
+            "   requirements.md に ## 機能要件 セクションが定義されているか確認してください。"
+        )
         return 1
 
     # ソース/テストファイルを収集
@@ -645,13 +789,6 @@ def main() -> int:
     markdown = render_markdown(traces, requirements)
     output_path.write_text(markdown, encoding="utf-8")
     print(f"\n✅ {output_path} を出力しました")
-
-    # requirements.json への埋め込み
-    if args.embed and not args.markdown_only:
-        requirements["traceability_matrix"] = traces_to_json(traces)
-        with req_path.open("w", encoding="utf-8") as f:
-            json.dump(requirements, f, ensure_ascii=False, indent=2)
-        print(f"✅ {req_path} に traceability_matrix を埋め込みました")
 
     return 0
 
