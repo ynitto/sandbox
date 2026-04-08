@@ -7,9 +7,10 @@
 ```mermaid
 flowchart TD
     A[Phase 2 開始] --> B{requirements.md 存在?}
-    B -- あり --> C[Step 2-2: バックログ変換]
+    B -- あり --> B2[convert_requirements.py で requirements.json を生成]
     B -- なし --> D[Step 2-1: プレインタビュー → requirements-definer に委譲]
-    D --> C
+    D --> B2
+    B2 --> C[Step 2-2: バックログ変換]
     C --> E[Step 2-3: プロダクトゴール & DoD 設定]
     E --> F[Step 2-4: plan.json 保存]
     F --> G{ゲート条件クリア?}
@@ -30,12 +31,19 @@ flowchart TD
 
 ---
 
-## Step 2-0: requirements.md の存在チェック
+## Step 2-0: requirements.md の存在チェックと JSON 変換
 
 作業ディレクトリのルートに `requirements.md` が存在するか確認する。
 
-- **存在する** → Step 2-2 へスキップ（Step 2-3 は引き続き必ず実行する）
+- **存在する** → `convert_requirements.py` を実行して `requirements.json` を生成し、Step 2-2 へスキップ（Step 2-3 は引き続き必ず実行する）
 - **存在しない** → Step 2-1 へ進む
+
+`requirements.json` の生成:
+
+```bash
+python .github/skills/scrum-master/scripts/convert_requirements.py
+# → requirements.json が生成される（requirements.md と同じディレクトリ）
+```
 
 ---
 
@@ -81,44 +89,43 @@ flowchart TD
 サマリー: [1〜2文で結果を説明]
 ```
 
-完了後、`requirements.md` が生成される → Step 2-2 へ進む。
+完了後、`requirements.md` が生成される。続けて `convert_requirements.py` を実行して `requirements.json` を生成してから → Step 2-2 へ進む。
+
+```bash
+python .github/skills/scrum-master/scripts/convert_requirements.py
+```
 
 ---
 
-## Step 2-2: requirements.md → バックログ変換
+## Step 2-2: requirements.json → バックログ変換
 
-`requirements.md` を読み込み、以下のマッピングルールで `plan.json` のバックログに変換する。
+Step 2-0 で生成した `requirements.json` を読み込み、以下のマッピングルールで `plan.json` のバックログに変換する。
 
-> **スクリプト補助**: `scripts/convert_requirements.py` を使うと `requirements.md` を構造化 JSON（`requirements.json`）に変換できる。LLM 自身が直接 requirements.md を読んで変換する場合は不要だが、自動化パイプラインやデバッグ時に活用できる。
->
-> ```bash
-> python .github/skills/scrum-master/scripts/convert_requirements.py
-> # → requirements.json が生成される
-> ```
+### requirements.json からの読み込み方法
 
-### requirements.md からの読み込み方法
-
-| requirements.md セクション | 読み取り方法 |
-|--------------------------|------------|
-| `## プロジェクト概要` の **ゴール**: | プロジェクトの目標文字列を抽出 |
-| `### F-NN:` の H3 セクション | 各機能要件。見出しからIDと名前を取得 |
-| F-NN > **ユーザーストーリー**: | `As a ... I want ... so that ...` 形式の文字列 |
-| F-NN > **MoSCoW**: | Must / Should / Could の文字列 |
-| F-NN > **受け入れ条件** 表 | Given / When / Then の各行 |
-| `## 非機能要件` 表 | ID / 要件名 / 内容の各行 |
-| `## スコープ` > Out スコープ 表 | 除外機能の一覧 |
+| requirements.json フィールド | 読み取り方法 |
+|-----------------------------|------------|
+| `goal` | プロジェクトの目標文字列 |
+| `functional_requirements[].id` | 要件ID（例: F-01） |
+| `functional_requirements[].name` | 要件名 |
+| `functional_requirements[].user_story` | `As a ... I want ... so that ...` 形式の文字列 |
+| `functional_requirements[].moscow` | `"must"` / `"should"` / `"could"` |
+| `functional_requirements[].acceptance_criteria[]` | `{given, when, then}` オブジェクトの配列 |
+| `non_functional_requirements[]` | `{id, name, description}` の配列 |
+| `scope.out[]` | `{feature, note}` の配列（除外スコープ） |
+| `personas[]` | `{id, name, description}` の配列（任意） |
 
 ### plan.json へのマッピング
 
 | 読み取り元 | plan.json フィールド | 変換ルール |
 |-----------|---------------------|-----------|
-| **ゴール**（プロジェクト概要） | `goal` | そのまま転記 |
+| `goal` | `goal` | そのまま転記 |
 | — | `requirements_source` | `"requirements-definer"` を設定 |
-| F-NN > ユーザーストーリー または H3 見出しの名前 | `backlog[].action` | 具体的な作業内容を導出 |
-| F-NN > 受け入れ条件 表の Then 列 | `backlog[].done_criteria` | 検証可能な完了条件に変換 |
-| F-NN > MoSCoW または出現順 | `backlog[].priority` | Must=1, Should=2, Could=3 |
-| 非機能要件 | 横断タスク or 制約 | パフォーマンス → 専用タスク、それ以外 → done_criteria に付与 |
-| Out スコープ | バックログに含めない | 除外スコープとして記録のみ |
+| `functional_requirements[].user_story` または `.name` | `backlog[].action` | 具体的な作業内容を導出 |
+| `functional_requirements[].acceptance_criteria[].then` | `backlog[].done_criteria` | 検証可能な完了条件に変換 |
+| `functional_requirements[].moscow` または出現順 | `backlog[].priority` | must=1, should=2, could=3 |
+| `non_functional_requirements[]` | 横断タスク or 制約 | パフォーマンス → 専用タスク、それ以外 → done_criteria に付与 |
+| `scope.out[]` | バックログに含めない | 除外スコープとして記録のみ |
 
 **変換の粒度:**
 - 1タスク = 1スキルの1回の実行
