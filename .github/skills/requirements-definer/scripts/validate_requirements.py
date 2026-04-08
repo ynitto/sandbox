@@ -275,10 +275,13 @@ def validate(data: dict, strict: bool) -> list[str]:
                 errors.append(f"[TYPE] {prefix} はオブジェクトでなければなりません")
                 continue
             for field in ("id", "name", "description"):
+                # markdown では description は **ユーザーストーリー**: から派生するため
+                # エラーメッセージをユーザーが認識できるラベルで表示する
+                label = "**ユーザーストーリー**:" if field == "description" else field
                 if field not in req:
-                    errors.append(f"[MISSING] {prefix}.{field} がありません")
+                    errors.append(f"[MISSING] {prefix}: {label} がありません")
                 elif not str(req[field]).strip():
-                    errors.append(f"[EMPTY] {prefix}.{field} が空文字です")
+                    errors.append(f"[EMPTY] {prefix}: {label} が空文字です")
             req_id = req.get("id", "")
             if req_id and not FUNC_ID_PATTERN.match(str(req_id)):
                 errors.append(
@@ -434,8 +437,8 @@ def main() -> int:
 
     try:
         data = load_requirements(path)
-    except ValueError as e:
-        print(f"❌ パースエラー: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ 読み込みエラー: {e}", file=sys.stderr)
         return 2
 
     issues = validate(data, strict=args.strict)

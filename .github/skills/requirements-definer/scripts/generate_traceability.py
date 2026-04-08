@@ -740,8 +740,8 @@ def main() -> int:
     # 読み込み
     try:
         requirements = load_requirements(req_path)
-    except ValueError as e:
-        print(f"❌ パースエラー: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ 読み込みエラー: {e}", file=sys.stderr)
         return 2
 
     func_reqs = requirements.get("functional_requirements", [])
