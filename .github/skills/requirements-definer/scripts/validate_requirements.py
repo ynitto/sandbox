@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-validate_requirements.py - requirements.md / requirements.json のバリデーション
+validate_requirements.py - requirements.md のバリデーション
 
-requirements-definer が出力した requirements.md（または後方互換の requirements.json）が
-正しいスキーマに準拠しているかを検証する。外部依存ゼロ（Python 標準ライブラリのみ）。
+requirements-definer が出力した requirements.md が正しいスキーマに準拠しているかを
+検証する。外部依存ゼロ（Python 標準ライブラリのみ）。
 
 使い方:
-  # デフォルト（カレントディレクトリの requirements.md を自動検出）
+  # デフォルト（カレントディレクトリの requirements.md を検索）
   python validate_requirements.py
 
   # ファイルを指定
   python validate_requirements.py --file path/to/requirements.md
-  python validate_requirements.py --file path/to/requirements.json
 
   # 警告も表示（オプションフィールドの未設定も報告）
   python validate_requirements.py --strict
@@ -25,7 +24,6 @@ requirements-definer が出力した requirements.md（または後方互換の 
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from pathlib import Path
@@ -235,23 +233,15 @@ def parse_requirements_md(text: str) -> dict:
 
 
 def load_requirements(path: Path) -> dict:
-    """requirements.md または requirements.json を読み込んで dict を返す。"""
+    """requirements.md を読み込んで dict を返す。"""
     text = path.read_text(encoding="utf-8")
-    if path.suffix == ".md":
-        return parse_requirements_md(text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"JSON パースエラー: {e}") from e
+    return parse_requirements_md(text)
 
 
 def find_requirements_file(cwd: Path) -> Path | None:
-    """requirements.md → requirements.json の優先順で探す。"""
-    for name in ("requirements.md", "requirements.json"):
-        p = cwd / name
-        if p.exists():
-            return p
-    return None
+    """requirements.md を探す。"""
+    p = cwd / "requirements.md"
+    return p if p.exists() else None
 
 
 # ─── バリデーション関数 ───────────────────────────────────────
@@ -413,12 +403,12 @@ def validate(data: dict, strict: bool) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="requirements.md / requirements.json のバリデーション"
+        description="requirements.md のバリデーション"
     )
     parser.add_argument(
         "--file",
         default=None,
-        help="バリデーション対象のファイルパス（デフォルト: requirements.md を自動検出）",
+        help="バリデーション対象の requirements.md パス（デフォルト: カレントディレクトリを検索）",
     )
     parser.add_argument(
         "--strict",
@@ -433,10 +423,7 @@ def main() -> int:
     else:
         path = find_requirements_file(cwd)
         if path is None:
-            print(
-                "❌ requirements.md / requirements.json が見つかりません",
-                file=sys.stderr,
-            )
+            print("❌ requirements.md が見つかりません", file=sys.stderr)
             return 2
 
     if not path.exists():

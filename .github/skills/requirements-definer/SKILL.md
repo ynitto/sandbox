@@ -335,9 +335,6 @@ python scripts/generate_traceability.py
 
 # 対象ディレクトリを指定
 python scripts/generate_traceability.py --root path/to/project
-
-# requirements.json にも埋め込む（後方互換）
-python scripts/generate_traceability.py --embed
 ```
 
 ### マトリクスの読み方
@@ -375,8 +372,6 @@ python scripts/validate_requirements.py --strict  # 警告も表示
 python scripts/generate_traceability.py
 python scripts/generate_traceability.py --root path/to/project
 python scripts/generate_traceability.py --requirements path/to/requirements.md
-python scripts/generate_traceability.py --embed       # requirements.json にも出力
-python scripts/generate_traceability.py --markdown-only
 ```
 
 **終了コード**: 0 = 正常完了 / 1 = エラーあり / 2 = ファイル不在
