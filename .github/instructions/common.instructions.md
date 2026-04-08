@@ -34,29 +34,21 @@ applyTo: "**"
 ### 手順 1: スキル自動更新チェック
 
 ```
-{skill_home}/git-skill-manager/scripts/auto_update.py check
+python {skill_home}/git-skill-manager/scripts/auto_update.py check
 ```
-
-`--force` なしの場合、前回チェックから `interval_hours` 未満であればスクリプト側でスキップされる（ネットワーク負荷を抑制）。インターバルは `auto_update.py configure --interval <時間>` で変更可能（デフォルト: 24h）。
 
 ### 手順 2: 記憶の同期
 
-以下を実行する（インターバルチェックを内包しており、前回実行から `interval_hours` 未満の場合は自動スキップされる）:
-
 ```
-{skill_home}/ltm-use/scripts/auto_update.py check
+python {skill_home}/ltm-use/scripts/auto_update.py check
 ```
-
-内部で手順 2-1（shared → home インポート）、2-2（昇格 & push）、2-3（Copilot Memory インポート）を順に実行する。
-共有リポジトリが未設定、または昇格候補がない場合は各ステップが自動スキップされる。
-インターバルは `auto_update.py configure --interval <時間>` で変更可能（デフォルト: 24h）。
 
 ### 手順 3: 過去の記憶のリコール
 
 タスクを受け取ったら、作業を始める前に関連する過去の記憶を検索する:
 
 ```
-{skill_home}/ltm-use/scripts/recall_memory.py "キーワード"
+python {skill_home}/ltm-use/scripts/recall_memory.py "キーワード"
 ```
 
 -----
@@ -70,7 +62,7 @@ applyTo: "**"
 - 設計上の重要な決定やトレードオフの結論
 
 ```
-{skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup --title "タイトル" --summary "要約" --tags tag1,tag2
+python {skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup --title "タイトル" --summary "要約" --tags tag1,tag2
 ```
 
 scrum-master 経由のスプリント実行中は、スプリント完了後（Phase 6 の後）にまとめて保存する。
@@ -82,7 +74,7 @@ scrum-master 経由のスプリント実行中は、スプリント完了後（P
 セッション終了前に、そのセッションで得た知識を振り返り記憶として保存する:
 
 ```
-{skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup --title "タイトル" --summary "要約" --tags tag1,tag2
+python {skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup --title "タイトル" --summary "要約" --tags tag1,tag2
 ```
 
 保存対象の例:
