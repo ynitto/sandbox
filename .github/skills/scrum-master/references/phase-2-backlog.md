@@ -89,6 +89,13 @@ flowchart TD
 
 `requirements.md` を読み込み、以下のマッピングルールで `plan.json` のバックログに変換する。
 
+> **スクリプト補助**: `scripts/convert_requirements.py` を使うと `requirements.md` を構造化 JSON（`requirements.json`）に変換できる。LLM 自身が直接 requirements.md を読んで変換する場合は不要だが、自動化パイプラインやデバッグ時に活用できる。
+>
+> ```bash
+> python .github/skills/scrum-master/scripts/convert_requirements.py
+> # → requirements.json が生成される
+> ```
+
 ### requirements.md からの読み込み方法
 
 | requirements.md セクション | 読み取り方法 |

@@ -90,10 +90,10 @@ def parse_requirements_md(text: str) -> dict:
                 result.setdefault("personas", [])
             elif "スコープ" in title:
                 section = "scope"
-            elif "機能要件" in title:
-                section = "functional"
             elif "非機能要件" in title:
                 section = "nonfunctional"
+            elif "機能要件" in title:
+                section = "functional"
             elif "カスタマージャーニー" in title:
                 section = "journey"
             else:
