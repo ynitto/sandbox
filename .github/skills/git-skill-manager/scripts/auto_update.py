@@ -39,9 +39,6 @@ def _default_auto_update() -> dict:
 def _should_check(reg: dict) -> bool:
     """前回チェックから interval_hours 以上経過しているかを判定する。"""
     au = reg.get("auto_update", {})
-    if not au.get("enabled", False):
-        return False
-
     last_checked = au.get("last_checked_at")
     if not last_checked:
         return True
@@ -134,17 +131,25 @@ def check_updates(force: bool = False) -> list[dict]:
     return updates
 
 
-def run_auto_update(force: bool = False) -> None:
+def run_auto_update(force: bool = False, explicit: bool = False) -> None:
     """
     自動更新のメインエントリーポイント。
 
+    explicit=True の場合: enabled フラグを無視し、インターバルチェックのみで判定する。
     notify_only=True の場合: 更新可能なスキルを表示するのみ。
     notify_only=False の場合: 自動で pull を実行する。
     """
     reg = load_registry()
     au = reg.get("auto_update", {})
 
-    if not force and not au.get("enabled", False):
+    if not force and not explicit and not au.get("enabled", False):
+        return
+
+    if not force and not _should_check(reg):
+        if explicit:
+            interval = au.get("interval_hours", 24)
+            last = au.get("last_checked_at", "未チェック")
+            print(f"⏭️  インターバル未達のためスキップ (間隔: {interval}h, 最終チェック: {last})")
         return
 
     updates = check_updates(force=force)
@@ -268,7 +273,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.command == "check":
-        run_auto_update(force=args.force)
+        run_auto_update(force=args.force, explicit=True)
     elif args.command == "configure":
         enabled = None
         if args.enable:
