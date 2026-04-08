@@ -182,22 +182,22 @@
 - レビューの perspective 選択は orchestrator ではなく `agent-reviewer` が行う
 - `review_result` には agent-reviewer の集約結果をそのまま保持する
 
-## requirements.md → plan.json 変換ルール
+## requirements.json → plan.json 変換ルール
 
-`requirements.md`（requirements-definer の出力）から `plan.json` のバックログに変換する際のマッピングルール。
+`requirements.json`（`convert_requirements.py` が `requirements.md` から生成）から `plan.json` のバックログに変換する際のマッピングルール。
 
 ### フィールドマッピング
 
-| requirements.md セクション | plan.json | 変換ルール |
+| requirements.json フィールド | plan.json | 変換ルール |
 |---|---|---|
-| `## プロジェクト概要` の **ゴール**: | `goal` | そのまま転記 |
+| `goal` | `goal` | そのまま転記 |
 | — | `requirements_source` | `"requirements-definer"` を設定 |
-| `### F-NN:` セクション | `backlog[]` | 各要件を1つ以上のタスクに分解（1タスク = 1スキル実行） |
-| `**ユーザーストーリー**:` | `backlog[].action` | ストーリーから具体的な作業内容を導出 |
-| `**受け入れ条件**:` 表の Then 列 | `backlog[].done_criteria` | Given/When/Then を検証可能な完了条件に要約 |
-| `**MoSCoW**:` または出現順 | `backlog[].priority` | Must=1, Should=2, Could=3。未設定なら出現順 |
-| `## 非機能要件` 表 | 横断タスクまたは制約 | 下記参照 |
-| `### Out スコープ` 表 | バックログに含めない | 除外スコープとして記録のみ |
+| `functional_requirements[]` | `backlog[]` | 各要件を1つ以上のタスクに分解（1タスク = 1スキル実行） |
+| `functional_requirements[].user_story` | `backlog[].action` | ストーリーから具体的な作業内容を導出 |
+| `functional_requirements[].acceptance_criteria[].then` | `backlog[].done_criteria` | Given/When/Then を検証可能な完了条件に要約 |
+| `functional_requirements[].moscow` または出現順 | `backlog[].priority` | must=1, should=2, could=3。未設定なら出現順 |
+| `non_functional_requirements[]` | 横断タスクまたは制約 | 下記参照 |
+| `scope.out[]` | バックログに含めない | 除外スコープとして記録のみ |
 
 ### 非機能要件の扱い
 
@@ -210,31 +210,26 @@
 
 ### 変換例
 
-**requirements.md（抜粋）:**
-```markdown
-## プロジェクト概要
-
-**ゴール**: 個人向けTODO管理WebアプリをReactで構築する
-
-## 機能要件
-
-### F-01: TODO作成
-
-**ユーザーストーリー**: As a 個人ユーザー, I want タイトル・期限・優先度を指定してTODOを登録する, so that やるべきことを忘れずに管理できる
-**MoSCoW**: Must
-
-**受け入れ条件**:
-
-| # | Given | When | Then |
-|---|-------|------|------|
-| 1 | ユーザーがログイン済み | タイトル・期限・優先度を入力して送信 | TODOが一覧に追加される |
-| 2 | ユーザーがログイン済み | タイトルを空のまま送信 | バリデーションエラーが表示される |
-
-## 非機能要件
-
-| ID | 要件名 | 内容 |
-|----|--------|------|
-| N-01 | レスポンス | API応答は95パーセンタイルで500ms以内 |
+**requirements.json（抜粋）:**
+```json
+{
+  "goal": "個人向けTODO管理WebアプリをReactで構築する",
+  "functional_requirements": [
+    {
+      "id": "F-01",
+      "name": "TODO作成",
+      "user_story": "As a 個人ユーザー, I want タイトル・期限・優先度を指定してTODOを登録する, so that やるべきことを忘れずに管理できる",
+      "moscow": "must",
+      "acceptance_criteria": [
+        {"given": "ユーザーがログイン済み", "when": "タイトル・期限・優先度を入力して送信", "then": "TODOが一覧に追加される"},
+        {"given": "ユーザーがログイン済み", "when": "タイトルを空のまま送信", "then": "バリデーションエラーが表示される"}
+      ]
+    }
+  ],
+  "non_functional_requirements": [
+    {"id": "N-01", "name": "レスポンス", "description": "API応答は95パーセンタイルで500ms以内"}
+  ]
+}
 ```
 
 **変換後の plan.json バックログ（抜粋）:**
