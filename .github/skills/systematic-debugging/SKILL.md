@@ -119,6 +119,10 @@ metadata:
 
 3. **ユーザーが選んだ仮説を検証する**（一度に一つの変数のみ）
 
+   > **仮説を途中で切り替える場合（ロールバック）:**
+   > 検証中に別の仮説を試したいとユーザーから指示された場合は、先に現在の調査で加えた変更を元に戻してから新しい仮説に進む。
+   > 計装コードが入っている場合は計装プロセスの「仮説切り替え手順」に従う。
+
 4. **続行前に検証する**:
    - うまくいった？ → フェーズ4へ
    - うまくいかなかった？ → **直交チェック**を行い、残りの仮説一覧を再提示してユーザーに選ばせる（下記参照）
@@ -235,6 +239,50 @@ node -e "require('http').createServer((q,s)=>{s.setHeader('Access-Control-Allow-
 選択を受けたら、**選ばれた仮説のみ**にステップ4の計装を入れる。
 
 すべてREJECTEDの場合、残りの仮説一覧を再提示してユーザーに次を選ばせる（フェーズ3の直交チェックを参照）。
+
+---
+
+#### 仮説切り替え手順（計装済みの状態で別の仮説を選択したとき）
+
+計装コードが既に挿入されている状態でユーザーが別の仮説を選んだ場合は、**先に現在の計装をロールバックしてからステップ4へ進む**。
+
+**1. 現在の計装を特定する**
+
+```bash
+# bash（Linux/macOS）
+grep -rn "#region debug:" src/
+
+# PowerShell（Windows）
+Select-String -Path src\* -Pattern "#region debug:" -Recurse
+```
+
+**2. 現在の仮説の計装を削除する**
+
+`#region debug:H1` ... `#endregion` ブロックをすべて削除する（言語別の構文は references/common.md 参照）。
+
+git を使う場合は計装のみを含む変更をリセットできる:
+
+```bash
+# 計装ファイルを特定してリセット（他の変更がない場合）
+git diff --name-only | xargs git checkout --
+
+# 計装だけをスタッシュしたい場合（他の変更も混在するとき）
+git stash push -m "debug:H1 instrumentation" -- <計装ファイル1> <計装ファイル2>
+```
+
+**3. debug.log をクリアする**
+
+```bash
+# bash（Linux/macOS）
+rm -f debug.log
+
+# PowerShell（Windows）
+Remove-Item -Force debug.log -ErrorAction SilentlyContinue
+```
+
+**4. 新しい仮説の計装を挿入する** → ステップ4へ
+
+---
 
 ### ステップ4: 計装の挿入
 
