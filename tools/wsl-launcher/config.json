@@ -1,0 +1,33 @@
+{
+  "settings": {
+    "terminalApp": "wt",
+    "delayBetweenLaunchesMs": 500,
+    "defaultDistro": "Ubuntu"
+  },
+  "terminals": [
+    {
+      "name": "My Project 1",
+      "wslPath": "/home/user/project1",
+      "command": "npm run dev",
+      "distro": "Ubuntu",
+      "keepOpen": true,
+      "enabled": true
+    },
+    {
+      "name": "My Project 2",
+      "wslPath": "/home/user/project2",
+      "command": "python app.py",
+      "distro": "Ubuntu",
+      "keepOpen": true,
+      "enabled": true
+    },
+    {
+      "name": "My Project 3 (disabled example)",
+      "wslPath": "/home/user/project3",
+      "command": "bash",
+      "distro": "Ubuntu",
+      "keepOpen": true,
+      "enabled": false
+    }
+  ]
+}
