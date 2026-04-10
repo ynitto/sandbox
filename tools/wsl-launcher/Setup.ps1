@@ -338,6 +338,186 @@ function Invoke-ConfigSetup {
 }
 
 # -------------------------------------------------------
+# WSL 自動起動設定 (オプション)
+# PC ログイン時に WSL を WT より先に起動してウォームアップする
+# -------------------------------------------------------
+
+# wsl-autostart をレジストリの Run キーに登録するヘルパー
+function Register-WslAutostartRegistry {
+    param([string]$VbsPath)
+
+    $regValueName = "WSLAutostart"
+    $regData      = "wscript `"$VbsPath`""
+    $hklmKey      = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    $hkcuKey      = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+
+    try {
+        Set-ItemProperty -Path $hklmKey -Name $regValueName -Value $regData -ErrorAction Stop
+        Write-Ok "HKLM Run に登録しました (全ユーザー対象)。"
+    } catch {
+        Write-Warn "HKLM への書き込みに失敗 (管理者権限が必要)。HKCU にフォールバックします..."
+        try {
+            Set-ItemProperty -Path $hkcuKey -Name $regValueName -Value $regData -ErrorAction Stop
+            Write-Ok "HKCU Run に登録しました (現在のユーザーのみ)。"
+        } catch {
+            Write-Err "レジストリ登録に失敗しました: $_"
+            return
+        }
+    }
+
+    $installDir = Split-Path -Parent $VbsPath
+    Write-Host ""
+    Write-Host "  インストール先: $installDir" -ForegroundColor Gray
+    Write-Host "  起動コマンド  : $regData" -ForegroundColor Gray
+    Write-Host "  サービス追加  : $installDir\commands.txt を編集してください" -ForegroundColor Gray
+}
+
+# OSS: troytse/wsl-autostart をダウンロード・セットアップ
+function Setup-WslAutostartOss {
+    $defaultDir  = "C:\wsl-autostart"
+    $installDir  = Prompt-Input "  インストール先" -Default $defaultDir
+    $zipUrl      = "https://github.com/troytse/wsl-autostart/archive/refs/heads/master.zip"
+    $tempZip     = Join-Path $env:TEMP "wsl-autostart.zip"
+    $tempExtract = Join-Path $env:TEMP "wsl-autostart-extract"
+
+    # 既存インストールをスキップできる
+    $vbsPath = Join-Path $installDir "start.vbs"
+    if ((Test-Path $installDir) -and (Test-Path $vbsPath)) {
+        if (-not (Prompt-YesNo "  $installDir に既にインストールされています。再インストールしますか?" -Default $false)) {
+            Register-WslAutostartRegistry -VbsPath $vbsPath
+            return
+        }
+    }
+
+    # ダウンロード
+    Write-Step "ダウンロード中: $zipUrl"
+    try {
+        Invoke-WebRequest -Uri $zipUrl -OutFile $tempZip -UseBasicParsing
+        Write-Ok "ダウンロード完了"
+    } catch {
+        Write-Err "ダウンロードに失敗しました: $_"
+        Write-Warn "手動ダウンロード先: https://github.com/troytse/wsl-autostart"
+        return
+    }
+
+    # 展開・コピー
+    Write-Step "展開中..."
+    if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
+    try { Expand-Archive -Path $tempZip -DestinationPath $tempExtract } catch {
+        Write-Err "展開に失敗しました: $_"; return
+    }
+    $srcDir = Join-Path $tempExtract "wsl-autostart-master"
+    if (-not (Test-Path $srcDir)) {
+        Write-Err "展開先に wsl-autostart-master が見つかりません"; return
+    }
+    if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force }
+    Copy-Item $srcDir $installDir -Recurse
+    Write-Ok "インストール先: $installDir"
+
+    # commands.txt 生成
+    # ここに Linux サービスを記述すると WSL 起動時に自動実行される
+    # 例: /etc/init.d/ssh
+    $commandsPath = Join-Path $installDir "commands.txt"
+    if (-not (Test-Path $commandsPath)) {
+        Set-Content $commandsPath "" -Encoding UTF8
+    }
+    Write-Ok "commands.txt: $commandsPath"
+    Write-Host "  (起動したい Linux サービスがあれば 1 行 1 コマンドで追記してください)" -ForegroundColor DarkGray
+
+    # start.vbs の存在確認
+    $vbsPath = Join-Path $installDir "start.vbs"
+    if (-not (Test-Path $vbsPath)) {
+        Write-Warn "start.vbs が見つかりません。リポジトリの構成を確認してください。"
+        return
+    }
+
+    Register-WslAutostartRegistry -VbsPath $vbsPath
+}
+
+# シンプルな Task Scheduler ウォームアップ (追加ダウンロードなし)
+function Register-WslWarmupTask {
+    $taskName = "WslWarmup"
+
+    # config.json から defaultDistro を取得
+    $distro = ""
+    if (Test-Path $ConfigPath) {
+        try {
+            $cfg    = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $distro = if ($cfg.settings.defaultDistro) { $cfg.settings.defaultDistro } else { "" }
+        } catch {}
+    }
+
+    # 既存タスクを削除して再登録
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+        Write-Host "  既存タスクを削除して再登録します。" -ForegroundColor DarkGray
+    }
+
+    $wslCmdArgs = if ($distro) { "-d `"$distro`" --exec echo warmup" } else { "--exec echo warmup" }
+    $action     = New-ScheduledTaskAction -Execute "wsl.exe" -Argument $wslCmdArgs
+    $trigger    = New-ScheduledTaskTrigger -AtLogOn
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $principal  = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
+    $settings   = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 3) `
+        -MultipleInstances IgnoreNew
+
+    try {
+        Register-ScheduledTask `
+            -TaskName    $taskName `
+            -Action      $action `
+            -Trigger     $trigger `
+            -Principal   $principal `
+            -Settings    $settings `
+            -Description "WSL ウォームアップ: ログオン直後に WSL を先行起動して WT の遅延を防ぎます。" `
+            | Out-Null
+        Write-Ok "タスク '$taskName' を登録しました。"
+        if ($distro) { Write-Host "  対象ディストロ: $distro" -ForegroundColor Gray }
+        Write-Ok "次回ログイン時から WSL がバックグラウンドで先行起動します。"
+    } catch {
+        Write-Err "タスク登録に失敗しました: $_"
+        Write-Warn "管理者権限で実行してください。"
+    }
+    Write-Host ""
+}
+
+function Invoke-WslAutostartSetup {
+    Write-Header "WSL 自動起動設定 (オプション)"
+
+    Write-Host "  WT がタブを開く前に WSL を起動しておくことで" -ForegroundColor Gray
+    Write-Host "  初回ログイン時の遅延・エラーを根本から解消できます。" -ForegroundColor Gray
+    Write-Host ""
+
+    if (-not (Prompt-YesNo "  WSL 自動起動を設定しますか?" -Default $true)) {
+        Write-Host "  スキップしました。" -ForegroundColor DarkGray
+        Write-Host ""
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  方式を選択してください:" -ForegroundColor Cyan
+    Write-Host "    1) wsl-autostart (troytse/wsl-autostart) [OSS]"
+    Write-Host "       GitHub からダウンロード。Linux サービスの起動にも対応。"
+    Write-Host "       HKLM (or HKCU) Run キーに登録します。"
+    Write-Host "    2) タスクスケジューラ ウォームアップ (追加ダウンロードなし)"
+    Write-Host "       ログオン時に wsl.exe を先行実行するだけのシンプルな方式。"
+    Write-Host ""
+
+    $method = ""
+    while ($method -notin @("1", "2")) {
+        $method = (Read-Host "  選択 [1/2]").Trim()
+    }
+
+    switch ($method) {
+        "1" { Setup-WslAutostartOss }
+        "2" { Register-WslWarmupTask }
+    }
+}
+
+# -------------------------------------------------------
 # STEP 3: スタートアップ登録
 # -------------------------------------------------------
 
@@ -543,8 +723,9 @@ Write-Host "  このウィザードは以下をサポートします:" -Foregrou
 Write-Host "    0. Windows Terminal の確認・インストール (winget)" -ForegroundColor Gray
 Write-Host "    1. 前提条件チェック (WSL / Windows Terminal)" -ForegroundColor Gray
 Write-Host "    2. 起動するターミナルの設定 (config.json)" -ForegroundColor Gray
-Write-Host "    3. スタートアップ登録 (settings.json / タスクスケジューラ / Startup フォルダ)" -ForegroundColor Gray
-Write-Host "    4. 動作テスト" -ForegroundColor Gray
+Write-Host "    3. WSL 自動起動設定 (wsl-autostart / タスクスケジューラ)" -ForegroundColor Gray
+Write-Host "    4. スタートアップ登録 (settings.json / タスクスケジューラ / Startup フォルダ)" -ForegroundColor Gray
+Write-Host "    5. 動作テスト" -ForegroundColor Gray
 Write-Host ""
 
 Invoke-WtInstall
@@ -559,6 +740,8 @@ if (-not $prereqOk) {
 }
 
 Invoke-ConfigSetup
+
+Invoke-WslAutostartSetup
 
 if (Prompt-YesNo "スタートアップに登録しますか?" -Default $true) {
     Invoke-StartupRegistration
