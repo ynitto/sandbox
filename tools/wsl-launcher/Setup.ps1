@@ -356,22 +356,36 @@ function Register-ViaTaskScheduler {
 }
 
 function Register-ViaStartupFolder {
-    $startupDir  = [System.Environment]::GetFolderPath("Startup")
-    $shortcut    = Join-Path $startupDir "WslTerminalLauncher.lnk"
-    $psExe       = (Get-Command powershell.exe).Source
-    $psArgs      = "-NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`""
+    $startupDir = [System.Environment]::GetFolderPath("Startup")
+    $shortcut   = Join-Path $startupDir "WslTerminalLauncher.lnk"
+    $vbsLauncher = Join-Path $ScriptDir "Start-WslTerminals.vbs"
 
     Write-Step "スタートアップフォルダにショートカットを作成中..."
     Write-Host "  保存先: $shortcut" -ForegroundColor DarkGray
 
-    # WScript.Shell でショートカット作成
-    $wsh  = New-Object -ComObject WScript.Shell
-    $lnk  = $wsh.CreateShortcut($shortcut)
-    $lnk.TargetPath       = $psExe
-    $lnk.Arguments        = $psArgs
-    $lnk.WorkingDirectory = $ScriptDir
-    $lnk.Description      = "WSL Terminal Launcher"
-    $lnk.WindowStyle      = 7  # 最小化ウィンドウで起動
+    # VBScript ランチャーが存在する場合はそれを使う (コンソールウィンドウが出ない)
+    # 存在しない場合は powershell.exe + -WindowStyle Hidden にフォールバック
+    $wsh = New-Object -ComObject WScript.Shell
+    $lnk = $wsh.CreateShortcut($shortcut)
+
+    if (Test-Path $vbsLauncher) {
+        $lnk.TargetPath       = "wscript.exe"
+        $lnk.Arguments        = "`"$vbsLauncher`""
+        $lnk.WorkingDirectory = $ScriptDir
+        $lnk.Description      = "WSL Terminal Launcher"
+        $lnk.WindowStyle      = 1
+        Write-Host "  起動方式: VBScript (コンソールなし)" -ForegroundColor DarkGray
+    } else {
+        $psExe  = (Get-Command powershell.exe).Source
+        $psArgs = "-NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`""
+        $lnk.TargetPath       = $psExe
+        $lnk.Arguments        = $psArgs
+        $lnk.WorkingDirectory = $ScriptDir
+        $lnk.Description      = "WSL Terminal Launcher"
+        $lnk.WindowStyle      = 7  # 最小化
+        Write-Host "  起動方式: PowerShell (WindowStyle Hidden)" -ForegroundColor DarkGray
+    }
+
     $lnk.Save()
 
     Write-Ok "ショートカットを作成しました: $shortcut"
@@ -439,6 +453,7 @@ Write-Host ""
 Write-Host "  その他の操作:" -ForegroundColor Gray
 Write-Host "    登録確認  : .\Register-Startup.ps1 -Action status" -ForegroundColor Gray
 Write-Host "    登録解除  : .\Register-Startup.ps1 -Action unregister" -ForegroundColor Gray
-Write-Host "    手動起動  : .\Start-WslTerminals.ps1" -ForegroundColor Gray
+Write-Host "    手動起動  : Start-WslTerminals.vbs をダブルクリック (コンソールなし)" -ForegroundColor Gray
+Write-Host "              ※ .ps1 を直接実行するとコンソールが表示されます" -ForegroundColor DarkGray
 Write-Host ""
 Read-Host "Enterキーで終了"

@@ -156,7 +156,8 @@ function Build-BashCommand {
 function Start-WithWindowsTerminal {
     param($TerminalList)
 
-    $args = @()
+    # 注意: $args は PowerShell 自動変数のため使用禁止。$wtArgs を使用する。
+    $wtArgs = @()
     $first = $true
 
     foreach ($term in $TerminalList) {
@@ -170,39 +171,39 @@ function Start-WithWindowsTerminal {
 
         if ($first) {
             # 最初のタブ: wt の起動直後に開くタブ
-            $args += "new-tab"
+            $wtArgs += "new-tab"
             $first = $false
         } else {
             # 2 枚目以降: セパレーター `;` で区切って追加タブ
-            $args += ";"
-            $args += "new-tab"
+            $wtArgs += ";"
+            $wtArgs += "new-tab"
         }
 
-        $args += "--title"
-        $args += $term.name
+        $wtArgs += "--title"
+        $wtArgs += $term.name
 
-        $args += "--startingDirectory"
-        $args += $uncPath
+        $wtArgs += "--startingDirectory"
+        $wtArgs += $uncPath
 
         if ($distro) {
-            $args += "wsl.exe"
-            $args += "-d"
-            $args += $distro
-            $args += "--"
-            $args += "bash"
-            $args += "-c"
-            $args += $bashCmd
+            $wtArgs += "wsl.exe"
+            $wtArgs += "-d"
+            $wtArgs += $distro
+            $wtArgs += "--"
+            $wtArgs += "bash"
+            $wtArgs += "-c"
+            $wtArgs += $bashCmd
         } else {
-            $args += "wsl.exe"
-            $args += "--"
-            $args += "bash"
-            $args += "-c"
-            $args += $bashCmd
+            $wtArgs += "wsl.exe"
+            $wtArgs += "--"
+            $wtArgs += "bash"
+            $wtArgs += "-c"
+            $wtArgs += $bashCmd
         }
     }
 
     Write-Log "Windows Terminal を起動します..."
-    Start-Process "wt.exe" -ArgumentList $args
+    Start-Process "wt.exe" -ArgumentList $wtArgs
 }
 
 # -------------------------------------------------------
