@@ -2,7 +2,7 @@
 name: systematic-debugging
 description: バグ修正・ランタイム計装・テスト失敗解消を担う統合デバッグスキル。「バグを直して」「テストが落ちてる」「エラーが出る」「修正して」「なぜ動かない」「ログを仕込んで」「計装して」「何が起きているか確認したい」「動作を観察したい」「値を追いたい」で発動する。根本原因を特定してから修正する体系的手法と、ランタイムprintf計装の両方を提供する。
 metadata:
-  version: 2.0.0
+  version: 2.1.0
   tier: stable
   category: debug
   tags:
@@ -240,34 +240,38 @@ node -e "require('http').createServer((q,s)=>{s.setHeader('Access-Control-Allow-
 
 すべてREJECTEDの場合、残りの仮説一覧を再提示してユーザーに次を選ばせる（フェーズ3の直交チェックを参照）。
 
----
-
-#### 仮説切り替え手順（計装済みの状態で別の仮説を選択したとき）
+### ステップ3.5: 仮説切り替え（計装済みの状態で別の仮説を選んだとき）
 
 計装コードが既に挿入されている状態でユーザーが別の仮説を選んだ場合は、**先に現在の計装をロールバックしてからステップ4へ進む**。
 
-**1. 現在の計装を特定する**
+**1. 計装ファイルを特定する**
 
 ```bash
 # bash（Linux/macOS）
-grep -rn "#region debug:" src/
+grep -rl "#region debug:" src/
 
 # PowerShell（Windows）
-Select-String -Path src\* -Pattern "#region debug:" -Recurse
+Select-String -Path src\* -Pattern "#region debug:" -Recurse | Select-Object -ExpandProperty Path
 ```
 
-**2. 現在の仮説の計装を削除する**
+**2. 計装ファイルのみをリセットする**
 
-`#region debug:H1` ... `#endregion` ブロックをすべて削除する（言語別の構文は references/common.md 参照）。
-
-git を使う場合は計装のみを含む変更をリセットできる:
+`#region debug:H1` ... `#endregion` ブロックをすべて削除する。  
+git を使う場合は計装が入っているファイルのみを対象にリセットする（他の変更は保持される）:
 
 ```bash
-# 計装ファイルを特定してリセット（他の変更がない場合）
-git diff --name-only | xargs git checkout --
+# bash（Linux/macOS）― 計装ファイルのみリセット
+grep -rl "#region debug:" src/ | xargs git checkout --
 
-# 計装だけをスタッシュしたい場合（他の変更も混在するとき）
+# 計装と実コード変更が同一ファイルに混在するとき — 手動編集 or stash
 git stash push -m "debug:H1 instrumentation" -- <計装ファイル1> <計装ファイル2>
+```
+
+```powershell
+# PowerShell（Windows）― 計装ファイルのみリセット
+Select-String -Path src\* -Pattern "#region debug:" -Recurse |
+  Select-Object -ExpandProperty Path -Unique |
+  ForEach-Object { git checkout -- $_ }
 ```
 
 **3. debug.log をクリアする**
@@ -281,8 +285,6 @@ Remove-Item -Force debug.log -ErrorAction SilentlyContinue
 ```
 
 **4. 新しい仮説の計装を挿入する** → ステップ4へ
-
----
 
 ### ステップ4: 計装の挿入
 
