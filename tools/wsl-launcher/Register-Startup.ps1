@@ -86,8 +86,8 @@ function Register-StartupTask {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
 
-    # PowerShell 実行コマンド
-    $psArgs = "-NonInteractive -NoProfile -ExecutionPolicy Bypass -File `"$LauncherPath`" -ConfigPath `"$ConfigPath`""
+    # PowerShell 実行コマンド (-WindowStyle Hidden でコンソールウィンドウを非表示)
+    $psArgs = "-NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`" -ConfigPath `"$ConfigPath`""
 
     # タスク定義
     $action  = New-ScheduledTaskAction `
