@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     WSL ターミナルランチャーのセットアップウィザード。
@@ -15,6 +15,11 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# コンソールエンコーディングを UTF-8 に統一 (Windows PowerShell 5.1 / Shift-JIS 環境対策)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+$OutputEncoding           = [System.Text.Encoding]::UTF8
 
 $ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LauncherPath = Join-Path $ScriptDir "Start-WslTerminals.ps1"
@@ -132,7 +137,11 @@ function Invoke-PrerequisiteCheck {
     # --- WSL ディストロ一覧 ---
     Write-Step "WSL ディストロの確認..."
     try {
-        $distros = wsl.exe --list --quiet 2>$null | Where-Object { $_ -match '\S' }
+        # wsl.exe --list の出力は UTF-16 LE のため、ヌル文字を除去して ASCII 文字列に変換する
+        $distros = @(wsl.exe --list --quiet 2>$null) |
+                   ForEach-Object { ($_ -replace '\x00', '').Trim() } |
+                   Where-Object   { $_ -match '\S' }
+
         if ($distros) {
             Write-Ok "利用可能なディストロ:"
             $distros | ForEach-Object { Write-Host "       - $_" -ForegroundColor Gray }
