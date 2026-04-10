@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Windows 起動時に複数の WSL ターミナルを自動起動するスクリプト。
@@ -6,6 +6,8 @@
 .DESCRIPTION
     config.json に登録されたフォルダをカレントディレクトリとして
     WSL ターミナルを起動し、指定されたコマンドを実行します。
+    Windows Terminal の settings.json からプロファイル情報を取得し、
+    適切なディストロで起動します。
 
 .PARAMETER ConfigPath
     設定ファイルのパス。省略時はスクリプトと同じフォルダの config.json を使用します。
@@ -42,6 +44,82 @@ function Write-Log {
     $line = "[$timestamp][$Level] $Message"
     Write-Host $line
     try { Add-Content -Path $LogPath -Value $line -Encoding UTF8 } catch {}
+}
+
+# -------------------------------------------------------
+# Windows Terminal settings.json の読み込み
+# -------------------------------------------------------
+function Get-WtSettings {
+    $searchPaths = @(
+        (Join-Path $env:LOCALAPPDATA "Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"),
+        (Join-Path $env:LOCALAPPDATA "Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"),
+        (Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\settings.json")
+    )
+    foreach ($p in $searchPaths) {
+        if (Test-Path $p) {
+            try {
+                # JSONC のコメントを除去してパース
+                $raw = Get-Content $p -Raw -Encoding UTF8
+                $raw = $raw -replace '(?m)//[^\r\n]*', ''
+                $raw = $raw -replace '(?s)/\*.*?\*/', ''
+                return $raw | ConvertFrom-Json
+            } catch {
+                Write-Log "Windows Terminal settings.json の読み込みに失敗しました: $p" "WARN"
+            }
+        }
+    }
+    return $null
+}
+
+# WT プロファイル名からディストロ名を解決する
+function Resolve-DistroFromProfile {
+    param([string]$ProfileName, $WtSettings)
+
+    if (-not $WtSettings -or -not $ProfileName) { return $ProfileName }
+
+    $profiles = @($WtSettings.profiles.list)
+    $prof     = $profiles | Where-Object { $_.name -eq $ProfileName } | Select-Object -First 1
+
+    if (-not $prof) { return $ProfileName }
+
+    # 自動生成 WSL プロファイル: source が "Windows.Terminal.Wsl" → name がディストロ名
+    if ($prof.source -eq "Windows.Terminal.Wsl") {
+        return $prof.name
+    }
+
+    # カスタムプロファイル: commandline から -d フラグを解析
+    if ($prof.commandline -match '(?:^|\s)wsl(?:\.exe)?\s+.*?-d\s+(\S+)') {
+        return $Matches[1]
+    }
+
+    return $ProfileName
+}
+
+# WT のデフォルト WSL プロファイル名を取得する
+function Get-DefaultWslProfileName {
+    param($WtSettings)
+
+    if (-not $WtSettings) { return "" }
+
+    $defaultGuid = $WtSettings.defaultProfile
+    $profiles    = @($WtSettings.profiles.list)
+
+    # デフォルトプロファイルが WSL ならそれを使用
+    if ($defaultGuid) {
+        $def = $profiles | Where-Object { $_.guid -eq $defaultGuid } | Select-Object -First 1
+        if ($def -and (-not $def.hidden) -and
+            ($def.source -eq "Windows.Terminal.Wsl" -or $def.commandline -like "*wsl*")) {
+            return $def.name
+        }
+    }
+
+    # 最初の非表示でない WSL プロファイルにフォールバック
+    $firstWsl = $profiles |
+        Where-Object { (-not $_.hidden) -and
+                       ($_.source -eq "Windows.Terminal.Wsl" -or $_.commandline -like "*wsl*") } |
+        Select-Object -First 1
+
+    return if ($firstWsl) { $firstWsl.name } else { "" }
 }
 
 # -------------------------------------------------------
@@ -99,26 +177,36 @@ try {
 $settings  = $config.settings
 $terminals = @($config.terminals)  # PS 5.1 では JSON 配列が1要素のとき単一オブジェクトになるため強制配列化
 
-$terminalApp         = if ($settings.terminalApp)             { $settings.terminalApp }             else { "wt" }
-$delayMs             = if ($settings.delayBetweenLaunchesMs)  { $settings.delayBetweenLaunchesMs }  else { 500 }
-$defaultDistro       = if ($settings.defaultDistro)           { $settings.defaultDistro }           else { "" }
-$wslWaitEnabled      = if ($null -ne $settings.wslWaitEnabled) { [bool]$settings.wslWaitEnabled }   else { $true }
-$wslWaitTimeout      = if ($settings.wslWaitTimeoutSeconds)    { [int]$settings.wslWaitTimeoutSeconds } else { 60 }
+# -------------------------------------------------------
+# Windows Terminal settings.json を読み込み、デフォルトプロファイルを取得
+# -------------------------------------------------------
+$wtSettings     = Get-WtSettings
+$defaultProfile = Get-DefaultWslProfileName -WtSettings $wtSettings
+
+if ($wtSettings) {
+    Write-Log "Windows Terminal settings.json を読み込みました。デフォルト WSL プロファイル: $(if ($defaultProfile) { $defaultProfile } else { '(なし)' })"
+} else {
+    Write-Log "Windows Terminal settings.json が見つかりません。" "WARN"
+}
+
+$wslWaitTimeout = if ($settings.wslWaitTimeoutSeconds) { [int]$settings.wslWaitTimeoutSeconds } else { 60 }
+$wslWaitEnabled = ($wslWaitTimeout -gt 0)
 
 # -------------------------------------------------------
 # Windows Terminal (wt.exe) 存在チェック
 # -------------------------------------------------------
-$wtPath = Get-Command "wt.exe" -ErrorAction SilentlyContinue
-$useWindowsTerminal = ($terminalApp -eq "wt") -and ($null -ne $wtPath)
+$wtPath             = Get-Command "wt.exe" -ErrorAction SilentlyContinue
+$useWindowsTerminal = ($null -ne $wtPath)
 
-if ($terminalApp -eq "wt" -and -not $wtPath) {
+if (-not $wtPath) {
     Write-Log "Windows Terminal (wt.exe) が見つかりません。wsl.exe で起動します。" "WARN"
 }
 
 # -------------------------------------------------------
 # 有効なターミナル一覧を取得
+# enabled が明示的に false 以外はすべて有効とみなす
 # -------------------------------------------------------
-$enabledTerminals = @($terminals | Where-Object { $_.enabled -eq $true })
+$enabledTerminals = @($terminals | Where-Object { $_.enabled -ne $false })
 
 if ($enabledTerminals.Count -eq 0) {
     Write-Log "有効なターミナルが設定されていません。config.json を確認してください。" "WARN"
@@ -161,9 +249,13 @@ function Start-WithWindowsTerminal {
     $first = $true
 
     foreach ($term in $TerminalList) {
-        $distro    = if ($term.distro) { $term.distro } else { $defaultDistro }
-        $keepOpen  = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
-        $bashCmd   = Build-BashCommand -WslPath $term.wslPath -Command $term.command -KeepOpen $keepOpen
+        # profile → distro 解決 (後方互換性のため distro フィールドも参照)
+        $profileName = if ($term.profile)      { $term.profile }
+                       elseif ($term.distro)   { $term.distro }
+                       else                    { $defaultProfile }
+        $distro      = Resolve-DistroFromProfile -ProfileName $profileName -WtSettings $wtSettings
+        $keepOpen    = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
+        $bashCmd     = Build-BashCommand -WslPath $term.wslPath -Command $term.command -KeepOpen $keepOpen
 
         if ($first) {
             # 最初のタブ: wt の起動直後に開くタブ
@@ -178,29 +270,27 @@ function Start-WithWindowsTerminal {
         $wtArgs += "--title"
         $wtArgs += $term.name
 
+        # --profile で WT プロファイルの外観設定 (フォント・配色等) を継承
+        if ($profileName) {
+            $wtArgs += "--profile"
+            $wtArgs += $profileName
+        }
+
         # --startingDirectory に UNC パス (\\wsl$\...) は環境依存で失敗するため廃止。
         # WT オプションと wsl コマンドを -- で明示的に区切り、
         # wsl.exe --cd で WSL 内パスを直接指定する。
         $wtArgs += "--"
+        $wtArgs += "wsl.exe"
         if ($distro) {
-            $wtArgs += "wsl.exe"
             $wtArgs += "-d"
             $wtArgs += $distro
-            $wtArgs += "--cd"
-            $wtArgs += $term.wslPath
-            $wtArgs += "--"
-            $wtArgs += "bash"
-            $wtArgs += "-c"
-            $wtArgs += $bashCmd
-        } else {
-            $wtArgs += "wsl.exe"
-            $wtArgs += "--cd"
-            $wtArgs += $term.wslPath
-            $wtArgs += "--"
-            $wtArgs += "bash"
-            $wtArgs += "-c"
-            $wtArgs += $bashCmd
         }
+        $wtArgs += "--cd"
+        $wtArgs += $term.wslPath
+        $wtArgs += "--"
+        $wtArgs += "bash"
+        $wtArgs += "-c"
+        $wtArgs += $bashCmd
     }
 
     Write-Log "Windows Terminal を起動します..."
@@ -214,9 +304,13 @@ function Start-WithWsl {
     param($TerminalList)
 
     foreach ($term in $TerminalList) {
-        $distro   = if ($term.distro) { $term.distro } else { $defaultDistro }
-        $keepOpen = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
-        $bashCmd  = Build-BashCommand -WslPath $term.wslPath -Command $term.command -KeepOpen $keepOpen
+        # profile → distro 解決 (後方互換性のため distro フィールドも参照)
+        $profileName = if ($term.profile)      { $term.profile }
+                       elseif ($term.distro)   { $term.distro }
+                       else                    { $defaultProfile }
+        $distro      = Resolve-DistroFromProfile -ProfileName $profileName -WtSettings $wtSettings
+        $keepOpen    = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
+        $bashCmd     = Build-BashCommand -WslPath $term.wslPath -Command $term.command -KeepOpen $keepOpen
 
         Write-Log "起動: $($term.name) ($($term.wslPath))"
 
@@ -233,9 +327,7 @@ function Start-WithWsl {
         # 新しいコンソールウィンドウで wsl を起動
         Start-Process "wsl.exe" -ArgumentList $wslArgs
 
-        if ($delayMs -gt 0) {
-            Start-Sleep -Milliseconds $delayMs
-        }
+        Start-Sleep -Milliseconds 500
     }
 }
 
@@ -246,7 +338,10 @@ try {
     # WSL が起動完了するまで待機（使用するディストロごとに1回）
     if ($wslWaitEnabled) {
         $distrosToWait = @($enabledTerminals | ForEach-Object {
-            if ($_.distro) { $_.distro } else { $defaultDistro }
+            $profileName = if ($_.profile)    { $_.profile }
+                           elseif ($_.distro) { $_.distro }
+                           else               { $defaultProfile }
+            Resolve-DistroFromProfile -ProfileName $profileName -WtSettings $wtSettings
         } | Sort-Object -Unique)
 
         foreach ($distro in $distrosToWait) {
