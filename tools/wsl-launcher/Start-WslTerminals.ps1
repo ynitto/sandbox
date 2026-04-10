@@ -30,6 +30,7 @@ $OutputEncoding           = [System.Text.Encoding]::UTF8
 # 定数・初期設定
 # -------------------------------------------------------
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$LogPath   = Join-Path $ScriptDir "launcher.log"
 
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $ScriptDir "config.json"
@@ -38,7 +39,46 @@ if (-not $ConfigPath) {
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Write-Host "[$timestamp][$Level] $Message"
+    $line = "[$timestamp][$Level] $Message"
+    Write-Host $line
+    try { Add-Content -Path $LogPath -Value $line -Encoding UTF8 } catch {}
+}
+
+# -------------------------------------------------------
+# WSL 起動完了を待機する
+# wsl.exe -e echo ok が成功するまでポーリングし、
+# タイムアウトした場合は $false を返す
+# -------------------------------------------------------
+function Wait-WslReady {
+    param(
+        [string]$Distro          = "",
+        [int]$TimeoutSeconds     = 60,
+        [int]$RetryIntervalMs    = 3000
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    Write-Log "WSL の起動を待機中$(if ($Distro) { " (ディストロ: $Distro)" })..."
+
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $wslArgs = @()
+            if ($Distro) { $wslArgs += @("-d", $Distro) }
+            $wslArgs += @("-e", "echo", "ok")
+
+            $result = & wsl.exe @wslArgs 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "WSL の起動を確認しました$(if ($Distro) { " (ディストロ: $Distro)" })。"
+                return $true
+            }
+        } catch {
+            # 起動中の例外は無視してリトライ
+        }
+        Start-Sleep -Milliseconds $RetryIntervalMs
+    }
+
+    Write-Log "WSL の起動待機がタイムアウトしました (${TimeoutSeconds}秒)。" "WARN"
+    return $false
 }
 
 # -------------------------------------------------------
@@ -59,9 +99,11 @@ try {
 $settings  = $config.settings
 $terminals = @($config.terminals)  # PS 5.1 では JSON 配列が1要素のとき単一オブジェクトになるため強制配列化
 
-$terminalApp         = if ($settings.terminalApp)         { $settings.terminalApp }         else { "wt" }
-$delayMs             = if ($settings.delayBetweenLaunchesMs) { $settings.delayBetweenLaunchesMs } else { 500 }
-$defaultDistro       = if ($settings.defaultDistro)       { $settings.defaultDistro }       else { "" }
+$terminalApp         = if ($settings.terminalApp)             { $settings.terminalApp }             else { "wt" }
+$delayMs             = if ($settings.delayBetweenLaunchesMs)  { $settings.delayBetweenLaunchesMs }  else { 500 }
+$defaultDistro       = if ($settings.defaultDistro)           { $settings.defaultDistro }           else { "" }
+$wslWaitEnabled      = if ($null -ne $settings.wslWaitEnabled) { [bool]$settings.wslWaitEnabled }   else { $true }
+$wslWaitTimeout      = if ($settings.wslWaitTimeoutSeconds)    { [int]$settings.wslWaitTimeoutSeconds } else { 60 }
 
 # -------------------------------------------------------
 # Windows Terminal (wt.exe) 存在チェック
@@ -114,7 +156,8 @@ function Build-BashCommand {
 function Start-WithWindowsTerminal {
     param($TerminalList)
 
-    $args = @()
+    # 注意: $args は PowerShell 自動変数のため使用禁止。$wtArgs を使用する。
+    $wtArgs = @()
     $first = $true
 
     foreach ($term in $TerminalList) {
@@ -122,45 +165,46 @@ function Start-WithWindowsTerminal {
         $keepOpen  = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
         $bashCmd   = Build-BashCommand -WslPath $term.wslPath -Command $term.command -KeepOpen $keepOpen
 
-        # Windows Terminal のスタートディレクトリ (UNC 形式)
-        $distroName = if ($distro) { $distro } else { "Ubuntu" }
-        $uncPath = "\\wsl`$\$distroName$($term.wslPath -replace '/', '\')"
-
         if ($first) {
             # 最初のタブ: wt の起動直後に開くタブ
-            $args += "new-tab"
+            $wtArgs += "new-tab"
             $first = $false
         } else {
             # 2 枚目以降: セパレーター `;` で区切って追加タブ
-            $args += ";"
-            $args += "new-tab"
+            $wtArgs += ";"
+            $wtArgs += "new-tab"
         }
 
-        $args += "--title"
-        $args += $term.name
+        $wtArgs += "--title"
+        $wtArgs += $term.name
 
-        $args += "--startingDirectory"
-        $args += $uncPath
-
+        # --startingDirectory に UNC パス (\\wsl$\...) は環境依存で失敗するため廃止。
+        # WT オプションと wsl コマンドを -- で明示的に区切り、
+        # wsl.exe --cd で WSL 内パスを直接指定する。
+        $wtArgs += "--"
         if ($distro) {
-            $args += "wsl.exe"
-            $args += "-d"
-            $args += $distro
-            $args += "--"
-            $args += "bash"
-            $args += "-c"
-            $args += $bashCmd
+            $wtArgs += "wsl.exe"
+            $wtArgs += "-d"
+            $wtArgs += $distro
+            $wtArgs += "--cd"
+            $wtArgs += $term.wslPath
+            $wtArgs += "--"
+            $wtArgs += "bash"
+            $wtArgs += "-c"
+            $wtArgs += $bashCmd
         } else {
-            $args += "wsl.exe"
-            $args += "--"
-            $args += "bash"
-            $args += "-c"
-            $args += $bashCmd
+            $wtArgs += "wsl.exe"
+            $wtArgs += "--cd"
+            $wtArgs += $term.wslPath
+            $wtArgs += "--"
+            $wtArgs += "bash"
+            $wtArgs += "-c"
+            $wtArgs += $bashCmd
         }
     }
 
     Write-Log "Windows Terminal を起動します..."
-    Start-Process "wt.exe" -ArgumentList $args
+    Start-Process "wt.exe" -ArgumentList $wtArgs
 }
 
 # -------------------------------------------------------
@@ -199,6 +243,20 @@ function Start-WithWsl {
 # メイン処理
 # -------------------------------------------------------
 try {
+    # WSL が起動完了するまで待機（使用するディストロごとに1回）
+    if ($wslWaitEnabled) {
+        $distrosToWait = @($enabledTerminals | ForEach-Object {
+            if ($_.distro) { $_.distro } else { $defaultDistro }
+        } | Sort-Object -Unique)
+
+        foreach ($distro in $distrosToWait) {
+            $ready = Wait-WslReady -Distro $distro -TimeoutSeconds $wslWaitTimeout
+            if (-not $ready) {
+                Write-Log "WSL (ディストロ: $distro) の起動確認に失敗しました。起動を試みますが不安定な場合があります。" "WARN"
+            }
+        }
+    }
+
     if ($useWindowsTerminal) {
         Start-WithWindowsTerminal -TerminalList $enabledTerminals
     } else {

@@ -108,6 +108,45 @@ function Request-Elevation {
 }
 
 # -------------------------------------------------------
+# STEP 0: Windows Terminal インストール確認・インストール
+# -------------------------------------------------------
+function Invoke-WtInstall {
+    Write-Header "STEP 0: Windows Terminal の確認"
+
+    $wtExe = Get-Command "wt.exe" -ErrorAction SilentlyContinue
+    if ($wtExe) {
+        Write-Ok "Windows Terminal は既にインストールされています: $($wtExe.Source)"
+        Write-Host ""
+        return
+    }
+
+    Write-Warn "Windows Terminal (wt.exe) が見つかりません。"
+    if (-not (Prompt-YesNo "  winget でインストールしますか?" -Default $true)) {
+        Write-Host "  スキップしました。" -ForegroundColor DarkGray
+        Write-Host ""
+        return
+    }
+
+    $winget = Get-Command "winget.exe" -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        Write-Err "winget.exe が見つかりません。"
+        Write-Warn "Microsoft Store から 'アプリ インストーラー' をインストールしてください。"
+        Write-Host ""
+        return
+    }
+
+    Write-Step "Windows Terminal をインストール中..."
+    try {
+        & winget.exe install --id Microsoft.WindowsTerminal --accept-package-agreements --accept-source-agreements
+        Write-Ok "Windows Terminal をインストールしました。"
+        Write-Warn "インストール後は PowerShell を再起動してから Setup.ps1 を再実行してください。"
+    } catch {
+        Write-Err "インストールに失敗しました: $_"
+    }
+    Write-Host ""
+}
+
+# -------------------------------------------------------
 # STEP 1: 前提条件チェック
 # -------------------------------------------------------
 function Invoke-PrerequisiteCheck {
@@ -299,19 +338,172 @@ function Invoke-ConfigSetup {
 }
 
 # -------------------------------------------------------
-# STEP 3: スタートアップ登録
+# WSL 自動起動設定 (オプション)
+# PC ログイン時に WSL を WT より先に起動してウォームアップする
 # -------------------------------------------------------
-function Invoke-StartupRegistration {
-    Write-Header "STEP 3: スタートアップ登録"
 
-    $isAdmin = Test-Administrator
+# wsl-autostart をレジストリの Run キーに登録するヘルパー
+function Register-WslAutostartRegistry {
+    param([string]$VbsPath)
 
-    # --- 登録方式の選択 ---
-    Write-Host "  登録方式を選択してください:" -ForegroundColor Cyan
-    Write-Host "    1) タスクスケジューラ (推奨・管理者権限が必要)"
-    Write-Host "       ログオン遅延設定が可能で確実に動作します。"
-    Write-Host "    2) スタートアップフォルダ (管理者権限不要)"
-    Write-Host "       ショートカットを %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup に配置します。"
+    $regValueName = "WSLAutostart"
+    $regData      = "wscript `"$VbsPath`""
+    $hklmKey      = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    $hkcuKey      = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+
+    try {
+        Set-ItemProperty -Path $hklmKey -Name $regValueName -Value $regData -ErrorAction Stop
+        Write-Ok "HKLM Run に登録しました (全ユーザー対象)。"
+    } catch {
+        Write-Warn "HKLM への書き込みに失敗 (管理者権限が必要)。HKCU にフォールバックします..."
+        try {
+            Set-ItemProperty -Path $hkcuKey -Name $regValueName -Value $regData -ErrorAction Stop
+            Write-Ok "HKCU Run に登録しました (現在のユーザーのみ)。"
+        } catch {
+            Write-Err "レジストリ登録に失敗しました: $_"
+            return
+        }
+    }
+
+    $installDir = Split-Path -Parent $VbsPath
+    Write-Host ""
+    Write-Host "  インストール先: $installDir" -ForegroundColor Gray
+    Write-Host "  起動コマンド  : $regData" -ForegroundColor Gray
+    Write-Host "  サービス追加  : $installDir\commands.txt を編集してください" -ForegroundColor Gray
+}
+
+# OSS: troytse/wsl-autostart をダウンロード・セットアップ
+function Setup-WslAutostartOss {
+    $defaultDir  = "C:\wsl-autostart"
+    $installDir  = Prompt-Input "  インストール先" -Default $defaultDir
+    $zipUrl      = "https://github.com/troytse/wsl-autostart/archive/refs/heads/master.zip"
+    $tempZip     = Join-Path $env:TEMP "wsl-autostart.zip"
+    $tempExtract = Join-Path $env:TEMP "wsl-autostart-extract"
+
+    # 既存インストールをスキップできる
+    $vbsPath = Join-Path $installDir "start.vbs"
+    if ((Test-Path $installDir) -and (Test-Path $vbsPath)) {
+        if (-not (Prompt-YesNo "  $installDir に既にインストールされています。再インストールしますか?" -Default $false)) {
+            Register-WslAutostartRegistry -VbsPath $vbsPath
+            return
+        }
+    }
+
+    # ダウンロード
+    Write-Step "ダウンロード中: $zipUrl"
+    try {
+        Invoke-WebRequest -Uri $zipUrl -OutFile $tempZip -UseBasicParsing
+        Write-Ok "ダウンロード完了"
+    } catch {
+        Write-Err "ダウンロードに失敗しました: $_"
+        Write-Warn "手動ダウンロード先: https://github.com/troytse/wsl-autostart"
+        return
+    }
+
+    # 展開・コピー
+    Write-Step "展開中..."
+    if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force }
+    try { Expand-Archive -Path $tempZip -DestinationPath $tempExtract } catch {
+        Write-Err "展開に失敗しました: $_"; return
+    }
+    $srcDir = Join-Path $tempExtract "wsl-autostart-master"
+    if (-not (Test-Path $srcDir)) {
+        Write-Err "展開先に wsl-autostart-master が見つかりません"; return
+    }
+    if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force }
+    Copy-Item $srcDir $installDir -Recurse
+    Write-Ok "インストール先: $installDir"
+
+    # commands.txt 生成
+    # ここに Linux サービスを記述すると WSL 起動時に自動実行される
+    # 例: /etc/init.d/ssh
+    $commandsPath = Join-Path $installDir "commands.txt"
+    if (-not (Test-Path $commandsPath)) {
+        Set-Content $commandsPath "" -Encoding UTF8
+    }
+    Write-Ok "commands.txt: $commandsPath"
+    Write-Host "  (起動したい Linux サービスがあれば 1 行 1 コマンドで追記してください)" -ForegroundColor DarkGray
+
+    # start.vbs の存在確認
+    $vbsPath = Join-Path $installDir "start.vbs"
+    if (-not (Test-Path $vbsPath)) {
+        Write-Warn "start.vbs が見つかりません。リポジトリの構成を確認してください。"
+        return
+    }
+
+    Register-WslAutostartRegistry -VbsPath $vbsPath
+}
+
+# シンプルな Task Scheduler ウォームアップ (追加ダウンロードなし)
+function Register-WslWarmupTask {
+    $taskName = "WslWarmup"
+
+    # config.json から defaultDistro を取得
+    $distro = ""
+    if (Test-Path $ConfigPath) {
+        try {
+            $cfg    = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $distro = if ($cfg.settings.defaultDistro) { $cfg.settings.defaultDistro } else { "" }
+        } catch {}
+    }
+
+    # 既存タスクを削除して再登録
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+        Write-Host "  既存タスクを削除して再登録します。" -ForegroundColor DarkGray
+    }
+
+    $wslCmdArgs = if ($distro) { "-d `"$distro`" --exec echo warmup" } else { "--exec echo warmup" }
+    $action     = New-ScheduledTaskAction -Execute "wsl.exe" -Argument $wslCmdArgs
+    $trigger    = New-ScheduledTaskTrigger -AtLogOn
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $principal  = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
+    $settings   = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 3) `
+        -MultipleInstances IgnoreNew
+
+    try {
+        Register-ScheduledTask `
+            -TaskName    $taskName `
+            -Action      $action `
+            -Trigger     $trigger `
+            -Principal   $principal `
+            -Settings    $settings `
+            -Description "WSL ウォームアップ: ログオン直後に WSL を先行起動して WT の遅延を防ぎます。" `
+            | Out-Null
+        Write-Ok "タスク '$taskName' を登録しました。"
+        if ($distro) { Write-Host "  対象ディストロ: $distro" -ForegroundColor Gray }
+        Write-Ok "次回ログイン時から WSL がバックグラウンドで先行起動します。"
+    } catch {
+        Write-Err "タスク登録に失敗しました: $_"
+        Write-Warn "管理者権限で実行してください。"
+    }
+    Write-Host ""
+}
+
+function Invoke-WslAutostartSetup {
+    Write-Header "WSL 自動起動設定 (オプション)"
+
+    Write-Host "  WT がタブを開く前に WSL を起動しておくことで" -ForegroundColor Gray
+    Write-Host "  初回ログイン時の遅延・エラーを根本から解消できます。" -ForegroundColor Gray
+    Write-Host ""
+
+    if (-not (Prompt-YesNo "  WSL 自動起動を設定しますか?" -Default $true)) {
+        Write-Host "  スキップしました。" -ForegroundColor DarkGray
+        Write-Host ""
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  方式を選択してください:" -ForegroundColor Cyan
+    Write-Host "    1) wsl-autostart (troytse/wsl-autostart) [OSS]"
+    Write-Host "       GitHub からダウンロード。Linux サービスの起動にも対応。"
+    Write-Host "       HKLM (or HKCU) Run キーに登録します。"
+    Write-Host "    2) タスクスケジューラ ウォームアップ (追加ダウンロードなし)"
+    Write-Host "       ログオン時に wsl.exe を先行実行するだけのシンプルな方式。"
     Write-Host ""
 
     $method = ""
@@ -320,8 +512,113 @@ function Invoke-StartupRegistration {
     }
 
     switch ($method) {
-        "1" { Register-ViaTaskScheduler -IsAdmin $isAdmin }
-        "2" { Register-ViaStartupFolder }
+        "1" { Setup-WslAutostartOss }
+        "2" { Register-WslWarmupTask }
+    }
+}
+
+# -------------------------------------------------------
+# STEP 3: スタートアップ登録
+# -------------------------------------------------------
+
+# Windows Terminal settings.json に startupActions / startOnUserLogin を設定する
+function Register-ViaWtSettings {
+    # settings.json の候補パス (安定版 / Preview 版)
+    $candidatePaths = @(
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json",
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"
+    )
+    $settingsPath = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if (-not $settingsPath) {
+        Write-Warn "settings.json が見つかりません。"
+        Write-Warn "Windows Terminal を一度起動してから再実行してください。"
+        return
+    }
+    Write-Host "  設定ファイル: $settingsPath" -ForegroundColor DarkGray
+
+    # config.json から有効ターミナル設定を読み込む
+    $cfg          = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $cfgTerminals = @($cfg.terminals) | Where-Object { $_.enabled -eq $true }
+    $cfgDefault   = if ($cfg.settings.defaultDistro) { $cfg.settings.defaultDistro } else { "Ubuntu" }
+
+    if (@($cfgTerminals).Count -eq 0) {
+        Write-Warn "有効なターミナルが設定されていません。config.json を確認してください。"
+        return
+    }
+
+    # startupActions 文字列を構築
+    # 形式: new-tab --title "name" [--tabColor "#RRGGBB"] -- wsl.exe -d Distro --cd "/path" -- bash -c 'cmd; exec bash'
+    $parts   = @()
+    $isFirst = $true
+    foreach ($term in $cfgTerminals) {
+        $distro   = if ($term.distro) { $term.distro } else { $cfgDefault }
+        $keepOpen = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
+        $safeCmd  = $term.command -replace "'", "'\\''"
+        $innerCmd = if ($keepOpen) { "bash -c '$safeCmd; exec bash'" } else { "bash -c '$safeCmd'" }
+
+        $tabPart = "new-tab --title `"$($term.name)`""
+        if ($isFirst) {
+            $tabPart += " --tabColor `"#0078D4`""
+            $isFirst  = $false
+        }
+        $tabPart += " -- wsl.exe -d `"$distro`" --cd `"$($term.wslPath)`" -- $innerCmd"
+        $parts   += $tabPart
+    }
+    $startupActions = $parts -join " ; "
+
+    # settings.json をバックアップ (タイムスタンプ付き)
+    $backupPath = $settingsPath -replace '\.json$', (".json.bak." + (Get-Date -Format "yyyyMMddHHmmss"))
+    Copy-Item $settingsPath $backupPath
+    Write-Ok "バックアップ: $backupPath"
+
+    # settings.json 読み込み (JSONC コメントを除去してパース)
+    $raw = Get-Content $settingsPath -Raw -Encoding UTF8
+    $raw = $raw -replace '(?m)//[^\r\n]*',  ''
+    $raw = $raw -replace '(?s)/\*.*?\*/', ''
+    $settings = $raw | ConvertFrom-Json
+
+    # 設定を更新
+    Add-Member -InputObject $settings -NotePropertyName "startOnUserLogin" -NotePropertyValue $true           -Force
+    Add-Member -InputObject $settings -NotePropertyName "startupActions"   -NotePropertyValue $startupActions -Force
+
+    # 書き込み
+    $settings | ConvertTo-Json -Depth 10 | Set-Content $settingsPath -Encoding UTF8
+    Write-Ok "settings.json を更新しました。"
+    Write-Host ""
+    Write-Host "  startOnUserLogin : true" -ForegroundColor Gray
+    Write-Host "  startupActions   :" -ForegroundColor Gray
+    $parts | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    Write-Host ""
+    Write-Warn "設定を元に戻す場合はバックアップから復元してください:"
+    Write-Host "  $backupPath" -ForegroundColor Gray
+}
+
+function Invoke-StartupRegistration {
+    Write-Header "STEP 3: スタートアップ登録"
+
+    $isAdmin = Test-Administrator
+
+    # --- 登録方式の選択 ---
+    Write-Host "  登録方式を選択してください:" -ForegroundColor Cyan
+    Write-Host "    1) Windows Terminal 自動起動設定 (推奨・管理者権限不要)"
+    Write-Host "       settings.json に startOnUserLogin と startupActions を設定します。"
+    Write-Host "       Windows Terminal が起動時にタブを直接開くため最も確実です。"
+    Write-Host "    2) タスクスケジューラ (管理者権限が必要)"
+    Write-Host "       ログオン遅延設定が可能。Windows Terminal がなくても動作します。"
+    Write-Host "    3) スタートアップフォルダ (管理者権限不要)"
+    Write-Host "       ショートカットを Startup フォルダに配置します。"
+    Write-Host ""
+
+    $method = ""
+    while ($method -notin @("1", "2", "3")) {
+        $method = (Read-Host "  選択 [1/2/3]").Trim()
+    }
+
+    switch ($method) {
+        "1" { Register-ViaWtSettings }
+        "2" { Register-ViaTaskScheduler -IsAdmin $isAdmin }
+        "3" { Register-ViaStartupFolder }
     }
 }
 
@@ -356,22 +653,36 @@ function Register-ViaTaskScheduler {
 }
 
 function Register-ViaStartupFolder {
-    $startupDir  = [System.Environment]::GetFolderPath("Startup")
-    $shortcut    = Join-Path $startupDir "WslTerminalLauncher.lnk"
-    $psExe       = (Get-Command powershell.exe).Source
-    $psArgs      = "-NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`""
+    $startupDir = [System.Environment]::GetFolderPath("Startup")
+    $shortcut   = Join-Path $startupDir "WslTerminalLauncher.lnk"
+    $vbsLauncher = Join-Path $ScriptDir "Start-WslTerminals.vbs"
 
     Write-Step "スタートアップフォルダにショートカットを作成中..."
     Write-Host "  保存先: $shortcut" -ForegroundColor DarkGray
 
-    # WScript.Shell でショートカット作成
-    $wsh  = New-Object -ComObject WScript.Shell
-    $lnk  = $wsh.CreateShortcut($shortcut)
-    $lnk.TargetPath       = $psExe
-    $lnk.Arguments        = $psArgs
-    $lnk.WorkingDirectory = $ScriptDir
-    $lnk.Description      = "WSL Terminal Launcher"
-    $lnk.WindowStyle      = 7  # 最小化ウィンドウで起動
+    # VBScript ランチャーが存在する場合はそれを使う (コンソールウィンドウが出ない)
+    # 存在しない場合は powershell.exe + -WindowStyle Hidden にフォールバック
+    $wsh = New-Object -ComObject WScript.Shell
+    $lnk = $wsh.CreateShortcut($shortcut)
+
+    if (Test-Path $vbsLauncher) {
+        $lnk.TargetPath       = "wscript.exe"
+        $lnk.Arguments        = "`"$vbsLauncher`""
+        $lnk.WorkingDirectory = $ScriptDir
+        $lnk.Description      = "WSL Terminal Launcher"
+        $lnk.WindowStyle      = 1
+        Write-Host "  起動方式: VBScript (コンソールなし)" -ForegroundColor DarkGray
+    } else {
+        $psExe  = (Get-Command powershell.exe).Source
+        $psArgs = "-NonInteractive -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`""
+        $lnk.TargetPath       = $psExe
+        $lnk.Arguments        = $psArgs
+        $lnk.WorkingDirectory = $ScriptDir
+        $lnk.Description      = "WSL Terminal Launcher"
+        $lnk.WindowStyle      = 7  # 最小化
+        Write-Host "  起動方式: PowerShell (WindowStyle Hidden)" -ForegroundColor DarkGray
+    }
+
     $lnk.Save()
 
     Write-Ok "ショートカットを作成しました: $shortcut"
@@ -409,11 +720,15 @@ function Invoke-TestRun {
 Write-Header "WSL Terminal Launcher セットアップ"
 Write-Host ""
 Write-Host "  このウィザードは以下をサポートします:" -ForegroundColor Gray
+Write-Host "    0. Windows Terminal の確認・インストール (winget)" -ForegroundColor Gray
 Write-Host "    1. 前提条件チェック (WSL / Windows Terminal)" -ForegroundColor Gray
 Write-Host "    2. 起動するターミナルの設定 (config.json)" -ForegroundColor Gray
-Write-Host "    3. Windows スタートアップへの登録" -ForegroundColor Gray
-Write-Host "    4. 動作テスト" -ForegroundColor Gray
+Write-Host "    3. WSL 自動起動設定 (wsl-autostart / タスクスケジューラ)" -ForegroundColor Gray
+Write-Host "    4. スタートアップ登録 (settings.json / タスクスケジューラ / Startup フォルダ)" -ForegroundColor Gray
+Write-Host "    5. 動作テスト" -ForegroundColor Gray
 Write-Host ""
+
+Invoke-WtInstall
 
 $prereqOk = Invoke-PrerequisiteCheck
 
@@ -425,6 +740,8 @@ if (-not $prereqOk) {
 }
 
 Invoke-ConfigSetup
+
+Invoke-WslAutostartSetup
 
 if (Prompt-YesNo "スタートアップに登録しますか?" -Default $true) {
     Invoke-StartupRegistration
@@ -439,6 +756,7 @@ Write-Host ""
 Write-Host "  その他の操作:" -ForegroundColor Gray
 Write-Host "    登録確認  : .\Register-Startup.ps1 -Action status" -ForegroundColor Gray
 Write-Host "    登録解除  : .\Register-Startup.ps1 -Action unregister" -ForegroundColor Gray
-Write-Host "    手動起動  : .\Start-WslTerminals.ps1" -ForegroundColor Gray
+Write-Host "    手動起動  : Start-WslTerminals.vbs をダブルクリック (コンソールなし)" -ForegroundColor Gray
+Write-Host "              ※ .ps1 を直接実行するとコンソールが表示されます" -ForegroundColor DarkGray
 Write-Host ""
 Read-Host "Enterキーで終了"

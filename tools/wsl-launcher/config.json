@@ -2,7 +2,9 @@
   "settings": {
     "terminalApp": "wt",
     "delayBetweenLaunchesMs": 500,
-    "defaultDistro": "Ubuntu"
+    "defaultDistro": "Ubuntu",
+    "wslWaitEnabled": true,
+    "wslWaitTimeoutSeconds": 60
   },
   "terminals": [
     {
