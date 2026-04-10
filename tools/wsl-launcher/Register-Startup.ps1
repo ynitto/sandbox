@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     WSL ターミナルランチャーを Windows スタートアップに登録・解除するスクリプト。
@@ -39,6 +39,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# コンソールエンコーディングを UTF-8 に統一 (Windows PowerShell 5.1 / Shift-JIS 環境対策)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+$OutputEncoding           = [System.Text.Encoding]::UTF8
 
 $ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LauncherPath = Join-Path $ScriptDir "Start-WslTerminals.ps1"
