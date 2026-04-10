@@ -205,6 +205,69 @@ function Invoke-PrerequisiteCheck {
 }
 
 # -------------------------------------------------------
+# Windows Terminal settings.json ユーティリティ
+# -------------------------------------------------------
+function Get-WtSettingsJson {
+    $candidatePaths = @(
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json",
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json",
+        "$env:LOCALAPPDATA\Microsoft\Windows Terminal\settings.json"
+    )
+    $settingsPath = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $settingsPath) { return $null }
+    try {
+        $raw = Get-Content $settingsPath -Raw -Encoding UTF8
+        $raw = $raw -replace '(?m)//[^\r\n]*', ''
+        $raw = $raw -replace '(?s)/\*.*?\*/', ''
+        return $raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+}
+
+# WT プロファイル名からディストロ名を解決する
+function Resolve-WslDistroFromProfile {
+    param([string]$ProfileName, $WtSettings)
+    if (-not $WtSettings -or -not $ProfileName) { return $ProfileName }
+    $profiles = @($WtSettings.profiles.list)
+    $prof     = $profiles | Where-Object { $_.name -eq $ProfileName } | Select-Object -First 1
+    if (-not $prof) { return $ProfileName }
+    if ($prof.source -eq "Windows.Terminal.Wsl") { return $prof.name }
+    if ($prof.commandline -match '(?:^|\s)wsl(?:\.exe)?\s+.*?-d\s+(\S+)') { return $Matches[1] }
+    return $ProfileName
+}
+
+# WT のデフォルト WSL プロファイル名を取得する
+function Get-DefaultWslProfile {
+    param($WtSettings)
+    if (-not $WtSettings) { return "" }
+    $defaultGuid = $WtSettings.defaultProfile
+    $profiles    = @($WtSettings.profiles.list)
+    if ($defaultGuid) {
+        $def = $profiles | Where-Object { $_.guid -eq $defaultGuid } | Select-Object -First 1
+        if ($def -and (-not $def.hidden) -and
+            ($def.source -eq "Windows.Terminal.Wsl" -or $def.commandline -like "*wsl*")) {
+            return $def.name
+        }
+    }
+    $firstWsl = $profiles |
+        Where-Object { (-not $_.hidden) -and
+                       ($_.source -eq "Windows.Terminal.Wsl" -or $_.commandline -like "*wsl*") } |
+        Select-Object -First 1
+    return if ($firstWsl) { $firstWsl.name } else { "" }
+}
+
+# WT の WSL プロファイル名一覧を取得する
+function Get-WslProfileNames {
+    param($WtSettings)
+    if (-not $WtSettings) { return @() }
+    return @($WtSettings.profiles.list |
+        Where-Object { (-not $_.hidden) -and
+                       ($_.source -eq "Windows.Terminal.Wsl" -or $_.commandline -like "*wsl*") } |
+        ForEach-Object { $_.name })
+}
+
+# -------------------------------------------------------
 # STEP 2: config.json の設定
 # -------------------------------------------------------
 function Invoke-ConfigSetup {
@@ -220,9 +283,7 @@ function Invoke-ConfigSetup {
         Write-Warn "config.json が見つかりません。新規作成します。"
         $cfg = [PSCustomObject]@{
             settings  = [PSCustomObject]@{
-                terminalApp            = "wt"
-                delayBetweenLaunchesMs = 500
-                defaultDistro          = "Ubuntu"
+                wslWaitTimeoutSeconds = 60
             }
             terminals = @()
         }
@@ -257,17 +318,22 @@ function Invoke-ConfigSetup {
         switch ($choice) {
             "a" {
                 Write-Host ""
-                $name    = Prompt-Input "    表示名"
-                $path    = Prompt-Input "    WSL パス (例: /home/user/myproject)"
-                $cmd     = Prompt-Input "    実行コマンド (例: npm run dev)"
-                $distro  = Prompt-Input "    ディストロ名 (例: Ubuntu)" -Default ($cfg.settings.defaultDistro)
+                $name        = Prompt-Input "    表示名"
+                $path        = Prompt-Input "    WSL パス (例: /home/user/myproject)"
+                $cmd         = Prompt-Input "    実行コマンド (例: npm run dev)"
+                $wtProfiles  = Get-WslProfileNames -WtSettings (Get-WtSettingsJson)
+                $defProfile  = if ($wtProfiles.Count -gt 0) { $wtProfiles[0] } else { "Ubuntu" }
+                if ($wtProfiles.Count -gt 0) {
+                    Write-Host "    利用可能な WT WSL プロファイル: $($wtProfiles -join ', ')" -ForegroundColor DarkGray
+                }
+                $profile = Prompt-Input "    Windows Terminal プロファイル名" -Default $defProfile
                 $keep    = Prompt-YesNo "    コマンド終了後もシェルを維持しますか?" -Default $true
 
                 $entry = [PSCustomObject]@{
                     name     = $name
+                    profile  = $profile
                     wslPath  = $path
                     command  = $cmd
-                    distro   = $distro
                     keepOpen = $keep
                     enabled  = $true
                 }
@@ -438,13 +504,14 @@ function Setup-WslAutostartOss {
 function Register-WslWarmupTask {
     $taskName = "WslWarmup"
 
-    # config.json から defaultDistro を取得
+    # Windows Terminal settings.json からデフォルト WSL ディストロを取得
     $distro = ""
-    if (Test-Path $ConfigPath) {
-        try {
-            $cfg    = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            $distro = if ($cfg.settings.defaultDistro) { $cfg.settings.defaultDistro } else { "" }
-        } catch {}
+    $wtCfg  = Get-WtSettingsJson
+    if ($wtCfg) {
+        $defProfile = Get-DefaultWslProfile -WtSettings $wtCfg
+        if ($defProfile) {
+            $distro = Resolve-WslDistroFromProfile -ProfileName $defProfile -WtSettings $wtCfg
+        }
     }
 
     # 既存タスクを削除して再登録
@@ -523,10 +590,11 @@ function Invoke-WslAutostartSetup {
 
 # Windows Terminal settings.json に startupActions / startOnUserLogin を設定する
 function Register-ViaWtSettings {
-    # settings.json の候補パス (安定版 / Preview 版)
+    # settings.json の候補パス (安定版 / Preview 版 / 非ストア版)
     $candidatePaths = @(
         "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json",
-        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json",
+        "$env:LOCALAPPDATA\Microsoft\Windows Terminal\settings.json"
     )
     $settingsPath = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
 
@@ -537,10 +605,16 @@ function Register-ViaWtSettings {
     }
     Write-Host "  設定ファイル: $settingsPath" -ForegroundColor DarkGray
 
+    # settings.json を読み込み (JSONC コメントを除去してパース)
+    $raw = Get-Content $settingsPath -Raw -Encoding UTF8
+    $raw = $raw -replace '(?m)//[^\r\n]*', ''
+    $raw = $raw -replace '(?s)/\*.*?\*/', ''
+    $settings         = $raw | ConvertFrom-Json
+    $defaultWtProfile = Get-DefaultWslProfile -WtSettings $settings
+
     # config.json から有効ターミナル設定を読み込む
     $cfg          = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $cfgTerminals = @($cfg.terminals) | Where-Object { $_.enabled -eq $true }
-    $cfgDefault   = if ($cfg.settings.defaultDistro) { $cfg.settings.defaultDistro } else { "Ubuntu" }
+    $cfgTerminals = @($cfg.terminals) | Where-Object { $_.enabled -ne $false }
 
     if (@($cfgTerminals).Count -eq 0) {
         Write-Warn "有効なターミナルが設定されていません。config.json を確認してください。"
@@ -548,22 +622,33 @@ function Register-ViaWtSettings {
     }
 
     # startupActions 文字列を構築
-    # 形式: new-tab --title "name" [--tabColor "#RRGGBB"] -- wsl.exe -d Distro --cd "/path" -- bash -c 'cmd; exec bash'
+    # 形式: new-tab --title "name" --profile "Profile" [--tabColor "#RRGGBB"] -- wsl.exe -d Distro --cd "/path" -- bash -c 'cmd; exec bash'
     $parts   = @()
     $isFirst = $true
     foreach ($term in $cfgTerminals) {
-        $distro   = if ($term.distro) { $term.distro } else { $cfgDefault }
+        # profile → distro 解決 (後方互換性のため distro フィールドも参照)
+        $profName = if ($term.profile)    { $term.profile }
+                    elseif ($term.distro) { $term.distro }
+                    else                  { $defaultWtProfile }
+        $distro   = Resolve-WslDistroFromProfile -ProfileName $profName -WtSettings $settings
         $keepOpen = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
         $safeCmd  = $term.command -replace "'", "'\\''"
         $innerCmd = if ($keepOpen) { "bash -c '$safeCmd; exec bash'" } else { "bash -c '$safeCmd'" }
 
         $tabPart = "new-tab --title `"$($term.name)`""
+        if ($profName) {
+            $tabPart += " --profile `"$profName`""
+        }
         if ($isFirst) {
             $tabPart += " --tabColor `"#0078D4`""
             $isFirst  = $false
         }
-        $tabPart += " -- wsl.exe -d `"$distro`" --cd `"$($term.wslPath)`" -- $innerCmd"
-        $parts   += $tabPart
+        if ($distro) {
+            $tabPart += " -- wsl.exe -d `"$distro`" --cd `"$($term.wslPath)`" -- $innerCmd"
+        } else {
+            $tabPart += " -- wsl.exe --cd `"$($term.wslPath)`" -- $innerCmd"
+        }
+        $parts += $tabPart
     }
     $startupActions = $parts -join " ; "
 
@@ -571,12 +656,6 @@ function Register-ViaWtSettings {
     $backupPath = $settingsPath -replace '\.json$', (".json.bak." + (Get-Date -Format "yyyyMMddHHmmss"))
     Copy-Item $settingsPath $backupPath
     Write-Ok "バックアップ: $backupPath"
-
-    # settings.json 読み込み (JSONC コメントを除去してパース)
-    $raw = Get-Content $settingsPath -Raw -Encoding UTF8
-    $raw = $raw -replace '(?m)//[^\r\n]*',  ''
-    $raw = $raw -replace '(?s)/\*.*?\*/', ''
-    $settings = $raw | ConvertFrom-Json
 
     # 設定を更新
     Add-Member -InputObject $settings -NotePropertyName "startOnUserLogin" -NotePropertyValue $true           -Force

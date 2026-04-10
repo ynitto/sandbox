@@ -1,33 +1,29 @@
 {
   "settings": {
-    "terminalApp": "wt",
-    "delayBetweenLaunchesMs": 500,
-    "defaultDistro": "Ubuntu",
-    "wslWaitEnabled": true,
     "wslWaitTimeoutSeconds": 60
   },
   "terminals": [
     {
       "name": "My Project 1",
+      "profile": "Ubuntu",
       "wslPath": "/home/user/project1",
       "command": "npm run dev",
-      "distro": "Ubuntu",
       "keepOpen": true,
       "enabled": true
     },
     {
       "name": "My Project 2",
+      "profile": "Ubuntu",
       "wslPath": "/home/user/project2",
       "command": "python app.py",
-      "distro": "Ubuntu",
       "keepOpen": true,
       "enabled": true
     },
     {
       "name": "My Project 3 (disabled example)",
+      "profile": "Ubuntu",
       "wslPath": "/home/user/project3",
       "command": "bash",
-      "distro": "Ubuntu",
       "keepOpen": true,
       "enabled": false
     }
