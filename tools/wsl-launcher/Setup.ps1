@@ -174,6 +174,8 @@ function Invoke-ConfigSetup {
     # 設定ファイル読み込み (なければ雛形を作成)
     if (Test-Path $ConfigPath) {
         $cfg = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        # PS 5.1 では JSON 配列が1要素のとき単一オブジェクトになるため強制配列化
+        $cfg.terminals = @($cfg.terminals)
         Write-Ok "既存の config.json を読み込みました。"
     } else {
         Write-Warn "config.json が見つかりません。新規作成します。"

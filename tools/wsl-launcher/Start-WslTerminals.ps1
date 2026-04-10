@@ -56,8 +56,8 @@ try {
     exit 1
 }
 
-$settings    = $config.settings
-$terminals   = $config.terminals
+$settings  = $config.settings
+$terminals = @($config.terminals)  # PS 5.1 では JSON 配列が1要素のとき単一オブジェクトになるため強制配列化
 
 $terminalApp         = if ($settings.terminalApp)         { $settings.terminalApp }         else { "wt" }
 $delayMs             = if ($settings.delayBetweenLaunchesMs) { $settings.delayBetweenLaunchesMs } else { 500 }
@@ -76,7 +76,7 @@ if ($terminalApp -eq "wt" -and -not $wtPath) {
 # -------------------------------------------------------
 # 有効なターミナル一覧を取得
 # -------------------------------------------------------
-$enabledTerminals = $terminals | Where-Object { $_.enabled -eq $true }
+$enabledTerminals = @($terminals | Where-Object { $_.enabled -eq $true })
 
 if ($enabledTerminals.Count -eq 0) {
     Write-Log "有効なターミナルが設定されていません。config.json を確認してください。" "WARN"
