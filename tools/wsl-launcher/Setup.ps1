@@ -108,6 +108,45 @@ function Request-Elevation {
 }
 
 # -------------------------------------------------------
+# STEP 0: Windows Terminal インストール確認・インストール
+# -------------------------------------------------------
+function Invoke-WtInstall {
+    Write-Header "STEP 0: Windows Terminal の確認"
+
+    $wtExe = Get-Command "wt.exe" -ErrorAction SilentlyContinue
+    if ($wtExe) {
+        Write-Ok "Windows Terminal は既にインストールされています: $($wtExe.Source)"
+        Write-Host ""
+        return
+    }
+
+    Write-Warn "Windows Terminal (wt.exe) が見つかりません。"
+    if (-not (Prompt-YesNo "  winget でインストールしますか?" -Default $true)) {
+        Write-Host "  スキップしました。" -ForegroundColor DarkGray
+        Write-Host ""
+        return
+    }
+
+    $winget = Get-Command "winget.exe" -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        Write-Err "winget.exe が見つかりません。"
+        Write-Warn "Microsoft Store から 'アプリ インストーラー' をインストールしてください。"
+        Write-Host ""
+        return
+    }
+
+    Write-Step "Windows Terminal をインストール中..."
+    try {
+        & winget.exe install --id Microsoft.WindowsTerminal --accept-package-agreements --accept-source-agreements
+        Write-Ok "Windows Terminal をインストールしました。"
+        Write-Warn "インストール後は PowerShell を再起動してから Setup.ps1 を再実行してください。"
+    } catch {
+        Write-Err "インストールに失敗しました: $_"
+    }
+    Write-Host ""
+}
+
+# -------------------------------------------------------
 # STEP 1: 前提条件チェック
 # -------------------------------------------------------
 function Invoke-PrerequisiteCheck {
@@ -301,6 +340,80 @@ function Invoke-ConfigSetup {
 # -------------------------------------------------------
 # STEP 3: スタートアップ登録
 # -------------------------------------------------------
+
+# Windows Terminal settings.json に startupActions / startOnUserLogin を設定する
+function Register-ViaWtSettings {
+    # settings.json の候補パス (安定版 / Preview 版)
+    $candidatePaths = @(
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json",
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"
+    )
+    $settingsPath = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if (-not $settingsPath) {
+        Write-Warn "settings.json が見つかりません。"
+        Write-Warn "Windows Terminal を一度起動してから再実行してください。"
+        return
+    }
+    Write-Host "  設定ファイル: $settingsPath" -ForegroundColor DarkGray
+
+    # config.json から有効ターミナル設定を読み込む
+    $cfg          = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $cfgTerminals = @($cfg.terminals) | Where-Object { $_.enabled -eq $true }
+    $cfgDefault   = if ($cfg.settings.defaultDistro) { $cfg.settings.defaultDistro } else { "Ubuntu" }
+
+    if (@($cfgTerminals).Count -eq 0) {
+        Write-Warn "有効なターミナルが設定されていません。config.json を確認してください。"
+        return
+    }
+
+    # startupActions 文字列を構築
+    # 形式: new-tab --title "name" [--tabColor "#RRGGBB"] -- wsl.exe -d Distro --cd "/path" -- bash -c 'cmd; exec bash'
+    $parts   = @()
+    $isFirst = $true
+    foreach ($term in $cfgTerminals) {
+        $distro   = if ($term.distro) { $term.distro } else { $cfgDefault }
+        $keepOpen = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
+        $safeCmd  = $term.command -replace "'", "'\\''"
+        $innerCmd = if ($keepOpen) { "bash -c '$safeCmd; exec bash'" } else { "bash -c '$safeCmd'" }
+
+        $tabPart = "new-tab --title `"$($term.name)`""
+        if ($isFirst) {
+            $tabPart += " --tabColor `"#0078D4`""
+            $isFirst  = $false
+        }
+        $tabPart += " -- wsl.exe -d `"$distro`" --cd `"$($term.wslPath)`" -- $innerCmd"
+        $parts   += $tabPart
+    }
+    $startupActions = $parts -join " ; "
+
+    # settings.json をバックアップ (タイムスタンプ付き)
+    $backupPath = $settingsPath -replace '\.json$', (".json.bak." + (Get-Date -Format "yyyyMMddHHmmss"))
+    Copy-Item $settingsPath $backupPath
+    Write-Ok "バックアップ: $backupPath"
+
+    # settings.json 読み込み (JSONC コメントを除去してパース)
+    $raw = Get-Content $settingsPath -Raw -Encoding UTF8
+    $raw = $raw -replace '(?m)//[^\r\n]*',  ''
+    $raw = $raw -replace '(?s)/\*.*?\*/', ''
+    $settings = $raw | ConvertFrom-Json
+
+    # 設定を更新
+    Add-Member -InputObject $settings -NotePropertyName "startOnUserLogin" -NotePropertyValue $true           -Force
+    Add-Member -InputObject $settings -NotePropertyName "startupActions"   -NotePropertyValue $startupActions -Force
+
+    # 書き込み
+    $settings | ConvertTo-Json -Depth 10 | Set-Content $settingsPath -Encoding UTF8
+    Write-Ok "settings.json を更新しました。"
+    Write-Host ""
+    Write-Host "  startOnUserLogin : true" -ForegroundColor Gray
+    Write-Host "  startupActions   :" -ForegroundColor Gray
+    $parts | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    Write-Host ""
+    Write-Warn "設定を元に戻す場合はバックアップから復元してください:"
+    Write-Host "  $backupPath" -ForegroundColor Gray
+}
+
 function Invoke-StartupRegistration {
     Write-Header "STEP 3: スタートアップ登録"
 
@@ -308,20 +421,24 @@ function Invoke-StartupRegistration {
 
     # --- 登録方式の選択 ---
     Write-Host "  登録方式を選択してください:" -ForegroundColor Cyan
-    Write-Host "    1) タスクスケジューラ (推奨・管理者権限が必要)"
-    Write-Host "       ログオン遅延設定が可能で確実に動作します。"
-    Write-Host "    2) スタートアップフォルダ (管理者権限不要)"
-    Write-Host "       ショートカットを %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup に配置します。"
+    Write-Host "    1) Windows Terminal 自動起動設定 (推奨・管理者権限不要)"
+    Write-Host "       settings.json に startOnUserLogin と startupActions を設定します。"
+    Write-Host "       Windows Terminal が起動時にタブを直接開くため最も確実です。"
+    Write-Host "    2) タスクスケジューラ (管理者権限が必要)"
+    Write-Host "       ログオン遅延設定が可能。Windows Terminal がなくても動作します。"
+    Write-Host "    3) スタートアップフォルダ (管理者権限不要)"
+    Write-Host "       ショートカットを Startup フォルダに配置します。"
     Write-Host ""
 
     $method = ""
-    while ($method -notin @("1", "2")) {
-        $method = (Read-Host "  選択 [1/2]").Trim()
+    while ($method -notin @("1", "2", "3")) {
+        $method = (Read-Host "  選択 [1/2/3]").Trim()
     }
 
     switch ($method) {
-        "1" { Register-ViaTaskScheduler -IsAdmin $isAdmin }
-        "2" { Register-ViaStartupFolder }
+        "1" { Register-ViaWtSettings }
+        "2" { Register-ViaTaskScheduler -IsAdmin $isAdmin }
+        "3" { Register-ViaStartupFolder }
     }
 }
 
@@ -423,11 +540,14 @@ function Invoke-TestRun {
 Write-Header "WSL Terminal Launcher セットアップ"
 Write-Host ""
 Write-Host "  このウィザードは以下をサポートします:" -ForegroundColor Gray
+Write-Host "    0. Windows Terminal の確認・インストール (winget)" -ForegroundColor Gray
 Write-Host "    1. 前提条件チェック (WSL / Windows Terminal)" -ForegroundColor Gray
 Write-Host "    2. 起動するターミナルの設定 (config.json)" -ForegroundColor Gray
-Write-Host "    3. Windows スタートアップへの登録" -ForegroundColor Gray
+Write-Host "    3. スタートアップ登録 (settings.json / タスクスケジューラ / Startup フォルダ)" -ForegroundColor Gray
 Write-Host "    4. 動作テスト" -ForegroundColor Gray
 Write-Host ""
+
+Invoke-WtInstall
 
 $prereqOk = Invoke-PrerequisiteCheck
 

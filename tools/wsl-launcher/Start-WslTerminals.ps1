@@ -165,10 +165,6 @@ function Start-WithWindowsTerminal {
         $keepOpen  = if ($null -ne $term.keepOpen) { [bool]$term.keepOpen } else { $true }
         $bashCmd   = Build-BashCommand -WslPath $term.wslPath -Command $term.command -KeepOpen $keepOpen
 
-        # Windows Terminal のスタートディレクトリ (UNC 形式)
-        $distroName = if ($distro) { $distro } else { "Ubuntu" }
-        $uncPath = "\\wsl`$\$distroName$($term.wslPath -replace '/', '\')"
-
         if ($first) {
             # 最初のタブ: wt の起動直後に開くタブ
             $wtArgs += "new-tab"
@@ -182,19 +178,24 @@ function Start-WithWindowsTerminal {
         $wtArgs += "--title"
         $wtArgs += $term.name
 
-        $wtArgs += "--startingDirectory"
-        $wtArgs += $uncPath
-
+        # --startingDirectory に UNC パス (\\wsl$\...) は環境依存で失敗するため廃止。
+        # WT オプションと wsl コマンドを -- で明示的に区切り、
+        # wsl.exe --cd で WSL 内パスを直接指定する。
+        $wtArgs += "--"
         if ($distro) {
             $wtArgs += "wsl.exe"
             $wtArgs += "-d"
             $wtArgs += $distro
+            $wtArgs += "--cd"
+            $wtArgs += $term.wslPath
             $wtArgs += "--"
             $wtArgs += "bash"
             $wtArgs += "-c"
             $wtArgs += $bashCmd
         } else {
             $wtArgs += "wsl.exe"
+            $wtArgs += "--cd"
+            $wtArgs += $term.wslPath
             $wtArgs += "--"
             $wtArgs += "bash"
             $wtArgs += "-c"
