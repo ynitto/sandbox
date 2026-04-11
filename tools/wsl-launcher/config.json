@@ -1,18 +1,21 @@
-[
-  {
-    "title": "API",
-    "type": "wsl",
-    "distro": "Ubuntu",
-    "user": "ubuntu",
-    "dir": "~/app/api",
-    "cmd": "npm run dev"
-  },
-  {
-    "title": "Worker",
-    "type": "wsl",
-    "distro": "Ubuntu",
-    "user": "ubuntu",
-    "dir": "~/app/worker",
-    "cmd": "npm run worker"
-  }
-]
+{
+  "mode": "wt",
+  "entries": [
+    {
+      "title": "API",
+      "type": "wsl",
+      "distro": "Ubuntu",
+      "user": "ubuntu",
+      "dir": "~/app/api",
+      "cmd": "npm run dev"
+    },
+    {
+      "title": "Worker",
+      "type": "wsl",
+      "distro": "Ubuntu",
+      "user": "ubuntu",
+      "dir": "~/app/worker",
+      "cmd": "npm run worker"
+    }
+  ]
+}

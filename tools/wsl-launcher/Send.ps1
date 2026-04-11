@@ -1,7 +1,7 @@
 param(
     [string]$ConfigPath = "./config.json",
-    [ValidateSet("direct", "wt")]
-    [string]$Mode = "direct"
+    [ValidateSet("", "direct", "wt")]
+    [string]$Mode = ""
 )
 
 if (!(Test-Path $ConfigPath)) {
@@ -9,7 +9,23 @@ if (!(Test-Path $ConfigPath)) {
     exit 1
 }
 
-$entries = Get-Content $ConfigPath | ConvertFrom-Json
+$config = Get-Content $ConfigPath | ConvertFrom-Json
+
+# --- config.json からエントリとモードを取得 ---
+# オブジェクト形式 { "mode": "wt", "entries": [...] } と配列形式の両方に対応
+if ($config -is [System.Collections.IEnumerable] -and $config -isnot [string]) {
+    # 配列形式 (後方互換)
+    $entries = $config
+    $configMode = ""
+} else {
+    $entries = $config.entries
+    $configMode = if ($config.mode) { $config.mode } else { "" }
+}
+
+# -Mode パラメータが明示指定されていればそちらを優先、なければ config の mode、なければ "direct"
+if ($Mode -eq "") {
+    $Mode = if ($configMode -ne "") { $configMode } else { "direct" }
+}
 
 # --- WSLウォームアップ ---
 if ($entries | Where-Object { $_.type -eq "wsl" }) {
