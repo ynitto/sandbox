@@ -2,13 +2,14 @@
 """
 WSL Terminal Launcher インストーラー
 
-Start.ps1 と tabs.json (-> config.json) を指定フォルダにコピーし、
-PC ログイン時に Start.ps1 が自動実行されるようタスクスケジューラに登録します。
+Send.ps1 と config.json を指定フォルダにコピーし、
+PC ログイン時に Send.ps1 が自動実行されるようタスクスケジューラに登録します。
 
 使用方法:
     python install.py
     python install.py --install-dir "C:\\tools\\wsl-launcher"
     python install.py --delay 30 --task-name "WslTerminalLauncher"
+    python install.py --mode wt
 """
 
 import argparse
@@ -21,21 +22,12 @@ DEFAULT_INSTALL_DIR = r"C:\tools\wsl-launcher"
 DEFAULT_TASK_NAME = "WslTerminalLauncher"
 DEFAULT_DELAY_SECONDS = 30
 DEFAULT_EXECUTION_LIMIT_MINUTES = 5
+DEFAULT_MODE = "wt"
 
 
-def copy_files(script_dir: str, install_dir: str) -> tuple[str, str, str]:
-    """Start.ps1、Send.ps1、config.json をインストール先にコピーする。"""
+def copy_files(script_dir: str, install_dir: str) -> tuple[str, str]:
+    """Send.ps1、config.json をインストール先にコピーする。"""
     os.makedirs(install_dir, exist_ok=True)
-
-    # Start.ps1 をコピー
-    src_start = os.path.join(script_dir, "Start.ps1")
-    dst_start = os.path.join(install_dir, "Start.ps1")
-    if not os.path.exists(src_start):
-        print(f"[エラー] Start.ps1 が見つかりません: {src_start}", file=sys.stderr)
-        sys.exit(1)
-    shutil.copy2(src_start, dst_start)
-    print(f"[コピー] {src_start}")
-    print(f"     -> {dst_start}")
 
     # Send.ps1 をコピー
     src_send = os.path.join(script_dir, "Send.ps1")
@@ -60,7 +52,7 @@ def copy_files(script_dir: str, install_dir: str) -> tuple[str, str, str]:
         print(f"[コピー] {src_config}")
         print(f"     -> {dst_config}")
 
-    return dst_start, dst_send, dst_config
+    return dst_send, dst_config
 
 
 def register_task(
@@ -69,13 +61,14 @@ def register_task(
     working_dir: str,
     task_name: str,
     delay_seconds: int,
+    mode: str = DEFAULT_MODE,
     execution_limit_minutes: int = DEFAULT_EXECUTION_LIMIT_MINUTES,
 ) -> None:
-    """タスクスケジューラに Start.ps1 をログイン時自動起動として登録する。"""
+    """タスクスケジューラに Send.ps1 をログイン時自動起動として登録する。"""
 
     ps_args = (
         f"-NonInteractive -NoProfile -ExecutionPolicy Bypass "
-        f"-WindowStyle Hidden -File \"{launcher_path}\" -ConfigPath \"{config_path}\""
+        f"-WindowStyle Hidden -File \"{launcher_path}\" -ConfigPath \"{config_path}\" -Mode {mode}"
     )
 
     # PowerShell スクリプトを組み立て
@@ -158,7 +151,8 @@ def main() -> None:
             "  python install.py\n"
             "  python install.py --install-dir \"C:\\\\tools\\\\wsl-launcher\"\n"
             "  python install.py --delay 30 --task-name \"WslTerminalLauncher\"\n"
-            "  python install.py --execution-limit 10"
+            "  python install.py --execution-limit 10\n"
+            "  python install.py --mode direct"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -188,6 +182,12 @@ def main() -> None:
         metavar="MIN",
         help=f"タスクの最大実行時間（分）(デフォルト: {DEFAULT_EXECUTION_LIMIT_MINUTES})",
     )
+    parser.add_argument(
+        "--mode",
+        default=DEFAULT_MODE,
+        choices=["direct", "wt"],
+        help=f"Send.ps1 の起動モード: wt=Windows Terminal タブ, direct=プロセス直接起動 (デフォルト: {DEFAULT_MODE})",
+    )
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -200,14 +200,15 @@ def main() -> None:
     print(f"タスク名       : {args.task_name}")
     print(f"起動遅延       : {args.delay} 秒")
     print(f"実行時間制限   : {args.execution_limit} 分")
+    print(f"起動モード     : {args.mode}")
     print()
 
     # ファイルのコピー
-    launcher_path, _send_path, config_path = copy_files(script_dir, install_dir)
+    launcher_path, config_path = copy_files(script_dir, install_dir)
     print()
 
     # タスクスケジューラへの登録
-    register_task(launcher_path, config_path, install_dir, args.task_name, args.delay, args.execution_limit)
+    register_task(launcher_path, config_path, install_dir, args.task_name, args.delay, args.mode, args.execution_limit)
     print()
     print("インストール完了。")
 

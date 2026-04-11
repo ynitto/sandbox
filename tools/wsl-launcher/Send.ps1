@@ -1,5 +1,7 @@
 param(
-    [string]$ConfigPath = "./config.json"
+    [string]$ConfigPath = "./config.json",
+    [ValidateSet("direct", "wt")]
+    [string]$Mode = "direct"
 )
 
 if (!(Test-Path $ConfigPath)) {
@@ -7,74 +9,138 @@ if (!(Test-Path $ConfigPath)) {
     exit 1
 }
 
-$commands = Get-Content $ConfigPath | ConvertFrom-Json
+$entries = Get-Content $ConfigPath | ConvertFrom-Json
 
 # --- WSLウォームアップ ---
-if ($commands | Where-Object { $_.type -eq "wsl" }) {
+if ($entries | Where-Object { $_.type -eq "wsl" }) {
     wsl -e true
     Start-Sleep -Seconds 2
 }
 
 # --- スクリプト出力先 ---
-$tmpDir = Join-Path $env:TEMP "wsl-send"
+$tmpDir = Join-Path $env:TEMP "wsl-launcher"
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 
 $index = 0
 
-foreach ($entry in $commands) {
+if ($Mode -eq "wt") {
 
-    $safeTitle = ($entry.title -replace "[^a-zA-Z0-9_-]", "_")
+    # --- wt モード: Windows Terminal タブで起動 ---
+    $parts = @()
 
-    switch ($entry.type) {
+    foreach ($entry in $entries) {
 
-        "wsl" {
-            $scriptPath = Join-Path $tmpDir "$index-$safeTitle.sh"
-            $wslUser = if ($entry.user) { $entry.user } else { "" }
+        $safeTitle = ($entry.title -replace "[^a-zA-Z0-9_-]", "_")
+
+        switch ($entry.type) {
+
+            "wsl" {
+                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.sh"
+                $wslUser = if ($entry.user) { $entry.user } else { "" }
 
 @"
-source ~/.bashrc
-cd $($entry.dir)
-$($entry.cmd)
+source ~/.bashrc && cd $($entry.dir) && $($entry.cmd)
+exec bash
 "@ | Out-File -Encoding utf8 $scriptPath
 
-            $wslArgs = @("-d", $entry.distro)
-            if ($wslUser) { $wslArgs += @("-u", $wslUser) }
-            $wslArgs += @("--", "bash", "-lc", "bash '$scriptPath'")
+                $wslTabArgs = "wsl -d $($entry.distro)"
+                if ($wslUser) { $wslTabArgs += " -u $wslUser" }
+                $wslTabArgs += " -- bash `"$scriptPath`""
 
-            Write-Host "[$($entry.title)] wsl $($wslArgs -join ' ')"
-            Start-Process "wsl" -ArgumentList $wslArgs
-        }
+                $parts += "new-tab --title `"$($entry.title)`" $wslTabArgs"
+            }
 
-        "cmd" {
-            $scriptPath = Join-Path $tmpDir "$index-$safeTitle.cmd"
+            "cmd" {
+                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.cmd"
 
 @"
 cd /d "$($entry.dir)"
 $($entry.cmd)
 "@ | Out-File -Encoding ascii $scriptPath
 
-            Write-Host "[$($entry.title)] cmd /c `"$scriptPath`""
-            Start-Process "cmd" -ArgumentList "/c", $scriptPath
-        }
+                $parts += "new-tab --title `"$($entry.title)`" cmd /k `"$scriptPath`""
+            }
 
-        "powershell" {
-            $scriptPath = Join-Path $tmpDir "$index-$safeTitle.ps1"
+            "powershell" {
+                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.ps1"
 
 @"
 Set-Location "$($entry.dir)"
 $($entry.cmd)
 "@ | Out-File -Encoding utf8 $scriptPath
 
-            Write-Host "[$($entry.title)] powershell -File `"$scriptPath`""
-            Start-Process "powershell" -ArgumentList "-NonInteractive", "-File", $scriptPath
+                $parts += "new-tab --title `"$($entry.title)`" powershell -NoExit -File `"$scriptPath`""
+            }
+
+            default {
+                Write-Warning "Unknown type: $($entry.type)"
+            }
         }
 
-        default {
-            Write-Warning "Unknown type: $($entry.type)"
-        }
+        $index++
     }
 
-    $index++
-}
+    $wtArgs = $parts -join " ; "
 
-Write-Host "Generated scripts in: $tmpDir"
+    Write-Host "Generated scripts in: $tmpDir"
+    Write-Host "Arguments:"
+    Write-Host $wtArgs
+
+    Start-Process "wt" -ArgumentList $wtArgs
+
+} else {
+
+    # --- direct モード: プロセス直接起動 ---
+    foreach ($entry in $entries) {
+
+        $safeTitle = ($entry.title -replace "[^a-zA-Z0-9_-]", "_")
+
+        switch ($entry.type) {
+
+            "wsl" {
+                $wslUser = if ($entry.user) { $entry.user } else { "" }
+                $bashCmd = "source ~/.bashrc && cd $($entry.dir) && $($entry.cmd)"
+
+                $wslArgs = @("-d", $entry.distro)
+                if ($wslUser) { $wslArgs += @("-u", $wslUser) }
+                $wslArgs += @("--", "bash", "-lc", $bashCmd)
+
+                Write-Host "[$($entry.title)] wsl $($wslArgs -join ' ')"
+                Start-Process "wsl" -ArgumentList $wslArgs
+            }
+
+            "cmd" {
+                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.cmd"
+
+@"
+cd /d "$($entry.dir)"
+$($entry.cmd)
+"@ | Out-File -Encoding ascii $scriptPath
+
+                Write-Host "[$($entry.title)] cmd /c `"$scriptPath`""
+                Start-Process "cmd" -ArgumentList "/c", $scriptPath
+            }
+
+            "powershell" {
+                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.ps1"
+
+@"
+Set-Location "$($entry.dir)"
+$($entry.cmd)
+"@ | Out-File -Encoding utf8 $scriptPath
+
+                Write-Host "[$($entry.title)] powershell -File `"$scriptPath`""
+                Start-Process "powershell" -ArgumentList "-NonInteractive", "-File", $scriptPath
+            }
+
+            default {
+                Write-Warning "Unknown type: $($entry.type)"
+            }
+        }
+
+        $index++
+    }
+
+    Write-Host "Generated scripts in: $tmpDir"
+
+}
