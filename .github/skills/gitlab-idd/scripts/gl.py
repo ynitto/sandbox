@@ -32,6 +32,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 
 
@@ -80,6 +81,36 @@ def get_token():
             "  Example: export GITLAB_TOKEN=glpat-xxxxxxxxxxxx"
         )
     return token
+
+
+def get_node_id() -> str:
+    """Return the current terminal (node) ID.
+
+    Priority:
+      1. GITLAB_NODE_ID environment variable  (terminal-scoped override)
+      2. ~/.config/gitlab-idd/node-id file   (auto-generated on first use)
+
+    Set GITLAB_NODE_ID to a distinct value in each terminal to run multiple
+    independent worker nodes under the same GitLab account.
+    """
+    env_id = os.environ.get("GITLAB_NODE_ID", "").strip()
+    if env_id:
+        return env_id
+
+    config_dir = os.path.expanduser("~/.config/gitlab-idd")
+    node_id_file = os.path.join(config_dir, "node-id")
+
+    if os.path.exists(node_id_file):
+        with open(node_id_file, encoding="utf-8") as f:
+            stored = f.read().strip()
+        if stored:
+            return stored
+
+    new_id = uuid.uuid4().hex[:12]
+    os.makedirs(config_dir, exist_ok=True)
+    with open(node_id_file, "w", encoding="utf-8") as f:
+        f.write(new_id)
+    return new_id
 
 
 def title_to_slug(title: str) -> str:
@@ -207,6 +238,11 @@ def read_body(body, body_file, option_name="--body"):
     return body or ""
 
 
+# Patterns for extracting embedded node IDs from issue description / comments
+_CREATOR_NODE_RE = re.compile(r"<!--\s*gitlab-idd:creator-node-id:([^\s>]+)\s*-->")
+_WORKER_NODE_RE = re.compile(r"<!--\s*gitlab-idd:worker-node-id:([^\s>]+)\s*-->")
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -219,6 +255,16 @@ def cmd_project_info(args, host, project, token):
         "project_encoded": encode_project(project),
         "base_url": f"https://{host}/{project}",
     }, args.get)
+
+
+def cmd_get_node_id(args, host, project, token):
+    """Show the current node ID for this terminal session.
+
+    The node ID is used to distinguish which terminal created or worked on
+    an issue when multiple nodes share the same GitLab account.
+    Set GITLAB_NODE_ID to override the default per-machine ID.
+    """
+    out({"node_id": get_node_id()}, args.get)
 
 
 def cmd_current_user(args, host, project, token):
@@ -245,9 +291,18 @@ def cmd_get_issue(args, host, project, token):
 
 
 def cmd_create_issue(args, host, project, token):
-    """Create a new issue."""
+    """Create a new issue.
+
+    Automatically appends a hidden HTML comment with the creator's node ID
+    so that check-defer can identify which terminal created the issue even
+    when multiple nodes share the same GitLab account.
+    """
     ep = encode_project(project)
-    data = {"title": args.title, "description": read_body(args.body, args.body_file)}
+    body = read_body(args.body, args.body_file)
+    node_id = get_node_id()
+    tag = f"<!-- gitlab-idd:creator-node-id:{node_id} -->"
+    description = (body + "\n\n" + tag) if body else tag
+    data = {"title": args.title, "description": description}
     if args.labels:
         data["labels"] = args.labels
     if args.assignee:
@@ -413,13 +468,42 @@ def cmd_check_review_defer(args, host, project, token):
     Output JSON:
       {"defer": true/false, "reason": "...", ...}
 
-    Defer when:
-      - The issue is assigned to the authenticated user (me).
+    Defer when the worker node ID embedded in the start-work comment matches
+    the current node ID.  Falls back to assignee username comparison when no
+    node ID comment is found (e.g. issues created before this feature).
     """
     ep = encode_project(project)
+    my_node_id = get_node_id()
+
+    # Search issue comments for a worker-node-id tag
+    comments = api_list(host, token, f"/projects/{ep}/issues/{args.issue_id}/notes")
+    worker_node_id = None
+    for comment in comments:
+        m = _WORKER_NODE_RE.search(comment.get("body") or "")
+        if m:
+            worker_node_id = m.group(1)
+            break  # use the first (oldest) match
+
+    if worker_node_id is not None:
+        if worker_node_id == my_node_id:
+            out({
+                "defer": True,
+                "reason": "self_implemented",
+                "worker_node_id": worker_node_id,
+                "my_node_id": my_node_id,
+            }, args.get)
+        else:
+            out({
+                "defer": False,
+                "reason": "not_my_implementation",
+                "worker_node_id": worker_node_id,
+                "my_node_id": my_node_id,
+            }, args.get)
+        return
+
+    # Fallback: compare by GitLab assignee username (pre-node-id issues)
     issue = api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}")
     me = api(host, token, "GET", "/user")
-
     assignee = issue.get("assignee") or {}
     assignee_username = assignee.get("username", "")
     my_username = me.get("username", "")
@@ -448,30 +532,52 @@ def cmd_check_defer(args, host, project, token):
       {"defer": true/false, "reason": "...", ...}
 
     Defer when:
-      - The issue was created by the authenticated user (me), AND
+      - The issue was created by this terminal (node), AND
       - The issue was created less than --minutes ago.
+
+    "This terminal" is identified by the creator node ID embedded in the
+    issue description at creation time.  Falls back to author username
+    comparison for issues created before node ID support was added.
 
     After the defer period expires, "defer" becomes false and the worker
     may take the issue.
     """
     ep = encode_project(project)
     issue = api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}")
-    me = api(host, token, "GET", "/user")
-
-    author = issue.get("author", {}).get("username", "")
-    my_username = me.get("username", "")
+    my_node_id = get_node_id()
     defer_minutes = args.minutes
 
-    if author != my_username:
-        out({
-            "defer": False,
-            "reason": "not_my_issue",
-            "author": author,
-            "me": my_username,
-        }, args.get)
-        return
+    # Primary check: creator node ID embedded in description
+    description = issue.get("description") or ""
+    m = _CREATOR_NODE_RE.search(description)
+    if m:
+        creator_node_id = m.group(1)
+        is_mine = (creator_node_id == my_node_id)
+        if not is_mine:
+            out({
+                "defer": False,
+                "reason": "not_my_issue",
+                "creator_node_id": creator_node_id,
+                "my_node_id": my_node_id,
+            }, args.get)
+            return
+    else:
+        # Fallback: compare by GitLab author username (pre-node-id issues)
+        me = api(host, token, "GET", "/user")
+        author = issue.get("author", {}).get("username", "")
+        my_username = me.get("username", "")
+        creator_node_id = None
+        is_mine = (author == my_username)
+        if not is_mine:
+            out({
+                "defer": False,
+                "reason": "not_my_issue",
+                "author": author,
+                "me": my_username,
+            }, args.get)
+            return
 
-    # Issue was created by me — check age
+    # Issue was created by this node — check age
     created_at_str = issue.get("created_at", "")
     created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
     now = datetime.now(timezone.utc)
@@ -484,6 +590,8 @@ def cmd_check_defer(args, host, project, token):
             "age_minutes": round(age_minutes, 1),
             "defer_minutes": defer_minutes,
             "remaining_minutes": int(defer_minutes - age_minutes),
+            "creator_node_id": creator_node_id,
+            "my_node_id": my_node_id,
         }, args.get)
     else:
         out({
@@ -491,6 +599,8 @@ def cmd_check_defer(args, host, project, token):
             "reason": "self_created_but_expired",
             "age_minutes": round(age_minutes, 1),
             "defer_minutes": defer_minutes,
+            "creator_node_id": creator_node_id,
+            "my_node_id": my_node_id,
         }, args.get)
 
 
@@ -513,6 +623,8 @@ def build_parser():
 
     sub.add_parser("project-info", help="Show host/project parsed from git remote origin")
     sub.add_parser("current-user", help="Show authenticated user info")
+    sub.add_parser("get-node-id",
+                   help="Show the current terminal node ID (set GITLAB_NODE_ID to override)")
 
     p = sub.add_parser("list-issues", help="List project issues")
     p.add_argument("--label", help="Filter by label (comma-separated, AND condition)")
@@ -612,6 +724,7 @@ def build_parser():
 COMMANDS = {
     "project-info":    cmd_project_info,
     "current-user":    cmd_current_user,
+    "get-node-id":     cmd_get_node_id,
     "list-issues":     cmd_list_issues,
     "get-issue":       cmd_get_issue,
     "create-issue":    cmd_create_issue,

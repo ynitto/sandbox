@@ -70,6 +70,28 @@ python scripts/gl.py current-user --get username
 
 ---
 
+## ノードID
+
+ターミナル（ノード）を識別するIDを確認する。`GITLAB_NODE_ID` 環境変数で上書き可能。
+同一 GitLab アカウントで複数ターミナルを独立ノードとして動かす場合に設定する。
+
+```
+python scripts/gl.py get-node-id
+python scripts/gl.py --get node_id get-node-id
+# → 12 文字のランダム文字列（~/.config/gitlab-idd/node-id に自動保存）
+
+# ターミナルごとに上書きする場合:
+export GITLAB_NODE_ID=my-terminal-1
+python scripts/gl.py --get node_id get-node-id
+# → "my-terminal-1"
+```
+
+> **注**: イシュー作成時（`create-issue`）に creator-node-id が description に自動埋め込まれる。
+> ワーカー着手時には `worker-node-id` を着手コメントに含める（worker-role.md ステップ 3-3 参照）。
+> これらを `check-defer` / `check-review-defer` が読み取り、ターミナル単位で自己判定を行う。
+
+---
+
 ## イシュー操作
 
 ### 一覧取得
@@ -241,7 +263,8 @@ python scripts/gl.py get-mr-pipeline MR_IID --get status
 
 ## self-defer チェック
 
-自分が作成したイシューを猶予期間中はスキップするためのチェック。
+自分のターミナル（ノード）が作成したイシューを猶予期間中はスキップするためのチェック。
+「自分かどうか」はイシュー description に埋め込まれた `creator-node-id` で判定する（フォールバック: author.username）。
 
 ```
 python scripts/gl.py check-defer 42 --get defer
@@ -255,12 +278,19 @@ python scripts/gl.py check-defer 42 --minutes 60 --get remaining_minutes
 
 | reason | defer | 意味 |
 |--------|-------|------|
-| `not_my_issue` | false | 他者が作成 → 即取得可 |
-| `self_created_too_recent` | true | 自分作成・猶予中 → スキップ |
-| `self_created_but_expired` | false | 自分作成・猶予切れ → 取得可 |
+| `not_my_issue` | false | 他ノードが作成 → 即取得可 |
+| `self_created_too_recent` | true | 自ノード作成・猶予中 → スキップ |
+| `self_created_but_expired` | false | 自ノード作成・猶予切れ → 取得可 |
 
 `defer` が `True` の場合はそのイシューをスキップして次の候補へ進む。
 残り猶予時間は `remaining_minutes` で確認できる。
+
+`check-review-defer` はイシューのコメントに埋め込まれた `worker-node-id` で判定する（フォールバック: assignee.username）:
+
+```
+python scripts/gl.py check-review-defer 42
+python scripts/gl.py check-review-defer 42 --get defer
+```
 
 ---
 
