@@ -92,15 +92,14 @@ $action = New-ScheduledTaskAction `
     -Argument '{ps_args}' `
     -WorkingDirectory '{working_dir}'
 
-# ログオン時トリガー + 遅延
-$trigger = New-ScheduledTaskTrigger -AtLogOn
+# スタートアップ時トリガー + 遅延
+$trigger = New-ScheduledTaskTrigger -AtStartup
 $trigger.Delay = 'PT{delay_seconds}S'
 
-# 現在のユーザーで高特権 (RunLevel Highest) 実行 / ログオン状態に関わらず実行
-$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+# SYSTEM アカウントで高特権 (RunLevel Highest) 実行
 $principal = New-ScheduledTaskPrincipal `
-    -UserId $currentUser `
-    -LogonType S4U `
+    -UserId 'NT AUTHORITY\SYSTEM' `
+    -LogonType ServiceAccount `
     -RunLevel Highest
 
 $settings = New-ScheduledTaskSettingsSet `
@@ -115,11 +114,11 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Principal $principal `
     -Settings $settings `
-    -Description 'マルチターミナルランチャー: ログイン時に複数のターミナルを起動します。' `
+    -Description 'ターミナルランチャー: スタートアップ時に複数のターミナルを起動します。' `
     | Out-Null
 
 Write-Host "[登録] タスク '{task_name}' を登録しました。"
-Write-Host "[情報] 次回ログイン時 ({delay_seconds} 秒後) に自動起動します。"
+Write-Host "[情報] 次回スタートアップ時 ({delay_seconds} 秒後) に自動起動します。"
 Write-Host "[情報] 手動テスト: Start-ScheduledTask -TaskName '{task_name}'"
 """
 
