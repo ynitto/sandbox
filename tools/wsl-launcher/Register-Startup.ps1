@@ -46,7 +46,7 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding           = [System.Text.Encoding]::UTF8
 
 $ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$LauncherPath = Join-Path $ScriptDir "Start-WslTerminals.ps1"
+$LauncherPath = Join-Path $ScriptDir "Start.ps1"
 $ConfigPath   = Join-Path $ScriptDir "config.json"
 
 function Write-Log {
@@ -104,7 +104,7 @@ function Register-StartupTask {
     $principal   = New-ScheduledTaskPrincipal `
         -UserId $currentUser `
         -LogonType Interactive `
-        -RunLevel Limited
+        -RunLevel Highest
 
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
