@@ -25,14 +25,14 @@ Environment variables:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-
-from gl_common import title_to_slug
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +80,15 @@ def get_token():
             "  Example: export GITLAB_TOKEN=glpat-xxxxxxxxxxxx"
         )
     return token
+
+
+def title_to_slug(title: str) -> str:
+    """イシュータイトルをブランチ名向けの URL セーフなスラッグに変換する。"""
+    normalized = unicodedata.normalize("NFKC", title).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")[:40].strip("-")
+    if not slug:
+        slug = "issue"
+    return slug
 
 
 def _make_headers(token: str) -> dict:
@@ -329,6 +338,8 @@ def cmd_create_mr(args, host, project, token):
     }
     if args.draft:
         data["draft"] = True
+    if args.remove_source_branch:
+        data["remove_source_branch"] = True
     out(api(host, token, "POST", f"/projects/{ep}/merge_requests", data=data), args.get)
 
 
@@ -553,6 +564,8 @@ def build_parser():
                    help="Read MR description from FILE (use - for stdin). "
                         "Mutually exclusive with --description.")
     p.add_argument("--draft", action="store_true")
+    p.add_argument("--remove-source-branch", action="store_true",
+                   help="Automatically delete the source branch after merge")
 
     p = sub.add_parser("update-mr", help="Update a merge request")
     p.add_argument("mr_id", type=int)

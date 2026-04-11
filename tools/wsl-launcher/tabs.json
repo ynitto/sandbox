@@ -10,8 +10,8 @@
     "title": "Worker",
     "type": "wsl",
     "distro": "Ubuntu",
-    "dir": "~/app/worker",
-    "cmd": "npm run worker"
+    "dir": "/mnt/c/tools/multi-agent-shogun",
+    "cmd": "./shutsujin_departure.sh"
   },
   {
     "title": "PS Tool",

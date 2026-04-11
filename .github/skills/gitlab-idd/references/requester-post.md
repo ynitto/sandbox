@@ -236,7 +236,7 @@ python scripts/gl.py create-issue \
 <!-- gitlab-idd: version=4.0.0 role=worker -->
 
 このイシューを `gitlab-idd` ワーカーロールで処理してください。
-イシューを自分に assign し、`feature/issue-{id}-{slug}` ブランチで実装後、push して Draft MR を作成し（ターゲットブランチは `## ターゲットブランチ` に記載のブランチ（記載がなければ main）、本文に `Closes #{id}` を含める）、`status:review-ready` に更新してください。
+イシューを自分に assign し、カレントブランチをベースに `git worktree` で `feature/issue-{id}-{slug}` ブランチを作成してください。作業前にそのブランチを push して空の Draft MR を作成し（ターゲットブランチは `## ターゲットブランチ` に記載のブランチ、記載がなければ main。`remove source branch` を有効にする）、実装完了後にコミットを push して MR 本文へ `Closes #{id}` を含めたうえで Draft を解除し、`status:review-ready` に更新してください。
 ````
 
 ---

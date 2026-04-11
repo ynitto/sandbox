@@ -193,7 +193,8 @@ python scripts/gl.py create-mr \
   --source-branch "feature/issue-42-add-login-form" \
   --target-branch main \
   --description-file _mr_body.md \
-  --draft
+  --draft \
+  --remove-source-branch
 ```
 
 短い説明なら `--description` に直接渡すことも可能:
@@ -204,7 +205,8 @@ python scripts/gl.py create-mr \
   --source-branch "feature/issue-42-add-login-form" \
   --target-branch main \
   --description "Closes #42" \
-  --draft
+  --draft \
+  --remove-source-branch
 ```
 
 MR 更新（本文の書き換え・ドラフト解除）:
