@@ -29,14 +29,20 @@ foreach ($entry in $commands) {
 
         "wsl" {
             $scriptPath = Join-Path $tmpDir "$index-$safeTitle.sh"
+            $wslUser = if ($entry.user) { $entry.user } else { "" }
 
 @"
+source ~/.bashrc
 cd $($entry.dir)
 $($entry.cmd)
 "@ | Out-File -Encoding utf8 $scriptPath
 
-            Write-Host "[$($entry.title)] wsl -d $($entry.distro) -- bash `"$scriptPath`""
-            Start-Process "wsl" -ArgumentList "-d", $entry.distro, "--", "bash", $scriptPath
+            $wslArgs = @("-d", $entry.distro)
+            if ($wslUser) { $wslArgs += @("-u", $wslUser) }
+            $wslArgs += @("--", "bash", "-lc", "bash '$scriptPath'")
+
+            Write-Host "[$($entry.title)] wsl $($wslArgs -join ' ')"
+            Start-Process "wsl" -ArgumentList $wslArgs
         }
 
         "cmd" {

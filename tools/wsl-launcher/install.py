@@ -98,11 +98,11 @@ $action = New-ScheduledTaskAction `
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $trigger.Delay = 'PT{delay_seconds}S'
 
-# 現在のユーザーで高特権 (RunLevel Highest) 実行
+# 現在のユーザーで高特権 (RunLevel Highest) 実行 / ログオン状態に関わらず実行
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal `
     -UserId $currentUser `
-    -LogonType Interactive `
+    -LogonType S4U `
     -RunLevel Highest
 
 $settings = New-ScheduledTaskSettingsSet `
