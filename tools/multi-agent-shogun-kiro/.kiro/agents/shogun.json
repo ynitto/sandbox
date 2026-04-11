@@ -1,0 +1,8 @@
+{
+  "name": "shogun",
+  "description": "multi-agent-shogun shogun role for Kiro CLI",
+    "prompt": "file:///Users/nitto/Workspace/sandbox/multi-agent-shogun/instructions/generated/kiro-shogun.md",
+  "tools": ["*"],
+  "includeMcpJson": true,
+  "welcomeMessage": "shogun role loaded for multi-agent-shogun"
+}
