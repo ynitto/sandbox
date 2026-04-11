@@ -16,7 +16,7 @@
   "goal": "string (必須) ユーザーの最終目標",
   "product_goal": "string (必須) プロダクトバックログのコミットメント。プロダクトの将来の状態を1文で表す長期目標。goal より大きなビジョン（例: 'チームの生産性を2倍にするCI/CDプラットフォームを提供する'）。スクラムガイド2020の確約。Phase 2 Step 2-5 で設定する",
   "definition_of_done": "string (必須) インクリメントのコミットメント。スプリントで完成したと見なす共通の品質基準（例: 'テストが全て通過・コードレビュー済み・本番環境にデプロイ可能な状態'）。スクラムガイド2020の確約。Phase 2 Step 2-5 で設定する",
-  "requirements_source": "string (任意) バックログの出自。'requirements-definer' = requirements.json 経由、'direct' = プロンプトから直接作成。デフォルト: 'direct'",
+  "requirements_source": "string (任意) バックログの出自。'requirements-definer' = requirements.md 経由、'direct' = プロンプトから直接作成。デフォルト: 'direct'",
   "backlog": [
     {
       "id": "string (必須) 一意のタスクID。例: b1, b2, b3",
@@ -184,18 +184,18 @@
 
 ## requirements.json → plan.json 変換ルール
 
-`requirements.json`（requirements-definer の出力）から `plan.json` のバックログに変換する際のマッピングルール。
+`requirements.json`（`convert_requirements.py` が `requirements.md` から生成）から `plan.json` のバックログに変換する際のマッピングルール。
 
 ### フィールドマッピング
 
-| requirements.json | plan.json | 変換ルール |
+| requirements.json フィールド | plan.json | 変換ルール |
 |---|---|---|
 | `goal` | `goal` | そのまま転記 |
 | — | `requirements_source` | `"requirements-definer"` を設定 |
 | `functional_requirements[]` | `backlog[]` | 各要件を1つ以上のタスクに分解（1タスク = 1スキル実行） |
-| `.user_story` or `.description` | `backlog[].action` | ストーリーまたは説明から具体的な作業内容を導出 |
-| `.acceptance_criteria[]` | `backlog[].done_criteria` | Given/When/Then を検証可能な完了条件に要約 |
-| `.moscow` or 出現順 | `backlog[].priority` | must=1, should=2, could=3。moscow がなければ出現順 |
+| `functional_requirements[].user_story` | `backlog[].action` | ストーリーから具体的な作業内容を導出 |
+| `functional_requirements[].acceptance_criteria[].then` | `backlog[].done_criteria` | Given/When/Then を検証可能な完了条件に要約 |
+| `functional_requirements[].moscow` または出現順 | `backlog[].priority` | must=1, should=2, could=3。未設定なら出現順 |
 | `non_functional_requirements[]` | 横断タスクまたは制約 | 下記参照 |
 | `scope.out[]` | バックログに含めない | 除外スコープとして記録のみ |
 
@@ -210,7 +210,7 @@
 
 ### 変換例
 
-**requirements.json:**
+**requirements.json（抜粋）:**
 ```json
 {
   "goal": "個人向けTODO管理WebアプリをReactで構築する",

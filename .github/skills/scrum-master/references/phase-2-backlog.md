@@ -6,10 +6,11 @@
 
 ```mermaid
 flowchart TD
-    A[Phase 2 開始] --> B{requirements.json 存在?}
-    B -- あり --> C[Step 2-2: バックログ変換]
+    A[Phase 2 開始] --> B{requirements.md 存在?}
+    B -- あり --> B2[convert_requirements.py で requirements.json を生成]
     B -- なし --> D[Step 2-1: プレインタビュー → requirements-definer に委譲]
-    D --> C
+    D --> B2
+    B2 --> C[Step 2-2: バックログ変換]
     C --> E[Step 2-3: プロダクトゴール & DoD 設定]
     E --> F[Step 2-4: plan.json 保存]
     F --> G{ゲート条件クリア?}
@@ -19,23 +20,30 @@ flowchart TD
 
 ## 目次
 
-- [Step 2-0: requirements.json の存在チェック](#step-2-0-requirementsjson-の存在チェック)
+- [Step 2-0: requirements.md の存在チェック](#step-2-0-requirementsmd-の存在チェック)
 - [Step 2-1: scrum-master がプレインタビューを実施し、requirements-definer に委譲する](#step-2-1-scrum-master-がプレインタビューを実施しrequirements-definer-に委譲する)
-- [Step 2-2: requirements.json → バックログ変換](#step-2-2-requirementsjson--バックログ変換)
+- [Step 2-2: requirements.md → バックログ変換](#step-2-2-requirementsmd--バックログ変換)
 - [Step 2-3: プロダクトゴールと完成の定義を設定する](#step-2-3-プロダクトゴールと完成の定義を設定する)
 - [Step 2-4: plan.json 保存](#step-2-4-planjson-保存)
 - [ゲート条件（Phase 3 に進む前に確認）](#ゲート条件phase-3-に進む前に確認)
 
-ユーザーのプロンプトから **必ず requirements-definer を経由して** バックログを作成する。プロンプトが明確に見えても要件定義は省略しない。requirements.json が存在する場合のみスキップできる。
+ユーザーのプロンプトから **必ず requirements-definer を経由して** バックログを作成する。プロンプトが明確に見えても要件定義は省略しない。`requirements.md` が存在する場合のみスキップできる。
 
 ---
 
-## Step 2-0: requirements.json の存在チェック
+## Step 2-0: requirements.md の存在チェックと JSON 変換
 
-作業ディレクトリのルートに `requirements.json` が存在するか確認する。
+作業ディレクトリのルートに `requirements.md` が存在するか確認する。
 
-- **存在する** → Step 2-2 へスキップ（Step 2-3 は引き続き必ず実行する）
+- **存在する** → `convert_requirements.py` を実行して `requirements.json` を生成し、Step 2-2 へスキップ（Step 2-3 は引き続き必ず実行する）
 - **存在しない** → Step 2-1 へ進む
+
+`requirements.json` の生成:
+
+```bash
+python .github/skills/scrum-master/scripts/convert_requirements.py
+# → requirements.json が生成される（requirements.md と同じディレクトリ）
+```
 
 ---
 
@@ -73,32 +81,51 @@ flowchart TD
   対象ユーザー: [Step 2-1a で収集した回答]
   スコープ: [Step 2-1a で収集した回答]
   規模感: [Step 2-1a で収集した回答]
-注意: 収集済みコンテキストが提供されているため、ユーザーへの追加質問（Step 1）はスキップして
-      Step 2 の規模判定から開始すること。
-      ただし、収集済みコンテキストに「未回答」の項目がある場合や、Step 2 以降で情報不足を
-      検出した場合は、合理的に推定して進めてよい。推定した内容は requirements.json 内に
-      明記すること。
+注意: 収集済みコンテキストが提供されているため（非対話モード）、Phase 0 と Phase 1 を経て
+      Phase 2 のインタビューループから開始すること。
+      ただし、収集済みコンテキストに「未回答」の項目がある場合や、Phase 2 以降で情報不足を
+      検出した場合は、合理的に推定して進めてよい。推定した内容は requirements.md 内に記録すること。
 要件数: 機能要件 [N] 件 / 非機能要件 [M] 件
 サマリー: [1〜2文で結果を説明]
 ```
 
-完了後、`requirements.json` が生成される → Step 2-2 へ進む。
+完了後、`requirements.md` が生成される。続けて `convert_requirements.py` を実行して `requirements.json` を生成してから → Step 2-2 へ進む。
+
+```bash
+python .github/skills/scrum-master/scripts/convert_requirements.py
+```
 
 ---
 
 ## Step 2-2: requirements.json → バックログ変換
 
-`requirements.json` を読み込み、以下のマッピングルールで `plan.json` のバックログに変換する:
+Step 2-0 で生成した `requirements.json` を読み込み、以下のマッピングルールで `plan.json` のバックログに変換する。
 
-| requirements.json | plan.json | 変換ルール |
-|---|---|---|
+### requirements.json からの読み込み方法
+
+| requirements.json フィールド | 読み取り方法 |
+|-----------------------------|------------|
+| `goal` | プロジェクトの目標文字列 |
+| `functional_requirements[].id` | 要件ID（例: F-01） |
+| `functional_requirements[].name` | 要件名 |
+| `functional_requirements[].user_story` | `As a ... I want ... so that ...` 形式の文字列 |
+| `functional_requirements[].moscow` | `"must"` / `"should"` / `"could"` |
+| `functional_requirements[].acceptance_criteria[]` | `{given, when, then}` オブジェクトの配列 |
+| `non_functional_requirements[]` | `{id, name, description}` の配列 |
+| `scope.out[]` | `{feature, note}` の配列（除外スコープ） |
+| `personas[]` | `{id, name, description}` の配列（任意） |
+
+### plan.json へのマッピング
+
+| 読み取り元 | plan.json フィールド | 変換ルール |
+|-----------|---------------------|-----------|
 | `goal` | `goal` | そのまま転記 |
 | — | `requirements_source` | `"requirements-definer"` を設定 |
-| `functional_requirements[].user_story` or `description` | `backlog[].action` | 具体的な作業内容を導出 |
-| `functional_requirements[].acceptance_criteria` | `backlog[].done_criteria` | 検証可能な完了条件に変換 |
-| `functional_requirements[].moscow` or 出現順 | `backlog[].priority` | must=1, should=2, could=3 |
-| `non_functional_requirements` | 横断タスク or 制約 | パフォーマンス → 専用タスク、それ以外 → done_criteria に付与 |
-| `scope.out` | バックログに含めない | 除外スコープとして記録のみ |
+| `functional_requirements[].user_story` または `.name` | `backlog[].action` | 具体的な作業内容を導出 |
+| `functional_requirements[].acceptance_criteria[].then` | `backlog[].done_criteria` | 検証可能な完了条件に変換 |
+| `functional_requirements[].moscow` または出現順 | `backlog[].priority` | must=1, should=2, could=3 |
+| `non_functional_requirements[]` | 横断タスク or 制約 | パフォーマンス → 専用タスク、それ以外 → done_criteria に付与 |
+| `scope.out[]` | バックログに含めない | 除外スコープとして記録のみ |
 
 **変換の粒度:**
 - 1タスク = 1スキルの1回の実行
@@ -112,7 +139,7 @@ flowchart TD
 
 補助スキルを `skill` 配列へ混在させてはならない。scrum-master 側で具体的な補助スキル名を再判定してはならない。
 
-→ **Step 2-3 へ進む**（requirements.json 経由でここに来た場合も省略しない）。
+→ **Step 2-3 へ進む**（requirements.md 経由でここに来た場合も省略しない）。
 
 ---
 

@@ -7,6 +7,12 @@
 例:
     python generate_e2e.py openapi.yaml
     python generate_e2e.py api/spec.yaml --output-dir ./e2e --env staging --base-url https://api.example.com
+
+生成されるフォルダ構造:
+    e2e/api/{tag}/{method}-{path}/
+        001. {summary}.bru           # 正常系テスト（シーケンシャル）
+        101. error - 400 ....bru     # エラー系テスト（OpenAPIの4xx/5xxから生成）
+        102. error - 401 ....bru
 """
 
 import argparse
@@ -65,6 +71,25 @@ def sanitize_dir_name(name: str) -> str:
 def bru_url(path: str) -> str:
     """`{param}` を Bruno の `{{param}}` 記法に変換する。"""
     return re.sub(r"\{(\w+)\}", r"{{\1}}", path)
+
+
+def _endpoint_folder_name(method: str, path: str) -> str:
+    """エンドポイントフォルダ名を生成する: {method}-{sanitized-path}。
+
+    例:
+        GET  /users        → get-users
+        POST /users        → post-users
+        GET  /users/{id}   → get-users-id
+        DELETE /users/{id} → delete-users-id
+    """
+    # {param} からパラメータ名だけ取り出す（ブレース除去）
+    clean = re.sub(r"\{([^}]+)\}", r"\1", path)
+    # 先頭スラッシュ除去、/ を - に変換、英数字・ハイフン・アンダースコア以外除去
+    clean = clean.lstrip("/")
+    clean = re.sub(r"[/\s]+", "-", clean)
+    clean = re.sub(r"[^a-zA-Z0-9_-]", "", clean)
+    clean = clean.strip("-").lower()
+    return f"{method.lower()}-{clean}" if clean else method.lower()
 
 
 # --- スキーマからサンプル値を生成 ---
@@ -129,8 +154,28 @@ def _expected_status(responses: dict) -> int:
     return min(success) if success else 200
 
 
-def operation_to_bru(method: str, path: str, operation: dict) -> str:
-    """1つのOpenAPI operationをBRU形式のテキストに変換する。"""
+def _get_error_responses(operation: dict) -> list:
+    """OpenAPI operationから4xx/5xxエラーレスポンスの一覧を取得する。
+
+    Returns:
+        [(status_code: int, description: str), ...] をステータスコード昇順で返す。
+    """
+    responses = operation.get("responses", {})
+    errors = []
+    for code, response in responses.items():
+        code_str = str(code)
+        if code_str.startswith("4") or code_str.startswith("5"):
+            try:
+                status_code = int(code_str)
+                description = response.get("description", f"Error {code_str}")
+                errors.append((status_code, description))
+            except ValueError:
+                continue  # "default" など非数値キーはスキップ
+    return sorted(errors)
+
+
+def operation_to_bru(method: str, path: str, operation: dict, seq: int = 1) -> str:
+    """正常系: 1つのOpenAPI operationをBRU形式のテキストに変換する。"""
     name = operation.get("summary", f"{method.upper()} {path}")
     url = f"{{{{baseUrl}}}}{bru_url(path)}"
 
@@ -165,7 +210,7 @@ def operation_to_bru(method: str, path: str, operation: dict) -> str:
     lines = []
 
     # meta
-    lines += [f"meta {{", f"  name: {name}", f"  type: http", f"  seq: 1", f"}}", ""]
+    lines += [f"meta {{", f"  name: {name}", f"  type: http", f"  seq: {seq}", f"}}", ""]
 
     # HTTPメソッドブロック
     lines += [
@@ -214,6 +259,62 @@ def operation_to_bru(method: str, path: str, operation: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def operation_to_error_bru(
+    method: str, path: str, operation: dict, status_code: int, description: str, seq: int
+) -> str:
+    """エラー系: 特定のHTTPエラーに対応するBRU形式のテキストを生成する。"""
+    name = f"error - {status_code} {description}"
+    url = f"{{{{baseUrl}}}}{bru_url(path)}"
+
+    has_json_body = method.lower() in ("post", "put", "patch")
+    body_type = "json" if has_json_body else "none"
+
+    lines = []
+
+    # meta
+    lines += [f"meta {{", f"  name: {name}", f"  type: http", f"  seq: {seq}", f"}}", ""]
+
+    # HTTPメソッドブロック
+    lines += [
+        f"{method.lower()} {{",
+        f"  url: {url}",
+        f"  body: {body_type}",
+        f"  auth: none",
+        f"}}",
+        "",
+    ]
+
+    # ヘッダー（401の場合はaccessTokenを送らない）
+    lines.append("headers {")
+    if has_json_body:
+        lines.append("  Content-Type: application/json")
+    if status_code != 401:
+        lines.append("  Authorization: Bearer {{accessToken}}")
+    lines += ["}", ""]
+
+    # エラーを引き起こすボディ（TODO付き）
+    if has_json_body:
+        lines += [
+            "body:json {",
+            "  {",
+            "    // TODO: エラーを引き起こすリクエストボディを記述",
+            "  }",
+            "}",
+            "",
+        ]
+
+    # テスト
+    lines += [
+        "tests {",
+        f'  test("should return {status_code}", function() {{',
+        f"    expect(res.status).to.equal({status_code});",
+        "  });",
+        "}",
+    ]
+
+    return "\n".join(lines) + "\n"
+
+
 # --- ファイル生成 ---
 
 
@@ -237,12 +338,19 @@ def generate_environment(env_name: str, base_url: str, output_dir: Path) -> None
 
 
 def generate_api_tests(spec: dict, output_dir: Path) -> None:
-    """e2e/api/ 配下にAPIインターフェース毎のBRUファイルを生成する。"""
+    """e2e/api/{tag}/{endpoint}/ 配下にAPIテストを生成する。
+
+    フォルダ構造:
+        api/{tag}/{method}-{path}/
+            001. {summary}.bru           # 正常系（シーケンシャル）
+            101. error - {status} ....bru # エラー系（OpenAPIの4xx/5xxから生成）
+            102. error - {status} ....bru
+    """
     api_dir = output_dir / "api"
     paths = spec.get("paths", {})
 
     # タグごとにオペレーションをグループ化
-    tag_groups: dict[str, list] = {}
+    tag_groups: dict = {}
     for path, path_item in paths.items():
         for method in HTTP_METHODS:
             operation = path_item.get(method)
@@ -253,14 +361,32 @@ def generate_api_tests(spec: dict, output_dir: Path) -> None:
 
     for tag, operations in sorted(tag_groups.items()):
         tag_dir = api_dir / tag
-        tag_dir.mkdir(parents=True, exist_ok=True)
 
-        for idx, (path, method, operation) in enumerate(operations, start=1):
+        for path, method, operation in operations:
+            # エンドポイント毎のフォルダを作成
+            endpoint_folder = _endpoint_folder_name(method, path)
+            endpoint_dir = tag_dir / endpoint_folder
+            endpoint_dir.mkdir(parents=True, exist_ok=True)
+
+            # 正常系テスト (001.)
             name = operation.get("summary", f"{method.upper()} {path}")
-            filename = f"{idx:03d}. {sanitize_filename(name)}.bru"
-            filepath = tag_dir / filename
-            filepath.write_text(operation_to_bru(method, path, operation), encoding="utf-8")
+            filename = f"001. {sanitize_filename(name)}.bru"
+            filepath = endpoint_dir / filename
+            filepath.write_text(operation_to_bru(method, path, operation, seq=1), encoding="utf-8")
             _log_created(filepath, output_dir.parent)
+
+            # エラー系テスト (101., 102., ...)
+            error_responses = _get_error_responses(operation)
+            for error_idx, (status_code, description) in enumerate(error_responses, start=1):
+                seq = 100 + error_idx
+                error_name = f"error - {status_code} {sanitize_filename(description)}"
+                error_filename = f"{seq:03d}. {error_name}.bru"
+                error_filepath = endpoint_dir / error_filename
+                content = operation_to_error_bru(
+                    method, path, operation, status_code, description, seq
+                )
+                error_filepath.write_text(content, encoding="utf-8")
+                _log_created(error_filepath, output_dir.parent)
 
 
 def _log_created(path: Path, base: Path) -> None:

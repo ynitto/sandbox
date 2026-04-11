@@ -1,0 +1,31 @@
+{
+  "settings": {
+    "wslWaitTimeoutSeconds": 60
+  },
+  "terminals": [
+    {
+      "name": "My Project 1",
+      "profile": "Ubuntu",
+      "wslPath": "/home/user/project1",
+      "command": "npm run dev",
+      "keepOpen": true,
+      "enabled": true
+    },
+    {
+      "name": "My Project 2",
+      "profile": "Ubuntu",
+      "wslPath": "/home/user/project2",
+      "command": "python app.py",
+      "keepOpen": true,
+      "enabled": true
+    },
+    {
+      "name": "My Project 3 (disabled example)",
+      "profile": "Ubuntu",
+      "wslPath": "/home/user/project3",
+      "command": "bash",
+      "keepOpen": true,
+      "enabled": false
+    }
+  ]
+}
