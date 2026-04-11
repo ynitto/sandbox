@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-WSL Terminal Launcher インストーラー
+Multi Terminal Launcher インストーラー
 
 Send.ps1 と config.json を指定フォルダにコピーし、
 PC ログイン時に Send.ps1 が自動実行されるようタスクスケジューラに登録します。
 
 使用方法:
     python install.py
-    python install.py --install-dir "C:\\tools\\wsl-launcher"
-    python install.py --delay 30 --task-name "WslTerminalLauncher"
+    python install.py --install-dir "C:\\tools\\terminal-launcher"
+    python install.py --install-dir "C:¥tools¥terminal-launcher"
+    python install.py --delay 30 --task-name "TerminalLauncher"
 """
 
 import argparse
@@ -17,10 +18,17 @@ import shutil
 import subprocess
 import sys
 
-DEFAULT_INSTALL_DIR = r"C:\tools\wsl-launcher"
-DEFAULT_TASK_NAME = "WslTerminalLauncher"
+DEFAULT_INSTALL_DIR = r"C:\tools\terminal-launcher"
+DEFAULT_TASK_NAME = "TerminalLauncher"
 DEFAULT_DELAY_SECONDS = 30
 DEFAULT_EXECUTION_LIMIT_MINUTES = 5
+
+
+def normalize_windows_path(path: str) -> str:
+    """日本語キーボード由来の ¥/￥ を Windows 区切り文字として解釈する。"""
+    # U+00A5(¥) と U+FFE5(￥) の両方を許容する。
+    normalized = path.replace("¥", "\\").replace("￥", "\\")
+    return os.path.expandvars(os.path.expanduser(normalized))
 
 
 def copy_files(script_dir: str, install_dir: str) -> tuple[str, str]:
@@ -107,7 +115,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Principal $principal `
     -Settings $settings `
-    -Description 'WSL ターミナルランチャー: ログイン時に複数の WSL ターミナルを起動します。' `
+    -Description 'マルチターミナルランチャー: ログイン時に複数のターミナルを起動します。' `
     | Out-Null
 
 Write-Host "[登録] タスク '{task_name}' を登録しました。"
@@ -142,12 +150,13 @@ Write-Host "[情報] 手動テスト: Start-ScheduledTask -TaskName '{task_name}
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="WSL Terminal Launcher インストーラー",
+        description="Terminal Launcher インストーラー",
         epilog=(
             "使用例:\n"
             "  python install.py\n"
-            "  python install.py --install-dir \"C:\\\\tools\\\\wsl-launcher\"\n"
-            "  python install.py --delay 30 --task-name \"WslTerminalLauncher\"\n"
+            "  python install.py --install-dir \"C:\\\\tools\\\\terminal-launcher\"\n"
+            "  python install.py --install-dir \"C:¥tools¥terminal-launcher\"\n"
+            "  python install.py --delay 30 --task-name \"TerminalLauncher\"\n"
             "  python install.py --execution-limit 10"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -181,10 +190,10 @@ def main() -> None:
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    install_dir = args.install_dir
+    install_dir = normalize_windows_path(args.install_dir)
 
     print("=" * 55)
-    print("  WSL Terminal Launcher インストーラー")
+    print("  Terminal Launcher インストーラー")
     print("=" * 55)
     print(f"インストール先 : {install_dir}")
     print(f"タスク名       : {args.task_name}")

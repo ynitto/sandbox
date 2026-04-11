@@ -19,7 +19,7 @@ if ($entries | Where-Object { $_.type -eq "wsl" }) {
 }
 
 # --- スクリプト出力先 ---
-$tmpDir = Join-Path $env:TEMP "wsl-launcher"
+$tmpDir = Join-Path $env:TEMP "terminal-launcher"
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 
 $index = 0
