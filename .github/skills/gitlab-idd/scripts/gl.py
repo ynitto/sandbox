@@ -82,6 +82,10 @@ def get_token():
     return token
 
 
+def _make_headers(token: str) -> dict:
+    return {"PRIVATE-TOKEN": token, "Content-Type": "application/json", "Accept": "application/json"}
+
+
 def api(host, token, method, path, data=None, params=None):
     """Make a GitLab REST API call and return parsed JSON."""
     url = f"https://{host}/api/v4{path}"
@@ -89,11 +93,7 @@ def api(host, token, method, path, data=None, params=None):
         url = url + "?" + urllib.parse.urlencode(
             {k: v for k, v in params.items() if v is not None}
         )
-    headers = {
-        "PRIVATE-TOKEN": token,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+    headers = _make_headers(token)
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
@@ -147,11 +147,7 @@ def api_list(host, token, path, params=None):
         url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(
             {k: v for k, v in params.items() if v is not None}
         )
-        headers = {
-            "PRIVATE-TOKEN": token,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+        headers = _make_headers(token)
         req = urllib.request.Request(url, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:

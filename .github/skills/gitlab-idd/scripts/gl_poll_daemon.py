@@ -34,6 +34,7 @@ Environment:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -351,14 +352,14 @@ def launch_agent_worker(
     via_wsl_kiro = cli.via_wsl and cli.name == "kiro"
     prompt = build_worker_prompt(issue, repo, via_wsl_kiro=via_wsl_kiro)
     issue_id = issue.get("iid", "?")
-    _cleanup_old_worker_files()
 
     if use_mock:
         run_mock_cli(issue, prompt)
         return
 
     # プロンプトをファイルに書き出す（stdin として渡す + デバッグ用に残す）
-    prompt_file = get_config_dir() / f"worker-prompt-{issue_id}.md"
+    repo_hash = hashlib.md5(f"{repo['host']}/{repo['project']}".encode()).hexdigest()[:8]
+    prompt_file = get_config_dir() / f"worker-prompt-{repo_hash}-{issue_id}.md"
     prompt_file.write_text(prompt, encoding="utf-8")
 
     # stdin 経由でプロンプトを渡す（コマンドライン引数にプロンプトを含めない）
@@ -368,6 +369,8 @@ def launch_agent_worker(
     log_file = get_config_dir() / f"worker-issue-{issue_id}.log"
     logging.info("[%s] 起動: イシュー #%s  cwd=%s", cli.name, issue_id, cwd or "WSL")
 
+    log_fh = None
+    prompt_fh = None
     try:
         kwargs: dict = {
             "cwd":    cwd,
@@ -378,16 +381,22 @@ def launch_agent_worker(
                 kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
             case _:
                 kwargs["start_new_session"] = True
-        with open(log_file, "w", encoding="utf-8") as log_fh:
-            kwargs["stdout"] = log_fh
-            # stdin にプロンプトファイルを接続する
-            # Unix では子プロセスが fd を継承するため、親が with を抜けて
-            # ファイルを閉じた後も子プロセスは読み続けることができる
-            with open(prompt_file, "r", encoding="utf-8") as prompt_fh:
-                kwargs["stdin"] = prompt_fh
-                subprocess.Popen(cmd, **kwargs)
+        # with ブロックを使わずファイルを開く。
+        # Popen は非同期なので with を使うと子プロセスが読む前に fd が閉じられる。
+        # 親側で Popen 後に明示的に閉じることで子プロセスへの fd 継承を保証する。
+        log_fh = open(log_file, "w", encoding="utf-8")
+        prompt_fh = open(prompt_file, "r", encoding="utf-8")
+        kwargs["stdout"] = log_fh
+        kwargs["stdin"] = prompt_fh
+        subprocess.Popen(cmd, **kwargs)
     except Exception as e:
         logging.error("CLI 起動失敗 (イシュー #%s): %s", issue_id, e)
+    finally:
+        # 親側の fd を閉じる（子プロセスは継承済みの fd を引き続き使用できる）
+        if prompt_fh is not None:
+            prompt_fh.close()
+        if log_fh is not None:
+            log_fh.close()
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +460,7 @@ def run_poll_cycle(
             continue
 
         key = repo_key(repo)
-        seen = set(config.get("seen_issues", {}).get(key, []))
+        seen = set(int(i) for i in config.get("seen_issues", {}).get(key, []))
         new_issues = [i for i in all_issues if i.get("iid") not in seen]
 
         if not new_issues:
@@ -463,16 +472,17 @@ def run_poll_cycle(
             iid = issue.get("iid", "?")
             title = issue.get("title", "")
             logging.info("  %sイシュー #%s: %s", mock_tag, iid, title)
-            # ワーカー起動前に seen に記録することで、複数デーモンインスタンスによる
-            # 重複起動を防ぐ（ベストエフォート）
-            if not use_mock:
-                mark_seen(config, repo, [issue])
-                save_config(config)
+            # ワーカー起動成功後に seen に記録する（例外発生時はサイレントドロップを防ぐ）
             send_notification(
                 f"GitLab 新規イシュー ({host}/{project})",
                 f"#{iid} {title}",
             )
-            launch_agent_worker(issue, repo, cli, use_mock=use_mock)
+            if not use_mock:
+                launch_agent_worker(issue, repo, cli, use_mock=use_mock)
+                mark_seen(config, repo, [issue])
+                save_config(config)
+            else:
+                launch_agent_worker(issue, repo, cli, use_mock=use_mock)
 
         if use_mock:
             logging.info("[MOCK CLI] seen_issues は更新しません（再実行でテスト可能）")
@@ -556,11 +566,13 @@ def main() -> None:
     logging.info("インターバル: %s 秒 / 設定: %s", config.get("poll_interval_seconds"), get_config_path())
 
     if args.once or args.dry_run:
+        _cleanup_old_worker_files()
         run_poll_cycle(config, cli, use_mock=use_mock)
         return
 
     interval = config.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
     _cached_preferred: str | None = config.get("preferred_cli")
+    _cleanup_old_worker_files()
     while True:
         try:
             config = load_config()  # 毎サイクル再読み込み（設定変更を即反映）

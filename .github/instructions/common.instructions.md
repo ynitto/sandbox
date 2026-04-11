@@ -18,7 +18,7 @@ applyTo: "**"
 
 | エージェント | skill-registry.json の場所 |
 |---|---|
-| GitHub Copilot | `<AGENT_HOME>/skill-registry.json` |
+| GitHub Copilot | `~/.copilot/skill-registry.json` |
 | Claude Code    | `~/.claude/skill-registry.json`  |
 | Codex          | `~/.codex/skill-registry.json`   |
 | Kiro           | `~/.kiro/skill-registry.json`    |

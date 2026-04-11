@@ -181,6 +181,11 @@ def copy_scripts_to_config_dir(*, dry_run: bool = False) -> None:
             print(f"  [DRYRUN] コピー予定: {src} → {dst}")
             continue
         config_dir.mkdir(parents=True, exist_ok=True)
+        if platform.system() != "Windows":
+            try:
+                os.chmod(config_dir, 0o700)
+            except OSError:
+                pass
         shutil.copy2(src, dst)
         if platform.system() != "Windows":
             try:
@@ -296,6 +301,8 @@ def install_service_linux(
     if mock_cli:
         env_lines += "Environment=GITLAB_IDD_MOCK_CLI=true\n"
 
+    env_section = f"\n{env_lines.rstrip()}" if env_lines.strip() else ""
+
     svc = textwrap.dedent(f"""\
         [Unit]
         Description=GitLab Issue Polling Daemon (gitlab-idd)
@@ -304,8 +311,7 @@ def install_service_linux(
 
         [Service]
         Type=simple
-        ExecStart="{python_exe}" "{daemon_path}" --interval {interval}
-        {env_lines.rstrip()}
+        ExecStart="{python_exe}" "{daemon_path}" --interval {interval}{env_section}
         Restart=on-failure
         RestartSec=30
         StandardOutput=append:{get_config_dir() / "daemon.log"}
@@ -588,6 +594,7 @@ def configure_session_hook(
     tmp = settings_path.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
+    os.chmod(tmp, 0o600)
     tmp.replace(settings_path)
     print(f"  SessionStart フック登録: {settings_path}")
 
