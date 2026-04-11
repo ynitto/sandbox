@@ -1,0 +1,16 @@
+[
+  {
+    "title": "API",
+    "type": "wsl",
+    "distro": "Ubuntu",
+    "dir": "~/app/api",
+    "cmd": "npm run dev"
+  },
+  {
+    "title": "Worker",
+    "type": "wsl",
+    "distro": "Ubuntu",
+    "dir": "~/app/worker",
+    "cmd": "npm run worker"
+  }
+]

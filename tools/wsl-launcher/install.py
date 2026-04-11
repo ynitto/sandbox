@@ -23,8 +23,8 @@ DEFAULT_DELAY_SECONDS = 30
 DEFAULT_EXECUTION_LIMIT_MINUTES = 5
 
 
-def copy_files(script_dir: str, install_dir: str) -> tuple[str, str]:
-    """Start.ps1 と tabs.json (config.json) をインストール先にコピーする。"""
+def copy_files(script_dir: str, install_dir: str) -> tuple[str, str, str]:
+    """Start.ps1、Send.ps1、config.json をインストール先にコピーする。"""
     os.makedirs(install_dir, exist_ok=True)
 
     # Start.ps1 をコピー
@@ -37,20 +37,30 @@ def copy_files(script_dir: str, install_dir: str) -> tuple[str, str]:
     print(f"[コピー] {src_start}")
     print(f"     -> {dst_start}")
 
-    # tabs.json を config.json としてコピー (既存は上書きしない)
-    src_tabs = os.path.join(script_dir, "tabs.json")
+    # Send.ps1 をコピー
+    src_send = os.path.join(script_dir, "Send.ps1")
+    dst_send = os.path.join(install_dir, "Send.ps1")
+    if not os.path.exists(src_send):
+        print(f"[エラー] Send.ps1 が見つかりません: {src_send}", file=sys.stderr)
+        sys.exit(1)
+    shutil.copy2(src_send, dst_send)
+    print(f"[コピー] {src_send}")
+    print(f"     -> {dst_send}")
+
+    # config.json をコピー (既存は上書きしない)
+    src_config = os.path.join(script_dir, "config.json")
     dst_config = os.path.join(install_dir, "config.json")
-    if not os.path.exists(src_tabs):
-        print(f"[エラー] tabs.json が見つかりません: {src_tabs}", file=sys.stderr)
+    if not os.path.exists(src_config):
+        print(f"[エラー] config.json が見つかりません: {src_config}", file=sys.stderr)
         sys.exit(1)
     if os.path.exists(dst_config):
         print(f"[スキップ] config.json は既に存在するため上書きしません: {dst_config}")
     else:
-        shutil.copy2(src_tabs, dst_config)
-        print(f"[コピー] {src_tabs}")
+        shutil.copy2(src_config, dst_config)
+        print(f"[コピー] {src_config}")
         print(f"     -> {dst_config}")
 
-    return dst_start, dst_config
+    return dst_start, dst_send, dst_config
 
 
 def register_task(
@@ -193,7 +203,7 @@ def main() -> None:
     print()
 
     # ファイルのコピー
-    launcher_path, config_path = copy_files(script_dir, install_dir)
+    launcher_path, _send_path, config_path = copy_files(script_dir, install_dir)
     print()
 
     # タスクスケジューラへの登録
