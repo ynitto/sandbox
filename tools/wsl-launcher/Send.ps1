@@ -1,7 +1,5 @@
 param(
-    [string]$ConfigPath = "./config.json",
-    [ValidateSet("", "direct", "wt")]
-    [string]$Mode = ""
+    [string]$ConfigPath = "./config.json"
 )
 
 if (!(Test-Path $ConfigPath)) {
@@ -13,11 +11,6 @@ $config = Get-Content $ConfigPath | ConvertFrom-Json
 
 # --- config.json からエントリを取得 ---
 $entries = $config.entries
-
-# -Mode パラメータが未指定の場合は "direct" をデフォルトとする
-if ($Mode -eq "") {
-    $Mode = "direct"
-}
 
 # --- WSLウォームアップ ---
 if ($entries | Where-Object { $_.type -eq "wsl" }) {
@@ -36,7 +29,7 @@ $wtParts = @()
 $directEntries = @()
 
 foreach ($entry in $entries) {
-    $entryMode = if ($entry.mode) { $entry.mode } else { $Mode }
+    $entryMode = if ($entry.mode) { $entry.mode } else { "direct" }
     if ($entryMode -eq "wt") {
         $wtParts += [PSCustomObject]@{ entry = $entry; index = $index }
     } else {
