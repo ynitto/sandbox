@@ -16,6 +16,15 @@
       "user": "ubuntu",
       "dir": "~/app/worker",
       "cmd": "npm run worker"
+    },
+    {
+      "title": "Logger",
+      "type": "wsl",
+      "mode": "direct",
+      "distro": "Ubuntu",
+      "user": "ubuntu",
+      "dir": "~/app",
+      "cmd": "tail -f logs/app.log"
     }
   ]
 }

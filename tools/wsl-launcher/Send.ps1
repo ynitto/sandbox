@@ -32,19 +32,34 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 
 $index = 0
 
-if ($Mode -eq "wt") {
+# --- エントリごとの有効モードを決定し、wt / direct に振り分け ---
+$wtParts = @()
+$directEntries = @()
 
-    # --- wt モード: Windows Terminal タブで起動 ---
+foreach ($entry in $entries) {
+    $entryMode = if ($entry.mode) { $entry.mode } else { $Mode }
+    if ($entryMode -eq "wt") {
+        $wtParts += [PSCustomObject]@{ entry = $entry; index = $index }
+    } else {
+        $directEntries += [PSCustomObject]@{ entry = $entry; index = $index }
+    }
+    $index++
+}
+
+# --- wt モード: Windows Terminal タブで起動 ---
+if ($wtParts.Count -gt 0) {
+
     $parts = @()
 
-    foreach ($entry in $entries) {
-
+    foreach ($item in $wtParts) {
+        $entry = $item.entry
+        $i = $item.index
         $safeTitle = ($entry.title -replace "[^a-zA-Z0-9_-]", "_")
 
         switch ($entry.type) {
 
             "wsl" {
-                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.sh"
+                $scriptPath = Join-Path $tmpDir "$i-$safeTitle.sh"
                 $wslUser = if ($entry.user) { $entry.user } else { "" }
 
 @"
@@ -60,7 +75,7 @@ exec bash
             }
 
             "cmd" {
-                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.cmd"
+                $scriptPath = Join-Path $tmpDir "$i-$safeTitle.cmd"
 
 @"
 cd /d "$($entry.dir)"
@@ -71,7 +86,7 @@ $($entry.cmd)
             }
 
             "powershell" {
-                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.ps1"
+                $scriptPath = Join-Path $tmpDir "$i-$safeTitle.ps1"
 
 @"
 Set-Location "$($entry.dir)"
@@ -85,8 +100,6 @@ $($entry.cmd)
                 Write-Warning "Unknown type: $($entry.type)"
             }
         }
-
-        $index++
     }
 
     $wtArgs = $parts -join " ; "
@@ -96,12 +109,14 @@ $($entry.cmd)
     Write-Host $wtArgs
 
     Start-Process "wt" -ArgumentList $wtArgs
+}
 
-} else {
+# --- direct モード: プロセス直接起動 ---
+if ($directEntries.Count -gt 0) {
 
-    # --- direct モード: プロセス直接起動 ---
-    foreach ($entry in $entries) {
-
+    foreach ($item in $directEntries) {
+        $entry = $item.entry
+        $i = $item.index
         $safeTitle = ($entry.title -replace "[^a-zA-Z0-9_-]", "_")
 
         switch ($entry.type) {
@@ -119,7 +134,7 @@ $($entry.cmd)
             }
 
             "cmd" {
-                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.cmd"
+                $scriptPath = Join-Path $tmpDir "$i-$safeTitle.cmd"
 
 @"
 cd /d "$($entry.dir)"
@@ -131,7 +146,7 @@ $($entry.cmd)
             }
 
             "powershell" {
-                $scriptPath = Join-Path $tmpDir "$index-$safeTitle.ps1"
+                $scriptPath = Join-Path $tmpDir "$i-$safeTitle.ps1"
 
 @"
 Set-Location "$($entry.dir)"
@@ -146,10 +161,7 @@ $($entry.cmd)
                 Write-Warning "Unknown type: $($entry.type)"
             }
         }
-
-        $index++
     }
 
     Write-Host "Generated scripts in: $tmpDir"
-
 }
