@@ -11,13 +11,12 @@ if (!(Test-Path $ConfigPath)) {
 
 $config = Get-Content $ConfigPath | ConvertFrom-Json
 
-# --- config.json からエントリとモードを取得 ---
+# --- config.json からエントリを取得 ---
 $entries = $config.entries
-$configMode = if ($config.mode) { $config.mode } else { "" }
 
-# -Mode パラメータが明示指定されていればそちらを優先、なければ config の mode、なければ "direct"
+# -Mode パラメータが未指定の場合は "direct" をデフォルトとする
 if ($Mode -eq "") {
-    $Mode = if ($configMode -ne "") { $configMode } else { "direct" }
+    $Mode = "direct"
 }
 
 # --- WSLウォームアップ ---

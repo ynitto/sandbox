@@ -1,9 +1,9 @@
 {
-  "mode": "wt",
   "entries": [
     {
       "title": "API",
       "type": "wsl",
+      "mode": "wt",
       "distro": "Ubuntu",
       "user": "ubuntu",
       "dir": "~/app/api",
@@ -12,6 +12,7 @@
     {
       "title": "Worker",
       "type": "wsl",
+      "mode": "wt",
       "distro": "Ubuntu",
       "user": "ubuntu",
       "dir": "~/app/worker",
