@@ -360,6 +360,32 @@ def copy_agent_instructions(paths: dict[str, str], agent_type: str = "copilot") 
     return copied
 
 
+def setup_lsp_for_kiro() -> None:
+    """Kiro エージェント向けに LSP サーバーをインストールする。
+
+    - typescript-language-server, typescript (npm グローバル)
+    - pyright (pip)
+    """
+    commands = [
+        (["npm", "install", "-g", "typescript-language-server", "typescript"],
+         "typescript-language-server / typescript"),
+        (["pip", "install", "pyright"],
+         "pyright"),
+    ]
+    for cmd, label in commands:
+        print(f"   インストール中: {label}")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"   ✓ {label}")
+            else:
+                print(f"   ✗ {label} (終了コード {result.returncode})")
+                if result.stderr:
+                    print(f"     {result.stderr.strip()}")
+        except FileNotFoundError:
+            print(f"   ✗ {label}: コマンドが見つかりません ({cmd[0]})")
+
+
 def main() -> None:
     args = parse_args()
     agent_type = args.agent
@@ -402,6 +428,11 @@ def main() -> None:
     print("\n4. エージェント指示ファイルをコピー...")
     if not copy_agent_instructions(paths, agent_type):
         print("   (対応するファイルが見つかりません、スキップ)")
+
+    # 5. Kiro 向け LSP セットアップ
+    if agent_type == "kiro":
+        print("\n5. LSP をセットアップ (Kiro)...")
+        setup_lsp_for_kiro()
 
     # 完了
     print("\n" + "=" * 50)
