@@ -98,7 +98,7 @@ systematic-debugging
 ## スキル管理
 
 ```
-skill-creator（モードA〜D）+ self-checking  ※補助スキル: 作成スキルファイルの自己評価
+skill-creator + self-checking  ※補助スキル: 作成スキルファイルの自己評価
   → git-skill-manager    [push/pull]
   → skill-evaluator      ※試用後の評価
 ```

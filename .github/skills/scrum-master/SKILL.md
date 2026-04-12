@@ -2,7 +2,7 @@
 name: scrum-master
 description: 複数ゴール・複数スプリントにまたがるプロジェクトを管理するオーケストレーター。要件定義→バックログ→スプリント実行→レビューを7フェーズで進める。「スクラムして」「スプリントで進めて」「タスク分解して実行して」「チームで開発して」「バックログを作って進めて」などで発動。単発タスクは skill-mentor へ、複数マシン協調は gitlab-idd へ。
 metadata:
-  version: 2.1.1
+  version: 2.2.0
   tier: core
   category: orchestration
   tags:
