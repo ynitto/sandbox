@@ -291,6 +291,7 @@ def compute_share_score(meta: dict, body: str) -> int:
     タグ豊富さ    : tags 数 * 5 点（上限 20）
     情報量        : 本文 100 文字ごとに 1 点（上限 18）
     アクティブ    : status == active なら 10 点
+    重要度        : critical=+30, high=+15, normal=0, low=-5
     ユーザー評価  : user_rating * 10 点（-20〜+20）
     修正ペナルティ: correction_count * 5 点（最大 -20）
     合計を [0, 100] にクランプ
@@ -302,12 +303,14 @@ def compute_share_score(meta: dict, body: str) -> int:
     user_rating = int(meta.get("user_rating", 0))
     correction_count = int(meta.get("correction_count", 0))
     status = meta.get("status", "active")
+    importance = meta.get("importance", "normal")
 
     score = 0
     score += min(access_count * 8, 32)
     score += min(len(tags) * 5, 20)
     score += min(len(body) // 100, 18)
     score += 10 if status == "active" else 0
+    score += {"critical": 30, "high": 15, "normal": 0, "low": -5}.get(importance, 0)
     score += max(min(user_rating * 10, 20), -20)
     score -= min(correction_count * 5, 20)
     return max(0, min(100, score))

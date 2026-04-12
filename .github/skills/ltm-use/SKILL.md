@@ -201,6 +201,7 @@ python scripts/list_memories.py --stats            # 統計のみ
 
 `share_score >= 70` で昇格候補、`>= 85` で自動昇格対象。
 `recall` を繰り返すほど `share_score` が上がり、昇格対象になる。
+**`importance: critical` は +30点、`high` は +15点のボーナスが付くため、保存直後でも自動昇格しやすい。**
 
 > **閾値の変更**: `<AGENT_HOME>/memory/config.json` の `semi_auto_promote_threshold`（デフォルト70）と
 > `auto_promote_threshold`（デフォルト85）で調整可能。

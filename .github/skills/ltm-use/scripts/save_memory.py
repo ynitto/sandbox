@@ -354,6 +354,24 @@ def main():
     if auto_tags_used:
         print(f"   自動タグ追加: {', '.join(auto_tags_used)}")
 
+    # 自動昇格チェック: share_score が auto_promote_threshold 以上なら shared へ昇格
+    if args.scope == "home":
+        try:
+            with open(filepath, encoding="utf-8") as _f:
+                saved_meta, _ = memory_utils.parse_frontmatter(_f.read())
+            saved_score = int(saved_meta.get("share_score", 0))
+            cfg = memory_utils.load_config()
+            auto_threshold = int(cfg.get("auto_promote_threshold", 85))
+            if saved_score >= auto_threshold:
+                import promote_memory
+                dst_path = promote_memory.promote_file(filepath, "home", "shared")
+                memory_utils.update_index_entry(
+                    memory_utils.get_memory_dir("shared"), dst_path
+                )
+                print(f"🔼 自動昇格しました [shared]: {dst_path} (score={saved_score})")
+        except Exception as _e:
+            print(f"⚠ 自動昇格スキップ: {_e}", file=sys.stderr)
+
     # 類似記憶がある場合はレポート
     if similar_memories and args.dedup_report:
         print("\n⚠ 類似する既存記憶:")
