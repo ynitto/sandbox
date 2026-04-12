@@ -263,6 +263,10 @@ python scripts/gl.py get-mr-pipeline MR_IID --get status
 
 ## self-defer チェック
 
+猶予／ロック判定コマンドは 3 種類ある。いずれも `defer=true` ならスキップ、`false` なら着手可。
+
+### check-defer（自分発行イシューの猶予）
+
 自分のターミナル（ノード）が作成したイシューを猶予期間中はスキップするためのチェック。
 「自分かどうか」はイシュー description に埋め込まれた `creator-node-id` で判定する（フォールバック: author.username）。
 
@@ -279,16 +283,40 @@ python scripts/gl.py check-defer 42 --minutes 60 --get remaining_minutes
 | reason | defer | 意味 |
 |--------|-------|------|
 | `not_my_issue` | false | 他ノードが作成 → 即取得可 |
-| `self_created_too_recent` | true | 自ノード作成・猶予中 → スキップ |
+| `self_created_too_recent` | true | 自ノード作成・猶予中（デフォルト 60 分）→ スキップ |
 | `self_created_but_expired` | false | 自ノード作成・猶予切れ → 取得可 |
 
-`defer` が `True` の場合はそのイシューをスキップして次の候補へ進む。
-残り猶予時間は `remaining_minutes` で確認できる。
+### check-assigned-defer（他ノード着手済みイシューの疎境期間）
 
-`check-review-defer` はイシューのコメントに埋め込まれた `worker-node-id` で判定する（フォールバック: assignee.username）:
+`worker-node-id` が別ノードのイシューが放置されていないか確認する。
+ロック期間内は引き継ぎ禁止。期間切れなら取得可。
+
+```
+python scripts/gl.py check-assigned-defer 42 --get defer
+# → True または False
+
+python scripts/gl.py check-assigned-defer 42 --minutes 1440 --get defer
+python scripts/gl.py check-assigned-defer 42 --get remaining_minutes
+```
+
+`check-assigned-defer` の判定結果:
+
+| reason | defer | 意味 |
+|--------|-------|------|
+| `no_worker_node_id` | false | 着手記録なし → 引き受け可 |
+| `my_assignment` | false | 自分が着手済み → 継続可 |
+| `assigned_active_lock` | true | 別ノードが着手中（デフォルト 1440 分）→ スキップ |
+| `assigned_lock_unknown` | true | 着手時刻不明 → スキップ |
+| `assigned_lock_expired` | false | 着手から 24h 経過し放置 → 引き受け可 |
+
+### check-review-defer（自分実装イシューのレビューロック）
+
+イシューのコメントに埋め込まれた `worker-node-id` とロック時間で判定する。
+`worker-node-id` がないイシューは誰でもレビュー可能（defer=false）。
 
 ```
 python scripts/gl.py check-review-defer 42
+python scripts/gl.py check-review-defer 42 --minutes 1440
 python scripts/gl.py check-review-defer 42 --get defer
 ```
 

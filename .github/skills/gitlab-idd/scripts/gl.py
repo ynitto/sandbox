@@ -18,8 +18,10 @@ Usage:
                  --get author.username       → nested field
 
 Environment variables:
-  GITLAB_TOKEN or GL_TOKEN   Personal Access Token (required)
-  GITLAB_SELF_DEFER_MINUTES  Default defer period for check-defer (default: 60)
+  GITLAB_TOKEN or GL_TOKEN         Personal Access Token (required)
+  GITLAB_SELF_DEFER_MINUTES        Worker self-defer period (check-defer, default: 60 min)
+  GITLAB_SELF_REVIEW_LOCK_MINUTES  Reviewer self-review lock period (check-review-defer, default: 1440 min)
+  GITLAB_ASSIGNED_LOCK_MINUTES     Stale-assignee lock period (check-assigned-defer, default: 1440 min)
 """
 
 import argparse
@@ -34,6 +36,11 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
+
+
+DEFAULT_SELF_DEFER_MINUTES = 60.0           #  1h  (check-defer)
+DEFAULT_SELF_REVIEW_LOCK_MINUTES = 1440.0  # 24h  (check-review-defer)
+DEFAULT_ASSIGNED_LOCK_MINUTES = 1440.0     # 24h  (check-assigned-defer)
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +225,16 @@ def out(obj, get_field=None):
         print(json.dumps(obj, ensure_ascii=False, indent=2))
 
 
+def _parse_iso8601_utc(ts: str | None):
+    """Parse GitLab ISO8601 timestamp to timezone-aware datetime."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def read_body(body, body_file, option_name="--body"):
     """Return body text from --body or --body-file (cross-platform, no shell needed).
 
@@ -281,7 +298,22 @@ def cmd_list_issues(args, host, project, token):
         "assignee_username": args.assignee or None,
         "author_username": args.author or None,
     }
-    out(api_list(host, token, f"/projects/{ep}/issues", params=params), args.get)
+    issues = api_list(host, token, f"/projects/{ep}/issues", params=params)
+
+    # Optional client-side label exclusion to express conditions that are
+    # difficult to represent as a single GitLab list query.
+    if args.exclude_labels:
+        excluded = {label.strip() for label in args.exclude_labels.split(",") if label.strip()}
+        if excluded:
+            filtered = []
+            for issue in issues:
+                labels = set(issue.get("labels") or [])
+                if labels.intersection(excluded):
+                    continue
+                filtered.append(issue)
+            issues = filtered
+
+    out(issues, args.get)
 
 
 def cmd_get_issue(args, host, project, token):
@@ -468,59 +500,160 @@ def cmd_check_review_defer(args, host, project, token):
     Output JSON:
       {"defer": true/false, "reason": "...", ...}
 
-    Defer when the worker node ID embedded in the start-work comment matches
-    the current node ID.  Falls back to assignee username comparison when no
-    node ID comment is found (e.g. issues created before this feature).
+        Defer when:
+            - The worker node ID embedded in the start-work comment matches the
+                current node ID, AND
+            - The worker start comment was posted less than --minutes ago.
+
+        If no worker node ID comment exists, allow review by anyone.
     """
     ep = encode_project(project)
     my_node_id = get_node_id()
+    lock_minutes = args.minutes
 
     # Search issue comments for a worker-node-id tag
     comments = api_list(host, token, f"/projects/{ep}/issues/{args.issue_id}/notes")
     worker_node_id = None
+    worker_started_at = None
     for comment in comments:
         m = _WORKER_NODE_RE.search(comment.get("body") or "")
         if m:
-            worker_node_id = m.group(1)
-            break  # use the first (oldest) match
+            candidate_started_at = _parse_iso8601_utc(comment.get("created_at"))
+            if worker_started_at is None or (
+                candidate_started_at is not None and candidate_started_at > worker_started_at
+            ):
+                worker_node_id = m.group(1)
+                worker_started_at = candidate_started_at
 
-    if worker_node_id is not None:
-        if worker_node_id == my_node_id:
-            out({
-                "defer": True,
-                "reason": "self_implemented",
-                "worker_node_id": worker_node_id,
-                "my_node_id": my_node_id,
-            }, args.get)
-        else:
-            out({
-                "defer": False,
-                "reason": "not_my_implementation",
-                "worker_node_id": worker_node_id,
-                "my_node_id": my_node_id,
-            }, args.get)
+    if worker_node_id is None:
+        out({
+            "defer": False,
+            "reason": "no_worker_node_id",
+            "my_node_id": my_node_id,
+        }, args.get)
         return
 
-    # Fallback: compare by GitLab assignee username (pre-node-id issues)
-    issue = api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}")
-    me = api(host, token, "GET", "/user")
-    assignee = issue.get("assignee") or {}
-    assignee_username = assignee.get("username", "")
-    my_username = me.get("username", "")
+    if worker_node_id != my_node_id:
+        out({
+            "defer": False,
+            "reason": "not_my_implementation",
+            "worker_node_id": worker_node_id,
+            "my_node_id": my_node_id,
+        }, args.get)
+        return
 
-    if assignee_username == my_username:
+    if worker_started_at is None:
         out({
             "defer": True,
-            "reason": "self_implemented",
-            "assignee": assignee_username,
-            "me": my_username,
+            "reason": "self_implemented_lock_unknown",
+            "worker_node_id": worker_node_id,
+            "my_node_id": my_node_id,
+            "lock_minutes": lock_minutes,
+        }, args.get)
+        return
+
+    now = datetime.now(timezone.utc)
+    age_minutes = (now - worker_started_at).total_seconds() / 60
+    if age_minutes < lock_minutes:
+        out({
+            "defer": True,
+            "reason": "self_implemented_locked",
+            "age_minutes": round(age_minutes, 1),
+            "lock_minutes": lock_minutes,
+            "remaining_minutes": int(lock_minutes - age_minutes),
+            "worker_node_id": worker_node_id,
+            "my_node_id": my_node_id,
         }, args.get)
     else:
         out({
             "defer": False,
-            "reason": "not_my_implementation",
-            "assignee": assignee_username,
-            "me": my_username,
+            "reason": "self_implemented_lock_expired",
+            "age_minutes": round(age_minutes, 1),
+            "lock_minutes": lock_minutes,
+            "worker_node_id": worker_node_id,
+            "my_node_id": my_node_id,
+        }, args.get)
+
+
+def cmd_check_assigned_defer(args, host, project, token):
+    """
+    Check whether a worker should skip an issue assigned to another node that has gone stale.
+
+    Output JSON:
+      {"defer": true/false, "reason": "...", ...}
+
+    Defer when:
+      - A worker-node-id comment exists on the issue, AND
+      - The comment was posted less than --minutes ago, AND
+      - The worker node ID is not our own.
+
+    If no worker-node-id exists, or it belongs to us, or the lock has expired,
+    the issue may be taken freely.
+    """
+    ep = encode_project(project)
+    my_node_id = get_node_id()
+    lock_minutes = args.minutes
+
+    comments = api_list(host, token, f"/projects/{ep}/issues/{args.issue_id}/notes")
+    worker_node_id = None
+    worker_started_at = None
+    for comment in comments:
+        m = _WORKER_NODE_RE.search(comment.get("body") or "")
+        if m:
+            candidate_started_at = _parse_iso8601_utc(comment.get("created_at"))
+            if worker_started_at is None or (
+                candidate_started_at is not None and candidate_started_at > worker_started_at
+            ):
+                worker_node_id = m.group(1)
+                worker_started_at = candidate_started_at
+
+    if worker_node_id is None:
+        out({
+            "defer": False,
+            "reason": "no_worker_node_id",
+            "my_node_id": my_node_id,
+        }, args.get)
+        return
+
+    if worker_node_id == my_node_id:
+        out({
+            "defer": False,
+            "reason": "my_assignment",
+            "worker_node_id": worker_node_id,
+            "my_node_id": my_node_id,
+        }, args.get)
+        return
+
+    if worker_started_at is None:
+        out({
+            "defer": True,
+            "reason": "assigned_lock_unknown",
+            "worker_node_id": worker_node_id,
+            "my_node_id": my_node_id,
+            "lock_minutes": lock_minutes,
+        }, args.get)
+        return
+
+    now = datetime.now(timezone.utc)
+    age_minutes = (now - worker_started_at).total_seconds() / 60
+    if age_minutes < lock_minutes:
+        out({
+            "defer": True,
+            "reason": "assigned_active_lock",
+            "age_minutes": round(age_minutes, 1),
+            "lock_minutes": lock_minutes,
+            "remaining_minutes": int(lock_minutes - age_minutes),
+            "worker_node_id": worker_node_id,
+            "my_node_id": my_node_id,
+        }, args.get)
+    else:
+        out({
+            "defer": False,
+            "reason": "assigned_lock_expired",
+            "age_minutes": round(age_minutes, 1),
+            "lock_minutes": lock_minutes,
+            "worker_node_id": worker_node_id,
+            "my_node_id": my_node_id,
         }, args.get)
 
 
@@ -579,7 +712,9 @@ def cmd_check_defer(args, host, project, token):
 
     # Issue was created by this node — check age
     created_at_str = issue.get("created_at", "")
-    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+    created_at = _parse_iso8601_utc(created_at_str)
+    if created_at is None:
+        sys.exit("ERROR: Issue created_at is missing or invalid")
     now = datetime.now(timezone.utc)
     age_minutes = (now - created_at).total_seconds() / 60
 
@@ -628,6 +763,10 @@ def build_parser():
 
     p = sub.add_parser("list-issues", help="List project issues")
     p.add_argument("--label", help="Filter by label (comma-separated, AND condition)")
+    p.add_argument(
+        "--exclude-labels",
+        help="Exclude issues that have any of these labels (comma-separated, OR condition)",
+    )
     p.add_argument("--assignee", help="Filter by assignee username")
     p.add_argument("--author", help="Filter by author username")
     p.add_argument("--state", default="opened",
@@ -703,6 +842,32 @@ def build_parser():
     p = sub.add_parser("check-review-defer",
                        help="Check if the reviewer should skip an issue they implemented")
     p.add_argument("issue_id", type=int)
+    p.add_argument(
+        "--minutes",
+        type=float,
+        default=float(
+            os.environ.get("GITLAB_SELF_REVIEW_LOCK_MINUTES", str(DEFAULT_SELF_REVIEW_LOCK_MINUTES))
+        ),
+        help=(
+            "Self-review lock period in minutes "
+            f"(default: {int(DEFAULT_SELF_REVIEW_LOCK_MINUTES)}, or $GITLAB_SELF_REVIEW_LOCK_MINUTES)"
+        ),
+    )
+
+    p = sub.add_parser("check-assigned-defer",
+                       help="Check if another node's assignment is still active (stale-assignee lock)")
+    p.add_argument("issue_id", type=int)
+    p.add_argument(
+        "--minutes",
+        type=float,
+        default=float(
+            os.environ.get("GITLAB_ASSIGNED_LOCK_MINUTES", str(DEFAULT_ASSIGNED_LOCK_MINUTES))
+        ),
+        help=(
+            "Stale-assignee lock period in minutes "
+            f"(default: {int(DEFAULT_ASSIGNED_LOCK_MINUTES)}, or $GITLAB_ASSIGNED_LOCK_MINUTES)"
+        ),
+    )
 
     p = sub.add_parser("check-defer",
                        help="Check if the worker should skip a self-created issue")
@@ -710,8 +875,11 @@ def build_parser():
     p.add_argument(
         "--minutes",
         type=float,
-        default=float(os.environ.get("GITLAB_SELF_DEFER_MINUTES", "60")),
-        help="Defer period in minutes (default: 60, or $GITLAB_SELF_DEFER_MINUTES)",
+        default=float(os.environ.get("GITLAB_SELF_DEFER_MINUTES", str(DEFAULT_SELF_DEFER_MINUTES))),
+        help=(
+            "Defer period in minutes "
+            f"(default: {int(DEFAULT_SELF_DEFER_MINUTES)}, or $GITLAB_SELF_DEFER_MINUTES)"
+        ),
     )
 
     return parser
@@ -737,8 +905,9 @@ COMMANDS = {
     "merge-mr":        cmd_merge_mr,
     "get-mr-pipeline": cmd_get_mr_pipeline,
     "make-branch-name": cmd_make_branch_name,
-    "check-review-defer": cmd_check_review_defer,
-    "check-defer":     cmd_check_defer,
+    "check-review-defer":   cmd_check_review_defer,
+    "check-assigned-defer": cmd_check_assigned_defer,
+    "check-defer":          cmd_check_defer,
 }
 
 

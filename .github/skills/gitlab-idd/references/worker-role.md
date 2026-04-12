@@ -25,6 +25,7 @@ Phase 1  環境確認 ─── プロジェクト情報・認証確認
    │
 Phase 2  イシュー取得 ─── オープンイシューをフィルタして 1 件選択
    │         ├── self-defer チェック: 自分発行イシューは猶予期間中はスキップ
+  │         ├── 放置アサインチェック: 他ノード着手中はロック期間中スキップ
    │         ├── 猶予期間経過後は自分発行イシューも実行可
    │         └── 依存チェック: 依存イシューが未完了ならスキップ
    │
@@ -71,12 +72,15 @@ python scripts/gl.py list-issues --label "status:open,assignee:any"
 
 # 3. 差し戻し済みで自分担当のものも対象
 python scripts/gl.py list-issues --label "status:needs-rework" --assignee MY_USER
+
+# 4. 放置アサイン救済候補（クローズしておらず、status:open/status:done 以外）
+python scripts/gl.py list-issues --state opened --exclude-labels "status:open,status:done"
 ```
 
 ### ステップ 2-2: self-defer チェック（自分発行イシューの猶予）
 
 他ノードに実行させるため自分が発行したイシューには猶予期間を設ける。
-猶予期間は `GITLAB_SELF_DEFER_MINUTES` 環境変数（デフォルト 60 分）。
+猶予期間は `GITLAB_SELF_DEFER_MINUTES` 環境変数（デフォルト 60 分 = 1 時間）。
 
 各候補イシューに対して以下を実行する:
 
@@ -98,19 +102,49 @@ python scripts/gl.py check-defer {issue_id} --get remaining_minutes
 | `self_created_too_recent` | true | 自分作成・猶予中 → スキップ |
 | `self_created_but_expired` | false | 自分作成・猶予切れ → 取得可 |
 
-### ステップ 2-3: イシュー選択
+### ステップ 2-3: 放置アサインチェック（他ノード着手済みイシューの疎境期間）
+
+`status:open` / `status:done` 以外の「クローズしていない」候補に対して実行する。
+（ステップ 2-1 の 4 で取得した候補群）
+疎境期間は `GITLAB_ASSIGNED_LOCK_MINUTES` 環境変数（デフォルト 1440 分 = 24 時間）。
+
+```
+python scripts/gl.py check-assigned-defer {issue_id} --get defer
+# → True（スキップ）または False（引き受け可）
+
+python scripts/gl.py check-assigned-defer {issue_id} --get remaining_minutes
+# → スキップ時の残り疎境分数
+```
+
+`defer` が `True` の場合はそのイシューをスキップして次の候補へ進む。
+
+`check-assigned-defer` の判定結果:
+
+| reason | defer | 意味 |
+|--------|-------|------|
+| `no_worker_node_id` | false | 着手記録なし → 引き受け可 |
+| `my_assignment` | false | 自分が着手済み → 引き受け可 |
+| `assigned_active_lock` | true | 他ノードが着手中（ロック中） → スキップ |
+| `assigned_lock_unknown` | true | 着手時刻不明 → スキップ |
+| `assigned_lock_expired` | false | 着手から 24h 経過し放置 → 引き受け可 |
+
+### ステップ 2-4: イシュー選択
 
 優先順位:
 1. `status:needs-rework` かつ自分 assign のもの（差し戻し再作業）
 2. `status:open` かつ自分 assign のもの
 3. `status:open,assignee:any` のもの
+4. `status:open/status:done` 以外でクローズしていないもの（放置アサイン救済候補）
 
-各候補に対して self-defer チェックを行い、`defer=false` の先頭 1 件を選択する。
+各候補に対して次を順に実行し、両方 `defer=false` の先頭 1 件を選択する。
+
+1. `check-defer`（自分発行イシュー猶予）
+2. `check-assigned-defer`（放置アサインロック）
 
 全候補が `defer=true` の場合: 「残り {remaining_minutes} 分後に実行可能です」と報告して終了。
 オープンイシューが 0 件の場合: 「実行可能なオープンイシューはありません」と報告して終了。
 
-### ステップ 2-4: 依存イシューチェック
+### ステップ 2-5: 依存イシューチェック
 
 選択したイシューの本文に `## 依存イシュー` セクションがある場合、記載されているイシューが **すべて完了済み**（`status:done` またはクローズ状態）であることを確認する。
 
@@ -134,7 +168,7 @@ python scripts/gl.py add-comment {issue_id} \
 
 依存イシューが **すべて完了**している場合はそのまま Phase 3 へ進む。
 
-### ステップ 2-5: イシュー詳細の読み込み
+### ステップ 2-6: イシュー詳細の読み込み
 
 ```
 python scripts/gl.py get-issue {issue_id}
@@ -287,19 +321,12 @@ supporting_skills:
 
 ### ステップ 4-3: agent-reviewer でレビュー
 
-実装・補助指示適用完了後、成果物全体を `agent-reviewer` に渡してレビューする。perspective は worker-role 側で決めない。
+実装・補助指示適用完了後、成果物全体を `agent-reviewer` に渡してレビューする。perspective の決定と並列レビューは `agent-reviewer` 自身が行う。
 
-agent-reviewer は内部で必要な 3 観点以上をレビューする:
-
-| エージェント | 観点 |
-|------------|------|
-| 機能レビュー | 受け入れ条件チェックリストの全項目検証・エッジケース |
-| セキュリティレビュー | OWASP Top 10・認証・入力検証・機密情報漏洩 |
-| アーキテクチャレビュー | SOLID・依存方向・既存設計との一貫性 |
-
-各エージェントへの入力: イシュー本文（受け入れ条件含む）+ `git diff TARGET_BRANCH...BRANCH`
-
-入力はイシュー本文、受け入れ条件、ワーカーの変更サマリー、`git diff TARGET_BRANCH...BRANCH` とする。
+agent-reviewer への入力:
+- イシュー本文（受け入れ条件含む）
+- ブランチの diff（`git diff {TARGET_BRANCH}..feature/issue-{id}*`）
+- ワーカーのサマリーコメント
 
 ### ステップ 4-4: 指摘統合と修正判断
 

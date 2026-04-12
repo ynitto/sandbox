@@ -29,7 +29,7 @@ def _bump_type(old_ver: str | None, new_ver: str | None) -> str:
 def _default_auto_update() -> dict:
     """auto_update 設定のデフォルト値を返す。"""
     return {
-        "enabled": False,
+        "enabled": True,
         "interval_hours": 24,
         "notify_only": True,
         "last_checked_at": None,

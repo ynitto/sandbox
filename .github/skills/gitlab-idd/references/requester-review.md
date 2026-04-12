@@ -13,7 +13,7 @@
 - [統合ブランチの最終マージ MR 作成](#統合ブランチの最終マージ-mr-作成)
 
 `status:review-ready` イシューを評価し、マージまたはリオープンする。
-自分が実装（アサイン）したイシューは self-defer し、他のレビュアーに委ねる。
+自分が実装したイシューは self-review ロック期間（デフォルト 24 時間）中は self-defer し、経過後は自分でレビューしてよい。
 すべての操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
 > **注**: 環境によって `python` を `python3` や `py` に読み替える。
@@ -37,10 +37,12 @@ python scripts/gl.py list-issues --label "status:review-ready"
 各イシューについて、自分が実装者（アサイニー）であれば self-defer してスキップする:
 
 ```
-python scripts/gl.py check-review-defer {issue_id}
+python scripts/gl.py check-review-defer {issue_id} --minutes 1440
 ```
 
 `defer: true` の場合はそのイシューをスキップする。
+`defer: false` かつ `reason=self_implemented_lock_expired` の場合は、ロック期間が切れているため自分でレビューしてよい。
+`defer: false` かつ `reason=no_worker_node_id` の場合は、実装者特定情報がないため誰でもレビューしてよい。
 
 レビュー対象が 0 件の場合は「レビュー待ちイシューはありません（または全件 self-defer）」と報告して終了。
 複数件ある場合は優先度順（`priority:high` → `normal` → `low`）に処理する。
@@ -197,7 +199,8 @@ python scripts/gl.py update-issue {issue_id} \
 ## 注意事項
 
 - リクエスターは実装を行わない。評価と判定のみ
-- 自分が実装（アサイン）したイシューはレビューしない（self-defer）。他のレビュアーに委ねる
+- 自分が実装したイシューはロック期間（デフォルト 24 時間）中はレビューしない。ロック経過後はレビュー可能
+- `worker-node-id` が付いていないイシューは誰でもレビュー可能
 - MR が存在しない場合はワーカーに確認コメントを投稿してから評価を保留
 - 複数 MR が存在する場合は最新のものを使用
 
