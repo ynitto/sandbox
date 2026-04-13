@@ -331,7 +331,7 @@ supporting_skills:
 
 agent-reviewer への入力:
 - イシュー本文（受け入れ条件含む）
-- ブランチの diff（`git diff {TARGET_BRANCH}..feature/issue-{id}*`）
+- ブランチの diff（`git diff {TARGET_BRANCH}..BRANCH`）
 - ワーカーのサマリーコメント
 
 ### ステップ 4-4: 指摘統合と修正判断
