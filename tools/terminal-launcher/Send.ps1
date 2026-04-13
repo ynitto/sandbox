@@ -1,5 +1,6 @@
 param(
-    [string]$ConfigPath = "./config.json"
+    [string]$ConfigPath = "./config.json",
+    [string]$Name = ""
 )
 
 if (!(Test-Path $ConfigPath)) {
@@ -10,7 +11,21 @@ if (!(Test-Path $ConfigPath)) {
 $config = Get-Content $ConfigPath | ConvertFrom-Json
 
 # --- config.json からエントリを取得 ---
-$entries = $config.entries
+$allEntries = $config.entries
+
+# --- Name 指定時は該当エントリのみ、未指定時は manual エントリを除外 ---
+if ($Name) {
+    $entries = $allEntries | Where-Object { $_.title -eq $Name }
+    if ($entries.Count -eq 0) {
+        Write-Warning "No entry found with title: $Name"
+        exit 0
+    }
+} else {
+    $entries = $allEntries | Where-Object {
+        $launchMode = if ($_.launch) { $_.launch } else { "auto" }
+        $launchMode -ne "manual"
+    }
+}
 
 # --- WSLウォームアップ ---
 if ($entries | Where-Object { $_.type -eq "wsl" }) {
