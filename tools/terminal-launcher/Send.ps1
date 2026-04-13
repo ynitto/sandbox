@@ -1,7 +1,18 @@
 param(
     [string]$ConfigPath = "./config.json",
-    [string]$Name = ""
+    [string]$Name = "",
+    [string]$ContextFile = ""
 )
+
+# --- Windows パスを WSL パスに変換 ---
+function ConvertTo-WslPath {
+    param([string]$WinPath)
+    if (!$WinPath) { return "" }
+    $result = $WinPath -replace '^([A-Za-z]):[\\\/]', {
+        "/mnt/$($_.Groups[1].Value.ToLower())/"
+    }
+    return ($result -replace '\\', '/')
+}
 
 if (!(Test-Path $ConfigPath)) {
     Write-Error "Config file not found: $ConfigPath"
@@ -68,8 +79,11 @@ if ($wtParts.Count -gt 0) {
             "wsl" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.sh"
                 $wslUser = if ($entry.user) { $entry.user } else { "" }
+                $wslContextFile = ConvertTo-WslPath $ContextFile
 
+$contextExport = if ($wslContextFile) { "export CONTEXT_FILE=`"$wslContextFile`"" } else { "" }
 @"
+$contextExport
 source ~/.bashrc && cd $($entry.dir) && $($entry.cmd)
 exec bash
 "@ | Out-File -Encoding utf8 $scriptPath
@@ -86,6 +100,7 @@ exec bash
 
 @"
 cd /d "$($entry.dir)"
+$(if ($ContextFile) { "set CONTEXT_FILE=$ContextFile" })
 $($entry.cmd)
 "@ | Out-File -Encoding ascii $scriptPath
 
@@ -97,6 +112,7 @@ $($entry.cmd)
 
 @"
 Set-Location "$($entry.dir)"
+$(if ($ContextFile) { "`$env:CONTEXT_FILE = `"$ContextFile`"" })
 $($entry.cmd)
 "@ | Out-File -Encoding utf8 $scriptPath
 
@@ -130,7 +146,9 @@ if ($directEntries.Count -gt 0) {
 
             "wsl" {
                 $wslUser = if ($entry.user) { $entry.user } else { "" }
-                $bashCmd = "source ~/.bashrc && cd $($entry.dir) && $($entry.cmd)"
+                $wslContextFile = ConvertTo-WslPath $ContextFile
+                $contextPrefix = if ($wslContextFile) { "export CONTEXT_FILE=`"$wslContextFile`" && " } else { "" }
+                $bashCmd = "${contextPrefix}source ~/.bashrc && cd $($entry.dir) && $($entry.cmd)"
 
                 $wslArgs = @("-d", $entry.distro)
                 if ($wslUser) { $wslArgs += @("-u", $wslUser) }
@@ -145,6 +163,7 @@ if ($directEntries.Count -gt 0) {
 
 @"
 cd /d "$($entry.dir)"
+$(if ($ContextFile) { "set CONTEXT_FILE=$ContextFile" })
 $($entry.cmd)
 "@ | Out-File -Encoding ascii $scriptPath
 
@@ -157,6 +176,7 @@ $($entry.cmd)
 
 @"
 Set-Location "$($entry.dir)"
+$(if ($ContextFile) { "`$env:CONTEXT_FILE = `"$ContextFile`"" })
 $($entry.cmd)
 "@ | Out-File -Encoding utf8 $scriptPath
 
