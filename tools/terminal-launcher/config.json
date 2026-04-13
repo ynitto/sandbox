@@ -16,7 +16,8 @@
       "distro": "Ubuntu",
       "user": "ubuntu",
       "dir": "~/app/worker",
-      "cmd": "npm run worker"
+      "cmd": "npm run worker",
+      "launch": "manual"
     },
     {
       "title": "Logger",
