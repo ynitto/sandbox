@@ -121,7 +121,7 @@ export GITLAB_ASSIGNED_LOCK_MINUTES=1440
 3. 依存チェック: "## 依存イシュー" に記載のイシューがすべて done/closed か確認
    → 未完了の依存あり → スキップまたはコメントして終了
 4. イシューを自分に assign してロック（競合防止）
-5. カレントブランチをベースに `git worktree` で feature/issue-{id} ブランチを作成
+5. テンポラリ領域にリポジトリをクローンし feature/issue-{id} ブランチを作成
 6. feature ブランチを push して空の Draft MR を作成（マージ後ブランチ削除設定つき）
 7. 実装ループ（最大 5 回）
    └── skill-selector で選定 → 実装 → supporting_skills を適用 → agent-reviewer でレビュー → 修正

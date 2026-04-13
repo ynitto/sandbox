@@ -29,7 +29,7 @@ Phase 2  イシュー取得 ─── オープンイシューをフィルタし
    │         ├── 猶予期間経過後は自分発行イシューも実行可
    │         └── 依存チェック: 依存イシューが未完了ならスキップ
    │
-Phase 3  イシュー着手 ─── assign + ラベル更新 + worktree 作成 + 空ドラフト MR 作成
+Phase 3  イシュー着手 ─── assign + ラベル更新 + テンポラリクローン作成 + 空ドラフト MR 作成
    │
 Phase 4  タスク実行 ─── 実装ループ（最大 5 回）
   │         └── スキル選定（skill-selector）→ 実装 → supporting_skills をそのまま適用 → agent-reviewer でレビュー → 修正・コミット・push
@@ -199,27 +199,33 @@ python scripts/gl.py get-issue {issue_id} --get assignees.0.username
 # → MY_USER であることを確認。別のユーザーなら「競合: 別ノードが先に取得しました」として終了する。
 ```
 
-### ステップ 3-2: 作業用 worktree とブランチ作成
+### ステップ 3-2: 作業用テンポラリクローンとブランチ作成
 
 イシュー本文の `## ターゲットブランチ` セクションからターゲットブランチを読み取る。セクションがない場合は `main` を使用する（TARGET_BRANCH とする）。
 
-feature ブランチは **git worktree を使って現在のブランチから作成** する。通常は現在のブランチを TARGET_BRANCH に合わせてから作業する。
+feature ブランチは **テンポラリ領域にリポジトリをクローンして作成** する。複数エージェントが並行作業できるよう、クローン先はイシュー単位でユニークなパスとする。
 
 ```
 python scripts/gl.py make-branch-name {issue_id}
 # → "feature/issue-42-add-login-form" のようなブランチ名が出力される
 
-git fetch origin TARGET_BRANCH
-git switch TARGET_BRANCH
-git pull --ff-only origin TARGET_BRANCH
+# カレントディレクトリからリモート URL を取得
+REMOTE_URL=$(git remote get-url origin)
 
-WORKTREE_PATH="../gitlab-idd-issue-{issue_id}"
-git worktree add -b BRANCH "$WORKTREE_PATH" HEAD
-cd "$WORKTREE_PATH"
+# WSL・Linux 共通: /tmp 配下にイシュー単位でユニークなクローン先を作成
+CLONE_DIR=$(mktemp -d /tmp/gitlab-idd-{issue_id}-XXXXXXXX)
+
+# クローン
+git clone --origin origin "$REMOTE_URL" "$CLONE_DIR"
+cd "$CLONE_DIR"
+
+# TARGET_BRANCH を基点に feature ブランチを作成
+git fetch origin TARGET_BRANCH
+git checkout -b BRANCH origin/TARGET_BRANCH
 ```
 
-> `git worktree add -b BRANCH ... HEAD` により、カレントブランチの HEAD を基点に feature ブランチを作成する。
-> TARGET_BRANCH と異なるブランチ上で開始したくない場合は、必ず先に `git switch TARGET_BRANCH` で揃える。
+> WSL 環境では `/tmp` は Linux ファイルシステム側のテンポラリ領域を指す。Windows 側のパス（`/mnt/c/...`）は使用しない。
+> `mktemp -d` により各エージェントのクローン先が競合しない。`CLONE_DIR` は Phase 5 末尾で削除する。
 
 ### ステップ 3-3: 着手コメント投稿
 
@@ -450,12 +456,21 @@ MR: MR_URL
 レビュー待ち状態に更新しました。
 ```
 
+### ステップ 5-6: テンポラリクローンの削除
+
+すべての push・コメント投稿が完了したら、テンポラリクローンを削除する:
+
+```
+cd /tmp
+rm -rf "$CLONE_DIR"
+```
+
 ---
 
 ## ワーカーの行動原則
 
 1. **1 イシュー = 1 ブランチ = 1 MR**: 複数イシューの変更を 1 フィーチャーブランチに混在させない。ただし複数のフィーチャーブランチが同じ統合ブランチ（TARGET_BRANCH）を MR のターゲットにすることは許容される
-2. **作業は worktree で分離**: 元のワークツリーは統合ブランチ側に残し、実装は issue 専用 worktree で行う
+2. **作業はテンポラリクローンで分離**: 元のリポジトリには触れず、実装はテンポラリ領域にクローンした issue 専用リポジトリで行う。完了後はテンポラリを削除する
 3. **スコープ厳守**: イシューで定義された範囲外の変更を含めない
 4. **受け入れ条件を読む**: 実装前に必ず受け入れ条件を確認し、全項目をカバーする
 5. **レビューを通す**: agent-reviewer でレビューを必ず実施する。自己判断でスキップしない
