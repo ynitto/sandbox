@@ -1,7 +1,7 @@
 param(
     [string]$ConfigPath = "./config.json",
     [string]$Name = "",
-    [string]$ContextFile = ""
+    [string]$CmdArgs = ""
 )
 
 if (!(Test-Path $ConfigPath)) {
@@ -10,12 +10,6 @@ if (!(Test-Path $ConfigPath)) {
 }
 
 $config = Get-Content $ConfigPath | ConvertFrom-Json
-
-# --- ContextFile の中身を読み込み ---
-$contextContent = ""
-if ($ContextFile -and (Test-Path $ContextFile)) {
-    $contextContent = (Get-Content $ContextFile -Raw).Trim()
-}
 
 # --- config.json からエントリを取得 ---
 $allEntries = $config.entries
@@ -75,7 +69,7 @@ if ($wtParts.Count -gt 0) {
             "wsl" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.sh"
                 $wslUser = if ($entry.user) { $entry.user } else { "" }
-                $fullCmd = if ($contextContent) { "$($entry.cmd) $contextContent" } else { $entry.cmd }
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 source ~/.bashrc && cd $($entry.dir) && $fullCmd
@@ -91,7 +85,7 @@ exec bash
 
             "cmd" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.cmd"
-                $fullCmd = if ($contextContent) { "$($entry.cmd) $contextContent" } else { $entry.cmd }
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 cd /d "$($entry.dir)"
@@ -103,7 +97,7 @@ $fullCmd
 
             "powershell" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.ps1"
-                $fullCmd = if ($contextContent) { "$($entry.cmd) $contextContent" } else { $entry.cmd }
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 Set-Location "$($entry.dir)"
@@ -140,7 +134,7 @@ if ($directEntries.Count -gt 0) {
 
             "wsl" {
                 $wslUser = if ($entry.user) { $entry.user } else { "" }
-                $fullCmd = if ($contextContent) { "$($entry.cmd) $contextContent" } else { $entry.cmd }
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
                 $bashCmd = "source ~/.bashrc && cd $($entry.dir) && $fullCmd"
 
                 $wslArgs = @("-d", $entry.distro)
@@ -153,7 +147,7 @@ if ($directEntries.Count -gt 0) {
 
             "cmd" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.cmd"
-                $fullCmd = if ($contextContent) { "$($entry.cmd) $contextContent" } else { $entry.cmd }
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 cd /d "$($entry.dir)"
@@ -166,7 +160,7 @@ $fullCmd
 
             "powershell" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.ps1"
-                $fullCmd = if ($contextContent) { "$($entry.cmd) $contextContent" } else { $entry.cmd }
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 Set-Location "$($entry.dir)"
