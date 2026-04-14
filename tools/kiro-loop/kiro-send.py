@@ -390,8 +390,8 @@ def _main_send() -> None:
     parser.add_argument(
         "--dir", "-d",
         metavar="DIR",
-        required=True,
-        help="作業ディレクトリ",
+        default=None,
+        help="作業ディレクトリ（省略時はディレクトリを変更しない）",
     )
     parser.add_argument(
         "--session", "-s",
@@ -408,10 +408,12 @@ def _main_send() -> None:
         print(f"[kiro-send] ERROR: ファイルが存在しません: {prompt_file}", file=sys.stderr)
         sys.exit(1)
 
-    work_dir = Path(args.dir).expanduser().resolve()
-    if not work_dir.is_dir():
-        print(f"[kiro-send] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
-        sys.exit(1)
+    work_dir: Path | None = None
+    if args.dir:
+        work_dir = Path(args.dir).expanduser().resolve()
+        if not work_dir.is_dir():
+            print(f"[kiro-send] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
+            sys.exit(1)
 
     kiro_bin = shutil.which("kiro-cli")
     if kiro_bin is None:
