@@ -60,7 +60,7 @@ python scripts/gl.py get-comments {issue_id}
 python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}"
 ```
 
-ワーカーが作成したブランチの diff を取得する。ターゲットブランチはイシュー本文の `## ターゲットブランチ` から読み取る（記載がなければ `main`）:
+ワーカーが作成したブランチの diff を取得する。ターゲットブランチはイシュー本文の `## ターゲットブランチ` から読み取る（記載がなければ `python scripts/gl.py get-default-branch --get default_branch` で取得）:
 
 ```
 git fetch origin
@@ -278,8 +278,9 @@ python scripts/gl.py create-issue \
 1. **新規統合ブランチを作成**（requester-post フェーズ 4 の統合ブランチ作成と同じ手順）:
 
    ```bash
-   git fetch origin main
-   git checkout -b feature/{task-name} origin/main
+   DEFAULT_BRANCH=$(python scripts/gl.py get-default-branch --get default_branch)
+   git fetch origin "$DEFAULT_BRANCH"
+   git checkout -b feature/{task-name} "origin/$DEFAULT_BRANCH"
    git push -u origin feature/{task-name}
    ```
 
@@ -309,11 +310,17 @@ python scripts/gl.py create-issue \
 「統合ブランチの最終 MR を作成して」などのフレーズで発動する。
 
 複数のワーカー MR を統合ブランチ（`feature/{機能名}`）にマージし終えた後、
-`feature/{機能名} → main` の最終 MR を作成する。**マージは行わず、人がレビュー・マージする。**
+`feature/{機能名} → {DEFAULT_BRANCH}` の最終 MR を作成する。**マージは行わず、人がレビュー・マージする。**
 
-### ステップ F-1: 対象統合ブランチの確認
+### ステップ F-1: 対象統合ブランチとデフォルトブランチの確認
 
 ユーザーから統合ブランチ名を確認する（明示されている場合はそのまま使用）。
+
+プロジェクトのデフォルトブランチを取得する:
+
+```bash
+DEFAULT_BRANCH=$(python scripts/gl.py get-default-branch --get default_branch)
+```
 
 全イシューが完了済みであることを確認する:
 
@@ -327,16 +334,16 @@ python scripts/gl.py list-issues --label "status:open,status:in-progress,status:
 
 `main` との差分を取得する:
 
-```
+```bash
 git fetch origin
-git diff main...origin/feature/{機能名}
+git diff "$DEFAULT_BRANCH"...origin/feature/{機能名}
 ```
 
 差分全体を agent-reviewer に渡して統合レビューを実施する。
 
 agent-reviewer への入力:
 - 統合ブランチ名・対象イシューの一覧
-- `git diff main...origin/feature/{機能名}`
+- `git diff {DEFAULT_BRANCH}...origin/feature/{機能名}`
 
 > レビュー結果が **Request Changes** の場合: 指摘内容をユーザーに報告して判断を委ねる（自動差し戻しはしない）。
 > レビュー結果が **LGTM** の場合: ステップ F-3 へ進む。
@@ -367,11 +374,11 @@ MR 本文を `_final_mr_body.md` に書く。`{...}` プレースホルダーに
 
 MR を作成する（**draft にしない**）:
 
-```
+```bash
 python scripts/gl.py create-mr \
   --title "feat: {機能名}" \
   --source-branch feature/{機能名} \
-  --target-branch main \
+  --target-branch "$DEFAULT_BRANCH" \
   --description-file _final_mr_body.md
 ```
 

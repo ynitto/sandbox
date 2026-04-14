@@ -201,7 +201,11 @@ python scripts/gl.py get-issue {issue_id} --get assignees.0.username
 
 ### ステップ 3-2: 作業用テンポラリクローンとブランチ作成
 
-イシュー本文の `## ターゲットブランチ` セクションからターゲットブランチを読み取る。セクションがない場合は `main` を使用する（TARGET_BRANCH とする）。
+イシュー本文の `## ターゲットブランチ` セクションからターゲットブランチを読み取る。セクションがない場合は GitLab API からデフォルトブランチを取得して使用する（TARGET_BRANCH とする）:
+
+```bash
+TARGET_BRANCH=$(python scripts/gl.py get-default-branch --get default_branch)
+```
 
 feature ブランチは **テンポラリ領域にリポジトリをクローンして作成** する。複数エージェントが並行作業できるよう、クローン先はイシュー単位でユニークなパスとする。
 

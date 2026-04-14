@@ -80,12 +80,36 @@ def get_project_info():
     return host, project
 
 
+def _token_from_shell_files() -> str:
+    """~/.bashrc や ~/.profile から GITLAB_TOKEN / GL_TOKEN を読み込む。"""
+    for fname in ("~/.bashrc", "~/.bash_profile", "~/.profile", "~/.zshrc"):
+        path = os.path.expanduser(fname)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    m = re.match(
+                        r'^(?:export\s+)?(GITLAB_TOKEN|GL_TOKEN)=["\']?([^\s"\'#]+)["\']?',
+                        line,
+                    )
+                    if m:
+                        return m.group(2)
+        except OSError:
+            continue
+    return ""
+
+
 def get_token():
     token = os.environ.get("GITLAB_TOKEN") or os.environ.get("GL_TOKEN")
     if not token:
+        token = _token_from_shell_files()
+    if not token:
         sys.exit(
             "ERROR: Set GITLAB_TOKEN or GL_TOKEN environment variable.\n"
-            "  Example: export GITLAB_TOKEN=glpat-xxxxxxxxxxxx"
+            "  ~/.bashrc / ~/.profile に export GITLAB_TOKEN=glpat-xxxx を追記するか、\n"
+            "  現在のシェルで export してください。"
         )
     return token
 
@@ -272,6 +296,13 @@ def cmd_project_info(args, host, project, token):
         "project_encoded": encode_project(project),
         "base_url": f"https://{host}/{project}",
     }, args.get)
+
+
+def cmd_get_default_branch(args, host, project, token):
+    """Show the default branch of the project (fetched from GitLab API)."""
+    ep = encode_project(project)
+    info = api(host, token, "GET", f"/projects/{ep}")
+    out({"default_branch": info.get("default_branch", "main")}, args.get)
 
 
 def cmd_get_node_id(args, host, project, token):
@@ -757,6 +788,7 @@ def build_parser():
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("project-info", help="Show host/project parsed from git remote origin")
+    sub.add_parser("get-default-branch", help="Show the project default branch (via GitLab API)")
     sub.add_parser("current-user", help="Show authenticated user info")
     sub.add_parser("get-node-id",
                    help="Show the current terminal node ID (set GITLAB_NODE_ID to override)")
@@ -890,8 +922,9 @@ def build_parser():
 # ---------------------------------------------------------------------------
 
 COMMANDS = {
-    "project-info":    cmd_project_info,
-    "current-user":    cmd_current_user,
+    "project-info":        cmd_project_info,
+    "get-default-branch":  cmd_get_default_branch,
+    "current-user":        cmd_current_user,
     "get-node-id":     cmd_get_node_id,
     "list-issues":     cmd_list_issues,
     "get-issue":       cmd_get_issue,
