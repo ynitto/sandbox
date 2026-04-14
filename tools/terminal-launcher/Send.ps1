@@ -1,18 +1,8 @@
 param(
     [string]$ConfigPath = "./config.json",
     [string]$Name = "",
-    [string]$ContextFile = ""
+    [string]$CmdArgs = ""
 )
-
-# --- Windows パスを WSL パスに変換 ---
-function ConvertTo-WslPath {
-    param([string]$WinPath)
-    if (!$WinPath) { return "" }
-    $result = $WinPath -replace '^([A-Za-z]):[\\\/]', {
-        "/mnt/$($_.Groups[1].Value.ToLower())/"
-    }
-    return ($result -replace '\\', '/')
-}
 
 if (!(Test-Path $ConfigPath)) {
     Write-Error "Config file not found: $ConfigPath"
@@ -79,12 +69,10 @@ if ($wtParts.Count -gt 0) {
             "wsl" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.sh"
                 $wslUser = if ($entry.user) { $entry.user } else { "" }
-                $wslContextFile = ConvertTo-WslPath $ContextFile
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
-$contextExport = if ($wslContextFile) { "export CONTEXT_FILE=`"$wslContextFile`"" } else { "" }
 @"
-$contextExport
-source ~/.bashrc && cd $($entry.dir) && $($entry.cmd)
+source ~/.bashrc && cd $($entry.dir) && $fullCmd
 exec bash
 "@ | Out-File -Encoding utf8 $scriptPath
 
@@ -97,11 +85,11 @@ exec bash
 
             "cmd" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.cmd"
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 cd /d "$($entry.dir)"
-$(if ($ContextFile) { "set CONTEXT_FILE=$ContextFile" })
-$($entry.cmd)
+$fullCmd
 "@ | Out-File -Encoding ascii $scriptPath
 
                 $parts += "new-tab --title `"$($entry.title)`" cmd /k `"$scriptPath`""
@@ -109,11 +97,11 @@ $($entry.cmd)
 
             "powershell" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.ps1"
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 Set-Location "$($entry.dir)"
-$(if ($ContextFile) { "`$env:CONTEXT_FILE = `"$ContextFile`"" })
-$($entry.cmd)
+$fullCmd
 "@ | Out-File -Encoding utf8 $scriptPath
 
                 $parts += "new-tab --title `"$($entry.title)`" powershell -NoExit -File `"$scriptPath`""
@@ -146,9 +134,8 @@ if ($directEntries.Count -gt 0) {
 
             "wsl" {
                 $wslUser = if ($entry.user) { $entry.user } else { "" }
-                $wslContextFile = ConvertTo-WslPath $ContextFile
-                $contextPrefix = if ($wslContextFile) { "export CONTEXT_FILE=`"$wslContextFile`" && " } else { "" }
-                $bashCmd = "${contextPrefix}source ~/.bashrc && cd $($entry.dir) && $($entry.cmd)"
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
+                $bashCmd = "source ~/.bashrc && cd $($entry.dir) && $fullCmd"
 
                 $wslArgs = @("-d", $entry.distro)
                 if ($wslUser) { $wslArgs += @("-u", $wslUser) }
@@ -160,11 +147,11 @@ if ($directEntries.Count -gt 0) {
 
             "cmd" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.cmd"
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 cd /d "$($entry.dir)"
-$(if ($ContextFile) { "set CONTEXT_FILE=$ContextFile" })
-$($entry.cmd)
+$fullCmd
 "@ | Out-File -Encoding ascii $scriptPath
 
                 Write-Host "[$($entry.title)] cmd /c `"$scriptPath`""
@@ -173,11 +160,11 @@ $($entry.cmd)
 
             "powershell" {
                 $scriptPath = Join-Path $tmpDir "$i-$safeTitle.ps1"
+                $fullCmd = if ($CmdArgs) { "$($entry.cmd) $CmdArgs" } else { $entry.cmd }
 
 @"
 Set-Location "$($entry.dir)"
-$(if ($ContextFile) { "`$env:CONTEXT_FILE = `"$ContextFile`"" })
-$($entry.cmd)
+$fullCmd
 "@ | Out-File -Encoding utf8 $scriptPath
 
                 Write-Host "[$($entry.title)] powershell -File `"$scriptPath`""
