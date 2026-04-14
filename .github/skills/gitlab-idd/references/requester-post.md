@@ -88,17 +88,23 @@
 
 **ターゲットブランチの決定**:
 
+まずプロジェクトのデフォルトブランチを取得する:
+
+```bash
+DEFAULT_BRANCH=$(python scripts/gl.py get-default-branch --get default_branch)
+```
+
 | タスク数 | ターゲットブランチ | 備考 |
 |---------|----------------|------|
-| 1 件 | `main`（デフォルトブランチ） | 統合ブランチは作成しない |
-| 2 件以上 | `feature/{スラグ}`（統合ブランチ） | フェーズ 4 でデフォルトブランチから派生して push する |
+| 1 件 | `DEFAULT_BRANCH`（GitLab から取得したデフォルトブランチ） | 統合ブランチは作成しない |
+| 2 件以上 | `feature/{スラグ}`（統合ブランチ） | フェーズ 4 で `DEFAULT_BRANCH` から派生して push する |
 
 タスクが 2 件以上の場合は、依頼内容のキーワードを英小文字・ハイフン区切りで最大 30 文字のスラグに変換して統合ブランチ名を自動生成する（例: `feature/user-auth`）。
 スラグは `issue-` を含めず、ワーカーが作成するブランチ（`feature/issue-{id}-{slug}`）と区別できる名前にする。
 
-**ユーザーに確認**（タスクが 1 件の場合）: 「上記の内容でイシューを作成しますが、問題ありませんか？」
+**ユーザーに確認**（タスクが 1 件の場合）: 「上記の内容でイシューを作成しますが、問題ありませんか？ターゲットブランチ: `{DEFAULT_BRANCH}`」
 
-**ユーザーに確認**（タスクが 2 件以上の場合）: 「上記のように分割して順に依頼します。統合ブランチ `feature/{スラグ}` をデフォルトブランチから作成し、各イシューのマージ先に指定します。問題ありませんか？」
+**ユーザーに確認**（タスクが 2 件以上の場合）: 「上記のように分割して順に依頼します。統合ブランチ `feature/{スラグ}` を `{DEFAULT_BRANCH}` から作成し、各イシューのマージ先に指定します。問題ありませんか？」
 
 承認を得たらフェーズ 3 へ進む。修正要求があれば分割案を調整する。
 
@@ -248,7 +254,7 @@ python scripts/gl.py create-issue \
 <!-- gitlab-idd: version=4.0.0 role=worker -->
 
 このイシューを `gitlab-idd` ワーカーロールで処理してください。
-イシューを自分に assign し、テンポラリ領域にリポジトリをクローンして `feature/issue-{id}-{slug}` ブランチを作成してください。作業前にそのブランチを push して空の Draft MR を作成し（ターゲットブランチは `## ターゲットブランチ` に記載のブランチ、記載がなければ main。`remove source branch` を有効にする）、実装完了後にコミットを push して MR 本文へ `Closes #{id}` を含めたうえで Draft を解除し、`status:review-ready` に更新してください。完了後はテンポラリクローンを削除してください。
+イシューを自分に assign し、テンポラリ領域にリポジトリをクローンして `feature/issue-{id}-{slug}` ブランチを作成してください。作業前にそのブランチを push して空の Draft MR を作成し（ターゲットブランチは `## ターゲットブランチ` に記載のブランチ、記載がなければ `python scripts/gl.py get-default-branch --get default_branch` で取得したデフォルトブランチ。`remove source branch` を有効にする）、実装完了後にコミットを push して MR 本文へ `Closes #{id}` を含めたうえで Draft を解除し、`status:review-ready` に更新してください。完了後はテンポラリクローンを削除してください。
 ````
 
 ---
@@ -261,9 +267,10 @@ python scripts/gl.py create-issue \
 イシューが 1 件の場合はこのステップをスキップし、ターゲットブランチは `main` とする。
 
 ```bash
+# DEFAULT_BRANCH はステップ 1-3 で取得済み（例: main）
 # INTEGRATION_BRANCH はステップ 1-3 で決定したブランチ名（例: feature/user-auth）
-git fetch origin main
-git checkout -b INTEGRATION_BRANCH origin/main
+git fetch origin "$DEFAULT_BRANCH"
+git checkout -b INTEGRATION_BRANCH "origin/$DEFAULT_BRANCH"
 git push -u origin INTEGRATION_BRANCH
 ```
 
