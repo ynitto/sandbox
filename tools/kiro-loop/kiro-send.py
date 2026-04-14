@@ -377,7 +377,6 @@ def _main_send() -> None:
   python3 kiro-send.py C:\\Users\\user\\task.md --dir ~/projects/app --session my-kiro
 
   prompt_file は Windows 形式（C:\\...）でも WSL 形式（/mnt/...）でも指定可能。
-  --dir を省略した場合はカレントディレクトリを変更しない。
 
 アイドルセッションの削除:
   python3 kiro-send.py clean --help
@@ -391,8 +390,8 @@ def _main_send() -> None:
     parser.add_argument(
         "--dir", "-d",
         metavar="DIR",
-        default=None,
-        help="作業ディレクトリ（省略時はディレクトリを変更しない）",
+        required=True,
+        help="作業ディレクトリ",
     )
     parser.add_argument(
         "--session", "-s",
@@ -409,13 +408,10 @@ def _main_send() -> None:
         print(f"[kiro-send] ERROR: ファイルが存在しません: {prompt_file}", file=sys.stderr)
         sys.exit(1)
 
-    # --dir が指定された場合のみ作業ディレクトリを解決する
-    work_dir: Path | None = None
-    if args.dir:
-        work_dir = Path(args.dir).expanduser().resolve()
-        if not work_dir.is_dir():
-            print(f"[kiro-send] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
-            sys.exit(1)
+    work_dir = Path(args.dir).expanduser().resolve()
+    if not work_dir.is_dir():
+        print(f"[kiro-send] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
+        sys.exit(1)
 
     kiro_bin = shutil.which("kiro-cli")
     if kiro_bin is None:
