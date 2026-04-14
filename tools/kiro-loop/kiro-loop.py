@@ -177,7 +177,7 @@ def _sanitize_session_name(name: str) -> str:
 
 # kiro-cli が入力待ちになったときに表示されるプロンプトパターン
 # 行全体がプロンプト記号（と空白）のみで構成される行を対象とする
-_PROMPT_RE = re.compile(r"^\s*[>?❯›]\s*$", re.MULTILINE)
+_PROMPT_RE = re.compile(r"(^\s*[>?❯›]\s*$|!>)", re.MULTILINE)
 
 
 class TmuxKiroSession:

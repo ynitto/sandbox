@@ -39,7 +39,8 @@ STARTUP_TIMEOUT = 60        # kiro-cli 起動待ちタイムアウト（秒）
 RESPONSE_TIMEOUT = 300      # 応答待ちタイムアウト（秒）
 
 # kiro-cli が入力待ちのとき末尾に現れるプロンプト行パターン
-_PROMPT_RE = re.compile(r"^\s*[>?❯›]\s*$", re.MULTILINE)
+# 単独記号行（例: >）と kiro-cli 形式（例: 1% !> Ask me anything!）の両方に対応
+_PROMPT_RE = re.compile(r"(^\s*[>?❯›]\s*$|!>)", re.MULTILINE)
 
 # tmux セッション環境変数名（最終送信時刻を記録）
 _ENV_LAST_ACTIVE = "KIRO_LAST_ACTIVE"
