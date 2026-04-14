@@ -117,6 +117,16 @@ def _list_sessions(prefix: str) -> list[str]:
     return [name for name in r.stdout.splitlines() if name.startswith(prefix)]
 
 
+def _is_owned_session(session: str) -> bool:
+    """kiro-send.py が作成・管理しているセッションかどうかを確認する。
+
+    kiro-send.py はセッション作成時および送受信のたびに KIRO_LAST_ACTIVE 環境変数を
+    書き込むため、この変数の有無で自分が管理するセッションかどうかを判定する。
+    """
+    r = _tmux("show-environment", "-t", session, _ENV_LAST_ACTIVE)
+    return r.returncode == 0
+
+
 # ---------------------------------------------------------------------------
 # アイドル時刻管理（tmux セッション環境変数）
 # ---------------------------------------------------------------------------
@@ -300,6 +310,10 @@ def cmd_clean(prefix: str, timeout_minutes: int, dry_run: bool) -> None:
           + (" [dry-run]" if dry_run else ""))
 
     for session in sessions:
+        if not _is_owned_session(session):
+            print(f"  スキップ          [other ] {session}  (kiro-send管理外のセッション)")
+            continue
+
         at_prompt = _has_prompt(_capture_pane(session))
         last_active = _get_last_active(session)
         elapsed = now - last_active
