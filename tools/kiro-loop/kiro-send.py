@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kiro-send.py — ディレクトリと md ファイルを受け取り、シングルトン tmux セッションで
+kiro-send.py — プロンプトファイルを受け取り、シングルトン tmux セッションで
 kiro-cli を起動してファイルの内容を指示として送信する。
 
 依存:
@@ -10,9 +10,9 @@ kiro-cli を起動してファイルの内容を指示として送信する。
 動作環境: WSL (Ubuntu) / Linux
 
 使い方:
-  python3 kiro-send.py <directory> <md_file>
-  python3 kiro-send.py --dir <directory> --md <md_file>
-  python3 kiro-send.py --dir ~/projects/app --md ~/notes/task.md --session my-kiro
+  python3 kiro-send.py <prompt_file>
+  python3 kiro-send.py <prompt_file> --dir ~/projects/app
+  python3 kiro-send.py C:\\Users\\user\\task.md --dir ~/projects/app --session my-kiro
 
   python3 kiro-send.py clean                        # 60分以上アイドルなセッションを削除
   python3 kiro-send.py clean --timeout 30           # 30分以上アイドルなセッションを削除
@@ -43,6 +43,22 @@ _PROMPT_RE = re.compile(r"^\s*[>?❯›]\s*$", re.MULTILINE)
 
 # tmux セッション環境変数名（最終送信時刻を記録）
 _ENV_LAST_ACTIVE = "KIRO_LAST_ACTIVE"
+
+# ---------------------------------------------------------------------------
+# パス変換
+# ---------------------------------------------------------------------------
+
+def win_to_wsl_path(path_str: str) -> str:
+    """Windows形式のパス（C:\\... または C:/...）をWSL形式（/mnt/c/...）に変換する。
+    既にWSL/Linux形式のパスはそのまま返す。
+    """
+    m = re.match(r'^([A-Za-z]):[\\\/](.*)', path_str)
+    if m:
+        drive = m.group(1).lower()
+        rest = m.group(2).replace('\\', '/')
+        return f"/mnt/{drive}/{rest}"
+    return path_str
+
 
 # ---------------------------------------------------------------------------
 # tmux ヘルパー
@@ -155,8 +171,11 @@ def _fmt_elapsed(seconds: int) -> str:
 # セッション管理
 # ---------------------------------------------------------------------------
 
-def ensure_session(session: str, work_dir: Path, kiro_bin: str) -> bool:
+def ensure_session(session: str, work_dir: Path | None, kiro_bin: str) -> bool:
     """シングルトンセッションを確保し、必要なら kiro-cli を起動/再起動する。
+
+    work_dir が None の場合はディレクトリを変更しない（既存セッションはそのまま再利用、
+    新規セッションはホームディレクトリで起動）。
 
     状態ごとの挙動:
       - セッション未存在                          → 新規作成して kiro-cli を起動
@@ -165,15 +184,16 @@ def ensure_session(session: str, work_dir: Path, kiro_bin: str) -> bool:
       - セッション存在 + kiro-cli 無応答           → 同 cwd または新 cwd で再起動
     """
     kiro_cmd = shlex.join([kiro_bin, "chat", "--trust-all-tools"])
-    cwd_str = str(work_dir)
+    cwd_str = str(work_dir) if work_dir else None
 
     if not _session_exists(session):
         # ── 新規セッション作成 ──────────────────────────────────────────────
+        effective_cwd = cwd_str or str(Path.home())
         print(
-            f"[kiro-send] tmux セッション '{session}' を作成します (cwd={cwd_str})",
+            f"[kiro-send] tmux セッション '{session}' を作成します (cwd={effective_cwd})",
             file=sys.stderr,
         )
-        r = _tmux("new-session", "-d", "-s", session, "-c", cwd_str, kiro_cmd)
+        r = _tmux("new-session", "-d", "-s", session, "-c", effective_cwd, kiro_cmd)
         if r.returncode != 0:
             print(
                 f"[kiro-send] ERROR: セッション作成に失敗しました: {r.stderr.strip()}",
@@ -189,9 +209,9 @@ def ensure_session(session: str, work_dir: Path, kiro_bin: str) -> bool:
     pane_cwd = _get_pane_cwd(session)
     kiro_alive = _has_prompt(_capture_pane(session))
 
-    if kiro_alive and pane_cwd == cwd_str:
+    if kiro_alive and (cwd_str is None or pane_cwd == cwd_str):
         print(
-            f"[kiro-send] 既存セッション '{session}' を再利用します (cwd={cwd_str})",
+            f"[kiro-send] 既存セッション '{session}' を再利用します (cwd={pane_cwd})",
             file=sys.stderr,
         )
         return True
@@ -203,7 +223,8 @@ def ensure_session(session: str, work_dir: Path, kiro_bin: str) -> bool:
         reason = "kiro-cli が終了していました"
     print(f"[kiro-send] kiro-cli を再起動します ({reason})", file=sys.stderr)
 
-    r = _tmux("respawn-pane", "-k", "-t", session, "-c", cwd_str, kiro_cmd)
+    effective_cwd = cwd_str or pane_cwd or str(Path.home())
+    r = _tmux("respawn-pane", "-k", "-t", session, "-c", effective_cwd, kiro_cmd)
     if r.returncode != 0:
         print(
             f"[kiro-send] ERROR: respawn-pane に失敗しました: {r.stderr.strip()}",
@@ -333,52 +354,54 @@ def main() -> None:
 def _main_send() -> None:
     """send モード（デフォルト）のエントリポイント。"""
     parser = argparse.ArgumentParser(
-        description="md ファイルの内容をシングルトン tmux セッションの kiro-cli に送信する",
+        description="プロンプトファイルの内容をシングルトン tmux セッションの kiro-cli に送信する",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使い方:
-  python3 kiro-send.py <directory> <md_file>
-  python3 kiro-send.py --dir ~/projects/app --md ~/notes/task.md
-  python3 kiro-send.py --dir ~/projects/app --md ~/notes/task.md --session my-kiro
+  python3 kiro-send.py <prompt_file>
+  python3 kiro-send.py <prompt_file> --dir ~/projects/app
+  python3 kiro-send.py C:\\Users\\user\\task.md --dir ~/projects/app --session my-kiro
+
+  prompt_file は Windows 形式（C:\\...）でも WSL 形式（/mnt/...）でも指定可能。
+  --dir を省略した場合はカレントディレクトリを変更しない。
 
 アイドルセッションの削除:
   python3 kiro-send.py clean --help
 """,
     )
-    parser.add_argument("--dir", "-d", metavar="DIR", help="作業ディレクトリ")
-    parser.add_argument("--md", "-m", metavar="FILE", help="送信する md ファイルのパス")
+    parser.add_argument(
+        "prompt_file",
+        metavar="PROMPT_FILE",
+        help="送信するプロンプトファイルのパス（Windows形式 C:\\... も指定可能）",
+    )
+    parser.add_argument(
+        "--dir", "-d",
+        metavar="DIR",
+        default=None,
+        help="作業ディレクトリ（省略時はディレクトリを変更しない）",
+    )
     parser.add_argument(
         "--session", "-s",
         default=DEFAULT_SESSION,
         metavar="NAME",
         help=f"tmux セッション名 (デフォルト: {DEFAULT_SESSION})",
     )
-    parser.add_argument(
-        "positional",
-        nargs="*",
-        metavar="ARG",
-        help="位置引数: [directory] [md_file]（--dir / --md の代替）",
-    )
     args = parser.parse_args()
 
-    # オプション優先、なければ位置引数
-    dir_arg = args.dir or (args.positional[0] if len(args.positional) > 0 else None)
-    md_arg  = args.md  or (args.positional[1] if len(args.positional) > 1 else None)
-
-    if not dir_arg:
-        parser.error("作業ディレクトリを指定してください (--dir DIR または第1位置引数)")
-    if not md_arg:
-        parser.error("md ファイルを指定してください (--md FILE または第2位置引数)")
-
-    work_dir = Path(dir_arg).expanduser().resolve()
-    if not work_dir.is_dir():
-        print(f"[kiro-send] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
+    # Windows パスを WSL パスに変換してからファイルを開く
+    prompt_path_str = win_to_wsl_path(args.prompt_file)
+    prompt_file = Path(prompt_path_str).expanduser().resolve()
+    if not prompt_file.is_file():
+        print(f"[kiro-send] ERROR: ファイルが存在しません: {prompt_file}", file=sys.stderr)
         sys.exit(1)
 
-    md_file = Path(md_arg).expanduser().resolve()
-    if not md_file.is_file():
-        print(f"[kiro-send] ERROR: ファイルが存在しません: {md_file}", file=sys.stderr)
-        sys.exit(1)
+    # --dir が指定された場合のみ作業ディレクトリを解決する
+    work_dir: Path | None = None
+    if args.dir:
+        work_dir = Path(args.dir).expanduser().resolve()
+        if not work_dir.is_dir():
+            print(f"[kiro-send] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
+            sys.exit(1)
 
     kiro_bin = shutil.which("kiro-cli")
     if kiro_bin is None:
@@ -388,18 +411,18 @@ def _main_send() -> None:
         )
         sys.exit(1)
 
-    md_content = md_file.read_text(encoding="utf-8").strip()
-    if not md_content:
-        print(f"[kiro-send] ERROR: md ファイルが空です: {md_file}", file=sys.stderr)
+    prompt_content = prompt_file.read_text(encoding="utf-8").strip()
+    if not prompt_content:
+        print(f"[kiro-send] ERROR: プロンプトファイルが空です: {prompt_file}", file=sys.stderr)
         sys.exit(1)
 
     # シングルトンセッション確保
     if not ensure_session(args.session, work_dir, kiro_bin):
         sys.exit(1)
 
-    # md の内容を指示として送信
-    print(f"[kiro-send] プロンプトを送信します ({md_file.name})", file=sys.stderr)
-    if send_prompt(args.session, md_content):
+    # プロンプトファイルの内容を送信
+    print(f"[kiro-send] プロンプトを送信します ({prompt_file.name})", file=sys.stderr)
+    if send_prompt(args.session, prompt_content):
         print(f"[kiro-send] 完了しました", file=sys.stderr)
     else:
         print(f"[kiro-send] WARN: 応答待ちがタイムアウトしました", file=sys.stderr)
