@@ -12,7 +12,7 @@ import {
   TFolder,
 } from 'obsidian';
 import { spawn } from 'child_process';
-import { writeFileSync, existsSync, chmodSync } from 'fs';
+import { writeFileSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 // ---------------------------------------------------------------------------
@@ -20,11 +20,11 @@ import { join } from 'path';
 // ---------------------------------------------------------------------------
 
 interface SubtreeEntry {
-  /** vault root からの相対パス (git subtree の --prefix 引数) */
+  /** vault root からの相対パス (子リポジトリのディレクトリ) */
   prefix: string;
   /** リモートリポジトリの URL */
   remote: string;
-  /** git remote の短縮名 (例: "my-subtree") */
+  /** git remote の短縮名 (例: "origin") */
   remoteName: string;
   /** 同期対象のブランチ名 */
   branch: string;
@@ -32,19 +32,10 @@ interface SubtreeEntry {
 
 interface GitSubtreeSettings {
   subtrees: SubtreeEntry[];
-  /** git subtree pull/add 時に --squash を使用するか */
-  useSquash: boolean;
-  /** ルートの pull (post-merge) 時に subtree も自動 pull するか */
-  autoPullOnMerge: boolean;
-  /** ルートの push (pre-push) 時に subtree も自動 push するか */
-  autoPushOnPush: boolean;
 }
 
 const DEFAULT_SETTINGS: GitSubtreeSettings = {
   subtrees: [],
-  useSquash: true,
-  autoPullOnMerge: true,
-  autoPushOnPush: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -69,8 +60,20 @@ function runGit(cwd: string, args: string[]): Promise<string> {
   });
 }
 
+// vault の .gitignore に prefix を追記する (重複は追加しない)
+function addToGitIgnore(vaultPath: string, prefix: string): void {
+  const gitignorePath = join(vaultPath, '.gitignore');
+  let content = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf-8') : '';
+  const entry = prefix.endsWith('/') ? prefix : `${prefix}/`;
+  const lines = content.split('\n').map((l) => l.trim());
+  if (lines.includes(entry) || lines.includes(prefix)) return;
+  if (content && !content.endsWith('\n')) content += '\n';
+  content += `${entry}\n`;
+  writeFileSync(gitignorePath, content, 'utf-8');
+}
+
 // ---------------------------------------------------------------------------
-// モーダル: subtree 追加
+// モーダル: 子リポジトリ追加
 // ---------------------------------------------------------------------------
 
 class AddSubtreeModal extends Modal {
@@ -86,32 +89,32 @@ class AddSubtreeModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h3', { text: 'Git Subtree を追加' });
+    contentEl.createEl('h3', { text: '子リポジトリを追加' });
 
     let prefix = this.initialPrefix;
     let remote = '';
-    let remoteName = '';
+    let remoteName = 'origin';
     let branch = 'main';
 
     new Setting(contentEl)
-      .setName('フォルダパス (prefix)')
-      .setDesc('vault root からの相対パス。subtree が配置されるフォルダ')
+      .setName('フォルダパス')
+      .setDesc('vault root からの相対パス。リポジトリがクローンされるフォルダ')
       .addText((t) =>
         t.setValue(prefix).onChange((v) => { prefix = v.trim(); })
       );
 
     new Setting(contentEl)
       .setName('リモート URL')
-      .setDesc('subtree として追加する git リポジトリの URL')
+      .setDesc('クローンする git リポジトリの URL')
       .addText((t) =>
         t.setPlaceholder('https://github.com/user/repo.git').onChange((v) => { remote = v.trim(); })
       );
 
     new Setting(contentEl)
       .setName('リモート名')
-      .setDesc('git remote の短縮名 (例: my-subtree)。スペース不可')
+      .setDesc('git remote の短縮名 (デフォルト: origin)')
       .addText((t) =>
-        t.setPlaceholder('my-subtree').onChange((v) => { remoteName = v.trim(); })
+        t.setValue(remoteName).onChange((v) => { remoteName = v.trim(); })
       );
 
     new Setting(contentEl)
@@ -147,7 +150,7 @@ class AddSubtreeModal extends Modal {
 }
 
 // ---------------------------------------------------------------------------
-// モーダル: subtree 選択
+// モーダル: 子リポジトリ選択
 // ---------------------------------------------------------------------------
 
 class SelectSubtreeModal extends Modal {
@@ -174,7 +177,7 @@ class SelectSubtreeModal extends Modal {
 
     if (this.subtrees.length === 0) {
       contentEl.createEl('p', {
-        text: '登録済みの subtree がありません。先に subtree を追加してください。',
+        text: '登録済みの子リポジトリがありません。先に追加してください。',
       });
       return;
     }
@@ -205,52 +208,33 @@ class SelectSubtreeModal extends Modal {
 }
 
 // ---------------------------------------------------------------------------
-// モーダル: ブランチ作成 / 切り替え
+// モーダル: ブランチ切り替え
 // ---------------------------------------------------------------------------
 
-class BranchModal extends Modal {
+class SwitchBranchModal extends Modal {
   private plugin: GitSubtreePlugin;
   private subtree: SubtreeEntry;
-  private mode: 'create' | 'switch';
 
-  constructor(
-    app: App,
-    plugin: GitSubtreePlugin,
-    subtree: SubtreeEntry,
-    mode: 'create' | 'switch',
-  ) {
+  constructor(app: App, plugin: GitSubtreePlugin, subtree: SubtreeEntry) {
     super(app);
     this.plugin = plugin;
     this.subtree = subtree;
-    this.mode = mode;
   }
 
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
+    contentEl.createEl('h3', { text: `ブランチを切り替え: ${this.subtree.prefix}` });
 
-    const isCreate = this.mode === 'create';
-    const title = isCreate ? 'ブランチを作成' : 'ブランチを切り替え';
-    contentEl.createEl('h3', { text: `${title}: ${this.subtree.prefix}` });
+    contentEl.createEl('p', {
+      text: `現在のブランチ: ${this.subtree.branch}`,
+      attr: { style: 'opacity:0.7;margin-bottom:12px;' },
+    });
 
-    if (!isCreate) {
-      contentEl.createEl('p', {
-        text: `現在のブランチ: ${this.subtree.branch}`,
-        attr: { style: 'opacity:0.7;margin-bottom:12px;' },
-      });
-    }
-
-    if (isCreate) {
-      contentEl.createEl('p', {
-        text: 'git subtree split で subtree の履歴のみを持つローカルブランチを作成します。',
-        attr: { style: 'opacity:0.7;font-size:0.9em;margin-bottom:12px;' },
-      });
-    } else {
-      contentEl.createEl('p', {
-        text: '以降の pull/push で同期するリモートブランチを変更します。',
-        attr: { style: 'opacity:0.7;font-size:0.9em;margin-bottom:12px;' },
-      });
-    }
+    contentEl.createEl('p', {
+      text: '以降の pull/push で同期するリモートブランチを変更します。',
+      attr: { style: 'opacity:0.7;font-size:0.9em;margin-bottom:12px;' },
+    });
 
     let branchName = '';
 
@@ -258,14 +242,14 @@ class BranchModal extends Modal {
       .setName('ブランチ名')
       .addText((t) =>
         t
-          .setPlaceholder(isCreate ? 'feature/my-feature' : 'develop')
+          .setPlaceholder('develop')
           .onChange((v) => { branchName = v.trim(); })
       );
 
     new Setting(contentEl)
       .addButton((btn) =>
         btn
-          .setButtonText(title)
+          .setButtonText('切り替え')
           .setCta()
           .onClick(async () => {
             if (!branchName) {
@@ -273,11 +257,7 @@ class BranchModal extends Modal {
               return;
             }
             this.close();
-            if (isCreate) {
-              await this.plugin.createSubtreeBranch(this.subtree, branchName);
-            } else {
-              await this.plugin.switchSubtreeBranch(this.subtree, branchName);
-            }
+            await this.plugin.switchSubtreeBranch(this.subtree, branchName);
           })
       );
   }
@@ -301,74 +281,56 @@ export default class GitSubtreePlugin extends Plugin {
 
     this.addCommand({
       id: 'add-subtree',
-      name: 'Subtree を追加',
+      name: '子リポジトリを追加',
       callback: () => new AddSubtreeModal(this.app, this).open(),
     });
 
     this.addCommand({
       id: 'pull-subtree',
-      name: 'Subtree を pull (選択)',
+      name: '子リポジトリを pull (選択)',
       callback: () =>
         new SelectSubtreeModal(
           this.app,
           this.settings.subtrees,
-          'Pull する Subtree を選択',
+          'Pull する子リポジトリを選択',
           (st) => this.pullSubtree(st),
         ).open(),
     });
 
     this.addCommand({
       id: 'pull-all-subtrees',
-      name: 'すべての Subtree を pull',
+      name: 'すべての子リポジトリを pull',
       callback: () => this.pullAllSubtrees(),
     });
 
     this.addCommand({
       id: 'push-subtree',
-      name: 'Subtree を push (選択)',
+      name: '子リポジトリを push (選択)',
       callback: () =>
         new SelectSubtreeModal(
           this.app,
           this.settings.subtrees,
-          'Push する Subtree を選択',
+          'Push する子リポジトリを選択',
           (st) => this.pushSubtree(st),
         ).open(),
     });
 
     this.addCommand({
       id: 'push-all-subtrees',
-      name: 'すべての Subtree を push',
+      name: 'すべての子リポジトリを push',
       callback: () => this.pushAllSubtrees(),
     });
 
     this.addCommand({
-      id: 'create-subtree-branch',
-      name: 'Subtree のブランチを作成',
-      callback: () =>
-        new SelectSubtreeModal(
-          this.app,
-          this.settings.subtrees,
-          'ブランチを作成する Subtree を選択',
-          (st) => new BranchModal(this.app, this, st, 'create').open(),
-        ).open(),
-    });
-
-    this.addCommand({
       id: 'switch-subtree-branch',
-      name: 'Subtree のブランチを切り替え',
+      name: '子リポジトリのブランチを切り替え',
       callback: () =>
         new SelectSubtreeModal(
           this.app,
           this.settings.subtrees,
-          'ブランチを切り替える Subtree を選択',
-          (st) => new BranchModal(this.app, this, st, 'switch').open(),
+          'ブランチを切り替える子リポジトリを選択',
+          (st) => new SwitchBranchModal(this.app, this, st).open(),
         ).open(),
-    });
-
-    this.addCommand({
-      id: 'install-git-hooks',
-      name: 'Git hooks をインストール',
-      callback: () => this.installGitHooks(),
     });
 
     // ---- フォルダ右クリックメニュー ----
@@ -384,32 +346,26 @@ export default class GitSubtreePlugin extends Plugin {
           if (existing) {
             menu.addItem((item: MenuItem) =>
               item
-                .setTitle('Git Subtree: Pull')
+                .setTitle('Git: Pull')
                 .setIcon('download')
                 .onClick(() => this.pullSubtree(existing))
             );
             menu.addItem((item: MenuItem) =>
               item
-                .setTitle('Git Subtree: Push')
+                .setTitle('Git: Push')
                 .setIcon('upload')
                 .onClick(() => this.pushSubtree(existing))
             );
             menu.addItem((item: MenuItem) =>
               item
-                .setTitle('Git Subtree: ブランチを切り替え')
+                .setTitle('Git: ブランチを切り替え')
                 .setIcon('git-branch')
-                .onClick(() => new BranchModal(this.app, this, existing, 'switch').open())
-            );
-            menu.addItem((item: MenuItem) =>
-              item
-                .setTitle('Git Subtree: ブランチを作成')
-                .setIcon('git-branch')
-                .onClick(() => new BranchModal(this.app, this, existing, 'create').open())
+                .onClick(() => new SwitchBranchModal(this.app, this, existing).open())
             );
           } else {
             menu.addItem((item: MenuItem) =>
               item
-                .setTitle('Git Subtree として追加')
+                .setTitle('子リポジトリとして追加')
                 .setIcon('git-pull-request')
                 .onClick(() => new AddSubtreeModal(this.app, this, prefix).open())
             );
@@ -434,62 +390,46 @@ export default class GitSubtreePlugin extends Plugin {
   }
 
   // ---------------------------------------------------------------------------
-  // Subtree 操作
+  // 子リポジトリ操作
   // ---------------------------------------------------------------------------
 
   async addSubtree(entry: SubtreeEntry): Promise<void> {
     const vaultPath = this.getVaultPath();
-    new Notice(`Subtree "${entry.prefix}" を追加しています...`);
+    const destPath = join(vaultPath, entry.prefix);
+
+    new Notice(`子リポジトリ "${entry.prefix}" をクローンしています...`);
     try {
-      // リモートが未登録の場合は追加
-      const remoteList = await runGit(vaultPath, ['remote']);
-      if (!remoteList.split('\n').includes(entry.remoteName)) {
-        await runGit(vaultPath, ['remote', 'add', entry.remoteName, entry.remote]);
+      if (existsSync(join(destPath, '.git'))) {
+        new Notice(`"${entry.prefix}" にはすでに git リポジトリが存在します`);
+      } else {
+        await runGit(vaultPath, ['clone', '--origin', entry.remoteName, entry.remote, entry.prefix]);
       }
 
-      const args = [
-        'subtree', 'add',
-        `--prefix=${entry.prefix}`,
-        entry.remoteName,
-        entry.branch,
-      ];
-      if (this.settings.useSquash) args.push('--squash');
-
-      await runGit(vaultPath, args);
-
+      addToGitIgnore(vaultPath, entry.prefix);
       this.settings.subtrees.push(entry);
       await this.saveSettings();
-      await this.installGitHooks();
-      new Notice(`Subtree "${entry.prefix}" を追加しました`);
+      new Notice(`子リポジトリ "${entry.prefix}" を追加しました`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`Subtree の追加に失敗しました:\n${msg}`, 8000);
+      new Notice(`子リポジトリの追加に失敗しました:\n${msg}`, 8000);
     }
   }
 
   async pullSubtree(entry: SubtreeEntry): Promise<void> {
-    const vaultPath = this.getVaultPath();
-    new Notice(`Subtree "${entry.prefix}" を pull しています...`);
+    const destPath = join(this.getVaultPath(), entry.prefix);
+    new Notice(`"${entry.prefix}" を pull しています...`);
     try {
-      const args = [
-        'subtree', 'pull',
-        `--prefix=${entry.prefix}`,
-        entry.remoteName,
-        entry.branch,
-      ];
-      if (this.settings.useSquash) args.push('--squash');
-
-      await runGit(vaultPath, args);
-      new Notice(`Subtree "${entry.prefix}" の pull が完了しました`);
+      await runGit(destPath, ['pull', entry.remoteName, entry.branch]);
+      new Notice(`"${entry.prefix}" の pull が完了しました`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`Subtree の pull に失敗しました:\n${msg}`, 8000);
+      new Notice(`pull に失敗しました:\n${msg}`, 8000);
     }
   }
 
   async pullAllSubtrees(): Promise<void> {
     if (this.settings.subtrees.length === 0) {
-      new Notice('登録済みの subtree がありません');
+      new Notice('登録済みの子リポジトリがありません');
       return;
     }
     for (const st of this.settings.subtrees) {
@@ -498,25 +438,20 @@ export default class GitSubtreePlugin extends Plugin {
   }
 
   async pushSubtree(entry: SubtreeEntry): Promise<void> {
-    const vaultPath = this.getVaultPath();
-    new Notice(`Subtree "${entry.prefix}" を push しています...`);
+    const destPath = join(this.getVaultPath(), entry.prefix);
+    new Notice(`"${entry.prefix}" を push しています...`);
     try {
-      await runGit(vaultPath, [
-        'subtree', 'push',
-        `--prefix=${entry.prefix}`,
-        entry.remoteName,
-        entry.branch,
-      ]);
-      new Notice(`Subtree "${entry.prefix}" の push が完了しました`);
+      await runGit(destPath, ['push', entry.remoteName, entry.branch]);
+      new Notice(`"${entry.prefix}" の push が完了しました`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`Subtree の push に失敗しました:\n${msg}`, 8000);
+      new Notice(`push に失敗しました:\n${msg}`, 8000);
     }
   }
 
   async pushAllSubtrees(): Promise<void> {
     if (this.settings.subtrees.length === 0) {
-      new Notice('登録済みの subtree がありません');
+      new Notice('登録済みの子リポジトリがありません');
       return;
     }
     for (const st of this.settings.subtrees) {
@@ -524,36 +459,6 @@ export default class GitSubtreePlugin extends Plugin {
     }
   }
 
-  /**
-   * git subtree split でローカルブランチを作成する。
-   * subtree の履歴のみを抽出したブランチが作られ、
-   * その後 git push <remoteName> <localBranch>:<remoteBranch> でリモートに反映できる。
-   */
-  async createSubtreeBranch(entry: SubtreeEntry, branchName: string): Promise<void> {
-    const vaultPath = this.getVaultPath();
-    new Notice(`ブランチ "${branchName}" を作成しています...`);
-    try {
-      await runGit(vaultPath, [
-        'subtree', 'split',
-        `--prefix=${entry.prefix}`,
-        '-b', branchName,
-      ]);
-      new Notice(
-        `ブランチ "${branchName}" を作成しました。\n` +
-        `リモートに push するには:\n` +
-        `git push ${entry.remoteName} ${branchName}:<リモートブランチ名>`,
-        8000,
-      );
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`ブランチの作成に失敗しました:\n${msg}`, 8000);
-    }
-  }
-
-  /**
-   * 以降の pull/push で同期するリモートブランチを変更する。
-   * 設定を更新して git hooks を再生成する。
-   */
   async switchSubtreeBranch(entry: SubtreeEntry, newBranch: string): Promise<void> {
     const idx = this.settings.subtrees.findIndex((st) => st.prefix === entry.prefix);
     if (idx === -1) return;
@@ -561,84 +466,7 @@ export default class GitSubtreePlugin extends Plugin {
     const oldBranch = this.settings.subtrees[idx].branch;
     this.settings.subtrees[idx].branch = newBranch;
     await this.saveSettings();
-    await this.installGitHooks();
-    new Notice(
-      `Subtree "${entry.prefix}" のブランチを "${oldBranch}" から "${newBranch}" に変更しました`,
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Git hooks インストール
-  // ---------------------------------------------------------------------------
-
-  async installGitHooks(): Promise<void> {
-    let vaultPath: string;
-    try {
-      vaultPath = this.getVaultPath();
-    } catch {
-      new Notice('FileSystemAdapter が利用できません');
-      return;
-    }
-
-    const hooksDir = join(vaultPath, '.git', 'hooks');
-    if (!existsSync(hooksDir)) {
-      new Notice('Git hooks ディレクトリが見つかりません。git リポジトリか確認してください。', 8000);
-      return;
-    }
-
-    const subtrees = this.settings.subtrees;
-    const squash = this.settings.useSquash ? ' --squash' : '';
-
-    // ---- post-merge (pull 後に実行) ----
-    const pullLines = subtrees
-      .map((st) =>
-        `git subtree pull --prefix=${st.prefix} ${st.remoteName} ${st.branch}${squash} || echo "WARN: subtree pull failed for ${st.prefix}"`
-      )
-      .join('\n');
-
-    const postMergeContent = [
-      '#!/bin/bash',
-      '# Generated by obsidian-git-subtree plugin',
-      '# DO NOT EDIT MANUALLY - このファイルはプラグインにより自動生成されます',
-      '',
-      subtrees.length > 0
-        ? `# Subtree auto-pull (${subtrees.length} subtree(s))\n${pullLines}`
-        : '# subtree が登録されていません',
-      '',
-    ].join('\n');
-
-    // ---- pre-push (push 前に実行) ----
-    const pushLines = subtrees
-      .map((st) =>
-        `git subtree push --prefix=${st.prefix} ${st.remoteName} ${st.branch} || echo "WARN: subtree push failed for ${st.prefix}"`
-      )
-      .join('\n');
-
-    const prePushContent = [
-      '#!/bin/bash',
-      '# Generated by obsidian-git-subtree plugin',
-      '# DO NOT EDIT MANUALLY - このファイルはプラグインにより自動生成されます',
-      '',
-      subtrees.length > 0
-        ? `# Subtree auto-push (${subtrees.length} subtree(s))\n${pushLines}`
-        : '# subtree が登録されていません',
-      '',
-    ].join('\n');
-
-    const postMergePath = join(hooksDir, 'post-merge');
-    const prePushPath = join(hooksDir, 'pre-push');
-
-    if (this.settings.autoPullOnMerge) {
-      writeFileSync(postMergePath, postMergeContent, { encoding: 'utf-8' });
-      chmodSync(postMergePath, 0o755);
-    }
-
-    if (this.settings.autoPushOnPush) {
-      writeFileSync(prePushPath, prePushContent, { encoding: 'utf-8' });
-      chmodSync(prePushPath, 0o755);
-    }
-
-    new Notice('Git hooks をインストールしました');
+    new Notice(`"${entry.prefix}" のブランチを "${oldBranch}" から "${newBranch}" に変更しました`);
   }
 
   // ---------------------------------------------------------------------------
@@ -670,54 +498,15 @@ class GitSubtreeSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl('h2', { text: 'Git Subtree 設定' });
+    containerEl.createEl('h2', { text: '子リポジトリ設定' });
 
-    // ---- 全般設定 ----
+    // ---- 登録済み子リポジトリ一覧 ----
 
-    new Setting(containerEl)
-      .setName('--squash を使用')
-      .setDesc('pull/add 時に --squash フラグを使用して履歴をまとめる (推奨)')
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.useSquash).onChange(async (v) => {
-          this.plugin.settings.useSquash = v;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName('pull 時に subtree を自動 pull')
-      .setDesc('ルートの git pull 後に post-merge hook で subtree を自動 pull する')
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.autoPullOnMerge).onChange(async (v) => {
-          this.plugin.settings.autoPullOnMerge = v;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName('push 時に subtree を自動 push')
-      .setDesc('ルートの git push 前に pre-push hook で subtree を自動 push する')
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.autoPushOnPush).onChange(async (v) => {
-          this.plugin.settings.autoPushOnPush = v;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName('Git Hooks')
-      .setDesc('現在の設定で git hooks を再生成してインストールする')
-      .addButton((btn) =>
-        btn.setButtonText('hooks をインストール').onClick(() => this.plugin.installGitHooks())
-      );
-
-    // ---- 登録済み subtree 一覧 ----
-
-    containerEl.createEl('h3', { text: '登録済み Subtree' });
+    containerEl.createEl('h3', { text: '登録済み子リポジトリ' });
 
     if (this.plugin.settings.subtrees.length === 0) {
       containerEl.createEl('p', {
-        text: '登録済みの subtree がありません。コマンドパレットか、フォルダの右クリックメニューから追加してください。',
+        text: '登録済みの子リポジトリがありません。コマンドパレットか、フォルダの右クリックメニューから追加してください。',
         attr: { style: 'opacity:0.7;' },
       });
     }
@@ -754,7 +543,7 @@ class GitSubtreeSettingTab extends PluginSettingTab {
 
       const switchBtn = actions.createEl('button', { text: 'ブランチ切り替え' });
       switchBtn.addEventListener('click', () =>
-        new BranchModal(this.plugin.app, this.plugin, st, 'switch').open()
+        new SwitchBranchModal(this.plugin.app, this.plugin, st).open()
       );
 
       const removeBtn = actions.createEl('button', { text: '削除' });
@@ -763,17 +552,16 @@ class GitSubtreeSettingTab extends PluginSettingTab {
       removeBtn.addEventListener('click', async () => {
         this.plugin.settings.subtrees.splice(idx, 1);
         await this.plugin.saveSettings();
-        await this.plugin.installGitHooks();
         this.display();
       });
     });
 
-    // ---- Subtree 追加ボタン ----
+    // ---- 子リポジトリ追加ボタン ----
 
     new Setting(containerEl)
       .addButton((btn) =>
         btn
-          .setButtonText('Subtree を追加')
+          .setButtonText('子リポジトリを追加')
           .setCta()
           .onClick(() => new AddSubtreeModal(this.plugin.app, this.plugin).open())
       );
