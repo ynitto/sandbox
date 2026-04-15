@@ -28,6 +28,8 @@ interface SubtreeEntry {
   remoteName: string;
   /** 同期対象のブランチ名 */
   branch: string;
+  /** 子リポジトリ内で使用するサブフォルダ (省略時はルート全体) */
+  subdir?: string;
 }
 
 interface GitSubtreeSettings {
@@ -95,6 +97,7 @@ class AddSubtreeModal extends Modal {
     let remote = '';
     let remoteName = 'origin';
     let branch = 'main';
+    let subdir = '';
 
     new Setting(contentEl)
       .setName('フォルダパス')
@@ -125,6 +128,13 @@ class AddSubtreeModal extends Modal {
       );
 
     new Setting(contentEl)
+      .setName('サブフォルダ (省略可)')
+      .setDesc('子リポジトリ内で使用するフォルダパス。省略時はリポジトリ全体を使用')
+      .addText((t) =>
+        t.setPlaceholder('docs').onChange((v) => { subdir = v.trim(); })
+      );
+
+    new Setting(contentEl)
       .addButton((btn) =>
         btn
           .setButtonText('追加')
@@ -139,7 +149,7 @@ class AddSubtreeModal extends Modal {
               return;
             }
             this.close();
-            await this.plugin.addSubtree({ prefix, remote, remoteName, branch });
+            await this.plugin.addSubtree({ prefix, remote, remoteName, branch, subdir: subdir || undefined });
           })
       );
   }
@@ -341,7 +351,11 @@ export default class GitSubtreePlugin extends Plugin {
         (menu: Menu, abstractFile: TAbstractFile) => {
           if (!(abstractFile instanceof TFolder)) return;
           const prefix = abstractFile.path;
-          const existing = this.settings.subtrees.find((st) => st.prefix === prefix);
+          const existing = this.settings.subtrees.find(
+            (st) =>
+              st.prefix === prefix ||
+              (st.subdir && `${st.prefix}/${st.subdir}` === prefix),
+          );
 
           if (existing) {
             menu.addItem((item: MenuItem) =>
@@ -522,6 +536,7 @@ class GitSubtreeSettingTab extends PluginSettingTab {
         ['Remote URL', st.remote],
         ['Remote 名', st.remoteName],
         ['Branch', st.branch],
+        ...(st.subdir ? [['サブフォルダ', st.subdir] as [string, string]] : []),
       ];
       rows.forEach(([label, value]) => {
         const p = card.createEl('p');
