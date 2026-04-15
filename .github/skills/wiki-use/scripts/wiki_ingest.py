@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""
+wiki_ingest.py — ソース取り込み支援スクリプト
+
+使い方:
+  python scripts/wiki_ingest.py copy --source <ファイルパス>
+      ソースを sources/ にコピーする
+
+  python scripts/wiki_ingest.py list-pending
+      default_source_dir にある未取り込みファイルを一覧表示する
+
+  python scripts/wiki_ingest.py update-index --pages <page1.md> [<page2.md> ...]
+      index.md に新規ページを登録する
+
+  python scripts/wiki_ingest.py log \\
+      --source <ソースパス> --pages-created <N> --pages-updated <N>
+      log.md に操作を記録する
+
+  python scripts/wiki_ingest.py update-hot --pages <page1.md> [<page2.md> ...]
+      hot.md を更新する（直近20件を維持）
+"""
+
+import argparse
+import re
+import shutil
+import sys
+from datetime import date, datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from wiki_utils import load_config, resolve_wiki_root, resolve_source_dir
+
+HOT_MAX = 20
+
+
+def slugify(name: str) -> str:
+    """ファイル名を slug 化する。"""
+    s = name.lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    return s or "source"
+
+
+def is_ingested(sources_dir: Path, log_path: Path) -> set:
+    """log.md に記録済みのソースファイル名セットを返す。"""
+    if not log_path.exists():
+        return set()
+    text = log_path.read_text(encoding="utf-8")
+    pattern = re.compile(r"sources/([^\s`]+)")
+    return {m.group(1) for m in pattern.finditer(text)}
+
+
+def cmd_copy(args, wiki_root: Path, _config: dict) -> None:
+    """ソースを sources/ にコピーする。"""
+    source_path = Path(args.source).expanduser()
+    if not source_path.exists():
+        print(f"[ERROR] ファイルが見つかりません: {source_path}", file=sys.stderr)
+        sys.exit(1)
+
+    today = date.today().isoformat()
+    slug = slugify(source_path.stem)
+    dest_name = f"{today}-{slug}{source_path.suffix}"
+    dest_path = wiki_root / "sources" / dest_name
+
+    sources_dir = wiki_root / "sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+
+    if dest_path.exists():
+        print(f"[WARN] 既に存在します: {dest_path}")
+    else:
+        shutil.copy2(source_path, dest_path)
+        print(f"[OK] コピーしました: {dest_path}")
+
+    print(f"source_path: {dest_path}")
+
+
+def cmd_list_pending(args, wiki_root: Path, config: dict) -> None:
+    """未取り込みファイルを一覧表示する。"""
+    source_dir = resolve_source_dir(config)
+    log_path = wiki_root / "log.md"
+    ingested = is_ingested(wiki_root / "sources", log_path)
+
+    if not source_dir.exists():
+        print(f"[WARN] default_source_dir が存在しません: {source_dir}", file=sys.stderr)
+        return
+
+    extensions = {".pdf", ".md", ".txt", ".html", ".rst", ".docx"}
+    files = [
+        f for f in source_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in extensions
+    ]
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+
+    pending = []
+    for f in files:
+        slug = slugify(f.stem)
+        pattern = f"-{slug}{f.suffix}"
+        already = any(s.endswith(pattern) for s in ingested)
+        if not already:
+            pending.append(f)
+
+    if not pending:
+        print("[INFO] 未取り込みファイルはありません")
+        return
+
+    print(f"未取り込みファイル ({len(pending)} 件):")
+    for f in pending:
+        print(f"  {f}")
+
+
+def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
+    """index.md に新規ページを追加する。"""
+    index_path = wiki_root / "index.md"
+    if not index_path.exists():
+        print(f"[ERROR] index.md が見つかりません: {index_path}", file=sys.stderr)
+        sys.exit(1)
+
+    today = date.today().isoformat()
+    index_text = index_path.read_text(encoding="utf-8")
+
+    for page_path_str in args.pages:
+        page_path = Path(page_path_str)
+        # カテゴリを path から判定
+        parts = page_path.parts
+        category = None
+        for part in parts:
+            if part in ("concepts", "entities", "topics"):
+                category = part
+                break
+
+        if category is None:
+            print(f"[WARN] カテゴリ不明（スキップ）: {page_path}")
+            continue
+
+        stem = page_path.stem
+        link = f"[[{stem}]]"
+
+        # 既に登録済みかチェック
+        if link in index_text:
+            print(f"  スキップ（既登録）: {link}")
+            continue
+
+        # カテゴリセクションの末尾テーブル行の後に追記
+        # パターン: "## <category>" 以降の最後のテーブル行の後
+        section_pattern = re.compile(
+            rf"(## {category}\n\|[^\n]+\n\|[-| ]+\n)((?:\|[^\n]+\n)*)",
+            re.MULTILINE,
+        )
+        m = section_pattern.search(index_text)
+        if m:
+            # 概要を frontmatter から読む
+            summary = _read_page_summary(wiki_root / page_path_str)
+            new_row = f"| {link} | {summary} | {today} |\n"
+            replacement = m.group(1) + m.group(2) + new_row
+            index_text = index_text[: m.start()] + replacement + index_text[m.end():]
+            print(f"  追加: {link} → {category}")
+        else:
+            print(f"[WARN] セクション '{category}' のテーブルが見つかりません: {page_path}")
+
+    # 最終更新日を更新
+    index_text = re.sub(
+        r"最終更新: \d{4}-\d{2}-\d{2}",
+        f"最終更新: {today}",
+        index_text,
+    )
+    index_path.write_text(index_text, encoding="utf-8")
+    print(f"[OK] index.md を更新しました: {index_path}")
+
+
+def _read_page_summary(page_path: Path) -> str:
+    """ページの frontmatter から title を読むか、最初の行を返す。"""
+    if not page_path.exists():
+        return ""
+    text = page_path.read_text(encoding="utf-8")
+    # frontmatter の title を探す
+    m = re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', text, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    # 最初の # 見出し
+    m = re.search(r'^#\s+(.+)', text, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+def cmd_log(args, wiki_root: Path, _config: dict) -> None:
+    """log.md に操作を記録する。"""
+    log_path = wiki_root / "log.md"
+    if not log_path.exists():
+        print(f"[ERROR] log.md が見つかりません: {log_path}", file=sys.stderr)
+        sys.exit(1)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    source_rel = args.source
+    created = args.pages_created
+    updated = args.pages_updated
+    notes = args.notes or ""
+
+    entry = (
+        f"\n## {now} — ingest\n\n"
+        f"- ソース: `{source_rel}`\n"
+        f"- 作成: {created}ページ\n"
+        f"- 更新: {updated}ページ\n"
+    )
+    if notes:
+        entry += f"- メモ: {notes}\n"
+    entry += "\n---\n"
+
+    # ヘッダーの直後（最初の ## の前）に挿入
+    existing = log_path.read_text(encoding="utf-8")
+    # "# Wiki 操作ログ\n" の直後に挿入
+    header_end = existing.find("\n", existing.find("# Wiki 操作ログ")) + 1
+    new_text = existing[:header_end] + entry + existing[header_end:]
+    log_path.write_text(new_text, encoding="utf-8")
+    print(f"[OK] log.md に記録しました: {now}")
+
+
+def cmd_update_hot(args, wiki_root: Path, _config: dict) -> None:
+    """hot.md を更新する（直近 HOT_MAX 件を維持）。"""
+    hot_path = wiki_root / "wiki" / "meta" / "hot.md"
+    if not hot_path.exists():
+        print(f"[ERROR] hot.md が見つかりません: {hot_path}", file=sys.stderr)
+        sys.exit(1)
+
+    today = date.today().isoformat()
+    existing = hot_path.read_text(encoding="utf-8")
+
+    # 既存エントリを抽出
+    entry_pattern = re.compile(r"^- \[\[(.+?)\]\] — (.+)$", re.MULTILINE)
+    existing_entries = entry_pattern.findall(existing)
+
+    # 新規エントリを先頭に追加
+    new_stems = []
+    for page_path_str in args.pages:
+        stem = Path(page_path_str).stem
+        action = "更新" if page_path_str in getattr(args, "updated_pages", []) else "作成"
+        new_stems.append((stem, f"{today} {action}"))
+
+    # 重複を除いてマージ（新しいものが先頭）
+    seen = {stem for stem, _ in new_stems}
+    merged = list(new_stems)
+    for stem, ts in existing_entries:
+        if stem not in seen:
+            seen.add(stem)
+            merged.append((stem, ts))
+
+    # 最大 HOT_MAX 件に制限
+    merged = merged[:HOT_MAX]
+
+    # hot.md を再生成
+    lines = [
+        "# Hot Pages（最近のコンテキスト）",
+        "",
+        f"最終更新: {today}",
+        "",
+        f"<!-- 新しい取り込みで更新される。最大{HOT_MAX}件 -->",
+        "",
+    ]
+    for stem, ts in merged:
+        lines.append(f"- [[{stem}]] — {ts}")
+
+    hot_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"[OK] hot.md を更新しました（{len(merged)} 件）")
+
+
+def main() -> None:
+    config = load_config()
+    wiki_root = resolve_wiki_root(config)
+
+    parser = argparse.ArgumentParser(
+        description="ソース取り込み支援スクリプト",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # copy
+    p_copy = subparsers.add_parser("copy", help="ソースを sources/ にコピーする")
+    p_copy.add_argument("--source", required=True, help="ソースファイルのパス")
+
+    # list-pending
+    subparsers.add_parser("list-pending", help="未取り込みファイルを一覧表示する")
+
+    # update-index
+    p_idx = subparsers.add_parser("update-index", help="index.md に新規ページを登録する")
+    p_idx.add_argument("--pages", nargs="+", required=True, help="登録するページのパス（wiki_root からの相対パス）")
+
+    # log
+    p_log = subparsers.add_parser("log", help="log.md に操作を記録する")
+    p_log.add_argument("--source", required=True, help="ソースパス（sources/ からの相対表記推奨）")
+    p_log.add_argument("--pages-created", type=int, default=0, help="作成したページ数")
+    p_log.add_argument("--pages-updated", type=int, default=0, help="更新したページ数")
+    p_log.add_argument("--notes", default="", help="メモ（任意）")
+
+    # update-hot
+    p_hot = subparsers.add_parser("update-hot", help="hot.md を更新する")
+    p_hot.add_argument("--pages", nargs="+", required=True, help="作成・更新したページのパス")
+
+    args = parser.parse_args()
+
+    dispatch = {
+        "copy": cmd_copy,
+        "list-pending": cmd_list_pending,
+        "update-index": cmd_update_index,
+        "log": cmd_log,
+        "update-hot": cmd_update_hot,
+    }
+    dispatch[args.command](args, wiki_root, config)
+
+
+if __name__ == "__main__":
+    main()
