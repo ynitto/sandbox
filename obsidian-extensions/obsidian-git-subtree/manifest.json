@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-git-subtree",
+  "name": "Git Subtree",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Manage git subtrees within your Obsidian vault: add, pull, push, and switch branches with automatic git hook integration.",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}
