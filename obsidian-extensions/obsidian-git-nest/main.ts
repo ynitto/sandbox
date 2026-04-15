@@ -19,7 +19,7 @@ import { join } from 'path';
 // 型定義
 // ---------------------------------------------------------------------------
 
-interface SubtreeEntry {
+interface RepoEntry {
   /** vault root からの相対パス (子リポジトリのディレクトリ) */
   prefix: string;
   /** リモートリポジトリの URL */
@@ -32,12 +32,12 @@ interface SubtreeEntry {
   subdir?: string;
 }
 
-interface GitSubtreeSettings {
-  subtrees: SubtreeEntry[];
+interface GitNestSettings {
+  repos: RepoEntry[];
 }
 
-const DEFAULT_SETTINGS: GitSubtreeSettings = {
-  subtrees: [],
+const DEFAULT_SETTINGS: GitNestSettings = {
+  repos: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -75,14 +75,14 @@ function addToGitIgnore(vaultPath: string, prefix: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// モーダル: 子リポジトリ追加
+// モーダル: リポジトリ追加
 // ---------------------------------------------------------------------------
 
-class AddSubtreeModal extends Modal {
-  private plugin: GitSubtreePlugin;
+class AddRepoModal extends Modal {
+  private plugin: GitNestPlugin;
   private initialPrefix: string;
 
-  constructor(app: App, plugin: GitSubtreePlugin, initialPrefix = '') {
+  constructor(app: App, plugin: GitNestPlugin, initialPrefix = '') {
     super(app);
     this.plugin = plugin;
     this.initialPrefix = initialPrefix;
@@ -91,7 +91,7 @@ class AddSubtreeModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h3', { text: '子リポジトリを追加' });
+    contentEl.createEl('h3', { text: 'リポジトリを追加' });
 
     let prefix = this.initialPrefix;
     let remote = '';
@@ -129,7 +129,7 @@ class AddSubtreeModal extends Modal {
 
     new Setting(contentEl)
       .setName('サブフォルダ (省略可)')
-      .setDesc('子リポジトリ内で使用するフォルダパス。省略時はリポジトリ全体を使用')
+      .setDesc('リポジトリ内で使用するフォルダパス。省略時はリポジトリ全体を使用')
       .addText((t) =>
         t.setPlaceholder('docs').onChange((v) => { subdir = v.trim(); })
       );
@@ -149,7 +149,7 @@ class AddSubtreeModal extends Modal {
               return;
             }
             this.close();
-            await this.plugin.addSubtree({ prefix, remote, remoteName, branch, subdir: subdir || undefined });
+            await this.plugin.addRepo({ prefix, remote, remoteName, branch, subdir: subdir || undefined });
           })
       );
   }
@@ -160,22 +160,22 @@ class AddSubtreeModal extends Modal {
 }
 
 // ---------------------------------------------------------------------------
-// モーダル: 子リポジトリ選択
+// モーダル: リポジトリ選択
 // ---------------------------------------------------------------------------
 
-class SelectSubtreeModal extends Modal {
-  private subtrees: SubtreeEntry[];
+class SelectRepoModal extends Modal {
+  private repos: RepoEntry[];
   private title: string;
-  private onSelect: (subtree: SubtreeEntry) => void;
+  private onSelect: (repo: RepoEntry) => void;
 
   constructor(
     app: App,
-    subtrees: SubtreeEntry[],
+    repos: RepoEntry[],
     title: string,
-    onSelect: (s: SubtreeEntry) => void,
+    onSelect: (r: RepoEntry) => void,
   ) {
     super(app);
-    this.subtrees = subtrees;
+    this.repos = repos;
     this.title = title;
     this.onSelect = onSelect;
   }
@@ -185,29 +185,29 @@ class SelectSubtreeModal extends Modal {
     contentEl.empty();
     contentEl.createEl('h3', { text: this.title });
 
-    if (this.subtrees.length === 0) {
+    if (this.repos.length === 0) {
       contentEl.createEl('p', {
-        text: '登録済みの子リポジトリがありません。先に追加してください。',
+        text: '登録済みのリポジトリがありません。先に追加してください。',
       });
       return;
     }
 
-    this.subtrees.forEach((st) => {
+    this.repos.forEach((repo) => {
       const btn = contentEl.createEl('button');
       btn.style.cssText =
         'display:block;width:100%;margin-bottom:6px;text-align:left;padding:8px 12px;cursor:pointer;border-radius:4px;';
 
-      const titleSpan = btn.createEl('span', { text: st.prefix });
+      const titleSpan = btn.createEl('span', { text: repo.prefix });
       titleSpan.style.fontWeight = 'bold';
 
       btn.createEl('span', {
-        text: `  ${st.remoteName}/${st.branch}`,
+        text: `  ${repo.remoteName}/${repo.branch}`,
         attr: { style: 'opacity:0.6;font-size:0.85em;margin-left:8px;' },
       });
 
       btn.addEventListener('click', () => {
         this.close();
-        this.onSelect(st);
+        this.onSelect(repo);
       });
     });
   }
@@ -222,22 +222,22 @@ class SelectSubtreeModal extends Modal {
 // ---------------------------------------------------------------------------
 
 class SwitchBranchModal extends Modal {
-  private plugin: GitSubtreePlugin;
-  private subtree: SubtreeEntry;
+  private plugin: GitNestPlugin;
+  private repo: RepoEntry;
 
-  constructor(app: App, plugin: GitSubtreePlugin, subtree: SubtreeEntry) {
+  constructor(app: App, plugin: GitNestPlugin, repo: RepoEntry) {
     super(app);
     this.plugin = plugin;
-    this.subtree = subtree;
+    this.repo = repo;
   }
 
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h3', { text: `ブランチを切り替え: ${this.subtree.prefix}` });
+    contentEl.createEl('h3', { text: `ブランチを切り替え: ${this.repo.prefix}` });
 
     contentEl.createEl('p', {
-      text: `現在のブランチ: ${this.subtree.branch}`,
+      text: `現在のブランチ: ${this.repo.branch}`,
       attr: { style: 'opacity:0.7;margin-bottom:12px;' },
     });
 
@@ -267,7 +267,7 @@ class SwitchBranchModal extends Modal {
               return;
             }
             this.close();
-            await this.plugin.switchSubtreeBranch(this.subtree, branchName);
+            await this.plugin.switchBranch(this.repo, branchName);
           })
       );
   }
@@ -281,8 +281,8 @@ class SwitchBranchModal extends Modal {
 // プラグイン本体
 // ---------------------------------------------------------------------------
 
-export default class GitSubtreePlugin extends Plugin {
-  settings: GitSubtreeSettings = DEFAULT_SETTINGS;
+export default class GitNestPlugin extends Plugin {
+  settings: GitNestSettings = DEFAULT_SETTINGS;
 
   async onload() {
     await this.loadSettings();
@@ -290,56 +290,56 @@ export default class GitSubtreePlugin extends Plugin {
     // ---- コマンド登録 ----
 
     this.addCommand({
-      id: 'add-subtree',
-      name: '子リポジトリを追加',
-      callback: () => new AddSubtreeModal(this.app, this).open(),
+      id: 'add-repo',
+      name: 'リポジトリを追加',
+      callback: () => new AddRepoModal(this.app, this).open(),
     });
 
     this.addCommand({
-      id: 'pull-subtree',
-      name: '子リポジトリを pull (選択)',
+      id: 'pull-repo',
+      name: 'リポジトリを pull (選択)',
       callback: () =>
-        new SelectSubtreeModal(
+        new SelectRepoModal(
           this.app,
-          this.settings.subtrees,
-          'Pull する子リポジトリを選択',
-          (st) => this.pullSubtree(st),
+          this.settings.repos,
+          'Pull するリポジトリを選択',
+          (repo) => this.pullRepo(repo),
         ).open(),
     });
 
     this.addCommand({
-      id: 'pull-all-subtrees',
-      name: 'すべての子リポジトリを pull',
-      callback: () => this.pullAllSubtrees(),
+      id: 'pull-all-repos',
+      name: 'すべてのリポジトリを pull',
+      callback: () => this.pullAllRepos(),
     });
 
     this.addCommand({
-      id: 'push-subtree',
-      name: '子リポジトリを push (選択)',
+      id: 'push-repo',
+      name: 'リポジトリを push (選択)',
       callback: () =>
-        new SelectSubtreeModal(
+        new SelectRepoModal(
           this.app,
-          this.settings.subtrees,
-          'Push する子リポジトリを選択',
-          (st) => this.pushSubtree(st),
+          this.settings.repos,
+          'Push するリポジトリを選択',
+          (repo) => this.pushRepo(repo),
         ).open(),
     });
 
     this.addCommand({
-      id: 'push-all-subtrees',
-      name: 'すべての子リポジトリを push',
-      callback: () => this.pushAllSubtrees(),
+      id: 'push-all-repos',
+      name: 'すべてのリポジトリを push',
+      callback: () => this.pushAllRepos(),
     });
 
     this.addCommand({
-      id: 'switch-subtree-branch',
-      name: '子リポジトリのブランチを切り替え',
+      id: 'switch-repo-branch',
+      name: 'リポジトリのブランチを切り替え',
       callback: () =>
-        new SelectSubtreeModal(
+        new SelectRepoModal(
           this.app,
-          this.settings.subtrees,
-          'ブランチを切り替える子リポジトリを選択',
-          (st) => new SwitchBranchModal(this.app, this, st).open(),
+          this.settings.repos,
+          'ブランチを切り替えるリポジトリを選択',
+          (repo) => new SwitchBranchModal(this.app, this, repo).open(),
         ).open(),
     });
 
@@ -350,11 +350,11 @@ export default class GitSubtreePlugin extends Plugin {
         'file-menu',
         (menu: Menu, abstractFile: TAbstractFile) => {
           if (!(abstractFile instanceof TFolder)) return;
-          const prefix = abstractFile.path;
-          const existing = this.settings.subtrees.find(
-            (st) =>
-              st.prefix === prefix ||
-              (st.subdir && `${st.prefix}/${st.subdir}` === prefix),
+          const folderPath = abstractFile.path;
+          const existing = this.settings.repos.find(
+            (repo) =>
+              repo.prefix === folderPath ||
+              (repo.subdir && `${repo.prefix}/${repo.subdir}` === folderPath),
           );
 
           if (existing) {
@@ -362,13 +362,13 @@ export default class GitSubtreePlugin extends Plugin {
               item
                 .setTitle('Git: Pull')
                 .setIcon('download')
-                .onClick(() => this.pullSubtree(existing))
+                .onClick(() => this.pullRepo(existing))
             );
             menu.addItem((item: MenuItem) =>
               item
                 .setTitle('Git: Push')
                 .setIcon('upload')
-                .onClick(() => this.pushSubtree(existing))
+                .onClick(() => this.pushRepo(existing))
             );
             menu.addItem((item: MenuItem) =>
               item
@@ -379,16 +379,16 @@ export default class GitSubtreePlugin extends Plugin {
           } else {
             menu.addItem((item: MenuItem) =>
               item
-                .setTitle('子リポジトリとして追加')
+                .setTitle('Git Nest: リポジトリとして追加')
                 .setIcon('git-pull-request')
-                .onClick(() => new AddSubtreeModal(this.app, this, prefix).open())
+                .onClick(() => new AddRepoModal(this.app, this, folderPath).open())
             );
           }
         },
       )
     );
 
-    this.addSettingTab(new GitSubtreeSettingTab(this.app, this));
+    this.addSettingTab(new GitNestSettingTab(this.app, this));
   }
 
   // ---------------------------------------------------------------------------
@@ -404,14 +404,14 @@ export default class GitSubtreePlugin extends Plugin {
   }
 
   // ---------------------------------------------------------------------------
-  // 子リポジトリ操作
+  // リポジトリ操作
   // ---------------------------------------------------------------------------
 
-  async addSubtree(entry: SubtreeEntry): Promise<void> {
+  async addRepo(entry: RepoEntry): Promise<void> {
     const vaultPath = this.getVaultPath();
     const destPath = join(vaultPath, entry.prefix);
 
-    new Notice(`子リポジトリ "${entry.prefix}" をクローンしています...`);
+    new Notice(`"${entry.prefix}" をクローンしています...`);
     try {
       if (existsSync(join(destPath, '.git'))) {
         new Notice(`"${entry.prefix}" にはすでに git リポジトリが存在します`);
@@ -420,16 +420,16 @@ export default class GitSubtreePlugin extends Plugin {
       }
 
       addToGitIgnore(vaultPath, entry.prefix);
-      this.settings.subtrees.push(entry);
+      this.settings.repos.push(entry);
       await this.saveSettings();
-      new Notice(`子リポジトリ "${entry.prefix}" を追加しました`);
+      new Notice(`"${entry.prefix}" を追加しました`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`子リポジトリの追加に失敗しました:\n${msg}`, 8000);
+      new Notice(`リポジトリの追加に失敗しました:\n${msg}`, 8000);
     }
   }
 
-  async pullSubtree(entry: SubtreeEntry): Promise<void> {
+  async pullRepo(entry: RepoEntry): Promise<void> {
     const destPath = join(this.getVaultPath(), entry.prefix);
     new Notice(`"${entry.prefix}" を pull しています...`);
     try {
@@ -441,17 +441,17 @@ export default class GitSubtreePlugin extends Plugin {
     }
   }
 
-  async pullAllSubtrees(): Promise<void> {
-    if (this.settings.subtrees.length === 0) {
-      new Notice('登録済みの子リポジトリがありません');
+  async pullAllRepos(): Promise<void> {
+    if (this.settings.repos.length === 0) {
+      new Notice('登録済みのリポジトリがありません');
       return;
     }
-    for (const st of this.settings.subtrees) {
-      await this.pullSubtree(st);
+    for (const repo of this.settings.repos) {
+      await this.pullRepo(repo);
     }
   }
 
-  async pushSubtree(entry: SubtreeEntry): Promise<void> {
+  async pushRepo(entry: RepoEntry): Promise<void> {
     const destPath = join(this.getVaultPath(), entry.prefix);
     new Notice(`"${entry.prefix}" を push しています...`);
     try {
@@ -463,22 +463,22 @@ export default class GitSubtreePlugin extends Plugin {
     }
   }
 
-  async pushAllSubtrees(): Promise<void> {
-    if (this.settings.subtrees.length === 0) {
-      new Notice('登録済みの子リポジトリがありません');
+  async pushAllRepos(): Promise<void> {
+    if (this.settings.repos.length === 0) {
+      new Notice('登録済みのリポジトリがありません');
       return;
     }
-    for (const st of this.settings.subtrees) {
-      await this.pushSubtree(st);
+    for (const repo of this.settings.repos) {
+      await this.pushRepo(repo);
     }
   }
 
-  async switchSubtreeBranch(entry: SubtreeEntry, newBranch: string): Promise<void> {
-    const idx = this.settings.subtrees.findIndex((st) => st.prefix === entry.prefix);
+  async switchBranch(entry: RepoEntry, newBranch: string): Promise<void> {
+    const idx = this.settings.repos.findIndex((repo) => repo.prefix === entry.prefix);
     if (idx === -1) return;
 
-    const oldBranch = this.settings.subtrees[idx].branch;
-    this.settings.subtrees[idx].branch = newBranch;
+    const oldBranch = this.settings.repos[idx].branch;
+    this.settings.repos[idx].branch = newBranch;
     await this.saveSettings();
     new Notice(`"${entry.prefix}" のブランチを "${oldBranch}" から "${newBranch}" に変更しました`);
   }
@@ -501,10 +501,10 @@ export default class GitSubtreePlugin extends Plugin {
 // 設定タブ
 // ---------------------------------------------------------------------------
 
-class GitSubtreeSettingTab extends PluginSettingTab {
-  plugin: GitSubtreePlugin;
+class GitNestSettingTab extends PluginSettingTab {
+  plugin: GitNestPlugin;
 
-  constructor(app: App, plugin: GitSubtreePlugin) {
+  constructor(app: App, plugin: GitNestPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -512,31 +512,31 @@ class GitSubtreeSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl('h2', { text: '子リポジトリ設定' });
+    containerEl.createEl('h2', { text: 'Git Nest 設定' });
 
-    // ---- 登録済み子リポジトリ一覧 ----
+    // ---- 登録済みリポジトリ一覧 ----
 
-    containerEl.createEl('h3', { text: '登録済み子リポジトリ' });
+    containerEl.createEl('h3', { text: '登録済みリポジトリ' });
 
-    if (this.plugin.settings.subtrees.length === 0) {
+    if (this.plugin.settings.repos.length === 0) {
       containerEl.createEl('p', {
-        text: '登録済みの子リポジトリがありません。コマンドパレットか、フォルダの右クリックメニューから追加してください。',
+        text: '登録済みのリポジトリがありません。コマンドパレットか、フォルダの右クリックメニューから追加してください。',
         attr: { style: 'opacity:0.7;' },
       });
     }
 
-    this.plugin.settings.subtrees.forEach((st, idx) => {
+    this.plugin.settings.repos.forEach((repo, idx) => {
       const card = containerEl.createDiv();
       card.style.cssText =
         'border:1px solid var(--background-modifier-border);border-radius:6px;padding:12px;margin-bottom:12px;';
 
-      card.createEl('strong', { text: st.prefix });
+      card.createEl('strong', { text: repo.prefix });
 
       const rows: Array<[string, string]> = [
-        ['Remote URL', st.remote],
-        ['Remote 名', st.remoteName],
-        ['Branch', st.branch],
-        ...(st.subdir ? [['サブフォルダ', st.subdir] as [string, string]] : []),
+        ['Remote URL', repo.remote],
+        ['Remote 名', repo.remoteName],
+        ['Branch', repo.branch],
+        ...(repo.subdir ? [['サブフォルダ', repo.subdir] as [string, string]] : []),
       ];
       rows.forEach(([label, value]) => {
         const p = card.createEl('p');
@@ -551,34 +551,34 @@ class GitSubtreeSettingTab extends PluginSettingTab {
       const actions = card.createDiv({ attr: { style: 'margin-top:10px;display:flex;gap:8px;' } });
 
       const pullBtn = actions.createEl('button', { text: 'Pull' });
-      pullBtn.addEventListener('click', () => this.plugin.pullSubtree(st));
+      pullBtn.addEventListener('click', () => this.plugin.pullRepo(repo));
 
       const pushBtn = actions.createEl('button', { text: 'Push' });
-      pushBtn.addEventListener('click', () => this.plugin.pushSubtree(st));
+      pushBtn.addEventListener('click', () => this.plugin.pushRepo(repo));
 
       const switchBtn = actions.createEl('button', { text: 'ブランチ切り替え' });
       switchBtn.addEventListener('click', () =>
-        new SwitchBranchModal(this.plugin.app, this.plugin, st).open()
+        new SwitchBranchModal(this.plugin.app, this.plugin, repo).open()
       );
 
       const removeBtn = actions.createEl('button', { text: '削除' });
       removeBtn.style.color = 'var(--text-error)';
       removeBtn.style.marginLeft = 'auto';
       removeBtn.addEventListener('click', async () => {
-        this.plugin.settings.subtrees.splice(idx, 1);
+        this.plugin.settings.repos.splice(idx, 1);
         await this.plugin.saveSettings();
         this.display();
       });
     });
 
-    // ---- 子リポジトリ追加ボタン ----
+    // ---- リポジトリ追加ボタン ----
 
     new Setting(containerEl)
       .addButton((btn) =>
         btn
-          .setButtonText('子リポジトリを追加')
+          .setButtonText('リポジトリを追加')
           .setCta()
-          .onClick(() => new AddSubtreeModal(this.plugin.app, this.plugin).open())
+          .onClick(() => new AddRepoModal(this.plugin.app, this.plugin).open())
       );
   }
 }
