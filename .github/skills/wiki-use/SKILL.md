@@ -1,6 +1,6 @@
 ---
 name: wiki-use
-description: Karpathy LLM Wiki パターンに基づく知識ベース管理スキル。「wikiに取り込んで」「ソースを取り込んで」でingest、「wikiを検索して」「〜について調べて」でquery、「wikiを初期化して」でinit、「wikiをチェックして」「リントして」でlintが発動する。ソースから概念ページを自動生成・更新し、クロスリファレンスを維持する。
+description: Karpathy LLM Wiki パターンに基づく知識ベース管理スキル。「wikiに取り込んで」「wikiに追加して」「URLをwikiに保存して」でingest、「wikiを検索して」でquery、「wikiを初期化して」でinit、「wikiをチェックして」でlintが発動する。ソース・URLから概念ページを自動生成・更新する。
 metadata:
   version: 1.0.0
   tier: experimental
