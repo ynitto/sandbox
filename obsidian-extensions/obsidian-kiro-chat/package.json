@@ -1,0 +1,15 @@
+{
+  "name": "obsidian-kiro-chat",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild main.ts --bundle --external:obsidian --external:electron --external:@codemirror --platform=node --target=es2018 --outfile=main.js",
+    "dev": "esbuild main.ts --bundle --external:obsidian --external:electron --external:@codemirror --platform=node --target=es2018 --outfile=main.js --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.20.0",
+    "obsidian": "latest",
+    "typescript": "^5.0.0"
+  }
+}

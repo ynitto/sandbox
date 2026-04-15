@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-kiro-chat",
+  "name": "Kiro Chat",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Chat with kiro-cli via ACP (Agent Client Protocol)",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}
