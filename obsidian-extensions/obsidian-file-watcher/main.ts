@@ -20,6 +20,7 @@ interface FileWatchRule {
   events: ('create' | 'modify')[];
   commandId: string;
   enabled: boolean;
+  activateFile: boolean; // コマンド実行前にトリガーファイルをアクティブにする
 }
 
 interface ScheduleRule {
@@ -28,6 +29,7 @@ interface ScheduleRule {
   schedule: string; // cron expression: "分 時 日 月 曜日"
   commandId: string;
   enabled: boolean;
+  filePath?: string;    // 実行前に開くファイル (省略可)
   lastRunMinute?: string; // "YYYY-M-D-H-MM" で同分内の二重実行を防ぐ
 }
 
@@ -185,6 +187,7 @@ class FileWatchRuleModal extends Modal {
           events: ['create', 'modify'],
           commandId: '',
           enabled: true,
+          activateFile: false,
         };
     this.onSave = onSave;
   }
@@ -241,6 +244,14 @@ class FileWatchRuleModal extends Modal {
         for (const cmd of commands) dd.addOption(cmd.id, cmd.name);
         dd.setValue(this.rule.commandId).onChange((v) => (this.rule.commandId = v));
       });
+
+    // ファイルをアクティブにする
+    new Setting(contentEl)
+      .setName('ファイルをアクティブにして実行')
+      .setDesc('ON にするとコマンド実行前にトリガーとなったファイルを開いてアクティブにします')
+      .addToggle((t) =>
+        t.setValue(this.rule.activateFile).onChange((v) => (this.rule.activateFile = v))
+      );
 
     // ボタン
     const btnRow = contentEl.createDiv({
@@ -308,6 +319,19 @@ class ScheduleRuleModal extends Modal {
           .setPlaceholder('0 9 * * *')
           .setValue(this.rule.schedule)
           .onChange((v) => (this.rule.schedule = v.trim()))
+      );
+
+    new Setting(contentEl)
+      .setName('対象ファイル (省略可)')
+      .setDesc('指定するとコマンド実行前にそのファイルを開きアクティブにします (Vault 内の相対パス)')
+      .addText((t) =>
+        t
+          .setPlaceholder('notes/target.md')
+          .setValue(this.rule.filePath ?? '')
+          .onChange((v) => {
+            const trimmed = v.trim();
+            this.rule.filePath = trimmed || undefined;
+          })
       );
 
     const commands = getCommands(this.app);
@@ -386,10 +410,11 @@ class FileWatcherSettingTab extends PluginSettingTab {
 
     for (const rule of this.plugin.settings.fileWatchRules) {
       const cmdName = this.commandName(rule.commandId);
+      const activateLabel = rule.activateFile ? '  |  ファイルをアクティブ化' : '';
       new Setting(containerEl)
         .setName(rule.name || '(名前なし)')
         .setDesc(
-          `パターン: ${rule.pathPattern}  |  イベント: ${rule.events.join(', ')}  |  コマンド: ${cmdName}`
+          `パターン: ${rule.pathPattern}  |  イベント: ${rule.events.join(', ')}  |  コマンド: ${cmdName}${activateLabel}`
         )
         .addToggle((tog) =>
           tog.setValue(rule.enabled).onChange(async (v) => {
@@ -459,9 +484,10 @@ class FileWatcherSettingTab extends PluginSettingTab {
 
     for (const rule of this.plugin.settings.scheduleRules) {
       const cmdName = this.commandName(rule.commandId);
+      const fileLabel = rule.filePath ? `  |  ファイル: ${rule.filePath}` : '';
       new Setting(containerEl)
         .setName(rule.name || '(名前なし)')
-        .setDesc(`スケジュール: ${rule.schedule}  |  コマンド: ${cmdName}`)
+        .setDesc(`スケジュール: ${rule.schedule}  |  コマンド: ${cmdName}${fileLabel}`)
         .addToggle((tog) =>
           tog.setValue(rule.enabled).onChange(async (v) => {
             rule.enabled = v;
@@ -537,16 +563,22 @@ export default class FileWatcherPlugin extends Plugin {
 
   // ----------------------------------------------------------
 
-  private handleFileEvent(event: 'create' | 'modify', file: TFile): void {
+  private async handleFileEvent(event: 'create' | 'modify', file: TFile): Promise<void> {
     for (const rule of this.settings.fileWatchRules) {
       if (!rule.enabled) continue;
       if (!rule.events.includes(event)) continue;
       if (!matchesGlob(file.path, rule.pathPattern)) continue;
+
+      if (rule.activateFile) {
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.openFile(file);
+      }
+
       this.executeCommand(rule.commandId, `ファイル監視ルール "${rule.name}"`);
     }
   }
 
-  private checkSchedules(): void {
+  private async checkSchedules(): Promise<void> {
     const now = new Date();
     const key = minuteKey(now);
     let dirty = false;
@@ -560,6 +592,20 @@ export default class FileWatcherPlugin extends Plugin {
 
       rule.lastRunMinute = key;
       dirty = true;
+
+      if (rule.filePath) {
+        const target = this.app.vault.getAbstractFileByPath(rule.filePath);
+        if (target instanceof TFile) {
+          const leaf = this.app.workspace.getLeaf(false);
+          await leaf.openFile(target);
+        } else {
+          new Notice(
+            `File Watcher: ファイルが見つかりません "${rule.filePath}"\n(スケジュールルール "${rule.name}")`,
+            6000
+          );
+        }
+      }
+
       this.executeCommand(rule.commandId, `スケジュールルール "${rule.name}"`);
     }
 
