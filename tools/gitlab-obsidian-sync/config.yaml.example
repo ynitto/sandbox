@@ -1,0 +1,102 @@
+# gitlab-obsidian-sync 設定ファイルサンプル
+# このファイルをコピーして gitlab-obsidian-sync.yaml という名前で保存してください。
+#
+# 検索順序:
+#   1. --config オプションで明示指定したパス
+#   2. カレントディレクトリの gitlab-obsidian-sync.yaml / .yml / .json
+#   3. HOME の gitlab-obsidian-sync.yaml / .yml / .json
+
+# ---------------------------------------------------------------------------
+# グローバル設定
+# ---------------------------------------------------------------------------
+global:
+  # Obsidian Vault のルートパス（絶対パス）
+  vault_path: ~/Documents/Obsidian/MyVault
+
+  # デフォルトのポーリング間隔（分）。各リポジトリで上書き可能
+  poll_interval_minutes: 5
+
+  # Issue ノートのテンプレート（省略時はデフォルトテンプレートを使用）
+  # 利用可能なプレースホルダー:
+  #   {issue_id}   IID (プロジェクト内の連番)
+  #   {title}      Issue タイトル
+  #   {project}    リポジトリ名
+  #   {state}      opened / closed
+  #   {labels}     ラベルの JSON 配列
+  #   {author}     作成者のユーザー名
+  #   {created_at} 作成日時 (ISO 8601)
+  #   {updated_at} 最終更新日時 (ISO 8601)
+  #   {url}        Issue の URL
+  #   {description} Issue の説明文
+  #
+  # issue_template: |
+  #   ---
+  #   issue_id: {issue_id}
+  #   title: "{title}"
+  #   project: "{project}"
+  #   state: {state}
+  #   labels: {labels}
+  #   author: "{author}"
+  #   created_at: {created_at}
+  #   updated_at: {updated_at}
+  #   url: "{url}"
+  #   status: pending
+  #   kiro_executed: false
+  #   ---
+  #
+  #   # {title}
+  #
+  #   ## Description
+  #
+  #   {description}
+  #
+  #   ## Kiro Task
+  #
+  #   <!-- status を "ready" に変更すると Kiro の実行トリガーとなります -->
+
+# ---------------------------------------------------------------------------
+# リポジトリ定義
+# ---------------------------------------------------------------------------
+repositories:
+  # ---- GitLab.com のパブリック/プライベートプロジェクト ----
+  - name: "my-api"
+    gitlab_url: "https://gitlab.com"
+    # プロジェクト ID: GitLab の プロジェクト設定 > 一般 で確認できます
+    project_id: 12345678
+    # アクセストークン: GitLab > ユーザー設定 > アクセストークン (read_api スコープ)
+    private_token: "glpat-xxxxxxxxxxxxxxxxxxxx"
+
+    # 同期する Issue の状態: "opened" / "closed" / "all"
+    state: "opened"
+
+    # ラベルでフィルタリング（省略時は全 Issue）
+    labels_filter: []
+    # labels_filter:
+    #   - "kiro-ready"
+    #   - "backend"
+
+    # Vault 内の保存先ディレクトリ（vault_path からの相対パス）
+    output_dir: "issues/my-api"
+
+    # このリポジトリのポーリング間隔（省略時は global.poll_interval_minutes）
+    poll_interval_minutes: 5
+
+  # ---- オンプレミス GitLab の別プロジェクト ----
+  - name: "company-backend"
+    gitlab_url: "https://gitlab.company.example.com"
+    project_id: 42
+    private_token: "glpat-yyyyyyyyyyyyyyyyyyyy"
+    state: "all"
+    labels_filter:
+      - "ai-task"
+    output_dir: "issues/company-backend"
+    poll_interval_minutes: 15
+
+  # ---- 別プロジェクト (10 分間隔) ----
+  # - name: "frontend"
+  #   gitlab_url: "https://gitlab.com"
+  #   project_id: 99999999
+  #   private_token: "glpat-zzzzzzzzzzzzzzzzzzzz"
+  #   state: "opened"
+  #   output_dir: "issues/frontend"
+  #   poll_interval_minutes: 10
