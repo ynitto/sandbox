@@ -9,23 +9,66 @@ import {
   normalizePath,
 } from 'obsidian';
 
+// ============================================================
+// Electron clipboard (desktop only)
+// ============================================================
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let electronClipboard: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  electronClipboard = require('electron').clipboard;
+} catch (e) {
+  console.error('[ClipboardHistory] Failed to access Electron clipboard:', e);
+}
+
+// ============================================================
+// Types
+// ============================================================
+
 interface ClipboardEntry {
   id: string;
   content: string;
   timestamp: number;
 }
 
-interface ClipboardHistorySettings {
+interface PluginSettings {
   maxHistorySize: number;
   saveDirectory: string;
-  pollingInterval: number;
+  pollingInterval: number; // ms
+  expiryHours: number;
 }
 
-const DEFAULT_SETTINGS: ClipboardHistorySettings = {
+interface PluginData {
+  settings: PluginSettings;
+  history: ClipboardEntry[];
+}
+
+const DEFAULT_SETTINGS: PluginSettings = {
   maxHistorySize: 50,
   saveDirectory: 'Clipboard History',
   pollingInterval: 1000,
+  expiryHours: 24,
 };
+
+// ============================================================
+// Helpers
+// ============================================================
+
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function toSafeFileName(content: string): string {
+  const firstLine = content.split('\n')[0].trim().slice(0, 50);
+  return firstLine.replace(/[\\/:*?"<>|]/g, '_') || 'clipboard';
+}
+
+// ============================================================
+// View
+// ============================================================
 
 export const VIEW_TYPE_CLIPBOARD = 'clipboard-history-view';
 
@@ -62,15 +105,19 @@ class ClipboardHistoryView extends ItemView {
     header.createEl('h4', { text: 'Clipboard History' });
 
     const clearBtn = header.createEl('button', { text: 'Clear All', cls: 'ch-btn mod-warning' });
-    clearBtn.addEventListener('click', () => {
-      this.plugin.clearHistory();
+    clearBtn.addEventListener('click', async () => {
+      if (!confirm('Clear all clipboard history?')) return;
+      await this.plugin.clearHistory();
       this.refresh();
     });
 
     const history = this.plugin.getHistory();
 
     if (history.length === 0) {
-      container.createEl('p', { text: 'No clipboard history yet. Start copying text!', cls: 'ch-empty' });
+      container.createEl('p', {
+        text: 'No clipboard history yet. Start copying text!',
+        cls: 'ch-empty',
+      });
       return;
     }
 
@@ -81,15 +128,13 @@ class ClipboardHistoryView extends ItemView {
 
       const meta = item.createDiv({ cls: 'ch-meta' });
       meta.createEl('span', {
-        text: new Date(entry.timestamp).toLocaleString(),
+        text: formatTimestamp(entry.timestamp),
         cls: 'ch-timestamp',
       });
 
       const preview = item.createDiv({ cls: 'ch-preview' });
       preview.setText(
-        entry.content.length > 300
-          ? entry.content.substring(0, 300) + '…'
-          : entry.content
+        entry.content.length > 300 ? entry.content.substring(0, 300) + '…' : entry.content
       );
 
       const actions = item.createDiv({ cls: 'ch-actions' });
@@ -116,17 +161,18 @@ class ClipboardHistoryView extends ItemView {
   async onClose(): Promise<void> {}
 }
 
+// ============================================================
+// Plugin
+// ============================================================
+
 export default class ClipboardHistoryPlugin extends Plugin {
-  settings: ClipboardHistorySettings = { ...DEFAULT_SETTINGS };
+  settings: PluginSettings = { ...DEFAULT_SETTINGS };
   private history: ClipboardEntry[] = [];
   private pollingTimer: number | null = null;
   private lastContent = '';
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private electronClipboard: any;
 
   async onload(): Promise<void> {
-    await this.loadSettings();
-    this.initElectronClipboard();
+    await this.loadPluginData();
 
     this.registerView(VIEW_TYPE_CLIPBOARD, (leaf) => new ClipboardHistoryView(leaf, this));
 
@@ -156,8 +202,8 @@ export default class ClipboardHistoryPlugin extends Plugin {
     this.addCommand({
       id: 'clear-clipboard-history',
       name: 'Clear Clipboard History',
-      callback: () => {
-        this.clearHistory();
+      callback: async () => {
+        await this.clearHistory();
         new Notice('Clipboard history cleared.');
       },
     });
@@ -170,27 +216,23 @@ export default class ClipboardHistoryPlugin extends Plugin {
     this.stopPolling();
   }
 
-  private initElectronClipboard(): void {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const electron = require('electron');
-      this.electronClipboard = electron.clipboard;
-    } catch (e) {
-      console.error('[ClipboardHistory] Failed to access Electron clipboard:', e);
-    }
-  }
+  // ----------------------------------------------------------
+  // Polling
+  // ----------------------------------------------------------
 
   startPolling(): void {
     if (this.pollingTimer !== null) return;
 
-    // Snapshot the current clipboard so we don't treat it as a new entry on load
-    if (this.electronClipboard) {
+    if (electronClipboard) {
       try {
-        this.lastContent = this.electronClipboard.readText();
+        this.lastContent = electronClipboard.readText();
       } catch (_) {}
     }
 
-    this.pollingTimer = window.setInterval(() => this.checkClipboard(), this.settings.pollingInterval);
+    this.pollingTimer = window.setInterval(
+      () => this.checkClipboard(),
+      this.settings.pollingInterval
+    );
   }
 
   stopPolling(): void {
@@ -201,9 +243,9 @@ export default class ClipboardHistoryPlugin extends Plugin {
   }
 
   private checkClipboard(): void {
-    if (!this.electronClipboard) return;
+    if (!electronClipboard) return;
     try {
-      const current = this.electronClipboard.readText();
+      const current = electronClipboard.readText();
       if (current && current !== this.lastContent) {
         this.lastContent = current;
         this.addToHistory(current);
@@ -214,55 +256,62 @@ export default class ClipboardHistoryPlugin extends Plugin {
   private addToHistory(content: string): void {
     if (!content.trim()) return;
 
-    const entry: ClipboardEntry = {
+    this.history.unshift({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       content,
       timestamp: Date.now(),
-    };
+    });
 
-    this.history.unshift(entry);
+    this.pruneHistory();
+    this.refreshView();
+    this.savePluginDataAsync();
+  }
 
+  // ----------------------------------------------------------
+  // History management
+  // ----------------------------------------------------------
+
+  private pruneHistory(): void {
+    const cutoff = Date.now() - this.settings.expiryHours * 60 * 60 * 1000;
+    this.history = this.history.filter((e) => e.timestamp >= cutoff);
     if (this.history.length > this.settings.maxHistorySize) {
       this.history.length = this.settings.maxHistorySize;
     }
-
-    this.refreshView();
   }
 
   getHistory(): ClipboardEntry[] {
     return this.history;
   }
 
-  clearHistory(): void {
+  async clearHistory(): Promise<void> {
     this.history = [];
     this.refreshView();
+    await this.savePluginData();
   }
 
   removeEntry(id: string): void {
     this.history = this.history.filter((e) => e.id !== id);
+    this.savePluginDataAsync();
   }
 
   async saveEntryToFile(entry: ClipboardEntry): Promise<void> {
-    const dir = this.settings.saveDirectory;
-    const ts = new Date(entry.timestamp)
-      .toISOString()
-      .replace(/[:.]/g, '-')
-      .slice(0, 19);
-    const path = normalizePath(`${dir}/clipboard-${ts}.md`);
+    const dir = normalizePath(this.settings.saveDirectory);
 
     if (!(await this.app.vault.adapter.exists(dir))) {
       await this.app.vault.createFolder(dir);
     }
 
-    // Avoid duplicate file names by appending a counter
-    let finalPath = path;
+    const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
+    const namePart = toSafeFileName(entry.content);
+    let filePath = normalizePath(`${dir}/${datePrefix}_${namePart}.md`);
+
     let counter = 1;
-    while (await this.app.vault.adapter.exists(finalPath)) {
-      finalPath = normalizePath(`${dir}/clipboard-${ts}-${counter++}.md`);
+    while (await this.app.vault.adapter.exists(filePath)) {
+      filePath = normalizePath(`${dir}/${datePrefix}_${namePart}_${counter++}.md`);
     }
 
-    await this.app.vault.create(finalPath, entry.content);
-    new Notice(`Saved: ${finalPath}`);
+    await this.app.vault.create(filePath, entry.content);
+    new Notice(`Saved: ${filePath}`);
   }
 
   async activateView(): Promise<void> {
@@ -283,14 +332,44 @@ export default class ClipboardHistoryPlugin extends Plugin {
     });
   }
 
-  async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-  }
+  // ----------------------------------------------------------
+  // Persistence
+  // ----------------------------------------------------------
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    this.pruneHistory();
+    await this.savePluginData();
+  }
+
+  private async loadPluginData(): Promise<void> {
+    const raw = await this.loadData();
+    if (raw && typeof raw === 'object' && 'settings' in raw) {
+      const data = raw as Partial<PluginData>;
+      this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings ?? {});
+      this.history = data.history ?? [];
+    } else {
+      // legacy: only settings were saved
+      this.settings = Object.assign({}, DEFAULT_SETTINGS, raw ?? {});
+      this.history = [];
+    }
+    this.pruneHistory();
+  }
+
+  private async savePluginData(): Promise<void> {
+    const data: PluginData = { settings: this.settings, history: this.history };
+    await this.saveData(data);
+  }
+
+  private savePluginDataAsync(): void {
+    this.savePluginData().catch((e) =>
+      console.error('[ClipboardHistory] save failed:', e)
+    );
   }
 }
+
+// ============================================================
+// Settings Tab
+// ============================================================
 
 class ClipboardHistorySettingTab extends PluginSettingTab {
   plugin: ClipboardHistoryPlugin;
@@ -307,7 +386,7 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Max history size')
-      .setDesc('Maximum number of clipboard entries to keep in memory.')
+      .setDesc('Maximum number of clipboard entries to keep.')
       .addText((text) =>
         text
           .setPlaceholder('50')
@@ -329,7 +408,7 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
           .setPlaceholder('Clipboard History')
           .setValue(this.plugin.settings.saveDirectory)
           .onChange(async (value) => {
-            this.plugin.settings.saveDirectory = value;
+            this.plugin.settings.saveDirectory = value.trim() || 'Clipboard History';
             await this.plugin.saveSettings();
           })
       );
@@ -348,6 +427,22 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
               this.plugin.stopPolling();
               this.plugin.startPolling();
+            }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('History expiry (hours)')
+      .setDesc('Entries older than this are automatically removed. Set 0 to keep forever.')
+      .addText((text) =>
+        text
+          .setPlaceholder('24')
+          .setValue(this.plugin.settings.expiryHours.toString())
+          .onChange(async (value) => {
+            const num = parseInt(value, 10);
+            if (!isNaN(num) && num >= 0) {
+              this.plugin.settings.expiryHours = num;
+              await this.plugin.saveSettings();
             }
           })
       );
