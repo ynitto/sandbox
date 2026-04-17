@@ -11,75 +11,154 @@ import {
   TAbstractFile,
   TFile,
 } from 'obsidian';
-import { spawn } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
+import { mkdirSync, writeFileSync } from 'fs';
+import { basename, extname, join } from 'path';
+import { tmpdir } from 'os';
 
 // ---------------------------------------------------------------------------
-// 設定
+// 型定義・設定
 // ---------------------------------------------------------------------------
 
-type KiroEnvironment = 'windows' | 'wsl';
+type KiroMode = 'wt-wsl' | 'wt-windows' | 'direct';
 
 interface KiroBridgeSettings {
-  /** 実行環境 */
-  environment: KiroEnvironment;
-  /** WSL ディストリビューション名 */
+  mode: KiroMode;
   wslDistro: string;
-  /** KiroRun.ps1 への Windows 絶対パス */
-  scriptPath: string;
-  /** kiro コマンド (Windows 環境) */
-  kiroCmdWindows: string;
-  /** kiro コマンド (WSL 環境) */
-  kiroCmdWsl: string;
-  /** 作業ディレクトリ (空の場合は Vault ルートを使用) */
+  kiroPath: string;
+  kiroFlags: string;
+  /** プレースホルダー: {file} {filename} {title} */
+  promptTemplate: string;
   workingDirectory: string;
-  /** kiro-cli に追加で渡すフラグ */
-  extraFlags: string;
 }
 
 const DEFAULT_SETTINGS: KiroBridgeSettings = {
-  environment: 'wsl',
+  mode: 'wt-wsl',
   wslDistro: 'Ubuntu',
-  scriptPath: 'C:\\tools\\kiro-bridge\\KiroRun.ps1',
-  kiroCmdWindows: 'kiro-cli',
-  kiroCmdWsl: 'kiro-cli',
+  kiroPath: 'kiro-cli',
+  kiroFlags: '--trust-all-tools',
+  promptTemplate: '以下のタスクを実行してください:\n\n{file}',
   workingDirectory: '',
-  extraFlags: '--trust-all-tools',
 };
 
 // ---------------------------------------------------------------------------
-// 環境選択モーダル (コマンドパレットから環境を一時的に切り替えたい場合)
+// ユーティリティ
 // ---------------------------------------------------------------------------
 
-class EnvSelectModal extends Modal {
-  private onChoose: (env: KiroEnvironment) => void;
+function winToWslPath(winPath: string): string {
+  return winPath
+    .replace(/^([A-Za-z]):[\\\/]/, (_, d) => `/mnt/${d.toLowerCase()}/`)
+    .replace(/\\/g, '/');
+}
 
-  constructor(app: App, onChoose: (env: KiroEnvironment) => void) {
+function expandPrompt(template: string, filePath: string): string {
+  const name = basename(filePath);
+  const title = basename(filePath, extname(filePath));
+  return template
+    .replace(/\{file\}/g, filePath)
+    .replace(/\{filename\}/g, name)
+    .replace(/\{title\}/g, title);
+}
+
+function ensureTmpDir(): string {
+  const dir = join(tmpdir(), 'kiro-bridge');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** bash シングルクォート内のエスケープ */
+function shEsc(s: string): string {
+  return s.replace(/'/g, "'\\''");
+}
+
+/** PowerShell シングルクォート内のエスケープ */
+function psEsc(s: string): string {
+  return s.replace(/'/g, "''");
+}
+
+// ---------------------------------------------------------------------------
+// 出力モーダル (direct モード用)
+// ---------------------------------------------------------------------------
+
+class KiroOutputModal extends Modal {
+  private outputEl!: HTMLPreElement;
+
+  constructor(
+    app: App,
+    private readonly noteTitle: string,
+    private readonly proc: ChildProcess,
+  ) {
     super(app);
-    this.onChoose = onChoose;
   }
 
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h3', { text: 'Kiro Bridge: 実行環境を選択' });
+    contentEl.addClass('kiro-output-modal');
 
-    const makeBtn = (label: string, env: KiroEnvironment) => {
-      const btn = contentEl.createEl('button');
-      btn.style.cssText = 'display:block;width:100%;margin-bottom:8px;padding:10px 14px;cursor:pointer;text-align:left;font-size:1em;';
-      btn.textContent = label;
-      btn.addEventListener('click', () => {
-        this.close();
-        this.onChoose(env);
-      });
+    const header = contentEl.createDiv('kiro-output-header');
+    header.createEl('strong', { text: `Kiro: ${this.noteTitle}` });
+    const statusEl = header.createEl('span', { text: ' 実行中…', cls: 'kiro-status-running' });
+
+    this.outputEl = contentEl.createEl('pre', { cls: 'kiro-output-pre' });
+
+    const append = (text: string) => {
+      this.outputEl.textContent = (this.outputEl.textContent ?? '') + text;
+      this.outputEl.scrollTop = this.outputEl.scrollHeight;
     };
 
-    makeBtn('🪟  Windows  (PowerShell)', 'windows');
-    makeBtn('🐧  WSL  (Linux / Bash)', 'wsl');
+    this.proc.stdout?.on('data', (d: Buffer) => append(d.toString()));
+    this.proc.stderr?.on('data', (d: Buffer) => append(d.toString()));
+    this.proc.on('exit', (code) => {
+      const ok = code === 0;
+      statusEl.textContent = ` 完了 (code: ${code ?? '?'})`;
+      statusEl.className = ok ? 'kiro-status-ok' : 'kiro-status-err';
+      append(`\n[終了: code ${code ?? '?'}]`);
+    });
+    this.proc.on('error', (err) => {
+      statusEl.textContent = ' エラー';
+      statusEl.className = 'kiro-status-err';
+      append(`\n[エラー: ${err.message}]`);
+    });
   }
 
   onClose(): void {
+    if (this.proc.exitCode === null) this.proc.kill();
     this.contentEl.empty();
   }
+}
+
+// ---------------------------------------------------------------------------
+// モード選択モーダル
+// ---------------------------------------------------------------------------
+
+class ModeSelectModal extends Modal {
+  constructor(
+    app: App,
+    private readonly onChoose: (mode: KiroMode) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: 'Kiro Bridge: 実行モードを選択' });
+
+    const modes: [KiroMode, string][] = [
+      ['wt-wsl',     '🐧  WSL  (Windows Terminal + Bash)'],
+      ['wt-windows', '🪟  Windows  (Windows Terminal + PowerShell)'],
+      ['direct',     '⚡  Direct  (直接実行 / Mac・Linux対応)'],
+    ];
+
+    modes.forEach(([mode, label]) => {
+      const btn = contentEl.createEl('button', { cls: 'kiro-mode-btn' });
+      btn.textContent = label;
+      btn.addEventListener('click', () => { this.close(); this.onChoose(mode); });
+    });
+  }
+
+  onClose(): void { this.contentEl.empty(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -92,78 +171,44 @@ export default class KiroBridgePlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
-    // ── コマンド登録 ──
-
-    // デフォルト環境で実行
     this.addCommand({
       id: 'run-note',
       name: 'Run current note as task',
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         if (file instanceof TFile) {
-          if (!checking) this.runNote(file, this.settings.environment);
+          if (!checking) this.runNote(file, this.settings.mode);
           return true;
         }
         return false;
       },
     });
 
-    // 環境を選んで実行
     this.addCommand({
-      id: 'run-note-select-env',
-      name: 'Run current note as task (select environment)',
+      id: 'run-note-select-mode',
+      name: 'Run current note as task (select mode)',
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         if (file instanceof TFile) {
-          if (!checking) {
-            new EnvSelectModal(this.app, (env) => this.runNote(file, env)).open();
-          }
+          if (!checking)
+            new ModeSelectModal(this.app, (mode) => this.runNote(file, mode)).open();
           return true;
         }
         return false;
       },
     });
 
-    // Windows 固定
-    this.addCommand({
-      id: 'run-note-windows',
-      name: 'Run current note as task (Windows)',
-      checkCallback: (checking) => {
-        const file = this.app.workspace.getActiveFile();
-        if (file instanceof TFile) {
-          if (!checking) this.runNote(file, 'windows');
-          return true;
-        }
-        return false;
-      },
-    });
-
-    // WSL 固定
-    this.addCommand({
-      id: 'run-note-wsl',
-      name: 'Run current note as task (WSL)',
-      checkCallback: (checking) => {
-        const file = this.app.workspace.getActiveFile();
-        if (file instanceof TFile) {
-          if (!checking) this.runNote(file, 'wsl');
-          return true;
-        }
-        return false;
-      },
-    });
-
-    // ── ファイルコンテキストメニュー ──
     this.registerEvent(
       this.app.workspace.on('file-menu', (menu: Menu, abstractFile: TAbstractFile) => {
         if (!(abstractFile instanceof TFile)) return;
-        const file = abstractFile;
-        menu.addItem((item: MenuItem) => {
+        const f = abstractFile;
+        menu.addItem((item: MenuItem) =>
           item
             .setTitle('Kiro Bridge で実行')
             .setIcon('bot')
-            .onClick(() => setTimeout(() => this.runNote(file, this.settings.environment), 50));
-        });
-      })
+            .onClick(() => setTimeout(() => this.runNote(f, this.settings.mode), 50)),
+        );
+      }),
     );
 
     this.addSettingTab(new KiroBridgeSettingTab(this.app, this));
@@ -173,43 +218,105 @@ export default class KiroBridgePlugin extends Plugin {
   // 実行ロジック
   // ---------------------------------------------------------------------------
 
-  private runNote(file: TFile, env: KiroEnvironment): void {
+  private runNote(file: TFile, mode: KiroMode): void {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) {
       new Notice('Kiro Bridge: FileSystemAdapter が利用できません');
       return;
     }
 
-    const basePath = adapter.getBasePath(); // Windows 絶対パス
-    // Obsidian の file.path はスラッシュ区切りのため変換
-    const winFilePath = `${basePath}\\${file.path.replace(/\//g, '\\')}`;
+    const basePath = adapter.getBasePath();
+    const sep = basePath.includes('\\') ? '\\' : '/';
+    const nativeFilePath = basePath + sep + file.path.replace(/\//g, sep);
     const workDir = this.settings.workingDirectory.trim() || basePath;
 
-    const kiroCmd = env === 'wsl' ? this.settings.kiroCmdWsl : this.settings.kiroCmdWindows;
-
-    const psArgs = [
-      '-NonInteractive',
-      '-WindowStyle', 'Hidden',
-      '-File', this.settings.scriptPath,
-      '-FilePath', winFilePath,
-      '-Environment', env,
-      '-KiroCmd', kiroCmd,
-      '-WslDistro', this.settings.wslDistro,
-      '-WorkDir', workDir,
-    ];
-
-    if (this.settings.extraFlags.trim()) {
-      psArgs.push('-ExtraFlags', this.settings.extraFlags.trim());
+    try {
+      if (mode === 'wt-wsl')     this.runWtWsl(file, nativeFilePath, workDir);
+      else if (mode === 'wt-windows') this.runWtWindows(file, nativeFilePath, workDir);
+      else                            this.runDirect(file, nativeFilePath, workDir);
+    } catch (err: unknown) {
+      new Notice(`Kiro Bridge: エラー\n${err instanceof Error ? err.message : String(err)}`, 10000);
     }
+  }
 
-    const proc = spawn('powershell.exe', psArgs, {
+  /** Windows Terminal + WSL */
+  private runWtWsl(file: TFile, winFilePath: string, winWorkDir: string): void {
+    const wslFile    = winToWslPath(winFilePath);
+    const wslWorkDir = winToWslPath(winWorkDir);
+    const prompt     = expandPrompt(this.settings.promptTemplate, wslFile);
+    const flags      = this.settings.kiroFlags.trim();
+
+    const tmpDir     = ensureTmpDir();
+    const scriptPath = join(tmpDir, `kiro-${Date.now()}.sh`);
+    const wslScript  = winToWslPath(scriptPath);
+
+    const bashScript = [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `export PATH="$HOME/.local/bin:$HOME/.kiro/bin:/usr/local/bin:/usr/bin:$PATH"`,
+      `cd '${shEsc(wslWorkDir)}'`,
+      `'${shEsc(this.settings.kiroPath)}' ${flags} '${shEsc(prompt)}'`,
+    ].join('\n') + '\n';
+
+    writeFileSync(scriptPath, bashScript, { encoding: 'utf-8' });
+
+    // Windows Terminal は Store アプリのため Start-Process 経由で起動
+    const psCmd = `Start-Process wt -ArgumentList @('new-tab','--title','Kiro: ${psEsc(file.basename)}','wsl','-d','${psEsc(this.settings.wslDistro)}','--','bash','${psEsc(wslScript)}')`;
+    spawn('powershell.exe', ['-NonInteractive', '-WindowStyle', 'Hidden', '-Command', psCmd], {
       detached: true,
       stdio: 'ignore',
-    });
-    proc.unref();
+    }).unref();
 
-    const envLabel = env === 'wsl' ? `WSL (${this.settings.wslDistro})` : 'Windows';
-    new Notice(`Kiro Bridge: "${file.name}" を ${envLabel} で実行中…`);
+    new Notice(`Kiro Bridge: WSL (${this.settings.wslDistro}) で起動しました`);
+  }
+
+  /** Windows Terminal + PowerShell */
+  private runWtWindows(file: TFile, winFilePath: string, winWorkDir: string): void {
+    const prompt     = expandPrompt(this.settings.promptTemplate, winFilePath);
+    const flags      = this.settings.kiroFlags.trim();
+    const tmpDir     = ensureTmpDir();
+    const scriptPath = join(tmpDir, `kiro-${Date.now()}.ps1`);
+
+    const ps1 = [
+      `Set-Location '${psEsc(winWorkDir)}'`,
+      `& '${psEsc(this.settings.kiroPath)}' ${flags} '${psEsc(prompt)}'`,
+    ].join('\n');
+
+    writeFileSync(scriptPath, ps1, { encoding: 'utf-8' });
+
+    const psCmd = `Start-Process wt -ArgumentList @('new-tab','--title','Kiro: ${psEsc(file.basename)}','powershell','-NoExit','-File','${psEsc(scriptPath)}')`;
+    spawn('powershell.exe', ['-NonInteractive', '-WindowStyle', 'Hidden', '-Command', psCmd], {
+      detached: true,
+      stdio: 'ignore',
+    }).unref();
+
+    new Notice(`Kiro Bridge: Windows Terminal で起動しました`);
+  }
+
+  /** 直接実行 (Mac / Linux / Windows 共通) */
+  private runDirect(file: TFile, nativeFilePath: string, workDir: string): void {
+    const prompt = expandPrompt(this.settings.promptTemplate, nativeFilePath);
+    const flags  = this.settings.kiroFlags.trim().split(/\s+/).filter(Boolean);
+
+    const env = { ...process.env };
+    if (process.platform !== 'win32') {
+      const home = process.env.HOME ?? '';
+      env.PATH = [
+        home && `${home}/.local/bin`,
+        home && `${home}/.kiro/bin`,
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        process.env.PATH,
+      ].filter(Boolean).join(':');
+    }
+
+    const proc = spawn(this.settings.kiroPath, [...flags, prompt], {
+      cwd: workDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+
+    new KiroOutputModal(this.app, file.name, proc).open();
   }
 
   async loadSettings() {
@@ -226,11 +333,8 @@ export default class KiroBridgePlugin extends Plugin {
 // ---------------------------------------------------------------------------
 
 class KiroBridgeSettingTab extends PluginSettingTab {
-  plugin: KiroBridgePlugin;
-
-  constructor(app: App, plugin: KiroBridgePlugin) {
+  constructor(app: App, private readonly plugin: KiroBridgePlugin) {
     super(app, plugin);
-    this.plugin = plugin;
   }
 
   display(): void {
@@ -239,21 +343,22 @@ class KiroBridgeSettingTab extends PluginSettingTab {
     containerEl.createEl('h2', { text: 'Kiro Bridge 設定' });
 
     new Setting(containerEl)
-      .setName('デフォルト実行環境')
-      .setDesc('コマンド "Run current note as task" で使用する環境')
+      .setName('実行モード')
+      .setDesc('kiro-cli をどの環境で起動するか')
       .addDropdown((dd) =>
         dd
-          .addOption('wsl', '🐧 WSL (Linux)')
-          .addOption('windows', '🪟 Windows (PowerShell)')
-          .setValue(this.plugin.settings.environment)
+          .addOption('wt-wsl',     '🐧 WSL (Windows Terminal + Bash)')
+          .addOption('wt-windows', '🪟 Windows (Windows Terminal + PowerShell)')
+          .addOption('direct',     '⚡ Direct (直接実行 / Mac・Linux対応)')
+          .setValue(this.plugin.settings.mode)
           .onChange(async (v) => {
-            this.plugin.settings.environment = v as KiroEnvironment;
+            this.plugin.settings.mode = v as KiroMode;
             await this.plugin.saveSettings();
             this.display();
-          })
+          }),
       );
 
-    if (this.plugin.settings.environment === 'wsl') {
+    if (this.plugin.settings.mode === 'wt-wsl') {
       new Setting(containerEl)
         .setName('WSL ディストリビューション')
         .setDesc('使用する WSL ディストリビューション名 (例: Ubuntu, Debian)')
@@ -264,64 +369,36 @@ class KiroBridgeSettingTab extends PluginSettingTab {
             .onChange(async (v) => {
               this.plugin.settings.wslDistro = v.trim();
               await this.plugin.saveSettings();
-            })
+            }),
         );
     }
-
-    containerEl.createEl('h3', { text: 'スクリプト設定' });
-
-    new Setting(containerEl)
-      .setName('KiroRun.ps1 のパス')
-      .setDesc('KiroRun.ps1 への Windows 絶対パス')
-      .addText((t) =>
-        t
-          .setPlaceholder('C:\\tools\\kiro-bridge\\KiroRun.ps1')
-          .setValue(this.plugin.settings.scriptPath)
-          .onChange(async (v) => {
-            this.plugin.settings.scriptPath = v.trim();
-            await this.plugin.saveSettings();
-          })
-      );
 
     containerEl.createEl('h3', { text: 'kiro-cli 設定' });
 
     new Setting(containerEl)
-      .setName('kiro コマンド (Windows)')
-      .setDesc('Windows 環境で実行する kiro-cli コマンドまたは絶対パス')
+      .setName('kiro-cli のパス')
+      .setDesc('コマンド名または絶対パス (wt-wsl の場合は WSL 内のパス)')
       .addText((t) =>
         t
           .setPlaceholder('kiro-cli')
-          .setValue(this.plugin.settings.kiroCmdWindows)
+          .setValue(this.plugin.settings.kiroPath)
           .onChange(async (v) => {
-            this.plugin.settings.kiroCmdWindows = v.trim();
+            this.plugin.settings.kiroPath = v.trim();
             await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName('kiro コマンド (WSL)')
-      .setDesc('WSL 環境で実行する kiro-cli コマンドまたは絶対パス')
-      .addText((t) =>
-        t
-          .setPlaceholder('kiro-cli')
-          .setValue(this.plugin.settings.kiroCmdWsl)
-          .onChange(async (v) => {
-            this.plugin.settings.kiroCmdWsl = v.trim();
-            await this.plugin.saveSettings();
-          })
+          }),
       );
 
     new Setting(containerEl)
       .setName('追加フラグ')
-      .setDesc('kiro-cli に追加で渡すフラグ (例: --trust-all-tools)')
+      .setDesc('kiro-cli に常に渡すフラグ (スペース区切り)')
       .addText((t) =>
         t
           .setPlaceholder('--trust-all-tools')
-          .setValue(this.plugin.settings.extraFlags)
+          .setValue(this.plugin.settings.kiroFlags)
           .onChange(async (v) => {
-            this.plugin.settings.extraFlags = v.trim();
+            this.plugin.settings.kiroFlags = v.trim();
             await this.plugin.saveSettings();
-          })
+          }),
       );
 
     new Setting(containerEl)
@@ -329,12 +406,40 @@ class KiroBridgeSettingTab extends PluginSettingTab {
       .setDesc('kiro-cli を起動するディレクトリ (空の場合は Vault のルートを使用)')
       .addText((t) =>
         t
-          .setPlaceholder('C:\\Users\\...\\my-project')
+          .setPlaceholder('/path/to/project  または  C:\\projects\\myapp')
           .setValue(this.plugin.settings.workingDirectory)
           .onChange(async (v) => {
             this.plugin.settings.workingDirectory = v.trim();
             await this.plugin.saveSettings();
-          })
+          }),
       );
+
+    containerEl.createEl('h3', { text: 'プロンプト設定' });
+
+    const descFrag = document.createDocumentFragment();
+    descFrag.append(
+      'kiro-cli に渡すプロンプトのテンプレート。プレースホルダー: ',
+      Object.assign(document.createElement('code'), { textContent: '{file}' }),
+      ' (ファイルパス)、',
+      Object.assign(document.createElement('code'), { textContent: '{filename}' }),
+      ' (ファイル名)、',
+      Object.assign(document.createElement('code'), { textContent: '{title}' }),
+      ' (タイトル・拡張子なし)',
+    );
+
+    new Setting(containerEl)
+      .setName('プロンプトテンプレート')
+      .setDesc(descFrag)
+      .addTextArea((ta) => {
+        ta
+          .setPlaceholder('以下のタスクを実行してください:\n\n{file}')
+          .setValue(this.plugin.settings.promptTemplate)
+          .onChange(async (v) => {
+            this.plugin.settings.promptTemplate = v;
+            await this.plugin.saveSettings();
+          });
+        ta.inputEl.rows = 5;
+        ta.inputEl.style.width = '100%';
+      });
   }
 }

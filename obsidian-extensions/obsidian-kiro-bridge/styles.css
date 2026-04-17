@@ -1,4 +1,4 @@
-.kiro-bridge-env-modal button {
+.kiro-mode-btn {
   display: block;
   width: 100%;
   margin-bottom: 8px;
@@ -12,6 +12,33 @@
   color: var(--text-normal);
 }
 
-.kiro-bridge-env-modal button:hover {
+.kiro-mode-btn:hover {
   background: var(--background-modifier-hover);
 }
+
+.kiro-output-modal .kiro-output-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.kiro-output-pre {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 10px;
+  font-size: 0.82em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 480px;
+  overflow-y: auto;
+  color: var(--text-normal);
+}
+
+.kiro-status-running { color: var(--text-muted); }
+.kiro-status-ok      { color: var(--color-green); }
+.kiro-status-err     { color: var(--text-error); }
