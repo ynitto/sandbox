@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-clipboard-history",
+  "name": "Clipboard History",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Hooks OS-level clipboard copy operations, keeps an in-memory history, and lets you save selected entries as notes.",
+  "author": "nitto",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

@@ -1,0 +1,76 @@
+.ch-container {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.ch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ch-header h4 {
+  margin: 0;
+}
+
+.ch-empty {
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 24px;
+}
+
+.ch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ch-item {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--background-secondary);
+}
+
+.ch-meta {
+  margin-bottom: 4px;
+}
+
+.ch-timestamp {
+  font-size: 0.75em;
+  color: var(--text-muted);
+}
+
+.ch-preview {
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow: hidden;
+  color: var(--text-normal);
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.ch-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.ch-btn {
+  font-size: 0.8em;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.ch-delete-btn {
+  margin-left: auto;
+  color: var(--text-error);
+  border-color: var(--text-error);
+}
