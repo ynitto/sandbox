@@ -30,6 +30,7 @@ interface ClipboardEntry {
   id: string;
   content: string;
   timestamp: number;
+  savedAt?: number;
 }
 
 interface PluginSettings {
@@ -37,6 +38,8 @@ interface PluginSettings {
   saveDirectory: string;
   pollingInterval: number; // ms
   expiryHours: number;
+  groupByDay: boolean;
+  autoSave: boolean;
 }
 
 interface PluginData {
@@ -49,6 +52,8 @@ const DEFAULT_SETTINGS: PluginSettings = {
   saveDirectory: 'Clipboard History',
   pollingInterval: 1000,
   expiryHours: 24,
+  groupByDay: false,
+  autoSave: false,
 };
 
 // ============================================================
@@ -131,6 +136,9 @@ class ClipboardHistoryView extends ItemView {
         text: formatTimestamp(entry.timestamp),
         cls: 'ch-timestamp',
       });
+      if (entry.savedAt) {
+        meta.createEl('span', { text: '保存済', cls: 'ch-saved-badge' });
+      }
 
       const preview = item.createDiv({ cls: 'ch-preview' });
       preview.setText(
@@ -256,15 +264,22 @@ export default class ClipboardHistoryPlugin extends Plugin {
   private addToHistory(content: string): void {
     if (!content.trim()) return;
 
-    this.history.unshift({
+    const entry: ClipboardEntry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       content,
       timestamp: Date.now(),
-    });
+    };
 
+    this.history.unshift(entry);
     this.pruneHistory();
     this.refreshView();
     this.savePluginDataAsync();
+
+    if (this.settings.autoSave) {
+      this.saveEntryToFile(entry).catch((e) =>
+        console.error('[ClipboardHistory] auto-save failed:', e)
+      );
+    }
   }
 
   // ----------------------------------------------------------
@@ -301,17 +316,36 @@ export default class ClipboardHistoryPlugin extends Plugin {
       await this.app.vault.createFolder(dir);
     }
 
-    const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
-    const namePart = toSafeFileName(entry.content);
-    let filePath = normalizePath(`${dir}/${datePrefix}_${namePart}.md`);
+    let filePath: string;
 
-    let counter = 1;
-    while (await this.app.vault.adapter.exists(filePath)) {
-      filePath = normalizePath(`${dir}/${datePrefix}_${namePart}_${counter++}.md`);
+    if (this.settings.groupByDay) {
+      const d = new Date(entry.timestamp);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      filePath = normalizePath(`${dir}/${dateStr}.md`);
+      const appendContent = `\n## ${timeStr}\n\n${entry.content}\n`;
+      if (await this.app.vault.adapter.exists(filePath)) {
+        const existing = await this.app.vault.adapter.read(filePath);
+        await this.app.vault.adapter.write(filePath, existing + appendContent);
+      } else {
+        await this.app.vault.create(filePath, `# ${dateStr}\n${appendContent}`);
+      }
+    } else {
+      const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
+      const namePart = toSafeFileName(entry.content);
+      filePath = normalizePath(`${dir}/${datePrefix}_${namePart}.md`);
+      let counter = 1;
+      while (await this.app.vault.adapter.exists(filePath)) {
+        filePath = normalizePath(`${dir}/${datePrefix}_${namePart}_${counter++}.md`);
+      }
+      await this.app.vault.create(filePath, entry.content);
     }
 
-    await this.app.vault.create(filePath, entry.content);
     new Notice(`Saved: ${filePath}`);
+    entry.savedAt = Date.now();
+    this.savePluginDataAsync();
+    this.refreshView();
   }
 
   async activateView(): Promise<void> {
@@ -444,6 +478,30 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
               this.plugin.settings.expiryHours = num;
               await this.plugin.saveSettings();
             }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Group entries by day')
+      .setDesc('When saving, append all entries for the same day into a single daily file (YYYY-MM-DD.md) instead of creating individual files.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.groupByDay)
+          .onChange(async (value) => {
+            this.plugin.settings.groupByDay = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Auto-save to file')
+      .setDesc('Automatically save each new clipboard entry to a file. Entries remain in history until you delete them manually.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoSave)
+          .onChange(async (value) => {
+            this.plugin.settings.autoSave = value;
+            await this.plugin.saveSettings();
           })
       );
   }
