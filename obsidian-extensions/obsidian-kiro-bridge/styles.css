@@ -1,0 +1,17 @@
+.kiro-bridge-env-modal button {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 1em;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+}
+
+.kiro-bridge-env-modal button:hover {
+  background: var(--background-modifier-hover);
+}
