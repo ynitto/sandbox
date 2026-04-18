@@ -30,6 +30,7 @@ interface ClipboardEntry {
   id: string;
   content: string;
   timestamp: number;
+  savedAt?: number;
 }
 
 interface PluginSettings {
@@ -37,6 +38,10 @@ interface PluginSettings {
   saveDirectory: string;
   pollingInterval: number; // ms
   expiryHours: number;
+  groupByDay: boolean;
+  autoSave: boolean;
+  fileTemplate: string;
+  entryTemplate: string;
 }
 
 interface PluginData {
@@ -44,11 +49,18 @@ interface PluginData {
   history: ClipboardEntry[];
 }
 
+const DEFAULT_FILE_TEMPLATE = '{{content}}';
+const DEFAULT_ENTRY_TEMPLATE = '\n## {{time}}\n\n{{content}}\n';
+
 const DEFAULT_SETTINGS: PluginSettings = {
   maxHistorySize: 50,
   saveDirectory: 'Clipboard History',
   pollingInterval: 1000,
   expiryHours: 24,
+  groupByDay: false,
+  autoSave: false,
+  fileTemplate: DEFAULT_FILE_TEMPLATE,
+  entryTemplate: DEFAULT_ENTRY_TEMPLATE,
 };
 
 // ============================================================
@@ -64,6 +76,19 @@ function formatTimestamp(ts: number): string {
 function toSafeFileName(content: string): string {
   const firstLine = content.split('\n')[0].trim().slice(0, 50);
   return firstLine.replace(/[\\/:*?"<>|]/g, '_') || 'clipboard';
+}
+
+function applyTemplate(template: string, entry: ClipboardEntry): string {
+  const d = new Date(entry.timestamp);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return template
+    .replace(/\{\{content\}\}/g, entry.content)
+    .replace(/\{\{date\}\}/g, date)
+    .replace(/\{\{time\}\}/g, time)
+    .replace(/\{\{datetime\}\}/g, `${date} ${time}`)
+    .replace(/\{\{title\}\}/g, toSafeFileName(entry.content));
 }
 
 // ============================================================
@@ -131,6 +156,9 @@ class ClipboardHistoryView extends ItemView {
         text: formatTimestamp(entry.timestamp),
         cls: 'ch-timestamp',
       });
+      if (entry.savedAt) {
+        meta.createEl('span', { text: '保存済', cls: 'ch-saved-badge' });
+      }
 
       const preview = item.createDiv({ cls: 'ch-preview' });
       preview.setText(
@@ -256,15 +284,22 @@ export default class ClipboardHistoryPlugin extends Plugin {
   private addToHistory(content: string): void {
     if (!content.trim()) return;
 
-    this.history.unshift({
+    const entry: ClipboardEntry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       content,
       timestamp: Date.now(),
-    });
+    };
 
+    this.history.unshift(entry);
     this.pruneHistory();
     this.refreshView();
     this.savePluginDataAsync();
+
+    if (this.settings.autoSave) {
+      this.saveEntryToFile(entry).catch((e) =>
+        console.error('[ClipboardHistory] auto-save failed:', e)
+      );
+    }
   }
 
   // ----------------------------------------------------------
@@ -301,17 +336,35 @@ export default class ClipboardHistoryPlugin extends Plugin {
       await this.app.vault.createFolder(dir);
     }
 
-    const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
-    const namePart = toSafeFileName(entry.content);
-    let filePath = normalizePath(`${dir}/${datePrefix}_${namePart}.md`);
+    let filePath: string;
 
-    let counter = 1;
-    while (await this.app.vault.adapter.exists(filePath)) {
-      filePath = normalizePath(`${dir}/${datePrefix}_${namePart}_${counter++}.md`);
+    if (this.settings.groupByDay) {
+      const d = new Date(entry.timestamp);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      filePath = normalizePath(`${dir}/${dateStr}.md`);
+      const entryContent = applyTemplate(this.settings.entryTemplate, entry);
+      if (await this.app.vault.adapter.exists(filePath)) {
+        const existing = await this.app.vault.adapter.read(filePath);
+        await this.app.vault.adapter.write(filePath, existing + entryContent);
+      } else {
+        await this.app.vault.create(filePath, `# ${dateStr}\n${entryContent}`);
+      }
+    } else {
+      const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
+      const namePart = toSafeFileName(entry.content);
+      filePath = normalizePath(`${dir}/${datePrefix}_${namePart}.md`);
+      let counter = 1;
+      while (await this.app.vault.adapter.exists(filePath)) {
+        filePath = normalizePath(`${dir}/${datePrefix}_${namePart}_${counter++}.md`);
+      }
+      await this.app.vault.create(filePath, applyTemplate(this.settings.fileTemplate, entry));
     }
 
-    await this.app.vault.create(filePath, entry.content);
     new Notice(`Saved: ${filePath}`);
+    entry.savedAt = Date.now();
+    this.savePluginDataAsync();
+    this.refreshView();
   }
 
   async activateView(): Promise<void> {
@@ -444,6 +497,62 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
               this.plugin.settings.expiryHours = num;
               await this.plugin.saveSettings();
             }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Group entries by day')
+      .setDesc('When saving, append all entries for the same day into a single daily file (YYYY-MM-DD.md) instead of creating individual files.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.groupByDay)
+          .onChange(async (value) => {
+            this.plugin.settings.groupByDay = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Auto-save to file')
+      .setDesc('Automatically save each new clipboard entry to a file. Entries remain in history until you delete them manually.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoSave)
+          .onChange(async (value) => {
+            this.plugin.settings.autoSave = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    containerEl.createEl('h3', { text: 'Templates' });
+    containerEl.createEl('p', {
+      text: 'Available variables: {{content}}, {{date}}, {{time}}, {{datetime}}, {{title}}',
+      cls: 'ch-setting-desc',
+    });
+
+    new Setting(containerEl)
+      .setName('File template')
+      .setDesc('Template for individual files (used when "Group entries by day" is off).')
+      .addTextArea((ta) =>
+        ta
+          .setPlaceholder(DEFAULT_FILE_TEMPLATE)
+          .setValue(this.plugin.settings.fileTemplate)
+          .onChange(async (value) => {
+            this.plugin.settings.fileTemplate = value || DEFAULT_FILE_TEMPLATE;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Entry template')
+      .setDesc('Template for each entry appended to a daily file (used when "Group entries by day" is on).')
+      .addTextArea((ta) =>
+        ta
+          .setPlaceholder(DEFAULT_ENTRY_TEMPLATE)
+          .setValue(this.plugin.settings.entryTemplate)
+          .onChange(async (value) => {
+            this.plugin.settings.entryTemplate = value || DEFAULT_ENTRY_TEMPLATE;
+            await this.plugin.saveSettings();
           })
       );
   }
