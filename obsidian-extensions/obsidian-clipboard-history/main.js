@@ -31,13 +31,17 @@ try {
 } catch (e) {
   console.error("[ClipboardHistory] Failed to access Electron clipboard:", e);
 }
+var DEFAULT_FILE_TEMPLATE = "{{content}}";
+var DEFAULT_ENTRY_TEMPLATE = "\n## {{time}}\n\n{{content}}\n";
 var DEFAULT_SETTINGS = {
   maxHistorySize: 50,
   saveDirectory: "Clipboard History",
   pollingInterval: 1e3,
   expiryHours: 24,
   groupByDay: false,
-  autoSave: false
+  autoSave: false,
+  fileTemplate: DEFAULT_FILE_TEMPLATE,
+  entryTemplate: DEFAULT_ENTRY_TEMPLATE
 };
 function formatTimestamp(ts) {
   const d = new Date(ts);
@@ -47,6 +51,13 @@ function formatTimestamp(ts) {
 function toSafeFileName(content) {
   const firstLine = content.split("\n")[0].trim().slice(0, 50);
   return firstLine.replace(/[\\/:*?"<>|]/g, "_") || "clipboard";
+}
+function applyTemplate(template, entry) {
+  const d = new Date(entry.timestamp);
+  const pad = (n) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return template.replace(/\{\{content\}\}/g, entry.content).replace(/\{\{date\}\}/g, date).replace(/\{\{time\}\}/g, time).replace(/\{\{datetime\}\}/g, `${date} ${time}`).replace(/\{\{title\}\}/g, toSafeFileName(entry.content));
 }
 var VIEW_TYPE_CLIPBOARD = "clipboard-history-view";
 var ClipboardHistoryView = class extends import_obsidian.ItemView {
@@ -252,19 +263,14 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
       const d = new Date(entry.timestamp);
       const pad = (n) => String(n).padStart(2, "0");
       const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-      const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
       filePath = (0, import_obsidian.normalizePath)(`${dir}/${dateStr}.md`);
-      const appendContent = `
-## ${timeStr}
-
-${entry.content}
-`;
+      const entryContent = applyTemplate(this.settings.entryTemplate, entry);
       if (await this.app.vault.adapter.exists(filePath)) {
         const existing = await this.app.vault.adapter.read(filePath);
-        await this.app.vault.adapter.write(filePath, existing + appendContent);
+        await this.app.vault.adapter.write(filePath, existing + entryContent);
       } else {
         await this.app.vault.create(filePath, `# ${dateStr}
-${appendContent}`);
+${entryContent}`);
       }
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, "-");
@@ -274,7 +280,7 @@ ${appendContent}`);
       while (await this.app.vault.adapter.exists(filePath)) {
         filePath = (0, import_obsidian.normalizePath)(`${dir}/${datePrefix}_${namePart}_${counter++}.md`);
       }
-      await this.app.vault.create(filePath, entry.content);
+      await this.app.vault.create(filePath, applyTemplate(this.settings.fileTemplate, entry));
     }
     new import_obsidian.Notice(`Saved: ${filePath}`);
     entry.savedAt = Date.now();
@@ -381,6 +387,23 @@ var ClipboardHistorySettingTab = class extends import_obsidian.PluginSettingTab 
     new import_obsidian.Setting(containerEl).setName("Auto-save to file").setDesc("Automatically save each new clipboard entry to a file. Entries remain in history until you delete them manually.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoSave).onChange(async (value) => {
         this.plugin.settings.autoSave = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    containerEl.createEl("h3", { text: "Templates" });
+    containerEl.createEl("p", {
+      text: "Available variables: {{content}}, {{date}}, {{time}}, {{datetime}}, {{title}}",
+      cls: "ch-setting-desc"
+    });
+    new import_obsidian.Setting(containerEl).setName("File template").setDesc('Template for individual files (used when "Group entries by day" is off).').addTextArea(
+      (ta) => ta.setPlaceholder(DEFAULT_FILE_TEMPLATE).setValue(this.plugin.settings.fileTemplate).onChange(async (value) => {
+        this.plugin.settings.fileTemplate = value || DEFAULT_FILE_TEMPLATE;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Entry template").setDesc('Template for each entry appended to a daily file (used when "Group entries by day" is on).').addTextArea(
+      (ta) => ta.setPlaceholder(DEFAULT_ENTRY_TEMPLATE).setValue(this.plugin.settings.entryTemplate).onChange(async (value) => {
+        this.plugin.settings.entryTemplate = value || DEFAULT_ENTRY_TEMPLATE;
         await this.plugin.saveSettings();
       })
     );

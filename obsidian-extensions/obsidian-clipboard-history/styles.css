@@ -85,3 +85,15 @@
   color: var(--text-error);
   border-color: var(--text-error);
 }
+
+.ch-setting-desc {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+
+.setting-item textarea {
+  min-height: 80px;
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+}
