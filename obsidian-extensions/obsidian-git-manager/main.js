@@ -40,7 +40,8 @@ var import_child_process = require("child_process");
 var DEFAULT_DATA = {
   repositories: [],
   exportPath: "git-repositories.json",
-  maxScanDepth: 5
+  maxScanDepth: 5,
+  insertTemplate: "{{value}}"
 };
 function getGitRemotes(repoPath) {
   try {
@@ -101,7 +102,7 @@ function scanForRepoPaths(rootPath, maxDepth) {
   walk(rootPath, 0);
   return found;
 }
-function renderGitManagerBlock(source, el, plugin) {
+function renderGitManagerBlock(source, el, plugin, ctx) {
   var _a;
   const config = {};
   for (const line of source.split("\n")) {
@@ -129,16 +130,26 @@ function renderGitManagerBlock(source, el, plugin) {
     selectEl.createEl("option", { text: repo.name, value: repo.id });
   }
   const infoPanel = container.createDiv();
+  async function insertBelowBlock(name, value) {
+    const info = ctx.getSectionInfo(el);
+    const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
+    if (!info || !(file instanceof import_obsidian.TFile)) return;
+    const text = plugin.data.insertTemplate.replace(/\{\{name\}\}/g, name).replace(/\{\{value\}\}/g, value);
+    const content = await plugin.app.vault.read(file);
+    const lines = content.split("\n");
+    lines.splice(info.lineEnd + 1, 0, text);
+    await plugin.app.vault.modify(file, lines.join("\n"));
+  }
   function renderInfo(repoId) {
     infoPanel.empty();
     const repo = repos.find((r) => r.id === repoId);
     if (!repo) return;
-    function makeCopyRow(label, value) {
+    function makeInsertRow(name, value) {
       const row = infoPanel.createDiv({
         attr: { style: "display:flex; align-items:center; gap:8px; margin-bottom:6px;" }
       });
       row.createEl("span", {
-        text: label,
+        text: `${name}:`,
         attr: { style: "color:var(--text-muted); min-width:70px; flex-shrink:0;" }
       });
       row.createEl("code", {
@@ -146,19 +157,19 @@ function renderGitManagerBlock(source, el, plugin) {
         attr: { style: "flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" }
       });
       const btn = row.createEl("button", {
-        text: "\u30B3\u30D4\u30FC",
+        text: "\u633F\u5165",
         attr: { style: "padding:2px 8px; font-size:0.85em; flex-shrink:0;" }
       });
-      btn.addEventListener("click", () => {
-        navigator.clipboard.writeText(value);
+      btn.addEventListener("click", async () => {
+        await insertBelowBlock(name, value);
         btn.textContent = "\u2713";
         setTimeout(() => {
-          btn.textContent = "\u30B3\u30D4\u30FC";
+          btn.textContent = "\u633F\u5165";
         }, 1500);
       });
     }
     if (show === "all" || show === "folder") {
-      makeCopyRow("\u30D5\u30A9\u30EB\u30C0:", repo.path);
+      makeInsertRow("\u30D5\u30A9\u30EB\u30C0", repo.path);
     }
     if (show === "all" || show === "remote") {
       if (repo.remotes.length === 0) {
@@ -168,7 +179,7 @@ function renderGitManagerBlock(source, el, plugin) {
         });
       } else {
         for (const remote of repo.remotes) {
-          makeCopyRow(`${remote.name}:`, remote.url);
+          makeInsertRow(remote.name, remote.url);
         }
       }
     }
@@ -240,7 +251,19 @@ var GitManagerSettingTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Git Repository Manager" });
-    containerEl.createEl("h3", { text: "\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\u8A2D\u5B9A" });
+    containerEl.createEl("h3", { text: "\u633F\u5165\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8" });
+    containerEl.createEl("p", {
+      text: "{{name}} = \u9805\u76EE\u540D\uFF08\u30D5\u30A9\u30EB\u30C0 / \u30EA\u30E2\u30FC\u30C8\u540D\uFF09\u3001{{value}} = \u9805\u76EE\u5024\uFF08\u30D1\u30B9 / URL\uFF09",
+      attr: { style: "color:var(--text-muted); margin-bottom:8px;" }
+    });
+    new import_obsidian.Setting(containerEl).setName("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8").setDesc("\u30B3\u30FC\u30C9\u30D6\u30ED\u30C3\u30AF\u4E0B\u306B\u633F\u5165\u3059\u308B\u30C6\u30AD\u30B9\u30C8\u306E\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8").addText((t) => {
+      t.setPlaceholder("{{value}}").setValue(this.plugin.data.insertTemplate).onChange(async (v) => {
+        this.plugin.data.insertTemplate = v || "{{value}}";
+        await this.plugin.savePluginData();
+      });
+      t.inputEl.style.width = "300px";
+    });
+    containerEl.createEl("h3", { text: "\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\u8A2D\u5B9A", attr: { style: "margin-top:24px;" } });
     new import_obsidian.Setting(containerEl).setName("\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\u30D5\u30A1\u30A4\u30EB\u30D1\u30B9").setDesc("Vault \u5185\u306E\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8\u5148 JSON \u30D5\u30A1\u30A4\u30EB\u30D1\u30B9\uFF08\u76F8\u5BFE\u30D1\u30B9\uFF09").addText(
       (t) => t.setPlaceholder("git-repositories.json").setValue(this.plugin.data.exportPath).onChange(async (v) => {
         this.plugin.data.exportPath = v.trim() || "git-repositories.json";
@@ -353,8 +376,8 @@ var GitManagerPlugin = class extends import_obsidian.Plugin {
     const saved = await this.loadData();
     this.data = Object.assign({}, DEFAULT_DATA, saved);
     this.addSettingTab(new GitManagerSettingTab(this.app, this));
-    this.registerMarkdownCodeBlockProcessor("git-manager", (source, el) => {
-      renderGitManagerBlock(source, el, this);
+    this.registerMarkdownCodeBlockProcessor("git-manager", (source, el, ctx) => {
+      renderGitManagerBlock(source, el, this, ctx);
     });
     this.addCommand({
       id: "export-to-json",
