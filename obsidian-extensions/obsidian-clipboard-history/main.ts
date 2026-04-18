@@ -186,9 +186,13 @@ class ClipboardHistoryView extends ItemView {
       });
 
       if (entry.savedFilePath) {
-        const deleteFileBtn = actions.createEl('button', { text: 'Remove Saved File', cls: 'ch-btn ch-delete-file-btn' });
+        const btnLabel = entry.savedGroupEntry ? 'Remove from File' : 'Remove Saved File';
+        const confirmMsg = entry.savedGroupEntry
+          ? `Remove this entry from the daily file?\n${entry.savedFilePath}`
+          : `Remove saved file?\n${entry.savedFilePath}`;
+        const deleteFileBtn = actions.createEl('button', { text: btnLabel, cls: 'ch-btn ch-delete-file-btn' });
         deleteFileBtn.addEventListener('click', async () => {
-          if (!confirm(`Remove saved file?\n${entry.savedFilePath}`)) return;
+          if (!confirm(confirmMsg)) return;
           await this.plugin.deleteSavedFile(entry);
         });
       }
