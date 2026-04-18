@@ -34,12 +34,14 @@ interface PluginData {
   repositories: GitRepository[];
   exportPath: string;
   maxScanDepth: number;
+  insertTemplate: string;
 }
 
 const DEFAULT_DATA: PluginData = {
   repositories: [],
   exportPath: 'git-repositories.json',
   maxScanDepth: 5,
+  insertTemplate: '{{value}}',
 };
 
 // ============================================================
@@ -157,13 +159,16 @@ function renderGitManagerBlock(
 
   const infoPanel = container.createDiv();
 
-  async function insertBelowBlock(value: string) {
+  async function insertBelowBlock(name: string, value: string) {
     const info = ctx.getSectionInfo(el);
     const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
     if (!info || !(file instanceof TFile)) return;
+    const text = plugin.data.insertTemplate
+      .replace(/\{\{name\}\}/g, name)
+      .replace(/\{\{value\}\}/g, value);
     const content = await plugin.app.vault.read(file);
     const lines = content.split('\n');
-    lines.splice(info.lineEnd + 1, 0, value);
+    lines.splice(info.lineEnd + 1, 0, text);
     await plugin.app.vault.modify(file, lines.join('\n'));
   }
 
@@ -172,12 +177,12 @@ function renderGitManagerBlock(
     const repo = repos.find(r => r.id === repoId);
     if (!repo) return;
 
-    function makeInsertRow(label: string, value: string) {
+    function makeInsertRow(name: string, value: string) {
       const row = infoPanel.createDiv({
         attr: { style: 'display:flex; align-items:center; gap:8px; margin-bottom:6px;' },
       });
       row.createEl('span', {
-        text: label,
+        text: `${name}:`,
         attr: { style: 'color:var(--text-muted); min-width:70px; flex-shrink:0;' },
       });
       row.createEl('code', {
@@ -189,14 +194,14 @@ function renderGitManagerBlock(
         attr: { style: 'padding:2px 8px; font-size:0.85em; flex-shrink:0;' },
       });
       btn.addEventListener('click', async () => {
-        await insertBelowBlock(value);
+        await insertBelowBlock(name, value);
         btn.textContent = '✓';
         setTimeout(() => { btn.textContent = '挿入'; }, 1500);
       });
     }
 
     if (show === 'all' || show === 'folder') {
-      makeInsertRow('フォルダ:', repo.path);
+      makeInsertRow('フォルダ', repo.path);
     }
 
     if (show === 'all' || show === 'remote') {
@@ -207,7 +212,7 @@ function renderGitManagerBlock(
         });
       } else {
         for (const remote of repo.remotes) {
-          makeInsertRow(`${remote.name}:`, remote.url);
+          makeInsertRow(remote.name, remote.url);
         }
       }
     }
@@ -314,8 +319,29 @@ class GitManagerSettingTab extends PluginSettingTab {
 
     containerEl.createEl('h2', { text: 'Git Repository Manager' });
 
+    // ---- 挿入テンプレート ----
+    containerEl.createEl('h3', { text: '挿入テンプレート' });
+    containerEl.createEl('p', {
+      text: '{{name}} = 項目名（フォルダ / リモート名）、{{value}} = 項目値（パス / URL）',
+      attr: { style: 'color:var(--text-muted); margin-bottom:8px;' },
+    });
+
+    new Setting(containerEl)
+      .setName('テンプレート')
+      .setDesc('コードブロック下に挿入するテキストのテンプレート')
+      .addText(t => {
+        t
+          .setPlaceholder('{{value}}')
+          .setValue(this.plugin.data.insertTemplate)
+          .onChange(async v => {
+            this.plugin.data.insertTemplate = v || '{{value}}';
+            await this.plugin.savePluginData();
+          });
+        t.inputEl.style.width = '300px';
+      });
+
     // ---- エクスポート設定 ----
-    containerEl.createEl('h3', { text: 'エクスポート設定' });
+    containerEl.createEl('h3', { text: 'エクスポート設定', attr: { style: 'margin-top:24px;' } });
 
     new Setting(containerEl)
       .setName('エクスポートファイルパス')
