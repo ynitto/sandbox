@@ -1,6 +1,7 @@
 import {
   App,
   ItemView,
+  Menu,
   Modal,
   Notice,
   Plugin,
@@ -181,19 +182,30 @@ class ClipboardHistoryView extends ItemView {
         new Notice('Copied to clipboard!');
       });
 
-      const saveBtn = actions.createEl('button', { text: 'Save to File', cls: 'ch-btn mod-cta' });
+      const saveBtn = actions.createEl('button', { text: 'Save', cls: 'ch-btn mod-cta ch-save-main-btn' });
       saveBtn.addEventListener('click', async () => {
         await this.plugin.saveEntryToFile(entry);
       });
 
-      const saveAsBtn = actions.createEl('button', { text: 'Save As…', cls: 'ch-btn' });
-      saveAsBtn.addEventListener('click', () => {
-        const defaultPath = this.plugin.buildDefaultFilePath(entry);
-        new SaveAsModal(this.plugin.app, this.plugin, entry, defaultPath).open();
+      const saveDropBtn = actions.createEl('button', { text: '▾', cls: 'ch-btn mod-cta ch-save-drop-btn' });
+      saveDropBtn.addEventListener('click', (e) => {
+        const menu = new Menu();
+        menu.addItem((menuItem) =>
+          menuItem.setTitle('Save to File').setIcon('save').onClick(async () => {
+            await this.plugin.saveEntryToFile(entry);
+          })
+        );
+        menu.addItem((menuItem) =>
+          menuItem.setTitle('Save As…').setIcon('file-plus').onClick(() => {
+            const defaultPath = this.plugin.buildDefaultFilePath(entry);
+            new SaveAsModal(this.plugin.app, this.plugin, entry, defaultPath).open();
+          })
+        );
+        menu.showAtMouseEvent(e);
       });
 
       if (entry.savedFilePath) {
-        const btnLabel = entry.savedGroupEntry ? 'Remove from File' : 'Remove Saved File';
+        const btnLabel = entry.savedGroupEntry ? 'Unlink' : 'Del File';
         const confirmMsg = entry.savedGroupEntry
           ? `Remove this entry from the daily file?\n${entry.savedFilePath}`
           : `Remove saved file?\n${entry.savedFilePath}`;
@@ -388,9 +400,15 @@ export default class ClipboardHistoryPlugin extends Plugin {
         entry.savedAppendedContent = entryContent;
       } else {
         const fileTpl = await this.getEffectiveTemplate(this.settings.fileTemplatePath, this.settings.fileTemplate);
-        const fileContent = applyTemplate(fileTpl, entry);
-        await this.app.vault.create(filePath, fileContent);
-        entry.savedAppendedContent = fileContent;
+        const fileHeader = applyTemplate(fileTpl, entry);
+        if (this.settings.fileTemplatePath) {
+          // カスタムファイルテンプレートはファイル構造のみ。最初のエントリーもentryTemplateで追記する
+          await this.app.vault.create(filePath, fileHeader + entryContent);
+          entry.savedAppendedContent = entryContent;
+        } else {
+          await this.app.vault.create(filePath, fileHeader);
+          entry.savedAppendedContent = fileHeader;
+        }
       }
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
@@ -419,7 +437,9 @@ export default class ClipboardHistoryPlugin extends Plugin {
       if (entry.savedGroupEntry && entry.savedAppendedContent) {
         const existing = await this.app.vault.adapter.read(path);
         const updated = existing.replace(entry.savedAppendedContent, '');
-        if (/^#\s+\S+\s*$/.test(updated.trim())) {
+        const remainingTrimmed = updated.trim();
+        // ファイル構造（見出し1行 or 空）しか残っていなければファイルごと削除
+        if (!remainingTrimmed || /^#[^\n]*$/.test(remainingTrimmed)) {
           await this.app.vault.adapter.remove(path);
           new Notice(`Deleted: ${path}`);
         } else {

@@ -53,7 +53,8 @@ function getGitRemotes(repoPath) {
     const seen = /* @__PURE__ */ new Map();
     for (const line of output.split("\n")) {
       const m = line.match(/^(\S+)\s+(\S+)\s+\(fetch\)/);
-      if (m) seen.set(m[1], m[2]);
+      if (m)
+        seen.set(m[1], m[2]);
     }
     return Array.from(seen.entries()).map(([name, url]) => ({ name, url }));
   } catch (e) {
@@ -81,7 +82,8 @@ function buildRepository(repoPath) {
 function scanForRepoPaths(rootPath, maxDepth) {
   const found = [];
   function walk(dir, depth) {
-    if (depth > maxDepth) return;
+    if (depth > maxDepth)
+      return;
     if (isGitRepo(dir)) {
       found.push(dir);
       return;
@@ -93,9 +95,12 @@ function scanForRepoPaths(rootPath, maxDepth) {
       return;
     }
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      if (entry.name.startsWith(".")) continue;
-      if (entry.name === "node_modules") continue;
+      if (!entry.isDirectory())
+        continue;
+      if (entry.name.startsWith("."))
+        continue;
+      if (entry.name === "node_modules")
+        continue;
       walk(nodePath.join(dir, entry.name), depth + 1);
     }
   }
@@ -107,7 +112,8 @@ function renderGitManagerBlock(source, el, plugin, ctx) {
   const config = {};
   for (const line of source.split("\n")) {
     const m = line.match(/^(\w+)\s*:\s*(.+)/);
-    if (m) config[m[1].trim()] = m[2].trim();
+    if (m)
+      config[m[1].trim()] = m[2].trim();
   }
   const show = ((_a = config["show"]) != null ? _a : "all").toLowerCase();
   const repos = plugin.data.repositories;
@@ -133,7 +139,8 @@ function renderGitManagerBlock(source, el, plugin, ctx) {
   async function insertBelowBlock(name, value) {
     const info = ctx.getSectionInfo(el);
     const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
-    if (!info || !(file instanceof import_obsidian.TFile)) return;
+    if (!info || !(file instanceof import_obsidian.TFile))
+      return;
     const text = plugin.data.insertTemplate.replace(/\{\{name\}\}/g, name).replace(/\{\{value\}\}/g, value);
     const content = await plugin.app.vault.read(file);
     const lines = content.split("\n");
@@ -143,7 +150,8 @@ function renderGitManagerBlock(source, el, plugin, ctx) {
   function renderInfo(repoId) {
     infoPanel.empty();
     const repo = repos.find((r) => r.id === repoId);
-    if (!repo) return;
+    if (!repo)
+      return;
     function makeInsertRow(name, value) {
       const row = infoPanel.createDiv({
         attr: { style: "display:flex; align-items:center; gap:8px; margin-bottom:6px;" }
@@ -234,7 +242,8 @@ var ScanModal = class extends import_obsidian.Modal {
         const { added, found } = await this.plugin.scanAndRegister(rootPath, depth);
         this.resultEl.textContent = `${found} \u4EF6\u767A\u898B / ${added} \u4EF6\u3092\u65B0\u898F\u8FFD\u52A0\u3057\u307E\u3057\u305F`;
         scanBtn.disabled = false;
-        if (added > 0) setTimeout(() => this.close(), 1500);
+        if (added > 0)
+          setTimeout(() => this.close(), 1500);
       }, 50);
     });
   }
@@ -432,12 +441,14 @@ var GitManagerPlugin = class extends import_obsidian.Plugin {
         added++;
       }
     }
-    if (added > 0) await this.savePluginData();
+    if (added > 0)
+      await this.savePluginData();
     return { found: paths.length, added };
   }
   async refreshRepository(id) {
     const repo = this.data.repositories.find((r) => r.id === id);
-    if (!repo) return;
+    if (!repo)
+      return;
     repo.remotes = getGitRemotes(repo.path);
     repo.lastUpdated = (/* @__PURE__ */ new Date()).toISOString();
     await this.savePluginData();

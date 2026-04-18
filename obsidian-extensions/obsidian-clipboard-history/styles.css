@@ -71,13 +71,15 @@
 .ch-actions {
   display: flex;
   gap: 4px;
-  flex-wrap: wrap;
+  align-items: center;
+  flex-wrap: nowrap;
 }
 
 .ch-btn {
-  font-size: 0.8em;
-  padding: 2px 8px;
+  font-size: 0.78em;
+  padding: 2px 7px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .ch-delete-file-btn {
@@ -91,7 +93,18 @@
   border-color: var(--text-error);
 }
 
-.ch-saveas-input {
+.ch-save-main-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+
+.ch-save-drop-btn {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding: 2px 5px;
+}
+
   width: 100%;
   margin-bottom: 6px;
 }

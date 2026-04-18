@@ -121,17 +121,28 @@ var ClipboardHistoryView = class extends import_obsidian.ItemView {
         await navigator.clipboard.writeText(entry.content);
         new import_obsidian.Notice("Copied to clipboard!");
       });
-      const saveBtn = actions.createEl("button", { text: "Save to File", cls: "ch-btn mod-cta" });
+      const saveBtn = actions.createEl("button", { text: "Save", cls: "ch-btn mod-cta ch-save-main-btn" });
       saveBtn.addEventListener("click", async () => {
         await this.plugin.saveEntryToFile(entry);
       });
-      const saveAsBtn = actions.createEl("button", { text: "Save As\u2026", cls: "ch-btn" });
-      saveAsBtn.addEventListener("click", () => {
-        const defaultPath = this.plugin.buildDefaultFilePath(entry);
-        new SaveAsModal(this.plugin.app, this.plugin, entry, defaultPath).open();
+      const saveDropBtn = actions.createEl("button", { text: "\u25BE", cls: "ch-btn mod-cta ch-save-drop-btn" });
+      saveDropBtn.addEventListener("click", (e) => {
+        const menu = new import_obsidian.Menu();
+        menu.addItem(
+          (menuItem) => menuItem.setTitle("Save to File").setIcon("save").onClick(async () => {
+            await this.plugin.saveEntryToFile(entry);
+          })
+        );
+        menu.addItem(
+          (menuItem) => menuItem.setTitle("Save As\u2026").setIcon("file-plus").onClick(() => {
+            const defaultPath = this.plugin.buildDefaultFilePath(entry);
+            new SaveAsModal(this.plugin.app, this.plugin, entry, defaultPath).open();
+          })
+        );
+        menu.showAtMouseEvent(e);
       });
       if (entry.savedFilePath) {
-        const btnLabel = entry.savedGroupEntry ? "Remove from File" : "Remove Saved File";
+        const btnLabel = entry.savedGroupEntry ? "Unlink" : "Del File";
         const confirmMsg = entry.savedGroupEntry ? `Remove this entry from the daily file?
 ${entry.savedFilePath}` : `Remove saved file?
 ${entry.savedFilePath}`;
@@ -301,9 +312,14 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
         entry.savedAppendedContent = entryContent;
       } else {
         const fileTpl = await this.getEffectiveTemplate(this.settings.fileTemplatePath, this.settings.fileTemplate);
-        const fileContent = applyTemplate(fileTpl, entry);
-        await this.app.vault.create(filePath, fileContent);
-        entry.savedAppendedContent = fileContent;
+        const fileHeader = applyTemplate(fileTpl, entry);
+        if (this.settings.fileTemplatePath) {
+          await this.app.vault.create(filePath, fileHeader + entryContent);
+          entry.savedAppendedContent = entryContent;
+        } else {
+          await this.app.vault.create(filePath, fileHeader);
+          entry.savedAppendedContent = fileHeader;
+        }
       }
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, "-");
@@ -331,7 +347,8 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
       if (entry.savedGroupEntry && entry.savedAppendedContent) {
         const existing = await this.app.vault.adapter.read(path);
         const updated = existing.replace(entry.savedAppendedContent, "");
-        if (/^#\s+\S+\s*$/.test(updated.trim())) {
+        const remainingTrimmed = updated.trim();
+        if (!remainingTrimmed || /^#[^\n]*$/.test(remainingTrimmed)) {
           await this.app.vault.adapter.remove(path);
           new import_obsidian.Notice(`Deleted: ${path}`);
         } else {
