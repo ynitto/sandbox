@@ -32,6 +32,7 @@ interface ClipboardEntry {
   timestamp: number;
   savedAt?: number;
   savedFilePath?: string;
+  savedGroupEntry?: boolean;
 }
 
 interface PluginSettings {
@@ -183,10 +184,10 @@ class ClipboardHistoryView extends ItemView {
         await this.plugin.saveEntryToFile(entry);
       });
 
-      if (entry.savedFilePath) {
-        const deleteFileBtn = actions.createEl('button', { text: 'Delete File', cls: 'ch-btn ch-delete-file-btn' });
+      if (entry.savedFilePath && !entry.savedGroupEntry) {
+        const deleteFileBtn = actions.createEl('button', { text: 'Remove Saved File', cls: 'ch-btn ch-delete-file-btn' });
         deleteFileBtn.addEventListener('click', async () => {
-          if (!confirm(`Delete saved file?\n${entry.savedFilePath}`)) return;
+          if (!confirm(`Remove saved file?\n${entry.savedFilePath}`)) return;
           await this.plugin.deleteSavedFile(entry);
         });
       }
@@ -390,6 +391,7 @@ export default class ClipboardHistoryPlugin extends Plugin {
     new Notice(`Saved: ${filePath}`);
     entry.savedAt = Date.now();
     entry.savedFilePath = filePath;
+    entry.savedGroupEntry = this.settings.groupByDay;
     this.savePluginDataAsync();
     this.refreshView();
   }

@@ -125,10 +125,10 @@ var ClipboardHistoryView = class extends import_obsidian.ItemView {
       saveBtn.addEventListener("click", async () => {
         await this.plugin.saveEntryToFile(entry);
       });
-      if (entry.savedFilePath) {
-        const deleteFileBtn = actions.createEl("button", { text: "Delete File", cls: "ch-btn ch-delete-file-btn" });
+      if (entry.savedFilePath && !entry.savedGroupEntry) {
+        const deleteFileBtn = actions.createEl("button", { text: "Remove Saved File", cls: "ch-btn ch-delete-file-btn" });
         deleteFileBtn.addEventListener("click", async () => {
-          if (!confirm(`Delete saved file?
+          if (!confirm(`Remove saved file?
 ${entry.savedFilePath}`))
             return;
           await this.plugin.deleteSavedFile(entry);
@@ -308,6 +308,7 @@ ${entryContent}`);
     new import_obsidian.Notice(`Saved: ${filePath}`);
     entry.savedAt = Date.now();
     entry.savedFilePath = filePath;
+    entry.savedGroupEntry = this.settings.groupByDay;
     this.savePluginDataAsync();
     this.refreshView();
   }
