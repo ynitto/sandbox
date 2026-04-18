@@ -101,7 +101,7 @@ function scanForRepoPaths(rootPath, maxDepth) {
   walk(rootPath, 0);
   return found;
 }
-function renderGitManagerBlock(source, el, plugin) {
+function renderGitManagerBlock(source, el, plugin, ctx) {
   var _a;
   const config = {};
   for (const line of source.split("\n")) {
@@ -129,11 +129,20 @@ function renderGitManagerBlock(source, el, plugin) {
     selectEl.createEl("option", { text: repo.name, value: repo.id });
   }
   const infoPanel = container.createDiv();
+  async function insertBelowBlock(value) {
+    const info = ctx.getSectionInfo(el);
+    const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
+    if (!info || !(file instanceof import_obsidian.TFile)) return;
+    const content = await plugin.app.vault.read(file);
+    const lines = content.split("\n");
+    lines.splice(info.lineEnd + 1, 0, value);
+    await plugin.app.vault.modify(file, lines.join("\n"));
+  }
   function renderInfo(repoId) {
     infoPanel.empty();
     const repo = repos.find((r) => r.id === repoId);
     if (!repo) return;
-    function makeCopyRow(label, value) {
+    function makeInsertRow(label, value) {
       const row = infoPanel.createDiv({
         attr: { style: "display:flex; align-items:center; gap:8px; margin-bottom:6px;" }
       });
@@ -146,19 +155,19 @@ function renderGitManagerBlock(source, el, plugin) {
         attr: { style: "flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" }
       });
       const btn = row.createEl("button", {
-        text: "\u30B3\u30D4\u30FC",
+        text: "\u633F\u5165",
         attr: { style: "padding:2px 8px; font-size:0.85em; flex-shrink:0;" }
       });
-      btn.addEventListener("click", () => {
-        navigator.clipboard.writeText(value);
+      btn.addEventListener("click", async () => {
+        await insertBelowBlock(value);
         btn.textContent = "\u2713";
         setTimeout(() => {
-          btn.textContent = "\u30B3\u30D4\u30FC";
+          btn.textContent = "\u633F\u5165";
         }, 1500);
       });
     }
     if (show === "all" || show === "folder") {
-      makeCopyRow("\u30D5\u30A9\u30EB\u30C0:", repo.path);
+      makeInsertRow("\u30D5\u30A9\u30EB\u30C0:", repo.path);
     }
     if (show === "all" || show === "remote") {
       if (repo.remotes.length === 0) {
@@ -168,7 +177,7 @@ function renderGitManagerBlock(source, el, plugin) {
         });
       } else {
         for (const remote of repo.remotes) {
-          makeCopyRow(`${remote.name}:`, remote.url);
+          makeInsertRow(`${remote.name}:`, remote.url);
         }
       }
     }
@@ -353,8 +362,8 @@ var GitManagerPlugin = class extends import_obsidian.Plugin {
     const saved = await this.loadData();
     this.data = Object.assign({}, DEFAULT_DATA, saved);
     this.addSettingTab(new GitManagerSettingTab(this.app, this));
-    this.registerMarkdownCodeBlockProcessor("git-manager", (source, el) => {
-      renderGitManagerBlock(source, el, this);
+    this.registerMarkdownCodeBlockProcessor("git-manager", (source, el, ctx) => {
+      renderGitManagerBlock(source, el, this, ctx);
     });
     this.addCommand({
       id: "export-to-json",
