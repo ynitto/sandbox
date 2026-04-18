@@ -80,6 +80,11 @@
   cursor: pointer;
 }
 
+.ch-delete-file-btn {
+  color: var(--color-orange);
+  border-color: var(--color-orange);
+}
+
 .ch-delete-btn {
   margin-left: auto;
   color: var(--text-error);

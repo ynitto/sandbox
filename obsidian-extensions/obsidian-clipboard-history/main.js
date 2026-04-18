@@ -41,7 +41,9 @@ var DEFAULT_SETTINGS = {
   groupByDay: false,
   autoSave: false,
   fileTemplate: DEFAULT_FILE_TEMPLATE,
-  entryTemplate: DEFAULT_ENTRY_TEMPLATE
+  entryTemplate: DEFAULT_ENTRY_TEMPLATE,
+  fileTemplatePath: "",
+  entryTemplatePath: ""
 };
 function formatTimestamp(ts) {
   const d = new Date(ts);
@@ -123,6 +125,18 @@ var ClipboardHistoryView = class extends import_obsidian.ItemView {
       saveBtn.addEventListener("click", async () => {
         await this.plugin.saveEntryToFile(entry);
       });
+      if (entry.savedFilePath) {
+        const btnLabel = entry.savedGroupEntry ? "Remove from File" : "Remove Saved File";
+        const confirmMsg = entry.savedGroupEntry ? `Remove this entry from the daily file?
+${entry.savedFilePath}` : `Remove saved file?
+${entry.savedFilePath}`;
+        const deleteFileBtn = actions.createEl("button", { text: btnLabel, cls: "ch-btn ch-delete-file-btn" });
+        deleteFileBtn.addEventListener("click", async () => {
+          if (!confirm(confirmMsg))
+            return;
+          await this.plugin.deleteSavedFile(entry);
+        });
+      }
       const deleteBtn = actions.createEl("button", { text: "\xD7", cls: "ch-btn ch-delete-btn" });
       deleteBtn.addEventListener("click", () => {
         this.plugin.removeEntry(entry.id);
@@ -253,6 +267,16 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
     this.history = this.history.filter((e) => e.id !== id);
     this.savePluginDataAsync();
   }
+  async getEffectiveTemplate(templatePath, fallback) {
+    if (templatePath) {
+      const path = (0, import_obsidian.normalizePath)(templatePath);
+      if (await this.app.vault.adapter.exists(path)) {
+        return await this.app.vault.adapter.read(path);
+      }
+      new import_obsidian.Notice(`Template file not found: ${templatePath}`);
+    }
+    return fallback;
+  }
   async saveEntryToFile(entry) {
     const dir = (0, import_obsidian.normalizePath)(this.settings.saveDirectory);
     if (!await this.app.vault.adapter.exists(dir)) {
@@ -264,7 +288,8 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
       const pad = (n) => String(n).padStart(2, "0");
       const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
       filePath = (0, import_obsidian.normalizePath)(`${dir}/${dateStr}.md`);
-      const entryContent = applyTemplate(this.settings.entryTemplate, entry);
+      const tpl = await this.getEffectiveTemplate(this.settings.entryTemplatePath, this.settings.entryTemplate);
+      const entryContent = applyTemplate(tpl, entry);
       if (await this.app.vault.adapter.exists(filePath)) {
         const existing = await this.app.vault.adapter.read(filePath);
         await this.app.vault.adapter.write(filePath, existing + entryContent);
@@ -272,6 +297,7 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
         await this.app.vault.create(filePath, `# ${dateStr}
 ${entryContent}`);
       }
+      entry.savedAppendedContent = entryContent;
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, "-");
       const namePart = toSafeFileName(entry.content);
@@ -280,10 +306,42 @@ ${entryContent}`);
       while (await this.app.vault.adapter.exists(filePath)) {
         filePath = (0, import_obsidian.normalizePath)(`${dir}/${datePrefix}_${namePart}_${counter++}.md`);
       }
-      await this.app.vault.create(filePath, applyTemplate(this.settings.fileTemplate, entry));
+      const tpl = await this.getEffectiveTemplate(this.settings.fileTemplatePath, this.settings.fileTemplate);
+      await this.app.vault.create(filePath, applyTemplate(tpl, entry));
     }
     new import_obsidian.Notice(`Saved: ${filePath}`);
     entry.savedAt = Date.now();
+    entry.savedFilePath = filePath;
+    entry.savedGroupEntry = this.settings.groupByDay;
+    this.savePluginDataAsync();
+    this.refreshView();
+  }
+  async deleteSavedFile(entry) {
+    if (!entry.savedFilePath)
+      return;
+    const path = (0, import_obsidian.normalizePath)(entry.savedFilePath);
+    if (await this.app.vault.adapter.exists(path)) {
+      if (entry.savedGroupEntry && entry.savedAppendedContent) {
+        const existing = await this.app.vault.adapter.read(path);
+        const updated = existing.replace(entry.savedAppendedContent, "");
+        if (/^#\s+\S+\s*$/.test(updated.trim())) {
+          await this.app.vault.adapter.remove(path);
+          new import_obsidian.Notice(`Deleted: ${path}`);
+        } else {
+          await this.app.vault.adapter.write(path, updated);
+          new import_obsidian.Notice(`Removed entry from: ${path}`);
+        }
+      } else {
+        await this.app.vault.adapter.remove(path);
+        new import_obsidian.Notice(`Deleted: ${path}`);
+      }
+    } else {
+      new import_obsidian.Notice(`File not found: ${path}`);
+    }
+    entry.savedAt = void 0;
+    entry.savedFilePath = void 0;
+    entry.savedGroupEntry = void 0;
+    entry.savedAppendedContent = void 0;
     this.savePluginDataAsync();
     this.refreshView();
   }
@@ -395,13 +453,29 @@ var ClipboardHistorySettingTab = class extends import_obsidian.PluginSettingTab 
       text: "Available variables: {{content}}, {{date}}, {{time}}, {{datetime}}, {{title}}",
       cls: "ch-setting-desc"
     });
-    new import_obsidian.Setting(containerEl).setName("File template").setDesc('Template for individual files (used when "Group entries by day" is off).').addTextArea(
+    containerEl.createEl("p", {
+      text: "Specify a vault file path to load the template from a file. If the path is empty or the file does not exist, the text template below is used.",
+      cls: "ch-setting-desc"
+    });
+    new import_obsidian.Setting(containerEl).setName("File template path").setDesc("Vault path to a template file for individual files (e.g. Templates/clipboard-file.md). Leave blank to use the text template below.").addText(
+      (text) => text.setPlaceholder("Templates/clipboard-file.md").setValue(this.plugin.settings.fileTemplatePath).onChange(async (value) => {
+        this.plugin.settings.fileTemplatePath = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("File template").setDesc('Fallback template for individual files (used when "Group entries by day" is off and no template path is set).').addTextArea(
       (ta) => ta.setPlaceholder(DEFAULT_FILE_TEMPLATE).setValue(this.plugin.settings.fileTemplate).onChange(async (value) => {
         this.plugin.settings.fileTemplate = value || DEFAULT_FILE_TEMPLATE;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Entry template").setDesc('Template for each entry appended to a daily file (used when "Group entries by day" is on).').addTextArea(
+    new import_obsidian.Setting(containerEl).setName("Entry template path").setDesc("Vault path to a template file for daily entries (e.g. Templates/clipboard-entry.md). Leave blank to use the text template below.").addText(
+      (text) => text.setPlaceholder("Templates/clipboard-entry.md").setValue(this.plugin.settings.entryTemplatePath).onChange(async (value) => {
+        this.plugin.settings.entryTemplatePath = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Entry template").setDesc('Fallback template for each entry in a daily file (used when "Group entries by day" is on and no template path is set).').addTextArea(
       (ta) => ta.setPlaceholder(DEFAULT_ENTRY_TEMPLATE).setValue(this.plugin.settings.entryTemplate).onChange(async (value) => {
         this.plugin.settings.entryTemplate = value || DEFAULT_ENTRY_TEMPLATE;
         await this.plugin.saveSettings();
