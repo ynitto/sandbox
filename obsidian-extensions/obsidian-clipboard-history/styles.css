@@ -91,6 +91,23 @@
   border-color: var(--text-error);
 }
 
+.ch-saveas-input {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.ch-saveas-hint {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
+.ch-saveas-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .ch-setting-desc {
   font-size: 0.85em;
   color: var(--text-muted);

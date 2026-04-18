@@ -1,6 +1,7 @@
 import {
   App,
   ItemView,
+  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -183,6 +184,12 @@ class ClipboardHistoryView extends ItemView {
       const saveBtn = actions.createEl('button', { text: 'Save to File', cls: 'ch-btn mod-cta' });
       saveBtn.addEventListener('click', async () => {
         await this.plugin.saveEntryToFile(entry);
+      });
+
+      const saveAsBtn = actions.createEl('button', { text: 'Save As…', cls: 'ch-btn' });
+      saveAsBtn.addEventListener('click', () => {
+        const defaultPath = this.plugin.buildDefaultFilePath(entry);
+        new SaveAsModal(this.plugin.app, this.plugin, entry, defaultPath).open();
       });
 
       if (entry.savedFilePath) {
@@ -373,15 +380,18 @@ export default class ClipboardHistoryPlugin extends Plugin {
       const pad = (n: number) => String(n).padStart(2, '0');
       const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
       filePath = normalizePath(`${dir}/${dateStr}.md`);
-      const tpl = await this.getEffectiveTemplate(this.settings.entryTemplatePath, this.settings.entryTemplate);
-      const entryContent = applyTemplate(tpl, entry);
+      const entryTpl = await this.getEffectiveTemplate(this.settings.entryTemplatePath, this.settings.entryTemplate);
+      const entryContent = applyTemplate(entryTpl, entry);
       if (await this.app.vault.adapter.exists(filePath)) {
         const existing = await this.app.vault.adapter.read(filePath);
         await this.app.vault.adapter.write(filePath, existing + entryContent);
+        entry.savedAppendedContent = entryContent;
       } else {
-        await this.app.vault.create(filePath, `# ${dateStr}\n${entryContent}`);
+        const fileTpl = await this.getEffectiveTemplate(this.settings.fileTemplatePath, this.settings.fileTemplate);
+        const fileContent = applyTemplate(fileTpl, entry);
+        await this.app.vault.create(filePath, fileContent);
+        entry.savedAppendedContent = fileContent;
       }
-      entry.savedAppendedContent = entryContent;
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
       const namePart = toSafeFileName(entry.content);
@@ -426,6 +436,37 @@ export default class ClipboardHistoryPlugin extends Plugin {
     entry.savedAt = undefined;
     entry.savedFilePath = undefined;
     entry.savedGroupEntry = undefined;
+    entry.savedAppendedContent = undefined;
+    this.savePluginDataAsync();
+    this.refreshView();
+  }
+
+  buildDefaultFilePath(entry: ClipboardEntry): string {
+    const dir = this.settings.saveDirectory;
+    const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
+    const namePart = toSafeFileName(entry.content);
+    return normalizePath(`${dir}/${datePrefix}_${namePart}.md`);
+  }
+
+  async saveEntryToFileAt(entry: ClipboardEntry, rawPath: string): Promise<void> {
+    const filePath = normalizePath(rawPath.endsWith('.md') ? rawPath : `${rawPath}.md`);
+    const parts = filePath.split('/');
+    if (parts.length > 1) {
+      const dir = parts.slice(0, -1).join('/');
+      if (!(await this.app.vault.adapter.exists(dir))) {
+        await this.app.vault.createFolder(dir);
+      }
+    }
+    if (await this.app.vault.adapter.exists(filePath)) {
+      new Notice(`File already exists: ${filePath}`);
+      return;
+    }
+    const tpl = await this.getEffectiveTemplate(this.settings.fileTemplatePath, this.settings.fileTemplate);
+    await this.app.vault.create(filePath, applyTemplate(tpl, entry));
+    new Notice(`Saved: ${filePath}`);
+    entry.savedAt = Date.now();
+    entry.savedFilePath = filePath;
+    entry.savedGroupEntry = false;
     entry.savedAppendedContent = undefined;
     this.savePluginDataAsync();
     this.refreshView();
@@ -481,6 +522,61 @@ export default class ClipboardHistoryPlugin extends Plugin {
     this.savePluginData().catch((e) =>
       console.error('[ClipboardHistory] save failed:', e)
     );
+  }
+}
+
+// ============================================================
+// Save As Modal
+// ============================================================
+
+class SaveAsModal extends Modal {
+  private plugin: ClipboardHistoryPlugin;
+  private entry: ClipboardEntry;
+  private defaultPath: string;
+
+  constructor(app: App, plugin: ClipboardHistoryPlugin, entry: ClipboardEntry, defaultPath: string) {
+    super(app);
+    this.plugin = plugin;
+    this.entry = entry;
+    this.defaultPath = defaultPath;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.createEl('h3', { text: 'Save As' });
+
+    const input = contentEl.createEl('input', { cls: 'ch-saveas-input' });
+    input.type = 'text';
+    input.value = this.defaultPath;
+
+    contentEl.createEl('p', {
+      text: 'Enter a vault-relative path. The .md extension is added automatically if omitted.',
+      cls: 'ch-saveas-hint',
+    });
+
+    const btnRow = contentEl.createDiv({ cls: 'ch-saveas-buttons' });
+    const saveBtn = btnRow.createEl('button', { text: 'Save', cls: 'mod-cta' });
+    const cancelBtn = btnRow.createEl('button', { text: 'Cancel' });
+
+    const doSave = async () => {
+      const path = input.value.trim();
+      if (!path) return;
+      await this.plugin.saveEntryToFileAt(this.entry, path);
+      this.close();
+    };
+
+    saveBtn.addEventListener('click', doSave);
+    cancelBtn.addEventListener('click', () => this.close());
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doSave();
+    });
+
+    input.focus();
+    input.select();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }
 
@@ -600,7 +696,7 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('File template path')
-      .setDesc('Vault path to a template file for individual files (e.g. Templates/clipboard-file.md). Leave blank to use the text template below.')
+      .setDesc('Vault path to a template file. Used for individual files (groupByDay off) and for the initial daily file structure (groupByDay on). Leave blank to use the text template below.')
       .addText((text) =>
         text
           .setPlaceholder('Templates/clipboard-file.md')
@@ -613,7 +709,7 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('File template')
-      .setDesc('Fallback template for individual files (used when "Group entries by day" is off and no template path is set).')
+      .setDesc('Template for individual files and the initial daily file structure. When "Group entries by day" is on, this template is applied when the daily file is first created.')
       .addTextArea((ta) =>
         ta
           .setPlaceholder(DEFAULT_FILE_TEMPLATE)
