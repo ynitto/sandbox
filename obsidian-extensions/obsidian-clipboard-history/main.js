@@ -288,16 +288,18 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
       const pad = (n) => String(n).padStart(2, "0");
       const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
       filePath = (0, import_obsidian.normalizePath)(`${dir}/${dateStr}.md`);
-      const tpl = await this.getEffectiveTemplate(this.settings.entryTemplatePath, this.settings.entryTemplate);
-      const entryContent = applyTemplate(tpl, entry);
+      const entryTpl = await this.getEffectiveTemplate(this.settings.entryTemplatePath, this.settings.entryTemplate);
+      const entryContent = applyTemplate(entryTpl, entry);
       if (await this.app.vault.adapter.exists(filePath)) {
         const existing = await this.app.vault.adapter.read(filePath);
         await this.app.vault.adapter.write(filePath, existing + entryContent);
+        entry.savedAppendedContent = entryContent;
       } else {
-        await this.app.vault.create(filePath, `# ${dateStr}
-${entryContent}`);
+        const fileTpl = await this.getEffectiveTemplate(this.settings.fileTemplatePath, this.settings.fileTemplate);
+        const fileContent = applyTemplate(fileTpl, entry);
+        await this.app.vault.create(filePath, fileContent);
+        entry.savedAppendedContent = fileContent;
       }
-      entry.savedAppendedContent = entryContent;
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, "-");
       const namePart = toSafeFileName(entry.content);
@@ -457,13 +459,13 @@ var ClipboardHistorySettingTab = class extends import_obsidian.PluginSettingTab 
       text: "Specify a vault file path to load the template from a file. If the path is empty or the file does not exist, the text template below is used.",
       cls: "ch-setting-desc"
     });
-    new import_obsidian.Setting(containerEl).setName("File template path").setDesc("Vault path to a template file for individual files (e.g. Templates/clipboard-file.md). Leave blank to use the text template below.").addText(
+    new import_obsidian.Setting(containerEl).setName("File template path").setDesc("Vault path to a template file. Used for individual files (groupByDay off) and for the initial daily file structure (groupByDay on). Leave blank to use the text template below.").addText(
       (text) => text.setPlaceholder("Templates/clipboard-file.md").setValue(this.plugin.settings.fileTemplatePath).onChange(async (value) => {
         this.plugin.settings.fileTemplatePath = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("File template").setDesc('Fallback template for individual files (used when "Group entries by day" is off and no template path is set).').addTextArea(
+    new import_obsidian.Setting(containerEl).setName("File template").setDesc('Template for individual files and the initial daily file structure. When "Group entries by day" is on, this template is applied when the daily file is first created.').addTextArea(
       (ta) => ta.setPlaceholder(DEFAULT_FILE_TEMPLATE).setValue(this.plugin.settings.fileTemplate).onChange(async (value) => {
         this.plugin.settings.fileTemplate = value || DEFAULT_FILE_TEMPLATE;
         await this.plugin.saveSettings();

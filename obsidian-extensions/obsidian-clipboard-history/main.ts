@@ -373,15 +373,18 @@ export default class ClipboardHistoryPlugin extends Plugin {
       const pad = (n: number) => String(n).padStart(2, '0');
       const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
       filePath = normalizePath(`${dir}/${dateStr}.md`);
-      const tpl = await this.getEffectiveTemplate(this.settings.entryTemplatePath, this.settings.entryTemplate);
-      const entryContent = applyTemplate(tpl, entry);
+      const entryTpl = await this.getEffectiveTemplate(this.settings.entryTemplatePath, this.settings.entryTemplate);
+      const entryContent = applyTemplate(entryTpl, entry);
       if (await this.app.vault.adapter.exists(filePath)) {
         const existing = await this.app.vault.adapter.read(filePath);
         await this.app.vault.adapter.write(filePath, existing + entryContent);
+        entry.savedAppendedContent = entryContent;
       } else {
-        await this.app.vault.create(filePath, `# ${dateStr}\n${entryContent}`);
+        const fileTpl = await this.getEffectiveTemplate(this.settings.fileTemplatePath, this.settings.fileTemplate);
+        const fileContent = applyTemplate(fileTpl, entry);
+        await this.app.vault.create(filePath, fileContent);
+        entry.savedAppendedContent = fileContent;
       }
-      entry.savedAppendedContent = entryContent;
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
       const namePart = toSafeFileName(entry.content);
@@ -600,7 +603,7 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('File template path')
-      .setDesc('Vault path to a template file for individual files (e.g. Templates/clipboard-file.md). Leave blank to use the text template below.')
+      .setDesc('Vault path to a template file. Used for individual files (groupByDay off) and for the initial daily file structure (groupByDay on). Leave blank to use the text template below.')
       .addText((text) =>
         text
           .setPlaceholder('Templates/clipboard-file.md')
@@ -613,7 +616,7 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('File template')
-      .setDesc('Fallback template for individual files (used when "Group entries by day" is off and no template path is set).')
+      .setDesc('Template for individual files and the initial daily file structure. When "Group entries by day" is on, this template is applied when the daily file is first created.')
       .addTextArea((ta) =>
         ta
           .setPlaceholder(DEFAULT_FILE_TEMPLATE)
