@@ -321,7 +321,7 @@ def evolve(mem_id: str, dry_run: bool = False, skip_pr: bool = False) -> None:
         sys.exit(f"ERROR: 記憶が見つかりません: {mem_id}")
 
     # analyze.py から理由を取得
-    from analyze import analyze
+    from tools.skills.analyze import analyze
     candidates = analyze(min_score=0)
     reasons = next(
         (c["reasons"] for c in candidates if c["id"] == mem_id),
@@ -367,7 +367,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.auto:
-        from analyze import analyze
+        from tools.skills.analyze import analyze
         candidates = analyze()
         if not candidates:
             print("進化候補はありません。")
