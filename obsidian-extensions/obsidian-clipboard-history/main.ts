@@ -33,6 +33,7 @@ interface ClipboardEntry {
   savedAt?: number;
   savedFilePath?: string;
   savedGroupEntry?: boolean;
+  savedAppendedContent?: string;
 }
 
 interface PluginSettings {
@@ -184,7 +185,7 @@ class ClipboardHistoryView extends ItemView {
         await this.plugin.saveEntryToFile(entry);
       });
 
-      if (entry.savedFilePath && !entry.savedGroupEntry) {
+      if (entry.savedFilePath) {
         const deleteFileBtn = actions.createEl('button', { text: 'Remove Saved File', cls: 'ch-btn ch-delete-file-btn' });
         deleteFileBtn.addEventListener('click', async () => {
           if (!confirm(`Remove saved file?\n${entry.savedFilePath}`)) return;
@@ -376,6 +377,7 @@ export default class ClipboardHistoryPlugin extends Plugin {
       } else {
         await this.app.vault.create(filePath, `# ${dateStr}\n${entryContent}`);
       }
+      entry.savedAppendedContent = entryContent;
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, '-');
       const namePart = toSafeFileName(entry.content);
@@ -400,13 +402,27 @@ export default class ClipboardHistoryPlugin extends Plugin {
     if (!entry.savedFilePath) return;
     const path = normalizePath(entry.savedFilePath);
     if (await this.app.vault.adapter.exists(path)) {
-      await this.app.vault.adapter.remove(path);
-      new Notice(`Deleted: ${path}`);
+      if (entry.savedGroupEntry && entry.savedAppendedContent) {
+        const existing = await this.app.vault.adapter.read(path);
+        const updated = existing.replace(entry.savedAppendedContent, '');
+        if (/^#\s+\S+\s*$/.test(updated.trim())) {
+          await this.app.vault.adapter.remove(path);
+          new Notice(`Deleted: ${path}`);
+        } else {
+          await this.app.vault.adapter.write(path, updated);
+          new Notice(`Removed entry from: ${path}`);
+        }
+      } else {
+        await this.app.vault.adapter.remove(path);
+        new Notice(`Deleted: ${path}`);
+      }
     } else {
       new Notice(`File not found: ${path}`);
     }
     entry.savedAt = undefined;
     entry.savedFilePath = undefined;
+    entry.savedGroupEntry = undefined;
+    entry.savedAppendedContent = undefined;
     this.savePluginDataAsync();
     this.refreshView();
   }

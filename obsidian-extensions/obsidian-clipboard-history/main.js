@@ -125,7 +125,7 @@ var ClipboardHistoryView = class extends import_obsidian.ItemView {
       saveBtn.addEventListener("click", async () => {
         await this.plugin.saveEntryToFile(entry);
       });
-      if (entry.savedFilePath && !entry.savedGroupEntry) {
+      if (entry.savedFilePath) {
         const deleteFileBtn = actions.createEl("button", { text: "Remove Saved File", cls: "ch-btn ch-delete-file-btn" });
         deleteFileBtn.addEventListener("click", async () => {
           if (!confirm(`Remove saved file?
@@ -294,6 +294,7 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
         await this.app.vault.create(filePath, `# ${dateStr}
 ${entryContent}`);
       }
+      entry.savedAppendedContent = entryContent;
     } else {
       const datePrefix = formatTimestamp(entry.timestamp).replace(/[: ]/g, "-");
       const namePart = toSafeFileName(entry.content);
@@ -317,13 +318,27 @@ ${entryContent}`);
       return;
     const path = (0, import_obsidian.normalizePath)(entry.savedFilePath);
     if (await this.app.vault.adapter.exists(path)) {
-      await this.app.vault.adapter.remove(path);
-      new import_obsidian.Notice(`Deleted: ${path}`);
+      if (entry.savedGroupEntry && entry.savedAppendedContent) {
+        const existing = await this.app.vault.adapter.read(path);
+        const updated = existing.replace(entry.savedAppendedContent, "");
+        if (/^#\s+\S+\s*$/.test(updated.trim())) {
+          await this.app.vault.adapter.remove(path);
+          new import_obsidian.Notice(`Deleted: ${path}`);
+        } else {
+          await this.app.vault.adapter.write(path, updated);
+          new import_obsidian.Notice(`Removed entry from: ${path}`);
+        }
+      } else {
+        await this.app.vault.adapter.remove(path);
+        new import_obsidian.Notice(`Deleted: ${path}`);
+      }
     } else {
       new import_obsidian.Notice(`File not found: ${path}`);
     }
     entry.savedAt = void 0;
     entry.savedFilePath = void 0;
+    entry.savedGroupEntry = void 0;
+    entry.savedAppendedContent = void 0;
     this.savePluginDataAsync();
     this.refreshView();
   }
