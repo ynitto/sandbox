@@ -31,6 +31,7 @@ interface ClipboardEntry {
   content: string;
   timestamp: number;
   savedAt?: number;
+  savedFilePath?: string;
 }
 
 interface PluginSettings {
@@ -42,6 +43,8 @@ interface PluginSettings {
   autoSave: boolean;
   fileTemplate: string;
   entryTemplate: string;
+  fileTemplatePath: string;
+  entryTemplatePath: string;
 }
 
 interface PluginData {
@@ -61,6 +64,8 @@ const DEFAULT_SETTINGS: PluginSettings = {
   autoSave: false,
   fileTemplate: DEFAULT_FILE_TEMPLATE,
   entryTemplate: DEFAULT_ENTRY_TEMPLATE,
+  fileTemplatePath: '',
+  entryTemplatePath: '',
 };
 
 // ============================================================
@@ -177,6 +182,14 @@ class ClipboardHistoryView extends ItemView {
       saveBtn.addEventListener('click', async () => {
         await this.plugin.saveEntryToFile(entry);
       });
+
+      if (entry.savedFilePath) {
+        const deleteFileBtn = actions.createEl('button', { text: 'Delete File', cls: 'ch-btn ch-delete-file-btn' });
+        deleteFileBtn.addEventListener('click', async () => {
+          if (!confirm(`Delete saved file?\n${entry.savedFilePath}`)) return;
+          await this.plugin.deleteSavedFile(entry);
+        });
+      }
 
       const deleteBtn = actions.createEl('button', { text: '×', cls: 'ch-btn ch-delete-btn' });
       deleteBtn.addEventListener('click', () => {
@@ -329,6 +342,17 @@ export default class ClipboardHistoryPlugin extends Plugin {
     this.savePluginDataAsync();
   }
 
+  private async getEffectiveTemplate(templatePath: string, fallback: string): Promise<string> {
+    if (templatePath) {
+      const path = normalizePath(templatePath);
+      if (await this.app.vault.adapter.exists(path)) {
+        return await this.app.vault.adapter.read(path);
+      }
+      new Notice(`Template file not found: ${templatePath}`);
+    }
+    return fallback;
+  }
+
   async saveEntryToFile(entry: ClipboardEntry): Promise<void> {
     const dir = normalizePath(this.settings.saveDirectory);
 
@@ -343,7 +367,8 @@ export default class ClipboardHistoryPlugin extends Plugin {
       const pad = (n: number) => String(n).padStart(2, '0');
       const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
       filePath = normalizePath(`${dir}/${dateStr}.md`);
-      const entryContent = applyTemplate(this.settings.entryTemplate, entry);
+      const tpl = await this.getEffectiveTemplate(this.settings.entryTemplatePath, this.settings.entryTemplate);
+      const entryContent = applyTemplate(tpl, entry);
       if (await this.app.vault.adapter.exists(filePath)) {
         const existing = await this.app.vault.adapter.read(filePath);
         await this.app.vault.adapter.write(filePath, existing + entryContent);
@@ -358,11 +383,28 @@ export default class ClipboardHistoryPlugin extends Plugin {
       while (await this.app.vault.adapter.exists(filePath)) {
         filePath = normalizePath(`${dir}/${datePrefix}_${namePart}_${counter++}.md`);
       }
-      await this.app.vault.create(filePath, applyTemplate(this.settings.fileTemplate, entry));
+      const tpl = await this.getEffectiveTemplate(this.settings.fileTemplatePath, this.settings.fileTemplate);
+      await this.app.vault.create(filePath, applyTemplate(tpl, entry));
     }
 
     new Notice(`Saved: ${filePath}`);
     entry.savedAt = Date.now();
+    entry.savedFilePath = filePath;
+    this.savePluginDataAsync();
+    this.refreshView();
+  }
+
+  async deleteSavedFile(entry: ClipboardEntry): Promise<void> {
+    if (!entry.savedFilePath) return;
+    const path = normalizePath(entry.savedFilePath);
+    if (await this.app.vault.adapter.exists(path)) {
+      await this.app.vault.adapter.remove(path);
+      new Notice(`Deleted: ${path}`);
+    } else {
+      new Notice(`File not found: ${path}`);
+    }
+    entry.savedAt = undefined;
+    entry.savedFilePath = undefined;
     this.savePluginDataAsync();
     this.refreshView();
   }
@@ -529,10 +571,27 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
       text: 'Available variables: {{content}}, {{date}}, {{time}}, {{datetime}}, {{title}}',
       cls: 'ch-setting-desc',
     });
+    containerEl.createEl('p', {
+      text: 'Specify a vault file path to load the template from a file. If the path is empty or the file does not exist, the text template below is used.',
+      cls: 'ch-setting-desc',
+    });
+
+    new Setting(containerEl)
+      .setName('File template path')
+      .setDesc('Vault path to a template file for individual files (e.g. Templates/clipboard-file.md). Leave blank to use the text template below.')
+      .addText((text) =>
+        text
+          .setPlaceholder('Templates/clipboard-file.md')
+          .setValue(this.plugin.settings.fileTemplatePath)
+          .onChange(async (value) => {
+            this.plugin.settings.fileTemplatePath = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
 
     new Setting(containerEl)
       .setName('File template')
-      .setDesc('Template for individual files (used when "Group entries by day" is off).')
+      .setDesc('Fallback template for individual files (used when "Group entries by day" is off and no template path is set).')
       .addTextArea((ta) =>
         ta
           .setPlaceholder(DEFAULT_FILE_TEMPLATE)
@@ -544,8 +603,21 @@ class ClipboardHistorySettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName('Entry template path')
+      .setDesc('Vault path to a template file for daily entries (e.g. Templates/clipboard-entry.md). Leave blank to use the text template below.')
+      .addText((text) =>
+        text
+          .setPlaceholder('Templates/clipboard-entry.md')
+          .setValue(this.plugin.settings.entryTemplatePath)
+          .onChange(async (value) => {
+            this.plugin.settings.entryTemplatePath = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName('Entry template')
-      .setDesc('Template for each entry appended to a daily file (used when "Group entries by day" is on).')
+      .setDesc('Fallback template for each entry in a daily file (used when "Group entries by day" is on and no template path is set).')
       .addTextArea((ta) =>
         ta
           .setPlaceholder(DEFAULT_ENTRY_TEMPLATE)
