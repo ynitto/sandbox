@@ -52,8 +52,7 @@ function getGitRemotes(repoPath) {
     const seen = /* @__PURE__ */ new Map();
     for (const line of output.split("\n")) {
       const m = line.match(/^(\S+)\s+(\S+)\s+\(fetch\)/);
-      if (m)
-        seen.set(m[1], m[2]);
+      if (m) seen.set(m[1], m[2]);
     }
     return Array.from(seen.entries()).map(([name, url]) => ({ name, url }));
   } catch (e) {
@@ -81,8 +80,7 @@ function buildRepository(repoPath) {
 function scanForRepoPaths(rootPath, maxDepth) {
   const found = [];
   function walk(dir, depth) {
-    if (depth > maxDepth)
-      return;
+    if (depth > maxDepth) return;
     if (isGitRepo(dir)) {
       found.push(dir);
       return;
@@ -94,17 +92,91 @@ function scanForRepoPaths(rootPath, maxDepth) {
       return;
     }
     for (const entry of entries) {
-      if (!entry.isDirectory())
-        continue;
-      if (entry.name.startsWith("."))
-        continue;
-      if (entry.name === "node_modules")
-        continue;
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith(".")) continue;
+      if (entry.name === "node_modules") continue;
       walk(nodePath.join(dir, entry.name), depth + 1);
     }
   }
   walk(rootPath, 0);
   return found;
+}
+function renderGitManagerBlock(source, el, plugin) {
+  var _a;
+  const config = {};
+  for (const line of source.split("\n")) {
+    const m = line.match(/^(\w+)\s*:\s*(.+)/);
+    if (m) config[m[1].trim()] = m[2].trim();
+  }
+  const show = ((_a = config["show"]) != null ? _a : "all").toLowerCase();
+  const repos = plugin.data.repositories;
+  const container = el.createDiv({ cls: "git-manager-block" });
+  container.style.cssText = "border:1px solid var(--background-modifier-border); border-radius:6px; padding:12px; font-size:0.9em;";
+  if (repos.length === 0) {
+    container.createEl("p", {
+      text: "\u30EA\u30DD\u30B8\u30C8\u30EA\u304C\u767B\u9332\u3055\u308C\u3066\u3044\u307E\u305B\u3093\u3002\u30D7\u30E9\u30B0\u30A4\u30F3\u8A2D\u5B9A\u304B\u3089\u30EA\u30DD\u30B8\u30C8\u30EA\u3092\u8FFD\u52A0\u3057\u3066\u304F\u3060\u3055\u3044\u3002",
+      attr: { style: "color:var(--text-muted); margin:0;" }
+    });
+    return;
+  }
+  container.createEl("div", {
+    text: "Git \u30EA\u30DD\u30B8\u30C8\u30EA",
+    attr: { style: "font-weight:600; margin-bottom:8px; color:var(--text-normal);" }
+  });
+  const selectEl = container.createEl("select");
+  selectEl.style.cssText = "width:100%; margin-bottom:10px; padding:4px 8px; background:var(--background-secondary); color:var(--text-normal); border:1px solid var(--background-modifier-border); border-radius:4px;";
+  for (const repo of repos) {
+    selectEl.createEl("option", { text: repo.name, value: repo.id });
+  }
+  const infoPanel = container.createDiv();
+  function renderInfo(repoId) {
+    infoPanel.empty();
+    const repo = repos.find((r) => r.id === repoId);
+    if (!repo) return;
+    function makeCopyRow(label, value) {
+      const row = infoPanel.createDiv({
+        attr: { style: "display:flex; align-items:center; gap:8px; margin-bottom:6px;" }
+      });
+      row.createEl("span", {
+        text: label,
+        attr: { style: "color:var(--text-muted); min-width:70px; flex-shrink:0;" }
+      });
+      row.createEl("code", {
+        text: value,
+        attr: { style: "flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" }
+      });
+      const btn = row.createEl("button", {
+        text: "\u30B3\u30D4\u30FC",
+        attr: { style: "padding:2px 8px; font-size:0.85em; flex-shrink:0;" }
+      });
+      btn.addEventListener("click", () => {
+        navigator.clipboard.writeText(value);
+        btn.textContent = "\u2713";
+        setTimeout(() => {
+          btn.textContent = "\u30B3\u30D4\u30FC";
+        }, 1500);
+      });
+    }
+    if (show === "all" || show === "folder") {
+      makeCopyRow("\u30D5\u30A9\u30EB\u30C0:", repo.path);
+    }
+    if (show === "all" || show === "remote") {
+      if (repo.remotes.length === 0) {
+        infoPanel.createEl("p", {
+          text: "\u30EA\u30E2\u30FC\u30C8\u306A\u3057",
+          attr: { style: "color:var(--text-muted); margin:4px 0;" }
+        });
+      } else {
+        for (const remote of repo.remotes) {
+          makeCopyRow(`${remote.name}:`, remote.url);
+        }
+      }
+    }
+  }
+  renderInfo(repos[0].id);
+  selectEl.addEventListener("change", (e) => {
+    renderInfo(e.target.value);
+  });
 }
 var ScanModal = class extends import_obsidian.Modal {
   constructor(app, plugin) {
@@ -151,8 +223,7 @@ var ScanModal = class extends import_obsidian.Modal {
         const { added, found } = await this.plugin.scanAndRegister(rootPath, depth);
         this.resultEl.textContent = `${found} \u4EF6\u767A\u898B / ${added} \u4EF6\u3092\u65B0\u898F\u8FFD\u52A0\u3057\u307E\u3057\u305F`;
         scanBtn.disabled = false;
-        if (added > 0)
-          setTimeout(() => this.close(), 1500);
+        if (added > 0) setTimeout(() => this.close(), 1500);
       }, 50);
     });
   }
@@ -282,6 +353,9 @@ var GitManagerPlugin = class extends import_obsidian.Plugin {
     const saved = await this.loadData();
     this.data = Object.assign({}, DEFAULT_DATA, saved);
     this.addSettingTab(new GitManagerSettingTab(this.app, this));
+    this.registerMarkdownCodeBlockProcessor("git-manager", (source, el) => {
+      renderGitManagerBlock(source, el, this);
+    });
     this.addCommand({
       id: "export-to-json",
       name: "\u30EA\u30DD\u30B8\u30C8\u30EA\u60C5\u5831\u3092 JSON \u306B\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8",
@@ -335,14 +409,12 @@ var GitManagerPlugin = class extends import_obsidian.Plugin {
         added++;
       }
     }
-    if (added > 0)
-      await this.savePluginData();
+    if (added > 0) await this.savePluginData();
     return { found: paths.length, added };
   }
   async refreshRepository(id) {
     const repo = this.data.repositories.find((r) => r.id === id);
-    if (!repo)
-      return;
+    if (!repo) return;
     repo.remotes = getGitRemotes(repo.path);
     repo.lastUpdated = (/* @__PURE__ */ new Date()).toISOString();
     await this.savePluginData();
