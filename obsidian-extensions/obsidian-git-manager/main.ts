@@ -111,6 +111,103 @@ function scanForRepoPaths(rootPath: string, maxDepth: number): string[] {
 }
 
 // ============================================================
+// Markdown Code Block Renderer
+// ============================================================
+
+function renderGitManagerBlock(
+  source: string,
+  el: HTMLElement,
+  plugin: GitManagerPlugin,
+): void {
+  const config: Record<string, string> = {};
+  for (const line of source.split('\n')) {
+    const m = line.match(/^(\w+)\s*:\s*(.+)/);
+    if (m) config[m[1].trim()] = m[2].trim();
+  }
+  const show = (config['show'] ?? 'all').toLowerCase();
+
+  const repos = plugin.data.repositories;
+  const container = el.createDiv({ cls: 'git-manager-block' });
+  container.style.cssText =
+    'border:1px solid var(--background-modifier-border); border-radius:6px; padding:12px; font-size:0.9em;';
+
+  if (repos.length === 0) {
+    container.createEl('p', {
+      text: 'リポジトリが登録されていません。プラグイン設定からリポジトリを追加してください。',
+      attr: { style: 'color:var(--text-muted); margin:0;' },
+    });
+    return;
+  }
+
+  container.createEl('div', {
+    text: 'Git リポジトリ',
+    attr: { style: 'font-weight:600; margin-bottom:8px; color:var(--text-normal);' },
+  });
+
+  const selectEl = container.createEl('select');
+  selectEl.style.cssText =
+    'width:100%; margin-bottom:10px; padding:4px 8px;' +
+    ' background:var(--background-secondary); color:var(--text-normal);' +
+    ' border:1px solid var(--background-modifier-border); border-radius:4px;';
+  for (const repo of repos) {
+    selectEl.createEl('option', { text: repo.name, value: repo.id });
+  }
+
+  const infoPanel = container.createDiv();
+
+  function renderInfo(repoId: string) {
+    infoPanel.empty();
+    const repo = repos.find(r => r.id === repoId);
+    if (!repo) return;
+
+    function makeCopyRow(label: string, value: string) {
+      const row = infoPanel.createDiv({
+        attr: { style: 'display:flex; align-items:center; gap:8px; margin-bottom:6px;' },
+      });
+      row.createEl('span', {
+        text: label,
+        attr: { style: 'color:var(--text-muted); min-width:70px; flex-shrink:0;' },
+      });
+      row.createEl('code', {
+        text: value,
+        attr: { style: 'flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;' },
+      });
+      const btn = row.createEl('button', {
+        text: 'コピー',
+        attr: { style: 'padding:2px 8px; font-size:0.85em; flex-shrink:0;' },
+      });
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(value);
+        btn.textContent = '✓';
+        setTimeout(() => { btn.textContent = 'コピー'; }, 1500);
+      });
+    }
+
+    if (show === 'all' || show === 'folder') {
+      makeCopyRow('フォルダ:', repo.path);
+    }
+
+    if (show === 'all' || show === 'remote') {
+      if (repo.remotes.length === 0) {
+        infoPanel.createEl('p', {
+          text: 'リモートなし',
+          attr: { style: 'color:var(--text-muted); margin:4px 0;' },
+        });
+      } else {
+        for (const remote of repo.remotes) {
+          makeCopyRow(`${remote.name}:`, remote.url);
+        }
+      }
+    }
+  }
+
+  renderInfo(repos[0].id);
+  selectEl.addEventListener('change', e => {
+    renderInfo((e.target as HTMLSelectElement).value);
+  });
+}
+
+// ============================================================
 // Scan Modal
 // ============================================================
 
@@ -374,6 +471,10 @@ export default class GitManagerPlugin extends Plugin {
     this.data = Object.assign({}, DEFAULT_DATA, saved);
 
     this.addSettingTab(new GitManagerSettingTab(this.app, this));
+
+    this.registerMarkdownCodeBlockProcessor('git-manager', (source, el) => {
+      renderGitManagerBlock(source, el, this);
+    });
 
     this.addCommand({
       id: 'export-to-json',
