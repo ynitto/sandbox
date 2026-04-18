@@ -7,6 +7,28 @@
 #   3. HOME の gitlab-obsidian-sync.yaml / .yml / .json
 
 # ---------------------------------------------------------------------------
+# Kanban ボード設定（--kanban モード用）
+# ---------------------------------------------------------------------------
+# python3 sync.py --kanban --config <this-file> で kanban.md を生成する
+# terminal-launcher の config.json や cron に以下を登録して毎朝自動更新する:
+#
+#   cron 例 (毎朝 8:00):
+#     0 8 * * * python3 ~/sandbox/tools/gitlab-obsidian-sync/sync.py --kanban --config ~/gitlab-obsidian-sync.yaml
+#
+#   terminal-launcher config.json 例:
+#     { "title": "kanban-sync", "type": "wsl", "mode": "direct",
+#       "distro": "Ubuntu", "dir": "~",
+#       "cmd": "python3 ~/sandbox/tools/gitlab-obsidian-sync/sync.py --kanban --config ~/gitlab-obsidian-sync.yaml" }
+#
+kanban:
+  # Vault 内の出力先（global.vault_path からの相対パス）
+  target_file: "AI-Tasks/kanban.md"
+
+  # このラベルを持つ Issue のみを対象にする（空リストで全 Issue）
+  label_filter:
+    - "ai-task"
+
+# ---------------------------------------------------------------------------
 # グローバル設定
 # ---------------------------------------------------------------------------
 global:

@@ -43,33 +43,55 @@ response_timeout: 300      # 1 プロンプトの応答待ち上限
 # 定期プロンプトの定義
 # ---------------------------------------------------------------------------
 prompts:
-  # ---- サンプル 1: project-a で 30 分ごとにコードレビュー ----
+  # ---------------------------------------------------------------------------
+  # GitLab Issue 自動実行ワークフロー
+  #
+  # ワークフロー:
+  #   毎朝 Obsidian kanban.md で未着手 Issue を確認
+  #   → 人が GitLab Issue に assignee をセット
+  #   → このプロンプトが定期的に「自分にアサインされた Issue」を拾って実行
+  # ---------------------------------------------------------------------------
+
+  # ---- MR コメント返答: 自分担当 MR の未解決スレッドを拾って返答・修正 ----
+  # レビュアーが MR にコメントを投稿した後、このプロンプトが返答または修正を行う
+  - name: "MR コメント返答"
+    prompt: |
+      自分にアサインされたオープン MR の未解決ディスカッションを確認してください。
+      手順:
+      1. python scripts/gl.py list-mrs --state opened でオープン MR を取得
+      2. 自分が assignee の MR に対して python scripts/gl.py get-mr-discussions MR_IID --unresolved で未解決スレッドを取得
+      3. 各スレッドの指摘内容を確認し:
+         - 質問・説明要求 → python scripts/gl.py add-mr-comment MR_IID --body "返答内容" で返答し、python scripts/gl.py resolve-mr-discussion MR_IID DISCUSSION_ID でスレッドをクローズ
+         - コード修正要求 → 修正を実装して push し、python scripts/gl.py add-mr-comment MR_IID --body "修正しました: ..." で報告してスレッドをクローズ
+      4. 全スレッドがクローズしたら python scripts/gl.py add-mr-comment MR_IID --body "全指摘に対応しました。再レビューをお願いします。" を投稿
+      未解決スレッドがなければ「対応待ちのコメントはありません」と報告して終了。
+    interval_minutes: 60
+    workspace: "project-a"
+    enabled: true
+
+  # ---- GitLab Issue ワーカー: 自分にアサインされた Issue を拾って実行 ----
+  - name: "GitLab Issue ワーカー"
+    prompt: |
+      gitlab-idd スキルのワーカーロールを実行してください。
+      自分にアサインされた status:open の Issue を 1 件取得して実装・報告してください。
+    interval_minutes: 60        # 1 時間ごとに確認
+    workspace: "project-a"
+    enabled: true
+
+  # ---- Kanban 更新: GitLab → Obsidian kanban.md を再生成 ----
+  # terminal-launcher や cron で直接 sync.py --kanban を呼ぶ場合は不要
+  - name: "Kanban 同期"
+    prompt: |
+      以下のコマンドを実行して Obsidian の kanban.md を最新状態に更新してください。
+      python ~/sandbox/tools/gitlab-obsidian-sync/sync.py --kanban --config ~/gitlab-obsidian-sync.yaml
+    interval_minutes: 30
+    workspace: "project-a"
+    enabled: false              # sync.py --kanban を直接 cron/terminal-launcher で動かす場合は false のまま
+
+  # ---- サンプル: 固定プロンプトによる定期コードレビュー ----
   - name: "定期コードレビュー"
     prompt: |
       直近の変更内容を確認して、問題があれば報告してください。
-      特にセキュリティ上の懸念点とパフォーマンス上の問題に注目してください。
     interval_minutes: 30
-    workspace: "project-a"   # 対象ワークスペース（省略するとデフォルトワークスペースを使う）
-    enabled: true
-
-  # ---- サンプル 2: project-b で 60 分ごとにテスト実行 ----
-  - name: "定期テスト実行"
-    prompt: "テストを実行して結果を教えてください。失敗があれば原因を分析してください。"
-    interval_minutes: 60
-    workspace: "project-b"
-    enabled: true
-
-  # ---- サンプル 3: デフォルトワークスペースで 90 分ごとに TODO チェック ----
-  - name: "TODO チェック"
-    prompt: |
-      プロジェクト内の TODO コメントを確認して、
-      優先度が高そうなものをリストアップしてください。
-    interval_minutes: 90
-    # workspace を省略 → デフォルトワークスペース (project-a) を使う
-    enabled: false
-
-  # ---- サンプル 4: 無効化したエントリの例 ----
-  - name: "無効なプロンプト"
-    prompt: "このプロンプトは実行されません。"
-    interval_minutes: 120
+    workspace: "project-a"
     enabled: false

@@ -770,6 +770,36 @@ def cmd_check_defer(args, host, project, token):
         }, args.get)
 
 
+def cmd_add_mr_comment(args, host, project, token):
+    """Post a comment (note) on a merge request."""
+    ep = encode_project(project)
+    body = read_body(args.body, args.body_file, "--body")
+    out(api(host, token, "POST",
+            f"/projects/{ep}/merge_requests/{args.mr_id}/notes",
+            data={"body": body}), args.get)
+
+
+def cmd_get_mr_discussions(args, host, project, token):
+    """List discussions (threads) on a merge request."""
+    ep = encode_project(project)
+    discussions = api_list(host, token,
+                           f"/projects/{ep}/merge_requests/{args.mr_id}/discussions")
+    if args.unresolved:
+        discussions = [
+            d for d in discussions
+            if any(not n.get("resolved", True) for n in d.get("notes", []))
+        ]
+    out(discussions, args.get)
+
+
+def cmd_resolve_mr_discussion(args, host, project, token):
+    """Resolve (or unresolve) a discussion thread on a merge request."""
+    ep = encode_project(project)
+    out(api(host, token, "PUT",
+            f"/projects/{ep}/merge_requests/{args.mr_id}/discussions/{args.discussion_id}",
+            data={"resolved": not args.unresolve}), args.get)
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -867,6 +897,24 @@ def build_parser():
                        help="Get the latest CI pipeline for a merge request")
     p.add_argument("mr_id", type=int)
 
+    p = sub.add_parser("add-mr-comment", help="Post a comment on a merge request")
+    p.add_argument("mr_id", type=int)
+    p.add_argument("--body", default="", help="Comment body (Markdown)")
+    p.add_argument("--body-file", metavar="FILE",
+                   help="Read comment body from FILE. Mutually exclusive with --body.")
+
+    p = sub.add_parser("get-mr-discussions",
+                       help="List discussion threads on a merge request")
+    p.add_argument("mr_id", type=int)
+    p.add_argument("--unresolved", action="store_true",
+                   help="Return only unresolved threads")
+
+    p = sub.add_parser("resolve-mr-discussion",
+                       help="Resolve (or unresolve) a discussion thread on a merge request")
+    p.add_argument("mr_id", type=int)
+    p.add_argument("discussion_id", help="Discussion ID (from get-mr-discussions[].id)")
+    p.add_argument("--unresolve", action="store_true", help="Unresolve instead of resolve")
+
     p = sub.add_parser("make-branch-name",
                        help="Generate branch name for an issue (feature/issue-{id}-{slug})")
     p.add_argument("issue_id", type=int)
@@ -937,6 +985,9 @@ COMMANDS = {
     "update-mr":       cmd_update_mr,
     "merge-mr":        cmd_merge_mr,
     "get-mr-pipeline": cmd_get_mr_pipeline,
+    "add-mr-comment":  cmd_add_mr_comment,
+    "get-mr-discussions": cmd_get_mr_discussions,
+    "resolve-mr-discussion": cmd_resolve_mr_discussion,
     "make-branch-name": cmd_make_branch_name,
     "check-review-defer":   cmd_check_review_defer,
     "check-assigned-defer": cmd_check_assigned_defer,
