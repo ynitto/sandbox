@@ -103,14 +103,14 @@
   border-bottom-right-radius: 0;
   border-right: none;
   padding: 2px;
-  margin: 0;
+  margin: 0 !important;
 }
 
 .ch-save-drop-btn {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   padding: 2px;
-  margin: 0;
+  margin: 0 !important;
 }
 
   width: 100%;
