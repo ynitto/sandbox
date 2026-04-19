@@ -61,6 +61,31 @@ function getGitRemotes(repoPath) {
     return [];
   }
 }
+function getGitBranches(repoPath) {
+  const local = [];
+  const remote = [];
+  try {
+    const out = (0, import_child_process.execSync)("git branch", { cwd: repoPath, encoding: "utf8", timeout: 5e3 });
+    for (const line of out.split("\n")) {
+      const name = line.replace(/^\*?\s+/, "").trim();
+      if (name)
+        local.push(name);
+    }
+  } catch (e) {
+  }
+  try {
+    const out = (0, import_child_process.execSync)("git branch -r", { cwd: repoPath, encoding: "utf8", timeout: 5e3 });
+    for (const line of out.split("\n")) {
+      if (line.includes("->"))
+        continue;
+      const name = line.trim();
+      if (name)
+        remote.push(name);
+    }
+  } catch (e) {
+  }
+  return { local, remote };
+}
 function isGitRepo(dirPath) {
   try {
     return fs.existsSync(nodePath.join(dirPath, ".git"));
@@ -191,12 +216,56 @@ function renderGitManagerBlock(source, el, plugin, ctx) {
         }
       }
     }
+    if (show === "all" || show === "branch") {
+      const branchRow = infoPanel.createDiv({
+        attr: { style: "display:flex; align-items:center; gap:8px; margin-top:6px;" }
+      });
+      branchRow.createEl("span", {
+        text: "\u30D6\u30E9\u30F3\u30C1:",
+        attr: { style: "color:var(--text-muted); min-width:70px; flex-shrink:0;" }
+      });
+      const branchBtn = branchRow.createEl("button", {
+        text: "\u30D6\u30E9\u30F3\u30C1\u3092\u9078\u629E",
+        attr: { style: "padding:2px 8px; font-size:0.85em;" }
+      });
+      branchBtn.addEventListener("click", () => {
+        const { local, remote } = getGitBranches(repo.path);
+        const all = [...local, ...remote];
+        if (all.length === 0) {
+          new import_obsidian.Notice("\u30D6\u30E9\u30F3\u30C1\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3067\u3057\u305F");
+          return;
+        }
+        new BranchSelectModal(plugin.app, all, async (branch) => {
+          await insertBelowBlock("\u30D6\u30E9\u30F3\u30C1", branch);
+        }).open();
+      });
+    }
   }
   renderInfo(repos[0].id);
   selectEl.addEventListener("change", (e) => {
     renderInfo(e.target.value);
   });
 }
+var BranchSelectModal = class extends import_obsidian.SuggestModal {
+  constructor(app, branches, onSelect) {
+    super(app);
+    this.branches = branches;
+    this.onSelect = onSelect;
+    this.setPlaceholder("\u30D6\u30E9\u30F3\u30C1\u540D\u3092\u5165\u529B\uFF08\u524D\u65B9\u4E00\u81F4\u3067\u7D5E\u308A\u8FBC\u307F\uFF09");
+  }
+  getSuggestions(query) {
+    if (!query)
+      return this.branches;
+    const q = query.toLowerCase();
+    return this.branches.filter((b) => b.toLowerCase().startsWith(q));
+  }
+  renderSuggestion(branch, el) {
+    el.setText(branch);
+  }
+  onChooseSuggestion(branch, _evt) {
+    this.onSelect(branch);
+  }
+};
 var ScanModal = class extends import_obsidian.Modal {
   constructor(app, plugin) {
     super(app);
