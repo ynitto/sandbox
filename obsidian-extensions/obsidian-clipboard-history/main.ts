@@ -184,7 +184,7 @@ class ClipboardHistoryView extends ItemView {
         new Notice('Copied to clipboard!');
       });
 
-      const splitBtn = actions.createDiv({ cls: 'ch-split-btn' });
+      const splitBtn = actions.createEl('div', { cls: 'ch-split-btn' });
       const saveBtn = splitBtn.createEl('button', { text: 'Save', cls: 'ch-btn mod-cta ch-save-main-btn' });
       saveBtn.addEventListener('click', async () => {
         await this.plugin.saveEntryToFile(entry);

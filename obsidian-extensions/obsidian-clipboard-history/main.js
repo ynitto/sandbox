@@ -122,7 +122,7 @@ var ClipboardHistoryView = class extends import_obsidian.ItemView {
         await navigator.clipboard.writeText(entry.content);
         new import_obsidian.Notice("Copied to clipboard!");
       });
-      const splitBtn = actions.createDiv({ cls: "ch-split-btn" });
+      const splitBtn = actions.createEl("div", { cls: "ch-split-btn" });
       const saveBtn = splitBtn.createEl("button", { text: "Save", cls: "ch-btn mod-cta ch-save-main-btn" });
       saveBtn.addEventListener("click", async () => {
         await this.plugin.saveEntryToFile(entry);
