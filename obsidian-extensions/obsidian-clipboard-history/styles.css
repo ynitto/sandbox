@@ -93,6 +93,10 @@
   border-color: var(--text-error);
 }
 
+.ch-split-btn {
+  display: flex;
+}
+
 .ch-save-main-btn {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;

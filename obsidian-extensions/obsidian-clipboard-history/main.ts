@@ -184,12 +184,13 @@ class ClipboardHistoryView extends ItemView {
         new Notice('Copied to clipboard!');
       });
 
-      const saveBtn = actions.createEl('button', { text: 'Save', cls: 'ch-btn mod-cta ch-save-main-btn' });
+      const splitBtn = actions.createDiv({ cls: 'ch-split-btn' });
+      const saveBtn = splitBtn.createEl('button', { text: 'Save', cls: 'ch-btn mod-cta ch-save-main-btn' });
       saveBtn.addEventListener('click', async () => {
         await this.plugin.saveEntryToFile(entry);
       });
 
-      const saveDropBtn = actions.createEl('button', { text: '▾', cls: 'ch-btn mod-cta ch-save-drop-btn' });
+      const saveDropBtn = splitBtn.createEl('button', { text: '▾', cls: 'ch-btn mod-cta ch-save-drop-btn' });
       saveDropBtn.addEventListener('click', (e) => {
         const menu = new Menu();
         menu.addItem((menuItem) =>
