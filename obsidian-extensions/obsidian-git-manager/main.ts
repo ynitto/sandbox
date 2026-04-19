@@ -6,6 +6,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  SuggestModal,
   TFile,
 } from 'obsidian';
 import * as fs from 'fs';
@@ -64,6 +65,30 @@ function getGitRemotes(repoPath: string): GitRemote[] {
   } catch {
     return [];
   }
+}
+
+function getGitBranches(repoPath: string): { local: string[]; remote: string[] } {
+  const local: string[] = [];
+  const remote: string[] = [];
+
+  try {
+    const out = execSync('git branch', { cwd: repoPath, encoding: 'utf8', timeout: 5000 });
+    for (const line of out.split('\n')) {
+      const name = line.replace(/^\*?\s+/, '').trim();
+      if (name) local.push(name);
+    }
+  } catch { /* ignore */ }
+
+  try {
+    const out = execSync('git branch -r', { cwd: repoPath, encoding: 'utf8', timeout: 5000 });
+    for (const line of out.split('\n')) {
+      if (line.includes('->')) continue;
+      const name = line.trim();
+      if (name) remote.push(name);
+    }
+  } catch { /* ignore */ }
+
+  return { local, remote };
 }
 
 function isGitRepo(dirPath: string): boolean {
@@ -216,12 +241,67 @@ function renderGitManagerBlock(
         }
       }
     }
+
+    if (show === 'all' || show === 'branch') {
+      const branchRow = infoPanel.createDiv({
+        attr: { style: 'display:flex; align-items:center; gap:8px; margin-top:6px;' },
+      });
+      branchRow.createEl('span', {
+        text: 'ブランチ:',
+        attr: { style: 'color:var(--text-muted); min-width:70px; flex-shrink:0;' },
+      });
+      const branchBtn = branchRow.createEl('button', {
+        text: 'ブランチを選択',
+        attr: { style: 'padding:2px 8px; font-size:0.85em;' },
+      });
+      branchBtn.addEventListener('click', () => {
+        const { local, remote } = getGitBranches(repo.path);
+        const all = [...local, ...remote];
+        if (all.length === 0) {
+          new Notice('ブランチが見つかりませんでした');
+          return;
+        }
+        new BranchSelectModal(plugin.app, all, async (branch) => {
+          await insertBelowBlock('ブランチ', branch);
+        }).open();
+      });
+    }
   }
 
   renderInfo(repos[0].id);
   selectEl.addEventListener('change', e => {
     renderInfo((e.target as HTMLSelectElement).value);
   });
+}
+
+// ============================================================
+// Branch Select Modal
+// ============================================================
+
+class BranchSelectModal extends SuggestModal<string> {
+  private branches: string[];
+  private onSelect: (branch: string) => void;
+
+  constructor(app: App, branches: string[], onSelect: (branch: string) => void) {
+    super(app);
+    this.branches = branches;
+    this.onSelect = onSelect;
+    this.setPlaceholder('ブランチ名を入力（前方一致で絞り込み）');
+  }
+
+  getSuggestions(query: string): string[] {
+    if (!query) return this.branches;
+    const q = query.toLowerCase();
+    return this.branches.filter(b => b.toLowerCase().startsWith(q));
+  }
+
+  renderSuggestion(branch: string, el: HTMLElement): void {
+    el.setText(branch);
+  }
+
+  onChooseSuggestion(branch: string, _evt: MouseEvent | KeyboardEvent): void {
+    this.onSelect(branch);
+  }
 }
 
 // ============================================================
