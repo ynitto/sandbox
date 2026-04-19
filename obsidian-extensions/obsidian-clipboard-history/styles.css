@@ -95,6 +95,7 @@
 
 .ch-split-btn {
   display: flex;
+  gap: 0;
 }
 
 .ch-save-main-btn {
@@ -102,12 +103,14 @@
   border-bottom-right-radius: 0;
   border-right: none;
   padding: 2px;
+  margin: 0;
 }
 
 .ch-save-drop-btn {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   padding: 2px;
+  margin: 0;
 }
 
   width: 100%;
