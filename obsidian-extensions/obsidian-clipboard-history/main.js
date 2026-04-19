@@ -31,6 +31,7 @@ try {
 } catch (e) {
   console.error("[ClipboardHistory] Failed to access Electron clipboard:", e);
 }
+var HISTORY_FILE = "history.json";
 var DEFAULT_FILE_TEMPLATE = "{{content}}";
 var DEFAULT_ENTRY_TEMPLATE = "\n## {{time}}\n\n{{content}}\n";
 var DEFAULT_SETTINGS = {
@@ -128,6 +129,12 @@ var ClipboardHistoryView = class extends import_obsidian.ItemView {
       const saveDropBtn = actions.createEl("button", { text: "\u25BE", cls: "ch-btn mod-cta ch-save-drop-btn" });
       saveDropBtn.addEventListener("click", (e) => {
         const menu = new import_obsidian.Menu();
+        menu.addItem(
+          (menuItem) => menuItem.setTitle("Copy to Clipboard").setIcon("clipboard-copy").onClick(async () => {
+            await navigator.clipboard.writeText(entry.content);
+            new import_obsidian.Notice("Copied to clipboard!");
+          })
+        );
         menu.addItem(
           (menuItem) => menuItem.setTitle("Save to File").setIcon("save").onClick(async () => {
             await this.plugin.saveEntryToFile(entry);
@@ -423,21 +430,42 @@ var ClipboardHistoryPlugin = class extends import_obsidian.Plugin {
     await this.savePluginData();
   }
   async loadPluginData() {
-    var _a, _b;
+    var _a;
     const raw = await this.loadData();
     if (raw && typeof raw === "object" && "settings" in raw) {
       const data = raw;
       this.settings = Object.assign({}, DEFAULT_SETTINGS, (_a = data.settings) != null ? _a : {});
-      this.history = (_b = data.history) != null ? _b : [];
+      if (data.history && data.history.length > 0) {
+        this.history = data.history;
+        await this.saveHistoryData();
+        await this.saveData({ settings: this.settings });
+      } else {
+        this.history = await this.loadHistoryData();
+      }
     } else {
       this.settings = Object.assign({}, DEFAULT_SETTINGS, raw != null ? raw : {});
-      this.history = [];
+      this.history = await this.loadHistoryData();
     }
     this.pruneHistory();
   }
+  async loadHistoryData() {
+    const path = (0, import_obsidian.normalizePath)(this.manifest.dir + "/" + HISTORY_FILE);
+    if (await this.app.vault.adapter.exists(path)) {
+      try {
+        return JSON.parse(await this.app.vault.adapter.read(path));
+      } catch (e) {
+        console.error("[ClipboardHistory] Failed to load history.json:", e);
+      }
+    }
+    return [];
+  }
+  async saveHistoryData() {
+    const path = (0, import_obsidian.normalizePath)(this.manifest.dir + "/" + HISTORY_FILE);
+    await this.app.vault.adapter.write(path, JSON.stringify(this.history));
+  }
   async savePluginData() {
-    const data = { settings: this.settings, history: this.history };
-    await this.saveData(data);
+    await this.saveData({ settings: this.settings });
+    await this.saveHistoryData();
   }
   savePluginDataAsync() {
     this.savePluginData().catch(
