@@ -97,12 +97,13 @@
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
   border-right: none;
+  padding: 2px;
 }
 
 .ch-save-drop-btn {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  padding: 2px 5px;
+  padding: 2px;
 }
 
   width: 100%;

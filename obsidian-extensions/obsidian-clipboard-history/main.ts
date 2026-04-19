@@ -53,8 +53,10 @@ interface PluginSettings {
 
 interface PluginData {
   settings: PluginSettings;
-  history: ClipboardEntry[];
+  history?: ClipboardEntry[]; // kept for migration from older versions
 }
+
+const HISTORY_FILE = 'history.json';
 
 const DEFAULT_FILE_TEMPLATE = '{{content}}';
 const DEFAULT_ENTRY_TEMPLATE = '\n## {{time}}\n\n{{content}}\n';
@@ -190,6 +192,12 @@ class ClipboardHistoryView extends ItemView {
       const saveDropBtn = actions.createEl('button', { text: '▾', cls: 'ch-btn mod-cta ch-save-drop-btn' });
       saveDropBtn.addEventListener('click', (e) => {
         const menu = new Menu();
+        menu.addItem((menuItem) =>
+          menuItem.setTitle('Copy to Clipboard').setIcon('clipboard-copy').onClick(async () => {
+            await navigator.clipboard.writeText(entry.content);
+            new Notice('Copied to clipboard!');
+          })
+        );
         menu.addItem((menuItem) =>
           menuItem.setTitle('Save to File').setIcon('save').onClick(async () => {
             await this.plugin.saveEntryToFile(entry);
@@ -524,18 +532,42 @@ export default class ClipboardHistoryPlugin extends Plugin {
     if (raw && typeof raw === 'object' && 'settings' in raw) {
       const data = raw as Partial<PluginData>;
       this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings ?? {});
-      this.history = data.history ?? [];
+      if (data.history && data.history.length > 0) {
+        // migrate history from data.json to history.json
+        this.history = data.history;
+        await this.saveHistoryData();
+        await this.saveData({ settings: this.settings });
+      } else {
+        this.history = await this.loadHistoryData();
+      }
     } else {
       // legacy: only settings were saved
       this.settings = Object.assign({}, DEFAULT_SETTINGS, raw ?? {});
-      this.history = [];
+      this.history = await this.loadHistoryData();
     }
     this.pruneHistory();
   }
 
+  private async loadHistoryData(): Promise<ClipboardEntry[]> {
+    const path = normalizePath(this.manifest.dir + '/' + HISTORY_FILE);
+    if (await this.app.vault.adapter.exists(path)) {
+      try {
+        return JSON.parse(await this.app.vault.adapter.read(path)) as ClipboardEntry[];
+      } catch (e) {
+        console.error('[ClipboardHistory] Failed to load history.json:', e);
+      }
+    }
+    return [];
+  }
+
+  private async saveHistoryData(): Promise<void> {
+    const path = normalizePath(this.manifest.dir + '/' + HISTORY_FILE);
+    await this.app.vault.adapter.write(path, JSON.stringify(this.history));
+  }
+
   private async savePluginData(): Promise<void> {
-    const data: PluginData = { settings: this.settings, history: this.history };
-    await this.saveData(data);
+    await this.saveData({ settings: this.settings });
+    await this.saveHistoryData();
   }
 
   private savePluginDataAsync(): void {
