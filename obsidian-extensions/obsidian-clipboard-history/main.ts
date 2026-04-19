@@ -193,6 +193,12 @@ class ClipboardHistoryView extends ItemView {
       saveDropBtn.addEventListener('click', (e) => {
         const menu = new Menu();
         menu.addItem((menuItem) =>
+          menuItem.setTitle('Copy to Clipboard').setIcon('clipboard-copy').onClick(async () => {
+            await navigator.clipboard.writeText(entry.content);
+            new Notice('Copied to clipboard!');
+          })
+        );
+        menu.addItem((menuItem) =>
           menuItem.setTitle('Save to File').setIcon('save').onClick(async () => {
             await this.plugin.saveEntryToFile(entry);
           })
