@@ -1,5 +1,5 @@
 ---
-name: presentator
+name: presenter
 description: JSONスペックからPowerPointを生成するスキル。「スライドを作って」「パワポを作って」「プレゼン資料を作って」「PPTXを生成して」「既存のPPTXを編集して」「スライドを修正して」「プレゼンのスタイルを作りたい」などで発動する。ブリーフィング→アウトライン→アートディレクション→スライド構成→レビューの段階的ワークフローで高品質なプレゼンを作成する。
 metadata:
   version: 1.0.0
@@ -13,7 +13,7 @@ metadata:
     - json
 ---
 
-# presentator
+# presenter
 
 JSONスペックからPowerPointプレゼンテーションを生成するスキル。
 パスはこの SKILL.md からの相対パス。コマンド実行前にこのディレクトリに `cd` すること。
@@ -23,7 +23,7 @@ JSONスペックからPowerPointプレゼンテーションを生成するスキ
 スキル開始時に必ず実行する:
 
 ```bash
-cd .github/skills/presentator
+cd .github/skills/presenter
 uv sync
 ```
 
