@@ -5,6 +5,8 @@
 # --- セットアップ ---
 
 setup() {
+    unset PERMISSION_FLAG
+
     # テスト用のtmpディレクトリ
     TEST_TMP="$(mktemp -d)"
 
@@ -144,6 +146,7 @@ YAML
 }
 
 teardown() {
+    unset PERMISSION_FLAG
     rm -rf "$TEST_TMP"
 }
 
@@ -312,6 +315,13 @@ load_adapter_with() {
     [ "$result" = "claude --model opus --dangerously-skip-permissions" ]
 }
 
+@test "build_cli_command: PERMISSION_FLAG override → claude --permission-mode auto-approved" {
+    PERMISSION_FLAG="--permission-mode auto-approved"
+    load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
+    result=$(build_cli_command "shogun")
+    [ "$result" = "claude --model opus --permission-mode auto-approved" ]
+}
+
 @test "build_cli_command: codex + default model → codex --model sonnet ..." {
     load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
     result=$(build_cli_command "ashigaru5")
@@ -336,22 +346,22 @@ load_adapter_with() {
     [ "$result" = "kimi --yolo --model k2.5" ]
 }
 
-@test "build_cli_command: kiro + model → kiro-cli chat --agent ashigaru --trust-all-tools --model ..." {
+@test "build_cli_command: kiro + model → kiro-cli chat --classic --agent ashigaru --trust-all-tools --model ..." {
     load_adapter_with "${TEST_TMP}/settings_kiro.yaml"
     result=$(build_cli_command "ashigaru3")
-    [ "$result" = "kiro-cli chat --agent ashigaru --trust-all-tools --model anthropic.claude-3-7-sonnet-20250219-v1:0" ]
+    [ "$result" = "kiro-cli chat --classic --agent ashigaru --trust-all-tools --model anthropic.claude-3-7-sonnet-20250219-v1:0" ]
 }
 
-@test "build_cli_command: kiro (モデル指定なし) → kiro-cli chat --agent ashigaru --trust-all-tools" {
+@test "build_cli_command: kiro (モデル指定なし) → kiro-cli chat --classic --agent ashigaru --trust-all-tools" {
     load_adapter_with "${TEST_TMP}/settings_kiro.yaml"
     result=$(build_cli_command "ashigaru4")
-    [ "$result" = "kiro-cli chat --agent ashigaru --trust-all-tools" ]
+    [ "$result" = "kiro-cli chat --classic --agent ashigaru --trust-all-tools" ]
 }
 
-@test "build_cli_command: kiro role mapping shogun → kiro-cli chat --agent shogun --trust-all-tools" {
+@test "build_cli_command: kiro role mapping shogun → kiro-cli chat --classic --agent shogun --trust-all-tools" {
     load_adapter_with "${TEST_TMP}/settings_kiro_default.yaml"
     result=$(build_cli_command "shogun")
-    [ "$result" = "kiro-cli chat --agent shogun --trust-all-tools" ]
+    [ "$result" = "kiro-cli chat --classic --agent shogun --trust-all-tools" ]
 }
 
 @test "build_cli_command: cliセクションなし → claude フォールバック" {

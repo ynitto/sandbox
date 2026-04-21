@@ -1,0 +1,17 @@
+# local verification settings for Kiro CLI
+language: ja
+shell: zsh
+display_mode: silent
+
+cli:
+  default: kiro
+  agents:
+    shogun:
+      type: kiro
+    karo:
+      type: kiro
+    gunshi:
+      type: kiro
+  validation:
+    fallback: kiro
+    strict: false

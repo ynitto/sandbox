@@ -132,6 +132,7 @@ build_cli_command() {
     local kiro_agent
     local thinking
     thinking=$(_cli_adapter_read_yaml "cli.agents.${agent_id}.thinking" "")
+    local permission_flag="${PERMISSION_FLAG:---dangerously-skip-permissions}"
 
     case "$agent_id" in
         shogun)    kiro_agent="shogun" ;;
@@ -155,7 +156,7 @@ build_cli_command() {
             if [[ -n "$model" ]]; then
                 cmd="$cmd --model $model"
             fi
-            cmd="$cmd --dangerously-skip-permissions"
+            cmd="$cmd $permission_flag"
             echo "${prefix}${cmd}"
             ;;
         codex)
@@ -177,14 +178,14 @@ build_cli_command() {
             echo "$cmd"
             ;;
         kiro)
-            local cmd="kiro-cli chat --agent ${kiro_agent} --trust-all-tools"
+            local cmd="kiro-cli chat --classic --agent ${kiro_agent} --trust-all-tools"
             if [[ -n "$model" ]]; then
                 cmd="$cmd --model $model"
             fi
             echo "$cmd"
             ;;
         *)
-            echo "claude --dangerously-skip-permissions"
+            echo "claude $permission_flag"
             ;;
     esac
 }

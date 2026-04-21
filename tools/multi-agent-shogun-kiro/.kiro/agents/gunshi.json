@@ -1,7 +1,7 @@
 {
   "name": "gunshi",
   "description": "multi-agent-shogun gunshi role for Kiro CLI",
-    "prompt": "file:///Users/nitto/Workspace/sandbox/multi-agent-shogun/instructions/generated/kiro-gunshi.md",
+    "prompt": "file:///path/to/Workspace/sandbox/multi-agent-shogun/instructions/generated/kiro-gunshi.md",
   "tools": ["*"],
   "includeMcpJson": true,
   "welcomeMessage": "gunshi role loaded for multi-agent-shogun"

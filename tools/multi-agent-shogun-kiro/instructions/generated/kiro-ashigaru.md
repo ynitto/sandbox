@@ -504,7 +504,7 @@ This section describes AWS Kiro CLI-specific tools and features.
 
 Kiro CLI (`kiro-cli`) is a terminal AI coding agent with workspace steering, local custom agents, MCP integration, and directory-scoped session persistence.
 
-- **Launch**: `kiro-cli` or `kiro-cli chat --agent <name>`
+- **Launch**: `kiro-cli` or `kiro-cli chat --classic --agent <name>`
 - **Install**: `curl -fsSL https://cli.kiro.dev/install | bash`
 - **Auth**: `kiro-cli login`
 - **Default model**: Workspace default unless `--model` is specified
@@ -557,9 +557,9 @@ Each custom agent uses the corresponding generated prompt file:
 Launch examples:
 
 ```bash
-kiro-cli chat --agent shogun
-kiro-cli chat --agent ashigaru --trust-all-tools
-kiro-cli chat --agent gunshi --trust-all-tools --model anthropic.claude-3-7-sonnet-20250219-v1:0
+kiro-cli chat --classic --agent shogun
+kiro-cli chat --classic --agent ashigaru --trust-all-tools
+kiro-cli chat --classic --agent gunshi --trust-all-tools --model anthropic.claude-3-7-sonnet-20250219-v1:0
 ```
 
 ## Steering and Context
@@ -574,8 +574,8 @@ Kiro supports workspace steering files under `.kiro/steering/` and global steeri
 
 Kiro stores sessions per directory in `~/.kiro/`.
 
-- Resume last session: `kiro-cli chat --resume`
-- Pick a previous session: `kiro-cli chat --resume-picker`
+- Resume last session: `kiro-cli chat --classic --resume`
+- Pick a previous session: `kiro-cli chat --classic --resume-picker`
 - Start a fresh in-session conversation: `/chat new`
 - Save a session to JSON: `/chat save <path>`
 
