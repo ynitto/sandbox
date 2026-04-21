@@ -100,10 +100,68 @@ python /path/to/kiro-loop.py --config ~/kiro-loop.yaml
 ## オプション
 
 ```
-python kiro-loop.py [--config FILE] [--log-level LEVEL]
+python kiro-loop.py [--config FILE] [--no-daemon] [--log-level LEVEL]
 
   --config FILE   設定ファイルのパス（省略時: カレントディレクトリ → HOME の順に自動検索）
+  --no-daemon     対話モード: コマンドプロンプト（>）を表示して対話的に操作
+                  デフォルトはデーモンモード（--daemon）で起動
   --log-level     DEBUG / INFO / WARNING / ERROR（デフォルト: INFO）
+```
+
+## タスクスケジューラ連携（Windows + WSL）
+
+### 多重起動防止
+
+kiro-loop は設定ファイルパスに基づく **PID ロックファイル**（`/tmp/kiro-loop-<hash>.pid`）で多重起動を防止します。
+
+| 起動条件 | 挙動 |
+|---------|------|
+| 同じ設定ファイルで既に起動中 | 即座に終了（ログに PID を表示） |
+| 異なる設定ファイル（別ディレクトリ） | 独立したインスタンスとして起動を許可 |
+| 前回の kiro-loop が異常終了していた場合 | stale ロックを自動検出して起動 |
+
+### デーモンモード（デフォルト動作）
+
+デフォルトでデーモンモードで起動します（`--no-daemon` で対話モードに切り替え可能）。
+
+- stdin を読まずに動作するため、タスクスケジューラから直接呼び出せる
+- 定期プロンプト / セッション監視はバックグラウンドスレッドで継続動作
+- `SIGTERM` / `SIGINT` / `SIGHUP` を受信するまでプロセスが生き続け、WSL のアイドルシャットダウンを回避
+- 既に同じ設定で起動中なら即終了（多重起動なし）
+
+### タスクスケジューラの設定例
+
+WSL がアイドル終了した場合にも自動復旧するよう、**定期的に呼び出す**タスクを設定します。
+kiro-loop が既に動いていれば即座に終了するため、頻繁に呼び出しても問題ありません。
+
+**タスクスケジューラの設定:**
+
+| 項目 | 設定値 |
+|------|--------|
+| トリガー | ログオン時 + 繰り返し間隔（例: 5 分ごと） |
+| 操作 > プログラム | `wsl.exe` |
+| 操作 > 引数 | `-- python3 /home/youruser/tools/kiro-loop/kiro-loop.py --config /home/youruser/kiro-loop.yaml` |
+| 全般 > ユーザーがログオンしているかどうかにかかわらず実行する | チェック |
+| 全般 > 最上位の特権で実行する | 不要 |
+| 条件 > AC 電源の場合のみ実行する | オフ（ノート PC の場合） |
+
+**コマンドラインからの手動テスト:**
+
+```powershell
+# PowerShell または cmd から
+wsl -- python3 /home/youruser/tools/kiro-loop/kiro-loop.py --config /home/youruser/kiro-loop.yaml
+```
+
+**複数プロジェクトを別インスタンスで管理する場合:**
+
+プロジェクトごとに設定ファイルを用意すると、タスクスケジューラから並行起動できます。
+
+```powershell
+# プロジェクト A（独立したインスタンス）
+wsl -- python3 ~/tools/kiro-loop/kiro-loop.py --config ~/projects/app-a/kiro-loop.yaml
+
+# プロジェクト B（独立したインスタンス）
+wsl -- python3 ~/tools/kiro-loop/kiro-loop.py --config ~/projects/app-b/kiro-loop.yaml
 ```
 
 ## 設定ファイル形式 (YAML)
