@@ -802,18 +802,12 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 起動例:
-  python3 kiro-loop.py                      # カレントディレクトリの設定ファイルを使用
+  python3 kiro-loop.py                      # デーモンモードで起動（デフォルト）
   python3 kiro-loop.py --config ~/my.yaml   # 設定ファイルを明示指定
-  python3 kiro-loop.py --daemon             # 非対話モード（タスクスケジューラ向け）
-
-起動後のコマンド例:
-  > add myproject ~/projects/my-app   ワークスペース追加
-  > attach myproject                   tmux セッションを確認（Ctrl+B D でデタッチ）
-  > list                               一覧表示
-  > quit                               終了
+  python3 kiro-loop.py --no-daemon          # 対話モードで起動（コマンドプロンプトあり）
 
 タスクスケジューラ（Windows）からの自動起動例:
-  wsl python3 /path/to/kiro-loop.py --daemon --config ~/kiro-loop.yaml
+  wsl python3 /path/to/kiro-loop.py --config ~/kiro-loop.yaml
   ※ 同じ設定で既に起動中の場合は即座に終了（多重起動防止）
 """,
     )
@@ -824,11 +818,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--daemon", "-D",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "非対話モード: stdin を使わずバックグラウンドで実行。"
-            "タスクスケジューラ経由の起動や WSL アイドル回避に適する。"
-            "SIGTERM / SIGINT / SIGHUP で終了。"
+            "デーモンモード（デフォルト: 有効）: stdin を使わずバックグラウンドで実行。"
+            "--no-daemon で対話モード（コマンドプロンプト）に切り替え可能。"
         ),
     )
     parser.add_argument(
