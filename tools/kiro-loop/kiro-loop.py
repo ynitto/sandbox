@@ -23,8 +23,10 @@ kiro-loop.py — kiro-cli を tmux セッション上で起動し、
 
 import argparse
 import atexit
+import hashlib
 import json
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -150,6 +152,59 @@ def _write_config(config: dict[str, Any], config_path: Path) -> bool:
     except Exception as exc:
         log.error("設定ファイルの書き込みに失敗しました: %s", exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# 多重起動防止（PID ロックファイル）
+# ---------------------------------------------------------------------------
+
+def _pid_lock_path(config_path: Path) -> Path:
+    """設定ファイルパスから一意な PID ロックファイルのパスを返す。
+
+    ロックキーは設定ファイルの絶対パスのハッシュで決まるため、
+    異なるカレントディレクトリ（= 異なる設定ファイル）からの起動は別インスタンスとして許可される。
+    """
+    key = hashlib.md5(str(config_path).encode()).hexdigest()[:12]
+    return Path(f"/tmp/kiro-loop-{key}.pid")
+
+
+def _try_acquire_lock(lock_path: Path) -> tuple[bool, int]:
+    """PID ロックを取得する。
+
+    Returns:
+        (acquired, existing_pid):
+          acquired=True なら取得成功。
+          acquired=False なら existing_pid のプロセスが既に実行中。
+    """
+    if lock_path.exists():
+        try:
+            existing_pid = int(lock_path.read_text().strip())
+        except (ValueError, OSError):
+            existing_pid = None
+
+        if existing_pid is not None:
+            try:
+                os.kill(existing_pid, 0)  # シグナル 0 = 存在確認のみ
+                return False, existing_pid
+            except ProcessLookupError:
+                pass  # プロセスが死んでいる → stale ロックを上書き
+            except PermissionError:
+                return False, existing_pid  # 別ユーザー所有（生きているとみなす）
+
+    try:
+        lock_path.write_text(str(os.getpid()))
+    except OSError as exc:
+        log.warning("PID ロックファイルの書き込みに失敗しました: %s", exc)
+    return True, 0
+
+
+def _release_lock(lock_path: Path) -> None:
+    """PID ロックを解放する。自プロセスが書いたファイルのみ削除する。"""
+    try:
+        if lock_path.exists() and lock_path.read_text().strip() == str(os.getpid()):
+            lock_path.unlink()
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +771,7 @@ def _monitor_loop(workspace_mgr: WorkspaceManager, stop_event: threading.Event) 
 _workspace_mgr_ref: WorkspaceManager | None = None
 _scheduler_ref: PeriodicScheduler | None = None
 _stop_event_ref: threading.Event | None = None
+_lock_path_ref: Path | None = None
 
 
 def _cleanup() -> None:
@@ -723,6 +779,8 @@ def _cleanup() -> None:
         _scheduler_ref.stop()
     if _workspace_mgr_ref is not None:
         _workspace_mgr_ref.stop_all()
+    if _lock_path_ref is not None:
+        _release_lock(_lock_path_ref)
 
 
 def _signal_handler(sig: int, frame: Any) -> None:
@@ -744,20 +802,28 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 起動例:
-  python3 kiro-loop.py                      # カレントディレクトリの設定ファイルを使用
+  python3 kiro-loop.py                      # デーモンモードで起動（デフォルト）
   python3 kiro-loop.py --config ~/my.yaml   # 設定ファイルを明示指定
+  python3 kiro-loop.py --no-daemon          # 対話モードで起動（コマンドプロンプトあり）
 
-起動後のコマンド例:
-  > add myproject ~/projects/my-app   ワークスペース追加
-  > attach myproject                   tmux セッションを確認（Ctrl+B D でデタッチ）
-  > list                               一覧表示
-  > quit                               終了
+タスクスケジューラ（Windows）からの自動起動例:
+  wsl python3 /path/to/kiro-loop.py --config ~/kiro-loop.yaml
+  ※ 同じ設定で既に起動中の場合は即座に終了（多重起動防止）
 """,
     )
     parser.add_argument(
         "--config",
         metavar="FILE",
         help="設定ファイルのパス (デフォルト: カレントディレクトリ or HOME の kiro-loop.yaml)",
+    )
+    parser.add_argument(
+        "--daemon", "-D",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "デーモンモード（デフォルト: 有効）: stdin を使わずバックグラウンドで実行。"
+            "--no-daemon で対話モード（コマンドプロンプト）に切り替え可能。"
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -772,6 +838,18 @@ def main() -> None:
     cwd = Path.cwd()
     config_path_arg = Path(args.config).resolve() if args.config else None
     config, config_path = load_config(config_path_arg, cwd)
+
+    # 多重起動チェック（同一設定ファイルに対してはシングルトン）
+    # 異なる設定ファイル（= 異なるカレントディレクトリ）からの起動は別インスタンスとして許可する
+    lock_path = _pid_lock_path(config_path)
+    acquired, existing_pid = _try_acquire_lock(lock_path)
+    if not acquired:
+        log.info(
+            "同じ設定で kiro-loop が既に実行中です (PID: %d, config: %s)。"
+            "起動をスキップします。",
+            existing_pid, config_path,
+        )
+        sys.exit(0)
 
     # kiro-cli 起動オプションの解決
     kiro_opts = config.get("kiro_options", {})
@@ -795,7 +873,9 @@ def main() -> None:
         log.info("prompts が定義されていません。ワークスペース管理モードで起動します。")
 
     # グローバル参照（cleanup / シグナルハンドラ用）
-    global _workspace_mgr_ref, _scheduler_ref, _stop_event_ref
+    global _workspace_mgr_ref, _scheduler_ref, _stop_event_ref, _lock_path_ref
+
+    _lock_path_ref = lock_path
 
     stop_event = threading.Event()
     _stop_event_ref = stop_event
@@ -845,12 +925,21 @@ def main() -> None:
     )
     monitor_thread.start()
 
-    log.info("実行中です。ターミナルを閉じるか 'quit' コマンドで終了します。")
+    if args.daemon:
+        log.info(
+            "デーモンモードで実行中です。SIGTERM / SIGINT / SIGHUP で終了します。"
+            " (PID: %d, lock: %s)",
+            os.getpid(), lock_path,
+        )
+        try:
+            stop_event.wait()
+        except KeyboardInterrupt:
+            pass
+    else:
+        log.info("実行中です。ターミナルを閉じるか 'quit' コマンドで終了します。")
+        command_loop(workspace_mgr, stop_event, config, config_path)
 
-    # コマンドループはメインスレッドで実行
-    command_loop(workspace_mgr, stop_event, config, config_path)
-
-    # コマンドループ終了後のクリーンアップ
+    # メインループ終了後のクリーンアップ
     stop_event.set()
     _cleanup()
     sys.exit(0)
