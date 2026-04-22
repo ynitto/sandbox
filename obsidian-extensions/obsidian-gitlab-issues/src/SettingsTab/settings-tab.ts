@@ -1,26 +1,7 @@
 import { App, normalizePath, PluginSettingTab, Setting } from "obsidian";
 import GitlabIssuesPlugin from "../main";
 import { settings } from "./settings";
-import { GitlabIssuesLevel, GitlabRefreshInterval, LabelPropertyMapping } from "./settings-types";
-
-const LABEL_MAPPING_PLACEHOLDER: LabelPropertyMapping[] = [
-	{
-		property: "priority",
-		default: "none",
-		rules: [
-			{ label: "priority::high", value: "high" },
-			{ label: "priority::medium", value: "medium" },
-			{ label: "priority::low", value: "low" },
-		],
-	},
-	{
-		property: "type",
-		rules: [
-			{ label: "bug", value: "bug" },
-			{ label: "feature", value: "feature" },
-		],
-	},
-];
+import { GitlabIssuesLevel, GitlabRefreshInterval } from "./settings-types";
 
 export class GitlabIssuesSettingTab extends PluginSettingTab {
 	plugin: GitlabIssuesPlugin;
@@ -118,49 +99,173 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			}
 		});
 
-		containerEl.createEl('h3', { text: 'Label Property Mappings' });
-		containerEl.createEl('p', {
-			text: 'Map issue labels to note properties using switch-like rules. The first matching label wins. Computed properties are available as template variables (e.g. {{priority}}).',
-		});
-
-		new Setting(containerEl)
-			.setName('Mappings (JSON)')
-			.setDesc('Array of mapping objects. Each mapping sets one property based on matching labels.')
-			.addTextArea(text => {
-				text
-					.setPlaceholder(JSON.stringify(LABEL_MAPPING_PLACEHOLDER, null, 2))
-					.setValue(
-						this.plugin.settings.labelPropertyMappings.length > 0
-							? JSON.stringify(this.plugin.settings.labelPropertyMappings, null, 2)
-							: ''
-					)
-					.onChange(async (value) => {
-						if (value.trim() === '') {
-							this.plugin.settings.labelPropertyMappings = [];
-							await this.plugin.saveSettings();
-							return;
-						}
-						try {
-							const parsed = JSON.parse(value);
-							if (Array.isArray(parsed)) {
-								this.plugin.settings.labelPropertyMappings = parsed;
-								await this.plugin.saveSettings();
-							}
-						} catch (_e) {
-							// Ignore invalid JSON until the user finishes editing
-						}
-					});
-				text.inputEl.rows = 12;
-				text.inputEl.style.width = '100%';
-				text.inputEl.style.fontFamily = 'monospace';
-				text.inputEl.style.fontSize = '12px';
-				return text;
-			});
+		this.renderLabelMappingsSection(containerEl);
 
 		containerEl.createEl('h3', { text: 'More Information' });
 		containerEl.createEl('a', {
 			text: gitlabDocumentation.title,
 			href: gitlabDocumentation.url
 		});
+	}
+
+	private renderLabelMappingsSection(containerEl: HTMLElement): void {
+		containerEl.createEl('h3', { text: 'Label Property Mappings' });
+		containerEl.createEl('p', {
+			cls: 'setting-item-description',
+			text: 'Map issue labels to note properties. Rules are evaluated top-to-bottom; the first matching label wins. Computed properties are available as template variables (e.g. {{priority}}).',
+		});
+
+		const listEl = containerEl.createDiv();
+
+		const refresh = () => {
+			listEl.empty();
+			this.plugin.settings.labelPropertyMappings.forEach((_, mi) => {
+				this.renderMappingBlock(listEl, mi, refresh);
+			});
+		};
+
+		refresh();
+
+		new Setting(containerEl)
+			.addButton(btn => btn
+				.setButtonText('+ Add Mapping')
+				.setCta()
+				.onClick(async () => {
+					this.plugin.settings.labelPropertyMappings.push({
+						property: '',
+						rules: [{ label: '', value: '' }],
+					});
+					await this.plugin.saveSettings();
+					refresh();
+				}));
+	}
+
+	private renderMappingBlock(container: HTMLElement, mi: number, refresh: () => void): void {
+		const mapping = this.plugin.settings.labelPropertyMappings[mi];
+
+		const card = container.createDiv();
+		card.style.border = '1px solid var(--background-modifier-border)';
+		card.style.borderRadius = '6px';
+		card.style.padding = '8px 12px 4px';
+		card.style.marginBottom = '12px';
+
+		// Property name + default value + remove button
+		const propSetting = new Setting(card)
+			.setName(`Mapping ${mi + 1}`)
+			.addText(text => {
+				text.inputEl.style.width = '160px';
+				return text
+					.setPlaceholder('property name (e.g. priority)')
+					.setValue(mapping.property)
+					.onChange(async (v) => {
+						this.plugin.settings.labelPropertyMappings[mi].property = v;
+						await this.plugin.saveSettings();
+					});
+			})
+			.addText(text => {
+				text.inputEl.style.width = '130px';
+				return text
+					.setPlaceholder('default value (optional)')
+					.setValue(mapping.default ?? '')
+					.onChange(async (v) => {
+						const m = this.plugin.settings.labelPropertyMappings[mi];
+						if (v) {
+							m.default = v;
+						} else {
+							delete m.default;
+						}
+						await this.plugin.saveSettings();
+					});
+			})
+			.addButton(btn => btn
+				.setIcon('trash')
+				.setTooltip('Remove mapping')
+				.onClick(async () => {
+					this.plugin.settings.labelPropertyMappings.splice(mi, 1);
+					await this.plugin.saveSettings();
+					refresh();
+				}));
+
+		// Add label to each text input for clarity
+		const controls = propSetting.controlEl.querySelectorAll('input[type="text"]');
+		if (controls[0]) (controls[0] as HTMLElement).setAttribute('aria-label', 'Property name');
+		if (controls[1]) (controls[1] as HTMLElement).setAttribute('aria-label', 'Default value');
+
+		// Rules header
+		const rulesHeader = card.createDiv();
+		rulesHeader.style.marginTop = '8px';
+		rulesHeader.style.marginBottom = '4px';
+		rulesHeader.style.paddingLeft = '4px';
+
+		const headerRow = rulesHeader.createDiv();
+		headerRow.style.display = 'flex';
+		headerRow.style.gap = '8px';
+		headerRow.style.color = 'var(--text-muted)';
+		headerRow.style.fontSize = '12px';
+		headerRow.style.paddingRight = '36px';
+
+		const labelCol = headerRow.createSpan({ text: 'Label' });
+		labelCol.style.flex = '1';
+		labelCol.style.minWidth = '160px';
+
+		headerRow.createSpan({ text: '→' });
+
+		const valueCol = headerRow.createSpan({ text: 'Value' });
+		valueCol.style.flex = '1';
+		valueCol.style.minWidth = '100px';
+
+		// Rule rows
+		const rulesEl = card.createDiv();
+		rulesEl.style.paddingLeft = '4px';
+
+		mapping.rules.forEach((rule, ri) => {
+			const ruleSetting = new Setting(rulesEl);
+			ruleSetting.settingEl.style.borderTop = 'none';
+			ruleSetting.settingEl.style.padding = '4px 0';
+
+			ruleSetting.addText(text => {
+				text.inputEl.style.width = '200px';
+				return text
+					.setPlaceholder('label (e.g. priority::high)')
+					.setValue(rule.label)
+					.onChange(async (v) => {
+						this.plugin.settings.labelPropertyMappings[mi].rules[ri].label = v;
+						await this.plugin.saveSettings();
+					});
+			});
+
+			// Arrow between label and value
+			ruleSetting.controlEl.createSpan({ text: '→' }).style.margin = '0 6px';
+
+			ruleSetting.addText(text => {
+				text.inputEl.style.width = '120px';
+				return text
+					.setPlaceholder('value')
+					.setValue(rule.value)
+					.onChange(async (v) => {
+						this.plugin.settings.labelPropertyMappings[mi].rules[ri].value = v;
+						await this.plugin.saveSettings();
+					});
+			});
+
+			ruleSetting.addButton(btn => btn
+				.setIcon('x')
+				.setTooltip('Remove rule')
+				.onClick(async () => {
+					this.plugin.settings.labelPropertyMappings[mi].rules.splice(ri, 1);
+					await this.plugin.saveSettings();
+					refresh();
+				}));
+		});
+
+		// Add rule button
+		new Setting(card)
+			.addButton(btn => btn
+				.setButtonText('+ Add Rule')
+				.onClick(async () => {
+					this.plugin.settings.labelPropertyMappings[mi].rules.push({ label: '', value: '' });
+					await this.plugin.saveSettings();
+					refresh();
+				}));
 	}
 }
