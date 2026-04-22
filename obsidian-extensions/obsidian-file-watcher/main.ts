@@ -1063,6 +1063,10 @@ export default class FileWatcherPlugin extends Plugin {
   async loadSettings() {
     const loaded = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    // 旧バージョンの absolutePathCopyRules に新フィールドが欠けている場合のマイグレーション
+    this.settings.absolutePathCopyRules = (this.settings.absolutePathCopyRules ?? []).map(
+      (rule) => ({ ...rule, pathPattern: rule.pathPattern ?? '', extensions: rule.extensions ?? [] })
+    );
   }
 
   async saveSettings() {
