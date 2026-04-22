@@ -39,11 +39,13 @@ interface AbsolutePathCopyRule {
   id: string;
   name: string;
   enabled: boolean;
-  sourcePath: string;   // Obsidian外のファイル絶対パス
-  destFolder: string;   // Vault内のコピー先フォルダ（相対パス、空欄でルート）
+  sourcePath: string;    // 監視するファイルまたはディレクトリの絶対パス
+  pathPattern: string;   // glob パターン (空欄で全ファイル、例: **/*.md)
+  extensions: string[];  // 拡張子フィルター (空配列で全ファイル、例: ['.md', '.txt'])
+  destFolder: string;    // Vault内のコピー先フォルダ（相対パス、空欄でルート）
   triggerType: 'event' | 'schedule';
   watchEvents: ('create' | 'modify')[]; // triggerType === 'event' の場合
-  schedule: string;     // triggerType === 'schedule' の場合 (cron式)
+  schedule: string;      // triggerType === 'schedule' の場合 (cron式)
   lastRunMinute?: string; // スケジュール実行の同分内二重実行防止
 }
 
@@ -180,6 +182,17 @@ function getCommands(app: App): Array<{ id: string; name: string }> {
 
 function minuteKey(date: Date): string {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}-${date.getHours()}-${date.getMinutes()}`;
+}
+
+function parseExtensions(text: string): string[] {
+  return text
+    .split(',')
+    .map((e) => {
+      const t = e.trim().toLowerCase();
+      if (!t) return '';
+      return t.startsWith('.') ? t : `.${t}`;
+    })
+    .filter((e) => e.length > 0);
 }
 
 // ============================================================
@@ -398,12 +411,14 @@ class AbsolutePathCopyRuleModal extends Modal {
     super(app);
     this.isNew = rule === null;
     this.rule = rule
-      ? { ...rule, watchEvents: [...rule.watchEvents] }
+      ? { ...rule, watchEvents: [...rule.watchEvents], extensions: [...rule.extensions] }
       : {
           id: crypto.randomUUID(),
           name: '',
           enabled: true,
           sourcePath: '',
+          pathPattern: '',
+          extensions: [],
           destFolder: '',
           triggerType: 'event',
           watchEvents: ['create', 'modify'],
@@ -430,12 +445,32 @@ class AbsolutePathCopyRuleModal extends Modal {
 
     new Setting(contentEl)
       .setName('コピー元 (絶対パス)')
-      .setDesc('Obsidian 外のファイルの絶対パス (例: /home/user/docs/note.md, C:\\Users\\user\\docs\\note.md)')
+      .setDesc('監視するファイルまたはディレクトリの絶対パス (例: /home/user/docs, C:\\Users\\user\\docs)')
       .addText((t) =>
         t
-          .setPlaceholder('/home/user/docs/note.md')
+          .setPlaceholder('/home/user/docs')
           .setValue(this.rule.sourcePath)
           .onChange((v) => (this.rule.sourcePath = v.trim()))
+      );
+
+    new Setting(contentEl)
+      .setName('パスパターン (省略可)')
+      .setDesc('コピー元ディレクトリ内のファイルを絞り込む glob パターン (例: **/*.md, reports/*.csv)。空欄で全ファイル対象。')
+      .addText((t) =>
+        t
+          .setPlaceholder('**/*.md')
+          .setValue(this.rule.pathPattern)
+          .onChange((v) => (this.rule.pathPattern = v.trim()))
+      );
+
+    new Setting(contentEl)
+      .setName('拡張子フィルター (省略可)')
+      .setDesc('カンマ区切りで拡張子を指定 (例: .md, .txt, pdf)。空欄で全ファイル対象。')
+      .addText((t) =>
+        t
+          .setPlaceholder('.md, .txt')
+          .setValue(this.rule.extensions.join(', '))
+          .onChange((v) => (this.rule.extensions = parseExtensions(v)))
       );
 
     new Setting(contentEl)
@@ -713,10 +748,14 @@ class FileWatcherSettingTab extends PluginSettingTab {
           ? `イベント: ${rule.watchEvents.join(', ')}`
           : `スケジュール: ${rule.schedule}`;
       const destLabel = rule.destFolder || '(Vault ルート)';
+      const filterParts: string[] = [];
+      if (rule.pathPattern) filterParts.push(`パターン: ${rule.pathPattern}`);
+      if (rule.extensions.length > 0) filterParts.push(`拡張子: ${rule.extensions.join(', ')}`);
+      const filterLabel = filterParts.length > 0 ? `  |  ${filterParts.join('  |  ')}` : '';
       new Setting(containerEl)
         .setName(rule.name || '(名前なし)')
         .setDesc(
-          `コピー元: ${rule.sourcePath}  |  コピー先: ${destLabel}  |  ${triggerLabel}`
+          `コピー元: ${rule.sourcePath}  |  コピー先: ${destLabel}${filterLabel}  |  ${triggerLabel}`
         )
         .addToggle((tog) =>
           tog.setValue(rule.enabled).onChange(async (v) => {
@@ -829,14 +868,36 @@ export default class FileWatcherPlugin extends Plugin {
         return;
       }
 
-      const watcher = fs.watch(rule.sourcePath, (eventType) => {
+      const isDir = fs.statSync(rule.sourcePath).isDirectory();
+      const watchOptions = isDir ? { recursive: true } : {};
+
+      const watcher = fs.watch(rule.sourcePath, watchOptions, (eventType, filename) => {
+        if (!filename) return;
+
+        const relPath = isDir
+          ? (filename as string).replace(/\\/g, '/')
+          : nodePath.basename(rule.sourcePath);
+        const absPath = isDir
+          ? nodePath.join(rule.sourcePath, filename as string)
+          : rule.sourcePath;
+
+        // 拡張子フィルター
+        if (!this.matchesExtensions(relPath, rule.extensions)) return;
+        // パスパターンフィルター
+        if (rule.pathPattern && !matchesGlob(relPath, rule.pathPattern)) return;
+
+        const handleCopy = () => {
+          try {
+            if (fs.existsSync(absPath) && fs.statSync(absPath).isFile()) {
+              this.copyFileToVault(rule, absPath);
+            }
+          } catch { /* ファイルが削除された場合など */ }
+        };
+
         if (eventType === 'change' && rule.watchEvents.includes('modify')) {
-          this.copyFileToVault(rule);
+          handleCopy();
         } else if (eventType === 'rename' && rule.watchEvents.includes('create')) {
-          // 'rename' はファイル作成・削除・リネームで発火。存在確認してコピー
-          if (fs.existsSync(rule.sourcePath)) {
-            this.copyFileToVault(rule);
-          }
+          handleCopy();
         }
       });
 
@@ -852,15 +913,21 @@ export default class FileWatcherPlugin extends Plugin {
     }
   }
 
-  private async copyFileToVault(rule: AbsolutePathCopyRule): Promise<void> {
+  private matchesExtensions(filePath: string, extensions: string[]): boolean {
+    if (extensions.length === 0) return true;
+    const ext = nodePath.extname(filePath).toLowerCase();
+    return extensions.includes(ext);
+  }
+
+  private async copyFileToVault(rule: AbsolutePathCopyRule, absoluteFilePath: string): Promise<void> {
     try {
-      const srcBuf = fs.readFileSync(rule.sourcePath);
+      const srcBuf = fs.readFileSync(absoluteFilePath);
       const arrayBuffer = srcBuf.buffer.slice(
         srcBuf.byteOffset,
         srcBuf.byteOffset + srcBuf.byteLength
       ) as ArrayBuffer;
 
-      const fileName = nodePath.basename(rule.sourcePath);
+      const fileName = nodePath.basename(absoluteFilePath);
       const destPath = rule.destFolder ? `${rule.destFolder}/${fileName}` : fileName;
 
       if (rule.destFolder) {
@@ -882,6 +949,36 @@ export default class FileWatcherPlugin extends Plugin {
       const msg = err instanceof Error ? err.message : String(err);
       new Notice(`File Watcher: コピーエラー "${rule.name}"\n${msg}`, 8000);
     }
+  }
+
+  private findMatchingFiles(rule: AbsolutePathCopyRule): string[] {
+    if (!fs.existsSync(rule.sourcePath)) return [];
+
+    const stat = fs.statSync(rule.sourcePath);
+    if (!stat.isDirectory()) {
+      if (!this.matchesExtensions(rule.sourcePath, rule.extensions)) return [];
+      if (rule.pathPattern && !matchesGlob(nodePath.basename(rule.sourcePath), rule.pathPattern)) return [];
+      return [rule.sourcePath];
+    }
+
+    const results: string[] = [];
+    const scan = (dir: string) => {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        const abs = nodePath.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scan(abs);
+        } else if (entry.isFile()) {
+          const rel = nodePath.relative(rule.sourcePath, abs).replace(/\\/g, '/');
+          if (!this.matchesExtensions(entry.name, rule.extensions)) continue;
+          if (rule.pathPattern && !matchesGlob(rel, rule.pathPattern)) continue;
+          results.push(abs);
+        }
+      }
+    };
+    scan(rule.sourcePath);
+    return results;
   }
 
   // ----------------------------------------------------------
@@ -942,7 +1039,10 @@ export default class FileWatcherPlugin extends Plugin {
       rule.lastRunMinute = key;
       dirty = true;
 
-      await this.copyFileToVault(rule);
+      const files = this.findMatchingFiles(rule);
+      for (const absPath of files) {
+        await this.copyFileToVault(rule, absPath);
+      }
     }
 
     if (dirty) this.saveSettings();
