@@ -8,6 +8,8 @@ import {
   TAbstractFile,
   TFile,
 } from 'obsidian';
+import * as fs from 'fs';
+import * as nodePath from 'path';
 
 // ============================================================
 // Types
@@ -33,14 +35,28 @@ interface ScheduleRule {
   lastRunMinute?: string; // "YYYY-M-D-H-MM" で同分内の二重実行を防ぐ
 }
 
+interface AbsolutePathCopyRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  sourcePath: string;   // Obsidian外のファイル絶対パス
+  destFolder: string;   // Vault内のコピー先フォルダ（相対パス、空欄でルート）
+  triggerType: 'event' | 'schedule';
+  watchEvents: ('create' | 'modify')[]; // triggerType === 'event' の場合
+  schedule: string;     // triggerType === 'schedule' の場合 (cron式)
+  lastRunMinute?: string; // スケジュール実行の同分内二重実行防止
+}
+
 interface PluginSettings {
   fileWatchRules: FileWatchRule[];
   scheduleRules: ScheduleRule[];
+  absolutePathCopyRules: AbsolutePathCopyRule[];
 }
 
 const DEFAULT_SETTINGS: PluginSettings = {
   fileWatchRules: [],
   scheduleRules: [],
+  absolutePathCopyRules: [],
 };
 
 // ============================================================
@@ -366,6 +382,142 @@ class ScheduleRuleModal extends Modal {
 }
 
 // ============================================================
+// Modal: AbsolutePathCopyRule
+// ============================================================
+
+class AbsolutePathCopyRuleModal extends Modal {
+  private rule: AbsolutePathCopyRule;
+  private readonly isNew: boolean;
+  private readonly onSave: (rule: AbsolutePathCopyRule) => void;
+
+  constructor(
+    app: App,
+    rule: AbsolutePathCopyRule | null,
+    onSave: (rule: AbsolutePathCopyRule) => void
+  ) {
+    super(app);
+    this.isNew = rule === null;
+    this.rule = rule
+      ? { ...rule, watchEvents: [...rule.watchEvents] }
+      : {
+          id: crypto.randomUUID(),
+          name: '',
+          enabled: true,
+          sourcePath: '',
+          destFolder: '',
+          triggerType: 'event',
+          watchEvents: ['create', 'modify'],
+          schedule: '0 9 * * *',
+        };
+    this.onSave = onSave;
+  }
+
+  onOpen(): void {
+    this.render();
+  }
+
+  private render(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', {
+      text: this.isNew ? '絶対パスコピールールを追加' : '絶対パスコピールールを編集',
+    });
+
+    new Setting(contentEl)
+      .setName('名前')
+      .setDesc('このルールの識別名')
+      .addText((t) => t.setValue(this.rule.name).onChange((v) => (this.rule.name = v.trim())));
+
+    new Setting(contentEl)
+      .setName('コピー元 (絶対パス)')
+      .setDesc('Obsidian 外のファイルの絶対パス (例: /home/user/docs/note.md, C:\\Users\\user\\docs\\note.md)')
+      .addText((t) =>
+        t
+          .setPlaceholder('/home/user/docs/note.md')
+          .setValue(this.rule.sourcePath)
+          .onChange((v) => (this.rule.sourcePath = v.trim()))
+      );
+
+    new Setting(contentEl)
+      .setName('コピー先フォルダ (Vault 内)')
+      .setDesc('Vault 内のフォルダパス (例: inbox)。空欄の場合は Vault ルートにコピーします。')
+      .addText((t) =>
+        t
+          .setPlaceholder('inbox')
+          .setValue(this.rule.destFolder)
+          .onChange((v) => (this.rule.destFolder = v.trim()))
+      );
+
+    new Setting(contentEl)
+      .setName('トリガー種別')
+      .setDesc('ファイルイベント: ファイル変更時にコピー / cronスケジュール: 指定時刻にコピー')
+      .addDropdown((dd) => {
+        dd.addOption('event', 'ファイルイベント');
+        dd.addOption('schedule', 'cronスケジュール');
+        dd.setValue(this.rule.triggerType);
+        dd.onChange((v) => {
+          this.rule.triggerType = v as 'event' | 'schedule';
+          this.render();
+        });
+      });
+
+    if (this.rule.triggerType === 'event') {
+      const evtSetting = new Setting(contentEl)
+        .setName('監視イベント')
+        .setDesc('コピーをトリガーするファイルイベントを選択してください');
+      const cbWrap = evtSetting.controlEl.createDiv({ attr: { style: 'display:flex; gap:16px;' } });
+
+      for (const evt of ['create', 'modify'] as const) {
+        const label = cbWrap.createEl('label', {
+          attr: { style: 'display:flex; align-items:center; gap:4px; cursor:pointer;' },
+        });
+        const cb = label.createEl('input', { type: 'checkbox' });
+        cb.checked = this.rule.watchEvents.includes(evt);
+        cb.addEventListener('change', () => {
+          if (cb.checked) {
+            if (!this.rule.watchEvents.includes(evt)) this.rule.watchEvents.push(evt);
+          } else {
+            this.rule.watchEvents = this.rule.watchEvents.filter((e) => e !== evt);
+          }
+        });
+        label.createSpan({ text: evt === 'create' ? '作成' : '変更' });
+      }
+    } else {
+      new Setting(contentEl)
+        .setName('スケジュール (cron 式)')
+        .setDesc('形式: 分 時 日 月 曜日 (0=日曜)  例: 0 9 * * * = 毎朝9時, */5 * * * * = 5分ごと')
+        .addText((t) =>
+          t
+            .setPlaceholder('0 9 * * *')
+            .setValue(this.rule.schedule)
+            .onChange((v) => (this.rule.schedule = v.trim()))
+        );
+    }
+
+    const btnRow = contentEl.createDiv({
+      attr: { style: 'display:flex; justify-content:flex-end; gap:8px; margin-top:16px;' },
+    });
+    btnRow.createEl('button', { text: 'キャンセル' }).addEventListener('click', () => this.close());
+
+    const saveBtn = btnRow.createEl('button', { text: '保存', cls: 'mod-cta' });
+    saveBtn.addEventListener('click', () => {
+      if (!this.rule.name) return new Notice('名前を入力してください');
+      if (!this.rule.sourcePath) return new Notice('コピー元パスを入力してください');
+      if (this.rule.triggerType === 'event' && this.rule.watchEvents.length === 0)
+        return new Notice('イベントを1つ以上選択してください');
+      if (this.rule.triggerType === 'schedule' && !parseCron(this.rule.schedule))
+        return new Notice('有効な cron 式を入力してください (例: 0 9 * * *)');
+      this.onSave(this.rule);
+      this.close();
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+// ============================================================
 // Settings Tab
 // ============================================================
 
@@ -523,6 +675,86 @@ class FileWatcherSettingTab extends PluginSettingTab {
             })
         );
     }
+
+    // ---- 絶対パスコピールール ----
+    containerEl.createEl('h2', {
+      text: '絶対パスコピールール',
+      attr: { style: 'margin-top:32px;' },
+    });
+    containerEl.createEl('p', {
+      text: 'Obsidian 外の絶対パスで指定したファイルを Vault 内フォルダにコピーします。ファイルイベントまたは cron スケジュールでトリガーできます。',
+      attr: { style: 'color:var(--text-muted); margin-bottom:8px;' },
+    });
+
+    new Setting(containerEl).setName('ルールを追加').addButton((btn) =>
+      btn
+        .setButtonText('+ 追加')
+        .setCta()
+        .onClick(() => {
+          new AbsolutePathCopyRuleModal(this.app, null, async (rule) => {
+            this.plugin.settings.absolutePathCopyRules.push(rule);
+            await this.plugin.saveSettings();
+            this.plugin.setupFsWatchers();
+            this.display();
+          }).open();
+        })
+    );
+
+    if (this.plugin.settings.absolutePathCopyRules.length === 0) {
+      containerEl.createEl('p', {
+        text: 'ルールがありません。「+ 追加」ボタンで追加してください。',
+        attr: { style: 'color:var(--text-muted); padding:4px 0;' },
+      });
+    }
+
+    for (const rule of this.plugin.settings.absolutePathCopyRules) {
+      const triggerLabel =
+        rule.triggerType === 'event'
+          ? `イベント: ${rule.watchEvents.join(', ')}`
+          : `スケジュール: ${rule.schedule}`;
+      const destLabel = rule.destFolder || '(Vault ルート)';
+      new Setting(containerEl)
+        .setName(rule.name || '(名前なし)')
+        .setDesc(
+          `コピー元: ${rule.sourcePath}  |  コピー先: ${destLabel}  |  ${triggerLabel}`
+        )
+        .addToggle((tog) =>
+          tog.setValue(rule.enabled).onChange(async (v) => {
+            rule.enabled = v;
+            await this.plugin.saveSettings();
+            this.plugin.setupFsWatchers();
+          })
+        )
+        .addButton((btn) =>
+          btn
+            .setIcon('pencil')
+            .setTooltip('編集')
+            .onClick(() => {
+              new AbsolutePathCopyRuleModal(this.app, rule, async (updated) => {
+                const idx = this.plugin.settings.absolutePathCopyRules.findIndex(
+                  (r) => r.id === updated.id
+                );
+                if (idx >= 0) this.plugin.settings.absolutePathCopyRules[idx] = updated;
+                await this.plugin.saveSettings();
+                this.plugin.setupFsWatchers();
+                this.display();
+              }).open();
+            })
+        )
+        .addButton((btn) =>
+          btn
+            .setIcon('trash')
+            .setTooltip('削除')
+            .setWarning()
+            .onClick(async () => {
+              this.plugin.settings.absolutePathCopyRules =
+                this.plugin.settings.absolutePathCopyRules.filter((r) => r.id !== rule.id);
+              await this.plugin.saveSettings();
+              this.plugin.setupFsWatchers();
+              this.display();
+            })
+        );
+    }
   }
 
   private commandName(commandId: string): string {
@@ -537,6 +769,7 @@ class FileWatcherSettingTab extends PluginSettingTab {
 
 export default class FileWatcherPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
+  private fsWatchers: Map<string, fs.FSWatcher> = new Map();
 
   async onload() {
     await this.loadSettings();
@@ -559,6 +792,96 @@ export default class FileWatcherPlugin extends Plugin {
     this.registerInterval(window.setInterval(() => this.checkSchedules(), 60_000));
 
     this.addSettingTab(new FileWatcherSettingTab(this.app, this));
+
+    // 絶対パスコピーの fs ウォッチャーを起動
+    this.setupFsWatchers();
+  }
+
+  onunload(): void {
+    this.teardownFsWatchers();
+  }
+
+  // ----------------------------------------------------------
+
+  setupFsWatchers(): void {
+    this.teardownFsWatchers();
+
+    for (const rule of this.settings.absolutePathCopyRules) {
+      if (!rule.enabled || rule.triggerType !== 'event') continue;
+      this.startFsWatcher(rule);
+    }
+  }
+
+  private teardownFsWatchers(): void {
+    for (const watcher of this.fsWatchers.values()) {
+      try { watcher.close(); } catch { /* ignore */ }
+    }
+    this.fsWatchers.clear();
+  }
+
+  private startFsWatcher(rule: AbsolutePathCopyRule): void {
+    try {
+      if (!fs.existsSync(rule.sourcePath)) {
+        new Notice(
+          `File Watcher: コピー元が見つかりません "${rule.name}"\n${rule.sourcePath}`,
+          6000
+        );
+        return;
+      }
+
+      const watcher = fs.watch(rule.sourcePath, (eventType) => {
+        if (eventType === 'change' && rule.watchEvents.includes('modify')) {
+          this.copyFileToVault(rule);
+        } else if (eventType === 'rename' && rule.watchEvents.includes('create')) {
+          // 'rename' はファイル作成・削除・リネームで発火。存在確認してコピー
+          if (fs.existsSync(rule.sourcePath)) {
+            this.copyFileToVault(rule);
+          }
+        }
+      });
+
+      watcher.on('error', (err) => {
+        new Notice(`File Watcher: 監視エラー "${rule.name}"\n${err.message}`, 8000);
+        this.fsWatchers.delete(rule.id);
+      });
+
+      this.fsWatchers.set(rule.id, watcher);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`File Watcher: 監視開始エラー "${rule.name}"\n${msg}`, 8000);
+    }
+  }
+
+  private async copyFileToVault(rule: AbsolutePathCopyRule): Promise<void> {
+    try {
+      const srcBuf = fs.readFileSync(rule.sourcePath);
+      const arrayBuffer = srcBuf.buffer.slice(
+        srcBuf.byteOffset,
+        srcBuf.byteOffset + srcBuf.byteLength
+      ) as ArrayBuffer;
+
+      const fileName = nodePath.basename(rule.sourcePath);
+      const destPath = rule.destFolder ? `${rule.destFolder}/${fileName}` : fileName;
+
+      if (rule.destFolder) {
+        const folder = this.app.vault.getAbstractFileByPath(rule.destFolder);
+        if (!folder) {
+          await this.app.vault.createFolder(rule.destFolder);
+        }
+      }
+
+      const existing = this.app.vault.getAbstractFileByPath(destPath);
+      if (existing instanceof TFile) {
+        await this.app.vault.modifyBinary(existing, arrayBuffer);
+      } else {
+        await this.app.vault.createBinary(destPath, arrayBuffer);
+      }
+
+      new Notice(`File Watcher: コピー完了 "${rule.name}"\n→ ${destPath}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`File Watcher: コピーエラー "${rule.name}"\n${msg}`, 8000);
+    }
   }
 
   // ----------------------------------------------------------
@@ -607,6 +930,19 @@ export default class FileWatcherPlugin extends Plugin {
       }
 
       this.executeCommand(rule.commandId, `スケジュールルール "${rule.name}"`);
+    }
+
+    for (const rule of this.settings.absolutePathCopyRules) {
+      if (!rule.enabled || rule.triggerType !== 'schedule') continue;
+      if (rule.lastRunMinute === key) continue;
+
+      const cron = parseCron(rule.schedule);
+      if (!cron || !cronMatchesNow(cron, now)) continue;
+
+      rule.lastRunMinute = key;
+      dirty = true;
+
+      await this.copyFileToVault(rule);
     }
 
     if (dirty) this.saveSettings();
