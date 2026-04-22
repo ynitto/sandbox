@@ -28,7 +28,14 @@ Python から Microsoft Graph API 経由で Teams チャンネルへのメッセ
 pip install msal requests
 ```
 
-Azure AD にアプリ登録が必要。詳細は [references/setup-guide.md](references/setup-guide.md) を参照。
+**アプリ登録不要。** 以下のいずれかの認証方法を自動選択する（優先順）:
+
+| 優先度 | 方法 | 必要なもの |
+|-------|------|-----------|
+| 1 | **Azure CLI セッション** | `az login` でサインイン済みであること |
+| 2 | **MSAL デバイスコードフロー** | `pip install msal`（初回のみブラウザ認証） |
+
+詳細は [references/setup-guide.md](references/setup-guide.md) を参照。
 
 ---
 
@@ -153,14 +160,21 @@ python scripts/get_teams_messages.py \
     --team-name "開発チーム" --channel-name "通知" --json
 ```
 
-### Step 3: 初回認証
+### Step 3: 認証
 
-スクリプト実行時にデバイスコードが表示される:
+スクリプト実行時に認証方法が自動選択される:
 
+**Azure CLI が利用可能な場合（`az login` 済み）:**
 ```
+Azure CLI セッションで認証しました。
+```
+追加操作は不要。
+
+**Azure CLI が利用できない場合（MSAL フォールバック）:**
+```
+Azure CLI が利用できません。MSAL デバイスコードフローを使用します。
 To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code XXXXXXXX to authenticate.
 ```
-
 ブラウザでコードを入力して認証する。トークンは `~/.teams_graph_cache.json` にキャッシュされ、以降は再認証不要（有効期限内）。
 
 ---
@@ -222,8 +236,8 @@ python scripts/get_teams_messages.py \
 | `チームに一致する候補が見つかりません` | 別のキーワードで再試行するか `--team-id` で GUID を直接指定 |
 | `チャンネルに一致する候補が見つかりません` | 別のキーワードで再試行するか `--channel-id` で ID を直接指定 |
 | `msal not found` | `pip install msal requests` を実行 |
-| 認証ループ | `~/.teams_graph_cache.json` を削除して再認証 |
-| `ClientId not found` | `~/.teams_graph_client_id` を削除して Client ID を再入力 |
+| Azure CLI 認証エラー | `az login` を再実行するか、MSAL フォールバックを使用 |
+| MSAL 認証ループ | `~/.teams_graph_cache.json` を削除して再認証 |
 
 ---
 

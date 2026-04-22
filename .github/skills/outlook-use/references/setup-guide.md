@@ -1,85 +1,75 @@
 # outlook-use セットアップガイド
 
-## 1. Python パッケージのインストール
+## 概要
+
+アプリ登録は不要。スクリプトは以下の順で認証を試みる:
+
+1. **Azure CLI セッション** — `az login` でサインイン済みなら即座に使用
+2. **MSAL デバイスコードフロー** — Microsoft Graph PowerShell SDK の公開 Client ID を使用（初回のみブラウザ認証）
+
+---
+
+## 方法 1: Azure CLI（推奨）
+
+### インストール
+
+| OS | 手順 |
+|----|------|
+| Windows | [Microsoft 公式インストーラー](https://aka.ms/installazurecliwindows) |
+| macOS | `brew install azure-cli` |
+| Linux | `curl -sL https://aka.ms/InstallAzureCLIDeb \| sudo bash` |
+
+### サインイン
+
+```bash
+az login
+```
+
+ブラウザが開き、Microsoft アカウントでサインインする。サインイン後は以降の実行で自動的にセッションが使用される。
+
+### 動作確認
+
+```bash
+az account get-access-token --resource https://graph.microsoft.com --query accessToken --output tsv
+```
+
+トークン文字列が表示されれば準備完了。
+
+> **注意**: 個人の Microsoft アカウント（Outlook.com / Hotmail）で `az login` した場合、Graph API の個人用メール・カレンダーへのアクセスは Azure CLI の権限設定によっては制限されることがある。その場合は方法 2 のフォールバックを使用する。
+
+---
+
+## 方法 2: MSAL デバイスコードフロー（フォールバック）
+
+Azure CLI が使えない環境では、自動的にこちらが使用される。
+
+### インストール
 
 ```bash
 pip install msal requests
 ```
 
----
+### 初回認証
 
-## 2. Azure AD アプリ登録
-
-### 2-1. Azure ポータルでアプリを登録する
-
-1. [Azure Portal](https://portal.azure.com) にサインイン
-2. **Microsoft Entra ID**（旧 Azure Active Directory）→ **アプリの登録** → **新規登録** をクリック
-3. 以下を入力して **登録**:
-   - 名前: `outlook-use-cli`（任意）
-   - サポートされているアカウントの種類: **任意の組織ディレクトリ内のアカウントと個人用 Microsoft アカウント（例: Skype、Xbox）**
-   - リダイレクト URI: 種類を **パブリック クライアント/ネイティブ（モバイルとデスクトップ）** に変更し、`https://login.microsoftonline.com/common/oauth2/nativeclient` を入力
-
-4. 登録後に表示される **アプリケーション（クライアント）ID** をコピーする
-
-### 2-2. API アクセス許可を追加する
-
-1. 登録したアプリ → **API のアクセス許可** → **アクセス許可の追加**
-2. **Microsoft Graph** → **委任されたアクセス許可** を選択
-3. 以下のスコープにチェックを入れて **アクセス許可の追加**:
-
-| スコープ | 用途 |
-|---------|------|
-| `Mail.Read` | メール読み取り |
-| `Mail.Send` | メール送信 |
-| `Calendars.ReadWrite` | カレンダー読み書き |
-| `offline_access` | トークン更新（必須） |
-
-> **注意**: 組織テナントの場合、管理者の同意が必要になることがある。その際は IT 管理者に「管理者の同意を付与」を依頼する。
-
-### 2-3. モバイルとデスクトップのフロー設定
-
-1. アプリ → **認証** → **詳細設定**
-2. **パブリック クライアント フローを許可する** を **はい** に設定して **保存**
-
----
-
-## 3. Client ID の設定
-
-スクリプトを初回実行すると、Client ID の入力を求められる:
+スクリプト実行時に以下が表示される:
 
 ```
-Azure AD アプリの Client ID を入力してください: <ここに貼り付け>
-```
-
-入力した Client ID は `~/.outlook_graph_client_id` に保存され、以降は自動で読み込まれる。
-
-手動で設定する場合:
-
-```bash
-echo "YOUR_CLIENT_ID_HERE" > ~/.outlook_graph_client_id
-```
-
----
-
-## 4. 初回認証
-
-スクリプトを実行すると、デバイスコードフローで認証を求められる:
-
-```
-To sign in, use a web browser to open the page https://microsoft.com/devicelogin
-and enter the code XXXXXXXX to authenticate.
+Azure CLI が利用できません。MSAL デバイスコードフローを使用します。
+To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code XXXXXXXX to authenticate.
 ```
 
 1. ブラウザで `https://microsoft.com/devicelogin` を開く
 2. 表示されたコードを入力
-3. Microsoft アカウントでサインイン
-4. 要求されているアクセス許可を確認して **承認**
+3. Microsoft アカウント（組織または個人）でサインイン
+4. 「Microsoft Graph Command Line Tools」からのアクセス許可要求を承認
 
-認証成功後、トークンは `~/.outlook_graph_cache.json` にキャッシュされる。以降は有効期限内であれば自動更新されるため、再認証不要。
+> **使用する Client ID**: `14d82eec-204b-4c2f-b7e8-296a70dab67e`（Microsoft Graph PowerShell SDK の公開 Client ID）。ユーザーが Azure AD にアプリを登録する必要はない。個人アカウント（Outlook.com / Hotmail）でも利用可能。
+
+認証後、トークンは `~/.outlook_graph_cache.json` にキャッシュされ、以降は再認証不要（有効期限内）。
 
 ---
 
-## 5. 動作確認
+## 動作確認
 
 ```bash
 # メール確認（受信トレイの直近 5 件）
@@ -91,17 +81,21 @@ python scripts/calendar_events.py list --top 5
 
 ---
 
-## 6. よくある質問
+## よくある質問
 
 ### Q: 「Insufficient privileges」エラーが出る
 
-組織テナントでは管理者の同意が必要な場合がある。Azure Portal で **API のアクセス許可** → **〇〇 に管理者の同意を付与する** をクリックするか、IT 管理者に依頼する。
+組織テナントでは管理者の同意が必要な場合がある。IT 管理者に以下のスコープへの同意を依頼する:
 
-### Q: 個人用 Microsoft アカウント（Outlook.com / Hotmail）で使えるか
+- `Mail.Read`
+- `Mail.Send`
+- `Calendars.ReadWrite`
 
-使える。アプリ登録時に「任意の組織ディレクトリ内のアカウントと個人用 Microsoft アカウント」を選択していれば、`@outlook.com` / `@hotmail.com` でも認証できる。
+### Q: 個人の Outlook.com / Hotmail アカウントで使えるか
 
-### Q: トークンをリセットしたい
+**方法 2 (MSAL フォールバック) では使える。** `14d82eec-204b-4c2f-b7e8-296a70dab67e` は個人アカウントにも対応している。方法 1 (Azure CLI) は組織アカウント向けのため、個人アカウントでは制限される場合がある。
+
+### Q: MSAL トークンをリセットしたい
 
 ```bash
 rm ~/.outlook_graph_cache.json
@@ -109,17 +103,7 @@ rm ~/.outlook_graph_cache.json
 
 次回実行時にデバイスコードフローで再認証される。
 
-### Q: Client ID を変更したい
-
-```bash
-rm ~/.outlook_graph_client_id
-```
-
-次回実行時に再入力を求められる。
-
 ### Q: 社内プロキシ環境で動かない
-
-`requests` はシステムのプロキシ設定を自動的に使用する。環境変数でプロキシを設定する:
 
 ```bash
 export HTTPS_PROXY=http://proxy.example.com:8080
@@ -128,14 +112,10 @@ python scripts/get_mail.py
 
 ---
 
-## 7. セキュリティ注意事項
+## セキュリティ注意事項
 
-- `~/.outlook_graph_cache.json` にはアクセストークン・リフレッシュトークンが保存される。ファイルのパーミッションを適切に設定すること:
+- `~/.outlook_graph_cache.json` にトークンが保存されるため、パーミッションを適切に設定する:
   ```bash
   chmod 600 ~/.outlook_graph_cache.json
   ```
-- Client ID はシークレットではないが、`~/.outlook_graph_client_id` も同様に保護することを推奨:
-  ```bash
-  chmod 600 ~/.outlook_graph_client_id
-  ```
-- このスクリプトは **委任アクセス許可** を使用するため、実行ユーザーの権限範囲のみ操作できる（他ユーザーのメールへのアクセスは不可）。
+- 委任アクセス許可を使用するため、実行ユーザーの権限範囲のみ操作できる（他ユーザーのメール・カレンダーへのアクセス不可）。
