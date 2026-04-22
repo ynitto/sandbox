@@ -114,12 +114,56 @@ def get_token():
     return token
 
 
+# ---------------------------------------------------------------------------
+# skill-registry.json helpers
+# ---------------------------------------------------------------------------
+
+_AGENT_DIR_NAMES = frozenset((".copilot", ".claude", ".codex", ".kiro"))
+_REGISTRY_FILENAME = "skill-registry.json"
+
+
+def _get_agent_home() -> str:
+    """エージェントホームを scripts/ から 3 階層上で探す。見つからなければ標準パスへフォールバック。"""
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.dirname(os.path.dirname(os.path.dirname(scripts_dir)))
+    if os.path.basename(candidate) in _AGENT_DIR_NAMES:
+        return candidate
+    home = os.path.expanduser("~")
+    for d in (".claude", ".copilot", ".kiro", ".codex"):
+        p = os.path.join(home, d)
+        if os.path.exists(os.path.join(p, _REGISTRY_FILENAME)):
+            return p
+    return os.path.join(home, ".claude")
+
+
+def _get_registry_path() -> str:
+    return os.path.join(_get_agent_home(), _REGISTRY_FILENAME)
+
+
+def _load_registry() -> dict:
+    path = _get_registry_path()
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_registry(reg: dict) -> None:
+    path = _get_registry_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(reg, f, indent=2, ensure_ascii=False)
+
+
 def get_node_id() -> str:
     """Return the current terminal (node) ID.
 
     Priority:
-      1. GITLAB_NODE_ID environment variable  (terminal-scoped override)
-      2. ~/.config/gitlab-idd/node-id file   (auto-generated on first use)
+      1. GITLAB_NODE_ID environment variable      (terminal-scoped override)
+      2. skill-registry.json skill_configs.gitlab-idd.node_id  (auto-generated on first use)
 
     Set GITLAB_NODE_ID to a distinct value in each terminal to run multiple
     independent worker nodes under the same GitLab account.
@@ -128,19 +172,14 @@ def get_node_id() -> str:
     if env_id:
         return env_id
 
-    config_dir = os.path.expanduser("~/.config/gitlab-idd")
-    node_id_file = os.path.join(config_dir, "node-id")
-
-    if os.path.exists(node_id_file):
-        with open(node_id_file, encoding="utf-8") as f:
-            stored = f.read().strip()
-        if stored:
-            return stored
+    reg = _load_registry()
+    stored = reg.get("skill_configs", {}).get("gitlab-idd", {}).get("node_id", "").strip()
+    if stored:
+        return stored
 
     new_id = uuid.uuid4().hex[:12]
-    os.makedirs(config_dir, exist_ok=True)
-    with open(node_id_file, "w", encoding="utf-8") as f:
-        f.write(new_id)
+    reg.setdefault("skill_configs", {}).setdefault("gitlab-idd", {})["node_id"] = new_id
+    _save_registry(reg)
     return new_id
 
 

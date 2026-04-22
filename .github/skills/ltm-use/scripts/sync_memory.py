@@ -6,7 +6,7 @@ skill-registry.json に登録されたリポジトリ（git-skill-manager と共
 shared 記憶を同期する。複数リポジトリ・readonly 対応。
 
 skill-registry.json に repositories が未登録の場合は、
-<AGENT_HOME>/memory/config.json の shared_remote をフォールバックとして使用する。
+skill-registry.json の skill_configs.ltm-use.shared_remote をフォールバックとして使用する。
 
 Usage:
   # 全リポジトリを pull して差分確認
@@ -24,7 +24,7 @@ Usage:
   # 全 shared 記憶をキーワード検索
   python sync_memory.py --search "JWT 認証"
 
-  # git remote を config.json に設定（skill-registry.json 未設定時のフォールバック用）
+  # git remote を skill-registry.json の skill_configs.ltm-use に設定（repositories 未設定時のフォールバック用）
   python sync_memory.py --set-remote git@github.com:org/shared-memories.git
 """
 
@@ -117,8 +117,8 @@ def search_shared(query: str, repos: list[dict]) -> list[dict]:
 def main():
     parser = argparse.ArgumentParser(description="git共有領域の記憶を同期する")
     parser.add_argument("--set-remote", metavar="URL",
-                        help="git remote URL を config.json に設定して終了"
-                             "（skill-registry.json 未設定時のフォールバック用）")
+                        help="git remote URL を skill-registry.json の skill_configs.ltm-use に設定して終了"
+                             "（skill-registry.json repositories 未設定時のフォールバック用）")
     parser.add_argument("--repo", metavar="NAME",
                         help="対象リポジトリ名を指定（省略時: 全リポジトリ）")
     parser.add_argument("--search", metavar="QUERY",
@@ -137,7 +137,7 @@ def main():
         cfg["shared_remote"] = args.set_remote
         memory_utils.save_config(cfg)
         print(f"shared_remote を設定しました: {args.set_remote}")
-        print(f"設定ファイル: {os.path.join(memory_utils.HOME_MEMORY_ROOT, 'config.json')}")
+        print(f"設定ファイル: {memory_utils.REGISTRY_PATH} (skill_configs.ltm-use)")
         print(f"注意: skill-registry.json に repositories が設定されている場合はそちらが優先されます。")
         return
 

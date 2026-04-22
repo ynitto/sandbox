@@ -101,7 +101,13 @@
     "protect_local_modified": true,
     "auto_resolve_conflicts": true
   },
-  "contribution_queue": []
+  "contribution_queue": [],
+  "skill_configs": {
+    "wiki-use": {
+      "wiki_root": "~/Documents/wiki",
+      "default_source_dir": "~/Downloads"
+    }
+  }
 }
 ```
 
@@ -184,6 +190,12 @@
 - `auto_accept_minor` (真偽値、デフォルト: false): マイナーバージョンアップ（X.Y1→X.Y2）を自動 pull するか。`notify_only=false` 時のみ有効。メジャーアップは常に手動確認
 - `protect_local_modified` (真偽値、デフォルト: true): true の場合、ローカル改善済みスキルを自動 pull で上書きしない
 - `auto_resolve_conflicts` (真偽値、デフォルト: true、v8): true の場合、複数リポジトリに同名スキルが存在する競合を、対話モードでもユーザーに確認せず `repositories[].priority` の高い方を自動採用する。`--no-interactive` フラグと同等の挙動をレジストリ設定として永続化できる
+
+**skill_configs** (オブジェクト):
+- スキル固有の設定を一元管理するセクション
+- キーはスキル名（例: `"wiki-use"`）、値はそのスキルの設定オブジェクト
+- 各スキルが `skill-registry.json` に設定を統合することで、`~/wiki-config.json` のような個別設定ファイルを廃止できる
+- 例: `skill_configs["wiki-use"]` には `wiki_root`・`default_source_dir` を格納する
 
 **contribution_queue** (配列、v5):
 - ローカル改善をリモートに貢献するための待ちキュー（`promotion_policy.py` が管理）

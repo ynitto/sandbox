@@ -10,7 +10,6 @@ wiki_init.py — Wiki を初期化する
 """
 
 import argparse
-import json
 import os
 import sys
 from datetime import date
@@ -19,7 +18,7 @@ from pathlib import Path
 # wiki_utils を同ディレクトリから import
 sys.path.insert(0, str(Path(__file__).parent))
 from wiki_utils import (
-    get_config_path,
+    get_registry_path,
     get_agent_home,
     load_config,
     save_config,
@@ -148,15 +147,16 @@ def create_structure(wiki_root: Path) -> None:
 
 def cmd_init_interactive() -> None:
     """対話的に設定を作成して Wiki を初期化する。"""
-    config_path = get_config_path()
+    registry_path = get_registry_path()
     existing = {}
-    if config_path.exists():
-        print(f"既存の設定ファイルが見つかりました: {config_path}")
-        with config_path.open(encoding="utf-8") as f:
-            existing = json.load(f)
+    try:
+        existing = load_config()
+        print(f"既存の設定が見つかりました: {registry_path} (skill_configs.wiki-use)")
         print(f"  wiki_root          : {existing.get('wiki_root', '(未設定)')}")
         print(f"  default_source_dir : {existing.get('default_source_dir', '(未設定)')}")
         print()
+    except RuntimeError:
+        pass
 
     print("=== wiki-use 初期化 ===")
     current_root = existing.get("wiki_root", "~/Documents/wiki")
@@ -170,7 +170,7 @@ def cmd_init_interactive() -> None:
         "default_source_dir": source_dir_str,
     }
     save_config(config)
-    print(f"\n[OK] 設定を保存しました: {config_path}")
+    print(f"\n[OK] 設定を保存しました: {registry_path} (skill_configs.wiki-use)")
 
     wiki_root = Path(os.path.expanduser(wiki_root_str))
     print(f"\nディレクトリ構造を作成します: {wiki_root}")
@@ -198,8 +198,8 @@ def cmd_init_non_interactive(wiki_root_str: str, source_dir_str: str) -> None:
         "default_source_dir": source_dir_str,
     }
     save_config(config)
-    config_path = get_config_path()
-    print(f"[OK] 設定を保存しました: {config_path}")
+    registry_path = get_registry_path()
+    print(f"[OK] 設定を保存しました: {registry_path} (skill_configs.wiki-use)")
 
     wiki_root = Path(os.path.expanduser(wiki_root_str))
     print(f"ディレクトリ構造を作成します: {wiki_root}")

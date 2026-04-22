@@ -3,7 +3,7 @@
 ## 目次
 
 - [git リポジトリ設定](#git-リポジトリ設定copilotskill-registryjson)
-- [メモリー設定](#メモリー設定copilotmemoryconfijson)
+- [メモリー設定](#メモリー設定agent_homeskill-registryjson-の-skill_configsltm-use)
 - [デフォルト動作](#デフォルト動作設定ファイル未作成時)
 - [Windows 環境の注意事項](#windows-環境の注意事項)
 
@@ -52,7 +52,7 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 - **複数リポジトリ**: `priority` 順に処理、書き込みは最優先（最小値）リポジトリへ
 - **readonly**: `true` のリポジトリは pull のみ、commit/push 不可
-- **フォールバック**: `skill-registry.json` が未設定の場合、`config.json` の `shared_remote` を使用
+- **フォールバック**: `skill-registry.json` の `repositories` が未設定の場合、`skill_configs.ltm-use.shared_remote` を使用
 
 ### ローカルディレクトリ
 
@@ -70,32 +70,34 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ---
 
-## メモリー設定（`<AGENT_HOME>/memory/config.json`）
+## メモリー設定（`<AGENT_HOME>/skill-registry.json` の `skill_configs.ltm-use`）
 
 ### 設定例
 
 ```json
 {
-  "shared_remote": "git@github.com:org/shared-memories.git",
-  "shared_branch": "main",
-  "auto_promote_threshold": 85,
-  "semi_auto_promote_threshold": 70,
-  "cleanup_inactive_days": 30,
-  "cleanup_archived_days": 60,
-
-  "// v5.0.0 脳構造インスパイア設定": "",
-  "consolidation_threshold": 5,
-  "consolidation_similarity": 0.5,
-  "forgetting_base_half_life": 30,
-  "auto_importance_enabled": true,
-  "auto_memory_type_enabled": true,
-  "context_aware_recall": true,
-  "review_interval_days": 14,
-  "recall_hybrid_weights_v5": {
-    "keyword": 0.4,
-    "tfidf": 0.3,
-    "meta": 0.15,
-    "context": 0.15
+  "skill_configs": {
+    "ltm-use": {
+      "shared_remote": "git@github.com:org/shared-memories.git",
+      "shared_branch": "main",
+      "auto_promote_threshold": 85,
+      "semi_auto_promote_threshold": 70,
+      "cleanup_inactive_days": 30,
+      "cleanup_archived_days": 60,
+      "consolidation_threshold": 5,
+      "consolidation_similarity": 0.5,
+      "forgetting_base_half_life": 30,
+      "auto_importance_enabled": true,
+      "auto_memory_type_enabled": true,
+      "context_aware_recall": true,
+      "review_interval_days": 14,
+      "recall_hybrid_weights_v5": {
+        "keyword": 0.4,
+        "tfidf": 0.3,
+        "meta": 0.15,
+        "context": 0.15
+      }
+    }
   }
 }
 ```
@@ -139,9 +141,9 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ---
 
-## デフォルト動作（設定ファイル未作成時）
+## デフォルト動作（設定未作成時）
 
-`<AGENT_HOME>/memory/config.json` が存在しない場合、以下のデフォルト値で動作する:
+`skill-registry.json` の `skill_configs.ltm-use` が存在しない場合、以下のデフォルト値で動作する:
 
 ```json
 {
@@ -181,10 +183,10 @@ git-skill-manager と共通のリポジトリ設定を使用する。
 
 ### 設定ファイル配置場所
 
-| ファイル | パス |
-|---------|------|
-| `config.json` | `{agent_home}/memory/config.json` |
-| `skill-registry.json` | `{agent_home}/skill-registry.json` |
+| 設定 | パス |
+|------|------|
+| ltm-use 設定 | `{agent_home}/skill-registry.json` の `skill_configs.ltm-use` |
+| git リポジトリ設定 | `{agent_home}/skill-registry.json` の `repositories` |
 
 `agent_home` の実際のパスは `skill-registry.json` の `skill_home` フィールドから確認できる。
 

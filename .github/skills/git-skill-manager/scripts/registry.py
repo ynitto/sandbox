@@ -346,6 +346,9 @@ def migrate_registry(reg: dict) -> dict:
         skill.pop("usage_stats", None)
     reg.pop("skill_discovery", None)
 
+    # skill_configs: 各スキルのスキル固有設定を格納するセクション
+    reg.setdefault("skill_configs", {})
+
     reg["version"] = 8
     # tier: core の SKILL.md から常に最新のコアスキル一覧を再計算する
     reg["core_skills"] = _discover_core_skills()
@@ -396,6 +399,7 @@ def load_registry() -> dict:
             "auto_resolve_conflicts": True,
         },
         "contribution_queue": [],
+        "skill_configs": {},
     }
 
 

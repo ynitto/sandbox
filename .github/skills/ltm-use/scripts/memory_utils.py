@@ -58,18 +58,32 @@ CORPUS_FILENAME = ".memory-corpus.json"
 
 
 def load_config() -> dict:
-    path = os.path.join(HOME_MEMORY_ROOT, "config.json")
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            return {**DEFAULT_CONFIG, **json.load(f)}
+    """skill-registry.json の skill_configs["ltm-use"] を読み込む。未設定ならデフォルト値を返す。"""
+    if os.path.exists(REGISTRY_PATH):
+        try:
+            with open(REGISTRY_PATH, encoding="utf-8") as f:
+                reg = json.load(f)
+            stored = reg.get("skill_configs", {}).get("ltm-use", {})
+            if stored:
+                return {**DEFAULT_CONFIG, **stored}
+        except (json.JSONDecodeError, OSError):
+            pass
     return DEFAULT_CONFIG.copy()
 
 
 def save_config(cfg: dict) -> None:
-    os.makedirs(HOME_MEMORY_ROOT, exist_ok=True)
-    path = os.path.join(HOME_MEMORY_ROOT, "config.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    """skill-registry.json の skill_configs["ltm-use"] に設定を書き込む。"""
+    reg = {}
+    if os.path.exists(REGISTRY_PATH):
+        try:
+            with open(REGISTRY_PATH, encoding="utf-8") as f:
+                reg = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    reg.setdefault("skill_configs", {})["ltm-use"] = cfg
+    os.makedirs(os.path.dirname(REGISTRY_PATH), exist_ok=True)
+    with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
+        json.dump(reg, f, ensure_ascii=False, indent=2)
 
 
 def _get_home_dir() -> str:

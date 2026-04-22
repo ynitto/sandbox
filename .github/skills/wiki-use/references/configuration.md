@@ -1,19 +1,29 @@
 # wiki-use 設定リファレンス
 
-## 設定ファイルの場所
+## 設定の保存先
 
-`<agent_home>/wiki-config.json`
+wiki-use の設定は `skill-registry.json` の `skill_configs.wiki-use` セクションに統合されています。
 
-`agent_home` は Python の `os.path.expanduser("~")` で解決される（`~/wiki-config.json`）。
+```
+{agent_home}/skill-registry.json
+```
+
+`agent_home` は `registry.py` の `_agent_home()` で決定される（`.claude`、`.copilot`、`.kiro`、`.codex` のいずれか）。
 
 ---
 
 ## 設定例
 
+`skill-registry.json` 内の該当セクション:
+
 ```json
 {
-  "wiki_root": "~/Documents/wiki",
-  "default_source_dir": "~/Downloads"
+  "skill_configs": {
+    "wiki-use": {
+      "wiki_root": "~/Documents/wiki",
+      "default_source_dir": "~/Downloads"
+    }
+  }
 }
 ```
 
@@ -34,8 +44,12 @@ Obsidian Vault 内に wiki_root を設定すると、Obsidian でそのまま閲
 
 ```json
 {
-  "wiki_root": "~/Documents/ObsidianVault/llm-wiki",
-  "default_source_dir": "~/Downloads"
+  "skill_configs": {
+    "wiki-use": {
+      "wiki_root": "~/Documents/ObsidianVault/llm-wiki",
+      "default_source_dir": "~/Downloads"
+    }
+  }
 }
 ```
 
@@ -43,10 +57,10 @@ Obsidian Vault 内に wiki_root を設定すると、Obsidian でそのまま閲
 
 ---
 
-## デフォルト動作（設定ファイル未作成時）
+## デフォルト動作（設定未作成時）
 
-`~/wiki-config.json` が存在しない場合、`wiki_utils.py config` はエラーを返す。
-`wiki_init.py` を実行して設定ファイルを作成してから使用すること。
+`skill-registry.json` の `skill_configs.wiki-use` が存在しない場合、`wiki_utils.py config` はエラーを返す。
+`wiki_init.py` を実行して設定を作成してから使用すること。
 
 ---
 
