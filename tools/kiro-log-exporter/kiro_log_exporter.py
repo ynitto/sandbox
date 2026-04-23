@@ -53,7 +53,7 @@ def _is_windows() -> bool:
 # ── パス解決 ──────────────────────────────────────────────────────────────────
 
 def _kiro_cli_db_candidates() -> list[Path]:
-    """kiro-cli SQLite DB の候補パスを優先順で返す。"""
+    """カレント環境の kiro-cli SQLite DB 候補パスを優先順で返す。"""
     base = Path.home() / ".kiro"
     return [
         base / "store.db",
@@ -61,6 +61,52 @@ def _kiro_cli_db_candidates() -> list[Path]:
         base / "db" / "sessions.db",
         base / "data" / "sessions.db",
     ]
+
+
+def _kiro_cli_windows_native_candidates() -> list[Path]:
+    """Windows ネイティブ kiro-cli DB の候補パスを返す。
+
+    Windows で実行する場合の %USERPROFILE%\.kiro\ を参照する。
+    """
+    if not _is_windows():
+        return []
+    profile = os.environ.get("USERPROFILE", "")
+    if not profile:
+        return []
+    base = Path(profile) / ".kiro"
+    return [base / "store.db", base / "sessions.db", base / "db" / "sessions.db"]
+
+
+def _kiro_cli_wsl_windows_candidates() -> list[Path]:
+    """WSL から Windows の kiro-cli DB を探す。
+
+    /mnt/c/Users/*/.kiro/store.db を検索する。
+    Windows ネイティブ kiro-cli は %USERPROFILE%\.kiro\ にデータを保存する。
+    """
+    if not _is_wsl():
+        return []
+    try:
+        result = subprocess.run(
+            ["wslpath", "-u", r"C:\Users"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        win_users = Path(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+    found: list[Path] = []
+    try:
+        for user_dir in win_users.iterdir():
+            for db_name in ("store.db", "sessions.db", "db/sessions.db"):
+                p = user_dir / ".kiro" / db_name
+                if p.exists():
+                    found.append(p)
+                    break  # 同一ユーザーにつき最初の DB のみ
+    except (PermissionError, OSError):
+        pass
+    return found
 
 
 def _kiro_cli_db_wsl_candidates() -> list[Path]:
@@ -201,8 +247,14 @@ class _ExportState:
 
 # ── kiro-cli セッション読み込み ───────────────────────────────────────────────
 
-def _read_cli_sessions(db_path: Path) -> list[dict]:
-    """kiro-cli の SQLite DB からセッション一覧を読み込む。"""
+def _read_cli_sessions(db_path: Path, source_type: str = "kiro-cli") -> list[dict]:
+    """kiro-cli の SQLite DB からセッション一覧を読み込む。
+
+    source_type には実行環境を示すラベルを渡す:
+      "kiro-cli"     - Linux ネイティブ
+      "kiro-cli-wsl" - WSL 環境
+      "kiro-cli-win" - Windows ネイティブ
+    """
     if not db_path.exists():
         return []
 
@@ -227,7 +279,7 @@ def _read_cli_sessions(db_path: Path) -> list[dict]:
 
         for row in cur.fetchall():
             data = dict(zip(cols, row))
-            s = _parse_cli_row(data, db_path)
+            s = _parse_cli_row(data, db_path, source_type)
             if s:
                 sessions.append(s)
 
@@ -238,7 +290,7 @@ def _read_cli_sessions(db_path: Path) -> list[dict]:
     return sessions
 
 
-def _parse_cli_row(data: dict, db_path: Path) -> Optional[dict]:
+def _parse_cli_row(data: dict, db_path: Path, source_type: str = "kiro-cli") -> Optional[dict]:
     sid = str(data.get("id") or "").strip()
     if not sid:
         return None
@@ -255,7 +307,7 @@ def _parse_cli_row(data: dict, db_path: Path) -> Optional[dict]:
 
     return {
         "session_id": sid,
-        "source_type": "kiro-cli",
+        "source_type": source_type,
         "source_db": str(db_path),
         "directory": str(directory),
         "created_at": created_at,
@@ -586,13 +638,20 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用例:
-  python kiro_log_exporter.py ~/kiro-logs
-  python kiro_log_exporter.py ~/kiro-logs --source cli
-  python kiro_log_exporter.py ~/kiro-logs --source ide
+  python kiro_log_exporter.py ~/kiro-logs              # CLI + IDE 全て (デフォルト)
+  python kiro_log_exporter.py ~/kiro-logs --source cli  # kiro-cli のみ
+  python kiro_log_exporter.py ~/kiro-logs --source ide  # kiro-ide のみ
   python kiro_log_exporter.py ~/kiro-logs --kiro-db ~/.kiro/store.db -v
 
-Windows (WSL + Windows OS 両方を取得):
-  python kiro_log_exporter.py C:\\kiro-logs --source all
+【WSL で実行する場合】
+  --source cli  : WSL kiro-cli + Windows kiro-cli を自動検出
+  --source ide  : Windows kiro-ide を自動検出
+  --source all  : 上記すべて (デフォルト)
+
+【Windows で実行する場合】
+  --source cli  : Windows kiro-cli + WSL kiro-cli を自動検出
+  --source ide  : Windows kiro-ide を自動検出
+  --source all  : 上記すべて (デフォルト)
 
 差分管理ファイル: <出力フォルダ>/.kiro_export_state.json
 """.strip(),
@@ -632,24 +691,59 @@ def main() -> None:
     # ── kiro-cli ──
     if include_cli:
         if args.kiro_db:
-            db_list = [Path(args.kiro_db).expanduser()]
+            # カスタム DB パス指定: 1つのみ読む
+            db_path = Path(args.kiro_db).expanduser()
+            sessions = _read_cli_sessions(db_path, "kiro-cli")
+            if args.verbose:
+                print(f"[kiro-cli] {len(sessions)} sessions <- {db_path}")
+            all_sessions.extend(sessions)
         else:
-            db_list = _kiro_cli_db_candidates()
+            cli_loaded = False
+
+            # ① カレント環境の kiro-cli DB（WSL/Linux/Windows それぞれの home）
+            local_label = "kiro-cli-wsl" if _is_wsl() else ("kiro-cli-win" if _is_windows() else "kiro-cli")
+            for db_path in _kiro_cli_db_candidates():
+                if db_path.exists():
+                    sessions = _read_cli_sessions(db_path, local_label)
+                    if args.verbose:
+                        print(f"[{local_label}] {len(sessions)} sessions <- {db_path}")
+                    all_sessions.extend(sessions)
+                    cli_loaded = True
+                    break
+
+            # ② Windows native kiro-cli（Windows で実行時: %USERPROFILE%\.kiro\）
             if _is_windows():
-                db_list.extend(_kiro_cli_db_wsl_candidates())
+                for db_path in _kiro_cli_windows_native_candidates():
+                    if db_path.exists():
+                        sessions = _read_cli_sessions(db_path, "kiro-cli-win")
+                        if args.verbose:
+                            print(f"[kiro-cli-win] {len(sessions)} sessions <- {db_path}")
+                        all_sessions.extend(sessions)
+                        cli_loaded = True
+                        break
 
-        cli_loaded = False
-        for db_path in db_list:
-            if db_path.exists():
-                sessions = _read_cli_sessions(db_path)
-                if verbose := args.verbose:
-                    print(f"[kiro-cli] {len(sessions)} sessions <- {db_path}")
-                all_sessions.extend(sessions)
-                cli_loaded = True
-                break  # 最初に見つかった DB を使用
+            # ③ WSL → Windows の kiro-cli（WSL で実行時: /mnt/c/Users/*/.kiro/）
+            if _is_wsl():
+                for db_path in _kiro_cli_wsl_windows_candidates():
+                    sessions = _read_cli_sessions(db_path, "kiro-cli-win")
+                    if args.verbose:
+                        print(f"[kiro-cli-win] {len(sessions)} sessions <- {db_path}")
+                    all_sessions.extend(sessions)
+                    cli_loaded = True
 
-        if not cli_loaded and args.verbose:
-            print("[kiro-cli] DB が見つかりません")
+            # ④ Windows → WSL の kiro-cli（Windows で実行時: \\wsl$\...）
+            if _is_windows():
+                for db_path in _kiro_cli_db_wsl_candidates():
+                    if db_path.exists():
+                        sessions = _read_cli_sessions(db_path, "kiro-cli-wsl")
+                        if args.verbose:
+                            print(f"[kiro-cli-wsl] {len(sessions)} sessions <- {db_path}")
+                        all_sessions.extend(sessions)
+                        cli_loaded = True
+                        break
+
+            if not cli_loaded and args.verbose:
+                print("[kiro-cli] DB が見つかりません")
 
     # ── kiro-ide ──
     if include_ide:
