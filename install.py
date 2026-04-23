@@ -360,6 +360,52 @@ def copy_agent_instructions(paths: dict[str, str], agent_type: str = "copilot") 
     return copied
 
 
+def setup_claude_hooks(paths: dict[str, str]) -> bool:
+    """Claude Code の settings.json に Stop hook を設定する。
+
+    Stop hook でセッション終了後に ltm-use のインデックスを再構築する。
+    既存設定は保持したまま hooks エントリのみ追加・更新する。
+    """
+    settings_path = os.path.join(paths["agent_home"], "settings.json")
+    skill_home = paths["skill_home"]
+
+    hook_command = (
+        f"python {skill_home}/ltm-use/scripts/build_index.py --scope all"
+        " 2>/dev/null || true"
+    )
+    new_hook_entry = {
+        "matcher": "",
+        "hooks": [{"type": "command", "command": hook_command}],
+    }
+
+    if os.path.isfile(settings_path):
+        with open(settings_path, encoding="utf-8") as f:
+            settings = json.load(f)
+    else:
+        settings = {}
+
+    hooks = settings.setdefault("hooks", {})
+    stop_hooks = hooks.get("Stop", [])
+
+    # 既存エントリに同じスクリプトパスがあれば上書き、なければ追加
+    ltm_script = f"{skill_home}/ltm-use/scripts/build_index.py"
+    updated = False
+    for entry in stop_hooks:
+        for h in entry.get("hooks", []):
+            if ltm_script in h.get("command", ""):
+                h["command"] = hook_command
+                updated = True
+    if not updated:
+        stop_hooks.append(new_hook_entry)
+
+    hooks["Stop"] = stop_hooks
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+    with open(settings_path, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2, ensure_ascii=False)
+    print(f"   {settings_path}")
+    return True
+
+
 def setup_lsp_for_kiro() -> None:
     """Kiro エージェント向けに LSP サーバーをインストールする。
 
@@ -429,10 +475,16 @@ def main() -> None:
     if not copy_agent_instructions(paths, agent_type):
         print("   (対応するファイルが見つかりません、スキップ)")
 
-    # 5. Kiro 向け LSP セットアップ
+    # 5. エージェント固有のセットアップ
     if agent_type == "kiro":
         print("\n5. LSP をセットアップ (Kiro)...")
         setup_lsp_for_kiro()
+    elif agent_type == "claude":
+        print("\n5. Claude Code hooks を設定...")
+        if setup_claude_hooks(paths):
+            print("   Stop hook (ltm-use build_index) を登録しました")
+        # Kiro と GitHub Copilot はセッション停止フックの仕組みを持たないため
+        # common.instructions.md の指示でセッション終了時の記憶保存を行う
 
     # 完了
     print("\n" + "=" * 50)
