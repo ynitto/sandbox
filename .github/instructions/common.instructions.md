@@ -45,11 +45,12 @@ python {skill_home}/ltm-use/scripts/auto_update.py check
 
 ### 手順 3: 過去の記憶のリコール
 
-タスクを受け取ったら、作業を始める前に関連する手順記憶を検索する:
+タスクを受け取ったら、作業を始める前に関連する記憶を全カテゴリを対象に検索する:
 
 ```bash
+# 全カテゴリを対象に検索（エピソード・意味・手順すべて）
 python {skill_home}/ltm-use/scripts/recall_memory.py "タスクのキーワード"
-# 手順記憶に絞る場合
+# 手順記憶に絞りたい場合のみ
 python {skill_home}/ltm-use/scripts/recall_memory.py "キーワード procedural"
 ```
 
@@ -76,6 +77,10 @@ python {skill_home}/ltm-use/scripts/save_memory.py \
 - 原因の特定が難しかったバグとその解決策
 - ユーザーが明示的に「覚えておいて」「記憶して」と指示したとき
 - 設計上の重要な決定やトレードオフの結論
+- ユーザーが肯定・承認の反応をした直後（「ありがとう」「OK」「それでいい」「完璧」など、学習シグナルとして扱う）
+- エラーが解決されたとき（難易度問わず、原因と対処法をセットで保存）
+- 新しいコマンド・ツール・API・ライブラリを初めて正常に使ったとき
+- 同じ問題が複数回登場したとき（繰り返しパターンは手続き記憶として保存）
 
 ```
 python {skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup --title "タイトル" --summary "要約" --tags tag1,tag2
@@ -87,7 +92,8 @@ scrum-master 経由のスプリント実行中は、スプリント完了後（P
 
 ## セッション終了時の手順
 
-セッション終了前に、そのセッションで得た知識を振り返り記憶として保存する:
+ユーザーが「終わり」「ありがとう」「以上」などセッション終了を示す発言をした際、
+または長時間応答がなくなる前に、そのセッションで得た知識を振り返り記憶として保存する:
 
 ```
 python {skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup --title "タイトル" --summary "要約" --tags tag1,tag2
@@ -98,6 +104,14 @@ python {skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup 
 - 採用した実装方針とその理由
 - 解決したエラーと原因・対処法
 - ユーザーの好みや繰り返し出てくる指示のパターン
+
+保存後、エピソード記憶が3件以上蓄積されている場合は固定化を検討する:
+
+```bash
+# 固定化候補を確認（ドライラン）
+python {skill_home}/ltm-use/scripts/consolidate_memory.py --dry-run
+# 候補が多い場合はユーザーに確認してから実行
+```
 
 -----
 
