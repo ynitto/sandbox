@@ -23,6 +23,7 @@ interface FileWatchRule {
   commandId: string;
   enabled: boolean;
   activateFile: boolean; // コマンド実行前にトリガーファイルをアクティブにする
+  notify: boolean;       // 通知を表示する
 }
 
 interface ScheduleRule {
@@ -31,6 +32,7 @@ interface ScheduleRule {
   schedule: string; // cron expression: "分 時 日 月 曜日"
   commandId: string;
   enabled: boolean;
+  notify: boolean;      // 通知を表示する
   filePath?: string;    // 実行前に開くファイル (省略可)
   lastRunMinute?: string; // "YYYY-M-D-H-MM" で同分内の二重実行を防ぐ
 }
@@ -43,6 +45,7 @@ interface AbsolutePathCopyRule {
   pathPattern: string;   // glob パターン (空欄で全ファイル、例: **/*.md)
   extensions: string[];  // 拡張子フィルター (空配列で全ファイル、例: ['.md', '.txt'])
   destFolder: string;    // Vault内のコピー先フォルダ（相対パス、空欄でルート）
+  notify: boolean;       // 通知を表示する
   triggerType: 'event' | 'schedule';
   watchEvents: ('create' | 'modify')[]; // triggerType === 'event' の場合
   schedule: string;      // triggerType === 'schedule' の場合 (cron式)
@@ -217,6 +220,7 @@ class FileWatchRuleModal extends Modal {
           commandId: '',
           enabled: true,
           activateFile: false,
+          notify: true,
         };
     this.onSave = onSave;
   }
@@ -282,6 +286,13 @@ class FileWatchRuleModal extends Modal {
         t.setValue(this.rule.activateFile).onChange((v) => (this.rule.activateFile = v))
       );
 
+    new Setting(contentEl)
+      .setName('通知')
+      .setDesc('OFF にするとコマンド実行の成否に関わらず通知を表示しません')
+      .addToggle((t) =>
+        t.setValue(this.rule.notify).onChange((v) => (this.rule.notify = v))
+      );
+
     // ボタン
     const btnRow = contentEl.createDiv({
       attr: { style: 'display:flex; justify-content:flex-end; gap:8px; margin-top:16px;' },
@@ -324,6 +335,7 @@ class ScheduleRuleModal extends Modal {
           schedule: '0 9 * * *',
           commandId: '',
           enabled: true,
+          notify: true,
         };
     this.onSave = onSave;
   }
@@ -373,6 +385,13 @@ class ScheduleRuleModal extends Modal {
         dd.setValue(this.rule.commandId).onChange((v) => (this.rule.commandId = v));
       });
 
+    new Setting(contentEl)
+      .setName('通知')
+      .setDesc('OFF にするとコマンド実行の成否に関わらず通知を表示しません')
+      .addToggle((t) =>
+        t.setValue(this.rule.notify).onChange((v) => (this.rule.notify = v))
+      );
+
     const btnRow = contentEl.createDiv({
       attr: { style: 'display:flex; justify-content:flex-end; gap:8px; margin-top:16px;' },
     });
@@ -420,6 +439,7 @@ class AbsolutePathCopyRuleModal extends Modal {
           pathPattern: '',
           extensions: [],
           destFolder: '',
+          notify: true,
           triggerType: 'event',
           watchEvents: ['create', 'modify'],
           schedule: '0 9 * * *',
@@ -529,6 +549,13 @@ class AbsolutePathCopyRuleModal extends Modal {
         );
     }
 
+    new Setting(contentEl)
+      .setName('通知')
+      .setDesc('OFF にするとコピーの成否に関わらず通知を表示しません')
+      .addToggle((t) =>
+        t.setValue(this.rule.notify).onChange((v) => (this.rule.notify = v))
+      );
+
     const btnRow = contentEl.createDiv({
       attr: { style: 'display:flex; justify-content:flex-end; gap:8px; margin-top:16px;' },
     });
@@ -598,10 +625,11 @@ class FileWatcherSettingTab extends PluginSettingTab {
     for (const rule of this.plugin.settings.fileWatchRules) {
       const cmdName = this.commandName(rule.commandId);
       const activateLabel = rule.activateFile ? '  |  ファイルをアクティブ化' : '';
+      const notifyLabel = !rule.notify ? '  |  通知OFF' : '';
       new Setting(containerEl)
         .setName(rule.name || '(名前なし)')
         .setDesc(
-          `パターン: ${rule.pathPattern}  |  イベント: ${rule.events.join(', ')}  |  コマンド: ${cmdName}${activateLabel}`
+          `パターン: ${rule.pathPattern}  |  イベント: ${rule.events.join(', ')}  |  コマンド: ${cmdName}${activateLabel}${notifyLabel}`
         )
         .addToggle((tog) =>
           tog.setValue(rule.enabled).onChange(async (v) => {
@@ -672,9 +700,10 @@ class FileWatcherSettingTab extends PluginSettingTab {
     for (const rule of this.plugin.settings.scheduleRules) {
       const cmdName = this.commandName(rule.commandId);
       const fileLabel = rule.filePath ? `  |  ファイル: ${rule.filePath}` : '';
+      const notifyLabel = !rule.notify ? '  |  通知OFF' : '';
       new Setting(containerEl)
         .setName(rule.name || '(名前なし)')
-        .setDesc(`スケジュール: ${rule.schedule}  |  コマンド: ${cmdName}${fileLabel}`)
+        .setDesc(`スケジュール: ${rule.schedule}  |  コマンド: ${cmdName}${fileLabel}${notifyLabel}`)
         .addToggle((tog) =>
           tog.setValue(rule.enabled).onChange(async (v) => {
             rule.enabled = v;
@@ -752,10 +781,11 @@ class FileWatcherSettingTab extends PluginSettingTab {
       if (rule.pathPattern) filterParts.push(`パターン: ${rule.pathPattern}`);
       if (rule.extensions.length > 0) filterParts.push(`拡張子: ${rule.extensions.join(', ')}`);
       const filterLabel = filterParts.length > 0 ? `  |  ${filterParts.join('  |  ')}` : '';
+      const notifyLabel = !rule.notify ? '  |  通知OFF' : '';
       new Setting(containerEl)
         .setName(rule.name || '(名前なし)')
         .setDesc(
-          `コピー元: ${rule.sourcePath}  |  コピー先: ${destLabel}${filterLabel}  |  ${triggerLabel}`
+          `コピー元: ${rule.sourcePath}  |  コピー先: ${destLabel}${filterLabel}  |  ${triggerLabel}${notifyLabel}`
         )
         .addToggle((tog) =>
           tog.setValue(rule.enabled).onChange(async (v) => {
@@ -948,11 +978,13 @@ export default class FileWatcherPlugin extends Plugin {
         await this.app.vault.createBinary(destPath, arrayBuffer);
       }
 
-      if (!silent) new Notice(`File Watcher: コピー完了 "${rule.name}"\n→ ${destPath}`);
+      if (rule.notify && !silent) new Notice(`File Watcher: コピー完了 "${rule.name}"\n→ ${destPath}`);
       return destPath;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`File Watcher: コピーエラー "${rule.name}"\n${nodePath.basename(absoluteFilePath)}: ${msg}`, 8000);
+      if (rule.notify) {
+        const msg = err instanceof Error ? err.message : String(err);
+        new Notice(`File Watcher: コピーエラー "${rule.name}"\n${nodePath.basename(absoluteFilePath)}: ${msg}`, 8000);
+      }
       return null;
     }
   }
@@ -1000,7 +1032,7 @@ export default class FileWatcherPlugin extends Plugin {
         await leaf.openFile(file);
       }
 
-      this.executeCommand(rule.commandId, `ファイル監視ルール "${rule.name}"`);
+      this.executeCommand(rule.commandId, `ファイル監視ルール "${rule.name}"`, rule.notify);
     }
   }
 
@@ -1032,7 +1064,7 @@ export default class FileWatcherPlugin extends Plugin {
         }
       }
 
-      this.executeCommand(rule.commandId, `スケジュールルール "${rule.name}"`);
+      this.executeCommand(rule.commandId, `スケジュールルール "${rule.name}"`, rule.notify);
     }
 
     for (const rule of this.settings.absolutePathCopyRules) {
@@ -1052,7 +1084,7 @@ export default class FileWatcherPlugin extends Plugin {
         const result = await this.copyFileToVault(rule, absPath, isMulti);
         if (result !== null) succeeded++;
       }
-      if (isMulti) {
+      if (isMulti && rule.notify) {
         const failed = files.length - succeeded;
         const failedLabel = failed > 0 ? ` (${failed} 件失敗)` : '';
         new Notice(`File Watcher: コピー完了 "${rule.name}"\n${succeeded} 件コピーしました${failedLabel}`);
@@ -1062,24 +1094,36 @@ export default class FileWatcherPlugin extends Plugin {
     if (dirty) this.saveSettings();
   }
 
-  private executeCommand(commandId: string, source: string): void {
+  private executeCommand(commandId: string, source: string, notify = true): void {
     try {
       const ok = (this.app as any).commands?.executeCommandById(commandId);
-      if (!ok) {
+      if (!ok && notify) {
         new Notice(`File Watcher: コマンド "${commandId}" の実行に失敗しました\n(${source})`);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`File Watcher: エラー (${source})\n${msg}`, 8000);
+      if (notify) {
+        const msg = err instanceof Error ? err.message : String(err);
+        new Notice(`File Watcher: エラー (${source})\n${msg}`, 8000);
+      }
     }
   }
 
   async loadSettings() {
     const loaded = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
-    // 旧バージョンの absolutePathCopyRules に新フィールドが欠けている場合のマイグレーション
+    this.settings.fileWatchRules = (this.settings.fileWatchRules ?? []).map(
+      (rule) => ({ ...rule, notify: rule.notify ?? true })
+    );
+    this.settings.scheduleRules = (this.settings.scheduleRules ?? []).map(
+      (rule) => ({ ...rule, notify: rule.notify ?? true })
+    );
     this.settings.absolutePathCopyRules = (this.settings.absolutePathCopyRules ?? []).map(
-      (rule) => ({ ...rule, pathPattern: rule.pathPattern ?? '', extensions: rule.extensions ?? [] })
+      (rule) => ({
+        ...rule,
+        notify: rule.notify ?? true,
+        pathPattern: rule.pathPattern ?? '',
+        extensions: rule.extensions ?? [],
+      })
     );
   }
 
