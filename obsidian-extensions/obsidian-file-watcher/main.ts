@@ -919,7 +919,11 @@ export default class FileWatcherPlugin extends Plugin {
     return extensions.includes(ext);
   }
 
-  private async copyFileToVault(rule: AbsolutePathCopyRule, absoluteFilePath: string): Promise<void> {
+  private async copyFileToVault(
+    rule: AbsolutePathCopyRule,
+    absoluteFilePath: string,
+    silent = false
+  ): Promise<string | null> {
     try {
       const srcBuf = fs.readFileSync(absoluteFilePath);
       const arrayBuffer = srcBuf.buffer.slice(
@@ -944,10 +948,12 @@ export default class FileWatcherPlugin extends Plugin {
         await this.app.vault.createBinary(destPath, arrayBuffer);
       }
 
-      new Notice(`File Watcher: コピー完了 "${rule.name}"\n→ ${destPath}`);
+      if (!silent) new Notice(`File Watcher: コピー完了 "${rule.name}"\n→ ${destPath}`);
+      return destPath;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`File Watcher: コピーエラー "${rule.name}"\n${msg}`, 8000);
+      new Notice(`File Watcher: コピーエラー "${rule.name}"\n${nodePath.basename(absoluteFilePath)}: ${msg}`, 8000);
+      return null;
     }
   }
 
@@ -1040,8 +1046,16 @@ export default class FileWatcherPlugin extends Plugin {
       dirty = true;
 
       const files = this.findMatchingFiles(rule);
+      const isMulti = files.length > 1;
+      let succeeded = 0;
       for (const absPath of files) {
-        await this.copyFileToVault(rule, absPath);
+        const result = await this.copyFileToVault(rule, absPath, isMulti);
+        if (result !== null) succeeded++;
+      }
+      if (isMulti) {
+        const failed = files.length - succeeded;
+        const failedLabel = failed > 0 ? ` (${failed} 件失敗)` : '';
+        new Notice(`File Watcher: コピー完了 "${rule.name}"\n${succeeded} 件コピーしました${failedLabel}`);
       }
     }
 
