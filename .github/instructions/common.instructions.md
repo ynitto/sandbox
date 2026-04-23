@@ -43,7 +43,18 @@ python {skill_home}/git-skill-manager/scripts/auto_update.py check
 python {skill_home}/ltm-use/scripts/auto_update.py check
 ```
 
-### 手順 3: 過去の記憶のリコール
+### 手順 3: ユーザーペルソナの読み込み
+
+`persona-use` が設定されていれば、ペルソナを読み込んで応答をパーソナライズする:
+
+```bash
+python {skill_home}/persona-use/scripts/show_persona.py
+```
+
+未設定の場合は "(ペルソナ未設定 — スキップ)" が出力されるのでそのまま次に進む。
+読み込んだペルソナは応答の詳細さ・言語・技術提案の際に反映する。
+
+### 手順 4: 過去の記憶のリコール
 
 タスクを受け取ったら、作業を始める前に関連する記憶を全カテゴリを対象に検索する:
 
@@ -87,6 +98,18 @@ python {skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup 
 ```
 
 scrum-master 経由のスプリント実行中は、スプリント完了後（Phase 6 の後）にまとめて保存する。
+
+### ペルソナの自律更新
+
+以下を検出したら `update_persona.py --log` で観察を記録し、該当する `profile.md` / `preferences.md` / `expertise.md` を直接編集して更新する:
+
+- ユーザーが特定の言語・フレームワーク・ツールに言及したとき（`expertise.md`）
+- ユーザーが出力フォーマットを修正・指定したとき（`preferences.md`）
+- 繰り返し同じ指示パターンが出てきたとき（`profile.md`）
+
+```bash
+python {skill_home}/persona-use/scripts/update_persona.py --log "観察内容"
+```
 
 -----
 
