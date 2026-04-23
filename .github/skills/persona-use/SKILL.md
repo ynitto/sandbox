@@ -5,6 +5,7 @@ metadata:
   version: 1.0.0
   tier: core
   category: meta
+  config_script: scripts/init_persona.py
   tags:
     - persona
     - personalization
