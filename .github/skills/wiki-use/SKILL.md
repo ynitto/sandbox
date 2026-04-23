@@ -5,6 +5,7 @@ metadata:
   version: 1.0.0
   tier: experimental
   category: knowledge
+  config_script: scripts/wiki_init.py
   tags:
     - wiki
     - knowledge-base

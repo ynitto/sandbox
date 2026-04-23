@@ -110,6 +110,12 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="全スキル（tier 問わず）をインストールする (default: コアスキルのみ)",
     )
+    parser.add_argument(
+        "--skip-config",
+        action="store_true",
+        default=False,
+        help="スキル設定プロンプトをスキップする（CI環境など非対話実行時に使用）",
+    )
     return parser.parse_args()
 
 
@@ -360,6 +366,79 @@ def copy_agent_instructions(paths: dict[str, str], agent_type: str = "copilot") 
     return copied
 
 
+def _get_skill_config_script(skill_dir: str) -> str | None:
+    """SKILL.md の metadata.config_script を返す。フィールドがなければ None。"""
+    skill_md = os.path.join(skill_dir, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return None
+    with open(skill_md, encoding="utf-8") as f:
+        content = f.read()
+    fm = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+    if not fm:
+        return None
+    m = re.search(r'^\s+config_script:\s*(.+?)\s*$', fm.group(1), re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def _get_existing_skill_config(skill_name: str, registry_path: str) -> dict | None:
+    """skill-registry.json の skill_configs[skill_name] を返す。なければ None。"""
+    if not os.path.isfile(registry_path):
+        return None
+    with open(registry_path, encoding="utf-8") as f:
+        reg = json.load(f)
+    return reg.get("skill_configs", {}).get(skill_name) or None
+
+
+def prompt_skill_configs(installed: list[dict], paths: dict[str, str]) -> None:
+    """設定が必要なスキルを検出し、ユーザーに設定を促す。
+
+    - 初回インストール: 「今すぐ設定しますか?」と聞く
+    - 上書きインストール: 現在の設定を表示して「変更しますか?」と聞く
+    """
+    needs_config = []
+    for skill in installed:
+        skill_dir = os.path.join(paths["skill_home"], skill["name"])
+        config_script = _get_skill_config_script(skill_dir)
+        if not config_script:
+            continue
+        existing = _get_existing_skill_config(skill["name"], paths["registry_path"])
+        needs_config.append({
+            "name": skill["name"],
+            "script": os.path.join(skill_dir, config_script),
+            "existing": existing,
+        })
+
+    if not needs_config:
+        return
+
+    print("\n" + "=" * 50)
+    print("スキル設定")
+    print("=" * 50)
+
+    for item in needs_config:
+        print(f"\n■ {item['name']}")
+
+        if item["existing"]:
+            print("  現在の設定:")
+            for k, v in item["existing"].items():
+                print(f"    {k}: {v}")
+            answer = input("  設定を変更しますか? [y/N]: ").strip().lower()
+            if answer != "y":
+                print("  スキップしました（後でスキルの init スクリプトを実行して変更できます）")
+                continue
+        else:
+            answer = input("  初期設定が必要です。今すぐ設定しますか? [Y/n]: ").strip().lower()
+            if answer == "n":
+                print("  スキップしました（後でスキルの init スクリプトを実行して設定できます）")
+                continue
+
+        print(f"  設定スクリプトを実行します...")
+        try:
+            subprocess.run([sys.executable, item["script"]], check=False)
+        except Exception as e:
+            print(f"  [エラー] スクリプト実行に失敗しました: {e}")
+
+
 def setup_claude_hooks(paths: dict[str, str]) -> bool:
     """Claude Code の settings.json に Stop hook を設定する。
 
@@ -499,6 +578,10 @@ def main() -> None:
     print('  - 「スキルをpullして」で最新スキルを取得')
     print('  - 「スクラムして」でscrum-masterを起動')
     print('  - 「スキルを探して」でリポジトリ内のスキルを検索')
+
+    # 6. スキル設定プロンプト
+    if not args.skip_config:
+        prompt_skill_configs(installed, paths)
 
 
 if __name__ == "__main__":
