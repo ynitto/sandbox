@@ -157,12 +157,30 @@ python scripts/gl.py create-issue --title "タイトル" --body "短い説明" -
 
 ### イシュー更新
 
+ラベル・アサイニー・状態の更新:
+
 ```
 python scripts/gl.py update-issue 42 --add-labels "status:in-progress" --remove-labels "status:open,assignee:any"
 python scripts/gl.py update-issue 42 --assignee MY_USER
 python scripts/gl.py update-issue 42 --state-event close
 python scripts/gl.py update-issue 42 --state-event reopen
 python scripts/gl.py update-issue 42 --add-labels "status:needs-rework" --remove-labels "status:review-ready" --state-event reopen
+```
+
+イシュー本文（description）の更新:
+
+```
+python scripts/gl.py update-issue 42 --body-file _clarified_body.md
+python scripts/gl.py update-issue 42 --body "更新後の説明（短い場合）"
+```
+
+複数オプションの組み合わせも可能:
+
+```
+python scripts/gl.py update-issue 42 \
+  --body-file _clarified_body.md \
+  --add-labels "status:open,assignee:any" \
+  --remove-labels "status:needs-clarification"
 ```
 
 ### コメント投稿

@@ -25,14 +25,15 @@ Phase 1  環境確認 ─── プロジェクト情報・認証確認
    │
 Phase 2  イシュー取得 ─── オープンイシューをフィルタして 1 件選択
    │         ├── self-defer チェック: 自分発行イシューは猶予期間中はスキップ
-  │         ├── 放置アサインチェック: 他ノード着手中はロック期間中スキップ
+   │         ├── 放置アサインチェック: 他ノード着手中はロック期間中スキップ
    │         ├── 猶予期間経過後は自分発行イシューも実行可
-   │         └── 依存チェック: 依存イシューが未完了ならスキップ
+   │         ├── 依存チェック: 依存イシューが未完了ならスキップ
+   │         └── 明確性チェック: 説明・受け入れ条件が曖昧なら指摘してスキップ
    │
 Phase 3  イシュー着手 ─── assign + ラベル更新 + テンポラリクローン作成 + 空ドラフト MR 作成
    │
 Phase 4  タスク実行 ─── 実装ループ（最大 5 回）
-  │         └── スキル選定（skill-selector）→ 実装 → supporting_skills をそのまま適用 → agent-reviewer でレビュー → 修正・コミット・push
+   │         └── スキル選定（skill-selector）→ 実装 → supporting_skills をそのまま適用 → agent-reviewer でレビュー → 修正・コミット・push
    │
 Phase 5  成果物提出 ─── push 確認 + MR 本文記入 + ドラフト解除 + イシューコメント + ラベル更新
 ```
@@ -73,8 +74,8 @@ python scripts/gl.py list-issues --label "status:open,assignee:any"
 # 3. 差し戻し済みで自分担当のものも対象
 python scripts/gl.py list-issues --label "status:needs-rework" --assignee MY_USER
 
-# 4. 放置アサイン救済候補（クローズしておらず、status:open/status:done 以外）
-python scripts/gl.py list-issues --state opened --exclude-labels "status:open,status:done"
+# 4. 放置アサイン救済候補（クローズしておらず、status:open/status:done/status:needs-clarification 以外）
+python scripts/gl.py list-issues --state opened --exclude-labels "status:open,status:done,status:needs-clarification"
 ```
 
 ### ステップ 2-2: self-defer チェック（自分発行イシューの猶予）
@@ -134,7 +135,7 @@ python scripts/gl.py check-assigned-defer {issue_id} --get remaining_minutes
 1. `status:needs-rework` かつ自分 assign のもの（差し戻し再作業）
 2. `status:open` かつ自分 assign のもの
 3. `status:open,assignee:any` のもの
-4. `status:open/status:done` 以外でクローズしていないもの（放置アサイン救済候補）
+4. `status:open` / `status:done` / `status:needs-clarification` 以外でクローズしていないもの（放置アサイン救済候補）
 
 各候補に対して次を順に実行し、両方 `defer=false` の先頭 1 件を選択する。
 

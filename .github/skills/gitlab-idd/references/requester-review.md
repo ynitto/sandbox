@@ -99,6 +99,8 @@ python scripts/gl.py update-issue {issue_id} \
 
 ---
 
+## レビュー・クローズ / リオープン
+
 `status:review-ready` イシューを評価し、マージまたはリオープンする。
 自分が実装したイシューは self-review ロック期間（デフォルト 24 時間）中は self-defer し、経過後は自分でレビューしてよい。
 すべての操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
@@ -412,7 +414,7 @@ DEFAULT_BRANCH=$(python scripts/gl.py get-default-branch --get default_branch)
 全イシューが完了済みであることを確認する:
 
 ```
-python scripts/gl.py list-issues --label "status:open,status:in-progress,status:review-ready,status:blocked"
+python scripts/gl.py list-issues --label "status:open,status:in-progress,status:review-ready,status:blocked,status:needs-clarification"
 ```
 
 未完了イシューが残っている場合は「未完了のイシューがあります。完了後に再度実行してください」と報告して終了する。
