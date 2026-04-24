@@ -1,12 +1,12 @@
 import {
   App,
   MarkdownPostProcessorContext,
+  MarkdownView,
   Modal,
   Notice,
   Plugin,
   PluginSettingTab,
   Setting,
-  SuggestModal,
   TFile,
 } from 'obsidian';
 import * as fs from 'fs';
@@ -139,6 +139,99 @@ function scanForRepoPaths(rootPath: string, maxDepth: number): string[] {
 }
 
 // ============================================================
+// Filterable Combobox
+// ============================================================
+
+interface ComboboxItem {
+  label: string;
+  value: string;
+}
+
+interface FilterableCombobox {
+  getValue: () => string;
+  setItems: (items: ComboboxItem[]) => void;
+}
+
+function createFilterableCombobox(
+  parent: HTMLElement,
+  items: ComboboxItem[],
+  placeholder: string,
+  onSelect: (value: string) => void,
+): FilterableCombobox {
+  let currentItems = items.slice();
+  let selectedValue = items[0]?.value ?? '';
+
+  const wrapper = parent.createDiv();
+  wrapper.style.cssText = 'position:relative;';
+
+  const input = wrapper.createEl('input') as HTMLInputElement;
+  input.type = 'text';
+  input.placeholder = placeholder;
+  input.value = items[0]?.label ?? '';
+  input.style.cssText =
+    'width:100%; padding:4px 8px; box-sizing:border-box;' +
+    ' background:var(--background-secondary); color:var(--text-normal);' +
+    ' border:1px solid var(--background-modifier-border); border-radius:4px;';
+
+  const dropdown = wrapper.createDiv();
+  dropdown.style.cssText =
+    'display:none; position:absolute; top:100%; left:0; right:0; max-height:200px; overflow-y:auto;' +
+    ' background:var(--background-primary); border:1px solid var(--background-modifier-border);' +
+    ' border-radius:4px; z-index:100; margin-top:2px; box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+
+  function renderDropdown() {
+    const q = input.value.toLowerCase();
+    dropdown.empty();
+    const filtered = q
+      ? currentItems.filter(i => i.label.toLowerCase().includes(q))
+      : currentItems;
+    if (filtered.length === 0) {
+      dropdown.style.display = 'none';
+      return;
+    }
+    for (const item of filtered) {
+      const div = dropdown.createDiv({ text: item.label });
+      div.style.cssText =
+        'padding:6px 8px; cursor:pointer; color:var(--text-normal);' +
+        ' white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+      div.addEventListener('mouseover', () => {
+        div.style.backgroundColor = 'var(--background-modifier-hover)';
+      });
+      div.addEventListener('mouseout', () => {
+        div.style.backgroundColor = '';
+      });
+      div.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        selectedValue = item.value;
+        input.value = item.label;
+        dropdown.style.display = 'none';
+        onSelect(item.value);
+      });
+    }
+    dropdown.style.display = 'block';
+  }
+
+  input.addEventListener('input', renderDropdown);
+  input.addEventListener('focus', renderDropdown);
+  input.addEventListener('blur', () => {
+    setTimeout(() => { dropdown.style.display = 'none'; }, 150);
+  });
+
+  if (items.length > 0) onSelect(items[0].value);
+
+  return {
+    getValue: () => selectedValue,
+    setItems: (newItems: ComboboxItem[]) => {
+      currentItems = newItems.slice();
+      selectedValue = newItems[0]?.value ?? '';
+      input.value = newItems[0]?.label ?? '';
+      dropdown.style.display = 'none';
+      if (newItems.length > 0) onSelect(newItems[0].value);
+    },
+  };
+}
+
+// ============================================================
 // Markdown Code Block Renderer
 // ============================================================
 
@@ -173,14 +266,9 @@ function renderGitManagerBlock(
     attr: { style: 'font-weight:600; margin-bottom:8px; color:var(--text-normal);' },
   });
 
-  const selectEl = container.createEl('select');
-  selectEl.style.cssText =
-    'width:100%; margin-bottom:10px; padding:4px 8px;' +
-    ' background:var(--background-secondary); color:var(--text-normal);' +
-    ' border:1px solid var(--background-modifier-border); border-radius:4px;';
-  for (const repo of repos) {
-    selectEl.createEl('option', { text: repo.name, value: repo.id });
-  }
+  const comboboxWrapper = container.createDiv({
+    attr: { style: 'margin-bottom:10px;' },
+  });
 
   const infoPanel = container.createDiv();
 
@@ -193,7 +281,14 @@ function renderGitManagerBlock(
       .replace(/\{\{value\}\}/g, value);
     const content = await plugin.app.vault.read(file);
     const lines = content.split('\n');
-    lines.splice(info.lineEnd + 1, 0, text);
+
+    let insertLine = info.lineEnd + 1;
+    const mdView = plugin.app.workspace.getActiveViewOfType(MarkdownView);
+    if (mdView?.file?.path === ctx.sourcePath && mdView.getMode() !== 'preview') {
+      insertLine = mdView.editor.getCursor().line + 1;
+    }
+
+    lines.splice(insertLine, 0, text);
     await plugin.app.vault.modify(file, lines.join('\n'));
   }
 
@@ -250,58 +345,50 @@ function renderGitManagerBlock(
         text: 'ブランチ:',
         attr: { style: 'color:var(--text-muted); min-width:70px; flex-shrink:0;' },
       });
-      const branchBtn = branchRow.createEl('button', {
-        text: 'ブランチを選択',
-        attr: { style: 'padding:2px 8px; font-size:0.85em;' },
-      });
-      branchBtn.addEventListener('click', () => {
-        const { local, remote } = getGitBranches(repo.path);
-        const all = [...local, ...remote];
-        if (all.length === 0) {
-          new Notice('ブランチが見つかりませんでした');
-          return;
-        }
-        new BranchSelectModal(plugin.app, all, async (branch) => {
+
+      const { local, remote } = getGitBranches(repo.path);
+      const allBranches = [...local, ...remote];
+
+      if (allBranches.length === 0) {
+        branchRow.createEl('span', {
+          text: 'ブランチなし',
+          attr: { style: 'color:var(--text-muted);' },
+        });
+      } else {
+        const branchComboboxWrapper = branchRow.createDiv({
+          attr: { style: 'flex:1; min-width:0;' },
+        });
+        const branchCombobox = createFilterableCombobox(
+          branchComboboxWrapper,
+          allBranches.map(b => ({ label: b, value: b })),
+          'ブランチを絞り込み...',
+          () => {},
+        );
+
+        const insertBranchBtn = branchRow.createEl('button', {
+          text: '挿入',
+          attr: { style: 'padding:2px 8px; font-size:0.85em; flex-shrink:0;' },
+        });
+        insertBranchBtn.addEventListener('click', async () => {
+          const branch = branchCombobox.getValue();
+          if (!branch) {
+            new Notice('ブランチを選択してください');
+            return;
+          }
           await insertBelowBlock('ブランチ', branch);
-        }).open();
-      });
+          insertBranchBtn.textContent = '✓';
+          setTimeout(() => { insertBranchBtn.textContent = '挿入'; }, 1500);
+        });
+      }
     }
   }
 
-  renderInfo(repos[0].id);
-  selectEl.addEventListener('change', e => {
-    renderInfo((e.target as HTMLSelectElement).value);
-  });
-}
-
-// ============================================================
-// Branch Select Modal
-// ============================================================
-
-class BranchSelectModal extends SuggestModal<string> {
-  private branches: string[];
-  private onSelect: (branch: string) => void;
-
-  constructor(app: App, branches: string[], onSelect: (branch: string) => void) {
-    super(app);
-    this.branches = branches;
-    this.onSelect = onSelect;
-    this.setPlaceholder('ブランチ名を入力（前方一致で絞り込み）');
-  }
-
-  getSuggestions(query: string): string[] {
-    if (!query) return this.branches;
-    const q = query.toLowerCase();
-    return this.branches.filter(b => b.toLowerCase().startsWith(q));
-  }
-
-  renderSuggestion(branch: string, el: HTMLElement): void {
-    el.setText(branch);
-  }
-
-  onChooseSuggestion(branch: string, _evt: MouseEvent | KeyboardEvent): void {
-    this.onSelect(branch);
-  }
+  createFilterableCombobox(
+    comboboxWrapper,
+    repos.map(r => ({ label: r.name, value: r.id })),
+    'リポジトリを絞り込み...',
+    (repoId) => renderInfo(repoId),
+  );
 }
 
 // ============================================================
