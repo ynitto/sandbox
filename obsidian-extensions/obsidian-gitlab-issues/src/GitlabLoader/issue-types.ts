@@ -30,10 +30,10 @@ export interface TimeStats {
 }
 
 export interface ShortIssue {
-	readonly due_date: string,
+	readonly due_date: string | null,
 	readonly project_id: number,
 	readonly state: string,
-	readonly description: string,
+	readonly description: string | null,
 	readonly iid: number,
 	readonly id: number,
 	readonly title: string,
@@ -62,7 +62,7 @@ export interface Issue extends ShortIssue {
 	readonly discussion_locked: boolean
 	readonly issue_type: string,
 	readonly time_stats: TimeStats,
-	readonly severity: string,
+	readonly severity: string | undefined,
 	readonly _links: {
 		self: string,
 		notes: string,
@@ -114,6 +114,34 @@ export interface MergeRequest {
 	readonly author: Assignee;
 	readonly assignees: Assignee[];
 	readonly labels: string[];
+}
+
+export interface MergeRequestDetailed extends MergeRequest {
+	readonly source_branch: string;
+	readonly target_branch: string;
+	readonly merge_status: string;
+	readonly detailed_merge_status: string;
+	readonly sha: string;
+	readonly draft: boolean;
+	readonly work_in_progress: boolean;
+	readonly squash: boolean;
+	readonly reviewers: Assignee[];
+	readonly milestone: ShortIssue | null;
+	readonly time_stats: TimeStats;
+	readonly task_completion_status: {
+		count: number;
+		completed_count: number;
+	};
+	readonly upvotes: number;
+	readonly downvotes: number;
+	readonly user_notes_count: number;
+	readonly closed_at: string | null;
+}
+
+export interface ObsidianMergeRequest extends MergeRequestDetailed {
+	filename: string;
+	discussions: Discussion[];
+	issueLinks: string[];
 }
 
 export interface ObsidianIssue extends Issue {

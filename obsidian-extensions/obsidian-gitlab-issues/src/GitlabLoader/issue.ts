@@ -1,7 +1,8 @@
-import { ObsidianIssue, Issue, Discussion, MergeRequest } from "./issue-types";
+import { ObsidianIssue, Issue, Discussion, MergeRequest, References, TimeStats, Epic, ShortIssue } from "./issue-types";
 
 export class GitlabIssue implements ObsidianIssue {
 	id: number;
+	iid: number;
 	title: string;
 	description: string | null;
 	due_date: string | null;
@@ -10,9 +11,11 @@ export class GitlabIssue implements ObsidianIssue {
 	created_at: string;
 	updated_at: string;
 	project_id: number;
+	references: string | References;
 	assignees: Array<any>;
 	author: any;
 	closed_by: any;
+	epic: Epic;
 	upvotes: number;
 	downvotes: number;
 	user_notes_count: number;
@@ -22,9 +25,14 @@ export class GitlabIssue implements ObsidianIssue {
 	labels: Array<string>;
 	severity: string | undefined;
 	confidential: boolean;
+	discussion_locked: boolean;
+	issue_type: string;
+	time_stats: TimeStats;
 	merge_requests_count: number;
+	milestone: ShortIssue;
+	imported: boolean;
+	imported_from: string;
 	_links: any;
-	iid: number;
 	discussions: Discussion[];
 	relatedMergeRequests: MergeRequest[];
 
