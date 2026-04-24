@@ -173,15 +173,24 @@ function createFilterableCombobox(
     ' background:var(--background-secondary); color:var(--text-normal);' +
     ' border:1px solid var(--background-modifier-border); border-radius:4px;';
 
-  const dropdown = wrapper.createDiv();
+  // ドロップダウンを body に追加して overflow クリッピングを回避
+  const dropdown = document.createElement('div');
   dropdown.style.cssText =
-    'display:none; position:absolute; top:100%; left:0; right:0; max-height:200px; overflow-y:auto;' +
+    'display:none; position:fixed; max-height:200px; overflow-y:auto;' +
     ' background:var(--background-primary); border:1px solid var(--background-modifier-border);' +
-    ' border-radius:4px; z-index:100; margin-top:2px; box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+    ' border-radius:4px; z-index:9999; box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+  document.body.appendChild(dropdown);
+
+  function positionDropdown() {
+    const rect = input.getBoundingClientRect();
+    dropdown.style.left = rect.left + 'px';
+    dropdown.style.top = (rect.bottom + 2) + 'px';
+    dropdown.style.width = rect.width + 'px';
+  }
 
   function renderDropdown() {
     const q = input.value.toLowerCase();
-    dropdown.empty();
+    dropdown.innerHTML = '';
     const filtered = q
       ? currentItems.filter(i => i.label.toLowerCase().includes(q))
       : currentItems;
@@ -190,7 +199,8 @@ function createFilterableCombobox(
       return;
     }
     for (const item of filtered) {
-      const div = dropdown.createDiv({ text: item.label });
+      const div = document.createElement('div');
+      div.textContent = item.label;
       div.style.cssText =
         'padding:6px 8px; cursor:pointer; color:var(--text-normal);' +
         ' white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
@@ -207,15 +217,32 @@ function createFilterableCombobox(
         dropdown.style.display = 'none';
         onSelect(item.value);
       });
+      dropdown.appendChild(div);
     }
+    positionDropdown();
     dropdown.style.display = 'block';
   }
+
+  function onScroll() {
+    if (dropdown.style.display !== 'none') positionDropdown();
+  }
+  window.addEventListener('scroll', onScroll, true);
 
   input.addEventListener('input', renderDropdown);
   input.addEventListener('focus', renderDropdown);
   input.addEventListener('blur', () => {
     setTimeout(() => { dropdown.style.display = 'none'; }, 150);
   });
+
+  // input が DOM から切り離されたらドロップダウンを削除してリスナーを解除
+  const cleanupObserver = new MutationObserver(() => {
+    if (!input.isConnected) {
+      dropdown.remove();
+      window.removeEventListener('scroll', onScroll, true);
+      cleanupObserver.disconnect();
+    }
+  });
+  cleanupObserver.observe(document.body, { childList: true, subtree: true });
 
   if (items.length > 0) onSelect(items[0].value);
 
@@ -290,6 +317,13 @@ function renderGitManagerBlock(
 
     lines.splice(insertLine, 0, text);
     await plugin.app.vault.modify(file, lines.join('\n'));
+
+    // 挿入行の末尾にカーソルを移動
+    if (mdView?.file?.path === ctx.sourcePath && mdView.getMode() !== 'preview') {
+      requestAnimationFrame(() => {
+        mdView.editor.setCursor({ line: insertLine, ch: text.length });
+      });
+    }
   }
 
   function renderInfo(repoId: string) {
