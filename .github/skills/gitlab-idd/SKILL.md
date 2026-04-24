@@ -120,7 +120,7 @@ export GITLAB_ASSIGNED_LOCK_MINUTES=1440
 
 ```
 1. list-issues でオープンイシューを取得
-2. self-defer チェック: 自分発行イシューは DEFER_MINUTES（デフォルト 24 時間）経過後まで skip
+2. self-defer チェック: 自分発行イシューは DEFER_MINUTES（デフォルト 60 分）経過後まで skip
 3. 依存チェック: "## 依存イシュー" に記載のイシューがすべて done/closed か確認
    → 未完了の依存あり → スキップまたはコメントして終了
 4. 説明の明確性チェック: 受け入れ条件・影響範囲が実装に十分か判断

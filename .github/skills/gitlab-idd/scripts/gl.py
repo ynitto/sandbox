@@ -36,6 +36,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 
 DEFAULT_SELF_DEFER_MINUTES = 60.0           #  1h  (check-defer)
@@ -288,7 +289,7 @@ def out(obj, get_field=None):
         print(json.dumps(obj, ensure_ascii=False, indent=2))
 
 
-def _parse_iso8601_utc(ts: str | None):
+def _parse_iso8601_utc(ts: Optional[str]):
     """Parse GitLab ISO8601 timestamp to timezone-aware datetime."""
     if not ts:
         return None
@@ -418,9 +419,12 @@ def cmd_create_issue(args, host, project, token):
 
 
 def cmd_update_issue(args, host, project, token):
-    """Update issue labels, assignee, or state."""
+    """Update issue labels, assignee, state, or description."""
     ep = encode_project(project)
     data = {}
+
+    if args.body is not None or args.body_file is not None:
+        data["description"] = read_body(args.body, args.body_file)
 
     # Label management: fetch current labels and apply add/remove
     if args.add_labels or args.remove_labels:
@@ -448,7 +452,7 @@ def cmd_update_issue(args, host, project, token):
     if not data:
         sys.exit(
             "ERROR: No update fields specified. "
-            "Use --add-labels, --remove-labels, --assignee, or --state-event."
+            "Use --body/--body-file, --add-labels, --remove-labels, --assignee, or --state-event."
         )
 
     out(api(host, token, "PUT", f"/projects/{ep}/issues/{args.issue_id}", data=data), args.get)
@@ -885,8 +889,12 @@ def build_parser():
     p.add_argument("--labels", help="Comma-separated label names")
     p.add_argument("--assignee", help="Assignee username")
 
-    p = sub.add_parser("update-issue", help="Update issue labels / assignee / state")
+    p = sub.add_parser("update-issue", help="Update issue description / labels / assignee / state")
     p.add_argument("issue_id", type=int)
+    p.add_argument("--body", default=None, help="New issue description (Markdown)")
+    p.add_argument("--body-file", metavar="FILE",
+                   help="Read new issue description from FILE (use - for stdin). "
+                        "Mutually exclusive with --body.")
     p.add_argument("--add-labels",    help="Labels to add (comma-separated)")
     p.add_argument("--remove-labels", help="Labels to remove (comma-separated)")
     p.add_argument("--assignee", help="Set assignee username")

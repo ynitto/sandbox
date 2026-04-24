@@ -73,8 +73,8 @@ python scripts/gl.py list-issues --label "status:open,assignee:any"
 # 3. 差し戻し済みで自分担当のものも対象
 python scripts/gl.py list-issues --label "status:needs-rework" --assignee MY_USER
 
-# 4. 放置アサイン救済候補（クローズしておらず、status:open/status:done 以外）
-python scripts/gl.py list-issues --state opened --exclude-labels "status:open,status:done"
+# 4. 放置アサイン救済候補（クローズしておらず、status:open/status:done/status:needs-clarification 以外）
+python scripts/gl.py list-issues --state opened --exclude-labels "status:open,status:done,status:needs-clarification"
 ```
 
 ### ステップ 2-2: self-defer チェック（自分発行イシューの猶予）
