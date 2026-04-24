@@ -132,6 +132,68 @@ function scanForRepoPaths(rootPath, maxDepth) {
   walk(rootPath, 0);
   return found;
 }
+function createFilterableCombobox(parent, items, placeholder, onSelect) {
+  var _a, _b, _c, _d;
+  let currentItems = items.slice();
+  let selectedValue = (_b = (_a = items[0]) == null ? void 0 : _a.value) != null ? _b : "";
+  const wrapper = parent.createDiv();
+  wrapper.style.cssText = "position:relative;";
+  const input = wrapper.createEl("input");
+  input.type = "text";
+  input.placeholder = placeholder;
+  input.value = (_d = (_c = items[0]) == null ? void 0 : _c.label) != null ? _d : "";
+  input.style.cssText = "width:100%; padding:4px 8px; box-sizing:border-box; background:var(--background-secondary); color:var(--text-normal); border:1px solid var(--background-modifier-border); border-radius:4px;";
+  const dropdown = wrapper.createDiv();
+  dropdown.style.cssText = "display:none; position:absolute; top:100%; left:0; right:0; max-height:200px; overflow-y:auto; background:var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:4px; z-index:100; margin-top:2px; box-shadow:0 4px 12px rgba(0,0,0,0.15);";
+  function renderDropdown() {
+    const q = input.value.toLowerCase();
+    dropdown.empty();
+    const filtered = q ? currentItems.filter((i) => i.label.toLowerCase().includes(q)) : currentItems;
+    if (filtered.length === 0) {
+      dropdown.style.display = "none";
+      return;
+    }
+    for (const item of filtered) {
+      const div = dropdown.createDiv({ text: item.label });
+      div.style.cssText = "padding:6px 8px; cursor:pointer; color:var(--text-normal); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;";
+      div.addEventListener("mouseover", () => {
+        div.style.backgroundColor = "var(--background-modifier-hover)";
+      });
+      div.addEventListener("mouseout", () => {
+        div.style.backgroundColor = "";
+      });
+      div.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        selectedValue = item.value;
+        input.value = item.label;
+        dropdown.style.display = "none";
+        onSelect(item.value);
+      });
+    }
+    dropdown.style.display = "block";
+  }
+  input.addEventListener("input", renderDropdown);
+  input.addEventListener("focus", renderDropdown);
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      dropdown.style.display = "none";
+    }, 150);
+  });
+  if (items.length > 0)
+    onSelect(items[0].value);
+  return {
+    getValue: () => selectedValue,
+    setItems: (newItems) => {
+      var _a2, _b2, _c2, _d2;
+      currentItems = newItems.slice();
+      selectedValue = (_b2 = (_a2 = newItems[0]) == null ? void 0 : _a2.value) != null ? _b2 : "";
+      input.value = (_d2 = (_c2 = newItems[0]) == null ? void 0 : _c2.label) != null ? _d2 : "";
+      dropdown.style.display = "none";
+      if (newItems.length > 0)
+        onSelect(newItems[0].value);
+    }
+  };
+}
 function renderGitManagerBlock(source, el, plugin, ctx) {
   var _a;
   const config = {};
@@ -155,13 +217,12 @@ function renderGitManagerBlock(source, el, plugin, ctx) {
     text: "Git \u30EA\u30DD\u30B8\u30C8\u30EA",
     attr: { style: "font-weight:600; margin-bottom:8px; color:var(--text-normal);" }
   });
-  const selectEl = container.createEl("select");
-  selectEl.style.cssText = "width:100%; margin-bottom:10px; padding:4px 8px; background:var(--background-secondary); color:var(--text-normal); border:1px solid var(--background-modifier-border); border-radius:4px;";
-  for (const repo of repos) {
-    selectEl.createEl("option", { text: repo.name, value: repo.id });
-  }
+  const comboboxWrapper = container.createDiv({
+    attr: { style: "margin-bottom:10px;" }
+  });
   const infoPanel = container.createDiv();
   async function insertBelowBlock(name, value) {
+    var _a2;
     const info = ctx.getSectionInfo(el);
     const file = plugin.app.vault.getAbstractFileByPath(ctx.sourcePath);
     if (!info || !(file instanceof import_obsidian.TFile))
@@ -169,7 +230,12 @@ function renderGitManagerBlock(source, el, plugin, ctx) {
     const text = plugin.data.insertTemplate.replace(/\{\{name\}\}/g, name).replace(/\{\{value\}\}/g, value);
     const content = await plugin.app.vault.read(file);
     const lines = content.split("\n");
-    lines.splice(info.lineEnd + 1, 0, text);
+    let insertLine = info.lineEnd + 1;
+    const mdView = plugin.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    if (((_a2 = mdView == null ? void 0 : mdView.file) == null ? void 0 : _a2.path) === ctx.sourcePath && mdView.getMode() !== "preview") {
+      insertLine = mdView.editor.getCursor().line + 1;
+    }
+    lines.splice(insertLine, 0, text);
     await plugin.app.vault.modify(file, lines.join("\n"));
   }
   function renderInfo(repoId) {
@@ -224,48 +290,50 @@ function renderGitManagerBlock(source, el, plugin, ctx) {
         text: "\u30D6\u30E9\u30F3\u30C1:",
         attr: { style: "color:var(--text-muted); min-width:70px; flex-shrink:0;" }
       });
-      const branchBtn = branchRow.createEl("button", {
-        text: "\u30D6\u30E9\u30F3\u30C1\u3092\u9078\u629E",
-        attr: { style: "padding:2px 8px; font-size:0.85em;" }
-      });
-      branchBtn.addEventListener("click", () => {
-        const { local, remote } = getGitBranches(repo.path);
-        const all = [...local, ...remote];
-        if (all.length === 0) {
-          new import_obsidian.Notice("\u30D6\u30E9\u30F3\u30C1\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3067\u3057\u305F");
-          return;
-        }
-        new BranchSelectModal(plugin.app, all, async (branch) => {
+      const { local, remote } = getGitBranches(repo.path);
+      const allBranches = [...local, ...remote];
+      if (allBranches.length === 0) {
+        branchRow.createEl("span", {
+          text: "\u30D6\u30E9\u30F3\u30C1\u306A\u3057",
+          attr: { style: "color:var(--text-muted);" }
+        });
+      } else {
+        const branchComboboxWrapper = branchRow.createDiv({
+          attr: { style: "flex:1; min-width:0;" }
+        });
+        const branchCombobox = createFilterableCombobox(
+          branchComboboxWrapper,
+          allBranches.map((b) => ({ label: b, value: b })),
+          "\u30D6\u30E9\u30F3\u30C1\u3092\u7D5E\u308A\u8FBC\u307F...",
+          () => {
+          }
+        );
+        const insertBranchBtn = branchRow.createEl("button", {
+          text: "\u633F\u5165",
+          attr: { style: "padding:2px 8px; font-size:0.85em; flex-shrink:0;" }
+        });
+        insertBranchBtn.addEventListener("click", async () => {
+          const branch = branchCombobox.getValue();
+          if (!branch) {
+            new import_obsidian.Notice("\u30D6\u30E9\u30F3\u30C1\u3092\u9078\u629E\u3057\u3066\u304F\u3060\u3055\u3044");
+            return;
+          }
           await insertBelowBlock("\u30D6\u30E9\u30F3\u30C1", branch);
-        }).open();
-      });
+          insertBranchBtn.textContent = "\u2713";
+          setTimeout(() => {
+            insertBranchBtn.textContent = "\u633F\u5165";
+          }, 1500);
+        });
+      }
     }
   }
-  renderInfo(repos[0].id);
-  selectEl.addEventListener("change", (e) => {
-    renderInfo(e.target.value);
-  });
+  createFilterableCombobox(
+    comboboxWrapper,
+    repos.map((r) => ({ label: r.name, value: r.id })),
+    "\u30EA\u30DD\u30B8\u30C8\u30EA\u3092\u7D5E\u308A\u8FBC\u307F...",
+    (repoId) => renderInfo(repoId)
+  );
 }
-var BranchSelectModal = class extends import_obsidian.SuggestModal {
-  constructor(app, branches, onSelect) {
-    super(app);
-    this.branches = branches;
-    this.onSelect = onSelect;
-    this.setPlaceholder("\u30D6\u30E9\u30F3\u30C1\u540D\u3092\u5165\u529B\uFF08\u524D\u65B9\u4E00\u81F4\u3067\u7D5E\u308A\u8FBC\u307F\uFF09");
-  }
-  getSuggestions(query) {
-    if (!query)
-      return this.branches;
-    const q = query.toLowerCase();
-    return this.branches.filter((b) => b.toLowerCase().startsWith(q));
-  }
-  renderSuggestion(branch, el) {
-    el.setText(branch);
-  }
-  onChooseSuggestion(branch, _evt) {
-    this.onSelect(branch);
-  }
-};
 var ScanModal = class extends import_obsidian.Modal {
   constructor(app, plugin) {
     super(app);
