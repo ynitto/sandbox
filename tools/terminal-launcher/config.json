@@ -1,4 +1,6 @@
 {
+  "slidingWindow": 3000,
+  "stagger": true,
   "entries": [
     {
       "title": "API",
