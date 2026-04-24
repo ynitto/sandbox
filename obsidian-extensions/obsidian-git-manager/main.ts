@@ -173,15 +173,29 @@ function createFilterableCombobox(
     ' background:var(--background-secondary); color:var(--text-normal);' +
     ' border:1px solid var(--background-modifier-border); border-radius:4px;';
 
-  const dropdown = wrapper.createDiv();
+  // Attach to document.body with position:fixed to escape any overflow:hidden ancestors
+  const dropdown = document.createElement('div');
   dropdown.style.cssText =
-    'display:none; position:absolute; top:100%; left:0; right:0; max-height:200px; overflow-y:auto;' +
+    'display:none; position:fixed; max-height:200px; overflow-y:auto;' +
     ' background:var(--background-primary); border:1px solid var(--background-modifier-border);' +
-    ' border-radius:4px; z-index:100; margin-top:2px; box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+    ' border-radius:4px; z-index:9999; box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+  document.body.appendChild(dropdown);
+
+  function positionDropdown() {
+    const rect = input.getBoundingClientRect();
+    dropdown.style.top = `${rect.bottom + 2}px`;
+    dropdown.style.left = `${rect.left}px`;
+    dropdown.style.width = `${rect.width}px`;
+  }
 
   function renderDropdown() {
+    if (!input.isConnected) {
+      dropdown.style.display = 'none';
+      dropdown.remove();
+      return;
+    }
     const q = input.value.toLowerCase();
-    dropdown.empty();
+    while (dropdown.firstChild) dropdown.removeChild(dropdown.firstChild);
     const filtered = q
       ? currentItems.filter(i => i.label.toLowerCase().includes(q))
       : currentItems;
@@ -190,7 +204,8 @@ function createFilterableCombobox(
       return;
     }
     for (const item of filtered) {
-      const div = dropdown.createDiv({ text: item.label });
+      const div = document.createElement('div');
+      div.textContent = item.label;
       div.style.cssText =
         'padding:6px 8px; cursor:pointer; color:var(--text-normal);' +
         ' white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
@@ -207,14 +222,25 @@ function createFilterableCombobox(
         dropdown.style.display = 'none';
         onSelect(item.value);
       });
+      dropdown.appendChild(div);
     }
+    positionDropdown();
     dropdown.style.display = 'block';
   }
 
+  const hideOnScroll = () => { dropdown.style.display = 'none'; };
+
   input.addEventListener('input', renderDropdown);
-  input.addEventListener('focus', renderDropdown);
+  input.addEventListener('focus', () => {
+    window.addEventListener('scroll', hideOnScroll, { capture: true, passive: true });
+    renderDropdown();
+  });
   input.addEventListener('blur', () => {
-    setTimeout(() => { dropdown.style.display = 'none'; }, 150);
+    window.removeEventListener('scroll', hideOnScroll, true);
+    setTimeout(() => {
+      dropdown.style.display = 'none';
+      if (!input.isConnected) dropdown.remove();
+    }, 150);
   });
 
   if (items.length > 0) onSelect(items[0].value);
