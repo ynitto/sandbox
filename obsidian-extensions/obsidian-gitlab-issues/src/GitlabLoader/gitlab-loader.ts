@@ -1,5 +1,6 @@
 import GitlabApi from "./gitlab-api";
 import { GitlabIssue } from "./issue";
+import { GitlabMergeRequest } from "./merge-request";
 import { App } from "obsidian";
 import Filesystem from "../filesystem";
 import { Issue, Discussion, MergeRequest } from "./issue-types";
@@ -31,6 +32,8 @@ export default class GitlabLoader {
 		try {
 			const issues = await GitlabApi.load<Array<Issue>>(encodeURI(this.getUrl()), this.settings.gitlabToken);
 
+			const relatedMrMap = new Map<string, GitlabMergeRequest>();
+
 			const gitlabIssues = await Promise.all(
 				issues.map(async (rawIssue: Issue) => {
 					const issue = new GitlabIssue(rawIssue);
@@ -51,6 +54,16 @@ export default class GitlabLoader {
 						} catch (e: any) {
 							logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);
 						}
+
+						if (this.settings.createRelatedMrFiles) {
+							for (const rawMr of issue.relatedMergeRequests) {
+								const key = `${rawMr.project_id}/${rawMr.iid}`;
+								if (!relatedMrMap.has(key)) {
+									relatedMrMap.set(key, new GitlabMergeRequest(rawMr));
+								}
+								relatedMrMap.get(key)!.issueLinks.push(`[[${issue.filename}]]`);
+							}
+						}
 					}
 
 					this.applyLabelMappings(issue);
@@ -58,6 +71,24 @@ export default class GitlabLoader {
 					return issue;
 				})
 			);
+
+			if (this.settings.createRelatedMrFiles && relatedMrMap.size > 0) {
+				const relatedMrs = Array.from(relatedMrMap.values());
+
+				if (this.settings.fetchMrDiscussions) {
+					await Promise.all(relatedMrs.map(async (mr) => {
+						try {
+							const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/discussions`;
+							mr.discussions = await GitlabApi.load<Discussion[]>(encodeURI(url), this.settings.gitlabToken);
+						} catch (e: any) {
+							logger(`Failed to fetch discussions for MR !${mr.iid}: ${e.message}`);
+						}
+					}));
+				}
+
+				this.fs.createMrOutputDirectory();
+				this.fs.processMergeRequests(relatedMrs);
+			}
 
 			if (this.settings.purgeIssues) {
 				this.fs.purgeExistingIssues();

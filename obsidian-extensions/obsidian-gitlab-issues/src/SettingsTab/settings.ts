@@ -13,6 +13,12 @@ export const DEFAULT_SETTINGS = {
 	intervalOfRefresh: "off",
 	fetchDiscussions: false,
 	fetchRelatedMergeRequests: false,
+	createRelatedMrFiles: false,
+	fetchMergeRequests: false,
+	mrFilter: "",
+	mrOutputDir: "/Gitlab Merge Requests/",
+	mrTemplateFile: "",
+	fetchMrDiscussions: false,
 	labelPropertyMappings: [],
 	gitlabIssuesLevel: "personal" as const,
 	gitlabApiUrl: function () {
@@ -57,6 +63,27 @@ export const settings: SettingsTab = {
 			placeholder: "due_date=month",
 			value: "filter",
 		},
+		{
+			title: "Merge Request Template File",
+			description:
+				"Path to a handlebars template file for generating merge request notes. Leave blank to use default template.",
+			placeholder: "templates/merge-request.hbs",
+			value: "mrTemplateFile",
+		},
+		{
+			title: "Merge Requests Output Folder",
+			description: "Directory where merge request notes will be saved",
+			placeholder: "/Gitlab Merge Requests/",
+			value: "mrOutputDir",
+			modifier: "normalizePath",
+		},
+		{
+			title: "Merge Requests Filter",
+			description:
+				"Filter merge requests using Gitlab API query parameters (e.g., state=opened&scope=assigned_to_me)",
+			placeholder: "state=opened",
+			value: "mrFilter",
+		},
 	],
 	dropdowns: [
 		{
@@ -74,7 +101,7 @@ export const settings: SettingsTab = {
 		},
 		{
 			title: "GitLab Scope",
-			description: "Scope of issues to import",
+			description: "Scope of issues and merge requests to import",
 			value: "gitlabIssuesLevel",
 			options: {
 				"personal": "Personal",
@@ -105,6 +132,21 @@ export const settings: SettingsTab = {
 			title: "Fetch Related Merge Requests",
 			description: "Fetch related merge requests for each issue. May slow down imports with many issues.",
 			value: "fetchRelatedMergeRequests",
+		},
+		{
+			title: "Create Separate Files for Related Merge Requests",
+			description: "When fetching related merge requests, also create individual markdown files for each MR. Requires 'Fetch Related Merge Requests' to be enabled.",
+			value: "createRelatedMrFiles",
+		},
+		{
+			title: "Import Merge Requests",
+			description: "Enable standalone merge request import using the Merge Requests filter and output folder settings below.",
+			value: "fetchMergeRequests",
+		},
+		{
+			title: "Fetch MR Discussions",
+			description: "Fetch discussion comments for each merge request (applies to both standalone import and related MR files).",
+			value: "fetchMrDiscussions",
 		},
 	],
 	getGitlabIssuesLevel: (currentLevel) => {

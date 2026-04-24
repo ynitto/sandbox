@@ -16,32 +16,19 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 
 		const { settingInputs, dropdowns, checkBoxInputs, gitlabDocumentation, getGitlabIssuesLevel, title } = settings;
 
+		const issueSettingKeys = new Set(["gitlabUrl", "gitlabToken", "templateFile", "outputDir", "filter"]);
+		const mrSettingKeys = new Set(["mrTemplateFile", "mrOutputDir", "mrFilter"]);
+		const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles"]);
+		const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions"]);
+
 		containerEl.empty();
 		containerEl.createEl('h2', { text: title });
 
-		settingInputs.forEach((setting) => {
-			const handleSetValue = () => {
-				if (setting.modifier === 'normalizePath') {
-					return normalizePath(this.plugin.settings[setting.value]);
-				}
-				return this.plugin.settings[setting.value];
-			};
-
-			new Setting(containerEl)
-				.setName(setting.title)
-				.setDesc(setting.description)
-				.addText(text => text
-					.setPlaceholder(setting.placeholder ?? "")
-					.setValue(handleSetValue())
-					.onChange(async (value) => {
-						if (setting.modifier === "normalizePath") {
-							this.plugin.settings[setting.value] = normalizePath(value);
-						} else {
-							this.plugin.settings[setting.value] = value;
-						}
-						await this.plugin.saveSettings();
-					}));
-		});
+		// ── Connection ──
+		containerEl.createEl('h3', { text: 'Connection' });
+		settingInputs
+			.filter(s => s.value === "gitlabUrl" || s.value === "gitlabToken")
+			.forEach(setting => this.renderTextInput(containerEl, setting));
 
 		dropdowns.forEach((dropdown) => {
 			const currentValue = dropdown.value;
@@ -85,19 +72,25 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 					}));
 		}
 
-		checkBoxInputs.forEach(checkboxSetting => {
-			const s = new Setting(containerEl)
-				.setName(checkboxSetting.title)
-				.addToggle(value => value
-					.setValue(this.plugin.settings[checkboxSetting.value])
-					.onChange(async (value) => {
-						this.plugin.settings[checkboxSetting.value] = value;
-						await this.plugin.saveSettings();
-					}));
-			if (checkboxSetting.description) {
-				s.setDesc(checkboxSetting.description);
-			}
-		});
+		// ── Issues ──
+		containerEl.createEl('h3', { text: 'Issues' });
+		settingInputs
+			.filter(s => issueSettingKeys.has(s.value) && s.value !== "gitlabUrl" && s.value !== "gitlabToken")
+			.forEach(setting => this.renderTextInput(containerEl, setting));
+
+		checkBoxInputs
+			.filter(c => issueCheckboxKeys.has(c.value))
+			.forEach(checkboxSetting => this.renderCheckbox(containerEl, checkboxSetting));
+
+		// ── Merge Requests ──
+		containerEl.createEl('h3', { text: 'Merge Requests' });
+		settingInputs
+			.filter(s => mrSettingKeys.has(s.value))
+			.forEach(setting => this.renderTextInput(containerEl, setting));
+
+		checkBoxInputs
+			.filter(c => mrCheckboxKeys.has(c.value))
+			.forEach(checkboxSetting => this.renderCheckbox(containerEl, checkboxSetting));
 
 		this.renderLabelMappingsSection(containerEl);
 
@@ -106,6 +99,44 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			text: gitlabDocumentation.title,
 			href: gitlabDocumentation.url
 		});
+	}
+
+	private renderTextInput(containerEl: HTMLElement, setting: import("./settings-types").SettingInput): void {
+		const handleSetValue = () => {
+			if (setting.modifier === 'normalizePath') {
+				return normalizePath(this.plugin.settings[setting.value] as string);
+			}
+			return this.plugin.settings[setting.value] as string;
+		};
+
+		new Setting(containerEl)
+			.setName(setting.title)
+			.setDesc(setting.description)
+			.addText(text => text
+				.setPlaceholder(setting.placeholder ?? "")
+				.setValue(handleSetValue())
+				.onChange(async (value) => {
+					if (setting.modifier === "normalizePath") {
+						(this.plugin.settings as any)[setting.value] = normalizePath(value);
+					} else {
+						(this.plugin.settings as any)[setting.value] = value;
+					}
+					await this.plugin.saveSettings();
+				}));
+	}
+
+	private renderCheckbox(containerEl: HTMLElement, checkboxSetting: import("./settings-types").SettingCheckboxInput): void {
+		const s = new Setting(containerEl)
+			.setName(checkboxSetting.title)
+			.addToggle(value => value
+				.setValue(this.plugin.settings[checkboxSetting.value])
+				.onChange(async (value) => {
+					this.plugin.settings[checkboxSetting.value] = value;
+					await this.plugin.saveSettings();
+				}));
+		if (checkboxSetting.description) {
+			s.setDesc(checkboxSetting.description);
+		}
 	}
 
 	private renderLabelMappingsSection(containerEl: HTMLElement): void {
