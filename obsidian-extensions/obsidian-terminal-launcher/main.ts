@@ -30,6 +30,10 @@ interface TerminalEntry {
 }
 
 interface TerminalLauncherConfig {
+  /** 全エントリの起動タイミングを分散させる時間幅（ミリ秒）。stagger が true の場合に使用 */
+  slidingWindow?: number;
+  /** true（デフォルト）のとき slidingWindow ÷ エントリ数 ずつ各エントリの実行開始をずらす */
+  stagger?: boolean;
   entries: TerminalEntry[];
 }
 
