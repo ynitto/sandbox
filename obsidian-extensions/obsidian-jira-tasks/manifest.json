@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-jira-tasks",
+  "name": "Jira Tasks",
+  "version": "0.1.0",
+  "minAppVersion": "0.12.0",
+  "description": "Import tasks from Jira into Obsidian, with comments and label-based property mappings.",
+  "author": "Claude",
+  "authorUrl": "https://github.com/anthropics/claude-code",
+  "isDesktopOnly": false
+}
