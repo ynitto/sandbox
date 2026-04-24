@@ -95,15 +95,15 @@ export GITLAB_ASSIGNED_LOCK_MINUTES=1440
 
 ```
 0. MY_USER=$(python scripts/gl.py current-user --get username)
-0a. (任意) status:needs-clarification のイシューがあれば詳細化して status:open,assignee:any に戻す
-1. list-issues --label "status:review-ready" --author "$MY_USER" でレビュー対象を取得
-2. イシューコメントとブランチの成果物を確認
-3. 環境の利用可能スキルを自ら調べて積極活用
-4. `agent-reviewer` を直接起動し、受け入れ条件の並列評価を委譲
-5a. 全観点 LGTM → merge-mr + update-issue --state-event close
-5b. Request Changes → add-comment（全指摘を統合した差し戻しコメント）+ reopen
+1. (任意) status:needs-clarification のイシューがあれば詳細化して status:open,assignee:any に戻す
+2. list-issues --label "status:review-ready" --author "$MY_USER" でレビュー対象を取得
+3. イシューコメントとブランチの成果物を確認
+4. 環境の利用可能スキルを自ら調べて積極活用
+5. `agent-reviewer` を直接起動し、受け入れ条件の並列評価を委譲
+6a. 全観点 LGTM → merge-mr + update-issue --state-event close
+6b. Request Changes → add-comment（全指摘を統合した差し戻しコメント）+ reopen
     → 再提出後に再レビュー（最大 5 回）
-6. (任意) スコープ外タスクを発見した場合:
+7. (任意) スコープ外タスクを発見した場合:
    - 同一機能・同じブランチ範囲 → 派生イシュー（レビュー中イシューのターゲットブランチを引き継ぐ）
    - 別機能・独立した作業      → 新規統合ブランチ作成 + requester-post フェーズ 1・3〜5 フローで起票
 ```
