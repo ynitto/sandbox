@@ -22,7 +22,6 @@ import sys
 DEFAULT_INSTALL_DIR = r"C:\tools\terminal-launcher"
 DEFAULT_TASK_NAME = "TerminalLauncher"
 DEFAULT_DELAY_SECONDS = 30
-DEFAULT_EXECUTION_LIMIT_MINUTES = 5
 
 
 def normalize_windows_path(path: str) -> str:
@@ -65,94 +64,75 @@ def copy_files(script_dir: str, install_dir: str) -> tuple[str, str]:
 def register_task(
     launcher_path: str,
     config_path: str,
-    working_dir: str,
     task_name: str,
     delay_seconds: int,
-    execution_limit_minutes: int = DEFAULT_EXECUTION_LIMIT_MINUTES,
     force: bool = False,
 ) -> None:
-    """タスクスケジューラに Send.ps1 をログイン時自動起動として登録する。"""
+    """タスクスケジューラに Send.ps1 をスタートアップ時自動起動として登録する。"""
 
-    ps_args = (
-        f"-NonInteractive -NoProfile -ExecutionPolicy Bypass "
+    # 既存タスク確認
+    check = subprocess.run(
+        ["schtasks", "/Query", "/TN", task_name],
+        capture_output=True,
+        text=True,
+    )
+    task_exists = check.returncode == 0
+
+    if task_exists:
+        if not force:
+            print(f"[スキップ] タスク '{task_name}' は既に存在します。再作成するには --force を指定してください。")
+            return
+        del_result = subprocess.run(
+            ["schtasks", "/Delete", "/TN", task_name, "/F"],
+            capture_output=True,
+            text=True,
+        )
+        if del_result.returncode != 0:
+            if del_result.stderr:
+                print(del_result.stderr.rstrip(), file=sys.stderr)
+            print("[エラー] 既存タスクの削除に失敗しました。", file=sys.stderr)
+            sys.exit(del_result.returncode)
+        print(f"[削除] 既存タスク '{task_name}' を削除しました。")
+
+    # 遅延を HH:MM:SS 形式に変換
+    delay_h = delay_seconds // 3600
+    delay_m = (delay_seconds % 3600) // 60
+    delay_s = delay_seconds % 60
+    delay_str = f"{delay_h:02d}:{delay_m:02d}:{delay_s:02d}"
+
+    tr_command = (
+        f"powershell.exe -NonInteractive -NoProfile -ExecutionPolicy Bypass "
         f"-WindowStyle Hidden -File \"{launcher_path}\" -ConfigPath \"{config_path}\""
     )
 
-    force_flag = "$true" if force else "$false"
-
-    # PowerShell スクリプトを組み立て
-    ps_script = f"""
-$ErrorActionPreference = 'Stop'
-$force = {force_flag}
-
-$existing = Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue
-if ($existing) {{
-    if (-not $force) {{
-        Write-Host "[スキップ] タスク '{task_name}' は既に存在します。再作成するには --force を指定してください。"
-        exit 0
-    }}
-    Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false
-    Write-Host "[削除] 既存タスク '{task_name}' を削除しました。"
-}}
-
-$action = New-ScheduledTaskAction `
-    -Execute 'powershell.exe' `
-    -Argument '{ps_args}' `
-    -WorkingDirectory '{working_dir}'
-
-# スタートアップ時トリガー + 遅延
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$trigger.Delay = 'PT{delay_seconds}S'
-
-# SYSTEM アカウントで高特権 (RunLevel Highest) 実行
-$principal = New-ScheduledTaskPrincipal `
-    -UserId 'NT AUTHORITY\SYSTEM' `
-    -LogonType ServiceAccount `
-    -RunLevel Highest
-
-$settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes {execution_limit_minutes}) `
-    -MultipleInstances IgnoreNew
-
-Register-ScheduledTask `
-    -TaskName '{task_name}' `
-    -Action $action `
-    -Trigger $trigger `
-    -Principal $principal `
-    -Settings $settings `
-    -Description 'ターミナルランチャー: スタートアップ時に複数のターミナルを起動します。' `
-    | Out-Null
-
-Write-Host "[登録] タスク '{task_name}' を登録しました。"
-Write-Host "[情報] 次回スタートアップ時 ({delay_seconds} 秒後) に自動起動します。"
-Write-Host "[情報] 手動テスト: Start-ScheduledTask -TaskName '{task_name}'"
-"""
-
-    result = subprocess.run(
+    create_result = subprocess.run(
         [
-            "powershell.exe",
-            "-NonInteractive",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            ps_script,
+            "schtasks", "/Create",
+            "/TN", task_name,
+            "/TR", tr_command,
+            "/SC", "ONSTART",
+            "/DELAY", delay_str,
+            "/RU", "SYSTEM",
+            "/RL", "HIGHEST",
+            "/F",
         ],
         capture_output=True,
         text=True,
     )
 
-    if result.stdout:
-        print(result.stdout.rstrip())
-    if result.stderr:
-        print(result.stderr.rstrip(), file=sys.stderr)
+    if create_result.stdout:
+        print(create_result.stdout.rstrip())
+    if create_result.stderr:
+        print(create_result.stderr.rstrip(), file=sys.stderr)
 
-    if result.returncode != 0:
+    if create_result.returncode != 0:
         print("[エラー] タスクスケジューラへの登録に失敗しました。", file=sys.stderr)
         print("[ヒント] 管理者権限で実行してください。", file=sys.stderr)
-        sys.exit(result.returncode)
+        sys.exit(create_result.returncode)
+
+    print(f"[登録] タスク '{task_name}' を登録しました。")
+    print(f"[情報] 次回スタートアップ時 ({delay_seconds} 秒後) に自動起動します。")
+    print(f"[情報] 手動テスト: schtasks /Run /TN \"{task_name}\"")
 
 
 def main() -> None:
@@ -164,7 +144,6 @@ def main() -> None:
             "  python install.py --install-dir \"C:\\\\tools\\\\terminal-launcher\"\n"
             "  python install.py --install-dir \"C:¥tools¥terminal-launcher\"\n"
             "  python install.py --delay 30 --task-name \"TerminalLauncher\"\n"
-            "  python install.py --execution-limit 10\n"
             "  python install.py --force"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -186,14 +165,7 @@ def main() -> None:
         type=int,
         default=DEFAULT_DELAY_SECONDS,
         metavar="SEC",
-        help=f"ログイン後の起動遅延秒数 (デフォルト: {DEFAULT_DELAY_SECONDS})",
-    )
-    parser.add_argument(
-        "--execution-limit",
-        type=int,
-        default=DEFAULT_EXECUTION_LIMIT_MINUTES,
-        metavar="MIN",
-        help=f"タスクの最大実行時間（分）(デフォルト: {DEFAULT_EXECUTION_LIMIT_MINUTES})",
+        help=f"スタートアップ後の起動遅延秒数 (デフォルト: {DEFAULT_DELAY_SECONDS})",
     )
     parser.add_argument(
         "--force",
@@ -211,7 +183,6 @@ def main() -> None:
     print(f"インストール先 : {install_dir}")
     print(f"タスク名       : {args.task_name}")
     print(f"起動遅延       : {args.delay} 秒")
-    print(f"実行時間制限   : {args.execution_limit} 分")
     print(f"強制再作成     : {'有効' if args.force else '無効'}")
     print()
 
@@ -220,7 +191,7 @@ def main() -> None:
     print()
 
     # タスクスケジューラへの登録
-    register_task(launcher_path, config_path, install_dir, args.task_name, args.delay, args.execution_limit, args.force)
+    register_task(launcher_path, config_path, args.task_name, args.delay, args.force)
     print()
     print("インストール完了。")
 
