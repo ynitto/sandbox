@@ -106,7 +106,7 @@ assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}
 ## Activity
 
 {{#each activities}}
-- **{{user.name}}** _{{created_at}}_ → `{{state}}`
+- **{{user.name}}** _{{created_at}}_ → \`{{state}}\`
 {{/each}}
 {{/if}}
 `;
