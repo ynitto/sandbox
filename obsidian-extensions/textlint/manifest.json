@@ -2,9 +2,9 @@
   "id": "obsidian-textlint",
   "name": "Textlint",
   "version": "1.0.0",
-  "minAppVersion": "1.0.0",
-  "description": "Proofread your notes with textlint (AI writing detection)",
+  "minAppVersion": "0.15.0",
+  "description": "Integrates textlint (https://github.com/textlint/textlint)",
   "author": "ynitto",
   "authorUrl": "https://github.com/ynitto",
-  "isDesktopOnly": true
+  "isDesktopOnly": false
 }

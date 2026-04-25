@@ -1,27 +1,37 @@
 {
   "name": "obsidian-textlint",
   "version": "1.0.0",
-  "description": "Proofread Obsidian notes with textlint AI writing detection",
+  "description": "This is a plugin for Obsidian (https://obsidian.md) that integrates textlint",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
-    "generate-worker:dev": "textlint-script-compiler --mode development --output-dir worker-dist --textlintrc scripts/textlintrc.json",
-    "generate-worker:prod": "textlint-script-compiler --mode production --output-dir worker-dist --textlintrc scripts/textlintrc.json"
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "setup": "npm run setup-textlint && npm run build",
+    "setup-textlint": "npm --prefix textlint-builder install && npm --prefix textlint-builder run build",
+    "version": "node version-bump.mjs"
   },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "builtin-modules": "^3.3.0",
-    "esbuild": "^0.24.0",
+    "@codemirror/lint": "^6.1.0",
+    "@codemirror/state": "^6.2.0",
+    "@codemirror/view": "^6.7.3",
+    "@textlint/script-compiler": "^0.17.0",
+    "@textlint/types": "^13.1.0",
+    "@types/node": "^16.11.6",
+    "@typescript-eslint/eslint-plugin": "5.29.0",
+    "@typescript-eslint/parser": "5.29.0",
+    "builtin-modules": "3.3.0",
+    "esbuild": "0.25.1",
+    "esbuild-plugin-inline-worker": "^0.1.1",
     "obsidian": "latest",
-    "typescript": "^5.0.0"
+    "tslib": "2.4.0",
+    "typescript": "^5.8.2"
   },
   "dependencies": {
-    "@codemirror/state": "^6.0.0",
-    "@codemirror/view": "^6.0.0",
-    "@textlint/script-compiler": "^15.0.0",
-    "@textlint/types": "^15.0.0",
-    "textlint": "^15.1.0",
-    "textlint-rule-preset-ai-writing": "^1.1.0"
-  }
+    "@types/lodash-es": "^4.17.6",
+    "lodash-es": "^4.17.21"
+  },
+  "packageManager": "pnpm@8.6.5"
 }
