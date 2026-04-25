@@ -1,137 +1,340 @@
-import { FileSystemAdapter, MarkdownView, Notice, Plugin, TFile, normalizePath } from 'obsidian';
+import { Notice, Plugin, TFile } from 'obsidian';
+import { debounce } from 'lodash-es';
+import { Diagnostic, lintGutter, setDiagnostics } from '@codemirror/lint';
+import { EditorView, tooltips, ViewUpdate } from '@codemirror/view';
 import { Extension } from '@codemirror/state';
-import { EditorView } from '@codemirror/view';
-import { TextlintSettings, DEFAULT_SETTINGS } from './settings';
-import { TextlintSettingTab } from './settingTab';
-import { TextlintWorker } from './worker';
-import { buildEditorExtension, setLintErrors, clearLintErrors, LintError } from './editor/underline';
+import { TextlintWorkerCommandResponseLint } from '@textlint/script-compiler';
+import { WorkerManager } from './textlint/worker';
+import { runLint } from './textlint/linter';
+import { getTheme } from './theme';
+import { DEFAULT_SETTINGS, TextlintPluginSettingTab, TextlintConfig, TextlintPluginSettings } from './settings';
+import {
+  diagnosticSeverityToTextlintSeverity,
+  getActiveEditorView,
+  getActiveFile,
+  isIgnoredFile,
+} from './util';
+import {
+  TextlintDiagnosticView,
+  TEXTLINT_DIAGNOSTICS_EXTENSION,
+  VIEW_TYPE_TEXTLINT_DIAGNOSTICS,
+} from './diagnosticsView';
+import { resetTextlintResponseEffect, textlintResponseEffect, textlintResponseField } from './textlint/responseField';
+import { getDiagnostics } from './cm/diagnostics';
+import defaultTextlintrc from '../_dist/textlintrc_default.json';
 
 export default class TextlintPlugin extends Plugin {
-  settings: TextlintSettings;
-  private worker: TextlintWorker | null = null;
-  private editorExtension: Extension[] = [];
+  settings: TextlintPluginSettings;
+  private isEnabled = true;
+  private workerManager: WorkerManager;
+  private effects: {
+    textlintResponse: typeof textlintResponseEffect;
+    resetTextlintResponse: typeof resetTextlintResponseEffect;
+  } = {
+    textlintResponse: textlintResponseEffect,
+    resetTextlintResponse: resetTextlintResponseEffect,
+  };
+  private watchers: {
+    textlintResponseWatcher: NodeJS.Timer | null;
+  } = {
+    textlintResponseWatcher: null,
+  };
+  defaultConfig: TextlintConfig = {
+    folder: '/',
+    textlintrc: JSON.stringify(defaultTextlintrc),
+    textlintrcPath: '',
+  };
+  private sortedConfigs: TextlintConfig[] = [];
 
   async onload() {
-    await this.loadSettings();
+    console.log('[textlint] loading...');
 
-    this.editorExtension = [buildEditorExtension()];
-    this.registerEditorExtension(this.editorExtension);
+    this.isEnabled = true;
+    this.workerManager = new WorkerManager();
+    this.watchers = {
+      textlintResponseWatcher: null,
+    };
 
-    const workerUrl = this.resolveWorkerUrl();
-    if (workerUrl) {
-      this.worker = new TextlintWorker(workerUrl);
-      this.worker.setTextlintrc(JSON.parse(this.settings.textlintrc));
-    }
+    this.app.workspace.onLayoutReady(async () => {
+      await this.loadSettings();
 
-    this.addCommand({
-      id: 'run-textlint',
-      name: 'Run textlint on current file',
-      editorCallback: async (editor) => {
-        await this.runTextlint(editor.getValue());
-      },
+      this.registerWorkers();
+      this.registerEditorExtensions();
+      this.registerEvents();
+      this.registerEditorExtension(textlintResponseField);
+      this.registerDiagnosticsViewExtension();
+      this.addCommands();
+      this.setWatchers();
+      this.runLint();
+
+      this.addSettingTab(new TextlintPluginSettingTab(this.app, this));
     });
 
-    this.addCommand({
-      id: 'clear-textlint',
-      name: 'Clear textlint errors',
-      editorCallback: () => {
-        this.dispatchToEditor((view) => view.dispatch({ effects: clearLintErrors.of(null) }));
-      },
-    });
-
-    this.registerEvent(
-      this.app.workspace.on('file-open', async (file) => {
-        if (file && this.settings.lintOnOpen) {
-          const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-          if (view) {
-            await this.runTextlint(view.editor.getValue());
-          }
-        }
-      })
-    );
-
-    this.addSettingTab(new TextlintSettingTab(this.app, this));
+    console.log('[textlint] loaded');
   }
 
-  onunload() {
-    this.worker?.terminate();
+  async onunload() {
+    console.log('[textlint] unloading...');
+
+    this.isEnabled = false;
+    this.resetState();
+    this.clearWatchers();
+    this.workerManager.terminate();
+    this.sortedConfigs = [];
+
+    console.log('[textlint] unloaded');
   }
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    for (const c of structuredClone(this.settings.textlintConfigs)) {
+      try {
+        if (!c.folder) {
+          console.log("[textlint]: folder is empty. use '/' as default");
+          c.folder = '/';
+        }
+        this.sortedConfigs.push(c);
+      } catch (e) {
+        new Notice('[textlint] Cannot read textlintrc. error: ' + e.message);
+      }
+    }
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
-    try {
-      this.worker?.setTextlintrc(JSON.parse(this.settings.textlintrc));
-    } catch {
-      // invalid JSON - keep previous config
-    }
+    this.runLint();
   }
 
-  private resolveWorkerUrl(): string | null {
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) return null;
-    const rel = normalizePath(`${this.manifest.dir}/textlint-worker.js`);
-    return adapter.getResourcePath(rel);
+  addCommands() {
+    this.addCommand({
+      id: 'run-lint',
+      name: 'Run textlint lint',
+      editorCallback: () => {
+        this.runLint();
+      },
+    });
   }
 
-  async runTextlint(text: string) {
-    if (!this.worker) {
-      new Notice('textlint: worker not initialized. Run "generate-worker" and rebuild the plugin.');
-      return;
-    }
-    const activeFile = this.app.workspace.getActiveFile();
-    if (!activeFile || this.shouldIgnoreFile(activeFile)) return;
+  registerDiagnosticsViewExtension() {
+    this.registerView(VIEW_TYPE_TEXTLINT_DIAGNOSTICS, (leaf) => {
+      return new TextlintDiagnosticView(leaf);
+    });
+    this.registerExtensions([TEXTLINT_DIAGNOSTICS_EXTENSION], VIEW_TYPE_TEXTLINT_DIAGNOSTICS);
+    this.addCommand({
+      id: 'show-diagnostics-view',
+      name: 'Show textlint diagnostics',
+      callback: async () => {
+        const activeViewLeaf = this.getDiagnosticViewLeaf();
+        if (activeViewLeaf) {
+          this.app.workspace.revealLeaf(activeViewLeaf);
+          return;
+        }
+        const leaf = this.app.workspace.getRightLeaf(false);
+        if (leaf) {
+          await leaf.setViewState({
+            type: VIEW_TYPE_TEXTLINT_DIAGNOSTICS,
+            active: true,
+          });
+        }
+        const activeLeaf = this.app.workspace.getMostRecentLeaf();
+        if (activeLeaf) {
+          this.app.workspace.setActiveLeaf(activeLeaf);
+        }
+      },
+    });
+  }
 
-    try {
-      const result = await this.worker.lint(text);
-      const docLength = this.getEditorDocLength();
-
-      const errors: LintError[] = result.messages
-        .map((msg) => ({
-          from: msg.range[0],
-          to: msg.range[1],
-          ruleId: msg.ruleId,
-          message: msg.message,
-        }))
-        .filter((e) => e.from >= 0 && e.to > e.from && e.to <= docLength);
-
-      this.dispatchToEditor((view) =>
-        view.dispatch({ effects: setLintErrors.of(errors) })
-      );
-
-      if (result.messages.length === 0) {
-        new Notice('textlint: No issues found');
-      } else {
-        new Notice(`textlint: ${result.messages.length} issue(s) found`);
+  registerEvents() {
+    if (this.settings.lintOnSaved) {
+      // @ts-expect-error
+      const editorSaveCommand = this.app.commands?.commands?.['editor:save-file'];
+      if (editorSaveCommand && editorSaveCommand?.callback) {
+        const originalCallback = editorSaveCommand.callback.bind({});
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const saveCallback = (...args: any[]) => {
+          originalCallback(...args);
+          this.runLint();
+        };
+        editorSaveCommand.callback = saveCallback;
       }
-    } catch (err) {
-      console.error('[obsidian-textlint]', err);
-      new Notice('textlint: An error occurred during linting.');
+    }
+
+    if (this.settings.lintOnActiveFileChanged) {
+      this.registerEvent(
+        this.app.workspace.on('active-leaf-change', (leaf) => {
+          if (!leaf) return;
+          const state = leaf.getViewState();
+          if (state.type === VIEW_TYPE_TEXTLINT_DIAGNOSTICS) return;
+          if (state.type !== 'markdown') {
+            return this.clear();
+          }
+          this.runLint();
+        }),
+      );
     }
   }
 
-  private shouldIgnoreFile(file: TFile): boolean {
-    return this.settings.foldersToIgnore.some((folder) =>
-      file.path.startsWith(folder.endsWith('/') ? folder : folder + '/')
+  registerEditorExtensions() {
+    const extensions = [
+      tooltips({ parent: document.body, position: 'fixed' }),
+      this.getLintOnTextChangedExtension(),
+      this.getLintGutterExtension(),
+      getTheme(),
+    ].filter((v) => v) as Extension[];
+
+    this.registerEditorExtension(extensions);
+  }
+
+  getDiagnosticViewLeaf() {
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TEXTLINT_DIAGNOSTICS);
+    if (!leaves[0]) return;
+    return leaves[0];
+  }
+
+  getDiagnosticView() {
+    const leaf = this.getDiagnosticViewLeaf();
+    if (!leaf) return;
+    if (leaf.isDeferred) leaf.loadIfDeferred();
+    return leaf.view as TextlintDiagnosticView;
+  }
+
+  getLintOnTextChangedExtension() {
+    if (!this.settings.lintOnTextChanged) return;
+
+    this.registerEvent(
+      this.app.workspace.on('editor-paste', () => {
+        this.runLint();
+      }),
     );
+
+    return EditorView.updateListener.of((update: ViewUpdate) => {
+      if (this.isEnabled && update.docChanged) {
+        this.runLint();
+      }
+    });
   }
 
-  private dispatchToEditor(fn: (view: EditorView) => void) {
-    const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!markdownView) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cm = (markdownView.editor as any).cm as EditorView | undefined;
-    if (cm) fn(cm);
+  getLintGutterExtension() {
+    const filter = (diagnostics: Diagnostic[]) => {
+      if (!this.settings.showGutter) {
+        return [];
+      }
+      return diagnostics.filter(
+        (d) => diagnosticSeverityToTextlintSeverity(d.severity) >= this.settings.minimumSeverityToShowGutter,
+      );
+    };
+    return lintGutter({ hoverTime: 100, tooltipFilter: filter, markerFilter: filter });
   }
 
-  private getEditorDocLength(): number {
-    const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!markdownView) return 0;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cm = (markdownView.editor as any).cm as EditorView | undefined;
-    return cm?.state.doc.length ?? 0;
+  getWorker(filepath: TFile['path']) {
+    const folder = this.getConfiguredFolderName(filepath);
+    return this.workerManager.getWorker(folder);
+  }
+
+  getConfiguredFolderName(filepath: string) {
+    let folder = '/';
+    for (const c of this.sortedConfigs) {
+      if (filepath.startsWith(c.folder)) {
+        folder = c.folder;
+        break;
+      }
+    }
+    return folder;
+  }
+
+  clear() {
+    const view = this.getDiagnosticView();
+    if (!view) return;
+    view.clear();
+  }
+
+  runLint = debounce(() => {
+    if (!this.isEnabled) return;
+    const cm = getActiveEditorView(this);
+    if (!cm) return;
+    const file = getActiveFile(this);
+    if (!file) return;
+    if (isIgnoredFile(file, this.settings.foldersToIgnore)) return;
+
+    const worker = this.getWorker(file.path);
+    const data = cm.state.doc.toJSON().join('\n');
+
+    runLint(worker, data);
+  }, 250);
+
+  private async registerWorkers() {
+    console.log('[textlint]: registering workers...');
+    this.registerWorker(this.defaultConfig.folder, this.defaultConfig.textlintrc);
+    for (const c of this.sortedConfigs) {
+      this.registerWorker(c.folder, c.textlintrc);
+    }
+  }
+
+  private registerWorker(folder: string, textlintrc: string) {
+    this.workerManager.registerWorker(folder, textlintrc, { 'lint:result': this.processLintCallback.bind(this) });
+  }
+
+  private setWatchers() {
+    this.watchers.textlintResponseWatcher = this.setTextlintResponseWatcher();
+  }
+
+  private clearWatchers() {
+    Object.values(this.watchers).forEach((watcher) => {
+      if (watcher) {
+        clearInterval(watcher);
+      }
+    });
+  }
+
+  private setTextlintResponseWatcher() {
+    let lastUpdateTime: number;
+    let processing = false;
+
+    const process = () => {
+      const cm = getActiveEditorView(this);
+      if (!cm) return;
+
+      try {
+        const textlintResponse = cm.state.field(textlintResponseField);
+        if (lastUpdateTime === textlintResponse.lastUpdateTime) return;
+
+        const { messages } = textlintResponse.response;
+        const view = this.getDiagnosticView();
+        if (!view) return;
+        view.setTextlintDiagnostics(this, messages);
+        const diagnostics = getDiagnostics(this, messages);
+        cm.dispatch(setDiagnostics(cm.state, diagnostics));
+        lastUpdateTime = textlintResponse.lastUpdateTime;
+      } catch (e) {
+        console.log('[textlint] error occurred in linting :', e);
+        lastUpdateTime = new Date().getTime();
+      }
+    };
+
+    return setInterval(() => {
+      if (processing) return;
+      processing = true;
+      process();
+      processing = false;
+    }, 500);
+  }
+
+  private resetState() {
+    const cm = getActiveEditorView(this);
+    if (!cm) return;
+
+    cm.dispatch({
+      effects: [this.effects.resetTextlintResponse.of(null)],
+    });
+  }
+
+  private processLintCallback(result: TextlintWorkerCommandResponseLint['result']) {
+    const cm = getActiveEditorView(this);
+    if (!cm) return;
+
+    if (result.messages) {
+      const effects = [this.effects.textlintResponse.of(result)];
+      cm.dispatch({ effects });
+    }
   }
 }
