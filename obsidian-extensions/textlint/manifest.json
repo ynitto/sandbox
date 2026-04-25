@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-textlint",
+  "name": "Textlint",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Proofread your notes with textlint (AI writing detection)",
+  "author": "ynitto",
+  "authorUrl": "https://github.com/ynitto",
+  "isDesktopOnly": true
+}

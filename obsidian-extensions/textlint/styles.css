@@ -1,0 +1,16 @@
+.textlint-underline {
+  text-decoration: underline wavy var(--color-red);
+  text-underline-offset: 3px;
+}
+
+.textlint-tooltip {
+  padding: 4px 8px;
+  font-size: var(--font-ui-small);
+  max-width: 360px;
+  word-break: break-word;
+}
+
+.textlint-tooltip .textlint-tooltip-rule {
+  color: var(--color-red);
+  font-size: 0.9em;
+}

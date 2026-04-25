@@ -1,0 +1,4 @@
+node_modules/
+main.js
+*.js.map
+worker-dist/textlint-worker.js

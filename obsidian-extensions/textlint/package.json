@@ -1,0 +1,27 @@
+{
+  "name": "obsidian-textlint",
+  "version": "1.0.0",
+  "description": "Proofread Obsidian notes with textlint AI writing detection",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "generate-worker:dev": "textlint-script-compiler --mode development --output-dir worker-dist --textlintrc scripts/textlintrc.json",
+    "generate-worker:prod": "textlint-script-compiler --mode production --output-dir worker-dist --textlintrc scripts/textlintrc.json"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.24.0",
+    "obsidian": "latest",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@codemirror/state": "^6.0.0",
+    "@codemirror/view": "^6.0.0",
+    "@textlint/script-compiler": "^15.0.0",
+    "@textlint/types": "^15.0.0",
+    "textlint": "^15.1.0",
+    "textlint-rule-preset-ai-writing": "^1.1.0"
+  }
+}
