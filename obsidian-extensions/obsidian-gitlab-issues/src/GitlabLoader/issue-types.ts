@@ -138,10 +138,20 @@ export interface MergeRequestDetailed extends MergeRequest {
 	readonly closed_at: string | null;
 }
 
+export interface MrActivityEvent {
+	readonly id: number;
+	readonly user: Assignee;
+	readonly created_at: string;
+	readonly resource_type: string;
+	readonly resource_id: number;
+	readonly state: string;
+}
+
 export interface ObsidianMergeRequest extends MergeRequestDetailed {
 	filename: string;
 	discussions: Discussion[];
 	issueLinks: string[];
+	activities: MrActivityEvent[];
 }
 
 export interface ObsidianIssue extends Issue {

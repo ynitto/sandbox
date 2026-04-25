@@ -2,7 +2,7 @@ import GitlabApi from "./gitlab-api";
 import { GitlabMergeRequest } from "./merge-request";
 import { App } from "obsidian";
 import Filesystem from "../filesystem";
-import { MergeRequest, Discussion } from "./issue-types";
+import { MergeRequest, Discussion, MrActivityEvent } from "./issue-types";
 import { GitlabIssuesSettings } from "../SettingsTab/settings-types";
 import { logger } from "../utils/utils";
 
@@ -41,6 +41,15 @@ export default class MergeRequestLoader {
 							mr.discussions = await GitlabApi.load<Discussion[]>(encodeURI(url), this.settings.gitlabToken);
 						} catch (e: any) {
 							logger(`Failed to fetch discussions for MR !${rawMr.iid}: ${e.message}`);
+						}
+					}
+
+					if (this.settings.fetchMrActivities) {
+						try {
+							const url = `${this.settings.gitlabApiUrl()}/projects/${rawMr.project_id}/merge_requests/${rawMr.iid}/resource_state_events`;
+							mr.activities = await GitlabApi.load<MrActivityEvent[]>(encodeURI(url), this.settings.gitlabToken);
+						} catch (e: any) {
+							logger(`Failed to fetch activities for MR !${rawMr.iid}: ${e.message}`);
 						}
 					}
 

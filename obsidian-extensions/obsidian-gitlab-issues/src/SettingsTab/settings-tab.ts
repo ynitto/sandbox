@@ -19,7 +19,7 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 		const issueSettingKeys = new Set(["gitlabUrl", "gitlabToken", "templateFile", "outputDir", "filter"]);
 		const mrSettingKeys = new Set(["mrTemplateFile", "mrOutputDir", "mrFilter"]);
 		const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles"]);
-		const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions"]);
+		const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions", "fetchMrActivities"]);
 
 		containerEl.empty();
 		containerEl.createEl('h2', { text: title });

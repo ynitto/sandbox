@@ -1,4 +1,4 @@
-import { ObsidianMergeRequest, MergeRequest, Discussion, Assignee, TimeStats, ShortIssue, References } from "./issue-types";
+import { ObsidianMergeRequest, MergeRequest, Discussion, Assignee, TimeStats, ShortIssue, References, MrActivityEvent } from "./issue-types";
 
 export class GitlabMergeRequest implements ObsidianMergeRequest {
 	id: number;
@@ -33,11 +33,13 @@ export class GitlabMergeRequest implements ObsidianMergeRequest {
 	user_notes_count: number;
 	discussions: Discussion[];
 	issueLinks: string[];
+	activities: MrActivityEvent[];
 
 	constructor(mr: MergeRequest) {
 		Object.assign(this, mr);
 		this.discussions = [];
 		this.issueLinks = [];
+		this.activities = [];
 	}
 
 	get filename(): string {

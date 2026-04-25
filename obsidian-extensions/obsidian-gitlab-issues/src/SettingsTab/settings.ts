@@ -19,6 +19,7 @@ export const DEFAULT_SETTINGS = {
 	mrOutputDir: "/Gitlab Merge Requests/",
 	mrTemplateFile: "",
 	fetchMrDiscussions: false,
+	fetchMrActivities: false,
 	labelPropertyMappings: [],
 	gitlabIssuesLevel: "personal" as const,
 	gitlabApiUrl: function () {
@@ -147,6 +148,11 @@ export const settings: SettingsTab = {
 			title: "Fetch MR Discussions",
 			description: "Fetch discussion comments for each merge request (applies to both standalone import and related MR files).",
 			value: "fetchMrDiscussions",
+		},
+		{
+			title: "Fetch MR Activities",
+			description: "Fetch state change activity events for each merge request (opened, merged, closed, reopened).",
+			value: "fetchMrActivities",
 		},
 	],
 	getGitlabIssuesLevel: (currentLevel) => {
