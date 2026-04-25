@@ -10,12 +10,12 @@ export function logger(message: string) {
 }
 
 export const DEFAULT_TEMPLATE = `---
-id: {{id}}
-title: {{{title}}}
-dueDate: {{due_date}}
-webUrl: {{web_url}}
-project: {{references.full}}
-state: {{state}}
+id: "{{id}}"
+title: "{{{title}}}"
+dueDate: "{{due_date}}"
+webUrl: "{{web_url}}"
+project: "{{references.full}}"
+state: "{{state}}"
 {{#if labels.length}}
 labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 {{/if}}
@@ -53,16 +53,16 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 `;
 
 export const DEFAULT_MR_TEMPLATE = `---
-id: {{id}}
-iid: {{iid}}
-title: {{{title}}}
-webUrl: {{web_url}}
-project: {{references.full}}
-state: {{state}}
-sourceBranch: {{source_branch}}
-targetBranch: {{target_branch}}
-draft: {{draft}}
-mergeStatus: {{detailed_merge_status}}
+id: "{{id}}"
+iid: "{{iid}}"
+title: "{{{title}}}"
+webUrl: "{{web_url}}"
+project: "{{references.full}}"
+state: "{{state}}"
+sourceBranch: "{{source_branch}}"
+targetBranch: "{{target_branch}}"
+draft: "{{draft}}"
+mergeStatus: "{{detailed_merge_status}}"
 {{#if issueLinks.length}}
 projects: [{{#each issueLinks}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 {{/if}}
