@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-REGISTRY_PATH = Path(__file__).parent / "skill-registry.json"
+REGISTRY_PATH = Path(__file__).parent.parent / "assets" / "skill-registry.json"
 
 # XML namespace map used by Atom feeds
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
@@ -31,7 +31,7 @@ _DC_NS = "{http://purl.org/dc/elements/1.1/}"
 
 def load_registry(tags: list[str] | None, lang: str | None) -> list[dict]:
     data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-    feeds = data["feeds"]
+    feeds = data["tech-harvester"]["feeds"]
     if lang:
         feeds = [f for f in feeds if f.get("lang") == lang]
     if tags:

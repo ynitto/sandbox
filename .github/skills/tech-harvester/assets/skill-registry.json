@@ -1,0 +1,54 @@
+{
+  "tech-harvester": {
+    "feeds": [
+      {
+        "name": "Hacker News",
+        "url": "https://news.ycombinator.com/rss",
+        "lang": "en",
+        "tags": ["general", "startup", "oss"]
+      },
+      {
+        "name": "InfoQ Japan",
+        "url": "https://feed.infoq.com/jp/",
+        "lang": "ja",
+        "tags": ["enterprise", "architecture", "devops"]
+      },
+      {
+        "name": "Zenn Trend",
+        "url": "https://zenn.dev/feed",
+        "lang": "ja",
+        "tags": ["japanese", "dev"]
+      },
+      {
+        "name": "The GitHub Blog",
+        "url": "https://github.blog/feed/",
+        "lang": "en",
+        "tags": ["github", "devops", "ai"]
+      },
+      {
+        "name": "AWS News Blog",
+        "url": "https://aws.amazon.com/blogs/aws/feed/",
+        "lang": "en",
+        "tags": ["cloud", "aws"]
+      },
+      {
+        "name": "Google Developers Blog",
+        "url": "https://developers.googleblog.com/feeds/posts/default",
+        "lang": "en",
+        "tags": ["google", "cloud", "ai"]
+      },
+      {
+        "name": "GIHYO.JP エンジニアHub",
+        "url": "https://gihyo.jp/feed/rss2",
+        "lang": "ja",
+        "tags": ["japanese", "engineering"]
+      },
+      {
+        "name": "ITmedia 新着",
+        "url": "https://rss.itmedia.co.jp/rss/2.0/itmedia_all.xml",
+        "lang": "ja",
+        "tags": ["japanese", "news"]
+      }
+    ]
+  }
+}

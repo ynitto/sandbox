@@ -19,10 +19,10 @@ IT系RSSフィードを取得し、記事タイトル・リンク・要約をマ
 
 ### ステップ1: フィード一覧を確認する
 
-`scripts/skill-registry.json` に登録済みのフィードを確認する:
+`assets/skill-registry.json` に登録済みのフィードを確認する:
 
 ```bash
-cat .github/skills/tech-harvester/scripts/skill-registry.json
+cat .github/skills/tech-harvester/assets/skill-registry.json
 ```
 
 ユーザーが追加・削除を希望する場合は「フィード管理」セクションに従う。
@@ -54,20 +54,26 @@ python .github/skills/tech-harvester/scripts/fetch_feeds.py --lang ja --max-item
 
 ## フィード管理
 
-`scripts/skill-registry.json` の `feeds` 配列でフィードを管理する。各エントリの構造:
+`assets/skill-registry.json` の `tech-harvester.feeds` 配列でフィードを管理する。各エントリの構造:
 
 ```json
 {
-  "name": "表示名",
-  "url": "RSSフィードのURL",
-  "lang": "ja または en",
-  "tags": ["タグ1", "タグ2"]
+  "tech-harvester": {
+    "feeds": [
+      {
+        "name": "表示名",
+        "url": "RSSフィードのURL",
+        "lang": "ja または en",
+        "tags": ["タグ1", "タグ2"]
+      }
+    ]
+  }
 }
 ```
 
 使用できる `tags` の例: `general`, `cloud`, `aws`, `ai`, `github`, `japanese`, `devops`, `enterprise`, `oss`, `news`
 
-ユーザーからフィードの追加・削除・変更を求められた場合は `skill-registry.json` を直接編集する。
+ユーザーからフィードの追加・削除・変更を求められた場合は `assets/skill-registry.json` を直接編集する。
 
 ## 出力フォーマット
 
