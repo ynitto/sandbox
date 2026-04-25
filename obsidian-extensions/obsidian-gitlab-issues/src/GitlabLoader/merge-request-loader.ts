@@ -29,7 +29,7 @@ export default class MergeRequestLoader {
 
 	async loadMergeRequests() {
 		try {
-			const mrs = await GitlabApi.load<Array<MergeRequest>>(encodeURI(this.getMrUrl()), this.settings.gitlabToken);
+			const mrs = await GitlabApi.loadAll<MergeRequest>(this.getMrUrl(), this.settings.gitlabToken, this.settings.maxItems);
 
 			const gitlabMrs = await Promise.all(
 				mrs.map(async (rawMr: MergeRequest) => {

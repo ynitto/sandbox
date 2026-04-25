@@ -34,6 +34,7 @@ export interface GitlabIssuesSettings {
 	fetchMrDiscussions: boolean;
 	fetchMrActivities: boolean;
 	labelPropertyMappings: LabelPropertyMapping[];
+	maxItems: number;
 	gitlabApiUrl(): string;
 }
 

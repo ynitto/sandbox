@@ -30,7 +30,7 @@ export default class GitlabLoader {
 
 	async loadIssues() {
 		try {
-			const issues = await GitlabApi.load<Array<Issue>>(encodeURI(this.getUrl()), this.settings.gitlabToken);
+			const issues = await GitlabApi.loadAll<Issue>(this.getUrl(), this.settings.gitlabToken, this.settings.maxItems);
 
 			const relatedMrMap = new Map<string, GitlabMergeRequest>();
 
