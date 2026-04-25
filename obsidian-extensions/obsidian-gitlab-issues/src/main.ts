@@ -22,8 +22,9 @@ export default class GitlabIssuesPlugin extends Plugin {
 			logger("Add your Gitlab Personal Token to the plugin settings");
 		} else {
 			if (this.settings.showIcon) {
-				this.ribbonIconEl = this.addRibbonIcon("cloud-download", "Import Gitlab Issues", () => {
+				this.ribbonIconEl = this.addRibbonIcon("cloud-download", "Import Gitlab Issues & Merge Requests", () => {
 					this.fetchIssuesFromGitlab();
+					this.fetchMergeRequestsFromGitlab();
 				});
 			}
 
