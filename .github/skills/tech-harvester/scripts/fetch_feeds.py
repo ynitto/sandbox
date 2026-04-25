@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-Fetch IT RSS feeds listed in skill-registry.json and output a Markdown digest.
+Fetch IT RSS feeds listed in skill-registry.json and output articles as JSON.
 
 Usage:
     python fetch_feeds.py [--max-items N] [--tags TAG1,TAG2] [--lang ja|en]
 
 Options:
-    --max-items N      Max articles per feed (default: 5)
+    --max-items N      Max articles per feed (default: 10)
     --tags TAG1,TAG2   Comma-separated tags to filter feeds (optional)
     --lang ja|en       Filter feeds by language (optional)
-    --output FILE      Write Markdown to file instead of stdout
+    --output FILE      Write JSON to file instead of stdout
 """
 
 import argparse
 import json
 import sys
-import textwrap
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -24,9 +23,7 @@ from xml.etree import ElementTree as ET
 
 REGISTRY_PATH = Path(__file__).parent.parent.parent / "skill-registry.json"
 
-# XML namespace map used by Atom feeds
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
-_DC_NS = "{http://purl.org/dc/elements/1.1/}"
 
 
 def load_registry(tags: list[str] | None, lang: str | None) -> list[dict]:
@@ -40,21 +37,20 @@ def load_registry(tags: list[str] | None, lang: str | None) -> list[dict]:
 
 
 def _text(element) -> str:
-    """Return stripped text content of an XML element, or empty string."""
     if element is None:
         return ""
     return (element.text or "").strip()
 
 
-def _truncate(text: str, max_chars: int = 200) -> str:
-    text = " ".join(text.split())  # collapse whitespace
+def _truncate(text: str, max_chars: int = 300) -> str:
+    text = " ".join(text.split())
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rsplit(" ", 1)[0] + "…"
 
 
-def fetch_feed(url: str, max_items: int) -> list[dict]:
-    """Fetch an RSS/Atom feed URL and return a list of article dicts."""
+def fetch_feed(feed_meta: dict, max_items: int) -> list[dict]:
+    url = feed_meta["url"]
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "tech-harvester/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -81,7 +77,14 @@ def fetch_feed(url: str, max_items: int) -> list[dict]:
             pub = _text(item.find("pubDate"))
             if not title or not link:
                 continue
-            articles.append({"title": title, "link": link, "summary": _truncate(desc), "date": pub})
+            articles.append({
+                "feed": feed_meta["name"],
+                "feed_tags": feed_meta.get("tags", []),
+                "title": title,
+                "link": link,
+                "description": _truncate(desc),
+                "date": pub,
+            })
         return articles
 
     # Atom
@@ -90,45 +93,28 @@ def fetch_feed(url: str, max_items: int) -> list[dict]:
         link_el = entry.find(f"{_ATOM_NS}link")
         link = link_el.get("href", "") if link_el is not None else ""
         summary_el = entry.find(f"{_ATOM_NS}summary") or entry.find(f"{_ATOM_NS}content")
-        summary = _truncate(_text(summary_el))
+        desc = _truncate(_text(summary_el))
         pub = _text(entry.find(f"{_ATOM_NS}updated") or entry.find(f"{_ATOM_NS}published"))
         if not title or not link:
             continue
-        articles.append({"title": title, "link": link, "summary": summary, "date": pub})
+        articles.append({
+            "feed": feed_meta["name"],
+            "feed_tags": feed_meta.get("tags", []),
+            "title": title,
+            "link": link,
+            "description": desc,
+            "date": pub,
+        })
 
     return articles
 
 
-def build_markdown(feeds_with_articles: list[tuple[dict, list[dict]]], generated_at: str) -> str:
-    lines = [
-        "# IT Tech Digest",
-        "",
-        f"_Generated: {generated_at}_",
-        "",
-    ]
-
-    for feed_meta, articles in feeds_with_articles:
-        if not articles:
-            continue
-        lines += [f"## {feed_meta['name']}", ""]
-        for art in articles:
-            lines.append(f"### [{art['title']}]({art['link']})")
-            if art.get("date"):
-                lines.append(f"_{art['date']}_")
-            if art.get("summary"):
-                lines.append("")
-                lines.append(art["summary"])
-            lines.append("")
-
-    return "\n".join(lines)
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Fetch IT RSS feeds and output a Markdown digest.")
-    parser.add_argument("--max-items", type=int, default=5, metavar="N", help="Max articles per feed (default: 5)")
+    parser = argparse.ArgumentParser(description="Fetch IT RSS feeds and output articles as JSON.")
+    parser.add_argument("--max-items", type=int, default=10, metavar="N", help="Max articles per feed (default: 10)")
     parser.add_argument("--tags", default="", help="Comma-separated tags to filter feeds")
     parser.add_argument("--lang", default="", help="Filter feeds by language (ja/en)")
-    parser.add_argument("--output", default="", help="Write Markdown to this file (default: stdout)")
+    parser.add_argument("--output", default="", help="Write JSON to this file (default: stdout)")
     args = parser.parse_args()
 
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] or None
@@ -139,20 +125,23 @@ def main():
         print("No feeds matched the given filters.", file=sys.stderr)
         sys.exit(1)
 
-    results = []
+    articles = []
     for feed_meta in feeds:
         print(f"Fetching {feed_meta['name']} …", file=sys.stderr)
-        articles = fetch_feed(feed_meta["url"], args.max_items)
-        results.append((feed_meta, articles))
+        articles.extend(fetch_feed(feed_meta, args.max_items))
 
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    md = build_markdown(results, generated_at)
+    result = {
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "total": len(articles),
+        "articles": articles,
+    }
+    output = json.dumps(result, ensure_ascii=False, indent=2)
 
     if args.output:
-        Path(args.output).write_text(md, encoding="utf-8")
-        print(f"Wrote digest to {args.output}", file=sys.stderr)
+        Path(args.output).write_text(output, encoding="utf-8")
+        print(f"Wrote {len(articles)} articles to {args.output}", file=sys.stderr)
     else:
-        print(md)
+        print(output)
 
 
 if __name__ == "__main__":
