@@ -38,7 +38,14 @@ export default class MergeRequestLoader {
 					if (this.settings.fetchMrDiscussions) {
 						try {
 							const url = `${this.settings.gitlabApiUrl()}/projects/${rawMr.project_id}/merge_requests/${rawMr.iid}/discussions`;
-							mr.discussions = await GitlabApi.load<Discussion[]>(encodeURI(url), this.settings.gitlabToken);
+							const discussions = await GitlabApi.load<Discussion[]>(encodeURI(url), this.settings.gitlabToken);
+							mr.discussions = discussions.map(discussion => ({
+								...discussion,
+								notes: discussion.notes.map(note => ({
+									...note,
+									permalink: `${rawMr.web_url}#note_${note.id}`
+								}))
+							}));
 						} catch (e: any) {
 							logger(`Failed to fetch discussions for MR !${rawMr.iid}: ${e.message}`);
 						}

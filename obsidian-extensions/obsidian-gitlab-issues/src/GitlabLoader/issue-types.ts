@@ -77,6 +77,21 @@ export interface Issue extends ShortIssue {
 	readonly milestone: ShortIssue
 }
 
+export interface DiffPosition {
+	readonly base_sha: string;
+	readonly start_sha: string;
+	readonly head_sha: string;
+	readonly old_path: string | null;
+	readonly new_path: string | null;
+	readonly position_type: string;
+	readonly old_line: number | null;
+	readonly new_line: number | null;
+	readonly line_range?: {
+		start: { line_code: string; type: string; old_line: number | null; new_line: number | null };
+		end: { line_code: string; type: string; old_line: number | null; new_line: number | null };
+	} | null;
+}
+
 export interface DiscussionNote {
 	readonly id: number;
 	readonly type: string | null;
@@ -91,12 +106,14 @@ export interface DiscussionNote {
 	readonly resolved?: boolean;
 	readonly resolved_by?: Assignee;
 	readonly resolved_at?: string;
+	readonly position?: DiffPosition | null;
+	permalink?: string;
 }
 
 export interface Discussion {
 	readonly id: string;
 	readonly individual_note: boolean;
-	readonly notes: DiscussionNote[];
+	notes: DiscussionNote[];
 }
 
 export interface MergeRequest {
