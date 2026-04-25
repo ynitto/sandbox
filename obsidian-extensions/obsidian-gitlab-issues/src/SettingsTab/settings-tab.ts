@@ -106,6 +106,20 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			.filter(c => mrCheckboxKeys.has(c.value))
 			.forEach(checkboxSetting => this.renderCheckbox(containerEl, checkboxSetting));
 
+		new Setting(containerEl)
+			.setName('Max MR Items')
+			.setDesc('Maximum total number of merge requests to fetch (pages of 100 are fetched until this limit is reached)')
+			.addText(text => text
+				.setPlaceholder('20')
+				.setValue(String(this.plugin.settings.maxMrItems))
+				.onChange(async (value) => {
+					const parsed = parseInt(value, 10);
+					if (!isNaN(parsed) && parsed >= 1) {
+						this.plugin.settings.maxMrItems = parsed;
+						await this.plugin.saveSettings();
+					}
+				}));
+
 		this.renderLabelMappingsSection(containerEl);
 
 		containerEl.createEl('h3', { text: 'More Information' });

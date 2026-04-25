@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS = {
 	fetchMrActivities: false,
 	labelPropertyMappings: [],
 	maxItems: 20,
+	maxMrItems: 20,
 	gitlabIssuesLevel: "personal" as const,
 	gitlabApiUrl: function () {
 		return `${this.gitlabUrl}/api/v4`;

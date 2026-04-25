@@ -35,6 +35,7 @@ export interface GitlabIssuesSettings {
 	fetchMrActivities: boolean;
 	labelPropertyMappings: LabelPropertyMapping[];
 	maxItems: number;
+	maxMrItems: number;
 	gitlabApiUrl(): string;
 }
 
