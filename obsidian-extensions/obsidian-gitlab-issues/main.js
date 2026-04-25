@@ -5579,6 +5579,7 @@ var DEFAULT_SETTINGS = {
   mrOutputDir: "/Gitlab Merge Requests/",
   mrTemplateFile: "",
   fetchMrDiscussions: false,
+  fetchMrActivities: false,
   labelPropertyMappings: [],
   gitlabIssuesLevel: "personal",
   gitlabApiUrl: function() {
@@ -5701,6 +5702,11 @@ var settings = {
       title: "Fetch MR Discussions",
       description: "Fetch discussion comments for each merge request (applies to both standalone import and related MR files).",
       value: "fetchMrDiscussions"
+    },
+    {
+      title: "Fetch MR Activities",
+      description: "Fetch state change activity events for each merge request (opened, merged, closed, reopened).",
+      value: "fetchMrActivities"
     }
   ],
   getGitlabIssuesLevel: (currentLevel) => {
@@ -5734,7 +5740,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian.PluginSettingTab {
     const issueSettingKeys = new Set(["gitlabUrl", "gitlabToken", "templateFile", "outputDir", "filter"]);
     const mrSettingKeys = new Set(["mrTemplateFile", "mrOutputDir", "mrFilter"]);
     const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles"]);
-    const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions"]);
+    const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions", "fetchMrActivities"]);
     containerEl.empty();
     containerEl.createEl("h2", { text: title });
     containerEl.createEl("h3", { text: "Connection" });
@@ -5950,6 +5956,7 @@ var GitlabMergeRequest = class {
     Object.assign(this, mr);
     this.discussions = [];
     this.issueLinks = [];
+    this.activities = [];
   }
   get filename() {
     return `MR-${this.iid} ${this.title}`.replace(/[/\\?%*:|"<>]/g, "-");
@@ -5966,12 +5973,12 @@ function logger(message) {
   console.log(pluginNamePrefix + message);
 }
 var DEFAULT_TEMPLATE = `---
-id: {{id}}
-title: {{{title}}}
-dueDate: {{due_date}}
-webUrl: {{web_url}}
-project: {{references.full}}
-state: {{state}}
+id: "{{id}}"
+title: "{{{title}}}"
+dueDate: "{{due_date}}"
+webUrl: "{{web_url}}"
+project: "{{references.full}}"
+state: "{{state}}"
 {{#if labels.length}}
 labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 {{/if}}
@@ -6008,16 +6015,16 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 {{/if}}
 `;
 var DEFAULT_MR_TEMPLATE = `---
-id: {{id}}
-iid: {{iid}}
-title: {{{title}}}
-webUrl: {{web_url}}
-project: {{references.full}}
-state: {{state}}
-sourceBranch: {{source_branch}}
-targetBranch: {{target_branch}}
-draft: {{draft}}
-mergeStatus: {{detailed_merge_status}}
+id: "{{id}}"
+iid: "{{iid}}"
+title: "{{{title}}}"
+webUrl: "{{web_url}}"
+project: "{{references.full}}"
+state: "{{state}}"
+sourceBranch: "{{source_branch}}"
+targetBranch: "{{target_branch}}"
+draft: "{{draft}}"
+mergeStatus: "{{detailed_merge_status}}"
 {{#if issueLinks.length}}
 projects: [{{#each issueLinks}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 {{/if}}
@@ -6054,6 +6061,14 @@ assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}
 
 {{/unless}}
 {{/each}}
+{{/each}}
+{{/if}}
+
+{{#if activities.length}}
+## Activity
+
+{{#each activities}}
+- **{{user.name}}** _{{created_at}}_ \u2192 \`{{state}}\`
 {{/each}}
 {{/if}}
 `;
@@ -6244,6 +6259,14 @@ var MergeRequestLoader = class {
               logger(`Failed to fetch discussions for MR !${rawMr.iid}: ${e.message}`);
             }
           }
+          if (this.settings.fetchMrActivities) {
+            try {
+              const url = `${this.settings.gitlabApiUrl()}/projects/${rawMr.project_id}/merge_requests/${rawMr.iid}/resource_state_events`;
+              mr.activities = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+            } catch (e) {
+              logger(`Failed to fetch activities for MR !${rawMr.iid}: ${e.message}`);
+            }
+          }
           return mr;
         })));
         this.fs.createMrOutputDirectory();
@@ -6265,8 +6288,9 @@ var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
         logger("Add your Gitlab Personal Token to the plugin settings");
       } else {
         if (this.settings.showIcon) {
-          this.ribbonIconEl = this.addRibbonIcon("cloud-download", "Import Gitlab Issues", () => {
+          this.ribbonIconEl = this.addRibbonIcon("cloud-download", "Import Gitlab Issues & Merge Requests", () => {
             this.fetchIssuesFromGitlab();
+            this.fetchMergeRequestsFromGitlab();
           });
         }
         this.addCommand({
