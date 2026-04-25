@@ -38,8 +38,15 @@ export default class JiraLoader {
 				this.settings.jiraApiToken,
 			);
 
+			const filteredIssues = response.issues.filter(rawIssue => {
+				const isSubtask = rawIssue.fields.issuetype?.subtask === true;
+				if (this.settings.issueScope === "tasks_only") return !isSubtask;
+				if (this.settings.issueScope === "subtasks_only") return isSubtask;
+				return true;
+			});
+
 			const tasks = await Promise.all(
-				response.issues.map(async (rawIssue) => {
+				filteredIssues.map(async (rawIssue) => {
 					const task = new JiraTask(rawIssue, this.settings.jiraUrl);
 
 					if (this.settings.fetchComments) {

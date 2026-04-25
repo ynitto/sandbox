@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS = {
 	purgeIssues: false,
 	refreshOnStartup: false,
 	intervalOfRefresh: "off" as const,
+	issueScope: "all" as const,
 	fetchComments: false,
 	labelPropertyMappings: [],
 	jiraApiUrl: function () {
@@ -72,6 +73,16 @@ export const dropdownInputs: DropdownInput[] = [
 			"45": "45 minutes",
 			"60": "1 hour",
 			"120": "2 hours",
+		},
+	},
+	{
+		title: "Issue Scope",
+		description: "Which issue types to import from Jira",
+		value: "issueScope",
+		options: {
+			"all": "Tasks & Subtasks",
+			"tasks_only": "Tasks only",
+			"subtasks_only": "Subtasks only",
 		},
 	},
 ];

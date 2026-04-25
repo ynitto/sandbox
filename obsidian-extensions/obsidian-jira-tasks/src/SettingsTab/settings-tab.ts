@@ -1,7 +1,6 @@
 import { App, normalizePath, PluginSettingTab, Setting } from "obsidian";
 import JiraTasksPlugin from "../main";
 import { settingInputs, dropdownInputs, checkboxInputs } from "./settings";
-import { JiraRefreshInterval } from "./settings-types";
 
 export class JiraTasksSettingTab extends PluginSettingTab {
 	plugin: JiraTasksPlugin;
@@ -78,7 +77,7 @@ export class JiraTasksSettingTab extends PluginSettingTab {
 					.addOptions(dropdown.options)
 					.setValue(this.plugin.settings[dropdown.value])
 					.onChange(async (value) => {
-						this.plugin.settings[dropdown.value] = value as JiraRefreshInterval;
+						(this.plugin.settings as any)[dropdown.value] = value;
 						this.plugin.scheduleAutomaticRefresh();
 						await this.plugin.saveSettings();
 					}));

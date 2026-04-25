@@ -1,4 +1,5 @@
 export type JiraRefreshInterval = "15" | "30" | "45" | "60" | "120" | "off";
+export type JiraIssueScope = "all" | "tasks_only" | "subtasks_only";
 
 export interface LabelPropertyRule {
 	label: string;
@@ -23,6 +24,7 @@ export interface JiraTasksSettings {
 	purgeIssues: boolean;
 	refreshOnStartup: boolean;
 	intervalOfRefresh: JiraRefreshInterval;
+	issueScope: JiraIssueScope;
 	fetchComments: boolean;
 	labelPropertyMappings: LabelPropertyMapping[];
 	jiraApiUrl(): string;
@@ -45,7 +47,7 @@ export interface SettingInput {
 export interface DropdownInput {
 	title: string;
 	description: string;
-	value: keyof Pick<JiraTasksSettings, "intervalOfRefresh">;
+	value: keyof Pick<JiraTasksSettings, "intervalOfRefresh" | "issueScope">;
 	options: Record<string, string>;
 }
 
