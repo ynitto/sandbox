@@ -1,6 +1,6 @@
 ---
 name: obsidian-use
-description: "Obsidianボルトの操作全般を担うスキル。.md/.base/.canvasファイルの作成・編集、ウィキリンク・コールアウト・Bases・JSONキャンバス・CLIコマンド・Webコンテンツ抽出が必要なときに使う。"
+description: "Obsidianのノート作成・編集・ウィキリンク・コールアウト・フロントマター・タグ・埋め込み、.baseファイルのフィルター・フォーミュラ・ビュー作成、.canvasのキャンバス・マインドマップ・フローチャート作成、CLIでのボルト操作・プラグイン開発・デバッグ、URLからのMarkdown抽出が必要なときに使う。"
 metadata:
   version: "1.0.0"
 ---
