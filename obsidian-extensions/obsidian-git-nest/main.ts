@@ -294,7 +294,11 @@ class GitRepoModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h3', { text: `Git 操作: ${this.repo.prefix}` });
+    const titleRow = contentEl.createDiv({ attr: { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;' } });
+    titleRow.createEl('h3', { text: `Git 操作: ${this.repo.prefix}`, attr: { style: 'margin:0;' } });
+    const vscodeBtn = titleRow.createEl('button', { text: 'VSCode で開く' });
+    vscodeBtn.style.cssText = 'font-size:0.85em;cursor:pointer;';
+    vscodeBtn.addEventListener('click', () => this.plugin.openInVSCode(this.repo));
 
     // ---- 現在のブランチ ----
 
@@ -722,6 +726,12 @@ export default class GitNestPlugin extends Plugin {
       const msg = err instanceof Error ? err.message : String(err);
       new Notice(`ブランチの作成・push に失敗しました:\n${msg}`, 8000);
     }
+  }
+
+  openInVSCode(entry: RepoEntry): void {
+    const destPath = join(this.getVaultPath(), entry.prefix);
+    const proc = spawn('code', [destPath], { detached: true, stdio: 'ignore' });
+    proc.unref();
   }
 
   async commitAndPush(entry: RepoEntry, message: string): Promise<void> {

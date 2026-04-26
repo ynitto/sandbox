@@ -207,7 +207,11 @@ var GitRepoModal = class extends import_obsidian.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h3", { text: `Git \u64CD\u4F5C: ${this.repo.prefix}` });
+    const titleRow = contentEl.createDiv({ attr: { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;" } });
+    titleRow.createEl("h3", { text: `Git \u64CD\u4F5C: ${this.repo.prefix}`, attr: { style: "margin:0;" } });
+    const vscodeBtn = titleRow.createEl("button", { text: "VSCode \u3067\u958B\u304F" });
+    vscodeBtn.style.cssText = "font-size:0.85em;cursor:pointer;";
+    vscodeBtn.addEventListener("click", () => this.plugin.openInVSCode(this.repo));
     const infoLine = contentEl.createEl("p", {
       attr: { style: "opacity:0.6;font-size:0.85em;margin-bottom:12px;" }
     });
@@ -549,6 +553,11 @@ ${msg}`, 8e3);
       new import_obsidian.Notice(`\u30D6\u30E9\u30F3\u30C1\u306E\u4F5C\u6210\u30FBpush \u306B\u5931\u6557\u3057\u307E\u3057\u305F:
 ${msg}`, 8e3);
     }
+  }
+  openInVSCode(entry) {
+    const destPath = (0, import_path.join)(this.getVaultPath(), entry.prefix);
+    const proc = (0, import_child_process.spawn)("code", [destPath], { detached: true, stdio: "ignore" });
+    proc.unref();
   }
   async commitAndPush(entry, message) {
     const destPath = (0, import_path.join)(this.getVaultPath(), entry.prefix);
