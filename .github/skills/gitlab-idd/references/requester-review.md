@@ -109,7 +109,7 @@ python scripts/gl.py update-issue {issue_id} \
 
 ---
 
-## ステップ 1 — レビュー対象イシューを取得
+## ステップ 1 — レビュー対象イシューを取得・分類
 
 自分のユーザー名を取得する:
 
@@ -117,11 +117,20 @@ python scripts/gl.py update-issue {issue_id} \
 python scripts/gl.py current-user --get username
 ```
 
-`status:review-ready` イシューをすべて取得する:
+`status:review-ready` イシューを**全件**取得する（作成者フィルタなし）:
 
 ```
 python scripts/gl.py list-issues --label "status:review-ready"
 ```
+
+取得したイシューを `author.username` で分類する:
+
+- `author.username == MY_USER` → **リクエスターレビューキュー**（自分発行）
+- `author.username != MY_USER` → **非リクエスターレビューキュー**（他者発行、[references/non-requester-review.md](non-requester-review.md) の手順で処理）
+
+**優先順位**: リクエスターレビューキューを先に処理し、完了後に非リクエスターレビューキューを処理する。
+
+### リクエスターレビューキューの処理
 
 各イシューについて、自分が実装者（アサイニー）であれば self-defer してスキップする:
 
@@ -133,8 +142,10 @@ python scripts/gl.py check-review-defer {issue_id} --minutes 1440
 `defer: false` かつ `reason=self_implemented_lock_expired` の場合は、ロック期間が切れているため自分でレビューしてよい。
 `defer: false` かつ `reason=no_worker_node_id` の場合は、実装者特定情報がないため誰でもレビューしてよい。
 
-レビュー対象が 0 件の場合は「レビュー待ちイシューはありません（または全件 self-defer）」と報告して終了。
-複数件ある場合は優先度順（`priority:high` → `normal` → `low`）に処理する。
+リクエスターレビューキューが 0 件の場合は非リクエスターレビューキューの処理へ進む。
+複数件ある場合は優先度順（`priority:high` → `normal` → `low`）で並べ、先頭 `MAX_REVIEW_PER_RUN` 件（SKILL.md の定数、デフォルト 1）のみ処理する。処理が終わったら残りは次回実行時に処理する。
+
+全キューが 0 件（または全件スキップ）の場合は「レビュー待ちイシューはありません」と報告して終了。
 
 ---
 

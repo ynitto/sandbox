@@ -315,3 +315,104 @@ def test_check_assigned_defer_allows_when_lock_expired(monkeypatch):
 
     assert captured["defer"] is False
     assert captured["reason"] == "assigned_lock_expired"
+
+
+# ---------------------------------------------------------------------------
+# check-non-requester-review-defer
+# ---------------------------------------------------------------------------
+
+def test_check_non_requester_review_defer_allows_when_no_review_yet(monkeypatch):
+    """worker-node-id exists but this node has not reviewed yet → defer=False"""
+    gl = load_gl_module()
+    captured = {}
+    started = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    monkeypatch.setattr(
+        gl, "api_list",
+        lambda host, token, path: [
+            {"body": "着手 <!-- gitlab-idd:worker-node-id:worker-node -->", "created_at": started},
+        ],
+    )
+    monkeypatch.setattr(gl, "get_node_id", lambda: "reviewer-node")
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.update(obj))
+
+    args = SimpleNamespace(issue_id=42, get=None)
+    gl.cmd_check_non_requester_review_defer(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["defer"] is False
+    assert captured["reason"] == "not_yet_reviewed"
+
+
+def test_check_non_requester_review_defer_defers_when_already_reviewed_in_cycle(monkeypatch):
+    """non-requester-reviewed marker exists after latest worker-node-id → defer=True"""
+    gl = load_gl_module()
+    captured = {}
+    started = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    reviewed = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    monkeypatch.setattr(
+        gl, "api_list",
+        lambda host, token, path: [
+            {"body": "着手 <!-- gitlab-idd:worker-node-id:worker-node -->", "created_at": started},
+            {
+                "body": "レビュー <!-- gitlab-idd:non-requester-reviewed:reviewer-node -->",
+                "created_at": reviewed,
+            },
+        ],
+    )
+    monkeypatch.setattr(gl, "get_node_id", lambda: "reviewer-node")
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.update(obj))
+
+    args = SimpleNamespace(issue_id=42, get=None)
+    gl.cmd_check_non_requester_review_defer(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["defer"] is True
+    assert captured["reason"] == "already_reviewed_this_cycle"
+
+
+def test_check_non_requester_review_defer_allows_when_worker_restarted(monkeypatch):
+    """new worker-node-id after previous non-requester-reviewed → defer=False (new cycle)"""
+    gl = load_gl_module()
+    captured = {}
+    first_start = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    reviewed = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    second_start = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    monkeypatch.setattr(
+        gl, "api_list",
+        lambda host, token, path: [
+            # First work cycle
+            {"body": "着手 <!-- gitlab-idd:worker-node-id:worker-node -->", "created_at": first_start},
+            # Non-requester reviewed in first cycle
+            {
+                "body": "レビュー <!-- gitlab-idd:non-requester-reviewed:reviewer-node -->",
+                "created_at": reviewed,
+            },
+            # Worker restarted after rework → new cycle
+            {"body": "再着手 <!-- gitlab-idd:worker-node-id:worker-node -->", "created_at": second_start},
+        ],
+    )
+    monkeypatch.setattr(gl, "get_node_id", lambda: "reviewer-node")
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.update(obj))
+
+    args = SimpleNamespace(issue_id=42, get=None)
+    gl.cmd_check_non_requester_review_defer(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["defer"] is False
+    assert captured["reason"] == "not_yet_reviewed"
+
+
+def test_check_non_requester_review_defer_allows_when_no_worker_node_id(monkeypatch):
+    """no worker-node-id comment at all → defer=False (allow review)"""
+    gl = load_gl_module()
+    captured = {}
+
+    monkeypatch.setattr(gl, "api_list", lambda host, token, path: [])
+    monkeypatch.setattr(gl, "get_node_id", lambda: "reviewer-node")
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.update(obj))
+
+    args = SimpleNamespace(issue_id=42, get=None)
+    gl.cmd_check_non_requester_review_defer(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["defer"] is False
+    assert captured["reason"] == "not_yet_reviewed"
