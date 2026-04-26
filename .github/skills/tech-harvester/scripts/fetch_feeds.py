@@ -28,7 +28,7 @@ _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
 def load_registry(tags: list[str] | None, lang: str | None) -> list[dict]:
     data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-    feeds = data["tech-harvester"]["feeds"]
+    feeds = data["skill_configs"]["tech-harvester"]["feeds"]
     if lang:
         feeds = [f for f in feeds if f.get("lang") == lang]
     if tags:
