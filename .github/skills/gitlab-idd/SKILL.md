@@ -46,15 +46,13 @@ export GITLAB_NODE_ID=my-terminal-1
 # {
 #   "skill_configs": {
 #     "gitlab-idd": {
-#       "max_review_per_run": 3,       # 1回のレビュー実行で処理するイシューの最大件数（デフォルト 1）
-#       "self_defer_minutes": 60,      # ワーカーの self-defer 猶予（分、デフォルト 60 = 1時間）
-#       "self_review_lock_minutes": 1440  # レビュアーの self-review ロック（分、デフォルト 1440 = 24時間）
+#       "max_review_per_run": 3,          # 1回のレビュー実行で処理するイシューの最大件数（デフォルト 1）
+#       "self_defer_minutes": 60,         # ワーカーの self-defer 猶予（分、デフォルト 60 = 1時間）
+#       "self_review_lock_minutes": 1440, # レビュアーの self-review ロック（分、デフォルト 1440 = 24時間）
+#       "assigned_lock_minutes": 1440     # 放置アサイン済イシューの引き受けロック（分、デフォルト 1440 = 24時間）
 #     }
 #   }
 # }
-
-# 任意: 放置アサイン済イシューの引き受けロック（分、デフォルト 1440 = 24時間）
-export GITLAB_ASSIGNED_LOCK_MINUTES=1440
 ```
 
 ---

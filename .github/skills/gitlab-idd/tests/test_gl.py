@@ -503,3 +503,32 @@ def test_get_self_review_lock_minutes_clamps_to_zero(monkeypatch):
         "skill_configs": {"gitlab-idd": {"self_review_lock_minutes": -5}}
     })
     assert gl.get_self_review_lock_minutes() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_assigned_lock_minutes
+# ---------------------------------------------------------------------------
+
+def test_get_assigned_lock_minutes_returns_default_when_not_set(monkeypatch):
+    """No registry entry → returns DEFAULT_ASSIGNED_LOCK_MINUTES (1440)"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {})
+    assert gl.get_assigned_lock_minutes() == 1440.0
+
+
+def test_get_assigned_lock_minutes_returns_configured_value(monkeypatch):
+    """Registry has assigned_lock_minutes set → returns that value"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"assigned_lock_minutes": 480}}
+    })
+    assert gl.get_assigned_lock_minutes() == 480.0
+
+
+def test_get_assigned_lock_minutes_clamps_to_zero(monkeypatch):
+    """Registry has assigned_lock_minutes=-1 → clamped to 0"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"assigned_lock_minutes": -1}}
+    })
+    assert gl.get_assigned_lock_minutes() == 0.0

@@ -18,12 +18,12 @@ Usage:
                  --get author.username       → nested field
 
 Environment variables:
-  GITLAB_TOKEN or GL_TOKEN         Personal Access Token (required)
-  GITLAB_ASSIGNED_LOCK_MINUTES     Stale-assignee lock period (check-assigned-defer, default: 1440 min)
+  GITLAB_TOKEN or GL_TOKEN  Personal Access Token (required)
 
 skill-registry.json (skill_configs.gitlab-idd.*):
   self_defer_minutes        Worker self-defer period (check-defer, default: 60 min)
   self_review_lock_minutes  Reviewer self-review lock period (check-review-defer, default: 1440 min)
+  assigned_lock_minutes     Stale-assignee lock period (check-assigned-defer, default: 1440 min)
   max_review_per_run        Max issues reviewed per run (default: 1)
 """
 
@@ -236,6 +236,22 @@ def get_self_review_lock_minutes() -> float:
         except (TypeError, ValueError):
             pass
     return DEFAULT_SELF_REVIEW_LOCK_MINUTES
+
+
+def get_assigned_lock_minutes() -> float:
+    """Return the stale-assignee lock period in minutes.
+
+    Read from skill-registry.json skill_configs.gitlab-idd.assigned_lock_minutes.
+    Defaults to DEFAULT_ASSIGNED_LOCK_MINUTES (1440) when not set.
+    """
+    reg = _load_registry()
+    val = reg.get("skill_configs", {}).get("gitlab-idd", {}).get("assigned_lock_minutes")
+    if val is not None:
+        try:
+            return max(0.0, float(val))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_ASSIGNED_LOCK_MINUTES
 
 
 def title_to_slug(title: str) -> str:
@@ -730,7 +746,7 @@ def cmd_check_assigned_defer(args, host, project, token):
     """
     ep = encode_project(project)
     my_node_id = get_node_id()
-    lock_minutes = args.minutes
+    lock_minutes = args.minutes if args.minutes is not None else get_assigned_lock_minutes()
 
     comments = api_list(host, token, f"/projects/{ep}/issues/{args.issue_id}/notes")
     worker_node_id = None
@@ -1100,12 +1116,10 @@ def build_parser():
     p.add_argument(
         "--minutes",
         type=float,
-        default=float(
-            os.environ.get("GITLAB_ASSIGNED_LOCK_MINUTES", str(DEFAULT_ASSIGNED_LOCK_MINUTES))
-        ),
+        default=None,
         help=(
             "Stale-assignee lock period in minutes "
-            f"(default: {int(DEFAULT_ASSIGNED_LOCK_MINUTES)}, or $GITLAB_ASSIGNED_LOCK_MINUTES)"
+            f"(default: skill-registry.json assigned_lock_minutes, or {int(DEFAULT_ASSIGNED_LOCK_MINUTES)})"
         ),
     )
 
