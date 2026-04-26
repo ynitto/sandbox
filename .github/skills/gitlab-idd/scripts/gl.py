@@ -144,15 +144,23 @@ def _get_registry_path() -> str:
     return os.path.join(_get_agent_home(), _REGISTRY_FILENAME)
 
 
+_registry_cache: Optional[dict] = None
+
+
 def _load_registry() -> dict:
+    global _registry_cache
+    if _registry_cache is not None:
+        return _registry_cache
     path = _get_registry_path()
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
+                _registry_cache = json.load(f)
+                return _registry_cache
         except (json.JSONDecodeError, OSError):
             pass
-    return {}
+    _registry_cache = {}
+    return _registry_cache
 
 
 def _save_registry(reg: dict) -> None:
@@ -190,68 +198,30 @@ def get_node_id() -> str:
 DEFAULT_MAX_REVIEW_PER_RUN = 1
 
 
-def get_max_review_per_run() -> int:
-    """Return the maximum number of issues to review per run.
-
-    Read from skill-registry.json skill_configs.gitlab-idd.max_review_per_run.
-    Defaults to DEFAULT_MAX_REVIEW_PER_RUN (1) when not set.
-    """
-    reg = _load_registry()
-    val = reg.get("skill_configs", {}).get("gitlab-idd", {}).get("max_review_per_run")
+def _get_idd_config(key, default, converter, minimum):
+    val = _load_registry().get("skill_configs", {}).get("gitlab-idd", {}).get(key)
     if val is not None:
         try:
-            return max(1, int(val))
+            return max(minimum, converter(val))
         except (TypeError, ValueError):
             pass
-    return DEFAULT_MAX_REVIEW_PER_RUN
+    return default
+
+
+def get_max_review_per_run() -> int:
+    return _get_idd_config("max_review_per_run", DEFAULT_MAX_REVIEW_PER_RUN, int, 1)
 
 
 def get_self_defer_minutes() -> float:
-    """Return the worker self-defer period in minutes.
-
-    Read from skill-registry.json skill_configs.gitlab-idd.self_defer_minutes.
-    Defaults to DEFAULT_SELF_DEFER_MINUTES (60) when not set.
-    """
-    reg = _load_registry()
-    val = reg.get("skill_configs", {}).get("gitlab-idd", {}).get("self_defer_minutes")
-    if val is not None:
-        try:
-            return max(0.0, float(val))
-        except (TypeError, ValueError):
-            pass
-    return DEFAULT_SELF_DEFER_MINUTES
+    return _get_idd_config("self_defer_minutes", DEFAULT_SELF_DEFER_MINUTES, float, 0.0)
 
 
 def get_self_review_lock_minutes() -> float:
-    """Return the reviewer self-review lock period in minutes.
-
-    Read from skill-registry.json skill_configs.gitlab-idd.self_review_lock_minutes.
-    Defaults to DEFAULT_SELF_REVIEW_LOCK_MINUTES (1440) when not set.
-    """
-    reg = _load_registry()
-    val = reg.get("skill_configs", {}).get("gitlab-idd", {}).get("self_review_lock_minutes")
-    if val is not None:
-        try:
-            return max(0.0, float(val))
-        except (TypeError, ValueError):
-            pass
-    return DEFAULT_SELF_REVIEW_LOCK_MINUTES
+    return _get_idd_config("self_review_lock_minutes", DEFAULT_SELF_REVIEW_LOCK_MINUTES, float, 0.0)
 
 
 def get_assigned_lock_minutes() -> float:
-    """Return the stale-assignee lock period in minutes.
-
-    Read from skill-registry.json skill_configs.gitlab-idd.assigned_lock_minutes.
-    Defaults to DEFAULT_ASSIGNED_LOCK_MINUTES (1440) when not set.
-    """
-    reg = _load_registry()
-    val = reg.get("skill_configs", {}).get("gitlab-idd", {}).get("assigned_lock_minutes")
-    if val is not None:
-        try:
-            return max(0.0, float(val))
-        except (TypeError, ValueError):
-            pass
-    return DEFAULT_ASSIGNED_LOCK_MINUTES
+    return _get_idd_config("assigned_lock_minutes", DEFAULT_ASSIGNED_LOCK_MINUTES, float, 0.0)
 
 
 def title_to_slug(title: str) -> str:
@@ -663,7 +633,7 @@ def cmd_check_review_defer(args, host, project, token):
     """
     ep = encode_project(project)
     my_node_id = get_node_id()
-    lock_minutes = args.minutes if args.minutes is not None else get_self_review_lock_minutes()
+    lock_minutes = args.minutes
 
     # Search issue comments for a worker-node-id tag
     comments = api_list(host, token, f"/projects/{ep}/issues/{args.issue_id}/notes")
@@ -746,7 +716,7 @@ def cmd_check_assigned_defer(args, host, project, token):
     """
     ep = encode_project(project)
     my_node_id = get_node_id()
-    lock_minutes = args.minutes if args.minutes is not None else get_assigned_lock_minutes()
+    lock_minutes = args.minutes
 
     comments = api_list(host, token, f"/projects/{ep}/issues/{args.issue_id}/notes")
     worker_node_id = None
@@ -832,7 +802,7 @@ def cmd_check_defer(args, host, project, token):
     ep = encode_project(project)
     issue = api(host, token, "GET", f"/projects/{ep}/issues/{args.issue_id}")
     my_node_id = get_node_id()
-    defer_minutes = args.minutes if args.minutes is not None else get_self_defer_minutes()
+    defer_minutes = args.minutes
 
     # Primary check: creator node ID embedded in description
     description = issue.get("description") or ""
@@ -1103,7 +1073,7 @@ def build_parser():
     p.add_argument(
         "--minutes",
         type=float,
-        default=None,
+        default=get_self_review_lock_minutes(),
         help=(
             "Self-review lock period in minutes "
             f"(default: skill-registry.json self_review_lock_minutes, or {int(DEFAULT_SELF_REVIEW_LOCK_MINUTES)})"
@@ -1116,7 +1086,7 @@ def build_parser():
     p.add_argument(
         "--minutes",
         type=float,
-        default=None,
+        default=get_assigned_lock_minutes(),
         help=(
             "Stale-assignee lock period in minutes "
             f"(default: skill-registry.json assigned_lock_minutes, or {int(DEFAULT_ASSIGNED_LOCK_MINUTES)})"
@@ -1129,7 +1099,7 @@ def build_parser():
     p.add_argument(
         "--minutes",
         type=float,
-        default=None,
+        default=get_self_defer_minutes(),
         help=(
             "Defer period in minutes "
             f"(default: skill-registry.json self_defer_minutes, or {int(DEFAULT_SELF_DEFER_MINUTES)})"
