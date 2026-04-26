@@ -445,3 +445,61 @@ def test_check_non_requester_review_defer_allows_when_no_worker_node_id(monkeypa
 
     assert captured["defer"] is False
     assert captured["reason"] == "not_yet_reviewed"
+
+
+# ---------------------------------------------------------------------------
+# get_self_defer_minutes
+# ---------------------------------------------------------------------------
+
+def test_get_self_defer_minutes_returns_default_when_not_set(monkeypatch):
+    """No registry entry → returns DEFAULT_SELF_DEFER_MINUTES (60)"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {})
+    assert gl.get_self_defer_minutes() == 60.0
+
+
+def test_get_self_defer_minutes_returns_configured_value(monkeypatch):
+    """Registry has self_defer_minutes set → returns that value"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"self_defer_minutes": 120}}
+    })
+    assert gl.get_self_defer_minutes() == 120.0
+
+
+def test_get_self_defer_minutes_clamps_to_zero(monkeypatch):
+    """Registry has self_defer_minutes=-10 → clamped to 0"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"self_defer_minutes": -10}}
+    })
+    assert gl.get_self_defer_minutes() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_self_review_lock_minutes
+# ---------------------------------------------------------------------------
+
+def test_get_self_review_lock_minutes_returns_default_when_not_set(monkeypatch):
+    """No registry entry → returns DEFAULT_SELF_REVIEW_LOCK_MINUTES (1440)"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {})
+    assert gl.get_self_review_lock_minutes() == 1440.0
+
+
+def test_get_self_review_lock_minutes_returns_configured_value(monkeypatch):
+    """Registry has self_review_lock_minutes set → returns that value"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"self_review_lock_minutes": 720}}
+    })
+    assert gl.get_self_review_lock_minutes() == 720.0
+
+
+def test_get_self_review_lock_minutes_clamps_to_zero(monkeypatch):
+    """Registry has self_review_lock_minutes=-5 → clamped to 0"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"self_review_lock_minutes": -5}}
+    })
+    assert gl.get_self_review_lock_minutes() == 0.0
