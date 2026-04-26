@@ -143,7 +143,7 @@ python scripts/gl.py check-review-defer {issue_id} --minutes 1440
 `defer: false` かつ `reason=no_worker_node_id` の場合は、実装者特定情報がないため誰でもレビューしてよい。
 
 リクエスターレビューキューが 0 件の場合は非リクエスターレビューキューの処理へ進む。
-複数件ある場合は優先度順（`priority:high` → `normal` → `low`）で並べ、先頭 `GITLAB_MAX_REVIEW_PER_RUN` 件（デフォルト 1、環境変数で変更可）のみ処理する。処理が終わったら残りは次回実行時に処理する。
+複数件ある場合は優先度順（`priority:high` → `normal` → `low`）で並べ、先頭 `MAX_REVIEW_PER_RUN` 件（SKILL.md の定数、デフォルト 1）のみ処理する。処理が終わったら残りは次回実行時に処理する。
 
 全キューが 0 件（または全件スキップ）の場合は「レビュー待ちイシューはありません」と報告して終了。
 

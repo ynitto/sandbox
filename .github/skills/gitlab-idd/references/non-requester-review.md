@@ -78,7 +78,7 @@ python scripts/gl.py check-non-requester-review-defer {issue_id}
 > ワーカーが差し戻し後に再着手すると新しい `worker-node-id` コメントが投稿され、このノードは再びレビュー可能になる。
 
 レビュー対象が 0 件（または全件スキップ）の場合は終了。
-複数件ある場合は優先度順（`priority:high` → `normal` → `low`）で並べ、先頭 **残り枠** 件のみ処理する。残り枠 = `GITLAB_MAX_REVIEW_PER_RUN`（デフォルト 1）− リクエスターキューで処理した件数。残り枠が 0 の場合はスキップして終了する。
+複数件ある場合は優先度順（`priority:high` → `normal` → `low`）で並べ、先頭 **残り枠** 件のみ処理する。残り枠 = `MAX_REVIEW_PER_RUN`（SKILL.md の定数、デフォルト 1）− リクエスターキューで処理した件数。残り枠が 0 の場合はスキップして終了する。
 
 ---
 

@@ -49,9 +49,6 @@ export GITLAB_SELF_REVIEW_LOCK_MINUTES=1440
 
 # 任意: 放置アサイン済イシューの引き受けべき猆ロック（分、デフォルト 1440 = 24時間）
 export GITLAB_ASSIGNED_LOCK_MINUTES=1440
-
-# 任意: 1回のレビュー実行で処理するイシューの最大件数（デフォルト 1）
-export GITLAB_MAX_REVIEW_PER_RUN=1
 ```
 
 ---
@@ -99,6 +96,12 @@ export GITLAB_MAX_REVIEW_PER_RUN=1
 - 自分発行: [references/requester-review.md](references/requester-review.md)
 - 他者発行: [references/non-requester-review.md](references/non-requester-review.md)
 
+### 定数
+
+```
+MAX_REVIEW_PER_RUN = 1  # 1回の実行で処理するイシューの最大件数（変更する場合はここを編集）
+```
+
 ### フロー概要
 
 ```
@@ -109,7 +112,7 @@ export GITLAB_MAX_REVIEW_PER_RUN=1
    - author.username == MY_USER → リクエスターレビューキュー（優先処理）
    - author.username != MY_USER → 非リクエスターレビューキュー
 4. リクエスターレビューキューを処理（リクエスターとして振る舞う）:
-   - 優先度順（priority:high → normal → low）で先頭 GITLAB_MAX_REVIEW_PER_RUN 件（デフォルト 1）を選択
+   - 優先度順（priority:high → normal → low）で先頭 MAX_REVIEW_PER_RUN 件（デフォルト 1）を選択
    - check-review-defer で self-defer チェック
    - イシューコメントとブランチの成果物を確認
    - agent-reviewer で受け入れ条件を並列評価
@@ -117,7 +120,7 @@ export GITLAB_MAX_REVIEW_PER_RUN=1
    - Request Changes → add-comment（差し戻しコメント）+ reopen → 再提出後に再レビュー（最大 5 回）
    - (任意) スコープ外タスクを発見した場合は派生/新規イシューとして起票
 5. 非リクエスターレビューキューを処理（非リクエスターとして振る舞う）:
-   - リクエスターキューで処理した件数を引いた残り枠（GITLAB_MAX_REVIEW_PER_RUN - 処理済み件数）を上限として選択
+   - リクエスターキューで処理した件数を引いた残り枠（MAX_REVIEW_PER_RUN - 処理済み件数）を上限として選択
    - 残り枠が 0 の場合はスキップして終了
    - 3 段階スキップチェック: check-defer / check-review-defer / check-non-requester-review-defer
    - イシューコメントとブランチの成果物を確認
