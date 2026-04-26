@@ -2,7 +2,7 @@
 name: skill-creator
 description: "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。"
 metadata:
-  version: 4.0.1
+  version: 4.0.2
   tier: core
   category: meta
   tags:
@@ -29,6 +29,9 @@ metadata:
 | URL・ローカルパスから外部スキルをインストールしたい | [references/skill-recruiter.md](references/skill-recruiter.md) |
 | パターン抽出の具体例を確認したい | [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md) |
 | 配布前の品質チェックリストが必要 | [references/quality-checklist.md](references/quality-checklist.md) |
+| スキルの出力形式・品質基準を設計したい | [references/output-patterns.md](references/output-patterns.md) |
+| 複数ステップのワークフローを設計したい | [references/workflows.md](references/workflows.md) |
+| SKILL.md 構造の段階的開示パターンを確認したい | [references/skill-structure-patterns.md](references/skill-structure-patterns.md) |
 
 上記に当てはまらない場合（ゼロから作成・改善）は、以下の「スキル作成プロセス」に従う。最終的にステップ5（検証）を経る点はどのケースも共通。.skillファイルへのパッケージ化はユーザーから明示的な指示があった場合のみ実行する。
 
@@ -128,49 +131,7 @@ skill-name/
 
 SKILL.md本文は500行以内に収める。超える場合はファイルを分割し、SKILL.mdから参照先とその読み込み条件を明記する。
 
-#### 段階的開示パターン
-
-**パターン1: ハイレベルガイド + リファレンス**
-
-```markdown
-# PDF処理
-
-## クイックスタート
-pdfplumberでテキスト抽出:
-[コード例]
-
-## 高度な機能
-- **フォーム入力**: [FORMS.md](FORMS.md) 参照
-- **APIリファレンス**: [REFERENCE.md](REFERENCE.md) 参照
-```
-
-**パターン2: ドメイン別整理**
-
-```
-bigquery-skill/
-├── SKILL.md（概要とナビゲーション）
-└── references/
-    ├── finance.md（収益、請求指標）
-    ├── sales.md（商談、パイプライン）
-    └── product.md（API利用、機能）
-```
-
-**パターン3: 条件付き詳細**
-
-```markdown
-# DOCX処理
-
-## ドキュメント作成
-docx-jsで新規作成。[DOCX-JS.md](DOCX-JS.md) 参照。
-
-## 編集
-単純な編集はXMLを直接変更。
-**変更履歴付き**: [REDLINING.md](REDLINING.md) 参照
-```
-
-**重要:**
-- リファレンスはSKILL.mdから1階層のみ。深いネストは避ける
-- すべてのリファレンスはSKILL.mdから直接リンクする
+具体的なパターン例は [references/skill-structure-patterns.md](references/skill-structure-patterns.md) 参照。
 
 -----
 

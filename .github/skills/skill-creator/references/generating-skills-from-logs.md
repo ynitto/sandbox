@@ -163,7 +163,7 @@ messages の形式:
 
 **粒度の判断基準**: 同じ手順・判断基準で処理できるセッション群なら粒度は適切。異なる手順を含むなら分割が必要。
 
-パターン抽出の詳細例は `pattern-extraction-examples.md` 参照。
+パターン抽出の詳細例は [pattern-extraction-examples.md](pattern-extraction-examples.md) 参照。
 
 ---
 
