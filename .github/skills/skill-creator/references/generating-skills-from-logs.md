@@ -110,11 +110,11 @@ python scripts/extract-copilot-history.py --workspace "my-project" --days 30
 
 | OS | パス |
 |---|---|
-| Linux / WSL | `~/.kiro/store.db`（優先）、`~/.kiro/sessions.db`、`~/.kiro/db/sessions.db` |
-| Windows | `%USERPROFILE%\.kiro\store.db` |
+| Linux / WSL | `~/.local/share/kiro-cli/data.sqlite3` |
 | macOS | `~/Library/Application Support/kiro-cli/data.sqlite3` |
+| Windows | `%LOCALAPPDATA%\kiro-cli\data.sqlite3` |
 
-SQLite DB で管理される。テーブル名は `conversations_v2`（v2）またはフォールバックとして `sessions`、`chat_sessions`、`conversations` を探索する。
+SQLite DB で管理される。テーブル名は `conversations_v2`。ディレクトリパスをキーとしてセッションが保存される。
 
 ```
 conversations_v2 テーブルの主要カラム:
@@ -134,7 +134,7 @@ messages の形式:
 ]
 ```
 
-`KIRO_CHAT_LOG_FILE` 環境変数でログパスを上書きできる。セッション内で `/logs` コマンドを実行すると診断ログ（タイムスタンプ付き ZIP）をエクスポートできる。
+セッション内で `/save <path>` でJSON形式にエクスポート、`/load <path>` でインポートできる。
 
 ---
 
