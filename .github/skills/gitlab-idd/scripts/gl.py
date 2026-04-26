@@ -322,6 +322,7 @@ def read_body(body, body_file, option_name="--body"):
 # Patterns for extracting embedded node IDs from issue description / comments
 _CREATOR_NODE_RE = re.compile(r"<!--\s*gitlab-idd:creator-node-id:([^\s>]+)\s*-->")
 _WORKER_NODE_RE = re.compile(r"<!--\s*gitlab-idd:worker-node-id:([^\s>]+)\s*-->")
+_NON_REQUESTER_REVIEW_RE = re.compile(r"<!--\s*gitlab-idd:non-requester-reviewed:([^\s>]+)\s*-->")
 
 
 # ---------------------------------------------------------------------------
@@ -813,6 +814,55 @@ def cmd_check_defer(args, host, project, token):
         }, args.get)
 
 
+def cmd_check_non_requester_review_defer(args, host, project, token):
+    """
+    Check whether the non-requester reviewer should skip an issue they already reviewed.
+
+    Output JSON:
+      {"defer": true/false, "reason": "...", ...}
+
+    Defer when:
+        - This node has already posted a non-requester-reviewed comment since the
+          latest worker-node-id comment (= the current work cycle).
+
+    If no worker-node-id comment exists or the non-requester-reviewed marker
+    predates the latest worker-node-id (new work cycle), allow review.
+    """
+    ep = encode_project(project)
+    my_node_id = get_node_id()
+
+    comments = api_list(host, token, f"/projects/{ep}/issues/{args.issue_id}/notes")
+
+    # Find the latest worker-node-id comment timestamp (= start of current cycle)
+    latest_worker_at = None
+    for comment in comments:
+        if _WORKER_NODE_RE.search(comment.get("body") or ""):
+            t = _parse_iso8601_utc(comment.get("created_at"))
+            if t is not None and (latest_worker_at is None or t > latest_worker_at):
+                latest_worker_at = t
+
+    # Check if this node has already reviewed since the latest worker-node-id
+    for comment in comments:
+        m = _NON_REQUESTER_REVIEW_RE.search(comment.get("body") or "")
+        if m and m.group(1) == my_node_id:
+            reviewed_at = _parse_iso8601_utc(comment.get("created_at"))
+            if latest_worker_at is None or (
+                reviewed_at is not None and reviewed_at > latest_worker_at
+            ):
+                out({
+                    "defer": True,
+                    "reason": "already_reviewed_this_cycle",
+                    "my_node_id": my_node_id,
+                }, args.get)
+                return
+
+    out({
+        "defer": False,
+        "reason": "not_yet_reviewed",
+        "my_node_id": my_node_id,
+    }, args.get)
+
+
 def cmd_add_mr_comment(args, host, project, token):
     """Post a comment (note) on a merge request."""
     ep = encode_project(project)
@@ -1009,6 +1059,12 @@ def build_parser():
         ),
     )
 
+    p = sub.add_parser(
+        "check-non-requester-review-defer",
+        help="Check if this node already reviewed the issue in the current work cycle",
+    )
+    p.add_argument("issue_id", type=int)
+
     return parser
 
 
@@ -1039,6 +1095,7 @@ COMMANDS = {
     "check-review-defer":   cmd_check_review_defer,
     "check-assigned-defer": cmd_check_assigned_defer,
     "check-defer":          cmd_check_defer,
+    "check-non-requester-review-defer": cmd_check_non_requester_review_defer,
 }
 
 
