@@ -106,7 +106,7 @@
         },
         {
           "name": "Mercari Engineering Blog",
-          "url": "https://engineering.mercari.com/blog/feed/",
+          "url": "https://engineering.mercari.com/blog/feed.xml",
           "lang": "ja",
           "tags": ["japanese", "tech", "blog"]
         },
