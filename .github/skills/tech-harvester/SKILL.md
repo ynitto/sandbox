@@ -1,6 +1,6 @@
 ---
 name: tech-harvester
-description: "IT系RSSフィードを取得して要約をマークダウンにまとめるスキル。「技術ニュースを取得して」「RSSをまとめて」「ITニュースのダイジェストを作って」「最新の技術情報を集めて」「テックブログをまとめて」などで発動する。フィードの追加・削除は agent home 直下の skill-registry.json で管理する。"
+description: "RSSフィードを取得して要約をMarkdownにまとめるスキル。「ニュースを取得して」「RSSをまとめて」「ニュースのダイジェストを作って」「最新の技術情報を集めて」「テックブログをまとめて」などで発動する。フィードの追加・削除は agent home 直下の skill-registry.json で管理する。"
 metadata:
   version: "1.1.0"
   category: productivity
@@ -13,7 +13,7 @@ metadata:
 
 # Tech Harvester
 
-IT系RSSフィードを取得し、テーマ別に整理して日本語要約付きのマークダウンダイジェストを生成するスキル。
+RSSフィードを取得し、テーマ別に整理して日本語要約付きのMarkdownダイジェストを生成するスキル。
 
 ## ワークフロー
 
@@ -53,7 +53,7 @@ python .github/skills/tech-harvester/scripts/fetch_feeds.py
 ## 出力フォーマット
 
 ```markdown
-# IT Tech Digest
+# Tech Digest
 
 _YYYY-MM-DD HH:MM UTC_
 
