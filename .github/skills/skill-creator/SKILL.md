@@ -2,7 +2,7 @@
 name: skill-creator
 description: "スキルの作成・改善・外部取得を担うメタスキル。「スキルを作って」「コードベースをスキル化して」「URLからスキルをインストールして」「チャット履歴からスキルを生成して」「このスキルを改善して」などで発動する。"
 metadata:
-  version: 3.5.0
+  version: 4.0.0
   tier: core
   category: meta
   tags:
@@ -27,8 +27,6 @@ metadata:
 | 既存リポジトリ・コードを分析してスキル化したい | [references/codebase-to-skill.md](references/codebase-to-skill.md) |
 | エージェントログ・チャット履歴からスキルを生成したい | [references/generating-skills-from-logs.md](references/generating-skills-from-logs.md) |
 | URL・ローカルパスから外部スキルをインストールしたい | [references/skill-recruiter.md](references/skill-recruiter.md) |
-| Copilot の履歴・ログを探索したい | [references/copilot-history-guide.md](references/copilot-history-guide.md) |
-| Kiro の履歴・ログを探索したい | [references/kiro-history-guide.md](references/kiro-history-guide.md) |
 | パターン抽出の具体例を確認したい | [references/pattern-extraction-examples.md](references/pattern-extraction-examples.md) |
 | 配布前の品質チェックリストが必要 | [references/quality-checklist.md](references/quality-checklist.md) |
 
@@ -288,10 +286,10 @@ metadata:
 
 **バージョン表記**: `X.Y.Z` 形式のセマンティックバージョニングを使用する。
 - **patch** (`1.0.0 → 1.0.1`): バグ修正・誤字修正・軽微な表現改善
-- **minor** (`1.0.0 → 1.1.0`): 後方互換の機能追加・手順の強化
-- **major** (`1.0.0 → 2.0.0`): 破壊的変更・大幅な動作変更
+- **minor** (`1.0.0 → 1.1.0`): 後方互換の機能追加・手順の強化・既存セクションの大幅書き換え
+- **major** (`1.0.0 → 2.0.0`): 機能の削除・破壊的変更・スキルの目的・スコープの大幅変更
 
-スキルを更新したら `git-skill-manager` の `bump` 操作でバージョンをインクリメントしてから push する。
+**スキルを更新したら必ずフロントマターのバージョンを変更の規模に応じてインクリメントする。** バージョンを上げずにスキルを変更してはならない。
 
 ##### 本文
 
