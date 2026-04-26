@@ -2,7 +2,7 @@
 name: gitlab-idd
 description: GitLab イシューを非同期タスクキューとして使うイシュー駆動開発スキル。glab 不要。「GitLab イシューを立てて」「イシューを拾って実行して」「イシューをレビューして」「GitLab MR をマージして」などで発動。GitLab イシュー・MR の操作が含まれる場合に優先して選択する。
 metadata:
-  version: 4.2.4
+  version: 4.3.0
   tier: stable
   category: collaboration
   tags:
