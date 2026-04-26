@@ -208,11 +208,28 @@ var GitRepoModal = class extends import_obsidian.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h3", { text: `Git \u64CD\u4F5C: ${this.repo.prefix}` });
-    contentEl.createEl("p", {
-      text: `\u30D6\u30E9\u30F3\u30C1: ${this.repo.branch}  |  \u30EA\u30E2\u30FC\u30C8: ${this.repo.remoteName}`,
-      attr: { style: "opacity:0.6;font-size:0.85em;margin-bottom:16px;" }
+    const infoLine = contentEl.createEl("p", {
+      attr: { style: "opacity:0.6;font-size:0.85em;margin-bottom:12px;" }
     });
-    contentEl.createEl("h4", { text: "\u540C\u671F" });
+    infoLine.createEl("span", { text: "\u73FE\u5728\u306E\u30D6\u30E9\u30F3\u30C1: " });
+    const branchCode = infoLine.createEl("code", { text: "\u8AAD\u307F\u8FBC\u307F\u4E2D..." });
+    infoLine.createEl("span", { text: `  |  \u30EA\u30E2\u30FC\u30C8: ${this.repo.remoteName}` });
+    contentEl.createEl("h4", { text: "\u30B3\u30DF\u30C3\u30C8\u5C65\u6B74", attr: { style: "margin:12px 0 4px;" } });
+    const commitLogEl = contentEl.createEl("pre", {
+      text: "\u8AAD\u307F\u8FBC\u307F\u4E2D...",
+      attr: {
+        style: "max-height:120px;overflow-y:auto;font-size:0.78em;background:var(--background-secondary);padding:8px;border-radius:4px;margin:0;white-space:pre-wrap;"
+      }
+    });
+    contentEl.createEl("h4", { text: "Git \u30B3\u30DE\u30F3\u30C9\u30ED\u30B0", attr: { style: "margin:12px 0 4px;" } });
+    const cmdLogEl = contentEl.createEl("pre", {
+      attr: {
+        style: "max-height:100px;overflow-y:auto;font-size:0.78em;background:var(--background-secondary);padding:8px;border-radius:4px;margin:0;white-space:pre-wrap;"
+      }
+    });
+    const logLines = this.plugin.commandLog;
+    cmdLogEl.setText(logLines.length > 0 ? [...logLines].reverse().join("\n") : "(\u307E\u3060\u5B9F\u884C\u3055\u308C\u305F\u30B3\u30DE\u30F3\u30C9\u306F\u3042\u308A\u307E\u305B\u3093)");
+    contentEl.createEl("h4", { text: "\u540C\u671F", attr: { style: "margin-top:16px;" } });
     new import_obsidian.Setting(contentEl).setName("Pull").setDesc(`${this.repo.remoteName}/${this.repo.branch} \u304B\u3089\u6700\u65B0\u3092\u53D6\u5F97`).addButton(
       (btn) => btn.setButtonText("Pull").setIcon("download").onClick(async () => {
         this.close();
@@ -229,6 +246,27 @@ var GitRepoModal = class extends import_obsidian.Modal {
       (btn) => btn.setButtonText("Stash & Pull").onClick(async () => {
         this.close();
         await this.plugin.pullWithStash(this.repo);
+      })
+    );
+    contentEl.createEl("h4", { text: "\u30B3\u30DF\u30C3\u30C8 & Push", attr: { style: "margin-top:16px;" } });
+    let commitMessage = "";
+    const commitSetting = new import_obsidian.Setting(contentEl).setName("\u30B3\u30DF\u30C3\u30C8\u30E1\u30C3\u30BB\u30FC\u30B8").addTextArea((t) => {
+      t.setPlaceholder("\u30B3\u30DF\u30C3\u30C8\u30E1\u30C3\u30BB\u30FC\u30B8\u3092\u5165\u529B...").onChange((v) => {
+        commitMessage = v;
+      });
+      t.inputEl.style.cssText = "width:100%;min-height:60px;";
+      return t;
+    });
+    commitSetting.settingEl.style.flexDirection = "column";
+    commitSetting.settingEl.style.alignItems = "flex-start";
+    new import_obsidian.Setting(contentEl).addButton(
+      (btn) => btn.setButtonText("Commit & Push").setCta().onClick(async () => {
+        if (!commitMessage.trim()) {
+          new import_obsidian.Notice("\u30B3\u30DF\u30C3\u30C8\u30E1\u30C3\u30BB\u30FC\u30B8\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044");
+          return;
+        }
+        this.close();
+        await this.plugin.commitAndPush(this.repo, commitMessage.trim());
       })
     );
     contentEl.createEl("h4", { text: "\u30D6\u30E9\u30F3\u30C1\u64CD\u4F5C", attr: { style: "margin-top:16px;" } });
@@ -259,6 +297,22 @@ var GitRepoModal = class extends import_obsidian.Modal {
         await this.plugin.createAndPushBranch(this.repo, branchName);
       })
     );
+    this.loadGitInfo(branchCode, commitLogEl);
+  }
+  async loadGitInfo(branchEl, logEl) {
+    const destPath = (0, import_path.join)(this.plugin.getVaultPath(), this.repo.prefix);
+    try {
+      const branch = await runGit(destPath, ["branch", "--show-current"]);
+      branchEl.setText(branch || this.repo.branch);
+    } catch (e) {
+      branchEl.setText(`${this.repo.branch} (config)`);
+    }
+    try {
+      const log = await runGit(destPath, ["log", "--oneline", "-15"]);
+      logEl.setText(log || "(\u30B3\u30DF\u30C3\u30C8\u306A\u3057)");
+    } catch (e) {
+      logEl.setText("(\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F)");
+    }
   }
   onClose() {
     this.contentEl.empty();
@@ -268,6 +322,25 @@ var GitNestPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
+    this.commandLog = [];
+  }
+  logCmd(cmd, result) {
+    const t = (/* @__PURE__ */ new Date()).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    this.commandLog.push(`[${t}] ${cmd}  \u2192  ${result}`);
+    if (this.commandLog.length > 100)
+      this.commandLog.shift();
+  }
+  async runGitAndLog(cwd, args) {
+    const cmd = `git ${args.join(" ")}`;
+    try {
+      const out = await runGit(cwd, args);
+      this.logCmd(cmd, out || "OK");
+      return out;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logCmd(cmd, `Error: ${msg}`);
+      throw err;
+    }
   }
   async onload() {
     await this.loadSettings();
@@ -361,7 +434,7 @@ var GitNestPlugin = class extends import_obsidian.Plugin {
       if ((0, import_fs.existsSync)((0, import_path.join)(destPath, ".git"))) {
         new import_obsidian.Notice(`"${entry.prefix}" \u306B\u306F\u3059\u3067\u306B git \u30EA\u30DD\u30B8\u30C8\u30EA\u304C\u5B58\u5728\u3057\u307E\u3059`);
       } else {
-        await runGit(vaultPath, ["clone", "--origin", entry.remoteName, entry.remote, entry.prefix]);
+        await this.runGitAndLog(vaultPath, ["clone", "--origin", entry.remoteName, entry.remote, entry.prefix]);
       }
       addToGitIgnore(vaultPath, entry.prefix);
       this.settings.repos.push(entry);
@@ -377,7 +450,7 @@ ${msg}`, 8e3);
     const destPath = (0, import_path.join)(this.getVaultPath(), entry.prefix);
     new import_obsidian.Notice(`"${entry.prefix}" \u3092 pull \u3057\u3066\u3044\u307E\u3059...`);
     try {
-      await runGit(destPath, ["pull", entry.remoteName, entry.branch]);
+      await this.runGitAndLog(destPath, ["pull", entry.remoteName, entry.branch]);
       new import_obsidian.Notice(`"${entry.prefix}" \u306E pull \u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -398,7 +471,7 @@ ${msg}`, 8e3);
     const destPath = (0, import_path.join)(this.getVaultPath(), entry.prefix);
     new import_obsidian.Notice(`"${entry.prefix}" \u3092 push \u3057\u3066\u3044\u307E\u3059...`);
     try {
-      await runGit(destPath, ["push", entry.remoteName, entry.branch]);
+      await this.runGitAndLog(destPath, ["push", entry.remoteName, entry.branch]);
       new import_obsidian.Notice(`"${entry.prefix}" \u306E push \u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -428,13 +501,13 @@ ${msg}`, 8e3);
     const destPath = (0, import_path.join)(this.getVaultPath(), entry.prefix);
     new import_obsidian.Notice(`"${entry.prefix}" \u306E\u5909\u66F4\u3092\u30B9\u30BF\u30C3\u30B7\u30E5\u3057\u3066\u3044\u307E\u3059...`);
     try {
-      const stashOut = await runGit(destPath, ["stash"]);
+      const stashOut = await this.runGitAndLog(destPath, ["stash"]);
       const hasStash = !stashOut.includes("No local changes");
       new import_obsidian.Notice(`"${entry.prefix}" \u3092 pull \u3057\u3066\u3044\u307E\u3059...`);
-      await runGit(destPath, ["pull", entry.remoteName, entry.branch]);
+      await this.runGitAndLog(destPath, ["pull", entry.remoteName, entry.branch]);
       if (hasStash) {
         new import_obsidian.Notice(`"${entry.prefix}" \u306E\u30B9\u30BF\u30C3\u30B7\u30E5\u3092\u623B\u3057\u3066\u3044\u307E\u3059...`);
-        await runGit(destPath, ["stash", "pop"]);
+        await this.runGitAndLog(destPath, ["stash", "pop"]);
       }
       new import_obsidian.Notice(`"${entry.prefix}" \u306E pull \u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F`);
     } catch (err) {
@@ -446,7 +519,7 @@ ${msg}`, 8e3);
   async checkoutBranch(entry, branchName) {
     const destPath = (0, import_path.join)(this.getVaultPath(), entry.prefix);
     try {
-      await runGit(destPath, ["checkout", branchName]);
+      await this.runGitAndLog(destPath, ["checkout", branchName]);
       const idx = this.settings.repos.findIndex((r) => r.prefix === entry.prefix);
       if (idx !== -1) {
         this.settings.repos[idx].branch = branchName;
@@ -462,9 +535,9 @@ ${msg}`, 8e3);
   async createAndPushBranch(entry, branchName) {
     const destPath = (0, import_path.join)(this.getVaultPath(), entry.prefix);
     try {
-      await runGit(destPath, ["checkout", "-b", branchName]);
+      await this.runGitAndLog(destPath, ["checkout", "-b", branchName]);
       new import_obsidian.Notice(`"${branchName}" \u30D6\u30E9\u30F3\u30C1\u3092\u4F5C\u6210\u3057\u307E\u3057\u305F\u3002push \u3057\u3066\u3044\u307E\u3059...`);
-      await runGit(destPath, ["push", "-u", entry.remoteName, branchName]);
+      await this.runGitAndLog(destPath, ["push", "-u", entry.remoteName, branchName]);
       const idx = this.settings.repos.findIndex((r) => r.prefix === entry.prefix);
       if (idx !== -1) {
         this.settings.repos[idx].branch = branchName;
@@ -474,6 +547,21 @@ ${msg}`, 8e3);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       new import_obsidian.Notice(`\u30D6\u30E9\u30F3\u30C1\u306E\u4F5C\u6210\u30FBpush \u306B\u5931\u6557\u3057\u307E\u3057\u305F:
+${msg}`, 8e3);
+    }
+  }
+  async commitAndPush(entry, message) {
+    const destPath = (0, import_path.join)(this.getVaultPath(), entry.prefix);
+    new import_obsidian.Notice(`"${entry.prefix}" \u3092\u30B3\u30DF\u30C3\u30C8\u3057\u3066\u3044\u307E\u3059...`);
+    try {
+      await this.runGitAndLog(destPath, ["add", "-A"]);
+      await this.runGitAndLog(destPath, ["commit", "-m", message]);
+      new import_obsidian.Notice(`"${entry.prefix}" \u3092 push \u3057\u3066\u3044\u307E\u3059...`);
+      await this.runGitAndLog(destPath, ["push", entry.remoteName, entry.branch]);
+      new import_obsidian.Notice(`"${entry.prefix}" \u306E\u30B3\u30DF\u30C3\u30C8\u30FBpush \u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new import_obsidian.Notice(`\u30B3\u30DF\u30C3\u30C8\u30FBpush \u306B\u5931\u6557\u3057\u307E\u3057\u305F:
 ${msg}`, 8e3);
     }
   }
