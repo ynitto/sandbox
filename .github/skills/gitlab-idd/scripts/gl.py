@@ -184,6 +184,25 @@ def get_node_id() -> str:
     return new_id
 
 
+DEFAULT_MAX_REVIEW_PER_RUN = 1
+
+
+def get_max_review_per_run() -> int:
+    """Return the maximum number of issues to review per run.
+
+    Read from skill-registry.json skill_configs.gitlab-idd.max_review_per_run.
+    Defaults to DEFAULT_MAX_REVIEW_PER_RUN (1) when not set.
+    """
+    reg = _load_registry()
+    val = reg.get("skill_configs", {}).get("gitlab-idd", {}).get("max_review_per_run")
+    if val is not None:
+        try:
+            return max(1, int(val))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_MAX_REVIEW_PER_RUN
+
+
 def title_to_slug(title: str) -> str:
     """イシュータイトルをブランチ名向けの URL セーフなスラッグに変換する。"""
     normalized = unicodedata.normalize("NFKC", title).lower()
@@ -354,6 +373,15 @@ def cmd_get_node_id(args, host, project, token):
     Set GITLAB_NODE_ID to override the default per-machine ID.
     """
     out({"node_id": get_node_id()}, args.get)
+
+
+def cmd_get_max_review_per_run(args, host, project, token):
+    """Show the maximum number of issues to review per run.
+
+    Read from skill-registry.json skill_configs.gitlab-idd.max_review_per_run.
+    Defaults to 1 when not set.
+    """
+    out({"max_review_per_run": get_max_review_per_run()}, args.get)
 
 
 def cmd_current_user(args, host, project, token):
@@ -915,6 +943,8 @@ def build_parser():
     sub.add_parser("current-user", help="Show authenticated user info")
     sub.add_parser("get-node-id",
                    help="Show the current terminal node ID (set GITLAB_NODE_ID to override)")
+    sub.add_parser("get-max-review-per-run",
+                   help="Show the max issues to review per run (skill-registry.json, default 1)")
 
     p = sub.add_parser("list-issues", help="List project issues")
     p.add_argument("--label", help="Filter by label (comma-separated, AND condition)")
@@ -1076,7 +1106,8 @@ COMMANDS = {
     "project-info":        cmd_project_info,
     "get-default-branch":  cmd_get_default_branch,
     "current-user":        cmd_current_user,
-    "get-node-id":     cmd_get_node_id,
+    "get-node-id":         cmd_get_node_id,
+    "get-max-review-per-run": cmd_get_max_review_per_run,
     "list-issues":     cmd_list_issues,
     "get-issue":       cmd_get_issue,
     "create-issue":    cmd_create_issue,

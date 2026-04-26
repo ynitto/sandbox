@@ -402,6 +402,35 @@ def test_check_non_requester_review_defer_allows_when_worker_restarted(monkeypat
     assert captured["reason"] == "not_yet_reviewed"
 
 
+# ---------------------------------------------------------------------------
+# get-max-review-per-run
+# ---------------------------------------------------------------------------
+
+def test_get_max_review_per_run_returns_default_when_not_set(monkeypatch):
+    """No registry entry → returns DEFAULT_MAX_REVIEW_PER_RUN (1)"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {})
+    assert gl.get_max_review_per_run() == 1
+
+
+def test_get_max_review_per_run_returns_configured_value(monkeypatch):
+    """Registry has max_review_per_run set → returns that value"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"max_review_per_run": 3}}
+    })
+    assert gl.get_max_review_per_run() == 3
+
+
+def test_get_max_review_per_run_clamps_to_minimum_one(monkeypatch):
+    """Registry has max_review_per_run=0 → clamped to 1"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"max_review_per_run": 0}}
+    })
+    assert gl.get_max_review_per_run() == 1
+
+
 def test_check_non_requester_review_defer_allows_when_no_worker_node_id(monkeypatch):
     """no worker-node-id comment at all → defer=False (allow review)"""
     gl = load_gl_module()
