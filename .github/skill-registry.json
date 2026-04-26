@@ -14,6 +14,12 @@
         "tags": ["enterprise", "architecture", "devops"]
       },
       {
+        "name": "Qiita Popular Items",
+        "url": "https://qiita.com/popular-items/feed",
+        "lang": "ja",
+        "tags": ["japanese", "dev"]
+      },
+      {
         "name": "Zenn Trend",
         "url": "https://zenn.dev/feed",
         "lang": "ja",
@@ -32,12 +38,6 @@
         "tags": ["cloud", "aws"]
       },
       {
-        "name": "Google Developers Blog",
-        "url": "https://developers.googleblog.com/feeds/posts/default",
-        "lang": "en",
-        "tags": ["google", "cloud", "ai"]
-      },
-      {
         "name": "GIHYO.JP エンジニアHub",
         "url": "https://gihyo.jp/feed/rss2",
         "lang": "ja",
@@ -48,6 +48,72 @@
         "url": "https://rss.itmedia.co.jp/rss/2.0/itmedia_all.xml",
         "lang": "ja",
         "tags": ["japanese", "news"]
+      },
+      {
+        "name": "CodeZine 新着",
+        "url": "https://codezine.jp/rss/new/index.xml",
+        "lang": "ja",
+        "tags": ["japanese", "dev"]
+      },
+      {
+        "name": "Classmethod Dev Blog",
+        "url": "https://dev.classmethod.jp/feed",
+        "lang": "ja",
+        "tags": ["japanese", "dev"]
+      },
+      {
+        "name": "ITmedia AI",
+        "url": "https://rss.itmedia.co.jp/rss/2.0/ait.xml",
+        "lang": "ja",
+        "tags": ["japanese", "ai"]
+      },
+      {
+        "name": "Publickey",
+        "url": "https://www.publickey1.jp/atom.xml",
+        "lang": "ja",
+        "tags": ["japanese", "enterprise", "cloud"]
+      },
+      {
+        "name": "Hatena Bookmark IT",
+        "url": "https://b.hatena.ne.jp/hotentry/it.rss",
+        "lang": "ja",
+        "tags": ["japanese", "news", "it"]
+      },
+      {
+        "name": "Yamadashy Tech Blog",
+        "url": "https://yamadashy.github.io/tech-blog-rss-feed/feeds/rss.xml",
+        "lang": "ja",
+        "tags": ["japanese", "tech", "blog"]
+      },
+      {
+        "name": "CyberAgent Developers Blog",
+        "url": "https://developers.cyberagent.co.jp/blog/feed",
+        "lang": "ja",
+        "tags": ["japanese", "tech", "blog"]
+      },
+      {
+        "name": "DeNA Engineers Blog",
+        "url": "https://engineer.dena.com/index.xml",
+        "lang": "ja",
+        "tags": ["japanese", "tech", "blog"]
+      },
+      {
+        "name": "ZOZO Tech Blog",
+        "url": "https://techblog.zozo.com/rss",
+        "lang": "ja",
+        "tags": ["japanese", "tech", "blog"]
+      },
+      {
+        "name": "Mercari Engineering Blog",
+        "url": "https://engineering.mercari.com/blog/feed/",
+        "lang": "ja",
+        "tags": ["japanese", "tech", "blog"]
+      },
+      {
+        "name": "Wantedly Engineers Blog",
+        "url": "https://www.wantedly.com/stories/s/wantedly_engineers/rss.xml",
+        "lang": "ja",
+        "tags": ["japanese", "tech", "blog"]
       }
     ]
   }
