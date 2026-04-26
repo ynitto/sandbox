@@ -218,7 +218,7 @@ class SelectRepoModal extends Modal {
 }
 
 // ---------------------------------------------------------------------------
-// モーダル: ブランチ切り替え
+// モーダル: ブランチ切り替え (設定タブ・コマンドパレット用)
 // ---------------------------------------------------------------------------
 
 class SwitchBranchModal extends Modal {
@@ -269,6 +269,110 @@ class SwitchBranchModal extends Modal {
             this.close();
             await this.plugin.switchBranch(this.repo, branchName);
           })
+      );
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// モーダル: Git 操作 (フォルダ右クリックメニューから表示)
+// ---------------------------------------------------------------------------
+
+class GitRepoModal extends Modal {
+  private plugin: GitNestPlugin;
+  private repo: RepoEntry;
+
+  constructor(app: App, plugin: GitNestPlugin, repo: RepoEntry) {
+    super(app);
+    this.plugin = plugin;
+    this.repo = repo;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: `Git 操作: ${this.repo.prefix}` });
+
+    contentEl.createEl('p', {
+      text: `ブランチ: ${this.repo.branch}  |  リモート: ${this.repo.remoteName}`,
+      attr: { style: 'opacity:0.6;font-size:0.85em;margin-bottom:16px;' },
+    });
+
+    // ---- 同期 ----
+
+    contentEl.createEl('h4', { text: '同期' });
+
+    new Setting(contentEl)
+      .setName('Pull')
+      .setDesc(`${this.repo.remoteName}/${this.repo.branch} から最新を取得`)
+      .addButton((btn) =>
+        btn.setButtonText('Pull').setIcon('download').onClick(async () => {
+          this.close();
+          await this.plugin.pullRepo(this.repo);
+        })
+      );
+
+    new Setting(contentEl)
+      .setName('Push')
+      .setDesc(`${this.repo.remoteName}/${this.repo.branch} へ変更を送信`)
+      .addButton((btn) =>
+        btn.setButtonText('Push').setIcon('upload').onClick(async () => {
+          this.close();
+          await this.plugin.pushRepo(this.repo);
+        })
+      );
+
+    new Setting(contentEl)
+      .setName('スタッシュして Pull')
+      .setDesc('現在の変更をスタッシュし、最新を pull してスタッシュを戻します')
+      .addButton((btn) =>
+        btn.setButtonText('Stash & Pull').onClick(async () => {
+          this.close();
+          await this.plugin.pullWithStash(this.repo);
+        })
+      );
+
+    // ---- ブランチ操作 ----
+
+    contentEl.createEl('h4', { text: 'ブランチ操作', attr: { style: 'margin-top:16px;' } });
+
+    let branchName = '';
+    const branchSetting = new Setting(contentEl)
+      .setName('ブランチ名')
+      .addText((t) =>
+        t.setPlaceholder('branch-name').onChange((v) => { branchName = v.trim(); })
+      );
+    branchSetting.settingEl.style.marginBottom = '0';
+
+    new Setting(contentEl)
+      .setName('既存ブランチへ切り替え')
+      .setDesc('git checkout でブランチを切り替えます')
+      .addButton((btn) =>
+        btn.setButtonText('チェックアウト').onClick(async () => {
+          if (!branchName) {
+            new Notice('ブランチ名を入力してください');
+            return;
+          }
+          this.close();
+          await this.plugin.checkoutBranch(this.repo, branchName);
+        })
+      );
+
+    new Setting(contentEl)
+      .setName('新規ブランチを作成して Push')
+      .setDesc('新しいブランチを作成してリモートに push します')
+      .addButton((btn) =>
+        btn.setButtonText('作成 & Push').setCta().onClick(async () => {
+          if (!branchName) {
+            new Notice('ブランチ名を入力してください');
+            return;
+          }
+          this.close();
+          await this.plugin.createAndPushBranch(this.repo, branchName);
+        })
       );
   }
 
@@ -360,21 +464,9 @@ export default class GitNestPlugin extends Plugin {
           if (existing) {
             menu.addItem((item: MenuItem) =>
               item
-                .setTitle('Git: Pull')
-                .setIcon('download')
-                .onClick(() => this.pullRepo(existing))
-            );
-            menu.addItem((item: MenuItem) =>
-              item
-                .setTitle('Git: Push')
-                .setIcon('upload')
-                .onClick(() => this.pushRepo(existing))
-            );
-            menu.addItem((item: MenuItem) =>
-              item
-                .setTitle('Git: ブランチを切り替え')
+                .setTitle('Git: 管理')
                 .setIcon('git-branch')
-                .onClick(() => new SwitchBranchModal(this.app, this, existing).open())
+                .onClick(() => new GitRepoModal(this.app, this, existing).open())
             );
           } else {
             menu.addItem((item: MenuItem) =>
@@ -481,6 +573,59 @@ export default class GitNestPlugin extends Plugin {
     this.settings.repos[idx].branch = newBranch;
     await this.saveSettings();
     new Notice(`"${entry.prefix}" のブランチを "${oldBranch}" から "${newBranch}" に変更しました`);
+  }
+
+  async pullWithStash(entry: RepoEntry): Promise<void> {
+    const destPath = join(this.getVaultPath(), entry.prefix);
+    new Notice(`"${entry.prefix}" の変更をスタッシュしています...`);
+    try {
+      const stashOut = await runGit(destPath, ['stash']);
+      const hasStash = !stashOut.includes('No local changes');
+      new Notice(`"${entry.prefix}" を pull しています...`);
+      await runGit(destPath, ['pull', entry.remoteName, entry.branch]);
+      if (hasStash) {
+        new Notice(`"${entry.prefix}" のスタッシュを戻しています...`);
+        await runGit(destPath, ['stash', 'pop']);
+      }
+      new Notice(`"${entry.prefix}" の pull が完了しました`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`スタッシュ pull に失敗しました:\n${msg}`, 8000);
+    }
+  }
+
+  async checkoutBranch(entry: RepoEntry, branchName: string): Promise<void> {
+    const destPath = join(this.getVaultPath(), entry.prefix);
+    try {
+      await runGit(destPath, ['checkout', branchName]);
+      const idx = this.settings.repos.findIndex((r) => r.prefix === entry.prefix);
+      if (idx !== -1) {
+        this.settings.repos[idx].branch = branchName;
+        await this.saveSettings();
+      }
+      new Notice(`"${entry.prefix}" を "${branchName}" に切り替えました`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`ブランチの切り替えに失敗しました:\n${msg}`, 8000);
+    }
+  }
+
+  async createAndPushBranch(entry: RepoEntry, branchName: string): Promise<void> {
+    const destPath = join(this.getVaultPath(), entry.prefix);
+    try {
+      await runGit(destPath, ['checkout', '-b', branchName]);
+      new Notice(`"${branchName}" ブランチを作成しました。push しています...`);
+      await runGit(destPath, ['push', '-u', entry.remoteName, branchName]);
+      const idx = this.settings.repos.findIndex((r) => r.prefix === entry.prefix);
+      if (idx !== -1) {
+        this.settings.repos[idx].branch = branchName;
+        await this.saveSettings();
+      }
+      new Notice(`"${entry.prefix}" の新ブランチ "${branchName}" を push しました`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`ブランチの作成・push に失敗しました:\n${msg}`, 8000);
+    }
   }
 
   // ---------------------------------------------------------------------------
