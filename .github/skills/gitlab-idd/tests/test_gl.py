@@ -315,3 +315,220 @@ def test_check_assigned_defer_allows_when_lock_expired(monkeypatch):
 
     assert captured["defer"] is False
     assert captured["reason"] == "assigned_lock_expired"
+
+
+# ---------------------------------------------------------------------------
+# check-non-requester-review-defer
+# ---------------------------------------------------------------------------
+
+def test_check_non_requester_review_defer_allows_when_no_review_yet(monkeypatch):
+    """worker-node-id exists but this node has not reviewed yet → defer=False"""
+    gl = load_gl_module()
+    captured = {}
+    started = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    monkeypatch.setattr(
+        gl, "api_list",
+        lambda host, token, path: [
+            {"body": "着手 <!-- gitlab-idd:worker-node-id:worker-node -->", "created_at": started},
+        ],
+    )
+    monkeypatch.setattr(gl, "get_node_id", lambda: "reviewer-node")
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.update(obj))
+
+    args = SimpleNamespace(issue_id=42, get=None)
+    gl.cmd_check_non_requester_review_defer(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["defer"] is False
+    assert captured["reason"] == "not_yet_reviewed"
+
+
+def test_check_non_requester_review_defer_defers_when_already_reviewed_in_cycle(monkeypatch):
+    """non-requester-reviewed marker exists after latest worker-node-id → defer=True"""
+    gl = load_gl_module()
+    captured = {}
+    started = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    reviewed = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    monkeypatch.setattr(
+        gl, "api_list",
+        lambda host, token, path: [
+            {"body": "着手 <!-- gitlab-idd:worker-node-id:worker-node -->", "created_at": started},
+            {
+                "body": "レビュー <!-- gitlab-idd:non-requester-reviewed:reviewer-node -->",
+                "created_at": reviewed,
+            },
+        ],
+    )
+    monkeypatch.setattr(gl, "get_node_id", lambda: "reviewer-node")
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.update(obj))
+
+    args = SimpleNamespace(issue_id=42, get=None)
+    gl.cmd_check_non_requester_review_defer(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["defer"] is True
+    assert captured["reason"] == "already_reviewed_this_cycle"
+
+
+def test_check_non_requester_review_defer_allows_when_worker_restarted(monkeypatch):
+    """new worker-node-id after previous non-requester-reviewed → defer=False (new cycle)"""
+    gl = load_gl_module()
+    captured = {}
+    first_start = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    reviewed = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    second_start = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    monkeypatch.setattr(
+        gl, "api_list",
+        lambda host, token, path: [
+            # First work cycle
+            {"body": "着手 <!-- gitlab-idd:worker-node-id:worker-node -->", "created_at": first_start},
+            # Non-requester reviewed in first cycle
+            {
+                "body": "レビュー <!-- gitlab-idd:non-requester-reviewed:reviewer-node -->",
+                "created_at": reviewed,
+            },
+            # Worker restarted after rework → new cycle
+            {"body": "再着手 <!-- gitlab-idd:worker-node-id:worker-node -->", "created_at": second_start},
+        ],
+    )
+    monkeypatch.setattr(gl, "get_node_id", lambda: "reviewer-node")
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.update(obj))
+
+    args = SimpleNamespace(issue_id=42, get=None)
+    gl.cmd_check_non_requester_review_defer(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["defer"] is False
+    assert captured["reason"] == "not_yet_reviewed"
+
+
+# ---------------------------------------------------------------------------
+# get-max-review-per-run
+# ---------------------------------------------------------------------------
+
+def test_get_max_review_per_run_returns_default_when_not_set(monkeypatch):
+    """No registry entry → returns DEFAULT_MAX_REVIEW_PER_RUN (1)"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {})
+    assert gl.get_max_review_per_run() == 1
+
+
+def test_get_max_review_per_run_returns_configured_value(monkeypatch):
+    """Registry has max_review_per_run set → returns that value"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"max_review_per_run": 3}}
+    })
+    assert gl.get_max_review_per_run() == 3
+
+
+def test_get_max_review_per_run_clamps_to_minimum_one(monkeypatch):
+    """Registry has max_review_per_run=0 → clamped to 1"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"max_review_per_run": 0}}
+    })
+    assert gl.get_max_review_per_run() == 1
+
+
+def test_check_non_requester_review_defer_allows_when_no_worker_node_id(monkeypatch):
+    """no worker-node-id comment at all → defer=False (allow review)"""
+    gl = load_gl_module()
+    captured = {}
+
+    monkeypatch.setattr(gl, "api_list", lambda host, token, path: [])
+    monkeypatch.setattr(gl, "get_node_id", lambda: "reviewer-node")
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.update(obj))
+
+    args = SimpleNamespace(issue_id=42, get=None)
+    gl.cmd_check_non_requester_review_defer(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["defer"] is False
+    assert captured["reason"] == "not_yet_reviewed"
+
+
+# ---------------------------------------------------------------------------
+# get_self_defer_minutes
+# ---------------------------------------------------------------------------
+
+def test_get_self_defer_minutes_returns_default_when_not_set(monkeypatch):
+    """No registry entry → returns DEFAULT_SELF_DEFER_MINUTES (60)"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {})
+    assert gl.get_self_defer_minutes() == 60.0
+
+
+def test_get_self_defer_minutes_returns_configured_value(monkeypatch):
+    """Registry has self_defer_minutes set → returns that value"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"self_defer_minutes": 120}}
+    })
+    assert gl.get_self_defer_minutes() == 120.0
+
+
+def test_get_self_defer_minutes_clamps_to_zero(monkeypatch):
+    """Registry has self_defer_minutes=-10 → clamped to 0"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"self_defer_minutes": -10}}
+    })
+    assert gl.get_self_defer_minutes() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_self_review_lock_minutes
+# ---------------------------------------------------------------------------
+
+def test_get_self_review_lock_minutes_returns_default_when_not_set(monkeypatch):
+    """No registry entry → returns DEFAULT_SELF_REVIEW_LOCK_MINUTES (1440)"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {})
+    assert gl.get_self_review_lock_minutes() == 1440.0
+
+
+def test_get_self_review_lock_minutes_returns_configured_value(monkeypatch):
+    """Registry has self_review_lock_minutes set → returns that value"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"self_review_lock_minutes": 720}}
+    })
+    assert gl.get_self_review_lock_minutes() == 720.0
+
+
+def test_get_self_review_lock_minutes_clamps_to_zero(monkeypatch):
+    """Registry has self_review_lock_minutes=-5 → clamped to 0"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"self_review_lock_minutes": -5}}
+    })
+    assert gl.get_self_review_lock_minutes() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_assigned_lock_minutes
+# ---------------------------------------------------------------------------
+
+def test_get_assigned_lock_minutes_returns_default_when_not_set(monkeypatch):
+    """No registry entry → returns DEFAULT_ASSIGNED_LOCK_MINUTES (1440)"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {})
+    assert gl.get_assigned_lock_minutes() == 1440.0
+
+
+def test_get_assigned_lock_minutes_returns_configured_value(monkeypatch):
+    """Registry has assigned_lock_minutes set → returns that value"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"assigned_lock_minutes": 480}}
+    })
+    assert gl.get_assigned_lock_minutes() == 480.0
+
+
+def test_get_assigned_lock_minutes_clamps_to_zero(monkeypatch):
+    """Registry has assigned_lock_minutes=-1 → clamped to 0"""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "_load_registry", lambda: {
+        "skill_configs": {"gitlab-idd": {"assigned_lock_minutes": -1}}
+    })
+    assert gl.get_assigned_lock_minutes() == 0.0

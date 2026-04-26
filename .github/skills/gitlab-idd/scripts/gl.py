@@ -18,10 +18,13 @@ Usage:
                  --get author.username       → nested field
 
 Environment variables:
-  GITLAB_TOKEN or GL_TOKEN         Personal Access Token (required)
-  GITLAB_SELF_DEFER_MINUTES        Worker self-defer period (check-defer, default: 60 min)
-  GITLAB_SELF_REVIEW_LOCK_MINUTES  Reviewer self-review lock period (check-review-defer, default: 1440 min)
-  GITLAB_ASSIGNED_LOCK_MINUTES     Stale-assignee lock period (check-assigned-defer, default: 1440 min)
+  GITLAB_TOKEN or GL_TOKEN  Personal Access Token (required)
+
+skill-registry.json (skill_configs.gitlab-idd.*):
+  self_defer_minutes        Worker self-defer period (check-defer, default: 60 min)
+  self_review_lock_minutes  Reviewer self-review lock period (check-review-defer, default: 1440 min)
+  assigned_lock_minutes     Stale-assignee lock period (check-assigned-defer, default: 1440 min)
+  max_review_per_run        Max issues reviewed per run (default: 1)
 """
 
 import argparse
@@ -141,15 +144,23 @@ def _get_registry_path() -> str:
     return os.path.join(_get_agent_home(), _REGISTRY_FILENAME)
 
 
+_registry_cache: Optional[dict] = None
+
+
 def _load_registry() -> dict:
+    global _registry_cache
+    if _registry_cache is not None:
+        return _registry_cache
     path = _get_registry_path()
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
+                _registry_cache = json.load(f)
+                return _registry_cache
         except (json.JSONDecodeError, OSError):
             pass
-    return {}
+    _registry_cache = {}
+    return _registry_cache
 
 
 def _save_registry(reg: dict) -> None:
@@ -182,6 +193,35 @@ def get_node_id() -> str:
     reg.setdefault("skill_configs", {}).setdefault("gitlab-idd", {})["node_id"] = new_id
     _save_registry(reg)
     return new_id
+
+
+DEFAULT_MAX_REVIEW_PER_RUN = 1
+
+
+def _get_idd_config(key, default, converter, minimum):
+    val = _load_registry().get("skill_configs", {}).get("gitlab-idd", {}).get(key)
+    if val is not None:
+        try:
+            return max(minimum, converter(val))
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+def get_max_review_per_run() -> int:
+    return _get_idd_config("max_review_per_run", DEFAULT_MAX_REVIEW_PER_RUN, int, 1)
+
+
+def get_self_defer_minutes() -> float:
+    return _get_idd_config("self_defer_minutes", DEFAULT_SELF_DEFER_MINUTES, float, 0.0)
+
+
+def get_self_review_lock_minutes() -> float:
+    return _get_idd_config("self_review_lock_minutes", DEFAULT_SELF_REVIEW_LOCK_MINUTES, float, 0.0)
+
+
+def get_assigned_lock_minutes() -> float:
+    return _get_idd_config("assigned_lock_minutes", DEFAULT_ASSIGNED_LOCK_MINUTES, float, 0.0)
 
 
 def title_to_slug(title: str) -> str:
@@ -322,6 +362,7 @@ def read_body(body, body_file, option_name="--body"):
 # Patterns for extracting embedded node IDs from issue description / comments
 _CREATOR_NODE_RE = re.compile(r"<!--\s*gitlab-idd:creator-node-id:([^\s>]+)\s*-->")
 _WORKER_NODE_RE = re.compile(r"<!--\s*gitlab-idd:worker-node-id:([^\s>]+)\s*-->")
+_NON_REQUESTER_REVIEW_RE = re.compile(r"<!--\s*gitlab-idd:non-requester-reviewed:([^\s>]+)\s*-->")
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +394,15 @@ def cmd_get_node_id(args, host, project, token):
     Set GITLAB_NODE_ID to override the default per-machine ID.
     """
     out({"node_id": get_node_id()}, args.get)
+
+
+def cmd_get_max_review_per_run(args, host, project, token):
+    """Show the maximum number of issues to review per run.
+
+    Read from skill-registry.json skill_configs.gitlab-idd.max_review_per_run.
+    Defaults to 1 when not set.
+    """
+    out({"max_review_per_run": get_max_review_per_run()}, args.get)
 
 
 def cmd_current_user(args, host, project, token):
@@ -813,6 +863,55 @@ def cmd_check_defer(args, host, project, token):
         }, args.get)
 
 
+def cmd_check_non_requester_review_defer(args, host, project, token):
+    """
+    Check whether the non-requester reviewer should skip an issue they already reviewed.
+
+    Output JSON:
+      {"defer": true/false, "reason": "...", ...}
+
+    Defer when:
+        - This node has already posted a non-requester-reviewed comment since the
+          latest worker-node-id comment (= the current work cycle).
+
+    If no worker-node-id comment exists or the non-requester-reviewed marker
+    predates the latest worker-node-id (new work cycle), allow review.
+    """
+    ep = encode_project(project)
+    my_node_id = get_node_id()
+
+    comments = api_list(host, token, f"/projects/{ep}/issues/{args.issue_id}/notes")
+
+    # Find the latest worker-node-id comment timestamp (= start of current cycle)
+    latest_worker_at = None
+    for comment in comments:
+        if _WORKER_NODE_RE.search(comment.get("body") or ""):
+            t = _parse_iso8601_utc(comment.get("created_at"))
+            if t is not None and (latest_worker_at is None or t > latest_worker_at):
+                latest_worker_at = t
+
+    # Check if this node has already reviewed since the latest worker-node-id
+    for comment in comments:
+        m = _NON_REQUESTER_REVIEW_RE.search(comment.get("body") or "")
+        if m and m.group(1) == my_node_id:
+            reviewed_at = _parse_iso8601_utc(comment.get("created_at"))
+            if latest_worker_at is None or (
+                reviewed_at is not None and reviewed_at > latest_worker_at
+            ):
+                out({
+                    "defer": True,
+                    "reason": "already_reviewed_this_cycle",
+                    "my_node_id": my_node_id,
+                }, args.get)
+                return
+
+    out({
+        "defer": False,
+        "reason": "not_yet_reviewed",
+        "my_node_id": my_node_id,
+    }, args.get)
+
+
 def cmd_add_mr_comment(args, host, project, token):
     """Post a comment (note) on a merge request."""
     ep = encode_project(project)
@@ -865,6 +964,8 @@ def build_parser():
     sub.add_parser("current-user", help="Show authenticated user info")
     sub.add_parser("get-node-id",
                    help="Show the current terminal node ID (set GITLAB_NODE_ID to override)")
+    sub.add_parser("get-max-review-per-run",
+                   help="Show the max issues to review per run (skill-registry.json, default 1)")
 
     p = sub.add_parser("list-issues", help="List project issues")
     p.add_argument("--label", help="Filter by label (comma-separated, AND condition)")
@@ -972,12 +1073,10 @@ def build_parser():
     p.add_argument(
         "--minutes",
         type=float,
-        default=float(
-            os.environ.get("GITLAB_SELF_REVIEW_LOCK_MINUTES", str(DEFAULT_SELF_REVIEW_LOCK_MINUTES))
-        ),
+        default=get_self_review_lock_minutes(),
         help=(
             "Self-review lock period in minutes "
-            f"(default: {int(DEFAULT_SELF_REVIEW_LOCK_MINUTES)}, or $GITLAB_SELF_REVIEW_LOCK_MINUTES)"
+            f"(default: skill-registry.json self_review_lock_minutes, or {int(DEFAULT_SELF_REVIEW_LOCK_MINUTES)})"
         ),
     )
 
@@ -987,12 +1086,10 @@ def build_parser():
     p.add_argument(
         "--minutes",
         type=float,
-        default=float(
-            os.environ.get("GITLAB_ASSIGNED_LOCK_MINUTES", str(DEFAULT_ASSIGNED_LOCK_MINUTES))
-        ),
+        default=get_assigned_lock_minutes(),
         help=(
             "Stale-assignee lock period in minutes "
-            f"(default: {int(DEFAULT_ASSIGNED_LOCK_MINUTES)}, or $GITLAB_ASSIGNED_LOCK_MINUTES)"
+            f"(default: skill-registry.json assigned_lock_minutes, or {int(DEFAULT_ASSIGNED_LOCK_MINUTES)})"
         ),
     )
 
@@ -1002,12 +1099,18 @@ def build_parser():
     p.add_argument(
         "--minutes",
         type=float,
-        default=float(os.environ.get("GITLAB_SELF_DEFER_MINUTES", str(DEFAULT_SELF_DEFER_MINUTES))),
+        default=get_self_defer_minutes(),
         help=(
             "Defer period in minutes "
-            f"(default: {int(DEFAULT_SELF_DEFER_MINUTES)}, or $GITLAB_SELF_DEFER_MINUTES)"
+            f"(default: skill-registry.json self_defer_minutes, or {int(DEFAULT_SELF_DEFER_MINUTES)})"
         ),
     )
+
+    p = sub.add_parser(
+        "check-non-requester-review-defer",
+        help="Check if this node already reviewed the issue in the current work cycle",
+    )
+    p.add_argument("issue_id", type=int)
 
     return parser
 
@@ -1020,7 +1123,8 @@ COMMANDS = {
     "project-info":        cmd_project_info,
     "get-default-branch":  cmd_get_default_branch,
     "current-user":        cmd_current_user,
-    "get-node-id":     cmd_get_node_id,
+    "get-node-id":         cmd_get_node_id,
+    "get-max-review-per-run": cmd_get_max_review_per_run,
     "list-issues":     cmd_list_issues,
     "get-issue":       cmd_get_issue,
     "create-issue":    cmd_create_issue,
@@ -1039,6 +1143,7 @@ COMMANDS = {
     "check-review-defer":   cmd_check_review_defer,
     "check-assigned-defer": cmd_check_assigned_defer,
     "check-defer":          cmd_check_defer,
+    "check-non-requester-review-defer": cmd_check_non_requester_review_defer,
 }
 
 
