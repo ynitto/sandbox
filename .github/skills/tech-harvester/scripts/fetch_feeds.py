@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-REGISTRY_PATH = Path(__file__).parent.parent.parent / "skill-registry.json"
+REGISTRY_PATH = Path(__file__).parent.parent.parent.parent / "skill-registry.json"
 
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
