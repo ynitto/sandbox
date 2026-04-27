@@ -41,8 +41,9 @@ def run_batch_update(persona_home: Path, dry_run: bool = False) -> bool:
     print("=== ペルソナ一括更新 ===")
     print(
         "以下の観察ログを読んで、profile.md / preferences.md / expertise.md の"
-        "該当セクションを更新してください。"
-        "既存記述と矛盾する場合は上書き、補完できる場合は追記してください。"
+        "該当セクションを更新してください。\n"
+        "【注意】既存ファイルの内容と重複する記述は追加しないこと。"
+        "既存記述と矛盾する場合は上書き、新規情報のみ追記してください。"
     )
     print()
 
