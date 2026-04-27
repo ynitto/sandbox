@@ -30,6 +30,39 @@ def find_update_files(persona_home: Path) -> list[Path]:
     return sorted(f for f in persona_home.iterdir() if _UPDATE_FILE_RE.match(f.name))
 
 
+def run_batch_update(persona_home: Path, dry_run: bool = False) -> bool:
+    """YYYY-MM-DD-update.md を処理して削除する。処理対象があれば True を返す。
+    他スクリプトから呼び出して自動的に一括更新を行う。"""
+    cleanup_old_update_files(persona_home)
+    update_files = find_update_files(persona_home)
+    if not update_files:
+        return False
+
+    print("=== ペルソナ一括更新 ===")
+    print(
+        "以下の観察ログを読んで、profile.md / preferences.md / expertise.md の"
+        "該当セクションを更新してください。"
+        "既存記述と矛盾する場合は上書き、補完できる場合は追記してください。"
+    )
+    print()
+
+    for path in update_files:
+        print(f"--- {path.name} ---")
+        print(path.read_text(encoding="utf-8"))
+        print()
+
+    if dry_run:
+        print("[DRY-RUN] ファイルは削除されませんでした。")
+        return True
+
+    for path in update_files:
+        path.unlink()
+        print(f"[削除] {path.name}")
+
+    print("[OK] 一括更新完了\n")
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="YYYY-MM-DD-update.md の内容を管理ファイルに反映する"
@@ -51,42 +84,8 @@ def main() -> None:
         print(f"[ERROR] persona_home が存在しません: {persona_home}", file=sys.stderr)
         sys.exit(1)
 
-    cleanup_old_update_files(persona_home)
-
-    update_files = find_update_files(persona_home)
-    if not update_files:
+    if not run_batch_update(persona_home, dry_run=args.dry_run):
         print("(処理対象の更新ファイルがありません)")
-        sys.exit(0)
-
-    print("=== ペルソナ一括更新 ===")
-    print(
-        "以下の観察ログを読んで、profile.md / preferences.md / expertise.md の"
-        "該当セクションを更新してください。"
-        "既存記述と矛盾する場合は上書き、補完できる場合は追記してください。"
-    )
-    print()
-
-    for path in update_files:
-        print(f"--- {path.name} ---")
-        print(path.read_text(encoding="utf-8"))
-        print()
-
-    print("=== 更新ファイル一覧 ===")
-    for path in update_files:
-        print(f"  {path}")
-
-    if args.dry_run:
-        print("\n[DRY-RUN] ファイルは削除されませんでした。")
-        return
-
-    print("\n上記の内容を管理ファイルに反映してください。")
-    print("反映後、以下の更新ファイルは自動的に削除されます。")
-
-    for path in update_files:
-        path.unlink()
-        print(f"  [削除] {path.name}")
-
-    print("\n[OK] 一括更新完了")
 
 
 if __name__ == "__main__":

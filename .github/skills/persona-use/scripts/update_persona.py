@@ -18,7 +18,8 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from persona_utils import cleanup_old_update_files, load_config, resolve_persona_home
+from batch_update_persona import run_batch_update
+from persona_utils import load_config, resolve_persona_home
 
 
 def append_daily_log(persona_home: Path, observation: str, today: str) -> None:
@@ -48,7 +49,7 @@ def main() -> None:
         print(f"[SKIP] persona_home が存在しません: {persona_home}", file=sys.stderr)
         sys.exit(0)
 
-    cleanup_old_update_files(persona_home)
+    run_batch_update(persona_home)
     append_daily_log(persona_home, args.log, args.date)
 
 

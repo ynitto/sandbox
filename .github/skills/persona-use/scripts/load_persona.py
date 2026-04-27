@@ -19,7 +19,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from persona_utils import cleanup_old_update_files, load_config, resolve_persona_home
+from batch_update_persona import run_batch_update
+from persona_utils import load_config, resolve_persona_home
 
 SECTIONS = ["profile", "preferences", "expertise"]
 FILE_MAP = {
@@ -82,7 +83,7 @@ def main() -> None:
         print(f"(persona_home が存在しません: {persona_home} — init_persona.py を実行してください)")
         sys.exit(0)
 
-    cleanup_old_update_files(persona_home)
+    run_batch_update(persona_home)
 
     sections = [args.section] if args.section else SECTIONS
     load_all(persona_home, sections)

@@ -18,6 +18,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from batch_update_persona import run_batch_update
 from persona_utils import (
     get_registry_path,
     load_config,
@@ -174,6 +175,7 @@ def main() -> None:
 
     print(f"\nペルソナフォルダ: {persona_home}")
     print()
+    run_batch_update(persona_home)
     init_files(persona_home, reset=args.reset)
 
     print()
