@@ -10,6 +10,8 @@ metadata:
     - knowledge-persistence
     - recall
     - brain-inspired
+  periodic_scripts:
+    - scripts/auto_update.py
 ---
 
 # ltm-use（Long-Term Memory Use）

@@ -42,6 +42,7 @@
         }
       ],
       "pending_refinement": true,
+      "periodic_scripts": [],
       "version": null,
       "central_version": null,
       "version_ahead": false,
@@ -163,6 +164,13 @@
 - `diverged_at`: ローカル変更が最初に検出された日時（ISO 8601）
 - `local_changes_summary`: ローカル変更の要約テキスト
 
+**installed_skills[].periodic_scripts** (文字列リスト、デフォルト: []):
+- スキルディレクトリからの相対パスで示す定期実行スクリプトのリスト
+- `auto_update.py`（git-skill-manager）が auto-update 実行時にこれらのスクリプトを引数なしで呼び出す
+- スクリプト自身がインターバル管理を持つことを前提とする（呼び出し毎に実行するかを自律判断）
+- SKILL.md のフロントマター `metadata.periodic_scripts` に宣言し、`pull` 時に自動登録される
+- 例: `ltm-use` は `scripts/auto_update.py` を登録し、記憶の自動同期（sync/promote）を行う
+
 **installed_skills[].metrics** (オブジェクト):
 - スキルの実行統計（`record_feedback.py` が更新）
 - `total_executions`: 総実行回数
@@ -235,5 +243,6 @@
 | v3 → v4 | `auto_update` |
 | v4 → v5 | `version`、`central_version`、`version_ahead`、`lineage`、`metrics`、`node`、`promotion_policy`、`sync_policy`、`contribution_queue` |
 | v7 → v8 | `sync_policy.auto_resolve_conflicts` |
+| v8 → v9 | `installed_skills[].periodic_scripts` |
 
 → 実装: `scripts/registry.py` — `migrate_registry(reg)`
