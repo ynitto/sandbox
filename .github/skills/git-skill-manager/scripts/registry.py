@@ -140,6 +140,40 @@ def _version_tuple(v: str | None) -> tuple:
         return (0, 0, 0)
 
 
+def _read_periodic_scripts(skill_path: str) -> list[str]:
+    """SKILL.md フロントマターから metadata.periodic_scripts を読み取る。
+
+    未記載の場合は空リストを返す。パスはスキルディレクトリからの相対パス。
+    """
+    skill_md = os.path.join(skill_path, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return []
+    with open(skill_md, encoding="utf-8") as f:
+        content = f.read()
+    fm = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+    if not fm:
+        return []
+    in_metadata = False
+    in_periodic = False
+    scripts: list[str] = []
+    for line in fm.group(1).splitlines():
+        if line.startswith("metadata:"):
+            in_metadata = True
+            continue
+        if in_metadata:
+            if line and not line[0].isspace():
+                break
+            stripped = line.lstrip()
+            if stripped.startswith("periodic_scripts:"):
+                in_periodic = True
+            elif in_periodic:
+                if stripped.startswith("- "):
+                    scripts.append(stripped[2:].strip().strip("\"'"))
+                elif stripped and not stripped.startswith("#"):
+                    in_periodic = False
+    return scripts
+
+
 def _read_frontmatter_version(skill_path: str) -> str | None:
     """SKILL.md のフロントマターから metadata.version を読み取る。未記載なら None。"""
     skill_md = os.path.join(skill_path, "SKILL.md")
@@ -341,6 +375,11 @@ def migrate_registry(reg: dict) -> dict:
         reg.setdefault("sync_policy", {})
         reg["sync_policy"].setdefault("auto_resolve_conflicts", True)
 
+    # v8 → v9: installed_skills に periodic_scripts フィールドを追加
+    if version < 9:
+        for skill in reg.get("installed_skills", []):
+            skill.setdefault("periodic_scripts", [])
+
     # usage_stats と skill_discovery を全バージョンから除去（使用記録機能削除）
     for skill in reg.get("installed_skills", []):
         skill.pop("usage_stats", None)
@@ -349,7 +388,7 @@ def migrate_registry(reg: dict) -> dict:
     # skill_configs: 各スキルのスキル固有設定を格納するセクション
     reg.setdefault("skill_configs", {})
 
-    reg["version"] = 8
+    reg["version"] = 9
     # tier: core の SKILL.md から常に最新のコアスキル一覧を再計算する
     reg["core_skills"] = _discover_core_skills()
     return reg
@@ -363,7 +402,7 @@ def load_registry() -> dict:
         return migrate_registry(reg)
     home = _user_home()
     return {
-        "version": 8,
+        "version": 9,
         "agent_type": "copilot",
         "user_home": home,
         "install_dir": None,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 
 from registry import load_registry, save_registry, _cache_dir, _skill_home, _version_tuple, _read_frontmatter_version
@@ -218,6 +219,42 @@ def run_auto_update(force: bool = False, explicit: bool = False) -> None:
                 print(f"\n📄 instructions: {changed} ファイルを更新しました")
         except Exception as e:
             print(f"\n⚠️  instructions 同期をスキップしました: {e}")
+
+    # スキル固有の periodic_scripts を実行
+    _run_periodic_scripts(reg)
+
+
+def _run_periodic_scripts(reg: dict) -> None:
+    """インストール済みスキルの periodic_scripts を実行する。
+
+    各スキルの installed_skills[].periodic_scripts に記載されたスクリプトを
+    スキルディレクトリ基準の相対パスで解決し、引数なしで実行する。
+    スクリプト側がインターバル管理を持つことを前提とする。
+    """
+    skill_home = _skill_home()
+    ran: list[str] = []
+    for skill in reg.get("installed_skills", []):
+        if not skill.get("enabled", True):
+            continue
+        scripts = skill.get("periodic_scripts", [])
+        if not scripts:
+            continue
+        skill_dir = os.path.join(skill_home, skill["name"])
+        for script_rel in scripts:
+            script_path = os.path.join(skill_dir, script_rel)
+            if not os.path.isfile(script_path):
+                print(f"   ⚠️  {skill['name']}: periodic_script が見つかりません ({script_rel})")
+                continue
+            try:
+                subprocess.run(
+                    [sys.executable, script_path],
+                    check=False,
+                )
+                ran.append(f"{skill['name']}/{script_rel}")
+            except Exception as e:
+                print(f"   ⚠️  {skill['name']}: {script_rel} の実行に失敗しました: {e}")
+    if ran:
+        print(f"\n🔄 periodic_scripts を実行しました ({len(ran)} 件): {', '.join(ran)}")
 
 
 def configure_auto_update(

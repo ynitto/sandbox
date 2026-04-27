@@ -10,7 +10,8 @@ from datetime import datetime
 
 from registry import (
     load_registry, save_registry, _cache_dir, _skill_home,
-    _version_tuple, _read_frontmatter_version, _transform_frontmatter_for_kiro,
+    _version_tuple, _read_frontmatter_version, _read_periodic_scripts,
+    _transform_frontmatter_for_kiro,
 )
 from repo import clone_or_fetch, update_remote_index
 from delta_tracker import check_sync_protection
@@ -309,6 +310,7 @@ def pull_skills(
 
         enabled = existing_skill.get("enabled", True) if existing_skill else True
         version = _read_frontmatter_version(dest)
+        periodic_scripts = _read_periodic_scripts(dest)
 
         installed.append({
             "name": sname,
@@ -321,6 +323,7 @@ def pull_skills(
             "version": version,
             "central_version": central_ver,
             "version_ahead": version_ahead,
+            "periodic_scripts": periodic_scripts,
         })
 
     # レジストリ更新
@@ -330,6 +333,9 @@ def pull_skills(
         # v3フィールドを引き継ぐ
         s["feedback_history"] = old.get("feedback_history", [])
         s["pending_refinement"] = old.get("pending_refinement", False)
+        # periodic_scripts: pull 後は SKILL.md から再読み込みした値を使用（空なら既存を引き継ぐ）
+        if not s.get("periodic_scripts"):
+            s["periodic_scripts"] = old.get("periodic_scripts", [])
         # v5フィールドを設定する（pull後はソース追跡情報を更新、統計は引き継ぐ）
         # s["version"], s["central_version"], s["version_ahead"] は installed.append() 時に設定済み
         s["lineage"] = {

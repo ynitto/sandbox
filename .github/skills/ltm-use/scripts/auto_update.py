@@ -123,8 +123,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.command == "check":
-        run_sync(force=args.force)
+    if args.command == "check" or args.command is None:
+        force = getattr(args, "force", False)
+        run_sync(force=force)
     elif args.command == "configure":
         configure_sync(interval_hours=args.interval)
     elif args.command == "status":
