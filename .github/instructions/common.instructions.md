@@ -44,7 +44,7 @@ python {skill_home}/git-skill-manager/scripts/auto_update.py check
 `persona-use` が設定されていれば、ペルソナを読み込んで応答をパーソナライズする:
 
 ```bash
-python {skill_home}/persona-use/scripts/show_persona.py
+python {skill_home}/persona-use/scripts/load_persona.py
 ```
 
 未設定の場合は "(ペルソナ未設定 — スキップ)" が出力されるのでそのまま次に進む。
