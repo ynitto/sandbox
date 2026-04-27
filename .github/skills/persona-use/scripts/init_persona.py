@@ -110,18 +110,6 @@ updated: {TODAY}
 
 """
 
-LOG_TEMPLATE = f"""\
-# ペルソナ更新ログ
-
-<!-- 新しい観察は先頭に追加 -->
-
-## {TODAY}
-
-- 初期化
-
-"""
-
-
 def init_files(persona_home: Path, reset: bool = False) -> None:
     persona_home.mkdir(parents=True, exist_ok=True)
 
@@ -129,7 +117,6 @@ def init_files(persona_home: Path, reset: bool = False) -> None:
         "profile.md": PROFILE_TEMPLATE,
         "preferences.md": PREFERENCES_TEMPLATE,
         "expertise.md": EXPERTISE_TEMPLATE,
-        "update_log.md": LOG_TEMPLATE,
     }
     for name, content in files.items():
         path = persona_home / name

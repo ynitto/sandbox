@@ -12,9 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
-from datetime import date
 from pathlib import Path
 
 SKILL_NAME = "persona-use"
@@ -83,21 +81,6 @@ def save_config(config: dict) -> None:
 def resolve_persona_home(config: dict) -> Path:
     return Path(os.path.expanduser(config["persona_home"]))
 
-
-_UPDATE_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-update\.md$")
-
-
-def cleanup_old_update_files(persona_home: Path) -> list[Path]:
-    """Delete YYYY-MM-DD-update.md files from before today. Return deleted paths."""
-    today = date.today().isoformat()
-    deleted: list[Path] = []
-    if not persona_home.exists():
-        return deleted
-    for f in persona_home.iterdir():
-        if _UPDATE_FILE_RE.match(f.name) and f.name[:10] < today:
-            f.unlink()
-            deleted.append(f)
-    return deleted
 
 
 def cmd_config(_args) -> None:

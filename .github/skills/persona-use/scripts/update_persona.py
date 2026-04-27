@@ -18,7 +18,6 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from batch_update_persona import run_batch_update
 from persona_utils import load_config, resolve_persona_home
 
 
@@ -49,7 +48,6 @@ def main() -> None:
         print(f"[SKIP] persona_home が存在しません: {persona_home}", file=sys.stderr)
         sys.exit(0)
 
-    run_batch_update(persona_home)
     append_daily_log(persona_home, args.log, args.date)
 
 
