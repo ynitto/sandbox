@@ -1,6 +1,6 @@
 ---
 name: obsidian-use
-description: "「Obsidianのノートを作って」「ウィキリンクを追加して」「コールアウトを書いて」「フロントマターを設定して」「タグをつけて」「ファイルを埋め込んで」「.baseファイルでフィルターやフォーミュラを使って」「キャンバスやマインドマップやフローチャートを作って」「ボルトをCLIで操作して」「プラグインを開発して」「このURLを読んで」「OfficeファイルをMarkdownに変換して」「WordファイルをObsidianに取り込んで」「PDFをノートに変換して」などで発動する。"
+description: "Obsidianのノート作成・編集（.md/.base/.canvas）、CLIによるボルト操作・プラグイン開発、WebページのMarkdown抽出、OfficeファイルのMarkdown変換で発動する。"
 metadata:
   version: "1.0.0"
   tier: domain
