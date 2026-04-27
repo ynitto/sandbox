@@ -66,6 +66,18 @@ export default function Worker() {
     }
   });
 
+  nodeWorker.on('error', function(err) {
+    const msg = { command: 'error', error: { message: 'Worker thread error: ' + (err && err.message || String(err)) } };
+    if (handler) { handler({ data: msg }); } else { pending.push(msg); }
+  });
+
+  nodeWorker.on('exit', function(code) {
+    if (code !== 0) {
+      const msg = { command: 'error', error: { message: 'Worker thread exited unexpectedly (code ' + code + ')' } };
+      if (handler) { handler({ data: msg }); } else { pending.push(msg); }
+    }
+  });
+
   return {
     postMessage: function(msg) { nodeWorker.postMessage(msg); },
     get onmessage() { return handler; },
