@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from persona_utils import cleanup_old_update_files, load_config, resolve_persona_home
+from persona_utils import load_config, resolve_persona_home
 
 _UPDATE_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-update\.md$")
 
@@ -32,8 +32,7 @@ def find_update_files(persona_home: Path) -> list[Path]:
 
 def run_batch_update(persona_home: Path, dry_run: bool = False) -> bool:
     """YYYY-MM-DD-update.md を処理して削除する。処理対象があれば True を返す。
-    他スクリプトから呼び出して自動的に一括更新を行う。"""
-    cleanup_old_update_files(persona_home)
+    他スクリプトから呼び出して自動的に一括更新を行う。古い日付のファイルも含めてすべて処理する。"""
     update_files = find_update_files(persona_home)
     if not update_files:
         return False

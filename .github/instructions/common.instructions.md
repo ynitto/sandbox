@@ -115,7 +115,7 @@ scrum-master 経由のスプリント実行中は、スプリント完了後（P
 
 ### ペルソナの自律更新
 
-以下を検出したら `update_persona.py --log` で観察を記録し、該当する `profile.md` / `preferences.md` / `expertise.md` を直接編集して更新する:
+以下を検出したら `update_persona.py --log` で観察を当日ログに記録する（管理ファイルへの反映は batch-update 時に行う）:
 
 - ユーザーが特定の言語・フレームワーク・ツールに言及したとき（`expertise.md`）
 - ユーザーが出力フォーマットを修正・指定したとき（`preferences.md`）

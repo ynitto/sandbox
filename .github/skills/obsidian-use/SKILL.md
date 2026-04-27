@@ -3,11 +3,28 @@ name: obsidian-use
 description: "「Obsidianのノートを作って」「ウィキリンクを追加して」「コールアウトを書いて」「フロントマターを設定して」「タグをつけて」「ファイルを埋め込んで」「.baseファイルでフィルターやフォーミュラを使って」「キャンバスやマインドマップやフローチャートを作って」「ボルトをCLIで操作して」「プラグインを開発して」「このURLを読んで」「OfficeファイルをMarkdownに変換して」「WordファイルをObsidianに取り込んで」「PDFをノートに変換して」などで発動する。"
 metadata:
   version: "1.0.0"
+  tier: domain
+  category: knowledge-management
+  tags:
+    - obsidian
+    - markdown
+    - note-taking
+    - knowledge-base
 ---
 
 # Obsidian Use
 
 Obsidian に関連するすべての操作をカバーする統合スキル。5つの機能領域を提供する。
+
+## 前提条件（外部ツール）
+
+各機能の利用前にツールがインストールされていることを確認する:
+
+| ツール | 用途 | インストール |
+|--------|------|-------------|
+| Obsidian CLI (`obsidian`) | ボルト操作・プラグイン開発 | `npm install -g @anthropics/obsidian-cli`（Obsidianが起動している必要あり） |
+| Defuddle (`defuddle`) | Web → Markdown 抽出 | `npm install -g defuddle` |
+| markitdown (`markitdown`) | Office / PDF → Markdown 変換 | `pip install markitdown` |
 
 ## 機能領域の選択
 
@@ -70,3 +87,31 @@ ObsidianはCommonMarkとGFMを独自記法で拡張している。主な機能:
 `markitdown` CLIでOfficeファイル（Word・Excel・PowerPoint・PDF等）をMarkdownに変換し、Obsidian Flavored Markdownに整形する。変換後にフロントマター追加・ウィキリンク化・コールアウト変換・画像埋め込み化を行う。
 
 詳細: [references/markitdown.md](references/markitdown.md)
+
+## クロスドメインワークフロー例
+
+### Web記事をObsidianノートに取り込む
+
+```bash
+# 1. DefuddleでWebページをクリーンなMarkdownに変換
+defuddle parse <url> --md -o article.md
+
+# 2. ウィキリンクやフロントマターを整形（Obsidian Flavored Markdown に加工）
+# （エージェントが article.md を編集: フロントマター追加・固有名詞をウィキリンク化）
+
+# 3. Obsidian CLI でボルトに保存
+obsidian create name="記事タイトル" content="$(cat article.md)" silent
+```
+
+### OfficeファイルをObsidianノートに変換する
+
+```bash
+# 1. markitdownでWordファイルをMarkdownに変換
+markitdown document.docx -o note.md
+
+# 2. Obsidian Flavored Markdownに整形
+# （エージェントが note.md を編集: フロントマター追加・見出し構造の整理）
+
+# 3. Obsidian CLI でボルトに保存
+obsidian create name="ドキュメント名" content="$(cat note.md)" silent
+```
