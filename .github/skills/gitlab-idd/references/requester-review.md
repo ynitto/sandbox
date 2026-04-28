@@ -101,11 +101,47 @@ python scripts/gl.py update-issue {issue_id} \
 
 ## レビュー・クローズ / リオープン
 
-`status:review-ready` イシューを評価し、マージまたはリオープンする。
+`status:review-ready` イシューを評価し、マージ依頼またはリオープンする。
 自分が実装したイシューは self-review ロック期間（デフォルト 24 時間）中は self-defer し、経過後は自分でレビューしてよい。
 すべての操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
 > **注**: 環境によって `python` を `python3` や `py` に読み替える。
+> **マージは必ず人間が行う**: レビュー完了後に自動マージはしない。イシュー作成者にマージを依頼するコメントを投稿する。
+
+---
+
+## ステップ 0 — MR マージ/クローズ済みイシューのクローズ（クリーンアップ）
+
+レビューフロー開始前に、自分が作成したオープンイシューのうち関連 MR がすでにマージまたはクローズされているものをクローズする。
+これにより、人間がマージした後もオープンのままになっているイシューを解消する。
+
+自分が作成したすべてのオープンイシューを取得する:
+
+```
+MY_USER=$(python scripts/gl.py current-user --get username)
+python scripts/gl.py list-issues --author MY_USER --state opened
+```
+
+各イシューについて、関連する MR の状態を確認する:
+
+```
+python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}" --state merged
+python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}" --state closed
+```
+
+`merged` または `closed` の MR が存在する場合はイシューをクローズする:
+
+```
+python scripts/gl.py add-comment {issue_id} \
+  --body "関連するマージリクエストがマージ/クローズされたため、このイシューをクローズします。"
+
+python scripts/gl.py update-issue {issue_id} \
+  --add-labels "status:done" \
+  --remove-labels "status:open,status:in-progress,status:review-ready,status:needs-rework,status:blocked,status:needs-clarification,assignee:any" \
+  --state-event close
+```
+
+クローズしたイシューは後続のステップで重複処理しないよう記録しておく。
 
 ---
 
@@ -141,6 +177,15 @@ python scripts/gl.py check-review-defer {issue_id} --minutes 1440
 `defer: true` の場合はそのイシューをスキップする。
 `defer: false` かつ `reason=self_implemented_lock_expired` の場合は、ロック期間が切れているため自分でレビューしてよい。
 `defer: false` かつ `reason=no_worker_node_id` の場合は、実装者特定情報がないため誰でもレビューしてよい。
+
+さらに、このノードが既に承認済み（`<!-- gitlab-idd:requester-approved:{NODE_ID} -->` コメントを投稿済み）のイシューはスキップする。人間のマージ待ち状態であるため再レビュー不要:
+
+```
+NODE_ID=$(python scripts/gl.py get-node-id --get node_id)
+python scripts/gl.py get-comments {issue_id}
+```
+
+コメント一覧に `<!-- gitlab-idd:requester-approved:{NODE_ID} -->` が含まれる場合はそのイシューをスキップする。
 
 リクエスターレビューキューが 0 件の場合は非リクエスターレビューキューの処理へ進む。
 最大件数を取得する:
@@ -203,7 +248,7 @@ agent-reviewer への入力:
 
 ---
 
-## ステップ 4a — 条件充足: クローズ & マージ
+## ステップ 4a — 条件充足: マージ依頼
 
 MR の IID を取得する:
 
@@ -213,7 +258,7 @@ python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}" --get 0
 
 ### CI パイプラインの確認
 
-マージ前に CI パイプラインの状態を確認する:
+マージ依頼前に CI パイプラインの状態を確認する:
 
 ```
 python scripts/gl.py get-mr-pipeline MR_IID --get status
@@ -221,30 +266,35 @@ python scripts/gl.py get-mr-pipeline MR_IID --get status
 
 | status | 対応 |
 |--------|------|
-| `success` | そのままマージへ進む |
-| `none` | CI 未設定（スキップしてマージへ進む） |
-| `skipped` | CI スキップ設定済み（スキップしてマージへ進む） |
+| `success` | そのままマージ依頼へ進む |
+| `none` | CI 未設定（スキップしてマージ依頼へ進む） |
+| `skipped` | CI スキップ設定済み（スキップしてマージ依頼へ進む） |
 | `running` / `pending` | 「パイプライン実行中のため待機中です」と報告して終了。完了後に再度「イシューをレビューして」で再実行する |
-| `failed` / `canceled` | MR の URL をユーザーに提示し、「CI が失敗しています。MR を確認してください」と報告して終了（自動マージしない） |
+| `failed` / `canceled` | MR の URL をユーザーに提示し、「CI が失敗しています。MR を確認してください」と報告して終了 |
 
-マージしてイシューをクローズする:
+イシュー作成者の名前とノード ID を取得する:
 
 ```
-python scripts/gl.py merge-mr MR_ID --squash --remove-source-branch
-
-python scripts/gl.py update-issue {issue_id} \
-  --add-labels "status:done" \
-  --remove-labels "status:review-ready" \
-  --state-event close
-
-python scripts/gl.py add-comment {issue_id} \
-  --body "✅ 受け入れ条件をすべて満たしています。マージしてクローズしました。"
+AUTHOR_NAME=$(python scripts/gl.py get-issue {issue_id} --get author.name)
+NODE_ID=$(python scripts/gl.py get-node-id --get node_id)
 ```
+
+レビュー完了コメントを投稿し、イシュー作成者にマージを依頼する:
+
+```
+python scripts/gl.py add-comment {issue_id} --body "${AUTHOR_NAME}さん、マージしてください
+
+<!-- gitlab-idd:requester-approved:${NODE_ID} -->"
+```
+
+> **注意**: マージは必ず人間（イシュー作成者）が行う。自動マージはしない。
+> MR がマージされた後、次回レビュー実行時のステップ 0 でイシューは自動クローズされる。
 
 **完了報告**:
 ```
-✅ イシュー #{id} をクローズしました。
-MR #{mr_id} をマージ済みです。
+✅ イシュー #{id} のレビューが完了しました。
+{AUTHOR_NAME} さんにマージを依頼するコメントを投稿しました。
+MR がマージされた後、次回レビュー実行時にイシューは自動クローズされます。
 ```
 
 ---
@@ -305,10 +355,12 @@ python scripts/gl.py update-issue {issue_id} \
 ## 注意事項
 
 - リクエスターは実装を行わない。評価と判定のみ
+- **マージは必ず人間が行う**: レビュー完了時に自動マージはしない。`merge-mr` コマンドは使用しない
 - 自分が実装したイシューはロック期間（デフォルト 24 時間）中はレビューしない。ロック経過後はレビュー可能
 - `worker-node-id` が付いていないイシューは誰でもレビュー可能
 - MR が存在しない場合はワーカーに確認コメントを投稿してから評価を保留
 - 複数 MR が存在する場合は最新のものを使用
+- `<!-- gitlab-idd:requester-approved:{NODE_ID} -->` マーカーがあるイシューは承認済み（人間のマージ待ち）のためスキップする
 
 ---
 

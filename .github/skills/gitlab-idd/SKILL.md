@@ -104,6 +104,7 @@ export GITLAB_NODE_ID=my-terminal-1
 
 ```
 0. MY_USER=$(python scripts/gl.py current-user --get username)
+0a. 【クリーンアップ】自分発行のオープンイシューで MR がマージ/クローズ済みのものを検出してクローズする
 1. (任意) status:needs-clarification のイシューがあれば詳細化して status:open,assignee:any に戻す
 2. list-issues --label "status:review-ready" で全件取得（--author フィルタなし）
 3. 取得したイシューを author.username で分類:
@@ -113,9 +114,10 @@ export GITLAB_NODE_ID=my-terminal-1
 5. リクエスターレビューキューを処理（リクエスターとして振る舞う）:
    - 優先度順（priority:high → normal → low）で先頭 MAX 件を選択
    - check-review-defer で self-defer チェック
+   - <!-- gitlab-idd:requester-approved:{NODE_ID} --> マーカーがあればスキップ（承認済み・人間のマージ待ち）
    - イシューコメントとブランチの成果物を確認
    - agent-reviewer で受け入れ条件を並列評価
-   - 全観点 LGTM → merge-mr + update-issue --state-event close
+   - 全観点 LGTM → add-comment（{作成者名}さん、マージしてください + <!-- gitlab-idd:requester-approved:{NODE_ID} --> マーカー付与）（マージは人間が行う）
    - Request Changes → add-comment（差し戻しコメント）+ reopen → 再提出後に再レビュー（最大 5 回）
    - (任意) スコープ外タスクを発見した場合は派生/新規イシューとして起票
 6. 非リクエスターレビューキューを処理（非リクエスターとして振る舞う）:
@@ -232,8 +234,10 @@ python scripts/gl.py project-info
 16. **レビュー時の自動ロール判定**: `status:review-ready` イシューは全件取得し、`author.username == MY_USER` なら自分発行（リクエスターとして振る舞い）、そうでなければ他者発行（非リクエスターとして振る舞い）として処理する。自分発行を優先して先に処理する
 17. **他者発行イシューへの非リクエスター振る舞い**: 他者が作成したイシューは 3 段階チェック（`check-defer` / `check-review-defer` / `check-non-requester-review-defer`）をパスしたもののみ助言コメントを投稿する。マージリクエストのマージおよびイシューのクローズ・ラベル変更は行わない
 18. **non-requester-reviewed タグ必須**: 他者発行イシューをレビューした場合、コメント末尾に必ず `<!-- gitlab-idd:non-requester-reviewed:{NODE_ID} -->` を付与する
+19. **マージは必ず人間が行う**: レビュー完了時に `merge-mr` は使用しない。代わりにイシュー作成者に「{作成者名}さん、マージしてください」とコメントし `<!-- gitlab-idd:requester-approved:{NODE_ID} -->` マーカーを付与する。マージ後のイシュークローズはステップ 0 クリーンアップで自動処理する
+20. **MR マージ済みイシューのクリーンアップ**: レビュー実行時に自分発行のオープンイシューを確認し、関連 MR が `merged` または `closed` 状態であればイシューをクローズする
 
 ## Permissions
 
-- **Allowed**: `scripts/gl.py` の実行（Python）、ブランチの作成・push、イシューコメント投稿・ラベル更新（`status:blocked` → `status:open` の解除を含む）、MR の作成・マージ（リクエスターのみ）、助言コメント投稿（非リクエスターレビュアー）
-- **Denied**: イシューの削除、force push、ユーザー確認なき既存 MR のクローズ、LLM セッション内でのポーリングループ実装、非リクエスターレビュアーによる merge-mr / update-issue --state-event close
+- **Allowed**: `scripts/gl.py` の実行（Python）、ブランチの作成・push、イシューコメント投稿・ラベル更新（`status:blocked` → `status:open` の解除を含む）、MR の作成（リクエスターのみ）、助言コメント投稿（非リクエスターレビュアー）
+- **Denied**: イシューの削除、force push、ユーザー確認なき既存 MR のクローズ、LLM セッション内でのポーリングループ実装、**merge-mr（マージは必ず人間が行う・全ロール禁止）**、非リクエスターレビュアーによる update-issue --state-event close
