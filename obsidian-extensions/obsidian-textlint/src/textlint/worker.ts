@@ -23,8 +23,14 @@ export class WorkerManager {
     this.workers = {};
   }
 
-  private newWorker(textlintrc: string): TextlintWorker {
-    const worker = new Worker();
+  private newWorker(textlintrc: string): TextlintWorker | undefined {
+    let worker: TextlintWorker;
+    try {
+      worker = new Worker();
+    } catch (e) {
+      new Notice('[textlint]: failed to create worker. ' + e.message);
+      return undefined;
+    }
     try {
       worker.postMessage({
         command: 'merge-config',
@@ -33,6 +39,7 @@ export class WorkerManager {
       return worker;
     } catch (e) {
       new Notice('[textlint]: failed to merge-config. error:' + e.message);
+      return undefined;
     }
   }
 
@@ -62,6 +69,7 @@ export class WorkerManager {
       return;
     }
     const worker = this.newWorker(textlintrc);
+    if (!worker) return;
     this.registerOnmessageCallbacks(worker, callbacks);
     this.workers[folder] = worker;
   }
