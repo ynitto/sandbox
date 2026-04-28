@@ -11,9 +11,10 @@ if you want to view the source, please visit the github repository of this plugi
 
 const prod = process.argv[2] === 'production';
 
-// Custom plugin that uses Node.js worker_threads instead of blob URL Web Workers.
-// blob: URL workers are blocked by corporate proxy security software, causing the
-// worker to fail silently. Node.js worker_threads bypasses this restriction entirely.
+// Custom plugin that writes the worker code to a temp file and loads it via file:// URL.
+// blob: URL workers are blocked by corporate proxy security software.
+// worker_threads are unavailable in Electron's renderer process (Chromium V8 platform).
+// file:// URL workers bypass proxy restrictions and work in Electron renderer.
 function nodeWorkerPlugin() {
   return {
     name: 'node-worker-plugin',
@@ -23,70 +24,28 @@ function nodeWorkerPlugin() {
         async ({ path: workerPath }) => {
           const workerCode = await fs.promises.readFile(workerPath, { encoding: 'utf-8' });
 
-          // Shim that maps Web Worker globals (self, postMessage, addEventListener)
-          // to the Node.js worker_threads equivalents (parentPort).
-          const shimLines = [
-            'const { parentPort } = require("worker_threads");',
-            'const self = {',
-            '  postMessage: function(data) { parentPort.postMessage(data); },',
-            '  addEventListener: function(type, handler) {',
-            '    if (type === "message") {',
-            '      parentPort.on("message", function(data) { handler({ data: data }); });',
-            '    } else if (type === "error") {',
-            '      process.on("uncaughtException", function(err) {',
-            '        handler({ error: err, message: err.message || String(err), preventDefault: function() {} });',
-            '      });',
-            '    } else if (type === "unhandledrejection") {',
-            '      process.on("unhandledRejection", function(reason) {',
-            '        handler({ reason: reason, preventDefault: function() {} });',
-            '      });',
-            '    }',
-            '  },',
-            '  removeEventListener: function() {}',
-            '};',
-            'Object.defineProperty(globalThis, "self", { value: self, configurable: true, writable: true });',
-          ];
-          const shim = shimLines.join('\n');
-
           return {
             contents: `
-const { Worker: NodeWorker } = require('worker_threads');
-const WORKER_CODE = ${JSON.stringify(shim + '\n' + workerCode)};
+const os = require('os');
+const nodePath = require('path');
+const nodefs = require('fs');
+const { pathToFileURL } = require('url');
+const WORKER_CODE = ${JSON.stringify(workerCode)};
+
+let workerFileURL = null;
+try {
+  const workerFile = nodePath.join(os.tmpdir(), 'obsidian-textlint-worker.js');
+  nodefs.writeFileSync(workerFile, WORKER_CODE, 'utf-8');
+  workerFileURL = pathToFileURL(workerFile).href;
+} catch (e) {
+  console.error('[textlint]: failed to write worker file:', e.message);
+}
 
 export default function Worker() {
-  const nodeWorker = new NodeWorker(WORKER_CODE, { eval: true });
-  const pending = [];
-  let handler = null;
-
-  nodeWorker.on('message', function(data) {
-    if (handler) {
-      handler({ data: data });
-    } else {
-      pending.push(data);
-    }
-  });
-
-  nodeWorker.on('error', function(err) {
-    const msg = { command: 'error', error: { message: 'Worker thread error: ' + (err && err.message || String(err)) } };
-    if (handler) { handler({ data: msg }); } else { pending.push(msg); }
-  });
-
-  nodeWorker.on('exit', function(code) {
-    if (code !== 0) {
-      const msg = { command: 'error', error: { message: 'Worker thread exited unexpectedly (code ' + code + ')' } };
-      if (handler) { handler({ data: msg }); } else { pending.push(msg); }
-    }
-  });
-
-  return {
-    postMessage: function(msg) { nodeWorker.postMessage(msg); },
-    get onmessage() { return handler; },
-    set onmessage(fn) {
-      handler = fn;
-      while (pending.length) handler({ data: pending.shift() });
-    },
-    terminate: function() { return nodeWorker.terminate(); }
-  };
+  if (!workerFileURL) {
+    throw new Error('[textlint]: Worker file could not be created in temp dir: ' + os.tmpdir());
+  }
+  return new globalThis.Worker(workerFileURL);
 }
 `,
             loader: 'js',

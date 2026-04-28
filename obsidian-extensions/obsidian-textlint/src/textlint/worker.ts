@@ -54,6 +54,11 @@ export class WorkerManager {
           callbacks[data.command](data.result);
         }
       };
+      worker.onerror = (e: ErrorEvent) => {
+        const msg = '[textlint worker]: worker error: ';
+        console.error(msg, e);
+        new Notice(msg + (e.message || String(e)));
+      };
     } catch (e) {
       console.log('[textlint worker]: failed to register worker.onmessage()', e);
     }
