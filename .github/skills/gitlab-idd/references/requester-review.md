@@ -272,17 +272,19 @@ python scripts/gl.py get-mr-pipeline MR_IID --get status
 | `running` / `pending` | 「パイプライン実行中のため待機中です」と報告して終了。完了後に再度「イシューをレビューして」で再実行する |
 | `failed` / `canceled` | MR の URL をユーザーに提示し、「CI が失敗しています。MR を確認してください」と報告して終了 |
 
-イシュー作成者の名前とノード ID を取得する:
+イシュー作成者のユーザー名とノード ID を取得する:
 
 ```
-AUTHOR_NAME=$(python scripts/gl.py get-issue {issue_id} --get author.name)
+AUTHOR_USERNAME=$(python scripts/gl.py get-issue {issue_id} --get author.username)
 NODE_ID=$(python scripts/gl.py get-node-id --get node_id)
 ```
 
 レビュー完了コメントのファイルを作成する（`_approve_comment.md`）:
 
 ```markdown
-{AUTHOR_NAME}さん、マージしてください
+## ✅ レビュー承認
+
+**@{AUTHOR_USERNAME} さん、マージをお願いします 🙏**
 
 <!-- gitlab-idd:requester-approved:{NODE_ID} -->
 ```
@@ -303,7 +305,7 @@ python scripts/gl.py update-issue {issue_id} \
 **完了報告**:
 ```
 ✅ イシュー #{id} のレビューが完了しました。
-{AUTHOR_NAME} さんにマージを依頼するコメントを投稿し、ラベルを status:approved に更新しました。
+@{AUTHOR_USERNAME} さんにマージを依頼するコメントを投稿し、ラベルを status:approved に更新しました。
 MR がマージされた後、次回レビュー実行時にイシューは自動クローズされます。
 ```
 
