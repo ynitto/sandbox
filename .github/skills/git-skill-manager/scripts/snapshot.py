@@ -24,6 +24,8 @@ import json
 import os
 import shutil
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))

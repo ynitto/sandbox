@@ -6,6 +6,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 from datetime import datetime
 
 from registry import (

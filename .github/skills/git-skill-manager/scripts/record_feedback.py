@@ -34,6 +34,8 @@ import os
 import secrets
 import subprocess
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 from datetime import datetime, timezone
 
 # registry.py の __file__ ベースのパス解決を利用
