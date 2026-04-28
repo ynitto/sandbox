@@ -534,7 +534,10 @@ def cmd_list_mrs(args, host, project, token):
         "state": args.state,
         "source_branch": args.source_branch or None,
     }
-    out(api_list(host, token, f"/projects/{ep}/merge_requests", params=params), args.get)
+    mrs = api_list(host, token, f"/projects/{ep}/merge_requests", params=params)
+    if args.source_branch_prefix:
+        mrs = [mr for mr in mrs if mr.get("source_branch", "").startswith(args.source_branch_prefix)]
+    out(mrs, args.get)
 
 
 def cmd_create_mr(args, host, project, token):
@@ -1012,7 +1015,8 @@ def build_parser():
     p.add_argument("issue_id", type=int)
 
     p = sub.add_parser("list-mrs", help="List merge requests")
-    p.add_argument("--source-branch", help="Filter by source branch name")
+    p.add_argument("--source-branch", help="Filter by source branch name (exact match)")
+    p.add_argument("--source-branch-prefix", help="Filter by source branch prefix (client-side, e.g. feature/issue-42)")
     p.add_argument("--state", default="opened",
                    choices=["opened", "closed", "merged", "all"])
 
