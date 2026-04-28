@@ -117,7 +117,7 @@ export GITLAB_NODE_ID=my-terminal-1
    - <!-- gitlab-idd:requester-approved:{NODE_ID} --> マーカーがあればスキップ（承認済み・人間のマージ待ち）
    - イシューコメントとブランチの成果物を確認
    - agent-reviewer で受け入れ条件を並列評価
-   - 全観点 LGTM → add-comment（{作成者名}さん、マージしてください + <!-- gitlab-idd:requester-approved:{NODE_ID} --> マーカー付与）+ update-issue（status:approved ラベルに変更）（マージは人間が行う）
+   - 全観点 LGTM → add-comment（**@{作成者username} さん、マージをお願いします 🙏** + <!-- gitlab-idd:requester-approved:{NODE_ID} --> マーカー付与）+ update-issue（status:approved ラベルに変更）（マージは人間が行う）
    - Request Changes → add-comment（差し戻しコメント）+ reopen → 再提出後に再レビュー（最大 5 回）
    - (任意) スコープ外タスクを発見した場合は派生/新規イシューとして起票
 6. 非リクエスターレビューキューを処理（非リクエスターとして振る舞う）:
@@ -235,7 +235,7 @@ python scripts/gl.py project-info
 16. **レビュー時の自動ロール判定**: `status:review-ready` イシューは全件取得し、`author.username == MY_USER` なら自分発行（リクエスターとして振る舞い）、そうでなければ他者発行（非リクエスターとして振る舞い）として処理する。自分発行を優先して先に処理する
 17. **他者発行イシューへの非リクエスター振る舞い**: 他者が作成したイシューは 3 段階チェック（`check-defer` / `check-review-defer` / `check-non-requester-review-defer`）をパスしたもののみ助言コメントを投稿する。マージリクエストのマージおよびイシューのクローズ・ラベル変更は行わない
 18. **non-requester-reviewed タグ必須**: 他者発行イシューをレビューした場合、コメント末尾に必ず `<!-- gitlab-idd:non-requester-reviewed:{NODE_ID} -->` を付与する
-19. **マージは必ず人間が行う**: レビュー完了時に `merge-mr` は使用しない。代わりにイシュー作成者に「{作成者名}さん、マージしてください」とコメントし `<!-- gitlab-idd:requester-approved:{NODE_ID} -->` マーカーを付与する。ラベルを `status:approved` に変更して承認済み状態を可視化する。マージ後のイシュークローズはステップ 0 クリーンアップで自動処理する
+19. **マージは必ず人間が行う**: レビュー完了時に `merge-mr` は使用しない。代わりにイシュー作成者へ `@username` メンション付きで「**@{作成者username} さん、マージをお願いします 🙏**」とコメントし `<!-- gitlab-idd:requester-approved:{NODE_ID} -->` マーカーを付与する。ラベルを `status:approved` に変更して承認済み状態を可視化する。マージ後のイシュークローズはステップ 0 クリーンアップで自動処理する
 20. **MR マージ済みイシューのクリーンアップ**: レビュー実行時に自分発行のオープンイシューを確認し、関連 MR が `merged` または `closed` 状態であればイシューをクローズする
 
 ## Permissions
