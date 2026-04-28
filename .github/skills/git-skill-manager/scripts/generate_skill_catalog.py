@@ -16,6 +16,8 @@ import json
 import os
 import re
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:
@@ -167,14 +169,6 @@ def generate_catalog(skills_dir: str) -> dict:
 
 
 def main() -> None:
-    # Windows PowerShell ではコンソールエンコーディングが cp932 になる場合があり、
-    # マルチバイト文字を含む JSON の出力で UnicodeEncodeError が発生する。
-    # stdout/stderr を UTF-8 に再設定して安定させる。
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8")
-
     parser = argparse.ArgumentParser(description="スキルカタログ生成")
     parser.add_argument(
         "--path",

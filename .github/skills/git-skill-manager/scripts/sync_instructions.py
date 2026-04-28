@@ -23,6 +23,8 @@ import hashlib
 import os
 import shutil
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 from datetime import datetime, timezone
 
 from registry import load_registry, save_registry, _instructions_home, _transform_frontmatter_for_kiro

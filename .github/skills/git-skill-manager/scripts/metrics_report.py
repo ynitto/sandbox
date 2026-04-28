@@ -16,6 +16,8 @@ import argparse
 import json
 import os
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 

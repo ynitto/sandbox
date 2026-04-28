@@ -6,6 +6,8 @@ import os
 import re
 import subprocess
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 from datetime import datetime, timedelta, timezone
 
 from registry import load_registry, save_registry, _cache_dir, _skill_home, _version_tuple, _read_frontmatter_version
