@@ -3,10 +3,11 @@
 ## 目次
 
 - [曖昧イシューの詳細化](#曖昧イシューの詳細化)
-- [ステップ 1 — レビュー対象イシューを取得](#ステップ-1--レビュー対象イシューを取得)
+- [ステップ 0 — MR マージ/クローズ済みイシューのクローズ（クリーンアップ）](#ステップ-0--mr-マージクローズ済みイシューのクローズクリーンアップ)
+- [ステップ 1 — レビュー対象イシューを取得・分類](#ステップ-1--レビュー対象イシューを取得分類)
 - [ステップ 2 — 成果物の確認](#ステップ-2--成果物の確認)
-- [ステップ 3 — 受け入れ条件の並列評価](#ステップ-3--受け入れ条件の並列評価)
-- [ステップ 4a — 条件充足: クローズ & マージ](#ステップ-4a--条件充足-クローズ--マージ)
+- [ステップ 3 — 受け入れ条件の評価](#ステップ-3--受け入れ条件の評価)
+- [ステップ 4a — 条件充足: マージ依頼](#ステップ-4a--条件充足-マージ依頼)
 - [ステップ 4b — 条件不足: リオープン](#ステップ-4b--条件不足-リオープン)
 - [判定基準](#判定基準)
 - [注意事項](#注意事項)
@@ -101,11 +102,47 @@ python scripts/gl.py update-issue {issue_id} \
 
 ## レビュー・クローズ / リオープン
 
-`status:review-ready` イシューを評価し、マージまたはリオープンする。
+`status:review-ready` イシューを評価し、マージ依頼またはリオープンする。
 自分が実装したイシューは self-review ロック期間（デフォルト 24 時間）中は self-defer し、経過後は自分でレビューしてよい。
 すべての操作は `scripts/gl.py` を Python で実行する（`glab` CLI 不要）。
 
 > **注**: 環境によって `python` を `python3` や `py` に読み替える。
+> **マージは必ず人間が行う**: レビュー完了後に自動マージはしない。イシュー作成者にマージを依頼するコメントを投稿する。
+
+---
+
+## ステップ 0 — MR マージ/クローズ済みイシューのクローズ（クリーンアップ）
+
+レビューフロー開始前に、自分が作成したオープンイシューのうち関連 MR がすでにマージまたはクローズされているものをクローズする。
+これにより、人間がマージした後もオープンのままになっているイシューを解消する。
+
+自分が作成したすべてのオープンイシューを取得する:
+
+```
+MY_USER=$(python scripts/gl.py current-user --get username)
+python scripts/gl.py list-issues --author MY_USER --state opened
+```
+
+各イシューについて、関連する MR の状態を確認する:
+
+```
+python scripts/gl.py list-mrs --source-branch-prefix "feature/issue-{issue_id}" --state merged
+python scripts/gl.py list-mrs --source-branch-prefix "feature/issue-{issue_id}" --state closed
+```
+
+`merged` または `closed` の MR が存在する場合はイシューをクローズする:
+
+```
+python scripts/gl.py add-comment {issue_id} \
+  --body "関連するマージリクエストがマージ/クローズされたため、このイシューをクローズします。"
+
+python scripts/gl.py update-issue {issue_id} \
+  --add-labels "status:done" \
+  --remove-labels "status:open,status:in-progress,status:review-ready,status:approved,status:needs-rework,status:blocked,status:needs-clarification,assignee:any" \
+  --state-event close
+```
+
+クローズしたイシューは後続のステップで重複処理しないよう記録しておく。
 
 ---
 
@@ -142,6 +179,14 @@ python scripts/gl.py check-review-defer {issue_id} --minutes 1440
 `defer: false` かつ `reason=self_implemented_lock_expired` の場合は、ロック期間が切れているため自分でレビューしてよい。
 `defer: false` かつ `reason=no_worker_node_id` の場合は、実装者特定情報がないため誰でもレビューしてよい。
 
+承認済みイシュー（`status:approved` ラベル付き）は `list-issues --label "status:review-ready"` には出現しないため自動的にスキップされる。
+念のためコメントに `<!-- gitlab-idd:requester-approved:{NODE_ID} -->` が含まれるイシューも手動でスキップする:
+
+```
+NODE_ID=$(python scripts/gl.py get-node-id --get node_id)
+python scripts/gl.py get-comments {issue_id}
+```
+
 リクエスターレビューキューが 0 件の場合は非リクエスターレビューキューの処理へ進む。
 最大件数を取得する:
 
@@ -163,7 +208,7 @@ MAX=$(python scripts/gl.py get-max-review-per-run --get max_review_per_run)
 python scripts/gl.py get-issue {issue_id}
 python scripts/gl.py get-comments {issue_id}
 
-python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}"
+python scripts/gl.py list-mrs --source-branch-prefix "feature/issue-{issue_id}"
 ```
 
 ワーカーが作成したブランチの diff を取得する。ターゲットブランチはイシュー本文の `## ターゲットブランチ` から読み取る（記載がなければ `python scripts/gl.py get-default-branch --get default_branch` で取得）:
@@ -195,7 +240,7 @@ agent-reviewer への入力:
 
 全観点の結果を受け取り以下の手順で判定する:
 
-- 全観点が **LGTM** → ステップ 4a（クローズ）へ進む
+- 全観点が **LGTM** → ステップ 4a（マージ依頼）へ進む
 - いずれかの観点が **Request Changes** → 全指摘を統合してワーカーに差し戻す（ステップ 4b）
 
 差し戻し後にワーカーが再提出した場合は、再度ステップ 3-2 からレビューを繰り返す。
@@ -203,17 +248,17 @@ agent-reviewer への入力:
 
 ---
 
-## ステップ 4a — 条件充足: クローズ & マージ
+## ステップ 4a — 条件充足: マージ依頼
 
 MR の IID を取得する:
 
 ```
-python scripts/gl.py list-mrs --source-branch "feature/issue-{issue_id}" --get 0.iid
+python scripts/gl.py list-mrs --source-branch-prefix "feature/issue-{issue_id}" --get 0.iid
 ```
 
 ### CI パイプラインの確認
 
-マージ前に CI パイプラインの状態を確認する:
+マージ依頼前に CI パイプラインの状態を確認する:
 
 ```
 python scripts/gl.py get-mr-pipeline MR_IID --get status
@@ -221,30 +266,45 @@ python scripts/gl.py get-mr-pipeline MR_IID --get status
 
 | status | 対応 |
 |--------|------|
-| `success` | そのままマージへ進む |
-| `none` | CI 未設定（スキップしてマージへ進む） |
-| `skipped` | CI スキップ設定済み（スキップしてマージへ進む） |
+| `success` | そのままマージ依頼へ進む |
+| `none` | CI 未設定（スキップしてマージ依頼へ進む） |
+| `skipped` | CI スキップ設定済み（スキップしてマージ依頼へ進む） |
 | `running` / `pending` | 「パイプライン実行中のため待機中です」と報告して終了。完了後に再度「イシューをレビューして」で再実行する |
-| `failed` / `canceled` | MR の URL をユーザーに提示し、「CI が失敗しています。MR を確認してください」と報告して終了（自動マージしない） |
+| `failed` / `canceled` | MR の URL をユーザーに提示し、「CI が失敗しています。MR を確認してください」と報告して終了 |
 
-マージしてイシューをクローズする:
+イシュー作成者の名前とノード ID を取得する:
 
 ```
-python scripts/gl.py merge-mr MR_ID --squash --remove-source-branch
+AUTHOR_NAME=$(python scripts/gl.py get-issue {issue_id} --get author.name)
+NODE_ID=$(python scripts/gl.py get-node-id --get node_id)
+```
+
+レビュー完了コメントのファイルを作成する（`_approve_comment.md`）:
+
+```markdown
+{AUTHOR_NAME}さん、マージしてください
+
+<!-- gitlab-idd:requester-approved:{NODE_ID} -->
+```
+
+コメントを投稿してラベルを更新する:
+
+```
+python scripts/gl.py add-comment {issue_id} --body-file _approve_comment.md
 
 python scripts/gl.py update-issue {issue_id} \
-  --add-labels "status:done" \
-  --remove-labels "status:review-ready" \
-  --state-event close
-
-python scripts/gl.py add-comment {issue_id} \
-  --body "✅ 受け入れ条件をすべて満たしています。マージしてクローズしました。"
+  --add-labels "status:approved" \
+  --remove-labels "status:review-ready"
 ```
+
+> **注意**: マージは必ず人間（イシュー作成者）が行う。自動マージはしない。
+> MR がマージされた後、次回レビュー実行時のステップ 0 でイシューは自動クローズされる。
 
 **完了報告**:
 ```
-✅ イシュー #{id} をクローズしました。
-MR #{mr_id} をマージ済みです。
+✅ イシュー #{id} のレビューが完了しました。
+{AUTHOR_NAME} さんにマージを依頼するコメントを投稿し、ラベルを status:approved に更新しました。
+MR がマージされた後、次回レビュー実行時にイシューは自動クローズされます。
 ```
 
 ---
@@ -305,10 +365,12 @@ python scripts/gl.py update-issue {issue_id} \
 ## 注意事項
 
 - リクエスターは実装を行わない。評価と判定のみ
+- **マージは必ず人間が行う**: レビュー完了時に自動マージはしない。`merge-mr` コマンドは使用しない
 - 自分が実装したイシューはロック期間（デフォルト 24 時間）中はレビューしない。ロック経過後はレビュー可能
 - `worker-node-id` が付いていないイシューは誰でもレビュー可能
 - MR が存在しない場合はワーカーに確認コメントを投稿してから評価を保留
 - 複数 MR が存在する場合は最新のものを使用
+- `status:approved` ラベルのイシューは承認済み（人間のマージ待ち）。`<!-- gitlab-idd:requester-approved:{NODE_ID} -->` マーカーで承認したノードを記録する
 
 ---
 
