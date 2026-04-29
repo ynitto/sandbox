@@ -1,18 +1,15 @@
-import { Diagnostic } from '@codemirror/lint';
 import { TextlintRuleSeverityLevel } from '@textlint/types';
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
+import { readFileSync, writeFileSync } from 'fs';
+import { join, isAbsolute } from 'path';
 import TextlintPlugin from './main';
-import { readTextlintrc } from './util';
-import textlintVersions from '../_dist/textlint_versions.json';
-import textlintDefault from '../_dist/textlintrc_default.json';
+import { installTextlintPlugin } from './textlint/runner';
 
-const SEVERITY_OPTIONS: Record<TextlintRuleSeverityLevel, Diagnostic['severity']> = {
-  0: 'info',
-  1: 'warning',
-  2: 'error',
+const SEVERITY_OPTIONS: Record<string, string> = {
+  '0': 'info',
+  '1': 'warning',
+  '2': 'error',
 };
-
-export type TextlintConfig = { folder: string; textlintrc: string; textlintrcPath: string };
 
 export interface TextlintPluginSettings {
   lintOnActiveFileChanged: boolean;
@@ -26,13 +23,17 @@ export interface TextlintPluginSettings {
   minimumSeverityToShowGutter: TextlintRuleSeverityLevel;
 
   foldersToIgnore: string[];
-  textlintConfigs: TextlintConfig[];
+
+  npxPath: string;
+  npmPath: string;
+  textlintrcPath: string;
+  workingDirectory: string;
 }
 
 export const DEFAULT_SETTINGS: TextlintPluginSettings = {
   lintOnActiveFileChanged: true,
   lintOnSaved: true,
-  lintOnTextChanged: true,
+  lintOnTextChanged: false,
 
   minimumSeverityInEditingView: 1,
   minimumSeverityToShowGutter: 2,
@@ -41,23 +42,19 @@ export const DEFAULT_SETTINGS: TextlintPluginSettings = {
   showGutter: true,
 
   foldersToIgnore: [],
-  textlintConfigs: [],
+
+  npxPath: 'npx',
+  npmPath: 'npm',
+  textlintrcPath: '',
+  workingDirectory: '',
 };
 
 export class TextlintPluginSettingTab extends PluginSettingTab {
   plugin: TextlintPlugin;
-  textlintConfigs: TextlintConfig[] = [];
 
   constructor(app: App, plugin: TextlintPlugin) {
     super(app, plugin);
     this.plugin = plugin;
-    this.textlintConfigs = this.plugin.settings.textlintConfigs;
-  }
-
-  saveTextlintConfig(config: TextlintConfig) {
-    const idx = this.plugin.settings.textlintConfigs.findIndex((c) => c.folder === config.folder);
-    this.plugin.settings.textlintConfigs[idx] = config;
-    this.plugin.saveSettings();
   }
 
   display(): void {
@@ -65,9 +62,19 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h1', { text: 'Obsidian textlint Settings' });
 
+    this.addLintTriggerSection(containerEl);
+    this.addDisplaySection(containerEl);
+    this.addSetupSection(containerEl);
+    this.addTextlintrcSection(containerEl);
+    this.addPluginManagerSection(containerEl);
+  }
+
+  private addLintTriggerSection(containerEl: HTMLElement) {
+    containerEl.createEl('h2', { text: 'Lint triggers' });
+
     new Setting(containerEl)
-      .setName('Lint on saved')
-      .setDesc('Require reload')
+      .setName('Lint on save')
+      .setDesc('Requires reload to take effect')
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.lintOnSaved).onChange(async (v) => {
           this.plugin.settings.lintOnSaved = v;
@@ -77,7 +84,7 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Lint on active file changed')
-      .setDesc('Require reload')
+      .setDesc('Requires reload to take effect')
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.lintOnActiveFileChanged).onChange(async (v) => {
           this.plugin.settings.lintOnActiveFileChanged = v;
@@ -86,14 +93,27 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Lint on text changed (Experimental)')
-      .setDesc('Require reload')
+      .setName('Lint on text changed')
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.lintOnTextChanged).onChange(async (v) => {
           this.plugin.settings.lintOnTextChanged = v;
           await this.plugin.saveSettings();
         });
       });
+
+    new Setting(containerEl)
+      .setName('Folders to ignore')
+      .setDesc('Folder paths to skip linting, one per line')
+      .addTextArea((textArea) => {
+        textArea.setValue(this.plugin.settings.foldersToIgnore.join('\n')).onChange(async (value) => {
+          this.plugin.settings.foldersToIgnore = value.split('\n').filter(Boolean);
+          await this.plugin.saveSettings();
+        });
+      });
+  }
+
+  private addDisplaySection(containerEl: HTMLElement) {
+    containerEl.createEl('h2', { text: 'Display' });
 
     new Setting(containerEl).setName('Minimum severity in editing view').addDropdown((dropdown) => {
       dropdown.addOptions(SEVERITY_OPTIONS);
@@ -115,7 +135,6 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
     if (this.plugin.settings.showGutter) {
       new Setting(containerEl)
         .setName('Minimum severity to show lint gutter')
-        .setDesc('Set a value equal to or greater than the value set in "Minimum severity in editing view".')
         .addDropdown((dropdown) => {
           dropdown.addOptions(SEVERITY_OPTIONS);
           dropdown.setValue(String(this.plugin.settings.minimumSeverityToShowGutter));
@@ -134,135 +153,158 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
+  }
+
+  private addSetupSection(containerEl: HTMLElement) {
+    containerEl.createEl('h2', { text: 'textlint setup' });
 
     new Setting(containerEl)
-      .setName('Folders to ignore lint')
-      .setDesc('Enter folder paths separated by newlines')
-      .addTextArea((textArea) => {
-        textArea.setValue(this.plugin.settings.foldersToIgnore.join('\n')).onChange(async (value) => {
-          this.plugin.settings.foldersToIgnore = value.split('\n');
-          await this.plugin.saveSettings();
-        });
-      });
-
-    const moduleInfoEl = containerEl.createEl('h3', { text: 'textlint modules' });
-    new Setting(moduleInfoEl)
-      .addTextArea(async (textarea) => {
-        textarea.setDisabled(true);
-        textarea.inputEl.style.width = '300px';
-        textarea.inputEl.style.height = '300px';
-        textarea.setValue(JSON.stringify(textlintVersions, null, 2));
-      })
-      .setDesc('installed modules')
-      .addButton((btn) => {
-        btn.setButtonText('Copy').onClick(async () => {
-          navigator.clipboard.writeText(JSON.stringify(textlintVersions, null, 2));
-          new Notice('Copied to clipboard.');
-        });
-      });
-
-    const defaultConfigEl = containerEl.createEl('h3', { text: 'textlint default config' });
-    new Setting(defaultConfigEl)
-      .addTextArea(async (textarea) => {
-        textarea.setDisabled(true);
-        textarea.inputEl.style.width = '300px';
-        textarea.inputEl.style.height = '300px';
-        textarea.setValue(JSON.stringify(textlintDefault, null, 2));
-      })
-      .setDesc('default textlintrc')
-      .addButton((btn) => {
-        btn.setButtonText('Copy').onClick(async () => {
-          navigator.clipboard.writeText(JSON.stringify(textlintDefault, null, 2));
-          new Notice('Copied to clipboard.');
-        });
-      });
-
-    const configEl = containerEl.createEl('h3', { text: 'textlintrc override per folder' });
-
-    const addConfigEl = (config: TextlintConfig, index: number) => {
-      const el = configEl.createEl('div');
-      el.style.border = '1px solid var(--background-modifier-border)';
-      el.style.padding = '1em';
-      el.style.marginBottom = '0.25em';
-
-      const parse = async (path: string) => {
-        try {
-          return await readTextlintrc(this.plugin, path);
-        } catch (e) {
-          new Notice(e.message);
-          return 'Could not parse textlintrc.';
-        }
-      };
-
-      new Setting(el)
-        .addText((text) => {
-          text.setValue(config.folder).onChange(async (v) => {
-            config.folder = v;
+      .setName('Working directory')
+      .setDesc('Directory where textlint is installed (contains node_modules). Leave empty to use vault root.')
+      .addText((text) => {
+        text
+          .setPlaceholder('/path/to/project')
+          .setValue(this.plugin.settings.workingDirectory)
+          .onChange(async (v) => {
+            this.plugin.settings.workingDirectory = v;
             await this.plugin.saveSettings();
-            this.saveTextlintConfig(config);
           });
-        })
-        .setName('folder');
-
-      const textlintrc = new Setting(el)
-        .addTextArea(async (textarea) => {
-          textarea.inputEl.style.width = '300px';
-          textarea.inputEl.style.height = '300px';
-          if (config.textlintrc) {
-            textarea.inputEl.value = JSON.stringify(JSON.parse(config.textlintrc), null, 2);
-          }
-          textarea.onChange((v) => {
-            try {
-              config.textlintrc = JSON.stringify(JSON.parse(v));
-              this.saveTextlintConfig(config);
-              new Notice('Saved');
-            } catch (e) {
-              new Notice(e.message);
-            }
-          });
-        })
-        .setName('textlintrc');
-
-      new Setting(el)
-        .addText((text) => {
-          text.setValue(config.textlintrcPath).onChange(async (v) => {
-            config.textlintrcPath = v;
-            this.saveTextlintConfig(config);
-          });
-        })
-        .setName('load json from file')
-        .addButton((button) => {
-          button.setButtonText('Load').onClick(async () => {
-            new Notice('Load textlintrc from: ' + config.textlintrcPath);
-            config.textlintrc = JSON.stringify(JSON.parse(await parse(config.textlintrcPath)));
-            new Notice('textlintrc loaded.');
-            this.saveTextlintConfig(config);
-            if (textlintrc.controlEl.firstChild) {
-              // @ts-expect-error
-              textlintrc.controlEl.firstChild.value = JSON.stringify(JSON.parse(config.textlintrc), null, 2);
-            }
-          });
-        });
-
-      new Setting(el).addButton((button) => {
-        button.setButtonText('Remove').onClick(async () => {
-          this.plugin.settings.textlintConfigs.splice(index, 1);
-          await this.plugin.saveSettings();
-          this.display();
-        });
       });
-    };
 
-    this.textlintConfigs.forEach((c, i) => {
-      addConfigEl(c, i);
+    new Setting(containerEl)
+      .setName('npx path')
+      .setDesc('Path to npx executable')
+      .addText((text) => {
+        text
+          .setPlaceholder('npx')
+          .setValue(this.plugin.settings.npxPath)
+          .onChange(async (v) => {
+            this.plugin.settings.npxPath = v || 'npx';
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('npm path')
+      .setDesc('Path to npm executable (used for plugin installation)')
+      .addText((text) => {
+        text
+          .setPlaceholder('npm')
+          .setValue(this.plugin.settings.npmPath)
+          .onChange(async (v) => {
+            this.plugin.settings.npmPath = v || 'npm';
+            await this.plugin.saveSettings();
+          });
+      });
+  }
+
+  private addTextlintrcSection(containerEl: HTMLElement) {
+    containerEl.createEl('h2', { text: 'textlintrc' });
+
+    new Setting(containerEl)
+      .setName('textlintrc path')
+      .setDesc('Path to .textlintrc file (absolute, or relative to vault root). Leave empty for textlint default discovery.')
+      .addText((text) => {
+        text
+          .setPlaceholder('.textlintrc or /absolute/path/.textlintrc')
+          .setValue(this.plugin.settings.textlintrcPath)
+          .onChange(async (v) => {
+            this.plugin.settings.textlintrcPath = v;
+            await this.plugin.saveSettings();
+            this.display();
+          });
+      });
+
+    const fullPath = this.resolveAbsolutePath(this.plugin.settings.textlintrcPath);
+    if (!fullPath) return;
+
+    let content = '';
+    try {
+      content = readFileSync(fullPath, 'utf-8');
+    } catch (_e) {
+      content = '';
+    }
+
+    const editorSetting = new Setting(containerEl)
+      .setName('Edit textlintrc')
+      .setDesc(fullPath);
+
+    let textareaEl: HTMLTextAreaElement;
+    editorSetting.addTextArea((ta) => {
+      ta.inputEl.style.width = '100%';
+      ta.inputEl.style.height = '200px';
+      ta.inputEl.style.fontFamily = 'monospace';
+      ta.setValue(content);
+      textareaEl = ta.inputEl;
     });
 
-    const addBtn = new Setting(configEl).addButton((button) => {
-      button.setButtonText('Add').onClick(async () => {
-        this.textlintConfigs.push({ folder: '', textlintrcPath: '', textlintrc: '' });
-        this.display();
+    editorSetting.addButton((btn) => {
+      btn.setButtonText('Save').onClick(() => {
+        try {
+          writeFileSync(fullPath, textareaEl.value, 'utf-8');
+          new Notice('[textlint] Saved: ' + fullPath);
+        } catch (e) {
+          new Notice('[textlint] Failed to save: ' + e.message);
+        }
       });
     });
-    addBtn.settingEl.style.border = 'none';
+  }
+
+  private addPluginManagerSection(containerEl: HTMLElement) {
+    containerEl.createEl('h2', { text: 'Plugin manager' });
+    containerEl.createEl('p', {
+      text: 'Install textlint plugins into the working directory.',
+    }).style.color = 'var(--text-muted)';
+
+    let packageInput = '';
+    let outputEl: HTMLTextAreaElement;
+
+    const installSetting = new Setting(containerEl)
+      .setName('Install plugin')
+      .setDesc('Package name, e.g. textlint-rule-spellcheck-tech-word');
+
+    installSetting.addText((text) => {
+      text.setPlaceholder('textlint-rule-...').onChange((v) => {
+        packageInput = v;
+      });
+    });
+
+    installSetting.addButton((btn) => {
+      btn.setButtonText('Install').onClick(async () => {
+        if (!packageInput.trim()) {
+          new Notice('[textlint] Enter a package name');
+          return;
+        }
+        const workingDir = this.plugin.settings.workingDirectory || this.plugin.getVaultBasePath();
+        btn.setButtonText('Installing...');
+        btn.setDisabled(true);
+        try {
+          const output = await installTextlintPlugin(packageInput.trim(), workingDir, this.plugin.settings.npmPath);
+          if (outputEl) outputEl.value = output;
+          new Notice('[textlint] Installed: ' + packageInput.trim());
+        } catch (e) {
+          if (outputEl) outputEl.value = 'Error: ' + e.message;
+          new Notice('[textlint] Install failed: ' + e.message);
+        } finally {
+          btn.setButtonText('Install');
+          btn.setDisabled(false);
+        }
+      });
+    });
+
+    const outputSetting = new Setting(containerEl).setName('Output');
+    outputSetting.addTextArea((ta) => {
+      ta.inputEl.style.width = '100%';
+      ta.inputEl.style.height = '100px';
+      ta.inputEl.style.fontFamily = 'monospace';
+      ta.setDisabled(true);
+      outputEl = ta.inputEl;
+    });
+  }
+
+  private resolveAbsolutePath(p: string): string | null {
+    if (!p) return null;
+    if (isAbsolute(p)) return p;
+    return join(this.plugin.getVaultBasePath(), p);
   }
 }

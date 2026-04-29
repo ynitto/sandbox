@@ -1,12 +1,9 @@
 import { Diagnostic } from '@codemirror/lint';
-import { TextlintWorkerCommandResponseLint } from '@textlint/script-compiler';
+import { TextlintMessage } from '@textlint/types';
 import TextlintPlugin from '../main';
 import { getActiveEditor, getEditorView, textlintSeverityToDiagnosticSeverity } from '../util';
 
-export const getDiagnostics = (
-  plugin: TextlintPlugin,
-  messages: TextlintWorkerCommandResponseLint['result']['messages'],
-): Diagnostic[] => {
+export const getDiagnostics = (plugin: TextlintPlugin, messages: TextlintMessage[]): Diagnostic[] => {
   const editor = getActiveEditor(plugin);
   if (!editor) return [];
 
@@ -17,7 +14,9 @@ export const getDiagnostics = (
   messages.forEach((message) => {
     if (message.severity < plugin.settings.minimumSeverityInEditingView) return;
 
-    const [from, to] = message.range;
+    const from = message.range ? message.range[0] : message.index;
+    const to = message.range ? message.range[1] : message.index + 1;
+
     const diagnostic: Diagnostic = {
       from,
       to,
@@ -35,17 +34,17 @@ export const getDiagnostics = (
           const fixBtn = document.createElement('button');
           fixBtn.style.marginLeft = '0.5em';
           fixBtn.setText('Fix');
-          const [from, to] = fix.range;
+          const [fixFrom, fixTo] = fix.range;
 
-          const oldText = cm.state.sliceDoc(from, to);
+          const oldText = cm.state.sliceDoc(fixFrom, fixTo);
           fixBtn.onClickEvent(() => {
             fixBtn.setText('Fixing...');
             fixBtn.setAttribute('disabled', '');
-            const changes = { changes: { from, to, insert: fix.text } };
+            const changes = { changes: { from: fixFrom, to: fixTo, insert: fix.text } };
             cm.dispatch(changes);
 
             setTimeout(() => {
-              if (cm.state.sliceDoc(from, to) !== oldText) {
+              if (cm.state.sliceDoc(fixFrom, fixTo) !== oldText) {
                 fixBtn.setText('Fixed!');
                 item.parentElement?.parentElement?.remove();
               } else {
