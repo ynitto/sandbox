@@ -289,8 +289,30 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
         : 'Install textlint plugins into the working directory.',
     }).style.color = 'var(--text-muted)';
 
-    let packageInput = '';
     let outputEl: HTMLTextAreaElement;
+
+    new Setting(containerEl)
+      .setName('Install textlint')
+      .setDesc('Run: npm install -g textlint')
+      .addButton((btn) => {
+        btn.setButtonText('Install').onClick(async () => {
+          btn.setButtonText('Installing...');
+          btn.setDisabled(true);
+          try {
+            const output = await installTextlintPlugin('textlint', '', this.plugin.settings.npmPath, true);
+            if (outputEl) outputEl.value = output;
+            new Notice('[textlint] Installed textlint globally');
+          } catch (e) {
+            if (outputEl) outputEl.value = 'Error: ' + e.message;
+            new Notice('[textlint] Install failed: ' + e.message);
+          } finally {
+            btn.setButtonText('Install');
+            btn.setDisabled(false);
+          }
+        });
+      });
+
+    let packageInput = '';
 
     const installSetting = new Setting(containerEl)
       .setName('Install plugin')
