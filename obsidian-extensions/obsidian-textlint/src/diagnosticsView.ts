@@ -183,20 +183,18 @@ export class TextlintDiagnosticView extends ItemView {
     }
 
     const count: DiagnosticsCount = { 0: 0, 1: 0, 2: 0 };
-    let hasFixable = false;
 
     msgs
       .sort((a, b) => b.severity - a.severity)
       .forEach((d) => {
         count[d.severity as 0 | 1 | 2]++;
-        if (d.fix !== undefined) hasFixable = true;
         el.appendChild(this.createDiagnosticItemElement(plugin, d));
       });
 
     this.setDiagnosticsMetadata(count);
 
     const btn = this.contentEl.querySelector<HTMLButtonElement>(`#${FIX_BTN_ID}`);
-    if (btn) btn.disabled = !hasFixable || !this.onFixAll;
+    if (btn) btn.disabled = !this.onFixAll;
   }
 
   private createDiagnosticItemElement(plugin: TextlintPlugin, d: TextlintMessage): HTMLElement {
