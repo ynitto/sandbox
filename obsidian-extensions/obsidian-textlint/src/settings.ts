@@ -24,6 +24,8 @@ export interface TextlintPluginSettings {
 
   foldersToIgnore: string[];
 
+  useGlobal: boolean;
+  textlintPath: string;
   npxPath: string;
   npmPath: string;
   textlintrcPath: string;
@@ -43,6 +45,8 @@ export const DEFAULT_SETTINGS: TextlintPluginSettings = {
 
   foldersToIgnore: [],
 
+  useGlobal: false,
+  textlintPath: 'textlint',
   npxPath: 'npx',
   npmPath: 'npm',
   textlintrcPath: '',
@@ -159,30 +163,56 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
     containerEl.createEl('h2', { text: 'textlint setup' });
 
     new Setting(containerEl)
-      .setName('Working directory')
-      .setDesc('Directory where textlint is installed (contains node_modules). Leave empty to use vault root.')
-      .addText((text) => {
-        text
-          .setPlaceholder('/path/to/project')
-          .setValue(this.plugin.settings.workingDirectory)
-          .onChange(async (v) => {
-            this.plugin.settings.workingDirectory = v;
-            await this.plugin.saveSettings();
-          });
+      .setName('Use global textlint')
+      .setDesc('Run the globally installed textlint instead of using npx. Plugins are also installed globally.')
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.useGlobal).onChange(async (v) => {
+          this.plugin.settings.useGlobal = v;
+          await this.plugin.saveSettings();
+          this.display();
+        });
       });
 
-    new Setting(containerEl)
-      .setName('npx path')
-      .setDesc('Path to npx executable')
-      .addText((text) => {
-        text
-          .setPlaceholder('npx')
-          .setValue(this.plugin.settings.npxPath)
-          .onChange(async (v) => {
-            this.plugin.settings.npxPath = v || 'npx';
-            await this.plugin.saveSettings();
-          });
-      });
+    if (this.plugin.settings.useGlobal) {
+      new Setting(containerEl)
+        .setName('textlint path')
+        .setDesc('Path to the textlint executable (e.g. C:\\Users\\user\\AppData\\Roaming\\npm\\textlint.cmd)')
+        .addText((text) => {
+          text
+            .setPlaceholder('textlint')
+            .setValue(this.plugin.settings.textlintPath)
+            .onChange(async (v) => {
+              this.plugin.settings.textlintPath = v || 'textlint';
+              await this.plugin.saveSettings();
+            });
+        });
+    } else {
+      new Setting(containerEl)
+        .setName('Working directory')
+        .setDesc('Directory where textlint is installed (contains node_modules). Leave empty to use vault root.')
+        .addText((text) => {
+          text
+            .setPlaceholder('C:\\path\\to\\project')
+            .setValue(this.plugin.settings.workingDirectory)
+            .onChange(async (v) => {
+              this.plugin.settings.workingDirectory = v;
+              await this.plugin.saveSettings();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName('npx path')
+        .setDesc('Path to npx executable')
+        .addText((text) => {
+          text
+            .setPlaceholder('npx')
+            .setValue(this.plugin.settings.npxPath)
+            .onChange(async (v) => {
+              this.plugin.settings.npxPath = v || 'npx';
+              await this.plugin.saveSettings();
+            });
+        });
+    }
 
     new Setting(containerEl)
       .setName('npm path')
@@ -252,8 +282,11 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
 
   private addPluginManagerSection(containerEl: HTMLElement) {
     containerEl.createEl('h2', { text: 'Plugin manager' });
+    const { useGlobal } = this.plugin.settings;
     containerEl.createEl('p', {
-      text: 'Install textlint plugins into the working directory.',
+      text: useGlobal
+        ? 'Install textlint plugins globally (npm install -g).'
+        : 'Install textlint plugins into the working directory.',
     }).style.color = 'var(--text-muted)';
 
     let packageInput = '';
@@ -279,7 +312,12 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
         btn.setButtonText('Installing...');
         btn.setDisabled(true);
         try {
-          const output = await installTextlintPlugin(packageInput.trim(), workingDir, this.plugin.settings.npmPath);
+          const output = await installTextlintPlugin(
+            packageInput.trim(),
+            workingDir,
+            this.plugin.settings.npmPath,
+            useGlobal,
+          );
           if (outputEl) outputEl.value = output;
           new Notice('[textlint] Installed: ' + packageInput.trim());
         } catch (e) {

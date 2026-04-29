@@ -1,4 +1,5 @@
 import { Notice, Plugin } from 'obsidian';
+import { join, isAbsolute } from 'path';
 import { debounce } from 'lodash-es';
 import { Diagnostic, lintGutter, setDiagnostics } from '@codemirror/lint';
 import { EditorView, tooltips, ViewUpdate } from '@codemirror/view';
@@ -201,11 +202,11 @@ export default class TextlintPlugin extends Plugin {
     if (isIgnoredFile(file, this.settings.foldersToIgnore)) return;
 
     const basePath = this.getVaultBasePath();
-    const filePath = `${basePath}/${file.path}`;
+    const filePath = join(basePath, file.path);
 
-    const { textlintrcPath, workingDirectory, npxPath } = this.settings;
+    const { textlintrcPath, workingDirectory, npxPath, useGlobal, textlintPath } = this.settings;
     const resolvedRcPath = textlintrcPath
-      ? textlintrcPath.startsWith('/') ? textlintrcPath : `${basePath}/${textlintrcPath}`
+      ? isAbsolute(textlintrcPath) ? textlintrcPath : join(basePath, textlintrcPath)
       : undefined;
     const resolvedWorkDir = workingDirectory || basePath;
 
@@ -214,6 +215,8 @@ export default class TextlintPlugin extends Plugin {
         npxPath,
         textlintrcPath: resolvedRcPath,
         workingDirectory: resolvedWorkDir,
+        useGlobal,
+        textlintPath,
       });
 
       const messages = results[0]?.messages ?? [];
