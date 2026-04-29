@@ -1,4 +1,4 @@
-/* base */
+/* base severity colors */
 .textlint-plugin-severity-info {
   color: var(--color-cyan);
 }
@@ -11,63 +11,162 @@
   color: var(--color-red);
 }
 
-/* diagnostics view */
+/* -------------------------------------------------------
+   Diagnostics view root
+   ItemView の contentEl は Obsidian 側で
+   display:flex; flex-direction:column; overflow:hidden
+   になっているので、それを活かす
+------------------------------------------------------- */
 
 #textlint-plugin-diagnostics-view-content {
   display: flex;
   flex-direction: column;
-  overflow: unset;
-  width: 100%;
-  margin: 0;
-  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  font-size: var(--font-ui-small);
 }
 
-#textlint-plugin-diagnostics-view-content-header {
-  border-bottom: 2px solid var(--background-modifier-border);
-  padding: 1em;
-}
-
-.textlint-plugin-diagnostics-view-content-header-metadata-container {
-  color: var(--text-faint);
+/* --- Header (metadata bar) --- */
+.textlint-plugin-diagnostics-view-header {
+  flex-shrink: 0;
   display: flex;
   flex-direction: row;
-  justify-content: space-between;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
 }
 
-.textlint-plugin-diagnostics-view-content-header-metadata-severity-item {
-  margin-left: 0.25em;
+.textlint-plugin-diagnostics-view-header-meta {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--size-4-2);
+  flex: 1;
+  min-width: 0;
 }
 
-#textlint-plugin-diagnostics-view-content-message-container {
-  width: 100%;
-  height: 100%;
-  overflow: scroll;
-  padding: 1em;
+.textlint-plugin-diagnostics-view-severity-container {
+  display: flex;
+  flex-direction: row;
+  gap: var(--size-4-1);
 }
 
-.textlint-plugin-diagnostics-view-content-message-item-container {
+.textlint-plugin-diagnostics-view-severity-item {
+  white-space: nowrap;
+}
+
+/* --- Tab bar --- */
+.textlint-plugin-diagnostics-view-tab-bar {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  padding: 0 var(--size-4-2);
+  gap: 0;
+}
+
+.textlint-plugin-diagnostics-view-tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  padding: var(--size-4-1) var(--size-4-3);
+  margin-bottom: -1px;
+  white-space: nowrap;
+}
+
+.textlint-plugin-diagnostics-view-tab-btn:hover {
+  color: var(--text-normal);
+}
+
+.textlint-plugin-diagnostics-view-tab-btn--active {
+  border-bottom-color: var(--color-accent);
+  color: var(--text-normal);
+}
+
+/* Fix All ボタンをタブバーの右端に配置 */
+.textlint-plugin-diagnostics-view-fix-btn {
+  margin-left: auto;
+  align-self: center;
+  font-size: var(--font-ui-smaller);
+  padding: 2px var(--size-4-3);
+  cursor: pointer;
+  border-radius: var(--radius-s);
+}
+
+/* --- Tab panels --- */
+.textlint-plugin-diagnostics-view-tab-panel {
+  flex: 1;
+  min-height: 0;       /* flex子要素がスクロールするために必須 */
+  overflow-y: auto;
+  padding: var(--size-4-2) var(--size-4-3);
+}
+
+/* Output パネルはテキストエリアを全面に広げるため padding なし */
+.textlint-plugin-diagnostics-view-tab-panel--output {
   display: flex;
   flex-direction: column;
-  border-bottom: 2px solid var(--background-modifier-border);
-  margin-bottom: 0.5em;
-  padding-bottom: 0.5em;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* --- Diagnostic items --- */
+.textlint-plugin-diagnostics-view-item {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: var(--size-4-1) 0;
   cursor: pointer;
 }
 
-.textlint-plugin-diagnostics-view-content-message-item-footer {
+.textlint-plugin-diagnostics-view-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.textlint-plugin-diagnostics-view-item-message {
+  display: block;
+  margin-bottom: var(--size-2-1);
+  word-break: break-word;
+}
+
+.textlint-plugin-diagnostics-view-item-footer {
   display: flex;
   flex-direction: row;
   justify-content: space-between;
-}
-
-.textlint-plugin-diagnostics-view-content-message-item-loc {
+  align-items: center;
   color: var(--text-faint);
 }
 
-.textlint-plugin-diagnostics-view-content-message-item-rule {
-  color: var(--text-faint);
+.textlint-plugin-diagnostics-view-item-footer-right {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--size-4-2);
 }
 
-.textlint-plugin-diagnostics-view-content-message-item-hr {
-  margin: 0.5em 0;
+.textlint-plugin-diagnostics-view-item-fixable {
+  color: var(--color-green);
 }
+
+/* --- Output textarea --- */
+.textlint-plugin-diagnostics-view-output-textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  background: var(--background-primary);
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--text-normal);
+  padding: var(--size-4-2) var(--size-4-3);
+  box-sizing: border-box;
+}
+

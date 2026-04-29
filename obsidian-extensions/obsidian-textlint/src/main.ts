@@ -1,10 +1,11 @@
-import { Notice, Plugin } from 'obsidian';
+import { Notice, Plugin, TFile } from 'obsidian';
 import { join, isAbsolute } from 'path';
+import { existsSync } from 'fs';
 import { debounce } from 'lodash-es';
 import { Diagnostic, lintGutter, setDiagnostics } from '@codemirror/lint';
 import { EditorView, tooltips, ViewUpdate } from '@codemirror/view';
 import { Extension } from '@codemirror/state';
-import { runTextlint } from './textlint/runner';
+import { runTextlint, runTextlintFix } from './runner';
 import { getTheme } from './theme';
 import { DEFAULT_SETTINGS, TextlintPluginSettingTab, TextlintPluginSettings } from './settings';
 import {
@@ -61,6 +62,10 @@ export default class TextlintPlugin extends Plugin {
   getVaultBasePath(): string {
     // @ts-expect-error
     return this.app.vault.adapter.basePath as string;
+  }
+
+  getPluginTextlintrcPath(): string {
+    return join(this.getVaultBasePath(), this.manifest.dir ?? '', '.textlintrc');
   }
 
   addCommands() {
@@ -156,6 +161,16 @@ export default class TextlintPlugin extends Plugin {
     return leaf.view as TextlintDiagnosticView;
   }
 
+  async getOrOpenDiagnosticView(): Promise<TextlintDiagnosticView | undefined> {
+    const existing = this.getDiagnosticView();
+    if (existing) return existing;
+
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
+    await leaf.setViewState({ type: VIEW_TYPE_TEXTLINT_DIAGNOSTICS, active: false });
+    return leaf.view as TextlintDiagnosticView;
+  }
+
   getLintOnTextChangedExtension() {
     if (!this.settings.lintOnTextChanged) return;
 
@@ -205,13 +220,19 @@ export default class TextlintPlugin extends Plugin {
     const filePath = join(basePath, file.path);
 
     const { textlintrcPath, workingDirectory, npxPath, useGlobal, textlintPath } = this.settings;
-    const resolvedRcPath = textlintrcPath
-      ? isAbsolute(textlintrcPath) ? textlintrcPath : join(basePath, textlintrcPath)
-      : undefined;
+    let resolvedRcPath: string | undefined;
+    if (textlintrcPath) {
+      resolvedRcPath = isAbsolute(textlintrcPath) ? textlintrcPath : join(basePath, textlintrcPath);
+    } else {
+      const pluginRcPath = this.getPluginTextlintrcPath();
+      if (existsSync(pluginRcPath)) {
+        resolvedRcPath = pluginRcPath;
+      }
+    }
     const resolvedWorkDir = workingDirectory || basePath;
 
     try {
-      const results = await runTextlint(filePath, {
+      const { results, rawOutput } = await runTextlint(filePath, {
         npxPath,
         textlintrcPath: resolvedRcPath,
         workingDirectory: resolvedWorkDir,
@@ -221,14 +242,64 @@ export default class TextlintPlugin extends Plugin {
 
       const messages = results[0]?.messages ?? [];
 
-      const view = this.getDiagnosticView();
-      if (view) view.setTextlintDiagnostics(this, messages);
+      const view = await this.getOrOpenDiagnosticView();
+      if (view) {
+        view.setFixCallback(() => this.runFix());
+        view.setCommandOutput(rawOutput);
+        view.setTextlintDiagnostics(this, messages);
+      }
 
       const diagnostics = getDiagnostics(this, messages);
       cm.dispatch(setDiagnostics(cm.state, diagnostics));
     } catch (e) {
       console.error('[textlint] error:', e);
       new Notice('[textlint] Error: ' + e.message);
+      const view = this.getDiagnosticView();
+      if (view) view.setCommandOutput('Error: ' + e.message);
     }
   }, 500);
+
+  async runFix() {
+    const file = getActiveFile(this);
+    if (!file) return;
+
+    const basePath = this.getVaultBasePath();
+    const filePath = join(basePath, file.path);
+
+    const { textlintrcPath, workingDirectory, npxPath, useGlobal, textlintPath } = this.settings;
+    let resolvedRcPath: string | undefined;
+    if (textlintrcPath) {
+      resolvedRcPath = isAbsolute(textlintrcPath) ? textlintrcPath : join(basePath, textlintrcPath);
+    } else {
+      const pluginRcPath = this.getPluginTextlintrcPath();
+      if (existsSync(pluginRcPath)) resolvedRcPath = pluginRcPath;
+    }
+    const resolvedWorkDir = workingDirectory || basePath;
+
+    try {
+      const { rawOutput } = await runTextlintFix(filePath, {
+        npxPath,
+        textlintrcPath: resolvedRcPath,
+        workingDirectory: resolvedWorkDir,
+        useGlobal,
+        textlintPath,
+      });
+
+      // Reload the file in Obsidian to reflect on-disk changes made by textlint
+      const tfile = this.app.vault.getAbstractFileByPath(file.path);
+      if (tfile instanceof TFile) {
+        const content = await this.app.vault.adapter.read(file.path);
+        await this.app.vault.modify(tfile, content);
+      }
+
+      const view = this.getDiagnosticView();
+      if (view) view.setCommandOutput(rawOutput);
+
+      new Notice('[textlint] Fix applied');
+      this.runLint();
+    } catch (e) {
+      console.error('[textlint] fix error:', e);
+      new Notice('[textlint] Fix error: ' + (e as Error).message);
+    }
+  }
 }

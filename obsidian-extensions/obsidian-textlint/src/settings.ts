@@ -3,7 +3,7 @@ import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import { readFileSync, writeFileSync } from 'fs';
 import { join, isAbsolute } from 'path';
 import TextlintPlugin from './main';
-import { installTextlintPlugin } from './textlint/runner';
+import { installTextlintPlugin, runTextlintPrintConfig, RuleConfig } from './runner';
 
 const SEVERITY_OPTIONS: Record<string, string> = {
   '0': 'info',
@@ -70,6 +70,7 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
     this.addDisplaySection(containerEl);
     this.addSetupSection(containerEl);
     this.addTextlintrcSection(containerEl);
+    this.addInstalledRulesSection(containerEl);
     this.addPluginManagerSection(containerEl);
   }
 
@@ -231,9 +232,53 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
   private addTextlintrcSection(containerEl: HTMLElement) {
     containerEl.createEl('h2', { text: 'textlintrc' });
 
+    // --- Plugin .textlintrc ---
+    containerEl.createEl('h3', { text: 'Plugin .textlintrc' });
+
+    const pluginRcPath = this.getPluginTextlintrcPath();
+    const pathDesc = containerEl.createEl('p');
+    pathDesc.textContent = `Path: ${pluginRcPath}`;
+    pathDesc.style.color = 'var(--text-muted)';
+    pathDesc.style.fontSize = 'smaller';
+
+    const autoDesc = containerEl.createEl('p');
+    autoDesc.textContent = 'Used automatically when "Custom textlintrc path" below is empty.';
+    autoDesc.style.color = 'var(--text-muted)';
+    autoDesc.style.fontSize = 'smaller';
+
+    let pluginRcContent = '';
+    try {
+      pluginRcContent = readFileSync(pluginRcPath, 'utf-8');
+    } catch (_e) {
+      pluginRcContent = '{\n  "rules": {}\n}';
+    }
+
+    const pluginRcSetting = new Setting(containerEl).setName('Edit plugin .textlintrc');
+    let pluginRcTextareaEl: HTMLTextAreaElement;
+    pluginRcSetting.addTextArea((ta) => {
+      ta.inputEl.style.width = '100%';
+      ta.inputEl.style.height = '200px';
+      ta.inputEl.style.fontFamily = 'monospace';
+      ta.setValue(pluginRcContent);
+      pluginRcTextareaEl = ta.inputEl;
+    });
+    pluginRcSetting.addButton((btn) => {
+      btn.setButtonText('Save').onClick(() => {
+        try {
+          writeFileSync(pluginRcPath, pluginRcTextareaEl.value, 'utf-8');
+          new Notice('[textlint] Saved: ' + pluginRcPath);
+        } catch (e) {
+          new Notice('[textlint] Failed to save: ' + e.message);
+        }
+      });
+    });
+
+    // --- Custom textlintrc path ---
+    containerEl.createEl('h3', { text: 'Custom textlintrc path' });
+
     new Setting(containerEl)
       .setName('textlintrc path')
-      .setDesc('Path to .textlintrc file (absolute, or relative to vault root). Leave empty for textlint default discovery.')
+      .setDesc('Override: path to .textlintrc file (absolute, or relative to vault root). Leave empty to use plugin .textlintrc.')
       .addText((text) => {
         text
           .setPlaceholder('.textlintrc or /absolute/path/.textlintrc')
@@ -256,7 +301,7 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
     }
 
     const editorSetting = new Setting(containerEl)
-      .setName('Edit textlintrc')
+      .setName('Edit custom textlintrc')
       .setDesc(fullPath);
 
     let textareaEl: HTMLTextAreaElement;
@@ -280,6 +325,137 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
     });
   }
 
+  private getPluginTextlintrcPath(): string {
+    return join(this.plugin.getVaultBasePath(), this.plugin.manifest.dir ?? '', '.textlintrc');
+  }
+
+  private addInstalledRulesSection(containerEl: HTMLElement) {
+    containerEl.createEl('h2', { text: 'Installed rules' });
+
+    let rulesContainer: HTMLElement | undefined;
+
+    new Setting(containerEl)
+      .setName('Effective config')
+      .setDesc('Run textlint --print-config to display configured rules')
+      .addButton((btn) => {
+        btn.setButtonText('Refresh').onClick(async () => {
+          if (!rulesContainer) return;
+          btn.setButtonText('Loading...');
+          btn.setDisabled(true);
+          try {
+            await this.loadInstalledRules(rulesContainer);
+          } finally {
+            btn.setButtonText('Refresh');
+            btn.setDisabled(false);
+          }
+        });
+      });
+
+    rulesContainer = containerEl.createDiv();
+  }
+
+  private async loadInstalledRules(container: HTMLElement) {
+    container.empty();
+    const loading = container.createEl('p', { text: 'Loading...' });
+    loading.style.color = 'var(--text-muted)';
+
+    const basePath = this.plugin.getVaultBasePath();
+    const { textlintrcPath, workingDirectory, npxPath, useGlobal, textlintPath } = this.plugin.settings;
+
+    let resolvedRcPath: string | undefined;
+    if (textlintrcPath) {
+      resolvedRcPath = isAbsolute(textlintrcPath) ? textlintrcPath : join(basePath, textlintrcPath);
+    } else {
+      const pluginRcPath = this.getPluginTextlintrcPath();
+      try {
+        readFileSync(pluginRcPath);
+        resolvedRcPath = pluginRcPath;
+      } catch {
+        // no plugin rc file
+      }
+    }
+    const resolvedWorkDir = workingDirectory || basePath;
+
+    try {
+      let { rules, rawOutput } = await runTextlintPrintConfig({
+        npxPath,
+        textlintrcPath: resolvedRcPath,
+        workingDirectory: resolvedWorkDir,
+        useGlobal,
+        textlintPath,
+      });
+
+      // Fallback: rawOutput may contain valid JSON with rules if initial extraction missed them
+      if (Object.keys(rules).length === 0 && rawOutput) {
+        try {
+          const jsonStart = rawOutput.indexOf('{');
+          const jsonEnd = rawOutput.lastIndexOf('}');
+          if (jsonStart !== -1 && jsonEnd > jsonStart) {
+            const fallback = JSON.parse(rawOutput.slice(jsonStart, jsonEnd + 1)) as { rules?: Record<string, RuleConfig> };
+            if (fallback.rules && Object.keys(fallback.rules).length > 0) {
+              rules = fallback.rules;
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      container.empty();
+
+      const ruleEntries = Object.entries(rules);
+      if (ruleEntries.length === 0) {
+        if (rawOutput) {
+          const pre = container.createEl('pre');
+          pre.style.cssText = 'font-size:var(--font-ui-smaller);overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:var(--text-muted);background:var(--background-secondary);padding:8px;border-radius:4px;margin-top:4px';
+          try {
+            const jsonStart = rawOutput.indexOf('{');
+            const jsonEnd = rawOutput.lastIndexOf('}');
+            pre.textContent = jsonStart !== -1 && jsonEnd > jsonStart
+              ? JSON.stringify(JSON.parse(rawOutput.slice(jsonStart, jsonEnd + 1)), null, 2)
+              : rawOutput;
+          } catch {
+            pre.textContent = rawOutput;
+          }
+        } else {
+          const empty = container.createEl('p', { text: 'No rules configured.' });
+          empty.style.color = 'var(--text-muted)';
+        }
+        return;
+      }
+
+      const SEVERITY_LABEL: Record<number, string> = { 0: 'info', 1: 'warning', 2: 'error' };
+      const SEVERITY_CLASS: Record<number, string> = {
+        0: 'textlint-plugin-severity-info',
+        1: 'textlint-plugin-severity-warning',
+        2: 'textlint-plugin-severity-error',
+      };
+
+      const table = container.createEl('table');
+      table.style.cssText = 'width:100%;border-collapse:collapse;font-size:var(--font-ui-small);margin-top:0.5em';
+
+      for (const [name, config] of ruleEntries) {
+        const row = table.createEl('tr');
+        row.style.borderBottom = '1px solid var(--background-modifier-border)';
+
+        const nameCell = row.createEl('td');
+        nameCell.style.cssText = 'padding:3px 4px;font-family:var(--font-monospace)';
+        nameCell.textContent = name;
+
+        const sevCell = row.createEl('td');
+        sevCell.style.cssText = 'padding:3px 4px;text-align:right;white-space:nowrap';
+
+        const sev = resolveSeverity(config);
+        const badge = sevCell.createEl('span', { text: SEVERITY_LABEL[sev] ?? 'warning' });
+        badge.addClass(SEVERITY_CLASS[sev] ?? 'textlint-plugin-severity-warning');
+      }
+    } catch (e) {
+      container.empty();
+      const errEl = container.createEl('p', { text: 'Error: ' + (e as Error).message });
+      errEl.style.color = 'var(--color-red)';
+    }
+  }
+
   private addPluginManagerSection(containerEl: HTMLElement) {
     containerEl.createEl('h2', { text: 'Plugin manager' });
     const { useGlobal } = this.plugin.settings;
@@ -299,7 +475,7 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
           btn.setButtonText('Installing...');
           btn.setDisabled(true);
           try {
-            const output = await installTextlintPlugin('textlint', '', this.plugin.settings.npmPath, true);
+            const output = await installTextlintPlugin('textlint', this.plugin.getVaultBasePath(), this.plugin.settings.npmPath, true);
             if (outputEl) outputEl.value = output;
             new Notice('[textlint] Installed textlint globally');
           } catch (e) {
@@ -367,4 +543,12 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
     if (isAbsolute(p)) return p;
     return join(this.plugin.getVaultBasePath(), p);
   }
+}
+
+function resolveSeverity(config: RuleConfig): number {
+  if (typeof config === 'number') return config;
+  if (typeof config === 'object' && config !== null && 'severity' in config) {
+    return (config as { severity: number }).severity;
+  }
+  return 1; // default: warning
 }
