@@ -10,19 +10,25 @@ export type RunnerOptions = {
   npxPath: string;
   textlintrcPath?: string;
   workingDirectory?: string;
+  useGlobal?: boolean;
+  textlintPath?: string;
 };
 
 export async function runTextlint(filePath: string, options: RunnerOptions): Promise<TextlintCLIResult[]> {
   return new Promise((resolve, reject) => {
-    const args = ['textlint', '--format', 'json'];
+    const args = ['--format', 'json'];
     if (options.textlintrcPath) {
       args.push('--config', quote(options.textlintrcPath));
     }
     args.push(quote(filePath));
 
-    const cmd = `${options.npxPath} ${args.join(' ')}`;
+    const cmd = options.useGlobal
+      ? `${options.textlintPath || 'textlint'} ${args.join(' ')}`
+      : `${options.npxPath} textlint ${args.join(' ')}`;
 
-    exec(cmd, { cwd: options.workingDirectory }, (error, stdout, stderr) => {
+    const cwd = options.useGlobal ? undefined : options.workingDirectory;
+
+    exec(cmd, { cwd }, (error, stdout, stderr) => {
       if (stdout) {
         try {
           resolve(JSON.parse(stdout));
@@ -40,9 +46,16 @@ export async function runTextlint(filePath: string, options: RunnerOptions): Pro
   });
 }
 
-export async function installTextlintPlugin(packageName: string, workingDirectory: string, npmPath: string): Promise<string> {
+export async function installTextlintPlugin(
+  packageName: string,
+  workingDirectory: string,
+  npmPath: string,
+  useGlobal = false,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    exec(`${npmPath} install ${packageName}`, { cwd: workingDirectory }, (error, stdout, stderr) => {
+    const globalFlag = useGlobal ? ' -g' : '';
+    const cwd = useGlobal ? undefined : workingDirectory;
+    exec(`${npmPath} install${globalFlag} ${packageName}`, { cwd }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(stderr || error.message));
         return;
