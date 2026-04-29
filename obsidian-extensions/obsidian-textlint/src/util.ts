@@ -7,53 +7,6 @@ const getActiveView = (plugin: Plugin) => {
   return plugin.app.workspace.getActiveViewOfType(MarkdownView);
 };
 
-export const getAbstractFile = (plugin: Plugin, path: string) => {
-  return plugin.app.vault.getAbstractFileByPath(path);
-};
-
-export const readVaultFile = async (plugin: Plugin, path: string) => {
-  return await plugin.app.vault.adapter.read(path);
-};
-
-const parseTextlintrcInCodeBlock = (text: string) => {
-  const regex = /```json:textlintrc.json([^`]*)```/;
-  const matched = text.match(regex);
-  if (!matched) return '';
-  return matched[1].trim();
-};
-
-export const readTextlintrc = async (plugin: Plugin, path: string) => {
-  const file = getAbstractFile(plugin, path);
-  if (!file) {
-    throw new Error(`File not found. path: ${path}`);
-  }
-  // @ts-expect-error 2339
-  if (file.extension === 'json') {
-    const json = await readVaultFile(plugin, path);
-    try {
-      JSON.parse(json);
-    } catch (e) {
-      throw new Error(`Cannot parse textlintrc.json path: ${path}`);
-    }
-    return json;
-  }
-  // @ts-expect-error 2339
-  if (file.extension === 'md') {
-    const text = await readVaultFile(plugin, path);
-    const json = parseTextlintrcInCodeBlock(text);
-    if (!json) {
-      throw new Error(`Cannot parse textlinrc code block in markdown. path: ${path}`);
-    }
-    try {
-      JSON.parse(json);
-    } catch (e) {
-      throw new Error(`Cannot parse textlintrc.json path: ${path}`);
-    }
-    return json;
-  }
-  return '';
-};
-
 export const getActiveFile = (plugin: Plugin) => {
   return plugin.app.workspace.getActiveFile();
 };

@@ -1,6 +1,3 @@
-import { Diagnostic } from '@codemirror/lint';
-import { StateEffect } from '@codemirror/state';
-import { TextlintWorkerCommandResponseLint } from '@textlint/script-compiler';
 import { TextlintMessage } from '@textlint/types';
 import { ItemView, Platform } from 'obsidian';
 import TextlintPlugin from './main';
@@ -8,9 +5,6 @@ import { getActiveEditor, textlintSeverityToDiagnosticSeverity } from './util';
 
 export const TEXTLINT_DIAGNOSTICS_EXTENSION = 'textlint.diagnostics';
 export const VIEW_TYPE_TEXTLINT_DIAGNOSTICS = 'textlint-diagnostics-view';
-
-export const diagnosticsViewEffect = StateEffect.define<TextlintWorkerCommandResponseLint['result']>();
-export const resetDiagnosticsViewEffect = StateEffect.define();
 
 const PREFIX = 'textlint-plugin-diagnostics-view';
 
@@ -77,7 +71,7 @@ export class TextlintDiagnosticView extends ItemView {
     const severityContainer = this.contentEl.createEl('div');
     severityContainer.addClass(PREFIX + '-content-header-metadata-severity-container');
 
-    function createSeverityItem(severity: Diagnostic['severity'], id: string) {
+    function createSeverityItem(severity: string, id: string) {
       const el = severityContainer.createEl('span');
       el.id = id;
       el.addClass(PREFIX + '-content-header-metadata-severity-item');
@@ -143,7 +137,7 @@ export class TextlintDiagnosticView extends ItemView {
     msgs
       .sort((a, b) => b.severity - a.severity)
       .forEach((d) => {
-        count[d.severity]++;
+        count[d.severity as 0 | 1 | 2]++;
         const item = this.createDiagnosticItemElement(plugin, d);
         el.appendChild(item);
       });
