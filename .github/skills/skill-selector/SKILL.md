@@ -2,7 +2,7 @@
 name: skill-selector
 description: 単一タスクに最適なプライマリスキルと補助スキルを選択・推薦するメタスキル。「どのスキルを使えばいい？」「スキルを選んで」などで発動し、skill-mentor・scrum-master からインライン実行もされる。補助スキル（self-checking・test-driven-development 等）の付加評価も担う。
 metadata:
-  version: 1.5.0
+  version: 1.7.0
   tier: core
   category: orchestration
   tags:
@@ -238,6 +238,27 @@ python ${LTM}/recall_memory.py \
 
 > **注意**: 補助スキルの構成は「self-checking 系 0または1件 + 条件付き 0または1件」に固定する。呼び出し元のオーケストレーター（skill-mentor・scrum-master・gitlab-idd）は、時間・コスト制約に応じて省略を最終判断してよい。
 
+### Step 4.5（必須）: 実行戦略の確信度を評価し council_hint を出力する
+
+skill-selector は推薦を確定する役割を持つ。council-system による実行戦略の合議は**呼び出し元（skill-mentor / scrum-master 等）の責務**である。このステップでは skill-selector が実行戦略の複雑度・不確実性を評価し、呼び出し元が council-system を起動すべきかを判断できる**構造化シグナル（`council_hint`）**を `notes` に出力する。
+
+以下の条件のいずれかに該当する場合、`notes` に `council_hint` を追加する:
+
+| 条件 | 追加する理由 |
+|---|---|
+| `execution_plan.groups` が 2 つ以上 | 並列・依存関係に実行順序リスクがある |
+| `supporting_skills.conditional.mode == skill` | 補助スキルの省略可否判断が必要 |
+| `primary_skills` が 2 件以上（複合タスク） | 複数スキルの協調実行に競合リスクがある |
+| `past_examples.warnings` に失敗パターンがある | 過去の失敗から学ぶ追加判断が必要 |
+
+`council_hint` の書式:
+
+```
+"council_hint: [理由]。呼び出し元（skill-mentor/scrum-master 等）で council-system による実行戦略の合議を推奨。"
+```
+
+条件に該当しない場合は `council_hint` を notes に追加しない。
+
 ### Step 5: 推薦を提示する
 
 呼び出し元が安定して扱えるよう、**必ず以下の出力契約で返す**。説明文を自由記述で散らさず、キー名を固定する。
@@ -283,11 +304,13 @@ past_examples:
 - `supporting_skills.principle`: 原則付加枠。`self-checking` を返す場合は `mode: skill`、スキル不在で自然文指示を返す場合は `mode: fallback`、不要なら `mode: none`。
 - `supporting_skills.conditional`: 条件付き枠。呼び出し元は候補名を解釈せず、このオブジェクトをそのまま扱う。
 - `execution_plan.groups`: 実行順序と並列グループ。呼び出し元はこの順序を壊さずに利用する。
-- `notes` と `past_examples`: なければ空配列を返す。
+- `notes`: なければ空配列を返す。Step 4.5 の評価で `council_hint` が生成された場合はその文字列を配列要素として含める。
+- `past_examples`: なければ空配列を返す。
 
 #### 呼び出し元への契約
 
 - skill-mentor / scrum-master / gitlab-idd は、`primary_skills` から実行対象を作り、`supporting_skills` は**キー構造を保ったまま**保持・伝播する。
+- `notes` に `council_hint:` で始まる要素が含まれる場合、呼び出し元は実行戦略の確定前に `council-system` を使って合議することを推奨する（強制ではなく、コスト・時間制約に応じて判断してよい）。
 - レビューは skill-selector の返却値ではなく、オーケストレーターが `agent-reviewer` を直接呼び出して実施する。
 - 呼び出し元は `self-checking` や `test-driven-development` などの具体名を前提に独自分岐しない。必要な分岐は `mode` と `timing`、および返却された `name` に対する実行だけで行う。
 
@@ -321,6 +344,7 @@ execution_plan:
       after: ["A"]
       skills: ["skill-name", "self-checking"]
 notes:
+  - "council_hint: execution_plan に2グループ以上の並列実行あり。呼び出し元（skill-mentor/scrum-master 等）で council-system による実行戦略の合議を推奨。"
   - "[スキルの重複・競合がある場合はここに記載]"
 past_examples:
   success:

@@ -347,6 +347,7 @@ cat ${SKILLS_DIR}/skill-selector/SKILL.md
 3. **プライマリスキル**: `primary_skills[].name` をステップ 4-1 のサブエージェントとして使用する
 4. **補助指示**: `supporting_skills.principle` / `supporting_skills.conditional` は `mode` / `timing` / `name` / `instruction` に従ってそのまま適用する。worker-role 側で個別の補助スキル判定や優先順位付けを追加しない
 5. **レビュー**: レビューは skill-selector の返却値ではなく、worker-role が `agent-reviewer` を直接呼び出して実施する
+6. **（必要時）`council_hint` を確認する**: `notes` に `council_hint:` で始まる要素が含まれる場合、ステップ 4-1 の実装を開始する前に `council-system` を起動して実行戦略（スキルの実行順序・補助スキルの省略可否等）を合議する。SYNTHESIS 結論に従って方針を調整してからステップ 4-1 へ進む。コスト・時間制約がある場合はスキップしてよい。
 
 適切な実装スキルが特定できない場合のみ、skill-selector の結論に従って汎用実装サブエージェントへフォールバックする。
 
