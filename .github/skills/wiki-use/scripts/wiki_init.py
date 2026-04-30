@@ -5,8 +5,7 @@ wiki_init.py — Wiki を初期化する
 使い方:
   python scripts/wiki_init.py              # 対話的に設定して初期化
   python scripts/wiki_init.py --non-interactive \
-      --wiki-root ~/Documents/wiki \
-      --source-dir ~/Downloads             # 非対話モード
+      --wiki-root ~/Documents/wiki         # 非対話モード
 """
 
 import argparse
@@ -23,8 +22,6 @@ from wiki_utils import (
     load_config,
     save_config,
     resolve_wiki_root,
-    resolve_source_dir,
-    DEFAULT_SOURCE_DIR,
 )
 
 
@@ -152,8 +149,7 @@ def cmd_init_interactive() -> None:
     try:
         existing = load_config()
         print(f"既存の設定が見つかりました: {registry_path} (skill_configs.wiki-use)")
-        print(f"  wiki_root          : {existing.get('wiki_root', '(未設定)')}")
-        print(f"  default_source_dir : {existing.get('default_source_dir', '(未設定)')}")
+        print(f"  wiki_root : {existing.get('wiki_root', '(未設定)')}")
         print()
     except RuntimeError:
         pass
@@ -162,12 +158,8 @@ def cmd_init_interactive() -> None:
     current_root = existing.get("wiki_root", "~/Documents/wiki")
     wiki_root_str = input(f"wiki_root [{current_root}]: ").strip() or current_root
 
-    current_src = existing.get("default_source_dir", DEFAULT_SOURCE_DIR)
-    source_dir_str = input(f"default_source_dir [{current_src}]: ").strip() or current_src
-
     config = {
         "wiki_root": wiki_root_str,
-        "default_source_dir": source_dir_str,
     }
     save_config(config)
     print(f"\n[OK] 設定を保存しました: {registry_path} (skill_configs.wiki-use)")
@@ -191,11 +183,10 @@ def cmd_init_interactive() -> None:
     print("  2. ソースファイルを取り込む: python scripts/wiki_ingest.py copy --source <path>")
 
 
-def cmd_init_non_interactive(wiki_root_str: str, source_dir_str: str) -> None:
+def cmd_init_non_interactive(wiki_root_str: str) -> None:
     """非対話モードで Wiki を初期化する。"""
     config = {
         "wiki_root": wiki_root_str,
-        "default_source_dir": source_dir_str,
     }
     save_config(config)
     registry_path = get_registry_path()
@@ -215,21 +206,16 @@ def main() -> None:
     parser.add_argument(
         "--non-interactive",
         action="store_true",
-        help="非対話モード（--wiki-root と --source-dir が必須）",
+        help="非対話モード（--wiki-root が必須）",
     )
     parser.add_argument("--wiki-root", help="wiki のルートディレクトリ")
-    parser.add_argument(
-        "--source-dir",
-        default=DEFAULT_SOURCE_DIR,
-        help=f"デフォルトソースディレクトリ（デフォルト: {DEFAULT_SOURCE_DIR}）",
-    )
 
     args = parser.parse_args()
 
     if args.non_interactive:
         if not args.wiki_root:
             parser.error("--non-interactive モードでは --wiki-root が必須です")
-        cmd_init_non_interactive(args.wiki_root, args.source_dir)
+        cmd_init_non_interactive(args.wiki_root)
     else:
         cmd_init_interactive()
 

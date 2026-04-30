@@ -3,17 +3,15 @@
 wiki_ingest.py — ソース取り込み支援スクリプト
 
 使い方:
-  python scripts/wiki_ingest.py copy --source <ファイルパス>
-      ソースを sources/ にコピーする
-
-  python scripts/wiki_ingest.py list-pending
-      default_source_dir にある未取り込みファイルを一覧表示する
+  python scripts/wiki_ingest.py copy --source <ファイルパス|フォルダパス> [--published YYYY-MM-DD]
+      ソースを sources/ にコピーする。Markdown の場合はフロントマターの published を自動検出する。
+      フォルダを指定した場合、テキストとして解析可能なファイルを再帰的に全て列挙してコピーする。
 
   python scripts/wiki_ingest.py update-index --pages <page1.md> [<page2.md> ...]
       index.md に新規ページを登録する
 
   python scripts/wiki_ingest.py log \\
-      --source <ソースパス> --pages-created <N> --pages-updated <N>
+      --source <ソースパス> --pages-created <N> --pages-updated <N> [--published YYYY-MM-DD]
       log.md に操作を記録する
 
   python scripts/wiki_ingest.py update-hot --pages <page1.md> [<page2.md> ...]
@@ -28,9 +26,12 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from wiki_utils import load_config, resolve_wiki_root, resolve_source_dir
+from wiki_utils import load_config, resolve_wiki_root
 
 HOT_MAX = 20
+
+# copy 対象とするテキスト解析可能な拡張子
+INGESTABLE_EXTENSIONS = {".md", ".markdown", ".txt", ".rst", ".html", ".htm", ".pdf", ".docx"}
 
 
 def slugify(name: str) -> str:
@@ -50,13 +51,26 @@ def is_ingested(sources_dir: Path, log_path: Path) -> set:
     return {m.group(1) for m in pattern.finditer(text)}
 
 
-def cmd_copy(args, wiki_root: Path, _config: dict) -> None:
-    """ソースを sources/ にコピーする。"""
-    source_path = Path(args.source).expanduser()
-    if not source_path.exists():
-        print(f"[ERROR] ファイルが見つかりません: {source_path}", file=sys.stderr)
-        sys.exit(1)
+def _extract_published_from_frontmatter(path: Path) -> str | None:
+    """Markdown ファイルのフロントマターから published 日付を取得する。"""
+    if path.suffix.lower() not in (".md", ".markdown"):
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    end = text.find("---", 3)
+    if end == -1:
+        return None
+    frontmatter = text[3:end]
+    m = re.search(r"^published:\s*(\S+)", frontmatter, re.MULTILINE)
+    return m.group(1).strip() if m else None
 
+
+def _copy_single_file(source_path: Path, wiki_root: Path, published_override: str) -> None:
+    """1 ファイルを sources/ にコピーし、発行日を出力する。"""
     today = date.today().isoformat()
     slug = slugify(source_path.stem)
     dest_name = f"{today}-{slug}{source_path.suffix}"
@@ -71,41 +85,35 @@ def cmd_copy(args, wiki_root: Path, _config: dict) -> None:
         shutil.copy2(source_path, dest_path)
         print(f"[OK] コピーしました: {dest_path}")
 
+    published = published_override or _extract_published_from_frontmatter(source_path)
+    published_str = published if published else "(unknown)"
+    print(f"published: {published_str}")
     print(f"source_path: {dest_path}")
 
 
-def cmd_list_pending(args, wiki_root: Path, config: dict) -> None:
-    """未取り込みファイルを一覧表示する。"""
-    source_dir = resolve_source_dir(config)
-    log_path = wiki_root / "log.md"
-    ingested = is_ingested(wiki_root / "sources", log_path)
+def cmd_copy(args, wiki_root: Path, _config: dict) -> None:
+    """ソース（ファイルまたはフォルダ）を sources/ にコピーする。"""
+    source_path = Path(args.source).expanduser()
+    if not source_path.exists():
+        print(f"[ERROR] パスが見つかりません: {source_path}", file=sys.stderr)
+        sys.exit(1)
 
-    if not source_dir.exists():
-        print(f"[WARN] default_source_dir が存在しません: {source_dir}", file=sys.stderr)
-        return
+    published_override = getattr(args, "published", "") or ""
 
-    extensions = {".pdf", ".md", ".txt", ".html", ".rst", ".docx"}
-    files = [
-        f for f in source_dir.iterdir()
-        if f.is_file() and f.suffix.lower() in extensions
-    ]
-    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-
-    pending = []
-    for f in files:
-        slug = slugify(f.stem)
-        pattern = f"-{slug}{f.suffix}"
-        already = any(s.endswith(pattern) for s in ingested)
-        if not already:
-            pending.append(f)
-
-    if not pending:
-        print("[INFO] 未取り込みファイルはありません")
-        return
-
-    print(f"未取り込みファイル ({len(pending)} 件):")
-    for f in pending:
-        print(f"  {f}")
+    if source_path.is_dir():
+        files = [
+            f for f in sorted(source_path.rglob("*"))
+            if f.is_file() and f.suffix.lower() in INGESTABLE_EXTENSIONS
+        ]
+        if not files:
+            print(f"[WARN] 解析可能なファイルが見つかりません: {source_path}")
+            return
+        print(f"[INFO] {len(files)} 件のファイルを検出しました")
+        for f in files:
+            print(f"--- {f} ---")
+            _copy_single_file(f, wiki_root, published_override)
+    else:
+        _copy_single_file(source_path, wiki_root, published_override)
 
 
 def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
@@ -195,10 +203,15 @@ def cmd_log(args, wiki_root: Path, _config: dict) -> None:
     created = args.pages_created
     updated = args.pages_updated
     notes = args.notes or ""
+    published = getattr(args, "published", None) or ""
 
     entry = (
         f"\n## {now} — ingest\n\n"
         f"- ソース: `{source_rel}`\n"
+    )
+    if published:
+        entry += f"- 発行日: {published}\n"
+    entry += (
         f"- 作成: {created}ページ\n"
         f"- 更新: {updated}ページ\n"
     )
@@ -276,9 +289,7 @@ def main() -> None:
     # copy
     p_copy = subparsers.add_parser("copy", help="ソースを sources/ にコピーする")
     p_copy.add_argument("--source", required=True, help="ソースファイルのパス")
-
-    # list-pending
-    subparsers.add_parser("list-pending", help="未取り込みファイルを一覧表示する")
+    p_copy.add_argument("--published", default="", help="情報の発行日 (YYYY-MM-DD)。未指定時は Markdown フロントマターから自動検出")
 
     # update-index
     p_idx = subparsers.add_parser("update-index", help="index.md に新規ページを登録する")
@@ -289,6 +300,7 @@ def main() -> None:
     p_log.add_argument("--source", required=True, help="ソースパス（sources/ からの相対表記推奨）")
     p_log.add_argument("--pages-created", type=int, default=0, help="作成したページ数")
     p_log.add_argument("--pages-updated", type=int, default=0, help="更新したページ数")
+    p_log.add_argument("--published", default="", help="情報の発行日 (YYYY-MM-DD)")
     p_log.add_argument("--notes", default="", help="メモ（任意）")
 
     # update-hot
@@ -299,7 +311,6 @@ def main() -> None:
 
     dispatch = {
         "copy": cmd_copy,
-        "list-pending": cmd_list_pending,
         "update-index": cmd_update_index,
         "log": cmd_log,
         "update-hot": cmd_update_hot,

@@ -2,7 +2,7 @@
 name: wiki-use
 description: Karpathy LLM Wiki パターンに基づく知識ベース管理スキル。「wikiに取り込んで」「wikiに追加して」「URLをwikiに保存して」でingest、「wikiを検索して」でquery、「wikiを初期化して」でinit、「wikiをチェックして」でlintが発動する。ソース・URLから概念ページを自動生成・更新する。
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   tier: experimental
   category: knowledge
   config_script: scripts/wiki_init.py
@@ -55,7 +55,6 @@ python scripts/wiki_utils.py config
 出力例:
 ```
 wiki_root: /home/user/Documents/wiki
-default_source_dir: /home/user/Downloads
 ```
 
 設定ファイルが存在しない場合は `init` でガイドする。
@@ -67,7 +66,7 @@ default_source_dir: /home/user/Downloads
 | 操作 | トリガー例 | スクリプト |
 |------|-----------|-----------|
 | **init** | 「wikiを初期化して」「wiki-useをセットアップして」 | `wiki_init.py` |
-| **ingest** | 「wikiに取り込んで」「ソースを取り込んで」「〈ファイル〉をwikiに追加して」 | `wiki_ingest.py` + Claude による編集 |
+| **ingest** | 「wikiに取り込んで」「ソースを取り込んで」「〈ファイル〉をwikiに追加して」 | `wiki_ingest.py` + エージェントによる編集 |
 | **query** | 「wikiを検索して」「〜についてwikiで調べて」「〜の知識は？」 | `wiki_query.py` |
 | **lint** | 「wikiをチェックして」「リントして」「wiki の整合性を確認して」 | `wiki_lint.py` |
 
@@ -80,7 +79,7 @@ python scripts/wiki_init.py
 ```
 
 実行内容:
-1. `<agent_home>/skill-registry.json` の `skill_configs.wiki-use` が未設定の場合、ユーザーに `wiki_root` と `default_source_dir` を確認する
+1. `<agent_home>/skill-registry.json` の `skill_configs.wiki-use` が未設定の場合、ユーザーに `wiki_root` を確認する
 2. `wiki_root` 配下に標準ディレクトリ構造を作成する
 3. `SCHEMA.md`・`index.md`・`log.md`・`wiki/meta/hot.md` を初期テンプレートで生成する
 4. 完了後に構造を表示する
@@ -90,8 +89,7 @@ python scripts/wiki_init.py
 {
   "skill_configs": {
     "wiki-use": {
-      "wiki_root": "~/Documents/wiki",
-      "default_source_dir": "~/Downloads"
+      "wiki_root": "~/Documents/wiki"
     }
   }
 }
@@ -101,22 +99,21 @@ python scripts/wiki_init.py
 
 ## ingest（ソースを取り込む）
 
-ingest はこのスキルの中核操作。**Claude が** ソースを読み込み、Wiki ページを生成・更新する。
+ingest はこのスキルの中核操作。**エージェントが** ソースを読み込み、Wiki ページを生成・更新する。
 
 ### ステップ 1: ソースをコピー
 
+ユーザーが指定したソース（ファイルパス・フォルダパス・URL）を必ず `--source` で渡すこと。
+
 ```bash
-python scripts/wiki_ingest.py copy --source <ソースパスまたはURL>
+python scripts/wiki_ingest.py copy --source <ソースパス|フォルダパス|URL> [--published YYYY-MM-DD]
 ```
 
-- ファイルを `sources/<YYYY-MM-DD>-<slug>.<ext>` としてコピーする
-- URL の場合は内容をテキストとして保存する
-- コピー先パスを出力する
-
-未指定の場合は `default_source_dir` から未取り込みファイルを一覧表示する:
-```bash
-python scripts/wiki_ingest.py list-pending
-```
+- **ファイル指定**: `sources/<YYYY-MM-DD>-<slug>.<ext>` としてコピーする
+- **フォルダ指定**: フォルダ以下を再帰的に走査し、テキストとして解析可能なファイル（`.md` `.txt` `.rst` `.html` `.pdf` `.docx` など）を全て列挙してコピーする。各ファイルに対して `source_path` と `published` が順に出力される
+- **URL 指定**: 内容をテキストとして保存する
+- Markdown ファイルの場合、フロントマターの `published` フィールドを自動検出する
+- `--published` を明示指定すると自動検出より優先される（フォルダ指定時は全ファイルに適用）
 
 ### ステップ 2: 現在の Wiki 状態を確認
 
@@ -126,12 +123,13 @@ python scripts/wiki_query.py list-pages
 
 既存ページの一覧と概要を確認し、重複・関連ページを把握する。
 
-### ステップ 3: ソースを読み込み、Wiki ページを生成・更新（Claude が実行）
+### ステップ 3: ソースを読み込み、Wiki ページを生成・更新（エージェントが実行）
 
 以下の手順でソースを処理する:
 
 **3-1. ソースを精読する**
-Read ツールでソース全体を読み込む。
+read_file（またはエージェント固有のファイル読み込み手段）でソース全体を読み込む。
+フロントマターに `published` フィールドがある場合、またはステップ 1 で `copy` 出力に発行日が含まれていた場合はその値を控える。
 
 **3-2. 概念を抽出する**
 ソースから以下を列挙する:
@@ -148,7 +146,13 @@ Read ツールでソース全体を読み込む。
 
 各ページは「ページフォーマット」（`references/page-conventions.md`）に従う。
 1 ソースから 5〜15 ページを作成・更新するのが目安。
+発行日が分かっている場合は、そのソースから書き込んだ情報ブロックの末尾にインライン注記する:
 
+```
+*発行: YYYY-MM-DD / [[ソーススラッグ]]*
+```
+
+発行日不明の場合は注記不要（ユーザーに確認しない）。
 **3-5. クロスリファレンスを追加する**
 - 新規ページを参照するページがあれば `[[ページ名]]` リンクを追記する
 - 関連概念ページ同士を `## 関連` セクションでつなぐ
@@ -159,11 +163,12 @@ Read ツールでソース全体を読み込む。
 # index.md に新規ページを登録
 python scripts/wiki_ingest.py update-index --pages <作成したページのパスリスト>
 
-# log.md に操作を記録
+# log.md に操作を記録（--published は情報の発行日、不明なら省略）
 python scripts/wiki_ingest.py log \
   --source <ソースパス> \
   --pages-created <作成数> \
-  --pages-updated <更新数>
+  --pages-updated <更新数> \
+  [--published YYYY-MM-DD]
 
 # hot.md（最近のコンテキスト）を更新（直近 20 件を維持）
 python scripts/wiki_ingest.py update-hot --pages <作成・更新したページのパスリスト>
@@ -229,7 +234,7 @@ python scripts/wiki_lint.py
 
 以下の状況では自律的に行動すること:
 
-- ユーザーが URL やファイルパスを貼り付けて「これ読んで」「まとめて」と言ったとき → `ingest` を提案・実行する
+- ユーザーが URL やファイルパスを貼り付けて「これ読んで」「まとめて」と言ったとき → `ingest` を提案・実行する（ソースは必ずユーザーが指定したパス/URL を使う）
 - セッション開始時に wiki を使う作業が想定されるとき → `python scripts/wiki_utils.py config` で設定を確認する
 - query の結果が 0 件で「ページがない」と分かったとき → ingest を勧める
 
@@ -240,8 +245,9 @@ python scripts/wiki_lint.py
 ```
 ユーザー: 「この論文をwikiに取り込んで」（ファイルパス添付）
 → wiki_ingest.py copy --source <path>
-→ ソース精読 → 概念抽出（10ページ作成・3ページ更新）
-→ wiki_ingest.py update-index / log / update-hot
+→ ソース精読（フロントマターから published 日付を取得）
+→ 概念抽出（10ページ作成・3ページ更新）、発行日が分かる情報ブロックに `*発行: YYYY-MM-DD / [[ソース]]*` を注記
+→ wiki_ingest.py update-index / log --published YYYY-MM-DD / update-hot
 → 「10ページ作成・3ページ更新しました」と報告
 
 ユーザー: 「トランスフォーマーについてwikiで調べて」

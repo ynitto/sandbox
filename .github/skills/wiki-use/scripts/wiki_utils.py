@@ -16,7 +16,6 @@ from pathlib import Path
 
 SKILL_NAME = "wiki-use"
 REGISTRY_FILENAME = "skill-registry.json"
-DEFAULT_SOURCE_DIR = "~/Downloads"
 
 _AGENT_DIR_NAMES = {".copilot", ".claude", ".codex", ".kiro"}
 
@@ -87,11 +86,6 @@ def resolve_wiki_root(config: dict) -> Path:
     return Path(os.path.expanduser(config["wiki_root"]))
 
 
-def resolve_source_dir(config: dict) -> Path:
-    """default_source_dir を絶対パスに解決する。"""
-    return Path(os.path.expanduser(config.get("default_source_dir", DEFAULT_SOURCE_DIR)))
-
-
 def cmd_config(_args) -> None:
     """現在の設定を表示する。"""
     registry_path = get_registry_path()
@@ -102,14 +96,11 @@ def cmd_config(_args) -> None:
         sys.exit(1)
 
     wiki_root = resolve_wiki_root(config)
-    source_dir = resolve_source_dir(config)
 
-    print(f"registry_path      : {registry_path}")
-    print(f"wiki_root          : {wiki_root}")
-    print(f"default_source_dir : {source_dir}")
+    print(f"registry_path : {registry_path}")
+    print(f"wiki_root     : {wiki_root}")
     print()
-    print(f"wiki_root exists           : {wiki_root.exists()}")
-    print(f"default_source_dir exists  : {source_dir.exists()}")
+    print(f"wiki_root exists : {wiki_root.exists()}")
 
 
 def cmd_set_config(_args) -> None:
@@ -128,12 +119,8 @@ def cmd_set_config(_args) -> None:
     current_root = existing.get("wiki_root", "~/Documents/wiki")
     wiki_root = input(f"wiki_root [{current_root}]: ").strip() or current_root
 
-    current_src = existing.get("default_source_dir", DEFAULT_SOURCE_DIR)
-    source_dir = input(f"default_source_dir [{current_src}]: ").strip() or current_src
-
     config = {
         "wiki_root": wiki_root,
-        "default_source_dir": source_dir,
     }
     save_config(config)
     print()
