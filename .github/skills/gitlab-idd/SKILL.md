@@ -113,7 +113,7 @@ export GITLAB_NODE_ID=my-terminal-1
 4. MAX=$(python scripts/gl.py get-max-review-per-run --get max_review_per_run)  # デフォルト 1
 5. リクエスターレビューキューを処理（リクエスターとして振る舞う）:
    - 優先度順（priority:high → normal → low）で先頭 MAX 件を選択
-   - check-review-defer で self-defer チェック
+   - check-review-defer で self-defer チェック（priority:high はバイパス）
    - <!-- gitlab-idd:requester-approved:{NODE_ID} --> マーカーがあればスキップ（承認済み・人間のマージ待ち）
    - イシューコメントとブランチの成果物を確認
    - agent-reviewer で受け入れ条件を並列評価
@@ -123,7 +123,7 @@ export GITLAB_NODE_ID=my-terminal-1
 6. 非リクエスターレビューキューを処理（非リクエスターとして振る舞う）:
    - 残り枠（MAX - リクエスターキューで処理した件数）を上限として選択
    - 残り枠が 0 の場合はスキップして終了
-   - 3 段階スキップチェック: check-defer / check-review-defer / check-non-requester-review-defer
+   - 3 段階スキップチェック: check-defer / check-review-defer / check-non-requester-review-defer（各チェックの self-defer は priority:high でバイパス）
    - イシューコメントとブランチの成果物を確認
    - agent-reviewer で受け入れ条件を並列評価
    - 助言コメントを投稿（末尾に <!-- gitlab-idd:non-requester-reviewed:{NODE_ID} --> 付与）
@@ -142,7 +142,7 @@ export GITLAB_NODE_ID=my-terminal-1
 
 ```
 1. list-issues でオープンイシューを取得
-2. self-defer チェック: 自分発行イシューは DEFER_MINUTES（デフォルト 60 分）経過後まで skip
+2. self-defer チェック: 自分発行イシューは DEFER_MINUTES（デフォルト 60 分）経過後まで skip（priority:high はバイパス）
 3. 依存チェック: "## 依存イシュー" に記載のイシューがすべて done/closed か確認
    → 未完了の依存あり → スキップまたはコメントして終了
 4. 説明の明確性チェック: 受け入れ条件・影響範囲が実装に十分か判断
@@ -222,8 +222,8 @@ python scripts/gl.py project-info
 3. **受け入れ条件最優先**: イシュー作成時に `## 受け入れ条件` セクションを必ず含める
 4. **最小往復**: 1 回のワーカー実行でリクエスターがマージ判断できる成果物を揃える
 5. **レビュー実施**: ワーカーは agent-reviewer でレビューを行う。リクエスターは agent-reviewer で受け入れ条件を評価する
-6. **self-defer 遵守**: ワーカーは自分が発行したイシューを猶予期間中は取得しない
-7. **self-review ロック遵守**: リクエスター/レビュアーは自分実装のイシューをロック期間（デフォルト 24 時間）中はレビューしない
+6. **self-defer 遵守**: ワーカーは自分が発行したイシューを猶予期間中は取得しない（`priority:high` のイシューは例外としてすべての self-defer を無視して即実行する）
+7. **self-review ロック遵守**: リクエスター/レビュアーは自分実装のイシューをロック期間（デフォルト 24 時間）中はレビューしない（`priority:high` のイシューは例外としてすべての self-defer を無視して即レビューする）
 8. **nodeID なしレビュー許可**: `worker-node-id` が記録されていないイシューは誰でもレビューしてよい
 9. **放置アサイン遵守**: `worker-node-id` が別ノードのものでロック期間内（デフォルト 24 時間）はそのイシューを引き受けない
 10. **依存遵守**: ワーカーは `## 依存イシュー` に記載されたイシューが完了するまで着手しない

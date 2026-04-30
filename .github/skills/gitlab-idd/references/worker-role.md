@@ -83,6 +83,8 @@ python scripts/gl.py list-issues --state opened --exclude-labels "status:open,st
 他ノードに実行させるため自分が発行したイシューには猶予期間を設ける。
 猶予期間は `GITLAB_SELF_DEFER_MINUTES` 環境変数（デフォルト 60 分 = 1 時間）。
 
+**`priority:high` バイパス**: 候補イシューのラベルに `priority:high` が含まれる場合、このチェックをスキップして取得可とみなす。
+
 各候補イシューに対して以下を実行する:
 
 ```
@@ -108,7 +110,7 @@ python scripts/gl.py check-defer {issue_id} --get remaining_minutes
 `status:open` / `status:done` 以外の「クローズしていない」候補に対して実行する。
 （ステップ 2-1 の 4 で取得した候補群）
 疎境期間は `GITLAB_ASSIGNED_LOCK_MINUTES` 環境変数（デフォルト 1440 分 = 24 時間）。
-
+**`priority:high` バイパス**: 候補イシューのラベルに `priority:high` が含まれる場合、このチェックをスキップして引き受け可とみなす。
 ```
 python scripts/gl.py check-assigned-defer {issue_id} --get defer
 # → True（スキップ）または False（引き受け可）
@@ -141,6 +143,8 @@ python scripts/gl.py check-assigned-defer {issue_id} --get remaining_minutes
 
 1. `check-defer`（自分発行イシュー猶予）
 2. `check-assigned-defer`（放置アサインロック）
+
+**いずれのチェックも `priority:high` ラベルのイシューではスキップして即取得可とみなす。**
 
 全候補が `defer=true` の場合: 「残り {remaining_minutes} 分後に実行可能です」と報告して終了。
 オープンイシューが 0 件の場合: 「実行可能なオープンイシューはありません」と報告して終了。
@@ -217,6 +221,45 @@ python scripts/gl.py add-comment {issue_id} --body-file _clarification.md
 
 - {リクエスターに確認したい具体的な質問 1}
 - {具体的な質問 2}
+
+---
+
+### 💡 ワーカーの推測（参考）
+
+現在の説明から以下のように解釈しました。意図と異なる箇所を修正してください:
+
+- {推測した解釈 1: 例「X モジュールの Y 関数を対象とした変更と推測」}
+- {推測した解釈 2: 例「影響範囲は Z ファイルのみと推測」}
+
+### 📝 イシュー修正テンプレート
+
+以下をベースにイシューの説明を補完していただくと、ワーカーがスムーズに着手できます:
+
+---
+
+**目的**
+
+{推測した目的。例: 「〇〇機能の △△ を修正する」}
+
+**背景・要件**
+
+{推測した背景・要件}
+
+**受け入れ条件**
+
+- [ ] {推測される条件 1: 例「〇〇した場合に △△ が返る」}
+- [ ] {推測される条件 2}
+
+**影響範囲（推測）**
+
+- 対象ファイル: {推測されるファイル・ディレクトリ}
+- 対象 API / モジュール: {推測されるもの}
+
+**技術的な補足**
+
+{不明な場合は「特になし」と記載}
+
+---
 
 <!-- gitlab-idd:clarification-requested -->
 ```

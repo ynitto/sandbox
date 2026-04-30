@@ -169,7 +169,7 @@ python scripts/gl.py list-issues --label "status:review-ready"
 
 ### リクエスターレビューキューの処理
 
-各イシューについて、自分が実装者（アサイニー）であれば self-defer してスキップする:
+各イシューについて、自分が実装者（アサイニー）であれば self-defer してスキップする。ただし `priority:high` ラベルが付いている場合はこのチェックをスキップして処理を続行する:
 
 ```
 python scripts/gl.py check-review-defer {issue_id} --minutes 1440

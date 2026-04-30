@@ -34,8 +34,7 @@ python scripts/gl.py get-node-id --get node_id
 
 ### チェック 1: self-defer（ワーカーと同じ）
 
-自分が作成したイシューは猶予期間中はスキップする:
-
+自分が作成したイシューは猶予期間中はスキップする:**`priority:high` のイシューはこのチェックをスキップしてチェック 2 へ進む。**
 ```
 python scripts/gl.py check-defer {issue_id}
 ```
@@ -48,8 +47,7 @@ python scripts/gl.py check-defer {issue_id}
 
 ### チェック 2: self-review ロック（リクエスターと同じ）
 
-自分が実装したイシューはロック期間中はスキップする:
-
+自分が実装したイシューはロック期間中はスキップする:**`priority:high` のイシューはこのチェックをスキップしてチェック 3 へ進む。**
 ```
 python scripts/gl.py check-review-defer {issue_id} --minutes 1440
 ```
@@ -190,6 +188,6 @@ python scripts/gl.py add-comment {issue_id} --body-file _non_requester_review_co
 - **マージ・クローズは行わない**: `merge-mr` および `update-issue --state-event close` は実行しない
 - **ラベルは変更しない**: `status:review-ready` のままにしておく
 - **助言コメントのみ**: レビュー結果は助言。リクエスターが最終判断を行う
-- **self-defer 遵守**: 自分が作成したイシューは猶予期間中はレビューしない（ワーカーと同じ）
-- **self-review ロック遵守**: 自分が実装したイシューはロック期間中はレビューしない（リクエスターと同じ）
+- **self-defer 遵守**: 自分が作成したイシューは猶予期間中はレビューしない（ワーカーと同じ）。`priority:high` は例外
+- **self-review ロック遵守**: 自分が実装したイシューはロック期間中はレビューしない（リクエスターと同じ）。`priority:high` は例外
 - **再レビュー禁止**: 同一作業サイクルでは 1 回のみレビューする。ワーカーが差し戻し後に再着手すれば再びレビュー可能
