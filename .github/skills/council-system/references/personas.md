@@ -2,8 +2,6 @@
 
 council-system における3つのサブエージェントペルソナの詳細定義。
 
-理論的根拠の詳細は `references/academic-frameworks.md`、バイアス一覧は `references/bias-catalog.md` を参照。
-
 ## 目次
 - [MELCHIOR — 論理・分析の賢者](#melchior)
 - [BALTHASAR — 倫理・感情の賢者](#balthasar)
