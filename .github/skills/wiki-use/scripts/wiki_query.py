@@ -6,7 +6,7 @@ wiki_query.py — Wiki を検索・閲覧するスクリプト
   python scripts/wiki_query.py search "<キーワード>"
       キーワードで Wiki ページを全文検索する
 
-  python scripts/wiki_query.py list-pages [--category concepts|entities|topics]
+  python scripts/wiki_query.py list-pages [--category atoms|topics]
       ページ一覧を表示する
 
   python scripts/wiki_query.py show <ページパス>
@@ -61,7 +61,7 @@ def collect_wiki_pages(wiki_root: Path, category: str = None) -> list:
     if not wiki_dir.exists():
         return []
 
-    categories = ["concepts", "entities", "topics"]
+    categories = ["atoms", "topics"]
     if category:
         categories = [c for c in categories if c == category]
 
@@ -138,9 +138,8 @@ def cmd_show(args, wiki_root: Path) -> None:
     """ページ内容を表示する。"""
     page_path = wiki_root / args.path
     if not page_path.exists():
-        # stem だけで検索
         stem = Path(args.path).stem
-        for cat in ["concepts", "entities", "topics"]:
+        for cat in ["atoms", "topics"]:
             candidate = wiki_root / "wiki" / cat / f"{stem}.md"
             if candidate.exists():
                 page_path = candidate
@@ -179,7 +178,7 @@ def main() -> None:
     p_list = subparsers.add_parser("list-pages", help="ページ一覧を表示する")
     p_list.add_argument(
         "--category",
-        choices=["concepts", "entities", "topics"],
+        choices=["atoms", "topics"],
         help="カテゴリを絞り込む",
     )
 

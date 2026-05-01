@@ -25,7 +25,7 @@ def collect_wiki_pages(wiki_root: Path) -> list:
     if not wiki_dir.exists():
         return []
     pages = []
-    for cat in ["concepts", "entities", "topics"]:
+    for cat in ["atoms", "topics"]:
         cat_dir = wiki_dir / cat
         if cat_dir.exists():
             for p in sorted(cat_dir.glob("*.md")):
@@ -141,21 +141,19 @@ def main() -> None:
         for cat, page_path in orphan_pages:
             stem = page_path.stem
             link = f"[[{stem}]]"
-            # カテゴリセクションの末尾に追記
-            section_pattern = re.compile(
-                rf"(## {cat}\n\s*\|[^\n]+\n\|[-| ]+\n)((?:\|[^\n]+\n)*)",
-                re.MULTILINE,
-            )
-            m = section_pattern.search(index_text)
+            new_line = f"- {link}\n"
+            header_pat = re.compile(rf"^## {re.escape(cat)}\n", re.MULTILINE)
+            m = header_pat.search(index_text)
             if m:
-                new_row = f"| {link} |  | {today} |\n"
-                replacement = m.group(1) + m.group(2) + new_row
-                index_text = index_text[: m.start()] + replacement + index_text[m.end():]
+                section_start = m.end()
+                next_h = re.search(r"^## ", index_text[section_start:], re.MULTILINE)
+                insert_pos = section_start + next_h.start() if next_h else len(index_text)
+                prefix = index_text[:insert_pos].rstrip("\n") + "\n"
+                index_text = prefix + new_line + index_text[insert_pos:]
                 print(f"  追加: {link} → {cat}")
             else:
-                print(f"  [SKIP] セクション '{cat}' のテーブルが見つかりません")
+                print(f"  [SKIP] セクション '{cat}' が見つかりません")
 
-        # 最終更新日を更新
         index_text = re.sub(
             r"最終更新: \d{4}-\d{2}-\d{2}",
             f"最終更新: {today}",

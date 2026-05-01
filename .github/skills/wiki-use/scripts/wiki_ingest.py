@@ -398,6 +398,48 @@ def cmd_verify_completion(args, wiki_root: Path, _config: dict) -> None:
         sys.exit(2)
 
 
+def _read_page_meta(page_path: Path) -> dict:
+    """ページのフロントマターから summary・type・source_count を返す。"""
+    result = {"summary": "", "type": "", "source_count": 0}
+    if not page_path.exists():
+        return result
+    text = page_path.read_text(encoding="utf-8")
+    fm = ""
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end != -1:
+            fm = text[3:end]
+    if fm:
+        m = re.search(r'^summary:\s*["\']?(.+?)["\']?\s*$', fm, re.MULTILINE)
+        if m:
+            result["summary"] = m.group(1).strip()
+        m = re.search(r'^type:\s*(\S+)', fm, re.MULTILINE)
+        if m:
+            result["type"] = m.group(1).strip()
+        result["source_count"] = len(re.findall(r'^\s+- ', fm, re.MULTILINE))
+    if not result["summary"]:
+        body = text[text.find("---", 3) + 3:] if fm else text
+        lines = [l.strip() for l in body.splitlines() if l.strip() and not l.startswith("#")]
+        if lines:
+            snippet = lines[0]
+            result["summary"] = snippet[:80] + "…" if len(snippet) > 80 else snippet
+    return result
+
+
+def _insert_into_section(index_text: str, section_name: str, new_line: str) -> str | None:
+    """セクション末尾に1行追加した新テキストを返す。セクションが見つからなければ None。"""
+    header_pat = re.compile(rf"^## {re.escape(section_name)}\n", re.MULTILINE)
+    m = header_pat.search(index_text)
+    if not m:
+        return None
+    section_start = m.end()
+    next_header = re.search(r"^## ", index_text[section_start:], re.MULTILINE)
+    insert_pos = section_start + next_header.start() if next_header else len(index_text)
+    prefix = index_text[:insert_pos].rstrip("\n") + "\n"
+    suffix = index_text[insert_pos:]
+    return prefix + new_line + suffix
+
+
 def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
     """index.md に新規ページを追加する。"""
     index_path = wiki_root / "index.md"
@@ -410,11 +452,9 @@ def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
 
     for page_path_str in args.pages:
         page_path = Path(page_path_str)
-        # カテゴリを path から判定
-        parts = page_path.parts
         category = None
-        for part in parts:
-            if part in ("concepts", "entities", "topics"):
+        for part in page_path.parts:
+            if part in ("atoms", "topics"):
                 category = part
                 break
 
@@ -425,29 +465,25 @@ def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
         stem = page_path.stem
         link = f"[[{stem}]]"
 
-        # 既に登録済みかチェック
         if link in index_text:
             print(f"  スキップ（既登録）: {link}")
             continue
 
-        # カテゴリセクションの末尾テーブル行の後に追記
-        # パターン: "## <category>" 以降の最後のテーブル行の後
-        section_pattern = re.compile(
-            rf"(## {category}\n\s*\|[^\n]+\n\|[-| ]+\n)((?:\|[^\n]+\n)*)",
-            re.MULTILINE,
-        )
-        m = section_pattern.search(index_text)
-        if m:
-            # 概要を frontmatter から読む
-            summary = _read_page_summary(wiki_root / page_path_str)
-            new_row = f"| {link} | {summary} | {today} |\n"
-            replacement = m.group(1) + m.group(2) + new_row
-            index_text = index_text[: m.start()] + replacement + index_text[m.end():]
+        meta = _read_page_meta(wiki_root / page_path_str)
+        summary = meta["summary"]
+        type_str = meta["type"]
+        n = meta["source_count"]
+        src_label = f"{n} source{'s' if n != 1 else ''}"
+        annotation = f"（{type_str}, {src_label}）" if type_str else f"（{src_label}）"
+        new_line = f"- {link} — {summary}{annotation}\n" if summary else f"- {link}{annotation}\n"
+
+        updated = _insert_into_section(index_text, category, new_line)
+        if updated is not None:
+            index_text = updated
             print(f"  追加: {link} → {category}")
         else:
-            print(f"[WARN] セクション '{category}' のテーブルが見つかりません: {page_path}")
+            print(f"[WARN] セクション '{category}' が見つかりません: {page_path}")
 
-    # 最終更新日を更新
     index_text = re.sub(
         r"最終更新: \d{4}-\d{2}-\d{2}",
         f"最終更新: {today}",
@@ -455,22 +491,6 @@ def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
     )
     index_path.write_text(index_text, encoding="utf-8")
     print(f"[OK] index.md を更新しました: {index_path}")
-
-
-def _read_page_summary(page_path: Path) -> str:
-    """ページの frontmatter から title を読むか、最初の行を返す。"""
-    if not page_path.exists():
-        return ""
-    text = page_path.read_text(encoding="utf-8")
-    # frontmatter の title を探す
-    m = re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', text, re.MULTILINE)
-    if m:
-        return m.group(1).strip()
-    # 最初の # 見出し
-    m = re.search(r'^#\s+(.+)', text, re.MULTILINE)
-    if m:
-        return m.group(1).strip()
-    return ""
 
 
 def cmd_log(args, wiki_root: Path, _config: dict) -> None:
