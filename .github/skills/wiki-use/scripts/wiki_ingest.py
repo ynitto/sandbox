@@ -19,6 +19,7 @@ wiki_ingest.py — ソース取り込み支援スクリプト
 """
 
 import argparse
+import hashlib
 import re
 import shutil
 import sys
@@ -49,6 +50,24 @@ def is_ingested(sources_dir: Path, log_path: Path) -> set:
     text = log_path.read_text(encoding="utf-8")
     pattern = re.compile(r"sources/([^\s`]+)")
     return {m.group(1) for m in pattern.finditer(text)}
+
+
+def _file_hash(path: Path) -> str:
+    """ファイル内容の SHA-256 ハッシュを返す。"""
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def _find_duplicate(source_path: Path, sources_dir: Path) -> Path | None:
+    """同じ内容のファイルが sources/ に存在すれば、そのパスを返す。"""
+    if not sources_dir.exists():
+        return None
+    source_hash = _file_hash(source_path)
+    for existing in sorted(sources_dir.iterdir()):
+        if existing.is_file() and _file_hash(existing) == source_hash:
+            return existing
+    return None
 
 
 def _extract_published_from_frontmatter(path: Path) -> str | None:
@@ -83,13 +102,19 @@ def _build_unique_dest_path(sources_dir: Path, today: str, slug: str, suffix: st
         index += 1
 
 
-def _copy_single_file(source_path: Path, wiki_root: Path, published_override: str) -> None:
-    """1 ファイルを sources/ にコピーし、発行日を出力する。"""
-    today = date.today().isoformat()
-    slug = slugify(source_path.stem)
-
+def _copy_single_file(source_path: Path, wiki_root: Path, published_override: str) -> bool:
+    """1 ファイルを sources/ にコピーし、発行日を出力する。重複の場合は False を返す。"""
     sources_dir = wiki_root / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
+
+    # 重複チェック（内容ハッシュで比較）
+    duplicate = _find_duplicate(source_path, sources_dir)
+    if duplicate is not None:
+        print(f"[SKIP] 同一内容が既に存在します: {duplicate} ← {source_path}")
+        return False
+
+    today = date.today().isoformat()
+    slug = slugify(source_path.stem)
     dest_path = _build_unique_dest_path(sources_dir, today, slug, source_path.suffix)
 
     shutil.copy2(source_path, dest_path)
@@ -99,6 +124,7 @@ def _copy_single_file(source_path: Path, wiki_root: Path, published_override: st
     published_str = published if published else "(unknown)"
     print(f"published: {published_str}")
     print(f"source_path: {dest_path}")
+    return True
 
 
 def cmd_copy(args, wiki_root: Path, _config: dict) -> None:
@@ -109,6 +135,7 @@ def cmd_copy(args, wiki_root: Path, _config: dict) -> None:
         sys.exit(1)
 
     published_override = getattr(args, "published", "") or ""
+    batch_size = getattr(args, "batch_size", None) or 0
 
     if source_path.is_dir():
         files = [
@@ -118,12 +145,57 @@ def cmd_copy(args, wiki_root: Path, _config: dict) -> None:
         if not files:
             print(f"[WARN] 解析可能なファイルが見つかりません: {source_path}")
             return
-        print(f"[INFO] {len(files)} 件のファイルを検出しました")
-        for f in files:
-            print(f"--- {f} ---")
-            _copy_single_file(f, wiki_root, published_override)
+
+        # 重複を除外した実コピー対象を先に確認（情報表示用）
+        total = len(files)
+        if batch_size > 0:
+            num_batches = (total + batch_size - 1) // batch_size
+            print(f"[INFO] {total} 件のファイルを検出しました（{batch_size} 件ずつ {num_batches} バッチ）")
+            for batch_idx in range(num_batches):
+                batch_files = files[batch_idx * batch_size:(batch_idx + 1) * batch_size]
+                print(f"\n[BATCH {batch_idx + 1}/{num_batches}]")
+                for f in batch_files:
+                    print(f"--- {f} ---")
+                    _copy_single_file(f, wiki_root, published_override)
+        else:
+            print(f"[INFO] {total} 件のファイルを検出しました")
+            for f in files:
+                print(f"--- {f} ---")
+                _copy_single_file(f, wiki_root, published_override)
     else:
         _copy_single_file(source_path, wiki_root, published_override)
+
+
+def cmd_list_batches(args, wiki_root: Path, _config: dict) -> None:
+    """フォルダ内の取り込み可能ファイルをバッチに分けて一覧表示する。"""
+    source_path = Path(args.source).expanduser()
+    if not source_path.exists():
+        print(f"[ERROR] パスが見つかりません: {source_path}", file=sys.stderr)
+        sys.exit(1)
+    if not source_path.is_dir():
+        print(f"[ERROR] フォルダを指定してください: {source_path}", file=sys.stderr)
+        sys.exit(1)
+
+    batch_size = args.batch_size if args.batch_size > 0 else 5
+
+    files = [
+        f for f in sorted(source_path.rglob("*"))
+        if f.is_file() and f.suffix.lower() in INGESTABLE_EXTENSIONS
+    ]
+    if not files:
+        print(f"[WARN] 解析可能なファイルが見つかりません: {source_path}")
+        return
+
+    total = len(files)
+    num_batches = (total + batch_size - 1) // batch_size
+    print(f"TOTAL: {total} files, {num_batches} batches (batch-size: {batch_size})")
+    print()
+    for batch_idx in range(num_batches):
+        batch_files = files[batch_idx * batch_size:(batch_idx + 1) * batch_size]
+        print(f"=== BATCH {batch_idx + 1}/{num_batches} ===")
+        for f in batch_files:
+            print(str(f))
+        print()
 
 
 def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
@@ -296,10 +368,18 @@ def main() -> None:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # list-batches
+    p_list = subparsers.add_parser("list-batches", help="フォルダ内ファイルをバッチに分けて一覧表示する")
+    p_list.add_argument("--source", required=True, help="フォルダパス")
+    p_list.add_argument("--batch-size", type=int, default=5, metavar="N",
+                        help="1バッチあたりのファイル数（デフォルト: 5）")
+
     # copy
     p_copy = subparsers.add_parser("copy", help="ソースを sources/ にコピーする")
     p_copy.add_argument("--source", required=True, help="ソースファイルのパス")
     p_copy.add_argument("--published", default="", help="情報の発行日 (YYYY-MM-DD)。未指定時は Markdown フロントマターから自動検出")
+    p_copy.add_argument("--batch-size", type=int, default=0, metavar="N",
+                        help="フォルダ指定時に N 件ずつバッチ区切りを出力する（0=区切りなし）")
 
     # update-index
     p_idx = subparsers.add_parser("update-index", help="index.md に新規ページを登録する")
@@ -320,6 +400,7 @@ def main() -> None:
     args = parser.parse_args()
 
     dispatch = {
+        "list-batches": cmd_list_batches,
         "copy": cmd_copy,
         "update-index": cmd_update_index,
         "log": cmd_log,
