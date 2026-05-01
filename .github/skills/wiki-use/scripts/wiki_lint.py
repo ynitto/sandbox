@@ -143,7 +143,7 @@ def main() -> None:
             link = f"[[{stem}]]"
             # カテゴリセクションの末尾に追記
             section_pattern = re.compile(
-                rf"(## {cat}\n\|[^\n]+\n\|[-| ]+\n)((?:\|[^\n]+\n)*)",
+                rf"(## {cat}\n\s*\|[^\n]+\n\|[-| ]+\n)((?:\|[^\n]+\n)*)",
                 re.MULTILINE,
             )
             m = section_pattern.search(index_text)

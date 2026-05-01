@@ -69,21 +69,31 @@ def _extract_published_from_frontmatter(path: Path) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _build_unique_dest_path(sources_dir: Path, today: str, slug: str, suffix: str) -> Path:
+    """同名ファイルがある場合は連番サフィックスで重複を回避する。"""
+    candidate = sources_dir / f"{today}-{slug}{suffix}"
+    if not candidate.exists():
+        return candidate
+
+    index = 2
+    while True:
+        candidate = sources_dir / f"{today}-{slug}-{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def _copy_single_file(source_path: Path, wiki_root: Path, published_override: str) -> None:
     """1 ファイルを sources/ にコピーし、発行日を出力する。"""
     today = date.today().isoformat()
     slug = slugify(source_path.stem)
-    dest_name = f"{today}-{slug}{source_path.suffix}"
-    dest_path = wiki_root / "sources" / dest_name
 
     sources_dir = wiki_root / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = _build_unique_dest_path(sources_dir, today, slug, source_path.suffix)
 
-    if dest_path.exists():
-        print(f"[WARN] 既に存在します: {dest_path}")
-    else:
-        shutil.copy2(source_path, dest_path)
-        print(f"[OK] コピーしました: {dest_path}")
+    shutil.copy2(source_path, dest_path)
+    print(f"[OK] コピーしました: {dest_path}")
 
     published = published_override or _extract_published_from_frontmatter(source_path)
     published_str = published if published else "(unknown)"
@@ -151,7 +161,7 @@ def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
         # カテゴリセクションの末尾テーブル行の後に追記
         # パターン: "## <category>" 以降の最後のテーブル行の後
         section_pattern = re.compile(
-            rf"(## {category}\n\|[^\n]+\n\|[-| ]+\n)((?:\|[^\n]+\n)*)",
+            rf"(## {category}\n\s*\|[^\n]+\n\|[-| ]+\n)((?:\|[^\n]+\n)*)",
             re.MULTILINE,
         )
         m = section_pattern.search(index_text)
