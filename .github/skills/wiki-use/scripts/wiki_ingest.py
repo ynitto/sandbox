@@ -198,6 +198,67 @@ def cmd_list_batches(args, wiki_root: Path, _config: dict) -> None:
         print()
 
 
+def cmd_verify_completion(args, wiki_root: Path, _config: dict) -> None:
+    """ソースフォルダと log.md を突合し、未処理ファイルを報告する。"""
+    source_path = Path(args.source).expanduser()
+    if not source_path.exists():
+        print(f"[ERROR] パスが見つかりません: {source_path}", file=sys.stderr)
+        sys.exit(1)
+    if not source_path.is_dir():
+        print(f"[ERROR] フォルダを指定してください: {source_path}", file=sys.stderr)
+        sys.exit(1)
+
+    sources_dir = wiki_root / "sources"
+    log_path = wiki_root / "log.md"
+
+    logged_sources = is_ingested(sources_dir, log_path)
+
+    files = [
+        f for f in sorted(source_path.rglob("*"))
+        if f.is_file() and f.suffix.lower() in INGESTABLE_EXTENSIONS
+    ]
+    if not files:
+        print(f"[WARN] 解析可能なファイルが見つかりません: {source_path}")
+        return
+
+    copied_and_logged = []
+    copied_not_logged = []
+    not_copied = []
+
+    for f in files:
+        duplicate = _find_duplicate(f, sources_dir)
+        if duplicate is None:
+            not_copied.append(f)
+        elif duplicate.name in logged_sources:
+            copied_and_logged.append(f)
+        else:
+            copied_not_logged.append(f)
+
+    total = len(files)
+    done = len(copied_and_logged)
+    print(f"VERIFY: {done}/{total} ファイル処理済み (log.md 記録済み)")
+    print()
+
+    if not_copied:
+        print(f"[UNPROCESSED] コピー未実施 ({len(not_copied)} 件):")
+        for f in not_copied:
+            print(f"  - {f}")
+        print()
+
+    if copied_not_logged:
+        print(f"[INCOMPLETE] コピー済みだが log.md 未記録 ({len(copied_not_logged)} 件):")
+        for f in copied_not_logged:
+            print(f"  - {f}")
+        print()
+
+    if not not_copied and not copied_not_logged:
+        print("[OK] 全ファイルの取り込みが完了しています")
+    else:
+        remaining = len(not_copied) + len(copied_not_logged)
+        print(f"[WARN] 未完了: {remaining} 件のファイルが残っています。該当バッチを再処理してください。")
+        sys.exit(2)
+
+
 def cmd_update_index(args, wiki_root: Path, _config: dict) -> None:
     """index.md に新規ページを追加する。"""
     index_path = wiki_root / "index.md"
@@ -397,6 +458,13 @@ def main() -> None:
     p_hot = subparsers.add_parser("update-hot", help="hot.md を更新する")
     p_hot.add_argument("--pages", nargs="+", required=True, help="作成・更新したページのパス")
 
+    # verify-completion
+    p_verify = subparsers.add_parser(
+        "verify-completion",
+        help="ソースフォルダと log.md を突合し、未処理ファイルを報告する（終了コード 2 = 未完了あり）",
+    )
+    p_verify.add_argument("--source", required=True, help="フォルダパス")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -405,6 +473,7 @@ def main() -> None:
         "update-index": cmd_update_index,
         "log": cmd_log,
         "update-hot": cmd_update_hot,
+        "verify-completion": cmd_verify_completion,
     }
     dispatch[args.command](args, wiki_root, config)
 
