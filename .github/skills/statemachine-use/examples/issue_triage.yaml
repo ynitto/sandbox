@@ -1,0 +1,84 @@
+# イシュートリアージ ワークフローサンプル
+# 使い方: python scripts/run_machine.py examples/issue_triage.yaml --input "モバイルでログインボタンが壊れている"
+
+name: "イシュートリアージ"
+description: "受信イシューを分類し、適切な構造化レスポンスを生成する"
+initial_state: classify
+
+states:
+  classify:
+    description: "受信イシューを分類"
+    action: |
+      以下のイシューを BUG、FEATURE、QUESTION のいずれか一つに分類してください。
+      イシュー: {{input}}
+      
+      カテゴリの単語（BUG、FEATURE、QUESTION）のみで回答してください。
+      説明は不要です。
+    output_key: classification
+
+  handle_bug:
+    description: "バグ報告の処理"
+    action: |
+      このイシューはバグ（BUG）として分類されました。
+      元のイシュー: {{input}}
+      
+      以下のセクションを含む構造化バグレポートを作成してください:
+      ## Summary
+      ## Steps to Reproduce
+      ## Expected Behavior
+      ## Actual Behavior
+      ## Suggested Priority (Low/Medium/High/Critical)
+    terminal: true
+
+  handle_feature:
+    description: "機能リクエストの処理"
+    action: |
+      このイシューは機能リクエスト（FEATURE REQUEST）として分類されました。
+      元のイシュー: {{input}}
+      
+      以下の構成で機能仕様を作成してください:
+      ## Feature Summary
+      ## User Story (As a ... I want ... So that ...)
+      ## Acceptance Criteria (箇条書きリスト)
+      ## Out of Scope
+    terminal: true
+
+  handle_question:
+    description: "質問の処理"
+    action: |
+      このイシューは質問（QUESTION）として分類されました。
+      元のイシュー: {{input}}
+      
+      簡潔な回答を返してください。十分なコンテキストがない場合は、
+      必要な追加情報を説明してください。
+    terminal: true
+
+  unknown:
+    description: "分類不能な入力の処理"
+    action: |
+      このイシューは自動分類できませんでした。
+      元のイシュー: {{input}}
+      
+      これがバグ、機能リクエスト、質問のどれに当たるか、報告者に確認を求めてください。
+    terminal: true
+
+transitions:
+  - from: classify
+    to: handle_bug
+    condition: "The last output is exactly the word BUG"
+    priority: 1
+
+  - from: classify
+    to: handle_feature
+    condition: "The last output is exactly the word FEATURE"
+    priority: 2
+
+  - from: classify
+    to: handle_question
+    condition: "The last output is exactly the word QUESTION"
+    priority: 3
+
+  - from: classify
+    to: unknown
+    condition: "The last output is none of: BUG, FEATURE, QUESTION"
+    priority: 10

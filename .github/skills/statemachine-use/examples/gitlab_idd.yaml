@@ -1,0 +1,213 @@
+# GitLab イシュー駆動開発ワークフロー
+# Kiro/Claude 自律ループ連携向けに設計
+# 使い方: python scripts/run_machine.py examples/gitlab_idd.yaml \
+#          --input "イシュータイトル: mTLS サポートを追加" \
+#          --context issue_id=42 --context repo=myproject
+
+name: "GitLab IDD ワークフロー"
+description: "自律イシュー駆動開発: 分析 → 計画 → 実装 → レビュー"
+initial_state: analyze_issue
+
+context:
+  issue_id: ""
+  repo: ""
+  label_state: "idd-task"
+
+states:
+  analyze_issue:
+    description: "GitLab イシューを分析"
+    action: |
+      以下の GitLab イシューを実装のために分析してください:
+      ---
+      {{input}}
+      ---
+      
+      リポジトリ: {{repo}}  |  イシュー #{{issue_id}}
+      
+      以下の構造で分析結果を出力してください:
+      ## 理解
+      何が求められていて、なぜ必要か？
+      
+      ## スコープ
+      影響を受ける可能性があるファイル/モジュールは？
+      
+      ## 複雑度
+      SIMPLE、MODERATE、COMPLEX のいずれかで評価してください
+      
+      ## リスク
+      何が問題になり得るか？
+      
+      ## 要確認事項
+      曖昧な点を列挙してください（イシューが明確な場合は「なし」と記載）
+    output_key: issue_analysis
+
+  request_clarification:
+    description: "イシューが曖昧 - 確認事項を生成"
+    action: |
+      このイシューは実装前に確認が必要です:
+      {{input}}
+      
+      分析結果: {{issue_analysis}}
+      
+      イシュー報告者向けに具体的な質問を2〜3個作成してください。
+      GitLab コメントの形式で記述してください。
+    terminal: true
+
+  create_implementation_plan:
+    description: "詳細な実装計画を作成"
+    action: |
+      以下のイシューに対して詳細な実装計画を作成してください:
+      
+      イシュー: {{input}}
+      分析結果: {{issue_analysis}}
+      
+      以下の形式で出力してください:
+      ## 実装計画
+      
+      ### 作成/変更するファイル
+      （各ファイルと簡単な理由を列挙）
+      
+      ### 実装手順
+      （具体的なステップの番号付きリスト）
+      
+      ### 追加するテストケース
+      （テストシナリオのリスト）
+      
+      ### 完了の定義
+      （受け入れ条件チェックリスト）
+    output_key: implementation_plan
+
+  generate_code:
+    description: "実装コードを生成"
+    action: |
+      以下の計画を実装してください:
+      
+      イシュー: {{input}}
+      計画: {{implementation_plan}}
+      
+      以下を含む本番品質のコードを生成してください:
+      - 適切なエラーハンドリング
+      - 型ヒント / JSDoc コメント
+      - 複雑なロジックにはインラインコメント
+      
+      各ファイルを以下の形式で記述してください:
+      ```
+      ### FILE: path/to/file.ext
+      （ここにコード）
+      ```
+    output_key: generated_code
+
+  code_review:
+    description: "生成されたコードの品質レビュー"
+    action: |
+      GitLab イシューに対して生成されたコードをレビューしてください:
+      
+      元のイシュー: {{input}}
+      実装計画: {{implementation_plan}}
+      生成されたコード: {{generated_code}}
+      
+      以下を確認してください:
+      1. 要件を完全に実装しているか？
+      2. セキュリティ上の問題はないか？
+      3. バグやロジックエラーはないか？
+      4. エラーハンドリングは適切か？
+      5. 計画の完了の定義を満たしているか？
+      
+      APPROVED または NEEDS_REVISION で評価し、
+      発見した具体的な問題点を列挙してください（承認の場合は「なし」）。
+    output_key: review_result
+
+  revise_code:
+    description: "レビューフィードバックに基づいてコードを修正"
+    action: |
+      レビューフィードバックに基づいて生成されたコードを修正してください:
+      
+      元のコード: {{generated_code}}
+      レビューフィードバック: {{review_result}}
+      
+      同じ形式で完全に修正されたコードを出力してください。
+    output_key: generated_code
+
+  create_mr_description:
+    description: "マージリクエストの説明を作成"
+    action: |
+      この実装の GitLab マージリクエスト説明を作成してください:
+      
+      イシュー: {{input}}
+      イシュー分析: {{issue_analysis}}
+      実装計画: {{implementation_plan}}
+      コードレビュー: {{review_result}}
+      
+      以下の形式で記述してください:
+      ## Summary
+      ## Changes
+      ## Testing
+      ## Screenshots (if applicable)
+      ## Checklist
+      - [ ] テスト追加済み
+      - [ ] ドキュメント更新済み
+      - [ ] Closes #{{issue_id}}
+    terminal: true
+
+  escalate_complex:
+    description: "複雑なイシューを人間のレビューにエスカレート"
+    action: |
+      このイシューは自律実装には複雑すぎると判断されました:
+      
+      イシュー: {{input}}
+      分析結果: {{issue_analysis}}
+      
+      以下を説明する GitLab コメントを作成してください:
+      1. 人間のレビューが必要な理由
+      2. これまでの分析内容
+      3. 人間の開発者向けの推奨される次のステップ
+    terminal: true
+
+transitions:
+  # 分析 → 曖昧な場合は確認
+  - from: analyze_issue
+    to: request_clarification
+    condition: "The Clarification Needed section of last_output lists specific questions (not 'None')"
+    priority: 1
+
+  # 分析 → COMPLEX の場合はエスカレート
+  - from: analyze_issue
+    to: escalate_complex
+    condition: "The last output contains 'Complexity' followed by 'COMPLEX'"
+    priority: 2
+
+  # 分析 → 明確で複雑でない場合は計画作成
+  - from: analyze_issue
+    to: create_implementation_plan
+    condition: "The last output contains 'None' in the Clarification Needed section"
+    priority: 3
+
+  # 計画 → コード生成
+  - from: create_implementation_plan
+    to: generate_code
+    condition: "The last output contains an Implementation Plan section"
+    priority: 1
+
+  # コード → レビュー
+  - from: generate_code
+    to: code_review
+    condition: "The last output contains at least one FILE: section"
+    priority: 1
+
+  # レビュー → 承認されたら MR 作成
+  - from: code_review
+    to: create_mr_description
+    condition: "The last output starts with APPROVED"
+    priority: 1
+
+  # レビュー → 変更が必要なら修正
+  - from: code_review
+    to: revise_code
+    condition: "The last output starts with NEEDS_REVISION"
+    priority: 2
+
+  # 修正 → 再レビュー
+  - from: revise_code
+    to: code_review
+    condition: "The last output contains at least one FILE: section"
+    priority: 1

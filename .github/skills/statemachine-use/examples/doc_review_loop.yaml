@@ -1,0 +1,127 @@
+# ドキュメントレビューループ サンプル
+# デモ内容: ループ処理、リトライロジック、コンテキスト蓄積、ワイルドカードトランジション
+# 使い方: python scripts/run_machine.py examples/doc_review_loop.yaml --input "$(cat my_doc.txt)"
+
+name: "ドキュメントレビューループ"
+description: "最大3回の修正サイクルで反復的にドキュメントをレビューする"
+initial_state: review
+
+context:
+  revision_count: 0
+  max_revisions: 3
+
+config:
+  max_steps: 20
+  verbose: true
+
+states:
+  review:
+    description: "ドキュメントをレビュー"
+    action: |
+      以下のドキュメントの品質をレビューしてください:
+      ---
+      {{input}}
+      ---
+      
+      現在の修正回数: {{revision_count}} / {{max_revisions}} 回
+      前回のフィードバック（あれば）: {{history.provide_feedback}}
+      
+      ドキュメントを APPROVED、NEEDS_REVISION、REJECTED のいずれかで評価してください。
+      その後、評価の理由を2〜3文で説明してください。
+    output_key: review_result
+
+  provide_feedback:
+    description: "具体的な修正フィードバックを生成"
+    action: |
+      以下のレビュー結果に基づいて:
+      {{review_result}}
+      
+      修正回数 {{revision_count}} に対する具体的で実行可能なフィードバックを提供してください。
+      番号付きで具体的な変更点を3つ挙げてください（1.、2.、3. の形式で）。
+    output_key: feedback
+
+  apply_revision:
+    description: "ドキュメントに修正を適用"
+    action: |
+      元のドキュメント:
+      ---
+      {{input}}
+      ---
+      
+      以下の修正を適用してください:
+      {{feedback}}
+      
+      前書きなしで修正後の完全なドキュメントのみを出力してください。
+    output_key: revised_document
+
+  approved:
+    description: "ドキュメント承認済み"
+    action: |
+      ✓ {{revision_count}} 回の修正の後にドキュメントが承認されました。
+      
+      最終レビュー: {{review_result}}
+      
+      最終ドキュメント:
+      {{revised_document}}
+    terminal: true
+
+  approved_original:
+    description: "元のドキュメントがそのまま承認"
+    action: |
+      ✓ 修正なしで初回レビューで承認されました。
+      
+      最終レビュー: {{review_result}}
+    terminal: true
+
+  rejected:
+    description: "ドキュメント却下"
+    action: |
+      ✗ {{revision_count}} 回の修正試行の後にドキュメントが却下されました。
+      
+      最終レビュー: {{review_result}}
+      
+      最大修正回数を超えても品質基準を満たしませんでした。
+    terminal: true
+
+transitions:
+  # 初回レビュー: 即時承認
+  - from: review
+    to: approved_original
+    condition: "The last output starts with APPROVED and {{revision_count}} equals 0"
+    priority: 1
+
+  # 修正後レビュー: 承認
+  - from: review
+    to: approved
+    condition: "The last output starts with APPROVED and {{revision_count}} is greater than 0"
+    priority: 2
+
+  # 修正が必要で残り試行回数あり
+  - from: review
+    to: provide_feedback
+    condition: "The last output starts with NEEDS_REVISION and {{revision_count}} is less than {{max_revisions}}"
+    priority: 3
+
+  # 修正が必要だが最大修正回数到達
+  - from: review
+    to: rejected
+    condition: "The last output starts with NEEDS_REVISION and {{revision_count}} is greater than or equal to {{max_revisions}}"
+    priority: 4
+
+  # 直接却下
+  - from: review
+    to: rejected
+    condition: "The last output starts with REJECTED"
+    priority: 5
+
+  # フィードバック後、修正を適用
+  - from: provide_feedback
+    to: apply_revision
+    condition: "The last output contains numbered items (1., 2., 3.)"
+    priority: 1
+
+  # 修正後、レビューに戻る
+  - from: apply_revision
+    to: review
+    condition: "The last output is a revised document (any non-empty text)"
+    priority: 1
