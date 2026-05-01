@@ -14,8 +14,9 @@ Usage:
 
 Config priority (highest to lowest):
     1. CLI options (--url, --user, --token)
-    2. Environment variables (JENKINS_URL, JENKINS_USER, JENKINS_TOKEN)
-    3. Workspace config file (.jenkins.json in current directory)
+    2. connections.yaml  -- workspace (.github/) > global (agent_dir/)
+    3. Environment variables (JENKINS_URL, JENKINS_USER, JENKINS_TOKEN)
+    4. Workspace config file (.jenkins.json in current directory)
 """
 
 import argparse
@@ -29,6 +30,16 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+# config_loader is bundled in the same scripts/ directory
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+try:
+    from config_loader import get_connection, get_yaml_write_path  # type: ignore[import]
+    _HAS_CONFIG_LOADER = True
+except ImportError:
+    _HAS_CONFIG_LOADER = False
 
 CONFIG_FILE = ".jenkins.json"
 
@@ -60,25 +71,60 @@ def save_config(data: dict) -> None:
 
 
 def cmd_configure(_client, args) -> int:
-    """Interactive setup: save Jenkins connection info to workspace config."""
-    existing = load_config()
+    """Create or update a connections.yaml entry interactively."""
+    write_path = get_yaml_write_path()
 
-    def prompt(label: str, key: str, secret: bool = False) -> str:
-        current = existing.get(key, "")
-        hint = f" [{current if not secret or not current else '****'}]" if current else ""
-        value = input(f"{label}{hint}: ").strip()
-        return value or current
+    # Load existing YAML
+    existing: dict = {}
+    if write_path.exists():
+        try:
+            import yaml  # type: ignore[import]
+            with open(write_path, encoding="utf-8") as f:
+                existing = yaml.safe_load(f) or {}
+        except Exception:
+            pass
 
-    url = prompt("Jenkins URL", "url")
-    user = prompt("Username", "user")
-    token = prompt("API Token", "token", secret=True)
+    label = getattr(args, "label", "default") or "default"
+    entries: list = existing.get("jenkins", [])
+    if not isinstance(entries, list):
+        entries = []
+    current = next((e for e in entries if isinstance(e, dict) and e.get("label", "default") == label), {})
+
+    def prompt(display: str, key: str, cli_val: str | None = None, secret: bool = False) -> str:
+        if cli_val:
+            return cli_val
+        current_val = current.get(key, "")
+        hint = f" [{current_val if not secret or not current_val else '****'}]" if current_val else ""
+        value = input(f"{display}{hint}: ").strip()
+        return value or current_val
+
+    url = prompt("Jenkins URL", "url", getattr(args, "url", None))
+    user = prompt("Username", "user", getattr(args, "user", None))
+    token = prompt("API Token", "token", getattr(args, "token", None), secret=True)
 
     if not url or not user or not token:
-        print("ERROR: All fields are required.", file=sys.stderr)
+        print("ERROR: URL, Username, API Token はすべて必須です。", file=sys.stderr)
         return 1
 
-    save_config({"url": url, "user": user, "token": token})
-    print("Connection info saved. Run 'python jenkins_client.py info' to verify.")
+    # Update or append entry
+    new_entry: dict = {"label": label, "url": url, "user": user, "token": token}
+    updated = [e for e in entries if isinstance(e, dict) and e.get("label", "default") != label]
+    updated.append(new_entry)
+    existing["jenkins"] = updated
+
+    try:
+        import yaml  # type: ignore[import]
+    except ImportError:
+        print("ERROR: pyyaml が必要です。pip install pyyaml", file=sys.stderr)
+        return 1
+
+    write_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(write_path, "w", encoding="utf-8") as f:
+        yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    write_path.chmod(0o600)
+
+    print(f"保存しました: {write_path}  (label={label})")
+    print(f"確認: python jenkins_client.py --label {label} info")
     return 0
 
 
@@ -446,11 +492,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--url", help="Jenkins base URL")
     parser.add_argument("--user", help="Jenkins username")
     parser.add_argument("--token", help="Jenkins API token")
+    parser.add_argument(
+        "--label", default="default",
+        help="connections.yaml で使う接続ラベル (デフォルト: default)",
+    )
     parser.add_argument("--http-timeout", type=int, default=30, metavar="SECS")
     parser.add_argument("--retries", type=int, default=3)
 
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("configure", help=f"Save connection info to {CONFIG_FILE}")
+    p_conf = sub.add_parser("configure", help="connections.yaml に接続情報を保存する")
+    p_conf.add_argument("--url", help="Jenkins base URL (省略時は対話入力)")
+    p_conf.add_argument("--user", help="Jenkins username (省略時は対話入力)")
+    p_conf.add_argument("--token", help="Jenkins API token (省略時は対話入力)")
     sub.add_parser("info", help="Show Jenkins server info")
     sub.add_parser("list-jobs", help="List all jobs")
 
@@ -486,11 +539,41 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def resolve_connection(args) -> tuple[str, str, str]:
-    """Return (url, user, token) from CLI args > env vars > workspace config."""
+    """
+    Return (url, user, token) from:
+      1. CLI options (--url / --user / --token)
+      2. connections.yaml (workspace > global) via --label
+      3. Environment variables (JENKINS_URL / JENKINS_USER / JENKINS_TOKEN)
+      4. Legacy .jenkins.json in cwd
+    """
     cfg = load_config()
-    url   = args.url   or os.environ.get("JENKINS_URL")   or cfg.get("url",   "")
-    user  = args.user  or os.environ.get("JENKINS_USER")  or cfg.get("user",  "")
-    token = args.token or os.environ.get("JENKINS_TOKEN") or cfg.get("token", "")
+
+    # 1. CLI options
+    url   = args.url   or ""
+    user  = args.user  or ""
+    token = args.token or ""
+
+    # 2. connections.yaml
+    if _HAS_CONFIG_LOADER and (not url or not user or not token):
+        label = getattr(args, "label", "default") or "default"
+        conn = get_connection("jenkins", label)
+        if not url:
+            url   = conn.get("url", "")
+        if not user:
+            user  = conn.get("user", "")
+        if not token:
+            token = conn.get("token", "")
+
+    # 3. Environment variables
+    if not url:   url   = os.environ.get("JENKINS_URL",   "")
+    if not user:  user  = os.environ.get("JENKINS_USER",  "")
+    if not token: token = os.environ.get("JENKINS_TOKEN", "")
+
+    # 4. Legacy .jenkins.json
+    if not url:   url   = cfg.get("url",   "")
+    if not user:  user  = cfg.get("user",  "")
+    if not token: token = cfg.get("token", "")
+
     return url, user, token
 
 

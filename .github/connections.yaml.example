@@ -1,0 +1,71 @@
+# connections.yaml
+# スキル共通の接続設定ファイル
+#
+# ■ 配置場所（優先順位順）
+#   1. ワークスペース:  <project_root>/{agent_dir}/connections.yaml
+#                        例: .github/  .copilot/  .claude/  .kiro/
+#                        ※ {agent_dir} はスクリプトファイルのパスから自動推定
+#   2. グローバル:      ~/{agent_dir}/connections.yaml
+#                        例: ~/.copilot/  ~/.claude/
+#
+# ■ ラベル
+#   各サービスに複数の接続設定を登録できます。
+#   label: default が省略時に使われます。
+#   --label オプションで他のラベルを指定できます。
+#
+# ■ 環境変数の参照
+#   ${VAR_NAME} 形式で環境変数を参照できます。
+#   機密情報（APIキー・トークン）は環境変数経由の指定を推奨します。
+#
+# ■ セキュリティ
+#   APIキーを直接書く場合は .gitignore に追加してください:
+#     .github/connections.yaml
+#
+# ────────────────────────────────────────────────
+# このファイルを connections.yaml にコピーして使ってください
+# ────────────────────────────────────────────────
+
+# ── Redmine ──────────────────────────────────────
+redmine:
+  - label: default
+    url: https://redmine.example.com
+    api_key: ${REDMINE_API_KEY}
+
+  # - label: staging
+  #   url: https://staging.redmine.example.com
+  #   api_key: ${REDMINE_STAGING_API_KEY}
+
+# ── Jenkins ──────────────────────────────────────
+jenkins:
+  - label: default
+    url: https://jenkins.example.com
+    user: ${JENKINS_USER}
+    token: ${JENKINS_TOKEN}
+
+  # - label: dev
+  #   url: https://dev.jenkins.example.com
+  #   user: myuser
+  #   token: mydevtoken
+
+# ── GitLab ───────────────────────────────────────
+gitlab:
+  - label: default
+    url: https://gitlab.com/namespace/repo
+    token: ${GITLAB_TOKEN}
+
+  # - label: work
+  #   url: https://gitlab.work.example.com/team/project
+  #   token: ${GITLAB_WORK_TOKEN}
+
+# ── Jira ─────────────────────────────────────────
+# jira:
+#   - label: default
+#     url: https://your-org.atlassian.net
+#     user: ${JIRA_USER}
+#     api_token: ${JIRA_API_TOKEN}
+
+# ── 汎用 HTTP API ─────────────────────────────────
+# myapi:
+#   - label: default
+#     url: https://api.example.com
+#     api_key: ${MY_API_KEY}

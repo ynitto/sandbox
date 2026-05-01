@@ -39,7 +39,18 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
+
+# config_loader is bundled in the same scripts/ directory
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+try:
+    from config_loader import get_connection, get_yaml_write_path  # type: ignore[import]
+    _HAS_CONFIG_LOADER = True
+except ImportError:
+    _HAS_CONFIG_LOADER = False
 
 
 DEFAULT_SELF_DEFER_MINUTES = 60.0           #  1h  (check-defer)
@@ -51,8 +62,30 @@ DEFAULT_ASSIGNED_LOCK_MINUTES = 1440.0     # 24h  (check-assigned-defer)
 # Core helpers
 # ---------------------------------------------------------------------------
 
-def get_project_info():
-    """Parse git remote origin URL to extract GitLab host and project path."""
+def get_project_info(label: str = "default"):
+    """Parse GitLab host and project path.
+
+    Priority:
+      1. connections.yaml gitlab.url for the given label
+      2. git remote get-url origin (fallback)
+    """
+    if _HAS_CONFIG_LOADER:
+        conn = get_connection("gitlab", label)
+        url = conn.get("url", "")
+        if url:
+            parsed = urllib.parse.urlparse(url)
+            host = parsed.hostname
+            project = parsed.path.lstrip("/").rstrip("/")
+            if project.endswith(".git"):
+                project = project[:-4]
+            if host and project:
+                return host, project
+
+    # Fallback: git remote origin
+    # Supported formats:
+    #   SSH:   git@gitlab.com:namespace/repo.git
+    #   HTTPS: https://gitlab.com/namespace/repo.git
+    #   HTTPS with token: https://oauth2:TOKEN@gitlab.com/namespace/repo.git
     try:
         remote_url = subprocess.check_output(
             ["git", "remote", "get-url", "origin"],
@@ -62,10 +95,6 @@ def get_project_info():
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         sys.exit("ERROR: Cannot get git remote 'origin'. Run from inside a git repo.")
 
-    # Supported formats:
-    #   SSH:   git@gitlab.com:namespace/repo.git
-    #   HTTPS: https://gitlab.com/namespace/repo.git
-    #   HTTPS with token: https://oauth2:TOKEN@gitlab.com/namespace/repo.git
     if remote_url.startswith("git@"):
         without_prefix = remote_url[4:]
         host, path = without_prefix.split(":", 1)
@@ -105,15 +134,23 @@ def _token_from_shell_files() -> str:
     return ""
 
 
-def get_token():
+def get_token(label: str = "default"):
+    # 1. connections.yaml
+    if _HAS_CONFIG_LOADER:
+        conn = get_connection("gitlab", label)
+        token = conn.get("token", "")
+        if token:
+            return token
+
+    # 2. Environment variables
     token = os.environ.get("GITLAB_TOKEN") or os.environ.get("GL_TOKEN")
     if not token:
         token = _token_from_shell_files()
     if not token:
         sys.exit(
-            "ERROR: Set GITLAB_TOKEN or GL_TOKEN environment variable.\n"
-            "  ~/.bashrc / ~/.profile に export GITLAB_TOKEN=glpat-xxxx を追記するか、\n"
-            "  現在のシェルで export してください。"
+            "ERROR: GitLab トークンが未設定です。以下のいずれかで設定してください:\n"
+            "  1. python gl.py --label-conn default configure  (connections.yaml に保存)\n"
+            "  2. export GITLAB_TOKEN=glpat-xxxx"
         )
     return token
 
@@ -368,6 +405,64 @@ _NON_REQUESTER_REVIEW_RE = re.compile(r"<!--\s*gitlab-idd:non-requester-reviewed
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+
+def cmd_configure(args, host, project, token):
+    """Create or update a connections.yaml entry interactively."""
+    if not _HAS_CONFIG_LOADER:
+        print("ERROR: pyyaml が必要です。pip install pyyaml", file=sys.stderr)
+        sys.exit(1)
+
+    write_path = get_yaml_write_path()
+    existing: dict = {}
+    if write_path.exists():
+        try:
+            import yaml  # type: ignore[import]
+            with open(write_path, encoding="utf-8") as f:
+                existing = yaml.safe_load(f) or {}
+        except Exception:
+            pass
+
+    label = getattr(args, "label", "default") or "default"
+    entries: list = existing.get("gitlab", [])
+    if not isinstance(entries, list):
+        entries = []
+    current = next((e for e in entries if isinstance(e, dict) and e.get("label", "default") == label), {})
+
+    def prompt(display: str, key: str, cli_val=None, secret: bool = False) -> str:
+        if cli_val:
+            return cli_val
+        current_val = current.get(key, "")
+        hint = f" [{current_val if not secret or not current_val else '****'}]" if current_val else ""
+        value = input(f"{display}{hint}: ").strip()
+        return value or current_val
+
+    url = prompt("GitLab Project URL (e.g. https://gitlab.com/namespace/repo)", "url", getattr(args, "url", None))
+    token_val = prompt("Personal Access Token", "token", getattr(args, "token", None), secret=True)
+
+    if not url or not token_val:
+        print("ERROR: URL と Token は必須です。", file=sys.stderr)
+        sys.exit(1)
+
+    new_entry: dict = {"label": label, "url": url, "token": token_val}
+    updated = [e for e in entries if isinstance(e, dict) and e.get("label", "default") != label]
+    updated.append(new_entry)
+    existing["gitlab"] = updated
+
+    try:
+        import yaml  # type: ignore[import]
+    except ImportError:
+        print("ERROR: pyyaml が必要です。pip install pyyaml", file=sys.stderr)
+        sys.exit(1)
+
+    write_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(write_path, "w", encoding="utf-8") as f:
+        yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    write_path.chmod(0o600)
+
+    print(f"保存しました: {write_path}  (label={label})")
+    print(f"確認: python gl.py --label-conn {label} project-info")
+
 
 def cmd_project_info(args, host, project, token):
     """Show parsed project info derived from git remote origin."""
@@ -960,15 +1055,23 @@ def build_parser():
         "--get", metavar="FIELD",
         help="Extract a field from JSON output using dot-path (e.g. username, 0.web_url)",
     )
+    parser.add_argument(
+        "--label-conn", dest="label", default="default", metavar="LABEL",
+        help="connections.yaml で使う接続ラベル (デフォルト: default)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("project-info", help="Show host/project parsed from git remote origin")
+    sub.add_parser("project-info", help="Show host/project parsed from git remote origin (or connections.yaml)")
     sub.add_parser("get-default-branch", help="Show the project default branch (via GitLab API)")
     sub.add_parser("current-user", help="Show authenticated user info")
     sub.add_parser("get-node-id",
                    help="Show the current terminal node ID (set GITLAB_NODE_ID to override)")
     sub.add_parser("get-max-review-per-run",
                    help="Show the max issues to review per run (skill-registry.json, default 1)")
+
+    p_conf = sub.add_parser("configure", help="connections.yaml に GitLab 接続情報を保存する")
+    p_conf.add_argument("--url", help="GitLab プロジェクト URL (省略時は対話入力)")
+    p_conf.add_argument("--token", help="Personal Access Token (省略時は対話入力)")
 
     p = sub.add_parser("list-issues", help="List project issues")
     p.add_argument("--label", help="Filter by label (comma-separated, AND condition)")
@@ -1124,7 +1227,8 @@ def build_parser():
 # ---------------------------------------------------------------------------
 
 COMMANDS = {
-    "project-info":        cmd_project_info,
+    "configure":              cmd_configure,
+    "project-info":           cmd_project_info,
     "get-default-branch":  cmd_get_default_branch,
     "current-user":        cmd_current_user,
     "get-node-id":         cmd_get_node_id,
@@ -1153,8 +1257,12 @@ COMMANDS = {
 
 def main():
     args = build_parser().parse_args()
-    host, project = get_project_info()
-    token = get_token()
+    label = getattr(args, "label", "default") or "default"
+    if args.command == "configure":
+        cmd_configure(args, None, None, None)
+        return
+    host, project = get_project_info(label)
+    token = get_token(label)
     COMMANDS[args.command](args, host, project, token)
 
 

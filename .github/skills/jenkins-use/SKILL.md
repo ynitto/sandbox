@@ -1,6 +1,6 @@
 ---
 name: jenkins-use
-description: Jenkins REST API でビルド操作・状態監視・ログ取得を行う。「Jenkins でビルドして」「ビルド状態を確認して」「コンソールログを取得して」「Jenkins ジョブを実行して」「CI の状態を確認して」「Jenkins に接続して」などで発動する。Python スクリプト経由でリトライ・タイムアウト付きで安定実行。
+description: Jenkins REST API でビルド操作・状態監視・ログ取得を行う。「Jenkins でビルドして」「ビルド状態を確認して」「Jenkins を設定して」「接続情報を設定して」「Jenkins の設定をして」などで発動する。Python スクリプト経由でリトライ・タイムアウト付きで安定実行。
 metadata:
   version: 1.0.0
   tier: experimental
@@ -18,30 +18,85 @@ metadata:
 
 Python スクリプトから Jenkins REST API を呼び出してビルド操作と状態監視を行う。
 
-## 前提条件
+## 「設定して」リクエスト時の対応
+
+ユーザーから「Jenkins を設定して」「接続情報を設定して」などのリクエストを受けたら以下を実行する:
+
+1. **必要情報の確認**: URL・ユーザー名・トークン・ラベルが指定されているか確認する。ない場合はユーザーに確認するか対話プロンプトを使う。
+2. **configure の実行**: 必要情報が提示されている場合はオプション付きで、なければ対話形式で実行する。
+
+```bash
+# URL ・ユーザー名・トークンが分かっている場合
+python {skill_home}/jenkins-use/scripts/jenkins_client.py --label default configure \
+  --url https://jenkins.example.com --user your-username --token YOUR_API_TOKEN
+
+# 不明な場合は対話プロンプト
+python {skill_home}/jenkins-use/scripts/jenkins_client.py --label default configure
+```
+
+3. **接続確認**: configure 実行後に `info` で接続を確認する。
+
+```bash
+python {skill_home}/jenkins-use/scripts/jenkins_client.py --label default info
+```
 
 - Python 3.8+（標準ライブラリのみ、追加インストール不要）
 - Jenkins URL、ユーザー名、API トークン（Jenkins 管理画面 → ユーザー → API Token で生成）
 
 ## 接続情報の設定
 
-接続情報の解決順序（上位優先）:
+「Jenkins を設定して」「接続情報を設定して」などのリクエストを受けたら、`configure` コマンドを実行して `connections.yaml` に保存する。
 
-1. `--url` / `--user` / `--token` オプション
-2. 環境変数 `JENKINS_URL` / `JENKINS_USER` / `JENKINS_TOKEN`
-3. ワークスペース設定ファイル `.jenkins.json`（カレントディレクトリ）
-
-**推奨: `configure` コマンドで設定ファイルに保存する**
+### configure コマンドで設定（推奨）
 
 ```bash
-python scripts/jenkins_client.py configure
-# → Jenkins URL: https://jenkins.example.com
-# → Username: your-username
-# → API Token: ****
-# → Saved to .jenkins.json  (パーミッション 600)
+# 対話形式（プロンプトで入力）
+python {skill_home}/jenkins-use/scripts/jenkins_client.py configure
+
+# オプションで直接指定
+python {skill_home}/jenkins-use/scripts/jenkins_client.py configure \
+  --url https://jenkins.example.com --user your-username --token YOUR_API_TOKEN
+
+# ラベルを指定して複数環境を管理
+python {skill_home}/jenkins-use/scripts/jenkins_client.py --label staging configure \
+  --url https://staging.jenkins.example.com --user your-username --token YOUR_TOKEN
 ```
 
-`.jenkins.json` はトークンを含むため `.gitignore` に追加すること。
+設定は `{agent_dir}/connections.yaml`（例: `.github/connections.yaml`）に保存される。
+APIトークンを直接記述する場合は `.gitignore` に追加すること。
+
+### connections.yaml の直接編集
+
+```yaml
+# .github/connections.yaml
+jenkins:
+  - label: default
+    url: https://jenkins.example.com
+    user: ${JENKINS_USER}    # 環境変数を参照
+    token: ${JENKINS_TOKEN}
+
+  - label: staging
+    url: https://staging.jenkins.example.com
+    user: your-username
+    token: your_staging_token
+```
+
+テンプレートは `{agent_dir}/connections.yaml.example`（例: `.github/connections.yaml.example`）を参照。
+
+接続情報の解決順序（上位優先）:
+
+1. `--url` / `--user` / `--token` CLI オプション
+2. **`connections.yaml`**（ワークスペース > グローバル）`--label` で接続先を切り替え可能
+3. 環境変数 `JENKINS_URL` / `JENKINS_USER` / `JENKINS_TOKEN`
+4. ワークスペース設定ファイル `.jenkins.json`（後方互換）
+
+### 環境変数で設定
+
+```bash
+export JENKINS_URL=https://jenkins.example.com
+export JENKINS_USER=your-username
+export JENKINS_TOKEN=your_api_token
+```
 
 ## 基本ワークフロー
 
