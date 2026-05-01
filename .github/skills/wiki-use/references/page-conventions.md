@@ -27,12 +27,13 @@ tags: [タグ1, タグ2]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:
-  - sources/<YYYY-MM-DD>-<slug>.<ext>
+  - "<ソースタイトルまたはパス>"
 summary: "<index.md 用の1文説明（80文字以内）>"
 ---
 ```
 
 - `type` は atoms では必須。topics では `topic` を指定する。
+- `sources` はソースの識別子（タイトル・ファイル名・URL など）を自由形式で記録する。
 - `summary` はindex.mdの1行説明として使われる。省略するとスクリプトが本文から自動生成する。
 
 ---
@@ -81,7 +82,7 @@ tags: [...]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:
-  - sources/2026-01-01-example.pdf
+  - "Source Title or /path/to/file.pdf"
 summary: "1文の簡潔な説明（80文字以内）"
 ---
 
@@ -126,7 +127,7 @@ tags: [...]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:
-  - sources/2026-01-01-example.pdf
+  - "Source Title or /path/to/file.pdf"
 summary: "1文の簡潔な説明（80文字以内）"
 ---
 

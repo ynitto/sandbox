@@ -78,18 +78,16 @@ wiki_root exists : True
 
 ```
 <wiki_root>/
-├── sources/                  ← 取り込み元の原文（変更しない）
-│   └── .gitkeep
 ├── wiki/
-│   ├── concepts/             ← 概念・用語ページ
-│   │   └── .gitkeep
-│   ├── entities/             ← 人物・プロダクト・組織ページ
+│   ├── atoms/                ← 個別トピックページ（概念・用語・人物・製品・組織）
 │   │   └── .gitkeep
 │   ├── topics/               ← テーマ別まとめページ
 │   │   └── .gitkeep
 │   └── meta/
 │       └── hot.md            ← 最近のコンテキストキャッシュ（直近20件）
-├── SCHEMA.md                 ← このWikiの構造・規約定義
-├── index.md                  ← 全ページの目録
+├── SCHEMA.md                 ← このWikiの構造・規約定義（LLMと共に育てる）
+├── index.md                  ← 全ページの目録（1ページ1行の箇条書き）
 └── log.md                    ← 操作ログ（追記専用）
 ```
+
+ソースデータは wiki_root 外で管理する（取り込み前に保全済みであることを前提とする）。

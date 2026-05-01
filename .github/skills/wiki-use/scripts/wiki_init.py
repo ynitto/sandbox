@@ -37,7 +37,6 @@ SCHEMA_TEMPLATE = """\
 - `wiki/atoms/`  — 個別トピックのページ（概念・用語・人物・製品・組織など）
 - `wiki/topics/` — 複数 atom を横断するまとめ・比較・分析ページ
 - `wiki/meta/`   — hot.md（最近のコンテキスト）
-- `sources/`     — 取り込み元の原文（変更しない）
 
 ## ページ規約
 
@@ -88,7 +87,6 @@ HOT_TEMPLATE = """\
 def create_structure(wiki_root: Path) -> None:
     """Wiki のディレクトリ構造を作成する。"""
     dirs = [
-        wiki_root / "sources",
         wiki_root / "wiki" / "atoms",
         wiki_root / "wiki" / "topics",
         wiki_root / "wiki" / "meta",
