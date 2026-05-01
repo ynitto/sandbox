@@ -4,8 +4,7 @@
 
 - [ページフォーマット](#ページフォーマット)
 - [カテゴリ別フォーマット](#カテゴリ別フォーマット)
-  - [concepts](#concepts概念用語ページ)
-  - [entities](#entities人物プロダクト組織ページ)
+  - [atoms](#atoms個別トピックページ)
   - [topics](#topicsテーマ別まとめページ)
 - [ファイル命名規則](#ファイル命名規則)
 - [ウィキリンク形式](#ウィキリンク形式)
@@ -23,14 +22,19 @@
 ```yaml
 ---
 title: "<ページタイトル>"
-category: concepts | entities | topics
+type: concept | term | person | organization | product | topic
 tags: [タグ1, タグ2]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:
-  - sources/<YYYY-MM-DD>-<slug>.<ext>
+  - "<ソースタイトルまたはパス>"
+summary: "<index.md 用の1文説明（80文字以内）>"
 ---
 ```
+
+- `type` は atoms では必須。topics では `topic` を指定する。
+- `sources` はソースの識別子（タイトル・ファイル名・URL など）を自由形式で記録する。
+- `summary` はindex.mdの1行説明として使われる。省略するとスクリプトが本文から自動生成する。
 
 ---
 
@@ -65,116 +69,82 @@ sources:
 
 ## カテゴリ別フォーマット
 
-### concepts（概念・用語ページ）
+### atoms（個別トピックページ）
+
+概念・用語・人物・製品・組織など、1つのトピックを扱うページ。
+`type` で細分類する（concept / term / person / organization / product）。
 
 ```markdown
 ---
-title: "概念名"
-category: concepts
+title: "トピック名"
+type: concept
 tags: [...]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:
-  - sources/2026-01-01-example.pdf
+  - "Source Title or /path/to/file.pdf"
+summary: "1文の簡潔な説明（80文字以内）"
 ---
 
-# 概念名
-
-## 定義
-
-[1〜3文で概念を明確に定義する]
-
-*発行: 2024-03-01 / [[source-slug]]*
-
-## 詳細
-
-[概念の詳しい説明。背景・仕組み・意義など]
-
-## 特徴・性質
-
-- 特徴1
-- 特徴2
-
-## 使用例・適用場面
-
-[いつ・どこで・どのように使われるか]
-
-## 関連
-
-- [[関連概念1]]
-- [[関連概念2]]
-
-## 出典
-
-- [ソースタイトル](sources/2026-01-01-example.pdf)
-```
-
----
-
-### entities（人物・プロダクト・組織ページ）
-
-```markdown
----
-title: "エンティティ名"
-category: entities
-tags: [...]
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
-sources:
-  - sources/2026-01-01-example.pdf
----
-
-# エンティティ名
+# トピック名
 
 ## 概要
 
-[エンティティの簡潔な説明]
-
-## 詳細
-
-[エンティティに関する詳しい情報]
+[1〜3文で明確に説明する。定義・役割・概要など]
 
 *発行: 2024-03-01 / [[source-slug]]*
 
-## 関連する概念
+## 詳細
 
-- [[概念1]]
-- [[概念2]]
+[詳しい情報。背景・仕組み・意義など。通算400語以内を目安にする]
+
+## 関連
+
+- [[関連トピック1]]
+- [[関連トピック2]]
 
 ## 出典
 
 - [ソースタイトル](sources/2026-01-01-example.pdf)
 ```
+
+`type` 別の書き方の違いは最小限に留める:
+- `concept` / `term`: 概要は「定義」として書く
+- `person`: 概要は「人物紹介」として書く（所属・業績など）
+- `organization` / `product`: 概要は「設立・目的・概要」として書く
 
 ---
 
 ### topics（テーマ別まとめページ）
 
+複数のatomsを横断するまとめ・比較・分析ページ。
+
 ```markdown
 ---
 title: "テーマ名"
-category: topics
+type: topic
 tags: [...]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:
-  - sources/2026-01-01-example.pdf
+  - "Source Title or /path/to/file.pdf"
+summary: "1文の簡潔な説明（80文字以内）"
 ---
 
 # テーマ名
 
 ## 概要
 
-[テーマの全体像を説明する]
+[テーマの全体像を1〜3文で説明する]
 
-## 主要な概念
+## 主要なトピック
 
-- [[概念1]]: 簡潔な説明
-- [[概念2]]: 簡潔な説明
+- [[atom-slug-1]]: 簡潔な説明
+- [[atom-slug-2]]: 簡潔な説明
 
 ## 詳細
 
-[テーマの詳しい内容]
+[テーマの詳しい内容・分析・比較]
 
 *発行: 2024-03-01 / [[source-slug]]*
 
@@ -198,9 +168,9 @@ sources:
 例:
 | タイトル | ファイル名 |
 |---------|-----------|
-| Attention Mechanism | `wiki/concepts/attention-mechanism.md` |
-| GPT-4 | `wiki/entities/gpt-4.md` |
-| Andrej Karpathy | `wiki/entities/andrej-karpathy.md` |
+| Attention Mechanism | `wiki/atoms/attention-mechanism.md` |
+| GPT-4 | `wiki/atoms/gpt-4.md` |
+| Andrej Karpathy | `wiki/atoms/andrej-karpathy.md` |
 | トランスフォーマー入門 | `wiki/topics/transformer-introduction.md` |
 
 ---
@@ -223,29 +193,28 @@ sources:
 
 ## index.md フォーマット
 
+1ページ1行の箇条書き。LLMがqueryで最初に読む羅針盤として使う。
+詳細はページ本体が持つので、ここでは最小限の情報に留める。
+
 ```markdown
 # Wiki インデックス
 
 最終更新: YYYY-MM-DD
 
-## concepts
+## atoms
 
-| ページ | 概要 | 作成日 |
-|--------|------|--------|
-| [[attention-mechanism]] | ... | 2026-01-01 |
-
-## entities
-
-| ページ | 概要 | 作成日 |
-|--------|------|--------|
-| [[gpt-4]] | ... | 2026-01-01 |
+- [[attention-mechanism]] — スケールドドット積アテンション機構（concept, 2 sources）
+- [[gpt-4]] — OpenAIのGPT-4言語モデル（product, 1 source）
+- [[andrej-karpathy]] — AI研究者（person, 3 sources）
 
 ## topics
 
-| ページ | 概要 | 作成日 |
-|--------|------|--------|
-| [[transformer-introduction]] | ... | 2026-01-01 |
+- [[transformer-introduction]] — トランスフォーマーアーキテクチャの全体まとめ（1 source）
 ```
+
+- `summary` はフロントマターの `summary:` フィールドから自動取得される
+- `type` と `N sources` はフロントマターから自動取得される
+- `update-index` スクリプトが自動でこの形式で追記する
 
 ---
 
@@ -293,27 +262,36 @@ sources:
 
 ## SCHEMA.md フォーマット
 
-`wiki_init.py` が自動生成するWiki構造の定義書:
+`wiki_init.py` が初期生成するWiki構造の定義書。
+**LLMとユーザーが協力して育てる**ライブドキュメント。  
+lintの結果、運用で気づいたルール、ドメイン固有の規約などを随時追記する。
 
 ```markdown
 # Wiki スキーマ
 
 このファイルは Wiki の構造・規約を定義します。LLM はこのファイルを参照して
-一貫したページを作成・更新してください。
+一貫したページを作成・更新してください。このファイル自体を LLM とユーザーが
+協力して育てることで、ドメインに最適化された Wiki 運用ルールを確立していく。
 
 ## ディレクトリ構造
 
-- `wiki/concepts/` — 概念・用語
-- `wiki/entities/` — 人物・プロダクト・組織
-- `wiki/topics/` — テーマ別まとめ
+- `wiki/atoms/`  — 個別トピックのページ（概念・用語・人物・製品・組織など）
+- `wiki/topics/` — 複数 atom を横断するまとめ・比較・分析ページ
+- `wiki/meta/`   — hot.md（最近のコンテキスト）
+- `sources/`     — 取り込み元の原文（変更しない）
 
 ## ページ規約
 
-- フロントマター必須（title, category, tags, created, updated, sources）
-- ウィキリンク形式: [[ファイル名]]
+- フロントマター必須（title, type, tags, created, updated, sources, summary）
+- `type` フィールド: concept | term | person | organization | product | topic
+- ウィキリンク形式: [[ファイル名]]（拡張子なし）
 - ファイル名: 英小文字 + ハイフン
 
 ## このWikiのドメイン
 
 [ユーザーが追記: このWikiが扱うテーマ・領域]
+
+## カスタムルール
+
+[このWikiに特有の運用ルール・強調したい観点があれば追記]
 ```

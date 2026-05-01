@@ -25,7 +25,7 @@ def collect_wiki_pages(wiki_root: Path) -> list:
     if not wiki_dir.exists():
         return []
     pages = []
-    for cat in ["concepts", "entities", "topics"]:
+    for cat in ["atoms", "topics"]:
         cat_dir = wiki_dir / cat
         if cat_dir.exists():
             for p in sorted(cat_dir.glob("*.md")):
@@ -41,15 +41,6 @@ def get_index_links(wiki_root: Path) -> set:
         return set()
     text = index_path.read_text(encoding="utf-8")
     return set(re.findall(r"\[\[([^\]]+)\]\]", text))
-
-
-def get_log_sources(wiki_root: Path) -> set:
-    """log.md に記録されているソースファイル名セットを返す。"""
-    log_path = wiki_root / "log.md"
-    if not log_path.exists():
-        return set()
-    text = log_path.read_text(encoding="utf-8")
-    return set(re.findall(r"sources/([^\s`\n]+)", text))
 
 
 def get_page_wikilinks(page_path: Path) -> set:
@@ -78,7 +69,6 @@ def main() -> None:
 
     pages = collect_wiki_pages(wiki_root)
     index_links = get_index_links(wiki_root)
-    log_sources = get_log_sources(wiki_root)
 
     # 全ページの stem セット（リンク解決用）
     all_stems = {p.stem for _, p in pages}
@@ -104,21 +94,12 @@ def main() -> None:
                     f"[WARN] リンク切れ: wiki/{cat}/{page_path.name} → [[{link}]] ({link}.md が存在しない)"
                 )
 
-    # ---- チェック 3: 未取り込みソース ----
-    sources_dir = wiki_root / "sources"
-    if sources_dir.exists():
-        for f in sorted(sources_dir.iterdir()):
-            if f.name.startswith(".") or not f.is_file():
-                continue
-            if f.name not in log_sources:
-                infos.append(f"[INFO] 孤立ソース: sources/{f.name} (log.mdに未記録)")
-
-    # ---- チェック 4: 空ページ ----
+    # ---- チェック 3: 短小ページ ----
     for cat, page_path in pages:
         length = get_body_length(page_path)
         if length < EMPTY_PAGE_THRESHOLD:
             warnings.append(
-                f"[WARN] 空ページ: wiki/{cat}/{page_path.name} (本文 {length} 文字)"
+                f"[WARN] 短小ページ: wiki/{cat}/{page_path.name} (本文 {length} 文字)"
             )
 
     # ---- 結果表示 ----
@@ -141,21 +122,19 @@ def main() -> None:
         for cat, page_path in orphan_pages:
             stem = page_path.stem
             link = f"[[{stem}]]"
-            # カテゴリセクションの末尾に追記
-            section_pattern = re.compile(
-                rf"(## {cat}\n\s*\|[^\n]+\n\|[-| ]+\n)((?:\|[^\n]+\n)*)",
-                re.MULTILINE,
-            )
-            m = section_pattern.search(index_text)
+            new_line = f"- {link}\n"
+            header_pat = re.compile(rf"^## {re.escape(cat)}\n", re.MULTILINE)
+            m = header_pat.search(index_text)
             if m:
-                new_row = f"| {link} |  | {today} |\n"
-                replacement = m.group(1) + m.group(2) + new_row
-                index_text = index_text[: m.start()] + replacement + index_text[m.end():]
+                section_start = m.end()
+                next_h = re.search(r"^## ", index_text[section_start:], re.MULTILINE)
+                insert_pos = section_start + next_h.start() if next_h else len(index_text)
+                prefix = index_text[:insert_pos].rstrip("\n") + "\n"
+                index_text = prefix + new_line + index_text[insert_pos:]
                 print(f"  追加: {link} → {cat}")
             else:
-                print(f"  [SKIP] セクション '{cat}' のテーブルが見つかりません")
+                print(f"  [SKIP] セクション '{cat}' が見つかりません")
 
-        # 最終更新日を更新
         index_text = re.sub(
             r"最終更新: \d{4}-\d{2}-\d{2}",
             f"最終更新: {today}",

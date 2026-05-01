@@ -29,26 +29,31 @@ SCHEMA_TEMPLATE = """\
 # Wiki スキーマ
 
 このファイルは Wiki の構造・規約を定義します。LLM はこのファイルを参照して
-一貫したページを作成・更新してください。
+一貫したページを作成・更新してください。このファイル自体を LLM とユーザーが
+協力して育てることで、ドメインに最適化された Wiki 運用ルールを確立していく。
 
 ## ディレクトリ構造
 
-- `wiki/concepts/` — 概念・用語
-- `wiki/entities/` — 人物・プロダクト・組織
-- `wiki/topics/`   — テーマ別まとめ
-- `wiki/meta/`     — hot.md（最近のコンテキスト）
-- `sources/`       — 取り込み元の原文（変更しない）
+- `wiki/atoms/`  — 個別トピックのページ（概念・用語・人物・製品・組織など）
+- `wiki/topics/` — 複数 atom を横断するまとめ・比較・分析ページ
+- `wiki/meta/`   — hot.md（最近のコンテキスト）
 
 ## ページ規約
 
-- フロントマター必須（title, category, tags, created, updated, sources）
+- フロントマター必須（title, type, tags, created, updated, sources, summary）
+- `type` フィールド: concept | term | person | organization | product | topic
 - ウィキリンク形式: [[ファイル名]]（拡張子なし）
 - ファイル名: 英小文字 + ハイフン（例: attention-mechanism.md）
 - 各ページに `## 関連` セクションを設け、関連ページをリンクする
+- `summary` は index.md 用の1文説明（80文字以内）
 
 ## このWikiのドメイン
 
 （このWikiが扱うテーマ・領域をここに記入してください）
+
+## カスタムルール
+
+（このWikiに特有の運用ルール・強調したい観点があれば追記してください）
 """
 
 INDEX_TEMPLATE = """\
@@ -56,20 +61,9 @@ INDEX_TEMPLATE = """\
 
 最終更新: {today}
 
-## concepts
-
-| ページ | 概要 | 作成日 |
-|--------|------|--------|
-
-## entities
-
-| ページ | 概要 | 作成日 |
-|--------|------|--------|
+## atoms
 
 ## topics
-
-| ページ | 概要 | 作成日 |
-|--------|------|--------|
 """
 
 LOG_TEMPLATE = """\
@@ -93,9 +87,7 @@ HOT_TEMPLATE = """\
 def create_structure(wiki_root: Path) -> None:
     """Wiki のディレクトリ構造を作成する。"""
     dirs = [
-        wiki_root / "sources",
-        wiki_root / "wiki" / "concepts",
-        wiki_root / "wiki" / "entities",
+        wiki_root / "wiki" / "atoms",
         wiki_root / "wiki" / "topics",
         wiki_root / "wiki" / "meta",
     ]
@@ -169,17 +161,16 @@ def cmd_init_interactive() -> None:
     create_structure(wiki_root)
 
     print("\n=== 初期化完了 ===")
-    print(f"  wiki_root     : {wiki_root}")
-    print(f"  sources       : {wiki_root / 'sources'}")
-    print(f"  wiki/concepts : {wiki_root / 'wiki' / 'concepts'}")
-    print(f"  wiki/entities : {wiki_root / 'wiki' / 'entities'}")
-    print(f"  wiki/topics   : {wiki_root / 'wiki' / 'topics'}")
-    print(f"  SCHEMA.md     : {wiki_root / 'SCHEMA.md'}")
-    print(f"  index.md      : {wiki_root / 'index.md'}")
-    print(f"  log.md        : {wiki_root / 'log.md'}")
+    print(f"  wiki_root   : {wiki_root}")
+    print(f"  sources     : {wiki_root / 'sources'}")
+    print(f"  wiki/atoms  : {wiki_root / 'wiki' / 'atoms'}")
+    print(f"  wiki/topics : {wiki_root / 'wiki' / 'topics'}")
+    print(f"  SCHEMA.md   : {wiki_root / 'SCHEMA.md'}")
+    print(f"  index.md    : {wiki_root / 'index.md'}")
+    print(f"  log.md      : {wiki_root / 'log.md'}")
     print()
     print("次のステップ:")
-    print("  1. SCHEMA.md の「このWikiのドメイン」欄にテーマを記入する")
+    print("  1. SCHEMA.md の「このWikiのドメイン」欄にテーマ・領域を記入する")
     print("  2. ソースファイルを取り込む: python scripts/wiki_ingest.py copy --source <path>")
 
 
