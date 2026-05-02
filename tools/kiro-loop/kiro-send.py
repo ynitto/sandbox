@@ -416,7 +416,7 @@ def _main_send() -> None:
     if not prompt_file.is_file():
         if re.match(r'^[A-Za-z]:[^\\/].+', args.prompt_file):
             print(
-                "[kiro-send] HINT: Windowsパスの区切り文字(\\)がシェルで解釈されています"
+                "[kiro-send] HINT: Windowsパスの区切り文字(\\)がシェルで解釈されています。"
                 " 引数を 'c:\\path\\to\\file.md' のように単引用符で囲むか、"
                 " c:/path/to/file.md 形式を使ってください。",
                 file=sys.stderr,
