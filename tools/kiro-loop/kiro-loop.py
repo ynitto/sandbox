@@ -928,7 +928,7 @@ class SessionManager:
         composed = f"{self._instance_id}-{self._prompt_token(prompt_id)}"
         return _tmux_session_name(Path(self._target_path), composed)
 
-    def _build_session(self, prompt_id: str) -> tuple["KiroSession", str]:
+    def _build_session(self, prompt_id: str) -> tuple[KiroSession, str]:
         tmux_name = self._tmux_name_for_prompt(prompt_id)
         session = KiroSession(
             cwd=self._target_path,
@@ -998,7 +998,7 @@ class SessionManager:
         for prompt_id in add_ids:
             self._start_session(prompt_id, desired[prompt_id])
 
-    def get_session(self, prompt_id: str, prompt_name: str) -> "KiroSession | None":
+    def get_session(self, prompt_id: str, prompt_name: str) -> KiroSession | None:
         with self._lock:
             existing = self._sessions.get(prompt_id)
         if existing is not None:
