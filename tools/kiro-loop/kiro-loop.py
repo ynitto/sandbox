@@ -26,6 +26,7 @@ kiro-loop.py — tmux 分割ウィンドウで kiro-cli を起動し、
 
 import argparse
 import atexit
+import hashlib
 import json
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -94,14 +95,18 @@ log = logging.getLogger("kiro-loop")
 INSTANCE_FILE_NAME = "kiro-loop.pid"
 LOG_FILE_NAME = "kiro-loop.log"
 
+
 def _runtime_dir(base_path: Path) -> Path:
     return base_path / ".kiro"
+
 
 def _instance_file(base_path: Path) -> Path:
     return _runtime_dir(base_path) / INSTANCE_FILE_NAME
 
+
 def _log_file(base_path: Path) -> Path:
     return _runtime_dir(base_path) / LOG_FILE_NAME
+
 
 def _safe_unlink(path: Path) -> None:
     try:
@@ -110,6 +115,7 @@ def _safe_unlink(path: Path) -> None:
         pass
     except OSError as exc:
         log.warning("不要ファイルの削除に失敗しました: %s (%s)", path, exc)
+
 
 def _process_matches_target(pid: int, target_path: Path) -> bool:
     """プロセスが生きているか確認する（macOS / Linux 共通）。"""
@@ -122,6 +128,16 @@ def _process_matches_target(pid: int, target_path: Path) -> bool:
         return True
     except OSError:
         return False
+
+    # Linux: /proc/{pid}/cmdline でコマンドラインを確認
+    proc_cmdline = Path(f"/proc/{pid}/cmdline")
+    if proc_cmdline.exists():
+        try:
+            cmdline_text = proc_cmdline.read_text(encoding="utf-8", errors="ignore").replace("\x00", " ")
+        except OSError:
+            return False
+        if "kiro-loop.py" not in cmdline_text and "kiro-loop" not in cmdline_text:
+            return False
 
     # Linux: /proc/{pid}/cwd でカレントディレクトリを確認
     proc_cwd = Path(f"/proc/{pid}/cwd")
@@ -224,7 +240,7 @@ def load_config(cwd: Path) -> tuple[dict[str, Any], Path, bool]:
     if config_path is None:
         default_path = cwd / "kiro-loop.yaml"
         log.info(
-            "設定ファイルが見つかりません。ワークスペースを追加すると %s に自動保存されます。",
+            "起動ディレクトリの設定ファイルが見つかりません。必要に応じて %s に保存されます。",
             default_path,
         )
         return {}, default_path, False
@@ -239,15 +255,17 @@ def load_config(cwd: Path) -> tuple[dict[str, Any], Path, bool]:
 
 def _sanitize_session_label(name: str) -> str:
     """tmux セッション名に使用できる文字列に変換する。"""
-    sanitized = re.sub(r"[^A-Za-z0-9_-]", "-", name)
-    return sanitized[:64] or "kiro"
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "-", name).strip("-_")
+    return (cleaned or "target")[:24]
 
 
 def _tmux_session_name(base_path: Path, instance_id: str) -> str:
-    """base_path と instance_id から tmux セッション名を生成する。"""
-    dir_label = _sanitize_session_label(base_path.name or "home")
-    inst_label = _sanitize_session_label(instance_id)
-    return f"kiro-{dir_label}-{inst_label}"
+    """実行インスタンスごとに独立した tmux セッション名を生成する。"""
+    resolved = str(base_path.resolve())
+    digest = hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:8]
+    label = _sanitize_session_label(base_path.name)
+    short_id = re.sub(r"[^A-Za-z0-9]", "", instance_id)[:12] or "run"
+    return f"kiro-{label}-{digest}-{short_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -256,51 +274,57 @@ def _tmux_session_name(base_path: Path, instance_id: str) -> str:
 
 def _strip_jsonc_comments(text: str) -> str:
     """JSONC のコメント（// および /* */）を除去する。"""
-    result: list[str] = []
+    out: list[str] = []
     i = 0
     in_string = False
+    escape = False
+
     while i < len(text):
-        c = text[i]
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+    
         if in_string:
-            if c == "\\" and i + 1 < len(text):
-                result.append(c)
-                result.append(text[i + 1])
-                i += 2
-                continue
-            if c == '"':
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
                 in_string = False
-            result.append(c)
             i += 1
-        else:
-            if c == '"':
-                in_string = True
-                result.append(c)
+            continue
+
+
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            i += 2
+            while i < len(text) and text[i] not in "\r\n":
                 i += 1
-            elif c == "/" and i + 1 < len(text):
-                if text[i + 1] == "/":
-                    # 行コメント
-                    while i < len(text) and text[i] != "\n":
-                        i += 1
-                elif text[i + 1] == "*":
-                    # ブロックコメント
-                    i += 2
-                    while i < len(text) - 1 and not (text[i] == "*" and text[i + 1] == "/"):
-                        i += 1
-                    i += 2
-                else:
-                    result.append(c)
-                    i += 1
-            else:
-                result.append(c)
-                i += 1
-    return "".join(result)
+            i += 2 if i + 1 < len(text) else 1
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
 
 
 def _load_jsonc_file(path: Path) -> dict[str, Any]:
-    """JSONC ファイルを読み込んで dict を返す。"""
     text = path.read_text(encoding="utf-8")
-    cleaned = _strip_jsonc_comments(text)
-    return json.loads(cleaned) or {}
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        # VS Code settings.json は JSONC のため、コメントと trailing comma を許容する。
+        stripped = _strip_jsonc_comments(text)
+        stripped = re.sub(r"(\s*[}\]]),", r"\1", stripped)
+        data = json.loads(stripped)
+        return data if isinstance(data, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -308,21 +332,56 @@ def _load_jsonc_file(path: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def load_vscode_periodic_prompts(base_path: Path) -> list[dict[str, Any]]:
-    """VS Code の .vscode/settings.json から agentExecutor.periodicPrompts を読み込む。"""
-    entries: list[dict[str, Any]] = []
+    """.vscode/settings.json の agentExecutor.periodicPrompts を読み込み、kiro-loop 形式へ変換する。"""
     settings_path = base_path / ".vscode" / "settings.json"
     if not settings_path.is_file():
-        return entries
+        return []
+
     try:
         data = _load_jsonc_file(settings_path)
-        prompts = data.get("agentExecutor", {}).get("periodicPrompts", [])
-        if isinstance(prompts, list):
-            for entry in prompts:
-                if isinstance(entry, dict):
-                    entries.append(entry)
     except Exception as exc:
-        log.warning("VS Code settings.json の読み込みに失敗しました: %s (%s)", settings_path, exc)
-    return entries
+        log.warning("%s の読み込みに失敗しました: %s", settings_path, exc)
+        return []
+
+    raw_entries = data.get("agentExecutor.periodicPrompts")
+    if not isinstance(raw_entries, list):
+        return []
+
+    prompts: list[dict[str, Any]] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("enabled", True) is False:
+            continue
+
+        agent_id = str(entry.get("agentId", "")).strip().lower()
+        if agent_id not in ("kiro", "kiro-cli"):
+            continue
+
+        prompt = str(entry.get("prompt", "")).strip()
+        if not prompt:
+            continue
+
+        try:
+            interval = int(entry.get("intervalMinutes", 0))
+        except Exception:
+            continue
+        if interval < 1:
+            continue
+
+        prompts.append(
+            {
+                "name": prompt[:40],
+                "prompt": prompt,
+                "interval_minutes": interval,
+                "enabled": True,
+            }
+        )
+
+    if prompts:
+        log.info("VS Code 設定から periodicPrompts を %d 件読み込みました。", len(prompts))
+
+    return prompts
 
 
 # ---------------------------------------------------------------------------
@@ -330,54 +389,64 @@ def load_vscode_periodic_prompts(base_path: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _prompt_file(base_path: str) -> Path:
-    """プロンプト設定ファイルのパスを返す。"""
+    """起動ディレクトリ単位の定期プロンプト設定ファイルパスを返す。"""
     return Path(base_path) / ".kiro" / "kiro-loop.yml"
 
 
 def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
-    """プロンプト設定ファイルを読み込んで dict を返す。ファイルがない場合は空 dict。"""
-    prompt_file = _prompt_file(base_path)
-    if not prompt_file.is_file():
+    """起動ディレクトリ配下 .kiro/kiro-loop.yml 全体を辞書として読む。"""
+    path = _prompt_file(base_path)
+    if not path.is_file():
+        return {}
+    if yaml is None:
+        log.warning("PyYAML がないため %s を読めません。", path)
         return {}
     try:
-        return _load_config_file(prompt_file) or {}
+        with path.open(encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if isinstance(data, dict):
+            return data
+        log.warning("%s の形式が不正なため空設定として扱います。", path)
     except Exception as exc:
-        log.warning("プロンプト設定ファイルの読み込みに失敗しました: %s (%s)", prompt_file, exc)
-        return {}
+        log.error("%s の読み込みに失敗しました: %s", path, exc)
+    return {}
 
 
 def load_prompt_config(base_path: str) -> list[dict[str, Any]]:
-    """プロンプト設定を読み込む。ファイルがない場合は空リスト。"""
+    """起動ディレクトリ配下 .kiro/kiro-loop.yml から prompts を読む。"""
+    path = _prompt_file(base_path)
     data = _load_prompt_file_data(base_path)
     prompts = data.get("prompts", [])
-    if not isinstance(prompts, list):
-        return []
-    return [p for p in prompts if isinstance(p, dict)]
+    if isinstance(prompts, list):
+        return [p for p in prompts if isinstance(p, dict)]
+    if data:
+        log.warning("%s の prompts が配列ではありません。", path)
+    return []
 
 
 def save_prompt_config(base_path: str, prompts: list[dict[str, Any]]) -> bool:
-    """プロンプト設定を .kiro/kiro-loop.yml に保存する。"""
+    """起動ディレクトリ配下 .kiro/kiro-loop.yml に prompts を保存する。"""
+    path = _prompt_file(base_path)
+    if yaml is None:
+        log.error("PyYAML が必要です。`pip install pyyaml` を実行してください。")
+        return False
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # prompts 以外の設定（kiro_options など）を保持する。
         data = _load_prompt_file_data(base_path)
         data["prompts"] = prompts
-        file = _prompt_file(base_path)
-        file.parent.mkdir(parents=True, exist_ok=True)
-        if yaml is not None:
-            with file.open("w", encoding="utf-8") as f:
-                yaml.dump(
-                    data, f,
-                    allow_unicode=True,
-                    default_flow_style=False,
-                    sort_keys=False,
-                )
-        else:
-            json_file = file.with_suffix(".json")
-            with json_file.open("w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        log.info("プロンプト設定を保存しました: %s", file)
+        with path.open("w", encoding="utf-8") as f:
+            yaml.dump(
+                data,
+                f,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+        log.info("定期プロンプト設定を保存しました: %s", path)
         return True
     except Exception as exc:
-        log.error("プロンプト設定の保存に失敗しました: %s", exc)
+        log.error("定期プロンプト設定の保存に失敗しました: %s", exc)
         return False
 
 
@@ -386,51 +455,70 @@ def save_prompt_config(base_path: str, prompts: list[dict[str, Any]]) -> bool:
 # ---------------------------------------------------------------------------
 
 def send_text_via_tmux(pane_target: str, text: str) -> tuple[bool, str]:
-    """set-buffer + paste-buffer を使ってテキストを安全に送信する。"""
-    buffer_name = f"kiro-loop-{uuid.uuid4().hex[:8]}"
+    """指定 pane へテキストを送信する。"""
     tmux_bin = shutil.which("tmux")
     if tmux_bin is None:
-        return False, "tmux が見つかりません"
+        return False, "tmux が PATH に見つかりません。"
+
+    pane_check = subprocess.run(
+        [tmux_bin, "display-message", "-p", "-t", pane_target, "#{pane_id}"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if pane_check.returncode != 0:
+        err = (pane_check.stderr or "").strip() or "指定 pane が見つかりません。"
+        return False, err
+
+    buffer_name = f"kiro-loop-send-{uuid.uuid4().hex[:8]}"
     try:
         result = subprocess.run(
             [tmux_bin, "set-buffer", "-b", buffer_name, "--", text],
-            capture_output=True,
+            check=False,
             text=True,
+            capture_output=True,
         )
         if result.returncode != 0:
-            return False, f"set-buffer 失敗: {result.stderr.strip()}"
+            err = (result.stderr or "").strip() or "tmux set-buffer に失敗しました。"
+            return False, err
+
         result = subprocess.run(
             [tmux_bin, "paste-buffer", "-t", pane_target, "-b", buffer_name],
-            capture_output=True,
+            check=False,
             text=True,
+            capture_output=True,
         )
         if result.returncode != 0:
-            return False, f"paste-buffer 失敗: {result.stderr.strip()}"
+            err = (result.stderr or "").strip() or "tmux paste-buffer に失敗しました。"
+            return False, err
+
         result = subprocess.run(
             [tmux_bin, "send-keys", "-t", pane_target, "Enter"],
-            capture_output=True,
+            check=False,
             text=True,
+            capture_output=True,
         )
         if result.returncode != 0:
-            return False, f"send-keys 失敗: {result.stderr.strip()}"
+            err = (result.stderr or "").strip() or "tmux send-keys(Enter) に失敗しました。"
+            return False, err
+
         return True, ""
     finally:
-        try:
-            subprocess.run(
-                [tmux_bin, "delete-buffer", "-b", buffer_name],
-                check=False,
-                capture_output=True,
-            )
-        except Exception:
-            pass
+        subprocess.run(
+            [tmux_bin, "delete-buffer", "-b", buffer_name],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
 
 
 # ---------------------------------------------------------------------------
-# kiro-cli セッション管理（tmux ベース）
+# kiro-cli セッション管理
 # ---------------------------------------------------------------------------
 
 class KiroSession:
-    """tmux ペインを通じて kiro-cli を制御するクラス。"""
+    """tmux 上で kiro-cli を分割ペイン起動し、プロンプトを送信するセッション。"""
 
     _layout_lock = threading.Lock()
 
@@ -480,12 +568,23 @@ class KiroSession:
         return "縦" if self._split_direction == "vertical" else "横"
 
     def _run_tmux(self, args: list[str], capture_output: bool = False) -> subprocess.CompletedProcess[str]:
-        """tmux コマンドを実行して CompletedProcess を返す。"""
-        tmux_bin = self._tmux_bin or shutil.which("tmux") or "tmux"
+        tmux_bin = self._tmux_bin or shutil.which("tmux")
+        if tmux_bin is None:
+            raise RuntimeError("tmux が PATH に見つかりません。`sudo apt install tmux` を実行してください。")
+        self._tmux_bin = tmux_bin
+        if capture_output:
+            return subprocess.run(
+                [tmux_bin, *args],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
         return subprocess.run(
-            [tmux_bin] + args,
-            capture_output=capture_output,
+            [tmux_bin, *args],
+            check=False,
             text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
     def _has_session(self, session_name: str) -> bool:
@@ -494,30 +593,38 @@ class KiroSession:
 
     def _pane_exists(self, pane_target: str) -> bool:
         result = self._run_tmux(
-            ["list-panes", "-a", "-F", "#{pane_id}"],
+            ["display-message", "-p", "-t", pane_target, "#{pane_id}"],
             capture_output=True,
         )
-        return pane_target in (result.stdout or "").split()
+        return result.returncode == 0
 
     def _window_target_from_pane(self, pane_target: str) -> str:
-        """ペインターゲットからウィンドウターゲット (session:window) を取得する。"""
         result = self._run_tmux(
             ["display-message", "-p", "-t", pane_target, "#{session_name}:#{window_index}"],
             capture_output=True,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-        return self._layout_window_target or ""
+        if result.returncode != 0:
+            err = (result.stderr or "").strip()
+            raise RuntimeError(f"tmux ウィンドウ取得に失敗しました: {err}")
+        window_target = (result.stdout or "").strip()
+        if not window_target:
+            raise RuntimeError("tmux ウィンドウ取得に失敗しました: 空の結果")
+        return window_target
 
     def _get_first_window_target(self, session_name: str) -> str:
-        """セッション内の先頭ウィンドウターゲットを返す。"""
+        """セッション内の先頭ウィンドウターゲットを返す。base-index 設定に依存しない。"""
         result = self._run_tmux(
             ["list-windows", "-t", session_name, "-F", "#{session_name}:#{window_index}"],
             capture_output=True,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip().splitlines()[0]
-        return f"{session_name}:0"
+        if result.returncode != 0:
+            err = (result.stderr or "").strip()
+            raise RuntimeError(f"tmux ウィンドウ一覧取得に失敗しました: {err}")
+        for line in (result.stdout or "").splitlines():
+            target = line.strip()
+            if target:
+                return target
+        raise RuntimeError("tmux ウィンドウ一覧取得に失敗しました: ウィンドウが見つかりません")
 
     def _get_first_pane_target(self, window_target: str) -> str:
         """ウィンドウ内の先頭ペインターゲットを返す。"""
@@ -525,83 +632,102 @@ class KiroSession:
             ["list-panes", "-t", window_target, "-F", "#{pane_id}"],
             capture_output=True,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip().splitlines()[0]
-        return ""
+        if result.returncode != 0:
+            err = (result.stderr or "").strip()
+            raise RuntimeError(f"tmux ペイン一覧取得に失敗しました: {err}")
+        for line in (result.stdout or "").splitlines():
+            target = line.strip()
+            if target:
+                return target
+        raise RuntimeError("tmux ペイン一覧取得に失敗しました: ペインが見つかりません")
 
     def _ensure_layout(self) -> None:
-        """tmux ウィンドウとコントローラペインを準備する。"""
         with self.__class__._layout_lock:
-            if (
-                self._layout_window_target
-                and self._layout_controller_pane
-                and self._pane_exists(self._layout_controller_pane)
-            ):
+            window_target = self._layout_window_target
+            controller_pane = self._layout_controller_pane
+            if window_target is not None and controller_pane is not None and self._pane_exists(controller_pane):
                 return
 
-            tmux_pane_env = os.environ.get("TMUX_PANE")
-
-            if self._has_session(self._tmux_session_name):
-                window_target = self._get_first_window_target(self._tmux_session_name)
-                controller_pane = tmux_pane_env or self._get_first_pane_target(window_target)
-                active_name = self._tmux_session_name
-            else:
+            pane_target = os.environ.get("TMUX_PANE")
+            if pane_target:
                 result = self._run_tmux(
-                    ["new-session", "-d", "-s", self._tmux_session_name, "-c", self._cwd],
+                    ["display-message", "-p", "-t", pane_target, "#{session_name}:#{window_index}"],
+                    capture_output=True,
+                )
+                if result.returncode == 0:
+                    window_target = (result.stdout or "").strip()
+                    if window_target:
+                        self._layout_window_target = window_target
+                        self._layout_controller_pane = pane_target
+                        self._active_session_name = self._session_from_window_target(window_target)
+                        log.info("現在の tmux ウィンドウを %s分割に使用します: %s", self._split_label(), window_target)
+                        return
+
+            # --no-auto-attach などで tmux 外実行された場合のフォールバック
+            session_name = self._tmux_session_name
+            if not self._has_session(session_name):
+                result = self._run_tmux(
+                    ["new-session", "-d", "-s", session_name, "-c", self._cwd],
                     capture_output=True,
                 )
                 if result.returncode != 0:
-                    raise RuntimeError(
-                        f"tmux セッション '{self._tmux_session_name}' の作成に失敗しました: {result.stderr.strip()}"
-                    )
-                window_target = self._get_first_window_target(self._tmux_session_name)
-                controller_pane = tmux_pane_env or self._get_first_pane_target(window_target)
-                active_name = self._tmux_session_name
+                    err = (result.stderr or "").strip()
+                    raise RuntimeError(f"tmux セッション作成に失敗しました: {err}")
+                log.info("tmux セッション '%s' を作成しました。", session_name)
+
+            window_target = self._get_first_window_target(session_name)
+            controller_pane = self._get_first_pane_target(window_target)
+            self._active_session_name = session_name
+            log.info("分割表示するには別端末で `tmux attach -t %s` を実行してください。", session_name)
 
             self._layout_window_target = window_target
             self._layout_controller_pane = controller_pane
-            self._active_session_name = active_name
 
     def _create_worker_pane(self, cmd: str) -> str:
         """kiro-cli を実行する新しいペインを作成してペインターゲットを返す。"""
         self._ensure_layout()
 
         with self.__class__._layout_lock:
-            split_target = self._layout_controller_pane or self._layout_window_target
+            window_target = self._layout_window_target
+            controller_pane = self._layout_controller_pane
+            if window_target is None:
+                raise RuntimeError("tmux レイアウトが初期化されていません。")
+
+            split_target = controller_pane or window_target
             result = self._run_tmux(
                 [
                     "split-window",
-                    self._split_option(), "-d",
-                    "-P", "-F", "#{pane_id}",
-                    "-t", split_target,
-                    "-c", self._cwd,
+                    self._split_option(),
+                    "-d",
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    "-t",
+                    split_target,
+                    "-c",
+                    self._cwd,
                     cmd,
                 ],
                 capture_output=True,
             )
+            if result.returncode != 0:
+                err = (result.stderr or "").strip()
+                raise RuntimeError(f"tmux ペイン分割に失敗しました: {err}")
 
-        if result.returncode != 0:
-            raise RuntimeError(f"ペイン作成に失敗しました: {result.stderr.strip()}")
-        pane_target = (result.stdout or "").strip()
-        if not pane_target:
-            raise RuntimeError("新しいペインの ID が取得できませんでした。")
+            pane_target = (result.stdout or "").strip()
+            if not pane_target:
+                raise RuntimeError("tmux ペイン分割に失敗しました: 空の結果")
 
-        # レイアウト調整
-        window_target = self._window_target_from_pane(pane_target)
-        if window_target:
-            self._run_tmux(
-                ["select-layout", "-t", window_target, self._layout_name()],
-                capture_output=False,
-            )
+            # kiro-cli がすぐ終了しても出力を確認できるようにする
+            self._run_tmux(["set-option", "-p", "-t", pane_target, "remain-on-exit", "on"], capture_output=False)
+            self._run_tmux(["select-layout", "-t", window_target, self._layout_name()], capture_output=False)
 
-        # コントローラペインを選択状態に戻す
-        if self._layout_controller_pane:
-            self._run_tmux(
-                ["select-pane", "-t", self._layout_controller_pane],
-                capture_output=False,
-            )
+            # 入力は常に controller 側 (kiro-loop) へ戻す
+            if controller_pane and self._pane_exists(controller_pane):
+                self._run_tmux(["select-pane", "-t", controller_pane], capture_output=False)
+                self._run_tmux(["refresh-client", "-S"], capture_output=False)
 
-        return pane_target
+            return pane_target
 
     def get_attach_session_name(self) -> str:
         """アタッチセッション名を返す。"""
@@ -623,21 +749,24 @@ class KiroSession:
                 capture_output=True,
             )
             if result.returncode != 0:
-                log.warning("set-buffer 失敗: %s", result.stderr.strip())
+                err = (result.stderr or "").strip()
+                log.warning("tmux set-buffer に失敗しました: %s", err)
                 return False
             result = self._run_tmux(
                 ["paste-buffer", "-t", pane_target, "-b", buffer_name],
                 capture_output=True,
             )
             if result.returncode != 0:
-                log.warning("paste-buffer 失敗: %s", result.stderr.strip())
+                err = (result.stderr or "").strip()
+                log.warning("tmux paste-buffer に失敗しました: %s", err)
                 return False
             result = self._run_tmux(
                 ["send-keys", "-t", pane_target, "Enter"],
                 capture_output=True,
             )
             if result.returncode != 0:
-                log.warning("send-keys 失敗: %s", result.stderr.strip())
+                err = (result.stderr or "").strip()
+                log.warning("tmux send-keys(Enter) に失敗しました: %s", err)
                 return False
             return True
         finally:
@@ -654,7 +783,7 @@ class KiroSession:
         """tmux 分割ペイン上で kiro-cli を起動する。"""
         tmux_bin = shutil.which("tmux")
         if tmux_bin is None:
-            raise RuntimeError("tmux が PATH に見つかりません。インストールしてください。")
+            raise RuntimeError("tmux が PATH に見つかりません。`sudo apt install tmux` を実行してください。")
         self._tmux_bin = tmux_bin
 
         kiro_bin = shutil.which("kiro-cli")
@@ -680,11 +809,10 @@ class KiroSession:
             time.sleep(0.2)
             window_target = self._window_target_from_pane(pane_target)
             self._run_tmux(["kill-pane", "-t", pane_target], capture_output=False)
-            if window_target:
-                self._run_tmux(
-                    ["select-layout", "-t", window_target, self._layout_name()],
-                    capture_output=False,
-                )
+            self._run_tmux(
+                ["select-layout", "-t", window_target, self._layout_name()],
+                capture_output=False,
+            )
 
     def is_alive(self) -> bool:
         """ペインが存在するか確認する。"""
@@ -832,7 +960,7 @@ class SessionManager:
                 prompt_name = self._prompt_names.pop(prompt_id, prompt_id)
                 self._tmux_names.pop(prompt_id, None)
             if session is not None:
-                log.info("プロンプト '%s' のセッションを削除します。", prompt_name)
+                log.info("プロンプト '%s' のセッションを停止します。", prompt_name)
                 session.stop()
 
         with self._lock:
@@ -916,9 +1044,7 @@ class PeriodicScheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
-
-        if entries:
-            self._set_entries(entries, allow_immediate_once=True)
+        self._set_entries(entries, allow_immediate_once=True)
 
     def _set_entries(self, entries: list[dict[str, Any]], allow_immediate_once: bool = False) -> None:
         normalized: list[dict[str, Any]] = []
@@ -947,6 +1073,8 @@ class PeriodicScheduler:
                 fresh_context_interval = int(fresh_context_interval_raw) if fresh_context_interval_raw is not None else None
             except Exception:
                 fresh_context_interval = None
+            if fresh_context_interval is not None and fresh_context_interval < 1:
+                fresh_context_interval = None
             normalized.append({
                 "id": prompt_id,
                 "name": name,
@@ -962,10 +1090,6 @@ class PeriodicScheduler:
         self._session_mgr.sync_entries(normalized)
         with self._lock:
             self._entries = normalized
-
-    def sync_entries(self, entries: list[dict[str, Any]]) -> None:
-        """エントリを更新する（スケジューラが稼働中の場合はリアルタイム反映）。"""
-        self._set_entries(entries, allow_immediate_once=False)
 
     def set_entries(self, entries: list[dict[str, Any]]) -> None:
         """エントリを設定する（次回ループから適用）。"""
@@ -997,6 +1121,7 @@ class PeriodicScheduler:
                 fresh_context = bool(entry.get("fresh_context", False))
                 fresh_context_interval = entry.get("fresh_context_interval_minutes")
 
+                # fresh_context_interval_minutes が設定されている場合は独立間隔で /clear を判定
                 should_clear = False
                 if fresh_context:
                     if fresh_context_interval is not None:
@@ -1018,6 +1143,7 @@ class PeriodicScheduler:
                                 log.warning("[%s] /clear の送信に失敗しました。スキップします。", name)
                                 continue
                             time.sleep(2)
+                            # next_clear_at を更新
                             if fresh_context_interval is not None:
                                 new_next_clear_at = time.time() + (int(fresh_context_interval) * 60)
                                 with self._lock:
@@ -1035,12 +1161,12 @@ class PeriodicScheduler:
                     except Exception as exc:
                         log.error("[%s] 予期しないエラー: %s", name, exc, exc_info=True)
 
-                next_run_at = time.time() + (interval_minutes * 60)
-                with self._lock:
-                    for e in self._entries:
-                        if e.get("id") == entry.get("id"):
-                            e["next_run_at"] = next_run_at
-                            break
+                    next_run_at = time.time() + (interval_minutes * 60)
+                    with self._lock:
+                        for e in self._entries:
+                            if e.get("id") == entry.get("id"):
+                                e["next_run_at"] = next_run_at
+                                break
 
     def stop(self) -> None:
         self._stop_event.set()
