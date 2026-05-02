@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 kiro-send.py — プロンプトファイルを受け取り、シングルトン tmux セッションで
 kiro-cli を起動してファイルの内容を指示として送信する。
