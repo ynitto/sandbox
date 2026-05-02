@@ -145,7 +145,7 @@ def _process_matches_target(pid: int, target_path: Path) -> bool:
         try:
             return proc_cwd.resolve() == target_path.resolve()
         except OSError:
-            pass
+            return False
 
     # macOS / fallback: PID が生存していれば一致とみなす
     return True
@@ -264,8 +264,8 @@ def _tmux_session_name(base_path: Path, instance_id: str) -> str:
     resolved = str(base_path.resolve())
     digest = hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:8]
     label = _sanitize_session_label(base_path.name)
-    short_id = re.sub(r"[^A-Za-z0-9]", "", instance_id)[:12] or "run"
-    return f"kiro-{label}-{digest}-{short_id}"
+    short_id = re.sub(r"[^A-Za-z0-9_-]", "", instance_id)[:12] or "run"
+    return f"kiro-loop-{label}-{digest}-{short_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -651,10 +651,12 @@ class KiroSession:
         if result.returncode != 0:
             err = (result.stderr or "").strip()
             raise RuntimeError(f"tmux ペイン一覧取得に失敗しました: {err}")
+
         for line in (result.stdout or "").splitlines():
             target = line.strip()
             if target:
                 return target
+
         raise RuntimeError("tmux ペイン一覧取得に失敗しました: ペインが見つかりません")
 
     def _ensure_layout(self) -> None:
@@ -683,7 +685,7 @@ class KiroSession:
             session_name = self._tmux_session_name
             if not self._has_session(session_name):
                 result = self._run_tmux(
-                    ["new-session", "-d", "-s", session_name, "-c", self._cwd],
+                    ["new-session", "-d", "-s", session_name],
                     capture_output=True,
                 )
                 if result.returncode != 0:
@@ -812,7 +814,7 @@ class KiroSession:
         cmd_args = ["chat"] + self._kiro_args
         cmd = " ".join(shlex.quote(arg) for arg in [kiro_bin, *cmd_args])
         pane_target = self._create_worker_pane(cmd)
-    
+
         with self._lock:
             self._pane_target = pane_target
 
@@ -823,6 +825,7 @@ class KiroSession:
         with self._lock:
             pane_target = self._pane_target
             self._pane_target = None
+
         if pane_target is not None and self._pane_exists(pane_target):
             log.info("kiro-cli セッションを終了します (cwd=%s)。", self._cwd)
             self._run_tmux(["send-keys", "-t", pane_target, "C-c"], capture_output=False)
@@ -845,6 +848,7 @@ class KiroSession:
         if not self._restart_lock.acquire(blocking=False):
             log.info("kiro-cli セッション再起動は既に進行中です (cwd=%s)。", self._cwd)
             return
+
         log.info("kiro-cli セッションを再起動します (cwd=%s)。", self._cwd)
         try:
             self.stop()
@@ -917,7 +921,7 @@ class SessionManager:
         self._lock = threading.Lock()
 
     def _prompt_token(self, prompt_id: str) -> str:
-        token = re.sub(r"[^A-Za-z0-9\-_]", "", prompt_id)[:12]
+        token = re.sub(r"[^A-Za-z0-9_-]", "", prompt_id)[:12]
         return token or "prompt"
 
     def _tmux_name_for_prompt(self, prompt_id: str) -> str:
@@ -1015,7 +1019,7 @@ class SessionManager:
     def get_status(self) -> tuple[str, str, int, int]:
         with self._lock:
             sessions = list(self._sessions.values())
-        alive = sum(1 for s in sessions if s.is_alive())
+        alive = sum(1 for session in sessions if session.is_alive())
         return self._target_name, self._target_path, len(sessions), alive
 
     def list_prompt_statuses(self) -> list[tuple[str, str, bool, str, str]]:
@@ -1297,7 +1301,7 @@ def command_loop(
                     and send_text[0] in ('"', "'")
                 ):
                     send_text = send_text[1:-1].strip()
-                    
+
                 if not pane_target:
                     print("pane が空です。", flush=True)
                     continue
@@ -1528,7 +1532,7 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
     )
 
     if not has_session:
-        log.info("tmux 外で起動されたため '%s' を新規作成してアタッチします。", session_name)
+        log.info("tmux 外で起動されたため `%s` を新規作成してアタッチします。", session_name)
         os.execvp(
             tmux_bin,
             [
@@ -1548,6 +1552,8 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
             "new-window",
             "-t",
             session_name,
+            "-n",
+            "kiro-loop",
             "-c",
             str(target_path),
             controller_cmd,
@@ -1559,7 +1565,7 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
     if create_window.returncode != 0:
         log.warning("既存セッションへの controller ウィンドウ追加に失敗しました。")
 
-    log.info("tmux 外で起動されたため '%s' へ自動アタッチします。", session_name)
+    log.info("tmux 外で起動されたため `%s` へ自動アタッチします。", session_name)
     os.execvp(
         tmux_bin,
         [tmux_bin, "attach-session", "-t", session_name],
@@ -1616,7 +1622,7 @@ def main() -> None:
 
     running_pid = find_running_instance(cwd)
     if running_pid is not None:
-        log.info("既に実行中のプロセスがあります。起動をスキップします。")
+        log.info("既に実行中のプロセスがあります。起動をスキップします。", flush=True)
         sys.exit(0)
 
     # tmux 外で起動された場合、自己を tmux 内で再実行
@@ -1625,7 +1631,7 @@ def main() -> None:
     # 再度チェック（tmux 内での再起動後）
     running_pid = find_running_instance(cwd)
     if running_pid is not None:
-        log.info("既に実行中のプロセスがあります。起動をスキップします。")
+        log.info("既に実行中のプロセスがあります。起動をスキップします。", flush=True)
         sys.exit(0)
 
     log_file = configure_file_logging(cwd)
