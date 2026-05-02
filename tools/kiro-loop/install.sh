@@ -53,20 +53,26 @@ echo "========================================"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 1. 実行環境チェック（WSL / Linux）
+# 1. 実行環境チェック（macOS / Linux / WSL）
 # ---------------------------------------------------------------------------
 info "実行環境を確認しています..."
 
 OS="$(uname -s)"
-if [[ "$OS" != "Linux" ]]; then
-  die "このスクリプトは Linux / WSL 環境専用です（検出: $OS）。"
-fi
-
-if grep -qi microsoft /proc/version 2>/dev/null; then
-  ok "WSL 環境を検出しました。"
-else
-  ok "Linux 環境を検出しました。"
-fi
+case "$OS" in
+  Darwin)
+    ok "macOS 環境を検出しました。"
+    ;;
+  Linux)
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+      ok "WSL 環境を検出しました。"
+    else
+      ok "Linux 環境を検出しました。"
+    fi
+    ;;
+  *)
+    die "サポートされていない OS です（検出: $OS）。macOS / Linux / WSL が必要です。"
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 2. tmux チェック
@@ -78,6 +84,7 @@ if command -v tmux &>/dev/null; then
   ok "tmux が見つかりました: $(command -v tmux) ($TMUX_VER)"
 else
   die "tmux が見つかりません。インストールしてください。
+  macOS:      brew install tmux
   Ubuntu/WSL: sudo apt install tmux"
 fi
 
@@ -105,6 +112,7 @@ done
 
 if [[ -z "$PYTHON_CMD" ]]; then
   die "Python 3.9 以上が見つかりません。手動でインストールしてください。
+  macOS:      brew install python3
   WSL/Ubuntu: sudo apt install python3
   参考: https://www.python.org/downloads/"
 fi
@@ -129,6 +137,7 @@ done
 
 if [[ -z "$PIP_CMD" ]]; then
   die "pip が見つかりません。インストールしてください。
+  macOS:      brew install python3  # pip3 が同梱されます
   WSL/Ubuntu: sudo apt install python3-pip"
 fi
 
@@ -185,8 +194,12 @@ mkdir -p "$INSTALL_PREFIX"
 cp "$SRC" "$INSTALL_PATH"
 chmod +x "$INSTALL_PATH"
 
-# shebang を環境の python コマンドに書き換える
-sed -i "1s|.*|#!/usr/bin/env ${PYTHON_CMD}|" "$INSTALL_PATH"
+# shebang を環境の python コマンドに書き換える（BSD sed と GNU sed の差異を吸収）
+if [[ "$OS" == "Darwin" ]]; then
+  sed -i '' "1s|.*|#!/usr/bin/env ${PYTHON_CMD}|" "$INSTALL_PATH"
+else
+  sed -i "1s|.*|#!/usr/bin/env ${PYTHON_CMD}|" "$INSTALL_PATH"
+fi
 
 ok "インストールしました: $INSTALL_PATH"
 
