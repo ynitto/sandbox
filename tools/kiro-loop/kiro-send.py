@@ -54,11 +54,11 @@ def win_to_wsl_path(path_str: str) -> str:
     既にWSL/Linux形式のパスはそのまま返す。
     """
     # 入力元によってはクォート付きや "\\" の重複を含むため、先に正規化する
-    noromalized = path_str.strip().strip('"').rstrip("'")
+    normalized = path_str.strip().strip('"').rstrip("'")
 
-    m = re.match(r'^([A-Za-z]):(.*)$', noromalized)
+    m = re.match(r'^([A-Za-z]):(.*)$', normalized)
     if not m:
-        return noromalized
+        return normalized
     
     drive = m.group(1).lower()
     rest = m.group(2).replace('\\', '/')
@@ -256,10 +256,10 @@ def ensure_session(session: str, work_dir: Path | None, kiro_bin: str) -> bool:
 
 
 def _wait_startup(session: str) -> bool:
-    print(f"[kiro-send] kiro-cli 起動待ち...", file=sys.stderr)
+    print("[kiro-send] kiro-cli 起動待ち...", file=sys.stderr)
     if not _wait_for_prompt(session, STARTUP_TIMEOUT, "起動"):
         return False
-    print(f"[kiro-send] kiro-cli 起動完了", file=sys.stderr)
+    print("[kiro-send] kiro-cli 起動完了", file=sys.stderr)
     return True
 
 
@@ -277,7 +277,7 @@ def send_prompt(session: str, text: str) -> bool:
     short = single_line[:80] + ("..." if len(single_line) > 80 else "")
     print(f"[kiro-send] 送信: {short}", file=sys.stderr)
 
-    ## single_line が '-' で始まる場合でも option と誤解釈されないよう区切る
+    # single_line が '-' で始まる場合でも option と誤解釈されないよう区切る
     r = _tmux("send-keys", "-t", session, "--", single_line, "Enter")
     if r.returncode != 0:
         print(
@@ -418,7 +418,8 @@ def _main_send() -> None:
             print(
                 "[kiro-send] HINT: Windowsパスの区切り文字(\\)がシェルで解釈されています"
                 " 引数を 'c:\\path\\to\\file.md' のように単引用符で囲むか、"
-                " c:/path/to/file.md 形式を使ってください"
+                " c:/path/to/file.md 形式を使ってください。",
+                file=sys.stderr,
             )
         print(f"[kiro-send] ERROR: ファイルが存在しません: {prompt_file}", file=sys.stderr)
         sys.exit(1)
