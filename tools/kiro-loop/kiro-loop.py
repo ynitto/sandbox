@@ -282,7 +282,7 @@ def _strip_jsonc_comments(text: str) -> str:
     while i < len(text):
         ch = text[i]
         nxt = text[i + 1] if i + 1 < len(text) else ""
-    
+
         if in_string:
             out.append(ch)
             if escape:
@@ -294,7 +294,6 @@ def _strip_jsonc_comments(text: str) -> str:
             i += 1
             continue
 
-
         if ch == '"':
             in_string = True
             out.append(ch)
@@ -304,6 +303,12 @@ def _strip_jsonc_comments(text: str) -> str:
         if ch == "/" and nxt == "/":
             i += 2
             while i < len(text) and text[i] not in "\r\n":
+                i += 1
+            continue
+
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
                 i += 1
             i += 2 if i + 1 < len(text) else 1
             continue
@@ -398,9 +403,11 @@ def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
     path = _prompt_file(base_path)
     if not path.is_file():
         return {}
+
     if yaml is None:
         log.warning("PyYAML がないため %s を読めません。", path)
         return {}
+
     try:
         with path.open(encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
@@ -409,6 +416,7 @@ def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
         log.warning("%s の形式が不正なため空設定として扱います。", path)
     except Exception as exc:
         log.error("%s の読み込みに失敗しました: %s", path, exc)
+
     return {}
 
 
@@ -421,15 +429,18 @@ def load_prompt_config(base_path: str) -> list[dict[str, Any]]:
         return [p for p in prompts if isinstance(p, dict)]
     if data:
         log.warning("%s の prompts が配列ではありません。", path)
+
     return []
 
 
 def save_prompt_config(base_path: str, prompts: list[dict[str, Any]]) -> bool:
     """起動ディレクトリ配下 .kiro/kiro-loop.yml に prompts を保存する。"""
     path = _prompt_file(base_path)
+
     if yaml is None:
         log.error("PyYAML が必要です。`pip install pyyaml` を実行してください。")
         return False
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         # prompts 以外の設定（kiro_options など）を保持する。
@@ -572,6 +583,7 @@ class KiroSession:
         if tmux_bin is None:
             raise RuntimeError("tmux が PATH に見つかりません。`sudo apt install tmux` を実行してください。")
         self._tmux_bin = tmux_bin
+
         if capture_output:
             return subprocess.run(
                 [tmux_bin, *args],
@@ -579,6 +591,7 @@ class KiroSession:
                 text=True,
                 capture_output=True,
             )
+
         return subprocess.run(
             [tmux_bin, *args],
             check=False,
@@ -606,6 +619,7 @@ class KiroSession:
         if result.returncode != 0:
             err = (result.stderr or "").strip()
             raise RuntimeError(f"tmux ウィンドウ取得に失敗しました: {err}")
+
         window_target = (result.stdout or "").strip()
         if not window_target:
             raise RuntimeError("tmux ウィンドウ取得に失敗しました: 空の結果")
@@ -620,10 +634,12 @@ class KiroSession:
         if result.returncode != 0:
             err = (result.stderr or "").strip()
             raise RuntimeError(f"tmux ウィンドウ一覧取得に失敗しました: {err}")
+
         for line in (result.stdout or "").splitlines():
             target = line.strip()
             if target:
                 return target
+
         raise RuntimeError("tmux ウィンドウ一覧取得に失敗しました: ウィンドウが見つかりません")
 
     def _get_first_pane_target(self, window_target: str) -> str:
@@ -752,6 +768,7 @@ class KiroSession:
                 err = (result.stderr or "").strip()
                 log.warning("tmux set-buffer に失敗しました: %s", err)
                 return False
+
             result = self._run_tmux(
                 ["paste-buffer", "-t", pane_target, "-b", buffer_name],
                 capture_output=True,
@@ -760,6 +777,7 @@ class KiroSession:
                 err = (result.stderr or "").strip()
                 log.warning("tmux paste-buffer に失敗しました: %s", err)
                 return False
+
             result = self._run_tmux(
                 ["send-keys", "-t", pane_target, "Enter"],
                 capture_output=True,
@@ -768,6 +786,7 @@ class KiroSession:
                 err = (result.stderr or "").strip()
                 log.warning("tmux send-keys(Enter) に失敗しました: %s", err)
                 return False
+
             return True
         finally:
             try:
@@ -792,10 +811,11 @@ class KiroSession:
 
         cmd_args = ["chat"] + self._kiro_args
         cmd = " ".join(shlex.quote(arg) for arg in [kiro_bin, *cmd_args])
-
         pane_target = self._create_worker_pane(cmd)
+    
         with self._lock:
             self._pane_target = pane_target
+
         log.info("kiro-cli 起動完了 (pane=%s, cwd=%s)。", pane_target, self._cwd)
 
     def stop(self) -> None:
@@ -844,6 +864,7 @@ class KiroSession:
         """tmux ペインにプロンプトを送信する（応答待ちはしない）。"""
         with self._lock:
             pane_target = self._pane_target
+
         if pane_target is None or not self._pane_exists(pane_target):
             log.warning("kiro-cli セッションが終了しています (cwd=%s)。", self._cwd)
             return False
@@ -861,7 +882,7 @@ class KiroSession:
 
 
 # ---------------------------------------------------------------------------
-# セッションマネージャ（カレントディレクトリ単一ワークスペース）
+# セッション管理
 # ---------------------------------------------------------------------------
 
 class SessionManager:
@@ -880,14 +901,16 @@ class SessionManager:
         resolved = Path(target_path).expanduser().resolve()
         if not resolved.is_dir():
             raise ValueError(f"パスが存在しないかディレクトリではありません: {resolved}")
+
         self._target_path = str(resolved)
         self._target_name = resolved.name or "default"
-        self._instance_id = re.sub(r"[^A-Za-z0-9\-_]", "", instance_id)[:12] or "run"
+        self._instance_id = re.sub(r"[^A-Za-z0-9_-]", "", instance_id)[:12] or "run"
         self._kiro_args_base = kiro_args_base[:]
         self._split_direction = split_direction
         self._startup_timeout = startup_timeout
         self._response_timeout = response_timeout
         self._echo_output = echo_output
+
         self._sessions: dict[str, KiroSession] = {}
         self._prompt_names: dict[str, str] = {}
         self._tmux_names: dict[str, str] = {}
@@ -923,6 +946,7 @@ class SessionManager:
             return False
 
         attach_session_name = session.get_attach_session_name()
+
         with self._lock:
             self._sessions[prompt_id] = session
             self._prompt_names[prompt_id] = prompt_name
@@ -975,8 +999,10 @@ class SessionManager:
             existing = self._sessions.get(prompt_id)
         if existing is not None:
             return existing
+
         if not self._start_session(prompt_id, prompt_name):
             return None
+
         with self._lock:
             return self._sessions.get(prompt_id)
 
@@ -997,12 +1023,14 @@ class SessionManager:
             items = list(self._sessions.items())
             names = dict(self._prompt_names)
             tmux_names = dict(self._tmux_names)
+
         statuses: list[tuple[str, str, bool, str, str]] = []
         for prompt_id, session in items:
             prompt_name = names.get(prompt_id, prompt_id)
             tmux_name = tmux_names.get(prompt_id, "")
             pane_target = session.get_pane_target()
             statuses.append((prompt_name, prompt_id, session.is_alive(), tmux_name, pane_target))
+
         statuses.sort(key=lambda item: item[0])
         return statuses
 
@@ -1010,6 +1038,7 @@ class SessionManager:
         with self._lock:
             items = list(self._sessions.items())
             names = dict(self._prompt_names)
+
         for prompt_id, session in items:
             if session.is_restarting():
                 continue
@@ -1027,12 +1056,13 @@ class SessionManager:
             self._sessions.clear()
             self._prompt_names.clear()
             self._tmux_names.clear()
+
         for session in sessions:
             session.stop()
 
 
 # ---------------------------------------------------------------------------
-# 定期実行スケジューラ（単一スレッド）
+# 定期実行スケジューラ
 # ---------------------------------------------------------------------------
 
 class PeriodicScheduler:
@@ -1049,24 +1079,30 @@ class PeriodicScheduler:
     def _set_entries(self, entries: list[dict[str, Any]], allow_immediate_once: bool = False) -> None:
         normalized: list[dict[str, Any]] = []
         now = time.time()
+
         for entry in entries:
             if not entry.get("enabled", True):
                 continue
+
             prompt = str(entry.get("prompt", "")).strip()
             interval_minutes = entry.get("interval_minutes")
             name = str(entry.get("name", prompt[:40])) if prompt else ""
+
             try:
                 interval = int(interval_minutes)
             except Exception:
                 continue
+
             if not prompt or interval < 1:
                 continue
+
             prompt_id = str(entry.get("id") or uuid.uuid4())
             run_immediately = bool(
                 entry.get("run_immediately_on_startup", entry.get("run_immediately", False))
             )
             # 起動直後は kiro-cli セットアップ時間を見込んで 30 秒待ってから初回送信する。
             next_run_at = now + 30 if (allow_immediate_once and run_immediately) else now + (interval * 60)
+
             fresh_context = bool(entry.get("fresh_context", False))
             fresh_context_interval_raw = entry.get("fresh_context_interval_minutes")
             try:
@@ -1075,6 +1111,7 @@ class PeriodicScheduler:
                 fresh_context_interval = None
             if fresh_context_interval is not None and fresh_context_interval < 1:
                 fresh_context_interval = None
+
             normalized.append({
                 "id": prompt_id,
                 "name": name,
@@ -1087,7 +1124,9 @@ class PeriodicScheduler:
                 "fresh_context_interval_minutes": fresh_context_interval,
                 "next_clear_at": now if fresh_context else None,
             })
+
         self._session_mgr.sync_entries(normalized)
+
         with self._lock:
             self._entries = normalized
 
@@ -1109,15 +1148,18 @@ class PeriodicScheduler:
             now = time.time()
             with self._lock:
                 entries = [e.copy() for e in self._entries]
+
             for entry in entries:
                 if not entry.get("enabled", True):
                     continue
                 if now < float(entry.get("next_run_at", now)):
                     continue
+
                 name = str(entry.get("name", ""))
                 prompt_id = str(entry.get("id", ""))
                 prompt = str(entry.get("prompt", ""))
                 interval_minutes = int(entry.get("interval_minutes", 1))
+
                 fresh_context = bool(entry.get("fresh_context", False))
                 fresh_context_interval = entry.get("fresh_context_interval_minutes")
 
@@ -1161,12 +1203,12 @@ class PeriodicScheduler:
                     except Exception as exc:
                         log.error("[%s] 予期しないエラー: %s", name, exc, exc_info=True)
 
-                    next_run_at = time.time() + (interval_minutes * 60)
-                    with self._lock:
-                        for e in self._entries:
-                            if e.get("id") == entry.get("id"):
-                                e["next_run_at"] = next_run_at
-                                break
+                next_run_at = time.time() + (interval_minutes * 60)
+                with self._lock:
+                    for e in self._entries:
+                        if e.get("id") == entry.get("id"):
+                            e["next_run_at"] = next_run_at
+                            break
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -1201,7 +1243,8 @@ def command_loop(
     """stdin からコマンドを読んで定期プロンプト設定を管理する（メインスレッドで実行）。"""
     target_name = session_mgr.get_target_name()
     target_path = session_mgr.get_target_path()
-    print(f"定期プロンプトが実行中です。'help' でコマンド一覧を表示します。", flush=True)
+
+    print("定期プロンプトが実行中です。'help' でコマンド一覧を表示します。", flush=True)
     print(f"設定ファイル: {config_path}", flush=True)
 
     while not stop_event.is_set():
@@ -1240,33 +1283,38 @@ def command_loop(
                         )
 
             elif cmd == "send":
-                send_args = line.split(maxsplit=2)
-                if len(send_args) < 3:
+                args = line.split(maxsplit=2)
+                if len(args) < 3:
                     print("使い方: send <pane> <text>", flush=True)
+                    continue
+
+                pane_target = args[1].strip()
+                send_text = args[2].strip()
+                # クォート除去
+                if (
+                    len(send_text) >= 2
+                    and send_text[0] == send_text[-1]
+                    and send_text[0] in ('"', "'")
+                ):
+                    send_text = send_text[1:-1].strip()
+                    
+                if not pane_target:
+                    print("pane が空です。", flush=True)
+                    continue
+
+                if not send_text:
+                    print("text が空です。", flush=True)
+                    continue
+
+                ok, err = send_text_via_tmux(pane_target, send_text)
+                if ok:
+                    print(f"送信しました: pane={pane_target}", flush=True)
                 else:
-                    pane_target = send_args[1].strip()
-                    send_text = send_args[2].strip()
-                    # クォート除去
-                    if (
-                        len(send_text) >= 2
-                        and send_text[0] == send_text[-1]
-                        and send_text[0] in ('"', "'")
-                    ):
-                        send_text = send_text[1:-1].strip()
-                    if not pane_target:
-                        print("pane が空です。", flush=True)
-                    elif not send_text:
-                        print("text が空です。", flush=True)
-                    else:
-                        ok, err = send_text_via_tmux(pane_target, send_text)
-                        if ok:
-                            print("送信しました。", flush=True)
-                        else:
-                            print(f"送信に失敗しました: {err}", flush=True)
+                    print(f"送信に失敗しました: {err}", flush=True)
 
             elif cmd == "prompt-add":
-                add_args = line.split(maxsplit=3)
-                if len(add_args) < 3:
+                args = line.split(maxsplit=3)
+                if len(args) < 3:
                     print(
                         "使い方: prompt-add <interval_minutes> <prompt>\n"
                         "        prompt-add <name> <interval_minutes> <prompt>",
@@ -1276,23 +1324,24 @@ def command_loop(
                     name_override: str | None = None
                     interval_text = ""
                     prompt_parts: list[str] = []
+
                     # 形式A: prompt-add <interval> <prompt>
                     # 形式B: prompt-add <name> <interval> <prompt>
                     try:
-                        int(add_args[1])
-                        interval_text = add_args[1]
-                        prompt_parts = add_args[2:]
+                        int(args[1])
+                        interval_text = args[1]
+                        prompt_parts = args[2:]
                     except ValueError:
-                        if len(add_args) < 4:
+                        if len(args) < 4:
                             print(
                                 "使い方: prompt-add <interval_minutes> <prompt>\n"
                                 "        prompt-add <name> <interval_minutes> <prompt>",
                                 flush=True,
                             )
                             continue
-                        name_override = add_args[1]
-                        interval_text = add_args[2]
-                        prompt_parts = add_args[3:]
+                        name_override = args[1]
+                        interval_text = args[2]
+                        prompt_parts = args[3:]
 
                     try:
                         interval = int(interval_text)
@@ -1315,64 +1364,72 @@ def command_loop(
                     ):
                         prompt_text = prompt_text[1:-1].strip()
 
-                    new_entry: dict[str, Any] = {
+                    if not prompt_text:
+                        print("prompt が空です。", flush=True)
+                        continue
+
+                    ws_prompts = load_prompt_config(target_path)                    
+                    ws_prompts.append({
+                        "id": str(uuid.uuid4()),
+                        "name": name_override or prompt_text[:40],
                         "prompt": prompt_text,
                         "interval_minutes": interval,
-                    }
-                    if name_override:
-                        new_entry["name"] = name_override
+                        "enabled": True,
+                    })
 
-                    ws_prompts = load_prompt_config(target_path)
-                    ws_prompts.append(new_entry)
                     if save_prompt_config(target_path, ws_prompts):
                         scheduler.set_entries(ws_prompts)
                         print("定期プロンプトを追加しました。", flush=True)
-                    else:
-                        print("保存に失敗しました。", flush=True)
 
             elif cmd == "prompt-list":
+                args = line.split(maxsplit=1)
+                if len(args) >= 2:
+                    print("使い方: prompt-list", flush=True)
+                    continue
+
                 ws_prompts = load_prompt_config(target_path)
                 print(f"[{target_name}] {target_path}", flush=True)
                 if not ws_prompts:
                     print("  (定期プロンプトは未設定)", flush=True)
-                else:
-                    for idx, p in enumerate(ws_prompts, start=1):
-                        enabled = p.get("enabled", True)
-                        interval = p.get("interval_minutes", "?")
-                        run_immediately = bool(
-                            p.get("run_immediately_on_startup", p.get("run_immediately", False))
-                        )
-                        prompt_text = str(p.get("prompt", "")).replace("\n", " ")
-                        short = prompt_text[:80] + ("..." if len(prompt_text) > 80 else "")
-                        flag = "on" if enabled else "off"
-                        immediate_note = " (起動時即実行)" if run_immediately else ""
-                        print(f"  {idx:>2}. [{flag}] {interval}分{immediate_note}: {short}", flush=True)
+                    continue
+
+                for idx, p in enumerate(ws_prompts, start=1):
+                    enabled = p.get("enabled", True)
+                    interval = p.get("interval_minutes", "?")
+                    run_immediately = bool(
+                        p.get("run_immediately_on_startup", p.get("run_immediately", False))
+                    )
+                    prompt_text = str(p.get("prompt", "")).replace("\n", " ")
+                    short = prompt_text[:80] + ("..." if len(prompt_text) > 80 else "")
+                    flag = "on" if enabled else "off"
+                    immediate_note = " (起動時即実行)" if run_immediately else ""
+                    print(f"  {idx:>2}. [{flag}] {interval}分{immediate_note}: {short}", flush=True)
 
             elif cmd == "prompt-remove":
-                remove_args = line.split(maxsplit=1)
-                if len(remove_args) < 2:
+                args = line.split(maxsplit=1)
+                if len(args) < 2:
                     print("使い方: prompt-remove <index>", flush=True)
                 else:
-                    index_text = remove_args[1]
+                    index_text = args[1]
+                    ws_prompts = load_prompt_config(target_path)
+                    if not ws_prompts:
+                        print("削除対象がありません。", flush=True)
+                        continue
                     try:
                         index = int(index_text)
-                        if index < 1:
-                            raise ValueError()
                     except ValueError:
-                        print("index は 1 以上の整数を指定してください。", flush=True)
+                        print("index は整数を指定してください。", flush=True)
                         continue
 
-                    ws_prompts = load_prompt_config(target_path)
-                    if index > len(ws_prompts):
-                        print(f"インデックスが範囲外です（{index}）。", flush=True)
-                    else:
-                        removed = ws_prompts.pop(index - 1)
-                        if save_prompt_config(target_path, ws_prompts):
-                            scheduler.set_entries(ws_prompts)
-                            short = str(removed.get("prompt", ""))[:60]
-                            print(f"削除しました: {short}", flush=True)
-                        else:
-                            print("保存に失敗しました。", flush=True)
+                    if index < 1 or index > len(ws_prompts):
+                        print(f"インデックスは 1 から {len(ws_prompts)} の範囲で指定してください。", flush=True)
+                        continue
+
+                    removed = ws_prompts.pop(index - 1)
+                    if save_prompt_config(target_path, ws_prompts):
+                        scheduler.set_entries(ws_prompts)
+                        short = str(removed.get("prompt", ""))[:60]
+                        print(f"削除しました: {short}", flush=True)
 
             elif cmd in ("quit", "exit", "q"):
                 print("終了します。", flush=True)
@@ -1444,17 +1501,20 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
     target_path = Path.cwd()
     instance_id = args.instance_id or uuid.uuid4().hex[:8]
     session_name = _tmux_session_name(target_path, instance_id)
-
     script_path = Path(__file__).resolve()
     command_parts = [
         shlex.quote(sys.executable),
         shlex.quote(str(script_path)),
     ]
+
     command_parts.extend(["--instance-id", shlex.quote(instance_id)])
+
     if args.log_level:
         command_parts.extend(["--log-level", shlex.quote(args.log_level)])
+
     if args.split_direction:
         command_parts.extend(["--split-direction", shlex.quote(args.split_direction)])
+
     command_parts.append("--controller-mode")
     controller_cmd = " ".join(command_parts)
 
@@ -1474,28 +1534,36 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
             [
                 tmux_bin,
                 "new-session",
-                "-s", session_name,
-                "-c", str(target_path),
+                "-s",
+                session_name,
+                "-c",
+                str(target_path),
                 controller_cmd,
             ],
         )
-    else:
-        create_window = subprocess.run(
-            [tmux_bin, "new-window", "-t", session_name, "-c", str(target_path), controller_cmd],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if create_window.returncode != 0:
-            log.warning(
-                "既存セッション '%s' へのウィンドウ追加に失敗しました: %s。アタッチのみ試みます。",
-                session_name,
-                create_window.stderr.strip(),
-            )
-        os.execvp(
+
+    create_window = subprocess.run(
+        [
             tmux_bin,
-            [tmux_bin, "attach-session", "-t", session_name],
-        )
+            "new-window",
+            "-t",
+            session_name,
+            "-c",
+            str(target_path),
+            controller_cmd,
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if create_window.returncode != 0:
+        log.warning("既存セッションへの controller ウィンドウ追加に失敗しました。")
+
+    log.info("tmux 外で起動されたため '%s' へ自動アタッチします。", session_name)
+    os.execvp(
+        tmux_bin,
+        [tmux_bin, "attach-session", "-t", session_name],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1508,7 +1576,7 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 起動例:
-  python kiro-loop.py                      # カレントディレクトリの設定ファイルを使用
+  python kiro-loop.py          # カレントディレクトリの設定ファイルを使用
 
 起動後のコマンド例:
   > status                     状態表示
@@ -1523,25 +1591,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--split-direction",
-        default=None,
         choices=["horizontal", "vertical"],
-        help="tmux ペインの分割方向 (デフォルト: horizontal)",
+        help="tmux 分割方向 (horizontal: 左右 / vertical: 上下)",
     )
     parser.add_argument(
         "--no-auto-attach",
         action="store_true",
-        default=False,
-        help="起動後に tmux セッションへ自動アタッチしない（デフォルト: 自動アタッチ）",
+        help="tmux 外で起動時に自動アタッチしない",
     )
     parser.add_argument(
         "--controller-mode",
         action="store_true",
-        default=False,
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--instance-id",
-        default=None,
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
@@ -1550,28 +1614,32 @@ def main() -> None:
 
     cwd = Path.cwd()
 
-    # 多重起動チェック
-    if find_running_instance(cwd) is not None:
-        log.info("既に起動中のインスタンスが見つかりました。起動をスキップします。")
+    running_pid = find_running_instance(cwd)
+    if running_pid is not None:
+        log.info("既に実行中のプロセスがあります。起動をスキップします。")
         sys.exit(0)
 
     # tmux 外で起動された場合、自己を tmux 内で再実行
     _auto_attach_tmux_if_needed(args)
 
     # 再度チェック（tmux 内での再起動後）
-    if find_running_instance(cwd) is not None:
-        log.info("既に起動中のインスタンスが見つかりました。起動をスキップします。")
+    running_pid = find_running_instance(cwd)
+    if running_pid is not None:
+        log.info("既に実行中のプロセスがあります。起動をスキップします。")
         sys.exit(0)
 
     log_file = configure_file_logging(cwd)
     log.info("ファイルログを開始しました: %s", log_file)
 
     config, config_path, has_local_config = load_config(cwd)
+
     ws_config = _load_prompt_file_data(str(cwd))
 
+    # kiro-cli 起動オプションの解決
     kiro_opts = config.get("kiro_options", {})
     if not isinstance(kiro_opts, dict):
         kiro_opts = {}
+
     if not has_local_config:
         ws_kiro_opts = ws_config.get("kiro_options", {})
         if isinstance(ws_kiro_opts, dict) and ws_kiro_opts:
@@ -1610,7 +1678,6 @@ def main() -> None:
 
     stop_event = threading.Event()
     _stop_event_ref = stop_event
-
     _instance_file_ref = write_instance_file(cwd)
     log.info("実行中プロセス情報を記録しました: %s", _instance_file_ref)
 
