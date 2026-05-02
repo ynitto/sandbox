@@ -10,14 +10,14 @@ kiro-cli を起動してファイルの内容を指示として送信する。
 動作環境: WSL (Ubuntu) / Linux
 
 使い方:
-  python3 kiro-send.py <prompt_file>
-  python3 kiro-send.py <prompt_file> --dir ~/projects/app
-  python3 kiro-send.py C:\\Users\\user\\task.md --dir ~/projects/app --session my-kiro
+  python kiro-send.py <prompt_file>
+  python kiro-send.py <prompt_file> --dir ~/projects/app
+  python kiro-send.py C:\\Users\\user\\task.md --dir ~/projects/app --session my-kiro
 
-  python3 kiro-send.py clean                        # 60分以上アイドルなセッションを削除
-  python3 kiro-send.py clean --timeout 30           # 30分以上アイドルなセッションを削除
-  python3 kiro-send.py clean --dry-run              # 削除対象を確認するだけ（削除しない）
-  python3 kiro-send.py clean --prefix kiro-send     # 対象セッション名プレフィックスを指定
+  python kiro-send.py clean                        # 60分以上アイドルなセッションを削除
+  python kiro-send.py clean --timeout 30           # 30分以上アイドルなセッションを削除
+  python kiro-send.py clean --dry-run              # 削除対象を確認するだけ（削除しない）
+  python kiro-send.py clean --prefix kiro-send     # 対象セッション名プレフィックスを指定
 """
 
 import argparse
@@ -53,12 +53,19 @@ def win_to_wsl_path(path_str: str) -> str:
     """Windows形式のパス（C:\\... または C:/...）をWSL形式（/mnt/c/...）に変換する。
     既にWSL/Linux形式のパスはそのまま返す。
     """
-    m = re.match(r'^([A-Za-z]):[\\\/](.*)', path_str)
-    if m:
-        drive = m.group(1).lower()
-        rest = m.group(2).replace('\\', '/')
-        return f"/mnt/{drive}/{rest}"
-    return path_str
+    # 入力元によってはクォート付きや "\\" の重複を含むため、先に正規化する
+    noromalized = path_str.strip().strip('"').rstrip("'")
+
+    m = re.match(r'^([A-Za-z]):(.*)$', noromalized)
+    if not m:
+        return noromalized
+    
+    drive = m.group(1).lower()
+    rest = m.group(2).replace('\\', '/')
+    rest = re.sub(r'^/+', '', rest)
+    rest = re.sub(r'/+', '/', rest)
+
+    return f"/mnt/{drive}/{rest}" if rest else f"/mnt/{drive}"
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +277,8 @@ def send_prompt(session: str, text: str) -> bool:
     short = single_line[:80] + ("..." if len(single_line) > 80 else "")
     print(f"[kiro-send] 送信: {short}", file=sys.stderr)
 
-    r = _tmux("send-keys", "-t", session, single_line, "Enter")
+    ## single_line が '-' で始まる場合でも option と誤解釈されないよう区切る
+    r = _tmux("send-keys", "-t", session, "--", single_line, "Enter")
     if r.returncode != 0:
         print(
             f"[kiro-send] ERROR: send-keys に失敗しました: {r.stderr.strip()}",
@@ -373,14 +381,14 @@ def _main_send() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使い方:
-  python3 kiro-send.py <prompt_file>
-  python3 kiro-send.py <prompt_file> --dir ~/projects/app
-  python3 kiro-send.py C:\\Users\\user\\task.md --dir ~/projects/app --session my-kiro
+  python kiro-send.py <prompt_file>
+  python kiro-send.py <prompt_file> --dir ~/projects/app
+  python kiro-send.py C:\\Users\\user\\task.md --dir ~/projects/app --session my-kiro
 
   prompt_file は Windows 形式（C:\\...）でも WSL 形式（/mnt/...）でも指定可能。
 
 アイドルセッションの削除:
-  python3 kiro-send.py clean --help
+  python kiro-send.py clean --help
 """,
     )
     parser.add_argument(
@@ -406,6 +414,12 @@ def _main_send() -> None:
     prompt_path_str = win_to_wsl_path(args.prompt_file)
     prompt_file = Path(prompt_path_str).expanduser().resolve()
     if not prompt_file.is_file():
+        if re.match(r'^[A-Za-z]:[^\\/].+', args.prompt_file):
+            print(
+                "[kiro-send] HINT: Windowsパスの区切り文字(\\)がシェルで解釈されています"
+                " 引数を 'c:\\path\\to\\file.md' のように単引用符で囲むか、"
+                " c:/path/to/file.md 形式を使ってください"
+            )
         print(f"[kiro-send] ERROR: ファイルが存在しません: {prompt_file}", file=sys.stderr)
         sys.exit(1)
 
@@ -436,9 +450,9 @@ def _main_send() -> None:
     # プロンプトファイルの内容を送信
     print(f"[kiro-send] プロンプトを送信します ({prompt_file.name})", file=sys.stderr)
     if send_prompt(args.session, prompt_content):
-        print(f"[kiro-send] 完了しました", file=sys.stderr)
+        print("[kiro-send] 完了しました", file=sys.stderr)
     else:
-        print(f"[kiro-send] WARN: 応答待ちがタイムアウトしました", file=sys.stderr)
+        print("[kiro-send] WARN: 応答待ちがタイムアウトしました", file=sys.stderr)
         sys.exit(2)
 
 
@@ -458,10 +472,10 @@ def _main_clean(argv: list[str]) -> None:
   未記録の場合は tmux の session_activity にフォールバックする。
 
 使い方:
-  python3 kiro-send.py clean
-  python3 kiro-send.py clean --timeout 30
-  python3 kiro-send.py clean --dry-run
-  python3 kiro-send.py clean --prefix kiro-send --timeout 120
+  python kiro-send.py clean
+  python kiro-send.py clean --timeout 30
+  python kiro-send.py clean --dry-run
+  python kiro-send.py clean --prefix kiro-send --timeout 120
 """,
     )
     parser.add_argument(
