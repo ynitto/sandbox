@@ -1231,9 +1231,6 @@ class PeriodicScheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
-        # pane_id → {prompt_id, name, prompt, should_clear, scheduled_at, pane_id}
-        self._pane_queue: dict[str, dict[str, Any]] = {}
-        self._pane_queue_lock = threading.Lock()
         self._set_entries(entries, allow_immediate_once=True)
 
     def _release_slot(self, pane_id: str | None) -> None:
@@ -1308,82 +1305,6 @@ class PeriodicScheduler:
         """エントリを設定する（次回ループから適用）。"""
         self._set_entries(entries, allow_immediate_once=False)
 
-    def _try_enqueue_for_pane(self, pane_id: str, item: dict[str, Any]) -> None:
-        """ペイン単位のキューに追加する。既存エントリより遅い場合は破棄する。"""
-        with self._pane_queue_lock:
-            existing = self._pane_queue.get(pane_id)
-            if existing is None or item["scheduled_at"] < existing["scheduled_at"]:
-                action = "上書き" if existing else "追加"
-                log.info(
-                    "[%s] ペイン %s のキューに%s (scheduled_at=%.0f)",
-                    item["name"], pane_id, action, item["scheduled_at"],
-                )
-                self._pane_queue[pane_id] = item
-                print(
-                    f"[kiro-loop] [{item['name']}] セマフォ取得待ちのためキューに追加しました (pane={pane_id})",
-                    file=sys.stderr, flush=True,
-                )
-            else:
-                log.info(
-                    "[%s] より早いキュー済みプロンプトが存在するため破棄 (pane=%s, scheduled_at=%.0f > %.0f)",
-                    item["name"], pane_id, item["scheduled_at"], existing["scheduled_at"],
-                )
-                print(
-                    f"[kiro-loop] [{item['name']}] より早い実行待ちが存在するため破棄しました (pane={pane_id})",
-                    file=sys.stderr, flush=True,
-                )
-
-    def _drain_pane_queue(self) -> None:
-        """キュー済みプロンプトをセマフォが空き次第送信する。"""
-        if not self._pane_queue:
-            return
-
-        with self._pane_queue_lock:
-            pane_ids = list(self._pane_queue.keys())
-
-        for pane_id in pane_ids:
-            if self._semaphore is not None and not self._semaphore.acquire(pane_id):
-                continue
-
-            with self._pane_queue_lock:
-                item = self._pane_queue.pop(pane_id, None)
-
-            if item is None:
-                self._release_slot(pane_id)
-                continue
-
-            name = item["name"]
-            prompt_id = item["prompt_id"]
-            log.info("[%s] キュー済みプロンプトを送信します (pane=%s)", name, pane_id)
-            print(
-                f"[kiro-loop] [{name}] セマフォ取得成功。キュー済みプロンプトを送信します (pane={pane_id})",
-                file=sys.stderr, flush=True,
-            )
-
-            if not self._session_mgr.ensure_session(prompt_id, name):
-                log.warning("[%s] キュー送信: セッションが見つかりません。破棄します。", name)
-                self._release_slot(pane_id)
-                continue
-
-            try:
-                if item.get("should_clear"):
-                    if not self._session_mgr.send_prompt(prompt_id, "/clear"):
-                        log.warning("[%s] キュー送信: /clear の送信に失敗しました。", name)
-                        self._release_slot(pane_id)
-                        continue
-                    time.sleep(2)
-
-                ok = self._session_mgr.send_prompt(prompt_id, item["prompt"])
-                if ok:
-                    if self._slot_monitor is not None:
-                        self._slot_monitor.track(pane_id)
-                else:
-                    log.warning("[%s] キュー送信: プロンプト送信に失敗しました。", name)
-                    self._release_slot(pane_id)
-            except Exception as exc:
-                log.error("[%s] キュー送信: 予期しないエラー: %s", name, exc, exc_info=True)
-                self._release_slot(pane_id)
-
     def _is_in_cooldown(self, entry: dict[str, Any], pane_id: str) -> bool:
         """クールダウン中かチェックし、中なら next_run_at を更新して True を返す。"""
         if self._semaphore is None:
@@ -1400,16 +1321,13 @@ class PeriodicScheduler:
         return False
 
     def _acquire_slot(self, entry: dict[str, Any], pane_id: str) -> bool:
-        """セマフォスロットを取得する。取得失敗時はキューに追加して False を返す。
+        """セマフォスロットを取得する。取得できない場合は今回の送信をスキップして False を返す。
 
         Returns True if execution should proceed, False if it should be skipped.
         """
         assert self._semaphore is not None
         name = str(entry.get("name", ""))
-        prompt_id = str(entry.get("id", ""))
-        prompt = str(entry.get("prompt", ""))
         interval_minutes = int(entry.get("interval_minutes", 1))
-        now = time.time()
 
         elapsed = self._semaphore.slot_elapsed(pane_id)
         if elapsed is not None:
@@ -1435,18 +1353,13 @@ class PeriodicScheduler:
 
         if not self._semaphore.acquire(pane_id):
             log.warning(
-                "[%s] 同時実行数が上限 (%d) に達しています。キューに追加します。",
+                "[%s] 同時実行数が上限 (%d) に達しています。今回の送信をスキップします。",
                 name, self._semaphore.max_concurrent,
             )
-            should_clear = bool(entry.get("_should_clear", False))
-            self._try_enqueue_for_pane(pane_id, {
-                "prompt_id": prompt_id,
-                "name": name,
-                "prompt": prompt,
-                "should_clear": should_clear,
-                "scheduled_at": float(entry.get("next_run_at", now)),
-                "pane_id": pane_id,
-            })
+            print(
+                f"[kiro-loop] [{name}] 同時実行数が上限に達しています。今回はスキップします。",
+                file=sys.stderr, flush=True,
+            )
             self._update_entry(str(entry.get("id", "")), next_run_at=time.time() + (interval_minutes * 60))
             return False
 
@@ -1477,9 +1390,6 @@ class PeriodicScheduler:
             if ok:
                 if self._slot_monitor is not None and pane_id:
                     self._slot_monitor.track(pane_id)
-                if pane_id:
-                    with self._pane_queue_lock:
-                        self._pane_queue.pop(pane_id, None)
             else:
                 self._release_slot(pane_id)
                 if not self._stop_event.is_set():
@@ -1544,8 +1454,6 @@ class PeriodicScheduler:
                     self._dispatch_prompt(entry, pane_id)
 
                 self._update_entry(str(entry.get("id", "")), next_run_at=time.time() + (interval_minutes * 60))
-
-            self._drain_pane_queue()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -2239,40 +2147,43 @@ def _find_managing_daemon(pane_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _try_acquire_slot_for_send(pane_id: str) -> None:
+def _try_acquire_slot_for_send(pane_id: str) -> bool:
     """cmd_send 用のスロットファイルを書き込む（max_concurrent > 0 のデーモン管理下のみ）。
 
     スロットファイルに管理デーモンの PID を設定することで、デーモンの SlotMonitor が
     kiro-cli のプロンプト復帰を検知した際に適切に解放できるようにする。
     max_concurrent=0 のデーモンはスロットを使わないため書き込まない（放置ファイル防止）。
+    同時実行数上限に達している場合は False を返す。
     """
     daemon_state = _find_managing_daemon(pane_id)
     if daemon_state is None:
-        return
+        return True
 
     cwd = daemon_state.get("cwd", "")
     if not cwd:
-        return
+        return True
 
     daemon_pid = int(daemon_state.get("pid", 0))
     if daemon_pid <= 0:
-        return
+        return True
 
     try:
         config, _, _ = load_config(Path(cwd))
         max_concurrent = int(config.get("max_concurrent", 0))
         if max_concurrent <= 0:
-            return
+            return True
         slot_timeout = int(config.get("slot_timeout_seconds", _DEFAULT_SLOT_TIMEOUT))
         cooldown = int(config.get("cooldown_seconds", 0))
     except Exception:
-        return
+        return True
 
     semaphore = GlobalSemaphore(max_concurrent, slot_timeout, cooldown)
     if semaphore.acquire(pane_id, pid=daemon_pid):
         log.debug("cmd_send: スロットを取得しました (pane=%s, daemon_pid=%d)", pane_id, daemon_pid)
+        return True
     else:
         log.warning("cmd_send: 同時実行数が上限 (%d) に達しています (pane=%s)", max_concurrent, pane_id)
+        return False
 
 
 def cmd_slot_release() -> None:
@@ -2378,7 +2289,12 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
     # 管理デーモンが max_concurrent > 0 の場合はスロットを取得してから送信する。
     # これにより送信後の処理中にデーモンが別のプロンプトを送り込むのを防ぐ。
     # スロットは SlotMonitor がプロンプト復帰を検知した際に自動解放する。
-    _try_acquire_slot_for_send(send_target)
+    if not _try_acquire_slot_for_send(send_target):
+        print(
+            "[kiro-loop] ERROR: 同時実行数が上限に達しています。他のペインの処理が完了してから再送してください。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if send_prompt_to_session(send_target, prompt_text):
         print("[kiro-loop] 完了しました", file=sys.stderr)
