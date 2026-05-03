@@ -204,7 +204,37 @@ fi
 ok "インストールしました: $INSTALL_PATH"
 
 # ---------------------------------------------------------------------------
-# 8. PATH チェック
+# 8. 同時実行数制御用ファイルのインストール
+# ---------------------------------------------------------------------------
+info "同時実行数制御用ファイルをインストールしています..."
+
+KIRO_AGENTS_DIR="$HOME/.kiro/agents"
+mkdir -p "$KIRO_AGENTS_DIR"
+
+CONCURRENCY_AGENT_FILE="$KIRO_AGENTS_DIR/kiro-loop-concurrency.json"
+cat > "$CONCURRENCY_AGENT_FILE" << 'EOF'
+{
+  "name": "kiro-loop-concurrency",
+  "description": "kiro-loop 並列実行制御用エージェント（自動生成 — 手動で編集しないでください）",
+  "hooks": {
+    "stop": [
+      {
+        "type": "command",
+        "command": "kiro-loop slot-release"
+      }
+    ]
+  },
+  "resources": [
+    "skill://~/.kiro/skills/**/SKILL.md",
+    "skill://.kiro/skills/**/SKILL.md"
+  ],
+  "tools": ["*"]
+}
+EOF
+ok "エージェント設定を作成しました: $CONCURRENCY_AGENT_FILE"
+
+# ---------------------------------------------------------------------------
+# 9. PATH チェック
 # ---------------------------------------------------------------------------
 info "PATH を確認しています..."
 
