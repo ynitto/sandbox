@@ -26,6 +26,7 @@ kiro-loop.py — tmux 分割ウィンドウで kiro-cli を起動し、
 
 import argparse
 import atexit
+import datetime as _dt
 import fcntl
 import hashlib
 import json
@@ -387,6 +388,120 @@ class SlotMonitor:
         with self._lock:
             self._pending.pop(pane_id, None)
         self._semaphore.release(pane_id)
+
+
+# ---------------------------------------------------------------------------
+# Cron 式パーサー
+# ---------------------------------------------------------------------------
+
+class CronExpression:
+    """5フィールド cron 式 (分 時 日 月 曜日) のパーサー。
+
+    形式: "分 時 日 月 曜日"
+    例:   "0 9 * * 1-5"   → 平日9:00
+          "*/30 * * * *"  → 30分ごと
+          "0 0 1 * *"     → 毎月1日0:00
+
+    DOM と DOW が両方指定された場合は Vixie cron と同じ OR ロジックを使用する。
+    """
+
+    def __init__(self, expr: str) -> None:
+        self._expr = expr.strip()
+        fields = self._expr.split()
+        if len(fields) != 5:
+            raise ValueError(
+                f"cron 式は「分 時 日 月 曜日」の5フィールドで指定してください: {expr!r}"
+            )
+        min_f, hour_f, dom_f, month_f, dow_f = fields
+        self._mins = self._parse_field(min_f, 0, 59)
+        self._hours = self._parse_field(hour_f, 0, 23)
+        self._doms = self._parse_field(dom_f, 1, 31)
+        self._months = self._parse_field(month_f, 1, 12)
+        raw_dows = self._parse_field(dow_f, 0, 7)
+        self._dows = {0 if v == 7 else v for v in raw_dows}  # 7 → 0 (日曜)
+        self._dom_star = dom_f == "*"
+        self._dow_star = dow_f == "*"
+
+    def _parse_field(self, field: str, lo: int, hi: int) -> set[int]:
+        values: set[int] = set()
+        for part in field.split(","):
+            step = 1
+            if "/" in part:
+                part, step_str = part.rsplit("/", 1)
+                step = int(step_str)
+                if step < 1:
+                    raise ValueError(f"ステップは1以上で指定してください: {field!r}")
+            if part == "*":
+                values.update(range(lo, hi + 1, step))
+            elif "-" in part:
+                a, b = part.split("-", 1)
+                values.update(range(int(a), int(b) + 1, step))
+            else:
+                v = int(part)
+                values.update(range(v, hi + 1, step) if step > 1 else [v])
+        return {v for v in values if lo <= v <= hi}
+
+    def next_run(self, after: _dt.datetime) -> _dt.datetime:
+        """after の1分後以降で最初に一致する時刻を返す（秒=0、ローカルタイム基準）。"""
+        t = (after + _dt.timedelta(minutes=1)).replace(second=0, microsecond=0)
+        limit = after + _dt.timedelta(days=366 * 4)
+
+        while t <= limit:
+            if t.month not in self._months:
+                t = self._next_valid_month(t)
+                continue
+
+            # DOM と DOW の評価 (Vixie cron: 両方指定時は OR)
+            cron_dow = (t.weekday() + 1) % 7  # Python Mon=0..Sun=6 → cron Sun=0..Sat=6
+            dom_ok = t.day in self._doms
+            dow_ok = cron_dow in self._dows
+
+            if self._dom_star and self._dow_star:
+                day_ok = True
+            elif self._dom_star:
+                day_ok = dow_ok
+            elif self._dow_star:
+                day_ok = dom_ok
+            else:
+                day_ok = dom_ok or dow_ok
+
+            if not day_ok:
+                t = (t + _dt.timedelta(days=1)).replace(hour=0, minute=0)
+                continue
+
+            if t.hour not in self._hours:
+                next_hours = [h for h in sorted(self._hours) if h > t.hour]
+                if next_hours:
+                    t = t.replace(hour=next_hours[0], minute=0)
+                else:
+                    t = (t + _dt.timedelta(days=1)).replace(hour=0, minute=0)
+                continue
+
+            if t.minute not in self._mins:
+                next_mins = [m for m in sorted(self._mins) if m > t.minute]
+                if next_mins:
+                    t = t.replace(minute=next_mins[0])
+                else:
+                    t = (t + _dt.timedelta(hours=1)).replace(minute=0)
+                continue
+
+            return t
+
+        raise ValueError(f"次回実行時刻が4年以内に見つかりません: {self._expr!r}")
+
+    def _next_valid_month(self, t: _dt.datetime) -> _dt.datetime:
+        year, month = t.year, t.month + 1
+        for _ in range(25):
+            if month > 12:
+                month = 1
+                year += 1
+            if month in self._months:
+                return t.replace(year=year, month=month, day=1, hour=0, minute=0)
+            month += 1
+        raise ValueError(f"有効な月が見つかりません: {self._expr!r}")
+
+    def __str__(self) -> str:
+        return self._expr
 
 
 def configure_file_logging() -> Path:
@@ -1253,23 +1368,43 @@ class PeriodicScheduler:
                 continue
 
             prompt = str(entry.get("prompt", "")).strip()
-            interval_minutes = entry.get("interval_minutes")
-            name = str(entry.get("name", prompt[:40])) if prompt else ""
-
-            try:
-                interval = int(interval_minutes)
-            except Exception:
+            if not prompt:
                 continue
 
-            if not prompt or interval < 1:
-                continue
+            name = str(entry.get("name", prompt[:40]))
+
+            # スケジュール: cron 式 または interval_minutes のどちらかが必要
+            cron_str = str(entry.get("cron", "")).strip()
+            cron_expr: CronExpression | None = None
+            interval = 0
+
+            if cron_str:
+                try:
+                    cron_expr = CronExpression(cron_str)
+                except ValueError as exc:
+                    log.warning("cron 式が不正なためスキップします: %s (%s)", cron_str, exc)
+                    continue
+            else:
+                interval_minutes = entry.get("interval_minutes")
+                try:
+                    interval = int(interval_minutes)  # type: ignore[arg-type]
+                except Exception:
+                    continue
+                if interval < 1:
+                    continue
 
             prompt_id = str(entry.get("id") or uuid.uuid4())
             run_immediately = bool(
                 entry.get("run_immediately_on_startup", entry.get("run_immediately", False))
             )
-            # 起動直後は kiro-cli セットアップ時間を見込んで 30 秒待ってから初回送信する。
-            next_run_at = now + 30 if (allow_immediate_once and run_immediately) else now + (interval * 60)
+
+            if allow_immediate_once and run_immediately:
+                # 起動直後は kiro-cli セットアップ時間を見込んで 30 秒待ってから初回送信する。
+                next_run_at = now + 30
+            elif cron_expr is not None:
+                next_run_at = cron_expr.next_run(_dt.datetime.now().astimezone()).timestamp()
+            else:
+                next_run_at = now + (interval * 60)
 
             fresh_context = bool(entry.get("fresh_context", False))
             fresh_context_interval_raw = entry.get("fresh_context_interval_minutes")
@@ -1286,6 +1421,7 @@ class PeriodicScheduler:
                 "id": prompt_id,
                 "name": name,
                 "prompt": prompt,
+                "cron": cron_str if cron_expr else None,
                 "interval_minutes": interval,
                 "enabled": True,
                 "run_immediately_on_startup": run_immediately,
@@ -1320,6 +1456,18 @@ class PeriodicScheduler:
             return True
         return False
 
+    def _next_run_at_for_entry(self, entry: dict[str, Any]) -> float:
+        """エントリの次回実行時刻 (Unix timestamp) を計算する。"""
+        cron_str = entry.get("cron")
+        if cron_str:
+            try:
+                return CronExpression(cron_str).next_run(_dt.datetime.now()).timestamp()
+            except Exception as exc:
+                log.error("[%s] cron 次回時刻計算エラー: %s", entry.get("name", ""), exc)
+                return time.time() + 60
+        interval_minutes = max(int(entry.get("interval_minutes", 1)), 1)
+        return time.time() + interval_minutes * 60
+
     def _acquire_slot(self, entry: dict[str, Any], pane_id: str) -> bool:
         """セマフォスロットを取得する。取得できない場合は今回の送信をスキップして False を返す。
 
@@ -1327,7 +1475,6 @@ class PeriodicScheduler:
         """
         assert self._semaphore is not None
         name = str(entry.get("name", ""))
-        interval_minutes = int(entry.get("interval_minutes", 1))
 
         elapsed = self._semaphore.slot_elapsed(pane_id)
         if elapsed is not None:
@@ -1360,7 +1507,7 @@ class PeriodicScheduler:
                 f"[kiro-loop] [{name}] 同時実行数が上限に達しています。今回はスキップします。",
                 file=sys.stderr, flush=True,
             )
-            self._update_entry(str(entry.get("id", "")), next_run_at=time.time() + (interval_minutes * 60))
+            self._update_entry(str(entry.get("id", "")), next_run_at=self._next_run_at_for_entry(entry))
             return False
 
         return True
@@ -1425,7 +1572,6 @@ class PeriodicScheduler:
 
                 name = str(entry.get("name", ""))
                 prompt_id = str(entry.get("id", ""))
-                interval_minutes = int(entry.get("interval_minutes", 1))
                 exclude_from_concurrency = bool(entry.get("exclude_from_concurrency", False))
 
                 fresh_context = bool(entry.get("fresh_context", False))
@@ -1453,7 +1599,7 @@ class PeriodicScheduler:
 
                     self._dispatch_prompt(entry, pane_id)
 
-                self._update_entry(str(entry.get("id", "")), next_run_at=time.time() + (interval_minutes * 60))
+                self._update_entry(str(entry.get("id", "")), next_run_at=self._next_run_at_for_entry(entry))
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -1473,7 +1619,7 @@ _HELP_TEXT = """\
                                   target: pane ID (%12)、tmux セッション名、またはプロンプト名
                                   例: send %12 status確認してください
                                   例: send my-prompt コードをレビューしてください
-  prompt-add <interval> <prompt>  定期プロンプトを追加
+  prompt-add <interval> <prompt>  定期プロンプトを追加 (interval は分単位の整数)
   prompt-add <name> <interval> <prompt>
                                   名前付きで定期プロンプトを追加
   prompt-list                     定期プロンプト設定を表示
@@ -1670,7 +1816,7 @@ def command_loop(
 
                 for idx, p in enumerate(ws_prompts, start=1):
                     enabled = p.get("enabled", True)
-                    interval = p.get("interval_minutes", "?")
+                    cron = str(p.get("cron", "")).strip()
                     run_immediately = bool(
                         p.get("run_immediately_on_startup", p.get("run_immediately", False))
                     )
@@ -1678,7 +1824,12 @@ def command_loop(
                     short = prompt_text[:80] + ("..." if len(prompt_text) > 80 else "")
                     flag = "on" if enabled else "off"
                     immediate_note = " (起動時即実行)" if run_immediately else ""
-                    print(f"  {idx:>2}. [{flag}] {interval}分{immediate_note}: {short}", flush=True)
+                    if cron:
+                        schedule_note = f'cron "{cron}"'
+                    else:
+                        interval = p.get("interval_minutes", "?")
+                        schedule_note = f"{interval}分"
+                    print(f"  {idx:>2}. [{flag}] {schedule_note}{immediate_note}: {short}", flush=True)
 
             elif cmd == "prompt-remove":
                 args = line.split(maxsplit=1)

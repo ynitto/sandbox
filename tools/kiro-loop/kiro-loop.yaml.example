@@ -30,36 +30,17 @@ response_timeout: 300      # 1 プロンプトの応答待ち上限
 # ---------------------------------------------------------------------------
 # 同時実行数制御（複数 kiro-loop プロセス間で共有）
 # ---------------------------------------------------------------------------
-# max_concurrent: 3        # kiro-cli の最大同時実行タスク数（0 = 無制限、デフォルト）
-# slot_timeout_seconds: 7200  # スロット強制解放までの猶予時間（秒）。デフォルト 7200 = 2時間。
-#                              # hook・ペイン監視が両方失敗した場合のフォールバックタイムアウト。
-# cooldown_seconds: 30        # セマフォ解放後の再取得待機時間（秒）。デフォルト 0 = 無効。
-#                              # 設定すると、一度実行したペインは指定秒数の間セマフォを取得できず、
-#                              # 他のペインに実行機会が回るようになる（公平性の確保）。
-#
-# 仕組み:
-#   ~/.kiro/slots/ にファイルベースのセマフォを使用。
-#   上限に達した kiro-loop は次の実行サイクルに再試行します。
-#   kiro_options.agent が設定されている場合も制限対象になります（ペイン監視・強制解放のみ）。
-#   install.sh を再実行すると同時実行制御用エージェント設定が自動生成されます。
+max_concurrent: 3             # kiro-cli の最大同時実行タスク数（0 = 無制限、デフォルト）
+slot_timeout_seconds: 7200    # スロット強制解放までの猶予時間（秒）。デフォルト 7200 = 2時間。
+                              # hook・ペイン監視が両方失敗した場合のフォールバックタイムアウト。
+cooldown_seconds: 30          # セマフォ解放後の再取得待機時間（秒）。デフォルト 0 = 無効。
+                              # 設定すると、一度実行したペインは指定秒数の間セマフォを取得できず、
+                              # 他のペインに実行機会が回るようになる（公平性の確保）。
 
 # ---------------------------------------------------------------------------
 # 定期プロンプトの定義
 # ---------------------------------------------------------------------------
 prompts:
-  # ---------------------------------------------------------------------------
-  # GitLab Issue 自動実行ワークフロー
-  #
-  # ワークフロー:
-  #   毎朝 Obsidian kanban.md で未着手 Issue を確認
-  #   → 人が GitLab Issue に assignee をセット
-  #   → このプロンプトが定期的に「自分にアサインされた Issue」を拾って実行
-  # ---------------------------------------------------------------------------
-
-  # 各プロンプトエントリで指定できる同時実行制御オプション:
-  #   exclude_from_concurrency: true   # このプロンプトは max_concurrent の制限対象外にする
-  #                                    # 軽量な確認タスクや緊急タスクに有用
-
   # ---- MR コメント返答: 自分担当 MR の未解決スレッドを拾って返答・修正 ----
   # レビュアーが MR にコメントを投稿した後、このプロンプトが返答または修正を行う
   - name: "MR コメント返答"
@@ -73,8 +54,7 @@ prompts:
          - コード修正要求 → 修正を実装して push し、python scripts/gl.py add-mr-comment MR_IID --body "修正しました: ..." で報告してスレッドをクローズ
       4. 全スレッドがクローズしたら python scripts/gl.py add-mr-comment MR_IID --body "全指摘に対応しました。再レビューをお願いします。" を投稿
       未解決スレッドがなければ「対応待ちのコメントはありません」と報告して終了。
-    interval_minutes: 60
-    workspace: "project-a"
+    interval_minutes: 60   # 1 時間ごとに確認
     enabled: true
 
   # ---- GitLab Issue ワーカー: 自分にアサインされた Issue を拾って実行 ----
@@ -82,8 +62,9 @@ prompts:
     prompt: |
       gitlab-idd スキルのワーカーロールを実行してください。
       自分にアサインされた status:open の Issue を 1 件取得して実装・報告してください。
-    interval_minutes: 60        # 1 時間ごとに確認
-    workspace: "project-a"
+    interval_minutes: 60        
+    cron: "0 9 * * 1-5"      # 平日9:00
+    cwd: /path/to/workspace  # ワークスペースを指定
     enabled: true
 
   # ---- Kanban 更新: GitLab → Obsidian kanban.md を再生成 ----
@@ -93,13 +74,13 @@ prompts:
       以下のコマンドを実行して Obsidian の kanban.md を最新状態に更新してください。
       python ~/sandbox/tools/gitlab-obsidian-sync/sync.py --kanban --config ~/gitlab-obsidian-sync.yaml
     interval_minutes: 30
-    workspace: "project-a"
-    enabled: false              # sync.py --kanban を直接 cron/terminal-launcher で動かす場合は false のまま
+    enabled: true
 
   # ---- サンプル: 固定プロンプトによる定期コードレビュー ----
   - name: "定期コードレビュー"
     prompt: |
       直近の変更内容を確認して、問題があれば報告してください。
     interval_minutes: 30
-    workspace: "project-a"
-    enabled: false
+    exclude_from_concurrency: true   # このプロンプトは max_concurrent の制限対象外にする
+                                     # 軽量な確認タスクや緊急タスクに有用
+    enabled: false                   # 一時的に無効化する
