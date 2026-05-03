@@ -43,6 +43,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+try:
+    import readline as _readline
+    _readline.set_history_length(50)
+except ImportError:
+    _readline = None  # type: ignore
+
 # ---------------------------------------------------------------------------
 # 依存ライブラリの存在チェック
 # ---------------------------------------------------------------------------
@@ -94,6 +100,15 @@ log = logging.getLogger("kiro-loop")
 
 INSTANCE_FILE_NAME = "kiro-loop.pid"
 LOG_FILE_NAME = "kiro-loop.log"
+
+# ---------------------------------------------------------------------------
+# send/ls サブコマンド用定数
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SEND_SESSION = "kiro"
+_SEND_STARTUP_TIMEOUT = 60
+_PROMPT_RE = re.compile(r"(^\s*[>?❯›]\s*$|!>)", re.MULTILINE)
+_ENV_LAST_ACTIVE = "KIRO_LAST_ACTIVE"
 
 
 def _runtime_dir(base_path: Path) -> Path:
@@ -234,13 +249,15 @@ def find_default_config(cwd: Path) -> Path | None:
 
 def load_config(cwd: Path) -> tuple[dict[str, Any], Path, bool]:
     """設定ファイルを読み込み (config, resolved_path, exists) を返す。
+    ~/.kiro/ 配下の DEFAULT_CONFIG_NAMES を探す。
     ファイルが存在しない場合は空の config とデフォルトパスを返す（終了しない）。
     """
-    config_path = find_default_config(cwd)
+    kiro_home = Path.home() / ".kiro"
+    config_path = find_default_config(kiro_home)
     if config_path is None:
-        default_path = cwd / "kiro-loop.yaml"
+        default_path = kiro_home / "kiro-loop.yaml"
         log.info(
-            "起動ディレクトリの設定ファイルが見つかりません。必要に応じて %s に保存されます。",
+            "~/.kiro の設定ファイルが見つかりません。必要に応じて %s に保存されます。",
             default_path,
         )
         return {}, default_path, False
@@ -399,18 +416,24 @@ def _prompt_file(base_path: str) -> Path:
 
 
 def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
-    """起動ディレクトリ配下 .kiro/kiro-loop.yml 全体を辞書として読む。"""
-    path = _prompt_file(base_path)
-    if not path.is_file():
+    """起動ディレクトリ配下 .kiro/ から設定ファイル（DEFAULT_CONFIG_NAMES）を探して読む。"""
+    kiro_dir = Path(base_path) / ".kiro"
+    path: Path | None = None
+    for name in DEFAULT_CONFIG_NAMES:
+        candidate = kiro_dir / name
+        if candidate.is_file():
+            path = candidate
+            break
+
+    if path is None:
         return {}
 
-    if yaml is None:
-        log.warning("PyYAML がないため %s を読めません。", path)
+    if path.suffix.lower() in (".yaml", ".yml") and yaml is None:
+        log.warning("PyYAML がないため %s を読めません。pip install pyyaml", path)
         return {}
 
     try:
-        with path.open(encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+        data = _load_config_file(path)
         if isinstance(data, dict):
             return data
         log.warning("%s の形式が不正なため空設定として扱います。", path)
@@ -421,14 +444,13 @@ def _load_prompt_file_data(base_path: str) -> dict[str, Any]:
 
 
 def load_prompt_config(base_path: str) -> list[dict[str, Any]]:
-    """起動ディレクトリ配下 .kiro/kiro-loop.yml から prompts を読む。"""
-    path = _prompt_file(base_path)
+    """起動ディレクトリ配下 .kiro/ から prompts を読む。"""
     data = _load_prompt_file_data(base_path)
     prompts = data.get("prompts", [])
     if isinstance(prompts, list):
         return [p for p in prompts if isinstance(p, dict)]
     if data:
-        log.warning("%s の prompts が配列ではありません。", path)
+        log.warning("%s/.kiro/ の prompts が配列ではありません。", base_path)
 
     return []
 
@@ -918,6 +940,7 @@ class SessionManager:
         self._sessions: dict[str, KiroSession] = {}
         self._prompt_names: dict[str, str] = {}
         self._tmux_names: dict[str, str] = {}
+        self._prompt_cwds: dict[str, str | None] = {}
         self._lock = threading.Lock()
 
     def _prompt_token(self, prompt_id: str) -> str:
@@ -928,10 +951,17 @@ class SessionManager:
         composed = f"{self._instance_id}-{self._prompt_token(prompt_id)}"
         return _tmux_session_name(Path(self._target_path), composed)
 
-    def _build_session(self, prompt_id: str) -> tuple[KiroSession, str]:
+    def _build_session(self, prompt_id: str, cwd: str | None = None) -> tuple[KiroSession, str]:
         tmux_name = self._tmux_name_for_prompt(prompt_id)
+        session_cwd = self._target_path
+        if cwd:
+            candidate = Path(cwd).expanduser().resolve()
+            if candidate.is_dir():
+                session_cwd = str(candidate)
+            else:
+                log.warning("エントリの cwd '%s' が存在しないため target_path を使用します。", cwd)
         session = KiroSession(
-            cwd=self._target_path,
+            cwd=session_cwd,
             kiro_args=self._kiro_args_base[:],
             tmux_session_name=tmux_name,
             split_direction=self._split_direction,
@@ -941,8 +971,8 @@ class SessionManager:
         )
         return session, tmux_name
 
-    def _start_session(self, prompt_id: str, prompt_name: str) -> bool:
-        session, tmux_name = self._build_session(prompt_id)
+    def _start_session(self, prompt_id: str, prompt_name: str, cwd: str | None = None) -> bool:
+        session, tmux_name = self._build_session(prompt_id, cwd)
         try:
             session.start()
         except RuntimeError as exc:
@@ -955,6 +985,7 @@ class SessionManager:
             self._sessions[prompt_id] = session
             self._prompt_names[prompt_id] = prompt_name
             self._tmux_names[prompt_id] = attach_session_name
+            self._prompt_cwds[prompt_id] = cwd
 
         log.info(
             "プロンプト '%s' 用セッションを起動しました (tmux=%s, generated=%s, args=%s)。",
@@ -968,12 +999,14 @@ class SessionManager:
     def sync_entries(self, entries: list[dict[str, Any]]) -> None:
         """エントリ一覧に合わせてセッションを起動/停止する。"""
         desired: dict[str, str] = {}
+        desired_cwd: dict[str, str | None] = {}
         for entry in entries:
             prompt_id = str(entry.get("id", "")).strip()
             if not prompt_id:
                 continue
             prompt_name = str(entry.get("name", prompt_id)).strip() or prompt_id
             desired[prompt_id] = prompt_name
+            desired_cwd[prompt_id] = str(entry.get("cwd", "")).strip() or None
 
         with self._lock:
             current_ids = set(self._sessions.keys())
@@ -987,6 +1020,7 @@ class SessionManager:
                 session = self._sessions.pop(prompt_id, None)
                 prompt_name = self._prompt_names.pop(prompt_id, prompt_id)
                 self._tmux_names.pop(prompt_id, None)
+                self._prompt_cwds.pop(prompt_id, None)
             if session is not None:
                 log.info("プロンプト '%s' のセッションを停止します。", prompt_name)
                 session.stop()
@@ -996,15 +1030,16 @@ class SessionManager:
                 self._prompt_names[prompt_id] = desired[prompt_id]
 
         for prompt_id in add_ids:
-            self._start_session(prompt_id, desired[prompt_id])
+            self._start_session(prompt_id, desired[prompt_id], desired_cwd.get(prompt_id))
 
     def get_session(self, prompt_id: str, prompt_name: str) -> KiroSession | None:
         with self._lock:
             existing = self._sessions.get(prompt_id)
+            cwd = self._prompt_cwds.get(prompt_id)
         if existing is not None:
             return existing
 
-        if not self._start_session(prompt_id, prompt_name):
+        if not self._start_session(prompt_id, prompt_name, cwd):
             return None
 
         with self._lock:
@@ -1038,6 +1073,30 @@ class SessionManager:
         statuses.sort(key=lambda item: item[0])
         return statuses
 
+    def resolve_managed_pane(self, target: str) -> str | None:
+        """管理下のセッションの中から target に対応するペイン ID を返す。
+
+        target には pane ID (%N)、tmux セッション名、またはプロンプト名を指定できる。
+        管理外のターゲットは None を返す。
+        """
+        with self._lock:
+            items = list(self._sessions.items())
+            names = dict(self._prompt_names)
+            tmux_names = dict(self._tmux_names)
+
+        for prompt_id, session in items:
+            pane_target = session.get_pane_target()
+            if not pane_target:
+                continue
+            if (
+                target == pane_target
+                or target == tmux_names.get(prompt_id, "")
+                or target == names.get(prompt_id, "")
+            ):
+                return pane_target
+
+        return None
+
     def restart_if_dead(self) -> None:
         with self._lock:
             items = list(self._sessions.items())
@@ -1060,6 +1119,7 @@ class SessionManager:
             self._sessions.clear()
             self._prompt_names.clear()
             self._tmux_names.clear()
+            self._prompt_cwds.clear()
 
         for session in sessions:
             session.stop()
@@ -1116,6 +1176,8 @@ class PeriodicScheduler:
             if fresh_context_interval is not None and fresh_context_interval < 1:
                 fresh_context_interval = None
 
+            entry_cwd = str(entry.get("cwd", "")).strip() or None
+
             normalized.append({
                 "id": prompt_id,
                 "name": name,
@@ -1127,6 +1189,7 @@ class PeriodicScheduler:
                 "fresh_context": fresh_context,
                 "fresh_context_interval_minutes": fresh_context_interval,
                 "next_clear_at": now if fresh_context else None,
+                "cwd": entry_cwd,
             })
 
         self._session_mgr.sync_entries(normalized)
@@ -1227,8 +1290,11 @@ class PeriodicScheduler:
 _HELP_TEXT = """\
 コマンド一覧:
   status                          実行状態を表示
-  send <pane> <text>              指定ペインにテキストを送信
+  ls                              管理下のセッション一覧を表示
+  send <target> <text>            管理下のセッションにテキストを送信
+                                  target: pane ID (%12)、tmux セッション名、またはプロンプト名
                                   例: send %12 status確認してください
+                                  例: send my-prompt コードをレビューしてください
   prompt-add <interval> <prompt>  定期プロンプトを追加
   prompt-add <name> <interval> <prompt>
                                   名前付きで定期プロンプトを追加
@@ -1286,13 +1352,34 @@ def command_loop(
                             flush=True,
                         )
 
+            elif cmd == "ls":
+                prompt_statuses = session_mgr.list_prompt_statuses()
+                if not prompt_statuses:
+                    print("  (管理下のセッションはありません)", flush=True)
+                else:
+                    col_name = max(len(p[0]) for p in prompt_statuses)
+                    col_name = max(col_name, 12)
+                    col_tmux = max(len(p[3]) for p in prompt_statuses)
+                    col_tmux = max(col_tmux, 10)
+                    header = f"  {'プロンプト名':<{col_name}}  {'pane':>6}  {'状態':<6}  tmux セッション"
+                    print(header, flush=True)
+                    print(f"  {'-' * (col_name + col_tmux + 26)}", flush=True)
+                    for prompt_name, _, is_alive, tmux_name, pane_target in prompt_statuses:
+                        state = "alive" if is_alive else "dead"
+                        pane_str = pane_target or "-"
+                        print(
+                            f"  {prompt_name:<{col_name}}  {pane_str:>6}  {state:<6}  {tmux_name}",
+                            flush=True,
+                        )
+
             elif cmd == "send":
                 args = line.split(maxsplit=2)
                 if len(args) < 3:
-                    print("使い方: send <pane> <text>", flush=True)
+                    print("使い方: send <target> <text>", flush=True)
+                    print("  target: pane ID (%N)、tmux セッション名、またはプロンプト名", flush=True)
                     continue
 
-                pane_target = args[1].strip()
+                target = args[1].strip()
                 send_text = args[2].strip()
                 # クォート除去
                 if (
@@ -1302,17 +1389,23 @@ def command_loop(
                 ):
                     send_text = send_text[1:-1].strip()
 
-                if not pane_target:
-                    print("pane が空です。", flush=True)
+                if not target:
+                    print("target が空です。", flush=True)
                     continue
 
                 if not send_text:
                     print("text が空です。", flush=True)
                     continue
 
-                ok, err = send_text_via_tmux(pane_target, send_text)
+                pane_id = session_mgr.resolve_managed_pane(target)
+                if pane_id is None:
+                    print(f"管理下のセッションが見つかりません: '{target}'", flush=True)
+                    print("  'ls' で管理下のセッション一覧を確認してください。", flush=True)
+                    continue
+
+                ok, err = send_text_via_tmux(pane_id, send_text)
                 if ok:
-                    print(f"送信しました: pane={pane_target}", flush=True)
+                    print(f"送信しました: pane={pane_id}", flush=True)
                 else:
                     print(f"送信に失敗しました: {err}", flush=True)
 
@@ -1573,6 +1666,302 @@ def _auto_attach_tmux_if_needed(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# send/ls サブコマンド: tmux ヘルパー
+# ---------------------------------------------------------------------------
+
+def _tmux_cmd(*args: str) -> subprocess.CompletedProcess[str]:
+    tmux_bin = shutil.which("tmux")
+    if tmux_bin is None:
+        raise RuntimeError("tmux が PATH に見つかりません。")
+    return subprocess.run([tmux_bin, *args], capture_output=True, text=True)
+
+
+def _session_name_exists(session: str) -> bool:
+    return _tmux_cmd("has-session", "-t", session).returncode == 0
+
+
+def _capture_pane(target: str) -> str:
+    """セッション名またはペイン ID でペイン内容を取得する。"""
+    r = _tmux_cmd("capture-pane", "-p", "-t", target)
+    return r.stdout if r.returncode == 0 else ""
+
+
+# 後方互換エイリアス
+def _capture_session_pane(session: str) -> str:
+    return _capture_pane(session)
+
+
+def _pane_has_prompt(content: str) -> bool:
+    lines = [line for line in content.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return bool(_PROMPT_RE.search("\n".join(lines[-3:])))
+
+
+def _get_session_pane_cwd(session: str) -> str:
+    r = _tmux_cmd("display-message", "-p", "-t", session, "#{pane_current_path}")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _find_kiro_pane_in_session(session: str) -> str | None:
+    """セッション内の kiro-cli ペインを探してペイン ID を返す。
+
+    pane_current_command で python/python3（コントローラー）を除外し、
+    残りの中から kiro プロンプトが表示されているペインを優先して返す。
+    """
+    r = _tmux_cmd(
+        "list-panes", "-t", session, "-F",
+        "#{pane_id}\t#{pane_current_command}\t#{pane_dead}",
+    )
+    if r.returncode != 0:
+        return None
+
+    non_controller: list[str] = []
+    all_alive: list[str] = []
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        pane_id, command, dead = parts[0], parts[1], parts[2]
+        if dead == "1":
+            continue
+        all_alive.append(pane_id)
+        if not command.startswith("python"):
+            non_controller.append(pane_id)
+
+    # コントローラー以外でプロンプトが出ているペインを優先
+    for pane_id in non_controller:
+        if _pane_has_prompt(_capture_pane(pane_id)):
+            return pane_id
+
+    if non_controller:
+        return non_controller[0]
+
+    # フォールバックなし — コントローラーを kiro ペインと誤認しないため None を返す
+    return None
+
+
+def _resolve_target_pane(target: str) -> str | None:
+    """セッション名またはペイン ID から kiro-cli ペイン ID を解決する。
+
+    target が '%' で始まる場合はそのまま使用し、セッション名の場合は
+    _find_kiro_pane_in_session() で kiro ペインを探す。
+    """
+    if target.startswith("%"):
+        r = _tmux_cmd("display-message", "-p", "-t", target, "#{pane_id}")
+        return target if r.returncode == 0 else None
+    return _find_kiro_pane_in_session(target)
+
+
+def _wait_for_session_prompt(session: str, timeout: int, label: str) -> bool:
+    """セッション名でプロンプト待機（ensure_kiro_session の起動待ち用）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _session_name_exists(session):
+            print(f"[kiro-loop] ERROR: セッション '{session}' が消えました", file=sys.stderr)
+            return False
+        if _pane_has_prompt(_capture_session_pane(session)):
+            return True
+        time.sleep(0.5)
+    print(f"[kiro-loop] WARN: {label} がタイムアウトしました ({timeout}秒)", file=sys.stderr)
+    return False
+
+
+def _set_session_last_active(session: str) -> None:
+    _tmux_cmd("set-environment", "-t", session, _ENV_LAST_ACTIVE, str(int(time.time())))
+
+
+def ensure_kiro_session(session: str, work_dir: Path | None, kiro_bin: str) -> bool:
+    """kiro-cli が起動中の tmux セッションを確保する。"""
+    kiro_cmd = shlex.join([kiro_bin, "chat", "--trust-all-tools"])
+    cwd_str = str(work_dir) if work_dir else None
+
+    if not _session_name_exists(session):
+        effective_cwd = cwd_str or str(Path.home())
+        print(f"[kiro-loop] tmux セッション '{session}' を作成します (cwd={effective_cwd})", file=sys.stderr)
+        r = _tmux_cmd("new-session", "-d", "-s", session, "-c", effective_cwd, kiro_cmd)
+        if r.returncode != 0:
+            print(f"[kiro-loop] ERROR: セッション作成に失敗しました: {r.stderr.strip()}", file=sys.stderr)
+            return False
+        print("[kiro-loop] kiro-cli 起動待ち...", file=sys.stderr)
+        ok = _wait_for_session_prompt(session, _SEND_STARTUP_TIMEOUT, "起動")
+        if ok:
+            print("[kiro-loop] kiro-cli 起動完了", file=sys.stderr)
+            _set_session_last_active(session)
+        return ok
+
+    pane_cwd = _get_session_pane_cwd(session)
+    kiro_alive = _pane_has_prompt(_capture_session_pane(session))
+
+    if kiro_alive and (cwd_str is None or pane_cwd == cwd_str):
+        print(f"[kiro-loop] 既存セッション '{session}' を再利用します (cwd={pane_cwd})", file=sys.stderr)
+        return True
+
+    reason = f"cwd 変更 ({pane_cwd} → {cwd_str})" if kiro_alive else "kiro-cli が終了していました"
+    print(f"[kiro-loop] kiro-cli を再起動します ({reason})", file=sys.stderr)
+
+    effective_cwd = cwd_str or pane_cwd or str(Path.home())
+    r = _tmux_cmd("respawn-pane", "-k", "-t", session, "-c", effective_cwd, kiro_cmd)
+    if r.returncode != 0:
+        print(f"[kiro-loop] ERROR: respawn-pane に失敗しました: {r.stderr.strip()}", file=sys.stderr)
+        return False
+    print("[kiro-loop] kiro-cli 起動待ち...", file=sys.stderr)
+    ok = _wait_for_session_prompt(session, _SEND_STARTUP_TIMEOUT, "起動")
+    if ok:
+        print("[kiro-loop] kiro-cli 起動完了", file=sys.stderr)
+        _set_session_last_active(session)
+    return ok
+
+
+def send_prompt_to_session(session: str, text: str) -> bool:
+    """テキストを tmux セッションの kiro-cli ペインに送信する（応答待ちはしない）。
+
+    セッション名が渡された場合は _resolve_target_pane() で kiro-cli ペインを
+    特定してから送信する（コントローラーペインへの誤送信を防ぐ）。
+    """
+    pane_id = _resolve_target_pane(session)
+    if pane_id is None:
+        print(f"[kiro-loop] ERROR: kiro-cli ペインが見つかりません (target={session})", file=sys.stderr)
+        return False
+
+    single_line = " ".join(text.splitlines()).strip()
+    short = single_line[:80] + ("..." if len(single_line) > 80 else "")
+    print(f"[kiro-loop] 送信: {short} (pane={pane_id})", file=sys.stderr)
+
+    r = _tmux_cmd("send-keys", "-t", pane_id, "--", single_line, "Enter")
+    if r.returncode != 0:
+        print(f"[kiro-loop] ERROR: send-keys に失敗しました: {r.stderr.strip()}", file=sys.stderr)
+        return False
+
+    return True
+
+
+def _resolve_prompt_text(prompt_arg: str, cwd: Path) -> str:
+    """プロンプト引数を解決して送信テキストを返す。
+
+    解決順序:
+    1. ファイルとして存在する → kiro-cli にファイル内容の実行を指示
+    2. .kiro/kiro-loop.yml の定期プロンプト名と一致する → そのプロンプトテキスト
+    3. そのまま自然文として使用
+    """
+    candidate = Path(prompt_arg).expanduser()
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    if candidate.is_file():
+        content = candidate.read_text(encoding="utf-8").strip()
+        return f"以下のファイルの内容を読んで実行してください:\n\n{content}"
+
+    ws_prompts = load_prompt_config(str(cwd))
+    for p in ws_prompts:
+        if p.get("name") == prompt_arg:
+            return str(p.get("prompt", "")).strip()
+
+    return prompt_arg
+
+
+# ---------------------------------------------------------------------------
+# ls / send サブコマンド
+# ---------------------------------------------------------------------------
+
+def cmd_ls() -> None:
+    """kiro 関連の tmux セッションを一覧表示する。"""
+    tmux_bin = shutil.which("tmux")
+    if tmux_bin is None:
+        print("[kiro-loop] ERROR: tmux が見つかりません。", file=sys.stderr)
+        sys.exit(1)
+
+    result = subprocess.run(
+        [tmux_bin, "list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    if result.returncode != 0:
+        print("tmux セッションが見つかりません。")
+        return
+
+    sessions = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            sessions.append((parts[0], parts[1], parts[2]))
+
+    kiro_sessions = [(n, w, a) for n, w, a in sessions if n.startswith("kiro")]
+
+    if not kiro_sessions:
+        print("kiro 関連セッションが見つかりません。")
+        return
+
+    print(f"{'セッション名':<50} {'kiro pane':>10} {'attached':>9}")
+    print("-" * 72)
+    for name, _, attached in kiro_sessions:
+        pane_id = _find_kiro_pane_in_session(name) or "-"
+        attached_str = "yes" if attached != "0" else "no"
+        print(f"{name:<50} {pane_id:>10} {attached_str:>9}")
+
+
+def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
+    """プロンプトを tmux セッションの kiro-cli に送信する。"""
+    kiro_bin = shutil.which("kiro-cli")
+    if kiro_bin is None:
+        print("[kiro-loop] ERROR: kiro-cli が PATH に見つかりません。", file=sys.stderr)
+        sys.exit(1)
+
+    prompt_arg = " ".join(args.prompt).strip()
+    if not prompt_arg:
+        print("[kiro-loop] ERROR: プロンプトが空です。", file=sys.stderr)
+        sys.exit(1)
+
+    target = getattr(args, "session", None) or _DEFAULT_SEND_SESSION
+
+    work_dir: Path | None = None
+    raw_dir = getattr(args, "dir", None)
+    if raw_dir:
+        work_dir = Path(raw_dir).expanduser().resolve()
+        if not work_dir.is_dir():
+            print(f"[kiro-loop] ERROR: ディレクトリが存在しません: {work_dir}", file=sys.stderr)
+            sys.exit(1)
+
+    prompt_text = _resolve_prompt_text(prompt_arg, cwd)
+    print(f"[kiro-loop] 送信するプロンプト:\n{prompt_text}\n", file=sys.stderr)
+
+    # ターゲットペインを解決する。
+    # 既に kiro ペインが存在する場合は ensure_kiro_session を呼ばない。
+    # kiro-cli が処理中（プロンプト非表示）でも誤って再起動しないようにするため。
+    if target.startswith("%"):
+        r = _tmux_cmd("display-message", "-p", "-t", target, "#{pane_id}")
+        if r.returncode != 0:
+            print(f"[kiro-loop] ERROR: ペイン '{target}' が見つかりません。", file=sys.stderr)
+            sys.exit(1)
+        send_target = target
+    elif _session_name_exists(target):
+        existing_pane = _find_kiro_pane_in_session(target)
+        if existing_pane:
+            print(f"[kiro-loop] セッション '{target}' の kiro ペイン {existing_pane} を使用します。", file=sys.stderr)
+            send_target = existing_pane
+        else:
+            print(f"[kiro-loop] ERROR: セッション '{target}' に kiro ペインが見つかりません。", file=sys.stderr)
+            print("  kiro-loop ls で確認するか、kiro-loop send でスタンドアロンセッションを作成してください。", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # セッションが存在しない場合のみ新規作成
+        if not ensure_kiro_session(target, work_dir, kiro_bin):
+            sys.exit(1)
+        resolved = _resolve_target_pane(target)
+        if resolved is None:
+            print(f"[kiro-loop] ERROR: kiro-cli ペインが見つかりません (session={target})。", file=sys.stderr)
+            sys.exit(1)
+        send_target = resolved
+
+    if send_prompt_to_session(send_target, prompt_text):
+        print("[kiro-loop] 完了しました", file=sys.stderr)
+    else:
+        print("[kiro-loop] WARN: 応答待ちがタイムアウトしました", file=sys.stderr)
+        sys.exit(2)
+
+
+# ---------------------------------------------------------------------------
 # メイン
 # ---------------------------------------------------------------------------
 
@@ -1581,12 +1970,13 @@ def main() -> None:
         description="kiro-cli を定期プロンプトで自動操作するスクリプト",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-起動例:
-  python kiro-loop.py          # カレントディレクトリの設定ファイルを使用
-
-起動後のコマンド例:
-  > status                     状態表示
-  > quit                       終了
+使い方:
+  kiro-loop                              # デーモンモードで起動
+  kiro-loop ls                           # kiro 関連セッションを一覧表示
+  kiro-loop send "プロンプト"             # セッションにプロンプトを送信
+  kiro-loop send task.md                 # ファイル内容を読んで実行
+  kiro-loop send "MR コメント返答"        # kiro-loop.yaml の定期プロンプト名で送信
+  kiro-loop send -s SESSION "プロンプト"  # 指定セッションに送信
 """,
     )
     parser.add_argument(
@@ -1614,11 +2004,57 @@ def main() -> None:
         "--instance-id",
         help=argparse.SUPPRESS,
     )
+
+    subparsers = parser.add_subparsers(dest="subcommand")
+
+    subparsers.add_parser("ls", help="kiro 関連の tmux セッションを一覧表示する")
+
+    send_parser = subparsers.add_parser(
+        "send",
+        help="tmux セッションの kiro-cli にプロンプトを送信する",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="プロンプトを kiro-cli tmux セッションに送信する",
+        epilog=f"""
+プロンプトの種類:
+  自然文:                kiro-loop send "コードをレビューしてください"
+  マークダウンファイル:   kiro-loop send task.md
+  スケジュール済み名:     kiro-loop send "MR コメント返答"
+
+セッションを指定しない場合は '{_DEFAULT_SEND_SESSION}' セッションを使用します。
+""",
+    )
+    send_parser.add_argument(
+        "prompt",
+        nargs="+",
+        metavar="PROMPT",
+        help="送信するプロンプト（自然文、ファイルパス、またはスケジュール名）",
+    )
+    send_parser.add_argument(
+        "--session", "-s",
+        default=None,
+        metavar="NAME",
+        help=f"対象 tmux セッション名（省略時: '{_DEFAULT_SEND_SESSION}'）",
+    )
+    send_parser.add_argument(
+        "--dir", "-d",
+        default=None,
+        metavar="DIR",
+        help="作業ディレクトリ（省略時: カレントディレクトリ）",
+    )
+
     args = parser.parse_args()
 
     logging.getLogger().setLevel(args.log_level)
 
     cwd = Path.cwd()
+
+    if args.subcommand == "ls":
+        cmd_ls()
+        return
+
+    if args.subcommand == "send":
+        cmd_send(args, cwd)
+        return
 
     running_pid = find_running_instance(cwd)
     if running_pid is not None:
