@@ -7,9 +7,12 @@ YAMLのtransitions定義に従って遷移先を確定する。
 状態遷移はこのスクリプトが決定論的に処理し、エージェントが勝手に選ばない。
 
 使い方:
-  python scripts/next_state.py workflow.yaml --state classify --evals '{"0": true, "1": false}'
+  python scripts/next_state.py {名前} --initial-state
+  python scripts/next_state.py {名前} --state classify --list-conditions
+  python scripts/next_state.py {名前} --state classify --evals '{"0": true, "1": false}'
 
 出力:
+  initial_state_id       (--initial-state の場合)
   次のstate_id           (マッチしたトランジションがある場合)
   NONE                   (一致するトランジションがない場合)
   TERMINAL               (現在のステートが終端ステートの場合)
@@ -37,8 +40,12 @@ def main() -> None:
         help="ワークフロー YAML ファイルのパス、または .statemachine/{name} の名前"
     )
     parser.add_argument(
-        "--state", required=True,
-        help="現在のステートID"
+        "--initial-state", action="store_true",
+        help="initial_state を出力して終了（実行開始時に使用）"
+    )
+    parser.add_argument(
+        "--state", default=None,
+        help="現在のステートID（--initial-state 以外では必須）"
     )
     parser.add_argument(
         "--evals",
@@ -53,6 +60,15 @@ def main() -> None:
     args = parser.parse_args()
 
     wf = load_workflow(resolve_workflow_path(args.workflow))
+
+    # --initial-state: 開始ステートを返して終了
+    if args.initial_state:
+        print(wf.initial_state)
+        return
+
+    if args.state is None:
+        print("ERROR: --state は --initial-state 以外では必須です", file=sys.stderr)
+        sys.exit(1)
 
     state = wf.states.get(args.state)
     if state is None:
@@ -92,8 +108,7 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
-    # --list-conditions なしで --evals も未指定はエラー
-    if not args.list_conditions and args.evals is None:
+    if args.evals is None:
         print("ERROR: --evals は --list-conditions なしの場合は必須です", file=sys.stderr)
         sys.exit(1)
 
