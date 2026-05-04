@@ -320,19 +320,14 @@ python .github/skills/statemachine-use/scripts/run_machine.py .statemachine/my_w
 完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
 ```
 
-### 繰り返しパターン
+### 繰り返しパターン（ContinueAsNew Loop）
 
-3つのバリアントがあり、詳細・テンプレートは `references/patterns.md` を参照。
+処理を1件完了するたびに継続確認ステートへ遷移し、次があれば処理ステートへ戻る2ステート構成。
+詳細・テンプレートは `references/patterns.md` を参照。
 
-| バリアント | 一般名 | 用途 |
-|---|---|---|
-| ① 基本 do-while | **後判定ループ / Sequential Loop**（BPMN） | 最大N回の反復。カウンター制御 |
-| ② Queue Drain | **キュードレインパターン**（consume-until-empty） | リスト・キューを1件ずつ消費しなくなるまで繰り返す |
-| ③ 問い合わせ型 | **Interactive Queue Drain** | 処理後に「次があるか」をユーザー/外部に確認してから継続判断 |
-
-共通の実装原則（do-while の本質）:
-- **アクションを先に実行し、完了後に継続条件を確認する**（前判定しない）
-- 自己ループトランジション（`from: X → to: X`）で表現する
+実装原則:
+- **処理を先に実行し、完了後に継続確認する**（前判定しない）
+- `process → check_next → process` のサイクルで表現する
 - 上限カウンターを context に持ち、無限ループを防ぐ
 
 ### エラーハンドリング
@@ -367,7 +362,7 @@ transitions:
 
 | パターン | 用途 | 参照 |
 |---|---|---|
-| **do-while / Queue Drain** | 繰り返し: 処理→継続確認のループ。カウンター制御・リスト消費・問い合わせ型の3バリアント | patterns.md |
+| **ContinueAsNew Loop** | 繰り返し: 処理→継続確認の2ステート構成。なくなるまで継続 | patterns.md |
 | **Fan-out/Fan-in** | 並列処理: 1アクションで複数サブエージェントを同時起動し結果を集約 | patterns.md |
 | **ゲートステート** | 副作用の大きい操作の後にチェックリスト検証を挟む | patterns.md |
 | **ReActアンカリング** | 複雑な判断ステートで思考→行動→観察の3段階を強制 | patterns.md |
