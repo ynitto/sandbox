@@ -432,7 +432,7 @@ def prompt_skill_configs(installed: list[dict], paths: dict[str, str]) -> None:
                 print("  スキップしました（後でスキルの init スクリプトを実行して設定できます）")
                 continue
 
-        print(f"  設定スクリプトを実行します...")
+        print("  設定スクリプトを実行します...")
         try:
             subprocess.run([sys.executable, item["script"]], check=False)
         except Exception as e:
