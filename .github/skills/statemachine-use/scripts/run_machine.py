@@ -10,10 +10,10 @@ run_machine.py  —  yaml-statemachine スキル用 CLI ランナー
   python scripts/run_machine.py workflow.yaml --agent claude
   python scripts/run_machine.py workflow.yaml --agent copilot
   python scripts/run_machine.py workflow.yaml --agent kiro
-  python scripts/run_machine.py workflow.yaml --agent anthropic --model claude-sonnet-4-20250514
+  python scripts/run_machine.py workflow.yaml --agent anthropic --model <model-id>
 
 LLM バックエンド:
-  claude     Claude Code CLI (`claude -p`)           ← デフォルト
+  claude     Claude Code CLI (`claude -p`)
   copilot    GitHub Copilot CLI (`gh copilot explain`)
   kiro       Kiro CLI (`kiro -p`)
   anthropic  Anthropic Python SDK（ANTHROPIC_API_KEY 必須）
@@ -95,7 +95,7 @@ async def call_cli_llm(prompt: str, cli: str, model: str | None = None) -> str:
     return stdout.decode().strip()
 
 
-async def anthropic_llm(prompt: str, model: str = "claude-sonnet-4-20250514") -> str:
+async def anthropic_llm(prompt: str, model: str) -> str:
     """Anthropic Python SDK を呼び出してテキストレスポンスを返す。"""
     try:
         import anthropic
@@ -161,8 +161,8 @@ def parse_args() -> argparse.Namespace:
         "--model",
         default=None,
         help=(
-            "モデル ID を指定（claude / anthropic のみ有効）。"
-            "例: claude-opus-4-5, claude-sonnet-4-20250514"
+            "使用するモデル ID（--agent のバックエンドでサポートされている ID を指定）。"
+            "省略時はバックエンドのデフォルトモデルを使用。"
         ),
     )
     return parser.parse_args()
@@ -239,7 +239,10 @@ async def main() -> None:
 
     # LLM 関数を構築
     if args.agent == "anthropic":
-        model = args.model or "claude-sonnet-4-20250514"
+        if not args.model:
+            print("ERROR: anthropic バックエンドでは --model でモデル ID を指定してください。")
+            sys.exit(1)
+        model = args.model
         async def llm_fn(prompt: str) -> str:
             return await anthropic_llm(prompt, model=model)
     else:

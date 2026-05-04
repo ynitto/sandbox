@@ -118,8 +118,8 @@ config:
   on_max_steps: "error"  # "error" | "stop" | ジャンプ先 state_id
   on_no_transition: "error"  # 条件が一致しない場合の動作
   verbose: false         # 各トランジションの推論をログ出力
-  condition_model: "claude-sonnet-4-20250514"  # 条件評価に使用するモデル
-  action_model: "claude-sonnet-4-20250514"     # ステートアクションに使用するモデル
+  condition_model: "your-model-id"  # 条件評価に使用するモデルID（省略時はエージェントのデフォルトモデルを使用）
+  action_model: "your-model-id"     # アクション実行に使用するモデルID（省略時はエージェントのデフォルトモデルを使用）
 ```
 
 ## Context Variable Reference
