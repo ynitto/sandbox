@@ -62,18 +62,55 @@ class WorkflowDefinition:
 #  YAML パーサー
 # ─────────────────────────────────────────────
 
+def resolve_workflow_path(path_or_name: str | Path) -> Path:
+    """名前またはパスから workflow.yaml を解決する。"""
+    p = Path(path_or_name)
+    if p.suffix in (".yaml", ".yml"):
+        return p
+    # .statemachine/{name}/workflow.yaml を試みる
+    candidate = Path(".statemachine") / p / "workflow.yaml"
+    if candidate.exists():
+        return candidate
+    # ディレクトリとして扱う
+    return p / "workflow.yaml"
+
+
+def _load_text_from_file(value: str, base_dir: Path) -> str:
+    """file: プレフィックスまたはファイルパスからテキストを読み込む。"""
+    if value.startswith("file:"):
+        file_path = base_dir / value[5:].strip()
+        return file_path.read_text(encoding="utf-8")
+    return value
+
+
 def load_workflow(path: str | Path) -> WorkflowDefinition:
-    """YAML ワークフローファイルを WorkflowDefinition にパースする。"""
+    """YAML ワークフローファイルを WorkflowDefinition にパースする。
+    名前を渡した場合は .statemachine/{name}/workflow.yaml を解決する。"""
+    path = resolve_workflow_path(path)
+    base_dir = path.parent
+
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     # ステート
     states: dict[str, StateConfig] = {}
     for state_id, sdef in data.get("states", {}).items():
+        # action の解決: action_file > file: prefix > インライン > 自動探索
+        action = sdef.get("action", "")
+        action_file = sdef.get("action_file", "")
+        if action_file:
+            action = (base_dir / action_file).read_text(encoding="utf-8")
+        elif action.startswith("file:"):
+            action = _load_text_from_file(action, base_dir)
+        elif not action:
+            auto = base_dir / "actions" / f"{state_id}.md"
+            if auto.exists():
+                action = auto.read_text(encoding="utf-8")
+
         states[state_id] = StateConfig(
             id=state_id,
             description=sdef.get("description", state_id),
-            action=sdef.get("action", ""),
+            action=action,
             terminal=sdef.get("terminal", False),
             on_enter=sdef.get("on_enter", ""),
             on_exit=sdef.get("on_exit", ""),
@@ -85,10 +122,23 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
     raw_transitions = data.get("transitions", [])
     transitions: list[TransitionConfig] = []
     for t in raw_transitions:
+        # condition の解決: condition_file > file: prefix > インライン > 自動探索
+        condition = t.get("condition", "")
+        condition_file = t.get("condition_file", "")
+        if condition_file:
+            condition = (base_dir / condition_file).read_text(encoding="utf-8")
+        elif condition.startswith("file:"):
+            condition = _load_text_from_file(condition, base_dir)
+        elif not condition:
+            from_id = t["from"].replace("*", "wildcard")
+            auto = base_dir / "conditions" / f"{from_id}_to_{t['to']}.md"
+            if auto.exists():
+                condition = auto.read_text(encoding="utf-8")
+
         transitions.append(TransitionConfig(
             from_state=t["from"],
             to_state=t["to"],
-            condition=t["condition"],
+            condition=condition,
             priority=t.get("priority", 0),
             description=t.get("description", ""),
         ))

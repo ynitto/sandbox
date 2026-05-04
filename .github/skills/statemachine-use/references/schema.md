@@ -39,6 +39,7 @@ states:
         {{current_state}}   - このステートのID
         {{step_count}}      - 発生したトランジションの数
         {{history.STATE_ID}} - 特定の名前付きステートの出力
+    action_file: actions/my_state.md   # 外部ファイル参照（action より優先）
     terminal: false
     on_enter: "オプション: action に前置される追加指示"
     on_exit: "オプション: action の後、トランジション前に実行される指示"
@@ -50,12 +51,17 @@ states:
 | フィールド | 型 | 必須 | デフォルト | 説明 |
 |-------|------|----------|---------|-------------|
 | `description` | 文字列 | いいえ | ステートID | 人が読めるラベル |
-| `action` | 文字列 | はい* | — | このステートの LLM プロンプト。*終端ステートでは不要 |
+| `action` | 文字列 | はい* | — | このステートの LLM プロンプト。`file: path` 形式でファイル参照も可。*終端ステートでは不要 |
+| `action_file` | 文字列 | いいえ | — | アクションを外部マークダウンファイルで指定（`action` より優先）。workflow.yaml からの相対パス |
 | `terminal` | 真偽値 | いいえ | false | true の場合、ここで実行終了 |
 | `on_enter` | 文字列 | いいえ | — | action プロンプトに前置されるプレフィックス |
 | `on_exit` | 文字列 | いいえ | — | action 後のプロンプト（出力は格納されるがルーティングには使用しない） |
 | `output_key` | 文字列 | いいえ | — | `context[output_key]` にも出力を格納 |
 | `max_retries` | 整数 | いいえ | 0 | トランジション評価が失敗した場合の action のリトライ回数 |
+
+### アクションの自動探索
+
+`action` も `action_file` も指定されていない場合、`actions/{state_id}.md` が存在すれば自動で読み込む。
 
 ## トランジション定義
 
@@ -72,6 +78,7 @@ transitions:
         "分類結果が BUG または FEATURE である"
         "{{retry_count}} が 2 より大きい"
         "前のステートが JSON オブジェクトを生成した"
+    condition_file: conditions/source_to_target.md  # 外部ファイル参照（condition より優先）
     priority: 0
     description: "このトランジションの任意ラベル"
 ```
@@ -82,9 +89,14 @@ transitions:
 |-------|------|----------|---------|-------------|
 | `from` | 文字列 | はい | — | 元ステートのID。ワイルドカードは `"*"` |
 | `to` | 文字列 | はい | — | 遷移先ステートのID |
-| `condition` | 文字列 | はい | — | 自然言語条件（LLM が YES/NO で評価） |
+| `condition` | 文字列 | はい* | — | 自然言語条件（LLM が YES/NO で評価）。`file: path` 形式も可。*`condition_file` がある場合は不要 |
+| `condition_file` | 文字列 | いいえ | — | 条件を外部マークダウンファイルで指定（`condition` より優先）。workflow.yaml からの相対パス |
 | `priority` | 整数 | いいえ | 0 | 評価順序（小さいほど先） |
 | `description` | 文字列 | いいえ | — | 人が読めるラベル |
+
+### 条件の自動探索
+
+`condition` も `condition_file` も指定されていない場合、`conditions/{from}_to_{to}.md` が存在すれば自動で読み込む（`from` が `*` の場合は `wildcard_to_{to}.md`）。
 
 ### ワイルドカードトランジション
 
