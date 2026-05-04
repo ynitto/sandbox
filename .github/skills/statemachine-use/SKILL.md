@@ -1,8 +1,8 @@
 ---
 name: statemachine-use
-description: 「ステートマシンを実行して」「YAMLワークフローを動かして」「ワークフローを回して」「エージェントループを起動して」「このYAMLを実行して」などで発動。YAML で定義した states/transitions ワークフローを LLM 駆動・ハイブリッド方式（アクション/条件判定は LLM、状態遷移は Python が確定）で実行するスキル。
+description: 「ステートマシンを実行して」「ステートマシンを作成/作って」「YAMLワークフローを動かして」「ワークフローを回して」「エージェントループを起動して」「このYAMLを実行して」などで発動。作成モード（手順を.statemachine/{名前}/に生成）と実行モード（YAMLをLLM駆動で実行）を持つ。
 metadata:
-  version: 1.1.0
+  version: 2.0.0
   tier: experimental
   category: workflow
   tags:
@@ -14,247 +14,439 @@ metadata:
 
 # YAML ステートマシン スキル
 
-YAMLファイルで定義された、LLM駆動のステートマシンを実行します。
-各ステートはLLM経由で自然言語アクションを実行し、各トランジション条件もLLMが評価します。
-新しいワークフローを追加するためのコード変更は不要です。
+YAMLと外部マークダウンファイルで定義されたLLM駆動ステートマシンを**作成・実行**します。
 
-## YAML スキーマ（クイックリファレンス）
+---
+
+## モードの選択
+
+| ユーザーの意図 | モード |
+|---|---|
+| 「〜という手順でステートマシンを作って」 | **作成モード** |
+| 「〜を実行して」「〜を動かして」「YAMLを回して」 | **実行モード** |
+
+---
+
+## 作成モード
+
+ユーザーが自然言語で説明した手順を `.statemachine/{名前}/` フォルダ以下のYAML+マークダウンに落とし込む。
+
+### ステップ1: 利用可能なスキルを調査する
+
+```bash
+ls .github/skills/
+```
+
+出力されたスキル名を記録する。アクション定義でスキル呼び出しを活用できる場合に参照する。
+
+### ステップ2: 手順を状態遷移として分解する
+
+ユーザーの手順を分析し、以下の原則でステートを設計する:
+
+**LLM読み飛ばし防止の設計原則（重要）**
+
+1. **ルーティングロジックをアクションに書かない**  
+   アクションは「何をするか」だけを記述する。「問題なければ承認し、問題があれば修正」のような分岐判断はアクションに書かず、トランジション条件に書く。
+
+2. **出力形式を強制する**  
+   条件が評価しやすいよう、アクションは特定のキーワードや形式での出力を要求する。  
+   例: 「PASS / MINOR / MAJOR / CRITICAL のいずれかで評価を出力してください」
+
+3. **ループはdo-whileパターンで実現する**  
+   ループが必要な場合、アクションを先に実行してから条件で継続/終了を判断させる。ループ全体を先にアクションへ提示しない。コンテキスト変数（`retry_count`等）でカウントして上限を設ける。
+
+4. **将来のステートをアクションにヒントとして含めない**  
+   アクションプロンプトは現在のステートの作業のみを指示する。次に何が来るかをLLMに予告しない。
+
+5. **アクションの末尾に単一指示を付与する**  
+   各アクションmdファイルの末尾に必ず追記する:
+   ```
+   この指示に従ってタスクを実行してください。
+   完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
+   ```
+
+6. **スキルを使ってLLMにアクションを実行させる**  
+   スクリプトは原則作成しない。利用可能なスキル（Step1で確認）や他のClaude機能を呼び出す形でアクションを記述する。
+
+7. **並列処理を検出したら Fan-out/Fan-in パターンを使う**  
+   手順に「同時に」「並列で」「〜と〜を一緒に」のような記述がある場合、シーケンシャルなステートを複数作らず、1つのアクション内でサブエージェントを並列起動するパターンを使う。詳細は「LLM 安全設計チートシート」の並列実行パターンを参照。
+
+8. **主要ステップの後にゲートステートを挟む**  
+   副作用が大きい操作（ファイル変更・API呼び出し・デプロイ等）の後には、必ず検証ゲートステートを挿入する。これにより後続のロールバック不能な操作への進行前に出力の正当性を確認できる。
+
+### ステップ3: フォルダ構造を作成する
+
+```
+.statemachine/{名前}/
+  workflow.yaml          # ステート・トランジション定義
+  actions/              # 各ステートのアクション（マークダウン）
+    {state_id}.md
+  conditions/           # 複雑な条件（マークダウン）※シンプルな条件はYAMLインラインでよい
+    {from}_to_{to}.md
+```
+
+### ステップ4: ファイルを生成する
+
+**workflow.yaml の構造:**
 
 ```yaml
 name: "ワークフロー名"
-description: "このワークフローの説明"
-initial_state: state_id
-context: {}           # オプション: 初期共有コンテキスト変数
+description: "説明"
+initial_state: first_state
+context:
+  # ループカウンターなど必要な初期変数
+  retry_count: 0
+  max_retries: 3
+
+config:
+  max_steps: 30
+  on_no_transition: "error"
 
 states:
-  state_id:
-    description: "人が読めるラベル"
-    action: |
-      このステートでエージェントが実行すべき自然言語の指示。
-      {{variable_name}} でコンテキスト変数を参照できます。
-      エージェントはこれを実行して出力を生成します。
-    terminal: false   # 終端ステートは true に設定（トランジション不要）
+  first_state:
+    description: "最初のステート"
+    action_file: actions/first_state.md   # 外部ファイル参照
+    output_key: first_result
+
+  loop_state:
+    description: "繰り返しステート"
+    action_file: actions/loop_state.md
+
+  done:
+    description: "完了"
+    action_file: actions/done.md
+    terminal: true
 
 transitions:
-  - from: state_id
-    to: other_state_id
-    condition: |
-      エージェントが真偽で評価する自然言語条件。
-      例: "ユーザーのリクエストに疑問符が含まれている"
-      例: "前のステートの出力がエラーを示している"
-    priority: 1       # 小さいほど先に評価（デフォルト: 0）
+  - from: first_state
+    to: loop_state
+    condition: "最後の出力に SUCCESS という単語が含まれている"
+    priority: 1
+  - from: loop_state
+    to: loop_state                        # ループ: 同じステートへ戻る
+    condition_file: conditions/loop_state_to_loop_state.md
+    priority: 1
+  - from: loop_state
+    to: done
+    condition: "{{retry_count}} が {{max_retries}} 以上である"
+    priority: 2
 ```
 
-全オプションを含む完全なスキーマは `references/schema.md` を参照してください。
+**actions/{state_id}.md の構造:**
 
-## 実行方法
+```markdown
+## [ステートID の作業]
 
-ユーザーが「`path/to/workflow.yaml` を実行して」と伝えると、
-エージェントが以下のハイブリッドプロトコルでインライン実行します。
-**YAMLワークフローはファイルパスで渡すことを前提とします。**
+（利用可能なスキルや具体的な指示を記述）
 
-**アクション実行・条件判定 → エージェントLLMが処理**  
-**状態遷移の確定 → `scripts/next_state.py` が決定論的に処理**
+**入力:** {{input}}
+**前のステートの出力:** {{last_output}}
 
-### インライン実行プロトコル
+（作業内容の詳細）
 
-#### Step 0: 準備
+**出力形式:** 〇〇 / △△ / ×× のいずれかの単語のみで回答してください。
 
-ファイルの存在と内容を確認し、ワークフローを検証する:
+この指示に従ってタスクを実行してください。
+完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
+```
+
+**conditions/{from}_to_{to}.md の構造（複雑な条件のみ）:**
+
+```markdown
+以下の条件をYES/NOで評価してください:
+
+- 最後の出力が「RETRY」で始まる、かつ
+- {{retry_count}} が {{max_retries}} 未満である
+
+両方を満たす場合のみ YES と回答してください。
+```
+
+---
+
+## 実行モード
+
+### 実行トリガー
+
+ユーザーが名前または既存YAMLパスを指定して実行を要求した場合。
+
+- 名前指定: `.statemachine/{名前}/workflow.yaml` を読み込む
+- パス指定: 指定されたYAMLを直接読み込む
+
+### Step 0: 準備
+
 ```bash
-python scripts/run_machine.py path/to/workflow.yaml --dry-run
+python .github/skills/statemachine-use/scripts/run_machine.py .statemachine/{名前}/workflow.yaml --dry-run
 ```
 
-検証が通ったら、initial_state を確認して実行を開始する。
+または名前で:
+```bash
+python .github/skills/statemachine-use/scripts/next_state.py {名前} --state {initial_state} --list-conditions
+```
 
-#### Step 1〜N: ステートループ（terminal まで繰り返す）
+検証が通ったら `initial_state` を確認して実行を開始する。
+
+### Step 1〜N: ステートループ（terminal まで繰り返す）
+
+**現在のステートに入ったことを宣言する（毎ステート必須）:**
+
+```
+## [現在のステート: {state_id}]
+```
 
 **① 条件リストを取得する（Python）**
+
 ```bash
-python scripts/next_state.py path/to/workflow.yaml --state <現在のstate_id> --list-conditions
+python .github/skills/statemachine-use/scripts/next_state.py .statemachine/{名前}/workflow.yaml \
+  --state {現在のstate_id} --list-conditions
 ```
+
 出力例:
 ```json
 {
   "state": "classify",
   "conditions": [
-    {"index": 0, "to": "handle_bug",      "condition": "The last output is exactly the word BUG"},
-    {"index": 1, "to": "handle_feature",  "condition": "The last output is exactly the word FEATURE"},
-    {"index": 2, "to": "handle_question", "condition": "The last output is exactly the word QUESTION"}
+    {"index": 0, "to": "handle_bug", "condition": "最後の出力がBUGという単語のみである"},
+    {"index": 1, "to": "handle_feature", "condition": "最後の出力がFEATUREという単語のみである"}
   ]
 }
 ```
 
 **② アクションを実行する（LLM）**
 
-`action` フィールドのプロンプトを実行し、出力を `last_output` として記録する。
+`action` フィールド（または参照先mdファイル）のプロンプトを**そのまま**実行する。  
+出力を `last_output` として記録する。
+
+> **重要**: アクションを実行する前に条件を読んで結果を予測してはならない。アクションの出力が確定してから条件を評価する。
 
 **③ 各条件を評価する（LLM）**
 
 `last_output` に対して各条件を YES / NO で評価し、JSON を構築する:
 ```json
-{"0": true, "1": false, "2": false}
+{"0": true, "1": false}
 ```
 
 **④ 遷移先を確定する（Python）**
+
 ```bash
-python scripts/next_state.py path/to/workflow.yaml --state <現在のstate_id> --evals '{"0": true, "1": false, "2": false}'
+python .github/skills/statemachine-use/scripts/next_state.py .statemachine/{名前}/workflow.yaml \
+  --state {現在のstate_id} --evals '{"0": true, "1": false}'
 ```
-出力: `handle_bug`（次のstate_id）、`NONE`（一致なし）、`TERMINAL`（終端）
+
+出力: 次の `state_id`、`NONE`（一致なし）、`TERMINAL`（終端）
 
 **⑤ 遷移 or 終了**
 
-- 次のstate_idが返されたら → そのステートへ移動して Step 1 に戻る
-- `TERMINAL` が返されたら → 実行完了
-- `NONE` が返されたら → `on_no_transition` 設定に従う（デフォルト: エラー）
+- 次の `state_id` → そのステートへ移動して Step 1 に戻る
+- `TERMINAL` → 実行完了、最終出力を表示
+- `NONE` → `on_no_transition` 設定に従う（デフォルト: エラー）
 
 ---
 
-### `next_state.py` オプション
+## YAML スキーマ（クイックリファレンス）
 
+```yaml
+states:
+  state_id:
+    description: "ラベル"
+    action: |          # インライン記述
+      プロンプト
+    action_file: actions/state_id.md   # 外部ファイル（action より優先）
+    terminal: false
+    output_key: "my_key"
+
+transitions:
+  - from: state_id
+    to: other_state_id
+    condition: |       # インライン条件
+      自然言語条件
+    condition_file: conditions/from_to_to.md  # 外部ファイル（condition より優先）
+    priority: 1
 ```
-workflow              ワークフロー YAML ファイルのパス
---state STATE         現在のステートID（必須）
---evals JSON          条件評価結果 JSON（--list-conditions なしの場合は必須）
---list-conditions     評価すべき条件リストを表示して終了（eval前の確認用）
-```
+
+全フィールドの仕様は `references/schema.md` を参照。
+
+---
+
+## ファイル参照の優先順位
+
+アクション・条件のテキスト解決は以下の順で行う:
+
+1. `action_file:` / `condition_file:` フィールド（明示的なファイルパス）
+2. `action:` / `condition:` フィールドが `file:` で始まる場合（`file: actions/foo.md`）
+3. `action:` / `condition:` フィールドのインラインテキスト
+4. 自動探索: `actions/{state_id}.md` / `conditions/{from}_to_{to}.md` が存在すれば自動読み込み
 
 ---
 
 ## 外部実行: `run_machine.py`（CLI ランナー）
 
-LLM バックエンドを選択してコマンドラインから実行できます:
-
 ```bash
-# Claude Code CLI（デフォルト）
-python scripts/run_machine.py path/to/workflow.yaml --agent claude
+# 名前で実行（.statemachine/{name}/workflow.yaml を自動探索）
+python .github/skills/statemachine-use/scripts/run_machine.py .statemachine/my_workflow/workflow.yaml --agent claude
 
 # GitHub Copilot CLI
-python scripts/run_machine.py path/to/workflow.yaml --agent copilot
-
-# Kiro CLI
-python scripts/run_machine.py path/to/workflow.yaml --agent kiro
-
-# Anthropic Python SDK（ANTHROPIC_API_KEY 必須）
-python scripts/run_machine.py path/to/workflow.yaml --agent anthropic --model claude-sonnet-4-20250514
+python .github/skills/statemachine-use/scripts/run_machine.py .statemachine/my_workflow/workflow.yaml --agent copilot
 ```
 
 主要オプション:
 ```
 --agent {claude,copilot,kiro,anthropic}  LLM バックエンド（デフォルト: claude）
---model MODEL                          モデル ID（claude / anthropic のみ有効）
---input TEXT                           初期入力テキスト
---context KEY=VALUE                    初期コンテキスト変数（繰り返し指定可）
---verbose                              遷移の詳細ログを表示
---dry-run                              検証のみ、実行しない
---output-json                          最終結果を JSON で出力
+--input TEXT                             初期入力テキスト
+--context KEY=VALUE                      初期コンテキスト変数（繰り返し指定可）
+--verbose                                遷移の詳細ログを表示
+--dry-run                                検証のみ、実行しない
 ```
 
-## 実行モデル
+---
 
+## LLM 安全設計チートシート
+
+効果的なステートマシン定義のための設計パターン。
+
+### アクションプロンプトの書き方
+
+```markdown
+## [state_id: 何をするステートか]
+
+（具体的な作業指示。スキル名があれば活用する）
+
+**入力:** {{input}}
+
+（詳細な指示）
+
+**出力形式:** PASS または FAIL の一語のみで回答してください。
+
+この指示に従ってタスクを実行してください。
+完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
 ```
-[initial_state]
-     │
-     ▼
-  state.action を LLM 経由で実行 → 出力をコンテキストに保存
-     │
-     ▼
-  各出力トランジション条件を LLM で評価（priority 順）
-     │
-     ├── 条件 TRUE → 対象ステートへ移動
-     └── 条件が一致しない → ERROR またはループ（設定可能）
-```
 
-**コンテキストの蓄積**: 各ステートの出力は `context["last_output"]` と
-`context["history"][state_id]` に格納されます。アクションは以前の出力を参照できます。
+### 繰り返しパターン（ContinueAsNew Loop）
 
-**終端ステート**: `terminal: true` のステートは実行を終了し、
-蓄積されたコンテキストを結果として返します。
+処理を1件完了するたびに継続確認ステートへ遷移し、次があれば処理ステートへ戻る2ステート構成。
+詳細・テンプレートは `references/patterns.md` を参照。
 
-## 効果的なステートマシンの書き方
-
-### アクションプロンプト
-- 具体的に記述: 「ユーザーの意図を question, complaint, request のいずれかに分類してください」
-- コンテキストを参照: 「分類結果 {{history.classify}} を踏まえて返答を作成してください」
-- 出力を制約: 「YES または NO の一語のみで回答してください」
-
-### トランジション条件
-- 曖昧にしない: 「最後の出力が 'YES' で始まる」（「肯定的に見える」はNG）
-- コンテキストを活用: 「変数 {{retry_count}} が 3 未満である」
-- 条件を連鎖: `priority` で評価順序を制御
+実装原則:
+- **処理を先に実行し、完了後に継続確認する**（前判定しない）
+- `process → check_next → process` のサイクルで表現する
+- 上限カウンターを context に持ち、無限ループを防ぐ
 
 ### エラーハンドリング
+
 ```yaml
 states:
   error:
     description: "エラーハンドラー"
-    action: "{{last_output}} に基づいて何が問題だったかを説明し、復旧手順を提案してください"
+    action_file: actions/error.md
     terminal: true
 
 transitions:
-  - from: any_state
+  - from: "*"
     to: error
-    condition: "最後の出力に ERROR または FAILED という単語が含まれている"
-    priority: 99   # 通常のトランジションの後に評価
+    condition: "最後の出力に FATAL ERROR または CRITICAL というフレーズが含まれている"
+    priority: 100
 ```
 
-## ファイル構成
+### トランジション条件の書き方
 
+- 明確に: 「最後の出力が 'YES' で始まる」（「肯定的に見える」はNG）
+- コンテキストを使う: 「{{retry_count}} が 3 未満である」
+- 排他的に: 優先度付きで条件が重複しないよう設計する
+
+---
+
+## 制御フローパターン集
+
+詳細なテンプレートとYAML例は `references/patterns.md` を参照。
+
+### 概要
+
+| パターン | 用途 | 参照 |
+|---|---|---|
+| **ContinueAsNew Loop** | 繰り返し: 処理→継続確認の2ステート構成。なくなるまで継続 | patterns.md |
+| **Fan-out/Fan-in** | 並列処理: 1アクションで複数サブエージェントを同時起動し結果を集約 | patterns.md |
+| **ゲートステート** | 副作用の大きい操作の後にチェックリスト検証を挟む | patterns.md |
+| **ReActアンカリング** | 複雑な判断ステートで思考→行動→観察の3段階を強制 | patterns.md |
+| **自己検証フィールド** | アクション末尾に出力前チェックリストを追加 | patterns.md |
+| **マイルストーンアンカー** | `output_key` で中間結果を名前付き保存し後続ステートで参照 | patterns.md |
+| **Saga（補償トランザクション）** | 複数ステップ失敗時に補償アクションで前の変更を取り消す | patterns.md |
+
+### 作成モードでのパターン自動適用
+
+作成モードでは手順を分析し、以下を検出した場合に対応パターンを自動適用する:
+
+- 「同時に」「並列で」「〜と〜を一緒に」→ **Fan-out/Fan-in**
+- 「確認してから」「チェックして」副作用の大きい操作後 → **ゲートステート**
+- 複雑な条件判断・推論を含むステート → **ReActアンカリング**
+- 5ステート以上の長いワークフロー → **マイルストーンアンカー**
+- 「失敗したら元に戻す」「ロールバック」 → **Saga**
+
+---
+
+## フォルダ構成
+
+- `.statemachine/{名前}/workflow.yaml` — ステート・トランジション定義
+- `.statemachine/{名前}/actions/{state_id}.md` — アクションプロンプト
+- `.statemachine/{名前}/conditions/{from}_to_{to}.md` — 複雑な条件プロンプト
 - `scripts/engine.py` — コア非同期ステートマシンエンジン
-- `scripts/run_machine.py` — CLI ランナー（`--agent claude|copilot|kiro|anthropic` で LLM 選択）
+- `scripts/run_machine.py` — CLI ランナー
 - `scripts/next_state.py` — ハイブリッドインライン実行用 遷移計算スクリプト
 - `references/schema.md` — 完全な YAML スキーマ仕様
 - `examples/` — ワークフロー YAML サンプルファイル
 
-## クイックスタート例
+---
 
+## クイックスタート例（作成モードの出力イメージ）
+
+**ユーザー**: 「コードレビューワークフローを作って: review_code」
+
+**生成されるファイル:**
+
+`.statemachine/review_code/workflow.yaml`:
 ```yaml
-# examples/issue_triage.yaml
-name: "イシュートリアージ"
-initial_state: classify
+name: "コードレビュー"
+initial_state: analyze
+context:
+  revision_count: 0
+  max_revisions: 3
 
 states:
-  classify:
-    description: "受け取ったイシューを分類"
-    action: |
-      このイシューを BUG, FEATURE, QUESTION のいずれか一つに分類してください。
-      イシュー: {{input}}
-      カテゴリの単語のみで回答してください。
-
-  handle_bug:
-    description: "バグ報告の処理"
-    action: |
-      このイシューはバグ (BUG) として分類されました。
-      元のイシュー: {{input}}
-      Summary、Steps to Reproduce、Expected vs Actual を含む構造化バグレポートを作成してください。
+  analyze:
+    description: "コードを分析"
+    action_file: actions/analyze.md
+    output_key: analysis_result
+  request_revision:
+    description: "修正を依頼"
+    action_file: actions/request_revision.md
     terminal: true
-
-  handle_feature:
-    description: "機能リクエストの処理"
-    action: |
-      このイシューは機能リクエスト (FEATURE REQUEST) として分類されました。
-      元のイシュー: {{input}}
-      この機能の受け入れ条件リストを作成してください。
-    terminal: true
-
-  handle_question:
-    description: "質問の処理"
-    action: |
-      このイシューは質問 (QUESTION) として分類されました。
-      元のイシュー: {{input}}
-      簡潔に質問に回答してください。
+  approve:
+    description: "承認"
+    action_file: actions/approve.md
     terminal: true
 
 transitions:
-  - from: classify
-    to: handle_bug
-    condition: "The last output is exactly the word BUG"
-  - from: classify
-    to: handle_feature
-    condition: "The last output is exactly the word FEATURE"
-  - from: classify
-    to: handle_question
-    condition: "The last output is exactly the word QUESTION"
+  - from: analyze
+    to: approve
+    condition: "analysis_result が PASS で始まる"
+    priority: 1
+  - from: analyze
+    to: request_revision
+    condition: "analysis_result が PASS 以外で始まる"
+    priority: 2
 ```
 
-実行: `python scripts/run_machine.py examples/issue_triage.yaml --input "モバイルでログインボタンが動作しない"`
+`.statemachine/review_code/actions/analyze.md`:
+```markdown
+## [analyze: コード品質を分析する]
+
+以下のコードを品質の観点で分析してください。
+
+**対象コード:**
+{{input}}
+
+確認項目: バグ、コードの臭い、エラーハンドリング漏れ、パフォーマンス問題
+
+**出力形式:** 最初の行に PASS / MINOR / MAJOR / CRITICAL のいずれか一語、その後に具体的な問題点を列挙してください。
+
+この指示に従ってタスクを実行してください。
+完了後、指定された形式で出力のみを返してください。次のステップは別途指示されます。
+```

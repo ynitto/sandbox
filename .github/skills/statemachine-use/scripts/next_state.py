@@ -25,14 +25,17 @@ from pathlib import Path
 # スクリプト単体実行 / スキルルートからの両方に対応
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.engine import load_workflow
+from scripts.engine import load_workflow, resolve_workflow_path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="ハイブリッドインライン実行用: 条件評価結果から遷移先を確定する"
     )
-    parser.add_argument("workflow", help="ワークフロー YAML ファイルのパス")
+    parser.add_argument(
+        "workflow",
+        help="ワークフロー YAML ファイルのパス、または .statemachine/{name} の名前"
+    )
     parser.add_argument(
         "--state", required=True,
         help="現在のステートID"
@@ -49,7 +52,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    wf = load_workflow(args.workflow)
+    wf = load_workflow(resolve_workflow_path(args.workflow))
 
     state = wf.states.get(args.state)
     if state is None:
