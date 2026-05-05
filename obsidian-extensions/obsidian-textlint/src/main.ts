@@ -24,6 +24,9 @@ import { getDiagnostics } from './cm/diagnostics';
 export default class TextlintPlugin extends Plugin {
   settings: TextlintPluginSettings;
   private isEnabled = true;
+  private debouncedRunLint = debounce(() => {
+    void this.executeLint();
+  }, DEFAULT_SETTINGS.lintDebounceMs);
 
   async onload() {
     console.log('[textlint] loading...');
@@ -31,6 +34,7 @@ export default class TextlintPlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(async () => {
       await this.loadSettings();
+      this.updateDebouncedRunLint();
 
       this.registerEditorExtensions();
       this.registerEvents();
@@ -47,6 +51,7 @@ export default class TextlintPlugin extends Plugin {
   async onunload() {
     console.log('[textlint] unloading...');
     this.isEnabled = false;
+    this.debouncedRunLint.cancel();
     console.log('[textlint] unloaded');
   }
 
@@ -56,7 +61,18 @@ export default class TextlintPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+    this.updateDebouncedRunLint();
     this.runLint();
+  }
+
+  updateDebouncedRunLint() {
+    this.debouncedRunLint.cancel();
+    this.debouncedRunLint = debounce(
+      () => {
+        void this.executeLint();
+      },
+      this.settings.lintDebounceMs,
+    );
   }
 
   getVaultBasePath(): string {
@@ -208,7 +224,11 @@ export default class TextlintPlugin extends Plugin {
     if (view) view.clear();
   }
 
-  runLint = debounce(async () => {
+  runLint = () => {
+    this.debouncedRunLint();
+  };
+
+  private async executeLint() {
     if (!this.isEnabled) return;
     const cm = getActiveEditorView(this);
     if (!cm) return;
@@ -252,12 +272,13 @@ export default class TextlintPlugin extends Plugin {
       const diagnostics = getDiagnostics(this, messages);
       cm.dispatch(setDiagnostics(cm.state, diagnostics));
     } catch (e) {
+      const err = e as Error;
       console.error('[textlint] error:', e);
-      new Notice('[textlint] Error: ' + e.message);
+      new Notice('[textlint] Error: ' + err.message);
       const view = this.getDiagnosticView();
-      if (view) view.setCommandOutput('Error: ' + e.message);
+      if (view) view.setCommandOutput('Error: ' + err.message);
     }
-  }, 500);
+  }
 
   async runFix() {
     const file = getActiveFile(this);

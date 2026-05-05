@@ -15,6 +15,7 @@ export interface TextlintPluginSettings {
   lintOnActiveFileChanged: boolean;
   lintOnSaved: boolean;
   lintOnTextChanged: boolean;
+  lintDebounceMs: number;
 
   minimumSeverityInEditingView: TextlintRuleSeverityLevel;
   minimumSeverityInDiagnosticsView: TextlintRuleSeverityLevel;
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS: TextlintPluginSettings = {
   lintOnActiveFileChanged: true,
   lintOnSaved: true,
   lintOnTextChanged: false,
+  lintDebounceMs: 500,
 
   minimumSeverityInEditingView: 1,
   minimumSeverityToShowGutter: 2,
@@ -104,6 +106,21 @@ export class TextlintPluginSettingTab extends PluginSettingTab {
           this.plugin.settings.lintOnTextChanged = v;
           await this.plugin.saveSettings();
         });
+      });
+
+    new Setting(containerEl)
+      .setName('Lint debounce time (ms)')
+      .setDesc('Delay before running textlint after a trigger. Set to 0 to disable debounce.')
+      .addText((text) => {
+        text
+          .setPlaceholder('500')
+          .setValue(String(this.plugin.settings.lintDebounceMs))
+          .onChange(async (v) => {
+            const parsed = Number(v);
+            const next = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 500;
+            this.plugin.settings.lintDebounceMs = next;
+            await this.plugin.saveSettings();
+          });
       });
 
     new Setting(containerEl)
