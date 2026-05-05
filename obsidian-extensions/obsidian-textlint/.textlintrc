@@ -1,0 +1,22 @@
+{
+  "rules": {
+    "@textlint-ja/no-synonyms": true,
+    "@textlint-ja/textlint-rule-no-dropping-i": true,
+    "@textlint-ja/textlint-rule-no-insert-dropping-sa": true,
+    "@textlint-ja/preset-ai-writing": true,
+    "no-mixed-zenkaku-and-hankaku-alphabet": true,
+    "period-in-list-item": true,
+    "prefer-tari-tari": true,
+    "preset-ja-technical-writing": true,
+    "date-weekday-mismatch": true,
+    "ja-no-orthographic-variants": true,
+    "write-good":  true,
+    "preset-ai-writing": true,
+    "incremental-headers": true,
+    "aws-service-name": true,
+    "max-comma": true
+  },
+  "filters": {
+    "comments": true
+  }
+}
