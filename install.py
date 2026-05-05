@@ -326,15 +326,62 @@ def _transform_frontmatter_for_kiro(content: str) -> str:
     return fm_match.group(1) + new_fm_body + fm_match.group(3) + content[fm_match.end():]
 
 
+def _transform_frontmatter_for_claude(content: str) -> str:
+    """Claude rules 向けにフロントマターの applyTo を paths に変換する。
+
+    - applyTo: "**"        → # paths なし（すべてのファイルに適用）
+    - applyTo: "<pattern>" → paths:\n  - <pattern>
+    """
+    fm_match = re.match(r'^(---[ \t]*\n)(.*?)(\n---)', content, re.DOTALL)
+    if not fm_match:
+        return content
+
+    fm_body = fm_match.group(2)
+
+    apply_to: str | None = None
+    m = re.search(r'^applyTo:\s*"([^"]*)"', fm_body, re.MULTILINE)
+    if m:
+        apply_to = m.group(1)
+    else:
+        m = re.search(r"^applyTo:\s*'([^']*)'\s*$", fm_body, re.MULTILINE)
+        if m:
+            apply_to = m.group(1)
+        else:
+            m = re.search(r'^applyTo:\s*(\S.*?)\s*$', fm_body, re.MULTILINE)
+            if m:
+                apply_to = m.group(1).strip()
+
+    if apply_to is None:
+        return content
+
+    if apply_to == "**":
+        new_fm_body = re.sub(
+            r'^applyTo:.*$', '# paths なし（すべてのファイルに適用）',
+            fm_body, count=1, flags=re.MULTILINE,
+        )
+    else:
+        replacement = f'paths:\n  - {apply_to}'
+        new_fm_body = re.sub(
+            r'^applyTo:.*$', replacement,
+            fm_body, count=1, flags=re.MULTILINE,
+        )
+
+    return fm_match.group(1) + new_fm_body + fm_match.group(3) + content[fm_match.end():]
+
+
 def copy_agent_instructions(paths: dict[str, str], agent_type: str = "copilot") -> bool:
     """リポジトリ配下の指示ファイルをエージェント領域へコピーする。
 
     kiro の場合は ~/.kiro/steering/ にコピーし、フロントマターの
     applyTo を Kiro 形式の inclusion に変換する。
+    claude の場合は ~/.claude/rules/ にコピーし、フロントマターの
+    applyTo を Claude rules 形式の paths に変換する。
     """
     src_dir = os.path.join(REPO_ROOT, ".github", "instructions")
     if agent_type == "kiro":
         dest_dir = os.path.join(paths["agent_home"], "steering")
+    elif agent_type == "claude":
+        dest_dir = os.path.join(paths["agent_home"], "rules")
     else:
         dest_dir = os.path.join(paths["agent_home"], "instructions")
 
@@ -356,6 +403,12 @@ def copy_agent_instructions(paths: dict[str, str], agent_type: str = "copilot") 
             with open(src, encoding="utf-8") as f:
                 content = f.read()
             transformed = _transform_frontmatter_for_kiro(content)
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write(transformed)
+        elif agent_type == "claude":
+            with open(src, encoding="utf-8") as f:
+                content = f.read()
+            transformed = _transform_frontmatter_for_claude(content)
             with open(dest, "w", encoding="utf-8") as f:
                 f.write(transformed)
         else:
