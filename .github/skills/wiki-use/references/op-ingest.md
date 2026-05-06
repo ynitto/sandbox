@@ -3,6 +3,10 @@
 ingest はこのスキルの中核操作。**エージェントが** ソースを読み込み、Wiki ページを生成・更新する。
 ソースデータは取り込み前に保全済みであることを前提とする（コピーは行わない）。
 
+パス規約:
+- 生成・更新する Wiki 側のローカルパスは `wiki_root` 起点の相対パスで記述する
+- 絶対パスは使わない
+
 ---
 
 ## ケース A: 単一ファイル / URL の場合
@@ -21,7 +25,7 @@ python scripts/wiki_ingest.py init-batches --source <フォルダパス> [--batc
 
 出力例:
 ```
-[OK] バッチ状態を初期化しました: /path/to/wiki/.wiki-batch-state.json
+[OK] バッチ状態を初期化しました: .wiki-batch-state.json
      合計 311 ファイル・63 バッチ（バッチサイズ: 5）
 
 next-batch を実行して最初のバッチを取得してください。
@@ -38,8 +42,8 @@ python scripts/wiki_ingest.py next-batch
 === BATCH 1/63 ===
 完了済み: 0 バッチ / 残り: 63 バッチ（このバッチを含む）
 
-/path/to/file01.md
-/path/to/file02.md
+docs/source/file01.md
+docs/source/file02.md
 ...
 
 処理完了後: python scripts/wiki_ingest.py complete-batch --pages-created <N> --pages-updated <M>

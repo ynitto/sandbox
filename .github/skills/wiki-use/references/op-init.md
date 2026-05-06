@@ -1,5 +1,9 @@
 # init — Wiki を初期化する
 
+パス規約:
+- 生成・表示するローカルパスは `wiki_root` 起点の相対パスで扱う（例: `wiki/meta/hot.md`, `index.md`）
+- 絶対パスは使わない
+
 ```bash
 python scripts/wiki_init.py
 ```

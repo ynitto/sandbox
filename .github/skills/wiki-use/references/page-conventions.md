@@ -15,6 +15,14 @@
 
 ---
 
+## パス記述の共通ルール
+
+- wiki-use 内で扱うローカルパスは `wiki_root` 起点の相対パスで記述する
+- 絶対パス（`/Users/...` や `/home/...`）は使わない
+- 例: `wiki/atoms/attention-mechanism.md`、`wiki/topics/transformer-introduction.md`、`wiki/meta/hot.md`、`index.md`
+
+---
+
 ## ページフォーマット
 
 すべての Wiki ページは以下の YAML フロントマターを持つ:
@@ -82,7 +90,7 @@ tags: [...]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:
-  - "Source Title or /path/to/file.pdf"
+  - "Source Title or sources/2026-01-01-example.pdf"
 summary: "1文の簡潔な説明（80文字以内）"
 ---
 
@@ -127,7 +135,7 @@ tags: [...]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:
-  - "Source Title or /path/to/file.pdf"
+  - "Source Title or sources/2026-01-01-example.pdf"
 summary: "1文の簡潔な説明（80文字以内）"
 ---
 
