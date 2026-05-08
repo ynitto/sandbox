@@ -2,9 +2,66 @@
 from __future__ import annotations
 from pathlib import Path
 
-from .models import Document, Section, Table, Row, Cell, Paragraph
-from .ingest import ExcelSheet, PageImage, iter_excel_sheets, iter_pdf_images, pdf_text_by_page
-from .table_extractor import TableTransformerExtractor
+from models import Document, Section, Table, Row, Cell, Paragraph
+from ingest import ExcelSheet, iter_excel_sheets, iter_pdf_images, pdf_text_by_page
+from table_extractor import TableTransformerExtractor
+
+
+# ---------------------------------------------------------------------------
+# Breadcrumb path inference
+# ---------------------------------------------------------------------------
+
+def _infer_paths(table: Table) -> None:
+    """Fill Cell.path with breadcrumb labels inferred from table structure.
+
+    For tables with carry-forward (merged) columns, propagates parent labels
+    downward and builds a path like [context, parent_val, col_header].
+    """
+    if not table.rows:
+        return
+
+    header_row = next((r for r in table.rows if r.is_header), table.rows[0])
+    col_headers: dict[int, str] = {c.col_idx: c.text for c in header_row.cells}
+
+    data_rows = [r for r in table.rows if not r.is_header]
+    if not data_rows:
+        return
+
+    # Detect hierarchy columns: >30% of data cells are empty
+    all_cols = sorted({c.col_idx for r in data_rows for c in r.cells})
+    n = len(data_rows)
+    hierarchy_cols: set[int] = set()
+    for ci in all_cols:
+        empty = sum(
+            1 for r in data_rows
+            if any(c.col_idx == ci and not c.text.strip() for c in r.cells)
+        )
+        if n > 1 and empty / n > 0.3:
+            hierarchy_cols.add(ci)
+
+    ctx = table.sheet or f"page_{table.page + 1}"
+    carry: dict[int, str] = {}
+
+    for row in data_rows:
+        for cell in row.cells:
+            col = cell.col_idx
+            val = cell.text.strip()
+            if col in hierarchy_cols:
+                if val:
+                    carry[col] = val
+                elif col in carry:
+                    cell.text = carry[col]  # flatten carry-forward value
+            path = [ctx]
+            for hcol in sorted(hierarchy_cols):
+                if hcol != col:
+                    path.append(carry.get(hcol, ""))
+            col_name = col_headers.get(col, "")
+            if col_name:
+                path.append(col_name)
+            cell.path = [p for p in path if p]
+
+    for cell in header_row.cells:
+        cell.path = [ctx, cell.text]
 
 
 # ---------------------------------------------------------------------------
@@ -20,7 +77,9 @@ def _excel_sheet_to_table(sheet: ExcelSheet, page: int = 0) -> Table:
             for c_idx, val in enumerate(raw_row)
         ]
         rows.append(Row(cells=cells, index=r_idx, is_header=is_header))
-    return Table(rows=rows, page=page, sheet=sheet.name)
+    table = Table(rows=rows, page=page, sheet=sheet.name)
+    _infer_paths(table)
+    return table
 
 
 def build_from_excel(path: Path) -> Document:
@@ -53,7 +112,9 @@ def _grid_to_table(
             for c_idx, val in enumerate(raw_row)
         ]
         rows.append(Row(cells=cells, index=r_idx, is_header=is_header))
-    return Table(rows=rows, page=page, bbox=bbox)
+    table = Table(rows=rows, page=page, bbox=bbox)
+    _infer_paths(table)
+    return table
 
 
 def build_from_pdf(

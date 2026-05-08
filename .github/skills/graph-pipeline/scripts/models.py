@@ -16,6 +16,7 @@ class Cell:
     col_idx: int
     is_header: bool = False
     bbox: Optional[tuple[float, float, float, float]] = None
+    path: list[str] = field(default_factory=list)  # breadcrumb: [context, parent..., col_header]
     node_id: str = field(default_factory=_uid)
 
 

@@ -15,9 +15,12 @@ Relationships:
 from __future__ import annotations
 from contextlib import contextmanager
 
+import json as _json
+
 from neo4j import GraphDatabase
 
-from .models import Document, Section, Table, Row, Cell, Paragraph
+from models import Document, Section, Table, Row, Cell, Paragraph
+from markdown_serializer import table_to_markdown
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +41,7 @@ RETURN s
 
 _MERGE_TABLE = """
 MERGE (t:Table {node_id: $node_id})
-SET t.page = $page, t.sheet = $sheet, t.bbox = $bbox
+SET t.page = $page, t.sheet = $sheet, t.bbox = $bbox, t.markdown_text = $markdown_text
 RETURN t
 """
 
@@ -51,7 +54,7 @@ RETURN r
 _MERGE_CELL = """
 MERGE (c:Cell {node_id: $node_id})
 SET c.text = $text, c.row_idx = $row_idx, c.col_idx = $col_idx,
-    c.is_header = $is_header
+    c.is_header = $is_header, c.path = $path
 RETURN c
 """
 
@@ -114,7 +117,8 @@ class Neo4jLoader:
     def _write_table(tx, table: Table, section_id: str) -> None:
         tx.run(_MERGE_TABLE, node_id=table.node_id, page=table.page,
                sheet=table.sheet or "",
-               bbox=str(table.bbox) if table.bbox else "")
+               bbox=str(table.bbox) if table.bbox else "",
+               markdown_text=table_to_markdown(table))
         tx.run(_rel_q("CONTAINS"), a=section_id, b=table.node_id)
 
         prev_row_id: str | None = None
@@ -134,7 +138,8 @@ class Neo4jLoader:
             for cell in row.cells:
                 tx.run(_MERGE_CELL, node_id=cell.node_id, text=cell.text,
                        row_idx=cell.row_idx, col_idx=cell.col_idx,
-                       is_header=cell.is_header)
+                       is_header=cell.is_header,
+                       path=_json.dumps(cell.path, ensure_ascii=False))
                 tx.run(_rel_q("HAS_CELL"), a=row.node_id, b=cell.node_id)
 
                 if prev_cell_id:
