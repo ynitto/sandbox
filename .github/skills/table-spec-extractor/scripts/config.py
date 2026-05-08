@@ -1,9 +1,9 @@
 """Profile-based configuration for multiple Neo4j endpoints and local data paths.
 
 Config file location (checked in order):
-  1. $GRAPH_PIPELINE_CONFIG env var
-  2. ./graph-pipeline.json  (project-local)
-  3. ~/.graph-pipeline/config.json  (user-global, default)
+  1. TABLE_SPEC_EXTRACTOR_CONFIG env var
+  2. ./table-spec-extractor.json  (project-local)
+  3. ~/.table-spec-extractor/config.json  (user-global, default)
 """
 from __future__ import annotations
 import json
@@ -13,14 +13,14 @@ from pathlib import Path
 from typing import Optional
 
 
-_DEFAULT_CONFIG_PATH = Path.home() / ".graph-pipeline" / "config.json"
+_DEFAULT_CONFIG_PATH = Path.home() / ".table-spec-extractor" / "config.json"
 
 
 def _config_path() -> Path:
-    env = os.environ.get("GRAPH_PIPELINE_CONFIG")
+    env = os.environ.get("TABLE_SPEC_EXTRACTOR_CONFIG")
     if env:
         return Path(env)
-    local = Path("graph-pipeline.json")
+    local = Path("table-spec-extractor.json")
     if local.exists():
         return local
     return _DEFAULT_CONFIG_PATH

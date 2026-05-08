@@ -174,7 +174,7 @@ def test_graph_loader_builds_cypher_params():
 
 def test_config_add_and_load(tmp_path, monkeypatch):
     from config import Profile, Config, save_config, load_config
-    monkeypatch.setenv("GRAPH_PIPELINE_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("TABLE_SPEC_EXTRACTOR_CONFIG", str(tmp_path / "config.json"))
 
     cfg = Config()
     cfg.add(Profile(name="local", neo4j_uri="bolt://localhost:7687",
@@ -192,7 +192,7 @@ def test_config_add_and_load(tmp_path, monkeypatch):
 
 def test_config_get_default(tmp_path, monkeypatch):
     from config import Profile, Config, save_config, load_config
-    monkeypatch.setenv("GRAPH_PIPELINE_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("TABLE_SPEC_EXTRACTOR_CONFIG", str(tmp_path / "config.json"))
 
     cfg = Config()
     cfg.add(Profile(name="local", neo4j_uri="bolt://localhost:7687"))
