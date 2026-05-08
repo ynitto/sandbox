@@ -1,16 +1,8 @@
 ---
-name: graph-pipeline
-description: |
-  Excel/PDFファイルをTable Transformer（microsoft/table-transformer-*）で解析し、
-  Document ASTを構築してNeo4jグラフDBへ保存・GraphRAGクエリを実行するパイプライン。
-  Excelの結合セルをcarry-forwardで階層フラット化し、各セルにbreadcrumb pathを付与。
-  テーブルをMarkdown中間表現に変換してNeo4jに保存することでLLMからの参照を容易にする。
-  init（依存インストール）、save（ドキュメント→Neo4j保存）、search（グラフ検索）、
-  config（複数Neo4jプロファイル管理）の4モードを持つ。
-  トリガー: /graph-pipeline、「PDFをグラフに保存」「Neo4jで検索」「ドキュメントグラフ」
-  「テーブルを抽出してグラフに」「GraphRAGで検索」などのキーワード。
+name: table-spec-extractor
+description: "Excel/PDFの仕様書テーブルをTable TransformerでAST化しNeo4jグラフへ保存・GraphRAG検索するパイプライン。「仕様書をグラフに保存したいとき」「Neo4jで仕様を検索したいとき」「テーブルをグラフ化するとき」「GraphRAGで検索したいとき」などで発動。init/save/search/configの4モード。"
 metadata:
-  version: "2.0.0"
+  version: "2.1.0"
   tier: experimental
   category: integration
   tags:
