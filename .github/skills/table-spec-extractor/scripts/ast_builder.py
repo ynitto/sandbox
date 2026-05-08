@@ -4,7 +4,6 @@ from pathlib import Path
 
 from models import Document, Section, Table, Row, Cell, Paragraph
 from ingest import ExcelSheet, iter_excel_sheets, iter_pdf_images, pdf_text_by_page
-from table_extractor import TableTransformerExtractor
 
 
 # ---------------------------------------------------------------------------
@@ -119,11 +118,12 @@ def _grid_to_table(
 
 def build_from_pdf(
     path: Path,
-    extractor: TableTransformerExtractor | None = None,
+    extractor=None,
     ocr_fn=None,
     dpi: int = 150,
 ) -> Document:
     if extractor is None:
+        from table_extractor import TableTransformerExtractor
         extractor = TableTransformerExtractor()
 
     page_texts = pdf_text_by_page(path)

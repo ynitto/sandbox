@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from typing import Optional
 import warnings
 
-from PIL import Image
-
 # DETR label maps for the two Table Transformer models
 _DETECT_LABELS = {
     0: "table",

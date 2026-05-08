@@ -2,7 +2,7 @@
 name: table-spec-extractor
 description: "Excel/PDFの仕様書テーブルをTable TransformerでAST化しNeo4jグラフへ保存・GraphRAG検索するパイプライン。「仕様書をグラフに保存して」「Neo4jで仕様を検索して」「テーブルをグラフ化して」「GraphRAGで検索して」などで発動。init/save/search/configの4モード。"
 metadata:
-  version: "2.2.0"
+  version: "2.3.0"
   tier: experimental
   category: integration
   tags:
@@ -88,16 +88,26 @@ Neo4jが不要な場合はここだけ設定してローカル保存のみも可
 
 依存ライブラリをインストールし、Neo4j接続を確認する。**初回に必ず実行する。**
 
+Excel のみ使う場合（デフォルト・軽量）:
 ```bash
-# 依存インストールのみ
 python scripts/run.py init
-
-# プロファイルを使ってNeo4j疎通も確認
-python scripts/run.py init --profile local
-
-# URI直接指定
-python scripts/run.py init --neo4j bolt://localhost:7687 --password secret
 ```
+
+PDF も処理する場合（torch / transformers / Pillow 等を追加インストール）:
+```bash
+python scripts/run.py init --enable-pdf
+```
+
+Neo4j 疎通確認を同時に行う場合:
+```bash
+python scripts/run.py init --profile local
+python scripts/run.py init --enable-pdf --neo4j bolt://localhost:7687 --password secret
+```
+
+| requirements | 内容 | サイズ目安 |
+|---|---|---|
+| `requirements.txt` | openpyxl, neo4j | ~数MB |
+| `requirements-pdf.txt` | pypdfium2, pdfplumber, torch, transformers, Pillow | ~1-2GB |
 
 ---
 

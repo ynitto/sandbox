@@ -28,7 +28,6 @@ from config import Config, Profile, load_config, cmd_config, add_config_subparse
 from graph_loader import Neo4jLoader
 from markdown_serializer import document_to_markdown
 from search import GraphSearcher, format_results
-from table_extractor import TableTransformerExtractor
 
 
 # ---------------------------------------------------------------------------
@@ -68,15 +67,21 @@ def cmd_init(args: argparse.Namespace) -> None:
     cfg = load_config()
     profile = cfg.get(getattr(args, "profile", ""))
 
-    req = Path(__file__).parent / "requirements.txt"
-    print("[1/2] 依存ライブラリをインストール中 …")
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "-r", str(req)],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(f"[✗] pip install 失敗:\n{result.stderr}", file=sys.stderr)
-        sys.exit(1)
+    scripts_dir = Path(__file__).parent
+    reqs = [scripts_dir / "requirements.txt"]
+    if args.enable_pdf:
+        reqs.append(scripts_dir / "requirements-pdf.txt")
+
+    for req in reqs:
+        label = req.name
+        print(f"[{'1' if req == reqs[0] else '2'}/{len(reqs)+1}] {label} をインストール中 …")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-r", str(req)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"[✗] pip install 失敗 ({label}):\n{result.stderr}", file=sys.stderr)
+            sys.exit(1)
     print("[✓] 依存ライブラリ: OK")
 
     uri, user, pwd, _ = _resolve_neo4j(args, profile)
@@ -136,9 +141,10 @@ def cmd_save(args: argparse.Namespace) -> None:
     cfg = load_config()
     profile = cfg.get(getattr(args, "profile", ""))
 
-    extractor = TableTransformerExtractor(
-        device=args.device, threshold=args.threshold
-    ) if path.suffix.lower() == ".pdf" else None
+    extractor = None
+    if path.suffix.lower() == ".pdf":
+        from table_extractor import TableTransformerExtractor
+        extractor = TableTransformerExtractor(device=args.device, threshold=args.threshold)
 
     print(f"[1/3] 解析中: {path.name} …")
     doc = build_document(path, extractor=extractor, dpi=args.dpi)
@@ -211,6 +217,8 @@ def main() -> None:
     # init
     p_init = sub.add_parser("init", help="依存インストール＋Neo4j疎通確認")
     _add_neo4j_args(p_init)
+    p_init.add_argument("--enable-pdf", action="store_true",
+                        help="PDF処理用ライブラリも追加インストール（torch, transformers等）")
 
     # save
     p_save = sub.add_parser("save", help="ドキュメントを解析してNeo4jへロード")

@@ -5,7 +5,6 @@ from typing import Iterator
 from dataclasses import dataclass
 
 import openpyxl
-from PIL import Image
 
 
 @dataclass
