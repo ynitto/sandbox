@@ -1,13 +1,13 @@
-"""CLI entry point for the document → graph pipeline.
+"""CLI entry point for the document graph pipeline.
 
-Usage:
-    python -m pipeline.pipeline <file> [options]
+Subcommands:
+    save    Excel/PDF → Table Transformer → AST → Neo4j
+    search  Full-text + graph-traversal query against Neo4j
 
 Examples:
-    python -m pipeline.pipeline report.pdf
-    python -m pipeline.pipeline data.xlsx --neo4j bolt://localhost:7687
-    python -m pipeline.pipeline report.pdf --neo4j bolt://localhost:7687 \\
-        --user neo4j --password secret --dpi 200
+    python -m pipeline.pipeline save report.pdf --dry-run
+    python -m pipeline.pipeline save data.xlsx --neo4j bolt://localhost:7687
+    python -m pipeline.pipeline search "revenue 2024" --neo4j bolt://localhost:7687
 """
 from __future__ import annotations
 import argparse
@@ -17,30 +17,32 @@ from pathlib import Path
 
 from .ast_builder import build_document
 from .graph_loader import Neo4jLoader
+from .search import GraphSearcher, format_results
 from .table_extractor import TableTransformerExtractor
 
 
+# ---------------------------------------------------------------------------
+# save
+# ---------------------------------------------------------------------------
+
 def _ast_to_dict(doc) -> dict:
-    """Serialize Document AST to a JSON-compatible dict (for --dry-run)."""
-    from .models import Document, Section, Table, Row, Cell, Paragraph
+    from .models import Table, Paragraph
 
-    def cell_d(c: Cell) -> dict:
-        return {"text": c.text, "row": c.row_idx, "col": c.col_idx,
-                "header": c.is_header}
+    def cell_d(c):
+        return {"text": c.text, "row": c.row_idx, "col": c.col_idx, "header": c.is_header}
 
-    def row_d(r: Row) -> dict:
-        return {"index": r.index, "header": r.is_header,
-                "cells": [cell_d(c) for c in r.cells]}
+    def row_d(r):
+        return {"index": r.index, "header": r.is_header, "cells": [cell_d(c) for c in r.cells]}
 
-    def table_d(t: Table) -> dict:
+    def table_d(t):
         return {"type": "table", "page": t.page, "sheet": t.sheet,
                 "rows": [row_d(r) for r in t.rows]}
 
-    def para_d(p: Paragraph) -> dict:
+    def para_d(p):
         return {"type": "paragraph", "page": p.page,
                 "text": p.text[:120] + ("…" if len(p.text) > 120 else "")}
 
-    def section_d(s: Section) -> dict:
+    def section_d(s):
         return {"title": s.title, "page": s.page,
                 "content": [table_d(i) if isinstance(i, Table) else para_d(i)
                             for i in s.content]}
@@ -49,7 +51,7 @@ def _ast_to_dict(doc) -> dict:
             "sections": [section_d(s) for s in doc.sections]}
 
 
-def run(args: argparse.Namespace) -> None:
+def cmd_save(args: argparse.Namespace) -> None:
     path = Path(args.file)
     if not path.exists():
         print(f"Error: file not found: {path}", file=sys.stderr)
@@ -76,25 +78,72 @@ def run(args: argparse.Namespace) -> None:
     print(f"[2/3] Connecting to Neo4j at {args.neo4j} …")
     with Neo4jLoader(args.neo4j, args.user, args.password, args.database) as loader:
         loader.create_indexes()
-        print(f"[3/3] Loading document graph …")
+        print("[3/3] Loading document graph …")
         loader.load(doc)
     print("Done.")
 
 
+# ---------------------------------------------------------------------------
+# search
+# ---------------------------------------------------------------------------
+
+def cmd_search(args: argparse.Namespace) -> None:
+    if not args.neo4j:
+        print("Error: --neo4j URI is required for search.", file=sys.stderr)
+        sys.exit(1)
+
+    with GraphSearcher(args.neo4j, args.user, args.password, args.database) as searcher:
+        result = searcher.search(args.query, limit=args.limit)
+
+    if args.json:
+        import dataclasses
+        print(json.dumps(dataclasses.asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print(format_results(result))
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _common_neo4j(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--neo4j", default="", help="Neo4j bolt URI")
+    p.add_argument("--user", default="neo4j")
+    p.add_argument("--password", default="")
+    p.add_argument("--database", default="neo4j")
+
+
 def main() -> None:
-    p = argparse.ArgumentParser(description="Excel/PDF → Table Transformer → AST → Neo4j")
-    p.add_argument("file", help="Input PDF or Excel file")
-    p.add_argument("--neo4j", default="", help="Neo4j bolt URI (e.g. bolt://localhost:7687)")
-    p.add_argument("--user", default="neo4j", help="Neo4j username")
-    p.add_argument("--password", default="", help="Neo4j password")
-    p.add_argument("--database", default="neo4j", help="Neo4j database name")
-    p.add_argument("--device", default="cpu", help="Torch device (cpu / cuda)")
-    p.add_argument("--threshold", type=float, default=0.9,
-                   help="Table detection confidence threshold")
-    p.add_argument("--dpi", type=int, default=150, help="PDF render DPI")
-    p.add_argument("--dry-run", action="store_true",
-                   help="Print AST as JSON without loading to Neo4j")
-    run(p.parse_args())
+    root = argparse.ArgumentParser(description="Document graph pipeline")
+    sub = root.add_subparsers(dest="cmd", required=True)
+
+    # save
+    p_save = sub.add_parser("save", help="Ingest file and load into Neo4j")
+    p_save.add_argument("file", help="PDF or Excel file path")
+    _common_neo4j(p_save)
+    p_save.add_argument("--device", default="cpu")
+    p_save.add_argument("--threshold", type=float, default=0.9)
+    p_save.add_argument("--dpi", type=int, default=150)
+    p_save.add_argument("--dry-run", action="store_true",
+                        help="Print AST as JSON without loading")
+
+    # search
+    p_search = sub.add_parser("search", help="Full-text + graph search")
+    p_search.add_argument("query", help="Search query string")
+    _common_neo4j(p_search)
+    p_search.add_argument("--limit", type=int, default=10)
+    p_search.add_argument("--json", action="store_true", help="Output as JSON")
+
+    args = root.parse_args()
+    if args.cmd == "save":
+        cmd_save(args)
+    else:
+        cmd_search(args)
+
+
+# Support legacy: `run(args)` used in tests
+def run(args: argparse.Namespace) -> None:
+    cmd_save(args)
 
 
 if __name__ == "__main__":
