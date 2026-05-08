@@ -1,10 +1,13 @@
 """CLI entry point for the document graph pipeline.
 
 Subcommands:
+    init    Install dependencies and verify Neo4j connection
     save    Excel/PDF → Table Transformer → AST → Neo4j
     search  Full-text + graph-traversal query against Neo4j
 
 Examples:
+    python -m pipeline.pipeline init
+    python -m pipeline.pipeline init --neo4j bolt://localhost:7687 --password secret
     python -m pipeline.pipeline save report.pdf --dry-run
     python -m pipeline.pipeline save data.xlsx --neo4j bolt://localhost:7687
     python -m pipeline.pipeline search "revenue 2024" --neo4j bolt://localhost:7687
@@ -19,6 +22,40 @@ from .ast_builder import build_document
 from .graph_loader import Neo4jLoader
 from .search import GraphSearcher, format_results
 from .table_extractor import TableTransformerExtractor
+
+
+# ---------------------------------------------------------------------------
+# init
+# ---------------------------------------------------------------------------
+
+def cmd_init(args: argparse.Namespace) -> None:
+    import subprocess
+
+    req = Path(__file__).parent / "requirements.txt"
+    print("[1/2] 依存ライブラリをインストール中 …")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "-r", str(req)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"[✗] pip install 失敗:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    print("[✓] 依存ライブラリ: OK")
+
+    if not args.neo4j:
+        print("[–] Neo4j URI が未指定のため接続確認をスキップ")
+        return
+
+    print(f"[2/2] Neo4j 接続確認: {args.neo4j} …")
+    try:
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(args.neo4j, auth=(args.user, args.password))
+        driver.verify_connectivity()
+        driver.close()
+        print(f"[✓] Neo4j 接続: OK ({args.user}@{args.neo4j})")
+    except Exception as e:
+        print(f"[✗] Neo4j 接続失敗: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +154,12 @@ def main() -> None:
     root = argparse.ArgumentParser(description="Document graph pipeline")
     sub = root.add_subparsers(dest="cmd", required=True)
 
+    # init
+    p_init = sub.add_parser("init", help="Install deps and verify Neo4j connection")
+    p_init.add_argument("--neo4j", default="", help="Neo4j bolt URI (optional)")
+    p_init.add_argument("--user", default="neo4j")
+    p_init.add_argument("--password", default="")
+
     # save
     p_save = sub.add_parser("save", help="Ingest file and load into Neo4j")
     p_save.add_argument("file", help="PDF or Excel file path")
@@ -135,7 +178,9 @@ def main() -> None:
     p_search.add_argument("--json", action="store_true", help="Output as JSON")
 
     args = root.parse_args()
-    if args.cmd == "save":
+    if args.cmd == "init":
+        cmd_init(args)
+    elif args.cmd == "save":
         cmd_save(args)
     else:
         cmd_search(args)
