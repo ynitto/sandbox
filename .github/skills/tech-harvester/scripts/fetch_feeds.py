@@ -10,6 +10,7 @@ Options:
     --tags TAG1,TAG2   Comma-separated tags to filter feeds (optional)
     --lang ja|en       Filter feeds by language (optional)
     --output FILE      Write JSON to file instead of stdout
+    --update-stats     フェッチ後に feed_stats を skill-registry.json へ記録する
 """
 
 import argparse
@@ -115,6 +116,7 @@ def main():
     parser.add_argument("--tags", default="", help="Comma-separated tags to filter feeds")
     parser.add_argument("--lang", default="", help="Filter feeds by language (ja/en)")
     parser.add_argument("--output", default="", help="Write JSON to this file (default: stdout)")
+    parser.add_argument("--update-stats", action="store_true", help="フェッチ後に feed_stats を更新する")
     args = parser.parse_args()
 
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] or None
@@ -126,9 +128,14 @@ def main():
         sys.exit(1)
 
     articles = []
+    failed_feeds: list[str] = []
     for feed_meta in feeds:
         print(f"Fetching {feed_meta['name']} …", file=sys.stderr)
-        articles.extend(fetch_feed(feed_meta, args.max_items))
+        fetched = fetch_feed(feed_meta, args.max_items)
+        if fetched:
+            articles.extend(fetched)
+        else:
+            failed_feeds.append(feed_meta["name"])
 
     result = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -142,6 +149,15 @@ def main():
         print(f"Wrote {len(articles)} articles to {args.output}", file=sys.stderr)
     else:
         print(output)
+
+    if args.update_stats:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).parent))
+        import scorer
+        registry = scorer.load_registry(REGISTRY_PATH)
+        registry = scorer.update_stats(registry, articles, failed_feeds)
+        scorer.save_registry(REGISTRY_PATH, registry)
+        print(f"[fetch_feeds] feed_stats を更新しました（失敗: {failed_feeds or 'なし'}）", file=sys.stderr)
 
 
 if __name__ == "__main__":
