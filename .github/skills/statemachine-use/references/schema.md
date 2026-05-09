@@ -57,7 +57,8 @@ states:
 | `on_enter` | 文字列 | いいえ | — | action プロンプトに前置されるプレフィックス |
 | `on_exit` | 文字列 | いいえ | — | action 後のプロンプト（出力は格納されるがルーティングには使用しない） |
 | `output_key` | 文字列 | いいえ | — | `context[output_key]` にも出力を格納 |
-| `max_retries` | 整数 | いいえ | 0 | トランジション評価が失敗した場合の action のリトライ回数 |
+| `max_retries` | 整数 | いいえ | 0 | `output_validator` 検証に失敗した場合の action のリトライ回数 |
+| `output_validator` | 文字列 | いいえ | — | 出力の第1行を検証するルール。書式: `startswith:VAL1,VAL2` — いずれかの値で始まること。検証失敗時は `max_retries` 回までリトライする |
 
 ### アクションの自動探索
 
@@ -89,14 +90,43 @@ transitions:
 |-------|------|----------|---------|-------------|
 | `from` | 文字列 | はい | — | 元ステートのID。ワイルドカードは `"*"` |
 | `to` | 文字列 | はい | — | 遷移先ステートのID |
-| `condition` | 文字列 | はい* | — | 自然言語条件（LLM が YES/NO で評価）。`file: path` 形式も可。*`condition_file` がある場合は不要 |
+| `condition` | 文字列 | はい* | — | 自然言語条件（LLM が YES/NO で評価）。`file: path` 形式も可。*`condition_file` または `condition_rule` がある場合は不要 |
 | `condition_file` | 文字列 | いいえ | — | 条件を外部マークダウンファイルで指定（`condition` より優先）。workflow.yaml からの相対パス |
+| `condition_rule` | 文字列 | いいえ | — | 決定論的評価ルール。**LLM評価より優先**して実行される。書式は下記「condition_rule 書式」参照 |
 | `priority` | 整数 | いいえ | 0 | 評価順序（小さいほど先） |
 | `description` | 文字列 | いいえ | — | 人が読めるラベル |
 
 ### 条件の自動探索
 
 `condition` も `condition_file` も指定されていない場合、`conditions/{from}_to_{to}.md` が存在すれば自動で読み込む（`from` が `*` の場合は `wildcard_to_{to}.md`）。
+
+### condition_rule 書式
+
+LLM を介さずにコンテキスト変数を決定論的に評価する。**`condition_rule` が評価可能な場合は `condition` の LLM 評価をスキップする**（LLM API 呼び出しが削減される）。
+
+```yaml
+# 単一ルール
+condition_rule: "startswith:last_output:PASS"
+
+# 複合条件（セミコロン区切り、AND評価）
+condition_rule: "startswith:last_output:RETRY;lt:retry_count:3"
+```
+
+| 演算子 | 意味 | 例 |
+|---|---|---|
+| `startswith:KEY:VALUE` | `ctx[KEY]` が `VALUE` で始まる | `startswith:last_output:PASS` |
+| `contains:KEY:VALUE` | `ctx[KEY]` に `VALUE` が含まれる | `contains:analysis_result:ERROR` |
+| `equals:KEY:VALUE` | `ctx[KEY]` が `VALUE` と等しい | `equals:last_output:BUG` |
+| `regex:KEY:PATTERN` | `ctx[KEY]` が正規表現 `PATTERN` にマッチ | `regex:last_output:^(PASS\|FAIL)` |
+| `lt:KEY:NUMBER` | `ctx[KEY]` < NUMBER | `lt:retry_count:3` |
+| `gte:KEY:NUMBER` | `ctx[KEY]` >= NUMBER | `gte:processed_count:10` |
+| `not-startswith:KEY:V` | `ctx[KEY]` が `V` で始まらない | `not-startswith:last_output:PASS` |
+| `not-contains:KEY:V` | `ctx[KEY]` に `V` が含まれない | `not-contains:last_output:ERROR` |
+| `not-equals:KEY:V` | `ctx[KEY]` が `V` と等しくない | `not-equals:last_output:SKIP` |
+
+- キーが `ctx` に存在しない場合は `None`（LLM評価にフォールバック）
+- 解析不能なルールは `None` として扱い LLM評価にフォールバック
+- インライン実行では `next_state.py --last-output VALUE` または `--output KEY=VALUE` でコンテキストを渡す
 
 ### ワイルドカードトランジション
 
@@ -193,16 +223,16 @@ states:
 transitions:
   - from: analyze
     to: approve
-    condition: "The analysis_result starts with PASS"
+    condition_rule: "startswith:analysis_result:PASS"  # 決定論的評価（LLM不要）
     priority: 1
 
   - from: analyze
     to: escalate
-    condition: "The analysis_result starts with CRITICAL"
+    condition_rule: "startswith:analysis_result:CRITICAL"
     priority: 2
 
   - from: analyze
     to: request_revision
-    condition: "The analysis_result starts with MINOR or MAJOR"
+    condition: "The analysis_result starts with MINOR or MAJOR"  # LLM評価
     priority: 3
 ```

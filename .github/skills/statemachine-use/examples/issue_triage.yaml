@@ -11,17 +11,19 @@ states:
     action: |
       以下のイシューを BUG、FEATURE、QUESTION のいずれか一つに分類してください。
       イシュー: {{input}}
-      
+
       カテゴリの単語（BUG、FEATURE、QUESTION）のみで回答してください。
       説明は不要です。
     output_key: classification
+    output_validator: "startswith:BUG,FEATURE,QUESTION"  # 第1行がこれらで始まること
+    max_retries: 2  # 形式違反時に最大2回リトライ
 
   handle_bug:
     description: "バグ報告の処理"
     action: |
       このイシューはバグ（BUG）として分類されました。
       元のイシュー: {{input}}
-      
+
       以下のセクションを含む構造化バグレポートを作成してください:
       ## Summary
       ## Steps to Reproduce
@@ -35,7 +37,7 @@ states:
     action: |
       このイシューは機能リクエスト（FEATURE REQUEST）として分類されました。
       元のイシュー: {{input}}
-      
+
       以下の構成で機能仕様を作成してください:
       ## Feature Summary
       ## User Story (As a ... I want ... So that ...)
@@ -48,7 +50,7 @@ states:
     action: |
       このイシューは質問（QUESTION）として分類されました。
       元のイシュー: {{input}}
-      
+
       簡潔な回答を返してください。十分なコンテキストがない場合は、
       必要な追加情報を説明してください。
     terminal: true
@@ -58,27 +60,27 @@ states:
     action: |
       このイシューは自動分類できませんでした。
       元のイシュー: {{input}}
-      
+
       これがバグ、機能リクエスト、質問のどれに当たるか、報告者に確認を求めてください。
     terminal: true
 
 transitions:
   - from: classify
     to: handle_bug
-    condition: "The last output is exactly the word BUG"
+    condition_rule: "startswith:last_output:BUG"  # 決定論的評価（LLM不要）
     priority: 1
 
   - from: classify
     to: handle_feature
-    condition: "The last output is exactly the word FEATURE"
+    condition_rule: "startswith:last_output:FEATURE"
     priority: 2
 
   - from: classify
     to: handle_question
-    condition: "The last output is exactly the word QUESTION"
+    condition_rule: "startswith:last_output:QUESTION"
     priority: 3
 
   - from: classify
     to: unknown
-    condition: "The last output is none of: BUG, FEATURE, QUESTION"
+    condition: "The last output is none of: BUG, FEATURE, QUESTION"  # LLMフォールバック
     priority: 10
