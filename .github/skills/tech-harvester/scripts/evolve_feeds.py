@@ -68,7 +68,8 @@ def find_removals(config: dict) -> list[dict]:
 
         if failures >= _REMOVE_FAILURE_THRESHOLD:
             removals.append({**feed, "_reason": f"{failures} 回連続フェッチ失敗"})
-        elif relevance < _REMOVE_RELEVANCE_MAX and fetch_count >= _REMOVE_FETCH_MIN:
+        elif relevance > 0.0 and relevance < _REMOVE_RELEVANCE_MAX and fetch_count >= _REMOVE_FETCH_MIN:
+            # relevance_score == 0.0 は「未評価」を意味するため削除対象外
             removals.append({**feed, "_reason": f"関連性スコア {relevance:.0f}/100 (閾値: {_REMOVE_RELEVANCE_MAX:.0f})"})
     return removals
 

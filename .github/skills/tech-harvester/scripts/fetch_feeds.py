@@ -50,7 +50,8 @@ def _truncate(text: str, max_chars: int = 300) -> str:
     return text[:max_chars].rsplit(" ", 1)[0] + "…"
 
 
-def fetch_feed(feed_meta: dict, max_items: int) -> list[dict]:
+def fetch_feed(feed_meta: dict, max_items: int) -> list[dict] | None:
+    """記事リストを返す。通信・パースエラー時は None を返す（空フィードは []）。"""
     url = feed_meta["url"]
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "tech-harvester/1.0"})
@@ -58,13 +59,13 @@ def fetch_feed(feed_meta: dict, max_items: int) -> list[dict]:
             raw = resp.read()
     except (urllib.error.URLError, OSError) as exc:
         print(f"  [WARN] Failed to fetch {url}: {exc}", file=sys.stderr)
-        return []
+        return None
 
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as exc:
         print(f"  [WARN] Failed to parse {url}: {exc}", file=sys.stderr)
-        return []
+        return None
 
     articles = []
 
@@ -132,10 +133,10 @@ def main():
     for feed_meta in feeds:
         print(f"Fetching {feed_meta['name']} …", file=sys.stderr)
         fetched = fetch_feed(feed_meta, args.max_items)
-        if fetched:
-            articles.extend(fetched)
-        else:
+        if fetched is None:
             failed_feeds.append(feed_meta["name"])
+        else:
+            articles.extend(fetched)
 
     result = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -151,8 +152,7 @@ def main():
         print(output)
 
     if args.update_stats:
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).parent))
+        sys.path.insert(0, str(Path(__file__).parent))
         import scorer
         registry = scorer.load_registry(REGISTRY_PATH)
         registry = scorer.update_stats(registry, articles, failed_feeds)
