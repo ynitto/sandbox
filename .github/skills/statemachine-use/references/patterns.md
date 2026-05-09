@@ -376,6 +376,142 @@ transitions:
 
 ---
 
+## ファセットプロンプティング（アクション品質標準化）
+
+TAKTファセット設計思想に基づき、actionプロンプトを5つの独立したファセットに分解して品質を安定させる。
+特に **Output Contract**（出力契約）を明確にすることで、`condition_rule` の `startswith` 判定が確実に機能するようになる。
+
+### 5ファセット標準テンプレート
+
+```markdown
+## [state_id: ステートの目的を一文で]
+
+**Persona（役割）:** あなたは[役割]として振る舞ってください。
+
+**Policy（品質規約）:**
+- 出力の第1行は必ず [KEYWORD_A] または [KEYWORD_B] の一語のみにすること
+- 現在のステートの作業のみを行い、次のステップを先読みしないこと
+- スコープ外の変更・追加機能は行わないこと
+
+**Instructions（手順）:**
+1. [具体的な作業ステップ1]
+2. [具体的な作業ステップ2]
+3. 完了後、Output Contract の形式で出力する
+
+**Knowledge（参照コンテキスト）:**
+- 入力: {{input}}
+- 直前のステート出力: {{last_output}}
+
+**Output Contract（出力契約）:**
+\`\`\`
+第1行: [KEYWORD_A] または [KEYWORD_B] の一語のみ（説明・修飾語を付けてはならない）
+第2行以降: [根拠・詳細]
+\`\`\`
+
+**⚠️ 出力前の自己チェック:**
+- [ ] 第1行が [KEYWORD_A] / [KEYWORD_B] の一語になっているか
+- [ ] 現在のステート以外の判断・作業を含んでいないか
+
+この指示に従ってタスクを実行してください。
+完了後、Output Contract の形式のみで出力してください。次のステップは別途指示されます。
+```
+
+**workflow.yaml での対応**:
+
+```yaml
+states:
+  analyze:
+    action_file: actions/analyze.md
+    output_key: analysis_result
+    output_validator: "startswith:PASS,FAIL,MINOR,MAJOR,CRITICAL"  # Output Contract と対応
+    max_retries: 2  # 形式違反時にリトライ
+
+transitions:
+  - from: analyze
+    to: approve
+    condition_rule: "startswith:analysis_result:PASS"  # Output Contract に依存した決定論的評価
+    priority: 1
+```
+
+**効果**: Output Contract で第1行のキーワードが保証されるため、`condition_rule` の `startswith` 判定がLLM評価なしで安定して機能する。
+
+---
+
+## ゲート条件テーブルパターン
+
+> **TAKT設計思想 — ルールベーストランジション制御**: 遷移の判断はAIの自由意思ではなく、
+> 明示的なルールに基づいて行う。各条件は機械的に検証可能（出力のstartswith・contextの値）であり、曖昧な判断を排除する。
+
+長いワークフローの終盤や副作用の大きい操作の前に挿入する。ゲートステートパターンの強化版で、
+遷移条件を「テーブル」として明示し、全条件のAND評価で遷移を制御する。
+
+### workflow.yaml
+
+```yaml
+states:
+  gate_final:
+    description: "最終ゲート: 全条件をAND評価して遷移を決定する"
+    action_file: actions/gate_final.md
+    output_key: gate_result
+
+transitions:
+  - from: gate_final
+    to: complete
+    condition_rule: "startswith:gate_result:GATE_PASS"   # 決定論的評価
+    priority: 1
+  - from: gate_final
+    to: error_handler
+    condition_rule: "not-startswith:gate_result:GATE_PASS"
+    priority: 2
+```
+
+### `actions/gate_final.md` テンプレート
+
+```markdown
+## [gate_final: 全条件をテーブルで検証する]
+
+**Persona:** あなたは厳格なゲートキーパーとして、全条件を客観的に検証します。
+
+**Policy:**
+- 各条件を独立して評価すること（前の条件の結果で他の評価を変えない）
+- 1つでも条件が不適合なら GATE_FAIL を出力すること
+- 条件番号を省略しないこと
+
+**Instructions:**
+1. 以下のゲート条件テーブルを上から順に評価する
+2. 各条件に「適合 ✅ / 不適合 ❌」と理由を記入する
+3. 全条件の評価が完了したら集約判定を出力する
+
+**Knowledge:**
+{{前フェーズの出力キー変数}}
+
+**ゲート条件テーブル（全条件をANDで評価）:**
+
+| # | 条件 | 検証方法 |
+|---|------|---------|
+| 1 | [条件1] | [何を見て確認するか] |
+| 2 | [条件2] | [何を見て確認するか] |
+
+**Output Contract:**
+\`\`\`
+第1行: GATE_PASS または GATE_FAIL の一語のみ
+第2行以降:
+| # | 条件 | 結果 | 理由 |
+|---|------|------|------|
+不適合条件がある場合: 不適合 N 件: [条件番号リスト]
+\`\`\`
+
+**⚠️ 出力前の自己チェック:**
+- [ ] 全条件を評価したか
+- [ ] 1件でも❌があれば GATE_FAIL を出力したか
+- [ ] 第1行が GATE_PASS / GATE_FAIL の一語になっているか
+
+この指示に従ってタスクを実行してください。
+完了後、Output Contract の形式のみで出力してください。次のステップは別途指示されます。
+```
+
+---
+
 ## パターン選択ガイド
 
 | 状況 | 適用するパターン |
@@ -388,3 +524,5 @@ transitions:
 | 複数ステップで一部失敗が許されない | Saga（補償トランザクション） |
 | 繰り返し処理（なくなるまで継続） | ContinueAsNew Loop |
 | 任意のステートからエラーへ飛ぶ | ワイルドカードトランジション |
+| 出力形式を安定させたい | ファセットプロンプティング |
+| 重要な遷移条件をLLMに依存させたくない | ゲート条件テーブルパターン + condition_rule |

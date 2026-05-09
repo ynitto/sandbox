@@ -171,6 +171,18 @@ transitions:
 
 ## 実行モード
 
+### ⛔ ハーネス実行プロトコル — 禁止行動（違反時は即座に停止して再確認）
+
+| 禁止行動 | 代替行動 |
+|---|---|
+| アクション実行前に条件リストを取得する | ① 実行 → 出力確定 → ② 条件取得 の順を守る |
+| 現在のステート以外の作業を実行する | 現在のステートの作業のみ実行する |
+| `## [現在のステート: {state_id}]` 宣言を省略する | 毎ステートの冒頭で必ず宣言する |
+| 条件を評価せずに遷移先を独断で決める | 必ず ④ の Python スクリプトで遷移先を確定する |
+| 複数ステートをまとめて実行する | 1ステート = 1ターンを厳守する |
+
+---
+
 ### Step 0: 検証と開始ステートの取得
 
 ```bash
@@ -201,26 +213,42 @@ python .github/skills/statemachine-use/scripts/next_state.py {名前} --initial-
 
 ```bash
 python .github/skills/statemachine-use/scripts/next_state.py {名前} \
-  --state {現在のstate_id} --list-conditions
+  --state {現在のstate_id} --list-conditions \
+  --last-output "{last_outputの第1行}"
 ```
+
+`needs_llm_eval: false` の条件は `condition_rule` で自動評価済み（LLM評価不要）。
+`needs_llm_eval: true` の条件のみ次のステップで評価する。
 
 **③ 各条件を評価する（LLM）**
 
-`last_output` に対して各条件を YES / NO で評価し、JSON を構築する:
+`needs_llm_eval: true` の条件のみ `last_output` に対して YES / NO で評価し、JSON を構築する:
 ```json
-{"0": true, "1": false}
+{"1": false}
 ```
+（`needs_llm_eval: false` の条件インデックスは省略可。`--evals` 渡し時に自動上書きされる）
 
 **④ 遷移先を確定する（Python）**
 
 ```bash
 python .github/skills/statemachine-use/scripts/next_state.py {名前} \
-  --state {現在のstate_id} --evals '{"0": true, "1": false}'
+  --state {現在のstate_id} --evals '{"1": false}' \
+  --last-output "{last_outputの第1行}"
 ```
 
 出力: 次の `state_id`、`NONE`（一致なし）、`TERMINAL`（終端）
 
-**⑤ 遷移 or 終了**
+> `condition_rule` がある条件は `--last-output` から自動評価され、`--evals` の値を上書きする。
+
+**⑤ 完了を記録する**
+
+```
+## [ステート {state_id} 完了]
+- 出力: {last_outputの第1行}
+- 遷移先: {次のstate_id または TERMINAL}
+```
+
+**⑥ 遷移 or 終了**
 
 - 次の `state_id` → そのステートへ移動して Step 1 に戻る
 - `TERMINAL` → 実行完了、最終出力を表示

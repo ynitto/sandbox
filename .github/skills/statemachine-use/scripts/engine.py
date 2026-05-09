@@ -28,6 +28,7 @@ class StateConfig:
     on_exit: str = ""
     output_key: str = ""
     max_retries: int = 0
+    output_validator: str = ""   # "startswith:VAL1,VAL2" — 第1行の形式を検証
 
 
 @dataclass
@@ -35,6 +36,7 @@ class TransitionConfig:
     from_state: str   # "*" = wildcard
     to_state: str
     condition: str
+    condition_rule: str = ""  # 決定論的評価ルール（LLM評価より優先）
     priority: int = 0
     description: str = ""
 
@@ -116,6 +118,7 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             on_exit=sdef.get("on_exit", ""),
             output_key=sdef.get("output_key", ""),
             max_retries=sdef.get("max_retries", 0),
+            output_validator=sdef.get("output_validator", ""),
         )
 
     # トランジション（priority 順にソート）
@@ -139,6 +142,7 @@ def load_workflow(path: str | Path) -> WorkflowDefinition:
             from_state=t["from"],
             to_state=t["to"],
             condition=condition,
+            condition_rule=t.get("condition_rule", ""),
             priority=t.get("priority", 0),
             description=t.get("description", ""),
         ))
@@ -206,6 +210,67 @@ def render_template(template: str, context: dict[str, Any]) -> str:
         return str(val)
 
     return re.sub(r"\{\{([^}]+)\}\}", replacer, template)
+
+
+# ─────────────────────────────────────────────
+#  condition_rule 決定論的評価
+# ─────────────────────────────────────────────
+
+def evaluate_condition_rule(rule: str, ctx: dict[str, Any]) -> bool | None:
+    """condition_rule を決定論的に評価する。
+
+    書式: {演算子}:{キー}:{値}
+      startswith:KEY:VALUE     ctx[KEY].startswith(VALUE)
+      contains:KEY:VALUE       VALUE in ctx[KEY]
+      equals:KEY:VALUE         ctx[KEY] == VALUE
+      regex:KEY:PATTERN        re.search(PATTERN, ctx[KEY])
+      lt:KEY:NUMBER            float(ctx[KEY]) < float(NUMBER)
+      gte:KEY:NUMBER           float(ctx[KEY]) >= float(NUMBER)
+      not-startswith:KEY:V     not ctx[KEY].startswith(VALUE)
+      not-contains:KEY:V       VALUE not in ctx[KEY]
+      not-equals:KEY:VALUE     ctx[KEY] != VALUE
+
+    複合条件（AND）: セミコロン区切り "rule1;rule2"
+      全ルールが True の場合のみ True
+
+    ルールが空・解析不能・キー不在の場合は None を返してLLM評価にフォールバック。
+    """
+    if not rule:
+        return None
+
+    # セミコロン区切りの複合条件（AND評価）
+    parts_list = [r.strip() for r in rule.split(";") if r.strip()]
+    if len(parts_list) > 1:
+        results = [evaluate_condition_rule(r, ctx) for r in parts_list]
+        if any(r is None for r in results):
+            return None  # 解析不能なルールが含まれる場合はフォールバック
+        return all(results)  # type: ignore[arg-type]
+
+    parts = rule.split(":", 2)
+    if len(parts) < 3:
+        return None
+
+    op, key, value = parts[0].strip(), parts[1].strip(), parts[2].strip()
+
+    if key not in ctx:
+        return None
+
+    ctx_value = str(ctx[key])
+
+    try:
+        match op:
+            case "startswith":      return ctx_value.startswith(value)
+            case "contains":        return value in ctx_value
+            case "equals":          return ctx_value == value
+            case "regex":           return bool(re.search(value, ctx_value))
+            case "lt":              return float(ctx_value) < float(value)
+            case "gte":             return float(ctx_value) >= float(value)
+            case "not-startswith":  return not ctx_value.startswith(value)
+            case "not-contains":    return value not in ctx_value
+            case "not-equals":      return ctx_value != value
+            case _:                 return None
+    except (ValueError, re.error):
+        return None
 
 
 # ─────────────────────────────────────────────
@@ -288,7 +353,7 @@ class StateMachineEngine:
             self._log(verbose, f"\n{'─'*50}")
             self._log(verbose, f"[ステップ {step_idx+1}] ステートに入りました: {current_state_id} ({state.description})")
 
-            # ステートアクションを実行
+            # ステートアクションを実行（max_retries でリトライ）
             output = await self._execute_state(state, ctx, verbose)
             ctx["last_output"] = output
             ctx["history"][current_state_id] = output
@@ -388,12 +453,32 @@ class StateMachineEngine:
         if not parts:
             return ""
 
-        prompt = "\n\n".join(parts)
-        self._log(verbose, f"  アクションプロンプト:\n{self._indent(prompt)}")
+        base_prompt = "\n\n".join(parts)
+        max_attempts = state.max_retries + 1
 
-        output = await self.llm_fn(prompt)
-        output = output.strip()
-        self._log(verbose, f"  アクション出力: {output[:200]}{'...' if len(output) > 200 else ''}")
+        output = ""
+        for attempt in range(max_attempts):
+            prompt = base_prompt
+            if attempt > 0:
+                prompt += (
+                    f"\n\n⚠️ リトライ {attempt}/{state.max_retries}: "
+                    "前回の出力が Output Contract に違反しました。"
+                    "指定された形式を必ず守って再実行してください。"
+                )
+            self._log(verbose, f"  アクションプロンプト (attempt {attempt+1}):\n{self._indent(prompt)}")
+
+            output = (await self.llm_fn(prompt)).strip()
+            self._log(verbose, f"  アクション出力: {output[:200]}{'...' if len(output) > 200 else ''}")
+
+            if state.output_validator:
+                if self._validate_output(output, state.output_validator):
+                    break
+                if attempt < state.max_retries:
+                    self._log(verbose, f"  ⚠ 出力バリデーション失敗、リトライします ({attempt+1}/{max_attempts})")
+                else:
+                    self._log(verbose, f"  ⚠ 出力バリデーション失敗、最大リトライ到達")
+            else:
+                break  # validator なしは常に成功
 
         if state.on_exit:
             exit_prompt = render_template(state.on_exit, {**ctx, "last_output": output})
@@ -419,10 +504,20 @@ class StateMachineEngine:
         ]
 
         for transition in candidates:
+            label = transition.description or f"{transition.from_state} → {transition.to_state}"
+
+            # 1. condition_rule で決定論的評価を試みる
+            rule_result = evaluate_condition_rule(transition.condition_rule, ctx)
+            if rule_result is not None:
+                self._log(verbose, f"  条件 [{label}] (rule): {'✓ 真' if rule_result else '✗ 偽'}")
+                if rule_result:
+                    return transition.to_state
+                continue
+
+            # 2. LLM フォールバック
             condition = render_template(transition.condition, ctx)
             matches = await self._evaluate_condition(condition, ctx, verbose)
-            label = transition.description or f"{transition.from_state} → {transition.to_state}"
-            self._log(verbose, f"  条件 [{label}]: {'✓ 真' if matches else '✗ 偽'}")
+            self._log(verbose, f"  条件 [{label}] (llm): {'✓ 真' if matches else '✗ 偽'}")
             if matches:
                 return transition.to_state
 
@@ -452,6 +547,23 @@ class StateMachineEngine:
         response = (await self.llm_fn(prompt)).strip().upper()
         # Accept YES / NO even with trailing punctuation
         return response.startswith("YES")
+
+    # ── 内部: 出力バリデーション ──────────────────────────────
+
+    @staticmethod
+    def _validate_output(output: str, validator: str) -> bool:
+        """output_validator ルールに従って出力の第1行を検証する。
+
+        書式: "startswith:VAL1,VAL2,VAL3"
+          出力の第1行がいずれかの値で始まること
+        """
+        if not validator:
+            return True
+        first_line = output.split("\n")[0].strip()
+        if validator.startswith("startswith:"):
+            allowed = [v.strip() for v in validator[len("startswith:"):].split(",")]
+            return any(first_line.startswith(v) for v in allowed)
+        return True  # 未知の validator は常に True
 
     # ── ユーティリティ ───────────────────────────────────────────────────
 
