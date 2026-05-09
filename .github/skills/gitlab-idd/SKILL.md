@@ -193,19 +193,14 @@ export GITLAB_NODE_ID=my-terminal-1
 ### フロー概要
 
 ```
-1. list-issues でオープンイシューを取得
-2. self-defer チェック: 自分発行イシューは DEFER_MINUTES（デフォルト 60 分）経過後まで skip（priority:high はバイパス）
-3. 依存チェック: "## 依存イシュー" に記載のイシューがすべて done/closed か確認
-   → 未完了の依存あり → スキップまたはコメントして終了
-4. 説明の明確性チェック: 受け入れ条件・影響範囲が実装に十分か判断
-   → 曖昧な場合 → 推測解釈を添えてコメント投稿・"status:needs-clarification" に更新して終了。次回起動時に回答または 24h 経過を確認して推測解釈で着手
-5. イシューを自分に assign してロック（競合防止）
-6. テンポラリ領域にリポジトリをクローンし feature/issue-{id} ブランチを作成
-7. feature ブランチを push して空の Draft MR を作成（マージ後ブランチ削除設定つき）
-8. 実装ループ（最大 5 回）
-   └── skill-selector で選定 → 実装 → supporting_skills を適用 → agent-reviewer でレビュー → 修正
-9. コミットを push し、MR 本文を更新して Draft を解除
-10. イシューにサマリーコメント投稿 + ラベル "status:review-ready" に更新
+1. list-issues でオープン・clarification 待ちイシューを取得
+2. self-defer / 放置アサイン / 依存 / 明確性を順に確認して 1 件選択
+   → 曖昧な場合   → 推測解釈付きコメント + status:needs-clarification。24h 後に再着手
+   → アプローチ分岐 → 提案コメント。24h 後に推奨案で着手
+3. assign・テンポラリクローン・スカウトマップ投稿・Draft MR 作成
+4. 実装ループ（最大 5 回）: skill-selector → 実装 → supporting_skills → agent-reviewer → 修正
+5. push・MR 本文更新・Draft 解除・status:review-ready 更新
+6. project-dod チェック → 依存自動解除 → 完了報告 → LTM 保存 → レトロスペクティブトリガー
 ```
 
 ---

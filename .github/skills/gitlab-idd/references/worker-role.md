@@ -709,6 +709,34 @@ fi
 
 スクリプトへの実際のパスは環境に応じて調整する（例: `${SKILLS_DIR}/ltm-use/scripts/save_memory.py`）。
 
+### ステップ 5-5b: 自動レトロスペクティブトリガー（条件付き）
+
+`status:done` の累積イシュー数が 10 の倍数に達した場合、かつ `sprint-reviewer` スキルが利用可能な場合に自動でレトロスペクティブを起動する。
+
+```bash
+SKILLS_DIR=$(dirname $(dirname $(realpath "$0"))) 2>/dev/null || true
+
+# sprint-reviewer が存在する場合のみ実行
+if [ -f "${SKILLS_DIR}/sprint-reviewer/SKILL.md" ]; then
+  # status:done の件数を取得（list-issues の出力件数をカウント）
+  DONE_ISSUES=$(python scripts/gl.py list-issues --label "status:done")
+  DONE_COUNT=$(python -c "import json,sys; d=json.loads('${DONE_ISSUES}'); print(len(d) if isinstance(d,list) else 0)" 2>/dev/null || echo 0)
+
+  if [ "$DONE_COUNT" -gt 0 ] && [ "$((DONE_COUNT % 10))" -eq 0 ]; then
+    cat "${SKILLS_DIR}/sprint-reviewer/SKILL.md"
+  fi
+fi
+```
+
+起動した場合、`sprint-reviewer` に以下を渡す:
+- 直近 10 件の完了イシュー（タイトル・使用スキル・差し戻し回数）
+- `ltm-use` の `gitlab-idd-execution` カテゴリの知見サマリー（ステップ 5-5a で蓄積済み）
+- `project-dod.md` の現在の内容（`references/project-dod.md`）
+
+`sprint-reviewer` の分析結果は新規イシューまたはコメントとして記録する（詳細は `sprint-reviewer/SKILL.md` に従う）。
+
+条件を満たさない場合はスキップ。`sprint-reviewer` が存在しない場合もスキップ。
+
 ### ステップ 5-6: テンポラリクローンの削除
 
 すべての push・コメント投稿が完了したら、テンポラリクローンを削除する:
