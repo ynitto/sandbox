@@ -300,7 +300,7 @@ python scripts/gl.py create-issue \
   --labels "status:blocked,priority:{high|normal|low}"
 ```
 
-> **依存先が完了したら**: リクエスターまたはワーカーが `status:blocked` を外し `status:open,assignee:any` を付与する。
+> **依存先が完了したら**: ワーカーが完了報告時（ステップ 5-4a）に自動で `status:blocked` を外し `status:open,assignee:any` を付与する。手動操作は不要。
 
 ### 複数イシューをまとめて作成する場合
 
@@ -335,7 +335,7 @@ python scripts/gl.py create-issue --title "タスク 2" --body-file _body2.md \
 | #43 | タスク 2 | status:blocked | #42 |
 
 依存関係のないイシューからワーカーが順に処理します。
-#42 が完了したら #43 の status:blocked を外してください。
+#42 が完了すると #43 の status:blocked が自動的に外れ、次のワーカーが着手できます。
 レビュー時は「イシューをレビューして」と声をかけてください。
 ```
 

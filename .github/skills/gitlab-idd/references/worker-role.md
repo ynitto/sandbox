@@ -76,6 +76,9 @@ python scripts/gl.py list-issues --label "status:needs-rework" --assignee MY_USE
 
 # 4. 放置アサイン救済候補（クローズしておらず、status:open/status:done/status:needs-clarification 以外）
 python scripts/gl.py list-issues --state opened --exclude-labels "status:open,status:done,status:needs-clarification"
+
+# 5. 自分が clarification コメントを投稿したイシュー（回答済みか 24h 経過を確認）
+python scripts/gl.py list-issues --label "status:needs-clarification" --assignee MY_USER
 ```
 
 ### ステップ 2-2: self-defer チェック（自分発行イシューの猶予）
@@ -138,6 +141,7 @@ python scripts/gl.py check-assigned-defer {issue_id} --get remaining_minutes
 2. `status:open` かつ自分 assign のもの
 3. `status:open,assignee:any` のもの
 4. `status:open` / `status:done` / `status:needs-clarification` 以外でクローズしていないもの（放置アサイン救済候補）
+5. `status:needs-clarification` かつ自分 assign のもの（clarification 回答待ち → 回答済みか 24h 経過したら再着手）
 
 各候補に対して次を順に実行し、両方 `defer=false` の先頭 1 件を選択する。
 
@@ -195,9 +199,9 @@ python scripts/gl.py get-comments {issue_id}
 | 影響範囲が不明（ファイル・モジュール・APIが特定できない） | 「エラーハンドリングを直して」(どのエラー・どの箇所かが不明) |
 | 受け入れ条件が検証不能（テスト・確認方法が示せない） | 「ユーザー体験を向上させて」|
 
-**判定: 明確な場合** → そのまま Phase 3 へ進む。
+**判定: 明確な場合** → そのまま ステップ 2-8 へ進む。
 
-**判定: 曖昧な場合** → 以下を実行して終了する（Phase 3 には進まない）:
+**判定: 曖昧な場合** → 以下を実行する:
 
 1. イシューにコメントを投稿する:
 
@@ -208,66 +212,35 @@ python scripts/gl.py add-comment {issue_id} --body-file _clarification.md
 `_clarification.md` の内容:
 
 ```markdown
-## ⚠️ 説明が不明確なため着手を保留します
+## ❓ 仕様の確認事項があります（24 時間以内に回答がなければ推測解釈で着手します）
 
-以下の点が不明確なため、実装に着手できません。リクエスターの方はイシュー説明を詳細化してください。
-
-### 不明確な点
-
-- {不明確な点 1: 具体的に何が分からないか}
-- {不明確な点 2}
+以下の点が不明確です。ご確認ください。
 
 ### 確認したい事項
 
-- {リクエスターに確認したい具体的な質問 1}
+- {具体的な質問 1}
 - {具体的な質問 2}
 
 ---
 
-### 💡 ワーカーの推測（参考）
-
-現在の説明から以下のように解釈しました。意図と異なる箇所を修正してください:
+### 💡 ワーカーの推測解釈（回答がない場合はこの解釈で実装します）
 
 - {推測した解釈 1: 例「X モジュールの Y 関数を対象とした変更と推測」}
 - {推測した解釈 2: 例「影響範囲は Z ファイルのみと推測」}
 
-### 📝 イシュー修正テンプレート
+**受け入れ条件（推測）**
 
-以下をベースにイシューの説明を補完していただくと、ワーカーがスムーズに着手できます:
-
----
-
-**目的**
-
-{推測した目的。例: 「〇〇機能の △△ を修正する」}
-
-**背景・要件**
-
-{推測した背景・要件}
-
-**受け入れ条件**
-
-- [ ] {推測される条件 1: 例「〇〇した場合に △△ が返る」}
+- [ ] {推測される条件 1}
 - [ ] {推測される条件 2}
 
-**影響範囲（推測）**
-
-- 対象ファイル: {推測されるファイル・ディレクトリ}
-- 対象 API / モジュール: {推測されるもの}
-
-**技術的な補足**
-
-{不明な場合は「特になし」と記載}
-
----
-
-<!-- gitlab-idd:clarification-requested -->
+<!-- gitlab-idd:clarification-requested:24h-timeout -->
 ```
 
-2. イシューのラベルを更新する:
+2. イシューのラベルを更新して終了する（Phase 3 には進まない）:
 
 ```
 python scripts/gl.py update-issue {issue_id} \
+  --assignee MY_USER \
   --add-labels "status:needs-clarification" \
   --remove-labels "status:open,assignee:any,status:needs-rework"
 ```
@@ -275,10 +248,85 @@ python scripts/gl.py update-issue {issue_id} \
 3. ユーザーに報告して終了する:
 
 ```
-⚠️ イシュー #{id} の説明が不明確なため着手を保留しました。
-不明確な点をコメントに記載し、ラベルを「status:needs-clarification」に更新しました。
-リクエスターが詳細化後、再度「イシューを拾って」で実行してください。
+❓ イシュー #{id} の仕様に確認事項があります。
+コメントに推測解釈を記載しました。24 時間以内に回答がない場合、次回起動時に推測解釈で実装を開始します。
 ```
+
+### ステップ 2-7b: needs-clarification 再開チェック
+
+**ステップ 2-1 の取得候補 5**（`status:needs-clarification` かつ自分 assign）に対してのみ実行する。
+
+各イシューのコメントを確認する:
+
+```
+python scripts/gl.py get-comments {issue_id}
+```
+
+以下のいずれかに該当する場合は **再着手可能** と判定して Phase 3 へ進む:
+
+| 条件 | 詳細 |
+|-----|------|
+| リクエスターが clarification コメント後に返信した | コメント履歴に `gitlab-idd:clarification-requested` 以降のリクエスター（非ワーカー）コメントがある |
+| 24 時間経過 | `gitlab-idd:clarification-requested:24h-timeout` タグのコメント投稿時刻から 24 時間以上経過している |
+
+再着手可能と判定したら:
+
+```
+python scripts/gl.py update-issue {issue_id} \
+  --add-labels "status:open" \
+  --remove-labels "status:needs-clarification"
+```
+
+どちらの条件も満たさない場合はこのイシューをスキップして次の候補へ進む。
+
+### ステップ 2-8: アプローチ提案（任意・判断による）
+
+イシューに複数の実装方針が考えられる場合（トレードオフが大きい・設計上の分岐点がある）、Phase 3 に進む前にリクエスターへアプローチ案を提案する。
+
+**提案を行う目安**（以下のいずれかに該当）:
+- 実装方式で非互換な変更を伴う選択肢が存在する（例: スキーマ変更 vs 後方互換維持）
+- パフォーマンスと保守性のトレードオフが顕著
+- 外部ライブラリ追加の要否で実装量が大きく変わる
+
+**提案しない場合**: 明らかに唯一の実装方針しかない場合は省略してそのまま Phase 3 へ進む。
+
+提案する場合は以下のコメントを投稿する:
+
+```
+python scripts/gl.py add-comment {issue_id} --body-file _approach.md
+```
+
+`_approach.md` の内容:
+
+```markdown
+## 🔀 実装アプローチの提案（24 時間以内に選択がなければ推奨案で進めます）
+
+### アプローチ A: {名称}
+
+{概要 1〜2 行}
+
+- **メリット**: {短所}
+- **デメリット**: {長所}
+
+### アプローチ B: {名称}
+
+{概要 1〜2 行}
+
+- **メリット**: {短所}
+- **デメリット**: {長所}
+
+---
+
+**推奨**: {A または B} — {推奨理由（コスト・保守性・要件への適合度）}
+
+イシューコメントで「A で」「B で」とお知らせください。24 時間以内に回答がなければ推奨案（{A/B}）で実装を開始します。
+
+<!-- gitlab-idd:approach-proposed:24h-timeout -->
+```
+
+コメント投稿後、24 時間を待たずに **そのまま終了する**（次回起動時にコメントを確認して選択済みアプローチで Phase 3 へ進む）。
+
+**次回起動時の再開手順**: ステップ 2-1 取得候補 2 または 3 でこのイシューを再取得 → コメントを確認 → `gitlab-idd:approach-proposed:24h-timeout` 以降にリクエスターの返信があれば指定アプローチで、返信なく 24h 経過なら推奨アプローチで Phase 3 へ進む。
 
 ---
 
@@ -404,6 +452,7 @@ cat ${SKILLS_DIR}/skill-selector/SKILL.md
 - 受け入れ条件を全て満たすコードを作成・変更する
 - 実装スコープ外の変更を含めない
 - 変更内容のサマリーをまとめておく
+- 実装中に仕様が変わった場合（予期しない制約・代替解の採用等）は、イシュー本文の `## 実装スコープ` または `## 受け入れ条件` を随時更新する（ライブ仕様書として維持）
 ```
 
 ### ステップ 4-2: 補助指示の適用（supporting_skills）
@@ -465,6 +514,17 @@ git push origin BRANCH
 
 > **GitLab Markdown ルール**: このフェーズで書くテンプレートの `{...}` プレースホルダーに流し込む文字列は **必ず GitLab Markdown 形式** で記述する。
 > `##` 見出し・`**太字**`・`- 箇条書き`・` ``` コードブロック ``` `・`- [x] / - [ ] チェックボックス`・`` `インラインコード` `` を使う。プレーンテキストのまま埋めない。
+
+### ステップ 5-0: project-dod チェック（任意）
+
+リポジトリのルートまたは `references/` に `project-dod.md` が存在する場合、MR を提出する前にその内容を確認してすべての項目を満たしているか確認する。
+
+```bash
+# 存在確認（どちらかを確認）
+ls project-dod.md 2>/dev/null || ls .github/skills/gitlab-idd/references/project-dod.md 2>/dev/null
+```
+
+存在する場合は、各チェック項目（テスト・セキュリティ・ドキュメント等）を実装成果物と照合する。未充足の項目があれば Phase 4 に戻って対処してから次のステップへ進む。存在しない場合はスキップ。
 
 ### ステップ 5-1: 最終 push の確認
 
@@ -558,6 +618,36 @@ python scripts/gl.py update-issue {issue_id} \
   --remove-labels "status:in-progress"
 ```
 
+### ステップ 5-4a: 依存ブロック解除（自動）
+
+完了したイシューを依存先として持つ `status:blocked` イシューを検索し、全依存が解消済みであれば自動的にオープンに戻す。
+
+```
+# status:blocked のイシューを全件取得
+python scripts/gl.py list-issues --label "status:blocked"
+```
+
+各イシューについて `## 依存イシュー` セクションを読み取り、**完了した {issue_id} が依存として記載されているか**確認する。
+該当する場合、残りの依存イシューをすべて確認する:
+
+```
+python scripts/gl.py get-issue {dep_issue_id} --get state
+# → "closed" であれば完了
+```
+
+**全依存が完了済みの場合**（今回のイシューが最後の依存だった場合）:
+
+```
+python scripts/gl.py update-issue {blocked_issue_id} \
+  --add-labels "status:open,assignee:any" \
+  --remove-labels "status:blocked"
+
+python scripts/gl.py add-comment {blocked_issue_id} \
+  --body "🔓 依存イシュー #{issue_id} が完了したため、着手可能になりました。"
+```
+
+依存が残っている場合はスキップして次のブロック済みイシューへ進む。
+
 ### ステップ 5-5: 完了報告
 
 ```
@@ -566,6 +656,27 @@ python scripts/gl.py update-issue {issue_id} \
 MR: MR_URL
 レビュー待ち状態に更新しました。
 ```
+
+### ステップ 5-5a: LTM フィードバック保存
+
+`ltm-use` スクリプトが存在する場合、このイシューの実行結果を記録する（存在しない場合はスキップ）:
+
+```bash
+SKILLS_DIR=$(dirname $(dirname $(realpath "$0"))) 2>/dev/null || true
+
+if [ -f "${SKILLS_DIR}/ltm-use/scripts/save_memory.py" ]; then
+  python "${SKILLS_DIR}/ltm-use/scripts/save_memory.py" \
+    --non-interactive --no-dedup \
+    --category "gitlab-idd-execution" \
+    --title "イシュー #{issue_id} 完了: {issue_title_slug}" \
+    --summary "使用スキル: {primary_skill}" \
+    --content "イシュー: {issue_title}\n使用スキル: {primary_skill}\n補助スキル: {supporting_skill}\n課題: {problems_if_any}\n解決策: {solutions_if_any}" \
+    --conclusion "{このイシューの種別に有効だったスキル組み合わせの知見}" \
+    --tags "gitlab-idd,{primary_skill}"
+fi
+```
+
+スクリプトへの実際のパスは環境に応じて調整する（例: `${SKILLS_DIR}/ltm-use/scripts/save_memory.py`）。
 
 ### ステップ 5-6: テンポラリクローンの削除
 
@@ -588,4 +699,4 @@ rm -rf "$CLONE_DIR"
 6. **コメントで証跡を残す**: リクエスターが判断できるよう、何をどう実装したかをコメントに記載する
 7. **self-defer を守る**: 自分発行イシューは猶予期間中は取得しない。他ノードへの委譲を尊重する
 8. **依存を守る**: `## 依存イシュー` に記載されたイシューがすべて完了するまで着手しない
-9. **曖昧なイシューには着手しない**: 説明・受け入れ条件が不明確な場合はコメントで指摘し、`status:needs-clarification` に更新してリクエスターの詳細化を待つ
+9. **曖昧なイシューには推測解釈で対話する**: 説明・受け入れ条件が不明確な場合は推測解釈を添えてコメントし、`status:needs-clarification` に更新して終了する。24 時間以内に回答があれば回答に従い、なければ推測解釈で着手する（ステップ 2-7 / 2-7b 参照）
