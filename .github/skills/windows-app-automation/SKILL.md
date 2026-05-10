@@ -103,8 +103,8 @@ python .github/skills/windows-app-automation/scripts/element_inspector.py --list
 - VS Code のターミナルが PowerShell の場合、`python` コマンドが正しく通るか確認する
 - `python --version` で Python 3.9 以上が表示されることを確認する
 
-**Kiro 固有の注意点:**
-- Kiro の統合ターミナルから実行する
+**Kiro IDE 固有の注意点:**
+- Kiro の統合ターミナルから実行する（PowerShell）
 - Kiro エージェントは直接 `!winauto tree --app notepad` のようにシェルコマンドを呼べる
 - スキルの自動化スクリプトを Kiro に書かせた後、Kiro のターミナルで実行する
 
@@ -129,6 +129,34 @@ cmd.exe /c python .github/skills/windows-app-automation/scripts/element_inspecto
 - `winauto run` に渡すスクリプト内のファイルパスは Windows パス（`C:/...`）で書く
 - スクリーンショットの保存先は `C:/Users/<name>/` 配下か `/mnt/c/...` の WSL パスを使う
 - WSL ターミナルに出力は返ってくるが、GUI 操作の対象は Windows デスクトップ上のウィンドウ
+
+### kiro-cli から呼び出す場合
+
+kiro-cli は WSL 上で動作する AI エージェント CLI。`--trust-all-tools` を付けると winauto コマンドを
+自律的に呼び出してスクリプトを生成・実行できる。詳細は `references/kiro-cli-usage.md` を参照。
+
+**基本パターン:**
+
+```bash
+# タスク記述に「winauto CLI が使える」と明示するとエージェントが活用する
+kiro-cli chat --no-interactive --trust-all-tools \
+  "Notepad を起動してテキストを入力してスクリーンショットを /tmp/sc.png に保存して。winauto CLI が使える。"
+```
+
+**自動実行フロー:**
+```
+kiro-cli --trust-all-tools
+    ├─ winauto apps              ← 起動中アプリを偵察
+    ├─ winauto tree --app <name> ← UI 要素を偵察
+    ├─ [Python スクリプト生成]    ← pywinauto スクリプトをファイルに書く
+    ├─ winauto run script.py     ← 実行（Windows Python が動く）
+    └─ winauto screenshot        ← 結果を画像で確認
+```
+
+**kiro-cli 固有の注意点:**
+- `--trust-all-tools` がないと winauto などの外部コマンド実行が承認待ちになる
+- GUI 操作は Windows デスクトップ側で発生するため stdout に状況は出ない。`winauto screenshot` で確認
+- kiro-cli が生成したスクリプト内の Windows パスは `C:/...` 形式にする
 
 ---
 
