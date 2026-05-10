@@ -15,7 +15,7 @@ export interface AgentConfig {
   /**
    * 使用する CLI ツール。
    * "claude" | "gh-copilot-suggest" | "gh-copilot-suggest-git" |
-   * "gh-copilot-suggest-gh" | "gh-copilot-explain" | "codex" | "q" | "kiro-cli"
+   * "gh-copilot-suggest-gh" | "gh-copilot-explain" | "codex" | "kiro-cli"
    */
   tool: string;
   /**
@@ -70,12 +70,6 @@ export const BUILTIN_AGENTS: AgentConfig[] = [
     name: 'Codex',
     description: 'OpenAI Codex でコード生成',
     tool: 'codex',
-  },
-  {
-    id: 'amazon-q',
-    name: 'Amazon Q',
-    description: 'Amazon Q Developer CLI',
-    tool: 'q',
   },
   {
     id: 'kiro',

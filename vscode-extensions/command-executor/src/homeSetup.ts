@@ -84,11 +84,6 @@ function buildSyncConfigs(): SyncConfig[] {
       homeDir: path.join(home, '.codex'),
       mappings: DEFAULT_MAPPINGS,
     },
-    {
-      tools: ['q'],
-      homeDir: path.join(home, '.aws', 'amazonq'),
-      mappings: DEFAULT_MAPPINGS,
-    },
   ];
 
   // kiro-cli: Windows で WSL ホームが解決できた場合のみ追加

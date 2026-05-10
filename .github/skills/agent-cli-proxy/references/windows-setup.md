@@ -169,58 +169,6 @@ winget install Docker.DockerDesktop
 
 ---
 
-## Amazon Q Developer CLI（`q`）
-
-### インストール
-
-**Windows（インストーラー）:**
-1. [Amazon Q Developer CLI リリースページ](https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-installing.html) からインストーラーをダウンロード
-2. `AmazonQ-Setup.exe` を実行
-
-**Windows（winget）:**
-```powershell
-winget install Amazon.AmazonQ
-```
-
-**macOS（Homebrew）:**
-```bash
-brew install amazon-q
-```
-
-**Linux:**
-```bash
-curl -fsSL https://desktop-release.q.us-east-1.amazonaws.com/latest/linux/q.tar.gz | tar -xz
-sudo mv q /usr/local/bin/
-```
-
-### 認証設定
-
-**Builder ID（無料）:**
-```bash
-q login
-# ブラウザが開いて AWS Builder ID でログイン
-```
-
-**IAM Identity Center（組織アカウント）:**
-```bash
-q login --sso-start-url https://your-org.awsapps.com/start
-```
-
-### 確認
-
-```bash
-q whoami
-q chat "EC2 インスタンスの一覧を表示する AWS CLI コマンドは？"
-```
-
-### Windows での注意事項
-
-- PowerShell 7（pwsh）を推奨。Windows PowerShell 5.x でも動作するが一部機能が制限される
-- `q chat` の日本語入力は IME 経由で正常に動作する
-- ターミナルとして Windows Terminal を使用すると表示が安定する
-
----
-
 ## Kiro（`kiro-cli`）
 
 > Kiro は AWS が開発中の AI ネイティブ IDE。2025年にプレビューリリース。CLI ツールとしても利用可能。
@@ -374,7 +322,7 @@ Get-Content .env | ForEach-Object {
 ```bash
 #!/bin/bash
 echo "=== AI CLI ツール インストール状況 ==="
-for cmd in claude "gh copilot" codex q kiro-cli; do
+for cmd in claude "gh copilot" codex kiro-cli; do
   if command -v ${cmd%% *} &>/dev/null; then
     echo "✅ $cmd: $(${cmd} --version 2>/dev/null || echo '(バージョン取得不可)')"
   else
@@ -390,7 +338,6 @@ $tools = @(
     @{ Name = "Claude Code";          Cmd = "claude";    Args = "--version";  UseWsl = $false },
     @{ Name = "GitHub Copilot CLI";   Cmd = "gh";        Args = "copilot --version"; UseWsl = $false },
     @{ Name = "OpenAI Codex CLI";     Cmd = "codex";     Args = "--version";  UseWsl = $false },
-    @{ Name = "Amazon Q CLI";         Cmd = "q";         Args = "--version";  UseWsl = $false },
     @{ Name = "Kiro (WSL2)";          Cmd = "wsl";       Args = "kiro-cli --version"; UseWsl = $true }
 )
 

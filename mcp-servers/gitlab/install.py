@@ -11,7 +11,6 @@ GitLab MCP Server (server.py) を共有ディレクトリにコピーし、
     python /path/to/agent-skills/mcp-servers/gitlab/install.py --agent claude
     python /path/to/agent-skills/mcp-servers/gitlab/install.py --agent copilot
     python /path/to/agent-skills/mcp-servers/gitlab/install.py --agent codex
-    python /path/to/agent-skills/mcp-servers/gitlab/install.py --agent amazonq
     python /path/to/agent-skills/mcp-servers/gitlab/install.py --agent kiro
     python /path/to/agent-skills/mcp-servers/gitlab/install.py --all
 
@@ -19,7 +18,6 @@ GitLab MCP Server (server.py) を共有ディレクトリにコピーし、
     claude   → .mcp.json                    (Claude Code プロジェクト設定)
     copilot  → .vscode/mcp.json             (GitHub Copilot / VSCode)
     codex    → .vscode/mcp.json             (OpenAI Codex in VSCode)
-    amazonq  → .vscode/mcp.json             (Amazon Q Developer in VSCode)
     kiro     → .kiro/settings/mcp.json      (Kiro by AWS)
 
 server.py の共有インストール先:
@@ -61,11 +59,6 @@ AGENTS: dict[str, dict] = {
         "config_path": os.path.join(".vscode", "mcp.json"),
         "format": "vscode",
     },
-    "amazonq": {
-        "description": "Amazon Q Developer (VSCode)",
-        "config_path": os.path.join(".vscode", "mcp.json"),
-        "format": "vscode",
-    },
     "kiro": {
         "description": "Kiro (AWS, VSCode)",
         "config_path": os.path.join(".kiro", "settings", "mcp.json"),
@@ -74,7 +67,7 @@ AGENTS: dict[str, dict] = {
 }
 
 # .vscode/mcp.json を使う複数エージェントのラベル（マージ表示用）
-VSCODE_AGENTS = {"copilot", "codex", "amazonq"}
+VSCODE_AGENTS = {"copilot", "codex"}
 
 
 def get_server_install_dir() -> str:
@@ -222,7 +215,6 @@ DETECT_COMMANDS = {
     "claude":  ["claude", "--version"],
     "copilot": ["gh", "copilot", "--version"],
     "codex":   ["codex", "--version"],
-    "amazonq": ["q", "--version"],
     "kiro":    ["kiro-cli", "--version"],
 }
 
@@ -256,7 +248,6 @@ def parse_args() -> argparse.Namespace:
   claude   Claude Code           → .mcp.json
   copilot  GitHub Copilot        → .vscode/mcp.json
   codex    OpenAI Codex CLI      → .vscode/mcp.json
-  amazonq  Amazon Q Developer    → .vscode/mcp.json
   kiro     Kiro (AWS)            → .kiro/settings/mcp.json
 
 例:
@@ -370,7 +361,7 @@ def _print_next_steps(agents: list[str]) -> None:
 
     if any(a in agents for a in VSCODE_AGENTS):
         print()
-        print("  [GitHub Copilot / Codex / Amazon Q (VSCode)]")
+        print("  [GitHub Copilot / Codex (VSCode)]")
         print("    VSCode でこのプロジェクトを開くと、起動時に")
         print("    GitLab Personal Access Token の入力を求められます。")
 

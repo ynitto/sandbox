@@ -22,7 +22,6 @@ function getCacheKey(tool: string): string | undefined {
     case 'gh-copilot-suggest-gh':
     case 'gh-copilot-explain':    return 'gh';
     case 'codex':                 return 'codex';
-    case 'q':                     return 'q';
     case 'kiro-cli':              return isWindows ? 'wsl:kiro-cli' : 'kiro-cli';
     default:                      return undefined;
   }

@@ -112,14 +112,6 @@ export function buildCommand(
         cwd: workspacePath,
       };
 
-    case 'q':
-      return {
-        cmd: 'q',
-        args: ['chat', '-p', prompt, ...extra],
-        label: agent.name,
-        cwd: workspacePath,
-      };
-
     case 'kiro-cli': {
       const modelArgs = model ? ['--model', model] : [];
       // kiro-cli は --session-id を持たず、--resume で直前セッションを継続する

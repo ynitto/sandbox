@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -45,6 +46,7 @@ AGENT_DIRS: dict[str, str] = {
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = SCRIPT_DIR  # install.py はリポジトリルートに配置
 REPO_SKILLS_DIR = os.path.join(REPO_ROOT, ".github", "skills")
+MCP_CONFIG_SRC = os.path.join(REPO_ROOT, ".github", "mcp", "mcp.json")
 
 def _discover_skills_by_tier(skills_dir: str, tier: str) -> list[str]:
     """SKILL.md の metadata.tier が指定値に一致するスキルを動的収集する。"""
@@ -82,6 +84,81 @@ def _discover_core_skills(skills_dir: str) -> list[str]:
 
 
 CORE_SKILLS = _discover_core_skills(REPO_SKILLS_DIR)
+
+
+# ---------------------------------------------------------------------------
+# MCP 設定
+# ---------------------------------------------------------------------------
+
+def _get_vscode_user_mcp_path() -> str:
+    """VS Code ユーザーレベルの mcp.json パスを返す。"""
+    system = platform.system()
+    if system == "Darwin":
+        base = os.path.expanduser("~/Library/Application Support/Code/User")
+    elif system == "Windows":
+        base = os.path.join(os.environ.get("APPDATA", ""), "Code", "User")
+    else:
+        base = os.path.expanduser("~/.config/Code/User")
+    return os.path.join(base, "mcp.json")
+
+
+def _mcp_target_path(agent_type: str, paths: dict[str, str]) -> str:
+    """エージェント種別に応じた MCP 設定ファイルのパスを返す。
+
+    claude  → ~/.claude/.mcp.json          (Claude Code ユーザーレベル設定)
+    kiro    → ~/.kiro/settings/mcp.json    (Kiro 設定)
+    copilot → VS Code ユーザーデータ mcp.json  (GitHub Copilot 向け)
+    codex   → VS Code ユーザーデータ mcp.json  (Codex 向け)
+    """
+    agent_home = paths["agent_home"]
+    if agent_type == "claude":
+        return os.path.join(agent_home, ".mcp.json")
+    elif agent_type == "kiro":
+        return os.path.join(agent_home, "settings", "mcp.json")
+    else:  # copilot, codex
+        return _get_vscode_user_mcp_path()
+
+
+def setup_mcp_config(paths: dict[str, str], agent_type: str) -> bool:
+    """`.github/mcp/mcp.json` のサーバーエントリをエージェントの MCP 設定にマージする。
+
+    - claude / kiro : Anthropic 形式の mcpServers キーに追記
+    - copilot / codex : VSCode 形式の servers キーに追記
+    """
+    if not os.path.isfile(MCP_CONFIG_SRC):
+        return False
+
+    with open(MCP_CONFIG_SRC, encoding="utf-8") as f:
+        src = json.load(f)
+
+    src_servers: dict = src.get("servers", {})
+    if not src_servers:
+        return False
+
+    target_path = _mcp_target_path(agent_type, paths)
+
+    existing: dict = {}
+    if os.path.isfile(target_path):
+        try:
+            with open(target_path, encoding="utf-8") as f:
+                existing = json.load(f)
+        except json.JSONDecodeError:
+            print(f"   警告: {target_path} のJSON解析に失敗しました。上書きします。")
+
+    if agent_type in ("claude", "kiro"):
+        # Anthropic 形式: mcpServers キー (servers エントリをそのまま利用可)
+        existing.setdefault("mcpServers", {}).update(src_servers)
+    else:
+        # VSCode 形式: servers キー
+        existing.setdefault("servers", {}).update(src_servers)
+
+    os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+    with open(target_path, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    print(f"   → {target_path}")
+    return True
 
 
 def parse_args() -> argparse.Namespace:
@@ -607,12 +684,17 @@ def main() -> None:
     if not copy_agent_instructions(paths, agent_type):
         print("   (対応するファイルが見つかりません、スキップ)")
 
-    # 5. エージェント固有のセットアップ
+    # 5. MCP 設定
+    print("\n5. MCP 設定をセットアップ...")
+    if not setup_mcp_config(paths, agent_type):
+        print("   (.github/mcp/mcp.json が見つかりません、スキップ)")
+
+    # 6. エージェント固有のセットアップ
     if agent_type == "kiro":
-        print("\n5. LSP をセットアップ (Kiro)...")
+        print("\n6. LSP をセットアップ (Kiro)...")
         setup_lsp_for_kiro()
     elif agent_type == "claude":
-        print("\n5. Claude Code hooks を設定...")
+        print("\n6. Claude Code hooks を設定...")
         if setup_claude_hooks(paths):
             print("   Stop hook (ltm-use build_index) を登録しました")
         # Kiro と GitHub Copilot はセッション停止フックの仕組みを持たないため

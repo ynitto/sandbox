@@ -1,7 +1,7 @@
 {
   "name": "vscode-agent-executor",
   "displayName": "Agent CLI Executor",
-  "description": "Execute Agent CLI commands (Claude Code, GitHub Copilot, Codex, Amazon Q, Kiro) from VS Code chat UI",
+  "description": "Execute Agent CLI commands (Claude Code, GitHub Copilot, Codex, Kiro) from VS Code chat UI",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.85.0"
