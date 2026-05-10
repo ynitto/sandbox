@@ -1,0 +1,5 @@
+recommends:
+  - name: webapp-testing
+    reason: "ブラウザベースのUIテストが必要な場合（Electron アプリの内部 web コンテンツなど）"
+  - name: self-checking
+    reason: "自動化スクリプト完成後に成果物を自己評価・動作確認する"
