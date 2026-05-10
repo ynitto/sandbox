@@ -83,6 +83,63 @@ def _discover_core_skills(skills_dir: str) -> list[str]:
     return _discover_skills_by_tier(skills_dir, "core")
 
 
+def _get_skill_agents(skill_dir: str) -> list[str] | None:
+    """SKILL.md の metadata.agents フィールドを返す。フィールドがなければ None（全エージェント対応）。"""
+    skill_md = os.path.join(skill_dir, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return None
+    with open(skill_md, encoding="utf-8") as f:
+        content = f.read()
+    fm = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+    if not fm:
+        return None
+    fm_body = fm.group(1)
+    # インライン形式: agents: [claude, kiro]
+    m = re.search(r'^\s+agents:\s*\[([^\]]+)\]', fm_body, re.MULTILINE)
+    if m:
+        return [a.strip() for a in m.group(1).split(',')]
+    # リスト形式:
+    #   agents:
+    #     - claude
+    if re.search(r'^\s+agents:\s*$', fm_body, re.MULTILINE):
+        agents = []
+        in_agents = False
+        for line in fm_body.split('\n'):
+            if re.match(r'^\s+agents:\s*$', line):
+                in_agents = True
+                continue
+            if in_agents:
+                item_m = re.match(r'^\s+-\s+(\S+)', line)
+                if item_m:
+                    agents.append(item_m.group(1))
+                else:
+                    break
+        return agents if agents else None
+    return None
+
+
+def _is_skill_for_agent(skill_dir: str, agent_type: str) -> bool:
+    """スキルが指定エージェントに対応しているか確認する。
+
+    metadata.agents フィールドがない場合は全エージェント対応とみなす。
+    """
+    agents = _get_skill_agents(skill_dir)
+    return agents is None or agent_type in agents
+
+
+def _discover_agent_specific_skills(skills_dir: str, agent_type: str) -> list[str]:
+    """指定エージェント専用スキル（metadata.agents フィールドあり）を収集する。"""
+    result = []
+    if not os.path.isdir(skills_dir):
+        return result
+    for name in sorted(os.listdir(skills_dir)):
+        skill_dir = os.path.join(skills_dir, name)
+        agents = _get_skill_agents(skill_dir)
+        if agents is not None and agent_type in agents:
+            result.append(name)
+    return result
+
+
 CORE_SKILLS = _discover_core_skills(REPO_SKILLS_DIR)
 
 
@@ -641,6 +698,77 @@ def setup_lsp_for_kiro() -> None:
             print(f"   ✗ {label}: コマンドが見つかりません ({cmd[0]})")
 
 
+def setup_playwright_cli_skill(paths: dict[str, str]) -> bool:
+    """playwright-cli npm パッケージのインストールとスキルの展開を行う。
+
+    処理源:
+      1. @playwright/cli が未インストールなら npm install -g でインストールする。
+      2. playwright-cli install --skills を user_home で実行する。
+         (常に ~/.claude/skills/playwright-cli に展開される)
+      3. ターゲットの skill_home に playwright-cli がなければコピーする。
+    """
+    # 1. playwright-cli のインストール確認
+    cli_available = bool(shutil.which("playwright-cli"))
+    if not cli_available:
+        print("   @playwright/cli は未インストールです。npm install を実行します...")
+        try:
+            result = subprocess.run(
+                ["npm", "install", "-g", "@playwright/cli"],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                print(f"   ✗ @playwright/cli のインストールに失敗しました (code {result.returncode})")
+                if result.stderr:
+                    print(f"     {result.stderr.strip()}")
+                return False
+            print("   ✓ @playwright/cli をインストールしました")
+            cli_available = bool(shutil.which("playwright-cli"))
+        except FileNotFoundError:
+            print("   ✗ npm が見つかりません。playwright-cli のインストールをスキップします")
+            return False
+    else:
+        print("   ✓ playwright-cli はインストール済みです")
+
+    # 2. playwright-cli install --skills で ~/.claude/skills/playwright-cli に展開
+    user_home = paths["user_home"]
+    claude_skill_path = os.path.join(user_home, ".claude", "skills", "playwright-cli")
+    print(f"   playwright-cli install --skills を実行します (CWD={user_home})...")
+    try:
+        result = subprocess.run(
+            ["playwright-cli", "install", "--skills"],
+            cwd=user_home,
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"   ✗ playwright-cli install --skills に失敗しました (code {result.returncode})")
+            if result.stderr:
+                print(f"     {result.stderr.strip()}")
+            return False
+        if result.stdout:
+            for line in result.stdout.strip().splitlines():
+                print(f"   {line}")
+    except FileNotFoundError:
+        print("   ✗ playwright-cli コマンドが見つかりません")
+        return False
+
+    if not os.path.isdir(claude_skill_path):
+        print(f"   ✗ 展開先 {claude_skill_path} が見つかりません")
+        return False
+
+    # 3. ターゲットの skill_home になければコピー
+    target_path = os.path.join(paths["skill_home"], "playwright-cli")
+    if os.path.abspath(claude_skill_path) == os.path.abspath(target_path):
+        # claude エージェント (源とターゲットが同じ)
+        print(f"   ✓ {target_path} (源と同一、コピー不要)")
+        return True
+    if os.path.isdir(target_path):
+        shutil.rmtree(target_path)
+        print(f"   既存の {target_path} を削除しました（バージョン更新のため）")
+    shutil.copytree(claude_skill_path, target_path)
+    print(f"   ✓ {claude_skill_path} → {target_path}")
+    return True
+
+
 def main() -> None:
     args = parse_args()
     agent_type = args.agent
@@ -664,11 +792,27 @@ def main() -> None:
 
     # 2. スキルをコピー
     if install_all:
-        target_skills = _discover_all_skills(REPO_SKILLS_DIR)
+        # 全スキルのうち、このエージェントに対応しているものをインストール
+        all_skills = _discover_all_skills(REPO_SKILLS_DIR)
+        target_skills = [
+            name for name in all_skills
+            if _is_skill_for_agent(os.path.join(REPO_SKILLS_DIR, name), agent_type)
+        ]
         print(f"\n2. 全スキルをインストール ({len(target_skills)} 件)...")
     else:
-        target_skills = CORE_SKILLS
-        print("\n2. コアスキルをインストール...")
+        # コアスキル + このエージェント専用スキル
+        agent_specific = _discover_agent_specific_skills(REPO_SKILLS_DIR, agent_type)
+        # 重複を除きつつ順序を保持
+        seen: set[str] = set()
+        target_skills = []
+        for name in list(CORE_SKILLS) + agent_specific:
+            if name not in seen:
+                seen.add(name)
+                target_skills.append(name)
+        if agent_specific:
+            print(f"\n2. コアスキル + {agent_type} 固有スキル ({len(target_skills)} 件) をインストール...")
+        else:
+            print("\n2. コアスキルをインストール...")
 
     installed = copy_skills(paths, target_skills)
     if not installed:
@@ -699,6 +843,10 @@ def main() -> None:
             print("   Stop hook (ltm-use build_index) を登録しました")
         # Kiro と GitHub Copilot はセッション停止フックの仕組みを持たないため
         # common.instructions.md の指示でセッション終了時の記憶保存を行う
+
+    # 7. playwright-cli インストール
+    print("\n7. playwright-cli をセットアップ...")
+    setup_playwright_cli_skill(paths)
 
     # 完了
     print("\n" + "=" * 50)
