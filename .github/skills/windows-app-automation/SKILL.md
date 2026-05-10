@@ -1,8 +1,8 @@
 ---
 name: windows-app-automation
-description: pywinauto と winauto CLI を使って Windows ネイティブアプリ（Win32・WPF・WinForms・UWP）を自動化するスキル。アプリ起動、要素探索、クリック・入力・キー送信、スクリーンショット取得、ファイルダイアログ操作に対応する。「Windows アプリを自動化して」「Windowsの画面を操作して」「デスクトップアプリをテストして」「Notepad を自動操作して」「ファイルダイアログを操作して」などのリクエストで発動する。Claude Code / GitHub Copilot 両環境で動作。Windows 専用スキル。
+description: pywinauto と winauto CLI を使って Windows ネイティブアプリ（Win32・WPF・WinForms・UWP）を自動化するスキル。アプリ起動、要素探索、クリック・入力・キー送信、スクリーンショット取得、ファイルダイアログ操作に対応する。「Windows アプリを自動化して」「Windowsの画面を操作して」「デスクトップアプリをテストして」「Notepad を自動操作して」「ファイルダイアログを操作して」などのリクエストで発動する。Claude Code・GitHub Copilot・Kiro の各エージェント環境、および WSL 端末から呼び出し可能。Windows 専用スキル。
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   tier: experimental
   category: implementation
   tags:
@@ -15,11 +15,122 @@ metadata:
     - winforms
     - desktop-automation
     - e2e-testing
+    - wsl
+    - copilot
+    - kiro
+    - cross-agent
 ---
 
 # windows-app-automation
 
 Windows ネイティブアプリを自動化するときは、Python + pywinauto で自動化スクリプトを作成する。
+
+## 対応エージェント環境
+
+| 環境 | 実行場所 | winauto コマンド |
+|------|---------|----------------|
+| **Claude Code** (Windows) | PowerShell / CMD ターミナル | `winauto` または `python winauto.py` |
+| **GitHub Copilot** (VS Code) | VS Code 統合ターミナル（PowerShell） | `winauto` または `python winauto.py` |
+| **Kiro** (AWS IDE) | Kiro 統合ターミナル（PowerShell） | `winauto` または `python winauto.py` |
+| **WSL** (WSL2 端末) | bash/zsh from VS Code / Kiro / Windows Terminal | `winauto`（ラッパー経由で Windows Python を呼ぶ） |
+
+> **注意**: pywinauto は Windows 専用。WSL から呼ぶ場合は Windows 側 Python で実行される。
+
+---
+
+## セットアップ（初回のみ）
+
+### Windows ネイティブ（Claude Code / Copilot / Kiro 共通）
+
+```powershell
+# 依存ライブラリと winauto コマンドのインストール
+python tools/winauto/install.py
+
+# インストール確認
+winauto --version
+winauto apps
+```
+
+### WSL 端末から使う場合
+
+```bash
+# Windows 側 Python を自動検出してインストール
+python tools/winauto/install.py
+
+# インストール確認（新しい端末で）
+winauto --version
+winauto apps
+```
+
+インストーラーが Windows 側 Python を見つけられない場合：
+```bash
+# Windows Python のパスを確認
+cmd.exe /c where python
+
+# 手動で Windows 側に pip インストール
+cmd.exe /c python -m pip install pywinauto Pillow pywin32 comtypes
+```
+
+### 依存ライブラリのみインストール（既存 Python 環境に追記）
+
+```powershell
+pip install pywinauto>=0.6.9 Pillow>=9.0.0 pywin32>=306 comtypes>=1.4.0
+```
+
+---
+
+## 環境別の実行方法
+
+### Claude Code / GitHub Copilot / Kiro（Windows ターミナル）
+
+これらはすべて Windows 上で動作するため、同じコマンドが使える。
+
+```powershell
+# winauto CLI（インストール済みなら直接呼べる）
+winauto apps
+winauto tree --app notepad
+winauto click "name:=OK" --app notepad
+
+# またはリポジトリから直接
+python tools/winauto/winauto.py apps
+python tools/winauto/winauto.py tree --app notepad
+
+# ヘルパースクリプトも同様
+python .github/skills/windows-app-automation/scripts/element_inspector.py --list
+```
+
+**Copilot（VS Code）固有の注意点:**
+- VS Code のターミナルが PowerShell の場合、`python` コマンドが正しく通るか確認する
+- `python --version` で Python 3.9 以上が表示されることを確認する
+
+**Kiro 固有の注意点:**
+- Kiro の統合ターミナルから実行する
+- Kiro エージェントは直接 `!winauto tree --app notepad` のようにシェルコマンドを呼べる
+- スキルの自動化スクリプトを Kiro に書かせた後、Kiro のターミナルで実行する
+
+### WSL 端末（VS Code Remote / Kiro WSL / Windows Terminal）
+
+```bash
+# winauto ラッパー経由（インストール済みなら直接呼べる）
+winauto apps
+winauto tree --app notepad
+
+# パスは WSL パス形式で指定可能（ラッパーが wslpath 変換を行う）
+winauto screenshot --app notepad --output /tmp/screenshot.png
+
+# スクリプトを WSL から実行（Windows Python が呼ばれる）
+winauto run my_automation.py
+
+# ヘルパースクリプトは Windows Python 経由で実行
+cmd.exe /c python .github\\skills\\windows-app-automation\\scripts\\element_inspector.py --list
+```
+
+**WSL 固有の注意点:**
+- `winauto run` に渡すスクリプト内のファイルパスは Windows パス（`C:\...`）で書く
+- スクリーンショットの保存先は `C:\Users\<name>\` 配下か `/mnt/c/...` の WSL パスを使う
+- WSL ターミナルに出力は返ってくるが、GUI 操作の対象は Windows デスクトップ上のウィンドウ
+
+---
 
 ## 利用可能な補助スクリプト
 
@@ -292,6 +403,11 @@ tab.select(1)            # インデックスで選択
 | `backend=uia` で要素が見えない | アプリが UIA 非対応 | `backend=win32` に切り替える |
 | 高速実行で要素見つからない | UI描画遅延 | `win.wait("ready")` / `elem.wait("exists")` を使う |
 | 管理者権限アプリを操作できない | UAC 分離 | スクリプト自体を管理者権限で実行 |
+| **WSL**: `pywinauto` が import できない | Linux Python に入っている | Windows Python で実行する: `cmd.exe /c python script.py` |
+| **WSL**: `winauto` コマンドが見つからない | インストール未完 / PATH 未設定 | `python tools/winauto/install.py` を再実行; `source ~/.bashrc` |
+| **WSL**: `winauto apps` が空 | WSL から Windows デスクトップが見えない | Windows Python 経由で実行されているか確認: `winauto --version` |
+| **Copilot**: ターミナルで `python` が見つからない | PATH に Python が未登録 | VS Code の Python インタープリタ設定を確認; `where python` でパスを確認 |
+| **Kiro**: エージェントが winauto を実行できない | Kiro がシェルコマンドをブロック | Kiro の設定で `trustTools: true` を確認; 手動でターミナル実行 |
 
 ---
 
