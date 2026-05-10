@@ -1,6 +1,6 @@
 ---
 name: windows-app-automation
-description: pywinauto と winauto CLI を使って Windows ネイティブアプリ（Win32・WPF・WinForms・UWP）を自動化するスキル。アプリ起動、要素探索、クリック・入力・キー送信、スクリーンショット取得、ファイルダイアログ操作に対応する。「Windows アプリを自動化して」「Windowsの画面を操作して」「デスクトップアプリをテストして」「Notepad を自動操作して」「ファイルダイアログを操作して」などのリクエストで発動する。Claude Code・GitHub Copilot・Kiro の各エージェント環境、および WSL 端末から呼び出し可能。Windows 専用スキル。
+description: Windows デスクトップアプリ（Win32・WPF・WinForms・UWP・メモ帳・タスクマネージャーなど）の GUI 自動化・UIテストスキル。「Windows アプリを自動化して」「デスクトップアプリをテストして」「ファイルダイアログを操作して」「Excelを自動操作して」などで発動。pywinauto/winauto 使用。Copilot・Kiro・WSL 対応。
 metadata:
   version: 1.1.0
   tier: experimental
@@ -122,12 +122,12 @@ winauto screenshot --app notepad --output /tmp/screenshot.png
 winauto run my_automation.py
 
 # ヘルパースクリプトは Windows Python 経由で実行
-cmd.exe /c python .github\\skills\\windows-app-automation\\scripts\\element_inspector.py --list
+cmd.exe /c python .github/skills/windows-app-automation/scripts/element_inspector.py --list
 ```
 
 **WSL 固有の注意点:**
-- `winauto run` に渡すスクリプト内のファイルパスは Windows パス（`C:\...`）で書く
-- スクリーンショットの保存先は `C:\Users\<name>\` 配下か `/mnt/c/...` の WSL パスを使う
+- `winauto run` に渡すスクリプト内のファイルパスは Windows パス（`C:/...`）で書く
+- スクリーンショットの保存先は `C:/Users/<name>/` 配下か `/mnt/c/...` の WSL パスを使う
 - WSL ターミナルに出力は返ってくるが、GUI 操作の対象は Windows デスクトップ上のウィンドウ
 
 ---

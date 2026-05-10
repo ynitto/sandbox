@@ -1,5 +1,17 @@
 # winauto Selector Syntax Reference
 
+## 目次
+
+- [Overview](#overview)
+- [Single Selectors](#single-selectors)
+- [Control Type Values](#control-type-values)
+- [Chained Selectors](#chained-selectors)
+- [pywinauto Code Equivalents](#pywinauto-code-equivalents)
+- [Selector Stability Ranking](#selector-stability-ranking)
+- [Key Sequences](#key-sequences-for-winauto-keys-and-type_keys)
+- [Inspection Workflow](#inspection-workflow)
+- [Common App Types and Recommended Backends](#common-app-types-and-recommended-backends)
+
 ## Overview
 
 Selectors identify UI elements within a Windows application window.
