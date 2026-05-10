@@ -250,6 +250,12 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="スキル設定プロンプトをスキップする（CI環境など非対話実行時に使用）",
     )
+    parser.add_argument(
+        "--excludes-external-skills",
+        action="store_true",
+        default=False,
+        help="playwright-cli など外部スキルをインストールしない",
+    )
     return parser.parse_args()
 
 
@@ -698,16 +704,28 @@ def setup_lsp_for_kiro() -> None:
             print(f"   ✗ {label}: コマンドが見つかりません ({cmd[0]})")
 
 
+def _check_npm_available() -> bool:
+    """npm が実行可能かどうか確認する。"""
+    return bool(shutil.which("npm"))
+
+
 def setup_playwright_cli_skill(paths: dict[str, str]) -> bool:
     """playwright-cli npm パッケージのインストールとスキルの展開を行う。
 
     処理源:
-      1. @playwright/cli が未インストールなら npm install -g でインストールする。
-      2. playwright-cli install --skills を user_home で実行する。
+      1. npm が利用不可なら警告を表示して中止する。
+      2. @playwright/cli が未インストールなら npm install -g でインストールする。
+      3. playwright-cli install --skills を user_home で実行する。
          (常に ~/.claude/skills/playwright-cli に展開される)
-      3. ターゲットの skill_home に playwright-cli がなければコピーする。
+      4. ターゲットの skill_home に playwright-cli がなければコピーする。
     """
-    # 1. playwright-cli のインストール確認
+    # 1. npm の存在確認
+    if not _check_npm_available():
+        print("   ⚠ npm が見つかりません。playwright-cli のセットアップをスキップします")
+        print("     Node.js/npm をインストール後に再実行してください")
+        return False
+
+    # 2. playwright-cli のインストール確認
     cli_available = bool(shutil.which("playwright-cli"))
     if not cli_available:
         print("   @playwright/cli は未インストールです。npm install を実行します...")
@@ -724,7 +742,7 @@ def setup_playwright_cli_skill(paths: dict[str, str]) -> bool:
             print("   ✓ @playwright/cli をインストールしました")
             cli_available = bool(shutil.which("playwright-cli"))
         except FileNotFoundError:
-            print("   ✗ npm が見つかりません。playwright-cli のインストールをスキップします")
+            print("   ⚠ npm が見つかりません。playwright-cli のセットアップをスキップします")
             return False
     else:
         print("   ✓ playwright-cli はインストール済みです")
@@ -845,8 +863,11 @@ def main() -> None:
         # common.instructions.md の指示でセッション終了時の記憶保存を行う
 
     # 7. playwright-cli インストール
-    print("\n7. playwright-cli をセットアップ...")
-    setup_playwright_cli_skill(paths)
+    if args.excludes_external_skills:
+        print("\n7. playwright-cli をスキップ (--excludes-external-skills が指定されました)")
+    else:
+        print("\n7. playwright-cli をセットアップ...")
+        setup_playwright_cli_skill(paths)
 
     # 完了
     print("\n" + "=" * 50)
