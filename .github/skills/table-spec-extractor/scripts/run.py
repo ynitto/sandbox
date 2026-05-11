@@ -146,8 +146,13 @@ def cmd_save(args: argparse.Namespace) -> None:
         from table_extractor import TableTransformerExtractor
         extractor = TableTransformerExtractor(device=args.device, threshold=args.threshold)
 
+    doc_type = getattr(args, "doc_type", "")
+    if not doc_type and not args.dry_run:
+        doc_type = input("仕様書の種別を入力してください (例: hw-spec, sw-spec, if-spec): ").strip()
+
     print(f"[1/3] 解析中: {path.name} …")
     doc = build_document(path, extractor=extractor, dpi=args.dpi)
+    doc.doc_type = doc_type
     tables = doc.all_tables()
     print(f"      → {len(doc.sections)} sections, {len(tables)} tables, "
           f"{len(doc.all_paragraphs())} paragraphs")
@@ -167,11 +172,15 @@ def cmd_save(args: argparse.Namespace) -> None:
         print("[!] Neo4j URI が未指定です。--dry-run でAST確認、または --profile / --neo4j を指定してください。")
         return
 
+    # --doc-type をデータベース名として使う（--database が明示されていない場合）
+    if doc_type and not db:
+        db = doc_type
+
     print(f"[2/3] Neo4j 接続中: {uri} …")
     with Neo4jLoader(uri, user, pwd, db) as loader:
         loader.create_indexes()
         print("[3/3] グラフへロード中 …")
-        loader.load(doc)
+        loader.load(doc, overwrite=getattr(args, "overwrite", False))
     print("完了。")
 
 
@@ -231,6 +240,10 @@ def main() -> None:
     p_save.add_argument("--dpi", type=int, default=150)
     p_save.add_argument("--dry-run", action="store_true",
                         help="Neo4jへロードせずASTをJSON表示")
+    p_save.add_argument("--doc-type", default="", dest="doc_type",
+                        help="仕様書種別（例: hw-spec）。省略時はプロンプトで入力。Neo4jデータベース名にも使用される")
+    p_save.add_argument("--overwrite", action="store_true",
+                        help="同一ファイルの既存データを削除して再インポート")
 
     # search
     p_search = sub.add_parser("search", help="グラフ全文＋トラバーサル検索")

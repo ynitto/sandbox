@@ -29,7 +29,8 @@ from markdown_serializer import table_to_markdown
 
 _MERGE_DOCUMENT = """
 MERGE (d:Document {node_id: $node_id})
-SET d.source = $source, d.metadata = $metadata
+SET d.source = $source, d.filename = $filename, d.file_stem = $file_stem,
+    d.doc_type = $doc_type, d.metadata = $metadata
 RETURN d
 """
 
@@ -91,14 +92,28 @@ class Neo4jLoader:
 
     # ------------------------------------------------------------------
 
-    def load(self, doc: Document) -> None:
+    def load(self, doc: Document, overwrite: bool = False) -> None:
         with self._driver.session(database=self._database) as session:
+            if overwrite:
+                session.execute_write(self._delete_document, doc.node_id)
             session.execute_write(self._write_document, doc)
+
+    @staticmethod
+    def _delete_document(tx, doc_node_id: str) -> None:
+        tx.run("""
+            MATCH (d:Document {node_id: $doc_id})
+            OPTIONAL MATCH (d)-[:HAS_SECTION]->(s:Section)
+            OPTIONAL MATCH (s)-[:CONTAINS]->(item)
+            OPTIONAL MATCH (item)-[:HAS_ROW]->(r:Row)
+            OPTIONAL MATCH (r)-[:HAS_CELL]->(c:Cell)
+            DETACH DELETE d, s, item, r, c
+        """, doc_id=doc_node_id)
 
     @staticmethod
     def _write_document(tx, doc: Document) -> None:
         tx.run(_MERGE_DOCUMENT, node_id=doc.node_id, source=doc.source,
-               metadata=str(doc.metadata))
+               filename=doc.filename, file_stem=doc.file_stem,
+               doc_type=doc.doc_type, metadata=str(doc.metadata))
 
         for section in doc.sections:
             tx.run(_MERGE_SECTION, node_id=section.node_id,
@@ -226,6 +241,7 @@ class Neo4jLoader:
     def create_indexes(self) -> None:
         queries = [
             "CREATE INDEX doc_id IF NOT EXISTS FOR (n:Document) ON (n.node_id)",
+            "CREATE INDEX doc_filename IF NOT EXISTS FOR (n:Document) ON (n.filename)",
             "CREATE INDEX section_id IF NOT EXISTS FOR (n:Section) ON (n.node_id)",
             "CREATE INDEX table_id IF NOT EXISTS FOR (n:Table) ON (n.node_id)",
             "CREATE INDEX row_id IF NOT EXISTS FOR (n:Row) ON (n.node_id)",
