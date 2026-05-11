@@ -2,11 +2,16 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
+import hashlib
 import uuid
 
 
 def _uid() -> str:
     return str(uuid.uuid4())
+
+
+def _stable_id(*parts: str) -> str:
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
 @dataclass
@@ -66,6 +71,9 @@ class Document:
     sections: list[Section]
     metadata: dict = field(default_factory=dict)
     node_id: str = field(default_factory=_uid)
+    filename: str = ""
+    file_stem: str = ""
+    doc_type: str = ""
 
     def all_tables(self) -> list[Table]:
         return [c for s in self.sections for c in s.content if isinstance(c, Table)]

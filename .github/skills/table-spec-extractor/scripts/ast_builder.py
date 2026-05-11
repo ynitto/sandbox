@@ -2,8 +2,28 @@
 from __future__ import annotations
 from pathlib import Path
 
-from models import Document, Section, Table, Row, Cell, Paragraph
+from models import Document, Section, Table, Row, Cell, Paragraph, _stable_id
 from ingest import ExcelSheet, iter_excel_sheets, iter_pdf_images, pdf_text_by_page
+
+
+def _assign_stable_ids(doc: Document) -> None:
+    """Replace random node_ids with deterministic ones derived from file path and position."""
+    doc_id = _stable_id(Path(doc.source).resolve().as_posix())
+    doc.node_id = doc_id
+    for section in doc.sections:
+        sec_id = _stable_id(doc_id, section.title, str(section.page))
+        section.node_id = sec_id
+        for item in section.content:
+            if isinstance(item, Table):
+                tbl_id = _stable_id(sec_id, item.sheet or "", str(item.page))
+                item.node_id = tbl_id
+                for row in item.rows:
+                    row_id = _stable_id(tbl_id, str(row.index))
+                    row.node_id = row_id
+                    for cell in row.cells:
+                        cell.node_id = _stable_id(row_id, str(cell.col_idx))
+            elif isinstance(item, Paragraph):
+                item.node_id = _stable_id(sec_id, "para", str(item.page))
 
 
 # ---------------------------------------------------------------------------
@@ -27,19 +47,21 @@ def _infer_paths(table: Table) -> None:
         return
 
     # Detect hierarchy columns: >30% of data cells are empty
-    all_cols = sorted({c.col_idx for r in data_rows for c in r.cells})
     n = len(data_rows)
+    col_to_cells: dict[int, list[Cell]] = {}
+    for r in data_rows:
+        for c in r.cells:
+            col_to_cells.setdefault(c.col_idx, []).append(c)
+
     hierarchy_cols: set[int] = set()
-    for ci in all_cols:
-        empty = sum(
-            1 for r in data_rows
-            if any(c.col_idx == ci and not c.text.strip() for c in r.cells)
-        )
+    for ci, cells in col_to_cells.items():
+        empty = sum(1 for c in cells if not c.text.strip())
         if n > 1 and empty / n > 0.3:
             hierarchy_cols.add(ci)
 
     ctx = table.sheet or f"page_{table.page + 1}"
     carry: dict[int, str] = {}
+    sorted_hierarchy = sorted(hierarchy_cols)
 
     for row in data_rows:
         for cell in row.cells:
@@ -51,7 +73,7 @@ def _infer_paths(table: Table) -> None:
                 elif col in carry:
                     cell.text = carry[col]  # flatten carry-forward value
             path = [ctx]
-            for hcol in sorted(hierarchy_cols):
+            for hcol in sorted_hierarchy:
                 if hcol != col:
                     path.append(carry.get(hcol, ""))
             col_name = col_headers.get(col, "")
@@ -86,11 +108,15 @@ def build_from_excel(path: Path) -> Document:
     for sheet in iter_excel_sheets(path):
         table = _excel_sheet_to_table(sheet)
         sections.append(Section(title=sheet.name, content=[table]))
-    return Document(
+    doc = Document(
         source=str(path),
         sections=sections,
         metadata={"format": "excel", "sheets": len(sections)},
+        filename=path.name,
+        file_stem=path.stem,
     )
+    _assign_stable_ids(doc)
+    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -156,11 +182,15 @@ def build_from_pdf(
         if content:
             sections.append(Section(title=f"Page {p + 1}", content=content, page=p))
 
-    return Document(
+    doc = Document(
         source=str(path),
         sections=sections,
         metadata={"format": "pdf", "pages": len(sections)},
+        filename=path.name,
+        file_stem=path.stem,
     )
+    _assign_stable_ids(doc)
+    return doc
 
 
 # ---------------------------------------------------------------------------

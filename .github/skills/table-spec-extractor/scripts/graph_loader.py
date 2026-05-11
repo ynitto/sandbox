@@ -29,7 +29,8 @@ from markdown_serializer import table_to_markdown
 
 _MERGE_DOCUMENT = """
 MERGE (d:Document {node_id: $node_id})
-SET d.source = $source, d.metadata = $metadata
+SET d.source = $source, d.filename = $filename, d.file_stem = $file_stem,
+    d.doc_type = $doc_type, d.metadata = $metadata
 RETURN d
 """
 
@@ -91,14 +92,28 @@ class Neo4jLoader:
 
     # ------------------------------------------------------------------
 
-    def load(self, doc: Document) -> None:
+    def load(self, doc: Document, overwrite: bool = False) -> None:
         with self._driver.session(database=self._database) as session:
+            if overwrite:
+                session.execute_write(self._delete_document, doc.node_id)
             session.execute_write(self._write_document, doc)
+
+    @staticmethod
+    def _delete_document(tx, doc_node_id: str) -> None:
+        tx.run("""
+            MATCH (d:Document {node_id: $doc_id})
+            OPTIONAL MATCH (d)-[:HAS_SECTION]->(s:Section)
+            OPTIONAL MATCH (s)-[:CONTAINS]->(item)
+            OPTIONAL MATCH (item)-[:HAS_ROW]->(r:Row)
+            OPTIONAL MATCH (r)-[:HAS_CELL]->(c:Cell)
+            DETACH DELETE d, s, item, r, c
+        """, doc_id=doc_node_id)
 
     @staticmethod
     def _write_document(tx, doc: Document) -> None:
         tx.run(_MERGE_DOCUMENT, node_id=doc.node_id, source=doc.source,
-               metadata=str(doc.metadata))
+               filename=doc.filename, file_stem=doc.file_stem,
+               doc_type=doc.doc_type, metadata=str(doc.metadata))
 
         for section in doc.sections:
             tx.run(_MERGE_SECTION, node_id=section.node_id,
@@ -121,37 +136,103 @@ class Neo4jLoader:
                markdown_text=table_to_markdown(table))
         tx.run(_rel_q("CONTAINS"), a=section_id, b=table.node_id)
 
-        prev_row_id: str | None = None
-        # col_idx → list of cell node_ids (for SAME_COLUMN edges)
+        if not table.rows:
+            return
+
+        # Bulk-merge all rows in one query
+        row_params = [
+            {"node_id": row.node_id, "index": row.index, "is_header": row.is_header}
+            for row in table.rows
+        ]
+        tx.run(
+            "UNWIND $rows AS r MERGE (n:Row {node_id: r.node_id}) "
+            "SET n.index = r.index, n.is_header = r.is_header",
+            rows=row_params,
+        )
+
+        # Bulk-create HAS_ROW relationships
+        tx.run(
+            "MATCH (t:Table {node_id: $tid}) "
+            "UNWIND $row_ids AS rid MATCH (r:Row {node_id: rid}) "
+            "MERGE (t)-[:HAS_ROW]->(r)",
+            tid=table.node_id,
+            row_ids=[row.node_id for row in table.rows],
+        )
+
+        # Bulk-create NEXT_ROW relationships
+        row_pairs = [
+            {"a": table.rows[i].node_id, "b": table.rows[i + 1].node_id}
+            for i in range(len(table.rows) - 1)
+        ]
+        if row_pairs:
+            tx.run(
+                "UNWIND $pairs AS p "
+                "MATCH (a:Row {node_id: p.a}) MATCH (b:Row {node_id: p.b}) "
+                "MERGE (a)-[:NEXT_ROW]->(b)",
+                pairs=row_pairs,
+            )
+
+        # Collect all cells and build NEXT_CELL / SAME_COLUMN data
+        cell_params: list[dict] = []
+        has_cell_pairs: list[dict] = []
+        next_cell_pairs: list[dict] = []
         col_cells: dict[int, list[str]] = {}
 
         for row in table.rows:
-            tx.run(_MERGE_ROW, node_id=row.node_id, index=row.index,
-                   is_header=row.is_header)
-            tx.run(_rel_q("HAS_ROW"), a=table.node_id, b=row.node_id)
-
-            if prev_row_id:
-                tx.run(_rel_q("NEXT_ROW"), a=prev_row_id, b=row.node_id)
-            prev_row_id = row.node_id
-
             prev_cell_id: str | None = None
             for cell in row.cells:
-                tx.run(_MERGE_CELL, node_id=cell.node_id, text=cell.text,
-                       row_idx=cell.row_idx, col_idx=cell.col_idx,
-                       is_header=cell.is_header,
-                       path=_json.dumps(cell.path, ensure_ascii=False))
-                tx.run(_rel_q("HAS_CELL"), a=row.node_id, b=cell.node_id)
-
+                cell_params.append({
+                    "node_id": cell.node_id,
+                    "text": cell.text,
+                    "row_idx": cell.row_idx,
+                    "col_idx": cell.col_idx,
+                    "is_header": cell.is_header,
+                    "path": _json.dumps(cell.path, ensure_ascii=False),
+                })
+                has_cell_pairs.append({"row_id": row.node_id, "cell_id": cell.node_id})
                 if prev_cell_id:
-                    tx.run(_rel_q("NEXT_CELL"), a=prev_cell_id, b=cell.node_id)
+                    next_cell_pairs.append({"a": prev_cell_id, "b": cell.node_id})
                 prev_cell_id = cell.node_id
-
                 col_cells.setdefault(cell.col_idx, []).append(cell.node_id)
 
-        # SAME_COLUMN edges (column-wise linkage for GraphRAG)
-        for col_id_list in col_cells.values():
-            for i in range(len(col_id_list) - 1):
-                tx.run(_rel_q("SAME_COLUMN"), a=col_id_list[i], b=col_id_list[i + 1])
+        # Bulk-merge all cells
+        tx.run(
+            "UNWIND $cells AS c MERGE (n:Cell {node_id: c.node_id}) "
+            "SET n.text = c.text, n.row_idx = c.row_idx, n.col_idx = c.col_idx, "
+            "n.is_header = c.is_header, n.path = c.path",
+            cells=cell_params,
+        )
+
+        # Bulk-create HAS_CELL relationships
+        tx.run(
+            "UNWIND $pairs AS p "
+            "MATCH (r:Row {node_id: p.row_id}) MATCH (c:Cell {node_id: p.cell_id}) "
+            "MERGE (r)-[:HAS_CELL]->(c)",
+            pairs=has_cell_pairs,
+        )
+
+        # Bulk-create NEXT_CELL relationships
+        if next_cell_pairs:
+            tx.run(
+                "UNWIND $pairs AS p "
+                "MATCH (a:Cell {node_id: p.a}) MATCH (b:Cell {node_id: p.b}) "
+                "MERGE (a)-[:NEXT_CELL]->(b)",
+                pairs=next_cell_pairs,
+            )
+
+        # Bulk-create SAME_COLUMN edges
+        same_col_pairs = [
+            {"a": ids[i], "b": ids[i + 1]}
+            for ids in col_cells.values()
+            for i in range(len(ids) - 1)
+        ]
+        if same_col_pairs:
+            tx.run(
+                "UNWIND $pairs AS p "
+                "MATCH (a:Cell {node_id: p.a}) MATCH (b:Cell {node_id: p.b}) "
+                "MERGE (a)-[:SAME_COLUMN]->(b)",
+                pairs=same_col_pairs,
+            )
 
     # ------------------------------------------------------------------
     # Index setup (run once)
@@ -160,6 +241,7 @@ class Neo4jLoader:
     def create_indexes(self) -> None:
         queries = [
             "CREATE INDEX doc_id IF NOT EXISTS FOR (n:Document) ON (n.node_id)",
+            "CREATE INDEX doc_filename IF NOT EXISTS FOR (n:Document) ON (n.filename)",
             "CREATE INDEX section_id IF NOT EXISTS FOR (n:Section) ON (n.node_id)",
             "CREATE INDEX table_id IF NOT EXISTS FOR (n:Table) ON (n.node_id)",
             "CREATE INDEX row_id IF NOT EXISTS FOR (n:Row) ON (n.node_id)",
