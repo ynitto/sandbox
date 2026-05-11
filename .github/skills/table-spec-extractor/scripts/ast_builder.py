@@ -27,19 +27,21 @@ def _infer_paths(table: Table) -> None:
         return
 
     # Detect hierarchy columns: >30% of data cells are empty
-    all_cols = sorted({c.col_idx for r in data_rows for c in r.cells})
     n = len(data_rows)
+    col_to_cells: dict[int, list[Cell]] = {}
+    for r in data_rows:
+        for c in r.cells:
+            col_to_cells.setdefault(c.col_idx, []).append(c)
+
     hierarchy_cols: set[int] = set()
-    for ci in all_cols:
-        empty = sum(
-            1 for r in data_rows
-            if any(c.col_idx == ci and not c.text.strip() for c in r.cells)
-        )
+    for ci, cells in col_to_cells.items():
+        empty = sum(1 for c in cells if not c.text.strip())
         if n > 1 and empty / n > 0.3:
             hierarchy_cols.add(ci)
 
     ctx = table.sheet or f"page_{table.page + 1}"
     carry: dict[int, str] = {}
+    sorted_hierarchy = sorted(hierarchy_cols)
 
     for row in data_rows:
         for cell in row.cells:
@@ -51,7 +53,7 @@ def _infer_paths(table: Table) -> None:
                 elif col in carry:
                     cell.text = carry[col]  # flatten carry-forward value
             path = [ctx]
-            for hcol in sorted(hierarchy_cols):
+            for hcol in sorted_hierarchy:
                 if hcol != col:
                     path.append(carry.get(hcol, ""))
             col_name = col_headers.get(col, "")
