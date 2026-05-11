@@ -1040,6 +1040,18 @@ def cmd_resolve_mr_discussion(args, host, project, token):
             data={"resolved": not args.unresolve}), args.get)
 
 
+def cmd_list_issue_templates(args, host, project, token):
+    """List GitLab issue templates defined in the project."""
+    ep = encode_project(project)
+    out(api_list(host, token, "GET", f"/projects/{ep}/templates/issues"), args.get)
+
+
+def cmd_get_issue_template(args, host, project, token):
+    """Get a specific GitLab issue template by name."""
+    ep = encode_project(project)
+    out(api(host, token, "GET", f"/projects/{ep}/templates/issues/{args.name}"), args.get)
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -1219,6 +1231,13 @@ def build_parser():
     )
     p.add_argument("issue_id", type=int)
 
+    sub.add_parser("list-issue-templates",
+                   help="List GitLab issue templates defined in the project")
+
+    p = sub.add_parser("get-issue-template",
+                       help="Get a specific GitLab issue template by name")
+    p.add_argument("--name", required=True, help="Template name (without .md extension)")
+
     return parser
 
 
@@ -1252,6 +1271,8 @@ COMMANDS = {
     "check-assigned-defer": cmd_check_assigned_defer,
     "check-defer":          cmd_check_defer,
     "check-non-requester-review-defer": cmd_check_non_requester_review_defer,
+    "list-issue-templates": cmd_list_issue_templates,
+    "get-issue-template":   cmd_get_issue_template,
 }
 
 
