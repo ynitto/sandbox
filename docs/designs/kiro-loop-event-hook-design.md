@@ -7,119 +7,124 @@
 
 ## 1. 背景・目的
 
-現在の kiro-loop はスケジュール（`interval_minutes` / `cron`）に従って固定のプロンプトを送信する。  
-これを拡張し、**プロンプト単位に「タイミング・内容を制御する Python スクリプト」を設定できる**ようにしたい。
+現在の kiro-loop に以下 2 つの機能を追加する。
 
-主なユースケース:
-- GitLab イシューをポーリングし、変化があったときだけ送信。ラベルに応じてプロンプトを切り替える
-- 外部 API や状態ファイルを参照して送信要否・送信内容を動的に決定する
-- 時刻ベーススケジュールとは独立した「イベント駆動」なプロンプト発火
+| 機能 | 概要 |
+|---|---|
+| **event_hook** | `interval_minutes`/`cron` スケジュールに乗せて、タイミング・送信内容を Python スクリプトで制御する |
+| **キューイング** | セマフォ上限到達時にプロンプトを破棄せず保持し、同一ペインへの重複送信を防ぐ |
 
 ---
 
 ## 2. 設計方針
 
-| 方針 | 内容 |
-|---|---|
-| **排他的スケジュール** | `event_hook` を設定したエントリには `interval_minutes`/`cron` を使わない。スクリプトがタイミングを完全に制御する |
-| **インプロセス実行** | スクリプトは `importlib` 経由で読み込み、scheduler スレッド内で `check()` 関数を直接呼ぶ（subprocess 不使用） |
-| **輻輳時のキューイング** | セマフォ上限到達時はプロンプトを破棄せず、エントリに保持して次回ポーリングで再送試行 |
-| **変更範囲を最小化** | 既存のスケジュール・セマフォ・セッション管理ロジックは変更しない。`_run_loop` に event_hook 分岐を追加するだけ |
-| **後方互換性** | `event_hook` が未設定のエントリは従来通り動作 |
+- **`interval_minutes`/`cron` と共存**: スケジュールが発火したタイミングでフックを呼ぶ。スケジュールを廃止しない
+- **インプロセス実行**: `importlib` 経由でロード、`check()` を scheduler スレッド内で直接呼ぶ（subprocess 不使用）
+- **同一ペインへの重複防止**: セマフォ取得失敗時はプロンプトを `_queued_prompt` に保持。次サイクルでキュー優先、スケジュール発火を抑制する
+- **既存コードへの変更ゼロ**: `_run_loop` にフック呼び出しとキュー処理を **挿入するだけ**。既存メソッドは変更しない
 
 ---
 
-## 3. フックスクリプトのインターフェース
+## 3. event_hook フックスクリプトのインターフェース
 
-### 呼び出し方法
+### 呼び出しタイミング
 
-`importlib.util.spec_from_file_location` でモジュールをロードし、`check()` 関数を呼ぶ。  
-**scheduler スレッド内で同期実行**されるため、`check()` 内ではブロッキング処理を最小限にすること。
+`interval_minutes`/`cron` でスケジュールが発火し、かつ `_queued_prompt` が空のとき (`ensure_session` の直前)。
 
 ### 関数シグネチャ
 
 ```python
 def check() -> str | None:
     """
-    poll_interval_seconds ごとに scheduler スレッドから呼ばれる。
+    スケジュール発火のたびに scheduler スレッドから呼ばれる。
 
     Returns:
-        str  : kiro-cli に送信するプロンプトテキスト
+        str  : kiro-cli に送信するプロンプトテキスト（YAML の prompt を上書き）
         None : このサイクルをスキップ（何も送らない）
     """
     ...
 ```
 
+- 引数なし。フック内の module-level 変数で状態を保持できる（同スレッドのため競合なし）
+- `check` 関数が存在しない場合は WARNING を出してスキップ
+
 ### モジュールキャッシュ
 
-- ファイルの `mtime` を監視し、変更時のみ再ロード
-- 未変更時はキャッシュ済みモジュールを再利用（毎回ロードコストなし）
-- `check` 関数が存在しない場合は WARNING を出してスキップ
+`mtime` を監視し、変更時のみ再ロード。未変更時はキャッシュを再利用。
 
 ---
 
 ## 4. 設定スキーマ変更
 
-### `kiro-loop.yaml` / `.kiro/kiro-loop.yml` のプロンプトエントリ
-
 ```yaml
 prompts:
   - name: "GitLab Issue ワーカー"
-    event_hook: ~/.kiro/hooks/gitlab-issue-hook.py
-    poll_interval_seconds: 30   # check() を呼ぶ間隔（デフォルト: 60）
-    # prompt / interval_minutes / cron は不要
+    prompt: |
+      （省略可。check() が str を返した場合はそちらを優先）
+    event_hook: ~/.kiro/hooks/gitlab-issue-hook.py   # ← 新規フィールド
+    interval_minutes: 5    # スケジュールはそのまま残す
     enabled: true
 ```
 
-`event_hook` と `interval_minutes`/`cron` を同時に指定した場合は WARNING を出し、`event_hook` を優先（`interval_minutes`/`cron` 無視）。
+`event_hook` は省略可。省略時は従来通り YAML の `prompt` をそのまま送信。
 
 ---
 
-## 5. コード変更範囲
+## 5. 発火フロー（変更後）
 
-### 5.1 `_set_entries()` — 変更内容
-
-`interval_minutes`/`cron` が必須だった制約を緩和。`event_hook` がある場合は `poll_interval_seconds` を保持する。
-
-```python
-# 変更前: interval か cron がないと continue でスキップ
-# 変更後: event_hook があればスケジュールなしでも受け入れる
-
-has_hook = bool(str(entry.get("event_hook", "")).strip())
-
-if has_hook:
-    if cron_str or interval > 0:
-        log.warning("[%s] event_hook と interval/cron は排他です。event_hook を優先します。", name)
-    poll_interval = max(int(entry.get("poll_interval_seconds") or 60), 1)
-    normalized.append({
-        "id": prompt_id,
-        "name": name,
-        "prompt": str(entry.get("prompt", "")).strip(),  # 省略可
-        "event_hook": str(entry.get("event_hook")).strip(),
-        "poll_interval_seconds": poll_interval,
-        "poll_next_at": now,    # 起動直後に初回ポーリング
-        "_queued_prompt": None, # 輻輳時にプロンプトを保持
-        "enabled": True,
-        "exclude_from_concurrency": bool(entry.get("exclude_from_concurrency", False)),
-        "cwd": entry_cwd,
-    })
-else:
-    # 既存の interval/cron バリデーション（変更なし）
-    ...
-    normalized.append({ ... })  # 既存フィールド（変更なし）
+```
+_run_loop (1秒ポーリング)
+│
+├─ _queued_prompt あり?
+│   Yes → _try_drain_queued()  ← セマフォ再試行のみ（スケジュール/フック呼ばない）
+│          成功: _queued_prompt クリア、next_run_at = now + interval
+│          失敗: _queued_prompt 保持、何もしない
+│   No  → 続行
+│
+├─ now < next_run_at?  Yes → スキップ
+│
+├─ event_hook あり?
+│   Yes → _call_hook_check() を呼ぶ
+│          → None:  next_run_at を更新してスキップ
+│          → str:   entry["prompt"] をそのテキストで上書き
+│   No  → entry["prompt"] をそのまま使用
+│
+├─ ensure_session()  失敗 → スキップ（再起動は session-monitor が担当）
+│
+├─ semaphore あり?
+│   Yes → _acquire_slot()
+│          成功: 続行
+│          失敗: _queued_prompt = entry["prompt"] を保存  ← NEW（現在は破棄）
+│               continue  （_acquire_slot が next_run_at を更新済み）
+│   No  → 続行
+│
+├─ _dispatch_prompt()
+│
+└─ next_run_at を更新
 ```
 
-**既存の `normalized.append({...})` は変更しない。**
+---
+
+## 6. コード変更範囲
+
+### 6.1 `_set_entries()` — 2行追加
+
+```python
+normalized.append({
+    # ... 既存フィールド（変更なし） ...
+    "event_hook": str(entry.get("event_hook", "")).strip() or None,  # +1行
+    "_queued_prompt": None,                                            # +1行
+})
+```
 
 ---
 
-### 5.2 新規メソッド 3本追加
+### 6.2 新規メソッド 3本
 
-#### `_load_hook_module(hook_path: Path)` — ~20行
+#### `_load_hook_module(hook_path: Path) -> Any | None` — ~20行
 
 ```python
 def _load_hook_module(self, hook_path: Path) -> Any | None:
-    """importlib でフックモジュールをロード（mtime キャッシュ付き）。"""
     key = str(hook_path)
     try:
         mtime = hook_path.stat().st_mtime
@@ -142,7 +147,7 @@ def _load_hook_module(self, hook_path: Path) -> Any | None:
         return None
 ```
 
-`self._hook_cache: dict[str, tuple[float, Any]] = {}` を `__init__` で初期化。
+`PeriodicScheduler.__init__` に `self._hook_cache: dict[str, tuple[float, Any]] = {}` を追加（+1行）。
 
 ---
 
@@ -150,7 +155,6 @@ def _load_hook_module(self, hook_path: Path) -> Any | None:
 
 ```python
 def _call_hook_check(self, entry: dict[str, Any]) -> str | None:
-    """フックの check() を呼び出し、送信するプロンプトを返す。"""
     hook_path = Path(os.path.expanduser(entry["event_hook"])).resolve()
     name = str(entry.get("name", ""))
     module = self._load_hook_module(hook_path)
@@ -169,116 +173,98 @@ def _call_hook_check(self, entry: dict[str, Any]) -> str | None:
             return None
         return result
     except Exception as exc:
-        log.error("[%s] check() の実行中にエラーが発生しました: %s", name, exc, exc_info=True)
+        log.error("[%s] check() でエラーが発生しました: %s", name, exc, exc_info=True)
         return None
 ```
 
 ---
 
-#### `_try_acquire_slot_hook(entry: dict, pane_id: str) -> bool` — ~25行
+#### `_try_drain_queued(entry: dict, now: float) -> None` — ~30行
 
-既存の `_acquire_slot` はスロット取得失敗時に `next_run_at` を更新する。  
-event_hook エントリはスケジュールなしのため、失敗時は `_queued_prompt` に保持して `False` を返す専用メソッドが必要。
+キュー済みプロンプトをセマフォ込みで送信試行する。`_acquire_slot` を呼ばず、インラインでスロット判定のみ行う（`next_run_at` を更新しないため）。
 
 ```python
-def _try_acquire_slot_hook(self, entry: dict[str, Any], pane_id: str) -> bool:
-    """event_hook 専用スロット取得。失敗時はキューイングのみ（next_run_at 更新なし）。"""
-    assert self._semaphore is not None
+def _try_drain_queued(self, entry: dict[str, Any], now: float) -> None:
+    prompt_id = str(entry["id"])
     name = str(entry.get("name", ""))
-
-    elapsed = self._semaphore.slot_elapsed(pane_id)
-    if elapsed is not None:
-        if elapsed < self._semaphore.slot_timeout:
-            log.info("[%s] 前回の実行が完了待ちです。キューに保持します。", name)
-            return False
-        else:
-            log.warning("[%s] スロットがタイムアウト超過。強制解放します。", name)
-            if self._slot_monitor is not None:
-                self._slot_monitor.untrack(pane_id)
-            self._semaphore.release(pane_id)
-
-    if self._semaphore.cooldown_remaining(pane_id) > 0:
-        log.info("[%s] クールダウン中。キューに保持します。", name)
-        return False
-
-    if not self._semaphore.acquire(pane_id):
-        log.info("[%s] 同時実行数が上限。キューに保持します。", name)
-        return False
-
-    return True
-```
-
----
-
-### 5.3 `_run_loop()` — event_hook 分岐を追加（~25行）
-
-既存ループの先頭に分岐を追加。**既存コードは移動・変更しない。**
-
-```python
-def _run_loop(self) -> None:
-    while not self._stop_event.wait(1):
-        now = time.time()
-        with self._lock:
-            entries = [e.copy() for e in self._entries]
-
-        for entry in entries:
-            if not entry.get("enabled", True):
-                continue
-
-            # ---- event_hook 分岐（新規） ----
-            if entry.get("event_hook"):
-                self._run_hook_entry(entry, now)   # 後述のヘルパーに委譲
-                continue                            # 既存スケジュール処理には入らない
-            # ---- ここまで新規 ----
-
-            # 既存スケジュール処理（変更なし）
-            if now < float(entry.get("next_run_at", now)):
-                continue
-            ...
-```
-
-`_run_hook_entry` を別メソッドに切り出すことで `_run_loop` の肥大化を防ぐ。
-
----
-
-#### `_run_hook_entry(entry, now)` — ~30行（新規メソッド）
-
-```python
-def _run_hook_entry(self, entry: dict[str, Any], now: float) -> None:
-    """event_hook エントリの1サイクル処理。"""
-    prompt_id = str(entry.get("id", ""))
-    name = str(entry.get("name", ""))
-    poll_interval = int(entry.get("poll_interval_seconds", 60))
+    queued_prompt = str(entry["_queued_prompt"])
     exclude = bool(entry.get("exclude_from_concurrency", False))
 
-    # キュー済みプロンプトがあれば再送試行、なければポーリング
-    queued = entry.get("_queued_prompt")
-    if queued:
-        prompt_to_send = queued
-    elif now >= float(entry.get("poll_next_at", 0)):
-        prompt_to_send = self._call_hook_check(entry)
-        self._update_entry(prompt_id, poll_next_at=now + poll_interval)
-        if prompt_to_send is None:
-            return  # スキップ
-    else:
-        return  # ポーリング時刻前
-
     if not self._session_mgr.ensure_session(prompt_id, name):
-        log.warning("[%s] セッション確保失敗。キューに保持します。", name)
-        self._update_entry(prompt_id, _queued_prompt=prompt_to_send)
-        return
+        return  # セッション未準備、保持
 
     pane_id: str | None = None
     if self._semaphore is not None and not exclude:
         pane_id = self._session_mgr.get_pane_id(prompt_id)
-        if pane_id and not self._try_acquire_slot_hook(entry, pane_id):
-            self._update_entry(prompt_id, _queued_prompt=prompt_to_send)
-            return
+        if pane_id:
+            elapsed = self._semaphore.slot_elapsed(pane_id)
+            if elapsed is not None:
+                if elapsed < self._semaphore.slot_timeout:
+                    return  # まだ処理中、保持
+                # タイムアウト超過: 強制解放して続行
+                if self._slot_monitor is not None:
+                    self._slot_monitor.untrack(pane_id)
+                self._semaphore.release(pane_id)
+            if self._semaphore.cooldown_remaining(pane_id) > 0:
+                return  # クールダウン中、保持
+            if not self._semaphore.acquire(pane_id):
+                return  # グローバル上限、保持
 
     dispatch_entry = dict(entry)
-    dispatch_entry["prompt"] = prompt_to_send
+    dispatch_entry["prompt"] = queued_prompt
     self._dispatch_prompt(dispatch_entry, pane_id)
-    self._update_entry(prompt_id, _queued_prompt=None)  # キュークリア
+    self._update_entry(prompt_id,
+                       _queued_prompt=None,
+                       next_run_at=self._next_run_at_for_entry(entry))
+```
+
+---
+
+### 6.3 `_run_loop()` — 3箇所に合計 13行挿入
+
+既存コードは **1行も変更しない**。以下の 3 箇所に行を挿入する。
+
+#### 挿入箇所 ①：`enabled` チェックの直後（キュー処理）
+
+```python
+for entry in entries:
+    if not entry.get("enabled", True):
+        continue
+
+    # ---- ① キュー処理（+5行） ----
+    if entry.get("_queued_prompt"):
+        self._try_drain_queued(entry, now)
+        continue
+    # ---- ここまで ----
+
+    if now < float(entry.get("next_run_at", now)):   # ← 既存行（変更なし）
+        continue
+```
+
+#### 挿入箇所 ②：`ensure_session` 呼び出しの直前（フック呼び出し）
+
+```python
+    entry["_should_clear"] = should_clear   # ← 既存行（変更なし）
+
+    # ---- ② event_hook 呼び出し（+7行） ----
+    if entry.get("event_hook"):
+        prompt_text = self._call_hook_check(entry)
+        if prompt_text is None:
+            self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry))
+            continue
+        entry = dict(entry)
+        entry["prompt"] = prompt_text
+    # ---- ここまで ----
+
+    if not self._session_mgr.ensure_session(prompt_id, name):   # ← 既存行（変更なし）
+```
+
+#### 挿入箇所 ③：`_acquire_slot` が False を返したときのキュー保存（+1行）
+
+```python
+    if pane_id and not self._acquire_slot(entry, pane_id):   # ← 既存行（変更なし）
+        self._update_entry(prompt_id, _queued_prompt=entry.get("prompt"))  # +1行
+        continue                                                             # ← 既存行（変更なし）
 ```
 
 ---
@@ -287,62 +273,56 @@ def _run_hook_entry(self, entry: dict[str, Any], now: float) -> None:
 
 | ファイル | 変更種別 | 追加行数 | 変更行数 |
 |---|---|---|---|
-| `kiro-loop.py` | `_set_entries` に event_hook 分岐を追加 | +20 | 0 |
-| `kiro-loop.py` | `__init__` に `_hook_cache = {}` 追加 | +1 | 0 |
+| `kiro-loop.py` | `_set_entries` に 2 行追加 | +2 | 0 |
+| `kiro-loop.py` | `PeriodicScheduler.__init__` に `_hook_cache` 追加 | +1 | 0 |
 | `kiro-loop.py` | `_load_hook_module` 新規メソッド | +20 | 0 |
 | `kiro-loop.py` | `_call_hook_check` 新規メソッド | +20 | 0 |
-| `kiro-loop.py` | `_try_acquire_slot_hook` 新規メソッド | +25 | 0 |
-| `kiro-loop.py` | `_run_loop` に event_hook 分岐追加（3行） | +3 | 0 |
-| `kiro-loop.py` | `_run_hook_entry` 新規メソッド | +30 | 0 |
-| `kiro-loop.yaml.example` | `event_hook` オプション追記 | +15 | 0 |
+| `kiro-loop.py` | `_try_drain_queued` 新規メソッド | +30 | 0 |
+| `kiro-loop.py` | `_run_loop` に 13 行挿入 | +13 | 0 |
+| `kiro-loop.yaml.example` | `event_hook` オプション追記 | +12 | 0 |
 | `hooks/gitlab-issue-hook.py` | 新規フック例 | +70 | — |
 
-**既存メソッドへの変更行数: 0**（`_set_entries` への追加は新しい `if` ブロックとして挿入）
+**既存メソッドへの変更行数: 0**
 
 ---
 
-## 6. スレッド安全性の注意点
+## 7. キューイング挙動の詳細
 
-`check()` は `periodic-scheduler` スレッドで実行されるため:
+### 重複防止の仕組み
 
-| 注意点 | 対処 |
-|---|---|
-| ブロッキング処理 | `check()` が長時間ブロックすると他エントリのスケジュールが遅延する。ネットワーク呼び出しは短いタイムアウトを設定すること |
-| モジュールレベル変数 | フックスクリプト内のグローバル変数はサイクル間で状態を保持できる（同一スレッドのため競合なし） |
-| スレッド間共有 | `check()` から kiro-loop の内部オブジェクト（`SessionManager` 等）にアクセスしないこと |
+```
+T=0:   スケジュール発火 → スロット上限 → _queued_prompt = "prompt A" に保存
+                                          _acquire_slot が next_run_at = T+5min に更新
+
+T=1s:  _queued_prompt あり → _try_drain_queued → まだ上限 → 保持（スケジュール触らない）
+
+T=5min: next_run_at 到達するが _queued_prompt あり → スケジュール発火せずキュードレインを試みる
+        スロット空き → "prompt A" を送信、_queued_prompt = None
+        next_run_at = T+5min + 5min に更新
+
+T=10min: 通常スケジュール発火
+```
+
+### キューは 1 エントリあたり最大 1 件
+
+新しいスケジュール発火時に `_queued_prompt` が存在する場合、キュードレインを優先し新しいプロンプトは生成しない。  
+これにより同一ペインへの多重送信を防ぐ。
+
+### インメモリのみ
+
+`_queued_prompt` はプロセスメモリ内のみ。kiro-loop 再起動時にキューは消える。再起動後は次のスケジュール発火から再開する。
 
 ---
 
-## 7. GitLab イシューフック実装例
+## 8. GitLab イシューフック実装例
 
 > ファイル: `tools/kiro-loop/hooks/gitlab-issue-hook.py`
 
-### 動作概要
-
-1. `scripts/gl.py list-issues` でオープンイシューを取得
-2. 前回実行時のイシュー ID セット（`~/.kiro/hooks/gitlab-issue-state.json`）と比較
-3. 新規イシューがなければ `None` を返す（スキップ）
-4. 新規イシューのラベルを確認し、対応するプロンプトを返す
-
-### ラベル → プロンプトマッピング例
-
-| ラベル | 送信するプロンプト |
-|---|---|
-| `priority:critical` | 緊急対応を促すプロンプト |
-| `type:bug` | バグ修正を指示するプロンプト |
-| `review:needed` | レビュー対応を指示するプロンプト |
-| （その他）| 汎用の対応依頼プロンプト |
-
-### コード
+新規イシューが割り当てられたときのみ発火し、ラベルに応じてプロンプトを切り替える。
 
 ```python
 #!/usr/bin/env python3
-"""GitLab イシューポーリングフック
-
-新規イシューが割り当てられたときのみ発火し、ラベルに応じてプロンプトを切り替える。
-このスクリプトは kiro-loop の scheduler スレッド内で直接実行されるため、
-ブロッキング処理は最小限にすること。
-"""
+"""GitLab イシューポーリングフック（kiro-loop scheduler スレッド内で実行される）"""
 import json
 import subprocess
 from pathlib import Path
@@ -350,71 +330,37 @@ from pathlib import Path
 _STATE_FILE = Path.home() / ".kiro" / "hooks" / "gitlab-issue-state.json"
 
 _LABEL_PROMPTS: dict[str, str] = {
-    "priority:critical": """\
-緊急イシューが割り当てられました。最優先で対応してください。
-イシュー詳細:
-{issue_json}
-""",
-    "type:bug": """\
-バグイシューが割り当てられました。再現手順を確認して修正してください。
-イシュー詳細:
-{issue_json}
-""",
-    "review:needed": """\
-レビュー依頼イシューがあります。コードを確認してフィードバックしてください。
-イシュー詳細:
-{issue_json}
-""",
+    "priority:critical": "緊急イシューが割り当てられました。最優先で対応してください。\n\n{issue_json}",
+    "type:bug":          "バグイシューが割り当てられました。再現手順を確認して修正してください。\n\n{issue_json}",
+    "review:needed":     "レビュー依頼イシューがあります。コードを確認してフィードバックしてください。\n\n{issue_json}",
 }
-
-_DEFAULT_PROMPT = """\
-新しいイシューが割り当てられました。内容を確認して対応してください。
-イシュー詳細:
-{issue_json}
-"""
+_DEFAULT_PROMPT = "新しいイシューが割り当てられました。内容を確認して対応してください。\n\n{issue_json}"
 
 
 def _get_issues() -> list[dict] | None:
-    result = subprocess.run(
+    r = subprocess.run(
         ["python", "scripts/gl.py", "list-issues", "--state", "opened", "--json"],
         capture_output=True, text=True, timeout=15,
     )
-    if result.returncode != 0:
-        return None
     try:
-        return json.loads(result.stdout)
+        return json.loads(r.stdout) if r.returncode == 0 else None
     except json.JSONDecodeError:
         return None
 
 
 def _load_state() -> set[str]:
-    if not _STATE_FILE.exists():
-        return set()
     try:
         return set(json.loads(_STATE_FILE.read_text(encoding="utf-8")).get("issue_ids", []))
     except Exception:
         return set()
 
 
-def _save_state(issue_ids: set[str]) -> None:
+def _save_state(ids: set[str]) -> None:
     _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _STATE_FILE.write_text(
-        json.dumps({"issue_ids": list(issue_ids)}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def _choose_prompt(issue: dict) -> str:
-    labels: list[str] = issue.get("labels", [])
-    issue_json = json.dumps(issue, ensure_ascii=False, indent=2)
-    for label in labels:
-        if label in _LABEL_PROMPTS:
-            return _LABEL_PROMPTS[label].format(issue_json=issue_json)
-    return _DEFAULT_PROMPT.format(issue_json=issue_json)
+    _STATE_FILE.write_text(json.dumps({"issue_ids": list(ids)}, ensure_ascii=False), encoding="utf-8")
 
 
 def check() -> str | None:
-    """新規イシューがあればプロンプトを返す。なければ None を返してスキップ。"""
     issues = _get_issues()
     if issues is None:
         return None
@@ -422,13 +368,17 @@ def check() -> str | None:
     prev_ids = _load_state()
     curr_ids = {str(i["iid"]) for i in issues}
     new_issues = [i for i in issues if str(i["iid"]) not in prev_ids]
-
     _save_state(curr_ids)
 
     if not new_issues:
         return None
 
-    return _choose_prompt(new_issues[0])
+    issue = new_issues[0]
+    issue_json = json.dumps(issue, ensure_ascii=False, indent=2)
+    for label in issue.get("labels", []):
+        if label in _LABEL_PROMPTS:
+            return _LABEL_PROMPTS[label].format(issue_json=issue_json)
+    return _DEFAULT_PROMPT.format(issue_json=issue_json)
 ```
 
 ### 設定例
@@ -438,19 +388,19 @@ def check() -> str | None:
 prompts:
   - name: "GitLab Issue ワーカー"
     event_hook: ~/sandbox/tools/kiro-loop/hooks/gitlab-issue-hook.py
-    poll_interval_seconds: 30
+    interval_minutes: 5
     enabled: true
 ```
 
 ---
 
-## 8. 実装時の注意点
+## 9. 実装時の注意点
 
-### `importlib` の副作用
-`spec.loader.exec_module(module)` はモジュールのトップレベルコードを実行する。フックスクリプトのトップレベルには副作用のある処理を書かないこと（`check()` 内に閉じること）。
+**`check()` のブロッキング**  
+scheduler スレッドで実行されるため、長時間ブロックすると他エントリのスケジュールが遅延する。ネットワーク呼び出しには短い timeout を設定すること（上記例では 15 秒）。
 
-### `_queued_prompt` の永続性
-現時点では `_queued_prompt` はインメモリのみ。kiro-loop 再起動時にキューは消える。永続化が必要な場合はフック側で状態ファイルに書き出すこと。
+**`importlib` のトップレベル副作用**  
+`spec.loader.exec_module` はモジュールのトップレベルコードを実行する。副作用のある処理は `check()` 内に閉じること。
 
-### `DESIGN.md` の更新
-実装後は `tools/kiro-loop/DESIGN.md` の「新しいプロンプトオプションを追加する」セクションに `event_hook` / `poll_interval_seconds` を追記すること。
+**`DESIGN.md` の更新**  
+実装後は `tools/kiro-loop/DESIGN.md` の「新しいプロンプトオプションを追加する」セクションに `event_hook` と `_queued_prompt` を追記すること。
