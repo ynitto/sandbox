@@ -1,5 +1,7 @@
 # table-spec-extractor フィードバック機能設計 — 合議結論
 
+> ⚠️ このドキュメントは [verification-roadmap](./2026-05-13-table-spec-extractor-verification-roadmap.md) に統合済み。新規参照はそちらを使うこと。
+
 **合議日**: 2026-05-13  
 **合議方式**: council-system（MELCHIOR / BALTHASAR / CASPER の三賢者合議）  
 **前提文書**: [改良方針・実測検証計画](./2026-05-13-table-spec-extractor-council-decision.md)
