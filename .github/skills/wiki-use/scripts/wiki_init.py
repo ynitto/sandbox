@@ -36,7 +36,7 @@ SCHEMA_TEMPLATE = """\
 
 - `wiki/atoms/`  — 個別トピックのページ（概念・用語・人物・製品・組織など）
 - `wiki/topics/` — 複数 atom を横断するまとめ・比較・分析ページ
-- `wiki/meta/`   — hot.md（最近のコンテキスト）
+- `wiki/meta/`   — hot.md（最近のコンテキスト）、queries.md（価値あるクエリ）
 
 ## ページ規約
 
@@ -81,6 +81,14 @@ HOT_TEMPLATE = """\
 最終更新: {today}
 
 <!-- 新しい取り込みで更新される。最大20件 -->
+"""
+
+QUERIES_TEMPLATE = """\
+# Queries（価値あるクエリの記録）
+
+最終更新: {today}
+
+<!-- query で価値ある回答が生まれたクエリを記録する。最大50件 -->
 """
 
 
@@ -132,6 +140,14 @@ def create_structure(wiki_root: Path) -> None:
         print(f"  作成: {hot_path}")
     else:
         print(f"  スキップ（既存）: {hot_path}")
+
+    # wiki/meta/queries.md
+    queries_path = wiki_root / "wiki" / "meta" / "queries.md"
+    if not queries_path.exists():
+        queries_path.write_text(QUERIES_TEMPLATE.format(today=today), encoding="utf-8")
+        print(f"  作成: {queries_path}")
+    else:
+        print(f"  スキップ（既存）: {queries_path}")
 
 
 def cmd_init_interactive() -> None:

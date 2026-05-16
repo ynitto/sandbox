@@ -11,6 +11,7 @@
 - [index.md フォーマット](#indexmd-フォーマット)
 - [log.md フォーマット](#logmd-フォーマット)
 - [hot.md フォーマット](#hotmd-フォーマット)
+- [queries.md フォーマット](#queriesmd-フォーマット)
 - [SCHEMA.md フォーマット](#schemamd-フォーマット)
 
 ---
@@ -265,6 +266,28 @@ summary: "1文の簡潔な説明（80文字以内）"
 - [[self-attention]] — 2026-01-15 作成
 - [[multi-head-attention]] — 2026-01-15 作成
 ```
+
+---
+
+## queries.md フォーマット
+
+query 操作で価値があると判断されたクエリを蓄積するメタファイル。
+最大50件を維持し、古いエントリは自動で削除される。
+
+```markdown
+# Queries（価値あるクエリの記録）
+
+最終更新: YYYY-MM-DD
+
+<!-- query で価値ある回答が生まれたクエリを記録する。最大50件 -->
+
+- **[クエリ文]** → [[answer-slug]] (YYYY-MM-DD) #keyword1 #keyword2
+- **[クエリ文]** (YYYY-MM-DD) #keyword
+```
+
+- `→ [[slug]]` は回答を保存したトピックページへのウィキリンク（省略可）
+- `#keyword` はタグ（省略可）
+- `save-query` スクリプトが自動で追記する
 
 ---
 
