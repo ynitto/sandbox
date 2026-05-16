@@ -1,8 +1,8 @@
 ---
 name: wiki-use
-description: Karpathy LLM Wiki パターンに基づく知識ベース管理スキル。「wikiに取り込んで」「wikiに追加して」「URLをwikiに保存して」でingest、「wikiを検索して」でquery、「wikiを初期化して」でinit、「wikiをチェックして」でlintが発動する。ソース・URLから概念ページを自動生成・更新する。
+description: Karpathy LLM Wiki パターンに基づく知識ベース管理スキル。「wikiに取り込んで」「wikiに追加して」「URLをwikiに保存して」でingest、「wikiを検索して」でquery、「wikiを初期化して」でinit、「wikiをチェックして」でlintが発動する。ソース・URLから概念ページを自動生成・更新する。ユーザーの質問に答える前には必ずwikiを検索し、URLやファイルを受け取ったときは確認なしに自動でingestする。
 metadata:
-  version: 1.3.0
+  version: 1.4.0
   tier: experimental
   category: knowledge
   config_script: scripts/wiki_init.py
@@ -95,11 +95,37 @@ query 操作は **3ステップ**で構成される:
 
 ## プロアクティブな操作
 
-以下の状況では自律的に行動すること:
+**ユーザーへの確認は不要。以下の状況では即座に自律実行すること。**
 
-- ユーザーが URL やファイルパスを貼り付けて「これ読んで」「まとめて」と言ったとき → `ingest` を提案・実行する（ソースは必ずユーザーが指定したパス/URL を使う）
+### B: 回答前に必ず wiki を検索する
+
+ユーザーが何らかの質問をしたとき、回答する前に必ず wiki を検索する:
+
+```bash
+python scripts/wiki_query.py search "<質問のキーワード>"
+```
+
+- 関連ページがヒットした → Read で読み込み、回答に組み込む
+- ヒットしなかった → `list-pages` で全体を確認し、それでもなければ自分の知識で回答する
+- 回答後に価値ある洞察が生まれた → `references/op-query.md` のステップ 2・3 で保存する
+
+### C: URL・ファイルを受け取ったら自動 ingest する
+
+ユーザーが URL やファイルパスを示して「読んで」「まとめて」「調べて」「説明して」などと言ったとき:
+
+1. まず wiki を検索して取り込み済みか確認する:
+   ```bash
+   python scripts/wiki_query.py search "<URL または ファイル名のキーワード>"
+   ```
+2. **取り込み済み** → 既存ページを使って回答する（ingest はスキップ）
+3. **未取り込み** → 確認なしに即座に ingest を実行する（`references/op-ingest.md` ケース A）
+
+対象となるソース: ドキュメント・記事・論文・Web ページなど知識として蓄積できるもの。  
+コードファイル・設定ファイル・ログファイルは ingest の対象外とする。
+
+### その他
+
 - セッション開始時に wiki を使う作業が想定されるとき → `python scripts/wiki_utils.py config` で設定を確認する
-- query の結果が 0 件で「ページがない」と分かったとき → ingest を勧める
 
 ---
 
@@ -120,4 +146,11 @@ query 操作は **3ステップ**で構成される:
 
 ユーザー: 「wiki-useをセットアップして」
 → references/op-init.md を読み込んで init を実行する
+
+ユーザー: 「アテンション機構について教えて」（wiki 明示なし）
+→ まず wiki を検索し、関連ページがあれば引用して回答する（B）
+
+ユーザー: 「この URL を読んでまとめて」
+→ wiki を検索して未取り込みなら即座に ingest して回答する（C）
 ```
+
