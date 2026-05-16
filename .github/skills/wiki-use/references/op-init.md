@@ -25,4 +25,3 @@ python scripts/wiki_init.py
 }
 ```
 
-設定の詳細: [`configuration.md`](configuration.md)
