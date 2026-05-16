@@ -178,6 +178,22 @@ def _mcp_target_path(agent_type: str, paths: dict[str, str]) -> str:
         return _get_vscode_user_mcp_path()
 
 
+def _wrap_npx_for_windows(entry: dict) -> dict:
+    """Windows では npx 起動エントリを cmd /c でラップする。
+
+    Windows の npx は npx.cmd（バッチファイル）として配布される。MCP クライアントは
+    シェルを介さずプロセスを spawn するため、バッチファイルを直接起動できず
+    `spawn npx ENOENT` で失敗する。実行ファイルである cmd.exe 経由で起動する。
+    """
+    if platform.system() != "Windows" or entry.get("command") != "npx":
+        return entry
+    return {
+        **entry,
+        "command": "cmd",
+        "args": ["/c", "npx", *entry.get("args", [])],
+    }
+
+
 def setup_mcp_config(paths: dict[str, str], agent_type: str) -> bool:
     """`.github/mcp/mcp.json` のサーバーエントリをエージェントの MCP 設定にマージする。
 
@@ -193,6 +209,10 @@ def setup_mcp_config(paths: dict[str, str], agent_type: str) -> bool:
     src_servers: dict = src.get("servers", {})
     if not src_servers:
         return False
+
+    src_servers = {
+        name: _wrap_npx_for_windows(entry) for name, entry in src_servers.items()
+    }
 
     target_path = _mcp_target_path(agent_type, paths)
 
@@ -238,10 +258,10 @@ def _mcp_servers_key(agent_type: str) -> str:
 
 def _build_filesystem_entry(dirs: list[str]) -> dict:
     """Filesystem MCP サーバーのエントリを返す。"""
-    return {
+    return _wrap_npx_for_windows({
         "command": "npx",
         "args": ["-y", FILESYSTEM_MCP_PACKAGE, *dirs],
-    }
+    })
 
 
 def _filesystem_dirs_from_entry(entry: dict) -> list[str]:
