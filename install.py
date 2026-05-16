@@ -147,7 +147,15 @@ CORE_SKILLS = _discover_core_skills(REPO_SKILLS_DIR)
 
 # ---------------------------------------------------------------------------
 # MCP 設定
+#
+# サーバーの雛形は .github/mcp/mcp.json に定義し、install.py が環境（Windows 判定）
+# とユーザー入力（filesystem の許可ディレクトリ）に応じて書き換えてから
+# エージェントの MCP 設定にマージする。
 # ---------------------------------------------------------------------------
+
+# mcp.json の args 内で許可ディレクトリ一覧へ展開されるプレースホルダ
+ALLOWED_DIRS_PLACEHOLDER = "${ALLOWED_DIRS}"
+
 
 def _get_vscode_user_mcp_path() -> str:
     """VS Code ユーザーレベルの mcp.json パスを返す。"""
@@ -194,59 +202,6 @@ def _wrap_npx_for_windows(entry: dict) -> dict:
     }
 
 
-def setup_mcp_config(paths: dict[str, str], agent_type: str) -> bool:
-    """`.github/mcp/mcp.json` のサーバーエントリをエージェントの MCP 設定にマージする。
-
-    - claude / kiro : Anthropic 形式の mcpServers キーに追記
-    - copilot / codex : VSCode 形式の servers キーに追記
-    """
-    if not os.path.isfile(MCP_CONFIG_SRC):
-        return False
-
-    with open(MCP_CONFIG_SRC, encoding="utf-8") as f:
-        src = json.load(f)
-
-    src_servers: dict = src.get("servers", {})
-    if not src_servers:
-        return False
-
-    src_servers = {
-        name: _wrap_npx_for_windows(entry) for name, entry in src_servers.items()
-    }
-
-    target_path = _mcp_target_path(agent_type, paths)
-
-    existing: dict = {}
-    if os.path.isfile(target_path):
-        try:
-            with open(target_path, encoding="utf-8") as f:
-                existing = json.load(f)
-        except json.JSONDecodeError:
-            print(f"   警告: {target_path} のJSON解析に失敗しました。上書きします。")
-
-    if agent_type in ("claude", "kiro"):
-        # Anthropic 形式: mcpServers キー (servers エントリをそのまま利用可)
-        existing.setdefault("mcpServers", {}).update(src_servers)
-    else:
-        # VSCode 形式: servers キー
-        existing.setdefault("servers", {}).update(src_servers)
-
-    os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
-    with open(target_path, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-    print(f"   → {target_path}")
-    return True
-
-
-# ---------------------------------------------------------------------------
-# Filesystem MCP 設定
-# ---------------------------------------------------------------------------
-
-FILESYSTEM_MCP_PACKAGE = "@modelcontextprotocol/server-filesystem"
-
-
 def _mcp_servers_key(agent_type: str) -> str:
     """エージェント種別に応じた MCP サーバー定義のキー名を返す。
 
@@ -256,19 +211,32 @@ def _mcp_servers_key(agent_type: str) -> str:
     return "mcpServers" if agent_type in ("claude", "kiro") else "servers"
 
 
-def _build_filesystem_entry(dirs: list[str]) -> dict:
-    """Filesystem MCP サーバーのエントリを返す。"""
-    return _wrap_npx_for_windows({
-        "command": "npx",
-        "args": ["-y", FILESYSTEM_MCP_PACKAGE, *dirs],
-    })
+def _load_mcp_config(path: str) -> dict:
+    """既存の MCP 設定ファイルを読み込む。存在しなければ空 dict を返す。"""
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        print(f"   警告: {path} のJSON解析に失敗しました。上書きします。")
+        return {}
 
 
-def _filesystem_dirs_from_entry(entry: dict) -> list[str]:
-    """既存の filesystem エントリの args から許可ディレクトリを抽出する。"""
+def _package_before_placeholder(args: list[str]) -> str | None:
+    """args 内の ${ALLOWED_DIRS} 直前の要素（パッケージ名）を返す。"""
+    if ALLOWED_DIRS_PLACEHOLDER in args:
+        idx = args.index(ALLOWED_DIRS_PLACEHOLDER)
+        if idx > 0:
+            return args[idx - 1]
+    return None
+
+
+def _installed_allowed_dirs(entry: dict, package: str | None) -> list[str]:
+    """インストール済みエントリの args から package 以降の許可ディレクトリを抽出する。"""
     args = entry.get("args", [])
-    if FILESYSTEM_MCP_PACKAGE in args:
-        idx = args.index(FILESYSTEM_MCP_PACKAGE)
+    if package and package in args:
+        idx = args.index(package)
         return list(args[idx + 1:])
     return []
 
@@ -290,57 +258,98 @@ def _prompt_filesystem_dirs(defaults: list[str]) -> list[str]:
     return dirs or defaults
 
 
-def setup_filesystem_mcp(
-    paths: dict[str, str], agent_type: str, skip_config: bool,
-) -> bool:
-    """Filesystem MCP サーバーをエージェントの MCP 設定に追加する。
+def _resolve_allowed_dirs(
+    current_dirs: list[str], default_dir: str, skip_config: bool,
+) -> list[str]:
+    """filesystem の許可ディレクトリを既存設定・対話入力・デフォルトから決定する。
 
-    - 新規インストール   : アクセスを許可するディレクトリを対話入力する
-                           （デフォルトはユーザーホーム）
-    - 更新インストール   : 既存の許可ディレクトリを表示し、変更するか確認する
-    - skip_config 指定時 : 対話せず既存設定を保持し、なければホームを既定にする
+    - skip_config 指定時 : 対話せず既存設定を保持し、なければデフォルトを使う
+    - 既存設定あり        : 現在の許可ディレクトリを表示し、変更するか確認する
+    - 既存設定なし        : 対話入力する（デフォルトはユーザーホーム）
     """
-    target_path = _mcp_target_path(agent_type, paths)
-    servers_key = _mcp_servers_key(agent_type)
-
-    existing: dict = {}
-    if os.path.isfile(target_path):
-        try:
-            with open(target_path, encoding="utf-8") as f:
-                existing = json.load(f)
-        except json.JSONDecodeError:
-            print(f"   警告: {target_path} のJSON解析に失敗しました。上書きします。")
-
-    current_entry = existing.get(servers_key, {}).get("filesystem")
-    current_dirs = _filesystem_dirs_from_entry(current_entry) if current_entry else []
-    default_dir = paths["user_home"]
-
     if skip_config:
-        dirs = current_dirs or [default_dir]
-    elif current_dirs:
-        print("   Filesystem MCP は既に設定されています。")
+        return current_dirs or [default_dir]
+    if current_dirs:
+        print("   filesystem MCP は既に設定されています。")
         print("   現在の許可ディレクトリ:")
         for d in current_dirs:
             print(f"     - {d}")
         answer = input("   許可ディレクトリを変更しますか? [y/N]: ").strip().lower()
         if answer == "y":
-            dirs = _prompt_filesystem_dirs(current_dirs)
-        else:
-            dirs = current_dirs
-            print("   現在の設定を保持します")
-    else:
-        dirs = _prompt_filesystem_dirs([default_dir])
+            return _prompt_filesystem_dirs(current_dirs)
+        print("   現在の設定を保持します")
+        return current_dirs
+    return _prompt_filesystem_dirs([default_dir])
 
-    existing.setdefault(servers_key, {})["filesystem"] = _build_filesystem_entry(dirs)
+
+def _render_server_entry(
+    entry: dict, existing_entry: dict | None,
+    paths: dict[str, str], skip_config: bool,
+) -> dict:
+    """mcp.json のサーバー雛形を環境・ユーザー入力に応じて書き換える。
+
+    - ${ALLOWED_DIRS} : 許可ディレクトリ一覧へ展開する（ユーザー入力）
+    - Windows         : npx 起動を cmd /c でラップする（環境）
+    """
+    args = entry.get("args", [])
+    if ALLOWED_DIRS_PLACEHOLDER in args:
+        package = _package_before_placeholder(args)
+        current_dirs = (
+            _installed_allowed_dirs(existing_entry, package) if existing_entry else []
+        )
+        dirs = _resolve_allowed_dirs(current_dirs, paths["user_home"], skip_config)
+        expanded: list[str] = []
+        for a in args:
+            if a == ALLOWED_DIRS_PLACEHOLDER:
+                expanded.extend(dirs)
+            else:
+                expanded.append(a)
+        entry = {**entry, "args": expanded}
+        print("   filesystem MCP の許可ディレクトリ:")
+        for d in dirs:
+            print(f"     - {d}")
+    return _wrap_npx_for_windows(entry)
+
+
+def setup_mcp_config(
+    paths: dict[str, str], agent_type: str, skip_config: bool,
+) -> bool:
+    """`.github/mcp/mcp.json` のサーバー雛形を書き換えてエージェントの MCP 設定にマージする。
+
+    各サーバー雛形は環境（Windows 判定）とユーザー入力（filesystem の許可
+    ディレクトリ）に応じて _render_server_entry で書き換えてからマージする。
+
+    - claude / kiro   : Anthropic 形式の mcpServers キーに追記
+    - copilot / codex : VSCode 形式の servers キーに追記
+    """
+    if not os.path.isfile(MCP_CONFIG_SRC):
+        return False
+
+    with open(MCP_CONFIG_SRC, encoding="utf-8") as f:
+        src = json.load(f)
+
+    src_servers: dict = src.get("servers", {})
+    if not src_servers:
+        return False
+
+    target_path = _mcp_target_path(agent_type, paths)
+    servers_key = _mcp_servers_key(agent_type)
+    existing = _load_mcp_config(target_path)
+    existing_servers = existing.get(servers_key, {})
+
+    rendered: dict = {}
+    for name, entry in src_servers.items():
+        rendered[name] = _render_server_entry(
+            entry, existing_servers.get(name), paths, skip_config,
+        )
+
+    existing.setdefault(servers_key, {}).update(rendered)
 
     os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
     with open(target_path, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
-    print("   Filesystem MCP の許可ディレクトリ:")
-    for d in dirs:
-        print(f"     - {d}")
     print(f"   → {target_path}")
     return True
 
@@ -975,10 +984,8 @@ def main() -> None:
 
     # 5. MCP 設定
     print("\n5. MCP 設定をセットアップ...")
-    if not setup_mcp_config(paths, agent_type):
+    if not setup_mcp_config(paths, agent_type, args.skip_config):
         print("   (.github/mcp/mcp.json が見つかりません、スキップ)")
-    print("\n   Filesystem MCP:")
-    setup_filesystem_mcp(paths, agent_type, args.skip_config)
 
     # 6. エージェント固有のセットアップ
     if agent_type == "kiro":
