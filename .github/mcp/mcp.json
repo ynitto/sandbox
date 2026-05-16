@@ -7,6 +7,14 @@
         "https://aws-mcp.us-east-1.api.aws/mcp",
         "--metadata", "AWS_REGION=ap-northeast-1"
       ]
+    },
+    "ripgrep": {
+      "command": "npx",
+      "args": ["-y", "mcp-ripgrep@latest"]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${ALLOWED_DIRS}"]
     }
   }
 }
