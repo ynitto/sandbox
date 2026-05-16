@@ -84,7 +84,8 @@ wiki_root exists : True
 │   ├── topics/               ← テーマ別まとめページ
 │   │   └── .gitkeep
 │   └── meta/
-│       └── hot.md            ← 最近のコンテキストキャッシュ（直近20件）
+│       ├── hot.md            ← 最近のコンテキストキャッシュ（直近20件）
+│       └── queries.md        ← 価値あるクエリの記録（直近50件）
 ├── SCHEMA.md                 ← このWikiの構造・規約定義（LLMと共に育てる）
 ├── index.md                  ← 全ページの目録（1ページ1行の箇条書き）
 └── log.md                    ← 操作ログ（追記専用）

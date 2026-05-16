@@ -11,6 +11,7 @@
 - [index.md フォーマット](#indexmd-フォーマット)
 - [log.md フォーマット](#logmd-フォーマット)
 - [hot.md フォーマット](#hotmd-フォーマット)
+- [queries.md フォーマット](#queriesmd-フォーマット)
 - [SCHEMA.md フォーマット](#schemamd-フォーマット)
 
 ---
@@ -233,6 +234,14 @@ summary: "1文の簡潔な説明（80文字以内）"
 ```markdown
 # Wiki 操作ログ
 
+## 2026-01-15 15:00 — query
+
+- クエリ: "トランスフォーマーと RNN の本質的な違いは？"
+- 保存先: wiki/topics/transformer-vs-rnn.md
+- キーワード: transformer, rnn
+
+---
+
 ## 2026-01-15 14:30 — ingest
 
 - ソース: `sources/2026-01-15-attention-paper.pdf`
@@ -247,6 +256,8 @@ summary: "1文の簡潔な説明（80文字以内）"
 - Wiki を初期化しました
 - wiki_root: ~/Documents/wiki
 ```
+
+`— query` エントリは `save-query` コマンドが自動で追記する（Karpathy パターン）。
 
 ---
 
@@ -265,6 +276,33 @@ summary: "1文の簡潔な説明（80文字以内）"
 - [[self-attention]] — 2026-01-15 作成
 - [[multi-head-attention]] — 2026-01-15 作成
 ```
+
+---
+
+## queries.md フォーマット
+
+query 操作で価値があると判断されたクエリを蓄積するナビゲーション用メタファイル。
+最大50件を維持し、古いエントリは自動で削除される。
+
+**queries.md は topics/ ページへのナビゲーション補助**が目的。
+知識の本体は topics ページが持つ。クエリテキストはその入口にすぎない。
+
+```markdown
+# Queries（価値あるクエリの記録）
+
+最終更新: YYYY-MM-DD
+
+<!-- query で価値ある回答が生まれたクエリを記録する。最大50件 -->
+
+- **[クエリ文]** → [[answer-slug]] (YYYY-MM-DD) #keyword1 #keyword2
+- **[クエリ文]** (YYYY-MM-DD) #keyword
+```
+
+- `→ [[slug]]` は回答を保存したトピックページへのウィキリンク（省略可）
+- `#keyword` はタグ（省略可）
+- `save-query` スクリプトが自動で追記する（queries.md と log.md の両方に記録）
+
+クエリ操作の完全な記録は log.md が持つ（Karpathy パターン: log.md は ingests・queries・lint passes を管理）。
 
 ---
 

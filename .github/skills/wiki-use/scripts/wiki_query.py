@@ -14,11 +14,18 @@ wiki_query.py — Wiki を検索・閲覧するスクリプト
 
   python scripts/wiki_query.py hot
       hot.md（最近のコンテキスト）を表示する
+
+  python scripts/wiki_query.py queries
+      queries.md（価値あるクエリの記録）を表示する
+
+  python scripts/wiki_query.py save-query --query "<クエリ文>" [--answer <ページパス>] [--keywords kw1 kw2]
+      価値あるクエリを queries.md に保存する
 """
 
 import argparse
 import re
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -160,6 +167,94 @@ def cmd_hot(args, wiki_root: Path) -> None:
     print(hot_path.read_text(encoding="utf-8"))
 
 
+QUERIES_MAX = 50
+
+
+def cmd_queries(args, wiki_root: Path) -> None:
+    """queries.md（価値あるクエリの記録）を表示する。"""
+    queries_path = wiki_root / "wiki" / "meta" / "queries.md"
+    if not queries_path.exists():
+        print("[INFO] queries.md が見つかりません")
+        return
+    print(queries_path.read_text(encoding="utf-8"))
+
+
+def cmd_save_query(args, wiki_root: Path) -> None:
+    """価値あるクエリを queries.md に保存する。"""
+    queries_path = wiki_root / "wiki" / "meta" / "queries.md"
+    if not queries_path.exists():
+        print(f"[ERROR] queries.md が見つかりません: {queries_path}", file=sys.stderr)
+        sys.exit(1)
+
+    today = date.today().isoformat()
+    query_text = args.query
+    answer = getattr(args, "answer", None) or ""
+    keywords = getattr(args, "keywords", None) or []
+
+    if answer:
+        stem = Path(answer).stem
+        entry = f"- **{query_text}** → [[{stem}]] ({today})"
+    else:
+        entry = f"- **{query_text}** ({today})"
+
+    if keywords:
+        tags = " ".join(f"#{kw}" for kw in keywords)
+        entry += f" {tags}"
+
+    entry += "\n"
+
+    existing = queries_path.read_text(encoding="utf-8")
+
+    # 重複チェック
+    if f"**{query_text}**" in existing:
+        print(f"[INFO] 同じクエリが既に存在します（スキップ）: {query_text[:60]}")
+        return
+
+    # コメント行の直後に挿入
+    comment_end = existing.find("-->")
+    if comment_end != -1:
+        insert_pos = existing.find("\n", comment_end) + 1
+    else:
+        insert_pos = len(existing)
+
+    new_text = existing[:insert_pos] + "\n" + entry + existing[insert_pos:]
+
+    # 最大 QUERIES_MAX 件に制限
+    entry_pattern = re.compile(r"^- \*\*.+$", re.MULTILINE)
+    all_entries = entry_pattern.findall(new_text)
+    if len(all_entries) > QUERIES_MAX:
+        # 古いエントリを末尾から削除
+        excess = len(all_entries) - QUERIES_MAX
+        for old_entry in all_entries[-excess:]:
+            new_text = new_text.replace(old_entry + "\n", "", 1)
+
+    # 最終更新日を更新
+    new_text = re.sub(
+        r"最終更新: \d{4}-\d{2}-\d{2}",
+        f"最終更新: {today}",
+        new_text,
+    )
+
+    queries_path.write_text(new_text, encoding="utf-8")
+    print(f"[OK] クエリを保存しました: {query_text[:60]}")
+
+    # log.md にも記録する（Karpathy: log.md は ingests・queries・lint passes の記録）
+    log_path = wiki_root / "log.md"
+    if log_path.exists():
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        log_entry = f"\n## {now} — query\n\n- クエリ: \"{query_text}\"\n"
+        if answer:
+            log_entry += f"- 保存先: {answer}\n"
+        if keywords:
+            log_entry += f"- キーワード: {', '.join(keywords)}\n"
+        log_entry += "\n---\n"
+
+        log_text = log_path.read_text(encoding="utf-8")
+        header_end = log_text.find("\n", log_text.find("# Wiki 操作ログ")) + 1
+        log_path.write_text(log_text[:header_end] + log_entry + log_text[header_end:], encoding="utf-8")
+        print(f"[OK] log.md に記録しました: {now}")
+
+
 def main() -> None:
     config = load_config()
     wiki_root = resolve_wiki_root(config)
@@ -189,6 +284,24 @@ def main() -> None:
     # hot
     subparsers.add_parser("hot", help="hot.md を表示する")
 
+    # queries
+    subparsers.add_parser("queries", help="queries.md（価値あるクエリの記録）を表示する")
+
+    # save-query
+    p_save_query = subparsers.add_parser("save-query", help="価値あるクエリを queries.md に保存する")
+    p_save_query.add_argument("--query", required=True, help="クエリ文（質問・検索テキスト）")
+    p_save_query.add_argument(
+        "--answer",
+        default="",
+        help="回答ページのパス（wiki_root からの相対パスまたは stem）",
+    )
+    p_save_query.add_argument(
+        "--keywords",
+        nargs="+",
+        default=[],
+        help="タグ用キーワード（スペース区切り）",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -196,6 +309,8 @@ def main() -> None:
         "list-pages": cmd_list_pages,
         "show": cmd_show,
         "hot": cmd_hot,
+        "queries": cmd_queries,
+        "save-query": cmd_save_query,
     }
     dispatch[args.command](args, wiki_root)
 

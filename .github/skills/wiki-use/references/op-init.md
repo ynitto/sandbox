@@ -11,7 +11,7 @@ python scripts/wiki_init.py
 実行内容:
 1. `<agent_home>/skill-registry.json` の `skill_configs.wiki-use` が未設定の場合、ユーザーに `wiki_root` を確認する
 2. `wiki_root` 配下に標準ディレクトリ構造を作成する
-3. `SCHEMA.md`・`index.md`・`log.md`・`wiki/meta/hot.md` を初期テンプレートで生成する
+3. `SCHEMA.md`・`index.md`・`log.md`・`wiki/meta/hot.md`・`wiki/meta/queries.md` を初期テンプレートで生成する
 4. 完了後に構造を表示する
 
 設定例（`<agent_home>/skill-registry.json` の `skill_configs.wiki-use`）:
@@ -25,4 +25,3 @@ python scripts/wiki_init.py
 }
 ```
 
-設定の詳細: [`configuration.md`](configuration.md)
