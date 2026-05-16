@@ -87,9 +87,9 @@ wiki_root: /home/user/Documents/wiki
 | **lint** | 「wikiをチェックして」「リントして」「wiki の整合性を確認して」 | [`references/op-lint.md`](references/op-lint.md) |
 
 query 操作は **3ステップ**で構成される:
-1. **過去クエリ確認** — `queries.md` を見て類似質問の有無を確認
-2. **検索・回答** — wiki ページを検索して回答する
-3. **保存** — 価値ある回答は topics ページに、クエリは `queries.md` に記録する
+1. **コンテキスト確認（任意）** — hot.md・queries.md で補足情報を把握する
+2. **wiki 検索・回答** — wiki ページを検索して回答する（**主役**）
+3. **保存** — 価値ある回答は topics ページに、クエリは `queries.md` と `log.md` に記録する
 
 ---
 

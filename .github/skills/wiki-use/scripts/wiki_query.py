@@ -25,7 +25,7 @@ wiki_query.py — Wiki を検索・閲覧するスクリプト
 import argparse
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -237,6 +237,22 @@ def cmd_save_query(args, wiki_root: Path) -> None:
 
     queries_path.write_text(new_text, encoding="utf-8")
     print(f"[OK] クエリを保存しました: {query_text[:60]}")
+
+    # log.md にも記録する（Karpathy: log.md は ingests・queries・lint passes の記録）
+    log_path = wiki_root / "log.md"
+    if log_path.exists():
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        log_entry = f"\n## {now} — query\n\n- クエリ: \"{query_text}\"\n"
+        if answer:
+            log_entry += f"- 保存先: {answer}\n"
+        if keywords:
+            log_entry += f"- キーワード: {', '.join(keywords)}\n"
+        log_entry += "\n---\n"
+
+        log_text = log_path.read_text(encoding="utf-8")
+        header_end = log_text.find("\n", log_text.find("# Wiki 操作ログ")) + 1
+        log_path.write_text(log_text[:header_end] + log_entry + log_text[header_end:], encoding="utf-8")
+        print(f"[OK] log.md に記録しました: {now}")
 
 
 def main() -> None:
