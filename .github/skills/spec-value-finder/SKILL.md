@@ -2,7 +2,7 @@
 name: spec-value-finder
 description: "元仕様書(Excel/Word/PowerPoint/PDF/Markdown/txt)から記入すべき値を探すスキル。人が用意した仕様書をファイル名の部分一致で特定し、マッピング情報をもとに値を探して出典・確信度付きで記入シートに落とし込む。「仕様書に書く値を探して」「元仕様書から値を落とし込んで」「設定値を仕様書から拾って」「記入シートを埋めて」などで発動。サーバ・GPU不要。"
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
   tier: experimental
   category: documentation
   tags:
@@ -42,6 +42,7 @@ GraphRAG の自動マッチングは、人が渡す**マッピング情報**（`
 | `validate` | マッピングファイルのスキーマ検証 |
 | `find` | マッピング × 抽出結果 → 項目ごとの候補を抽出 |
 | `fill` | 記入シート例 + 確定値 → 値を埋めた新規ファイルを生成 |
+| `compare` | 手動転記結果 + 確定値 → 突き合わせて一致/不一致を判定 |
 
 ```
 scripts/
@@ -51,6 +52,7 @@ scripts/
 ├── mapping.py    # マッピングファイルのスキーマ・検証・ドラフト
 ├── finder.py     # キーワード前段フィルタ → 候補抽出
 ├── filler.py     # テンプレート + findings → 新規ファイル生成
+├── comparer.py   # 手動転記結果 × findings の突き合わせ判定
 └── requirements.txt
 ```
 
@@ -70,8 +72,12 @@ scripts/
                                                     │
                                             findings.json 作成
                                                     ▼
-                                  [fill] ─→ 人が成果物を検証
+                          ┌─────────────────────────┴───────────────────┐
+                          ▼ 生成したいとき                 検証したいとき ▼
+              [fill] ─→ 人が成果物を検証      [compare] ─→ Claude が判定を吟味 ─→ 人が確認
 ```
+
+`fill` は記入シートを新規生成する。`compare` は**人が既に手で転記した記入シート**を findings.json と突き合わせて転記の正しさを判定する。用途に応じてどちらか（または両方）を使う。
 
 ### Step 0 — init（初回のみ）
 
@@ -179,6 +185,35 @@ python scripts/run.py fill --template 記入例.xlsx --findings findings.json --
 
 生成後、人が `出典` と `要確認` 列を見て検証する。
 
+### Step 6 — compare（手動転記の正しさを判定する）
+
+`fill` の代わりに、**人が既に手で転記済みの記入シート**を findings.json と突き合わせて検証する。
+
+```bash
+python scripts/run.py compare --manual 手動転記.xlsx --findings findings.json \
+  --mapping mapping.yaml --out comparison.json
+```
+
+`--manual` には項目→値の表を含むファイルを渡す（Excel/Word/PowerPoint/Markdown の表に対応。`項目` / `値` 列の見出しは `--col-item` / `--col-value` で変更可）。`--mapping` は任意で、項目の並び順の参照に使う。
+
+スクリプトは機械的判定（数値・正規化文字列の一致）まで行い、項目ごとに verdict を出す:
+
+| verdict | 意味 |
+|---------|------|
+| `match` | 一致（数値のみ一致で表記が違う場合は `needs_review` が立つ） |
+| `mismatch` | 手動値とスキル値が不一致 |
+| `missing_manual` | 手動転記が空（転記漏れの疑い） |
+| `missing_skill` | スキルが値を検出できなかった |
+| `both_empty` | 双方とも空 |
+
+**compare のあと、Claude は `needs_review: true` の項目を吟味する**:
+
+- `mismatch` — 単なる誤りか、セマンティック等価（例: 手動「有効」/ スキル「Enabled」）かを判定する
+- `missing_skill` — マッピングの `keywords` が不足していないか、手動値の出典が妥当かを確認する
+- `missing_manual` — 転記漏れか、対象外の項目かを判定する
+
+そのうえで「転記が正しい項目／要修正の項目／人の最終裁定が必要な項目」に整理して人へ提示する。数値・単位の最終確認や専門的判断は人が行う。
+
 ---
 
 ## マッピングファイル スキーマ
@@ -221,4 +256,6 @@ python scripts/run.py fill --template 記入例.xlsx --findings findings.json --
 | PDF を `extract` しても段落0件 | テキスト層が無い（スキャンPDF等）。本文テキスト層付きPDFか別形式に変換する |
 | 候補は出るが値がずれる | `row_values` の隣接セルが正解。Claude が行文脈から値を選ぶ |
 | `fill` で「項目列見出しが見つかりません」 | テンプレートの見出し名を `--col-item` 等で指定 |
+| `compare` で「項目表が見つかりません」 | 手動転記ファイルに `項目` 列を含む表が必要。見出し名を `--col-item` で指定 |
+| `compare` で全件 `missing_skill` | findings.json の `target` と手動転記の項目名が不一致。名称を揃える |
 | マッピング検証 NG | `validate` のエラーメッセージに従い `target` / `keywords` を修正 |

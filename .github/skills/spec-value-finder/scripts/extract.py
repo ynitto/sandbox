@@ -68,9 +68,10 @@ def _infer_paths(table: Table, context: list[str]) -> None:
         for c in r:
             col_cells.setdefault(c.col, []).append(c)
 
-    # 30%超が空の列は階層列とみなす（結合セル未展開のレイアウト対策）
+    # 半数以上が空の列を階層列とみなす（結合セル未展開のレイアウト対策）。
+    # carry-forward は breadcrumb(path)の補完にのみ使い、セルの値(text)は書き換えない。
     hierarchy = {ci for ci, cells in col_cells.items()
-                 if n > 1 and sum(1 for c in cells if not c.text.strip()) / n > 0.3}
+                 if n > 1 and sum(1 for c in cells if not c.text.strip()) / n >= 0.5}
     carry: dict[int, str] = {}
     sorted_h = sorted(hierarchy)
 
@@ -78,11 +79,8 @@ def _infer_paths(table: Table, context: list[str]) -> None:
         for cell in row:
             col = cell.col
             val = cell.text.strip()
-            if col in hierarchy:
-                if val:
-                    carry[col] = val
-                elif col in carry:
-                    cell.text = carry[col]
+            if col in hierarchy and val:
+                carry[col] = val
             path = list(context)
             for hc in sorted_h:
                 if hc != col and carry.get(hc):

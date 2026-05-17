@@ -11,6 +11,7 @@
     validate   マッピングファイルをスキーマ検証
     find       マッピング × 抽出結果 → 項目ごとの候補（候補JSON）を出力
     fill       記入シート例 + findings.json → 値を埋めた新規ファイルを生成
+    compare    手動転記結果 + findings.json → 突き合わせて一致/不一致を判定
 
 使用例:
     python run.py init
@@ -19,6 +20,7 @@
     python run.py validate mapping.yaml
     python run.py find --mapping mapping.yaml --out candidates.json
     python run.py fill --template 記入例.xlsx --findings findings.json --out 結果.xlsx
+    python run.py compare --manual 手動転記.xlsx --findings findings.json
 """
 from __future__ import annotations
 
@@ -186,6 +188,38 @@ def cmd_fill(args: argparse.Namespace) -> None:
         print(f"    プレースホルダ置換: {report['replaced']} 箇所")
 
 
+def cmd_compare(args: argparse.Namespace) -> None:
+    from comparer import format_comparison, read_manual_values, run_comparison
+    from filler import load_findings
+
+    findings = load_findings(args.findings)
+    manual = read_manual_values(
+        args.manual,
+        item_header=args.col_item or "項目",
+        value_header=args.col_value or "値",
+    )
+    if not manual:
+        print(f"[!] 手動転記ファイルに項目表が見つかりません: {args.manual}\n"
+              f"    項目列見出し '{args.col_item or '項目'}' を含む表が必要です"
+              f"（--col-item で変更可）。", file=sys.stderr)
+        sys.exit(1)
+
+    mapping_items = None
+    if args.mapping:
+        from mapping import items_of, load_mapping
+        mapping_items = items_of(load_mapping(args.mapping))
+
+    result = run_comparison(manual, findings, mapping_items)
+    if args.out:
+        Path(args.out).write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[✓] 比較結果を出力: {args.out}")
+    if args.json and not args.out:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(format_comparison(result))
+
+
 def main() -> None:
     root = argparse.ArgumentParser(description="spec-value-finder")
     sub = root.add_subparsers(dest="cmd", required=True)
@@ -223,6 +257,16 @@ def main() -> None:
     p_fl.add_argument("--col-confidence", default="", help="Excel: 確信度列の見出し（既定『確信度』）")
     p_fl.add_argument("--col-review", default="", help="Excel: 要確認列の見出し（既定『要確認』）")
 
+    # compare
+    p_cmp = sub.add_parser("compare", help="手動転記結果 × findings を突き合わせ判定")
+    p_cmp.add_argument("--manual", required=True, help="手動転記済みファイル（項目→値の表）")
+    p_cmp.add_argument("--findings", required=True, help="findings.json のパス")
+    p_cmp.add_argument("--mapping", default="", help="mapping.yaml（任意・項目順と type の参照に使う）")
+    p_cmp.add_argument("--out", default="", help="比較結果JSONの出力先")
+    p_cmp.add_argument("--col-item", default="", help="項目列の見出し（既定『項目』）")
+    p_cmp.add_argument("--col-value", default="", help="値列の見出し（既定『値』）")
+    p_cmp.add_argument("--json", action="store_true", help="JSON形式で stdout 出力")
+
     args = root.parse_args()
     {
         "init": cmd_init,
@@ -231,6 +275,7 @@ def main() -> None:
         "validate": cmd_validate,
         "find": cmd_find,
         "fill": cmd_fill,
+        "compare": cmd_compare,
     }[args.cmd](args)
 
 

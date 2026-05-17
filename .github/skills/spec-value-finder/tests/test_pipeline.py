@@ -11,10 +11,12 @@ import pytest
 
 import docx
 
+from comparer import format_comparison, read_manual_values, run_comparison
 from extract import extract_file, find_files, to_markdown
 from filler import fill
 from finder import find_candidates
 from mapping import validate_mapping, write_draft
+from models import normalize
 import yaml
 
 
@@ -315,6 +317,91 @@ def test_unsupported_format_raises(tmp_path):
     legacy.write_text("dummy", encoding="utf-8")
     with pytest.raises(ValueError, match="旧形式"):
         extract_file(legacy)
+
+
+# ---------------------------------------------------------------------------
+# compare（手動転記 × スキル抽出の突き合わせ）
+# ---------------------------------------------------------------------------
+
+def _make_manual_xlsx(path, rows):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["項目", "値", "出典"])
+    for item, val in rows:
+        ws.append([item, val, ""])
+    wb.save(path)
+
+
+def read_manual_values_dict(rows, tmp_path):
+    """rows から手動転記 xlsx を作って read_manual_values で読み戻すテスト補助。"""
+    path = tmp_path / "手動転記.xlsx"
+    _make_manual_xlsx(path, rows)
+    return read_manual_values(path)
+
+
+def test_read_manual_values_from_excel(tmp_path):
+    src = tmp_path / "手動転記.xlsx"
+    _make_manual_xlsx(src, [("MTU上限", "1500"), ("定格電圧", "100V")])
+    manual = read_manual_values(src)
+    assert manual[normalize("MTU上限")]["value"] == "1500"
+    assert manual[normalize("定格電圧")]["value"] == "100V"
+
+
+def test_read_manual_values_from_markdown(tmp_path):
+    src = tmp_path / "手動転記.md"
+    src.write_text("# 記入シート\n\n| 項目 | 値 |\n| --- | --- |\n| MTU上限 | 1500 |\n",
+                   encoding="utf-8")
+    manual = read_manual_values(src)
+    assert manual[normalize("MTU上限")]["value"] == "1500"
+
+
+def test_compare_verdicts(tmp_path):
+    manual = read_manual_values_dict([
+        ("MTU上限", "1500"),       # 一致
+        ("ジャンボフレーム", "9000"),  # 不一致
+        ("定格電圧", ""),            # 手動空
+        ("予備項目", "ABC"),         # スキル側になし
+    ], tmp_path)
+    findings = [
+        {"target": "MTU上限", "value": "1500", "confidence": "high"},
+        {"target": "ジャンボフレーム", "value": "1500", "confidence": "high"},
+        {"target": "定格電圧", "value": "100V", "confidence": "high"},
+        {"target": "消費電力", "value": "50W", "confidence": "high"},  # 手動になし
+    ]
+    result = run_comparison(manual, findings)
+    by = {it["target"]: it for it in result["items"]}
+    assert by["MTU上限"]["verdict"] == "match"
+    assert by["ジャンボフレーム"]["verdict"] == "mismatch"
+    assert by["定格電圧"]["verdict"] == "missing_manual"
+    assert by["消費電力"]["verdict"] == "missing_manual"
+    assert by["予備項目"]["verdict"] == "missing_skill"
+    assert result["summary"]["mismatch"] == 1
+    assert "判定結果" in format_comparison(result)
+
+
+def test_compare_numeric_match_flags_review(tmp_path):
+    manual = read_manual_values_dict([("MTU上限", "1,500")], tmp_path)
+    findings = [{"target": "MTU上限", "value": "1500 bytes", "confidence": "high"}]
+    result = run_comparison(manual, findings)
+    it = result["items"][0]
+    assert it["verdict"] == "match"
+    assert it["needs_review"] is True  # 数値一致だが表記差
+
+
+def test_compare_low_confidence_match_flags_review(tmp_path):
+    manual = read_manual_values_dict([("MTU上限", "1500")], tmp_path)
+    findings = [{"target": "MTU上限", "value": "1500", "confidence": "low"}]
+    result = run_comparison(manual, findings)
+    assert result["items"][0]["verdict"] == "match"
+    assert result["items"][0]["needs_review"] is True
+
+
+def test_compare_uses_mapping_order(tmp_path):
+    manual = read_manual_values_dict([("B項目", "2"), ("A項目", "1")], tmp_path)
+    findings = [{"target": "A項目", "value": "1"}, {"target": "B項目", "value": "2"}]
+    mapping_items = [{"target": "A項目"}, {"target": "B項目"}]
+    result = run_comparison(manual, findings, mapping_items)
+    assert [it["target"] for it in result["items"]] == ["A項目", "B項目"]
 
 
 # ---------------------------------------------------------------------------
