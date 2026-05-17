@@ -1,9 +1,11 @@
 """spec-value-finder — エントリポイント。
 
-サーバ不要・GPU不要。元仕様書(Excel/Word)から「記入すべき値」を探す。
+サーバ不要・GPU不要。元仕様書(Excel/Word/PowerPoint/PDF/Markdown/txt)から
+「記入すべき値」を探す。
 
 サブコマンド:
-    init       依存ライブラリ（openpyxl / python-docx / PyYAML）をインストール
+    init       依存ライブラリ（openpyxl / python-docx / python-pptx /
+               pypdfium2 / PyYAML）をインストール
     extract    フォルダを部分一致で走査し、元仕様書を構造化Markdown化
     map-draft  自然文の対応記述ファイル → マッピングファイルのドラフト生成
     validate   マッピングファイルをスキーマ検証
@@ -41,7 +43,8 @@ def cmd_init(args: argparse.Namespace) -> None:
     if result.returncode != 0:
         print(f"[✗] pip install 失敗:\n{result.stderr}", file=sys.stderr)
         sys.exit(1)
-    print("[✓] openpyxl / python-docx / PyYAML: OK（サーバ・GPU不要）")
+    print("[✓] openpyxl / python-docx / python-pptx / pypdfium2 / PyYAML: OK"
+          "（サーバ・GPU不要）")
 
 
 def cmd_extract(args: argparse.Namespace) -> None:
@@ -195,7 +198,7 @@ def main() -> None:
     p_ex.add_argument("--out", default="", help="Markdown/JSON の出力先ディレクトリ")
 
     p_md = sub.add_parser("map-draft", help="自然文の対応記述 → マッピングドラフト")
-    p_md.add_argument("file", help="自然文マッピング記述ファイル（Excel/Word）")
+    p_md.add_argument("file", help="自然文マッピング記述ファイル（Excel/Word/PDF/PPTX/MD/txt）")
     p_md.add_argument("--out", default="mapping.yaml", help="出力する mapping ファイル")
 
     p_va = sub.add_parser("validate", help="マッピングファイルを検証")

@@ -1,13 +1,15 @@
 ---
 name: spec-value-finder
-description: "元仕様書(Excel/Word)から記入すべき値を探すスキル。人が用意した仕様書をファイル名の部分一致で特定し、マッピング情報をもとに値を探して出典・確信度付きで記入シートに落とし込む。「仕様書に書く値を探して」「元仕様書から値を落とし込んで」「設定値を仕様書から拾って」「記入シートを埋めて」などで発動。サーバ・GPU不要。"
+description: "元仕様書(Excel/Word/PowerPoint/PDF/Markdown/txt)から記入すべき値を探すスキル。人が用意した仕様書をファイル名の部分一致で特定し、マッピング情報をもとに値を探して出典・確信度付きで記入シートに落とし込む。「仕様書に書く値を探して」「元仕様書から値を落とし込んで」「設定値を仕様書から拾って」「記入シートを埋めて」などで発動。サーバ・GPU不要。"
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   tier: experimental
   category: documentation
   tags:
     - excel
     - word
+    - powerpoint
+    - pdf
     - specification
     - document-extraction
     - value-lookup
@@ -16,9 +18,9 @@ metadata:
 
 # spec-value-finder
 
-人が用意した元仕様書（Excel / Word）から「記入すべき値」を探し、出典・確信度・要確認フラグ付きで記入シートに落とし込むスキル。
+人が用意した元仕様書（Excel / Word / PowerPoint / PDF / Markdown / txt）から「記入すべき値」を探し、出典・確信度・要確認フラグ付きで記入シートに落とし込むスキル。
 
-> **設計思想**: Neo4j も Table Transformer も使わない。依存は純Pythonの3ライブラリ（openpyxl / python-docx / PyYAML、数MB）だけで、サーバ起動も GPU も不要。どの環境でも `init` 一発で動く可搬性を最優先する。
+> **設計思想**: Neo4j も Table Transformer も使わない。依存は pip 一発で入る純Python系ライブラリ（openpyxl / python-docx / python-pptx / pypdfium2 / PyYAML、数MB）だけで、サーバ起動も GPU も不要。どの環境でも `init` 一発で動く可搬性を最優先する。
 
 ## 役割分担
 
@@ -45,7 +47,7 @@ GraphRAG の自動マッチングは、人が渡す**マッピング情報**（`
 scripts/
 ├── run.py        # エントリポイント（__file__ 基準でパス解決）
 ├── models.py     # データ構造（Cell.path = breadcrumb）
-├── extract.py    # Excel(openpyxl)/Word(python-docx) → 構造化抽出
+├── extract.py    # Excel/Word/PowerPoint/PDF/Markdown/txt → 構造化抽出
 ├── mapping.py    # マッピングファイルのスキーマ・検証・ドラフト
 ├── finder.py     # キーワード前段フィルタ → 候補抽出
 ├── filler.py     # テンプレート + findings → 新規ファイル生成
@@ -193,14 +195,20 @@ python scripts/run.py fill --template 記入例.xlsx --findings findings.json --
 
 ---
 
-## 対応フォーマット
+## 対応フォーマット（元仕様書）
 
-| 種別 | 拡張子 | ライブラリ |
-|------|--------|-----------|
-| Excel | `.xlsx` `.xlsm` | openpyxl |
-| Word | `.docx`（表・非表形式の本文の両方） | python-docx |
+| 種別 | 拡張子 | 抽出方式 |
+|------|--------|---------|
+| Excel | `.xlsx` `.xlsm` | openpyxl。結合セルを展開し表構造の breadcrumb を保持 |
+| Word | `.docx` | python-docx。見出し階層 ＋ 表 ＋ 本文段落 |
+| PowerPoint | `.pptx` | python-pptx。スライドタイトル ＋ 図形テキスト ＋ 表 |
+| PDF | `.pdf` | pypdfium2。透明テキスト層をページ単位で抽出（表構造解析はしない） |
+| Markdown | `.md` `.markdown` | 見出し階層 ＋ パイプ表 ＋ 段落 |
+| テキスト | `.txt` | 空行区切りの段落 |
 
-旧形式（`.xls` / `.doc`）と PDF は非対応。`.xlsx` / `.docx` に変換して使う。
+- PDF はテキスト層からの抽出のみ。**スキャン画像だけで本文テキスト層を持たない PDF は抽出が空になる**（OCR は行わない）。
+- 旧形式（`.xls` / `.doc` / `.ppt`）は非対応。新形式に変換して使う。
+- 記入シート例（`fill` のテンプレート）は Excel / Word に対応する。
 
 ---
 
@@ -208,8 +216,9 @@ python scripts/run.py fill --template 記入例.xlsx --findings findings.json --
 
 | 現象 | 対処 |
 |------|------|
-| `No module named openpyxl` | `init` を実行 |
+| `No module named openpyxl` / `pypdfium2` 等 | `init` を実行 |
 | `find` で候補0件 | マッピングの `keywords` に表記揺れを追加。`extract` で実テキストを確認 |
+| PDF を `extract` しても段落0件 | テキスト層が無い（スキャンPDF等）。本文テキスト層付きPDFか別形式に変換する |
 | 候補は出るが値がずれる | `row_values` の隣接セルが正解。Claude が行文脈から値を選ぶ |
 | `fill` で「項目列見出しが見つかりません」 | テンプレートの見出し名を `--col-item` 等で指定 |
 | マッピング検証 NG | `validate` のエラーメッセージに従い `target` / `keywords` を修正 |

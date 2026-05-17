@@ -1,9 +1,12 @@
-"""Excel / Word を構造化抽出する。
+"""元仕様書を構造化抽出する。
 
-- Excel: openpyxl。結合セルは値を全構成セルへ展開し、breadcrumb を保つ。
-- Word : python-docx。見出し階層を breadcrumb 化し、表だけでなく本文段落も拾う。
+- Excel : openpyxl。結合セルは値を全構成セルへ展開し、表構造の breadcrumb を保つ。
+- Word  : python-docx。見出し階層を breadcrumb 化し、表＋本文段落を拾う。
+- PowerPoint: python-pptx。スライドタイトルを文脈に、図形テキスト＋表を拾う。
+- PDF   : pypdfium2。透明テキスト層をページ単位で抽出する（表構造解析はしない）。
+- Markdown/txt: 標準ライブラリのみ。見出し・段落・パイプ表を素直に拾う。
 
-PDF・Table Transformer・Neo4j には一切依存しない（純Python・サーバ不要）。
+Table Transformer も Neo4j も使わない（純Python・サーバ/GPU不要）。
 """
 from __future__ import annotations
 
@@ -14,7 +17,12 @@ from models import Cell, ExtractedDoc, Table, TextBlock
 
 EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
 WORD_SUFFIXES = {".docx"}
-SUPPORTED = EXCEL_SUFFIXES | WORD_SUFFIXES
+PPTX_SUFFIXES = {".pptx"}
+PDF_SUFFIXES = {".pdf"}
+MD_SUFFIXES = {".md", ".markdown"}
+TXT_SUFFIXES = {".txt"}
+SUPPORTED = (EXCEL_SUFFIXES | WORD_SUFFIXES | PPTX_SUFFIXES
+             | PDF_SUFFIXES | MD_SUFFIXES | TXT_SUFFIXES)
 
 
 def find_files(folder: Path, name_match: str = "") -> list[Path]:
@@ -193,6 +201,176 @@ def extract_word(path: Path) -> ExtractedDoc:
                         fmt="word", blocks=blocks)
 
 
+# ---------------------------------------------------------------------------
+# PowerPoint
+# ---------------------------------------------------------------------------
+
+def extract_pptx(path: Path) -> ExtractedDoc:
+    from pptx import Presentation
+
+    prs = Presentation(str(path))
+    blocks: list = []
+    table_no = 0
+    for n, slide in enumerate(prs.slides, 1):
+        loc = f"スライド{n}"
+        title_shape = slide.shapes.title
+        title = ""
+        if title_shape is not None and title_shape.has_text_frame:
+            title = (title_shape.text or "").strip()
+        context = [title] if title else [loc]
+        if title:
+            blocks.append(TextBlock(text=title, style="Heading 1",
+                                    path=[], locator=loc))
+        for shape in slide.shapes:
+            if shape.has_table:
+                table_no += 1
+                grid: list[list[Cell]] = []
+                for r_idx, row in enumerate(shape.table.rows):
+                    cells = [Cell(text=(c.text or "").strip(), row=r_idx, col=c_idx,
+                                  is_header=(r_idx == 0))
+                             for c_idx, c in enumerate(row.cells)]
+                    if any(c.text for c in cells):
+                        grid.append(cells)
+                if grid:
+                    table = Table(container=f"{loc} 表#{table_no}", rows=grid)
+                    _infer_paths(table, context)
+                    blocks.append(table)
+            elif shape.has_text_frame and shape is not title_shape:
+                text = (shape.text or "").strip()
+                if text:
+                    blocks.append(TextBlock(text=text, style="Normal",
+                                            path=[title] if title else [],
+                                            locator=loc))
+    return ExtractedDoc(source=str(Path(path).resolve()), filename=Path(path).name,
+                        fmt="powerpoint", blocks=blocks)
+
+
+# ---------------------------------------------------------------------------
+# PDF（透明テキスト層）
+# ---------------------------------------------------------------------------
+
+def _split_paragraphs(text: str) -> list[str]:
+    return [c.strip() for c in re.split(r"\n\s*\n", text) if c.strip()]
+
+
+def extract_pdf(path: Path) -> ExtractedDoc:
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(str(path))
+    blocks: list = []
+    try:
+        for n in range(len(pdf)):
+            page = pdf[n]
+            textpage = page.get_textpage()
+            text = textpage.get_text_range() or ""
+            textpage.close()
+            page.close()
+            loc = f"ページ{n + 1}"
+            for chunk in _split_paragraphs(text):
+                blocks.append(TextBlock(text=chunk, style="Normal",
+                                        path=[loc], locator=loc))
+    finally:
+        pdf.close()
+    return ExtractedDoc(source=str(Path(path).resolve()), filename=Path(path).name,
+                        fmt="pdf", blocks=blocks)
+
+
+# ---------------------------------------------------------------------------
+# Markdown / txt
+# ---------------------------------------------------------------------------
+
+_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+
+
+def _is_md_table_row(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("|") and s.count("|") >= 2
+
+
+def _is_md_separator(line: str) -> bool:
+    s = line.strip().strip("|")
+    return bool(s) and "-" in s and all(ch in " :-|" for ch in s)
+
+
+def _parse_md_row(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _md_table(lines: list[str], context: list[str]) -> Table:
+    grid: list[list[Cell]] = []
+    for r_idx, line in enumerate(lines):
+        values = _parse_md_row(line)
+        cells = [Cell(text=v, row=r_idx, col=c_idx, is_header=(r_idx == 0))
+                 for c_idx, v in enumerate(values)]
+        grid.append(cells)
+    table = Table(container="表", rows=grid)
+    _infer_paths(table, context or ["表"])
+    return table
+
+
+def extract_markdown(path: Path) -> ExtractedDoc:
+    lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    blocks: list = []
+    heading_stack: list[tuple[int, str]] = []
+    para_buf: list[str] = []
+
+    def heading_path() -> list[str]:
+        return [t for _, t in heading_stack]
+
+    def flush() -> None:
+        nonlocal para_buf
+        joined = " ".join(s.strip() for s in para_buf).strip()
+        if joined:
+            blocks.append(TextBlock(text=joined, style="Normal", path=heading_path()))
+        para_buf = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _MD_HEADING_RE.match(line)
+        if m:
+            flush()
+            level, title = len(m.group(1)), m.group(2).strip()
+            heading_stack[:] = [h for h in heading_stack if h[0] < level]
+            blocks.append(TextBlock(text=title, style=f"Heading {level}",
+                                    path=heading_path()))
+            heading_stack.append((level, title))
+        elif (_is_md_table_row(line) and i + 1 < len(lines)
+              and _is_md_separator(lines[i + 1])):
+            flush()
+            tbl = [line]
+            j = i + 2
+            while j < len(lines) and _is_md_table_row(lines[j]):
+                tbl.append(lines[j])
+                j += 1
+            blocks.append(_md_table(tbl, heading_path()))
+            i = j
+            continue
+        elif not line.strip():
+            flush()
+        else:
+            para_buf.append(line)
+        i += 1
+    flush()
+    return ExtractedDoc(source=str(Path(path).resolve()), filename=Path(path).name,
+                        fmt="markdown", blocks=blocks)
+
+
+def extract_txt(path: Path) -> ExtractedDoc:
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    blocks = [TextBlock(text=chunk, style="Normal")
+              for chunk in _split_paragraphs(text)]
+    return ExtractedDoc(source=str(Path(path).resolve()), filename=Path(path).name,
+                        fmt="text", blocks=blocks)
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+
+_LEGACY_HINT = {".xls": ".xlsx", ".doc": ".docx", ".ppt": ".pptx"}
+
+
 def extract_file(path: Path | str) -> ExtractedDoc:
     path = Path(path)
     suffix = path.suffix.lower()
@@ -200,8 +378,17 @@ def extract_file(path: Path | str) -> ExtractedDoc:
         return extract_excel(path)
     if suffix in WORD_SUFFIXES:
         return extract_word(path)
-    if suffix in (".xls", ".doc"):
-        raise ValueError(f"旧形式は非対応です（{suffix}）。.xlsx / .docx に変換してください: {path}")
+    if suffix in PPTX_SUFFIXES:
+        return extract_pptx(path)
+    if suffix in PDF_SUFFIXES:
+        return extract_pdf(path)
+    if suffix in MD_SUFFIXES:
+        return extract_markdown(path)
+    if suffix in TXT_SUFFIXES:
+        return extract_txt(path)
+    if suffix in _LEGACY_HINT:
+        raise ValueError(
+            f"旧形式は非対応です（{suffix}）。{_LEGACY_HINT[suffix]} に変換してください: {path}")
     raise ValueError(f"対応していないファイル形式です: {suffix}")
 
 
@@ -227,9 +414,15 @@ def _table_to_markdown(table: Table) -> str:
 
 def to_markdown(doc: ExtractedDoc) -> str:
     parts = [f"# {doc.filename}", ""]
+    last_loc = ""
     for block in doc.blocks:
+        loc = getattr(block, "locator", "") or ""
+        if loc and loc != last_loc:
+            parts.append(f"## {loc}")
+            parts.append("")
+        last_loc = loc or last_loc
         if isinstance(block, Table):
-            parts.append(f"## {block.container}")
+            parts.append(f"### {block.container}")
             parts.append(_table_to_markdown(block))
             parts.append("")
         else:

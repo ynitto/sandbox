@@ -36,6 +36,7 @@ class TextBlock:
     text: str
     style: str = ""                # "Heading 1" など
     path: list[str] = field(default_factory=list)  # 見出し breadcrumb
+    locator: str = ""              # 出典の位置ヒント（"ページ3" "スライド2" など）
     kind: str = "text"
 
 
@@ -54,7 +55,8 @@ class ExtractedDoc:
                     "container": b.container,
                     "rows": [[vars(c) for c in row] for row in b.rows],
                 }
-            return {"kind": "text", "text": b.text, "style": b.style, "path": b.path}
+            return {"kind": "text", "text": b.text, "style": b.style,
+                    "path": b.path, "locator": b.locator}
 
         return {
             "source": self.source,
@@ -75,6 +77,7 @@ class ExtractedDoc:
             else:
                 blocks.append(TextBlock(
                     text=b["text"], style=b.get("style", ""), path=b.get("path", []),
+                    locator=b.get("locator", ""),
                 ))
         return cls(source=d["source"], filename=d["filename"],
                    fmt=d["fmt"], blocks=blocks)

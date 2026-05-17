@@ -42,7 +42,9 @@ def _cell_location(doc: ExtractedDoc, table: Table, cell) -> str:
     return f"{doc.filename} :: {table.container} :: 行{cell.row + 1}列{cell.col + 1}"
 
 
-def _text_location(doc: ExtractedDoc, idx: int) -> str:
+def _text_location(doc: ExtractedDoc, idx: int, block: TextBlock) -> str:
+    if block.locator:
+        return f"{doc.filename} :: {block.locator}"
     return f"{doc.filename} :: 段落#{idx + 1}"
 
 
@@ -90,7 +92,7 @@ def search_item(docs: list[ExtractedDoc], item: dict[str, Any],
                 hit = [orig for orig, nk in norm_kws if nk and nk in ntext]
                 if not hit:
                     continue
-                loc = _text_location(doc, idx)
+                loc = _text_location(doc, idx, block)
                 score = len(set(hit)) + _hint_bonus(
                     section_hint, block.path, block.style)
                 snippet = block.text if len(block.text) <= 300 else block.text[:300] + "…"
