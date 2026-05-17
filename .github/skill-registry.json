@@ -118,5 +118,13 @@
         }
       ]
     }
-  }
+  },
+  "deprecated_skills": [
+    {
+      "name": "table-spec-extractor",
+      "deprecated_by": "spec-value-finder",
+      "deprecated_since": "2.4.0",
+      "archived_at": null
+    }
+  ]
 }
