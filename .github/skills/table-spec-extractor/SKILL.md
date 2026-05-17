@@ -1,19 +1,24 @@
 ---
 name: table-spec-extractor
-description: "Excel/PDFの仕様書テーブルをTable TransformerでAST化しNeo4jグラフへ保存・GraphRAG検索するパイプライン。「仕様書をグラフに保存して」「Neo4jで仕様を検索して」「テーブルをグラフ化して」「GraphRAGで検索して」などで発動。init/save/search/configの4モード。"
+description: "【非推奨】spec-value-finder を使用してください。Excel/PDFの仕様書テーブルをTable TransformerでAST化しNeo4jグラフへ保存・GraphRAG検索するパイプライン（deprecated）。Neo4j・GPU依存が重く可搬性に欠けるため後継スキルへ移行。"
 metadata:
-  version: "2.3.0"
-  tier: experimental
+  version: "2.4.0"
+  tier: deprecated
+  deprecated_by: spec-value-finder
+  deprecated_since: "2.4.0"
   category: integration
   tags:
     - neo4j
     - graphrag
-    - pdf
+    - deprecated
     - excel
     - table-transformer
-    - document-graph
-    - markdown
 ---
+
+> ⚠️ **【非推奨】このスキルは deprecated です。**
+> Neo4j サーバと Table Transformer（torch/transformers, ~1-2GB）への依存が重く、
+> スキルとしての可搬性に欠けるため、後継の **`spec-value-finder`**（純Python・サーバ/GPU不要）へ移行してください。
+> 「元仕様書から記入すべき値を探す」用途は `spec-value-finder` がカバーします。
 
 # テーブル仕様抽出パイプライン
 
