@@ -1,0 +1,63 @@
+{
+  "name": "vscode-copilot-chat-bridge",
+  "displayName": "Copilot Chat Bridge",
+  "description": "Expose VS Code's Copilot Chat (language model API + chat UI commands) over a local HTTP bridge so MCP clients can drive it.",
+  "version": "0.1.0",
+  "publisher": "agent-skills",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": ["Other"],
+  "extensionKind": ["ui", "workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "copilotChatBridge.showStatus",
+        "title": "Copilot Chat Bridge: Show status",
+        "category": "Copilot Chat Bridge"
+      },
+      {
+        "command": "copilotChatBridge.listModels",
+        "title": "Copilot Chat Bridge: List chat models",
+        "category": "Copilot Chat Bridge"
+      }
+    ],
+    "configuration": {
+      "title": "Copilot Chat Bridge",
+      "properties": {
+        "copilotChatBridge.port": {
+          "type": "number",
+          "default": 52719,
+          "description": "Loopback TCP port used by the bridge HTTP server."
+        },
+        "copilotChatBridge.defaultVendor": {
+          "type": "string",
+          "default": "copilot",
+          "description": "Default LanguageModelChat vendor used when /api/ask receives no explicit selector."
+        },
+        "copilotChatBridge.defaultFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Default LanguageModelChat family used when /api/ask receives no explicit selector. Empty means 'any'."
+        },
+        "copilotChatBridge.requestTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "description": "Maximum time to wait for a language model response, in milliseconds (capped at 600000)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.93.0",
+    "typescript": "^5.5.0"
+  }
+}
