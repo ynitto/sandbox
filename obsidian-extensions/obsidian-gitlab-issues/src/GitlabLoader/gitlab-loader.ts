@@ -3,9 +3,9 @@ import { GitlabIssue } from "./issue";
 import { GitlabMergeRequest } from "./merge-request";
 import { App } from "obsidian";
 import Filesystem from "../filesystem";
-import { Issue, Discussion, MergeRequest } from "./issue-types";
+import { Issue, Discussion, MergeRequest, MergeRequestChangesResponse } from "./issue-types";
 import { GitlabIssuesSettings, LabelPropertyMapping } from "../SettingsTab/settings-types";
-import { logger } from "../utils/utils";
+import { appendStaleParam, isStale, logger } from "../utils/utils";
 
 export default class GitlabLoader {
 	private fs: Filesystem;
@@ -17,20 +17,22 @@ export default class GitlabLoader {
 	}
 
 	getUrl() {
+		const filter = appendStaleParam(this.settings.filter, this.settings.staleDays);
 		switch (this.settings.gitlabIssuesLevel) {
 			case "project":
-				return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/issues?${this.settings.filter}`;
+				return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/issues?${filter}`;
 			case "group":
-				return `${this.settings.gitlabApiUrl()}/groups/${this.settings.gitlabAppId}/issues?${this.settings.filter}`;
+				return `${this.settings.gitlabApiUrl()}/groups/${this.settings.gitlabAppId}/issues?${filter}`;
 			case "personal":
 			default:
-				return `${this.settings.gitlabApiUrl()}/issues?${this.settings.filter}`;
+				return `${this.settings.gitlabApiUrl()}/issues?${filter}`;
 		}
 	}
 
 	async loadIssues() {
 		try {
-			const issues = await GitlabApi.loadAll<Issue>(this.getUrl(), this.settings.gitlabToken, this.settings.maxItems);
+			const allIssues = await GitlabApi.loadAll<Issue>(this.getUrl(), this.settings.gitlabToken, this.settings.maxItems);
+			const issues = allIssues.filter((i) => !isStale(i.updated_at, this.settings.staleDays));
 
 			const relatedMrMap = new Map<string, GitlabMergeRequest>();
 
@@ -53,6 +55,18 @@ export default class GitlabLoader {
 							issue.relatedMergeRequests = await GitlabApi.load<MergeRequest[]>(encodeURI(url), this.settings.gitlabToken);
 						} catch (e: any) {
 							logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);
+						}
+
+						if (this.settings.embedRelatedMrDetails && this.settings.fetchMrChanges) {
+							await Promise.all(issue.relatedMergeRequests.map(async (mr) => {
+								try {
+									const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+									const resp = await GitlabApi.load<MergeRequestChangesResponse>(encodeURI(url), this.settings.gitlabToken);
+									(mr as any).changes = resp.changes ?? [];
+								} catch (e: any) {
+									logger(`Failed to fetch changes for related MR !${mr.iid}: ${e.message}`);
+								}
+							}));
 						}
 
 						if (this.settings.createRelatedMrFiles) {
@@ -82,6 +96,19 @@ export default class GitlabLoader {
 							mr.discussions = await GitlabApi.load<Discussion[]>(encodeURI(url), this.settings.gitlabToken);
 						} catch (e: any) {
 							logger(`Failed to fetch discussions for MR !${mr.iid}: ${e.message}`);
+						}
+					}));
+				}
+
+				if (this.settings.fetchMrChanges) {
+					await Promise.all(relatedMrs.map(async (mr) => {
+						if (mr.changes && mr.changes.length > 0) return;
+						try {
+							const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+							const resp = await GitlabApi.load<MergeRequestChangesResponse>(encodeURI(url), this.settings.gitlabToken);
+							mr.changes = resp.changes ?? [];
+						} catch (e: any) {
+							logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
 						}
 					}));
 				}

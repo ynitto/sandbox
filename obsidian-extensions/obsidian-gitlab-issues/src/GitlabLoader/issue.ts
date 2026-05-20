@@ -1,4 +1,4 @@
-import { ObsidianIssue, Issue, Discussion, MergeRequest, References, TimeStats, Epic, ShortIssue } from "./issue-types";
+import { ObsidianIssue, Issue, Discussion, EmbeddedRelatedMergeRequest, References, TimeStats, Epic, ShortIssue } from "./issue-types";
 
 export class GitlabIssue implements ObsidianIssue {
 	id: number;
@@ -34,7 +34,7 @@ export class GitlabIssue implements ObsidianIssue {
 	imported_from: string;
 	_links: any;
 	discussions: Discussion[];
-	relatedMergeRequests: MergeRequest[];
+	relatedMergeRequests: EmbeddedRelatedMergeRequest[];
 
 	constructor(issue: Issue) {
 		Object.assign(this, issue);
