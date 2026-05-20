@@ -14,15 +14,18 @@ export const DEFAULT_SETTINGS = {
 	fetchDiscussions: false,
 	fetchRelatedMergeRequests: false,
 	createRelatedMrFiles: false,
+	embedRelatedMrDetails: false,
 	fetchMergeRequests: false,
 	mrFilter: "",
 	mrOutputDir: "/Gitlab Merge Requests/",
 	mrTemplateFile: "",
 	fetchMrDiscussions: false,
 	fetchMrActivities: false,
+	fetchMrChanges: false,
 	labelPropertyMappings: [],
 	maxItems: 20,
 	maxMrItems: 20,
+	staleDays: 0,
 	gitlabIssuesLevel: "personal" as const,
 	gitlabApiUrl: function () {
 		return `${this.gitlabUrl}/api/v4`;
@@ -142,6 +145,11 @@ export const settings: SettingsTab = {
 			value: "createRelatedMrFiles",
 		},
 		{
+			title: "Embed Related MR Details in Issue Notes",
+			description: "Render the description, branches, author, and (if enabled) code diff of each related MR inline in the issue markdown instead of just a link. Requires 'Fetch Related Merge Requests' to be enabled.",
+			value: "embedRelatedMrDetails",
+		},
+		{
 			title: "Import Merge Requests",
 			description: "Enable standalone merge request import using the Merge Requests filter and output folder settings below.",
 			value: "fetchMergeRequests",
@@ -155,6 +163,11 @@ export const settings: SettingsTab = {
 			title: "Fetch MR Activities",
 			description: "Fetch state change activity events for each merge request (opened, merged, closed, reopened).",
 			value: "fetchMrActivities",
+		},
+		{
+			title: "Fetch MR Code Diff",
+			description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Also embedded inside issue notes when 'Embed Related MR Details' is on. May slow down imports for large MRs.",
+			value: "fetchMrChanges",
 		},
 	],
 	getGitlabIssuesLevel: (currentLevel) => {

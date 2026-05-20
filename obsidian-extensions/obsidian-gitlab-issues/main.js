@@ -5574,7 +5574,7 @@ var require_handlebars = __commonJS({
 __export(exports, {
   default: () => GitlabIssuesPlugin
 });
-var import_obsidian4 = __toModule(require("obsidian"));
+var import_obsidian5 = __toModule(require("obsidian"));
 
 // src/SettingsTab/settings.ts
 var DEFAULT_SETTINGS = {
@@ -5591,13 +5591,18 @@ var DEFAULT_SETTINGS = {
   fetchDiscussions: false,
   fetchRelatedMergeRequests: false,
   createRelatedMrFiles: false,
+  embedRelatedMrDetails: false,
   fetchMergeRequests: false,
   mrFilter: "",
   mrOutputDir: "/Gitlab Merge Requests/",
   mrTemplateFile: "",
   fetchMrDiscussions: false,
   fetchMrActivities: false,
+  fetchMrChanges: false,
   labelPropertyMappings: [],
+  maxItems: 20,
+  maxMrItems: 20,
+  staleDays: 0,
   gitlabIssuesLevel: "personal",
   gitlabApiUrl: function() {
     return `${this.gitlabUrl}/api/v4`;
@@ -5711,6 +5716,11 @@ var settings = {
       value: "createRelatedMrFiles"
     },
     {
+      title: "Embed Related MR Details in Issue Notes",
+      description: "Render the description, branches, author, and (if enabled) code diff of each related MR inline in the issue markdown instead of just a link. Requires 'Fetch Related Merge Requests' to be enabled.",
+      value: "embedRelatedMrDetails"
+    },
+    {
       title: "Import Merge Requests",
       description: "Enable standalone merge request import using the Merge Requests filter and output folder settings below.",
       value: "fetchMergeRequests"
@@ -5724,6 +5734,11 @@ var settings = {
       title: "Fetch MR Activities",
       description: "Fetch state change activity events for each merge request (opened, merged, closed, reopened).",
       value: "fetchMrActivities"
+    },
+    {
+      title: "Fetch MR Code Diff",
+      description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Also embedded inside issue notes when 'Embed Related MR Details' is on. May slow down imports for large MRs.",
+      value: "fetchMrChanges"
     }
   ],
   getGitlabIssuesLevel: (currentLevel) => {
@@ -5756,8 +5771,8 @@ var GitlabIssuesSettingTab = class extends import_obsidian.PluginSettingTab {
     const { settingInputs, dropdowns, checkBoxInputs, gitlabDocumentation, getGitlabIssuesLevel, title } = settings;
     const issueSettingKeys = new Set(["gitlabUrl", "gitlabToken", "templateFile", "outputDir", "filter"]);
     const mrSettingKeys = new Set(["mrTemplateFile", "mrOutputDir", "mrFilter"]);
-    const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles"]);
-    const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions", "fetchMrActivities"]);
+    const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles", "embedRelatedMrDetails"]);
+    const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions", "fetchMrActivities", "fetchMrChanges"]);
     containerEl.empty();
     containerEl.createEl("h2", { text: title });
     containerEl.createEl("h3", { text: "Connection" });
@@ -5792,9 +5807,30 @@ var GitlabIssuesSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h3", { text: "Issues" });
     settingInputs.filter((s) => issueSettingKeys.has(s.value) && s.value !== "gitlabUrl" && s.value !== "gitlabToken").forEach((setting) => this.renderTextInput(containerEl, setting));
     checkBoxInputs.filter((c) => issueCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
+    new import_obsidian.Setting(containerEl).setName("Max Items").setDesc("Maximum total number of issues and merge requests to fetch (pages of 100 are fetched until this limit is reached)").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxItems)).onChange((value) => __async(this, null, function* () {
+      const parsed = parseInt(value, 10);
+      if (!isNaN(parsed) && parsed >= 1) {
+        this.plugin.settings.maxItems = parsed;
+        yield this.plugin.saveSettings();
+      }
+    })));
+    new import_obsidian.Setting(containerEl).setName("Skip items not updated in (days)").setDesc("Skip issues and merge requests whose last update is older than this many days. Set to 0 to disable. Sent to the GitLab API as updated_after for efficiency.").addText((text) => text.setPlaceholder("0").setValue(String(this.plugin.settings.staleDays)).onChange((value) => __async(this, null, function* () {
+      const parsed = parseInt(value, 10);
+      if (!isNaN(parsed) && parsed >= 0) {
+        this.plugin.settings.staleDays = parsed;
+        yield this.plugin.saveSettings();
+      }
+    })));
     containerEl.createEl("h3", { text: "Merge Requests" });
     settingInputs.filter((s) => mrSettingKeys.has(s.value)).forEach((setting) => this.renderTextInput(containerEl, setting));
     checkBoxInputs.filter((c) => mrCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
+    new import_obsidian.Setting(containerEl).setName("Max MR Items").setDesc("Maximum total number of merge requests to fetch (pages of 100 are fetched until this limit is reached)").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxMrItems)).onChange((value) => __async(this, null, function* () {
+      const parsed = parseInt(value, 10);
+      if (!isNaN(parsed) && parsed >= 1) {
+        this.plugin.settings.maxMrItems = parsed;
+        yield this.plugin.saveSettings();
+      }
+    })));
     this.renderLabelMappingsSection(containerEl);
     containerEl.createEl("h3", { text: "More Information" });
     containerEl.createEl("a", {
@@ -5953,6 +5989,48 @@ var GitlabApi = class {
       return response.json;
     });
   }
+  static loadAll(baseUrl, gitlabToken, maxItems) {
+    return __async(this, null, function* () {
+      const headers = { "PRIVATE-TOKEN": gitlabToken };
+      const results = [];
+      const sep = baseUrl.includes("?") ? "&" : "?";
+      let page = 1;
+      while (results.length < maxItems) {
+        const url = encodeURI(`${baseUrl}${sep}per_page=100&page=${page}`);
+        const response = yield (0, import_obsidian2.requestUrl)({ url, headers });
+        if (response.status !== 200) {
+          throw new Error(response.text);
+        }
+        const items = response.json;
+        if (items.length === 0)
+          break;
+        results.push(...items);
+        if (!response.headers["x-next-page"])
+          break;
+        page++;
+      }
+      return results.slice(0, maxItems);
+    });
+  }
+  static request(url, gitlabToken, method, params) {
+    return __async(this, null, function* () {
+      const headers = { "PRIVATE-TOKEN": gitlabToken };
+      let body;
+      if (params && Object.keys(params).length > 0) {
+        const search = new URLSearchParams();
+        for (const [k, v] of Object.entries(params)) {
+          search.append(k, v);
+        }
+        body = search.toString();
+        headers["Content-Type"] = "application/x-www-form-urlencoded";
+      }
+      const response = yield (0, import_obsidian2.requestUrl)({ url, method, headers, body, throw: false });
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`${response.status}: ${response.text}`);
+      }
+      return response.json;
+    });
+  }
 };
 
 // src/GitlabLoader/issue.ts
@@ -5970,10 +6048,12 @@ var GitlabIssue = class {
 // src/GitlabLoader/merge-request.ts
 var GitlabMergeRequest = class {
   constructor(mr) {
+    var _a;
     Object.assign(this, mr);
     this.discussions = [];
     this.issueLinks = [];
     this.activities = [];
+    this.changes = (_a = mr.changes) != null ? _a : [];
   }
   get filename() {
     return `MR-${this.iid} ${this.title}`.replace(/[/\\?%*:|"<>]/g, "-");
@@ -5989,8 +6069,31 @@ function logger(message) {
   const pluginNamePrefix = "Gitlab Issues: ";
   console.log(pluginNamePrefix + message);
 }
+function staleCutoffIso(staleDays) {
+  if (!staleDays || staleDays <= 0)
+    return null;
+  const cutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1e3);
+  return cutoff.toISOString();
+}
+function appendStaleParam(filter, staleDays) {
+  const cutoff = staleCutoffIso(staleDays);
+  if (!cutoff)
+    return filter;
+  if (/(^|[?&])updated_after=/.test(filter))
+    return filter;
+  const sep = filter && !filter.endsWith("&") && !filter.endsWith("?") ? "&" : "";
+  return `${filter}${sep}updated_after=${cutoff}`;
+}
+function isStale(updatedAt, staleDays) {
+  const cutoff = staleCutoffIso(staleDays);
+  if (!cutoff || !updatedAt)
+    return false;
+  return updatedAt < cutoff;
+}
 var DEFAULT_TEMPLATE = `---
 id: "{{id}}"
+iid: "{{iid}}"
+projectId: "{{project_id}}"
 title: "{{{title}}}"
 dueDate: "{{due_date}}"
 webUrl: "{{web_url}}"
@@ -6012,7 +6115,31 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 ## Related Merge Requests
 
 {{#each relatedMergeRequests}}
-- [!{{iid}} {{{title}}}]({{web_url}}) \u2014 {{state}}
+### [!{{iid}} {{{title}}}]({{web_url}})
+
+**Status:** {{state}}{{#if draft}} (Draft){{/if}}{{#if detailed_merge_status}} \xB7 {{detailed_merge_status}}{{/if}}
+{{#if source_branch}}**Branch:** \`{{source_branch}}\` \u2192 \`{{target_branch}}\`{{/if}}
+**Author:** {{author.name}}{{#if assignees.length}} \xB7 **Assignees:** {{#each assignees}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}{{#if reviewers.length}} \xB7 **Reviewers:** {{#each reviewers}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+**Updated:** {{updated_at}}{{#if merged_at}} \xB7 **Merged:** {{merged_at}}{{/if}}
+
+{{#if description}}
+{{{description}}}
+
+{{/if}}
+{{#if changes.length}}
+<details><summary>Code Diff ({{changes.length}} file(s))</summary>
+
+{{#each changes}}
+**\`{{new_path}}\`**{{#if new_file}} (new){{/if}}{{#if deleted_file}} (deleted){{/if}}{{#if renamed_file}} (renamed from \`{{old_path}}\`){{/if}}
+
+\`\`\`diff
+{{{diff}}}
+\`\`\`
+
+{{/each}}
+</details>
+
+{{/if}}
 {{/each}}
 {{/if}}
 
@@ -6034,6 +6161,7 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 var DEFAULT_MR_TEMPLATE = `---
 id: "{{id}}"
 iid: "{{iid}}"
+projectId: "{{project_id}}"
 title: "{{{title}}}"
 webUrl: "{{web_url}}"
 project: "{{references.full}}"
@@ -6086,6 +6214,19 @@ assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}
 
 {{#each activities}}
 - **{{user.name}}** _{{created_at}}_ \u2192 \`{{state}}\`
+{{/each}}
+{{/if}}
+
+{{#if changes.length}}
+## Code Diff ({{changes.length}} file(s))
+
+{{#each changes}}
+### \`{{new_path}}\`{{#if new_file}} (new){{/if}}{{#if deleted_file}} (deleted){{/if}}{{#if renamed_file}} (renamed from \`{{old_path}}\`){{/if}}
+
+\`\`\`diff
+{{{diff}}}
+\`\`\`
+
 {{/each}}
 {{/if}}
 `;
@@ -6155,20 +6296,22 @@ var GitlabLoader = class {
     this.settings = settings2;
   }
   getUrl() {
+    const filter = appendStaleParam(this.settings.filter, this.settings.staleDays);
     switch (this.settings.gitlabIssuesLevel) {
       case "project":
-        return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/issues?${this.settings.filter}`;
+        return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/issues?${filter}`;
       case "group":
-        return `${this.settings.gitlabApiUrl()}/groups/${this.settings.gitlabAppId}/issues?${this.settings.filter}`;
+        return `${this.settings.gitlabApiUrl()}/groups/${this.settings.gitlabAppId}/issues?${filter}`;
       case "personal":
       default:
-        return `${this.settings.gitlabApiUrl()}/issues?${this.settings.filter}`;
+        return `${this.settings.gitlabApiUrl()}/issues?${filter}`;
     }
   }
   loadIssues() {
     return __async(this, null, function* () {
       try {
-        const issues = yield GitlabApi.load(encodeURI(this.getUrl()), this.settings.gitlabToken);
+        const allIssues = yield GitlabApi.loadAll(this.getUrl(), this.settings.gitlabToken, this.settings.maxItems);
+        const issues = allIssues.filter((i) => !isStale(i.updated_at, this.settings.staleDays));
         const relatedMrMap = new Map();
         const gitlabIssues = yield Promise.all(issues.map((rawIssue) => __async(this, null, function* () {
           const issue = new GitlabIssue(rawIssue);
@@ -6186,6 +6329,18 @@ var GitlabLoader = class {
               issue.relatedMergeRequests = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
             } catch (e) {
               logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);
+            }
+            if (this.settings.embedRelatedMrDetails && this.settings.fetchMrChanges) {
+              yield Promise.all(issue.relatedMergeRequests.map((mr) => __async(this, null, function* () {
+                var _a;
+                try {
+                  const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+                  const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+                  mr.changes = (_a = resp.changes) != null ? _a : [];
+                } catch (e) {
+                  logger(`Failed to fetch changes for related MR !${mr.iid}: ${e.message}`);
+                }
+              })));
             }
             if (this.settings.createRelatedMrFiles) {
               for (const rawMr of issue.relatedMergeRequests) {
@@ -6209,6 +6364,20 @@ var GitlabLoader = class {
                 mr.discussions = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
               } catch (e) {
                 logger(`Failed to fetch discussions for MR !${mr.iid}: ${e.message}`);
+              }
+            })));
+          }
+          if (this.settings.fetchMrChanges) {
+            yield Promise.all(relatedMrs.map((mr) => __async(this, null, function* () {
+              var _a;
+              if (mr.changes && mr.changes.length > 0)
+                return;
+              try {
+                const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+                const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+                mr.changes = (_a = resp.changes) != null ? _a : [];
+              } catch (e) {
+                logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
               }
             })));
           }
@@ -6252,21 +6421,24 @@ var MergeRequestLoader = class {
     this.settings = settings2;
   }
   getMrUrl() {
+    const filter = appendStaleParam(this.settings.mrFilter, this.settings.staleDays);
     switch (this.settings.gitlabIssuesLevel) {
       case "project":
-        return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/merge_requests?${this.settings.mrFilter}`;
+        return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/merge_requests?${filter}`;
       case "group":
-        return `${this.settings.gitlabApiUrl()}/groups/${this.settings.gitlabAppId}/merge_requests?${this.settings.mrFilter}`;
+        return `${this.settings.gitlabApiUrl()}/groups/${this.settings.gitlabAppId}/merge_requests?${filter}`;
       case "personal":
       default:
-        return `${this.settings.gitlabApiUrl()}/merge_requests?${this.settings.mrFilter}`;
+        return `${this.settings.gitlabApiUrl()}/merge_requests?${filter}`;
     }
   }
   loadMergeRequests() {
     return __async(this, null, function* () {
       try {
-        const mrs = yield GitlabApi.load(encodeURI(this.getMrUrl()), this.settings.gitlabToken);
+        const allMrs = yield GitlabApi.loadAll(this.getMrUrl(), this.settings.gitlabToken, this.settings.maxMrItems);
+        const mrs = allMrs.filter((m) => !isStale(m.updated_at, this.settings.staleDays));
         const gitlabMrs = yield Promise.all(mrs.map((rawMr) => __async(this, null, function* () {
+          var _a;
           const mr = new GitlabMergeRequest(rawMr);
           if (this.settings.fetchMrDiscussions) {
             try {
@@ -6289,6 +6461,15 @@ var MergeRequestLoader = class {
               logger(`Failed to fetch activities for MR !${rawMr.iid}: ${e.message}`);
             }
           }
+          if (this.settings.fetchMrChanges) {
+            try {
+              const url = `${this.settings.gitlabApiUrl()}/projects/${rawMr.project_id}/merge_requests/${rawMr.iid}/changes`;
+              const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+              mr.changes = (_a = resp.changes) != null ? _a : [];
+            } catch (e) {
+              logger(`Failed to fetch changes for MR !${rawMr.iid}: ${e.message}`);
+            }
+          }
           return mr;
         })));
         this.fs.createMrOutputDirectory();
@@ -6300,8 +6481,213 @@ var MergeRequestLoader = class {
   }
 };
 
+// src/IssueActions/actions.ts
+function parseIssueRefFromWebUrl(webUrl) {
+  const m = webUrl.match(/^https?:\/\/[^/]+\/(.+?)\/-\/issues\/(\d+)/);
+  if (!m)
+    return null;
+  return { projectId: m[1], iid: parseInt(m[2], 10) };
+}
+function getActiveIssueRef(app) {
+  var _a, _b;
+  const file = app.workspace.getActiveFile();
+  if (!file)
+    return null;
+  const fm = (_a = app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
+  if (!fm)
+    return null;
+  let projectId = fm.projectId !== void 0 ? String(fm.projectId) : null;
+  let iid = fm.iid !== void 0 ? parseInt(String(fm.iid), 10) : null;
+  if (!projectId || !iid) {
+    const webUrl = (_b = fm.webUrl) != null ? _b : fm.web_url;
+    if (typeof webUrl === "string") {
+      const parsed = parseIssueRefFromWebUrl(webUrl);
+      if (parsed) {
+        projectId = projectId != null ? projectId : parsed.projectId;
+        iid = iid != null ? iid : parsed.iid;
+      }
+    }
+  }
+  if (!projectId || !iid || isNaN(iid))
+    return null;
+  return { file, ref: { projectId, iid }, frontmatter: fm };
+}
+function issueApiUrl(settings2, ref, suffix = "") {
+  const id = encodeURIComponent(ref.projectId);
+  return `${settings2.gitlabApiUrl()}/projects/${id}/issues/${ref.iid}${suffix}`;
+}
+function postIssueComment(settings2, ref, body) {
+  return __async(this, null, function* () {
+    yield GitlabApi.request(issueApiUrl(settings2, ref, "/notes"), settings2.gitlabToken, "POST", { body });
+  });
+}
+function updateIssueLabels(settings2, ref, change) {
+  return __async(this, null, function* () {
+    var _a;
+    const params = {};
+    if (change.replace !== void 0) {
+      params.labels = change.replace.join(",");
+    } else {
+      if (change.add && change.add.length > 0)
+        params.add_labels = change.add.join(",");
+      if (change.remove && change.remove.length > 0)
+        params.remove_labels = change.remove.join(",");
+    }
+    if (Object.keys(params).length === 0)
+      return [];
+    const resp = yield GitlabApi.request(issueApiUrl(settings2, ref), settings2.gitlabToken, "PUT", params);
+    return (_a = resp.labels) != null ? _a : [];
+  });
+}
+function setIssueState(settings2, ref, stateEvent) {
+  return __async(this, null, function* () {
+    const resp = yield GitlabApi.request(issueApiUrl(settings2, ref), settings2.gitlabToken, "PUT", { state_event: stateEvent });
+    return resp.state;
+  });
+}
+function updateNoteFrontmatter(app, file, updates) {
+  return __async(this, null, function* () {
+    yield app.fileManager.processFrontMatter(file, (fm) => {
+      for (const [k, v] of Object.entries(updates)) {
+        fm[k] = v;
+      }
+    });
+  });
+}
+function splitLabelList(value) {
+  return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+// src/IssueActions/modals.ts
+var import_obsidian4 = __toModule(require("obsidian"));
+var TextInputModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    var _a;
+    this.value = (_a = opts.defaultValue) != null ? _a : "";
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.opts.title });
+    if (this.opts.description) {
+      contentEl.createEl("p", { text: this.opts.description, cls: "setting-item-description" });
+    }
+    const inputWrap = contentEl.createDiv();
+    inputWrap.style.margin = "8px 0";
+    let inputEl;
+    if (this.opts.multiline) {
+      inputEl = inputWrap.createEl("textarea");
+      inputEl.rows = 6;
+    } else {
+      inputEl = inputWrap.createEl("input", { type: "text" });
+    }
+    inputEl.style.width = "100%";
+    inputEl.value = this.value;
+    if (this.opts.placeholder)
+      inputEl.placeholder = this.opts.placeholder;
+    inputEl.addEventListener("input", () => {
+      this.value = inputEl.value;
+    });
+    inputEl.focus();
+    if (!this.opts.multiline) {
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          this.submit();
+        }
+      });
+    }
+    new import_obsidian4.Setting(contentEl).addButton((btn) => {
+      var _a;
+      return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "Submit").setCta().onClick(() => this.submit());
+    }).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  submit() {
+    const v = this.value.trim();
+    if (!v)
+      return;
+    this.close();
+    this.opts.onSubmit(v);
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var LabelMultiSelectModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    this.selected = new Set();
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.opts.title });
+    if (this.opts.description) {
+      contentEl.createEl("p", { text: this.opts.description, cls: "setting-item-description" });
+    }
+    if (this.opts.labels.length === 0) {
+      contentEl.createEl("p", { text: "No labels on this issue." });
+      new import_obsidian4.Setting(contentEl).addButton((btn) => btn.setButtonText("Close").onClick(() => this.close()));
+      return;
+    }
+    const listEl = contentEl.createDiv();
+    listEl.style.margin = "8px 0";
+    this.opts.labels.forEach((label) => {
+      const row = listEl.createDiv();
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.gap = "6px";
+      row.style.padding = "2px 0";
+      const cb = row.createEl("input", { type: "checkbox" });
+      cb.id = `lbl-${label}`;
+      cb.addEventListener("change", () => {
+        if (cb.checked)
+          this.selected.add(label);
+        else
+          this.selected.delete(label);
+      });
+      const lblEl = row.createEl("label", { text: label });
+      lblEl.htmlFor = cb.id;
+    });
+    new import_obsidian4.Setting(contentEl).addButton((btn) => {
+      var _a;
+      return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "Submit").setCta().onClick(() => {
+        if (this.selected.size === 0)
+          return;
+        this.close();
+        this.opts.onSubmit(Array.from(this.selected));
+      });
+    }).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var ConfirmModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.opts.title });
+    contentEl.createEl("p", { text: this.opts.message });
+    new import_obsidian4.Setting(contentEl).addButton((btn) => {
+      var _a;
+      return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "OK").setCta().onClick(() => {
+        this.close();
+        this.opts.onConfirm();
+      });
+    }).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
 // src/main.ts
-var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
+var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
   onload() {
     return __async(this, null, function* () {
       yield this.loadSettings();
@@ -6328,6 +6714,36 @@ var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
           callback: () => {
             this.fetchMergeRequestsFromGitlab();
           }
+        });
+        this.addCommand({
+          id: "gitlab-issues-add-comment",
+          name: "Post comment to active Gitlab issue",
+          callback: () => this.commentOnActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-add-label",
+          name: "Add label to active Gitlab issue",
+          callback: () => this.addLabelToActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-remove-label",
+          name: "Remove label from active Gitlab issue",
+          callback: () => this.removeLabelFromActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-set-labels",
+          name: "Set (replace) labels on active Gitlab issue",
+          callback: () => this.replaceLabelsOnActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-close",
+          name: "Close active Gitlab issue",
+          callback: () => this.changeActiveIssueState("close")
+        });
+        this.addCommand({
+          id: "gitlab-issues-reopen",
+          name: "Reopen active Gitlab issue",
+          callback: () => this.changeActiveIssueState("reopen")
         });
         this.fs.createOutputDirectory();
         this.scheduleAutomaticRefresh();
@@ -6367,16 +6783,16 @@ var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
     }
   }
   fetchIssuesFromGitlab() {
-    new import_obsidian4.Notice("Fetching Gitlab issues...");
+    new import_obsidian5.Notice("Fetching Gitlab issues...");
     const loader = new GitlabLoader(this.app, this.settings);
     loader.loadIssues();
   }
   fetchMergeRequestsFromGitlab() {
     if (!this.settings.fetchMergeRequests) {
-      new import_obsidian4.Notice("Enable 'Import Merge Requests' in settings to use this command.");
+      new import_obsidian5.Notice("Enable 'Import Merge Requests' in settings to use this command.");
       return;
     }
-    new import_obsidian4.Notice("Fetching Gitlab merge requests...");
+    new import_obsidian5.Notice("Fetching Gitlab merge requests...");
     const loader = new MergeRequestLoader(this.app, this.settings);
     loader.loadMergeRequests();
   }
@@ -6386,5 +6802,132 @@ var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
         this.fetchIssuesFromGitlab();
       }, 3e4);
     }
+  }
+  resolveActiveIssue() {
+    const ctx = getActiveIssueRef(this.app);
+    if (!ctx) {
+      new import_obsidian5.Notice("Could not identify a Gitlab issue from the active note. Frontmatter must contain projectId+iid or webUrl.");
+      return null;
+    }
+    return ctx;
+  }
+  currentLabels(fm) {
+    const raw = fm.labels;
+    if (Array.isArray(raw))
+      return raw.map((s) => String(s));
+    if (typeof raw === "string" && raw.length > 0)
+      return splitLabelList(raw);
+    return [];
+  }
+  commentOnActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    new TextInputModal(this.app, {
+      title: `Comment on issue #${ctx.ref.iid}`,
+      placeholder: "Write a comment in Markdown...",
+      multiline: true,
+      submitText: "Post",
+      onSubmit: (body) => __async(this, null, function* () {
+        try {
+          yield postIssueComment(this.settings, ctx.ref, body);
+          new import_obsidian5.Notice(`Comment posted to issue #${ctx.ref.iid}`);
+        } catch (e) {
+          logger(`Failed to post comment: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to post comment: ${e.message}`);
+        }
+      })
+    }).open();
+  }
+  addLabelToActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    new TextInputModal(this.app, {
+      title: `Add label to issue #${ctx.ref.iid}`,
+      description: "Comma-separated labels are supported.",
+      placeholder: "label-name or label1,label2",
+      submitText: "Add",
+      onSubmit: (value) => __async(this, null, function* () {
+        const toAdd = splitLabelList(value);
+        if (toAdd.length === 0)
+          return;
+        try {
+          const updated = yield updateIssueLabels(this.settings, ctx.ref, { add: toAdd });
+          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
+          new import_obsidian5.Notice(`Added label(s) to issue #${ctx.ref.iid}`);
+        } catch (e) {
+          logger(`Failed to add labels: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to add labels: ${e.message}`);
+        }
+      })
+    }).open();
+  }
+  removeLabelFromActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    const current = this.currentLabels(ctx.frontmatter);
+    new LabelMultiSelectModal(this.app, {
+      title: `Remove labels from issue #${ctx.ref.iid}`,
+      description: "Tick labels to remove.",
+      labels: current,
+      submitText: "Remove",
+      onSubmit: (toRemove) => __async(this, null, function* () {
+        try {
+          const updated = yield updateIssueLabels(this.settings, ctx.ref, { remove: toRemove });
+          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
+          new import_obsidian5.Notice(`Removed label(s) from issue #${ctx.ref.iid}`);
+        } catch (e) {
+          logger(`Failed to remove labels: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to remove labels: ${e.message}`);
+        }
+      })
+    }).open();
+  }
+  replaceLabelsOnActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    const current = this.currentLabels(ctx.frontmatter);
+    new TextInputModal(this.app, {
+      title: `Set labels on issue #${ctx.ref.iid}`,
+      description: "Comma-separated. The list fully replaces existing labels (empty value clears all labels).",
+      placeholder: "label1, label2",
+      defaultValue: current.join(", "),
+      submitText: "Apply",
+      onSubmit: (value) => __async(this, null, function* () {
+        const replace = splitLabelList(value);
+        try {
+          const updated = yield updateIssueLabels(this.settings, ctx.ref, { replace });
+          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
+          new import_obsidian5.Notice(`Labels updated on issue #${ctx.ref.iid}`);
+        } catch (e) {
+          logger(`Failed to set labels: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to set labels: ${e.message}`);
+        }
+      })
+    }).open();
+  }
+  changeActiveIssueState(stateEvent) {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    const verb = stateEvent === "close" ? "Close" : "Reopen";
+    new ConfirmModal(this.app, {
+      title: `${verb} issue #${ctx.ref.iid}`,
+      message: `${verb} issue #${ctx.ref.iid} on Gitlab?`,
+      submitText: verb,
+      onConfirm: () => __async(this, null, function* () {
+        try {
+          const state = yield setIssueState(this.settings, ctx.ref, stateEvent);
+          yield updateNoteFrontmatter(this.app, ctx.file, { state });
+          new import_obsidian5.Notice(`Issue #${ctx.ref.iid} ${state}`);
+        } catch (e) {
+          logger(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
+        }
+      })
+    }).open();
   }
 };

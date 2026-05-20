@@ -18,8 +18,8 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 
 		const issueSettingKeys = new Set(["gitlabUrl", "gitlabToken", "templateFile", "outputDir", "filter"]);
 		const mrSettingKeys = new Set(["mrTemplateFile", "mrOutputDir", "mrFilter"]);
-		const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles"]);
-		const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions", "fetchMrActivities"]);
+		const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles", "embedRelatedMrDetails"]);
+		const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions", "fetchMrActivities", "fetchMrChanges"]);
 
 		containerEl.empty();
 		containerEl.createEl('h2', { text: title });
@@ -92,6 +92,20 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 					const parsed = parseInt(value, 10);
 					if (!isNaN(parsed) && parsed >= 1) {
 						this.plugin.settings.maxItems = parsed;
+						await this.plugin.saveSettings();
+					}
+				}));
+
+		new Setting(containerEl)
+			.setName('Skip items not updated in (days)')
+			.setDesc('Skip issues and merge requests whose last update is older than this many days. Set to 0 to disable. Sent to the GitLab API as updated_after for efficiency.')
+			.addText(text => text
+				.setPlaceholder('0')
+				.setValue(String(this.plugin.settings.staleDays))
+				.onChange(async (value) => {
+					const parsed = parseInt(value, 10);
+					if (!isNaN(parsed) && parsed >= 0) {
+						this.plugin.settings.staleDays = parsed;
 						await this.plugin.saveSettings();
 					}
 				}));

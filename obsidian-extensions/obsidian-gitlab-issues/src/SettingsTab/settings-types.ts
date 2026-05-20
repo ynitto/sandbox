@@ -27,15 +27,18 @@ export interface GitlabIssuesSettings {
 	fetchDiscussions: boolean;
 	fetchRelatedMergeRequests: boolean;
 	createRelatedMrFiles: boolean;
+	embedRelatedMrDetails: boolean;
 	fetchMergeRequests: boolean;
 	mrFilter: string;
 	mrOutputDir: string;
 	mrTemplateFile: string;
 	fetchMrDiscussions: boolean;
 	fetchMrActivities: boolean;
+	fetchMrChanges: boolean;
 	labelPropertyMappings: LabelPropertyMapping[];
 	maxItems: number;
 	maxMrItems: number;
+	staleDays: number;
 	gitlabApiUrl(): string;
 }
 
@@ -63,7 +66,7 @@ export interface DropdownInputs extends Setting {
 export interface SettingCheckboxInput {
 	title: string;
 	description?: string;
-	value: keyof Pick<GitlabIssuesSettings, "refreshOnStartup" | "purgeIssues" | "showIcon" | "fetchDiscussions" | "fetchRelatedMergeRequests" | "createRelatedMrFiles" | "fetchMergeRequests" | "fetchMrDiscussions" | "fetchMrActivities">
+	value: keyof Pick<GitlabIssuesSettings, "refreshOnStartup" | "purgeIssues" | "showIcon" | "fetchDiscussions" | "fetchRelatedMergeRequests" | "createRelatedMrFiles" | "embedRelatedMrDetails" | "fetchMergeRequests" | "fetchMrDiscussions" | "fetchMrActivities" | "fetchMrChanges">
 }
 
 export interface SettingsTab {

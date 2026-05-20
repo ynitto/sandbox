@@ -131,6 +131,30 @@ export interface MergeRequest {
 	readonly author: Assignee;
 	readonly assignees: Assignee[];
 	readonly labels: string[];
+	readonly source_branch?: string;
+	readonly target_branch?: string;
+	readonly draft?: boolean;
+	readonly detailed_merge_status?: string;
+	readonly reviewers?: Assignee[];
+}
+
+export interface MergeRequestChange {
+	readonly old_path: string;
+	readonly new_path: string;
+	readonly a_mode: string;
+	readonly b_mode: string;
+	readonly new_file: boolean;
+	readonly renamed_file: boolean;
+	readonly deleted_file: boolean;
+	readonly diff: string;
+}
+
+export interface MergeRequestChangesResponse {
+	readonly changes: MergeRequestChange[];
+}
+
+export interface EmbeddedRelatedMergeRequest extends MergeRequest {
+	changes?: MergeRequestChange[];
 }
 
 export interface MergeRequestDetailed extends MergeRequest {
@@ -169,10 +193,11 @@ export interface ObsidianMergeRequest extends MergeRequestDetailed {
 	discussions: Discussion[];
 	issueLinks: string[];
 	activities: MrActivityEvent[];
+	changes: MergeRequestChange[];
 }
 
 export interface ObsidianIssue extends Issue {
 	filename: string;
 	discussions: Discussion[];
-	relatedMergeRequests: MergeRequest[];
+	relatedMergeRequests: EmbeddedRelatedMergeRequest[];
 }

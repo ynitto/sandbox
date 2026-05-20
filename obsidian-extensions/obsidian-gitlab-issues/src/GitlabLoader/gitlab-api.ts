@@ -43,4 +43,31 @@ export default class GitlabApi {
 
 		return results.slice(0, maxItems);
 	}
+
+	static async request<T>(
+		url: string,
+		gitlabToken: string,
+		method: 'POST' | 'PUT' | 'DELETE',
+		params?: Record<string, string>
+	): Promise<T> {
+		const headers: Record<string, string> = { 'PRIVATE-TOKEN': gitlabToken };
+		let body: string | undefined;
+
+		if (params && Object.keys(params).length > 0) {
+			const search = new URLSearchParams();
+			for (const [k, v] of Object.entries(params)) {
+				search.append(k, v);
+			}
+			body = search.toString();
+			headers['Content-Type'] = 'application/x-www-form-urlencoded';
+		}
+
+		const response = await requestUrl({ url, method, headers, body, throw: false });
+
+		if (response.status < 200 || response.status >= 300) {
+			throw new Error(`${response.status}: ${response.text}`);
+		}
+
+		return response.json as T;
+	}
 }
