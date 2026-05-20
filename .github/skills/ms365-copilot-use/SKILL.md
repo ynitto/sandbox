@@ -1,6 +1,6 @@
 ---
 name: ms365-copilot-use
-description: Python + Playwright CLI で Microsoft 365 Copilot Chat にアクセスし、プロンプトを送信して回答を取得する。「M365 Copilot に聞いて」「Copilot で調べて」「Microsoft 365 Copilot に質問して」「社内ナレッジを Copilot で検索して」「Copilot の回答を Markdown で保存して」「Copilot の会話履歴を JSON で出力して」などのリクエストで発動する。永続プロファイルで社内 SSO セッションを再利用する。Windows / macOS / Linux で動作。
+description: Microsoft 365 Copilot Chat（m365.cloud.microsoft）を Playwright で操作し回答を Markdown/JSON で取得する。「M365 Copilot に聞いて」「Microsoft 365 Copilot に質問」「M365 Copilot で検索」「M365 Copilot の回答を保存」「M365 Copilot の履歴」で発動。
 metadata:
   version: 0.1.0
   tier: experimental
