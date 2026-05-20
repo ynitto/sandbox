@@ -128,14 +128,32 @@ def _locator(
 mcp = FastMCP(
     "terminal-bridge",
     instructions=(
-        "Drive the user's VS Code integrated terminals through the "
-        "Terminal Bridge extension. Use list_terminals first to discover "
-        "what is currently open, then prefer execute_in_terminal (which "
-        "requires VS Code shell integration) to run commands and capture "
-        "output. Use send_to_terminal for text that is not a complete "
-        "command (e.g. answering prompts) or when shell integration is "
-        "unavailable. wait_for_output is useful after send_to_terminal to "
-        "synchronize with a known prompt or log line."
+        "Drive the user's VS Code integrated terminals so the human can watch "
+        "what you do in real time.\n"
+        "\n"
+        "Recommended workflows:\n"
+        "  * Discover state first: call list_terminals before doing anything "
+        "    else. Reuse an existing terminal when its name matches your task "
+        "    (e.g. 'api-server', 'frontend'); only create a new one when you "
+        "    need an isolated context.\n"
+        "  * Short, output-bearing commands: use execute_in_terminal. It blocks "
+        "    until completion and returns combined stdout/stderr.\n"
+        "  * Long-running processes (dev servers, log tails, watchers): use "
+        "    create_terminal with a descriptive name + send_to_terminal to fire "
+        "    the command, then wait_for_output to confirm it really started.\n"
+        "  * Periodic monitoring or post-hoc inspection: read_terminal_output "
+        "    returns the last ~200 lines captured per terminal.\n"
+        "  * Driving another CLI agent inside a sibling terminal: use "
+        "    send_to_terminal — never put '\\n' (line breaks) inside the text "
+        "    argument or the receiving agent's input box will be left in a bad "
+        "    state. Submit by sending a separate empty send_to_terminal with "
+        "    text='\\n' or by using the agent's own submit shortcut.\n"
+        "\n"
+        "Prefer running commands here over your built-in shell tool whenever a "
+        "human is supposed to see the command running, when you need a "
+        "dedicated long-lived process, or when you need a clean context "
+        "boundary (e.g. starting another agent in a fresh terminal as a "
+        "lightweight '/clear')."
     ),
 )
 
@@ -145,12 +163,17 @@ def list_terminals() -> str:
     """
     List the integrated terminals that are currently open in VS Code.
 
+    Always call this first when you don't know the current terminal state.
+    Reuse an existing terminal when its name matches your intent — only fall
+    back to create_terminal for genuinely new work, otherwise the user ends
+    up with dozens of look-alike tabs.
+
     Returns:
         JSON array of terminals with fields:
           - index: 0-based position in vscode.window.terminals
           - name:  display name shown in the VS Code UI
           - processId: OS process id (may be null)
-          - hasShellIntegration: true when /api/execute is usable
+          - hasShellIntegration: true when execute_in_terminal is usable
           - cwd: working directory if shell integration reports it
     """
     result = _bridge_request("GET", "/api/terminals")
@@ -167,9 +190,19 @@ def execute_in_terminal(
     """
     Run a shell command in the targeted terminal and return captured output.
 
-    The targeted terminal must have VS Code shell integration active.
-    Provide exactly one of terminal_index / terminal_name / process_id;
-    if none are given the call returns an error.
+    Use this for short, output-bearing commands (build, test, grep, status
+    queries). The call blocks until the shell reports completion via the
+    shell integration stream and then returns the combined stdout+stderr.
+
+    For long-running processes (dev servers, watchers, REPLs), do NOT use
+    this tool — it will hang. Use create_terminal + send_to_terminal +
+    wait_for_output instead so the user can keep watching the live tab.
+
+    Requirements:
+      * The targeted terminal must have VS Code shell integration active.
+        Confirm via list_terminals (hasShellIntegration=true). Shell
+        integration works in bash / zsh / pwsh / fish on VS Code 1.93+.
+      * Provide exactly one of terminal_index / terminal_name / process_id.
 
     Args:
         command: Command line to execute (single line, no trailing newline).
@@ -197,12 +230,26 @@ def send_to_terminal(
     """
     Write text to the terminal as if the user typed it.
 
-    Unlike execute_in_terminal, this does not wait for or return output.
-    Append a newline character to submit a command line. Combine with
-    wait_for_output or read_terminal_output to inspect what happens next.
+    Unlike execute_in_terminal, this is fire-and-forget — it does not wait
+    for or return output. Typical uses:
+
+      * Start a long-running process: send_to_terminal text="npm run dev\\n"
+        then wait_for_output pattern="ready in" to confirm startup.
+      * Answer an interactive prompt (yes/no, password, REPL input).
+      * Talk to another CLI agent running in a sibling terminal (e.g. another
+        Claude Code, Codex CLI).
+
+    CRITICAL — when targeting another interactive CLI agent (Claude Code,
+    Codex, etc.) do NOT include line breaks ('\\n') inside `text`. Multiline
+    input is pasted into the agent's prompt area and tends to leave its input
+    box in a broken state instead of submitting. Send the visible text in one
+    call, then submit it with a second send_to_terminal whose text is exactly
+    "\\n" (or use the receiving agent's own submit shortcut).
 
     Args:
-        text: Raw text to send. Include "\\n" to commit a command.
+        text: Raw text to send. For a normal shell, include "\\n" to commit.
+              For another interactive agent, keep text on a single line and
+              submit separately.
         terminal_index / terminal_name / process_id: Terminal selector.
 
     Returns:
@@ -218,6 +265,15 @@ def send_to_terminal(
 def read_terminal_output(terminal_name: str | None = None) -> str:
     """
     Read captured terminal output from the bridge's ring buffer.
+
+    The bridge stores only the most recent ~200 lines per terminal name
+    (configurable via the `terminalBridge.captureBufferLines` setting), so
+    treat this as a recent-tail view, not a full log. For exhaustive logs,
+    have the process write to a file and tail it.
+
+    Useful for monitoring long-running processes started via send_to_terminal,
+    spying on a Claude Code running in another terminal, or inspecting a
+    server's startup output without blocking on wait_for_output.
 
     Args:
         terminal_name: When set, returns the captured lines for that terminal.
@@ -246,6 +302,14 @@ def create_terminal(
     Create a new VS Code integrated terminal and optionally send an initial
     command.
 
+    Always give a descriptive `name` ("api-server", "frontend", "test-watch",
+    "claude-impl-worker", etc.). Later calls can target this terminal by
+    name, and the user can find it in the VS Code terminal dropdown.
+
+    Useful as a lightweight "/clear": create a terminal and launch a fresh
+    `claude` / `codex` inside it to hand off a self-contained task in a clean
+    context window.
+
     Args:
         name: Optional display name (VS Code may suffix it for uniqueness).
         command: If set, the bridge calls Terminal.sendText after creation.
@@ -255,7 +319,9 @@ def create_terminal(
     Returns:
         JSON object with index, name, hasShellIntegration. Shell integration
         usually needs a moment to activate; the bridge waits briefly before
-        reporting.
+        reporting. If hasShellIntegration is false on the first read, call
+        list_terminals again after ~1s before deciding execute_in_terminal
+        is unusable.
     """
     payload: dict[str, Any] = {}
     if name is not None:
@@ -300,18 +366,25 @@ def wait_for_output(
     Block until captured output for the terminal matches a JavaScript regex.
 
     Only output produced after this call begins (relative to the bridge's
-    ring buffer) is considered.
+    ring buffer) is considered. Pair this with send_to_terminal to
+    synchronise on a known prompt or log line — e.g. send "npm run dev\\n"
+    then wait_for_output pattern="Local:.*http" to confirm the dev server is
+    actually listening before proceeding.
 
     Args:
         pattern: ECMAScript regular expression source. The bridge constructs
-                 ``new RegExp(pattern)`` on the VS Code side.
+                 ``new RegExp(pattern)`` on the VS Code side. Escape
+                 backslashes in the JSON tool call (e.g. "\\\\d+").
         terminal_index / terminal_name / process_id: Terminal selector.
         timeout_ms: Maximum wait in milliseconds. Default 30 000, capped at
-                    120 000 by the bridge.
+                    120 000 by the bridge. If you suspect the process is just
+                    slow, call wait_for_output again instead of bumping the
+                    timeout — the user can see progress in the terminal.
 
     Returns:
         JSON object: {"matched": bool, "matchedText": str?, "output": str,
-        "timedOut": bool?}.
+        "timedOut": bool?}. On timeout, inspect `output` and decide whether
+        to keep waiting or take corrective action.
     """
     payload = _locator(terminal_index, terminal_name, process_id)
     payload["pattern"] = pattern

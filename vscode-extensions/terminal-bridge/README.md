@@ -37,13 +37,18 @@ Code / GitHub Copilot / Codex / Kiro などの MCP クライアントから VS C
 ```bash
 cd vscode-extensions/terminal-bridge
 npm install
-npm run compile
+npm run compile     # ← `npx tsc` ではなく `npm run` を使うこと（後述）
 npx --yes @vscode/vsce package --out terminal-bridge.vsix
 code --install-extension terminal-bridge.vsix --force
 ```
 
 VS Code を再起動するとバックグラウンドで起動する。
 動作確認は `curl http://127.0.0.1:52718/api/health` で行う。
+
+> **罠**: `npx tsc -p ./` を直接実行すると、TypeScript ではない別の `tsc` パッケージ
+> (npm 上に存在する v2.0.4 の無関係なツール) が拾われることがある。
+> `npm run compile` または `./node_modules/.bin/tsc -p ./` を使うと、必ずローカル
+> インストール版の TypeScript が呼ばれる。
 
 ## MCP サーバーから利用する
 
