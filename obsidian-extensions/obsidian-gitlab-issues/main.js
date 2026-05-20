@@ -5574,7 +5574,7 @@ var require_handlebars = __commonJS({
 __export(exports, {
   default: () => GitlabIssuesPlugin
 });
-var import_obsidian4 = __toModule(require("obsidian"));
+var import_obsidian5 = __toModule(require("obsidian"));
 
 // src/SettingsTab/settings.ts
 var DEFAULT_SETTINGS = {
@@ -6012,6 +6012,25 @@ var GitlabApi = class {
       return results.slice(0, maxItems);
     });
   }
+  static request(url, gitlabToken, method, params) {
+    return __async(this, null, function* () {
+      const headers = { "PRIVATE-TOKEN": gitlabToken };
+      let body;
+      if (params && Object.keys(params).length > 0) {
+        const search = new URLSearchParams();
+        for (const [k, v] of Object.entries(params)) {
+          search.append(k, v);
+        }
+        body = search.toString();
+        headers["Content-Type"] = "application/x-www-form-urlencoded";
+      }
+      const response = yield (0, import_obsidian2.requestUrl)({ url, method, headers, body, throw: false });
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`${response.status}: ${response.text}`);
+      }
+      return response.json;
+    });
+  }
 };
 
 // src/GitlabLoader/issue.ts
@@ -6073,6 +6092,8 @@ function isStale(updatedAt, staleDays) {
 }
 var DEFAULT_TEMPLATE = `---
 id: "{{id}}"
+iid: "{{iid}}"
+projectId: "{{project_id}}"
 title: "{{{title}}}"
 dueDate: "{{due_date}}"
 webUrl: "{{web_url}}"
@@ -6140,6 +6161,7 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 var DEFAULT_MR_TEMPLATE = `---
 id: "{{id}}"
 iid: "{{iid}}"
+projectId: "{{project_id}}"
 title: "{{{title}}}"
 webUrl: "{{web_url}}"
 project: "{{references.full}}"
@@ -6459,8 +6481,213 @@ var MergeRequestLoader = class {
   }
 };
 
+// src/IssueActions/actions.ts
+function parseIssueRefFromWebUrl(webUrl) {
+  const m = webUrl.match(/^https?:\/\/[^/]+\/(.+?)\/-\/issues\/(\d+)/);
+  if (!m)
+    return null;
+  return { projectId: m[1], iid: parseInt(m[2], 10) };
+}
+function getActiveIssueRef(app) {
+  var _a, _b;
+  const file = app.workspace.getActiveFile();
+  if (!file)
+    return null;
+  const fm = (_a = app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
+  if (!fm)
+    return null;
+  let projectId = fm.projectId !== void 0 ? String(fm.projectId) : null;
+  let iid = fm.iid !== void 0 ? parseInt(String(fm.iid), 10) : null;
+  if (!projectId || !iid) {
+    const webUrl = (_b = fm.webUrl) != null ? _b : fm.web_url;
+    if (typeof webUrl === "string") {
+      const parsed = parseIssueRefFromWebUrl(webUrl);
+      if (parsed) {
+        projectId = projectId != null ? projectId : parsed.projectId;
+        iid = iid != null ? iid : parsed.iid;
+      }
+    }
+  }
+  if (!projectId || !iid || isNaN(iid))
+    return null;
+  return { file, ref: { projectId, iid }, frontmatter: fm };
+}
+function issueApiUrl(settings2, ref, suffix = "") {
+  const id = encodeURIComponent(ref.projectId);
+  return `${settings2.gitlabApiUrl()}/projects/${id}/issues/${ref.iid}${suffix}`;
+}
+function postIssueComment(settings2, ref, body) {
+  return __async(this, null, function* () {
+    yield GitlabApi.request(issueApiUrl(settings2, ref, "/notes"), settings2.gitlabToken, "POST", { body });
+  });
+}
+function updateIssueLabels(settings2, ref, change) {
+  return __async(this, null, function* () {
+    var _a;
+    const params = {};
+    if (change.replace !== void 0) {
+      params.labels = change.replace.join(",");
+    } else {
+      if (change.add && change.add.length > 0)
+        params.add_labels = change.add.join(",");
+      if (change.remove && change.remove.length > 0)
+        params.remove_labels = change.remove.join(",");
+    }
+    if (Object.keys(params).length === 0)
+      return [];
+    const resp = yield GitlabApi.request(issueApiUrl(settings2, ref), settings2.gitlabToken, "PUT", params);
+    return (_a = resp.labels) != null ? _a : [];
+  });
+}
+function setIssueState(settings2, ref, stateEvent) {
+  return __async(this, null, function* () {
+    const resp = yield GitlabApi.request(issueApiUrl(settings2, ref), settings2.gitlabToken, "PUT", { state_event: stateEvent });
+    return resp.state;
+  });
+}
+function updateNoteFrontmatter(app, file, updates) {
+  return __async(this, null, function* () {
+    yield app.fileManager.processFrontMatter(file, (fm) => {
+      for (const [k, v] of Object.entries(updates)) {
+        fm[k] = v;
+      }
+    });
+  });
+}
+function splitLabelList(value) {
+  return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+// src/IssueActions/modals.ts
+var import_obsidian4 = __toModule(require("obsidian"));
+var TextInputModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    var _a;
+    this.value = (_a = opts.defaultValue) != null ? _a : "";
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.opts.title });
+    if (this.opts.description) {
+      contentEl.createEl("p", { text: this.opts.description, cls: "setting-item-description" });
+    }
+    const inputWrap = contentEl.createDiv();
+    inputWrap.style.margin = "8px 0";
+    let inputEl;
+    if (this.opts.multiline) {
+      inputEl = inputWrap.createEl("textarea");
+      inputEl.rows = 6;
+    } else {
+      inputEl = inputWrap.createEl("input", { type: "text" });
+    }
+    inputEl.style.width = "100%";
+    inputEl.value = this.value;
+    if (this.opts.placeholder)
+      inputEl.placeholder = this.opts.placeholder;
+    inputEl.addEventListener("input", () => {
+      this.value = inputEl.value;
+    });
+    inputEl.focus();
+    if (!this.opts.multiline) {
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          this.submit();
+        }
+      });
+    }
+    new import_obsidian4.Setting(contentEl).addButton((btn) => {
+      var _a;
+      return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "Submit").setCta().onClick(() => this.submit());
+    }).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  submit() {
+    const v = this.value.trim();
+    if (!v)
+      return;
+    this.close();
+    this.opts.onSubmit(v);
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var LabelMultiSelectModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    this.selected = new Set();
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.opts.title });
+    if (this.opts.description) {
+      contentEl.createEl("p", { text: this.opts.description, cls: "setting-item-description" });
+    }
+    if (this.opts.labels.length === 0) {
+      contentEl.createEl("p", { text: "No labels on this issue." });
+      new import_obsidian4.Setting(contentEl).addButton((btn) => btn.setButtonText("Close").onClick(() => this.close()));
+      return;
+    }
+    const listEl = contentEl.createDiv();
+    listEl.style.margin = "8px 0";
+    this.opts.labels.forEach((label) => {
+      const row = listEl.createDiv();
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.gap = "6px";
+      row.style.padding = "2px 0";
+      const cb = row.createEl("input", { type: "checkbox" });
+      cb.id = `lbl-${label}`;
+      cb.addEventListener("change", () => {
+        if (cb.checked)
+          this.selected.add(label);
+        else
+          this.selected.delete(label);
+      });
+      const lblEl = row.createEl("label", { text: label });
+      lblEl.htmlFor = cb.id;
+    });
+    new import_obsidian4.Setting(contentEl).addButton((btn) => {
+      var _a;
+      return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "Submit").setCta().onClick(() => {
+        if (this.selected.size === 0)
+          return;
+        this.close();
+        this.opts.onSubmit(Array.from(this.selected));
+      });
+    }).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var ConfirmModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.opts.title });
+    contentEl.createEl("p", { text: this.opts.message });
+    new import_obsidian4.Setting(contentEl).addButton((btn) => {
+      var _a;
+      return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "OK").setCta().onClick(() => {
+        this.close();
+        this.opts.onConfirm();
+      });
+    }).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
 // src/main.ts
-var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
+var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
   onload() {
     return __async(this, null, function* () {
       yield this.loadSettings();
@@ -6487,6 +6714,36 @@ var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
           callback: () => {
             this.fetchMergeRequestsFromGitlab();
           }
+        });
+        this.addCommand({
+          id: "gitlab-issues-add-comment",
+          name: "Post comment to active Gitlab issue",
+          callback: () => this.commentOnActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-add-label",
+          name: "Add label to active Gitlab issue",
+          callback: () => this.addLabelToActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-remove-label",
+          name: "Remove label from active Gitlab issue",
+          callback: () => this.removeLabelFromActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-set-labels",
+          name: "Set (replace) labels on active Gitlab issue",
+          callback: () => this.replaceLabelsOnActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-close",
+          name: "Close active Gitlab issue",
+          callback: () => this.changeActiveIssueState("close")
+        });
+        this.addCommand({
+          id: "gitlab-issues-reopen",
+          name: "Reopen active Gitlab issue",
+          callback: () => this.changeActiveIssueState("reopen")
         });
         this.fs.createOutputDirectory();
         this.scheduleAutomaticRefresh();
@@ -6526,16 +6783,16 @@ var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
     }
   }
   fetchIssuesFromGitlab() {
-    new import_obsidian4.Notice("Fetching Gitlab issues...");
+    new import_obsidian5.Notice("Fetching Gitlab issues...");
     const loader = new GitlabLoader(this.app, this.settings);
     loader.loadIssues();
   }
   fetchMergeRequestsFromGitlab() {
     if (!this.settings.fetchMergeRequests) {
-      new import_obsidian4.Notice("Enable 'Import Merge Requests' in settings to use this command.");
+      new import_obsidian5.Notice("Enable 'Import Merge Requests' in settings to use this command.");
       return;
     }
-    new import_obsidian4.Notice("Fetching Gitlab merge requests...");
+    new import_obsidian5.Notice("Fetching Gitlab merge requests...");
     const loader = new MergeRequestLoader(this.app, this.settings);
     loader.loadMergeRequests();
   }
@@ -6545,5 +6802,132 @@ var GitlabIssuesPlugin = class extends import_obsidian4.Plugin {
         this.fetchIssuesFromGitlab();
       }, 3e4);
     }
+  }
+  resolveActiveIssue() {
+    const ctx = getActiveIssueRef(this.app);
+    if (!ctx) {
+      new import_obsidian5.Notice("Could not identify a Gitlab issue from the active note. Frontmatter must contain projectId+iid or webUrl.");
+      return null;
+    }
+    return ctx;
+  }
+  currentLabels(fm) {
+    const raw = fm.labels;
+    if (Array.isArray(raw))
+      return raw.map((s) => String(s));
+    if (typeof raw === "string" && raw.length > 0)
+      return splitLabelList(raw);
+    return [];
+  }
+  commentOnActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    new TextInputModal(this.app, {
+      title: `Comment on issue #${ctx.ref.iid}`,
+      placeholder: "Write a comment in Markdown...",
+      multiline: true,
+      submitText: "Post",
+      onSubmit: (body) => __async(this, null, function* () {
+        try {
+          yield postIssueComment(this.settings, ctx.ref, body);
+          new import_obsidian5.Notice(`Comment posted to issue #${ctx.ref.iid}`);
+        } catch (e) {
+          logger(`Failed to post comment: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to post comment: ${e.message}`);
+        }
+      })
+    }).open();
+  }
+  addLabelToActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    new TextInputModal(this.app, {
+      title: `Add label to issue #${ctx.ref.iid}`,
+      description: "Comma-separated labels are supported.",
+      placeholder: "label-name or label1,label2",
+      submitText: "Add",
+      onSubmit: (value) => __async(this, null, function* () {
+        const toAdd = splitLabelList(value);
+        if (toAdd.length === 0)
+          return;
+        try {
+          const updated = yield updateIssueLabels(this.settings, ctx.ref, { add: toAdd });
+          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
+          new import_obsidian5.Notice(`Added label(s) to issue #${ctx.ref.iid}`);
+        } catch (e) {
+          logger(`Failed to add labels: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to add labels: ${e.message}`);
+        }
+      })
+    }).open();
+  }
+  removeLabelFromActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    const current = this.currentLabels(ctx.frontmatter);
+    new LabelMultiSelectModal(this.app, {
+      title: `Remove labels from issue #${ctx.ref.iid}`,
+      description: "Tick labels to remove.",
+      labels: current,
+      submitText: "Remove",
+      onSubmit: (toRemove) => __async(this, null, function* () {
+        try {
+          const updated = yield updateIssueLabels(this.settings, ctx.ref, { remove: toRemove });
+          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
+          new import_obsidian5.Notice(`Removed label(s) from issue #${ctx.ref.iid}`);
+        } catch (e) {
+          logger(`Failed to remove labels: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to remove labels: ${e.message}`);
+        }
+      })
+    }).open();
+  }
+  replaceLabelsOnActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    const current = this.currentLabels(ctx.frontmatter);
+    new TextInputModal(this.app, {
+      title: `Set labels on issue #${ctx.ref.iid}`,
+      description: "Comma-separated. The list fully replaces existing labels (empty value clears all labels).",
+      placeholder: "label1, label2",
+      defaultValue: current.join(", "),
+      submitText: "Apply",
+      onSubmit: (value) => __async(this, null, function* () {
+        const replace = splitLabelList(value);
+        try {
+          const updated = yield updateIssueLabels(this.settings, ctx.ref, { replace });
+          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
+          new import_obsidian5.Notice(`Labels updated on issue #${ctx.ref.iid}`);
+        } catch (e) {
+          logger(`Failed to set labels: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to set labels: ${e.message}`);
+        }
+      })
+    }).open();
+  }
+  changeActiveIssueState(stateEvent) {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    const verb = stateEvent === "close" ? "Close" : "Reopen";
+    new ConfirmModal(this.app, {
+      title: `${verb} issue #${ctx.ref.iid}`,
+      message: `${verb} issue #${ctx.ref.iid} on Gitlab?`,
+      submitText: verb,
+      onConfirm: () => __async(this, null, function* () {
+        try {
+          const state = yield setIssueState(this.settings, ctx.ref, stateEvent);
+          yield updateNoteFrontmatter(this.app, ctx.file, { state });
+          new import_obsidian5.Notice(`Issue #${ctx.ref.iid} ${state}`);
+        } catch (e) {
+          logger(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
+          new import_obsidian5.Notice(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
+        }
+      })
+    }).open();
   }
 };

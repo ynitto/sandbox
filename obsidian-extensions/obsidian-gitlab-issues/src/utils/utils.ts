@@ -31,6 +31,8 @@ export function isStale(updatedAt: string | undefined | null, staleDays: number)
 
 export const DEFAULT_TEMPLATE = `---
 id: "{{id}}"
+iid: "{{iid}}"
+projectId: "{{project_id}}"
 title: "{{{title}}}"
 dueDate: "{{due_date}}"
 webUrl: "{{web_url}}"
@@ -99,6 +101,7 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 export const DEFAULT_MR_TEMPLATE = `---
 id: "{{id}}"
 iid: "{{iid}}"
+projectId: "{{project_id}}"
 title: "{{{title}}}"
 webUrl: "{{web_url}}"
 project: "{{references.full}}"
