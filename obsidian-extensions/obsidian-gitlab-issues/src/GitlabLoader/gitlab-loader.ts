@@ -3,7 +3,7 @@ import { GitlabIssue } from "./issue";
 import { GitlabMergeRequest } from "./merge-request";
 import { App } from "obsidian";
 import Filesystem from "../filesystem";
-import { Issue, Discussion, MergeRequest, MergeRequestChangesResponse, EmbeddedRelatedMergeRequest } from "./issue-types";
+import { Issue, Discussion, MergeRequest, MergeRequestChangesResponse, EmbeddedRelatedMergeRequest, MrActivityEvent } from "./issue-types";
 import { GitlabIssuesSettings, LabelPropertyMapping } from "../SettingsTab/settings-types";
 import { appendStaleParam, isStale, logger } from "../utils/utils";
 import { extractRepoPath, sanitizeFolderSegment, sanitizeRepoPath } from "./repo";
@@ -107,17 +107,29 @@ export default class GitlabLoader {
 					}));
 				}
 
-				// Separate-file mode always fetches diffs so MR files include final code changes.
-				await Promise.all(relatedMrs.map(async (mr) => {
-					if (mr.changes && mr.changes.length > 0) return;
-					try {
-						const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
-						const resp = await GitlabApi.load<MergeRequestChangesResponse>(encodeURI(url), this.settings.gitlabToken);
-						mr.changes = resp.changes ?? [];
-					} catch (e: any) {
-						logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
-					}
-				}));
+				if (this.settings.fetchMrActivities) {
+					await Promise.all(relatedMrs.map(async (mr) => {
+						try {
+							const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/resource_state_events`;
+							mr.activities = await GitlabApi.load<MrActivityEvent[]>(encodeURI(url), this.settings.gitlabToken);
+						} catch (e: any) {
+							logger(`Failed to fetch activities for MR !${mr.iid}: ${e.message}`);
+						}
+					}));
+				}
+
+				if (this.settings.fetchMrChanges) {
+					await Promise.all(relatedMrs.map(async (mr) => {
+						if (mr.changes && mr.changes.length > 0) return;
+						try {
+							const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+							const resp = await GitlabApi.load<MergeRequestChangesResponse>(encodeURI(url), this.settings.gitlabToken);
+							mr.changes = resp.changes ?? [];
+						} catch (e: any) {
+							logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
+						}
+					}));
+				}
 
 				this.fs.createMrOutputDirectory();
 				this.fs.processMergeRequests(relatedMrs);

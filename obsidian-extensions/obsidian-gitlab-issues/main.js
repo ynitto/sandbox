@@ -5725,12 +5725,12 @@ var settings = {
     },
     {
       title: "Fetch MR Activities",
-      description: "Fetch state change activity events for each merge request (opened, merged, closed, reopened).",
+      description: "Fetch state change activity events for each merge request, opened/merged/closed/reopened (applies to both standalone import and related MR files).",
       value: "fetchMrActivities"
     },
     {
       title: "Fetch MR Code Diff",
-      description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Also embedded inside issue notes when Related MR mode is 'Same'. Always fetched for 'Separate' mode regardless of this setting.",
+      description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Applies equally to standalone MR import and related-MR files (Separate mode), and to inline embedding when Related MR mode is 'Same'.",
       value: "fetchMrChanges"
     }
   ],
@@ -6444,18 +6444,30 @@ var GitlabLoader = class {
               }
             })));
           }
-          yield Promise.all(relatedMrs.map((mr) => __async(this, null, function* () {
-            var _a;
-            if (mr.changes && mr.changes.length > 0)
-              return;
-            try {
-              const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
-              const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
-              mr.changes = (_a = resp.changes) != null ? _a : [];
-            } catch (e) {
-              logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
-            }
-          })));
+          if (this.settings.fetchMrActivities) {
+            yield Promise.all(relatedMrs.map((mr) => __async(this, null, function* () {
+              try {
+                const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/resource_state_events`;
+                mr.activities = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+              } catch (e) {
+                logger(`Failed to fetch activities for MR !${mr.iid}: ${e.message}`);
+              }
+            })));
+          }
+          if (this.settings.fetchMrChanges) {
+            yield Promise.all(relatedMrs.map((mr) => __async(this, null, function* () {
+              var _a;
+              if (mr.changes && mr.changes.length > 0)
+                return;
+              try {
+                const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+                const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+                mr.changes = (_a = resp.changes) != null ? _a : [];
+              } catch (e) {
+                logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
+              }
+            })));
+          }
           this.fs.createMrOutputDirectory();
           this.fs.processMergeRequests(relatedMrs);
         }

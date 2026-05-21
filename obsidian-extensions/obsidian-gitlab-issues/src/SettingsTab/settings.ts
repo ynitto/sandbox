@@ -154,12 +154,12 @@ export const settings: SettingsTab = {
 		},
 		{
 			title: "Fetch MR Activities",
-			description: "Fetch state change activity events for each merge request (opened, merged, closed, reopened).",
+			description: "Fetch state change activity events for each merge request, opened/merged/closed/reopened (applies to both standalone import and related MR files).",
 			value: "fetchMrActivities",
 		},
 		{
 			title: "Fetch MR Code Diff",
-			description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Also embedded inside issue notes when Related MR mode is 'Same'. Always fetched for 'Separate' mode regardless of this setting.",
+			description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Applies equally to standalone MR import and related-MR files (Separate mode), and to inline embedding when Related MR mode is 'Same'.",
 			value: "fetchMrChanges",
 		},
 	],
