@@ -3,9 +3,10 @@ import { GitlabIssue } from "./issue";
 import { GitlabMergeRequest } from "./merge-request";
 import { App } from "obsidian";
 import Filesystem from "../filesystem";
-import { Issue, Discussion, MergeRequest, MergeRequestChangesResponse } from "./issue-types";
+import { Issue, Discussion, MergeRequest, MergeRequestChangesResponse, EmbeddedRelatedMergeRequest } from "./issue-types";
 import { GitlabIssuesSettings, LabelPropertyMapping } from "../SettingsTab/settings-types";
 import { appendStaleParam, isStale, logger } from "../utils/utils";
+import { extractRepoPath, sanitizeFolderSegment, sanitizeRepoPath } from "./repo";
 
 export default class GitlabLoader {
 	private fs: Filesystem;
@@ -49,34 +50,40 @@ export default class GitlabLoader {
 						}
 					}
 
-					if (this.settings.fetchRelatedMergeRequests) {
-						try {
-							const url = `${this.settings.gitlabApiUrl()}/projects/${rawIssue.project_id}/issues/${rawIssue.iid}/related_merge_requests`;
-							issue.relatedMergeRequests = await GitlabApi.load<MergeRequest[]>(encodeURI(url), this.settings.gitlabToken);
-						} catch (e: any) {
-							logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);
-						}
+					try {
+						const url = `${this.settings.gitlabApiUrl()}/projects/${rawIssue.project_id}/issues/${rawIssue.iid}/related_merge_requests`;
+						const fetched = await GitlabApi.load<MergeRequest[]>(encodeURI(url), this.settings.gitlabToken);
+						issue.relatedMergeRequests = fetched
+							.filter((mr) => !isStale(mr.updated_at, this.settings.staleDays))
+							.map<EmbeddedRelatedMergeRequest>((mr) => {
+								const repoPath = sanitizeRepoPath(extractRepoPath(mr, "merge_requests"));
+								const safeTitle = sanitizeFolderSegment(mr.title).replace(/[/\\?%]/g, "-");
+								const filename = `!${mr.iid} - ${safeTitle}`;
+								return { ...mr, repoPath, wikilink: `${repoPath}/${filename}` };
+							});
+					} catch (e: any) {
+						logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);
+					}
 
-						if (this.settings.embedRelatedMrDetails && this.settings.fetchMrChanges) {
-							await Promise.all(issue.relatedMergeRequests.map(async (mr) => {
-								try {
-									const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
-									const resp = await GitlabApi.load<MergeRequestChangesResponse>(encodeURI(url), this.settings.gitlabToken);
-									(mr as any).changes = resp.changes ?? [];
-								} catch (e: any) {
-									logger(`Failed to fetch changes for related MR !${mr.iid}: ${e.message}`);
-								}
-							}));
-						}
-
-						if (this.settings.createRelatedMrFiles) {
-							for (const rawMr of issue.relatedMergeRequests) {
-								const key = `${rawMr.project_id}/${rawMr.iid}`;
-								if (!relatedMrMap.has(key)) {
-									relatedMrMap.set(key, new GitlabMergeRequest(rawMr));
-								}
-								relatedMrMap.get(key)!.issueLinks.push(`[[${issue.filename}]]`);
+					if (this.settings.relatedMrMode === "same" && this.settings.fetchMrChanges) {
+						await Promise.all(issue.relatedMergeRequests.map(async (mr) => {
+							try {
+								const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+								const resp = await GitlabApi.load<MergeRequestChangesResponse>(encodeURI(url), this.settings.gitlabToken);
+								(mr as any).changes = resp.changes ?? [];
+							} catch (e: any) {
+								logger(`Failed to fetch changes for related MR !${mr.iid}: ${e.message}`);
 							}
+						}));
+					}
+
+					if (this.settings.relatedMrMode === "separate") {
+						for (const rawMr of issue.relatedMergeRequests) {
+							const key = `${rawMr.project_id}/${rawMr.iid}`;
+							if (!relatedMrMap.has(key)) {
+								relatedMrMap.set(key, new GitlabMergeRequest(rawMr));
+							}
+							relatedMrMap.get(key)!.issueLinks.push(`[[${issue.wikilink}]]`);
 						}
 					}
 
@@ -86,7 +93,7 @@ export default class GitlabLoader {
 				})
 			);
 
-			if (this.settings.createRelatedMrFiles && relatedMrMap.size > 0) {
+			if (this.settings.relatedMrMode === "separate" && relatedMrMap.size > 0) {
 				const relatedMrs = Array.from(relatedMrMap.values());
 
 				if (this.settings.fetchMrDiscussions) {
@@ -100,18 +107,17 @@ export default class GitlabLoader {
 					}));
 				}
 
-				if (this.settings.fetchMrChanges) {
-					await Promise.all(relatedMrs.map(async (mr) => {
-						if (mr.changes && mr.changes.length > 0) return;
-						try {
-							const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
-							const resp = await GitlabApi.load<MergeRequestChangesResponse>(encodeURI(url), this.settings.gitlabToken);
-							mr.changes = resp.changes ?? [];
-						} catch (e: any) {
-							logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
-						}
-					}));
-				}
+				// Separate-file mode always fetches diffs so MR files include final code changes.
+				await Promise.all(relatedMrs.map(async (mr) => {
+					if (mr.changes && mr.changes.length > 0) return;
+					try {
+						const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+						const resp = await GitlabApi.load<MergeRequestChangesResponse>(encodeURI(url), this.settings.gitlabToken);
+						mr.changes = resp.changes ?? [];
+					} catch (e: any) {
+						logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
+					}
+				}));
 
 				this.fs.createMrOutputDirectory();
 				this.fs.processMergeRequests(relatedMrs);

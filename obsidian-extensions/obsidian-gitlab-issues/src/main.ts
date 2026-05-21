@@ -102,7 +102,22 @@ export default class GitlabIssuesPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const loaded = (await this.loadData()) as Record<string, any> | null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded ?? {}) as GitlabIssuesSettings;
+
+		// Migration: collapse the old three booleans into the single relatedMrMode dropdown.
+		if (loaded && loaded.relatedMrMode === undefined) {
+			if (loaded.embedRelatedMrDetails) {
+				this.settings.relatedMrMode = "same";
+			} else if (loaded.createRelatedMrFiles) {
+				this.settings.relatedMrMode = "separate";
+			} else {
+				this.settings.relatedMrMode = "off";
+			}
+		}
+		delete (this.settings as any).fetchRelatedMergeRequests;
+		delete (this.settings as any).createRelatedMrFiles;
+		delete (this.settings as any).embedRelatedMrDetails;
 	}
 
 	async saveSettings() {

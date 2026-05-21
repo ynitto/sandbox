@@ -12,9 +12,7 @@ export const DEFAULT_SETTINGS = {
 	refreshOnStartup: false,
 	intervalOfRefresh: "off",
 	fetchDiscussions: false,
-	fetchRelatedMergeRequests: false,
-	createRelatedMrFiles: false,
-	embedRelatedMrDetails: false,
+	relatedMrMode: "off" as const,
 	fetchMergeRequests: false,
 	mrFilter: "",
 	mrOutputDir: "/Gitlab Merge Requests/",
@@ -115,6 +113,16 @@ export const settings: SettingsTab = {
 				"group": "Group",
 			},
 		},
+		{
+			title: "Related Merge Requests",
+			description: "How to render related MRs on issue notes. 'Off' writes a list of GitLab URLs. 'Separate' creates a file per MR (with code diff) and links to it. 'Same' embeds details inline in the issue note.",
+			value: "relatedMrMode",
+			options: {
+				"off": "Off (GitLab URL list)",
+				"separate": "Separate file (with code diff)",
+				"same": "Same file (embed details)",
+			},
+		},
 	],
 	checkBoxInputs: [
 		{
@@ -135,21 +143,6 @@ export const settings: SettingsTab = {
 			value: "fetchDiscussions",
 		},
 		{
-			title: "Fetch Related Merge Requests",
-			description: "Fetch related merge requests for each issue. May slow down imports with many issues.",
-			value: "fetchRelatedMergeRequests",
-		},
-		{
-			title: "Create Separate Files for Related Merge Requests",
-			description: "When fetching related merge requests, also create individual markdown files for each MR. Requires 'Fetch Related Merge Requests' to be enabled.",
-			value: "createRelatedMrFiles",
-		},
-		{
-			title: "Embed Related MR Details in Issue Notes",
-			description: "Render the description, branches, author, and (if enabled) code diff of each related MR inline in the issue markdown instead of just a link. Requires 'Fetch Related Merge Requests' to be enabled.",
-			value: "embedRelatedMrDetails",
-		},
-		{
 			title: "Import Merge Requests",
 			description: "Enable standalone merge request import using the Merge Requests filter and output folder settings below.",
 			value: "fetchMergeRequests",
@@ -166,7 +159,7 @@ export const settings: SettingsTab = {
 		},
 		{
 			title: "Fetch MR Code Diff",
-			description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Also embedded inside issue notes when 'Embed Related MR Details' is on. May slow down imports for large MRs.",
+			description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Also embedded inside issue notes when Related MR mode is 'Same'. Always fetched for 'Separate' mode regardless of this setting.",
 			value: "fetchMrChanges",
 		},
 	],

@@ -1,5 +1,6 @@
 export type GitlabIssuesLevel = 'personal' | 'project' | 'group';
 export type GitlabRefreshInterval = "15" | "30" | "45" | "60" | "120" | "off";
+export type RelatedMrMode = "off" | "separate" | "same";
 
 export interface LabelPropertyRule {
 	label: string;
@@ -25,9 +26,7 @@ export interface GitlabIssuesSettings {
 	refreshOnStartup: boolean;
 	intervalOfRefresh: GitlabRefreshInterval;
 	fetchDiscussions: boolean;
-	fetchRelatedMergeRequests: boolean;
-	createRelatedMrFiles: boolean;
-	embedRelatedMrDetails: boolean;
+	relatedMrMode: RelatedMrMode;
 	fetchMergeRequests: boolean;
 	mrFilter: string;
 	mrOutputDir: string;
@@ -59,14 +58,14 @@ export interface SettingInput extends Setting {
 }
 
 export interface DropdownInputs extends Setting {
-	value: keyof Pick<GitlabIssuesSettings, "gitlabIssuesLevel" | "intervalOfRefresh">
+	value: keyof Pick<GitlabIssuesSettings, "gitlabIssuesLevel" | "intervalOfRefresh" | "relatedMrMode">
 	options: Record<string, string>
 }
 
 export interface SettingCheckboxInput {
 	title: string;
 	description?: string;
-	value: keyof Pick<GitlabIssuesSettings, "refreshOnStartup" | "purgeIssues" | "showIcon" | "fetchDiscussions" | "fetchRelatedMergeRequests" | "createRelatedMrFiles" | "embedRelatedMrDetails" | "fetchMergeRequests" | "fetchMrDiscussions" | "fetchMrActivities" | "fetchMrChanges">
+	value: keyof Pick<GitlabIssuesSettings, "refreshOnStartup" | "purgeIssues" | "showIcon" | "fetchDiscussions" | "fetchMergeRequests" | "fetchMrDiscussions" | "fetchMrActivities" | "fetchMrChanges">
 }
 
 export interface SettingsTab {

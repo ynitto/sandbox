@@ -1,4 +1,5 @@
 import { ObsidianIssue, Issue, Discussion, EmbeddedRelatedMergeRequest, References, TimeStats, Epic, ShortIssue } from "./issue-types";
+import { extractRepoPath, sanitizeFolderSegment, sanitizeRepoPath } from "./repo";
 
 export class GitlabIssue implements ObsidianIssue {
 	id: number;
@@ -42,7 +43,16 @@ export class GitlabIssue implements ObsidianIssue {
 		this.relatedMergeRequests = [];
 	}
 
+	get repoPath(): string {
+		return sanitizeRepoPath(extractRepoPath(this, "issues"));
+	}
+
 	get filename(): string {
-		return this.title.replace(/[/\\?%*:|"<>]/g, "-");
+		const safeTitle = sanitizeFolderSegment(this.title).replace(/[/\\?%]/g, "-");
+		return `${this.iid} - ${safeTitle}`;
+	}
+
+	get wikilink(): string {
+		return `${this.repoPath}/${this.filename}`;
 	}
 }

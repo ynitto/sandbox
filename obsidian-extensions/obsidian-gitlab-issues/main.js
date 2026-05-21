@@ -720,7 +720,7 @@ var require_base = __commonJS({
       constructor: HandlebarsEnvironment,
       logger: _logger2["default"],
       log: _logger2["default"].log,
-      registerHelper: function registerHelper(name, fn) {
+      registerHelper: function registerHelper2(name, fn) {
         if (_utils.toString.call(name) === objectType) {
           if (fn) {
             throw new _exception2["default"]("Arg not supported with multiple helpers");
@@ -1127,7 +1127,7 @@ var require_no_conflict = __commonJS({
   "node_modules/handlebars/dist/cjs/handlebars/no-conflict.js"(exports, module2) {
     "use strict";
     exports.__esModule = true;
-    exports["default"] = function(Handlebars) {
+    exports["default"] = function(Handlebars2) {
       (function() {
         if (typeof globalThis === "object")
           return;
@@ -1138,11 +1138,11 @@ var require_no_conflict = __commonJS({
         delete Object.prototype.__magic__;
       })();
       var $Handlebars = globalThis.Handlebars;
-      Handlebars.noConflict = function() {
-        if (globalThis.Handlebars === Handlebars) {
+      Handlebars2.noConflict = function() {
+        if (globalThis.Handlebars === Handlebars2) {
           globalThis.Handlebars = $Handlebars;
         }
-        return Handlebars;
+        return Handlebars2;
       };
     };
     module2.exports = exports["default"];
@@ -5589,9 +5589,7 @@ var DEFAULT_SETTINGS = {
   refreshOnStartup: false,
   intervalOfRefresh: "off",
   fetchDiscussions: false,
-  fetchRelatedMergeRequests: false,
-  createRelatedMrFiles: false,
-  embedRelatedMrDetails: false,
+  relatedMrMode: "off",
   fetchMergeRequests: false,
   mrFilter: "",
   mrOutputDir: "/Gitlab Merge Requests/",
@@ -5685,6 +5683,16 @@ var settings = {
         "project": "Project",
         "group": "Group"
       }
+    },
+    {
+      title: "Related Merge Requests",
+      description: "How to render related MRs on issue notes. 'Off' writes a list of GitLab URLs. 'Separate' creates a file per MR (with code diff) and links to it. 'Same' embeds details inline in the issue note.",
+      value: "relatedMrMode",
+      options: {
+        "off": "Off (GitLab URL list)",
+        "separate": "Separate file (with code diff)",
+        "same": "Same file (embed details)"
+      }
     }
   ],
   checkBoxInputs: [
@@ -5706,21 +5714,6 @@ var settings = {
       value: "fetchDiscussions"
     },
     {
-      title: "Fetch Related Merge Requests",
-      description: "Fetch related merge requests for each issue. May slow down imports with many issues.",
-      value: "fetchRelatedMergeRequests"
-    },
-    {
-      title: "Create Separate Files for Related Merge Requests",
-      description: "When fetching related merge requests, also create individual markdown files for each MR. Requires 'Fetch Related Merge Requests' to be enabled.",
-      value: "createRelatedMrFiles"
-    },
-    {
-      title: "Embed Related MR Details in Issue Notes",
-      description: "Render the description, branches, author, and (if enabled) code diff of each related MR inline in the issue markdown instead of just a link. Requires 'Fetch Related Merge Requests' to be enabled.",
-      value: "embedRelatedMrDetails"
-    },
-    {
       title: "Import Merge Requests",
       description: "Enable standalone merge request import using the Merge Requests filter and output folder settings below.",
       value: "fetchMergeRequests"
@@ -5737,7 +5730,7 @@ var settings = {
     },
     {
       title: "Fetch MR Code Diff",
-      description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Also embedded inside issue notes when 'Embed Related MR Details' is on. May slow down imports for large MRs.",
+      description: "Fetch the final code diff (changes) for each merge request and embed it in the MR markdown. Also embedded inside issue notes when Related MR mode is 'Same'. Always fetched for 'Separate' mode regardless of this setting.",
       value: "fetchMrChanges"
     }
   ],
@@ -5771,25 +5764,15 @@ var GitlabIssuesSettingTab = class extends import_obsidian.PluginSettingTab {
     const { settingInputs, dropdowns, checkBoxInputs, gitlabDocumentation, getGitlabIssuesLevel, title } = settings;
     const issueSettingKeys = new Set(["gitlabUrl", "gitlabToken", "templateFile", "outputDir", "filter"]);
     const mrSettingKeys = new Set(["mrTemplateFile", "mrOutputDir", "mrFilter"]);
-    const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles", "embedRelatedMrDetails"]);
+    const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions"]);
     const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions", "fetchMrActivities", "fetchMrChanges"]);
+    const connectionDropdownKeys = new Set(["intervalOfRefresh", "gitlabIssuesLevel"]);
+    const issueDropdownKeys = new Set(["relatedMrMode"]);
     containerEl.empty();
     containerEl.createEl("h2", { text: title });
     containerEl.createEl("h3", { text: "Connection" });
     settingInputs.filter((s) => s.value === "gitlabUrl" || s.value === "gitlabToken").forEach((setting) => this.renderTextInput(containerEl, setting));
-    dropdowns.forEach((dropdown) => {
-      const currentValue = dropdown.value;
-      new import_obsidian.Setting(containerEl).setName(dropdown.title).setDesc(dropdown.description).addDropdown((value) => value.addOptions(dropdown.options).setValue(this.plugin.settings[currentValue]).onChange((value2) => __async(this, null, function* () {
-        if (currentValue === "gitlabIssuesLevel") {
-          this.plugin.settings[currentValue] = value2;
-        } else {
-          this.plugin.settings[currentValue] = value2;
-          this.plugin.scheduleAutomaticRefresh();
-        }
-        yield this.plugin.saveSettings();
-        this.display();
-      })));
-    });
+    dropdowns.filter((d) => connectionDropdownKeys.has(d.value)).forEach((d) => this.renderDropdown(containerEl, d));
     if (this.plugin.settings.gitlabIssuesLevel !== "personal") {
       const gitlabIssuesLevelIdObject = getGitlabIssuesLevel(this.plugin.settings.gitlabIssuesLevel);
       const descriptionDocumentFragment = document.createDocumentFragment();
@@ -5807,6 +5790,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h3", { text: "Issues" });
     settingInputs.filter((s) => issueSettingKeys.has(s.value) && s.value !== "gitlabUrl" && s.value !== "gitlabToken").forEach((setting) => this.renderTextInput(containerEl, setting));
     checkBoxInputs.filter((c) => issueCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
+    dropdowns.filter((d) => issueDropdownKeys.has(d.value)).forEach((d) => this.renderDropdown(containerEl, d));
     new import_obsidian.Setting(containerEl).setName("Max Items").setDesc("Maximum total number of issues and merge requests to fetch (pages of 100 are fetched until this limit is reached)").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxItems)).onChange((value) => __async(this, null, function* () {
       const parsed = parseInt(value, 10);
       if (!isNaN(parsed) && parsed >= 1) {
@@ -5837,6 +5821,17 @@ var GitlabIssuesSettingTab = class extends import_obsidian.PluginSettingTab {
       text: gitlabDocumentation.title,
       href: gitlabDocumentation.url
     });
+  }
+  renderDropdown(containerEl, dropdown) {
+    const key = dropdown.value;
+    new import_obsidian.Setting(containerEl).setName(dropdown.title).setDesc(dropdown.description).addDropdown((value) => value.addOptions(dropdown.options).setValue(this.plugin.settings[key]).onChange((newValue) => __async(this, null, function* () {
+      this.plugin.settings[key] = newValue;
+      if (key === "intervalOfRefresh") {
+        this.plugin.scheduleAutomaticRefresh();
+      }
+      yield this.plugin.saveSettings();
+      this.display();
+    })));
   }
   renderTextInput(containerEl, setting) {
     const handleSetValue = () => {
@@ -6033,6 +6028,26 @@ var GitlabApi = class {
   }
 };
 
+// src/GitlabLoader/repo.ts
+function extractRepoPath(item, kind) {
+  if (item.references && typeof item.references === "object" && item.references.full) {
+    return item.references.full.replace(/[#!]\d+$/, "");
+  }
+  if (item.web_url) {
+    const re = new RegExp(`^https?://[^/]+/(.+?)/-/${kind}/\\d+`);
+    const m = item.web_url.match(re);
+    if (m)
+      return m[1];
+  }
+  return item.project_id ? String(item.project_id) : "unknown";
+}
+function sanitizeFolderSegment(value) {
+  return value.replace(/[*"\\<>|?:]/g, "-");
+}
+function sanitizeRepoPath(repoPath) {
+  return repoPath.split("/").map(sanitizeFolderSegment).filter((s) => s.length > 0).join("/");
+}
+
 // src/GitlabLoader/issue.ts
 var GitlabIssue = class {
   constructor(issue) {
@@ -6040,8 +6055,15 @@ var GitlabIssue = class {
     this.discussions = [];
     this.relatedMergeRequests = [];
   }
+  get repoPath() {
+    return sanitizeRepoPath(extractRepoPath(this, "issues"));
+  }
   get filename() {
-    return this.title.replace(/[/\\?%*:|"<>]/g, "-");
+    const safeTitle = sanitizeFolderSegment(this.title).replace(/[/\\?%]/g, "-");
+    return `${this.iid} - ${safeTitle}`;
+  }
+  get wikilink() {
+    return `${this.repoPath}/${this.filename}`;
   }
 };
 
@@ -6055,13 +6077,21 @@ var GitlabMergeRequest = class {
     this.activities = [];
     this.changes = (_a = mr.changes) != null ? _a : [];
   }
+  get repoPath() {
+    return sanitizeRepoPath(extractRepoPath(this, "merge_requests"));
+  }
   get filename() {
-    return `MR-${this.iid} ${this.title}`.replace(/[/\\?%*:|"<>]/g, "-");
+    const safeTitle = sanitizeFolderSegment(this.title).replace(/[/\\?%]/g, "-");
+    return `!${this.iid} - ${safeTitle}`;
+  }
+  get wikilink() {
+    return `${this.repoPath}/${this.filename}`;
   }
 };
 
 // src/filesystem.ts
 var import_obsidian3 = __toModule(require("obsidian"));
+var Handlebars = __toModule(require_handlebars());
 var import_handlebars = __toModule(require_handlebars());
 
 // src/utils/utils.ts
@@ -6114,6 +6144,7 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 {{#if relatedMergeRequests.length}}
 ## Related Merge Requests
 
+{{#if (eq relatedMrMode "same")}}
 {{#each relatedMergeRequests}}
 ### [!{{iid}} {{{title}}}]({{web_url}})
 
@@ -6141,6 +6172,17 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 
 {{/if}}
 {{/each}}
+{{else}}
+{{#if (eq relatedMrMode "separate")}}
+{{#each relatedMergeRequests}}
+- [[{{wikilink}}|!{{iid}} {{{title}}}]] \u2014 {{state}}
+{{/each}}
+{{else}}
+{{#each relatedMergeRequests}}
+- [!{{iid}} {{{title}}}]({{web_url}}) \u2014 {{state}}
+{{/each}}
+{{/if}}
+{{/if}}
 {{/if}}
 
 {{#if discussions.length}}
@@ -6232,6 +6274,7 @@ assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}
 `;
 
 // src/filesystem.ts
+Handlebars.registerHelper("eq", (a, b) => a === b);
 var Filesystem = class {
   constructor(vault, settings2) {
     this.vault = vault;
@@ -6276,16 +6319,46 @@ var Filesystem = class {
     });
   }
   writeIssueFile(issue, template) {
-    this.vault.create(this.buildIssueFileName(issue), template(issue)).catch((error) => logger(error.message));
+    return __async(this, null, function* () {
+      issue.relatedMrMode = this.settings.relatedMrMode;
+      const repoFolder = this.joinPath(this.settings.outputDir, issue.repoPath);
+      yield this.ensureFolder(repoFolder);
+      const path = this.joinPath(repoFolder, `${issue.filename}.md`);
+      this.vault.create(path, template(issue)).catch((error) => logger(error.message));
+    });
   }
   writeMrFile(mr, template) {
-    this.vault.create(this.buildMrFileName(mr), template(mr)).catch((error) => logger(error.message));
+    return __async(this, null, function* () {
+      const repoFolder = this.joinPath(this.settings.mrOutputDir, mr.repoPath);
+      yield this.ensureFolder(repoFolder);
+      const path = this.joinPath(repoFolder, `${mr.filename}.md`);
+      this.vault.create(path, template(mr)).catch((error) => logger(error.message));
+    });
   }
-  buildIssueFileName(issue) {
-    return this.settings.outputDir + "/" + issue.filename + ".md";
+  joinPath(...parts) {
+    return (0, import_obsidian3.normalizePath)(parts.filter((p) => p && p.length > 0).join("/"));
   }
-  buildMrFileName(mr) {
-    return this.settings.mrOutputDir + "/" + mr.filename + ".md";
+  ensureFolder(path) {
+    return __async(this, null, function* () {
+      var _a, _b;
+      if (!path)
+        return;
+      const segments = path.split("/").filter((s) => s.length > 0);
+      let current = "";
+      for (const seg of segments) {
+        current = current ? `${current}/${seg}` : seg;
+        const exists = this.vault.getAbstractFileByPath(current);
+        if (exists)
+          continue;
+        try {
+          yield this.vault.createFolder(current);
+        } catch (error) {
+          if (!((_a = error == null ? void 0 : error.message) == null ? void 0 : _a.includes("Folder already exists"))) {
+            logger(`Could not create folder ${current}: ${(_b = error == null ? void 0 : error.message) != null ? _b : error}`);
+          }
+        }
+      }
+    });
   }
 };
 
@@ -6323,39 +6396,43 @@ var GitlabLoader = class {
               logger(`Failed to fetch discussions for issue #${rawIssue.iid}: ${e.message}`);
             }
           }
-          if (this.settings.fetchRelatedMergeRequests) {
-            try {
-              const url = `${this.settings.gitlabApiUrl()}/projects/${rawIssue.project_id}/issues/${rawIssue.iid}/related_merge_requests`;
-              issue.relatedMergeRequests = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
-            } catch (e) {
-              logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);
-            }
-            if (this.settings.embedRelatedMrDetails && this.settings.fetchMrChanges) {
-              yield Promise.all(issue.relatedMergeRequests.map((mr) => __async(this, null, function* () {
-                var _a;
-                try {
-                  const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
-                  const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
-                  mr.changes = (_a = resp.changes) != null ? _a : [];
-                } catch (e) {
-                  logger(`Failed to fetch changes for related MR !${mr.iid}: ${e.message}`);
-                }
-              })));
-            }
-            if (this.settings.createRelatedMrFiles) {
-              for (const rawMr of issue.relatedMergeRequests) {
-                const key = `${rawMr.project_id}/${rawMr.iid}`;
-                if (!relatedMrMap.has(key)) {
-                  relatedMrMap.set(key, new GitlabMergeRequest(rawMr));
-                }
-                relatedMrMap.get(key).issueLinks.push(`[[${issue.filename}]]`);
+          try {
+            const url = `${this.settings.gitlabApiUrl()}/projects/${rawIssue.project_id}/issues/${rawIssue.iid}/related_merge_requests`;
+            const fetched = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+            issue.relatedMergeRequests = fetched.filter((mr) => !isStale(mr.updated_at, this.settings.staleDays)).map((mr) => {
+              const repoPath = sanitizeRepoPath(extractRepoPath(mr, "merge_requests"));
+              const safeTitle = sanitizeFolderSegment(mr.title).replace(/[/\\?%]/g, "-");
+              const filename = `!${mr.iid} - ${safeTitle}`;
+              return __spreadProps(__spreadValues({}, mr), { repoPath, wikilink: `${repoPath}/${filename}` });
+            });
+          } catch (e) {
+            logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);
+          }
+          if (this.settings.relatedMrMode === "same" && this.settings.fetchMrChanges) {
+            yield Promise.all(issue.relatedMergeRequests.map((mr) => __async(this, null, function* () {
+              var _a;
+              try {
+                const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+                const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+                mr.changes = (_a = resp.changes) != null ? _a : [];
+              } catch (e) {
+                logger(`Failed to fetch changes for related MR !${mr.iid}: ${e.message}`);
               }
+            })));
+          }
+          if (this.settings.relatedMrMode === "separate") {
+            for (const rawMr of issue.relatedMergeRequests) {
+              const key = `${rawMr.project_id}/${rawMr.iid}`;
+              if (!relatedMrMap.has(key)) {
+                relatedMrMap.set(key, new GitlabMergeRequest(rawMr));
+              }
+              relatedMrMap.get(key).issueLinks.push(`[[${issue.wikilink}]]`);
             }
           }
           this.applyLabelMappings(issue);
           return issue;
         })));
-        if (this.settings.createRelatedMrFiles && relatedMrMap.size > 0) {
+        if (this.settings.relatedMrMode === "separate" && relatedMrMap.size > 0) {
           const relatedMrs = Array.from(relatedMrMap.values());
           if (this.settings.fetchMrDiscussions) {
             yield Promise.all(relatedMrs.map((mr) => __async(this, null, function* () {
@@ -6367,20 +6444,18 @@ var GitlabLoader = class {
               }
             })));
           }
-          if (this.settings.fetchMrChanges) {
-            yield Promise.all(relatedMrs.map((mr) => __async(this, null, function* () {
-              var _a;
-              if (mr.changes && mr.changes.length > 0)
-                return;
-              try {
-                const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
-                const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
-                mr.changes = (_a = resp.changes) != null ? _a : [];
-              } catch (e) {
-                logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
-              }
-            })));
-          }
+          yield Promise.all(relatedMrs.map((mr) => __async(this, null, function* () {
+            var _a;
+            if (mr.changes && mr.changes.length > 0)
+              return;
+            try {
+              const url = `${this.settings.gitlabApiUrl()}/projects/${mr.project_id}/merge_requests/${mr.iid}/changes`;
+              const resp = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
+              mr.changes = (_a = resp.changes) != null ? _a : [];
+            } catch (e) {
+              logger(`Failed to fetch changes for MR !${mr.iid}: ${e.message}`);
+            }
+          })));
           this.fs.createMrOutputDirectory();
           this.fs.processMergeRequests(relatedMrs);
         }
@@ -6757,7 +6832,20 @@ var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
   }
   loadSettings() {
     return __async(this, null, function* () {
-      this.settings = Object.assign({}, DEFAULT_SETTINGS, yield this.loadData());
+      const loaded = yield this.loadData();
+      this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded != null ? loaded : {});
+      if (loaded && loaded.relatedMrMode === void 0) {
+        if (loaded.embedRelatedMrDetails) {
+          this.settings.relatedMrMode = "same";
+        } else if (loaded.createRelatedMrFiles) {
+          this.settings.relatedMrMode = "separate";
+        } else {
+          this.settings.relatedMrMode = "off";
+        }
+      }
+      delete this.settings.fetchRelatedMergeRequests;
+      delete this.settings.createRelatedMrFiles;
+      delete this.settings.embedRelatedMrDetails;
     });
   }
   saveSettings() {

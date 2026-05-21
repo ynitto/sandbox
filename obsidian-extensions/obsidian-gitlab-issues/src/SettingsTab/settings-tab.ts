@@ -1,7 +1,7 @@
 import { App, normalizePath, PluginSettingTab, Setting } from "obsidian";
 import GitlabIssuesPlugin from "../main";
 import { settings } from "./settings";
-import { GitlabIssuesLevel, GitlabRefreshInterval } from "./settings-types";
+import { DropdownInputs } from "./settings-types";
 
 export class GitlabIssuesSettingTab extends PluginSettingTab {
 	plugin: GitlabIssuesPlugin;
@@ -18,8 +18,10 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 
 		const issueSettingKeys = new Set(["gitlabUrl", "gitlabToken", "templateFile", "outputDir", "filter"]);
 		const mrSettingKeys = new Set(["mrTemplateFile", "mrOutputDir", "mrFilter"]);
-		const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions", "fetchRelatedMergeRequests", "createRelatedMrFiles", "embedRelatedMrDetails"]);
+		const issueCheckboxKeys = new Set(["showIcon", "purgeIssues", "refreshOnStartup", "fetchDiscussions"]);
 		const mrCheckboxKeys = new Set(["fetchMergeRequests", "fetchMrDiscussions", "fetchMrActivities", "fetchMrChanges"]);
+		const connectionDropdownKeys = new Set(["intervalOfRefresh", "gitlabIssuesLevel"]);
+		const issueDropdownKeys = new Set(["relatedMrMode"]);
 
 		containerEl.empty();
 		containerEl.createEl('h2', { text: title });
@@ -30,26 +32,9 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			.filter(s => s.value === "gitlabUrl" || s.value === "gitlabToken")
 			.forEach(setting => this.renderTextInput(containerEl, setting));
 
-		dropdowns.forEach((dropdown) => {
-			const currentValue = dropdown.value;
-
-			new Setting(containerEl)
-				.setName(dropdown.title)
-				.setDesc(dropdown.description)
-				.addDropdown(value => value
-					.addOptions(dropdown.options)
-					.setValue(this.plugin.settings[currentValue])
-					.onChange(async (value) => {
-						if (currentValue === 'gitlabIssuesLevel') {
-							this.plugin.settings[currentValue] = value as GitlabIssuesLevel;
-						} else {
-							this.plugin.settings[currentValue] = value as GitlabRefreshInterval;
-							this.plugin.scheduleAutomaticRefresh();
-						}
-						await this.plugin.saveSettings();
-						this.display();
-					}));
-		});
+		dropdowns
+			.filter(d => connectionDropdownKeys.has(d.value))
+			.forEach(d => this.renderDropdown(containerEl, d));
 
 		if (this.plugin.settings.gitlabIssuesLevel !== "personal") {
 			const gitlabIssuesLevelIdObject = getGitlabIssuesLevel(this.plugin.settings.gitlabIssuesLevel);
@@ -81,6 +66,10 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 		checkBoxInputs
 			.filter(c => issueCheckboxKeys.has(c.value))
 			.forEach(checkboxSetting => this.renderCheckbox(containerEl, checkboxSetting));
+
+		dropdowns
+			.filter(d => issueDropdownKeys.has(d.value))
+			.forEach(d => this.renderDropdown(containerEl, d));
 
 		new Setting(containerEl)
 			.setName('Max Items')
@@ -141,6 +130,24 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			text: gitlabDocumentation.title,
 			href: gitlabDocumentation.url
 		});
+	}
+
+	private renderDropdown(containerEl: HTMLElement, dropdown: DropdownInputs): void {
+		const key = dropdown.value;
+		new Setting(containerEl)
+			.setName(dropdown.title)
+			.setDesc(dropdown.description)
+			.addDropdown(value => value
+				.addOptions(dropdown.options)
+				.setValue(this.plugin.settings[key] as string)
+				.onChange(async (newValue) => {
+					(this.plugin.settings as any)[key] = newValue;
+					if (key === 'intervalOfRefresh') {
+						this.plugin.scheduleAutomaticRefresh();
+					}
+					await this.plugin.saveSettings();
+					this.display();
+				}));
 	}
 
 	private renderTextInput(containerEl: HTMLElement, setting: import("./settings-types").SettingInput): void {
