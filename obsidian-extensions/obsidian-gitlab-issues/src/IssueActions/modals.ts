@@ -1,4 +1,5 @@
-import { App, Modal, Setting } from "obsidian";
+import { App, FuzzySuggestModal, Modal, Setting } from "obsidian";
+import { IssueActionTemplate } from "../SettingsTab/settings-types";
 
 export class TextInputModal extends Modal {
 	private value: string;
@@ -135,6 +136,98 @@ export class LabelMultiSelectModal extends Modal {
 						if (this.selected.size === 0) return;
 						this.close();
 						this.opts.onSubmit(Array.from(this.selected));
+					})
+			)
+			.addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
+export class TemplateSuggestModal extends FuzzySuggestModal<IssueActionTemplate> {
+	constructor(
+		app: App,
+		private templates: IssueActionTemplate[],
+		private onSelect: (template: IssueActionTemplate) => void
+	) {
+		super(app);
+		this.setPlaceholder("Pick an issue action template...");
+	}
+
+	getItems(): IssueActionTemplate[] {
+		return this.templates;
+	}
+
+	getItemText(item: IssueActionTemplate): string {
+		return item.name;
+	}
+
+	onChooseItem(item: IssueActionTemplate): void {
+		this.onSelect(item);
+	}
+}
+
+export class TemplatePreviewModal extends Modal {
+	private commentBody: string | null;
+
+	constructor(
+		app: App,
+		private template: IssueActionTemplate,
+		private iid: number,
+		private onSubmit: (commentBody: string | null) => void
+	) {
+		super(app);
+		this.commentBody = template.commentBody !== undefined ? template.commentBody : null;
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.createEl("h3", { text: `Apply template: ${this.template.name}` });
+		contentEl.createEl("p", { text: `Target: issue #${this.iid}` });
+
+		const summary = contentEl.createEl("ul");
+		summary.style.margin = "8px 0";
+		if (this.template.commentBody !== undefined) {
+			summary.createEl("li", { text: "Post comment (editable below)" });
+		}
+		if (this.template.labelsReplace !== undefined) {
+			const list = this.template.labelsReplace.length > 0 ? this.template.labelsReplace.join(", ") : "(clear all)";
+			summary.createEl("li", { text: `Replace labels with: ${list}` });
+		} else {
+			if (this.template.labelsAdd && this.template.labelsAdd.length > 0) {
+				summary.createEl("li", { text: `Add labels: ${this.template.labelsAdd.join(", ")}` });
+			}
+			if (this.template.labelsRemove && this.template.labelsRemove.length > 0) {
+				summary.createEl("li", { text: `Remove labels: ${this.template.labelsRemove.join(", ")}` });
+			}
+		}
+		if (summary.children.length === 0) {
+			summary.createEl("li", { text: "(template has no actions configured)" });
+		}
+
+		if (this.commentBody !== null) {
+			const labelEl = contentEl.createEl("div");
+			labelEl.createEl("label", { text: "Comment body:" });
+			const ta = labelEl.createEl("textarea");
+			ta.rows = 8;
+			ta.style.width = "100%";
+			ta.style.marginTop = "4px";
+			ta.value = this.commentBody;
+			ta.addEventListener("input", () => {
+				this.commentBody = ta.value;
+			});
+		}
+
+		new Setting(contentEl)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Apply")
+					.setCta()
+					.onClick(() => {
+						this.close();
+						this.onSubmit(this.commentBody);
 					})
 			)
 			.addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));

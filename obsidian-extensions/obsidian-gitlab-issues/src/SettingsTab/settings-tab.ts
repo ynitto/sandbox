@@ -2,6 +2,7 @@ import { App, normalizePath, PluginSettingTab, Setting } from "obsidian";
 import GitlabIssuesPlugin from "../main";
 import { settings } from "./settings";
 import { DropdownInputs } from "./settings-types";
+import { splitLabelList } from "../IssueActions/actions";
 
 export class GitlabIssuesSettingTab extends PluginSettingTab {
 	plugin: GitlabIssuesPlugin;
@@ -124,6 +125,8 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 				}));
 
 		this.renderLabelMappingsSection(containerEl);
+
+		this.renderIssueActionTemplatesSection(containerEl);
 
 		containerEl.createEl('h3', { text: 'More Information' });
 		containerEl.createEl('a', {
@@ -347,5 +350,150 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					refresh();
 				}));
+	}
+
+	private renderIssueActionTemplatesSection(containerEl: HTMLElement): void {
+		containerEl.createEl('h3', { text: 'Issue Action Templates' });
+		containerEl.createEl('p', {
+			cls: 'setting-item-description',
+			text: 'Define re-usable bundles of comment body + label add/remove/replace. Apply via the "Apply template to active Gitlab issue" command.',
+		});
+
+		const listEl = containerEl.createDiv();
+
+		const refresh = () => {
+			listEl.empty();
+			const templates = this.plugin.settings.issueActionTemplates ?? [];
+			templates.forEach((_, i) => this.renderTemplateBlock(listEl, i, refresh));
+		};
+
+		refresh();
+
+		new Setting(containerEl)
+			.addButton(btn => btn
+				.setButtonText('+ Add Template')
+				.setCta()
+				.onClick(async () => {
+					if (!this.plugin.settings.issueActionTemplates) {
+						this.plugin.settings.issueActionTemplates = [];
+					}
+					this.plugin.settings.issueActionTemplates.push({
+						id: `tmpl-${Date.now()}`,
+						name: 'New Template',
+					});
+					await this.plugin.saveSettings();
+					refresh();
+				}));
+	}
+
+	private renderTemplateBlock(container: HTMLElement, idx: number, refresh: () => void): void {
+		const tmpl = this.plugin.settings.issueActionTemplates![idx];
+
+		const card = container.createDiv();
+		card.style.border = '1px solid var(--background-modifier-border)';
+		card.style.borderRadius = '6px';
+		card.style.padding = '8px 12px';
+		card.style.marginBottom = '12px';
+
+		new Setting(card)
+			.setName(`Template ${idx + 1}`)
+			.addText(text => text
+				.setPlaceholder('display name')
+				.setValue(tmpl.name)
+				.onChange(async (v) => {
+					this.plugin.settings.issueActionTemplates![idx].name = v;
+					await this.plugin.saveSettings();
+				}))
+			.addButton(btn => btn
+				.setIcon('trash')
+				.setTooltip('Delete template')
+				.onClick(async () => {
+					this.plugin.settings.issueActionTemplates!.splice(idx, 1);
+					await this.plugin.saveSettings();
+					refresh();
+				}));
+
+		new Setting(card)
+			.setName('Comment body')
+			.setDesc('Leave empty to skip posting a comment. Editable at apply time.')
+			.addTextArea(ta => {
+				ta.inputEl.rows = 4;
+				ta.inputEl.style.width = '100%';
+				return ta
+					.setValue(tmpl.commentBody ?? '')
+					.onChange(async (v) => {
+						const t = this.plugin.settings.issueActionTemplates![idx];
+						if (v) {
+							t.commentBody = v;
+						} else {
+							delete t.commentBody;
+						}
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(card)
+			.setName('Add labels')
+			.setDesc('Comma-separated. Ignored when Replace is enabled.')
+			.addText(text => text
+				.setPlaceholder('bug, priority::high')
+				.setValue((tmpl.labelsAdd ?? []).join(', '))
+				.onChange(async (v) => {
+					const t = this.plugin.settings.issueActionTemplates![idx];
+					const list = splitLabelList(v);
+					if (list.length > 0) {
+						t.labelsAdd = list;
+					} else {
+						delete t.labelsAdd;
+					}
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(card)
+			.setName('Remove labels')
+			.setDesc('Comma-separated. Ignored when Replace is enabled.')
+			.addText(text => text
+				.setPlaceholder('triage')
+				.setValue((tmpl.labelsRemove ?? []).join(', '))
+				.onChange(async (v) => {
+					const t = this.plugin.settings.issueActionTemplates![idx];
+					const list = splitLabelList(v);
+					if (list.length > 0) {
+						t.labelsRemove = list;
+					} else {
+						delete t.labelsRemove;
+					}
+					await this.plugin.saveSettings();
+				}));
+
+		const replaceEnabled = tmpl.labelsReplace !== undefined;
+		new Setting(card)
+			.setName('Replace labels')
+			.setDesc('Replaces ALL existing labels with the list below. Empty list clears all labels. Overrides Add/Remove.')
+			.addToggle(toggle => toggle
+				.setValue(replaceEnabled)
+				.onChange(async (v) => {
+					const t = this.plugin.settings.issueActionTemplates![idx];
+					if (v) {
+						t.labelsReplace = t.labelsReplace ?? [];
+					} else {
+						delete t.labelsReplace;
+					}
+					await this.plugin.saveSettings();
+					refresh();
+				}));
+
+		if (replaceEnabled) {
+			new Setting(card)
+				.setName('Replacement labels')
+				.setDesc('Comma-separated.')
+				.addText(text => text
+					.setPlaceholder('label1, label2')
+					.setValue((tmpl.labelsReplace ?? []).join(', '))
+					.onChange(async (v) => {
+						this.plugin.settings.issueActionTemplates![idx].labelsReplace = splitLabelList(v);
+						await this.plugin.saveSettings();
+					}));
+		}
 	}
 }

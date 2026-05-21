@@ -13,6 +13,16 @@ export interface LabelPropertyMapping {
 	default?: string;
 }
 
+export interface IssueActionTemplate {
+	id: string;
+	name: string;
+	commentBody?: string;
+	labelsAdd?: string[];
+	labelsRemove?: string[];
+	// `undefined` means "do not perform replace". `[]` means "clear all labels".
+	labelsReplace?: string[];
+}
+
 export interface GitlabIssuesSettings {
 	gitlabUrl: string;
 	gitlabToken: string;
@@ -35,6 +45,7 @@ export interface GitlabIssuesSettings {
 	fetchMrActivities: boolean;
 	fetchMrChanges: boolean;
 	labelPropertyMappings: LabelPropertyMapping[];
+	issueActionTemplates: IssueActionTemplate[];
 	maxItems: number;
 	maxMrItems: number;
 	staleDays: number;
