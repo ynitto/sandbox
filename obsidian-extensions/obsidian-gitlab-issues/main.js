@@ -5949,7 +5949,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
     settingInputs.filter((s) => issueSettingKeys.has(s.value) && s.value !== "gitlabUrl" && s.value !== "gitlabToken").forEach((setting) => this.renderTextInput(containerEl, setting));
     checkBoxInputs.filter((c) => issueCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
     dropdowns.filter((d) => issueDropdownKeys.has(d.value)).forEach((d) => this.renderDropdown(containerEl, d));
-    new import_obsidian2.Setting(containerEl).setName("Max Items").setDesc("Maximum total number of issues and merge requests to fetch (pages of 100 are fetched until this limit is reached)").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxItems)).onChange((value) => __async(this, null, function* () {
+    new import_obsidian2.Setting(containerEl).setName("Max Issues").setDesc("Maximum number of issues to fetch (pages of 100 are fetched until this limit is reached). Independent from the merge request limit.").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxItems)).onChange((value) => __async(this, null, function* () {
       const parsed = parseInt(value, 10);
       if (!isNaN(parsed) && parsed >= 1) {
         this.plugin.settings.maxItems = parsed;
@@ -5966,7 +5966,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
     containerEl.createEl("h3", { text: "Merge Requests" });
     settingInputs.filter((s) => mrSettingKeys.has(s.value)).forEach((setting) => this.renderTextInput(containerEl, setting));
     checkBoxInputs.filter((c) => mrCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
-    new import_obsidian2.Setting(containerEl).setName("Max MR Items").setDesc("Maximum total number of merge requests to fetch (pages of 100 are fetched until this limit is reached)").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxMrItems)).onChange((value) => __async(this, null, function* () {
+    new import_obsidian2.Setting(containerEl).setName("Max Merge Requests").setDesc("Maximum number of standalone merge requests to fetch (pages of 100 are fetched until this limit is reached). Independent from the issue limit.").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxMrItems)).onChange((value) => __async(this, null, function* () {
       const parsed = parseInt(value, 10);
       if (!isNaN(parsed) && parsed >= 1) {
         this.plugin.settings.maxMrItems = parsed;
