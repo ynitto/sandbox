@@ -73,8 +73,8 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			.forEach(d => this.renderDropdown(containerEl, d));
 
 		new Setting(containerEl)
-			.setName('Max Items')
-			.setDesc('Maximum total number of issues and merge requests to fetch (pages of 100 are fetched until this limit is reached)')
+			.setName('Max Issues')
+			.setDesc('Maximum number of issues to fetch (pages of 100 are fetched until this limit is reached). Independent from the merge request limit.')
 			.addText(text => text
 				.setPlaceholder('20')
 				.setValue(String(this.plugin.settings.maxItems))
@@ -111,8 +111,8 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			.forEach(checkboxSetting => this.renderCheckbox(containerEl, checkboxSetting));
 
 		new Setting(containerEl)
-			.setName('Max MR Items')
-			.setDesc('Maximum total number of merge requests to fetch (pages of 100 are fetched until this limit is reached)')
+			.setName('Max Merge Requests')
+			.setDesc('Maximum number of standalone merge requests to fetch (pages of 100 are fetched until this limit is reached). Independent from the issue limit.')
 			.addText(text => text
 				.setPlaceholder('20')
 				.setValue(String(this.plugin.settings.maxMrItems))
