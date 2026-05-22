@@ -4,7 +4,7 @@ import { App } from "obsidian";
 import Filesystem from "../filesystem";
 import { MergeRequest, Discussion, MrActivityEvent, MergeRequestChangesResponse } from "./issue-types";
 import { GitlabIssuesSettings } from "../SettingsTab/settings-types";
-import { appendStaleParam, isStale, logger } from "../utils/utils";
+import { buildListFilter, isStale, logger } from "../utils/utils";
 
 export default class MergeRequestLoader {
 	private fs: Filesystem;
@@ -16,7 +16,7 @@ export default class MergeRequestLoader {
 	}
 
 	getMrUrl() {
-		const filter = appendStaleParam(this.settings.mrFilter, this.settings.staleDays);
+		const filter = buildListFilter(this.settings.mrFilter, this.settings.staleDays);
 		switch (this.settings.gitlabIssuesLevel) {
 			case "project":
 				return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/merge_requests?${filter}`;

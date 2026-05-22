@@ -5,7 +5,7 @@ import { App } from "obsidian";
 import Filesystem from "../filesystem";
 import { Issue, Discussion, MergeRequest, MergeRequestChangesResponse, EmbeddedRelatedMergeRequest, MrActivityEvent } from "./issue-types";
 import { GitlabIssuesSettings, LabelPropertyMapping } from "../SettingsTab/settings-types";
-import { appendStaleParam, isStale, logger } from "../utils/utils";
+import { buildListFilter, isStale, logger } from "../utils/utils";
 import { extractRepoPath, sanitizeFolderSegment, sanitizeRepoPath } from "./repo";
 
 export default class GitlabLoader {
@@ -18,7 +18,7 @@ export default class GitlabLoader {
 	}
 
 	getUrl() {
-		const filter = appendStaleParam(this.settings.filter, this.settings.staleDays);
+		const filter = buildListFilter(this.settings.filter, this.settings.staleDays);
 		switch (this.settings.gitlabIssuesLevel) {
 			case "project":
 				return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/issues?${filter}`;

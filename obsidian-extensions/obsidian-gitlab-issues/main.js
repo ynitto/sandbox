@@ -6310,14 +6310,22 @@ function staleCutoffIso(staleDays) {
   const cutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1e3);
   return cutoff.toISOString();
 }
+function appendQueryParam(filter, key, value) {
+  if (new RegExp(`(^|[?&])${key}=`).test(filter))
+    return filter;
+  const sep = filter && !filter.endsWith("&") && !filter.endsWith("?") ? "&" : "";
+  return `${filter}${sep}${key}=${value}`;
+}
 function appendStaleParam(filter, staleDays) {
   const cutoff = staleCutoffIso(staleDays);
   if (!cutoff)
     return filter;
-  if (/(^|[?&])updated_after=/.test(filter))
-    return filter;
-  const sep = filter && !filter.endsWith("&") && !filter.endsWith("?") ? "&" : "";
-  return `${filter}${sep}updated_after=${cutoff}`;
+  return appendQueryParam(filter, "updated_after", cutoff);
+}
+function buildListFilter(filter, staleDays) {
+  let f = appendQueryParam(filter, "order_by", "updated_at");
+  f = appendQueryParam(f, "sort", "desc");
+  return appendStaleParam(f, staleDays);
 }
 function isStale(updatedAt, staleDays) {
   const cutoff = staleCutoffIso(staleDays);
@@ -6574,7 +6582,7 @@ var GitlabLoader = class {
     this.settings = settings2;
   }
   getUrl() {
-    const filter = appendStaleParam(this.settings.filter, this.settings.staleDays);
+    const filter = buildListFilter(this.settings.filter, this.settings.staleDays);
     switch (this.settings.gitlabIssuesLevel) {
       case "project":
         return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/issues?${filter}`;
@@ -6713,7 +6721,7 @@ var MergeRequestLoader = class {
     this.settings = settings2;
   }
   getMrUrl() {
-    const filter = appendStaleParam(this.settings.mrFilter, this.settings.staleDays);
+    const filter = buildListFilter(this.settings.mrFilter, this.settings.staleDays);
     switch (this.settings.gitlabIssuesLevel) {
       case "project":
         return `${this.settings.gitlabApiUrl()}/projects/${this.settings.gitlabAppId}/merge_requests?${filter}`;

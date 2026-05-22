@@ -15,12 +15,22 @@ export function staleCutoffIso(staleDays: number): string | null {
 	return cutoff.toISOString();
 }
 
+export function appendQueryParam(filter: string, key: string, value: string): string {
+	if (new RegExp(`(^|[?&])${key}=`).test(filter)) return filter;
+	const sep = filter && !filter.endsWith('&') && !filter.endsWith('?') ? '&' : '';
+	return `${filter}${sep}${key}=${value}`;
+}
+
 export function appendStaleParam(filter: string, staleDays: number): string {
 	const cutoff = staleCutoffIso(staleDays);
 	if (!cutoff) return filter;
-	if (/(^|[?&])updated_after=/.test(filter)) return filter;
-	const sep = filter && !filter.endsWith('&') && !filter.endsWith('?') ? '&' : '';
-	return `${filter}${sep}updated_after=${cutoff}`;
+	return appendQueryParam(filter, 'updated_after', cutoff);
+}
+
+export function buildListFilter(filter: string, staleDays: number): string {
+	let f = appendQueryParam(filter, 'order_by', 'updated_at');
+	f = appendQueryParam(f, 'sort', 'desc');
+	return appendStaleParam(f, staleDays);
 }
 
 export function isStale(updatedAt: string | undefined | null, staleDays: number): boolean {
