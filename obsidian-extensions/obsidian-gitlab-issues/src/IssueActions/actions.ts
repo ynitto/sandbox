@@ -1,6 +1,6 @@
 import { App, TFile } from "obsidian";
 import GitlabApi from "../GitlabLoader/gitlab-api";
-import { GitlabIssuesSettings } from "../SettingsTab/settings-types";
+import { GitlabIssuesSettings, IssueActionTemplate } from "../SettingsTab/settings-types";
 
 export interface IssueRef {
 	projectId: string;
@@ -109,4 +109,32 @@ export function splitLabelList(value: string): string[] {
 		.split(",")
 		.map((s) => s.trim())
 		.filter((s) => s.length > 0);
+}
+
+export async function executeIssueActionTemplate(
+	app: App,
+	settings: GitlabIssuesSettings,
+	ref: IssueRef,
+	file: TFile,
+	template: IssueActionTemplate,
+	commentBodyOverride?: string | null
+): Promise<void> {
+	const change: { add?: string[]; remove?: string[]; replace?: string[] } = {};
+	if (template.labelsReplace !== undefined) {
+		change.replace = template.labelsReplace;
+	} else {
+		if (template.labelsAdd && template.labelsAdd.length > 0) change.add = template.labelsAdd;
+		if (template.labelsRemove && template.labelsRemove.length > 0) change.remove = template.labelsRemove;
+	}
+
+	if (change.replace !== undefined || change.add || change.remove) {
+		const updatedLabels = await updateIssueLabels(settings, ref, change);
+		await updateNoteFrontmatter(app, file, { labels: updatedLabels });
+	}
+
+	const body =
+		commentBodyOverride === undefined ? template.commentBody : commentBodyOverride;
+	if (body !== undefined && body !== null && body.trim().length > 0) {
+		await postIssueComment(settings, ref, body);
+	}
 }

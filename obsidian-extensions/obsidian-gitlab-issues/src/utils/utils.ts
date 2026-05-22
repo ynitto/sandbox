@@ -53,6 +53,7 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 {{#if relatedMergeRequests.length}}
 ## Related Merge Requests
 
+{{#if (eq relatedMrMode "same")}}
 {{#each relatedMergeRequests}}
 ### [!{{iid}} {{{title}}}]({{web_url}})
 
@@ -80,6 +81,17 @@ labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
 
 {{/if}}
 {{/each}}
+{{else}}
+{{#if (eq relatedMrMode "separate")}}
+{{#each relatedMergeRequests}}
+- [[{{wikilink}}|!{{iid}} {{{title}}}]] — {{state}}
+{{/each}}
+{{else}}
+{{#each relatedMergeRequests}}
+- [!{{iid}} {{{title}}}]({{web_url}}) — {{state}}
+{{/each}}
+{{/if}}
+{{/if}}
 {{/if}}
 
 {{#if discussions.length}}

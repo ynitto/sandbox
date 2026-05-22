@@ -155,6 +155,8 @@ export interface MergeRequestChangesResponse {
 
 export interface EmbeddedRelatedMergeRequest extends MergeRequest {
 	changes?: MergeRequestChange[];
+	wikilink?: string;
+	repoPath?: string;
 }
 
 export interface MergeRequestDetailed extends MergeRequest {

@@ -1,8 +1,11 @@
-import { Vault, TFile, TAbstractFile, TFolder } from "obsidian";
+import { Vault, TFile, TAbstractFile, TFolder, normalizePath } from "obsidian";
+import * as Handlebars from "handlebars";
 import { compile } from 'handlebars';
 import { ObsidianIssue, ObsidianMergeRequest } from "./GitlabLoader/issue-types";
 import { GitlabIssuesSettings } from "./SettingsTab/settings-types";
 import { DEFAULT_TEMPLATE, DEFAULT_MR_TEMPLATE, logger } from "./utils/utils";
+
+Handlebars.registerHelper("eq", (a: unknown, b: unknown) => a === b);
 
 export default class Filesystem {
 	private vault: Vault;
@@ -62,19 +65,40 @@ export default class Filesystem {
 			});
 	}
 
-	private writeIssueFile(issue: ObsidianIssue, template: HandlebarsTemplateDelegate) {
-		this.vault.create(this.buildIssueFileName(issue), template(issue)).catch((error) => logger(error.message));
+	private async writeIssueFile(issue: ObsidianIssue, template: HandlebarsTemplateDelegate) {
+		(issue as any).relatedMrMode = this.settings.relatedMrMode;
+		const repoFolder = this.joinPath(this.settings.outputDir, (issue as any).repoPath);
+		await this.ensureFolder(repoFolder);
+		const path = this.joinPath(repoFolder, `${issue.filename}.md`);
+		this.vault.create(path, template(issue)).catch((error) => logger(error.message));
 	}
 
-	private writeMrFile(mr: ObsidianMergeRequest, template: HandlebarsTemplateDelegate) {
-		this.vault.create(this.buildMrFileName(mr), template(mr)).catch((error) => logger(error.message));
+	private async writeMrFile(mr: ObsidianMergeRequest, template: HandlebarsTemplateDelegate) {
+		const repoFolder = this.joinPath(this.settings.mrOutputDir, (mr as any).repoPath);
+		await this.ensureFolder(repoFolder);
+		const path = this.joinPath(repoFolder, `${mr.filename}.md`);
+		this.vault.create(path, template(mr)).catch((error) => logger(error.message));
 	}
 
-	private buildIssueFileName(issue: ObsidianIssue): string {
-		return this.settings.outputDir + '/' + issue.filename + '.md';
+	private joinPath(...parts: string[]): string {
+		return normalizePath(parts.filter((p) => p && p.length > 0).join("/"));
 	}
 
-	private buildMrFileName(mr: ObsidianMergeRequest): string {
-		return this.settings.mrOutputDir + '/' + mr.filename + '.md';
+	private async ensureFolder(path: string): Promise<void> {
+		if (!path) return;
+		const segments = path.split("/").filter((s) => s.length > 0);
+		let current = "";
+		for (const seg of segments) {
+			current = current ? `${current}/${seg}` : seg;
+			const exists = this.vault.getAbstractFileByPath(current);
+			if (exists) continue;
+			try {
+				await this.vault.createFolder(current);
+			} catch (error: any) {
+				if (!error?.message?.includes("Folder already exists")) {
+					logger(`Could not create folder ${current}: ${error?.message ?? error}`);
+				}
+			}
+		}
 	}
 }

@@ -1,5 +1,6 @@
 export type GitlabIssuesLevel = 'personal' | 'project' | 'group';
 export type GitlabRefreshInterval = "15" | "30" | "45" | "60" | "120" | "off";
+export type RelatedMrMode = "off" | "separate" | "same";
 
 export interface LabelPropertyRule {
 	label: string;
@@ -10,6 +11,16 @@ export interface LabelPropertyMapping {
 	property: string;
 	rules: LabelPropertyRule[];
 	default?: string;
+}
+
+export interface IssueActionTemplate {
+	id: string;
+	name: string;
+	commentBody?: string;
+	labelsAdd?: string[];
+	labelsRemove?: string[];
+	// `undefined` means "do not perform replace". `[]` means "clear all labels".
+	labelsReplace?: string[];
 }
 
 export interface GitlabIssuesSettings {
@@ -25,9 +36,7 @@ export interface GitlabIssuesSettings {
 	refreshOnStartup: boolean;
 	intervalOfRefresh: GitlabRefreshInterval;
 	fetchDiscussions: boolean;
-	fetchRelatedMergeRequests: boolean;
-	createRelatedMrFiles: boolean;
-	embedRelatedMrDetails: boolean;
+	relatedMrMode: RelatedMrMode;
 	fetchMergeRequests: boolean;
 	mrFilter: string;
 	mrOutputDir: string;
@@ -36,6 +45,7 @@ export interface GitlabIssuesSettings {
 	fetchMrActivities: boolean;
 	fetchMrChanges: boolean;
 	labelPropertyMappings: LabelPropertyMapping[];
+	issueActionTemplates: IssueActionTemplate[];
 	maxItems: number;
 	maxMrItems: number;
 	staleDays: number;
@@ -59,14 +69,14 @@ export interface SettingInput extends Setting {
 }
 
 export interface DropdownInputs extends Setting {
-	value: keyof Pick<GitlabIssuesSettings, "gitlabIssuesLevel" | "intervalOfRefresh">
+	value: keyof Pick<GitlabIssuesSettings, "gitlabIssuesLevel" | "intervalOfRefresh" | "relatedMrMode">
 	options: Record<string, string>
 }
 
 export interface SettingCheckboxInput {
 	title: string;
 	description?: string;
-	value: keyof Pick<GitlabIssuesSettings, "refreshOnStartup" | "purgeIssues" | "showIcon" | "fetchDiscussions" | "fetchRelatedMergeRequests" | "createRelatedMrFiles" | "embedRelatedMrDetails" | "fetchMergeRequests" | "fetchMrDiscussions" | "fetchMrActivities" | "fetchMrChanges">
+	value: keyof Pick<GitlabIssuesSettings, "refreshOnStartup" | "purgeIssues" | "showIcon" | "fetchDiscussions" | "fetchMergeRequests" | "fetchMrDiscussions" | "fetchMrActivities" | "fetchMrChanges">
 }
 
 export interface SettingsTab {
