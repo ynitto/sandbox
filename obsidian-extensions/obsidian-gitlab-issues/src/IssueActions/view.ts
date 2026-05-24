@@ -8,6 +8,7 @@ export const ISSUE_ACTIONS_VIEW_TYPE = "gitlab-issue-actions-view";
 export class IssueActionsView extends ItemView {
 	private form: IssueActionsForm;
 	private trackedFilePath: string | null = null;
+	private hasRenderedOnce = false;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -50,7 +51,26 @@ export class IssueActionsView extends ItemView {
 
 	private refresh(): void {
 		const ctx = getActiveIssueRef(this.app);
-		this.trackedFilePath = ctx?.file.path ?? null;
+
+		if (!ctx) {
+			// Active note isn't an issue. Keep the existing form intact so the
+			// user can read related MRs / other notes while composing a comment.
+			// Only render the empty-state placeholder once, before any issue
+			// has ever been loaded into the panel.
+			if (!this.hasRenderedOnce) {
+				this.form.render(this.contentEl, null);
+				this.hasRenderedOnce = true;
+			}
+			return;
+		}
+
+		if (ctx.file.path === this.trackedFilePath) {
+			// Same issue — preserve in-progress comment text and input values.
+			return;
+		}
+
+		this.trackedFilePath = ctx.file.path;
 		this.form.render(this.contentEl, ctx);
+		this.hasRenderedOnce = true;
 	}
 }
