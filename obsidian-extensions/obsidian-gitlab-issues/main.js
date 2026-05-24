@@ -7231,12 +7231,14 @@ var IssueActionsForm = class {
     const ta = (_a = this.formRefs) == null ? void 0 : _a.commentTextarea;
     if (!ta)
       return;
-    let selection = "";
-    const view = (_d = (_c = (_b = this.hooks).getSourceEditor) == null ? void 0 : _c.call(_b)) != null ? _d : this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
-    if (view) {
-      const cmSel = view.editor.getSelection();
-      if (cmSel)
-        selection = cmSel;
+    let selection = this.hooks.getLastSelection ? this.hooks.getLastSelection() : "";
+    if (!selection) {
+      const view = (_d = (_c = (_b = this.hooks).getSourceEditor) == null ? void 0 : _c.call(_b)) != null ? _d : this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
+      if (view) {
+        const cmSel = view.editor.getSelection();
+        if (cmSel)
+          selection = cmSel;
+      }
     }
     if (!selection) {
       const winSel = window.getSelection();
@@ -7570,6 +7572,7 @@ var IssueActionsView = class extends import_obsidian7.ItemView {
   constructor(leaf, settings2, hooks) {
     super(leaf);
     this.trackedFilePath = null;
+    this.hasRenderedOnce = false;
     this.form = new IssueActionsForm(this.app, settings2, hooks);
   }
   getViewType() {
@@ -7598,10 +7601,20 @@ var IssueActionsView = class extends import_obsidian7.ItemView {
     });
   }
   refresh() {
-    var _a;
     const ctx = getActiveIssueRef(this.app);
-    this.trackedFilePath = (_a = ctx == null ? void 0 : ctx.file.path) != null ? _a : null;
+    if (!ctx) {
+      if (!this.hasRenderedOnce) {
+        this.form.render(this.contentEl, null);
+        this.hasRenderedOnce = true;
+      }
+      return;
+    }
+    if (ctx.file.path === this.trackedFilePath) {
+      return;
+    }
+    this.trackedFilePath = ctx.file.path;
     this.form.render(this.contentEl, ctx);
+    this.hasRenderedOnce = true;
   }
 };
 
@@ -7967,6 +7980,7 @@ var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.lastMarkdownLeaf = null;
+    this.lastSelection = "";
   }
   onload() {
     return __async(this, null, function* () {
@@ -7978,6 +7992,12 @@ var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
           this.lastMarkdownLeaf = leaf;
         }
       }));
+      this.registerDomEvent(document, "selectionchange", () => {
+        this.captureCurrentSelection();
+      });
+      this.registerDomEvent(document, "mouseup", () => {
+        this.captureCurrentSelection();
+      });
       if (!this.settings.gitlabToken) {
         logger("Add your Gitlab Personal Token to the plugin settings");
       } else {
@@ -8222,7 +8242,11 @@ var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
         var _a;
         return (_a = this.settings.issueActionTemplates) != null ? _a : [];
       },
-      getSourceEditor: () => this.getLastMarkdownView()
+      getSourceEditor: () => this.getLastMarkdownView(),
+      getLastSelection: () => this.lastSelection,
+      clearLastSelection: () => {
+        this.lastSelection = "";
+      }
     };
   }
   getLastMarkdownView() {
@@ -8232,6 +8256,22 @@ var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
       return active;
     const v = (_a = this.lastMarkdownLeaf) == null ? void 0 : _a.view;
     return v instanceof import_obsidian9.MarkdownView ? v : null;
+  }
+  captureCurrentSelection() {
+    const editorView = this.getLastMarkdownView();
+    if (editorView) {
+      const sel = editorView.editor.getSelection();
+      if (sel && sel.length > 0) {
+        this.lastSelection = sel;
+        return;
+      }
+    }
+    const winSel = window.getSelection();
+    if (winSel) {
+      const s = winSel.toString();
+      if (s && s.length > 0)
+        this.lastSelection = s;
+    }
   }
   activateIssueActionsView() {
     return __async(this, null, function* () {

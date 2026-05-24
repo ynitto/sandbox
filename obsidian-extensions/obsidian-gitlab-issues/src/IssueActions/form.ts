@@ -16,6 +16,8 @@ export interface IssueActionsFormHooks {
 	onLabelsLearned?: (labels: string[]) => void | Promise<void>;
 	getTemplates?: () => IssueActionTemplate[];
 	getSourceEditor?: () => MarkdownView | null;
+	getLastSelection?: () => string;
+	clearLastSelection?: () => void;
 }
 
 export interface IssueActionsFormContext {
@@ -372,14 +374,20 @@ export class IssueActionsForm {
 		const ta = this.formRefs?.commentTextarea;
 		if (!ta) return;
 
-		let selection = "";
-		const view =
-			this.hooks.getSourceEditor?.() ??
-			this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (view) {
-			const cmSel = view.editor.getSelection();
-			if (cmSel) selection = cmSel;
+		// 1) Prefer the cached selection (kept current by the plugin's
+		//    selectionchange listener). Survives focus shifts cleanly.
+		let selection = this.hooks.getLastSelection ? this.hooks.getLastSelection() : "";
+		// 2) Fall back to live editor selection.
+		if (!selection) {
+			const view =
+				this.hooks.getSourceEditor?.() ??
+				this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (view) {
+				const cmSel = view.editor.getSelection();
+				if (cmSel) selection = cmSel;
+			}
 		}
+		// 3) Fall back to window selection (reading mode).
 		if (!selection) {
 			const winSel = window.getSelection();
 			if (winSel) selection = winSel.toString();

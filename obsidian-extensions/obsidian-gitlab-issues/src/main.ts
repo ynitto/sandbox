@@ -32,6 +32,7 @@ export default class GitlabIssuesPlugin extends Plugin {
 	private ribbonIconEl: HTMLElement;
 	private refreshIntervalId: number | undefined;
 	private lastMarkdownLeaf: WorkspaceLeaf | null = null;
+	private lastSelection = "";
 
 	async onload() {
 		await this.loadSettings();
@@ -50,6 +51,15 @@ export default class GitlabIssuesPlugin extends Plugin {
 				}
 			})
 		);
+
+		// Continuously cache the user's latest text selection so the panel's
+		// "Quote selection" button can grab it even after focus has moved.
+		this.registerDomEvent(document, "selectionchange", () => {
+			this.captureCurrentSelection();
+		});
+		this.registerDomEvent(document, "mouseup", () => {
+			this.captureCurrentSelection();
+		});
 
 		if (!this.settings.gitlabToken) {
 			logger("Add your Gitlab Personal Token to the plugin settings");
@@ -310,6 +320,10 @@ export default class GitlabIssuesPlugin extends Plugin {
 			onLabelsLearned: (labels) => this.recordKnownLabels(labels),
 			getTemplates: () => this.settings.issueActionTemplates ?? [],
 			getSourceEditor: () => this.getLastMarkdownView(),
+			getLastSelection: () => this.lastSelection,
+			clearLastSelection: () => {
+				this.lastSelection = "";
+			},
 		};
 	}
 
@@ -318,6 +332,22 @@ export default class GitlabIssuesPlugin extends Plugin {
 		if (active) return active;
 		const v = this.lastMarkdownLeaf?.view;
 		return v instanceof MarkdownView ? v : null;
+	}
+
+	private captureCurrentSelection(): void {
+		const editorView = this.getLastMarkdownView();
+		if (editorView) {
+			const sel = editorView.editor.getSelection();
+			if (sel && sel.length > 0) {
+				this.lastSelection = sel;
+				return;
+			}
+		}
+		const winSel = window.getSelection();
+		if (winSel) {
+			const s = winSel.toString();
+			if (s && s.length > 0) this.lastSelection = s;
+		}
 	}
 
 	public async activateIssueActionsView(): Promise<void> {
