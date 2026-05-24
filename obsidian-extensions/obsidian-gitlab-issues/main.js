@@ -5574,7 +5574,7 @@ var require_handlebars = __commonJS({
 __export(exports, {
   default: () => GitlabIssuesPlugin
 });
-var import_obsidian6 = __toModule(require("obsidian"));
+var import_obsidian7 = __toModule(require("obsidian"));
 
 // src/SettingsTab/settings.ts
 var DEFAULT_SETTINGS = {
@@ -5995,6 +5995,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian3.PluginSettingTab {
     }
     containerEl.createEl("h3", { text: "Issues" });
     settingInputs.filter((s) => issueSettingKeys.has(s.value) && s.value !== "gitlabUrl" && s.value !== "gitlabToken").forEach((setting) => this.renderTextInput(containerEl, setting));
+    new import_obsidian3.Setting(containerEl).setName("Generate issue template scaffold").setDesc("Create a Handlebars template file pre-populated with every supported placeholder.").addButton((btn) => btn.setButtonText("Generate scaffold").onClick(() => this.plugin.openTemplateScaffoldModal("issue")));
     checkBoxInputs.filter((c) => issueCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
     dropdowns.filter((d) => issueDropdownKeys.has(d.value)).forEach((d) => this.renderDropdown(containerEl, d));
     new import_obsidian3.Setting(containerEl).setName("Max Issues").setDesc("Maximum number of issues to fetch (pages of 100 are fetched until this limit is reached). Independent from the merge request limit.").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxItems)).onChange((value) => __async(this, null, function* () {
@@ -6013,6 +6014,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian3.PluginSettingTab {
     })));
     containerEl.createEl("h3", { text: "Merge Requests" });
     settingInputs.filter((s) => mrSettingKeys.has(s.value)).forEach((setting) => this.renderTextInput(containerEl, setting));
+    new import_obsidian3.Setting(containerEl).setName("Generate merge request template scaffold").setDesc("Create a Handlebars template file pre-populated with every supported placeholder.").addButton((btn) => btn.setButtonText("Generate scaffold").onClick(() => this.plugin.openTemplateScaffoldModal("mr")));
     checkBoxInputs.filter((c) => mrCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
     new import_obsidian3.Setting(containerEl).setName("Max Merge Requests").setDesc("Maximum number of standalone merge requests to fetch (pages of 100 are fetched until this limit is reached). Independent from the issue limit.").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxMrItems)).onChange((value) => __async(this, null, function* () {
       const parsed = parseInt(value, 10);
@@ -7101,6 +7103,51 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     this.contentEl.empty();
   }
 };
+var TemplateScaffoldModal = class extends import_obsidian5.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    this.overwrite = false;
+    this.linkToSettings = true;
+    this.path = opts.currentSettingPath && opts.currentSettingPath.length > 0 ? opts.currentSettingPath : opts.defaultPath;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    const label = this.opts.kind === "issue" ? "issue" : "merge request";
+    contentEl.createEl("h3", { text: `Generate ${label} template scaffold` });
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Writes a Handlebars template file pre-populated with every supported placeholder. Edit the result to keep only the sections you need."
+    });
+    new import_obsidian5.Setting(contentEl).setName("Output path").setDesc("Path inside the vault, e.g. templates/gitlab-issue.hbs").addText((text) => {
+      text.inputEl.style.width = "100%";
+      return text.setValue(this.path).onChange((v) => {
+        this.path = v;
+      });
+    });
+    new import_obsidian5.Setting(contentEl).setName("Overwrite if file exists").addToggle((t) => t.setValue(this.overwrite).onChange((v) => this.overwrite = v));
+    new import_obsidian5.Setting(contentEl).setName(`Set as ${label} template after creating`).setDesc(`Updates the "${this.opts.kind === "issue" ? "Template File" : "Merge Request Template File"}" setting to point at the new file.`).addToggle((t) => t.setValue(this.linkToSettings).onChange((v) => this.linkToSettings = v));
+    new import_obsidian5.Setting(contentEl).addButton((btn) => btn.setButtonText("Generate").setCta().onClick(() => __async(this, null, function* () {
+      var _a;
+      if (!this.path.trim()) {
+        new import_obsidian5.Notice("Please specify an output path.");
+        return;
+      }
+      btn.setDisabled(true);
+      try {
+        yield this.opts.onSubmit(this.path.trim(), this.overwrite, this.linkToSettings);
+        this.close();
+      } catch (e) {
+        new import_obsidian5.Notice((_a = e.message) != null ? _a : String(e));
+      } finally {
+        btn.setDisabled(false);
+      }
+    }))).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
 var ConfirmModal = class extends import_obsidian5.Modal {
   constructor(app, opts) {
     super(app);
@@ -7123,8 +7170,339 @@ var ConfirmModal = class extends import_obsidian5.Modal {
   }
 };
 
+// src/utils/template-scaffolds.ts
+var import_obsidian6 = __toModule(require("obsidian"));
+function defaultScaffoldPath(kind) {
+  return kind === "issue" ? "templates/gitlab-issue.hbs" : "templates/gitlab-merge-request.hbs";
+}
+function scaffoldContent(kind) {
+  return kind === "issue" ? ISSUE_TEMPLATE_SCAFFOLD : MR_TEMPLATE_SCAFFOLD;
+}
+function ensureParentFolder(app, filePath) {
+  return __async(this, null, function* () {
+    var _a;
+    const segments = filePath.split("/").filter((s) => s.length > 0);
+    segments.pop();
+    let current = "";
+    for (const seg of segments) {
+      current = current ? `${current}/${seg}` : seg;
+      if (app.vault.getAbstractFileByPath(current))
+        continue;
+      try {
+        yield app.vault.createFolder(current);
+      } catch (e) {
+        if (!String((_a = e == null ? void 0 : e.message) != null ? _a : "").includes("Folder already exists"))
+          throw e;
+      }
+    }
+  });
+}
+function writeTemplateScaffold(app, kind, rawPath, overwrite) {
+  return __async(this, null, function* () {
+    const path = (0, import_obsidian6.normalizePath)(rawPath);
+    yield ensureParentFolder(app, path);
+    const existing = app.vault.getAbstractFileByPath(path);
+    const content = scaffoldContent(kind);
+    if (existing instanceof import_obsidian6.TFile) {
+      if (!overwrite) {
+        throw new Error(`A file already exists at "${path}". Tick "Overwrite" to replace it.`);
+      }
+      yield app.vault.modify(existing, content);
+      return existing;
+    }
+    const created = yield app.vault.create(path, content);
+    return created;
+  });
+}
+var ISSUE_TEMPLATE_SCAFFOLD = `---
+{{!-- ===========================================================
+     Issue note frontmatter
+     All placeholders below come from the GitLab Issues API plus
+     a few computed values added by this plugin (repoPath, wikilink,
+     relatedMrMode, and any properties from Label Property Mappings).
+     Remove sections you do not need; the file is plain Handlebars.
+============================================================ --}}
+id: "{{id}}"
+iid: "{{iid}}"
+projectId: "{{project_id}}"
+title: "{{{title}}}"
+state: "{{state}}"
+issueType: "{{issue_type}}"
+severity: "{{severity}}"
+confidential: "{{confidential}}"
+discussionLocked: "{{discussion_locked}}"
+imported: "{{imported}}"
+importedFrom: "{{imported_from}}"
+hasTasks: "{{has_tasks}}"
+taskStatus: "{{task_status}}"
+tasksCompleted: "{{task_completion_status.completed_count}}"
+tasksTotal: "{{task_completion_status.count}}"
+upvotes: "{{upvotes}}"
+downvotes: "{{downvotes}}"
+mergeRequestsCount: "{{merge_requests_count}}"
+userNotesCount: "{{user_notes_count}}"
+createdAt: "{{created_at}}"
+updatedAt: "{{updated_at}}"
+dueDate: "{{due_date}}"
+webUrl: "{{web_url}}"
+project: "{{references.full}}"
+projectShort: "{{references.short}}"
+projectRelative: "{{references.relative}}"
+author: "{{author.name}}"
+authorUsername: "{{author.username}}"
+{{#if closed_by}}
+closedBy: "{{closed_by.name}}"
+{{/if}}
+{{#if assignees.length}}
+assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if labels.length}}
+labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if milestone}}
+milestone: "{{milestone.title}}"
+milestoneIid: "{{milestone.iid}}"
+milestoneState: "{{milestone.state}}"
+milestoneDueDate: "{{milestone.due_date}}"
+{{/if}}
+{{#if epic}}
+epic: "{{epic.title}}"
+epicIid: "{{epic.iid}}"
+epicUrl: "{{epic.url}}"
+{{/if}}
+{{#if time_stats}}
+timeEstimate: "{{time_stats.time_estimate}}"
+timeSpent: "{{time_stats.total_time_spent}}"
+humanTimeEstimate: "{{time_stats.human_time_spent}}"
+humanTotalTimeSpent: "{{time_stats.human_total_time_spent}}"
+{{/if}}
+repoPath: "{{repoPath}}"
+wikilink: "{{wikilink}}"
+{{!-- Computed properties from Label Property Mappings appear by
+     the property name you configured, e.g.:
+     priority: "{{priority}}"                                    --}}
+---
+
+# {{iid}} \xB7 {{{title}}}
+
+**State:** {{state}}{{#if confidential}} \xB7 Confidential{{/if}}{{#if discussion_locked}} \xB7 Locked{{/if}}
+**Author:** {{author.name}} (@{{author.username}})
+**Created:** {{created_at}} \xB7 **Updated:** {{updated_at}}{{#if due_date}} \xB7 **Due:** {{due_date}}{{/if}}
+{{#if closed_by}}**Closed by:** {{closed_by.name}}{{/if}}
+{{#if assignees.length}}**Assignees:** {{#each assignees}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+{{#if labels.length}}**Labels:** {{#each labels}}\`{{this}}\`{{#unless @last}} {{/unless}}{{/each}}{{/if}}
+{{#if milestone}}**Milestone:** {{milestone.title}} ({{milestone.state}}){{/if}}
+{{#if epic}}**Epic:** [{{epic.title}}]({{epic.url}}){{/if}}
+
+[View on GitLab]({{web_url}})
+
+---
+
+## Description
+
+{{{description}}}
+
+{{#if has_tasks}}
+> Tasks: {{task_completion_status.completed_count}}/{{task_completion_status.count}}
+{{/if}}
+
+{{#if relatedMergeRequests.length}}
+## Related Merge Requests
+
+{{!-- relatedMrMode is one of "off" | "separate" | "same" --}}
+{{#if (eq relatedMrMode "same")}}
+{{#each relatedMergeRequests}}
+### [!{{iid}} {{{title}}}]({{web_url}})
+
+**Status:** {{state}}{{#if draft}} (Draft){{/if}}{{#if detailed_merge_status}} \xB7 {{detailed_merge_status}}{{/if}}
+{{#if source_branch}}**Branch:** \`{{source_branch}}\` \u2192 \`{{target_branch}}\`{{/if}}
+**Author:** {{author.name}}{{#if assignees.length}} \xB7 **Assignees:** {{#each assignees}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}{{#if reviewers.length}} \xB7 **Reviewers:** {{#each reviewers}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+**Updated:** {{updated_at}}{{#if merged_at}} \xB7 **Merged:** {{merged_at}}{{/if}}
+
+{{#if description}}
+{{{description}}}
+
+{{/if}}
+{{#if changes.length}}
+<details><summary>Code Diff ({{changes.length}} file(s))</summary>
+
+{{#each changes}}
+**\`{{new_path}}\`**{{#if new_file}} (new){{/if}}{{#if deleted_file}} (deleted){{/if}}{{#if renamed_file}} (renamed from \`{{old_path}}\`){{/if}}
+
+\`\`\`diff
+{{{diff}}}
+\`\`\`
+
+{{/each}}
+</details>
+
+{{/if}}
+{{/each}}
+{{else}}
+{{#if (eq relatedMrMode "separate")}}
+{{#each relatedMergeRequests}}
+- [[{{wikilink}}|!{{iid}} {{{title}}}]] \u2014 {{state}}
+{{/each}}
+{{else}}
+{{#each relatedMergeRequests}}
+- [!{{iid}} {{{title}}}]({{web_url}}) \u2014 {{state}}
+{{/each}}
+{{/if}}
+{{/if}}
+{{/if}}
+
+{{#if discussions.length}}
+## Discussions
+
+{{#each discussions}}
+{{#each notes}}
+{{#unless system}}
+**{{author.name}}** _{{created_at}}_
+
+> {{{body}}}
+
+{{/unless}}
+{{/each}}
+{{/each}}
+{{/if}}
+
+{{!-- Links exposed by the GitLab API (uncomment to use):
+- Self:  {{_links.self}}
+- Notes: {{_links.notes}}
+- Award emoji: {{_links.award_emoji}}
+- Project: {{_links.project}}
+- Closed as duplicate of: {{_links.closed_as_duplicate_of}}
+--}}
+`;
+var MR_TEMPLATE_SCAFFOLD = `---
+{{!-- ===========================================================
+     Merge Request note frontmatter
+     All placeholders below come from the GitLab Merge Requests API
+     plus computed fields added by this plugin (repoPath, wikilink,
+     issueLinks). Trim sections to taste.
+============================================================ --}}
+id: "{{id}}"
+iid: "{{iid}}"
+projectId: "{{project_id}}"
+title: "{{{title}}}"
+state: "{{state}}"
+draft: "{{draft}}"
+workInProgress: "{{work_in_progress}}"
+squash: "{{squash}}"
+mergeStatus: "{{merge_status}}"
+detailedMergeStatus: "{{detailed_merge_status}}"
+sha: "{{sha}}"
+createdAt: "{{created_at}}"
+updatedAt: "{{updated_at}}"
+mergedAt: "{{merged_at}}"
+closedAt: "{{closed_at}}"
+sourceBranch: "{{source_branch}}"
+targetBranch: "{{target_branch}}"
+webUrl: "{{web_url}}"
+project: "{{references.full}}"
+projectShort: "{{references.short}}"
+projectRelative: "{{references.relative}}"
+author: "{{author.name}}"
+authorUsername: "{{author.username}}"
+upvotes: "{{upvotes}}"
+downvotes: "{{downvotes}}"
+userNotesCount: "{{user_notes_count}}"
+tasksCompleted: "{{task_completion_status.completed_count}}"
+tasksTotal: "{{task_completion_status.count}}"
+{{#if assignees.length}}
+assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if reviewers.length}}
+reviewers: [{{#each reviewers}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if labels.length}}
+labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if milestone}}
+milestone: "{{milestone.title}}"
+milestoneIid: "{{milestone.iid}}"
+milestoneState: "{{milestone.state}}"
+milestoneDueDate: "{{milestone.due_date}}"
+{{/if}}
+{{#if time_stats}}
+timeEstimate: "{{time_stats.time_estimate}}"
+timeSpent: "{{time_stats.total_time_spent}}"
+humanTimeEstimate: "{{time_stats.human_time_spent}}"
+humanTotalTimeSpent: "{{time_stats.human_total_time_spent}}"
+{{/if}}
+{{#if issueLinks.length}}
+issueLinks: [{{#each issueLinks}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+repoPath: "{{repoPath}}"
+wikilink: "{{wikilink}}"
+---
+
+# !{{iid}} \xB7 {{{title}}}
+
+**Status:** {{state}}{{#if draft}} (Draft){{/if}}{{#if detailed_merge_status}} \xB7 {{detailed_merge_status}}{{/if}}
+**Branch:** \`{{source_branch}}\` \u2192 \`{{target_branch}}\`
+**Author:** {{author.name}} (@{{author.username}})
+**Created:** {{created_at}} \xB7 **Updated:** {{updated_at}}{{#if merged_at}} \xB7 **Merged:** {{merged_at}}{{/if}}{{#if closed_at}} \xB7 **Closed:** {{closed_at}}{{/if}}
+{{#if assignees.length}}**Assignees:** {{#each assignees}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+{{#if reviewers.length}}**Reviewers:** {{#each reviewers}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+{{#if labels.length}}**Labels:** {{#each labels}}\`{{this}}\`{{#unless @last}} {{/unless}}{{/each}}{{/if}}
+{{#if milestone}}**Milestone:** {{milestone.title}} ({{milestone.state}}){{/if}}
+
+[View on GitLab]({{web_url}})
+
+---
+
+## Description
+
+{{{description}}}
+
+{{#if issueLinks.length}}
+## Linked Issues
+
+{{#each issueLinks}}
+- {{{this}}}
+{{/each}}
+{{/if}}
+
+{{#if discussions.length}}
+## Discussions
+
+{{#each discussions}}
+{{#each notes}}
+{{#unless system}}
+**{{author.name}}** _{{created_at}}_
+
+> {{{body}}}
+
+{{/unless}}
+{{/each}}
+{{/each}}
+{{/if}}
+
+{{#if activities.length}}
+## Activity
+
+{{#each activities}}
+- **{{user.name}}** _{{created_at}}_ \u2192 \`{{state}}\` ({{resource_type}})
+{{/each}}
+{{/if}}
+
+{{#if changes.length}}
+## Code Diff ({{changes.length}} file(s))
+
+{{#each changes}}
+### \`{{new_path}}\`{{#if new_file}} (new){{/if}}{{#if deleted_file}} (deleted){{/if}}{{#if renamed_file}} (renamed from \`{{old_path}}\`){{/if}}
+
+\`\`\`diff
+{{{diff}}}
+\`\`\`
+
+{{/each}}
+{{/if}}
+`;
+
 // src/main.ts
-var GitlabIssuesPlugin = class extends import_obsidian6.Plugin {
+var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
   onload() {
     return __async(this, null, function* () {
       yield this.loadSettings();
@@ -7171,6 +7549,16 @@ var GitlabIssuesPlugin = class extends import_obsidian6.Plugin {
           id: "gitlab-issues-apply-template",
           name: "Apply template to active Gitlab issue",
           callback: () => this.applyTemplateToActiveIssue()
+        });
+        this.addCommand({
+          id: "gitlab-issues-create-issue-template-scaffold",
+          name: "Create issue template scaffold (all placeholders)",
+          callback: () => this.openTemplateScaffoldModal("issue")
+        });
+        this.addCommand({
+          id: "gitlab-issues-create-mr-template-scaffold",
+          name: "Create merge request template scaffold (all placeholders)",
+          callback: () => this.openTemplateScaffoldModal("mr")
         });
         this.fs.createOutputDirectory();
         this.scheduleAutomaticRefresh();
@@ -7223,16 +7611,16 @@ var GitlabIssuesPlugin = class extends import_obsidian6.Plugin {
     }
   }
   fetchIssuesFromGitlab() {
-    new import_obsidian6.Notice("Fetching Gitlab issues...");
+    new import_obsidian7.Notice("Fetching Gitlab issues...");
     const loader = new GitlabLoader(this.app, this.settings);
     loader.loadIssues();
   }
   fetchMergeRequestsFromGitlab() {
     if (!this.settings.fetchMergeRequests) {
-      new import_obsidian6.Notice("Enable 'Import Merge Requests' in settings to use this command.");
+      new import_obsidian7.Notice("Enable 'Import Merge Requests' in settings to use this command.");
       return;
     }
-    new import_obsidian6.Notice("Fetching Gitlab merge requests...");
+    new import_obsidian7.Notice("Fetching Gitlab merge requests...");
     const loader = new MergeRequestLoader(this.app, this.settings);
     loader.loadMergeRequests();
   }
@@ -7246,7 +7634,7 @@ var GitlabIssuesPlugin = class extends import_obsidian6.Plugin {
   resolveActiveIssue() {
     const ctx = getActiveIssueRef(this.app);
     if (!ctx) {
-      new import_obsidian6.Notice("Could not identify a Gitlab issue from the active note. Frontmatter must contain projectId+iid or webUrl.");
+      new import_obsidian7.Notice("Could not identify a Gitlab issue from the active note. Frontmatter must contain projectId+iid or webUrl.");
       return null;
     }
     return ctx;
@@ -7257,6 +7645,26 @@ var GitlabIssuesPlugin = class extends import_obsidian6.Plugin {
       return;
     new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter).open();
   }
+  openTemplateScaffoldModal(kind) {
+    const currentSettingPath = kind === "issue" ? this.settings.templateFile : this.settings.mrTemplateFile;
+    new TemplateScaffoldModal(this.app, {
+      kind,
+      defaultPath: defaultScaffoldPath(kind),
+      currentSettingPath,
+      onSubmit: (path, overwrite, linkToSettings) => __async(this, null, function* () {
+        const file = yield writeTemplateScaffold(this.app, kind, path, overwrite);
+        if (linkToSettings) {
+          if (kind === "issue") {
+            this.settings.templateFile = file.path;
+          } else {
+            this.settings.mrTemplateFile = file.path;
+          }
+          yield this.saveSettings();
+        }
+        new import_obsidian7.Notice(`Template scaffold written to ${file.path}`);
+      })
+    }).open();
+  }
   applyTemplateToActiveIssue() {
     var _a;
     const ctx = this.resolveActiveIssue();
@@ -7264,17 +7672,17 @@ var GitlabIssuesPlugin = class extends import_obsidian6.Plugin {
       return;
     const templates = (_a = this.settings.issueActionTemplates) != null ? _a : [];
     if (templates.length === 0) {
-      new import_obsidian6.Notice("No issue action templates configured. Add some in plugin settings.");
+      new import_obsidian7.Notice("No issue action templates configured. Add some in plugin settings.");
       return;
     }
     new TemplateSuggestModal(this.app, templates, (template) => {
       new TemplatePreviewModal(this.app, template, ctx.ref.iid, (commentBody) => __async(this, null, function* () {
         try {
           yield executeIssueActionTemplate(this.app, this.settings, ctx.ref, ctx.file, template, commentBody);
-          new import_obsidian6.Notice(`Applied "${template.name}" to issue #${ctx.ref.iid}`);
+          new import_obsidian7.Notice(`Applied "${template.name}" to issue #${ctx.ref.iid}`);
         } catch (e) {
           logger(`Failed to apply template: ${e.message}`);
-          new import_obsidian6.Notice(`Failed to apply template: ${e.message}`);
+          new import_obsidian7.Notice(`Failed to apply template: ${e.message}`);
         }
       })).open();
     }).open();
@@ -7293,10 +7701,10 @@ var GitlabIssuesPlugin = class extends import_obsidian6.Plugin {
           const state = yield setIssueState(this.settings, ctx.ref, stateEvent);
           yield updateNoteFrontmatter(this.app, ctx.file, { state });
           yield moveIssueFileForState(this.app, ctx.file, state);
-          new import_obsidian6.Notice(`Issue #${ctx.ref.iid} ${state}`);
+          new import_obsidian7.Notice(`Issue #${ctx.ref.iid} ${state}`);
         } catch (e) {
           logger(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
-          new import_obsidian6.Notice(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
+          new import_obsidian7.Notice(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
         }
       })
     }).open();

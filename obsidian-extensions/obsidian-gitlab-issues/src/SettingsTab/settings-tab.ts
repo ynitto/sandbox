@@ -64,6 +64,13 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			.filter(s => issueSettingKeys.has(s.value) && s.value !== "gitlabUrl" && s.value !== "gitlabToken")
 			.forEach(setting => this.renderTextInput(containerEl, setting));
 
+		new Setting(containerEl)
+			.setName('Generate issue template scaffold')
+			.setDesc('Create a Handlebars template file pre-populated with every supported placeholder.')
+			.addButton(btn => btn
+				.setButtonText('Generate scaffold')
+				.onClick(() => this.plugin.openTemplateScaffoldModal('issue')));
+
 		checkBoxInputs
 			.filter(c => issueCheckboxKeys.has(c.value))
 			.forEach(checkboxSetting => this.renderCheckbox(containerEl, checkboxSetting));
@@ -105,6 +112,13 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 		settingInputs
 			.filter(s => mrSettingKeys.has(s.value))
 			.forEach(setting => this.renderTextInput(containerEl, setting));
+
+		new Setting(containerEl)
+			.setName('Generate merge request template scaffold')
+			.setDesc('Create a Handlebars template file pre-populated with every supported placeholder.')
+			.addButton(btn => btn
+				.setButtonText('Generate scaffold')
+				.onClick(() => this.plugin.openTemplateScaffoldModal('mr')));
 
 		checkBoxInputs
 			.filter(c => mrCheckboxKeys.has(c.value))

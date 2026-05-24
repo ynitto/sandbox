@@ -490,6 +490,83 @@ export class IssueActionsModal extends Modal {
 	}
 }
 
+export class TemplateScaffoldModal extends Modal {
+	private path: string;
+	private overwrite = false;
+	private linkToSettings = true;
+
+	constructor(
+		app: App,
+		private opts: {
+			kind: "issue" | "mr";
+			defaultPath: string;
+			currentSettingPath?: string;
+			onSubmit: (path: string, overwrite: boolean, linkToSettings: boolean) => Promise<void>;
+		}
+	) {
+		super(app);
+		this.path = opts.currentSettingPath && opts.currentSettingPath.length > 0
+			? opts.currentSettingPath
+			: opts.defaultPath;
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		const label = this.opts.kind === "issue" ? "issue" : "merge request";
+		contentEl.createEl("h3", { text: `Generate ${label} template scaffold` });
+		contentEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Writes a Handlebars template file pre-populated with every supported placeholder. Edit the result to keep only the sections you need.",
+		});
+
+		new Setting(contentEl)
+			.setName("Output path")
+			.setDesc("Path inside the vault, e.g. templates/gitlab-issue.hbs")
+			.addText((text) => {
+				text.inputEl.style.width = "100%";
+				return text.setValue(this.path).onChange((v) => {
+					this.path = v;
+				});
+			});
+
+		new Setting(contentEl)
+			.setName("Overwrite if file exists")
+			.addToggle((t) => t.setValue(this.overwrite).onChange((v) => (this.overwrite = v)));
+
+		new Setting(contentEl)
+			.setName(`Set as ${label} template after creating`)
+			.setDesc(`Updates the "${this.opts.kind === "issue" ? "Template File" : "Merge Request Template File"}" setting to point at the new file.`)
+			.addToggle((t) => t.setValue(this.linkToSettings).onChange((v) => (this.linkToSettings = v)));
+
+		new Setting(contentEl)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Generate")
+					.setCta()
+					.onClick(async () => {
+						if (!this.path.trim()) {
+							new Notice("Please specify an output path.");
+							return;
+						}
+						btn.setDisabled(true);
+						try {
+							await this.opts.onSubmit(this.path.trim(), this.overwrite, this.linkToSettings);
+							this.close();
+						} catch (e: any) {
+							new Notice(e.message ?? String(e));
+						} finally {
+							btn.setDisabled(false);
+						}
+					})
+			)
+			.addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
 export class ConfirmModal extends Modal {
 	constructor(
 		app: App,

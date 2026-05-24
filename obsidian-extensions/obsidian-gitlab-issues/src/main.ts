@@ -18,7 +18,13 @@ import {
 	IssueActionsModal,
 	TemplateSuggestModal,
 	TemplatePreviewModal,
+	TemplateScaffoldModal,
 } from "./IssueActions/modals";
+import {
+	defaultScaffoldPath,
+	writeTemplateScaffold,
+	TemplateScaffoldKind,
+} from "./utils/template-scaffolds";
 
 export default class GitlabIssuesPlugin extends Plugin {
 	settings: GitlabIssuesSettings;
@@ -79,6 +85,18 @@ export default class GitlabIssuesPlugin extends Plugin {
 				id: "gitlab-issues-apply-template",
 				name: "Apply template to active Gitlab issue",
 				callback: () => this.applyTemplateToActiveIssue(),
+			});
+
+			this.addCommand({
+				id: "gitlab-issues-create-issue-template-scaffold",
+				name: "Create issue template scaffold (all placeholders)",
+				callback: () => this.openTemplateScaffoldModal("issue"),
+			});
+
+			this.addCommand({
+				id: "gitlab-issues-create-mr-template-scaffold",
+				name: "Create merge request template scaffold (all placeholders)",
+				callback: () => this.openTemplateScaffoldModal("mr"),
 			});
 
 			this.fs.createOutputDirectory();
@@ -178,6 +196,28 @@ export default class GitlabIssuesPlugin extends Plugin {
 		const ctx = this.resolveActiveIssue();
 		if (!ctx) return;
 		new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter).open();
+	}
+
+	public openTemplateScaffoldModal(kind: TemplateScaffoldKind): void {
+		const currentSettingPath =
+			kind === "issue" ? this.settings.templateFile : this.settings.mrTemplateFile;
+		new TemplateScaffoldModal(this.app, {
+			kind,
+			defaultPath: defaultScaffoldPath(kind),
+			currentSettingPath,
+			onSubmit: async (path, overwrite, linkToSettings) => {
+				const file = await writeTemplateScaffold(this.app, kind, path, overwrite);
+				if (linkToSettings) {
+					if (kind === "issue") {
+						this.settings.templateFile = file.path;
+					} else {
+						this.settings.mrTemplateFile = file.path;
+					}
+					await this.saveSettings();
+				}
+				new Notice(`Template scaffold written to ${file.path}`);
+			},
+		}).open();
 	}
 
 	private applyTemplateToActiveIssue() {
