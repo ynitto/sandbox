@@ -159,8 +159,25 @@ export default class GitlabIssuesPlugin extends Plugin {
 
 	private fetchIssuesFromGitlab() {
 		new Notice("Fetching Gitlab issues...");
-		const loader = new GitlabLoader(this.app, this.settings);
+		const loader = new GitlabLoader(this.app, this.settings, (labels) =>
+			this.recordKnownLabels(labels)
+		);
 		loader.loadIssues();
+	}
+
+	public async recordKnownLabels(incoming: string[]): Promise<void> {
+		if (!incoming || incoming.length === 0) return;
+		const set = new Set<string>(this.settings.knownLabels ?? []);
+		const before = set.size;
+		incoming.forEach((l) => {
+			const trimmed = String(l).trim();
+			if (trimmed.length > 0) set.add(trimmed);
+		});
+		if (set.size === before) return;
+		this.settings.knownLabels = Array.from(set).sort((a, b) =>
+			a.localeCompare(b, undefined, { sensitivity: "base" })
+		);
+		await this.saveSettings();
 	}
 
 	private fetchMergeRequestsFromGitlab() {
@@ -195,7 +212,10 @@ export default class GitlabIssuesPlugin extends Plugin {
 	private manageActiveIssue() {
 		const ctx = this.resolveActiveIssue();
 		if (!ctx) return;
-		new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter).open();
+		new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter, {
+			getKnownLabels: () => this.settings.knownLabels ?? [],
+			onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+		}).open();
 	}
 
 	public openTemplateScaffoldModal(kind: TemplateScaffoldKind): void {

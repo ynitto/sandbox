@@ -46,6 +46,7 @@ export interface GitlabIssuesSettings {
 	fetchMrChanges: boolean;
 	labelPropertyMappings: LabelPropertyMapping[];
 	issueActionTemplates: IssueActionTemplate[];
+	knownLabels: string[];
 	maxItems: number;
 	maxMrItems: number;
 	staleDays: number;

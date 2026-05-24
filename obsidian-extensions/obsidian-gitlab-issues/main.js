@@ -5599,6 +5599,7 @@ var DEFAULT_SETTINGS = {
   fetchMrChanges: false,
   labelPropertyMappings: [],
   issueActionTemplates: [],
+  knownLabels: [],
   maxItems: 20,
   maxMrItems: 20,
   staleDays: 0,
@@ -6629,9 +6630,10 @@ var Filesystem = class {
 
 // src/GitlabLoader/gitlab-loader.ts
 var GitlabLoader = class {
-  constructor(app, settings2) {
+  constructor(app, settings2, onLabelsCollected) {
     this.fs = new Filesystem(app.vault, settings2);
     this.settings = settings2;
+    this.onLabelsCollected = onLabelsCollected;
   }
   getUrl() {
     const filter = buildListFilter(this.settings.filter, this.settings.staleDays);
@@ -6740,6 +6742,16 @@ var GitlabLoader = class {
           this.fs.purgeExistingIssues();
         }
         this.fs.processIssues(gitlabIssues);
+        if (this.onLabelsCollected) {
+          const collected = new Set();
+          gitlabIssues.forEach((i) => {
+            var _a;
+            return ((_a = i.labels) != null ? _a : []).forEach((l) => collected.add(l));
+          });
+          if (collected.size > 0) {
+            yield this.onLabelsCollected(Array.from(collected));
+          }
+        }
       } catch (error) {
         logger(error.message);
       }
@@ -6905,13 +6917,64 @@ var TemplatePreviewModal = class extends import_obsidian5.Modal {
   }
 };
 var IssueActionsModal = class extends import_obsidian5.Modal {
-  constructor(app, settings2, ref, file, frontmatter) {
+  constructor(app, settings2, ref, file, frontmatter, hooks = {}) {
     super(app);
     this.settings = settings2;
     this.ref = ref;
+    this.hooks = hooks;
     this.commentBody = "";
     this.file = file;
     this.labels = this.readLabels(frontmatter);
+  }
+  knownLabels() {
+    const arr = this.hooks.getKnownLabels ? this.hooks.getKnownLabels() : [];
+    return arr != null ? arr : [];
+  }
+  announceLearned(labels) {
+    return __async(this, null, function* () {
+      if (!this.hooks.onLabelsLearned || labels.length === 0)
+        return;
+      try {
+        yield this.hooks.onLabelsLearned(labels);
+      } catch (e) {
+        logger(`Failed to record known labels: ${e.message}`);
+      }
+    });
+  }
+  appendToInput(input, label) {
+    const existing = splitLabelList(input.value);
+    if (existing.includes(label))
+      return;
+    existing.push(label);
+    input.value = existing.join(", ");
+    input.focus();
+  }
+  renderChips(parent, suggestions, emptyText, onPick) {
+    const wrap = parent.createDiv();
+    wrap.style.display = "flex";
+    wrap.style.flexWrap = "wrap";
+    wrap.style.gap = "4px";
+    wrap.style.margin = "4px 0";
+    if (suggestions.length === 0) {
+      wrap.createEl("span", {
+        text: emptyText,
+        cls: "setting-item-description"
+      });
+      return wrap;
+    }
+    suggestions.forEach((label) => {
+      const chip = wrap.createEl("button", { text: label });
+      chip.type = "button";
+      chip.style.padding = "1px 8px";
+      chip.style.fontSize = "12px";
+      chip.style.borderRadius = "10px";
+      chip.style.cursor = "pointer";
+      chip.addEventListener("click", (e) => {
+        e.preventDefault();
+        onPick(label);
+      });
+    });
+    return wrap;
   }
   readLabels(fm) {
     const raw = fm == null ? void 0 : fm.labels;
@@ -7006,8 +7069,21 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     const addInputWrap = parent.createDiv();
     addInputWrap.style.margin = "6px 0";
     const addInput = addInputWrap.createEl("input", { type: "text" });
-    addInput.placeholder = "Add labels (comma-separated)";
+    addInput.placeholder = "Add labels (comma-separated, custom OK)";
     addInput.style.width = "100%";
+    const addSuggestionsEl = parent.createDiv();
+    const renderAddSuggestions = () => {
+      addSuggestionsEl.empty();
+      const known = this.knownLabels();
+      const current = new Set(this.labels);
+      const suggestions = known.filter((l) => !current.has(l));
+      addSuggestionsEl.createEl("div", {
+        text: "Known labels (click to add):",
+        cls: "setting-item-description"
+      });
+      this.renderChips(addSuggestionsEl, suggestions, "(no recorded labels yet \u2014 fetch issues first, or just type custom labels above)", (label) => this.appendToInput(addInput, label));
+    };
+    renderAddSuggestions();
     new import_obsidian5.Setting(parent).addButton((btn) => btn.setButtonText("Add").onClick(() => __async(this, null, function* () {
       const toAdd = splitLabelList(addInput.value);
       if (toAdd.length === 0)
@@ -7019,6 +7095,9 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
         this.labels = updated;
         addInput.value = "";
         renderList();
+        yield this.announceLearned(toAdd);
+        renderAddSuggestions();
+        renderReplaceSuggestions();
         new import_obsidian5.Notice(`Added label(s) to issue #${this.ref.iid}`);
       } catch (e) {
         logger(`Failed to add labels: ${e.message}`);
@@ -7038,6 +7117,7 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
         yield updateNoteFrontmatter(this.app, this.file, { labels: updated });
         this.labels = updated;
         renderList();
+        renderAddSuggestions();
         new import_obsidian5.Notice(`Removed label(s) from issue #${this.ref.iid}`);
       } catch (e) {
         logger(`Failed to remove labels: ${e.message}`);
@@ -7056,6 +7136,17 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     replaceInput.style.width = "100%";
     replaceInput.value = this.labels.join(", ");
     replaceInput.placeholder = "label1, label2";
+    const replaceSuggestionsEl = parent.createDiv();
+    const renderReplaceSuggestions = () => {
+      replaceSuggestionsEl.empty();
+      const known = this.knownLabels();
+      replaceSuggestionsEl.createEl("div", {
+        text: "Known labels (click to add to replacement set):",
+        cls: "setting-item-description"
+      });
+      this.renderChips(replaceSuggestionsEl, known, "(no recorded labels yet)", (label) => this.appendToInput(replaceInput, label));
+    };
+    renderReplaceSuggestions();
     new import_obsidian5.Setting(parent).addButton((btn) => btn.setButtonText("Apply replace").onClick(() => __async(this, null, function* () {
       const replace = splitLabelList(replaceInput.value);
       btn.setDisabled(true);
@@ -7065,6 +7156,9 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
         this.labels = updated;
         replaceInput.value = updated.join(", ");
         renderList();
+        yield this.announceLearned(replace);
+        renderAddSuggestions();
+        renderReplaceSuggestions();
         new import_obsidian5.Notice(`Labels updated on issue #${this.ref.iid}`);
       } catch (e) {
         logger(`Failed to set labels: ${e.message}`);
@@ -7612,8 +7706,26 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
   }
   fetchIssuesFromGitlab() {
     new import_obsidian7.Notice("Fetching Gitlab issues...");
-    const loader = new GitlabLoader(this.app, this.settings);
+    const loader = new GitlabLoader(this.app, this.settings, (labels) => this.recordKnownLabels(labels));
     loader.loadIssues();
+  }
+  recordKnownLabels(incoming) {
+    return __async(this, null, function* () {
+      var _a;
+      if (!incoming || incoming.length === 0)
+        return;
+      const set = new Set((_a = this.settings.knownLabels) != null ? _a : []);
+      const before = set.size;
+      incoming.forEach((l) => {
+        const trimmed = String(l).trim();
+        if (trimmed.length > 0)
+          set.add(trimmed);
+      });
+      if (set.size === before)
+        return;
+      this.settings.knownLabels = Array.from(set).sort((a, b) => a.localeCompare(b, void 0, { sensitivity: "base" }));
+      yield this.saveSettings();
+    });
   }
   fetchMergeRequestsFromGitlab() {
     if (!this.settings.fetchMergeRequests) {
@@ -7643,7 +7755,13 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
     const ctx = this.resolveActiveIssue();
     if (!ctx)
       return;
-    new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter).open();
+    new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter, {
+      getKnownLabels: () => {
+        var _a;
+        return (_a = this.settings.knownLabels) != null ? _a : [];
+      },
+      onLabelsLearned: (labels) => this.recordKnownLabels(labels)
+    }).open();
   }
   openTemplateScaffoldModal(kind) {
     const currentSettingPath = kind === "issue" ? this.settings.templateFile : this.settings.mrTemplateFile;

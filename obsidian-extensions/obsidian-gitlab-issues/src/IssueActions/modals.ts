@@ -248,6 +248,11 @@ export class TemplatePreviewModal extends Modal {
 	}
 }
 
+export interface IssueActionsModalHooks {
+	getKnownLabels?: () => string[];
+	onLabelsLearned?: (labels: string[]) => void | Promise<void>;
+}
+
 export class IssueActionsModal extends Modal {
 	private file: TFile;
 	private labels: string[];
@@ -258,11 +263,67 @@ export class IssueActionsModal extends Modal {
 		private settings: GitlabIssuesSettings,
 		private ref: IssueRef,
 		file: TFile,
-		frontmatter: Record<string, any>
+		frontmatter: Record<string, any>,
+		private hooks: IssueActionsModalHooks = {}
 	) {
 		super(app);
 		this.file = file;
 		this.labels = this.readLabels(frontmatter);
+	}
+
+	private knownLabels(): string[] {
+		const arr = this.hooks.getKnownLabels ? this.hooks.getKnownLabels() : [];
+		return arr ?? [];
+	}
+
+	private async announceLearned(labels: string[]): Promise<void> {
+		if (!this.hooks.onLabelsLearned || labels.length === 0) return;
+		try {
+			await this.hooks.onLabelsLearned(labels);
+		} catch (e: any) {
+			logger(`Failed to record known labels: ${e.message}`);
+		}
+	}
+
+	private appendToInput(input: HTMLInputElement, label: string): void {
+		const existing = splitLabelList(input.value);
+		if (existing.includes(label)) return;
+		existing.push(label);
+		input.value = existing.join(", ");
+		input.focus();
+	}
+
+	private renderChips(
+		parent: HTMLElement,
+		suggestions: string[],
+		emptyText: string,
+		onPick: (label: string) => void
+	): HTMLElement {
+		const wrap = parent.createDiv();
+		wrap.style.display = "flex";
+		wrap.style.flexWrap = "wrap";
+		wrap.style.gap = "4px";
+		wrap.style.margin = "4px 0";
+		if (suggestions.length === 0) {
+			wrap.createEl("span", {
+				text: emptyText,
+				cls: "setting-item-description",
+			});
+			return wrap;
+		}
+		suggestions.forEach((label) => {
+			const chip = wrap.createEl("button", { text: label });
+			chip.type = "button";
+			chip.style.padding = "1px 8px";
+			chip.style.fontSize = "12px";
+			chip.style.borderRadius = "10px";
+			chip.style.cursor = "pointer";
+			chip.addEventListener("click", (e) => {
+				e.preventDefault();
+				onPick(label);
+			});
+		});
+		return wrap;
 	}
 
 	private readLabels(fm: Record<string, any>): string[] {
@@ -370,8 +431,27 @@ export class IssueActionsModal extends Modal {
 		const addInputWrap = parent.createDiv();
 		addInputWrap.style.margin = "6px 0";
 		const addInput = addInputWrap.createEl("input", { type: "text" });
-		addInput.placeholder = "Add labels (comma-separated)";
+		addInput.placeholder = "Add labels (comma-separated, custom OK)";
 		addInput.style.width = "100%";
+
+		const addSuggestionsEl = parent.createDiv();
+		const renderAddSuggestions = () => {
+			addSuggestionsEl.empty();
+			const known = this.knownLabels();
+			const current = new Set(this.labels);
+			const suggestions = known.filter((l) => !current.has(l));
+			addSuggestionsEl.createEl("div", {
+				text: "Known labels (click to add):",
+				cls: "setting-item-description",
+			});
+			this.renderChips(
+				addSuggestionsEl,
+				suggestions,
+				"(no recorded labels yet — fetch issues first, or just type custom labels above)",
+				(label) => this.appendToInput(addInput, label)
+			);
+		};
+		renderAddSuggestions();
 
 		new Setting(parent)
 			.addButton((btn) =>
@@ -385,6 +465,9 @@ export class IssueActionsModal extends Modal {
 						this.labels = updated;
 						addInput.value = "";
 						renderList();
+						await this.announceLearned(toAdd);
+						renderAddSuggestions();
+						renderReplaceSuggestions();
 						new Notice(`Added label(s) to issue #${this.ref.iid}`);
 					} catch (e: any) {
 						logger(`Failed to add labels: ${e.message}`);
@@ -407,6 +490,7 @@ export class IssueActionsModal extends Modal {
 						await updateNoteFrontmatter(this.app, this.file, { labels: updated });
 						this.labels = updated;
 						renderList();
+						renderAddSuggestions();
 						new Notice(`Removed label(s) from issue #${this.ref.iid}`);
 					} catch (e: any) {
 						logger(`Failed to remove labels: ${e.message}`);
@@ -428,6 +512,23 @@ export class IssueActionsModal extends Modal {
 		replaceInput.value = this.labels.join(", ");
 		replaceInput.placeholder = "label1, label2";
 
+		const replaceSuggestionsEl = parent.createDiv();
+		const renderReplaceSuggestions = () => {
+			replaceSuggestionsEl.empty();
+			const known = this.knownLabels();
+			replaceSuggestionsEl.createEl("div", {
+				text: "Known labels (click to add to replacement set):",
+				cls: "setting-item-description",
+			});
+			this.renderChips(
+				replaceSuggestionsEl,
+				known,
+				"(no recorded labels yet)",
+				(label) => this.appendToInput(replaceInput, label)
+			);
+		};
+		renderReplaceSuggestions();
+
 		new Setting(parent).addButton((btn) =>
 			btn.setButtonText("Apply replace").onClick(async () => {
 				const replace = splitLabelList(replaceInput.value);
@@ -438,6 +539,9 @@ export class IssueActionsModal extends Modal {
 					this.labels = updated;
 					replaceInput.value = updated.join(", ");
 					renderList();
+					await this.announceLearned(replace);
+					renderAddSuggestions();
+					renderReplaceSuggestions();
 					new Notice(`Labels updated on issue #${this.ref.iid}`);
 				} catch (e: any) {
 					logger(`Failed to set labels: ${e.message}`);
