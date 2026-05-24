@@ -27,6 +27,18 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 var __markAsModule = (target) => __defProp(target, "__esModule", { value: true });
+var __objRest = (source, exclude) => {
+  var target = {};
+  for (var prop in source)
+    if (__hasOwnProp.call(source, prop) && exclude.indexOf(prop) < 0)
+      target[prop] = source[prop];
+  if (source != null && __getOwnPropSymbols)
+    for (var prop of __getOwnPropSymbols(source)) {
+      if (exclude.indexOf(prop) < 0 && __propIsEnum.call(source, prop))
+        target[prop] = source[prop];
+    }
+  return target;
+};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
@@ -5620,7 +5632,7 @@ var settings = {
     },
     {
       title: "Personal Access Token",
-      description: "Generate a Personal Access Token in your Gitlab Settings (User > Settings > Access Tokens) with 'api' scope",
+      description: "Generate a Personal Access Token in your Gitlab Settings (User > Settings > Access Tokens) with 'api' scope. Stored separately in data.secrets.json alongside this plugin's data.json \u2014 add data.secrets.json to your .gitignore so the rest of the settings can be safely shared via git.",
       placeholder: "glpat-...",
       value: "gitlabToken"
     },
@@ -7877,11 +7889,57 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
       delete this.settings.fetchRelatedMergeRequests;
       delete this.settings.createRelatedMrFiles;
       delete this.settings.embedRelatedMrDetails;
+      const secretsToken = yield this.readSecretsToken();
+      const dataJsonToken = typeof (loaded == null ? void 0 : loaded.gitlabToken) === "string" ? loaded.gitlabToken : "";
+      let needsRewrite = false;
+      if (secretsToken !== void 0) {
+        this.settings.gitlabToken = secretsToken;
+        if (dataJsonToken)
+          needsRewrite = true;
+      } else if (dataJsonToken) {
+        this.settings.gitlabToken = dataJsonToken;
+        needsRewrite = true;
+      }
+      if (needsRewrite) {
+        yield this.saveSettings();
+      }
     });
   }
   saveSettings() {
     return __async(this, null, function* () {
-      yield this.saveData(this.settings);
+      var _a;
+      yield this.writeSecretsToken((_a = this.settings.gitlabToken) != null ? _a : "");
+      const _b = this.settings, { gitlabToken: _omit } = _b, shared = __objRest(_b, ["gitlabToken"]);
+      yield this.saveData(shared);
+    });
+  }
+  secretsPath() {
+    return `${this.app.vault.configDir}/plugins/${this.manifest.id}/data.secrets.json`;
+  }
+  readSecretsToken() {
+    return __async(this, null, function* () {
+      try {
+        const path = this.secretsPath();
+        if (!(yield this.app.vault.adapter.exists(path)))
+          return void 0;
+        const raw = yield this.app.vault.adapter.read(path);
+        const parsed = JSON.parse(raw);
+        return typeof (parsed == null ? void 0 : parsed.gitlabToken) === "string" ? parsed.gitlabToken : void 0;
+      } catch (e) {
+        logger(`Failed to read secrets sidecar: ${e.message}`);
+        return void 0;
+      }
+    });
+  }
+  writeSecretsToken(token) {
+    return __async(this, null, function* () {
+      try {
+        const path = this.secretsPath();
+        const payload = JSON.stringify({ gitlabToken: token != null ? token : "" }, null, 2);
+        yield this.app.vault.adapter.write(path, payload);
+      } catch (e) {
+        logger(`Failed to write secrets sidecar: ${e.message}`);
+      }
     });
   }
   scheduleAutomaticRefresh() {

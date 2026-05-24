@@ -126,10 +126,59 @@ export default class GitlabIssuesPlugin extends Plugin {
 		delete (this.settings as any).fetchRelatedMergeRequests;
 		delete (this.settings as any).createRelatedMrFiles;
 		delete (this.settings as any).embedRelatedMrDetails;
+
+		// Load the GitLab access token from the secrets sidecar (kept out of
+		// data.json so the rest of the settings can be shared via git).
+		const secretsToken = await this.readSecretsToken();
+		const dataJsonToken =
+			typeof loaded?.gitlabToken === "string" ? loaded.gitlabToken : "";
+
+		let needsRewrite = false;
+		if (secretsToken !== undefined) {
+			this.settings.gitlabToken = secretsToken;
+			if (dataJsonToken) needsRewrite = true; // strip stale token from data.json
+		} else if (dataJsonToken) {
+			// One-time migration: move existing token out of data.json.
+			this.settings.gitlabToken = dataJsonToken;
+			needsRewrite = true;
+		}
+
+		if (needsRewrite) {
+			await this.saveSettings();
+		}
 	}
 
 	async saveSettings() {
-		await this.saveData(this.settings);
+		await this.writeSecretsToken(this.settings.gitlabToken ?? "");
+		const { gitlabToken: _omit, ...shared } = this.settings as Record<string, any>;
+		await this.saveData(shared);
+	}
+
+	private secretsPath(): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/data.secrets.json`;
+	}
+
+	private async readSecretsToken(): Promise<string | undefined> {
+		try {
+			const path = this.secretsPath();
+			if (!(await this.app.vault.adapter.exists(path))) return undefined;
+			const raw = await this.app.vault.adapter.read(path);
+			const parsed = JSON.parse(raw) as Record<string, any>;
+			return typeof parsed?.gitlabToken === "string" ? parsed.gitlabToken : undefined;
+		} catch (e: any) {
+			logger(`Failed to read secrets sidecar: ${e.message}`);
+			return undefined;
+		}
+	}
+
+	private async writeSecretsToken(token: string): Promise<void> {
+		try {
+			const path = this.secretsPath();
+			const payload = JSON.stringify({ gitlabToken: token ?? "" }, null, 2);
+			await this.app.vault.adapter.write(path, payload);
+		} catch (e: any) {
+			logger(`Failed to write secrets sidecar: ${e.message}`);
+		}
 	}
 
 	scheduleAutomaticRefresh() {
