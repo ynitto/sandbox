@@ -19,6 +19,16 @@ export function sanitizeFolderSegment(value: string): string {
 	return value.replace(/[*"\\<>|?:]/g, "-");
 }
 
+// Sanitize a string so it is safe to use BOTH as a filesystem basename AND
+// as the target inside an Obsidian wikilink ([[...]]). Strips characters that
+// either break the OS path (\ / : * ? " < > | %) or wikilink parsing
+// (# [ ] ^), then collapses runs of dashes.
+export function sanitizeFilenameForWikilink(value: string): string {
+	return value
+		.replace(/[*"\\<>|?:/%#\[\]^]/g, "-")
+		.replace(/-{2,}/g, "-");
+}
+
 export function sanitizeRepoPath(repoPath: string): string {
 	return repoPath
 		.split("/")

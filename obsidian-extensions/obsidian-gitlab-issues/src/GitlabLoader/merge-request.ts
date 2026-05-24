@@ -1,5 +1,5 @@
 import { ObsidianMergeRequest, MergeRequest, Discussion, Assignee, TimeStats, ShortIssue, References, MrActivityEvent, MergeRequestChange } from "./issue-types";
-import { extractRepoPath, sanitizeFolderSegment, sanitizeRepoPath } from "./repo";
+import { extractRepoPath, sanitizeFilenameForWikilink, sanitizeRepoPath } from "./repo";
 
 export class GitlabMergeRequest implements ObsidianMergeRequest {
 	id: number;
@@ -50,8 +50,7 @@ export class GitlabMergeRequest implements ObsidianMergeRequest {
 	}
 
 	get filename(): string {
-		const safeTitle = sanitizeFolderSegment(this.title).replace(/[/\\?%]/g, "-");
-		return `!${this.iid} - ${safeTitle}`;
+		return `!${this.iid} - ${sanitizeFilenameForWikilink(this.title)}`;
 	}
 
 	get wikilink(): string {

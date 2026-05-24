@@ -6326,6 +6326,9 @@ function extractRepoPath(item, kind) {
 function sanitizeFolderSegment(value) {
   return value.replace(/[*"\\<>|?:]/g, "-");
 }
+function sanitizeFilenameForWikilink(value) {
+  return value.replace(/[*"\\<>|?:/%#\[\]^]/g, "-").replace(/-{2,}/g, "-");
+}
 function sanitizeRepoPath(repoPath) {
   return repoPath.split("/").map(sanitizeFolderSegment).filter((s) => s.length > 0).join("/");
 }
@@ -6343,8 +6346,7 @@ var GitlabIssue = class {
     return base ? `${base}/${stateFolder}` : stateFolder;
   }
   get filename() {
-    const safeTitle = sanitizeFolderSegment(this.title).replace(/[/\\?%]/g, "-");
-    return `${this.iid} - ${safeTitle}`;
+    return `${this.iid} - ${sanitizeFilenameForWikilink(this.title)}`;
   }
   get wikilink() {
     return this.filename;
@@ -6365,8 +6367,7 @@ var GitlabMergeRequest = class {
     return sanitizeRepoPath(extractRepoPath(this, "merge_requests"));
   }
   get filename() {
-    const safeTitle = sanitizeFolderSegment(this.title).replace(/[/\\?%]/g, "-");
-    return `!${this.iid} - ${safeTitle}`;
+    return `!${this.iid} - ${sanitizeFilenameForWikilink(this.title)}`;
   }
   get wikilink() {
     return this.filename;
@@ -6716,8 +6717,7 @@ var GitlabLoader = class {
             const fetched = yield GitlabApi.load(encodeURI(url), this.settings.gitlabToken);
             issue.relatedMergeRequests = fetched.filter((mr) => !isStale(mr.updated_at, this.settings.staleDays)).map((mr) => {
               const repoPath = sanitizeRepoPath(extractRepoPath(mr, "merge_requests"));
-              const safeTitle = sanitizeFolderSegment(mr.title).replace(/[/\\?%]/g, "-");
-              const filename = `!${mr.iid} - ${safeTitle}`;
+              const filename = `!${mr.iid} - ${sanitizeFilenameForWikilink(mr.title)}`;
               return __spreadProps(__spreadValues({}, mr), { repoPath, wikilink: filename });
             });
           } catch (e) {

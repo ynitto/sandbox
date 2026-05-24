@@ -6,7 +6,7 @@ import Filesystem from "../filesystem";
 import { Issue, Discussion, MergeRequest, MergeRequestChangesResponse, EmbeddedRelatedMergeRequest, MrActivityEvent } from "./issue-types";
 import { GitlabIssuesSettings, LabelPropertyMapping } from "../SettingsTab/settings-types";
 import { buildListFilter, isStale, logger } from "../utils/utils";
-import { extractRepoPath, sanitizeFolderSegment, sanitizeRepoPath } from "./repo";
+import { extractRepoPath, sanitizeFilenameForWikilink, sanitizeRepoPath } from "./repo";
 
 export default class GitlabLoader {
 	private fs: Filesystem;
@@ -63,8 +63,7 @@ export default class GitlabLoader {
 							.filter((mr) => !isStale(mr.updated_at, this.settings.staleDays))
 							.map<EmbeddedRelatedMergeRequest>((mr) => {
 								const repoPath = sanitizeRepoPath(extractRepoPath(mr, "merge_requests"));
-								const safeTitle = sanitizeFolderSegment(mr.title).replace(/[/\\?%]/g, "-");
-								const filename = `!${mr.iid} - ${safeTitle}`;
+								const filename = `!${mr.iid} - ${sanitizeFilenameForWikilink(mr.title)}`;
 								return { ...mr, repoPath, wikilink: filename };
 							});
 					} catch (e: any) {
