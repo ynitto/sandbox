@@ -64,6 +64,13 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 			.filter(s => issueSettingKeys.has(s.value) && s.value !== "gitlabUrl" && s.value !== "gitlabToken")
 			.forEach(setting => this.renderTextInput(containerEl, setting));
 
+		new Setting(containerEl)
+			.setName('Generate issue template scaffold')
+			.setDesc('Create a Handlebars template file pre-populated with every supported placeholder.')
+			.addButton(btn => btn
+				.setButtonText('Generate scaffold')
+				.onClick(() => this.plugin.openTemplateScaffoldModal('issue')));
+
 		checkBoxInputs
 			.filter(c => issueCheckboxKeys.has(c.value))
 			.forEach(checkboxSetting => this.renderCheckbox(containerEl, checkboxSetting));
@@ -105,6 +112,13 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 		settingInputs
 			.filter(s => mrSettingKeys.has(s.value))
 			.forEach(setting => this.renderTextInput(containerEl, setting));
+
+		new Setting(containerEl)
+			.setName('Generate merge request template scaffold')
+			.setDesc('Create a Handlebars template file pre-populated with every supported placeholder.')
+			.addButton(btn => btn
+				.setButtonText('Generate scaffold')
+				.onClick(() => this.plugin.openTemplateScaffoldModal('mr')));
 
 		checkBoxInputs
 			.filter(c => mrCheckboxKeys.has(c.value))
@@ -356,7 +370,7 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 		containerEl.createEl('h3', { text: 'Issue Action Templates' });
 		containerEl.createEl('p', {
 			cls: 'setting-item-description',
-			text: 'Define re-usable bundles of comment body + label add/remove/replace. Apply via the "Apply template to active Gitlab issue" command.',
+			text: 'Define re-usable bundles of comment body + labels to add/remove. Load them from the template dropdown inside the "Manage active Gitlab issue" pane — selecting a template overwrites the form inputs.',
 		});
 
 		const listEl = containerEl.createDiv();
@@ -434,7 +448,7 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 
 		new Setting(card)
 			.setName('Add labels')
-			.setDesc('Comma-separated. Ignored when Replace is enabled.')
+			.setDesc('Comma-separated. Pre-fills the "Add labels" input when the template is loaded.')
 			.addText(text => text
 				.setPlaceholder('bug, priority::high')
 				.setValue((tmpl.labelsAdd ?? []).join(', '))
@@ -451,9 +465,9 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 
 		new Setting(card)
 			.setName('Remove labels')
-			.setDesc('Comma-separated. Ignored when Replace is enabled.')
+			.setDesc('Comma-separated. Wildcards supported (e.g. status:*). Pre-fills the "Remove labels" input when the template is loaded.')
 			.addText(text => text
-				.setPlaceholder('triage')
+				.setPlaceholder('triage, status:*')
 				.setValue((tmpl.labelsRemove ?? []).join(', '))
 				.onChange(async (v) => {
 					const t = this.plugin.settings.issueActionTemplates![idx];
@@ -466,33 +480,26 @@ export class GitlabIssuesSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		const replaceEnabled = tmpl.labelsReplace !== undefined;
-		new Setting(card)
-			.setName('Replace labels')
-			.setDesc('Replaces ALL existing labels with the list below. Empty list clears all labels. Overrides Add/Remove.')
-			.addToggle(toggle => toggle
-				.setValue(replaceEnabled)
-				.onChange(async (v) => {
-					const t = this.plugin.settings.issueActionTemplates![idx];
-					if (v) {
-						t.labelsReplace = t.labelsReplace ?? [];
-					} else {
-						delete t.labelsReplace;
-					}
-					await this.plugin.saveSettings();
-					refresh();
-				}));
-
-		if (replaceEnabled) {
+		if (tmpl.labelsReplace !== undefined) {
+			const legacy = card.createEl('p', { cls: 'setting-item-description' });
+			legacy.createEl('strong', { text: 'Legacy: ' });
+			legacy.appendText(
+				`This template still uses the deprecated "Replace labels" field (${
+					tmpl.labelsReplace.length > 0 ? tmpl.labelsReplace.join(', ') : '(clear all)'
+				}). When loaded, it will fill Remove with "*" and Add with the replacement labels.`
+			);
 			new Setting(card)
-				.setName('Replacement labels')
-				.setDesc('Comma-separated.')
-				.addText(text => text
-					.setPlaceholder('label1, label2')
-					.setValue((tmpl.labelsReplace ?? []).join(', '))
-					.onChange(async (v) => {
-						this.plugin.settings.issueActionTemplates![idx].labelsReplace = splitLabelList(v);
+				.addButton(btn => btn
+					.setButtonText('Migrate to Add/Remove')
+					.onClick(async () => {
+						const t = this.plugin.settings.issueActionTemplates![idx];
+						const replacement = t.labelsReplace ?? [];
+						t.labelsAdd = replacement.length > 0 ? replacement : undefined;
+						t.labelsRemove = ['*'];
+						delete t.labelsReplace;
+						if (!t.labelsAdd) delete t.labelsAdd;
 						await this.plugin.saveSettings();
+						refresh();
 					}));
 		}
 	}

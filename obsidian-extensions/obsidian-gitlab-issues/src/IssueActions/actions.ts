@@ -1,6 +1,6 @@
-import { App, TFile } from "obsidian";
+import { App, TFile, normalizePath } from "obsidian";
 import GitlabApi from "../GitlabLoader/gitlab-api";
-import { GitlabIssuesSettings, IssueActionTemplate } from "../SettingsTab/settings-types";
+import { GitlabIssuesSettings } from "../SettingsTab/settings-types";
 
 export interface IssueRef {
 	projectId: string;
@@ -111,30 +111,91 @@ export function splitLabelList(value: string): string[] {
 		.filter((s) => s.length > 0);
 }
 
-export async function executeIssueActionTemplate(
+async function ensureFolderPath(app: App, folderPath: string): Promise<void> {
+	if (!folderPath) return;
+	const segments = folderPath.split("/").filter((s) => s.length > 0);
+	let current = "";
+	for (const seg of segments) {
+		current = current ? `${current}/${seg}` : seg;
+		if (app.vault.getAbstractFileByPath(current)) continue;
+		try {
+			await app.vault.createFolder(current);
+		} catch (e: any) {
+			if (!String(e?.message ?? "").includes("Folder already exists")) throw e;
+		}
+	}
+}
+
+export async function moveIssueFileForState(
 	app: App,
+	file: TFile,
+	newState: string
+): Promise<TFile> {
+	const targetFolder = newState === "closed" ? "Closed" : "Open";
+	const oppositeFolder = newState === "closed" ? "Open" : "Closed";
+
+	const parent = file.parent;
+	if (!parent) return file;
+
+	let baseFolderPath: string;
+	if (parent.name === oppositeFolder) {
+		baseFolderPath = parent.parent ? parent.parent.path : "";
+	} else if (parent.name === targetFolder) {
+		return file;
+	} else {
+		baseFolderPath = parent.path;
+	}
+
+	const newFolderPath = baseFolderPath
+		? normalizePath(`${baseFolderPath}/${targetFolder}`)
+		: targetFolder;
+	const newPath = normalizePath(`${newFolderPath}/${file.name}`);
+	if (newPath === file.path) return file;
+
+	await ensureFolderPath(app, newFolderPath);
+	await app.fileManager.renameFile(file, newPath);
+	const moved = app.vault.getAbstractFileByPath(newPath);
+	return moved instanceof TFile ? moved : file;
+}
+
+export function expandRemoveLabelPatterns(patterns: string[], current: string[]): string[] {
+	const out = new Set<string>();
+	for (const raw of patterns) {
+		const p = raw.trim();
+		if (p.length === 0) continue;
+		if (p.includes("*")) {
+			const re = new RegExp(
+				"^" + p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"
+			);
+			current.forEach((l) => {
+				if (re.test(l)) out.add(l);
+			});
+		} else {
+			out.add(p);
+		}
+	}
+	return Array.from(out);
+}
+
+export async function applyLabelChanges(
 	settings: GitlabIssuesSettings,
 	ref: IssueRef,
-	file: TFile,
-	template: IssueActionTemplate,
-	commentBodyOverride?: string | null
-): Promise<void> {
-	const change: { add?: string[]; remove?: string[]; replace?: string[] } = {};
-	if (template.labelsReplace !== undefined) {
-		change.replace = template.labelsReplace;
-	} else {
-		if (template.labelsAdd && template.labelsAdd.length > 0) change.add = template.labelsAdd;
-		if (template.labelsRemove && template.labelsRemove.length > 0) change.remove = template.labelsRemove;
-	}
+	currentLabels: string[],
+	removePatterns: string[],
+	addLabels: string[]
+): Promise<string[]> {
+	const expandedRemove = expandRemoveLabelPatterns(removePatterns, currentLabels);
+	let resultLabels = currentLabels.slice();
+	let changed = false;
 
-	if (change.replace !== undefined || change.add || change.remove) {
-		const updatedLabels = await updateIssueLabels(settings, ref, change);
-		await updateNoteFrontmatter(app, file, { labels: updatedLabels });
+	if (expandedRemove.length > 0) {
+		resultLabels = await updateIssueLabels(settings, ref, { remove: expandedRemove });
+		changed = true;
 	}
-
-	const body =
-		commentBodyOverride === undefined ? template.commentBody : commentBodyOverride;
-	if (body !== undefined && body !== null && body.trim().length > 0) {
-		await postIssueComment(settings, ref, body);
+	if (addLabels.length > 0) {
+		resultLabels = await updateIssueLabels(settings, ref, { add: addLabels });
+		changed = true;
 	}
+	if (!changed) return currentLabels;
+	return resultLabels;
 }

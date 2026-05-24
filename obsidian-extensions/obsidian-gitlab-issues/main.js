@@ -5574,7 +5574,7 @@ var require_handlebars = __commonJS({
 __export(exports, {
   default: () => GitlabIssuesPlugin
 });
-var import_obsidian5 = __toModule(require("obsidian"));
+var import_obsidian7 = __toModule(require("obsidian"));
 
 // src/SettingsTab/settings.ts
 var DEFAULT_SETTINGS = {
@@ -5599,6 +5599,7 @@ var DEFAULT_SETTINGS = {
   fetchMrChanges: false,
   labelPropertyMappings: [],
   issueActionTemplates: [],
+  knownLabels: [],
   maxItems: 20,
   maxMrItems: 20,
   staleDays: 0,
@@ -5754,6 +5755,9 @@ var settings = {
 };
 
 // src/SettingsTab/settings-tab.ts
+var import_obsidian3 = __toModule(require("obsidian"));
+
+// src/IssueActions/actions.ts
 var import_obsidian2 = __toModule(require("obsidian"));
 
 // src/GitlabLoader/gitlab-api.ts
@@ -5889,30 +5893,90 @@ function updateNoteFrontmatter(app, file, updates) {
 function splitLabelList(value) {
   return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
-function executeIssueActionTemplate(app, settings2, ref, file, template, commentBodyOverride) {
+function ensureFolderPath(app, folderPath) {
   return __async(this, null, function* () {
-    const change = {};
-    if (template.labelsReplace !== void 0) {
-      change.replace = template.labelsReplace;
+    var _a;
+    if (!folderPath)
+      return;
+    const segments = folderPath.split("/").filter((s) => s.length > 0);
+    let current = "";
+    for (const seg of segments) {
+      current = current ? `${current}/${seg}` : seg;
+      if (app.vault.getAbstractFileByPath(current))
+        continue;
+      try {
+        yield app.vault.createFolder(current);
+      } catch (e) {
+        if (!String((_a = e == null ? void 0 : e.message) != null ? _a : "").includes("Folder already exists"))
+          throw e;
+      }
+    }
+  });
+}
+function moveIssueFileForState(app, file, newState) {
+  return __async(this, null, function* () {
+    const targetFolder = newState === "closed" ? "Closed" : "Open";
+    const oppositeFolder = newState === "closed" ? "Open" : "Closed";
+    const parent = file.parent;
+    if (!parent)
+      return file;
+    let baseFolderPath;
+    if (parent.name === oppositeFolder) {
+      baseFolderPath = parent.parent ? parent.parent.path : "";
+    } else if (parent.name === targetFolder) {
+      return file;
     } else {
-      if (template.labelsAdd && template.labelsAdd.length > 0)
-        change.add = template.labelsAdd;
-      if (template.labelsRemove && template.labelsRemove.length > 0)
-        change.remove = template.labelsRemove;
+      baseFolderPath = parent.path;
     }
-    if (change.replace !== void 0 || change.add || change.remove) {
-      const updatedLabels = yield updateIssueLabels(settings2, ref, change);
-      yield updateNoteFrontmatter(app, file, { labels: updatedLabels });
+    const newFolderPath = baseFolderPath ? (0, import_obsidian2.normalizePath)(`${baseFolderPath}/${targetFolder}`) : targetFolder;
+    const newPath = (0, import_obsidian2.normalizePath)(`${newFolderPath}/${file.name}`);
+    if (newPath === file.path)
+      return file;
+    yield ensureFolderPath(app, newFolderPath);
+    yield app.fileManager.renameFile(file, newPath);
+    const moved = app.vault.getAbstractFileByPath(newPath);
+    return moved instanceof import_obsidian2.TFile ? moved : file;
+  });
+}
+function expandRemoveLabelPatterns(patterns, current) {
+  const out = new Set();
+  for (const raw of patterns) {
+    const p = raw.trim();
+    if (p.length === 0)
+      continue;
+    if (p.includes("*")) {
+      const re = new RegExp("^" + p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
+      current.forEach((l) => {
+        if (re.test(l))
+          out.add(l);
+      });
+    } else {
+      out.add(p);
     }
-    const body = commentBodyOverride === void 0 ? template.commentBody : commentBodyOverride;
-    if (body !== void 0 && body !== null && body.trim().length > 0) {
-      yield postIssueComment(settings2, ref, body);
+  }
+  return Array.from(out);
+}
+function applyLabelChanges(settings2, ref, currentLabels, removePatterns, addLabels) {
+  return __async(this, null, function* () {
+    const expandedRemove = expandRemoveLabelPatterns(removePatterns, currentLabels);
+    let resultLabels = currentLabels.slice();
+    let changed = false;
+    if (expandedRemove.length > 0) {
+      resultLabels = yield updateIssueLabels(settings2, ref, { remove: expandedRemove });
+      changed = true;
     }
+    if (addLabels.length > 0) {
+      resultLabels = yield updateIssueLabels(settings2, ref, { add: addLabels });
+      changed = true;
+    }
+    if (!changed)
+      return currentLabels;
+    return resultLabels;
   });
 }
 
 // src/SettingsTab/settings-tab.ts
-var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
+var GitlabIssuesSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -5940,23 +6004,24 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
         title: `Goto ${gitlabIssuesLevelIdObject.url}`
       });
       descriptionDocumentFragment.appendChild(descriptionLinkElement);
-      new import_obsidian2.Setting(containerEl).setName(`Set Gitlab ${gitlabIssuesLevelIdObject.title} Id`).setDesc(descriptionDocumentFragment).addText((value) => value.setValue(this.plugin.settings.gitlabAppId).onChange((value2) => __async(this, null, function* () {
+      new import_obsidian3.Setting(containerEl).setName(`Set Gitlab ${gitlabIssuesLevelIdObject.title} Id`).setDesc(descriptionDocumentFragment).addText((value) => value.setValue(this.plugin.settings.gitlabAppId).onChange((value2) => __async(this, null, function* () {
         this.plugin.settings.gitlabAppId = value2;
         yield this.plugin.saveSettings();
       })));
     }
     containerEl.createEl("h3", { text: "Issues" });
     settingInputs.filter((s) => issueSettingKeys.has(s.value) && s.value !== "gitlabUrl" && s.value !== "gitlabToken").forEach((setting) => this.renderTextInput(containerEl, setting));
+    new import_obsidian3.Setting(containerEl).setName("Generate issue template scaffold").setDesc("Create a Handlebars template file pre-populated with every supported placeholder.").addButton((btn) => btn.setButtonText("Generate scaffold").onClick(() => this.plugin.openTemplateScaffoldModal("issue")));
     checkBoxInputs.filter((c) => issueCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
     dropdowns.filter((d) => issueDropdownKeys.has(d.value)).forEach((d) => this.renderDropdown(containerEl, d));
-    new import_obsidian2.Setting(containerEl).setName("Max Issues").setDesc("Maximum number of issues to fetch (pages of 100 are fetched until this limit is reached). Independent from the merge request limit.").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxItems)).onChange((value) => __async(this, null, function* () {
+    new import_obsidian3.Setting(containerEl).setName("Max Issues").setDesc("Maximum number of issues to fetch (pages of 100 are fetched until this limit is reached). Independent from the merge request limit.").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxItems)).onChange((value) => __async(this, null, function* () {
       const parsed = parseInt(value, 10);
       if (!isNaN(parsed) && parsed >= 1) {
         this.plugin.settings.maxItems = parsed;
         yield this.plugin.saveSettings();
       }
     })));
-    new import_obsidian2.Setting(containerEl).setName("Skip items not updated in (days)").setDesc("Skip issues and merge requests whose last update is older than this many days. Set to 0 to disable. Sent to the GitLab API as updated_after for efficiency.").addText((text) => text.setPlaceholder("0").setValue(String(this.plugin.settings.staleDays)).onChange((value) => __async(this, null, function* () {
+    new import_obsidian3.Setting(containerEl).setName("Skip items not updated in (days)").setDesc("Skip issues and merge requests whose last update is older than this many days. Set to 0 to disable. Sent to the GitLab API as updated_after for efficiency.").addText((text) => text.setPlaceholder("0").setValue(String(this.plugin.settings.staleDays)).onChange((value) => __async(this, null, function* () {
       const parsed = parseInt(value, 10);
       if (!isNaN(parsed) && parsed >= 0) {
         this.plugin.settings.staleDays = parsed;
@@ -5965,8 +6030,9 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
     })));
     containerEl.createEl("h3", { text: "Merge Requests" });
     settingInputs.filter((s) => mrSettingKeys.has(s.value)).forEach((setting) => this.renderTextInput(containerEl, setting));
+    new import_obsidian3.Setting(containerEl).setName("Generate merge request template scaffold").setDesc("Create a Handlebars template file pre-populated with every supported placeholder.").addButton((btn) => btn.setButtonText("Generate scaffold").onClick(() => this.plugin.openTemplateScaffoldModal("mr")));
     checkBoxInputs.filter((c) => mrCheckboxKeys.has(c.value)).forEach((checkboxSetting) => this.renderCheckbox(containerEl, checkboxSetting));
-    new import_obsidian2.Setting(containerEl).setName("Max Merge Requests").setDesc("Maximum number of standalone merge requests to fetch (pages of 100 are fetched until this limit is reached). Independent from the issue limit.").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxMrItems)).onChange((value) => __async(this, null, function* () {
+    new import_obsidian3.Setting(containerEl).setName("Max Merge Requests").setDesc("Maximum number of standalone merge requests to fetch (pages of 100 are fetched until this limit is reached). Independent from the issue limit.").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxMrItems)).onChange((value) => __async(this, null, function* () {
       const parsed = parseInt(value, 10);
       if (!isNaN(parsed) && parsed >= 1) {
         this.plugin.settings.maxMrItems = parsed;
@@ -5983,7 +6049,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
   }
   renderDropdown(containerEl, dropdown) {
     const key = dropdown.value;
-    new import_obsidian2.Setting(containerEl).setName(dropdown.title).setDesc(dropdown.description).addDropdown((value) => value.addOptions(dropdown.options).setValue(this.plugin.settings[key]).onChange((newValue) => __async(this, null, function* () {
+    new import_obsidian3.Setting(containerEl).setName(dropdown.title).setDesc(dropdown.description).addDropdown((value) => value.addOptions(dropdown.options).setValue(this.plugin.settings[key]).onChange((newValue) => __async(this, null, function* () {
       this.plugin.settings[key] = newValue;
       if (key === "intervalOfRefresh") {
         this.plugin.scheduleAutomaticRefresh();
@@ -5995,15 +6061,15 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
   renderTextInput(containerEl, setting) {
     const handleSetValue = () => {
       if (setting.modifier === "normalizePath") {
-        return (0, import_obsidian2.normalizePath)(this.plugin.settings[setting.value]);
+        return (0, import_obsidian3.normalizePath)(this.plugin.settings[setting.value]);
       }
       return this.plugin.settings[setting.value];
     };
-    new import_obsidian2.Setting(containerEl).setName(setting.title).setDesc(setting.description).addText((text) => {
+    new import_obsidian3.Setting(containerEl).setName(setting.title).setDesc(setting.description).addText((text) => {
       var _a;
       return text.setPlaceholder((_a = setting.placeholder) != null ? _a : "").setValue(handleSetValue()).onChange((value) => __async(this, null, function* () {
         if (setting.modifier === "normalizePath") {
-          this.plugin.settings[setting.value] = (0, import_obsidian2.normalizePath)(value);
+          this.plugin.settings[setting.value] = (0, import_obsidian3.normalizePath)(value);
         } else {
           this.plugin.settings[setting.value] = value;
         }
@@ -6012,7 +6078,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
     });
   }
   renderCheckbox(containerEl, checkboxSetting) {
-    const s = new import_obsidian2.Setting(containerEl).setName(checkboxSetting.title).addToggle((value) => value.setValue(this.plugin.settings[checkboxSetting.value]).onChange((value2) => __async(this, null, function* () {
+    const s = new import_obsidian3.Setting(containerEl).setName(checkboxSetting.title).addToggle((value) => value.setValue(this.plugin.settings[checkboxSetting.value]).onChange((value2) => __async(this, null, function* () {
       this.plugin.settings[checkboxSetting.value] = value2;
       yield this.plugin.saveSettings();
     })));
@@ -6034,7 +6100,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
       });
     };
     refresh();
-    new import_obsidian2.Setting(containerEl).addButton((btn) => btn.setButtonText("+ Add Mapping").setCta().onClick(() => __async(this, null, function* () {
+    new import_obsidian3.Setting(containerEl).addButton((btn) => btn.setButtonText("+ Add Mapping").setCta().onClick(() => __async(this, null, function* () {
       this.plugin.settings.labelPropertyMappings.push({
         property: "",
         rules: [{ label: "", value: "" }]
@@ -6050,7 +6116,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
     card.style.borderRadius = "6px";
     card.style.padding = "8px 12px 4px";
     card.style.marginBottom = "12px";
-    const propSetting = new import_obsidian2.Setting(card).setName(`Mapping ${mi + 1}`).addText((text) => {
+    const propSetting = new import_obsidian3.Setting(card).setName(`Mapping ${mi + 1}`).addText((text) => {
       text.inputEl.style.width = "160px";
       return text.setPlaceholder("property name (e.g. priority)").setValue(mapping.property).onChange((v) => __async(this, null, function* () {
         this.plugin.settings.labelPropertyMappings[mi].property = v;
@@ -6098,7 +6164,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
     const rulesEl = card.createDiv();
     rulesEl.style.paddingLeft = "4px";
     mapping.rules.forEach((rule, ri) => {
-      const ruleSetting = new import_obsidian2.Setting(rulesEl);
+      const ruleSetting = new import_obsidian3.Setting(rulesEl);
       ruleSetting.settingEl.style.borderTop = "none";
       ruleSetting.settingEl.style.padding = "4px 0";
       ruleSetting.addText((text) => {
@@ -6122,7 +6188,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
         refresh();
       })));
     });
-    new import_obsidian2.Setting(card).addButton((btn) => btn.setButtonText("+ Add Rule").onClick(() => __async(this, null, function* () {
+    new import_obsidian3.Setting(card).addButton((btn) => btn.setButtonText("+ Add Rule").onClick(() => __async(this, null, function* () {
       this.plugin.settings.labelPropertyMappings[mi].rules.push({ label: "", value: "" });
       yield this.plugin.saveSettings();
       refresh();
@@ -6132,7 +6198,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
     containerEl.createEl("h3", { text: "Issue Action Templates" });
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: 'Define re-usable bundles of comment body + label add/remove/replace. Apply via the "Apply template to active Gitlab issue" command.'
+      text: 'Define re-usable bundles of comment body + labels to add/remove. Load them from the template dropdown inside the "Manage active Gitlab issue" pane \u2014 selecting a template overwrites the form inputs.'
     });
     const listEl = containerEl.createDiv();
     const refresh = () => {
@@ -6142,7 +6208,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
       templates.forEach((_, i) => this.renderTemplateBlock(listEl, i, refresh));
     };
     refresh();
-    new import_obsidian2.Setting(containerEl).addButton((btn) => btn.setButtonText("+ Add Template").setCta().onClick(() => __async(this, null, function* () {
+    new import_obsidian3.Setting(containerEl).addButton((btn) => btn.setButtonText("+ Add Template").setCta().onClick(() => __async(this, null, function* () {
       if (!this.plugin.settings.issueActionTemplates) {
         this.plugin.settings.issueActionTemplates = [];
       }
@@ -6161,7 +6227,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
     card.style.borderRadius = "6px";
     card.style.padding = "8px 12px";
     card.style.marginBottom = "12px";
-    new import_obsidian2.Setting(card).setName(`Template ${idx + 1}`).addText((text) => text.setPlaceholder("display name").setValue(tmpl.name).onChange((v) => __async(this, null, function* () {
+    new import_obsidian3.Setting(card).setName(`Template ${idx + 1}`).addText((text) => text.setPlaceholder("display name").setValue(tmpl.name).onChange((v) => __async(this, null, function* () {
       this.plugin.settings.issueActionTemplates[idx].name = v;
       yield this.plugin.saveSettings();
     }))).addButton((btn) => btn.setIcon("trash").setTooltip("Delete template").onClick(() => __async(this, null, function* () {
@@ -6169,7 +6235,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
       yield this.plugin.saveSettings();
       refresh();
     })));
-    new import_obsidian2.Setting(card).setName("Comment body").setDesc("Leave empty to skip posting a comment. Editable at apply time.").addTextArea((ta) => {
+    new import_obsidian3.Setting(card).setName("Comment body").setDesc("Leave empty to skip posting a comment. Editable at apply time.").addTextArea((ta) => {
       var _a;
       ta.inputEl.rows = 4;
       ta.inputEl.style.width = "100%";
@@ -6183,7 +6249,7 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
         yield this.plugin.saveSettings();
       }));
     });
-    new import_obsidian2.Setting(card).setName("Add labels").setDesc("Comma-separated. Ignored when Replace is enabled.").addText((text) => {
+    new import_obsidian3.Setting(card).setName("Add labels").setDesc('Comma-separated. Pre-fills the "Add labels" input when the template is loaded.').addText((text) => {
       var _a;
       return text.setPlaceholder("bug, priority::high").setValue(((_a = tmpl.labelsAdd) != null ? _a : []).join(", ")).onChange((v) => __async(this, null, function* () {
         const t = this.plugin.settings.issueActionTemplates[idx];
@@ -6196,9 +6262,9 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
         yield this.plugin.saveSettings();
       }));
     });
-    new import_obsidian2.Setting(card).setName("Remove labels").setDesc("Comma-separated. Ignored when Replace is enabled.").addText((text) => {
+    new import_obsidian3.Setting(card).setName("Remove labels").setDesc('Comma-separated. Wildcards supported (e.g. status:*). Pre-fills the "Remove labels" input when the template is loaded.').addText((text) => {
       var _a;
-      return text.setPlaceholder("triage").setValue(((_a = tmpl.labelsRemove) != null ? _a : []).join(", ")).onChange((v) => __async(this, null, function* () {
+      return text.setPlaceholder("triage, status:*").setValue(((_a = tmpl.labelsRemove) != null ? _a : []).join(", ")).onChange((v) => __async(this, null, function* () {
         const t = this.plugin.settings.issueActionTemplates[idx];
         const list = splitLabelList(v);
         if (list.length > 0) {
@@ -6209,26 +6275,22 @@ var GitlabIssuesSettingTab = class extends import_obsidian2.PluginSettingTab {
         yield this.plugin.saveSettings();
       }));
     });
-    const replaceEnabled = tmpl.labelsReplace !== void 0;
-    new import_obsidian2.Setting(card).setName("Replace labels").setDesc("Replaces ALL existing labels with the list below. Empty list clears all labels. Overrides Add/Remove.").addToggle((toggle) => toggle.setValue(replaceEnabled).onChange((v) => __async(this, null, function* () {
-      var _a;
-      const t = this.plugin.settings.issueActionTemplates[idx];
-      if (v) {
-        t.labelsReplace = (_a = t.labelsReplace) != null ? _a : [];
-      } else {
-        delete t.labelsReplace;
-      }
-      yield this.plugin.saveSettings();
-      refresh();
-    })));
-    if (replaceEnabled) {
-      new import_obsidian2.Setting(card).setName("Replacement labels").setDesc("Comma-separated.").addText((text) => {
+    if (tmpl.labelsReplace !== void 0) {
+      const legacy = card.createEl("p", { cls: "setting-item-description" });
+      legacy.createEl("strong", { text: "Legacy: " });
+      legacy.appendText(`This template still uses the deprecated "Replace labels" field (${tmpl.labelsReplace.length > 0 ? tmpl.labelsReplace.join(", ") : "(clear all)"}). When loaded, it will fill Remove with "*" and Add with the replacement labels.`);
+      new import_obsidian3.Setting(card).addButton((btn) => btn.setButtonText("Migrate to Add/Remove").onClick(() => __async(this, null, function* () {
         var _a;
-        return text.setPlaceholder("label1, label2").setValue(((_a = tmpl.labelsReplace) != null ? _a : []).join(", ")).onChange((v) => __async(this, null, function* () {
-          this.plugin.settings.issueActionTemplates[idx].labelsReplace = splitLabelList(v);
-          yield this.plugin.saveSettings();
-        }));
-      });
+        const t = this.plugin.settings.issueActionTemplates[idx];
+        const replacement = (_a = t.labelsReplace) != null ? _a : [];
+        t.labelsAdd = replacement.length > 0 ? replacement : void 0;
+        t.labelsRemove = ["*"];
+        delete t.labelsReplace;
+        if (!t.labelsAdd)
+          delete t.labelsAdd;
+        yield this.plugin.saveSettings();
+        refresh();
+      })));
     }
   }
 };
@@ -6261,7 +6323,9 @@ var GitlabIssue = class {
     this.relatedMergeRequests = [];
   }
   get repoPath() {
-    return sanitizeRepoPath(extractRepoPath(this, "issues"));
+    const base = sanitizeRepoPath(extractRepoPath(this, "issues"));
+    const stateFolder = this.state === "closed" ? "Closed" : "Open";
+    return base ? `${base}/${stateFolder}` : stateFolder;
   }
   get filename() {
     const safeTitle = sanitizeFolderSegment(this.title).replace(/[/\\?%]/g, "-");
@@ -6295,7 +6359,7 @@ var GitlabMergeRequest = class {
 };
 
 // src/filesystem.ts
-var import_obsidian3 = __toModule(require("obsidian"));
+var import_obsidian4 = __toModule(require("obsidian"));
 var Handlebars = __toModule(require_handlebars());
 var import_handlebars = __toModule(require_handlebars());
 
@@ -6509,9 +6573,9 @@ var Filesystem = class {
   }
   purgeExistingIssues() {
     const outputDir = this.vault.getAbstractFileByPath(this.settings.outputDir);
-    if (outputDir instanceof import_obsidian3.TFolder) {
-      import_obsidian3.Vault.recurseChildren(outputDir, (existingFile) => {
-        if (existingFile instanceof import_obsidian3.TFile) {
+    if (outputDir instanceof import_obsidian4.TFolder) {
+      import_obsidian4.Vault.recurseChildren(outputDir, (existingFile) => {
+        if (existingFile instanceof import_obsidian4.TFile) {
           this.vault.delete(existingFile).catch((error) => logger(error.message));
         }
       });
@@ -6549,7 +6613,7 @@ var Filesystem = class {
     });
   }
   joinPath(...parts) {
-    return (0, import_obsidian3.normalizePath)(parts.filter((p) => p && p.length > 0).join("/"));
+    return (0, import_obsidian4.normalizePath)(parts.filter((p) => p && p.length > 0).join("/"));
   }
   ensureFolder(path) {
     return __async(this, null, function* () {
@@ -6577,9 +6641,10 @@ var Filesystem = class {
 
 // src/GitlabLoader/gitlab-loader.ts
 var GitlabLoader = class {
-  constructor(app, settings2) {
+  constructor(app, settings2, onLabelsCollected) {
     this.fs = new Filesystem(app.vault, settings2);
     this.settings = settings2;
+    this.onLabelsCollected = onLabelsCollected;
   }
   getUrl() {
     const filter = buildListFilter(this.settings.filter, this.settings.staleDays);
@@ -6688,6 +6753,16 @@ var GitlabLoader = class {
           this.fs.purgeExistingIssues();
         }
         this.fs.processIssues(gitlabIssues);
+        if (this.onLabelsCollected) {
+          const collected = new Set();
+          gitlabIssues.forEach((i) => {
+            var _a;
+            return ((_a = i.labels) != null ? _a : []).forEach((l) => collected.add(l));
+          });
+          if (collected.size > 0) {
+            yield this.onLabelsCollected(Array.from(collected));
+          }
+        }
       } catch (error) {
         logger(error.message);
       }
@@ -6782,181 +6857,348 @@ var MergeRequestLoader = class {
 };
 
 // src/IssueActions/modals.ts
-var import_obsidian4 = __toModule(require("obsidian"));
-var TextInputModal = class extends import_obsidian4.Modal {
-  constructor(app, opts) {
+var import_obsidian5 = __toModule(require("obsidian"));
+var IssueActionsModal = class extends import_obsidian5.Modal {
+  constructor(app, settings2, ref, file, frontmatter, hooks = {}) {
     super(app);
-    this.opts = opts;
+    this.settings = settings2;
+    this.ref = ref;
+    this.hooks = hooks;
+    this.commentBody = "";
+    this.formRefs = null;
+    this.file = file;
+    this.labels = this.readLabels(frontmatter);
+  }
+  knownLabels() {
+    const arr = this.hooks.getKnownLabels ? this.hooks.getKnownLabels() : [];
+    return arr != null ? arr : [];
+  }
+  announceLearned(labels) {
+    return __async(this, null, function* () {
+      if (!this.hooks.onLabelsLearned || labels.length === 0)
+        return;
+      try {
+        yield this.hooks.onLabelsLearned(labels);
+      } catch (e) {
+        logger(`Failed to record known labels: ${e.message}`);
+      }
+    });
+  }
+  appendToInput(input, label) {
+    const existing = splitLabelList(input.value);
+    if (existing.includes(label))
+      return;
+    existing.push(label);
+    input.value = existing.join(", ");
+    input.focus();
+  }
+  renderChips(parent, suggestions, emptyText, onPick) {
+    const wrap = parent.createDiv();
+    wrap.style.display = "flex";
+    wrap.style.flexWrap = "wrap";
+    wrap.style.gap = "4px";
+    wrap.style.margin = "4px 0";
+    if (suggestions.length === 0) {
+      wrap.createEl("span", {
+        text: emptyText,
+        cls: "setting-item-description"
+      });
+      return wrap;
+    }
+    suggestions.forEach((label) => {
+      const chip = wrap.createEl("button", { text: label });
+      chip.type = "button";
+      chip.style.padding = "1px 8px";
+      chip.style.fontSize = "12px";
+      chip.style.borderRadius = "10px";
+      chip.style.cursor = "pointer";
+      chip.addEventListener("click", (e) => {
+        e.preventDefault();
+        onPick(label);
+      });
+    });
+    return wrap;
+  }
+  readLabels(fm) {
+    const raw = fm == null ? void 0 : fm.labels;
+    if (Array.isArray(raw))
+      return raw.map((s) => String(s));
+    if (typeof raw === "string" && raw.length > 0)
+      return splitLabelList(raw);
+    return [];
+  }
+  get state() {
     var _a;
-    this.value = (_a = opts.defaultValue) != null ? _a : "";
+    const fm = (_a = this.app.metadataCache.getFileCache(this.file)) == null ? void 0 : _a.frontmatter;
+    return (fm == null ? void 0 : fm.state) ? String(fm.state) : "opened";
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: this.opts.title });
-    if (this.opts.description) {
-      contentEl.createEl("p", { text: this.opts.description, cls: "setting-item-description" });
-    }
-    const inputWrap = contentEl.createDiv();
-    inputWrap.style.margin = "8px 0";
-    let inputEl;
-    if (this.opts.multiline) {
-      inputEl = inputWrap.createEl("textarea");
-      inputEl.rows = 6;
-    } else {
-      inputEl = inputWrap.createEl("input", { type: "text" });
-    }
-    inputEl.style.width = "100%";
-    inputEl.value = this.value;
-    if (this.opts.placeholder)
-      inputEl.placeholder = this.opts.placeholder;
-    inputEl.addEventListener("input", () => {
-      this.value = inputEl.value;
-    });
-    inputEl.focus();
-    if (!this.opts.multiline) {
-      inputEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          this.submit();
-        }
-      });
-    }
-    new import_obsidian4.Setting(contentEl).addButton((btn) => {
-      var _a;
-      return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "Submit").setCta().onClick(() => this.submit());
-    }).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+    contentEl.empty();
+    this.formRefs = null;
+    contentEl.createEl("h3", { text: `Manage issue #${this.ref.iid}` });
+    this.renderTemplateSection(contentEl);
+    contentEl.createEl("hr");
+    this.renderCommentSection(contentEl);
+    contentEl.createEl("hr");
+    this.renderLabelsSection(contentEl);
+    contentEl.createEl("hr");
+    this.renderStateSection(contentEl);
+    contentEl.createEl("hr");
+    new import_obsidian5.Setting(contentEl).addButton((btn) => btn.setButtonText("Close").onClick(() => this.close()));
   }
-  submit() {
-    const v = this.value.trim();
-    if (!v)
+  getTemplates() {
+    var _a;
+    return this.hooks.getTemplates ? (_a = this.hooks.getTemplates()) != null ? _a : [] : [];
+  }
+  renderTemplateSection(parent) {
+    const templates = this.getTemplates();
+    parent.createEl("h4", { text: "Template" });
+    if (templates.length === 0) {
+      parent.createEl("p", {
+        cls: "setting-item-description",
+        text: "No templates configured. Add some in plugin settings to pre-fill the form below."
+      });
       return;
-    this.close();
-    this.opts.onSubmit(v);
+    }
+    parent.createEl("p", {
+      cls: "setting-item-description",
+      text: "Pick a template and click Load to overwrite the form inputs below with the saved content."
+    });
+    let selectedId = templates[0].id;
+    const row = new import_obsidian5.Setting(parent);
+    row.addDropdown((dd) => {
+      templates.forEach((t) => dd.addOption(t.id, t.name));
+      dd.setValue(selectedId);
+      dd.onChange((v) => {
+        selectedId = v;
+      });
+    });
+    row.addButton((btn) => btn.setButtonText("Load into form").onClick(() => {
+      const tmpl = templates.find((t) => t.id === selectedId);
+      if (!tmpl)
+        return;
+      this.applyTemplateToForm(tmpl);
+      new import_obsidian5.Notice(`Loaded template "${tmpl.name}" into form`);
+    }));
+  }
+  applyTemplateToForm(tmpl) {
+    var _a, _b, _c;
+    if (!this.formRefs)
+      return;
+    if (tmpl.commentBody !== void 0) {
+      this.formRefs.commentTextarea.value = tmpl.commentBody;
+      this.commentBody = tmpl.commentBody;
+    }
+    if (tmpl.labelsReplace !== void 0) {
+      this.formRefs.removeInput.value = "*";
+      this.formRefs.addInput.value = ((_a = tmpl.labelsReplace) != null ? _a : []).join(", ");
+      return;
+    }
+    if (tmpl.labelsAdd !== void 0) {
+      this.formRefs.addInput.value = ((_b = tmpl.labelsAdd) != null ? _b : []).join(", ");
+    }
+    if (tmpl.labelsRemove !== void 0) {
+      this.formRefs.removeInput.value = ((_c = tmpl.labelsRemove) != null ? _c : []).join(", ");
+    }
+  }
+  renderCommentSection(parent) {
+    var _a;
+    parent.createEl("h4", { text: "Post comment" });
+    const wrap = parent.createDiv();
+    wrap.style.margin = "8px 0";
+    const ta = wrap.createEl("textarea");
+    ta.rows = 5;
+    ta.style.width = "100%";
+    ta.placeholder = "Write a comment in Markdown...";
+    ta.addEventListener("input", () => {
+      this.commentBody = ta.value;
+    });
+    this.formRefs = __spreadProps(__spreadValues({}, (_a = this.formRefs) != null ? _a : {}), {
+      commentTextarea: ta
+    });
+    new import_obsidian5.Setting(parent).addButton((btn) => btn.setButtonText("Post comment").setCta().onClick(() => __async(this, null, function* () {
+      const body = this.commentBody.trim();
+      if (!body) {
+        new import_obsidian5.Notice("Comment is empty.");
+        return;
+      }
+      btn.setDisabled(true);
+      try {
+        yield postIssueComment(this.settings, this.ref, body);
+        new import_obsidian5.Notice(`Comment posted to issue #${this.ref.iid}`);
+        ta.value = "";
+        this.commentBody = "";
+      } catch (e) {
+        logger(`Failed to post comment: ${e.message}`);
+        new import_obsidian5.Notice(`Failed to post comment: ${e.message}`);
+      } finally {
+        btn.setDisabled(false);
+      }
+    })));
+  }
+  renderLabelsSection(parent) {
+    var _a;
+    parent.createEl("h4", { text: "Labels" });
+    const currentEl = parent.createDiv();
+    currentEl.style.margin = "6px 0";
+    const renderCurrent = () => {
+      currentEl.empty();
+      currentEl.createEl("div", {
+        text: "Current labels:",
+        cls: "setting-item-description"
+      });
+      this.renderChips(currentEl, this.labels, "(no labels)", () => {
+      });
+    };
+    renderCurrent();
+    parent.createEl("div", {
+      text: "Add labels (comma-separated, custom OK)",
+      cls: "setting-item-description"
+    });
+    const addInputWrap = parent.createDiv();
+    addInputWrap.style.margin = "4px 0";
+    const addInput = addInputWrap.createEl("input", { type: "text" });
+    addInput.placeholder = "label1, label2";
+    addInput.style.width = "100%";
+    const addSuggestionsEl = parent.createDiv();
+    const renderAddSuggestions = () => {
+      addSuggestionsEl.empty();
+      const known = this.knownLabels();
+      const current = new Set(this.labels);
+      const suggestions = known.filter((l) => !current.has(l));
+      addSuggestionsEl.createEl("div", {
+        text: "Known labels (click to add):",
+        cls: "setting-item-description"
+      });
+      this.renderChips(addSuggestionsEl, suggestions, "(no recorded labels yet \u2014 fetch issues first, or just type custom labels above)", (label) => this.appendToInput(addInput, label));
+    };
+    renderAddSuggestions();
+    parent.createEl("div", {
+      text: "Remove labels (comma-separated, wildcards OK \u2014 e.g. status:*)",
+      cls: "setting-item-description"
+    });
+    const removeInputWrap = parent.createDiv();
+    removeInputWrap.style.margin = "4px 0";
+    const removeInput = removeInputWrap.createEl("input", { type: "text" });
+    removeInput.placeholder = "label1, status:*";
+    removeInput.style.width = "100%";
+    const removeSuggestionsEl = parent.createDiv();
+    const renderRemoveSuggestions = () => {
+      removeSuggestionsEl.empty();
+      removeSuggestionsEl.createEl("div", {
+        text: "Current labels (click to add to remove list):",
+        cls: "setting-item-description"
+      });
+      this.renderChips(removeSuggestionsEl, this.labels, "(no labels on this issue)", (label) => this.appendToInput(removeInput, label));
+    };
+    renderRemoveSuggestions();
+    this.formRefs = __spreadProps(__spreadValues({}, (_a = this.formRefs) != null ? _a : {}), {
+      addInput,
+      removeInput
+    });
+    new import_obsidian5.Setting(parent).addButton((btn) => btn.setButtonText("Apply changes (remove \u2192 add)").setCta().onClick(() => __async(this, null, function* () {
+      const removePatterns = splitLabelList(removeInput.value);
+      const addList = splitLabelList(addInput.value);
+      if (removePatterns.length === 0 && addList.length === 0) {
+        new import_obsidian5.Notice("Nothing to apply. Type labels to add or remove first.");
+        return;
+      }
+      btn.setDisabled(true);
+      try {
+        const updated = yield applyLabelChanges(this.settings, this.ref, this.labels, removePatterns, addList);
+        yield updateNoteFrontmatter(this.app, this.file, { labels: updated });
+        this.labels = updated;
+        addInput.value = "";
+        removeInput.value = "";
+        renderCurrent();
+        renderAddSuggestions();
+        renderRemoveSuggestions();
+        yield this.announceLearned(addList);
+        new import_obsidian5.Notice(`Updated labels on issue #${this.ref.iid}`);
+      } catch (e) {
+        logger(`Failed to apply label changes: ${e.message}`);
+        new import_obsidian5.Notice(`Failed to apply label changes: ${e.message}`);
+      } finally {
+        btn.setDisabled(false);
+      }
+    })));
+  }
+  renderStateSection(parent) {
+    parent.createEl("h4", { text: "State" });
+    const statusEl = parent.createEl("p", {
+      text: `Current state: ${this.state}`,
+      cls: "setting-item-description"
+    });
+    new import_obsidian5.Setting(parent).addButton((btn) => btn.setButtonText("Close issue").onClick(() => this.changeState("close", btn, statusEl))).addButton((btn) => btn.setButtonText("Reopen issue").onClick(() => this.changeState("reopen", btn, statusEl)));
+  }
+  changeState(stateEvent, btn, statusEl) {
+    return __async(this, null, function* () {
+      btn.setDisabled(true);
+      try {
+        const state = yield setIssueState(this.settings, this.ref, stateEvent);
+        yield updateNoteFrontmatter(this.app, this.file, { state });
+        this.file = yield moveIssueFileForState(this.app, this.file, state);
+        statusEl.setText(`Current state: ${state}`);
+        new import_obsidian5.Notice(`Issue #${this.ref.iid} ${state}`);
+      } catch (e) {
+        logger(`Failed to change state: ${e.message}`);
+        new import_obsidian5.Notice(`Failed to change state: ${e.message}`);
+      } finally {
+        btn.setDisabled(false);
+      }
+    });
   }
   onClose() {
     this.contentEl.empty();
   }
 };
-var LabelMultiSelectModal = class extends import_obsidian4.Modal {
+var TemplateScaffoldModal = class extends import_obsidian5.Modal {
   constructor(app, opts) {
     super(app);
     this.opts = opts;
-    this.selected = new Set();
+    this.overwrite = false;
+    this.linkToSettings = true;
+    this.path = opts.currentSettingPath && opts.currentSettingPath.length > 0 ? opts.currentSettingPath : opts.defaultPath;
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: this.opts.title });
-    if (this.opts.description) {
-      contentEl.createEl("p", { text: this.opts.description, cls: "setting-item-description" });
-    }
-    if (this.opts.labels.length === 0) {
-      contentEl.createEl("p", { text: "No labels on this issue." });
-      new import_obsidian4.Setting(contentEl).addButton((btn) => btn.setButtonText("Close").onClick(() => this.close()));
-      return;
-    }
-    const listEl = contentEl.createDiv();
-    listEl.style.margin = "8px 0";
-    this.opts.labels.forEach((label) => {
-      const row = listEl.createDiv();
-      row.style.display = "flex";
-      row.style.alignItems = "center";
-      row.style.gap = "6px";
-      row.style.padding = "2px 0";
-      const cb = row.createEl("input", { type: "checkbox" });
-      cb.id = `lbl-${label}`;
-      cb.addEventListener("change", () => {
-        if (cb.checked)
-          this.selected.add(label);
-        else
-          this.selected.delete(label);
-      });
-      const lblEl = row.createEl("label", { text: label });
-      lblEl.htmlFor = cb.id;
+    const label = this.opts.kind === "issue" ? "issue" : "merge request";
+    contentEl.createEl("h3", { text: `Generate ${label} template scaffold` });
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Writes a Handlebars template file pre-populated with every supported placeholder. Edit the result to keep only the sections you need."
     });
-    new import_obsidian4.Setting(contentEl).addButton((btn) => {
+    new import_obsidian5.Setting(contentEl).setName("Output path").setDesc("Path inside the vault, e.g. templates/gitlab-issue.hbs").addText((text) => {
+      text.inputEl.style.width = "100%";
+      return text.setValue(this.path).onChange((v) => {
+        this.path = v;
+      });
+    });
+    new import_obsidian5.Setting(contentEl).setName("Overwrite if file exists").addToggle((t) => t.setValue(this.overwrite).onChange((v) => this.overwrite = v));
+    new import_obsidian5.Setting(contentEl).setName(`Set as ${label} template after creating`).setDesc(`Updates the "${this.opts.kind === "issue" ? "Template File" : "Merge Request Template File"}" setting to point at the new file.`).addToggle((t) => t.setValue(this.linkToSettings).onChange((v) => this.linkToSettings = v));
+    new import_obsidian5.Setting(contentEl).addButton((btn) => btn.setButtonText("Generate").setCta().onClick(() => __async(this, null, function* () {
       var _a;
-      return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "Submit").setCta().onClick(() => {
-        if (this.selected.size === 0)
-          return;
+      if (!this.path.trim()) {
+        new import_obsidian5.Notice("Please specify an output path.");
+        return;
+      }
+      btn.setDisabled(true);
+      try {
+        yield this.opts.onSubmit(this.path.trim(), this.overwrite, this.linkToSettings);
         this.close();
-        this.opts.onSubmit(Array.from(this.selected));
-      });
-    }).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+      } catch (e) {
+        new import_obsidian5.Notice((_a = e.message) != null ? _a : String(e));
+      } finally {
+        btn.setDisabled(false);
+      }
+    }))).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
   }
   onClose() {
     this.contentEl.empty();
   }
 };
-var TemplateSuggestModal = class extends import_obsidian4.FuzzySuggestModal {
-  constructor(app, templates, onSelect) {
-    super(app);
-    this.templates = templates;
-    this.onSelect = onSelect;
-    this.setPlaceholder("Pick an issue action template...");
-  }
-  getItems() {
-    return this.templates;
-  }
-  getItemText(item) {
-    return item.name;
-  }
-  onChooseItem(item) {
-    this.onSelect(item);
-  }
-};
-var TemplatePreviewModal = class extends import_obsidian4.Modal {
-  constructor(app, template, iid, onSubmit) {
-    super(app);
-    this.template = template;
-    this.iid = iid;
-    this.onSubmit = onSubmit;
-    this.commentBody = template.commentBody !== void 0 ? template.commentBody : null;
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.createEl("h3", { text: `Apply template: ${this.template.name}` });
-    contentEl.createEl("p", { text: `Target: issue #${this.iid}` });
-    const summary = contentEl.createEl("ul");
-    summary.style.margin = "8px 0";
-    if (this.template.commentBody !== void 0) {
-      summary.createEl("li", { text: "Post comment (editable below)" });
-    }
-    if (this.template.labelsReplace !== void 0) {
-      const list = this.template.labelsReplace.length > 0 ? this.template.labelsReplace.join(", ") : "(clear all)";
-      summary.createEl("li", { text: `Replace labels with: ${list}` });
-    } else {
-      if (this.template.labelsAdd && this.template.labelsAdd.length > 0) {
-        summary.createEl("li", { text: `Add labels: ${this.template.labelsAdd.join(", ")}` });
-      }
-      if (this.template.labelsRemove && this.template.labelsRemove.length > 0) {
-        summary.createEl("li", { text: `Remove labels: ${this.template.labelsRemove.join(", ")}` });
-      }
-    }
-    if (summary.children.length === 0) {
-      summary.createEl("li", { text: "(template has no actions configured)" });
-    }
-    if (this.commentBody !== null) {
-      const labelEl = contentEl.createEl("div");
-      labelEl.createEl("label", { text: "Comment body:" });
-      const ta = labelEl.createEl("textarea");
-      ta.rows = 8;
-      ta.style.width = "100%";
-      ta.style.marginTop = "4px";
-      ta.value = this.commentBody;
-      ta.addEventListener("input", () => {
-        this.commentBody = ta.value;
-      });
-    }
-    new import_obsidian4.Setting(contentEl).addButton((btn) => btn.setButtonText("Apply").setCta().onClick(() => {
-      this.close();
-      this.onSubmit(this.commentBody);
-    })).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
-var ConfirmModal = class extends import_obsidian4.Modal {
+var ConfirmModal = class extends import_obsidian5.Modal {
   constructor(app, opts) {
     super(app);
     this.opts = opts;
@@ -6965,7 +7207,7 @@ var ConfirmModal = class extends import_obsidian4.Modal {
     const { contentEl } = this;
     contentEl.createEl("h3", { text: this.opts.title });
     contentEl.createEl("p", { text: this.opts.message });
-    new import_obsidian4.Setting(contentEl).addButton((btn) => {
+    new import_obsidian5.Setting(contentEl).addButton((btn) => {
       var _a;
       return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "OK").setCta().onClick(() => {
         this.close();
@@ -6978,8 +7220,339 @@ var ConfirmModal = class extends import_obsidian4.Modal {
   }
 };
 
+// src/utils/template-scaffolds.ts
+var import_obsidian6 = __toModule(require("obsidian"));
+function defaultScaffoldPath(kind) {
+  return kind === "issue" ? "templates/gitlab-issue.hbs" : "templates/gitlab-merge-request.hbs";
+}
+function scaffoldContent(kind) {
+  return kind === "issue" ? ISSUE_TEMPLATE_SCAFFOLD : MR_TEMPLATE_SCAFFOLD;
+}
+function ensureParentFolder(app, filePath) {
+  return __async(this, null, function* () {
+    var _a;
+    const segments = filePath.split("/").filter((s) => s.length > 0);
+    segments.pop();
+    let current = "";
+    for (const seg of segments) {
+      current = current ? `${current}/${seg}` : seg;
+      if (app.vault.getAbstractFileByPath(current))
+        continue;
+      try {
+        yield app.vault.createFolder(current);
+      } catch (e) {
+        if (!String((_a = e == null ? void 0 : e.message) != null ? _a : "").includes("Folder already exists"))
+          throw e;
+      }
+    }
+  });
+}
+function writeTemplateScaffold(app, kind, rawPath, overwrite) {
+  return __async(this, null, function* () {
+    const path = (0, import_obsidian6.normalizePath)(rawPath);
+    yield ensureParentFolder(app, path);
+    const existing = app.vault.getAbstractFileByPath(path);
+    const content = scaffoldContent(kind);
+    if (existing instanceof import_obsidian6.TFile) {
+      if (!overwrite) {
+        throw new Error(`A file already exists at "${path}". Tick "Overwrite" to replace it.`);
+      }
+      yield app.vault.modify(existing, content);
+      return existing;
+    }
+    const created = yield app.vault.create(path, content);
+    return created;
+  });
+}
+var ISSUE_TEMPLATE_SCAFFOLD = `---
+{{!-- ===========================================================
+     Issue note frontmatter
+     All placeholders below come from the GitLab Issues API plus
+     a few computed values added by this plugin (repoPath, wikilink,
+     relatedMrMode, and any properties from Label Property Mappings).
+     Remove sections you do not need; the file is plain Handlebars.
+============================================================ --}}
+id: "{{id}}"
+iid: "{{iid}}"
+projectId: "{{project_id}}"
+title: "{{{title}}}"
+state: "{{state}}"
+issueType: "{{issue_type}}"
+severity: "{{severity}}"
+confidential: "{{confidential}}"
+discussionLocked: "{{discussion_locked}}"
+imported: "{{imported}}"
+importedFrom: "{{imported_from}}"
+hasTasks: "{{has_tasks}}"
+taskStatus: "{{task_status}}"
+tasksCompleted: "{{task_completion_status.completed_count}}"
+tasksTotal: "{{task_completion_status.count}}"
+upvotes: "{{upvotes}}"
+downvotes: "{{downvotes}}"
+mergeRequestsCount: "{{merge_requests_count}}"
+userNotesCount: "{{user_notes_count}}"
+createdAt: "{{created_at}}"
+updatedAt: "{{updated_at}}"
+dueDate: "{{due_date}}"
+webUrl: "{{web_url}}"
+project: "{{references.full}}"
+projectShort: "{{references.short}}"
+projectRelative: "{{references.relative}}"
+author: "{{author.name}}"
+authorUsername: "{{author.username}}"
+{{#if closed_by}}
+closedBy: "{{closed_by.name}}"
+{{/if}}
+{{#if assignees.length}}
+assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if labels.length}}
+labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if milestone}}
+milestone: "{{milestone.title}}"
+milestoneIid: "{{milestone.iid}}"
+milestoneState: "{{milestone.state}}"
+milestoneDueDate: "{{milestone.due_date}}"
+{{/if}}
+{{#if epic}}
+epic: "{{epic.title}}"
+epicIid: "{{epic.iid}}"
+epicUrl: "{{epic.url}}"
+{{/if}}
+{{#if time_stats}}
+timeEstimate: "{{time_stats.time_estimate}}"
+timeSpent: "{{time_stats.total_time_spent}}"
+humanTimeEstimate: "{{time_stats.human_time_spent}}"
+humanTotalTimeSpent: "{{time_stats.human_total_time_spent}}"
+{{/if}}
+repoPath: "{{repoPath}}"
+wikilink: "{{wikilink}}"
+{{!-- Computed properties from Label Property Mappings appear by
+     the property name you configured, e.g.:
+     priority: "{{priority}}"                                    --}}
+---
+
+# {{iid}} \xB7 {{{title}}}
+
+**State:** {{state}}{{#if confidential}} \xB7 Confidential{{/if}}{{#if discussion_locked}} \xB7 Locked{{/if}}
+**Author:** {{author.name}} (@{{author.username}})
+**Created:** {{created_at}} \xB7 **Updated:** {{updated_at}}{{#if due_date}} \xB7 **Due:** {{due_date}}{{/if}}
+{{#if closed_by}}**Closed by:** {{closed_by.name}}{{/if}}
+{{#if assignees.length}}**Assignees:** {{#each assignees}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+{{#if labels.length}}**Labels:** {{#each labels}}\`{{this}}\`{{#unless @last}} {{/unless}}{{/each}}{{/if}}
+{{#if milestone}}**Milestone:** {{milestone.title}} ({{milestone.state}}){{/if}}
+{{#if epic}}**Epic:** [{{epic.title}}]({{epic.url}}){{/if}}
+
+[View on GitLab]({{web_url}})
+
+---
+
+## Description
+
+{{{description}}}
+
+{{#if has_tasks}}
+> Tasks: {{task_completion_status.completed_count}}/{{task_completion_status.count}}
+{{/if}}
+
+{{#if relatedMergeRequests.length}}
+## Related Merge Requests
+
+{{!-- relatedMrMode is one of "off" | "separate" | "same" --}}
+{{#if (eq relatedMrMode "same")}}
+{{#each relatedMergeRequests}}
+### [!{{iid}} {{{title}}}]({{web_url}})
+
+**Status:** {{state}}{{#if draft}} (Draft){{/if}}{{#if detailed_merge_status}} \xB7 {{detailed_merge_status}}{{/if}}
+{{#if source_branch}}**Branch:** \`{{source_branch}}\` \u2192 \`{{target_branch}}\`{{/if}}
+**Author:** {{author.name}}{{#if assignees.length}} \xB7 **Assignees:** {{#each assignees}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}{{#if reviewers.length}} \xB7 **Reviewers:** {{#each reviewers}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+**Updated:** {{updated_at}}{{#if merged_at}} \xB7 **Merged:** {{merged_at}}{{/if}}
+
+{{#if description}}
+{{{description}}}
+
+{{/if}}
+{{#if changes.length}}
+<details><summary>Code Diff ({{changes.length}} file(s))</summary>
+
+{{#each changes}}
+**\`{{new_path}}\`**{{#if new_file}} (new){{/if}}{{#if deleted_file}} (deleted){{/if}}{{#if renamed_file}} (renamed from \`{{old_path}}\`){{/if}}
+
+\`\`\`diff
+{{{diff}}}
+\`\`\`
+
+{{/each}}
+</details>
+
+{{/if}}
+{{/each}}
+{{else}}
+{{#if (eq relatedMrMode "separate")}}
+{{#each relatedMergeRequests}}
+- [[{{wikilink}}|!{{iid}} {{{title}}}]] \u2014 {{state}}
+{{/each}}
+{{else}}
+{{#each relatedMergeRequests}}
+- [!{{iid}} {{{title}}}]({{web_url}}) \u2014 {{state}}
+{{/each}}
+{{/if}}
+{{/if}}
+{{/if}}
+
+{{#if discussions.length}}
+## Discussions
+
+{{#each discussions}}
+{{#each notes}}
+{{#unless system}}
+**{{author.name}}** _{{created_at}}_
+
+> {{{body}}}
+
+{{/unless}}
+{{/each}}
+{{/each}}
+{{/if}}
+
+{{!-- Links exposed by the GitLab API (uncomment to use):
+- Self:  {{_links.self}}
+- Notes: {{_links.notes}}
+- Award emoji: {{_links.award_emoji}}
+- Project: {{_links.project}}
+- Closed as duplicate of: {{_links.closed_as_duplicate_of}}
+--}}
+`;
+var MR_TEMPLATE_SCAFFOLD = `---
+{{!-- ===========================================================
+     Merge Request note frontmatter
+     All placeholders below come from the GitLab Merge Requests API
+     plus computed fields added by this plugin (repoPath, wikilink,
+     issueLinks). Trim sections to taste.
+============================================================ --}}
+id: "{{id}}"
+iid: "{{iid}}"
+projectId: "{{project_id}}"
+title: "{{{title}}}"
+state: "{{state}}"
+draft: "{{draft}}"
+workInProgress: "{{work_in_progress}}"
+squash: "{{squash}}"
+mergeStatus: "{{merge_status}}"
+detailedMergeStatus: "{{detailed_merge_status}}"
+sha: "{{sha}}"
+createdAt: "{{created_at}}"
+updatedAt: "{{updated_at}}"
+mergedAt: "{{merged_at}}"
+closedAt: "{{closed_at}}"
+sourceBranch: "{{source_branch}}"
+targetBranch: "{{target_branch}}"
+webUrl: "{{web_url}}"
+project: "{{references.full}}"
+projectShort: "{{references.short}}"
+projectRelative: "{{references.relative}}"
+author: "{{author.name}}"
+authorUsername: "{{author.username}}"
+upvotes: "{{upvotes}}"
+downvotes: "{{downvotes}}"
+userNotesCount: "{{user_notes_count}}"
+tasksCompleted: "{{task_completion_status.completed_count}}"
+tasksTotal: "{{task_completion_status.count}}"
+{{#if assignees.length}}
+assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if reviewers.length}}
+reviewers: [{{#each reviewers}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if labels.length}}
+labels: [{{#each labels}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+{{#if milestone}}
+milestone: "{{milestone.title}}"
+milestoneIid: "{{milestone.iid}}"
+milestoneState: "{{milestone.state}}"
+milestoneDueDate: "{{milestone.due_date}}"
+{{/if}}
+{{#if time_stats}}
+timeEstimate: "{{time_stats.time_estimate}}"
+timeSpent: "{{time_stats.total_time_spent}}"
+humanTimeEstimate: "{{time_stats.human_time_spent}}"
+humanTotalTimeSpent: "{{time_stats.human_total_time_spent}}"
+{{/if}}
+{{#if issueLinks.length}}
+issueLinks: [{{#each issueLinks}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
+{{/if}}
+repoPath: "{{repoPath}}"
+wikilink: "{{wikilink}}"
+---
+
+# !{{iid}} \xB7 {{{title}}}
+
+**Status:** {{state}}{{#if draft}} (Draft){{/if}}{{#if detailed_merge_status}} \xB7 {{detailed_merge_status}}{{/if}}
+**Branch:** \`{{source_branch}}\` \u2192 \`{{target_branch}}\`
+**Author:** {{author.name}} (@{{author.username}})
+**Created:** {{created_at}} \xB7 **Updated:** {{updated_at}}{{#if merged_at}} \xB7 **Merged:** {{merged_at}}{{/if}}{{#if closed_at}} \xB7 **Closed:** {{closed_at}}{{/if}}
+{{#if assignees.length}}**Assignees:** {{#each assignees}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+{{#if reviewers.length}}**Reviewers:** {{#each reviewers}}{{name}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}
+{{#if labels.length}}**Labels:** {{#each labels}}\`{{this}}\`{{#unless @last}} {{/unless}}{{/each}}{{/if}}
+{{#if milestone}}**Milestone:** {{milestone.title}} ({{milestone.state}}){{/if}}
+
+[View on GitLab]({{web_url}})
+
+---
+
+## Description
+
+{{{description}}}
+
+{{#if issueLinks.length}}
+## Linked Issues
+
+{{#each issueLinks}}
+- {{{this}}}
+{{/each}}
+{{/if}}
+
+{{#if discussions.length}}
+## Discussions
+
+{{#each discussions}}
+{{#each notes}}
+{{#unless system}}
+**{{author.name}}** _{{created_at}}_
+
+> {{{body}}}
+
+{{/unless}}
+{{/each}}
+{{/each}}
+{{/if}}
+
+{{#if activities.length}}
+## Activity
+
+{{#each activities}}
+- **{{user.name}}** _{{created_at}}_ \u2192 \`{{state}}\` ({{resource_type}})
+{{/each}}
+{{/if}}
+
+{{#if changes.length}}
+## Code Diff ({{changes.length}} file(s))
+
+{{#each changes}}
+### \`{{new_path}}\`{{#if new_file}} (new){{/if}}{{#if deleted_file}} (deleted){{/if}}{{#if renamed_file}} (renamed from \`{{old_path}}\`){{/if}}
+
+\`\`\`diff
+{{{diff}}}
+\`\`\`
+
+{{/each}}
+{{/if}}
+`;
+
 // src/main.ts
-var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
+var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
   onload() {
     return __async(this, null, function* () {
       yield this.loadSettings();
@@ -7008,24 +7581,9 @@ var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
           }
         });
         this.addCommand({
-          id: "gitlab-issues-add-comment",
-          name: "Post comment to active Gitlab issue",
-          callback: () => this.commentOnActiveIssue()
-        });
-        this.addCommand({
-          id: "gitlab-issues-add-label",
-          name: "Add label to active Gitlab issue",
-          callback: () => this.addLabelToActiveIssue()
-        });
-        this.addCommand({
-          id: "gitlab-issues-remove-label",
-          name: "Remove label from active Gitlab issue",
-          callback: () => this.removeLabelFromActiveIssue()
-        });
-        this.addCommand({
-          id: "gitlab-issues-set-labels",
-          name: "Set (replace) labels on active Gitlab issue",
-          callback: () => this.replaceLabelsOnActiveIssue()
+          id: "gitlab-issues-manage",
+          name: "Manage active Gitlab issue (comment & labels)",
+          callback: () => this.manageActiveIssue()
         });
         this.addCommand({
           id: "gitlab-issues-close",
@@ -7038,9 +7596,14 @@ var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
           callback: () => this.changeActiveIssueState("reopen")
         });
         this.addCommand({
-          id: "gitlab-issues-apply-template",
-          name: "Apply template to active Gitlab issue",
-          callback: () => this.applyTemplateToActiveIssue()
+          id: "gitlab-issues-create-issue-template-scaffold",
+          name: "Create issue template scaffold (all placeholders)",
+          callback: () => this.openTemplateScaffoldModal("issue")
+        });
+        this.addCommand({
+          id: "gitlab-issues-create-mr-template-scaffold",
+          name: "Create merge request template scaffold (all placeholders)",
+          callback: () => this.openTemplateScaffoldModal("mr")
         });
         this.fs.createOutputDirectory();
         this.scheduleAutomaticRefresh();
@@ -7093,16 +7656,34 @@ var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
     }
   }
   fetchIssuesFromGitlab() {
-    new import_obsidian5.Notice("Fetching Gitlab issues...");
-    const loader = new GitlabLoader(this.app, this.settings);
+    new import_obsidian7.Notice("Fetching Gitlab issues...");
+    const loader = new GitlabLoader(this.app, this.settings, (labels) => this.recordKnownLabels(labels));
     loader.loadIssues();
+  }
+  recordKnownLabels(incoming) {
+    return __async(this, null, function* () {
+      var _a;
+      if (!incoming || incoming.length === 0)
+        return;
+      const set = new Set((_a = this.settings.knownLabels) != null ? _a : []);
+      const before = set.size;
+      incoming.forEach((l) => {
+        const trimmed = String(l).trim();
+        if (trimmed.length > 0)
+          set.add(trimmed);
+      });
+      if (set.size === before)
+        return;
+      this.settings.knownLabels = Array.from(set).sort((a, b) => a.localeCompare(b, void 0, { sensitivity: "base" }));
+      yield this.saveSettings();
+    });
   }
   fetchMergeRequestsFromGitlab() {
     if (!this.settings.fetchMergeRequests) {
-      new import_obsidian5.Notice("Enable 'Import Merge Requests' in settings to use this command.");
+      new import_obsidian7.Notice("Enable 'Import Merge Requests' in settings to use this command.");
       return;
     }
-    new import_obsidian5.Notice("Fetching Gitlab merge requests...");
+    new import_obsidian7.Notice("Fetching Gitlab merge requests...");
     const loader = new MergeRequestLoader(this.app, this.settings);
     loader.loadMergeRequests();
   }
@@ -7116,129 +7697,45 @@ var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
   resolveActiveIssue() {
     const ctx = getActiveIssueRef(this.app);
     if (!ctx) {
-      new import_obsidian5.Notice("Could not identify a Gitlab issue from the active note. Frontmatter must contain projectId+iid or webUrl.");
+      new import_obsidian7.Notice("Could not identify a Gitlab issue from the active note. Frontmatter must contain projectId+iid or webUrl.");
       return null;
     }
     return ctx;
   }
-  currentLabels(fm) {
-    const raw = fm.labels;
-    if (Array.isArray(raw))
-      return raw.map((s) => String(s));
-    if (typeof raw === "string" && raw.length > 0)
-      return splitLabelList(raw);
-    return [];
-  }
-  commentOnActiveIssue() {
+  manageActiveIssue() {
     const ctx = this.resolveActiveIssue();
     if (!ctx)
       return;
-    new TextInputModal(this.app, {
-      title: `Comment on issue #${ctx.ref.iid}`,
-      placeholder: "Write a comment in Markdown...",
-      multiline: true,
-      submitText: "Post",
-      onSubmit: (body) => __async(this, null, function* () {
-        try {
-          yield postIssueComment(this.settings, ctx.ref, body);
-          new import_obsidian5.Notice(`Comment posted to issue #${ctx.ref.iid}`);
-        } catch (e) {
-          logger(`Failed to post comment: ${e.message}`);
-          new import_obsidian5.Notice(`Failed to post comment: ${e.message}`);
-        }
-      })
+    new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter, {
+      getKnownLabels: () => {
+        var _a;
+        return (_a = this.settings.knownLabels) != null ? _a : [];
+      },
+      onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+      getTemplates: () => {
+        var _a;
+        return (_a = this.settings.issueActionTemplates) != null ? _a : [];
+      }
     }).open();
   }
-  addLabelToActiveIssue() {
-    const ctx = this.resolveActiveIssue();
-    if (!ctx)
-      return;
-    new TextInputModal(this.app, {
-      title: `Add label to issue #${ctx.ref.iid}`,
-      description: "Comma-separated labels are supported.",
-      placeholder: "label-name or label1,label2",
-      submitText: "Add",
-      onSubmit: (value) => __async(this, null, function* () {
-        const toAdd = splitLabelList(value);
-        if (toAdd.length === 0)
-          return;
-        try {
-          const updated = yield updateIssueLabels(this.settings, ctx.ref, { add: toAdd });
-          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-          new import_obsidian5.Notice(`Added label(s) to issue #${ctx.ref.iid}`);
-        } catch (e) {
-          logger(`Failed to add labels: ${e.message}`);
-          new import_obsidian5.Notice(`Failed to add labels: ${e.message}`);
+  openTemplateScaffoldModal(kind) {
+    const currentSettingPath = kind === "issue" ? this.settings.templateFile : this.settings.mrTemplateFile;
+    new TemplateScaffoldModal(this.app, {
+      kind,
+      defaultPath: defaultScaffoldPath(kind),
+      currentSettingPath,
+      onSubmit: (path, overwrite, linkToSettings) => __async(this, null, function* () {
+        const file = yield writeTemplateScaffold(this.app, kind, path, overwrite);
+        if (linkToSettings) {
+          if (kind === "issue") {
+            this.settings.templateFile = file.path;
+          } else {
+            this.settings.mrTemplateFile = file.path;
+          }
+          yield this.saveSettings();
         }
+        new import_obsidian7.Notice(`Template scaffold written to ${file.path}`);
       })
-    }).open();
-  }
-  removeLabelFromActiveIssue() {
-    const ctx = this.resolveActiveIssue();
-    if (!ctx)
-      return;
-    const current = this.currentLabels(ctx.frontmatter);
-    new LabelMultiSelectModal(this.app, {
-      title: `Remove labels from issue #${ctx.ref.iid}`,
-      description: "Tick labels to remove.",
-      labels: current,
-      submitText: "Remove",
-      onSubmit: (toRemove) => __async(this, null, function* () {
-        try {
-          const updated = yield updateIssueLabels(this.settings, ctx.ref, { remove: toRemove });
-          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-          new import_obsidian5.Notice(`Removed label(s) from issue #${ctx.ref.iid}`);
-        } catch (e) {
-          logger(`Failed to remove labels: ${e.message}`);
-          new import_obsidian5.Notice(`Failed to remove labels: ${e.message}`);
-        }
-      })
-    }).open();
-  }
-  replaceLabelsOnActiveIssue() {
-    const ctx = this.resolveActiveIssue();
-    if (!ctx)
-      return;
-    const current = this.currentLabels(ctx.frontmatter);
-    new TextInputModal(this.app, {
-      title: `Set labels on issue #${ctx.ref.iid}`,
-      description: "Comma-separated. The list fully replaces existing labels (empty value clears all labels).",
-      placeholder: "label1, label2",
-      defaultValue: current.join(", "),
-      submitText: "Apply",
-      onSubmit: (value) => __async(this, null, function* () {
-        const replace = splitLabelList(value);
-        try {
-          const updated = yield updateIssueLabels(this.settings, ctx.ref, { replace });
-          yield updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-          new import_obsidian5.Notice(`Labels updated on issue #${ctx.ref.iid}`);
-        } catch (e) {
-          logger(`Failed to set labels: ${e.message}`);
-          new import_obsidian5.Notice(`Failed to set labels: ${e.message}`);
-        }
-      })
-    }).open();
-  }
-  applyTemplateToActiveIssue() {
-    var _a;
-    const ctx = this.resolveActiveIssue();
-    if (!ctx)
-      return;
-    const templates = (_a = this.settings.issueActionTemplates) != null ? _a : [];
-    if (templates.length === 0) {
-      new import_obsidian5.Notice("No issue action templates configured. Add some in plugin settings.");
-      return;
-    }
-    new TemplateSuggestModal(this.app, templates, (template) => {
-      new TemplatePreviewModal(this.app, template, ctx.ref.iid, (commentBody) => __async(this, null, function* () {
-        try {
-          yield executeIssueActionTemplate(this.app, this.settings, ctx.ref, ctx.file, template, commentBody);
-          new import_obsidian5.Notice(`Applied "${template.name}" to issue #${ctx.ref.iid}`);
-        } catch (e) {
-          logger(`Failed to apply template: ${e.message}`);
-          new import_obsidian5.Notice(`Failed to apply template: ${e.message}`);
-        }
-      })).open();
     }).open();
   }
   changeActiveIssueState(stateEvent) {
@@ -7254,10 +7751,11 @@ var GitlabIssuesPlugin = class extends import_obsidian5.Plugin {
         try {
           const state = yield setIssueState(this.settings, ctx.ref, stateEvent);
           yield updateNoteFrontmatter(this.app, ctx.file, { state });
-          new import_obsidian5.Notice(`Issue #${ctx.ref.iid} ${state}`);
+          yield moveIssueFileForState(this.app, ctx.file, state);
+          new import_obsidian7.Notice(`Issue #${ctx.ref.iid} ${state}`);
         } catch (e) {
           logger(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
-          new import_obsidian5.Notice(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
+          new import_obsidian7.Notice(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
         }
       })
     }).open();

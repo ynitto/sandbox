@@ -8,20 +8,20 @@ import Filesystem from "./filesystem";
 import { logger } from "./utils/utils";
 import {
 	getActiveIssueRef,
-	postIssueComment,
-	updateIssueLabels,
 	setIssueState,
 	updateNoteFrontmatter,
-	splitLabelList,
-	executeIssueActionTemplate,
+	moveIssueFileForState,
 } from "./IssueActions/actions";
 import {
-	TextInputModal,
-	LabelMultiSelectModal,
 	ConfirmModal,
-	TemplateSuggestModal,
-	TemplatePreviewModal,
+	IssueActionsModal,
+	TemplateScaffoldModal,
 } from "./IssueActions/modals";
+import {
+	defaultScaffoldPath,
+	writeTemplateScaffold,
+	TemplateScaffoldKind,
+} from "./utils/template-scaffolds";
 
 export default class GitlabIssuesPlugin extends Plugin {
 	settings: GitlabIssuesSettings;
@@ -61,27 +61,9 @@ export default class GitlabIssuesPlugin extends Plugin {
 			});
 
 			this.addCommand({
-				id: "gitlab-issues-add-comment",
-				name: "Post comment to active Gitlab issue",
-				callback: () => this.commentOnActiveIssue(),
-			});
-
-			this.addCommand({
-				id: "gitlab-issues-add-label",
-				name: "Add label to active Gitlab issue",
-				callback: () => this.addLabelToActiveIssue(),
-			});
-
-			this.addCommand({
-				id: "gitlab-issues-remove-label",
-				name: "Remove label from active Gitlab issue",
-				callback: () => this.removeLabelFromActiveIssue(),
-			});
-
-			this.addCommand({
-				id: "gitlab-issues-set-labels",
-				name: "Set (replace) labels on active Gitlab issue",
-				callback: () => this.replaceLabelsOnActiveIssue(),
+				id: "gitlab-issues-manage",
+				name: "Manage active Gitlab issue (comment & labels)",
+				callback: () => this.manageActiveIssue(),
 			});
 
 			this.addCommand({
@@ -97,9 +79,15 @@ export default class GitlabIssuesPlugin extends Plugin {
 			});
 
 			this.addCommand({
-				id: "gitlab-issues-apply-template",
-				name: "Apply template to active Gitlab issue",
-				callback: () => this.applyTemplateToActiveIssue(),
+				id: "gitlab-issues-create-issue-template-scaffold",
+				name: "Create issue template scaffold (all placeholders)",
+				callback: () => this.openTemplateScaffoldModal("issue"),
+			});
+
+			this.addCommand({
+				id: "gitlab-issues-create-mr-template-scaffold",
+				name: "Create merge request template scaffold (all placeholders)",
+				callback: () => this.openTemplateScaffoldModal("mr"),
 			});
 
 			this.fs.createOutputDirectory();
@@ -162,8 +150,25 @@ export default class GitlabIssuesPlugin extends Plugin {
 
 	private fetchIssuesFromGitlab() {
 		new Notice("Fetching Gitlab issues...");
-		const loader = new GitlabLoader(this.app, this.settings);
+		const loader = new GitlabLoader(this.app, this.settings, (labels) =>
+			this.recordKnownLabels(labels)
+		);
 		loader.loadIssues();
+	}
+
+	public async recordKnownLabels(incoming: string[]): Promise<void> {
+		if (!incoming || incoming.length === 0) return;
+		const set = new Set<string>(this.settings.knownLabels ?? []);
+		const before = set.size;
+		incoming.forEach((l) => {
+			const trimmed = String(l).trim();
+			if (trimmed.length > 0) set.add(trimmed);
+		});
+		if (set.size === before) return;
+		this.settings.knownLabels = Array.from(set).sort((a, b) =>
+			a.localeCompare(b, undefined, { sensitivity: "base" })
+		);
+		await this.saveSettings();
 	}
 
 	private fetchMergeRequestsFromGitlab() {
@@ -195,133 +200,35 @@ export default class GitlabIssuesPlugin extends Plugin {
 		return ctx;
 	}
 
-	private currentLabels(fm: Record<string, any>): string[] {
-		const raw = fm.labels;
-		if (Array.isArray(raw)) return raw.map((s) => String(s));
-		if (typeof raw === "string" && raw.length > 0) return splitLabelList(raw);
-		return [];
-	}
-
-	private commentOnActiveIssue() {
+	private manageActiveIssue() {
 		const ctx = this.resolveActiveIssue();
 		if (!ctx) return;
-
-		new TextInputModal(this.app, {
-			title: `Comment on issue #${ctx.ref.iid}`,
-			placeholder: "Write a comment in Markdown...",
-			multiline: true,
-			submitText: "Post",
-			onSubmit: async (body) => {
-				try {
-					await postIssueComment(this.settings, ctx.ref, body);
-					new Notice(`Comment posted to issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to post comment: ${e.message}`);
-					new Notice(`Failed to post comment: ${e.message}`);
-				}
-			},
+		new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter, {
+			getKnownLabels: () => this.settings.knownLabels ?? [],
+			onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+			getTemplates: () => this.settings.issueActionTemplates ?? [],
 		}).open();
 	}
 
-	private addLabelToActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-
-		new TextInputModal(this.app, {
-			title: `Add label to issue #${ctx.ref.iid}`,
-			description: "Comma-separated labels are supported.",
-			placeholder: "label-name or label1,label2",
-			submitText: "Add",
-			onSubmit: async (value) => {
-				const toAdd = splitLabelList(value);
-				if (toAdd.length === 0) return;
-				try {
-					const updated = await updateIssueLabels(this.settings, ctx.ref, { add: toAdd });
-					await updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-					new Notice(`Added label(s) to issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to add labels: ${e.message}`);
-					new Notice(`Failed to add labels: ${e.message}`);
+	public openTemplateScaffoldModal(kind: TemplateScaffoldKind): void {
+		const currentSettingPath =
+			kind === "issue" ? this.settings.templateFile : this.settings.mrTemplateFile;
+		new TemplateScaffoldModal(this.app, {
+			kind,
+			defaultPath: defaultScaffoldPath(kind),
+			currentSettingPath,
+			onSubmit: async (path, overwrite, linkToSettings) => {
+				const file = await writeTemplateScaffold(this.app, kind, path, overwrite);
+				if (linkToSettings) {
+					if (kind === "issue") {
+						this.settings.templateFile = file.path;
+					} else {
+						this.settings.mrTemplateFile = file.path;
+					}
+					await this.saveSettings();
 				}
+				new Notice(`Template scaffold written to ${file.path}`);
 			},
-		}).open();
-	}
-
-	private removeLabelFromActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-		const current = this.currentLabels(ctx.frontmatter);
-
-		new LabelMultiSelectModal(this.app, {
-			title: `Remove labels from issue #${ctx.ref.iid}`,
-			description: "Tick labels to remove.",
-			labels: current,
-			submitText: "Remove",
-			onSubmit: async (toRemove) => {
-				try {
-					const updated = await updateIssueLabels(this.settings, ctx.ref, { remove: toRemove });
-					await updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-					new Notice(`Removed label(s) from issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to remove labels: ${e.message}`);
-					new Notice(`Failed to remove labels: ${e.message}`);
-				}
-			},
-		}).open();
-	}
-
-	private replaceLabelsOnActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-		const current = this.currentLabels(ctx.frontmatter);
-
-		new TextInputModal(this.app, {
-			title: `Set labels on issue #${ctx.ref.iid}`,
-			description: "Comma-separated. The list fully replaces existing labels (empty value clears all labels).",
-			placeholder: "label1, label2",
-			defaultValue: current.join(", "),
-			submitText: "Apply",
-			onSubmit: async (value) => {
-				const replace = splitLabelList(value);
-				try {
-					const updated = await updateIssueLabels(this.settings, ctx.ref, { replace });
-					await updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-					new Notice(`Labels updated on issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to set labels: ${e.message}`);
-					new Notice(`Failed to set labels: ${e.message}`);
-				}
-			},
-		}).open();
-	}
-
-	private applyTemplateToActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-
-		const templates = this.settings.issueActionTemplates ?? [];
-		if (templates.length === 0) {
-			new Notice("No issue action templates configured. Add some in plugin settings.");
-			return;
-		}
-
-		new TemplateSuggestModal(this.app, templates, (template) => {
-			new TemplatePreviewModal(this.app, template, ctx.ref.iid, async (commentBody) => {
-				try {
-					await executeIssueActionTemplate(
-						this.app,
-						this.settings,
-						ctx.ref,
-						ctx.file,
-						template,
-						commentBody
-					);
-					new Notice(`Applied "${template.name}" to issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to apply template: ${e.message}`);
-					new Notice(`Failed to apply template: ${e.message}`);
-				}
-			}).open();
 		}).open();
 	}
 
@@ -338,6 +245,7 @@ export default class GitlabIssuesPlugin extends Plugin {
 				try {
 					const state = await setIssueState(this.settings, ctx.ref, stateEvent);
 					await updateNoteFrontmatter(this.app, ctx.file, { state });
+					await moveIssueFileForState(this.app, ctx.file, state);
 					new Notice(`Issue #${ctx.ref.iid} ${state}`);
 				} catch (e: any) {
 					logger(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);

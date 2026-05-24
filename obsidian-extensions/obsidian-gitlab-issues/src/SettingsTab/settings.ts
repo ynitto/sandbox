@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS = {
 	fetchMrChanges: false,
 	labelPropertyMappings: [],
 	issueActionTemplates: [],
+	knownLabels: [],
 	maxItems: 20,
 	maxMrItems: 20,
 	staleDays: 0,

@@ -11,10 +11,16 @@ import { extractRepoPath, sanitizeFolderSegment, sanitizeRepoPath } from "./repo
 export default class GitlabLoader {
 	private fs: Filesystem;
 	private settings: GitlabIssuesSettings;
+	private onLabelsCollected?: (labels: string[]) => void | Promise<void>;
 
-	constructor(app: App, settings: GitlabIssuesSettings) {
+	constructor(
+		app: App,
+		settings: GitlabIssuesSettings,
+		onLabelsCollected?: (labels: string[]) => void | Promise<void>
+	) {
 		this.fs = new Filesystem(app.vault, settings);
 		this.settings = settings;
+		this.onLabelsCollected = onLabelsCollected;
 	}
 
 	getUrl() {
@@ -139,6 +145,14 @@ export default class GitlabLoader {
 				this.fs.purgeExistingIssues();
 			}
 			this.fs.processIssues(gitlabIssues);
+
+			if (this.onLabelsCollected) {
+				const collected = new Set<string>();
+				gitlabIssues.forEach((i) => (i.labels ?? []).forEach((l) => collected.add(l)));
+				if (collected.size > 0) {
+					await this.onLabelsCollected(Array.from(collected));
+				}
+			}
 		} catch (error: any) {
 			logger(error.message);
 		}

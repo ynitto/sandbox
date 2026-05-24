@@ -1,5 +1,15 @@
-import { App, FuzzySuggestModal, Modal, Setting } from "obsidian";
-import { IssueActionTemplate } from "../SettingsTab/settings-types";
+import { App, Modal, Notice, Setting, TFile } from "obsidian";
+import { IssueActionTemplate, GitlabIssuesSettings } from "../SettingsTab/settings-types";
+import {
+	IssueRef,
+	postIssueComment,
+	applyLabelChanges,
+	updateNoteFrontmatter,
+	setIssueState,
+	splitLabelList,
+	moveIssueFileForState,
+} from "./actions";
+import { logger } from "../utils/utils";
 
 export class TextInputModal extends Modal {
 	private value: string;
@@ -146,88 +156,454 @@ export class LabelMultiSelectModal extends Modal {
 	}
 }
 
-export class TemplateSuggestModal extends FuzzySuggestModal<IssueActionTemplate> {
-	constructor(
-		app: App,
-		private templates: IssueActionTemplate[],
-		private onSelect: (template: IssueActionTemplate) => void
-	) {
-		super(app);
-		this.setPlaceholder("Pick an issue action template...");
-	}
-
-	getItems(): IssueActionTemplate[] {
-		return this.templates;
-	}
-
-	getItemText(item: IssueActionTemplate): string {
-		return item.name;
-	}
-
-	onChooseItem(item: IssueActionTemplate): void {
-		this.onSelect(item);
-	}
+export interface IssueActionsModalHooks {
+	getKnownLabels?: () => string[];
+	onLabelsLearned?: (labels: string[]) => void | Promise<void>;
+	getTemplates?: () => IssueActionTemplate[];
 }
 
-export class TemplatePreviewModal extends Modal {
-	private commentBody: string | null;
+interface IssueActionsFormRefs {
+	commentTextarea: HTMLTextAreaElement;
+	addInput: HTMLInputElement;
+	removeInput: HTMLInputElement;
+}
+
+export class IssueActionsModal extends Modal {
+	private file: TFile;
+	private labels: string[];
+	private commentBody = "";
+	private formRefs: IssueActionsFormRefs | null = null;
 
 	constructor(
 		app: App,
-		private template: IssueActionTemplate,
-		private iid: number,
-		private onSubmit: (commentBody: string | null) => void
+		private settings: GitlabIssuesSettings,
+		private ref: IssueRef,
+		file: TFile,
+		frontmatter: Record<string, any>,
+		private hooks: IssueActionsModalHooks = {}
 	) {
 		super(app);
-		this.commentBody = template.commentBody !== undefined ? template.commentBody : null;
+		this.file = file;
+		this.labels = this.readLabels(frontmatter);
+	}
+
+	private knownLabels(): string[] {
+		const arr = this.hooks.getKnownLabels ? this.hooks.getKnownLabels() : [];
+		return arr ?? [];
+	}
+
+	private async announceLearned(labels: string[]): Promise<void> {
+		if (!this.hooks.onLabelsLearned || labels.length === 0) return;
+		try {
+			await this.hooks.onLabelsLearned(labels);
+		} catch (e: any) {
+			logger(`Failed to record known labels: ${e.message}`);
+		}
+	}
+
+	private appendToInput(input: HTMLInputElement, label: string): void {
+		const existing = splitLabelList(input.value);
+		if (existing.includes(label)) return;
+		existing.push(label);
+		input.value = existing.join(", ");
+		input.focus();
+	}
+
+	private renderChips(
+		parent: HTMLElement,
+		suggestions: string[],
+		emptyText: string,
+		onPick: (label: string) => void
+	): HTMLElement {
+		const wrap = parent.createDiv();
+		wrap.style.display = "flex";
+		wrap.style.flexWrap = "wrap";
+		wrap.style.gap = "4px";
+		wrap.style.margin = "4px 0";
+		if (suggestions.length === 0) {
+			wrap.createEl("span", {
+				text: emptyText,
+				cls: "setting-item-description",
+			});
+			return wrap;
+		}
+		suggestions.forEach((label) => {
+			const chip = wrap.createEl("button", { text: label });
+			chip.type = "button";
+			chip.style.padding = "1px 8px";
+			chip.style.fontSize = "12px";
+			chip.style.borderRadius = "10px";
+			chip.style.cursor = "pointer";
+			chip.addEventListener("click", (e) => {
+				e.preventDefault();
+				onPick(label);
+			});
+		});
+		return wrap;
+	}
+
+	private readLabels(fm: Record<string, any>): string[] {
+		const raw = fm?.labels;
+		if (Array.isArray(raw)) return raw.map((s) => String(s));
+		if (typeof raw === "string" && raw.length > 0) return splitLabelList(raw);
+		return [];
+	}
+
+	private get state(): string {
+		const fm = this.app.metadataCache.getFileCache(this.file)?.frontmatter as
+			| Record<string, any>
+			| undefined;
+		return fm?.state ? String(fm.state) : "opened";
 	}
 
 	onOpen(): void {
 		const { contentEl } = this;
-		contentEl.createEl("h3", { text: `Apply template: ${this.template.name}` });
-		contentEl.createEl("p", { text: `Target: issue #${this.iid}` });
+		contentEl.empty();
+		this.formRefs = null;
+		contentEl.createEl("h3", { text: `Manage issue #${this.ref.iid}` });
+		this.renderTemplateSection(contentEl);
+		contentEl.createEl("hr");
+		this.renderCommentSection(contentEl);
+		contentEl.createEl("hr");
+		this.renderLabelsSection(contentEl);
+		contentEl.createEl("hr");
+		this.renderStateSection(contentEl);
+		contentEl.createEl("hr");
+		new Setting(contentEl).addButton((btn) =>
+			btn.setButtonText("Close").onClick(() => this.close())
+		);
+	}
 
-		const summary = contentEl.createEl("ul");
-		summary.style.margin = "8px 0";
-		if (this.template.commentBody !== undefined) {
-			summary.createEl("li", { text: "Post comment (editable below)" });
-		}
-		if (this.template.labelsReplace !== undefined) {
-			const list = this.template.labelsReplace.length > 0 ? this.template.labelsReplace.join(", ") : "(clear all)";
-			summary.createEl("li", { text: `Replace labels with: ${list}` });
-		} else {
-			if (this.template.labelsAdd && this.template.labelsAdd.length > 0) {
-				summary.createEl("li", { text: `Add labels: ${this.template.labelsAdd.join(", ")}` });
-			}
-			if (this.template.labelsRemove && this.template.labelsRemove.length > 0) {
-				summary.createEl("li", { text: `Remove labels: ${this.template.labelsRemove.join(", ")}` });
-			}
-		}
-		if (summary.children.length === 0) {
-			summary.createEl("li", { text: "(template has no actions configured)" });
-		}
+	private getTemplates(): IssueActionTemplate[] {
+		return this.hooks.getTemplates ? this.hooks.getTemplates() ?? [] : [];
+	}
 
-		if (this.commentBody !== null) {
-			const labelEl = contentEl.createEl("div");
-			labelEl.createEl("label", { text: "Comment body:" });
-			const ta = labelEl.createEl("textarea");
-			ta.rows = 8;
-			ta.style.width = "100%";
-			ta.style.marginTop = "4px";
-			ta.value = this.commentBody;
-			ta.addEventListener("input", () => {
-				this.commentBody = ta.value;
+	private renderTemplateSection(parent: HTMLElement): void {
+		const templates = this.getTemplates();
+		parent.createEl("h4", { text: "Template" });
+		if (templates.length === 0) {
+			parent.createEl("p", {
+				cls: "setting-item-description",
+				text: "No templates configured. Add some in plugin settings to pre-fill the form below.",
 			});
+			return;
 		}
+
+		parent.createEl("p", {
+			cls: "setting-item-description",
+			text: "Pick a template and click Load to overwrite the form inputs below with the saved content.",
+		});
+
+		let selectedId: string = templates[0].id;
+		const row = new Setting(parent);
+		row.addDropdown((dd) => {
+			templates.forEach((t) => dd.addOption(t.id, t.name));
+			dd.setValue(selectedId);
+			dd.onChange((v) => {
+				selectedId = v;
+			});
+		});
+		row.addButton((btn) =>
+			btn
+				.setButtonText("Load into form")
+				.onClick(() => {
+					const tmpl = templates.find((t) => t.id === selectedId);
+					if (!tmpl) return;
+					this.applyTemplateToForm(tmpl);
+					new Notice(`Loaded template "${tmpl.name}" into form`);
+				})
+		);
+	}
+
+	private applyTemplateToForm(tmpl: IssueActionTemplate): void {
+		if (!this.formRefs) return;
+		if (tmpl.commentBody !== undefined) {
+			this.formRefs.commentTextarea.value = tmpl.commentBody;
+			this.commentBody = tmpl.commentBody;
+		}
+
+		// Legacy replace = remove "*" then add labelsReplace
+		if (tmpl.labelsReplace !== undefined) {
+			this.formRefs.removeInput.value = "*";
+			this.formRefs.addInput.value = (tmpl.labelsReplace ?? []).join(", ");
+			return;
+		}
+
+		if (tmpl.labelsAdd !== undefined) {
+			this.formRefs.addInput.value = (tmpl.labelsAdd ?? []).join(", ");
+		}
+		if (tmpl.labelsRemove !== undefined) {
+			this.formRefs.removeInput.value = (tmpl.labelsRemove ?? []).join(", ");
+		}
+	}
+
+	private renderCommentSection(parent: HTMLElement): void {
+		parent.createEl("h4", { text: "Post comment" });
+		const wrap = parent.createDiv();
+		wrap.style.margin = "8px 0";
+		const ta = wrap.createEl("textarea");
+		ta.rows = 5;
+		ta.style.width = "100%";
+		ta.placeholder = "Write a comment in Markdown...";
+		ta.addEventListener("input", () => {
+			this.commentBody = ta.value;
+		});
+		this.formRefs = {
+			...(this.formRefs ?? ({} as IssueActionsFormRefs)),
+			commentTextarea: ta,
+		};
+
+		new Setting(parent).addButton((btn) =>
+			btn
+				.setButtonText("Post comment")
+				.setCta()
+				.onClick(async () => {
+					const body = this.commentBody.trim();
+					if (!body) {
+						new Notice("Comment is empty.");
+						return;
+					}
+					btn.setDisabled(true);
+					try {
+						await postIssueComment(this.settings, this.ref, body);
+						new Notice(`Comment posted to issue #${this.ref.iid}`);
+						ta.value = "";
+						this.commentBody = "";
+					} catch (e: any) {
+						logger(`Failed to post comment: ${e.message}`);
+						new Notice(`Failed to post comment: ${e.message}`);
+					} finally {
+						btn.setDisabled(false);
+					}
+				})
+		);
+	}
+
+	private renderLabelsSection(parent: HTMLElement): void {
+		parent.createEl("h4", { text: "Labels" });
+
+		const currentEl = parent.createDiv();
+		currentEl.style.margin = "6px 0";
+		const renderCurrent = () => {
+			currentEl.empty();
+			currentEl.createEl("div", {
+				text: "Current labels:",
+				cls: "setting-item-description",
+			});
+			this.renderChips(currentEl, this.labels, "(no labels)", () => {});
+		};
+		renderCurrent();
+
+		// Add section
+		parent.createEl("div", {
+			text: "Add labels (comma-separated, custom OK)",
+			cls: "setting-item-description",
+		});
+		const addInputWrap = parent.createDiv();
+		addInputWrap.style.margin = "4px 0";
+		const addInput = addInputWrap.createEl("input", { type: "text" });
+		addInput.placeholder = "label1, label2";
+		addInput.style.width = "100%";
+
+		const addSuggestionsEl = parent.createDiv();
+		const renderAddSuggestions = () => {
+			addSuggestionsEl.empty();
+			const known = this.knownLabels();
+			const current = new Set(this.labels);
+			const suggestions = known.filter((l) => !current.has(l));
+			addSuggestionsEl.createEl("div", {
+				text: "Known labels (click to add):",
+				cls: "setting-item-description",
+			});
+			this.renderChips(
+				addSuggestionsEl,
+				suggestions,
+				"(no recorded labels yet — fetch issues first, or just type custom labels above)",
+				(label) => this.appendToInput(addInput, label)
+			);
+		};
+		renderAddSuggestions();
+
+		// Remove section
+		parent.createEl("div", {
+			text: "Remove labels (comma-separated, wildcards OK — e.g. status:*)",
+			cls: "setting-item-description",
+		});
+		const removeInputWrap = parent.createDiv();
+		removeInputWrap.style.margin = "4px 0";
+		const removeInput = removeInputWrap.createEl("input", { type: "text" });
+		removeInput.placeholder = "label1, status:*";
+		removeInput.style.width = "100%";
+
+		const removeSuggestionsEl = parent.createDiv();
+		const renderRemoveSuggestions = () => {
+			removeSuggestionsEl.empty();
+			removeSuggestionsEl.createEl("div", {
+				text: "Current labels (click to add to remove list):",
+				cls: "setting-item-description",
+			});
+			this.renderChips(
+				removeSuggestionsEl,
+				this.labels,
+				"(no labels on this issue)",
+				(label) => this.appendToInput(removeInput, label)
+			);
+		};
+		renderRemoveSuggestions();
+
+		this.formRefs = {
+			...(this.formRefs ?? ({} as IssueActionsFormRefs)),
+			addInput,
+			removeInput,
+		};
+
+		new Setting(parent).addButton((btn) =>
+			btn
+				.setButtonText("Apply changes (remove → add)")
+				.setCta()
+				.onClick(async () => {
+					const removePatterns = splitLabelList(removeInput.value);
+					const addList = splitLabelList(addInput.value);
+					if (removePatterns.length === 0 && addList.length === 0) {
+						new Notice("Nothing to apply. Type labels to add or remove first.");
+						return;
+					}
+					btn.setDisabled(true);
+					try {
+						const updated = await applyLabelChanges(
+							this.settings,
+							this.ref,
+							this.labels,
+							removePatterns,
+							addList
+						);
+						await updateNoteFrontmatter(this.app, this.file, { labels: updated });
+						this.labels = updated;
+						addInput.value = "";
+						removeInput.value = "";
+						renderCurrent();
+						renderAddSuggestions();
+						renderRemoveSuggestions();
+						await this.announceLearned(addList);
+						new Notice(`Updated labels on issue #${this.ref.iid}`);
+					} catch (e: any) {
+						logger(`Failed to apply label changes: ${e.message}`);
+						new Notice(`Failed to apply label changes: ${e.message}`);
+					} finally {
+						btn.setDisabled(false);
+					}
+				})
+		);
+	}
+
+	private renderStateSection(parent: HTMLElement): void {
+		parent.createEl("h4", { text: "State" });
+		const statusEl = parent.createEl("p", {
+			text: `Current state: ${this.state}`,
+			cls: "setting-item-description",
+		});
+
+		new Setting(parent)
+			.addButton((btn) =>
+				btn.setButtonText("Close issue").onClick(() => this.changeState("close", btn, statusEl))
+			)
+			.addButton((btn) =>
+				btn.setButtonText("Reopen issue").onClick(() => this.changeState("reopen", btn, statusEl))
+			);
+	}
+
+	private async changeState(
+		stateEvent: "close" | "reopen",
+		btn: { setDisabled: (b: boolean) => any },
+		statusEl: HTMLElement
+	): Promise<void> {
+		btn.setDisabled(true);
+		try {
+			const state = await setIssueState(this.settings, this.ref, stateEvent);
+			await updateNoteFrontmatter(this.app, this.file, { state });
+			this.file = await moveIssueFileForState(this.app, this.file, state);
+			statusEl.setText(`Current state: ${state}`);
+			new Notice(`Issue #${this.ref.iid} ${state}`);
+		} catch (e: any) {
+			logger(`Failed to change state: ${e.message}`);
+			new Notice(`Failed to change state: ${e.message}`);
+		} finally {
+			btn.setDisabled(false);
+		}
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
+export class TemplateScaffoldModal extends Modal {
+	private path: string;
+	private overwrite = false;
+	private linkToSettings = true;
+
+	constructor(
+		app: App,
+		private opts: {
+			kind: "issue" | "mr";
+			defaultPath: string;
+			currentSettingPath?: string;
+			onSubmit: (path: string, overwrite: boolean, linkToSettings: boolean) => Promise<void>;
+		}
+	) {
+		super(app);
+		this.path = opts.currentSettingPath && opts.currentSettingPath.length > 0
+			? opts.currentSettingPath
+			: opts.defaultPath;
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		const label = this.opts.kind === "issue" ? "issue" : "merge request";
+		contentEl.createEl("h3", { text: `Generate ${label} template scaffold` });
+		contentEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Writes a Handlebars template file pre-populated with every supported placeholder. Edit the result to keep only the sections you need.",
+		});
+
+		new Setting(contentEl)
+			.setName("Output path")
+			.setDesc("Path inside the vault, e.g. templates/gitlab-issue.hbs")
+			.addText((text) => {
+				text.inputEl.style.width = "100%";
+				return text.setValue(this.path).onChange((v) => {
+					this.path = v;
+				});
+			});
+
+		new Setting(contentEl)
+			.setName("Overwrite if file exists")
+			.addToggle((t) => t.setValue(this.overwrite).onChange((v) => (this.overwrite = v)));
+
+		new Setting(contentEl)
+			.setName(`Set as ${label} template after creating`)
+			.setDesc(`Updates the "${this.opts.kind === "issue" ? "Template File" : "Merge Request Template File"}" setting to point at the new file.`)
+			.addToggle((t) => t.setValue(this.linkToSettings).onChange((v) => (this.linkToSettings = v)));
 
 		new Setting(contentEl)
 			.addButton((btn) =>
 				btn
-					.setButtonText("Apply")
+					.setButtonText("Generate")
 					.setCta()
-					.onClick(() => {
-						this.close();
-						this.onSubmit(this.commentBody);
+					.onClick(async () => {
+						if (!this.path.trim()) {
+							new Notice("Please specify an output path.");
+							return;
+						}
+						btn.setDisabled(true);
+						try {
+							await this.opts.onSubmit(this.path.trim(), this.overwrite, this.linkToSettings);
+							this.close();
+						} catch (e: any) {
+							new Notice(e.message ?? String(e));
+						} finally {
+							btn.setDisabled(false);
+						}
 					})
 			)
 			.addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
