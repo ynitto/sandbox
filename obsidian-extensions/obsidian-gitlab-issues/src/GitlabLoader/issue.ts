@@ -44,7 +44,9 @@ export class GitlabIssue implements ObsidianIssue {
 	}
 
 	get repoPath(): string {
-		return sanitizeRepoPath(extractRepoPath(this, "issues"));
+		const base = sanitizeRepoPath(extractRepoPath(this, "issues"));
+		const stateFolder = this.state === "closed" ? "Closed" : "Open";
+		return base ? `${base}/${stateFolder}` : stateFolder;
 	}
 
 	get filename(): string {

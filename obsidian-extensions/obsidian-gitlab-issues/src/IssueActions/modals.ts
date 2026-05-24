@@ -1,5 +1,15 @@
-import { App, FuzzySuggestModal, Modal, Setting } from "obsidian";
-import { IssueActionTemplate } from "../SettingsTab/settings-types";
+import { App, FuzzySuggestModal, Modal, Notice, Setting, TFile } from "obsidian";
+import { IssueActionTemplate, GitlabIssuesSettings } from "../SettingsTab/settings-types";
+import {
+	IssueRef,
+	postIssueComment,
+	updateIssueLabels,
+	updateNoteFrontmatter,
+	setIssueState,
+	splitLabelList,
+	moveIssueFileForState,
+} from "./actions";
+import { logger } from "../utils/utils";
 
 export class TextInputModal extends Modal {
 	private value: string;
@@ -231,6 +241,248 @@ export class TemplatePreviewModal extends Modal {
 					})
 			)
 			.addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
+export class IssueActionsModal extends Modal {
+	private file: TFile;
+	private labels: string[];
+	private commentBody = "";
+
+	constructor(
+		app: App,
+		private settings: GitlabIssuesSettings,
+		private ref: IssueRef,
+		file: TFile,
+		frontmatter: Record<string, any>
+	) {
+		super(app);
+		this.file = file;
+		this.labels = this.readLabels(frontmatter);
+	}
+
+	private readLabels(fm: Record<string, any>): string[] {
+		const raw = fm?.labels;
+		if (Array.isArray(raw)) return raw.map((s) => String(s));
+		if (typeof raw === "string" && raw.length > 0) return splitLabelList(raw);
+		return [];
+	}
+
+	private get state(): string {
+		const fm = this.app.metadataCache.getFileCache(this.file)?.frontmatter as
+			| Record<string, any>
+			| undefined;
+		return fm?.state ? String(fm.state) : "opened";
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl("h3", { text: `Manage issue #${this.ref.iid}` });
+		this.renderCommentSection(contentEl);
+		contentEl.createEl("hr");
+		this.renderLabelsSection(contentEl);
+		contentEl.createEl("hr");
+		this.renderStateSection(contentEl);
+		contentEl.createEl("hr");
+		new Setting(contentEl).addButton((btn) =>
+			btn.setButtonText("Close").onClick(() => this.close())
+		);
+	}
+
+	private renderCommentSection(parent: HTMLElement): void {
+		parent.createEl("h4", { text: "Post comment" });
+		const wrap = parent.createDiv();
+		wrap.style.margin = "8px 0";
+		const ta = wrap.createEl("textarea");
+		ta.rows = 5;
+		ta.style.width = "100%";
+		ta.placeholder = "Write a comment in Markdown...";
+		ta.addEventListener("input", () => {
+			this.commentBody = ta.value;
+		});
+
+		new Setting(parent).addButton((btn) =>
+			btn
+				.setButtonText("Post comment")
+				.setCta()
+				.onClick(async () => {
+					const body = this.commentBody.trim();
+					if (!body) {
+						new Notice("Comment is empty.");
+						return;
+					}
+					btn.setDisabled(true);
+					try {
+						await postIssueComment(this.settings, this.ref, body);
+						new Notice(`Comment posted to issue #${this.ref.iid}`);
+						ta.value = "";
+						this.commentBody = "";
+					} catch (e: any) {
+						logger(`Failed to post comment: ${e.message}`);
+						new Notice(`Failed to post comment: ${e.message}`);
+					} finally {
+						btn.setDisabled(false);
+					}
+				})
+		);
+	}
+
+	private renderLabelsSection(parent: HTMLElement): void {
+		parent.createEl("h4", { text: "Labels" });
+
+		const listEl = parent.createDiv();
+		listEl.style.margin = "6px 0";
+		const selected = new Set<string>();
+
+		const renderList = () => {
+			listEl.empty();
+			selected.clear();
+			if (this.labels.length === 0) {
+				listEl.createEl("p", {
+					text: "(no labels)",
+					cls: "setting-item-description",
+				});
+				return;
+			}
+			this.labels.forEach((label) => {
+				const row = listEl.createDiv();
+				row.style.display = "flex";
+				row.style.alignItems = "center";
+				row.style.gap = "6px";
+				row.style.padding = "2px 0";
+				const cb = row.createEl("input", { type: "checkbox" });
+				cb.id = `gitlab-issue-lbl-${label}`;
+				cb.addEventListener("change", () => {
+					if (cb.checked) selected.add(label);
+					else selected.delete(label);
+				});
+				const lblEl = row.createEl("label", { text: label });
+				lblEl.htmlFor = cb.id;
+			});
+		};
+		renderList();
+
+		const addInputWrap = parent.createDiv();
+		addInputWrap.style.margin = "6px 0";
+		const addInput = addInputWrap.createEl("input", { type: "text" });
+		addInput.placeholder = "Add labels (comma-separated)";
+		addInput.style.width = "100%";
+
+		new Setting(parent)
+			.addButton((btn) =>
+				btn.setButtonText("Add").onClick(async () => {
+					const toAdd = splitLabelList(addInput.value);
+					if (toAdd.length === 0) return;
+					btn.setDisabled(true);
+					try {
+						const updated = await updateIssueLabels(this.settings, this.ref, { add: toAdd });
+						await updateNoteFrontmatter(this.app, this.file, { labels: updated });
+						this.labels = updated;
+						addInput.value = "";
+						renderList();
+						new Notice(`Added label(s) to issue #${this.ref.iid}`);
+					} catch (e: any) {
+						logger(`Failed to add labels: ${e.message}`);
+						new Notice(`Failed to add labels: ${e.message}`);
+					} finally {
+						btn.setDisabled(false);
+					}
+				})
+			)
+			.addButton((btn) =>
+				btn.setButtonText("Remove selected").onClick(async () => {
+					const toRemove = Array.from(selected);
+					if (toRemove.length === 0) {
+						new Notice("Tick labels to remove first.");
+						return;
+					}
+					btn.setDisabled(true);
+					try {
+						const updated = await updateIssueLabels(this.settings, this.ref, { remove: toRemove });
+						await updateNoteFrontmatter(this.app, this.file, { labels: updated });
+						this.labels = updated;
+						renderList();
+						new Notice(`Removed label(s) from issue #${this.ref.iid}`);
+					} catch (e: any) {
+						logger(`Failed to remove labels: ${e.message}`);
+						new Notice(`Failed to remove labels: ${e.message}`);
+					} finally {
+						btn.setDisabled(false);
+					}
+				})
+			);
+
+		const replaceWrap = parent.createDiv();
+		replaceWrap.style.margin = "6px 0";
+		replaceWrap.createEl("div", {
+			text: "Replace all labels (empty clears):",
+			cls: "setting-item-description",
+		});
+		const replaceInput = replaceWrap.createEl("input", { type: "text" });
+		replaceInput.style.width = "100%";
+		replaceInput.value = this.labels.join(", ");
+		replaceInput.placeholder = "label1, label2";
+
+		new Setting(parent).addButton((btn) =>
+			btn.setButtonText("Apply replace").onClick(async () => {
+				const replace = splitLabelList(replaceInput.value);
+				btn.setDisabled(true);
+				try {
+					const updated = await updateIssueLabels(this.settings, this.ref, { replace });
+					await updateNoteFrontmatter(this.app, this.file, { labels: updated });
+					this.labels = updated;
+					replaceInput.value = updated.join(", ");
+					renderList();
+					new Notice(`Labels updated on issue #${this.ref.iid}`);
+				} catch (e: any) {
+					logger(`Failed to set labels: ${e.message}`);
+					new Notice(`Failed to set labels: ${e.message}`);
+				} finally {
+					btn.setDisabled(false);
+				}
+			})
+		);
+	}
+
+	private renderStateSection(parent: HTMLElement): void {
+		parent.createEl("h4", { text: "State" });
+		const statusEl = parent.createEl("p", {
+			text: `Current state: ${this.state}`,
+			cls: "setting-item-description",
+		});
+
+		new Setting(parent)
+			.addButton((btn) =>
+				btn.setButtonText("Close issue").onClick(() => this.changeState("close", btn, statusEl))
+			)
+			.addButton((btn) =>
+				btn.setButtonText("Reopen issue").onClick(() => this.changeState("reopen", btn, statusEl))
+			);
+	}
+
+	private async changeState(
+		stateEvent: "close" | "reopen",
+		btn: { setDisabled: (b: boolean) => any },
+		statusEl: HTMLElement
+	): Promise<void> {
+		btn.setDisabled(true);
+		try {
+			const state = await setIssueState(this.settings, this.ref, stateEvent);
+			await updateNoteFrontmatter(this.app, this.file, { state });
+			this.file = await moveIssueFileForState(this.app, this.file, state);
+			statusEl.setText(`Current state: ${state}`);
+			new Notice(`Issue #${this.ref.iid} ${state}`);
+		} catch (e: any) {
+			logger(`Failed to change state: ${e.message}`);
+			new Notice(`Failed to change state: ${e.message}`);
+		} finally {
+			btn.setDisabled(false);
+		}
 	}
 
 	onClose(): void {

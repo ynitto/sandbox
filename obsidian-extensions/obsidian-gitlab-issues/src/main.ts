@@ -8,17 +8,14 @@ import Filesystem from "./filesystem";
 import { logger } from "./utils/utils";
 import {
 	getActiveIssueRef,
-	postIssueComment,
-	updateIssueLabels,
 	setIssueState,
 	updateNoteFrontmatter,
-	splitLabelList,
 	executeIssueActionTemplate,
+	moveIssueFileForState,
 } from "./IssueActions/actions";
 import {
-	TextInputModal,
-	LabelMultiSelectModal,
 	ConfirmModal,
+	IssueActionsModal,
 	TemplateSuggestModal,
 	TemplatePreviewModal,
 } from "./IssueActions/modals";
@@ -61,27 +58,9 @@ export default class GitlabIssuesPlugin extends Plugin {
 			});
 
 			this.addCommand({
-				id: "gitlab-issues-add-comment",
-				name: "Post comment to active Gitlab issue",
-				callback: () => this.commentOnActiveIssue(),
-			});
-
-			this.addCommand({
-				id: "gitlab-issues-add-label",
-				name: "Add label to active Gitlab issue",
-				callback: () => this.addLabelToActiveIssue(),
-			});
-
-			this.addCommand({
-				id: "gitlab-issues-remove-label",
-				name: "Remove label from active Gitlab issue",
-				callback: () => this.removeLabelFromActiveIssue(),
-			});
-
-			this.addCommand({
-				id: "gitlab-issues-set-labels",
-				name: "Set (replace) labels on active Gitlab issue",
-				callback: () => this.replaceLabelsOnActiveIssue(),
+				id: "gitlab-issues-manage",
+				name: "Manage active Gitlab issue (comment & labels)",
+				callback: () => this.manageActiveIssue(),
 			});
 
 			this.addCommand({
@@ -195,104 +174,10 @@ export default class GitlabIssuesPlugin extends Plugin {
 		return ctx;
 	}
 
-	private currentLabels(fm: Record<string, any>): string[] {
-		const raw = fm.labels;
-		if (Array.isArray(raw)) return raw.map((s) => String(s));
-		if (typeof raw === "string" && raw.length > 0) return splitLabelList(raw);
-		return [];
-	}
-
-	private commentOnActiveIssue() {
+	private manageActiveIssue() {
 		const ctx = this.resolveActiveIssue();
 		if (!ctx) return;
-
-		new TextInputModal(this.app, {
-			title: `Comment on issue #${ctx.ref.iid}`,
-			placeholder: "Write a comment in Markdown...",
-			multiline: true,
-			submitText: "Post",
-			onSubmit: async (body) => {
-				try {
-					await postIssueComment(this.settings, ctx.ref, body);
-					new Notice(`Comment posted to issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to post comment: ${e.message}`);
-					new Notice(`Failed to post comment: ${e.message}`);
-				}
-			},
-		}).open();
-	}
-
-	private addLabelToActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-
-		new TextInputModal(this.app, {
-			title: `Add label to issue #${ctx.ref.iid}`,
-			description: "Comma-separated labels are supported.",
-			placeholder: "label-name or label1,label2",
-			submitText: "Add",
-			onSubmit: async (value) => {
-				const toAdd = splitLabelList(value);
-				if (toAdd.length === 0) return;
-				try {
-					const updated = await updateIssueLabels(this.settings, ctx.ref, { add: toAdd });
-					await updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-					new Notice(`Added label(s) to issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to add labels: ${e.message}`);
-					new Notice(`Failed to add labels: ${e.message}`);
-				}
-			},
-		}).open();
-	}
-
-	private removeLabelFromActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-		const current = this.currentLabels(ctx.frontmatter);
-
-		new LabelMultiSelectModal(this.app, {
-			title: `Remove labels from issue #${ctx.ref.iid}`,
-			description: "Tick labels to remove.",
-			labels: current,
-			submitText: "Remove",
-			onSubmit: async (toRemove) => {
-				try {
-					const updated = await updateIssueLabels(this.settings, ctx.ref, { remove: toRemove });
-					await updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-					new Notice(`Removed label(s) from issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to remove labels: ${e.message}`);
-					new Notice(`Failed to remove labels: ${e.message}`);
-				}
-			},
-		}).open();
-	}
-
-	private replaceLabelsOnActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-		const current = this.currentLabels(ctx.frontmatter);
-
-		new TextInputModal(this.app, {
-			title: `Set labels on issue #${ctx.ref.iid}`,
-			description: "Comma-separated. The list fully replaces existing labels (empty value clears all labels).",
-			placeholder: "label1, label2",
-			defaultValue: current.join(", "),
-			submitText: "Apply",
-			onSubmit: async (value) => {
-				const replace = splitLabelList(value);
-				try {
-					const updated = await updateIssueLabels(this.settings, ctx.ref, { replace });
-					await updateNoteFrontmatter(this.app, ctx.file, { labels: updated });
-					new Notice(`Labels updated on issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to set labels: ${e.message}`);
-					new Notice(`Failed to set labels: ${e.message}`);
-				}
-			},
-		}).open();
+		new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter).open();
 	}
 
 	private applyTemplateToActiveIssue() {
@@ -338,6 +223,7 @@ export default class GitlabIssuesPlugin extends Plugin {
 				try {
 					const state = await setIssueState(this.settings, ctx.ref, stateEvent);
 					await updateNoteFrontmatter(this.app, ctx.file, { state });
+					await moveIssueFileForState(this.app, ctx.file, state);
 					new Notice(`Issue #${ctx.ref.iid} ${state}`);
 				} catch (e: any) {
 					logger(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);

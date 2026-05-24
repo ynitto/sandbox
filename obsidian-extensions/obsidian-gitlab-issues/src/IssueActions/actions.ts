@@ -1,4 +1,4 @@
-import { App, TFile } from "obsidian";
+import { App, TFile, normalizePath } from "obsidian";
 import GitlabApi from "../GitlabLoader/gitlab-api";
 import { GitlabIssuesSettings, IssueActionTemplate } from "../SettingsTab/settings-types";
 
@@ -109,6 +109,53 @@ export function splitLabelList(value: string): string[] {
 		.split(",")
 		.map((s) => s.trim())
 		.filter((s) => s.length > 0);
+}
+
+async function ensureFolderPath(app: App, folderPath: string): Promise<void> {
+	if (!folderPath) return;
+	const segments = folderPath.split("/").filter((s) => s.length > 0);
+	let current = "";
+	for (const seg of segments) {
+		current = current ? `${current}/${seg}` : seg;
+		if (app.vault.getAbstractFileByPath(current)) continue;
+		try {
+			await app.vault.createFolder(current);
+		} catch (e: any) {
+			if (!String(e?.message ?? "").includes("Folder already exists")) throw e;
+		}
+	}
+}
+
+export async function moveIssueFileForState(
+	app: App,
+	file: TFile,
+	newState: string
+): Promise<TFile> {
+	const targetFolder = newState === "closed" ? "Closed" : "Open";
+	const oppositeFolder = newState === "closed" ? "Open" : "Closed";
+
+	const parent = file.parent;
+	if (!parent) return file;
+
+	let baseFolderPath: string;
+	if (parent.name === oppositeFolder) {
+		baseFolderPath = parent.parent ? parent.parent.path : "";
+	} else if (parent.name === targetFolder) {
+		return file;
+	} else {
+		baseFolderPath = parent.path;
+	}
+
+	const newFolderPath = baseFolderPath
+		? normalizePath(`${baseFolderPath}/${targetFolder}`)
+		: targetFolder;
+	const newPath = normalizePath(`${newFolderPath}/${file.name}`);
+	if (newPath === file.path) return file;
+
+	await ensureFolderPath(app, newFolderPath);
+	await app.fileManager.renameFile(file, newPath);
+	const moved = app.vault.getAbstractFileByPath(newPath);
+	return moved instanceof TFile ? moved : file;
 }
 
 export async function executeIssueActionTemplate(
