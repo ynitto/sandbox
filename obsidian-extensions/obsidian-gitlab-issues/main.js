@@ -6375,7 +6375,6 @@ var GitlabMergeRequest = class {
 
 // src/filesystem.ts
 var import_obsidian4 = __toModule(require("obsidian"));
-var Handlebars = __toModule(require_handlebars());
 var import_handlebars = __toModule(require_handlebars());
 
 // src/utils/utils.ts
@@ -6565,8 +6564,31 @@ assignees: [{{#each assignees}}"{{name}}"{{#unless @last}}, {{/unless}}{{/each}}
 {{/if}}
 `;
 
+// src/utils/handlebars-helpers.ts
+var Handlebars = __toModule(require_handlebars());
+var registered = false;
+function registerHandlebarsHelpers() {
+  if (registered)
+    return;
+  registered = true;
+  Handlebars.registerHelper("eq", (a, b) => a === b);
+  Handlebars.registerHelper("replace", (input, pattern, replacement) => {
+    if (typeof input !== "string")
+      return input;
+    if (pattern === void 0 || pattern === null || pattern === "")
+      return input;
+    return input.split(String(pattern)).join(String(replacement != null ? replacement : ""));
+  });
+  Handlebars.registerHelper("prefixLines", (input, prefix) => {
+    if (typeof input !== "string")
+      return input;
+    const p = String(prefix != null ? prefix : "");
+    return input.split("\n").map((line) => p + line).join("\n");
+  });
+}
+
 // src/filesystem.ts
-Handlebars.registerHelper("eq", (a, b) => a === b);
+registerHandlebarsHelpers();
 var Filesystem = class {
   constructor(vault, settings2) {
     this.vault = vault;
@@ -7438,6 +7460,14 @@ var ISSUE_TEMPLATE_SCAFFOLD = `---
      a few computed values added by this plugin (repoPath, wikilink,
      relatedMrMode, and any properties from Label Property Mappings).
      Remove sections you do not need; the file is plain Handlebars.
+
+     Custom helpers registered by this plugin:
+       {{eq a b}}                       \u2014 equality test (used by #if)
+       {{replace input "pat" "rep"}}    \u2014 global literal string replace
+       {{prefixLines input "> "}}       \u2014 prefix every line of input
+     Example:
+       {{{prefixLines description "> "}}}   renders the description as
+                                            a Markdown blockquote.
 ============================================================ --}}
 id: "{{id}}"
 iid: "{{iid}}"
@@ -7597,6 +7627,14 @@ var MR_TEMPLATE_SCAFFOLD = `---
      All placeholders below come from the GitLab Merge Requests API
      plus computed fields added by this plugin (repoPath, wikilink,
      issueLinks). Trim sections to taste.
+
+     Custom helpers registered by this plugin:
+       {{eq a b}}                       \u2014 equality test (used by #if)
+       {{replace input "pat" "rep"}}    \u2014 global literal string replace
+       {{prefixLines input "> "}}       \u2014 prefix every line of input
+     Example:
+       {{{prefixLines description "> "}}}   renders the description as
+                                            a Markdown blockquote.
 ============================================================ --}}
 id: "{{id}}"
 iid: "{{iid}}"

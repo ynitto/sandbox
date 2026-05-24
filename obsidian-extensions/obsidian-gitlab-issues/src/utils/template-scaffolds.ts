@@ -55,6 +55,14 @@ export const ISSUE_TEMPLATE_SCAFFOLD = `---
      a few computed values added by this plugin (repoPath, wikilink,
      relatedMrMode, and any properties from Label Property Mappings).
      Remove sections you do not need; the file is plain Handlebars.
+
+     Custom helpers registered by this plugin:
+       {{eq a b}}                       — equality test (used by #if)
+       {{replace input "pat" "rep"}}    — global literal string replace
+       {{prefixLines input "> "}}       — prefix every line of input
+     Example:
+       {{{prefixLines description "> "}}}   renders the description as
+                                            a Markdown blockquote.
 ============================================================ --}}
 id: "{{id}}"
 iid: "{{iid}}"
@@ -215,6 +223,14 @@ export const MR_TEMPLATE_SCAFFOLD = `---
      All placeholders below come from the GitLab Merge Requests API
      plus computed fields added by this plugin (repoPath, wikilink,
      issueLinks). Trim sections to taste.
+
+     Custom helpers registered by this plugin:
+       {{eq a b}}                       — equality test (used by #if)
+       {{replace input "pat" "rep"}}    — global literal string replace
+       {{prefixLines input "> "}}       — prefix every line of input
+     Example:
+       {{{prefixLines description "> "}}}   renders the description as
+                                            a Markdown blockquote.
 ============================================================ --}}
 id: "{{id}}"
 iid: "{{iid}}"

@@ -1,11 +1,11 @@
 import { Vault, TFile, TAbstractFile, TFolder, normalizePath } from "obsidian";
-import * as Handlebars from "handlebars";
 import { compile } from 'handlebars';
 import { ObsidianIssue, ObsidianMergeRequest } from "./GitlabLoader/issue-types";
 import { GitlabIssuesSettings } from "./SettingsTab/settings-types";
 import { DEFAULT_TEMPLATE, DEFAULT_MR_TEMPLATE, logger } from "./utils/utils";
+import { registerHandlebarsHelpers } from "./utils/handlebars-helpers";
 
-Handlebars.registerHelper("eq", (a: unknown, b: unknown) => a === b);
+registerHandlebarsHelpers();
 
 export default class Filesystem {
 	private vault: Vault;
