@@ -5586,7 +5586,7 @@ var require_handlebars = __commonJS({
 __export(exports, {
   default: () => GitlabIssuesPlugin
 });
-var import_obsidian7 = __toModule(require("obsidian"));
+var import_obsidian9 = __toModule(require("obsidian"));
 
 // src/SettingsTab/settings.ts
 var DEFAULT_SETTINGS = {
@@ -6918,6 +6918,9 @@ var MergeRequestLoader = class {
 };
 
 // src/IssueActions/modals.ts
+var import_obsidian6 = __toModule(require("obsidian"));
+
+// src/IssueActions/form.ts
 var import_obsidian5 = __toModule(require("obsidian"));
 function renderLabelDropdown(parent, placeholder, options, onPick) {
   const select = parent.createEl("select");
@@ -6948,20 +6951,48 @@ function appendLabelToInput(input, label) {
   input.value = existing.join(", ");
   input.focus();
 }
-var IssueActionsModal = class extends import_obsidian5.Modal {
-  constructor(app, settings2, ref, file, frontmatter, hooks = {}) {
-    super(app);
+function readLabels(fm) {
+  const raw = fm == null ? void 0 : fm.labels;
+  if (Array.isArray(raw))
+    return raw.map((s) => String(s));
+  if (typeof raw === "string" && raw.length > 0)
+    return splitLabelList(raw);
+  return [];
+}
+var IssueActionsForm = class {
+  constructor(app, settings2, hooks = {}) {
+    this.app = app;
     this.settings = settings2;
-    this.ref = ref;
     this.hooks = hooks;
+    this.file = null;
+    this.ref = null;
+    this.labels = [];
     this.commentBody = "";
     this.formRefs = null;
-    this.file = file;
-    this.labels = this.readLabels(frontmatter);
+  }
+  render(container, ctx) {
+    container.empty();
+    this.formRefs = null;
+    if (!ctx) {
+      const empty = container.createEl("p", { cls: "setting-item-description" });
+      empty.style.padding = "8px";
+      empty.setText("Open a Gitlab issue note (frontmatter with projectId+iid or webUrl) to manage it from this panel.");
+      return;
+    }
+    this.file = ctx.file;
+    this.ref = ctx.ref;
+    this.labels = readLabels(ctx.frontmatter);
+    this.commentBody = "";
+    const heading = container.createEl("h3", { text: `Manage issue #${this.ref.iid}` });
+    heading.style.margin = "0 0 6px";
+    this.renderTemplateSection(container);
+    this.renderCommentSection(container);
+    this.renderLabelsSection(container);
+    this.renderStateSection(container);
   }
   knownLabels() {
-    const arr = this.hooks.getKnownLabels ? this.hooks.getKnownLabels() : [];
-    return arr != null ? arr : [];
+    var _a;
+    return this.hooks.getKnownLabels ? (_a = this.hooks.getKnownLabels()) != null ? _a : [] : [];
   }
   announceLearned(labels) {
     return __async(this, null, function* () {
@@ -6982,36 +7013,19 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     row.style.margin = "4px 0";
     return row;
   }
-  readLabels(fm) {
-    const raw = fm == null ? void 0 : fm.labels;
-    if (Array.isArray(raw))
-      return raw.map((s) => String(s));
-    if (typeof raw === "string" && raw.length > 0)
-      return splitLabelList(raw);
-    return [];
-  }
-  get state() {
-    var _a;
-    const fm = (_a = this.app.metadataCache.getFileCache(this.file)) == null ? void 0 : _a.frontmatter;
-    return (fm == null ? void 0 : fm.state) ? String(fm.state) : "opened";
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    this.formRefs = null;
-    const heading = contentEl.createEl("h3", { text: `Manage issue #${this.ref.iid}` });
-    heading.style.margin = "0 0 6px";
-    this.renderTemplateSection(contentEl);
-    this.renderCommentSection(contentEl);
-    this.renderLabelsSection(contentEl);
-    this.renderStateSection(contentEl);
-  }
   sectionLabel(parent, text) {
     const el = parent.createEl("div", { text });
     el.style.fontSize = "12px";
     el.style.color = "var(--text-muted)";
     el.style.margin = "8px 0 2px";
     return el;
+  }
+  get state() {
+    var _a;
+    if (!this.file)
+      return "opened";
+    const fm = (_a = this.app.metadataCache.getFileCache(this.file)) == null ? void 0 : _a.frontmatter;
+    return (fm == null ? void 0 : fm.state) ? String(fm.state) : "opened";
   }
   getTemplates() {
     var _a;
@@ -7080,6 +7094,8 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     postBtn.classList.add("mod-cta");
     postBtn.addEventListener("click", (e) => __async(this, null, function* () {
       e.preventDefault();
+      if (!this.ref)
+        return;
       const body = this.commentBody.trim();
       if (!body) {
         new import_obsidian5.Notice("Comment is empty.");
@@ -7107,9 +7123,7 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     currentEl.style.margin = "0 0 4px";
     const renderCurrent = () => {
       currentEl.empty();
-      currentEl.createEl("span", {
-        text: "Current: "
-      }).style.color = "var(--text-muted)";
+      currentEl.createEl("span", { text: "Current: " }).style.color = "var(--text-muted)";
       currentEl.createEl("span", {
         text: this.labels.length > 0 ? this.labels.join(", ") : "(none)"
       });
@@ -7157,6 +7171,8 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     applyBtn.classList.add("mod-cta");
     applyBtn.addEventListener("click", (e) => __async(this, null, function* () {
       e.preventDefault();
+      if (!this.ref || !this.file)
+        return;
       const removePatterns = splitLabelList(removeInput.value);
       const addList = splitLabelList(addInput.value);
       if (removePatterns.length === 0 && addList.length === 0) {
@@ -7205,6 +7221,8 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
   }
   changeState(stateEvent, btn, statusEl) {
     return __async(this, null, function* () {
+      if (!this.ref || !this.file)
+        return;
       btn.setAttr("disabled", "true");
       try {
         const state = yield setIssueState(this.settings, this.ref, stateEvent);
@@ -7220,11 +7238,29 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
       }
     });
   }
+};
+
+// src/IssueActions/modals.ts
+var IssueActionsModal = class extends import_obsidian6.Modal {
+  constructor(app, settings2, ref, file, frontmatter, hooks = {}) {
+    super(app);
+    this.ref = ref;
+    this.file = file;
+    this.frontmatter = frontmatter;
+    this.form = new IssueActionsForm(app, settings2, hooks);
+  }
+  onOpen() {
+    this.form.render(this.contentEl, {
+      file: this.file,
+      ref: this.ref,
+      frontmatter: this.frontmatter
+    });
+  }
   onClose() {
     this.contentEl.empty();
   }
 };
-var NewIssueModal = class extends import_obsidian5.Modal {
+var NewIssueModal = class extends import_obsidian6.Modal {
   constructor(app, settings2, defaultProjectId, hooks = {}) {
     super(app);
     this.settings = settings2;
@@ -7331,11 +7367,11 @@ var NewIssueModal = class extends import_obsidian5.Modal {
     submitBtn.addEventListener("click", (e) => __async(this, null, function* () {
       e.preventDefault();
       if (!this.projectId.trim()) {
-        new import_obsidian5.Notice("Project is required.");
+        new import_obsidian6.Notice("Project is required.");
         return;
       }
       if (!this.title.trim()) {
-        new import_obsidian5.Notice("Title is required.");
+        new import_obsidian6.Notice("Title is required.");
         return;
       }
       const labels = splitLabelList(this.labelsValue);
@@ -7362,14 +7398,14 @@ var NewIssueModal = class extends import_obsidian5.Modal {
             logger(`Failed to record known project: ${err.message}`);
           }
         }
-        new import_obsidian5.Notice(`Created issue #${created.iid}`);
+        new import_obsidian6.Notice(`Created issue #${created.iid}`);
         this.close();
         if (this.hooks.onCreated) {
           yield this.hooks.onCreated(created);
         }
       } catch (err) {
         logger(`Failed to create issue: ${err.message}`);
-        new import_obsidian5.Notice(`Failed to create issue: ${err.message}`);
+        new import_obsidian6.Notice(`Failed to create issue: ${err.message}`);
       } finally {
         submitBtn.removeAttribute("disabled");
       }
@@ -7380,7 +7416,7 @@ var NewIssueModal = class extends import_obsidian5.Modal {
     this.contentEl.empty();
   }
 };
-var TemplateScaffoldModal = class extends import_obsidian5.Modal {
+var TemplateScaffoldModal = class extends import_obsidian6.Modal {
   constructor(app, opts) {
     super(app);
     this.opts = opts;
@@ -7396,18 +7432,18 @@ var TemplateScaffoldModal = class extends import_obsidian5.Modal {
       cls: "setting-item-description",
       text: "Writes a Handlebars template file pre-populated with every supported placeholder. Edit the result to keep only the sections you need."
     });
-    new import_obsidian5.Setting(contentEl).setName("Output path").setDesc("Path inside the vault, e.g. templates/gitlab-issue.hbs").addText((text) => {
+    new import_obsidian6.Setting(contentEl).setName("Output path").setDesc("Path inside the vault, e.g. templates/gitlab-issue.hbs").addText((text) => {
       text.inputEl.style.width = "100%";
       return text.setValue(this.path).onChange((v) => {
         this.path = v;
       });
     });
-    new import_obsidian5.Setting(contentEl).setName("Overwrite if file exists").addToggle((t) => t.setValue(this.overwrite).onChange((v) => this.overwrite = v));
-    new import_obsidian5.Setting(contentEl).setName(`Set as ${label} template after creating`).setDesc(`Updates the "${this.opts.kind === "issue" ? "Template File" : "Merge Request Template File"}" setting to point at the new file.`).addToggle((t) => t.setValue(this.linkToSettings).onChange((v) => this.linkToSettings = v));
-    new import_obsidian5.Setting(contentEl).addButton((btn) => btn.setButtonText("Generate").setCta().onClick(() => __async(this, null, function* () {
+    new import_obsidian6.Setting(contentEl).setName("Overwrite if file exists").addToggle((t) => t.setValue(this.overwrite).onChange((v) => this.overwrite = v));
+    new import_obsidian6.Setting(contentEl).setName(`Set as ${label} template after creating`).setDesc(`Updates the "${this.opts.kind === "issue" ? "Template File" : "Merge Request Template File"}" setting to point at the new file.`).addToggle((t) => t.setValue(this.linkToSettings).onChange((v) => this.linkToSettings = v));
+    new import_obsidian6.Setting(contentEl).addButton((btn) => btn.setButtonText("Generate").setCta().onClick(() => __async(this, null, function* () {
       var _a;
       if (!this.path.trim()) {
-        new import_obsidian5.Notice("Please specify an output path.");
+        new import_obsidian6.Notice("Please specify an output path.");
         return;
       }
       btn.setDisabled(true);
@@ -7415,7 +7451,7 @@ var TemplateScaffoldModal = class extends import_obsidian5.Modal {
         yield this.opts.onSubmit(this.path.trim(), this.overwrite, this.linkToSettings);
         this.close();
       } catch (e) {
-        new import_obsidian5.Notice((_a = e.message) != null ? _a : String(e));
+        new import_obsidian6.Notice((_a = e.message) != null ? _a : String(e));
       } finally {
         btn.setDisabled(false);
       }
@@ -7425,7 +7461,7 @@ var TemplateScaffoldModal = class extends import_obsidian5.Modal {
     this.contentEl.empty();
   }
 };
-var ConfirmModal = class extends import_obsidian5.Modal {
+var ConfirmModal = class extends import_obsidian6.Modal {
   constructor(app, opts) {
     super(app);
     this.opts = opts;
@@ -7434,7 +7470,7 @@ var ConfirmModal = class extends import_obsidian5.Modal {
     const { contentEl } = this;
     contentEl.createEl("h3", { text: this.opts.title });
     contentEl.createEl("p", { text: this.opts.message });
-    new import_obsidian5.Setting(contentEl).addButton((btn) => {
+    new import_obsidian6.Setting(contentEl).addButton((btn) => {
       var _a;
       return btn.setButtonText((_a = this.opts.submitText) != null ? _a : "OK").setCta().onClick(() => {
         this.close();
@@ -7447,8 +7483,50 @@ var ConfirmModal = class extends import_obsidian5.Modal {
   }
 };
 
+// src/IssueActions/view.ts
+var import_obsidian7 = __toModule(require("obsidian"));
+var ISSUE_ACTIONS_VIEW_TYPE = "gitlab-issue-actions-view";
+var IssueActionsView = class extends import_obsidian7.ItemView {
+  constructor(leaf, settings2, hooks) {
+    super(leaf);
+    this.trackedFilePath = null;
+    this.form = new IssueActionsForm(this.app, settings2, hooks);
+  }
+  getViewType() {
+    return ISSUE_ACTIONS_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return "Gitlab Issue";
+  }
+  getIcon() {
+    return "git-pull-request";
+  }
+  onOpen() {
+    return __async(this, null, function* () {
+      this.refresh();
+      this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refresh()));
+      this.registerEvent(this.app.metadataCache.on("changed", (file) => {
+        if (this.trackedFilePath && file.path === this.trackedFilePath) {
+          this.refresh();
+        }
+      }));
+    });
+  }
+  onClose() {
+    return __async(this, null, function* () {
+      this.contentEl.empty();
+    });
+  }
+  refresh() {
+    var _a;
+    const ctx = getActiveIssueRef(this.app);
+    this.trackedFilePath = (_a = ctx == null ? void 0 : ctx.file.path) != null ? _a : null;
+    this.form.render(this.contentEl, ctx);
+  }
+};
+
 // src/utils/template-scaffolds.ts
-var import_obsidian6 = __toModule(require("obsidian"));
+var import_obsidian8 = __toModule(require("obsidian"));
 function defaultScaffoldPath(kind) {
   return kind === "issue" ? "templates/gitlab-issue.hbs" : "templates/gitlab-merge-request.hbs";
 }
@@ -7476,11 +7554,11 @@ function ensureParentFolder(app, filePath) {
 }
 function writeTemplateScaffold(app, kind, rawPath, overwrite) {
   return __async(this, null, function* () {
-    const path = (0, import_obsidian6.normalizePath)(rawPath);
+    const path = (0, import_obsidian8.normalizePath)(rawPath);
     yield ensureParentFolder(app, path);
     const existing = app.vault.getAbstractFileByPath(path);
     const content = scaffoldContent(kind);
-    if (existing instanceof import_obsidian6.TFile) {
+    if (existing instanceof import_obsidian8.TFile) {
       if (!overwrite) {
         throw new Error(`A file already exists at "${path}". Tick "Overwrite" to replace it.`);
       }
@@ -7805,11 +7883,12 @@ wikilink: "{{wikilink}}"
 `;
 
 // src/main.ts
-var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
+var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
   onload() {
     return __async(this, null, function* () {
       yield this.loadSettings();
       this.fs = new Filesystem(this.app.vault, this.settings);
+      this.registerView(ISSUE_ACTIONS_VIEW_TYPE, (leaf) => new IssueActionsView(leaf, this.settings, this.buildIssueActionsHooks()));
       if (!this.settings.gitlabToken) {
         logger("Add your Gitlab Personal Token to the plugin settings");
       } else {
@@ -7839,8 +7918,13 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
           callback: () => this.createNewIssue()
         });
         this.addCommand({
+          id: "gitlab-issues-open-panel",
+          name: "Open Gitlab issue panel (sidebar)",
+          callback: () => this.activateIssueActionsView()
+        });
+        this.addCommand({
           id: "gitlab-issues-manage",
-          name: "Manage active Gitlab issue (comment & labels)",
+          name: "Manage active Gitlab issue (modal)",
           callback: () => this.manageActiveIssue()
         });
         this.addCommand({
@@ -7960,7 +8044,7 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
     }
   }
   fetchIssuesFromGitlab() {
-    new import_obsidian7.Notice("Fetching Gitlab issues...");
+    new import_obsidian9.Notice("Fetching Gitlab issues...");
     const loader = new GitlabLoader(this.app, this.settings, {
       onLabelsCollected: (labels) => this.recordKnownLabels(labels),
       onProjectsCollected: (projects) => this.recordKnownProjects(projects)
@@ -7997,10 +8081,10 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
   }
   fetchMergeRequestsFromGitlab() {
     if (!this.settings.fetchMergeRequests) {
-      new import_obsidian7.Notice("Enable 'Import Merge Requests' in settings to use this command.");
+      new import_obsidian9.Notice("Enable 'Import Merge Requests' in settings to use this command.");
       return;
     }
-    new import_obsidian7.Notice("Fetching Gitlab merge requests...");
+    new import_obsidian9.Notice("Fetching Gitlab merge requests...");
     const loader = new MergeRequestLoader(this.app, this.settings);
     loader.loadMergeRequests();
   }
@@ -8014,7 +8098,7 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
   resolveActiveIssue() {
     const ctx = getActiveIssueRef(this.app);
     if (!ctx) {
-      new import_obsidian7.Notice("Could not identify a Gitlab issue from the active note. Frontmatter must contain projectId+iid or webUrl.");
+      new import_obsidian9.Notice("Could not identify a Gitlab issue from the active note. Frontmatter must contain projectId+iid or webUrl.");
       return null;
     }
     return ctx;
@@ -8038,11 +8122,8 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
       }
     }).open();
   }
-  manageActiveIssue() {
-    const ctx = this.resolveActiveIssue();
-    if (!ctx)
-      return;
-    new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter, {
+  buildIssueActionsHooks() {
+    return {
       getKnownLabels: () => {
         var _a;
         return (_a = this.settings.knownLabels) != null ? _a : [];
@@ -8052,7 +8133,27 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
         var _a;
         return (_a = this.settings.issueActionTemplates) != null ? _a : [];
       }
-    }).open();
+    };
+  }
+  activateIssueActionsView() {
+    return __async(this, null, function* () {
+      const { workspace } = this.app;
+      let leaf = workspace.getLeavesOfType(ISSUE_ACTIONS_VIEW_TYPE)[0];
+      if (!leaf) {
+        const rightLeaf = workspace.getRightLeaf(false);
+        if (!rightLeaf)
+          return;
+        leaf = rightLeaf;
+        yield leaf.setViewState({ type: ISSUE_ACTIONS_VIEW_TYPE, active: true });
+      }
+      workspace.revealLeaf(leaf);
+    });
+  }
+  manageActiveIssue() {
+    const ctx = this.resolveActiveIssue();
+    if (!ctx)
+      return;
+    new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter, this.buildIssueActionsHooks()).open();
   }
   openTemplateScaffoldModal(kind) {
     const currentSettingPath = kind === "issue" ? this.settings.templateFile : this.settings.mrTemplateFile;
@@ -8070,7 +8171,7 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
           }
           yield this.saveSettings();
         }
-        new import_obsidian7.Notice(`Template scaffold written to ${file.path}`);
+        new import_obsidian9.Notice(`Template scaffold written to ${file.path}`);
       })
     }).open();
   }
@@ -8088,10 +8189,10 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
           const state = yield setIssueState(this.settings, ctx.ref, stateEvent);
           yield updateNoteFrontmatter(this.app, ctx.file, { state });
           yield moveIssueFileForState(this.app, ctx.file, state);
-          new import_obsidian7.Notice(`Issue #${ctx.ref.iid} ${state}`);
+          new import_obsidian9.Notice(`Issue #${ctx.ref.iid} ${state}`);
         } catch (e) {
           logger(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
-          new import_obsidian7.Notice(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
+          new import_obsidian9.Notice(`Failed to ${verb.toLowerCase()} issue: ${e.message}`);
         }
       })
     }).open();
