@@ -5600,6 +5600,7 @@ var DEFAULT_SETTINGS = {
   labelPropertyMappings: [],
   issueActionTemplates: [],
   knownLabels: [],
+  knownProjects: [],
   maxItems: 20,
   maxMrItems: 20,
   staleDays: 0,
@@ -6679,10 +6680,10 @@ var Filesystem = class {
 
 // src/GitlabLoader/gitlab-loader.ts
 var GitlabLoader = class {
-  constructor(app, settings2, onLabelsCollected) {
+  constructor(app, settings2, callbacks = {}) {
     this.fs = new Filesystem(app.vault, settings2);
     this.settings = settings2;
-    this.onLabelsCollected = onLabelsCollected;
+    this.callbacks = callbacks;
   }
   getUrl() {
     const filter = buildListFilter(this.settings.filter, this.settings.staleDays);
@@ -6790,14 +6791,25 @@ var GitlabLoader = class {
           this.fs.purgeExistingIssues();
         }
         this.fs.processIssues(gitlabIssues);
-        if (this.onLabelsCollected) {
+        if (this.callbacks.onLabelsCollected) {
           const collected = new Set();
           gitlabIssues.forEach((i) => {
             var _a;
             return ((_a = i.labels) != null ? _a : []).forEach((l) => collected.add(l));
           });
           if (collected.size > 0) {
-            yield this.onLabelsCollected(Array.from(collected));
+            yield this.callbacks.onLabelsCollected(Array.from(collected));
+          }
+        }
+        if (this.callbacks.onProjectsCollected) {
+          const projects = new Set();
+          gitlabIssues.forEach((i) => {
+            const path = extractRepoPath(i, "issues");
+            if (path && path !== "unknown")
+              projects.add(path);
+          });
+          if (projects.size > 0) {
+            yield this.callbacks.onProjectsCollected(Array.from(projects));
           }
         }
       } catch (error) {
@@ -7040,7 +7052,7 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     var _a;
     this.sectionLabel(parent, "Comment");
     const ta = parent.createEl("textarea");
-    ta.rows = 3;
+    ta.rows = 8;
     ta.style.width = "100%";
     ta.placeholder = "Write a comment in Markdown...";
     ta.addEventListener("input", () => {
@@ -7225,6 +7237,7 @@ var NewIssueModal = class extends import_obsidian5.Modal {
     return this.hooks.getKnownLabels ? (_a = this.hooks.getKnownLabels()) != null ? _a : [] : [];
   }
   onOpen() {
+    var _a;
     const { contentEl } = this;
     contentEl.empty();
     const heading = contentEl.createEl("h3", { text: "Create Gitlab issue" });
@@ -7237,6 +7250,12 @@ var NewIssueModal = class extends import_obsidian5.Modal {
     projectInput.value = this.projectId;
     projectInput.addEventListener("input", () => {
       this.projectId = projectInput.value.trim();
+    });
+    const knownProjects = this.hooks.getKnownProjects ? (_a = this.hooks.getKnownProjects()) != null ? _a : [] : [];
+    renderLabelDropdown(projectRow, "+ known", knownProjects, (project) => {
+      projectInput.value = project;
+      this.projectId = project;
+      projectInput.focus();
     });
     const titleRow = this.inlineRow(contentEl);
     titleRow.createEl("span", { text: "Title" }).style.minWidth = "5em";
@@ -7251,7 +7270,7 @@ var NewIssueModal = class extends import_obsidian5.Modal {
     descLabel.style.color = "var(--text-muted)";
     descLabel.style.margin = "6px 0 2px";
     const descTa = contentEl.createEl("textarea");
-    descTa.rows = 5;
+    descTa.rows = 10;
     descTa.style.width = "100%";
     descTa.placeholder = "Markdown body (optional)";
     descTa.addEventListener("input", () => {
@@ -7322,6 +7341,13 @@ var NewIssueModal = class extends import_obsidian5.Modal {
             yield this.hooks.onLabelsLearned(labels);
           } catch (err) {
             logger(`Failed to record known labels: ${err.message}`);
+          }
+        }
+        if (this.hooks.onProjectLearned) {
+          try {
+            yield this.hooks.onProjectLearned(this.projectId.trim());
+          } catch (err) {
+            logger(`Failed to record known project: ${err.message}`);
           }
         }
         new import_obsidian5.Notice(`Created issue #${created.iid}`);
@@ -7877,24 +7903,37 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
   }
   fetchIssuesFromGitlab() {
     new import_obsidian7.Notice("Fetching Gitlab issues...");
-    const loader = new GitlabLoader(this.app, this.settings, (labels) => this.recordKnownLabels(labels));
+    const loader = new GitlabLoader(this.app, this.settings, {
+      onLabelsCollected: (labels) => this.recordKnownLabels(labels),
+      onProjectsCollected: (projects) => this.recordKnownProjects(projects)
+    });
     loader.loadIssues();
   }
   recordKnownLabels(incoming) {
     return __async(this, null, function* () {
+      yield this.mergeStringSet("knownLabels", incoming);
+    });
+  }
+  recordKnownProjects(incoming) {
+    return __async(this, null, function* () {
+      yield this.mergeStringSet("knownProjects", incoming);
+    });
+  }
+  mergeStringSet(key, incoming) {
+    return __async(this, null, function* () {
       var _a;
       if (!incoming || incoming.length === 0)
         return;
-      const set = new Set((_a = this.settings.knownLabels) != null ? _a : []);
+      const set = new Set((_a = this.settings[key]) != null ? _a : []);
       const before = set.size;
-      incoming.forEach((l) => {
-        const trimmed = String(l).trim();
+      incoming.forEach((v) => {
+        const trimmed = String(v).trim();
         if (trimmed.length > 0)
           set.add(trimmed);
       });
       if (set.size === before)
         return;
-      this.settings.knownLabels = Array.from(set).sort((a, b) => a.localeCompare(b, void 0, { sensitivity: "base" }));
+      this.settings[key] = Array.from(set).sort((a, b) => a.localeCompare(b, void 0, { sensitivity: "base" }));
       yield this.saveSettings();
     });
   }
@@ -7930,7 +7969,12 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
         var _a2;
         return (_a2 = this.settings.knownLabels) != null ? _a2 : [];
       },
+      getKnownProjects: () => {
+        var _a2;
+        return (_a2 = this.settings.knownProjects) != null ? _a2 : [];
+      },
       onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+      onProjectLearned: (project) => this.recordKnownProjects([project]),
       onCreated: () => {
         this.fetchIssuesFromGitlab();
       }

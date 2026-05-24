@@ -157,22 +157,34 @@ export default class GitlabIssuesPlugin extends Plugin {
 
 	private fetchIssuesFromGitlab() {
 		new Notice("Fetching Gitlab issues...");
-		const loader = new GitlabLoader(this.app, this.settings, (labels) =>
-			this.recordKnownLabels(labels)
-		);
+		const loader = new GitlabLoader(this.app, this.settings, {
+			onLabelsCollected: (labels) => this.recordKnownLabels(labels),
+			onProjectsCollected: (projects) => this.recordKnownProjects(projects),
+		});
 		loader.loadIssues();
 	}
 
 	public async recordKnownLabels(incoming: string[]): Promise<void> {
+		await this.mergeStringSet("knownLabels", incoming);
+	}
+
+	public async recordKnownProjects(incoming: string[]): Promise<void> {
+		await this.mergeStringSet("knownProjects", incoming);
+	}
+
+	private async mergeStringSet(
+		key: "knownLabels" | "knownProjects",
+		incoming: string[]
+	): Promise<void> {
 		if (!incoming || incoming.length === 0) return;
-		const set = new Set<string>(this.settings.knownLabels ?? []);
+		const set = new Set<string>(this.settings[key] ?? []);
 		const before = set.size;
-		incoming.forEach((l) => {
-			const trimmed = String(l).trim();
+		incoming.forEach((v) => {
+			const trimmed = String(v).trim();
 			if (trimmed.length > 0) set.add(trimmed);
 		});
 		if (set.size === before) return;
-		this.settings.knownLabels = Array.from(set).sort((a, b) =>
+		this.settings[key] = Array.from(set).sort((a, b) =>
 			a.localeCompare(b, undefined, { sensitivity: "base" })
 		);
 		await this.saveSettings();
@@ -212,7 +224,9 @@ export default class GitlabIssuesPlugin extends Plugin {
 			this.settings.gitlabIssuesLevel === "project" ? this.settings.gitlabAppId ?? "" : "";
 		new NewIssueModal(this.app, this.settings, defaultProject, {
 			getKnownLabels: () => this.settings.knownLabels ?? [],
+			getKnownProjects: () => this.settings.knownProjects ?? [],
 			onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+			onProjectLearned: (project) => this.recordKnownProjects([project]),
 			onCreated: () => {
 				this.fetchIssuesFromGitlab();
 			},

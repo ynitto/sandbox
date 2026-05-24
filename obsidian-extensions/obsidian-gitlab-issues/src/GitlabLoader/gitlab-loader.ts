@@ -8,19 +8,24 @@ import { GitlabIssuesSettings, LabelPropertyMapping } from "../SettingsTab/setti
 import { buildListFilter, isStale, logger } from "../utils/utils";
 import { extractRepoPath, sanitizeFilenameForWikilink, sanitizeRepoPath } from "./repo";
 
+export interface GitlabLoaderCallbacks {
+	onLabelsCollected?: (labels: string[]) => void | Promise<void>;
+	onProjectsCollected?: (projects: string[]) => void | Promise<void>;
+}
+
 export default class GitlabLoader {
 	private fs: Filesystem;
 	private settings: GitlabIssuesSettings;
-	private onLabelsCollected?: (labels: string[]) => void | Promise<void>;
+	private callbacks: GitlabLoaderCallbacks;
 
 	constructor(
 		app: App,
 		settings: GitlabIssuesSettings,
-		onLabelsCollected?: (labels: string[]) => void | Promise<void>
+		callbacks: GitlabLoaderCallbacks = {}
 	) {
 		this.fs = new Filesystem(app.vault, settings);
 		this.settings = settings;
-		this.onLabelsCollected = onLabelsCollected;
+		this.callbacks = callbacks;
 	}
 
 	getUrl() {
@@ -145,11 +150,22 @@ export default class GitlabLoader {
 			}
 			this.fs.processIssues(gitlabIssues);
 
-			if (this.onLabelsCollected) {
+			if (this.callbacks.onLabelsCollected) {
 				const collected = new Set<string>();
 				gitlabIssues.forEach((i) => (i.labels ?? []).forEach((l) => collected.add(l)));
 				if (collected.size > 0) {
-					await this.onLabelsCollected(Array.from(collected));
+					await this.callbacks.onLabelsCollected(Array.from(collected));
+				}
+			}
+
+			if (this.callbacks.onProjectsCollected) {
+				const projects = new Set<string>();
+				gitlabIssues.forEach((i) => {
+					const path = extractRepoPath(i, "issues");
+					if (path && path !== "unknown") projects.add(path);
+				});
+				if (projects.size > 0) {
+					await this.callbacks.onProjectsCollected(Array.from(projects));
 				}
 			}
 		} catch (error: any) {

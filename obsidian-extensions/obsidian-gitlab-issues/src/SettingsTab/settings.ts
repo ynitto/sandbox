@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS = {
 	labelPropertyMappings: [],
 	issueActionTemplates: [],
 	knownLabels: [],
+	knownProjects: [],
 	maxItems: 20,
 	maxMrItems: 20,
 	staleDays: 0,

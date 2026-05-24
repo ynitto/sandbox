@@ -186,7 +186,7 @@ export class IssueActionsModal extends Modal {
 	private renderCommentSection(parent: HTMLElement): void {
 		this.sectionLabel(parent, "Comment");
 		const ta = parent.createEl("textarea");
-		ta.rows = 3;
+		ta.rows = 8;
 		ta.style.width = "100%";
 		ta.placeholder = "Write a comment in Markdown...";
 		ta.addEventListener("input", () => {
@@ -373,7 +373,9 @@ export class IssueActionsModal extends Modal {
 
 export interface NewIssueModalHooks {
 	getKnownLabels?: () => string[];
+	getKnownProjects?: () => string[];
 	onLabelsLearned?: (labels: string[]) => void | Promise<void>;
+	onProjectLearned?: (project: string) => void | Promise<void>;
 	onCreated?: (created: { iid: number; web_url: string; project_id: number }) => void | Promise<void>;
 }
 
@@ -423,6 +425,12 @@ export class NewIssueModal extends Modal {
 		projectInput.addEventListener("input", () => {
 			this.projectId = projectInput.value.trim();
 		});
+		const knownProjects = this.hooks.getKnownProjects ? this.hooks.getKnownProjects() ?? [] : [];
+		renderLabelDropdown(projectRow, "+ known", knownProjects, (project) => {
+			projectInput.value = project;
+			this.projectId = project;
+			projectInput.focus();
+		});
 
 		const titleRow = this.inlineRow(contentEl);
 		titleRow.createEl("span", { text: "Title" }).style.minWidth = "5em";
@@ -438,7 +446,7 @@ export class NewIssueModal extends Modal {
 		descLabel.style.color = "var(--text-muted)";
 		descLabel.style.margin = "6px 0 2px";
 		const descTa = contentEl.createEl("textarea");
-		descTa.rows = 5;
+		descTa.rows = 10;
 		descTa.style.width = "100%";
 		descTa.placeholder = "Markdown body (optional)";
 		descTa.addEventListener("input", () => {
@@ -515,6 +523,13 @@ export class NewIssueModal extends Modal {
 						await this.hooks.onLabelsLearned(labels);
 					} catch (err: any) {
 						logger(`Failed to record known labels: ${err.message}`);
+					}
+				}
+				if (this.hooks.onProjectLearned) {
+					try {
+						await this.hooks.onProjectLearned(this.projectId.trim());
+					} catch (err: any) {
+						logger(`Failed to record known project: ${err.message}`);
 					}
 				}
 				new Notice(`Created issue #${created.iid}`);
