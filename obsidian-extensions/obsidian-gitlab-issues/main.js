@@ -7092,7 +7092,7 @@ var IssueActionsForm = class {
     buttonRow.style.justifyContent = "space-between";
     const quoteBtn = buttonRow.createEl("button", { text: "Quote selection" });
     quoteBtn.type = "button";
-    quoteBtn.addEventListener("mousedown", (e) => {
+    quoteBtn.addEventListener("click", (e) => {
       e.preventDefault();
       this.insertQuoteFromSelection();
     });
@@ -7227,15 +7227,18 @@ var IssueActionsForm = class {
     });
   }
   insertQuoteFromSelection() {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e, _f;
     const ta = (_a = this.formRefs) == null ? void 0 : _a.commentTextarea;
     if (!ta)
       return;
     let selection = "";
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
-    if (view && view.editor.getSelection().length > 0) {
-      selection = view.editor.getSelection();
-    } else {
+    const view = (_d = (_c = (_b = this.hooks).getSourceEditor) == null ? void 0 : _c.call(_b)) != null ? _d : this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
+    if (view) {
+      const cmSel = view.editor.getSelection();
+      if (cmSel)
+        selection = cmSel;
+    }
+    if (!selection) {
       const winSel = window.getSelection();
       if (winSel)
         selection = winSel.toString();
@@ -7245,8 +7248,8 @@ var IssueActionsForm = class {
       return;
     }
     const quoted = selection.split("\n").map((l) => `> ${l}`).join("\n") + "\n\n";
-    const start = (_b = ta.selectionStart) != null ? _b : ta.value.length;
-    const end = (_c = ta.selectionEnd) != null ? _c : ta.value.length;
+    const start = (_e = ta.selectionStart) != null ? _e : ta.value.length;
+    const end = (_f = ta.selectionEnd) != null ? _f : ta.value.length;
     ta.value = ta.value.substring(0, start) + quoted + ta.value.substring(end);
     this.commentBody = ta.value;
     const cursor = start + quoted.length;
@@ -7961,11 +7964,20 @@ wikilink: "{{wikilink}}"
 
 // src/main.ts
 var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
+  constructor() {
+    super(...arguments);
+    this.lastMarkdownLeaf = null;
+  }
   onload() {
     return __async(this, null, function* () {
       yield this.loadSettings();
       this.fs = new Filesystem(this.app.vault, this.settings);
       this.registerView(ISSUE_ACTIONS_VIEW_TYPE, (leaf) => new IssueActionsView(leaf, this.settings, this.buildIssueActionsHooks()));
+      this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (leaf && leaf.view instanceof import_obsidian9.MarkdownView) {
+          this.lastMarkdownLeaf = leaf;
+        }
+      }));
       if (!this.settings.gitlabToken) {
         logger("Add your Gitlab Personal Token to the plugin settings");
       } else {
@@ -8209,8 +8221,17 @@ var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
       getTemplates: () => {
         var _a;
         return (_a = this.settings.issueActionTemplates) != null ? _a : [];
-      }
+      },
+      getSourceEditor: () => this.getLastMarkdownView()
     };
+  }
+  getLastMarkdownView() {
+    var _a;
+    const active = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
+    if (active)
+      return active;
+    const v = (_a = this.lastMarkdownLeaf) == null ? void 0 : _a.view;
+    return v instanceof import_obsidian9.MarkdownView ? v : null;
   }
   activateIssueActionsView() {
     return __async(this, null, function* () {

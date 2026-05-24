@@ -1,4 +1,4 @@
-import { Plugin, Notice } from "obsidian";
+import { Plugin, Notice, MarkdownView, WorkspaceLeaf } from "obsidian";
 import { DEFAULT_SETTINGS } from "./SettingsTab/settings";
 import { GitlabIssuesSettingTab } from "./SettingsTab/settings-tab";
 import { GitlabIssuesSettings } from "./SettingsTab/settings-types";
@@ -31,6 +31,7 @@ export default class GitlabIssuesPlugin extends Plugin {
 	private fs: Filesystem;
 	private ribbonIconEl: HTMLElement;
 	private refreshIntervalId: number | undefined;
+	private lastMarkdownLeaf: WorkspaceLeaf | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -40,6 +41,14 @@ export default class GitlabIssuesPlugin extends Plugin {
 		this.registerView(
 			ISSUE_ACTIONS_VIEW_TYPE,
 			(leaf) => new IssueActionsView(leaf, this.settings, this.buildIssueActionsHooks())
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", (leaf) => {
+				if (leaf && leaf.view instanceof MarkdownView) {
+					this.lastMarkdownLeaf = leaf;
+				}
+			})
 		);
 
 		if (!this.settings.gitlabToken) {
@@ -300,7 +309,15 @@ export default class GitlabIssuesPlugin extends Plugin {
 			getKnownLabels: () => this.settings.knownLabels ?? [],
 			onLabelsLearned: (labels) => this.recordKnownLabels(labels),
 			getTemplates: () => this.settings.issueActionTemplates ?? [],
+			getSourceEditor: () => this.getLastMarkdownView(),
 		};
+	}
+
+	public getLastMarkdownView(): MarkdownView | null {
+		const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (active) return active;
+		const v = this.lastMarkdownLeaf?.view;
+		return v instanceof MarkdownView ? v : null;
 	}
 
 	public async activateIssueActionsView(): Promise<void> {
