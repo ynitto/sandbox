@@ -15,6 +15,7 @@ export interface IssueActionsFormHooks {
 	getKnownLabels?: () => string[];
 	onLabelsLearned?: (labels: string[]) => void | Promise<void>;
 	getTemplates?: () => IssueActionTemplate[];
+	getSourceEditor?: () => MarkdownView | null;
 }
 
 export interface IssueActionsFormContext {
@@ -217,9 +218,7 @@ export class IssueActionsForm {
 
 		const quoteBtn = buttonRow.createEl("button", { text: "Quote selection" });
 		quoteBtn.type = "button";
-		// Use mousedown + preventDefault so we read the editor selection BEFORE
-		// the click steals focus and clears it.
-		quoteBtn.addEventListener("mousedown", (e) => {
+		quoteBtn.addEventListener("click", (e) => {
 			e.preventDefault();
 			this.insertQuoteFromSelection();
 		});
@@ -374,10 +373,14 @@ export class IssueActionsForm {
 		if (!ta) return;
 
 		let selection = "";
-		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (view && view.editor.getSelection().length > 0) {
-			selection = view.editor.getSelection();
-		} else {
+		const view =
+			this.hooks.getSourceEditor?.() ??
+			this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view) {
+			const cmSel = view.editor.getSelection();
+			if (cmSel) selection = cmSel;
+		}
+		if (!selection) {
 			const winSel = window.getSelection();
 			if (winSel) selection = winSel.toString();
 		}
