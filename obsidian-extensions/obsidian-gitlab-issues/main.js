@@ -6987,6 +6987,7 @@ var IssueActionsForm = class {
     heading.style.margin = "0 0 6px";
     this.renderTemplateSection(container);
     this.renderCommentSection(container);
+    this.renderRelatedMrsSection(container);
     this.renderLabelsSection(container);
     this.renderStateSection(container);
   }
@@ -7088,7 +7089,13 @@ var IssueActionsForm = class {
       commentTextarea: ta
     });
     const buttonRow = this.inlineRow(parent);
-    buttonRow.style.justifyContent = "flex-end";
+    buttonRow.style.justifyContent = "space-between";
+    const quoteBtn = buttonRow.createEl("button", { text: "Quote selection" });
+    quoteBtn.type = "button";
+    quoteBtn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      this.insertQuoteFromSelection();
+    });
     const postBtn = buttonRow.createEl("button", { text: "Post comment" });
     postBtn.type = "button";
     postBtn.classList.add("mod-cta");
@@ -7217,6 +7224,76 @@ var IssueActionsForm = class {
     reopenBtn.addEventListener("click", (e) => {
       e.preventDefault();
       this.changeState("reopen", reopenBtn, statusEl);
+    });
+  }
+  insertQuoteFromSelection() {
+    var _a, _b, _c;
+    const ta = (_a = this.formRefs) == null ? void 0 : _a.commentTextarea;
+    if (!ta)
+      return;
+    let selection = "";
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
+    if (view && view.editor.getSelection().length > 0) {
+      selection = view.editor.getSelection();
+    } else {
+      const winSel = window.getSelection();
+      if (winSel)
+        selection = winSel.toString();
+    }
+    if (!selection.trim()) {
+      new import_obsidian5.Notice("Select some text in a note first.");
+      return;
+    }
+    const quoted = selection.split("\n").map((l) => `> ${l}`).join("\n") + "\n\n";
+    const start = (_b = ta.selectionStart) != null ? _b : ta.value.length;
+    const end = (_c = ta.selectionEnd) != null ? _c : ta.value.length;
+    ta.value = ta.value.substring(0, start) + quoted + ta.value.substring(end);
+    this.commentBody = ta.value;
+    const cursor = start + quoted.length;
+    ta.focus();
+    ta.setSelectionRange(cursor, cursor);
+  }
+  renderRelatedMrsSection(parent) {
+    var _a;
+    if (!this.file)
+      return;
+    const cache = this.app.metadataCache.getFileCache(this.file);
+    const allLinks = (_a = cache == null ? void 0 : cache.links) != null ? _a : [];
+    const seen = new Set();
+    const mrLinks = allLinks.filter((l) => {
+      var _a2;
+      const basename = ((_a2 = l.link.split("/").pop()) != null ? _a2 : "").trim();
+      if (!basename.startsWith("!"))
+        return false;
+      if (seen.has(l.link))
+        return false;
+      seen.add(l.link);
+      return true;
+    });
+    if (mrLinks.length === 0)
+      return;
+    this.sectionLabel(parent, "Related MRs");
+    const sourcePath = this.file.path;
+    mrLinks.forEach((l) => {
+      const row = this.inlineRow(parent);
+      const label = l.displayText && l.displayText !== l.link ? l.displayText : l.link;
+      const linkEl = row.createEl("span", { text: label });
+      linkEl.style.flex = "1";
+      linkEl.style.fontSize = "12px";
+      const splitBtn = row.createEl("button", { text: "\u2197 Split" });
+      splitBtn.type = "button";
+      splitBtn.title = "Open in side split";
+      splitBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        this.app.workspace.openLinkText(l.link, sourcePath, "split");
+      });
+      const tabBtn = row.createEl("button", { text: "Tab" });
+      tabBtn.type = "button";
+      tabBtn.title = "Open in new tab";
+      tabBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        this.app.workspace.openLinkText(l.link, sourcePath, "tab");
+      });
     });
   }
   changeState(stateEvent, btn, statusEl) {

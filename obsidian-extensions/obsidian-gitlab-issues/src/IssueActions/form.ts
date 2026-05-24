@@ -1,4 +1,4 @@
-import { App, Notice, TFile } from "obsidian";
+import { App, MarkdownView, Notice, TFile } from "obsidian";
 import { IssueActionTemplate, GitlabIssuesSettings } from "../SettingsTab/settings-types";
 import {
 	IssueRef,
@@ -106,6 +106,7 @@ export class IssueActionsForm {
 
 		this.renderTemplateSection(container);
 		this.renderCommentSection(container);
+		this.renderRelatedMrsSection(container);
 		this.renderLabelsSection(container);
 		this.renderStateSection(container);
 	}
@@ -212,7 +213,17 @@ export class IssueActionsForm {
 		};
 
 		const buttonRow = this.inlineRow(parent);
-		buttonRow.style.justifyContent = "flex-end";
+		buttonRow.style.justifyContent = "space-between";
+
+		const quoteBtn = buttonRow.createEl("button", { text: "Quote selection" });
+		quoteBtn.type = "button";
+		// Use mousedown + preventDefault so we read the editor selection BEFORE
+		// the click steals focus and clears it.
+		quoteBtn.addEventListener("mousedown", (e) => {
+			e.preventDefault();
+			this.insertQuoteFromSelection();
+		});
+
 		const postBtn = buttonRow.createEl("button", { text: "Post comment" });
 		postBtn.type = "button";
 		postBtn.classList.add("mod-cta");
@@ -355,6 +366,75 @@ export class IssueActionsForm {
 		reopenBtn.addEventListener("click", (e) => {
 			e.preventDefault();
 			this.changeState("reopen", reopenBtn, statusEl);
+		});
+	}
+
+	private insertQuoteFromSelection(): void {
+		const ta = this.formRefs?.commentTextarea;
+		if (!ta) return;
+
+		let selection = "";
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view && view.editor.getSelection().length > 0) {
+			selection = view.editor.getSelection();
+		} else {
+			const winSel = window.getSelection();
+			if (winSel) selection = winSel.toString();
+		}
+		if (!selection.trim()) {
+			new Notice("Select some text in a note first.");
+			return;
+		}
+
+		const quoted = selection.split("\n").map((l) => `> ${l}`).join("\n") + "\n\n";
+		const start = ta.selectionStart ?? ta.value.length;
+		const end = ta.selectionEnd ?? ta.value.length;
+		ta.value = ta.value.substring(0, start) + quoted + ta.value.substring(end);
+		this.commentBody = ta.value;
+		const cursor = start + quoted.length;
+		ta.focus();
+		ta.setSelectionRange(cursor, cursor);
+	}
+
+	private renderRelatedMrsSection(parent: HTMLElement): void {
+		if (!this.file) return;
+		const cache = this.app.metadataCache.getFileCache(this.file);
+		const allLinks = cache?.links ?? [];
+
+		const seen = new Set<string>();
+		const mrLinks = allLinks.filter((l) => {
+			const basename = (l.link.split("/").pop() ?? "").trim();
+			if (!basename.startsWith("!")) return false;
+			if (seen.has(l.link)) return false;
+			seen.add(l.link);
+			return true;
+		});
+		if (mrLinks.length === 0) return;
+
+		this.sectionLabel(parent, "Related MRs");
+		const sourcePath = this.file.path;
+		mrLinks.forEach((l) => {
+			const row = this.inlineRow(parent);
+			const label = l.displayText && l.displayText !== l.link ? l.displayText : l.link;
+			const linkEl = row.createEl("span", { text: label });
+			linkEl.style.flex = "1";
+			linkEl.style.fontSize = "12px";
+
+			const splitBtn = row.createEl("button", { text: "↗ Split" });
+			splitBtn.type = "button";
+			splitBtn.title = "Open in side split";
+			splitBtn.addEventListener("click", (e) => {
+				e.preventDefault();
+				this.app.workspace.openLinkText(l.link, sourcePath, "split");
+			});
+
+			const tabBtn = row.createEl("button", { text: "Tab" });
+			tabBtn.type = "button";
+			tabBtn.title = "Open in new tab";
+			tabBtn.addEventListener("click", (e) => {
+				e.preventDefault();
+				this.app.workspace.openLinkText(l.link, sourcePath, "tab");
+			});
 		});
 	}
 
