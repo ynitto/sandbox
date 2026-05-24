@@ -65,7 +65,7 @@ export default class GitlabLoader {
 								const repoPath = sanitizeRepoPath(extractRepoPath(mr, "merge_requests"));
 								const safeTitle = sanitizeFolderSegment(mr.title).replace(/[/\\?%]/g, "-");
 								const filename = `!${mr.iid} - ${safeTitle}`;
-								return { ...mr, repoPath, wikilink: `${repoPath}/${filename}` };
+								return { ...mr, repoPath, wikilink: filename };
 							});
 					} catch (e: any) {
 						logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);

@@ -55,6 +55,6 @@ export class GitlabMergeRequest implements ObsidianMergeRequest {
 	}
 
 	get wikilink(): string {
-		return `${this.repoPath}/${this.filename}`;
+		return this.filename;
 	}
 }

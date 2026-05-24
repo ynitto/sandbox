@@ -63,6 +63,11 @@ export const ISSUE_TEMPLATE_SCAFFOLD = `---
      Example:
        {{{prefixLines description "> "}}}   renders the description as
                                             a Markdown blockquote.
+
+     Note: {{wikilink}} is the file's basename (e.g. "!9 - MR Title").
+     Obsidian resolves [[basename]] links via basename match across the
+     whole vault, so links keep working even if you move the file
+     later — as long as basenames remain unique.
 ============================================================ --}}
 id: "{{id}}"
 iid: "{{iid}}"
@@ -231,6 +236,11 @@ export const MR_TEMPLATE_SCAFFOLD = `---
      Example:
        {{{prefixLines description "> "}}}   renders the description as
                                             a Markdown blockquote.
+
+     Note: {{wikilink}} is the file's basename (e.g. "!9 - MR Title").
+     Obsidian resolves [[basename]] links via basename match across the
+     whole vault, so links keep working even if you move the file
+     later — as long as basenames remain unique.
 ============================================================ --}}
 id: "{{id}}"
 iid: "{{iid}}"
