@@ -7,9 +7,23 @@ var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getOwnPropSymbols = Object.getOwnPropertySymbols;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __propIsEnum = Object.prototype.propertyIsEnumerable;
 var __markAsModule = (target) => __defProp(target, "__esModule", { value: true });
+var __objRest = (source, exclude) => {
+  var target = {};
+  for (var prop in source)
+    if (__hasOwnProp.call(source, prop) && exclude.indexOf(prop) < 0)
+      target[prop] = source[prop];
+  if (source != null && __getOwnPropSymbols)
+    for (var prop of __getOwnPropSymbols(source)) {
+      if (exclude.indexOf(prop) < 0 && __propIsEnum.call(source, prop))
+        target[prop] = source[prop];
+    }
+  return target;
+};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
@@ -5572,6 +5586,7 @@ var DEFAULT_SETTINGS = {
   purgeIssues: false,
   refreshOnStartup: false,
   intervalOfRefresh: "off",
+  issueScope: "all",
   fetchComments: false,
   labelPropertyMappings: [],
   jiraApiUrl: function() {
@@ -5587,13 +5602,13 @@ var settingInputs = [
   },
   {
     title: "Email Address",
-    description: "Your Atlassian account email address used to authenticate with Jira",
+    description: "Your Atlassian account email address used to authenticate with Jira. Stored separately in data.secrets.json alongside this plugin's data.json \u2014 add data.secrets.json to your .gitignore so the rest of the settings can be safely shared via git.",
     placeholder: "you@example.com",
     value: "jiraEmail"
   },
   {
     title: "API Token",
-    description: "Generate an API token at id.atlassian.com/manage-profile/security/api-tokens",
+    description: "Generate an API token at id.atlassian.com/manage-profile/security/api-tokens. Stored separately in data.secrets.json (see Email field above for git-sharing guidance).",
     placeholder: "ATATT...",
     value: "jiraApiToken",
     type: "password"
@@ -5630,6 +5645,16 @@ var dropdownInputs = [
       "45": "45 minutes",
       "60": "1 hour",
       "120": "2 hours"
+    }
+  },
+  {
+    title: "Issue Scope",
+    description: "Which issue types to import from Jira",
+    value: "issueScope",
+    options: {
+      "all": "Tasks & Subtasks",
+      "tasks_only": "Tasks only",
+      "subtasks_only": "Subtasks only"
     }
   }
 ];
@@ -6197,7 +6222,16 @@ var JiraLoader = class {
     return __async(this, null, function* () {
       try {
         const response = yield JiraApi.load(this.getSearchUrl(), this.settings.jiraEmail, this.settings.jiraApiToken);
-        const tasks = yield Promise.all(response.issues.map((rawIssue) => __async(this, null, function* () {
+        const filteredIssues = response.issues.filter((rawIssue) => {
+          var _a;
+          const isSubtask = ((_a = rawIssue.fields.issuetype) == null ? void 0 : _a.subtask) === true;
+          if (this.settings.issueScope === "tasks_only")
+            return !isSubtask;
+          if (this.settings.issueScope === "subtasks_only")
+            return isSubtask;
+          return true;
+        });
+        const tasks = yield Promise.all(filteredIssues.map((rawIssue) => __async(this, null, function* () {
           const task = new JiraTask(rawIssue, this.settings.jiraUrl);
           if (this.settings.fetchComments) {
             try {
@@ -6284,15 +6318,68 @@ var JiraTasksPlugin = class extends import_obsidian4.Plugin {
   }
   loadSettings() {
     return __async(this, null, function* () {
-      this.settings = Object.assign({}, DEFAULT_SETTINGS, yield this.loadData());
+      const loaded = yield this.loadData();
+      this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded != null ? loaded : {});
       this.settings.jiraApiUrl = function() {
         return `${this.jiraUrl}/rest/api/3`;
       };
+      const secrets = yield this.readSecrets();
+      const dataJsonEmail = typeof (loaded == null ? void 0 : loaded.jiraEmail) === "string" ? loaded.jiraEmail : "";
+      const dataJsonToken = typeof (loaded == null ? void 0 : loaded.jiraApiToken) === "string" ? loaded.jiraApiToken : "";
+      let needsRewrite = false;
+      if (secrets) {
+        if (typeof secrets.jiraEmail === "string")
+          this.settings.jiraEmail = secrets.jiraEmail;
+        if (typeof secrets.jiraApiToken === "string")
+          this.settings.jiraApiToken = secrets.jiraApiToken;
+        if (dataJsonEmail || dataJsonToken)
+          needsRewrite = true;
+      } else if (dataJsonEmail || dataJsonToken) {
+        this.settings.jiraEmail = dataJsonEmail;
+        this.settings.jiraApiToken = dataJsonToken;
+        needsRewrite = true;
+      }
+      if (needsRewrite) {
+        yield this.saveSettings();
+      }
     });
   }
   saveSettings() {
     return __async(this, null, function* () {
-      yield this.saveData(this.settings);
+      var _a, _b;
+      yield this.writeSecrets({
+        jiraEmail: (_a = this.settings.jiraEmail) != null ? _a : "",
+        jiraApiToken: (_b = this.settings.jiraApiToken) != null ? _b : ""
+      });
+      const _c = this.settings, { jiraEmail: _e, jiraApiToken: _t } = _c, shared = __objRest(_c, ["jiraEmail", "jiraApiToken"]);
+      yield this.saveData(shared);
+    });
+  }
+  secretsPath() {
+    return `${this.app.vault.configDir}/plugins/${this.manifest.id}/data.secrets.json`;
+  }
+  readSecrets() {
+    return __async(this, null, function* () {
+      try {
+        const path = this.secretsPath();
+        if (!(yield this.app.vault.adapter.exists(path)))
+          return null;
+        const raw = yield this.app.vault.adapter.read(path);
+        return JSON.parse(raw);
+      } catch (e) {
+        logger(`Failed to read secrets sidecar: ${e.message}`);
+        return null;
+      }
+    });
+  }
+  writeSecrets(secrets) {
+    return __async(this, null, function* () {
+      try {
+        const path = this.secretsPath();
+        yield this.app.vault.adapter.write(path, JSON.stringify(secrets, null, 2));
+      } catch (e) {
+        logger(`Failed to write secrets sidecar: ${e.message}`);
+      }
     });
   }
   scheduleAutomaticRefresh() {

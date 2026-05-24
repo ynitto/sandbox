@@ -29,13 +29,15 @@ export const settingInputs: SettingInput[] = [
 	},
 	{
 		title: "Email Address",
-		description: "Your Atlassian account email address used to authenticate with Jira",
+		description:
+			"Your Atlassian account email address used to authenticate with Jira. Stored separately in data.secrets.json alongside this plugin's data.json — add data.secrets.json to your .gitignore so the rest of the settings can be safely shared via git.",
 		placeholder: "you@example.com",
 		value: "jiraEmail",
 	},
 	{
 		title: "API Token",
-		description: "Generate an API token at id.atlassian.com/manage-profile/security/api-tokens",
+		description:
+			"Generate an API token at id.atlassian.com/manage-profile/security/api-tokens. Stored separately in data.secrets.json (see Email field above for git-sharing guidance).",
 		placeholder: "ATATT...",
 		value: "jiraApiToken",
 		type: "password",

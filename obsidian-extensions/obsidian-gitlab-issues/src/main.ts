@@ -18,6 +18,8 @@ import {
 	NewIssueModal,
 	TemplateScaffoldModal,
 } from "./IssueActions/modals";
+import { IssueActionsView, ISSUE_ACTIONS_VIEW_TYPE } from "./IssueActions/view";
+import { IssueActionsFormHooks } from "./IssueActions/form";
 import {
 	defaultScaffoldPath,
 	writeTemplateScaffold,
@@ -34,6 +36,11 @@ export default class GitlabIssuesPlugin extends Plugin {
 		await this.loadSettings();
 
 		this.fs = new Filesystem(this.app.vault, this.settings);
+
+		this.registerView(
+			ISSUE_ACTIONS_VIEW_TYPE,
+			(leaf) => new IssueActionsView(leaf, this.settings, this.buildIssueActionsHooks())
+		);
 
 		if (!this.settings.gitlabToken) {
 			logger("Add your Gitlab Personal Token to the plugin settings");
@@ -68,8 +75,14 @@ export default class GitlabIssuesPlugin extends Plugin {
 			});
 
 			this.addCommand({
+				id: "gitlab-issues-open-panel",
+				name: "Open Gitlab issue panel (sidebar)",
+				callback: () => this.activateIssueActionsView(),
+			});
+
+			this.addCommand({
 				id: "gitlab-issues-manage",
-				name: "Manage active Gitlab issue (comment & labels)",
+				name: "Manage active Gitlab issue (modal)",
 				callback: () => this.manageActiveIssue(),
 			});
 
@@ -282,14 +295,37 @@ export default class GitlabIssuesPlugin extends Plugin {
 		}).open();
 	}
 
-	private manageActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-		new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter, {
+	public buildIssueActionsHooks(): IssueActionsFormHooks {
+		return {
 			getKnownLabels: () => this.settings.knownLabels ?? [],
 			onLabelsLearned: (labels) => this.recordKnownLabels(labels),
 			getTemplates: () => this.settings.issueActionTemplates ?? [],
-		}).open();
+		};
+	}
+
+	public async activateIssueActionsView(): Promise<void> {
+		const { workspace } = this.app;
+		let leaf = workspace.getLeavesOfType(ISSUE_ACTIONS_VIEW_TYPE)[0];
+		if (!leaf) {
+			const rightLeaf = workspace.getRightLeaf(false);
+			if (!rightLeaf) return;
+			leaf = rightLeaf;
+			await leaf.setViewState({ type: ISSUE_ACTIONS_VIEW_TYPE, active: true });
+		}
+		workspace.revealLeaf(leaf);
+	}
+
+	private manageActiveIssue() {
+		const ctx = this.resolveActiveIssue();
+		if (!ctx) return;
+		new IssueActionsModal(
+			this.app,
+			this.settings,
+			ctx.ref,
+			ctx.file,
+			ctx.frontmatter,
+			this.buildIssueActionsHooks()
+		).open();
 	}
 
 	public openTemplateScaffoldModal(kind: TemplateScaffoldKind): void {
