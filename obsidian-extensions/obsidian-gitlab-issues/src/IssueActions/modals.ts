@@ -9,7 +9,42 @@ import {
 	splitLabelList,
 	moveIssueFileForState,
 } from "./actions";
+import { createIssue } from "./actions";
 import { logger } from "../utils/utils";
+
+function renderLabelDropdown(
+	parent: HTMLElement,
+	placeholder: string,
+	options: string[],
+	onPick: (label: string) => void
+): HTMLSelectElement {
+	const select = parent.createEl("select");
+	select.style.maxWidth = "12em";
+	const placeholderOpt = select.createEl("option", {
+		text: options.length > 0 ? placeholder : `${placeholder} (none)`,
+	});
+	placeholderOpt.value = "";
+	options.forEach((label) => {
+		const opt = select.createEl("option", { text: label });
+		opt.value = label;
+	});
+	select.disabled = options.length === 0;
+	select.addEventListener("change", () => {
+		const v = select.value;
+		if (!v) return;
+		onPick(v);
+		select.value = "";
+	});
+	return select;
+}
+
+function appendLabelToInput(input: HTMLInputElement, label: string): void {
+	const existing = splitLabelList(input.value);
+	if (existing.includes(label)) return;
+	existing.push(label);
+	input.value = existing.join(", ");
+	input.focus();
+}
 
 export interface IssueActionsModalHooks {
 	getKnownLabels?: () => string[];
@@ -54,40 +89,6 @@ export class IssueActionsModal extends Modal {
 		} catch (e: any) {
 			logger(`Failed to record known labels: ${e.message}`);
 		}
-	}
-
-	private appendToInput(input: HTMLInputElement, label: string): void {
-		const existing = splitLabelList(input.value);
-		if (existing.includes(label)) return;
-		existing.push(label);
-		input.value = existing.join(", ");
-		input.focus();
-	}
-
-	private renderLabelPicker(
-		parent: HTMLElement,
-		placeholder: string,
-		options: string[],
-		onPick: (label: string) => void
-	): HTMLSelectElement {
-		const select = parent.createEl("select");
-		select.style.maxWidth = "12em";
-		const placeholderOpt = select.createEl("option", {
-			text: options.length > 0 ? placeholder : `${placeholder} (none)`,
-		});
-		placeholderOpt.value = "";
-		options.forEach((label) => {
-			const opt = select.createEl("option", { text: label });
-			opt.value = label;
-		});
-		select.disabled = options.length === 0;
-		select.addEventListener("change", () => {
-			const v = select.value;
-			if (!v) return;
-			onPick(v);
-			select.value = "";
-		});
-		return select;
 	}
 
 	private inlineRow(parent: HTMLElement): HTMLElement {
@@ -254,8 +255,8 @@ export class IssueActionsModal extends Modal {
 			const known = this.knownLabels();
 			const current = new Set(this.labels);
 			const suggestions = known.filter((l) => !current.has(l));
-			addPicker = this.renderLabelPicker(addRow, "+ known", suggestions, (label) =>
-				this.appendToInput(addInput, label)
+			addPicker = renderLabelDropdown(addRow, "+ known", suggestions, (label) =>
+				appendLabelToInput(addInput, label)
 			);
 		};
 		refreshAddPicker();
@@ -271,8 +272,8 @@ export class IssueActionsModal extends Modal {
 		let removePicker: HTMLSelectElement;
 		const refreshRemovePicker = () => {
 			if (removePicker) removePicker.remove();
-			removePicker = this.renderLabelPicker(removeRow, "+ current", this.labels, (label) =>
-				this.appendToInput(removeInput, label)
+			removePicker = renderLabelDropdown(removeRow, "+ current", this.labels, (label) =>
+				appendLabelToInput(removeInput, label)
 			);
 		};
 		refreshRemovePicker();
@@ -363,6 +364,173 @@ export class IssueActionsModal extends Modal {
 		} finally {
 			btn.removeAttribute("disabled");
 		}
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
+export interface NewIssueModalHooks {
+	getKnownLabels?: () => string[];
+	onLabelsLearned?: (labels: string[]) => void | Promise<void>;
+	onCreated?: (created: { iid: number; web_url: string; project_id: number }) => void | Promise<void>;
+}
+
+export class NewIssueModal extends Modal {
+	private projectId: string;
+	private title = "";
+	private description = "";
+	private labelsValue = "";
+	private confidential = false;
+	private dueDate = "";
+
+	constructor(
+		app: App,
+		private settings: GitlabIssuesSettings,
+		defaultProjectId: string,
+		private hooks: NewIssueModalHooks = {}
+	) {
+		super(app);
+		this.projectId = defaultProjectId;
+	}
+
+	private inlineRow(parent: HTMLElement): HTMLElement {
+		const row = parent.createDiv();
+		row.style.display = "flex";
+		row.style.alignItems = "center";
+		row.style.gap = "6px";
+		row.style.margin = "4px 0";
+		return row;
+	}
+
+	private knownLabels(): string[] {
+		return this.hooks.getKnownLabels ? this.hooks.getKnownLabels() ?? [] : [];
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		const heading = contentEl.createEl("h3", { text: "Create Gitlab issue" });
+		heading.style.margin = "0 0 6px";
+
+		const projectRow = this.inlineRow(contentEl);
+		projectRow.createEl("span", { text: "Project" }).style.minWidth = "5em";
+		const projectInput = projectRow.createEl("input", { type: "text" });
+		projectInput.placeholder = "group/project or numeric ID";
+		projectInput.style.flex = "1";
+		projectInput.value = this.projectId;
+		projectInput.addEventListener("input", () => {
+			this.projectId = projectInput.value.trim();
+		});
+
+		const titleRow = this.inlineRow(contentEl);
+		titleRow.createEl("span", { text: "Title" }).style.minWidth = "5em";
+		const titleInput = titleRow.createEl("input", { type: "text" });
+		titleInput.placeholder = "Issue title (required)";
+		titleInput.style.flex = "1";
+		titleInput.addEventListener("input", () => {
+			this.title = titleInput.value;
+		});
+
+		const descLabel = contentEl.createEl("div", { text: "Description" });
+		descLabel.style.fontSize = "12px";
+		descLabel.style.color = "var(--text-muted)";
+		descLabel.style.margin = "6px 0 2px";
+		const descTa = contentEl.createEl("textarea");
+		descTa.rows = 5;
+		descTa.style.width = "100%";
+		descTa.placeholder = "Markdown body (optional)";
+		descTa.addEventListener("input", () => {
+			this.description = descTa.value;
+		});
+
+		const labelsRow = this.inlineRow(contentEl);
+		labelsRow.createEl("span", { text: "Labels" }).style.minWidth = "5em";
+		const labelsInput = labelsRow.createEl("input", { type: "text" });
+		labelsInput.placeholder = "label1, label2 (custom OK)";
+		labelsInput.style.flex = "1";
+		labelsInput.addEventListener("input", () => {
+			this.labelsValue = labelsInput.value;
+		});
+		renderLabelDropdown(labelsRow, "+ known", this.knownLabels(), (label) => {
+			appendLabelToInput(labelsInput, label);
+			this.labelsValue = labelsInput.value;
+		});
+
+		const optsRow = this.inlineRow(contentEl);
+		const confidentialWrap = optsRow.createEl("label");
+		confidentialWrap.style.display = "flex";
+		confidentialWrap.style.alignItems = "center";
+		confidentialWrap.style.gap = "4px";
+		confidentialWrap.style.fontSize = "12px";
+		const confidentialCb = confidentialWrap.createEl("input", { type: "checkbox" });
+		confidentialCb.addEventListener("change", () => {
+			this.confidential = confidentialCb.checked;
+		});
+		confidentialWrap.createEl("span", { text: "Confidential" });
+
+		optsRow.createEl("span", { text: "Due" }).style.fontSize = "12px";
+		const dueInput = optsRow.createEl("input", { type: "date" });
+		dueInput.addEventListener("change", () => {
+			this.dueDate = dueInput.value;
+		});
+
+		const buttons = this.inlineRow(contentEl);
+		buttons.style.justifyContent = "flex-end";
+		buttons.style.marginTop = "10px";
+
+		const cancelBtn = buttons.createEl("button", { text: "Cancel" });
+		cancelBtn.type = "button";
+		cancelBtn.addEventListener("click", (e) => {
+			e.preventDefault();
+			this.close();
+		});
+
+		const submitBtn = buttons.createEl("button", { text: "Create issue" });
+		submitBtn.type = "button";
+		submitBtn.classList.add("mod-cta");
+		submitBtn.addEventListener("click", async (e) => {
+			e.preventDefault();
+			if (!this.projectId.trim()) {
+				new Notice("Project is required.");
+				return;
+			}
+			if (!this.title.trim()) {
+				new Notice("Title is required.");
+				return;
+			}
+			const labels = splitLabelList(this.labelsValue);
+			submitBtn.setAttr("disabled", "true");
+			try {
+				const created = await createIssue(this.settings, this.projectId.trim(), {
+					title: this.title.trim(),
+					description: this.description || undefined,
+					labels: labels.length > 0 ? labels : undefined,
+					confidential: this.confidential || undefined,
+					due_date: this.dueDate || undefined,
+				});
+				if (this.hooks.onLabelsLearned && labels.length > 0) {
+					try {
+						await this.hooks.onLabelsLearned(labels);
+					} catch (err: any) {
+						logger(`Failed to record known labels: ${err.message}`);
+					}
+				}
+				new Notice(`Created issue #${created.iid}`);
+				this.close();
+				if (this.hooks.onCreated) {
+					await this.hooks.onCreated(created);
+				}
+			} catch (err: any) {
+				logger(`Failed to create issue: ${err.message}`);
+				new Notice(`Failed to create issue: ${err.message}`);
+			} finally {
+				submitBtn.removeAttribute("disabled");
+			}
+		});
+
+		titleInput.focus();
 	}
 
 	onClose(): void {

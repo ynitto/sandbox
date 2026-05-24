@@ -5852,6 +5852,21 @@ function issueApiUrl(settings2, ref, suffix = "") {
   const id = encodeURIComponent(ref.projectId);
   return `${settings2.gitlabApiUrl()}/projects/${id}/issues/${ref.iid}${suffix}`;
 }
+function createIssue(settings2, projectId, params) {
+  return __async(this, null, function* () {
+    const id = encodeURIComponent(projectId);
+    const body = { title: params.title };
+    if (params.description)
+      body.description = params.description;
+    if (params.labels && params.labels.length > 0)
+      body.labels = params.labels.join(",");
+    if (params.confidential)
+      body.confidential = "true";
+    if (params.due_date)
+      body.due_date = params.due_date;
+    return yield GitlabApi.request(`${settings2.gitlabApiUrl()}/projects/${id}/issues`, settings2.gitlabToken, "POST", body);
+  });
+}
 function postIssueComment(settings2, ref, body) {
   return __async(this, null, function* () {
     yield GitlabApi.request(issueApiUrl(settings2, ref, "/notes"), settings2.gitlabToken, "POST", { body });
@@ -6858,6 +6873,35 @@ var MergeRequestLoader = class {
 
 // src/IssueActions/modals.ts
 var import_obsidian5 = __toModule(require("obsidian"));
+function renderLabelDropdown(parent, placeholder, options, onPick) {
+  const select = parent.createEl("select");
+  select.style.maxWidth = "12em";
+  const placeholderOpt = select.createEl("option", {
+    text: options.length > 0 ? placeholder : `${placeholder} (none)`
+  });
+  placeholderOpt.value = "";
+  options.forEach((label) => {
+    const opt = select.createEl("option", { text: label });
+    opt.value = label;
+  });
+  select.disabled = options.length === 0;
+  select.addEventListener("change", () => {
+    const v = select.value;
+    if (!v)
+      return;
+    onPick(v);
+    select.value = "";
+  });
+  return select;
+}
+function appendLabelToInput(input, label) {
+  const existing = splitLabelList(input.value);
+  if (existing.includes(label))
+    return;
+  existing.push(label);
+  input.value = existing.join(", ");
+  input.focus();
+}
 var IssueActionsModal = class extends import_obsidian5.Modal {
   constructor(app, settings2, ref, file, frontmatter, hooks = {}) {
     super(app);
@@ -6883,35 +6927,6 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
         logger(`Failed to record known labels: ${e.message}`);
       }
     });
-  }
-  appendToInput(input, label) {
-    const existing = splitLabelList(input.value);
-    if (existing.includes(label))
-      return;
-    existing.push(label);
-    input.value = existing.join(", ");
-    input.focus();
-  }
-  renderLabelPicker(parent, placeholder, options, onPick) {
-    const select = parent.createEl("select");
-    select.style.maxWidth = "12em";
-    const placeholderOpt = select.createEl("option", {
-      text: options.length > 0 ? placeholder : `${placeholder} (none)`
-    });
-    placeholderOpt.value = "";
-    options.forEach((label) => {
-      const opt = select.createEl("option", { text: label });
-      opt.value = label;
-    });
-    select.disabled = options.length === 0;
-    select.addEventListener("change", () => {
-      const v = select.value;
-      if (!v)
-        return;
-      onPick(v);
-      select.value = "";
-    });
-    return select;
   }
   inlineRow(parent) {
     const row = parent.createDiv();
@@ -7068,7 +7083,7 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
       const known = this.knownLabels();
       const current = new Set(this.labels);
       const suggestions = known.filter((l) => !current.has(l));
-      addPicker = this.renderLabelPicker(addRow, "+ known", suggestions, (label) => this.appendToInput(addInput, label));
+      addPicker = renderLabelDropdown(addRow, "+ known", suggestions, (label) => appendLabelToInput(addInput, label));
     };
     refreshAddPicker();
     const removeRow = this.inlineRow(parent);
@@ -7082,7 +7097,7 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     const refreshRemovePicker = () => {
       if (removePicker)
         removePicker.remove();
-      removePicker = this.renderLabelPicker(removeRow, "+ current", this.labels, (label) => this.appendToInput(removeInput, label));
+      removePicker = renderLabelDropdown(removeRow, "+ current", this.labels, (label) => appendLabelToInput(removeInput, label));
     };
     refreshRemovePicker();
     this.formRefs = __spreadProps(__spreadValues({}, (_a = this.formRefs) != null ? _a : {}), {
@@ -7158,6 +7173,148 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
         btn.removeAttribute("disabled");
       }
     });
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var NewIssueModal = class extends import_obsidian5.Modal {
+  constructor(app, settings2, defaultProjectId, hooks = {}) {
+    super(app);
+    this.settings = settings2;
+    this.hooks = hooks;
+    this.title = "";
+    this.description = "";
+    this.labelsValue = "";
+    this.confidential = false;
+    this.dueDate = "";
+    this.projectId = defaultProjectId;
+  }
+  inlineRow(parent) {
+    const row = parent.createDiv();
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.gap = "6px";
+    row.style.margin = "4px 0";
+    return row;
+  }
+  knownLabels() {
+    var _a;
+    return this.hooks.getKnownLabels ? (_a = this.hooks.getKnownLabels()) != null ? _a : [] : [];
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    const heading = contentEl.createEl("h3", { text: "Create Gitlab issue" });
+    heading.style.margin = "0 0 6px";
+    const projectRow = this.inlineRow(contentEl);
+    projectRow.createEl("span", { text: "Project" }).style.minWidth = "5em";
+    const projectInput = projectRow.createEl("input", { type: "text" });
+    projectInput.placeholder = "group/project or numeric ID";
+    projectInput.style.flex = "1";
+    projectInput.value = this.projectId;
+    projectInput.addEventListener("input", () => {
+      this.projectId = projectInput.value.trim();
+    });
+    const titleRow = this.inlineRow(contentEl);
+    titleRow.createEl("span", { text: "Title" }).style.minWidth = "5em";
+    const titleInput = titleRow.createEl("input", { type: "text" });
+    titleInput.placeholder = "Issue title (required)";
+    titleInput.style.flex = "1";
+    titleInput.addEventListener("input", () => {
+      this.title = titleInput.value;
+    });
+    const descLabel = contentEl.createEl("div", { text: "Description" });
+    descLabel.style.fontSize = "12px";
+    descLabel.style.color = "var(--text-muted)";
+    descLabel.style.margin = "6px 0 2px";
+    const descTa = contentEl.createEl("textarea");
+    descTa.rows = 5;
+    descTa.style.width = "100%";
+    descTa.placeholder = "Markdown body (optional)";
+    descTa.addEventListener("input", () => {
+      this.description = descTa.value;
+    });
+    const labelsRow = this.inlineRow(contentEl);
+    labelsRow.createEl("span", { text: "Labels" }).style.minWidth = "5em";
+    const labelsInput = labelsRow.createEl("input", { type: "text" });
+    labelsInput.placeholder = "label1, label2 (custom OK)";
+    labelsInput.style.flex = "1";
+    labelsInput.addEventListener("input", () => {
+      this.labelsValue = labelsInput.value;
+    });
+    renderLabelDropdown(labelsRow, "+ known", this.knownLabels(), (label) => {
+      appendLabelToInput(labelsInput, label);
+      this.labelsValue = labelsInput.value;
+    });
+    const optsRow = this.inlineRow(contentEl);
+    const confidentialWrap = optsRow.createEl("label");
+    confidentialWrap.style.display = "flex";
+    confidentialWrap.style.alignItems = "center";
+    confidentialWrap.style.gap = "4px";
+    confidentialWrap.style.fontSize = "12px";
+    const confidentialCb = confidentialWrap.createEl("input", { type: "checkbox" });
+    confidentialCb.addEventListener("change", () => {
+      this.confidential = confidentialCb.checked;
+    });
+    confidentialWrap.createEl("span", { text: "Confidential" });
+    optsRow.createEl("span", { text: "Due" }).style.fontSize = "12px";
+    const dueInput = optsRow.createEl("input", { type: "date" });
+    dueInput.addEventListener("change", () => {
+      this.dueDate = dueInput.value;
+    });
+    const buttons = this.inlineRow(contentEl);
+    buttons.style.justifyContent = "flex-end";
+    buttons.style.marginTop = "10px";
+    const cancelBtn = buttons.createEl("button", { text: "Cancel" });
+    cancelBtn.type = "button";
+    cancelBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      this.close();
+    });
+    const submitBtn = buttons.createEl("button", { text: "Create issue" });
+    submitBtn.type = "button";
+    submitBtn.classList.add("mod-cta");
+    submitBtn.addEventListener("click", (e) => __async(this, null, function* () {
+      e.preventDefault();
+      if (!this.projectId.trim()) {
+        new import_obsidian5.Notice("Project is required.");
+        return;
+      }
+      if (!this.title.trim()) {
+        new import_obsidian5.Notice("Title is required.");
+        return;
+      }
+      const labels = splitLabelList(this.labelsValue);
+      submitBtn.setAttr("disabled", "true");
+      try {
+        const created = yield createIssue(this.settings, this.projectId.trim(), {
+          title: this.title.trim(),
+          description: this.description || void 0,
+          labels: labels.length > 0 ? labels : void 0,
+          confidential: this.confidential || void 0,
+          due_date: this.dueDate || void 0
+        });
+        if (this.hooks.onLabelsLearned && labels.length > 0) {
+          try {
+            yield this.hooks.onLabelsLearned(labels);
+          } catch (err) {
+            logger(`Failed to record known labels: ${err.message}`);
+          }
+        }
+        new import_obsidian5.Notice(`Created issue #${created.iid}`);
+        this.close();
+        if (this.hooks.onCreated) {
+          yield this.hooks.onCreated(created);
+        }
+      } catch (err) {
+        logger(`Failed to create issue: ${err.message}`);
+        new import_obsidian5.Notice(`Failed to create issue: ${err.message}`);
+      } finally {
+        submitBtn.removeAttribute("disabled");
+      }
+    }));
+    titleInput.focus();
   }
   onClose() {
     this.contentEl.empty();
@@ -7591,6 +7748,11 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
           }
         });
         this.addCommand({
+          id: "gitlab-issues-create",
+          name: "Create new Gitlab issue",
+          callback: () => this.createNewIssue()
+        });
+        this.addCommand({
           id: "gitlab-issues-manage",
           name: "Manage active Gitlab issue (comment & labels)",
           callback: () => this.manageActiveIssue()
@@ -7711,6 +7873,20 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
       return null;
     }
     return ctx;
+  }
+  createNewIssue() {
+    var _a;
+    const defaultProject = this.settings.gitlabIssuesLevel === "project" ? (_a = this.settings.gitlabAppId) != null ? _a : "" : "";
+    new NewIssueModal(this.app, this.settings, defaultProject, {
+      getKnownLabels: () => {
+        var _a2;
+        return (_a2 = this.settings.knownLabels) != null ? _a2 : [];
+      },
+      onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+      onCreated: () => {
+        this.fetchIssuesFromGitlab();
+      }
+    }).open();
   }
   manageActiveIssue() {
     const ctx = this.resolveActiveIssue();
