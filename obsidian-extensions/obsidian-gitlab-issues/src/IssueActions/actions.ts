@@ -1,6 +1,6 @@
 import { App, TFile, normalizePath } from "obsidian";
 import GitlabApi from "../GitlabLoader/gitlab-api";
-import { GitlabIssuesSettings, IssueActionTemplate } from "../SettingsTab/settings-types";
+import { GitlabIssuesSettings } from "../SettingsTab/settings-types";
 
 export interface IssueRef {
 	projectId: string;
@@ -158,30 +158,44 @@ export async function moveIssueFileForState(
 	return moved instanceof TFile ? moved : file;
 }
 
-export async function executeIssueActionTemplate(
-	app: App,
+export function expandRemoveLabelPatterns(patterns: string[], current: string[]): string[] {
+	const out = new Set<string>();
+	for (const raw of patterns) {
+		const p = raw.trim();
+		if (p.length === 0) continue;
+		if (p.includes("*")) {
+			const re = new RegExp(
+				"^" + p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"
+			);
+			current.forEach((l) => {
+				if (re.test(l)) out.add(l);
+			});
+		} else {
+			out.add(p);
+		}
+	}
+	return Array.from(out);
+}
+
+export async function applyLabelChanges(
 	settings: GitlabIssuesSettings,
 	ref: IssueRef,
-	file: TFile,
-	template: IssueActionTemplate,
-	commentBodyOverride?: string | null
-): Promise<void> {
-	const change: { add?: string[]; remove?: string[]; replace?: string[] } = {};
-	if (template.labelsReplace !== undefined) {
-		change.replace = template.labelsReplace;
-	} else {
-		if (template.labelsAdd && template.labelsAdd.length > 0) change.add = template.labelsAdd;
-		if (template.labelsRemove && template.labelsRemove.length > 0) change.remove = template.labelsRemove;
-	}
+	currentLabels: string[],
+	removePatterns: string[],
+	addLabels: string[]
+): Promise<string[]> {
+	const expandedRemove = expandRemoveLabelPatterns(removePatterns, currentLabels);
+	let resultLabels = currentLabels.slice();
+	let changed = false;
 
-	if (change.replace !== undefined || change.add || change.remove) {
-		const updatedLabels = await updateIssueLabels(settings, ref, change);
-		await updateNoteFrontmatter(app, file, { labels: updatedLabels });
+	if (expandedRemove.length > 0) {
+		resultLabels = await updateIssueLabels(settings, ref, { remove: expandedRemove });
+		changed = true;
 	}
-
-	const body =
-		commentBodyOverride === undefined ? template.commentBody : commentBodyOverride;
-	if (body !== undefined && body !== null && body.trim().length > 0) {
-		await postIssueComment(settings, ref, body);
+	if (addLabels.length > 0) {
+		resultLabels = await updateIssueLabels(settings, ref, { add: addLabels });
+		changed = true;
 	}
+	if (!changed) return currentLabels;
+	return resultLabels;
 }

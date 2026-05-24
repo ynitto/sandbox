@@ -10,14 +10,11 @@ import {
 	getActiveIssueRef,
 	setIssueState,
 	updateNoteFrontmatter,
-	executeIssueActionTemplate,
 	moveIssueFileForState,
 } from "./IssueActions/actions";
 import {
 	ConfirmModal,
 	IssueActionsModal,
-	TemplateSuggestModal,
-	TemplatePreviewModal,
 	TemplateScaffoldModal,
 } from "./IssueActions/modals";
 import {
@@ -79,12 +76,6 @@ export default class GitlabIssuesPlugin extends Plugin {
 				id: "gitlab-issues-reopen",
 				name: "Reopen active Gitlab issue",
 				callback: () => this.changeActiveIssueState("reopen"),
-			});
-
-			this.addCommand({
-				id: "gitlab-issues-apply-template",
-				name: "Apply template to active Gitlab issue",
-				callback: () => this.applyTemplateToActiveIssue(),
 			});
 
 			this.addCommand({
@@ -215,6 +206,7 @@ export default class GitlabIssuesPlugin extends Plugin {
 		new IssueActionsModal(this.app, this.settings, ctx.ref, ctx.file, ctx.frontmatter, {
 			getKnownLabels: () => this.settings.knownLabels ?? [],
 			onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+			getTemplates: () => this.settings.issueActionTemplates ?? [],
 		}).open();
 	}
 
@@ -237,36 +229,6 @@ export default class GitlabIssuesPlugin extends Plugin {
 				}
 				new Notice(`Template scaffold written to ${file.path}`);
 			},
-		}).open();
-	}
-
-	private applyTemplateToActiveIssue() {
-		const ctx = this.resolveActiveIssue();
-		if (!ctx) return;
-
-		const templates = this.settings.issueActionTemplates ?? [];
-		if (templates.length === 0) {
-			new Notice("No issue action templates configured. Add some in plugin settings.");
-			return;
-		}
-
-		new TemplateSuggestModal(this.app, templates, (template) => {
-			new TemplatePreviewModal(this.app, template, ctx.ref.iid, async (commentBody) => {
-				try {
-					await executeIssueActionTemplate(
-						this.app,
-						this.settings,
-						ctx.ref,
-						ctx.file,
-						template,
-						commentBody
-					);
-					new Notice(`Applied "${template.name}" to issue #${ctx.ref.iid}`);
-				} catch (e: any) {
-					logger(`Failed to apply template: ${e.message}`);
-					new Notice(`Failed to apply template: ${e.message}`);
-				}
-			}).open();
 		}).open();
 	}
 
