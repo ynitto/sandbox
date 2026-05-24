@@ -55,6 +55,6 @@ export class GitlabIssue implements ObsidianIssue {
 	}
 
 	get wikilink(): string {
-		return `${this.repoPath}/${this.filename}`;
+		return this.filename;
 	}
 }

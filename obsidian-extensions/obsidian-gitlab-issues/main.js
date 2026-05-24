@@ -6347,7 +6347,7 @@ var GitlabIssue = class {
     return `${this.iid} - ${safeTitle}`;
   }
   get wikilink() {
-    return `${this.repoPath}/${this.filename}`;
+    return this.filename;
   }
 };
 
@@ -6369,7 +6369,7 @@ var GitlabMergeRequest = class {
     return `!${this.iid} - ${safeTitle}`;
   }
   get wikilink() {
-    return `${this.repoPath}/${this.filename}`;
+    return this.filename;
   }
 };
 
@@ -6718,7 +6718,7 @@ var GitlabLoader = class {
               const repoPath = sanitizeRepoPath(extractRepoPath(mr, "merge_requests"));
               const safeTitle = sanitizeFolderSegment(mr.title).replace(/[/\\?%]/g, "-");
               const filename = `!${mr.iid} - ${safeTitle}`;
-              return __spreadProps(__spreadValues({}, mr), { repoPath, wikilink: `${repoPath}/${filename}` });
+              return __spreadProps(__spreadValues({}, mr), { repoPath, wikilink: filename });
             });
           } catch (e) {
             logger(`Failed to fetch merge requests for issue #${rawIssue.iid}: ${e.message}`);
@@ -7468,6 +7468,11 @@ var ISSUE_TEMPLATE_SCAFFOLD = `---
      Example:
        {{{prefixLines description "> "}}}   renders the description as
                                             a Markdown blockquote.
+
+     Note: {{wikilink}} is the file's basename (e.g. "!9 - MR Title").
+     Obsidian resolves [[basename]] links via basename match across the
+     whole vault, so links keep working even if you move the file
+     later \u2014 as long as basenames remain unique.
 ============================================================ --}}
 id: "{{id}}"
 iid: "{{iid}}"
@@ -7635,6 +7640,11 @@ var MR_TEMPLATE_SCAFFOLD = `---
      Example:
        {{{prefixLines description "> "}}}   renders the description as
                                             a Markdown blockquote.
+
+     Note: {{wikilink}} is the file's basename (e.g. "!9 - MR Title").
+     Obsidian resolves [[basename]] links via basename match across the
+     whole vault, so links keep working even if you move the file
+     later \u2014 as long as basenames remain unique.
 ============================================================ --}}
 id: "{{id}}"
 iid: "{{iid}}"
