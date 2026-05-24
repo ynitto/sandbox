@@ -47,6 +47,7 @@ export interface GitlabIssuesSettings {
 	labelPropertyMappings: LabelPropertyMapping[];
 	issueActionTemplates: IssueActionTemplate[];
 	knownLabels: string[];
+	knownProjects: string[];
 	maxItems: number;
 	maxMrItems: number;
 	staleDays: number;

@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS = {
 	labelPropertyMappings: [],
 	issueActionTemplates: [],
 	knownLabels: [],
+	knownProjects: [],
 	maxItems: 20,
 	maxMrItems: 20,
 	staleDays: 0,
@@ -44,7 +45,7 @@ export const settings: SettingsTab = {
 		{
 			title: "Personal Access Token",
 			description:
-				"Generate a Personal Access Token in your Gitlab Settings (User > Settings > Access Tokens) with 'api' scope",
+				"Generate a Personal Access Token in your Gitlab Settings (User > Settings > Access Tokens) with 'api' scope. Stored separately in data.secrets.json alongside this plugin's data.json — add data.secrets.json to your .gitignore so the rest of the settings can be safely shared via git.",
 			placeholder: "glpat-...",
 			value: "gitlabToken",
 		},

@@ -27,6 +27,18 @@ var __spreadValues = (a, b) => {
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 var __markAsModule = (target) => __defProp(target, "__esModule", { value: true });
+var __objRest = (source, exclude) => {
+  var target = {};
+  for (var prop in source)
+    if (__hasOwnProp.call(source, prop) && exclude.indexOf(prop) < 0)
+      target[prop] = source[prop];
+  if (source != null && __getOwnPropSymbols)
+    for (var prop of __getOwnPropSymbols(source)) {
+      if (exclude.indexOf(prop) < 0 && __propIsEnum.call(source, prop))
+        target[prop] = source[prop];
+    }
+  return target;
+};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[Object.keys(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
@@ -5600,6 +5612,7 @@ var DEFAULT_SETTINGS = {
   labelPropertyMappings: [],
   issueActionTemplates: [],
   knownLabels: [],
+  knownProjects: [],
   maxItems: 20,
   maxMrItems: 20,
   staleDays: 0,
@@ -5619,7 +5632,7 @@ var settings = {
     },
     {
       title: "Personal Access Token",
-      description: "Generate a Personal Access Token in your Gitlab Settings (User > Settings > Access Tokens) with 'api' scope",
+      description: "Generate a Personal Access Token in your Gitlab Settings (User > Settings > Access Tokens) with 'api' scope. Stored separately in data.secrets.json alongside this plugin's data.json \u2014 add data.secrets.json to your .gitignore so the rest of the settings can be safely shared via git.",
       placeholder: "glpat-...",
       value: "gitlabToken"
     },
@@ -6679,10 +6692,10 @@ var Filesystem = class {
 
 // src/GitlabLoader/gitlab-loader.ts
 var GitlabLoader = class {
-  constructor(app, settings2, onLabelsCollected) {
+  constructor(app, settings2, callbacks = {}) {
     this.fs = new Filesystem(app.vault, settings2);
     this.settings = settings2;
-    this.onLabelsCollected = onLabelsCollected;
+    this.callbacks = callbacks;
   }
   getUrl() {
     const filter = buildListFilter(this.settings.filter, this.settings.staleDays);
@@ -6790,14 +6803,25 @@ var GitlabLoader = class {
           this.fs.purgeExistingIssues();
         }
         this.fs.processIssues(gitlabIssues);
-        if (this.onLabelsCollected) {
+        if (this.callbacks.onLabelsCollected) {
           const collected = new Set();
           gitlabIssues.forEach((i) => {
             var _a;
             return ((_a = i.labels) != null ? _a : []).forEach((l) => collected.add(l));
           });
           if (collected.size > 0) {
-            yield this.onLabelsCollected(Array.from(collected));
+            yield this.callbacks.onLabelsCollected(Array.from(collected));
+          }
+        }
+        if (this.callbacks.onProjectsCollected) {
+          const projects = new Set();
+          gitlabIssues.forEach((i) => {
+            const path = extractRepoPath(i, "issues");
+            if (path && path !== "unknown")
+              projects.add(path);
+          });
+          if (projects.size > 0) {
+            yield this.callbacks.onProjectsCollected(Array.from(projects));
           }
         }
       } catch (error) {
@@ -7040,7 +7064,7 @@ var IssueActionsModal = class extends import_obsidian5.Modal {
     var _a;
     this.sectionLabel(parent, "Comment");
     const ta = parent.createEl("textarea");
-    ta.rows = 3;
+    ta.rows = 8;
     ta.style.width = "100%";
     ta.placeholder = "Write a comment in Markdown...";
     ta.addEventListener("input", () => {
@@ -7225,6 +7249,7 @@ var NewIssueModal = class extends import_obsidian5.Modal {
     return this.hooks.getKnownLabels ? (_a = this.hooks.getKnownLabels()) != null ? _a : [] : [];
   }
   onOpen() {
+    var _a;
     const { contentEl } = this;
     contentEl.empty();
     const heading = contentEl.createEl("h3", { text: "Create Gitlab issue" });
@@ -7237,6 +7262,12 @@ var NewIssueModal = class extends import_obsidian5.Modal {
     projectInput.value = this.projectId;
     projectInput.addEventListener("input", () => {
       this.projectId = projectInput.value.trim();
+    });
+    const knownProjects = this.hooks.getKnownProjects ? (_a = this.hooks.getKnownProjects()) != null ? _a : [] : [];
+    renderLabelDropdown(projectRow, "+ known", knownProjects, (project) => {
+      projectInput.value = project;
+      this.projectId = project;
+      projectInput.focus();
     });
     const titleRow = this.inlineRow(contentEl);
     titleRow.createEl("span", { text: "Title" }).style.minWidth = "5em";
@@ -7251,7 +7282,7 @@ var NewIssueModal = class extends import_obsidian5.Modal {
     descLabel.style.color = "var(--text-muted)";
     descLabel.style.margin = "6px 0 2px";
     const descTa = contentEl.createEl("textarea");
-    descTa.rows = 5;
+    descTa.rows = 10;
     descTa.style.width = "100%";
     descTa.placeholder = "Markdown body (optional)";
     descTa.addEventListener("input", () => {
@@ -7322,6 +7353,13 @@ var NewIssueModal = class extends import_obsidian5.Modal {
             yield this.hooks.onLabelsLearned(labels);
           } catch (err) {
             logger(`Failed to record known labels: ${err.message}`);
+          }
+        }
+        if (this.hooks.onProjectLearned) {
+          try {
+            yield this.hooks.onProjectLearned(this.projectId.trim());
+          } catch (err) {
+            logger(`Failed to record known project: ${err.message}`);
           }
         }
         new import_obsidian5.Notice(`Created issue #${created.iid}`);
@@ -7851,11 +7889,57 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
       delete this.settings.fetchRelatedMergeRequests;
       delete this.settings.createRelatedMrFiles;
       delete this.settings.embedRelatedMrDetails;
+      const secretsToken = yield this.readSecretsToken();
+      const dataJsonToken = typeof (loaded == null ? void 0 : loaded.gitlabToken) === "string" ? loaded.gitlabToken : "";
+      let needsRewrite = false;
+      if (secretsToken !== void 0) {
+        this.settings.gitlabToken = secretsToken;
+        if (dataJsonToken)
+          needsRewrite = true;
+      } else if (dataJsonToken) {
+        this.settings.gitlabToken = dataJsonToken;
+        needsRewrite = true;
+      }
+      if (needsRewrite) {
+        yield this.saveSettings();
+      }
     });
   }
   saveSettings() {
     return __async(this, null, function* () {
-      yield this.saveData(this.settings);
+      var _a;
+      yield this.writeSecretsToken((_a = this.settings.gitlabToken) != null ? _a : "");
+      const _b = this.settings, { gitlabToken: _omit } = _b, shared = __objRest(_b, ["gitlabToken"]);
+      yield this.saveData(shared);
+    });
+  }
+  secretsPath() {
+    return `${this.app.vault.configDir}/plugins/${this.manifest.id}/data.secrets.json`;
+  }
+  readSecretsToken() {
+    return __async(this, null, function* () {
+      try {
+        const path = this.secretsPath();
+        if (!(yield this.app.vault.adapter.exists(path)))
+          return void 0;
+        const raw = yield this.app.vault.adapter.read(path);
+        const parsed = JSON.parse(raw);
+        return typeof (parsed == null ? void 0 : parsed.gitlabToken) === "string" ? parsed.gitlabToken : void 0;
+      } catch (e) {
+        logger(`Failed to read secrets sidecar: ${e.message}`);
+        return void 0;
+      }
+    });
+  }
+  writeSecretsToken(token) {
+    return __async(this, null, function* () {
+      try {
+        const path = this.secretsPath();
+        const payload = JSON.stringify({ gitlabToken: token != null ? token : "" }, null, 2);
+        yield this.app.vault.adapter.write(path, payload);
+      } catch (e) {
+        logger(`Failed to write secrets sidecar: ${e.message}`);
+      }
     });
   }
   scheduleAutomaticRefresh() {
@@ -7877,24 +7961,37 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
   }
   fetchIssuesFromGitlab() {
     new import_obsidian7.Notice("Fetching Gitlab issues...");
-    const loader = new GitlabLoader(this.app, this.settings, (labels) => this.recordKnownLabels(labels));
+    const loader = new GitlabLoader(this.app, this.settings, {
+      onLabelsCollected: (labels) => this.recordKnownLabels(labels),
+      onProjectsCollected: (projects) => this.recordKnownProjects(projects)
+    });
     loader.loadIssues();
   }
   recordKnownLabels(incoming) {
     return __async(this, null, function* () {
+      yield this.mergeStringSet("knownLabels", incoming);
+    });
+  }
+  recordKnownProjects(incoming) {
+    return __async(this, null, function* () {
+      yield this.mergeStringSet("knownProjects", incoming);
+    });
+  }
+  mergeStringSet(key, incoming) {
+    return __async(this, null, function* () {
       var _a;
       if (!incoming || incoming.length === 0)
         return;
-      const set = new Set((_a = this.settings.knownLabels) != null ? _a : []);
+      const set = new Set((_a = this.settings[key]) != null ? _a : []);
       const before = set.size;
-      incoming.forEach((l) => {
-        const trimmed = String(l).trim();
+      incoming.forEach((v) => {
+        const trimmed = String(v).trim();
         if (trimmed.length > 0)
           set.add(trimmed);
       });
       if (set.size === before)
         return;
-      this.settings.knownLabels = Array.from(set).sort((a, b) => a.localeCompare(b, void 0, { sensitivity: "base" }));
+      this.settings[key] = Array.from(set).sort((a, b) => a.localeCompare(b, void 0, { sensitivity: "base" }));
       yield this.saveSettings();
     });
   }
@@ -7930,7 +8027,12 @@ var GitlabIssuesPlugin = class extends import_obsidian7.Plugin {
         var _a2;
         return (_a2 = this.settings.knownLabels) != null ? _a2 : [];
       },
+      getKnownProjects: () => {
+        var _a2;
+        return (_a2 = this.settings.knownProjects) != null ? _a2 : [];
+      },
       onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+      onProjectLearned: (project) => this.recordKnownProjects([project]),
       onCreated: () => {
         this.fetchIssuesFromGitlab();
       }
