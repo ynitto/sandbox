@@ -15,6 +15,7 @@ import {
 import {
 	ConfirmModal,
 	IssueActionsModal,
+	NewIssueModal,
 	TemplateScaffoldModal,
 } from "./IssueActions/modals";
 import {
@@ -58,6 +59,12 @@ export default class GitlabIssuesPlugin extends Plugin {
 				callback: () => {
 					this.fetchMergeRequestsFromGitlab();
 				},
+			});
+
+			this.addCommand({
+				id: "gitlab-issues-create",
+				name: "Create new Gitlab issue",
+				callback: () => this.createNewIssue(),
 			});
 
 			this.addCommand({
@@ -198,6 +205,18 @@ export default class GitlabIssuesPlugin extends Plugin {
 			return null;
 		}
 		return ctx;
+	}
+
+	private createNewIssue() {
+		const defaultProject =
+			this.settings.gitlabIssuesLevel === "project" ? this.settings.gitlabAppId ?? "" : "";
+		new NewIssueModal(this.app, this.settings, defaultProject, {
+			getKnownLabels: () => this.settings.knownLabels ?? [],
+			onLabelsLearned: (labels) => this.recordKnownLabels(labels),
+			onCreated: () => {
+				this.fetchIssuesFromGitlab();
+			},
+		}).open();
 	}
 
 	private manageActiveIssue() {

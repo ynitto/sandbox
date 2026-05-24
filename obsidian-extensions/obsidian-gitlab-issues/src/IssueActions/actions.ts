@@ -42,6 +42,43 @@ function issueApiUrl(settings: GitlabIssuesSettings, ref: IssueRef, suffix = "")
 	return `${settings.gitlabApiUrl()}/projects/${id}/issues/${ref.iid}${suffix}`;
 }
 
+export interface CreateIssueParams {
+	title: string;
+	description?: string;
+	labels?: string[];
+	confidential?: boolean;
+	due_date?: string;
+}
+
+export interface CreatedIssue {
+	id: number;
+	iid: number;
+	project_id: number;
+	title: string;
+	state: string;
+	web_url: string;
+}
+
+export async function createIssue(
+	settings: GitlabIssuesSettings,
+	projectId: string,
+	params: CreateIssueParams
+): Promise<CreatedIssue> {
+	const id = encodeURIComponent(projectId);
+	const body: Record<string, string> = { title: params.title };
+	if (params.description) body.description = params.description;
+	if (params.labels && params.labels.length > 0) body.labels = params.labels.join(",");
+	if (params.confidential) body.confidential = "true";
+	if (params.due_date) body.due_date = params.due_date;
+
+	return await GitlabApi.request<CreatedIssue>(
+		`${settings.gitlabApiUrl()}/projects/${id}/issues`,
+		settings.gitlabToken,
+		"POST",
+		body
+	);
+}
+
 export async function postIssueComment(
 	settings: GitlabIssuesSettings,
 	ref: IssueRef,
