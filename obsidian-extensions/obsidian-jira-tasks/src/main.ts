@@ -47,15 +47,71 @@ export default class JiraTasksPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const loaded = (await this.loadData()) as Record<string, any> | null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded ?? {}) as JiraTasksSettings;
 		// Restore method lost after JSON serialization
 		this.settings.jiraApiUrl = function () {
 			return `${this.jiraUrl}/rest/api/3`;
 		};
+
+		// Load Jira credentials from the secrets sidecar (kept out of data.json
+		// so the rest of the settings can be shared via git).
+		const secrets = await this.readSecrets();
+		const dataJsonEmail =
+			typeof loaded?.jiraEmail === "string" ? loaded.jiraEmail : "";
+		const dataJsonToken =
+			typeof loaded?.jiraApiToken === "string" ? loaded.jiraApiToken : "";
+
+		let needsRewrite = false;
+		if (secrets) {
+			if (typeof secrets.jiraEmail === "string") this.settings.jiraEmail = secrets.jiraEmail;
+			if (typeof secrets.jiraApiToken === "string") this.settings.jiraApiToken = secrets.jiraApiToken;
+			if (dataJsonEmail || dataJsonToken) needsRewrite = true; // strip stale fields
+		} else if (dataJsonEmail || dataJsonToken) {
+			// One-time migration: move existing credentials out of data.json.
+			this.settings.jiraEmail = dataJsonEmail;
+			this.settings.jiraApiToken = dataJsonToken;
+			needsRewrite = true;
+		}
+
+		if (needsRewrite) {
+			await this.saveSettings();
+		}
 	}
 
 	async saveSettings() {
-		await this.saveData(this.settings);
+		await this.writeSecrets({
+			jiraEmail: this.settings.jiraEmail ?? "",
+			jiraApiToken: this.settings.jiraApiToken ?? "",
+		});
+		const { jiraEmail: _e, jiraApiToken: _t, ...shared } =
+			this.settings as Record<string, any>;
+		await this.saveData(shared);
+	}
+
+	private secretsPath(): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/data.secrets.json`;
+	}
+
+	private async readSecrets(): Promise<Record<string, any> | null> {
+		try {
+			const path = this.secretsPath();
+			if (!(await this.app.vault.adapter.exists(path))) return null;
+			const raw = await this.app.vault.adapter.read(path);
+			return JSON.parse(raw) as Record<string, any>;
+		} catch (e: any) {
+			logger(`Failed to read secrets sidecar: ${e.message}`);
+			return null;
+		}
+	}
+
+	private async writeSecrets(secrets: Record<string, string>): Promise<void> {
+		try {
+			const path = this.secretsPath();
+			await this.app.vault.adapter.write(path, JSON.stringify(secrets, null, 2));
+		} catch (e: any) {
+			logger(`Failed to write secrets sidecar: ${e.message}`);
+		}
 	}
 
 	scheduleAutomaticRefresh() {
