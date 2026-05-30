@@ -24,11 +24,6 @@ metadata:
 ## 動作環境
 
 このスキルは Windows / macOS / Linux のいずれでも動作する。
-
-- **Claude Code**: `~/.claude/skills/spec-to-readable-html/`
-- **Kiro**: `~/.kiro/skills/spec-to-readable-html/`
-- **GitHub Copilot**: `~/.copilot/skills/spec-to-readable-html/`
-
 出力する HTML は完全にスタンドアロン（CDN 依存なしオプションあり）のため、オフライン環境でも閲覧可能。
 
 ## 使用するタイミング
