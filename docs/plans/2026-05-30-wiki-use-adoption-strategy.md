@@ -8,6 +8,7 @@
 - [Karpathy shares 'LLM Knowledge Base' architecture（VentureBeat）](https://venturebeat.com/data/karpathy-shares-llm-knowledge-base-architecture-that-bypasses-rag-with-an)
 - [I used Karpathy's LLM Wiki to build a knowledge base that maintains itself（Medium / Balu Kosuri）](https://medium.com/@k.balu124/i-used-karpathys-llm-wiki-to-build-a-knowledge-base-that-maintains-itself-with-ai-df968e4f5ea0)
 - [agent-wiki — hosted markdown memory for agents](https://agent-wiki.justin-ccf.workers.dev/)
+- 検索ツール調査: [tobi/qmd](https://github.com/tobi/qmd)（ローカル CLI 検索エンジン）、[Yakitrak/notesmd-cli](https://github.com/Yakitrak/notesmd-cli)（Obsidian CLI コミュニティ版）、[Obsidian 公式 CLI](https://obsidian.md/cli)
 
 ---
 
@@ -102,7 +103,7 @@ ltm-use は rate / consolidate / index を持つ。wiki-use は lint（整合性
 ### Phase 1 — コールドスタートを断つ
 
 1. **シード投入**: 既存 Obsidian Vault と ltm の意味記憶を一度だけ一括 ingest し、Wiki を非空状態で開始する。
-2. **検索の強化（RC5）**: トークン化＋複数語 AND/OR、title・`aliases`・frontmatter を重み付け検索、日本語向け正規化、ヒット 0 時も list-pages を近傍順に提示。`aliases:` frontmatter を導入し「注意機構／attention／アテンション」を相互解決する。
+2. **検索の強化（RC5）**: トークン化＋複数語 AND/OR、title・`aliases`・frontmatter を重み付け検索、日本語向け正規化、ヒット 0 時も list-pages を近傍順に提示。`aliases:` frontmatter を導入し「注意機構／attention／アテンション」を相互解決する。実装方針（自前強化 vs qmd / obsidian-cli 等の外部ツール）の比較は [§3.5](#35-検索強化の実装方針比較自前強化-vs-外部-markdown-検索ツール) を参照。
 3. **空振りを生産的にする**: 検索が当たらなかったら、直前に参照したソースの ingest を自動提案する（miss → grow の転換）。
 
 ### Phase 2 — Organic capture（明示コマンド無しで育てる）
@@ -127,6 +128,66 @@ ltm-use は rate / consolidate / index を持つ。wiki-use は lint（整合性
 
 - Obsidian を人間側の閲覧・編集 UI として正式に推奨（既にサポート済み）。
 - 将来的に MCP / 共通エントリ化で「捕捉も参照も 1 ステップ」を目指す（agent-wiki / Link の方向）。
+
+---
+
+## 3.5 検索強化の実装方針比較（自前強化 vs 外部 Markdown 検索ツール）
+
+Phase 1-2 の「検索の強化（RC5）」をどう実装するか。外部 Markdown 検索ツール（**qmd** / **obsidian-cli 系**）の導入を含めて比較する。
+
+### 前提となる設計制約（本リポジトリのスキル群）
+
+- **ゼロ依存**: `ltm-use` 等は「MCP サーバーや特定エージェント専用機能を使わず、Markdown の読み書きだけで動作」を明言している。
+- **クロスエージェント**: Copilot / Claude / Codex / Kiro で共通動作（`install.py` ベース、`{agent_home}` 解決）。
+- **クロスプラットフォーム**: Windows 対応あり（`USERPROFILE` 解決など）。
+- **ヘッドレス**: CI / Web セッション等、GUI の無い環境でも動く必要がある。
+
+→ 外部ツールはこの 4 制約をどれだけ満たせるかで評価する。
+
+### 候補
+
+| 候補 | 概要 | 検索方式 | 主な依存・前提 |
+|------|------|----------|----------------|
+| **A. 自前強化（stdlib のみ）** | `wiki_query.py` をトークン化・別名・重み付け・近傍提示に拡張 | キーワード／TF-IDF 程度 | なし（Python 標準ライブラリ） |
+| **B. qmd**（[tobi/qmd](https://github.com/tobi/qmd)） | ローカル CLI 検索エンジン。BM25＋ベクトル＋LLM リランク、MCP・JSON 出力 | ハイブリッド（最高品質） | **Node.js≥22 / Bun**、GGUF モデル計 ~2GB 自動DL、SQLite、（実質）GPU |
+| **C. obsidian-cli 系**（[Yakitrak/notesmd-cli](https://github.com/Yakitrak/notesmd-cli) 等） | Vault をターミナル操作。grep 風／JSON 出力の検索 | キーワード（grep 相当） | Go バイナリ等の別途インストール。ツールにより Vault 前提 |
+| **D. 公式 obsidian CLI**（既存 `obsidian-use` が統合済み） | 実行中 Obsidian を操作 | アプリ内検索 | **Obsidian アプリが起動している必要がある** |
+
+### 制約への適合
+
+| 制約 | A 自前 | B qmd | C obsidian-cli 系 | D 公式 obsidian |
+|------|:--:|:--:|:--:|:--:|
+| ゼロ依存 | ✓ | ✗（Node＋2GBモデル） | △（要バイナリ） | ✗ |
+| クロスエージェント | ✓ | △（MCP対応エージェント寄り） | ○ | ○ |
+| クロスプラットフォーム | ✓ | △（GPU/モデル差） | ○ | △ |
+| ヘッドレス動作 | ✓ | ○ | ○ | **✗（GUI必須）** |
+| 検索品質 | △〜○ | **◎（意味検索）** | ○ | ○ |
+| 日本語・表記ゆれ | △（要実装） | **◎（多言語埋め込み）** | △ | ○ |
+| 導入摩擦 | **最小** | 大 | 中 | 中（Obsidian常駐） |
+
+### 検討の結論
+
+- **既定路線は A（自前強化）**。スキル群の「ゼロ依存・クロス環境・ヘッドレス」という根幹の設計制約を唯一すべて満たす。RC5 の主因（単一キーワードの部分一致）は、トークン化・別名（`aliases`）・frontmatter 重み付け・近傍提示という**軽量な改良で大半が解消**でき、コールドスタート（RC1）への即効性も高い。
+- **D（公式 obsidian CLI）は wiki 検索のバックエンドには不適**。GUI 常駐が必須でヘッドレス要件に反する。ただし `obsidian-use` が担う**人間側の閲覧・編集 UI** としては既に有効で、役割が違う（competing ではなく complementary）。
+- **B（qmd）は「将来のオプトイン強化」として位置づける**。意味検索・多言語・MCP は本質的に魅力的で、Wiki が大規模化し純テキスト検索が頭打ちになった段階で価値が出る。ただし Node＋約2GBのモデル＋（実質）GPU は本スキルの既定依存にはできない。**導入するなら「検索バックエンドの差し替え可能化（pluggable backend）」として、qmd があれば使い、無ければ自前にフォールバックする設計**にする。
+- **C（obsidian-cli 系）は中間案**だが、検索品質は grep 相当で A から大きく前進せず、別バイナリ依存が増えるだけなので**優先度は低い**。
+
+### 推奨アーキテクチャ（pluggable search backend）
+
+```
+wiki_query.py search "<kw>"
+   ├─ backend=builtin（既定・ゼロ依存）── トークン化＋別名＋重み付け＋近傍提示
+   └─ backend=qmd（任意・検出時）──────── qmd query --json をラップして利用
+```
+
+- 既定は builtin。`skill_configs.wiki-use.search_backend: "qmd"` かつ `qmd` が PATH にあるときのみ B を使う。
+- 出力フォーマット（ヒットページ・スニペット）を共通化し、上位の ingest/query フローからはバックエンドを透過にする。
+- これにより「まず A で RC5 を潰す → 必要な人だけ B にオプトイン」という**段階導入**が可能になり、ゼロ依存の既定値を壊さない。
+
+### 実装順序への反映
+
+1. **今回**: A（builtin 強化）を実装し RC5 を解消する。
+2. **後続（任意）**: search backend を抽象化し、qmd アダプタをオプトインで追加する。
 
 ---
 
