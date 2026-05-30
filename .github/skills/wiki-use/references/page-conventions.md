@@ -32,6 +32,7 @@
 ---
 title: "<ページタイトル>"
 type: concept | term | person | organization | product | topic
+aliases: [別名1, 別名2]
 tags: [タグ1, タグ2]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -42,6 +43,9 @@ summary: "<index.md 用の1文説明（80文字以内）>"
 ```
 
 - `type` は atoms では必須。topics では `topic` を指定する。
+- `aliases` はそのページの別名・表記ゆれ・訳語・略称を列挙する（省略可）。`wiki_query.py search` は title と同じ最高重みで参照するため、**異なる表記からのヒット率を大きく上げる**。Obsidian の別名としても機能する。
+  - 例: `attention-mechanism.md` に `aliases: [注意機構, アテンション, self-attention]` を付けると「注意機構」「アテンション」「attention」のいずれでも到達できる。
+  - 日本語タイトルのページには英語表記を、英語タイトルのページには日本語の訳語・カナを入れておくと効果が高い。
 - `sources` はソースの識別子（タイトル・ファイル名・URL など）を自由形式で記録する。
 - `summary` はindex.mdの1行説明として使われる。省略するとスクリプトが本文から自動生成する。
 
