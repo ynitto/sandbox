@@ -2,7 +2,7 @@
 name: persona-use
 description: "「ペルソナをロードして」「ペルソナを初期化して」「ペルソナをリセットして」「ペルソナを一括更新して」「ユーザーの好みを読み込んで」など、ユーザーのペルソナ（コミュニケーションスタイル・技術嗜好・専門領域）を蓄積・活用して応答をパーソナライズするスキル。"
 metadata:
-  version: 2.0.0
+  version: 2.0.1
   tier: core
   category: meta
   config_script: scripts/init_persona.py
@@ -19,6 +19,14 @@ metadata:
 認知科学における Emotion / Valuation（感情・価値判断）層を担う。
 
 ---
+
+## 記憶レイヤの役割分担（persona-use / ltm-use / wiki-use）
+
+persona-use は **ユーザー自身のモデル**（コミュニケーションスタイル・技術嗜好・専門領域）を扱う。
+自分／チームの運用知（手順・設計判断）は **ltm-use**、世界・ドメインの知識（概念・外部ソース）は **wiki-use** に保存する。
+判定に迷ったとき・取り違えたときのルーティングとブリッジは
+[`../../instructions/common.instructions.md`](../../instructions/common.instructions.md) の「記憶レイヤの役割分担」を正典とする。
+**同一の情報を他レイヤと重複保存しないこと。**
 
 ## ペルソナの構造
 
