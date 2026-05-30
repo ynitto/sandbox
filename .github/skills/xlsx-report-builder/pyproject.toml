@@ -1,0 +1,8 @@
+[project]
+name = "xlsx-report-builder"
+version = "1.0.0"
+description = "JSON スペックから Excel (.xlsx) 帳票を生成するスキル"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1",
+]
