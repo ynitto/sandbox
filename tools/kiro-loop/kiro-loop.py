@@ -111,6 +111,7 @@ _DEFAULT_SEND_SESSION = "kiro"
 _SEND_STARTUP_TIMEOUT = 60
 _PROMPT_RE = re.compile(r"(^\s*[>?❯›]\s*$|!>)", re.MULTILINE)
 _ENV_LAST_ACTIVE = "KIRO_LAST_ACTIVE"
+_AGENTS_DIR = Path.home() / ".kiro" / "agents"
 
 
 def _find_running_daemon(cwd: Path) -> int | None:
@@ -388,6 +389,130 @@ class SlotMonitor:
         with self._lock:
             self._pending.pop(pane_id, None)
         self._semaphore.release(pane_id)
+
+
+# ---------------------------------------------------------------------------
+# エージェント間メッセージ受信ウォッチャー
+# ---------------------------------------------------------------------------
+
+class InboxWatcher:
+    """エージェント間メッセージ受信スレッド。
+
+    メッセージファイル: ~/.kiro/agents/<agent_name>/inbox/<timestamp>_<uuid>.json
+    処理済みアーカイブ: ~/.kiro/agents/<agent_name>/inbox/.processed/
+
+    メッセージ JSON スキーマ:
+      id          (str)   メッセージ固有 ID
+      from        (str)   送信元エージェント名
+      to          (str)   宛先エージェント名
+      created_at  (float) 作成日時 (Unix timestamp)
+      subject     (str)   件名（省略可）
+      body        (str)   本文
+      reply_to    (str)   返信先エージェント名（省略時は from と同じ）
+      correlation_id (str) 会話追跡用 ID（省略可）
+      cwd         (str)   送信元の作業ディレクトリ（省略可）
+    """
+
+    def __init__(
+        self,
+        agent_name: str,
+        session_mgr: "SessionManager",
+        semaphore: "GlobalSemaphore | None" = None,
+        poll_interval: int = 5,
+    ) -> None:
+        self._agent_name = agent_name
+        self._session_mgr = session_mgr
+        self._semaphore = semaphore
+        self._poll_interval = poll_interval
+        self._inbox_dir = _AGENTS_DIR / agent_name / "inbox"
+        self._processed_dir = self._inbox_dir / ".processed"
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._inbox_dir.mkdir(parents=True, exist_ok=True)
+        self._processed_dir.mkdir(parents=True, exist_ok=True)
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="inbox-watcher",
+            daemon=True,
+        )
+        self._thread.start()
+        log.info("[InboxWatcher] 起動しました (agent=%s): %s", self._agent_name, self._inbox_dir)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def _run_loop(self) -> None:
+        while not self._stop_event.wait(self._poll_interval):
+            try:
+                self._check_inbox()
+            except Exception as exc:
+                log.error("[InboxWatcher] ポーリングエラー: %s", exc, exc_info=True)
+
+    def _check_inbox(self) -> None:
+        """受信ボックスの未処理メッセージを走査してディスパッチする。"""
+        msg_files = sorted(self._inbox_dir.glob("*.json"))
+        for msg_file in msg_files:
+            try:
+                data = json.loads(msg_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                log.warning("[InboxWatcher] メッセージ読み込みエラー (%s): %s", msg_file.name, exc)
+                continue
+
+            dispatched = self._try_dispatch(data)
+            if dispatched:
+                dest = self._processed_dir / msg_file.name
+                try:
+                    msg_file.rename(dest)
+                except OSError as exc:
+                    log.warning("[InboxWatcher] アーカイブ移動エラー (%s): %s", msg_file.name, exc)
+                log.info(
+                    "[InboxWatcher] メッセージ処理完了: from=%s subject=%r",
+                    data.get("from", "?"),
+                    data.get("subject", ""),
+                )
+            else:
+                log.debug("[InboxWatcher] メッセージ保留中 (busy/semaphore): %s", msg_file.name)
+
+    def _try_dispatch(self, data: dict[str, Any]) -> bool:
+        """セッションへメッセージをディスパッチする。成功時 True。"""
+        prompt_id = f"inbox-{data.get('id', uuid.uuid4().hex[:8])}"
+        name = f"inbox:{data.get('from', '?')}"
+
+        if not self._session_mgr.ensure_session(prompt_id, name):
+            log.warning("[InboxWatcher] セッション未準備のため保留")
+            return False
+
+        pane_id: str | None = self._session_mgr.get_pane_id(prompt_id)
+
+        if self._semaphore is not None and pane_id:
+            if not self._semaphore.acquire(pane_id):
+                return False
+
+        prompt_text = self._build_prompt(data)
+        return self._session_mgr.send_prompt(prompt_id, prompt_text)
+
+    def _build_prompt(self, data: dict[str, Any]) -> str:
+        from_agent = data.get("from", "unknown")
+        subject = data.get("subject", "")
+        body = data.get("body", "")
+        reply_to = data.get("reply_to") or from_agent
+        msg_id = data.get("id", "")
+
+        parts: list[str] = [f"[エージェント {from_agent} からのメッセージ]"]
+        if subject:
+            parts.append(f"件名: {subject}")
+        parts.append("")
+        parts.append(body)
+        parts.append("")
+        parts.append("---")
+        reply_cmd = f'kiro-loop msg --to {from_agent}'
+        if msg_id:
+            reply_cmd += f' --reply-to "{msg_id}"'
+        reply_cmd += ' "返答内容"'
+        parts.append(f"返信する場合: {reply_cmd}")
+        return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -2454,6 +2579,82 @@ def cmd_send(args: argparse.Namespace, cwd: Path) -> None:
         sys.exit(2)
 
 
+def cmd_msg(args: argparse.Namespace) -> None:
+    """msg サブコマンド: エージェントの受信ボックスにメッセージを投函する。"""
+    to_agent = args.to
+    from_agent = args.from_agent or "unknown"
+    subject = args.subject or ""
+    reply_to_id = args.reply_to or ""
+    correlation_id = args.correlation_id or uuid.uuid4().hex
+
+    # ボディの解決（引数 or ファイル）
+    body_arg = " ".join(args.body) if args.body else ""
+    body = body_arg.strip()
+    if not body:
+        print("[kiro-loop msg] ERROR: メッセージ本文を指定してください。", file=sys.stderr)
+        sys.exit(1)
+
+    # ファイルパスとして解釈を試みる
+    maybe_file = Path(body_arg.strip())
+    if maybe_file.is_file():
+        body = maybe_file.read_text(encoding="utf-8").strip()
+
+    inbox_dir = _AGENTS_DIR / to_agent / "inbox"
+    try:
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[kiro-loop msg] ERROR: 受信ボックスの作成に失敗しました: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    msg_id = uuid.uuid4().hex
+    ts = int(time.time())
+    msg_file = inbox_dir / f"{ts}_{msg_id}.json"
+
+    payload: dict[str, Any] = {
+        "id": msg_id,
+        "from": from_agent,
+        "to": to_agent,
+        "created_at": float(ts),
+        "subject": subject,
+        "body": body,
+        "reply_to": reply_to_id or from_agent,
+        "correlation_id": correlation_id,
+        "cwd": str(Path.cwd()),
+    }
+
+    try:
+        msg_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"[kiro-loop msg] ERROR: メッセージファイルの書き込みに失敗しました: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[kiro-loop msg] メッセージを投函しました → {msg_file}", file=sys.stderr)
+    print(f"  to:      {to_agent}", file=sys.stderr)
+    print(f"  from:    {from_agent}", file=sys.stderr)
+    if subject:
+        print(f"  subject: {subject}", file=sys.stderr)
+    print(f"  id:      {msg_id}", file=sys.stderr)
+
+
+def cmd_agents() -> None:
+    """agents サブコマンド: 登録済みエージェントの一覧を表示する。"""
+    if not _AGENTS_DIR.exists():
+        print("(登録済みエージェントはありません)")
+        return
+
+    agents = [d for d in _AGENTS_DIR.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    if not agents:
+        print("(登録済みエージェントはありません)")
+        return
+
+    for agent_dir in sorted(agents):
+        inbox = agent_dir / "inbox"
+        pending = len(list(inbox.glob("*.json"))) if inbox.exists() else 0
+        processed_dir = inbox / ".processed"
+        processed = len(list(processed_dir.glob("*.json"))) if processed_dir.exists() else 0
+        print(f"  {agent_dir.name}  (inbox: {pending} pending, {processed} processed)")
+
+
 # ---------------------------------------------------------------------------
 # メイン
 # ---------------------------------------------------------------------------
@@ -2540,6 +2741,35 @@ def main() -> None:
         help="作業ディレクトリ（省略時: カレントディレクトリ）",
     )
 
+    msg_parser = subparsers.add_parser(
+        "msg",
+        help="エージェントの受信ボックスにメッセージを投函する",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="エージェント間メッセージを非同期に送信する（受信側の InboxWatcher が処理）",
+        epilog="""
+使い方:
+  kiro-loop msg --to worker1 "実装してください: feature X"
+  kiro-loop msg --to worker1 --from orchestrator --subject "タスク依頼" task.md
+  kiro-loop msg --to orchestrator --reply-to <msg_id> "完了しました"
+""",
+    )
+    msg_parser.add_argument("--to", required=True, metavar="AGENT", help="宛先エージェント名")
+    msg_parser.add_argument("--from", dest="from_agent", default=None, metavar="AGENT", help="送信元エージェント名")
+    msg_parser.add_argument("--subject", "-S", default=None, metavar="TEXT", help="件名")
+    msg_parser.add_argument("--reply-to", default=None, metavar="MSG_ID", help="返信元メッセージ ID")
+    msg_parser.add_argument("--correlation-id", default=None, metavar="ID", help="会話追跡 ID")
+    msg_parser.add_argument(
+        "body",
+        nargs="*",
+        metavar="BODY",
+        help="メッセージ本文またはファイルパス",
+    )
+
+    subparsers.add_parser(
+        "agents",
+        help="登録済みエージェントの一覧を表示する",
+    )
+
     args = parser.parse_args()
 
     logging.getLogger().setLevel(args.log_level)
@@ -2556,6 +2786,14 @@ def main() -> None:
 
     if args.subcommand == "send":
         cmd_send(args, cwd)
+        return
+
+    if args.subcommand == "msg":
+        cmd_msg(args)
+        return
+
+    if args.subcommand == "agents":
+        cmd_agents()
         return
 
     running_pid = _find_running_daemon(cwd)
@@ -2681,6 +2919,20 @@ def main() -> None:
 
     # スケジューラ開始
     scheduler.start()
+
+    # InboxWatcher: agent_name が設定されている場合に受信ボックスを監視する
+    agent_name = str(config.get("agent_name", "")).strip()
+    inbox_poll_seconds = int(config.get("inbox_poll_seconds", 5))
+    inbox_watcher: InboxWatcher | None = None
+    if agent_name:
+        inbox_watcher = InboxWatcher(
+            agent_name=agent_name,
+            session_mgr=session_mgr,
+            semaphore=semaphore,
+            poll_interval=inbox_poll_seconds,
+        )
+        inbox_watcher.start()
+        log.info("InboxWatcher を起動しました: agent_name=%s", agent_name)
 
     # スロット監視スレッド起動（同時実行数制御が有効な場合のみ）
     if slot_monitor is not None:
