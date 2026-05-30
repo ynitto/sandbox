@@ -41,6 +41,7 @@ SCHEMA_TEMPLATE = """\
 ## ページ規約
 
 - フロントマター必須（title, type, tags, created, updated, sources, summary）
+- `aliases` は任意。別名・表記ゆれ・訳語・略称を列挙すると検索ヒット率が上がる（search は title と同じ重みで参照）
 - `type` フィールド: concept | term | person | organization | product | topic
 - ウィキリンク形式: [[ファイル名]]（拡張子なし）
 - ファイル名: 英小文字 + ハイフン（例: attention-mechanism.md）
