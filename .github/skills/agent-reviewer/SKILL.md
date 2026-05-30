@@ -2,7 +2,7 @@
 name: agent-reviewer
 description: 入力された成果物を分析し、適切な perspectives を自律選択してサブエージェントを並列起動し、集約レビューを返す。「レビューして」「コードを確認して」「設計をレビューして」「ドキュメントをチェックして」「品質確認して」などの依頼で発動。sprint-reviewer は含まない。
 metadata:
-  version: 3.0.0
+  version: 3.1.0
   tier: stable
   category: review
   tags:
@@ -28,7 +28,7 @@ metadata:
 | `functional` | `${SKILL_DIR}/references/functional.md` | プロダクションコードの正確性・堅牢性 |
 | `ai-antipattern` | `${SKILL_DIR}/references/ai-antipattern.md` | AI 生成コード特有の問題 |
 | `architecture` | `${SKILL_DIR}/references/architecture.md` | モジュール・レイヤー間の構造 |
-| `security` | `${SKILL_DIR}/references/security.md` | OWASP Top 10・脆弱性 |
+| `security` | `${SKILL_DIR}/references/security.md` | OWASP Top 10・脆弱性・差分SAST |
 | `design` | `${SKILL_DIR}/references/design.md` | クラス・モジュール設計・SOLID |
 | `test` | `${SKILL_DIR}/references/test.md` | テストコードの品質・網羅性 |
 | `document` | `${SKILL_DIR}/references/document.md` | 要件定義書・設計書・仕様書 |
@@ -52,7 +52,7 @@ metadata:
 | プロダクションコード + テストファイル混在 | `functional`, `ai-antipattern`, `architecture`, `test` |
 | セキュリティ関連コード（認証・DB・API・入力処理） | `functional`, `ai-antipattern`, `architecture`, `security` |
 | テストコードのみ | `test` |
-| セキュリティ診断 | `security` |
+| セキュリティ診断・セキュリティレビュー | `security` |
 | クラス・モジュール設計 | `design`, `architecture` |
 | ドキュメント・仕様書・設計書 | `document` |
 
