@@ -144,6 +144,33 @@ python {skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup 
 
 scrum-master 経由のスプリント実行中は、スプリント完了後（Phase 6 の後）にまとめて保存する。
 
+### 知識の自律 ingest（wiki-use / organic capture）
+
+`wiki-use` が設定されている場合（`skill-registry.json` の `skill_configs.wiki-use` が存在する場合）、
+**ドメイン知識が生まれた瞬間に、ユーザーの明示指示を待たずに wiki へ取り込む**。
+これは ltm の自律 save と対になる動作で、「明示コマンド依存で wiki が育たない」状態を防ぐためのもの。
+未設定の場合はスキップしてよい。
+
+以下を検出したら自律的に ingest する（対象は **意味的・参照的なドメイン知識**に限る。手順・嗜好は ltm-use / persona-use へ）:
+
+- 外部ソース（記事・論文・URL・ドキュメント）を精読・要約・説明したとき
+- Web 検索・リサーチで新しい概念・用語・人物・組織・製品の知識が得られたとき
+- 複数の概念を横断して比較・分析・統合した回答を生成したとき（topics ページの候補）
+- ユーザーの質問に答える中で、再利用価値のあるドメイン知識を自分の知識から提示したとき
+
+手順（確認不要。ただし重複を避けるため事前検索する）:
+
+```bash
+# 1. 取り込み済みか確認（ヒットすれば既存ページを更新、無ければ新規 ingest）
+python {skill_home}/wiki-use/scripts/wiki_query.py search "対象のキーワード"
+# 2. 未取り込みなら wiki-use の ingest 手順（SKILL.md / references/op-ingest.md）に従ってページを生成・更新する
+```
+
+- コードファイル・設定ファイル・ログファイルは ingest の対象外。
+- 「どう動くか／どう直したか」という運用知は ltm-use、「ユーザーはどんな人か」は persona-use に回す（前掲の役割分担に従う）。
+- セッション終了時には、そのセッションで生まれた未取り込みのドメイン知識がないか振り返り、あれば ingest する。
+- scrum-master 経由のスプリント実行中は、スプリント完了後にまとめて ingest する。
+
 ### ペルソナの自律更新
 
 以下を検出したら `update_persona.py --log` で観察を当日ログに記録する（管理ファイルへの反映は batch-update 時に行う）:
