@@ -2,7 +2,7 @@
 name: ltm-use
 description: セッションをまたいで知識・決定事項を継続させたいときのスキル。「覚えておいて」でsave、「思い出して」でrecall、「記憶一覧」でlist、「忘れて」でarchive、「昇格して」でpromote、「整理して」でcleanup、「役立った／間違ってた」でrate、「固定化して」でconsolidate。重要な知見を発見したら自律的にsaveを実行すること。
 metadata:
-  version: 5.3.1
+  version: 5.3.2
   tier: core
   category: meta
   tags:
@@ -42,6 +42,16 @@ home  →  (昇格・git)  →  shared
 > **注意**: `workspace` スコープ（`${SKILL_DIR}/memories/`）は廃止。全記憶は `home` に保存する。
 
 `agent_home` はエージェント種別に応じて自動解決される（Windows では `USERPROFILE` 環境変数が使用される）。
+
+---
+
+## wiki-use との役割分担
+
+ltm-use は **手続き的・エピソード的な運用知**（バグ修正手順、設計判断、ユーザー嗜好、コマンド・ツールの使い方）を扱う。
+概念・用語・人物・組織・製品の定義や外部ソース（記事・論文・URL）由来の**意味的・参照的な知識**は **wiki-use** に ingest する。
+判定に迷ったとき・取り違えたときのルーティングとブリッジは
+[`../../instructions/common.instructions.md`](../../instructions/common.instructions.md) の「記憶レイヤの役割分担」を正典とする。
+**同一の知識を wiki-use と重複保存しないこと。**
 
 ---
 
