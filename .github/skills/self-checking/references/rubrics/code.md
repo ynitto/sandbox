@@ -69,13 +69,19 @@ artifact_type: `code`
 **2 点**: 重複が多い、または大幅なリファクタリングが必要  
 **1 点**: 保守困難な状態  
 
+## 実行証拠ゲート（必須・スコアより優先）
+
+`code` の評価では、SKILL.md「Step 2.5: 実行証拠ゲート」を必ず通過させる。
+**テスト・ビルド・型チェック・実行ログ・画面挙動のいずれかでエージェント自身が動作を裏取りしていない限り PASS にしない。**
+`correctness` の採点も、実行で確認した事実を根拠とする（未実行の「動くはず」を 4〜5 点の根拠にしない）。
+
 ## 合格判定
 
 ```
 rubric_score = Σ (score_i / 5 × weight_i)
 
-PASS:            rubric_score >= 0.80
-NEEDS_IMPROVEMENT: rubric_score < 0.80
+PASS:            rubric_score >= 0.80 かつ 実行証拠ゲート通過（execution_evidence == "verified"）
+NEEDS_IMPROVEMENT: rubric_score < 0.80 または 実行証拠が未取得／blocked
 ```
 
 **優先的に改善すべき順序**: correctness → test_quality → readability → robustness → maintainability

@@ -15,7 +15,7 @@ io_contract:
   output:
     - name: evaluation_result
       format: json
-      description: "評価結果（verdict / rubric_score / auto_score / iterations / blocking_issues）"
+      description: "評価結果（verdict / rubric_score / auto_score / execution_evidence / iterations / blocking_issues）"
       required: true
     - name: improved_files
       format: file-reference

@@ -2,7 +2,7 @@
 name: self-checking
 description: "成果物（コード・調査・ドキュメント）をルーブリックと自動チェックで定量評価し、PASSになるまで改善を繰り返すスキル。「自己評価して」「品質チェックして」「成果物をレビューして」「改善ループ回して」などで発動。scrum-master・skill-mentor からも自動起動される。"
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   tier: stable
   category: evaluation
   tags:
@@ -94,6 +94,30 @@ python ${SKILL_DIR}/scripts/check.py \
 
 ---
 
+### Step 2.5: 実行証拠ゲート（`code` のみ・必須）
+
+**`artifact_type` が `code` の場合、「動くはず」という推論だけで PASS にしてはならない。**
+完了報告の前にエージェント自身が実際に動かし、客観的な実行証拠を取得する。これにより人間が後追いで検証する手間を肩代わりする。
+
+**証拠として認める成果（いずれか 1 つ以上、対象成果物に応じて選ぶ）**:
+
+| 証拠 | 取得方法の例 |
+|---|---|
+| テスト実行結果 | テストランナーを実行し、件数・成否（pass/fail）の実出力を取得 |
+| ビルド／型チェック／リンタ | ビルド・型・lint コマンドを実行し、終了コードと出力を取得 |
+| 実行ログ | スクリプト・CLI を実際に走らせ、想定どおりの出力を確認 |
+| 画面の挙動 | Web/UI は `webapp-testing`（Playwright）で操作し、スクリーンショット・コンソールログを取得 |
+
+**ゲート判定**:
+
+- 実行証拠が**取得できた** → `execution_evidence = "verified"`。証拠の要約（実行コマンド・結果）を記録して Step 3 へ
+- 実行が環境制約等で**不可能だった** → `execution_evidence = "blocked"`。理由と、人間が確認すべき手順を `blocking_issues` に明記して Step 3 へ。**この場合 PASS にはできず NEEDS_IMPROVEMENT が上限**
+- まだ**実行していない** → 実行してから判定する（未実行のまま先へ進まない）
+
+`research` / `document` ではこのゲートは適用しない（Step 3 へ直行）。
+
+---
+
 ### Step 3: ルーブリック評価
 
 読み込んだルーブリックに従って各ディメンションを評価する。
@@ -122,8 +146,10 @@ python ${SKILL_DIR}/scripts/check.py \
 ```
 
 **判定閾値**:
-- `rubric_score >= 0.8` かつ `auto_score >= 0.7`（自動チェックあり時）→ **PASS**
+- `rubric_score >= 0.8` かつ `auto_score >= 0.7`（自動チェックあり時）かつ **実行証拠ゲートを通過（`code` 時は `execution_evidence == "verified"`）** → **PASS**
 - それ以外 → **NEEDS_IMPROVEMENT**（改善ループへ）
+
+> `code` で実行証拠が `blocked` の場合、スコアが閾値を超えていても PASS にはできない。NEEDS_IMPROVEMENT のまま、人間が確認すべき手順を添えて返す。
 
 ---
 
@@ -135,8 +161,10 @@ python ${SKILL_DIR}/scripts/check.py \
 
 | 条件 | 判定 | 次の処理 |
 |------|------|----------|
-| `rubric_score >= 0.8` かつ `auto_score >= 0.7`（自動チェックあり時）| **PASS** | Step 5 へ |
+| `rubric_score >= 0.8` かつ `auto_score >= 0.7`（自動チェックあり時）かつ 実行証拠ゲート通過（`code` 時）| **PASS** | Step 5 へ |
 | 連続 2 イテレーションでスコア改善幅 < 0.03（収束） | **NEEDS_IMPROVEMENT** | Step 5 へ（外部レビューに引き渡す） |
+
+改善ループでは、実行証拠が `blocked`／未取得のまま PASS 条件に到達しても PASS とせず、まず実行証拠の取得を試みる。
 
 ```
 各イテレーション:
@@ -167,7 +195,10 @@ python ${SKILL_DIR}/scripts/check.py \
 | 最終判定 | PASS ✅ / NEEDS_IMPROVEMENT ⚠️ |
 | ルーブリックスコア | [0.0〜1.0] |
 | 自動チェックスコア | [0.0〜1.0 / N/A] |
+| 実行証拠 | verified ✅ / blocked ⚠️ / N/A（code 以外） |
 | 反復回数 | [0〜N（PASS or 収束まで）] |
+
+実行証拠が `verified` の場合は、実行したコマンドと結果の要約を「改善の軌跡」または専用の小節に残す。
 
 ### ディメンション別結果
 
@@ -194,6 +225,8 @@ python ${SKILL_DIR}/scripts/check.py \
   "artifact_type": "[code|research|document]",
   "rubric_score": 0.0,
   "auto_score": 0.0,
+  "execution_evidence": "verified | blocked | n/a",
+  "evidence_summary": "[実行したコマンドと結果の要約。code かつ verified 時は必須]",
   "iterations": 0,
   "improved_files": [],
   "blocking_issues": []
@@ -211,6 +244,7 @@ python ${SKILL_DIR}/scripts/check.py \
 | **PASSになるまで改善する** | 回数ではなく「スコア閾値を超えるまで」を終了条件とする |
 | **収束で安全に終了する** | 連続 2 回の改善幅 < 0.03 で収束とみなし、NEEDS_IMPROVEMENT のまま外部レビューに引き渡す |
 | **自動チェックとルーブリックを組み合わせる** | 定量的な客観指標と定性的な評価の両方を担保する |
+| **code は実行で裏取りしてから PASS にする** | 「動くはず」を排し、人間の後追い検証の手間を肩代わりする。証拠の要約を必ず残す |
 | **改善履歴をログに残す** | デバッグと振り返り分析のために全反復のトレースを保持する |
 
 ---
