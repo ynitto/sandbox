@@ -179,8 +179,6 @@ python {skill_home}/ltm-use/scripts/save_memory.py \
 - 新しいコマンド・ツール・API・ライブラリを初めて正常に使ったとき
 - 同じ問題が複数回登場したとき（繰り返しパターンは手続き記憶として保存）
 
-scrum-master 経由のスプリント実行中は、スプリント完了後（Phase 6 の後）にまとめて保存する。
-
 ### 知識の自律 ingest（wiki-use）
 
 wiki-use 有効時は、**ドメイン知識が生まれた瞬間に、明示指示を待たず wiki へ取り込む**。
@@ -203,7 +201,6 @@ python {skill_home}/wiki-use/scripts/wiki_query.py search "対象のキーワー
 
 - コード・設定・ログファイルは ingest 対象外
 - セッション終了時、そのセッションで生まれた未取り込みのドメイン知識がないか振り返り、あれば ingest する
-- scrum-master 経由のスプリント実行中は、スプリント完了後にまとめて ingest する
 
 ### ペルソナの自律更新（persona-use）
 
@@ -266,12 +263,10 @@ python {skill_home}/ltm-use/scripts/consolidate_memory.py --dry-run
 
 ## スキル実行後のフィードバック収集
 
-スキルを単体で実行完了したら、**scrum-master 経由の場合を除き**、
-git-skill-manager の `feedback` 操作でフィードバックを収集する:
+スキルを単体で実行完了したら、git-skill-manager の `feedback` 操作でフィードバックを収集する:
 
 ```
 git-skill-manager で [スキル名] のフィードバックを記録して
 ```
 
 実行時間が概算で分かれば `--duration <秒>` を付ける（「約30秒」→ `--duration 30`、正確でなくてよい。不明なら省略）。
-scrum-master 経由の場合はスプリント終了時に一括収集するためスキップする。
