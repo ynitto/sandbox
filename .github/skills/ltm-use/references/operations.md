@@ -519,6 +519,15 @@ python scripts/sync_kiro_memory.py
 
 ---
 
+## sync（git共有領域から自動更新する）
+
+skill-registry.json に登録されたリポジトリ（git-skill-manager と共通）を使用する。
+複数リポジトリ・readonly 対応。
+
+### 全オプション
+
+```bash
+# 基本形（全リポジトリを pull して差分確認）
 python scripts/sync_memory.py
 
 # リポジトリ指定
