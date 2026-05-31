@@ -18,10 +18,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from wiki_utils import (
     get_registry_path,
-    get_agent_home,
     load_config,
     save_config,
-    resolve_wiki_root,
 )
 
 

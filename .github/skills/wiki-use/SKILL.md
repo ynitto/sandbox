@@ -51,9 +51,9 @@ wiki-use は **意味的・参照的な知識**（概念・用語・人物・組
 
 ### atoms vs topics の使い分け
 
-- **atoms**: 「〜とは何か」「〜は誰か」と1文で答えられる個別トピック。  
+- **atoms**: 「〜とは何か」「〜は誰か」と1文で答えられる個別トピック。
   typeフロントマターで `concept | term | person | organization | product` を指定する。
-- **topics**: 複数のatomsをつなぐ横断的なまとめ・比較・分析。  
+- **topics**: 複数のatomsをつなぐ横断的なまとめ・比較・分析。
   単一のatomに収まらない場合はtopicsに置く。
 
 `wiki_root` は `<agent_home>/skill-registry.json` の `skill_configs.wiki-use` セクションで指定する（後述）。
@@ -105,7 +105,7 @@ query 操作は **3ステップ**で構成される:
 
 **ユーザーへの確認は不要。以下の状況では即座に自律実行すること。**
 
-### B: 回答前に必ず wiki を検索する
+### A: 回答前に必ず wiki を検索する
 
 ユーザーが何らかの質問をしたとき、回答する前に必ず wiki を検索する:
 
@@ -117,7 +117,7 @@ python scripts/wiki_query.py search "<質問のキーワード>"
 - ヒットしなかった → `list-pages` で全体を確認し、それでもなければ自分の知識で回答する
 - 回答後に価値ある洞察が生まれた → `references/op-query.md` のステップ 2・3 で保存する
 
-### C: URL・ファイルを受け取ったら自動 ingest する
+### B: URL・ファイルを受け取ったら自動 ingest する
 
 ユーザーが URL やファイルパスを示して「読んで」「まとめて」「調べて」「説明して」などと言ったとき:
 
@@ -128,7 +128,7 @@ python scripts/wiki_query.py search "<質問のキーワード>"
 2. **取り込み済み** → 既存ページを使って回答する（ingest はスキップ）
 3. **未取り込み** → 確認なしに即座に ingest を実行する（`references/op-ingest.md` ケース A）
 
-対象となるソース: ドキュメント・記事・論文・Web ページなど知識として蓄積できるもの。  
+対象となるソース: ドキュメント・記事・論文・Web ページなど知識として蓄積できるもの。
 コードファイル・設定ファイル・ログファイルは ingest の対象外とする。
 
 ### その他
@@ -161,4 +161,3 @@ python scripts/wiki_query.py search "<質問のキーワード>"
 ユーザー: 「この URL を読んでまとめて」
 → wiki を検索して未取り込みなら即座に ingest して回答する（C）
 ```
-
