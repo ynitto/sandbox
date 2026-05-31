@@ -119,6 +119,6 @@ shallow だと疑うものには**削除テスト**を適用する: 削除した
 
 ## 他スキルとの境界
 
-- **architecture-reviewer**: SOLID・依存方向・セキュリティ境界の観点で*レビュー*する。本スキルは shallow→deep の*深化機会*に特化し、HTML レポート + grilling で設計を詰める。
-- **code-simplifier**: 変更された diff を*直接修正*する。本スキルで合意した深化を実際に適用する段で連携する。
+- **code-simplifier**: 変更された diff を*直接修正*する。本スキルは shallow→deep の*深化機会*の発見・合意形成（HTML レポート + grilling）に特化し、合意した深化を実際に適用する段で code-simplifier と連携する。
 - **legacy-modernizer**: 大規模・レガシーの*段階的移行戦略*を立てる。本スキルはモジュール単位の深さに焦点を当てる。
+- **codebase-onboarding**: 既存コードベースを*俯瞰解説*する。本スキルは解説ではなく、改善（深化）候補の提案を行う。
