@@ -136,6 +136,10 @@ python {skill_home}/ltm-use/scripts/recall_memory.py "キーワード procedural
 
 ## セッション中の手順
 
+### コーディング行動規範（Karpathy Guidelines）
+
+コーディングタスクに着手する際は `{skill_home}/karpathy-guidelines/SKILL.md` を読み込み、その内容を作業全体に常時適用する。
+
 ### 調査・情報収集
 
 wiki-use 有効時は **Wiki をファーストチョイス**として参照し、外部検索やコードリーディングより先に必ず確認する:
@@ -271,9 +275,3 @@ git-skill-manager で [スキル名] のフィードバックを記録して
 
 実行時間が概算で分かれば `--duration <秒>` を付ける（「約30秒」→ `--duration 30`、正確でなくてよい。不明なら省略）。
 scrum-master 経由の場合はスプリント終了時に一括収集するためスキップする。
-
------
-
-## コーディング行動規範（Karpathy Guidelines）
-
-`{skill_home}/karpathy-guidelines/SKILL.md` を読み込み、すべてのコーディングタスクに常時適用する。
