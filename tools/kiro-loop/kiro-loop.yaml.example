@@ -72,10 +72,33 @@ prompts:
     prompt: |
       gitlab-idd スキルのワーカーロールを実行してください。
       自分にアサインされた status:open の Issue を 1 件取得して実装・報告してください。
-    interval_minutes: 60        
+    interval_minutes: 60
     cron: "0 9 * * 1-5"      # 平日9:00
     cwd: /path/to/workspace  # ワークスペースを指定
     enabled: true
+
+  # ---- event_hook: 送信タイミングと内容を Python スクリプトで制御する ----
+  # event_hook を指定すると、スケジュール発火のたびにフックの check() が呼ばれる:
+  #   - str を返す  → そのテキストを prompt として送信（YAML の prompt を上書き）
+  #   - None を返す → 今回は送信せずスキップ
+  # event_hook を使う場合 prompt は省略可（フックが内容を決める）。
+  #
+  # event_hook_fallback: true にすると、フックに環境変数
+  #   KIRO_LOOP_EVENT_HOOK_FALLBACK=1 が渡される。フック側はこれを見て
+  #   「更新が無いときでもフィルター条件に合致する対象をランダムに 1 件選んで
+  #   送信する（フォールバック）」挙動を実装できる。デフォルト false（更新が
+  #   無ければ何も送らない）。フォールバックは check() の呼び出しごとに評価される。
+  # 同梱フック例:
+  #   hooks/gitlab-issue-hook.py … 新規/更新 Issue を検知。更新が無ければ
+  #                                 フォールバックでランダムな Issue を送る。
+  #   hooks/gitlab-mr-hook.py    … 新規/更新 MR を検知。更新が無ければ
+  #                                 フォールバックでランダムな MR を送る。
+  - name: "GitLab Issue ワーカー (event_hook)"
+    event_hook: ~/sandbox/tools/kiro-loop/hooks/gitlab-issue-hook.py
+    event_hook_fallback: true   # 更新が無くてもランダムに 1 件送る
+    interval_minutes: 5
+    cwd: /path/to/workspace
+    enabled: false
 
   # ---- Kanban 更新: GitLab → Obsidian kanban.md を再生成 ----
   # terminal-launcher や cron で直接 sync.py --kanban を呼ぶ場合は不要
