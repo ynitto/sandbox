@@ -200,7 +200,42 @@ prompts:
     interval_minutes: 60
     workspace: "project-b"
     enabled: true
+
+  # event_hook: 送信タイミング・内容を Python スクリプトで制御する
+  - name: "GitLab Issue ワーカー"
+    event_hook: ~/sandbox/tools/kiro-loop/hooks/gitlab-issue-hook.py
+    event_hook_fallback: true   # 更新が無くてもランダムに 1 件送る
+    interval_minutes: 5
+    enabled: true
 ```
+
+### event_hook（フックによる送信制御）
+
+`event_hook` にフックスクリプトのパスを指定すると、スケジュール発火のたびに
+フックの `check()` が呼ばれます。
+
+```python
+def check() -> str | None:
+    ...  # str を返す→その内容を送信 / None を返す→今回はスキップ
+```
+
+- `event_hook` を使う場合 `prompt` は省略できます（フックが内容を決めるため）。
+- `event_hook_fallback: true`（既定 `false`）にすると、フックに環境変数
+  `KIRO_LOOP_EVENT_HOOK_FALLBACK=1` が渡されます。フック側はこれを見て
+  「**発火すべき更新が無くても、フィルター条件に合致する対象をランダムに 1 件
+  選んで送る**」フォールバックを実装できます。フォールバックは `check()` の
+  呼び出しごと（イベント検知のタイミング）に毎回評価されます。
+
+同梱フック例（`hooks/`）:
+
+| フック | 動作 |
+|---|---|
+| `gitlab-issue-hook.py` | 新規/更新 Issue を検知して送信。更新が無くフォールバック有効ならランダムな Issue を送る。 |
+| `gitlab-mr-hook.py` | 新規/更新 MR を検知して送信。更新が無くフォールバック有効ならランダムな MR を送る。 |
+
+いずれも `gitlab-idd` スキルの `scripts/gl.py` を利用します。`GITLAB_TOKEN` を
+設定し、必要に応じて環境変数（`KIRO_LOOP_GL_PY`, `KIRO_LOOP_GL_CWD`,
+`KIRO_LOOP_ISSUE_LABELS` など）でパスやフィルター条件を上書きしてください。
 
 ## tmux セッションの命名規則
 

@@ -130,15 +130,26 @@ cwd が変わらない限り同じセッション名が生成される。
 
 **エントリ正規化** (`_set_entries`):
 - `enabled: false` のエントリは除外
-- `prompt`, `interval_minutes` が空/0 のエントリは除外
+- `interval_minutes` が空/0 のエントリは除外
+- `prompt` が空のエントリは除外。ただし `event_hook` を指定している場合は許容（フックが送信内容を決めるため）
 - `run_immediately_on_startup: true` なら起動後 30 秒で初回送信、それ以外は `interval_minutes` 後
 - UUID が未設定なら自動生成
+- `event_hook`（フックスクリプトのパス）・`event_hook_fallback`（bool）を正規化エントリに保持
+
+**event_hook**:
+- スケジュール発火のたびにフックの `check() -> str | None` を呼ぶ（`importlib` でインプロセス実行、`mtime` でキャッシュ）
+- `str` を返せばその文字列を `prompt` として送信、`None` ならそのサイクルはスキップ
+- `event_hook_fallback: true` のとき、フック呼び出し前に環境変数 `KIRO_LOOP_EVENT_HOOK_FALLBACK=1` を設定する（false なら `0`）。フック側はこれを見て「更新が無いときでもフィルター条件に合致する対象をランダム送信する」等のフォールバックを自己判断する。`KIRO_LOOP_PROMPT_NAME` にエントリ名も渡す。環境変数は呼び出し後に元へ戻す（scheduler は単一スレッドのため安全）
+- 同梱例: `hooks/gitlab-issue-hook.py` / `hooks/gitlab-mr-hook.py`
 
 **`_run_loop` の処理フロー**（1 秒ごと）:
 ```
 各エントリについて:
   now >= next_run_at? → No: スキップ
   fresh_context: should_clear を決定
+  event_hook あり? → check() を呼ぶ
+    None → next_run_at を更新してスキップ
+    str  → entry["prompt"] を上書き
   ensure_session() でペイン確保
   max_concurrent > 0 かつ exclude_from_concurrency でない場合:
     _acquire_slot() でセマフォ取得
@@ -307,6 +318,11 @@ kiro-cli agent hook (stop)
 
 ### 新しいプロンプトオプションを追加する
 `PeriodicScheduler._set_entries()` の `normalized` 辞書にフィールドを追加し、`_run_loop()` で参照する。`kiro-loop.yaml.example` にもドキュメントを追記すること。
+
+### event_hook を追加・変更する
+- フックは `check() -> str | None` を実装する。`check()` は scheduler スレッド内で同期実行されるため、ネットワーク呼び出しには短い timeout を設定しブロックを避けること。
+- フックのロードは `_load_hook_module()`（`mtime` キャッシュ付き）、呼び出しは `_call_hook_check()`。`importlib.util.exec_module` はトップレベルコードを実行するため、副作用は `check()` 内に閉じること。
+- フォールバック有無は YAML の `event_hook_fallback` で制御し、環境変数 `KIRO_LOOP_EVENT_HOOK_FALLBACK`（`1`/`0`）でフックへ渡す。新しいフックでもこの規約に従う。
 
 ### 設定ファイルの読み込み先を変更する
 `load_config()` がグローバル設定（`~/.kiro/`）、`_load_prompt_file_data()` がワークスペース設定（`<project>/.kiro/`）を担当する。両者の役割を混在させないこと。

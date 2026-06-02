@@ -29,6 +29,7 @@ import atexit
 import datetime as _dt
 import fcntl
 import hashlib
+import importlib.util
 import json
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -1471,6 +1472,8 @@ class PeriodicScheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        # event_hook モジュールのキャッシュ: {hook_path: (mtime, module)}
+        self._hook_cache: dict[str, tuple[float, Any]] = {}
         self._set_entries(entries, allow_immediate_once=True)
 
     def _release_slot(self, pane_id: str | None) -> None:
@@ -1493,10 +1496,14 @@ class PeriodicScheduler:
                 continue
 
             prompt = str(entry.get("prompt", "")).strip()
-            if not prompt:
+            event_hook = str(entry.get("event_hook", "")).strip() or None
+            event_hook_fallback = bool(entry.get("event_hook_fallback", False))
+            # prompt は通常必須だが、event_hook がある場合は check() が
+            # 送信テキストを返すため空でも許容する。
+            if not prompt and not event_hook:
                 continue
 
-            name = str(entry.get("name", prompt[:40]))
+            name = str(entry.get("name", prompt[:40] or (event_hook or "")[:40]))
 
             # スケジュール: cron 式 または interval_minutes のどちらかが必要
             cron_str = str(entry.get("cron", "")).strip()
@@ -1555,6 +1562,9 @@ class PeriodicScheduler:
                 "fresh_context_interval_minutes": fresh_context_interval,
                 "next_clear_at": now if fresh_context else None,
                 "cwd": entry_cwd,
+                "exclude_from_concurrency": bool(entry.get("exclude_from_concurrency", False)),
+                "event_hook": event_hook,
+                "event_hook_fallback": event_hook_fallback,
             })
 
         self._session_mgr.sync_entries(normalized)
@@ -1637,6 +1647,78 @@ class PeriodicScheduler:
 
         return True
 
+    def _load_hook_module(self, hook_path: Path) -> Any | None:
+        """event_hook スクリプトを importlib でロードする（mtime キャッシュ付き）。"""
+        key = str(hook_path)
+        try:
+            mtime = hook_path.stat().st_mtime
+        except OSError:
+            log.warning("event_hook が見つかりません: %s", hook_path)
+            return None
+
+        cached = self._hook_cache.get(key)
+        if cached and cached[0] == mtime:
+            return cached[1]
+
+        try:
+            spec = importlib.util.spec_from_file_location("kiro_loop_hook", hook_path)
+            if spec is None or spec.loader is None:
+                log.error("event_hook の spec 生成に失敗しました: %s", hook_path)
+                return None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self._hook_cache[key] = (mtime, module)
+            return module
+        except Exception as exc:
+            log.error("event_hook のロードに失敗しました (%s): %s", hook_path, exc, exc_info=True)
+            return None
+
+    def _call_hook_check(self, entry: dict[str, Any]) -> str | None:
+        """event_hook の check() を呼び出して送信プロンプトを得る。
+
+        scheduler スレッド（単一）内で実行されるため env 変数の一時設定は安全。
+        event_hook_fallback の値を環境変数経由でフックに渡し、フック側が
+        「更新が無いときにフォールバック送信するか」を自己判断できるようにする。
+
+        Returns:
+            str  : kiro-cli に送信するプロンプトテキスト
+            None : 今回のサイクルはスキップ
+        """
+        hook_path = Path(os.path.expanduser(entry["event_hook"])).resolve()
+        name = str(entry.get("name", ""))
+        module = self._load_hook_module(hook_path)
+        if module is None:
+            return None
+
+        check_fn = getattr(module, "check", None)
+        if not callable(check_fn):
+            log.warning("[%s] event_hook に check() 関数が定義されていません: %s", name, hook_path)
+            return None
+
+        fallback_flag = "1" if entry.get("event_hook_fallback") else "0"
+        env_overrides = {
+            "KIRO_LOOP_EVENT_HOOK_FALLBACK": fallback_flag,
+            "KIRO_LOOP_PROMPT_NAME": name,
+        }
+        previous = {k: os.environ.get(k) for k in env_overrides}
+        os.environ.update(env_overrides)
+        try:
+            result = check_fn()
+        except Exception as exc:
+            log.error("[%s] check() でエラーが発生しました: %s", name, exc, exc_info=True)
+            return None
+        finally:
+            for k, prev in previous.items():
+                if prev is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = prev
+
+        if result is not None and not isinstance(result, str):
+            log.warning("[%s] check() の戻り値が str でも None でもありません: %r", name, result)
+            return None
+        return result
+
     def _dispatch_prompt(self, entry: dict[str, Any], pane_id: str | None) -> None:
         """プロンプトを送信し、失敗時は再起動する。"""
         name = str(entry.get("name", ""))
@@ -1712,6 +1794,15 @@ class PeriodicScheduler:
                         should_clear = True
                 # Stash should_clear in entry copy for _acquire_slot / _dispatch_prompt
                 entry["_should_clear"] = should_clear
+
+                # event_hook がある場合は check() を呼んで送信プロンプトを決定する。
+                # None が返ったら今回は送信せず次回スケジュールへ。
+                if entry.get("event_hook"):
+                    prompt_text = self._call_hook_check(entry)
+                    if prompt_text is None:
+                        self._update_entry(prompt_id, next_run_at=self._next_run_at_for_entry(entry))
+                        continue
+                    entry["prompt"] = prompt_text
 
                 if not self._session_mgr.ensure_session(prompt_id, name):
                     log.warning("[%s] 対応セッションの準備に失敗したため今回の送信をスキップします。", name)
