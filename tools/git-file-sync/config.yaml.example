@@ -1,0 +1,84 @@
+# git-file-sync 設定ファイルサンプル
+# このファイルをコピーして git-file-sync.yaml という名前で保存してください。
+#
+# 検索順序:
+#   1. --config オプションで明示指定したパス
+#   2. カレントディレクトリの git-file-sync.yaml / .yml / .json
+#   3. HOME の git-file-sync.yaml / .yml / .json
+
+# ---------------------------------------------------------------------------
+# 同期ハブとなる git リポジトリ
+# ---------------------------------------------------------------------------
+# remote を指定すると worktree へ自動 clone し、pull / push で他マシンと同期する。
+# remote を省略すると worktree をローカル git リポジトリとして init する
+# （単一マシン内のバックアップ用途や、別途リモートを手動設定したい場合）。
+repository:
+  # 同期ハブのリモート URL（省略可）
+  remote: "git@github.com:youruser/my-sync-repo.git"
+
+  # 同期に使うブランチ
+  branch: "main"
+
+  # リポジトリのローカルクローン置き場（このツール専用に用意するのを推奨）
+  worktree: "~/.git-file-sync/repo"
+
+  # コミット後に自動 push するか
+  auto_push: true
+
+  # コミットメッセージの接頭辞
+  commit_message_prefix: "git-file-sync"
+
+  # コミット author（省略時は git のグローバル設定を使用）
+  # author_name: "Sync Bot"
+  # author_email: "sync-bot@example.com"
+
+# 前回同期スナップショット（3-way 差分の基準）の保存先
+# state_dir: "~/.git-file-sync/state"
+
+# ---------------------------------------------------------------------------
+# 既定値（各ペアで上書き可能）
+# ---------------------------------------------------------------------------
+defaults:
+  # ポーリング間隔（分）
+  poll_interval_minutes: 5
+
+  # コンフリクト時の採用ポリシー:
+  #   mine   (= local / ours)  … 自分 (ローカル) を採用
+  #   theirs (= remote)         … 他人 (リポジトリ) を採用
+  conflict_policy: "theirs"
+
+  # コンフリクトで負けた側を .conflict バックアップとして残すか
+  keep_conflict_backup: true
+
+  # 同期から除外するパターン（相対パスの glob / ディレクトリ接頭辞）
+  ignore:
+    - "*.tmp"
+    - ".DS_Store"
+    - "node_modules"
+
+# ---------------------------------------------------------------------------
+# 同期ペアの定義（ローカルフォルダ ⇔ リポジトリ内サブフォルダ）
+# ---------------------------------------------------------------------------
+pairs:
+  # ---- ドキュメントを同期（他人優先） ----
+  - name: "docs"
+    local_path: "~/Documents/notes"
+    # リポジトリのワークツリーからの相対サブパス（"" でリポジトリ直下）
+    repo_subpath: "notes"
+    poll_interval_minutes: 5
+    conflict_policy: "theirs"   # 競合したらリポジトリ側を採用
+
+  # ---- 設定ファイルを同期（自分優先・5 分間隔） ----
+  - name: "dotfiles"
+    local_path: "~/dotfiles"
+    repo_subpath: "dotfiles"
+    poll_interval_minutes: 10
+    conflict_policy: "mine"     # 競合したらローカル側を採用
+    ignore:
+      - ".git"
+      - "*.log"
+
+  # ---- 画像フォルダを同期（既定ポリシーを使用） ----
+  # - name: "images"
+  #   local_path: "~/Pictures/shared"
+  #   repo_subpath: "images"
