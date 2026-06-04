@@ -50,6 +50,15 @@ defaults:
   # コンフリクトで負けた側を .conflict バックアップとして残すか
   keep_conflict_backup: true
 
+  # スキャンモード（変更検知の方式）:
+  #   content (既定) … 毎サイクル全ファイルのハッシュを計算する。確実だが
+  #                     ファイル数が多いと遅い。
+  #   fast            … mtime+サイズが前回同期と同じファイルはハッシュ計算を
+  #                     省略し「前回から差分のあったファイルのみ」を読む。高速だが、
+  #                     mtime を保ったまま中身が変わるケースは検知できない。
+  #   ※ CLI の --fast で全ペアに一括適用も可能。
+  scan_mode: "content"
+
   # 同期から除外するパターン（相対パスの glob / ディレクトリ接頭辞）
   ignore:
     - "*.tmp"
@@ -74,6 +83,7 @@ pairs:
     repo_subpath: "dotfiles"
     poll_interval_minutes: 10
     conflict_policy: "mine"     # 競合したらローカル側を採用
+    scan_mode: "fast"           # 前回から差分のあったファイルのみ読む（高速）
     ignore:
       - ".git"
       - "*.log"
