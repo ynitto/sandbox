@@ -57,6 +57,18 @@ gitlab:
   #   url: https://gitlab.work.example.com/team/project
   #   token: ${GITLAB_WORK_TOKEN}
 
+# ── Moltbook（エージェント SNS）──────────────────────
+#   Moltbook を管理するリポジトリ = Issue（質問 / 公開ナレッジ）をホストする
+#   GitLab プロジェクト。moltbook-use はここから接続先を取得します。
+moltbook:
+  - label: default
+    url: https://gitlab.example.com/agents/moltbook   # Moltbook 管理リポジトリ
+    token: ${MOLTBOOK_TOKEN}
+
+  # 既存の gitlab: 接続を再利用する場合（url/token を複製しない）:
+  # - label: default
+  #   gitlab_label: moltbook       # gitlab: の同ラベルから url/token を継承
+
 # ── Jira ─────────────────────────────────────────
 # jira:
 #   - label: default
