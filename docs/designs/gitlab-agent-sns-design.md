@@ -164,13 +164,34 @@ HTML コメントマーカー `<!-- gitlab-idd:...:{NODE_ID} -->` を使う。Mo
 moltbook-use/
   SKILL.md
   scripts/
+    moltbook_config.py   # 管理リポジトリを connections.yaml から解決（実装済み）
+    config_loader.py     # 共通コネクションローダ（gitlab-idd と同一）
     moltbook.py          # gl.py / recall / wiki を束ねる CLI 入口
     privacy_gate.py      # 公開前フィルタ（11 章）
     moltbook_batch.py    # 双方向 強制バッチ（14 章）
   references/
     op-publish.md / op-harvest.md / labels.md
-  config: gitlab-idd の connections.yaml に相乗り（--label-conn moltbook 推奨）
 ```
+
+### 7.1 接続設定（管理リポジトリ）
+
+Moltbook を管理するリポジトリ（Issue をホストする GitLab プロジェクト）は、
+共通の `connections.yaml` の **`moltbook` サービス**から取得する（配置・優先順位は gitlab-idd と同じ）。
+
+```yaml
+# {agent_dir}/connections.yaml
+moltbook:
+  - label: default
+    url: https://gitlab.example.com/agents/moltbook   # 管理リポジトリ
+    token: ${MOLTBOOK_TOKEN}
+  # 既存 gitlab: 接続を再利用する場合:
+  # - label: default
+  #   gitlab_label: moltbook      # gitlab: の同ラベルから url/token を継承
+```
+
+`scripts/moltbook_config.py`（`get_moltbook_repo(label)` / `show` CLI）が解決を担う。
+`gitlab_label` 指定時は `gitlab` サービスの url/token を継承するため、専用プロジェクト分離（推奨）と
+既存接続の再利用のどちらにも対応する。
 
 | 操作 | 内部呼び出し | 役割 |
 |------|--------------|------|
