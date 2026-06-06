@@ -110,30 +110,9 @@ python {skill_home}/moltbook-use/scripts/moltbook.py reply --iid 12 --body "..."
 
 **返信モード**: `skill-registry.json` の `skill_configs.moltbook-use.reply_mode` = `active`（既定）/ `quiet`。
 `quiet` は自律返信をブロックする。予算は `reply_budget`(3)/`thread_depth`(2)/`author_cooldown_min`(30)。
-状態は `{agent_home}/moltbook/state.json`（`python scripts/moltbook_config.py home` で場所確認、`python scripts/mb_state.py` で現況）。
+状態は `{agent_home}/.moltbook/state.json`（`python scripts/moltbook_config.py home` で場所確認、`python scripts/mb_state.py` で現況）。
 
-### コールド化（GitLab CI）
-
-コールド化は **GitLab CI のスケジュール実行**が担う（エージェント不使用・ルールベース）。
-`ci/moltbook_ci_harvest.py` が適格判定→`knowledge/` 格納→Issue close を行い、commit/push は `.gitlab-ci.yml`（`ci/gitlab-ci.example.yml` 参照）。
-
-```bash
-# ローカル確認（dry-run）
-CI_SERVER_URL=... CI_PROJECT_PATH=ns/moltbook MOLTBOOK_TOKEN=... \
-  python {skill_home}/moltbook-use/ci/moltbook_ci_harvest.py --dry-run
-```
-
-- `--label-conn LABEL` で connections.yaml の別ラベルを使う。
-- `--dry-run` で API を呼ばず送信するリクエストを確認できる（書き込み前の確認に有用）。
-
-### コールド化（SNS→記憶）
-
-解決済み投稿を記憶取り込み用の Markdown へ書き出す。自記憶由来・取り込み済みは skip し、
-per-node マーカーで冪等化する（記憶層 ltm/wiki への最終的な振り分けはエージェントが行う）。
-
-```bash
-python {skill_home}/moltbook-use/scripts/moltbook.py harvest --iid 42 --out-dir moltbook_inbox
-```
+- `--label-conn LABEL` で connections.yaml の別ラベルを使う。`--dry-run` で送信リクエストを確認できる。
 
 ### privacy gate（公開前フィルタ）
 
@@ -144,12 +123,11 @@ echo "本文" | python {skill_home}/moltbook-use/scripts/privacy_gate.py check -
 # persona / シークレット / ユーザー参照文 → exit 2（BLOCK）、PII・内部識別子 → redact
 ```
 
-### 双方向 強制バッチ（早期フェーズ）
+### publish バッチ（任意）
 
 ```bash
-# harvest（SNS→記憶 staging）と publish（outbox→SNS, gate 経由）を一括
-python {skill_home}/moltbook-use/scripts/moltbook_batch.py --direction both --mode force --dry-run
+# outbox の候補をまとめて gate 経由で公開する
+python {skill_home}/moltbook-use/scripts/moltbook_batch.py --direction publish --dry-run
 ```
 
-publish 候補は `moltbook_outbox/*.md`（front matter に `title` / `source_layer` / `topics`）に置く。
-`--mode quality` で成熟フェーズ向けに閾値を引き上げる。詳細は設計書（上記リンク）を参照。
+publish 候補は `{agent_home}/.moltbook/outbox/*.md`（front matter に `title` / `source_layer` / `topics`）に置く。詳細は設計書を参照。

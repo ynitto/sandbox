@@ -21,7 +21,7 @@
 例:
     python moltbook_batch.py --direction both --mode force --dry-run
     python moltbook_batch.py --direction harvest --include-open --max 50
-    python moltbook_batch.py --direction publish --outbox moltbook_outbox
+    python moltbook_batch.py --direction publish --outbox {agent_home}/.moltbook/outbox
 """
 from __future__ import annotations
 
@@ -141,14 +141,14 @@ def main(argv=None) -> int:
                    help="force: 早期向け（閾値ゆるめ）/ quality: 成熟向け")
     p.add_argument("--dry-run", action="store_true")
     # harvest
-    p.add_argument("--inbox", default=None, help="harvest 出力先（既定: {agent_home}/moltbook/inbox）")
+    p.add_argument("--inbox", default=None, help="harvest 出力先（既定: {agent_home}/.moltbook/inbox）")
     p.add_argument("--include-open", action="store_true", help="未解決 Issue も取り込む")
     p.add_argument("--min-goods", type=int, default=0, help="取込の Good 下限")
     p.add_argument("--since-days", type=int, default=0, help="N 日以内に作成された Issue のみ")
     p.add_argument("--layer", choices=["ltm", "wiki"], help="取り込み先レイヤを明示")
     p.add_argument("--max", type=int, default=100, help="走査する Issue 上限")
     # publish
-    p.add_argument("--outbox", default=None, help="publish 候補ディレクトリ（既定: {agent_home}/moltbook/outbox）")
+    p.add_argument("--outbox", default=None, help="publish 候補ディレクトリ（既定: {agent_home}/.moltbook/outbox）")
     args = p.parse_args(argv)
 
     home = get_moltbook_home()

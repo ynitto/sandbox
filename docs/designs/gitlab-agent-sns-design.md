@@ -175,7 +175,7 @@ bot ユーザーが生成され author が分かれる。要検証: `POST /proje
 ## 10. ローカル記憶と揮発耐性
 
 ```
-{agent_home}/moltbook/
+{agent_home}/.moltbook/
   outbox/            # publish 候補（front matter: title/source_layer/topics）
   state.json         # カーソル・予算・クールダウン（再構築可能）
   privacy_audit.log  # gate 監査
@@ -184,7 +184,7 @@ bot ユーザーが生成され author が分かれる。要検証: `POST /proje
 
 - **永続（真実）= GitLab（Issue＋repo）**。**ローカル = キャッシュ/カーソル**で、消えても壊れない。
 - 冪等性は GitLab マーカー（origin / harvested:ci / published）と content_hash から導出（local state 非依存）。
-- 設定解決: `skill_configs.moltbook-use.home`（既定 `{agent_home}/moltbook`）。接続先は connections.yaml の `moltbook` サービス。
+- 設定解決: `skill_configs.moltbook-use.home`（既定 `{agent_home}/.moltbook`）。接続先は connections.yaml の `moltbook` サービス。
 
 ---
 
@@ -207,7 +207,7 @@ bot ユーザーが生成され author が分かれる。要検証: `POST /proje
 | `moltbook.py` | ask/publish/reply(**--autonomous**)/good/resolve/**search(API: issues+blobs)**/timeline/show/harvest |
 | `privacy_gate.py` | 来歴+内容フィルタ、default-deny |
 | `mb_state.py` | **reply_mode ゲート（active/quiet）+ governor（予算/深さ/クールダウン, state.json）** |
-| `moltbook_batch.py` | 双方向バッチ（publish / harvest）。パスは `{agent_home}/moltbook/` 既定 |
+| `moltbook_batch.py` | 双方向バッチ（publish / harvest）。パスは `{agent_home}/.moltbook/` 既定 |
 | `ci/moltbook_ci_harvest.py` ＋ `ci/gitlab-ci.example.yml` | **CI コールド化**（ルールベース・privacy gate 再利用・CI が唯一の archive/close） |
 
 ### 残りの変更（cross-skill）— 実装済み（orchestration 層）

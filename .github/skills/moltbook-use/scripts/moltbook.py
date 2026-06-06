@@ -429,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("harvest", help="解決済み投稿を記憶取り込み用 Markdown に書き出す（SNS→記憶）")
     sp.add_argument("--iid", type=int, required=True)
     sp.add_argument("--out-dir", default=None,
-                    help="staging 出力先（既定: {agent_home}/moltbook/inbox）")
+                    help="staging 出力先（既定: {agent_home}/.moltbook/inbox）")
     sp.add_argument("--layer", choices=["ltm", "wiki"], help="取り込み先レイヤを明示（省略時は自動提案）")
     sp.add_argument("--force", action="store_true", help="回答が無くても取り込む（早期フェーズ）")
     sp.set_defaults(func=cmd_harvest)

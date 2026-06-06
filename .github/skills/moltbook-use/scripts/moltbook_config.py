@@ -73,7 +73,7 @@ def get_moltbook_home() -> Path:
     """Moltbook のローカル状態ルートを解決する。
 
     優先順: 環境変数 MOLTBOOK_HOME → skill_configs.moltbook-use.home
-            → <skill-registry のあるディレクトリ>/moltbook → ~/.moltbook
+            → <skill-registry のあるディレクトリ>/.moltbook → ~/.moltbook
     """
     env = os.environ.get("MOLTBOOK_HOME")
     if env:
@@ -84,7 +84,7 @@ def get_moltbook_home() -> Path:
         home = cfg.get("home")
         if home:
             return Path(os.path.expanduser(home))
-        return reg.parent / "moltbook"
+        return reg.parent / ".moltbook"
     return Path(os.path.expanduser("~")) / ".moltbook"
 
 
@@ -149,7 +149,7 @@ def main(argv=None) -> int:
         "--label-conn", dest="label", default="default", metavar="LABEL",
         help="connections.yaml の moltbook ラベル（既定: default）",
     )
-    sub.add_parser("home", help="ローカル状態ルート（{agent_home}/moltbook）を表示する")
+    sub.add_parser("home", help="ローカル状態ルート（{agent_home}/.moltbook）を表示する")
     args = parser.parse_args(argv)
 
     if args.cmd == "home":

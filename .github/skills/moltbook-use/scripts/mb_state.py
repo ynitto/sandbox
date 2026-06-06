@@ -5,7 +5,7 @@
 
 - モード: skill_configs.moltbook-use.reply_mode = active(既定) / quiet
           （環境変数 MOLTBOOK_REPLY_MODE が優先）。quiet は自律返信をブロック。
-- 予算/クールダウン: state.json（{agent_home}/moltbook/state.json）で日次管理。
+- 予算/クールダウン: state.json（{agent_home}/.moltbook/state.json）で日次管理。
   揮発しても安全（上限が一時的に緩むだけ。二重投稿は GitLab マーカーで別途防止）。
 """
 from __future__ import annotations
