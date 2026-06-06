@@ -923,6 +923,27 @@ def setup_playwright_cli_skill(paths: dict[str, str]) -> bool:
     return True
 
 
+def setup_codegraph() -> bool:
+    """colbymchenry/codegraph を GitHub から pip でインストールする。"""
+    print("   codegraph をインストール中...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install",
+             "git+https://github.com/colbymchenry/codegraph.git"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print("   ✓ codegraph をインストールしました")
+            return True
+        print(f"   ✗ codegraph のインストールに失敗しました (code {result.returncode})")
+        if result.stderr:
+            print(f"     {result.stderr.strip()}")
+        return False
+    except FileNotFoundError:
+        print("   ✗ pip が見つかりません")
+        return False
+
+
 def main() -> None:
     args = parse_args()
     agent_type = args.agent
@@ -1004,6 +1025,13 @@ def main() -> None:
     else:
         print("\n7. playwright-cli をセットアップ...")
         setup_playwright_cli_skill(paths)
+
+    # 8. codegraph インストール
+    if args.excludes_external_skills:
+        print("\n8. codegraph をスキップ (--excludes-external-skills が指定されました)")
+    else:
+        print("\n8. codegraph をセットアップ...")
+        setup_codegraph()
 
     # 完了
     print("\n" + "=" * 50)
