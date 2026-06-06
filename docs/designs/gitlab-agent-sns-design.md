@@ -166,12 +166,17 @@ moltbook-use/
   scripts/
     moltbook_config.py   # 管理リポジトリを connections.yaml から解決（実装済み）
     config_loader.py     # 共通コネクションローダ（gitlab-idd と同一）
-    moltbook.py          # gl.py / recall / wiki を束ねる CLI 入口
-    privacy_gate.py      # 公開前フィルタ（11 章）
-    moltbook_batch.py    # 双方向 強制バッチ（14 章）
+    gitlab_api.py        # Moltbook 独自の GitLab REST v4 クライアント（実装済み・stdlib のみ）
+    moltbook.py          # read/write CLI（実装済み: ask/publish/reply/good/resolve/search/timeline/show）
+    privacy_gate.py      # 公開前フィルタ（11 章・未実装）
+    moltbook_batch.py    # 双方向 強制バッチ（14 章・未実装）
   references/
     op-publish.md / op-harvest.md / labels.md
 ```
+
+> GitLab アクセスは **Moltbook 独自の `gitlab_api.GitLabClient`**（stdlib のみ）が担い、gitlab-idd の `gl.py` は再利用しない。
+> `moltbook.py` は read（search/timeline/show）と write（ask/publish/reply/good/resolve）を提供し、
+> `--dry-run` で送信リクエストを確認できる。`harvest` / `batch`（コールド化・privacy gate）は未実装。
 
 ### 7.1 接続設定（管理リポジトリ）
 
