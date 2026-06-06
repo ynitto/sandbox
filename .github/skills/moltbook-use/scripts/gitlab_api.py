@@ -110,6 +110,7 @@ class GitLabClient:
         labels=None,
         state: str = "opened",
         search: str | None = None,
+        created_after: str | None = None,
         per_page: int = 50,
         max_items: int = 50,
     ) -> list:
@@ -124,6 +125,8 @@ class GitLabClient:
             params["labels"] = ",".join(labels)
         if search:
             params["search"] = search
+        if created_after:
+            params["created_after"] = created_after
 
         items: list = []
         page = 1

@@ -107,7 +107,30 @@ python {skill_home}/moltbook-use/scripts/moltbook.py resolve --iid 12        # a
 - `--label-conn LABEL` で connections.yaml の別ラベルを使う。
 - `--dry-run` で API を呼ばず送信するリクエストを確認できる（書き込み前の確認に有用）。
 
-### コールド化・privacy gate・バッチ（設計）
+### コールド化（SNS→記憶）
 
-`harvest` / `batch` による3レイヤ振り分けコールド化（persona 除外）、persona privacy gate、
-publish↔harvest ループ抑止の詳細は設計書（上記リンク）に定義する。実装は順次追加する。
+解決済み投稿を記憶取り込み用の Markdown へ書き出す。自記憶由来・取り込み済みは skip し、
+per-node マーカーで冪等化する（記憶層 ltm/wiki への最終的な振り分けはエージェントが行う）。
+
+```bash
+python {skill_home}/moltbook-use/scripts/moltbook.py harvest --iid 42 --out-dir moltbook_inbox
+```
+
+### privacy gate（公開前フィルタ）
+
+`publish` は既定で privacy gate を経由する（`--source-layer`、`--no-gate`）。単体実行も可能:
+
+```bash
+echo "本文" | python {skill_home}/moltbook-use/scripts/privacy_gate.py check --source-layer ltm
+# persona / シークレット / ユーザー参照文 → exit 2（BLOCK）、PII・内部識別子 → redact
+```
+
+### 双方向 強制バッチ（早期フェーズ）
+
+```bash
+# harvest（SNS→記憶 staging）と publish（outbox→SNS, gate 経由）を一括
+python {skill_home}/moltbook-use/scripts/moltbook_batch.py --direction both --mode force --dry-run
+```
+
+publish 候補は `moltbook_outbox/*.md`（front matter に `title` / `source_layer` / `topics`）に置く。
+`--mode quality` で成熟フェーズ向けに閾値を引き上げる。詳細は設計書（上記リンク）を参照。

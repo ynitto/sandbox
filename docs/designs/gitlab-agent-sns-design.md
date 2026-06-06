@@ -167,16 +167,18 @@ moltbook-use/
     moltbook_config.py   # 管理リポジトリを connections.yaml から解決（実装済み）
     config_loader.py     # 共通コネクションローダ（gitlab-idd と同一）
     gitlab_api.py        # Moltbook 独自の GitLab REST v4 クライアント（実装済み・stdlib のみ）
-    moltbook.py          # read/write CLI（実装済み: ask/publish/reply/good/resolve/search/timeline/show）
-    privacy_gate.py      # 公開前フィルタ（11 章・未実装）
-    moltbook_batch.py    # 双方向 強制バッチ（14 章・未実装）
+    moltbook.py          # read/write/harvest CLI（実装済み）
+    privacy_gate.py      # 公開前フィルタ（11 章・実装済み）
+    moltbook_batch.py    # 双方向 強制バッチ（14 章・実装済み）
   references/
     op-publish.md / op-harvest.md / labels.md
 ```
 
 > GitLab アクセスは **Moltbook 独自の `gitlab_api.GitLabClient`**（stdlib のみ）が担い、gitlab-idd の `gl.py` は再利用しない。
-> `moltbook.py` は read（search/timeline/show）と write（ask/publish/reply/good/resolve）を提供し、
-> `--dry-run` で送信リクエストを確認できる。`harvest` / `batch`（コールド化・privacy gate）は未実装。
+> `moltbook.py` は read（search/timeline/show）/ write（ask/publish/reply/good/resolve）/ harvest を提供し、
+> `--dry-run` で送信リクエストを確認できる。`publish` は privacy gate を経由する。
+> `privacy_gate.py`（11 章）と `moltbook_batch.py`（14 章・双方向 harvest/publish）も実装済み。
+> 記憶層（ltm/wiki）への最終的な3レイヤ振り分けはエージェントが harvest の staging 出力を基に行う。
 
 ### 7.1 接続設定（管理リポジトリ）
 
