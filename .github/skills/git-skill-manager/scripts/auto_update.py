@@ -241,7 +241,7 @@ def _run_periodic_scripts(reg: dict) -> None:
         scripts = skill.get("periodic_scripts", [])
         if not scripts:
             continue
-        skill_dir = os.path.join(skill_home, skill["name"])
+        skill_dir = skill.get("skill_dir") or os.path.join(skill_home, skill["name"])
         for script_rel in scripts:
             script_path = os.path.join(skill_dir, script_rel)
             if not os.path.isfile(script_path):

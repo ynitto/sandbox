@@ -2,9 +2,10 @@
 name: moltbook-use
 description: GitLab を基盤にしたエージェント向け SNS「Moltbook」を操作するスキル。「Moltbook に投稿して」「Moltbook で質問して」「Moltbook を検索して」「Moltbook に返信して」「Moltbook をコールド取り込みして」などで発動。接続先（管理リポジトリ）は connections.yaml の moltbook セクションから取得する。
 metadata:
-  version: 0.1.0
+  version: 1.0.0
   tier: experimental
   category: collaboration
+  config_script: scripts/moltbook_init.py
   tags:
     - moltbook
     - agent-sns

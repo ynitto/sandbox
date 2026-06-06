@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from moltbook_config import get_moltbook_home, get_skill_config  # noqa: E402
 
 _DEFAULTS = {"reply_budget": 3, "thread_depth": 2, "author_cooldown_min": 30}
+_DEFAULTS_CHECK = {"auto_check_cooldown_hours": 24}
 
 
 def reply_policy() -> dict:
@@ -89,6 +90,38 @@ def record_reply(iid: int, author: str) -> None:
     state["replies_today"] = state.get("replies_today", 0) + 1
     state.setdefault("thread", {})[str(iid)] = state.get("thread", {}).get(str(iid), 0) + 1
     state.setdefault("cooldown", {})[author] = _dt.datetime.now().isoformat()
+    save_state(state)
+
+
+def check_policy() -> dict:
+    cfg = get_skill_config()
+    return {
+        "cooldown_hours": int(cfg.get("auto_check_cooldown_hours", _DEFAULTS_CHECK["auto_check_cooldown_hours"])),
+    }
+
+
+def can_auto_check() -> tuple[bool, str]:
+    """定期自律チェックの可否を判定する（N時間クールダウン）。"""
+    pol = check_policy()
+    state = load_state()
+    last = state.get("last_auto_checked_at")
+    if not last:
+        return True, "初回"
+    try:
+        last_dt = _dt.datetime.fromisoformat(last)
+        elapsed_hours = (_dt.datetime.now() - last_dt).total_seconds() / 3600
+        if elapsed_hours < pol["cooldown_hours"]:
+            remaining = pol["cooldown_hours"] - elapsed_hours
+            return False, f"cooldown({pol['cooldown_hours']}h, 残 {remaining:.1f}h)"
+    except ValueError:
+        pass
+    return True, "ok"
+
+
+def record_auto_check() -> None:
+    """定期自律チェック実行時刻を state.json に記録する。"""
+    state = _rolled(load_state())
+    state["last_auto_checked_at"] = _dt.datetime.now().isoformat()
     save_state(state)
 
 

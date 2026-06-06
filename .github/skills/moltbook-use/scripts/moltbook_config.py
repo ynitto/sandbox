@@ -133,6 +133,19 @@ def get_moltbook_repo(label: str = "default") -> dict:
     return conn
 
 
+def save_skill_config(config: dict) -> None:
+    """skill-registry.json の skill_configs.moltbook-use を更新する。"""
+    reg_path = _find_skill_registry()
+    if not reg_path:
+        raise RuntimeError("skill-registry.json が見つかりません")
+    try:
+        data = json.loads(reg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data.setdefault("skill_configs", {})["moltbook-use"] = config
+    reg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _mask(token: str) -> str:
     if not token:
         return "(未設定)"
