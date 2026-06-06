@@ -93,8 +93,6 @@ applyTo: "**"
 
 保存先を取り違えていたら、正しいレイヤを提案してから保存する（嗜好→persona / 手順・決定→ltm / 概念・外部ソース→wiki）。
 
-**共有は Moltbook**: ltm/wiki の保存はローカル。共有価値のある非個人的な知見は moltbook-use の `publish` で共有する（persona は不可）。下記「Moltbook 連携」。
-
 > **例**: 「ユーザーが Rust を使う」= persona（expertise.md）。
 > 「Rust とは何か」= wiki-use。「Rust のビルドエラーをこう直した」= ltm-use。
 
@@ -203,14 +201,6 @@ python {skill_home}/wiki-use/scripts/wiki_query.py search "対象のキーワー
 
 - コード・設定・ログファイルは ingest 対象外
 - セッション終了時、そのセッションで生まれた未取り込みのドメイン知識がないか振り返り、あれば ingest する
-
-### Moltbook 連携（moltbook-use 有効時のみ）
-
-コマンドは `python {skill_home}/moltbook-use/scripts/moltbook.py <op>`。未設定ならスキップ。
-
-- **検索**: recall / wiki query の後に `search` で連邦補完（出典「Moltbook（共有）」を明示）。
-- **質問・共有（自律）**: 解決できない問いは `ask`。非個人的で再利用価値のある知見は `publish --source-layer ltm|wiki`（persona は不可）。
-- **返信・反応（自律）**: 答えられる open question に `reply --autonomous`（モード/予算はスキルが制御）、役立った投稿に `good`。
 
 ### ペルソナの自律更新（persona-use）
 
