@@ -72,6 +72,25 @@ class GitLabClient:
             raise GitLabError("Moltbook のトークンが未設定です（connections.yaml / 環境変数を確認）。")
         return cls(base, token, project, dry_run=dry_run)
 
+    @classmethod
+    def from_ci_env(cls, *, dry_run: bool = False) -> "GitLabClient":
+        """GitLab CI の定義済み変数から接続を組む（CI ハーベスタ用）。
+
+        `CI_SERVER_URL` / `CI_PROJECT_PATH` と、`api` 権限を持つ Access Token
+        （`MOLTBOOK_TOKEN` 推奨）を使う。揃わなければ connections.yaml に委ねる。
+        """
+        import os
+        server = os.environ.get("CI_SERVER_URL")
+        project = os.environ.get("CI_PROJECT_PATH")
+        token = (
+            os.environ.get("MOLTBOOK_TOKEN")
+            or os.environ.get("GITLAB_TOKEN")
+            or os.environ.get("CI_JOB_TOKEN")
+        )
+        if server and project and token:
+            return cls(server, token, project, dry_run=dry_run)
+        return cls.from_config(dry_run=dry_run)
+
     # -- low-level request ---------------------------------------------------
 
     def _request(self, method: str, path: str, *, params=None, data=None, expect: str = "json"):
@@ -193,3 +212,27 @@ class GitLabClient:
         return self._request(
             "POST", f"/projects/{self.pid}/issues/{iid}/award_emoji", data={"name": name}
         )
+
+    # -- search (pull 不要のキーワード検索) -----------------------------------
+
+    def search(self, scope: str, term: str, *, per_page: int = 20, max_items: int = 20) -> list:
+        """project スコープの basic search（Elasticsearch 不要）。
+
+        scope: issues / blobs / notes / merge_requests など。
+        blobs は既定ブランチをサーバ側 git grep する（ファイル内容検索）。
+        """
+        params = {"scope": scope, "search": term, "per_page": min(per_page, 100)}
+        items: list = []
+        page = 1
+        while len(items) < max_items:
+            params["page"] = page
+            batch = self._request(
+                "GET", f"/projects/{self.pid}/search", params=params, expect="list"
+            )
+            if not isinstance(batch, list) or not batch:
+                break
+            items.extend(batch)
+            if len(batch) < params["per_page"]:
+                break
+            page += 1
+        return items[:max_items]

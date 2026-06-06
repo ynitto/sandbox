@@ -34,6 +34,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gitlab_api import GitLabClient, GitLabError  # noqa: E402
 from privacy_gate import evaluate as gate_evaluate  # noqa: E402
+from moltbook_config import get_moltbook_home  # noqa: E402
+from mb_state import can_reply, record_reply  # noqa: E402
 
 # --- label namespace (gitlab-idd 非衝突) ------------------------------------
 L_POST = "moltbook:post"          # 判別子（全 Moltbook Issue に付与）
@@ -149,9 +151,23 @@ def cmd_publish(args) -> int:
 
 def cmd_reply(args) -> int:
     client = _client(args)
+    # 自律返信は reply_mode ゲート（active/quiet）と governor を通す。手動は素通り。
+    author = args.author
+    if args.autonomous:
+        if not author and not args.dry_run:
+            try:
+                author = (client.get_issue(args.iid).get("author") or {}).get("username")
+            except GitLabError:
+                author = None
+        ok, reason = can_reply(args.iid, author or "?", autonomous=True)
+        if not ok:
+            print(f"#{args.iid} への自律返信をスキップ（{reason}）")
+            return 0
     note = client.create_note(args.iid, args.body)
     if args.dry_run:
         return 0
+    if args.autonomous:
+        record_reply(args.iid, author or "?")
     print(f"#{args.iid} に返信しました（note {note.get('id')}）")
     return 0
 
@@ -263,7 +279,7 @@ def harvest_issue(client: GitLabClient, issue: dict, *, out_dir: Path,
 
 def cmd_harvest(args) -> int:
     client = _client(args)
-    out_dir = Path(args.out_dir)
+    out_dir = Path(args.out_dir) if args.out_dir else get_moltbook_home() / "inbox"
     issue = client.get_issue(args.iid) if not args.dry_run else {
         "iid": args.iid, "title": f"issue-{args.iid}", "description": "", "labels": [], "author": {}
     }
@@ -280,23 +296,50 @@ def cmd_harvest(args) -> int:
 
 # --- read operations --------------------------------------------------------
 
+def _iid_from_blob_path(path: str) -> str:
+    base = path.rsplit("/", 1)[-1]
+    return base.split("-", 1)[0] if "-" in base else base.removesuffix(".md")
+
+
 def cmd_search(args) -> int:
+    """pull 不要の連邦検索。GitLab project search API（issues + blobs[+notes]）。"""
     client = _client(args)
-    labels = [L_POST]
-    if args.kind == "question":
-        labels.append(L_QUESTION)
-    elif args.kind == "knowledge":
-        labels.append(L_KNOWLEDGE)
-    issues = client.list_issues(
-        labels=labels, state=args.state, search=args.query, max_items=args.limit
-    )
+    scopes = ["issues", "blobs"] if args.scope == "all" else [args.scope]
+    if args.notes and "notes" not in scopes:
+        scopes.append("notes")
+
+    rows: list[tuple[float, str]] = []
+    for scope in scopes:
+        for hit in client.search(scope, args.query, max_items=args.limit):
+            if scope == "issues":
+                labels = hit.get("labels", []) or []
+                if L_POST not in labels:
+                    continue
+                if args.kind == "question" and L_QUESTION not in labels:
+                    continue
+                if args.kind == "knowledge" and L_KNOWLEDGE not in labels:
+                    continue
+                kind = "Q" if L_QUESTION in labels else ("K" if L_KNOWLEDGE in labels else "-")
+                up = hit.get("upvotes") or 0
+                score = 10 + up
+                rows.append((score, f"#{hit.get('iid')}\t[{kind}]\t👍{up}\t{hit.get('title','')}"))
+            elif scope == "blobs":
+                path = hit.get("path", "") or ""
+                if not path.startswith("knowledge/"):
+                    continue
+                snippet = (hit.get("data", "") or "").strip().splitlines()
+                line = snippet[0][:120] if snippet else ""
+                rows.append((5.0, f"知{_iid_from_blob_path(path)}\t{path}\t{line}"))
+            else:  # notes
+                rows.append((3.0, f"note\t{(hit.get('body','') or '')[:120]}"))
+
     if args.dry_run:
         return 0
-    if not issues:
+    if not rows:
         print("該当する投稿はありません。")
         return 0
-    for issue in issues:
-        _print_issue_row(issue)
+    for _, text in sorted(rows, key=lambda r: r[0], reverse=True)[: args.limit]:
+        print(text)
     return 0
 
 
@@ -368,6 +411,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("reply", help="投稿に返信する")
     sp.add_argument("--iid", type=int, required=True)
     sp.add_argument("--body", required=True)
+    sp.add_argument("--autonomous", action="store_true",
+                    help="自律返信。reply_mode(active/quiet)・予算・クールダウンのゲートを通す")
+    sp.add_argument("--author", help="返信先の著者（クールダウン用。未指定時は取得）")
     sp.set_defaults(func=cmd_reply)
 
     sp = sub.add_parser("good", help="投稿に Good を付ける")
@@ -382,16 +428,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("harvest", help="解決済み投稿を記憶取り込み用 Markdown に書き出す（SNS→記憶）")
     sp.add_argument("--iid", type=int, required=True)
-    sp.add_argument("--out-dir", default="moltbook_inbox", help="staging 出力先（既定: moltbook_inbox）")
+    sp.add_argument("--out-dir", default=None,
+                    help="staging 出力先（既定: {agent_home}/moltbook/inbox）")
     sp.add_argument("--layer", choices=["ltm", "wiki"], help="取り込み先レイヤを明示（省略時は自動提案）")
     sp.add_argument("--force", action="store_true", help="回答が無くても取り込む（早期フェーズ）")
     sp.set_defaults(func=cmd_harvest)
 
-    # read
-    sp = sub.add_parser("search", help="投稿を検索する")
-    sp.add_argument("--query", help="タイトル/本文の検索語")
+    # read（pull 不要の API 検索）
+    sp = sub.add_parser("search", help="投稿を検索する（GitLab API・pull 不要）")
+    sp.add_argument("--query", required=True, help="検索語")
     sp.add_argument("--kind", choices=["question", "knowledge", "any"], default="any")
-    sp.add_argument("--state", choices=["opened", "closed", "all"], default="opened")
+    sp.add_argument("--scope", choices=["all", "issues", "blobs"], default="all",
+                    help="all=ホット(issues)+コールド(blobs)")
+    sp.add_argument("--notes", action="store_true", help="返信本文(notes)も検索する")
     sp.add_argument("--limit", type=int, default=20)
     sp.set_defaults(func=cmd_search)
 

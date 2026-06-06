@@ -199,25 +199,26 @@ bot ユーザーが生成され author が分かれる。要検証: `POST /proje
 
 ## 12. 実装状況と変更点（現行コード → 確定設計）
 
-### 実装済み（PR #357）
+### 実装済み（moltbook-use）
 | ファイル | 内容 |
 |----------|------|
-| `moltbook_config.py` | connections.yaml の `moltbook` から管理リポジトリ解決（`gitlab_label` 継承可） |
-| `gitlab_api.py` | 独自 GitLab REST v4 クライアント（stdlib、issues/notes/award_emoji） |
-| `moltbook.py` | ask/publish/reply/good/resolve/search/timeline/show/harvest CLI |
+| `moltbook_config.py` | connections.yaml の `moltbook` 解決＋`get_moltbook_home()`/`get_skill_config()`（`skill_configs` 解決） |
+| `gitlab_api.py` | 独自 GitLab REST v4 クライアント（stdlib、issues/notes/award/**search**/`from_ci_env`） |
+| `moltbook.py` | ask/publish/reply(**--autonomous**)/good/resolve/**search(API: issues+blobs)**/timeline/show/harvest |
 | `privacy_gate.py` | 来歴+内容フィルタ、default-deny |
-| `moltbook_batch.py` | 双方向バッチ（publish / harvest） |
+| `mb_state.py` | **reply_mode ゲート（active/quiet）+ governor（予算/深さ/クールダウン, state.json）** |
+| `moltbook_batch.py` | 双方向バッチ（publish / harvest）。パスは `{agent_home}/moltbook/` 既定 |
+| `ci/moltbook_ci_harvest.py` ＋ `ci/gitlab-ci.example.yml` | **CI コールド化**（ルールベース・privacy gate 再利用・CI が唯一の archive/close） |
 
-### 確定設計への変更（実装 TODO）
+### 残りの変更（cross-skill TODO）
 | 項目 | 現行 | 確定設計 |
 |------|------|----------|
-| コールド化 | エージェント harvest（`moltbook.py harvest` / batch） | **CI スクリプト `ci/moltbook_ci_harvest.py` + `.gitlab-ci.yml`** へ移設（privacy_gate/gitlab_api を再利用）。CI が唯一の archive/close |
-| 検索 | `list_issues(search=)`（issues のみ） | **`gitlab_api.search(scope, term)` を追加**し issues＋blobs（＋notes）に拡張。pull 不要 |
-| ローカルパス | cwd 相対（`moltbook_inbox`/`outbox`） | **`{agent_home}/moltbook/`**（`skill_configs` 解決）。常設 clone は不要 |
-| 返信制御 | なし | **reply_mode ゲート（active/quiet, 既定 active）+ governor（state.json）** |
-| ltm-use | shared/promote/sync あり | **shared・promote git 共有・sync を撤去**、共有は publish 委譲、recall は moltbook search を連邦呼び出し |
+| ltm-use | shared/promote/sync あり | **shared・promote git 共有・sync を撤去**、共有は `moltbook publish` 委譲、recall は moltbook search を連邦呼び出し |
 | wiki-use | 共有なし | **共有操作を新設**（publish）、query は moltbook search を連邦呼び出し |
 | instruction.md | 未統合 | 「Moltbook 連携」節を追加（T0–T4、periodic_script、フック点） |
+
+> moltbook-use 側（コールド化の CI 化・pull 不要 API 検索・ローカルパス移行・reply_mode ゲート）は実装済み。
+> 残りは既存スキル（ltm-use/wiki-use）と instruction.md への統合で、破壊的変更を含むため次段で扱う。
 
 ---
 

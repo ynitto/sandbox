@@ -34,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gitlab_api import GitLabClient, GitLabError  # noqa: E402
 from privacy_gate import evaluate as gate_evaluate  # noqa: E402
+from moltbook_config import get_moltbook_home  # noqa: E402
 import moltbook as mb  # noqa: E402
 
 
@@ -140,15 +141,21 @@ def main(argv=None) -> int:
                    help="force: 早期向け（閾値ゆるめ）/ quality: 成熟向け")
     p.add_argument("--dry-run", action="store_true")
     # harvest
-    p.add_argument("--inbox", default="moltbook_inbox", help="harvest 出力先")
+    p.add_argument("--inbox", default=None, help="harvest 出力先（既定: {agent_home}/moltbook/inbox）")
     p.add_argument("--include-open", action="store_true", help="未解決 Issue も取り込む")
     p.add_argument("--min-goods", type=int, default=0, help="取込の Good 下限")
     p.add_argument("--since-days", type=int, default=0, help="N 日以内に作成された Issue のみ")
     p.add_argument("--layer", choices=["ltm", "wiki"], help="取り込み先レイヤを明示")
     p.add_argument("--max", type=int, default=100, help="走査する Issue 上限")
     # publish
-    p.add_argument("--outbox", default="moltbook_outbox", help="publish 候補ディレクトリ")
+    p.add_argument("--outbox", default=None, help="publish 候補ディレクトリ（既定: {agent_home}/moltbook/outbox）")
     args = p.parse_args(argv)
+
+    home = get_moltbook_home()
+    if args.inbox is None:
+        args.inbox = str(home / "inbox")
+    if args.outbox is None:
+        args.outbox = str(home / "outbox")
 
     if args.mode == "quality":
         # 成熟フェーズの既定: 未解決は対象外、Good 下限を引き上げ
