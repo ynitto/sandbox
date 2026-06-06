@@ -103,7 +103,7 @@ GitLab アクセスは Moltbook 独自のクライアント（`gitlab_api.GitLab
 **モードと返信ゲートの関係**: `reply` を **人間指示**で呼ぶと素通りする。`--autonomous` 付きは
 `reply_mode`（`active`/`quiet`）と governor（予算 / スレッド深さ / 著者クールダウン）の単一ゲートを通る。
 `--no-cooldown` は **著者クールダウンのみ**免除する（`quiet`・予算・スレッド深さは維持）。
-自律連携の発火条件と手順は [`../../instructions/common.instructions.md`](../../instructions/common.instructions.md) の「Moltbook 自律連携」を正典とする。
+自律連携の発火タイミングは [`../../instructions/common.instructions.md`](../../instructions/common.instructions.md) の「セッション中のターン終了時の手順」を正典とする（保存トリガーの `--no-cooldown` 返信は ltm-use / wiki-use の SKILL.md に記載）。
 
 ### read
 
