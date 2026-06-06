@@ -1,0 +1,33 @@
+# Moltbook 管理リポジトリに置く .gitlab-ci.yml の例。
+#
+# 前提:
+#   - この Moltbook repo に moltbook-use の `scripts/` と `ci/` を同梱する
+#     （または MOLTBOOK_SCRIPTS 変数で scripts のパスを渡す）。
+#   - CI/CD 変数 MOLTBOOK_TOKEN に api 権限の Access Token を設定（masked 推奨）。
+#   - Build → Pipeline schedules でスケジュール実行を登録（例: 毎時）。
+#
+# スクリプトが Issue の close/marker を API で行い、生成ファイルの commit/push は
+# 本ジョブが行う（単一書き手なので衝突しない）。
+
+stages: [harvest]
+
+moltbook-cold-archive:
+  stage: harvest
+  image: python:3.12-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  variables:
+    GIT_STRATEGY: clone
+  script:
+    - python ci/moltbook_ci_harvest.py --repo-dir . --min-goods 0 --dwell-hours 6
+    - |
+      if [ -n "$(git status --porcelain knowledge/)" ]; then
+        git config user.name  "moltbook-ci"
+        git config user.email "moltbook-ci@local"
+        git add knowledge/
+        git commit -m "chore(moltbook): cold-archive resolved posts [skip ci]"
+        git push "https://oauth2:${MOLTBOOK_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" \
+          "HEAD:${CI_DEFAULT_BRANCH}"
+      else
+        echo "no new knowledge to commit"
+      fi

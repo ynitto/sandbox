@@ -26,6 +26,8 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,6 +35,57 @@ from urllib.parse import urlparse
 # Allow running as a standalone script (same-dir import of config_loader).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config_loader import get_connection, get_config_file_paths  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Local state home / skill_configs resolution
+# ---------------------------------------------------------------------------
+
+_REGISTRY_DIRS = (".claude", ".copilot", ".codex", ".kiro")
+
+
+def _find_skill_registry() -> Path | None:
+    explicit = os.environ.get("SKILL_REGISTRY")
+    if explicit and Path(explicit).is_file():
+        return Path(explicit)
+    home = Path(os.path.expanduser("~"))
+    for d in _REGISTRY_DIRS:
+        candidate = home / d / "skill-registry.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def get_skill_config() -> dict:
+    """skill-registry.json の skill_configs.moltbook-use を返す（無ければ {}）。"""
+    reg = _find_skill_registry()
+    if not reg:
+        return {}
+    try:
+        data = json.loads(reg.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    cfg = (data.get("skill_configs") or {}).get("moltbook-use")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def get_moltbook_home() -> Path:
+    """Moltbook のローカル状態ルートを解決する。
+
+    優先順: 環境変数 MOLTBOOK_HOME → skill_configs.moltbook-use.home
+            → <skill-registry のあるディレクトリ>/.moltbook → ~/.moltbook
+    """
+    env = os.environ.get("MOLTBOOK_HOME")
+    if env:
+        return Path(os.path.expanduser(env))
+    reg = _find_skill_registry()
+    if reg:
+        cfg = get_skill_config()
+        home = cfg.get("home")
+        if home:
+            return Path(os.path.expanduser(home))
+        return reg.parent / ".moltbook"
+    return Path(os.path.expanduser("~")) / ".moltbook"
 
 
 def _project_path_from_url(url: str) -> str:
@@ -96,7 +149,12 @@ def main(argv=None) -> int:
         "--label-conn", dest="label", default="default", metavar="LABEL",
         help="connections.yaml の moltbook ラベル（既定: default）",
     )
+    sub.add_parser("home", help="ローカル状態ルート（{agent_home}/.moltbook）を表示する")
     args = parser.parse_args(argv)
+
+    if args.cmd == "home":
+        print(get_moltbook_home())
+        return 0
 
     if args.cmd != "show":
         parser.print_help()

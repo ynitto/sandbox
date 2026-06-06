@@ -56,26 +56,9 @@ def run_sync(force: bool = False) -> None:
 
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 手順 2-1: shared からの記憶を home に取り込む
-    try:
-        subprocess.run(
-            [sys.executable, os.path.join(scripts_dir, "sync_memory.py"), "--import-to-home"],
-            check=False,
-        )
-    except Exception as e:
-        print(f"⚠️  手順 2-1 (sync_memory --import-to-home) をスキップしました: {e}")
-
-    # 手順 2-2: share_score >= auto_promote_threshold の記憶を shared へ昇格し push する
-    try:
-        subprocess.run(
-            [
-                sys.executable, os.path.join(scripts_dir, "promote_memory.py"),
-                "--scope", "home", "--target", "shared", "--auto", "--push",
-            ],
-            check=False,
-        )
-    except Exception as e:
-        print(f"⚠️  手順 2-2 (promote_memory) をスキップしました: {e}")
+    # 手順 2-1/2-2 は廃止: チーム共有は ltm shared(git) ではなく Moltbook publish に一本化した。
+    # 旧 sync_memory(--import-to-home) と promote_memory(--target shared --push) は実行しない。
+    # （共有・連邦検索はエージェントが moltbook-use を呼んで行う。設計: docs/designs/gitlab-agent-sns-design.md）
 
     # 手順 2-3: Copilot Memory インポート（スクリプト内で72h スキップ）
     try:
