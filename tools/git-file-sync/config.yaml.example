@@ -1,0 +1,118 @@
+# git-file-sync 設定ファイルサンプル
+# このファイルをコピーして git-file-sync.yaml という名前で保存してください。
+#
+# 検索順序:
+#   1. --config オプションで明示指定したパス
+#   2. カレントディレクトリの git-file-sync.yaml / .yml / .json
+#   3. HOME の git-file-sync.yaml / .yml / .json
+
+# ---------------------------------------------------------------------------
+# 同期ハブとなる git リポジトリ
+# ---------------------------------------------------------------------------
+# remote を指定すると worktree へ自動 clone し、pull / push で他マシンと同期する。
+# remote を省略すると worktree をローカル git リポジトリとして init する
+# （単一マシン内のバックアップ用途や、別途リモートを手動設定したい場合）。
+repository:
+  # 同期ハブのリモート URL（省略可）
+  remote: "git@github.com:youruser/my-sync-repo.git"
+
+  # 同期に使うブランチ
+  branch: "main"
+
+  # リポジトリのローカルクローン置き場（このツール専用に用意するのを推奨）
+  worktree: "~/.git-file-sync/repo"
+
+  # コミット後に自動 push するか
+  auto_push: true
+
+  # コミットメッセージの接頭辞
+  commit_message_prefix: "git-file-sync"
+
+  # コミット author（省略時は git のグローバル設定を使用）
+  # author_name: "Sync Bot"
+  # author_email: "sync-bot@example.com"
+
+# 前回同期スナップショット（3-way 差分の基準）の保存先
+# state_dir: "~/.git-file-sync/state"
+
+# ---------------------------------------------------------------------------
+# 既定値（各ペアで上書き可能）
+# ---------------------------------------------------------------------------
+defaults:
+  # ポーリング間隔（分）
+  poll_interval_minutes: 5
+
+  # 同期方向:
+  #   bidirectional (既定) … ローカルと git を双方向同期
+  #   pull                  … git → ローカルのみ。git を正とし、リポジトリには
+  #                           一切書き込まない（削除もしない）。ローカルの削除・編集は
+  #                           尊重し、git 側が更新されたファイルだけを（再）ダウンロード。
+  #   push                  … ローカル → git のみ
+  direction: "bidirectional"
+
+  # コンフリクト時の採用ポリシー:
+  #   mine   (= local / ours)  … 自分 (ローカル) を採用
+  #   theirs (= remote)         … 他人 (リポジトリ) を採用
+  conflict_policy: "theirs"
+
+  # コンフリクトで負けた側を .conflict バックアップとして残すか
+  keep_conflict_backup: true
+
+  # スキャンモード（変更検知の方式）:
+  #   content (既定) … 毎サイクル全ファイルのハッシュを計算する。確実だが
+  #                     ファイル数が多いと遅い。
+  #   fast            … mtime+サイズが前回同期と同じファイルはハッシュ計算を
+  #                     省略し「前回から差分のあったファイルのみ」を読む。高速だが、
+  #                     mtime を保ったまま中身が変わるケースは検知できない。
+  #   ※ CLI の --fast で全ペアに一括適用も可能。
+  scan_mode: "content"
+
+  # 同期から除外するパターン（相対パスの glob / ディレクトリ接頭辞）
+  ignore:
+    - "*.tmp"
+    - ".DS_Store"
+    - "node_modules"
+
+# ---------------------------------------------------------------------------
+# 同期ペアの定義（ローカルフォルダ ⇔ リポジトリ内サブフォルダ）
+# ---------------------------------------------------------------------------
+pairs:
+  # ---- ドキュメントを同期（他人優先） ----
+  - name: "docs"
+    local_path: "~/Documents/notes"
+    # リポジトリのワークツリーからの相対サブパス（"" でリポジトリ直下）
+    repo_subpath: "notes"
+    poll_interval_minutes: 5
+    conflict_policy: "theirs"   # 競合したらリポジトリ側を採用
+
+  # ---- 設定ファイルを同期（自分優先・5 分間隔） ----
+  - name: "dotfiles"
+    local_path: "~/dotfiles"
+    repo_subpath: "dotfiles"
+    poll_interval_minutes: 10
+    conflict_policy: "mine"     # 競合したらローカル側を採用
+    scan_mode: "fast"           # 前回から差分のあったファイルのみ読む（高速）
+    ignore:
+      - ".git"
+      - "*.log"
+
+  # ---- 画像フォルダを同期（既定ポリシーを使用） ----
+  # - name: "images"
+  #   local_path: "~/Pictures/shared"
+  #   repo_subpath: "images"
+
+  # ---- git=全アーカイブ / ローカル=最近更新分の作業キャッシュ ----
+  # git には全ファイルがあり、ローカルでは処理済みの古いファイルを別プログラムが
+  # 削除する構成。pull モードなら、ローカルの削除を git に伝播せず（アーカイブ保護）、
+  # git 側で更新されたファイルだけを（再）ダウンロードする。
+  # - name: "inbox"
+  #   local_path: "~/work/inbox"
+  #   repo_subpath: "archive"
+  #   direction: "pull"
+  #   scan_mode: "fast"
+  #   poll_interval_minutes: 1
+  #   # 取得の更新日時フィルタ（pull 専用）。git 側で最後にそのファイルを
+  #   # 変更したコミットが古いものは取得しない。初回の全件ダウンロードを抑制でき、
+  #   # 「最近更新されたファイルだけローカルに置く」用途に最適。
+  #   # 例: "7d"（7日）/ "48h" / "90m" / "2w" / 30（数値は日）
+  #   max_age: "7d"
