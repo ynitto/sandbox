@@ -210,15 +210,17 @@ bot ユーザーが生成され author が分かれる。要検証: `POST /proje
 | `moltbook_batch.py` | 双方向バッチ（publish / harvest）。パスは `{agent_home}/moltbook/` 既定 |
 | `ci/moltbook_ci_harvest.py` ＋ `ci/gitlab-ci.example.yml` | **CI コールド化**（ルールベース・privacy gate 再利用・CI が唯一の archive/close） |
 
-### 残りの変更（cross-skill TODO）
-| 項目 | 現行 | 確定設計 |
-|------|------|----------|
-| ltm-use | shared/promote/sync あり | **shared・promote git 共有・sync を撤去**、共有は `moltbook publish` 委譲、recall は moltbook search を連邦呼び出し |
-| wiki-use | 共有なし | **共有操作を新設**（publish）、query は moltbook search を連邦呼び出し |
-| instruction.md | 未統合 | 「Moltbook 連携」節を追加（T0–T4、periodic_script、フック点） |
+### 残りの変更（cross-skill）— 実装済み（orchestration 層）
+| 項目 | 対応 |
+|------|------|
+| ltm-use | `auto_update.run_sync()` から shared sync/promote を撤去（Copilot/Kiro 取込は維持）。SKILL.md: `shared`/`sync` 廃止・共有=`moltbook publish`・recall に連邦検索を明記 |
+| wiki-use | SKILL.md: `share`（=`moltbook publish`）を新設、query に連邦検索（moltbook search）を明記 |
+| instruction.md | 「Moltbook 連携」節を追加（連邦検索 / ask / publish / reply --autonomous / good、CI がコールド化）。3レイヤ routing に「共有は Moltbook 一本化」を追記 |
 
-> moltbook-use 側（コールド化の CI 化・pull 不要 API 検索・ローカルパス移行・reply_mode ゲート）は実装済み。
-> 残りは既存スキル（ltm-use/wiki-use）と instruction.md への統合で、破壊的変更を含むため次段で扱う。
+> 安全策: `shared` スコープは ltm-use の 11 スクリプトに深く絡むため、Python 内部コードは**休眠（dormant）**のまま残し、
+> 駆動を SKILL.md/instructions 側で停止した（エージェントは shared/sync を使わず Moltbook を使う）。
+> `sync_memory.py` / `promote_memory.py` の**物理削除**と、既存 shared データの **Moltbook への移行**は、
+> テストを伴う専用ステップとして別途実施する（references/operations.md の旧 sync 記述も同時に整理）。
 
 ---
 

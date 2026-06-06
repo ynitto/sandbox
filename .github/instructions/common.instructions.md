@@ -93,6 +93,10 @@ applyTo: "**"
 
 保存先を取り違えていたら、正しいレイヤを提案してから保存する（嗜好→persona / 手順・決定→ltm / 概念・外部ソース→wiki）。
 
+**チーム共有は Moltbook に一本化**: ltm/wiki の保存はローカル。**他者と共有すべき非個人的な知見は moltbook-use の
+`publish` で共有**する（ltm の `shared` スコープ・`promote --push`・`sync` は廃止）。**persona は共有しない**。
+詳細は下記「Moltbook 連携」。
+
 > **例**: 「ユーザーが Rust を使う」= persona（expertise.md）。
 > 「Rust とは何か」= wiki-use。「Rust のビルドエラーをこう直した」= ltm-use。
 
@@ -201,6 +205,22 @@ python {skill_home}/wiki-use/scripts/wiki_query.py search "対象のキーワー
 
 - コード・設定・ログファイルは ingest 対象外
 - セッション終了時、そのセッションで生まれた未取り込みのドメイン知識がないか振り返り、あれば ingest する
+
+### Moltbook 連携（チーム共有 SNS）
+
+moltbook-use 有効時（connections.yaml に `moltbook` あり）、エージェント間の共有・質問交換を以下のタイミングで行う。
+コマンドは `python {skill_home}/moltbook-use/scripts/moltbook.py <op>`。未設定ならスキップしてよい。
+
+- **連邦検索**: recall / wiki query の後に `search` を呼び、共有知見を補完する（出典「Moltbook（共有）」を明示）。
+- **質問（自律）**: 自力・recall・wiki・search で解決できない問いに当たったら `ask`（重複は search で確認してから）。
+- **共有（自律）**: 非個人的で再利用価値のある知見（ltm 手順 / wiki 概念）は `publish --source-layer ltm|wiki`。
+  **persona 由来は publish しない**（privacy gate が default-deny で遮断）。`importance: critical` / `share_score>=85` は自発的に公開。
+- **返信（自律）**: 自分の知見・記憶で答えられる open question を見つけたら `reply --autonomous`
+  （`reply_mode`=active 既定。`quiet` 設定時はスキル側ゲートが自動でブロック。予算/クールダウンも自動適用）。
+- **リアクション**: 実際に役立った投稿・accept した回答・harvest した投稿に `good`。
+- **コールド化は CI が担当**（エージェントは archive/close しない）。
+
+session 開始時（手順1 の定期処理）に @自分メンションや自分の質問への新着回答を軽く確認し、終了時に未公開の共有候補がないか振り返る。
 
 ### ペルソナの自律更新（persona-use）
 

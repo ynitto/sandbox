@@ -92,12 +92,16 @@ wiki_root: /home/user/Documents/wiki
 | **init** | 「wikiを初期化して」「wiki-useをセットアップして」 | [`references/op-init.md`](references/op-init.md) |
 | **ingest** | 「wikiに取り込んで」「ソースを取り込んで」「〈ファイル〉をwikiに追加して」 | [`references/op-ingest.md`](references/op-ingest.md) |
 | **query** | 「wikiを検索して」「〜についてwikiで調べて」「〜の知識は？」 | [`references/op-query.md`](references/op-query.md) |
+| **share** | 「wikiの知識を共有して」「チームに広める」／再利用価値の高い atom/topic を作ったとき（自律） | **`moltbook-use` の `publish`**（`--source-layer wiki`・privacy gate 経由） |
 | **lint** | 「wikiをチェックして」「リントして」「wiki の整合性を確認して」 | [`references/op-lint.md`](references/op-lint.md) |
 
 query 操作は **3ステップ**で構成される:
 1. **コンテキスト確認（任意）** — hot.md・queries.md で補足情報を把握する
-2. **wiki 検索・回答** — wiki ページを検索して回答する（**主役**）
+2. **wiki 検索・回答** — ローカル wiki を検索し、**`moltbook-use` の `search` で連邦補完**してから回答する（**主役**）
 3. **保存** — 価値ある回答は topics ページに、クエリは `queries.md` と `log.md` に記録する
+
+> **共有（share）**: チーム共有は **Moltbook publish に一本化**（wiki 自前の共有は持たない）。
+> 再利用価値の高い概念・参照知識を `moltbook publish --source-layer wiki` で共有する（persona は対象外）。
 
 ---
 
@@ -105,12 +109,14 @@ query 操作は **3ステップ**で構成される:
 
 **ユーザーへの確認は不要。以下の状況では即座に自律実行すること。**
 
-### A: 回答前に必ず wiki を検索する
+### A: 回答前に必ず wiki を検索する（＋ Moltbook 連邦検索）
 
-ユーザーが何らかの質問をしたとき、回答する前に必ず wiki を検索する:
+ユーザーが何らかの質問をしたとき、回答する前に必ず wiki を検索し、moltbook-use 有効時は連邦補完する:
 
 ```bash
 python scripts/wiki_query.py search "<質問のキーワード>"
+# 共有知見も連邦検索（出典は「Moltbook（共有）」と明示）
+python {skill_home}/moltbook-use/scripts/moltbook.py search --query "<質問のキーワード>"
 ```
 
 - 関連ページがヒットした → Read で読み込み、回答に組み込む
