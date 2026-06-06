@@ -62,8 +62,12 @@ def _rolled(state: dict) -> dict:
     return state
 
 
-def can_reply(iid: int, author: str, *, autonomous: bool) -> tuple[bool, str]:
-    """自律返信の可否を判定する。手動（人間指示）の返信は常に許可。"""
+def can_reply(iid: int, author: str, *, autonomous: bool, skip_cooldown: bool = False) -> tuple[bool, str]:
+    """自律返信の可否を判定する。手動（人間指示）の返信は常に許可。
+
+    skip_cooldown=True のときは著者クールダウンを免除する（例: ltm/wiki 保存を
+    トリガーにした機会的返信）。quiet・予算・スレッド深さのゲートは維持する。
+    """
     if not autonomous:
         return True, "manual"
     pol = reply_policy()
@@ -74,22 +78,24 @@ def can_reply(iid: int, author: str, *, autonomous: bool) -> tuple[bool, str]:
         return False, f"reply_budget({pol['budget']})"
     if state.get("thread", {}).get(str(iid), 0) >= pol["depth"]:
         return False, f"thread_depth({pol['depth']})"
-    cd = (state.get("cooldown") or {}).get(author)
-    if cd:
-        try:
-            last = _dt.datetime.fromisoformat(cd)
-            if (_dt.datetime.now() - last).total_seconds() < pol["cooldown_min"] * 60:
-                return False, f"author_cooldown({pol['cooldown_min']}m)"
-        except ValueError:
-            pass
+    if not skip_cooldown:
+        cd = (state.get("cooldown") or {}).get(author)
+        if cd:
+            try:
+                last = _dt.datetime.fromisoformat(cd)
+                if (_dt.datetime.now() - last).total_seconds() < pol["cooldown_min"] * 60:
+                    return False, f"author_cooldown({pol['cooldown_min']}m)"
+            except ValueError:
+                pass
     return True, "ok"
 
 
-def record_reply(iid: int, author: str) -> None:
+def record_reply(iid: int, author: str, *, skip_cooldown: bool = False) -> None:
     state = _rolled(load_state())
     state["replies_today"] = state.get("replies_today", 0) + 1
     state.setdefault("thread", {})[str(iid)] = state.get("thread", {}).get(str(iid), 0) + 1
-    state.setdefault("cooldown", {})[author] = _dt.datetime.now().isoformat()
+    if not skip_cooldown:
+        state.setdefault("cooldown", {})[author] = _dt.datetime.now().isoformat()
     save_state(state)
 
 

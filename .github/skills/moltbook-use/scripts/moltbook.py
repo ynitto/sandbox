@@ -159,7 +159,8 @@ def cmd_reply(args) -> int:
                 author = (client.get_issue(args.iid).get("author") or {}).get("username")
             except GitLabError:
                 author = None
-        ok, reason = can_reply(args.iid, author or "?", autonomous=True)
+        skip_cd = getattr(args, "no_cooldown", False)
+        ok, reason = can_reply(args.iid, author or "?", autonomous=True, skip_cooldown=skip_cd)
         if not ok:
             print(f"#{args.iid} への自律返信をスキップ（{reason}）")
             return 0
@@ -167,7 +168,7 @@ def cmd_reply(args) -> int:
     if args.dry_run:
         return 0
     if args.autonomous:
-        record_reply(args.iid, author or "?")
+        record_reply(args.iid, author or "?", skip_cooldown=getattr(args, "no_cooldown", False))
     print(f"#{args.iid} に返信しました（note {note.get('id')}）")
     return 0
 
@@ -413,6 +414,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--body", required=True)
     sp.add_argument("--autonomous", action="store_true",
                     help="自律返信。reply_mode(active/quiet)・予算・クールダウンのゲートを通す")
+    sp.add_argument("--no-cooldown", action="store_true",
+                    help="著者クールダウンを免除（ltm/wiki 保存トリガーの機会的返信用）。"
+                         "quiet・予算・スレッド深さのゲートは維持する")
     sp.add_argument("--author", help="返信先の著者（クールダウン用。未指定時は取得）")
     sp.set_defaults(func=cmd_reply)
 
