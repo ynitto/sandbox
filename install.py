@@ -924,23 +924,18 @@ def setup_playwright_cli_skill(paths: dict[str, str]) -> bool:
 
 
 def setup_codegraph() -> bool:
-    """colbymchenry/codegraph を GitHub から pip でインストールする。"""
-    print("   codegraph をインストール中...")
+    """npx @colbymchenry/codegraph を実行し、インタラクティブにセットアップを任せる。"""
+    print("   npx @colbymchenry/codegraph を実行します...")
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install",
-             "git+https://github.com/colbymchenry/codegraph.git"],
-            capture_output=True, text=True,
-        )
+        # capture_output を指定せず、標準入出力を引き継いでインタラクティブに実行する
+        result = subprocess.run(["npx", "@colbymchenry/codegraph"])
         if result.returncode == 0:
-            print("   ✓ codegraph をインストールしました")
+            print("   ✓ codegraph のセットアップが完了しました")
             return True
-        print(f"   ✗ codegraph のインストールに失敗しました (code {result.returncode})")
-        if result.stderr:
-            print(f"     {result.stderr.strip()}")
+        print(f"   ✗ codegraph のセットアップに失敗しました (code {result.returncode})")
         return False
     except FileNotFoundError:
-        print("   ✗ pip が見つかりません")
+        print("   ✗ npx が見つかりません (Node.js をインストールしてください)")
         return False
 
 
