@@ -939,6 +939,54 @@ def setup_codegraph() -> bool:
         return False
 
 
+def setup_graphify() -> bool:
+    """safishamsi/graphify (PyPI: graphifyy) の CLI をインストールし、スキルを登録する。
+
+    uv → pipx → pip の順で利用可能なものを使って CLI をインストールし、
+    その後 `graphify install` を実行して Claude Code のスキルを登録する。
+    """
+    # 利用可能なインストーラーを優先順に探す（uv tool / pipx / pip）
+    installers = [
+        ("uv", ["uv", "tool", "install", "graphifyy"]),
+        ("pipx", ["pipx", "install", "graphifyy"]),
+        ("pip", [sys.executable, "-m", "pip", "install", "graphifyy"]),
+    ]
+
+    installed = False
+    for name, cmd in installers:
+        if shutil.which(cmd[0]) is None:
+            continue
+        print(f"   {name} で graphify (graphifyy) をインストール中...")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            continue
+        if result.returncode == 0:
+            print(f"   ✓ graphify をインストールしました ({name})")
+            installed = True
+            break
+        print(f"   ✗ {name} でのインストールに失敗しました (code {result.returncode})")
+        if result.stderr:
+            print(f"     {result.stderr.strip()}")
+
+    if not installed:
+        print("   ✗ graphify をインストールできませんでした (uv / pipx / pip が必要です)")
+        return False
+
+    # スキルを登録する（graphify install をインタラクティブに実行）
+    print("   graphify install でスキルを登録します...")
+    try:
+        result = subprocess.run(["graphify", "install"])
+        if result.returncode == 0:
+            print("   ✓ graphify のスキルを登録しました")
+            return True
+        print(f"   ✗ graphify のスキル登録に失敗しました (code {result.returncode})")
+        return False
+    except FileNotFoundError:
+        print("   ✗ graphify コマンドが見つかりません (PATH を確認してください)")
+        return False
+
+
 def main() -> None:
     args = parse_args()
     agent_type = args.agent
@@ -1027,6 +1075,13 @@ def main() -> None:
     else:
         print("\n8. codegraph をセットアップ...")
         setup_codegraph()
+
+    # 9. graphify インストール
+    if args.excludes_external_skills:
+        print("\n9. graphify をスキップ (--excludes-external-skills が指定されました)")
+    else:
+        print("\n9. graphify をセットアップ...")
+        setup_graphify()
 
     # 完了
     print("\n" + "=" * 50)
