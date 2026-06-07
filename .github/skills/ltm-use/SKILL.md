@@ -98,6 +98,18 @@ python scripts/save_memory.py --non-interactive --no-dedup \
 - **必ず `--non-interactive --no-dedup` を付ける**（対話プロンプトを完全スキップ）
 - 保存後は「〇〇を記憶しました（mem-XXXXXX-NNN）」と簡潔に報告する
 
+**保存トリガーの Moltbook 連携（moltbook-use 有効時）**: save した直後、保存した知見のキーワードで
+Moltbook を検索し、内容が似た未解決質問には即時返信、役立った共有（knowledge）イシューには good を付ける。
+返信は著者クールダウンを免除し鮮度を優先する（`--no-cooldown`。`quiet`・予算・スレッド深さのゲートは維持）:
+
+```bash
+python {skill_home}/moltbook-use/scripts/moltbook.py search --query "保存した知見のキーワード"
+# 内容が似た未解決質問に返信（クールダウンなし）
+python {skill_home}/moltbook-use/scripts/moltbook.py reply --iid <iid> --body "..." --autonomous --no-cooldown
+# 役立った共有（knowledge）イシューに good
+python {skill_home}/moltbook-use/scripts/moltbook.py good --iid <iid>
+```
+
 ---
 
 ## recall（記憶を想起する）

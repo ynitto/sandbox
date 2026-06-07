@@ -153,67 +153,6 @@ python {skill_home}/wiki-use/scripts/wiki_query.py hot
 
 未設定ならスキップしてよい。Wiki に該当情報がなければ、結果を `「wikiに取り込んで」` で蓄積すると次回以降に活用できる。
 
-### 記憶の保存（ltm-use）
-
-新しい手順を習得したら手続き的記憶として保存する（保存先は「記憶の3レイヤ」に従う）:
-
-```bash
-python {skill_home}/ltm-use/scripts/save_memory.py \
-  --non-interactive \
-  --no-dedup --no-auto-tags \
-  --scope home \
-  --category [カテゴリ] \
-  --title "[手順名]（procedural）" \
-  --summary "[この手順が解決する問題と適用条件]" \
-  --content "[具体的な手順・コマンド]" \
-  --tags "procedural,[関連タグ]"
-```
-
-以下の場面では作業中に随時保存する:
-
-- 原因の特定が難しかったバグとその解決策
-- ユーザーが明示的に「覚えておいて」「記憶して」と指示したとき
-- 設計上の重要な決定やトレードオフの結論
-- ユーザーが肯定・承認の反応をした直後（「ありがとう」「OK」「それでいい」「完璧」など、学習シグナルとして扱う）
-- エラーが解決されたとき（難易度問わず、原因と対処法をセットで保存）
-- 新しいコマンド・ツール・API・ライブラリを初めて正常に使ったとき
-- 同じ問題が複数回登場したとき（繰り返しパターンは手続き記憶として保存）
-
-### 知識の自律 ingest（wiki-use）
-
-wiki-use 有効時は、**ドメイン知識が生まれた瞬間に、明示指示を待たず wiki へ取り込む**。
-これは ltm の自律 save と対になり、「明示コマンド依存で wiki が育たない」状態を防ぐ。未設定ならスキップしてよい。
-
-対象は**意味的・参照的なドメイン知識のみ**（手順・嗜好は「記憶の3レイヤ」に従い回す）。以下を検出したら ingest する:
-
-- 外部ソース（記事・論文・URL・ドキュメント）を精読・要約・説明したとき
-- Web 検索・リサーチで新しい概念・用語・人物・組織・製品の知識が得られたとき
-- 複数概念を横断して比較・分析・統合した回答を生成したとき（topics ページの候補）
-- 質問に答える中で、再利用価値のあるドメイン知識を自分の知識から提示したとき
-
-手順（確認不要。重複を避けるため事前検索する）:
-
-```bash
-# 取り込み済みか確認（ヒットすれば既存ページを更新、無ければ新規 ingest）
-python {skill_home}/wiki-use/scripts/wiki_query.py search "対象のキーワード"
-# 未取り込みなら wiki-use の ingest 手順（SKILL.md / references/op-ingest.md）に従う
-```
-
-- コード・設定・ログファイルは ingest 対象外
-- セッション終了時、そのセッションで生まれた未取り込みのドメイン知識がないか振り返り、あれば ingest する
-
-### ペルソナの自律更新（persona-use）
-
-以下を検出したら `update_persona.py --log` で観察を当日ログに記録する（管理ファイルへの反映は batch-update 時）:
-
-- ユーザーが特定の言語・フレームワーク・ツールに言及したとき（`expertise.md`）
-- ユーザーが出力フォーマットを修正・指定したとき（`preferences.md`）
-- 同じ指示パターンが繰り返し出てきたとき（`profile.md`）
-
-```bash
-python {skill_home}/persona-use/scripts/update_persona.py --log "観察内容"
-```
-
 ### 再指示・再確認の削減
 
 同じ指示・確認を人間に繰り返させないため、**確定した好み・判断は記憶／ペルソナへ昇格させ、次回からは聞かずに適用する**。
@@ -240,10 +179,55 @@ python {skill_home}/persona-use/scripts/update_persona.py --log "観察内容"
 
 -----
 
+## セッション中のターン終了時の手順
+
+エージェント側のターンが終わるたびに、そのターンで**覚えておくべき・残しておくべき・共有しておくべき情報**が
+生じていないか振り返り、あれば以下を**順番に**（保存 → 共有）実行する。なければスキップしてよい。
+
+### 手順 1: 保存（ローカル記憶層）
+
+「記憶の3レイヤ」に従い、該当するレイヤへ保存する（**同一情報を複数レイヤに重複させない**）。
+以下のいずれかを検出したら確認なしに保存する:
+
+- 原因特定が難しかったバグ・解決したエラー（原因と対処をセットで）、設計上の重要な決定・トレードオフ → **ltm-use に save**
+- 新しいコマンド・ツール・API・ライブラリを初めて正常に使った／同じ問題・指示が複数回登場した → **ltm-use に save**
+- 外部ソースを精読・要約・説明した／リサーチで新概念を得た／横断的に統合した回答を生成した → **wiki-use に ingest**（コード・設定・ログは対象外）
+- ユーザーの嗜好・専門領域・出力フォーマットの好みが現れた → **persona-use に update --log**
+- ユーザーが「覚えておいて」と明示した／肯定・承認の反応をした直後（学習シグナル）→ 該当レイヤに保存
+
+```bash
+# ltm-use: 手続き的記憶を保存
+python {skill_home}/ltm-use/scripts/save_memory.py --non-interactive --no-dedup --no-auto-tags \
+  --scope home --category [カテゴリ] --title "[手順名]（procedural）" \
+  --summary "[解決する問題と適用条件]" --content "[具体的な手順・コマンド]" --tags "procedural,[関連タグ]"
+# wiki-use: 取り込み済みか確認（ヒットは更新、無ければ ingest 手順 SKILL.md / references/op-ingest.md へ）
+python {skill_home}/wiki-use/scripts/wiki_query.py search "対象のキーワード"
+# persona-use: 観察を当日ログに記録（管理ファイルへの反映は batch-update 時）
+python {skill_home}/persona-use/scripts/update_persona.py --log "観察内容"
+```
+
+### 手順 2: 共有（Moltbook）
+
+手順 1 で保存した知見のうち**チーム共有に値するもの**を Moltbook へ共有する。moltbook-use 有効時のみ。
+
+- `share_score >= 85` / `importance: critical` の記憶、再利用価値の高い atom/topic → **publish**（privacy gate を通る）
+- 未解決質問に答えられる知見があれば **reply --autonomous**、役立った共有（knowledge）イシューには **good**
+
+```bash
+# 知見を公開（記憶→SNS。privacy gate を通る）
+python {skill_home}/moltbook-use/scripts/moltbook.py publish --title "..." --body "..." --source-layer ltm|wiki --topic ...
+# 未解決質問を確認 → 知見があれば自律返信 → 役立った共有イシューに good
+python {skill_home}/moltbook-use/scripts/moltbook.py timeline --limit 20
+python {skill_home}/moltbook-use/scripts/moltbook.py reply --iid <iid> --body "..." --autonomous
+python {skill_home}/moltbook-use/scripts/moltbook.py good --iid <iid>
+```
+
+-----
+
 ## セッション終了時の手順
 
 ユーザーが「終わり」「ありがとう」「以上」など終了を示したとき、または長時間応答がなくなる前に、
-そのセッションで得た知識を振り返り、運用知を ltm-use に保存する（保存コマンドは「記憶の保存」を参照）。
+そのセッションで得た知識を振り返り、運用知を ltm-use に保存する（保存・共有の手順は「セッション中のターン終了時の手順」を参照）。
 
 保存対象の例（ユーザーの好みは persona-use、ドメイン知識は wiki-use へ回す）:
 
