@@ -924,23 +924,66 @@ def setup_playwright_cli_skill(paths: dict[str, str]) -> bool:
 
 
 def setup_codegraph() -> bool:
-    """colbymchenry/codegraph を GitHub から pip でインストールする。"""
-    print("   codegraph をインストール中...")
+    """npx @colbymchenry/codegraph を実行し、インタラクティブにセットアップを任せる。"""
+    print("   npx @colbymchenry/codegraph を実行します...")
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install",
-             "git+https://github.com/colbymchenry/codegraph.git"],
-            capture_output=True, text=True,
-        )
+        # capture_output を指定せず、標準入出力を引き継いでインタラクティブに実行する
+        result = subprocess.run(["npx", "@colbymchenry/codegraph"])
         if result.returncode == 0:
-            print("   ✓ codegraph をインストールしました")
+            print("   ✓ codegraph のセットアップが完了しました")
             return True
-        print(f"   ✗ codegraph のインストールに失敗しました (code {result.returncode})")
-        if result.stderr:
-            print(f"     {result.stderr.strip()}")
+        print(f"   ✗ codegraph のセットアップに失敗しました (code {result.returncode})")
         return False
     except FileNotFoundError:
-        print("   ✗ pip が見つかりません")
+        print("   ✗ npx が見つかりません (Node.js をインストールしてください)")
+        return False
+
+
+def setup_graphify() -> bool:
+    """safishamsi/graphify (PyPI: graphifyy) の CLI をインストールし、スキルを登録する。
+
+    uv → pipx → pip の順で利用可能なものを使って CLI をインストールし、
+    その後 `graphify install` を実行して Claude Code のスキルを登録する。
+    """
+    # 利用可能なインストーラーを優先順に探す（uv tool / pipx / pip）
+    installers = [
+        ("uv", ["uv", "tool", "install", "graphifyy"]),
+        ("pipx", ["pipx", "install", "graphifyy"]),
+        ("pip", [sys.executable, "-m", "pip", "install", "graphifyy"]),
+    ]
+
+    installed = False
+    for name, cmd in installers:
+        if shutil.which(cmd[0]) is None:
+            continue
+        print(f"   {name} で graphify (graphifyy) をインストール中...")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            continue
+        if result.returncode == 0:
+            print(f"   ✓ graphify をインストールしました ({name})")
+            installed = True
+            break
+        print(f"   ✗ {name} でのインストールに失敗しました (code {result.returncode})")
+        if result.stderr:
+            print(f"     {result.stderr.strip()}")
+
+    if not installed:
+        print("   ✗ graphify をインストールできませんでした (uv / pipx / pip が必要です)")
+        return False
+
+    # スキルを登録する（graphify install をインタラクティブに実行）
+    print("   graphify install でスキルを登録します...")
+    try:
+        result = subprocess.run(["graphify", "install"])
+        if result.returncode == 0:
+            print("   ✓ graphify のスキルを登録しました")
+            return True
+        print(f"   ✗ graphify のスキル登録に失敗しました (code {result.returncode})")
+        return False
+    except FileNotFoundError:
+        print("   ✗ graphify コマンドが見つかりません (PATH を確認してください)")
         return False
 
 
@@ -1032,6 +1075,13 @@ def main() -> None:
     else:
         print("\n8. codegraph をセットアップ...")
         setup_codegraph()
+
+    # 9. graphify インストール
+    if args.excludes_external_skills:
+        print("\n9. graphify をスキップ (--excludes-external-skills が指定されました)")
+    else:
+        print("\n9. graphify をセットアップ...")
+        setup_graphify()
 
     # 完了
     print("\n" + "=" * 50)
