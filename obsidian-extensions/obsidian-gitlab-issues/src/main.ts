@@ -14,10 +14,12 @@ import {
 } from "./IssueActions/actions";
 import {
 	ConfirmModal,
+	InlineCommentModal,
 	IssueActionsModal,
 	NewIssueModal,
 	TemplateScaffoldModal,
 } from "./IssueActions/modals";
+import { addInlineCommentToEditor } from "./IssueActions/inline-comments";
 import { IssueActionsView, ISSUE_ACTIONS_VIEW_TYPE } from "./IssueActions/view";
 import { IssueActionsFormHooks } from "./IssueActions/form";
 import {
@@ -97,6 +99,23 @@ export default class GitlabIssuesPlugin extends Plugin {
 				id: "gitlab-issues-open-panel",
 				name: "Open Gitlab issue panel (sidebar)",
 				callback: () => this.activateIssueActionsView(),
+			});
+
+			this.addCommand({
+				id: "gitlab-issues-add-inline-comment",
+				name: "Add inline review comment from selection",
+				editorCallback: (editor) => {
+					const anchor = editor.getSelection() ?? "";
+					const from = editor.getCursor("from");
+					const to = editor.getCursor("to");
+					new InlineCommentModal(this.app, {
+						anchor,
+						onSubmit: (body) => {
+							addInlineCommentToEditor(editor, body, { text: anchor, from, to });
+							new Notice("Inline comment added.");
+						},
+					}).open();
+				},
 			});
 
 			this.addCommand({
@@ -324,6 +343,8 @@ export default class GitlabIssuesPlugin extends Plugin {
 			clearLastSelection: () => {
 				this.lastSelection = "";
 			},
+			openInlineCommentModal: (anchor, onSubmit) =>
+				new InlineCommentModal(this.app, { anchor, onSubmit }).open(),
 		};
 	}
 

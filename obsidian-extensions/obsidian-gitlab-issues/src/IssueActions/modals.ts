@@ -227,6 +227,79 @@ export class NewIssueModal extends Modal {
 	}
 }
 
+export class InlineCommentModal extends Modal {
+	private body = "";
+
+	constructor(
+		app: App,
+		private opts: {
+			anchor: string;
+			onSubmit: (body: string) => void | Promise<void>;
+		}
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl("h3", { text: "Add inline review comment" }).style.margin = "0 0 6px";
+
+		if (this.opts.anchor) {
+			const anchorEl = contentEl.createEl("blockquote");
+			anchorEl.style.margin = "0 0 8px";
+			anchorEl.style.fontSize = "12px";
+			anchorEl.style.color = "var(--text-muted)";
+			const trimmed =
+				this.opts.anchor.length > 200 ? this.opts.anchor.slice(0, 200) + "…" : this.opts.anchor;
+			anchorEl.setText(trimmed);
+		} else {
+			const hint = contentEl.createEl("p", { cls: "setting-item-description" });
+			hint.setText("No text selected — the comment will be anchored at the cursor.");
+		}
+
+		const ta = contentEl.createEl("textarea");
+		ta.rows = 5;
+		ta.style.width = "100%";
+		ta.placeholder = "What needs to change here? (Markdown)";
+		ta.addEventListener("input", () => {
+			this.body = ta.value;
+		});
+		// Cmd/Ctrl+Enter submits.
+		ta.addEventListener("keydown", (e) => {
+			if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+				e.preventDefault();
+				void this.submit();
+			}
+		});
+
+		const buttons = new Setting(contentEl);
+		buttons.addButton((btn) =>
+			btn
+				.setButtonText("Add comment")
+				.setCta()
+				.onClick(() => void this.submit())
+		);
+		buttons.addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+
+		setTimeout(() => ta.focus(), 0);
+	}
+
+	private async submit(): Promise<void> {
+		const body = this.body.trim();
+		if (!body) {
+			new Notice("Comment is empty.");
+			return;
+		}
+		this.close();
+		await this.opts.onSubmit(body);
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
 export class TemplateScaffoldModal extends Modal {
 	private path: string;
 	private overwrite = false;
