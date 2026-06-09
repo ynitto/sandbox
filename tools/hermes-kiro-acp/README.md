@@ -45,7 +45,31 @@
    > IDE / ヘッドレス環境はシェルの PATH を継承しないことが多いので、後段では
    > **絶対パス**で指定するのが安全です。
 
-2. **Hermes 本体**を取得する。
+2. **Kiro CLI を認証する。** 用途に応じて 2 通り（どちらか一方でよい）。
+
+   - **対話利用 → `kiro-cli login`**（`KIRO_API_KEY` は不要）
+     AWS Builder ID / IAM Identity Center / Google / GitHub でログインします。
+     リモート環境でもデバイスフロー（URL + ワンタイムコード）に対応。一度ログインすれば
+     セッションが HOME 配下にキャッシュされ、Hermes が起動する ACP サブプロセスが再利用します。
+
+     ```bash
+     kiro-cli login
+     ```
+
+     > 重要: キャッシュは **HOME 配下**に保存されます。本 ACP クライアントはサブプロセスの
+     > `HOME` を継承（または Hermes のプロファイル HOME）で渡すため、**`kiro-cli login` を
+     > 実行したのと同じ HOME** で Hermes を動かしてください（copilot-acp と同じ前提）。
+
+   - **ヘッドレス / 無人運用（CI など）→ `KIRO_API_KEY`**（`login` は不要）
+     この環境変数をセットすると Kiro CLI はブラウザログインを完全にスキップして
+     非対話で動きます。**Kiro Pro / Pro+ / Power サブスク限定**の機能です。
+     値は CI のシークレットとして渡し、コミットや設定ファイルに直書きしないこと。
+
+     ```bash
+     export KIRO_API_KEY="..."   # 子プロセスへ継承される
+     ```
+
+3. **Hermes 本体**を取得する。
 
    ```bash
    git clone https://github.com/NousResearch/hermes-agent.git
@@ -108,8 +132,10 @@ git checkout -- . && git clean -fd plugins/model-providers/kiro-acp agent/kiro_a
 ```bash
 # IDE/ヘッドレスは PATH を継承しないことが多いので、絶対パス指定を推奨
 export HERMES_KIRO_ACP_COMMAND="$HOME/.local/bin/kiro-cli"   # which kiro-cli で確認
-# 無人運用なら API キーを環境変数で渡す（kiro-cli にそのまま継承される）
-export KIRO_API_KEY="..."
+
+# 認証は事前準備で済ませた方法に従う:
+#   対話利用     → 事前に `kiro-cli login`（KIRO_API_KEY は不要）
+#   ヘッドレス運用 → export KIRO_API_KEY="..."（login は不要 / Pro 以上）
 
 hermes chat --provider kiro-acp --model kiro-acp
 ```
@@ -124,7 +150,7 @@ hermes chat --provider kiro-acp --model kiro-acp
 | `KIRO_CLI_PATH` | （未設定） | 上の代替（後方互換的な別名） |
 | `HERMES_KIRO_ACP_ARGS` | `acp` | CLI に渡す引数（`shlex` で分割） |
 | `KIRO_ACP_BASE_URL` | `acp://kiro` | ACP マーカー URL の上書き（`acp+tcp://...` も可） |
-| `KIRO_API_KEY` | （未設定） | 子プロセスへ継承され Kiro 側認証に使われる |
+| `KIRO_API_KEY` | （未設定） | **ヘッドレス/無人運用時のみ**。セットすると `kiro-cli login` をスキップして非対話認証（Pro 以上）。対話利用では不要 |
 
 ## 変更点の要約
 
