@@ -6922,6 +6922,151 @@ var import_obsidian6 = __toModule(require("obsidian"));
 
 // src/IssueActions/form.ts
 var import_obsidian5 = __toModule(require("obsidian"));
+
+// src/IssueActions/inline-comments.ts
+var REGION_START = "<!-- gitlab-review-comments:start -->";
+var REGION_END = "<!-- gitlab-review-comments:end -->";
+var COMMENT_MARKER = "\u{1F4AC} ";
+var LABEL_PREFIX = "gli-";
+var DEF_RE = /^\[\^(gli-(\d+))\]:[ \t]*(.*)$/;
+function highestInlineIndex(text) {
+  let max = 0;
+  for (const line of text.split("\n")) {
+    const m = line.match(DEF_RE);
+    if (m) {
+      const n = parseInt(m[2], 10);
+      if (n > max)
+        max = n;
+    }
+  }
+  return max;
+}
+function nextInlineLabel(text) {
+  return `${LABEL_PREFIX}${highestInlineIndex(text) + 1}`;
+}
+function findAnchor(text, label) {
+  const re = new RegExp("==([^=]+?)==\\[\\^" + escapeRegExp(label) + "\\]");
+  const m = text.match(re);
+  return m ? m[1].trim() : void 0;
+}
+function parseInlineComments(text) {
+  const out = [];
+  for (const line of text.split("\n")) {
+    const m = line.match(DEF_RE);
+    if (!m)
+      continue;
+    const label = m[1];
+    let body = m[3].trim();
+    if (body.startsWith(COMMENT_MARKER))
+      body = body.slice(COMMENT_MARKER.length).trim();
+    out.push({
+      index: parseInt(m[2], 10),
+      label,
+      body,
+      anchor: findAnchor(text, label)
+    });
+  }
+  out.sort((a, b) => a.index - b.index);
+  return out;
+}
+function normalizeBody(body) {
+  return body.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+}
+function regionBounds(text) {
+  const start = text.indexOf(REGION_START);
+  if (start === -1)
+    return null;
+  const innerStart = start + REGION_START.length + 1;
+  const innerEnd = text.indexOf(REGION_END, innerStart);
+  if (innerEnd === -1)
+    return null;
+  let end = innerEnd + REGION_END.length;
+  if (text[end] === "\n")
+    end += 1;
+  return { start, innerStart, innerEnd, end };
+}
+function clearInlineComments(text) {
+  let next = text;
+  next = next.replace(/==([^=]*?)==\[\^gli-\d+\]/g, "$1");
+  next = next.replace(/[ \t]*\[\^gli-\d+\]/g, "");
+  const region = regionBounds(next);
+  if (region) {
+    let head = next.slice(0, region.start);
+    const tail = next.slice(region.end);
+    head = head.replace(/\n{2,}$/, "\n");
+    next = head + tail;
+  }
+  return next.replace(/[ \t]+$/gm, "");
+}
+function composeAggregateComment(comments, opts = {}) {
+  var _a;
+  if (comments.length === 0)
+    return "";
+  const heading = (_a = opts.heading) != null ? _a : "## Review comments";
+  const includeAnchors = opts.includeAnchors !== false;
+  const blocks = comments.map((c, i) => {
+    const n = i + 1;
+    const lines = [];
+    if (includeAnchors && c.anchor) {
+      lines.push(`${n}. > ${c.anchor}`);
+      lines.push("");
+      lines.push(`   ${c.body}`);
+    } else {
+      lines.push(`${n}. ${c.body}`);
+    }
+    return lines.join("\n");
+  });
+  return `${heading}
+
+${blocks.join("\n\n")}
+`;
+}
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function addInlineCommentToEditor(editor, body, selection) {
+  const fullText = editor.getValue();
+  const label = nextInlineLabel(fullText);
+  const ref = `[^${label}]`;
+  if (selection && selection.text.trim().length > 0) {
+    editor.replaceRange(`==${selection.text}==${ref}`, selection.from, selection.to);
+  } else {
+    const cursor = editor.getCursor();
+    editor.replaceRange(` ${ref}`, cursor);
+  }
+  const defLine = `[^${label}]: ${COMMENT_MARKER}${normalizeBody(body)}`;
+  appendDefinitionToEditor(editor, defLine);
+  return label;
+}
+function appendDefinitionToEditor(editor, defLine) {
+  const text = editor.getValue();
+  const region = regionBounds(text);
+  if (!region) {
+    const sep = text.endsWith("\n") ? "\n" : "\n\n";
+    const block = `${sep}${REGION_START}
+${defLine}
+${REGION_END}
+`;
+    editor.replaceRange(block, editor.offsetToPos(text.length));
+    return;
+  }
+  const before = text.slice(0, region.innerEnd);
+  const insertAt = before.endsWith("\n") ? editor.offsetToPos(region.innerEnd) : editor.offsetToPos(region.innerEnd);
+  const prefix = before.endsWith("\n") ? "" : "\n";
+  editor.replaceRange(`${prefix}${defLine}
+`, insertAt);
+}
+function clearInlineCommentsInEditor(editor) {
+  const cleaned = clearInlineComments(editor.getValue());
+  if (cleaned === editor.getValue())
+    return;
+  const lastLine = editor.lastLine();
+  const lastCh = editor.getLine(lastLine).length;
+  editor.replaceRange(cleaned, { line: 0, ch: 0 }, { line: lastLine, ch: lastCh });
+}
+
+// src/IssueActions/form.ts
+var INLINE_REVIEW_HEADING = "## Review comments";
 function renderLabelDropdown(parent, placeholder, options, onPick) {
   const select = parent.createEl("select");
   select.style.maxWidth = "12em";
@@ -6969,6 +7114,8 @@ var IssueActionsForm = class {
     this.labels = [];
     this.commentBody = "";
     this.formRefs = null;
+    this.clearAfterPost = true;
+    this.inlineStatusRefresh = null;
   }
   render(container, ctx) {
     container.empty();
@@ -6987,6 +7134,7 @@ var IssueActionsForm = class {
     heading.style.margin = "0 0 6px";
     this.renderTemplateSection(container);
     this.renderCommentSection(container);
+    this.renderInlineReviewSection(container);
     this.renderRelatedMrsSection(container);
     this.renderLabelsSection(container);
     this.renderStateSection(container);
@@ -7121,6 +7269,189 @@ var IssueActionsForm = class {
         postBtn.removeAttribute("disabled");
       }
     }));
+  }
+  getIssueView() {
+    var _a, _b, _c;
+    const view = (_c = (_b = (_a = this.hooks).getSourceEditor) == null ? void 0 : _b.call(_a)) != null ? _c : this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
+    if (view && this.file && view.file && view.file.path === this.file.path)
+      return view;
+    return null;
+  }
+  readNoteText() {
+    return __async(this, null, function* () {
+      const view = this.getIssueView();
+      if (view)
+        return view.editor.getValue();
+      if (this.file) {
+        try {
+          return yield this.app.vault.read(this.file);
+        } catch (e) {
+          logger(`Failed to read note: ${e.message}`);
+        }
+      }
+      return "";
+    });
+  }
+  renderInlineReviewSection(parent) {
+    this.sectionLabel(parent, "Inline review");
+    const status = parent.createEl("div");
+    status.style.fontSize = "12px";
+    status.style.color = "var(--text-muted)";
+    status.style.margin = "0 0 4px";
+    const refreshStatus = () => __async(this, null, function* () {
+      const text = yield this.readNoteText();
+      const n = text ? parseInlineComments(text).length : 0;
+      status.setText(`${n} inline comment${n === 1 ? "" : "s"} in this note`);
+    });
+    this.inlineStatusRefresh = refreshStatus;
+    void refreshStatus();
+    const row = this.inlineRow(parent);
+    const addBtn = row.createEl("button", { text: "\uFF0B From selection" });
+    addBtn.type = "button";
+    addBtn.title = "Anchor a comment to the selected text in the issue note";
+    addBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      this.addInlineCommentFromSelection();
+    });
+    const composeBtn = row.createEl("button", { text: "Compose \u2191" });
+    composeBtn.type = "button";
+    composeBtn.title = "Aggregate the inline comments into the comment box above";
+    composeBtn.addEventListener("click", (e) => __async(this, null, function* () {
+      e.preventDefault();
+      yield this.composeInlineIntoComment();
+    }));
+    const clearBtn = row.createEl("button", { text: "Clear" });
+    clearBtn.type = "button";
+    clearBtn.title = "Remove all inline review annotations from the note";
+    clearBtn.addEventListener("click", (e) => __async(this, null, function* () {
+      e.preventDefault();
+      yield this.clearInlineAnnotations();
+      yield refreshStatus();
+    }));
+    const optRow = this.inlineRow(parent);
+    const clearWrap = optRow.createEl("label");
+    clearWrap.style.display = "flex";
+    clearWrap.style.alignItems = "center";
+    clearWrap.style.gap = "4px";
+    clearWrap.style.fontSize = "12px";
+    const clearCb = clearWrap.createEl("input", { type: "checkbox" });
+    clearCb.checked = this.clearAfterPost;
+    clearCb.addEventListener("change", () => {
+      this.clearAfterPost = clearCb.checked;
+    });
+    clearWrap.createEl("span", { text: "Clear annotations after posting" });
+    const postRow = this.inlineRow(parent);
+    postRow.style.justifyContent = "flex-end";
+    const reworkBtn = postRow.createEl("button", { text: "Post review \u2192 request re-work" });
+    reworkBtn.type = "button";
+    reworkBtn.classList.add("mod-cta");
+    reworkBtn.title = "Post the aggregated comment, apply the label changes below, then clear annotations";
+    reworkBtn.addEventListener("click", (e) => __async(this, null, function* () {
+      e.preventDefault();
+      yield this.postReview(reworkBtn);
+    }));
+  }
+  addInlineCommentFromSelection() {
+    var _a;
+    const view = this.getIssueView();
+    if (!view) {
+      new import_obsidian5.Notice("Open this issue note in the editor, then select text to comment on.");
+      return;
+    }
+    const open = this.hooks.openInlineCommentModal;
+    if (!open) {
+      new import_obsidian5.Notice("Inline comment modal is unavailable.");
+      return;
+    }
+    const editor = view.editor;
+    const from = editor.getCursor("from");
+    const to = editor.getCursor("to");
+    const anchor = (_a = editor.getSelection()) != null ? _a : "";
+    open(anchor, (body) => __async(this, null, function* () {
+      addInlineCommentToEditor(editor, body, { text: anchor, from, to });
+      new import_obsidian5.Notice("Inline comment added.");
+      if (this.inlineStatusRefresh)
+        yield this.inlineStatusRefresh();
+    }));
+  }
+  composeInlineIntoComment() {
+    return __async(this, null, function* () {
+      var _a;
+      const text = yield this.readNoteText();
+      const comments = parseInlineComments(text);
+      if (comments.length === 0) {
+        new import_obsidian5.Notice("No inline comments to compose.");
+        return;
+      }
+      const body = composeAggregateComment(comments, { heading: INLINE_REVIEW_HEADING });
+      const ta = (_a = this.formRefs) == null ? void 0 : _a.commentTextarea;
+      if (!ta)
+        return;
+      ta.value = body;
+      this.commentBody = body;
+      ta.focus();
+      new import_obsidian5.Notice(`Composed ${comments.length} inline comment${comments.length === 1 ? "" : "s"}.`);
+    });
+  }
+  clearInlineAnnotations() {
+    return __async(this, null, function* () {
+      const view = this.getIssueView();
+      if (view) {
+        clearInlineCommentsInEditor(view.editor);
+      } else if (this.file) {
+        const text = yield this.app.vault.read(this.file);
+        const cleaned = clearInlineComments(text);
+        if (cleaned !== text)
+          yield this.app.vault.modify(this.file, cleaned);
+      }
+      new import_obsidian5.Notice("Inline annotations cleared.");
+    });
+  }
+  postReview(btn) {
+    return __async(this, null, function* () {
+      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+      if (!this.ref || !this.file)
+        return;
+      let body = ((_c = (_b = (_a = this.formRefs) == null ? void 0 : _a.commentTextarea) == null ? void 0 : _b.value) != null ? _c : this.commentBody).trim();
+      if (!body) {
+        const comments = parseInlineComments(yield this.readNoteText());
+        if (comments.length === 0) {
+          new import_obsidian5.Notice("Nothing to post \u2014 add inline comments or write a comment first.");
+          return;
+        }
+        body = composeAggregateComment(comments, { heading: INLINE_REVIEW_HEADING }).trim();
+      }
+      btn.setAttr("disabled", "true");
+      try {
+        yield postIssueComment(this.settings, this.ref, body);
+        const addList = splitLabelList((_f = (_e = (_d = this.formRefs) == null ? void 0 : _d.addInput) == null ? void 0 : _e.value) != null ? _f : "");
+        const removePatterns = splitLabelList((_i = (_h = (_g = this.formRefs) == null ? void 0 : _g.removeInput) == null ? void 0 : _h.value) != null ? _i : "");
+        if (addList.length > 0 || removePatterns.length > 0) {
+          const updated = yield applyLabelChanges(this.settings, this.ref, this.labels, removePatterns, addList);
+          yield updateNoteFrontmatter(this.app, this.file, { labels: updated });
+          this.labels = updated;
+          yield this.announceLearned(addList);
+        }
+        if (this.clearAfterPost) {
+          yield this.clearInlineAnnotations();
+        }
+        if ((_j = this.formRefs) == null ? void 0 : _j.commentTextarea)
+          this.formRefs.commentTextarea.value = "";
+        this.commentBody = "";
+        if ((_k = this.formRefs) == null ? void 0 : _k.addInput)
+          this.formRefs.addInput.value = "";
+        if ((_l = this.formRefs) == null ? void 0 : _l.removeInput)
+          this.formRefs.removeInput.value = "";
+        if (this.inlineStatusRefresh)
+          yield this.inlineStatusRefresh();
+        new import_obsidian5.Notice(`Review posted to #${this.ref.iid}`);
+      } catch (err) {
+        logger(`Failed to post review: ${err.message}`);
+        new import_obsidian5.Notice(`Failed to post review: ${err.message}`);
+      } finally {
+        btn.removeAttribute("disabled");
+      }
+    });
   }
   renderLabelsSection(parent) {
     var _a;
@@ -7493,6 +7824,60 @@ var NewIssueModal = class extends import_obsidian6.Modal {
       }
     }));
     titleInput.focus();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var InlineCommentModal = class extends import_obsidian6.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    this.body = "";
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Add inline review comment" }).style.margin = "0 0 6px";
+    if (this.opts.anchor) {
+      const anchorEl = contentEl.createEl("blockquote");
+      anchorEl.style.margin = "0 0 8px";
+      anchorEl.style.fontSize = "12px";
+      anchorEl.style.color = "var(--text-muted)";
+      const trimmed = this.opts.anchor.length > 200 ? this.opts.anchor.slice(0, 200) + "\u2026" : this.opts.anchor;
+      anchorEl.setText(trimmed);
+    } else {
+      const hint = contentEl.createEl("p", { cls: "setting-item-description" });
+      hint.setText("No text selected \u2014 the comment will be anchored at the cursor.");
+    }
+    const ta = contentEl.createEl("textarea");
+    ta.rows = 5;
+    ta.style.width = "100%";
+    ta.placeholder = "What needs to change here? (Markdown)";
+    ta.addEventListener("input", () => {
+      this.body = ta.value;
+    });
+    ta.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        void this.submit();
+      }
+    });
+    const buttons = new import_obsidian6.Setting(contentEl);
+    buttons.addButton((btn) => btn.setButtonText("Add comment").setCta().onClick(() => void this.submit()));
+    buttons.addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()));
+    setTimeout(() => ta.focus(), 0);
+  }
+  submit() {
+    return __async(this, null, function* () {
+      const body = this.body.trim();
+      if (!body) {
+        new import_obsidian6.Notice("Comment is empty.");
+        return;
+      }
+      this.close();
+      yield this.opts.onSubmit(body);
+    });
   }
   onClose() {
     this.contentEl.empty();
@@ -8032,6 +8417,23 @@ var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
           callback: () => this.activateIssueActionsView()
         });
         this.addCommand({
+          id: "gitlab-issues-add-inline-comment",
+          name: "Add inline review comment from selection",
+          editorCallback: (editor) => {
+            var _a;
+            const anchor = (_a = editor.getSelection()) != null ? _a : "";
+            const from = editor.getCursor("from");
+            const to = editor.getCursor("to");
+            new InlineCommentModal(this.app, {
+              anchor,
+              onSubmit: (body) => {
+                addInlineCommentToEditor(editor, body, { text: anchor, from, to });
+                new import_obsidian9.Notice("Inline comment added.");
+              }
+            }).open();
+          }
+        });
+        this.addCommand({
           id: "gitlab-issues-manage",
           name: "Manage active Gitlab issue (modal)",
           callback: () => this.manageActiveIssue()
@@ -8246,7 +8648,8 @@ var GitlabIssuesPlugin = class extends import_obsidian9.Plugin {
       getLastSelection: () => this.lastSelection,
       clearLastSelection: () => {
         this.lastSelection = "";
-      }
+      },
+      openInlineCommentModal: (anchor, onSubmit) => new InlineCommentModal(this.app, { anchor, onSubmit }).open()
     };
   }
   getLastMarkdownView() {

@@ -10,6 +10,15 @@ import {
 	moveIssueFileForState,
 } from "./actions";
 import { logger } from "../utils/utils";
+import {
+	parseInlineComments,
+	composeAggregateComment,
+	addInlineCommentToEditor,
+	clearInlineComments,
+	clearInlineCommentsInEditor,
+} from "./inline-comments";
+
+export const INLINE_REVIEW_HEADING = "## Review comments";
 
 export interface IssueActionsFormHooks {
 	getKnownLabels?: () => string[];
@@ -18,6 +27,10 @@ export interface IssueActionsFormHooks {
 	getSourceEditor?: () => MarkdownView | null;
 	getLastSelection?: () => string;
 	clearLastSelection?: () => void;
+	openInlineCommentModal?: (
+		anchor: string,
+		onSubmit: (body: string) => void | Promise<void>
+	) => void;
 }
 
 export interface IssueActionsFormContext {
@@ -79,6 +92,8 @@ export class IssueActionsForm {
 	private labels: string[] = [];
 	private commentBody = "";
 	private formRefs: IssueActionsFormRefs | null = null;
+	private clearAfterPost = true;
+	private inlineStatusRefresh: (() => Promise<void>) | null = null;
 
 	constructor(
 		private app: App,
@@ -109,6 +124,7 @@ export class IssueActionsForm {
 
 		this.renderTemplateSection(container);
 		this.renderCommentSection(container);
+		this.renderInlineReviewSection(container);
 		this.renderRelatedMrsSection(container);
 		this.renderLabelsSection(container);
 		this.renderStateSection(container);
@@ -249,6 +265,199 @@ export class IssueActionsForm {
 				postBtn.removeAttribute("disabled");
 			}
 		});
+	}
+
+	private getIssueView(): MarkdownView | null {
+		const view =
+			this.hooks.getSourceEditor?.() ?? this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view && this.file && view.file && view.file.path === this.file.path) return view;
+		return null;
+	}
+
+	private async readNoteText(): Promise<string> {
+		const view = this.getIssueView();
+		if (view) return view.editor.getValue();
+		if (this.file) {
+			try {
+				return await this.app.vault.read(this.file);
+			} catch (e: any) {
+				logger(`Failed to read note: ${e.message}`);
+			}
+		}
+		return "";
+	}
+
+	private renderInlineReviewSection(parent: HTMLElement): void {
+		this.sectionLabel(parent, "Inline review");
+
+		const status = parent.createEl("div");
+		status.style.fontSize = "12px";
+		status.style.color = "var(--text-muted)";
+		status.style.margin = "0 0 4px";
+
+		const refreshStatus = async () => {
+			const text = await this.readNoteText();
+			const n = text ? parseInlineComments(text).length : 0;
+			status.setText(`${n} inline comment${n === 1 ? "" : "s"} in this note`);
+		};
+		this.inlineStatusRefresh = refreshStatus;
+		void refreshStatus();
+
+		const row = this.inlineRow(parent);
+
+		const addBtn = row.createEl("button", { text: "＋ From selection" });
+		addBtn.type = "button";
+		addBtn.title = "Anchor a comment to the selected text in the issue note";
+		addBtn.addEventListener("click", (e) => {
+			e.preventDefault();
+			this.addInlineCommentFromSelection();
+		});
+
+		const composeBtn = row.createEl("button", { text: "Compose ↑" });
+		composeBtn.type = "button";
+		composeBtn.title = "Aggregate the inline comments into the comment box above";
+		composeBtn.addEventListener("click", async (e) => {
+			e.preventDefault();
+			await this.composeInlineIntoComment();
+		});
+
+		const clearBtn = row.createEl("button", { text: "Clear" });
+		clearBtn.type = "button";
+		clearBtn.title = "Remove all inline review annotations from the note";
+		clearBtn.addEventListener("click", async (e) => {
+			e.preventDefault();
+			await this.clearInlineAnnotations();
+			await refreshStatus();
+		});
+
+		const optRow = this.inlineRow(parent);
+		const clearWrap = optRow.createEl("label");
+		clearWrap.style.display = "flex";
+		clearWrap.style.alignItems = "center";
+		clearWrap.style.gap = "4px";
+		clearWrap.style.fontSize = "12px";
+		const clearCb = clearWrap.createEl("input", { type: "checkbox" });
+		clearCb.checked = this.clearAfterPost;
+		clearCb.addEventListener("change", () => {
+			this.clearAfterPost = clearCb.checked;
+		});
+		clearWrap.createEl("span", { text: "Clear annotations after posting" });
+
+		const postRow = this.inlineRow(parent);
+		postRow.style.justifyContent = "flex-end";
+		const reworkBtn = postRow.createEl("button", { text: "Post review → request re-work" });
+		reworkBtn.type = "button";
+		reworkBtn.classList.add("mod-cta");
+		reworkBtn.title =
+			"Post the aggregated comment, apply the label changes below, then clear annotations";
+		reworkBtn.addEventListener("click", async (e) => {
+			e.preventDefault();
+			await this.postReview(reworkBtn);
+		});
+	}
+
+	private addInlineCommentFromSelection(): void {
+		const view = this.getIssueView();
+		if (!view) {
+			new Notice("Open this issue note in the editor, then select text to comment on.");
+			return;
+		}
+		const open = this.hooks.openInlineCommentModal;
+		if (!open) {
+			new Notice("Inline comment modal is unavailable.");
+			return;
+		}
+		const editor = view.editor;
+		// Capture the selection up front — focusing the modal clears it.
+		const from = editor.getCursor("from");
+		const to = editor.getCursor("to");
+		const anchor = editor.getSelection() ?? "";
+
+		open(anchor, async (body) => {
+			addInlineCommentToEditor(editor, body, { text: anchor, from, to });
+			new Notice("Inline comment added.");
+			if (this.inlineStatusRefresh) await this.inlineStatusRefresh();
+		});
+	}
+
+	private async composeInlineIntoComment(): Promise<void> {
+		const text = await this.readNoteText();
+		const comments = parseInlineComments(text);
+		if (comments.length === 0) {
+			new Notice("No inline comments to compose.");
+			return;
+		}
+		const body = composeAggregateComment(comments, { heading: INLINE_REVIEW_HEADING });
+		const ta = this.formRefs?.commentTextarea;
+		if (!ta) return;
+		ta.value = body;
+		this.commentBody = body;
+		ta.focus();
+		new Notice(`Composed ${comments.length} inline comment${comments.length === 1 ? "" : "s"}.`);
+	}
+
+	private async clearInlineAnnotations(): Promise<void> {
+		const view = this.getIssueView();
+		if (view) {
+			clearInlineCommentsInEditor(view.editor);
+		} else if (this.file) {
+			const text = await this.app.vault.read(this.file);
+			const cleaned = clearInlineComments(text);
+			if (cleaned !== text) await this.app.vault.modify(this.file, cleaned);
+		}
+		new Notice("Inline annotations cleared.");
+	}
+
+	private async postReview(btn: HTMLButtonElement): Promise<void> {
+		if (!this.ref || !this.file) return;
+
+		let body = (this.formRefs?.commentTextarea?.value ?? this.commentBody).trim();
+		if (!body) {
+			const comments = parseInlineComments(await this.readNoteText());
+			if (comments.length === 0) {
+				new Notice("Nothing to post — add inline comments or write a comment first.");
+				return;
+			}
+			body = composeAggregateComment(comments, { heading: INLINE_REVIEW_HEADING }).trim();
+		}
+
+		btn.setAttr("disabled", "true");
+		try {
+			await postIssueComment(this.settings, this.ref, body);
+
+			// Optional label swap to drive re-work (only when inputs are filled).
+			const addList = splitLabelList(this.formRefs?.addInput?.value ?? "");
+			const removePatterns = splitLabelList(this.formRefs?.removeInput?.value ?? "");
+			if (addList.length > 0 || removePatterns.length > 0) {
+				const updated = await applyLabelChanges(
+					this.settings,
+					this.ref,
+					this.labels,
+					removePatterns,
+					addList
+				);
+				await updateNoteFrontmatter(this.app, this.file, { labels: updated });
+				this.labels = updated;
+				await this.announceLearned(addList);
+			}
+
+			if (this.clearAfterPost) {
+				await this.clearInlineAnnotations();
+			}
+
+			if (this.formRefs?.commentTextarea) this.formRefs.commentTextarea.value = "";
+			this.commentBody = "";
+			if (this.formRefs?.addInput) this.formRefs.addInput.value = "";
+			if (this.formRefs?.removeInput) this.formRefs.removeInput.value = "";
+			if (this.inlineStatusRefresh) await this.inlineStatusRefresh();
+
+			new Notice(`Review posted to #${this.ref.iid}`);
+		} catch (err: any) {
+			logger(`Failed to post review: ${err.message}`);
+			new Notice(`Failed to post review: ${err.message}`);
+		} finally {
+			btn.removeAttribute("disabled");
+		}
 	}
 
 	private renderLabelsSection(parent: HTMLElement): void {
