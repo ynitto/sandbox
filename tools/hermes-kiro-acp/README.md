@@ -28,19 +28,80 @@
 > 注意: `hermes acp` は Hermes 自身を ACP **サーバ**として起動する逆向きのモードです。
 > 本パッチがやるのは「Hermes が Kiro を叩く」向きで、別物です。
 
-## 適用方法
+## インストール
 
-対象: `NousResearch/hermes-agent`（ベースコミット `57c67149` 時点で生成・検証済み）
+対象: `NousResearch/hermes-agent`（このパッチはベースコミット `57c67149` 時点で
+生成・検証しています）。
+
+### 0. 事前準備（前提条件）
+
+1. **Kiro CLI** をインストールし、ACP サブコマンドが動くことを確認する。
+
+   ```bash
+   which kiro-cli                 # 実体パスを確認（Linux/macOS なら ~/.local/bin/kiro-cli が多い）
+   kiro-cli acp --help            # acp サブコマンドが存在するか確認
+   ```
+
+   > IDE / ヘッドレス環境はシェルの PATH を継承しないことが多いので、後段では
+   > **絶対パス**で指定するのが安全です。
+
+2. **Hermes 本体**を取得する。
+
+   ```bash
+   git clone https://github.com/NousResearch/hermes-agent.git
+   cd hermes-agent
+   ```
+
+### 1. パッチを当てる
+
+パッチファイル `0001-add-kiro-acp-provider.patch` を Hermes のリポジトリ直下から当てます。
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-git apply --check /path/to/0001-add-kiro-acp-provider.patch   # 事前チェック
-git apply         /path/to/0001-add-kiro-acp-provider.patch
+# 事前チェック（何も出力されず終了コード 0 なら綺麗に当たる）
+git apply --check 0001-add-kiro-acp-provider.patch
+
+# 適用
+git apply 0001-add-kiro-acp-provider.patch
 ```
 
-本流は更新が速いため、行コンテキストがずれて `git apply` が失敗する場合は
-`git apply --3way`、または下記「変更点の要約」を参照して手で当て直してください。
+本流は更新が速く、行コンテキストがずれて上記が失敗することがあります。その場合は順に：
+
+```bash
+# (a) 3-way マージで当てる（コンフリクトマーカーが入ることがある）
+git apply --3way 0001-add-kiro-acp-provider.patch
+
+# (b) git を介さず当てる（ファジーマッチ・.rej を残す）
+patch -p1 < 0001-add-kiro-acp-provider.patch
+
+# (c) 検証時とまったく同じ状態に当てたい場合はベースコミットに固定してから当てる
+git checkout 57c67149
+git apply 0001-add-kiro-acp-provider.patch
+```
+
+それでも当たらない箇所は `*.rej` を見ながら、本 README 末尾の
+「変更点の要約」に従って手で当て直してください（追記はすべて copilot-acp と
+並列に 1 ブロック足すだけなので、対応箇所はすぐ見つかります）。
+
+### 2. 適用結果を確認する
+
+```bash
+# 新規ファイルが入っているか
+ls agent/kiro_acp_client.py plugins/model-providers/kiro-acp/
+
+# 構文チェック
+python3 -m py_compile agent/kiro_acp_client.py hermes_cli/auth.py
+
+# プロバイダ一覧に kiro-acp が出るか（Hermes のインストール手順は本家 README 参照）
+hermes models providers | grep -i kiro
+```
+
+### 3. 取り消したいとき
+
+```bash
+git apply --reverse 0001-add-kiro-acp-provider.patch
+# もしくはコミット前なら
+git checkout -- . && git clean -fd plugins/model-providers/kiro-acp agent/kiro_acp_client.py
+```
 
 ## 使い方
 
@@ -52,6 +113,8 @@ export KIRO_API_KEY="..."
 
 hermes chat --provider kiro-acp --model kiro-acp
 ```
+
+別名でも指定できます（`kiro` / `kiro-cli` / `kiro-agent` / `kiro-acp-agent` → `kiro-acp`）。
 
 ### 環境変数
 
