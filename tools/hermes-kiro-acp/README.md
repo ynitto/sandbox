@@ -1,0 +1,96 @@
+# hermes-kiro-acp — ルートB パッチ
+
+本流 [Hermes](https://github.com/NousResearch/hermes-agent) に **`kiro-acp` プロバイダ**を
+追加するパッチです。`hermes chat --provider kiro-acp` で、ローカルの `kiro-cli acp`
+（ACP サーバ）をサブプロセスとして起動し、Hermes のバックエンドとして駆動します。
+
+これは検討メモの「ルートB（本流に kiro-acp プロバイダを自作する）」の実装です。
+本流が既に持つ **copilot-acp のサブプロセス × ACP 機構**を雛形にしており、
+**外部依存の追加はありません**（stdlib の `subprocess` / `json` / `threading` のみ）。
+
+## 何ができるか
+
+```
+┌─────────────┐   ACP (stdio / JSON-RPC)   ┌──────────────┐
+│   Hermes    │ ─────────────────────────▶ │  kiro-cli acp │ ──▶ 推論
+│ (クライアント) │ ◀───────────────────────── │ (ACP サーバ)   │
+└─────────────┘   text / thought chunks    └──────────────┘
+```
+
+- Hermes のオーケストレーション・メモリ・スキルはローカルに残る。
+- 外に出るのは Kiro が処理する推論分だけ。
+- Kiro のガバナンス設定（モデルアクセスや MCP 制限）はそのまま効く。
+- ツール承認は ACP の `session/request_permission` として飛ぶが、本クライアントは
+  copilot-acp と同じく**既定で拒否**（headless 安全側）。`fs/read_text_file` /
+  `fs/write_text_file` は Hermes 側の `file_safety` ガード（cwd 制限・機密ファイル保護・
+  秘匿情報マスク）を通してのみ許可する。
+
+> 注意: `hermes acp` は Hermes 自身を ACP **サーバ**として起動する逆向きのモードです。
+> 本パッチがやるのは「Hermes が Kiro を叩く」向きで、別物です。
+
+## 適用方法
+
+対象: `NousResearch/hermes-agent`（ベースコミット `57c67149` 時点で生成・検証済み）
+
+```bash
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+git apply --check /path/to/0001-add-kiro-acp-provider.patch   # 事前チェック
+git apply         /path/to/0001-add-kiro-acp-provider.patch
+```
+
+本流は更新が速いため、行コンテキストがずれて `git apply` が失敗する場合は
+`git apply --3way`、または下記「変更点の要約」を参照して手で当て直してください。
+
+## 使い方
+
+```bash
+# IDE/ヘッドレスは PATH を継承しないことが多いので、絶対パス指定を推奨
+export HERMES_KIRO_ACP_COMMAND="$HOME/.local/bin/kiro-cli"   # which kiro-cli で確認
+# 無人運用なら API キーを環境変数で渡す（kiro-cli にそのまま継承される）
+export KIRO_API_KEY="..."
+
+hermes chat --provider kiro-acp --model kiro-acp
+```
+
+### 環境変数
+
+| 変数 | 既定値 | 用途 |
+|------|--------|------|
+| `HERMES_KIRO_ACP_COMMAND` | `kiro-cli` | 起動する Kiro CLI の実体パス |
+| `KIRO_CLI_PATH` | （未設定） | 上の代替（後方互換的な別名） |
+| `HERMES_KIRO_ACP_ARGS` | `acp` | CLI に渡す引数（`shlex` で分割） |
+| `KIRO_ACP_BASE_URL` | `acp://kiro` | ACP マーカー URL の上書き（`acp+tcp://...` も可） |
+| `KIRO_API_KEY` | （未設定） | 子プロセスへ継承され Kiro 側認証に使われる |
+
+## 変更点の要約
+
+新規ファイル:
+- `agent/kiro_acp_client.py` — Kiro 用 ACP クライアント（`copilot_acp_client.py` の
+  雛形。`acp://kiro` マーカー、`kiro-cli acp` 既定、Copilot 固有の gh-copilot
+  非推奨判定は除去）。
+- `plugins/model-providers/kiro-acp/{__init__.py,plugin.yaml}` — プロバイダプロファイル登録。
+
+既存ファイルへの追記（いずれも copilot-acp と並列に 1 ブロック追加するだけ）:
+- `agent/agent_runtime_helpers.py` — `acp://kiro` / `provider == "kiro-acp"` を
+  `KiroACPClient` にディスパッチ。
+- `agent/agent_init.py` — Responses API 自動昇格の除外に kiro-acp を追加し、
+  `command`/`args` を ACP クライアントへ受け渡し。
+- `hermes_cli/providers.py` — `HERMES_OVERLAYS` に `kiro-acp`、表示ラベル、別名。
+- `hermes_cli/auth.py` — `PROVIDER_REGISTRY` に `kiro-acp`、別名、`DEFAULT_KIRO_ACP_BASE_URL`、
+  および外部プロセス系リゾルバ（`get_external_process_provider_status` /
+  `resolve_external_process_provider_credentials`）を**プロバイダ別の起動既定**で
+  汎用化（copilot-acp の挙動は不変）。
+- `hermes_cli/runtime_provider.py` — 外部プロセス系ルートを kiro-acp にも適用。
+- `hermes_cli/models.py` — curated モデル一覧・プロバイダ一覧・別名に kiro-acp を追加。
+
+### スコープ外（必要なら別途）
+
+対話セットアップウィザード（`hermes setup` / `model_setup_flows.py` /
+`main.py` のプロバイダ選択分岐）への組み込みは含めていません。
+本パッチは `hermes chat --provider kiro-acp` での直接利用を成立させることを目的としています。
+
+## 検証済みの内容
+
+- 変更後の全 Python ファイルが `py_compile` を通過。
+- `git apply --check` がベースコミットに対して成功（reverse / forward の往復適用も確認）。
