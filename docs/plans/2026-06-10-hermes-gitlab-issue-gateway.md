@@ -81,6 +81,8 @@ Issues events / Comments events をチェックするだけ。
 
 ## 案B: ポーリング → loopback webhook 投函（プル型・WSL 向け推奨）
 
+> **採用・実装済み**: [tools/hermes-gitlab-gateway/](../../tools/hermes-gitlab-gateway/)
+
 インバウンド公開も GitLab 側の webhook 設定権限も不要にする構成。
 kiro-loop の `hooks/gitlab-issue-hook.py`（新規/更新検知 + 状態ファイル）の検知ロジックを
 ほぼそのまま流用できる。
