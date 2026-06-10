@@ -69,60 +69,89 @@
      export KIRO_API_KEY="..."   # 子プロセスへ継承される
      ```
 
-3. **Hermes 本体**を取得する。
+3. **Hermes を通常どおりインストールする。**
 
-   ```bash
-   git clone https://github.com/NousResearch/hermes-agent.git
-   cd hermes-agent
-   ```
+   公式インストールは、いずれの経路でも **リポジトリを git clone して editable
+   install（`pip install -e .`）し、`~/.local/bin/hermes` にコマンドを張る**仕組みです。
+   そのため**インストール先のチェックアウトがそのままパッチ適用先**になり、
+   検証用に別クローンを作る必要はありません。
 
-### 1. パッチを当てる
+   - **経路A: 公式ワンライナー（おすすめ。これが通常インストール）**
 
-パッチファイル `0001-add-kiro-acp-provider.patch` を Hermes のリポジトリ直下から当てます。
+     ```bash
+     curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+     ```
+
+     既定のチェックアウト先は `~/.hermes/hermes-agent`（root は `/root/.hermes/hermes-agent`）。
+     `hermes` コマンドは `~/.local/bin/hermes` に張られ、PATH 設定もインストーラが行います。
+
+   - **経路B: ソースから（コントリビュータ手順。これも“通常”の一つ）**
+
+     ```bash
+     git clone https://github.com/NousResearch/hermes-agent.git
+     cd hermes-agent
+     ./setup-hermes.sh     # uv + venv + editable install + ~/.local/bin/hermes シンボリックリンク
+     ```
+
+### 1. インストール先のチェックアウトにパッチを当てる
+
+editable install なので、**チェックアウト内のファイルがそのまま `hermes` の実行コード**です。
+パッチを当てれば**再インストール不要で即反映**されます（インストール前・後どちらで当ててもよい）。
 
 ```bash
-# 事前チェック（何も出力されず終了コード 0 なら綺麗に当たる）
-git apply --check 0001-add-kiro-acp-provider.patch
+# 経路A の既定パスに移動（root は /root/.hermes/hermes-agent）
+cd ~/.hermes/hermes-agent
+# 経路B の場合は clone したディレクトリ（例: cd ~/hermes-agent）
 
-# 適用
-git apply 0001-add-kiro-acp-provider.patch
+# 事前チェック（何も出力されず終了コード 0 なら綺麗に当たる）→ 適用
+git apply --check /path/to/0001-add-kiro-acp-provider.patch
+git apply         /path/to/0001-add-kiro-acp-provider.patch
 ```
 
 本流は更新が速く、行コンテキストがずれて上記が失敗することがあります。その場合は順に：
 
 ```bash
 # (a) 3-way マージで当てる（コンフリクトマーカーが入ることがある）
-git apply --3way 0001-add-kiro-acp-provider.patch
+git apply --3way /path/to/0001-add-kiro-acp-provider.patch
 
 # (b) git を介さず当てる（ファジーマッチ・.rej を残す）
-patch -p1 < 0001-add-kiro-acp-provider.patch
+patch -p1 < /path/to/0001-add-kiro-acp-provider.patch
 
 # (c) 検証時とまったく同じ状態に当てたい場合はベースコミットに固定してから当てる
+#     （経路A のインストーラなら `--commit 57c67149` でも固定可能）
 git checkout 57c67149
-git apply 0001-add-kiro-acp-provider.patch
+git apply /path/to/0001-add-kiro-acp-provider.patch
 ```
 
 それでも当たらない箇所は `*.rej` を見ながら、本 README 末尾の
 「変更点の要約」に従って手で当て直してください（追記はすべて copilot-acp と
 並列に 1 ブロック足すだけなので、対応箇所はすぐ見つかります）。
 
-### 2. 適用結果を確認する
+> **`hermes update` の注意:** 公式の更新は内部で `git stash` / `git checkout` を行うため、
+> 未コミットのパッチは退避・コンフリクトする可能性があります。チェックアウト内で
+> `git commit` してから更新するか、更新後に当て直すのが安全です。
+
+### 2. 反映を確認する
 
 ```bash
 # 新規ファイルが入っているか
 ls agent/kiro_acp_client.py plugins/model-providers/kiro-acp/
 
-# 構文チェック
-python3 -m py_compile agent/kiro_acp_client.py hermes_cli/auth.py
-
-# プロバイダ一覧に kiro-acp が出るか（Hermes のインストール手順は本家 README 参照）
+# プロバイダ一覧に kiro-acp が出るか
 hermes models providers | grep -i kiro
 ```
+
+> `hermes: command not found` のときは `~/.local/bin` が PATH に入っているか確認:
+> ```bash
+> echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin" || export PATH="$HOME/.local/bin:$PATH"
+> ```
+> 恒久化はシェルの rc ファイルに追記（公式インストーラは通常これを設定済み）。
 
 ### 3. 取り消したいとき
 
 ```bash
-git apply --reverse 0001-add-kiro-acp-provider.patch
+cd ~/.hermes/hermes-agent      # 経路B は clone 先
+git apply --reverse /path/to/0001-add-kiro-acp-provider.patch
 # もしくはコミット前なら
 git checkout -- . && git clean -fd plugins/model-providers/kiro-acp agent/kiro_acp_client.py
 ```
