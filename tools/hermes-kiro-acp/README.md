@@ -28,6 +28,21 @@
 > 注意: `hermes acp` は Hermes 自身を ACP **サーバ**として起動する逆向きのモードです。
 > 本パッチがやるのは「Hermes が Kiro を叩く」向きで、別物です。
 
+### Hermes ツールの受け渡し（ツールブリッジ）
+
+ACP にはクライアント側ツールを宣言するプロトコルがないため、Hermes のツール群は
+プロンプト内で受け渡しします。読み飛ばし・取りこぼしを防ぐため次の設計です。
+
+- ツール定義は `<tools>…</tools>` タグで明示的に区切り、**1 行 1 スキーマ**で列挙。
+  Kiro 自身の組み込みツール・ACP/MCP ツールは使用禁止と明記し、プロンプト末尾でも
+  再度念押しする（エージェント系 CLI は自前ツールに流れやすいため）。
+- 呼び出しは Hermes 標準の `<tool_call>{"name": …, "arguments": {…}}</tool_call>`
+  形式を指示。応答の解析は寛容で、OpenAI 形式
+  （`{"id","type","function":{…}}`）、タグ内のコードフェンス、タグなしの
+  フェンス付き/裸 JSON もフォールバックで受理する。
+- 過去ターンの assistant ツールコールと tool 結果（`tool_call_id` 付き）も
+  transcript に復元するので、複数ターンのツールループが Kiro 側から一貫して見える。
+
 ## インストール
 
 対象: `NousResearch/hermes-agent`（このパッチはベースコミット `57c67149` 時点で
@@ -186,7 +201,8 @@ hermes chat --provider kiro-acp --model kiro-acp
 新規ファイル:
 - `agent/kiro_acp_client.py` — Kiro 用 ACP クライアント（`copilot_acp_client.py` の
   雛形。`acp://kiro` マーカー、`kiro-cli acp` 既定、Copilot 固有の gh-copilot
-  非推奨判定は除去）。
+  非推奨判定は除去）。Hermes ツールのプロンプト受け渡しと `<tool_call>` 解析は
+  上記「ツールブリッジ」のとおり強化済み。
 - `plugins/model-providers/kiro-acp/{__init__.py,plugin.yaml}` — プロバイダプロファイル登録。
 
 既存ファイルへの追記（いずれも copilot-acp と並列に 1 ブロック追加するだけ）:
@@ -212,3 +228,6 @@ hermes chat --provider kiro-acp --model kiro-acp
 
 - 変更後の全 Python ファイルが `py_compile` を通過。
 - `git apply --check` がベースコミットに対して成功（reverse / forward の往復適用も確認）。
+- ツールブリッジのユニットテスト（プロンプト整形と `<tool_call>` 抽出: Hermes 形式 /
+  OpenAI 形式 / コードフェンス内 JSON / フェンスのみ / 裸 JSON / 大文字タグ /
+  ツールなし時の素通し）を通過。

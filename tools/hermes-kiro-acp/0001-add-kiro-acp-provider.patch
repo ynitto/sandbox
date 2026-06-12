@@ -45,10 +45,10 @@ index f9bfb7a..b59acc2 100644
  
 diff --git a/agent/kiro_acp_client.py b/agent/kiro_acp_client.py
 new file mode 100644
-index 0000000..be3f11f
+index 0000000..c99c8d9
 --- /dev/null
 +++ b/agent/kiro_acp_client.py
-@@ -0,0 +1,660 @@
+@@ -0,0 +1,759 @@
 +"""OpenAI-compatible shim that forwards Hermes requests to `kiro-cli acp`.
 +
 +This adapter lets Hermes treat a local Kiro CLI ACP server as a chat-style
@@ -85,8 +85,10 @@ index 0000000..be3f11f
 +ACP_MARKER_BASE_URL = "acp://kiro"
 +_DEFAULT_TIMEOUT_SECONDS = 900.0
 +
-+_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
++_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL | re.IGNORECASE)
++_FENCED_JSON_RE = re.compile(r"```(?:json|tool_call|tool)?[ \t]*\n(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 +_TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
++_TOOL_CALL_NAME_ARGS_RE = re.compile(r"\{\s*\"name\"\s*:\s*\"[^\"]+\"\s*,\s*\"arguments\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 +
 +
 +def _resolve_command() -> str:
@@ -170,6 +172,67 @@ index 0000000..be3f11f
 +    }
 +
 +
++def _normalise_tool_specs(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
++    specs: list[dict[str, Any]] = []
++    if not isinstance(tools, list):
++        return specs
++    for t in tools:
++        if not isinstance(t, dict):
++            continue
++        fn = t.get("function") or {}
++        if not isinstance(fn, dict):
++            continue
++        name = fn.get("name")
++        if not isinstance(name, str) or not name.strip():
++            continue
++        specs.append(
++            {
++                "name": name.strip(),
++                "description": fn.get("description", ""),
++                "parameters": fn.get("parameters", {}),
++            }
++        )
++    return specs
++
++
++def _render_tool_call_blocks(tool_calls: Any) -> str:
++    """Serialise prior assistant tool calls back into <tool_call> blocks.
++
++    Keeps the transcript self-consistent with the calling convention we ask
++    Kiro to use, so it can see that earlier tool calls were real and answered.
++    """
++
++    if not isinstance(tool_calls, list):
++        return ""
++    blocks: list[str] = []
++    for call in tool_calls:
++        if isinstance(call, dict):
++            fn = call.get("function") or {}
++            name = fn.get("name") if isinstance(fn, dict) else None
++            arguments = fn.get("arguments") if isinstance(fn, dict) else None
++            call_id = call.get("id")
++        else:
++            fn = getattr(call, "function", None)
++            name = getattr(fn, "name", None)
++            arguments = getattr(fn, "arguments", None)
++            call_id = getattr(call, "id", None)
++        if not isinstance(name, str) or not name.strip():
++            continue
++        if isinstance(arguments, str):
++            try:
++                arguments = json.loads(arguments)
++            except Exception:
++                pass
++        payload: dict[str, Any] = {
++            "name": name.strip(),
++            "arguments": arguments if arguments is not None else {},
++        }
++        if isinstance(call_id, str) and call_id.strip():
++            payload["id"] = call_id.strip()
++        blocks.append("<tool_call>" + json.dumps(payload, ensure_ascii=False) + "</tool_call>")
++    return "\n".join(blocks)
++
++
 +def _format_messages_as_prompt(
 +    messages: list[dict[str, Any]],
 +    model: str | None = None,
@@ -177,42 +240,37 @@ index 0000000..be3f11f
 +    tool_choice: Any = None,
 +) -> str:
 +    sections: list[str] = [
-+        "You are being used as the active ACP agent backend for Hermes.",
-+        "Use ACP capabilities to complete tasks.",
-+        "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
-+        "If no tool is needed, answer normally.",
++        "You are the inference backend for the Hermes agent. Hermes owns the "
++        "agent loop: it executes tool calls on your behalf and sends each "
++        "result back to you as a 'Tool result' message in the transcript.",
 +    ]
 +    if model:
 +        sections.append(f"Hermes requested model hint: {model}")
 +
-+    if isinstance(tools, list) and tools:
-+        tool_specs: list[dict[str, Any]] = []
-+        for t in tools:
-+            if not isinstance(t, dict):
-+                continue
-+            fn = t.get("function") or {}
-+            if not isinstance(fn, dict):
-+                continue
-+            name = fn.get("name")
-+            if not isinstance(name, str) or not name.strip():
-+                continue
-+            tool_specs.append(
-+                {
-+                    "name": name.strip(),
-+                    "description": fn.get("description", ""),
-+                    "parameters": fn.get("parameters", {}),
-+                }
-+            )
-+        if tool_specs:
-+            sections.append(
-+                "Available tools (OpenAI function schema). "
-+                "When using a tool, emit ONLY <tool_call>{...}</tool_call> with one JSON object "
-+                "containing id/type/function{name,arguments}. arguments must be a JSON string.\n"
-+                + json.dumps(tool_specs, ensure_ascii=False)
-+            )
++    tool_specs = _normalise_tool_specs(tools)
++    if tool_specs:
++        tool_lines = "\n".join(json.dumps(spec, ensure_ascii=False) for spec in tool_specs)
++        sections.append(
++            "# Tools\n"
++            "The ONLY tools available in this conversation are the Hermes tools "
++            "listed between the <tools></tools> tags below, one JSON schema per "
++            "line. Do NOT use your own built-in tools, ACP/MCP tools, or direct "
++            "file-system access: Hermes cannot observe those actions and they "
++            "will be rejected. To call a Hermes tool, emit one block per call, "
++            "as plain text without a markdown code fence:\n"
++            '<tool_call>{"name": "<tool name>", "arguments": {<JSON arguments '
++            "matching the tool's parameters schema>}}</tool_call>\n"
++            "Any explanation for the user goes outside the block. If no tool is "
++            "needed, answer normally without <tool_call>.\n"
++            "<tools>\n" + tool_lines + "\n</tools>"
++        )
++    else:
++        sections.append("No tools are available for this request. Answer in plain text.")
 +
 +    if tool_choice is not None:
-+        sections.append(f"Tool choice hint: {json.dumps(tool_choice, ensure_ascii=False)}")
++        sections.append(
++            f"Tool choice requirement from Hermes: {json.dumps(tool_choice, ensure_ascii=False)}"
++        )
 +
 +    transcript: list[str] = []
 +    for message in messages:
@@ -224,24 +282,38 @@ index 0000000..be3f11f
 +        elif role not in {"system", "user", "assistant"}:
 +            role = "context"
 +
-+        content = message.get("content")
-+        rendered = _render_message_content(content)
-+        if not rendered:
-+            continue
-+
++        rendered = _render_message_content(message.get("content"))
 +        label = {
 +            "system": "System",
 +            "user": "User",
 +            "assistant": "Assistant",
-+            "tool": "Tool",
++            "tool": "Tool result",
 +            "context": "Context",
 +        }.get(role, role.title())
++
++        if role == "assistant":
++            call_blocks = _render_tool_call_blocks(message.get("tool_calls"))
++            if call_blocks:
++                rendered = f"{rendered}\n{call_blocks}".strip()
++        elif role == "tool":
++            call_id = str(message.get("tool_call_id") or "").strip()
++            if call_id:
++                label = f"Tool result (for call {call_id})"
++
++        if not rendered:
++            continue
 +        transcript.append(f"{label}:\n{rendered}")
 +
 +    if transcript:
 +        sections.append("Conversation transcript:\n\n" + "\n\n".join(transcript))
 +
-+    sections.append("Continue the conversation from the latest user request.")
++    closing = "Continue the conversation from the latest user request."
++    if tool_specs:
++        closing += (
++            " Remember: to act, emit <tool_call> blocks for the Hermes tools "
++            "declared in <tools> above — never use built-in or ACP tools."
++        )
++    sections.append(closing)
 +    return "\n\n".join(section.strip() for section in sections if section and section.strip())
 +
 +
@@ -269,6 +341,20 @@ index 0000000..be3f11f
 +    return str(content).strip()
 +
 +
++def _strip_code_fences(raw: str) -> str:
++    """Reduce a candidate block to its JSON object, tolerating markdown fences."""
++
++    cleaned = raw.strip()
++    if cleaned.startswith("```"):
++        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*[ \t]*\n?", "", cleaned)
++        cleaned = re.sub(r"\n?```\s*$", "", cleaned).strip()
++    start = cleaned.find("{")
++    end = cleaned.rfind("}")
++    if start != -1 and end > start:
++        cleaned = cleaned[start : end + 1]
++    return cleaned
++
++
 +def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
 +    if not isinstance(text, str) or not text.strip():
 +        return [], ""
@@ -276,20 +362,25 @@ index 0000000..be3f11f
 +    extracted: list[SimpleNamespace] = []
 +    consumed_spans: list[tuple[int, int]] = []
 +
-+    def _try_add_tool_call(raw_json: str) -> None:
++    def _try_add_tool_call(raw_json: str) -> bool:
 +        try:
-+            obj = json.loads(raw_json)
++            obj = json.loads(_strip_code_fences(raw_json))
 +        except Exception:
-+            return
++            return False
 +        if not isinstance(obj, dict):
-+            return
++            return False
++
++        # Accept both the OpenAI envelope ({"id","type","function":{...}})
++        # and the bare Hermes shape ({"name": ..., "arguments": ...}).
 +        fn = obj.get("function")
-+        if not isinstance(fn, dict):
-+            return
-+        fn_name = fn.get("name")
++        if isinstance(fn, dict):
++            fn_name = fn.get("name")
++            fn_args = fn.get("arguments", "{}")
++        else:
++            fn_name = obj.get("name")
++            fn_args = obj.get("arguments", "{}")
 +        if not isinstance(fn_name, str) or not fn_name.strip():
-+            return
-+        fn_args = fn.get("arguments", "{}")
++            return False
 +        if not isinstance(fn_args, str):
 +            fn_args = json.dumps(fn_args, ensure_ascii=False)
 +        call_id = obj.get("id")
@@ -305,18 +396,26 @@ index 0000000..be3f11f
 +                function=SimpleNamespace(name=fn_name.strip(), arguments=fn_args),
 +            )
 +        )
++        return True
 +
 +    for m in _TOOL_CALL_BLOCK_RE.finditer(text):
 +        raw = m.group(1)
++        # Consume the block even if the payload is malformed: it was clearly
++        # meant as a tool call and leaking the markup back to Hermes as plain
++        # text only confuses the loop.
 +        _try_add_tool_call(raw)
 +        consumed_spans.append((m.start(), m.end()))
 +
-+    # Only try bare-JSON fallback when no XML blocks were found.
++    # Fallbacks, tried only when no <tool_call> blocks were found: fenced JSON
++    # code blocks, then bare JSON in either supported shape. These consume
++    # text only when they parse into a valid call.
 +    if not extracted:
-+        for m in _TOOL_CALL_JSON_RE.finditer(text):
-+            raw = m.group(0)
-+            _try_add_tool_call(raw)
-+            consumed_spans.append((m.start(), m.end()))
++        for pattern in (_FENCED_JSON_RE, _TOOL_CALL_JSON_RE, _TOOL_CALL_NAME_ARGS_RE):
++            for m in pattern.finditer(text):
++                if _try_add_tool_call(m.group(0)):
++                    consumed_spans.append((m.start(), m.end()))
++            if extracted:
++                break
 +
 +    if not consumed_spans:
 +        return extracted, text.strip()
