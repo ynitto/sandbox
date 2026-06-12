@@ -28,6 +28,37 @@
 > 注意: `hermes acp` は Hermes 自身を ACP **サーバ**として起動する逆向きのモードです。
 > 本パッチがやるのは「Hermes が Kiro を叩く」向きで、別物です。
 
+### Hermes ツールの受け渡し（ツールブリッジ）
+
+ACP にはクライアント側ツールを宣言するプロトコルがないため、Hermes のツール群は
+プロンプト内で受け渡しします。読み飛ばし・取りこぼしを防ぐため次の設計です。
+
+- ツール定義は `<tools>…</tools>` タグで明示的に区切り、**1 行 1 スキーマ**で列挙。
+  Kiro 自身の組み込みツール・ACP/MCP ツールは使用禁止と明記し、プロンプト末尾でも
+  再度念押しする（エージェント系 CLI は自前ツールに流れやすいため）。
+- 呼び出しは Hermes 標準の `<tool_call>{"name": …, "arguments": {…}}</tool_call>`
+  形式を指示。応答の解析は寛容で、OpenAI 形式
+  （`{"id","type","function":{…}}`）、タグ内のコードフェンス、タグなしの
+  フェンス付き/裸 JSON もフォールバックで受理する。
+- 過去ターンの assistant ツールコールと tool 結果（`tool_call_id` 付き）も
+  transcript に復元するので、複数ターンのツールループが Kiro 側から一貫して見える。
+  空のツール結果も「(tool returned no output)」として残し、再呼び出しループを防ぐ。
+
+雛形の copilot-acp 実装から引き継いだ不具合も修正済み:
+
+- **JSON-RPC**: id なしの通知に誤って応答しない（プロトコル違反の解消）。
+  子プロセスが最終応答を書いた直後に終了しても、パイプに残った応答を猶予付きで
+  回収する（応答取りこぼし競合の解消）。stdin 切断は stderr 末尾付きの
+  エラーとして報告。
+- **`fs/read_text_file`**: `line` / `limit` を ACP 仕様どおり処理
+  （旧実装は `line=1` や `limit` 単独指定を無視していた）。
+- **`<tool_call>` 解析**: ネストした arguments を含む裸 JSON は正規表現でなく
+  JSON デコーダ走査で正しく括る。タグ外のフォールバックでは `arguments`
+  必須にして本文中の例示 JSON の誤検出を防止。重複 id は自動リネーム。
+- **コマンドパス**: `HERMES_KIRO_ACP_COMMAND` / `KIRO_CLI_PATH` の `~` を展開
+  （env ファイル経由の指定でも動く。auth 側リゾルバも同様で、copilot-acp にも
+  `~` 展開が効くようになった以外、copilot-acp の挙動は不変）。
+
 ## インストール
 
 対象: `NousResearch/hermes-agent`（このパッチはベースコミット `57c67149` 時点で
@@ -186,7 +217,8 @@ hermes chat --provider kiro-acp --model kiro-acp
 新規ファイル:
 - `agent/kiro_acp_client.py` — Kiro 用 ACP クライアント（`copilot_acp_client.py` の
   雛形。`acp://kiro` マーカー、`kiro-cli acp` 既定、Copilot 固有の gh-copilot
-  非推奨判定は除去）。
+  非推奨判定は除去）。Hermes ツールのプロンプト受け渡しと `<tool_call>` 解析は
+  上記「ツールブリッジ」のとおり強化済み。
 - `plugins/model-providers/kiro-acp/{__init__.py,plugin.yaml}` — プロバイダプロファイル登録。
 
 既存ファイルへの追記（いずれも copilot-acp と並列に 1 ブロック追加するだけ）:
@@ -211,4 +243,12 @@ hermes chat --provider kiro-acp --model kiro-acp
 ## 検証済みの内容
 
 - 変更後の全 Python ファイルが `py_compile` を通過。
-- `git apply --check` がベースコミットに対して成功（reverse / forward の往復適用も確認）。
+- `git apply --check` がベースコミット（`57c67149` の実ソース）に対して成功し、
+  forward 適用 → 全対象ファイル `py_compile` → reverse 適用の往復を確認。
+- ツールブリッジのユニットテスト（プロンプト整形と `<tool_call>` 抽出: Hermes 形式 /
+  OpenAI 形式 / コードフェンス内 JSON / フェンスのみ / ネスト引数の裸 JSON /
+  大文字タグ / 例示 JSON の非検出 / 重複 id / ツールなし時の素通し）を通過。
+- 偽 ACP サーバ（stdio JSON-RPC）に対する統合テストを通過: 正常系、
+  応答直後のプロセス終了（取りこぼし競合・10 回反復）、未知メソッド通知の無視、
+  `fs/read_text_file` の `line`/`limit`、cwd 外パスの拒否、コマンド未検出時の
+  エラーメッセージ。
