@@ -289,7 +289,7 @@ while 常駐:
 
 | コマンド | 役割 |
 |---------|------|
-| `daemon` | 常駐し orchestrator/worker をオンデマンド起動（`--max-workers`） |
+| `daemon` | 常駐し orchestrator/worker をオンデマンド起動（`--max-workers`）。**サブコマンド省略時の既定**（global 引数と設定ファイルのみで起動） |
 | `submit <要求>` | 要求を inbox に投入（run-id を返す） |
 | `run [要求]` | 単発実行。**既存 --run-id なら再開、無ければ新規**（状態で自動判断） |
 | `status` | 状態表示。既定 1 回 / `--follow` でライブ監視（`--until-done`） |
@@ -306,7 +306,7 @@ pip 依存なし。git は分散用、kiro-cli は実運用用で無くても st
 
 環境ごとに決まる値を設定ファイルへ外出しできる（kiro-loop と同じ流儀）。
 
-- **探索順序（フォールバック）**: `--config <path>` → カレントディレクトリ → `~/.kiro/` の
+- **探索順序（フォールバック）**: `--config <path>` → `./.kiro/` → `~/.kiro/` の
   `kiro-flow.{yaml,yml,json}`。
 - **形式**: PyYAML があれば YAML、無ければ JSON（同じキー。PyYAML は任意）。
 - **優先順位**: CLI 引数 > 設定ファイル > 組み込み既定（`CONFIG_DEFAULTS`）。
