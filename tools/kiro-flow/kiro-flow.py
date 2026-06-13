@@ -614,7 +614,7 @@ def plan_stub(request: str):
     if len(segments) == 1 and "->" not in segments[0]:
         n = random.randint(2, 5)
         base = segments[0][:48]
-        segments = [f"{base}（サブタスク{i + 1})"] + [f"{base}(サブタスク{i + 1})" for i in range(1, n)]
+        segments = [f"{base}（サブタスク{j + 1}）" for j in range(n)]
     tasks = []
     idx = 0
     for seg in segments:
