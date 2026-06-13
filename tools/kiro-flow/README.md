@@ -53,6 +53,7 @@ orchestrator は要求を見て、以下の 6 パターン（[参考記事](http
 | **generate-and-filter** | `generate` ×N → `filter` | 候補を多数出して絞り込み |
 | **tournament** | `generate` ×N → `judge` | 複数案から最良を選ぶ |
 | **loop-until-done** | `work` → `verify`（条件を満たすまで反復） | テスト通過・品質達成まで繰り返す |
+| **map-reduce** | `split` → 実行時に `map` ×N を動的展開 → `reduce` | 件数を事前に固定せずデータ駆動で並列処理し集約 |
 
 - **パターン選択**: `--planner kiro` なら kiro-cli が選ぶ。`--planner stub` は要求のキーワードで判定
   （「分類/振り分け」→classify、「tournament/最良」→tournament、「候補/フィルタ」→filter、
@@ -60,6 +61,17 @@ orchestrator は要求を見て、以下の 6 パターン（[参考記事](http
 - **並列数**: 要求中の `xN` / `並列N` を拾う。無ければ並列タスク数から既定（2〜6）。
 - **継続判断**: 静止（claim 可能・実行中タスクが無い）するたびに評価し、`classify` 結果でルーティング、
   `verify` が fail なら依存を作り直して再検証（`replaces` で後続の依存を付け替え）、失敗タスクは retry。
+- **構造化成果（structured results）**: 各ノードの結果はテキスト `output` に加え、任意の **`data`（JSON）**
+  を持てる。依存先へはテキスト＋構造化データの両方を渡す。`reduce` kind は依存の `data`（リスト等）を
+  畳み込んで集約する集約ノード。kiro executor は出力を寛容パースして `data` に格納する。
+- **データ駆動の動的 fan-out（map-reduce）**: `split` ノードが実行時にリスト（`data`）を返すと、継続段階で
+  **要素数ぶんの `map` タスクを動的展開**し（件数を事前に固定しない）、`reduce` で集約する。展開数は
+  `--max-fanout`（既定 50）で上限クランプ。初期グラフは `split` のみで、`reduce` は展開時に生成するため
+  先走り実行されない。
+- **統合前の事前チェック / 敵対的レビュー（`--review`）**: 統合（synthesize/reduce）の前に `verify` gate を
+  挟む。gate が fail なら依存を作り直して再検証（既存の verify-loop）。fan-out・map-reduce に複合適用でき、
+  kiro planner はパターンを多段に**複合**できる（例: classify→各分岐を fan-out）。
+- **グラフ健全性検査**: 計画・再計画のたびに**未知の依存 ID を除去・循環依存を断ち切る**（planner 誤出力の防御）。
 - 選んだ戦略は `graph.json` / `final.json` に記録され、`status` でも表示される。
 
 ## 動的ワークフロー（evaluator-optimizer ループ）
@@ -218,6 +230,8 @@ tmux attach -t flow
 | `--max-workers` | 4 | デーモンが同時に走らせる worker 上限（`daemon`） |
 | `--planner` / `--executor` | `kiro` | `kiro`（kiro-cli）/ `stub`（オフライン検証）。executor は評価役にも使う |
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
+| `--max-fanout` | 50 | データ駆動 fan-out（split→map）の最大展開数 |
+| `--review` | off | 統合（synthesize/reduce）の前に検証 gate を挟む |
 | `--poll` | 2.0 | ポーリング間隔（秒） |
 | `--keep-alive` / `--idle-exit` | off | run 完了後も待機 / claim 可能タスクが尽きたら終了（`work`） |
 
@@ -239,7 +253,12 @@ python3 tools/kiro-flow/tests/test_kiro_flow.py
 主なケース: 決定的タイブレーク、**lease 切れ claim の回収（死んだワーカー）**、
 **同時 claim でも勝者は 1 人**、逐次依存の分解、失敗 → 再計画 → retry 成功（end-to-end）、
 **要求 claim でデーモンが 1 台に決まる**・`run_claimable_count` の依存考慮、
-**6 パターン検出・並列数抽出・fan-out/tournament のグラフ形・classify ルーティング・verify fail の作り直し**。
+**6 パターン検出・並列数抽出・fan-out/tournament のグラフ形・classify ルーティング・verify fail の作り直し**、
+**構造化成果 + reduce 集約・データ駆動 fan-out（split→map→reduce）・統合前 gate（--review）・
+グラフ健全性検査（未知依存/循環/自己ループ）・kind 正規化**。
+
+stub の擬似実行スリープは環境変数 `KIRO_FLOW_STUB_SLEEP_MAX`（既定 1〜5 秒）で調整でき、テストは `0` で
+高速に完走する（約 3 秒）。
 
 ## ロードマップ
 
