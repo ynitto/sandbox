@@ -3,22 +3,23 @@
 kiro-cli で **Claude 風の Dynamic Workflow**（動的にタスクを分解 → ワーカーへ委譲 → 結果統合）を
 実現する基盤。通信は **ファイルのみ**で行い、バスを git に差し替えれば**複数 PC へ分散**できる設計。
 
-> **現状: M5（デーモン化）**
-> M4 までの機能に加え、**常駐デーモン**が要求に応じて orchestrator/worker を
-> **オンデマンド起動**する。`up`（ワンショット）も引き続き利用可能。
+> **現状: M6（コマンド化＋整理）**
+> `install.sh` で `kiro-flow` コマンドとして導入でき、常駐デーモンが要求に応じて
+> orchestrator/worker を**オンデマンド起動**する。サブコマンドは状態で挙動が決まるものを
+> 統合済み（`up`+`resume`→`run`、`status`+`watch`→`status --follow`）。
 
 ## できること
 
 - **`daemon`**：常駐し、投入された要求を拾って orchestrator を起動、claim 可能タスク量に応じて
   **ワーカーをオンデマンド起動**（仕事が無くなれば自然終了）。**分散時は各 PC でデーモンを動かす**だけ。
 - **`submit`**：要求を inbox に投入。デーモンが拾う（要求は claim で 1 台だけが orchestrate を担当）。
-- `up` **一発**で orchestrator ×1 ＋ worker ×N を起動して待機（単発実行向け）。
+- **`run`**：単発実行。**既存 run-id なら再開、無ければ新規**と状態で自動判断（旧 `up`/`resume` を統合）。
 - 要求をタスクに分解し、**依存関係を尊重**しつつ複数ワーカーが**競合せず** claim して並列実行。
 - **動的な再計画**：全タスク完了後に結果を評価し、不足があればタスクを追加して反復（最大 `--max-iterations`）。
 - **`--git` で複数 PC 分散**：各ノードが共有リポジトリの自分専用クローンで作業し、push/pull で通信。
-- **`resume`**：中断した run を同じ `--run-id` で再開（計画はやり直さず未完タスクから継続）。
+- **再開**：`run --run-id <id>` で中断した run を再開（計画はやり直さず未完タスクから継続）。
 - **lease ハートビート**：実行中はリースを延長し続け、長時間タスクでも他ノードに横取りされない。
-- **`watch`**：タスクグラフの状態と直近イベントをライブ表示（tmux ペインに置けば監視ダッシュボード）。
+- **`status`**：状態を 1 回表示。`--follow` でライブ監視（tmux ペインに置けば監視ダッシュボード）。
 - **`gc`**：古い・完了済みの run をバスから削除（git バスでは git rm＋push）。
 - LLM は **kiro-cli** がデフォルト。kiro-cli 無しでも動く **stub** モードでプロトコル検証可能。
 
@@ -80,65 +81,69 @@ claim は lease 超過で自動的に無効化され、別ノードが再 claim 
   final.json           # 統合結果
 ```
 
+## インストール
+
+```bash
+bash tools/kiro-flow/install.sh          # ~/.local/bin/kiro-flow にインストール
+bash tools/kiro-flow/install.sh --prefix /usr/local/bin   # 任意の場所へ
+```
+
+標準ライブラリのみで動作（pip 依存なし）。git は分散モードで必要、kiro-cli は実運用で必要
+（無くても `--planner stub --executor stub` で動作確認できる）。以降の例は `kiro-flow`
+コマンド前提（未インストールなら `python3 tools/kiro-flow/kiro-flow.py` で代用可）。
+
 ## 使い方
 
 ### デーモン（推奨・オンデマンド起動）
 
 ```bash
 # 1) デーモンを常駐起動（このマシンのワーカー上限は --max-workers）
-python3 kiro-flow.py --bus /tmp/flowbus daemon --max-workers 4 &
+kiro-flow --bus /tmp/flowbus daemon --max-workers 4 &
 
 # 2) 要求を投入（run-id が標準出力に返る）。デーモンが拾って自動実行する
-RID=$(python3 kiro-flow.py --bus /tmp/flowbus submit "要件整理; API設計; テスト")
-python3 kiro-flow.py --bus /tmp/flowbus --run-id "$RID" watch --until-done
+RID=$(kiro-flow --bus /tmp/flowbus submit "要件整理; API設計; テスト")
+kiro-flow --bus /tmp/flowbus --run-id "$RID" status --follow --until-done
 
 # 分散: 各 PC で同じ --git を指すデーモンを起動するだけ。要求はどの PC から submit してもよい
-python3 kiro-flow.py --git git@example.com:team/flow-bus.git daemon --max-workers 4 &   # PC ごとに
-python3 kiro-flow.py --git git@example.com:team/flow-bus.git submit "<要求>"
+kiro-flow --git git@example.com:team/flow-bus.git daemon --max-workers 4 &   # PC ごとに
+kiro-flow --git git@example.com:team/flow-bus.git submit "<要求>"
 ```
 
-### ワンショット（単発実行）
+### ワンショット（単発実行・既存 run-id なら自動で再開）
 
 ```bash
 # kiro-cli 無しでプロトコルを確認（まずこれ）
-python3 kiro-flow.py --bus /tmp/flowbus up \
+kiro-flow --bus /tmp/flowbus run \
   "要件を整理する; APIを設計する; テストを書く; READMEを書く" \
   --workers 3 --planner stub --executor stub --poll 0.5
 
 # kiro-cli を使った実運用（既定）
-python3 kiro-flow.py up "<要求>" --workers 3
+kiro-flow run "<要求>" --workers 3
 
-# 複数 PC 分散（共有 git リポジトリをバスにする）
-#   各ノードは <bus>/<node-id> に自分専用クローンを作り push/pull で通信する。
-#   別 PC でも同じ --git URL を指すワーカーを起動すれば同じ run に参加できる。
-python3 kiro-flow.py --git git@example.com:team/flow-bus.git --git-branch main \
-  up "<要求>" --workers 3
-#   ローカルのベアリポジトリで動作確認:
-#     git init --bare -b main /tmp/flowbus.git
-#     python3 kiro-flow.py --git /tmp/flowbus.git up "A; B; C" --workers 3 \
-#       --planner stub --executor stub
-
-# 別 PC をワーカーとして後から合流（同じ run-id を指定）
-python3 kiro-flow.py --git <URL> --run-id <run-id> work --keep-alive
+# 中断した run を再開（要求は省略。状態を見て自動的に未完タスクから続行）
+kiro-flow --bus /tmp/flowbus --run-id <run-id> run
 
 # 依存関係つきの分解（stub）: ';' は並列、'->' は逐次依存チェーン
-python3 kiro-flow.py up "setup -> build -> test; write docs" \
-  --workers 3 --planner stub --executor stub
+kiro-flow run "setup -> build -> test; write docs" --planner stub --executor stub
 
-# ライブ可視化（別ターミナル / tmux ペインで）
-python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> watch
-python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> status   # 1 回だけ表示
+# 複数 PC 分散（共有 git リポジトリをバスにする）
+kiro-flow --git git@example.com:team/flow-bus.git run "<要求>" --workers 3
+#   ローカルのベアリポジトリで動作確認:
+#     git init --bare -b main /tmp/flowbus.git
+#     kiro-flow --git /tmp/flowbus.git run "A; B; C" --planner stub --executor stub
 
-# 古い run を掃除（7 日より古い done を残り 5 件保護で削除、まず dry-run）
-python3 kiro-flow.py --bus /tmp/flowbus gc --older-than 7 --keep 5 --status done --dry-run
+# 状態確認 / ライブ監視 / 掃除
+kiro-flow --bus /tmp/flowbus --run-id <run-id> status            # 1 回だけ表示
+kiro-flow --bus /tmp/flowbus --run-id <run-id> status --follow   # ライブ監視
+kiro-flow --bus /tmp/flowbus gc --older-than 7 --keep 5 --status done --dry-run
 ```
 
 ### tmux で「実行 ＋ 監視」を一画面に
 
 ```bash
 RID=run-XXXX
-tmux new-session -d -s flow "python3 kiro-flow.py --run-id $RID up '<要求>' --workers 3"
-tmux split-window -h "python3 kiro-flow.py --run-id $RID watch --until-done"
+tmux new-session -d -s flow "kiro-flow --run-id $RID run '<要求>' --workers 3"
+tmux split-window -h "kiro-flow --run-id $RID status --follow --until-done"
 tmux attach -t flow
 ```
 
@@ -148,13 +153,10 @@ tmux attach -t flow
 |---------|------|
 | `daemon` | 常駐し要求に応じて orchestrator/worker をオンデマンド起動（`--max-workers`） |
 | `submit <要求>` | 要求を inbox に投入（run-id を返す）。デーモンが拾う |
-| `up <要求>` | orchestrator + worker(複数) を一発起動して待機（単発実行） |
-| `resume --run-id <id>` | 中断した run を再開（orchestrator + worker を再起動） |
-| `orchestrate --request <要求>` | 計画役単体（分解 → 投入 → 評価/再計画 → 統合）。既存グラフがあれば再開 |
-| `work` | ワーカー役単体（claim → 実行 → result）。`--keep-alive` 常駐 / `--idle-exit` 短命 |
-| `watch` | タスクグラフ＋直近イベントをライブ表示（`--once` / `--until-done`） |
+| `run [要求]` | 単発実行。**既存 --run-id なら再開、無ければ新規**（状態で自動判断） |
+| `status` | 状態表示。既定 1 回 / `--follow` でライブ監視（`--until-done` で自動終了） |
 | `gc` | 古い run を削除（`--older-than` 日 / `--keep` 件 / `--status` / `--dry-run`） |
-| `status` | run の状態表示 |
+| `orchestrate` / `work` | 計画役・ワーカー役の内部コマンド（`run`/`daemon` が起動する） |
 
 ### 主なオプション
 
@@ -164,7 +166,7 @@ tmux attach -t flow
 | `--git` | （なし） | 共有 git リポジトリ URL/パス。指定で複数 PC 分散モード |
 | `--git-branch` | `main` | バスに使う git ブランチ |
 | `--lease` | 1800 | claim のリース秒数（実行中はハートビートが延長） |
-| `--workers` | 2 | 起動するワーカー数（`up` / `resume`） |
+| `--workers` | 2 | 起動するワーカー数（`run`） |
 | `--max-workers` | 4 | デーモンが同時に走らせる worker 上限（`daemon`） |
 | `--planner` / `--executor` | `kiro` | `kiro`（kiro-cli）/ `stub`（オフライン検証）。executor は評価役にも使う |
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
@@ -199,8 +201,10 @@ python3 tools/kiro-flow/tests/test_kiro_flow.py
   lease ハートビート（長時間タスクの claim 更新）・負荷分散の位相ずらし。✅
 - **M4**: 依存付き分解（`;` 並列 / `->` 逐次）・ライブ可視化 `watch`・
   `gc`（古い run 掃除）・障害注入を含むテストスイート。✅
-- **M5（本実装）**: **常駐デーモン**による orchestrator/worker のオンデマンド起動・
+- **M5**: **常駐デーモン**による orchestrator/worker のオンデマンド起動・
   `submit`/inbox 要求キュー・要求 claim によるデーモン選出。✅
+- **M6（本実装）**: `install.sh` で `kiro-flow` コマンド化・サブコマンド整理
+  （`up`+`resume`→`run`、`status`+`watch`→`status --follow`）。✅
 - **今後**: 公平な負荷分散（work-stealing）・依存付き分解の LLM 強化・成果物の大容量対応（git-lfs）。
 
 ## 既知の制限

@@ -745,11 +745,24 @@ def cmd_work(args) -> int:
 
 
 # --------------------------------------------------------------------------
-# up — 一発起動
+# run — 単発実行。既存 run-id なら再開、無ければ新規（状態で自動判断）
 # --------------------------------------------------------------------------
-def cmd_up(args) -> int:
-    run_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
-    args.run_id = run_id
+def cmd_run(args) -> int:
+    probe = make_bus(args, "run")
+    probe.sync_pull()
+    resuming = bool(args.run_id) and probe.run_exists(args.run_id)
+    if resuming:
+        meta = probe.run_meta(args.run_id)
+        args.request = meta.get("request", "")
+        print(f">>> 既存 run {args.run_id} を再開します（status={meta.get('status')}）", flush=True)
+    else:
+        if not args.request:
+            print("エラー: 新規実行には <要求> が必要です（再開なら既存の --run-id を指定）",
+                  file=sys.stderr)
+            return 2
+        args.run_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
+    run_id = args.run_id
+
     bus_root = os.path.abspath(args.bus)
     me = self_path()
     # グローバル引数（バス・転送）を子プロセスへ引き継ぐ
@@ -776,11 +789,10 @@ def cmd_up(args) -> int:
         ])
         procs.append((wid, w))
 
-    kind = "resume" if getattr(args, "_resume", False) else "up"
-    print(f"\n>>> kiro-flow {kind}: run_id={run_id} bus={mode}")
+    print(f"\n>>> kiro-flow run: run_id={run_id} bus={mode} ({'resume' if resuming else 'new'})")
     print(f">>> orchestrator x1 + worker x{args.workers} を起動しました。Ctrl-C で全停止。\n", flush=True)
 
-    bus = make_bus(args, "up-monitor")
+    bus = make_bus(args, "run")
 
     def shutdown(*_):
         for name, p in procs:
@@ -814,26 +826,6 @@ def cmd_up(args) -> int:
         print("\n=== 最終結果 ===")
         print(final.get("summary", ""))
     return 0
-
-
-# --------------------------------------------------------------------------
-# resume — 中断した run を同じ run-id で再開
-# --------------------------------------------------------------------------
-def cmd_resume(args) -> int:
-    if not args.run_id:
-        print("resume には --run-id が必要です", file=sys.stderr)
-        return 2
-    bus = make_bus(args, "resume-reader")
-    bus.sync_pull()
-    meta = read_json(bus.meta_path)
-    if not meta:
-        print(f"run {args.run_id} が見つかりません（bus を確認）", file=sys.stderr)
-        return 2
-    # orchestrate は既存グラフを検出すると計画をやり直さず再開する
-    args.request = meta.get("request", "")
-    args._resume = True
-    print(f">>> run {args.run_id} を再開します（status={meta.get('status')}）", flush=True)
-    return cmd_up(args)
 
 
 # --------------------------------------------------------------------------
@@ -972,55 +964,49 @@ def cmd_gc(args) -> int:
 
 
 # --------------------------------------------------------------------------
-# watch — ライブ可視化（tmux ペインに置くと監視ダッシュボードになる）
+# status — 状態表示。既定は 1 回表示、--follow でライブ監視（tmux ペイン向け）
 # --------------------------------------------------------------------------
-def cmd_watch(args) -> int:
-    bus = make_bus(args, "watch-viewer")
+def _render_status(bus, run_id, events):
+    graph = bus.read_graph()
+    status = bus.get_status()
+    lines = [f"run: {run_id}   status: {status}   {now_iso()}"]
+    if graph and graph.get("nodes"):
+        counts = {}
+        for nid in graph["nodes"]:
+            st = bus.node_state(nid)
+            counts[st] = counts.get(st, 0) + 1
+        lines.append("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                     + f"   iteration={graph.get('iteration', 0)}")
+        for nid, node in graph["nodes"].items():
+            deps = ",".join(node.get("deps", [])) or "-"
+            lines.append(f"  {nid:<6} {bus.node_state(nid):<8} "
+                         f"deps[{deps}] {node.get('goal','')[:48]}")
+    else:
+        lines.append("  (グラフ未生成)")
+    if events:
+        evs = bus.recent_events(events)
+        if evs:
+            lines.append("  --- recent events ---")
+            for e in evs:
+                lines.append(f"  {e.get('ts','')} {e.get('who',''):<12} "
+                             f"{e.get('kind','')} {e.get('node','') or e.get('tasks') or ''}")
+    return status, "\n".join(lines)
+
+
+def cmd_status(args) -> int:
+    bus = make_bus(args, "status-viewer")
     try:
         while True:
             bus.sync_pull()
-            graph = bus.read_graph()
-            status = bus.get_status()
-            lines = [f"run: {args.run_id}   status: {status}   {now_iso()}"]
-            if graph and graph.get("nodes"):
-                counts = {}
-                for nid in graph["nodes"]:
-                    st = bus.node_state(nid)
-                    counts[st] = counts.get(st, 0) + 1
-                lines.append("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-                             + f"   iteration={graph.get('iteration', 0)}")
-                for nid, node in graph["nodes"].items():
-                    deps = ",".join(node.get("deps", [])) or "-"
-                    lines.append(f"  {nid:<6} {bus.node_state(nid):<8} "
-                                 f"deps[{deps}] {node.get('goal','')[:48]}")
-            else:
-                lines.append("  (グラフ未生成)")
-            evs = bus.recent_events(args.events)
-            if evs:
-                lines.append("  --- recent events ---")
-                for e in evs:
-                    lines.append(f"  {e.get('ts','')} {e.get('who',''):<12} "
-                                 f"{e.get('kind','')} {e.get('node','') or e.get('tasks') or ''}")
-            if not args.once:
+            status, text = _render_status(bus, args.run_id, args.events)
+            if args.follow:
                 sys.stdout.write("\033[2J\033[H")  # 画面クリア
-            print("\n".join(lines), flush=True)
-            if args.once or (args.until_done and status in TERMINAL):
+            print(text, flush=True)
+            if not args.follow or (args.until_done and status in TERMINAL):
                 break
             time.sleep(args.interval)
     except KeyboardInterrupt:
         pass
-    return 0
-
-
-# --------------------------------------------------------------------------
-# status
-# --------------------------------------------------------------------------
-def cmd_status(args) -> int:
-    bus = make_bus(args, "status-viewer")
-    bus.sync_pull()
-    print(f"run: {args.run_id}  status: {bus.get_status()}")
-    for nid in bus.task_ids():
-        print(f"  {nid:<8} {bus.node_state(nid)}")
     return 0
 
 
@@ -1041,25 +1027,17 @@ def main() -> int:
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    up = sub.add_parser("up", help="orchestrator + worker(複数) を一発起動して待機")
-    up.add_argument("request", help="ワークフローへの要求")
-    up.add_argument("--workers", type=int, default=2)
-    up.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
-    up.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
-    up.add_argument("--max-iterations", type=int, default=3,
-                    help="再計画（evaluator-optimizer）の最大反復回数")
-    up.add_argument("--model", default=None)
-    up.add_argument("--poll", type=float, default=2.0)
-    up.set_defaults(func=cmd_up)
-
-    res = sub.add_parser("resume", help="中断した run を同じ --run-id で再開")
-    res.add_argument("--workers", type=int, default=2)
-    res.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
-    res.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
-    res.add_argument("--max-iterations", type=int, default=3)
-    res.add_argument("--model", default=None)
-    res.add_argument("--poll", type=float, default=2.0)
-    res.set_defaults(func=cmd_resume)
+    run = sub.add_parser("run", help="単発実行。既存 --run-id なら再開、無ければ新規（状態で自動判断）")
+    run.add_argument("request", nargs="?", default=None,
+                     help="ワークフローへの要求（再開時は省略可）")
+    run.add_argument("--workers", type=int, default=2)
+    run.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
+    run.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
+    run.add_argument("--max-iterations", type=int, default=3,
+                     help="再計画（evaluator-optimizer）の最大反復回数")
+    run.add_argument("--model", default=None)
+    run.add_argument("--poll", type=float, default=2.0)
+    run.set_defaults(func=cmd_run)
 
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
@@ -1096,15 +1074,12 @@ def main() -> int:
     sb.add_argument("request", help="ワークフローへの要求")
     sb.set_defaults(func=cmd_submit)
 
-    st = sub.add_parser("status", help="run の状態表示")
+    st = sub.add_parser("status", help="run の状態表示（既定 1 回 / --follow でライブ監視）")
+    st.add_argument("--follow", "-f", action="store_true", help="ライブ監視（tmux ペイン向け）")
+    st.add_argument("--interval", type=float, default=1.0, help="更新間隔（秒, --follow 時）")
+    st.add_argument("--events", type=int, default=8, help="表示する直近イベント数")
+    st.add_argument("--until-done", action="store_true", help="run 完了で自動終了（--follow 時）")
     st.set_defaults(func=cmd_status)
-
-    wt = sub.add_parser("watch", help="run をライブ可視化（tmux ペイン向け）")
-    wt.add_argument("--interval", type=float, default=1.0, help="更新間隔（秒）")
-    wt.add_argument("--events", type=int, default=8, help="表示する直近イベント数")
-    wt.add_argument("--once", action="store_true", help="1 回だけ表示して終了")
-    wt.add_argument("--until-done", action="store_true", help="run 完了で自動終了")
-    wt.set_defaults(func=cmd_watch)
 
     gc = sub.add_parser("gc", help="古い run を掃除")
     gc.add_argument("--older-than", type=float, default=7.0, help="この日数より古い run が対象")

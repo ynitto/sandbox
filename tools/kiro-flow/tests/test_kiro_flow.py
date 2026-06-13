@@ -177,7 +177,7 @@ class DaemonPrimitiveTests(unittest.TestCase):
 
 class EndToEndTests(unittest.TestCase):
     def _run_up(self, bus, request, extra=None, timeout=90):
-        cmd = [sys.executable, str(SCRIPT), "--bus", bus, "up", request,
+        cmd = [sys.executable, str(SCRIPT), "--bus", bus, "run", request,
                "--workers", "3", "--planner", "stub", "--executor", "stub", "--poll", "0.2"]
         cmd += extra or []
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
