@@ -3,18 +3,20 @@
 kiro-cli で **Claude 風の Dynamic Workflow**（動的にタスクを分解 → ワーカーへ委譲 → 結果統合）を
 実現する基盤。通信は **ファイルのみ**で行い、バスを git に差し替えれば**複数 PC へ分散**できる設計。
 
-> **現状: M3（動的ワークフロー）**
-> ローカル/ git バス（M1/M2）の上に、結果評価に基づく**再計画ループ**（evaluator-optimizer）、
-> **中断再開（resume）**、長時間タスク向けの**lease ハートビート**を実装。
+> **現状: M4（運用機能＋テスト）**
+> 動的ワークフロー（M3）の上に、**依存付き分解**、**ライブ可視化（watch）**、
+> **古い run の掃除（gc）**、**障害注入を含むテストスイート**を追加。
 
 ## できること
 
 - `up` **一発**で orchestrator ×1 ＋ worker ×N を起動して待機。run 完了で自動停止、Ctrl-C で全停止。
-- 要求を独立タスクに分解し、複数ワーカーが**競合せず** claim して並列実行。
+- 要求をタスクに分解し、**依存関係を尊重**しつつ複数ワーカーが**競合せず** claim して並列実行。
 - **動的な再計画**：全タスク完了後に結果を評価し、不足があればタスクを追加して反復（最大 `--max-iterations`）。
 - **`--git` で複数 PC 分散**：各ノードが共有リポジトリの自分専用クローンで作業し、push/pull で通信。
 - **`resume`**：中断した run を同じ `--run-id` で再開（計画はやり直さず未完タスクから継続）。
 - **lease ハートビート**：実行中はリースを延長し続け、長時間タスクでも他ノードに横取りされない。
+- **`watch`**：タスクグラフの状態と直近イベントをライブ表示（tmux ペインに置けば監視ダッシュボード）。
+- **`gc`**：古い・完了済みの run をバスから削除（git バスでは git rm＋push）。
 - LLM は **kiro-cli** がデフォルト。kiro-cli 無しでも動く **stub** モードでプロトコル検証可能。
 
 ## 動的ワークフロー（evaluator-optimizer ループ）
@@ -83,8 +85,25 @@ python3 kiro-flow.py --git git@example.com:team/flow-bus.git --git-branch main \
 # 別 PC をワーカーとして後から合流（同じ run-id を指定）
 python3 kiro-flow.py --git <URL> --run-id <run-id> work --keep-alive
 
-# 状態確認
-python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> status
+# 依存関係つきの分解（stub）: ';' は並列、'->' は逐次依存チェーン
+python3 kiro-flow.py up "setup -> build -> test; write docs" \
+  --workers 3 --planner stub --executor stub
+
+# ライブ可視化（別ターミナル / tmux ペインで）
+python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> watch
+python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> status   # 1 回だけ表示
+
+# 古い run を掃除（7 日より古い done を残り 5 件保護で削除、まず dry-run）
+python3 kiro-flow.py --bus /tmp/flowbus gc --older-than 7 --keep 5 --status done --dry-run
+```
+
+### tmux で「実行 ＋ 監視」を一画面に
+
+```bash
+RID=run-XXXX
+tmux new-session -d -s flow "python3 kiro-flow.py --run-id $RID up '<要求>' --workers 3"
+tmux split-window -h "python3 kiro-flow.py --run-id $RID watch --until-done"
+tmux attach -t flow
 ```
 
 ### サブコマンド
@@ -95,6 +114,8 @@ python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> status
 | `resume --run-id <id>` | 中断した run を再開（orchestrator + worker を再起動） |
 | `orchestrate --request <要求>` | 計画役単体（分解 → 投入 → 評価/再計画 → 統合）。既存グラフがあれば再開 |
 | `work` | ワーカー役単体（claim → 実行 → result）。`--keep-alive` で常駐待機 |
+| `watch` | タスクグラフ＋直近イベントをライブ表示（`--once` / `--until-done`） |
+| `gc` | 古い run を削除（`--older-than` 日 / `--keep` 件 / `--status` / `--dry-run`） |
 | `status` | run の状態表示 |
 
 ### 主なオプション
@@ -117,16 +138,30 @@ python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> status
 - git モードでは `git` コマンド（共有リポジトリは初期化済みであること）
 - 実運用では `kiro-cli`（`--planner kiro` / `--executor kiro`）
 
+## テスト
+
+kiro-cli 不要（stub のみ）。プロトコル・障害注入・依存分解・再計画・end-to-end を検証する。
+
+```bash
+python3 tools/kiro-flow/tests/test_kiro_flow.py
+# または: python3 -m unittest discover -s tools/kiro-flow/tests
+```
+
+主なケース: 決定的タイブレーク、**lease 切れ claim の回収（死んだワーカー）**、
+**同時 claim でも勝者は 1 人**、逐次依存の分解、失敗 → 再計画 → retry 成功（end-to-end）。
+
 ## ロードマップ
 
 - **M1**: ローカルバス・claim プロトコル・一発起動。✅
 - **M2**: git バスで複数 PC 分散。名前空間付き claim ＋ 決定的タイブレーク、
   push 競合の rebase リトライ、lease による孤児 claim の自動回収。✅
-- **M3（本実装）**: 結果評価に基づく**再計画ループ**（evaluator-optimizer）・`resume`（中断再開）・
+- **M3**: 結果評価に基づく**再計画ループ**（evaluator-optimizer）・`resume`（中断再開）・
   lease ハートビート（長時間タスクの claim 更新）・負荷分散の位相ずらし。✅
-- **M4**: tmux 可視化・`gc`（古い run 掃除）・障害注入テスト・依存付きタスクの自動分解強化。
+- **M4（本実装）**: 依存付き分解（`;` 並列 / `->` 逐次）・ライブ可視化 `watch`・
+  `gc`（古い run 掃除）・障害注入を含むテストスイート。✅
+- **今後**: 公平な負荷分散（work-stealing）・依存付き分解の LLM 強化・成果物の大容量対応（git-lfs）。
 
-## 既知の制限（M3 時点）
+## 既知の制限
 
 - **負荷分散は heuristic**: 起動位相ずらし＋タスク後ジッタで緩和するが、ウォームなノードが
   連続 claim しやすい傾向は残る。実 kiro-cli はタスク実行に時間がかかり遅延も入るため自然に

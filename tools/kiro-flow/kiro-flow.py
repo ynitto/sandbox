@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import random
+import shutil
 import signal
 import socket
 import subprocess
@@ -89,6 +90,7 @@ def extract_json(text: str):
 class Bus:
     def __init__(self, root: str, run_id: str):
         self.root = root
+        self.runs_root = os.path.join(root, "runs")
         self.run_dir = os.path.join(root, "runs", run_id)
         self.tasks_dir = os.path.join(self.run_dir, "tasks")
         self.claims_dir = os.path.join(self.run_dir, "claims")
@@ -235,6 +237,31 @@ class Bus:
         with open(os.path.join(self.events_dir, f"{who}.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+    def recent_events(self, limit: int):
+        evs = []
+        if os.path.isdir(self.events_dir):
+            for name in os.listdir(self.events_dir):
+                with open(os.path.join(self.events_dir, name), encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            evs.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+        return sorted(evs, key=lambda e: e.get("ts", ""))[-limit:]
+
+    # --- run 管理（gc / watch 用） ---
+    def list_runs(self):
+        if not os.path.isdir(self.runs_root):
+            return []
+        return sorted(d for d in os.listdir(self.runs_root)
+                      if os.path.isdir(os.path.join(self.runs_root, d)))
+
+    def run_meta(self, run_id: str):
+        return read_json(os.path.join(self.runs_root, run_id, "meta.json")) or {}
+
+    def remove_run(self, run_id: str) -> None:
+        shutil.rmtree(os.path.join(self.runs_root, run_id), ignore_errors=True)
+
 
 # --------------------------------------------------------------------------
 # GitBus — git 共有リポジトリをバスにする（複数 PC 分散）
@@ -302,6 +329,10 @@ class GitBus(Bus):
             time.sleep(2 ** i if i < 4 else 16)
         raise RuntimeError(f"git push が {self.branch} へ反映できませんでした")
 
+    def remove_run(self, run_id: str) -> None:
+        self._git(["rm", "-r", "-q", "--ignore-unmatch", f"runs/{run_id}"], check=False)
+        super().remove_run(run_id)  # 未追跡の残骸も掃除（commit/push は呼び出し側）
+
 
 def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
@@ -309,10 +340,11 @@ def _safe(name: str) -> str:
 
 def make_bus(args, node_id: str) -> Bus:
     """--git があれば GitBus（ノードごとに専用クローン）、無ければローカル Bus。"""
+    run_id = args.run_id or "_"  # gc 等 run 横断コマンドでは run_id 不要
     if getattr(args, "git", None):
         clone_dir = os.path.join(os.path.abspath(args.bus), _safe(node_id))
-        return GitBus(clone_dir, args.run_id, remote=args.git, branch=args.git_branch)
-    return Bus(os.path.abspath(args.bus), args.run_id)
+        return GitBus(clone_dir, run_id, remote=args.git, branch=args.git_branch)
+    return Bus(os.path.abspath(args.bus), run_id)
 
 
 # --------------------------------------------------------------------------
@@ -349,19 +381,34 @@ class Heartbeat(threading.Thread):
 def plan_stub(request: str):
     """kiro-cli 無しでプロトコルを検証するための簡易分解。
 
-    request を ';' か改行で割って独立タスクにする（依存なし＝並列 claim を試せる）。
-    1 つしか無ければそのまま 1 タスク。"""
-    parts = [p.strip() for p in request.replace("\n", ";").split(";") if p.strip()]
-    if not parts:
-        parts = [request.strip() or "no-op"]
-    return [{"id": f"t{i+1}", "goal": g, "deps": []} for i, g in enumerate(parts)]
+    区切り記号で依存関係も表現できる:
+      ';' / 改行 … 独立（並列）タスクの境界
+      '->'        … 逐次依存チェーン（各タスクが直前のタスクに依存）
+    例: "setup -> build -> test; write docs"
+        → t1=setup, t2=build(deps t1), t3=test(deps t2), t4=write docs(deps なし)"""
+    segments = [s.strip() for s in request.replace("\n", ";").split(";") if s.strip()]
+    if not segments:
+        segments = [request.strip() or "no-op"]
+    tasks = []
+    idx = 0
+    for seg in segments:
+        chain = [c.strip() for c in seg.split("->") if c.strip()]
+        prev = None
+        for goal in chain:
+            idx += 1
+            tid = f"t{idx}"
+            tasks.append({"id": tid, "goal": goal, "deps": [prev] if prev else []})
+            prev = tid
+    return tasks
 
 
 def plan_kiro(request: str, model: str | None):
     prompt = (
-        "あなたは分散ワークフローの計画役です。次の要求を、互いに独立して実行できる"
-        "小さなサブタスクに分解してください。出力は JSON 配列のみ。各要素は "
-        '{"id": "t1", "goal": "...", "deps": []} の形式。deps は先行タスクの id 配列。\n\n'
+        "あなたは分散ワークフローの計画役です。次の要求を、小さなサブタスクに分解してください。"
+        "互いに独立なタスクは並列実行できるよう deps を空にし、順序が必要なタスクは deps に"
+        "先行タスクの id を入れてください（依存を正しく抽出することが重要）。"
+        "出力は JSON 配列のみ。各要素は "
+        '{"id": "t1", "goal": "...", "deps": []} の形式。\n\n'
         f"要求: {request}"
     )
     out = run_kiro(prompt, model)
@@ -718,6 +765,91 @@ def cmd_resume(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# gc — 古い run を掃除
+# --------------------------------------------------------------------------
+def _age_hours(meta) -> float:
+    ts = meta.get("updated_at") or meta.get("created_at")
+    if not ts:
+        return float("inf")  # タイムスタンプ無し＝十分古いとみなす
+    try:
+        dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return float("inf")
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+
+
+def cmd_gc(args) -> int:
+    bus = make_bus(args, "gc")
+    bus.sync_pull()
+    runs = bus.list_runs()
+    metas = [(rid, bus.run_meta(rid)) for rid in runs]
+    # 新しい順に並べ、先頭 keep 件は無条件で保護
+    metas.sort(key=lambda x: x[1].get("created_at", ""), reverse=True)
+
+    to_delete = []
+    for i, (rid, meta) in enumerate(metas):
+        if i < args.keep:
+            continue
+        if _age_hours(meta) < args.older_than * 24.0:
+            continue
+        if args.status and meta.get("status") != args.status:
+            continue
+        to_delete.append((rid, meta))
+
+    for rid, meta in to_delete:
+        tag = "[dry-run] " if args.dry_run else ""
+        print(f"{tag}削除: {rid} (status={meta.get('status')}, age={_age_hours(meta):.1f}h)")
+        if not args.dry_run:
+            bus.remove_run(rid)
+    if to_delete and not args.dry_run:
+        bus.sync_push(f"gc: removed {len(to_delete)} run(s)")
+    print(f"削除 {len(to_delete)} / 全 {len(runs)} runs"
+          f"{'（dry-run）' if args.dry_run else ''}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# watch — ライブ可視化（tmux ペインに置くと監視ダッシュボードになる）
+# --------------------------------------------------------------------------
+def cmd_watch(args) -> int:
+    bus = make_bus(args, "watch-viewer")
+    try:
+        while True:
+            bus.sync_pull()
+            graph = bus.read_graph()
+            status = bus.get_status()
+            lines = [f"run: {args.run_id}   status: {status}   {now_iso()}"]
+            if graph and graph.get("nodes"):
+                counts = {}
+                for nid in graph["nodes"]:
+                    st = bus.node_state(nid)
+                    counts[st] = counts.get(st, 0) + 1
+                lines.append("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                             + f"   iteration={graph.get('iteration', 0)}")
+                for nid, node in graph["nodes"].items():
+                    deps = ",".join(node.get("deps", [])) or "-"
+                    lines.append(f"  {nid:<6} {bus.node_state(nid):<8} "
+                                 f"deps[{deps}] {node.get('goal','')[:48]}")
+            else:
+                lines.append("  (グラフ未生成)")
+            evs = bus.recent_events(args.events)
+            if evs:
+                lines.append("  --- recent events ---")
+                for e in evs:
+                    lines.append(f"  {e.get('ts','')} {e.get('who',''):<12} "
+                                 f"{e.get('kind','')} {e.get('node','') or e.get('tasks') or ''}")
+            if not args.once:
+                sys.stdout.write("\033[2J\033[H")  # 画面クリア
+            print("\n".join(lines), flush=True)
+            if args.once or (args.until_done and status in TERMINAL):
+                break
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+# --------------------------------------------------------------------------
 # status
 # --------------------------------------------------------------------------
 def cmd_status(args) -> int:
@@ -787,6 +919,20 @@ def main() -> int:
 
     st = sub.add_parser("status", help="run の状態表示")
     st.set_defaults(func=cmd_status)
+
+    wt = sub.add_parser("watch", help="run をライブ可視化（tmux ペイン向け）")
+    wt.add_argument("--interval", type=float, default=1.0, help="更新間隔（秒）")
+    wt.add_argument("--events", type=int, default=8, help="表示する直近イベント数")
+    wt.add_argument("--once", action="store_true", help="1 回だけ表示して終了")
+    wt.add_argument("--until-done", action="store_true", help="run 完了で自動終了")
+    wt.set_defaults(func=cmd_watch)
+
+    gc = sub.add_parser("gc", help="古い run を掃除")
+    gc.add_argument("--older-than", type=float, default=7.0, help="この日数より古い run が対象")
+    gc.add_argument("--keep", type=int, default=5, help="新しい順にこの件数は無条件で保護")
+    gc.add_argument("--status", default=None, help="この status の run のみ対象（例: done）")
+    gc.add_argument("--dry-run", action="store_true", help="削除せず対象だけ表示")
+    gc.set_defaults(func=cmd_gc)
 
     args = p.parse_args()
     # --model は up でだけ name が衝突しないよう調整済み
