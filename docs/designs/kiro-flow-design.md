@@ -161,6 +161,13 @@ try_claim(node, who):
 | `GitBus` | `git pull --rebase` / `add+commit+push`（競合は rebase リトライ） | 複数 PC 分散 |
 
 - `GitBus` は各ノードが `<bus>/<node-id>` に**自分専用クローン**を作り、push/pull で同期。
+- **バスサブディレクトリ**: `--git-subdir`（config `git_subdir`）でリポジトリ内のサブディレクトリを
+  バスのルートにできる（既存リポジトリの一角を間借り）。git の作業ツリーは `clone_dir`、バスの
+  ファイル群はその中の `clone_dir/<subdir>/{runs,inbox}` に置かれる。
+- **sparse checkout**: clone は `--no-checkout --filter=blob:none`（非対応サーバはフォールバック）で
+  取得し、cone モードの sparse-checkout でバスのサブツリー（`<subdir>` か、直下時は `runs`/`inbox`）
+  だけを作業ツリーに展開する。無関係なファイルを取得・展開しないので、大きな共有リポジトリでも軽い。
+  `remove_run`（gc）はサブディレクトリを考慮したリポジトリ相対パスで `git rm` する。
 - 全書き込みヘルパは親ディレクトリを自動生成する（git は空ディレクトリを追跡しないため、
   クローンしたてのノードでも `results/` 等へ書ける）。
 - `run_view(run_id)` で同一クローン内の別 run を**再クローンせず**読み取れる（デーモンの判断用）。
@@ -313,7 +320,7 @@ pip 依存なし。git は分散用、kiro-cli は実運用用で無くても st
 - **実装**: 設定対象オプションの argparse 既定を `None` にし、parse 後に `resolve_config(args)` が
   「CLI 未指定（None）の値だけ」を設定ファイル→既定で埋める。`--model_opt ""`（子プロセスが渡す
   「モデル指定なし」）は resolve 後に `None` へ正規化するため、設定ファイルの `model` が子へ漏れない。
-- **キー**: `bus` / `git` / `git_branch` / `planner` / `executor` / `model` /
+- **キー**: `bus` / `git` / `git_branch` / `git_subdir` / `planner` / `executor` / `model` /
   `max_workers` / `workers` / `max_iterations` / `poll` / `lease`。
 - 子プロセス（orchestrate/work）へはこれらを**明示フラグ**で渡すため、子側 resolve は同じ値を保ち整合する。
 

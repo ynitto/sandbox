@@ -70,6 +70,7 @@ CONFIG_DEFAULTS = {
     "bus": "./.kiro-flow",
     "git": None,
     "git_branch": "main",
+    "git_subdir": "",
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
@@ -409,42 +410,51 @@ class GitBus(Bus):
     rebase はほぼ disjoint なファイルの取り込みで済みコンフリクトしない。
     push 競合は pull --rebase → 再 push のリトライで吸収する。"""
 
-    def __init__(self, root: str, run_id: str, remote: str, branch: str = "main"):
-        super().__init__(root, run_id)
+    def __init__(self, clone_dir: str, run_id: str, remote: str, branch: str = "main",
+                 subdir: str = ""):
+        # git の作業ツリーは clone_dir。バスのルートはその中の subdir（指定時）。
+        self.workdir = clone_dir
+        self.subdir = (subdir or "").strip("/")
+        bus_root = os.path.join(clone_dir, self.subdir) if self.subdir else clone_dir
+        super().__init__(bus_root, run_id)
         self.remote = remote
         self.branch = branch
         self._ensure_clone()
 
+    # sparse checkout で作業ツリーに展開するパス（cone モード）
+    def _sparse_paths(self):
+        return [self.subdir] if self.subdir else ["runs", "inbox"]
+
     def _git(self, args, check=True):
-        p = subprocess.run(["git", "-C", self.root] + args, capture_output=True, text=True)
+        p = subprocess.run(["git", "-C", self.workdir] + args, capture_output=True, text=True)
         if check and p.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失敗: {p.stderr.strip()[:300]}")
         return p
 
     def _ensure_clone(self) -> None:
-        if not os.path.isdir(os.path.join(self.root, ".git")):
-            os.makedirs(os.path.dirname(self.root) or ".", exist_ok=True)
-            r = subprocess.run(["git", "clone", self.remote, self.root],
-                               capture_output=True, text=True)
+        first = not os.path.isdir(os.path.join(self.workdir, ".git"))
+        if first:
+            os.makedirs(os.path.dirname(self.workdir) or ".", exist_ok=True)
+            # sparse checkout: --no-checkout で取得し、必要なパスだけ展開する
+            r = subprocess.run(
+                ["git", "clone", "--no-checkout", "--filter=blob:none", self.remote, self.workdir],
+                capture_output=True, text=True)
+            if r.returncode != 0:
+                # blob filter 非対応サーバ向けフォールバック
+                r = subprocess.run(["git", "clone", "--no-checkout", self.remote, self.workdir],
+                                   capture_output=True, text=True)
             if r.returncode != 0:
                 raise RuntimeError(f"git clone 失敗: {r.stderr.strip()[:300]}")
         # コミット用 ID（未設定環境向けのフォールバック）
         if not self._git(["config", "user.email"], check=False).stdout.strip():
             self._git(["config", "user.email", "kiro-flow@local"])
             self._git(["config", "user.name", "kiro-flow"])
+        # sparse checkout（cone モード）を設定 — バスのサブツリーだけ作業ツリーに置く
+        self._git(["sparse-checkout", "init", "--cone"], check=False)
+        self._git(["sparse-checkout", "set"] + self._sparse_paths(), check=False)
         # 対象ブランチへ。無ければ作成（空リポジトリ初回も含む）
         if self._git(["checkout", self.branch], check=False).returncode != 0:
             self._git(["checkout", "-B", self.branch])
-
-    def _retry(self, args, attempts=4):
-        delay = 2
-        for i in range(attempts):
-            if self._git(args, check=False).returncode == 0:
-                return True
-            if i < attempts - 1:
-                time.sleep(delay)
-                delay *= 2
-        return False
 
     def sync_pull(self) -> None:
         # リモートに当該ブランチが無い初回などは黙って無視
@@ -464,7 +474,9 @@ class GitBus(Bus):
         raise RuntimeError(f"git push が {self.branch} へ反映できませんでした")
 
     def remove_run(self, run_id: str) -> None:
-        self._git(["rm", "-r", "-q", "--ignore-unmatch", f"runs/{run_id}"], check=False)
+        # バスサブディレクトリを考慮したリポジトリ相対パスで git rm
+        rel = os.path.join(self.subdir, "runs", run_id) if self.subdir else f"runs/{run_id}"
+        self._git(["rm", "-r", "-q", "--ignore-unmatch", rel], check=False)
         super().remove_run(run_id)  # 未追跡の残骸も掃除（commit/push は呼び出し側）
 
 
@@ -477,7 +489,8 @@ def make_bus(args, node_id: str) -> Bus:
     run_id = args.run_id or "_"  # gc 等 run 横断コマンドでは run_id 不要
     if getattr(args, "git", None):
         clone_dir = os.path.join(os.path.abspath(args.bus), _safe(node_id))
-        return GitBus(clone_dir, run_id, remote=args.git, branch=args.git_branch)
+        return GitBus(clone_dir, run_id, remote=args.git, branch=args.git_branch,
+                      subdir=getattr(args, "git_subdir", "") or "")
     return Bus(os.path.abspath(args.bus), run_id)
 
 
@@ -1028,7 +1041,8 @@ def cmd_run(args) -> int:
     # グローバル引数（バス・転送）を子プロセスへ引き継ぐ
     base = [sys.executable, me, "--bus", bus_root, "--run-id", run_id, "--lease", str(args.lease)]
     if args.git:
-        base += ["--git", args.git, "--git-branch", args.git_branch]
+        base += ["--git", args.git, "--git-branch", args.git_branch,
+                 "--git-subdir", args.git_subdir or ""]
     mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus_root}"
 
     procs = []
@@ -1111,7 +1125,8 @@ def cmd_daemon(args) -> int:
     me = self_path()
     base = [sys.executable, me, "--bus", os.path.abspath(args.bus), "--lease", str(args.lease)]
     if args.git:
-        base += ["--git", args.git, "--git-branch", args.git_branch]
+        base += ["--git", args.git, "--git-branch", args.git_branch,
+                 "--git-subdir", args.git_subdir or ""]
     mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.abspath(args.bus)}"
 
     orchestrators = {}   # run_id -> Popen
@@ -1338,6 +1353,8 @@ def main() -> int:
     p.add_argument("--git", default=None,
                    help="共有 git リポジトリ URL/パス。指定で複数 PC 分散モードになる")
     p.add_argument("--git-branch", default=None, help="バスに使う git ブランチ（既定 main）")
+    p.add_argument("--git-subdir", default=None,
+                   help="リポジトリ内のバスにするサブディレクトリ（既定: リポジトリ直下）")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     # サブコマンド未指定なら daemon として扱う（required=False）
