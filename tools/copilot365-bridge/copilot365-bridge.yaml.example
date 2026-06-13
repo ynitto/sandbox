@@ -1,0 +1,42 @@
+# copilot365-bridge 設定サンプル
+# コピーして copilot365-bridge.yaml として保存（JSON でも可: copilot365-bridge.json）。
+#
+# 検索順序:
+#   1. --config で明示指定
+#   2. カレントディレクトリの copilot365-bridge.yaml / .yml / .json
+#   3. HOME の同名ファイル
+# 設定が無くても既定値で動く（--mock 確認や selftest はこのファイル不要）。
+
+# ---------------------------------------------------------------------------
+# ブラウザ（B→A の Playwright 操作）
+# ---------------------------------------------------------------------------
+# 本人のログイン済みセッションを再利用する永続プロファイル。認証情報は保存しない。
+# 初回はヘッドフルで開き、人間が SSO/MFA を手で通す。以降はプロファイルに残る。
+user_data_dir: ~/.copilot365-bridge/browser-profile
+headless: false          # 既定はヘッドフル（本人セッション・ポリシー安全側）
+timeout_ms: 120000
+
+# ---------------------------------------------------------------------------
+# セレクタ（DOM が変わったらここだけ直す）
+# ---------------------------------------------------------------------------
+# テナント / 時期で MS365 の DOM は変わる。壊れたらこの 1 箇所を更新する。
+selectors:
+  url: "https://m365.cloud.microsoft/chat/"
+  prompt_box: 'textarea[aria-label*="Copilot"], div[contenteditable="true"]'
+  send_button: 'button[aria-label*="Send"], button[type="submit"]'
+  response: '[data-content="message"], div.response-message-body'
+  response_done: '[data-testid="copilot-response-complete"]'
+
+# ---------------------------------------------------------------------------
+# メールボックス（outbox/inbox による中継）
+# ---------------------------------------------------------------------------
+# daemon が outbox を監視し、to=ms365 のパケットを ask して inbox に回答を返す。
+# このディレクトリを issue-mailbox / makaroshki-bridge / kiro-loop と共有すれば、
+# 既存のメッセージハブにそのまま接続できる。
+mailbox_dir: ~/.copilot365-bridge/mailbox
+poll_interval_s: 5
+
+# ---------------------------------------------------------------------------
+# 承認（A→B: 人間が Outlook で返信した承認を検知）
+# ---------------------------------------------------------------------------
+approval_keyword: "approve"   # この語を含む返信を承認とみなす
