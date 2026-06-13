@@ -306,7 +306,7 @@ pip 依存なし。git は分散用、kiro-cli は実運用用で無くても st
 
 環境ごとに決まる値を設定ファイルへ外出しできる（kiro-loop と同じ流儀）。
 
-- **探索順序（フォールバック）**: `--config <path>` → カレントディレクトリ → `~/.kiro/` の
+- **探索順序（フォールバック）**: `--config <path>` → `./.kiro/` → `~/.kiro/` の
   `kiro-flow.{yaml,yml,json}`。
 - **形式**: PyYAML があれば YAML、無ければ JSON（同じキー。PyYAML は任意）。
 - **優先順位**: CLI 引数 > 設定ファイル > 組み込み既定（`CONFIG_DEFAULTS`）。

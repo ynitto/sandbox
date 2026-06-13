@@ -84,7 +84,7 @@ CONFIG_DEFAULTS = {
 def _find_config(explicit):
     """設定ファイルの探索（フォールバック順）:
        1. --config で明示指定
-       2. カレントディレクトリの kiro-flow.{yaml,yml,json}
+       2. カレントディレクトリの .kiro/kiro-flow.{yaml,yml,json}
        3. ~/.kiro/kiro-flow.{yaml,yml,json}"""
     if explicit:
         p = os.path.expanduser(explicit)
@@ -92,7 +92,8 @@ def _find_config(explicit):
             print(f"[kiro-flow] 設定ファイルが見つかりません: {explicit}", file=sys.stderr)
             sys.exit(1)
         return p
-    for base in (os.getcwd(), os.path.join(os.path.expanduser("~"), ".kiro")):
+    for base in (os.path.join(os.getcwd(), ".kiro"),
+                 os.path.join(os.path.expanduser("~"), ".kiro")):
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(base, name)
             if os.path.isfile(cand):

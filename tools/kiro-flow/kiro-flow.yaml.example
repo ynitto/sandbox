@@ -2,11 +2,11 @@
 # ファイル名: kiro-flow.yaml
 #
 # このファイルをどこかに置いて --config で指定するか、
-# カレントディレクトリか ~/.kiro/ に置くと自動検出されます。
+# ./.kiro/ か ~/.kiro/ に置くと自動検出されます。
 #
 # 検索順序（フォールバック）:
 #   1. --config オプションで明示指定したパス
-#   2. カレントディレクトリの kiro-flow.yaml / .yml / .json
+#   2. カレントディレクトリの .kiro/kiro-flow.yaml / .yml / .json
 #   3. ~/.kiro/kiro-flow.yaml / .yml / .json
 #
 # 値の優先順位: コマンドライン引数 > この設定ファイル > 組み込み既定。
