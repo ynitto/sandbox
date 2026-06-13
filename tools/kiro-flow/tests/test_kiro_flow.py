@@ -111,26 +111,77 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(by_id["t4"]["deps"], [])         # docs independent
 
 
-class EvaluatorTests(unittest.TestCase):
+class ContinuationTests(unittest.TestCase):
     def test_replan_retries_failed_once(self):
-        goals = {"t1": "ok", "t2": "FAIL bad"}
+        nodes = {"t1": {"goal": "ok", "deps": [], "kind": "work"},
+                 "t2": {"goal": "FAIL bad", "deps": [], "kind": "work"}}
         results = {"t1": {"status": "done"}, "t2": {"status": "failed"}}
-        decision, new, _ = kf.evaluate_stub("req", goals, results, 0)
+        decision, new, _ = kf.continue_stub("req", nodes, results, 0)
         self.assertEqual(decision, "replan")
         self.assertEqual([t["id"] for t in new], ["t2r"])
         self.assertNotIn("FAIL", new[0]["goal"])  # retry のゴールは修正済み
 
     def test_no_replan_when_all_done(self):
-        decision, new, _ = kf.evaluate_stub("req", {"t1": "ok"}, {"t1": {"status": "done"}}, 0)
+        nodes = {"t1": {"goal": "ok", "deps": [], "kind": "work"}}
+        decision, new, _ = kf.continue_stub("req", nodes, {"t1": {"status": "done"}}, 0)
         self.assertEqual(decision, "done")
         self.assertEqual(new, [])
 
-    def test_replan_guarded_against_loop(self):
-        # 既に retry 済み（t2r が存在）なら新規追加しない
-        goals = {"t2": "FAIL", "t2r": "[retry] ok"}
-        results = {"t2": {"status": "failed"}, "t2r": {"status": "done"}}
-        decision, new, _ = kf.evaluate_stub("req", goals, results, 1)
-        self.assertEqual(decision, "done")
+    def test_classify_routes_to_specialist(self):
+        nodes = {"classify": {"goal": "分類: backend のバグ", "deps": [], "kind": "classify"}}
+        results = {"classify": {"status": "done", "output": "class=backend"}}
+        decision, new, _ = kf.continue_stub("backend のバグ", nodes, results, 0)
+        self.assertEqual(decision, "replan")
+        self.assertEqual(new[0]["id"], "classify-act")
+        self.assertIn("backend", new[0]["goal"])
+        self.assertEqual(new[0]["deps"], ["classify"])
+
+    def test_verify_fail_triggers_regen_and_recheck(self):
+        nodes = {"gen1": {"goal": "FLAKY work", "deps": [], "kind": "generate"},
+                 "verify1": {"goal": "検証", "deps": ["gen1"], "kind": "verify"}}
+        results = {"gen1": {"status": "done", "output": "[stub] 未完(issue)"},
+                   "verify1": {"status": "done", "output": "verify=fail"}}
+        decision, new, _ = kf.continue_stub("req", nodes, results, 0)
+        self.assertEqual(decision, "replan")
+        ids = [t["id"] for t in new]
+        self.assertIn("gen1-r1", ids)     # 作り直し
+        self.assertIn("verify1-r1", ids)  # 再検証
+        self.assertNotIn("FLAKY", next(t for t in new if t["id"] == "gen1-r1")["goal"])
+
+
+class PatternStrategyTests(unittest.TestCase):
+    def test_pattern_detection(self):
+        cases = {
+            "バグを分類して振り分けて": "classify-and-act",
+            "3案を比較して最良を選ぶ tournament": "tournament",
+            "候補を出してフィルタ": "generate-and-filter",
+            "成果をレビューして検証": "adversarial-verification",
+            "テストが通るまで繰り返す": "loop-until-done",
+            "資料を3観点でまとめる": "fan-out-and-synthesize",
+        }
+        for req, want in cases.items():
+            self.assertEqual(kf._detect_pattern(req), want, req)
+
+    def test_parallelism_extraction(self):
+        self.assertEqual(kf._parallelism("候補を x4 出す", 2), 4)
+        self.assertEqual(kf._parallelism("並列5で", 2), 5)
+        self.assertEqual(kf._parallelism("ふつうの要求", 3), 3)
+
+    def test_fanout_graph_has_synthesize_over_parallel(self):
+        strat, tasks = kf.plan_strategy_stub("A; B; C")
+        self.assertEqual(strat["patterns"], ["fan-out-and-synthesize"])
+        synth = [t for t in tasks if t["kind"] == "synthesize"]
+        self.assertEqual(len(synth), 1)
+        # 統合ノードは全並列ノードに依存
+        gens = [t["id"] for t in tasks if t["kind"] != "synthesize"]
+        self.assertEqual(sorted(synth[0]["deps"]), sorted(gens))
+
+    def test_tournament_graph_has_judge(self):
+        strat, tasks = kf.plan_strategy_stub("最良案を選ぶ tournament x3")
+        self.assertEqual(strat["patterns"], ["tournament"])
+        self.assertEqual(strat["parallelism"], 3)
+        self.assertEqual(len([t for t in tasks if t["kind"] == "generate"]), 3)
+        self.assertEqual(len([t for t in tasks if t["kind"] == "judge"]), 1)
 
 
 class DaemonPrimitiveTests(unittest.TestCase):
@@ -193,10 +244,13 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-800:])
         final = self._final(bus)
         results = final["results"]
-        self.assertEqual(len(results), 3)
+        # fan-out-and-synthesize: 並列ノード + 統合ノード（合計 >= 4）がすべて done
+        self.assertGreaterEqual(len(results), 4)
+        self.assertIn("synth", results)
         for nid, r in results.items():
-            self.assertEqual(r["status"], "done")
+            self.assertEqual(r["status"], "done", f"{nid}: {r}")
             self.assertTrue(r["who"])  # 誰かが実行した
+        self.assertEqual(final["strategy"]["patterns"], ["fan-out-and-synthesize"])
 
     def test_up_replan_recovers_failure(self):
         bus = tempfile.mkdtemp(prefix="kf-e2e-")

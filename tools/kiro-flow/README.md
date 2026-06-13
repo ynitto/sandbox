@@ -3,13 +3,14 @@
 kiro-cli で **Claude 風の Dynamic Workflow**（動的にタスクを分解 → ワーカーへ委譲 → 結果統合）を
 実現する基盤。通信は **ファイルのみ**で行い、バスを git に差し替えれば**複数 PC へ分散**できる設計。
 
-> **現状: M6（コマンド化＋整理）**
-> `install.sh` で `kiro-flow` コマンドとして導入でき、常駐デーモンが要求に応じて
-> orchestrator/worker を**オンデマンド起動**する。サブコマンドは状態で挙動が決まるものを
-> 統合済み（`up`+`resume`→`run`、`status`+`watch`→`status --follow`）。
+> **現状: M7（6 パターン戦略）**
+> orchestrator が [Claude Dynamic Workflows の 6 パターン](https://zenn.dev/aria3/articles/claude-code-dynamic-workflows-6-patterns)
+> をカタログとして持ち、**要求に応じてパターンの組み合わせと並列数を選んで**タスクグラフを形作る。
 
 ## できること
 
+- **6 つのワークフローパターン**を orchestrator が知っていて、**要求からパターンと並列数（fan-out 幅）を
+  自動選択**してグラフを形作る（下記）。kiro 評価役はパターンを踏まえて継続（ルーティング/再生成/統合）を判断。
 - **`daemon`**：常駐し、投入された要求を拾って orchestrator を起動、claim 可能タスク量に応じて
   **ワーカーをオンデマンド起動**（仕事が無くなれば自然終了）。**分散時は各 PC でデーモンを動かす**だけ。
 - **`submit`**：要求を inbox に投入。デーモンが拾う（要求は claim で 1 台だけが orchestrate を担当）。
@@ -37,20 +38,42 @@ submit "要求" ─▶ inbox/<id>.json
         分散時: 共有 git バスを複数デーモンが見て各自 worker を湧かせる
 ```
 
+## 6 つのワークフローパターン
+
+orchestrator は要求を見て、以下の 6 パターン（[参考記事](https://zenn.dev/aria3/articles/claude-code-dynamic-workflows-6-patterns)）
+から組み合わせと並列数を選び、各ノードに **kind** を付けたタスクグラフを生成する。
+
+| パターン | 形（ノード kind） | 使いどころ |
+|---------|------------------|-----------|
+| **classify-and-act** | `classify` → 結果で `work` を追加（ルーティング） | 種別判定して専門処理へ振り分け |
+| **fan-out-and-synthesize** | 並列 `work`/`generate` ×N → `synthesize` | 分割して並列処理し統合 |
+| **adversarial-verification** | `generate` → `verify`（fail なら作り直し） | 成果を批判的に検証 |
+| **generate-and-filter** | `generate` ×N → `filter` | 候補を多数出して絞り込み |
+| **tournament** | `generate` ×N → `judge` | 複数案から最良を選ぶ |
+| **loop-until-done** | `work` → `verify`（条件を満たすまで反復） | テスト通過・品質達成まで繰り返す |
+
+- **パターン選択**: `--planner kiro` なら kiro-cli が選ぶ。`--planner stub` は要求のキーワードで判定
+  （「分類/振り分け」→classify、「tournament/最良」→tournament、「候補/フィルタ」→filter、
+  「検証/レビュー」→adversarial、「繰り返し/通るまで」→loop、それ以外→fan-out）。
+- **並列数**: 要求中の `xN` / `並列N` を拾う。無ければ並列タスク数から既定（2〜6）。
+- **継続判断**: 静止（claim 可能・実行中タスクが無い）するたびに評価し、`classify` 結果でルーティング、
+  `verify` が fail なら依存を作り直して再検証（`replaces` で後続の依存を付け替え）、失敗タスクは retry。
+- 選んだ戦略は `graph.json` / `final.json` に記録され、`status` でも表示される。
+
 ## 動的ワークフロー（evaluator-optimizer ループ）
 
 ```
-要求 → [分解] → タスク投入 → ワーカーが claim/実行 → 全完了
+要求 → [パターン選択+分解] → タスク投入 → ワーカーが claim/実行 → 静止
                   ▲                                      │
                   │                                      ▼
             タスク追加 ◀── replan ── [評価] done? ──→ 統合(final.json)
                           （最大 max-iterations 回）
 ```
 
-orchestrator は全タスク完了のたびに結果を評価し、`done` なら統合、`replan` なら不足タスクを
-グラフへ追加して継続する。stub 評価役は失敗タスクを 1 度だけ retry する（`FAIL` を含むゴールは
-stub executor が失敗させるので、ループの動作確認に使える）。kiro 評価役は kiro-cli に
-`{"decision","reason","new_tasks"}` を出力させる。
+orchestrator は run が静止するたびに結果を評価し、`done` なら統合、`replan` ならパターンに応じた
+タスクをグラフへ追加して継続する（最大 `--max-iterations`）。stub では `FAIL` を含むゴールは失敗 →
+retry、`FLAKY` を含むゴールは検証で issue 扱い → 作り直しが走るので、ループ動作を確認できる。
+kiro 評価役は 6 パターンのカタログ付きプロンプトで `{"decision","reason","new_tasks"}` を出力させる。
 
 ## 設計の肝 — 衝突しない通信
 
@@ -190,7 +213,8 @@ python3 tools/kiro-flow/tests/test_kiro_flow.py
 
 主なケース: 決定的タイブレーク、**lease 切れ claim の回収（死んだワーカー）**、
 **同時 claim でも勝者は 1 人**、逐次依存の分解、失敗 → 再計画 → retry 成功（end-to-end）、
-**要求 claim でデーモンが 1 台に決まる**・`run_claimable_count` の依存考慮。
+**要求 claim でデーモンが 1 台に決まる**・`run_claimable_count` の依存考慮、
+**6 パターン検出・並列数抽出・fan-out/tournament のグラフ形・classify ルーティング・verify fail の作り直し**。
 
 ## ロードマップ
 
@@ -203,9 +227,11 @@ python3 tools/kiro-flow/tests/test_kiro_flow.py
   `gc`（古い run 掃除）・障害注入を含むテストスイート。✅
 - **M5**: **常駐デーモン**による orchestrator/worker のオンデマンド起動・
   `submit`/inbox 要求キュー・要求 claim によるデーモン選出。✅
-- **M6（本実装）**: `install.sh` で `kiro-flow` コマンド化・サブコマンド整理
+- **M6**: `install.sh` で `kiro-flow` コマンド化・サブコマンド整理
   （`up`+`resume`→`run`、`status`+`watch`→`status --follow`）。✅
-- **今後**: 公平な負荷分散（work-stealing）・依存付き分解の LLM 強化・成果物の大容量対応（git-lfs）。
+- **M7（本実装）**: orchestrator が **Claude Dynamic Workflows の 6 パターン**を持ち、要求から
+  パターンの組み合わせと並列数を選択。ノード kind とパターン別継続（ルーティング/再生成/統合）。✅
+- **今後**: 公平な負荷分散（work-stealing）・成果物の大容量対応（git-lfs）。
 
 ## 既知の制限
 

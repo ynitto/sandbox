@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import socket
@@ -438,16 +439,30 @@ class Heartbeat(threading.Thread):
 
 
 # --------------------------------------------------------------------------
-# Planner — 動的分解（kiro-cli or stub）
+# ワークフローパターンのカタログ（Claude Dynamic Workflows の 6 パターン）
 # --------------------------------------------------------------------------
-def plan_stub(request: str):
-    """kiro-cli 無しでプロトコルを検証するための簡易分解。
+# orchestrator はこのカタログを知っていて、要求に応じてパターンの組み合わせと
+# 並列数（fan-out 幅）を決め、タスクグラフを形作る。各ノードには kind を付け、
+# kind に応じて worker の実行プロンプトと評価役の継続判断が変わる。
+PATTERNS = {
+    "classify-and-act": "1 つの分類エージェントが種別を判定し、結果に応じて適切な専門タスクへ振り分ける（ルーティング）。",
+    "fan-out-and-synthesize": "大きな仕事を独立な小片に分割し並列実行、最後に統合ノードでまとめる。",
+    "adversarial-verification": "生成ノードの成果を別の検証ノードが批判的にチェックし、問題があれば作り直す。",
+    "generate-and-filter": "候補を多数（並列）生成し、フィルタノードが基準を満たすものだけ残す。",
+    "tournament": "複数案を並列生成し、判定ノードが比較して最良案を選ぶ。",
+    "loop-until-done": "完了条件（テスト通過・指摘なし・品質達成）を満たすまで生成と検証を反復する。",
+}
+# ノード種別: work=通常実行 / generate=候補生成 / classify=分類 / synthesize=統合 /
+#            verify=検証 / filter=絞り込み / judge=最良選択
+PATTERN_LIST = list(PATTERNS)
 
-    区切り記号で依存関係も表現できる:
+
+def plan_stub(request: str):
+    """kiro-cli 無しの簡易分解。
+
+    区切り記号で依存も表現:
       ';' / 改行 … 独立（並列）タスクの境界
-      '->'        … 逐次依存チェーン（各タスクが直前のタスクに依存）
-    例: "setup -> build -> test; write docs"
-        → t1=setup, t2=build(deps t1), t3=test(deps t2), t4=write docs(deps なし)"""
+      '->'        … 逐次依存チェーン（各タスクが直前のタスクに依存）"""
     segments = [s.strip() for s in request.replace("\n", ";").split(";") if s.strip()]
     if not segments:
         segments = [request.strip() or "no-op"]
@@ -459,33 +474,110 @@ def plan_stub(request: str):
         for goal in chain:
             idx += 1
             tid = f"t{idx}"
-            tasks.append({"id": tid, "goal": goal, "deps": [prev] if prev else []})
+            tasks.append({"id": tid, "goal": goal, "deps": [prev] if prev else [], "kind": "work"})
             prev = tid
     return tasks
 
 
-def plan_kiro(request: str, model: str | None):
+def _detect_pattern(request: str) -> str:
+    t = request.lower()
+    table = [
+        ("classify-and-act", ["classif", "route", "routing", "ルーティング", "分類", "振り分け", "triage", "トリアージ"]),
+        ("tournament", ["tournament", "トーナメント", "対戦", "ベスト", "best of", "最良", "勝ち抜き"]),
+        ("generate-and-filter", ["filter", "フィルタ", "候補", "絞り込", "candidate", "ふるい"]),
+        ("adversarial-verification", ["verify", "検証", "レビュー", "review", "adversar", "批判", "critique", "監査"]),
+        ("loop-until-done", ["loop", "until", "繰り返", "反復", "直るまで", "tests pass", "通るまで", "完了まで"]),
+    ]
+    for name, kws in table:
+        if any(k in t for k in kws):
+            return name
+    return "fan-out-and-synthesize"
+
+
+def _parallelism(request: str, default: int) -> int:
+    m = re.search(r"[x×]\s*(\d+)", request) or re.search(r"並列\s*(\d+)", request)
+    if m:
+        return max(1, min(8, int(m.group(1))))
+    return max(2, min(6, default))
+
+
+def _strategy_to_graph(pattern: str, request: str, par: int):
+    """選んだパターンを初期タスクグラフ（kind 付き）へ落とし込む。"""
+    short = request.strip()[:48]
+    if pattern == "classify-and-act":
+        # 分類ノードのみ。専門タスクは分類結果を見て継続段階で追加（ルーティング）
+        return [{"id": "classify", "goal": f"分類: {short}", "deps": [], "kind": "classify"}]
+    if pattern == "generate-and-filter":
+        gens = [{"id": f"g{i+1}", "goal": f"候補{i+1}: {short}", "deps": [], "kind": "generate"}
+                for i in range(par)]
+        return gens + [{"id": "filter", "goal": "候補を基準でフィルタ",
+                        "deps": [g["id"] for g in gens], "kind": "filter"}]
+    if pattern == "tournament":
+        gens = [{"id": f"c{i+1}", "goal": f"案{i+1}: {short}", "deps": [], "kind": "generate"}
+                for i in range(par)]
+        return gens + [{"id": "judge", "goal": "比較して最良案を選ぶ",
+                        "deps": [g["id"] for g in gens], "kind": "judge"}]
+    if pattern == "adversarial-verification":
+        return [{"id": "gen1", "goal": short, "deps": [], "kind": "generate"},
+                {"id": "verify1", "goal": "成果を批判的に検証", "deps": ["gen1"], "kind": "verify"}]
+    if pattern == "loop-until-done":
+        return [{"id": "work1", "goal": short, "deps": [], "kind": "work"},
+                {"id": "check1", "goal": "完了条件を確認", "deps": ["work1"], "kind": "verify"}]
+    # fan-out-and-synthesize（既定）: 並列ノード + 統合ノード
+    gens = plan_stub(request)
+    if len(gens) < 2:  # 単一要求なら par 個に展開
+        gens = [{"id": f"t{i+1}", "goal": f"{short}（観点{i+1}）", "deps": [], "kind": "work"}
+                for i in range(par)]
+    return gens + [{"id": "synth", "goal": f"統合: {short}",
+                    "deps": [g["id"] for g in gens], "kind": "synthesize"}]
+
+
+def plan_strategy_stub(request: str):
+    """要求からパターンと並列数を選び、初期グラフを作る（kiro 無し版）。"""
+    pattern = _detect_pattern(request)
+    base = plan_stub(request)
+    par = _parallelism(request, len([t for t in base if not t["deps"]]))
+    tasks = _strategy_to_graph(pattern, request, par)
+    strategy = {"patterns": [pattern], "parallelism": par,
+                "reason": f"stub heuristic → {pattern}"}
+    return strategy, tasks
+
+
+def plan_strategy_kiro(request: str, model: str | None):
+    """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。"""
+    catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     prompt = (
-        "あなたは分散ワークフローの計画役です。次の要求を、小さなサブタスクに分解してください。"
-        "互いに独立なタスクは並列実行できるよう deps を空にし、順序が必要なタスクは deps に"
-        "先行タスクの id を入れてください（依存を正しく抽出することが重要）。"
-        "出力は JSON 配列のみ。各要素は "
-        '{"id": "t1", "goal": "...", "deps": []} の形式。\n\n'
+        "あなたは分散 Dynamic Workflow の計画役です。以下の 6 つのワークフローパターンを知っています:\n"
+        f"{catalog}\n\n"
+        "要求に最も適したパターン（複数の組み合わせ可）と並列数を選び、それを反映した初期タスクグラフを"
+        "作ってください。各タスクには kind を付けます: "
+        "work/generate/classify/synthesize/verify/filter/judge。"
+        "並列にできるタスクは deps を空に、順序や統合が要るものは deps に先行 id を入れます。\n"
+        "出力は JSON オブジェクトのみ:\n"
+        '{"patterns": ["..."], "parallelism": N, "reason": "...", '
+        '"tasks": [{"id": "t1", "goal": "...", "deps": [], "kind": "work"}]}\n\n'
         f"要求: {request}"
     )
-    out = run_kiro(prompt, model)
-    raw = extract_json(out)
-    tasks = []
-    for i, item in enumerate(raw):
-        if isinstance(item, str):
-            tasks.append({"id": f"t{i+1}", "goal": item, "deps": []})
-        else:
+    try:
+        data = extract_json(run_kiro(prompt, model))
+        tasks = []
+        for i, t in enumerate(data.get("tasks", []) or []):
             tasks.append({
-                "id": str(item.get("id") or f"t{i+1}"),
-                "goal": str(item.get("goal", "")),
-                "deps": list(item.get("deps", [])),
+                "id": str(t.get("id") or f"t{i+1}"),
+                "goal": str(t.get("goal", "")),
+                "deps": list(t.get("deps", [])),
+                "kind": str(t.get("kind", "work")),
             })
-    return tasks or plan_stub(request)
+        if not tasks:
+            raise ValueError("tasks 空")
+        strategy = {
+            "patterns": [p for p in (data.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"],
+            "parallelism": int(data.get("parallelism", 2) or 2),
+            "reason": str(data.get("reason", "")),
+        }
+        return strategy, tasks
+    except Exception:  # noqa: BLE001 — 解釈できなければ stub の戦略に倒す
+        return plan_strategy_stub(request)
 
 
 # --------------------------------------------------------------------------
@@ -502,86 +594,152 @@ def run_kiro(prompt: str, model: str | None) -> str:
     return proc.stdout.strip()
 
 
-def execute_stub(goal: str, dep_ctx: str, model: str | None) -> str:
-    time.sleep(random.uniform(0.2, 0.6))  # 実行のばらつきを模す
-    # 再計画ループ検証用: ゴールに "FAIL" を含むと失敗する（再計画で retry される）
+def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None) -> str:
+    time.sleep(random.uniform(0.1, 0.4))  # 実行のばらつきを模す
+    # 失敗注入: "FAIL" を含むと失敗（retry される）/ "FLAKY" は一旦 issue を残す（verify loop 用）
     if "FAIL" in goal:
         raise RuntimeError(f"[stub] 意図的失敗: {goal}")
-    ctx = f" / 依存結果あり({len(dep_ctx)}字)" if dep_ctx else ""
-    return f"[stub] 完了: {goal}{ctx}"
+    outs = list(dep_results.values())
+    if kind == "classify":
+        for lbl in ("frontend", "backend", "security", "performance"):
+            if lbl in goal.lower():
+                return f"class={lbl}"
+        return "class=general"
+    if kind == "synthesize":
+        return f"[synth] {len(outs)} 件を統合: " + " | ".join(d for d in dep_results)[:80]
+    if kind == "filter":
+        kept = [d for d, o in dep_results.items() if "FAIL" not in o and "issue" not in o]
+        return f"[filter] 採用={','.join(kept)}"
+    if kind == "judge":
+        win = next(iter(dep_results), "")
+        return f"[judge] winner={win}"
+    if kind == "verify":
+        ok = all("issue" not in o and "fail" not in o.lower() for o in outs)
+        return "verify=pass" if ok else "verify=fail"
+    # work / generate
+    if "FLAKY" in goal:
+        return f"[stub] 未完(issue): {goal}"
+    return f"[stub] 完了: {goal}"
 
 
-# --------------------------------------------------------------------------
-# Evaluator — 結果を評価して done / replan を決める（evaluator-optimizer）
-# --------------------------------------------------------------------------
-def evaluate_stub(request: str, goals: dict, results: dict, iteration: int):
-    """失敗ノードがあれば retry タスクを 1 回だけ追加して replan。無ければ done。"""
-    new_tasks = []
-    for nid, r in results.items():
-        if r.get("status") == "failed":
-            rid = f"{nid}r"
-            if rid in goals:  # 既に retry 済み → 無限ループ防止
-                continue
-            fixed = goals.get(nid, "").replace("FAIL", "ok")
-            new_tasks.append({"id": rid, "goal": f"[retry] {fixed}", "deps": []})
-    if new_tasks:
-        return "replan", new_tasks, f"{len(new_tasks)} 件の失敗を retry"
-    return "done", [], "全タスク成功"
-
-
-def evaluate_kiro(request: str, goals: dict, results: dict, iteration: int):
-    summary = "\n".join(
-        f"- {nid} [{r.get('status')}]: {str(r.get('output',''))[:200]}"
-        for nid, r in results.items()
-    )
-    prompt = (
-        "あなたは分散ワークフローの評価役です。元の要求に対して、現在の結果が十分か判定し、"
-        "不足があれば追加すべきタスクを出してください。出力は JSON オブジェクトのみ:\n"
-        '{"decision": "done"|"replan", "reason": "...", '
-        '"new_tasks": [{"id": "...", "goal": "...", "deps": []}]}\n'
-        "done のときは new_tasks を空配列にしてください。既存の id とは重複しない id を使うこと。\n\n"
-        f"元の要求: {request}\n\n現在の結果:\n{summary}"
-    )
-    try:
-        data = extract_json(run_kiro(prompt, None))
-    except Exception:  # noqa: BLE001 — 評価に失敗したら done 扱い（暴走防止）
-        return "done", [], "評価出力を解釈できず done 扱い"
-    decision = data.get("decision", "done")
-    new_tasks = []
-    for t in data.get("new_tasks", []) or []:
-        if isinstance(t, dict) and t.get("id") and t.get("id") not in goals:
-            new_tasks.append({
-                "id": str(t["id"]),
-                "goal": str(t.get("goal", "")),
-                "deps": list(t.get("deps", [])),
-            })
-    if decision == "replan" and new_tasks:
-        return "replan", new_tasks, str(data.get("reason", ""))
-    return "done", [], str(data.get("reason", "done"))
-
-
-def execute_kiro(goal: str, dep_ctx: str, model: str | None) -> str:
-    prompt = (
-        "あなたは分散ワークフローのワーカーです。次のタスクだけを完了し、成果物を出力してください。\n"
-        f"タスク: {goal}\n"
-    )
-    if dep_ctx:
-        prompt += f"\n依存タスクの成果（参考）:\n{dep_ctx}\n"
+def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None) -> str:
+    role = {
+        "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
+        "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
+        "filter": "選別役。依存の候補から基準を満たすものだけを残し、採用理由を述べる。",
+        "judge": "審判役。依存の複数案を比較し最良案を選び理由を述べる。",
+        "verify": "検証役。依存の成果を批判的に検証し、問題なければ『verify=pass』、"
+                  "問題があれば『verify=fail』と指摘を出力。",
+    }.get(kind, "ワーカー。次のタスクだけを完了し成果物を出力。")
+    prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
+    if dep_results:
+        ctx = "\n".join(f"[{d}] {o}" for d, o in dep_results.items())
+        prompt += f"\n依存タスクの成果:\n{ctx}\n"
     prompt += "\n成果物を簡潔に直接出力してください。"
     return run_kiro(prompt, model)
 
 
 # --------------------------------------------------------------------------
+# Continuation — パターンに応じて done / replan（タスク追加）を決める
+# --------------------------------------------------------------------------
+def continue_stub(request: str, nodes: dict, results: dict, iteration: int):
+    """パターン継続（kiro 無し版）:
+       - classify-and-act: 分類完了 → 振り分け先の専門タスクを追加
+       - adversarial / loop-until-done: verify が fail → 作り直し + 再検証
+       - 失敗タスク: retry を 1 回追加"""
+    new = []
+    have = set(nodes)
+
+    def fresh(tid):
+        return tid not in have and tid not in [t["id"] for t in new]
+
+    for nid, node in nodes.items():
+        r = results.get(nid, {})
+        if r.get("status") != "done" and r.get("status") != "failed":
+            continue
+        kind = node.get("kind", "work")
+        # 1) classify → 専門タスクへルーティング（追加のみ）
+        if kind == "classify" and r.get("status") == "done":
+            actid = f"{nid}-act"
+            if fresh(actid):
+                label = str(r.get("output", "")).split("=")[-1].strip() or "general"
+                new.append({"id": actid, "goal": f"{label} 専門処理: {request[:30]}",
+                            "deps": [nid], "kind": "work"})
+        # 2) verify が fail → 依存を作り直して再検証（loop-until-done / adversarial）
+        #    replaces で依存元（gen/verify）を置き換え、後続の依存を付け替える
+        if kind == "verify" and "fail" in str(r.get("output", "")):
+            for dep in node.get("deps", []):
+                rid = f"{dep}-r{iteration+1}"
+                if fresh(rid):
+                    goal = nodes.get(dep, {}).get("goal", "").replace("FLAKY", "ok")
+                    new.append({"id": rid, "goal": f"[retry] {goal}", "deps": [],
+                                "kind": nodes.get(dep, {}).get("kind", "work"), "replaces": dep})
+            vid = f"{nid}-r{iteration+1}"
+            if fresh(vid):
+                new.append({"id": vid, "goal": "再検証",
+                            "deps": [f"{dep}-r{iteration+1}" for dep in node.get("deps", [])],
+                            "kind": "verify", "replaces": nid})
+        # 3) 失敗タスクの retry（失敗ノードを置き換え、依存元を付け替える）
+        if r.get("status") == "failed":
+            rid = f"{nid}r"
+            if fresh(rid):
+                goal = node.get("goal", "").replace("FAIL", "ok")
+                new.append({"id": rid, "goal": f"[retry] {goal}", "deps": [],
+                            "kind": node.get("kind", "work"), "replaces": nid})
+    if new:
+        return "replan", new, f"{len(new)} 件追加"
+    return "done", [], "全パターン完了"
+
+
+def continue_kiro(request: str, nodes: dict, results: dict, iteration: int):
+    catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
+    summary = "\n".join(
+        f"- {nid} ({nodes.get(nid, {}).get('kind','work')}) "
+        f"[{r.get('status')}]: {str(r.get('output',''))[:160]}"
+        for nid, r in results.items()
+    )
+    prompt = (
+        "あなたは分散 Dynamic Workflow の評価役です。6 パターンを踏まえ、現在の結果が要求を満たすか判定し、"
+        "必要なら次のタスクを追加してください（例: 分類結果に応じた専門タスク、検証 fail の作り直し、"
+        "統合や追加候補の生成）。\n"
+        f"パターン:\n{catalog}\n\n"
+        "出力は JSON のみ: "
+        '{"decision":"done"|"replan","reason":"...",'
+        '"new_tasks":[{"id":"...","goal":"...","deps":[],"kind":"work"}]}\n'
+        "既存 id と重複しない id を使うこと。done のとき new_tasks は空配列。\n\n"
+        f"元の要求: {request}\n\n現在の結果:\n{summary}"
+    )
+    try:
+        data = extract_json(run_kiro(prompt, None))
+    except Exception:  # noqa: BLE001
+        return "done", [], "評価出力を解釈できず done 扱い"
+    new = []
+    for t in data.get("new_tasks", []) or []:
+        if isinstance(t, dict) and t.get("id") and t["id"] not in nodes:
+            new.append({"id": str(t["id"]), "goal": str(t.get("goal", "")),
+                        "deps": list(t.get("deps", [])), "kind": str(t.get("kind", "work"))})
+    if data.get("decision") == "replan" and new:
+        return "replan", new, str(data.get("reason", ""))
+    return "done", [], str(data.get("reason", "done"))
+
+
+# --------------------------------------------------------------------------
 # orchestrate
 # --------------------------------------------------------------------------
-def _plan(args):
-    return plan_kiro(args.request, args.model) if args.planner == "kiro" else plan_stub(args.request)
+def _plan_strategy(args):
+    if args.planner == "kiro":
+        return plan_strategy_kiro(args.request, args.model)
+    return plan_strategy_stub(args.request)
 
 
-def _evaluate(args, request, goals, results, iteration):
+def _continue(args, request, nodes, results, iteration):
     if args.executor == "kiro":
-        return evaluate_kiro(request, goals, results, iteration)
-    return evaluate_stub(request, goals, results, iteration)
+        return continue_kiro(request, nodes, results, iteration)
+    return continue_stub(request, nodes, results, iteration)
+
+
+def _node_entry(t):
+    return {"goal": t["goal"], "deps": t["deps"], "kind": t.get("kind", "work")}
 
 
 def cmd_orchestrate(args) -> int:
@@ -599,46 +757,58 @@ def cmd_orchestrate(args) -> int:
             bus.set_status("running")
             bus.sync_push(f"resume run {args.run_id}")
     else:
-        tasks = _plan(args)
-        graph = {"nodes": {t["id"]: {"goal": t["goal"], "deps": t["deps"]} for t in tasks},
+        # 要求から 6 パターンの組み合わせと並列数を選び、初期グラフを形作る
+        strategy, tasks = _plan_strategy(args)
+        graph = {"strategy": strategy,
+                 "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
         bus.write_graph(graph)
         for t in tasks:
             bus.write_task(t)
         bus.set_status("running")
-        bus.event(who, "planned", tasks=[t["id"] for t in tasks])
-        bus.sync_push(f"plan run {args.run_id}: {[t['id'] for t in tasks]}")
-        log(who, f"計画 (planner={args.planner}) → タスク投入: {[t['id'] for t in tasks]}")
+        bus.event(who, "planned", patterns=strategy["patterns"],
+                  parallelism=strategy["parallelism"], tasks=[t["id"] for t in tasks])
+        bus.sync_push(f"plan run {args.run_id}: {strategy['patterns']} x{strategy['parallelism']}")
+        log(who, f"戦略: patterns={strategy['patterns']} parallelism={strategy['parallelism']} "
+                 f"（{strategy.get('reason','')}）")
+        log(who, f"初期タスク: {[(t['id'], t.get('kind','work')) for t in tasks]}")
         iteration = 0
 
-    # evaluator-optimizer ループ: 完了 → 評価 → (replan ならタスク追加して継続)
+    # evaluator-optimizer ループ: 静止（claim 可能・実行中タスクが無い）→ パターン継続判断
     while True:
-        while not bus.all_terminal():
+        graph = bus.read_graph()
+        while not _quiesced(bus, graph["nodes"]):
             bus.sync_pull()
             time.sleep(args.poll)
+            graph = bus.read_graph()
         bus.sync_pull()
-
         graph = bus.read_graph()
-        goals = {nid: n.get("goal", "") for nid, n in graph["nodes"].items()}
-        results = {nid: (bus.read_result(nid) or {}) for nid in graph["nodes"]}
+        nodes = graph["nodes"]
+        results = {nid: (bus.read_result(nid) or {}) for nid in nodes}
 
         if iteration >= args.max_iterations:
             decision, new_tasks, reason = "done", [], f"max-iterations({args.max_iterations}) 到達"
         else:
-            decision, new_tasks, reason = _evaluate(args, args.request, goals, results, iteration)
+            decision, new_tasks, reason = _continue(args, args.request, nodes, results, iteration)
         log(who, f"評価 #{iteration}: {decision} — {reason}")
 
         if decision == "replan" and new_tasks:
             iteration += 1
             for t in new_tasks:
-                graph["nodes"][t["id"]] = {"goal": t["goal"], "deps": t["deps"]}
-                bus.write_task(t)
+                graph["nodes"][t["id"]] = _node_entry(t)
+                bus.write_task({k: v for k, v in t.items() if k != "replaces"})
+                # replaces 指定: 旧ノードを外し、旧ノードに依存する後続を新ノードへ付け替える
+                old = t.get("replaces")
+                if old and old in graph["nodes"]:
+                    for n in graph["nodes"].values():
+                        n["deps"] = [t["id"] if d == old else d for d in n.get("deps", [])]
+                    del graph["nodes"][old]
             graph["iteration"] = iteration
             bus.write_graph(graph)
             bus.set_status("running")
             bus.event(who, "replan", iteration=iteration, added=[t["id"] for t in new_tasks])
             bus.sync_push(f"replan #{iteration} run {args.run_id}: +{[t['id'] for t in new_tasks]}")
-            log(who, f"再計画 #{iteration}: 追加タスク {[t['id'] for t in new_tasks]}")
+            log(who, f"再計画 #{iteration}: 追加タスク {[(t['id'], t.get('kind','work')) for t in new_tasks]}")
             continue
         break
 
@@ -652,6 +822,7 @@ def cmd_orchestrate(args) -> int:
         "request": args.request,
         "finished_at": now_iso(),
         "iterations": iteration,
+        "strategy": (bus.read_graph() or {}).get("strategy", {}),
         "summary": summary,
         "results": results,
     })
@@ -670,6 +841,18 @@ def deps_satisfied(bus: Bus, node) -> bool:
         (bus.read_result(d) or {}).get("status") == "done"
         for d in node.get("deps", [])
     )
+
+
+def _quiesced(bus: Bus, nodes: dict) -> bool:
+    """run が静止したか: 実行中(claimed)も、今すぐ claim 可能な pending も無い状態。
+    依存が失敗してブロックされた pending は静止扱い（継続判断で付け替えられる）。"""
+    for nid, node in nodes.items():
+        st = bus.node_state(nid)
+        if st == "claimed":
+            return False
+        if st == "pending" and deps_satisfied(bus, node):
+            return False
+    return True
 
 
 def pick_claimable(bus: Bus):
@@ -713,23 +896,22 @@ def cmd_work(args) -> int:
 
         idle_polls = 0
         nid, node = candidate
+        kind = node.get("kind", "work")
         if not bus.try_claim(nid, who, args.lease):
             continue  # 競り負け
-        log(who, f"claim 成功: {nid} — {node['goal'][:60]}")
+        log(who, f"claim 成功: {nid} [{kind}] — {node['goal'][:55]}")
         bus.event(who, "claimed", node=nid)
 
-        dep_ctx = "\n".join(
-            f"[{d}] {(bus.read_result(d) or {}).get('output','')}"
-            for d in node.get("deps", [])
-        )
+        dep_results = {d: (bus.read_result(d) or {}).get("output", "")
+                       for d in node.get("deps", [])}
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
         try:
             if args.executor == "kiro":
-                output = execute_kiro(node["goal"], dep_ctx, args.model)
+                output = execute_kiro(kind, node["goal"], dep_results, args.model)
             else:
-                output = execute_stub(node["goal"], dep_ctx, args.model)
+                output = execute_stub(kind, node["goal"], dep_results, args.model)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
@@ -970,6 +1152,9 @@ def _render_status(bus, run_id, events):
     graph = bus.read_graph()
     status = bus.get_status()
     lines = [f"run: {run_id}   status: {status}   {now_iso()}"]
+    if graph and graph.get("strategy"):
+        s = graph["strategy"]
+        lines.append(f"  strategy: patterns={s.get('patterns')} parallelism={s.get('parallelism')}")
     if graph and graph.get("nodes"):
         counts = {}
         for nid in graph["nodes"]:
@@ -979,8 +1164,8 @@ def _render_status(bus, run_id, events):
                      + f"   iteration={graph.get('iteration', 0)}")
         for nid, node in graph["nodes"].items():
             deps = ",".join(node.get("deps", [])) or "-"
-            lines.append(f"  {nid:<6} {bus.node_state(nid):<8} "
-                         f"deps[{deps}] {node.get('goal','')[:48]}")
+            lines.append(f"  {nid:<8} {bus.node_state(nid):<8} {node.get('kind','work'):<10} "
+                         f"deps[{deps}] {node.get('goal','')[:40]}")
     else:
         lines.append("  (グラフ未生成)")
     if events:
