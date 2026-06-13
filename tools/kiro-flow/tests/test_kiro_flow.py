@@ -87,6 +87,12 @@ class ProtocolTests(unittest.TestCase):
         winners = [n for n, ok in results.items() if ok]
         self.assertEqual(len(winners), 1, f"勝者は 1 人のはず: {results}")
 
+    def test_claim_lock_is_off_bus(self):
+        # 排他ロックはバス（git に乗る領域）の外＝一時領域に置く
+        lp = kf._claim_lock_path(self.bus._claim_dir("t1"))
+        self.assertNotIn(self.tmp, lp)
+        self.assertIn("kiro-flow-locks", lp)
+
     def test_all_terminal(self):
         self._add_task("t1")
         self._add_task("t2")
