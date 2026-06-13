@@ -289,7 +289,7 @@ while 常駐:
 
 | コマンド | 役割 |
 |---------|------|
-| `daemon` | 常駐し orchestrator/worker をオンデマンド起動（`--max-workers`） |
+| `daemon` | 常駐し orchestrator/worker をオンデマンド起動（`--max-workers`）。**サブコマンド省略時の既定**（global 引数と設定ファイルのみで起動） |
 | `submit <要求>` | 要求を inbox に投入（run-id を返す） |
 | `run [要求]` | 単発実行。**既存 --run-id なら再開、無ければ新規**（状態で自動判断） |
 | `status` | 状態表示。既定 1 回 / `--follow` でライブ監視（`--until-done`） |

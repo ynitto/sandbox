@@ -1285,7 +1285,8 @@ def main() -> int:
     p.add_argument("--git-branch", default=None, help="バスに使う git ブランチ（既定 main）")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    # サブコマンド未指定なら daemon として扱う（required=False）
+    sub = p.add_subparsers(dest="cmd")
 
     run = sub.add_parser("run", help="単発実行。既存 --run-id なら再開、無ければ新規（状態で自動判断）")
     run.add_argument("request", nargs="?", default=None,
@@ -1355,6 +1356,10 @@ def main() -> int:
     # 子プロセスから渡る空文字の --model_opt は「モデル指定なし」を意味する
     if getattr(args, "model", None) == "":
         args.model = None
+    # サブコマンド未指定 → daemon として処理
+    if getattr(args, "func", None) is None:
+        args.node_id = getattr(args, "node_id", None)
+        return cmd_daemon(args)
     return args.func(args)
 
 
