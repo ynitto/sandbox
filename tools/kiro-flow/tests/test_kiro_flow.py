@@ -187,6 +187,46 @@ class DataDrivenFanoutTests(unittest.TestCase):
         self.assertEqual([t["kind"] for t in tasks], ["split"])
 
 
+class GraphHealthTests(unittest.TestCase):
+    def test_unknown_deps_dropped(self):
+        nodes = {"a": {"id": "a", "goal": "", "deps": ["ghost"], "kind": "work"},
+                 "b": {"id": "b", "goal": "", "deps": ["a"], "kind": "work"}}
+        kf._sanitize_graph(nodes)
+        self.assertEqual(nodes["a"]["deps"], [])      # 未知 ghost を除去
+        self.assertEqual(nodes["b"]["deps"], ["a"])   # 正当な依存は保持
+
+    def test_cycle_broken(self):
+        nodes = {"a": {"id": "a", "goal": "", "deps": ["b"], "kind": "work"},
+                 "b": {"id": "b", "goal": "", "deps": ["a"], "kind": "work"}}
+        kf._sanitize_graph(nodes)
+        # 循環が断ち切られ、トポロジカル順が成立する（少なくとも片方の deps が空）
+        self.assertTrue(nodes["a"]["deps"] == [] or nodes["b"]["deps"] == [])
+
+    def test_self_loop_dropped(self):
+        nodes = {"a": {"id": "a", "goal": "", "deps": ["a"], "kind": "work"}}
+        kf._sanitize_graph(nodes)
+        self.assertEqual(nodes["a"]["deps"], [])
+
+
+class ReviewGateTests(unittest.TestCase):
+    def test_fanout_inserts_gate_before_synthesize(self):
+        strat, tasks = kf.plan_strategy_stub("A; B; C", review=True)
+        by = {t["id"]: t for t in tasks}
+        self.assertIn("gate", by)
+        self.assertEqual(by["gate"]["kind"], "verify")
+        self.assertEqual(by["synth"]["deps"], ["gate"])   # 統合は gate を待つ
+        self.assertIn("adversarial-verification", strat["patterns"])
+
+    def test_map_reduce_gate_between_map_and_reduce(self):
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": ["x", "y"]}}
+        _, new, _ = kf.continue_stub("req", nodes, results, 0, max_fanout=50, review=True)
+        by = {t["id"]: t for t in new}
+        self.assertIn("s-gate", by)
+        self.assertEqual(by["s-gate"]["kind"], "verify")
+        self.assertEqual(by["s-reduce"]["deps"], ["s-gate"])
+
+
 class ContinuationTests(unittest.TestCase):
     def test_replan_retries_failed_once(self):
         nodes = {"t1": {"goal": "ok", "deps": [], "kind": "work"},

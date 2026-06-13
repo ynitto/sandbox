@@ -68,6 +68,10 @@ orchestrator は要求を見て、以下の 6 パターン（[参考記事](http
   **要素数ぶんの `map` タスクを動的展開**し（件数を事前に固定しない）、`reduce` で集約する。展開数は
   `--max-fanout`（既定 50）で上限クランプ。初期グラフは `split` のみで、`reduce` は展開時に生成するため
   先走り実行されない。
+- **統合前の事前チェック / 敵対的レビュー（`--review`）**: 統合（synthesize/reduce）の前に `verify` gate を
+  挟む。gate が fail なら依存を作り直して再検証（既存の verify-loop）。fan-out・map-reduce に複合適用でき、
+  kiro planner はパターンを多段に**複合**できる（例: classify→各分岐を fan-out）。
+- **グラフ健全性検査**: 計画・再計画のたびに**未知の依存 ID を除去・循環依存を断ち切る**（planner 誤出力の防御）。
 - 選んだ戦略は `graph.json` / `final.json` に記録され、`status` でも表示される。
 
 ## 動的ワークフロー（evaluator-optimizer ループ）
@@ -227,6 +231,7 @@ tmux attach -t flow
 | `--planner` / `--executor` | `kiro` | `kiro`（kiro-cli）/ `stub`（オフライン検証）。executor は評価役にも使う |
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
 | `--max-fanout` | 50 | データ駆動 fan-out（split→map）の最大展開数 |
+| `--review` | off | 統合（synthesize/reduce）の前に検証 gate を挟む |
 | `--poll` | 2.0 | ポーリング間隔（秒） |
 | `--keep-alive` / `--idle-exit` | off | run 完了後も待機 / claim 可能タスクが尽きたら終了（`work`） |
 
