@@ -91,6 +91,8 @@ class Bus:
     def __init__(self, root: str, run_id: str):
         self.root = root
         self.runs_root = os.path.join(root, "runs")
+        self.inbox_dir = os.path.join(root, "inbox")
+        self.inbox_claims_dir = os.path.join(root, "inbox", "claims")
         self.run_dir = os.path.join(root, "runs", run_id)
         self.tasks_dir = os.path.join(self.run_dir, "tasks")
         self.claims_dir = os.path.join(self.run_dir, "claims")
@@ -148,54 +150,64 @@ class Bus:
 
     # --- claim（名前空間付き claim ＋ 決定的タイブレーク） ---
     #
-    # 各ワーカーは自分専用のファイル claims/<node>/<who>.json を書く（ファイル名が
+    # 各クレーマは自分専用のファイル <claim_dir>/<who>.json を書く（ファイル名が
     # 衝突しないので git で add/add コンフリクトにならない）。勝者は全 claim のうち
     # lease 内で「(ts, who) が最小」の 1 件に決定的に定まる。ローカル/ git どちらの
-    # 転送でも同じロジックで唯一の勝者が決まる。
+    # 転送でも同じロジックで唯一の勝者が決まる。タスクにも要求にも同じ仕組みを使う。
     def _claim_dir(self, node_id: str) -> str:
         return os.path.join(self.claims_dir, node_id)
 
-    def _list_claims(self, node_id: str):
-        d = self._claim_dir(node_id)
+    def _list_claims_in(self, claim_dir: str):
         out = {}
-        if os.path.isdir(d):
-            for name in os.listdir(d):
+        if os.path.isdir(claim_dir):
+            for name in os.listdir(claim_dir):
                 if name.endswith(".json"):
-                    info = read_json(os.path.join(d, name))
+                    info = read_json(os.path.join(claim_dir, name))
                     if info:
                         out[name[:-5]] = info
         return out
 
-    def _winner(self, node_id: str):
+    def _winner_in(self, claim_dir: str):
         """lease 内の claim から決定的に勝者を選ぶ。無ければ None。"""
         now = time.time()
         live = [
             (info.get("ts", 0.0), who)
-            for who, info in self._list_claims(node_id).items()
+            for who, info in self._list_claims_in(claim_dir).items()
             if info.get("lease_until", 0) >= now
         ]
         return min(live)[1] if live else None
 
-    def _write_claim(self, node_id: str, who: str, lease_sec: int) -> None:
-        os.makedirs(self._claim_dir(node_id), exist_ok=True)
-        write_json_atomic(os.path.join(self._claim_dir(node_id), f"{who}.json"), {
+    def _write_claim_in(self, claim_dir: str, who: str, lease_sec: float) -> None:
+        os.makedirs(claim_dir, exist_ok=True)
+        write_json_atomic(os.path.join(claim_dir, f"{who}.json"), {
             "who": who,
             "ts": time.time(),
             "claimed_at": now_iso(),
             "lease_until": time.time() + lease_sec,
         })
 
-    def try_claim(self, node_id: str, who: str, lease_sec: int) -> bool:
+    def _try_claim_in(self, claim_dir: str, who: str, lease_sec: float, msg: str) -> bool:
+        w = self._winner_in(claim_dir)
+        if w is not None and w != who:
+            return False  # 既に他者が勝者（lease 内）
+        self._write_claim_in(claim_dir, who, lease_sec)
+        self.sync_push(msg)
+        self.sync_pull()  # 他ノードの claim を取り込んでから勝敗判定
+        return self._winner_in(claim_dir) == who
+
+    # 後方互換のためのノード単位ラッパ
+    def _winner(self, node_id: str):
+        return self._winner_in(self._claim_dir(node_id))
+
+    def _write_claim(self, node_id: str, who: str, lease_sec: float) -> None:
+        self._write_claim_in(self._claim_dir(node_id), who, lease_sec)
+
+    def try_claim(self, node_id: str, who: str, lease_sec: float) -> bool:
         self.sync_pull()
         if self.has_result(node_id):
             return False
-        w = self._winner(node_id)
-        if w is not None and w != who:
-            return False  # 既に他者が勝者（lease 内）
-        self._write_claim(node_id, who, lease_sec)
-        self.sync_push(f"claim {node_id} by {who}")
-        self.sync_pull()  # 他ノードの claim を取り込んでから勝敗判定
-        return self._winner(node_id) == who
+        return self._try_claim_in(self._claim_dir(node_id), who, lease_sec,
+                                  f"claim {node_id} by {who}")
 
     # --- 結果 ---
     def result_path(self, node_id: str) -> str:
@@ -261,6 +273,56 @@ class Bus:
 
     def remove_run(self, run_id: str) -> None:
         shutil.rmtree(os.path.join(self.runs_root, run_id), ignore_errors=True)
+
+    def run_view(self, run_id: str) -> "Bus":
+        """同じ作業ツリー上の別 run を読み取るための軽量ビュー（git 再クローンしない）。"""
+        return Bus(self.root, run_id)
+
+    def active_runs(self):
+        """planning/running な run の id 一覧（終端した run は除く）。"""
+        out = []
+        for rid in self.list_runs():
+            st = self.run_meta(rid).get("status")
+            if st and st not in TERMINAL:
+                out.append(rid)
+        return out
+
+    def run_claimable_count(self, run_id: str) -> int:
+        """その run で今すぐ claim 可能（pending かつ依存充足）なタスク数。"""
+        v = self.run_view(run_id)
+        graph = v.read_graph()
+        if not graph:
+            return 0
+        return sum(1 for nid, node in graph["nodes"].items()
+                   if v.node_state(nid) == "pending" and deps_satisfied(v, node))
+
+    # --- inbox（要求キュー）と要求 claim ---
+    def submit_request(self, req_id: str, request: str, submitter: str) -> None:
+        write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), {
+            "id": req_id,
+            "request": request,
+            "submitter": submitter,
+            "submitted_at": now_iso(),
+        })
+
+    def list_inbox(self):
+        if not os.path.isdir(self.inbox_dir):
+            return []
+        return sorted(f[:-5] for f in os.listdir(self.inbox_dir) if f.endswith(".json"))
+
+    def read_inbox(self, req_id: str):
+        return read_json(os.path.join(self.inbox_dir, f"{req_id}.json"))
+
+    def run_exists(self, run_id: str) -> bool:
+        return os.path.exists(os.path.join(self.runs_root, run_id, "meta.json"))
+
+    def claim_request(self, req_id: str, who: str, lease_sec: float) -> bool:
+        """どのデーモンがこの要求を orchestrate するかを 1 台に決める。"""
+        self.sync_pull()
+        if self.run_exists(req_id):
+            return False  # 既に誰かが run を作って処理開始済み
+        return self._try_claim_in(os.path.join(self.inbox_claims_dir, req_id),
+                                  who, lease_sec, f"claim request {req_id} by {who}")
 
 
 # --------------------------------------------------------------------------
@@ -625,9 +687,12 @@ def pick_claimable(bus: Bus):
 def cmd_work(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
-    log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive})")
+    idle_exit = getattr(args, "idle_exit", False)
+    log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive}, "
+             f"idle_exit={idle_exit})")
     time.sleep(random.uniform(0, args.poll))  # 負荷分散: 起動位相をずらす
 
+    idle_polls = 0
     while True:
         bus.sync_pull()
         status = bus.get_status()
@@ -637,9 +702,16 @@ def cmd_work(args) -> int:
             if status in TERMINAL and not args.keep_alive:
                 log(who, f"run が {status}。終了します。")
                 return 0
+            # デーモン起動の短命ワーカー: 仕事が無くなったら少し待って終了（オンデマンド）
+            if idle_exit and status not in (None,) and not args.keep_alive:
+                idle_polls += 1
+                if idle_polls >= 2:
+                    log(who, "claim 可能タスクが無いため終了します（idle-exit）。")
+                    return 0
             time.sleep(args.poll)
             continue
 
+        idle_polls = 0
         nid, node = candidate
         if not bus.try_claim(nid, who, args.lease):
             continue  # 競り負け
@@ -765,6 +837,97 @@ def cmd_resume(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# submit — 要求を inbox に投入（デーモンが拾って orchestrator を起動する）
+# --------------------------------------------------------------------------
+def cmd_submit(args) -> int:
+    req_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
+    bus = make_bus(args, "submitter")
+    bus.sync_pull()
+    bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}")
+    bus.sync_push(f"submit request {req_id}")
+    print(req_id)  # run-id を標準出力（スクリプトから拾える）
+    print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# daemon — 常駐し、要求に応じて orchestrator/worker をオンデマンド起動
+# --------------------------------------------------------------------------
+def cmd_daemon(args) -> int:
+    daemon_id = args.node_id or f"{socket.gethostname()}-{os.getpid()}"
+    bus = make_bus(args, f"daemon-{_safe(daemon_id)}")
+    me = self_path()
+    base = [sys.executable, me, "--bus", os.path.abspath(args.bus), "--lease", str(args.lease)]
+    if args.git:
+        base += ["--git", args.git, "--git-branch", args.git_branch]
+    mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.abspath(args.bus)}"
+
+    orchestrators = {}   # run_id -> Popen
+    workers = []         # list of (run_id, Popen)
+    wcounter = 0
+    stop = {"v": False}
+
+    def shutdown(*_):
+        stop["v"] = True
+        for _, p in list(orchestrators.items()) + workers:
+            if p.poll() is None:
+                p.terminate()
+    signal.signal(signal.SIGINT, lambda *_: (shutdown(), sys.exit(130)))
+    signal.signal(signal.SIGTERM, lambda *_: (shutdown(), sys.exit(143)))
+
+    log(daemon_id, f"daemon 起動 bus={mode} max_workers={args.max_workers} poll={args.poll}")
+
+    while not stop["v"]:
+        bus.sync_pull()
+        # 死んだ子を刈り取る
+        for rid in [r for r, p in orchestrators.items() if p.poll() is not None]:
+            log(daemon_id, f"orchestrator 終了: {rid}")
+            del orchestrators[rid]
+        workers = [(r, p) for r, p in workers if p.poll() is None]
+
+        # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）
+        for req_id in bus.list_inbox():
+            if bus.run_exists(req_id) or req_id in orchestrators:
+                continue
+            req = bus.read_inbox(req_id)
+            if not req:
+                continue
+            if bus.claim_request(req_id, daemon_id, args.lease):
+                p = subprocess.Popen(base + [
+                    "--run-id", req_id, "orchestrate", "--request", req["request"],
+                    "--planner", args.planner, "--executor", args.executor,
+                    "--max-iterations", str(args.max_iterations),
+                    "--model_opt", args.model or "", "--poll", str(args.poll),
+                    "--node-id", f"orchestrator-{req_id}",
+                ])
+                orchestrators[req_id] = p
+                log(daemon_id, f"要求 {req_id} を受理 → orchestrator 起動: {req['request'][:50]}")
+
+        # 2) claim 可能タスク量に応じてワーカーをオンデマンド起動
+        claim_by_run = {r: bus.run_claimable_count(r) for r in bus.active_runs()}
+        alive_by_run = {}
+        for r, _ in workers:
+            alive_by_run[r] = alive_by_run.get(r, 0) + 1
+        for rid in sorted(claim_by_run, key=lambda x: -claim_by_run[x]):
+            want = claim_by_run[rid]
+            have = alive_by_run.get(rid, 0)
+            while have < want and len(workers) < args.max_workers:
+                wcounter += 1
+                wid = f"{daemon_id}-w{wcounter}"
+                p = subprocess.Popen(base + [
+                    "--run-id", rid, "work", "--node-id", wid,
+                    "--executor", args.executor, "--model_opt", args.model or "",
+                    "--poll", str(args.poll), "--idle-exit",
+                ])
+                workers.append((rid, p))
+                have += 1
+                log(daemon_id, f"ワーカー起動: {wid} → run {rid}（claim可能={want}）")
+
+        time.sleep(args.poll)
+    return 0
+
+
+# --------------------------------------------------------------------------
 # gc — 古い run を掃除
 # --------------------------------------------------------------------------
 def _age_hours(meta) -> float:
@@ -867,7 +1030,7 @@ def self_path() -> str:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow (M3)")
+    p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow")
     p.add_argument("--bus", default="./.kiro-flow",
                    help="ローカルバスのルート / git モードでは各ノードのクローン親ディレクトリ")
     p.add_argument("--run-id", default=None, help="run 識別子")
@@ -915,7 +1078,23 @@ def main() -> int:
     work.add_argument("--model_opt", dest="model", default=None)
     work.add_argument("--poll", type=float, default=2.0)
     work.add_argument("--keep-alive", action="store_true", help="run 完了後も待機し続ける")
+    work.add_argument("--idle-exit", action="store_true",
+                      help="claim 可能タスクが無くなったら終了（デーモンのオンデマンド起動用）")
     work.set_defaults(func=cmd_work)
+
+    dm = sub.add_parser("daemon", help="常駐し、要求に応じ orchestrator/worker をオンデマンド起動")
+    dm.add_argument("--node-id", default=None, help="デーモン識別子（既定: host-pid）")
+    dm.add_argument("--max-workers", type=int, default=4, help="このデーモンが同時に走らせる worker 上限")
+    dm.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
+    dm.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
+    dm.add_argument("--max-iterations", type=int, default=3)
+    dm.add_argument("--model", default=None)
+    dm.add_argument("--poll", type=float, default=2.0)
+    dm.set_defaults(func=cmd_daemon)
+
+    sb = sub.add_parser("submit", help="要求を inbox に投入（デーモンが拾う）")
+    sb.add_argument("request", help="ワークフローへの要求")
+    sb.set_defaults(func=cmd_submit)
 
     st = sub.add_parser("status", help="run の状態表示")
     st.set_defaults(func=cmd_status)

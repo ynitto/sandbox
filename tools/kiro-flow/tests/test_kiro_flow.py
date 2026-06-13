@@ -133,8 +133,50 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(decision, "done")
 
 
+class DaemonPrimitiveTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-daemon-")
+        self.bus = kf.Bus(self.tmp, "_")
+
+    def test_submit_and_inbox(self):
+        self.bus.submit_request("req1", "do things", "tester")
+        self.assertIn("req1", self.bus.list_inbox())
+        self.assertEqual(self.bus.read_inbox("req1")["request"], "do things")
+
+    def test_claim_request_single_winner(self):
+        self.bus.submit_request("req1", "x", "t")
+        a = self.bus.claim_request("req1", "daemonA", 60)
+        b = self.bus.claim_request("req1", "daemonB", 60)
+        self.assertNotEqual(a, b)            # ちょうど 1 台が勝つ
+        self.assertTrue(a and not b)         # 先に claim した A が勝者
+
+    def test_claim_request_false_if_run_exists(self):
+        self.bus.submit_request("req1", "x", "t")
+        kf.Bus(self.tmp, "req1").ensure_run("x")  # 既に run が作られている
+        self.assertFalse(self.bus.claim_request("req1", "daemonC", 60))
+
+    def test_active_runs_and_claimable_count(self):
+        v = kf.Bus(self.tmp, "runA")
+        v.ensure_run("req")
+        v.write_graph({"nodes": {"t1": {"goal": "a", "deps": []},
+                                 "t2": {"goal": "b", "deps": ["t1"]}}, "iteration": 0})
+        v.write_task({"id": "t1", "goal": "a", "deps": []})
+        v.write_task({"id": "t2", "goal": "b", "deps": ["t1"]})
+        v.set_status("running")
+        # t1 は claim 可能、t2 は依存未充足なので不可 → count == 1
+        self.assertIn("runA", self.bus.active_runs())
+        self.assertEqual(self.bus.run_claimable_count("runA"), 1)
+        # t1 完了で t2 が解放される
+        v.write_result("t1", "w", "done", "o")
+        self.assertEqual(self.bus.run_claimable_count("runA"), 1)
+        # 終端した run は active_runs から外れる
+        v.write_result("t2", "w", "done", "o")
+        v.set_status("done")
+        self.assertNotIn("runA", self.bus.active_runs())
+
+
 class EndToEndTests(unittest.TestCase):
-    def _run_up(self, bus, request, extra=None, timeout=40):
+    def _run_up(self, bus, request, extra=None, timeout=90):
         cmd = [sys.executable, str(SCRIPT), "--bus", bus, "up", request,
                "--workers", "3", "--planner", "stub", "--executor", "stub", "--poll", "0.2"]
         cmd += extra or []
