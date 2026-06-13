@@ -19,6 +19,9 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "kiro-flow.py"
 
+# stub の擬似実行スリープを無効化してテストを高速化（子プロセスにも継承される）
+os.environ["KIRO_FLOW_STUB_SLEEP_MAX"] = "0"
+
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("kiroflow", SCRIPT)
@@ -187,6 +190,25 @@ class DataDrivenFanoutTests(unittest.TestCase):
         self.assertEqual([t["kind"] for t in tasks], ["split"])
 
 
+class CoerceTasksTests(unittest.TestCase):
+    def test_unknown_kind_coerced_to_work(self):
+        out = kf._coerce_tasks([{"id": "a", "goal": "g", "kind": "bogus"}])
+        self.assertEqual(out[0]["kind"], "work")
+
+    def test_valid_kinds_preserved(self):
+        out = kf._coerce_tasks([{"id": "a", "kind": "split"}, {"id": "b", "kind": "reduce"}])
+        self.assertEqual([t["kind"] for t in out], ["split", "reduce"])
+
+    def test_duplicate_and_existing_ids_dropped(self):
+        out = kf._coerce_tasks(
+            [{"id": "x"}, {"id": "x"}, {"id": "y"}], existing={"y"})
+        self.assertEqual([t["id"] for t in out], ["x"])  # 重複 x は 1 つ、既存 y は除外
+
+    def test_deps_stringified(self):
+        out = kf._coerce_tasks([{"id": "a", "deps": [1, "b"]}])
+        self.assertEqual(out[0]["deps"], ["1", "b"])
+
+
 class GraphHealthTests(unittest.TestCase):
     def test_unknown_deps_dropped(self):
         nodes = {"a": {"id": "a", "goal": "", "deps": ["ghost"], "kind": "work"},
@@ -214,7 +236,8 @@ class ReviewGateTests(unittest.TestCase):
         by = {t["id"]: t for t in tasks}
         self.assertIn("gate", by)
         self.assertEqual(by["gate"]["kind"], "verify")
-        self.assertEqual(by["synth"]["deps"], ["gate"])   # 統合は gate を待つ
+        self.assertIn("gate", by["synth"]["deps"])        # 統合は gate を待つ
+        self.assertIn("t1", by["synth"]["deps"])          # 統合は成果も集約する
         self.assertIn("adversarial-verification", strat["patterns"])
 
     def test_map_reduce_gate_between_map_and_reduce(self):
@@ -224,7 +247,9 @@ class ReviewGateTests(unittest.TestCase):
         by = {t["id"]: t for t in new}
         self.assertIn("s-gate", by)
         self.assertEqual(by["s-gate"]["kind"], "verify")
-        self.assertEqual(by["s-reduce"]["deps"], ["s-gate"])
+        self.assertIn("s-gate", by["s-reduce"]["deps"])    # reduce は gate を待つ
+        self.assertIn("s-m1", by["s-reduce"]["deps"])      # reduce は map 成果を集約
+        self.assertEqual(by["s-gate"]["deps"], ["s-m1", "s-m2"])
 
 
 class ContinuationTests(unittest.TestCase):
@@ -375,6 +400,19 @@ class EndToEndTests(unittest.TestCase):
         final = self._final(bus)
         self.assertGreaterEqual(final["iterations"], 1)        # 再計画が回った
         self.assertEqual(final["results"]["t2r"]["status"], "done")  # retry 成功
+
+    def test_up_map_reduce_with_review(self):
+        # データ駆動 fan-out（split→map）＋統合前 gate（--review）の複合を end-to-end で
+        bus = tempfile.mkdtemp(prefix="kf-e2e-")
+        p = self._run_up(bus, "ファイルをそれぞれ処理して集約 3件", extra=["--review"])
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        final = self._final(bus)
+        res = final["results"]
+        # split → 3 map → gate(verify) → reduce がすべて done
+        self.assertEqual(sum(1 for k in res if k.startswith("split1-m")), 3)
+        self.assertIn("split1-gate", res)
+        self.assertEqual(res["split1-reduce"]["status"], "done")
+        self.assertEqual(res["split1-reduce"]["data"]["count"], 3)
 
 
 if __name__ == "__main__":

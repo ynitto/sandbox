@@ -606,6 +606,34 @@ PATTERNS = {
 #            verify=検証 / filter=絞り込み / judge=最良選択 / reduce=構造化データの集約
 PATTERN_LIST = list(PATTERNS)
 
+# 有効なノード kind。planner（kiro）が未知 kind を出したら work に丸める。
+VALID_KINDS = {"work", "generate", "classify", "synthesize", "verify",
+               "filter", "judge", "reduce", "split", "map"}
+
+
+def _coerce_tasks(raw, existing=()):
+    """planner/評価役（kiro）の生出力をタスク dict に正規化する。
+    id 重複除去・既存 id 回避・不正 kind の work 丸め・deps の文字列化を行う。"""
+    seen = set(existing)
+    out = []
+    for i, t in enumerate(raw or []):
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or f"t{i+1}")
+        if tid in seen:
+            continue
+        seen.add(tid)
+        kind = str(t.get("kind", "work"))
+        if kind not in VALID_KINDS:
+            kind = "work"
+        out.append({
+            "id": tid,
+            "goal": str(t.get("goal", "")),
+            "deps": [str(d) for d in (t.get("deps") or [])],
+            "kind": kind,
+        })
+    return out
+
 
 def plan_stub(request: str):
     """kiro-cli 無しの簡易分解。
@@ -691,10 +719,12 @@ def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = Fals
                 for i in range(par)]
     gen_ids = [g["id"] for g in gens]
     if review:
-        # 統合前の事前チェック / 敵対的レビュー（adversarial-verification との複合）
+        # 統合前の事前チェック / 敵対的レビュー（adversarial-verification との複合）。
+        # 統合ノードは成果（gens）＋ gate に依存し、gate 通過後に gens を統合する。
         gate = {"id": "gate", "goal": "統合前レビュー（成果を検証）",
                 "deps": gen_ids, "kind": "verify"}
-        synth = {"id": "synth", "goal": f"統合: {short}", "deps": ["gate"], "kind": "synthesize"}
+        synth = {"id": "synth", "goal": f"統合: {short}",
+                 "deps": gen_ids + ["gate"], "kind": "synthesize"}
         return gens + [gate, synth]
     return gens + [{"id": "synth", "goal": f"統合: {short}",
                     "deps": gen_ids, "kind": "synthesize"}]
@@ -735,14 +765,7 @@ def plan_strategy_kiro(request: str, model: str | None, review: bool = False):
     )
     try:
         data = extract_json(run_kiro(prompt, model))
-        tasks = []
-        for i, t in enumerate(data.get("tasks", []) or []):
-            tasks.append({
-                "id": str(t.get("id") or f"t{i+1}"),
-                "goal": str(t.get("goal", "")),
-                "deps": list(t.get("deps", [])),
-                "kind": str(t.get("kind", "work")),
-            })
+        tasks = _coerce_tasks(data.get("tasks"))
         if not tasks:
             raise ValueError("tasks 空")
         strategy = {
@@ -779,11 +802,27 @@ def _dep_data(r: dict):
     return (r or {}).get("data")
 
 
+def _stub_sleep() -> None:
+    """stub の擬似実行時間。既定 1〜5 秒。環境変数 KIRO_FLOW_STUB_SLEEP_MAX で調整
+    （テストや動作確認では 0 にして高速化できる）。"""
+    try:
+        mx = float(os.environ.get("KIRO_FLOW_STUB_SLEEP_MAX", "5"))
+    except ValueError:
+        mx = 5.0
+    if mx > 0:
+        time.sleep(random.uniform(min(1.0, mx), mx))
+
+
 def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None):
-    time.sleep(random.uniform(1.0, 5.0))  # 実行時間をランダム（1−5 秒）で模す
+    _stub_sleep()  # 実行時間を模す（KIRO_FLOW_STUB_SLEEP_MAX で調整可）
     # 失敗注入: "FAIL" を含むと失敗（retry される）/ "FLAKY" は一旦 issue を残す（verify loop 用）
     if "FAIL" in goal:
         raise RuntimeError(f"[stub] 意図的失敗: {goal}")
+    # gate（verify の判定 {"ok":...}）は集約対象から除く
+    def _is_gate(r):
+        dv = _dep_data(r)
+        return isinstance(dv, dict) and "ok" in dv
+    agg = {d: r for d, r in dep_results.items() if not _is_gate(r)}
     texts = {d: _dep_text(r) for d, r in dep_results.items()}
     if kind == "split":
         # 入力をリストへ分解（データ駆動 fan-out の起点）。要素数は goal 中の数字 or 既定 3
@@ -796,8 +835,8 @@ def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None):
                       if lbl in goal.lower()), "general")
         return f"class={label}", {"label": label}
     if kind == "synthesize":
-        return (f"[synth] {len(texts)} 件を統合: " + " | ".join(texts)[:80],
-                {"merged": list(texts)})
+        return (f"[synth] {len(agg)} 件を統合: " + " | ".join(agg)[:80],
+                {"merged": list(agg)})
     if kind == "filter":
         kept = [d for d, t in texts.items() if "FAIL" not in t and "issue" not in t]
         return f"[filter] 採用={','.join(kept)}", {"kept": kept}
@@ -808,9 +847,9 @@ def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None):
         ok = all("issue" not in t and "fail" not in t.lower() for t in texts.values())
         return ("verify=pass" if ok else "verify=fail"), {"ok": ok}
     if kind == "reduce":
-        # 依存の構造化 data を畳み込む（list は連結、その他は要素として収集）
+        # 依存の構造化 data を畳み込む（gate は除外。list は連結、その他は要素として収集）
         items = []
-        for d, r in dep_results.items():
+        for d, r in agg.items():
             dv = _dep_data(r)
             if isinstance(dv, list):
                 items.extend(dv)
@@ -885,11 +924,11 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int, review: bool = F
             new.append({"id": mid, "goal": f"{nid} 要素{i+1}: {item}",
                         "deps": [], "kind": "map"})
         reduce_deps = map_ids
-        if review:  # 集約前の事前チェック / 敵対的レビュー
+        if review:  # 集約前の事前チェック / 敵対的レビュー。reduce は map＋gate に依存
             gid = f"{nid}-gate"
             new.append({"id": gid, "goal": f"{nid} の map 結果を集約前に検証",
                         "deps": map_ids, "kind": "verify"})
-            reduce_deps = [gid]
+            reduce_deps = map_ids + [gid]
         new.append({"id": f"{nid}-reduce", "goal": f"{nid} の結果を集約",
                     "deps": reduce_deps, "kind": "reduce"})
     return new
@@ -973,11 +1012,7 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
         data = extract_json(run_kiro(prompt, None))
     except Exception:  # noqa: BLE001
         return "done", [], "評価出力を解釈できず done 扱い"
-    new = []
-    for t in data.get("new_tasks", []) or []:
-        if isinstance(t, dict) and t.get("id") and t["id"] not in nodes:
-            new.append({"id": str(t["id"]), "goal": str(t.get("goal", "")),
-                        "deps": list(t.get("deps", [])), "kind": str(t.get("kind", "work"))})
+    new = _coerce_tasks(data.get("new_tasks"), existing=nodes)  # 既存 id と衝突しないよう正規化
     if data.get("decision") == "replan" and new:
         return "replan", new, str(data.get("reason", ""))
     return "done", [], str(data.get("reason", "done"))

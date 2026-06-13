@@ -253,7 +253,12 @@ python3 tools/kiro-flow/tests/test_kiro_flow.py
 主なケース: 決定的タイブレーク、**lease 切れ claim の回収（死んだワーカー）**、
 **同時 claim でも勝者は 1 人**、逐次依存の分解、失敗 → 再計画 → retry 成功（end-to-end）、
 **要求 claim でデーモンが 1 台に決まる**・`run_claimable_count` の依存考慮、
-**6 パターン検出・並列数抽出・fan-out/tournament のグラフ形・classify ルーティング・verify fail の作り直し**。
+**6 パターン検出・並列数抽出・fan-out/tournament のグラフ形・classify ルーティング・verify fail の作り直し**、
+**構造化成果 + reduce 集約・データ駆動 fan-out（split→map→reduce）・統合前 gate（--review）・
+グラフ健全性検査（未知依存/循環/自己ループ）・kind 正規化**。
+
+stub の擬似実行スリープは環境変数 `KIRO_FLOW_STUB_SLEEP_MAX`（既定 1〜5 秒）で調整でき、テストは `0` で
+高速に完走する（約 3 秒）。
 
 ## ロードマップ
 
