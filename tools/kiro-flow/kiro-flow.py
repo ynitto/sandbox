@@ -533,10 +533,17 @@ def plan_stub(request: str):
 
     区切り記号で依存も表現:
       ';' / 改行 … 独立（並列）タスクの境界
-      '->'        … 逐次依存チェーン（各タスクが直前のタスクに依存）"""
+      '->'        … 逐次依存チェーン（各タスクが直前のタスクに依存）
+
+    区切り記号が無い単一文字列ならタスク数をランダム（2−5件）で決める。"""
     segments = [s.strip() for s in request.replace("\n", ";").split(";") if s.strip()]
     if not segments:
         segments = [request.strip() or "no-op"]
+    # 単一セグメントかつ依存記号（'->')も無い場合はタスク数をランダム展開
+    if len(segments) == 1 and "->" not in segments[0]:
+        n = random.randint(2, 5)
+        base = segments[0][:48]
+        segments = [f"{base}（サブタスク{i + 1})"] + [f"{base}(サブタスク{i + 1})" for i in range(1, n)]
     tasks = []
     idx = 0
     for seg in segments:
@@ -666,7 +673,7 @@ def run_kiro(prompt: str, model: str | None) -> str:
 
 
 def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None) -> str:
-    time.sleep(random.uniform(0.1, 0.4))  # 実行のばらつきを模す
+    time.sleep(random.uniform(1.0, 5.0))  # 実行時間をランダム（1−5 秒）で模括
     # 失敗注入: "FAIL" を含むと失敗（retry される）/ "FLAKY" は一旦 issue を残す（verify loop 用）
     if "FAIL" in goal:
         raise RuntimeError(f"[stub] 意図的失敗: {goal}")
@@ -1222,7 +1229,10 @@ def cmd_gc(args) -> int:
 def _render_status(bus, run_id, events):
     graph = bus.read_graph()
     status = bus.get_status()
+    meta = bus.run_meta(run_id) if hasattr(bus, 'run_meta') else (read_json(bus.meta_path) or {})
     lines = [f"run: {run_id}   status: {status}   {now_iso()}"]
+    if meta.get("request"):
+        lines.append(f"  request: {meta['request'][:80]}")
     if graph and graph.get("strategy"):
         s = graph["strategy"]
         lines.append(f"  strategy: patterns={s.get('patterns')} parallelism={s.get('parallelism')}")
@@ -1246,10 +1256,55 @@ def _render_status(bus, run_id, events):
             for e in evs:
                 lines.append(f"  {e.get('ts','')} {e.get('who',''):<12} "
                              f"{e.get('kind','')} {e.get('node','') or e.get('tasks') or ''}")
+    if status in TERMINAL:
+        final = read_json(bus.final_path)
+        if final:
+            lines.append("  --- final summary ---")
+            for line in final.get("summary", "").splitlines()[:20]:
+                lines.append(f"  {line}")
     return status, "\n".join(lines)
 
 
+def _resolve_run_id(args) -> str | None:
+    """--run-id 未指定時に最新 run を自動選択（done/failed 含む）。
+    見つからなければ None を返す。"""
+    probe = make_bus(args, "status-viewer")
+    probe.sync_pull()
+    runs = probe.list_runs()
+    if not runs:
+        return None
+    metas = [(rid, probe.run_meta(rid)) for rid in runs]
+    metas.sort(key=lambda x: x[1].get("created_at", x[0]), reverse=True)
+    return metas[0][0]
+
+
 def cmd_status(args) -> int:
+    # --list: run 一覧を表示して終了
+    if getattr(args, "list", False):
+        probe = make_bus(args, "status-viewer")
+        probe.sync_pull()
+        runs = probe.list_runs()
+        if not runs:
+            print("run がありません。")
+            return 0
+        metas = [(rid, probe.run_meta(rid)) for rid in runs]
+        metas.sort(key=lambda x: x[1].get("created_at", x[0]), reverse=True)
+        for rid, meta in metas:
+            req = meta.get("request", "")[:50]
+            print(f"  {rid}  status={meta.get('status','?'):<8}  "
+                  f"created={meta.get('created_at','?')}  req={req}")
+        return 0
+
+    # run_id が未指定の場合、最新の run を自動選択（終了済み含む）
+    if not args.run_id:
+        resolved = _resolve_run_id(args)
+        if not resolved:
+            print("エラー: run が見つかりません。まず kiro-flow run を実行してください。",
+                  file=sys.stderr)
+            return 1
+        args.run_id = resolved
+        print(f"(run_id 未指定 — 最新の run を表示: {args.run_id})", file=sys.stderr)
+
     bus = make_bus(args, "status-viewer")
     try:
         while True:
@@ -1341,6 +1396,7 @@ def main() -> int:
     st.add_argument("--interval", type=float, default=1.0, help="更新間隔（秒, --follow 時）")
     st.add_argument("--events", type=int, default=8, help="表示する直近イベント数")
     st.add_argument("--until-done", action="store_true", help="run 完了で自動終了（--follow 時）")
+    st.add_argument("--list", "-l", action="store_true", help="run 一覧を表示して終了")
     st.set_defaults(func=cmd_status)
 
     gc = sub.add_parser("gc", help="古い run を掃除")
