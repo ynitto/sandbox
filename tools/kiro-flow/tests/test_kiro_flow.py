@@ -117,6 +117,40 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(by_id["t4"]["deps"], [])         # docs independent
 
 
+class StructuredResultTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-data-")
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("req")
+
+    def test_result_data_roundtrip(self):
+        self.bus.write_result("t1", "w", "done", "txt", data={"items": [1, 2, 3]})
+        r = self.bus.read_result("t1")
+        self.assertEqual(r["output"], "txt")
+        self.assertEqual(r["data"], {"items": [1, 2, 3]})
+
+    def test_result_without_data_has_no_key(self):
+        self.bus.write_result("t1", "w", "done", "txt")
+        self.assertNotIn("data", self.bus.read_result("t1"))
+
+    def test_executor_returns_text_and_data(self):
+        text, data = kf.execute_stub("classify", "backend のバグ", {}, None)
+        self.assertEqual(text, "class=backend")
+        self.assertEqual(data, {"label": "backend"})
+        text, data = kf.execute_stub("work", "ふつうの仕事", {}, None)
+        self.assertIsNone(data)
+
+    def test_reduce_aggregates_dependency_data(self):
+        deps = {
+            "a": {"output": "oa", "data": ["x", "y"]},
+            "b": {"output": "ob", "data": ["z"]},
+            "c": {"output": "oc"},  # data 無し → output を要素化
+        }
+        text, data = kf.execute_stub("reduce", "集約", deps, None)
+        self.assertEqual(data["count"], 4)
+        self.assertEqual(sorted(str(i) for i in data["items"]), ["oc", "x", "y", "z"])
+
+
 class ContinuationTests(unittest.TestCase):
     def test_replan_retries_failed_once(self):
         nodes = {"t1": {"goal": "ok", "deps": [], "kind": "work"},

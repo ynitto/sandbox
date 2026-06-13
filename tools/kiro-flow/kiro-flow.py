@@ -350,14 +350,18 @@ class Bus:
     def read_result(self, node_id: str):
         return read_json(self.result_path(node_id))
 
-    def write_result(self, node_id: str, who: str, status: str, output: str) -> None:
-        write_json_atomic(self.result_path(node_id), {
+    def write_result(self, node_id: str, who: str, status: str, output: str,
+                     data=None) -> None:
+        rec = {
             "id": node_id,
             "who": who,
             "status": status,
             "output": output,
             "finished_at": now_iso(),
-        })
+        }
+        if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
+            rec["data"] = data
+        write_json_atomic(self.result_path(node_id), rec)
 
     # --- 状態導出 ---
     def node_state(self, node_id: str) -> str:
@@ -595,7 +599,7 @@ PATTERNS = {
     "loop-until-done": "完了条件（テスト通過・指摘なし・品質達成）を満たすまで生成と検証を反復する。",
 }
 # ノード種別: work=通常実行 / generate=候補生成 / classify=分類 / synthesize=統合 /
-#            verify=検証 / filter=絞り込み / judge=最良選択
+#            verify=検証 / filter=絞り込み / judge=最良選択 / reduce=構造化データの集約
 PATTERN_LIST = list(PATTERNS)
 
 
@@ -700,7 +704,8 @@ def plan_strategy_kiro(request: str, model: str | None):
         f"{catalog}\n\n"
         "要求に最も適したパターン（複数の組み合わせ可）と並列数を選び、それを反映した初期タスクグラフを"
         "作ってください。各タスクには kind を付けます: "
-        "work/generate/classify/synthesize/verify/filter/judge。"
+        "work/generate/classify/synthesize/verify/filter/judge/reduce"
+        "（reduce は依存の構造化データを畳み込む集約ノード）。"
         "並列にできるタスクは deps を空に、順序や統合が要るものは deps に先行 id を入れます。\n"
         "出力は JSON オブジェクトのみ:\n"
         '{"patterns": ["..."], "parallelism": N, "reason": "...", '
@@ -743,49 +748,85 @@ def run_kiro(prompt: str, model: str | None) -> str:
     return proc.stdout.strip()
 
 
-def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None) -> str:
-    time.sleep(random.uniform(1.0, 5.0))  # 実行時間をランダム（1−5 秒）で模括
+# dep_results は {dep_id: result_dict}（result_dict は output テキストと任意の data を持つ）。
+# 実行結果は (text, data) を返す。data は構造化成果（JSON 可、無ければ None）。
+def _dep_text(r: dict) -> str:
+    return str((r or {}).get("output", ""))
+
+
+def _dep_data(r: dict):
+    return (r or {}).get("data")
+
+
+def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None):
+    time.sleep(random.uniform(1.0, 5.0))  # 実行時間をランダム（1−5 秒）で模す
     # 失敗注入: "FAIL" を含むと失敗（retry される）/ "FLAKY" は一旦 issue を残す（verify loop 用）
     if "FAIL" in goal:
         raise RuntimeError(f"[stub] 意図的失敗: {goal}")
-    outs = list(dep_results.values())
+    texts = {d: _dep_text(r) for d, r in dep_results.items()}
     if kind == "classify":
-        for lbl in ("frontend", "backend", "security", "performance"):
-            if lbl in goal.lower():
-                return f"class={lbl}"
-        return "class=general"
+        label = next((lbl for lbl in ("frontend", "backend", "security", "performance")
+                      if lbl in goal.lower()), "general")
+        return f"class={label}", {"label": label}
     if kind == "synthesize":
-        return f"[synth] {len(outs)} 件を統合: " + " | ".join(d for d in dep_results)[:80]
+        return (f"[synth] {len(texts)} 件を統合: " + " | ".join(texts)[:80],
+                {"merged": list(texts)})
     if kind == "filter":
-        kept = [d for d, o in dep_results.items() if "FAIL" not in o and "issue" not in o]
-        return f"[filter] 採用={','.join(kept)}"
+        kept = [d for d, t in texts.items() if "FAIL" not in t and "issue" not in t]
+        return f"[filter] 採用={','.join(kept)}", {"kept": kept}
     if kind == "judge":
         win = next(iter(dep_results), "")
-        return f"[judge] winner={win}"
+        return f"[judge] winner={win}", {"winner": win}
     if kind == "verify":
-        ok = all("issue" not in o and "fail" not in o.lower() for o in outs)
-        return "verify=pass" if ok else "verify=fail"
+        ok = all("issue" not in t and "fail" not in t.lower() for t in texts.values())
+        return ("verify=pass" if ok else "verify=fail"), {"ok": ok}
+    if kind == "reduce":
+        # 依存の構造化 data を畳み込む（list は連結、その他は要素として収集）
+        items = []
+        for d, r in dep_results.items():
+            dv = _dep_data(r)
+            if isinstance(dv, list):
+                items.extend(dv)
+            elif dv is not None:
+                items.append(dv)
+            else:
+                items.append(_dep_text(r))
+        return f"[reduce] {len(items)} 件を集約", {"items": items, "count": len(items)}
     # work / generate
     if "FLAKY" in goal:
-        return f"[stub] 未完(issue): {goal}"
-    return f"[stub] 完了: {goal}"
+        return f"[stub] 未完(issue): {goal}", None
+    return f"[stub] 完了: {goal}", None
 
 
-def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None) -> str:
+def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
         "filter": "選別役。依存の候補から基準を満たすものだけを残し、採用理由を述べる。",
         "judge": "審判役。依存の複数案を比較し最良案を選び理由を述べる。",
+        "reduce": "集約役。依存タスクの構造化データを畳み込み、集約結果を JSON で出力。",
         "verify": "検証役。依存の成果を批判的に検証し、問題なければ『verify=pass』、"
                   "問題があれば『verify=fail』と指摘を出力。",
     }.get(kind, "ワーカー。次のタスクだけを完了し成果物を出力。")
     prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
     if dep_results:
-        ctx = "\n".join(f"[{d}] {o}" for d, o in dep_results.items())
-        prompt += f"\n依存タスクの成果:\n{ctx}\n"
+        lines = []
+        for d, r in dep_results.items():
+            line = f"[{d}] {_dep_text(r)}"
+            dv = _dep_data(r)
+            if dv is not None:
+                line += f"\n  data: {json.dumps(dv, ensure_ascii=False)[:400]}"
+            lines.append(line)
+        prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
     prompt += "\n成果物を簡潔に直接出力してください。"
-    return run_kiro(prompt, model)
+    text = run_kiro(prompt, model)
+    # 出力から構造化データを寛容に抽出（あれば後続へ JSON として流す）
+    data = None
+    try:
+        data = extract_json(text)
+    except Exception:  # noqa: BLE001 — 構造化できなければテキストのみ
+        data = None
+    return text, data
 
 
 # --------------------------------------------------------------------------
@@ -1051,16 +1092,17 @@ def cmd_work(args) -> int:
         log(who, f"claim 成功: {nid} [{kind}] — {node['goal'][:55]}")
         bus.event(who, "claimed", node=nid)
 
-        dep_results = {d: (bus.read_result(d) or {}).get("output", "")
-                       for d in node.get("deps", [])}
+        # 依存の成果は構造化データ込みの完全な result dict で渡す
+        dep_results = {d: (bus.read_result(d) or {}) for d in node.get("deps", [])}
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
+        rdata = None
         try:
             if args.executor == "kiro":
-                output = execute_kiro(kind, node["goal"], dep_results, args.model)
+                output, rdata = execute_kiro(kind, node["goal"], dep_results, args.model)
             else:
-                output = execute_stub(kind, node["goal"], dep_results, args.model)
+                output, rdata = execute_stub(kind, node["goal"], dep_results, args.model)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
@@ -1068,7 +1110,7 @@ def cmd_work(args) -> int:
         finally:
             hb.stop()
 
-        bus.write_result(nid, who, rstatus, output)
+        bus.write_result(nid, who, rstatus, output, rdata)
         bus.event(who, "result", node=nid, status=rstatus)
         bus.sync_push(f"result {nid} [{rstatus}] by {who}")
         log(who, f"完了: {nid} [{rstatus}]")

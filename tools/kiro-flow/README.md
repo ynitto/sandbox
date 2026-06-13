@@ -60,6 +60,10 @@ orchestrator は要求を見て、以下の 6 パターン（[参考記事](http
 - **並列数**: 要求中の `xN` / `並列N` を拾う。無ければ並列タスク数から既定（2〜6）。
 - **継続判断**: 静止（claim 可能・実行中タスクが無い）するたびに評価し、`classify` 結果でルーティング、
   `verify` が fail なら依存を作り直して再検証（`replaces` で後続の依存を付け替え）、失敗タスクは retry。
+- **構造化成果（structured results）**: 各ノードの結果はテキスト `output` に加え、任意の **`data`（JSON）**
+  を持てる。依存先へはテキスト＋構造化データの両方を渡す。`reduce` kind は依存の `data`（リスト等）を
+  畳み込んで集約する集約ノード。kiro executor は出力を寛容パースして `data` に格納する。
+  （データ駆動の動的 fan-out や map/reduce ノードの本格対応は後続フェーズ）
 - 選んだ戦略は `graph.json` / `final.json` に記録され、`status` でも表示される。
 
 ## 動的ワークフロー（evaluator-optimizer ループ）
