@@ -3,16 +3,34 @@
 kiro-cli で **Claude 風の Dynamic Workflow**（動的にタスクを分解 → ワーカーへ委譲 → 結果統合）を
 実現する基盤。通信は **ファイルのみ**で行い、バスを git に差し替えれば**複数 PC へ分散**できる設計。
 
-> **現状: M2（git 分散）**
-> ローカルディレクトリバス（M1）に加え、`--git` で**共有 git リポジトリをバス**にして
-> 複数 PC へ分散実行できる。claim は全転送で衝突しない方式に統一済み。
+> **現状: M3（動的ワークフロー）**
+> ローカル/ git バス（M1/M2）の上に、結果評価に基づく**再計画ループ**（evaluator-optimizer）、
+> **中断再開（resume）**、長時間タスク向けの**lease ハートビート**を実装。
 
 ## できること
 
 - `up` **一発**で orchestrator ×1 ＋ worker ×N を起動して待機。run 完了で自動停止、Ctrl-C で全停止。
 - 要求を独立タスクに分解し、複数ワーカーが**競合せず** claim して並列実行。
+- **動的な再計画**：全タスク完了後に結果を評価し、不足があればタスクを追加して反復（最大 `--max-iterations`）。
 - **`--git` で複数 PC 分散**：各ノードが共有リポジトリの自分専用クローンで作業し、push/pull で通信。
+- **`resume`**：中断した run を同じ `--run-id` で再開（計画はやり直さず未完タスクから継続）。
+- **lease ハートビート**：実行中はリースを延長し続け、長時間タスクでも他ノードに横取りされない。
 - LLM は **kiro-cli** がデフォルト。kiro-cli 無しでも動く **stub** モードでプロトコル検証可能。
+
+## 動的ワークフロー（evaluator-optimizer ループ）
+
+```
+要求 → [分解] → タスク投入 → ワーカーが claim/実行 → 全完了
+                  ▲                                      │
+                  │                                      ▼
+            タスク追加 ◀── replan ── [評価] done? ──→ 統合(final.json)
+                          （最大 max-iterations 回）
+```
+
+orchestrator は全タスク完了のたびに結果を評価し、`done` なら統合、`replan` なら不足タスクを
+グラフへ追加して継続する。stub 評価役は失敗タスクを 1 度だけ retry する（`FAIL` を含むゴールは
+stub executor が失敗させるので、ループの動作確認に使える）。kiro 評価役は kiro-cli に
+`{"decision","reason","new_tasks"}` を出力させる。
 
 ## 設計の肝 — 衝突しない通信
 
@@ -74,7 +92,8 @@ python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> status
 | コマンド | 役割 |
 |---------|------|
 | `up <要求>` | orchestrator + worker(複数) を一発起動して待機 |
-| `orchestrate --request <要求>` | 計画役単体（分解 → 投入 → 完了待ち → 統合） |
+| `resume --run-id <id>` | 中断した run を再開（orchestrator + worker を再起動） |
+| `orchestrate --request <要求>` | 計画役単体（分解 → 投入 → 評価/再計画 → 統合）。既存グラフがあれば再開 |
 | `work` | ワーカー役単体（claim → 実行 → result）。`--keep-alive` で常駐待機 |
 | `status` | run の状態表示 |
 
@@ -85,9 +104,10 @@ python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> status
 | `--bus` | `./.kiro-flow` | ローカルバスのルート / git モードでは各ノードのクローン親 |
 | `--git` | （なし） | 共有 git リポジトリ URL/パス。指定で複数 PC 分散モード |
 | `--git-branch` | `main` | バスに使う git ブランチ |
-| `--lease` | 1800 | claim のリース秒数（超過で他ノードが再 claim 可能） |
-| `--workers` | 2 | 起動するワーカー数（`up`） |
-| `--planner` / `--executor` | `kiro` | `kiro`（kiro-cli）/ `stub`（オフライン検証） |
+| `--lease` | 1800 | claim のリース秒数（実行中はハートビートが延長） |
+| `--workers` | 2 | 起動するワーカー数（`up` / `resume`） |
+| `--planner` / `--executor` | `kiro` | `kiro`（kiro-cli）/ `stub`（オフライン検証）。executor は評価役にも使う |
+| `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
 | `--poll` | 2.0 | ポーリング間隔（秒） |
 | `--keep-alive` | off | run 完了後もワーカーを待機させる（`work`） |
 
@@ -100,18 +120,19 @@ python3 kiro-flow.py --bus /tmp/flowbus --run-id <run-id> status
 ## ロードマップ
 
 - **M1**: ローカルバス・claim プロトコル・一発起動。✅
-- **M2（本実装）**: git バスで複数 PC 分散。名前空間付き claim ＋ 決定的タイブレーク、
+- **M2**: git バスで複数 PC 分散。名前空間付き claim ＋ 決定的タイブレーク、
   push 競合の rebase リトライ、lease による孤児 claim の自動回収。✅
-- **M3**: 結果評価に基づく**再計画ループ**（evaluator-optimizer）・`resume`（中断再開）・
-  lease ハートビート（長時間タスクの claim 更新）・負荷分散の改善。
-- **M4**: tmux 可視化・`gc`（古い run 掃除）・障害注入テスト。
+- **M3（本実装）**: 結果評価に基づく**再計画ループ**（evaluator-optimizer）・`resume`（中断再開）・
+  lease ハートビート（長時間タスクの claim 更新）・負荷分散の位相ずらし。✅
+- **M4**: tmux 可視化・`gc`（古い run 掃除）・障害注入テスト・依存付きタスクの自動分解強化。
 
-## 既知の制限（M2 時点）
+## 既知の制限（M3 時点）
 
-- **負荷分散は最適ではない**: ウォームなノードが連続して claim しやすい。実 kiro-cli は
-  タスク実行に時間がかかり遅延も入るため自然に分散するが、厳密な公平分配は M3 で扱う。
-- **長時間タスクと lease**: タスク実行が `--lease` を超えると別ノードが再 claim し二重実行の
-  恐れ。既定 1800 秒。M3 でハートビート更新を入れる。
+- **負荷分散は heuristic**: 起動位相ずらし＋タスク後ジッタで緩和するが、ウォームなノードが
+  連続 claim しやすい傾向は残る。実 kiro-cli はタスク実行に時間がかかり遅延も入るため自然に
+  分散する。厳密な公平分配（リース幅/ work-stealing 調整）は今後の課題。
+- **ハートビート間隔の下限**: `max(2 秒, lease/3)`。極端に短い lease では下限が効くため、
+  lease は実タスク時間に対して十分大きく設定すること。
 
 ## 既存ツールとの関係
 

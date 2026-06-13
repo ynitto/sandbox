@@ -33,6 +33,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -315,6 +316,34 @@ def make_bus(args, node_id: str) -> Bus:
 
 
 # --------------------------------------------------------------------------
+# Heartbeat — 長時間タスク実行中に claim の lease を更新し続ける
+# --------------------------------------------------------------------------
+class Heartbeat(threading.Thread):
+    """実行中のワーカーが claim を握り続けるための心拍。
+
+    lease の 1/3 間隔で claims/<node>/<who>.json の lease_until を延長し push する。
+    これがないと、実行が lease を超えた瞬間に他ノードへ再 claim され二重実行になりうる。"""
+
+    def __init__(self, bus: Bus, node_id: str, who: str, lease: float):
+        super().__init__(daemon=True)
+        self.bus, self.node_id, self.who, self.lease = bus, node_id, who, lease
+        self._stopped = threading.Event()
+
+    def run(self) -> None:
+        interval = max(2.0, self.lease / 3.0)
+        while not self._stopped.wait(interval):
+            try:
+                self.bus._write_claim(self.node_id, self.who, self.lease)
+                self.bus.sync_push(f"heartbeat {self.node_id} by {self.who}")
+            except Exception:  # noqa: BLE001 — 心拍失敗は実行を止めない
+                pass
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self.join(timeout=5)
+
+
+# --------------------------------------------------------------------------
 # Planner — 動的分解（kiro-cli or stub）
 # --------------------------------------------------------------------------
 def plan_stub(request: str):
@@ -366,8 +395,60 @@ def run_kiro(prompt: str, model: str | None) -> str:
 
 def execute_stub(goal: str, dep_ctx: str, model: str | None) -> str:
     time.sleep(random.uniform(0.2, 0.6))  # 実行のばらつきを模す
+    # 再計画ループ検証用: ゴールに "FAIL" を含むと失敗する（再計画で retry される）
+    if "FAIL" in goal:
+        raise RuntimeError(f"[stub] 意図的失敗: {goal}")
     ctx = f" / 依存結果あり({len(dep_ctx)}字)" if dep_ctx else ""
     return f"[stub] 完了: {goal}{ctx}"
+
+
+# --------------------------------------------------------------------------
+# Evaluator — 結果を評価して done / replan を決める（evaluator-optimizer）
+# --------------------------------------------------------------------------
+def evaluate_stub(request: str, goals: dict, results: dict, iteration: int):
+    """失敗ノードがあれば retry タスクを 1 回だけ追加して replan。無ければ done。"""
+    new_tasks = []
+    for nid, r in results.items():
+        if r.get("status") == "failed":
+            rid = f"{nid}r"
+            if rid in goals:  # 既に retry 済み → 無限ループ防止
+                continue
+            fixed = goals.get(nid, "").replace("FAIL", "ok")
+            new_tasks.append({"id": rid, "goal": f"[retry] {fixed}", "deps": []})
+    if new_tasks:
+        return "replan", new_tasks, f"{len(new_tasks)} 件の失敗を retry"
+    return "done", [], "全タスク成功"
+
+
+def evaluate_kiro(request: str, goals: dict, results: dict, iteration: int):
+    summary = "\n".join(
+        f"- {nid} [{r.get('status')}]: {str(r.get('output',''))[:200]}"
+        for nid, r in results.items()
+    )
+    prompt = (
+        "あなたは分散ワークフローの評価役です。元の要求に対して、現在の結果が十分か判定し、"
+        "不足があれば追加すべきタスクを出してください。出力は JSON オブジェクトのみ:\n"
+        '{"decision": "done"|"replan", "reason": "...", '
+        '"new_tasks": [{"id": "...", "goal": "...", "deps": []}]}\n'
+        "done のときは new_tasks を空配列にしてください。既存の id とは重複しない id を使うこと。\n\n"
+        f"元の要求: {request}\n\n現在の結果:\n{summary}"
+    )
+    try:
+        data = extract_json(run_kiro(prompt, None))
+    except Exception:  # noqa: BLE001 — 評価に失敗したら done 扱い（暴走防止）
+        return "done", [], "評価出力を解釈できず done 扱い"
+    decision = data.get("decision", "done")
+    new_tasks = []
+    for t in data.get("new_tasks", []) or []:
+        if isinstance(t, dict) and t.get("id") and t.get("id") not in goals:
+            new_tasks.append({
+                "id": str(t["id"]),
+                "goal": str(t.get("goal", "")),
+                "deps": list(t.get("deps", [])),
+            })
+    if decision == "replan" and new_tasks:
+        return "replan", new_tasks, str(data.get("reason", ""))
+    return "done", [], str(data.get("reason", "done"))
 
 
 def execute_kiro(goal: str, dep_ctx: str, model: str | None) -> str:
@@ -384,31 +465,73 @@ def execute_kiro(goal: str, dep_ctx: str, model: str | None) -> str:
 # --------------------------------------------------------------------------
 # orchestrate
 # --------------------------------------------------------------------------
+def _plan(args):
+    return plan_kiro(args.request, args.model) if args.planner == "kiro" else plan_stub(args.request)
+
+
+def _evaluate(args, request, goals, results, iteration):
+    if args.executor == "kiro":
+        return evaluate_kiro(request, goals, results, iteration)
+    return evaluate_stub(request, goals, results, iteration)
+
+
 def cmd_orchestrate(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
     bus.sync_pull()
     bus.ensure_run(args.request)
-    log(who, f"run={args.run_id} 計画開始 (planner={args.planner})")
+    graph = bus.read_graph()
 
-    if args.planner == "kiro":
-        tasks = plan_kiro(args.request, args.model)
+    # 既存グラフがあれば計画をやり直さず再開（resume）
+    if graph and graph.get("nodes"):
+        iteration = graph.get("iteration", 0)
+        log(who, f"run={args.run_id} 再開（既存 {len(graph['nodes'])} ノード, iteration={iteration}）")
+        if not bus.all_terminal():
+            bus.set_status("running")
+            bus.sync_push(f"resume run {args.run_id}")
     else:
-        tasks = plan_stub(args.request)
+        tasks = _plan(args)
+        graph = {"nodes": {t["id"]: {"goal": t["goal"], "deps": t["deps"]} for t in tasks},
+                 "iteration": 0}
+        bus.write_graph(graph)
+        for t in tasks:
+            bus.write_task(t)
+        bus.set_status("running")
+        bus.event(who, "planned", tasks=[t["id"] for t in tasks])
+        bus.sync_push(f"plan run {args.run_id}: {[t['id'] for t in tasks]}")
+        log(who, f"計画 (planner={args.planner}) → タスク投入: {[t['id'] for t in tasks]}")
+        iteration = 0
 
-    graph = {"nodes": {t["id"]: {"goal": t["goal"], "deps": t["deps"]} for t in tasks}}
-    bus.write_graph(graph)
-    for t in tasks:
-        bus.write_task(t)
-    bus.set_status("running")
-    bus.event(who, "planned", tasks=[t["id"] for t in tasks])
-    bus.sync_push(f"plan run {args.run_id}: {[t['id'] for t in tasks]}")
-    log(who, f"タスク投入: {[t['id'] for t in tasks]}")
-
-    # 完了待ち（lease 切れの孤児 claim は _winner が自動的に無視＝再 claim 可能）
-    while not bus.all_terminal():
+    # evaluator-optimizer ループ: 完了 → 評価 → (replan ならタスク追加して継続)
+    while True:
+        while not bus.all_terminal():
+            bus.sync_pull()
+            time.sleep(args.poll)
         bus.sync_pull()
-        time.sleep(args.poll)
+
+        graph = bus.read_graph()
+        goals = {nid: n.get("goal", "") for nid, n in graph["nodes"].items()}
+        results = {nid: (bus.read_result(nid) or {}) for nid in graph["nodes"]}
+
+        if iteration >= args.max_iterations:
+            decision, new_tasks, reason = "done", [], f"max-iterations({args.max_iterations}) 到達"
+        else:
+            decision, new_tasks, reason = _evaluate(args, args.request, goals, results, iteration)
+        log(who, f"評価 #{iteration}: {decision} — {reason}")
+
+        if decision == "replan" and new_tasks:
+            iteration += 1
+            for t in new_tasks:
+                graph["nodes"][t["id"]] = {"goal": t["goal"], "deps": t["deps"]}
+                bus.write_task(t)
+            graph["iteration"] = iteration
+            bus.write_graph(graph)
+            bus.set_status("running")
+            bus.event(who, "replan", iteration=iteration, added=[t["id"] for t in new_tasks])
+            bus.sync_push(f"replan #{iteration} run {args.run_id}: +{[t['id'] for t in new_tasks]}")
+            log(who, f"再計画 #{iteration}: 追加タスク {[t['id'] for t in new_tasks]}")
+            continue
+        break
 
     # 統合
     results = {nid: (bus.read_result(nid) or {}) for nid in bus.task_ids()}
@@ -419,12 +542,13 @@ def cmd_orchestrate(args) -> int:
     write_json_atomic(bus.final_path, {
         "request": args.request,
         "finished_at": now_iso(),
+        "iterations": iteration,
         "summary": summary,
         "results": results,
     })
     bus.set_status("done")
     bus.sync_push(f"finalize run {args.run_id}")
-    log(who, "全タスク完了。final.json を書き出しました。")
+    log(who, f"完了（iteration={iteration}）。final.json を書き出しました。")
     log(who, "結果サマリ:\n" + summary)
     return 0
 
@@ -455,6 +579,7 @@ def cmd_work(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
     log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive})")
+    time.sleep(random.uniform(0, args.poll))  # 負荷分散: 起動位相をずらす
 
     while True:
         bus.sync_pull()
@@ -478,6 +603,9 @@ def cmd_work(args) -> int:
             f"[{d}] {(bus.read_result(d) or {}).get('output','')}"
             for d in node.get("deps", [])
         )
+        # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
+        hb = Heartbeat(bus, nid, who, args.lease)
+        hb.start()
         try:
             if args.executor == "kiro":
                 output = execute_kiro(node["goal"], dep_ctx, args.model)
@@ -487,11 +615,14 @@ def cmd_work(args) -> int:
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
             rstatus = "failed"
+        finally:
+            hb.stop()
 
         bus.write_result(nid, who, rstatus, output)
         bus.event(who, "result", node=nid, status=rstatus)
         bus.sync_push(f"result {nid} [{rstatus}] by {who}")
         log(who, f"完了: {nid} [{rstatus}]")
+        time.sleep(random.uniform(0, 0.3))  # 負荷分散: 他ノードに claim の機会を渡す
 
 
 # --------------------------------------------------------------------------
@@ -511,7 +642,9 @@ def cmd_up(args) -> int:
     procs = []
     orch = subprocess.Popen(base + [
         "orchestrate", "--request", args.request,
-        "--planner", args.planner, "--model_opt", args.model or "",
+        "--planner", args.planner, "--executor", args.executor,
+        "--max-iterations", str(args.max_iterations),
+        "--model_opt", args.model or "",
         "--poll", str(args.poll), "--node-id", "orchestrator",
     ])
     procs.append(("orchestrator", orch))
@@ -524,7 +657,8 @@ def cmd_up(args) -> int:
         ])
         procs.append((wid, w))
 
-    print(f"\n>>> kiro-flow up: run_id={run_id} bus={mode}")
+    kind = "resume" if getattr(args, "_resume", False) else "up"
+    print(f"\n>>> kiro-flow {kind}: run_id={run_id} bus={mode}")
     print(f">>> orchestrator x1 + worker x{args.workers} を起動しました。Ctrl-C で全停止。\n", flush=True)
 
     bus = make_bus(args, "up-monitor")
@@ -564,6 +698,26 @@ def cmd_up(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# resume — 中断した run を同じ run-id で再開
+# --------------------------------------------------------------------------
+def cmd_resume(args) -> int:
+    if not args.run_id:
+        print("resume には --run-id が必要です", file=sys.stderr)
+        return 2
+    bus = make_bus(args, "resume-reader")
+    bus.sync_pull()
+    meta = read_json(bus.meta_path)
+    if not meta:
+        print(f"run {args.run_id} が見つかりません（bus を確認）", file=sys.stderr)
+        return 2
+    # orchestrate は既存グラフを検出すると計画をやり直さず再開する
+    args.request = meta.get("request", "")
+    args._resume = True
+    print(f">>> run {args.run_id} を再開します（status={meta.get('status')}）", flush=True)
+    return cmd_up(args)
+
+
+# --------------------------------------------------------------------------
 # status
 # --------------------------------------------------------------------------
 def cmd_status(args) -> int:
@@ -581,7 +735,7 @@ def self_path() -> str:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow (M2)")
+    p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow (M3)")
     p.add_argument("--bus", default="./.kiro-flow",
                    help="ローカルバスのルート / git モードでは各ノードのクローン親ディレクトリ")
     p.add_argument("--run-id", default=None, help="run 識別子")
@@ -597,13 +751,27 @@ def main() -> int:
     up.add_argument("--workers", type=int, default=2)
     up.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
     up.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
+    up.add_argument("--max-iterations", type=int, default=3,
+                    help="再計画（evaluator-optimizer）の最大反復回数")
     up.add_argument("--model", default=None)
     up.add_argument("--poll", type=float, default=2.0)
     up.set_defaults(func=cmd_up)
 
+    res = sub.add_parser("resume", help="中断した run を同じ --run-id で再開")
+    res.add_argument("--workers", type=int, default=2)
+    res.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
+    res.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
+    res.add_argument("--max-iterations", type=int, default=3)
+    res.add_argument("--model", default=None)
+    res.add_argument("--poll", type=float, default=2.0)
+    res.set_defaults(func=cmd_resume)
+
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
     orch.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
+    orch.add_argument("--executor", choices=["kiro", "stub"], default="kiro",
+                      help="評価役（evaluator）に使うバックエンド")
+    orch.add_argument("--max-iterations", type=int, default=3)
     orch.add_argument("--node-id", default="orchestrator")
     orch.add_argument("--model_opt", dest="model", default=None)
     orch.add_argument("--poll", type=float, default=2.0)
