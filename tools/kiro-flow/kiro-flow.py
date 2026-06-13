@@ -59,6 +59,7 @@ def read_json(path: str):
 
 
 def write_json_atomic(path: str, data) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -86,6 +87,7 @@ def extract_json(text: str):
 # --------------------------------------------------------------------------
 class Bus:
     def __init__(self, root: str, run_id: str):
+        self.root = root
         self.run_dir = os.path.join(root, "runs", run_id)
         self.tasks_dir = os.path.join(self.run_dir, "tasks")
         self.claims_dir = os.path.join(self.run_dir, "claims")
@@ -95,11 +97,11 @@ class Bus:
         self.graph_path = os.path.join(self.run_dir, "graph.json")
         self.final_path = os.path.join(self.run_dir, "final.json")
 
-    # --- git バス化のための同期フック（ローカルでは no-op） ---
+    # --- 転送フック（ローカルバスでは no-op、GitBus が上書き） ---
     def sync_pull(self) -> None:
         pass
 
-    def sync_push(self) -> None:
+    def sync_push(self, msg: str = "") -> None:
         pass
 
     # --- セットアップ ---
@@ -141,45 +143,56 @@ class Bus:
         g = self.read_graph()
         return list(g["nodes"].keys()) if g else []
 
-    # --- claim（原子操作） ---
-    def lock_path(self, node_id: str) -> str:
-        return os.path.join(self.claims_dir, f"{node_id}.lock")
+    # --- claim（名前空間付き claim ＋ 決定的タイブレーク） ---
+    #
+    # 各ワーカーは自分専用のファイル claims/<node>/<who>.json を書く（ファイル名が
+    # 衝突しないので git で add/add コンフリクトにならない）。勝者は全 claim のうち
+    # lease 内で「(ts, who) が最小」の 1 件に決定的に定まる。ローカル/ git どちらの
+    # 転送でも同じロジックで唯一の勝者が決まる。
+    def _claim_dir(self, node_id: str) -> str:
+        return os.path.join(self.claims_dir, node_id)
 
-    def try_claim(self, node_id: str, who: str, lease_sec: int) -> bool:
-        path = self.lock_path(node_id)
-        payload = json.dumps({
+    def _list_claims(self, node_id: str):
+        d = self._claim_dir(node_id)
+        out = {}
+        if os.path.isdir(d):
+            for name in os.listdir(d):
+                if name.endswith(".json"):
+                    info = read_json(os.path.join(d, name))
+                    if info:
+                        out[name[:-5]] = info
+        return out
+
+    def _winner(self, node_id: str):
+        """lease 内の claim から決定的に勝者を選ぶ。無ければ None。"""
+        now = time.time()
+        live = [
+            (info.get("ts", 0.0), who)
+            for who, info in self._list_claims(node_id).items()
+            if info.get("lease_until", 0) >= now
+        ]
+        return min(live)[1] if live else None
+
+    def _write_claim(self, node_id: str, who: str, lease_sec: int) -> None:
+        os.makedirs(self._claim_dir(node_id), exist_ok=True)
+        write_json_atomic(os.path.join(self._claim_dir(node_id), f"{who}.json"), {
             "who": who,
+            "ts": time.time(),
             "claimed_at": now_iso(),
             "lease_until": time.time() + lease_sec,
-        }).encode()
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            return False
-        try:
-            os.write(fd, payload)
-        finally:
-            os.close(fd)
-        return True
+        })
 
-    def reclaim_expired(self) -> int:
-        """lease 切れの孤児ロックを解放する（orchestrator が単独で呼ぶ想定）。"""
-        freed = 0
-        now = time.time()
-        for name in os.listdir(self.claims_dir):
-            if not name.endswith(".lock"):
-                continue
-            node_id = name[:-len(".lock")]
-            if self.has_result(node_id):
-                continue
-            info = read_json(os.path.join(self.claims_dir, name)) or {}
-            if info.get("lease_until", 0) < now:
-                try:
-                    os.remove(os.path.join(self.claims_dir, name))
-                    freed += 1
-                except FileNotFoundError:
-                    pass
-        return freed
+    def try_claim(self, node_id: str, who: str, lease_sec: int) -> bool:
+        self.sync_pull()
+        if self.has_result(node_id):
+            return False
+        w = self._winner(node_id)
+        if w is not None and w != who:
+            return False  # 既に他者が勝者（lease 内）
+        self._write_claim(node_id, who, lease_sec)
+        self.sync_push(f"claim {node_id} by {who}")
+        self.sync_pull()  # 他ノードの claim を取り込んでから勝敗判定
+        return self._winner(node_id) == who
 
     # --- 結果 ---
     def result_path(self, node_id: str) -> str:
@@ -205,7 +218,7 @@ class Bus:
         res = self.read_result(node_id)
         if res:
             return res.get("status", "done")
-        if os.path.exists(self.lock_path(node_id)):
+        if self._winner(node_id) is not None:
             return "claimed"
         if os.path.exists(os.path.join(self.tasks_dir, f"{node_id}.json")):
             return "pending"
@@ -217,8 +230,88 @@ class Bus:
 
     def event(self, who: str, kind: str, **extra) -> None:
         rec = {"ts": now_iso(), "who": who, "kind": kind, **extra}
+        os.makedirs(self.events_dir, exist_ok=True)
         with open(os.path.join(self.events_dir, f"{who}.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+# --------------------------------------------------------------------------
+# GitBus — git 共有リポジトリをバスにする（複数 PC 分散）
+# --------------------------------------------------------------------------
+class GitBus(Bus):
+    """共有 git リポジトリをメッセージバスにする転送実装。
+
+    各ノードは自分専用のクローン（root）で作業し、push/pull で同期する。
+    書き込みはノードごとに名前空間化されている（claims/<node>/<who>.json、
+    results/<node>.json は勝者のみ、meta/graph/tasks は orchestrator のみ）ため、
+    rebase はほぼ disjoint なファイルの取り込みで済みコンフリクトしない。
+    push 競合は pull --rebase → 再 push のリトライで吸収する。"""
+
+    def __init__(self, root: str, run_id: str, remote: str, branch: str = "main"):
+        super().__init__(root, run_id)
+        self.remote = remote
+        self.branch = branch
+        self._ensure_clone()
+
+    def _git(self, args, check=True):
+        p = subprocess.run(["git", "-C", self.root] + args, capture_output=True, text=True)
+        if check and p.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args)} 失敗: {p.stderr.strip()[:300]}")
+        return p
+
+    def _ensure_clone(self) -> None:
+        if not os.path.isdir(os.path.join(self.root, ".git")):
+            os.makedirs(os.path.dirname(self.root) or ".", exist_ok=True)
+            r = subprocess.run(["git", "clone", self.remote, self.root],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError(f"git clone 失敗: {r.stderr.strip()[:300]}")
+        # コミット用 ID（未設定環境向けのフォールバック）
+        if not self._git(["config", "user.email"], check=False).stdout.strip():
+            self._git(["config", "user.email", "kiro-flow@local"])
+            self._git(["config", "user.name", "kiro-flow"])
+        # 対象ブランチへ。無ければ作成（空リポジトリ初回も含む）
+        if self._git(["checkout", self.branch], check=False).returncode != 0:
+            self._git(["checkout", "-B", self.branch])
+
+    def _retry(self, args, attempts=4):
+        delay = 2
+        for i in range(attempts):
+            if self._git(args, check=False).returncode == 0:
+                return True
+            if i < attempts - 1:
+                time.sleep(delay)
+                delay *= 2
+        return False
+
+    def sync_pull(self) -> None:
+        # リモートに当該ブランチが無い初回などは黙って無視
+        self._git(["pull", "--rebase", "origin", self.branch], check=False)
+
+    def sync_push(self, msg: str = "kiro-flow update") -> None:
+        self._git(["add", "-A"])
+        if self._git(["commit", "-m", msg], check=False).returncode != 0:
+            # コミット対象が無ければ push 試行のみ（初回の追従用）
+            pass
+        for i in range(5):
+            if self._git(["push", "-u", "origin", self.branch], check=False).returncode == 0:
+                return
+            # 競合 → 取り込んで再試行（disjoint なので基本コンフリクトしない）
+            self._git(["pull", "--rebase", "origin", self.branch], check=False)
+            time.sleep(2 ** i if i < 4 else 16)
+        raise RuntimeError(f"git push が {self.branch} へ反映できませんでした")
+
+
+def _safe(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+
+
+def make_bus(args, node_id: str) -> Bus:
+    """--git があれば GitBus（ノードごとに専用クローン）、無ければローカル Bus。"""
+    if getattr(args, "git", None):
+        clone_dir = os.path.join(os.path.abspath(args.bus), _safe(node_id))
+        return GitBus(clone_dir, args.run_id, remote=args.git, branch=args.git_branch)
+    return Bus(os.path.abspath(args.bus), args.run_id)
 
 
 # --------------------------------------------------------------------------
@@ -293,7 +386,8 @@ def execute_kiro(goal: str, dep_ctx: str, model: str | None) -> str:
 # --------------------------------------------------------------------------
 def cmd_orchestrate(args) -> int:
     who = args.node_id
-    bus = Bus(args.bus, args.run_id)
+    bus = make_bus(args, who)
+    bus.sync_pull()
     bus.ensure_run(args.request)
     log(who, f"run={args.run_id} 計画開始 (planner={args.planner})")
 
@@ -306,17 +400,14 @@ def cmd_orchestrate(args) -> int:
     bus.write_graph(graph)
     for t in tasks:
         bus.write_task(t)
-    bus.sync_push()
     bus.set_status("running")
-    log(who, f"タスク投入: {[t['id'] for t in tasks]}")
     bus.event(who, "planned", tasks=[t["id"] for t in tasks])
+    bus.sync_push(f"plan run {args.run_id}: {[t['id'] for t in tasks]}")
+    log(who, f"タスク投入: {[t['id'] for t in tasks]}")
 
-    # 完了待ち
+    # 完了待ち（lease 切れの孤児 claim は _winner が自動的に無視＝再 claim 可能）
     while not bus.all_terminal():
         bus.sync_pull()
-        freed = bus.reclaim_expired()
-        if freed:
-            log(who, f"孤児ロックを {freed} 件解放")
         time.sleep(args.poll)
 
     # 統合
@@ -332,7 +423,7 @@ def cmd_orchestrate(args) -> int:
         "results": results,
     })
     bus.set_status("done")
-    bus.sync_push()
+    bus.sync_push(f"finalize run {args.run_id}")
     log(who, "全タスク完了。final.json を書き出しました。")
     log(who, "結果サマリ:\n" + summary)
     return 0
@@ -362,7 +453,7 @@ def pick_claimable(bus: Bus):
 
 def cmd_work(args) -> int:
     who = args.node_id
-    bus = Bus(args.bus, args.run_id)
+    bus = make_bus(args, who)
     log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive})")
 
     while True:
@@ -378,8 +469,7 @@ def cmd_work(args) -> int:
             continue
 
         nid, node = candidate
-        lease = max(args.poll * 10, 60)
-        if not bus.try_claim(nid, who, lease):
+        if not bus.try_claim(nid, who, args.lease):
             continue  # 競り負け
         log(who, f"claim 成功: {nid} — {node['goal'][:60]}")
         bus.event(who, "claimed", node=nid)
@@ -399,9 +489,9 @@ def cmd_work(args) -> int:
             rstatus = "failed"
 
         bus.write_result(nid, who, rstatus, output)
-        bus.sync_push()
-        log(who, f"完了: {nid} [{rstatus}]")
         bus.event(who, "result", node=nid, status=rstatus)
+        bus.sync_push(f"result {nid} [{rstatus}] by {who}")
+        log(who, f"完了: {nid} [{rstatus}]")
 
 
 # --------------------------------------------------------------------------
@@ -409,9 +499,14 @@ def cmd_work(args) -> int:
 # --------------------------------------------------------------------------
 def cmd_up(args) -> int:
     run_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
+    args.run_id = run_id
     bus_root = os.path.abspath(args.bus)
     me = self_path()
-    base = [sys.executable, me, "--bus", bus_root, "--run-id", run_id]
+    # グローバル引数（バス・転送）を子プロセスへ引き継ぐ
+    base = [sys.executable, me, "--bus", bus_root, "--run-id", run_id, "--lease", str(args.lease)]
+    if args.git:
+        base += ["--git", args.git, "--git-branch", args.git_branch]
+    mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus_root}"
 
     procs = []
     orch = subprocess.Popen(base + [
@@ -429,10 +524,10 @@ def cmd_up(args) -> int:
         ])
         procs.append((wid, w))
 
-    print(f"\n>>> kiro-flow up: run_id={run_id} bus={bus_root}")
+    print(f"\n>>> kiro-flow up: run_id={run_id} bus={mode}")
     print(f">>> orchestrator x1 + worker x{args.workers} を起動しました。Ctrl-C で全停止。\n", flush=True)
 
-    bus = Bus(bus_root, run_id)
+    bus = make_bus(args, "up-monitor")
 
     def shutdown(*_):
         for name, p in procs:
@@ -449,6 +544,7 @@ def cmd_up(args) -> int:
     # run が終端に達するか orchestrator が落ちるまで待機
     try:
         while True:
+            bus.sync_pull()
             if bus.get_status() in TERMINAL:
                 print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
                 break
@@ -459,6 +555,7 @@ def cmd_up(args) -> int:
     finally:
         shutdown()
 
+    bus.sync_pull()
     final = read_json(bus.final_path)
     if final:
         print("\n=== 最終結果 ===")
@@ -470,7 +567,8 @@ def cmd_up(args) -> int:
 # status
 # --------------------------------------------------------------------------
 def cmd_status(args) -> int:
-    bus = Bus(args.bus, args.run_id)
+    bus = make_bus(args, "status-viewer")
+    bus.sync_pull()
     print(f"run: {args.run_id}  status: {bus.get_status()}")
     for nid in bus.task_ids():
         print(f"  {nid:<8} {bus.node_state(nid)}")
@@ -483,9 +581,15 @@ def self_path() -> str:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow (M1)")
-    p.add_argument("--bus", default="./.kiro-flow", help="メッセージバスのルートディレクトリ")
+    p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow (M2)")
+    p.add_argument("--bus", default="./.kiro-flow",
+                   help="ローカルバスのルート / git モードでは各ノードのクローン親ディレクトリ")
     p.add_argument("--run-id", default=None, help="run 識別子")
+    p.add_argument("--git", default=None,
+                   help="共有 git リポジトリ URL/パス。指定で複数 PC 分散モードになる")
+    p.add_argument("--git-branch", default="main", help="バスに使う git ブランチ")
+    p.add_argument("--lease", type=float, default=1800.0,
+                   help="claim のリース秒数（超過すると他ノードが再 claim 可能）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     up = sub.add_parser("up", help="orchestrator + worker(複数) を一発起動して待機")
