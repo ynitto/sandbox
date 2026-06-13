@@ -329,6 +329,9 @@ while 常駐:
   デーモンだけ**がその要求を orchestrate する。
 - **オンデマンド worker**: claim 可能タスク量に応じて起動。仕事が尽きれば worker は自然終了し、
   新たな仕事が来れば再び起動される。
+- **冪等な起動**: デーモンはバス単位の singleton。起動時に `_daemon_lock_path`（バス外の一時領域、
+  ローカルは bus 絶対パス / git は remote@branch/subdir をキーに）へ `fcntl` 非ブロッキング排他ロックを
+  取り、既に稼働中なら何もせず終了する。`kiro-flow daemon` の重複呼び出しは安全（多重起動しない）。
 - 分散は各 PC で `kiro-flow --git <repo> daemon` を動かすだけ。要求はどの PC から `submit` してもよい。
 
 ---
@@ -351,6 +354,12 @@ while 常駐:
 
 インストール: `bash tools/kiro-flow/install.sh` で `~/.local/bin/kiro-flow` に導入（標準ライブラリのみ、
 pip 依存なし。git は分散用、kiro-cli は実運用用で無くても stub で動く）。
+
+`status` は公式 Dynamic Workflows 風のダッシュボード（進捗バー・エージェント状態ツリー（依存深さで字下げ）・
+直近アクティビティ・最終結果）を表示する。`--follow` でライブ監視、`--list` で run 一覧。
+
+Claude Code スキル `.github/skills/kiro-flow/` がこの CLI の呼び出し（run/submit/daemon/status/gc の
+使い分け・要求の書き方）を案内する。
 
 ### 11.1 設定ファイル（環境依存値の外部化）
 
