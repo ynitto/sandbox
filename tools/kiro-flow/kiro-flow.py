@@ -112,6 +112,7 @@ CONFIG_DEFAULTS = {
     "executor": "kiro",
     "max_workers": 4,
     "max_iterations": 3,
+    "max_fanout": 50,
     "workers": 2,
 }
 
@@ -597,6 +598,8 @@ PATTERNS = {
     "generate-and-filter": "候補を多数（並列）生成し、フィルタノードが基準を満たすものだけ残す。",
     "tournament": "複数案を並列生成し、判定ノードが比較して最良案を選ぶ。",
     "loop-until-done": "完了条件（テスト通過・指摘なし・品質達成）を満たすまで生成と検証を反復する。",
+    "map-reduce": "split ノードが入力をリスト化し、実行時に要素数ぶんの map を動的に展開して "
+                  "reduce で集約する（データ駆動の fan-out。件数を事前に固定しない）。",
 }
 # ノード種別: work=通常実行 / generate=候補生成 / classify=分類 / synthesize=統合 /
 #            verify=検証 / filter=絞り込み / judge=最良選択 / reduce=構造化データの集約
@@ -636,6 +639,7 @@ def _detect_pattern(request: str) -> str:
     t = request.lower()
     table = [
         ("classify-and-act", ["classif", "route", "routing", "ルーティング", "分類", "振り分け", "triage", "トリアージ"]),
+        ("map-reduce", ["それぞれ", "各", "per item", "per-item", "分割して", "一覧", "列挙", "map-reduce", "map reduce", "件ごと", "ごとに"]),
         ("tournament", ["tournament", "トーナメント", "対戦", "ベスト", "best of", "最良", "勝ち抜き"]),
         ("generate-and-filter", ["filter", "フィルタ", "候補", "絞り込", "candidate", "ふるい"]),
         ("adversarial-verification", ["verify", "検証", "レビュー", "review", "adversar", "批判", "critique", "監査"]),
@@ -660,6 +664,9 @@ def _strategy_to_graph(pattern: str, request: str, par: int):
     if pattern == "classify-and-act":
         # 分類ノードのみ。専門タスクは分類結果を見て継続段階で追加（ルーティング）
         return [{"id": "classify", "goal": f"分類: {short}", "deps": [], "kind": "classify"}]
+    if pattern == "map-reduce":
+        # split ノードのみ。map（要素ごと）と reduce は実行時に動的展開（データ駆動 fan-out）
+        return [{"id": "split1", "goal": f"分解: {short}", "deps": [], "kind": "split"}]
     if pattern == "generate-and-filter":
         gens = [{"id": f"g{i+1}", "goal": f"候補{i+1}: {short}", "deps": [], "kind": "generate"}
                 for i in range(par)]
@@ -764,6 +771,12 @@ def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None):
     if "FAIL" in goal:
         raise RuntimeError(f"[stub] 意図的失敗: {goal}")
     texts = {d: _dep_text(r) for d, r in dep_results.items()}
+    if kind == "split":
+        # 入力をリストへ分解（データ駆動 fan-out の起点）。要素数は goal 中の数字 or 既定 3
+        m = re.search(r"\d+", goal)
+        k = max(1, min(int(m.group()) if m else 3, 8))
+        items = [f"{goal[:30]} #{i + 1}" for i in range(k)]
+        return f"[split] {k} 件に分解", items
     if kind == "classify":
         label = next((lbl for lbl in ("frontend", "backend", "security", "performance")
                       if lbl in goal.lower()), "general")
@@ -832,12 +845,43 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None):
 # --------------------------------------------------------------------------
 # Continuation — パターンに応じて done / replan（タスク追加）を決める
 # --------------------------------------------------------------------------
-def continue_stub(request: str, nodes: dict, results: dict, iteration: int):
+def _expand_splits(nodes: dict, results: dict, max_fanout: int):
+    """データ駆動の動的 fan-out: 完了した split ノードの data(リスト)を見て、
+    実行時に要素ごとの map タスクと、それらを集約する reduce タスクを生成する。
+    （reduce は展開時に作るので、split 完了直後に reduce が先走り実行されない）"""
+    new = []
+    have = set(nodes)
+    for nid, node in nodes.items():
+        if node.get("kind") != "split":
+            continue
+        r = results.get(nid, {})
+        if r.get("status") != "done":
+            continue
+        if f"{nid}-reduce" in have:  # 既に展開済み
+            continue
+        items = r.get("data")
+        if not isinstance(items, list) or not items:
+            continue
+        items = items[:max(1, max_fanout)]  # 暴走防止のクランプ
+        map_ids = []
+        for i, item in enumerate(items):
+            mid = f"{nid}-m{i+1}"
+            map_ids.append(mid)
+            new.append({"id": mid, "goal": f"{nid} 要素{i+1}: {item}",
+                        "deps": [], "kind": "map"})
+        new.append({"id": f"{nid}-reduce", "goal": f"{nid} の結果を集約",
+                    "deps": map_ids, "kind": "reduce"})
+    return new
+
+
+def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
+                  max_fanout: int = 50):
     """パターン継続（kiro 無し版）:
+       - データ駆動 fan-out: split 完了 → 要素ごとの map + reduce を生成
        - classify-and-act: 分類完了 → 振り分け先の専門タスクを追加
        - adversarial / loop-until-done: verify が fail → 作り直し + 再検証
        - 失敗タスク: retry を 1 回追加"""
-    new = []
+    new = _expand_splits(nodes, results, max_fanout)
     have = set(nodes)
 
     def fresh(tid):
@@ -881,7 +925,12 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int):
     return "done", [], "全パターン完了"
 
 
-def continue_kiro(request: str, nodes: dict, results: dict, iteration: int):
+def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
+                  max_fanout: int = 50):
+    # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
+    fanout_tasks = _expand_splits(nodes, results, max_fanout)
+    if fanout_tasks:
+        return "replan", fanout_tasks, f"data-driven fan-out: +{len(fanout_tasks)}"
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     summary = "\n".join(
         f"- {nid} ({nodes.get(nid, {}).get('kind','work')}) "
@@ -923,9 +972,10 @@ def _plan_strategy(args):
 
 
 def _continue(args, request, nodes, results, iteration):
+    mf = int(getattr(args, "max_fanout", 50) or 50)
     if args.executor == "kiro":
-        return continue_kiro(request, nodes, results, iteration)
-    return continue_stub(request, nodes, results, iteration)
+        return continue_kiro(request, nodes, results, iteration, mf)
+    return continue_stub(request, nodes, results, iteration, mf)
 
 
 def _node_entry(t):
@@ -1150,6 +1200,7 @@ def cmd_run(args) -> int:
         "orchestrate", "--request", args.request,
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
+        "--max-fanout", str(args.max_fanout),
         "--model_opt", args.model or "",
         "--poll", str(args.poll), "--node-id", "orchestrator",
     ])
@@ -1264,6 +1315,7 @@ def cmd_daemon(args) -> int:
                     "--run-id", req_id, "orchestrate", "--request", req["request"],
                     "--planner", args.planner, "--executor", args.executor,
                     "--max-iterations", str(args.max_iterations),
+        "--max-fanout", str(args.max_fanout),
                     "--model_opt", args.model or "", "--poll", str(args.poll),
                     "--node-id", f"orchestrator-{req_id}",
                 ])
@@ -1468,6 +1520,8 @@ def main() -> int:
     run.add_argument("--executor", choices=["kiro", "stub"], default=None)
     run.add_argument("--max-iterations", type=int, default=None,
                      help="再計画（evaluator-optimizer）の最大反復回数")
+    run.add_argument("--max-fanout", type=int, default=None,
+                     help="データ駆動 fan-out の最大展開数（既定 50）")
     run.add_argument("--model", default=None)
     run.add_argument("--poll", type=float, default=None)
     run.set_defaults(func=cmd_run)
@@ -1478,6 +1532,7 @@ def main() -> int:
     orch.add_argument("--executor", choices=["kiro", "stub"], default=None,
                       help="評価役（evaluator）に使うバックエンド")
     orch.add_argument("--max-iterations", type=int, default=None)
+    orch.add_argument("--max-fanout", type=int, default=None)
     orch.add_argument("--node-id", default="orchestrator")
     orch.add_argument("--model_opt", dest="model", default=None)
     orch.add_argument("--poll", type=float, default=None)
@@ -1500,6 +1555,7 @@ def main() -> int:
     dm.add_argument("--planner", choices=["kiro", "stub"], default=None)
     dm.add_argument("--executor", choices=["kiro", "stub"], default=None)
     dm.add_argument("--max-iterations", type=int, default=None)
+    dm.add_argument("--max-fanout", type=int, default=None)
     dm.add_argument("--model", default=None)
     dm.add_argument("--poll", type=float, default=None)
     dm.set_defaults(func=cmd_daemon)

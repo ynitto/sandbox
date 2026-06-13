@@ -151,6 +151,42 @@ class StructuredResultTests(unittest.TestCase):
         self.assertEqual(sorted(str(i) for i in data["items"]), ["oc", "x", "y", "z"])
 
 
+class DataDrivenFanoutTests(unittest.TestCase):
+    def test_split_executor_returns_list(self):
+        text, data = kf.execute_stub("split", "5 件に分解", {}, None)
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), 5)
+
+    def test_split_expands_to_map_and_reduce(self):
+        nodes = {"split1": {"goal": "分解", "deps": [], "kind": "split"}}
+        results = {"split1": {"status": "done", "data": ["x", "y", "z"]}}
+        decision, new, _ = kf.continue_stub("req", nodes, results, 0, max_fanout=50)
+        self.assertEqual(decision, "replan")
+        self.assertEqual([t["id"] for t in new],
+                         ["split1-m1", "split1-m2", "split1-m3", "split1-reduce"])
+        red = next(t for t in new if t["kind"] == "reduce")
+        self.assertEqual(red["deps"], ["split1-m1", "split1-m2", "split1-m3"])
+
+    def test_fanout_respects_max(self):
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": list(range(100))}}
+        _, new, _ = kf.continue_stub("req", nodes, results, 0, max_fanout=5)
+        self.assertEqual(len([t for t in new if t["kind"] == "map"]), 5)
+
+    def test_split_not_reexpanded(self):
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"},
+                 "s-reduce": {"goal": "集約", "deps": ["s-m1"], "kind": "reduce"}}
+        results = {"s": {"status": "done", "data": ["a", "b"]}}
+        decision, new, _ = kf.continue_stub("req", nodes, results, 0)
+        # 既に展開済み（s-reduce あり）→ 追加しない
+        self.assertFalse(any(t["id"].startswith("s-m") for t in new))
+
+    def test_strategy_map_reduce_starts_with_split(self):
+        strat, tasks = kf.plan_strategy_stub("ファイルをそれぞれ処理して集約")
+        self.assertEqual(strat["patterns"], ["map-reduce"])
+        self.assertEqual([t["kind"] for t in tasks], ["split"])
+
+
 class ContinuationTests(unittest.TestCase):
     def test_replan_retries_failed_once(self):
         nodes = {"t1": {"goal": "ok", "deps": [], "kind": "work"},

@@ -53,6 +53,7 @@ orchestrator は要求を見て、以下の 6 パターン（[参考記事](http
 | **generate-and-filter** | `generate` ×N → `filter` | 候補を多数出して絞り込み |
 | **tournament** | `generate` ×N → `judge` | 複数案から最良を選ぶ |
 | **loop-until-done** | `work` → `verify`（条件を満たすまで反復） | テスト通過・品質達成まで繰り返す |
+| **map-reduce** | `split` → 実行時に `map` ×N を動的展開 → `reduce` | 件数を事前に固定せずデータ駆動で並列処理し集約 |
 
 - **パターン選択**: `--planner kiro` なら kiro-cli が選ぶ。`--planner stub` は要求のキーワードで判定
   （「分類/振り分け」→classify、「tournament/最良」→tournament、「候補/フィルタ」→filter、
@@ -63,7 +64,10 @@ orchestrator は要求を見て、以下の 6 パターン（[参考記事](http
 - **構造化成果（structured results）**: 各ノードの結果はテキスト `output` に加え、任意の **`data`（JSON）**
   を持てる。依存先へはテキスト＋構造化データの両方を渡す。`reduce` kind は依存の `data`（リスト等）を
   畳み込んで集約する集約ノード。kiro executor は出力を寛容パースして `data` に格納する。
-  （データ駆動の動的 fan-out や map/reduce ノードの本格対応は後続フェーズ）
+- **データ駆動の動的 fan-out（map-reduce）**: `split` ノードが実行時にリスト（`data`）を返すと、継続段階で
+  **要素数ぶんの `map` タスクを動的展開**し（件数を事前に固定しない）、`reduce` で集約する。展開数は
+  `--max-fanout`（既定 50）で上限クランプ。初期グラフは `split` のみで、`reduce` は展開時に生成するため
+  先走り実行されない。
 - 選んだ戦略は `graph.json` / `final.json` に記録され、`status` でも表示される。
 
 ## 動的ワークフロー（evaluator-optimizer ループ）
@@ -222,6 +226,7 @@ tmux attach -t flow
 | `--max-workers` | 4 | デーモンが同時に走らせる worker 上限（`daemon`） |
 | `--planner` / `--executor` | `kiro` | `kiro`（kiro-cli）/ `stub`（オフライン検証）。executor は評価役にも使う |
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
+| `--max-fanout` | 50 | データ駆動 fan-out（split→map）の最大展開数 |
 | `--poll` | 2.0 | ポーリング間隔（秒） |
 | `--keep-alive` / `--idle-exit` | off | run 完了後も待機 / claim 可能タスクが尽きたら終了（`work`） |
 
