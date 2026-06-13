@@ -43,6 +43,76 @@ TERMINAL = {"done", "failed"}
 
 
 # --------------------------------------------------------------------------
+# 設定ファイル（kiro-loop と同じ流儀: YAML 任意 / JSON フォールバック）
+# --------------------------------------------------------------------------
+try:
+    import yaml  # type: ignore
+
+    def _load_config_file(path: str) -> dict:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+except ImportError:  # PyYAML 無し → JSON のみ
+    yaml = None  # type: ignore
+
+    def _load_config_file(path: str) -> dict:  # type: ignore[misc]
+        if path.lower().endswith((".yaml", ".yml")):
+            print("[kiro-flow] ERROR: YAML 設定には PyYAML が必要です（pip install pyyaml）。"
+                  "JSON 設定なら不要です。", file=sys.stderr)
+            sys.exit(1)
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+
+DEFAULT_CONFIG_NAMES = ["kiro-flow.yaml", "kiro-flow.yml", "kiro-flow.json"]
+
+# 環境ごとに変わる値の組み込み既定。設定ファイルのキーもこの名前（snake_case）。
+CONFIG_DEFAULTS = {
+    "bus": "./.kiro-flow",
+    "git": None,
+    "git_branch": "main",
+    "lease": 1800.0,
+    "poll": 2.0,
+    "model": None,
+    "planner": "kiro",
+    "executor": "kiro",
+    "max_workers": 4,
+    "max_iterations": 3,
+    "workers": 2,
+}
+
+
+def _find_config(explicit):
+    """設定ファイルの探索（フォールバック順）:
+       1. --config で明示指定
+       2. カレントディレクトリの kiro-flow.{yaml,yml,json}
+       3. ~/.kiro/kiro-flow.{yaml,yml,json}"""
+    if explicit:
+        p = os.path.expanduser(explicit)
+        if not os.path.isfile(p):
+            print(f"[kiro-flow] 設定ファイルが見つかりません: {explicit}", file=sys.stderr)
+            sys.exit(1)
+        return p
+    for base in (os.getcwd(), os.path.join(os.path.expanduser("~"), ".kiro")):
+        for name in DEFAULT_CONFIG_NAMES:
+            cand = os.path.join(base, name)
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
+def resolve_config(args):
+    """優先順位 CLI > 設定ファイル > 組み込み既定 で各値を確定する。
+    CLI 未指定（None）の設定値だけを設定ファイル→既定で埋める。"""
+    path = _find_config(getattr(args, "config", None))
+    cfg = _load_config_file(path) if path else {}
+    args._config_path = path
+    for key, dflt in CONFIG_DEFAULTS.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, cfg.get(key, dflt))
+    return args
+
+
+# --------------------------------------------------------------------------
 # 小道具
 # --------------------------------------------------------------------------
 def now_iso() -> str:
@@ -1202,44 +1272,48 @@ def self_path() -> str:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow")
-    p.add_argument("--bus", default="./.kiro-flow",
+    # 設定値の優先順位: CLI > 設定ファイル(kiro-flow.yaml) > 組み込み既定。
+    # 設定ファイル対象のオプションは既定 None にし、parse 後 resolve_config で確定する。
+    p.add_argument("--config", default=None,
+                   help="設定ファイルのパス（未指定なら CWD → ~/.kiro の kiro-flow.{yaml,yml,json}）")
+    p.add_argument("--bus", default=None,
                    help="ローカルバスのルート / git モードでは各ノードのクローン親ディレクトリ")
     p.add_argument("--run-id", default=None, help="run 識別子")
     p.add_argument("--git", default=None,
                    help="共有 git リポジトリ URL/パス。指定で複数 PC 分散モードになる")
-    p.add_argument("--git-branch", default="main", help="バスに使う git ブランチ")
-    p.add_argument("--lease", type=float, default=1800.0,
-                   help="claim のリース秒数（超過すると他ノードが再 claim 可能）")
+    p.add_argument("--git-branch", default=None, help="バスに使う git ブランチ（既定 main）")
+    p.add_argument("--lease", type=float, default=None,
+                   help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     run = sub.add_parser("run", help="単発実行。既存 --run-id なら再開、無ければ新規（状態で自動判断）")
     run.add_argument("request", nargs="?", default=None,
                      help="ワークフローへの要求（再開時は省略可）")
-    run.add_argument("--workers", type=int, default=2)
-    run.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
-    run.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
-    run.add_argument("--max-iterations", type=int, default=3,
+    run.add_argument("--workers", type=int, default=None)
+    run.add_argument("--planner", choices=["kiro", "stub"], default=None)
+    run.add_argument("--executor", choices=["kiro", "stub"], default=None)
+    run.add_argument("--max-iterations", type=int, default=None,
                      help="再計画（evaluator-optimizer）の最大反復回数")
     run.add_argument("--model", default=None)
-    run.add_argument("--poll", type=float, default=2.0)
+    run.add_argument("--poll", type=float, default=None)
     run.set_defaults(func=cmd_run)
 
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
-    orch.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
-    orch.add_argument("--executor", choices=["kiro", "stub"], default="kiro",
+    orch.add_argument("--planner", choices=["kiro", "stub"], default=None)
+    orch.add_argument("--executor", choices=["kiro", "stub"], default=None,
                       help="評価役（evaluator）に使うバックエンド")
-    orch.add_argument("--max-iterations", type=int, default=3)
+    orch.add_argument("--max-iterations", type=int, default=None)
     orch.add_argument("--node-id", default="orchestrator")
     orch.add_argument("--model_opt", dest="model", default=None)
-    orch.add_argument("--poll", type=float, default=2.0)
+    orch.add_argument("--poll", type=float, default=None)
     orch.set_defaults(func=cmd_orchestrate)
 
     work = sub.add_parser("work", help="ワーカー役")
     work.add_argument("--node-id", default=f"{socket.gethostname()}-{os.getpid()}")
-    work.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
+    work.add_argument("--executor", choices=["kiro", "stub"], default=None)
     work.add_argument("--model_opt", dest="model", default=None)
-    work.add_argument("--poll", type=float, default=2.0)
+    work.add_argument("--poll", type=float, default=None)
     work.add_argument("--keep-alive", action="store_true", help="run 完了後も待機し続ける")
     work.add_argument("--idle-exit", action="store_true",
                       help="claim 可能タスクが無くなったら終了（デーモンのオンデマンド起動用）")
@@ -1247,12 +1321,13 @@ def main() -> int:
 
     dm = sub.add_parser("daemon", help="常駐し、要求に応じ orchestrator/worker をオンデマンド起動")
     dm.add_argument("--node-id", default=None, help="デーモン識別子（既定: host-pid）")
-    dm.add_argument("--max-workers", type=int, default=4, help="このデーモンが同時に走らせる worker 上限")
-    dm.add_argument("--planner", choices=["kiro", "stub"], default="kiro")
-    dm.add_argument("--executor", choices=["kiro", "stub"], default="kiro")
-    dm.add_argument("--max-iterations", type=int, default=3)
+    dm.add_argument("--max-workers", type=int, default=None,
+                    help="このデーモンが同時に走らせる worker 上限（既定 4）")
+    dm.add_argument("--planner", choices=["kiro", "stub"], default=None)
+    dm.add_argument("--executor", choices=["kiro", "stub"], default=None)
+    dm.add_argument("--max-iterations", type=int, default=None)
     dm.add_argument("--model", default=None)
-    dm.add_argument("--poll", type=float, default=2.0)
+    dm.add_argument("--poll", type=float, default=None)
     dm.set_defaults(func=cmd_daemon)
 
     sb = sub.add_parser("submit", help="要求を inbox に投入（デーモンが拾う）")
@@ -1274,7 +1349,9 @@ def main() -> int:
     gc.set_defaults(func=cmd_gc)
 
     args = p.parse_args()
-    # --model は up でだけ name が衝突しないよう調整済み
+    # CLI 未指定の設定値を設定ファイル→組み込み既定で確定（CLI > config > 既定）
+    resolve_config(args)
+    # 子プロセスから渡る空文字の --model_opt は「モデル指定なし」を意味する
     if getattr(args, "model", None) == "":
         args.model = None
     return args.func(args)

@@ -302,6 +302,23 @@ while 常駐:
 インストール: `bash tools/kiro-flow/install.sh` で `~/.local/bin/kiro-flow` に導入（標準ライブラリのみ、
 pip 依存なし。git は分散用、kiro-cli は実運用用で無くても stub で動く）。
 
+### 11.1 設定ファイル（環境依存値の外部化）
+
+環境ごとに決まる値を設定ファイルへ外出しできる（kiro-loop と同じ流儀）。
+
+- **探索順序（フォールバック）**: `--config <path>` → カレントディレクトリ → `~/.kiro/` の
+  `kiro-flow.{yaml,yml,json}`。
+- **形式**: PyYAML があれば YAML、無ければ JSON（同じキー。PyYAML は任意）。
+- **優先順位**: CLI 引数 > 設定ファイル > 組み込み既定（`CONFIG_DEFAULTS`）。
+- **実装**: 設定対象オプションの argparse 既定を `None` にし、parse 後に `resolve_config(args)` が
+  「CLI 未指定（None）の値だけ」を設定ファイル→既定で埋める。`--model_opt ""`（子プロセスが渡す
+  「モデル指定なし」）は resolve 後に `None` へ正規化するため、設定ファイルの `model` が子へ漏れない。
+- **キー**: `bus` / `git` / `git_branch` / `planner` / `executor` / `model` /
+  `max_workers` / `workers` / `max_iterations` / `poll` / `lease`。
+- 子プロセス（orchestrate/work）へはこれらを**明示フラグ**で渡すため、子側 resolve は同じ値を保ち整合する。
+
+サンプル: `tools/kiro-flow/kiro-flow.yaml.example`。
+
 ---
 
 ## 12. 整合性・障害対応

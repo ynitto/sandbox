@@ -115,6 +115,26 @@ bash tools/kiro-flow/install.sh --prefix /usr/local/bin   # 任意の場所へ
 （無くても `--planner stub --executor stub` で動作確認できる）。以降の例は `kiro-flow`
 コマンド前提（未インストールなら `python3 tools/kiro-flow/kiro-flow.py` で代用可）。
 
+## 設定ファイル
+
+環境ごとに決まる値（バス、git リポジトリ、planner/executor、`max_workers`、`poll`、`lease` 等）は
+設定ファイルに書ける。**優先順位は CLI 引数 > 設定ファイル > 組み込み既定**。
+
+```bash
+cp tools/kiro-flow/kiro-flow.yaml.example ~/.kiro/kiro-flow.yaml   # 編集して配置
+```
+
+検索順序（フォールバック、kiro-loop と同じ流儀）:
+
+1. `--config <path>` で明示指定
+2. カレントディレクトリの `kiro-flow.{yaml,yml,json}`
+3. `~/.kiro/kiro-flow.{yaml,yml,json}`
+
+YAML を使うには PyYAML が必要（任意）。無い環境では **JSON**（`kiro-flow.json`、同じキー）でよい。
+設定できるキー: `bus` / `git` / `git_branch` / `planner` / `executor` / `model` /
+`max_workers` / `workers` / `max_iterations` / `poll` / `lease`。例は
+[`kiro-flow.yaml.example`](kiro-flow.yaml.example) を参照。
+
 ## 使い方
 
 ### デーモン（推奨・オンデマンド起動）
