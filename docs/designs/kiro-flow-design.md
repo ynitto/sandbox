@@ -329,6 +329,9 @@ while 常駐:
   デーモンだけ**がその要求を orchestrate する。
 - **オンデマンド worker**: claim 可能タスク量に応じて起動。仕事が尽きれば worker は自然終了し、
   新たな仕事が来れば再び起動される。
+- **冪等な起動**: デーモンはバス単位の singleton。起動時に `_daemon_lock_path`（バス外の一時領域、
+  ローカルは bus 絶対パス / git は remote@branch/subdir をキーに）へ `fcntl` 非ブロッキング排他ロックを
+  取り、既に稼働中なら何もせず終了する。`kiro-flow daemon` の重複呼び出しは安全（多重起動しない）。
 - 分散は各 PC で `kiro-flow --git <repo> daemon` を動かすだけ。要求はどの PC から `submit` してもよい。
 
 ---
@@ -351,6 +354,12 @@ while 常駐:
 
 インストール: `bash tools/kiro-flow/install.sh` で `~/.local/bin/kiro-flow` に導入（標準ライブラリのみ、
 pip 依存なし。git は分散用、kiro-cli は実運用用で無くても stub で動く）。
+
+`status` は公式 Dynamic Workflows 風のダッシュボード（進捗バー・エージェント状態ツリー（依存深さで字下げ）・
+直近アクティビティ・最終結果）を表示する。`--follow` でライブ監視、`--list` で run 一覧。
+
+Claude Code スキル `.github/skills/kiro-flow/` がこの CLI の呼び出し（run/submit/daemon/status/gc の
+使い分け・要求の書き方）を案内する。
 
 ### 11.1 設定ファイル（環境依存値の外部化）
 
@@ -396,7 +405,14 @@ pip 依存なし。git は分散用、kiro-cli は実運用用で無くても st
 - **6 パターン**: パターン検出、並列数抽出、fan-out/tournament のグラフ形、classify ルーティング、
   verify fail の作り直し。
 - **デーモン**: 要求 claim の単一勝者、run 既存時の claim 拒否、`run_claimable_count` の依存考慮。
-- **end-to-end**: stub で全完了（fan-out + 統合）、失敗 → 再計画 → retry 成功。
+- **構造化成果 / map-reduce / gate / 健全性検査 / kind 正規化**: P1〜P4 の各機能。
+- **end-to-end**: stub で全完了（fan-out + 統合）、失敗 → 再計画 → retry 成功、map-reduce + review。
+- **分散統合（`GitDistributedTests`、git 必須）**: ローカルのベアリポジトリを共有バスにし、ノードごとの
+  独立クローン（＝別 PC 相当）から push/pull させて検証する。
+  - 別クローンからの同一タスク claim → 勝者は 1 人（両クローンから見て同じ勝者）
+  - 別クローンの 2 デーモンが同じ要求を claim → orchestrate 担当は 1 台
+  - orchestrator + worker が各自の独立クローンから git バス越しに完走
+  - `--git-subdir` ＋ sparse checkout で無関係ディレクトリを作業ツリーに展開しない
 
 ```bash
 python3 tools/kiro-flow/tests/test_kiro_flow.py
@@ -426,3 +442,35 @@ python3 tools/kiro-flow/tests/test_kiro_flow.py
 | M5 | 常駐デーモン・`submit`/inbox 要求キュー・要求 claim によるデーモン選出 |
 | M6 | `install.sh` で `kiro-flow` コマンド化・サブコマンド整理（`run`/`status --follow`） |
 | M7 | 6 ワークフローパターンの戦略選択・ノード kind・パターン別継続 |
+| P1–P4 | 構造化成果＋reduce / データ駆動 fan-out（split→map→reduce）/ 複合パターン＋統合前 gate＋健全性検査 / planner 正規化 |
+
+---
+
+## 16. ADR: ワークフロースクリプトの動的生成は当面採用しない
+
+- **ステータス**: 採用（2026-06-13）。当面コードハーネス生成は導入しない。
+- **文脈**: 公式 Claude Dynamic Workflows は、Claude が**タスク専用ハーネス（コード）**を生成し、
+  サブエージェントの spawn と JS（Math/JSON/Array）でのデータ加工を**実行**することで動的な
+  オーケストレーションを実現する。kiro-flow は宣言的タスクグラフ＋継続ルール＋データ駆動 fan-out で
+  同等の動的性を、コードを実行せずに表現している。
+
+- **決定**: LLM 生成コードの実行（コードハーネス）は**現時点では採用しない**。表現力が不足する場面が出たら、
+  まず**宣言的語彙の拡張**（条件付きエッジ、reduce/transform 演算の指定、新ノード kind 等）で対応する。
+
+- **理由**:
+  1. **セキュリティ**: LLM 生成コードの実行＝任意コード実行。分散＋git バス文脈では、ハーネスがバス
+     リポジトリへ push・情報持ち出し・無制限 spawn を行いうる。安全に運ぶにはプロセス分離・資源/時間
+     上限・FS/ネットワーク遮断のサンドボックスが必須で、コストとリスクが大きい。
+  2. **分散との不整合**: kiro-flow の核は「git バス＋claim による分散実行」。プロセス内 spawn 型の
+     ハーネスは claim/lease/複数 PC に自然に乗らない。バスのタスクへ翻訳すれば結局現行の宣言的グラフと
+     同じになる。
+  3. **可観測性・再現性**: グラフは状態をファイル存在から導出でき、`status` で可視化、git で差分追跡、
+     `resume` で再開できる。走るスクリプトは不透明で、中断再開・監視・監査・障害復旧が難しい。
+  4. **暴走制御**: 宣言的ループは `max_iterations` / `max_fanout` で二重ガードできるが、任意コードは
+     サンドボックスで強制しない限り無制限になりうる。
+
+- **再検討の条件 / 代替**: どうしてもコード生成が必要になった場合は、**分散バスから切り離した
+  「単一ノードのローカルハーネスモード」をオプトイン**で用意し、サンドボックス（別プロセス・タイムアウト・
+  FS/ネット遮断・生成コードのバス書き込み禁止）を必須とする。分散実行・可観測性を損なわない範囲に閉じる。
+
+- **影響**: 当面は宣言的グラフ路線を継続。表現力の不足は語彙拡張で吸収する。

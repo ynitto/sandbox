@@ -1356,7 +1356,33 @@ def cmd_submit(args) -> int:
 # --------------------------------------------------------------------------
 # daemon — 常駐し、要求に応じて orchestrator/worker をオンデマンド起動
 # --------------------------------------------------------------------------
+def _daemon_lock_path(args) -> str:
+    """バス単位のデーモン singleton 用ロックパス（バス外の一時領域）。"""
+    if getattr(args, "git", None):
+        key = f"git::{args.git}@{args.git_branch}/{args.git_subdir or ''}"
+    else:
+        key = "local::" + os.path.abspath(args.bus)
+    h = hashlib.sha1(key.encode()).hexdigest()
+    d = os.path.join(tempfile.gettempdir(), "kiro-flow-locks")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"daemon-{h}.lock")
+
+
 def cmd_daemon(args) -> int:
+    # 冪等化: 同一バスのデーモンが既に稼働していれば何もしない（多重起動しない）
+    lock_path = _daemon_lock_path(args)
+    lock_file = open(lock_path, "w")
+    if fcntl is not None:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            mode0 = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.abspath(args.bus)}"
+            print(f">>> kiro-flow daemon は既に稼働中です（{mode0}）。起動をスキップします。", flush=True)
+            lock_file.close()
+            return 0
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+
     daemon_id = args.node_id or f"{socket.gethostname()}-{os.getpid()}"
     bus = make_bus(args, f"daemon-{_safe(daemon_id)}")
     me = self_path()
@@ -1479,43 +1505,100 @@ def cmd_gc(args) -> int:
 # --------------------------------------------------------------------------
 # status — 状態表示。既定は 1 回表示、--follow でライブ監視（tmux ペイン向け）
 # --------------------------------------------------------------------------
+_STATE_GLYPH = {"done": "✓", "failed": "✗", "claimed": "▶", "pending": "○", "unknown": "·"}
+
+
+def _progress_bar(done: int, total: int, width: int = 24) -> str:
+    if total <= 0:
+        return "[" + "·" * width + "] 0/0"
+    filled = int(width * done / total)
+    pct = int(100 * done / total)
+    return "[" + "█" * filled + "░" * (width - filled) + f"] {done}/{total} ({pct}%)"
+
+
+def _node_depth(nid, nodes, memo):
+    if nid in memo:
+        return memo[nid]
+    memo[nid] = 0  # 循環ガード（_sanitize_graph 済みだが念のため）
+    deps = [d for d in nodes.get(nid, {}).get("deps", []) if d in nodes]
+    d = 0 if not deps else 1 + max(_node_depth(x, nodes, memo) for x in deps)
+    memo[nid] = d
+    return d
+
+
+def _elapsed(meta) -> str:
+    a = meta.get("created_at")
+    b = meta.get("updated_at") or now_iso()
+    try:
+        ta = datetime.strptime(a, "%Y-%m-%dT%H:%M:%SZ")
+        tb = datetime.strptime(b, "%Y-%m-%dT%H:%M:%SZ")
+        s = int((tb - ta).total_seconds())
+        return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
+    except (TypeError, ValueError):
+        return "-"
+
+
 def _render_status(bus, run_id, events):
+    """公式 Dynamic Workflows 風のダッシュボード表示。
+    進捗バー / エージェント（タスク）状態ツリー / 直近アクティビティ / 最終サマリ。"""
     graph = bus.read_graph()
     status = bus.get_status()
-    meta = bus.run_meta(run_id) if hasattr(bus, 'run_meta') else (read_json(bus.meta_path) or {})
-    lines = [f"run: {run_id}   status: {status}   {now_iso()}"]
+    meta = bus.run_meta(run_id) if hasattr(bus, "run_meta") else (read_json(bus.meta_path) or {})
+    nodes = (graph or {}).get("nodes", {})
+
+    states = {nid: bus.node_state(nid) for nid in nodes}
+    counts = {}
+    for st in states.values():
+        counts[st] = counts.get(st, 0) + 1
+    total = len(nodes)
+    done = counts.get("done", 0) + counts.get("failed", 0)
+
+    L = []
+    L.append(f"╭─ kiro-flow ── run {run_id} ── [{(status or '?').upper()}]  ⏱ {_elapsed(meta)}")
     if meta.get("request"):
-        lines.append(f"  request: {meta['request'][:80]}")
+        L.append(f"│  request : {meta['request'][:78]}")
     if graph and graph.get("strategy"):
         s = graph["strategy"]
-        lines.append(f"  strategy: patterns={s.get('patterns')} parallelism={s.get('parallelism')}")
-    if graph and graph.get("nodes"):
-        counts = {}
-        for nid in graph["nodes"]:
-            st = bus.node_state(nid)
-            counts[st] = counts.get(st, 0) + 1
-        lines.append("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-                     + f"   iteration={graph.get('iteration', 0)}")
-        for nid, node in graph["nodes"].items():
-            deps = ",".join(node.get("deps", [])) or "-"
-            lines.append(f"  {nid:<8} {bus.node_state(nid):<8} {node.get('kind','work'):<10} "
-                         f"deps[{deps}] {node.get('goal','')[:40]}")
+        pats = " + ".join(s.get("patterns", []) or [])
+        L.append(f"│  strategy: {pats}   ‖parallel={s.get('parallelism','?')}"
+                 f"   iter={graph.get('iteration', 0)}")
+    if total:
+        L.append(f"│  progress: {_progress_bar(done, total)}")
+        order = ("done", "claimed", "pending", "failed", "unknown")
+        agentline = "  ".join(f"{_STATE_GLYPH[k]}{k}={counts[k]}" for k in order if counts.get(k))
+        L.append(f"│  agents  : {total}   {agentline}")
+        L.append("├─ tasks")
+        memo = {}
+        ordered = sorted(nodes, key=lambda n: (_node_depth(n, nodes, memo), n))
+        for nid in ordered:
+            node = nodes[nid]
+            g = _STATE_GLYPH.get(states[nid], "·")
+            indent = "  " * _node_depth(nid, nodes, memo)
+            res = bus.read_result(nid) or {}
+            who = res.get("who", "")
+            dep = (" ← " + ",".join(node.get("deps", []))) if node.get("deps") else ""
+            who_s = f"  @{who}" if who else ""
+            L.append(f"│  {g} {indent}{nid} [{node.get('kind','work')}]{dep}{who_s}")
     else:
-        lines.append("  (グラフ未生成)")
+        L.append("│  (グラフ未生成 — 計画中)")
+
     if events:
         evs = bus.recent_events(events)
         if evs:
-            lines.append("  --- recent events ---")
+            L.append("├─ activity")
             for e in evs:
-                lines.append(f"  {e.get('ts','')} {e.get('who',''):<12} "
-                             f"{e.get('kind','')} {e.get('node','') or e.get('tasks') or ''}")
+                ts = (e.get("ts", "") or "")[11:19]  # HH:MM:SS
+                detail = e.get("node", "") or (",".join(e.get("tasks", [])) if e.get("tasks") else "")
+                L.append(f"│  {ts}  {e.get('who',''):<14} {e.get('kind',''):<8} {detail}")
+
     if status in TERMINAL:
         final = read_json(bus.final_path)
         if final:
-            lines.append("  --- final summary ---")
+            L.append("├─ result")
             for line in final.get("summary", "").splitlines()[:20]:
-                lines.append(f"  {line}")
-    return status, "\n".join(lines)
+                L.append(f"│  {line}")
+    L.append("╰─")
+    return status, "\n".join(L)
 
 
 def _resolve_run_id(args) -> str | None:

@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -413,6 +414,86 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("split1-gate", res)
         self.assertEqual(res["split1-reduce"]["status"], "done")
         self.assertEqual(res["split1-reduce"]["data"]["count"], 3)
+
+
+class GitDistributedTests(unittest.TestCase):
+    """複数 PC 分散の模擬: ローカルのベアリポジトリを共有バスにし、ノードごとに
+    独立クローン（= 別 PC 相当）から push/pull させて検証する。git 必須。"""
+
+    def setUp(self):
+        if not shutil.which("git"):
+            self.skipTest("git が無い環境ではスキップ")
+        self.root = tempfile.mkdtemp(prefix="kf-git-")
+        self.bare = os.path.join(self.root, "bus.git")
+        r = subprocess.run(["git", "init", "--bare", "-b", "main", self.bare],
+                           capture_output=True, text=True)
+        if r.returncode != 0:  # 古い git 向けフォールバック
+            subprocess.run(["git", "init", "--bare", self.bare], check=True,
+                           capture_output=True)
+        self.clones = os.path.join(self.root, "clones")
+
+    def _final_from_bare(self):
+        tmp = tempfile.mkdtemp(prefix="kf-read-")
+        subprocess.run(["git", "clone", "-q", self.bare, tmp], check=True,
+                       capture_output=True)
+        runs = os.path.join(tmp, "runs")
+        rid = sorted(os.listdir(runs))[0]
+        return kf.read_json(os.path.join(runs, rid, "final.json"))
+
+    def test_claim_across_separate_clones_single_winner(self):
+        # 別クローン（別 PC 相当）から同じタスクを claim → 勝者は 1 人
+        a = kf.GitBus(os.path.join(self.clones, "A"), "run1", remote=self.bare, branch="main")
+        b = kf.GitBus(os.path.join(self.clones, "B"), "run1", remote=self.bare, branch="main")
+        won_a = a.try_claim("t1", "nodeA", 60)
+        won_b = b.try_claim("t1", "nodeB", 60)
+        self.assertTrue(won_a)
+        self.assertFalse(won_b)
+        # 先着の claim が両クローンから見て勝者
+        b.sync_pull()
+        self.assertEqual(b._winner("t1"), "nodeA")
+
+    def test_request_claim_elects_single_daemon(self):
+        # 別クローンの 2 デーモンが同じ要求を claim → orchestrate 担当は 1 台
+        a = kf.GitBus(os.path.join(self.clones, "dA"), "_", remote=self.bare, branch="main")
+        b = kf.GitBus(os.path.join(self.clones, "dB"), "_", remote=self.bare, branch="main")
+        a.submit_request("req1", "do it", "submitter")
+        a.sync_push("submit req1")
+        b.sync_pull()
+        ca = a.claim_request("req1", "daemonA", 60)
+        cb = b.claim_request("req1", "daemonB", 60)
+        self.assertTrue(ca)
+        self.assertFalse(cb)
+
+    def test_run_over_git_bus_completes(self):
+        # orchestrator + worker が各自の独立クローンから git バスへ push/pull して完走
+        cmd = [sys.executable, str(SCRIPT), "--bus", self.clones, "--git", self.bare,
+               "run", "x; y; z", "--planner", "stub", "--executor", "stub",
+               "--workers", "3", "--poll", "0.2"]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        self.assertEqual(p.returncode, 0, p.stderr[-1000:])
+        final = self._final_from_bare()
+        self.assertIsNotNone(final)
+        res = final["results"]
+        self.assertGreaterEqual(len(res), 4)  # fan-out 並列 + synth
+        for nid, r in res.items():
+            self.assertEqual(r["status"], "done", f"{nid}: {r}")
+            self.assertTrue(r["who"])  # 誰か（どこかのクローン）が実行した
+
+    def test_sparse_checkout_limits_worktree(self):
+        # 既存リポジトリにバスを間借り（--git-subdir）し、sparse で他を展開しない
+        seed = tempfile.mkdtemp(prefix="kf-seed-")
+        subprocess.run(["git", "clone", "-q", self.bare, seed], check=True, capture_output=True)
+        os.makedirs(os.path.join(seed, "unrelated"))
+        with open(os.path.join(seed, "unrelated", "x.txt"), "w") as f:
+            f.write("hi")
+        for c in (["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed"],
+                  ["push", "-q", "origin", "main"]):
+            subprocess.run(["git", "-C", seed] + c, check=True, capture_output=True)
+        clone = os.path.join(self.clones, "sub")
+        kf.GitBus(clone, "run1", remote=self.bare, branch="main", subdir="flow")
+        entries = set(os.listdir(clone))
+        self.assertNotIn("unrelated", entries)  # sparse で無関係ディレクトリは未展開
+        self.assertIn(".git", entries)
 
 
 if __name__ == "__main__":
