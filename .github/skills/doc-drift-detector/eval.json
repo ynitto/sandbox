@@ -1,0 +1,20 @@
+[
+  {"query": "ドキュメントの乖離を検出して", "should_trigger": true},
+  {"query": "仕様書とコードのズレを確認して", "should_trigger": true},
+  {"query": "READMEが古くなってないか確認して", "should_trigger": true},
+  {"query": "ドキュメントの鮮度をチェックして", "should_trigger": true},
+  {"query": "仕様と実装の差分を調べて", "should_trigger": true},
+  {"query": "ドキュメントドリフトを検出して", "should_trigger": true},
+  {"query": "古くなったドキュメントを洗い出して", "should_trigger": true},
+  {"query": "このランブックが今も正しいか検証して", "should_trigger": true},
+  {"query": "OpenAPI仕様が実装と一致しているか確認して", "should_trigger": true},
+  {"query": "docsが最新のコードに追従しているか調べて", "should_trigger": true},
+  {"query": "この手順書どおりに動くか確かめて", "should_trigger": true},
+  {"query": "仕様書を作って", "should_trigger": false},
+  {"query": "READMEを作って", "should_trigger": false},
+  {"query": "コードから仕様を起こして", "should_trigger": false},
+  {"query": "ドキュメントをレビューして", "should_trigger": false},
+  {"query": "ランブックを作って", "should_trigger": false},
+  {"query": "仕様書をHTMLに変換して", "should_trigger": false},
+  {"query": "コードをリファクタリングして", "should_trigger": false}
+]
