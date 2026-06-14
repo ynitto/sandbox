@@ -240,7 +240,7 @@ tmux attach -t flow
 | `--lease` | 1800 | claim のリース秒数（実行中はハートビートが延長） |
 | `--workers` | 2 | 起動するワーカー数（`run`） |
 | `--max-workers` | 4 | デーモンが同時に走らせる worker 上限（`daemon`） |
-| `--planner` / `--executor` | `kiro` | `kiro`（kiro-cli）/ `stub`（オフライン検証）。executor は評価役にも使う |
+| `--planner` / `--executor` | `flow-planner` / `kiro` | planner は `flow-planner`（3段パイプライン、既定）/ `kiro`（kiro-cli 1回）/ `stub`（オフライン検証）。executor は評価役にも使う |
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
 | `--max-fanout` | 50 | データ駆動 fan-out（split→map）の最大展開数 |
 | `--review` / `--no-review` | auto | 検証 gate の有効化。既定 `auto`（集約パターンで自動 ON）／`--review` 常時 ON ／`--no-review` OFF。設定は `review: auto\|true\|false` |

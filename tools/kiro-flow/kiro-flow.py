@@ -108,7 +108,7 @@ CONFIG_DEFAULTS = {
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
-    "planner": "kiro",
+    "planner": "flow-planner",
     "executor": "kiro",
     "max_workers": 4,
     "max_iterations": 3,
@@ -844,6 +844,9 @@ def _find_flow_planner_script():
             candidates.append(os.path.join(root, ".github", "skills", "flow-planner", "scripts", "plan.py"))
     except Exception:  # noqa: BLE001
         pass
+    # ~/.kiro/skills 直下を直接確認
+    kiro_skills = os.path.expanduser("~/.kiro/skills")
+    candidates.append(os.path.join(kiro_skills, "flow-planner", "scripts", "plan.py"))
     # skill-registry.json から skill_home を読む
     for agent_dir in [os.path.expanduser("~/.kiro"), os.path.expanduser("~/.copilot"),
                       os.path.expanduser("~/.claude"), os.path.expanduser("~/.codex")]:
