@@ -108,7 +108,7 @@ CONFIG_DEFAULTS = {
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
-    "planner": "kiro",
+    "planner": "flow-planner",
     "executor": "kiro",
     "max_workers": 4,
     "max_iterations": 3,
@@ -830,6 +830,82 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto"):
         return plan_strategy_stub(request, review)
 
 
+def _find_flow_planner_script():
+    """flow-planner スキルの plan.py を探す。
+    検索順: .github/skills/flow-planner/ → git root/.github/skills/ → ~/.kiro/skills/ → {skill_home}/"""
+    candidates = []
+    # ワークスペース内
+    cwd = os.getcwd()
+    candidates.append(os.path.join(cwd, ".github", "skills", "flow-planner", "scripts", "plan.py"))
+    # リポジトリルート（git rev-parse で探す）
+    try:
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True
+        ).stdout.strip()
+        if root:
+            candidates.append(os.path.join(root, ".github", "skills", "flow-planner", "scripts", "plan.py"))
+    except Exception:  # noqa: BLE001
+        pass
+    # ~/.kiro/skills 直下を直接確認
+    kiro_skills = os.path.expanduser("~/.kiro/skills")
+    candidates.append(os.path.join(kiro_skills, "flow-planner", "scripts", "plan.py"))
+    # skill-registry.json から skill_home を読む
+    for agent_dir in [os.path.expanduser("~/.kiro"), os.path.expanduser("~/.copilot"),
+                      os.path.expanduser("~/.claude"), os.path.expanduser("~/.codex")]:
+        reg = os.path.join(agent_dir, "skill-registry.json")
+        if os.path.isfile(reg):
+            try:
+                with open(reg, encoding="utf-8") as f:
+                    data = json.load(f)
+                home = data.get("skill_home", "")
+                if home:
+                    candidates.append(os.path.join(home, "flow-planner", "scripts", "plan.py"))
+            except Exception:  # noqa: BLE001
+                pass
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def plan_strategy_flow_planner(request: str, model: str | None, review="auto"):
+    """flow-planner スキルの3段パイプラインを呼び出す。
+    スキルが見つからない / 失敗した場合は plan_strategy_kiro にフォールバック。"""
+    script = _find_flow_planner_script()
+    if not script:
+        # flow-planner スキル未インストール → kiro planner にフォールバック
+        return plan_strategy_kiro(request, model, review)
+    cmd = [sys.executable, script, request]
+    if model:
+        cmd += ["--model", model]
+    if isinstance(review, bool):
+        cmd += ["--review", "true" if review else "false"]
+    else:
+        cmd += ["--review", str(review)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr[:500])
+        data = json.loads(proc.stdout)
+        strategy = data.get("strategy", {})
+        tasks = _coerce_tasks(data.get("tasks", []))
+        if not tasks:
+            raise ValueError("flow-planner returned empty tasks")
+        # strategy を正規化
+        patterns = [p for p in (strategy.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"]
+        final_strategy = {
+            "patterns": patterns,
+            "parallelism": int(strategy.get("parallelism", 2) or 2),
+            "review": _review_decision(review, patterns) if not isinstance(strategy.get("review"), bool)
+                      else strategy["review"],
+            "reason": f"[flow-planner] {strategy.get('reason', '')}",
+        }
+        return final_strategy, tasks
+    except Exception:  # noqa: BLE001 — flow-planner 失敗時は kiro にフォールバック
+        return plan_strategy_kiro(request, model, review)
+
+
 # --------------------------------------------------------------------------
 # Executor — タスク実行（kiro-cli or stub）
 # --------------------------------------------------------------------------
@@ -1156,6 +1232,8 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
 # --------------------------------------------------------------------------
 def _plan_strategy(args):
     review = getattr(args, "review", "auto")  # 'auto'/True/False の三値
+    if args.planner == "flow-planner":
+        return plan_strategy_flow_planner(args.request, args.model, review)
     if args.planner == "kiro":
         return plan_strategy_kiro(args.request, args.model, review)
     return plan_strategy_stub(args.request, review)
@@ -1856,7 +1934,7 @@ def main() -> int:
     run.add_argument("request", nargs="?", default=None,
                      help="ワークフローへの要求（再開時は省略可）")
     run.add_argument("--workers", type=int, default=None)
-    run.add_argument("--planner", choices=["kiro", "stub"], default=None)
+    run.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
     run.add_argument("--executor", choices=["kiro", "stub"], default=None)
     run.add_argument("--max-iterations", type=int, default=None,
                      help="再計画（evaluator-optimizer）の最大反復回数")
@@ -1872,7 +1950,7 @@ def main() -> int:
 
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
-    orch.add_argument("--planner", choices=["kiro", "stub"], default=None)
+    orch.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
     orch.add_argument("--executor", choices=["kiro", "stub"], default=None,
                       help="評価役（evaluator）に使うバックエンド")
     orch.add_argument("--max-iterations", type=int, default=None)
@@ -1898,7 +1976,7 @@ def main() -> int:
     dm.add_argument("--node-id", default=None, help="デーモン識別子（既定: host-pid）")
     dm.add_argument("--max-workers", type=int, default=None,
                     help="このデーモンが同時に走らせる worker 上限（既定 4）")
-    dm.add_argument("--planner", choices=["kiro", "stub"], default=None)
+    dm.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
     dm.add_argument("--executor", choices=["kiro", "stub"], default=None)
     dm.add_argument("--max-iterations", type=int, default=None)
     dm.add_argument("--max-fanout", type=int, default=None)

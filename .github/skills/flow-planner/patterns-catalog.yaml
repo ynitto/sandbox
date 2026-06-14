@@ -1,0 +1,288 @@
+# flow-planner パターンカタログ
+#
+# kiro-flow の 6 パターン + 複合テンプレートの詳細定義。
+# orchestrator の戦略選定で参照される。
+
+# =============================================================================
+# 基本パターン
+# =============================================================================
+patterns:
+  fan-out-and-synthesize:
+    description: >
+      大きな仕事を独立な小片に分割し並列実行、最後に統合ノードでまとめる。
+    node_kinds: [work, generate, synthesize]
+    when_to_use:
+      - 独立した部分タスクに分割でき、最後に統合が要る
+      - 観点別の並列調査・分析
+      - 複数ファイル・モジュールへの独立した変更
+      - 並列レビュー（セキュリティ/パフォーマンス/可読性）
+    when_not_to_use:
+      - タスク間に強い順序依存がある
+      - 全体を見ないと各部分を解けない
+      - 単一の逐次タスクで十分
+    typical_parallelism: [3, 6]
+    composable_with:
+      - adversarial-verification  # 統合前の検証gate
+      - loop-until-done           # 統合後に品質未達なら再生成
+
+  adversarial-verification:
+    description: >
+      生成ノードの成果を別の検証ノードが批判的にチェックし、問題があれば作り直す。
+    node_kinds: [generate, verify]
+    when_to_use:
+      - 正確性が重要（コード、計算、事実確認）
+      - 成果物にバグや誤りが混入しやすい
+      - セキュリティ・品質レビューが必須
+      - 単一の成果を深く検証する
+    when_not_to_use:
+      - 探索的タスク（正解が無い）
+      - 速度が最優先
+      - 検証基準が曖昧
+    typical_parallelism: [1, 2]
+    composable_with:
+      - fan-out-and-synthesize    # 統合前gateとして
+      - loop-until-done           # 検証通過まで反復
+
+  classify-and-act:
+    description: >
+      1つの分類エージェントが種別を判定し、結果に応じて適切な専門タスクへ振り分ける（ルーティング）。
+    node_kinds: [classify, work]
+    when_to_use:
+      - 入力の種類によって処理が異なる
+      - トリアージ・振り分けが必要
+      - 大量の異種アイテムを仕分ける
+      - 条件分岐でワークフローが変わる
+    when_not_to_use:
+      - 全入力に同一処理を適用する
+      - 分類基準が無い・不明確
+    typical_parallelism: [1, 1]
+    composable_with:
+      - fan-out-and-synthesize    # 分類後の各カテゴリを並列処理
+      - loop-until-done           # 分類精度の検証ループ
+
+  generate-and-filter:
+    description: >
+      候補を多数（並列）生成し、フィルタノードが基準を満たすものだけ残す。
+    node_kinds: [generate, filter]
+    when_to_use:
+      - 良い候補が事前に分からない（探索的）
+      - 基準が明確で機械的に判定できる
+      - 量からの選別が有効
+    when_not_to_use:
+      - 候補数が少ない（2-3）
+      - フィルタ基準が曖昧
+      - 全候補を残す必要がある
+    typical_parallelism: [4, 8]
+    composable_with:
+      - tournament                # フィルタ後にさらに最良選定
+      - adversarial-verification  # フィルタ結果の検証
+
+  tournament:
+    description: >
+      複数案を並列生成し、判定ノードが比較して最良案を選ぶ。
+    node_kinds: [generate, judge]
+    when_to_use:
+      - 「最良」を選ぶ必要がある（命名、デザイン案、アルゴリズム選定）
+      - 比較基準（rubric）が定義できる
+      - ペアワイズ比較が有効な大量候補の順序付け
+    when_not_to_use:
+      - 正解が1つしかない
+      - 比較基準が無い
+      - 全候補を保持する必要がある
+    typical_parallelism: [3, 8]
+    composable_with:
+      - generate-and-filter       # 事前フィルタ後にtournament
+      - loop-until-done           # 勝者が品質未達なら再生成
+
+  loop-until-done:
+    description: >
+      完了条件（テスト通過・指摘なし・品質達成）を満たすまで生成と検証を反復する。
+    node_kinds: [work, verify]
+    when_to_use:
+      - 明確な完了条件がある（テスト通過、lint clean、型チェック通過）
+      - 反復的改善が有効
+      - 1回で正解に至る可能性が低い
+    when_not_to_use:
+      - 完了条件が曖昧
+      - 反復しても改善しない種類のタスク
+      - 1回で十分な精度が出る
+    typical_parallelism: [1, 2]
+    composable_with:
+      - adversarial-verification  # 各反復での検証強化
+      - fan-out-and-synthesize    # 反復内を並列化
+
+  map-reduce:
+    description: >
+      split ノードが入力をリスト化し、実行時に要素数ぶんの map を動的に展開して
+      reduce で集約する（データ駆動の fan-out。件数を事前に固定しない）。
+    node_kinds: [split, map, reduce]
+    when_to_use:
+      - 処理対象がリスト・コレクション（ファイル一覧、API一覧、データセット）
+      - 各要素への処理が独立で同一
+      - 件数が実行時まで不明
+      - 結果の集約（合計、結合、フィルタ）が要る
+    when_not_to_use:
+      - 件数が事前確定かつ少数（3以下）→ fan-out で十分
+      - 要素間に依存がある
+      - 集約が不要（各要素の結果を個別に使う）
+    typical_parallelism: [5, 50]
+    composable_with:
+      - adversarial-verification  # reduce前の検証gate
+      - classify-and-act          # split前の分類
+
+# =============================================================================
+# 複合テンプレート（よくあるパターン組み合わせ）
+# =============================================================================
+composites:
+  fanout-then-verify:
+    patterns: [fan-out-and-synthesize, adversarial-verification]
+    description: >
+      並列生成 → 検証gate → 統合。精度が重要な並列タスクで使う。
+    graph_skeleton:
+      - { id: "t{i}", kind: work, deps: [], repeat: parallelism }
+      - { id: gate, kind: verify, deps: ["t*"] }
+      - { id: synth, kind: synthesize, deps: ["t*", gate] }
+
+  classify-then-fanout:
+    patterns: [classify-and-act, fan-out-and-synthesize]
+    description: >
+      まず分類し、分類結果ごとに並列処理して統合。大量トリアージに有効。
+    graph_skeleton:
+      - { id: classify, kind: classify, deps: [] }
+      # classify完了後、継続段階で分岐先を動的追加
+
+  generate-filter-tournament:
+    patterns: [generate-and-filter, tournament]
+    description: >
+      候補を大量生成→フィルタ→勝ち抜き。デザイン・命名の探索に最適。
+    graph_skeleton:
+      - { id: "g{i}", kind: generate, deps: [], repeat: parallelism }
+      - { id: filter, kind: filter, deps: ["g*"] }
+      - { id: judge, kind: judge, deps: [filter] }
+
+  deep-research:
+    patterns: [fan-out-and-synthesize, adversarial-verification]
+    description: >
+      並列調査 → 検証（事実確認）→ 統合。リサーチ系に最適。
+    graph_skeleton:
+      - { id: "r{i}", kind: work, deps: [], repeat: parallelism }
+      - { id: verify, kind: verify, deps: ["r*"] }
+      - { id: synth, kind: synthesize, deps: ["r*", verify] }
+
+  migration-pipeline:
+    patterns: [fan-out-and-synthesize, adversarial-verification, loop-until-done]
+    description: >
+      並列変更 → 検証 → 品質達成まで反復。マイグレーション・リファクタリング向け。
+    graph_skeleton:
+      - { id: "m{i}", kind: work, deps: [], repeat: parallelism }
+      - { id: verify, kind: verify, deps: ["m*"] }
+      - { id: synth, kind: synthesize, deps: ["m*", verify] }
+      # verify failで loop-until-done の継続ルールが発動
+
+  root-cause-analysis:
+    patterns: [generate-and-filter, adversarial-verification, loop-until-done]
+    description: >
+      仮説生成 → 検証パネル → 反復。根本原因の調査に最適。
+    graph_skeleton:
+      - { id: "h{i}", kind: generate, deps: [], repeat: parallelism }
+      - { id: verify, kind: verify, deps: ["h*"] }
+      # verify結果に基づきループ
+
+  lightweight-eval:
+    patterns: [fan-out-and-synthesize, adversarial-verification, loop-until-done]
+    description: >
+      並列実行 → 比較評価 → 改善反復。軽量Eval（実行+採点+改善）に最適。
+    graph_skeleton:
+      - { id: "run{i}", kind: work, deps: [], repeat: parallelism }
+      - { id: grade, kind: verify, deps: ["run*"] }
+      - { id: synth, kind: synthesize, deps: ["run*", grade] }
+
+# =============================================================================
+# ユースケース → 複合テンプレートのマッピング（Decision Matrix の入力）
+# =============================================================================
+use_case_mapping:
+  - keywords: [マイグレーション, リファクタリング, 移行, migration, refactor]
+    composite: migration-pipeline
+    quality_focus: accuracy
+    reason: "変更の正確性が最重要。検証ループで品質を担保"
+
+  - keywords: [リサーチ, 調査, 調べ, research, investigate, 深く]
+    composite: deep-research
+    quality_focus: coverage
+    reason: "網羅性と事実確認が重要。並列調査+検証で信頼性を確保"
+
+  - keywords: [ソート, 順位, ランキング, 比較, sort, rank, best]
+    composite: generate-filter-tournament
+    quality_focus: accuracy
+    reason: "ペアワイズ比較で最良を選定"
+
+  - keywords: [原因, 根本, 障害, なぜ, root cause, debug, 調査]
+    composite: root-cause-analysis
+    quality_focus: accuracy
+    reason: "仮説生成と検証の反復で原因を絞り込み"
+
+  - keywords: [トリアージ, 振り分け, 分類, 仕分け, triage, classify]
+    composite: classify-then-fanout
+    quality_focus: speed
+    reason: "分類→振り分けで大量アイテムを効率処理"
+
+  - keywords: [デザイン, 命名, ネーミング, 案, design, naming, 探索]
+    composite: generate-filter-tournament
+    quality_focus: exploration
+    reason: "候補を広く生成し、基準で絞って最良を選ぶ"
+
+  - keywords: [eval, 評価, テスト, 採点, grade, score, benchmark]
+    composite: lightweight-eval
+    quality_focus: accuracy
+    reason: "並列実行→採点→改善の反復で品質向上"
+
+  - keywords: [それぞれ, 各, ごとに, per item, 一覧, 列挙, 件]
+    composite: null  # map-reduce（基本パターン）を直接使う
+    quality_focus: speed
+    reason: "データ駆動で動的fan-out"
+
+# =============================================================================
+# Decision Matrix: 属性 → パターンスコア
+# =============================================================================
+decision_matrix:
+  # data_flow による加点
+  data_flow:
+    static:
+      fan-out-and-synthesize: 2
+      tournament: 1
+      generate-and-filter: 1
+    dynamic:
+      map-reduce: 3
+      classify-and-act: 1
+    unknown:
+      fan-out-and-synthesize: 1
+
+  # quality_focus による加点
+  quality_focus:
+    speed:
+      fan-out-and-synthesize: 2
+      map-reduce: 2
+      classify-and-act: 1
+    accuracy:
+      adversarial-verification: 3
+      loop-until-done: 2
+      tournament: 1
+    coverage:
+      fan-out-and-synthesize: 2
+      generate-and-filter: 2
+      map-reduce: 1
+    exploration:
+      generate-and-filter: 3
+      tournament: 2
+
+  # complexity による加点
+  complexity:
+    simple:
+      fan-out-and-synthesize: 1
+    moderate:
+      fan-out-and-synthesize: 2
+      adversarial-verification: 1
+    complex:
+      classify-and-act: 2
+      loop-until-done: 2
+      adversarial-verification: 2

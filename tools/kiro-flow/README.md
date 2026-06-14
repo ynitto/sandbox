@@ -63,7 +63,9 @@ orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
 | **loop-until-done** | `work` → `verify`（条件を満たすまで反復） | テスト通過・品質達成まで繰り返す |
 | **map-reduce** | `split` → 実行時に `map` ×N を動的展開 → `reduce` | 件数を事前に固定せずデータ駆動で並列処理し集約 |
 
-- **パターン選択**: `--planner kiro` なら kiro-cli が選ぶ。`--planner stub` は要求のキーワードで判定
+- **パターン選択**: `--planner flow-planner` なら3段パイプライン（要求分析→戦略選定→グラフ生成）で
+  高精度な分解を行う（`.github/skills/flow-planner/` スキル）。`--planner kiro` なら kiro-cli が
+  1回の呼び出しで選ぶ。`--planner stub` は要求のキーワードで判定
   （「分類/振り分け」→classify、「tournament/最良」→tournament、「候補/フィルタ」→filter、
   「検証/レビュー」→adversarial、「繰り返し/通るまで」→loop、それ以外→fan-out）。
 - **並列数**: 要求中の `xN` / `並列N` を拾う。無ければ並列タスク数から既定（2〜6）。
@@ -242,7 +244,7 @@ tmux attach -t flow
 | `--lease` | 1800 | claim のリース秒数（実行中はハートビートが延長） |
 | `--workers` | 2 | 起動するワーカー数（`run`） |
 | `--max-workers` | 4 | デーモンが同時に走らせる worker 上限（`daemon`） |
-| `--planner` / `--executor` | `kiro` | `kiro`（kiro-cli）/ `stub`（オフライン検証）。executor は評価役にも使う |
+| `--planner` / `--executor` | `flow-planner` / `kiro` | planner は `flow-planner`（3段パイプライン、既定）/ `kiro`（kiro-cli 1回）/ `stub`（オフライン検証）。executor は評価役にも使う |
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
 | `--max-fanout` | 50 | データ駆動 fan-out（split→map）の最大展開数 |
 | `--review` / `--no-review` | auto | 検証 gate の有効化。既定 `auto`（集約パターンで自動 ON）／`--review` 常時 ON ／`--no-review` OFF。設定は `review: auto\|true\|false` |
