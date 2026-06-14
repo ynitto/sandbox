@@ -3,13 +3,14 @@
 kiro-cli で **Claude 風の Dynamic Workflow**（動的にタスクを分解 → ワーカーへ委譲 → 結果統合）を
 実現する基盤。通信は **ファイルのみ**で行い、バスを git に差し替えれば**複数 PC へ分散**できる設計。
 
-> **現状: M7（6 パターン戦略）**
+> **現状: M7＋P1–P4（7 パターン戦略）**
 > orchestrator が [Claude Dynamic Workflows の 6 パターン](https://zenn.dev/aria3/articles/claude-code-dynamic-workflows-6-patterns)
-> をカタログとして持ち、**要求に応じてパターンの組み合わせと並列数を選んで**タスクグラフを形作る。
+> ＋ kiro-flow 追加の `map-reduce`（計 7）をカタログとして持ち、**要求に応じてパターンの組み合わせと
+> 並列数を選んで**タスクグラフを形作る。
 
 ## できること
 
-- **6 つのワークフローパターン**を orchestrator が知っていて、**要求からパターンと並列数（fan-out 幅）を
+- **7 つのワークフローパターン**を orchestrator が知っていて、**要求からパターンと並列数（fan-out 幅）を
   自動選択**してグラフを形作る（下記）。kiro 評価役はパターンを踏まえて継続（ルーティング/再生成/統合）を判断。
 - **`daemon`**：常駐し、投入された要求を拾って orchestrator を起動、claim 可能タスク量に応じて
   **ワーカーをオンデマンド起動**（仕事が無くなれば自然終了）。**分散時は各 PC でデーモンを動かす**だけ。
@@ -44,10 +45,13 @@ submit "要求" ─▶ inbox/<id>.json
         分散時: 共有 git バスを複数デーモンが見て各自 worker を湧かせる
 ```
 
-## 6 つのワークフローパターン
+## 7 つのワークフローパターン
 
-orchestrator は要求を見て、以下の 6 パターン（[参考記事](https://zenn.dev/aria3/articles/claude-code-dynamic-workflows-6-patterns)）
-から組み合わせと並列数を選び、各ノードに **kind** を付けたタスクグラフを生成する。
+orchestrator は要求を見て、以下の 7 パターン（最初の 6 つは
+[参考記事](https://zenn.dev/aria3/articles/claude-code-dynamic-workflows-6-patterns)、
+`map-reduce` は kiro-flow が追加した 7 つ目）から組み合わせと並列数を選び、各ノードに **kind** を
+付けたタスクグラフを生成する。`map-reduce` も他の 6 つと同格の選択可能パターンで、`split` 完了後の
+`map`/`reduce` 展開だけが実行時の動的メカニズム。
 
 | パターン | 形（ノード kind） | 使いどころ |
 |---------|------------------|-----------|
@@ -97,7 +101,7 @@ orchestrator は要求を見て、以下の 6 パターン（[参考記事](http
 orchestrator は run が静止するたびに結果を評価し、`done` なら統合、`replan` ならパターンに応じた
 タスクをグラフへ追加して継続する（最大 `--max-iterations`）。stub では `FAIL` を含むゴールは失敗 →
 retry、`FLAKY` を含むゴールは検証で issue 扱い → 作り直しが走るので、ループ動作を確認できる。
-kiro 評価役は 6 パターンのカタログ付きプロンプトで `{"decision","reason","new_tasks"}` を出力させる。
+kiro 評価役は 7 パターンのカタログ付きプロンプトで `{"decision","reason","new_tasks"}` を出力させる。
 
 ## 設計の肝 — 衝突しない通信
 
@@ -298,6 +302,8 @@ stub の擬似実行スリープは環境変数 `KIRO_FLOW_STUB_SLEEP_MAX`（既
   （`up`+`resume`→`run`、`status`+`watch`→`status --follow`）。✅
 - **M7（本実装）**: orchestrator が **Claude Dynamic Workflows の 6 パターン**を持ち、要求から
   パターンの組み合わせと並列数を選択。ノード kind とパターン別継続（ルーティング/再生成/統合）。✅
+- **P1–P4**: 構造化成果＋`reduce` / 7 つ目のパターン `map-reduce`（データ駆動 fan-out: split→map→reduce）/
+  複合パターン＋統合前 gate＋グラフ健全性検査 / planner 出力の正規化。✅
 - **今後**: 公平な負荷分散（work-stealing）・成果物の大容量対応（git-lfs）。
 
 ## 既知の制限

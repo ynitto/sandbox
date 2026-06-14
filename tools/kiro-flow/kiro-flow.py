@@ -618,8 +618,10 @@ class Heartbeat(threading.Thread):
 
 
 # --------------------------------------------------------------------------
-# ワークフローパターンのカタログ（Claude Dynamic Workflows の 6 パターン）
+# ワークフローパターンのカタログ（7 パターン）
 # --------------------------------------------------------------------------
+# 最初の 6 つは Claude Dynamic Workflows の 6 パターン、map-reduce は kiro-flow が
+# 追加した 7 つ目の正規パターン（split→実行時に map×N を動的展開→reduce）。
 # orchestrator はこのカタログを知っていて、要求に応じてパターンの組み合わせと
 # 並列数（fan-out 幅）を決め、タスクグラフを形作る。各ノードには kind を付け、
 # kind に応じて worker の実行プロンプトと評価役の継続判断が変わる。
@@ -634,7 +636,8 @@ PATTERNS = {
                   "reduce で集約する（データ駆動の fan-out。件数を事前に固定しない）。",
 }
 # ノード種別: work=通常実行 / generate=候補生成 / classify=分類 / synthesize=統合 /
-#            verify=検証 / filter=絞り込み / judge=最良選択 / reduce=構造化データの集約
+#            verify=検証 / filter=絞り込み / judge=最良選択 / reduce=構造化データの集約 /
+#            split=リスト化（データ駆動 fan-out の起点）/ map=要素ごとの処理
 PATTERN_LIST = list(PATTERNS)
 
 # 有効なノード kind。planner（kiro）が未知 kind を出したら work に丸める。
