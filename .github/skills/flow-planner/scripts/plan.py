@@ -112,6 +112,17 @@ SELECT_PROMPT = """\
 上記の候補から最適なパターン（組み合わせ）を選び、並列数を決定してください。
 複合テンプレートが適合する場合はそれを使い、適合しない場合は基本パターンを組み合わせてください。
 
+### 語彙ロック（厳守）
+
+- `patterns` に書けるのは次の7つの基本パターン名のみ:
+  fan-out-and-synthesize / adversarial-verification / classify-and-act /
+  generate-and-filter / tournament / loop-until-done / map-reduce
+- `composite_template` は上記「複合テンプレート」のキー名か null のみ。
+- synthesize / generate / verify / judge / filter / reduce / split / map /
+  classify / work は**ノード種別であってパターンではない**。`patterns` に書かない。
+- 派生語・同義語（例: "panel of verifiers", "tournament with rubric"）は使わず、
+  対応する正規名（adversarial-verification, tournament）へ読み替える。
+
 出力は JSON オブジェクトのみ:
 ```json
 {{
@@ -296,8 +307,8 @@ def phase2_select(request: str, analysis: dict, catalog: dict,
     # ユースケース説明
     use_cases = catalog.get("use_case_mapping", [])
     use_cases_desc = "\n".join(
-        f"- {', '.join(m.get('keywords', [])[:3])}... → {m.get('composite', 'map-reduce')} ({m.get('reason', '')})"
-        for m in use_cases[:7]
+        f"- {', '.join(m.get('keywords', [])[:3])}... → {m.get('composite') or 'map-reduce/loop-until-done（基本パターン）'} ({m.get('reason', '')})"
+        for m in use_cases
     )
 
     # スコアリング

@@ -796,8 +796,11 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto"):
     prompt = (
         "あなたは分散 Dynamic Workflow の計画役です。以下のワークフローパターンを知っています:\n"
         f"{catalog}\n\n"
+        "patterns に書けるのは上記 7 つのパターン名だけです。派生語・同義語は使わず、"
+        "近いものは必ず上記の正規名へ読み替えてください（例: 'panel of verifiers'→adversarial-verification）。\n"
         f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
-        "それを反映した初期タスクグラフを作ってください。各タスクには kind を付けます: "
+        "それを反映した初期タスクグラフを作ってください。各タスクには kind を付けます"
+        "（kind はノード種別であってパターン名ではありません。patterns には書かないこと）: "
         "work/generate/classify/synthesize/verify/filter/judge/reduce/split"
         "（reduce=構造化データの集約 / split=リスト化してデータ駆動 fan-out の起点）。"
         "重要: map-reduce では split ノードを1つだけ置き、要素ごとの map と reduce は"
@@ -1217,7 +1220,7 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
         for nid, r in results.items()
     )
     prompt = (
-        "あなたは分散 Dynamic Workflow の評価役です。6 パターンを踏まえ、現在の結果が要求を満たすか判定し、"
+        "あなたは分散 Dynamic Workflow の評価役です。7 パターンを踏まえ、現在の結果が要求を満たすか判定し、"
         "必要なら次のタスクを追加してください（例: 分類結果に応じた専門タスク、検証 fail の作り直し、"
         "統合や追加候補の生成）。\n"
         f"パターン:\n{catalog}\n\n"
@@ -1802,6 +1805,28 @@ def _elapsed(meta) -> str:
         return "-"
 
 
+# 集約・最終ノード（sink）として優先する kind。これらがあれば最終成果とみなす。
+_AGG_KINDS = ("synthesize", "reduce", "judge", "filter")
+
+
+def _final_result_nodes(nodes: dict, results: dict) -> list:
+    """ワークフローの最終成果に当たるノード id を返す。
+
+    sink（他ノードの deps に現れない末端）かつ done のものを集め、集約 kind
+    （synthesize/reduce/judge/filter）があればそれを優先する。末端が無い／done で
+    ないときは done ノード全体へフォールバックする（最終結果を必ず何か返すため）。"""
+    if not nodes:
+        return []
+    done = [nid for nid in nodes if (results.get(nid) or {}).get("status") == "done"]
+    if not done:
+        return []
+    depended = {d for n in nodes.values() for d in n.get("deps", [])}
+    sinks = [nid for nid in done if nid not in depended]
+    pool = sinks or done
+    agg = [nid for nid in pool if nodes[nid].get("kind") in _AGG_KINDS]
+    return agg or pool
+
+
 def _render_status(bus, run_id, events):
     """公式 Dynamic Workflows 風のダッシュボード表示。
     進捗バー / エージェント（タスク）状態ツリー / 直近アクティビティ / 最終サマリ。"""
@@ -1856,11 +1881,24 @@ def _render_status(bus, run_id, events):
                 L.append(f"│  {ts}  {e.get('who',''):<14} {e.get('kind',''):<8} {detail}")
 
     if status in TERMINAL:
-        final = read_json(bus.final_path)
-        if final:
+        node_results = {nid: bus.read_result(nid) or {} for nid in nodes}
+        sink_ids = _final_result_nodes(nodes, node_results)
+        if sink_ids:
             L.append("├─ result")
-            for line in final.get("summary", "").splitlines()[:20]:
-                L.append(f"│  {line}")
+            for nid in sink_ids:
+                out = str(node_results[nid].get("output", "")).strip()
+                lines = out.splitlines() or ["(出力なし)"]
+                L.append(f"│  ◆ {nid} [{nodes[nid].get('kind', 'work')}]")
+                for line in lines[:10]:
+                    L.append(f"│    {line[:96]}")
+                if len(lines) > 10:
+                    L.append(f"│    … (全 {len(lines)} 行 — 全文は `kiro-flow result` で)")
+        else:
+            final = read_json(bus.final_path)
+            if final:
+                L.append("├─ result")
+                for line in final.get("summary", "").splitlines()[:20]:
+                    L.append(f"│  {line}")
     L.append("╰─")
     return status, "\n".join(L)
 
@@ -1918,6 +1956,79 @@ def cmd_status(args) -> int:
             time.sleep(args.interval)
     except KeyboardInterrupt:
         pass
+    return 0
+
+
+def cmd_result(args) -> int:
+    """完了した run の最終結果を探し出して提示する。
+
+    status が進捗ダッシュボードなのに対し、result は成果そのものを返す。
+    最終成果＝集約／末端（sink）ノードの全文出力（`_final_result_nodes` で特定）。
+    run_id 未指定なら最新 run を自動選択（status と同じ挙動）。未完了なら
+    その旨を知らせ、確定済みの成果があれば参考表示する。"""
+    if not args.run_id:
+        resolved = _resolve_run_id(args)
+        if not resolved:
+            print("エラー: run が見つかりません。まず kiro-flow run を実行してください。",
+                  file=sys.stderr)
+            return 1
+        args.run_id = resolved
+        print(f"(run_id 未指定 — 最新の run: {args.run_id})", file=sys.stderr)
+
+    bus = make_bus(args, "result-viewer")
+    bus.sync_pull()
+    status = bus.get_status()
+    graph = bus.read_graph() or {}
+    nodes = graph.get("nodes", {})
+    results = {nid: (bus.read_result(nid) or {}) for nid in nodes}
+    final_meta = read_json(bus.final_path) or {}
+    request = final_meta.get("request") or bus.run_meta(args.run_id).get("request", "")
+    sink_ids = _final_result_nodes(nodes, results)
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "run_id": args.run_id,
+            "status": status,
+            "done": status in TERMINAL,
+            "request": request,
+            "strategy": graph.get("strategy") or final_meta.get("strategy", {}),
+            "finished_at": final_meta.get("finished_at"),
+            "final_nodes": [
+                {"id": nid, "kind": nodes.get(nid, {}).get("kind", "work"),
+                 "output": str(results.get(nid, {}).get("output", "")),
+                 "data": results.get(nid, {}).get("data")}
+                for nid in sink_ids
+            ],
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    if status not in TERMINAL:
+        done_n = sum(1 for r in results.values() if r.get("status") in TERMINAL)
+        print(f"run {args.run_id} はまだ完了していません（status={status}, "
+              f"{done_n}/{len(nodes)} 完了）。"
+              f"進捗は `kiro-flow status --run-id {args.run_id} --follow` で確認してください。",
+              file=sys.stderr)
+        if not sink_ids:
+            return 0
+        print("（現時点で確定している成果のみ表示します）")
+
+    if not sink_ids:
+        print("（最終結果がまだありません）")
+        return 0
+
+    print(f"== run {args.run_id} 最終結果 ==")
+    if request:
+        print(f"request : {request}")
+    if final_meta.get("finished_at"):
+        print(f"finished: {final_meta['finished_at']}")
+    for nid in sink_ids:
+        r = results.get(nid, {})
+        kind = nodes.get(nid, {}).get("kind", "work")
+        print(f"\n── {nid} [{kind}] ──")
+        out = str(r.get("output", "")).strip()
+        print(out or "(出力なし)")
+        if r.get("data") is not None:
+            print(f"[data] {json.dumps(r['data'], ensure_ascii=False)}")
     return 0
 
 
@@ -2012,6 +2123,11 @@ def main() -> int:
     st.add_argument("--until-done", action="store_true", help="run 完了で自動終了（--follow 時）")
     st.add_argument("--list", "-l", action="store_true", help="run 一覧を表示して終了")
     st.set_defaults(func=cmd_status)
+
+    rs = sub.add_parser("result",
+                        help="完了した run の最終結果を探して提示（status 相当・進捗でなく成果を返す）")
+    rs.add_argument("--json", action="store_true", help="機械可読な JSON で出力")
+    rs.set_defaults(func=cmd_result)
 
     gc = sub.add_parser("gc", help="古い run を掃除（対応する inbox 要求・claim も削除）")
     gc.add_argument("--older-than", type=float, default=7.0, help="この日数より古い run が対象")

@@ -154,11 +154,19 @@ composites:
   generate-filter-tournament:
     patterns: [generate-and-filter, tournament]
     description: >
-      候補を大量生成→フィルタ→勝ち抜き。デザイン・命名の探索に最適。
+      候補を大量生成→フィルタ→勝ち抜き。デザイン・命名など「無から最良案を作る」探索に最適。
     graph_skeleton:
       - { id: "g{i}", kind: generate, deps: [], repeat: parallelism }
       - { id: filter, kind: filter, deps: ["g*"] }
       - { id: judge, kind: judge, deps: [filter] }
+
+  tournament-rank:
+    patterns: [tournament]
+    description: >
+      既存アイテム群をペアワイズ比較で順位付け／最良選定する（候補生成は伴わない）。
+      絶対スコアより比較判定の方が信頼性が高い、大量ソート・ランキングに向く。
+    graph_skeleton:
+      - { id: judge, kind: judge, deps: [] }  # ペアワイズ比較で順位付け
 
   deep-research:
     patterns: [fan-out-and-synthesize, adversarial-verification]
@@ -200,41 +208,54 @@ composites:
 # =============================================================================
 # ユースケース → 複合テンプレートのマッピング（Decision Matrix の入力）
 # =============================================================================
+# 注意: match_composite は「先頭から最初にキーワードが当たった行」を採用する。
+# そのため、より具体的なユースケースを上に、単体パターン頼みの汎用行を下に置く。
+# キーワードは複数行で重複させない（重複すると上の行が常に勝ち、決定がブレる）。
 use_case_mapping:
-  - keywords: [マイグレーション, リファクタリング, 移行, migration, refactor]
+  - keywords: [マイグレーション, リファクタリング, 移行, 一括変更, migration, refactor]
     composite: migration-pipeline
     quality_focus: accuracy
     reason: "変更の正確性が最重要。検証ループで品質を担保"
+
+  - keywords: [原因, 根本, なぜ, 障害, root cause, debug]
+    composite: root-cause-analysis
+    quality_focus: accuracy
+    reason: "仮説生成→検証→反復で原因を絞り込み"
 
   - keywords: [リサーチ, 調査, 調べ, research, investigate, 深く]
     composite: deep-research
     quality_focus: coverage
     reason: "網羅性と事実確認が重要。並列調査+検証で信頼性を確保"
 
-  - keywords: [ソート, 順位, ランキング, 比較, sort, rank, best]
-    composite: generate-filter-tournament
+  - keywords: [レビュー, 監査, 観点, セキュリティ, パフォーマンス, 可読性, review, audit]
+    composite: fanout-then-verify
     quality_focus: accuracy
-    reason: "ペアワイズ比較で最良を選定"
-
-  - keywords: [原因, 根本, 障害, なぜ, root cause, debug, 調査]
-    composite: root-cause-analysis
-    quality_focus: accuracy
-    reason: "仮説生成と検証の反復で原因を絞り込み"
+    reason: "観点別に並列レビューし、統合前に検証gateで品質を担保"
 
   - keywords: [トリアージ, 振り分け, 分類, 仕分け, triage, classify]
     composite: classify-then-fanout
     quality_focus: speed
     reason: "分類→振り分けで大量アイテムを効率処理"
 
-  - keywords: [デザイン, 命名, ネーミング, 案, design, naming, 探索]
+  - keywords: [ソート, 順位, ランキング, 順序付け, pairwise, sort, rank, ranking]
+    composite: tournament-rank
+    quality_focus: accuracy
+    reason: "既存アイテムをペアワイズ比較で順位付け（比較判定は絶対スコアより信頼性が高い）"
+
+  - keywords: [デザイン, 命名, ネーミング, 案, アイデア, design, naming, 探索]
     composite: generate-filter-tournament
     quality_focus: exploration
     reason: "候補を広く生成し、基準で絞って最良を選ぶ"
 
-  - keywords: [eval, 評価, テスト, 採点, grade, score, benchmark]
+  - keywords: [eval, 評価, 採点, ベンチ, grade, score, benchmark]
     composite: lightweight-eval
     quality_focus: accuracy
     reason: "並列実行→採点→改善の反復で品質向上"
+
+  - keywords: [テスト通過, lint, 型チェック, 緑, グリーン, 反復, 完了条件, until done]
+    composite: null  # loop-until-done（基本パターン）を直接使う
+    quality_focus: accuracy
+    reason: "明確な完了条件を満たすまで生成と検証を反復"
 
   - keywords: [それぞれ, 各, ごとに, per item, 一覧, 列挙, 件]
     composite: null  # map-reduce（基本パターン）を直接使う

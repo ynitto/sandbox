@@ -619,6 +619,58 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(res["split1-reduce"]["status"], "done")
         self.assertEqual(res["split1-reduce"]["data"]["count"], 3)
 
+    def test_result_command_presents_final_output(self):
+        # 完了した run に対し result が最終成果（集約ノード synth）を返す
+        bus = tempfile.mkdtemp(prefix="kf-e2e-")
+        p = self._run_up(bus, "x; y; z")
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        run_id = sorted(os.listdir(os.path.join(bus, "runs")))[0]
+        rp = subprocess.run(
+            [sys.executable, str(SCRIPT), "--bus", bus, "--run-id", run_id,
+             "result", "--json"],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(rp.returncode, 0, rp.stderr[-800:])
+        out = json.loads(rp.stdout)
+        self.assertTrue(out["done"])
+        self.assertEqual(out["status"], "done")
+        self.assertEqual([n["id"] for n in out["final_nodes"]], ["synth"])
+        self.assertTrue(out["final_nodes"][0]["output"])
+
+
+class FinalResultNodeTests(unittest.TestCase):
+    def test_prefers_aggregation_sink(self):
+        nodes = {
+            "t1": {"kind": "work", "deps": []},
+            "t2": {"kind": "work", "deps": []},
+            "synth": {"kind": "synthesize", "deps": ["t1", "t2"]},
+        }
+        results = {k: {"status": "done"} for k in nodes}
+        self.assertEqual(kf._final_result_nodes(nodes, results), ["synth"])
+
+    def test_falls_back_to_sinks_without_agg_kind(self):
+        # 末端が work のみ → 集約 kind が無いので末端ノードを返す
+        nodes = {
+            "a": {"kind": "work", "deps": []},
+            "b": {"kind": "work", "deps": ["a"]},
+        }
+        results = {k: {"status": "done"} for k in nodes}
+        self.assertEqual(kf._final_result_nodes(nodes, results), ["b"])
+
+    def test_falls_back_when_agg_node_not_done(self):
+        # 集約ノードが未完了なら done の末端へフォールバック
+        nodes = {
+            "t1": {"kind": "work", "deps": []},
+            "synth": {"kind": "synthesize", "deps": ["t1"]},
+        }
+        results = {"t1": {"status": "done"}, "synth": {"status": "pending"}}
+        self.assertEqual(kf._final_result_nodes(nodes, results), ["t1"])
+
+    def test_empty_when_nothing_done(self):
+        self.assertEqual(
+            kf._final_result_nodes({"t1": {"kind": "work", "deps": []}},
+                                   {"t1": {"status": "pending"}}), [])
+        self.assertEqual(kf._final_result_nodes({}, {}), [])
+
 
 class GitDistributedTests(unittest.TestCase):
     """複数 PC 分散の模擬: ローカルのベアリポジトリを共有バスにし、ノードごとに

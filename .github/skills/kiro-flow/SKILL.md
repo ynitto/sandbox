@@ -1,6 +1,6 @@
 ---
 name: kiro-flow
-description: kiro-flow CLI を呼び出して分散 Dynamic Workflow を実行・監視するスキル。kiro-cli を頭脳に、要求を6パターンから戦略化してタスクグラフへ分解し、git/ローカルのファイルバス上で複数ワーカーに分散実行する。「ワークフローを実行して」「kiro-flow で動かして」「タスクを分散実行して」「要求を投入して」「デーモンを起動して」「run の状態を見て」「古い run を掃除して」などで発動する。Claude Dynamic Workflows 風の動的分解・再計画・データ駆動 fan-out を使いたい場合に選択する。
+description: kiro-flow CLI を呼び出して分散 Dynamic Workflow を実行・監視し、完了後は最終結果を提示するスキル。kiro-cli を頭脳に、要求を6パターンから戦略化してタスクグラフへ分解し、git/ローカルのファイルバス上で複数ワーカーに分散実行する。「ワークフローを実行して」「kiro-flow で動かして」「タスクを分散実行して」「要求を投入して」「デーモンを起動して」「run の状態を見て」「結果を見せて」「最終結果は？」「成果物を出して」「古い run を掃除して」などで発動する。Claude Dynamic Workflows 風の動的分解・再計画・データ駆動 fan-out を使いたい場合に選択する。
 metadata:
   version: 1.0.0
   tier: experimental
@@ -36,8 +36,9 @@ KF="kiro-flow"   # 未インストールなら KF="python3 tools/kiro-flow/kiro-
 | 「ワークフローを実行して」「kiro-flow で動かして」 | `run` |
 | 「中断した run を再開して」 | `run --run-id <id>`（要求は省略可） |
 | 「デーモンを起動して」「常駐させて」 | `daemon`（多重起動しない＝冪等） |
-| 「要求を投入して」「タスクを依頼して」 | `submit` |
+| 「要求を投入して」「タスクを依頼して」 | `submit`（投入前に daemon を確保。git リポジトリ内なら GitHub 共有バスで起動） |
 | 「run の状態を見て」「進捗を見せて」 | `status`（`--follow` でライブ） |
+| 「結果を見せて」「最終結果は？」「成果物を出して」 | `result`（完了済みなら最終成果を提示） |
 | 「古い run を掃除して」 | `gc` |
 
 ## よく使う呼び出し
@@ -66,20 +67,48 @@ $KF run "a; b; c" --planner stub --executor stub
 `daemon` は**同一バスにつき 1 つだけ**起動する（既に稼働中なら何もせず終了＝冪等）。
 「デーモンを起動して」と言われたら、まず起動コマンドを実行してよい（重複起動の心配は不要）。
 
+### submit でタスクを投入する手順（daemon の確保 ＋ git 自動設定）
+
+`submit` は要求を inbox に置くだけで、実際に実行するのは `daemon`。したがって
+**submit の前に必ず daemon を確保する**（稼働確認は不要 — `daemon` は冪等で、既に動いていれば
+自動でスキップされるので、そのまま起動コマンドを実行すればよい）。さらに
+**カレントディレクトリが git リポジトリなら、その origin（GitHub）リモートを共有バスにして起動**し、
+複数 PC でそのまま分散できるようにする。
+
 ```bash
-$KF daemon --max-workers 4 &                   # 常駐（多重起動しない）
-$KF &                                          # サブコマンド省略でも daemon
-RID=$($KF submit "<要求>")                      # 要求を投入（run-id が返る）
-$KF status --run-id "$RID" --follow --until-done
+# 1) バスモードを決定: git リポジトリ内なら GitHub 共有バス、そうでなければローカル
+if BUS_REMOTE=$(git remote get-url origin 2>/dev/null); then
+  REPO=$(basename -s .git "$(git rev-parse --show-toplevel)")
+  # 専用ブランチ kiro-flow-bus を使い、プロジェクトの main/作業ブランチには一切 push しない。
+  # クローンはリポジトリ外（~/.kiro/flow-clones/<repo>）に置き、作業中のリポジトリを汚さない。
+  BUS="--git $BUS_REMOTE --git-branch kiro-flow-bus --bus $HOME/.kiro/flow-clones/$REPO"
+else
+  BUS="--bus ./.kiro-flow"                      # git 外: ローカルバス
+fi
+
+# 2) daemon を確保（冪等 — 既に稼働していれば自動スキップ。そのまま実行してよい）
+$KF $BUS daemon --max-workers 4 &
+
+# 3) 要求を投入 → run-id 取得 → 監視 → 最終結果
+RID=$($KF $BUS submit "<要求>")
+$KF $BUS status --run-id "$RID" --follow --until-done
+$KF $BUS result --run-id "$RID"
 ```
+
+**同一バスで揃える**: `daemon`/`submit`/`status`/`result` は必ず**同じ `$BUS` フラグ**で呼ぶ
+（別バスを指すと投入した要求が拾われない）。毎回フラグを渡す代わりに、リポジトリの
+`./.kiro/kiro-flow.yaml` に `git` / `git_branch` / `bus` を書けば全コマンドが自動で同じバスを使う
+（優先順位 CLI > 設定ファイル > 既定）。git モードは初回に `kiro-flow-bus` ブランチを origin へ
+作成・push する（main は変更しない）。
 
 ### 分散（複数 PC）
 
-各 PC で同じ `--git` を指すだけ。バスはリポジトリ直下、または `--git-subdir` でサブディレクトリ。
+上の手順で git リポジトリ内なら自動で GitHub 共有バスになる。**他の PC は同じリポジトリで
+同じ手順を実行するだけ**で同一バスに参加する。リポジトリ外から明示的に指定する場合:
 
 ```bash
-$KF --git <repo-url> [--git-subdir flow] daemon --max-workers 4 &   # PC ごとに（冪等）
-$KF --git <repo-url> submit "<要求>"
+$KF --git <repo-url> --git-branch kiro-flow-bus daemon --max-workers 4 &   # PC ごとに（冪等）
+$KF --git <repo-url> --git-branch kiro-flow-bus submit "<要求>"
 ```
 
 ### 状態確認・掃除
@@ -90,6 +119,28 @@ $KF status --follow               # ライブ監視（tmux ペイン向け）
 $KF status --list                 # run 一覧
 $KF gc --older-than 7 --status done --dry-run   # 古い done を掃除（まず dry-run）
 ```
+
+### 最終結果の提示
+
+このスキルは**ワークフローの最終結果を提示する役割**も担う。状態確認を求められて
+（「結果を見せて」「終わった？」「成果物は？」等）対象 run が**完了している**なら、
+進捗ダッシュボードだけでなく**最終結果そのもの**を探し出して提示する。
+
+```bash
+$KF result                        # 最新 run の最終結果（run_id 省略で自動選択）
+$KF result --run-id <run-id>      # 指定 run の最終結果
+$KF result --json                 # 機械可読（final_nodes に sink ノードの全文 output/data）
+```
+
+- 「最終結果」＝集約／末端（sink）ノードの**全文出力**を自動特定して返す。
+  集約 kind（synthesize / reduce / judge / filter）があればそれを優先し、無ければ
+  他から依存されない末端ノードを採る（例: fan-out→`synth`、tournament→`judge`、
+  map-reduce→`reduce`）。`status` の `├─ result` 欄にも要約が出るが、**全文は `result`**。
+- 未完了の run に対しては「まだ完了していません（X/Y 完了）」と知らせ、`status --follow`
+  を案内する。確定済みの成果があれば参考として表示する。
+
+判断指針: 進捗・経過を知りたい → `status`。出来上がった成果が欲しい → `result`。
+完了済み run について「結果」を問われたら `result` を使う。
 
 ## 環境ごとの設定
 
