@@ -829,7 +829,7 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto"):
 
 def _find_flow_planner_script():
     """flow-planner スキルの plan.py を探す。
-    検索順: .github/skills/flow-planner/ → {skill_home}/flow-planner/"""
+    検索順: .github/skills/flow-planner/ → git root/.github/skills/ → ~/.kiro/skills/ → {skill_home}/"""
     candidates = []
     # ワークスペース内
     cwd = os.getcwd()
