@@ -52,15 +52,6 @@ kiro-flow run "<要求>" --planner flow-planner
 ### スクリプト直接呼び出し
 
 ```bash
-# Phase 1: 要求分析
-python3 .github/skills/flow-planner/scripts/analyze_request.py "<要求>"
-
-# Phase 2: 戦略選定（Phase 1 の出力を入力）
-python3 .github/skills/flow-planner/scripts/select_strategy.py --analysis '<JSON>'
-
-# Phase 3: グラフ生成（Phase 2 の出力を入力）
-python3 .github/skills/flow-planner/scripts/build_graph.py --strategy '<JSON>' --request "<要求>"
-
 # 全段パイプライン（kiro-flow が内部で呼ぶ）
 python3 .github/skills/flow-planner/scripts/plan.py "<要求>" [--model <model>] [--review auto|true|false]
 ```
