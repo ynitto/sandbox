@@ -113,9 +113,23 @@ CONFIG_DEFAULTS = {
     "max_workers": 4,
     "max_iterations": 3,
     "max_fanout": 50,
-    "review": False,
+    "review": "auto",  # auto: 集約パターンで自動有効 / True/False: 明示上書き
     "workers": 2,
 }
+
+# 集約点（reduce/synthesize）を持ち、独立レビューが結果の信頼性を高めるパターン。
+# 公式 dynamic workflows の「集約前に互いの成果をレビューする品質パターン」に倣い、
+# これらでは検証 gate を既定で自動挿入する。generate-and-filter/tournament/
+# adversarial-verification は元々 filter/judge/verify を内包するため対象外。
+AGGREGATING_PATTERNS = {"map-reduce", "fan-out-and-synthesize"}
+
+
+def _review_decision(review_setting, patterns) -> bool:
+    """review の三値解決。True/False は明示指定として尊重。'auto'（既定）や None は
+    集約パターンを含むときのみ自動で有効化する。"""
+    if isinstance(review_setting, bool):
+        return review_setting
+    return bool(set(patterns or []) & AGGREGATING_PATTERNS)
 
 
 def _find_config(explicit):
@@ -208,6 +222,15 @@ def extract_json(text: str):
             except json.JSONDecodeError:
                 continue
     raise ValueError("planner 出力から JSON を抽出できませんでした")
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    """端末カラー等の ANSI エスケープを除去する。
+    kiro-cli の出力にはカラーコードが混ざるため、保存・解析前に正規化する。"""
+    return _ANSI_RE.sub("", text or "")
 
 
 # --------------------------------------------------------------------------
@@ -410,6 +433,14 @@ class Bus:
 
     def remove_run(self, run_id: str) -> None:
         shutil.rmtree(os.path.join(self.runs_root, run_id), ignore_errors=True)
+        # 対応する inbox 要求と claim も消す（req_id == run_id）。残すとデーモンの
+        # 重複排除（run_exists ベース）が外れ、gc 後にリース失効済みの要求を拾い直して
+        # 完了済みの run を再実行してしまう。
+        try:
+            os.remove(os.path.join(self.inbox_dir, f"{run_id}.json"))
+        except OSError:
+            pass
+        shutil.rmtree(os.path.join(self.inbox_claims_dir, run_id), ignore_errors=True)
 
     def run_view(self, run_id: str) -> "Bus":
         """同じ作業ツリー上の別 run を読み取るための軽量ビュー（git 再クローンしない）。"""
@@ -610,6 +641,11 @@ PATTERN_LIST = list(PATTERNS)
 VALID_KINDS = {"work", "generate", "classify", "synthesize", "verify",
                "filter", "judge", "reduce", "split", "map"}
 
+# 構造化データ（data）を成果として意図する kind。これら以外（work/generate/
+# classify/synthesize）の自由記述出力では、散文中に紛れた JSON 風断片を data に
+# 昇格させない（例: 本文の "issues": [] を空リスト data と誤抽出して下流を汚す事故を防ぐ）。
+STRUCTURED_KINDS = {"split", "map", "reduce", "filter", "judge", "verify"}
+
 
 def _coerce_tasks(raw, existing=()):
     """planner/評価役（kiro）の生出力をタスク dict に正規化する。
@@ -730,25 +766,30 @@ def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = Fals
                     "deps": gen_ids, "kind": "synthesize"}]
 
 
-def plan_strategy_stub(request: str, review: bool = False):
-    """要求からパターンと並列数を選び、初期グラフを作る（kiro 無し版）。"""
+def plan_strategy_stub(request: str, review="auto"):
+    """要求からパターンと並列数を選び、初期グラフを作る（kiro 無し版）。
+    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。"""
     pattern = _detect_pattern(request)
     base = plan_stub(request)
     par = _parallelism(request, len([t for t in base if not t["deps"]]))
+    review = _review_decision(review, [pattern])
     tasks = _strategy_to_graph(pattern, request, par, review)
     patterns = [pattern] + (["adversarial-verification"] if review and pattern != "adversarial-verification" else [])
-    strategy = {"patterns": patterns, "parallelism": par,
+    strategy = {"patterns": patterns, "parallelism": par, "review": review,
                 "reason": f"stub heuristic → {pattern}" + ("（統合前レビュー有）" if review else "")}
     return strategy, tasks
 
 
-def plan_strategy_kiro(request: str, model: str | None, review: bool = False):
-    """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。"""
+def plan_strategy_kiro(request: str, model: str | None, review="auto"):
+    """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
+    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。"""
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     compose = ("必要なら複数パターンを多段に複合してよい（例: classify-and-act の各分岐を "
                "fan-out-and-synthesize にする / generate-and-filter の通過案で tournament を行う）。")
-    review_note = ("統合（synthesize/reduce）の前に verify ノードを 1 つ挟み、事前チェック・"
-                   "敵対的レビューを行ってください。" if review else "")
+    # 明示 OFF でなければレビューの意図を planner に伝える（最終的な有効/無効は
+    # 返ってきた patterns を見て _review_decision で確定する）。
+    review_note = ("統合（synthesize/reduce）を伴うパターンでは、集約の前に verify ノードを 1 つ挟み、"
+                   "事前チェック・敵対的レビューを行ってください。" if review is not False else "")
     prompt = (
         "あなたは分散 Dynamic Workflow の計画役です。以下のワークフローパターンを知っています:\n"
         f"{catalog}\n\n"
@@ -756,6 +797,9 @@ def plan_strategy_kiro(request: str, model: str | None, review: bool = False):
         "それを反映した初期タスクグラフを作ってください。各タスクには kind を付けます: "
         "work/generate/classify/synthesize/verify/filter/judge/reduce/split"
         "（reduce=構造化データの集約 / split=リスト化してデータ駆動 fan-out の起点）。"
+        "重要: map-reduce では split ノードを1つだけ置き、要素ごとの map と reduce は"
+        " split 完了後に実行時へ動的展開されるので、グラフに静的に書かないこと"
+        "（split→work→reduce のような固定チェーンにすると並列展開されない）。"
         "並列にできるタスクは deps を空に、順序や統合が要るものは deps に先行 id を入れます。"
         "依存は既存タスク id のみ、循環は作らないこと。\n"
         "出力は JSON オブジェクトのみ:\n"
@@ -765,17 +809,22 @@ def plan_strategy_kiro(request: str, model: str | None, review: bool = False):
     )
     try:
         data = extract_json(run_kiro(prompt, model))
+        # planner がオブジェクトでなくベア配列を返すことがある → tasks とみなす
+        if isinstance(data, list):
+            data = {"tasks": data}
         tasks = _coerce_tasks(data.get("tasks"))
         if not tasks:
             raise ValueError("tasks 空")
+        patterns = [p for p in (data.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"]
         strategy = {
-            "patterns": [p for p in (data.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"],
+            "patterns": patterns,
             "parallelism": int(data.get("parallelism", 2) or 2),
+            "review": _review_decision(review, patterns),
             "reason": str(data.get("reason", "")),
         }
         return strategy, tasks
     except Exception:  # noqa: BLE001 — 解釈できなければ stub の戦略に倒す
-        return plan_strategy_stub(request)
+        return plan_strategy_stub(request, review)
 
 
 # --------------------------------------------------------------------------
@@ -789,7 +838,7 @@ def run_kiro(prompt: str, model: str | None) -> str:
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"kiro-cli 失敗 (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
-    return proc.stdout.strip()
+    return strip_ansi(proc.stdout).strip()
 
 
 # dep_results は {dep_id: result_dict}（result_dict は output テキストと任意の data を持つ）。
@@ -870,14 +919,29 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None):
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
         "filter": "選別役。依存の候補から基準を満たすものだけを残し、採用理由を述べる。",
         "judge": "審判役。依存の複数案を比較し最良案を選び理由を述べる。",
-        "reduce": "集約役。依存タスクの構造化データを畳み込み、集約結果を JSON で出力。",
-        "verify": "検証役。依存の成果を批判的に検証し、問題なければ『verify=pass』、"
-                  "問題があれば『verify=fail』と指摘を出力。",
+        "reduce": "集約役。依存タスクの構造化データを畳み込み、集約結果を JSON で出力。"
+                  " 要素数を表す count を含める場合は、必ず集約後リストの実際の要素数と一致させること。",
+        "split": "分解役。入力を独立に処理できる小片のリストへ分解し、"
+                 "各要素を文字列とする JSON 配列のみを出力（例: [\"1-100\", \"101-200\"]）。"
+                 " 説明文は付けず配列だけを返すこと。",
+        "map": "map役。ゴールに示された本来のタスクを、与えられた1要素だけに適用して結果を返す。"
+               " 勝手に別の処理（合計・件数など）に変えないこと。"
+               " リスト状の成果は JSON 配列で出力し、後段の集約に渡せるようにする。",
+        "verify": "検証役。依存の成果を鵜呑みにせず独立に検算する。"
+                  "可能なら結果を自分で再導出して突き合わせ、最低限"
+                  "(1)件数・合計の整合 (2)抜け漏れ・重複 (3)各要素の妥当性の抜き取り検査"
+                  " を行う。問題が無ければ『verify=pass』、あれば『verify=fail』と"
+                  "具体的な該当箇所を出力し、末尾に JSON"
+                  ' {"ok": true|false, "issues": ["..."]} を必ず添える。',
     }.get(kind, "ワーカー。次のタスクだけを完了し成果物を出力。")
+    # 集約・選別系では gate（verify の判定）を入力から除く（成果物に紛れ込ませない）
+    deps = dep_results
+    if kind in ("reduce", "synthesize", "filter", "judge"):
+        deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}
     prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
-    if dep_results:
+    if deps:
         lines = []
-        for d, r in dep_results.items():
+        for d, r in deps.items():
             line = f"[{d}] {_dep_text(r)}"
             dv = _dep_data(r)
             if dv is not None:
@@ -886,23 +950,79 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None):
         prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
     prompt += "\n成果物を簡潔に直接出力してください。"
     text = run_kiro(prompt, model)
-    # 出力から構造化データを寛容に抽出（あれば後続へ JSON として流す）
+    # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
+    # data に誤昇格させない）。
     data = None
-    try:
-        data = extract_json(text)
-    except Exception:  # noqa: BLE001 — 構造化できなければテキストのみ
-        data = None
+    if kind in STRUCTURED_KINDS:
+        try:
+            data = extract_json(text)
+        except Exception:  # noqa: BLE001 — 構造化できなければテキストのみ
+            data = None
+    if kind == "reduce":
+        data = _reconcile_count(data)
+    elif kind == "verify":
+        data = _normalize_verify(text, data)
     return text, data
+
+
+def _is_gate_result(r: dict) -> bool:
+    """verify gate の結果か（data が {"ok": ...} を持つ）。集約対象から除くのに使う。"""
+    dv = _dep_data(r)
+    return isinstance(dv, dict) and "ok" in dv
+
+
+def _collect_dep_results(bus, node: dict, kind: str) -> dict:
+    """ノードの依存成果を集める。集約系（reduce/synthesize/filter/judge）では、
+    planner が work→gate→synth と直列にして集約役の依存が gate だけになっても入力が
+    空にならないよう、gate が検証した上流の成果も透過して渡す（gate 判定自体は
+    execute 側で集約対象から除外される）。"""
+    dep_results = {d: (bus.read_result(d) or {}) for d in node.get("deps", [])}
+    if kind in ("reduce", "synthesize", "filter", "judge"):
+        gnodes = (bus.read_graph() or {}).get("nodes", {})
+        for d in list(dep_results):
+            if _is_gate_result(dep_results[d]):
+                for up in gnodes.get(d, {}).get("deps", []):
+                    dep_results.setdefault(up, bus.read_result(up) or {})
+    return dep_results
+
+
+def _normalize_verify(text: str, data):
+    """verify 成果を {"ok": bool, ...} 形へ正規化する。
+    LLM が JSON を欠いても、本文の verify=pass/fail から ok を導いて gate を機能させる。"""
+    if isinstance(data, dict) and "ok" in data:
+        return data
+    low = text.lower()
+    ok = ("verify=pass" in low) or ("verify=fail" not in low and "fail" not in low)
+    out = {"ok": ok}
+    if isinstance(data, dict):
+        out.update(data)
+        out["ok"] = ok
+    return out
+
+
+def _reconcile_count(data):
+    """reduce 成果の count を実リスト長へ補正する。
+    dict に count(int) と単一のリスト値があれば、count = len(list) に揃える
+    （LLM 自己申告の件数とリスト実体の不整合を機械的に解消）。"""
+    if not isinstance(data, dict) or "count" not in data:
+        return data
+    lists = [v for v in data.values() if isinstance(v, list)]
+    if len(lists) == 1 and isinstance(data.get("count"), int):
+        data["count"] = len(lists[0])
+    return data
 
 
 # --------------------------------------------------------------------------
 # Continuation — パターンに応じて done / replan（タスク追加）を決める
 # --------------------------------------------------------------------------
-def _expand_splits(nodes: dict, results: dict, max_fanout: int, review: bool = False):
+def _expand_splits(nodes: dict, results: dict, max_fanout: int,
+                   review: bool = False, request: str = ""):
     """データ駆動の動的 fan-out: 完了した split ノードの data(リスト)を見て、
     実行時に要素ごとの map タスクと、それらを集約する reduce タスクを生成する。
     （reduce は展開時に作るので、split 完了直後に reduce が先走り実行されない）
-    review 時は map と reduce の間に検証 gate を挟む。"""
+    review 時は map と reduce の間に検証 gate を挟む。
+    map・reduce ゴールには元の要求（intent）を埋め込み、各要素への適用と最終整形
+    （並べ替え・重複排除など要求由来の集約条件）が失われないようにする。"""
     new = []
     have = set(nodes)
     for nid, node in nodes.items():
@@ -917,19 +1037,24 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int, review: bool = F
         if not isinstance(items, list) or not items:
             continue
         items = items[:max(1, max_fanout)]  # 暴走防止のクランプ
+        intent = (request or node.get("goal", "")).strip()
         map_ids = []
         for i, item in enumerate(items):
             mid = f"{nid}-m{i+1}"
             map_ids.append(mid)
-            new.append({"id": mid, "goal": f"{nid} 要素{i+1}: {item}",
-                        "deps": [], "kind": "map"})
+            # 要素だけでなく「何をするか」を渡さないと map が意図を失う
+            goal = f"{intent}（対象要素: {item}）" if intent else f"{nid} 要素{i+1}: {item}"
+            new.append({"id": mid, "goal": goal, "deps": [], "kind": "map"})
         reduce_deps = map_ids
         if review:  # 集約前の事前チェック / 敵対的レビュー。reduce は map＋gate に依存
             gid = f"{nid}-gate"
             new.append({"id": gid, "goal": f"{nid} の map 結果を集約前に検証",
                         "deps": map_ids, "kind": "verify"})
             reduce_deps = map_ids + [gid]
-        new.append({"id": f"{nid}-reduce", "goal": f"{nid} の結果を集約",
+        # reduce も intent を保持（「アルファベット順」「重複排除」等の集約条件を失わない）
+        reduce_goal = (f"{intent}（各 map の結果を要求どおりに集約・整形して最終成果にまとめる）"
+                       if intent else f"{nid} の結果を集約")
+        new.append({"id": f"{nid}-reduce", "goal": reduce_goal,
                     "deps": reduce_deps, "kind": "reduce"})
     return new
 
@@ -941,7 +1066,7 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
        - classify-and-act: 分類完了 → 振り分け先の専門タスクを追加
        - adversarial / loop-until-done: verify が fail → 作り直し + 再検証
        - 失敗タスク: retry を 1 回追加"""
-    new = _expand_splits(nodes, results, max_fanout, review)
+    new = _expand_splits(nodes, results, max_fanout, review, request)
     have = set(nodes)
 
     def fresh(tid):
@@ -988,7 +1113,7 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
 def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
-    fanout_tasks = _expand_splits(nodes, results, max_fanout, review)
+    fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request)
     if fanout_tasks:
         return "replan", fanout_tasks, f"data-driven fan-out: +{len(fanout_tasks)}"
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
@@ -1012,6 +1137,11 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
         data = extract_json(run_kiro(prompt, None))
     except Exception:  # noqa: BLE001
         return "done", [], "評価出力を解釈できず done 扱い"
+    # planner がオブジェクトでなくベア配列を返すことがある → new_tasks とみなす
+    if isinstance(data, list):
+        data = {"decision": "replan", "new_tasks": data}
+    if not isinstance(data, dict):
+        return "done", [], "評価出力が想定形でなく done 扱い"
     new = _coerce_tasks(data.get("new_tasks"), existing=nodes)  # 既存 id と衝突しないよう正規化
     if data.get("decision") == "replan" and new:
         return "replan", new, str(data.get("reason", ""))
@@ -1022,15 +1152,23 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
 # orchestrate
 # --------------------------------------------------------------------------
 def _plan_strategy(args):
-    review = bool(getattr(args, "review", False))
+    review = getattr(args, "review", "auto")  # 'auto'/True/False の三値
     if args.planner == "kiro":
         return plan_strategy_kiro(args.request, args.model, review)
     return plan_strategy_stub(args.request, review)
 
 
-def _continue(args, request, nodes, results, iteration):
+def _continue(args, request, nodes, results, iteration, strategy=None):
     mf = int(getattr(args, "max_fanout", 50) or 50)
-    review = bool(getattr(args, "review", False))
+    # 計画時に確定した review 判断を再利用（resume・継続でも一貫させる）。
+    # CLI で明示指定（True/False）があればそれを優先。
+    cli = getattr(args, "review", "auto")
+    if isinstance(cli, bool):
+        review = cli
+    elif strategy and "review" in strategy:
+        review = bool(strategy["review"])
+    else:
+        review = _review_decision(cli, (strategy or {}).get("patterns", []))
     if args.executor == "kiro":
         return continue_kiro(request, nodes, results, iteration, mf, review)
     return continue_stub(request, nodes, results, iteration, mf, review)
@@ -1040,9 +1178,33 @@ def _node_entry(t):
     return {"goal": t["goal"], "deps": t["deps"], "kind": t.get("kind", "work")}
 
 
+def _collapse_split_successors(nodes: dict) -> dict:
+    """split は実行時 fan-out で map→reduce を生成するのが正典。planner が split の
+    後段に静的な work/reduce を付けると fan-out と二重化し、意図を失った map と
+    重複 reduce が並走する。fan-out 前（<split>-reduce 未生成）に限り、split に
+    （推移的に）依存する静的後段ノードを除去する。"""
+    splits = {i for i, n in nodes.items()
+              if n.get("kind") == "split" and f"{i}-reduce" not in nodes}
+    if not splits:
+        return nodes
+    tainted, changed = set(splits), True
+    while changed:
+        changed = False
+        for i, n in nodes.items():
+            if i in tainted:
+                continue
+            if any(d in tainted for d in n.get("deps", [])):
+                tainted.add(i)
+                changed = True
+    for i in tainted - splits:  # split 自体は残し、後段だけ落とす
+        nodes.pop(i, None)
+    return nodes
+
+
 def _sanitize_graph(nodes: dict) -> dict:
     """グラフ健全性検査: 未知の依存 ID を除去し、循環依存を断ち切る。
     planner（kiro）の誤出力や継続での追加に対する防御。"""
+    _collapse_split_successors(nodes)
     ids = set(nodes)
     for n in nodes.values():
         n["deps"] = [d for d in n.get("deps", []) if d in ids and d != n.get("id")]
@@ -1113,7 +1275,8 @@ def cmd_orchestrate(args) -> int:
         if iteration >= args.max_iterations:
             decision, new_tasks, reason = "done", [], f"max-iterations({args.max_iterations}) 到達"
         else:
-            decision, new_tasks, reason = _continue(args, args.request, nodes, results, iteration)
+            decision, new_tasks, reason = _continue(
+                args, args.request, nodes, results, iteration, graph.get("strategy"))
         log(who, f"評価 #{iteration}: {decision} — {reason}")
 
         if decision == "replan" and new_tasks:
@@ -1228,7 +1391,7 @@ def cmd_work(args) -> int:
         bus.event(who, "claimed", node=nid)
 
         # 依存の成果は構造化データ込みの完全な result dict で渡す
-        dep_results = {d: (bus.read_result(d) or {}) for d in node.get("deps", [])}
+        dep_results = _collect_dep_results(bus, node, kind)
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
@@ -1286,7 +1449,8 @@ def cmd_run(args) -> int:
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
         "--max-fanout", str(args.max_fanout),
-        *(["--review"] if args.review else []),
+        *(["--review"] if args.review is True
+          else ["--no-review"] if args.review is False else []),
         "--model_opt", args.model or "",
         "--poll", str(args.poll), "--node-id", "orchestrator",
     ])
@@ -1499,6 +1663,10 @@ def cmd_gc(args) -> int:
         bus.sync_push(f"gc: removed {len(to_delete)} run(s)")
     print(f"削除 {len(to_delete)} / 全 {len(runs)} runs"
           f"{'（dry-run）' if args.dry_run else ''}")
+    if len(to_delete) == 0 and len(runs) > 0:
+        oldest_h = max(_age_hours(m) for _, m in metas) if metas else 0
+        print(f"ヒント: --keep {args.keep} で全件保護中、最古 run は {oldest_h:.1f}h前。"
+              f" --keep 0 --older-than 0 で全件を対象にできます。")
     return 0
 
 
@@ -1691,8 +1859,10 @@ def main() -> int:
                      help="再計画（evaluator-optimizer）の最大反復回数")
     run.add_argument("--max-fanout", type=int, default=None,
                      help="データ駆動 fan-out の最大展開数（既定 50）")
-    run.add_argument("--review", action="store_const", const=True, default=None,
-                     help="統合（synthesize/reduce）の前に検証 gate を挟む")
+    run.add_argument("--review", dest="review", action="store_const", const=True, default=None,
+                     help="統合（synthesize/reduce）の前に検証 gate を必ず挟む（既定: 集約パターンで自動）")
+    run.add_argument("--no-review", dest="review", action="store_const", const=False,
+                     help="自動の検証 gate を無効化する")
     run.add_argument("--model", default=None)
     run.add_argument("--poll", type=float, default=None)
     run.set_defaults(func=cmd_run)
@@ -1704,7 +1874,8 @@ def main() -> int:
                       help="評価役（evaluator）に使うバックエンド")
     orch.add_argument("--max-iterations", type=int, default=None)
     orch.add_argument("--max-fanout", type=int, default=None)
-    orch.add_argument("--review", action="store_const", const=True, default=None)
+    orch.add_argument("--review", dest="review", action="store_const", const=True, default=None)
+    orch.add_argument("--no-review", dest="review", action="store_const", const=False)
     orch.add_argument("--node-id", default="orchestrator")
     orch.add_argument("--model_opt", dest="model", default=None)
     orch.add_argument("--poll", type=float, default=None)
@@ -1728,7 +1899,8 @@ def main() -> int:
     dm.add_argument("--executor", choices=["kiro", "stub"], default=None)
     dm.add_argument("--max-iterations", type=int, default=None)
     dm.add_argument("--max-fanout", type=int, default=None)
-    dm.add_argument("--review", action="store_const", const=True, default=None)
+    dm.add_argument("--review", dest="review", action="store_const", const=True, default=None)
+    dm.add_argument("--no-review", dest="review", action="store_const", const=False)
     dm.add_argument("--model", default=None)
     dm.add_argument("--poll", type=float, default=None)
     dm.set_defaults(func=cmd_daemon)
@@ -1745,9 +1917,9 @@ def main() -> int:
     st.add_argument("--list", "-l", action="store_true", help="run 一覧を表示して終了")
     st.set_defaults(func=cmd_status)
 
-    gc = sub.add_parser("gc", help="古い run を掃除")
+    gc = sub.add_parser("gc", help="古い run を掃除（対応する inbox 要求・claim も削除）")
     gc.add_argument("--older-than", type=float, default=7.0, help="この日数より古い run が対象")
-    gc.add_argument("--keep", type=int, default=5, help="新しい順にこの件数は無条件で保護")
+    gc.add_argument("--keep", type=int, default=3, help="新しい順にこの件数は無条件で保護")
     gc.add_argument("--status", default=None, help="この status の run のみ対象（例: done）")
     gc.add_argument("--dry-run", action="store_true", help="削除せず対象だけ表示")
     gc.set_defaults(func=cmd_gc)

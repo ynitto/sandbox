@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "kiro-flow.py"
@@ -137,6 +138,34 @@ class StructuredResultTests(unittest.TestCase):
         self.bus.write_result("t1", "w", "done", "txt")
         self.assertNotIn("data", self.bus.read_result("t1"))
 
+    def test_collect_dep_results_sees_through_gate(self):
+        # planner が work→gate→synth と直列にしても、集約役は gate が検証した
+        # 上流（t2,t3）の成果を受け取れる（gate 経由でも入力が空にならない）
+        self.bus.write_graph({"nodes": {
+            "t2": {"deps": [], "kind": "work"},
+            "t3": {"deps": [], "kind": "work"},
+            "gate": {"deps": ["t2", "t3"], "kind": "verify"},
+            "synth": {"deps": ["gate"], "kind": "synthesize"},
+        }})
+        self.bus.write_result("t2", "w", "done", "out2")
+        self.bus.write_result("t3", "w", "done", "out3")
+        self.bus.write_result("gate", "w", "done", "verify=pass", data={"ok": True})
+        node = {"deps": ["gate"], "kind": "synthesize"}
+        dep = kf._collect_dep_results(self.bus, node, "synthesize")
+        self.assertEqual(set(dep), {"gate", "t2", "t3"})  # 上流が透過された
+        self.assertEqual(dep["t2"]["output"], "out2")
+
+    def test_collect_dep_results_no_passthrough_for_work(self):
+        # 非集約ノードは透過しない（gate をそのまま受ける）
+        self.bus.write_graph({"nodes": {
+            "a": {"deps": [], "kind": "work"},
+            "gate": {"deps": ["a"], "kind": "verify"},
+        }})
+        self.bus.write_result("a", "w", "done", "oa")
+        self.bus.write_result("gate", "w", "done", "verify=pass", data={"ok": True})
+        dep = kf._collect_dep_results(self.bus, {"deps": ["gate"], "kind": "work"}, "work")
+        self.assertEqual(set(dep), {"gate"})
+
     def test_executor_returns_text_and_data(self):
         text, data = kf.execute_stub("classify", "backend のバグ", {}, None)
         self.assertEqual(text, "class=backend")
@@ -153,6 +182,39 @@ class StructuredResultTests(unittest.TestCase):
         text, data = kf.execute_stub("reduce", "集約", deps, None)
         self.assertEqual(data["count"], 4)
         self.assertEqual(sorted(str(i) for i in data["items"]), ["oc", "x", "y", "z"])
+
+
+class OutputSanitizeTests(unittest.TestCase):
+    def test_strip_ansi(self):
+        raw = "\x1b[38;5;141m> \x1b[0mhello\x1b[1mX\x1b[22m"
+        self.assertEqual(kf.strip_ansi(raw), "> helloX")
+        self.assertEqual(kf.strip_ansi(""), "")
+
+    def test_reconcile_count_fixes_mismatch(self):
+        d = kf._reconcile_count({"primes": [2, 3, 5], "count": 99, "range": {"min": 2}})
+        self.assertEqual(d["count"], 3)
+
+    def test_reconcile_count_skips_when_ambiguous(self):
+        # count 無し / 複数リスト / 非 dict は変更しない
+        self.assertEqual(kf._reconcile_count({"primes": [2, 3]}), {"primes": [2, 3]})
+        self.assertEqual(kf._reconcile_count({"a": [1], "b": [1, 2], "count": 5})["count"], 5)
+        self.assertEqual(kf._reconcile_count([1, 2, 3]), [1, 2, 3])
+
+
+class VerifyGateTests(unittest.TestCase):
+    def test_normalize_verify_from_json(self):
+        d = kf._normalize_verify("verify=fail", {"ok": False, "issues": ["x"]})
+        self.assertFalse(d["ok"])
+        self.assertEqual(d["issues"], ["x"])
+
+    def test_normalize_verify_from_text(self):
+        self.assertFalse(kf._normalize_verify("verify=fail: 件数不一致", None)["ok"])
+        self.assertTrue(kf._normalize_verify("verify=pass 問題なし", None)["ok"])
+
+    def test_is_gate_result(self):
+        self.assertTrue(kf._is_gate_result({"data": {"ok": True}}))
+        self.assertFalse(kf._is_gate_result({"data": [1, 2]}))
+        self.assertFalse(kf._is_gate_result({"output": "x"}))
 
 
 class DataDrivenFanoutTests(unittest.TestCase):
@@ -177,6 +239,34 @@ class DataDrivenFanoutTests(unittest.TestCase):
         _, new, _ = kf.continue_stub("req", nodes, results, 0, max_fanout=5)
         self.assertEqual(len([t for t in new if t["kind"] == "map"]), 5)
 
+    def test_map_goal_carries_request_intent(self):
+        # map ゴールに元の要求（intent）が埋め込まれ、各要素に本来のタスクが適用される
+        nodes = {"t1": {"id": "t1", "goal": "分解", "deps": [], "kind": "split"}}
+        results = {"t1": {"status": "done", "data": ["1-100", "101-200"]}}
+        _, new, _ = kf.continue_stub("1-1000まで素数を出して", nodes, results, 0)
+        m1 = next(t for t in new if t["id"] == "t1-m1")
+        self.assertIn("素数", m1["goal"])
+        self.assertIn("1-100", m1["goal"])
+        # reduce ゴールも intent を保持（並べ替え・集約条件を失わない）
+        red = next(t for t in new if t["id"] == "t1-reduce")
+        self.assertIn("素数", red["goal"])
+
+    def test_collapse_static_split_successors(self):
+        # planner が split→work→reduce を静的に焼き込んでも fan-out 前に後段を除去
+        g = {"t1": {"id": "t1", "goal": "分割", "deps": [], "kind": "split"},
+             "t2": {"id": "t2", "goal": "work", "deps": ["t1"], "kind": "work"},
+             "t3": {"id": "t3", "goal": "reduce", "deps": ["t2"], "kind": "reduce"}}
+        kf._sanitize_graph(g)
+        self.assertEqual(sorted(g), ["t1"])
+
+    def test_collapse_skipped_after_fanout(self):
+        # 既に fan-out 済み（<split>-reduce 生成済み）なら除去しない
+        g = {"t1": {"id": "t1", "goal": "s", "deps": [], "kind": "split"},
+             "t1-m1": {"id": "t1-m1", "goal": "m", "deps": [], "kind": "map"},
+             "t1-reduce": {"id": "t1-reduce", "goal": "r", "deps": ["t1-m1"], "kind": "reduce"}}
+        kf._sanitize_graph(g)
+        self.assertEqual(sorted(g), ["t1", "t1-m1", "t1-reduce"])
+
     def test_split_not_reexpanded(self):
         nodes = {"s": {"goal": "g", "deps": [], "kind": "split"},
                  "s-reduce": {"goal": "集約", "deps": ["s-m1"], "kind": "reduce"}}
@@ -187,8 +277,11 @@ class DataDrivenFanoutTests(unittest.TestCase):
 
     def test_strategy_map_reduce_starts_with_split(self):
         strat, tasks = kf.plan_strategy_stub("ファイルをそれぞれ処理して集約")
-        self.assertEqual(strat["patterns"], ["map-reduce"])
+        self.assertIn("map-reduce", strat["patterns"])
         self.assertEqual([t["kind"] for t in tasks], ["split"])
+        # 集約パターンは既定（auto）で検証 gate が有効
+        self.assertTrue(strat["review"])
+        self.assertIn("adversarial-verification", strat["patterns"])
 
 
 class CoerceTasksTests(unittest.TestCase):
@@ -208,6 +301,62 @@ class CoerceTasksTests(unittest.TestCase):
     def test_deps_stringified(self):
         out = kf._coerce_tasks([{"id": "a", "deps": [1, "b"]}])
         self.assertEqual(out[0]["deps"], ["1", "b"])
+
+
+class PlannerRobustnessTests(unittest.TestCase):
+    """planner（kiro）がオブジェクトでなくベア配列を返しても落ちないこと。"""
+
+    def test_continue_kiro_handles_bare_list(self):
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}
+        with mock.patch.object(
+                kf, "run_kiro",
+                return_value='[{"id":"n1","goal":"次","deps":[],"kind":"work"}]'):
+            decision, new, _ = kf.continue_kiro("req", nodes, results, 0)
+        self.assertEqual(decision, "replan")
+        self.assertEqual([t["id"] for t in new], ["n1"])
+
+    def test_continue_kiro_handles_scalar(self):
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"}}
+        with mock.patch.object(kf, "run_kiro", return_value="42"):
+            decision, new, _ = kf.continue_kiro("req", nodes, results, 0)
+        self.assertEqual(decision, "done")
+        self.assertEqual(new, [])
+
+    def test_plan_strategy_kiro_handles_bare_list(self):
+        with mock.patch.object(
+                kf, "run_kiro",
+                return_value='[{"id":"t1","goal":"分解","deps":[],"kind":"split"}]'):
+            strat, tasks = kf.plan_strategy_kiro("req", None)
+        self.assertEqual([t["id"] for t in tasks], ["t1"])
+
+
+class StructuredExtractionTests(unittest.TestCase):
+    """自由記述 kind の本文に紛れた JSON 風断片を data に誤昇格させないこと。"""
+
+    def test_work_does_not_extract_incidental_json(self):
+        # 本文に "issues": [] を含む work 出力でも data は None（誤抽出の事故防止）
+        txt = 'verify=pass（修正不要）。t2の検査で問題なし（{"ok": true, "issues": []}）。通過。'
+        with mock.patch.object(kf, "run_kiro", return_value=txt):
+            _, data = kf.execute_kiro("work", "修正し通過", {}, None)
+        self.assertIsNone(data)
+
+    def test_generate_does_not_extract_incidental_json(self):
+        with mock.patch.object(kf, "run_kiro", return_value="例: [1, 2] のような配列を返す関数"):
+            _, data = kf.execute_kiro("generate", "関数を書く", {}, None)
+        self.assertIsNone(data)
+
+    def test_split_still_extracts_list(self):
+        with mock.patch.object(kf, "run_kiro", return_value='["1-100", "101-200"]'):
+            _, data = kf.execute_kiro("split", "分割", {}, None)
+        self.assertEqual(data, ["1-100", "101-200"])
+
+    def test_reduce_still_extracts_and_reconciles(self):
+        with mock.patch.object(kf, "run_kiro",
+                               return_value='{"primes": [2, 3, 5], "count": 99}'):
+            _, data = kf.execute_kiro("reduce", "集約", {}, None)
+        self.assertEqual(data["count"], 3)  # 実リスト長へ補正
 
 
 class GraphHealthTests(unittest.TestCase):
@@ -310,13 +459,30 @@ class PatternStrategyTests(unittest.TestCase):
         self.assertEqual(kf._parallelism("ふつうの要求", 3), 3)
 
     def test_fanout_graph_has_synthesize_over_parallel(self):
-        strat, tasks = kf.plan_strategy_stub("A; B; C")
+        # 既定（auto）では集約パターンに検証 gate が入るため、純粋な構造は --no-review で確認
+        strat, tasks = kf.plan_strategy_stub("A; B; C", review=False)
         self.assertEqual(strat["patterns"], ["fan-out-and-synthesize"])
+        self.assertFalse(strat["review"])
         synth = [t for t in tasks if t["kind"] == "synthesize"]
         self.assertEqual(len(synth), 1)
         # 統合ノードは全並列ノードに依存
         gens = [t["id"] for t in tasks if t["kind"] != "synthesize"]
         self.assertEqual(sorted(synth[0]["deps"]), sorted(gens))
+
+    def test_aggregating_pattern_auto_enables_review(self):
+        # 公式準拠: 集約パターンは既定で検証 gate を自動挿入する
+        strat, tasks = kf.plan_strategy_stub("A; B; C")  # fan-out-and-synthesize
+        self.assertTrue(strat["review"])
+        self.assertIn("verify", [t["kind"] for t in tasks])
+
+    def test_non_aggregating_pattern_no_auto_review(self):
+        # 集約点を持たない（または内包する）パターンは auto では gate を足さない
+        strat, _ = kf.plan_strategy_stub("バグを分類して振り分けて")  # classify-and-act
+        self.assertFalse(strat["review"])
+
+    def test_explicit_no_review_overrides_auto(self):
+        strat, _ = kf.plan_strategy_stub("ファイルをそれぞれ処理して集約", review=False)
+        self.assertFalse(strat["review"])
 
     def test_tournament_graph_has_judge(self):
         strat, tasks = kf.plan_strategy_stub("最良案を選ぶ tournament x3")
@@ -347,6 +513,22 @@ class DaemonPrimitiveTests(unittest.TestCase):
         self.bus.submit_request("req1", "x", "t")
         kf.Bus(self.tmp, "req1").ensure_run("x")  # 既に run が作られている
         self.assertFalse(self.bus.claim_request("req1", "daemonC", 60))
+
+    def test_remove_run_also_purges_inbox(self):
+        # gc（remove_run）は対応する inbox 要求と claim も消す。残すと run_exists が
+        # 再び False になり、デーモンが完了済み要求を再実行してしまう（resurrection 防止）。
+        self.bus.submit_request("req1", "x", "t")
+        self.bus.claim_request("req1", "daemonA", 60)  # inbox/claims/req1 を作る
+        kf.Bus(self.tmp, "req1").ensure_run("x")
+        self.assertIn("req1", self.bus.list_inbox())
+        self.bus.remove_run("req1")
+        self.assertNotIn("req1", self.bus.list_inbox())          # inbox 要求が消えた
+        self.assertFalse(self.bus.run_exists("req1"))            # run も消えた
+        import os
+        self.assertFalse(os.path.exists(
+            os.path.join(self.bus.inbox_claims_dir, "req1")))   # claim も消えた
+        # 消えた後は再 claim 可能にならない（要求自体が無い）
+        self.assertEqual(self.bus.list_inbox(), [])
 
     def test_active_runs_and_claimable_count(self):
         v = kf.Bus(self.tmp, "runA")
@@ -392,7 +574,10 @@ class EndToEndTests(unittest.TestCase):
         for nid, r in results.items():
             self.assertEqual(r["status"], "done", f"{nid}: {r}")
             self.assertTrue(r["who"])  # 誰かが実行した
-        self.assertEqual(final["strategy"]["patterns"], ["fan-out-and-synthesize"])
+        self.assertIn("fan-out-and-synthesize", final["strategy"]["patterns"])
+        # 集約パターンは既定で検証 gate が自動挿入される
+        self.assertTrue(final["strategy"]["review"])
+        self.assertIn("gate", results)
 
     def test_up_replan_recovers_failure(self):
         bus = tempfile.mkdtemp(prefix="kf-e2e-")
