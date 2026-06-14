@@ -909,12 +909,27 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto"):
 # --------------------------------------------------------------------------
 # Executor — タスク実行（kiro-cli or stub）
 # --------------------------------------------------------------------------
+def _kiro_timeout() -> float | None:
+    """kiro-cli 1 呼び出しのタイムアウト秒。既定 600。env で調整、0/負で無効化。
+    心拍が lease を延長し続けるため、ハングした kiro-cli はこのタイムアウトでしか
+    止められない（無いと worker が無限ブロックし run 全体が停止する）。"""
+    try:
+        to = float(os.environ.get("KIRO_FLOW_KIRO_TIMEOUT", "600"))
+    except ValueError:
+        to = 600.0
+    return to if to > 0 else None
+
+
 def run_kiro(prompt: str, model: str | None) -> str:
     cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if model:
         cmd += ["--model", model]
     cmd.append(prompt)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_kiro_timeout())
+    except subprocess.TimeoutExpired:
+        # 失敗として上位へ。タスクは failed 記録 → 再計画で retry に回り、run は前進する
+        raise RuntimeError(f"kiro-cli タイムアウト（{_kiro_timeout():.0f}s 超過）")
     if proc.returncode != 0:
         raise RuntimeError(f"kiro-cli 失敗 (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
     return strip_ansi(proc.stdout).strip()

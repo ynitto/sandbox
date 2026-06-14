@@ -332,6 +332,25 @@ class PlannerRobustnessTests(unittest.TestCase):
         self.assertEqual([t["id"] for t in tasks], ["t1"])
 
 
+class KiroTimeoutTests(unittest.TestCase):
+    """kiro-cli のハングがタイムアウトで失敗化され、run が無限停止しないこと。"""
+
+    def test_run_kiro_timeout_raises_runtimeerror(self):
+        import subprocess
+        def boom(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="kiro-cli", timeout=k.get("timeout"))
+        with mock.patch.object(kf.subprocess, "run", side_effect=boom):
+            with self.assertRaises(RuntimeError) as ctx:
+                kf.run_kiro("素数を列挙", None)
+        self.assertIn("タイムアウト", str(ctx.exception))
+
+    def test_kiro_timeout_env_override(self):
+        with mock.patch.dict(os.environ, {"KIRO_FLOW_KIRO_TIMEOUT": "0"}):
+            self.assertIsNone(kf._kiro_timeout())   # 0/負で無効化
+        with mock.patch.dict(os.environ, {"KIRO_FLOW_KIRO_TIMEOUT": "120"}):
+            self.assertEqual(kf._kiro_timeout(), 120.0)
+
+
 class StructuredExtractionTests(unittest.TestCase):
     """自由記述 kind の本文に紛れた JSON 風断片を data に誤昇格させないこと。"""
 
