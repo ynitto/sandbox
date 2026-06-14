@@ -59,7 +59,9 @@ orchestrator は要求を見て、以下の 6 パターン（[参考記事](http
 | **loop-until-done** | `work` → `verify`（条件を満たすまで反復） | テスト通過・品質達成まで繰り返す |
 | **map-reduce** | `split` → 実行時に `map` ×N を動的展開 → `reduce` | 件数を事前に固定せずデータ駆動で並列処理し集約 |
 
-- **パターン選択**: `--planner kiro` なら kiro-cli が選ぶ。`--planner stub` は要求のキーワードで判定
+- **パターン選択**: `--planner flow-planner` なら3段パイプライン（要求分析→戦略選定→グラフ生成）で
+  高精度な分解を行う（`.github/skills/flow-planner/` スキル）。`--planner kiro` なら kiro-cli が
+  1回の呼び出しで選ぶ。`--planner stub` は要求のキーワードで判定
   （「分類/振り分け」→classify、「tournament/最良」→tournament、「候補/フィルタ」→filter、
   「検証/レビュー」→adversarial、「繰り返し/通るまで」→loop、それ以外→fan-out）。
 - **並列数**: 要求中の `xN` / `並列N` を拾う。無ければ並列タスク数から既定（2〜6）。
