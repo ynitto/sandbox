@@ -1,20 +1,16 @@
-# Backlog
-
 <!--
-kiro-marshal のバックログファイル。
-- 各タスクは "## <id>: <タイトル>" で始め、直後の "- key: value" 行をメタデータとする。
+kiro-marshal は backlog/ ディレクトリ内の「1ファイル＝1タスク」を読む。
+このファイルを backlog/<id>.md としてコピーして使う（id はファイル名の stem が正）。
+  例: cp backlog.md.example backlog/T1.md
+
 - status : inbox | ready | doing | done | blocked
-           ready=実行待ち（消化対象）。inbox=triageで verify があれば ready に昇格。
-           blocked=人の判断待ち（approve/hold で動かす）。
+           ready=実行待ち（消化対象）。inbox=triage で verify があれば ready に昇格。
+           blocked=人の判断待ち（needs/<id>.md にフィードバックを書くか approve で動かす）。
 - source : human | triage | followup（出自の系。省略時は human）
 - verify : 終了コード 0 を PASS とみなすシェルコマンド。**done 確定の唯一の根拠**。
            verify を持たないタスクは done にできず人の判断（blocked）へ回る。
 - retries: 失敗回数（kiro-marshal が自動更新する。初期値 0）。
-
-実行:  kiro-marshal run --backlog backlog.md --executor kiro
-優先順位だけ確認: kiro-marshal triage --backlog backlog.md
-要対応の確認: kiro-marshal needs --backlog backlog.md
-検証だけ整合: kiro-marshal run --backlog backlog.md --dry-run
+- done になったタスクのファイルは削除される（backlog/ には未完だけが残る）。
 -->
 
 ## T1: README にプロジェクト概要の見出しを追加する
@@ -23,15 +19,3 @@ kiro-marshal のバックログファイル。
 - verify: `grep -q "## 概要" README.md`
 - retries: 0
 - note: 既存の見出し階層に合わせる
-
-## T2: ユーティリティ関数 slugify を実装する
-- status: ready
-- source: human
-- verify: `python -c "from utils import slugify; assert slugify('Hello World')=='hello-world'"`
-- retries: 0
-
-## T3: slugify のテストを追加してパスさせる
-- status: ready
-- source: human
-- verify: `python -m pytest tests/test_utils.py -k slugify -q`
-- retries: 0
