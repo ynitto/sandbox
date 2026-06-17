@@ -240,6 +240,37 @@ class TestArchive(unittest.TestCase):
             self.assertEqual(tasks[0].status, "done")
 
 
+class TestPace(unittest.TestCase):
+    def test_decide_pace_fixed_and_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            # 固定 pace=5、経過2秒 → 残り3秒待つ
+            self.assertAlmostEqual(ks.decide_pace(cfg_for(d, pace=5.0), 2.0), 3.0)
+            # 既に下限を超過 → 待たない
+            self.assertEqual(ks.decide_pace(cfg_for(d, pace=5.0), 9.0), 0.0)
+            # 予算で均す: max_seconds=20 / max_cycles=10 → 目標2秒/サイクル
+            c = cfg_for(d, pace=0.0, max_seconds=20.0, max_cycles=10)
+            self.assertAlmostEqual(ks.decide_pace(c, 0.5), 1.5)
+
+    def test_run_loop_calls_sleeper(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "backlog.md",
+                  "# B\n\n## T1: a\n- status: ready\n- verify: `true`\n- retries: 0\n\n"
+                  "## T2: b\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            slept = []
+            ks.run_loop(cfg_for(d, pace=3.0), sleeper=lambda s: slept.append(s))
+            self.assertTrue(slept and all(s > 0 for s in slept))
+
+    def test_no_pace_no_sleep(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "backlog.md", "# B\n\n## T1: a\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            slept = []
+            ks.run_loop(cfg_for(d), sleeper=lambda s: slept.append(s))  # pace=0 既定
+            self.assertEqual(slept, [])
+
+
 class TestNotify(unittest.TestCase):
     def test_notify_only_on_transition(self):
         with tempfile.TemporaryDirectory() as d:

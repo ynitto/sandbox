@@ -324,6 +324,19 @@ def build_request(task: Task) -> str:
     )
 
 
+def decide_pace(cfg: "Config", cycle_elapsed: float) -> float:
+    """次サイクルまでの待機秒数（レーン減速）。
+
+    拡張次元（pace）。`--pace` を1サイクルの下限間隔とし、実時間予算（max_seconds）が
+    設定されていれば max_seconds/max_cycles のペースに均してバーストを防ぐ。
+    既に間隔ぶん経過していれば待たない。"""
+    pace = cfg.pace
+    if cfg.max_seconds and cfg.max_cycles:
+        target = cfg.max_seconds / cfg.max_cycles  # 1サイクルあたりの目標間隔
+        pace = max(pace, target)
+    return max(0.0, pace - cycle_elapsed)
+
+
 def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
     """act の実行先を決める拡張次元。git バス設定があり offload 規則に当たれば remote。"""
     if cfg.git_bus and any(task.matches(p) for p in policy.offload):
@@ -426,6 +439,7 @@ class Config:
     max_cycles: int = 20         # 予算: サイクル数
     max_seconds: float = 0.0     # 予算: 実時間（0=無制限）
     max_retries: int = 2         # これを超える NG で人の判断へ
+    pace: float = 0.0            # 1サイクルあたりの下限間隔（秒）。予算でレーンを減速
     verify_timeout: float = 120.0
     act_timeout: float = 1800.0
     notify_cmd: "str | None" = None
@@ -465,7 +479,7 @@ def append_archive(path: Path, tasks: "list[Task]") -> None:
             f.write(f"- verify: {f'`{t.verify}`' if t.verify else ''}\n\n")
 
 
-def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None) -> dict:
+def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
     preamble, tasks = load_backlog(cfg.backlog)
     policy = load_policy(cfg.policy)
@@ -499,6 +513,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None) -> dict:
         task = order[0]
 
         cycle += 1
+        cycle_start = time.time()
         task.status = "doing"
         save_backlog(cfg.backlog, preamble, tasks)
 
@@ -532,6 +547,10 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None) -> dict:
         if cfg.once:
             reason = "once"
             break
+
+        delay = decide_pace(cfg, time.time() - cycle_start)  # レーン減速（予算で均す）
+        if delay > 0:
+            sleeper(delay)
 
     counts = summarize(tasks)  # done を含む（この run の成果。アーカイブ前に確定）
     newly_blocked = {t.id for t in tasks if t.norm_status() == "blocked"} - pre_blocked
@@ -669,7 +688,7 @@ def build_config(args) -> Config:
         kiro_flow=args.kiro_flow, planner=args.planner, executor=args.executor,
         model=args.model, max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
-        max_retries=args.max_retries, verify_timeout=args.verify_timeout,
+        max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd,
         actor=args.actor, archive=rel("archive", "ARCHIVE.md"),
         do_archive=not getattr(args, "no_archive", False),
@@ -699,6 +718,8 @@ def _add_common(sp):
     sp.add_argument("--max-cycles", type=int, default=20, help="予算: サイクル数")
     sp.add_argument("--max-seconds", type=float, default=0.0, help="予算: 実時間（0=無制限）")
     sp.add_argument("--max-retries", type=int, default=2)
+    sp.add_argument("--pace", type=float, default=0.0,
+                    help="1サイクルの下限間隔（秒）。予算でレーンを減速（バースト防止）")
     sp.add_argument("--verify-timeout", type=float, default=120.0)
     sp.add_argument("--act-timeout", type=float, default=1800.0)
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")

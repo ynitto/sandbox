@@ -106,6 +106,9 @@ kiro-steward run --backlog backlog.md --git-bus git@example:team/bus.git
 
 検証 NG は backlog に積み直して再挑戦。`--max-retries 2` を超えると人の判断（blocked）へ回す。
 
+**レーン減速（pace）**: `--pace <秒>` で1サイクルの下限間隔を設けてバーストを防ぐ。`--max-seconds`
+を併用すると `max_seconds/max_cycles` のペースに均して実時間予算を一気に使い切らない。
+
 ## done 自動アーカイブ
 
 run 末尾で `done` を backlog から `ARCHIVE.md`（append-only）へ退避し、live backlog を小さく保つ。
