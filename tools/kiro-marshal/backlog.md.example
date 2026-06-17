@@ -1,7 +1,7 @@
 # Backlog
 
 <!--
-kiro-steward のバックログファイル。
+kiro-marshal のバックログファイル。
 - 各タスクは "## <id>: <タイトル>" で始め、直後の "- key: value" 行をメタデータとする。
 - status : inbox | ready | doing | done | blocked
            ready=実行待ち（消化対象）。inbox=triageで verify があれば ready に昇格。
@@ -9,12 +9,12 @@ kiro-steward のバックログファイル。
 - source : human | triage | followup（出自の系。省略時は human）
 - verify : 終了コード 0 を PASS とみなすシェルコマンド。**done 確定の唯一の根拠**。
            verify を持たないタスクは done にできず人の判断（blocked）へ回る。
-- retries: 失敗回数（kiro-steward が自動更新する。初期値 0）。
+- retries: 失敗回数（kiro-marshal が自動更新する。初期値 0）。
 
-実行:  kiro-steward run --backlog backlog.md --executor kiro
-優先順位だけ確認: kiro-steward triage --backlog backlog.md
-要対応の確認: kiro-steward needs --backlog backlog.md
-検証だけ整合: kiro-steward run --backlog backlog.md --dry-run
+実行:  kiro-marshal run --backlog backlog.md --executor kiro
+優先順位だけ確認: kiro-marshal triage --backlog backlog.md
+要対応の確認: kiro-marshal needs --backlog backlog.md
+検証だけ整合: kiro-marshal run --backlog backlog.md --dry-run
 -->
 
 ## T1: README にプロジェクト概要の見出しを追加する

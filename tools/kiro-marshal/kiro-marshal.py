@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""kiro-steward — Loop Engineering MVP（バックログを捌く制御層）
+"""kiro-marshal — Loop Engineering MVP（バックログを捌く制御層）
 
-正準ループ（設計書 docs/designs/2026-06-16-kiro-steward-mvp-design.md §2）:
+正準ループ（設計書 docs/designs/2026-06-16-kiro-marshal-mvp-design.md §2）:
   ① backlog.md を読み優先順位をつけ、最優先タスクを kiro-flow に投げる
   ② 優先順位付けは原則 kiro-cli。stub 時は最古優先（FIFO）。人間は policy.md で上書きできる
   ③ kiro-flow の結果を verify ゲートで検証。NG なら backlog に積み直す
   ④ backlog が尽きるか予算（サイクル数/実時間）が尽きるまで反復
   ⑤ ユーザーの判断は DECISIONS.md（決定記録）に保存
 
-二層構成: kiro-flow が実行（act）、kiro-steward が優先順位付け・検証・収束・決定記録を担う。
+二層構成: kiro-flow が実行（act）、kiro-marshal が優先順位付け・検証・収束・決定記録を担う。
 標準ライブラリのみ。kiro-cli が無くても --planner stub / --executor stub / --dry-run で動く。
 """
 from __future__ import annotations
@@ -159,7 +159,7 @@ def load_policy(path: Path) -> Policy:
 
 def append_policy(path: Path, key: str, value: str) -> None:
     """policy.md に1ルール追記（無ければヘッダ付きで作成）。"""
-    header = "" if path.exists() else "# kiro-steward policy（人間による順位付けの上書き）\n\n"
+    header = "" if path.exists() else "# kiro-marshal policy（人間による順位付けの上書き）\n\n"
     with path.open("a", encoding="utf-8") as f:
         f.write(f"{header}{key}: {value}\n")
 
@@ -380,7 +380,7 @@ def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task]]":
 
 
 def render_digest(blocked, intake, reasons: dict, budget_stop: bool) -> str:
-    lines = ["# 要対応（kiro-steward）", ""]
+    lines = ["# 要対応（kiro-marshal）", ""]
     if budget_stop:
         lines.append("⚠ 予算切れで未消化のまま停止しました。")
         lines.append("")
@@ -469,7 +469,7 @@ def append_journal(path: Path, line: str) -> None:
 def append_archive(path: Path, tasks: "list[Task]") -> None:
     """完了タスクを ARCHIVE.md へ append（長期運用で backlog を小さく保つ）。"""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    header = "" if path.exists() else "# kiro-steward archive（完了タスク）\n\n"
+    header = "" if path.exists() else "# kiro-marshal archive（完了タスク）\n\n"
     with path.open("a", encoding="utf-8") as f:
         f.write(header)
         for t in tasks:
@@ -490,7 +490,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         reasons[t.id] = why
     save_backlog(cfg.backlog, preamble, tasks)
 
-    append_journal(cfg.journal, f"=== kiro-steward 開始 tasks={len(tasks)} "
+    append_journal(cfg.journal, f"=== kiro-marshal 開始 tasks={len(tasks)} "
                                 f"planner={cfg.planner} executor={cfg.executor} "
                                 f"dry_run={cfg.dry_run} ===")
     start = time.time()
@@ -568,7 +568,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             save_backlog(cfg.backlog, preamble, remaining)
             archived = len(done_tasks)
 
-    append_journal(cfg.journal, f"=== kiro-steward 停止 reason={reason} cycles={cycle} "
+    append_journal(cfg.journal, f"=== kiro-marshal 停止 reason={reason} cycles={cycle} "
                                 f"done={counts['done']} blocked={counts['blocked']} "
                                 f"archived={archived} notified={notified} ===")
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
@@ -658,7 +658,7 @@ def cmd_triage(cfg: Config) -> int:
 def cmd_run(cfg: Config) -> int:
     result = run_loop(cfg)
     counts = result["counts"]
-    print("\n=== kiro-steward 完了 ===")
+    print("\n=== kiro-marshal 完了 ===")
     print(f"停止理由 : {result['reason']}")
     print(f"サイクル : {result['cycles']}")
     print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
@@ -683,7 +683,7 @@ def build_config(args) -> Config:
         journal=rel("journal", "journal.md"),
         needs=rel("needs", "NEEDS_YOU.md"),
         workdir=workdir,
-        bus=rel("bus", ".kiro-steward-bus"),
+        bus=rel("bus", ".kiro-marshal-bus"),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
         kiro_flow=args.kiro_flow, planner=args.planner, executor=args.executor,
         model=args.model, max_iterations=args.max_iterations,
@@ -705,7 +705,7 @@ def _add_common(sp):
     sp.add_argument("--needs", default="NEEDS_YOU.md")
     sp.add_argument("--archive", default="ARCHIVE.md")
     sp.add_argument("--workdir", default=".")
-    sp.add_argument("--bus", default=".kiro-steward-bus")
+    sp.add_argument("--bus", default=".kiro-marshal-bus")
     sp.add_argument("--git-bus", default=None,
                     help="分散移譲先の共有 git リポジトリ（policy の offload 対象を remote 実行）")
     sp.add_argument("--git-branch", default="main")
@@ -728,7 +728,7 @@ def _add_common(sp):
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        prog="kiro-steward",
+        prog="kiro-marshal",
         description="backlog.md を優先順位付け・検証・収束させる制御層（Loop Engineering MVP）",
     )
     sub = p.add_subparsers(dest="cmd", required=True)

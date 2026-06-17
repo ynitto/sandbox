@@ -1,10 +1,10 @@
-"""kiro-steward の単体テスト（標準ライブラリ unittest）。
+"""kiro-marshal の単体テスト（標準ライブラリ unittest）。
 
 正準ループ（優先順位付け・検証ゲート・積み直し・収束）と、人の判断機構
 （policy 上書き・決定記録・通知の dedup）を kiro-flow を呼ばずに検証する。
 kiro-flow stub を 1 回叩く統合テストも持つ（無ければ skip）。
 
-    python -m unittest discover -s tools/kiro-steward/tests
+    python -m unittest discover -s tools/kiro-marshal/tests
 """
 import importlib.util
 import os
@@ -13,10 +13,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-_MOD = Path(__file__).resolve().parent.parent / "kiro-steward.py"
-_spec = importlib.util.spec_from_file_location("kiro_steward", _MOD)
+_MOD = Path(__file__).resolve().parent.parent / "kiro-marshal.py"
+_spec = importlib.util.spec_from_file_location("kiro_marshal", _MOD)
 ks = importlib.util.module_from_spec(_spec)
-sys.modules["kiro_steward"] = ks  # dataclass の前方参照解決に必要
+sys.modules["kiro_marshal"] = ks  # dataclass の前方参照解決に必要
 _spec.loader.exec_module(ks)
 
 
