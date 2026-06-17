@@ -90,15 +90,28 @@ class TestTriage(unittest.TestCase):
 
 
 class TestRunLoop(unittest.TestCase):
-    def test_drains_and_deletes_done(self):
+    def test_drains_and_archives_done(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             mkb(d, "T1", verify="true"); mkb(d, "T2", verify="true")
             res = km.run_loop(cfg_for(d))
             self.assertEqual(res["reason"], km.REASON_DRAINED)
             self.assertEqual(res["counts"]["done"], 2)
+            self.assertEqual(res["archived"], 2)
             self.assertEqual(km.exit_code_for(res), 0)
+            # backlog からは消え、archive/ へ移動（退避ファイルに archived 行）
             self.assertEqual(list((d / "backlog").glob("*.md")), [])
+            self.assertTrue((d / "archive" / "T1.md").exists())
+            self.assertIn("archived:", (d / "archive" / "T1.md").read_text())
+
+    def test_no_archive_deletes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            res = km.run_loop(cfg_for(d, do_archive=False))
+            self.assertEqual(res["archived"], 0)
+            self.assertEqual(list((d / "backlog").glob("*.md")), [])
+            self.assertFalse((d / "archive").exists())
 
     def test_ng_restacks_then_blocks_with_needs_file(self):
         with tempfile.TemporaryDirectory() as d:
@@ -256,6 +269,35 @@ class TestDecisionRecords(unittest.TestCase):
             km.cmd_reprioritize(c, "T1", "pin", "急ぎ")
             self.assertIn("pin: T1", (d / "policy.md").read_text())
             self.assertIn("DR-0002", (d / "decisions" / "T1.md").read_text())
+
+
+class TestDaemonRouting(unittest.TestCase):
+    def test_kf_base_git_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d, git_bus="git@x:bus.git")
+            self.assertNotIn("--git", km._kf_base(c, False))
+            self.assertIn("--git", km._kf_base(c, True))
+
+    def test_daemon_detection(self):
+        if km.fcntl is None:
+            self.skipTest("fcntl 無し")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            lp = km.daemon_lock_path(cfg, False)
+            self.addCleanup(lambda: lp.exists() and lp.unlink())
+            self.assertFalse(km.daemon_running(cfg))      # ロックファイル無し
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            lp.write_text("")
+            self.assertFalse(km.daemon_running(cfg))      # 在るが保持されていない
+            f = open(lp, "r+")
+            km.fcntl.flock(f, km.fcntl.LOCK_EX | km.fcntl.LOCK_NB)
+            try:
+                self.assertTrue(km.daemon_running(cfg))   # 保持中 = daemon 稼働
+            finally:
+                km.fcntl.flock(f, km.fcntl.LOCK_UN)
+                f.close()
 
 
 class TestKiroFlowIntegration(unittest.TestCase):

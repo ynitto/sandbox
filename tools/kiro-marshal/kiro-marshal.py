@@ -16,16 +16,23 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
+    fcntl = None
 
 VALID_STATUS = ("inbox", "ready", "doing", "done", "blocked")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス
@@ -427,26 +434,100 @@ def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
     return "local"
 
 
-def build_kiro_flow_cmd(task: Task, cfg: "Config", location: str = "local") -> "list[str]":
+def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
     base = resolve_kiro_flow(cfg.kiro_flow) + ["--bus", str(cfg.bus)]
-    if location == "remote" and cfg.git_bus:
+    if use_git and cfg.git_bus:
         base += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
         if cfg.git_subdir:
             base += ["--git-subdir", cfg.git_subdir]
-    return base + ["run", build_request(task), "--planner", cfg.planner,
-                   "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
+    return base
 
 
-def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tuple[bool, str]":
+def build_kiro_flow_cmd(task: Task, cfg: "Config", location: str = "local") -> "list[str]":
+    """kiro-flow run（都度起動）のコマンド。remote なら共有 git バスへ移譲する。"""
+    return _kf_base(cfg, location == "remote") + [
+        "run", build_request(task), "--planner", cfg.planner,
+        "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
+
+
+def daemon_lock_path(cfg: "Config", use_git: bool) -> Path:
+    """kiro-flow daemon の singleton ロックパス（kiro-flow と同一規則）。"""
+    if use_git and cfg.git_bus:
+        key = f"git::{cfg.git_bus}@{cfg.git_branch}/{cfg.git_subdir or ''}"
+    else:
+        key = "local::" + os.path.abspath(str(cfg.bus))
+    h = hashlib.sha1(key.encode()).hexdigest()
+    return Path(tempfile.gettempdir()) / "kiro-flow-locks" / f"daemon-{h}.lock"
+
+
+def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
+    """対象バスの kiro-flow daemon が稼働中か（ロックが保持されているか）を判定する。"""
+    if fcntl is None:
+        return False
+    p = daemon_lock_path(cfg, use_git)
+    if not p.exists():
+        return False
+    try:
+        f = open(p, "r+")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return False  # 取得できた = 誰も保持していない = daemon 無し
+    except BlockingIOError:
+        return True   # 保持されている = daemon 稼働中
+    finally:
+        f.close()
+
+
+def _act_run(task: Task, cfg: "Config", location: str) -> "tuple[bool, str]":
+    """daemon が無いとき: kiro-flow run で都度起動（同期実行）。"""
     cmd = build_kiro_flow_cmd(task, cfg, location)
     try:
         proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=cfg.act_timeout,
                               capture_output=True, text=True)
     except subprocess.TimeoutExpired:
-        return (False, f"kiro-flow タイムアウト（{cfg.act_timeout}s）")
+        return (False, f"kiro-flow run タイムアウト（{cfg.act_timeout}s）")
     except FileNotFoundError as e:
         return (False, f"kiro-flow を起動できません: {e}")
     return (proc.returncode == 0, (proc.stdout or "")[-300:].strip())
+
+
+def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
+    """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
+    base = _kf_base(cfg, use_git)
+    try:
+        sub = subprocess.run(base + ["submit", build_request(task)], cwd=str(cfg.workdir),
+                             timeout=60, capture_output=True, text=True)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return (False, f"submit 失敗: {e}")
+    if sub.returncode != 0:
+        return (False, f"submit rc={sub.returncode}: {sub.stderr.strip()[:200]}")
+    out = (sub.stdout or "").strip().splitlines()
+    run_id = out[0].strip() if out else ""
+    if not run_id:
+        return (False, "run-id を取得できません")
+    deadline = time.time() + cfg.act_timeout
+    while time.time() < deadline:
+        try:
+            res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
+                                cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True)
+            data = json.loads(res.stdout)
+            if data.get("done"):
+                return (True, f"daemon run {run_id} done")
+        except Exception:  # noqa: BLE001 — 取得失敗は次ポーリングで再試行
+            pass
+        time.sleep(2.0)
+    return (False, f"daemon run {run_id} タイムアウト")
+
+
+def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tuple[bool, str]":
+    """daemon があれば submit、無ければ run で都度起動する。"""
+    use_git = location == "remote" and bool(cfg.git_bus)
+    if daemon_running(cfg, use_git):
+        return _act_submit(task, cfg, use_git)
+    return _act_run(task, cfg, location)
 
 
 # ---------------------------------------------------------------------------
@@ -477,16 +558,29 @@ class Config:
     act_timeout: float = 1800.0
     notify_cmd: "str | None" = None
     actor: str = "user"
+    archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）
+    do_archive: bool = True         # done を archive/ へ退避（False なら削除）
     watch: bool = False     # 終了条件後もプロセスを残し backlog を監視
     poll: float = 5.0       # watch のポーリング間隔（秒）
     dry_run: bool = False
     once: bool = False
+
+    def archive_dir(self) -> Path:
+        return self.archive or (self.backlog.parent / "archive")
 
 
 def ensure_dirs(cfg: Config) -> None:
     for d in (cfg.backlog, cfg.needs, cfg.decisions):
         d.mkdir(parents=True, exist_ok=True)
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
+
+
+def archive_task(cfg: Config, task: Task) -> None:
+    """done タスクを backlog から archive/<id>.md へ退避（move）。backlog は未完だけが残る。"""
+    cfg.archive_dir().mkdir(parents=True, exist_ok=True)
+    task.extra.append(("archived", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    (cfg.archive_dir() / f"{task.id}.md").write_text(serialize_task(task), encoding="utf-8")
+    delete_task_file(cfg, task)
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +625,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                                 f"executor={cfg.executor} dry_run={cfg.dry_run} ===")
     start = time.time()
     cycle = 0
+    archived = 0
     reason = REASON_DRAINED
 
     while True:
@@ -561,9 +656,15 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         ok, vmsg = run_verify(task.verify, cfg.workdir, cfg.verify_timeout)
         if ok:
             task.status = "done"
-            delete_task_file(cfg, task)       # done はファイル削除（痕跡は journal）
+            if cfg.do_archive:
+                archive_task(cfg, task)       # backlog → archive/ へ退避
+                archived += 1
+                done_disp = "DONE → archive"
+            else:
+                delete_task_file(cfg, task)
+                done_disp = "DONE 削除"
             clear_needs_file(cfg, task.id)
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} DONE 削除 — {vmsg}")
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {vmsg}")
         else:
             task.retries += 1
             if not task.verify:
@@ -594,7 +695,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                                 f"notified={notified} ===")
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
             "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified,
-            "ingested": ingested}
+            "ingested": ingested, "archived": archived}
 
 
 def exit_code_for(result: dict) -> int:
@@ -717,7 +818,8 @@ def cmd_run(cfg: Config) -> int:
     print(f"停止理由 : {result['reason']}")
     print(f"サイクル : {result['cycles']}")
     print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
-          f"inbox={counts['inbox']} ingested={len(result.get('ingested', []))}")
+          f"inbox={counts['inbox']} archived={result.get('archived', 0)} "
+          f"ingested={len(result.get('ingested', []))}")
     return exit_code_for(result)
 
 
@@ -745,6 +847,7 @@ def build_config(args) -> Config:
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
+        archive=rel("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
         watch=getattr(args, "watch", False), poll=getattr(args, "poll", 5.0),
         dry_run=getattr(args, "dry_run", False), once=getattr(args, "once", False),
     )
@@ -756,6 +859,7 @@ def _add_common(sp):
     sp.add_argument("--decisions", default="decisions", help="決定記録ディレクトリ（案件毎）")
     sp.add_argument("--journal", default="journal.md")
     sp.add_argument("--needs", default="needs", help="要対応ディレクトリ（案件毎・フィードバック欄）")
+    sp.add_argument("--archive", default="archive", help="done の退避先ディレクトリ")
     sp.add_argument("--workdir", default=".")
     sp.add_argument("--bus", default=".kiro-marshal-bus")
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
@@ -787,6 +891,8 @@ def main(argv=None) -> int:
     run.add_argument("--watch", action="store_true",
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
     run.add_argument("--poll", type=float, default=5.0, help="watch のポーリング間隔（秒）")
+    run.add_argument("--no-archive", action="store_true",
+                     help="done を archive/ へ退避せず削除する（既定は退避）")
     run.add_argument("--dry-run", action="store_true", help="act を飛ばし verify のみ")
     run.add_argument("--once", action="store_true", help="1 タスクだけ処理して終了")
 

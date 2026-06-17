@@ -1,7 +1,7 @@
 # kiro-marshal
 
 **Loop Engineering MVP** — `backlog/`（案件毎ファイル）を優先順位付けし、最優先タスクを kiro-flow に
-実行させ、**`verify` をローカルで実行して PASS したものだけ done に確定**（ファイル削除）、NG なら
+実行させ、**`verify` をローカルで実行して PASS したものだけ done に確定**（archive/ へ退避）、NG なら
 積み直す。backlog が尽きるか予算が尽きるまで繰り返し、人の判断が要った分は案件毎の
 `needs/<id>.md`（フィードバック欄つき）で差し出し、判断は `decisions/<id>.md` に残す。
 
@@ -13,7 +13,7 @@
 
 1. `backlog/<id>.md` を読み優先順位をつけ、最優先を kiro-flow に投げる。
 2. 優先順位付けは原則 kiro-cli。`--planner stub` なら最古優先（FIFO）。人間は `policy.md` で上書きできる。
-3. kiro-flow の結果を verify ゲートで検証。done はファイル削除、NG なら積み直す。
+3. kiro-flow の結果を verify ゲートで検証。done は `archive/` へ退避、NG なら積み直す。
 4. backlog が尽きるか予算が尽きるまで繰り返す（`--watch` なら尽きても監視を続ける）。
 5. ユーザーの判断・フィードバックは案件毎 `decisions/<id>.md` に保存する。
 
@@ -43,11 +43,23 @@ bash tools/kiro-marshal/install.sh           # ~/.local/bin/kiro-marshal
 ## ファイル/ディレクトリ構成
 
 ```
-backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で削除される）
+backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
+archive/<id>.md      完了タスクの保全先（done で backlog から移動）
 policy.md            優先順位・実行先の上書き（人だけが書く）
 needs/<id>.md        判断待ちの通知＋フィードバック記入欄（人が記入→自動再開）
 decisions/<id>.md    人の判断・承認・フィードバックの決定記録（append-only）
 journal.md           機械のサイクルログ
+```
+
+## kiro-flow への委譲（daemon があれば submit、無ければ run）
+
+対象バスに kiro-flow daemon が稼働していれば `kiro-flow submit` で投入し、その run が終わるのを
+待ってから verify する。daemon が無ければ `kiro-flow run` で都度起動（同期実行）。検知は kiro-flow と
+同じロック（`flock`）で行う。`--git-bus`（offload）使用時はその git バスの daemon を見る。
+
+```bash
+kiro-flow --bus .kiro-marshal-bus daemon &   # daemon を立てておくと kiro-marshal は submit する
+kiro-marshal run --executor kiro
 ```
 
 ## サブコマンド
