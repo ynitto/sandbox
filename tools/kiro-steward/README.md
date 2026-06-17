@@ -106,6 +106,12 @@ kiro-steward run --backlog backlog.md --git-bus git@example:team/bus.git
 
 検証 NG は backlog に積み直して再挑戦。`--max-retries 2` を超えると人の判断（blocked）へ回す。
 
+## done 自動アーカイブ
+
+run 末尾で `done` を backlog から `ARCHIVE.md`（append-only）へ退避し、live backlog を小さく保つ。
+長期 cron 運用でファイルが肥大しないための機構。`--no-archive` で無効化（done を backlog に残す）。
+この run の `done` 件数は退避前に確定するため、終了コード・サマリには影響しない。
+
 ## 通知
 
 人の判断待ちへの**遷移時だけ**、要対応ダイジェストを `NEEDS_YOU.md` と標準出力に出す

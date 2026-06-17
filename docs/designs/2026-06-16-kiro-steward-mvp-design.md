@@ -276,9 +276,12 @@ verify 未定義   → done 不能。人の判断へ（§7）
 - 既知フィールド以外（`note` 等）は順序保持で退避・書き戻し（正準形へ寄せつつ自由記述を失わない）。
 - `ready`（実行待ち）を上から消化。`done`/`blocked` は飛ばす。`inbox` は triage で `ready` 化する。
 
-### journal.md / DECISIONS.md / policy.md
+### journal.md / DECISIONS.md / policy.md / ARCHIVE.md
 
 §7・§9 の通り。journal は機械の申し送り、DECISIONS は人の統治ログ、policy は人の常設指示。
+**ARCHIVE.md** は run 末尾で `done` を backlog から退避する先（append-only）。長期 cron 運用で
+live backlog を小さく保つ（`--no-archive` で無効化）。この run の `done` 件数は退避前に確定するため
+終了コード・サマリには影響しない。
 
 ---
 
@@ -317,7 +320,8 @@ verify 未定義   → done 不能。人の判断へ（§7）
 
 主なフラグ: `--backlog` `--policy` `--decisions` `--journal` `--workdir` `--bus`
 `--executor{kiro,stub}` `--planner{flow-planner,kiro,stub}` `--max-cycles` `--max-seconds`
-`--max-iterations` `--notify-cmd` `--git-bus` `--git-branch` `--git-subdir` `--dry-run` `--once`。
+`--max-iterations` `--notify-cmd` `--git-bus` `--git-branch` `--git-subdir`
+`--archive` `--no-archive` `--dry-run` `--once`。
 
 ---
 
@@ -361,7 +365,7 @@ KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-steward/tes
 | 優先順位 | kiro-cli ／ stub=最古 ／ policy 上書き | 過去 DR からの自動解決学習（ltm-use） |
 | 実行・検証 | kiro-flow（local）＋ ローカル verify ゲート | — |
 | 収束 | drained / budget（cycles・time） | コスト予算、pace（予算でレーン減速） |
-| 系 | inbox/ready/doing/done/blocked ＋ source | rot 自動検知, webhook enqueue, done 自動アーカイブ |
+| 系 | inbox/ready/doing/done/blocked ＋ source, **done 自動アーカイブ** | rot 自動検知, webhook enqueue |
 | 通知 | NEEDS_YOU.md＋stdout（遷移時 dedup） | teams/メール/issue 連携 |
 | 決定記録 | approve/hold/reprioritize → DECISIONS.md | — |
 | 実行先 | local ／ **location（offload 規則で kiro-flow `--git` 分散バスへ移譲）** | コスト連動の自動 offload 判断 |

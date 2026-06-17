@@ -61,6 +61,7 @@ kiro-steward hold <id> --reason "…"                         # 保留（policy.
 
 終了コード: `0`=完走で判断待ち無し / `1`=判断待ちあり / `2`=予算停止。CI に組める。
 人の判断待ちへの**遷移時だけ** `NEEDS_YOU.md`＋stdout に通知（毎サイクルでは鳴らさない）。
+run 末尾で `done` は `ARCHIVE.md` へ自動退避し backlog を小さく保つ（`--no-archive` で無効化）。
 
 ## エージェントの振る舞い
 

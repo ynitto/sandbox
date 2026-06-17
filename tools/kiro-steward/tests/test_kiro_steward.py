@@ -210,6 +210,36 @@ class TestLocation(unittest.TestCase):
             self.assertEqual(seen["T2"], "local")
 
 
+class TestArchive(unittest.TestCase):
+    def test_done_moved_to_archive(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "backlog.md",
+                  "# B\n\n## T1: a\n- status: ready\n- verify: `true`\n- retries: 0\n\n"
+                  "## T2: b\n- status: ready\n- verify: `false`\n- retries: 0\n")
+            res = ks.run_loop(cfg_for(d, max_retries=0))  # T1 done, T2 即 blocked
+            self.assertEqual(res["archived"], 1)
+            self.assertEqual(res["counts"]["done"], 1)  # counts はアーカイブ前で確定
+            arch = (d / "ARCHIVE.md").read_text()
+            self.assertIn("## T1: a", arch)
+            # backlog からは done が消え、blocked は残る
+            _, tasks = ks.load_backlog(d / "backlog.md")
+            ids = [t.id for t in tasks]
+            self.assertNotIn("T1", ids)
+            self.assertIn("T2", ids)
+
+    def test_no_archive_keeps_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "backlog.md",
+                  "# B\n\n## T1: a\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            res = ks.run_loop(cfg_for(d, do_archive=False))
+            self.assertEqual(res["archived"], 0)
+            self.assertFalse((d / "ARCHIVE.md").exists())
+            _, tasks = ks.load_backlog(d / "backlog.md")
+            self.assertEqual(tasks[0].status, "done")
+
+
 class TestNotify(unittest.TestCase):
     def test_notify_only_on_transition(self):
         with tempfile.TemporaryDirectory() as d:

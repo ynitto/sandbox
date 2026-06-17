@@ -430,6 +430,8 @@ class Config:
     act_timeout: float = 1800.0
     notify_cmd: "str | None" = None
     actor: str = "user"
+    archive: "Path | None" = None   # done の退避先（既定 backlog と同じ場所の ARCHIVE.md）
+    do_archive: bool = True         # done を backlog から ARCHIVE.md へ退避するか
     dry_run: bool = False
     once: bool = False
 
@@ -448,6 +450,19 @@ def append_journal(path: Path, line: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with path.open("a", encoding="utf-8") as f:
         f.write(f"- {ts} {line}\n")
+
+
+def append_archive(path: Path, tasks: "list[Task]") -> None:
+    """完了タスクを ARCHIVE.md へ append（長期運用で backlog を小さく保つ）。"""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    header = "" if path.exists() else "# kiro-steward archive（完了タスク）\n\n"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(header)
+        for t in tasks:
+            f.write(f"## {t.id}: {t.title}\n")
+            f.write(f"- archived: {ts}\n")
+            f.write(f"- source: {t.source}\n")
+            f.write(f"- verify: {f'`{t.verify}`' if t.verify else ''}\n\n")
 
 
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None) -> dict:
@@ -518,15 +533,28 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None) -> dict:
             reason = "once"
             break
 
-    counts = summarize(tasks)
+    counts = summarize(tasks)  # done を含む（この run の成果。アーカイブ前に確定）
     newly_blocked = {t.id for t in tasks if t.norm_status() == "blocked"} - pre_blocked
     budget_stop = reason == REASON_BUDGET
     notified = notify(cfg, tasks, reasons, newly_blocked, budget_stop)
+
+    # done の自動アーカイブ: backlog から退避して live を小さく保つ
+    archived = 0
+    if cfg.do_archive:
+        done_tasks = [t for t in tasks if t.norm_status() == "done"]
+        if done_tasks:
+            archive_path = cfg.archive or (cfg.backlog.parent / "ARCHIVE.md")
+            append_archive(archive_path, done_tasks)
+            remaining = [t for t in tasks if t.norm_status() != "done"]
+            save_backlog(cfg.backlog, preamble, remaining)
+            archived = len(done_tasks)
+
     append_journal(cfg.journal, f"=== kiro-steward 停止 reason={reason} cycles={cycle} "
                                 f"done={counts['done']} blocked={counts['blocked']} "
-                                f"notified={notified} ===")
+                                f"archived={archived} notified={notified} ===")
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
-            "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified}
+            "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified,
+            "archived": archived}
 
 
 def exit_code_for(result: dict) -> int:
@@ -615,7 +643,7 @@ def cmd_run(cfg: Config) -> int:
     print(f"停止理由 : {result['reason']}")
     print(f"サイクル : {result['cycles']}")
     print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
-          f"inbox={counts['inbox']}")
+          f"inbox={counts['inbox']} archived={result.get('archived', 0)}")
     return exit_code_for(result)
 
 
@@ -643,7 +671,9 @@ def build_config(args) -> Config:
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_retries=args.max_retries, verify_timeout=args.verify_timeout,
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd,
-        actor=args.actor, dry_run=getattr(args, "dry_run", False),
+        actor=args.actor, archive=rel("archive", "ARCHIVE.md"),
+        do_archive=not getattr(args, "no_archive", False),
+        dry_run=getattr(args, "dry_run", False),
         once=getattr(args, "once", False),
     )
 
@@ -654,6 +684,7 @@ def _add_common(sp):
     sp.add_argument("--decisions", default="DECISIONS.md")
     sp.add_argument("--journal", default="journal.md")
     sp.add_argument("--needs", default="NEEDS_YOU.md")
+    sp.add_argument("--archive", default="ARCHIVE.md")
     sp.add_argument("--workdir", default=".")
     sp.add_argument("--bus", default=".kiro-steward-bus")
     sp.add_argument("--git-bus", default=None,
@@ -683,6 +714,8 @@ def main(argv=None) -> int:
 
     run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束・通知）")
     _add_common(run)
+    run.add_argument("--no-archive", action="store_true",
+                     help="done を backlog に残す（既定は ARCHIVE.md へ退避）")
     run.add_argument("--dry-run", action="store_true", help="act を飛ばし verify のみ")
     run.add_argument("--once", action="store_true", help="1 タスクだけ処理して終了")
 
