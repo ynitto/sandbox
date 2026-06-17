@@ -2,25 +2,20 @@
 applyTo: "**/backlog.md"
 ---
 
-# kiro-steward 規約 — backlog.md と停止条件
+# kiro-steward 規約 — backlog.md・policy.md・DECISIONS.md
 
-Loop Engineering の MVP。**人間がプロンプトを毎サイクル投げ込まなくても、
-`backlog.md` のタスクが枯れるか停止条件に達するまで自律的に回り続け、人の判断が要る時だけ
-手を止める**制御層。実体は `tools/kiro-steward/`（ランナー）と `tools/kiro-flow/`（実行委譲先）。
-詳細設計は `docs/designs/2026-06-16-kiro-steward-mvp-design.md`。
+Loop Engineering の MVP。**`backlog.md` を優先順位付けし、最優先タスクを kiro-flow に実行させ、
+verify ゲートで検証し、NG なら積み直す——backlog が尽きるか予算が尽きるまで繰り返す**制御層。
+人の判断が要った時はそれを `DECISIONS.md` に残す。実体は `tools/kiro-steward/` と
+`tools/kiro-flow/`（実行委譲先）。詳細設計は `docs/designs/2026-06-16-kiro-steward-mvp-design.md`。
 
-> 本規約は現状の **loop コア**（消化ループ・verify ゲート・停止条件）を定義する。
-> 判断（triage / `policy.md` 上書き）・通知（`NEEDS_YOU.md`）・決定記録（`DECISIONS.md`）は
-> 設計書に基づき順次追加する。
+## 正準ループ（5点）
 
-## 二層構成
-
-| 層 | 担当 | 実体 |
-|----|------|------|
-| 外側（制御） | backlog.md の状態管理 / 停止条件 / **真の verify ゲート** | `kiro-steward` |
-| 内側（実行） | タスクの分解 → act → 内側 verify ループ | `kiro-flow run` |
-
-各サイクルは **「todo を 1 件 claim → act → verify → 状態更新 → 申し送り」** を回す。
+1. backlog を読み優先順位をつけ、最優先を kiro-flow に投げる。
+2. 優先順位付けは原則 kiro-cli。`stub` なら最古優先（FIFO）。人間は `policy.md` で上書きできる。
+3. kiro-flow の結果を verify ゲートで検証。NG なら backlog に積み直す。
+4. backlog 枯渇（drained）or 予算切れ（budget=サイクル数/実時間）まで反復。
+5. ユーザーの判断は `DECISIONS.md` に保存。
 
 ## backlog.md 規約
 
@@ -30,52 +25,47 @@ Loop Engineering の MVP。**人間がプロンプトを毎サイクル投げ込
 - source: human | triage | followup
 - verify: `終了コード0をPASSとみなすシェルコマンド`
 - retries: 0
-- note: 任意の自由記述（保持される）
+- note: 任意（保持される）
 ```
 
-- タスクは `## <id>: <title>` 見出しで始め、直後の `- key: value` 行をメタデータとする。
-- `todo`/`ready` を**上から順**に消化する。`done`/`blocked` は飛ばす。
-- `status`/`source`/`verify`/`retries` 以外の `- key: value`（`note` 等）は順序を保って保持・書き戻される。
+- `ready`（実行待ち）を上から順に消化。`done`/`blocked` は飛ばす。`inbox` は triage で
+  verify があれば `ready` に昇格、無ければ据え置き（acceptance 未定義として人へ）。
+- `status`/`source`/`verify`/`retries` 以外（`note` 等）は順序保持で書き戻す。
 
-## 鉄則（この 3 つが MVP の存在意義）
+## 鉄則（MVP の存在意義）
 
-1. **done は自己申告では確定しない。** `verify` コマンドの終了コード 0 だけが done の根拠。
-   エージェントが「できました」と言っても、verify が通らなければ done にしない。
-2. **verify を持たないタスクは done 不能。** verify 未定義のタスクは即 `blocked` にして人間へ回す。
-3. **ループは必ず有限回で止まる。** 下記いずれかの停止条件に必ず到達する。
+1. **done は自己申告では確定しない。** `verify` の終了コード 0 だけが done の根拠。
+2. **verify を持たないタスクは done 不能。** 人の判断（`blocked`）へ回す。
+3. **必ず有限回で止まる。** `drained` か `budget`（サイクル数/実時間）に到達する。
 
-## 停止条件（いずれかで停止しエスカレーション）
+## 人間が触る3面
 
-| 理由 | 既定 | 意味 |
-|------|------|------|
-| `drained` | — | 消化対象が尽きた（実質完了） |
-| `max_cycles` | 20 | 外側ループのサイクル上限 |
-| `no_progress` | 3 | `done` 件数が N サイクル増えていない（停滞） |
-| `blocked_ratio` | 0.5 | `blocked` 比率がこれ以上 |
-| `budget` | 無制限 | 実時間予算（`--max-seconds`）超過 |
+| ファイル | 役割 | 書く主体 |
+|----------|------|----------|
+| `backlog.md` | タスク本体 | 人＋システム |
+| `policy.md` | 優先順位の上書き（`deny`/`pin`/`defer`、ID/タイトル部分一致） | **人だけ** |
+| `DECISIONS.md` | 人の判断・承認の決定記録（append-only） | システム（人の操作から生成） |
 
-タスク単位では `retries > max_retries`（既定 2）で `blocked` に落とす。
+precedence は厳格に **人間 policy ＞ エージェント提案**。
 
 ## 実行
 
 ```bash
-# バックログを自律消化（act は kiro-flow に委譲）
-kiro-steward --backlog backlog.md --executor kiro
-
-# kiro-cli 無しでプロトコル確認（stub）
-kiro-steward --backlog backlog.md --executor stub --planner stub
-
-# act を飛ばし verify だけで状態を整合（既存成果の点検・再開前の棚卸し）
-kiro-steward --backlog backlog.md --dry-run
+kiro-steward run --backlog backlog.md --executor kiro       # 自律消化
+kiro-steward run --backlog backlog.md --planner stub --executor stub   # kiro-cli 無しで確認
+kiro-steward run --backlog backlog.md --dry-run             # verify だけで状態整合
+kiro-steward needs --backlog backlog.md                     # 人の判断待ちを表示
+kiro-steward approve <id> --reason "…"                      # 承認して積み直し（→ DECISIONS）
+kiro-steward hold <id> --reason "…"                         # 保留（policy.deny 追加 → DECISIONS）
 ```
 
-終了コード: `0`=完走で blocked 無し / `1`=blocked あり / `2`=ガードで停止。CI に組める。
-申し送りは `journal.md` に追記される（次サイクル・次セッションが読む短期メモリ）。
+終了コード: `0`=完走で判断待ち無し / `1`=判断待ちあり / `2`=予算停止。CI に組める。
+人の判断待ちへの**遷移時だけ** `NEEDS_YOU.md`＋stdout に通知（毎サイクルでは鳴らさない）。
 
 ## エージェントの振る舞い
 
-- このループを「回して」と言われたら `kiro-steward` を起動し、停止後は
-  **`blocked`/`todo` の残タスクと停止理由を報告**する（勝手に done 扱いしない）。
-- タスクを backlog.md に追加するときは**必ず実行可能な `verify` を付ける**。付けられないタスクは
-  分解が粗い兆候——`verify` を書けるところまで分解してから積む。
+- 「回して」と言われたら `kiro-steward run` を起動し、停止後は
+  **判断待ち（blocked）と停止理由を報告**する（勝手に done 扱いしない）。
+- backlog にタスクを追加するときは**必ず実行可能な `verify` を付ける**。書けないなら分解が粗い兆候。
+- 優先順位を機械に任せたくない時は `policy.md` に `deny`/`pin`/`defer` を書く（人間が必ず勝つ）。
 - 曖昧で人間判断が要るタスクは積まずに確認する。ループは「機械的に検証できる作業」を回す箱。

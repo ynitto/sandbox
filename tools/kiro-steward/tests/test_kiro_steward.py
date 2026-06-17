@@ -1,8 +1,8 @@
 """kiro-steward の単体テスト（標準ライブラリ unittest）。
 
-外側ループの状態機械・停止条件・verify ゲートを、kiro-flow を呼ばずに
-検証する（act を注入 or --dry-run 相当）。1 件だけ実際に kiro-flow stub を
-叩く統合テストも持つ（kiro-flow が無ければ skip）。
+正準ループ（優先順位付け・検証ゲート・積み直し・収束）と、人の判断機構
+（policy 上書き・決定記録・通知の dedup）を kiro-flow を呼ばずに検証する。
+kiro-flow stub を 1 回叩く統合テストも持つ（無ければ skip）。
 
     python -m unittest discover -s tools/kiro-steward/tests
 """
@@ -13,163 +13,215 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# kiro-steward.py をモジュールとして読み込む（ハイフン名のため importlib 経由）
 _MOD = Path(__file__).resolve().parent.parent / "kiro-steward.py"
 _spec = importlib.util.spec_from_file_location("kiro_steward", _MOD)
-tl = importlib.util.module_from_spec(_spec)
-sys.modules["kiro_steward"] = tl  # dataclass の前方参照解決に必要
-_spec.loader.exec_module(tl)
+ks = importlib.util.module_from_spec(_spec)
+sys.modules["kiro_steward"] = ks  # dataclass の前方参照解決に必要
+_spec.loader.exec_module(ks)
 
 
-def write_queue(d: Path, body: str) -> Path:
-    q = d / "backlog.md"
-    q.write_text(body, encoding="utf-8")
-    return q
+def write(d: Path, name: str, body: str) -> Path:
+    p = d / name
+    p.write_text(body, encoding="utf-8")
+    return p
 
 
-class TestParse(unittest.TestCase):
-    def test_roundtrip_and_fields(self):
-        text = (
-            "# Task Queue\n\n"
-            "## T1: 見出しを追加\n"
-            "- status: todo\n"
-            "- verify: `grep -q hi out.txt`\n"
-            "- retries: 0\n"
-            "- note: メモ\n\n"
-            "## T2: 何か\n"
-            "- status: done\n"
-            "- verify: `true`\n"
-            "- retries: 1\n"
-        )
-        preamble, tasks = tl.parse_queue(text)
-        self.assertIn("# Task Queue", preamble)
-        self.assertEqual(len(tasks), 2)
-        self.assertEqual(tasks[0].id, "T1")
-        self.assertEqual(tasks[0].title, "見出しを追加")
-        self.assertEqual(tasks[0].verify, "grep -q hi out.txt")  # バッククォート除去
-        self.assertEqual(tasks[0].extra, [("note", "メモ")])
-        self.assertEqual(tasks[1].status, "done")
-        self.assertEqual(tasks[1].retries, 1)
-        # 書き戻しても再パースで等価
-        s = tl.serialize_queue(preamble, tasks)
-        _, tasks2 = tl.parse_queue(s)
-        self.assertEqual([t.id for t in tasks2], ["T1", "T2"])
-        self.assertEqual(tasks2[0].verify, "grep -q hi out.txt")
-        self.assertEqual(tasks2[0].extra, [("note", "メモ")])
-
-
-class TestVerifyGate(unittest.TestCase):
-    def test_pass_and_fail(self):
-        with tempfile.TemporaryDirectory() as d:
-            ok, _ = tl.run_verify("true", Path(d), 10)
-            self.assertTrue(ok)
-            ng, _ = tl.run_verify("false", Path(d), 10)
-            self.assertFalse(ng)
-
-    def test_empty_verify_is_fail(self):
-        with tempfile.TemporaryDirectory() as d:
-            ok, msg = tl.run_verify("", Path(d), 10)
-            self.assertFalse(ok)
-            self.assertIn("verify", msg)
-
-
-def make_cfg(d: Path, queue: Path, **kw) -> "tl.Config":
+def cfg_for(d: Path, **kw):
     base = dict(
-        queue=queue, journal=d / "journal.md", workdir=d, bus=d / "bus",
-        executor="stub", planner="stub", dry_run=True,
+        backlog=d / "backlog.md", policy=d / "policy.md", decisions=d / "DECISIONS.md",
+        journal=d / "journal.md", needs=d / "NEEDS_YOU.md", workdir=d, bus=d / "bus",
+        planner="stub", executor="stub", dry_run=True,
     )
     base.update(kw)
-    return tl.Config(**base)
+    return ks.Config(**base)
 
 
-class TestLoop(unittest.TestCase):
-    def test_drains_when_all_verify_pass(self):
+# --------------------------------------------------------------------------
+class TestParse(unittest.TestCase):
+    def test_roundtrip_with_source(self):
+        text = ("# Backlog\n\n"
+                "## T1: a\n- status: ready\n- source: human\n- verify: `true`\n- retries: 0\n- note: x\n\n"
+                "## T2: b\n- status: inbox\n- source: triage\n- verify: \n- retries: 2\n")
+        pre, tasks = ks.parse_backlog(text)
+        self.assertEqual([t.id for t in tasks], ["T1", "T2"])
+        self.assertEqual(tasks[0].source, "human")
+        self.assertEqual(tasks[0].verify, "true")
+        self.assertEqual(tasks[0].extra, [("note", "x")])
+        self.assertEqual(tasks[1].status, "inbox")
+        # 書き戻して等価
+        _, tasks2 = ks.parse_backlog(ks.serialize_backlog(pre, tasks))
+        self.assertEqual(tasks2[1].source, "triage")
+        self.assertEqual(tasks2[0].extra, [("note", "x")])
+
+
+class TestPolicy(unittest.TestCase):
+    def test_parse_and_match(self):
+        pol = ks.parse_policy("# c\ndeny: prod\npin: T3\ndefer: cleanup\ndeny: secret\n")
+        self.assertEqual(pol.deny, ["prod", "secret"])
+        self.assertEqual(pol.pin, ["T3"])
+        t = ks.Task(id="T9", title="deploy prod api")
+        self.assertTrue(t.matches("prod"))
+        self.assertFalse(t.matches("staging"))
+
+
+class TestPrioritize(unittest.TestCase):
+    def test_stub_is_oldest_first(self):
+        tasks = [ks.Task(id=f"T{i}", title=str(i), status="ready") for i in range(3)]
+        order = ks.prioritize(tasks, ks.Policy(), planner="stub")
+        self.assertEqual([t.id for t in order], ["T0", "T1", "T2"])  # ファイル順=最古優先
+
+    def test_policy_pin_and_defer(self):
+        tasks = [ks.Task(id="T0", title="a", status="ready"),
+                 ks.Task(id="T1", title="cleanup logs", status="ready"),
+                 ks.Task(id="T2", title="urgent", status="ready")]
+        pol = ks.Policy(pin=["T2"], defer=["cleanup"])
+        order = ks.prioritize(tasks, pol, planner="stub")
+        self.assertEqual([t.id for t in order], ["T2", "T0", "T1"])  # pin→先頭, defer→末尾
+
+    def test_agent_rank_with_fallback(self):
+        ready = [ks.Task(id="T0", title="a"), ks.Task(id="T1", title="b")]
+        # 正常: エージェントが逆順を返す
+        ranked = ks.rank_agent(ready, None, kiro_run=lambda p, m: '["T1","T0"]')
+        self.assertEqual([t.id for t in ranked], ["T1", "T0"])
+        # 失敗: 例外 → None（呼び出し側で最古優先にフォールバック）
+        def boom(p, m):
+            raise RuntimeError("no kiro-cli")
+        self.assertIsNone(ks.rank_agent(ready, None, kiro_run=boom))
+
+
+class TestTriage(unittest.TestCase):
+    def test_inbox_with_verify_promoted(self):
+        tasks = [ks.Task(id="T1", title="a", status="inbox", verify="true"),
+                 ks.Task(id="T2", title="b", status="inbox", verify="")]
+        ks.triage(tasks, ks.Policy())
+        self.assertEqual(tasks[0].status, "ready")   # verify あり→昇格
+        self.assertEqual(tasks[1].status, "inbox")   # verify なし→据え置き（need_intake）
+
+    def test_deny_blocks(self):
+        tasks = [ks.Task(id="T1", title="deploy prod", status="ready", verify="true")]
+        trans = ks.triage(tasks, ks.Policy(deny=["prod"]))
+        self.assertEqual(tasks[0].status, "blocked")
+        self.assertEqual(len(trans), 1)
+
+
+class TestRunLoop(unittest.TestCase):
+    def test_drains_all_pass(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            q = write_queue(d,
-                "# Q\n\n"
-                "## T1: a\n- status: todo\n- verify: `true`\n- retries: 0\n\n"
-                "## T2: b\n- status: todo\n- verify: `true`\n- retries: 0\n")
-            res = tl.run_loop(make_cfg(d, q))
-            self.assertEqual(res["reason"], tl.REASON_DRAINED)
+            write(d, "backlog.md",
+                  "# B\n\n## T1: a\n- status: ready\n- verify: `true`\n- retries: 0\n\n"
+                  "## T2: b\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            res = ks.run_loop(cfg_for(d))
+            self.assertEqual(res["reason"], ks.REASON_DRAINED)
             self.assertEqual(res["counts"]["done"], 2)
-            self.assertEqual(tl.exit_code_for(res), 0)
+            self.assertEqual(ks.exit_code_for(res), 0)
 
-    def test_failing_task_becomes_blocked_after_retries(self):
+    def test_ng_restacks_then_blocks(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            q = write_queue(d,
-                "# Q\n\n## T1: a\n- status: todo\n- verify: `false`\n- retries: 0\n")
-            res = tl.run_loop(make_cfg(d, q, max_retries=2))
+            write(d, "backlog.md",
+                  "# B\n\n## T1: a\n- status: ready\n- verify: `false`\n- retries: 0\n")
+            res = ks.run_loop(cfg_for(d, max_retries=2))
+            # NG で積み直し → retries>2 で人の判断（blocked）
             self.assertEqual(res["counts"]["blocked"], 1)
-            self.assertEqual(tl.exit_code_for(res), 1)
-            # retries が max を超えて blocked に落ちている
             self.assertGreater(res["tasks"][0].retries, 2)
+            self.assertEqual(ks.exit_code_for(res), 1)
 
-    def test_no_verify_blocks_immediately(self):
+    def test_budget_stop_by_cycles(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            q = write_queue(d,
-                "# Q\n\n## T1: a\n- status: todo\n- verify: \n- retries: 0\n")
-            res = tl.run_loop(make_cfg(d, q))
-            self.assertEqual(res["counts"]["blocked"], 1)
-            self.assertEqual(res["tasks"][0].retries, 1)  # 1 回で即 blocked
-
-    def test_max_cycles_guard(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            # 常に false → 再試行で回り続けるが max-cycles で必ず止まる
-            q = write_queue(d,
-                "# Q\n\n## T1: a\n- status: todo\n- verify: `false`\n- retries: 0\n")
-            res = tl.run_loop(make_cfg(d, q, max_retries=999, max_cycles=4,
-                                       no_progress=999, blocked_ratio=1.1))
-            self.assertEqual(res["reason"], tl.REASON_MAX_CYCLES)
+            write(d, "backlog.md",
+                  "# B\n\n## T1: a\n- status: ready\n- verify: `false`\n- retries: 0\n")
+            res = ks.run_loop(cfg_for(d, max_retries=999, max_cycles=4))
+            self.assertEqual(res["reason"], ks.REASON_BUDGET)
             self.assertEqual(res["cycles"], 4)
+            self.assertEqual(ks.exit_code_for(res), 2)
 
-    def test_no_progress_guard(self):
+    def test_no_verify_blocks(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            q = write_queue(d,
-                "# Q\n\n## T1: a\n- status: todo\n- verify: `false`\n- retries: 0\n")
-            res = tl.run_loop(make_cfg(d, q, max_retries=999, max_cycles=999,
-                                       no_progress=3, blocked_ratio=1.1))
-            self.assertEqual(res["reason"], tl.REASON_NO_PROGRESS)
+            write(d, "backlog.md", "# B\n\n## T1: a\n- status: ready\n- verify: \n- retries: 0\n")
+            res = ks.run_loop(cfg_for(d))
+            self.assertEqual(res["counts"]["blocked"], 1)
+            self.assertEqual(res["tasks"][0].retries, 1)
 
-    def test_blocked_ratio_guard(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            q = write_queue(d,
-                "# Q\n\n"
-                "## T1: a\n- status: todo\n- verify: `false`\n- retries: 0\n\n"
-                "## T2: b\n- status: todo\n- verify: `true`\n- retries: 0\n")
-            res = tl.run_loop(make_cfg(d, q, max_retries=0, blocked_ratio=0.5,
-                                       max_cycles=999, no_progress=999))
-            # T1 が即 blocked（retries=0）→ 1/2=0.5 で停止
-            self.assertEqual(res["reason"], tl.REASON_BLOCKED_RATIO)
-
-    def test_act_injection_runs(self):
-        """act を注入して、verify と独立に呼ばれることを確認。"""
+    def test_act_injection(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             marker = d / "acted"
-            q = write_queue(d,
-                f"# Q\n\n## T1: a\n- status: todo\n- verify: `test -f {marker}`\n- retries: 0\n")
+            write(d, "backlog.md",
+                  f"# B\n\n## T1: a\n- status: ready\n- verify: `test -f {marker}`\n- retries: 0\n")
             calls = []
 
             def fake_act(task, cfg):
                 calls.append(task.id)
-                marker.write_text("x")  # act が成果物を作る
+                marker.write_text("x")
                 return True, "ok"
 
-            cfg = make_cfg(d, q, dry_run=False)
-            res = tl.run_loop(cfg, act=fake_act)
+            res = ks.run_loop(cfg_for(d, dry_run=False), act=fake_act)
             self.assertEqual(calls, ["T1"])
             self.assertEqual(res["counts"]["done"], 1)
 
 
-class TestKiroFlowIntegration(unittest.TestCase):
-    """実際に kiro-flow stub を 1 回叩く統合テスト（無ければ skip）。"""
+class TestNotify(unittest.TestCase):
+    def test_notify_only_on_transition(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            # verify 未定義 → blocked 遷移が起き、NEEDS_YOU.md が書かれる
+            write(d, "backlog.md", "# B\n\n## T1: a\n- status: ready\n- verify: \n- retries: 0\n")
+            res = ks.run_loop(cfg_for(d))
+            self.assertTrue(res["notified"])
+            self.assertTrue((d / "NEEDS_YOU.md").exists())
 
+    def test_no_notify_when_no_transition(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "backlog.md", "# B\n\n## T1: a\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            res = ks.run_loop(cfg_for(d))
+            self.assertFalse(res["notified"])
+            self.assertFalse((d / "NEEDS_YOU.md").exists())
+
+
+class TestDecisionRecords(unittest.TestCase):
+    def test_approve_writes_dr_and_restacks(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "backlog.md", "# B\n\n## T1: a\n- status: blocked\n- verify: `true`\n- retries: 3\n")
+            rc = ks.cmd_approve(cfg_for(d, actor="alice"), "T1", "verify を修正")
+            self.assertEqual(rc, 0)
+            _, tasks = ks.load_backlog(d / "backlog.md")
+            self.assertEqual(tasks[0].status, "ready")
+            dec = (d / "DECISIONS.md").read_text()
+            self.assertIn("DR-0001", dec)
+            self.assertIn("alice", dec)
+            self.assertIn("verify を修正", dec)
+
+    def test_hold_adds_deny_and_dr(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "backlog.md", "# B\n\n## T1: a\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            ks.cmd_hold(cfg_for(d), "T1", "本番関連は手動")
+            self.assertIn("deny: T1", (d / "policy.md").read_text())
+            _, tasks = ks.load_backlog(d / "backlog.md")
+            self.assertEqual(tasks[0].status, "blocked")
+            self.assertIn("DR-0001", (d / "DECISIONS.md").read_text())
+
+    def test_reprioritize_pin_and_incrementing_dr(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "backlog.md", "# B\n\n## T1: a\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            c = cfg_for(d)
+            ks.cmd_reprioritize(c, "T1", "pin", "急ぎ")
+            ks.cmd_reprioritize(c, "T1", "defer", "やっぱり後で")
+            pol = (d / "policy.md").read_text()
+            self.assertIn("pin: T1", pol)
+            self.assertIn("defer: T1", pol)
+            dec = (d / "DECISIONS.md").read_text()
+            self.assertIn("DR-0001", dec)
+            self.assertIn("DR-0002", dec)  # 連番
+
+
+class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
         kf = Path(__file__).resolve().parents[2] / "kiro-flow" / "kiro-flow.py"
         if not kf.exists():
@@ -177,21 +229,13 @@ class TestKiroFlowIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             out = d / "out.txt"
-            # verify は act 後にローカルで判定。act 成否に依らず成果物を用意して
-            # 「verify ゲートが done を確定する」ことを確認する。
             out.write_text("done")
-            q = write_queue(d,
-                f"# Q\n\n## T1: 何か\n- status: todo\n- verify: `test -f {out}`\n- retries: 0\n")
-            env = dict(os.environ, KIRO_FLOW_STUB_SLEEP_MAX="0")
-            os.environ.update(env)
-            cfg = tl.Config(
-                queue=q, journal=d / "journal.md", workdir=d, bus=d / "bus",
-                executor="stub", planner="stub", dry_run=False,
-                act_timeout=120, max_cycles=3,
-            )
-            res = tl.run_loop(cfg)
+            write(d, "backlog.md",
+                  f"# B\n\n## T1: 何か\n- status: ready\n- verify: `test -f {out}`\n- retries: 0\n")
+            os.environ["KIRO_FLOW_STUB_SLEEP_MAX"] = "0"
+            res = ks.run_loop(cfg_for(d, dry_run=False, act_timeout=120, max_cycles=3))
             self.assertEqual(res["counts"]["done"], 1)
-            self.assertEqual(res["reason"], tl.REASON_DRAINED)
+            self.assertEqual(res["reason"], ks.REASON_DRAINED)
 
 
 if __name__ == "__main__":
