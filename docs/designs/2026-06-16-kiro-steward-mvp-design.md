@@ -119,9 +119,10 @@ Sub-agents / Memory・State）を満たす部品（`kiro-loop`, `kiro-flow`, `lt
 `deny` / `pin` / `defer` の3種。値は**タスクID またはタイトル部分一致**でマッチ。
 
 ```yaml
-deny:  prod        # タイトル/IDに "prod" を含むタスクは自動実行しない（人の判断待ち）
-pin:   T3          # T3 を最優先に固定
-defer: cleanup     # "cleanup" を含むタスクは後回し
+deny:    prod      # タイトル/IDに "prod" を含むタスクは自動実行しない（人の判断待ち）
+pin:     T3        # T3 を最優先に固定
+defer:   cleanup   # "cleanup" を含むタスクは後回し
+offload: heavy     # "heavy" を含むタスクは分散環境（git バス）へ移譲（§5.1）
 ```
 
 ---
@@ -139,6 +140,21 @@ kiro-flow --bus <bus> run "<request>" --planner <p> --executor <e> --max-iterati
 要求文には**完了条件として `verify` コマンドを明示**し、「完了条件を満たすまで反復
 （loop-until-done）」を促す。kiro-flow 実行体は `--kiro-flow` > `PATH` > 同梱
 `tools/kiro-flow/kiro-flow.py` の順で解決する。
+
+### 5.1 実行先の決定（location 次元 / 分散移譲）
+
+`decide` の拡張次元として **act の実行先（local / remote）** を決める。`--git-bus`（共有 git
+リポジトリ）が設定され、かつタスクが `policy.md` の `offload:` 規則に当たる場合のみ **remote**：
+kiro-flow を `--git <bus>` 付きで起動し、共有バス越しに分散実行する（kiro-flow の既存分散機構を
+そのまま活用）。それ以外は local。判断は journal に記録する（透明性）。
+
+```
+decide_location(task) = remote  if (git-bus 設定あり) かつ (offload 規則に一致)
+                      = local   otherwise
+```
+
+人間制御の一貫性のため、移譲対象は `deny/pin/defer` と同じく **`policy.md` の人間ルール**
+（`offload:` 部分一致）で指定する。
 
 ### 検証ゲート（done 確定の唯一の根拠）
 
@@ -301,7 +317,7 @@ verify 未定義   → done 不能。人の判断へ（§7）
 
 主なフラグ: `--backlog` `--policy` `--decisions` `--journal` `--workdir` `--bus`
 `--executor{kiro,stub}` `--planner{flow-planner,kiro,stub}` `--max-cycles` `--max-seconds`
-`--max-iterations` `--notify-cmd` `--dry-run` `--once`。
+`--max-iterations` `--notify-cmd` `--git-bus` `--git-branch` `--git-subdir` `--dry-run` `--once`。
 
 ---
 
@@ -348,7 +364,8 @@ KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-steward/tes
 | 系 | inbox/ready/doing/done/blocked ＋ source | rot 自動検知, webhook enqueue, done 自動アーカイブ |
 | 通知 | NEEDS_YOU.md＋stdout（遷移時 dedup） | teams/メール/issue 連携 |
 | 決定記録 | approve/hold/reprioritize → DECISIONS.md | — |
-| 実行先 | local | location（kiro-flow `--git` 分散バスへ移譲） |
+| 実行先 | local ／ **location（offload 規則で kiro-flow `--git` 分散バスへ移譲）** | コスト連動の自動 offload 判断 |
 
-**拡張次元**: 予算でレーンを減速する `pace`、分散環境へ act を移譲する `location` は、
-優先順位付け（§4）と収束（§6）の延長として後段で足す。判断を1点に集約してあるため局所で拡張できる。
+**拡張次元**: 分散移譲 `location` は実装済み（§5.1、`policy.md` の `offload:` で人間が指定）。
+予算でレーンを減速する `pace` は、収束（§6）の延長として後段で足す。判断を1点（`decide`）に
+集約してあるため、いずれも局所で拡張できる。

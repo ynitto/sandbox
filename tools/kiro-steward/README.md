@@ -82,9 +82,19 @@ kiro-steward hold prod-deploy --reason "本番は手動" --backlog backlog.md
 
 ```yaml
 # policy.md の例
-deny:  prod        # "prod" を含むタスクは自動実行しない（人の判断待ち）
-pin:   T3          # T3 を最優先
-defer: cleanup     # "cleanup" を含むタスクは後回し
+deny:    prod      # "prod" を含むタスクは自動実行しない（人の判断待ち）
+pin:     T3        # T3 を最優先
+defer:   cleanup   # "cleanup" を含むタスクは後回し
+offload: heavy     # "heavy" を含むタスクは分散環境へ移譲（--git-bus 設定時）
+```
+
+## 分散移譲（location）
+
+`--git-bus <共有gitリポジトリ>` を設定し、`policy.md` に `offload: <パターン>` を書くと、一致した
+タスクの実行（act）を kiro-flow の `--git` 分散バス越しに**別環境へ移譲**する。それ以外は local 実行。
+
+```bash
+kiro-steward run --backlog backlog.md --git-bus git@example:team/bus.git
 ```
 
 ## 収束（必ず止まる）

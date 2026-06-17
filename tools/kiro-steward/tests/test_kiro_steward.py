@@ -153,14 +153,61 @@ class TestRunLoop(unittest.TestCase):
                   f"# B\n\n## T1: a\n- status: ready\n- verify: `test -f {marker}`\n- retries: 0\n")
             calls = []
 
-            def fake_act(task, cfg):
-                calls.append(task.id)
+            def fake_act(task, cfg, location="local"):
+                calls.append((task.id, location))
                 marker.write_text("x")
                 return True, "ok"
 
             res = ks.run_loop(cfg_for(d, dry_run=False), act=fake_act)
-            self.assertEqual(calls, ["T1"])
+            self.assertEqual(calls, [("T1", "local")])
             self.assertEqual(res["counts"]["done"], 1)
+
+
+class TestLocation(unittest.TestCase):
+    def test_policy_offload_parsed(self):
+        pol = ks.parse_policy("offload: heavy\ndeny: prod\n")
+        self.assertEqual(pol.offload, ["heavy"])
+
+    def test_decide_location(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            t = ks.Task(id="T1", title="heavy batch job")
+            pol = ks.Policy(offload=["heavy"])
+            # git バス未設定 → 常に local
+            self.assertEqual(ks.decide_location(t, pol, cfg_for(d)), "local")
+            # git バス設定＋offload 一致 → remote
+            c = cfg_for(d, git_bus="git@x:team/bus.git")
+            self.assertEqual(ks.decide_location(t, pol, c), "remote")
+            # offload 不一致 → local
+            self.assertEqual(ks.decide_location(ks.Task(id="T2", title="light"), pol, c), "local")
+
+    def test_build_cmd_includes_git_when_remote(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            t = ks.Task(id="T1", title="a", verify="true")
+            c = cfg_for(d, git_bus="git@x:team/bus.git", git_branch="main")
+            local_cmd = ks.build_kiro_flow_cmd(t, c, "local")
+            remote_cmd = ks.build_kiro_flow_cmd(t, c, "remote")
+            self.assertNotIn("--git", local_cmd)
+            self.assertIn("--git", remote_cmd)
+            self.assertIn("git@x:team/bus.git", remote_cmd)
+
+    def test_run_offloads_matching_task(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write(d, "policy.md", "offload: heavy\n")
+            write(d, "backlog.md",
+                  "# B\n\n## T1: heavy job\n- status: ready\n- verify: `true`\n- retries: 0\n\n"
+                  "## T2: light job\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            seen = {}
+
+            def fake_act(task, cfg, location="local"):
+                seen[task.id] = location
+                return True, "ok"
+
+            ks.run_loop(cfg_for(d, dry_run=False, git_bus="git@x:team/bus.git"), act=fake_act)
+            self.assertEqual(seen["T1"], "remote")  # offload 一致
+            self.assertEqual(seen["T2"], "local")
 
 
 class TestNotify(unittest.TestCase):

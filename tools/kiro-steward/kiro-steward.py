@@ -29,7 +29,7 @@ VALID_STATUS = ("inbox", "ready", "doing", "done", "blocked")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
-POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer):\s*(?P<val>.+)$")
+POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 
 # 停止理由
@@ -136,6 +136,7 @@ class Policy:
     deny: "list[str]" = field(default_factory=list)
     pin: "list[str]" = field(default_factory=list)
     defer: "list[str]" = field(default_factory=list)
+    offload: "list[str]" = field(default_factory=list)  # 分散環境へ移譲する対象
 
 
 def parse_policy(text: str) -> Policy:
@@ -323,12 +324,29 @@ def build_request(task: Task) -> str:
     )
 
 
-def act_via_kiro_flow(task: Task, cfg: "Config") -> "tuple[bool, str]":
-    cmd = resolve_kiro_flow(cfg.kiro_flow) + [
-        "--bus", str(cfg.bus), "run", build_request(task),
+def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
+    """act の実行先を決める拡張次元。git バス設定があり offload 規則に当たれば remote。"""
+    if cfg.git_bus and any(task.matches(p) for p in policy.offload):
+        return "remote"
+    return "local"
+
+
+def build_kiro_flow_cmd(task: Task, cfg: "Config", location: str = "local") -> "list[str]":
+    """kiro-flow 起動コマンドを組み立てる。remote なら共有 git バスへ移譲する。"""
+    base = resolve_kiro_flow(cfg.kiro_flow) + ["--bus", str(cfg.bus)]
+    if location == "remote" and cfg.git_bus:
+        base += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
+        if cfg.git_subdir:
+            base += ["--git-subdir", cfg.git_subdir]
+    return base + [
+        "run", build_request(task),
         "--planner", cfg.planner, "--executor", cfg.executor,
         "--max-iterations", str(cfg.max_iterations),
     ]
+
+
+def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tuple[bool, str]":
+    cmd = build_kiro_flow_cmd(task, cfg, location)
     try:
         proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=cfg.act_timeout,
                               capture_output=True, text=True)
@@ -397,6 +415,9 @@ class Config:
     needs: Path
     workdir: Path
     bus: Path
+    git_bus: "str | None" = None   # 分散移譲先（kiro-flow --git）。未設定なら常に local
+    git_branch: str = "main"
+    git_subdir: "str | None" = None
     kiro_flow: "str | None" = None
     planner: str = "flow-planner"
     executor: str = "kiro"
@@ -466,9 +487,12 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None) -> dict:
         task.status = "doing"
         save_backlog(cfg.backlog, preamble, tasks)
 
+        location = decide_location(task, policy, cfg)
+        if location == "remote":
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} を分散環境へ移譲（{cfg.git_bus}）")
         act_msg = "(dry-run: act skip)"
         if not cfg.dry_run:
-            _, act_msg = act(task, cfg)
+            _, act_msg = act(task, cfg, location)
 
         ok, vmsg = run_verify(task.verify, cfg.workdir, cfg.verify_timeout)
         if ok:
@@ -613,6 +637,7 @@ def build_config(args) -> Config:
         needs=rel("needs", "NEEDS_YOU.md"),
         workdir=workdir,
         bus=rel("bus", ".kiro-steward-bus"),
+        git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
         kiro_flow=args.kiro_flow, planner=args.planner, executor=args.executor,
         model=args.model, max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
@@ -631,6 +656,10 @@ def _add_common(sp):
     sp.add_argument("--needs", default="NEEDS_YOU.md")
     sp.add_argument("--workdir", default=".")
     sp.add_argument("--bus", default=".kiro-steward-bus")
+    sp.add_argument("--git-bus", default=None,
+                    help="分散移譲先の共有 git リポジトリ（policy の offload 対象を remote 実行）")
+    sp.add_argument("--git-branch", default="main")
+    sp.add_argument("--git-subdir", default=None)
     sp.add_argument("--kiro-flow", default=None)
     sp.add_argument("--planner", default="flow-planner", choices=["kiro", "stub", "flow-planner"])
     sp.add_argument("--executor", default="kiro", choices=["kiro", "stub"])
