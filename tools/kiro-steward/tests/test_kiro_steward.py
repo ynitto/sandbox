@@ -1,10 +1,10 @@
-"""task-loop の単体テスト（標準ライブラリ unittest）。
+"""kiro-steward の単体テスト（標準ライブラリ unittest）。
 
 外側ループの状態機械・停止条件・verify ゲートを、kiro-flow を呼ばずに
 検証する（act を注入 or --dry-run 相当）。1 件だけ実際に kiro-flow stub を
 叩く統合テストも持つ（kiro-flow が無ければ skip）。
 
-    python -m unittest discover -s tools/task-loop/tests
+    python -m unittest discover -s tools/kiro-steward/tests
 """
 import importlib.util
 import os
@@ -13,16 +13,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# task-loop.py をモジュールとして読み込む（ハイフン名のため importlib 経由）
-_MOD = Path(__file__).resolve().parent.parent / "task-loop.py"
-_spec = importlib.util.spec_from_file_location("task_loop", _MOD)
+# kiro-steward.py をモジュールとして読み込む（ハイフン名のため importlib 経由）
+_MOD = Path(__file__).resolve().parent.parent / "kiro-steward.py"
+_spec = importlib.util.spec_from_file_location("kiro_steward", _MOD)
 tl = importlib.util.module_from_spec(_spec)
-sys.modules["task_loop"] = tl  # dataclass の前方参照解決に必要
+sys.modules["kiro_steward"] = tl  # dataclass の前方参照解決に必要
 _spec.loader.exec_module(tl)
 
 
 def write_queue(d: Path, body: str) -> Path:
-    q = d / "queue.md"
+    q = d / "backlog.md"
     q.write_text(body, encoding="utf-8")
     return q
 

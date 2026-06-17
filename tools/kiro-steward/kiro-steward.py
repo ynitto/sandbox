@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""task-loop — Loop Engineering MVP（自律タスク消化ループ）
+"""kiro-steward — Loop Engineering MVP（バックログを捌く制御層）
 
-`queue.md` に並んだタスクを 1 件ずつ拾い、kiro-flow に実行させ、**タスク自身が
+`backlog.md` に並んだタスクを 1 件ずつ拾い、kiro-flow に実行させ、**タスク自身が
 持つ verify コマンドをローカルで実行して PASS したものだけを done に確定**する
-外側ループ。人間がプロンプトを毎回投げ込まなくても、キューが枯れるか停止条件に
+外側ループ。人間がプロンプトを毎回投げ込まなくても、バックログが枯れるか停止条件に
 達するまで自律的に回り続ける。
 
+注: 本ファイルは loop コア（消化ループ・verify ゲート・停止条件）を実装する。
+判断(triage/policy)・通知・決定記録は設計書（docs/designs/2026-06-16-kiro-steward-mvp-design.md）
+に基づき順次追加する。
+
 二層構成:
-  - kiro-flow   … 実行（分解 → act → 内側 verify ループ）を担う「頭脳」
-  - task-loop   … queue.md の状態管理／外側の停止条件／真の verify ゲートを担う
+  - kiro-flow      … 実行（分解 → act → 内側 verify ループ）を担う「頭脳」
+  - kiro-steward   … backlog.md の状態管理／外側の停止条件／真の verify ゲートを担う
 
 設計上の肝（Loop Engineering の事故を物理的に潰す）:
   1. done は **自己申告では確定しない**。verify コマンドの終了コード 0 だけが根拠。
@@ -45,7 +49,7 @@ REASON_BUDGET = "budget"            # 実時間予算超過
 
 
 # ---------------------------------------------------------------------------
-# queue.md のパース / シリアライズ
+# backlog.md のパース / シリアライズ
 # ---------------------------------------------------------------------------
 @dataclass
 class Task:
@@ -70,7 +74,7 @@ def _strip_code(val: str) -> str:
 
 
 def parse_queue(text: str) -> "tuple[str, list[Task]]":
-    """queue.md をプレアンブル（最初のタスク見出しより前）とタスク列に分解する。"""
+    """backlog をプレアンブル（最初のタスク見出しより前）とタスク列に分解する。"""
     lines = text.splitlines()
     tasks: list[Task] = []
     preamble: list[str] = []
@@ -273,7 +277,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow) -> dict:
     cycle = 0
     last_done = progress_count(tasks)
     no_progress_streak = 0
-    append_journal(cfg.journal, f"=== task-loop 開始 tasks={len(tasks)} "
+    append_journal(cfg.journal, f"=== kiro-steward 開始 tasks={len(tasks)} "
                                 f"executor={cfg.executor} dry_run={cfg.dry_run} ===")
 
     while True:
@@ -335,7 +339,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow) -> dict:
 
     counts = summarize(tasks)
     append_journal(cfg.journal,
-                   f"=== task-loop 停止 reason={reason} cycles={cycle} "
+                   f"=== kiro-steward 停止 reason={reason} cycles={cycle} "
                    f"done={counts['done']} blocked={counts['blocked']} "
                    f"todo={counts['todo']} ===")
     return {
@@ -362,7 +366,7 @@ def exit_code_for(result: dict) -> int:
 # ---------------------------------------------------------------------------
 def build_config(args) -> Config:
     workdir = Path(args.workdir).resolve()
-    queue = Path(args.queue)
+    queue = Path(args.backlog)
     queue = queue if queue.is_absolute() else (workdir / queue)
     journal = Path(args.journal)
     journal = journal if journal.is_absolute() else (workdir / journal)
@@ -381,13 +385,13 @@ def build_config(args) -> Config:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        prog="task-loop",
-        description="queue.md を verify ゲート付きで自律消化するループ（Loop Engineering MVP）",
+        prog="kiro-steward",
+        description="backlog.md を verify ゲート付きで自律消化するループ（Loop Engineering MVP）",
     )
-    p.add_argument("--queue", default="queue.md", help="キューファイル（既定 queue.md）")
+    p.add_argument("--backlog", default="backlog.md", help="バックログファイル（既定 backlog.md）")
     p.add_argument("--journal", default="journal.md", help="申し送りログ（既定 journal.md）")
     p.add_argument("--workdir", default=".", help="作業ディレクトリ（verify/act の cwd）")
-    p.add_argument("--bus", default=".task-loop-bus", help="kiro-flow のバス")
+    p.add_argument("--bus", default=".kiro-steward-bus", help="kiro-flow のバス")
     p.add_argument("--kiro-flow", default=None, help="kiro-flow 実行体（既定: PATH→同梱）")
     p.add_argument("--planner", default="flow-planner",
                    choices=["kiro", "stub", "flow-planner"])
@@ -408,12 +412,12 @@ def main(argv=None) -> int:
 
     cfg = build_config(args)
     if not cfg.queue.exists():
-        print(f"エラー: キューが見つかりません: {cfg.queue}", file=sys.stderr)
+        print(f"エラー: バックログが見つかりません: {cfg.queue}", file=sys.stderr)
         return 2
 
     result = run_loop(cfg)
     counts = result["counts"]
-    print("\n=== task-loop 完了 ===")
+    print("\n=== kiro-steward 完了 ===")
     print(f"停止理由 : {result['reason']}")
     print(f"サイクル : {result['cycles']}")
     print(f"done={counts['done']} blocked={counts['blocked']} "

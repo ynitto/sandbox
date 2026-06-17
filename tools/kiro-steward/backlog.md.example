@@ -1,29 +1,36 @@
-# Task Queue
+# Backlog
 
 <!--
-task-loop のキューファイル。
+kiro-steward のバックログファイル。
 - 各タスクは "## <id>: <タイトル>" で始め、直後の "- key: value" 行をメタデータとする。
-- status : todo | doing | done | blocked  （todo を上から順に消化する）
+- status : inbox | ready | doing | done | blocked
+- source : human | triage | followup（出自の系。省略時は human 扱い）
 - verify : 終了コード 0 を PASS とみなすシェルコマンド。**done 確定の唯一の根拠**。
            verify を持たないタスクは done にできず即 blocked になる。
-- retries: 失敗回数（task-loop が自動更新する。初期値 0）。
+- retries: 失敗回数（kiro-steward が自動更新する。初期値 0）。
 
-実行:  task-loop --queue queue.md --executor kiro
-検証だけ整合: task-loop --queue queue.md --dry-run
+実行:  kiro-steward run --backlog backlog.md --executor kiro
+検証だけ整合: kiro-steward run --backlog backlog.md --dry-run
+
+※ 現状の loop コアは status の todo/done/blocked を消化する。inbox/ready の triage と
+  source による優先度付けは設計書に基づき順次追加する。
 -->
 
 ## T1: README にプロジェクト概要の見出しを追加する
 - status: todo
+- source: human
 - verify: `grep -q "## 概要" README.md`
 - retries: 0
 - note: 既存の見出し階層に合わせる
 
 ## T2: ユーティリティ関数 slugify を実装する
 - status: todo
+- source: human
 - verify: `python -c "from utils import slugify; assert slugify('Hello World')=='hello-world'"`
 - retries: 0
 
 ## T3: slugify のテストを追加してパスさせる
 - status: todo
+- source: human
 - verify: `python -m pytest tests/test_utils.py -k slugify -q`
 - retries: 0
