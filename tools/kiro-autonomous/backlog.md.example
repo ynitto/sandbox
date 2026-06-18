@@ -1,0 +1,24 @@
+<!--
+kiro-autonomous は backlog/ ディレクトリ内の「1ファイル＝1タスク」を読む。
+このファイルを backlog/<id>.md としてコピーして使う（id はファイル名の stem が正）。
+  例: cp backlog.md.example backlog/T1.md
+
+- status : inbox | ready | doing | done | blocked
+           ready=実行待ち（消化対象）。inbox=triage で verify があれば ready に昇格。
+           blocked=人の判断待ち（needs/<id>.md にフィードバックを書くか approve で動かす）。
+- source : human | triage | followup（出自の系。省略時は human）
+- priority: 外部で付与する優先度（整数・大きいほど高優先。省略時 0）。
+           --planner none は priority 降順→同値は最古、--planner kiro はエージェントが加味する。
+- verify : 終了コード 0 を PASS とみなすシェルコマンド。**done 確定の唯一の根拠**。
+           verify を持たないタスクは done にできず人の判断（blocked）へ回る。
+- retries: 失敗回数（kiro-autonomous が自動更新する。初期値 0）。
+- done になったタスクは archive/<id>.md へ退避される（backlog/ には未完だけが残る）。
+-->
+
+## T1: README にプロジェクト概要の見出しを追加する
+- status: ready
+- source: human
+- priority: 0
+- verify: `grep -q "## 概要" README.md`
+- retries: 0
+- note: 既存の見出し階層に合わせる
