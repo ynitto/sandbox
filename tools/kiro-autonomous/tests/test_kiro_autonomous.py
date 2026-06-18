@@ -368,6 +368,44 @@ class TestRot(unittest.TestCase):
             self.assertTrue((d / "needs" / "T1.md").exists())
 
 
+class TestLayout(unittest.TestCase):
+    def test_files_consolidated_under_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bl = d / ".kiro-autonomous" / "backlog"
+            bl.mkdir(parents=True)
+            (bl / "T1.md").write_text(
+                "## T1: x\n- status: ready\n- verify: `true`\n- retries: 0\n", encoding="utf-8")
+            rc = km.main(["run", "--workdir", str(d), "--planner", "none",
+                          "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
+            self.assertEqual(rc, 0)
+            root = d / ".kiro-autonomous"
+            self.assertTrue((root / "journal.md").exists())
+            self.assertTrue((root / "archive" / "T1.md").exists())   # done → root/archive
+            self.assertFalse((bl / "T1.md").exists())
+            # ルート以外に散らばっていない
+            self.assertFalse((d / "backlog").exists())
+            self.assertFalse((d / "journal.md").exists())
+
+    def test_cleanup_bus_removes_run_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (cfg.bus / "runs" / "r1").mkdir(parents=True)
+            (cfg.bus / "inbox").mkdir(parents=True)
+            km._cleanup_bus(cfg)
+            self.assertFalse((cfg.bus / "runs").exists())
+            self.assertFalse((cfg.bus / "inbox").exists())
+
+    def test_no_cleanup_keeps_bus(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, cleanup=False)
+            (cfg.bus / "runs" / "r1").mkdir(parents=True)
+            km._cleanup_bus(cfg)
+            self.assertTrue((cfg.bus / "runs").exists())
+
+
 class TestDaemonRouting(unittest.TestCase):
     def test_kf_base_git_flag(self):
         with tempfile.TemporaryDirectory() as d:

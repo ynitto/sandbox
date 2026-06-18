@@ -42,13 +42,17 @@ bash tools/kiro-autonomous/install.sh           # ~/.local/bin/kiro-autonomous
 
 ## ファイル/ディレクトリ構成
 
+すべて **cwd の `./.kiro-autonomous/` 配下に集約**される（`--root` で変更可。各パスは `--backlog` 等で個別上書きも可）。
+
 ```
-backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
-archive/<id>.md      完了タスクの保全先（done で backlog から移動）
-policy.md            優先順位・実行先の上書き（人だけが書く）
-needs/<id>.md        判断待ちの通知＋フィードバック記入欄（人が記入→自動再開）
-decisions/<id>.md    人の判断・承認・フィードバックの決定記録（append-only）
-journal.md           機械のサイクルログ
+.kiro-autonomous/
+  backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
+  archive/<id>.md      完了タスクの保全先（done で backlog から移動）
+  policy.md            優先順位・実行先の上書き（人だけが書く）
+  needs/<id>.md        判断待ちの通知＋フィードバック記入欄（人が記入→自動再開）
+  decisions/<id>.md    人の判断・承認・フィードバックの決定記録（append-only）
+  journal.md           機械のサイクルログ
+  bus/                 kiro-flow バス（一時。run 後に自動クリーンアップ。--no-cleanup で保持）
 ```
 
 ## kiro-flow への委譲（`--location` で local / daemon / remote）

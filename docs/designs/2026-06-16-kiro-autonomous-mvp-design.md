@@ -351,10 +351,17 @@ verify 未定義   → done 不能。人の判断へ（needs/<id>.md 生成、§
 - `ready`（実行待ち）を消化。順序は `--planner`（kiro=エージェント／none=priority 降順→最古）。`inbox` は triage で `ready` 化。
 - **done は `archive/<id>.md` へ退避**（§5）。`backlog/` には常に未完だけが残る。
 
-### journal.md / policy.md / needs/ / decisions/ / archive/
+### ファイル集約とクリーンアップ
 
-§7・§8・§9 の通り。journal は機械の単一ログ、policy は人の常設指示（単一）、
-needs・decisions・archive は**案件毎ディレクトリ**（archive は完了タスクの保全先・append-only 的）。
+すべての成果物は **cwd の `./.kiro-autonomous/` 配下に集約**する（`--root` で変更、各パスは個別上書き可）:
+
+```
+.kiro-autonomous/{backlog,archive,decisions,needs}/<id>.md  policy.md  journal.md  bus/
+```
+
+journal は機械の単一ログ、policy は人の常設指示（単一）、needs・decisions・archive は案件毎ディレクトリ。
+`bus/`（kiro-flow の run 状態）は**一時**で、local run 後に `_cleanup_bus` が `runs/`・`inbox/` を削除する
+（`--no-cleanup` で保持。daemon 稼働中・git バスは作業中のため触らない）。
 
 ---
 

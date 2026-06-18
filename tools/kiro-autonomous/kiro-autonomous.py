@@ -669,6 +669,7 @@ class Config:
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
     rot: bool = False               # rot 検知（古い/重複/実行不能を triage で掃除）
     rot_age_days: float = 14.0      # stale とみなす経過日数
+    cleanup: bool = True            # run 後に kiro-flow バスの一時状態を掃除
     watch: bool = False     # 終了条件後もプロセスを残し backlog を監視
     poll: float = 5.0       # watch のポーリング間隔（秒）
     dry_run: bool = False
@@ -820,12 +821,22 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     newly_blocked = {t.id for t in tasks if t.norm_status() == "blocked"} - pre_blocked
     budget_stop = reason == REASON_BUDGET
     notified = notify(cfg, tasks, reasons, newly_blocked, budget_stop)
+    _cleanup_bus(cfg)             # 不要な一時ファイル（kiro-flow バスの run 状態）を掃除
     append_journal(cfg.journal, f"=== kiro-autonomous 停止 reason={reason} cycles={cycle} "
                                 f"done={counts['done']} blocked={counts['blocked']} "
                                 f"notified={notified} ===")
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
             "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified,
             "ingested": ingested, "archived": archived}
+
+
+def _cleanup_bus(cfg: Config) -> None:
+    """local run 後に不要となる kiro-flow バスの一時状態（runs/inbox）を削除する。
+    daemon 稼働中や git バス（remote）は作業中のため触らない。"""
+    if not cfg.cleanup or cfg.git_bus or daemon_running(cfg, use_git=False):
+        return
+    for sub in ("runs", "inbox"):
+        shutil.rmtree(cfg.bus / sub, ignore_errors=True)
 
 
 def exit_code_for(result: dict) -> int:
@@ -975,19 +986,25 @@ def cmd_run(cfg: Config) -> int:
 # ---------------------------------------------------------------------------
 def build_config(args) -> Config:
     workdir = Path(args.workdir).resolve()
+    root = Path(args.root)
+    root = root if root.is_absolute() else (workdir / root)
 
-    def rel(name, default):
-        p = Path(getattr(args, name, None) or default)
-        return p if p.is_absolute() else (workdir / p)
+    def under(name, sub):
+        """個別指定があればそれを、無ければルート（既定 ./.kiro-autonomous）配下に集約。"""
+        v = getattr(args, name, None)
+        if v:
+            p = Path(v)
+            return p if p.is_absolute() else (workdir / p)
+        return root / sub
 
     return Config(
-        backlog=rel("backlog", "backlog"),
-        policy=rel("policy", "policy.md"),
-        decisions=rel("decisions", "decisions"),
-        journal=rel("journal", "journal.md"),
-        needs=rel("needs", "needs"),
+        backlog=under("backlog", "backlog"),
+        policy=under("policy", "policy.md"),
+        decisions=under("decisions", "decisions"),
+        journal=under("journal", "journal.md"),
+        needs=under("needs", "needs"),
         workdir=workdir,
-        bus=rel("bus", ".kiro-autonomous-bus"),
+        bus=under("bus", "bus"),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
         location=args.location, executor=args.executor,
@@ -995,23 +1012,26 @@ def build_config(args) -> Config:
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
-        archive=rel("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
+        archive=under("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
         learn=not getattr(args, "no_learn", False), learn_threshold=args.learn_threshold,
         rot=getattr(args, "rot", False), rot_age_days=args.rot_age_days,
+        cleanup=not getattr(args, "no_cleanup", False),
         watch=getattr(args, "watch", False), poll=getattr(args, "poll", 5.0),
         dry_run=getattr(args, "dry_run", False), once=getattr(args, "once", False),
     )
 
 
 def _add_common(sp):
-    sp.add_argument("--backlog", default="backlog", help="バックログディレクトリ（案件毎 *.md）")
-    sp.add_argument("--policy", default="policy.md")
-    sp.add_argument("--decisions", default="decisions", help="決定記録ディレクトリ（案件毎）")
-    sp.add_argument("--journal", default="journal.md")
-    sp.add_argument("--needs", default="needs", help="要対応ディレクトリ（案件毎・フィードバック欄）")
-    sp.add_argument("--archive", default="archive", help="done の退避先ディレクトリ")
+    sp.add_argument("--root", default=".kiro-autonomous",
+                    help="作業ルート（cwd 相対、既定 ./.kiro-autonomous）。各ファイルはこの配下に集約")
+    sp.add_argument("--backlog", default=None, help="バックログディレクトリ（既定 <root>/backlog）")
+    sp.add_argument("--policy", default=None, help="（既定 <root>/policy.md）")
+    sp.add_argument("--decisions", default=None, help="決定記録ディレクトリ（既定 <root>/decisions）")
+    sp.add_argument("--journal", default=None, help="（既定 <root>/journal.md）")
+    sp.add_argument("--needs", default=None, help="要対応ディレクトリ（既定 <root>/needs）")
+    sp.add_argument("--archive", default=None, help="done の退避先（既定 <root>/archive）")
     sp.add_argument("--workdir", default=".")
-    sp.add_argument("--bus", default=".kiro-autonomous-bus")
+    sp.add_argument("--bus", default=None, help="kiro-flow バス（既定 <root>/bus）")
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
     sp.add_argument("--git-branch", default="main")
     sp.add_argument("--git-subdir", default=None)
@@ -1056,6 +1076,8 @@ def main(argv=None) -> int:
                      help="done を archive/ へ退避せず削除する（既定は退避）")
     run.add_argument("--rot", action="store_true",
                      help="triage で rot（古い/重複/実行不能）を検知し人の判断へ回す")
+    run.add_argument("--no-cleanup", action="store_true",
+                     help="run 後に kiro-flow バスの一時状態を掃除しない")
     run.add_argument("--dry-run", action="store_true", help="act を飛ばし verify のみ")
     run.add_argument("--once", action="store_true", help="1 タスクだけ処理して終了")
 
