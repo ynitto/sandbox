@@ -317,6 +317,76 @@ class TestDelivery(unittest.TestCase):
             self.assertIn("/pull/7", manifest)
 
 
+def _seed_learn(d: Path, src: str, title: str, guide: str):
+    """decisions/<src>.md に learn ルールを置く。"""
+    (d / "decisions").mkdir(parents=True, exist_ok=True)
+    (d / "decisions" / f"{src}.md").write_text(
+        f"## DR-1  2026-06-18  actor: alice\n- action  : feedback-resume\n"
+        f"- learn: {title} :: {guide}\n", encoding="utf-8")
+
+
+def _seed_hits(d: Path, src: str, n: int):
+    """auto-resolve が src を n 回参照した決定記録を作る（昇格の根拠）。"""
+    (d / "decisions").mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        (d / "decisions" / f"H{i}.md").write_text(
+            f"## DR-1  2026-06-18  actor: auto\n- action  : auto-resolve\n"
+            f"- reason  : learned from {src}: なおせ\n", encoding="utf-8")
+
+
+class TestPromotion(unittest.TestCase):
+    def test_promote_writes_memory_when_proven(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            home = d / "ltmhome"
+            _seed_learn(d, "T1", "build を直す", "make を使え")
+            _seed_hits(d, "T1", 2)                      # 2 回効いた → 昇格
+            cfg = cfg_for(d, ltm=True, ltm_home=home, promote_threshold=2)
+            promoted = km.promote_learnings(cfg)
+            self.assertEqual([s for s, _ in promoted], ["T1"])
+            mems = list((home / "memory" / "home" / "memories" / "kiro-autonomous").glob("*.md"))
+            self.assertEqual(len(mems), 1)
+            txt = mems[0].read_text()
+            self.assertIn("- learn: build を直す :: make を使え", txt)
+            self.assertIn("promoted_from: \"decisions/T1.md\"", txt)
+            # 出典に昇格マーカ → 再実行は冪等（重複しない）
+            self.assertIn("- promoted:", (d / "decisions" / "T1.md").read_text())
+            self.assertEqual(km.promote_learnings(cfg), [])
+
+    def test_below_threshold_not_promoted(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            home = d / "ltmhome"
+            _seed_learn(d, "T1", "build を直す", "make を使え")
+            _seed_hits(d, "T1", 1)                      # 1 回だけ → まだ昇格しない
+            cfg = cfg_for(d, ltm=True, ltm_home=home, promote_threshold=2)
+            self.assertEqual(km.promote_learnings(cfg), [])
+            self.assertFalse((home / "memory").exists())
+
+    def test_noop_when_ltm_disabled(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            _seed_learn(d, "T1", "x", "y"); _seed_hits(d, "T1", 5)
+            cfg = cfg_for(d, ltm=False, ltm_home=d / "ltmhome")
+            self.assertEqual(km.promote_learnings(cfg), [])
+
+    def test_recall_falls_back_to_ltm(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            home = d / "ltmhome"
+            mem = home / "memory" / "home" / "memories" / "kiro-autonomous"
+            mem.mkdir(parents=True)
+            (mem / "m.md").write_text(
+                "---\nid: mem-1\n---\n## 学び・結論\n- learn: build を直す :: make を使え\n",
+                encoding="utf-8")
+            cfg = cfg_for(d, ltm=True, ltm_home=home)   # ローカル decisions 無し
+            task = km.Task(id="T9", title="build を直す")
+            res = km.find_learned_resolution(cfg, task)
+            self.assertIsNotNone(res)
+            self.assertEqual(res[1], "make を使え")
+            self.assertTrue(res[0].startswith("ltm:"))
+
+
 class TestWatch(unittest.TestCase):
     def test_watch_picks_up_new_task(self):
         with tempfile.TemporaryDirectory() as d:

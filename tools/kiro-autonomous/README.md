@@ -50,7 +50,8 @@ bash tools/kiro-autonomous/install.sh           # ~/.local/bin/kiro-autonomous
   archive/<id>.md      完了タスクの保全先（done で backlog から移動）
   policy.md            優先順位・実行先の上書き（人だけが書く）
   needs/<id>.md        判断待ちの通知＋フィードバック記入欄（人が記入→自動再開）
-  decisions/<id>.md    人の判断・承認・フィードバックの決定記録（append-only）
+  decisions/<id>.md    人の判断・承認・フィードバックの決定記録（learn＝学習材料。append-only）
+                       └ --ltm 時、実績ある learn は ltm-use home へ昇格（横断再利用）
   archive/<id>.md      ↑ done の保全先。検収用の「納品書」付き（backlog と1:1）
   DELIVERY.md          納品一覧（受領書）。done を1行ずつ追記
   journal.md           機械のサイクルログ
@@ -133,6 +134,27 @@ kiro-autonomous hold prod-deploy --reason "本番は手動"
 人へ回りそうになると、他案件の `learn` から**タイトルが十分似た過去の指示**（Jaccard ≥ `--learn-threshold`、
 既定 0.5）を探し、見つかれば **blocked にせず**その指示を反映して自動的に再実行する（`auto-resolve` を
 決定記録に残し通知を抑制）。自動適用は **1 タスク 1 回**まで。`--no-learn` で無効化。
+
+### ltm-use への学習昇格（プロジェクト横断・エージェント不要）
+
+`decisions/` の学習は**その作業ディレクトリ内**だけで効く。`--ltm` を付けると、これを
+`ltm-use`（セッション横断の長期記憶）へ**昇格**し、別プロジェクトからも再利用できる。すべて
+**決定的なファイル操作**で完結し、LLM／エージェントは一切起動しない:
+
+- **昇格の根拠は実績**: ある `learn` ルールが `auto-resolve` で実際に効いた**回数**が
+  `--promote-threshold`（既定 2）以上になったら昇格。`ltm-use` の home
+  （`<ltm-home>/memory/home/memories/kiro-autonomous/`）へ frontmatter 付き Markdown を書く。
+- **横断 recall**: 学習照合は「ローカル `decisions/` → ヒット無しなら **ltm-use home**」の順に
+  フォールバック（同じ Jaccard 照合）。別リポジトリで同種の詰まりが起きると過去の指示を再利用する。
+- **冪等・グレースフル**: 昇格済みは出典 DR に `- promoted:` マーカを残し二重昇格しない。
+  `--ltm` 無し（既定）や home 未解決なら**何もしない**（home の外へ書かないのが既定）。
+
+```bash
+kiro-autonomous run  --ltm                 # run 末尾で実績のある学習を自動昇格＋横断 recall
+kiro-autonomous promote                    # 昇格だけ手動実行（明示操作なので常に有効）
+#   --ltm-home PATH   ストアのルート（既定 $KIRO_LTM_HOME → ~/.claude）
+#   --promote-threshold N   昇格に要する実績回数（既定 2）
+```
 
 ## 納品書（成果物の検収）
 

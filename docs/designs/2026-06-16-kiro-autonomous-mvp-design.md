@@ -298,7 +298,28 @@ done 時に検収用のサマリーを2段で残す（成果物は kiro-flow 経
 - 見つかれば **blocked にせず**、その指示を feedback として添付して `ready` に戻し（自動解決）、
   `decisions/<id>.md` に `auto-resolve`（出典 DR 付き）を記録して**通知を抑制**する。
 - **自動適用は 1 タスク 1 回まで**（`autolearned` 印）。それでも解決しなければ通常どおり人へ回す。
-- `--no-learn` で無効化。自分の履歴は学習源にしない（自己ループ防止）。将来 `ltm-use` へ昇格。
+- `--no-learn` で無効化。自分の履歴は学習源にしない（自己ループ防止）。
+
+### 7.2 ltm-use への学習昇格（プロジェクト横断・**エージェント不要**）
+
+§7.1 の学習は**作業ディレクトリの `decisions/` 内**に閉じる。`--ltm` でこれを `ltm-use`
+（セッション横断の長期記憶）へ**昇格**し、別プロジェクトからも再利用できるようにする。
+設計上の制約は **「エージェント（LLM）を一切起動しない／決定的」**。ltm-use はエージェントが
+save/recall するスキルだが、ここでは **home の Markdown を直接読み書き**して連携する。
+
+- **昇格の根拠＝実績（決定的）**: ある `learn` ルールが `auto-resolve` で実際に効いた**回数**を
+  `count_learn_hits`（決定記録の `learned from <src>` を集計）で数え、`--promote-threshold`
+  （既定 2）以上で昇格対象とする。LLM の価値判断は用いない。
+- **昇格先＝ltm-use home**: `<ltm-home>/memory/home/memories/kiro-autonomous/` に
+  ltm-use の記憶フォーマット（YAML frontmatter＋本文）で書く。`ltm-home` は
+  `--ltm-home` → 環境変数 `KIRO_LTM_HOME` → `~/.claude` の順で解決。本文に機械可読な
+  `- learn: …` を残し、recall は同じ `LEARN_RE` で読み戻す（パーサ1本で対称）。
+- **横断 recall**: `find_learned_resolution` は「ローカル `decisions/` → ヒット無しなら
+  **ltm-use home**」の順にフォールバック（同じ Jaccard 照合）。ltm-use home は複数プロジェクト
+  横断なので、別リポジトリの同種の詰まりに過去の指示が効く。
+- **冪等・グレースフル**: 昇格済みは出典 DR に `- promoted: <memid>` を残して二重昇格しない。
+  `--ltm` 無し（既定）や home 未解決なら**何もしない**（home の外へ書くため既定は off）。
+- 入口: `run --ltm`（ループ末尾で自動昇格）／`promote`（昇格のみ手動。明示操作なので常に有効）。
 
 ---
 
@@ -472,7 +493,8 @@ KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/
 | 系 | …＋done を archive/ へ退避、**rot 検知（古い/重複/実行不能）** | webhook enqueue |
 | 実行委譲 | **location: local=run / daemon・remote=submit＋結果待ち** | コスト連動の自動 location |
 | 通知 | 案件毎 `needs/<id>.md`＋**チェックボックス確定/draft/debounce で誤発火防止**＋stdout | teams/メール/issue 連携 |
-| 決定記録 | approve/hold/reprioritize/feedback → `decisions/<id>.md`、DR 学習で類似案件を自動解決 | ltm-use への昇格 |
+| 決定記録 | approve/hold/reprioritize/feedback → `decisions/<id>.md`、DR 学習で類似案件を自動解決 | （済）一般化 |
+| 学習昇格 | **`--ltm` で実績ある learn を ltm-use home へ昇格＋プロジェクト横断 recall（決定的・LLM不要）** | semantic 統合・rate 連携 |
 | 検収 | **archive 個票の納品書＋DELIVERY.md 受領書一覧（成果参照: PR/commit/git）** | 検収 UI |
 | 実行先 | local ／ **location（offload 規則で kiro-flow `--git` 分散バスへ移譲）** | コスト連動の自動 offload 判断 |
 

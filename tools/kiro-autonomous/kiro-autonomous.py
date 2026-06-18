@@ -41,6 +41,7 @@ FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
+LTM_CATEGORY = "kiro-autonomous"  # ltm-use home 内のカテゴリ（昇格先サブディレクトリ）
 FEEDBACK_MARKER = "## フィードバック"
 CHECKBOX_RE = re.compile(r"^\s*-\s*\[[ xX]\]")        # 確定チェックボックス行（任意状態）
 CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]")          # チェック済み（= 確定）
@@ -231,23 +232,152 @@ def _title_overlap(a: str, b: str) -> float:
     return len(wa & wb) / len(wa | wb)
 
 
-def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | None":
-    """他案件の決定記録の『- learn:』から、タイトルが十分似た過去の指示を探す。
-    返り値 (出典 DR ファイルの id, 指示文)。無ければ None。"""
-    if not cfg.decisions.exists():
-        return None
+def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
+                      label, skip_id: "str | None" = None) -> "tuple[str, str] | None":
+    """与えた md 群の『- learn:』を Jaccard でタイトル照合し最良を返す（決定的・LLM 不要）。"""
     best, best_score = None, 0.0
-    for df in sorted(cfg.decisions.glob("*.md")):
-        if df.stem == task.id:  # 自分の履歴は除く（自己ループ防止）
+    for f in sorted(files):
+        if skip_id is not None and f.stem == skip_id:  # 自分の履歴は除く（自己ループ防止）
             continue
-        for line in df.read_text(encoding="utf-8").splitlines():
+        for line in f.read_text(encoding="utf-8").splitlines():
             m = LEARN_RE.match(line)
             if not m:
                 continue
             score = _title_overlap(task.title, m.group("title"))
-            if score >= cfg.learn_threshold and score > best_score:
-                best, best_score = (df.stem, m.group("guide").strip()), score
+            if score >= threshold and score > best_score:
+                best, best_score = (label(f), m.group("guide").strip()), score
     return best
+
+
+def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | None":
+    """過去の人の判断（learn）からタイトルが十分似た指示を探す。返り値 (出典, 指示文)。
+
+    ① ローカル `decisions/` を照合 → ② ヒット無し かつ cfg.ltm なら ltm-use home を横断照合。
+    どちらも決定的なファイル走査＋Jaccard で、エージェント（LLM）を一切起動しない。"""
+    local = []
+    if cfg.decisions.exists():
+        local = _best_learn_match(task, cfg.learn_threshold,
+                                  list(cfg.decisions.glob("*.md")),
+                                  label=lambda f: f.stem, skip_id=task.id)
+    if local:
+        return local
+    if cfg.ltm:
+        mem_dir = ltm_memories_dir(cfg)
+        if mem_dir and mem_dir.exists():
+            return _best_learn_match(task, cfg.learn_threshold, list(mem_dir.glob("*.md")),
+                                     label=lambda f: f"ltm:{f.stem}")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# ltm-use への学習昇格（決定的・エージェント不要。home の Markdown を直接読み書き）
+# ---------------------------------------------------------------------------
+def resolve_ltm_home(arg: "str | None") -> Path:
+    """ltm-use ストアのルート: 明示指定 → 環境変数 KIRO_LTM_HOME → ~/.claude。"""
+    raw = arg or os.environ.get("KIRO_LTM_HOME") or "~/.claude"
+    return Path(raw).expanduser()
+
+
+def ltm_memories_dir(cfg: "Config") -> "Path | None":
+    """昇格先 `<home>/memory/home/memories/kiro-autonomous`。ltm 無効なら None。"""
+    if not cfg.ltm or cfg.ltm_home is None:
+        return None
+    return cfg.ltm_home / "memory" / "home" / "memories" / LTM_CATEGORY
+
+
+def _slug(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s or "memory"
+
+
+def count_learn_hits(cfg: "Config") -> "dict[str, int]":
+    """各 learn ルール（出典 DR id）が auto-resolve で実際に効いた回数を数える（昇格の根拠）。"""
+    hits: dict[str, int] = {}
+    if not cfg.decisions.exists():
+        return hits
+    pat = re.compile(r"learned from (?:ltm:)?(?P<src>\S+?):")
+    for df in cfg.decisions.glob("*.md"):
+        for line in df.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("- reason"):
+                m = pat.search(line)
+                if m:
+                    src = m.group("src")
+                    hits[src] = hits.get(src, 0) + 1
+    return hits
+
+
+def collect_learnings(cfg: "Config") -> "list[tuple[str, str, str]]":
+    """decisions/ の全 learn ルールを (出典id, title, guide) で列挙。"""
+    out: list[tuple[str, str, str]] = []
+    if not cfg.decisions.exists():
+        return out
+    for df in sorted(cfg.decisions.glob("*.md")):
+        for line in df.read_text(encoding="utf-8").splitlines():
+            m = LEARN_RE.match(line)
+            if m:
+                out.append((df.stem, m.group("title").strip(), m.group("guide").strip()))
+    return out
+
+
+def _promote_marker(cfg: "Config", src: str) -> bool:
+    p = decision_path(cfg, src)
+    return p.exists() and "- promoted:" in p.read_text(encoding="utf-8")
+
+
+def write_ltm_memory(mem_dir: Path, title: str, guide: str, src: str, hits: int) -> str:
+    """ltm-use 記憶フォーマット（frontmatter＋本文）で1件書き出し、記憶IDを返す。
+
+    本文に機械可読な `- learn: <title> :: <guide>` を残し、recall 時に同じ LEARN_RE で読み戻す。"""
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    n = len(list(mem_dir.glob("*.md"))) + 1
+    date = datetime.now().strftime("%Y-%m-%d")
+    memid = f"mem-{datetime.now().strftime('%Y%m%d')}-{n:03d}"
+    name = f"{_slug(title)}-{n:03d}"
+    summary = guide.replace("\n", " ")[:120]
+    body = (
+        f"---\n"
+        f"id: {memid}\n"
+        f"title: \"{title}\"\n"
+        f"created: \"{date}\"\n"
+        f"updated: \"{date}\"\n"
+        f"status: active\n"
+        f"scope: home\n"
+        f"tags: [{LTM_CATEGORY}, learn]\n"
+        f"memory_type: procedural\n"
+        f"promoted_from: \"decisions/{src}.md\"\n"
+        f"access_count: {hits}\n"
+        f"summary: \"{summary}\"\n"
+        f"---\n\n"
+        f"# {title}\n\n"
+        f"## コンテキスト\n"
+        f"kiro-autonomous の判断ノウハウ。出典 decisions/{src}.md で {hits} 回再利用され昇格。\n\n"
+        f"## 学び・結論\n"
+        f"- learn: {title} :: {guide}\n"
+    )
+    (mem_dir / f"{name}.md").write_text(body, encoding="utf-8")
+    return memid
+
+
+def promote_learnings(cfg: "Config") -> "list[tuple[str, str]]":
+    """効果が再現した learn ルール（hits ≥ promote_threshold・未昇格）を ltm-use home へ昇格。
+
+    返り値 [(出典id, 記憶id)]。ltm 無効や home 未解決なら何もしない（グレースフル no-op）。"""
+    mem_dir = ltm_memories_dir(cfg)
+    if mem_dir is None:
+        return []
+    hits = count_learn_hits(cfg)
+    seen: set[str] = set()
+    promoted: list[tuple[str, str]] = []
+    for src, title, guide in collect_learnings(cfg):
+        if src in seen or hits.get(src, 0) < cfg.promote_threshold or _promote_marker(cfg, src):
+            continue
+        seen.add(src)
+        memid = write_ltm_memory(mem_dir, title, guide, src, hits[src])
+        with decision_path(cfg, src).open("a", encoding="utf-8") as f:
+            f.write(f"- promoted: {memid}（ltm-use home へ昇格 / hits={hits[src]}）\n")
+        append_journal(cfg.journal, f"学習昇格: {src} → ltm-use {memid}（hits={hits[src]}）")
+        promoted.append((src, memid))
+    return promoted
 
 
 def normalize_title(t: Task) -> str:
@@ -688,6 +818,9 @@ class Config:
     do_archive: bool = True         # done を archive/ へ退避（False なら削除）
     learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
+    ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
+    ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
+    promote_threshold: int = 2      # learn ルールがこの回数以上効いたら昇格
     rot: bool = False               # rot 検知（古い/重複/実行不能を triage で掃除）
     rot_age_days: float = 14.0      # stale とみなす経過日数
     cleanup: bool = True            # run 後に kiro-flow バスの一時状態を掃除
@@ -887,13 +1020,14 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     newly_blocked = {t.id for t in tasks if t.norm_status() == "blocked"} - pre_blocked
     budget_stop = reason == REASON_BUDGET
     notified = notify(cfg, tasks, reasons, newly_blocked, budget_stop)
+    promoted = promote_learnings(cfg) if cfg.ltm else []   # 効いた学習を ltm-use へ昇格
     _cleanup_bus(cfg)             # 不要な一時ファイル（kiro-flow バスの run 状態）を掃除
     append_journal(cfg.journal, f"=== kiro-autonomous 停止 reason={reason} cycles={cycle} "
                                 f"done={counts['done']} blocked={counts['blocked']} "
-                                f"notified={notified} ===")
+                                f"notified={notified} promoted={len(promoted)} ===")
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
             "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified,
-            "ingested": ingested, "archived": archived}
+            "ingested": ingested, "archived": archived, "promoted": promoted}
 
 
 def _cleanup_bus(cfg: Config) -> None:
@@ -1015,6 +1149,22 @@ def cmd_rot(cfg: Config, fix: bool) -> int:
     return 1
 
 
+def cmd_promote(cfg: Config) -> int:
+    """効いた学習（decisions/ の learn）を ltm-use 長期記憶へ昇格（エージェント不要）。"""
+    cfg.ltm = True   # promote は明示操作なので ltm を有効化
+    mem_dir = ltm_memories_dir(cfg)
+    promoted = promote_learnings(cfg)
+    print(f"昇格先: {mem_dir}")
+    if not promoted:
+        hits = count_learn_hits(cfg)
+        print(f"昇格対象なし（threshold={cfg.promote_threshold}・既存hits={hits or '無'}）。")
+        return 0
+    print(f"{len(promoted)} 件を昇格:")
+    for src, memid in promoted:
+        print(f"  decisions/{src} → {memid}")
+    return 0
+
+
 def cmd_triage(cfg: Config) -> int:
     ensure_dirs(cfg)
     tasks = load_tasks(cfg.backlog)
@@ -1043,7 +1193,8 @@ def cmd_run(cfg: Config) -> int:
     print(f"サイクル : {result['cycles']}")
     print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
           f"inbox={counts['inbox']} archived={result.get('archived', 0)} "
-          f"ingested={len(result.get('ingested', []))}")
+          f"ingested={len(result.get('ingested', []))} "
+          f"promoted={len(result.get('promoted', []))}")
     return exit_code_for(result)
 
 
@@ -1080,6 +1231,8 @@ def build_config(args) -> Config:
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
         learn=not getattr(args, "no_learn", False), learn_threshold=args.learn_threshold,
+        ltm=getattr(args, "ltm", False), ltm_home=resolve_ltm_home(getattr(args, "ltm_home", None)),
+        promote_threshold=getattr(args, "promote_threshold", 2),
         rot=getattr(args, "rot", False), rot_age_days=args.rot_age_days,
         cleanup=not getattr(args, "no_cleanup", False),
         delivery=under("delivery", "DELIVERY.md"), debounce=args.debounce,
@@ -1127,6 +1280,12 @@ def _add_common(sp):
                     help="DR 学習（過去の人の判断から類似案件を自動解決）を無効化")
     sp.add_argument("--learn-threshold", type=float, default=0.5,
                     help="DR 学習のタイトル類似度しきい値（0〜1）")
+    sp.add_argument("--ltm", action="store_true",
+                    help="効いた学習を ltm-use 長期記憶へ昇格＋プロジェクト横断 recall（既定 off）")
+    sp.add_argument("--ltm-home", default=None,
+                    help="ltm-use ストアのルート（既定 KIRO_LTM_HOME → ~/.claude）")
+    sp.add_argument("--promote-threshold", type=int, default=2,
+                    help="learn ルールがこの回数以上効いたら昇格（既定 2）")
     sp.add_argument("--rot-age-days", type=float, default=14.0,
                     help="rot の stale 判定（経過日数）")
 
@@ -1152,7 +1311,8 @@ def main(argv=None) -> int:
     run.add_argument("--once", action="store_true", help="1 タスクだけ処理して終了")
 
     for name, helptext in [("triage", "優先順位付けのみ（inbox→ready 昇格・policy 適用）"),
-                           ("needs", "人の判断待ち（blocked / need_intake）を表示")]:
+                           ("needs", "人の判断待ち（blocked / need_intake）を表示"),
+                           ("promote", "効いた学習を ltm-use 長期記憶へ昇格（エージェント不要）")]:
         _add_common(sub.add_parser(name, help=helptext))
     rot = sub.add_parser("rot", help="rot（古い/重複/実行不能）を検出して報告（--fix で blocked 化）")
     _add_common(rot); rot.add_argument("--fix", action="store_true", help="検出した rot を人の判断へ回す")
@@ -1178,6 +1338,7 @@ def main(argv=None) -> int:
         "run": lambda: cmd_run(cfg),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
+        "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason),
         "hold": lambda: cmd_hold(cfg, args.id, args.reason),
