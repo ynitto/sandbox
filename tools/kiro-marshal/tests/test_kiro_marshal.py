@@ -31,7 +31,7 @@ def mkb(d: Path, tid: str, status="ready", verify="true", source="human", title=
 def cfg_for(d: Path, **kw):
     base = dict(backlog=d / "backlog", policy=d / "policy.md", decisions=d / "decisions",
                 journal=d / "journal.md", needs=d / "needs", workdir=d, bus=d / "bus",
-                planner="stub", executor="stub", dry_run=True)
+                planner="none", flow_planner="stub", executor="stub", dry_run=True)
     base.update(kw)
     return km.Config(**base)
 
@@ -64,11 +64,19 @@ class TestPolicy(unittest.TestCase):
 
 
 class TestPrioritize(unittest.TestCase):
-    def test_stub_oldest_and_policy(self):
+    def test_none_age_and_policy(self):
         tasks = [km.Task(id="T0", title="a"), km.Task(id="T1", title="cleanup logs"),
                  km.Task(id="T2", title="urgent")]
-        order = km.prioritize(tasks, km.Policy(pin=["T2"], defer=["cleanup"]), planner="stub")
+        order = km.prioritize(tasks, km.Policy(pin=["T2"], defer=["cleanup"]), planner="none")
         self.assertEqual([t.id for t in order], ["T2", "T0", "T1"])
+
+    def test_none_priority_then_age(self):
+        # mtime 順 A,B,C で渡るが priority 降順が勝ち、同値は古さ
+        tasks = [km.Task(id="A", title="a", priority=1),
+                 km.Task(id="B", title="b", priority=5),
+                 km.Task(id="C", title="c", priority=5)]
+        order = km.prioritize(tasks, km.Policy(), planner="none")
+        self.assertEqual([t.id for t in order], ["B", "C", "A"])
 
     def test_agent_fallback(self):
         ready = [km.Task(id="T0", title="a"), km.Task(id="T1", title="b")]
@@ -163,11 +171,17 @@ class TestLocation(unittest.TestCase):
             d = Path(d)
             t = km.Task(id="T1", title="heavy batch", verify="true")
             pol = km.Policy(offload=["heavy"])
+            # auto: git-bus 無し → local
             self.assertEqual(km.decide_location(t, pol, cfg_for(d)), "local")
+            # auto: offload 一致＋git-bus → remote
             c = cfg_for(d, git_bus="git@x:team/bus.git")
             self.assertEqual(km.decide_location(t, pol, c), "remote")
-            self.assertIn("--git", km.build_kiro_flow_cmd(t, c, "remote"))
-            self.assertNotIn("--git", km.build_kiro_flow_cmd(t, c, "local"))
+            # 明示 location
+            self.assertEqual(km.decide_location(t, km.Policy(), cfg_for(d, location="daemon")), "daemon")
+            # remote 指定だが git-bus 無し → local
+            self.assertEqual(km.decide_location(t, km.Policy(), cfg_for(d, location="remote")), "local")
+            self.assertIn("--git", km.build_kiro_flow_cmd(t, c, use_git=True))
+            self.assertNotIn("--git", km.build_kiro_flow_cmd(t, c, use_git=False))
 
     def test_run_offloads(self):
         with tempfile.TemporaryDirectory() as d:

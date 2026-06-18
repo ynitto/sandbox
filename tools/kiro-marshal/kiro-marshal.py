@@ -11,7 +11,7 @@
      書き込むと拾って再開する
 
 二層構成: kiro-flow が実行（act）、kiro-marshal が優先順位付け・検証・収束・決定記録を担う。
-標準ライブラリのみ。kiro-cli が無くても --planner stub / --executor stub / --dry-run で動く。
+標準ライブラリのみ。kiro-cli が無くても --planner none / --flow-planner stub / --executor stub で動く。
 """
 from __future__ import annotations
 
@@ -56,6 +56,7 @@ class Task:
     title: str
     status: str = "ready"
     source: str = "human"
+    priority: int = 0      # 外部で付与する優先度（大きいほど高優先。none planner で使う）
     verify: str = ""
     retries: int = 0
     extra: "list[tuple[str, str]]" = field(default_factory=list)
@@ -97,6 +98,11 @@ def parse_task(text: str, tid: str) -> Task:
             t.status = val or "ready"
         elif key == "source":
             t.source = val or "human"
+        elif key == "priority":
+            try:
+                t.priority = int(val)
+            except ValueError:
+                t.priority = 0
         elif key == "verify":
             t.verify = _strip_code(val)
         elif key == "retries":
@@ -114,6 +120,7 @@ def serialize_task(task: Task) -> str:
         f"## {task.id}: {task.title}",
         f"- status: {task.norm_status()}",
         f"- source: {task.source}",
+        f"- priority: {task.priority}",
         f"- verify: {f'`{task.verify}`' if task.verify else ''}",
         f"- retries: {task.retries}",
     ]
@@ -333,10 +340,11 @@ def _run_kiro_cli(prompt: str, model: "str | None") -> str:
 def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=_run_kiro_cli) -> "list[Task] | None":
     if not ready:
         return []
-    listing = "\n".join(f"- {t.id}: {t.title}（source={t.source}）" for t in ready)
-    prompt = ("あなたはバックログの優先順位付け役。次のタスク群を、重要度・緊急度・依存関係から"
-              "優先順位の高い順に並べ替え、**タスクID の JSON 配列だけ**を出力してください"
-              "（説明文なし）。\n\nタスク:\n" + listing)
+    listing = "\n".join(
+        f"- {t.id}: {t.title}（priority={t.priority}, source={t.source}）" for t in ready)
+    prompt = ("あなたはバックログの優先順位付け役。次のタスク群を、重要度・緊急度・依存関係に加え、"
+              "**外部で付与された priority（大きいほど高優先）も加味**して優先順位の高い順に並べ替え、"
+              "**タスクID の JSON 配列だけ**を出力してください（説明文なし）。\n\nタスク:\n" + listing)
     try:
         order_ids = _extract_id_array(kiro_run(prompt, model))
     except Exception:  # noqa: BLE001
@@ -359,13 +367,19 @@ def apply_policy_order(ordered: "list[Task]", policy: Policy) -> "list[Task]":
     return pinned + middle + deferred
 
 
+def by_priority_then_age(ready: "list[Task]") -> "list[Task]":
+    """優先度降順、同値は最古優先（ready は mtime 昇順で渡される＝安定ソートで age が効く）。"""
+    return sorted(ready, key=lambda t: -t.priority)
+
+
 def prioritize(tasks, policy, planner, model=None, ranker=None) -> "list[Task]":
-    ready = consumable_tasks(tasks)
-    if planner == "stub":
-        base = list(ready)  # mtime 昇順 = 最古優先（FIFO）
-    else:
+    """planner=none: priority＋古さ。planner=kiro: エージェント（priority も加味）。policy が最終上書き。"""
+    ready = consumable_tasks(tasks)  # mtime 昇順（最古優先）
+    if planner == "none":
+        base = by_priority_then_age(ready)
+    else:  # kiro（エージェント順位付け。失敗時は priority＋古さにフォールバック）
         rank = (ranker or rank_agent)(ready, model)
-        base = rank if rank is not None else list(ready)
+        base = rank if rank is not None else by_priority_then_age(ready)
     return apply_policy_order(base, policy)
 
 
@@ -429,9 +443,23 @@ def decide_pace(cfg: "Config", cycle_elapsed: float) -> float:
 
 
 def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
-    if cfg.git_bus and any(task.matches(p) for p in policy.offload):
-        return "remote"
-    return "local"
+    """act の実行モードを local / daemon / remote に決める（kiro-flow の起動方法を統合）。
+
+      local  : kiro-flow run（単発・自己完結・daemon 不要）
+      daemon : ローカルバスの daemon に submit して結果を待つ（warm worker 再利用）
+      remote : 共有 git バス（別マシンの daemon）へ submit＝真のオフロード
+    `--location auto`（既定）: offload 一致かつ git-bus → remote / ローカル daemon 稼働 → daemon / それ以外 local。
+    明示指定（local/daemon/remote）はそれを優先（remote は git-bus 必須、無ければ local）。"""
+    loc = cfg.location
+    if loc == "auto":
+        if cfg.git_bus and any(task.matches(p) for p in policy.offload):
+            return "remote"
+        if daemon_running(cfg, use_git=False):
+            return "daemon"
+        return "local"
+    if loc == "remote" and not cfg.git_bus:
+        return "local"
+    return loc
 
 
 def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
@@ -443,10 +471,10 @@ def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
     return base
 
 
-def build_kiro_flow_cmd(task: Task, cfg: "Config", location: str = "local") -> "list[str]":
-    """kiro-flow run（都度起動）のコマンド。remote なら共有 git バスへ移譲する。"""
-    return _kf_base(cfg, location == "remote") + [
-        "run", build_request(task), "--planner", cfg.planner,
+def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
+    """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。"""
+    return _kf_base(cfg, use_git) + [
+        "run", build_request(task), "--planner", cfg.flow_planner,
         "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
 
 
@@ -481,9 +509,9 @@ def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
         f.close()
 
 
-def _act_run(task: Task, cfg: "Config", location: str) -> "tuple[bool, str]":
-    """daemon が無いとき: kiro-flow run で都度起動（同期実行）。"""
-    cmd = build_kiro_flow_cmd(task, cfg, location)
+def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, str]":
+    """kiro-flow run で都度起動（同期実行）。daemon 不要。"""
+    cmd = build_kiro_flow_cmd(task, cfg, use_git)
     try:
         proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=cfg.act_timeout,
                               capture_output=True, text=True)
@@ -523,11 +551,19 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
 
 
 def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tuple[bool, str]":
-    """daemon があれば submit、無ければ run で都度起動する。"""
-    use_git = location == "remote" and bool(cfg.git_bus)
-    if daemon_running(cfg, use_git):
-        return _act_submit(task, cfg, use_git)
-    return _act_run(task, cfg, location)
+    """location（local/daemon/remote）に応じて kiro-flow へ委譲する。
+
+      local  → run（単発）
+      daemon → ローカル daemon に submit＋結果待ち（daemon が無ければ run にフォールバック）
+      remote → git バスの remote daemon に submit＋結果待ち（オフロード。フォールバックしない）
+    """
+    if location == "remote":
+        return _act_submit(task, cfg, use_git=True)
+    if location == "daemon":
+        if daemon_running(cfg, use_git=False):
+            return _act_submit(task, cfg, use_git=False)
+        return _act_run(task, cfg, use_git=False)  # daemon 不在 → run
+    return _act_run(task, cfg, use_git=False)
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +582,9 @@ class Config:
     git_branch: str = "main"
     git_subdir: "str | None" = None
     kiro_flow: "str | None" = None
-    planner: str = "flow-planner"
+    planner: str = "kiro"          # marshal の優先順位付け: kiro（エージェント）/ none（priority＋古さ）
+    flow_planner: str = "flow-planner"  # kiro-flow run に渡す planner
+    location: str = "auto"         # act の実行モード: auto / local / daemon / remote
     executor: str = "kiro"
     model: "str | None" = None
     max_iterations: int = 3
@@ -648,8 +686,9 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         persist_task(cfg, task)
 
         location = decide_location(task, policy, cfg)
-        if location == "remote":
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} を分散環境へ移譲（{cfg.git_bus}）")
+        if location != "local":
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
+                                        + (f"（{cfg.git_bus}）" if location == "remote" else ""))
         if not cfg.dry_run:
             act(task, cfg, location)
 
@@ -842,7 +881,8 @@ def build_config(args) -> Config:
         workdir=workdir,
         bus=rel("bus", ".kiro-marshal-bus"),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
-        kiro_flow=args.kiro_flow, planner=args.planner, executor=args.executor,
+        kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
+        location=args.location, executor=args.executor,
         model=args.model, max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
@@ -866,7 +906,12 @@ def _add_common(sp):
     sp.add_argument("--git-branch", default="main")
     sp.add_argument("--git-subdir", default=None)
     sp.add_argument("--kiro-flow", default=None)
-    sp.add_argument("--planner", default="flow-planner", choices=["kiro", "stub", "flow-planner"])
+    sp.add_argument("--planner", default="kiro", choices=["kiro", "none"],
+                    help="優先順位付け: kiro=エージェント（priority 加味）/ none=priority＋古さ")
+    sp.add_argument("--flow-planner", default="flow-planner",
+                    choices=["flow-planner", "kiro", "stub"], help="kiro-flow run に渡す planner")
+    sp.add_argument("--location", default="auto",
+                    choices=["auto", "local", "daemon", "remote"], help="act の実行モード")
     sp.add_argument("--executor", default="kiro", choices=["kiro", "stub"])
     sp.add_argument("--model", default=None)
     sp.add_argument("--max-iterations", type=int, default=3)
