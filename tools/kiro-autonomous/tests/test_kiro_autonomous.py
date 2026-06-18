@@ -1,9 +1,9 @@
-"""kiro-marshal の単体テスト（標準ライブラリ unittest）。
+"""kiro-autonomous の単体テスト（標準ライブラリ unittest）。
 
 案件毎ファイル（backlog/<id>.md）・done でファイル削除・watch 常駐・フィードバック往復・
 案件毎の needs/decisions を、kiro-flow を呼ばずに検証する。kiro-flow stub 統合も含む。
 
-    python -m unittest discover -s tools/kiro-marshal/tests
+    python -m unittest discover -s tools/kiro-autonomous/tests
 """
 import importlib.util
 import os
@@ -12,10 +12,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-_MOD = Path(__file__).resolve().parent.parent / "kiro-marshal.py"
-_spec = importlib.util.spec_from_file_location("kiro_marshal", _MOD)
+_MOD = Path(__file__).resolve().parent.parent / "kiro-autonomous.py"
+_spec = importlib.util.spec_from_file_location("kiro_autonomous", _MOD)
 km = importlib.util.module_from_spec(_spec)
-sys.modules["kiro_marshal"] = km
+sys.modules["kiro_autonomous"] = km
 _spec.loader.exec_module(km)
 
 

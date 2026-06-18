@@ -1,12 +1,12 @@
-# kiro-marshal
+# kiro-autonomous
 
 **Loop Engineering MVP** — `backlog/`（案件毎ファイル）を優先順位付けし、最優先タスクを kiro-flow に
 実行させ、**`verify` をローカルで実行して PASS したものだけ done に確定**（archive/ へ退避）、NG なら
 積み直す。backlog が尽きるか予算が尽きるまで繰り返し、人の判断が要った分は案件毎の
 `needs/<id>.md`（フィードバック欄つき）で差し出し、判断は `decisions/<id>.md` に残す。
 
-> 規約は [`.github/instructions/kiro-marshal.instructions.md`](../../.github/instructions/kiro-marshal.instructions.md)、
-> 設計は [`docs/designs/2026-06-16-kiro-marshal-mvp-design.md`](../../docs/designs/2026-06-16-kiro-marshal-mvp-design.md)。
+> 規約は [`.github/instructions/kiro-autonomous.instructions.md`](../../.github/instructions/kiro-autonomous.instructions.md)、
+> 設計は [`docs/designs/2026-06-16-kiro-autonomous-mvp-design.md`](../../docs/designs/2026-06-16-kiro-autonomous-mvp-design.md)。
 > `kiro-` 接頭辞は実行を kiro-flow＝kiro-cli に委譲するため。
 
 ## 正準ループ（5点）
@@ -21,7 +21,7 @@
 
 | 層 | 担当 | 実体 |
 |----|------|------|
-| 外側（制御） | 優先順位付け / 検証ゲート / 積み直し / 収束 / 決定記録 | `kiro-marshal` |
+| 外側（制御） | 優先順位付け / 検証ゲート / 積み直し / 収束 / 決定記録 | `kiro-autonomous` |
 | 内側（実行） | タスクの分解 → act → 内側 verify ループ | `kiro-flow run` |
 
 done を**自己申告で確定させない**（verify の終了コード0のみが根拠）ことが MVP の存在意義。
@@ -35,10 +35,10 @@ done を**自己申告で確定させない**（verify の終了コード0のみ
 ## インストール
 
 ```bash
-bash tools/kiro-marshal/install.sh           # ~/.local/bin/kiro-marshal
+bash tools/kiro-autonomous/install.sh           # ~/.local/bin/kiro-autonomous
 ```
 
-未インストールでも `python3 tools/kiro-marshal/kiro-marshal.py ...` で代用可。
+未インストールでも `python3 tools/kiro-autonomous/kiro-autonomous.py ...` で代用可。
 
 ## ファイル/ディレクトリ構成
 
@@ -66,11 +66,11 @@ daemon 検知は kiro-flow と同じロック（`flock`）。逐次処理では 
 
 ```bash
 # 既定（local: 単発 run）
-kiro-marshal run --executor kiro
+kiro-autonomous run --executor kiro
 
 # warm worker を再利用したいなら daemon を立てて submit 経路に
-kiro-flow --bus .kiro-marshal-bus daemon &
-kiro-marshal run --location daemon --executor kiro
+kiro-flow --bus .kiro-autonomous-bus daemon &
+kiro-autonomous run --location daemon --executor kiro
 ```
 
 ## サブコマンド
@@ -88,14 +88,14 @@ kiro-marshal run --location daemon --executor kiro
 
 ```bash
 mkdir backlog
-cp tools/kiro-marshal/backlog.md.example backlog/T1.md   # 1タスク=1ファイル
-kiro-marshal run --executor kiro                         # 自律消化（backlog/ を消化）
+cp tools/kiro-autonomous/backlog.md.example backlog/T1.md   # 1タスク=1ファイル
+kiro-autonomous run --executor kiro                         # 自律消化（backlog/ を消化）
 
 # 常駐: 新規タスク/フィードバックを監視して自動消化（idle 中はエージェントを起動しない）
-kiro-marshal run --watch --poll 10 --executor kiro
+kiro-autonomous run --watch --poll 10 --executor kiro
 
 # 優先度＋古さで決定的に（kiro-cli 不要）。kiro-flow も stub に
-kiro-marshal run --planner none --flow-planner stub --executor stub
+kiro-autonomous run --planner none --flow-planner stub --executor stub
 ```
 
 `backlog/<id>.md` に `- priority: N`（大きいほど高優先）を書くと外部から順序を制御できる。
@@ -108,9 +108,9 @@ kiro-marshal run --planner none --flow-planner stub --executor stub
 ブロック解除＋内容を次の実行に反映し、`decisions/<id>.md` に記録される。コマンドでも操作できる:
 
 ```bash
-kiro-marshal needs                                  # 何が判断待ちか
-kiro-marshal approve T12 --reason "テスト側を修正"
-kiro-marshal hold prod-deploy --reason "本番は手動"
+kiro-autonomous needs                                  # 何が判断待ちか
+kiro-autonomous approve T12 --reason "テスト側を修正"
+kiro-autonomous hold prod-deploy --reason "本番は手動"
 ```
 
 ## policy.md（優先順位・実行先の上書き）
@@ -159,7 +159,7 @@ issue-mailbox 等へダイジェストをパイプできる。
 ## テスト
 
 ```bash
-KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-marshal/tests -v
+KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/tests -v
 ```
 
 優先順位付け・検証ゲート・積み直し・収束・location/pace・フィードバック往復・watch・案件毎の

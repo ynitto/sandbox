@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# install.sh — kiro-marshal インストーラー
+# install.sh — kiro-autonomous インストーラー
 # 使い方: bash install.sh [--prefix <dir>]
 #
-# デフォルトのインストール先: ~/.local/bin/kiro-marshal
-# kiro-marshal は標準ライブラリのみ（pip 依存なし）。
+# デフォルトのインストール先: ~/.local/bin/kiro-autonomous
+# kiro-autonomous は標準ライブラリのみ（pip 依存なし）。
 # act の委譲先として kiro-flow を PATH に置いておくと連携できる（無くても --dry-run で動く）。
 
 set -euo pipefail
@@ -25,13 +25,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="${SCRIPT_DIR}/kiro-marshal.py"
-[[ -f "${SRC}" ]] || die "kiro-marshal.py が見つかりません: ${SRC}"
+SRC="${SCRIPT_DIR}/kiro-autonomous.py"
+[[ -f "${SRC}" ]] || die "kiro-autonomous.py が見つかりません: ${SRC}"
 
 command -v python3 >/dev/null 2>&1 || die "python3 が必要です"
 
 mkdir -p "${INSTALL_PREFIX}"
-DEST="${INSTALL_PREFIX}/kiro-marshal"
+DEST="${INSTALL_PREFIX}/kiro-autonomous"
 cp "${SRC}" "${DEST}"
 chmod +x "${DEST}"
 ok "インストールしました: ${DEST}"

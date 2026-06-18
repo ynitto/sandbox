@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""kiro-marshal — Loop Engineering MVP（バックログを捌く制御層）
+"""kiro-autonomous — Loop Engineering MVP（バックログを捌く制御層）
 
-正準ループ（設計書 docs/designs/2026-06-16-kiro-marshal-mvp-design.md §2）:
+正準ループ（設計書 docs/designs/2026-06-16-kiro-autonomous-mvp-design.md §2）:
   ① backlog/（案件毎ファイル）を読み優先順位をつけ、最優先タスクを kiro-flow に投げる
   ② 優先順位付けは原則 kiro-cli。stub 時は最古優先（FIFO）。人間は policy.md で上書きできる
   ③ kiro-flow の結果を verify ゲートで検証。done はファイル削除、NG は積み直す
@@ -10,7 +10,7 @@
   ⑤ ユーザーの判断は案件毎の decisions/<id>.md に保存。needs/<id>.md のフィードバック欄に
      書き込むと拾って再開する
 
-二層構成: kiro-flow が実行（act）、kiro-marshal が優先順位付け・検証・収束・決定記録を担う。
+二層構成: kiro-flow が実行（act）、kiro-autonomous が優先順位付け・検証・収束・決定記録を担う。
 標準ライブラリのみ。kiro-cli が無くても --planner none / --flow-planner stub / --executor stub で動く。
 """
 from __future__ import annotations
@@ -175,7 +175,7 @@ def load_policy(path: Path) -> Policy:
 
 
 def append_policy(path: Path, key: str, value: str) -> None:
-    header = "" if path.exists() else "# kiro-marshal policy（人間による上書き）\n\n"
+    header = "" if path.exists() else "# kiro-autonomous policy（人間による上書き）\n\n"
     with path.open("a", encoding="utf-8") as f:
         f.write(f"{header}{key}: {value}\n")
 
@@ -223,10 +223,10 @@ def write_needs_file(cfg: "Config", task: Task, reason: str) -> None:
     body = (
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"- なぜ: {reason}\n"
-        f"- 状態: blocked（kiro-marshal の判断待ち）\n\n"
+        f"- 状態: blocked（kiro-autonomous の判断待ち）\n\n"
         f"{FEEDBACK_MARKER}\n"
-        f"<!-- ここに修正方針・指示を書いて保存すると、kiro-marshal が拾ってブロックを解除し、\n"
-        f"     内容を次の実行に反映します。あるいは `kiro-marshal approve {task.id}`。 -->\n"
+        f"<!-- ここに修正方針・指示を書いて保存すると、kiro-autonomous が拾ってブロックを解除し、\n"
+        f"     内容を次の実行に反映します。あるいは `kiro-autonomous approve {task.id}`。 -->\n"
     )
     needs_path(cfg, task.id).write_text(body, encoding="utf-8")
 
@@ -274,7 +274,7 @@ def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task]]":
 
 
 def render_digest(blocked, intake, reasons: dict, budget_stop: bool) -> str:
-    lines = ["# 要対応（kiro-marshal）", ""]
+    lines = ["# 要対応（kiro-autonomous）", ""]
     if budget_stop:
         lines += ["⚠ 予算切れで未消化のまま停止しました。", ""]
     if blocked:
@@ -582,7 +582,7 @@ class Config:
     git_branch: str = "main"
     git_subdir: "str | None" = None
     kiro_flow: "str | None" = None
-    planner: str = "kiro"          # marshal の優先順位付け: kiro（エージェント）/ none（priority＋古さ）
+    planner: str = "kiro"          # 優先順位付け戦略: kiro（エージェント）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # kiro-flow run に渡す planner
     location: str = "auto"         # act の実行モード: auto / local / daemon / remote
     executor: str = "kiro"
@@ -658,7 +658,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         write_needs_file(cfg, t, why)
         persist_task(cfg, t)
 
-    append_journal(cfg.journal, f"=== kiro-marshal 開始 tasks={len(tasks)} "
+    append_journal(cfg.journal, f"=== kiro-autonomous 開始 tasks={len(tasks)} "
                                 f"ingested={len(ingested)} planner={cfg.planner} "
                                 f"executor={cfg.executor} dry_run={cfg.dry_run} ===")
     start = time.time()
@@ -729,7 +729,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     newly_blocked = {t.id for t in tasks if t.norm_status() == "blocked"} - pre_blocked
     budget_stop = reason == REASON_BUDGET
     notified = notify(cfg, tasks, reasons, newly_blocked, budget_stop)
-    append_journal(cfg.journal, f"=== kiro-marshal 停止 reason={reason} cycles={cycle} "
+    append_journal(cfg.journal, f"=== kiro-autonomous 停止 reason={reason} cycles={cycle} "
                                 f"done={counts['done']} blocked={counts['blocked']} "
                                 f"notified={notified} ===")
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
@@ -853,7 +853,7 @@ def cmd_run(cfg: Config) -> int:
         return 0
     result = run_loop(cfg)
     counts = result["counts"]
-    print("\n=== kiro-marshal 完了 ===")
+    print("\n=== kiro-autonomous 完了 ===")
     print(f"停止理由 : {result['reason']}")
     print(f"サイクル : {result['cycles']}")
     print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
@@ -879,7 +879,7 @@ def build_config(args) -> Config:
         journal=rel("journal", "journal.md"),
         needs=rel("needs", "needs"),
         workdir=workdir,
-        bus=rel("bus", ".kiro-marshal-bus"),
+        bus=rel("bus", ".kiro-autonomous-bus"),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
         location=args.location, executor=args.executor,
@@ -901,7 +901,7 @@ def _add_common(sp):
     sp.add_argument("--needs", default="needs", help="要対応ディレクトリ（案件毎・フィードバック欄）")
     sp.add_argument("--archive", default="archive", help="done の退避先ディレクトリ")
     sp.add_argument("--workdir", default=".")
-    sp.add_argument("--bus", default=".kiro-marshal-bus")
+    sp.add_argument("--bus", default=".kiro-autonomous-bus")
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
     sp.add_argument("--git-branch", default="main")
     sp.add_argument("--git-subdir", default=None)
@@ -927,7 +927,7 @@ def _add_common(sp):
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        prog="kiro-marshal",
+        prog="kiro-autonomous",
         description="backlog/ を優先順位付け・検証・収束させる制御層（Loop Engineering MVP）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
