@@ -9,6 +9,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -283,6 +284,88 @@ class TestDecisionRecords(unittest.TestCase):
             km.cmd_reprioritize(c, "T1", "pin", "急ぎ")
             self.assertIn("pin: T1", (d / "policy.md").read_text())
             self.assertIn("DR-0002", (d / "decisions" / "T1.md").read_text())
+
+
+class TestLearning(unittest.TestCase):
+    def _seed_learn(self, d, src_id, title, guide):
+        cfg = cfg_for(d)
+        km.ensure_dirs(cfg)
+        km.append_decision(cfg, src_id, "alice", context=f"{src_id}（{title}）",
+                           action="feedback-resume", reason=guide, affects="→ ready",
+                           learn=(title, guide))
+
+    def test_find_learned_resolution(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_learn(d, "OLD", "fix slugify util", "lower-case と置換を直す")
+            cfg = cfg_for(d)
+            hit = km.find_learned_resolution(cfg, km.Task(id="NEW", title="fix slugify util again"))
+            self.assertIsNotNone(hit)
+            self.assertEqual(hit[0], "OLD")
+            miss = km.find_learned_resolution(cfg, km.Task(id="NEW", title="完全に無関係な作業"))
+            self.assertIsNone(miss)
+            # 自分の履歴は学習源にしない
+            self.assertIsNone(km.find_learned_resolution(cfg, km.Task(id="OLD", title="fix slugify util")))
+
+    def test_run_auto_resolves_then_blocks(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_learn(d, "OLD", "build the report file", "出力先を作ってから書く")
+            mkb(d, "T1", title="build the report file", verify="false")
+            res = km.run_loop(cfg_for(d, max_retries=0, max_cycles=5))
+            dec = (d / "decisions" / "T1.md").read_text()
+            self.assertIn("auto-resolve", dec)               # 学習で自動解決した記録
+            t = res["tasks"][0]
+            self.assertIn("autolearned", dict(t.extra))      # 1回だけ自動適用
+            self.assertEqual(res["counts"]["blocked"], 1)    # 解決せず最終的に人の判断
+
+    def test_no_learn_disables(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_learn(d, "OLD", "build the report file", "ヒント")
+            mkb(d, "T1", title="build the report file", verify="false")
+            res = km.run_loop(cfg_for(d, max_retries=0, learn=False))
+            self.assertFalse((d / "decisions" / "T1.md").exists())  # 自動解決せず即 block
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+
+class TestRot(unittest.TestCase):
+    def test_detect_unverifiable_and_duplicate(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", title="同じ作業", verify="true")
+            mkb(d, "T2", title="同じ作業", verify="true")   # duplicate
+            mkb(d, "T3", title="no verify", verify="")       # unverifiable
+            rot = {t.id: r for t, r in km.detect_rot(cfg_for(d), km.load_tasks(d / "backlog"))}
+            self.assertIn("duplicate", rot.get("T2", ""))
+            self.assertIn("unverifiable", rot.get("T3", ""))
+            self.assertNotIn("T1", rot)
+
+    def test_stale_by_age(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", title="old task", verify="true")
+            old = time.time() - 30 * 86400
+            os.utime(d / "backlog" / "T1.md", (old, old))
+            rot = km.detect_rot(cfg_for(d, rot_age_days=14), km.load_tasks(d / "backlog"))
+            self.assertTrue(any(t.id == "T1" and "stale" in r for t, r in rot))
+
+    def test_run_with_rot_blocks(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "A", title="dup", verify="true")
+            mkb(d, "B", title="dup", verify="true")
+            res = km.run_loop(cfg_for(d, rot=True))
+            self.assertTrue((d / "needs" / "B.md").exists())   # duplicate → 人の判断
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+    def test_cmd_rot_fix(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", title="x", verify="")  # unverifiable
+            self.assertEqual(km.cmd_rot(cfg_for(d), fix=True), 1)
+            self.assertEqual(km.load_tasks(d / "backlog")[0].status, "blocked")
+            self.assertTrue((d / "needs" / "T1.md").exists())
 
 
 class TestDaemonRouting(unittest.TestCase):

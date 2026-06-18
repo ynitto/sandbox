@@ -65,11 +65,14 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub   # kiro-
 kiro-autonomous needs                                # 人の判断待ちを表示
 kiro-autonomous approve <id> --reason "…"            # 承認して積み直し（→ decisions/<id>.md）
 kiro-autonomous hold <id> --reason "…"               # 保留（policy.deny 追加）
+kiro-autonomous rot [--fix]                          # 古い/重複/実行不能を検出（--fix で人の判断へ）
 ```
 
 終了コード（非 watch）: `0`=完走で判断待ち無し / `1`=判断待ちあり / `2`=予算停止。CI に組める。
 **フィードバック往復**: 判断待ちは `needs/<id>.md` を生成。人が「## フィードバック」欄に記入すると
 次パスで拾われ、ブロック解除＋内容を次の act に反映する。
+**DR 学習**: 繰り返し NG で人へ回る前に、過去の `decisions/` の類似指示（`learn`）を自動適用して
+通知を抑制する（1 タスク 1 回・`--no-learn` で無効）。**rot**: `run --rot` で古い/重複/実行不能を triage で掃除。
 
 ## エージェントの振る舞い
 

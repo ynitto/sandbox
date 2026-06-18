@@ -40,6 +40,7 @@ TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
+LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
 FEEDBACK_MARKER = "## フィードバック"
 
 # 停止理由
@@ -198,17 +199,82 @@ def next_dr_id(path: Path) -> str:
 
 
 def append_decision(cfg: "Config", tid: str, actor: str, context: str,
-                    action: str, reason: str, affects: str) -> str:
+                    action: str, reason: str, affects: str,
+                    learn: "tuple[str, str] | None" = None) -> str:
+    """決定記録を追記。learn=(title, guidance) を渡すと『- learn:』行を残し、
+    将来 find_learned_resolution が類似タスクへ自動適用できる学習材料にする。"""
     cfg.decisions.mkdir(parents=True, exist_ok=True)
     path = decision_path(cfg, tid)
     dr = next_dr_id(path)
     date = datetime.now().strftime("%Y-%m-%d")
     block = (f"## {dr}  {date}  actor: {actor}\n"
              f"- context : {context}\n- action  : {action}\n"
-             f"- reason  : {reason}\n- affects : {affects}\n\n")
+             f"- reason  : {reason}\n- affects : {affects}\n")
+    if learn:
+        title, guide = learn
+        block += f"- learn: {title.replace(chr(10), ' ')} :: {guide.replace(chr(10), ' ')}\n"
     with path.open("a", encoding="utf-8") as f:
-        f.write(block)
+        f.write(block + "\n")
     return dr
+
+
+# ---------------------------------------------------------------------------
+# DR 学習（過去の人の判断から類似案件を自動解決して通知を減らす）
+# ---------------------------------------------------------------------------
+def _title_overlap(a: str, b: str) -> float:
+    wa = set(re.findall(r"\w+", a.lower()))
+    wb = set(re.findall(r"\w+", b.lower()))
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | None":
+    """他案件の決定記録の『- learn:』から、タイトルが十分似た過去の指示を探す。
+    返り値 (出典 DR ファイルの id, 指示文)。無ければ None。"""
+    if not cfg.decisions.exists():
+        return None
+    best, best_score = None, 0.0
+    for df in sorted(cfg.decisions.glob("*.md")):
+        if df.stem == task.id:  # 自分の履歴は除く（自己ループ防止）
+            continue
+        for line in df.read_text(encoding="utf-8").splitlines():
+            m = LEARN_RE.match(line)
+            if not m:
+                continue
+            score = _title_overlap(task.title, m.group("title"))
+            if score >= cfg.learn_threshold and score > best_score:
+                best, best_score = (df.stem, m.group("guide").strip()), score
+    return best
+
+
+def normalize_title(t: Task) -> str:
+    return re.sub(r"\s+", " ", t.title.strip().lower())
+
+
+def file_age_days(cfg: "Config", tid: str) -> float:
+    p = cfg.backlog / f"{tid}.md"
+    return (time.time() - p.stat().st_mtime) / 86400.0 if p.exists() else 0.0
+
+
+def detect_rot(cfg: "Config", tasks: "list[Task]") -> "list[tuple[Task, str]]":
+    """腐ったタスクを検出: unverifiable（verify無）/ duplicate（同題）/ stale（古い）。"""
+    out: list[tuple[Task, str]] = []
+    seen: dict[str, str] = {}
+    for t in tasks:
+        if not t.consumable():
+            continue
+        if not t.verify.strip():
+            out.append((t, "unverifiable（verify 未定義）"))
+            continue
+        nt = normalize_title(t)
+        if nt in seen:
+            out.append((t, f"duplicate（{seen[nt]} と重複）"))
+            continue
+        seen[nt] = t.id
+        if cfg.rot_age_days and file_age_days(cfg, t.id) > cfg.rot_age_days:
+            out.append((t, f"stale（{cfg.rot_age_days:.0f}日以上未処理）"))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +325,9 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         t.extra = [(k, v) for k, v in t.extra if k != "feedback"]
         t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
         persist_task(cfg, t)
-        append_decision(cfg, t.id, cfg.actor, context=f"{t.id} に人のフィードバック",
-                        action="feedback-resume", reason=fb[:200], affects=f"{t.id} → ready")
+        append_decision(cfg, t.id, cfg.actor, context=f"{t.id}（{t.title}）に人のフィードバック",
+                        action="feedback-resume", reason=fb[:200], affects=f"{t.id} → ready",
+                        learn=(t.title, fb))
         nf.unlink()
         append_journal(cfg.journal, f"feedback 取り込み: {t.id} を再開")
         ingested.append(t.id)
@@ -598,6 +665,10 @@ class Config:
     actor: str = "user"
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）
     do_archive: bool = True         # done を archive/ へ退避（False なら削除）
+    learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
+    learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
+    rot: bool = False               # rot 検知（古い/重複/実行不能を triage で掃除）
+    rot_age_days: float = 14.0      # stale とみなす経過日数
     watch: bool = False     # 終了条件後もプロセスを残し backlog を監視
     poll: float = 5.0       # watch のポーリング間隔（秒）
     dry_run: bool = False
@@ -653,7 +724,12 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
 
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
     pre_blocked = {t.id for t in tasks if t.norm_status() == "blocked"}
-    for t, why in triage(tasks, policy):
+    transitions = list(triage(tasks, policy))
+    if cfg.rot:                                       # rot 検知（古い/重複/実行不能を掃除）
+        transitions += [(t, f"rot: {why}") for t, why in detect_rot(cfg, tasks)]
+    for t, why in transitions:
+        if t.norm_status() != "blocked":
+            t.status = "blocked"
         reasons[t.id] = why
         write_needs_file(cfg, t, why)
         persist_task(cfg, t)
@@ -710,8 +786,23 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                 _block(cfg, task, "verify 未定義", reasons)
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
             elif task.retries > cfg.max_retries:
-                _block(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons)
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
+                learned = find_learned_resolution(cfg, task) if cfg.learn else None
+                if learned and not dict(task.extra).get("autolearned"):
+                    src, guide = learned
+                    task.extra = [(k, v) for k, v in task.extra
+                                  if k not in ("feedback", "autolearned")]
+                    task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", "1")]
+                    task.status = "ready"
+                    persist_task(cfg, task)
+                    append_decision(cfg, task.id, "auto",
+                                    context=f"{task.id}（{task.title}）を学習で自動解決",
+                                    action="auto-resolve", reason=f"learned from {src}: {guide[:120]}",
+                                    affects=f"{task.id} → ready")
+                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
+                                                f"（{src} に倣う・通知を抑制）")
+                else:
+                    _block(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons)
+                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
             else:
                 task.status = "ready"
                 persist_task(cfg, task)
@@ -791,8 +882,9 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
     t.status = "ready"
     persist_task(cfg, t)
     clear_needs_file(cfg, tid)
-    dr = append_decision(cfg, tid, cfg.actor, context=f"{tid} を人の判断から復帰",
-                         action="approve-and-fix", reason=reason, affects=f"{tid} → ready")
+    dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を人の判断から復帰",
+                         action="approve-and-fix", reason=reason, affects=f"{tid} → ready",
+                         learn=(t.title, reason))
     print(f"{dr}: {tid} を ready に積み直しました。")
     return 0
 
@@ -828,6 +920,22 @@ def cmd_needs(cfg: Config) -> int:
     if blocked:
         print(f"（各案件の詳細・フィードバック欄: {cfg.needs}/<id>.md）")
     return 1 if blocked else 0
+
+
+def cmd_rot(cfg: Config, fix: bool) -> int:
+    tasks = load_tasks(cfg.backlog)
+    rot = detect_rot(cfg, tasks)
+    if not rot:
+        print("rot は見つかりませんでした。")
+        return 0
+    print(f"rot を {len(rot)} 件検出:")
+    for t, reason in rot:
+        print(f"  {t.id}: {t.title} — {reason}")
+        if fix:
+            _block(cfg, t, f"rot: {reason}", {})
+    if fix:
+        print("→ いずれも人の判断（blocked）へ回しました。")
+    return 1
 
 
 def cmd_triage(cfg: Config) -> int:
@@ -888,6 +996,8 @@ def build_config(args) -> Config:
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
         archive=rel("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
+        learn=not getattr(args, "no_learn", False), learn_threshold=args.learn_threshold,
+        rot=getattr(args, "rot", False), rot_age_days=args.rot_age_days,
         watch=getattr(args, "watch", False), poll=getattr(args, "poll", 5.0),
         dry_run=getattr(args, "dry_run", False), once=getattr(args, "once", False),
     )
@@ -923,6 +1033,12 @@ def _add_common(sp):
     sp.add_argument("--act-timeout", type=float, default=1800.0)
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
     sp.add_argument("--actor", default=os.environ.get("USER", "user"))
+    sp.add_argument("--no-learn", action="store_true",
+                    help="DR 学習（過去の人の判断から類似案件を自動解決）を無効化")
+    sp.add_argument("--learn-threshold", type=float, default=0.5,
+                    help="DR 学習のタイトル類似度しきい値（0〜1）")
+    sp.add_argument("--rot-age-days", type=float, default=14.0,
+                    help="rot の stale 判定（経過日数）")
 
 
 def main(argv=None) -> int:
@@ -938,12 +1054,16 @@ def main(argv=None) -> int:
     run.add_argument("--poll", type=float, default=5.0, help="watch のポーリング間隔（秒）")
     run.add_argument("--no-archive", action="store_true",
                      help="done を archive/ へ退避せず削除する（既定は退避）")
+    run.add_argument("--rot", action="store_true",
+                     help="triage で rot（古い/重複/実行不能）を検知し人の判断へ回す")
     run.add_argument("--dry-run", action="store_true", help="act を飛ばし verify のみ")
     run.add_argument("--once", action="store_true", help="1 タスクだけ処理して終了")
 
     for name, helptext in [("triage", "優先順位付けのみ（inbox→ready 昇格・policy 適用）"),
                            ("needs", "人の判断待ち（blocked / need_intake）を表示")]:
         _add_common(sub.add_parser(name, help=helptext))
+    rot = sub.add_parser("rot", help="rot（古い/重複/実行不能）を検出して報告（--fix で blocked 化）")
+    _add_common(rot); rot.add_argument("--fix", action="store_true", help="検出した rot を人の判断へ回す")
 
     ap = sub.add_parser("approve", help="判断待ちを修正承認して積み直し（決定記録）")
     _add_common(ap); ap.add_argument("id"); ap.add_argument("--reason", required=True)
@@ -958,7 +1078,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     cfg = build_config(args)
 
-    if args.cmd in ("triage", "needs") and not cfg.backlog.exists():
+    if args.cmd in ("triage", "needs", "rot") and not cfg.backlog.exists():
         print(f"エラー: バックログディレクトリがありません: {cfg.backlog}", file=sys.stderr)
         return 2
 
@@ -966,6 +1086,7 @@ def main(argv=None) -> int:
         "run": lambda: cmd_run(cfg),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
+        "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason),
         "hold": lambda: cmd_hold(cfg, args.id, args.reason),
         "reprioritize": lambda: cmd_reprioritize(

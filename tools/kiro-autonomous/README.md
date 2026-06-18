@@ -80,6 +80,7 @@ kiro-autonomous run --location daemon --executor kiro
 | `run` [`--watch`] | 正準ループ。`--watch` で終了条件後も常駐監視（idle はエージェント非起動） |
 | `triage` | 優先順位付けのみ（inbox→ready 昇格・policy 適用）。順位を表示 |
 | `needs` | 人の判断待ち（blocked / acceptance 未定義）を表示 |
+| `rot` [`--fix`] | 古い/重複/実行不能タスクを検出して報告（`--fix` で人の判断へ回す） |
 | `approve <id> --reason …` | 判断待ちを修正承認して積み直し（決定記録） |
 | `hold <id> --reason …` | `policy.md` に `deny` 追加し保留（決定記録） |
 | `reprioritize <id> --pin\|--defer --reason …` | `policy.md` に `pin`/`defer` 追加（決定記録） |
@@ -111,6 +112,23 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
 kiro-autonomous needs                                  # 何が判断待ちか
 kiro-autonomous approve T12 --reason "テスト側を修正"
 kiro-autonomous hold prod-deploy --reason "本番は手動"
+```
+
+## DR 学習（通知を減らす）
+
+`feedback`/`approve` の決定記録には `- learn: <タイトル> :: <指示>` が残る。タスクが繰り返し NG で
+人へ回りそうになると、他案件の `learn` から**タイトルが十分似た過去の指示**（Jaccard ≥ `--learn-threshold`、
+既定 0.5）を探し、見つかれば **blocked にせず**その指示を反映して自動的に再実行する（`auto-resolve` を
+決定記録に残し通知を抑制）。自動適用は **1 タスク 1 回**まで。`--no-learn` で無効化。
+
+## rot 検知（バックログの掃除）
+
+古い/重複/実行不能タスクを検出して**人の判断へ回す**（消さず棚卸し）:
+
+```bash
+kiro-autonomous rot           # 検出して報告（unverifiable / duplicate / stale）
+kiro-autonomous rot --fix     # 検出した rot を blocked にして needs/ へ
+kiro-autonomous run --rot     # 毎 run の triage に組み込む（--rot-age-days で stale しきい値）
 ```
 
 ## policy.md（優先順位・実行先の上書き）

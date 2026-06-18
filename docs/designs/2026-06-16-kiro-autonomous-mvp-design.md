@@ -132,6 +132,19 @@ defer:   cleanup   # "cleanup" を含むタスクは後回し
 offload: heavy     # "heavy" を含むタスクは分散環境（git バス）へ移譲（§5）
 ```
 
+### 4.1 rot 検知（古い/重複/実行不能の掃除）
+
+バックログが腐らないよう、triage 時に **rot** を検出して**人の判断（blocked＋needs/）へ回す**
+（消さずに棚卸し）:
+
+| rot | 判定 |
+|-----|------|
+| `unverifiable` | 消化可能だが `verify` 未定義（done 不能） |
+| `duplicate` | 正規化タイトルが先行タスクと一致（先行を残し後続を回す） |
+| `stale` | 消化可能だが backlog/<id>.md の mtime が `--rot-age-days`（既定 14）日より古い |
+
+`run --rot` で triage に組み込み、`rot`（サブコマンド）で随時レポート（`--fix` で blocked 化）。
+
 ---
 
 ## 5. 実行と検証（正準ループ ②③）
@@ -265,9 +278,17 @@ verify 未定義   → done 不能。人の判断へ（needs/<id>.md 生成、§
 - `hold <id> --reason …` … policy に deny を追加（denylist 化）＋ blocked
 - `reprioritize <id> --pin|--defer --reason …` … policy に pin/defer
 
-**北極星との接続**: 蓄積した DR は将来、似た事案をエージェントが過去の人間判断に倣って
-自動解決する材料になり、人の判断件数そのものを減らす。MVP では記録まで。学習
-（`ltm-use` への promote）は後段。
+### 7.1 DR 学習（過去の判断から類似案件を自動解決＝通知を減らす）
+
+北極星「人の判断件数そのものを減らす」を実装する。`feedback-resume` / `approve-and-fix` の DR には
+**`- learn: <タイトル> :: <指示>` 行**を残す（人の判断を学習材料化）。
+
+- タスクが**繰り返し NG で人へ回りそうになった瞬間**、`find_learned_resolution` が他案件の `learn`
+  から**タイトル類似度（Jaccard ≥ `--learn-threshold`、既定 0.5）**で最も近い過去の指示を探す。
+- 見つかれば **blocked にせず**、その指示を feedback として添付して `ready` に戻し（自動解決）、
+  `decisions/<id>.md` に `auto-resolve`（出典 DR 付き）を記録して**通知を抑制**する。
+- **自動適用は 1 タスク 1 回まで**（`autolearned` 印）。それでも解決しなければ通常どおり人へ回す。
+- `--no-learn` で無効化。自分の履歴は学習源にしない（自己ループ防止）。将来 `ltm-use` へ昇格。
 
 ---
 
@@ -367,6 +388,7 @@ kiro-autonomous run --watch --poll 10 --executor kiro
 | `run` [`--watch`] | 正準ループ（優先順位付け → 実行 → 検証 → 積み直し → 収束）。`--watch` で常駐監視 |
 | `triage` | 優先順位付けのみ（`--planner kiro`/`none`）＋ policy 上書き |
 | `needs` | 人の判断待ち（blocked）を描画 |
+| `rot` | 古い/重複/実行不能を検出して報告（`--fix` で blocked 化） |
 | `approve <id>` | 判断待ちを修正承認して積み直し＋ DR |
 | `hold <id>` | policy に deny 追加＋ DR |
 | `reprioritize <id> --pin\|--defer` | policy に pin/defer ＋ DR |
@@ -375,7 +397,7 @@ kiro-autonomous run --watch --poll 10 --executor kiro
 `--planner{kiro,none}` `--flow-planner{flow-planner,kiro,stub}` `--location{auto,local,daemon,remote}`
 `--executor{kiro,stub}` `--max-cycles` `--max-seconds`
 `--max-iterations` `--notify-cmd` `--git-bus` `--git-branch` `--git-subdir`
-`--pace` `--watch` `--poll` `--archive`(dir) `--no-archive` `--dry-run` `--once`。
+`--pace` `--watch` `--poll` `--archive`(dir) `--no-archive` `--rot` `--rot-age-days` `--no-learn` `--learn-threshold` `--dry-run` `--once`。
 
 ---
 
@@ -420,10 +442,10 @@ KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/
 | 優先順位 | **外部 priority** ＋ kiro（加味）／none（priority＋古さ）／policy 上書き | 過去 DR からの自動解決学習（ltm-use） |
 | 実行・検証 | kiro-flow（local）＋ ローカル verify ゲート | — |
 | 収束 | drained / budget（cycles・time）、**pace**、**`--watch` 常駐監視** | コスト予算 |
-| 系 | inbox/ready/doing/done/blocked ＋ source、**案件毎ファイル＋done を archive/ へ退避** | rot 自動検知, webhook enqueue |
+| 系 | …＋done を archive/ へ退避、**rot 検知（古い/重複/実行不能）** | webhook enqueue |
 | 実行委譲 | **location: local=run / daemon・remote=submit＋結果待ち** | コスト連動の自動 location |
 | 通知 | **案件毎 `needs/<id>.md`＋フィードバック往復**＋stdout（遷移時 dedup） | teams/メール/issue 連携 |
-| 決定記録 | approve/hold/reprioritize/**feedback** → 案件毎 `decisions/<id>.md` | 過去 DR からの自動解決学習（ltm-use） |
+| 決定記録 | approve/hold/reprioritize/feedback → `decisions/<id>.md`、**DR 学習で類似案件を自動解決** | ltm-use への昇格 |
 | 実行先 | local ／ **location（offload 規則で kiro-flow `--git` 分散バスへ移譲）** | コスト連動の自動 offload 判断 |
 
 **拡張次元**: 実行モード `location`（§5、local/daemon/remote）とレーン減速 `pace`（§5.2、
