@@ -219,7 +219,25 @@ class TestPace(unittest.TestCase):
             self.assertTrue(slept and all(s > 0 for s in slept))
 
 
+def _submit_feedback(nf: Path, text: str):
+    """needs ファイルにフィードバックを書き、確定チェックボックスを [x] にする。"""
+    s = nf.read_text(encoding="utf-8").replace("- [ ] 確定", "- [x] 確定")
+    nf.write_text(s + f"\n{text}\n", encoding="utf-8")
+
+
 class TestFeedback(unittest.TestCase):
+    def test_requires_checkbox(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            km.write_needs_file(cfg, km.Task(id="T1", title="T1"), "NG")
+            nf = d / "needs" / "T1.md"
+            # 未チェックで本文だけ書いた（＝書きかけ）→ 取り込まれない
+            nf.write_text(nf.read_text() + "\n書きかけのメモ\n", encoding="utf-8")
+            self.assertEqual(km.ingest_feedback(cfg, km.load_tasks(d / "backlog")), [])
+
     def test_ingest_resumes_blocked(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -228,7 +246,7 @@ class TestFeedback(unittest.TestCase):
             km.ensure_dirs(cfg)
             km.write_needs_file(cfg, km.Task(id="T1", title="T1"), "繰り返しNG")
             nf = d / "needs" / "T1.md"
-            nf.write_text(nf.read_text() + "\nverify を直して再実行して\n", encoding="utf-8")
+            _submit_feedback(nf, "verify を直して再実行して")
             tasks = km.load_tasks(d / "backlog")
             self.assertEqual(km.ingest_feedback(cfg, tasks), ["T1"])
             self.assertEqual(tasks[0].status, "ready")
@@ -243,12 +261,60 @@ class TestFeedback(unittest.TestCase):
             cfg = cfg_for(d)
             km.ensure_dirs(cfg)
             km.write_needs_file(cfg, km.Task(id="T1", title="T1"), "NG")
-            nf = d / "needs" / "T1.md"
-            nf.write_text(nf.read_text() + "\nこう直して\n", encoding="utf-8")
+            _submit_feedback(d / "needs" / "T1.md", "こう直して")
             res = km.run_loop(cfg)
             self.assertEqual(res["ingested"], ["T1"])
             self.assertEqual(res["counts"]["done"], 1)
             self.assertFalse((d / "backlog" / "T1.md").exists())
+
+
+    def test_debounce_in_watch(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            cfg = cfg_for(d, watch=True, debounce=999)   # 直近編集は静穏化待ちで取り込まない
+            km.ensure_dirs(cfg)
+            km.write_needs_file(cfg, km.Task(id="T1", title="T1"), "NG")
+            _submit_feedback(d / "needs" / "T1.md", "急いで保存した")
+            self.assertEqual(km.ingest_feedback(cfg, km.load_tasks(d / "backlog")), [])
+
+
+class TestDraft(unittest.TestCase):
+    def test_draft_not_consumed(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="draft", verify="true")   # 書きかけ＝消化対象外
+            mkb(d, "T2", status="ready", verify="true")
+            res = km.run_loop(cfg_for(d))
+            self.assertEqual(res["counts"]["done"], 1)     # T2 のみ
+            self.assertEqual(res["counts"]["draft"], 1)    # T1 は残る
+            self.assertTrue((d / "backlog" / "T1.md").exists())
+            self.assertFalse(km.has_work(cfg_for(d)))      # draft だけなら watch を起こさない
+
+
+class TestDelivery(unittest.TestCase):
+    def test_extract_ref(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            self.assertIn("/pull/42", km.extract_delivery_ref("done https://github.com/o/r/pull/42 ok", cfg))
+            self.assertIn("commit", km.extract_delivery_ref("created abcdef1 done", cfg))
+
+    def test_delivery_note_and_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", title="納品物A", verify="true")
+
+            def fake_act(task, cfg, location="local"):
+                return True, "pushed https://github.com/o/r/pull/7"
+
+            res = km.run_loop(cfg_for(d, dry_run=False), act=fake_act)
+            self.assertEqual(res["counts"]["done"], 1)
+            note = (d / "archive" / "T1.md").read_text()
+            self.assertIn("## 納品書", note)
+            self.assertIn("/pull/7", note)
+            manifest = (d / "DELIVERY.md").read_text()
+            self.assertIn("納品物A", manifest)
+            self.assertIn("/pull/7", manifest)
 
 
 class TestWatch(unittest.TestCase):

@@ -34,14 +34,16 @@ try:
 except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
     fcntl = None
 
-VALID_STATUS = ("inbox", "ready", "doing", "done", "blocked")
-CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス
+VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked")
+CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
 FEEDBACK_MARKER = "## フィードバック"
+CHECKBOX_RE = re.compile(r"^\s*-\s*\[[ xX]\]")        # 確定チェックボックス行（任意状態）
+CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]")          # チェック済み（= 確定）
 
 # 停止理由
 REASON_DRAINED = "drained"  # 消化可能タスクが尽きた（実質完了）
@@ -291,8 +293,10 @@ def write_needs_file(cfg: "Config", task: Task, reason: str) -> None:
         f"- なぜ: {reason}\n"
         f"- 状態: blocked（kiro-autonomous の判断待ち）\n\n"
         f"{FEEDBACK_MARKER}\n"
-        f"<!-- ここに修正方針・指示を書いて保存すると、kiro-autonomous が拾ってブロックを解除し、\n"
-        f"     内容を次の実行に反映します。あるいは `kiro-autonomous approve {task.id}`。 -->\n"
+        f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
+        f"<!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。\n"
+        f"     下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。\n"
+        f"     コマンドなら `kiro-autonomous approve {task.id}`。 -->\n"
     )
     needs_path(cfg, task.id).write_text(body, encoding="utf-8")
 
@@ -304,30 +308,47 @@ def clear_needs_file(cfg: "Config", tid: str) -> None:
 
 
 def read_feedback(path: Path) -> str:
-    """needs ファイルの『## フィードバック』以降から人の記入（HTMLコメント除く）を取り出す。"""
+    """『## フィードバック』以降の人の記入（HTMLコメント・チェックボックス行は除く）を取り出す。"""
     text = re.sub(r"<!--.*?-->", "", path.read_text(encoding="utf-8"), flags=re.S)
     i = text.find(FEEDBACK_MARKER)
-    return text[i + len(FEEDBACK_MARKER):].strip() if i >= 0 else ""
+    if i < 0:
+        return ""
+    body = text[i + len(FEEDBACK_MARKER):]
+    lines = [ln for ln in body.splitlines() if not CHECKBOX_RE.match(ln)]
+    return "\n".join(lines).strip()
+
+
+def feedback_submitted(path: Path) -> bool:
+    """確定チェックボックスが [x] かどうか（= 人が編集を終えた明示シグナル）。"""
+    return any(CHECKED_RE.match(ln) for ln in path.read_text(encoding="utf-8").splitlines())
 
 
 def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
-    """needs/<id>.md に人の記入があれば、対象をブロック解除し内容を次の act に渡す。"""
+    """needs/<id>.md の確定（[x]）を検知したら、対象をブロック解除し内容を次の act に渡す。
+
+    明示シグナル（チェックボックス [x]）必須。書きかけでの誤発火を防ぐため、watch 中は
+    最終保存から cfg.debounce 秒が経過するまで待つ（静穏化）。"""
     ingested: list[str] = []
     if not cfg.needs.exists():
         return ingested
     by_id = {t.id: t for t in tasks}
     for nf in sorted(cfg.needs.glob("*.md")):
-        fb = read_feedback(nf)
-        t = by_id.get(nf.stem)
-        if not fb or t is None:
+        if not feedback_submitted(nf):                 # [x] が無ければ確定していない
             continue
+        if cfg.watch and cfg.debounce > 0 and (time.time() - nf.stat().st_mtime) < cfg.debounce:
+            continue                                    # 直近に編集 → 静穏化を待つ
+        t = by_id.get(nf.stem)
+        if t is None:
+            continue
+        fb = read_feedback(nf)
         t.status = "ready"
         t.extra = [(k, v) for k, v in t.extra if k != "feedback"]
-        t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
+        if fb:
+            t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
         persist_task(cfg, t)
         append_decision(cfg, t.id, cfg.actor, context=f"{t.id}（{t.title}）に人のフィードバック",
-                        action="feedback-resume", reason=fb[:200], affects=f"{t.id} → ready",
-                        learn=(t.title, fb))
+                        action="feedback-resume", reason=fb[:200] if fb else "チェックで承認",
+                        affects=f"{t.id} → ready", learn=(t.title, fb) if fb else None)
         nf.unlink()
         append_journal(cfg.journal, f"feedback 取り込み: {t.id} を再開")
         ingested.append(t.id)
@@ -670,6 +691,8 @@ class Config:
     rot: bool = False               # rot 検知（古い/重複/実行不能を triage で掃除）
     rot_age_days: float = 14.0      # stale とみなす経過日数
     cleanup: bool = True            # run 後に kiro-flow バスの一時状態を掃除
+    delivery: "Path | None" = None  # 納品一覧（受領書）DELIVERY.md
+    debounce: float = 3.0           # watch 中、最終保存からこの秒数は feedback 取込を待つ
     watch: bool = False     # 終了条件後もプロセスを残し backlog を監視
     poll: float = 5.0       # watch のポーリング間隔（秒）
     dry_run: bool = False
@@ -678,6 +701,10 @@ class Config:
     def archive_dir(self) -> Path:
         return self.archive or (self.backlog.parent / "archive")
 
+    def __post_init__(self):
+        if self.delivery is None:
+            self.delivery = self.backlog.parent / "DELIVERY.md"
+
 
 def ensure_dirs(cfg: Config) -> None:
     for d in (cfg.backlog, cfg.needs, cfg.decisions):
@@ -685,11 +712,46 @@ def ensure_dirs(cfg: Config) -> None:
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
 
 
-def archive_task(cfg: Config, task: Task) -> None:
-    """done タスクを backlog から archive/<id>.md へ退避（move）。backlog は未完だけが残る。"""
+def extract_delivery_ref(act_msg: str, cfg: Config) -> str:
+    """成果物の参照を得る。act 出力の PR URL / commit SHA を優先、無ければ workdir の git。"""
+    m = re.search(r"https?://\S+/(?:pull|merge_requests)/\d+", act_msg or "")
+    if m:
+        return m.group(0)
+    m = re.search(r"\b[0-9a-f]{7,40}\b", act_msg or "")
+    if m:
+        return f"commit {m.group(0)}"
+    try:
+        r = subprocess.run(["git", "-C", str(cfg.workdir), "log", "-1", "--format=%h %s"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            return f"git: {r.stdout.strip()}"
+    except Exception:  # noqa: BLE001
+        pass
+    return "(参照なし)"
+
+
+def append_delivery(cfg: Config, task: Task, ref: str, ts: str) -> None:
+    """納品一覧（受領書）DELIVERY.md に1行追記する。"""
+    path = cfg.delivery
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = "" if path.exists() else (
+        "# 納品一覧（受領書）\n\n| id | タイトル | 検収 | 成果参照 | 完了 |\n|---|---|---|---|---|\n")
+    title = task.title.replace("|", "\\|")
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"{header}| {task.id} | {title} | PASS | {ref} | {ts} |\n")
+
+
+def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str) -> None:
+    """done タスクを archive/<id>.md へ退避し、検収用の『納品書』を付す（backlog と1:1）。"""
     cfg.archive_dir().mkdir(parents=True, exist_ok=True)
-    task.extra.append(("archived", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    (cfg.archive_dir() / f"{task.id}.md").write_text(serialize_task(task), encoding="utf-8")
+    task.extra.append(("archived", ts))
+    body = serialize_task(task) + (
+        f"\n## 納品書\n"
+        f"- 完了 : {ts}\n"
+        f"- verify: `{task.verify}` → PASS（{vmsg}）\n"
+        f"- 成果 : {ref}\n"
+    )
+    (cfg.archive_dir() / f"{task.id}.md").write_text(body, encoding="utf-8")
     delete_task_file(cfg, task)
 
 
@@ -766,21 +828,25 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         if location != "local":
             append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
                                         + (f"（{cfg.git_bus}）" if location == "remote" else ""))
+        act_msg = "(dry-run)"
         if not cfg.dry_run:
-            act(task, cfg, location)
+            _, act_msg = act(task, cfg, location)
 
         ok, vmsg = run_verify(task.verify, cfg.workdir, cfg.verify_timeout)
         if ok:
             task.status = "done"
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ref = extract_delivery_ref(act_msg, cfg)     # 成果物の参照（PR/commit/git）
+            append_delivery(cfg, task, ref, ts)          # 受領書一覧に追記
             if cfg.do_archive:
-                archive_task(cfg, task)       # backlog → archive/ へ退避
+                archive_task(cfg, task, vmsg, ref, ts)   # backlog → archive/（納品書付き）
                 archived += 1
-                done_disp = "DONE → archive"
+                done_disp = "DONE → archive（納品書）"
             else:
                 delete_task_file(cfg, task)
                 done_disp = "DONE 削除"
             clear_needs_file(cfg, task.id)
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {vmsg}")
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {ref}")
         else:
             task.retries += 1
             if not task.verify:
@@ -1016,6 +1082,7 @@ def build_config(args) -> Config:
         learn=not getattr(args, "no_learn", False), learn_threshold=args.learn_threshold,
         rot=getattr(args, "rot", False), rot_age_days=args.rot_age_days,
         cleanup=not getattr(args, "no_cleanup", False),
+        delivery=under("delivery", "DELIVERY.md"), debounce=args.debounce,
         watch=getattr(args, "watch", False), poll=getattr(args, "poll", 5.0),
         dry_run=getattr(args, "dry_run", False), once=getattr(args, "once", False),
     )
@@ -1030,6 +1097,9 @@ def _add_common(sp):
     sp.add_argument("--journal", default=None, help="（既定 <root>/journal.md）")
     sp.add_argument("--needs", default=None, help="要対応ディレクトリ（既定 <root>/needs）")
     sp.add_argument("--archive", default=None, help="done の退避先（既定 <root>/archive）")
+    sp.add_argument("--delivery", default=None, help="納品一覧（既定 <root>/DELIVERY.md）")
+    sp.add_argument("--debounce", type=float, default=3.0,
+                    help="watch 中、最終保存からこの秒数は feedback 取込を待つ（誤発火防止）")
     sp.add_argument("--workdir", default=".")
     sp.add_argument("--bus", default=None, help="kiro-flow バス（既定 <root>/bus）")
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")

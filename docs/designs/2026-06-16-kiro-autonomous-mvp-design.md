@@ -204,13 +204,23 @@ kiro-flow が結果を返したら、kiro-autonomous が**タスク自身の `ve
 verify が通らなければ done にしない（自己申告 done の禁止）。
 
 ```
-PASS（exit 0） → done（backlog/<id>.md を archive/<id>.md へ退避＝アーカイブ化）
+PASS（exit 0） → done（archive/<id>.md へ退避＝納品書付き。DELIVERY.md にも1行追記）
 NG（exit≠0）   → backlog に積み直す（status を ready に戻す＝retry）
 verify 未定義   → done 不能。人の判断へ（needs/<id>.md 生成、§8）
 ```
 
 - **done は backlog/<id>.md を `archive/<id>.md` へ移動（アーカイブ化）**（正準ループ ③）。
   backlog/ には未完だけが残り、完了は archive/ に保全される（`--no-archive` で削除に切替）。
+
+#### 納品書（検収サマリー）
+
+done 時に検収用のサマリーを2段で残す（成果物は kiro-flow 経由で各リポジトリへ push される前提）:
+
+- **個票**: `archive/<id>.md` に「## 納品書」を付す（verify=PASS・**成果参照**・完了時刻）。backlog と 1:1。
+- **一覧（受領書）**: `DELIVERY.md` に1行追記（id・タイトル・検収・成果参照・完了）。
+
+**成果参照**は決定的に取得（LLM 不要）: act 出力の **PR/MR URL** → **commit SHA** → workdir の
+`git log -1` の順で `extract_delivery_ref` が解決する。
 - **検証 NG は積み直し**。次サイクル以降で再び拾われる。
 - ただし **kiro-autonomous が機械的に判断できない**ケース（verify 未定義／同一タスクが繰り返し NG）は、
   無限の積み直しにせず**人の判断へ回す**（status=blocked → `needs/<id>.md` 生成 §8 →
@@ -313,7 +323,17 @@ verify 未定義   → done 不能。人の判断へ（needs/<id>.md 生成、§
 4. `needs/<id>.md` を**消費（削除）**。
 
 これにより「実行後に人の判断を促し、修正して差し戻す」系がファイルだけで完結する。`--watch` と
-組み合わせれば、人が記入した瞬間（次の poll）に自動で再開する。
+組み合わせれば、人が確定した直後（次の poll）に自動で再開する。
+
+#### 編集「完了」の明示検知（書きかけでの誤発火防止）
+
+ファイル変更イベントだけだと**保存途中**で発火しうる。3層で防ぐ:
+
+1. **チェックボックス（必須シグナル）**: needs に `- [ ] 確定` を置き、人が `- [x]` にした時だけ
+   `feedback_submitted` が真→取り込む。本文は空でも `[x]` なら「そのまま再実行」。
+2. **draft 状態**: 新規タスクは `status: draft`（消化対象外）で置き、書き終えたら `ready` に上げる。
+   `draft` は consumable でも inbox でもないので watch も起こさない。
+3. **debounce**: `--watch` 中は最終保存から `--debounce`（既定 3 秒）経過するまで取り込みを待つ。
 
 ---
 
@@ -338,7 +358,7 @@ verify 未定義   → done 不能。人の判断へ（needs/<id>.md 生成、§
 
 ```markdown
 ## <id>: <タイトル>
-- status: inbox | ready | doing | done | blocked
+- status: inbox | draft | ready | doing | done | blocked
 - source: human | triage | followup
 - priority: 0          # 外部で付与する優先度（整数・大きいほど高優先。省略時 0）
 - verify: `終了コード0をPASSとみなすシェルコマンド`
@@ -451,8 +471,9 @@ KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/
 | 収束 | drained / budget（cycles・time）、**pace**、**`--watch` 常駐監視** | コスト予算 |
 | 系 | …＋done を archive/ へ退避、**rot 検知（古い/重複/実行不能）** | webhook enqueue |
 | 実行委譲 | **location: local=run / daemon・remote=submit＋結果待ち** | コスト連動の自動 location |
-| 通知 | **案件毎 `needs/<id>.md`＋フィードバック往復**＋stdout（遷移時 dedup） | teams/メール/issue 連携 |
-| 決定記録 | approve/hold/reprioritize/feedback → `decisions/<id>.md`、**DR 学習で類似案件を自動解決** | ltm-use への昇格 |
+| 通知 | 案件毎 `needs/<id>.md`＋**チェックボックス確定/draft/debounce で誤発火防止**＋stdout | teams/メール/issue 連携 |
+| 決定記録 | approve/hold/reprioritize/feedback → `decisions/<id>.md`、DR 学習で類似案件を自動解決 | ltm-use への昇格 |
+| 検収 | **archive 個票の納品書＋DELIVERY.md 受領書一覧（成果参照: PR/commit/git）** | 検収 UI |
 | 実行先 | local ／ **location（offload 規則で kiro-flow `--git` 分散バスへ移譲）** | コスト連動の自動 offload 判断 |
 
 **拡張次元**: 実行モード `location`（§5、local/daemon/remote）とレーン減速 `pace`（§5.2、

@@ -51,6 +51,8 @@ bash tools/kiro-autonomous/install.sh           # ~/.local/bin/kiro-autonomous
   policy.md            優先順位・実行先の上書き（人だけが書く）
   needs/<id>.md        判断待ちの通知＋フィードバック記入欄（人が記入→自動再開）
   decisions/<id>.md    人の判断・承認・フィードバックの決定記録（append-only）
+  archive/<id>.md      ↑ done の保全先。検収用の「納品書」付き（backlog と1:1）
+  DELIVERY.md          納品一覧（受領書）。done を1行ずつ追記
   journal.md           機械のサイクルログ
   bus/                 kiro-flow バス（一時。run 後に自動クリーンアップ。--no-cleanup で保持）
 ```
@@ -108,9 +110,16 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
 
 ## 人の判断とフィードバック往復
 
-タスクが判断待ち（blocked）になると `needs/<id>.md` が生成される。**そのファイルの
-「## フィードバック」欄に方針を書いて保存**すると、次パス（`--watch` なら次 poll）で拾われ、
-ブロック解除＋内容を次の実行に反映し、`decisions/<id>.md` に記録される。コマンドでも操作できる:
+タスクが判断待ち（blocked）になると `needs/<id>.md` が生成される。**「## フィードバック」欄に方針を
+書き、`- [ ] 確定` を `- [x]` にして保存**すると、次パス（`--watch` なら次 poll）で拾われ、ブロック
+解除＋内容を次の実行に反映し、`decisions/<id>.md` に記録される。
+
+**書きかけでの誤発火を防ぐ仕組み**（途中保存しても発動しない）:
+- **チェックボックス**: `[x]` にした時だけ確定（明示シグナル）。
+- **draft 状態**: 新規タスクは `status: draft` にしておくと消化対象外（書き終えたら `ready` に）。
+- **debounce**: `--watch` 中は最終保存から `--debounce`（既定 3 秒）経過するまで待つ。
+
+コマンドでも操作できる:
 
 ```bash
 kiro-autonomous needs                                  # 何が判断待ちか
@@ -124,6 +133,15 @@ kiro-autonomous hold prod-deploy --reason "本番は手動"
 人へ回りそうになると、他案件の `learn` から**タイトルが十分似た過去の指示**（Jaccard ≥ `--learn-threshold`、
 既定 0.5）を探し、見つかれば **blocked にせず**その指示を反映して自動的に再実行する（`auto-resolve` を
 決定記録に残し通知を抑制）。自動適用は **1 タスク 1 回**まで。`--no-learn` で無効化。
+
+## 納品書（成果物の検収）
+
+タスク完了時に、検収用のサマリーを2段で残す（人の検品向け。`backlog` と対になる）:
+- **個票**: `archive/<id>.md` に「## 納品書」を付す（verify=PASS・**成果参照**・完了時刻）。
+- **一覧（受領書）**: `DELIVERY.md` に1行追記（id・タイトル・検収・成果参照・完了）。
+
+**成果参照**は決定的に取得：act 出力の **PR/MR URL** → **commit SHA** → workdir の `git log -1` の順。
+成果物が kiro-flow 経由で各リポジトリへ push される前提で、その PR/コミットへ辿れる。
 
 ## rot 検知（バックログの掃除）
 
