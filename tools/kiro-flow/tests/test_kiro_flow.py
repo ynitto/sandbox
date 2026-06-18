@@ -752,5 +752,109 @@ class GitDistributedTests(unittest.TestCase):
         self.assertIn(".git", entries)
 
 
+class CleanupTests(unittest.TestCase):
+    """一時ファイルの自動クリーンアップ（A: ロック / B: 中間 .tmp / C: 孤立クローン）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-cleanup-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _old(self, path, age_sec):
+        t = time.time() - age_sec
+        os.utime(path, (t, t))
+
+    def test_sweep_tmp_dead_pid(self):
+        # 死んだ pid の <path>.tmp.<pid> は消す。生存 pid の新しいものは残す。
+        d = os.path.join(self.tmp, "runs", "r1")
+        os.makedirs(d)
+        dead = os.path.join(d, "meta.json.tmp.999999")
+        alive = os.path.join(d, "meta.json.tmp.%d" % os.getpid())
+        normal = os.path.join(d, "meta.json")
+        for p in (dead, alive, normal):
+            with open(p, "w") as f:
+                f.write("{}")
+        removed = kf.sweep_tmp_files(self.tmp, min_age_sec=300.0)
+        self.assertEqual(removed, 1)
+        self.assertFalse(os.path.exists(dead))
+        self.assertTrue(os.path.exists(alive))   # 生存 pid かつ新しい → 残す
+        self.assertTrue(os.path.exists(normal))  # 中間でない通常ファイルは対象外
+
+    def test_sweep_tmp_old_alive_pid(self):
+        # 生存 pid でも min_age を超えて古ければクラッシュ残骸とみなし消す。
+        d = os.path.join(self.tmp, "runs")
+        os.makedirs(d)
+        old = os.path.join(d, "graph.json.tmp.%d" % os.getpid())
+        with open(old, "w") as f:
+            f.write("{}")
+        self._old(old, 600)
+        self.assertEqual(kf.sweep_tmp_files(self.tmp, min_age_sec=300.0), 1)
+        self.assertFalse(os.path.exists(old))
+
+    def test_sweep_tmp_skips_git_internals(self):
+        # .git 配下は走査しない（git の内部一時ファイルに触れない）。
+        g = os.path.join(self.tmp, ".git", "objects")
+        os.makedirs(g)
+        inside = os.path.join(g, "x.tmp.999999")
+        with open(inside, "w") as f:
+            f.write("x")
+        self.assertEqual(kf.sweep_tmp_files(self.tmp), 0)
+        self.assertTrue(os.path.exists(inside))
+
+    def test_sweep_lock_unused_old(self):
+        # 古くて誰も保持していないロックは消す。新しいロックは残す。
+        d = kf._locks_root()
+        os.makedirs(d, exist_ok=True)
+        old = os.path.join(d, "kf-test-old.lock")
+        fresh = os.path.join(d, "kf-test-fresh.lock")
+        for p in (old, fresh):
+            with open(p, "w") as f:
+                f.write("")
+        self.addCleanup(lambda: [os.path.exists(p) and os.remove(p) for p in (old, fresh)])
+        self._old(old, 7200)
+        removed = kf.sweep_lock_files(min_age_sec=3600.0)
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(fresh))  # 新しい → 残す
+        self.assertGreaterEqual(removed, 1)
+
+    @unittest.skipIf(kf.fcntl is None, "flock 非対応環境")
+    def test_sweep_lock_held_is_kept(self):
+        # 保持中（flock 中）の古いロックは消さない。
+        d = kf._locks_root()
+        os.makedirs(d, exist_ok=True)
+        held = os.path.join(d, "kf-test-held.lock")
+        f = open(held, "w")
+        self.addCleanup(lambda: (f.close(), os.path.exists(held) and os.remove(held)))
+        kf.fcntl.flock(f, kf.fcntl.LOCK_EX)
+        self._old(held, 7200)
+        kf.sweep_lock_files(min_age_sec=3600.0)
+        self.assertTrue(os.path.exists(held))  # 保持中 → 残す
+
+    def test_sweep_clone_dirs(self):
+        # .git を持つ古い孤立クローンは消す。新しいクローンと keep 対象・非クローンは残す。
+        parent = self.tmp
+        for name in ("orchestrator-r1", "daemon-self", "worker-w1"):
+            os.makedirs(os.path.join(parent, name, ".git"))
+        plain = os.path.join(parent, "runs")  # .git を持たない → 触らない
+        os.makedirs(plain)
+        self._old(os.path.join(parent, "orchestrator-r1"), 100000)
+        self._old(os.path.join(parent, "orchestrator-r1", ".git"), 100000)
+        removed = kf.sweep_clone_dirs(parent, keep_basename="daemon-self",
+                                      min_age_sec=3600.0)
+        self.assertEqual(removed, 1)
+        self.assertFalse(os.path.exists(os.path.join(parent, "orchestrator-r1")))
+        self.assertTrue(os.path.exists(os.path.join(parent, "daemon-self")))  # keep
+        self.assertTrue(os.path.exists(os.path.join(parent, "worker-w1")))    # 新しい
+        self.assertTrue(os.path.exists(plain))  # 非クローン
+
+    def test_run_cleanup_local_skips_clones(self):
+        # ローカルバス（--git なし）では孤立クローン掃除は走らない（クローンが無い）。
+        args = mock.Mock(bus=self.tmp, lease=1800.0, git=None, cleanup_age=24.0)
+        bus = kf.Bus(self.tmp, "_")
+        res = kf.run_cleanup(args, bus)
+        self.assertEqual(res["clones"], 0)
+        self.assertIn("locks", res)
+        self.assertIn("tmp", res)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

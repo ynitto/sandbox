@@ -115,6 +115,9 @@ CONFIG_DEFAULTS = {
     "max_fanout": 50,
     "review": "auto",  # auto: 集約パターンで自動有効 / True/False: 明示上書き
     "workers": 2,
+    # 一時ファイルの自動クリーンアップ（daemon ループ内で定期実行）
+    "cleanup_interval": 3600.0,  # 掃除の実行間隔（秒）。0 以下で無効化
+    "cleanup_age": 24.0,         # 孤立クローンを掃除するまでのアイドル時間（時間）
 }
 
 # 集約点（reduce/synthesize）を持ち、独立レビューが結果の信頼性を高めるパターン。
@@ -1669,9 +1672,21 @@ def cmd_daemon(args) -> int:
     signal.signal(signal.SIGTERM, lambda *_: (shutdown(), sys.exit(143)))
 
     log(daemon_id, f"daemon 起動 bus={mode} max_workers={args.max_workers} poll={args.poll}")
+    cleanup_interval = float(args.cleanup_interval)
+    # 起動直後に 1 回掃除しないよう、最初の判定は interval 後になるよう初期化
+    last_cleanup = time.time()
 
     while not stop["v"]:
         bus.sync_pull()
+        # 一時ファイルの自動クリーンアップ（ロック / 中間 .tmp / 孤立クローン）を定期実行
+        if cleanup_interval > 0 and time.time() - last_cleanup >= cleanup_interval:
+            last_cleanup = time.time()
+            try:
+                c = run_cleanup(args, bus)
+                if any(c.values()):
+                    log(daemon_id, f"cleanup: locks={c['locks']} tmp={c['tmp']} clones={c['clones']}")
+            except Exception as e:  # noqa: BLE001 — 掃除失敗は daemon を止めない
+                log(daemon_id, f"cleanup でエラー（無視して継続）: {e}")
         # 死んだ子を刈り取る
         for rid in [r for r, p in orchestrators.items() if p.poll() is not None]:
             log(daemon_id, f"orchestrator 終了: {rid}")
@@ -1719,6 +1734,140 @@ def cmd_daemon(args) -> int:
 
         time.sleep(args.poll)
     return 0
+
+
+# --------------------------------------------------------------------------
+# cleanup — 一時ファイルの自動掃除（ロック / 中間 .tmp / 孤立クローン）
+# --------------------------------------------------------------------------
+# バス内の run（gc が掃除する）とは別に、kiro-flow は「バス外の一時ファイル」を
+# 残す。これらは削除処理が無く溜まり続けるため、daemon ループから定期掃除する。
+#   A) $TMPDIR/kiro-flow-locks/*.lock        … claim/daemon の排他ロック
+#   B) <path>.tmp.<pid>                       … write_json_atomic の中間ファイル（crash 残骸）
+#   C) {bus}/<node>/                          … git モードのノード別クローン（run 終了後に孤立）
+_TMP_SUFFIX_RE = re.compile(r"\.tmp\.(\d+)$")
+
+
+def _locks_root() -> str:
+    return os.path.join(tempfile.gettempdir(), "kiro-flow-locks")
+
+
+def _pid_alive(pid: int) -> bool:
+    """pid のプロセスが存命か（POSIX）。判定不能なら安全側で True を返す。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # 別ユーザのプロセス＝存在はする
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def sweep_lock_files(min_age_sec: float = 3600.0) -> int:
+    """$TMPDIR/kiro-flow-locks/ の使われていない .lock を削除し、削除数を返す。
+    保持中のロックを消すと排他が壊れるため、(1) 十分古い（min_age_sec 以上アイドル）
+    かつ (2) flock を非ブロッキングで取得できた（＝誰も保持していない）ものに限る。"""
+    d = _locks_root()
+    if not os.path.isdir(d):
+        return 0
+    removed = 0
+    now = time.time()
+    for name in os.listdir(d):
+        if not name.endswith(".lock"):
+            continue
+        path = os.path.join(d, name)
+        try:
+            if now - os.path.getmtime(path) < min_age_sec:
+                continue  # 最近使われた → 残す
+            f = open(path, "a")  # "a": 既存内容を切り詰めない（保持中でも無害）
+        except OSError:
+            continue
+        try:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    continue  # 保持中 → 残す（finally で close）
+            os.remove(path)
+            removed += 1
+        except OSError:
+            pass
+        finally:
+            f.close()
+    return removed
+
+
+def sweep_tmp_files(root: str, min_age_sec: float = 300.0) -> int:
+    """write_json_atomic が残した <path>.tmp.<pid> の残骸を掃除し、削除数を返す。
+    正常時は即 os.replace されるので、残存＝書き込み中かクラッシュ由来。書き込み元 pid が
+    死んでいる、または min_age_sec 以上古いものを消す（.git 配下は触らない）。"""
+    if not os.path.isdir(root):
+        return 0
+    removed = 0
+    now = time.time()
+    for dirpath, dirs, files in os.walk(root):
+        if ".git" in dirs:
+            dirs.remove(".git")  # git 内部には踏み込まない
+        for fn in files:
+            m = _TMP_SUFFIX_RE.search(fn)
+            if not m:
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                age = now - os.path.getmtime(path)
+            except OSError:
+                continue
+            if _pid_alive(int(m.group(1))) and age < min_age_sec:
+                continue  # 生存プロセスが書き込み中かも → 残す
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def sweep_clone_dirs(bus_parent: str, keep_basename: str, min_age_sec: float) -> int:
+    """git モードでノードごとに作られた孤立クローン（{bus}/<node>/）を削除し、削除数を返す。
+    最近 git 操作のあったクローン（mtime が新しい＝稼働中）と、稼働デーモン自身の
+    クローン（keep_basename）は残す。クローン以外（runs/inbox 等）は .git の有無で除外。"""
+    if not os.path.isdir(bus_parent):
+        return 0
+    removed = 0
+    now = time.time()
+    for name in os.listdir(bus_parent):
+        if name == keep_basename:
+            continue
+        sub = os.path.join(bus_parent, name)
+        gitdir = os.path.join(sub, ".git")
+        if not os.path.exists(gitdir):
+            continue  # クローンでない → 触らない
+        try:
+            ref = max(os.path.getmtime(sub), os.path.getmtime(gitdir))
+        except OSError:
+            continue
+        if now - ref < min_age_sec:
+            continue  # 最近使われた → 残す
+        shutil.rmtree(sub, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+def run_cleanup(args, bus: Bus) -> dict:
+    """A/B/C の一時ファイルをまとめて掃除し、{種別: 削除数} を返す。
+    ロックは lease の 2 倍（最低 1h）アイドルなら確実に未使用。クローンは cleanup_age 時間。"""
+    bus_parent = os.path.abspath(args.bus)
+    lock_age = max(float(args.lease) * 2.0, 3600.0)
+    n_lock = sweep_lock_files(lock_age)
+    n_tmp = sweep_tmp_files(bus_parent)
+    n_clone = 0
+    if getattr(args, "git", None):  # 孤立クローンは git モードのみ存在する
+        keep = os.path.basename(bus.workdir) if isinstance(bus, GitBus) else ""
+        n_clone = sweep_clone_dirs(bus_parent, keep, float(args.cleanup_age) * 3600.0)
+    return {"locks": n_lock, "tmp": n_tmp, "clones": n_clone}
 
 
 # --------------------------------------------------------------------------
@@ -2110,6 +2259,12 @@ def main() -> int:
     dm.add_argument("--no-review", dest="review", action="store_const", const=False)
     dm.add_argument("--model", default=None)
     dm.add_argument("--poll", type=float, default=None)
+    dm.add_argument("--cleanup-interval", dest="cleanup_interval", type=float, default=None,
+                    help="一時ファイル自動掃除の実行間隔（秒, 既定 3600）。0 以下で無効化")
+    dm.add_argument("--cleanup-age", dest="cleanup_age", type=float, default=None,
+                    help="孤立クローンを掃除するまでのアイドル時間（時間, 既定 24）")
+    dm.add_argument("--no-cleanup", dest="cleanup_interval", action="store_const", const=0.0,
+                    help="一時ファイルの自動掃除を無効化する")
     dm.set_defaults(func=cmd_daemon)
 
     sb = sub.add_parser("submit", help="要求を inbox に投入（デーモンが拾う）")
