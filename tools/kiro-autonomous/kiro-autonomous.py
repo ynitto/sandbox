@@ -1291,10 +1291,13 @@ def _add_common(sp):
 
 
 def main(argv=None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
     p = argparse.ArgumentParser(
         prog="kiro-autonomous",
-        description="backlog/ を優先順位付け・検証・収束させる制御層（Loop Engineering MVP）")
-    sub = p.add_subparsers(dest="cmd", required=True)
+        description="backlog/ を優先順位付け・検証・収束させる制御層（Loop Engineering MVP）。"
+                    "サブコマンドを省略すると常駐監視（run --watch）で起動し backlog 投入を待ち続ける")
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束）")
     _add_common(run)
@@ -1326,6 +1329,13 @@ def main(argv=None) -> int:
     g = rp.add_mutually_exclusive_group(required=True)
     g.add_argument("--pin", action="store_true"); g.add_argument("--defer", action="store_true")
     rp.add_argument("--reason", required=True)
+
+    # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
+    # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
+    _subcommands = {"run", "triage", "needs", "promote", "rot",
+                    "approve", "hold", "reprioritize"}
+    if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
+        argv = ["run", "--watch", *argv]
 
     args = p.parse_args(argv)
     cfg = build_config(args)

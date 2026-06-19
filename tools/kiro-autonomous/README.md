@@ -84,6 +84,7 @@ kiro-autonomous run --location daemon --executor kiro
 
 | コマンド | 役割 |
 |----------|------|
+| （省略） | **`run --watch` と同義**。常駐監視で起動し backlog 投入を待ち続ける（PC 起動時の常駐用） |
 | `run` [`--watch`] | 正準ループ。`--watch` で終了条件後も常駐監視（idle はエージェント非起動） |
 | `triage` | 優先順位付けのみ（inbox→ready 昇格・policy 適用）。順位を表示 |
 | `needs` | 人の判断待ち（blocked / acceptance 未定義）を表示 |
@@ -108,6 +109,51 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
 
 `backlog/<id>.md` に `- priority: N`（大きいほど高優先）を書くと外部から順序を制御できる。
 `--planner none` は priority 降順→同値は最古、`--planner kiro`（既定）はエージェントが priority も加味する。
+
+## 常駐起動（PC 起動時から待ち受ける）
+
+サブコマンドを**省略して呼ぶと `run --watch` と同義**になり、常駐監視で起動して backlog 投入を待ち続ける。
+PC 起動時に立ち上げっぱなしにしておき、`backlog/<id>.md` を置くだけで自動消化させる使い方を一級にしている。
+
+```bash
+kiro-autonomous                       # = run --watch（常駐。backlog 投入を待つ）
+kiro-autonomous --poll 10             # フラグだけ渡しても常駐（run の各フラグはそのまま効く）
+kiro-autonomous run                   # 明示 run は従来どおり単発（drained/budget で終了）
+```
+
+idle 中はエージェント（kiro-cli/flow）を起動しないので、待機中の常駐は安価。停止は `Ctrl-C` か SIGTERM。
+`--root` は cwd 相対なので、**常駐は backlog を置きたい作業ディレクトリで起動**する（または `--root /abs/path`）。
+
+### OS の自動起動に登録する
+
+**Linux（systemd ユーザーユニット）** — `~/.config/systemd/user/kiro-autonomous.service`:
+
+```ini
+[Unit]
+Description=kiro-autonomous（backlog を待ち受ける常駐ループ）
+
+[Service]
+WorkingDirectory=%h/work               # backlog を置く作業ディレクトリ
+ExecStart=%h/.local/bin/kiro-autonomous --poll 10 --executor kiro
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now kiro-autonomous     # 今すぐ起動＋ログイン時に自動起動
+loginctl enable-linger "$USER"                    # ログアウト後も常駐させたい場合
+journalctl --user -u kiro-autonomous -f           # ログ追従
+```
+
+**macOS（launchd）** — `~/Library/LaunchAgents/local.kiro-autonomous.plist` に
+`ProgramArguments=[kiro-autonomous の絶対パス, --poll, 10, --executor, kiro]`、`WorkingDirectory`、
+`RunAtLoad=true`、`KeepAlive=true` を設定して `launchctl load` する。
+
+**Windows** — タスク スケジューラで「ログオン時」トリガに
+`python C:\path\to\kiro-autonomous.py --poll 10 --executor kiro`（`開始（作業フォルダ）` に backlog ディレクトリ）を登録する。
 
 ## 人の判断とフィードバック往復
 
