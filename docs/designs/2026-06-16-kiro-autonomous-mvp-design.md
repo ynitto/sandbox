@@ -2,6 +2,8 @@
 
 > 作成日: 2026-06-16 ／ 更新日: 2026-06-17（正準ループ確定に伴い全面改訂）
 > 対象ブランチ: `claude/determined-cray-dthvbi`
+> 運用・外部操作レイヤ（常駐起動・操作スキル・インスタンス発見・設定ファイル）は
+> [`2026-06-19-kiro-autonomous-ops-design.md`](2026-06-19-kiro-autonomous-ops-design.md) に分冊。
 > 関連ファイル: `tools/kiro-autonomous/kiro-autonomous.py`, `tools/kiro-autonomous/tests/test_kiro_autonomous.py`,
 > `tools/kiro-autonomous/README.md`, `tools/kiro-autonomous/backlog.md.example`（タスク書式の規約）, `tools/kiro-flow/`
 >

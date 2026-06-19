@@ -692,6 +692,7 @@ class TestConfigFile(unittest.TestCase):
         ns = self._resolve(None)
         self.assertEqual((ns.executor, ns.planner, ns.poll, ns.max_cycles, ns.location),
                          ("kiro", "kiro", 5.0, 20, "auto"))
+        self.assertEqual((ns.auto_adjudicate, ns.adjudicate_max), (True, 1))  # 既定 on
 
     def test_yaml_config_when_pyyaml_available(self):
         if km.yaml is None:
@@ -706,6 +707,249 @@ class TestConfigFile(unittest.TestCase):
     def test_missing_explicit_config_exits(self):
         with self.assertRaises(SystemExit):
             self._resolve("/no/such/kiro-autonomous.yaml")
+
+
+class TestAutoAdjudicate(unittest.TestCase):
+    """needs に落とす前の kiro-cli 自律裁定ゲート（既定 off・有限回・人 policy 不介入）。"""
+
+    def setUp(self):
+        self._orig = km._run_kiro_cli
+        self.calls = []
+
+    def tearDown(self):
+        km._run_kiro_cli = self._orig
+
+    def _stub(self, payload):
+        def run(prompt, model):
+            self.calls.append(prompt)
+            return payload
+        km._run_kiro_cli = run
+
+    def _cfg(self, d, **kw):
+        base = dict(dry_run=False, learn=False, max_retries=0, max_cycles=5)
+        base.update(kw)
+        return cfg_for(d, **base)
+
+    def test_unit_requeue_and_escalate_and_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            task = km.load_tasks(d / "backlog")[0]
+            cfg = cfg_for(d)
+            self.assertEqual(
+                km.adjudicate_escalation(cfg, task, "ng",
+                                         kiro_run=lambda p, m: '{"decision":"requeue","guidance":"G"}'),
+                ("requeue", "G"))
+            self.assertEqual(
+                km.adjudicate_escalation(cfg, task, "ng",
+                                         kiro_run=lambda p, m: '{"decision":"escalate"}')[0],
+                "escalate")
+            # 不正 JSON・例外は安全側（人へ）にフォールバック
+            self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", kiro_run=lambda p, m: "??")[0],
+                             "escalate")
+
+            def boom(p, m):
+                raise RuntimeError("kiro 不在")
+            self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", kiro_run=boom)[0], "escalate")
+
+    def test_on_requeues_then_blocks_within_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            self._stub('{"decision":"requeue","guidance":"X を追加"}')
+            cfg = self._cfg(d, auto_adjudicate=True, adjudicate_max=1)
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "acted"))
+            self.assertEqual(len(self.calls), 1)                 # 裁定は cap=1 回だけ
+            self.assertEqual(res["counts"]["blocked"], 1)        # 最終的には人へ
+            self.assertTrue((cfg.needs / "T1.md").exists())
+            txt = "".join(p.read_text(encoding="utf-8") for p in (d / "decisions").glob("*.md"))
+            self.assertIn("auto-adjudicate", txt)                # 決定記録に残る
+
+    def test_escalate_decision_blocks_immediately(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            self._stub('{"decision":"escalate"}')
+            cfg = self._cfg(d, auto_adjudicate=True, adjudicate_max=2)
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "acted"))
+            self.assertEqual(len(self.calls), 1)                 # 1度諮って escalate
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+    def test_off_never_calls_kiro(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            self._stub('{"decision":"requeue"}')
+            cfg = self._cfg(d, auto_adjudicate=False)
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "acted"))
+            self.assertEqual(self.calls, [])                     # off は呼ばない
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+    def test_verifyless_task_is_not_adjudicated(self):
+        # verify を持たない（acceptance 未定義）タスクは裁定対象外＝必ず人へ
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="")
+            self._stub('{"decision":"requeue"}')
+            cfg = self._cfg(d, auto_adjudicate=True, adjudicate_max=3)
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "acted"))
+            self.assertEqual(self.calls, [])                     # kiro を呼ばずに人へ
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+
+class TestApprovalGate(unittest.TestCase):
+    """verify=PASS でも人の承認を要する検収ゲート（- review: human / policy.gate）。"""
+
+    @staticmethod
+    def _mk(d, body, policy=None):
+        bd = d / "backlog"; bd.mkdir(parents=True, exist_ok=True)
+        (bd / "T1.md").write_text(body, encoding="utf-8")
+        if policy is not None:
+            (d / "policy.md").write_text(policy, encoding="utf-8")
+
+    def test_unit_needs_human_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: x\n- status: ready\n- verify: `true`\n- review: human\n")
+            t = km.load_tasks(d / "backlog")[0]
+            self.assertTrue(km.needs_human_review(t, km.Policy()))           # タスク単位
+            self._mk(d, "## T1: x\n- status: ready\n- verify: `true`\n")
+            t = km.load_tasks(d / "backlog")[0]
+            self.assertFalse(km.needs_human_review(t, km.Policy()))          # ゲート無し
+            self.assertTrue(km.needs_human_review(t, km.Policy(gate=["T1"])))  # policy.gate
+
+    def test_review_gate_holds_then_approve_finalizes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: deploy\n- status: ready\n- verify: `true`\n- review: human\n- retries: 0\n")
+            cfg = cfg_for(d)
+            res = km.run_loop(cfg)
+            self.assertEqual(res["counts"]["review"], 1)
+            self.assertEqual(res["counts"]["done"], 0)
+            self.assertTrue((cfg.backlog / "T1.md").exists())            # archive されず残る
+            self.assertFalse((cfg.archive_dir() / "T1.md").exists())
+            self.assertTrue((cfg.needs / "T1.md").exists())
+            self.assertEqual(km.exit_code_for(res), 1)                   # 人の対応待ち
+            # 承認 → done 確定（archive・納品書・needs クリア）
+            self.assertEqual(km.cmd_approve(cfg, "T1", "本番OK"), 0)
+            self.assertTrue((cfg.archive_dir() / "T1.md").exists())
+            self.assertFalse((cfg.backlog / "T1.md").exists())
+            self.assertFalse((cfg.needs / "T1.md").exists())
+            self.assertIn("T1", (d / "DELIVERY.md").read_text(encoding="utf-8"))
+
+    def test_policy_gate_holds(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: prod-release\n- status: ready\n- verify: `true`\n- retries: 0\n",
+                     policy="gate: prod\n")
+            res = km.run_loop(cfg_for(d))
+            self.assertEqual(res["counts"]["review"], 1)
+
+    def test_no_gate_finalizes_immediately(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: x\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            res = km.run_loop(cfg_for(d))
+            self.assertEqual(res["counts"]["done"], 1)
+            self.assertEqual(res["counts"].get("review", 0), 0)
+
+    def test_reject_via_feedback_reopens_to_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: y\n- status: ready\n- verify: `true`\n- review: human\n- retries: 0\n")
+            cfg = cfg_for(d)
+            km.run_loop(cfg)
+            nf = cfg.needs / "T1.md"
+            nf.write_text(nf.read_text(encoding="utf-8").replace("- [ ] 確定", "- [x] 確定")
+                          + "\n## フィードバック\nやり直して\n", encoding="utf-8")
+            km.ingest_feedback(cfg, km.load_tasks(cfg.backlog))
+            self.assertEqual(km.load_tasks(cfg.backlog)[0].status, "ready")
+
+
+class TestLoopEngineering(unittest.TestCase):
+    """Loop Engineering 拡張: 計測・タスク自己生成・依存(DAG)・回帰ゲート。"""
+
+    @staticmethod
+    def _mk(d, name, body):
+        bd = d / "backlog"; bd.mkdir(parents=True, exist_ok=True)
+        (bd / f"{name}.md").write_text(body, encoding="utf-8")
+
+    # --- 計測 ---
+    def test_stats_counts(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: ok\n- status: ready\n- verify: `true`\n")
+            self._mk(d, "T2", "## T2: ng\n- status: ready\n- verify: `false`\n")
+            cfg = cfg_for(d, learn=False, max_retries=0, auto_adjudicate=False)
+            km.run_loop(cfg)
+            s = km.compute_stats(cfg)
+            self.assertEqual(s["done_archived"], 1)
+            self.assertEqual(s["pending_human"], 1)        # T2 blocked
+            self.assertEqual(s["delivery_rows"], 1)
+            self.assertEqual(s["first_pass_done"], 1)
+            self.assertEqual(km.cmd_stats(cfg, as_json=True), 0)
+
+    # --- タスク自己生成 ---
+    def test_followup_spawn_static(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: parent\n- status: ready\n- verify: `true`\n"
+                              "- followup: 子A :: true\n- followup: 子B\n")
+            cfg = cfg_for(d, learn=False, auto_adjudicate=False, max_cycles=10)
+            res = km.run_loop(cfg)
+            self.assertEqual(res["spawned"], 2)
+            self.assertTrue((cfg.archive_dir() / "T1-f1.md").exists())   # 子A: verify有→ready→done
+            t = km.load_tasks(cfg.backlog)
+            self.assertEqual([x.id for x in t], ["T1-f2"])              # 子B: verify無→inbox 残置
+            self.assertEqual(t[0].norm_status(), "inbox")
+            self.assertEqual(t[0].source, "followup")
+
+    def test_followup_disabled_by_zero_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: p\n- status: ready\n- verify: `true`\n- followup: 子 :: true\n")
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, max_spawn=0))
+            self.assertEqual(res["spawned"], 0)
+
+    # --- 依存(DAG) ---
+    def test_deps_gate_ordering(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: first\n- status: ready\n- verify: `true`\n")
+            self._mk(d, "T2", "## T2: second\n- status: ready\n- verify: `true`\n- after: T1\n")
+            tasks = km.load_tasks(d / "backlog")
+            order = km.prioritize(tasks, km.Policy(), "none")
+            self.assertEqual([t.id for t in order], ["T1"])            # T2 は依存未達で除外
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, max_cycles=10))
+            self.assertEqual(res["counts"]["done"], 2)                 # 解けると両方 done
+
+    def test_deps_block_when_dep_unfinished(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: dep\n- status: blocked\n- verify: `true`\n")
+            self._mk(d, "T2", "## T2: x\n- status: ready\n- verify: `true`\n- after: T1\n")
+            tasks = km.load_tasks(d / "backlog")
+            self.assertEqual(km.unmet_deps(tasks[1] if tasks[1].id == "T2" else tasks[0],
+                                           tasks), ["T1"])
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False))
+            self.assertEqual(res["counts"]["done"], 0)                 # T1 未完なので T2 も進まない
+
+    # --- 回帰ゲート ---
+    def test_regression_gate_blocks_on_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: x\n- status: ready\n- verify: `true`\n")
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False,
+                                      regression_cmd="false", max_cycles=3))
+            self.assertEqual(res["counts"]["done"], 0)
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+    def test_regression_gate_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: x\n- status: ready\n- verify: `true`\n")
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, regression_cmd="true"))
+            self.assertEqual(res["counts"]["done"], 1)
 
 
 class TestKiroFlowIntegration(unittest.TestCase):

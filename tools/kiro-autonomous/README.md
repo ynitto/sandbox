@@ -111,7 +111,8 @@ kiro-autonomous run --location daemon --executor kiro
 | （省略） | **`run --watch` と同義**。常駐監視で起動し backlog 投入を待ち続ける（PC 起動時の常駐用） |
 | `run` [`--watch`] | 正準ループ。`--watch` で終了条件後も常駐監視（idle はエージェント非起動） |
 | `triage` | 優先順位付けのみ（inbox→ready 昇格・policy 適用）。順位を表示 |
-| `needs` | 人の判断待ち（blocked / acceptance 未定義）を表示 |
+| `needs` | 人の判断待ち（blocked / acceptance 未定義 / 検収待ち）を表示 |
+| `stats` [`--json`] | ループの計測値（スループット・自動化率・retry・人対応待ち） |
 | `rot` [`--fix`] | 古い/重複/実行不能タスクを検出して報告（`--fix` で人の判断へ回す） |
 | `approve <id> --reason …` | 判断待ちを修正承認して積み直し（決定記録） |
 | `hold <id> --reason …` | `policy.md` に `deny` 追加し保留（決定記録） |
@@ -215,12 +216,97 @@ kiro-autonomous approve T12 --reason "テスト側を修正"
 kiro-autonomous hold prod-deploy --reason "本番は手動"
 ```
 
+## 検収ゲート（verify=PASS でも人の承認を要する）
+
+verify は機械的な合否でしかない。**verify が通っても人の承認・サインオフが要る**ケース
+（本番反映・不可逆操作・課金・質的なレビューなど）のために、タスクを **done 確定の手前で止めて
+承認待ち（`review`）**にできる（既定はゲート無し＝従来どおり verify PASS で即 done）。
+
+- **タスク単位**: `backlog/<id>.md` に `- review: human` を書く（その案件だけゲート）。
+- **policy 単位**: `policy.md` に `gate: <パターン>` を書く（ID/タイトル部分一致で一括ゲート）。
+
+ゲート対象は verify PASS でも archive せず `review` になり、`needs/<id>.md`（検収待ち）を生成する。
+
+```bash
+kiro-autonomous needs               # 検収待ちが「## 検収待ち」として並ぶ（成果参照つき）
+kiro-autonomous approve <id> --reason "本番OK"   # 承認＝done 確定（納品書＋archive）
+# 差し戻すなら needs/<id>.md に方針を書いて [x]（→ ready で再実行）
+```
+
+非 watch の終了コードは、`review`（承認待ち）が残ると `blocked` と同様に `1`（人の対応待ち）。
+
+## 計測（stats）— ループを「engineering」する土台
+
+`stats` で archive・decisions・DELIVERY・backlog から決定的に KPI を集計する。ループの調整はまず計測から。
+
+```bash
+kiro-autonomous stats          # スループット・自動化率・retry・人対応待ち
+kiro-autonomous stats --json   # 機械処理用
+```
+
+- 完了(archive) / 納品(DELIVERY) / 未消化 backlog（status 別）/ 人の対応待ち（blocked+review）
+- **自動化率** = 自動解決(auto-resolve＋auto-adjudicate) / (自動＋人の対応)
+- **一発 done** = retry 0 で done になった割合 / retry 累計（pending・archived）
+
+## タスク依存（`- after:` で DAG 順序）
+
+`backlog/<id>.md` に `- after: T1, T2` を書くと、**その依存が done になるまで消化対象に入らない**
+（依存未達のタスクは prioritize で除外）。done は archive へ退避＝backlog から消えるので、依存解決は
+自動で進む。依存が blocked/review で止まっていれば従属タスクも待つ。
+
+## タスクの自己生成（followup）— backlog の自走
+
+完了タスクから派生タスクを backlog に生み、ループが自分で仕事を継ぎ足せる（`source: followup`）。2 経路:
+
+- **静的**: タスクに `- followup: <タイトル> :: <verify>`（複数可）。done 時に生成。
+- **動的**: act 出力に `@followup <タイトル> :: <verify>` 行（エージェントが「ついでに見つけた」を吐く）。
+
+verify があれば `ready`（同じ run で自走消化）、無ければ `inbox`（triage で人へ）。**`--max-spawn`（既定 20）で
+1 run の生成数を上限**＝暴走しない（`0` で無効）。生成は `decisions/` に `spawn-followup` として残る。
+
+## 回帰ゲート（done 確定前のグローバル検査）
+
+per-task の `verify` は通っても**別の所を壊す**（巻き込み事故）ことがある。`--regression-cmd`（または設定
+`regression_cmd`）を与えると、**verify PASS 後・done 確定前に共通検査を走らせ**、失敗したら done にせず
+人へ回す（`review`/`done` どちらにもせず blocked）。
+
+```bash
+kiro-autonomous run --regression-cmd "make -s smoke"          # done 前に毎回スモーク
+kiro-autonomous run --regression-cmd "pytest -q" --regression-revert  # 回帰時に未コミット変更を巻き戻す
+```
+
+`--regression-revert` は **未コミットの作業ツリー変更のみ** best-effort で戻す（コミット/push 済みは対象外）。既定 off。
+
+## 自律裁定（人の判断を減らす・kiro-cli 門番）
+
+人の判断（`needs`）の**手前にフック**し、**ループ内で自律的に積み直して解けるか／人が要るか**を
+kiro-cli に判断させる仕組み（既定 **on**。`--no-auto-adjudicate` で無効化、設定ファイルの
+`auto_adjudicate: false` でも切替）。kiro-cli が無い環境では各エスカレーションで一度試して失敗し、
+そのまま人へフォールバックする（挙動は従来と同じだが、明示的に切るなら `--no-auto-adjudicate`）。
+
+- 対象は**ループ内の verify 失敗**（繰り返し NG / verify 未定義）。kiro-cli が `requeue`（積み直し）と
+  判断したら **needs を作らず ready に戻し**、指示（guidance）を次の試行へ feedback として注入する。
+  `escalate`（人へ）や判断不能・kiro-cli 不在は**必ず人へ**フォールバックする（安全側）。
+- **有限停止**: 1 タスクあたりの自律裁定は `--adjudicate-max`（既定 1）回まで。超えたら従来どおり人へ。
+- **人の意思は飛ばさない**: `policy.md` の `deny` や `hold`・`rot` による判断待ちは裁定対象外
+  （人の上書きが常に勝つ原則を維持）。`verify` を持たないタスクは「ループでは解けない」ため対象外＝必ず人へ。
+- 決定は `decisions/<id>.md` に `auto-adjudicate` として記録される。DR 学習（下記）が先に効けばそちらを優先。
+
+```bash
+kiro-autonomous run                       # 既定 on: 人へ回す前に kiro-cli が一次裁定
+kiro-autonomous run --adjudicate-max 2    # 1タスクの裁定回数を増やす
+kiro-autonomous run --no-auto-adjudicate  # 無効化して常に人へ回す
+```
+
 ## DR 学習（通知を減らす）
 
 `feedback`/`approve` の決定記録には `- learn: <タイトル> :: <指示>` が残る。タスクが繰り返し NG で
 人へ回りそうになると、他案件の `learn` から**タイトルが十分似た過去の指示**（Jaccard ≥ `--learn-threshold`、
 既定 0.5）を探し、見つかれば **blocked にせず**その指示を反映して自動的に再実行する（`auto-resolve` を
 決定記録に残し通知を抑制）。自動適用は **1 タスク 1 回**まで。`--no-learn` で無効化。
+
+> **裁定と学習の順序**: 繰り返し NG ではまず **DR 学習（決定的・kiro-cli 不要）**を試し、効かなければ
+> **自律裁定（kiro-cli）**、それも `requeue` でなければ人へ、の三段で人の判断を絞り込む。
 
 ### ltm-use への学習昇格（プロジェクト横断・エージェント不要）
 
@@ -265,11 +351,14 @@ kiro-autonomous run --rot     # 毎 run の triage に組み込む（--rot-age-d
 ## policy.md（優先順位・実行先の上書き）
 
 ```yaml
-deny:    prod      # "prod" を含むタスクは自動実行しない（人の判断待ち）
+deny:    prod      # "prod" を含むタスクは自動実行しない（実行前に人の判断待ち）
 pin:     T3        # T3 を最優先
 defer:   cleanup   # "cleanup" を含むタスクは後回し
 offload: heavy     # "heavy" を含むタスクは分散環境へ移譲（--git-bus 設定時）
+gate:    release   # "release" を含むタスクは verify PASS でも done 前に人の承認を要する（検収ゲート）
 ```
+
+`deny` は**実行前**に止め、`gate` は**実行・verify は通すが done 確定前**に止める（止める位置が違う）。
 
 ## 分散移譲（remote）
 

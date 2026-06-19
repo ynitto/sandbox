@@ -35,11 +35,11 @@ try:
 except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
     fcntl = None
 
-VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked")
+VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
-POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload):\s*(?P<val>.+)$")
+POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
 LTM_CATEGORY = "kiro-autonomous"  # ltm-use home 内のカテゴリ（昇格先サブディレクトリ）
@@ -152,6 +152,62 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
         p.unlink()
 
 
+_FOLLOWUP_LINE_RE = re.compile(r"^@followup\s+(?P<spec>.+)$")
+
+
+def parse_followups(parent: "Task", act_msg: str) -> "list[tuple[str, str]]":
+    """完了タスクから派生タスク仕様 (title, verify) を集める。2 経路:
+    静的: 親タスクの `- followup: <title> [:: <verify>]`／
+    動的: act 出力の `@followup <title> [:: <verify>]` 行（エージェントが「ついでに見つけた」を吐く）。"""
+    specs: list[tuple[str, str]] = []
+
+    def add(raw: str):
+        raw = raw.strip()
+        if not raw:
+            return
+        title, _, verify = raw.partition("::")
+        specs.append((title.strip(), _strip_code(verify.strip())))
+
+    for k, v in parent.extra:
+        if k == "followup":
+            add(v)
+    for line in (act_msg or "").splitlines():
+        m = _FOLLOWUP_LINE_RE.match(line.strip())
+        if m:
+            add(m.group("spec"))
+    return specs
+
+
+def spawn_followups(cfg: "Config", parent: "Task", specs: "list[tuple[str, str]]",
+                    tasks: "list[Task] | None", cap: int) -> "list[Task]":
+    """派生タスクを backlog/<parent>-fN.md として作る（source=followup）。verify があれば ready で
+    即消化対象、無ければ inbox（triage で人へ）。cap でこの run の生成数を制限し暴走を防ぐ。
+    tasks を渡すと同じ run 内で自走消化できるよう追記する。"""
+    spawned: list[Task] = []
+    existing = {p.stem for p in cfg.backlog.glob("*.md")}
+    if tasks:
+        existing |= {t.id for t in tasks}
+    n = 0
+    for title, verify in specs:
+        if len(spawned) >= cap or not title:
+            break
+        n += 1
+        while f"{parent.id}-f{n}" in existing:
+            n += 1
+        nid = f"{parent.id}-f{n}"
+        existing.add(nid)
+        child = Task(id=nid, title=title, status=("ready" if verify else "inbox"),
+                     source="followup", verify=verify, extra=[("parent", parent.id)])
+        persist_task(cfg, child)
+        if tasks is not None:
+            tasks.append(child)
+        spawned.append(child)
+        append_decision(cfg, nid, "auto", context=f"{parent.id}（{parent.title}）から派生生成",
+                        action="spawn-followup", reason=title[:120],
+                        affects=f"{nid} → {child.status}")
+    return spawned
+
+
 # ---------------------------------------------------------------------------
 # policy.md（人間による順位付け・実行先の上書き）
 # ---------------------------------------------------------------------------
@@ -161,6 +217,7 @@ class Policy:
     pin: "list[str]" = field(default_factory=list)
     defer: "list[str]" = field(default_factory=list)
     offload: "list[str]" = field(default_factory=list)
+    gate: "list[str]" = field(default_factory=list)   # verify PASS でも人の承認を要する（検収ゲート）
 
 
 def parse_policy(text: str) -> Policy:
@@ -177,6 +234,17 @@ def parse_policy(text: str) -> Policy:
 
 def load_policy(path: Path) -> Policy:
     return parse_policy(path.read_text(encoding="utf-8")) if path.exists() else Policy()
+
+
+_REVIEW_VALUES = {"human", "manual", "required", "yes", "true", "1"}
+
+
+def needs_human_review(task: "Task", policy: "Policy") -> bool:
+    """verify PASS でも人の承認(検収)を要するか。タスクの `- review: human` か policy の
+    `gate: <パターン>` 一致で gate（高リスク・不可逆・質的受け入れ等を人へ）。既定はゲート無し。"""
+    if dict(task.extra).get("review", "").strip().lower() in _REVIEW_VALUES:
+        return True
+    return any(task.matches(p) for p in policy.gate)
 
 
 def append_policy(path: Path, key: str, value: str) -> None:
@@ -560,17 +628,24 @@ def needs_path(cfg: "Config", tid: str) -> Path:
     return cfg.needs / f"{tid}.md"
 
 
-def write_needs_file(cfg: "Config", task: Task, reason: str) -> None:
+def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False) -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
+    if review:    # verify=PASS の承認ゲート（検収待ち）
+        state = "review（検収待ち・verify=PASS）"
+        hint = (f"<!-- 承認して done 確定するなら `kiro-autonomous approve {task.id}`。\n"
+                f"     差し戻すなら下に修正方針を書いて [x] にする（再実行されます）。 -->\n")
+    else:
+        state = "blocked（kiro-autonomous の判断待ち）"
+        hint = (f"<!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。\n"
+                f"     下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。\n"
+                f"     コマンドなら `kiro-autonomous approve {task.id}`。 -->\n")
     body = (
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"- なぜ: {reason}\n"
-        f"- 状態: blocked（kiro-autonomous の判断待ち）\n\n"
+        f"- 状態: {state}\n\n"
         f"{FEEDBACK_MARKER}\n"
         f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
-        f"<!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。\n"
-        f"     下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。\n"
-        f"     コマンドなら `kiro-autonomous approve {task.id}`。 -->\n"
+        f"{hint}"
     )
     needs_path(cfg, task.id).write_text(body, encoding="utf-8")
 
@@ -629,16 +704,25 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     return ingested
 
 
-def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task]]":
+def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task], list[Task]]":
     blocked = [t for t in tasks if t.norm_status() == "blocked"]
     intake = [t for t in tasks if t.norm_status() == "inbox" and not t.verify.strip()]
-    return blocked, intake
+    review = [t for t in tasks if t.norm_status() == "review"]   # verify=PASS の承認待ち
+    return blocked, intake, review
 
 
-def render_digest(blocked, intake, reasons: dict, budget_stop: bool) -> str:
+def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None) -> str:
+    review = review or []
     lines = ["# 要対応（kiro-autonomous）", ""]
     if budget_stop:
         lines += ["⚠ 予算切れで未消化のまま停止しました。", ""]
+    if review:
+        lines.append("## 検収待ち（verify=PASS・承認で done 確定）")
+        for t in review:
+            lines.append(f"- {t.id}: {t.title}")
+            lines.append(f"    成果: {dict(t.extra).get('gate_ref', '')}")
+            lines.append(f"    対応: `kiro-autonomous approve {t.id}`（承認）／needs に方針を書いて差し戻し")
+        lines.append("")
     if blocked:
         lines.append("## 判断待ち（blocked）")
         for t in blocked:
@@ -649,7 +733,7 @@ def render_digest(blocked, intake, reasons: dict, budget_stop: bool) -> str:
         lines += ["", "## acceptance 未定義（need_intake）"]
         for t in intake:
             lines.append(f"- {t.id}: {t.title}\n    なぜ: verify 未定義 → verify を定義して ready 化")
-    if not blocked and not intake:
+    if not blocked and not intake and not review:
         lines.append("（対応待ちなし）")
     return "\n".join(lines) + "\n"
 
@@ -658,8 +742,8 @@ def notify(cfg: "Config", tasks, reasons: dict, newly_blocked: set, budget_stop:
     """状態遷移時だけ stdout / notify-cmd へ要約を出す（案件毎の needs/<id>.md は別途書込済）。"""
     if not newly_blocked and not budget_stop:
         return False
-    blocked, intake = human_worklist(tasks)
-    digest = render_digest(blocked, intake, reasons, budget_stop)
+    blocked, intake, review = human_worklist(tasks)
+    digest = render_digest(blocked, intake, reasons, budget_stop, review)
     print("\n--- 通知（要対応）---\n" + digest, flush=True)
     if cfg.notify_cmd:
         try:
@@ -677,6 +761,23 @@ def consumable_tasks(tasks: "list[Task]") -> "list[Task]":
     return [t for t in tasks if t.consumable()]
 
 
+def task_deps(task: "Task") -> "list[str]":
+    """`- after: T1, T2` の依存 ID 群（カンマ/空白区切り）。無ければ空。"""
+    raw = dict(task.extra).get("after", "")
+    return [d for d in re.split(r"[,\s]+", raw.strip()) if d]
+
+
+def unmet_deps(task: "Task", tasks: "list[Task]") -> "list[str]":
+    """`after` の依存のうち、まだ未完（backlog に done 以外で残っている）ID。done は退避済みなので満たし。"""
+    pending = {t.id for t in tasks if t.norm_status() != "done"}
+    return [d for d in task_deps(task) if d in pending]
+
+
+def ready_after_deps(tasks: "list[Task]") -> "list[Task]":
+    """消化対象（ready）のうち、依存が満たされたものだけ（DAG 順序）。"""
+    return [t for t in consumable_tasks(tasks) if not unmet_deps(t, tasks)]
+
+
 def _extract_id_array(text: str) -> "list[str] | None":
     start, end = text.find("["), text.rfind("]")
     if start < 0 or end <= start:
@@ -686,6 +787,18 @@ def _extract_id_array(text: str) -> "list[str] | None":
     except Exception:  # noqa: BLE001
         return None
     return [str(x) for x in arr] if isinstance(arr, list) else None
+
+
+def _extract_json_obj(text: str) -> "dict | None":
+    """応答から最初の JSON オブジェクト {...} を取り出す（説明文が混じっても拾う）。"""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        obj = json.loads(text[start:end + 1])
+    except Exception:  # noqa: BLE001
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _run_kiro_cli(prompt: str, model: "str | None") -> str:
@@ -720,6 +833,33 @@ def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=_run_kiro_cli)
     return ordered
 
 
+def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
+                          kiro_run=None) -> "tuple[str, str]":
+    """needs（人の判断）に落とす直前の kiro-cli 裁定ゲート。
+    『ループ内で自律的に積み直して解けるか／人の判断が要るか』を判断させる。
+    返り値: ("requeue", guidance) なら自律的に積み直す、("escalate", "") なら従来どおり人へ。
+    判断不能・エラー・曖昧は **必ず escalate にフォールバック**（安全側＝人を飛ばさない）。"""
+    run = kiro_run or _run_kiro_cli
+    prompt = (
+        "あなたは自律バックログ・ループの『人の判断を呼ぶ前の門番』です。次のタスクが検証(verify)に"
+        "失敗し、通常なら人の判断待ち(needs)へ送られます。これを **ループ内で自律的に積み直して解決を試みる"
+        "価値があるか** を判断してください。\n"
+        "- requeue（積み直す）: 失敗が実装の不足・取り違え等で、明確な追加指示があれば次の試行で解けそうな場合。\n"
+        "- escalate（人へ）: 要件が曖昧／意思決定や承認が要る／リスクが高い／同じ失敗の繰り返しで打開策が無い場合。\n"
+        "**判断は厳しめに。少しでも人の意思決定が要るなら escalate。**\n\n"
+        f"タスクID: {task.id}\nタイトル: {task.title}\nverify: {task.verify}\n"
+        f"これまでの試行回数(retries): {task.retries}\n失敗理由: {reason}\n\n"
+        '出力は次の JSON オブジェクトだけ（説明文なし）:\n'
+        '{"decision": "requeue" | "escalate", "guidance": "requeue の場合のみ、次の試行への具体的な指示"}')
+    try:
+        obj = _extract_json_obj(run(prompt, cfg.model))
+    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は人へ
+        return ("escalate", "")
+    if not obj or obj.get("decision") != "requeue":
+        return ("escalate", "")
+    return ("requeue", str(obj.get("guidance", "")).strip())
+
+
 def apply_policy_order(ordered: "list[Task]", policy: Policy) -> "list[Task]":
     def hit(t, pats):
         return any(t.matches(p) for p in pats)
@@ -736,7 +876,7 @@ def by_priority_then_age(ready: "list[Task]") -> "list[Task]":
 
 def prioritize(tasks, policy, planner, model=None, ranker=None) -> "list[Task]":
     """planner=none: priority＋古さ。planner=kiro: エージェント（priority も加味）。policy が最終上書き。"""
-    ready = consumable_tasks(tasks)  # mtime 昇順（最古優先）
+    ready = ready_after_deps(tasks)  # mtime 昇順（最古優先）。依存(after)未達は除外
     if planner == "none":
         base = by_priority_then_age(ready)
     else:  # kiro（エージェント順位付け。失敗時は priority＋古さにフォールバック）
@@ -962,6 +1102,11 @@ class Config:
     do_archive: bool = True         # done を archive/ へ退避（False なら削除）
     learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
+    auto_adjudicate: bool = True    # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on）
+    adjudicate_max: int = 1         # 1タスクあたりの自律裁定の上限回数（有限停止のため）
+    max_spawn: int = 20             # 1 run で生成できる派生タスク数の上限（0 で生成無効。暴走防止）
+    regression_cmd: "str | None" = None  # done 確定前に走らせるグローバル回帰検査（巻き込み事故の検知）
+    regression_revert: bool = False      # 回帰時に作業ツリーの未コミット変更を巻き戻す（既定 off）
     ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
     ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
     promote_threshold: int = 2      # learn ルールがこの回数以上効いたら昇格
@@ -1056,6 +1201,47 @@ def _block(cfg, task, reason, reasons):
     write_needs_file(cfg, task, reason)
 
 
+def _revert_workdir(cfg) -> None:
+    """回帰時の best-effort 巻き戻し: 追跡ファイルを HEAD に戻し未追跡を消す。
+    **コミット済み/ push 済みの変更は対象外**（未コミットの作業ツリー変更のみ）。"""
+    if not (cfg.workdir / ".git").exists():
+        return
+    for cmd in (["git", "-C", str(cfg.workdir), "checkout", "--", "."],
+                ["git", "-C", str(cfg.workdir), "clean", "-fd"]):
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def _escalate(cfg, task, reason, reasons, cycle):
+    """ループ内で人の判断(needs)へ回す直前のフック。auto_adjudicate が有効なら、人へ送る前に
+    kiro-cli へ『自律的に積み直して解けるか』を諮り、可能なら needs を作らず ready に戻して回し続ける。
+    verify を持たないタスク（acceptance 未定義）は対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
+    if cfg.auto_adjudicate and not cfg.dry_run and task.verify:
+        done_n = int(dict(task.extra).get("adjudicated", "0") or "0")
+        if done_n < cfg.adjudicate_max:
+            decision, guide = adjudicate_escalation(cfg, task, reason)
+            if decision == "requeue":
+                task.extra = [(k, v) for k, v in task.extra
+                              if k not in ("feedback", "adjudicated")]
+                if guide:
+                    task.extra.append(("feedback", guide.replace("\n", " ⏎ ")))
+                task.extra.append(("adjudicated", str(done_n + 1)))
+                task.status = "ready"
+                persist_task(cfg, task)
+                append_decision(cfg, task.id, "auto",
+                                context=f"{task.id}（{task.title}）を人の判断前に自律裁定",
+                                action="auto-adjudicate",
+                                reason=(f"kiro-cli: requeue — {guide[:120]}" if guide
+                                        else "kiro-cli: requeue"),
+                                affects=f"{task.id} → ready")
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} 自律裁定で積み直し"
+                                            f"（人の判断を回避 {done_n + 1}/{cfg.adjudicate_max}）")
+                return
+    _block(cfg, task, reason, reasons)
+
+
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     ensure_dirs(cfg)
     tasks = load_tasks(cfg.backlog)
@@ -1063,7 +1249,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     reasons: dict[str, str] = {}
 
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
-    pre_blocked = {t.id for t in tasks if t.norm_status() == "blocked"}
+    pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review")}
     transitions = list(triage(tasks, policy))
     if cfg.rot:                                       # rot 検知（古い/重複/実行不能を掃除）
         transitions += [(t, f"rot: {why}") for t, why in detect_rot(cfg, tasks)]
@@ -1080,6 +1266,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     start = time.time()
     cycle = 0
     archived = 0
+    spawned_total = 0
     reason = REASON_DRAINED
 
     while True:
@@ -1110,7 +1297,35 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             _, act_msg = act(task, cfg, location)
 
         ok, vmsg = run_verify(task.verify, cfg.workdir, cfg.verify_timeout)
-        if ok:
+        regressed = False
+        if ok and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故の検知）
+            rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout)
+            if not rok:
+                regressed = True
+                if cfg.regression_revert:
+                    _revert_workdir(cfg)
+                _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}",
+                       reasons)
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
+                               + ("・revert 済" if cfg.regression_revert else ""))
+        if regressed:
+            pass                          # 既に blocked 化済み。done/review にしない
+        elif ok and needs_human_review(task, policy):
+            # verify は通ったが承認ゲート対象 → done を確定せず人の検収待ち（review）へ
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ref = extract_delivery_ref(act_msg, cfg)
+            task.status = "review"
+            task.extra = [(k, v) for k, v in task.extra
+                          if k not in ("gate_ref", "gate_vmsg", "gate_ts")]
+            task.extra += [("gate_ref", ref), ("gate_ts", ts),
+                           ("gate_vmsg", vmsg.replace("\n", " ")[:200])]
+            reasons[task.id] = "検収待ち（verify=PASS。approve で done 確定）"
+            persist_task(cfg, task)
+            write_needs_file(cfg, task,
+                             "verify=PASS だが承認ゲート対象（review/policy.gate）。"
+                             "approve で done 確定、フィードバック記入で差し戻し（再実行）", review=True)
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち（承認ゲート） — {ref}")
+        elif ok:
             task.status = "done"
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ref = extract_delivery_ref(act_msg, cfg)     # 成果物の参照（PR/commit/git）
@@ -1124,11 +1339,19 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                 done_disp = "DONE 削除"
             clear_needs_file(cfg, task.id)
             append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {ref}")
+            specs = parse_followups(task, act_msg)        # done から派生タスクを生む（backlog 自走）
+            if specs and spawned_total < cfg.max_spawn:
+                new = spawn_followups(cfg, task, specs, tasks, cfg.max_spawn - spawned_total)
+                spawned_total += len(new)
+                if new:
+                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} から派生生成 "
+                                                f"{[t.id for t in new]}")
         else:
             task.retries += 1
             if not task.verify:
-                _block(cfg, task, "verify 未定義", reasons)
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
+                _escalate(cfg, task, "verify 未定義", reasons, cycle)
+                if task.norm_status() == "blocked":
+                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
             elif task.retries > cfg.max_retries:
                 learned = find_learned_resolution(cfg, task) if cfg.learn else None
                 if learned and not dict(task.extra).get("autolearned"):
@@ -1145,8 +1368,11 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                     append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
                                                 f"（{src} に倣う・通知を抑制）")
                 else:
-                    _block(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons)
-                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
+                    _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}",
+                              reasons, cycle)
+                    if task.norm_status() == "blocked":
+                        append_journal(cfg.journal,
+                                       f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
             else:
                 task.status = "ready"
                 persist_task(cfg, task)
@@ -1161,7 +1387,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             sleeper(delay)
 
     counts = summarize(tasks)
-    newly_blocked = {t.id for t in tasks if t.norm_status() == "blocked"} - pre_blocked
+    newly_blocked = {t.id for t in tasks
+                     if t.norm_status() in ("blocked", "review")} - pre_blocked
     budget_stop = reason == REASON_BUDGET
     notified = notify(cfg, tasks, reasons, newly_blocked, budget_stop)
     promoted = promote_learnings(cfg) if cfg.ltm else []   # 効いた学習を ltm-use へ昇格
@@ -1171,7 +1398,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                                 f"notified={notified} promoted={len(promoted)} ===")
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
             "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified,
-            "ingested": ingested, "archived": archived, "promoted": promoted}
+            "ingested": ingested, "archived": archived, "promoted": promoted,
+            "spawned": spawned_total}
 
 
 def _cleanup_bus(cfg: Config) -> None:
@@ -1185,7 +1413,7 @@ def _cleanup_bus(cfg: Config) -> None:
 
 def exit_code_for(result: dict) -> int:
     counts = result["counts"]
-    if counts["blocked"] > 0:
+    if counts["blocked"] > 0 or counts.get("review", 0) > 0:   # 人の対応待ち（判断 or 検収承認）
         return 1
     if result["reason"] == REASON_DRAINED:
         return 0
@@ -1234,6 +1462,26 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
     if t is None:
         print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
         return 2
+    if t.norm_status() == "review":
+        # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
+        ex = dict(t.extra)
+        ref = ex.get("gate_ref", "")
+        ts = ex.get("gate_ts") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        vmsg = ex.get("gate_vmsg", "")
+        t.status = "done"
+        t.extra = [(k, v) for k, v in t.extra if k not in ("gate_ref", "gate_ts", "gate_vmsg")]
+        append_delivery(cfg, t, ref, ts)
+        disp = "done（承認・納品書）"
+        if cfg.do_archive:
+            archive_task(cfg, t, vmsg or f"承認: {reason}", ref, ts)
+        else:
+            delete_task_file(cfg, t)
+            disp = "done（承認・削除）"
+        clear_needs_file(cfg, tid)
+        dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を検収承認",
+                             action="approve-done", reason=reason, affects=f"{tid} → done")
+        print(f"{dr}: {tid} を承認し {disp} 確定しました。")
+        return 0
     t.status = "ready"
     persist_task(cfg, t)
     clear_needs_file(cfg, tid)
@@ -1270,11 +1518,87 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
 
 def cmd_needs(cfg: Config) -> int:
     tasks = load_tasks(cfg.backlog)
-    blocked, intake = human_worklist(tasks)
-    print(render_digest(blocked, intake, {}, budget_stop=False))
-    if blocked:
+    blocked, intake, review = human_worklist(tasks)
+    print(render_digest(blocked, intake, {}, budget_stop=False, review=review))
+    if blocked or review:
         print(f"（各案件の詳細・フィードバック欄: {cfg.needs}/<id>.md）")
-    return 1 if blocked else 0
+    return 1 if (blocked or review) else 0
+
+
+def _decision_action_tally(decisions_dir: Path) -> "dict[str, int]":
+    """decisions/*.md の `- action  : X` を数える（ループ計測の素）。"""
+    tally: dict[str, int] = {}
+    if not decisions_dir.exists():
+        return tally
+    pat = re.compile(r"^- action\s*:\s*(?P<a>.+)$")
+    for f in decisions_dir.glob("*.md"):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            m = pat.match(line.strip())
+            if m:
+                a = m.group("a").strip()
+                tally[a] = tally.get(a, 0) + 1
+    return tally
+
+
+def compute_stats(cfg: Config) -> dict:
+    """archive・decisions・DELIVERY・backlog から決定的にループの KPI を集計する。"""
+    tasks = load_tasks(cfg.backlog)
+    by_status: dict[str, int] = {}
+    for t in tasks:
+        by_status[t.norm_status()] = by_status.get(t.norm_status(), 0) + 1
+    arch_dir = cfg.archive_dir()
+    archived = sorted(arch_dir.glob("*.md")) if arch_dir.exists() else []
+    arch_tasks = [parse_task(p.read_text(encoding="utf-8"), p.stem) for p in archived]
+    deliv_rows = 0
+    dp = Path(cfg.delivery) if cfg.delivery else None
+    if dp and dp.exists():
+        for line in dp.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s.startswith("|") and not s.startswith("| id") and "---" not in s:
+                deliv_rows += 1
+    actions = _decision_action_tally(cfg.decisions)
+    auto = actions.get("auto-resolve", 0) + actions.get("auto-adjudicate", 0)
+    human = (actions.get("approve-done", 0) + actions.get("approve-and-fix", 0)
+             + actions.get("hold(deny)", 0) + actions.get("feedback-resume", 0))
+    routed = auto + human
+    done = len(archived)
+    pending_human = by_status.get("blocked", 0) + by_status.get("review", 0)
+    return {
+        "backlog_pending": len(tasks),
+        "by_status": by_status,
+        "pending_human": pending_human,                 # blocked + review（要対応）
+        "done_archived": done,
+        "delivery_rows": deliv_rows,
+        "decisions_total": sum(actions.values()),
+        "actions": actions,
+        "auto_resolved": auto,                           # auto-resolve + auto-adjudicate
+        "human_actions": human,
+        "automation_rate": (auto / routed) if routed else None,  # 機械で捌けた割合
+        "retries_pending_sum": sum(t.retries for t in tasks),
+        "retries_archived_sum": sum(t.retries for t in arch_tasks),
+        "first_pass_done": sum(1 for t in arch_tasks if t.retries == 0),  # 一発 done
+    }
+
+
+def cmd_stats(cfg: Config, as_json: bool = False) -> int:
+    """ループの計測値を出す（スループット・自動化率・retry・人対応待ち）。回路調整の土台。"""
+    s = compute_stats(cfg)
+    if as_json:
+        print(json.dumps(s, ensure_ascii=False, indent=2))
+        return 0
+    rate = s["automation_rate"]
+    rate_disp = f"{rate*100:.0f}%" if rate is not None else "—"
+    fp = s["first_pass_done"]
+    fp_disp = f"{fp}/{s['done_archived']}" if s["done_archived"] else "—"
+    print("=== kiro-autonomous stats ===")
+    print(f"完了(archive)   : {s['done_archived']}（一発 done {fp_disp}）")
+    print(f"納品(DELIVERY)  : {s['delivery_rows']}")
+    print(f"未消化 backlog  : {s['backlog_pending']}  {s['by_status']}")
+    print(f"人の対応待ち    : {s['pending_human']}（blocked + review）")
+    print(f"自動解決/人対応 : {s['auto_resolved']} / {s['human_actions']}  → 自動化率 {rate_disp}")
+    print(f"retry 累計      : pending {s['retries_pending_sum']} / archived {s['retries_archived_sum']}")
+    print(f"決定記録        : {s['decisions_total']} 件  {s['actions']}")
+    return 0
 
 
 def cmd_rot(cfg: Config, fix: bool) -> int:
@@ -1408,6 +1732,10 @@ CONFIG_DEFAULTS = {
     "promote_threshold": 2,
     "ltm_home": None,
     "rot_age_days": 14.0,
+    "auto_adjudicate": True,    # 真偽だが --auto-adjudicate/--no-... の三値で config 上書き可（既定 on）
+    "adjudicate_max": 1,
+    "max_spawn": 20,            # 1 run の派生タスク生成上限（0 で無効）
+    "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
 }
 
 
@@ -1469,6 +1797,11 @@ def build_config(args) -> Config:
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
         learn=not getattr(args, "no_learn", False), learn_threshold=args.learn_threshold,
+        auto_adjudicate=bool(getattr(args, "auto_adjudicate", True)),
+        adjudicate_max=getattr(args, "adjudicate_max", 1),
+        max_spawn=getattr(args, "max_spawn", 20),
+        regression_cmd=getattr(args, "regression_cmd", None),
+        regression_revert=bool(getattr(args, "regression_revert", False)),
         ltm=getattr(args, "ltm", False), ltm_home=resolve_ltm_home(getattr(args, "ltm_home", None)),
         promote_threshold=getattr(args, "promote_threshold", 2),
         rot=getattr(args, "rot", False), rot_age_days=args.rot_age_days,
@@ -1522,6 +1855,19 @@ def _add_common(sp):
                     help="DR 学習（過去の人の判断から類似案件を自動解決）を無効化")
     sp.add_argument("--learn-threshold", type=float, default=None,
                     help="DR 学習のタイトル類似度しきい値（0〜1。既定 0.5）")
+    # 自律裁定: needs に落とす前に kiro-cli が積み直し可否を判断（三値: 未指定→設定ファイル/既定 on）
+    sp.add_argument("--auto-adjudicate", dest="auto_adjudicate", action="store_true", default=None,
+                    help="人の判断(needs)へ送る前に kiro-cli が『自律的に積み直すか人へ回すか』を裁定（既定 on）")
+    sp.add_argument("--no-auto-adjudicate", dest="auto_adjudicate", action="store_false",
+                    default=None, help="自律裁定を無効化して常に人へ回す（明示 off）")
+    sp.add_argument("--adjudicate-max", type=int, default=None,
+                    help="1タスクあたりの自律裁定の上限回数（有限停止のため。既定 1）")
+    sp.add_argument("--max-spawn", type=int, default=None,
+                    help="1 run で生成できる派生タスク（followup）数の上限（0 で無効。既定 20）")
+    sp.add_argument("--regression-cmd", default=None,
+                    help="done 確定前に走らせるグローバル回帰検査（失敗で done にせず人へ。巻き込み事故の検知）")
+    sp.add_argument("--regression-revert", action="store_true",
+                    help="回帰検知時に作業ツリーの未コミット変更を巻き戻す（best-effort・既定 off）")
     sp.add_argument("--ltm", action="store_true",
                     help="効いた学習を ltm-use 長期記憶へ昇格＋プロジェクト横断 recall（既定 off）")
     sp.add_argument("--ltm-home", default=None,
@@ -1562,6 +1908,9 @@ def main(argv=None) -> int:
     rot = sub.add_parser("rot", help="rot（古い/重複/実行不能）を検出して報告（--fix で blocked 化）")
     _add_common(rot); rot.add_argument("--fix", action="store_true", help="検出した rot を人の判断へ回す")
 
+    st = sub.add_parser("stats", help="ループの計測値（スループット・自動化率・retry・人対応待ち）")
+    _add_common(st); st.add_argument("--json", action="store_true", help="JSON で出力")
+
     ap = sub.add_parser("approve", help="判断待ちを修正承認して積み直し（決定記録）")
     _add_common(ap); ap.add_argument("id"); ap.add_argument("--reason", required=True)
     hd = sub.add_parser("hold", help="policy に deny 追加し保留（決定記録）")
@@ -1578,7 +1927,7 @@ def main(argv=None) -> int:
 
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
-    _subcommands = {"run", "triage", "needs", "promote", "rot",
+    _subcommands = {"run", "triage", "needs", "promote", "rot", "stats",
                     "approve", "hold", "reprioritize", "instances"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
@@ -1600,6 +1949,7 @@ def main(argv=None) -> int:
         "run": lambda: cmd_run(cfg),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
+        "stats": lambda: cmd_stats(cfg, getattr(args, "json", False)),
         "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason),
