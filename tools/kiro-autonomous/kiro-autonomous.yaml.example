@@ -17,6 +17,7 @@
 #
 # 注: 真偽フラグ（--watch / --ltm / --no-learn / --no-archive / --no-cleanup / --rot /
 #     --dry-run / --once）と個別パス上書き（--backlog 等）は CLI 専用です。ここには書けません。
+#     例外: auto_adjudicate は三値対応のためこのファイルでも on/off できます（下記）。
 
 # ---------------------------------------------------------------------------
 # 作業ルート（すべてのファイルの集約先。cwd 相対 or 絶対）
@@ -61,6 +62,8 @@ git_branch: main            # バスに使う git ブランチ
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し
 # ---------------------------------------------------------------------------
+# auto_adjudicate: false     # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 off）
+# adjudicate_max: 1          # 1タスクあたりの自律裁定の上限回数（有限停止のため）
 learn_threshold: 0.5        # DR 学習のタイトル類似度（Jaccard）しきい値
 promote_threshold: 2        # learn ルールがこの回数以上効いたら ltm-use へ昇格（--ltm 時）
 # ltm_home: ~/.claude        # ltm-use ストアのルート（既定 KIRO_LTM_HOME → ~/.claude）

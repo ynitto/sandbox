@@ -708,6 +708,94 @@ class TestConfigFile(unittest.TestCase):
             self._resolve("/no/such/kiro-autonomous.yaml")
 
 
+class TestAutoAdjudicate(unittest.TestCase):
+    """needs に落とす前の kiro-cli 自律裁定ゲート（既定 off・有限回・人 policy 不介入）。"""
+
+    def setUp(self):
+        self._orig = km._run_kiro_cli
+        self.calls = []
+
+    def tearDown(self):
+        km._run_kiro_cli = self._orig
+
+    def _stub(self, payload):
+        def run(prompt, model):
+            self.calls.append(prompt)
+            return payload
+        km._run_kiro_cli = run
+
+    def _cfg(self, d, **kw):
+        base = dict(dry_run=False, learn=False, max_retries=0, max_cycles=5)
+        base.update(kw)
+        return cfg_for(d, **base)
+
+    def test_unit_requeue_and_escalate_and_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            task = km.load_tasks(d / "backlog")[0]
+            cfg = cfg_for(d)
+            self.assertEqual(
+                km.adjudicate_escalation(cfg, task, "ng",
+                                         kiro_run=lambda p, m: '{"decision":"requeue","guidance":"G"}'),
+                ("requeue", "G"))
+            self.assertEqual(
+                km.adjudicate_escalation(cfg, task, "ng",
+                                         kiro_run=lambda p, m: '{"decision":"escalate"}')[0],
+                "escalate")
+            # 不正 JSON・例外は安全側（人へ）にフォールバック
+            self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", kiro_run=lambda p, m: "??")[0],
+                             "escalate")
+
+            def boom(p, m):
+                raise RuntimeError("kiro 不在")
+            self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", kiro_run=boom)[0], "escalate")
+
+    def test_on_requeues_then_blocks_within_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            self._stub('{"decision":"requeue","guidance":"X を追加"}')
+            cfg = self._cfg(d, auto_adjudicate=True, adjudicate_max=1)
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "acted"))
+            self.assertEqual(len(self.calls), 1)                 # 裁定は cap=1 回だけ
+            self.assertEqual(res["counts"]["blocked"], 1)        # 最終的には人へ
+            self.assertTrue((cfg.needs / "T1.md").exists())
+            txt = "".join(p.read_text(encoding="utf-8") for p in (d / "decisions").glob("*.md"))
+            self.assertIn("auto-adjudicate", txt)                # 決定記録に残る
+
+    def test_escalate_decision_blocks_immediately(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            self._stub('{"decision":"escalate"}')
+            cfg = self._cfg(d, auto_adjudicate=True, adjudicate_max=2)
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "acted"))
+            self.assertEqual(len(self.calls), 1)                 # 1度諮って escalate
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+    def test_off_never_calls_kiro(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            self._stub('{"decision":"requeue"}')
+            cfg = self._cfg(d, auto_adjudicate=False)
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "acted"))
+            self.assertEqual(self.calls, [])                     # off は呼ばない
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+    def test_verifyless_task_is_not_adjudicated(self):
+        # verify を持たない（acceptance 未定義）タスクは裁定対象外＝必ず人へ
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="")
+            self._stub('{"decision":"requeue"}')
+            cfg = self._cfg(d, auto_adjudicate=True, adjudicate_max=3)
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "acted"))
+            self.assertEqual(self.calls, [])                     # kiro を呼ばずに人へ
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+
 class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
         kf = Path(__file__).resolve().parents[2] / "kiro-flow" / "kiro-flow.py"

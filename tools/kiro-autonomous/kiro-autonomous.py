@@ -688,6 +688,18 @@ def _extract_id_array(text: str) -> "list[str] | None":
     return [str(x) for x in arr] if isinstance(arr, list) else None
 
 
+def _extract_json_obj(text: str) -> "dict | None":
+    """応答から最初の JSON オブジェクト {...} を取り出す（説明文が混じっても拾う）。"""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        obj = json.loads(text[start:end + 1])
+    except Exception:  # noqa: BLE001
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 def _run_kiro_cli(prompt: str, model: "str | None") -> str:
     cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if model:
@@ -718,6 +730,33 @@ def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=_run_kiro_cli)
     seen = {t.id for t in ordered}
     ordered += [t for t in ready if t.id not in seen]
     return ordered
+
+
+def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
+                          kiro_run=None) -> "tuple[str, str]":
+    """needs（人の判断）に落とす直前の kiro-cli 裁定ゲート。
+    『ループ内で自律的に積み直して解けるか／人の判断が要るか』を判断させる。
+    返り値: ("requeue", guidance) なら自律的に積み直す、("escalate", "") なら従来どおり人へ。
+    判断不能・エラー・曖昧は **必ず escalate にフォールバック**（安全側＝人を飛ばさない）。"""
+    run = kiro_run or _run_kiro_cli
+    prompt = (
+        "あなたは自律バックログ・ループの『人の判断を呼ぶ前の門番』です。次のタスクが検証(verify)に"
+        "失敗し、通常なら人の判断待ち(needs)へ送られます。これを **ループ内で自律的に積み直して解決を試みる"
+        "価値があるか** を判断してください。\n"
+        "- requeue（積み直す）: 失敗が実装の不足・取り違え等で、明確な追加指示があれば次の試行で解けそうな場合。\n"
+        "- escalate（人へ）: 要件が曖昧／意思決定や承認が要る／リスクが高い／同じ失敗の繰り返しで打開策が無い場合。\n"
+        "**判断は厳しめに。少しでも人の意思決定が要るなら escalate。**\n\n"
+        f"タスクID: {task.id}\nタイトル: {task.title}\nverify: {task.verify}\n"
+        f"これまでの試行回数(retries): {task.retries}\n失敗理由: {reason}\n\n"
+        '出力は次の JSON オブジェクトだけ（説明文なし）:\n'
+        '{"decision": "requeue" | "escalate", "guidance": "requeue の場合のみ、次の試行への具体的な指示"}')
+    try:
+        obj = _extract_json_obj(run(prompt, cfg.model))
+    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は人へ
+        return ("escalate", "")
+    if not obj or obj.get("decision") != "requeue":
+        return ("escalate", "")
+    return ("requeue", str(obj.get("guidance", "")).strip())
 
 
 def apply_policy_order(ordered: "list[Task]", policy: Policy) -> "list[Task]":
@@ -962,6 +1001,8 @@ class Config:
     do_archive: bool = True         # done を archive/ へ退避（False なら削除）
     learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
+    auto_adjudicate: bool = False   # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 off）
+    adjudicate_max: int = 1         # 1タスクあたりの自律裁定の上限回数（有限停止のため）
     ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
     ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
     promote_threshold: int = 2      # learn ルールがこの回数以上効いたら昇格
@@ -1056,6 +1097,34 @@ def _block(cfg, task, reason, reasons):
     write_needs_file(cfg, task, reason)
 
 
+def _escalate(cfg, task, reason, reasons, cycle):
+    """ループ内で人の判断(needs)へ回す直前のフック。auto_adjudicate が有効なら、人へ送る前に
+    kiro-cli へ『自律的に積み直して解けるか』を諮り、可能なら needs を作らず ready に戻して回し続ける。
+    verify を持たないタスク（acceptance 未定義）は対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
+    if cfg.auto_adjudicate and not cfg.dry_run and task.verify:
+        done_n = int(dict(task.extra).get("adjudicated", "0") or "0")
+        if done_n < cfg.adjudicate_max:
+            decision, guide = adjudicate_escalation(cfg, task, reason)
+            if decision == "requeue":
+                task.extra = [(k, v) for k, v in task.extra
+                              if k not in ("feedback", "adjudicated")]
+                if guide:
+                    task.extra.append(("feedback", guide.replace("\n", " ⏎ ")))
+                task.extra.append(("adjudicated", str(done_n + 1)))
+                task.status = "ready"
+                persist_task(cfg, task)
+                append_decision(cfg, task.id, "auto",
+                                context=f"{task.id}（{task.title}）を人の判断前に自律裁定",
+                                action="auto-adjudicate",
+                                reason=(f"kiro-cli: requeue — {guide[:120]}" if guide
+                                        else "kiro-cli: requeue"),
+                                affects=f"{task.id} → ready")
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} 自律裁定で積み直し"
+                                            f"（人の判断を回避 {done_n + 1}/{cfg.adjudicate_max}）")
+                return
+    _block(cfg, task, reason, reasons)
+
+
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     ensure_dirs(cfg)
     tasks = load_tasks(cfg.backlog)
@@ -1127,8 +1196,9 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         else:
             task.retries += 1
             if not task.verify:
-                _block(cfg, task, "verify 未定義", reasons)
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
+                _escalate(cfg, task, "verify 未定義", reasons, cycle)
+                if task.norm_status() == "blocked":
+                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
             elif task.retries > cfg.max_retries:
                 learned = find_learned_resolution(cfg, task) if cfg.learn else None
                 if learned and not dict(task.extra).get("autolearned"):
@@ -1145,8 +1215,11 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                     append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
                                                 f"（{src} に倣う・通知を抑制）")
                 else:
-                    _block(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons)
-                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
+                    _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}",
+                              reasons, cycle)
+                    if task.norm_status() == "blocked":
+                        append_journal(cfg.journal,
+                                       f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
             else:
                 task.status = "ready"
                 persist_task(cfg, task)
@@ -1408,6 +1481,8 @@ CONFIG_DEFAULTS = {
     "promote_threshold": 2,
     "ltm_home": None,
     "rot_age_days": 14.0,
+    "auto_adjudicate": False,   # 真偽だが --auto-adjudicate/--no-... の三値で config 上書き可
+    "adjudicate_max": 1,
 }
 
 
@@ -1469,6 +1544,8 @@ def build_config(args) -> Config:
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
         learn=not getattr(args, "no_learn", False), learn_threshold=args.learn_threshold,
+        auto_adjudicate=bool(getattr(args, "auto_adjudicate", False)),
+        adjudicate_max=getattr(args, "adjudicate_max", 1),
         ltm=getattr(args, "ltm", False), ltm_home=resolve_ltm_home(getattr(args, "ltm_home", None)),
         promote_threshold=getattr(args, "promote_threshold", 2),
         rot=getattr(args, "rot", False), rot_age_days=args.rot_age_days,
@@ -1522,6 +1599,13 @@ def _add_common(sp):
                     help="DR 学習（過去の人の判断から類似案件を自動解決）を無効化")
     sp.add_argument("--learn-threshold", type=float, default=None,
                     help="DR 学習のタイトル類似度しきい値（0〜1。既定 0.5）")
+    # 自律裁定: needs に落とす前に kiro-cli が積み直し可否を判断（三値: 未指定→設定ファイル/既定）
+    sp.add_argument("--auto-adjudicate", dest="auto_adjudicate", action="store_true", default=None,
+                    help="人の判断(needs)へ送る前に kiro-cli が『自律的に積み直すか人へ回すか』を裁定（既定 off）")
+    sp.add_argument("--no-auto-adjudicate", dest="auto_adjudicate", action="store_false",
+                    default=None, help="自律裁定を無効化（明示 off。設定ファイルで on のときの打ち消し）")
+    sp.add_argument("--adjudicate-max", type=int, default=None,
+                    help="1タスクあたりの自律裁定の上限回数（有限停止のため。既定 1）")
     sp.add_argument("--ltm", action="store_true",
                     help="効いた学習を ltm-use 長期記憶へ昇格＋プロジェクト横断 recall（既定 off）")
     sp.add_argument("--ltm-home", default=None,

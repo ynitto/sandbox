@@ -215,12 +215,34 @@ kiro-autonomous approve T12 --reason "テスト側を修正"
 kiro-autonomous hold prod-deploy --reason "本番は手動"
 ```
 
+## 自律裁定（人の判断を減らす・kiro-cli 門番）
+
+人の判断（`needs`）の**手前にフック**し、**ループ内で自律的に積み直して解けるか／人が要るか**を
+kiro-cli に判断させる仕組み（既定 **off**。`--auto-adjudicate` で有効化、`--no-auto-adjudicate` で明示無効、
+設定ファイルの `auto_adjudicate: true/false` でも切替）。
+
+- 対象は**ループ内の verify 失敗**（繰り返し NG / verify 未定義）。kiro-cli が `requeue`（積み直し）と
+  判断したら **needs を作らず ready に戻し**、指示（guidance）を次の試行へ feedback として注入する。
+  `escalate`（人へ）や判断不能・kiro-cli 不在は**必ず人へ**フォールバックする（安全側）。
+- **有限停止**: 1 タスクあたりの自律裁定は `--adjudicate-max`（既定 1）回まで。超えたら従来どおり人へ。
+- **人の意思は飛ばさない**: `policy.md` の `deny` や `hold`・`rot` による判断待ちは裁定対象外
+  （人の上書きが常に勝つ原則を維持）。`verify` を持たないタスクは「ループでは解けない」ため対象外＝必ず人へ。
+- 決定は `decisions/<id>.md` に `auto-adjudicate` として記録される。DR 学習（下記）が先に効けばそちらを優先。
+
+```bash
+kiro-autonomous run --auto-adjudicate                  # 人へ回す前に kiro-cli が一次裁定
+kiro-autonomous run --auto-adjudicate --adjudicate-max 2
+```
+
 ## DR 学習（通知を減らす）
 
 `feedback`/`approve` の決定記録には `- learn: <タイトル> :: <指示>` が残る。タスクが繰り返し NG で
 人へ回りそうになると、他案件の `learn` から**タイトルが十分似た過去の指示**（Jaccard ≥ `--learn-threshold`、
 既定 0.5）を探し、見つかれば **blocked にせず**その指示を反映して自動的に再実行する（`auto-resolve` を
 決定記録に残し通知を抑制）。自動適用は **1 タスク 1 回**まで。`--no-learn` で無効化。
+
+> **裁定と学習の順序**: 繰り返し NG ではまず **DR 学習（決定的・kiro-cli 不要）**を試し、効かなければ
+> **自律裁定（kiro-cli）**、それも `requeue` でなければ人へ、の三段で人の判断を絞り込む。
 
 ### ltm-use への学習昇格（プロジェクト横断・エージェント不要）
 
