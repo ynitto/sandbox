@@ -1,0 +1,5 @@
+recommends:
+  - name: decomposition
+    reason: "曖昧な依頼を verify を付けられる粒度の小タスクに割って backlog へ投入する前段に使う"
+  - name: requirements-definer
+    reason: "投入前に受け入れ条件（= verify の根拠）を明確化し、機械検証できる形に整える"

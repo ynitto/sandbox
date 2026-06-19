@@ -571,6 +571,95 @@ class TestDaemonRouting(unittest.TestCase):
                 f.close()
 
 
+class TestBareDefault(unittest.TestCase):
+    """サブコマンド省略時は常駐監視（run --watch）を既定にする。"""
+
+    def _route(self, argv):
+        captured = {}
+        orig = km.cmd_run
+        km.cmd_run = lambda cfg: (captured.update(cmd="run", watch=cfg.watch), 0)[1]
+        try:
+            rc = km.main(argv)
+        finally:
+            km.cmd_run = orig
+        return rc, captured
+
+    def test_no_args_defaults_to_run_watch(self):
+        rc, cap = self._route([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(cap, {"cmd": "run", "watch": True})
+
+    def test_bare_flags_route_to_run_watch(self):
+        # サブコマンド無しで run 用フラグだけ渡しても watch 常駐になる
+        _, cap = self._route(["--poll", "10"])
+        self.assertEqual(cap, {"cmd": "run", "watch": True})
+
+    def test_explicit_run_does_not_force_watch(self):
+        # 明示 run はこれまで通り（--watch を勝手に付けない）
+        _, cap = self._route(["run"])
+        self.assertEqual(cap, {"cmd": "run", "watch": False})
+
+    def test_other_subcommands_unaffected(self):
+        # needs はバックログ未作成なら従来通り 2 を返す（run にすり替えない）
+        with tempfile.TemporaryDirectory() as d:
+            rc = km.main(["needs", "--workdir", d, "--root", str(Path(d) / ".ka")])
+            self.assertEqual(rc, 2)
+
+
+class TestInstances(unittest.TestCase):
+    """稼働インスタンスのレジストリ（外部操作者がフォルダを発見する口）。"""
+
+    def setUp(self):
+        self._home = tempfile.mkdtemp()
+        self._prev = os.environ.get("KIRO_AUTONOMOUS_HOME")
+        os.environ["KIRO_AUTONOMOUS_HOME"] = self._home
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("KIRO_AUTONOMOUS_HOME", None)
+        else:
+            os.environ["KIRO_AUTONOMOUS_HOME"] = self._prev
+
+    def test_register_then_discover(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), watch=True)
+            p = km.register_instance(cfg)
+            self.addCleanup(lambda: p and p.exists() and p.unlink())
+            recs = km.list_instances()
+            self.assertEqual(len(recs), 1)
+            r = recs[0]
+            self.assertEqual(r["pid"], os.getpid())
+            self.assertTrue(r["watch"])
+            self.assertEqual(r["root"], str(Path(d).resolve()))
+            # 主要パスが揃っていて、外部から各ファイルへ直接到達できる
+            for k in ("backlog", "needs", "archive", "policy", "delivery", "journal"):
+                self.assertIn(k, r)
+            self.assertIn(r["runtime"], ("linux", "wsl", "windows", "darwin"))
+
+    def test_dead_pid_is_pruned(self):
+        d = km.instances_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        dead = d / "999999999.json"
+        dead.write_text('{"pid": 999999999, "root": "/x"}', encoding="utf-8")
+        self.assertEqual(km.list_instances(), [])      # 死んだ PID は出ない
+        self.assertFalse(dead.exists())                # かつ掃除される
+
+    def test_run_registers_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", title="x", verify="true")
+            rc = km.main(["run", "--workdir", str(d), "--root", str(d / ".ka"),
+                          "--planner", "none", "--flow-planner", "stub",
+                          "--executor", "stub", "--dry-run"])
+            self.assertEqual(rc, 0)
+            # run 終了後はレジストリから自分が消えている（finally で unlink）
+            self.assertNotIn(os.getpid(), [r["pid"] for r in km.list_instances()])
+
+    def test_cmd_instances_json_smoke(self):
+        self.assertEqual(km.cmd_instances(as_json=True), 0)
+        self.assertEqual(km.cmd_instances(as_json=False), 0)
+
+
 class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
         kf = Path(__file__).resolve().parents[2] / "kiro-flow" / "kiro-flow.py"

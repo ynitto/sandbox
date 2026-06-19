@@ -247,6 +247,13 @@ done 時に検収用のサマリーを2段で残す（成果物は kiro-flow 経
   「終了条件を満たしてもプロセスは残るが、**エージェントは待機しない**」。
 - `--poll` 間隔で「消化可能タスク or 新規 inbox or フィードバック」を検知したら次のパスを起こす。
 - 予算は**1パス毎**に与え直す。長寿命の常駐（cron の代替）に使える。
+- **サブコマンド省略時の既定**: `kiro-autonomous`（cmd なし）は `run --watch` にディスパッチする。PC 起動時に
+  立ち上げて backlog 投入を待つ常駐用途を一級にするため（OS 自動起動の例は README 参照）。明示 `run` は不変。
+- **稼働インスタンスの発見**: `run` 中は監視中ルートと OS/WSL 情報（`runtime`/`wsl_distro`、可能なら
+  `wslpath -w` の Windows パス）を共通 home（`$KIRO_AUTONOMOUS_HOME`→`~/.kiro-autonomous`）の
+  `instances/<pid>.json` に登録し、終了時に消す（死活は PID で判定し一覧時に prune）。外部操作者
+  （kiro-autonomous スキル）が `instances` で「いま見ているフォルダ」を発見し、WSL/Windows をまたいで
+  同じ `backlog/`・`needs/` へ読み書きするための発見口。レジストリ自体は決定的なファイル操作のみ。
 
 ### 終了コード（CI 連携・非 watch 時）
 

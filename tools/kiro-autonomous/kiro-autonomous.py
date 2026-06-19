@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -283,6 +284,149 @@ def ltm_memories_dir(cfg: "Config") -> "Path | None":
     if not cfg.ltm or cfg.ltm_home is None:
         return None
     return cfg.ltm_home / "memory" / "home" / "memories" / LTM_CATEGORY
+
+
+# ---------------------------------------------------------------------------
+# 稼働インスタンスのレジストリ（外部から「いま見ているフォルダ」を発見可能にする）
+#
+# run（特に --watch 常駐）中、監視中のルートと OS/WSL 情報を共通 home に記録する。
+# 外部の操作者（kiro-autonomous スキル等）が `instances` で発見し、同じフォルダへ
+# 読み書きできる。プロセスは WSL で動き操作側は Windows/WSL という構成を想定し、
+# 可能なら Windows パス（wslpath -w）も併記する。
+# ---------------------------------------------------------------------------
+def resolve_state_home() -> Path:
+    """インスタンス・レジストリ等の置き場: 環境変数 KIRO_AUTONOMOUS_HOME → ~/.kiro-autonomous。"""
+    raw = os.environ.get("KIRO_AUTONOMOUS_HOME") or "~/.kiro-autonomous"
+    return Path(raw).expanduser()
+
+
+def instances_dir() -> Path:
+    return resolve_state_home() / "instances"
+
+
+def detect_runtime() -> dict:
+    """実行環境（linux / wsl / windows / darwin）と WSL ディストロ名を判定する。"""
+    info: dict = {"runtime": "linux", "wsl_distro": None}
+    distro = os.environ.get("WSL_DISTRO_NAME")
+    is_wsl = False
+    try:
+        with open("/proc/version", encoding="utf-8", errors="ignore") as f:
+            is_wsl = "microsoft" in f.read().lower()
+    except OSError:
+        pass
+    if distro or is_wsl:
+        info["runtime"], info["wsl_distro"] = "wsl", distro
+    elif sys.platform.startswith("win"):
+        info["runtime"] = "windows"
+    elif sys.platform == "darwin":
+        info["runtime"] = "darwin"
+    return info
+
+
+def to_windows_path(p: "str | Path") -> "str | None":
+    """WSL パス → Windows パス（`wslpath -w`）。wslpath が無ければ None。"""
+    if not shutil.which("wslpath"):
+        return None
+    try:
+        out = subprocess.run(["wslpath", "-w", str(p)], capture_output=True,
+                             text=True, timeout=5)
+        return out.stdout.strip() or None if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def instance_record(cfg: "Config") -> dict:
+    """このプロセスの監視対象（ルートと主要パス・OS/WSL 情報）を表す発見用レコード。"""
+    root = cfg.backlog.parent.resolve()
+    rt = detect_runtime()
+    rec = {
+        "pid": os.getpid(),
+        "root": str(root),
+        "backlog": str(cfg.backlog.resolve()),
+        "needs": str(cfg.needs.resolve()),
+        "decisions": str(cfg.decisions.resolve()),
+        "archive": str(cfg.archive_dir().resolve()),
+        "policy": str(cfg.policy.resolve()),
+        "delivery": str(Path(cfg.delivery).resolve()),
+        "journal": str(cfg.journal.resolve()),
+        "workdir": str(cfg.workdir.resolve()),
+        "watch": cfg.watch,
+        "started_at": time.time(),
+        "started_iso": datetime.now().isoformat(timespec="seconds"),
+        "host": socket.gethostname(),
+        "python": sys.executable,
+        **rt,
+    }
+    if rt["runtime"] == "wsl":
+        rec["root_windows"] = to_windows_path(root)  # \\wsl.localhost\<distro>\... 等。無ければ None
+    return rec
+
+
+def register_instance(cfg: "Config") -> "Path | None":
+    """レジストリに自分を登録し、書いたファイルパスを返す（失敗しても run は止めない）。"""
+    try:
+        d = instances_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{os.getpid()}.json"
+        p.write_text(json.dumps(instance_record(cfg), ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+        return p
+    except OSError:
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True       # 別ユーザーの生存プロセス
+    except OSError:
+        return False
+    return True
+
+
+def list_instances(prune: bool = True) -> list:
+    """生存中のインスタンス一覧。死んだ PID のレコードは prune で掃除する。"""
+    d = instances_dir()
+    out = []
+    if not d.exists():
+        return out
+    for f in sorted(d.glob("*.json")):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if _pid_alive(int(rec.get("pid", -1))):
+            out.append(rec)
+        elif prune:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    return out
+
+
+def cmd_instances(as_json: bool = False) -> int:
+    """稼働中の kiro-autonomous（監視中フォルダ）を一覧。外部操作者の発見口。"""
+    recs = list_instances(prune=True)
+    if as_json:
+        print(json.dumps(recs, ensure_ascii=False, indent=2))
+        return 0
+    if not recs:
+        print("稼働中の kiro-autonomous はありません（run/--watch 起動時に登録されます）。")
+        return 0
+    for r in recs:
+        rt = r.get("runtime", "?")
+        if r.get("wsl_distro"):
+            rt += f":{r['wsl_distro']}"
+        flags = "watch" if r.get("watch") else "run"
+        print(f"pid={r['pid']} [{rt}] {flags}  root={r['root']}")
+        if r.get("root_windows"):
+            print(f"    Windows: {r['root_windows']}")
+    return 0
+
 
 
 def _slug(text: str) -> str:
@@ -1183,19 +1327,27 @@ def cmd_triage(cfg: Config) -> int:
 
 def cmd_run(cfg: Config) -> int:
     ensure_dirs(cfg)
-    if cfg.watch:
-        run_watch(cfg)
-        return 0
-    result = run_loop(cfg)
-    counts = result["counts"]
-    print("\n=== kiro-autonomous 完了 ===")
-    print(f"停止理由 : {result['reason']}")
-    print(f"サイクル : {result['cycles']}")
-    print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
-          f"inbox={counts['inbox']} archived={result.get('archived', 0)} "
-          f"ingested={len(result.get('ingested', []))} "
-          f"promoted={len(result.get('promoted', []))}")
-    return exit_code_for(result)
+    reg = register_instance(cfg)   # 外部操作者が「監視中フォルダ」を発見できるよう登録
+    try:
+        if cfg.watch:
+            run_watch(cfg)
+            return 0
+        result = run_loop(cfg)
+        counts = result["counts"]
+        print("\n=== kiro-autonomous 完了 ===")
+        print(f"停止理由 : {result['reason']}")
+        print(f"サイクル : {result['cycles']}")
+        print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
+              f"inbox={counts['inbox']} archived={result.get('archived', 0)} "
+              f"ingested={len(result.get('ingested', []))} "
+              f"promoted={len(result.get('promoted', []))}")
+        return exit_code_for(result)
+    finally:
+        if reg is not None:
+            try:
+                reg.unlink()
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1291,10 +1443,13 @@ def _add_common(sp):
 
 
 def main(argv=None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
     p = argparse.ArgumentParser(
         prog="kiro-autonomous",
-        description="backlog/ を優先順位付け・検証・収束させる制御層（Loop Engineering MVP）")
-    sub = p.add_subparsers(dest="cmd", required=True)
+        description="backlog/ を優先順位付け・検証・収束させる制御層（Loop Engineering MVP）。"
+                    "サブコマンドを省略すると常駐監視（run --watch）で起動し backlog 投入を待ち続ける")
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束）")
     _add_common(run)
@@ -1327,7 +1482,23 @@ def main(argv=None) -> int:
     g.add_argument("--pin", action="store_true"); g.add_argument("--defer", action="store_true")
     rp.add_argument("--reason", required=True)
 
+    inst = sub.add_parser("instances",
+                          help="稼働中の kiro-autonomous（監視中フォルダ）を一覧（外部操作者の発見口）")
+    inst.add_argument("--json", action="store_true", help="JSON で出力（スキル等が機械処理する用）")
+
+    # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
+    # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
+    _subcommands = {"run", "triage", "needs", "promote", "rot",
+                    "approve", "hold", "reprioritize", "instances"}
+    if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
+        argv = ["run", "--watch", *argv]
+
     args = p.parse_args(argv)
+
+    # instances は共通設定（backlog 等）を必要としない発見専用コマンド。
+    if args.cmd == "instances":
+        return cmd_instances(args.json)
+
     cfg = build_config(args)
 
     if args.cmd in ("triage", "needs", "rot") and not cfg.backlog.exists():

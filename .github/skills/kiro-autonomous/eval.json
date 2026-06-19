@@ -1,0 +1,22 @@
+[
+  {"query": "kiro-autonomous のバックログにタスクを積んで", "should_trigger": true},
+  {"query": "このタスクを kiro-autonomous に投げて", "should_trigger": true},
+  {"query": "backlog に新しい案件を投入して", "should_trigger": true},
+  {"query": "kiro-autonomous の判断待ちを確認して", "should_trigger": true},
+  {"query": "needs を見せて", "should_trigger": true},
+  {"query": "T12 を承認して積み直して", "should_trigger": true},
+  {"query": "このタスクは保留にして", "should_trigger": true},
+  {"query": "この案件の優先度を上げて", "should_trigger": true},
+  {"query": "kiro-autonomous の成果物を確認して", "should_trigger": true},
+  {"query": "完了した納品物を見せて", "should_trigger": true},
+  {"query": "kiro-autonomous を常駐させて backlog を待たせて", "should_trigger": true},
+  {"query": "バックログを回して状態を見せて", "should_trigger": true},
+  {"query": "prod を含むタスクは手動にする policy を書いて", "should_trigger": true},
+  {"query": "稼働中の kiro-autonomous が見ているフォルダに繋いでタスクを投入して", "should_trigger": true},
+  {"query": "WSL で動いている kiro-autonomous の backlog に積んで", "should_trigger": true},
+  {"query": "バグを修正して", "should_trigger": false},
+  {"query": "GitLab イシューを立てて", "should_trigger": false},
+  {"query": "README をレビューして", "should_trigger": false},
+  {"query": "別エージェントにメッセージを送って", "should_trigger": false},
+  {"query": "テストを書いて", "should_trigger": false}
+]
