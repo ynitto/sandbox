@@ -692,6 +692,7 @@ class TestConfigFile(unittest.TestCase):
         ns = self._resolve(None)
         self.assertEqual((ns.executor, ns.planner, ns.poll, ns.max_cycles, ns.location),
                          ("kiro", "kiro", 5.0, 20, "auto"))
+        self.assertEqual((ns.auto_adjudicate, ns.adjudicate_max), (True, 1))  # 既定 on
 
     def test_yaml_config_when_pyyaml_available(self):
         if km.yaml is None:

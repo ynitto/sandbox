@@ -1001,7 +1001,7 @@ class Config:
     do_archive: bool = True         # done を archive/ へ退避（False なら削除）
     learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
-    auto_adjudicate: bool = False   # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 off）
+    auto_adjudicate: bool = True    # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on）
     adjudicate_max: int = 1         # 1タスクあたりの自律裁定の上限回数（有限停止のため）
     ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
     ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
@@ -1481,7 +1481,7 @@ CONFIG_DEFAULTS = {
     "promote_threshold": 2,
     "ltm_home": None,
     "rot_age_days": 14.0,
-    "auto_adjudicate": False,   # 真偽だが --auto-adjudicate/--no-... の三値で config 上書き可
+    "auto_adjudicate": True,    # 真偽だが --auto-adjudicate/--no-... の三値で config 上書き可（既定 on）
     "adjudicate_max": 1,
 }
 
@@ -1544,7 +1544,7 @@ def build_config(args) -> Config:
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
         learn=not getattr(args, "no_learn", False), learn_threshold=args.learn_threshold,
-        auto_adjudicate=bool(getattr(args, "auto_adjudicate", False)),
+        auto_adjudicate=bool(getattr(args, "auto_adjudicate", True)),
         adjudicate_max=getattr(args, "adjudicate_max", 1),
         ltm=getattr(args, "ltm", False), ltm_home=resolve_ltm_home(getattr(args, "ltm_home", None)),
         promote_threshold=getattr(args, "promote_threshold", 2),
@@ -1599,11 +1599,11 @@ def _add_common(sp):
                     help="DR 学習（過去の人の判断から類似案件を自動解決）を無効化")
     sp.add_argument("--learn-threshold", type=float, default=None,
                     help="DR 学習のタイトル類似度しきい値（0〜1。既定 0.5）")
-    # 自律裁定: needs に落とす前に kiro-cli が積み直し可否を判断（三値: 未指定→設定ファイル/既定）
+    # 自律裁定: needs に落とす前に kiro-cli が積み直し可否を判断（三値: 未指定→設定ファイル/既定 on）
     sp.add_argument("--auto-adjudicate", dest="auto_adjudicate", action="store_true", default=None,
-                    help="人の判断(needs)へ送る前に kiro-cli が『自律的に積み直すか人へ回すか』を裁定（既定 off）")
+                    help="人の判断(needs)へ送る前に kiro-cli が『自律的に積み直すか人へ回すか』を裁定（既定 on）")
     sp.add_argument("--no-auto-adjudicate", dest="auto_adjudicate", action="store_false",
-                    default=None, help="自律裁定を無効化（明示 off。設定ファイルで on のときの打ち消し）")
+                    default=None, help="自律裁定を無効化して常に人へ回す（明示 off）")
     sp.add_argument("--adjudicate-max", type=int, default=None,
                     help="1タスクあたりの自律裁定の上限回数（有限停止のため。既定 1）")
     sp.add_argument("--ltm", action="store_true",

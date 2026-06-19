@@ -62,7 +62,7 @@ git_branch: main            # バスに使う git ブランチ
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し
 # ---------------------------------------------------------------------------
-# auto_adjudicate: false     # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 off）
+# auto_adjudicate: true      # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on。false で無効）
 # adjudicate_max: 1          # 1タスクあたりの自律裁定の上限回数（有限停止のため）
 learn_threshold: 0.5        # DR 学習のタイトル類似度（Jaccard）しきい値
 promote_threshold: 2        # learn ルールがこの回数以上効いたら ltm-use へ昇格（--ltm 時）
