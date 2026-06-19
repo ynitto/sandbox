@@ -1,6 +1,6 @@
 ---
 name: kiro-autonomous
-description: kiro-autonomous（自律バックログ消化ループ）を外部から操作するスキル。バックログへのタスク投入・人の判断待ち（needs）の確認と指示・成果物（納品書）の検収を、CLI とファイル操作で支援する。「バックログに積んで」「kiro-autonomous にタスクを投げて」「判断待ちを確認して」「needs を見せて」「承認して」「保留して」「優先度を上げて」「成果物を確認して」「納品物を見せて」「ループを回して/常駐させて」などで発動する。kiro-autonomous の運用が含まれる場合に優先して選択する。
+description: kiro-autonomous（自律バックログ消化ループ）を外部から操作するスキル。いま稼働中のプロセスが監視しているフォルダを発見し（WSL/Windows のパス差を吸収）、バックログへのタスク投入・人の判断待ち（needs）の確認と指示・成果物（納品書）の検収を CLI とファイル操作で支援する。「バックログに積んで」「kiro-autonomous にタスクを投げて」「判断待ちを確認して」「needs を見せて」「承認して」「保留して」「優先度を上げて」「成果物を確認して」「納品物を見せて」「ループを回して/常駐させて」「稼働中のループに繋いで」などで発動する。kiro-autonomous の運用が含まれる場合に優先して選択する。
 metadata:
   version: 1.0.0
   tier: experimental
@@ -43,11 +43,68 @@ $KA --help
 ```
 
 - **作用先（root）**: 既定で **cwd の `./.kiro-autonomous/` 配下**に集約される（`backlog/`・`needs/`・
-  `archive/`・`policy.md`・`DELIVERY.md` など）。ループを別ディレクトリで回している場合は `--root <path>`
-  を全コマンドに付ける。**どのディレクトリのループを操作するか不明なら、まずユーザーに確認する。**
+  `archive/`・`policy.md`・`DELIVERY.md` など）。だが操作対象は **いま稼働している kiro-autonomous が
+  監視しているフォルダ**でなければ意味がない。**cwd を当てにせず、必ず下記「稼働インスタンスへの接続」で
+  実ルートを発見してから**全コマンドに `--root <発見した root>` を付けて操作する。
 - タスク書式の正典は `tools/kiro-autonomous/backlog.md.example`、運用詳細は同 `README.md`。
 
 ---
+
+## 稼働インスタンスへの接続（WSL / Windows）
+
+**最重要**: backlog 投入・needs 記入・成果物確認は、**稼働中プロセスが実際に見ているフォルダ**に対して
+行う。`run`（特に `--watch`）中のプロセスは監視中ルートと OS/WSL 情報を
+`~/.kiro-autonomous/instances/<pid>.json`（`$KIRO_AUTONOMOUS_HOME` で変更可）に登録している。
+
+### 手順
+
+1. **実行環境を判定する**（スキル＝あなたが今どこで動いているか）:
+   - WSL/Linux: `/proc/version` に `microsoft` を含む、または `$WSL_DISTRO_NAME` あり → **WSL**。
+   - それ以外で `wsl.exe` が使える → **Windows**（プロセスは WSL 側の可能性が高い）。
+
+2. **稼働インスタンスを発見する**（`instances --json` で root と OS を取得）:
+
+   ```bash
+   # 自分も WSL 側（プロセスと同じ OS）にいる場合 — そのまま
+   $KA instances --json
+
+   # 自分は Windows・プロセスは WSL の場合 — WSL 内の CLI を呼ぶ
+   wsl.exe -d <distro> -- bash -lc 'kiro-autonomous instances --json'
+   ```
+
+   出力は配列。各レコードに `pid` / `root`（プロセス側 OS の絶対パス）/ `backlog` / `needs` / `archive` /
+   `policy` / `delivery` / `journal` / `runtime`（`linux`/`wsl`/`windows`/`darwin`）/ `wsl_distro` /
+   WSL なら `root_windows`（`\\wsl.localhost\<distro>\…`）が入る。
+
+3. **対象を選ぶ**: 生存インスタンスが 1 つならそれ。複数（root 違い）あればユーザーに root を提示して選ばせる。
+   0 件なら「稼働中の kiro-autonomous が無い」ことを伝え、起動（補助モード）するか root を確認する。
+
+### 読み書きの原則（境界をまたがない）
+
+**プロセスと同じ OS 側で読み書きする**のが最も確実（パス変換が不要）。プロセスが WSL なら、CLI 実行も
+ファイル編集も WSL 内で行う:
+
+```bash
+# Windows 側のスキルから WSL 側の root を操作する（推奨パターン）
+DISTRO=<wsl_distro>; ROOT=<レコードの root>      # 例: /home/user/work/.kiro-autonomous
+wsl.exe -d "$DISTRO" -- bash -lc "kiro-autonomous needs --root '$ROOT'"
+wsl.exe -d "$DISTRO" -- bash -lc "cat > '$ROOT/backlog/T42.md'" < /tmp/T42.md   # 投入
+```
+
+どうしても **Windows 側のツールで直接** root を読み書きする必要があるときだけ、パスを変換する:
+
+- レコードの `root_windows` を使う（無ければ `\\wsl.localhost\<distro>\` ＋ root を `/`→`\` で連結）。
+- 変換ツール: WSL 内で `wslpath -w <wslパス>`（→ Windows）/ `wslpath -u '<winパス>'`（→ WSL）。
+- `/mnt/c/...` の root は `C:\...` に対応（`wslpath` が正しく変換する）。
+
+> 逆に**あなたが WSL・プロセスも WSL**（同一ディストロ）なら変換は一切不要。発見した `root` をそのまま
+> `--root` に渡し、ファイルも直接編集する。`wsl.exe` も挟まない。
+
+---
+
+> **以降のモードの前提**: まず「稼働インスタンスへの接続」で **root を発見**しておく。以下の例の
+> `.kiro-autonomous/` は発見した `root` に読み替え、CLI には `--root <root>` を付ける。プロセスが WSL で
+> 自分が Windows なら、各コマンドを `wsl.exe -d <distro> -- bash -lc '…'` で包む。
 
 ## モード1: バックログ投入（enqueue）
 

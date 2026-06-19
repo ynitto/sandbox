@@ -92,6 +92,23 @@ kiro-autonomous run --location daemon --executor kiro
 | `approve <id> --reason …` | 判断待ちを修正承認して積み直し（決定記録） |
 | `hold <id> --reason …` | `policy.md` に `deny` 追加し保留（決定記録） |
 | `reprioritize <id> --pin\|--defer --reason …` | `policy.md` に `pin`/`defer` 追加（決定記録） |
+| `instances` [`--json`] | 稼働中の kiro-autonomous（監視中フォルダ）を一覧（外部操作者の発見口） |
+
+### 稼働インスタンスの発見（外部操作者向け）
+
+`run`（特に `--watch`）の間、監視中のルートと OS/WSL 情報を共通 home
+（`$KIRO_AUTONOMOUS_HOME` → `~/.kiro-autonomous`）の `instances/<pid>.json` に登録する。外部のツール
+（例: kiro-autonomous スキル）はこれを読んで「いまどのフォルダを見ているか」を発見し、同じ `backlog/`・
+`needs/` 等へ読み書きできる。死んだ PID のレコードは一覧時に自動で掃除される。
+
+```bash
+kiro-autonomous instances           # 人が読む一覧（pid・runtime・root、WSL なら Windows パスも）
+kiro-autonomous instances --json    # 機械処理用（root/backlog/needs/archive… の絶対パスと runtime/wsl_distro）
+```
+
+WSL で稼働中の場合、レコードには `runtime: "wsl"`・`wsl_distro` と、可能なら `wslpath -w` で得た
+`root_windows`（`\\wsl.localhost\<distro>\…`）も含まれる。プロセスは WSL・操作側は Windows という構成で
+パスを橋渡しできる。
 
 ## クイックスタート
 

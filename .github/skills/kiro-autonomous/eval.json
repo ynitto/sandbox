@@ -12,6 +12,8 @@
   {"query": "kiro-autonomous を常駐させて backlog を待たせて", "should_trigger": true},
   {"query": "バックログを回して状態を見せて", "should_trigger": true},
   {"query": "prod を含むタスクは手動にする policy を書いて", "should_trigger": true},
+  {"query": "稼働中の kiro-autonomous が見ているフォルダに繋いでタスクを投入して", "should_trigger": true},
+  {"query": "WSL で動いている kiro-autonomous の backlog に積んで", "should_trigger": true},
   {"query": "バグを修正して", "should_trigger": false},
   {"query": "GitLab イシューを立てて", "should_trigger": false},
   {"query": "README をレビューして", "should_trigger": false},
