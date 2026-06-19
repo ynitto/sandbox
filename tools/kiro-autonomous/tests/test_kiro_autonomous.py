@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -658,6 +659,53 @@ class TestInstances(unittest.TestCase):
     def test_cmd_instances_json_smoke(self):
         self.assertEqual(km.cmd_instances(as_json=True), 0)
         self.assertEqual(km.cmd_instances(as_json=False), 0)
+
+
+class TestConfigFile(unittest.TestCase):
+    """設定ファイル（YAML 任意 / JSON フォールバック、CLI > config > 既定）。"""
+
+    @staticmethod
+    def _resolve(cfg_path=None, **cli):
+        # CLI 未指定キーは None（getattr の既定）。明示したいキーだけ cli に渡す。
+        ns = types.SimpleNamespace(config=cfg_path, **cli)
+        km.resolve_config(ns)
+        return ns
+
+    def test_json_config_fills_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "kiro-autonomous.json"
+            p.write_text('{"executor":"stub","planner":"none","poll":9,"max_cycles":3}',
+                         encoding="utf-8")
+            ns = self._resolve(str(p))
+            self.assertEqual((ns.executor, ns.planner, ns.poll, ns.max_cycles),
+                             ("stub", "none", 9, 3))
+
+    def test_cli_overrides_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "kiro-autonomous.json"
+            p.write_text('{"executor":"stub","planner":"none"}', encoding="utf-8")
+            ns = self._resolve(str(p), executor="kiro")   # CLI 明示は維持される
+            self.assertEqual(ns.executor, "kiro")          # CLI 勝ち
+            self.assertEqual(ns.planner, "none")           # config 採用
+
+    def test_builtin_defaults_when_no_config(self):
+        ns = self._resolve(None)
+        self.assertEqual((ns.executor, ns.planner, ns.poll, ns.max_cycles, ns.location),
+                         ("kiro", "kiro", 5.0, 20, "auto"))
+
+    def test_yaml_config_when_pyyaml_available(self):
+        if km.yaml is None:
+            self.skipTest("PyYAML 未導入（JSON 経路は別テストで担保）")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "kiro-autonomous.yaml"
+            p.write_text("executor: stub\nmax_retries: 5\ngit_branch: develop\n", encoding="utf-8")
+            ns = self._resolve(str(p))
+            self.assertEqual((ns.executor, ns.max_retries, ns.git_branch),
+                             ("stub", 5, "develop"))
+
+    def test_missing_explicit_config_exits(self):
+        with self.assertRaises(SystemExit):
+            self._resolve("/no/such/kiro-autonomous.yaml")
 
 
 class TestKiroFlowIntegration(unittest.TestCase):

@@ -254,6 +254,10 @@ done 時に検収用のサマリーを2段で残す（成果物は kiro-flow 経
   `instances/<pid>.json` に登録し、終了時に消す（死活は PID で判定し一覧時に prune）。外部操作者
   （kiro-autonomous スキル）が `instances` で「いま見ているフォルダ」を発見し、WSL/Windows をまたいで
   同じ `backlog/`・`needs/` へ読み書きするための発見口。レジストリ自体は決定的なファイル操作のみ。
+- **設定ファイル**: kiro-flow と同じ流儀で、環境ごと・常駐ごとに決まる値を `.kiro/kiro-autonomous.{yaml,
+  yml,json}` に書ける（YAML は PyYAML 任意・無ければ JSON フォールバック）。優先順位は
+  `CLI > 設定ファイル > 組み込み既定`（CLI default を None にし `resolve_config` で確定）。スカラ値のみ
+  対象で、真偽フラグと個別パス上書きは CLI 専用。サンプルは `kiro-autonomous.yaml.example`。
 
 ### 終了コード（CI 連携・非 watch 時）
 
