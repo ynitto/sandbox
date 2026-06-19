@@ -1,5 +1,5 @@
 ---
-name: kiro-autonomous-ops
+name: kiro-autonomous
 description: kiro-autonomous（自律バックログ消化ループ）を外部から操作するスキル。バックログへのタスク投入・人の判断待ち（needs）の確認と指示・成果物（納品書）の検収を、CLI とファイル操作で支援する。「バックログに積んで」「kiro-autonomous にタスクを投げて」「判断待ちを確認して」「needs を見せて」「承認して」「保留して」「優先度を上げて」「成果物を確認して」「納品物を見せて」「ループを回して/常駐させて」などで発動する。kiro-autonomous の運用が含まれる場合に優先して選択する。
 metadata:
   version: 1.0.0
@@ -13,7 +13,7 @@ metadata:
     - operations
 ---
 
-# kiro-autonomous-ops — 自律ループの外部操作
+# kiro-autonomous — 自律ループの外部操作
 
 `kiro-autonomous`（`backlog/` を優先順位付け→実行→`verify` ゲート→収束させる制御層）を、**人間の運用側**
 から操作するスキル。ループ本体（自律消化）は `kiro-autonomous run` が回す。本スキルが担うのは、その
