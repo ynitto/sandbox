@@ -5,7 +5,7 @@
 積み直す。backlog が尽きるか予算が尽きるまで繰り返し、人の判断が要った分は案件毎の
 `needs/<id>.md`（フィードバック欄つき）で差し出し、判断は `decisions/<id>.md` に残す。
 
-> 規約は [`.github/instructions/kiro-autonomous.instructions.md`](../../.github/instructions/kiro-autonomous.instructions.md)、
+> タスク書式（backlog/<id>.md）の規約は [`backlog.md.example`](backlog.md.example)、
 > 設計は [`docs/designs/2026-06-16-kiro-autonomous-mvp-design.md`](../../docs/designs/2026-06-16-kiro-autonomous-mvp-design.md)。
 > `kiro-` 接頭辞は実行を kiro-flow＝kiro-cli に委譲するため。
 
