@@ -40,6 +40,30 @@ bash tools/kiro-autonomous/install.sh           # ~/.local/bin/kiro-autonomous
 
 未インストールでも `python3 tools/kiro-autonomous/kiro-autonomous.py ...` で代用可。
 
+## 設定ファイル（任意・kiro-flow と同じ流儀）
+
+毎回フラグを並べる代わりに、環境ごと・常駐ごとに決まる値を設定ファイルに書ける。**優先順位は
+`CLI > 設定ファイル > 組み込み既定`**。サンプルは [`kiro-autonomous.yaml.example`](kiro-autonomous.yaml.example)。
+
+```bash
+cp tools/kiro-autonomous/kiro-autonomous.yaml.example .kiro/kiro-autonomous.yaml   # 編集して使う
+kiro-autonomous run                       # 設定を読み込んで起動
+kiro-autonomous run --executor stub       # その場限りの上書きだけ CLI で
+kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
+```
+
+- **検索順序**: `--config` 明示 → `./.kiro/kiro-autonomous.{yaml,yml,json}` → `~/.kiro/…`（kiro-flow と同じ `.kiro`）。
+- **形式**: YAML（**PyYAML 必要**）または JSON（標準ライブラリのみ。キーは同じ）。PyYAML 非導入の環境で
+  `.yaml` を指定するとエラーになるので、その場合は `kiro-autonomous.json` を使う。
+- **書けるキー**: `executor` / `planner` / `flow_planner` / `location` / `model` / `root` / `workdir` /
+  `poll` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_retries` / `max_iterations` /
+  `verify_timeout` / `act_timeout` / `git_bus` / `git_branch` / `git_subdir` / `kiro_flow` /
+  `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days`。
+- **書けないもの**: 真偽フラグ（`--watch` / `--ltm` / `--no-learn` / `--no-archive` / `--no-cleanup` /
+  `--rot` / `--dry-run` / `--once`）と個別パス上書き（`--backlog` 等）は CLI 専用。
+
+常駐運用では systemd の `ExecStart` を `kiro-autonomous` だけにして、調整はこのファイルで完結できる。
+
 ## ファイル/ディレクトリ構成
 
 すべて **cwd の `./.kiro-autonomous/` 配下に集約**される（`--root` で変更可。各パスは `--backlog` 等で個別上書きも可）。

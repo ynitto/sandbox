@@ -1,0 +1,69 @@
+# kiro-autonomous の設定ファイルサンプル
+# ファイル名: kiro-autonomous.yaml
+#
+# このファイルをどこかに置いて --config で指定するか、
+# ./.kiro/ か ~/.kiro/ に置くと自動検出されます（kiro-flow と同じ .kiro ディレクトリ）。
+#
+# 検索順序（フォールバック）:
+#   1. --config オプションで明示指定したパス
+#   2. カレントディレクトリの .kiro/kiro-autonomous.yaml / .yml / .json
+#   3. ~/.kiro/kiro-autonomous.yaml / .yml / .json
+#
+# 値の優先順位: コマンドライン引数 > この設定ファイル > 組み込み既定。
+# つまり「環境ごと・常駐ごとに決まる値」をここに書き、その場限りの上書きだけ CLI で渡せます。
+# 例: 常駐は systemd の ExecStart を `kiro-autonomous` だけにし、調整はこのファイルで行う。
+#
+# PyYAML が無い環境では JSON 形式（kiro-autonomous.json）にしてください（キーは同じ）。
+#
+# 注: 真偽フラグ（--watch / --ltm / --no-learn / --no-archive / --no-cleanup / --rot /
+#     --dry-run / --once）と個別パス上書き（--backlog 等）は CLI 専用です。ここには書けません。
+
+# ---------------------------------------------------------------------------
+# 作業ルート（すべてのファイルの集約先。cwd 相対 or 絶対）
+# ---------------------------------------------------------------------------
+root: .kiro-autonomous      # backlog/ needs/ archive/ policy.md DELIVERY.md などがこの配下に集まる
+workdir: .                  # act / verify を実行する作業ディレクトリ
+
+# ---------------------------------------------------------------------------
+# 実行バックエンド（環境に kiro-cli があるか等で切替）
+# ---------------------------------------------------------------------------
+executor: kiro              # 実行・評価役: kiro（kiro-cli）/ stub（オフライン検証）
+planner: kiro               # 優先順位付け: kiro=エージェントが priority も加味 / none=priority 降順→最古
+flow_planner: flow-planner  # kiro-flow run に渡す planner: flow-planner / kiro / stub
+location: auto              # act の実行先: auto / local / daemon / remote
+# model: claude-sonnet      # kiro-cli に渡すモデル（省略可）
+# kiro_flow: /path/to/kiro-flow.py   # kiro-flow の明示パス（省略時は PATH→リポジトリ内を自動解決）
+
+# ---------------------------------------------------------------------------
+# タイミング・常駐
+# ---------------------------------------------------------------------------
+poll: 5.0                   # --watch のポーリング間隔（秒）
+debounce: 3.0              # watch 中、フィードバックの最終保存からこの秒数は取込を待つ（誤発火防止）
+pace: 0.0                   # 1サイクルの下限間隔（秒）。バースト抑制（0=無制限）
+
+# ---------------------------------------------------------------------------
+# 予算（必ず有限回で止めるための上限）
+# ---------------------------------------------------------------------------
+max_cycles: 20             # 1パスで回す最大サイクル数（watch は1パス毎に与え直す）
+max_seconds: 0.0           # 実時間の上限（0=無制限）
+max_retries: 2             # verify NG の再挑戦上限。超えたら人の判断（blocked）へ
+max_iterations: 3          # kiro-flow 内の再計画の最大反復
+verify_timeout: 120.0      # verify コマンドのタイムアウト（秒）
+act_timeout: 1800.0        # act（kiro-flow 実行）のタイムアウト（秒）
+
+# ---------------------------------------------------------------------------
+# 分散移譲（remote）。policy.md の offload と併用
+# ---------------------------------------------------------------------------
+# git_bus: git@example.com:team/flow-bus.git   # 共有 git バス（offload 一致タスクを別マシンへ submit）
+git_branch: main            # バスに使う git ブランチ
+# git_subdir: flow           # リポジトリ内でバスにするサブディレクトリ
+
+# ---------------------------------------------------------------------------
+# 学習・通知・棚卸し
+# ---------------------------------------------------------------------------
+learn_threshold: 0.5        # DR 学習のタイトル類似度（Jaccard）しきい値
+promote_threshold: 2        # learn ルールがこの回数以上効いたら ltm-use へ昇格（--ltm 時）
+# ltm_home: ~/.claude        # ltm-use ストアのルート（既定 KIRO_LTM_HOME → ~/.claude）
+rot_age_days: 14.0          # rot の stale 判定（経過日数）
+# notify_cmd: "teams-use post"   # 判断待ち遷移時のダイジェストを渡す通知コマンド
+# actor: alice               # 決定記録に残す操作者名（既定 $USER）

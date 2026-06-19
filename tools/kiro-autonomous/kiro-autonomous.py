@@ -1353,6 +1353,92 @@ def cmd_run(cfg: Config) -> int:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 設定ファイル（kiro-flow と同じ流儀: YAML 任意 / JSON フォールバック）
+#   優先順位 CLI > 設定ファイル > 組み込み既定。環境ごとに決まる値をファイルに、
+#   その場限りの上書きだけ CLI で渡す。PyYAML 無し環境は JSON（同じキー）で。
+# ---------------------------------------------------------------------------
+try:
+    import yaml  # type: ignore
+
+    def _load_config_file(path: str) -> dict:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+except ImportError:  # PyYAML 無し → JSON のみ
+    yaml = None  # type: ignore
+
+    def _load_config_file(path: str) -> dict:  # type: ignore[misc]
+        if path.lower().endswith((".yaml", ".yml")):
+            print("[kiro-autonomous] ERROR: YAML 設定には PyYAML が必要です（pip install pyyaml）。"
+                  "JSON 設定（kiro-autonomous.json・同じキー）なら不要です。", file=sys.stderr)
+            sys.exit(1)
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+
+DEFAULT_CONFIG_NAMES = ["kiro-autonomous.yaml", "kiro-autonomous.yml", "kiro-autonomous.json"]
+
+# 設定ファイルで上書きできるキー（snake_case）と組み込み既定。
+# CLI 引数の default は None にし、resolve_config で「設定ファイル→ここ」の順に埋める。
+# 真偽フラグ（--watch / --ltm / --no-archive 等）と個別パス上書きは CLI 専用。
+CONFIG_DEFAULTS = {
+    "root": ".kiro-autonomous",
+    "workdir": ".",
+    "executor": "kiro",
+    "planner": "kiro",
+    "flow_planner": "flow-planner",
+    "location": "auto",
+    "model": None,
+    "poll": 5.0,
+    "debounce": 3.0,
+    "pace": 0.0,
+    "max_cycles": 20,
+    "max_seconds": 0.0,
+    "max_retries": 2,
+    "max_iterations": 3,
+    "verify_timeout": 120.0,
+    "act_timeout": 1800.0,
+    "git_bus": None,
+    "git_branch": "main",
+    "git_subdir": None,
+    "kiro_flow": None,
+    "notify_cmd": None,
+    "actor": os.environ.get("USER", "user"),
+    "learn_threshold": 0.5,
+    "promote_threshold": 2,
+    "ltm_home": None,
+    "rot_age_days": 14.0,
+}
+
+
+def _find_config(explicit):
+    """設定ファイルの探索: 1) --config 明示 2) ./.kiro/ 3) ~/.kiro/（kiro-flow と同じ .kiro）。"""
+    if explicit:
+        p = os.path.expanduser(explicit)
+        if not os.path.isfile(p):
+            print(f"[kiro-autonomous] 設定ファイルが見つかりません: {explicit}", file=sys.stderr)
+            sys.exit(1)
+        return p
+    for base in (os.path.join(os.getcwd(), ".kiro"),
+                 os.path.join(os.path.expanduser("~"), ".kiro")):
+        for name in DEFAULT_CONFIG_NAMES:
+            cand = os.path.join(base, name)
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
+def resolve_config(args):
+    """CLI 未指定（None）の設定値だけを 設定ファイル→組み込み既定 で埋める（CLI > config > 既定）。"""
+    path = _find_config(getattr(args, "config", None))
+    cfg = _load_config_file(path) if path else {}
+    args._config_path = path
+    for key, dflt in CONFIG_DEFAULTS.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, cfg.get(key, dflt))
+    return args
+
+
 def build_config(args) -> Config:
     workdir = Path(args.workdir).resolve()
     root = Path(args.root)
@@ -1394,7 +1480,11 @@ def build_config(args) -> Config:
 
 
 def _add_common(sp):
-    sp.add_argument("--root", default=".kiro-autonomous",
+    # 設定ファイルで上書き可能なキー（CONFIG_DEFAULTS）は default=None にし、resolve_config で確定する
+    # （CLI > 設定ファイル > 組み込み既定）。個別パス上書きと真偽フラグは CLI 専用。
+    sp.add_argument("--config", default=None,
+                    help="設定ファイル（未指定なら ./.kiro → ~/.kiro の kiro-autonomous.{yaml,yml,json}）")
+    sp.add_argument("--root", default=None,
                     help="作業ルート（cwd 相対、既定 ./.kiro-autonomous）。各ファイルはこの配下に集約")
     sp.add_argument("--backlog", default=None, help="バックログディレクトリ（既定 <root>/backlog）")
     sp.add_argument("--policy", default=None, help="（既定 <root>/policy.md）")
@@ -1403,43 +1493,43 @@ def _add_common(sp):
     sp.add_argument("--needs", default=None, help="要対応ディレクトリ（既定 <root>/needs）")
     sp.add_argument("--archive", default=None, help="done の退避先（既定 <root>/archive）")
     sp.add_argument("--delivery", default=None, help="納品一覧（既定 <root>/DELIVERY.md）")
-    sp.add_argument("--debounce", type=float, default=3.0,
-                    help="watch 中、最終保存からこの秒数は feedback 取込を待つ（誤発火防止）")
-    sp.add_argument("--workdir", default=".")
+    sp.add_argument("--debounce", type=float, default=None,
+                    help="watch 中、最終保存からこの秒数は feedback 取込を待つ（誤発火防止。既定 3）")
+    sp.add_argument("--workdir", default=None)
     sp.add_argument("--bus", default=None, help="kiro-flow バス（既定 <root>/bus）")
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
-    sp.add_argument("--git-branch", default="main")
+    sp.add_argument("--git-branch", default=None)
     sp.add_argument("--git-subdir", default=None)
     sp.add_argument("--kiro-flow", default=None)
-    sp.add_argument("--planner", default="kiro", choices=["kiro", "none"],
-                    help="優先順位付け: kiro=エージェント（priority 加味）/ none=priority＋古さ")
-    sp.add_argument("--flow-planner", default="flow-planner",
-                    choices=["flow-planner", "kiro", "stub"], help="kiro-flow run に渡す planner")
-    sp.add_argument("--location", default="auto",
-                    choices=["auto", "local", "daemon", "remote"], help="act の実行モード")
-    sp.add_argument("--executor", default="kiro", choices=["kiro", "stub"])
+    sp.add_argument("--planner", default=None, choices=["kiro", "none"],
+                    help="優先順位付け: kiro=エージェント（priority 加味）/ none=priority＋古さ（既定 kiro）")
+    sp.add_argument("--flow-planner", default=None,
+                    choices=["flow-planner", "kiro", "stub"], help="kiro-flow run に渡す planner（既定 flow-planner）")
+    sp.add_argument("--location", default=None,
+                    choices=["auto", "local", "daemon", "remote"], help="act の実行モード（既定 auto）")
+    sp.add_argument("--executor", default=None, choices=["kiro", "stub"], help="（既定 kiro）")
     sp.add_argument("--model", default=None)
-    sp.add_argument("--max-iterations", type=int, default=3)
-    sp.add_argument("--max-cycles", type=int, default=20, help="予算: サイクル数")
-    sp.add_argument("--max-seconds", type=float, default=0.0, help="予算: 実時間（0=無制限）")
-    sp.add_argument("--max-retries", type=int, default=2)
-    sp.add_argument("--pace", type=float, default=0.0, help="1サイクルの下限間隔（秒）。レーン減速")
-    sp.add_argument("--verify-timeout", type=float, default=120.0)
-    sp.add_argument("--act-timeout", type=float, default=1800.0)
+    sp.add_argument("--max-iterations", type=int, default=None)
+    sp.add_argument("--max-cycles", type=int, default=None, help="予算: サイクル数（既定 20）")
+    sp.add_argument("--max-seconds", type=float, default=None, help="予算: 実時間（0=無制限）")
+    sp.add_argument("--max-retries", type=int, default=None)
+    sp.add_argument("--pace", type=float, default=None, help="1サイクルの下限間隔（秒）。レーン減速")
+    sp.add_argument("--verify-timeout", type=float, default=None)
+    sp.add_argument("--act-timeout", type=float, default=None)
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
-    sp.add_argument("--actor", default=os.environ.get("USER", "user"))
+    sp.add_argument("--actor", default=None)
     sp.add_argument("--no-learn", action="store_true",
                     help="DR 学習（過去の人の判断から類似案件を自動解決）を無効化")
-    sp.add_argument("--learn-threshold", type=float, default=0.5,
-                    help="DR 学習のタイトル類似度しきい値（0〜1）")
+    sp.add_argument("--learn-threshold", type=float, default=None,
+                    help="DR 学習のタイトル類似度しきい値（0〜1。既定 0.5）")
     sp.add_argument("--ltm", action="store_true",
                     help="効いた学習を ltm-use 長期記憶へ昇格＋プロジェクト横断 recall（既定 off）")
     sp.add_argument("--ltm-home", default=None,
                     help="ltm-use ストアのルート（既定 KIRO_LTM_HOME → ~/.claude）")
-    sp.add_argument("--promote-threshold", type=int, default=2,
+    sp.add_argument("--promote-threshold", type=int, default=None,
                     help="learn ルールがこの回数以上効いたら昇格（既定 2）")
-    sp.add_argument("--rot-age-days", type=float, default=14.0,
-                    help="rot の stale 判定（経過日数）")
+    sp.add_argument("--rot-age-days", type=float, default=None,
+                    help="rot の stale 判定（経過日数。既定 14）")
 
 
 def main(argv=None) -> int:
@@ -1455,7 +1545,7 @@ def main(argv=None) -> int:
     _add_common(run)
     run.add_argument("--watch", action="store_true",
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
-    run.add_argument("--poll", type=float, default=5.0, help="watch のポーリング間隔（秒）")
+    run.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
     run.add_argument("--no-archive", action="store_true",
                      help="done を archive/ へ退避せず削除する（既定は退避）")
     run.add_argument("--rot", action="store_true",
@@ -1499,6 +1589,7 @@ def main(argv=None) -> int:
     if args.cmd == "instances":
         return cmd_instances(args.json)
 
+    resolve_config(args)      # CLI 未指定値を 設定ファイル → 組み込み既定 で確定
     cfg = build_config(args)
 
     if args.cmd in ("triage", "needs", "rot") and not cfg.backlog.exists():
