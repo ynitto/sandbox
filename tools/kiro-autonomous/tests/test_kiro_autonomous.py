@@ -866,6 +866,92 @@ class TestApprovalGate(unittest.TestCase):
             self.assertEqual(km.load_tasks(cfg.backlog)[0].status, "ready")
 
 
+class TestLoopEngineering(unittest.TestCase):
+    """Loop Engineering 拡張: 計測・タスク自己生成・依存(DAG)・回帰ゲート。"""
+
+    @staticmethod
+    def _mk(d, name, body):
+        bd = d / "backlog"; bd.mkdir(parents=True, exist_ok=True)
+        (bd / f"{name}.md").write_text(body, encoding="utf-8")
+
+    # --- 計測 ---
+    def test_stats_counts(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: ok\n- status: ready\n- verify: `true`\n")
+            self._mk(d, "T2", "## T2: ng\n- status: ready\n- verify: `false`\n")
+            cfg = cfg_for(d, learn=False, max_retries=0, auto_adjudicate=False)
+            km.run_loop(cfg)
+            s = km.compute_stats(cfg)
+            self.assertEqual(s["done_archived"], 1)
+            self.assertEqual(s["pending_human"], 1)        # T2 blocked
+            self.assertEqual(s["delivery_rows"], 1)
+            self.assertEqual(s["first_pass_done"], 1)
+            self.assertEqual(km.cmd_stats(cfg, as_json=True), 0)
+
+    # --- タスク自己生成 ---
+    def test_followup_spawn_static(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: parent\n- status: ready\n- verify: `true`\n"
+                              "- followup: 子A :: true\n- followup: 子B\n")
+            cfg = cfg_for(d, learn=False, auto_adjudicate=False, max_cycles=10)
+            res = km.run_loop(cfg)
+            self.assertEqual(res["spawned"], 2)
+            self.assertTrue((cfg.archive_dir() / "T1-f1.md").exists())   # 子A: verify有→ready→done
+            t = km.load_tasks(cfg.backlog)
+            self.assertEqual([x.id for x in t], ["T1-f2"])              # 子B: verify無→inbox 残置
+            self.assertEqual(t[0].norm_status(), "inbox")
+            self.assertEqual(t[0].source, "followup")
+
+    def test_followup_disabled_by_zero_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: p\n- status: ready\n- verify: `true`\n- followup: 子 :: true\n")
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, max_spawn=0))
+            self.assertEqual(res["spawned"], 0)
+
+    # --- 依存(DAG) ---
+    def test_deps_gate_ordering(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: first\n- status: ready\n- verify: `true`\n")
+            self._mk(d, "T2", "## T2: second\n- status: ready\n- verify: `true`\n- after: T1\n")
+            tasks = km.load_tasks(d / "backlog")
+            order = km.prioritize(tasks, km.Policy(), "none")
+            self.assertEqual([t.id for t in order], ["T1"])            # T2 は依存未達で除外
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, max_cycles=10))
+            self.assertEqual(res["counts"]["done"], 2)                 # 解けると両方 done
+
+    def test_deps_block_when_dep_unfinished(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: dep\n- status: blocked\n- verify: `true`\n")
+            self._mk(d, "T2", "## T2: x\n- status: ready\n- verify: `true`\n- after: T1\n")
+            tasks = km.load_tasks(d / "backlog")
+            self.assertEqual(km.unmet_deps(tasks[1] if tasks[1].id == "T2" else tasks[0],
+                                           tasks), ["T1"])
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False))
+            self.assertEqual(res["counts"]["done"], 0)                 # T1 未完なので T2 も進まない
+
+    # --- 回帰ゲート ---
+    def test_regression_gate_blocks_on_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: x\n- status: ready\n- verify: `true`\n")
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False,
+                                      regression_cmd="false", max_cycles=3))
+            self.assertEqual(res["counts"]["done"], 0)
+            self.assertEqual(res["counts"]["blocked"], 1)
+
+    def test_regression_gate_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "T1", "## T1: x\n- status: ready\n- verify: `true`\n")
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, regression_cmd="true"))
+            self.assertEqual(res["counts"]["done"], 1)
+
+
 class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
         kf = Path(__file__).resolve().parents[2] / "kiro-flow" / "kiro-flow.py"

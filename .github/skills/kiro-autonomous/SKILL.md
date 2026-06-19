@@ -128,6 +128,8 @@ MD
 - `status` … `ready`=実行待ち / `inbox`=triage 待ち / `draft`=書きかけ（消化対象外）/ `blocked`=判断待ち。
 - `priority` … 整数・大きいほど高優先（省略時 0）。
 - `verify` … **終了コード 0 を PASS とみなすシェルコマンド。done 確定の唯一の根拠**。
+- `after` … 任意。`- after: T1, T2` で依存（それらが done になるまで消化されない＝DAG 順序）。
+- `review` … `human` で検収ゲート（verify PASS でも承認が要る）。`followup` で done 時に派生タスクを生成。
 
 ### 鉄則（投入時に必ず守る）
 
@@ -216,8 +218,12 @@ $KA                              # = run --watch（常駐。backlog 投入を待
 $KA run --executor kiro          # 単発で backlog を消化（drained/budget で終了）
 $KA run --planner none --flow-planner stub --executor stub   # kiro-cli 無しで挙動確認
 $KA triage                       # 消化せず順位だけ表示
+$KA stats                        # 計測値（スループット・自動化率・retry・人対応待ち）。状態報告に使う
 sed -n '1,30p' .kiro-autonomous/journal.md             # 機械のサイクルログ
 ```
+
+「状態を見せて」には `stats` の値（完了数・自動化率・人対応待ち）で答える。巻き込み事故を防ぎたい案件では
+`run --regression-cmd "<共通スモーク>"` を提案する（verify PASS でも回帰したら done にせず人へ）。
 
 「回して」と言われて `run` を起動したら、停止後は**判断待ち（blocked）の有無と停止理由（drained/budget）
 を報告**する（勝手に done 扱いしない）。終了コード: `0`=完走で判断待ち無し / `1`=判断待ちあり / `2`=予算停止。
