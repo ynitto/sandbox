@@ -215,6 +215,25 @@ kiro-autonomous approve T12 --reason "テスト側を修正"
 kiro-autonomous hold prod-deploy --reason "本番は手動"
 ```
 
+## 検収ゲート（verify=PASS でも人の承認を要する）
+
+verify は機械的な合否でしかない。**verify が通っても人の承認・サインオフが要る**ケース
+（本番反映・不可逆操作・課金・質的なレビューなど）のために、タスクを **done 確定の手前で止めて
+承認待ち（`review`）**にできる（既定はゲート無し＝従来どおり verify PASS で即 done）。
+
+- **タスク単位**: `backlog/<id>.md` に `- review: human` を書く（その案件だけゲート）。
+- **policy 単位**: `policy.md` に `gate: <パターン>` を書く（ID/タイトル部分一致で一括ゲート）。
+
+ゲート対象は verify PASS でも archive せず `review` になり、`needs/<id>.md`（検収待ち）を生成する。
+
+```bash
+kiro-autonomous needs               # 検収待ちが「## 検収待ち」として並ぶ（成果参照つき）
+kiro-autonomous approve <id> --reason "本番OK"   # 承認＝done 確定（納品書＋archive）
+# 差し戻すなら needs/<id>.md に方針を書いて [x]（→ ready で再実行）
+```
+
+非 watch の終了コードは、`review`（承認待ち）が残ると `blocked` と同様に `1`（人の対応待ち）。
+
 ## 自律裁定（人の判断を減らす・kiro-cli 門番）
 
 人の判断（`needs`）の**手前にフック**し、**ループ内で自律的に積み直して解けるか／人が要るか**を
@@ -289,11 +308,14 @@ kiro-autonomous run --rot     # 毎 run の triage に組み込む（--rot-age-d
 ## policy.md（優先順位・実行先の上書き）
 
 ```yaml
-deny:    prod      # "prod" を含むタスクは自動実行しない（人の判断待ち）
+deny:    prod      # "prod" を含むタスクは自動実行しない（実行前に人の判断待ち）
 pin:     T3        # T3 を最優先
 defer:   cleanup   # "cleanup" を含むタスクは後回し
 offload: heavy     # "heavy" を含むタスクは分散環境へ移譲（--git-bus 設定時）
+gate:    release   # "release" を含むタスクは verify PASS でも done 前に人の承認を要する（検収ゲート）
 ```
+
+`deny` は**実行前**に止め、`gate` は**実行・verify は通すが done 確定前**に止める（止める位置が違う）。
 
 ## 分散移譲（remote）
 

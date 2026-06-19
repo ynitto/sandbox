@@ -35,11 +35,11 @@ try:
 except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
     fcntl = None
 
-VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked")
+VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
-POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload):\s*(?P<val>.+)$")
+POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
 LTM_CATEGORY = "kiro-autonomous"  # ltm-use home 内のカテゴリ（昇格先サブディレクトリ）
@@ -161,6 +161,7 @@ class Policy:
     pin: "list[str]" = field(default_factory=list)
     defer: "list[str]" = field(default_factory=list)
     offload: "list[str]" = field(default_factory=list)
+    gate: "list[str]" = field(default_factory=list)   # verify PASS でも人の承認を要する（検収ゲート）
 
 
 def parse_policy(text: str) -> Policy:
@@ -177,6 +178,17 @@ def parse_policy(text: str) -> Policy:
 
 def load_policy(path: Path) -> Policy:
     return parse_policy(path.read_text(encoding="utf-8")) if path.exists() else Policy()
+
+
+_REVIEW_VALUES = {"human", "manual", "required", "yes", "true", "1"}
+
+
+def needs_human_review(task: "Task", policy: "Policy") -> bool:
+    """verify PASS でも人の承認(検収)を要するか。タスクの `- review: human` か policy の
+    `gate: <パターン>` 一致で gate（高リスク・不可逆・質的受け入れ等を人へ）。既定はゲート無し。"""
+    if dict(task.extra).get("review", "").strip().lower() in _REVIEW_VALUES:
+        return True
+    return any(task.matches(p) for p in policy.gate)
 
 
 def append_policy(path: Path, key: str, value: str) -> None:
@@ -560,17 +572,24 @@ def needs_path(cfg: "Config", tid: str) -> Path:
     return cfg.needs / f"{tid}.md"
 
 
-def write_needs_file(cfg: "Config", task: Task, reason: str) -> None:
+def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False) -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
+    if review:    # verify=PASS の承認ゲート（検収待ち）
+        state = "review（検収待ち・verify=PASS）"
+        hint = (f"<!-- 承認して done 確定するなら `kiro-autonomous approve {task.id}`。\n"
+                f"     差し戻すなら下に修正方針を書いて [x] にする（再実行されます）。 -->\n")
+    else:
+        state = "blocked（kiro-autonomous の判断待ち）"
+        hint = (f"<!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。\n"
+                f"     下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。\n"
+                f"     コマンドなら `kiro-autonomous approve {task.id}`。 -->\n")
     body = (
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"- なぜ: {reason}\n"
-        f"- 状態: blocked（kiro-autonomous の判断待ち）\n\n"
+        f"- 状態: {state}\n\n"
         f"{FEEDBACK_MARKER}\n"
         f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
-        f"<!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。\n"
-        f"     下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。\n"
-        f"     コマンドなら `kiro-autonomous approve {task.id}`。 -->\n"
+        f"{hint}"
     )
     needs_path(cfg, task.id).write_text(body, encoding="utf-8")
 
@@ -629,16 +648,25 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     return ingested
 
 
-def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task]]":
+def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task], list[Task]]":
     blocked = [t for t in tasks if t.norm_status() == "blocked"]
     intake = [t for t in tasks if t.norm_status() == "inbox" and not t.verify.strip()]
-    return blocked, intake
+    review = [t for t in tasks if t.norm_status() == "review"]   # verify=PASS の承認待ち
+    return blocked, intake, review
 
 
-def render_digest(blocked, intake, reasons: dict, budget_stop: bool) -> str:
+def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None) -> str:
+    review = review or []
     lines = ["# 要対応（kiro-autonomous）", ""]
     if budget_stop:
         lines += ["⚠ 予算切れで未消化のまま停止しました。", ""]
+    if review:
+        lines.append("## 検収待ち（verify=PASS・承認で done 確定）")
+        for t in review:
+            lines.append(f"- {t.id}: {t.title}")
+            lines.append(f"    成果: {dict(t.extra).get('gate_ref', '')}")
+            lines.append(f"    対応: `kiro-autonomous approve {t.id}`（承認）／needs に方針を書いて差し戻し")
+        lines.append("")
     if blocked:
         lines.append("## 判断待ち（blocked）")
         for t in blocked:
@@ -649,7 +677,7 @@ def render_digest(blocked, intake, reasons: dict, budget_stop: bool) -> str:
         lines += ["", "## acceptance 未定義（need_intake）"]
         for t in intake:
             lines.append(f"- {t.id}: {t.title}\n    なぜ: verify 未定義 → verify を定義して ready 化")
-    if not blocked and not intake:
+    if not blocked and not intake and not review:
         lines.append("（対応待ちなし）")
     return "\n".join(lines) + "\n"
 
@@ -658,8 +686,8 @@ def notify(cfg: "Config", tasks, reasons: dict, newly_blocked: set, budget_stop:
     """状態遷移時だけ stdout / notify-cmd へ要約を出す（案件毎の needs/<id>.md は別途書込済）。"""
     if not newly_blocked and not budget_stop:
         return False
-    blocked, intake = human_worklist(tasks)
-    digest = render_digest(blocked, intake, reasons, budget_stop)
+    blocked, intake, review = human_worklist(tasks)
+    digest = render_digest(blocked, intake, reasons, budget_stop, review)
     print("\n--- 通知（要対応）---\n" + digest, flush=True)
     if cfg.notify_cmd:
         try:
@@ -1132,7 +1160,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     reasons: dict[str, str] = {}
 
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
-    pre_blocked = {t.id for t in tasks if t.norm_status() == "blocked"}
+    pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review")}
     transitions = list(triage(tasks, policy))
     if cfg.rot:                                       # rot 検知（古い/重複/実行不能を掃除）
         transitions += [(t, f"rot: {why}") for t, why in detect_rot(cfg, tasks)]
@@ -1179,7 +1207,22 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             _, act_msg = act(task, cfg, location)
 
         ok, vmsg = run_verify(task.verify, cfg.workdir, cfg.verify_timeout)
-        if ok:
+        if ok and needs_human_review(task, policy):
+            # verify は通ったが承認ゲート対象 → done を確定せず人の検収待ち（review）へ
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ref = extract_delivery_ref(act_msg, cfg)
+            task.status = "review"
+            task.extra = [(k, v) for k, v in task.extra
+                          if k not in ("gate_ref", "gate_vmsg", "gate_ts")]
+            task.extra += [("gate_ref", ref), ("gate_ts", ts),
+                           ("gate_vmsg", vmsg.replace("\n", " ")[:200])]
+            reasons[task.id] = "検収待ち（verify=PASS。approve で done 確定）"
+            persist_task(cfg, task)
+            write_needs_file(cfg, task,
+                             "verify=PASS だが承認ゲート対象（review/policy.gate）。"
+                             "approve で done 確定、フィードバック記入で差し戻し（再実行）", review=True)
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち（承認ゲート） — {ref}")
+        elif ok:
             task.status = "done"
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ref = extract_delivery_ref(act_msg, cfg)     # 成果物の参照（PR/commit/git）
@@ -1234,7 +1277,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             sleeper(delay)
 
     counts = summarize(tasks)
-    newly_blocked = {t.id for t in tasks if t.norm_status() == "blocked"} - pre_blocked
+    newly_blocked = {t.id for t in tasks
+                     if t.norm_status() in ("blocked", "review")} - pre_blocked
     budget_stop = reason == REASON_BUDGET
     notified = notify(cfg, tasks, reasons, newly_blocked, budget_stop)
     promoted = promote_learnings(cfg) if cfg.ltm else []   # 効いた学習を ltm-use へ昇格
@@ -1258,7 +1302,7 @@ def _cleanup_bus(cfg: Config) -> None:
 
 def exit_code_for(result: dict) -> int:
     counts = result["counts"]
-    if counts["blocked"] > 0:
+    if counts["blocked"] > 0 or counts.get("review", 0) > 0:   # 人の対応待ち（判断 or 検収承認）
         return 1
     if result["reason"] == REASON_DRAINED:
         return 0
@@ -1307,6 +1351,26 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
     if t is None:
         print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
         return 2
+    if t.norm_status() == "review":
+        # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
+        ex = dict(t.extra)
+        ref = ex.get("gate_ref", "")
+        ts = ex.get("gate_ts") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        vmsg = ex.get("gate_vmsg", "")
+        t.status = "done"
+        t.extra = [(k, v) for k, v in t.extra if k not in ("gate_ref", "gate_ts", "gate_vmsg")]
+        append_delivery(cfg, t, ref, ts)
+        disp = "done（承認・納品書）"
+        if cfg.do_archive:
+            archive_task(cfg, t, vmsg or f"承認: {reason}", ref, ts)
+        else:
+            delete_task_file(cfg, t)
+            disp = "done（承認・削除）"
+        clear_needs_file(cfg, tid)
+        dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を検収承認",
+                             action="approve-done", reason=reason, affects=f"{tid} → done")
+        print(f"{dr}: {tid} を承認し {disp} 確定しました。")
+        return 0
     t.status = "ready"
     persist_task(cfg, t)
     clear_needs_file(cfg, tid)
@@ -1343,11 +1407,11 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
 
 def cmd_needs(cfg: Config) -> int:
     tasks = load_tasks(cfg.backlog)
-    blocked, intake = human_worklist(tasks)
-    print(render_digest(blocked, intake, {}, budget_stop=False))
-    if blocked:
+    blocked, intake, review = human_worklist(tasks)
+    print(render_digest(blocked, intake, {}, budget_stop=False, review=review))
+    if blocked or review:
         print(f"（各案件の詳細・フィードバック欄: {cfg.needs}/<id>.md）")
-    return 1 if blocked else 0
+    return 1 if (blocked or review) else 0
 
 
 def cmd_rot(cfg: Config, fix: bool) -> int:

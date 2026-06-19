@@ -797,6 +797,75 @@ class TestAutoAdjudicate(unittest.TestCase):
             self.assertEqual(res["counts"]["blocked"], 1)
 
 
+class TestApprovalGate(unittest.TestCase):
+    """verify=PASS でも人の承認を要する検収ゲート（- review: human / policy.gate）。"""
+
+    @staticmethod
+    def _mk(d, body, policy=None):
+        bd = d / "backlog"; bd.mkdir(parents=True, exist_ok=True)
+        (bd / "T1.md").write_text(body, encoding="utf-8")
+        if policy is not None:
+            (d / "policy.md").write_text(policy, encoding="utf-8")
+
+    def test_unit_needs_human_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: x\n- status: ready\n- verify: `true`\n- review: human\n")
+            t = km.load_tasks(d / "backlog")[0]
+            self.assertTrue(km.needs_human_review(t, km.Policy()))           # タスク単位
+            self._mk(d, "## T1: x\n- status: ready\n- verify: `true`\n")
+            t = km.load_tasks(d / "backlog")[0]
+            self.assertFalse(km.needs_human_review(t, km.Policy()))          # ゲート無し
+            self.assertTrue(km.needs_human_review(t, km.Policy(gate=["T1"])))  # policy.gate
+
+    def test_review_gate_holds_then_approve_finalizes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: deploy\n- status: ready\n- verify: `true`\n- review: human\n- retries: 0\n")
+            cfg = cfg_for(d)
+            res = km.run_loop(cfg)
+            self.assertEqual(res["counts"]["review"], 1)
+            self.assertEqual(res["counts"]["done"], 0)
+            self.assertTrue((cfg.backlog / "T1.md").exists())            # archive されず残る
+            self.assertFalse((cfg.archive_dir() / "T1.md").exists())
+            self.assertTrue((cfg.needs / "T1.md").exists())
+            self.assertEqual(km.exit_code_for(res), 1)                   # 人の対応待ち
+            # 承認 → done 確定（archive・納品書・needs クリア）
+            self.assertEqual(km.cmd_approve(cfg, "T1", "本番OK"), 0)
+            self.assertTrue((cfg.archive_dir() / "T1.md").exists())
+            self.assertFalse((cfg.backlog / "T1.md").exists())
+            self.assertFalse((cfg.needs / "T1.md").exists())
+            self.assertIn("T1", (d / "DELIVERY.md").read_text(encoding="utf-8"))
+
+    def test_policy_gate_holds(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: prod-release\n- status: ready\n- verify: `true`\n- retries: 0\n",
+                     policy="gate: prod\n")
+            res = km.run_loop(cfg_for(d))
+            self.assertEqual(res["counts"]["review"], 1)
+
+    def test_no_gate_finalizes_immediately(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: x\n- status: ready\n- verify: `true`\n- retries: 0\n")
+            res = km.run_loop(cfg_for(d))
+            self.assertEqual(res["counts"]["done"], 1)
+            self.assertEqual(res["counts"].get("review", 0), 0)
+
+    def test_reject_via_feedback_reopens_to_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "## T1: y\n- status: ready\n- verify: `true`\n- review: human\n- retries: 0\n")
+            cfg = cfg_for(d)
+            km.run_loop(cfg)
+            nf = cfg.needs / "T1.md"
+            nf.write_text(nf.read_text(encoding="utf-8").replace("- [ ] 確定", "- [x] 確定")
+                          + "\n## フィードバック\nやり直して\n", encoding="utf-8")
+            km.ingest_feedback(cfg, km.load_tasks(cfg.backlog))
+            self.assertEqual(km.load_tasks(cfg.backlog)[0].status, "ready")
+
+
 class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
         kf = Path(__file__).resolve().parents[2] / "kiro-flow" / "kiro-flow.py"
