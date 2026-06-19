@@ -3,8 +3,7 @@
 > 作成日: 2026-06-16 ／ 更新日: 2026-06-17（正準ループ確定に伴い全面改訂）
 > 対象ブランチ: `claude/determined-cray-dthvbi`
 > 関連ファイル: `tools/kiro-autonomous/kiro-autonomous.py`, `tools/kiro-autonomous/tests/test_kiro_autonomous.py`,
-> `tools/kiro-autonomous/README.md`, `tools/kiro-autonomous/backlog.md.example`,
-> `.github/instructions/kiro-autonomous.instructions.md`, `tools/kiro-flow/`
+> `tools/kiro-autonomous/README.md`, `tools/kiro-autonomous/backlog.md.example`（タスク書式の規約）, `tools/kiro-flow/`
 >
 > 名称 `kiro-autonomous`: バックログを**自律的に**優先順位付け・実行・検証・収束させ、人の判断が
 > 要る分だけ差し戻すループ。人がプロンプトを毎回投げ込まなくても回り続けることを表す。

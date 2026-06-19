@@ -1,18 +1,37 @@
 <!--
+kiro-autonomous の backlog/<id>.md 規約（このファイルがタスク書式の正典）
+========================================================================
 kiro-autonomous は backlog/ ディレクトリ内の「1ファイル＝1タスク」を読む。
 このファイルを backlog/<id>.md としてコピーして使う（id はファイル名の stem が正）。
   例: cp backlog.md.example backlog/T1.md
+運用・サブコマンドの詳細は tools/kiro-autonomous/README.md、
+設計は docs/designs/2026-06-16-kiro-autonomous-mvp-design.md。
 
-- status : inbox | ready | doing | done | blocked
-           ready=実行待ち（消化対象）。inbox=triage で verify があれば ready に昇格。
-           blocked=人の判断待ち（needs/<id>.md にフィードバックを書くか approve で動かす）。
-- source : human | triage | followup（出自の系。省略時は human）
-- priority: 外部で付与する優先度（整数・大きいほど高優先。省略時 0）。
-           --planner none は priority 降順→同値は最古、--planner kiro はエージェントが加味する。
-- verify : 終了コード 0 を PASS とみなすシェルコマンド。**done 確定の唯一の根拠**。
-           verify を持たないタスクは done にできず人の判断（blocked）へ回る。
-- retries: 失敗回数（kiro-autonomous が自動更新する。初期値 0）。
-- done になったタスクは archive/<id>.md へ退避される（backlog/ には未完だけが残る）。
+書式（## 見出しが id とタイトル。以降の `- key: value` がフィールド）:
+
+  ## <id>: <タイトル>
+  - status : inbox | draft | ready | doing | done | blocked
+  - source : human | triage | followup        # 出自の系。省略時 human
+  - priority: 0                                 # 外部付与の優先度（整数・大ほど高。省略時 0）
+  - verify : `終了コード0をPASSとみなすシェルコマンド`
+  - retries: 0                                  # 失敗回数。kiro-autonomous が自動更新（初期 0）
+  - note   : 任意（保持される）
+
+フィールドの意味:
+- status :
+    ready  = 実行待ち（消化対象）。
+    inbox  = triage で verify があれば ready に昇格、無ければ据え置き（人へ）。
+    draft  = 書きかけ。消化対象外（書き終えたら ready に上げる。watch も起こさない）。
+    blocked= 人の判断待ち（needs/<id>.md にフィードバックを書くか approve で動かす）。
+    doing/done = 実行中/完了（done は archive/<id>.md へ退避され backlog には残らない）。
+- priority: --planner none は priority 降順→同値は最古（mtime 昇順）。--planner kiro は加味。
+- verify : **done 確定の唯一の根拠**。終了コード 0 のみが PASS。
+
+鉄則（この箱に積めるのは「機械的に検証できる作業」だけ）:
+1. done は自己申告では確定しない。verify の終了コード 0 だけが done の根拠。
+2. verify を持たないタスクは done 不能 → 人の判断（blocked＋needs/<id>.md）へ回る。
+   タスクを追加するときは必ず実行可能な verify を付ける（書けないなら分解が粗い兆候）。
+3. 曖昧で人間判断が要るタスクは積まず確認する。必ず drained か budget で有限回停止する。
 -->
 
 ## T1: README にプロジェクト概要の見出しを追加する
