@@ -323,6 +323,18 @@ backlog への投入経路を一級化し、**入口を増やしてもコアは 
   が run/watch の各パス冒頭で backlog へ取り込み、元ファイルを消す。`has_work` も inbox を見て watch を起こす。
 - **鉄則の保全**: verify を持たない投入は必ず `inbox`＝人の triage 行き（done は verify でしか確定しない①）。
 
+### 8.7 別ホストの発見（共有レジストリ）（§11 で実装）
+インスタンス・レジストリ（§4）はローカル home のみで、別ホストの稼働は見えなかった。**共有レジストリ**
+（NFS / 同期フォルダ / git バスのチェックアウト等、複数ホストから見える1ディレクトリ。`--registry` /
+`KIRO_AUTONOMOUS_REGISTRY`）へも各ホストがレコードを書き、`instances` がローカル＋共有を横断する。
+**core は決定的なファイル操作のみ・ネットワークは共有先の仕組みが担う**＝不変条件④/⑤を破らない。
+
+- **ホスト別の生死判定**: 自ホストは PID（`os.kill(pid,0)`）、別ホストは PID が無意味なので **heartbeat の
+  鮮度（`ttl`＝`max(90s, poll×3)`）**。watch が各パス/idle で heartbeat を更新し、鮮度切れは一覧から落ちる。
+- **掃除の非対称性**: 自ホストの死レコードは即削除、別ホストは長期 grace（24h）超のみ削除＝共有先での競合を避ける。
+- **停止は自ホストのみ**: `stop`/`restart`/`select_instances` は別ホストを対象にしない（リモート PID へ
+  シグナルは送れない）。レコードは衝突回避のため `instances/<host>-<pid>.json`。
+
 ---
 
 ## 9. 維持した不変条件（外周を足しても破らないもの）
@@ -339,7 +351,7 @@ backlog への投入経路を一級化し、**入口を増やしてもコアは 
 
 ## 10. テスト
 
-`tools/kiro-autonomous/tests/test_kiro_autonomous.py`（**計 92 件**）。本書の追加分:
+`tools/kiro-autonomous/tests/test_kiro_autonomous.py`（**計 100 件**）。本書の追加分:
 
 | 領域 | 検証 |
 |------|------|
@@ -351,6 +363,7 @@ backlog への投入経路を一級化し、**入口を増やしてもコアは 
 | 中核機能（§8） | stats 集計・followup 静的生成(ready/inbox)・max_spawn=0 無効・依存除外と解決後 done・依存未完で停止・回帰失敗で blocked・回帰成功で done |
 | コスト予算（§8.5） | parse_cost のマーカ加算・max_tokens 超過で `cost` 停止(exit 2)・max_cost 超過で停止・stats の archive 横断コスト集計 |
 | 取り込み口（§8.6） | spec 検証(title 必須/status 既定)・フィールドと未知キー保持・id 一意化・inbox(json/md) 取り込みと消去・run_loop が inbox を消化・enqueue コマンド |
+| 別ホスト発見（§8.7） | heartbeat/ttl レコード・共有先への登録と heartbeat 更新・別ホストの生存(鮮度)/停止判定・select は自ホストのみ・複数ディレクトリ集約と重複排除・--registry/env 解釈 |
 
 ```bash
 KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/tests
@@ -360,7 +373,6 @@ KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/
 
 ## 11. 今後の拡張余地（非目標として明示）
 
-- リモート（別ホスト）インスタンスの発見 — 現状はローカル home のレジストリのみ（git バス越しは未対応）。
 - 並列消費（独立・依存解決済みタスクを N 並列で）— 現状は 1 サイクル 1 タスクの逐次（kiro-flow 側は worker 並列）。
 - 既製の外部アダプタ同梱（GitHub issue / メール → `enqueue --json`）— 現状は取り込み口（§8.6）まで。アダプタ本体は範囲外。
 - 回帰ゲートの本格ロールバック（コミット/push 済み変更の revert・PR クローズ）— 現状は未コミット変更の戻しのみ。

@@ -74,7 +74,14 @@ $KA --help
 
    出力は配列。各レコードに `pid` / `root`（プロセス側 OS の絶対パス）/ `backlog` / `needs` / `archive` /
    `policy` / `delivery` / `journal` / `runtime`（`linux`/`wsl`/`windows`/`darwin`）/ `wsl_distro` /
-   WSL なら `root_windows`（`\\wsl.localhost\<distro>\…`）が入る。
+   WSL なら `root_windows`（`\\wsl.localhost\<distro>\…`）/ `host`（ホスト名）が入る。
+
+   **別ホストも横断したい**ときは共有レジストリ（複数ホストから見える1ディレクトリ）を指す:
+   ```bash
+   $KA instances --json --registry /mnt/shared/kiro-registry   # env KIRO_AUTONOMOUS_REGISTRY でも可
+   ```
+   別ホストのレコードは `host` が自分と異なり、`@host(remote)` と表示される。**別ホストの操作（stop 等）は
+   そのホスト上で行う**（リモート PID へシグナルは送れない）。読み書きは共有ファイルシステム越しに可能。
 
 3. **対象を選ぶ**: 生存インスタンスが 1 つならそれ。複数（root 違い）あればユーザーに root を提示して選ばせる。
    0 件なら「稼働中の kiro-autonomous が無い」ことを伝え、起動（補助モード）するか root を確認する。
