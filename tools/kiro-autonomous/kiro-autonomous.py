@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -495,6 +496,144 @@ def cmd_instances(as_json: bool = False) -> int:
         if r.get("root_windows"):
             print(f"    Windows: {r['root_windows']}")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# 常駐ライフサイクル（start / stop / restart）— レジストリ(§4)の上に起動・停止操作を一級化
+# ---------------------------------------------------------------------------
+def _self_script() -> str:
+    """この CLI 本体スクリプトの絶対パス（子プロセス起動に使う）。"""
+    return str(Path(__file__).resolve())
+
+
+def _norm_root(root: str) -> str:
+    return str(Path(root).expanduser().resolve())
+
+
+def _drop_instance_file(pid: int) -> None:
+    try:
+        (instances_dir() / f"{pid}.json").unlink()
+    except OSError:
+        pass
+
+
+def _reap(pid: int) -> None:
+    """対象が自分の子なら回収してゾンビ化を防ぐ（他人の子・未対応は無視）。"""
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (OSError, ChildProcessError, AttributeError):
+        pass
+
+
+def select_instances(root: "str | None" = None, pid: "int | None" = None,
+                     want_all: bool = False) -> list:
+    """稼働インスタンスを root / pid / 全件 で選ぶ。root は『作業ルート』でも『その配下の root』でも一致させる。"""
+    recs = list_instances(prune=True)
+    if want_all:
+        return recs
+    nr = _norm_root(root) if root else None
+    out = []
+    for r in recs:
+        if pid is not None and int(r.get("pid", -1)) == pid:
+            out.append(r)
+            continue
+        if nr is not None:
+            rroot = str(r.get("root", ""))
+            if rroot == nr or rroot == str(Path(nr) / ".kiro-autonomous") or str(Path(rroot).parent) == nr:
+                out.append(r)
+    return out
+
+
+def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
+             want_all: bool = False, timeout: float = 5.0) -> int:
+    """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する。"""
+    targets = select_instances(root, pid, want_all)
+    if not targets:
+        print("停止対象の稼働インスタンスが見つかりません（instances で確認できます）。", file=sys.stderr)
+        return 1
+    all_ok = True
+    for r in targets:
+        p = int(r["pid"])
+        if p == os.getpid():                  # 自分自身は決して止めない（安全ガード）
+            continue
+        try:
+            os.kill(p, signal.SIGTERM)        # graceful: 子側の SIGTERM ハンドラが finally で後始末
+        except OSError as e:
+            print(f"pid={p}: SIGTERM 失敗（{e}）", file=sys.stderr)
+            all_ok = False
+            continue
+        deadline = time.time() + timeout
+        while time.time() < deadline and _pid_alive(p):
+            _reap(p)
+            time.sleep(0.1)
+        if _pid_alive(p) and hasattr(signal, "SIGKILL"):  # 居残りは強制終了（POSIX のみ）
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+            time.sleep(0.2)
+            _reap(p)
+        _drop_instance_file(p)
+        ok = not _pid_alive(p)
+        all_ok = all_ok and ok
+        print(f"pid={p} {'停止しました' if ok else '停止できませんでした'}  root={r.get('root')}")
+    return 0 if all_ok else 1
+
+
+def cmd_start(root: "str | None" = None, config: "str | None" = None,
+              force: bool = False) -> int:
+    """`run --watch` を切り離して常駐起動する（detached）。重複監視は既定で拒否（--force で許可）。"""
+    expected = _norm_root(root) if root else str((Path.cwd() / ".kiro-autonomous").resolve())
+    dup = [r for r in list_instances(prune=True) if str(r.get("root", "")) == expected]
+    if dup and not force:
+        print(f"既に root={expected} を監視中です（pid={dup[0]['pid']}）。重複起動は --force、"
+              f"再起動は restart を使ってください。", file=sys.stderr)
+        return 1
+    child = [sys.executable, _self_script(), "run", "--watch"]
+    if root:
+        child += ["--root", root]
+    if config:
+        child += ["--config", config]
+    log_dir = resolve_state_home() / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log = log_dir / f"{_slug(expected)}.log"
+        logf = open(log, "a", encoding="utf-8")
+    except OSError:
+        log, logf = None, subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(child, stdout=logf, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        print(f"起動に失敗しました: {e}", file=sys.stderr)
+        return 1
+    finally:
+        if hasattr(logf, "close"):
+            try:
+                logf.close()
+            except OSError:
+                pass
+    deadline = time.time() + 5.0                # 登録（レジストリ出現）を確認
+    registered = False
+    while time.time() < deadline:
+        if any(int(r.get("pid", -1)) == proc.pid for r in list_instances(prune=False)):
+            registered = True
+            break
+        if not _pid_alive(proc.pid):
+            break
+        time.sleep(0.2)
+    status = "起動しました" if (registered and _pid_alive(proc.pid)) else \
+             "起動しましたが登録未確認（log を確認してください）"
+    print(f"{status} pid={proc.pid} root={expected}" + (f" log={log}" if log else ""))
+    return 0 if _pid_alive(proc.pid) else 1
+
+
+def cmd_restart(root: "str | None" = None, config: "str | None" = None) -> int:
+    """同じ root の監視を停止してから起動し直す。"""
+    select = select_instances(root=root)
+    if select:
+        cmd_stop(root=root)
+    return cmd_start(root=root, config=config, force=True)
 
 
 
@@ -1743,6 +1882,12 @@ def cmd_run(cfg: Config) -> int:
     reg = register_instance(cfg)   # 外部操作者が「監視中フォルダ」を発見できるよう登録
     try:
         if cfg.watch:
+            # 常駐のみ: stop からの SIGTERM を KeyboardInterrupt 化し finally で後始末させる
+            try:
+                signal.signal(signal.SIGTERM,
+                              lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+            except (ValueError, OSError):  # メインスレッド以外/未対応では無視
+                pass
             run_watch(cfg)
             return 0
         result = run_loop(cfg)
@@ -2028,18 +2173,36 @@ def main(argv=None) -> int:
                           help="稼働中の kiro-autonomous（監視中フォルダ）を一覧（外部操作者の発見口）")
     inst.add_argument("--json", action="store_true", help="JSON で出力（スキル等が機械処理する用）")
 
+    sta = sub.add_parser("start", help="run --watch を切り離して常駐起動（detached。重複は --force）")
+    sta.add_argument("--root", default=None, help="監視する作業ルート（既定 ./.kiro-autonomous）")
+    sta.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
+    sta.add_argument("--force", action="store_true", help="同じ root を既に監視中でも起動する")
+    sto = sub.add_parser("stop", help="稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除）")
+    sto.add_argument("--root", default=None, help="停止対象の root（作業ルート/配下どちらでも一致）")
+    sto.add_argument("--pid", type=int, default=None, help="停止対象の PID（instances で確認）")
+    sto.add_argument("--all", action="store_true", help="稼働中インスタンスを全停止")
+    res = sub.add_parser("restart", help="同じ root の監視を停止してから起動し直す")
+    res.add_argument("--root", default=None, help="再起動する作業ルート（既定 ./.kiro-autonomous）")
+    res.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
+
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats",
-                    "approve", "hold", "reprioritize", "instances"}
+                    "approve", "hold", "reprioritize", "instances", "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
 
     args = p.parse_args(argv)
 
-    # instances は共通設定（backlog 等）を必要としない発見専用コマンド。
+    # instances / start / stop / restart は共通設定（backlog 等）を必要としない操作コマンド。
     if args.cmd == "instances":
         return cmd_instances(args.json)
+    if args.cmd == "start":
+        return cmd_start(args.root, args.config, args.force)
+    if args.cmd == "stop":
+        return cmd_stop(args.root, args.pid, args.all)
+    if args.cmd == "restart":
+        return cmd_restart(args.root, args.config)
 
     resolve_config(args)      # CLI 未指定値を 設定ファイル → 組み込み既定 で確定
     cfg = build_config(args)

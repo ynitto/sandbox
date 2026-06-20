@@ -123,6 +123,9 @@ kiro-autonomous run --location daemon --executor kiro
 | `hold <id> --reason …` | `policy.md` に `deny` 追加し保留（決定記録） |
 | `reprioritize <id> --pin\|--defer --reason …` | `policy.md` に `pin`/`defer` 追加（決定記録） |
 | `instances` [`--json`] | 稼働中の kiro-autonomous（監視中フォルダ）を一覧（外部操作者の発見口） |
+| `start` [`--root` `--config` `--force`] | `run --watch` を切り離して常駐起動（detached。重複監視は拒否） |
+| `stop` [`--root` \| `--pid` \| `--all`] | 稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除） |
+| `restart` [`--root` `--config`] | 同じ root の監視を停止してから起動し直す |
 
 ### 稼働インスタンスの発見（外部操作者向け）
 
@@ -139,6 +142,27 @@ kiro-autonomous instances --json    # 機械処理用（root/backlog/needs/archi
 WSL で稼働中の場合、レコードには `runtime: "wsl"`・`wsl_distro` と、可能なら `wslpath -w` で得た
 `root_windows`（`\\wsl.localhost\<distro>\…`）も含まれる。プロセスは WSL・操作側は Windows という構成で
 パスを橋渡しできる。
+
+### 常駐の起動・停止・再起動（lifecycle）
+
+レジストリ（上記）の上に、常駐プロセスの**起動/停止/再起動**を一級コマンドにしている。スキルや人が
+「いま動かす／止める」を明示操作できる。
+
+```bash
+kiro-autonomous start --root /work          # run --watch を detached 起動（重複監視は拒否。--force で許可）
+kiro-autonomous start --config ./my.yaml    # 設定はファイルに寄せる（CLI 個別フラグは start では渡さない）
+kiro-autonomous stop  --root /work          # SIGTERM（→ 居残りは SIGKILL）。登録も掃除
+kiro-autonomous stop  --pid 12345           # PID 指定（instances で確認）／ --all で全停止
+kiro-autonomous restart --root /work        # 同じ root を止めてから起動し直す
+```
+
+- **`start`** は子を `start_new_session` で切り離し、ログを `~/.kiro-autonomous/logs/<root>.log` に流す。
+  起動後にレジストリ出現を確認して pid を報告する。実行時設定は**設定ファイル**（`--config` か `.kiro/`）に
+  寄せる思想（§設定ファイル）— `start` は個別の run フラグを取らない。
+- **`stop`** は graceful（daemon 側は SIGTERM を受けて後始末＝registry を消して終了）。居残りだけ
+  `SIGKILL`（POSIX）。自分自身は決して止めない安全ガード付き。
+- `--root` は**作業ルートでもその配下の `.kiro-autonomous` でも**一致する。Windows ネイティブでは
+  SIGTERM の挙動が限定的（`stop` はベストエフォート）。
 
 ## クイックスタート
 

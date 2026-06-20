@@ -222,6 +222,15 @@ $KA stats                        # 計測値（スループット・自動化率
 sed -n '1,30p' .kiro-autonomous/journal.md             # 機械のサイクルログ
 ```
 
+常駐の**起動/停止/再起動**は lifecycle コマンドで明示操作する（プロセスを直接 kill しない）:
+
+```bash
+$KA start --root <work>          # detached で常駐起動（重複監視は拒否。設定は --config か .kiro/ に寄せる）
+$KA stop  --root <work>          # graceful 停止（SIGTERM→居残りは SIGKILL・登録掃除）。--pid / --all も可
+$KA restart --root <work>        # 同じ root を止めてから起動し直す
+$KA instances                    # どの root を誰(pid)が監視中かを先に確認
+```
+
 「状態を見せて」には `stats` の値（完了数・自動化率・人対応待ち）で答える。巻き込み事故を防ぎたい案件では
 `run --regression-cmd "<共通スモーク>"` を提案する（verify PASS でも回帰したら done にせず人へ）。
 
