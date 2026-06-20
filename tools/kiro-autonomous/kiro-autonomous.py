@@ -154,6 +154,111 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
         p.unlink()
 
 
+# ---------------------------------------------------------------------------
+# enqueue（汎用の取り込み口）— 外部ソース(webhook/メール/issue 抽出)は薄いアダプタで
+#   ここへ流し込む。コアは stdlib のみ・ネットワーク非依存・決定的を保つ。
+# ---------------------------------------------------------------------------
+ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
+                      "after", "review", "note"}
+
+
+def _slug_id(text: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9_-]+", "-", (text or "").strip()).strip("-")
+    return s[:48]
+
+
+def _unique_task_id(cfg: "Config", base: str) -> str:
+    existing = {p.stem for p in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
+    base = base or "task"
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}-{n}" in existing:
+        n += 1
+    return f"{base}-{n}"
+
+
+def _gen_task_id(cfg: "Config", explicit: "str | None", title: str) -> str:
+    if explicit:
+        base = _slug_id(explicit) or "task"
+    else:
+        slug = _slug_id(title)
+        base = (f"{slug[:24]}-{datetime.now().strftime('%H%M%S')}" if slug
+                else "enq-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+    return _unique_task_id(cfg, base)
+
+
+def task_from_spec(cfg: "Config", spec: dict) -> Task:
+    """spec(dict) を検証して Task を作る。title 必須。status 未指定なら verify 有→ready / 無→inbox。"""
+    title = str(spec.get("title", "") or "").strip()
+    if not title:
+        raise ValueError("title は必須です")
+    verify = _strip_code(str(spec.get("verify", "") or "").strip())
+    tid = _gen_task_id(cfg, spec.get("id"), title)
+    status = str(spec.get("status", "") or "").strip() or ("ready" if verify else "inbox")
+    t = Task(id=tid, title=title, status=status, verify=verify,
+             source=str(spec.get("source", "") or "enqueue"))
+    try:
+        t.priority = int(spec.get("priority", 0) or 0)
+    except (TypeError, ValueError):
+        t.priority = 0
+    for k in ("after", "review", "note"):           # 既知の追加フィールド
+        v = spec.get(k)
+        if v not in (None, "", []):
+            t.extra.append((k, ",".join(map(str, v)) if isinstance(v, list) else str(v)))
+    for k, v in spec.items():                        # 未知キーも保持（取りこぼさない）
+        if k not in ENQUEUE_KNOWN_KEYS and v not in (None, "", []):
+            t.extra.append((str(k), str(v)))
+    return t
+
+
+def enqueue_task(cfg: "Config", spec: dict) -> Task:
+    t = task_from_spec(cfg, spec)
+    cfg.backlog.mkdir(parents=True, exist_ok=True)
+    persist_task(cfg, t)
+    return t
+
+
+def ingest_inbox(cfg: "Config") -> "list[Task]":
+    """inbox/ に置かれたファイルを backlog タスクへ取り込む（.json=オブジェクト/配列 / .md=タスク形式）。
+    取り込めたら元ファイルを消す。外部ソースの共通入口（watch がこの口を監視して起こす）。"""
+    created: list[Task] = []
+    inbox = cfg.inbox
+    if not inbox or not inbox.exists():
+        return created
+    for f in sorted(inbox.glob("*")):
+        if f.is_dir():
+            continue
+        try:
+            if f.suffix.lower() == ".json":
+                data = json.loads(f.read_text(encoding="utf-8"))
+                for sp in (data if isinstance(data, list) else [data]):
+                    if isinstance(sp, dict):
+                        created.append(enqueue_task(cfg, sp))
+            elif f.suffix.lower() in (".md", ".markdown", ".txt"):
+                t = parse_task(f.read_text(encoding="utf-8"), f.stem)
+                t.id = _unique_task_id(cfg, _slug_id(t.id) or "task")
+                if t.source == "human":
+                    t.source = "inbox"
+                if t.norm_status() == "ready" and not t.verify:
+                    t.status = "inbox"               # verify 無しは人の triage へ（鉄則）
+                cfg.backlog.mkdir(parents=True, exist_ok=True)
+                persist_task(cfg, t)
+                created.append(t)
+            else:
+                continue
+        except (OSError, ValueError) as e:
+            append_journal(cfg.journal, f"inbox 取り込み失敗: {f.name}: {e}")
+            continue
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    if created:
+        append_journal(cfg.journal, f"inbox 取り込み {[t.id for t in created]}")
+    return created
+
+
 _FOLLOWUP_LINE_RE = re.compile(r"^@followup\s+(?P<spec>.+)$")
 
 
@@ -1297,6 +1402,7 @@ class Config:
     rot_age_days: float = 14.0      # stale とみなす経過日数
     cleanup: bool = True            # run 後に kiro-flow バスの一時状態を掃除
     delivery: "Path | None" = None  # 納品一覧（受領書）DELIVERY.md
+    inbox: "Path | None" = None     # 取り込み待ちのドロップ口（外部ソースがここへファイルを置く）
     debounce: float = 3.0           # watch 中、最終保存からこの秒数は feedback 取込を待つ
     watch: bool = False     # 終了条件後もプロセスを残し backlog を監視
     poll: float = 5.0       # watch のポーリング間隔（秒）
@@ -1314,6 +1420,8 @@ class Config:
 def ensure_dirs(cfg: Config) -> None:
     for d in (cfg.backlog, cfg.needs, cfg.decisions):
         d.mkdir(parents=True, exist_ok=True)
+    if cfg.inbox:                       # 外部ソースが投入先を見つけられるよう作っておく
+        cfg.inbox.mkdir(parents=True, exist_ok=True)
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -1448,6 +1556,7 @@ def _escalate(cfg, task, reason, reasons, cycle):
 
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     ensure_dirs(cfg)
+    inboxed = ingest_inbox(cfg)                       # 外部ドロップ(inbox/)を backlog へ取り込む
     tasks = load_tasks(cfg.backlog)
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
@@ -1619,7 +1728,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
             "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified,
             "ingested": ingested, "archived": archived, "promoted": promoted,
-            "spawned": spawned_total, "tokens": tokens_used, "cost": cost_used}
+            "spawned": spawned_total, "tokens": tokens_used, "cost": cost_used,
+            "inboxed": inboxed}
 
 
 def _cleanup_bus(cfg: Config) -> None:
@@ -1648,6 +1758,8 @@ def has_work(cfg: Config) -> bool:
     for t in load_tasks(cfg.backlog):
         if t.norm_status() in CONSUMABLE or t.norm_status() == "inbox":
             return True
+    if cfg.inbox and cfg.inbox.exists() and any(cfg.inbox.glob("*")):
+        return True               # 外部ドロップ(inbox/)が来たら起こす
     if cfg.needs.exists():
         for nf in cfg.needs.glob("*.md"):
             if read_feedback(nf):
@@ -1861,6 +1973,38 @@ def cmd_promote(cfg: Config) -> int:
     return 0
 
 
+def cmd_enqueue(cfg: Config, args) -> int:
+    """汎用の取り込み口。CLI フラグ・stdin/JSON から検証済み backlog タスクを作る。
+    外部ソース（webhook/メール/issue 抽出）は薄いアダプタでここへ流し込む。"""
+    ensure_dirs(cfg)
+    if getattr(args, "json", False):
+        try:
+            raw = Path(args.file).read_text(encoding="utf-8") if args.file else sys.stdin.read()
+            data = json.loads(raw)
+        except (OSError, ValueError) as e:
+            print(f"enqueue 失敗: JSON 読込エラー: {e}", file=sys.stderr)
+            return 2
+        specs = data if isinstance(data, list) else [data]
+    else:
+        specs = [{"id": args.id, "title": args.title, "verify": args.verify,
+                  "priority": args.priority, "source": args.source, "status": args.status,
+                  "after": args.after, "review": args.review, "note": args.note}]
+    created = []
+    for sp in specs:
+        if not isinstance(sp, dict):
+            print(f"enqueue 失敗: オブジェクトでない要素: {sp!r}", file=sys.stderr)
+            return 2
+        try:
+            created.append(enqueue_task(cfg, sp))
+        except ValueError as e:
+            print(f"enqueue 失敗: {e}", file=sys.stderr)
+            return 2
+    for t in created:
+        warn = "" if t.verify else "  ⚠ verify 未定義 → inbox（人の triage へ）"
+        print(f"enqueued {t.id} [{t.norm_status()}] {t.title}{warn}")
+    return 0
+
+
 def cmd_triage(cfg: Config) -> int:
     ensure_dirs(cfg)
     tasks = load_tasks(cfg.backlog)
@@ -2048,7 +2192,8 @@ def build_config(args) -> Config:
         promote_threshold=getattr(args, "promote_threshold", 2),
         rot=bool(getattr(args, "rot", False)), rot_age_days=args.rot_age_days,
         cleanup=bool(getattr(args, "cleanup", True)),
-        delivery=under("delivery", "DELIVERY.md"), debounce=args.debounce,
+        delivery=under("delivery", "DELIVERY.md"), inbox=under("inbox", "inbox"),
+        debounce=args.debounce,
         watch=bool(getattr(args, "watch", False)), poll=getattr(args, "poll", 5.0),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
     )
@@ -2068,6 +2213,7 @@ def _add_common(sp):
     sp.add_argument("--needs", default=None, help="要対応ディレクトリ（既定 <root>/needs）")
     sp.add_argument("--archive", default=None, help="done の退避先（既定 <root>/archive）")
     sp.add_argument("--delivery", default=None, help="納品一覧（既定 <root>/DELIVERY.md）")
+    sp.add_argument("--inbox", default=None, help="取り込み待ちのドロップ口（既定 <root>/inbox）")
     sp.add_argument("--debounce", type=float, default=None,
                     help="watch 中、最終保存からこの秒数は feedback 取込を待つ（誤発火防止。既定 3）")
     sp.add_argument("--workdir", default=None)
@@ -2159,6 +2305,20 @@ def main(argv=None) -> int:
     st = sub.add_parser("stats", help="ループの計測値（スループット・自動化率・retry・人対応待ち）")
     _add_common(st); st.add_argument("--json", action="store_true", help="JSON で出力")
 
+    enq = sub.add_parser("enqueue", help="汎用の取り込み口（CLI/stdin/JSON から backlog タスクを作る）")
+    _add_common(enq)
+    enq.add_argument("--title", default=None, help="タスクのタイトル（必須・--json 時は不要）")
+    enq.add_argument("--verify", default=None, help="done 確定の verify コマンド（無いと inbox=人の triage へ）")
+    enq.add_argument("--priority", type=int, default=0, help="優先度（大きいほど高優先・既定 0）")
+    enq.add_argument("--source", default=None, help="出所（既定 enqueue）")
+    enq.add_argument("--status", default=None, help="status を明示（既定: verify 有→ready / 無→inbox）")
+    enq.add_argument("--after", default=None, help="依存タスク ID（カンマ区切り。DAG）")
+    enq.add_argument("--review", default=None, help="検収ゲート（human で done 前に承認）")
+    enq.add_argument("--note", default=None, help="メモ（保持される）")
+    enq.add_argument("--id", default=None, help="タスク ID を明示（既定はタイトルから自動生成）")
+    enq.add_argument("--json", action="store_true", help="stdin か --file の JSON（オブジェクト/配列）で投入")
+    enq.add_argument("--file", default=None, help="--json の入力ファイル（既定 stdin）")
+
     ap = sub.add_parser("approve", help="判断待ちを修正承認して積み直し（決定記録）")
     _add_common(ap); ap.add_argument("id"); ap.add_argument("--reason", required=True)
     hd = sub.add_parser("hold", help="policy に deny 追加し保留（決定記録）")
@@ -2187,7 +2347,7 @@ def main(argv=None) -> int:
 
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
-    _subcommands = {"run", "triage", "needs", "promote", "rot", "stats",
+    _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "enqueue",
                     "approve", "hold", "reprioritize", "instances", "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
@@ -2215,6 +2375,7 @@ def main(argv=None) -> int:
         "run": lambda: cmd_run(cfg),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
+        "enqueue": lambda: cmd_enqueue(cfg, args),
         "stats": lambda: cmd_stats(cfg, getattr(args, "json", False)),
         "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),

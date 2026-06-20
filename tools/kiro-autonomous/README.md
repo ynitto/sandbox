@@ -76,6 +76,7 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
 ```
 .kiro-autonomous/
   backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
+  inbox/               取り込み待ちのドロップ口（外部ソースが .json/.md を置く→run/watch が backlog 化）
   archive/<id>.md      完了タスクの保全先（done で backlog から移動）
   policy.md            優先順位・実行先の上書き（人だけが書く）
   needs/<id>.md        判断待ちの通知＋フィードバック記入欄（人が記入→自動再開）
@@ -117,6 +118,7 @@ kiro-autonomous run --location daemon --executor kiro
 | `run` [`--watch`] | 正準ループ。`--watch` で終了条件後も常駐監視（idle はエージェント非起動） |
 | `triage` | 優先順位付けのみ（inbox→ready 昇格・policy 適用）。順位を表示 |
 | `needs` | 人の判断待ち（blocked / acceptance 未定義 / 検収待ち）を表示 |
+| `enqueue` [`--title` `--verify` …\| `--json`] | 汎用の取り込み口。CLI/stdin/JSON から backlog タスクを作る |
 | `stats` [`--json`] | ループの計測値（スループット・自動化率・retry・人対応待ち） |
 | `rot` [`--fix`] | 古い/重複/実行不能タスクを検出して報告（`--fix` で人の判断へ回す） |
 | `approve <id> --reason …` | 判断待ちを修正承認して積み直し（決定記録） |
@@ -142,6 +144,28 @@ kiro-autonomous instances --json    # 機械処理用（root/backlog/needs/archi
 WSL で稼働中の場合、レコードには `runtime: "wsl"`・`wsl_distro` と、可能なら `wslpath -w` で得た
 `root_windows`（`\\wsl.localhost\<distro>\…`）も含まれる。プロセスは WSL・操作側は Windows という構成で
 パスを橋渡しできる。
+
+### 取り込み口の多様化（enqueue / inbox）
+
+backlog へタスクを入れる経路を一級化した。**コアは標準ライブラリのみ・ネットワーク非依存**を保ち、外部
+ソース（webhook / メール / GitHub issue 抽出 …）は**薄いアダプタで取り込み口へ流し込む**設計。
+
+```bash
+# CLI から1件（verify が無いと inbox=人の triage 行き）
+kiro-autonomous enqueue --title "レポート生成を直す" --verify 'pytest -q tests/report'
+
+# stdin/JSON（1件 or 配列）。外部ソースのアダプタはここへパイプするだけ
+echo '{"title":"X","verify":"make test","priority":5,"after":"T1"}' | kiro-autonomous enqueue --json
+gh issue list --label kiro --json title | adapter.sh | kiro-autonomous enqueue --json
+
+# ドロップ口: <root>/inbox/ に .json（obj/配列）や .md（タスク形式）を置くと、run/watch が取り込む
+cp task.md .kiro-autonomous/inbox/
+```
+
+- `--json` の各オブジェクトのキー: `title`(必須) / `verify` / `priority` / `source` / `status` /
+  `after` / `review` / `note` / `id`（未知キーも保持）。`status` 未指定なら **verify 有→`ready` / 無→`inbox`**。
+- `inbox/` のファイルは取り込むと消える。watch は inbox に何か置かれると起きる（idle のまま放置しない）。
+- いずれも **verify を持たないタスクは `inbox`** に入り、triage で人へ回る（done は verify でしか確定しない鉄則）。
 
 ### 常駐の起動・停止・再起動（lifecycle）
 
