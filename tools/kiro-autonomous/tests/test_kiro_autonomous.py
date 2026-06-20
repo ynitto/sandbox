@@ -7,6 +7,7 @@
 """
 import importlib.util
 import os
+import socket
 import sys
 import tempfile
 import time
@@ -701,8 +702,8 @@ class TestInstances(unittest.TestCase):
     def test_register_then_discover(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), watch=True)
-            p = km.register_instance(cfg)
-            self.addCleanup(lambda: p and p.exists() and p.unlink())
+            paths = km.register_instance(cfg)
+            self.addCleanup(lambda: [x.unlink() for x in paths if x.exists()])
             recs = km.list_instances()
             self.assertEqual(len(recs), 1)
             r = recs[0]
@@ -738,6 +739,101 @@ class TestInstances(unittest.TestCase):
         self.assertEqual(km.cmd_instances(as_json=False), 0)
 
 
+class TestRemoteDiscovery(unittest.TestCase):
+    """共有レジストリ越しの別ホスト発見（§11-7）。core はファイル操作のみ・ネットワーク非依存を保つ。"""
+
+    def setUp(self):
+        self._home = tempfile.mkdtemp()
+        self._shared = tempfile.mkdtemp()
+        self._prev = os.environ.get("KIRO_AUTONOMOUS_HOME")
+        self._prev_reg = os.environ.get("KIRO_AUTONOMOUS_REGISTRY")
+        os.environ["KIRO_AUTONOMOUS_HOME"] = self._home
+        os.environ.pop("KIRO_AUTONOMOUS_REGISTRY", None)
+
+    def tearDown(self):
+        for k, v in (("KIRO_AUTONOMOUS_HOME", self._prev),
+                     ("KIRO_AUTONOMOUS_REGISTRY", self._prev_reg)):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _remote(self, host, pid, hb_age, root="/srv/p"):
+        d = Path(self._shared); d.mkdir(parents=True, exist_ok=True)
+        rec = {"pid": pid, "root": root, "host": host, "watch": True, "runtime": "linux",
+               "heartbeat": time.time() - hb_age, "ttl": 90, "started_at": time.time() - hb_age}
+        (d / f"{host}-{pid}.json").write_text(__import__("json").dumps(rec), encoding="utf-8")
+        return rec
+
+    def test_record_has_heartbeat_and_ttl(self):
+        with tempfile.TemporaryDirectory() as wd:
+            cfg = cfg_for(Path(wd), watch=True, poll=40.0)
+            rec = km.instance_record(cfg)
+            self.assertIn("heartbeat", rec)
+            self.assertEqual(rec["host"], socket.gethostname())
+            self.assertGreaterEqual(rec["ttl"], km.INSTANCE_TTL)
+            self.assertGreaterEqual(rec["ttl"], cfg.poll * 3)      # poll より十分長い
+
+    def test_register_writes_to_shared_and_refresh_bumps_heartbeat(self):
+        with tempfile.TemporaryDirectory() as wd:
+            cfg = cfg_for(Path(wd), watch=True)
+            paths = km.register_instance(cfg, [self._shared])
+            self.addCleanup(lambda: [p.unlink() for p in paths if p.exists()])
+            # ローカル home と共有先の両方へホスト修飾名で書かれる
+            self.assertEqual(len(paths), 2)
+            self.assertTrue(any(Path(self._shared) in p.parents for p in paths))
+            self.assertTrue(all(p.name == f"{socket.gethostname()}-{os.getpid()}.json" for p in paths))
+            before = __import__("json").loads(paths[0].read_text())["heartbeat"]
+            time.sleep(0.01)
+            km.refresh_instance(paths)
+            after = __import__("json").loads(paths[0].read_text())["heartbeat"]
+            self.assertGreater(after, before)
+
+    def test_live_remote_discovered_stale_hidden(self):
+        self._remote("hostB", 101, hb_age=5)              # 生存
+        self._remote("hostC", 202, hb_age=9999)           # 古い → 停止扱い
+        recs = km.list_instances(extra=[self._shared])
+        seen = {(r["host"], r["pid"]) for r in recs}
+        self.assertIn(("hostB", 101), seen)
+        self.assertNotIn(("hostC", 202), seen)
+
+    def test_select_instances_excludes_remote(self):
+        self._remote("hostB", 101, hb_age=1)
+        # 停止対象は自ホストのみ（別ホストの PID へシグナルは送れない）
+        self.assertEqual(km.select_instances(want_all=True, extra=[self._shared]), [])
+
+    def test_aggregate_dedup_keeps_freshest(self):
+        # 同一インスタンスがローカルと共有の両方にある → 1件に集約し heartbeat の新しい方を採用
+        km.instances_dir().mkdir(parents=True, exist_ok=True)
+        old = {"pid": 101, "root": "/srv/p", "host": "hostB", "watch": True,
+               "heartbeat": time.time() - 50, "ttl": 90}
+        (km.instances_dir() / "hostB-101.json").write_text(__import__("json").dumps(old),
+                                                           encoding="utf-8")
+        self._remote("hostB", 101, hb_age=2)              # 共有側はより新しい
+        recs = [r for r in km.list_instances(extra=[self._shared])
+                if (r["host"], r["pid"]) == ("hostB", 101)]
+        self.assertEqual(len(recs), 1)
+        self.assertGreater(recs[0]["heartbeat"], time.time() - 10)
+
+    def test_split_registry_parses_pathsep_and_list(self):
+        joined = os.pathsep.join(["/a", "/b"])
+        self.assertEqual(km._split_registry(joined), ["/a", "/b"])
+        self.assertEqual(km._split_registry(["/a", joined]), ["/a", "/a", "/b"])
+        self.assertEqual(km._split_registry(None), [])
+
+    def test_env_registry_is_read(self):
+        self._remote("hostB", 303, hb_age=3)
+        os.environ["KIRO_AUTONOMOUS_REGISTRY"] = self._shared
+        seen = {(r["host"], r["pid"]) for r in km.list_instances()}
+        self.assertIn(("hostB", 303), seen)               # env でも共有先を読む
+
+    def test_cmd_instances_shows_remote_json(self):
+        self._remote("hostB", 404, hb_age=2, root="/srv/q")
+        self.assertEqual(km.cmd_instances(as_json=True, extra=[self._shared]), 0)
+        recs = km.list_instances(extra=[self._shared])
+        self.assertIn("hostB", {r["host"] for r in recs})
+
+
 class TestLifecycle(unittest.TestCase):
     """常駐ライフサイクル（start / stop / restart）。レジストリの上に起動・停止操作を載せる。"""
 
@@ -754,9 +850,11 @@ class TestLifecycle(unittest.TestCase):
             os.environ["KIRO_AUTONOMOUS_HOME"] = self._prev
 
     def _write_rec(self, pid, root):
+        import socket
         d = km.instances_dir(); d.mkdir(parents=True, exist_ok=True)
         (d / f"{pid}.json").write_text(
-            __import__("json").dumps({"pid": pid, "root": str(root), "watch": True}),
+            __import__("json").dumps({"pid": pid, "root": str(root), "watch": True,
+                                      "host": socket.gethostname()}),
             encoding="utf-8")
 
     def test_select_by_pid_root_and_all(self):

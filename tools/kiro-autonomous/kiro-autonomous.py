@@ -479,6 +479,61 @@ def instances_dir() -> Path:
     return resolve_state_home() / "instances"
 
 
+# リモート（別ホスト）レコードは PID が当てにならないので heartbeat の鮮度で生死を見る。
+INSTANCE_TTL = 90.0           # heartbeat からこの秒数を超えたリモートレコードは「停止」とみなす
+REMOTE_PRUNE_GRACE = 86400.0  # これより古い（=長期間死んでいる）リモートレコードは誰が掃除してもよい
+
+
+def resolve_registry_dirs(extra: "list | str | None" = None) -> "list[Path]":
+    """レコードを書く/読むディレクトリ群。先頭が自分の書き込み先（ローカル home）。
+    KIRO_AUTONOMOUS_REGISTRY（os.pathsep 区切り）と extra（--registry）を共有レジストリとして加える。
+    共有先を NFS / 同期フォルダ / git バスのチェックアウト等にすると、別ホスト同士が相互発見できる
+    （core は決定的なファイル操作のみ。ネットワークは共有先の仕組みが担うので不変条件④⑤を保つ）。"""
+    dirs = [instances_dir()]
+    seen = {dirs[0]}
+    sources: list[str] = []
+    env = os.environ.get("KIRO_AUTONOMOUS_REGISTRY")
+    if env:
+        sources += env.split(os.pathsep)
+    if extra:
+        sources += extra if isinstance(extra, list) else [extra]
+    for s in sources:
+        s = (s or "").strip()
+        if not s:
+            continue
+        p = Path(s).expanduser()
+        if p not in seen:
+            dirs.append(p)
+            seen.add(p)
+    return dirs
+
+
+def _split_registry(arg: "list | str | None") -> "list[str]":
+    """--registry の値（os.pathsep 区切り文字列 / 繰り返しリスト）を正規化した list にする。"""
+    if not arg:
+        return []
+    items = arg if isinstance(arg, list) else [arg]
+    out: list[str] = []
+    for it in items:
+        out += [s for s in str(it).split(os.pathsep) if s.strip()]
+    return out
+
+
+def _instance_filename(rec: dict) -> str:
+    """ホスト修飾のレコードファイル名。共有レジストリで別ホストの同一 PID が衝突しないように。"""
+    host = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(rec.get("host", "host")) or "host")
+    return f"{host}-{rec.get('pid', 0)}.json"
+
+
+def _record_alive(rec: dict) -> bool:
+    """レコードの生死。ローカルホストは PID で、別ホストは heartbeat の鮮度（TTL）で判定する。"""
+    if str(rec.get("host", "")) == socket.gethostname():
+        return _pid_alive(int(rec.get("pid", -1)))
+    hb = float(rec.get("heartbeat", rec.get("started_at", 0)) or 0)
+    ttl = float(rec.get("ttl", INSTANCE_TTL) or INSTANCE_TTL)
+    return (time.time() - hb) <= max(ttl, INSTANCE_TTL)
+
+
 def detect_runtime() -> dict:
     """実行環境（linux / wsl / windows / darwin）と WSL ディストロ名を判定する。"""
     info: dict = {"runtime": "linux", "wsl_distro": None}
@@ -528,6 +583,9 @@ def instance_record(cfg: "Config") -> dict:
         "watch": cfg.watch,
         "started_at": time.time(),
         "started_iso": datetime.now().isoformat(timespec="seconds"),
+        "heartbeat": time.time(),                               # 生存信号（リモート発見の鮮度判定に使う）
+        "heartbeat_iso": datetime.now().isoformat(timespec="seconds"),
+        "ttl": max(INSTANCE_TTL, cfg.poll * 3),                 # poll より十分長くしてフラッピングを防ぐ
         "host": socket.gethostname(),
         "python": sys.executable,
         **rt,
@@ -537,17 +595,35 @@ def instance_record(cfg: "Config") -> dict:
     return rec
 
 
-def register_instance(cfg: "Config") -> "Path | None":
-    """レジストリに自分を登録し、書いたファイルパスを返す（失敗しても run は止めない）。"""
-    try:
-        d = instances_dir()
-        d.mkdir(parents=True, exist_ok=True)
-        p = d / f"{os.getpid()}.json"
-        p.write_text(json.dumps(instance_record(cfg), ensure_ascii=False, indent=2),
-                     encoding="utf-8")
-        return p
-    except OSError:
-        return None
+def register_instance(cfg: "Config", extra: "list | str | None" = None) -> "list[Path]":
+    """全レジストリ（ローカル home＋共有先）に自分を登録し、書けたファイルパス一覧を返す。
+    共有先にも書くことで別ホストから発見される（失敗しても run は止めない）。"""
+    rec = instance_record(cfg)
+    blob = json.dumps(rec, ensure_ascii=False, indent=2)
+    fname = _instance_filename(rec)
+    written: list[Path] = []
+    for d in resolve_registry_dirs(extra):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            p = d / fname
+            p.write_text(blob, encoding="utf-8")
+            written.append(p)
+        except OSError:
+            continue
+    return written
+
+
+def refresh_instance(paths: "list[Path]") -> None:
+    """登録済みレコードの heartbeat を更新する（watch の各パス/idle で呼ぶ＝リモートに生存を示す）。"""
+    now = time.time()
+    iso = datetime.now().isoformat(timespec="seconds")
+    for p in paths:
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+            rec["heartbeat"], rec["heartbeat_iso"] = now, iso
+            p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, ValueError):
+            continue
 
 
 def _pid_alive(pid: int) -> bool:
@@ -562,42 +638,64 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def list_instances(prune: bool = True) -> list:
-    """生存中のインスタンス一覧。死んだ PID のレコードは prune で掃除する。"""
-    d = instances_dir()
-    out = []
-    if not d.exists():
-        return out
-    for f in sorted(d.glob("*.json")):
-        try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if _pid_alive(int(rec.get("pid", -1))):
-            out.append(rec)
-        elif prune:
-            try:
+def _maybe_prune(rec: dict, f: Path) -> None:
+    """死んだレコードの掃除。自ホストのものは即削除、リモートは長期（grace 超）に限り削除。
+    他ホストの最近のレコードは（共有先での競合を避け）触らない。"""
+    try:
+        if str(rec.get("host", "")) == socket.gethostname():
+            f.unlink()
+        else:
+            hb = float(rec.get("heartbeat", rec.get("started_at", 0)) or 0)
+            if (time.time() - hb) > REMOTE_PRUNE_GRACE:
                 f.unlink()
-            except OSError:
-                pass
-    return out
+    except OSError:
+        pass
 
 
-def cmd_instances(as_json: bool = False) -> int:
-    """稼働中の kiro-autonomous（監視中フォルダ）を一覧。外部操作者の発見口。"""
-    recs = list_instances(prune=True)
+def list_instances(prune: bool = True, extra: "list | str | None" = None) -> list:
+    """生存中のインスタンス一覧（ローカル＋共有レジストリを横断）。同一インスタンスが複数ディレクトリに
+    現れたら heartbeat が新しい方を採用。死んだレコードは _maybe_prune で掃除する。"""
+    best: dict = {}                          # (host,pid,root) -> (rec, heartbeat)
+    for d in resolve_registry_dirs(extra):
+        if not d.exists():
+            continue
+        for f in sorted(d.glob("*.json")):
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not _record_alive(rec):
+                if prune:
+                    _maybe_prune(rec, f)
+                continue
+            key = (str(rec.get("host", "")), int(rec.get("pid", -1)), str(rec.get("root", "")))
+            hb = float(rec.get("heartbeat", rec.get("started_at", 0)) or 0)
+            cur = best.get(key)
+            if cur is None or hb > cur[1]:
+                best[key] = (rec, hb)
+    return [v[0] for v in best.values()]
+
+
+def cmd_instances(as_json: bool = False, extra: "list | str | None" = None) -> int:
+    """稼働中の kiro-autonomous（監視中フォルダ）を一覧。外部操作者の発見口。
+    共有レジストリを併用すると別ホストのインスタンスも横断表示する。"""
+    recs = list_instances(prune=True, extra=extra)
+    recs.sort(key=lambda r: (str(r.get("host", "")), int(r.get("pid", 0))))
     if as_json:
         print(json.dumps(recs, ensure_ascii=False, indent=2))
         return 0
     if not recs:
         print("稼働中の kiro-autonomous はありません（run/--watch 起動時に登録されます）。")
         return 0
+    me = socket.gethostname()
     for r in recs:
         rt = r.get("runtime", "?")
         if r.get("wsl_distro"):
             rt += f":{r['wsl_distro']}"
         flags = "watch" if r.get("watch") else "run"
-        print(f"pid={r['pid']} [{rt}] {flags}  root={r['root']}")
+        host = str(r.get("host", "?"))
+        where = "" if host == me else f" @{host}(remote)"
+        print(f"pid={r['pid']} [{rt}] {flags}{where}  root={r['root']}")
         if r.get("root_windows"):
             print(f"    Windows: {r['root_windows']}")
     return 0
@@ -615,11 +713,16 @@ def _norm_root(root: str) -> str:
     return str(Path(root).expanduser().resolve())
 
 
-def _drop_instance_file(pid: int) -> None:
-    try:
-        (instances_dir() / f"{pid}.json").unlink()
-    except OSError:
-        pass
+def _drop_instance_record(rec: dict, extra: "list | str | None" = None) -> None:
+    """このレコードのファイルを全レジストリから消す（ホスト修飾名＋旧 `<pid>.json` 形式の両方）。"""
+    fname = _instance_filename(rec)
+    pid = rec.get("pid")
+    for d in resolve_registry_dirs(extra):
+        for name in (fname, f"{pid}.json"):
+            try:
+                (d / name).unlink()
+            except OSError:
+                pass
 
 
 def _reap(pid: int) -> None:
@@ -631,9 +734,11 @@ def _reap(pid: int) -> None:
 
 
 def select_instances(root: "str | None" = None, pid: "int | None" = None,
-                     want_all: bool = False) -> list:
-    """稼働インスタンスを root / pid / 全件 で選ぶ。root は『作業ルート』でも『その配下の root』でも一致させる。"""
-    recs = list_instances(prune=True)
+                     want_all: bool = False, extra: "list | str | None" = None) -> list:
+    """稼働インスタンスを root / pid / 全件 で選ぶ。root は『作業ルート』でも『その配下の root』でも一致させる。
+    停止対象に使うため自ホストのレコードのみを返す（別ホストの PID へはシグナルを送れない）。"""
+    me = socket.gethostname()
+    recs = [r for r in list_instances(prune=True, extra=extra) if str(r.get("host", "")) == me]
     if want_all:
         return recs
     nr = _norm_root(root) if root else None
@@ -650,9 +755,10 @@ def select_instances(root: "str | None" = None, pid: "int | None" = None,
 
 
 def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
-             want_all: bool = False, timeout: float = 5.0) -> int:
-    """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する。"""
-    targets = select_instances(root, pid, want_all)
+             want_all: bool = False, timeout: float = 5.0,
+             extra: "list | str | None" = None) -> int:
+    """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する（自ホストのみ）。"""
+    targets = select_instances(root, pid, want_all, extra=extra)
     if not targets:
         print("停止対象の稼働インスタンスが見つかりません（instances で確認できます）。", file=sys.stderr)
         return 1
@@ -678,7 +784,7 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
                 pass
             time.sleep(0.2)
             _reap(p)
-        _drop_instance_file(p)
+        _drop_instance_record(r)
         ok = not _pid_alive(p)
         all_ok = all_ok and ok
         print(f"pid={p} {'停止しました' if ok else '停止できませんでした'}  root={r.get('root')}")
@@ -686,10 +792,12 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
 
 
 def cmd_start(root: "str | None" = None, config: "str | None" = None,
-              force: bool = False) -> int:
+              force: bool = False, extra: "list | str | None" = None) -> int:
     """`run --watch` を切り離して常駐起動する（detached）。重複監視は既定で拒否（--force で許可）。"""
     expected = _norm_root(root) if root else str((Path.cwd() / ".kiro-autonomous").resolve())
-    dup = [r for r in list_instances(prune=True) if str(r.get("root", "")) == expected]
+    me = socket.gethostname()
+    dup = [r for r in list_instances(prune=True, extra=extra)
+           if str(r.get("root", "")) == expected and str(r.get("host", "")) == me]
     if dup and not force:
         print(f"既に root={expected} を監視中です（pid={dup[0]['pid']}）。重複起動は --force、"
               f"再起動は restart を使ってください。", file=sys.stderr)
@@ -699,6 +807,8 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
         child += ["--root", root]
     if config:
         child += ["--config", config]
+    for r in _split_registry(extra):            # 共有レジストリを子 daemon にも引き継ぐ
+        child += ["--registry", r]
     log_dir = resolve_state_home() / "logs"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -721,7 +831,7 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
     deadline = time.time() + 5.0                # 登録（レジストリ出現）を確認
     registered = False
     while time.time() < deadline:
-        if any(int(r.get("pid", -1)) == proc.pid for r in list_instances(prune=False)):
+        if any(int(r.get("pid", -1)) == proc.pid for r in list_instances(prune=False, extra=extra)):
             registered = True
             break
         if not _pid_alive(proc.pid):
@@ -733,12 +843,13 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
     return 0 if _pid_alive(proc.pid) else 1
 
 
-def cmd_restart(root: "str | None" = None, config: "str | None" = None) -> int:
+def cmd_restart(root: "str | None" = None, config: "str | None" = None,
+                extra: "list | str | None" = None) -> int:
     """同じ root の監視を停止してから起動し直す。"""
-    select = select_instances(root=root)
+    select = select_instances(root=root, extra=extra)
     if select:
-        cmd_stop(root=root)
-    return cmd_start(root=root, config=config, force=True)
+        cmd_stop(root=root, extra=extra)
+    return cmd_start(root=root, config=config, force=True, extra=extra)
 
 
 
@@ -1406,6 +1517,7 @@ class Config:
     debounce: float = 3.0           # watch 中、最終保存からこの秒数は feedback 取込を待つ
     watch: bool = False     # 終了条件後もプロセスを残し backlog を監視
     poll: float = 5.0       # watch のポーリング間隔（秒）
+    registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
     dry_run: bool = False
     once: bool = False
 
@@ -1768,12 +1880,14 @@ def has_work(cfg: Config) -> bool:
 
 
 def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep,
-              max_passes=None) -> dict:
+              max_passes=None, heartbeat=None) -> dict:
     passes = 0
     last: dict = {}
     while True:
         last = run_loop(cfg, act, ranker, sleeper)
         passes += 1
+        if heartbeat:
+            heartbeat()              # 各パスで生存信号を更新（共有レジストリ越しのリモート発見用）
         c = last["counts"]
         print(f"[watch] pass {passes}: reason={last['reason']} "
               f"done={c['done']} blocked={c['blocked']}", flush=True)
@@ -1783,6 +1897,8 @@ def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.slee
                                     "エージェントは待機しない）===")
         while not has_work(cfg):     # idle: kiro-cli/flow は一切起動しない
             sleeper(cfg.poll)
+            if heartbeat:
+                heartbeat()          # idle 中も heartbeat を保ち、リモートから生存が見えるようにする
 
 
 # ---------------------------------------------------------------------------
@@ -2023,7 +2139,7 @@ def cmd_triage(cfg: Config) -> int:
 
 def cmd_run(cfg: Config) -> int:
     ensure_dirs(cfg)
-    reg = register_instance(cfg)   # 外部操作者が「監視中フォルダ」を発見できるよう登録
+    reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
     try:
         if cfg.watch:
             # 常駐のみ: stop からの SIGTERM を KeyboardInterrupt 化し finally で後始末させる
@@ -2032,7 +2148,7 @@ def cmd_run(cfg: Config) -> int:
                               lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
             except (ValueError, OSError):  # メインスレッド以外/未対応では無視
                 pass
-            run_watch(cfg)
+            run_watch(cfg, heartbeat=lambda: refresh_instance(reg))
             return 0
         result = run_loop(cfg)
         counts = result["counts"]
@@ -2045,9 +2161,9 @@ def cmd_run(cfg: Config) -> int:
               f"promoted={len(result.get('promoted', []))}")
         return exit_code_for(result)
     finally:
-        if reg is not None:
+        for p in reg:
             try:
-                reg.unlink()
+                p.unlink()
             except OSError:
                 pass
 
@@ -2195,6 +2311,7 @@ def build_config(args) -> Config:
         delivery=under("delivery", "DELIVERY.md"), inbox=under("inbox", "inbox"),
         debounce=args.debounce,
         watch=bool(getattr(args, "watch", False)), poll=getattr(args, "poll", 5.0),
+        registry=_split_registry(getattr(args, "registry", None)),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
     )
 
@@ -2284,6 +2401,9 @@ def main(argv=None) -> int:
     run.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
     run.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
+    run.add_argument("--registry", action="append", default=None,
+                     help="共有レジストリへも自分を登録（別ホスト発見。os.pathsep 区切り可・"
+                          "環境変数 KIRO_AUTONOMOUS_REGISTRY でも指定可）")
     run.add_argument("--no-archive", dest="do_archive", action="store_const", const=False,
                      default=None, help="done を archive/ へ退避せず削除（既定は退避。config: do_archive）")
     run.add_argument("--rot", action=argparse.BooleanOptionalAction, default=None,
@@ -2329,21 +2449,27 @@ def main(argv=None) -> int:
     g.add_argument("--pin", action="store_true"); g.add_argument("--defer", action="store_true")
     rp.add_argument("--reason", required=True)
 
+    _reg_help = ("共有レジストリ（os.pathsep 区切り可）。NFS/同期フォルダ/git バスのチェックアウト等を"
+                 "指すと別ホストを相互発見。環境変数 KIRO_AUTONOMOUS_REGISTRY でも指定可")
     inst = sub.add_parser("instances",
                           help="稼働中の kiro-autonomous（監視中フォルダ）を一覧（外部操作者の発見口）")
     inst.add_argument("--json", action="store_true", help="JSON で出力（スキル等が機械処理する用）")
+    inst.add_argument("--registry", action="append", default=None, help=_reg_help)
 
     sta = sub.add_parser("start", help="run --watch を切り離して常駐起動（detached。重複は --force）")
     sta.add_argument("--root", default=None, help="監視する作業ルート（既定 ./.kiro-autonomous）")
     sta.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
     sta.add_argument("--force", action="store_true", help="同じ root を既に監視中でも起動する")
+    sta.add_argument("--registry", action="append", default=None, help=_reg_help)
     sto = sub.add_parser("stop", help="稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除）")
     sto.add_argument("--root", default=None, help="停止対象の root（作業ルート/配下どちらでも一致）")
     sto.add_argument("--pid", type=int, default=None, help="停止対象の PID（instances で確認）")
     sto.add_argument("--all", action="store_true", help="稼働中インスタンスを全停止")
+    sto.add_argument("--registry", action="append", default=None, help=_reg_help)
     res = sub.add_parser("restart", help="同じ root の監視を停止してから起動し直す")
     res.add_argument("--root", default=None, help="再起動する作業ルート（既定 ./.kiro-autonomous）")
     res.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
+    res.add_argument("--registry", action="append", default=None, help=_reg_help)
 
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
@@ -2356,13 +2482,16 @@ def main(argv=None) -> int:
 
     # instances / start / stop / restart は共通設定（backlog 等）を必要としない操作コマンド。
     if args.cmd == "instances":
-        return cmd_instances(args.json)
+        return cmd_instances(args.json, extra=_split_registry(getattr(args, "registry", None)))
     if args.cmd == "start":
-        return cmd_start(args.root, args.config, args.force)
+        return cmd_start(args.root, args.config, args.force,
+                         extra=_split_registry(getattr(args, "registry", None)))
     if args.cmd == "stop":
-        return cmd_stop(args.root, args.pid, args.all)
+        return cmd_stop(args.root, args.pid, args.all,
+                        extra=_split_registry(getattr(args, "registry", None)))
     if args.cmd == "restart":
-        return cmd_restart(args.root, args.config)
+        return cmd_restart(args.root, args.config,
+                           extra=_split_registry(getattr(args, "registry", None)))
 
     resolve_config(args)      # CLI 未指定値を 設定ファイル → 組み込み既定 で確定
     cfg = build_config(args)

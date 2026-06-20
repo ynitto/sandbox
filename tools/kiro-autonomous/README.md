@@ -124,8 +124,8 @@ kiro-autonomous run --location daemon --executor kiro
 | `approve <id> --reason …` | 判断待ちを修正承認して積み直し（決定記録） |
 | `hold <id> --reason …` | `policy.md` に `deny` 追加し保留（決定記録） |
 | `reprioritize <id> --pin\|--defer --reason …` | `policy.md` に `pin`/`defer` 追加（決定記録） |
-| `instances` [`--json`] | 稼働中の kiro-autonomous（監視中フォルダ）を一覧（外部操作者の発見口） |
-| `start` [`--root` `--config` `--force`] | `run --watch` を切り離して常駐起動（detached。重複監視は拒否） |
+| `instances` [`--json` `--registry`] | 稼働中の kiro-autonomous を一覧（共有レジストリで別ホストも横断） |
+| `start` [`--root` `--config` `--force` `--registry`] | `run --watch` を切り離して常駐起動（detached。重複監視は拒否） |
 | `stop` [`--root` \| `--pid` \| `--all`] | 稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除） |
 | `restart` [`--root` `--config`] | 同じ root の監視を停止してから起動し直す |
 
@@ -144,6 +144,25 @@ kiro-autonomous instances --json    # 機械処理用（root/backlog/needs/archi
 WSL で稼働中の場合、レコードには `runtime: "wsl"`・`wsl_distro` と、可能なら `wslpath -w` で得た
 `root_windows`（`\\wsl.localhost\<distro>\…`）も含まれる。プロセスは WSL・操作側は Windows という構成で
 パスを橋渡しできる。
+
+#### 別ホストの発見（共有レジストリ）
+
+複数マシンの稼働インスタンスを横断発見したいときは、**共有レジストリ**（NFS / 同期フォルダ / git バスの
+チェックアウト等、複数ホストから見える1ディレクトリ）を指す。各ホストはそこへも自分のレコードを書き、
+`instances` はローカル home＋共有先を横断して一覧する。**core は決定的なファイル操作のみで、ネットワークは
+共有先の仕組み（NFS/同期/git）が担う**＝「標準ライブラリのみ・ネットワーク非依存」の不変条件を保つ。
+
+```bash
+# 各ホストで（共有先にも自分を登録。env KIRO_AUTONOMOUS_REGISTRY でも可）
+kiro-autonomous start --registry /mnt/shared/kiro-registry
+# どのホストからでも横断一覧（別ホストは @host(remote) 印つき）
+kiro-autonomous instances --registry /mnt/shared/kiro-registry
+```
+
+- 生死判定はホスト別: **自ホストは PID**、**別ホストは heartbeat の鮮度**（`ttl`、既定 90s 以上・`poll` の3倍）。
+  watch は各パス/idle で heartbeat を更新する。鮮度切れの別ホストは一覧から消える（長期間死んだものは掃除）。
+- `stop`/`restart` は**自ホストのみ**を対象にする（別ホストの PID へシグナルは送れない＝そのホストで停止する）。
+- レコードファイルは衝突回避のため `instances/<host>-<pid>.json`。
 
 ### 取り込み口の多様化（enqueue / inbox）
 
