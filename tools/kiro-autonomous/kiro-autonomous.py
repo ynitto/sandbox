@@ -1786,6 +1786,10 @@ CONFIG_DEFAULTS = {
     "adjudicate_max": 1,
     "max_spawn": 20,            # 1 run の派生タスク生成上限（0 で無効）
     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
+    "regression_revert": False,
+    # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
+    "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
+    "do_archive": True, "learn": True, "cleanup": True,   # do_archive: --archive はパス用なので別名
 }
 
 
@@ -1847,20 +1851,20 @@ def build_config(args) -> Config:
         max_cost=getattr(args, "max_cost", 0.0) or 0.0,
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
-        archive=under("archive", "archive"), do_archive=not getattr(args, "no_archive", False),
-        learn=not getattr(args, "no_learn", False), learn_threshold=args.learn_threshold,
+        archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
+        learn=bool(getattr(args, "learn", True)), learn_threshold=args.learn_threshold,
         auto_adjudicate=bool(getattr(args, "auto_adjudicate", True)),
         adjudicate_max=getattr(args, "adjudicate_max", 1),
         max_spawn=getattr(args, "max_spawn", 20),
         regression_cmd=getattr(args, "regression_cmd", None),
         regression_revert=bool(getattr(args, "regression_revert", False)),
-        ltm=getattr(args, "ltm", False), ltm_home=resolve_ltm_home(getattr(args, "ltm_home", None)),
+        ltm=bool(getattr(args, "ltm", False)), ltm_home=resolve_ltm_home(getattr(args, "ltm_home", None)),
         promote_threshold=getattr(args, "promote_threshold", 2),
-        rot=getattr(args, "rot", False), rot_age_days=args.rot_age_days,
-        cleanup=not getattr(args, "no_cleanup", False),
+        rot=bool(getattr(args, "rot", False)), rot_age_days=args.rot_age_days,
+        cleanup=bool(getattr(args, "cleanup", True)),
         delivery=under("delivery", "DELIVERY.md"), debounce=args.debounce,
-        watch=getattr(args, "watch", False), poll=getattr(args, "poll", 5.0),
-        dry_run=getattr(args, "dry_run", False), once=getattr(args, "once", False),
+        watch=bool(getattr(args, "watch", False)), poll=getattr(args, "poll", 5.0),
+        dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
     )
 
 
@@ -1907,8 +1911,8 @@ def _add_common(sp):
     sp.add_argument("--act-timeout", type=float, default=None)
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
     sp.add_argument("--actor", default=None)
-    sp.add_argument("--no-learn", action="store_true",
-                    help="DR 学習（過去の人の判断から類似案件を自動解決）を無効化")
+    sp.add_argument("--learn", action=argparse.BooleanOptionalAction, default=None,
+                    help="DR 学習（過去の人の判断から類似案件を自動解決）。--no-learn で無効化（既定 on）")
     sp.add_argument("--learn-threshold", type=float, default=None,
                     help="DR 学習のタイトル類似度しきい値（0〜1。既定 0.5）")
     # 自律裁定: needs に落とす前に kiro-cli が積み直し可否を判断（三値: 未指定→設定ファイル/既定 on）
@@ -1922,9 +1926,9 @@ def _add_common(sp):
                     help="1 run で生成できる派生タスク（followup）数の上限（0 で無効。既定 20）")
     sp.add_argument("--regression-cmd", default=None,
                     help="done 確定前に走らせるグローバル回帰検査（失敗で done にせず人へ。巻き込み事故の検知）")
-    sp.add_argument("--regression-revert", action="store_true",
+    sp.add_argument("--regression-revert", action=argparse.BooleanOptionalAction, default=None,
                     help="回帰検知時に作業ツリーの未コミット変更を巻き戻す（best-effort・既定 off）")
-    sp.add_argument("--ltm", action="store_true",
+    sp.add_argument("--ltm", action=argparse.BooleanOptionalAction, default=None,
                     help="効いた学習を ltm-use 長期記憶へ昇格＋プロジェクト横断 recall（既定 off）")
     sp.add_argument("--ltm-home", default=None,
                     help="ltm-use ストアのルート（既定 KIRO_LTM_HOME → ~/.claude）")
@@ -1945,17 +1949,19 @@ def main(argv=None) -> int:
 
     run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束）")
     _add_common(run)
-    run.add_argument("--watch", action="store_true",
+    run.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
     run.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
-    run.add_argument("--no-archive", action="store_true",
-                     help="done を archive/ へ退避せず削除する（既定は退避）")
-    run.add_argument("--rot", action="store_true",
+    run.add_argument("--no-archive", dest="do_archive", action="store_const", const=False,
+                     default=None, help="done を archive/ へ退避せず削除（既定は退避。config: do_archive）")
+    run.add_argument("--rot", action=argparse.BooleanOptionalAction, default=None,
                      help="triage で rot（古い/重複/実行不能）を検知し人の判断へ回す")
-    run.add_argument("--no-cleanup", action="store_true",
-                     help="run 後に kiro-flow バスの一時状態を掃除しない")
-    run.add_argument("--dry-run", action="store_true", help="act を飛ばし verify のみ")
-    run.add_argument("--once", action="store_true", help="1 タスクだけ処理して終了")
+    run.add_argument("--cleanup", action=argparse.BooleanOptionalAction, default=None,
+                     help="run 後に kiro-flow バスの一時状態を掃除（--no-cleanup で残す。既定 on）")
+    run.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None,
+                     help="act を飛ばし verify のみ")
+    run.add_argument("--once", action=argparse.BooleanOptionalAction, default=None,
+                     help="1 タスクだけ処理して終了")
 
     for name, helptext in [("triage", "優先順位付けのみ（inbox→ready 昇格・policy 適用）"),
                            ("needs", "人の判断待ち（blocked / need_intake）を表示"),

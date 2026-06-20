@@ -59,9 +59,13 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
   `poll` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_tokens` / `max_cost` /
   `max_retries` / `max_iterations` /
   `verify_timeout` / `act_timeout` / `git_bus` / `git_branch` / `git_subdir` / `kiro_flow` /
-  `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days`。
-- **書けないもの**: 真偽フラグ（`--watch` / `--ltm` / `--no-learn` / `--no-archive` / `--no-cleanup` /
-  `--rot` / `--dry-run` / `--once`）と個別パス上書き（`--backlog` 等）は CLI 専用。
+  `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days` /
+  `max_spawn` / `regression_cmd`。
+- **真偽フラグも書ける**: `watch` / `once` / `dry_run` / `rot` / `ltm` / `regression_revert`（既定 false）・
+  `do_archive` / `learn` / `cleanup`（既定 true）・`auto_adjudicate`（既定 true）。CLI の `--flag`/`--no-flag`
+  が常に勝つ（例: config で `watch: true` にしつつ、その場だけ `--no-watch`）。退避可否は `--archive` が
+  パス用のため config キーは `do_archive`。
+- **書けないもの**: 個別パス上書き（`--backlog` 等）と実行限定フラグ（`--json` / `--fix` / `--pin`/`--defer`）は CLI 専用。
 
 常駐運用では systemd の `ExecStart` を `kiro-autonomous` だけにして、調整はこのファイルで完結できる。
 

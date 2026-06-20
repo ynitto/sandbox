@@ -708,6 +708,34 @@ class TestConfigFile(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._resolve("/no/such/kiro-autonomous.yaml")
 
+    def test_boolean_flags_from_config(self):
+        # 真偽フラグ（watch/do_archive/learn/rot/cleanup/once/dry_run/ltm/regression_revert）が
+        # 設定ファイルで効く。resolve_config は CLI 未指定（None）のみ config→既定 で埋める。
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "kiro-autonomous.json"
+            p.write_text('{"watch":true,"do_archive":false,"learn":false,"rot":true}',
+                         encoding="utf-8")
+            ns = self._resolve(str(p), watch=None, do_archive=None, learn=None, rot=None,
+                               once=None, dry_run=None, cleanup=None, ltm=None,
+                               regression_revert=None)
+            self.assertEqual((ns.watch, ns.do_archive, ns.learn, ns.rot),
+                             (True, False, False, True))
+            self.assertEqual((ns.cleanup, ns.once, ns.dry_run, ns.ltm), (True, False, False, False))
+
+    def test_cli_overrides_boolean_config(self):
+        # CLI 明示（--no-watch / --learn 等で None でない値）が config に勝つ。
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "kiro-autonomous.json"
+            p.write_text('{"watch":true,"learn":false}', encoding="utf-8")
+            ns = self._resolve(str(p), watch=False, learn=True)
+            self.assertEqual((ns.watch, ns.learn), (False, True))     # CLI 勝ち
+
+    def test_boolean_defaults_when_no_config(self):
+        ns = self._resolve(None, watch=None, do_archive=None, learn=None, cleanup=None,
+                           rot=None, once=None, dry_run=None, ltm=None, regression_revert=None)
+        self.assertEqual((ns.watch, ns.do_archive, ns.learn, ns.cleanup),
+                         (False, True, True, True))                    # 組み込み既定
+
 
 class TestAutoAdjudicate(unittest.TestCase):
     """needs に落とす前の kiro-cli 自律裁定ゲート（既定 off・有限回・人 policy 不介入）。"""
