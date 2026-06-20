@@ -449,9 +449,30 @@ pin:     T3        # T3 を最優先
 defer:   cleanup   # "cleanup" を含むタスクは後回し
 offload: heavy     # "heavy" を含むタスクは分散環境へ移譲（--git-bus 設定時）
 gate:    release   # "release" を含むタスクは verify PASS でも done 前に人の承認を要する（検収ゲート）
+protect: auth/**   # act が auth/ 配下を**変更したら** verify PASS でも done せず人の承認へ（安全ゲート）
 ```
 
-`deny` は**実行前**に止め、`gate` は**実行・verify は通すが done 確定前**に止める（止める位置が違う）。
+- `deny` は**実行前**（タスク選択）で止め、`gate` は**実行・verify は通すが done 確定前**で止める（止める位置が違う）。
+- **`protect`**（パスのデニーリスト）は `gate` と同じ done 直前に効くが、**判定対象がタスクではなく「act が触ったファイル」**。
+  glob で書け（`*`=スラッシュ以外 / `**`=スラッシュ含む。`**/` は 0 階層も一致）、一致した変更があれば検収待ち(review)に落とし、
+  `approve` で done 確定／フィードバックで差し戻し。無人運用で `.env`・`secrets/`・`auth/`・`payments/`・`**/migrations/**`・
+  infra 等を「自動で書き換えさせない」ための最低ラインの安全策（Loop Engineering の safety denylist）。
+
+```yaml
+# 推奨デニーリスト例（必要に応じて1行ずつ）
+protect: .env
+protect: .env.*
+protect: **/secrets/**
+protect: **/credentials/**
+protect: **/*_key*
+protect: **/migrations/**
+protect: auth/**
+protect: payments/**
+protect: k8s/production/**
+```
+
+> 変更ファイルの検出は `cfg.workdir` の git（未コミット＋act 後コミット差分）で best-effort。git でない／
+> remote・daemon にオフロードした実行は workdir に変更が出ないため対象外（その場合は実行先側で守る）。
 
 ## 分散移譲（remote）
 
