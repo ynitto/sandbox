@@ -41,7 +41,7 @@ VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
-POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate):\s*(?P<val>.+)$")
+POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate|protect):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
 LTM_CATEGORY = "kiro-autonomous"  # ltm-use home 内のカテゴリ（昇格先サブディレクトリ）
@@ -326,6 +326,7 @@ class Policy:
     defer: "list[str]" = field(default_factory=list)
     offload: "list[str]" = field(default_factory=list)
     gate: "list[str]" = field(default_factory=list)   # verify PASS でも人の承認を要する（検収ゲート）
+    protect: "list[str]" = field(default_factory=list)  # この**パス**を act が触ったら done にせず人の承認へ
 
 
 def parse_policy(text: str) -> Policy:
@@ -353,6 +354,90 @@ def needs_human_review(task: "Task", policy: "Policy") -> bool:
     if dict(task.extra).get("review", "").strip().lower() in _REVIEW_VALUES:
         return True
     return any(task.matches(p) for p in policy.gate)
+
+
+# ---------------------------------------------------------------------------
+# パス保護ゲート（safety denylist）— act が触ったファイルが policy の `protect:` に
+#   一致したら、verify=PASS でも done にせず人の承認(review)へ。無人運用の blast radius を縮める。
+#   .env / secrets / auth / payments / migrations / infra など「自動で触らせない」場所を守る。
+# ---------------------------------------------------------------------------
+def _glob_to_regex(pat: str) -> str:
+    """glob → 正規表現。`*`=スラッシュ以外の任意 / `**`=スラッシュ含む任意（`**/` は 0 階層も許容）。"""
+    i, out = 0, []
+    while i < len(pat):
+        if pat[i] == "*":
+            if pat[i:i + 2] == "**":
+                out.append(".*")
+                i += 2
+                if i < len(pat) and pat[i] == "/":   # `**/` は途中ディレクトリ 0 個も一致させる
+                    out.append("/?")
+                    i += 1
+                continue
+            out.append("[^/]*")
+            i += 1
+        elif pat[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pat[i]))
+            i += 1
+    return "(?s:" + "".join(out) + r")\Z"
+
+
+def path_protected(path: str, patterns: "list[str]") -> "str | None":
+    """path が protect パターン群のどれかに一致すれば、その（最初の）パターンを返す。無ければ None。"""
+    p = path.replace("\\", "/").lstrip("/")
+    if p.startswith("./"):
+        p = p[2:]
+    for pat in patterns:
+        pat = (pat or "").strip().replace("\\", "/")
+        if pat and re.match(_glob_to_regex(pat), p):
+            return pat
+    return None
+
+
+def _git_out(workdir: "Path", *args: str, timeout: float = 30) -> str:
+    try:
+        r = subprocess.run(["git", "-C", str(workdir), *args],
+                           capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _git_dirty_paths(workdir: "Path") -> "set[str]":
+    """作業ツリーの未コミット変更パス（git status --porcelain）。"""
+    out: set[str] = set()
+    for line in _git_out(workdir, "status", "--porcelain", "-uall").splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip().strip('"')
+        if " -> " in path:                       # rename: old -> new は new 側を見る
+            path = path.split(" -> ", 1)[1].strip().strip('"')
+        if path:
+            out.add(path)
+    return out
+
+
+def git_change_baseline(workdir: "Path") -> "tuple[str, frozenset]":
+    """act 前のスナップショット（HEAD と、その時点で既に dirty なパス集合）。"""
+    return (_git_out(workdir, "rev-parse", "HEAD").strip(),
+            frozenset(_git_dirty_paths(workdir)))
+
+
+def changed_paths_since(workdir: "Path", baseline: "tuple[str, frozenset] | None") -> "set[str]":
+    """baseline 以降に act が変更したパス集合（新規 dirty ＋ baseline 以降のコミット差分）。
+    git でないと空（best-effort）。remote/daemon 実行は workdir に出ないので保護対象外。"""
+    if baseline is None:
+        return set()
+    head0, dirty0 = baseline
+    changed = _git_dirty_paths(workdir) - set(dirty0)     # act で新たに dirty 化した分
+    head1 = _git_out(workdir, "rev-parse", "HEAD").strip()
+    if head0 and head1 and head0 != head1:                # act がコミットした分
+        for line in _git_out(workdir, "diff", "--name-only", f"{head0}..{head1}").splitlines():
+            if line.strip():
+                changed.add(line.strip())
+    return changed
 
 
 def append_policy(path: Path, key: str, value: str) -> None:
@@ -1778,6 +1863,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         # 並列消費: 依存解決済み（=互いに独立）な先頭群を daemon/remote へ並行 submit。
         # verify 以降のローカル状態変更は逐次のまま（competition を避け不変条件を保つ）。
         batch = _select_batch(order, cfg, policy, cfg.max_cycles - cycle)
+        git_base = git_change_baseline(cfg.workdir) if policy.protect else None  # 保護パス検査の基準
         act_results = _act_batch(batch, cfg, act, policy)
 
         stop = None
@@ -1807,23 +1893,35 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                            reasons)
                     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
                                    + ("・revert 済" if cfg.regression_revert else ""))
+            protect_hits = []
+            if ok and not regressed and policy.protect:   # act が保護パスを触ったか（safety denylist）
+                protect_hits = sorted({(p, m) for p in changed_paths_since(cfg.workdir, git_base)
+                                       if (m := path_protected(p, policy.protect))})
             if regressed:
                 pass                          # 既に blocked 化済み。done/review にしない
-            elif ok and needs_human_review(task, policy):
-                # verify は通ったが承認ゲート対象 → done を確定せず人の検収待ち（review）へ
+            elif ok and (needs_human_review(task, policy) or protect_hits):
+                # verify は通ったが承認ゲート対象（review/gate）か、保護パスを触った → done せず人の承認(review)へ
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ref = extract_delivery_ref(act_msg, cfg)
                 task.status = "review"
                 task.extra = [(k, v) for k, v in task.extra
-                              if k not in ("gate_ref", "gate_vmsg", "gate_ts")]
+                              if k not in ("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")]
                 task.extra += [("gate_ref", ref), ("gate_ts", ts),
                                ("gate_vmsg", vmsg.replace("\n", " ")[:200])]
-                reasons[task.id] = "検収待ち（verify=PASS。approve で done 確定）"
+                if protect_hits:
+                    paths = ", ".join(p for p, _ in protect_hits)
+                    task.extra.append(("gate_protect", paths[:200]))
+                    gate_why = f"保護パス変更（protect）: {paths[:160]} — approve で done 確定"
+                else:
+                    gate_why = "承認ゲート対象（review/policy.gate）。approve で done 確定、" \
+                               "フィードバック記入で差し戻し（再実行）"
+                reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
+                                    if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
                 persist_task(cfg, task)
-                write_needs_file(cfg, task,
-                                 "verify=PASS だが承認ゲート対象（review/policy.gate）。"
-                                 "approve で done 確定、フィードバック記入で差し戻し（再実行）", review=True)
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち（承認ゲート） — {ref}")
+                write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True)
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち"
+                               + (f"（保護パス: {paths[:80]}）" if protect_hits else "（承認ゲート）")
+                               + f" — {ref}")
             elif ok:
                 task.status = "done"
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

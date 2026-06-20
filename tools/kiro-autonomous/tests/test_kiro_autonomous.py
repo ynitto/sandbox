@@ -179,6 +179,90 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
 
+class TestProtectPaths(unittest.TestCase):
+    """パス保護ゲート（safety denylist）— act が保護パスを触ったら done せず人の承認(review)へ。"""
+
+    def _git_init(self, d):
+        import subprocess as sp
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
+                    ["git", "commit", "-qm", "init", "--allow-empty"]):
+            sp.run(cmd, cwd=str(d), env=env, capture_output=True)
+
+    def _act_writes(self, relpath):
+        def _act(t, c, loc):
+            f = Path(c.workdir) / relpath
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("changed", encoding="utf-8")
+            return (True, "ok")
+        return _act
+
+    def test_glob_matcher_denylist(self):
+        pats = [".env", ".env.*", "**/secrets/**", "**/*_key*", "auth/**",
+                "k8s/production/**", "**/migrations/**"]
+        for path in [".env", ".env.local", "app/secrets/db.yaml", "secrets/x",
+                     "src/api_key.ts", "auth/login.py", "k8s/production/d.yaml",
+                     "db/migrations/001.sql"]:
+            self.assertIsNotNone(km.path_protected(path, pats), path)
+        for path in ["src/app.py", "README.md", "k8s/staging/d.yaml", "docs/auth-notes.md"]:
+            self.assertIsNone(km.path_protected(path, pats), path)
+
+    def test_changed_paths_detects_dirty_and_commits(self):
+        with tempfile.TemporaryDirectory() as d:
+            import subprocess as sp
+            d = Path(d)
+            (d / "a.txt").write_text("1", encoding="utf-8")
+            self._git_init(d)
+            base = km.git_change_baseline(d)
+            (d / "a.txt").write_text("2", encoding="utf-8")      # 既存を変更（dirty）
+            (d / "sub").mkdir()
+            (d / "sub" / "b.txt").write_text("n", encoding="utf-8")  # 新規（untracked）
+            changed = km.changed_paths_since(d, base)
+            self.assertIn("a.txt", changed)
+            self.assertIn("sub/b.txt", changed)
+            # コミットしても baseline 以降の差分として検出される
+            env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+            sp.run(["git", "add", "-A"], cwd=str(d), env=env, capture_output=True)
+            sp.run(["git", "commit", "-qm", "c"], cwd=str(d), env=env, capture_output=True)
+            self.assertIn("sub/b.txt", km.changed_paths_since(d, base))
+
+    def _cfg(self, d):
+        return cfg_for(Path(d), dry_run=False, learn=False, auto_adjudicate=False, max_cycles=10)
+
+    def test_protected_change_goes_to_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._git_init(d)
+            mkb(d, "T1", verify="true")
+            (d / "policy.md").write_text("protect: secrets/**\n", encoding="utf-8")
+            res = km.run_loop(self._cfg(d), act=self._act_writes("secrets/api.yaml"))
+            self.assertEqual(res["counts"].get("review", 0), 1)   # done せず検収待ち
+            self.assertEqual(res["counts"]["done"], 0)
+            self.assertTrue((d / "needs" / "T1.md").exists())
+            t = km.parse_task((d / "backlog" / "T1.md").read_text(), "T1")
+            self.assertIn("secrets/api.yaml", dict(t.extra).get("gate_protect", ""))
+
+    def test_safe_change_completes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._git_init(d)
+            mkb(d, "T1", verify="true")
+            (d / "policy.md").write_text("protect: secrets/**\n", encoding="utf-8")
+            res = km.run_loop(self._cfg(d), act=self._act_writes("src/app.py"))
+            self.assertEqual(res["counts"]["done"], 1)            # 保護外なので通常 done
+            self.assertEqual(res["counts"].get("review", 0), 0)
+
+    def test_no_protect_policy_is_noop(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._git_init(d)
+            mkb(d, "T1", verify="true")
+            res = km.run_loop(self._cfg(d), act=self._act_writes("secrets/api.yaml"))
+            self.assertEqual(res["counts"]["done"], 1)            # protect 未設定なら従来どおり
+
+
 class TestParallelConsumption(unittest.TestCase):
     """並列消費（§11）— daemon/remote へ独立タスクを並行 submit。worker 並列へ寄せる。"""
 
