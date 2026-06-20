@@ -179,6 +179,48 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
 
+class TestAutonomyLevels(unittest.TestCase):
+    """自律度レベル（report=計画のみ / assisted=実行するが done は人が承認 / unattended=現行）。"""
+
+    def _cfg(self, d, **kw):
+        return cfg_for(Path(d), dry_run=False, learn=False, auto_adjudicate=False,
+                       max_cycles=10, **kw)
+
+    def test_report_plans_without_acting(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true", title="a"); mkb(d, "T2", verify="true", title="b")
+            calls = []
+            res = km.run_loop(self._cfg(d, level="report"),
+                              act=lambda t, c, loc: calls.append(t.id) or (True, "ok"))
+            self.assertEqual(calls, [])                         # act を一切呼ばない
+            self.assertEqual(res["reason"], "report")
+            self.assertEqual(set(res["plan"]), {"T1", "T2"})    # 計画（順序つき）を返す
+            self.assertEqual(res["counts"]["done"], 0)
+            self.assertEqual(km.exit_code_for(res), 0)          # 計画報告は正常終了
+
+    def test_assisted_acts_but_routes_done_to_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true"); mkb(d, "T2", verify="true")
+            calls = []
+            res = km.run_loop(self._cfg(d, level="assisted"),
+                              act=lambda t, c, loc: calls.append(t.id) or (True, "ok"))
+            self.assertEqual(sorted(calls), ["T1", "T2"])       # 実行はする
+            self.assertEqual(res["counts"]["done"], 0)          # だが自動 done しない
+            self.assertEqual(res["counts"].get("review", 0), 2)  # 全件 検収待ち
+            self.assertTrue((d / "needs" / "T1.md").exists())
+            self.assertEqual(km.exit_code_for(res), 1)          # 人の対応待ち
+
+    def test_unattended_is_default_auto_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            res = km.run_loop(self._cfg(d), act=lambda t, c, loc: (True, "ok"))  # 既定=unattended
+            self.assertEqual(res["level"], "unattended")
+            self.assertEqual(res["counts"]["done"], 1)          # 従来どおり自動 done
+
+
 class TestAudit(unittest.TestCase):
     """Loop Readiness セルフ監査（L0–L3・スコア・赤旗・--strict ゲート）。"""
 

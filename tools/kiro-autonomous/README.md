@@ -56,7 +56,7 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
 - **形式**: YAML（**PyYAML 必要**）または JSON（標準ライブラリのみ。キーは同じ）。PyYAML 非導入の環境で
   `.yaml` を指定するとエラーになるので、その場合は `kiro-autonomous.json` を使う。
 - **書けるキー**: `executor` / `planner` / `flow_planner` / `location` / `model` / `root` / `workdir` /
-  `poll` / `concurrency` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_tokens` / `max_cost` /
+  `poll` / `concurrency` / `level` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_tokens` / `max_cost` /
   `max_retries` / `max_iterations` /
   `verify_timeout` / `act_timeout` / `git_bus` / `git_branch` / `git_subdir` / `kiro_flow` /
   `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days` /
@@ -126,6 +126,28 @@ kiro-autonomous run --location daemon --concurrency 3 --executor kiro
 
 - 1サイクル=1タスクの計上は不変（`max_cycles`/予算はそのまま効く。バッチ幅は残サイクル予算も超えない）。
 - `--once` のときは並行せず1件だけ。`--concurrency 1`（既定）は従来どおり完全な逐次。
+
+### 自律度の段階導入（`--level`：report → assisted → unattended）
+
+Loop Engineering の「**L1 report → L2 assisted → L3 unattended** を一足飛びにしない」段階導入を一級化。
+新しい backlog やパターンを本番に載せるとき、いきなり自動 done させずに信頼を積み上げる。
+
+| level | act | done | 用途 |
+|-------|-----|------|------|
+| `report` | **しない** | — | 「何を・どの順で回すか」だけ報告（消化しない）。week 1 の様子見・計画確認 |
+| `assisted` | する | **人が承認**（全件 review） | 実行はするが done は必ず人が `approve`。検証つき小修正の段階 |
+| `unattended`（既定） | する | 自動（既存ゲートに従う） | 現行。protect/gate/regression を通れば自動 done |
+
+```bash
+kiro-autonomous run --level report      # 計画だけ出す（act しない）
+kiro-autonomous run --level assisted    # 実行するが done は approve 待ち（全件 review）
+kiro-autonomous run                     # 既定 unattended（従来どおり）
+```
+
+- `report` は正常終了（exit 0）で計画一覧を出すだけ＝既存 backlog を一切変えない安全な下見。
+- `assisted` は verify=PASS でも `review` に落とす（`approve` で done／フィードバックで差し戻し）。`protect`(後述) や
+  `review: human` の上位ゲートとも自然に重なる。`unattended` は既定なので**従来挙動は不変**。
+- いま無人運用に値するかは `audit`（後述）が L0–L3 で採点する。`--level` はその「実際に動かす自律度」を選ぶ側。
 
 ## サブコマンド
 
