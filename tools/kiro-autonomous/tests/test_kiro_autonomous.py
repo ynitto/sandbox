@@ -780,6 +780,41 @@ class TestAutoAdjudicate(unittest.TestCase):
                 raise RuntimeError("kiro 不在")
             self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", kiro_run=boom)[0], "escalate")
 
+    def test_context_gathers_journal_decisions_feedback(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            cfg = cfg_for(d)
+            km.append_journal(cfg.journal, "cycle 1: T1 verify NG exit=1")
+            km.append_journal(cfg.journal, "cycle 2: T9 無関係")
+            km.append_decision(cfg, "T1", "human", "ctx", "hold(deny)", "様子見", "T1")
+            t = km.Task(id="T1", title="x", verify="false",
+                        extra=[("feedback", "ヒントFB"), ("note", "メモN")])
+            ctx = km.adjudication_context(cfg, t)
+            self.assertIn("cycle 1: T1 verify NG", ctx)     # journal（当該IDのみ）
+            self.assertNotIn("T9 無関係", ctx)               # 無関係行は混ぜない
+            self.assertIn("hold(deny)", ctx)                 # decisions
+            self.assertIn("ヒントFB", ctx)                    # feedback
+            self.assertIn("メモN", ctx)                       # note
+            self.assertEqual(km.adjudication_context(cfg, km.Task(id="ZZ", title="none")), "")
+
+    def test_context_is_injected_into_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="false")
+            cfg = cfg_for(d)
+            km.append_journal(cfg.journal, "cycle 1: T1 過去の試行ログ")
+            task = km.load_tasks(d / "backlog")[0]
+            seen = {}
+
+            def run(prompt, model):
+                seen["p"] = prompt
+                return '{"decision":"escalate"}'
+
+            km.adjudicate_escalation(cfg, task, "ng", kiro_run=run)
+            self.assertIn("参考文脈", seen["p"])
+            self.assertIn("過去の試行ログ", seen["p"])
+
     def test_on_requeues_then_blocks_within_cap(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
