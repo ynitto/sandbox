@@ -661,6 +661,69 @@ class TestInstances(unittest.TestCase):
         self.assertEqual(km.cmd_instances(as_json=False), 0)
 
 
+class TestLifecycle(unittest.TestCase):
+    """常駐ライフサイクル（start / stop / restart）。レジストリの上に起動・停止操作を載せる。"""
+
+    def setUp(self):
+        self._home = tempfile.mkdtemp()
+        self._prev = os.environ.get("KIRO_AUTONOMOUS_HOME")
+        os.environ["KIRO_AUTONOMOUS_HOME"] = self._home
+
+    def tearDown(self):
+        km.cmd_stop(want_all=True)            # 取りこぼした daemon を確実に止める
+        if self._prev is None:
+            os.environ.pop("KIRO_AUTONOMOUS_HOME", None)
+        else:
+            os.environ["KIRO_AUTONOMOUS_HOME"] = self._prev
+
+    def _write_rec(self, pid, root):
+        d = km.instances_dir(); d.mkdir(parents=True, exist_ok=True)
+        (d / f"{pid}.json").write_text(
+            __import__("json").dumps({"pid": pid, "root": str(root), "watch": True}),
+            encoding="utf-8")
+
+    def test_select_by_pid_root_and_all(self):
+        me = os.getpid()
+        root = "/tmp/wrk/.kiro-autonomous"
+        self._write_rec(me, root)
+        self.assertEqual([r["pid"] for r in km.select_instances(pid=me)], [me])
+        self.assertEqual([r["pid"] for r in km.select_instances(root=root)], [me])  # root 直指定
+        self.assertEqual([r["pid"] for r in km.select_instances(root="/tmp/wrk")], [me])  # 作業ルート
+        self.assertEqual([r["pid"] for r in km.select_instances(want_all=True)], [me])
+        self.assertEqual(km.select_instances(root="/no/such"), [])
+
+    def test_stop_kills_process_and_cleans_registry(self):
+        import subprocess as sp
+        child = sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(lambda: child.poll() is None and child.kill())
+        self._write_rec(child.pid, "/tmp/x/.kiro-autonomous")
+        rc = km.cmd_stop(pid=child.pid, timeout=5.0)
+        self.assertEqual(rc, 0)
+        self.assertFalse(km._pid_alive(child.pid))
+        self.assertFalse((km.instances_dir() / f"{child.pid}.json").exists())
+
+    def test_stop_without_target_returns_1(self):
+        self.assertEqual(km.cmd_stop(root="/nothing/here"), 1)
+
+    def test_start_registers_then_stop(self):
+        work = Path(tempfile.mkdtemp())
+        (work / "kiro-autonomous.json").write_text(
+            '{"executor":"stub","planner":"none","flow_planner":"stub","poll":0.3}', encoding="utf-8")
+        cfg = str(work / "kiro-autonomous.json")
+        rc = km.cmd_start(root=str(work), config=cfg)
+        self.assertEqual(rc, 0)
+        # 登録の出現を待つ（最大 ~5s）
+        root = str((work).resolve())
+        for _ in range(50):
+            if km.select_instances(root=root):
+                break
+            time.sleep(0.1)
+        self.assertTrue(km.select_instances(root=root))         # 起動して登録された
+        self.assertEqual(km.cmd_start(root=str(work), config=cfg), 1)  # 重複起動は拒否
+        self.assertEqual(km.cmd_stop(root=str(work)), 0)
+        self.assertEqual(km.select_instances(root=root), [])    # 停止で消える
+
+
 class TestConfigFile(unittest.TestCase):
     """設定ファイル（YAML 任意 / JSON フォールバック、CLI > config > 既定）。"""
 
