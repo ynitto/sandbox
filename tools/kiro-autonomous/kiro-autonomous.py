@@ -834,6 +834,44 @@ def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=_run_kiro_cli)
     return ordered
 
 
+def _tail_matching(path: "Path | None", needle: str, limit: int) -> "list[str]":
+    """ファイルから needle を含む行を末尾 limit 件返す（best-effort・無ければ空）。"""
+    if not path or not path.exists():
+        return []
+    try:
+        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if needle in ln]
+    except OSError:
+        return []
+    return lines[-limit:]
+
+
+def adjudication_context(cfg: "Config", task: Task,
+                         journal_lines: int = 8, decision_chars: int = 1200) -> str:
+    """裁定の判断材料を decisions/journal/task から決定的に集める（LLM 不要・有界）。
+    『過去にどう試して何を人が判断したか』を門番へ渡し、的外れな requeue や再エスカレを減らす。"""
+    parts: list[str] = []
+    jl = _tail_matching(cfg.journal, task.id, journal_lines)
+    if jl:
+        parts.append("これまでのサイクル履歴(journal):\n" + "\n".join(jl))
+    dp = decision_path(cfg, task.id)
+    if dp.exists():
+        try:
+            txt = dp.read_text(encoding="utf-8").strip()
+        except OSError:
+            txt = ""
+        if txt:
+            if len(txt) > decision_chars:        # 直近の判断が重要なので末尾を残す
+                txt = "…\n" + txt[-decision_chars:]
+            parts.append("過去の決定記録(decisions):\n" + txt)
+    fb = task.feedback()
+    if fb:
+        parts.append("適用済みの直近フィードバック: " + fb)
+    note = next((v for k, v in task.extra if k == "note"), None)
+    if note:
+        parts.append("タスクのメモ(note): " + note)
+    return "\n\n".join(parts)
+
+
 def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
                           kiro_run=None) -> "tuple[str, str]":
     """needs（人の判断）に落とす直前の kiro-cli 裁定ゲート。
@@ -841,16 +879,19 @@ def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
     返り値: ("requeue", guidance) なら自律的に積み直す、("escalate", "") なら従来どおり人へ。
     判断不能・エラー・曖昧は **必ず escalate にフォールバック**（安全側＝人を飛ばさない）。"""
     run = kiro_run or _run_kiro_cli
+    ctx = adjudication_context(cfg, task)        # journal/decisions/feedback の文脈を渡す
     prompt = (
         "あなたは自律バックログ・ループの『人の判断を呼ぶ前の門番』です。次のタスクが検証(verify)に"
         "失敗し、通常なら人の判断待ち(needs)へ送られます。これを **ループ内で自律的に積み直して解決を試みる"
         "価値があるか** を判断してください。\n"
         "- requeue（積み直す）: 失敗が実装の不足・取り違え等で、明確な追加指示があれば次の試行で解けそうな場合。\n"
         "- escalate（人へ）: 要件が曖昧／意思決定や承認が要る／リスクが高い／同じ失敗の繰り返しで打開策が無い場合。\n"
-        "**判断は厳しめに。少しでも人の意思決定が要るなら escalate。**\n\n"
+        "**判断は厳しめに。少しでも人の意思決定が要るなら escalate。過去に同じ案件を積み直して解けていない"
+        "なら escalate。**\n\n"
         f"タスクID: {task.id}\nタイトル: {task.title}\nverify: {task.verify}\n"
         f"これまでの試行回数(retries): {task.retries}\n失敗理由: {reason}\n\n"
-        '出力は次の JSON オブジェクトだけ（説明文なし）:\n'
+        + (f"--- 参考文脈（既存の試行・判断の履歴）---\n{ctx}\n\n" if ctx else "")
+        + '出力は次の JSON オブジェクトだけ（説明文なし）:\n'
         '{"decision": "requeue" | "escalate", "guidance": "requeue の場合のみ、次の試行への具体的な指示"}')
     try:
         obj = _extract_json_obj(run(prompt, cfg.model))
