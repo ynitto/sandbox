@@ -56,7 +56,8 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
 - **形式**: YAML（**PyYAML 必要**）または JSON（標準ライブラリのみ。キーは同じ）。PyYAML 非導入の環境で
   `.yaml` を指定するとエラーになるので、その場合は `kiro-autonomous.json` を使う。
 - **書けるキー**: `executor` / `planner` / `flow_planner` / `location` / `model` / `root` / `workdir` /
-  `poll` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_retries` / `max_iterations` /
+  `poll` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_tokens` / `max_cost` /
+  `max_retries` / `max_iterations` /
   `verify_timeout` / `act_timeout` / `git_bus` / `git_branch` / `git_subdir` / `kiro_flow` /
   `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days`。
 - **書けないもの**: 真偽フラグ（`--watch` / `--ltm` / `--no-learn` / `--no-archive` / `--no-cleanup` /
@@ -247,6 +248,7 @@ kiro-autonomous stats --json   # 機械処理用
 - 完了(archive) / 納品(DELIVERY) / 未消化 backlog（status 別）/ 人の対応待ち（blocked+review）
 - **自動化率** = 自動解決(auto-resolve＋auto-adjudicate) / (自動＋人の対応)
 - **一発 done** = retry 0 で done になった割合 / retry 累計（pending・archived）
+- **コスト** = archive 横断の累計トークン / 金額(USD)（納品書 `- cost:` を集計。コスト予算と突合できる）
 
 ## タスク依存（`- after:` で DAG 順序）
 
@@ -372,6 +374,12 @@ gate:    release   # "release" を含むタスクは verify PASS でも done 前
 |----------|------|--------|
 | `drained` | 消化可能タスクが尽きた | — |
 | `budget` | 予算が尽きた（サイクル数 / 実時間） | `--max-cycles 20` / `--max-seconds 0` |
+| `cost` | 予算が尽きた（トークン / 金額） | `--max-tokens 0` / `--max-cost 0`（0=無制限） |
+
+**コスト予算**: 無人運用で暴走課金を止める安全弁。`--max-tokens` / `--max-cost`（設定ファイル可）を超えると
+`cost` で停止（終了コード 2）。計上は **act 出力の `@cost tokens=… usd=…` 行**を加算する決定的方式
+（エージェントが吐かなければ 0）。done 時に納品書へ `- cost:` を残すので `stats` が archive 横断で累計
+トークン/金額を出す。
 
 検証 NG は積み直して再挑戦。`--max-retries 2` を超えると人の判断（blocked）へ回す。
 `--watch` の場合は終了条件後もプロセスは生存して backlog/ を監視する（**idle 中は kiro-cli/flow を
@@ -392,7 +400,7 @@ issue-mailbox 等へダイジェストをパイプできる。
 |------|------|
 | 0 | `drained` かつ判断待ち無し（完走） |
 | 1 | 判断待ち（blocked）あり |
-| 2 | `budget` で停止 |
+| 2 | `budget` / `cost` で停止 |
 
 ## テスト
 

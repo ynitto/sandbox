@@ -951,6 +951,49 @@ class TestLoopEngineering(unittest.TestCase):
             res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, regression_cmd="true"))
             self.assertEqual(res["counts"]["done"], 1)
 
+    # --- コスト予算 ---
+    def test_parse_cost_sums_markers(self):
+        self.assertEqual(km.parse_cost("ok\n@cost tokens=1_200 usd=0.03\n@cost tokens=300 cost=0.01"),
+                         (1500, 0.04))
+        self.assertEqual(km.parse_cost("no markers here"), (0, 0.0))
+
+    @staticmethod
+    def _seed_ready(d, n):
+        for i in range(n):
+            TestLoopEngineering._mk(d, f"T{i}", f"## T{i}: x\n- status: ready\n- verify: `true`\n")
+
+    def test_max_tokens_stops_loop(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_ready(d, 5)
+            res = km.run_loop(cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False,
+                                      max_cycles=99, max_tokens=2500),
+                              act=lambda t, c, loc: (True, "done\n@cost tokens=1000 usd=0.02"))
+            self.assertEqual(res["reason"], km.REASON_COST)
+            self.assertEqual(res["counts"]["done"], 3)        # 3 サイクルで 3000≥2500
+            self.assertEqual(res["tokens"], 3000)
+            self.assertEqual(km.exit_code_for(res), 2)        # 予算停止は 2
+
+    def test_max_cost_stops_loop(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_ready(d, 5)
+            res = km.run_loop(cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False,
+                                      max_cycles=99, max_cost=0.05),
+                              act=lambda t, c, loc: (True, "done\n@cost usd=0.02"))
+            self.assertEqual(res["reason"], km.REASON_COST)
+            self.assertEqual(res["counts"]["done"], 3)        # 0.06≥0.05 で停止
+
+    def test_stats_aggregates_archived_cost(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_ready(d, 2)
+            cfg = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False, max_cycles=99)
+            km.run_loop(cfg, act=lambda t, c, loc: (True, "ok\n@cost tokens=500 usd=0.01"))
+            s = km.compute_stats(cfg)
+            self.assertEqual((s["tokens_archived"], s["cost_archived"], s["done_archived"]),
+                             (1000, 0.02, 2))
+
 
 class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
