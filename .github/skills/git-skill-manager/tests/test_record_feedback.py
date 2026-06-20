@@ -251,6 +251,6 @@ class TestMainUsesLoadRegistry:
             with patch.object(rf, "is_workspace_skill", return_value=False):
                 rf.main()
 
-        # 保存されたレジストリが v7 に昇格されているか確認
+        # 保存されたレジストリが最新版に昇格されているか確認
         saved = _json.loads(reg_path.read_text(encoding="utf-8"))
-        assert saved["version"] == 7, "main() は load_registry() 経由で migration を行う必要があります"
+        assert saved["version"] == 9, "main() は load_registry() 経由で migration を行う必要があります"
