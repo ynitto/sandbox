@@ -10,6 +10,7 @@ import os
 import socket
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -175,6 +176,98 @@ class TestEnqueue(unittest.TestCase):
             files = list((d / ".ka" / "backlog").glob("*.md"))
             self.assertEqual(len(files), 1)
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
+
+
+class TestParallelConsumption(unittest.TestCase):
+    """並列消費（§11）— daemon/remote へ独立タスクを並行 submit。worker 並列へ寄せる。"""
+
+    def _tasks(self, n):
+        return [km.Task(id=f"T{i}", title=f"t{i}", status="ready", verify="true")
+                for i in range(n)]
+
+    def _cfg(self, d, **kw):
+        base = dict(location="remote", git_bus="bus", concurrency=3, dry_run=False,
+                    learn=False, auto_adjudicate=False, max_cycles=50)
+        base.update(kw)
+        return cfg_for(Path(d), **base)
+
+    def test_submit_bound(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            self.assertTrue(km._submit_bound("remote", cfg))
+            self.assertFalse(km._submit_bound("local", cfg))
+            # daemon は実際に稼働中のときだけ並行対象（テスト環境では未稼働）
+            self.assertEqual(km._submit_bound("daemon", cfg), km.daemon_running(cfg, use_git=False))
+
+    def test_select_batch_width_and_caps(self):
+        with tempfile.TemporaryDirectory() as d:
+            pol = km.parse_policy("")
+            order = self._tasks(4)
+            self.assertEqual(len(km._select_batch(order, self._cfg(d), pol, 10)), 3)  # concurrency=3
+            self.assertEqual(len(km._select_batch(order, self._cfg(d), pol, 2)), 2)   # 残予算で制限
+            self.assertEqual(len(km._select_batch(order, self._cfg(d, concurrency=1), pol, 10)), 1)
+            self.assertEqual(len(km._select_batch(order, self._cfg(d, once=True), pol, 10)), 1)
+            # 先頭が local 実行なら逐次（1件）に落とす
+            local = self._cfg(d, location="local", git_bus=None)
+            self.assertEqual(len(km._select_batch(order, local, pol, 10)), 1)
+
+    def test_acts_run_concurrently(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for i in range(3):
+                mkb(d, f"T{i}", verify="true")
+            active = {"n": 0, "max": 0}
+            lock = threading.Lock()
+
+            def act(t, c, loc):
+                with lock:
+                    active["n"] += 1
+                    active["max"] = max(active["max"], active["n"])
+                time.sleep(0.05)
+                with lock:
+                    active["n"] -= 1
+                return (True, "ok")
+
+            res = km.run_loop(self._cfg(d), act=act)
+            self.assertEqual(active["max"], 3)               # 3件が同時に走った
+            self.assertEqual(res["counts"]["done"], 3)
+            self.assertEqual(res["cycles"], 3)               # 1タスク=1サイクルを維持
+
+    def test_location_passed_to_act(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for i in range(3):
+                mkb(d, f"T{i}", verify="true")
+            seen = []
+            lock = threading.Lock()
+
+            def act(t, c, loc):
+                with lock:
+                    seen.append(loc)
+                return (True, "ok")
+
+            km.run_loop(self._cfg(d), act=act)
+            self.assertEqual(set(seen), {"remote"})          # remote へ submit された
+
+    def test_dry_run_parallel_skips_act(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for i in range(3):
+                mkb(d, f"T{i}", verify="true")
+            calls = []
+            res = km.run_loop(self._cfg(d, dry_run=True),
+                              act=lambda t, c, loc: calls.append(t.id) or (True, "x"))
+            self.assertEqual(calls, [])                       # dry-run は act を呼ばない
+            self.assertEqual(res["counts"]["done"], 3)        # verify=true で done
+
+    def test_once_processes_single_task(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for i in range(3):
+                mkb(d, f"T{i}", verify="true")
+            res = km.run_loop(self._cfg(d, once=True), act=lambda t, c, loc: (True, "ok"))
+            self.assertEqual(res["cycles"], 1)                # once は 1 件だけ
+            self.assertEqual(res["reason"], "once")
 
 
 class TestRunLoop(unittest.TestCase):

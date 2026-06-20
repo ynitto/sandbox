@@ -56,7 +56,7 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
 - **形式**: YAML（**PyYAML 必要**）または JSON（標準ライブラリのみ。キーは同じ）。PyYAML 非導入の環境で
   `.yaml` を指定するとエラーになるので、その場合は `kiro-autonomous.json` を使う。
 - **書けるキー**: `executor` / `planner` / `flow_planner` / `location` / `model` / `root` / `workdir` /
-  `poll` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_tokens` / `max_cost` /
+  `poll` / `concurrency` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_tokens` / `max_cost` /
   `max_retries` / `max_iterations` /
   `verify_timeout` / `act_timeout` / `git_bus` / `git_branch` / `git_subdir` / `kiro_flow` /
   `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days` /
@@ -109,6 +109,23 @@ kiro-autonomous run --executor kiro
 kiro-flow --bus .kiro-autonomous-bus daemon &
 kiro-autonomous run --location daemon --executor kiro
 ```
+
+### 並列消費（`--concurrency`：kiro-flow の worker 並列へ寄せる）
+
+依存（`after`）が解決済みのタスクは互いに独立なので、`--concurrency N`（既定 1）で**先頭から最大 N 件を
+daemon/remote へ並行 submit** し、kiro-flow の worker 並列に実行させる。**実行の重い部分だけを並列化し、
+verify と done/archive/decisions/派生生成といったローカル状態の変更は逐次のまま**にして、workdir や決定記録の
+競合を避ける（不変条件をそのまま維持）。`local`（単発 run）実行は逐次のまま＝並列化しない（daemon を立てて
+submit 経路にしたときだけ効く）。隔離は kiro-flow の worker に委ねる前提。
+
+```bash
+# ローカル daemon を立て、独立タスクを最大3並行で消化
+kiro-flow --bus .kiro-autonomous-bus daemon --workers 3 &
+kiro-autonomous run --location daemon --concurrency 3 --executor kiro
+```
+
+- 1サイクル=1タスクの計上は不変（`max_cycles`/予算はそのまま効く。バッチ幅は残サイクル予算も超えない）。
+- `--once` のときは並行せず1件だけ。`--concurrency 1`（既定）は従来どおり完全な逐次。
 
 ## サブコマンド
 
