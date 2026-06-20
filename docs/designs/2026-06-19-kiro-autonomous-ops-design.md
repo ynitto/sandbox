@@ -276,7 +276,7 @@ done を verify 以外で確定させる訳ではない（承認は「verify 済
 
 ---
 
-## 8. Loop Engineering の中核機能（計測・自己生成・依存・回帰ゲート・コスト予算・取り込み口）
+## 8. Loop Engineering の中核機能（計測・自己生成・依存・回帰ゲート・コスト予算・取り込み口・並列消費）
 
 §1–7 が「外周」なら、ここは**ループそのものを engineering する**ための中核。"engineer" は計測・自走・
 順序・安全の 4 軸が要る（安全は回帰ゲートとコスト予算の二枚）。いずれも本体の不変条件（§9）を保ったまま
@@ -335,6 +335,17 @@ backlog への投入経路を一級化し、**入口を増やしてもコアは 
 - **停止は自ホストのみ**: `stop`/`restart`/`select_instances` は別ホストを対象にしない（リモート PID へ
   シグナルは送れない）。レコードは衝突回避のため `instances/<host>-<pid>.json`。
 
+### 8.8 並列消費（kiro-flow の worker 並列へ寄せる）（§11 で実装）
+`prioritize` が返す order は依存（`after`）解決済み＝**互いに独立**。`--concurrency N`（既定 1）で先頭から
+最大 N 件を **daemon/remote へ並行 submit**（`ThreadPoolExecutor`）し、実体の並列実行は **kiro-flow の
+worker** に委ねる。kiro-autonomous 自身に並列実行器は持たせない（隔離はワーカ側）。
+
+- **並列は重い部分だけ**: `_act_batch` の submit/待機のみ並行。verify と done/archive/decisions/派生生成
+  などローカル状態の変更は**逐次**のまま＝workdir・決定記録の競合を避け、§9 の不変条件をそのまま守る。
+- **local は逐次**: `_submit_bound` が daemon/remote のときだけバッチ化。`local`（単発 run）実行は1件ずつ。
+- **有限停止の保全**: 1サイクル=1タスクの計上は不変。`_select_batch` はバッチ幅を**残サイクル予算**でも
+  抑え、`max_cycles`/予算/`--once`（=幅1）をそのまま効かせる。`--concurrency 1` は完全な逐次（従来同値）。
+
 ---
 
 ## 9. 維持した不変条件（外周を足しても破らないもの）
@@ -351,7 +362,7 @@ backlog への投入経路を一級化し、**入口を増やしてもコアは 
 
 ## 10. テスト
 
-`tools/kiro-autonomous/tests/test_kiro_autonomous.py`（**計 100 件**）。本書の追加分:
+`tools/kiro-autonomous/tests/test_kiro_autonomous.py`（**計 106 件**）。本書の追加分:
 
 | 領域 | 検証 |
 |------|------|
@@ -364,6 +375,7 @@ backlog への投入経路を一級化し、**入口を増やしてもコアは 
 | コスト予算（§8.5） | parse_cost のマーカ加算・max_tokens 超過で `cost` 停止(exit 2)・max_cost 超過で停止・stats の archive 横断コスト集計 |
 | 取り込み口（§8.6） | spec 検証(title 必須/status 既定)・フィールドと未知キー保持・id 一意化・inbox(json/md) 取り込みと消去・run_loop が inbox を消化・enqueue コマンド |
 | 別ホスト発見（§8.7） | heartbeat/ttl レコード・共有先への登録と heartbeat 更新・別ホストの生存(鮮度)/停止判定・select は自ホストのみ・複数ディレクトリ集約と重複排除・--registry/env 解釈 |
+| 並列消費（§8.8） | submit_bound 判定・batch 幅と残予算/once/local の制限・act が実際に並行実行・location 伝播・dry-run は act 非呼出・once は1件 |
 
 ```bash
 KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/tests
@@ -373,8 +385,8 @@ KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/
 
 ## 11. 今後の拡張余地（非目標として明示）
 
-- 並列消費（独立・依存解決済みタスクを N 並列で）— 現状は 1 サイクル 1 タスクの逐次（kiro-flow 側は worker 並列）。
 - 既製の外部アダプタ同梱（GitHub issue / メール → `enqueue --json`）— 現状は取り込み口（§8.6）まで。アダプタ本体は範囲外。
+- ローカル並列実行器（daemon 無しで N 並列）— 現状の並列消費（§8.8）は kiro-flow の worker 並列に委ねる（local 単発 run は逐次）。
 - 回帰ゲートの本格ロールバック（コミット/push 済み変更の revert・PR クローズ）— 現状は未コミット変更の戻しのみ。
 
 これらは本体の不変条件を保ったまま、同じ「外周を足す」方針で段階追加できる。

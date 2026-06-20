@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -1517,6 +1518,7 @@ class Config:
     debounce: float = 3.0           # watch 中、最終保存からこの秒数は feedback 取込を待つ
     watch: bool = False     # 終了条件後もプロセスを残し backlog を監視
     poll: float = 5.0       # watch のポーリング間隔（秒）
+    concurrency: int = 1    # 1サイクルで daemon/remote へ並行 submit する独立タスク数（1=逐次）
     registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
     dry_run: bool = False
     once: bool = False
@@ -1666,6 +1668,64 @@ def _escalate(cfg, task, reason, reasons, cycle):
     _block(cfg, task, reason, reasons)
 
 
+# ---------------------------------------------------------------------------
+# 並列消費（§11）— kiro-flow の worker 並列へ寄せる。
+#   prioritize が返す order は依存(after)解決済み＝互いに独立。daemon/remote へ submit する
+#   タスクは実行が daemon 側の隔離ワーカで走るので、最大 concurrency 個まで並行 submit して
+#   一括で待つ。verify と done/archive/decisions/派生など「ローカル状態の変更」は逐次のまま
+#   （workdir/決定記録の競合を避け、不変条件をそのまま守る）。local act は逐次（並列化しない）。
+# ---------------------------------------------------------------------------
+def _submit_bound(location: str, cfg: "Config") -> bool:
+    """その location が daemon/remote への submit（=隔離ワーカ実行）になるか。local 実行なら False。"""
+    if location == "remote":
+        return True
+    if location == "daemon":
+        return daemon_running(cfg, use_git=False)
+    return False
+
+
+def _select_batch(order: "list[Task]", cfg: "Config", policy, remaining: int) -> "list[Task]":
+    """先頭から、並行 submit 可能（daemon/remote）なタスクを最大 width 個まとめる。
+    先頭が local 実行なら従来どおり1件だけ（逐次）。残サイクル予算 remaining も超えない。"""
+    width = cfg.concurrency if (cfg.concurrency > 1 and not cfg.once) else 1
+    width = max(1, min(width, remaining))
+    first_loc = decide_location(order[0], policy, cfg)
+    if width == 1 or not _submit_bound(first_loc, cfg):
+        return [order[0]]
+    batch = []
+    for t in order:
+        if len(batch) >= width:
+            break
+        if not _submit_bound(decide_location(t, policy, cfg), cfg):
+            break                      # local 実行が混ざったらそこで切る（逐次に落とす）
+        batch.append(t)
+    return batch or [order[0]]
+
+
+def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tuple[str, str]]":
+    """batch を doing にして act を実行（2件以上は ThreadPool で並行）。{id: (location, act_msg)} を返す。"""
+    for t in batch:
+        t.status = "doing"
+        persist_task(cfg, t)
+    locs = {t.id: decide_location(t, policy, cfg) for t in batch}
+    if cfg.dry_run:
+        return {t.id: (locs[t.id], "(dry-run)") for t in batch}
+    if len(batch) == 1:
+        t = batch[0]
+        _, msg = act(t, cfg, locs[t.id])
+        return {t.id: (locs[t.id], msg)}
+    results: dict[str, tuple[str, str]] = {}
+    with ThreadPoolExecutor(max_workers=len(batch)) as ex:
+        futs = {ex.submit(act, t, cfg, locs[t.id]): t for t in batch}
+        for fut, t in futs.items():
+            try:
+                _, msg = fut.result()
+            except Exception as e:     # noqa: BLE001 — act 失敗は verify=NG 相当として後段で扱う
+                msg = f"act 失敗: {e}"
+            results[t.id] = (locs[t.id], msg)
+    return results
+
+
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     ensure_dirs(cfg)
     inboxed = ingest_inbox(cfg)                       # 外部ドロップ(inbox/)を backlog へ取り込む
@@ -1714,118 +1774,121 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         if not order:
             reason = REASON_DRAINED
             break
-        task = order[0]
 
-        cycle += 1
-        cycle_start = time.time()
-        task.status = "doing"
-        persist_task(cfg, task)
+        # 並列消費: 依存解決済み（=互いに独立）な先頭群を daemon/remote へ並行 submit。
+        # verify 以降のローカル状態変更は逐次のまま（competition を避け不変条件を保つ）。
+        batch = _select_batch(order, cfg, policy, cfg.max_cycles - cycle)
+        act_results = _act_batch(batch, cfg, act, policy)
 
-        location = decide_location(task, policy, cfg)
-        if location != "local":
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
-                                        + (f"（{cfg.git_bus}）" if location == "remote" else ""))
-        act_msg = "(dry-run)"
-        if not cfg.dry_run:
-            _, act_msg = act(task, cfg, location)
-        dtok, dusd = parse_cost(act_msg)             # このサイクルのコストを計上（予算ゲート用）
-        tokens_used += dtok
-        cost_used += dusd
-        if dtok or dusd:
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
-                                        f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
+        stop = None
+        for task in batch:
+            cycle += 1
+            cycle_start = time.time()
+            location, act_msg = act_results[task.id]
+            if location != "local":
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
+                                            + (f"（{cfg.git_bus}）" if location == "remote" else ""))
+            dtok, dusd = parse_cost(act_msg)             # このサイクルのコストを計上（予算ゲート用）
+            tokens_used += dtok
+            cost_used += dusd
+            if dtok or dusd:
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
+                                            f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
 
-        ok, vmsg = run_verify(task.verify, cfg.workdir, cfg.verify_timeout)
-        regressed = False
-        if ok and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故の検知）
-            rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout)
-            if not rok:
-                regressed = True
-                if cfg.regression_revert:
-                    _revert_workdir(cfg)
-                _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}",
-                       reasons)
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
-                               + ("・revert 済" if cfg.regression_revert else ""))
-        if regressed:
-            pass                          # 既に blocked 化済み。done/review にしない
-        elif ok and needs_human_review(task, policy):
-            # verify は通ったが承認ゲート対象 → done を確定せず人の検収待ち（review）へ
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ref = extract_delivery_ref(act_msg, cfg)
-            task.status = "review"
-            task.extra = [(k, v) for k, v in task.extra
-                          if k not in ("gate_ref", "gate_vmsg", "gate_ts")]
-            task.extra += [("gate_ref", ref), ("gate_ts", ts),
-                           ("gate_vmsg", vmsg.replace("\n", " ")[:200])]
-            reasons[task.id] = "検収待ち（verify=PASS。approve で done 確定）"
-            persist_task(cfg, task)
-            write_needs_file(cfg, task,
-                             "verify=PASS だが承認ゲート対象（review/policy.gate）。"
-                             "approve で done 確定、フィードバック記入で差し戻し（再実行）", review=True)
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち（承認ゲート） — {ref}")
-        elif ok:
-            task.status = "done"
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ref = extract_delivery_ref(act_msg, cfg)     # 成果物の参照（PR/commit/git）
-            if dtok or dusd:                             # コストを納品書に残し stats で集計可能に
-                task.extra.append(("cost", f"tokens={dtok} usd={dusd:.4f}"))
-            append_delivery(cfg, task, ref, ts)          # 受領書一覧に追記
-            if cfg.do_archive:
-                archive_task(cfg, task, vmsg, ref, ts)   # backlog → archive/（納品書付き）
-                archived += 1
-                done_disp = "DONE → archive（納品書）"
+            ok, vmsg = run_verify(task.verify, cfg.workdir, cfg.verify_timeout)
+            regressed = False
+            if ok and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故の検知）
+                rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout)
+                if not rok:
+                    regressed = True
+                    if cfg.regression_revert:
+                        _revert_workdir(cfg)
+                    _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}",
+                           reasons)
+                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
+                                   + ("・revert 済" if cfg.regression_revert else ""))
+            if regressed:
+                pass                          # 既に blocked 化済み。done/review にしない
+            elif ok and needs_human_review(task, policy):
+                # verify は通ったが承認ゲート対象 → done を確定せず人の検収待ち（review）へ
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ref = extract_delivery_ref(act_msg, cfg)
+                task.status = "review"
+                task.extra = [(k, v) for k, v in task.extra
+                              if k not in ("gate_ref", "gate_vmsg", "gate_ts")]
+                task.extra += [("gate_ref", ref), ("gate_ts", ts),
+                               ("gate_vmsg", vmsg.replace("\n", " ")[:200])]
+                reasons[task.id] = "検収待ち（verify=PASS。approve で done 確定）"
+                persist_task(cfg, task)
+                write_needs_file(cfg, task,
+                                 "verify=PASS だが承認ゲート対象（review/policy.gate）。"
+                                 "approve で done 確定、フィードバック記入で差し戻し（再実行）", review=True)
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち（承認ゲート） — {ref}")
+            elif ok:
+                task.status = "done"
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ref = extract_delivery_ref(act_msg, cfg)     # 成果物の参照（PR/commit/git）
+                if dtok or dusd:                             # コストを納品書に残し stats で集計可能に
+                    task.extra.append(("cost", f"tokens={dtok} usd={dusd:.4f}"))
+                append_delivery(cfg, task, ref, ts)          # 受領書一覧に追記
+                if cfg.do_archive:
+                    archive_task(cfg, task, vmsg, ref, ts)   # backlog → archive/（納品書付き）
+                    archived += 1
+                    done_disp = "DONE → archive（納品書）"
+                else:
+                    delete_task_file(cfg, task)
+                    done_disp = "DONE 削除"
+                clear_needs_file(cfg, task.id)
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {ref}")
+                specs = parse_followups(task, act_msg)        # done から派生タスクを生む（backlog 自走）
+                if specs and spawned_total < cfg.max_spawn:
+                    new = spawn_followups(cfg, task, specs, tasks, cfg.max_spawn - spawned_total)
+                    spawned_total += len(new)
+                    if new:
+                        append_journal(cfg.journal, f"cycle {cycle}: {task.id} から派生生成 "
+                                                    f"{[t.id for t in new]}")
             else:
-                delete_task_file(cfg, task)
-                done_disp = "DONE 削除"
-            clear_needs_file(cfg, task.id)
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {ref}")
-            specs = parse_followups(task, act_msg)        # done から派生タスクを生む（backlog 自走）
-            if specs and spawned_total < cfg.max_spawn:
-                new = spawn_followups(cfg, task, specs, tasks, cfg.max_spawn - spawned_total)
-                spawned_total += len(new)
-                if new:
-                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} から派生生成 "
-                                                f"{[t.id for t in new]}")
-        else:
-            task.retries += 1
-            if not task.verify:
-                _escalate(cfg, task, "verify 未定義", reasons, cycle)
-                if task.norm_status() == "blocked":
-                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
-            elif task.retries > cfg.max_retries:
-                learned = find_learned_resolution(cfg, task) if cfg.learn else None
-                if learned and not dict(task.extra).get("autolearned"):
-                    src, guide = learned
-                    task.extra = [(k, v) for k, v in task.extra
-                                  if k not in ("feedback", "autolearned")]
-                    task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", "1")]
+                task.retries += 1
+                if not task.verify:
+                    _escalate(cfg, task, "verify 未定義", reasons, cycle)
+                    if task.norm_status() == "blocked":
+                        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
+                elif task.retries > cfg.max_retries:
+                    learned = find_learned_resolution(cfg, task) if cfg.learn else None
+                    if learned and not dict(task.extra).get("autolearned"):
+                        src, guide = learned
+                        task.extra = [(k, v) for k, v in task.extra
+                                      if k not in ("feedback", "autolearned")]
+                        task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", "1")]
+                        task.status = "ready"
+                        persist_task(cfg, task)
+                        append_decision(cfg, task.id, "auto",
+                                        context=f"{task.id}（{task.title}）を学習で自動解決",
+                                        action="auto-resolve", reason=f"learned from {src}: {guide[:120]}",
+                                        affects=f"{task.id} → ready")
+                        append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
+                                                    f"（{src} に倣う・通知を抑制）")
+                    else:
+                        _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}",
+                                  reasons, cycle)
+                        if task.norm_status() == "blocked":
+                            append_journal(cfg.journal,
+                                           f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
+                else:
                     task.status = "ready"
                     persist_task(cfg, task)
-                    append_decision(cfg, task.id, "auto",
-                                    context=f"{task.id}（{task.title}）を学習で自動解決",
-                                    action="auto-resolve", reason=f"learned from {src}: {guide[:120]}",
-                                    affects=f"{task.id} → ready")
-                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
-                                                f"（{src} に倣う・通知を抑制）")
-                else:
-                    _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}",
-                              reasons, cycle)
-                    if task.norm_status() == "blocked":
-                        append_journal(cfg.journal,
-                                       f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
-            else:
-                task.status = "ready"
-                persist_task(cfg, task)
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
-                                            f"({task.retries}/{cfg.max_retries}) — {vmsg}")
+                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
+                                                f"({task.retries}/{cfg.max_retries}) — {vmsg}")
 
-        if cfg.once:
-            reason = "once"
+            if cfg.once:
+                stop = "once"
+                break
+            delay = decide_pace(cfg, time.time() - cycle_start)
+            if delay > 0:
+                sleeper(delay)
+        if stop:
+            reason = stop
             break
-        delay = decide_pace(cfg, time.time() - cycle_start)
-        if delay > 0:
-            sleeper(delay)
 
     counts = summarize(tasks)
     newly_blocked = {t.id for t in tasks
@@ -2208,6 +2271,7 @@ CONFIG_DEFAULTS = {
     "location": "auto",
     "model": None,
     "poll": 5.0,
+    "concurrency": 1,
     "debounce": 3.0,
     "pace": 0.0,
     "max_cycles": 20,
@@ -2311,6 +2375,7 @@ def build_config(args) -> Config:
         delivery=under("delivery", "DELIVERY.md"), inbox=under("inbox", "inbox"),
         debounce=args.debounce,
         watch=bool(getattr(args, "watch", False)), poll=getattr(args, "poll", 5.0),
+        concurrency=max(1, int(getattr(args, "concurrency", 1) or 1)),
         registry=_split_registry(getattr(args, "registry", None)),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
     )
@@ -2401,6 +2466,9 @@ def main(argv=None) -> int:
     run.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
     run.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
+    run.add_argument("--concurrency", type=int, default=None,
+                     help="1サイクルで daemon/remote へ並行 submit する独立タスク数（既定 1=逐次。"
+                          "kiro-flow の worker 並列に委ねる。local 実行は逐次のまま）")
     run.add_argument("--registry", action="append", default=None,
                      help="共有レジストリへも自分を登録（別ホスト発見。os.pathsep 区切り可・"
                           "環境変数 KIRO_AUTONOMOUS_REGISTRY でも指定可）")
