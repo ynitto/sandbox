@@ -179,6 +179,63 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
 
+class TestAudit(unittest.TestCase):
+    """Loop Readiness セルフ監査（L0–L3・スコア・赤旗・--strict ゲート）。"""
+
+    def _weak(self, d):
+        # verify 無し ready・watch・予算/保護なし → 低レベル
+        mkb(d, "T1", verify="")
+        return cfg_for(d, watch=True)
+
+    def _strong(self, d):
+        mkb(d, "T1", verify="true")
+        (d / "policy.md").write_text("protect: **/secrets/**\n", encoding="utf-8")
+        (d / "needs").mkdir(exist_ok=True)
+        (d / "decisions").mkdir(exist_ok=True)
+        return cfg_for(d, watch=True, max_cost=5.0, rot=True)
+
+    def test_weak_config_is_l0_with_critical_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = km.compute_audit(self._weak(Path(d)))
+            self.assertEqual(a["level"], 0)
+            self.assertLess(a["score"], 60)
+            self.assertTrue(any(r["severity"] == "critical" for r in a["red_flags"]))
+            ids = {c["id"]: c["ok"] for c in a["checks"]}
+            self.assertFalse(ids["verify_coverage"])          # 鉄則違反を検出
+            self.assertFalse(ids["safety_denylist"])
+
+    def test_strong_config_is_l3_score_100(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = km.compute_audit(self._strong(Path(d)))
+            self.assertEqual(a["level"], 3)
+            self.assertEqual(a["score"], 100)
+            self.assertEqual(a["red_flags"], [])
+
+    def test_cost_budget_and_protect_signals_toggle(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            ids = {c["id"]: c["ok"] for c in km.compute_audit(cfg_for(d))["checks"]}
+            self.assertFalse(ids["cost_budget"])
+            self.assertFalse(ids["safety_denylist"])
+            (d / "policy.md").write_text("protect: auth/**\n", encoding="utf-8")
+            ids2 = {c["id"]: c["ok"] for c in km.compute_audit(cfg_for(d, max_tokens=1000))["checks"]}
+            self.assertTrue(ids2["cost_budget"])
+            self.assertTrue(ids2["safety_denylist"])
+
+    def test_strict_exit_codes(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(km.cmd_audit(self._weak(Path(d)), strict=True), 2)   # critical → 2
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(km.cmd_audit(self._strong(Path(d)), strict=True), 0)
+
+    def test_audit_via_main_json_without_backlog(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            rc = km.main(["audit", "--json", "--workdir", str(d), "--root", str(d / ".ka")])
+            self.assertEqual(rc, 0)                            # backlog 無しでも落ちない
+
+
 class TestProtectPaths(unittest.TestCase):
     """パス保護ゲート（safety denylist）— act が保護パスを触ったら done せず人の承認(review)へ。"""
 

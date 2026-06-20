@@ -2196,6 +2196,138 @@ def compute_stats(cfg: Config) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# audit（Loop Readiness セルフ監査）— Loop Engineering の Loop Design Checklist /
+#   Quick Red Flags を決定的に採点する。L0–L3 のレベルと 0–100 スコア・赤旗・提案を出し、
+#   「いまどの自律度で無人運用してよいか」を機械判定する。stdlib のみ・エージェント不要。
+# ---------------------------------------------------------------------------
+def compute_audit(cfg: Config) -> dict:
+    """backlog/policy/config/state を走査して Loop Readiness を採点する（決定的）。"""
+    tasks = load_tasks(cfg.backlog)
+    policy = load_policy(cfg.policy)
+    protect = list(getattr(policy, "protect", []) or [])
+    ready = consumable_tasks(tasks)
+    ready_no_verify = [t.id for t in ready if not (t.verify or "").strip()]
+    has_cost_budget = bool(cfg.max_tokens) or bool(cfg.max_cost)
+    near_cap = [t.id for t in ready if cfg.max_retries and t.retries >= cfg.max_retries]
+    state_ok = cfg.decisions.exists() or cfg.journal.exists()
+    handoff_ok = cfg.needs.exists()
+    rot_hits = detect_rot(cfg, tasks) if cfg.rot else []   # rot on のときだけ走査
+
+    # checks: id, label, ok, weight, min_level, severity, detail
+    checks = [
+        ("verify_coverage", "ready タスクは全て verify を持つ（鉄則）",
+         not ready_no_verify, 25, 1, "critical",
+         (f"verify 無し ready: {ready_no_verify[:8]}" if ready_no_verify else "OK")),
+        ("verifier_independent", "verifier は実装者と別（決定的 verify＝rubber-stamp 不能）",
+         True, 5, 1, "info", "verify は終了コードで判定（構造的に独立）"),
+        ("finite_stop", "有限停止（max_cycles が有限）",
+         cfg.max_cycles > 0, 10, 1, "critical",
+         f"max_cycles={cfg.max_cycles} max_seconds={cfg.max_seconds}"),
+        ("state_observability", "状態/観測（decisions・journal）",
+         state_ok, 10, 1, "warn", "decisions/journal あり" if state_ok else "未作成"),
+        ("attempt_cap", "リトライ上限→escalate（無限 fix ループ防止）",
+         cfg.max_retries >= 0, 10, 2, "warn", f"max_retries={cfg.max_retries}"),
+        ("human_handoff", "人へのエスカレーション先（needs/）",
+         handoff_ok, 10, 2, "warn", "needs/ あり" if handoff_ok else "needs/ 未作成"),
+        ("cost_budget", "コスト予算（max_tokens か max_cost）",
+         has_cost_budget, 10, 3, "warn",
+         f"tokens={cfg.max_tokens} usd={cfg.max_cost}" if has_cost_budget else "未設定（無人運用は要設定）"),
+        ("safety_denylist", "パス保護デニーリスト（policy protect:）",
+         bool(protect), 15, 3, "warn",
+         f"protect={protect[:6]}" if protect else "未設定（.env/secrets/auth 等を守れていない）"),
+        ("prune_state", "状態の掃除（--rot で古い/重複/実行不能を検知）",
+         bool(cfg.rot), 5, 3, "info", "rot on" if cfg.rot else "rot off"),
+    ]
+    score = round(100 * sum(w for _, _, ok, w, *_ in checks if ok)
+                  / sum(w for _, _, _, w, *_ in checks))
+
+    # level: 各レベルの必須 check が全て ok か（下から積み上げ）
+    def _lvl_ok(n):
+        return all(ok for _id, _lbl, ok, _w, ml, sev, _d in checks if ml <= n and sev != "info")
+    level = 0
+    for n in (1, 2, 3):
+        if _lvl_ok(n):
+            level = n
+        else:
+            break
+
+    red_flags = []
+    if ready_no_verify:
+        red_flags.append(("critical", f"verify を持たない ready タスク {len(ready_no_verify)} 件"
+                                      "（拾われても escalate＝人手に逆流）"))
+    if cfg.watch and not has_cost_budget:
+        red_flags.append(("warn", "無人運用(watch)なのにコスト予算(max_tokens/max_cost)が未設定"))
+    if cfg.watch and not protect:
+        red_flags.append(("warn", "無人運用(watch)なのに保護パス(protect)が未設定"
+                                  "（act が .env/secrets/auth を書き換え得る）"))
+    if rot_hits:
+        red_flags.append(("warn", f"rot（古い/重複/実行不能）{len(rot_hits)} 件を検知"))
+    if near_cap:
+        red_flags.append(("warn", f"リトライ上限間際のタスク {near_cap[:6]}（収束していない可能性）"))
+    # L3 はクリティカル赤旗があれば認めない
+    if level >= 3 and any(sev == "critical" for sev, _ in red_flags):
+        level = 2
+
+    suggestions = []
+    for _id, lbl, ok, _w, ml, sev, _d in checks:
+        if not ok and sev != "info":
+            if _id == "cost_budget":
+                suggestions.append("max_cost か max_tokens を設定（config か --max-cost/--max-tokens）")
+            elif _id == "safety_denylist":
+                suggestions.append("policy.md に protect: を追加（.env / **/secrets/** / auth/** など）")
+            elif _id == "verify_coverage":
+                suggestions.append("verify 無しの ready タスクに検証コマンドを与えるか inbox へ戻す")
+            elif _id == "prune_state":
+                suggestions.append("--rot を有効化して古い/重複タスクを掃除")
+            else:
+                suggestions.append(f"未達: {lbl}")
+
+    return {
+        "level": level, "level_label": f"L{level}", "score": score,
+        "checks": [{"id": i, "label": l, "ok": ok, "min_level": ml,
+                    "severity": sev, "detail": d}
+                   for i, l, ok, _w, ml, sev, d in checks],
+        "red_flags": [{"severity": s, "message": m} for s, m in red_flags],
+        "suggestions": suggestions,
+        "summary": {"ready": len(ready), "ready_no_verify": len(ready_no_verify),
+                    "pending_human": sum(1 for t in tasks
+                                         if t.norm_status() in ("blocked", "review")),
+                    "watch": cfg.watch},
+    }
+
+
+_LEVEL_MEANING = {0: "Draft（意図のみ）", 1: "Report（報告のみ・自動実行なし相当）",
+                  2: "Assisted（検証つき小修正）", 3: "Unattended（無人運用可・人ゲート前提）"}
+
+
+def cmd_audit(cfg: Config, as_json: bool = False, strict: bool = False) -> int:
+    """Loop Readiness を採点して L0–L3・スコア・赤旗・提案を出す。--strict で CI ゲート化。"""
+    a = compute_audit(cfg)
+    if as_json:
+        print(json.dumps(a, ensure_ascii=False, indent=2))
+    else:
+        print("=== kiro-autonomous audit（Loop Readiness）===")
+        print(f"レベル : {a['level_label']} — {_LEVEL_MEANING[a['level']]}")
+        print(f"スコア : {a['score']}/100")
+        print("チェック:")
+        for c in a["checks"]:
+            mark = "✓" if c["ok"] else ("✗" if c["severity"] == "critical" else "−")
+            print(f"  [{mark}] L{c['min_level']} {c['label']} … {c['detail']}")
+        if a["red_flags"]:
+            print("赤旗:")
+            for r in a["red_flags"]:
+                print(f"  ⚠ [{r['severity']}] {r['message']}")
+        if a["suggestions"]:
+            print("提案:")
+            for s in a["suggestions"]:
+                print(f"  → {s}")
+    has_critical = any(r["severity"] == "critical" for r in a["red_flags"])
+    if strict and (a["score"] < 40 or has_critical):
+        return 2
+    return 0
+
+
 def cmd_stats(cfg: Config, as_json: bool = False) -> int:
     """ループの計測値を出す（スループット・自動化率・retry・人対応待ち）。回路調整の土台。"""
     s = compute_stats(cfg)
@@ -2597,6 +2729,11 @@ def main(argv=None) -> int:
     st = sub.add_parser("stats", help="ループの計測値（スループット・自動化率・retry・人対応待ち）")
     _add_common(st); st.add_argument("--json", action="store_true", help="JSON で出力")
 
+    au = sub.add_parser("audit", help="Loop Readiness を採点（L0–L3・スコア・赤旗・提案）")
+    _add_common(au); au.add_argument("--json", action="store_true", help="JSON で出力")
+    au.add_argument("--strict", action="store_true",
+                    help="スコア<40 か critical 赤旗があれば exit 2（CI ゲート用）")
+
     enq = sub.add_parser("enqueue", help="汎用の取り込み口（CLI/stdin/JSON から backlog タスクを作る）")
     _add_common(enq)
     enq.add_argument("--title", default=None, help="タスクのタイトル（必須・--json 時は不要）")
@@ -2645,7 +2782,7 @@ def main(argv=None) -> int:
 
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
-    _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "enqueue",
+    _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit", "enqueue",
                     "approve", "hold", "reprioritize", "instances", "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
@@ -2678,6 +2815,8 @@ def main(argv=None) -> int:
         "needs": lambda: cmd_needs(cfg),
         "enqueue": lambda: cmd_enqueue(cfg, args),
         "stats": lambda: cmd_stats(cfg, getattr(args, "json", False)),
+        "audit": lambda: cmd_audit(cfg, getattr(args, "json", False),
+                                   getattr(args, "strict", False)),
         "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason),
