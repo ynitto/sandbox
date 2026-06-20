@@ -1604,6 +1604,7 @@ class Config:
     watch: bool = False     # 終了条件後もプロセスを残し backlog を監視
     poll: float = 5.0       # watch のポーリング間隔（秒）
     concurrency: int = 1    # 1サイクルで daemon/remote へ並行 submit する独立タスク数（1=逐次）
+    level: str = "unattended"  # 自律度: report(実行せず計画報告) / assisted(実行するが done は人が承認) / unattended(現行)
     registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
     dry_run: bool = False
     once: bool = False
@@ -1841,7 +1842,16 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     cost_used = 0.0
     reason = REASON_DRAINED
 
-    while True:
+    plan: list[str] = []
+    if cfg.level == "report":                 # report: 実行せず「何を・どの順で回すか」だけ報告
+        order = prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
+        plan = [t.id for t in order]
+        for i, t in enumerate(order, 1):
+            append_journal(cfg.journal, f"report: {i}. {t.id} — {t.title}")
+        append_journal(cfg.journal, f"report: 実行待ち {len(order)} 件（report レベル＝act しない）")
+        reason = "report"
+
+    while cfg.level != "report":               # report は消化ループに入らない（計画の報告のみ）
         if cycle >= cfg.max_cycles:
             reason = REASON_BUDGET
             break
@@ -1897,10 +1907,11 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             if ok and not regressed and policy.protect:   # act が保護パスを触ったか（safety denylist）
                 protect_hits = sorted({(p, m) for p in changed_paths_since(cfg.workdir, git_base)
                                        if (m := path_protected(p, policy.protect))})
+            assisted = cfg.level == "assisted"   # assisted: 実行はするが done は人が承認（全件 review）
             if regressed:
                 pass                          # 既に blocked 化済み。done/review にしない
-            elif ok and (needs_human_review(task, policy) or protect_hits):
-                # verify は通ったが承認ゲート対象（review/gate）か、保護パスを触った → done せず人の承認(review)へ
+            elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
+                # verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ref = extract_delivery_ref(act_msg, cfg)
                 task.status = "review"
@@ -1912,6 +1923,9 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                     paths = ", ".join(p for p, _ in protect_hits)
                     task.extra.append(("gate_protect", paths[:200]))
                     gate_why = f"保護パス変更（protect）: {paths[:160]} — approve で done 確定"
+                elif assisted and not needs_human_review(task, policy):
+                    gate_why = "assisted レベル（done は人が承認）。approve で done 確定、" \
+                               "フィードバック記入で差し戻し（再実行）"
                 else:
                     gate_why = "承認ゲート対象（review/policy.gate）。approve で done 確定、" \
                                "フィードバック記入で差し戻し（再実行）"
@@ -1920,7 +1934,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                 persist_task(cfg, task)
                 write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True)
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち"
-                               + (f"（保護パス: {paths[:80]}）" if protect_hits else "（承認ゲート）")
+                               + (f"（保護パス: {paths[:80]}）" if protect_hits
+                                  else "（assisted）" if assisted else "（承認ゲート）")
                                + f" — {ref}")
             elif ok:
                 task.status = "done"
@@ -2002,7 +2017,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified,
             "ingested": ingested, "archived": archived, "promoted": promoted,
             "spawned": spawned_total, "tokens": tokens_used, "cost": cost_used,
-            "inboxed": inboxed}
+            "inboxed": inboxed, "level": cfg.level, "plan": plan}
 
 
 def _cleanup_bus(cfg: Config) -> None:
@@ -2018,7 +2033,7 @@ def exit_code_for(result: dict) -> int:
     counts = result["counts"]
     if counts["blocked"] > 0 or counts.get("review", 0) > 0:   # 人の対応待ち（判断 or 検収承認）
         return 1
-    if result["reason"] == REASON_DRAINED:
+    if result["reason"] in (REASON_DRAINED, "report"):         # 正常停止（消化完了 or 計画報告）
         return 0
     return 2
 
@@ -2293,7 +2308,7 @@ def compute_audit(cfg: Config) -> dict:
         "summary": {"ready": len(ready), "ready_no_verify": len(ready_no_verify),
                     "pending_human": sum(1 for t in tasks
                                          if t.norm_status() in ("blocked", "review")),
-                    "watch": cfg.watch},
+                    "watch": cfg.watch, "level": cfg.level},
     }
 
 
@@ -2445,8 +2460,16 @@ def cmd_run(cfg: Config) -> int:
             return 0
         result = run_loop(cfg)
         counts = result["counts"]
+        if result.get("level") == "report":          # report: 消化せず計画だけ提示
+            print("\n=== kiro-autonomous report（level=report・実行なし）===")
+            plan = result.get("plan", [])
+            print(f"実行待ち {len(plan)} 件（この順で回す予定）:")
+            for i, tid in enumerate(plan, 1):
+                print(f"  {i}. {tid}")
+            print(f"人の対応待ち: blocked={counts['blocked']} review={counts.get('review', 0)}")
+            return exit_code_for(result)
         print("\n=== kiro-autonomous 完了 ===")
-        print(f"停止理由 : {result['reason']}")
+        print(f"停止理由 : {result['reason']}（level={result.get('level')}）")
         print(f"サイクル : {result['cycles']}")
         print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
               f"inbox={counts['inbox']} archived={result.get('archived', 0)} "
@@ -2508,6 +2531,7 @@ CONFIG_DEFAULTS = {
     "model": None,
     "poll": 5.0,
     "concurrency": 1,
+    "level": "unattended",
     "debounce": 3.0,
     "pace": 0.0,
     "max_cycles": 20,
@@ -2612,6 +2636,7 @@ def build_config(args) -> Config:
         debounce=args.debounce,
         watch=bool(getattr(args, "watch", False)), poll=getattr(args, "poll", 5.0),
         concurrency=max(1, int(getattr(args, "concurrency", 1) or 1)),
+        level=getattr(args, "level", None) or "unattended",
         registry=_split_registry(getattr(args, "registry", None)),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
     )
@@ -2702,6 +2727,9 @@ def main(argv=None) -> int:
     run.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
     run.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
+    run.add_argument("--level", default=None, choices=["report", "assisted", "unattended"],
+                     help="自律度の段階導入（既定 unattended）。report=実行せず計画報告のみ／"
+                          "assisted=実行するが done は人が承認（全件 review）／unattended=現行（自動 done）")
     run.add_argument("--concurrency", type=int, default=None,
                      help="1サイクルで daemon/remote へ並行 submit する独立タスク数（既定 1=逐次。"
                           "kiro-flow の worker 並列に委ねる。local 実行は逐次のまま）")
