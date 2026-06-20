@@ -7,6 +7,7 @@
 """
 import importlib.util
 import os
+import signal
 import socket
 import sys
 import tempfile
@@ -945,8 +946,10 @@ class TestLifecycle(unittest.TestCase):
     def _write_rec(self, pid, root):
         import socket
         d = km.instances_dir(); d.mkdir(parents=True, exist_ok=True)
+        # 本番（instance_record）は root を resolve して保存するのでフィクスチャも揃える
+        # （macOS では /tmp→/private/tmp のため生パスだと select の照合に外れる）
         (d / f"{pid}.json").write_text(
-            __import__("json").dumps({"pid": pid, "root": str(root), "watch": True,
+            __import__("json").dumps({"pid": pid, "root": km._norm_root(str(root)), "watch": True,
                                       "host": socket.gethostname()}),
             encoding="utf-8")
 
@@ -990,6 +993,21 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(km.cmd_start(root=str(work), config=cfg), 1)  # 重複起動は拒否
         self.assertEqual(km.cmd_stop(root=str(work)), 0)
         self.assertEqual(km.select_instances(root=root), [])    # 停止で消える
+
+    def test_watch_sigterm_graceful_exit(self):
+        # SIGTERM 化された KeyboardInterrupt は graceful 停止: traceback を出さず 0 で終え、
+        # finally で登録を掃除する（README の「stop は graceful…終了」を担保）。
+        import unittest.mock as mock
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), watch=True)
+            saved = signal.getsignal(signal.SIGTERM)
+            try:
+                with mock.patch.object(km, "run_watch", side_effect=KeyboardInterrupt):
+                    rc = km.cmd_run(cfg)        # 例外は伝播せず捕捉される
+            finally:
+                signal.signal(signal.SIGTERM, saved)   # ハンドラを元へ戻す
+            self.assertEqual(rc, 0)
+            self.assertEqual(km.select_instances(want_all=True), [])  # 登録は掃除済み
 
 
 class TestConfigFile(unittest.TestCase):

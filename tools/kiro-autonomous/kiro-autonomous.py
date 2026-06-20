@@ -2223,6 +2223,12 @@ def cmd_run(cfg: Config) -> int:
               f"ingested={len(result.get('ingested', []))} "
               f"promoted={len(result.get('promoted', []))}")
         return exit_code_for(result)
+    except KeyboardInterrupt:
+        # stop(SIGTERM) / Ctrl-C: graceful 停止。finally でレジストリを掃除し、
+        # traceback を出さずに 0 終了する（KeyboardInterrupt を top-level へ伝播させない）。
+        if cfg.watch:
+            print("\n=== kiro-autonomous 停止（SIGTERM/Ctrl-C 受信）===")
+        return 0
     finally:
         for p in reg:
             try:
