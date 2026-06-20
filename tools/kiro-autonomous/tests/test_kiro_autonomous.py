@@ -179,6 +179,73 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
 
+class TestAtomicClaim(unittest.TestCase):
+    """原子的クレーム（共有 backlog／並列での二重実行防止）。"""
+
+    def _task(self, d, tid="T1"):
+        mkb(d, tid, verify="true")
+        return km.Task(id=tid, title="x", status="ready", verify="true")
+
+    def test_claim_excludes_second_then_release_reopens(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._task(d)
+            self.assertTrue(km.claim_task(cfg, t))        # 1人目は取得
+            self.assertFalse(km.claim_task(cfg, t))       # 2人目は弾かれる（新鮮なクレーム）
+            km.release_claim(cfg, t)
+            self.assertTrue(km.claim_task(cfg, t))         # 解放後は再取得できる
+
+    def test_stale_claim_is_stolen(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._task(d)
+            lock = d / "claims" / "T1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text('{"host":"old","pid":1,"ts":0,"id":"T1"}', encoding="utf-8")  # 大昔
+            self.assertTrue(km.claim_task(cfg, t))         # owner 失踪とみなし奪取
+
+    def test_claim_revalidates_against_disk(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._task(d)
+            (d / "backlog" / "T1.md").unlink()             # 別インスタンスが消化(archive)した想定
+            self.assertFalse(km.claim_task(cfg, t))        # 取得後の再検証で弾く（二重実行防止）
+            self.assertFalse((d / "claims" / "T1.lock").exists())  # ロックも残さない
+            # 状態が consumable でない（review）なら同様に弾く
+            t2 = self._task(d, "T2")
+            (d / "backlog" / "T2.md").write_text(
+                "## T2: x\n- status: review\n- verify: `true`\n", encoding="utf-8")
+            self.assertFalse(km.claim_task(cfg, t2))
+
+    def test_run_loop_releases_all_claims(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true"); mkb(d, "T2", verify="true")
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False, max_cycles=10))
+            self.assertEqual(res["counts"]["done"], 2)
+            claims = d / "claims"
+            self.assertEqual(list(claims.glob("*.lock")) if claims.exists() else [], [])
+
+    def test_held_claim_makes_task_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true"); mkb(d, "T2", verify="true")
+            (d / "claims").mkdir(parents=True, exist_ok=True)
+            (d / "claims" / "T1.lock").write_text(           # 他インスタンスが保持中（新鮮）
+                f'{{"host":"other","pid":99999,"ts":{time.time()},"id":"T1"}}', encoding="utf-8")
+            calls = []
+            res = km.run_loop(cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False,
+                                      max_cycles=10),
+                              act=lambda t, c, loc: calls.append(t.id) or (True, "ok"))
+            self.assertEqual(calls, ["T2"])                  # T1 は他者保持で飛ばす
+            self.assertEqual(res["counts"]["done"], 1)
+            t1 = km.parse_task((d / "backlog" / "T1.md").read_text(), "T1")
+            self.assertEqual(t1.norm_status(), "ready")      # T1 は手つかずのまま
+
+
 class TestAutonomyLevels(unittest.TestCase):
     """自律度レベル（report=計画のみ / assisted=実行するが done は人が承認 / unattended=現行）。"""
 
