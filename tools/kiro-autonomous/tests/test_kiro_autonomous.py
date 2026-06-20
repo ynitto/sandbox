@@ -99,6 +99,83 @@ class TestTriage(unittest.TestCase):
         self.assertEqual(tasks[2].status, "blocked")
 
 
+class TestEnqueue(unittest.TestCase):
+    """汎用の取り込み口（enqueue コマンド・inbox/ ドロップ）。外部ソースの共通入口。"""
+
+    def _cfg(self, d):
+        return cfg_for(d, inbox=d / "inbox", learn=False, auto_adjudicate=False, max_cycles=10)
+
+    def test_spec_required_title_and_status_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            with self.assertRaises(ValueError):
+                km.task_from_spec(cfg, {"verify": "true"})           # title 必須
+            t = km.task_from_spec(cfg, {"title": "A", "verify": "`pytest -q`"})
+            self.assertEqual((t.norm_status(), t.verify, t.source), ("ready", "pytest -q", "enqueue"))
+            t2 = km.task_from_spec(cfg, {"title": "B"})
+            self.assertEqual(t2.norm_status(), "inbox")              # verify 無し→人の triage へ
+
+    def test_spec_fields_and_unknown_preserved(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            t = km.task_from_spec(cfg, {"title": "C", "verify": "true", "priority": "7",
+                                        "after": ["T1", "T2"], "review": "human",
+                                        "note": "メモ", "custom": "保持"})
+            ex = dict(t.extra)
+            self.assertEqual(t.priority, 7)
+            self.assertEqual(ex["after"], "T1,T2")
+            self.assertEqual((ex["review"], ex["note"], ex["custom"]), ("human", "メモ", "保持"))
+
+    def test_enqueue_task_persists_unique_ids(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            a = km.enqueue_task(cfg, {"id": "dup", "title": "x", "verify": "true"})
+            b = km.enqueue_task(cfg, {"id": "dup", "title": "y", "verify": "true"})
+            self.assertEqual(a.id, "dup")
+            self.assertEqual(b.id, "dup-2")                          # 衝突回避
+            self.assertTrue((cfg.backlog / "dup.md").exists())
+            self.assertTrue((cfg.backlog / "dup-2.md").exists())
+
+    def test_ingest_inbox_json_and_md(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            km.ensure_dirs(cfg)
+            (cfg.inbox / "a.json").write_text(
+                __import__("json").dumps([{"id": "J1", "title": "j1", "verify": "true"},
+                                          {"id": "J2", "title": "j2"}]), encoding="utf-8")
+            (cfg.inbox / "b.md").write_text(
+                "## ignore: mdタスク\n- status: ready\n- verify: ``\n", encoding="utf-8")
+            got = km.ingest_inbox(cfg)
+            ids = sorted(t.id for t in got)
+            self.assertEqual(ids, ["J1", "J2", "b"])
+            self.assertEqual(list(cfg.inbox.glob("*")), [])          # 取り込んだら消す
+            self.assertEqual(km.parse_task((cfg.backlog / "J2.md").read_text(), "J2").norm_status(),
+                             "inbox")                                # verify 無し→inbox
+            self.assertEqual(km.parse_task((cfg.backlog / "b.md").read_text(), "b").norm_status(),
+                             "inbox")                                # md も verify 無し→inbox
+
+    def test_run_loop_ingests_inbox_and_consumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            km.ensure_dirs(cfg)
+            (cfg.inbox / "t.json").write_text(
+                __import__("json").dumps({"title": "外部から", "verify": "true"}), encoding="utf-8")
+            self.assertTrue(km.has_work(cfg))                        # watch が起きる
+            res = km.run_loop(cfg)
+            self.assertEqual(len(res["inboxed"]), 1)
+            self.assertEqual(res["counts"]["done"], 1)              # 同じ run で消化
+
+    def test_cmd_enqueue_via_main(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            rc = km.main(["enqueue", "--title", "X", "--verify", "true",
+                          "--workdir", str(d), "--root", str(d / ".ka")])
+            self.assertEqual(rc, 0)
+            files = list((d / ".ka" / "backlog").glob("*.md"))
+            self.assertEqual(len(files), 1)
+            self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
+
+
 class TestRunLoop(unittest.TestCase):
     def test_drains_and_archives_done(self):
         with tempfile.TemporaryDirectory() as d:

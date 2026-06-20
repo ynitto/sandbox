@@ -108,7 +108,18 @@ wsl.exe -d "$DISTRO" -- bash -lc "cat > '$ROOT/backlog/T42.md'" < /tmp/T42.md   
 
 ## モード1: バックログ投入（enqueue）
 
-`backlog/<id>.md`（**1ファイル＝1タスク。id はファイル名の stem**）を作る。書式の正典は
+**最短は `enqueue` コマンド**（検証済みで `backlog/<id>.md` を生成。id 自動・verify 無しは inbox 行き）:
+
+```bash
+$KA enqueue --title "利用規約に最終更新日を表示" --verify 'grep -q 最終更新 web/terms.html' --priority 1
+echo '{"title":"X","verify":"make test","after":"T1"}' | $KA enqueue --json   # stdin/JSON（配列も可）
+cp task.md .kiro-autonomous/inbox/   # ドロップ口に置くだけでも run/watch が取り込む
+```
+
+外部ソース（GitHub issue 抽出・メール 等）からの取り込みは、それらを `--json` 形式に整形して
+`enqueue --json` へパイプする（コアはネットワーク非依存）。
+
+ファイルを直接書く場合（`backlog/<id>.md` **1ファイル＝1タスク。id はファイル名の stem**）。書式の正典は
 `tools/kiro-autonomous/backlog.md.example`（規約コメント付き雛形）。これを写経して1ファイルを書く:
 
 ```bash
