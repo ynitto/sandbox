@@ -76,6 +76,7 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
 ```
 .kiro-autonomous/
   backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
+  claims/<id>.lock     実行権の原子的クレーム（二重実行防止。doing 中だけ存在し終了で解放）
   inbox/               取り込み待ちのドロップ口（外部ソースが .json/.md を置く→run/watch が backlog 化）
   archive/<id>.md      完了タスクの保全先（done で backlog から移動）
   policy.md            優先順位・実行先の上書き（人だけが書く）
@@ -126,6 +127,10 @@ kiro-autonomous run --location daemon --concurrency 3 --executor kiro
 
 - 1サイクル=1タスクの計上は不変（`max_cycles`/予算はそのまま効く。バッチ幅は残サイクル予算も超えない）。
 - `--once` のときは並行せず1件だけ。`--concurrency 1`（既定）は従来どおり完全な逐次。
+- **二重実行防止（原子的クレーム）**: 各タスクは実行前に `claims/<id>.lock` を `O_CREAT\|O_EXCL` で原子的に
+  確保した worker/インスタンスだけが回す。**同じ backlog を複数プロセス（や複数ホスト）で同時に回しても
+  同一タスクが二度実行されない**。ロック取得後は disk を再検証し、別インスタンスが既に消化済み（archive/状態変更）
+  なら実行しない。owner 失踪時は TTL（act+verify を上回る猶予）超で奪取。終了時に解放（クラッシュ時の残骸も再利用可）。
 
 ### 自律度の段階導入（`--level`：report → assisted → unattended）
 

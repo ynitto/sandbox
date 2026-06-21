@@ -1788,21 +1788,83 @@ def _select_batch(order: "list[Task]", cfg: "Config", policy, remaining: int) ->
     return batch or [order[0]]
 
 
+# --- 原子的クレーム: 同一 backlog を複数 worker/インスタンスが回しても二重実行しないための claim。---
+#   <root>/claims/<id>.lock を O_CREAT|O_EXCL で作れた者だけが実行権を持つ。owner 失踪時のため TTL で奪取可。
+def _claims_dir(cfg: "Config") -> Path:
+    return cfg.backlog.parent / "claims"
+
+
+def _claim_ttl(cfg: "Config") -> float:
+    return cfg.act_timeout + cfg.verify_timeout + 60.0   # act+verify を十分に上回る猶予（失踪検知用）
+
+
+def claim_task(cfg: "Config", task: "Task") -> bool:
+    """task の実行権を原子的に取得できれば True。既に新鮮なクレームがあれば False（他者が実行中）。"""
+    d = _claims_dir(cfg)
+    p = d / f"{task.id}.lock"
+    rec = json.dumps({"host": socket.gethostname(), "pid": os.getpid(),
+                      "ts": time.time(), "id": task.id}).encode("utf-8")
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        try:
+            old = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            old = {}
+        if time.time() - float(old.get("ts", 0) or 0) <= _claim_ttl(cfg):
+            return False                      # 新鮮なクレーム＝他者が実行中
+        try:                                  # stale（owner 失踪）＝奪取を試みる
+            p.unlink()
+            fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except (FileExistsError, OSError):
+            return False                      # 競合で他者が先取り
+    except OSError:
+        return True                           # claim 不能な環境（FS 制約等）は従来どおり通す
+    try:
+        os.write(fd, rec)
+    finally:
+        os.close(fd)
+    # クレーム後の再検証: 別インスタンスが既に消化（archive/削除）や状態変更をしていないか。
+    # （ロック取得は「同時実行」を防ぐが、こちらの in-memory ビューが古い場合に二重実行を防ぐ）
+    disk = cfg.backlog / f"{task.id}.md"
+    try:
+        live = parse_task(disk.read_text(encoding="utf-8"), task.id) if disk.exists() else None
+    except OSError:
+        live = None
+    if live is None or live.norm_status() not in CONSUMABLE:
+        release_claim(cfg, task)              # 既に done/review/blocked 等 → 実行しない
+        return False
+    return True
+
+
+def release_claim(cfg: "Config", task: "Task") -> None:
+    """実行権を解放する（done/review/blocked/積み直しのいずれでも、doing でなくなったら呼ぶ）。"""
+    try:
+        (_claims_dir(cfg) / f"{task.id}.lock").unlink()
+    except OSError:
+        pass
+
+
 def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tuple[str, str]]":
-    """batch を doing にして act を実行（2件以上は ThreadPool で並行）。{id: (location, act_msg)} を返す。"""
-    for t in batch:
+    """batch のうち**クレームできたタスクだけ** doing にして act（2件以上は ThreadPool で並行）。
+    返り値のキーはクレーム成功＝実際に実行したタスクのみ（取れなかったものは含めない）。"""
+    claimed = [t for t in batch if claim_task(cfg, t)]   # 二重実行防止: 取れた者だけ進む
+    for t in claimed:
         t.status = "doing"
         persist_task(cfg, t)
-    locs = {t.id: decide_location(t, policy, cfg) for t in batch}
+    locs = {t.id: decide_location(t, policy, cfg) for t in claimed}
     if cfg.dry_run:
-        return {t.id: (locs[t.id], "(dry-run)") for t in batch}
-    if len(batch) == 1:
-        t = batch[0]
+        return {t.id: (locs[t.id], "(dry-run)") for t in claimed}
+    if not claimed:
+        return {}
+    if len(claimed) == 1:
+        t = claimed[0]
         _, msg = act(t, cfg, locs[t.id])
         return {t.id: (locs[t.id], msg)}
     results: dict[str, tuple[str, str]] = {}
-    with ThreadPoolExecutor(max_workers=len(batch)) as ex:
-        futs = {ex.submit(act, t, cfg, locs[t.id]): t for t in batch}
+    with ThreadPoolExecutor(max_workers=len(claimed)) as ex:
+        futs = {ex.submit(act, t, cfg, locs[t.id]): t for t in claimed}
         for fut, t in futs.items():
             try:
                 _, msg = fut.result()
@@ -1842,6 +1904,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     cost_used = 0.0
     reason = REASON_DRAINED
 
+    unavailable: set[str] = set()             # この run でクレームできなかった（他者処理中の）タスク
     plan: list[str] = []
     if cfg.level == "report":                 # report: 実行せず「何を・どの順で回すか」だけ報告
         order = prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
@@ -1865,7 +1928,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             reason = REASON_COST
             break
 
-        order = prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
+        order = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
+                 if t.id not in unavailable]      # 他 worker/インスタンスがクレーム済みは除外
         if not order:
             reason = REASON_DRAINED
             break
@@ -1874,10 +1938,16 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         # verify 以降のローカル状態変更は逐次のまま（competition を避け不変条件を保つ）。
         batch = _select_batch(order, cfg, policy, cfg.max_cycles - cycle)
         git_base = git_change_baseline(cfg.workdir) if policy.protect else None  # 保護パス検査の基準
-        act_results = _act_batch(batch, cfg, act, policy)
+        act_results = _act_batch(batch, cfg, act, policy)   # クレームできたものだけ実行
+        if not act_results:                      # 全て他者がクレーム済み → 次パスへ（この run では触らない）
+            unavailable.update(t.id for t in batch)
+            continue
 
         stop = None
         for task in batch:
+            if task.id not in act_results:        # クレームできなかった分はこの run では飛ばす
+                unavailable.add(task.id)
+                continue
             cycle += 1
             cycle_start = time.time()
             location, act_msg = act_results[task.id]
@@ -1993,6 +2063,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                     append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
                                                 f"({task.retries}/{cfg.max_retries}) — {vmsg}")
 
+            release_claim(cfg, task)          # doing でなくなったので実行権を解放
             if cfg.once:
                 stop = "once"
                 break
