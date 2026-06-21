@@ -358,6 +358,119 @@ def needs_human_review(task: "Task", policy: "Policy") -> bool:
 
 
 # ---------------------------------------------------------------------------
+# タスク単位の自律レベル — 実効 level = 明示 `- level:` > 自動昇格(track) > グローバル `--level`。
+#   安全網（protect/gate/regression/review:human）は level に依らず締める方向で常時上乗せ。
+LEVELS = ("report", "assisted", "unattended")     # 自律度の梯子（左ほど人の関与が大）
+
+
+def _level_rank(level: str) -> int:
+    try:
+        return LEVELS.index((level or "").strip().lower())
+    except ValueError:
+        return LEVELS.index("unattended")          # 未知値は最も自律的（＝既定）に倒す
+
+
+def _autonomy_dir(cfg: "Config") -> Path:
+    return cfg.backlog.parent / "autonomy"
+
+
+def _autonomy_path(cfg: "Config", track: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", track)[:80] or "_"
+    return _autonomy_dir(cfg) / f"{safe}.json"
+
+
+def _autonomy_get(cfg: "Config", track: str, cache: "dict | None" = None) -> "dict | None":
+    """track の自動昇格レコードを返す（無ければ None）。cache があれば読みを1回に抑える。"""
+    if cache is not None and track in cache:
+        return cache[track]
+    p = _autonomy_path(cfg, track)
+    rec = None
+    if p.exists():
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rec = None
+    if cache is not None:
+        cache[track] = rec
+    return rec
+
+
+def resolve_level(task: "Task", cfg: "Config", cache: "dict | None" = None) -> str:
+    """タスクの実効自律レベル。明示 `- level:` を最優先（ピン）、次に track の自動昇格、無ければグローバル。"""
+    explicit = dict(task.extra).get("level", "").strip().lower()
+    if explicit in LEVELS:
+        return explicit
+    if cfg.auto_level:
+        track = dict(task.extra).get("track", "").strip()
+        if track:
+            rec = _autonomy_get(cfg, track, cache)
+            lvl = (rec or {}).get("level")
+            if lvl in LEVELS:
+                return lvl
+    return cfg.level
+
+
+def autonomy_record(cfg: "Config", task: "Task", clean: bool,
+                    cache: "dict | None" = None) -> "tuple | None":
+    """track の実績を1件記録し、必要なら level を昇格/降格する。`--auto-level` かつ `- track:` 付きのみ。
+    clean=完了が手戻りなし（auto-done / approve）、False=手戻り（差し戻し/回帰/偽done/revert）。
+    昇格: 連続 clean ≥ promote_after かつ rework_rate ≤ rework_max で ceiling まで1段上げ。
+    降格: 手戻り1件で assisted を下限に1段下げ、累計2回で assisted にピンし自動管理を停止。"""
+    if not cfg.auto_level:
+        return None
+    track = dict(task.extra).get("track", "").strip()
+    if not track:
+        return None
+    rec = _autonomy_get(cfg, track, cache) or {
+        "track": track, "level": cfg.level, "clean_streak": 0,
+        "recent": [], "demotions": 0, "pinned": False}
+    n = max(1, cfg.level_window)
+    recent = (list(rec.get("recent", [])) + [bool(clean)])[-n:]
+    rec["recent"] = recent
+    cur = rec.get("level", cfg.level)
+    transition = None
+    if clean:
+        rec["clean_streak"] = int(rec.get("clean_streak", 0)) + 1
+        rework_rate = 1.0 - (sum(1 for x in recent if x) / len(recent))
+        if (not rec.get("pinned") and rec["clean_streak"] >= cfg.level_promote_after
+                and rework_rate <= cfg.level_rework_max
+                and _level_rank(cur) < _level_rank(cfg.auto_level_max)
+                and _level_rank(cur) < _level_rank("unattended")):
+            new = LEVELS[_level_rank(cur) + 1]
+            rec["level"], rec["clean_streak"] = new, 0
+            transition = ("promote", cur, new, rework_rate)
+    else:
+        rec["clean_streak"] = 0
+        if not rec.get("pinned"):
+            rec["demotions"] = int(rec.get("demotions", 0)) + 1
+            if rec["demotions"] >= 2:                      # 2回目の手戻り → assisted にピンし人へ
+                rec["level"], rec["pinned"] = "assisted", True
+                transition = ("pin", cur, "assisted", None)
+            else:
+                lowered = LEVELS[max(_level_rank("assisted"), _level_rank(cur) - 1)]
+                if lowered != cur:
+                    rec["level"] = lowered
+                    transition = ("demote", cur, lowered, None)
+    rec["updated"] = datetime.now().isoformat(timespec="seconds")
+    _autonomy_dir(cfg).mkdir(parents=True, exist_ok=True)
+    _autonomy_path(cfg, track).write_text(json.dumps(rec, ensure_ascii=False, indent=2),
+                                          encoding="utf-8")
+    if cache is not None:
+        cache[track] = rec
+    if transition:
+        kind, old, new, rate = transition
+        label = {"promote": "昇格", "demote": "降格", "pin": "人へピン(自動停止)"}[kind]
+        append_decision(cfg, f"track:{track}", "auto",
+                        context=f"track `{track}` の自律度を{label}",
+                        action=f"autolevel-{kind}",
+                        reason=f"{old}→{new}"
+                               + (f" rework_rate={rate:.2f}" if rate is not None else "")
+                               + f" recent={['o' if x else 'x' for x in recent]}",
+                        affects=f"track:{track} → {new}")
+    return transition
+
+
+# ---------------------------------------------------------------------------
 # パス保護ゲート（safety denylist）— act が触ったファイルが policy の `protect:` に
 #   一致したら、verify=PASS でも done にせず人の承認(review)へ。無人運用の blast radius を縮める。
 #   .env / secrets / auth / payments / migrations / infra など「自動で触らせない」場所を守る。
@@ -1160,10 +1273,13 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         if t is None:
             continue
         fb = read_feedback(nf)
+        was_review = t.norm_status() == "review"     # 検収待ちからの復帰か（自律度の clean/手戻り判定用）
         t.status = "ready"
         t.extra = [(k, v) for k, v in t.extra if k != "feedback"]
         if fb:
             t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
+        if was_review:                               # review→ feedback あり=差し戻し(手戻り) / 無し=承認(clean)
+            autonomy_record(cfg, t, clean=not bool(fb))
         persist_task(cfg, t)
         append_decision(cfg, t.id, cfg.actor, context=f"{t.id}（{t.title}）に人のフィードバック",
                         action="feedback-resume", reason=fb[:200] if fb else "チェックで承認",
@@ -1627,6 +1743,11 @@ class Config:
     verify_timeout: float = 120.0
     verify_confirm: int = 1         # verify を最大この回数まで再実行し PASS/FAIL が跨いだら flake として人へ隔離（1=従来）
     require_progress: bool = False  # verify=PASS でも act が baseline 以降に変更を生んでなければ done せず人へ（履歴一致 verify の偽 done 対策）
+    auto_level: bool = False         # 実績連動の自動昇格（track 毎に手戻り率で level を上げ下げ）。既定 off
+    auto_level_max: str = "assisted" # 自動昇格の ceiling。既定 assisted（unattended への自動到達は明示時のみ）
+    level_promote_after: int = 5     # 昇格に要する連続 clean 完了数
+    level_window: int = 10           # 手戻り率の評価窓（直近 N 件の完了）
+    level_rework_max: float = 0.0    # 昇格を許す最大 rework_rate（既定 0＝手戻りゼロ）
     act_timeout: float = 1800.0
     notify_cmd: "str | None" = None
     actor: str = "user"
@@ -1982,15 +2103,10 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
 
     unavailable: set[str] = set()             # この run でクレームできなかった（他者処理中の）タスク
     plan: list[str] = []
-    if cfg.level == "report":                 # report: 実行せず「何を・どの順で回すか」だけ報告
-        order = prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
-        plan = [t.id for t in order]
-        for i, t in enumerate(order, 1):
-            append_journal(cfg.journal, f"report: {i}. {t.id} — {t.title}")
-        append_journal(cfg.journal, f"report: 実行待ち {len(order)} 件（report レベル＝act しない）")
-        reason = "report"
+    plan_seen: set[str] = set()               # 計画に載せた report タスク（重複追記の防止）
+    autonomy_cache: dict = {}                  # track→自動昇格レコードの読みキャッシュ
 
-    while cfg.level != "report":               # report は消化ループに入らない（計画の報告のみ）
+    while True:                                # report タスクは actionable から除外し有限停止で収束
         if cycle >= cfg.max_cycles:
             reason = REASON_BUDGET
             break
@@ -2009,10 +2125,17 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             reason = REASON_THROTTLE
             break
 
-        order = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
-                 if t.id not in unavailable]      # 他 worker/インスタンスがクレーム済みは除外
-        if not order:
-            reason = REASON_DRAINED
+        order_all = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
+                     if t.id not in unavailable]  # 他 worker/インスタンスがクレーム済みは除外
+        levels = {t.id: resolve_level(t, cfg, autonomy_cache) for t in order_all}
+        for t in order_all:                       # report タスクは実行せず「計画」に載せて保留（塩漬け）
+            if levels[t.id] == "report" and t.id not in plan_seen:
+                plan_seen.add(t.id)
+                plan.append(t.id)
+                append_journal(cfg.journal, f"report: {t.id} — {t.title}（level=report・実行せず保留）")
+        order = [t for t in order_all if levels[t.id] != "report"]
+        if not order:                             # 実行可能ゼロ＝消化完了（全 report ならグローバルに応じ report）
+            reason = "report" if cfg.level == "report" else REASON_DRAINED
             break
 
         # 並列消費: 依存解決済み（=互いに独立）な先頭群を daemon/remote へ並行 submit。
@@ -2054,6 +2177,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                         _revert_workdir(cfg)
                     _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}",
                            reasons)
+                    autonomy_record(cfg, task, clean=False, cache=autonomy_cache)  # 手戻り（track 信頼を下げる）
                     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
                                    + ("・revert 済" if cfg.regression_revert else ""))
             changed = set()
@@ -2068,7 +2192,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             require_prog = ((cfg.require_progress or _expect == "changes") and _expect != "none"
                             and (cfg.workdir / ".git").exists())
             no_progress = (ok and not flaky and not regressed and require_prog and not changed)
-            assisted = cfg.level == "assisted"   # assisted: 実行はするが done は人が承認（全件 review）
+            # 実効自律レベル（明示 - level: > track 自動昇格 > グローバル）。report は選択時に除外済み
+            assisted = resolve_level(task, cfg, autonomy_cache) == "assisted"
             if flaky:
                 # verify が不安定（flake）→ 自動修正せず人へ隔離（NG churn / flaky PASS の done を防ぐ）
                 task.extra = [(k, v) for k, v in task.extra if k != "flake"]
@@ -2085,6 +2210,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                 _block(cfg, task, "no-progress: verify=PASS だが baseline 以降の変更が無い"
                        "（履歴一致 verify による偽 done の疑い。verify を差分基準で見直すか expect: none を付与）",
                        reasons)
+                autonomy_record(cfg, task, clean=False, cache=autonomy_cache)  # 偽 done 疑い＝手戻り
                 append_journal(cfg.journal,
                                f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
             elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
@@ -2116,6 +2242,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                                + f" — {ref}")
             elif ok:
                 task.status = "done"
+                autonomy_record(cfg, task, clean=True, cache=autonomy_cache)  # 無人 auto-done＝clean 実績
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ref = extract_delivery_ref(act_msg, cfg, git_base)  # 成果参照（baseline 以降の新規のみ）
                 if dtok or dusd:                             # コストを納品書に残し stats で集計可能に
@@ -2283,6 +2410,7 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         ts = ex.get("gate_ts") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         vmsg = ex.get("gate_vmsg", "")
         t.status = "done"
+        autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
         t.extra = [(k, v) for k, v in t.extra if k not in ("gate_ref", "gate_ts", "gate_vmsg")]
         append_delivery(cfg, t, ref, ts)
         disp = "done（承認・納品書）"
@@ -2776,9 +2904,13 @@ CONFIG_DEFAULTS = {
     "max_spawn": 20,            # 1 run の派生タスク生成上限（0 で無効）
     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
     "regression_revert": False,
+    "auto_level_max": "assisted",   # 自動昇格の ceiling（unattended への自動到達は明示時のみ）
+    "level_promote_after": 5,       # 昇格に要する連続 clean 数
+    "level_window": 10,             # 手戻り率の評価窓（直近 N 件）
+    "level_rework_max": 0.0,        # 昇格を許す最大 rework_rate
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
-    "require_progress": False,
+    "require_progress": False, "auto_level": False,
     "do_archive": True, "learn": True, "cleanup": True,   # do_archive: --archive はパス用なので別名
 }
 
@@ -2850,6 +2982,11 @@ def build_config(args) -> Config:
         regression_cmd=getattr(args, "regression_cmd", None),
         regression_revert=bool(getattr(args, "regression_revert", False)),
         require_progress=bool(getattr(args, "require_progress", False)),
+        auto_level=bool(getattr(args, "auto_level", False)),
+        auto_level_max=str(getattr(args, "auto_level_max", "assisted") or "assisted"),
+        level_promote_after=max(1, int(getattr(args, "level_promote_after", 5) or 5)),
+        level_window=max(1, int(getattr(args, "level_window", 10) or 10)),
+        level_rework_max=max(0.0, float(getattr(args, "level_rework_max", 0.0) or 0.0)),
         ltm=bool(getattr(args, "ltm", False)), ltm_home=resolve_ltm_home(getattr(args, "ltm_home", None)),
         promote_threshold=getattr(args, "promote_threshold", 2),
         rot=bool(getattr(args, "rot", False)), rot_age_days=args.rot_age_days,
@@ -2956,7 +3093,13 @@ def main(argv=None) -> int:
     run.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
     run.add_argument("--level", default=None, choices=["report", "assisted", "unattended"],
                      help="自律度の段階導入（既定 unattended）。report=実行せず計画報告のみ／"
-                          "assisted=実行するが done は人が承認（全件 review）／unattended=現行（自動 done）")
+                          "assisted=実行するが done は人が承認（全件 review）／unattended=現行（自動 done）。"
+                          "タスク毎に `- level:` で上書き可、`- track:` 群は --auto-level で実績連動昇格")
+    run.add_argument("--auto-level", action=argparse.BooleanOptionalAction, default=None,
+                     help="実績連動の自動昇格（opt-in）。`- track:` 群の手戻り率が低ければ level を自動で上げ、"
+                          "手戻りで下げる。ceiling は --auto-level-max（既定 assisted）")
+    run.add_argument("--auto-level-max", default=None, choices=["report", "assisted", "unattended"],
+                     help="自動昇格の上限（既定 assisted）。unattended にすると完全無人化への自動到達を解禁")
     run.add_argument("--throttle", type=float, default=None,
                      help="ソフト予算比率(0=off)。max_tokens/max_cost のこの割合(例 0.8)で run を打ち切り、"
                           "watch は以降 report へ降格（act 停止）。ハード上限の手前で緩やかに止める")
