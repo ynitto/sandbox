@@ -187,7 +187,7 @@ class TestFlakeTolerantVerify(unittest.TestCase):
         seq = list(results)
         i = [0]
 
-        def fake(cmd, wd, to):
+        def fake(cmd, wd, to, env=None):
             v = seq[i[0] % len(seq)]
             i[0] += 1
             return (v, f"exit={0 if v else 1}")
@@ -461,6 +461,97 @@ class TestAudit(unittest.TestCase):
             d = Path(d)
             rc = km.main(["audit", "--json", "--workdir", str(d), "--root", str(d / ".ka")])
             self.assertEqual(rc, 0)                            # backlog 無しでも落ちない
+
+
+class TestVerifyProgress(unittest.TestCase):
+    """履歴一致 verify による偽 done の対策（成果参照の真正化・KIRO_BASE_REV・no-progress ガード）。"""
+
+    def _git(self, d, *a):
+        import subprocess as sp
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "-C", str(d), *a], env=env, capture_output=True)
+
+    def _repo(self, d, verify="`git log --oneline | grep -q refactor`"):
+        (d / "app.py").write_text("x\n", encoding="utf-8")
+        self._git(d, "init", "-q"); self._git(d, "add", "-A")
+        self._git(d, "commit", "-qm", "refactor: pre-existing helper")   # 過去の修正コミット
+        mkbf = d / "backlog"; mkbf.mkdir(exist_ok=True)
+        (mkbf / "R1.md").write_text(f"## R1: x\n- status: ready\n- verify: {verify}\n", encoding="utf-8")
+
+    def _cfg(self, d, **kw):
+        return cfg_for(Path(d), dry_run=True, learn=False, auto_adjudicate=False,
+                       max_cycles=5, **kw)
+
+    def _ref(self, d):
+        rows = [l for l in (d / "DELIVERY.md").read_text(encoding="utf-8").splitlines()
+                if l.startswith("| R1")]
+        return rows[0].split("|")[4].strip() if rows else ""
+
+    def test_delivery_ref_truthful_no_change(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._repo(d)
+            res = km.run_loop(self._cfg(d))                # 既定: done のまま（挙動不変）
+            self.assertEqual(res["counts"]["done"], 1)
+            self.assertEqual(self._ref(d), "(変更なし)")    # 既存コミットを成果物と偽らない
+
+    def test_delivery_ref_prefers_act_pr(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._repo(d)
+            base = km.git_change_baseline(d)
+            self.assertIn("/pull/7", km.extract_delivery_ref(
+                "done https://github.com/o/r/pull/7", self._cfg(d), base))
+
+    def test_meaningful_changes_excludes_kiro_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._repo(d)
+            cfg = self._cfg(d)
+            base = km.git_change_baseline(d)
+            (d / "needs").mkdir(exist_ok=True)
+            (d / "needs" / "X.md").write_text("state", encoding="utf-8")   # kiro 状態ファイル
+            (d / "journal.md").write_text("log", encoding="utf-8")
+            self.assertEqual(km.meaningful_changes(cfg, base), set())      # 成果物ゼロ扱い
+            (d / "app.py").write_text("changed\n", encoding="utf-8")        # 本物のコード変更
+            self.assertIn("app.py", km.meaningful_changes(cfg, base))
+
+    def test_kiro_base_rev_passed_to_verify(self):
+        with tempfile.TemporaryDirectory() as d:
+            # 差分スコープ verify: baseline 以降に該当コミットが無ければ正しく未done
+            d = Path(d)
+            self._repo(d, '`test -n "$(git log $KIRO_BASE_REV..HEAD --grep refactor 2>/dev/null)"`')
+            res = km.run_loop(self._cfg(d))
+            self.assertEqual(res["counts"]["done"], 0)      # 過去コミットには騙されない
+
+    def test_require_progress_blocks_false_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._repo(d)
+            res = km.run_loop(self._cfg(d, require_progress=True))
+            self.assertEqual(res["counts"]["done"], 0)
+            self.assertEqual(res["counts"]["blocked"], 1)
+            self.assertTrue((d / "needs" / "R1.md").exists())
+            t = km.parse_task((d / "backlog" / "R1.md").read_text(), "R1")
+            self.assertEqual(dict(t.extra).get("noprogress"), "1")
+
+    def test_expect_none_opts_out(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._repo(d)
+            (d / "backlog" / "R1.md").write_text(
+                "## R1: x\n- status: ready\n- verify: `git log|grep -q refactor`\n- expect: none\n",
+                encoding="utf-8")
+            res = km.run_loop(self._cfg(d, require_progress=True))
+            self.assertEqual(res["counts"]["done"], 1)      # 正当な無変更タスクは opt-out で done
+
+    def test_expect_changes_opts_in_without_global(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._repo(d)
+            (d / "backlog" / "R1.md").write_text(
+                "## R1: x\n- status: ready\n- verify: `git log|grep -q refactor`\n- expect: changes\n",
+                encoding="utf-8")
+            res = km.run_loop(self._cfg(d))                 # グローバル未指定でもタスク単位で発動
+            self.assertEqual(res["counts"]["done"], 0)
+            self.assertEqual(res["counts"]["blocked"], 1)
 
 
 class TestProtectPaths(unittest.TestCase):
