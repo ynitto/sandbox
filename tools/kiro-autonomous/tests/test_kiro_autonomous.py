@@ -2172,6 +2172,17 @@ class TestMultiProject(unittest.TestCase):
             self.assertTrue((root / "projects" / "p1" / "backlog").exists())
             self.assertFalse((root / "projects" / "p2").exists())
 
+    def test_instance_record_exposes_project_and_container(self):
+        # 外部操作者（スキル）が発見後に `--root <container> --project <name>` を組めること
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            proot = d / ".ka" / "projects" / "payments"
+            proot.mkdir(parents=True)
+            rec = km.instance_record(cfg_for(proot, project_name="payments"))
+            self.assertEqual(rec["project"], "payments")
+            self.assertEqual(rec["container"], str((d / ".ka").resolve()))
+            self.assertEqual(rec["root"], str(proot.resolve()))
+
     def test_project_dirname_sanitizes(self):
         self.assertEqual(km._project_dirname("a/b:c"), "a_b_c")
         self.assertEqual(km._project_dirname("  "), "default")

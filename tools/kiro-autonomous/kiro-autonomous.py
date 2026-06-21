@@ -793,12 +793,18 @@ def to_windows_path(p: "str | Path") -> "str | None":
 
 
 def instance_record(cfg: "Config") -> dict:
-    """このプロセスの監視対象（ルートと主要パス・OS/WSL 情報）を表す発見用レコード。"""
+    """このプロセスの監視対象（ルートと主要パス・OS/WSL 情報）を表す発見用レコード。
+    `root` は per-project root（<container>/projects/<name>）。外部操作者が CLI を組むときは
+    **`container` を `--root` に・`project` を `--project` に**渡す（root を --root に渡すと二重ネストする）。"""
     root = cfg.backlog.parent.resolve()
+    # container = projects/<name> を 1 段上がった値（標準レイアウト）。--backlog 等で逸脱したら root を流用。
+    container = root.parent.parent if root.parent.name == "projects" else root
     rt = detect_runtime()
     rec = {
         "pid": os.getpid(),
         "root": str(root),
+        "project": cfg.project_name or root.name,
+        "container": str(container),
         "backlog": str(cfg.backlog.resolve()),
         "needs": str(cfg.needs.resolve()),
         "decisions": str(cfg.decisions.resolve()),
