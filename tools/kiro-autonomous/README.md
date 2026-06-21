@@ -6,7 +6,7 @@
 `needs/<id>.md`（フィードバック欄つき）で差し出し、判断は `decisions/<id>.md` に残す。
 
 > タスク書式（backlog/<id>.md）の規約は [`backlog.md.example`](backlog.md.example)、
-> 設計は [`docs/designs/2026-06-16-kiro-autonomous-mvp-design.md`](../../docs/designs/2026-06-16-kiro-autonomous-mvp-design.md)。
+> 設計は [`docs/designs/kiro-autonomous-design.md`](../../docs/designs/kiro-autonomous-design.md)（統合設計書）。
 > `kiro-` 接頭辞は実行を kiro-flow＝kiro-cli に委譲するため。
 >
 > 🚦 **熟練度別の設定・動かし方は [`GUIDE.md`](GUIDE.md)**（L0 下見 → L1 試運転 → L2 日常運用 → L3 無人運用 → L4 スケール）。
@@ -31,7 +31,7 @@ done を**自己申告で確定させない**（verify の終了コード0のみ
 ## プロジェクト層（`project`）— charter 駆動の長期改善ループ
 
 backlog（タスク）の上に、**人が書く目標**から逆算して回す**もう一段のループ**を載せる
-（設計: [project-loop 設計メモ](../../docs/designs/2026-06-21-kiro-autonomous-project-loop-design.md)）。
+（設計: [統合設計書 §11](../../docs/designs/kiro-autonomous-design.md)）。
 backlog を消化して `drained` で止まる正準ループに対し、`project` は「**枯渇**」と「**目標達成**」を分離し、
 未達なら改善タスクを生成して長期に回す。
 
@@ -246,7 +246,7 @@ kiro-autonomous run                     # 既定 unattended（従来どおり）
 
 実運用では自律度は backlog 毎に違う（決済コードは承認必須、typo 修正は無人で良い）。`--level` は run 全体の
 既定だが、**タスク毎に上書き**でき、さらに**実績で自動調整**できる。設計詳細は
-[per-task autonomy 設計メモ](../../docs/designs/2026-06-21-kiro-autonomous-per-task-autonomy-design.md)。
+[統合設計書 §7.1–7.2](../../docs/designs/kiro-autonomous-design.md)。
 
 - **`- level: report|assisted|unattended`**（タスク行）: そのタスクの自律度をグローバルより優先（**上書き**）。
   実効 = `- level:`（明示）＞ track の自動昇格 ＞ グローバル `--level`。`protect`/`gate`/`regression` は常に上乗せ。
