@@ -1570,7 +1570,49 @@ def resolve_kiro_flow(explicit: "str | None") -> "list[str]":
     return [sys.executable, str(local)]
 
 
-def build_request(task: Task) -> str:
+def charter_context(cfg: "Config", max_chars: int = 1400) -> str:
+    """charter.md（プロジェクト定義＝目標/制約/前提/成果物）を act ワーカーへ渡す文脈に要約する。
+    **`project` でも通常 `run` でも、charter.md が存在すれば全 act に注入**＝kiro-flow のワーカーが
+    プロジェクトの北極星（目標・制約）を踏まえて働く。charter 無し（通常運用）では空＝従来どおり。"""
+    try:
+        ch = load_charter(cfg)
+    except (OSError, ValueError):
+        return ""
+    if ch is None:
+        return ""
+    parts = []
+    if ch.goal:
+        parts.append(f"目標: {ch.goal}")
+    if ch.constraints:
+        parts.append("制約:\n" + "\n".join(f"- {c}" for c in ch.constraints))
+    if ch.assumptions:
+        parts.append("前提:\n" + "\n".join(f"- {a}" for a in ch.assumptions))
+    if ch.deliverables:
+        parts.append("成果物:\n" + "\n".join(f"- {d}" for d in ch.deliverables))
+    block = "\n".join(parts).strip()
+    if len(block) > max_chars:                  # 有界化（先頭＝目標/制約を優先して残す）
+        block = block[:max_chars].rstrip() + " …"
+    return block
+
+
+def decision_context(cfg: "Config", task: Task, max_chars: int = 1000) -> str:
+    """このタスクの過去の判断記録（needs の判断結果・人の承認/差し戻し/learn）を act ワーカーへ渡す。
+    **project/backlog を問わず**、`decisions/<id>.md` があれば注入する（末尾＝直近を優先して有界化）。"""
+    dp = decision_path(cfg, task.id)
+    if not dp.exists():
+        return ""
+    try:
+        txt = dp.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if not txt:
+        return ""
+    if len(txt) > max_chars:
+        txt = "…\n" + txt[-max_chars:]
+    return txt
+
+
+def build_request(task: Task, cfg: "Config | None" = None) -> str:
     base = (f"{task.title}\n\n"
             f"このタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n"
             f"完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n"
@@ -1578,6 +1620,15 @@ def build_request(task: Task) -> str:
     fb = task.feedback()
     if fb:
         base += f"\n\n人からのフィードバック（必ず反映すること）:\n{fb}"
+    if cfg is not None:
+        # 定義（charter）と判断結果（decisions）を、project でも通常 run でもワーカーへ渡す。
+        cc = charter_context(cfg)
+        if cc:
+            base += ("\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n"
+                     + cc)
+        dc = decision_context(cfg, task)
+        if dc:
+            base += ("\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n" + dc)
     return base
 
 
@@ -1620,7 +1671,7 @@ def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
 def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
     """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。"""
     return _kf_base(cfg, use_git) + [
-        "run", build_request(task), "--planner", cfg.flow_planner,
+        "run", build_request(task, cfg), "--planner", cfg.flow_planner,
         "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
 
 
@@ -1672,7 +1723,7 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
     base = _kf_base(cfg, use_git)
     try:
-        sub = subprocess.run(base + ["submit", build_request(task)], cwd=str(cfg.workdir),
+        sub = subprocess.run(base + ["submit", build_request(task, cfg)], cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         return (False, f"submit 失敗: {e}")

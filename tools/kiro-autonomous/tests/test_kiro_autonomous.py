@@ -2108,6 +2108,29 @@ class TestProjectLayer(unittest.TestCase):
                              km.REASON_PROJECT_BLOCKED)
             self.assertEqual(code, 1)
 
+    def test_request_injects_charter_and_decisions(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, CHARTER.replace("{flag}", "x"))
+            cfg = cfg_for(d)
+            cfg.decisions.mkdir(parents=True, exist_ok=True)
+            km.append_decision(cfg, "T1", "user", context="前回の判断",
+                               action="approve", reason="ライブラリXを使う", affects="T1")
+            t = km.Task(id="T1", title="やる", verify="true")
+            req = km.build_request(t, cfg)
+            self.assertIn("プロジェクト定義", req)       # charter(定義)が注入される
+            self.assertIn("CSV", req)                    # goal 本文
+            self.assertIn("過去の判断記録", req)         # needs の判断結果(decisions)が注入される
+            self.assertIn("ライブラリXを使う", req)
+
+    def test_request_no_charter_is_backward_compatible(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)                              # charter.md 無し（通常運用）
+            t = km.Task(id="T1", title="やる", verify="true")
+            self.assertNotIn("プロジェクト定義", km.build_request(t, cfg))
+            self.assertEqual(km.build_request(t), km.build_request(t, None))  # cfg 無しは従来どおり
+
     def test_idempotent_plan_dedup(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

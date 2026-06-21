@@ -51,6 +51,17 @@ backlog を消化して `drained` で止まる正準ループに対し、`projec
 - **知能は委譲**: plan の分解・evaluate の敵対的レビューはエージェントへ、enqueue・acceptance 実行・収束判定は
   本体が決定的に行う（stdlib のみ）。`project` を呼ばない限り従来挙動は完全不変。
 
+### ワーカーへの定義/判断の伝播（charter + decisions の注入）
+
+kiro-flow へ委譲する act 依頼（`build_request`）に、**プロジェクト定義（charter）**と**過去の判断結果
+（`decisions/<id>.md`）**を文脈として注入する。これにより kiro-flow で動くワーカーが、個票だけでなく
+**プロジェクトの目標・制約・前提・成果物と、人の過去の承認/差し戻し/learn を踏まえて**働く。
+
+- **`project` か通常 `run` かを問わない**: `charter.md` が存在すれば全 act に定義が乗る（無ければ従来どおり空）。
+  判断記録もタスクに `decisions/<id>.md` があれば project/backlog に関わらず注入される。
+- **有界**: charter は目標/制約優先で要約（既定 1400 字）、decisions は末尾＝直近優先（既定 1000 字）。
+- 注入は**依頼文字列の組み立てだけ**で、本体の不変条件（done は verify のみ・決定的）には触れない。
+
 ```bash
 cp tools/kiro-autonomous/charter.md.example .kiro-autonomous/charter.md   # 目標を書く（正典はこのテンプレ）
 kiro-autonomous project                       # plan→execute→evaluate を回す（収束で人へ）
