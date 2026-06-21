@@ -2,10 +2,8 @@
 
 「いきなり無人運用にしない」ためのガイド。**L0 下見 → L1 試運転 → L2 日常運用 → L3 無人運用 → L4 スケール**の
 順に、各段階で**何を設定し・どう動かし・いつ次へ進むか**をまとめる。詳細仕様は [README](README.md) と
-[運用設計書](../../docs/designs/2026-06-19-kiro-autonomous-ops-design.md) を参照。目標から回す上位ループと複数
-プロジェクトは [§プロジェクト層](#プロジェクト層charter-駆動-目標から回す複数プロジェクト)・
-[project-loop 設計](../../docs/designs/2026-06-21-kiro-autonomous-project-loop-design.md)・
-[multi-project 設計](../../docs/designs/2026-06-21-kiro-autonomous-multi-project-design.md)。
+[統合設計書](../../docs/designs/kiro-autonomous-design.md) を参照。目標から回す上位ループと複数プロジェクトは
+[§プロジェクト層](#プロジェクト層charter-駆動-目標から回す複数プロジェクト)・[設計書 §11–12](../../docs/designs/kiro-autonomous-design.md)。
 
 > 大原則: **done は verify の終了コード 0 だけが根拠**。信頼は `--level` と各種ゲートで段階的に明け渡す。
 > 迷ったら一段下のレベルで回し、`audit` のスコアが上がってから次へ進む。

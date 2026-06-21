@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """kiro-autonomous — Loop Engineering MVP（バックログを捌く制御層）
 
-正準ループ（設計書 docs/designs/2026-06-16-kiro-autonomous-mvp-design.md §2）:
+正準ループ（設計書 docs/designs/kiro-autonomous-design.md §2）:
   ① backlog/（案件毎ファイル）を読み優先順位をつけ、最優先タスクを kiro-flow に投げる
   ② 優先順位付けは原則 kiro-cli。stub 時は最古優先（FIFO）。人間は policy.md で上書きできる
   ③ kiro-flow の結果を verify ゲートで検証。done はファイル削除、NG は積み直す
@@ -793,12 +793,18 @@ def to_windows_path(p: "str | Path") -> "str | None":
 
 
 def instance_record(cfg: "Config") -> dict:
-    """このプロセスの監視対象（ルートと主要パス・OS/WSL 情報）を表す発見用レコード。"""
+    """このプロセスの監視対象（ルートと主要パス・OS/WSL 情報）を表す発見用レコード。
+    `root` は per-project root（<container>/projects/<name>）。外部操作者が CLI を組むときは
+    **`container` を `--root` に・`project` を `--project` に**渡す（root を --root に渡すと二重ネストする）。"""
     root = cfg.backlog.parent.resolve()
+    # container = projects/<name> を 1 段上がった値（標準レイアウト）。--backlog 等で逸脱したら root を流用。
+    container = root.parent.parent if root.parent.name == "projects" else root
     rt = detect_runtime()
     rec = {
         "pid": os.getpid(),
         "root": str(root),
+        "project": cfg.project_name or root.name,
+        "container": str(container),
         "backlog": str(cfg.backlog.resolve()),
         "needs": str(cfg.needs.resolve()),
         "decisions": str(cfg.decisions.resolve()),
@@ -2972,7 +2978,7 @@ def cmd_run(cfg: Config) -> int:
 
 # ---------------------------------------------------------------------------
 # プロジェクト層（charter 駆動の plan→execute→evaluate ループ）
-#   設計: docs/designs/2026-06-21-kiro-autonomous-project-loop-design.md
+#   設計: docs/designs/kiro-autonomous-design.md §11（プロジェクト層）
 #   backlog の上に「目標→分解→消化→評価→改善」のもう一段を載せる。内側の正準ループ（run_loop）は
 #   無改造で呼ぶ。done は acceptance(=verify) 全 PASS のみが根拠。知能（分解・敵対的レビュー）は
 #   エージェントへ委譲し、本体は決定的なファイル操作（charter 解釈・enqueue・acceptance 実行・収束計算）
