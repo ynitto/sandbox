@@ -8,6 +8,8 @@
 > タスク書式（backlog/<id>.md）の規約は [`backlog.md.example`](backlog.md.example)、
 > 設計は [`docs/designs/2026-06-16-kiro-autonomous-mvp-design.md`](../../docs/designs/2026-06-16-kiro-autonomous-mvp-design.md)。
 > `kiro-` 接頭辞は実行を kiro-flow＝kiro-cli に委譲するため。
+>
+> 🚦 **熟練度別の設定・動かし方は [`GUIDE.md`](GUIDE.md)**（L0 下見 → L1 試運転 → L2 日常運用 → L3 無人運用 → L4 スケール）。
 
 ## 正準ループ（5点）
 
