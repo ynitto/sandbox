@@ -441,6 +441,33 @@ def changed_paths_since(workdir: "Path", baseline: "tuple[str, frozenset] | None
     return changed
 
 
+def _kiro_managed_rels(cfg: "Config") -> "set[str]":
+    """kiro-autonomous 自身の状態ファイル/ディレクトリの、workdir からの相対パス集合。
+    backlog/needs/decisions/archive/claims/inbox/bus・journal/DELIVERY/run-log/policy は
+    『成果物』ではなく運用状態なので、進捗判定（no-progress）や成果参照から除外する。"""
+    wd = cfg.workdir.resolve()
+    cand = [cfg.backlog, cfg.needs, cfg.decisions, cfg.archive_dir(), cfg.journal,
+            Path(cfg.delivery) if cfg.delivery else None, cfg.runlog, cfg.policy,
+            cfg.bus, cfg.inbox, _claims_dir(cfg)]
+    rels: set[str] = set()
+    for p in cand:
+        if not p:
+            continue
+        try:
+            rels.add(str(p.resolve().relative_to(wd)))
+        except (ValueError, OSError):
+            continue                                       # workdir 外 → git status に出ない
+    return rels
+
+
+def meaningful_changes(cfg: "Config", baseline: "tuple[str, frozenset] | None") -> "set[str]":
+    """act が生んだ『成果物としての』変更（kiro-autonomous 自身の状態ファイルを除いた差分）。"""
+    changed = changed_paths_since(cfg.workdir, baseline)
+    managed = _kiro_managed_rels(cfg)
+    return {c for c in changed
+            if not any(c == r or c.startswith(r + "/") for r in managed)}
+
+
 def append_policy(path: Path, key: str, value: str) -> None:
     header = "" if path.exists() else "# kiro-autonomous policy（人間による上書き）\n\n"
     with path.open("a", encoding="utf-8") as f:
@@ -1388,12 +1415,13 @@ def triage(tasks, policy) -> "list[tuple[Task, str]]":
 # ---------------------------------------------------------------------------
 # verify ゲート / act（kiro-flow 委譲）
 # ---------------------------------------------------------------------------
-def run_verify(cmd: str, workdir: Path, timeout: float) -> "tuple[bool, str]":
+def run_verify(cmd: str, workdir: Path, timeout: float, env: "dict | None" = None) -> "tuple[bool, str]":
     if not cmd.strip():
         return (False, "verify 未定義（自己申告では done にできない → 人の判断へ）")
     try:
         proc = subprocess.run(cmd, shell=True, cwd=str(workdir), timeout=timeout,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True,
+                              env={**os.environ, **env} if env else None)
     except subprocess.TimeoutExpired:
         return (False, f"verify タイムアウト（{timeout}s）")
     tail = (proc.stdout or "")[-400:] + (proc.stderr or "")[-400:]
@@ -1401,15 +1429,15 @@ def run_verify(cmd: str, workdir: Path, timeout: float) -> "tuple[bool, str]":
 
 
 def run_verify_stable(cmd: str, workdir: Path, timeout: float,
-                      confirm: int = 1) -> "tuple[bool, bool, str]":
+                      confirm: int = 1, env: "dict | None" = None) -> "tuple[bool, bool, str]":
     """verify を最大 confirm 回まで実行し (ok, flaky, msg) を返す。confirm>1 で結果が PASS/FAIL を
     跨いだら flaky=True（不安定）。揺れる verify を NG 誤読して retry churn したり、flaky PASS を
     そのまま done にするのを防ぐ（一致したら確定、跨いだら人へ隔離）。"""
-    ok, msg = run_verify(cmd, workdir, timeout)
+    ok, msg = run_verify(cmd, workdir, timeout, env)
     if confirm <= 1 or not cmd.strip():        # 既定(1)や verify 未定義は従来どおり1回
         return (ok, False, msg)
     for _ in range(confirm - 1):
-        ok2, msg2 = run_verify(cmd, workdir, timeout)
+        ok2, msg2 = run_verify(cmd, workdir, timeout, env)
         if ok2 != ok:                          # PASS/FAIL を跨いだ＝不安定（flake）
             return (ok, True, f"flaky: verify が不安定（{confirm} 回中で PASS/FAIL 混在）"
                               f" — 1回目:[{msg}] 別回:[{msg2}]"[:500])
@@ -1598,6 +1626,7 @@ class Config:
     pace: float = 0.0
     verify_timeout: float = 120.0
     verify_confirm: int = 1         # verify を最大この回数まで再実行し PASS/FAIL が跨いだら flake として人へ隔離（1=従来）
+    require_progress: bool = False  # verify=PASS でも act が baseline 以降に変更を生んでなければ done せず人へ（履歴一致 verify の偽 done 対策）
     act_timeout: float = 1800.0
     notify_cmd: "str | None" = None
     actor: str = "user"
@@ -1647,14 +1676,27 @@ def ensure_dirs(cfg: Config) -> None:
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
 
 
-def extract_delivery_ref(act_msg: str, cfg: Config) -> str:
-    """成果物の参照を得る。act 出力の PR URL / commit SHA を優先、無ければ workdir の git。"""
+def extract_delivery_ref(act_msg: str, cfg: Config,
+                         baseline: "tuple[str, frozenset] | None" = None) -> str:
+    """成果物の参照を得る。act 出力の PR URL / commit SHA を優先。
+    baseline（act 前スナップショット）が渡されたら **baseline 以降の新規コミット/未コミット変更のみ**を
+    成果物とみなし、変化が無ければ `(変更なし)` を返す（既存コミットを成果物と偽らない＝偽 done の可視化）。
+    baseline=None のときは従来どおり `git log -1`（後方互換）。"""
     m = re.search(r"https?://\S+/(?:pull|merge_requests)/\d+", act_msg or "")
     if m:
         return m.group(0)
     m = re.search(r"\b[0-9a-f]{7,40}\b", act_msg or "")
     if m:
         return f"commit {m.group(0)}"
+    if baseline is not None:
+        head0, _ = baseline
+        head1 = _git_out(cfg.workdir, "rev-parse", "HEAD").strip()
+        if head1 and head1 != head0:                      # baseline 以降の新規コミット
+            line = _git_out(cfg.workdir, "log", "-1", "--format=%h %s").strip()
+            return f"git: {line}" if line else f"commit {head1[:8]}"
+        if meaningful_changes(cfg, baseline):             # 未コミットの作業ツリー変更（kiro 状態は除外）
+            return "git: 未コミットの変更あり"
+        return "(変更なし)"                               # ← 既存コミットを成果物として報告しない
     try:
         r = subprocess.run(["git", "-C", str(cfg.workdir), "log", "-1", "--format=%h %s"],
                            capture_output=True, text=True, timeout=10)
@@ -1976,7 +2018,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         # 並列消費: 依存解決済み（=互いに独立）な先頭群を daemon/remote へ並行 submit。
         # verify 以降のローカル状態変更は逐次のまま（competition を避け不変条件を保つ）。
         batch = _select_batch(order, cfg, policy, cfg.max_cycles - cycle)
-        git_base = git_change_baseline(cfg.workdir) if policy.protect else None  # 保護パス検査の基準
+        git_base = git_change_baseline(cfg.workdir)   # act 前スナップショット（保護パス/進捗判定/成果参照）
+        verify_env = {"KIRO_BASE_REV": git_base[0]} if git_base[0] else None  # verify に差分基準を渡す
         act_results = _act_batch(batch, cfg, act, policy)   # クレームできたものだけ実行
         if not act_results:                      # 全て他者がクレーム済み → 次パスへ（この run では触らない）
             unavailable.update(t.id for t in batch)
@@ -2001,10 +2044,10 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                                             f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
 
             ok, flaky, vmsg = run_verify_stable(task.verify, cfg.workdir, cfg.verify_timeout,
-                                                cfg.verify_confirm)
+                                                cfg.verify_confirm, verify_env)
             regressed = False
             if ok and not flaky and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故の検知）
-                rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout)
+                rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout, verify_env)
                 if not rok:
                     regressed = True
                     if cfg.regression_revert:
@@ -2013,10 +2056,18 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                            reasons)
                     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
                                    + ("・revert 済" if cfg.regression_revert else ""))
+            changed = set()
             protect_hits = []
-            if ok and not flaky and not regressed and policy.protect:  # act が保護パスを触ったか（safety denylist）
-                protect_hits = sorted({(p, m) for p in changed_paths_since(cfg.workdir, git_base)
-                                       if (m := path_protected(p, policy.protect))})
+            if ok and not flaky and not regressed:
+                changed = meaningful_changes(cfg, git_base)   # act が生んだ成果差分（kiro 状態ファイルは除外）
+                if policy.protect:                        # act が保護パスを触ったか（safety denylist）
+                    protect_hits = sorted({(p, m) for p in changed
+                                           if (m := path_protected(p, policy.protect))})
+            # no-progress: verify=PASS でも変更ゼロ＝履歴一致 verify による偽 done の疑い（opt-in）
+            _expect = dict(task.extra).get("expect", "")
+            require_prog = ((cfg.require_progress or _expect == "changes") and _expect != "none"
+                            and (cfg.workdir / ".git").exists())
+            no_progress = (ok and not flaky and not regressed and require_prog and not changed)
             assisted = cfg.level == "assisted"   # assisted: 実行はするが done は人が承認（全件 review）
             if flaky:
                 # verify が不安定（flake）→ 自動修正せず人へ隔離（NG churn / flaky PASS の done を防ぐ）
@@ -2027,10 +2078,19 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                                f"cycle {cycle}: {task.id} → 人の判断（flake 検知・quarantine）")
             elif regressed:
                 pass                          # 既に blocked 化済み。done/review にしない
+            elif no_progress:
+                # verify=PASS だが act が何も変更していない＝履歴一致 verify 等による偽 done の疑い → 人へ
+                task.extra = [(k, v) for k, v in task.extra if k != "noprogress"]
+                task.extra.append(("noprogress", "1"))
+                _block(cfg, task, "no-progress: verify=PASS だが baseline 以降の変更が無い"
+                       "（履歴一致 verify による偽 done の疑い。verify を差分基準で見直すか expect: none を付与）",
+                       reasons)
+                append_journal(cfg.journal,
+                               f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
             elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
                 # verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ref = extract_delivery_ref(act_msg, cfg)
+                ref = extract_delivery_ref(act_msg, cfg, git_base)
                 task.status = "review"
                 task.extra = [(k, v) for k, v in task.extra
                               if k not in ("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")]
@@ -2057,7 +2117,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             elif ok:
                 task.status = "done"
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ref = extract_delivery_ref(act_msg, cfg)     # 成果物の参照（PR/commit/git）
+                ref = extract_delivery_ref(act_msg, cfg, git_base)  # 成果参照（baseline 以降の新規のみ）
                 if dtok or dusd:                             # コストを納品書に残し stats で集計可能に
                     task.extra.append(("cost", f"tokens={dtok} usd={dusd:.4f}"))
                 append_delivery(cfg, task, ref, ts)          # 受領書一覧に追記
@@ -2718,6 +2778,7 @@ CONFIG_DEFAULTS = {
     "regression_revert": False,
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
+    "require_progress": False,
     "do_archive": True, "learn": True, "cleanup": True,   # do_archive: --archive はパス用なので別名
 }
 
@@ -2788,6 +2849,7 @@ def build_config(args) -> Config:
         max_spawn=getattr(args, "max_spawn", 20),
         regression_cmd=getattr(args, "regression_cmd", None),
         regression_revert=bool(getattr(args, "regression_revert", False)),
+        require_progress=bool(getattr(args, "require_progress", False)),
         ltm=bool(getattr(args, "ltm", False)), ltm_home=resolve_ltm_home(getattr(args, "ltm_home", None)),
         promote_threshold=getattr(args, "promote_threshold", 2),
         rot=bool(getattr(args, "rot", False)), rot_age_days=args.rot_age_days,
@@ -2908,6 +2970,9 @@ def main(argv=None) -> int:
                      default=None, help="done を archive/ へ退避せず削除（既定は退避。config: do_archive）")
     run.add_argument("--rot", action=argparse.BooleanOptionalAction, default=None,
                      help="triage で rot（古い/重複/実行不能）を検知し人の判断へ回す")
+    run.add_argument("--require-progress", action=argparse.BooleanOptionalAction, default=None,
+                     help="verify=PASS でも act が baseline 以降に変更を生んでなければ done せず人へ"
+                          "（履歴一致 verify の偽 done 対策。タスク毎に - expect: changes / none で上書き）")
     run.add_argument("--cleanup", action=argparse.BooleanOptionalAction, default=None,
                      help="run 後に kiro-flow バスの一時状態を掃除（--no-cleanup で残す。既定 on）")
     run.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None,
