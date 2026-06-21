@@ -174,7 +174,8 @@ class TestEnqueue(unittest.TestCase):
             rc = km.main(["enqueue", "--title", "X", "--verify", "true",
                           "--workdir", str(d), "--root", str(d / ".ka")])
             self.assertEqual(rc, 0)
-            files = list((d / ".ka" / "backlog").glob("*.md"))
+            # 新レイアウト: <root>/projects/default/backlog（--project 未指定は default）
+            files = list((d / ".ka" / "projects" / "default" / "backlog").glob("*.md"))
             self.assertEqual(len(files), 1)
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
@@ -1249,19 +1250,21 @@ class TestLayout(unittest.TestCase):
     def test_files_consolidated_under_root(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            bl = d / ".kiro-autonomous" / "backlog"
+            # 新レイアウト: per-project root は <root>/projects/default/
+            proot = d / ".kiro-autonomous" / "projects" / "default"
+            bl = proot / "backlog"
             bl.mkdir(parents=True)
             (bl / "T1.md").write_text(
                 "## T1: x\n- status: ready\n- verify: `true`\n- retries: 0\n", encoding="utf-8")
             rc = km.main(["run", "--workdir", str(d), "--planner", "none",
                           "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
             self.assertEqual(rc, 0)
-            root = d / ".kiro-autonomous"
-            self.assertTrue((root / "journal.md").exists())
-            self.assertTrue((root / "archive" / "T1.md").exists())   # done → root/archive
+            self.assertTrue((proot / "journal.md").exists())
+            self.assertTrue((proot / "archive" / "T1.md").exists())   # done → project/archive
             self.assertFalse((bl / "T1.md").exists())
-            # ルート以外に散らばっていない
+            # プロジェクト root 以外に散らばっていない
             self.assertFalse((d / "backlog").exists())
+            self.assertFalse((d / ".kiro-autonomous" / "backlog").exists())
             self.assertFalse((d / "journal.md").exists())
 
     def test_cleanup_bus_removes_run_state(self):
@@ -1551,15 +1554,15 @@ class TestLifecycle(unittest.TestCase):
         cfg = str(work / "kiro-autonomous.json")
         rc = km.cmd_start(root=str(work), config=cfg)
         self.assertEqual(rc, 0)
-        # 登録の出現を待つ（最大 ~5s）
-        root = str((work).resolve())
+        # 登録の出現を待つ（最大 ~5s）。記録 root は per-project（projects/default）
+        root = str((work / "projects" / "default").resolve())
         for _ in range(50):
             if km.select_instances(root=root):
                 break
             time.sleep(0.1)
         self.assertTrue(km.select_instances(root=root))         # 起動して登録された
         self.assertEqual(km.cmd_start(root=str(work), config=cfg), 1)  # 重複起動は拒否
-        self.assertEqual(km.cmd_stop(root=str(work)), 0)
+        self.assertEqual(km.cmd_stop(root=str(work), project="default"), 0)
         self.assertEqual(km.select_instances(root=root), [])    # 停止で消える
 
     def test_watch_sigterm_graceful_exit(self):
@@ -2144,6 +2147,70 @@ class TestProjectLayer(unittest.TestCase):
 def _drained():
     return {"reason": km.REASON_DRAINED, "cycles": 0,
             "counts": {s: 0 for s in km.VALID_STATUS}, "cost": 0.0, "tokens": 0}
+
+
+class TestMultiProject(unittest.TestCase):
+    def test_enqueue_targets_project_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            km.main(["enqueue", "--title", "A", "--verify", "true",
+                     "--workdir", str(d), "--root", str(root)])                      # default
+            km.main(["enqueue", "--project", "payments", "--title", "B", "--verify", "true",
+                     "--workdir", str(d), "--root", str(root)])                      # 別プロジェクト
+            self.assertEqual(len(list((root / "projects" / "default" / "backlog").glob("*.md"))), 1)
+            self.assertEqual(len(list((root / "projects" / "payments" / "backlog").glob("*.md"))), 1)
+
+    def test_needs_decisions_isolated_per_project(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            # P1 にだけ判断待ち（verify 無し→inbox ではなく blocked にするため triage 経由）
+            km.main(["enqueue", "--project", "p1", "--title", "X",
+                     "--workdir", str(d), "--root", str(root)])        # verify 無し → inbox
+            # p1 の操作は p1 配下だけを作り、p2 は存在しない（プロジェクト分離）
+            self.assertTrue((root / "projects" / "p1" / "backlog").exists())
+            self.assertFalse((root / "projects" / "p2").exists())
+
+    def test_project_dirname_sanitizes(self):
+        self.assertEqual(km._project_dirname("a/b:c"), "a_b_c")
+        self.assertEqual(km._project_dirname("  "), "default")
+        self.assertEqual(km._project_dirname("案件A"), "案件A")     # unicode は保つ
+
+    def test_project_id_prefers_project_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            ch = km.parse_charter("# Charter: 表示名\n## goal\nやる\n")
+            self.assertEqual(km._project_id(cfg_for(d, project_name="payments"), ch), "payments")
+            # project_name 未設定（Config 直接構築）は charter 名スラグ→日本語のみは "project"
+            self.assertEqual(km._project_id(cfg_for(d), ch), "project")
+
+    def test_charter_links_resolve_and_inject(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            projects = d / ".ka" / "projects"
+            # リンク先プロジェクト shared に定義と learn を置く
+            shared = projects / "shared"
+            (shared / "decisions").mkdir(parents=True)
+            (shared).joinpath("charter.md").write_text(
+                "# Charter: shared\n## goal\n共通規約\n## constraints\n- 二段階認証必須\n", encoding="utf-8")
+            km.append_decision(cfg_for(shared), "T9", "user", context="c",
+                               action="approve", reason="r", affects="a",
+                               learn=("認証の作法", "MFA を必ず通す"))
+            # 本体プロジェクト main が shared をリンク
+            main_p = projects / "main"
+            (main_p / "backlog").mkdir(parents=True)
+            (main_p).joinpath("charter.md").write_text(
+                "# Charter: main\n## goal\n本体\n## acceptance\n- `true`\n## links\n- shared\n",
+                encoding="utf-8")
+            cfg = cfg_for(main_p)
+            ch = km.load_charter(cfg)
+            links = km.resolve_linked_projects(cfg, ch)
+            self.assertEqual([n for n, _ in links], ["shared"])
+            cc = km.charter_context(cfg)
+            self.assertIn("二段階認証必須", cc)              # リンク先の定義が取り込まれる
+            lc = km.linked_learnings_context(cfg)
+            self.assertIn("MFA を必ず通す", lc)              # リンク先の判断(learn)が取り込まれる
 
 
 class TestKiroFlowIntegration(unittest.TestCase):

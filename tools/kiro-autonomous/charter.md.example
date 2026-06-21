@@ -44,3 +44,9 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 - `pytest -q tests/`
 - `python report.py sample.csv | grep -q "Summary"`
 - `grep -q "## Usage" README.md`
+
+## links
+# 他プロジェクトへの横展開リンク（任意）。リンク先の charter 定義(目標/制約)と decisions の learn(人の判断)を
+# act ワーカーの文脈に取り込む。名前は <root>/projects/<name>、'/' や '..' を含めば相対パス。
+# - shared-conventions
+# - ../infra-rules
