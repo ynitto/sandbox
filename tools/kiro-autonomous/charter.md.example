@@ -1,0 +1,52 @@
+<!--
+kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
+========================================================================
+`kiro-autonomous project` は、このファイル（<root>/charter.md・既定 .kiro-autonomous/charter.md）を
+**人が書く唯一の最上位入力**として読む。backlog（タスク）の上に「目標 → 分解 → 消化 → 評価 → 改善」の
+ループをもう一段載せ、charter が満たされるまで長期に回す。
+
+  使い方:
+    cp tools/kiro-autonomous/charter.md.example .kiro-autonomous/charter.md   # 編集して使う
+    kiro-autonomous project                 # plan→execute→evaluate を回す（収束で人へ）
+    kiro-autonomous project --watch          # 収束/人待ちでも常駐し charter 更新を待つ
+    kiro-autonomous approve <project> --reason "受領"   # 収束候補を完了確定（最終納品書）
+
+書式（`## <key>` セクション。key は goal/constraints/assumptions/deliverables/acceptance）:
+
+鉄則:
+1. **プロジェクト done の唯一の根拠は `acceptance` 全 PASS**（各行＝終了コード0をPASSとみなすシェルコマンド）。
+   AI の自己申告や敵対的レビューだけでは done にしない（タスクの verify と同じ鉄則）。
+2. acceptance は **「履歴」ではなく「望む最終状態/差分」を見る**こと（偽 done 対策。`$KIRO_BASE_REV` 利用可）。
+   acceptance を書けないプロジェクトは done 判定不能 → 必ず人へ回る。
+3. plan（目標→backlog 分解）と evaluate の敵対的レビューの知能はエージェントへ委譲し、enqueue・acceptance 実行・
+   収束判定は本体が決定的に行う。必ず有限回（--max-project-cycles）で止まる。
+4. project（プロジェクト名）の id はこの見出し名から生成（ASCII 推奨。日本語のみだと既定 `project`）。
+-->
+
+# Charter: my-project
+
+## goal
+ユーザーが CSV を投入すると要約レポートを生成する CLI を完成させる。
+
+## constraints
+- Python 3.9 / 標準ライブラリのみ（pip 依存を増やさない）
+- 既存 API の後方互換を壊さない
+
+## assumptions
+- 入力 CSV は UTF-8・ヘッダ行あり
+
+## deliverables
+- report.py（生成器）
+- tests/（テスト）
+- README の使用例
+
+## acceptance
+- `pytest -q tests/`
+- `python report.py sample.csv | grep -q "Summary"`
+- `grep -q "## Usage" README.md`
+
+## links
+# 他プロジェクトへの横展開リンク（任意）。リンク先の charter 定義(目標/制約)と decisions の learn(人の判断)を
+# act ワーカーの文脈に取り込む。名前は <root>/projects/<name>、'/' や '..' を含めば相対パス。
+# - shared-conventions
+# - ../infra-rules

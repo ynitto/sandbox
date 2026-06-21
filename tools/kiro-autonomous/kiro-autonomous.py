@@ -983,8 +983,10 @@ def select_instances(root: "str | None" = None, pid: "int | None" = None,
 
 def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
              want_all: bool = False, timeout: float = 5.0,
-             extra: "list | str | None" = None) -> int:
+             extra: "list | str | None" = None, project: "str | None" = None) -> int:
     """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する（自ホストのみ）。"""
+    if project and not pid and not want_all:      # --project 指定はその per-project root に解決して照合
+        root = _container_project_root(root, project)
     targets = select_instances(root, pid, want_all, extra=extra)
     if not targets:
         print("停止対象の稼働インスタンスが見つかりません（instances で確認できます）。", file=sys.stderr)
@@ -1018,10 +1020,20 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
     return 0 if all_ok else 1
 
 
+def _container_project_root(root: "str | None", project: "str | None") -> str:
+    """start/stop/restart 用に per-project root（<container>/projects/<name>）を絶対パス文字列で返す。
+    build_config の root 計算と一致させ、稼働インスタンスの記録 root（=project root）と突き合わせる。"""
+    container = Path(root) if root else (Path.cwd() / ".kiro-autonomous")
+    container = container if container.is_absolute() else (Path.cwd() / container)
+    name = _project_dirname(project or "default")
+    return str((container / "projects" / name).resolve())
+
+
 def cmd_start(root: "str | None" = None, config: "str | None" = None,
-              force: bool = False, extra: "list | str | None" = None) -> int:
+              force: bool = False, extra: "list | str | None" = None,
+              project: "str | None" = None) -> int:
     """`run --watch` を切り離して常駐起動する（detached）。重複監視は既定で拒否（--force で許可）。"""
-    expected = _norm_root(root) if root else str((Path.cwd() / ".kiro-autonomous").resolve())
+    expected = _container_project_root(root, project)
     me = socket.gethostname()
     dup = [r for r in list_instances(prune=True, extra=extra)
            if str(r.get("root", "")) == expected and str(r.get("host", "")) == me]
@@ -1032,6 +1044,8 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
     child = [sys.executable, _self_script(), "run", "--watch"]
     if root:
         child += ["--root", root]
+    if project:
+        child += ["--project", project]
     if config:
         child += ["--config", config]
     for r in _split_registry(extra):            # 共有レジストリを子 daemon にも引き継ぐ
@@ -1071,12 +1085,12 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
 
 
 def cmd_restart(root: "str | None" = None, config: "str | None" = None,
-                extra: "list | str | None" = None) -> int:
-    """同じ root の監視を停止してから起動し直す。"""
-    select = select_instances(root=root, extra=extra)
-    if select:
-        cmd_stop(root=root, extra=extra)
-    return cmd_start(root=root, config=config, force=True, extra=extra)
+                extra: "list | str | None" = None, project: "str | None" = None) -> int:
+    """同じプロジェクト root の監視を停止してから起動し直す。"""
+    proot = _container_project_root(root, project)
+    if select_instances(root=proot, extra=extra):
+        cmd_stop(root=proot, extra=extra)
+    return cmd_start(root=root, config=config, force=True, extra=extra, project=project)
 
 
 
@@ -1570,7 +1584,101 @@ def resolve_kiro_flow(explicit: "str | None") -> "list[str]":
     return [sys.executable, str(local)]
 
 
-def build_request(task: Task) -> str:
+def _charter_definition(ch: "Charter") -> str:
+    parts = []
+    if ch.goal:
+        parts.append(f"目標: {ch.goal}")
+    if ch.constraints:
+        parts.append("制約:\n" + "\n".join(f"- {c}" for c in ch.constraints))
+    if ch.assumptions:
+        parts.append("前提:\n" + "\n".join(f"- {a}" for a in ch.assumptions))
+    if ch.deliverables:
+        parts.append("成果物:\n" + "\n".join(f"- {d}" for d in ch.deliverables))
+    return "\n".join(parts).strip()
+
+
+def charter_context(cfg: "Config", max_chars: int = 1400) -> str:
+    """charter.md（プロジェクト定義＝目標/制約/前提/成果物）を act ワーカーへ渡す文脈に要約する。
+    **`project` でも通常 `run` でも、charter.md が存在すれば全 act に注入**＝kiro-flow のワーカーが
+    プロジェクトの北極星（目標・制約）を踏まえて働く。`## links` があればリンク先プロジェクトの定義も
+    続けて取り込む（横展開）。charter 無し（通常運用）では空＝従来どおり。"""
+    try:
+        ch = load_charter(cfg)
+    except (OSError, ValueError):
+        return ""
+    if ch is None:
+        return ""
+    block = _charter_definition(ch)
+    if len(block) > max_chars:                  # 有界化（先頭＝目標/制約を優先して残す）
+        block = block[:max_chars].rstrip() + " …"
+    # 横展開: リンク先プロジェクトの定義を要約付与（有界・1 階層）
+    for name, root in resolve_linked_projects(cfg, ch):
+        lp = root / "charter.md"
+        if not lp.exists():
+            continue
+        try:
+            linked = parse_charter(lp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        d = _charter_definition(linked)
+        if d:
+            block += f"\n\n[リンク: {name}] の定義（横展開・踏まえること）:\n" + d[:600]
+    return block
+
+
+def decision_context(cfg: "Config", task: Task, max_chars: int = 1000) -> str:
+    """このタスクの過去の判断記録（needs の判断結果・人の承認/差し戻し/learn）を act ワーカーへ渡す。
+    **project/backlog を問わず**、`decisions/<id>.md` があれば注入する（末尾＝直近を優先して有界化）。"""
+    dp = decision_path(cfg, task.id)
+    if not dp.exists():
+        return ""
+    try:
+        txt = dp.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if not txt:
+        return ""
+    if len(txt) > max_chars:
+        txt = "…\n" + txt[-max_chars:]
+    return txt
+
+
+def _scan_learn_lines(decisions_dir: Path, limit: int = 12) -> "list[str]":
+    """decisions/ 配下の `- learn: <title> :: <guide>` 行を集める（再利用可能な人の判断）。"""
+    out: list[str] = []
+    if not decisions_dir.exists():
+        return out
+    for f in sorted(decisions_dir.glob("*.md")):
+        try:
+            for line in f.read_text(encoding="utf-8").splitlines():
+                m = LEARN_RE.match(line.strip())
+                if m:
+                    out.append(f"{m.group('title').strip()} :: {m.group('guide').strip()}")
+        except OSError:
+            continue
+    return out[-limit:]
+
+
+def linked_learnings_context(cfg: "Config", max_chars: int = 800) -> str:
+    """charter `## links` 先プロジェクトの判断（decisions の learn）を act ワーカーへ取り込む（横展開）。
+    リンク先で人が下した再利用可能な判断を、別プロジェクトの作業にも効かせる（明示 opt-in・有界）。"""
+    try:
+        ch = load_charter(cfg)
+    except (OSError, ValueError):
+        return ""
+    if ch is None or not ch.links:
+        return ""
+    lines: list[str] = []
+    for name, root in resolve_linked_projects(cfg, ch):
+        for ln in _scan_learn_lines(root / "decisions"):
+            lines.append(f"[{name}] {ln}")
+    if not lines:
+        return ""
+    block = "\n".join(f"- {x}" for x in lines)
+    return block[:max_chars]
+
+
+def build_request(task: Task, cfg: "Config | None" = None) -> str:
     base = (f"{task.title}\n\n"
             f"このタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n"
             f"完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n"
@@ -1578,6 +1686,18 @@ def build_request(task: Task) -> str:
     fb = task.feedback()
     if fb:
         base += f"\n\n人からのフィードバック（必ず反映すること）:\n{fb}"
+    if cfg is not None:
+        # 定義（charter）と判断結果（decisions）を、project でも通常 run でもワーカーへ渡す。
+        cc = charter_context(cfg)
+        if cc:
+            base += ("\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n"
+                     + cc)
+        dc = decision_context(cfg, task)
+        if dc:
+            base += ("\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n" + dc)
+        lc = linked_learnings_context(cfg)
+        if lc:
+            base += ("\n\nリンク先プロジェクトの判断（横展開・参考にすること）:\n" + lc)
     return base
 
 
@@ -1620,7 +1740,7 @@ def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
 def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
     """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。"""
     return _kf_base(cfg, use_git) + [
-        "run", build_request(task), "--planner", cfg.flow_planner,
+        "run", build_request(task, cfg), "--planner", cfg.flow_planner,
         "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
 
 
@@ -1672,7 +1792,7 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
     base = _kf_base(cfg, use_git)
     try:
-        sub = subprocess.run(base + ["submit", build_request(task)], cwd=str(cfg.workdir),
+        sub = subprocess.run(base + ["submit", build_request(task, cfg)], cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         return (False, f"submit 失敗: {e}")
@@ -1778,6 +1898,13 @@ class Config:
     registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
     dry_run: bool = False
     once: bool = False
+    project_name: str = ""               # 選択中プロジェクト名（CLI --project。milestone id の一次ソース）
+    # プロジェクト層（charter 駆動の plan→execute→evaluate ループ）。`project` サブコマンドでのみ使う。
+    charter: "Path | None" = None        # 人が書く目標/制約/前提/成果物/acceptance（既定 <root>/charter.md）
+    review_project: bool = False         # evaluate で敵対的レビューを上乗せ（opt-in・知能は委譲）
+    max_project_cycles: int = 5          # 改善サイクルの上限（有限停止）
+    max_project_cost: float = 0.0        # プロジェクト累計コスト上限(USD・0=無制限)
+    project_stall: int = 2               # acceptance PASS 数が増えない連続回数の上限→人へ
 
     def archive_dir(self) -> Path:
         return self.archive or (self.backlog.parent / "archive")
@@ -1787,6 +1914,8 @@ class Config:
             self.delivery = self.backlog.parent / "DELIVERY.md"
         if self.runlog is None:
             self.runlog = self.backlog.parent / "run-log.jsonl"
+        if self.charter is None:
+            self.charter = self.backlog.parent / "charter.md"
 
 
 def ensure_dirs(cfg: Config) -> None:
@@ -2401,6 +2530,12 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
     tasks = load_tasks(cfg.backlog)
     t = next((x for x in tasks if x.id == tid), None)
     if t is None:
+        # プロジェクト milestone の承認（収束候補 → done 確定）。backlog タスクではない。
+        pstate = load_project_state(cfg)
+        if pstate.get("id") == tid and pstate.get("status") == REASON_PROJECT_CONVERGED:
+            finalize_project(cfg, pstate, reason)
+            print(f"プロジェクト done（承認・最終納品書）: {tid}")
+            return 0
         print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
         return 2
     if t.norm_status() == "review":
@@ -2836,6 +2971,482 @@ def cmd_run(cfg: Config) -> int:
 
 
 # ---------------------------------------------------------------------------
+# プロジェクト層（charter 駆動の plan→execute→evaluate ループ）
+#   設計: docs/designs/2026-06-21-kiro-autonomous-project-loop-design.md
+#   backlog の上に「目標→分解→消化→評価→改善」のもう一段を載せる。内側の正準ループ（run_loop）は
+#   無改造で呼ぶ。done は acceptance(=verify) 全 PASS のみが根拠。知能（分解・敵対的レビュー）は
+#   エージェントへ委譲し、本体は決定的なファイル操作（charter 解釈・enqueue・acceptance 実行・収束計算）
+#   のみを担う。`project` を呼ばない限り従来挙動は完全不変。
+# ---------------------------------------------------------------------------
+REASON_PROJECT_CONVERGED = "converged"        # acceptance 全 PASS・改善ゼロ → milestone gate で人へ
+REASON_PROJECT_ACCEPTED = "accepted"          # 人が milestone を承認（プロジェクト done）
+REASON_PROJECT_BUDGET = "project-budget"      # 改善サイクル/内側予算の上限
+REASON_PROJECT_COST = "project-cost"          # プロジェクト累計コスト上限
+REASON_PROJECT_STALL = "no-progress"          # acceptance PASS 数が増えず人へ
+REASON_PROJECT_BLOCKED = "blocked"            # 内側ループが人へエスカレーション
+
+
+@dataclass
+class Charter:
+    name: str = "project"
+    goal: str = ""
+    constraints: "list[str]" = field(default_factory=list)
+    assumptions: "list[str]" = field(default_factory=list)
+    deliverables: "list[str]" = field(default_factory=list)
+    acceptance: "list[str]" = field(default_factory=list)   # 受入 verify（シェルコマンド）
+    links: "list[str]" = field(default_factory=list)        # 横展開リンク（他プロジェクト名/相対パス）
+    raw: str = ""
+
+
+_CHARTER_NAME_RE = re.compile(r"^#\s+(?:Charter|憲章)\s*[:：]?\s*(?P<name>.+?)\s*$", re.M)
+_CHARTER_SECTION_RE = re.compile(r"^##\s+(?P<key>[A-Za-z]+)\b")
+
+
+def _charter_bullets(lines: "list[str]") -> "list[str]":
+    """`- ...` 行の中身を抽出（コードフェンス/バッククォートは剥がす）。空行・コメントは無視。"""
+    out: list[str] = []
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("<!--"):
+            continue
+        if s.startswith(("- ", "* ", "+ ")):
+            out.append(_strip_code(s[2:].strip()))
+        elif s.startswith(("-", "*", "+")) and len(s) > 1 and not s[1].isspace():
+            out.append(_strip_code(s[1:].strip()))
+    return [x for x in out if x]
+
+
+def parse_charter(text: str) -> Charter:
+    """charter.md を構造化する。`# Charter: <name>` と `## goal/constraints/assumptions/
+    deliverables/acceptance` を読む。acceptance は受入 verify（1 行 1 コマンド）。決定的・LLM 不要。"""
+    ch = Charter(raw=text)
+    m = _CHARTER_NAME_RE.search(text)
+    if m:
+        ch.name = m.group("name").strip() or "project"
+    sections: dict[str, list[str]] = {}
+    cur: "str | None" = None
+    for line in text.splitlines():
+        sm = _CHARTER_SECTION_RE.match(line)
+        if sm:
+            cur = sm.group("key").lower()
+            sections.setdefault(cur, [])
+        elif cur is not None:
+            sections[cur].append(line)
+    ch.goal = "\n".join(l for l in sections.get("goal", []) if l.strip()).strip()
+    ch.constraints = _charter_bullets(sections.get("constraints", []))
+    ch.assumptions = _charter_bullets(sections.get("assumptions", []))
+    ch.deliverables = _charter_bullets(sections.get("deliverables", []))
+    ch.acceptance = _charter_bullets(sections.get("acceptance", []))
+    ch.links = _charter_bullets(sections.get("links", []))
+    return ch
+
+
+def load_charter(cfg: "Config") -> "Charter | None":
+    p = cfg.charter
+    if not p or not p.exists():
+        return None
+    return parse_charter(p.read_text(encoding="utf-8"))
+
+
+def project_state_path(cfg: "Config") -> Path:
+    return cfg.backlog.parent / "project.json"
+
+
+def load_project_state(cfg: "Config") -> dict:
+    p = project_state_path(cfg)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+    return {}
+
+
+def save_project_state(cfg: "Config", state: dict) -> None:
+    state["updated"] = datetime.now().isoformat(timespec="seconds")
+    project_state_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+    project_state_path(cfg).write_text(json.dumps(state, ensure_ascii=False, indent=2),
+                                       encoding="utf-8")
+
+
+def _project_id(cfg: "Config", charter: "Charter") -> str:
+    """milestone/state の id。プロジェクト名（--project）を一次採用し、未設定なら charter 名から導出。
+    Config を直接構築するテスト等（project_name 未設定）では従来どおり charter 名スラグになる（後方互換）。"""
+    return getattr(cfg, "project_name", "") or _slug_id(charter.name) or "project"
+
+
+def resolve_linked_projects(cfg: "Config", charter: "Charter") -> "list[tuple[str, Path]]":
+    """charter の `## links` を他プロジェクト root へ解決する（横展開）。名前なら兄弟 projects/<name>、
+    `/`・`..` を含めば現プロジェクト root からの相対。存在するものだけ返す（1 階層・自己/重複は無視）。"""
+    out: list[tuple[str, Path]] = []
+    proj_root = cfg.backlog.parent
+    projects_dir = proj_root.parent              # <root>/projects/
+    seen = {proj_root.resolve()}
+    for link in charter.links:
+        link = link.strip()
+        if not link:
+            continue
+        if "/" in link or link.startswith(".."):
+            cand = (proj_root / link).resolve()
+        else:
+            cand = (projects_dir / _project_dirname(link)).resolve()
+        if cand.exists() and cand.is_dir() and cand not in seen:
+            seen.add(cand)
+            out.append((link, cand))
+    return out
+
+
+def _existing_titles(cfg: "Config") -> "list[str]":
+    """重複投入の冪等照合に使う既存タイトル（backlog＋archive）。"""
+    titles = [t.title for t in load_tasks(cfg.backlog)]
+    adir = cfg.archive_dir()
+    if adir.exists():
+        for p in adir.glob("*.md"):
+            try:
+                titles.append(parse_task(p.read_text(encoding="utf-8"), p.stem).title)
+            except (OSError, ValueError):
+                continue
+    return [t for t in titles if t]
+
+
+def _is_duplicate(title: str, verify: str, existing: "list[str]", threshold: float) -> bool:
+    """タイトルが既存と十分類似（Jaccard ≥ threshold）なら重複とみなす（plan/evaluate の冪等性）。"""
+    return any(_title_overlap(title, e) >= threshold for e in existing)
+
+
+def _extract_json_array(text: str) -> "list | None":
+    """エージェント出力から最初の JSON 配列を取り出す（寛容パース）。"""
+    depth, start = 0, -1
+    for i, c in enumerate(text or ""):
+        if c == "[":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif c == "]" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    v = json.loads(text[start:i + 1])
+                    if isinstance(v, list):
+                        return v
+                except ValueError:
+                    start = -1
+    return None
+
+
+def build_charter_request(charter: "Charter") -> str:
+    """charter を分解要求の文章に組み立てる（plan フェーズで kiro-flow/エージェントへ渡す）。"""
+    parts = [f"プロジェクト目標: {charter.goal}"]
+    if charter.constraints:
+        parts.append("制約:\n" + "\n".join(f"- {c}" for c in charter.constraints))
+    if charter.assumptions:
+        parts.append("前提:\n" + "\n".join(f"- {a}" for a in charter.assumptions))
+    if charter.deliverables:
+        parts.append("成果物:\n" + "\n".join(f"- {d}" for d in charter.deliverables))
+    if charter.acceptance:
+        parts.append("受入条件(満たすべき検証):\n" + "\n".join(f"- {a}" for a in charter.acceptance))
+    return "\n\n".join(parts)
+
+
+def _plan_decompose_prompt(charter: "Charter") -> str:
+    return (
+        "あなたはプロジェクトを実行可能なタスクに分解するプランナーです。以下の憲章を、"
+        "それぞれ機械的に検証できる小さなタスクへ分解してください。\n\n"
+        + build_charter_request(charter)
+        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str} で、verify は"
+        " 終了コード0をPASSとみなすシェルコマンド（『履歴』でなく『望む最終状態/差分』を見ること）。"
+        " 検証コマンドを書けない曖昧なタスクは含めないでください。")
+
+
+def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
+    """charter をエージェント（kiro-flow/kiro-cli）に分解させ、[{title, verify}, ...] を得る。
+    知能は委譲し、取り込み（enqueue）は本体が決定的に行う。失敗時は空（plan を諦め人へ）。"""
+    try:
+        out = _run_kiro_cli(_plan_decompose_prompt(charter), cfg.model)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+        append_journal(cfg.journal, f"project plan: 分解に失敗（{e}）")
+        return []
+    arr = _extract_json_array(out) or []
+    specs = []
+    for item in arr:
+        if isinstance(item, dict) and str(item.get("title", "")).strip():
+            specs.append({"title": str(item["title"]).strip(),
+                          "verify": _strip_code(str(item.get("verify", "") or "").strip()),
+                          "source": "charter"})
+    return specs
+
+
+def _review_prompt(charter: "Charter") -> str:
+    return (
+        "あなたは成果物を批判的にレビューする敵対的レビュアです。以下の憲章の目標・成果物に対し、"
+        "現状の成果物がまだ満たせていない点（短絡的達成・抜け漏れ・品質不足）を洗い出してください。\n\n"
+        + build_charter_request(charter)
+        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str}（改善タスクと検証）。"
+        " 問題が無ければ空配列 [] を返してください。")
+
+
+def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
+    """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, verify}] として返す。"""
+    try:
+        out = _run_kiro_cli(_review_prompt(charter), cfg.model)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+        append_journal(cfg.journal, f"project review: レビューに失敗（{e}）")
+        return []
+    arr = _extract_json_array(out) or []
+    return [{"title": str(i["title"]).strip(),
+             "verify": _strip_code(str(i.get("verify", "") or "").strip()),
+             "source": "review"}
+            for i in arr if isinstance(i, dict) and str(i.get("title", "")).strip()]
+
+
+def _enqueue_specs(cfg: "Config", specs: "list[dict]", existing: "list[str]",
+                   threshold: float) -> "list[Task]":
+    """spec 群を冪等に backlog へ投入（既存と類似は飛ばす）。verify 無しは enqueue_task が inbox にする。"""
+    created: list[Task] = []
+    for sp in specs:
+        title = str(sp.get("title", "") or "").strip()
+        verify = str(sp.get("verify", "") or "").strip()
+        if not title or _is_duplicate(title, verify, existing, threshold):
+            continue
+        try:
+            created.append(enqueue_task(cfg, sp))
+            existing.append(title)
+        except ValueError:
+            continue
+    return created
+
+
+def evaluate_acceptance(cfg: "Config", charter: "Charter") -> "tuple[int, int, list]":
+    """charter の acceptance（受入 verify）を実行し (passed, total, [(cmd, ok, msg)]) を返す。
+    プロジェクト done の唯一の根拠＝全 PASS。verify と同じ flake 耐性/差分基準で実行する。"""
+    env = None
+    if (cfg.workdir / ".git").exists():
+        head = _git_out(cfg.workdir, "rev-parse", "HEAD").strip()
+        if head:
+            env = {"KIRO_BASE_REV": head}
+    results = []
+    for cmd in charter.acceptance:
+        ok, _flaky, msg = run_verify_stable(cmd, cfg.workdir, cfg.verify_timeout,
+                                            cfg.verify_confirm, env)
+        results.append((cmd, ok, msg))
+    passed = sum(1 for _, ok, _ in results if ok)
+    return passed, len(results), results
+
+
+def _failing_acceptance_specs(results: "list") -> "list[dict]":
+    """未達 acceptance を、それ自体を verify とする改善タスク spec にする（決定的・的が外れない）。"""
+    specs = []
+    for cmd, ok, _ in results:
+        if not ok:
+            specs.append({"title": f"受入条件を満たす: {cmd}"[:120], "verify": cmd, "source": "acceptance"})
+    return specs
+
+
+def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str) -> None:
+    """収束候補/要対応を milestone として needs/<project>.md に出す（検収ゲートのプロジェクト版）。"""
+    pid = _project_id(cfg, charter)
+    cfg.needs.mkdir(parents=True, exist_ok=True)
+    labels = {
+        REASON_PROJECT_CONVERGED: "収束候補（acceptance 全 PASS・改善ゼロ）",
+        REASON_PROJECT_STALL: "停滞（acceptance PASS 数が増えない→人へ）",
+        REASON_PROJECT_BUDGET: "サイクル予算到達（人の判断待ち）",
+        REASON_PROJECT_COST: "コスト予算到達（人の判断待ち）",
+        REASON_PROJECT_BLOCKED: "内側ループが人へエスカレーション",
+        "no-acceptance": "acceptance 未定義（done 判定不能→人へ）",
+    }
+    hint = (
+        f"<!-- 完了として受領するなら `kiro-autonomous approve {pid} --reason ...`（プロジェクト done）。\n"
+        f"     次フェーズへ続けるなら charter.md の goal/acceptance を更新して再実行。\n"
+        f"     方向修正なら下に方針を書いて [x]（または policy.md を編集）。 -->\n")
+    body = (
+        f"# マイルストーン: {charter.name}\n\n"
+        f"- なぜ: {labels.get(reason, reason)}\n"
+        f"- 状態: {reason}\n"
+        f"- 概況: {summary}\n\n"
+        f"## goal\n{charter.goal}\n\n"
+        f"{FEEDBACK_MARKER}\n"
+        f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
+        f"{hint}")
+    (cfg.needs / f"{pid}.md").write_text(body, encoding="utf-8")
+
+
+def finalize_project(cfg: "Config", state: dict, reason: str) -> None:
+    """プロジェクトを done 確定する（人の承認 or テスト用）。最終納品書を残し state を accepted に。"""
+    pid = state.get("id", "project")
+    name = state.get("name", pid)
+    total = int(state.get("acceptance_total", 0))
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    summary = f"acceptance {total}/{total} PASS"
+    final = Task(id=pid, title=f"[project] {name}", status="done",
+                 source="project", verify=f"acceptance×{total}")
+    append_delivery(cfg, final, summary, ts)
+    append_decision(cfg, pid, "user", context=f"プロジェクト『{name}』を完了として受領",
+                    action="project-accept", reason=reason, affects=summary)
+    clear_needs_file(cfg, pid)
+    state["status"] = REASON_PROJECT_ACCEPTED
+    save_project_state(cfg, state)
+
+
+def project_exit_code(reason: str) -> int:
+    if reason == REASON_PROJECT_ACCEPTED:
+        return 0
+    if reason in (REASON_PROJECT_BUDGET, REASON_PROJECT_COST):
+        return 2
+    return 1   # converged / no-progress / blocked / no-acceptance は人の対応待ち
+
+
+def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop) -> int:
+    """charter 駆動の plan→execute→evaluate ループ（1 プロジェクトパス）。planner/reviewer/runner は
+    テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
+    ensure_dirs(cfg)
+    charter = load_charter(cfg)
+    if charter is None:
+        print(f"エラー: charter が見つかりません: {cfg.charter}", file=sys.stderr)
+        print("  ヒント: 目標/制約/前提/成果物/acceptance を charter.md に書いてください。",
+              file=sys.stderr)
+        return 2
+    pid = _project_id(cfg, charter)
+    if not charter.acceptance:
+        # acceptance（受入 verify）が無いと done を判定できない＝必ず人へ（鉄則の保全）
+        write_milestone(cfg, charter, "no-acceptance", "acceptance 未定義のため done 判定不能")
+        print(f"[project] {charter.name}: acceptance 未定義 → 人へ（needs/{pid}.md）")
+        return project_exit_code("no-acceptance")
+
+    plan_fn = planner or (lambda ch: plan_via_agent(cfg, ch))
+    review_fn = reviewer or (lambda ch: review_via_agent(cfg, ch))
+    state = load_project_state(cfg)
+    if state.get("id") != pid:
+        state = {"id": pid, "name": charter.name, "history": [], "best": 0, "stall": 0}
+    state.update({"id": pid, "name": charter.name,
+                  "acceptance_total": len(charter.acceptance), "status": "running"})
+    save_project_state(cfg, state)
+
+    append_journal(cfg.journal, f"=== project 開始 {charter.name} "
+                                f"acceptance={len(charter.acceptance)} ===")
+    cost_used = float(state.get("cost", 0.0))
+    cycle = 0
+    reason = REASON_PROJECT_CONVERGED
+    last_summary = ""
+
+    while True:
+        cycle += 1
+        if cycle > cfg.max_project_cycles:
+            reason = REASON_PROJECT_BUDGET
+            break
+
+        # ① plan — 消化可能タスクが無いときだけ目標から backlog を起こす（毎サイクルの再分解は避ける）
+        existing = _existing_titles(cfg)
+        has_consumable = any(t.consumable() for t in load_tasks(cfg.backlog))
+        if not has_consumable:
+            specs = plan_fn(charter)
+            planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold)
+            if planned:
+                append_journal(cfg.journal,
+                               f"project cycle {cycle}: plan で {len(planned)} 件投入 "
+                               f"{[t.id for t in planned]}")
+
+        # ② execute — 既存の正準ループを無改造で回す（drained まで）
+        result = runner(cfg)
+        cost_used += float(result.get("cost", 0.0))
+        counts = result["counts"]
+        if result["reason"] in (REASON_BUDGET, REASON_COST, REASON_THROTTLE):
+            reason = REASON_PROJECT_BUDGET if result["reason"] != REASON_COST else REASON_PROJECT_COST
+            break
+        if counts.get("blocked", 0) > 0 or counts.get("review", 0) > 0:
+            reason = REASON_PROJECT_BLOCKED      # 内側が人へ → プロジェクトも人待ちで止める
+            break
+
+        # ③ evaluate — 「枯渇」と「達成」を分離する
+        passed, total, results = evaluate_acceptance(cfg, charter)
+        history = list(state.get("history", [])) + [passed]
+        state["history"] = history
+        existing = _existing_titles(cfg)
+        improved: list[Task] = []
+        if passed < total:                        # 未達 acceptance を、それ自体を verify とする改善タスクへ
+            improved += _enqueue_specs(cfg, _failing_acceptance_specs(results),
+                                       existing, cfg.learn_threshold)
+        findings: list[dict] = []
+        if cfg.review_project and passed == total:  # 短絡的達成を疑い敵対的レビュー（opt-in）
+            findings = review_fn(charter)
+            improved += _enqueue_specs(cfg, findings, existing, cfg.learn_threshold)
+        last_summary = (f"cycle {cycle}: acceptance {passed}/{total} PASS, "
+                        f"改善 {len(improved)} 件, cost={cost_used:.4f}")
+        append_decision(cfg, pid, "auto",
+                        context=f"cycle {cycle}: acceptance {passed}/{total} PASS",
+                        action="project-evaluate",
+                        reason=("収束候補" if passed == total and not improved else "改善継続"),
+                        affects=f"改善 {len(improved)} 件 / findings {len(findings)}")
+        append_journal(cfg.journal, "project " + last_summary)
+
+        # 収束: acceptance 全 PASS かつ改善ゼロ
+        if passed == total and not improved:
+            reason = REASON_PROJECT_CONVERGED
+            break
+        # コスト予算
+        if cfg.max_project_cost and cost_used >= cfg.max_project_cost:
+            reason = REASON_PROJECT_COST
+            break
+        # 停滞: PASS 数が過去最高を更新しない状態が続く→人へ（自動チャーンを止める）
+        best = int(state.get("best", 0))
+        if passed > best:
+            state["best"], state["stall"] = passed, 0
+        else:
+            state["stall"] = int(state.get("stall", 0)) + 1
+        if state["stall"] >= cfg.project_stall:
+            reason = REASON_PROJECT_STALL
+            break
+
+    state["cost"] = round(cost_used, 4)
+    state["cycles"] = int(state.get("cycles", 0)) + cycle
+    state["status"] = reason
+    save_project_state(cfg, state)
+
+    if reason in (REASON_PROJECT_CONVERGED, REASON_PROJECT_STALL,
+                  REASON_PROJECT_BUDGET, REASON_PROJECT_COST, REASON_PROJECT_BLOCKED):
+        write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）")
+    append_journal(cfg.journal, f"=== project 停止 reason={reason} cycles={cycle} "
+                                f"cost={cost_used:.4f} ===")
+    print(f"\n=== kiro-autonomous project: {charter.name} ===")
+    print(f"停止理由 : {reason}")
+    print(f"概況     : {last_summary or '（評価前に停止）'}")
+    if reason == REASON_PROJECT_CONVERGED:
+        print(f"→ 収束候補。受領: kiro-autonomous approve {pid} --reason ...  "
+              f"／ 続行: charter.md を更新して再実行")
+    elif reason != REASON_PROJECT_ACCEPTED:
+        print(f"→ 人の対応待ち: needs/{pid}.md を確認")
+    return project_exit_code(reason)
+
+
+def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
+                  sleeper=time.sleep, max_passes=None) -> int:
+    """`project --watch`: 1 パスごとに plan→execute→evaluate を回し、人待ちで止まったら charter 更新/
+    フィードバックを poll で拾って再開する（idle 中はエージェント非起動）。"""
+    passes = 0
+    code = 0
+    while True:
+        code = cmd_project(cfg, planner, reviewer, runner)
+        passes += 1
+        if max_passes is not None and passes >= max_passes:
+            return code
+        charter = load_charter(cfg)
+        if charter is None:
+            return code
+        pid = _project_id(cfg, charter)
+        mtime0 = cfg.charter.stat().st_mtime if cfg.charter.exists() else 0
+        append_journal(cfg.journal, "=== project watch: 監視中（charter 更新/フィードバック待ち）===")
+        while True:                  # idle: charter が変わるか、人のフィードバックが来たら再開
+            sleeper(cfg.poll)
+            nf = needs_path(cfg, pid)
+            if nf.exists() and read_feedback(nf):
+                clear_needs_file(cfg, pid)
+                break
+            if cfg.charter.exists() and cfg.charter.stat().st_mtime > mtime0:
+                break
+            if has_work(cfg):
+                break
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -2908,9 +3519,12 @@ CONFIG_DEFAULTS = {
     "level_promote_after": 5,       # 昇格に要する連続 clean 数
     "level_window": 10,             # 手戻り率の評価窓（直近 N 件）
     "level_rework_max": 0.0,        # 昇格を許す最大 rework_rate
+    "max_project_cycles": 5,        # project: 改善サイクルの上限（有限停止）
+    "max_project_cost": 0.0,        # project: 累計コスト上限(USD・0=無制限)
+    "project_stall": 2,             # project: acceptance PASS 数が増えない連続回数→人へ
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
-    "require_progress": False, "auto_level": False,
+    "require_progress": False, "auto_level": False, "review_project": False,
     "do_archive": True, "learn": True, "cleanup": True,   # do_archive: --archive はパス用なので別名
 }
 
@@ -2943,10 +3557,20 @@ def resolve_config(args):
     return args
 
 
+def _project_dirname(name: str) -> str:
+    """プロジェクト名を FS セーフなディレクトリ名にする（unicode は保つ。パス/制御文字のみ _ 化）。"""
+    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", (name or "").strip()).strip().strip(".")
+    return safe or "default"
+
+
 def build_config(args) -> Config:
     workdir = Path(args.workdir).resolve()
-    root = Path(args.root)
-    root = root if root.is_absolute() else (workdir / root)
+    container = Path(args.root)
+    container = container if container.is_absolute() else (workdir / container)
+    # プロジェクトを最上位コンテナにする: <root>/projects/<name>/ を per-project の effective root にする。
+    # 全 per-project パスは backlog.parent から派生するため、root を 1 段深くするだけで全体が配下へ移る。
+    project_name = getattr(args, "project", None) or "default"
+    root = container / "projects" / _project_dirname(project_name)
 
     def under(name, sub):
         """個別指定があればそれを、無ければルート（既定 ./.kiro-autonomous）配下に集約。"""
@@ -3000,6 +3624,12 @@ def build_config(args) -> Config:
         level=getattr(args, "level", None) or "unattended",
         registry=_split_registry(getattr(args, "registry", None)),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
+        project_name=_project_dirname(project_name),
+        charter=under("charter", "charter.md"),
+        review_project=bool(getattr(args, "review_project", False)),
+        max_project_cycles=max(1, int(getattr(args, "max_project_cycles", 5) or 5)),
+        max_project_cost=max(0.0, float(getattr(args, "max_project_cost", 0.0) or 0.0)),
+        project_stall=max(1, int(getattr(args, "project_stall", 2) or 2)),
     )
 
 
@@ -3009,7 +3639,9 @@ def _add_common(sp):
     sp.add_argument("--config", default=None,
                     help="設定ファイル（未指定なら ./.kiro → ~/.kiro の kiro-autonomous.{yaml,yml,json}）")
     sp.add_argument("--root", default=None,
-                    help="作業ルート（cwd 相対、既定 ./.kiro-autonomous）。各ファイルはこの配下に集約")
+                    help="コンテナ（cwd 相対、既定 ./.kiro-autonomous）。配下の projects/<name>/ が各プロジェクト")
+    sp.add_argument("--project", default=None,
+                    help="操作対象プロジェクト（既定 default。未指定なら作成）。実体は <root>/projects/<name>/")
     sp.add_argument("--backlog", default=None, help="バックログディレクトリ（既定 <root>/backlog）")
     sp.add_argument("--policy", default=None, help="（既定 <root>/policy.md）")
     sp.add_argument("--decisions", default=None, help="決定記録ディレクトリ（既定 <root>/decisions）")
@@ -3123,6 +3755,30 @@ def main(argv=None) -> int:
     run.add_argument("--once", action=argparse.BooleanOptionalAction, default=None,
                      help="1 タスクだけ処理して終了")
 
+    # project: charter 駆動の plan→execute→evaluate ループ（run を内側に呼ぶ外側の一段）
+    prj = sub.add_parser("project",
+                         help="charter（目標/制約/前提/成果物/acceptance）駆動の長期改善ループ")
+    _add_common(prj)
+    prj.add_argument("--charter", default=None,
+                     help="プロジェクト憲章ファイル（既定 <root>/charter.md）")
+    prj.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
+                     help="収束/人待ちで止まっても常駐し charter 更新/フィードバックを待つ")
+    prj.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
+    prj.add_argument("--review-project", action=argparse.BooleanOptionalAction, default=None,
+                     help="evaluate で敵対的レビューを上乗せ（acceptance 全 PASS でも短絡的達成を疑う・opt-in）")
+    prj.add_argument("--max-project-cycles", type=int, default=None,
+                     help="改善サイクルの上限（有限停止・既定 5）")
+    prj.add_argument("--max-project-cost", type=float, default=None,
+                     help="プロジェクト累計コスト上限(USD・0=無制限)")
+    prj.add_argument("--project-stall", type=int, default=None,
+                     help="acceptance PASS 数が増えない連続回数の上限→人へ（既定 2）")
+    prj.add_argument("--level", default=None, choices=["report", "assisted", "unattended"],
+                     help="内側 run の自律度（既定 unattended）")
+    prj.add_argument("--no-archive", dest="do_archive", action="store_const", const=False,
+                     default=None, help="done を archive/ へ退避せず削除")
+    prj.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None,
+                     help="内側 act を飛ばし verify のみ")
+
     for name, helptext in [("triage", "優先順位付けのみ（inbox→ready 昇格・policy 適用）"),
                            ("needs", "人の判断待ち（blocked / need_intake）を表示"),
                            ("promote", "効いた学習を ltm-use 長期記憶へ昇格（エージェント不要）")]:
@@ -3174,24 +3830,28 @@ def main(argv=None) -> int:
     inst.add_argument("--registry", action="append", default=None, help=_reg_help)
 
     sta = sub.add_parser("start", help="run --watch を切り離して常駐起動（detached。重複は --force）")
-    sta.add_argument("--root", default=None, help="監視する作業ルート（既定 ./.kiro-autonomous）")
+    sta.add_argument("--root", default=None, help="コンテナ（既定 ./.kiro-autonomous）")
+    sta.add_argument("--project", default=None, help="監視するプロジェクト（既定 default）")
     sta.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
-    sta.add_argument("--force", action="store_true", help="同じ root を既に監視中でも起動する")
+    sta.add_argument("--force", action="store_true", help="同じプロジェクトを既に監視中でも起動する")
     sta.add_argument("--registry", action="append", default=None, help=_reg_help)
     sto = sub.add_parser("stop", help="稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除）")
-    sto.add_argument("--root", default=None, help="停止対象の root（作業ルート/配下どちらでも一致）")
+    sto.add_argument("--root", default=None, help="停止対象のコンテナ/プロジェクト root")
+    sto.add_argument("--project", default=None, help="停止対象のプロジェクト（--root と併せて per-project root に解決）")
     sto.add_argument("--pid", type=int, default=None, help="停止対象の PID（instances で確認）")
     sto.add_argument("--all", action="store_true", help="稼働中インスタンスを全停止")
     sto.add_argument("--registry", action="append", default=None, help=_reg_help)
-    res = sub.add_parser("restart", help="同じ root の監視を停止してから起動し直す")
-    res.add_argument("--root", default=None, help="再起動する作業ルート（既定 ./.kiro-autonomous）")
+    res = sub.add_parser("restart", help="同じプロジェクトの監視を停止してから起動し直す")
+    res.add_argument("--root", default=None, help="コンテナ（既定 ./.kiro-autonomous）")
+    res.add_argument("--project", default=None, help="再起動するプロジェクト（既定 default）")
     res.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
     res.add_argument("--registry", action="append", default=None, help=_reg_help)
 
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
-    _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit", "runlog", "enqueue",
-                    "approve", "hold", "reprioritize", "instances", "start", "stop", "restart"}
+    _subcommands = {"run", "project", "triage", "needs", "promote", "rot", "stats", "audit",
+                    "runlog", "enqueue", "approve", "hold", "reprioritize", "instances",
+                    "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
 
@@ -3202,13 +3862,16 @@ def main(argv=None) -> int:
         return cmd_instances(args.json, extra=_split_registry(getattr(args, "registry", None)))
     if args.cmd == "start":
         return cmd_start(args.root, args.config, args.force,
-                         extra=_split_registry(getattr(args, "registry", None)))
+                         extra=_split_registry(getattr(args, "registry", None)),
+                         project=getattr(args, "project", None))
     if args.cmd == "stop":
         return cmd_stop(args.root, args.pid, args.all,
-                        extra=_split_registry(getattr(args, "registry", None)))
+                        extra=_split_registry(getattr(args, "registry", None)),
+                        project=getattr(args, "project", None))
     if args.cmd == "restart":
         return cmd_restart(args.root, args.config,
-                           extra=_split_registry(getattr(args, "registry", None)))
+                           extra=_split_registry(getattr(args, "registry", None)),
+                           project=getattr(args, "project", None))
 
     resolve_config(args)      # CLI 未指定値を 設定ファイル → 組み込み既定 で確定
     cfg = build_config(args)
@@ -3219,6 +3882,7 @@ def main(argv=None) -> int:
 
     return {
         "run": lambda: cmd_run(cfg),
+        "project": lambda: (project_watch(cfg) if cfg.watch else cmd_project(cfg)),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
         "enqueue": lambda: cmd_enqueue(cfg, args),
