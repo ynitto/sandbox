@@ -2978,7 +2978,7 @@ def cmd_run(cfg: Config) -> int:
 
 # ---------------------------------------------------------------------------
 # プロジェクト層（charter 駆動の plan→execute→evaluate ループ）
-#   設計: docs/designs/kiro-autonomous-design.md §11（プロジェクト層）
+#   設計: docs/designs/kiro-autonomous-design.md §6（プロジェクト層）
 #   backlog の上に「目標→分解→消化→評価→改善」のもう一段を載せる。内側の正準ループ（run_loop）は
 #   無改造で呼ぶ。done は acceptance(=verify) 全 PASS のみが根拠。知能（分解・敵対的レビュー）は
 #   エージェントへ委譲し、本体は決定的なファイル操作（charter 解釈・enqueue・acceptance 実行・収束計算）
