@@ -406,6 +406,115 @@ class TestAutonomyLevels(unittest.TestCase):
             self.assertEqual(res["counts"]["done"], 1)          # 従来どおり自動 done
 
 
+class TestPerTaskAutonomy(unittest.TestCase):
+    """タスク単位の `- level:` 上書き と 実績連動の自動昇格（--auto-level・track）。"""
+
+    def _mk(self, d, tid, level=None, track=None, verify="true"):
+        bd = d / "backlog"; bd.mkdir(parents=True, exist_ok=True)
+        body = f"## {tid}: {tid}\n- status: ready\n- verify: `{verify}`\n"
+        if level:
+            body += f"- level: {level}\n"
+        if track:
+            body += f"- track: {track}\n"
+        (bd / f"{tid}.md").write_text(body, encoding="utf-8")
+
+    def _cfg(self, d, **kw):
+        return cfg_for(Path(d), dry_run=False, learn=False, auto_adjudicate=False,
+                       max_cycles=20, **kw)
+
+    _act = staticmethod(lambda t, c, loc: (True, "ok"))
+
+    def test_resolve_level_precedence(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d, level="unattended")
+            explicit = km.parse_task("## T: T\n- level: assisted\n", "T")
+            self.assertEqual(km.resolve_level(explicit, cfg), "assisted")  # 明示が勝つ
+            plain = km.parse_task("## T: T\n", "T")
+            self.assertEqual(km.resolve_level(plain, cfg), "unattended")   # 無指定はグローバル
+
+    def test_mixed_levels_in_one_backlog(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "U", level="unattended"); self._mk(d, "A", level="assisted")
+            self._mk(d, "R", level="report")
+            calls = []
+            res = km.run_loop(self._cfg(d, level="unattended"),
+                              act=lambda t, c, loc: calls.append(t.id) or (True, "ok"))
+            self.assertEqual(res["counts"]["done"], 1)                 # U だけ自動 done
+            self.assertEqual(res["counts"].get("review", 0), 1)        # A は検収待ち
+            self.assertNotIn("R", calls)                               # report は実行しない
+            self.assertIn("R", res["plan"])                            # 計画に保留として載る
+            self.assertEqual(km.parse_task((d / "backlog" / "R.md").read_text(), "R")
+                             .norm_status(), "ready")                  # 塩漬け（ready のまま）
+
+    def test_global_report_honors_explicit_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "P1"); self._mk(d, "P2", level="unattended")
+            res = km.run_loop(self._cfg(d, level="report"), act=self._act)
+            self.assertEqual(res["counts"]["done"], 1)                 # 明示 unattended は実行
+            self.assertEqual(res["reason"], "report")
+            self.assertIn("P1", res["plan"])                           # 無指定は report 保留
+
+    def test_auto_promote_assisted_to_unattended(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            conf = dict(level="assisted", auto_level=True, auto_level_max="unattended",
+                        level_promote_after=2, level_window=10)
+            for i in range(2):                                         # 2 件 clean 承認で昇格
+                self._mk(d, f"X{i}", track="docs")
+                km.run_loop(self._cfg(d, **conf), act=self._act)
+                km.cmd_approve(self._cfg(d, **conf), f"X{i}", "ok")    # review→approve=clean
+            rec = km._autonomy_get(self._cfg(d, **conf), "docs")
+            self.assertEqual(rec["level"], "unattended")              # 実績で自動昇格
+            self._mk(d, "X9", track="docs")
+            res = km.run_loop(self._cfg(d, **conf), act=self._act)
+            self.assertEqual(res["counts"]["done"], 1)               # 以後は自動 done
+
+    def test_ceiling_default_assisted_blocks_unattended(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            conf = dict(level="assisted", auto_level=True, level_promote_after=1)  # ceiling 既定 assisted
+            for i in range(3):
+                self._mk(d, f"Y{i}", track="docs")
+                km.run_loop(self._cfg(d, **conf), act=self._act)
+                km.cmd_approve(self._cfg(d, **conf), f"Y{i}", "ok")
+            rec = km._autonomy_get(self._cfg(d, **conf), "docs")
+            self.assertEqual(rec["level"], "assisted")               # ceiling で unattended に上がらない
+
+    def test_demote_then_pin_on_rework(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._git_init(d)
+            conf = dict(level="unattended", auto_level=True, auto_level_max="unattended",
+                        regression_cmd="false")                       # 回帰必ず失敗＝手戻り
+            self._mk(d, "R1", track="risky")
+            km.run_loop(self._cfg(d, **conf), act=self._act)
+            rec = km._autonomy_get(self._cfg(d, **conf), "risky")
+            self.assertEqual((rec["level"], rec["demotions"], rec["pinned"]),
+                             ("assisted", 1, False))                  # 1 回目 → 降格
+            (d / "backlog" / "R1.md").unlink()
+            self._mk(d, "R2", track="risky")
+            km.run_loop(self._cfg(d, **conf), act=self._act)
+            rec = km._autonomy_get(self._cfg(d, **conf), "risky")
+            self.assertEqual((rec["level"], rec["pinned"]), ("assisted", True))  # 2 回目 → ピン
+
+    def test_off_by_default_no_store(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._mk(d, "Z", track="docs")
+            res = km.run_loop(self._cfg(d, level="unattended"), act=self._act)  # auto_level 既定 off
+            self.assertEqual(res["counts"]["done"], 1)
+            self.assertFalse((d / "autonomy").exists())              # 既定では一切書かない＝挙動不変
+
+    def _git_init(self, d):
+        import subprocess as sp
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "-C", str(d), "init", "-q"], env=env, capture_output=True)
+
+
 class TestAudit(unittest.TestCase):
     """Loop Readiness セルフ監査（L0–L3・スコア・赤旗・--strict ゲート）。"""
 

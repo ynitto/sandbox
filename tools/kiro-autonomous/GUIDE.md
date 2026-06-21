@@ -117,6 +117,23 @@ kiro-autonomous runlog --tail 20    # 何が起きたかを構造化ログで確
 **安全装置の役割**（→ [早見表](#安全装置の早見表)）: `gate`=質の承認 / `protect`=危険パスの番人 /
 `regression_cmd`=巻き込み検知 / `verify_confirm`=flake 隔離 / `require_progress`=偽 done 捕捉。
 
+**自律度はタスク毎に変えてよい**（実運用では backlog 毎に違う）。グローバル `--level` は既定で、タスク行
+`- level:` が**上書き**する（実効＝明示 > 自動 > グローバル。`protect`/`gate` は常に上乗せ）:
+```text
+## PAY-12: 決済ロジック変更
+- level: assisted      # この案件だけ done は人が承認
+## DOC-3: README の typo
+- level: unattended    # 同じ backlog でも雑魚は自動 done
+## RISKY-9: まだ自動化しない
+- level: report        # 実行せず計画に保留（塩漬け）
+```
+**自動昇格（opt-in）**: `- track: <名前>` を付けた同種群は `--auto-level` で、手戻り率が低ければ level を自動で
+上げ、手戻り（差し戻し/回帰/偽done）で下げる。ceiling 既定 `assisted`、`--auto-level-max unattended` で完全
+無人化への自動到達を解禁。「assisted で慣らし→実績で unattended」を**人手の昇格判断なしに**回せる。
+```bash
+kiro-autonomous run --level assisted --auto-level --auto-level-max unattended
+```
+
 **卒業の目安**: 1 週間 watch で回して赤旗ゼロ、人対応待ちが詰まらない、回帰ゲートが効いている。
 
 ---
@@ -211,6 +228,7 @@ kiro-autonomous instances --registry /shared/kiro-registry
 | 装置 | 設定 | 何を止めるか | 推奨レベル |
 |------|------|--------------|-----------|
 | 自律度 | `level: report/assisted/unattended` | act/done の権限そのもの | 全段階 |
+| タスク単位の自律度 | `- level:`（上書き）/ `- track:`＋`--auto-level` | 案件毎にゲートを出し入れ・実績で自動調整 | L2+ |
 | 検収ゲート | `policy.md: gate:` / `- review: human` | verify=PASS でも質的に要承認 | L2+ |
 | パス保護 | `policy.md: protect:` | 危険パス（CI/秘密等）への変更 | L2+ |
 | 回帰ゲート | `regression_cmd` (+`regression_revert`) | done が他を壊す巻き込み事故 | L2+ |
@@ -226,7 +244,8 @@ kiro-autonomous instances --registry /shared/kiro-registry
 
 | キー | 既定 | 効く段階 | メモ |
 |------|------|---------|------|
-| `level` | `unattended` | L0–L1 | 最初は `report`→`assisted` で信頼を積む |
+| `level` | `unattended` | L0–L1 | 最初は `report`→`assisted` で信頼を積む。タスク毎は `- level:` で上書き |
+| `auto_level` / `auto_level_max` | `false` / `assisted` | L2+ | `- track:` 群を実績連動で自動昇格。無人化到達は max を `unattended` に |
 | `planner` | `kiro` | L0 | 様子見は `none`（決定的・エージェント不要） |
 | `executor` | `kiro` | L0 | 下見は `stub`（無料・無害） |
 | `watch` / `poll` | `false` / `5.0` | L2+ | 常駐監視。idle 中はエージェント非起動 |

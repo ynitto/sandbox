@@ -62,8 +62,8 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
   `max_retries` / `max_iterations` /
   `verify_timeout` / `verify_confirm` / `act_timeout` / `git_bus` / `git_branch` / `git_subdir` / `kiro_flow` /
   `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days` /
-  `max_spawn` / `regression_cmd`。
-- **真偽フラグも書ける**: `watch` / `once` / `dry_run` / `rot` / `ltm` / `regression_revert` / `require_progress`（既定 false）・
+  `max_spawn` / `regression_cmd` / `auto_level_max` / `level_promote_after` / `level_window` / `level_rework_max`。
+- **真偽フラグも書ける**: `watch` / `once` / `dry_run` / `rot` / `ltm` / `regression_revert` / `require_progress` / `auto_level`（既定 false）・
   `do_archive` / `learn` / `cleanup`（既定 true）・`auto_adjudicate`（既定 true）。CLI の `--flag`/`--no-flag`
   が常に勝つ（例: config で `watch: true` にしつつ、その場だけ `--no-watch`）。退避可否は `--archive` が
   パス用のため config キーは `do_archive`。
@@ -156,6 +156,34 @@ kiro-autonomous run                     # 既定 unattended（従来どおり）
 - `assisted` は verify=PASS でも `review` に落とす（`approve` で done／フィードバックで差し戻し）。`protect`(後述) や
   `review: human` の上位ゲートとも自然に重なる。`unattended` は既定なので**従来挙動は不変**。
 - いま無人運用に値するかは `audit`（後述）が L0–L3 で採点する。`--level` はその「実際に動かす自律度」を選ぶ側。
+
+### タスク単位の自律レベルと実績連動の自動昇格（`- level:` / `- track:` / `--auto-level`）
+
+実運用では自律度は backlog 毎に違う（決済コードは承認必須、typo 修正は無人で良い）。`--level` は run 全体の
+既定だが、**タスク毎に上書き**でき、さらに**実績で自動調整**できる。設計詳細は
+[per-task autonomy 設計メモ](../../docs/designs/2026-06-21-kiro-autonomous-per-task-autonomy-design.md)。
+
+- **`- level: report|assisted|unattended`**（タスク行）: そのタスクの自律度をグローバルより優先（**上書き**）。
+  実効 = `- level:`（明示）＞ track の自動昇格 ＞ グローバル `--level`。`protect`/`gate`/`regression` は常に上乗せ。
+  ```text
+  ## PAY-12: 決済ロジック変更
+  - level: assisted        # この案件だけ done は人が承認
+  ## DOC-3: README の typo
+  - level: unattended      # 同じ backlog でも雑魚は自動 done
+  ```
+  `report` のタスクは実行せず「計画」に保留（塩漬け）。グローバル `report` でも明示 `unattended` は実行される。
+
+- **`--auto-level`（opt-in）＋ `- track: <名前>`**: 同種タスク群の**手戻り率**で level を自動で上げ下げ。
+  直近 `level_window`（既定 10）件で手戻りが無く連続 clean が `level_promote_after`（既定 5）に達したら 1 段昇格、
+  手戻り（差し戻し/回帰/偽done）で 1 段降格・**2 回で `assisted` にピンして自動管理を停止**。**ceiling は既定
+  `assisted`**（`--auto-level-max unattended` を明示したときだけ完全無人化へ到達）。track 毎の状態は
+  `<root>/autonomy/<track>.json`、昇降格は `decisions/` に監査記録。
+  ```bash
+  kiro-autonomous run --level assisted --auto-level --auto-level-max unattended
+  #   docs-typo の様な低リスク track は実績が貯まると自動で unattended に昇格、
+  #   手戻りが出れば assisted に自動で引き戻す（信頼は得るだけでなく失う）
+  ```
+  既定（`--auto-level` off・`- level:`/`- track:` 無し）では**従来挙動は完全不変**。
 
 ## サブコマンド
 
