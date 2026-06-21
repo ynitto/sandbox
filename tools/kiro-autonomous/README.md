@@ -56,7 +56,7 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
 - **形式**: YAML（**PyYAML 必要**）または JSON（標準ライブラリのみ。キーは同じ）。PyYAML 非導入の環境で
   `.yaml` を指定するとエラーになるので、その場合は `kiro-autonomous.json` を使う。
 - **書けるキー**: `executor` / `planner` / `flow_planner` / `location` / `model` / `root` / `workdir` /
-  `poll` / `concurrency` / `level` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_tokens` / `max_cost` /
+  `poll` / `concurrency` / `level` / `throttle` / `debounce` / `pace` / `max_cycles` / `max_seconds` / `max_tokens` / `max_cost` /
   `max_retries` / `max_iterations` /
   `verify_timeout` / `act_timeout` / `git_bus` / `git_branch` / `git_subdir` / `kiro_flow` /
   `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days` /
@@ -85,7 +85,8 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
                        └ --ltm 時、実績ある learn は ltm-use home へ昇格（横断再利用）
   archive/<id>.md      ↑ done の保全先。検収用の「納品書」付き（backlog と1:1）
   DELIVERY.md          納品一覧（受領書）。done を1行ずつ追記
-  journal.md           機械のサイクルログ
+  run-log.jsonl        構造化 run-log（run 毎に1行 JSON。reason/done/escalations/tokens/cost/duration）
+  journal.md           機械のサイクルログ（人間可読）
   bus/                 kiro-flow バス（一時。run 後に自動クリーンアップ。--no-cleanup で保持）
 ```
 
@@ -165,6 +166,7 @@ kiro-autonomous run                     # 既定 unattended（従来どおり）
 | `enqueue` [`--title` `--verify` …\| `--json`] | 汎用の取り込み口。CLI/stdin/JSON から backlog タスクを作る |
 | `stats` [`--json`] | ループの計測値（スループット・自動化率・retry・人対応待ち） |
 | `audit` [`--json` `--strict`] | Loop Readiness を採点（L0–L3・スコア・赤旗・提案）。`--strict` で CI ゲート化 |
+| `runlog` [`--json` `--tail N`] | 構造化 run-log（run-log.jsonl）の末尾を表示（運用判断の土台） |
 | `rot` [`--fix`] | 古い/重複/実行不能タスクを検出して報告（`--fix` で人の判断へ回す） |
 | `approve <id> --reason …` | 判断待ちを修正承認して積み直し（決定記録） |
 | `hold <id> --reason …` | `policy.md` に `deny` 追加し保留（決定記録） |
@@ -489,6 +491,27 @@ kiro-autonomous audit --strict   # スコア<40 か critical 赤旗で exit 2（
 ```bash
 # CI で「無人運用に値するか」を門番に（例: GitHub Actions の1ステップ）
 kiro-autonomous audit --strict || echo "Loop がまだ unattended 基準を満たしていない"
+```
+
+## 構造化 run-log と自動スロットル（`runlog` / `--throttle`）
+
+[Loop Engineering の operating-loops](https://github.com/cobusgreyling/loop-engineering/blob/main/docs/operating-loops.md)
+の「per-run ログ」「slow down/pause の発火条件」を取り込む。`journal.md` が人間可読なのに対し、
+**`run-log.jsonl` は run 毎に1行 JSON**（`reason`/`done`/`escalations`/`tokens`/`cost`/`duration_s` …）で、
+スプレッドシートや監視に流せる機械可読ログ。
+
+```bash
+kiro-autonomous runlog              # 直近10件を表示
+kiro-autonomous runlog --json --tail 50
+```
+
+**自動スロットル** `--throttle <比率>`（既定 0=off）: `max_tokens`/`max_cost` の比率（例 `0.8`）に達したら
+**ハード上限の手前で run を打ち切り**（`reason=throttle`）、`--watch` 中は以降 **report レベルへ降格**して
+spend を止めつつ監視は続ける。日次予算に当たって途中のタスクで急停止するのを避ける「緩やかなブレーキ」。
+
+```bash
+# 1日2ドルのソフト上限を超えたら act を止めて報告のみに（監視は継続）
+kiro-autonomous run --watch --max-cost 2.0 --throttle 0.8
 ```
 
 ## policy.md（優先順位・実行先の上書き）

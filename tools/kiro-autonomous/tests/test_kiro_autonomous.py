@@ -179,6 +179,67 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
 
+class TestRunlogAndThrottle(unittest.TestCase):
+    """構造化 run-log（JSONL）と自動スロットル（ソフト予算→打ち切り・watch は report 降格）。"""
+
+    def _cfg(self, d, **kw):
+        return cfg_for(Path(d), dry_run=False, learn=False, auto_adjudicate=False,
+                       max_cycles=50, do_archive=True, **kw)
+
+    def _cost_act(self, usd=0.03):
+        return lambda t, c, loc: (True, f"done\n@cost tokens=100 usd={usd}")
+
+    def test_runlog_written_per_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true"); mkb(d, "T2", verify="true")
+            res = km.run_loop(self._cfg(d), act=lambda t, c, loc: (True, "ok"))
+            lines = (d / "run-log.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            rec = __import__("json").loads(lines[0])
+            self.assertEqual(rec["done"], 2)
+            self.assertEqual(rec["reason"], res["reason"])
+            for k in ("ts", "reason", "cycles", "escalations", "tokens", "cost", "duration_s"):
+                self.assertIn(k, rec)
+
+    def test_throttle_stops_before_hard_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for i in range(6):
+                mkb(d, f"T{i}", verify="true")
+            res = km.run_loop(self._cfg(d, max_cost=0.10, throttle=0.8),
+                              act=self._cost_act(0.03))
+            self.assertEqual(res["reason"], "throttle")        # 0.8*0.10=0.08 で打ち切り
+            self.assertLess(res["cost"], 0.10)                 # ハード上限の手前
+            self.assertEqual(km.exit_code_for(res), 2)
+
+    def test_throttle_off_uses_hard_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for i in range(6):
+                mkb(d, f"T{i}", verify="true")
+            res = km.run_loop(self._cfg(d, max_cost=0.10, throttle=0.0),
+                              act=self._cost_act(0.03))
+            self.assertEqual(res["reason"], "cost")            # throttle off → ハード上限で停止
+
+    def test_watch_degrades_to_report_on_throttle(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for i in range(6):
+                mkb(d, f"T{i}", verify="true")
+            cfg = self._cfg(d, max_cost=0.10, throttle=0.8)
+            km.run_watch(cfg, act=self._cost_act(0.03), sleeper=lambda s: None, max_passes=2)
+            self.assertEqual(cfg.level, "report")              # throttle 後は report 降格
+
+    def test_cmd_runlog(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self.assertEqual(km.cmd_runlog(self._cfg(d)), 0)   # 空でも落ちない
+            mkb(d, "T1", verify="true")
+            km.run_loop(self._cfg(d), act=lambda t, c, loc: (True, "ok"))
+            self.assertEqual(km.cmd_runlog(self._cfg(d), as_json=True, tail=5), 0)
+
+
 class TestAtomicClaim(unittest.TestCase):
     """原子的クレーム（共有 backlog／並列での二重実行防止）。"""
 
