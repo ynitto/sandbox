@@ -1975,6 +1975,154 @@ class TestLoopEngineering(unittest.TestCase):
                              (1000, 0.02, 2))
 
 
+CHARTER = """# Charter: demo
+
+## goal
+CSV を要約する CLI を完成させる。
+
+## constraints
+- 標準ライブラリのみ
+
+## assumptions
+- 入力は UTF-8
+
+## deliverables
+- report.py
+
+## acceptance
+- `test -f {flag}`
+"""
+
+
+def write_charter(d: Path, body: str) -> None:
+    (d / "charter.md").write_text(body, encoding="utf-8")
+
+
+class TestProjectLayer(unittest.TestCase):
+    def test_parse_charter(self):
+        ch = km.parse_charter(CHARTER.replace("{flag}", "x"))
+        self.assertEqual(ch.name, "demo")
+        self.assertIn("CSV", ch.goal)
+        self.assertEqual(ch.constraints, ["標準ライブラリのみ"])
+        self.assertEqual(ch.deliverables, ["report.py"])
+        self.assertEqual(ch.acceptance, ["test -f x"])
+
+    def test_missing_charter_errors(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self.assertEqual(km.cmd_project(cfg_for(d)), 2)
+
+    def test_no_acceptance_escalates(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: X\n## goal\nやる\n")
+            code = km.cmd_project(cfg_for(d), planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(code, 1)
+            self.assertTrue((d / "needs" / "X.md").exists())
+
+    def test_plan_enqueues_then_converges(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            planned = {"n": 0}
+
+            def planner(ch):
+                planned["n"] += 1
+                return [{"title": "成果物を作る", "verify": f"test -f {flag}"}]
+
+            def runner(c):                      # 実行を模す: acceptance を満たすファイルを作る
+                flag.write_text("x")
+                return _drained()
+
+            code = km.cmd_project(cfg_for(d), planner=planner, runner=runner)
+            self.assertEqual(code, 1)           # converged → 人の承認待ち
+            st = km.load_project_state(cfg_for(d))
+            self.assertEqual(st["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertEqual(planned["n"], 1)   # 1 回だけ plan（消化可能タスクがある間は再分解しない）
+            self.assertTrue((d / "needs" / "demo.md").exists())
+
+    def test_unmet_acceptance_generates_improvement(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, CHARTER.replace("{flag}", str(d / "never")))
+            cfg = cfg_for(d, max_project_cycles=1)
+            code = km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(code, 2)           # 1サイクルで未達のまま予算到達 → project-budget
+            # 未達 acceptance がそれ自体を verify とする改善タスクとして積まれている
+            titles = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertTrue(any("受入条件を満たす" in t for t in titles))
+
+    def test_stall_escalates(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, CHARTER.replace("{flag}", str(d / "never")))
+            cfg = cfg_for(d, max_project_cycles=9, project_stall=2)
+            code = km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            st = km.load_project_state(cfg)
+            self.assertEqual(st["status"], km.REASON_PROJECT_STALL)
+            self.assertEqual(code, 1)
+
+    def test_approve_finalizes_converged_project(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertEqual(km.cmd_approve(cfg, "demo", "OK"), 0)
+            st = km.load_project_state(cfg)
+            self.assertEqual(st["status"], km.REASON_PROJECT_ACCEPTED)
+            self.assertIn("project", (d / "DELIVERY.md").read_text(encoding="utf-8"))
+
+    def test_review_project_generates_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d, review_project=True, max_project_cycles=1)
+            seen = {"n": 0}
+
+            def reviewer(ch):
+                seen["n"] += 1
+                return [{"title": "テストを追加", "verify": "true"}]
+
+            km.cmd_project(cfg, planner=lambda ch: [], reviewer=reviewer,
+                           runner=lambda c: _drained())
+            self.assertEqual(seen["n"], 1)      # acceptance 全 PASS でも敵対的レビューが走る
+            titles = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertIn("テストを追加", titles)
+
+    def test_inner_blocked_stops_project(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, CHARTER.replace("{flag}", str(d / "f")))
+
+            def runner(c):
+                r = _drained(); r["counts"]["blocked"] = 1
+                return r
+
+            code = km.cmd_project(cfg_for(d), planner=lambda ch: [], runner=runner)
+            self.assertEqual(km.load_project_state(cfg_for(d))["status"],
+                             km.REASON_PROJECT_BLOCKED)
+            self.assertEqual(code, 1)
+
+    def test_idempotent_plan_dedup(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            existing = ["成果物を作る"]
+            created = km._enqueue_specs(
+                cfg, [{"title": "成果物を作る", "verify": "true"}], existing, 0.5)
+            self.assertEqual(created, [])       # 既存と類似は投入しない
+
+
+def _drained():
+    return {"reason": km.REASON_DRAINED, "cycles": 0,
+            "counts": {s: 0 for s in km.VALID_STATUS}, "cost": 0.0, "tokens": 0}
+
+
 class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
         kf = Path(__file__).resolve().parents[2] / "kiro-flow" / "kiro-flow.py"

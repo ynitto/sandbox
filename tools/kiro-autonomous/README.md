@@ -28,6 +28,45 @@
 
 done を**自己申告で確定させない**（verify の終了コード0のみが根拠）ことが MVP の存在意義。
 
+## プロジェクト層（`project`）— charter 駆動の長期改善ループ
+
+backlog（タスク）の上に、**人が書く目標**から逆算して回す**もう一段のループ**を載せる
+（設計: [project-loop 設計メモ](../../docs/designs/2026-06-21-kiro-autonomous-project-loop-design.md)）。
+backlog を消化して `drained` で止まる正準ループに対し、`project` は「**枯渇**」と「**目標達成**」を分離し、
+未達なら改善タスクを生成して長期に回す。
+
+```
+人が書く charter.md（goal / constraints / assumptions / deliverables / acceptance=受入 verify）
+   │
+   ├ ① plan     charter をエージェントに分解させ enqueue（冪等。verify 必須）
+   ├ ② execute  既存の正準ループ run を drained まで回す（検収/回帰/protect/予算は全て温存）
+   └ ③ evaluate acceptance 全 PASS かを判定（＋opt-in 敵対的レビュー）
+         未達/指摘 → 改善タスクを生成して次サイクル（長期改善）
+         全 PASS かつ改善ゼロ → milestone gate で人へ（needs/<project>.md）
+```
+
+- **done の唯一の根拠は `acceptance`（=verify）全 PASS**。タスクの verify と同じ鉄則（履歴でなく最終状態/差分）。
+- **必ず有限停止**: 内側 `run`（drained/budget）＋プロジェクト層（`--max-project-cycles` 既定 5 /
+  `--max-project-cost` / `--project-stall`＝PASS 数が増えない連続回数で人へ）。
+- **知能は委譲**: plan の分解・evaluate の敵対的レビューはエージェントへ、enqueue・acceptance 実行・収束判定は
+  本体が決定的に行う（stdlib のみ）。`project` を呼ばない限り従来挙動は完全不変。
+
+```bash
+cp tools/kiro-autonomous/charter.md.example .kiro-autonomous/charter.md   # 目標を書く（正典はこのテンプレ）
+kiro-autonomous project                       # plan→execute→evaluate を回す（収束で人へ）
+kiro-autonomous project --watch               # 収束/人待ちでも常駐し charter 更新を待つ
+kiro-autonomous project --review-project      # acceptance 全 PASS でも敵対的レビューで短絡的達成を疑う
+kiro-autonomous needs                         # milestone（収束候補）を確認
+kiro-autonomous approve <project> --reason "受領"   # 収束候補を完了確定（最終納品書）／続行は charter を更新して再実行
+```
+
+- **charter の書式**は [`charter.md.example`](charter.md.example)（このテンプレが正典）。`# Charter: <name>` の
+  name から project id を生成（ASCII 推奨。日本語のみだと既定 `project`）。`acceptance` を持たない charter は
+  done 判定不能＝必ず人へ回る。
+- 状態は `<root>/project.json`（サイクル・PASS 履歴・stall・cost）、各評価は `decisions/` に `project-evaluate`
+  として監査記録。終了コードは `0`＝完了受領 / `1`＝人の対応待ち（収束候補・停滞・内側エスカレーション）/
+  `2`＝予算停止。
+
 ## 依存
 
 - `python3`（標準ライブラリのみ。pip 依存なし）
@@ -62,8 +101,9 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
   `max_retries` / `max_iterations` /
   `verify_timeout` / `verify_confirm` / `act_timeout` / `git_bus` / `git_branch` / `git_subdir` / `kiro_flow` /
   `notify_cmd` / `actor` / `learn_threshold` / `promote_threshold` / `ltm_home` / `rot_age_days` /
-  `max_spawn` / `regression_cmd` / `auto_level_max` / `level_promote_after` / `level_window` / `level_rework_max`。
-- **真偽フラグも書ける**: `watch` / `once` / `dry_run` / `rot` / `ltm` / `regression_revert` / `require_progress` / `auto_level`（既定 false）・
+  `max_spawn` / `regression_cmd` / `auto_level_max` / `level_promote_after` / `level_window` / `level_rework_max` /
+  `max_project_cycles` / `max_project_cost` / `project_stall`（project 用）。
+- **真偽フラグも書ける**: `watch` / `once` / `dry_run` / `rot` / `ltm` / `regression_revert` / `require_progress` / `auto_level` / `review_project`（既定 false）・
   `do_archive` / `learn` / `cleanup`（既定 true）・`auto_adjudicate`（既定 true）。CLI の `--flag`/`--no-flag`
   が常に勝つ（例: config で `watch: true` にしつつ、その場だけ `--no-watch`）。退避可否は `--archive` が
   パス用のため config キーは `do_archive`。
@@ -77,6 +117,8 @@ kiro-autonomous run --config ./my.yaml    # 明示パス指定も可
 
 ```
 .kiro-autonomous/
+  charter.md           プロジェクト憲章（人が書く・project の最上位入力。正典 charter.md.example）
+  project.json         project のサイクル状態（PASS 履歴・stall・cost。project が増分更新）
   backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
   claims/<id>.lock     実行権の原子的クレーム（二重実行防止。doing 中だけ存在し終了で解放）
   inbox/               取り込み待ちのドロップ口（外部ソースが .json/.md を置く→run/watch が backlog 化）
@@ -191,6 +233,7 @@ kiro-autonomous run                     # 既定 unattended（従来どおり）
 |----------|------|
 | （省略） | **`run --watch` と同義**。常駐監視で起動し backlog 投入を待ち続ける（PC 起動時の常駐用） |
 | `run` [`--watch`] | 正準ループ。`--watch` で終了条件後も常駐監視（idle はエージェント非起動） |
+| `project` [`--watch`] | **charter 駆動の長期改善ループ**（下記）。目標→分解→消化→評価→改善を回す |
 | `triage` | 優先順位付けのみ（inbox→ready 昇格・policy 適用）。順位を表示 |
 | `needs` | 人の判断待ち（blocked / acceptance 未定義 / 検収待ち）を表示 |
 | `enqueue` [`--title` `--verify` …\| `--json`] | 汎用の取り込み口。CLI/stdin/JSON から backlog タスクを作る |
