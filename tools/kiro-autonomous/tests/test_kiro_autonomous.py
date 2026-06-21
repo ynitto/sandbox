@@ -179,6 +179,63 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
 
+class TestFlakeTolerantVerify(unittest.TestCase):
+    """フレーク耐性 verify（--verify-confirm）。揺れる verify を NG churn せず人へ隔離。"""
+
+    def _patch_verify(self, results):
+        """km.run_verify を results の順に返すスタブへ差し替え（テスト後に復元）。"""
+        seq = list(results)
+        i = [0]
+
+        def fake(cmd, wd, to):
+            v = seq[i[0] % len(seq)]
+            i[0] += 1
+            return (v, f"exit={0 if v else 1}")
+        orig = km.run_verify
+        km.run_verify = fake
+        self.addCleanup(lambda: setattr(km, "run_verify", orig))
+
+    def test_stable_results_not_flaky(self):
+        self._patch_verify([True])
+        self.assertEqual(km.run_verify_stable("x", Path("."), 1, 3), (True, False, "exit=0"))
+        self._patch_verify([False])
+        ok, flaky, _ = km.run_verify_stable("x", Path("."), 1, 3)
+        self.assertEqual((ok, flaky), (False, False))
+
+    def test_confirm_one_is_legacy_single_run(self):
+        self._patch_verify([True, False])              # 交互でも confirm=1 なら1回だけ＝flaky 判定しない
+        self.assertEqual(km.run_verify_stable("x", Path("."), 1, 1), (True, False, "exit=0"))
+
+    def test_alternating_is_flaky(self):
+        self._patch_verify([True, False, True])
+        ok, flaky, msg = km.run_verify_stable("x", Path("."), 1, 2)
+        self.assertTrue(flaky)
+        self.assertIn("flaky", msg)
+
+    def test_run_loop_quarantines_flaky_to_human(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            self._patch_verify([True, False])           # 1回目 PASS / 2回目 FAIL → flake
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False,
+                                      verify_confirm=2, max_cycles=10))
+            self.assertEqual(res["counts"]["done"], 0)          # done にしない
+            self.assertEqual(res["counts"]["blocked"], 1)       # 人へ隔離
+            self.assertTrue((d / "needs" / "T1.md").exists())
+            t = km.parse_task((d / "backlog" / "T1.md").read_text(), "T1")
+            self.assertEqual(dict(t.extra).get("flake"), "1")   # flake マーカ
+            self.assertEqual(t.retries, 0)                      # NG churn しない（retry 増やさない）
+
+    def test_run_loop_stable_pass_still_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            self._patch_verify([True])                  # 常に PASS（confirm=2 でも一致）
+            res = km.run_loop(cfg_for(d, learn=False, auto_adjudicate=False,
+                                      verify_confirm=2, max_cycles=10))
+            self.assertEqual(res["counts"]["done"], 1)          # 安定 PASS は従来どおり done
+
+
 class TestRunlogAndThrottle(unittest.TestCase):
     """構造化 run-log（JSONL）と自動スロットル（ソフト予算→打ち切り・watch は report 降格）。"""
 

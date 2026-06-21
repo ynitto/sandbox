@@ -1400,6 +1400,22 @@ def run_verify(cmd: str, workdir: Path, timeout: float) -> "tuple[bool, str]":
     return (proc.returncode == 0, f"exit={proc.returncode} {tail.strip()}"[:500])
 
 
+def run_verify_stable(cmd: str, workdir: Path, timeout: float,
+                      confirm: int = 1) -> "tuple[bool, bool, str]":
+    """verify を最大 confirm 回まで実行し (ok, flaky, msg) を返す。confirm>1 で結果が PASS/FAIL を
+    跨いだら flaky=True（不安定）。揺れる verify を NG 誤読して retry churn したり、flaky PASS を
+    そのまま done にするのを防ぐ（一致したら確定、跨いだら人へ隔離）。"""
+    ok, msg = run_verify(cmd, workdir, timeout)
+    if confirm <= 1 or not cmd.strip():        # 既定(1)や verify 未定義は従来どおり1回
+        return (ok, False, msg)
+    for _ in range(confirm - 1):
+        ok2, msg2 = run_verify(cmd, workdir, timeout)
+        if ok2 != ok:                          # PASS/FAIL を跨いだ＝不安定（flake）
+            return (ok, True, f"flaky: verify が不安定（{confirm} 回中で PASS/FAIL 混在）"
+                              f" — 1回目:[{msg}] 別回:[{msg2}]"[:500])
+    return (ok, False, msg)                    # 全回一致＝安定した結果
+
+
 def resolve_kiro_flow(explicit: "str | None") -> "list[str]":
     if explicit:
         return [sys.executable, explicit] if explicit.endswith(".py") else [explicit]
@@ -1581,6 +1597,7 @@ class Config:
     max_retries: int = 2
     pace: float = 0.0
     verify_timeout: float = 120.0
+    verify_confirm: int = 1         # verify を最大この回数まで再実行し PASS/FAIL が跨いだら flake として人へ隔離（1=従来）
     act_timeout: float = 1800.0
     notify_cmd: "str | None" = None
     actor: str = "user"
@@ -1983,9 +2000,10 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
                                             f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
 
-            ok, vmsg = run_verify(task.verify, cfg.workdir, cfg.verify_timeout)
+            ok, flaky, vmsg = run_verify_stable(task.verify, cfg.workdir, cfg.verify_timeout,
+                                                cfg.verify_confirm)
             regressed = False
-            if ok and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故の検知）
+            if ok and not flaky and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故の検知）
                 rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout)
                 if not rok:
                     regressed = True
@@ -1996,11 +2014,18 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
                                    + ("・revert 済" if cfg.regression_revert else ""))
             protect_hits = []
-            if ok and not regressed and policy.protect:   # act が保護パスを触ったか（safety denylist）
+            if ok and not flaky and not regressed and policy.protect:  # act が保護パスを触ったか（safety denylist）
                 protect_hits = sorted({(p, m) for p in changed_paths_since(cfg.workdir, git_base)
                                        if (m := path_protected(p, policy.protect))})
             assisted = cfg.level == "assisted"   # assisted: 実行はするが done は人が承認（全件 review）
-            if regressed:
+            if flaky:
+                # verify が不安定（flake）→ 自動修正せず人へ隔離（NG churn / flaky PASS の done を防ぐ）
+                task.extra = [(k, v) for k, v in task.extra if k != "flake"]
+                task.extra.append(("flake", "1"))
+                _block(cfg, task, f"flake 検知（verify 不安定・自動修正せず隔離）: {vmsg}", reasons)
+                append_journal(cfg.journal,
+                               f"cycle {cycle}: {task.id} → 人の判断（flake 検知・quarantine）")
+            elif regressed:
                 pass                          # 既に blocked 化済み。done/review にしない
             elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
                 # verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ
@@ -2674,6 +2699,7 @@ CONFIG_DEFAULTS = {
     "max_retries": 2,
     "max_iterations": 3,
     "verify_timeout": 120.0,
+    "verify_confirm": 1,
     "act_timeout": 1800.0,
     "git_bus": None,
     "git_branch": "main",
@@ -2753,6 +2779,7 @@ def build_config(args) -> Config:
         max_tokens=getattr(args, "max_tokens", 0) or 0,
         max_cost=getattr(args, "max_cost", 0.0) or 0.0,
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
+        verify_confirm=max(1, int(getattr(args, "verify_confirm", 1) or 1)),
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
         learn=bool(getattr(args, "learn", True)), learn_threshold=args.learn_threshold,
@@ -2818,6 +2845,9 @@ def _add_common(sp):
     sp.add_argument("--max-retries", type=int, default=None)
     sp.add_argument("--pace", type=float, default=None, help="1サイクルの下限間隔（秒）。レーン減速")
     sp.add_argument("--verify-timeout", type=float, default=None)
+    sp.add_argument("--verify-confirm", type=int, default=None,
+                    help="verify をこの回数まで再実行し PASS/FAIL が跨いだら flake として人へ隔離（既定 1）。"
+                         "揺れる verify の NG churn / flaky PASS の done を防ぐ（コストは回数分）")
     sp.add_argument("--act-timeout", type=float, default=None)
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
     sp.add_argument("--actor", default=None)
