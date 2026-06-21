@@ -161,7 +161,7 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 #   ここへ流し込む。コアは stdlib のみ・ネットワーク非依存・決定的を保つ。
 # ---------------------------------------------------------------------------
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
-                      "after", "review", "note"}
+                      "after", "review", "note", "accept", "verify_template"}
 
 
 def _slug_id(text: str) -> str:
@@ -196,21 +196,30 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     if not title:
         raise ValueError("title は必須です")
     verify = _strip_code(str(spec.get("verify", "") or "").strip())
+    accept = str(spec.get("accept", "") or "").strip()
+    tmpl = str(spec.get("verify_template", "") or "").strip()
     tid = _gen_task_id(cfg, spec.get("id"), title)
-    status = str(spec.get("status", "") or "").strip() or ("ready" if verify else "inbox")
+    # verify が無くても accept / verify_template があれば「verify を用意できる」ので ready 扱い（後で展開/合成）
+    has_plan = bool(verify or accept or tmpl)
+    status = str(spec.get("status", "") or "").strip() or ("ready" if has_plan else "inbox")
     t = Task(id=tid, title=title, status=status, verify=verify,
              source=str(spec.get("source", "") or "enqueue"))
     try:
         t.priority = int(spec.get("priority", 0) or 0)
     except (TypeError, ValueError):
         t.priority = 0
-    for k in ("after", "review", "note"):           # 既知の追加フィールド
+    for k in ("after", "review", "note", "accept", "verify_template"):   # 既知の追加フィールド
         v = spec.get(k)
         if v not in (None, "", []):
             t.extra.append((k, ",".join(map(str, v)) if isinstance(v, list) else str(v)))
     for k, v in spec.items():                        # 未知キーも保持（取りこぼさない）
         if k not in ENQUEUE_KNOWN_KEYS and v not in (None, "", []):
             t.extra.append((str(k), str(v)))
+    if not t.verify and tmpl:                        # テンプレは決定的＝enqueue 時に即展開（エージェント不要）
+        ex = expand_verify_template(tmpl)
+        if ex:
+            t.verify = ex
+            t.extra.append(("verify_source", "template"))
     return t
 
 
@@ -1211,7 +1220,7 @@ def detect_rot(cfg: "Config", tasks: "list[Task]") -> "list[tuple[Task, str]]":
     for t in tasks:
         if not t.consumable():
             continue
-        if not t.verify.strip():
+        if not has_verify_plan(t):                # accept / verify_template があれば verify を用意できる
             out.append((t, "unverifiable（verify 未定義）"))
             continue
         nt = normalize_title(t)
@@ -1539,7 +1548,7 @@ def triage(tasks, policy) -> "list[tuple[Task, str]]":
     transitions = []
     for t in tasks:
         st = t.norm_status()
-        if st == "inbox" and t.verify.strip():
+        if st == "inbox" and has_verify_plan(t):   # verify か、用意できる材料(accept/verify_template)があれば昇格
             t.status = "ready"
             st = "ready"
         if st in CONSUMABLE and any(t.matches(p) for p in policy.deny):
@@ -1578,6 +1587,97 @@ def run_verify_stable(cmd: str, workdir: Path, timeout: float,
             return (ok, True, f"flaky: verify が不安定（{confirm} 回中で PASS/FAIL 混在）"
                               f" — 1回目:[{msg}] 別回:[{msg2}]"[:500])
     return (ok, False, msg)                    # 全回一致＝安定した結果
+
+
+# ---------------------------------------------------------------------------
+# verify の用意（人が書く負担を減らす）。完了条件は決定的なシェルが正典だが、人が書くのは難しい。
+#   - `- verify_template: <名前> :: <引数...>` … 決定的に展開（エージェント不要）。
+#   - `- accept: <自然言語の完了条件>`         … エージェントが決定的 verify を合成（偽 done 防止規則を織込）。
+# どちらも最終的に concrete な `verify`（終了コード0=PASS）になり、done は verify のみが根拠の不変条件を保つ。
+# 合成/展開できなければ verify は空のまま＝従来どおり人へ（done 不能）。
+# ---------------------------------------------------------------------------
+def _sh_q(s: str) -> str:
+    return "'" + str(s).replace("'", "'\\''") + "'"
+
+
+def expand_verify_template(spec: str) -> "str | None":
+    """`<名前> :: <引数...>` を決定的なシェル verify に展開する（エージェント不要）。未知の名前は None。
+    鉄則どおり「履歴でなく最終状態/差分」を見る形にする（diff-contains は $KIRO_BASE_REV を使う）。"""
+    name, _, rest = (spec or "").partition("::")
+    name = name.strip().lower()
+    rest = rest.strip()
+    args = [x.strip() for x in rest.split("::")] if rest else []
+    if name in ("file-contains", "contains") and len(args) >= 2:
+        return f"grep -qF -- {_sh_q(args[1])} {_sh_q(args[0])}"        # path に needle を含む
+    if name in ("file-exists", "exists") and args:
+        return f"test -e {_sh_q(args[0])}"
+    if name in ("defines", "symbol") and len(args) >= 2:               # path に symbol を定義
+        sym, path = args[0], args[1]
+        pat = f"def +{sym}|function +{sym}|{sym} *=|class +{sym}"
+        return f"grep -qE {_sh_q(pat)} {_sh_q(path)}"
+    if name in ("diff-contains", "grep-diff") and args:               # act 後の差分に needle（履歴に騙されない）
+        return f'git log "$KIRO_BASE_REV"..HEAD -p 2>/dev/null | grep -qF -- {_sh_q(args[0])}'
+    if name in ("cmd-succeeds", "tests-pass", "cmd", "run") and rest:  # 残り全体をコマンドとして実行
+        return rest
+    return None
+
+
+def _synth_verify_prompt(title: str, accept: str) -> str:
+    return (
+        "次のタスクの『完了条件（自然言語）』を、**決定的なシェルコマンド**に変換してください。"
+        "終了コード 0 を PASS とみなします。\n"
+        "規則: ①「履歴」ではなく「望む最終状態 / 差分」を検査する"
+        "（`git log|grep` で過去コミットに当てない）②差分を見るなら環境変数 `$KIRO_BASE_REV`"
+        "（act 前の HEAD）を使い `git log \"$KIRO_BASE_REV\"..HEAD ...` の形にする"
+        "③外部状態に依存せず再現可能にする。\n"
+        f"タスク: {title}\n完了条件: {accept}\n\n"
+        "出力はコマンド 1 行のみ（説明・コードフェンス不要）。検証コマンドを書けない場合は空行を返す。")
+
+
+def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None) -> str:
+    """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
+    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。"""
+    run = kiro_run or _run_kiro_cli
+    try:
+        out = run(_synth_verify_prompt(title, accept), cfg.model)
+    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は合成せず人へ
+        return ""
+    for line in (out or "").splitlines():       # 先頭の意味ある行をコマンドとみなす
+        line = _strip_code(line.strip())
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
+def ensure_verify(cfg: "Config", task: "Task", kiro_run=None) -> bool:
+    """task に concrete な verify が無ければ `verify_template`（決定的）→ `accept`（合成）の順で用意する。
+    用意できたら task.verify を埋め `verify_source` を記録して True を返す（呼び出し側が persist する）。"""
+    if task.verify:
+        return False
+    ex = dict(task.extra)
+    tmpl = ex.get("verify_template", "").strip()
+    if tmpl:
+        cmd = expand_verify_template(tmpl)
+        if cmd:
+            task.verify = cmd
+            task.extra.append(("verify_source", "template"))
+            return True
+    accept = ex.get("accept", "").strip()
+    if accept:
+        cmd = synth_verify(cfg, task.title, accept, kiro_run)
+        if cmd:
+            task.verify = cmd
+            task.extra.append(("verify_source", "synth"))
+            return True
+    return False
+
+
+def has_verify_plan(task: "Task") -> bool:
+    """concrete な verify か、それを用意する材料（accept / verify_template）を持つか。"""
+    if task.verify:
+        return True
+    ex = dict(task.extra)
+    return bool(ex.get("accept", "").strip() or ex.get("verify_template", "").strip())
 
 
 def resolve_kiro_flow(explicit: "str | None") -> "list[str]":
@@ -2215,7 +2315,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
 
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
     pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review")}
-    transitions = list(triage(tasks, policy))
+    transitions = list(triage(tasks, policy))        # inbox→ready 昇格（verify か用意材料あり）・deny→blocked
     if cfg.rot:                                       # rot 検知（古い/重複/実行不能を掃除）
         transitions += [(t, f"rot: {why}") for t, why in detect_rot(cfg, tasks)]
     for t, why in transitions:
@@ -2224,6 +2324,10 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         reasons[t.id] = why
         write_needs_file(cfg, t, why)
         persist_task(cfg, t)
+    for t in tasks:                                   # accept/verify_template から concrete な verify を用意
+        if t.norm_status() in CONSUMABLE and not t.verify and ensure_verify(cfg, t):
+            persist_task(cfg, t)
+            append_journal(cfg.journal, f"verify 用意: {t.id} ← {dict(t.extra).get('verify_source')}")
 
     append_journal(cfg.journal, f"=== kiro-autonomous 開始 tasks={len(tasks)} "
                                 f"ingested={len(ingested)} planner={cfg.planner} "
@@ -2898,7 +3002,8 @@ def cmd_enqueue(cfg: Config, args) -> int:
     else:
         specs = [{"id": args.id, "title": args.title, "verify": args.verify,
                   "priority": args.priority, "source": args.source, "status": args.status,
-                  "after": args.after, "review": args.review, "note": args.note}]
+                  "after": args.after, "review": args.review, "note": args.note,
+                  "accept": args.accept, "verify_template": args.verify_template}]
     created = []
     for sp in specs:
         if not isinstance(sp, dict):
@@ -2910,7 +3015,14 @@ def cmd_enqueue(cfg: Config, args) -> int:
             print(f"enqueue 失敗: {e}", file=sys.stderr)
             return 2
     for t in created:
-        warn = "" if t.verify else "  ⚠ verify 未定義 → inbox（人の triage へ）"
+        if t.verify:
+            warn = ""
+        elif dict(t.extra).get("accept"):
+            warn = "  （accept から実行時に verify を合成）"
+        elif dict(t.extra).get("verify_template"):
+            warn = "  ⚠ verify_template が未知 → inbox"
+        else:
+            warn = "  ⚠ verify 未定義 → inbox（人の triage へ）"
         print(f"enqueued {t.id} [{t.norm_status()}] {t.title}{warn}")
     return 0
 
@@ -2933,7 +3045,9 @@ def cmd_triage(cfg: Config) -> int:
 
 def cmd_run(cfg: Config) -> int:
     ensure_dirs(cfg)
+    charter = load_charter(cfg)                  # charter.md があれば run が自動で目標駆動になる（§6）
     reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
+    hb = lambda: refresh_instance(reg)
     try:
         if cfg.watch:
             # 常駐のみ: stop からの SIGTERM を KeyboardInterrupt 化し finally で後始末させる
@@ -2942,8 +3056,13 @@ def cmd_run(cfg: Config) -> int:
                               lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
             except (ValueError, OSError):  # メインスレッド以外/未対応では無視
                 pass
-            run_watch(cfg, heartbeat=lambda: refresh_instance(reg))
+            if charter is not None:
+                project_watch(cfg, heartbeat=hb)       # 目標を満たすまで回り続ける常駐
+            else:
+                run_watch(cfg, heartbeat=hb)           # backlog 監視の常駐
             return 0
+        if charter is not None:
+            return cmd_project(cfg, heartbeat=hb)       # charter 駆動の単発（plan→execute→evaluate）
         result = run_loop(cfg)
         counts = result["counts"]
         if result.get("level") == "report":          # report: 消化せず計画だけ提示
@@ -3301,9 +3420,9 @@ def project_exit_code(reason: str) -> int:
     return 1   # converged / no-progress / blocked / no-acceptance は人の対応待ち
 
 
-def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop) -> int:
-    """charter 駆動の plan→execute→evaluate ループ（1 プロジェクトパス）。planner/reviewer/runner は
-    テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
+def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None) -> int:
+    """charter 駆動の plan→execute→evaluate ループ（1 プロジェクトパス。`run` が charter 検出時に呼ぶ）。
+    planner/reviewer/runner は テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
     ensure_dirs(cfg)
     charter = load_charter(cfg)
     if charter is None:
@@ -3336,6 +3455,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop) -> 
 
     while True:
         cycle += 1
+        if heartbeat:
+            heartbeat()                  # 長い改善ループ中も生存信号を更新（リモート発見の鮮度）
         if cycle > cfg.max_project_cycles:
             reason = REASON_PROJECT_BUDGET
             break
@@ -3412,26 +3533,28 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop) -> 
         write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）")
     append_journal(cfg.journal, f"=== project 停止 reason={reason} cycles={cycle} "
                                 f"cost={cost_used:.4f} ===")
-    print(f"\n=== kiro-autonomous project: {charter.name} ===")
+    print(f"\n=== kiro-autonomous run（charter 駆動: {charter.name}）===")
     print(f"停止理由 : {reason}")
     print(f"概況     : {last_summary or '（評価前に停止）'}")
     if reason == REASON_PROJECT_CONVERGED:
         print(f"→ 収束候補。受領: kiro-autonomous approve {pid} --reason ...  "
-              f"／ 続行: charter.md を更新して再実行")
+              f"／ 続行: charter.md を更新して run を再実行")
     elif reason != REASON_PROJECT_ACCEPTED:
         print(f"→ 人の対応待ち: needs/{pid}.md を確認")
     return project_exit_code(reason)
 
 
 def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
-                  sleeper=time.sleep, max_passes=None) -> int:
-    """`project --watch`: 1 パスごとに plan→execute→evaluate を回し、人待ちで止まったら charter 更新/
-    フィードバックを poll で拾って再開する（idle 中はエージェント非起動）。"""
+                  sleeper=time.sleep, max_passes=None, heartbeat=None) -> int:
+    """`run --watch`（charter あり）: 1 パスごとに plan→execute→evaluate を回し、人待ちで止まったら
+    charter 更新/フィードバックを poll で拾って再開する（idle 中はエージェント非起動）。"""
     passes = 0
     code = 0
     while True:
-        code = cmd_project(cfg, planner, reviewer, runner)
+        code = cmd_project(cfg, planner, reviewer, runner, heartbeat=heartbeat)
         passes += 1
+        if heartbeat:
+            heartbeat()
         if max_passes is not None and passes >= max_passes:
             return code
         charter = load_charter(cfg)
@@ -3442,6 +3565,8 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
         append_journal(cfg.journal, "=== project watch: 監視中（charter 更新/フィードバック待ち）===")
         while True:                  # idle: charter が変わるか、人のフィードバックが来たら再開
             sleeper(cfg.poll)
+            if heartbeat:
+                heartbeat()
             nf = needs_path(cfg, pid)
             if nf.exists() and read_feedback(nf):
                 clear_needs_file(cfg, pid)
@@ -3724,7 +3849,8 @@ def main(argv=None) -> int:
                     "サブコマンドを省略すると常駐監視（run --watch）で起動し backlog 投入を待ち続ける")
     sub = p.add_subparsers(dest="cmd", required=False)
 
-    run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束）")
+    run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束）。"
+                                     "<project>/charter.md があれば自動で目標駆動（plan→execute→evaluate）")
     _add_common(run)
     run.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
@@ -3760,30 +3886,17 @@ def main(argv=None) -> int:
                      help="act を飛ばし verify のみ")
     run.add_argument("--once", action=argparse.BooleanOptionalAction, default=None,
                      help="1 タスクだけ処理して終了")
-
-    # project: charter 駆動の plan→execute→evaluate ループ（run を内側に呼ぶ外側の一段）
-    prj = sub.add_parser("project",
-                         help="charter（目標/制約/前提/成果物/acceptance）駆動の長期改善ループ")
-    _add_common(prj)
-    prj.add_argument("--charter", default=None,
-                     help="プロジェクト憲章ファイル（既定 <root>/charter.md）")
-    prj.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
-                     help="収束/人待ちで止まっても常駐し charter 更新/フィードバックを待つ")
-    prj.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
-    prj.add_argument("--review-project", action=argparse.BooleanOptionalAction, default=None,
-                     help="evaluate で敵対的レビューを上乗せ（acceptance 全 PASS でも短絡的達成を疑う・opt-in）")
-    prj.add_argument("--max-project-cycles", type=int, default=None,
-                     help="改善サイクルの上限（有限停止・既定 5）")
-    prj.add_argument("--max-project-cost", type=float, default=None,
-                     help="プロジェクト累計コスト上限(USD・0=無制限)")
-    prj.add_argument("--project-stall", type=int, default=None,
-                     help="acceptance PASS 数が増えない連続回数の上限→人へ（既定 2）")
-    prj.add_argument("--level", default=None, choices=["report", "assisted", "unattended"],
-                     help="内側 run の自律度（既定 unattended）")
-    prj.add_argument("--no-archive", dest="do_archive", action="store_const", const=False,
-                     default=None, help="done を archive/ へ退避せず削除")
-    prj.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None,
-                     help="内側 act を飛ばし verify のみ")
+    # charter 駆動（目標から回す）。<project>/charter.md があれば run が自動で plan→execute→evaluate に入る
+    run.add_argument("--charter", default=None,
+                     help="プロジェクト憲章ファイル（既定 <project>/charter.md。あれば run が目標駆動になる）")
+    run.add_argument("--review-project", action=argparse.BooleanOptionalAction, default=None,
+                     help="charter 駆動時、evaluate で敵対的レビューを上乗せ（全 PASS でも短絡的達成を疑う・opt-in）")
+    run.add_argument("--max-project-cycles", type=int, default=None,
+                     help="charter 駆動時の改善サイクル上限（有限停止・既定 5）")
+    run.add_argument("--max-project-cost", type=float, default=None,
+                     help="charter 駆動時のプロジェクト累計コスト上限(USD・0=無制限)")
+    run.add_argument("--project-stall", type=int, default=None,
+                     help="charter 駆動時、acceptance PASS 数が増えない連続回数の上限→人へ（既定 2）")
 
     for name, helptext in [("triage", "優先順位付けのみ（inbox→ready 昇格・policy 適用）"),
                            ("needs", "人の判断待ち（blocked / need_intake）を表示"),
@@ -3807,7 +3920,11 @@ def main(argv=None) -> int:
     enq = sub.add_parser("enqueue", help="汎用の取り込み口（CLI/stdin/JSON から backlog タスクを作る）")
     _add_common(enq)
     enq.add_argument("--title", default=None, help="タスクのタイトル（必須・--json 時は不要）")
-    enq.add_argument("--verify", default=None, help="done 確定の verify コマンド（無いと inbox=人の triage へ）")
+    enq.add_argument("--verify", default=None, help="done 確定の verify コマンド（書ければこれが最良）")
+    enq.add_argument("--accept", default=None,
+                     help="完了条件を自然言語で（verify が書けない人向け。実行時にエージェントが決定的 verify を合成）")
+    enq.add_argument("--verify-template", default=None,
+                     help="決定的テンプレで verify を生成（例 'file-contains :: path :: 文字列'。エージェント不要）")
     enq.add_argument("--priority", type=int, default=0, help="優先度（大きいほど高優先・既定 0）")
     enq.add_argument("--source", default=None, help="出所（既定 enqueue）")
     enq.add_argument("--status", default=None, help="status を明示（既定: verify 有→ready / 無→inbox）")
@@ -3855,7 +3972,7 @@ def main(argv=None) -> int:
 
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
-    _subcommands = {"run", "project", "triage", "needs", "promote", "rot", "stats", "audit",
+    _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "enqueue", "approve", "hold", "reprioritize", "instances",
                     "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
@@ -3888,7 +4005,6 @@ def main(argv=None) -> int:
 
     return {
         "run": lambda: cmd_run(cfg),
-        "project": lambda: (project_watch(cfg) if cfg.watch else cmd_project(cfg)),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
         "enqueue": lambda: cmd_enqueue(cfg, args),

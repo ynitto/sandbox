@@ -235,11 +235,11 @@ cp tools/kiro-autonomous/charter.md.example .kiro-autonomous/projects/default/ch
 - shared-conventions
 ```
 
-**回す**:
+**回す**（プロセスは `run` に一本化。charter.md があれば自動で目標駆動になる。専用 `project` コマンドは廃止）:
 ```bash
-kiro-autonomous project                       # plan→execute→evaluate（acceptance 全PASS+改善ゼロで収束→人へ）
-kiro-autonomous project --watch               # 収束/人待ちでも常駐し charter 更新を待つ
-kiro-autonomous project --review-project      # acceptance 全PASS でも敵対的レビューで短絡的達成を疑う
+kiro-autonomous run                           # charter あり→plan→execute→evaluate（収束→人へ）
+kiro-autonomous run --watch                   # 目標を満たすまで回り続ける常駐（charter 更新も待つ）
+kiro-autonomous run --review-project          # acceptance 全PASS でも敵対的レビューで短絡的達成を疑う
 kiro-autonomous needs                         # milestone（収束候補）を確認
 kiro-autonomous approve <project> --reason "受領"   # 収束候補を完了確定（最終納品書）／続行は charter を更新して再実行
 ```
@@ -258,8 +258,7 @@ kiro-autonomous approve <project> --reason "受領"   # 収束候補を完了確
 **複数プロジェクトを併存させる**:
 ```bash
 kiro-autonomous enqueue --project payments --title "…" --verify '…'   # 別プロジェクトへ積む（無ければ作成）
-kiro-autonomous run     --project payments                            # そのプロジェクトを消化
-kiro-autonomous project --project payments                            # そのプロジェクトの charter ループ
+kiro-autonomous run     --project payments                            # そのプロジェクトを消化（charter あれば目標駆動）
 kiro-autonomous needs   --project payments                            # per-project の判断待ち
 kiro-autonomous start   --project payments                            # そのプロジェクトを常駐監視
 kiro-autonomous instances                                            # 稼働中の全プロジェクト root を横断発見
@@ -283,6 +282,11 @@ needs/decisions/policy/journal/archive/DELIVERY は per-project に閉じる。`
 2. **変更が出るはずの作業には `- expect: changes`** を付ける（無変更 done を人へ）。逆に正当な無変更タスクは
    `- expect: none`。全体で強制するなら `--require-progress`（または `require_progress: true`）。
 3. **成果参照は自動で真正化**される。DELIVERY/needs には act 前以降の新規差分のみが載り、無ければ `(変更なし)`。
+
+**verify を書くのが難しいとき**: 自分で書けるのが最良だが、`- accept: <自然言語>`（実行時にエージェントが決定的 verify を
+合成）や `- verify_template: file-contains :: path :: 文字列`（決定的展開・エージェント不要）で代替できる。最終的に
+concrete な verify に変換されるので「done は verify のみが根拠」の鉄則は保たれる。シェルで検証できないものは `- review: human` で
+人承認に回す。
 
 ---
 

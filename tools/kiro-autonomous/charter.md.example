@@ -1,14 +1,15 @@
 <!--
 kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 ========================================================================
-`kiro-autonomous project` は、このファイル（<root>/charter.md・既定 .kiro-autonomous/charter.md）を
-**人が書く唯一の最上位入力**として読む。backlog（タスク）の上に「目標 → 分解 → 消化 → 評価 → 改善」の
-ループをもう一段載せ、charter が満たされるまで長期に回す。
+このファイル（<project>/charter.md。既定 .kiro-autonomous/projects/<name>/charter.md）は
+**人が書く唯一の最上位入力**。これを置くと `kiro-autonomous run` が自動で backlog の上に
+「目標 → 分解 → 消化 → 評価 → 改善」のループをもう一段載せ、charter が満たされるまで長期に回す
+（専用 project コマンドは無い。プロセスは run に一本化）。
 
   使い方:
-    cp tools/kiro-autonomous/charter.md.example .kiro-autonomous/charter.md   # 編集して使う
-    kiro-autonomous project                 # plan→execute→evaluate を回す（収束で人へ）
-    kiro-autonomous project --watch          # 収束/人待ちでも常駐し charter 更新を待つ
+    cp tools/kiro-autonomous/charter.md.example .kiro-autonomous/projects/default/charter.md   # 編集して使う
+    kiro-autonomous run                      # charter があれば plan→execute→evaluate（収束で人へ）
+    kiro-autonomous run --watch              # 目標を満たすまで回り続ける常駐（charter 更新も待つ）
     kiro-autonomous approve <project> --reason "受領"   # 収束候補を完了確定（最終納品書）
 
 書式（`## <key>` セクション。key は goal/constraints/assumptions/deliverables/acceptance）:
