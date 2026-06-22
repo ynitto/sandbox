@@ -130,6 +130,21 @@ CONFIG_DEFAULTS = {
     "cleanup_age": 24.0,         # 孤立クローンを掃除するまでのアイドル時間（時間）
     # 作業後に sparse-checkout クローンを削除するか（True で削除 / False で残して再利用）
     "cleanup_clone": True,
+    # executor プラグインの追加検索ディレクトリ（既定の検索先に加えて優先探索する）。
+    "executor_dir": None,
+    # gitlab executor プラグイン（opt-in のワーカーバス）の設定。executor: gitlab を選んだ
+    # ときだけ使われ、この dict が JSON 化され環境変数経由でプラグインに渡される。
+    # タスクを gitlab-idd スキルでイシュー化し、リモートのワーカーが拾って実行する。
+    # status:approved ラベルが付く（レビュー承認）まで get-issue でポーリングし完了とみなす。
+    "gitlab": {
+        "conn_label": "default",            # connections.yaml の接続ラベル（gitlab-idd と共通）
+        "labels": "status:open,assignee:any",  # 起票するイシューに付ける初期ラベル
+        "priority": "priority:normal",      # 付与する優先度ラベル（空文字で付けない）
+        "poll_interval": 30.0,              # イシューのポーリング間隔（秒）
+        "timeout": 86400.0,                 # approved 待ちのタイムアウト（秒）。0/負で無限待ち
+        "approved_label": "status:approved",  # この状態に達したら完了とみなす（= 受け入れ承認）
+        "done_label": "status:done",        # approved 以外に完了とみなすラベル
+    },
 }
 
 # 集約点（reduce/synthesize）を持ち、独立レビューが結果の信頼性を高めるパターン。
@@ -1141,18 +1156,23 @@ def _kiro_timeout() -> float | None:
 # 設定ファイル/CLI で解決した閾値を、args を持たない free 関数（run_kiro 等）が参照できる
 # よう、main の resolve 後に _configure_thresholds がここへ反映する（既定は CONFIG_DEFAULTS）。
 _ARGV_LIMIT = CONFIG_DEFAULTS["argv_limit"]
+# executor プラグインの追加検索ディレクトリ（設定 executor_dir）。
+_EXECUTOR_DIR: "str | None" = None
 
 
 def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
-    run_kiro は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
-    global _ARGV_LIMIT
+    run_kiro / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
+    global _ARGV_LIMIT, _EXECUTOR_DIR
     v = getattr(args, "argv_limit", None)
     if v:
         try:
             _ARGV_LIMIT = int(v)
         except (TypeError, ValueError):
             pass
+    d = getattr(args, "executor_dir", None)
+    if d:
+        _EXECUTOR_DIR = str(d)
 
 
 def _kiro_argv_limit() -> int:
@@ -1319,6 +1339,113 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
     elif kind == "verify":
         data = _normalize_verify(text, data)
     return text, data
+
+
+# --------------------------------------------------------------------------
+# executor プラグイン — kiro/stub は組み込み、それ以外はプラグインを動的ロードする
+#
+#   kiro-loop の event_hook と同じ流儀で、executor をプラグイン化する。`--executor`
+#   （設定 executor）には次のいずれかを指定できる:
+#     - "kiro" / "stub"  : 組み込み executor
+#     - プラグイン名（例 "gitlab"）: 検索ディレクトリの executors/<name>.py を解決
+#     - .py への明示パス : そのファイルをプラグインとしてロード
+#   プラグインは `execute(kind, goal, dep_results, model, art_dir, dep_arts)` を公開し、
+#   (text, data) を返す。プラグイン固有の設定は、同名のトップレベル設定ブロック
+#   （例 gitlab:）を JSON 化して環境変数 KIRO_FLOW_EXECUTOR_CONFIG で渡す。
+# --------------------------------------------------------------------------
+# 組み込み executor の名前 → 実体は呼び出し時に globals() から解決する
+# （テストの monkeypatch やホットリロードが効くよう、import 時の参照を握らない）。
+BUILTIN_EXECUTORS = {"kiro": "execute_kiro", "stub": "execute_stub"}
+
+# executor プラグインモジュールの mtime キャッシュ: {path: (mtime, module)}
+_executor_module_cache: "dict[str, tuple[float, object]]" = {}
+
+
+def _executor_search_dirs() -> "list[str]":
+    """executor プラグイン（<name>.py）を探すディレクトリ群（優先順）。"""
+    dirs = []
+    # 1. スクリプトと同階層の executors/（リポジトリ実行時に同梱プラグインを発見）
+    dirs.append(os.path.join(os.path.dirname(self_path()), "executors"))
+    # 2. git リポジトリの tools/kiro-flow/executors（cwd がサブディレクトリでも届く）
+    try:
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+        ).stdout.strip()
+        if root:
+            dirs.append(os.path.join(root, "tools", "kiro-flow", "executors"))
+    except Exception:  # noqa: BLE001
+        pass
+    # 3. インストーラが配置する ~/.kiro/kiro-flow/executors（単一ファイル配布後の発見性）
+    dirs.append(os.path.expanduser("~/.kiro/kiro-flow/executors"))
+    # 4. 設定 executor_dir（任意の追加ディレクトリ）
+    extra = _EXECUTOR_DIR
+    if extra:
+        dirs.insert(0, os.path.expanduser(extra))
+    # 重複を保ちつつ除去
+    seen, out = set(), []
+    for d in dirs:
+        if d and d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def _resolve_executor_plugin(spec: str) -> "str | None":
+    """executor 名 or パスからプラグイン .py の絶対パスを解決する。無ければ None。"""
+    # 明示パス（.py）
+    p = os.path.expanduser(spec)
+    if p.endswith(".py") and os.path.isfile(p):
+        return os.path.abspath(p)
+    # 検索ディレクトリの <name>.py
+    if not os.sep in spec and not spec.endswith(".py"):
+        for d in _executor_search_dirs():
+            cand = os.path.join(d, f"{spec}.py")
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
+def _load_executor_module(path: str):
+    """executor プラグインを importlib でロードする（mtime キャッシュ付き）。"""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        raise RuntimeError(f"executor プラグインが見つかりません: {path}")
+    cached = _executor_module_cache.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("kiro_flow_executor", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"executor プラグインの spec 生成に失敗: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _executor_module_cache[path] = (mtime, module)
+    return module
+
+
+def make_executor(args):
+    """args.executor を解決し、execute(kind, goal, dep_results, model, art_dir, dep_arts)
+    形の呼び出し可能オブジェクトを返す。プラグインのときは設定ブロックを環境変数で渡す。"""
+    spec = getattr(args, "executor", None) or "kiro"
+    if spec in BUILTIN_EXECUTORS:
+        return globals()[BUILTIN_EXECUTORS[spec]]
+    path = _resolve_executor_plugin(spec)
+    if not path:
+        dirs = "、".join(_executor_search_dirs())
+        raise SystemExit(
+            f"[kiro-flow] executor '{spec}' を解決できません。組み込み（kiro/stub）か、"
+            f"プラグイン .py（検索: {dirs}）か、明示パスを指定してください。")
+    module = _load_executor_module(path)
+    fn = getattr(module, "execute", None)
+    if not callable(fn):
+        raise SystemExit(f"[kiro-flow] executor プラグインに execute() がありません: {path}")
+    # プラグイン固有設定: 同名のトップレベル設定ブロック（例 gitlab:）を JSON で渡す
+    cfg = getattr(args, spec, None)
+    if isinstance(cfg, dict):
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(cfg, ensure_ascii=False)
+    log("executor", f"プラグイン '{spec}' をロードしました: {path}")
+    return fn
 
 
 def _is_gate_result(r: dict) -> bool:
@@ -1611,9 +1738,12 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
         review = _review_decision(cli, (strategy or {}).get("patterns", []))
     ef = bool(getattr(args, "exemplar_first", False))
     mr = int(getattr(args, "max_retries", 3) or 3)
-    if args.executor == "kiro":
-        return continue_kiro(request, nodes, results, iteration, mf, review, ef, mr)
-    return continue_stub(request, nodes, results, iteration, mf, review, ef, mr)
+    # 再計画（evaluator-optimizer）はオーケストレータ側でローカルに判断する。stub のときだけ
+    # stub 継続、それ以外（kiro やプラグイン executor）はローカル kiro で判断する
+    # （プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
+    if args.executor == "stub":
+        return continue_stub(request, nodes, results, iteration, mf, review, ef, mr)
+    return continue_kiro(request, nodes, results, iteration, mf, review, ef, mr)
 
 
 def _node_entry(t):
@@ -1806,6 +1936,8 @@ def cmd_work(args) -> int:
     idle_exit = getattr(args, "idle_exit", False)
     log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive}, "
              f"idle_exit={idle_exit})")
+    # executor を一度だけ解決する（組み込み kiro/stub or プラグイン）。
+    execute = make_executor(args)
     # 親（run/daemon）からの SIGTERM でも成果物リポジトリの clone を消してから抜ける
     signal.signal(signal.SIGTERM, lambda *_: (cleanup_work_repos(), sys.exit(143)))
     time.sleep(random.uniform(0, args.poll))  # 負荷分散: 起動位相をずらす
@@ -1853,12 +1985,8 @@ def cmd_work(args) -> int:
         hb.start()
         rdata = None
         try:
-            if args.executor == "kiro":
-                output, rdata = execute_kiro(kind, goal, dep_results, args.model,
-                                             art_dir, dep_arts)
-            else:
-                output, rdata = execute_stub(kind, goal, dep_results, args.model,
-                                             art_dir, dep_arts)
+            output, rdata = execute(kind, goal, dep_results, args.model,
+                                    art_dir, dep_arts)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
@@ -2597,6 +2725,8 @@ def main() -> int:
     p.add_argument("--lock-dir", dest="lock_dir", default=None,
                    help="daemon singleton ロックの置き場（設定ファイル lock_dir と同義。"
                         "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
+    p.add_argument("--executor-dir", dest="executor_dir", default=None,
+                   help="executor プラグイン（<name>.py）の追加検索ディレクトリ（設定 executor_dir と同義）")
     p.add_argument("--repo", dest="repos", action="append", default=None,
                    help="成果物リポジトリ URL（複数指定可）。worker が temp 領域へ clone してから"
                         "作業し、作業後に必ず消す。push が必要・中身を読む必要があるタスク用")
@@ -2623,7 +2753,10 @@ def main() -> int:
                      help="ワークフローへの要求（再開時は省略可）")
     run.add_argument("--workers", type=int, default=None)
     run.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
-    run.add_argument("--executor", choices=["kiro", "stub"], default=None)
+    run.add_argument("--executor", default=None,
+                     help="ワーカーバス: 組み込み kiro / stub、または executor プラグイン名"
+                          "（例 gitlab）/ .py パス（opt-in。gitlab はタスクを GitLab イシューに"
+                          "して委譲し approved まで待つ）")
     run.add_argument("--max-iterations", type=int, default=None,
                      help="再計画（evaluator-optimizer）の最大反復回数")
     run.add_argument("--max-fanout", type=int, default=None,
@@ -2641,8 +2774,9 @@ def main() -> int:
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
     orch.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
-    orch.add_argument("--executor", choices=["kiro", "stub"], default=None,
-                      help="評価役（evaluator）に使うバックエンド")
+    orch.add_argument("--executor", default=None,
+                      help="ワーカーバス（kiro/stub/プラグイン名/.py パス）。"
+                           "評価役（evaluator）は stub 以外ならローカル kiro で判断")
     orch.add_argument("--max-iterations", type=int, default=None)
     orch.add_argument("--max-fanout", type=int, default=None)
     orch.add_argument("--max-retries", type=int, default=None)
@@ -2655,7 +2789,8 @@ def main() -> int:
 
     work = sub.add_parser("work", help="ワーカー役")
     work.add_argument("--node-id", default=f"{socket.gethostname()}-{os.getpid()}")
-    work.add_argument("--executor", choices=["kiro", "stub"], default=None)
+    work.add_argument("--executor", default=None,
+                      help="ワーカーバス（kiro/stub/プラグイン名/.py パス）")
     work.add_argument("--model_opt", dest="model", default=None)
     work.add_argument("--poll", type=float, default=None)
     work.add_argument("--keep-alive", action="store_true", help="run 完了後も待機し続ける")
@@ -2668,7 +2803,8 @@ def main() -> int:
     dm.add_argument("--max-workers", type=int, default=None,
                     help="このデーモンが同時に走らせる worker 上限（既定 4）")
     dm.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
-    dm.add_argument("--executor", choices=["kiro", "stub"], default=None)
+    dm.add_argument("--executor", default=None,
+                    help="ワーカーバス（kiro/stub/プラグイン名/.py パス）")
     dm.add_argument("--max-iterations", type=int, default=None)
     dm.add_argument("--max-fanout", type=int, default=None)
     dm.add_argument("--max-retries", type=int, default=None)
@@ -2716,6 +2852,14 @@ def main() -> int:
     # 子プロセスから渡る空文字の --model_opt は「モデル指定なし」を意味する
     if getattr(args, "model", None) == "":
         args.model = None
+    # executor の早期検証: 不正名のまま worker を起動すると run がハングするため、
+    # 親プロセスでプラグイン解決を試し、解決できなければここで明確に失敗する。
+    spec = getattr(args, "executor", None)
+    if spec and spec not in BUILTIN_EXECUTORS and _resolve_executor_plugin(spec) is None:
+        dirs = "、".join(_executor_search_dirs())
+        print(f"[kiro-flow] executor '{spec}' を解決できません。組み込み（kiro/stub）か、"
+              f"プラグイン .py（検索: {dirs}）か、明示パスを指定してください。", file=sys.stderr)
+        return 2
     # サブコマンド未指定 → daemon として処理
     try:
         if getattr(args, "func", None) is None:
