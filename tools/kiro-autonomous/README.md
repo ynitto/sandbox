@@ -412,6 +412,30 @@ kiro-autonomous runlog [--json --tail N]   # run 毎1行 JSON（reason/done/esca
 `stats` は archive/decisions/DELIVERY/backlog から決定的に集計（**自動化率**=auto-resolve＋auto-adjudicate÷自動＋人、
 **一発 done**=retry 0、コストは納品書 `- cost:` の累計で予算と突合）。`run-log.jsonl` は監視/スプレッドシートに流せる。
 
+## 稼働診断（doctor）
+
+```bash
+kiro-autonomous doctor [--json]     # ログ/状態/環境から稼働を診断（既定は診断のみ・無害）
+kiro-autonomous doctor --fix        # env/config を修正し、program の不具合を gitlab-idd で起票
+```
+
+`doctor` は **収集と適用を決定的に・診断と分類は kiro-cli へ委譲** して稼働の問題を洗い出し、原因を 3 つに分類する。
+
+- **env**（ユーザー環境固有）… `kiro-cli`/`kiro-flow`/`git` の不在・PATH・workdir が git でない等。
+- **config**（設定）… verify 欠落・コスト予算未設定・保護パス未設定・必須ディレクトリ未作成等（`audit` の未達も取り込む）。
+- **program**（プログラム上の不具合）… 正しい環境・設定でも再現する不具合。**コード修正が必要なものだけ**。
+
+材料は決定的チェック（依存コマンド・ディレクトリ・`audit` 結果）＋稼働シグナル（`stats`/`run-log`/`journal` 末尾/`needs`/
+blocked タスク）。これを kiro-cli に渡して分類済みの所見を得る（kiro-cli 不在・解析不能なら**決定的チェックのみ**で続行）。
+
+`--fix` のとき:
+- **env/config** … 既知の修正アクションを適用（`create-dirs`＝backlog/needs/decisions 作成、`policy-protect`＝policy.md に
+  既定の保護デニーリストを追記）。判断が要るもの（コスト予算・git 初期化等）は提案表示のみ。
+- **program** … `gitlab-idd` スキルのリクエスター役（kiro-cli 委譲）で **GitLab イシューを起票**。
+  **スキルが見つからなければ起票せず出力のみ**（`$KIRO_SKILLS_HOME` → cwd 上方向の `.github/skills` → `~/.claude/skills` の順で探索）。
+
+終了コード: `0`=健康（所見なし）／`1`=未解決の所見あり／`2`=未解決の critical あり。`--fix` 無しは常に診断のみ（既定）。
+
 ## CLI 一覧
 
 | コマンド | 役割 |
@@ -421,6 +445,7 @@ kiro-autonomous runlog [--json --tail N]   # run 毎1行 JSON（reason/done/esca
 | `enqueue` [`--title --verify\|--accept\|--verify-template …`\|`--json`] | 取り込み口（`--project`） |
 | `approve <id>` / `hold <id>` / `reprioritize <id> --pin\|--defer` | 決定記録を残す人の操作 |
 | `stats` / `runlog` / `audit` [`--strict`] | 計測 / 構造化ログ / Loop Readiness 採点 |
+| `doctor` [`--fix --json`] | 稼働診断（kiro-cli）。env/config は修正・program は gitlab-idd で起票 |
 | `promote` | 効いた学習を ltm-use へ昇格（手動） |
 | `instances` [`--json --registry`] | 稼働中プロジェクトを横断一覧 |
 | `start` / `stop` / `restart` [`--project --root --force`／`--pid --all`] | 常駐の起動/停止/再起動 |

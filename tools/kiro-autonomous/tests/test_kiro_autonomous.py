@@ -574,6 +574,120 @@ class TestAudit(unittest.TestCase):
             self.assertEqual(rc, 0)                            # backlog 無しでも落ちない
 
 
+class TestDoctor(unittest.TestCase):
+    """稼働診断（doctor）: 決定的チェック・kiro-cli 診断・分類・env/config 修正・program 起票。"""
+
+    def _cfg(self, d, **kw):
+        kw.setdefault("planner", "none")
+        kw.setdefault("executor", "stub")
+        kw.setdefault("auto_adjudicate", False)
+        return cfg_for(Path(d), **kw)
+
+    def test_env_findings_detect_missing_kiro_cli(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, planner="kiro")            # planner=kiro は kiro-cli を要求
+            fs = km.doctor_env_findings(cfg, which=lambda _n: None)   # 何も PATH に無い
+            titles = [f["title"] for f in fs]
+            self.assertTrue(any("kiro-cli" in t for t in titles))
+            cli = next(f for f in fs if "kiro-cli" in f["title"])
+            self.assertEqual(cli["category"], "env")
+            self.assertEqual(cli["severity"], "critical")
+            # 必須ディレクトリ未作成は config + create-dirs アクション
+            dirf = next(f for f in fs if f["category"] == "config")
+            self.assertEqual(dirf["fix_action"], "create-dirs")
+
+    def test_env_findings_clean_when_tools_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            fs = km.doctor_env_findings(cfg, which=lambda _n: "/usr/bin/" + _n)
+            # kiro-flow/git あり・ディレクトリ作成済み → env/config の致命所見は出ない
+            self.assertFalse(any(f["severity"] == "critical" for f in fs))
+            self.assertFalse(any(f.get("fix_action") == "create-dirs" for f in fs))
+
+    def test_parse_findings_filters_unknown_categories(self):
+        out = ('説明文… [{"category":"program","severity":"critical","title":"NPE",'
+               '"evidence":"journal","fix":"バグ"},'
+               '{"category":"bogus","severity":"warn","title":"x"},'
+               '{"category":"config","severity":"loud","title":"y"}]')
+        fs = km._parse_doctor_findings(out)
+        self.assertEqual(len(fs), 2)                       # bogus カテゴリは捨てる
+        self.assertEqual(fs[0]["category"], "program")
+        self.assertEqual(fs[1]["severity"], "warn")        # 未知 severity は warn へ正規化
+
+    def test_diagnose_returns_none_when_agent_unavailable(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            boom = lambda p, m: (_ for _ in ()).throw(RuntimeError("no kiro-cli"))
+            self.assertIsNone(km.diagnose_with_agent(cfg, {}, [], kiro_run=boom))
+
+    def test_apply_fix_create_dirs_and_policy_protect(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            self.assertTrue(km.apply_doctor_fix(cfg, {"fix_action": "create-dirs"}))
+            self.assertTrue(cfg.needs.exists() and cfg.decisions.exists())
+            msg = km.apply_doctor_fix(cfg, {"fix_action": "policy-protect"})
+            self.assertIn("protect", msg)
+            self.assertTrue(km.load_policy(cfg.policy).protect)
+            # 冪等: 既に protect があれば二重追加しない（空文字＝変更なし）
+            self.assertEqual(km.apply_doctor_fix(cfg, {"fix_action": "policy-protect"}), "")
+
+    def test_find_skill(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d) / "skills"
+            (home / "gitlab-idd").mkdir(parents=True)
+            self.assertEqual(km.find_skill("gitlab-idd", home=str(home)),
+                             home / "gitlab-idd")
+            self.assertIsNone(km.find_skill("does-not-exist", home=str(home)))
+
+    def test_program_findings_routed_to_gitlab_idd_when_skill_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            calls = []
+
+            def agent(prompt, model):
+                if "稼働診断医" in prompt:                  # 診断パス
+                    return ('[{"category":"program","severity":"critical",'
+                            '"title":"クラッシュ","evidence":"run-log","fix":"例外"}]')
+                calls.append("file")                        # 起票パス
+                return "起票しました"
+
+            with tempfile.TemporaryDirectory() as sk:
+                home = Path(sk)
+                (home / "gitlab-idd").mkdir(parents=True)
+                rc = km.cmd_doctor(cfg, fix=True, as_json=True, kiro_run=agent,
+                                   skill_finder=lambda n: km.find_skill(n, home=str(home)))
+            self.assertEqual(calls, ["file"])               # gitlab-idd へ委譲した
+            self.assertEqual(rc, 1)                          # critical は起票で解消・残りは warn → 1
+
+    def test_program_output_only_when_skill_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            calls = []
+
+            def agent(prompt, model):
+                if "稼働診断医" in prompt:
+                    return ('[{"category":"program","severity":"critical",'
+                            '"title":"バグ","evidence":"e","fix":"f"}]')
+                calls.append("file")
+                return "x"
+
+            rc = km.cmd_doctor(cfg, fix=True, kiro_run=agent,
+                               skill_finder=lambda _n: None)   # スキル無し
+            self.assertEqual(calls, [])                      # 起票は呼ばない（出力のみ）
+            self.assertEqual(rc, 2)                          # 未解決の critical program → 2
+
+    def test_doctor_via_main_without_backlog_diagnoses(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            # kiro-cli を呼ばない構成で main 経由（backlog 無しでも落ちない）
+            rc = km.main(["doctor", "--json", "--workdir", str(d), "--root", str(d / ".ka"),
+                          "--planner", "none", "--executor", "stub", "--no-auto-adjudicate"])
+            self.assertIn(rc, (0, 1, 2))
+
+
 class TestVerifyProgress(unittest.TestCase):
     """履歴一致 verify による偽 done の対策（成果参照の真正化・KIRO_BASE_REV・no-progress ガード）。"""
 
