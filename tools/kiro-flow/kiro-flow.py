@@ -117,6 +117,12 @@ CONFIG_DEFAULTS = {
     "max_workers": 4,
     "max_iterations": 3,
     "max_fanout": 50,
+    # judge/評価役のサーキットブレーカー: 同一系統（verify/失敗）の作り直しをこの回数で打ち切る。
+    # 達成不可能な完了条件で無限に再タスクを生み続けるのを防ぐ（max_iterations と二重ガード）。
+    "max_retries": 3,
+    # kiro-cli へ argv で渡すプロンプトの最大バイト数。超過分は一時ファイルへ退避し参照渡しに
+    # 切り替える（依存成果物が大きいときに OS の ARG_MAX に達して起動失敗するのを防ぐ）。
+    "argv_limit": 100000,
     "review": "auto",  # auto: 集約パターンで自動有効 / True/False: 明示上書き
     "workers": 2,
     # 一時ファイルの自動クリーンアップ（daemon ループ内で定期実行）
@@ -255,6 +261,7 @@ class Bus:
         self.tasks_dir = os.path.join(self.run_dir, "tasks")
         self.claims_dir = os.path.join(self.run_dir, "claims")
         self.results_dir = os.path.join(self.run_dir, "results")
+        self.artifacts_dir = os.path.join(self.run_dir, "artifacts")
         self.events_dir = os.path.join(self.run_dir, "events")
         self.meta_path = os.path.join(self.run_dir, "meta.json")
         self.graph_path = os.path.join(self.run_dir, "graph.json")
@@ -381,6 +388,31 @@ class Bus:
         return self._try_claim_in(self._claim_dir(node_id), who, lease_sec,
                                   f"claim {node_id} by {who}")
 
+    # --- 中間成果物（ファイル）プロトコル ---
+    #
+    # output/data（JSON）に乗らない大きな成果物（生成ファイル等）は、ノードごとの
+    # 決定的なディレクトリ artifacts/<node-id>/ に置く。パスが node-id から一意に
+    # 決まるので、後続タスクは依存ノードの同じパスを読んで成果物を発見できる。
+    # （バスのファイルとして push/pull で同期されるため分散でも同じパスで参照可能。）
+    def node_artifact_dir(self, node_id: str) -> str:
+        return os.path.join(self.artifacts_dir, node_id)
+
+    def ensure_artifact_dir(self, node_id: str) -> str:
+        d = self.node_artifact_dir(node_id)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def list_artifacts(self, node_id: str) -> "list[str]":
+        """ノードの成果物ディレクトリ内のファイル絶対パス一覧（無ければ空）。"""
+        d = self.node_artifact_dir(node_id)
+        if not os.path.isdir(d):
+            return []
+        out = []
+        for dirpath, _dirs, files in os.walk(d):
+            for fn in files:
+                out.append(os.path.join(dirpath, fn))
+        return sorted(out)
+
     # --- 結果 ---
     def result_path(self, node_id: str) -> str:
         return os.path.join(self.results_dir, f"{node_id}.json")
@@ -392,7 +424,7 @@ class Bus:
         return read_json(self.result_path(node_id))
 
     def write_result(self, node_id: str, who: str, status: str, output: str,
-                     data=None) -> None:
+                     data=None, artifacts=None) -> None:
         rec = {
             "id": node_id,
             "who": who,
@@ -402,6 +434,8 @@ class Bus:
         }
         if data is not None:  # 構造化成果（任意）。エージェント間を JSON で流す
             rec["data"] = data
+        if artifacts:  # 生成した中間成果物（run_dir 相対パス）。後続が参照できる
+            rec["artifacts"] = list(artifacts)
         write_json_atomic(self.result_path(node_id), rec)
 
     # --- 状態導出 ---
@@ -698,6 +732,30 @@ def repo_instruction(clones: "list[tuple[str, str]]") -> str:
     failed = [url for url, path in clones if not path]
     if failed:
         lines.append("  ※ clone 失敗（必要なら手動で取得・push 不可の可能性）: " + ", ".join(failed))
+    return "\n".join(lines)
+
+
+def artifact_instruction(self_dir: "str | None", dep_arts: "dict[str, str] | None") -> str:
+    """中間成果物（ファイル）の受け渡しプロトコルをエージェントへ伝える指示ブロック。
+
+    output/data に乗らない大きな成果物は決定的なディレクトリでファイル参照する。
+    - 自ノードの出力先（self_dir）に書き出すと後続タスクが同じパスで発見できる。
+    - 依存タスクの成果物（dep_arts）は、その内容を本文に貼らずパスを示し、
+      エージェントにファイルとして読ませる（コマンドライン長制限を避ける狙いも兼ねる）。"""
+    if not self_dir and not dep_arts:
+        return ""
+    lines = ["【中間成果物プロトコル】タスク間の大きな成果物はファイルで受け渡します。"]
+    if self_dir:
+        lines.append("  - 出力先: 生成ファイル・大きな中間成果物は必ず次のディレクトリに書き出すこと"
+                     f"（後続タスクがこのパスで参照します）: {self_dir}")
+    have = {d: p for d, p in (dep_arts or {}).items()
+            if p and os.path.isdir(p) and os.listdir(p)}
+    if have:
+        lines.append("  - 依存タスクの成果物（本文には貼りません。次のパス内のファイルを読んで利用すること）:")
+        for d, p in have.items():
+            files = sorted(os.listdir(p))
+            more = " …" if len(files) > 10 else ""
+            lines.append(f"    [{d}] {p} （{', '.join(files[:10])}{more}）")
     return "\n".join(lines)
 
 
@@ -1080,16 +1138,55 @@ def _kiro_timeout() -> float | None:
     return to if to > 0 else None
 
 
+# 設定ファイル/CLI で解決した閾値を、args を持たない free 関数（run_kiro 等）が参照できる
+# よう、main の resolve 後に _configure_thresholds がここへ反映する（既定は CONFIG_DEFAULTS）。
+_ARGV_LIMIT = CONFIG_DEFAULTS["argv_limit"]
+
+
+def _configure_thresholds(args) -> None:
+    """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
+    run_kiro は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
+    global _ARGV_LIMIT
+    v = getattr(args, "argv_limit", None)
+    if v:
+        try:
+            _ARGV_LIMIT = int(v)
+        except (TypeError, ValueError):
+            pass
+
+
+def _kiro_argv_limit() -> int:
+    """kiro-cli へ argv（コマンドライン）で渡すプロンプトの最大バイト数。
+    これを超えるプロンプトは一時ファイルへ退避し参照渡しに切り替える。依存タスクの
+    成果物が大きいとプロンプトが肥大し、OS の ARG_MAX（コマンドライン長制限）に達して
+    プロセス起動自体が失敗するため。設定 argv_limit / CLI --argv-limit で調整（既定 100000）。"""
+    return _ARGV_LIMIT if _ARGV_LIMIT > 0 else CONFIG_DEFAULTS["argv_limit"]
+
+
 def run_kiro(prompt: str, model: str | None) -> str:
     cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if model:
         cmd += ["--model", model]
-    cmd.append(prompt)
+    # プロンプトが大きすぎて argv 長制限に達する恐れがあれば、一時ファイルへ退避して
+    # 「そのファイルを読んで実行」する短い指示に置き換える（成果物の受け渡しを参照渡しに）。
+    spill = None
+    if len(prompt.encode("utf-8")) > _kiro_argv_limit():
+        fd, spill = tempfile.mkstemp(prefix="kiro-flow-prompt-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(prompt)
+        cmd.append("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
+                   f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
+    else:
+        cmd.append(prompt)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_kiro_timeout())
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。タスクは failed 記録 → 再計画で retry に回り、run は前進する
         raise RuntimeError(f"kiro-cli タイムアウト（{_kiro_timeout():.0f}s 超過）")
+    finally:
+        if spill:
+            with contextlib.suppress(OSError):
+                os.remove(spill)
     if proc.returncode != 0:
         raise RuntimeError(f"kiro-cli 失敗 (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
     return strip_ansi(proc.stdout).strip()
@@ -1116,7 +1213,8 @@ def _stub_sleep() -> None:
         time.sleep(random.uniform(min(1.0, mx), mx))
 
 
-def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None):
+def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None,
+                 art_dir: "str | None" = None, dep_arts: "dict | None" = None):
     _stub_sleep()  # 実行時間を模す（KIRO_FLOW_STUB_SLEEP_MAX で調整可）
     # 失敗注入: "FAIL" を含むと失敗（retry される）/ "FLAKY" は一旦 issue を残す（verify loop 用）
     if "FAIL" in goal:
@@ -1167,7 +1265,8 @@ def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None):
     return f"[stub] 完了: {goal}", None
 
 
-def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None):
+def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
+                 art_dir: "str | None" = None, dep_arts: "dict | None" = None):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -1193,6 +1292,9 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None):
     if kind in ("reduce", "synthesize", "filter", "judge"):
         deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}
     prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
+    art_note = artifact_instruction(art_dir, dep_arts)
+    if art_note:  # 中間成果物のファイル参照プロトコル（出力先・依存成果物のパス）
+        prompt += art_note + "\n"
     if deps:
         lines = []
         for d, r in deps.items():
@@ -1342,14 +1444,20 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
 
 
 def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
-                  max_fanout: int = 50, review: bool = False, exemplar_first: bool = False):
+                  max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
+                  max_retries: int = 3):
     """パターン継続（kiro 無し版）:
        - データ駆動 fan-out: split 完了 → 要素ごとの map + reduce を生成
        - classify-and-act: 分類完了 → 振り分け先の専門タスクを追加
        - adversarial / loop-until-done: verify が fail → 作り直し + 再検証
-       - 失敗タスク: retry を 1 回追加"""
+       - 失敗タスク: retry を 1 回追加
+
+    サーキットブレーカー: 同一系統の作り直し回数（retries）が max_retries に達したら、
+    その系統の verify-fail / 失敗ノードに対する再タスクをこれ以上生成しない。達成不可能な
+    完了条件で無限に再タスクを積み続けるのを防ぐ（node["retries"] で系統ごとに計上）。"""
     new = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first)
     have = set(nodes)
+    tripped = []  # サーキットブレーカーが作動した系統（理由表示用）
 
     def fresh(tid):
         return tid not in have and tid not in [t["id"] for t in new]
@@ -1359,6 +1467,7 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
         if r.get("status") != "done" and r.get("status") != "failed":
             continue
         kind = node.get("kind", "work")
+        tries = int(node.get("retries", 0))  # この系統で既に作り直した回数
         # 1) classify → 専門タスクへルーティング（追加のみ）
         if kind == "classify" and r.get("status") == "done":
             actid = f"{nid}-act"
@@ -1369,35 +1478,78 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
         # 2) verify が fail → 依存を作り直して再検証（loop-until-done / adversarial）
         #    replaces で依存元（gen/verify）を置き換え、後続の依存を付け替える
         if kind == "verify" and "fail" in str(r.get("output", "")):
-            for dep in node.get("deps", []):
-                rid = f"{dep}-r{iteration+1}"
-                if fresh(rid):
-                    goal = nodes.get(dep, {}).get("goal", "").replace("FLAKY", "ok")
-                    new.append({"id": rid, "goal": f"[retry] {goal}", "deps": [],
-                                "kind": nodes.get(dep, {}).get("kind", "work"), "replaces": dep})
-            vid = f"{nid}-r{iteration+1}"
-            if fresh(vid):
-                new.append({"id": vid, "goal": "再検証",
-                            "deps": [f"{dep}-r{iteration+1}" for dep in node.get("deps", [])],
-                            "kind": "verify", "replaces": nid})
+            if tries >= max_retries:
+                tripped.append(nid)  # サーキット開放: これ以上作り直さない（達成不可能とみなす）
+            else:
+                for dep in node.get("deps", []):
+                    rid = f"{dep}-r{iteration+1}"
+                    if fresh(rid):
+                        goal = nodes.get(dep, {}).get("goal", "").replace("FLAKY", "ok")
+                        new.append({"id": rid, "goal": f"[retry] {goal}", "deps": [],
+                                    "kind": nodes.get(dep, {}).get("kind", "work"),
+                                    "replaces": dep, "retries": tries + 1})
+                vid = f"{nid}-r{iteration+1}"
+                if fresh(vid):
+                    new.append({"id": vid, "goal": "再検証",
+                                "deps": [f"{dep}-r{iteration+1}" for dep in node.get("deps", [])],
+                                "kind": "verify", "replaces": nid, "retries": tries + 1})
         # 3) 失敗タスクの retry（失敗ノードを置き換え、依存元を付け替える）
         if r.get("status") == "failed":
-            rid = f"{nid}r"
-            if fresh(rid):
-                goal = node.get("goal", "").replace("FAIL", "ok")
-                new.append({"id": rid, "goal": f"[retry] {goal}", "deps": [],
-                            "kind": node.get("kind", "work"), "replaces": nid})
+            if tries >= max_retries:
+                tripped.append(nid)  # サーキット開放: 反復失敗するタスクは諦める
+            else:
+                rid = f"{nid}r"
+                if fresh(rid):
+                    goal = node.get("goal", "").replace("FAIL", "ok")
+                    new.append({"id": rid, "goal": f"[retry] {goal}", "deps": [],
+                                "kind": node.get("kind", "work"),
+                                "replaces": nid, "retries": tries + 1})
     if new:
         return "replan", new, f"{len(new)} 件追加"
+    if tripped:
+        return "done", [], (f"サーキットブレーカー作動: {','.join(tripped)} は "
+                            f"{max_retries} 回の作り直しでも未達のため打ち切り")
     return "done", [], "全パターン完了"
 
 
+_RETRY_SUFFIX_RE = re.compile(r"-r\d+")
+
+
+def _retry_depth(nid: str, node: dict) -> int:
+    """ノードの作り直し回数（系統の深さ）。明示の retries カウンタを優先し、無ければ
+    id の -rN 連鎖（例: gen1-r1-r2 → 2）から推定する。サーキットブレーカー判定に使う。"""
+    if node and node.get("retries"):
+        return int(node["retries"])
+    return len(_RETRY_SUFFIX_RE.findall(nid or ""))
+
+
+def _circuit_tripped(nodes: dict, results: dict, max_retries: int) -> list:
+    """達成不可能な完了条件で打ち切るべき系統の id 一覧を返す。
+    verify が fail し続ける／失敗を繰り返すノードのうち、作り直しが max_retries に
+    達したものを「これ以上再タスクを積まない」対象として検出する。"""
+    out = []
+    for nid, node in nodes.items():
+        r = results.get(nid, {})
+        st = r.get("status")
+        is_verify_fail = node.get("kind") == "verify" and "fail" in str(r.get("output", ""))
+        if (st == "failed" or is_verify_fail) and _retry_depth(nid, node) >= max_retries:
+            out.append(nid)
+    return out
+
+
 def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
-                  max_fanout: int = 50, review: bool = False, exemplar_first: bool = False):
+                  max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
+                  max_retries: int = 3):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
     fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first)
     if fanout_tasks:
         return "replan", fanout_tasks, f"data-driven fan-out: +{len(fanout_tasks)}"
+    # サーキットブレーカー: 作り直しが上限に達した系統は達成不可能とみなし打ち切る
+    # （評価役 LLM が無限に再タスクを積み続けるのを防ぐ）。
+    tripped = _circuit_tripped(nodes, results, max_retries)
+    if tripped:
+        return "done", [], (f"サーキットブレーカー作動: {','.join(tripped)} は "
+                            f"{max_retries} 回の作り直しでも未達のため打ち切り")
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     summary = "\n".join(
         f"- {nid} ({nodes.get(nid, {}).get('kind','work')}) "
@@ -1408,6 +1560,9 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
         "あなたは分散 Dynamic Workflow の評価役です。7 パターンを踏まえ、現在の結果が要求を満たすか判定し、"
         "必要なら次のタスクを追加してください（例: 分類結果に応じた専門タスク、検証 fail の作り直し、"
         "統合や追加候補の生成）。\n"
+        f"ただし同じ完了条件のために作り直しを繰り返しても改善しない場合（達成不可能な条件など）は、"
+        f"同一タスクの作り直しは最大 {max_retries} 回までとし、それを超えるなら無理に再タスクを足さず "
+        '"done" を返してください。\n'
         f"パターン:\n{catalog}\n\n"
         "出力は JSON のみ: "
         '{"decision":"done"|"replan","reason":"...",'
@@ -1455,13 +1610,17 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
     else:
         review = _review_decision(cli, (strategy or {}).get("patterns", []))
     ef = bool(getattr(args, "exemplar_first", False))
+    mr = int(getattr(args, "max_retries", 3) or 3)
     if args.executor == "kiro":
-        return continue_kiro(request, nodes, results, iteration, mf, review, ef)
-    return continue_stub(request, nodes, results, iteration, mf, review, ef)
+        return continue_kiro(request, nodes, results, iteration, mf, review, ef, mr)
+    return continue_stub(request, nodes, results, iteration, mf, review, ef, mr)
 
 
 def _node_entry(t):
-    return {"goal": t["goal"], "deps": t["deps"], "kind": t.get("kind", "work")}
+    e = {"goal": t["goal"], "deps": t["deps"], "kind": t.get("kind", "work")}
+    if t.get("retries"):  # サーキットブレーカー用の作り直し回数（>0 のときだけ保持）
+        e["retries"] = int(t["retries"])
+    return e
 
 
 def _collapse_split_successors(nodes: dict) -> dict:
@@ -1680,6 +1839,10 @@ def cmd_work(args) -> int:
 
         # 依存の成果は構造化データ込みの完全な result dict で渡す
         dep_results = _collect_dep_results(bus, node, kind)
+        # 中間成果物プロトコル: 自ノードの出力先を用意し、依存ノードの成果物パスを集める。
+        # これにより大きな成果物は output/data に貼らずファイル参照で受け渡せる。
+        art_dir = bus.ensure_artifact_dir(nid)
+        dep_arts = {d: bus.node_artifact_dir(d) for d in node.get("deps", [])}
         # 成果物リポジトリ（この run のもの）を temp 領域へ clone し、エージェントへパスを渡す
         goal = node["goal"]
         clones = ensure_work_repos(bus.run_repos(), who)
@@ -1691,9 +1854,11 @@ def cmd_work(args) -> int:
         rdata = None
         try:
             if args.executor == "kiro":
-                output, rdata = execute_kiro(kind, goal, dep_results, args.model)
+                output, rdata = execute_kiro(kind, goal, dep_results, args.model,
+                                             art_dir, dep_arts)
             else:
-                output, rdata = execute_stub(kind, goal, dep_results, args.model)
+                output, rdata = execute_stub(kind, goal, dep_results, args.model,
+                                             art_dir, dep_arts)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
@@ -1701,7 +1866,9 @@ def cmd_work(args) -> int:
         finally:
             hb.stop()
 
-        bus.write_result(nid, who, rstatus, output, rdata)
+        # 生成された中間成果物を run_dir 相対パスで記録（後続・status から発見できる）
+        artifacts = [os.path.relpath(p, bus.run_dir) for p in bus.list_artifacts(nid)]
+        bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts)
         bus.event(who, "result", node=nid, status=rstatus)
         bus.sync_push(f"result {nid} [{rstatus}] by {who}")
         log(who, f"完了: {nid} [{rstatus}]")
@@ -1749,6 +1916,7 @@ def cmd_run(args) -> int:
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
         "--max-fanout", str(args.max_fanout),
+        "--max-retries", str(args.max_retries),
         *(["--review"] if args.review is True
           else ["--no-review"] if args.review is False else []),
         "--model_opt", args.model or "",
@@ -1927,7 +2095,8 @@ def cmd_daemon(args) -> int:
                     "--run-id", req_id, "orchestrate", "--request", req["request"],
                     "--planner", args.planner, "--executor", args.executor,
                     "--max-iterations", str(args.max_iterations),
-        "--max-fanout", str(args.max_fanout),
+                    "--max-fanout", str(args.max_fanout),
+                    "--max-retries", str(args.max_retries),
                     "--model_opt", args.model or "", "--poll", str(args.poll),
                     "--node-id", f"orchestrator-{req_id}",
                 ])
@@ -2367,7 +2536,8 @@ def cmd_result(args) -> int:
             "final_nodes": [
                 {"id": nid, "kind": nodes.get(nid, {}).get("kind", "work"),
                  "output": str(results.get(nid, {}).get("output", "")),
-                 "data": results.get(nid, {}).get("data")}
+                 "data": results.get(nid, {}).get("data"),
+                 "artifacts": results.get(nid, {}).get("artifacts", [])}
                 for nid in sink_ids
             ],
         }, ensure_ascii=False, indent=2))
@@ -2400,6 +2570,8 @@ def cmd_result(args) -> int:
         print(out or "(出力なし)")
         if r.get("data") is not None:
             print(f"[data] {json.dumps(r['data'], ensure_ascii=False)}")
+        if r.get("artifacts"):
+            print(f"[artifacts] {', '.join(r['artifacts'])}")
     return 0
 
 
@@ -2437,6 +2609,9 @@ def main() -> int:
                         "先頭1件を検証ゲートに通してから残りを展開し、同様手順を1件で固めてから流す")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
+    p.add_argument("--argv-limit", dest="argv_limit", type=int, default=None,
+                   help="kiro-cli へ argv で渡すプロンプトの最大バイト数（設定 argv_limit と同義）。"
+                        "超過分は一時ファイルへ退避し参照渡しにする（既定 100000）")
     p.add_argument("--keep-clone", dest="cleanup_clone", action="store_const", const=False,
                    default=None,
                    help="作業後に sparse-checkout クローンを削除せず残す（既定: 削除して再利用しない）")
@@ -2453,6 +2628,8 @@ def main() -> int:
                      help="再計画（evaluator-optimizer）の最大反復回数")
     run.add_argument("--max-fanout", type=int, default=None,
                      help="データ駆動 fan-out の最大展開数（既定 50）")
+    run.add_argument("--max-retries", type=int, default=None,
+                     help="同一系統の作り直し打ち切り回数（サーキットブレーカー, 既定 3）")
     run.add_argument("--review", dest="review", action="store_const", const=True, default=None,
                      help="統合（synthesize/reduce）の前に検証 gate を必ず挟む（既定: 集約パターンで自動）")
     run.add_argument("--no-review", dest="review", action="store_const", const=False,
@@ -2468,6 +2645,7 @@ def main() -> int:
                       help="評価役（evaluator）に使うバックエンド")
     orch.add_argument("--max-iterations", type=int, default=None)
     orch.add_argument("--max-fanout", type=int, default=None)
+    orch.add_argument("--max-retries", type=int, default=None)
     orch.add_argument("--review", dest="review", action="store_const", const=True, default=None)
     orch.add_argument("--no-review", dest="review", action="store_const", const=False)
     orch.add_argument("--node-id", default="orchestrator")
@@ -2493,6 +2671,7 @@ def main() -> int:
     dm.add_argument("--executor", choices=["kiro", "stub"], default=None)
     dm.add_argument("--max-iterations", type=int, default=None)
     dm.add_argument("--max-fanout", type=int, default=None)
+    dm.add_argument("--max-retries", type=int, default=None)
     dm.add_argument("--review", dest="review", action="store_const", const=True, default=None)
     dm.add_argument("--no-review", dest="review", action="store_const", const=False)
     dm.add_argument("--model", default=None)
@@ -2532,6 +2711,8 @@ def main() -> int:
     args = p.parse_args()
     # CLI 未指定の設定値を設定ファイル→組み込み既定で確定（CLI > config > 既定）
     resolve_config(args)
+    # args を持たない free 関数（run_kiro 等）が読む閾値をモジュール変数へ確定させる
+    _configure_thresholds(args)
     # 子プロセスから渡る空文字の --model_opt は「モデル指定なし」を意味する
     if getattr(args, "model", None) == "":
         args.model = None

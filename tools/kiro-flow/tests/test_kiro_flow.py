@@ -1005,5 +1005,220 @@ class CleanupTests(unittest.TestCase):
         self.assertIn("tmp", res)
 
 
+class ArtifactProtocolTests(unittest.TestCase):
+    """中間成果物のファイル参照プロトコル（依存タスクの成果物を決定的パスで受け渡す）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-art-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("req")
+
+    def test_node_artifact_dir_is_deterministic(self):
+        # 同じ node-id なら別 Bus ビューでも同じ run 相対パスを指す（後続が発見できる）
+        d1 = self.bus.node_artifact_dir("t1")
+        d2 = kf.Bus(self.tmp, "run1").node_artifact_dir("t1")
+        self.assertEqual(d1, d2)
+        self.assertEqual(os.path.relpath(d1, self.bus.run_dir),
+                         os.path.join("artifacts", "t1"))
+
+    def test_ensure_and_list_artifacts(self):
+        d = self.bus.ensure_artifact_dir("t1")
+        self.assertTrue(os.path.isdir(d))
+        with open(os.path.join(d, "out.bin"), "w") as f:
+            f.write("payload")
+        self.assertEqual(self.bus.list_artifacts("t1"), [os.path.join(d, "out.bin")])
+        self.assertEqual(self.bus.list_artifacts("missing"), [])  # 無ければ空
+
+    def test_write_result_records_artifacts(self):
+        self.bus.write_result("t1", "w", "done", "out", artifacts=["artifacts/t1/out.bin"])
+        self.assertEqual(self.bus.read_result("t1")["artifacts"], ["artifacts/t1/out.bin"])
+        # artifacts 無しなら後方互換でキーを足さない
+        self.bus.write_result("t2", "w", "done", "out")
+        self.assertNotIn("artifacts", self.bus.read_result("t2"))
+
+    def test_artifact_instruction_lists_self_and_deps(self):
+        dep_dir = self.bus.ensure_artifact_dir("dep1")
+        with open(os.path.join(dep_dir, "data.json"), "w") as f:
+            f.write("{}")
+        self_dir = self.bus.node_artifact_dir("t2")
+        note = kf.artifact_instruction(self_dir, {"dep1": dep_dir})
+        self.assertIn(self_dir, note)            # 出力先を案内
+        self.assertIn(dep_dir, note)             # 依存の成果物パスを案内
+        self.assertIn("data.json", note)         # 依存ディレクトリ内のファイル名も
+        # 依存ディレクトリが空（成果物なし）なら依存欄は出さない
+        empty = kf.artifact_instruction(self_dir, {"dep1": self.bus.node_artifact_dir("nope")})
+        self.assertNotIn("依存タスクの成果物", empty)
+
+    def test_artifact_instruction_empty_when_nothing(self):
+        self.assertEqual(kf.artifact_instruction(None, None), "")
+
+    def test_execute_kiro_prompt_references_dep_artifacts_by_path(self):
+        # execute_kiro は依存成果物の中身を本文に貼らず、パスを示してファイル参照させる
+        dep_dir = self.bus.ensure_artifact_dir("dep1")
+        with open(os.path.join(dep_dir, "big.txt"), "w") as f:
+            f.write("X" * 100)
+        captured = {}
+
+        def fake(prompt, model):
+            captured["prompt"] = prompt
+            return "ok"
+
+        with mock.patch.object(kf, "run_kiro", side_effect=fake):
+            kf.execute_kiro("work", "後続処理", {}, None,
+                            self.bus.node_artifact_dir("t2"), {"dep1": dep_dir})
+        self.assertIn("中間成果物プロトコル", captured["prompt"])
+        self.assertIn(dep_dir, captured["prompt"])
+        self.assertIn("big.txt", captured["prompt"])
+        self.assertNotIn("X" * 100, captured["prompt"])  # 中身は貼らない（参照のみ）
+
+    def test_worker_records_artifacts_in_result(self):
+        # ワーカーが実行中に書いた成果物を result に記録し、後続が発見できる
+        bus = self.bus
+        bus.write_graph({"nodes": {"t1": {"goal": "g", "deps": [], "kind": "work"}},
+                         "iteration": 0})
+        bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
+        bus.set_status("running")
+
+        def fake_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None):
+            with open(os.path.join(art_dir, "result.bin"), "w") as f:
+                f.write("done")
+            return "ok", None
+
+        args = mock.Mock(bus=self.tmp, run_id="run1", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        with mock.patch.object(kf, "execute_stub", side_effect=fake_exec), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        r = bus.read_result("t1")
+        self.assertEqual(r["status"], "done")
+        self.assertIn(os.path.join("artifacts", "t1", "result.bin"), r["artifacts"])
+
+
+class ArgvLimitTests(unittest.TestCase):
+    """大きなプロンプトをコマンドライン長制限で落とさず、一時ファイル参照に切り替える。"""
+
+    def test_argv_limit_from_config(self):
+        import argparse
+        # 解決済み設定値（argv_limit）はモジュール変数へ確定し、free 関数が参照する
+        orig = kf._ARGV_LIMIT
+        self.addCleanup(setattr, kf, "_ARGV_LIMIT", orig)
+        kf._configure_thresholds(argparse.Namespace(argv_limit=123))
+        self.assertEqual(kf._kiro_argv_limit(), 123)
+        kf._configure_thresholds(argparse.Namespace(argv_limit=None))  # 未指定は据え置き
+        self.assertEqual(kf._kiro_argv_limit(), 123)
+        kf._ARGV_LIMIT = 0  # 0/不正は組み込み既定へフォールバック
+        self.assertEqual(kf._kiro_argv_limit(), kf.CONFIG_DEFAULTS["argv_limit"])
+
+    def test_argv_limit_resolved_from_config_file(self):
+        # 設定ファイルの argv_limit が resolve_config 経由で args に載る（env 非依存）
+        import argparse
+        cfg_dir = tempfile.mkdtemp(prefix="kf-cfg-")
+        self.addCleanup(shutil.rmtree, cfg_dir, ignore_errors=True)
+        cfg = os.path.join(cfg_dir, "kiro-flow.json")
+        with open(cfg, "w") as f:
+            json.dump({"argv_limit": 4096}, f)
+        args = argparse.Namespace(config=cfg, argv_limit=None)
+        kf.resolve_config(args)
+        self.assertEqual(args.argv_limit, 4096)
+
+    def test_small_prompt_passed_inline(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return mock.Mock(returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_kiro("短いプロンプト", None)
+        self.assertIn("短いプロンプト", seen["cmd"])  # そのまま argv に乗る
+
+    def test_large_prompt_spilled_to_tempfile(self):
+        big = "依存成果物" + "X" * 200000  # argv 長制限を超える巨大プロンプト
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            # 退避ファイルへのパスが argv 末尾に入り、実行中はその中身が読めること
+            path = cmd[-1].split(": ")[-1]
+            seen["spill_path"] = path
+            with open(path, encoding="utf-8") as f:
+                seen["spill_body"] = f.read()
+            return mock.Mock(returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_kiro(big, None)
+        # 巨大プロンプト本体は argv に乗らない（コマンドライン長制限を回避）
+        self.assertNotIn(big, seen["cmd"])
+        self.assertLess(len(seen["cmd"][-1]), 500)
+        self.assertEqual(seen["spill_body"], big)          # ファイルには全文がある
+        self.assertFalse(os.path.exists(seen["spill_path"]))  # 実行後に掃除される
+
+
+class CircuitBreakerTests(unittest.TestCase):
+    """judge/評価役のサーキットブレーカー: 達成不可能な完了条件で無限に再タスクを積まない。"""
+
+    def test_node_entry_preserves_retries(self):
+        e = kf._node_entry({"id": "x", "goal": "g", "deps": [], "kind": "verify", "retries": 2})
+        self.assertEqual(e["retries"], 2)
+        e0 = kf._node_entry({"id": "y", "goal": "g", "deps": [], "kind": "work"})
+        self.assertNotIn("retries", e0)  # 0/未指定は持たない（ノイズを足さない）
+
+    def test_verify_fail_increments_retries(self):
+        nodes = {"gen1": {"goal": "FLAKY", "deps": [], "kind": "generate"},
+                 "v1": {"goal": "検証", "deps": ["gen1"], "kind": "verify"}}
+        results = {"gen1": {"status": "done", "output": "issue"},
+                   "v1": {"status": "done", "output": "verify=fail"}}
+        _, new, _ = kf.continue_stub("req", nodes, results, 0, max_retries=3)
+        by = {t["id"]: t for t in new}
+        self.assertEqual(by["v1-r1"]["retries"], 1)
+        self.assertEqual(by["gen1-r1"]["retries"], 1)
+
+    def test_circuit_breaker_stops_verify_retries_at_cap(self):
+        # retries が上限に達した verify-fail は作り直しを生成せず done で打ち切る
+        nodes = {"gen1": {"goal": "g", "deps": [], "kind": "generate", "retries": 3},
+                 "v1": {"goal": "検証", "deps": ["gen1"], "kind": "verify", "retries": 3}}
+        results = {"gen1": {"status": "done", "output": "issue"},
+                   "v1": {"status": "done", "output": "verify=fail"}}
+        decision, new, reason = kf.continue_stub("req", nodes, results, 5, max_retries=3)
+        self.assertEqual(decision, "done")
+        self.assertEqual(new, [])
+        self.assertIn("サーキットブレーカー", reason)
+
+    def test_circuit_breaker_stops_failed_task_retries_at_cap(self):
+        nodes = {"t2": {"goal": "FAIL", "deps": [], "kind": "work", "retries": 3}}
+        results = {"t2": {"status": "failed"}}
+        decision, new, reason = kf.continue_stub("req", nodes, results, 5, max_retries=3)
+        self.assertEqual(decision, "done")
+        self.assertEqual(new, [])
+        self.assertIn("サーキットブレーカー", reason)
+
+    def test_failed_retry_below_cap_still_retries(self):
+        nodes = {"t2": {"goal": "FAIL", "deps": [], "kind": "work", "retries": 1}}
+        results = {"t2": {"status": "failed"}}
+        decision, new, _ = kf.continue_stub("req", nodes, results, 0, max_retries=3)
+        self.assertEqual(decision, "replan")
+        self.assertEqual(new[0]["id"], "t2r")
+        self.assertEqual(new[0]["retries"], 2)
+
+    def test_retry_depth_from_id_chain(self):
+        self.assertEqual(kf._retry_depth("gen1", {}), 0)
+        self.assertEqual(kf._retry_depth("gen1-r1", {}), 1)
+        self.assertEqual(kf._retry_depth("gen1-r1-r2", {}), 2)
+        self.assertEqual(kf._retry_depth("x", {"retries": 4}), 4)  # 明示カウンタ優先
+
+    def test_continue_kiro_circuit_breaker_short_circuits(self):
+        # 評価役 LLM を呼ぶ前に、上限到達の系統を検知して done で打ち切る（LLM 不要）
+        nodes = {"v1-r1-r2-r3": {"goal": "検証", "deps": [], "kind": "verify"}}
+        results = {"v1-r1-r2-r3": {"status": "done", "output": "verify=fail"}}
+        with mock.patch.object(kf, "run_kiro",
+                               side_effect=AssertionError("LLM を呼んではいけない")):
+            decision, new, reason = kf.continue_kiro("req", nodes, results, 9, max_retries=3)
+        self.assertEqual(decision, "done")
+        self.assertEqual(new, [])
+        self.assertIn("サーキットブレーカー", reason)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

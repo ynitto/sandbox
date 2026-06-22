@@ -13,6 +13,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 作業後に sparse-checkout クローンを自動削除（既定 ON）。各コマンド終了時に
   ノード専用クローンを丸ごと掃除しクローンの溜まり込みを防ぐ。`--keep-clone` /
   設定 `cleanup_clone: false` で従来どおり残して再利用も可能。
+- 中間成果物のファイル参照プロトコル。`output`/`data` に乗らない大きな成果物は
+  決定的なディレクトリ `runs/<run-id>/artifacts/<node-id>/` に書き出し、後続タスクは
+  依存ノードの同じパスを読んで発見できる。ワーカーは生成した成果物を result に記録し、
+  `result` コマンドでも一覧できる。
+
+#### Fixed
+- judge/評価役のサーキットブレーカー。同一系統の作り直し（verify=fail の再生成・
+  失敗タスクの retry）が `--max-retries`（設定 `max_retries`, 既定 3）に達したら
+  打ち切る。達成不可能な完了条件に対し無限に再タスクを積み続ける暴走を防ぐ
+  （`--max-iterations` と二重ガード）。
+- 依存タスクの成果物が大きいとき、kiro-cli へ渡すプロンプトが OS のコマンドライン長
+  制限（ARG_MAX）に達して起動失敗する不具合を修正。一定サイズを超えるプロンプトは
+  一時ファイルへ退避し参照渡しに切り替える（設定 `argv_limit` / `--argv-limit` で調整、既定 100000）。
 
 ---
 
