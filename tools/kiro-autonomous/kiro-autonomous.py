@@ -96,8 +96,18 @@ class Task:
         self.extra = [(k, v) for k, v in self.extra if k not in keys]
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    """端末カラー等の ANSI エスケープを除去する。
+    kiro-cli の出力にはカラーコードが混ざるため、合成した verify を
+    シェルで実行する前に正規化しないと `\\x1b[..m` が混入してコマンドが壊れる。"""
+    return _ANSI_RE.sub("", text or "")
+
+
 def _strip_code(val: str) -> str:
-    v = val.strip()
+    v = strip_ansi(val).strip()
     if len(v) >= 2 and v.startswith("`") and v.endswith("`"):
         return v[1:-1]
     return v
@@ -1441,10 +1451,12 @@ def _run_kiro_cli(prompt: str, model: "str | None") -> str:
     if model:
         cmd += ["--model", model]
     cmd.append(prompt)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"kiro-cli rc={proc.returncode}: {proc.stderr.strip()[:300]}")
-    return proc.stdout.strip()
+    return strip_ansi(proc.stdout).strip()
 
 
 def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=_run_kiro_cli) -> "list[Task] | None":

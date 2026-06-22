@@ -2265,6 +2265,19 @@ class TestVerifyAssist(unittest.TestCase):
             self.assertFalse(km.ensure_verify(cfg, t, kiro_run=boom))   # 合成不能→verify 空のまま
             self.assertEqual(t.verify, "")
 
+    def test_strip_ansi_removes_escapes(self):
+        raw = "\x1b[38;5;141m> \x1b[0mgrep -q foo bar.txt\x1b[0m"
+        self.assertEqual(km.strip_ansi(raw), "> grep -q foo bar.txt")
+        self.assertEqual(km.strip_ansi(""), "")
+
+    def test_synth_verify_strips_ansi_from_kiro_output(self):
+        # kiro-cli の色付き出力に ANSI が混ざっても、合成した verify は素のコマンドになる
+        cfg = cfg_for(Path("."))
+        ansi_out = "\x1b[2K\x1b[36mgrep -q '## 概要' README.md\x1b[0m"
+        cmd = km.synth_verify(cfg, "概要を書く", "README に概要", kiro_run=lambda p, m: ansi_out)
+        self.assertEqual(cmd, "grep -q '## 概要' README.md")
+        self.assertNotIn("\x1b", cmd)
+
     def test_rot_excludes_accept_or_template(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
