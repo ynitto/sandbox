@@ -1349,6 +1349,27 @@ class TestBareDefault(unittest.TestCase):
             rc = km.main(["needs", "--workdir", d, "--root", str(Path(d) / ".ka")])
             self.assertEqual(rc, 2)
 
+    def _route_project(self, argv):
+        captured = {}
+        orig = km.cmd_run
+        km.cmd_run = lambda cfg: (captured.update(project=cfg.project_name), 0)[1]
+        try:
+            km.main(argv)
+        finally:
+            km.cmd_run = orig
+        return captured.get("project")
+
+    def test_bare_defaults_to_all_project(self):
+        # サブコマンド省略は全プロジェクト（--project all）を既定にする
+        self.assertEqual(self._route_project([]), "all")
+        self.assertEqual(self._route_project(["--poll", "10"]), "all")
+
+    def test_explicit_run_stays_single_default(self):
+        # 明示 run は単一 default のまま（all にしない）
+        self.assertEqual(self._route_project(["run"]), "default")
+        # 省略でも明示 --project があればそちらが勝つ
+        self.assertEqual(self._route_project(["--project", "web"]), "web")
+
 
 class TestInstances(unittest.TestCase):
     """稼働インスタンスのレジストリ（外部操作者がフォルダを発見する口）。"""
@@ -1441,13 +1462,14 @@ class TestRemoteDiscovery(unittest.TestCase):
 
     def test_register_writes_to_shared_and_refresh_bumps_heartbeat(self):
         with tempfile.TemporaryDirectory() as wd:
-            cfg = cfg_for(Path(wd), watch=True)
+            cfg = cfg_for(Path(wd), watch=True, project_name="default")
             paths = km.register_instance(cfg, [self._shared])
             self.addCleanup(lambda: [p.unlink() for p in paths if p.exists()])
-            # ローカル home と共有先の両方へホスト修飾名で書かれる
+            # ローカル home と共有先の両方へ「ホスト-PID-プロジェクト」修飾名で書かれる
             self.assertEqual(len(paths), 2)
             self.assertTrue(any(Path(self._shared) in p.parents for p in paths))
-            self.assertTrue(all(p.name == f"{socket.gethostname()}-{os.getpid()}.json" for p in paths))
+            self.assertTrue(all(p.name == f"{socket.gethostname()}-{os.getpid()}-default.json"
+                                for p in paths))
             before = __import__("json").loads(paths[0].read_text())["heartbeat"]
             time.sleep(0.01)
             km.refresh_instance(paths)
@@ -1564,6 +1586,23 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(km.cmd_start(root=str(work), config=cfg), 1)  # 重複起動は拒否
         self.assertEqual(km.cmd_stop(root=str(work), project="default"), 0)
         self.assertEqual(km.select_instances(root=root), [])    # 停止で消える
+
+    def test_start_defaults_to_all_daemon(self):
+        # daemon（start）は --project 未指定なら all で起動し、"all" センチネルを登録する
+        work = Path(tempfile.mkdtemp())
+        (work / "kiro-autonomous.json").write_text(
+            '{"executor":"stub","planner":"none","flow_planner":"stub","poll":0.3}', encoding="utf-8")
+        cfgp = str(work / "kiro-autonomous.json")
+        self.assertEqual(km.cmd_start(root=str(work), config=cfgp), 0)   # --project なし → all
+        all_root = str((work / "projects" / "all").resolve())
+        for _ in range(50):
+            if km.select_instances(root=all_root):
+                break
+            time.sleep(0.1)
+        self.assertTrue(km.select_instances(root=all_root))             # all センチネルが登録された
+        self.assertEqual(km.cmd_start(root=str(work), config=cfgp), 1)  # 重複起動は拒否
+        self.assertEqual(km.cmd_stop(root=str(work), project="all"), 0)  # all daemon を停止
+        self.assertEqual(km.select_instances(root=all_root), [])
 
     def test_watch_sigterm_graceful_exit(self):
         # SIGTERM 化された KeyboardInterrupt は graceful 停止: traceback を出さず 0 で終え、
@@ -2260,6 +2299,31 @@ class TestVerifyAssist(unittest.TestCase):
 
 
 class TestMultiProject(unittest.TestCase):
+    def test_run_all_consumes_every_project(self):
+        # 1 プロセス（--project all）でコンテナ配下の全プロジェクトを回す
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            for name in ("alpha", "beta"):
+                km.main(["enqueue", "--project", name, "--title", f"T-{name}", "--verify", "true",
+                         "--workdir", str(d), "--root", str(root)])
+            rc = km.main(["run", "--project", "all", "--workdir", str(d), "--root", str(root),
+                          "--planner", "none", "--flow-planner", "stub", "--executor", "stub",
+                          "--dry-run", "--max-cycles", "3"])
+            self.assertEqual(rc, 0)
+            # 両プロジェクトとも消化され archive に入る
+            self.assertEqual(len(list((root / "projects" / "alpha" / "archive").glob("*.md"))), 1)
+            self.assertEqual(len(list((root / "projects" / "beta" / "archive").glob("*.md"))), 1)
+
+    def test_project_cfg_repoints_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            base = cfg_for(d / ".ka" / "projects" / "default", project_name="default")
+            pc = km.project_cfg(base, "payments")
+            self.assertEqual(pc.project_name, "payments")
+            self.assertTrue(str(pc.backlog).endswith("projects/payments/backlog"))
+            self.assertEqual(km.container_dir(pc), d / ".ka")
+
     def test_run_creates_default_project_folder(self):
         # project 指定なしで起動すると default プロジェクトのフォルダが（無ければ）作られ、その下に集約される
         with tempfile.TemporaryDirectory() as d:
