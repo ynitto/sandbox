@@ -1349,6 +1349,27 @@ class TestBareDefault(unittest.TestCase):
             rc = km.main(["needs", "--workdir", d, "--root", str(Path(d) / ".ka")])
             self.assertEqual(rc, 2)
 
+    def _route_project(self, argv):
+        captured = {}
+        orig = km.cmd_run
+        km.cmd_run = lambda cfg: (captured.update(project=cfg.project_name), 0)[1]
+        try:
+            km.main(argv)
+        finally:
+            km.cmd_run = orig
+        return captured.get("project")
+
+    def test_bare_defaults_to_all_project(self):
+        # サブコマンド省略は全プロジェクト（--project all）を既定にする
+        self.assertEqual(self._route_project([]), "all")
+        self.assertEqual(self._route_project(["--poll", "10"]), "all")
+
+    def test_explicit_run_stays_single_default(self):
+        # 明示 run は単一 default のまま（all にしない）
+        self.assertEqual(self._route_project(["run"]), "default")
+        # 省略でも明示 --project があればそちらが勝つ
+        self.assertEqual(self._route_project(["--project", "web"]), "web")
+
 
 class TestInstances(unittest.TestCase):
     """稼働インスタンスのレジストリ（外部操作者がフォルダを発見する口）。"""

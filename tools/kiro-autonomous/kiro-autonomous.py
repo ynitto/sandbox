@@ -4108,13 +4108,14 @@ def main(argv=None) -> int:
     res.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
     res.add_argument("--registry", action="append", default=None, help=_reg_help)
 
-    # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
-    # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
+    # サブコマンドを省略して呼ばれたら「全プロジェクトの常駐監視（run --watch --project all）」を既定にする。
+    # PC 起動時に立ち上げっぱなしにして全プロジェクトを面倒見る daemon 用途を一級にするため。
+    # （`--project all` を前置きするだけ＝後続に明示 --project があればそちらが勝つ。明示 `run` は単一 default のまま）
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "enqueue", "approve", "hold", "reprioritize", "instances",
                     "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
-        argv = ["run", "--watch", *argv]
+        argv = ["run", "--watch", "--project", "all", *argv]
 
     args = p.parse_args(argv)
 

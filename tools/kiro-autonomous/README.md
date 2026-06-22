@@ -69,7 +69,7 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
 ```
 
 `backlog/<id>.md` に `- priority: N`（大ほど高）で外部から順序を制御できる。サブコマンド省略
-（`kiro-autonomous` 単体）は **`run --watch` と同義**。
+（`kiro-autonomous` 単体）は **`run --watch --project all` と同義**（全プロジェクトを1プロセスで常駐監視）。
 
 ## ディレクトリ構成（プロジェクト > バックログ）
 
@@ -345,7 +345,7 @@ kiro-autonomous start --project all               # 上を detached 常駐起動
 
 - **watch**: 1 パスが終わってもプロセスを残し backlog を監視。idle 中は kiro-cli/kiro-flow を起動せず（安価な FS
   ポーリングのみ）、`--poll` 間隔で「消化可能タスク or 新規 inbox or フィードバック」を検知して次パスを起こす。
-  予算は 1 パス毎に与え直す。サブコマンド省略（`kiro-autonomous`）は `run --watch` と同義。
+  予算は 1 パス毎に与え直す。サブコマンド省略（`kiro-autonomous`）は `run --watch --project all` と同義（全プロジェクト常駐）。
 - **lifecycle（start / stop / restart）**: 常駐の明示操作。**daemon は既定で `--project all`**（1 プロセスで全プロジェクトを
   回す）。`start` は `run --watch --project all` を detached 起動（ログは `~/.kiro-autonomous/logs/`・重複監視は拒否・`--force`）。
   `stop`（引数なし）は all daemon を止める。1 つのプロジェクトだけ常駐したいなら `start --project <name>`。`stop` は graceful
