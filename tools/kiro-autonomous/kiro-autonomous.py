@@ -96,8 +96,18 @@ class Task:
         self.extra = [(k, v) for k, v in self.extra if k not in keys]
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    """端末カラー等の ANSI エスケープを除去する。
+    kiro-cli の出力にはカラーコードが混ざるため、合成した verify を
+    シェルで実行する前に正規化しないと `\\x1b[..m` が混入してコマンドが壊れる。"""
+    return _ANSI_RE.sub("", text or "")
+
+
 def _strip_code(val: str) -> str:
-    v = val.strip()
+    v = strip_ansi(val).strip()
     if len(v) >= 2 and v.startswith("`") and v.endswith("`"):
         return v[1:-1]
     return v
@@ -173,7 +183,8 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 #   ここへ流し込む。コアは stdlib のみ・ネットワーク非依存・決定的を保つ。
 # ---------------------------------------------------------------------------
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
-                      "after", "review", "note", "accept", "verify_template"}
+                      "after", "review", "note", "accept", "verify_template", "repos",
+                      "cohort_items", "cohort", "cohort_role"}
 
 
 def _slug_id(text: str) -> str:
@@ -220,7 +231,7 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
         t.priority = int(spec.get("priority", 0) or 0)
     except (TypeError, ValueError):
         t.priority = 0
-    for k in ("after", "review", "note", "accept", "verify_template"):   # 既知の追加フィールド
+    for k in ("after", "review", "note", "accept", "verify_template", "repos"):   # 既知の追加フィールド
         v = spec.get(k)
         if v not in (None, "", []):
             t.extra.append((k, ",".join(map(str, v)) if isinstance(v, list) else str(v)))
@@ -236,10 +247,142 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
 
 
 def enqueue_task(cfg: "Config", spec: dict) -> Task:
-    t = task_from_spec(cfg, spec)
+    # cohort_items があれば「pilot 先行 → 人レビューで指示を固める → 残りを生成」の cohort にする
+    if spec.get("cohort_items"):
+        t = create_cohort(cfg, spec)
+    else:
+        t = task_from_spec(cfg, spec)
     cfg.backlog.mkdir(parents=True, exist_ok=True)
     persist_task(cfg, t)
     return t
+
+
+# ---------------------------------------------------------------------------
+# cohort（pilot-then-batch）— タスク分解で生じた「同様手順の繰り返しタスク」を、
+#   まず 1 件（pilot）だけ走らせて verify→review:human で指示を固め、その定義を元に
+#   残りのタスク指示を生成して実行する。act 非依存（残りは通常ループが任意の act で消化）。
+#   pilot 承認の検知は既存の review/approve を再利用し、承認時に残りを materialize する。
+# ---------------------------------------------------------------------------
+COHORT_ITEM_TOKEN = "{item}"
+
+
+def _apply_item(template: str, item: str, fallback: bool = True) -> str:
+    """テンプレ中の {item} を対象で差し込む。
+    fallback=True（title 用）はプレースホルダ無しなら末尾に対象を付す。
+    fallback=False（verify 用）はプレースホルダ無しならコマンドをそのまま使う（全要素で共通）。"""
+    if COHORT_ITEM_TOKEN in template:
+        return template.replace(COHORT_ITEM_TOKEN, item)
+    if not fallback:
+        return template
+    return f"{template}（対象: {item}）" if template else item
+
+
+def _cohort_path(cfg: "Config", cid: str) -> Path:
+    return cfg.cohorts_dir() / f"{cid}.json"
+
+
+def _write_cohort(cfg: "Config", state: dict) -> None:
+    cfg.cohorts_dir().mkdir(parents=True, exist_ok=True)
+    _cohort_path(cfg, state["id"]).write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_cohort(cfg: "Config", cid: str) -> "dict | None":
+    p = _cohort_path(cfg, cid)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _unique_cohort_id(cfg: "Config", base: str) -> str:
+    existing = {p.stem for p in cfg.cohorts_dir().glob("*.json")} if cfg.cohorts_dir().exists() else set()
+    base = base or "cohort"
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}-{n}" in existing:
+        n += 1
+    return f"{base}-{n}"
+
+
+def create_cohort(cfg: "Config", spec: dict) -> Task:
+    """同様手順の cohort を作る: 先頭要素を pilot（review:human）として 1 件だけ作り、
+    残りは cohort 状態へ保持する。pilot 承認後に materialize_cohort_rest が残りを生成する。"""
+    items = [str(x).strip() for x in (spec.get("cohort_items") or []) if str(x).strip()]
+    title_t = str(spec.get("title", "") or "").strip()
+    verify_t = _strip_code(str(spec.get("verify", "") or "").strip())
+    if not title_t:
+        raise ValueError("cohort には title が必要です")
+    if not items:
+        raise ValueError("cohort には cohort_items が必要です")
+    cid = _unique_cohort_id(cfg, _slug_id(title_t) or "cohort")
+    pilot_item, rest = items[0], items[1:]
+    repos = spec.get("repos")
+    pilot_spec = {
+        "title": _apply_item(title_t, pilot_item),
+        "verify": _apply_item(verify_t, pilot_item, fallback=False) if verify_t else "",
+        "accept": spec.get("accept"),
+        "review": "human",                 # pilot は人の承認（feedback）で指示を固める
+        "source": str(spec.get("source", "") or "cohort"),
+        "repos": repos,
+        "priority": spec.get("priority", 0),
+    }
+    pilot = task_from_spec(cfg, pilot_spec)
+    pilot.set("cohort", cid)
+    pilot.set("cohort_role", "pilot")
+    persist_task(cfg, pilot)
+    _write_cohort(cfg, {
+        "id": cid,
+        "pilot_id": pilot.id,
+        "title_template": title_t,
+        "verify_template": verify_t,
+        "accept": str(spec.get("accept", "") or ""),
+        "items": rest,                     # pilot 承認後に生成する残り要素
+        "repos": ",".join(repos) if isinstance(repos, list) else (repos or ""),
+        "source": str(spec.get("source", "") or "cohort"),
+        "status": "pending",
+        "feedback": "",
+    })
+    append_journal(cfg.journal, f"cohort {cid}: pilot {pilot.id} を作成（残り {len(rest)} 件は承認後に生成）")
+    return pilot
+
+
+def materialize_cohort_rest(cfg: "Config", pilot: Task, feedback: str = "") -> "list[Task]":
+    """pilot で固まった定義を元に残りの cohort タスクを生成して ready にする。
+    pilot の承認理由・feedback を各メンバの feedback に載せ、固めた指示を必ず反映させる。"""
+    cid = pilot.get("cohort")
+    if not cid:
+        return []
+    state = _read_cohort(cfg, cid)
+    if not state or state.get("status") != "pending":
+        return []
+    guidance = "\n".join(x for x in [state.get("feedback", ""), feedback, pilot.feedback() or ""] if x).strip()
+    repos = state.get("repos") or None
+    created: "list[Task]" = []
+    for item in state.get("items", []):
+        mspec = {
+            "title": _apply_item(state["title_template"], item),
+            "verify": _apply_item(state["verify_template"], item, fallback=False) if state.get("verify_template") else "",
+            "accept": state.get("accept") or None,
+            "source": str(state.get("source", "") or "cohort"),
+            "repos": repos,
+        }
+        m = task_from_spec(cfg, mspec)
+        m.set("cohort", cid)
+        m.set("cohort_role", "member")
+        if guidance:
+            m.set("feedback", guidance)     # build_request が「必ず反映」として act へ渡す
+        persist_task(cfg, m)
+        created.append(m)
+    state["status"] = "done"
+    state["feedback"] = guidance
+    _write_cohort(cfg, state)
+    append_journal(cfg.journal,
+                   f"cohort {cid}: pilot {pilot.id} 承認 → 固めた定義から残り {len(created)} 件を生成")
+    return created
 
 
 def ingest_inbox(cfg: "Config") -> "list[Task]":
@@ -1441,10 +1584,12 @@ def _run_kiro_cli(prompt: str, model: "str | None") -> str:
     if model:
         cmd += ["--model", model]
     cmd.append(prompt)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"kiro-cli rc={proc.returncode}: {proc.stderr.strip()[:300]}")
-    return proc.stdout.strip()
+    return strip_ansi(proc.stdout).strip()
 
 
 def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=_run_kiro_cli) -> "list[Task] | None":
@@ -1863,42 +2008,118 @@ def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
     return base
 
 
+def task_repo_urls(cfg: "Config", task: Task) -> "list[str]":
+    """タスクの `- repos:` を charter の repos で解決して URL の列にする。
+    トークンは charter の name/url、または素の URL。必要なタスクだけが repos を持つ
+    （宣言の無いタスクは空＝従来どおり clone しない）。"""
+    raw = task.get("repos")
+    if not raw:
+        return []
+    try:
+        rmap = charter_repo_map(load_charter(cfg))
+    except (OSError, ValueError):
+        rmap = {}
+    out: "list[str]" = []
+    for tok in re.split(r"[,\s]+", str(raw).strip()):
+        tok = _strip_code(tok)
+        if not tok:
+            continue
+        url = rmap.get(tok)
+        if not url and ("://" in tok or "@" in tok or tok.endswith(".git")):
+            url = tok                       # charter に無くても素の URL ならそのまま使う
+        if url and url not in out:
+            out.append(url)
+    return out
+
+
+def _repo_cmd_args(cfg: "Config", task: Task) -> "list[str]":
+    """kiro-flow へ渡す `--repo <url>` 列（成果物リポジトリの伝搬）。"""
+    args: "list[str]" = []
+    for url in task_repo_urls(cfg, task):
+        args += ["--repo", url]
+    return args
+
+
 def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
     """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。"""
-    return _kf_base(cfg, use_git) + [
+    return _kf_base(cfg, use_git) + _repo_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
         "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
 
 
 def daemon_lock_path(cfg: "Config", use_git: bool) -> Path:
-    """kiro-flow daemon の singleton ロックパス（kiro-flow と同一規則）。"""
+    """kiro-flow daemon の singleton ロックパス（kiro-flow と同一規則）。
+
+    外部起動の daemon を取りこぼさないため、kiro-flow と完全に同じ導出をする:
+      - ロック置き場は設定 `lock_dir`（無ければ tempdir 配下）
+      - local キーは realpath で canonical 化（symlink/相対パスのズレを吸収）"""
     if use_git and cfg.git_bus:
         key = f"git::{cfg.git_bus}@{cfg.git_branch}/{cfg.git_subdir or ''}"
     else:
-        key = "local::" + os.path.abspath(str(cfg.bus))
+        key = "local::" + os.path.realpath(str(cfg.bus))
     h = hashlib.sha1(key.encode()).hexdigest()
-    return Path(tempfile.gettempdir()) / "kiro-flow-locks" / f"daemon-{h}.lock"
+    base = cfg.lock_dir or str(Path(tempfile.gettempdir()) / "kiro-flow-locks")
+    return Path(base) / f"daemon-{h}.lock"
 
 
-def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
-    """対象バスの kiro-flow daemon が稼働中か（ロックが保持されているか）を判定する。"""
+def _pid_alive(pid: int) -> bool:
+    """pid が生存しているか（POSIX）。0/負や不在は False。別ユーザのプロセスは生存扱い。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True            # 別ユーザの生存プロセス（送れないだけ）
+    except OSError:
+        return False
+    return True
+
+
+def _lock_pid(p: Path) -> int:
+    """ロックファイル先頭行の pid を読む（kiro-flow daemon が記録）。読めなければ 0。"""
+    try:
+        lines = p.read_text(encoding="utf-8").strip().splitlines()
+    except OSError:
+        return 0
+    try:
+        return int(lines[0]) if lines else 0
+    except ValueError:
+        return 0
+
+
+def _flock_held(p: Path) -> "bool | None":
+    """flock の保持状況。True=保持中 / False=未保持 / None=判定不能（fcntl 無し・非対応FS 等）。"""
     if fcntl is None:
-        return False
-    p = daemon_lock_path(cfg, use_git)
-    if not p.exists():
-        return False
+        return None
     try:
         f = open(p, "r+")
     except OSError:
-        return False
+        return None
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(f, fcntl.LOCK_UN)
-        return False  # 取得できた = 誰も保持していない = daemon 無し
+        return False           # 取得できた = 誰も保持していない
     except BlockingIOError:
-        return True   # 保持されている = daemon 稼働中
+        return True            # 保持されている = daemon 稼働中
+    except OSError:
+        return None            # flock 非対応FS 等 → pid で判定へ
     finally:
         f.close()
+
+
+def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
+    """対象バスの kiro-flow daemon が稼働中かを判定する。
+    flock を第一の根拠とし、判定不能（fcntl 無し / 異種FS）なら daemon が記録した
+    pid の生存で補完する。これで外部起動・Windows・NFS 上の daemon も発見できる。"""
+    p = daemon_lock_path(cfg, use_git)
+    if not p.exists():
+        return False
+    held = _flock_held(p)
+    if held is not None:
+        return held
+    return _pid_alive(_lock_pid(p))
 
 
 def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, str]":
@@ -1916,7 +2137,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
 
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
-    base = _kf_base(cfg, use_git)
+    base = _kf_base(cfg, use_git) + _repo_cmd_args(cfg, task)
     try:
         sub = subprocess.run(base + ["submit", build_request(task, cfg)], cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
@@ -1973,6 +2194,7 @@ class Config:
     git_bus: "str | None" = None
     git_branch: str = "main"
     git_subdir: "str | None" = None
+    lock_dir: "str | None" = None   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     kiro_flow: "str | None" = None
     planner: str = "kiro"          # 優先順位付け戦略: kiro（エージェント）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # kiro-flow run に渡す planner
@@ -2034,6 +2256,9 @@ class Config:
 
     def archive_dir(self) -> Path:
         return self.archive or (self.backlog.parent / "archive")
+
+    def cohorts_dir(self) -> Path:
+        return self.backlog.parent / "cohorts"
 
     def __post_init__(self):
         if self.delivery is None:
@@ -2691,6 +2916,12 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を検収承認",
                              action="approve-done", reason=reason, affects=f"{tid} → done")
         print(f"{dr}: {tid} を承認し {disp} 確定しました。")
+        # cohort の pilot 承認なら、固めた定義から残りのタスクを生成して ready にする
+        if t.get("cohort_role") == "pilot":
+            members = materialize_cohort_rest(cfg, t, feedback=reason)
+            if members:
+                print(f"cohort {t.get('cohort')}: 残り {len(members)} 件を生成しました "
+                      f"（{', '.join(m.id for m in members[:6])}{' …' if len(members) > 6 else ''}）。")
         return 0
     t.status = "ready"
     persist_task(cfg, t)
@@ -3028,7 +3259,9 @@ def cmd_enqueue(cfg: Config, args) -> int:
         specs = [{"id": args.id, "title": args.title, "verify": args.verify,
                   "priority": args.priority, "source": args.source, "status": args.status,
                   "after": args.after, "review": args.review, "note": args.note,
-                  "accept": args.accept, "verify_template": args.verify_template}]
+                  "accept": args.accept, "verify_template": args.verify_template,
+                  "repos": _coerce_repos(getattr(args, "repos", None)),
+                  "cohort_items": _coerce_repos(getattr(args, "cohort_items", None))}]
     created = []
     for sp in specs:
         if not isinstance(sp, dict):
@@ -3243,6 +3476,7 @@ class Charter:
     deliverables: "list[str]" = field(default_factory=list)
     acceptance: "list[str]" = field(default_factory=list)   # 受入 verify（シェルコマンド）
     links: "list[str]" = field(default_factory=list)        # 横展開リンク（他プロジェクト名/相対パス）
+    repos: "list[str]" = field(default_factory=list)        # 成果物リポジトリ URL（`name = url` も可）
     raw: str = ""
 
 
@@ -3286,7 +3520,34 @@ def parse_charter(text: str) -> Charter:
     ch.deliverables = _charter_bullets(sections.get("deliverables", []))
     ch.acceptance = _charter_bullets(sections.get("acceptance", []))
     ch.links = _charter_bullets(sections.get("links", []))
+    ch.repos = _charter_bullets(sections.get("repos", [])) or _charter_bullets(
+        sections.get("repositories", []))
     return ch
+
+
+def _repo_token_parts(token: str) -> "tuple[str, str]":
+    """charter の repos 行 `name = url` または `url` を (name, url) に分解する。
+    name 省略時は URL の末尾（.git 除く）を name とする。"""
+    if "=" in token:
+        name, url = token.split("=", 1)
+        name, url = name.strip(), url.strip()
+    else:
+        name, url = "", token.strip()
+    if not name:
+        base = url.rstrip("/").split("/")[-1]
+        name = base[:-4] if base.endswith(".git") else base
+    return name, url
+
+
+def charter_repo_map(ch: "Charter | None") -> "dict[str, str]":
+    """charter の repos を {name: url} と {url: url} の両引きできる辞書にする。"""
+    out: "dict[str, str]" = {}
+    for token in (ch.repos if ch else []):
+        name, url = _repo_token_parts(token)
+        if url:
+            out[name] = url
+            out[url] = url
+    return out
 
 
 def load_charter(cfg: "Config") -> "Charter | None":
@@ -3382,6 +3643,17 @@ def _extract_json_array(text: str) -> "list | None":
     return None
 
 
+def _coerce_repos(v) -> "list[str]":
+    """エージェント出力の repos（list/str/None）を name/url の文字列リストへ正規化する。"""
+    if not v:
+        return []
+    if isinstance(v, str):
+        return [x for x in (s.strip() for s in re.split(r"[,\s]+", v)) if x]
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return []
+
+
 def build_charter_request(charter: "Charter") -> str:
     """charter を分解要求の文章に組み立てる（plan フェーズで kiro-flow/エージェントへ渡す）。"""
     parts = [f"プロジェクト目標: {charter.goal}"]
@@ -3393,6 +3665,11 @@ def build_charter_request(charter: "Charter") -> str:
         parts.append("成果物:\n" + "\n".join(f"- {d}" for d in charter.deliverables))
     if charter.acceptance:
         parts.append("受入条件(満たすべき検証):\n" + "\n".join(f"- {a}" for a in charter.acceptance))
+    rmap = charter_repo_map(charter)
+    names = [n for n in rmap if rmap.get(n) != n]   # name → url の name 側だけ列挙
+    if names:
+        parts.append("利用可能なリポジトリ（中身を読む/ push する必要があるタスクにのみ割当）:\n"
+                     + "\n".join(f"- {n} = {rmap[n]}" for n in names))
     return "\n\n".join(parts)
 
 
@@ -3403,6 +3680,11 @@ def _plan_decompose_prompt(charter: "Charter") -> str:
         + build_charter_request(charter)
         + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str} で、verify は"
         " 終了コード0をPASSとみなすシェルコマンド（『履歴』でなく『望む最終状態/差分』を見ること）。"
+        " そのタスクが特定リポジトリの中身を読む/ push する必要があるなら、利用可能なリポジトリの名前で"
+        " \"repos\": [\"name\", ...] を付ける（不要なタスクには付けない）。"
+        " 同じ手順を多数の対象に繰り返すタスクは 1 件ずつ列挙せず、"
+        " {\"title\": \"…{item}…\", \"verify\": \"…{item}…\", \"cohort_items\": [\"対象1\", \"対象2\", …]} の"
+        " 1 件にまとめること（{item} に各対象が差し込まれ、先頭を pilot として人が指示を固めてから残りが生成される）。"
         " 検証コマンドを書けない曖昧なタスクは含めないでください。")
 
 
@@ -3420,6 +3702,8 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
         if isinstance(item, dict) and str(item.get("title", "")).strip():
             specs.append({"title": str(item["title"]).strip(),
                           "verify": _strip_code(str(item.get("verify", "") or "").strip()),
+                          "repos": _coerce_repos(item.get("repos")),
+                          "cohort_items": _coerce_repos(item.get("cohort_items")),
                           "source": "charter"})
     return specs
 
@@ -3443,6 +3727,7 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     arr = _extract_json_array(out) or []
     return [{"title": str(i["title"]).strip(),
              "verify": _strip_code(str(i.get("verify", "") or "").strip()),
+             "repos": _coerce_repos(i.get("repos")),
              "source": "review"}
             for i in arr if isinstance(i, dict) and str(i.get("title", "")).strip()]
 
@@ -3757,6 +4042,7 @@ CONFIG_DEFAULTS = {
     "git_bus": None,
     "git_branch": "main",
     "git_subdir": None,
+    "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
     "notify_cmd": None,
     "actor": os.environ.get("USER", "user"),
@@ -3854,6 +4140,7 @@ def build_config(args) -> Config:
         workdir=workdir,
         bus=under("bus", "bus"),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
+        lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
         location=args.location, executor=args.executor,
         model=args.model, max_iterations=args.max_iterations,
@@ -3923,6 +4210,9 @@ def _add_common(sp):
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
     sp.add_argument("--git-branch", default=None)
     sp.add_argument("--git-subdir", default=None)
+    sp.add_argument("--lock-dir", dest="lock_dir", default=None,
+                    help="kiro-flow daemon ロックの置き場（設定ファイル lock_dir と同義）。"
+                         "外部起動の daemon を発見するため kiro-flow 側と一致させる")
     sp.add_argument("--kiro-flow", default=None)
     sp.add_argument("--planner", default=None, choices=["kiro", "none"],
                     help="優先順位付け: kiro=エージェント（priority 加味）/ none=priority＋古さ（既定 kiro）")
@@ -4064,6 +4354,13 @@ def main(argv=None) -> int:
     enq.add_argument("--source", default=None, help="出所（既定 enqueue）")
     enq.add_argument("--status", default=None, help="status を明示（既定: verify 有→ready / 無→inbox）")
     enq.add_argument("--after", default=None, help="依存タスク ID（カンマ区切り。DAG）")
+    enq.add_argument("--repos", default=None,
+                     help="このタスクが clone して作業する成果物リポジトリ（charter の name か URL・"
+                          "カンマ区切りで複数可）。worker が temp 領域へ clone してから作業し作業後に消す")
+    enq.add_argument("--cohort-items", dest="cohort_items", default=None,
+                     help="同様手順の繰り返しタスクの対象一覧（カンマ区切り）。先頭を pilot として"
+                          "先行実行し review:human で指示を固め、承認後に残りを生成する。"
+                          "title/verify 中の {item} に各対象を差し込む")
     enq.add_argument("--review", default=None, help="検収ゲート（human で done 前に承認）")
     enq.add_argument("--note", default=None, help="メモ（保持される）")
     enq.add_argument("--id", default=None, help="タスク ID を明示（既定はタイトルから自動生成）")

@@ -233,6 +233,39 @@ class DataDrivenFanoutTests(unittest.TestCase):
         red = next(t for t in new if t["kind"] == "reduce")
         self.assertEqual(red["deps"], ["split1-m1", "split1-m2", "split1-m3"])
 
+    def test_exemplar_first_stages_pilot_then_rest(self):
+        # Stage 1: split 完了直後は pilot map 1件＋検証ゲートだけ（残りは出さない）
+        nodes = {"s": {"goal": "各件を移行", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": ["a", "b", "c"]}}
+        _, new, _ = kf.continue_stub("各件を移行", nodes, results, 0, exemplar_first=True)
+        ids = [t["id"] for t in new]
+        self.assertEqual(ids, ["s-m1", "s-pilot"])               # 先行1件＋ゲートのみ
+        self.assertEqual(next(t for t in new if t["id"] == "s-pilot")["kind"], "verify")
+        self.assertNotIn("s-reduce", ids)
+
+        # pilot ゲート未了の間は残りを展開しない
+        nodes.update({"s-m1": {"goal": "", "deps": [], "kind": "map"},
+                      "s-pilot": {"goal": "", "deps": ["s-m1"], "kind": "verify"}})
+        results.update({"s-m1": {"status": "done"}, "s-pilot": {"status": "running"}})
+        _, new2, _ = kf.continue_stub("各件を移行", nodes, results, 1, exemplar_first=True)
+        self.assertEqual([t for t in new2 if t["id"].startswith("s-")], [])
+
+        # Stage 2: pilot ゲート done → 残り map（pilot＋ゲートに依存）＋ reduce を展開
+        results["s-pilot"] = {"status": "done"}
+        _, new3, _ = kf.continue_stub("各件を移行", nodes, results, 2, exemplar_first=True)
+        ids3 = [t["id"] for t in new3]
+        self.assertEqual(ids3, ["s-m2", "s-m3", "s-reduce"])
+        self.assertEqual(next(t for t in new3 if t["id"] == "s-m2")["deps"], ["s-m1", "s-pilot"])
+        self.assertEqual(set(next(t for t in new3 if t["id"] == "s-reduce")["deps"]),
+                         {"s-m1", "s-m2", "s-m3"})
+
+    def test_default_fanout_unchanged_without_exemplar_first(self):
+        # exemplar_first 無し（既定）は従来どおり一括 fan-out
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": ["a", "b"]}}
+        _, new, _ = kf.continue_stub("g", nodes, results, 0)
+        self.assertEqual([t["id"] for t in new], ["s-m1", "s-m2", "s-reduce"])
+
     def test_fanout_respects_max(self):
         nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
         results = {"s": {"status": "done", "data": list(range(100))}}
@@ -511,6 +544,48 @@ class PatternStrategyTests(unittest.TestCase):
         self.assertEqual(len([t for t in tasks if t["kind"] == "judge"]), 1)
 
 
+class GranularityTests(unittest.TestCase):
+    def test_factor_levels(self):
+        self.assertEqual(kf.granularity_factor("coarse"), 1)
+        self.assertEqual(kf.granularity_factor("fine"), 2)
+        self.assertEqual(kf.granularity_factor("finest"), 3)
+        self.assertEqual(kf.granularity_factor(None), 3)        # 既定は最も細かい
+        self.assertEqual(kf.granularity_factor("unknown"), 3)
+
+    def test_directive_empty_for_coarse(self):
+        self.assertEqual(kf.granularity_directive("coarse"), "")
+        self.assertIn("細か", kf.granularity_directive("fine"))
+        self.assertIn("細か", kf.granularity_directive("finest"))
+
+    def test_stub_scales_node_count_by_granularity(self):
+        # 同じ要求でも粒度が細かいほど並列ノードが増える（明示並列が無い場合）。
+        # plan_stub は単一セグメントで乱数を使うため、同一 base になるよう seed を固定する
+        import random
+        req = "最良案を選ぶ tournament"            # generate ノード数 = parallelism
+
+        def plan(g):
+            random.seed(0)
+            return kf.plan_strategy_stub(req, granularity=g)
+
+        coarse, ctasks = plan("coarse")
+        fine, _ = plan("fine")
+        finest, ftasks = plan("finest")
+        self.assertLess(coarse["parallelism"], fine["parallelism"])
+        self.assertLess(fine["parallelism"], finest["parallelism"])
+        self.assertEqual(fine["parallelism"], coarse["parallelism"] * 2)
+        self.assertEqual(finest["parallelism"], coarse["parallelism"] * 3)
+        gens = lambda ts: len([t for t in ts if t["kind"] == "generate"])
+        self.assertGreater(gens(ftasks), gens(ctasks))           # 細かいほどノードが多い
+
+    def test_explicit_parallelism_not_scaled(self):
+        # 要求に "x3" 等の明示があれば粒度倍率は効かせない（ユーザ指定を尊重）
+        strat, _ = kf.plan_strategy_stub("案を出して選ぶ tournament x3", granularity="finest")
+        self.assertEqual(strat["parallelism"], 3)
+
+    def test_scale_parallelism_caps_at_16(self):
+        self.assertEqual(kf.scale_parallelism(6, "finest"), 16)   # 6*3=18 → 16 にクランプ
+
+
 class DaemonPrimitiveTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-daemon-")
@@ -533,6 +608,40 @@ class DaemonPrimitiveTests(unittest.TestCase):
         kf.Bus(self.tmp, "req1").ensure_run("x")  # 既に run が作られている
         self.assertFalse(self.bus.claim_request("req1", "daemonC", 60))
 
+    def test_run_repos_roundtrip_via_meta(self):
+        # 成果物リポジトリは run meta に載り、submit→inbox でも伝搬する
+        b = kf.Bus(self.tmp, "runR")
+        b.ensure_run("goal", repos=["https://x/a.git", "https://x/b.git"])
+        self.assertEqual(b.run_repos(), ["https://x/a.git", "https://x/b.git"])
+        self.bus.submit_request("reqR", "do", "t", repos=["https://x/c.git"])
+        self.assertEqual(self.bus.read_inbox("reqR")["repos"], ["https://x/c.git"])
+
+    def test_ensure_work_repos_clones_and_cleans(self):
+        # ローカルの「リモート」を git init で用意し、clone→作業後 cleanup を検証
+        remote = os.path.join(self.tmp, "remote_repo")
+        os.makedirs(remote)
+        subprocess.run(["git", "init", "-q", remote], check=True)
+        subprocess.run(["git", "-C", remote, "config", "user.email", "t@t"], check=True)
+        subprocess.run(["git", "-C", remote, "config", "user.name", "t"], check=True)
+        open(os.path.join(remote, "f.txt"), "w").close()
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "init"], check=True)
+        try:
+            clones = kf.ensure_work_repos([remote], "worker-1")
+            self.assertEqual(len(clones), 1)
+            url, path = clones[0]
+            self.assertTrue(path and os.path.isdir(os.path.join(path, ".git")))
+            self.assertIn(path, kf.repo_instruction(clones))   # エージェントへ渡す指示にパスが入る
+        finally:
+            kf.cleanup_work_repos()
+        self.assertFalse(path and os.path.exists(path))        # 作業後に消える（クリーン必須）
+
+    def test_ensure_work_repos_marks_failed_clone(self):
+        clones = kf.ensure_work_repos([os.path.join(self.tmp, "does_not_exist")], "w")
+        self.addCleanup(kf.cleanup_work_repos)
+        self.assertEqual(clones[0][1], "")                     # clone 失敗は path 空
+        self.assertIn("clone 失敗", kf.repo_instruction(clones))
+
     def test_remove_run_also_purges_inbox(self):
         # gc（remove_run）は対応する inbox 要求と claim も消す。残すと run_exists が
         # 再び False になり、デーモンが完了済み要求を再実行してしまう（resurrection 防止）。
@@ -548,6 +657,24 @@ class DaemonPrimitiveTests(unittest.TestCase):
             os.path.join(self.bus.inbox_claims_dir, "req1")))   # claim も消えた
         # 消えた後は再 claim 可能にならない（要求自体が無い）
         self.assertEqual(self.bus.list_inbox(), [])
+
+    def test_lock_path_canonical_and_config_dir(self):
+        import argparse
+        # local キーは realpath で canonical 化 → symlink 経由でも同一ロックパス
+        real = os.path.join(self.tmp, "real_bus")
+        os.makedirs(real)
+        link = os.path.join(self.tmp, "link_bus")
+        try:
+            os.symlink(real, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink 不可")
+        a_real = argparse.Namespace(bus=real, git=None, git_branch="main", git_subdir=None, lock_dir=None)
+        a_link = argparse.Namespace(bus=link, git=None, git_branch="main", git_subdir=None, lock_dir=None)
+        self.assertEqual(kf._daemon_lock_path(a_real), kf._daemon_lock_path(a_link))
+        # 設定 lock_dir でロック置き場を共有できる（TMPDIR 差の吸収）
+        lockdir = os.path.join(self.tmp, "locks")
+        a_cfg = argparse.Namespace(bus=real, git=None, git_branch="main", git_subdir=None, lock_dir=lockdir)
+        self.assertEqual(os.path.dirname(kf._daemon_lock_path(a_cfg)), lockdir)
 
     def test_active_runs_and_claimable_count(self):
         v = kf.Bus(self.tmp, "runA")

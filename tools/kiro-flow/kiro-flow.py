@@ -105,11 +105,15 @@ CONFIG_DEFAULTS = {
     "git": None,
     "git_branch": "main",
     "git_subdir": "",
+    "lock_dir": None,   # daemon singleton ロックの置き場（外部 daemon の発見性を担保。既定 tempdir 配下）
+    "repos": [],        # 成果物リポジトリ URL。worker が temp 領域へ clone してから作業し、作業後に消す
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
     "planner": "flow-planner",
     "executor": "kiro",
+    "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
+    "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     "max_workers": 4,
     "max_iterations": 3,
     "max_fanout": 50,
@@ -268,14 +272,21 @@ class Bus:
         for d in (self.tasks_dir, self.claims_dir, self.results_dir, self.events_dir):
             os.makedirs(d, exist_ok=True)
 
-    def ensure_run(self, request: str) -> None:
+    def ensure_run(self, request: str, repos: "list[str] | None" = None) -> None:
         self.ensure_dirs()
         if read_json(self.meta_path) is None:
             write_json_atomic(self.meta_path, {
                 "request": request,
+                "repos": list(repos or []),   # 成果物リポジトリ（worker が clone してから作業）
                 "status": "planning",
                 "created_at": now_iso(),
             })
+
+    def run_repos(self) -> "list[str]":
+        """この run の成果物リポジトリ URL 一覧（meta に記録、worker が clone する）。"""
+        meta = read_json(self.meta_path) or {}
+        r = meta.get("repos")
+        return list(r) if isinstance(r, list) else []
 
     # --- メタ / グラフ ---
     def set_status(self, status: str) -> None:
@@ -470,11 +481,13 @@ class Bus:
                    if v.node_state(nid) == "pending" and deps_satisfied(v, node))
 
     # --- inbox（要求キュー）と要求 claim ---
-    def submit_request(self, req_id: str, request: str, submitter: str) -> None:
+    def submit_request(self, req_id: str, request: str, submitter: str,
+                       repos: "list[str] | None" = None) -> None:
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), {
             "id": req_id,
             "request": request,
             "submitter": submitter,
+            "repos": list(repos or []),   # 成果物リポジトリを daemon の orchestrate へ伝搬する
             "submitted_at": now_iso(),
         })
 
@@ -619,6 +632,76 @@ def cleanup_active_clones() -> None:
 
 
 # --------------------------------------------------------------------------
+# 成果物リポジトリ — worker が temp 領域へ clone してから作業し、作業後に必ず消す。
+#   push が必要なもの・中身を読む必要があるもの（複数可）を、orchestrator の
+#   作業ツリーを汚さずに分離して扱うための仕組み。clone はプロセス内で再利用する。
+# --------------------------------------------------------------------------
+_work_repos_cache: "dict[str, str]" = {}   # url -> clone パス（""=clone 失敗）
+_work_repos_root: "str | None" = None
+
+
+def _repo_name(url: str) -> str:
+    base = url.rstrip("/").split("/")[-1]
+    if base.endswith(".git"):
+        base = base[:-4]
+    return _safe(base) or "repo"
+
+
+def ensure_work_repos(repos: "list[str]", node_id: str) -> "list[tuple[str, str]]":
+    """成果物リポジトリを worker 専用の temp 領域へ clone する（プロセス内でキャッシュ）。
+    (url, path) の列を返す（path=""=clone 失敗）。作業後に cleanup_work_repos で必ず消す。"""
+    global _work_repos_root
+    out: "list[tuple[str, str]]" = []
+    if not repos:
+        return out
+    if _work_repos_root is None:
+        _work_repos_root = tempfile.mkdtemp(prefix=f"kiro-flow-repos-{_safe(node_id)}-")
+    for url in repos:
+        if url in _work_repos_cache:
+            out.append((url, _work_repos_cache[url]))
+            continue
+        dest = os.path.join(_work_repos_root, _repo_name(url))
+        n = 2
+        while os.path.exists(dest):                 # 同名 repo の衝突回避
+            dest = os.path.join(_work_repos_root, f"{_repo_name(url)}-{n}")
+            n += 1
+        try:
+            r = subprocess.run(["git", "clone", url, dest],
+                               capture_output=True, text=True, timeout=600)
+            path = dest if r.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            path = ""
+        _work_repos_cache[url] = path
+        out.append((url, path))
+    return out
+
+
+def cleanup_work_repos() -> None:
+    """worker が clone した成果物リポジトリを丸ごと削除する（作業後クリーンは必須）。"""
+    global _work_repos_root
+    if _work_repos_root and os.path.isdir(_work_repos_root):
+        shutil.rmtree(_work_repos_root, ignore_errors=True)
+    _work_repos_root = None
+    _work_repos_cache.clear()
+
+
+def repo_instruction(clones: "list[tuple[str, str]]") -> str:
+    """clone 済みの成果物リポジトリをエージェントに伝える決定的な指示ブロック。"""
+    if not clones:
+        return ""
+    lines = ["【成果物リポジトリ】以下はこのタスク用に clone 済みです。"
+             "読み書きは必ずこのパス内で行い、変更は commit して push すること"
+             "（orchestrator の作業ツリーなど他の場所は編集しない）:"]
+    for url, path in clones:
+        if path:
+            lines.append(f"  - {url} → {path}")
+    failed = [url for url, path in clones if not path]
+    if failed:
+        lines.append("  ※ clone 失敗（必要なら手動で取得・push 不可の可能性）: " + ", ".join(failed))
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
 # Heartbeat — 長時間タスク実行中に claim の lease を更新し続ける
 # --------------------------------------------------------------------------
 class Heartbeat(threading.Thread):
@@ -755,6 +838,44 @@ def _parallelism(request: str, default: int) -> int:
     return max(2, min(6, default))
 
 
+# --------------------------------------------------------------------------
+# 分解の粒度（granularity）— 設定ファイルで調整。coarse=現状 / fine=1段細かい /
+#   finest=2段細かい（既定）。factor は並列ノード数の倍率＋プロンプトの分解指示に効く。
+# --------------------------------------------------------------------------
+GRANULARITY_FACTORS = {"coarse": 1, "fine": 2, "finest": 3}
+
+
+def granularity_factor(level: "str | None") -> int:
+    """粒度レベルを倍率（1/2/3）に。未知値は既定（finest=3）。"""
+    return GRANULARITY_FACTORS.get((level or "finest").lower(), 3)
+
+
+def scale_parallelism(par: int, level: "str | None") -> int:
+    """並列ノード数を粒度倍率でスケールする（細かいほど多く・上限 16）。"""
+    return max(1, min(16, int(par) * granularity_factor(level)))
+
+
+def _explicit_parallelism(request: str) -> bool:
+    """要求に並列数が明示（"x3"/"並列3"）されているか。明示なら粒度倍率を効かせない。"""
+    return bool(re.search(r"[x×]\s*\d+", request) or re.search(r"並列\s*\d+", request))
+
+
+def maybe_scale_parallelism(request: str, par: int, level: "str | None") -> int:
+    """要求に明示が無いときだけ並列数を粒度倍率でスケールする（明示指定は尊重）。"""
+    return par if _explicit_parallelism(request) else scale_parallelism(par, level)
+
+
+def granularity_directive(level: "str | None") -> str:
+    """プランナーへ渡す分解の細かさ指示。coarse は空（現状どおり）。"""
+    f = granularity_factor(level)
+    if f <= 1:
+        return ""
+    unit = "1ファイル/1関数/1観点" if f >= 3 else "意味のある最小単位"
+    return (f"分解の粒度: 通常より細かく、各タスクを{unit}まで原子的に分解すること。"
+            f"目安は通常の約{f}倍の数の小さなタスク（ただし無意味な細分化・重複は避け、"
+            "各タスクは独立に検証可能に保つこと）。")
+
+
 def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = False):
     """選んだパターンを初期タスクグラフ（kind 付き）へ落とし込む。"""
     short = request.strip()[:48]
@@ -798,23 +919,27 @@ def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = Fals
                     "deps": gen_ids, "kind": "synthesize"}]
 
 
-def plan_strategy_stub(request: str, review="auto"):
+def plan_strategy_stub(request: str, review="auto", granularity="finest"):
     """要求からパターンと並列数を選び、初期グラフを作る（kiro 無し版）。
-    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。"""
+    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
+    granularity で並列ノード数（=分解の細かさ）をスケールする。"""
     pattern = _detect_pattern(request)
     base = plan_stub(request)
-    par = _parallelism(request, len([t for t in base if not t["deps"]]))
+    par = maybe_scale_parallelism(request, _parallelism(request, len([t for t in base if not t["deps"]])),
+                                  granularity)
     review = _review_decision(review, [pattern])
     tasks = _strategy_to_graph(pattern, request, par, review)
     patterns = [pattern] + (["adversarial-verification"] if review and pattern != "adversarial-verification" else [])
     strategy = {"patterns": patterns, "parallelism": par, "review": review,
-                "reason": f"stub heuristic → {pattern}" + ("（統合前レビュー有）" if review else "")}
+                "reason": f"stub heuristic → {pattern}（粒度 {granularity}）"
+                          + ("（統合前レビュー有）" if review else "")}
     return strategy, tasks
 
 
-def plan_strategy_kiro(request: str, model: str | None, review="auto"):
+def plan_strategy_kiro(request: str, model: str | None, review="auto", granularity="finest"):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
-    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。"""
+    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
+    granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。"""
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     compose = ("必要なら複数パターンを多段に複合してよい（例: classify-and-act の各分岐を "
                "fan-out-and-synthesize にする / generate-and-filter の通過案で tournament を行う）。")
@@ -822,12 +947,14 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto"):
     # 返ってきた patterns を見て _review_decision で確定する）。
     review_note = ("統合（synthesize/reduce）を伴うパターンでは、集約の前に verify ノードを 1 つ挟み、"
                    "事前チェック・敵対的レビューを行ってください。" if review is not False else "")
+    gran_note = granularity_directive(granularity)
     prompt = (
         "あなたは分散 Dynamic Workflow の計画役です。以下のワークフローパターンを知っています:\n"
         f"{catalog}\n\n"
         "patterns に書けるのは上記 7 つのパターン名だけです。派生語・同義語は使わず、"
         "近いものは必ず上記の正規名へ読み替えてください（例: 'panel of verifiers'→adversarial-verification）。\n"
-        f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
+        + (gran_note + "\n" if gran_note else "")
+        + f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
         "それを反映した初期タスクグラフを作ってください。各タスクには kind を付けます"
         "（kind はノード種別であってパターン名ではありません。patterns には書かないこと）: "
         "work/generate/classify/synthesize/verify/filter/judge/reduce/split"
@@ -853,13 +980,13 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto"):
         patterns = [p for p in (data.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"]
         strategy = {
             "patterns": patterns,
-            "parallelism": int(data.get("parallelism", 2) or 2),
+            "parallelism": maybe_scale_parallelism(request, int(data.get("parallelism", 2) or 2), granularity),
             "review": _review_decision(review, patterns),
             "reason": str(data.get("reason", "")),
         }
         return strategy, tasks
     except Exception:  # noqa: BLE001 — 解釈できなければ stub の戦略に倒す
-        return plan_strategy_stub(request, review)
+        return plan_strategy_stub(request, review, granularity)
 
 
 def _find_flow_planner_script():
@@ -901,14 +1028,15 @@ def _find_flow_planner_script():
     return None
 
 
-def plan_strategy_flow_planner(request: str, model: str | None, review="auto"):
+def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="finest"):
     """flow-planner スキルの3段パイプラインを呼び出す。
-    スキルが見つからない / 失敗した場合は plan_strategy_kiro にフォールバック。"""
+    スキルが見つからない / 失敗した場合は plan_strategy_kiro にフォールバック。
+    granularity はスキルへ `--granularity` で渡し、返ってきた並列数も粒度倍率でスケールする。"""
     script = _find_flow_planner_script()
     if not script:
         # flow-planner スキル未インストール → kiro planner にフォールバック
-        return plan_strategy_kiro(request, model, review)
-    cmd = [sys.executable, script, request]
+        return plan_strategy_kiro(request, model, review, granularity)
+    cmd = [sys.executable, script, request, "--granularity", str(granularity)]
     if model:
         cmd += ["--model", model]
     if isinstance(review, bool):
@@ -928,14 +1056,14 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto"):
         patterns = [p for p in (strategy.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"]
         final_strategy = {
             "patterns": patterns,
-            "parallelism": int(strategy.get("parallelism", 2) or 2),
+            "parallelism": maybe_scale_parallelism(request, int(strategy.get("parallelism", 2) or 2), granularity),
             "review": _review_decision(review, patterns) if not isinstance(strategy.get("review"), bool)
                       else strategy["review"],
-            "reason": f"[flow-planner] {strategy.get('reason', '')}",
+            "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {granularity}）",
         }
         return final_strategy, tasks
     except Exception:  # noqa: BLE001 — flow-planner 失敗時は kiro にフォールバック
-        return plan_strategy_kiro(request, model, review)
+        return plan_strategy_kiro(request, model, review, granularity)
 
 
 # --------------------------------------------------------------------------
@@ -1142,13 +1270,17 @@ def _reconcile_count(data):
 # Continuation — パターンに応じて done / replan（タスク追加）を決める
 # --------------------------------------------------------------------------
 def _expand_splits(nodes: dict, results: dict, max_fanout: int,
-                   review: bool = False, request: str = ""):
+                   review: bool = False, request: str = "", exemplar_first: bool = False):
     """データ駆動の動的 fan-out: 完了した split ノードの data(リスト)を見て、
     実行時に要素ごとの map タスクと、それらを集約する reduce タスクを生成する。
     （reduce は展開時に作るので、split 完了直後に reduce が先走り実行されない）
     review 時は map と reduce の間に検証 gate を挟む。
     map・reduce ゴールには元の要求（intent）を埋め込み、各要素への適用と最終整形
-    （並べ替え・重複排除など要求由来の集約条件）が失われないようにする。"""
+    （並べ替え・重複排除など要求由来の集約条件）が失われないようにする。
+
+    exemplar_first=True のときは「見本先行」分解にする: まず先頭1件(pilot map)と
+    その検証ゲートだけを出し、ゲート通過後に残りの map（pilot を範に取る = pilot に依存）
+    と reduce を展開する。同様手順の繰り返しで、1件で手順を固めてから残りを流す。"""
     new = []
     have = set(nodes)
     for nid, node in nodes.items():
@@ -1157,42 +1289,66 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
         r = results.get(nid, {})
         if r.get("status") != "done":
             continue
-        if f"{nid}-reduce" in have:  # 既に展開済み
+        if f"{nid}-reduce" in have:  # 既に完全展開済み
             continue
         items = r.get("data")
         if not isinstance(items, list) or not items:
             continue
         items = items[:max(1, max_fanout)]  # 暴走防止のクランプ
         intent = (request or node.get("goal", "")).strip()
-        map_ids = []
-        for i, item in enumerate(items):
-            mid = f"{nid}-m{i+1}"
-            map_ids.append(mid)
-            # 要素だけでなく「何をするか」を渡さないと map が意図を失う
-            goal = f"{intent}（対象要素: {item}）" if intent else f"{nid} 要素{i+1}: {item}"
-            new.append({"id": mid, "goal": goal, "deps": [], "kind": "map"})
+
+        def _mgoal(i, item):
+            return f"{intent}（対象要素: {item}）" if intent else f"{nid} 要素{i+1}: {item}"
+
+        reduce_goal = (f"{intent}（各 map の結果を要求どおりに集約・整形して最終成果にまとめる）"
+                       if intent else f"{nid} の結果を集約")
+        pilot_gate = f"{nid}-pilot"
+        m1 = f"{nid}-m1"
+
+        if exemplar_first:
+            if m1 not in have:
+                # Stage 1: pilot map 1件＋その検証ゲートだけを出す（残りはまだ展開しない）
+                new.append({"id": m1, "goal": _mgoal(0, items[0]), "deps": [], "kind": "map"})
+                new.append({"id": pilot_gate,
+                            "goal": f"先行1件(map)を検証し、残りに使う手順・基準を固める: {intent}"[:200],
+                            "deps": [m1], "kind": "verify"})
+                continue
+            if results.get(pilot_gate, {}).get("status") != "done":
+                continue  # pilot ゲート通過まで残りは展開しない
+            # Stage 2: 残り map（pilot を範に取り、ゲート通過後に走る）＋ reduce
+            map_ids = [m1]
+            for i, item in enumerate(items[1:], start=1):
+                mid = f"{nid}-m{i+1}"
+                map_ids.append(mid)
+                new.append({"id": mid, "goal": _mgoal(i, item),
+                            "deps": [m1, pilot_gate], "kind": "map"})
+        else:
+            map_ids = []
+            for i, item in enumerate(items):
+                mid = f"{nid}-m{i+1}"
+                map_ids.append(mid)
+                # 要素だけでなく「何をするか」を渡さないと map が意図を失う
+                new.append({"id": mid, "goal": _mgoal(i, item), "deps": [], "kind": "map"})
+
         reduce_deps = map_ids
         if review:  # 集約前の事前チェック / 敵対的レビュー。reduce は map＋gate に依存
             gid = f"{nid}-gate"
             new.append({"id": gid, "goal": f"{nid} の map 結果を集約前に検証",
                         "deps": map_ids, "kind": "verify"})
             reduce_deps = map_ids + [gid]
-        # reduce も intent を保持（「アルファベット順」「重複排除」等の集約条件を失わない）
-        reduce_goal = (f"{intent}（各 map の結果を要求どおりに集約・整形して最終成果にまとめる）"
-                       if intent else f"{nid} の結果を集約")
         new.append({"id": f"{nid}-reduce", "goal": reduce_goal,
                     "deps": reduce_deps, "kind": "reduce"})
     return new
 
 
 def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
-                  max_fanout: int = 50, review: bool = False):
+                  max_fanout: int = 50, review: bool = False, exemplar_first: bool = False):
     """パターン継続（kiro 無し版）:
        - データ駆動 fan-out: split 完了 → 要素ごとの map + reduce を生成
        - classify-and-act: 分類完了 → 振り分け先の専門タスクを追加
        - adversarial / loop-until-done: verify が fail → 作り直し + 再検証
        - 失敗タスク: retry を 1 回追加"""
-    new = _expand_splits(nodes, results, max_fanout, review, request)
+    new = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first)
     have = set(nodes)
 
     def fresh(tid):
@@ -1237,9 +1393,9 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
 
 
 def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
-                  max_fanout: int = 50, review: bool = False):
+                  max_fanout: int = 50, review: bool = False, exemplar_first: bool = False):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
-    fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request)
+    fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first)
     if fanout_tasks:
         return "replan", fanout_tasks, f"data-driven fan-out: +{len(fanout_tasks)}"
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
@@ -1279,11 +1435,12 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
 # --------------------------------------------------------------------------
 def _plan_strategy(args):
     review = getattr(args, "review", "auto")  # 'auto'/True/False の三値
+    gran = getattr(args, "granularity", "finest")
     if args.planner == "flow-planner":
-        return plan_strategy_flow_planner(args.request, args.model, review)
+        return plan_strategy_flow_planner(args.request, args.model, review, gran)
     if args.planner == "kiro":
-        return plan_strategy_kiro(args.request, args.model, review)
-    return plan_strategy_stub(args.request, review)
+        return plan_strategy_kiro(args.request, args.model, review, gran)
+    return plan_strategy_stub(args.request, review, gran)
 
 
 def _continue(args, request, nodes, results, iteration, strategy=None):
@@ -1297,9 +1454,10 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
         review = bool(strategy["review"])
     else:
         review = _review_decision(cli, (strategy or {}).get("patterns", []))
+    ef = bool(getattr(args, "exemplar_first", False))
     if args.executor == "kiro":
-        return continue_kiro(request, nodes, results, iteration, mf, review)
-    return continue_stub(request, nodes, results, iteration, mf, review)
+        return continue_kiro(request, nodes, results, iteration, mf, review, ef)
+    return continue_stub(request, nodes, results, iteration, mf, review, ef)
 
 
 def _node_entry(t):
@@ -1359,7 +1517,7 @@ def cmd_orchestrate(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
     bus.sync_pull()
-    bus.ensure_run(args.request)
+    bus.ensure_run(args.request, getattr(args, "repos", None))
     graph = bus.read_graph()
 
     # 既存グラフがあれば計画をやり直さず再開（resume）
@@ -1370,7 +1528,7 @@ def cmd_orchestrate(args) -> int:
             bus.set_status("running")
             bus.sync_push(f"resume run {args.run_id}")
     else:
-        # 要求から 6 パターンの組み合わせと並列数を選び、初期グラフを形作る
+        # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
         strategy, tasks = _plan_strategy(args)
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
@@ -1489,6 +1647,8 @@ def cmd_work(args) -> int:
     idle_exit = getattr(args, "idle_exit", False)
     log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive}, "
              f"idle_exit={idle_exit})")
+    # 親（run/daemon）からの SIGTERM でも成果物リポジトリの clone を消してから抜ける
+    signal.signal(signal.SIGTERM, lambda *_: (cleanup_work_repos(), sys.exit(143)))
     time.sleep(random.uniform(0, args.poll))  # 負荷分散: 起動位相をずらす
 
     idle_polls = 0
@@ -1520,15 +1680,20 @@ def cmd_work(args) -> int:
 
         # 依存の成果は構造化データ込みの完全な result dict で渡す
         dep_results = _collect_dep_results(bus, node, kind)
+        # 成果物リポジトリ（この run のもの）を temp 領域へ clone し、エージェントへパスを渡す
+        goal = node["goal"]
+        clones = ensure_work_repos(bus.run_repos(), who)
+        if clones:
+            goal = repo_instruction(clones) + "\n\n" + goal
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
         rdata = None
         try:
             if args.executor == "kiro":
-                output, rdata = execute_kiro(kind, node["goal"], dep_results, args.model)
+                output, rdata = execute_kiro(kind, goal, dep_results, args.model)
             else:
-                output, rdata = execute_stub(kind, node["goal"], dep_results, args.model)
+                output, rdata = execute_stub(kind, goal, dep_results, args.model)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
@@ -1571,6 +1736,11 @@ def cmd_run(args) -> int:
                  "--git-subdir", args.git_subdir or ""]
     if not getattr(args, "cleanup_clone", True):
         base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
+    for r in (getattr(args, "repos", None) or []):
+        base += ["--repo", r]     # 成果物リポジトリを orchestrator/worker へ伝搬
+    base += ["--granularity", str(getattr(args, "granularity", "finest") or "finest")]  # 分解粒度
+    if getattr(args, "exemplar_first", False):
+        base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
     mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus_root}"
 
     procs = []
@@ -1640,7 +1810,8 @@ def cmd_submit(args) -> int:
     req_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
     bus = make_bus(args, "submitter")
     bus.sync_pull()
-    bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}")
+    bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
+                       repos=getattr(args, "repos", None))
     bus.sync_push(f"submit request {req_id}")
     print(req_id)  # run-id を標準出力（スクリプトから拾える）
     print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
@@ -1650,32 +1821,48 @@ def cmd_submit(args) -> int:
 # --------------------------------------------------------------------------
 # daemon — 常駐し、要求に応じて orchestrator/worker をオンデマンド起動
 # --------------------------------------------------------------------------
+def daemon_lock_dir(lock_dir: "str | None" = None) -> str:
+    """daemon ロックを置く共有ディレクトリ。
+    起動側とプローブ側（kiro-autonomous 等）で必ず一致させる必要があるため、
+    設定ファイルの `lock_dir`（CLI `--lock-dir`）で明示でき、既定は tempdir 配下。
+    TMPDIR 差で別ディレクトリを見て「外部 daemon を発見できない」事故を防ぐ。"""
+    d = lock_dir or os.path.join(tempfile.gettempdir(), "kiro-flow-locks")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def daemon_lock_key(args) -> str:
+    """バスを正規化した singleton キー。symlink/相対パス/別 cwd で起動された
+    外部 daemon でも同じ論理バスなら同一キーになるよう realpath で canonical 化する。"""
+    if getattr(args, "git", None):
+        return f"git::{args.git}@{args.git_branch}/{args.git_subdir or ''}"
+    return "local::" + os.path.realpath(args.bus)
+
+
 def _daemon_lock_path(args) -> str:
     """バス単位のデーモン singleton 用ロックパス（バス外の一時領域）。"""
-    if getattr(args, "git", None):
-        key = f"git::{args.git}@{args.git_branch}/{args.git_subdir or ''}"
-    else:
-        key = "local::" + os.path.abspath(args.bus)
-    h = hashlib.sha1(key.encode()).hexdigest()
-    d = os.path.join(tempfile.gettempdir(), "kiro-flow-locks")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"daemon-{h}.lock")
+    h = hashlib.sha1(daemon_lock_key(args).encode()).hexdigest()
+    return os.path.join(daemon_lock_dir(getattr(args, "lock_dir", None)), f"daemon-{h}.lock")
 
 
 def cmd_daemon(args) -> int:
     # 冪等化: 同一バスのデーモンが既に稼働していれば何もしない（多重起動しない）
     lock_path = _daemon_lock_path(args)
-    lock_file = open(lock_path, "w")
+    # 既存ホルダの pid を消さないよう truncate せず開く（flock 取得後にだけ書く）
+    lock_file = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
     if fcntl is not None:
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            mode0 = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.abspath(args.bus)}"
+            mode0 = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.realpath(args.bus)}"
             print(f">>> kiro-flow daemon は既に稼働中です（{mode0}）。起動をスキップします。", flush=True)
             lock_file.close()
             return 0
-        lock_file.write(str(os.getpid()))
-        lock_file.flush()
+    # pid は flock の有無に関わらず記録する（flock 非対応環境でも pid 生存で発見できるように）
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
 
     daemon_id = args.node_id or f"{socket.gethostname()}-{os.getpid()}"
     bus = make_bus(args, f"daemon-{_safe(daemon_id)}")
@@ -1731,7 +1918,12 @@ def cmd_daemon(args) -> int:
             if not req:
                 continue
             if bus.claim_request(req_id, daemon_id, args.lease):
-                p = subprocess.Popen(base + [
+                repo_args = []
+                for r in (req.get("repos") or []):   # 要求に紐づく成果物リポジトリを run meta へ載せる
+                    repo_args += ["--repo", r]
+                p = subprocess.Popen(base + repo_args + [
+                    "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
+                    *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
                     "--run-id", req_id, "orchestrate", "--request", req["request"],
                     "--planner", args.planner, "--executor", args.executor,
                     "--max-iterations", str(args.max_iterations),
@@ -2230,6 +2422,19 @@ def main() -> int:
     p.add_argument("--git-branch", default=None, help="バスに使う git ブランチ（既定 main）")
     p.add_argument("--git-subdir", default=None,
                    help="リポジトリ内のバスにするサブディレクトリ（既定: リポジトリ直下）")
+    p.add_argument("--lock-dir", dest="lock_dir", default=None,
+                   help="daemon singleton ロックの置き場（設定ファイル lock_dir と同義。"
+                        "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
+    p.add_argument("--repo", dest="repos", action="append", default=None,
+                   help="成果物リポジトリ URL（複数指定可）。worker が temp 領域へ clone してから"
+                        "作業し、作業後に必ず消す。push が必要・中身を読む必要があるタスク用")
+    p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
+                   help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
+                        "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")
+    p.add_argument("--exemplar-first", dest="exemplar_first", action="store_const", const=True,
+                   default=None,
+                   help="map-reduce の fan-out を見本先行にする（設定 exemplar_first と同義）。"
+                        "先頭1件を検証ゲートに通してから残りを展開し、同様手順を1件で固めてから流す")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     p.add_argument("--keep-clone", dest="cleanup_clone", action="store_const", const=False,
@@ -2340,6 +2545,7 @@ def main() -> int:
         # 作業後に sparse-checkout クローンを削除する（--keep-clone で抑止可）
         if getattr(args, "cleanup_clone", True):
             cleanup_active_clones()
+        cleanup_work_repos()   # 成果物リポジトリの clone は常に消す（作業後クリーンは必須）
 
 
 if __name__ == "__main__":

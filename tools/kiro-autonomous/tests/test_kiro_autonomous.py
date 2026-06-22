@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 _MOD = Path(__file__).resolve().parent.parent / "kiro-autonomous.py"
@@ -1314,6 +1315,44 @@ class TestDaemonRouting(unittest.TestCase):
                 km.fcntl.flock(f, km.fcntl.LOCK_UN)
                 f.close()
 
+    def test_lock_path_canonical_across_symlink(self):
+        # symlink 経由で起動した外部 daemon でも、同じ実バスなら同じロックパスになる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            real = d / "real_bus"
+            real.mkdir()
+            link = d / "link_bus"
+            try:
+                link.symlink_to(real)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink 不可")
+            p_real = km.daemon_lock_path(cfg_for(d, bus=real), False)
+            p_link = km.daemon_lock_path(cfg_for(d, bus=link), False)
+            self.assertEqual(p_real, p_link)
+
+    def test_lock_dir_config_override(self):
+        # 設定 lock_dir を起動側・プローブ側で共有すれば TMPDIR 差を吸収できる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            p = km.daemon_lock_path(cfg_for(d, lock_dir=str(d / "locks")), False)
+            self.assertEqual(p.parent, d / "locks")
+
+    def test_pid_liveness_fallback_when_flock_unavailable(self):
+        # fcntl 無し（Windows 等）でも、daemon が記録した pid の生存で発見できる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            lp = km.daemon_lock_path(cfg, False)
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(km, "fcntl", None):
+                lp.write_text(str(os.getpid()))          # 自分（生存）= daemon 稼働とみなす
+                self.assertTrue(km.daemon_running(cfg))
+                lp.write_text("999999999")               # 不在 pid = daemon 無し
+                self.assertFalse(km.daemon_running(cfg))
+                lp.write_text("")                        # pid 不明 = daemon 無し
+                self.assertFalse(km.daemon_running(cfg))
+            self.addCleanup(lambda: lp.exists() and lp.unlink())
+
 
 class TestBareDefault(unittest.TestCase):
     """サブコマンド省略時は常駐監視（run --watch）を既定にする。"""
@@ -1888,6 +1927,58 @@ class TestApprovalGate(unittest.TestCase):
             self.assertEqual(km.load_tasks(cfg.backlog)[0].status, "ready")
 
 
+class TestCohort(unittest.TestCase):
+    """pilot-then-batch: 同様手順の繰り返しは pilot を1件先行→人レビューで指示を固め→残りを生成。"""
+
+    def test_apply_item_placeholder_and_fallback(self):
+        self.assertEqual(km._apply_item("Tを{item}に適用", "a"), "Tをaに適用")
+        self.assertEqual(km._apply_item("手順を実施", "b"), "手順を実施（対象: b）")  # プレースホルダ無し
+
+    def test_create_cohort_makes_pilot_and_holds_rest(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            pilot = km.enqueue_task(cfg, {"title": "{item} を移行", "verify": "test -f {item}",
+                                          "cohort_items": ["a", "b", "c"]})
+            self.assertEqual(pilot.title, "a を移行")
+            self.assertEqual(pilot.verify, "test -f a")
+            self.assertEqual(pilot.get("cohort_role"), "pilot")
+            self.assertEqual(pilot.get("review"), "human")          # pilot は人の承認で固める
+            self.assertEqual(len(km.load_tasks(cfg.backlog)), 1)    # 残りはまだ作らない
+            state = km._read_cohort(cfg, pilot.get("cohort"))
+            self.assertEqual(state["items"], ["b", "c"])
+            self.assertEqual(state["status"], "pending")
+
+    def test_materialize_rest_after_pilot_approval(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            pilot = km.enqueue_task(cfg, {"title": "{item} を移行", "verify": "true",
+                                          "cohort_items": ["a", "b", "c"]})
+            # pilot は verify PASS でも review:human で検収待ち（review）になる
+            res = km.run_loop(cfg)
+            self.assertEqual(res["counts"]["review"], 1)
+            self.assertEqual(res["counts"]["done"], 0)
+            # pilot 承認 → 残り 2 件が固めた指示（feedback）付きで ready 生成される
+            self.assertEqual(km.cmd_approve(cfg, pilot.id, "命名規則に従うこと"), 0)
+            members = [t for t in km.load_tasks(cfg.backlog) if t.get("cohort_role") == "member"]
+            self.assertEqual(len(members), 2)
+            self.assertEqual(sorted(m.title for m in members), ["b を移行", "c を移行"])
+            for m in members:
+                self.assertEqual(m.norm_status(), "ready")
+                self.assertIn("命名規則に従うこと", m.feedback() or "")   # 固めた指示が伝わる
+            self.assertEqual(km._read_cohort(cfg, pilot.get("cohort"))["status"], "done")
+
+    def test_materialize_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            pilot = km.enqueue_task(cfg, {"title": "{item}", "verify": "true",
+                                          "cohort_items": ["a", "b"]})
+            self.assertEqual(len(km.materialize_cohort_rest(cfg, pilot, "ok")), 1)
+            self.assertEqual(km.materialize_cohort_rest(cfg, pilot, "ok"), [])  # 二度目は空（done）
+
+
 class TestLoopEngineering(unittest.TestCase):
     """Loop Engineering 拡張: 計測・タスク自己生成・依存(DAG)・回帰ゲート。"""
 
@@ -2048,6 +2139,49 @@ class TestProjectLayer(unittest.TestCase):
         self.assertEqual(ch.constraints, ["標準ライブラリのみ"])
         self.assertEqual(ch.deliverables, ["report.py"])
         self.assertEqual(ch.acceptance, ["test -f x"])
+
+    def test_parse_charter_repos(self):
+        ch = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- app = https://git/app.git\n- https://git/lib.git\n")
+        self.assertEqual(ch.repos, ["app = https://git/app.git", "https://git/lib.git"])
+        rmap = km.charter_repo_map(ch)
+        self.assertEqual(rmap["app"], "https://git/app.git")     # name 引き
+        self.assertEqual(rmap["lib"], "https://git/lib.git")     # URL 末尾を name に
+        self.assertEqual(rmap["https://git/app.git"], "https://git/app.git")  # URL 引き
+
+    def test_task_repo_urls_resolved_from_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n- app = https://git/app.git\n")
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "app")])
+            self.assertEqual(km.task_repo_urls(cfg, t), ["https://git/app.git"])
+            # charter に無い素の URL はそのまま通す。宣言の無いタスクは空（clone しない）
+            t2 = km.Task(id="T2", title="y", verify="true", extra=[("repos", "https://x/raw.git")])
+            self.assertEqual(km.task_repo_urls(cfg, t2), ["https://x/raw.git"])
+            self.assertEqual(km.task_repo_urls(cfg, km.Task(id="T3", title="z")), [])
+
+    def test_repos_propagated_to_kiro_flow_cmd(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n- app = https://git/app.git\n")
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "app")])
+            cmd = km.build_kiro_flow_cmd(t, cfg)
+            self.assertIn("--repo", cmd)
+            self.assertIn("https://git/app.git", cmd)
+            # repos の無いタスクは --repo を付けない（必要なものだけ）
+            self.assertNotIn("--repo", km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg))
+
+    def test_repos_spec_roundtrips_to_task(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = km.task_from_spec(cfg, {"title": "x", "verify": "true", "repos": ["app", "lib"]})
+            self.assertEqual(t.get("repos"), "app,lib")
+            t2 = km.parse_task(km.serialize_task(t), t.id)      # 永続化往復で保持
+            self.assertEqual(t2.get("repos"), "app,lib")
 
     def test_run_autodetects_charter(self):
         # run は charter.md があれば自動で目標駆動になる（project サブコマンドは廃止・1プロセス統合）
@@ -2264,6 +2398,19 @@ class TestVerifyAssist(unittest.TestCase):
                 raise RuntimeError("no kiro-cli")
             self.assertFalse(km.ensure_verify(cfg, t, kiro_run=boom))   # 合成不能→verify 空のまま
             self.assertEqual(t.verify, "")
+
+    def test_strip_ansi_removes_escapes(self):
+        raw = "\x1b[38;5;141m> \x1b[0mgrep -q foo bar.txt\x1b[0m"
+        self.assertEqual(km.strip_ansi(raw), "> grep -q foo bar.txt")
+        self.assertEqual(km.strip_ansi(""), "")
+
+    def test_synth_verify_strips_ansi_from_kiro_output(self):
+        # kiro-cli の色付き出力に ANSI が混ざっても、合成した verify は素のコマンドになる
+        cfg = cfg_for(Path("."))
+        ansi_out = "\x1b[2K\x1b[36mgrep -q '## 概要' README.md\x1b[0m"
+        cmd = km.synth_verify(cfg, "概要を書く", "README に概要", kiro_run=lambda p, m: ansi_out)
+        self.assertEqual(cmd, "grep -q '## 概要' README.md")
+        self.assertNotIn("\x1b", cmd)
 
     def test_rot_excludes_accept_or_template(self):
         with tempfile.TemporaryDirectory() as d:
