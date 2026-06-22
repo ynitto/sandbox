@@ -510,6 +510,11 @@ kiro-flow への act 依頼（`build_request`）に **charter（定義）と `de
   **スキルが見つからなければ出力のみ**（探索: `$KIRO_SKILLS_HOME`→cwd 上方向 `.github/skills`→`~/.claude/skills`）。
   適用/起票は journal に記録。終了コードは `0`=健康／`1`=未解決の所見／`2`=未解決の critical（`--fix` 無しは診断のみ）。
   知能（診断・分類・起票文面）の委譲と決定的なファイル操作の二層構成は §1 不変条件（done 確定を緩めず外周を足す）を保つ。
+  **実行層 kiro-flow との連携**（`--with-flow`・既定 on）: 内側＝act の実体である `kiro-flow doctor --json` を同じバスに対して
+  呼び、同一スキーマの findings を `[flow]` 印で統合する。`--fix` 時は kiro-flow 側にも `--fix` を委譲し、kiro-flow が自分の
+  env/config 修正と program 起票を担う（本体は kiro-flow 由来を再修正・再起票しない＝二重作業を避ける）。kiro-flow は同じ
+  doctor 機構を独立コマンドとしても持ち（run 状態/滞留/失敗ノード/kiro-cli エラーを材料に env/config/program へ分類）、
+  単独でも kiro-autonomous からの連携呼び出しでも使える。連携は決定的なサブプロセス呼び出し＋JSON 統合で不変条件を保つ。
 - **テスト**: `tools/kiro-autonomous/tests/test_kiro_autonomous.py`（標準 `unittest`）。kiro-flow/kiro-cli を呼ばずに検証
   （stub・注入）。S0–S7 の各ゲート・自律度・原子的クレーム・偽 done/flake・プロジェクト層・複数プロジェクト/charter リンクを網羅。
   `KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/tests`。

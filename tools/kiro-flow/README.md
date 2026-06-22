@@ -260,6 +260,30 @@ tmux split-window -h "kiro-flow --run-id $RID status --follow --until-done"
 tmux attach -t flow
 ```
 
+### 稼働診断（doctor）
+
+```bash
+kiro-flow --bus /tmp/flowbus doctor          # 診断のみ（無害・既定）
+kiro-flow --bus /tmp/flowbus doctor --fix    # env/config を修正し program を gitlab-idd で起票
+kiro-flow --bus /tmp/flowbus doctor --json   # 連携呼び出し用の findings を JSON で出力
+```
+
+**収集と適用を決定的に・診断と分類は kiro-cli へ委譲** して稼働の問題を洗い出し、原因を分類する。
+
+- **env**（ユーザー環境固有）… `kiro-cli`/`git` 不在・バスに書き込めない・worker/daemon 未起動 等。
+- **config**（設定）… 有限停止の無効化（`max_iterations`/`max_retries` ≤0）・`lease`/`argv_limit` 不正・バス未作成 等。
+- **program**（プログラム上の不具合）… 正しい環境・設定でも再現する failed・グラフ生成や claim/再計画のロジック欠陥。**コード修正が必要なものだけ**。
+
+材料は決定的チェック（依存コマンド・バス・有限停止設定）＋稼働シグナル（直近 run の状態・滞留・失敗ノード・
+kiro-cli エラー）。これを kiro-cli に渡して分類済みの所見を得る（kiro-cli 不在・解析不能なら**決定的チェックのみ**で続行）。
+
+`--fix` のとき env/config は既知の修正（`ensure-bus`＝バス作成）を適用、判断が要るものは提案表示のみ。
+**program は `gitlab-idd` スキルで GitLab イシューを起票**（スキルが無ければ出力のみ）。終了コード `0`=健康/`1`=所見あり/`2`=未解決の critical。
+
+`--json` の `findings` は kiro-autonomous の `doctor` と同一スキーマ。**`kiro-autonomous doctor` が `--with-flow`（既定 on）で
+この `kiro-flow doctor --json` を同じバスに対して呼び、実行層の所見を統合する**（連携時は kiro-flow 側が自分の env/config 修正と
+program 起票を担い、二重作業を避ける）。
+
 ### サブコマンド
 
 | コマンド | 役割 |
@@ -270,6 +294,7 @@ tmux attach -t flow
 | `status` | ダッシュボード表示（進捗バー/エージェント状態/アクティビティ）。`--follow` ライブ / `--list` 一覧 |
 | `result` | 完了した run の**最終結果**（集約／末端ノードの全文出力）を提示。run-id 省略で最新を自動選択。`--json` で機械可読 |
 | `gc` | 古い run を削除（対応する inbox 要求・claim も）（`--older-than` 日 / `--keep` 件 / `--status` / `--dry-run`） |
+| `doctor` | 稼働診断。run 状態/イベント/環境から問題を env/config/program に分類。`--fix` で env/config 修正・program は gitlab-idd 起票。`--json` は連携呼び出し用 |
 | `orchestrate` / `work` | 計画役・ワーカー役の内部コマンド（`run`/`daemon` が起動する） |
 
 ### 主なオプション

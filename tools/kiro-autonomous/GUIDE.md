@@ -181,7 +181,8 @@ kiro-autonomous doctor              # 診断のみ（無害）。env/config/prog
 kiro-autonomous doctor --fix        # env/config を自動修正し、program の不具合は gitlab-idd で起票
 ```
 `audit` が「設定が無人運用に値するか」を採点するのに対し、`doctor` は「**いま現に何が起きているか**」を
-ログ・稼働シグナルから診断する。環境/設定の問題は直し、コードの不具合だけイシューに切り出す。
+ログ・稼働シグナルから診断する。環境/設定の問題は直し、コードの不具合だけイシューに切り出す。既定では
+実行層 `kiro-flow doctor` も連携実行して所見を統合する（`[flow]` 印・`--no-flow` で本体のみ）。
 
 **卒業の目安**: 予算内で安定収束、`audit --strict` が常時グリーン、夜間放任でも事故ゼロ。
 

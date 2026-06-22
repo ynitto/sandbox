@@ -16,8 +16,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   修正（`create-dirs` / policy への保護デニーリスト追記）し、program の不具合は `gitlab-idd` スキルで
   GitLab イシューを起票する。**スキルが見つからなければ出力のみ**。終了コード `0`=健康/`1`=所見あり/
   `2`=未解決の critical。既定（`--fix` 無し）は無害な診断のみ。
+- `doctor` の **実行層 kiro-flow との連携**（`--with-flow`・既定 on／`--no-flow` で本体のみ）。
+  同じバスに対して `kiro-flow doctor --json` を呼び、実行層の所見を `[flow]` 印で統合する。`--fix` 時は
+  kiro-flow 側にも委譲し、kiro-flow が自分の env/config 修正と program 起票を担う（二重作業を避ける）。
 
 ### kiro-flow
+
+#### Added
+- `doctor` サブコマンド。run 状態/イベント/環境から稼働を診断し、原因を **env / config / program** に
+  分類する。収集・修正・起票の駆動は決定的に、診断と分類は kiro-cli へ委譲（不在時は決定的チェックのみ）。
+  `--fix` で env/config を修正（`ensure-bus`＝バス作成）し、program の不具合は `gitlab-idd` スキルで
+  GitLab イシューを起票する（スキルが無ければ出力のみ）。`--json` の findings は kiro-autonomous の doctor と
+  同一スキーマで、単独でも kiro-autonomous からの連携呼び出しでも使える。終了コード `0`/`1`/`2`。
 
 #### Added
 - 作業後に sparse-checkout クローンを自動削除（既定 ON）。各コマンド終了時に

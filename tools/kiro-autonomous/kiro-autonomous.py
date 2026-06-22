@@ -2253,6 +2253,7 @@ class Config:
     max_project_cycles: int = 5          # 改善サイクルの上限（有限停止）
     max_project_cost: float = 0.0        # プロジェクト累計コスト上限(USD・0=無制限)
     project_stall: int = 2               # acceptance PASS 数が増えない連続回数の上限→人へ
+    with_flow: bool = False              # doctor: 実行層 kiro-flow doctor も連携実行し findings を統合（CLI 既定 on）
 
     def archive_dir(self) -> Path:
         return self.archive or (self.backlog.parent / "archive")
@@ -3420,9 +3421,42 @@ def file_issues_via_gitlab_idd(cfg: "Config", program: "list[dict]", skill_dir: 
         return False
 
 
+def collect_flow_findings(cfg: "Config", fix: bool, runner=None) -> "list[dict]":
+    """連携: 実行層 `kiro-flow doctor --json` を同じバスに対して実行し findings を取り込む。
+    kiro-autonomous の診断に kiro-flow（内側＝act の実体）の稼働所見を統合する。`--fix` のときは
+    kiro-flow 側にも `--fix` を委譲し、kiro-flow が自分の env/config 修正と program 起票を行う
+    （本体は kiro-flow 由来の finding を再修正・再起票しない＝二重作業を避ける）。
+    cfg.with_flow が off・kiro-flow 不在・タイムアウト・解析不能は空で無害にスキップ。"""
+    if not cfg.with_flow:
+        return []
+    cmd = resolve_kiro_flow(cfg.kiro_flow) + ["--bus", str(cfg.bus)]
+    if cfg.git_bus:
+        cmd += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
+        if cfg.git_subdir:
+            cmd += ["--git-subdir", cfg.git_subdir]
+    cmd += ["doctor", "--json"]
+    if fix:
+        cmd.append("--fix")
+    run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=600))
+    try:
+        proc = run(cmd)
+        data = json.loads(getattr(proc, "stdout", "") or "")
+    except Exception:  # noqa: BLE001  kiro-flow 不在・タイムアウト・JSON 解析失敗
+        return []
+    out: list[dict] = []
+    for f in (data.get("findings", []) if isinstance(data, dict) else []):
+        if not isinstance(f, dict) or f.get("category") not in _DOCTOR_CATEGORIES:
+            continue
+        g = dict(f)
+        g["source"] = "kiro-flow"
+        out.append(g)
+    return out
+
+
 def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
-               kiro_run=None, skill_finder=find_skill) -> int:
+               kiro_run=None, skill_finder=find_skill, flow_finder=collect_flow_findings) -> int:
     """稼働を診断し env/config を（--fix で）修正、program は gitlab-idd で起票する。
+    実行層 kiro-flow の doctor も連携実行し findings を統合する（cfg.with_flow 時）。
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
     deterministic = doctor_env_findings(cfg) + doctor_audit_findings(cfg)
@@ -3430,12 +3464,14 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
         f["source"] = "check"
     signals = collect_doctor_signals(cfg)
     agent = diagnose_with_agent(cfg, signals, deterministic, kiro_run=kiro_run)
-    findings = _dedupe_findings(deterministic + (agent or []))
+    flow = flow_finder(cfg, fix) if cfg.with_flow else []   # 実行層 kiro-flow の所見を連携取得
+    findings = _dedupe_findings(deterministic + (agent or []) + flow)
 
     applied: list[tuple] = []
     if fix:
         for f in findings:
-            if f["category"] in ("env", "config"):
+            # kiro-flow 由来は kiro-flow 側で既に処理済み（再修正しない）
+            if f["category"] in ("env", "config") and f.get("source") != "kiro-flow":
                 msg = apply_doctor_fix(cfg, f)
                 if msg:
                     f["resolved"] = msg
@@ -3450,7 +3486,9 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
                 if key not in still:
                     f["resolved"] = "修正により解消"
 
-    program = [f for f in findings if f["category"] == "program"]
+    # program は本体由来のみ本体が起票（kiro-flow 由来は kiro-flow が起票済み）
+    program = [f for f in findings
+               if f["category"] == "program" and f.get("source") != "kiro-flow"]
     skill_dir = skill_finder("gitlab-idd")
     filed = False
     if fix and program:
@@ -3472,6 +3510,8 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
         print(json.dumps({
             "agent_used": agent is not None,
             "skill_available": bool(skill_dir),
+            "with_flow": cfg.with_flow,
+            "flow_findings": len(flow),
             "fix": fix,
             "findings": findings,
             "applied": len(applied),
@@ -3481,8 +3521,9 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
         return 2 if has_critical else (1 if unresolved else 0)
 
     print("=== kiro-autonomous doctor（稼働診断）===")
+    flow_note = f"  / kiro-flow 連携 {len(flow)} 件" if cfg.with_flow else ""
     print(f"診断: {'kiro-cli' if agent is not None else '決定的チェックのみ（kiro-cli 不在/解析不能）'}"
-          f"  / 所見 {len(findings)} 件")
+          f"  / 所見 {len(findings)} 件{flow_note}")
     if not findings:
         print("問題は見つかりませんでした（healthy）。")
         return 0
@@ -3494,7 +3535,8 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
             continue
         print(f"\n[{label[cat]}] {len(group)} 件")
         for f in group:
-            print(f"  {mark.get(f['severity'], '−')} {f['title']}")
+            src = " [flow]" if f.get("source") == "kiro-flow" else ""
+            print(f"  {mark.get(f['severity'], '−')} {f['title']}{src}")
             if f.get("evidence"):
                 print(f"      根拠: {f['evidence']}")
             if f.get("fix"):
@@ -4422,6 +4464,7 @@ CONFIG_DEFAULTS = {
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,
     "do_archive": True, "learn": True, "cleanup": True,   # do_archive: --archive はパス用なので別名
+    "with_flow": True,   # doctor: 実行層 kiro-flow doctor も連携実行（CLI 既定 on・直接 Config は off）
 }
 
 
@@ -4538,6 +4581,7 @@ def build_config(args) -> Config:
         max_project_cycles=max(1, int(getattr(args, "max_project_cycles", 5) or 5)),
         max_project_cost=max(0.0, float(getattr(args, "max_project_cost", 0.0) or 0.0)),
         project_stall=max(1, int(getattr(args, "project_stall", 2) or 2)),
+        with_flow=bool(getattr(args, "with_flow", False)),
     )
 
 
@@ -4704,6 +4748,10 @@ def main(argv=None) -> int:
     dr.add_argument("--fix", action="store_true",
                     help="env/config の問題を修正し、program の不具合を gitlab-idd で起票"
                          "（スキルが無ければ出力のみ。既定は診断のみ）")
+    dr.add_argument("--with-flow", dest="with_flow", action="store_true", default=None,
+                    help="実行層 kiro-flow の doctor も連携実行して所見を統合（既定 on）")
+    dr.add_argument("--no-flow", dest="with_flow", action="store_false",
+                    help="kiro-flow との連携を無効化し本体のみ診断する")
 
     enq = sub.add_parser("enqueue", help="汎用の取り込み口（CLI/stdin/JSON から backlog タスクを作る）")
     _add_common(enq)

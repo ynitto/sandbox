@@ -6,6 +6,7 @@
     python -m unittest discover -s tools/kiro-autonomous/tests
 """
 import importlib.util
+import json
 import os
 import signal
 import socket
@@ -17,6 +18,14 @@ import types
 import unittest
 import unittest.mock as mock
 from pathlib import Path
+
+# テストの git コミットを環境のコミット署名設定（commit.gpgsign）から切り離す。
+# 署名が有効な環境では署名処理が間欠的に失敗して `git commit` がコミットを作らず、
+# git ベースのテスト（成果参照・差分 verify 等）が偶発的に落ちる。GIT_CONFIG_* で
+# この子プロセス（と配下）に commit.gpgsign=false を上乗せして決定的にする（identity は温存）。
+os.environ["GIT_CONFIG_COUNT"] = "1"
+os.environ["GIT_CONFIG_KEY_0"] = "commit.gpgsign"
+os.environ["GIT_CONFIG_VALUE_0"] = "false"
 
 _MOD = Path(__file__).resolve().parent.parent / "kiro-autonomous.py"
 _spec = importlib.util.spec_from_file_location("kiro_autonomous", _MOD)
@@ -682,10 +691,81 @@ class TestDoctor(unittest.TestCase):
     def test_doctor_via_main_without_backlog_diagnoses(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            # kiro-cli を呼ばない構成で main 経由（backlog 無しでも落ちない）
-            rc = km.main(["doctor", "--json", "--workdir", str(d), "--root", str(d / ".ka"),
-                          "--planner", "none", "--executor", "stub", "--no-auto-adjudicate"])
+            # kiro-cli/kiro-flow を呼ばない構成で main 経由（backlog 無しでも落ちない）
+            rc = km.main(["doctor", "--json", "--no-flow", "--workdir", str(d),
+                          "--root", str(d / ".ka"), "--planner", "none", "--executor", "stub",
+                          "--no-auto-adjudicate"])
             self.assertIn(rc, (0, 1, 2))
+
+    def test_flow_coordination_merges_and_does_not_refile(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, with_flow=True)
+            km.ensure_dirs(cfg)
+            filed = []
+
+            def agent(prompt, model):
+                if "稼働診断医" in prompt:
+                    return "[]"                              # 本体側は所見なし
+                filed.append("autonomous")
+                return "x"
+
+            # kiro-flow doctor が返す findings（env/config は解消済み・program は起票済み）
+            def flow_finder(c, fix):
+                return [
+                    {"category": "config", "severity": "warn", "title": "バスのルートが未作成",
+                     "evidence": "bus=...", "fix": "作成", "source": "kiro-flow",
+                     "resolved": "バスのルートを作成しました"},
+                    {"category": "program", "severity": "critical", "title": "flow のクラッシュ",
+                     "evidence": "run-x", "fix": "例外", "source": "kiro-flow",
+                     "resolved": "gitlab-idd で起票（gitlab-idd）"},
+                ]
+
+            captured = {}
+            with tempfile.TemporaryDirectory() as sk:
+                home = Path(sk)
+                (home / "gitlab-idd").mkdir(parents=True)
+                import io
+                import contextlib as _ctx
+                buf = io.StringIO()
+                with _ctx.redirect_stdout(buf):
+                    rc = km.cmd_doctor(cfg, fix=True, as_json=True, kiro_run=agent,
+                                       skill_finder=lambda n: km.find_skill(n, home=str(home)),
+                                       flow_finder=flow_finder)
+                captured = json.loads(buf.getvalue())
+            # flow 由来の program は本体が再起票しない（kiro-flow が起票済み）
+            self.assertEqual(filed, [])
+            # flow の critical は解消済みで統合 → 未解決 critical なし（rc は 2 でない）
+            self.assertIn(rc, (0, 1))
+            self.assertEqual(captured["flow_findings"], 2)
+            flow_prog = [f for f in captured["findings"]
+                         if f.get("source") == "kiro-flow" and f["category"] == "program"]
+            self.assertEqual(len(flow_prog), 1)
+            self.assertTrue(flow_prog[0].get("resolved"))     # kiro-flow が起票済みのまま統合
+
+    def test_flow_disabled_skips_flow_finder(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, with_flow=False)        # 既定 off（直接 Config 構築）
+            km.ensure_dirs(cfg)
+            called = []
+            km.cmd_doctor(cfg, fix=False, kiro_run=lambda p, m: "[]",
+                          flow_finder=lambda c, fix: called.append(1) or [])
+            self.assertEqual(called, [])               # with_flow=False なら呼ばれない
+
+    def test_collect_flow_findings_parses_subprocess_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, with_flow=True)
+
+            class P:
+                stdout = ('{"tool":"kiro-flow","findings":'
+                          '[{"category":"env","severity":"warn","title":"git 無し",'
+                          '"evidence":"e","fix":"f"}]}')
+
+            out = km.collect_flow_findings(cfg, fix=False, runner=lambda cmd: P())
+            self.assertEqual(len(out), 1)
+            self.assertEqual(out[0]["source"], "kiro-flow")   # 連携由来でタグ付け
+            # 不正 JSON は空で無害にスキップ
+            self.assertEqual(km.collect_flow_findings(
+                cfg, fix=False, runner=lambda cmd: type("P", (), {"stdout": "boom"})()), [])
 
 
 class TestVerifyProgress(unittest.TestCase):
