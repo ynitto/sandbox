@@ -2236,6 +2236,28 @@ class TestVerifyAssist(unittest.TestCase):
             self.assertNotIn("A", rot)               # accept ありは unverifiable にしない
             self.assertIn("B", rot)                  # 素の verify 無しは rot
 
+    def test_audit_does_not_flag_accept_task(self):
+        # バグ修正: audit は accept/verify_template を持つ ready タスクを「verify 無し（critical）」にしない
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.enqueue_task(cfg, {"title": "X", "accept": "README に概要がある"})
+            audit = km.compute_audit(cfg)
+            self.assertFalse(any(rf["severity"] == "critical" for rf in audit["red_flags"]))
+            verify_check = next(c for c in audit["checks"] if c["id"] == "verify_coverage")
+            self.assertTrue(verify_check["ok"])
+
+    def test_inbox_md_accept_stays_ready(self):
+        # バグ修正: inbox の .md に accept があれば verify 無しでも inbox 落ちせず ready のまま
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, inbox=d / "inbox")
+            cfg.inbox.mkdir(parents=True, exist_ok=True)
+            (cfg.inbox / "t.md").write_text(
+                "## t1: やる\n- status: ready\n- accept: README に概要がある\n", encoding="utf-8")
+            created = km.ingest_inbox(cfg)
+            self.assertEqual(created[0].norm_status(), "ready")
+
 
 class TestMultiProject(unittest.TestCase):
     def test_run_creates_default_project_folder(self):
