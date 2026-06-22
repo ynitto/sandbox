@@ -78,7 +78,6 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
 
 ```
 .kiro-autonomous/                  ← コンテナ（--root）。projects/ を束ねる
-  inbox/                           ← グローバル投入口（project 不問）。各 item を project（無→default）へ振り分け
   projects/
     default/                       ← 1 プロジェクト（--project。未指定はこれを作成）
       charter.md           プロジェクト憲章（人が書く・project の最上位入力。正典 charter.md.example）
@@ -261,14 +260,6 @@ kiro-autonomous hold prod-deploy --reason "本番は手動"
 - **取り込み口（enqueue / inbox）**: `enqueue` は CLI フラグ or stdin/JSON（1 件/配列）から投入。`<project>/inbox/` に
   置かれた `.json`/`.md` は run/watch が取り込み元ファイルを消す。**verify を持たない投入は必ず `inbox`**＝人の triage 行き。
   外部ソース（webhook/メール/issue 抽出）は薄いアダプタでここへ流し込む。
-- **project 指定なしは default の下で管理**: どのプロジェクトか分からない投入は**グローバル inbox `<root>/inbox/`**（コンテナ
-  直下）に置けばよい。各 item の `project` フィールド（あれば）へ、無ければ **default** へ自動で振り分けられる。`enqueue --json`
-  の item に `project` を書けば任意プロジェクトへ、書かなければ呼び出しの `--project`（既定 default）へ入る。
-
-```bash
-echo '{"title":"とりあえず投入","verify":"true"}'              > .kiro-autonomous/inbox/a.json   # → default
-echo '{"title":"決済の修正","verify":"make test","project":"payments"}' > .kiro-autonomous/inbox/b.json   # → payments
-```
 - **依存（DAG）** `- after: T1, T2`: 依存が done（archive へ退避）になるまで消化対象に入らない。依存が blocked/review で
   止まれば従属も待つ。
 - **自己生成（followup）**: 完了タスクから派生を生む。静的（タスクの `- followup: <title> :: <verify>`）／動的（act 出力の
