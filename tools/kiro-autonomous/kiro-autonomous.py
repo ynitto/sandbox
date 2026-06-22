@@ -3780,7 +3780,7 @@ def _add_common(sp):
     sp.add_argument("--needs", default=None, help="要対応ディレクトリ（既定 <root>/needs）")
     sp.add_argument("--archive", default=None, help="done の退避先（既定 <root>/archive）")
     sp.add_argument("--delivery", default=None, help="納品一覧（既定 <root>/DELIVERY.md）")
-    sp.add_argument("--inbox", default=None, help="取り込み待ちのドロップ口（既定 <root>/inbox）")
+    sp.add_argument("--inbox", default=None, help="取り込み待ちのドロップ口（既定 <project>/inbox）")
     sp.add_argument("--debounce", type=float, default=None,
                     help="watch 中、最終保存からこの秒数は feedback 取込を待つ（誤発火防止。既定 3）")
     sp.add_argument("--workdir", default=None)

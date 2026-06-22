@@ -2238,6 +2238,19 @@ class TestVerifyAssist(unittest.TestCase):
 
 
 class TestMultiProject(unittest.TestCase):
+    def test_run_creates_default_project_folder(self):
+        # project 指定なしで起動すると default プロジェクトのフォルダが（無ければ）作られ、その下に集約される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            km.main(["run", "--workdir", str(d), "--root", str(root),
+                     "--planner", "none", "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
+            dflt = root / "projects" / "default"
+            self.assertTrue((dflt / "backlog").is_dir())
+            self.assertTrue((dflt / "needs").is_dir())
+            self.assertTrue((dflt / "decisions").is_dir())
+            self.assertFalse((root / "inbox").exists())     # グローバル inbox は作らない
+
     def test_enqueue_targets_project_dir(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
