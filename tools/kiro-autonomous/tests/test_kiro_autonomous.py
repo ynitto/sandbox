@@ -1330,12 +1330,11 @@ class TestDaemonRouting(unittest.TestCase):
             p_link = km.daemon_lock_path(cfg_for(d, bus=link), False)
             self.assertEqual(p_real, p_link)
 
-    def test_lock_dir_env_override(self):
-        # KIRO_FLOW_LOCK_DIR を起動側・プローブ側で共有すれば TMPDIR 差を吸収できる
+    def test_lock_dir_config_override(self):
+        # 設定 lock_dir を起動側・プローブ側で共有すれば TMPDIR 差を吸収できる
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            with mock.patch.dict(os.environ, {"KIRO_FLOW_LOCK_DIR": str(d / "locks")}):
-                p = km.daemon_lock_path(cfg_for(d), False)
+            p = km.daemon_lock_path(cfg_for(d, lock_dir=str(d / "locks")), False)
             self.assertEqual(p.parent, d / "locks")
 
     def test_pid_liveness_fallback_when_flock_unavailable(self):

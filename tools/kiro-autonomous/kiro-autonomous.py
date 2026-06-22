@@ -1886,14 +1886,14 @@ def daemon_lock_path(cfg: "Config", use_git: bool) -> Path:
     """kiro-flow daemon の singleton ロックパス（kiro-flow と同一規則）。
 
     外部起動の daemon を取りこぼさないため、kiro-flow と完全に同じ導出をする:
-      - ロック置き場は env `KIRO_FLOW_LOCK_DIR`（無ければ tempdir 配下）
+      - ロック置き場は設定 `lock_dir`（無ければ tempdir 配下）
       - local キーは realpath で canonical 化（symlink/相対パスのズレを吸収）"""
     if use_git and cfg.git_bus:
         key = f"git::{cfg.git_bus}@{cfg.git_branch}/{cfg.git_subdir or ''}"
     else:
         key = "local::" + os.path.realpath(str(cfg.bus))
     h = hashlib.sha1(key.encode()).hexdigest()
-    base = os.environ.get("KIRO_FLOW_LOCK_DIR") or str(Path(tempfile.gettempdir()) / "kiro-flow-locks")
+    base = cfg.lock_dir or str(Path(tempfile.gettempdir()) / "kiro-flow-locks")
     return Path(base) / f"daemon-{h}.lock"
 
 
@@ -2029,6 +2029,7 @@ class Config:
     git_bus: "str | None" = None
     git_branch: str = "main"
     git_subdir: "str | None" = None
+    lock_dir: "str | None" = None   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     kiro_flow: "str | None" = None
     planner: str = "kiro"          # 優先順位付け戦略: kiro（エージェント）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # kiro-flow run に渡す planner
@@ -3813,6 +3814,7 @@ CONFIG_DEFAULTS = {
     "git_bus": None,
     "git_branch": "main",
     "git_subdir": None,
+    "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
     "notify_cmd": None,
     "actor": os.environ.get("USER", "user"),
@@ -3910,6 +3912,7 @@ def build_config(args) -> Config:
         workdir=workdir,
         bus=under("bus", "bus"),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
+        lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
         location=args.location, executor=args.executor,
         model=args.model, max_iterations=args.max_iterations,
@@ -3979,6 +3982,9 @@ def _add_common(sp):
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
     sp.add_argument("--git-branch", default=None)
     sp.add_argument("--git-subdir", default=None)
+    sp.add_argument("--lock-dir", dest="lock_dir", default=None,
+                    help="kiro-flow daemon ロックの置き場（設定ファイル lock_dir と同義）。"
+                         "外部起動の daemon を発見するため kiro-flow 側と一致させる")
     sp.add_argument("--kiro-flow", default=None)
     sp.add_argument("--planner", default=None, choices=["kiro", "none"],
                     help="優先順位付け: kiro=エージェント（priority 加味）/ none=priority＋古さ（既定 kiro）")

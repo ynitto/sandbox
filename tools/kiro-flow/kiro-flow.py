@@ -105,6 +105,7 @@ CONFIG_DEFAULTS = {
     "git": None,
     "git_branch": "main",
     "git_subdir": "",
+    "lock_dir": None,   # daemon singleton ロックの置き場（外部 daemon の発見性を担保。既定 tempdir 配下）
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
@@ -1650,12 +1651,12 @@ def cmd_submit(args) -> int:
 # --------------------------------------------------------------------------
 # daemon — 常駐し、要求に応じて orchestrator/worker をオンデマンド起動
 # --------------------------------------------------------------------------
-def daemon_lock_dir() -> str:
+def daemon_lock_dir(lock_dir: "str | None" = None) -> str:
     """daemon ロックを置く共有ディレクトリ。
     起動側とプローブ側（kiro-autonomous 等）で必ず一致させる必要があるため、
-    env `KIRO_FLOW_LOCK_DIR` で明示でき、既定は tempdir 配下。TMPDIR 差で
-    別ディレクトリを見て「外部 daemon を発見できない」事故を防ぐ。"""
-    d = os.environ.get("KIRO_FLOW_LOCK_DIR") or os.path.join(tempfile.gettempdir(), "kiro-flow-locks")
+    設定ファイルの `lock_dir`（CLI `--lock-dir`）で明示でき、既定は tempdir 配下。
+    TMPDIR 差で別ディレクトリを見て「外部 daemon を発見できない」事故を防ぐ。"""
+    d = lock_dir or os.path.join(tempfile.gettempdir(), "kiro-flow-locks")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -1671,7 +1672,7 @@ def daemon_lock_key(args) -> str:
 def _daemon_lock_path(args) -> str:
     """バス単位のデーモン singleton 用ロックパス（バス外の一時領域）。"""
     h = hashlib.sha1(daemon_lock_key(args).encode()).hexdigest()
-    return os.path.join(daemon_lock_dir(), f"daemon-{h}.lock")
+    return os.path.join(daemon_lock_dir(getattr(args, "lock_dir", None)), f"daemon-{h}.lock")
 
 
 def cmd_daemon(args) -> int:
@@ -2246,6 +2247,9 @@ def main() -> int:
     p.add_argument("--git-branch", default=None, help="バスに使う git ブランチ（既定 main）")
     p.add_argument("--git-subdir", default=None,
                    help="リポジトリ内のバスにするサブディレクトリ（既定: リポジトリ直下）")
+    p.add_argument("--lock-dir", dest="lock_dir", default=None,
+                   help="daemon singleton ロックの置き場（設定ファイル lock_dir と同義。"
+                        "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     p.add_argument("--keep-clone", dest="cleanup_clone", action="store_const", const=False,

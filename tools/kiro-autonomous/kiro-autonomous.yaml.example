@@ -109,6 +109,10 @@ watch: true                # 既定で常駐監視（systemd の ExecStart を `
 git_branch: main            # バスに使う git ブランチ
 # git_subdir: flow           # リポジトリ内でバスにするサブディレクトリ
 
+# lock_dir: /var/run/kiro-flow   # kiro-flow daemon ロックの置き場（既定: $TMPDIR/kiro-flow-locks）。
+#                            # 外部起動の kiro-flow daemon を発見するため kiro-flow 側の lock_dir と一致させる。
+#                            # TMPDIR が食い違う構成で明示すると確実。
+
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し
 # ---------------------------------------------------------------------------

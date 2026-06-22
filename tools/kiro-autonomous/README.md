@@ -110,7 +110,8 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
 kiro-flow と同じロックで行う：バスを `realpath` で正規化したキーで `flock` を見て、`flock` が使えない環境
 （Windows・一部の異種FS）では daemon が記録した PID の生存で補完する。**外部で起動した daemon を取りこぼさない
 ため、起動側とこちらでロック置き場を一致させること**——既定は `$TMPDIR/kiro-flow-locks/` だが、`TMPDIR` が
-食い違う場合は両者で `KIRO_FLOW_LOCK_DIR` に同じ絶対パスを指定する。どちらの経路でも verify は act 完了後に走る。
+食い違う場合は両者の設定ファイルで `lock_dir`（CLI `--lock-dir`）に同じ絶対パスを指定する。どちらの経路でも
+verify は act 完了後に走る。
 
 **並列消費（`--concurrency N`、既定 1）**: 依存解決済みの独立タスクを先頭から最大 N 件 daemon/remote へ並行
 submit し、実体の並列は kiro-flow の worker に委ねる。**実行の重い部分だけ並列化し、verify・done/archive・
