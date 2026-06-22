@@ -1528,7 +1528,7 @@ def cmd_orchestrate(args) -> int:
             bus.set_status("running")
             bus.sync_push(f"resume run {args.run_id}")
     else:
-        # 要求から 6 パターンの組み合わせと並列数を選び、初期グラフを形作る
+        # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
         strategy, tasks = _plan_strategy(args)
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
