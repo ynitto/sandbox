@@ -2010,6 +2010,34 @@ class TestProjectLayer(unittest.TestCase):
         self.assertEqual(ch.deliverables, ["report.py"])
         self.assertEqual(ch.acceptance, ["test -f x"])
 
+    def test_run_autodetects_charter(self):
+        # run は charter.md があれば自動で目標駆動になる（project サブコマンドは廃止・1プロセス統合）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            proot = d / ".kiro-autonomous" / "projects" / "default"
+            proot.mkdir(parents=True)
+            (proot / "charter.md").write_text(
+                "# Charter: demo\n## goal\nやる\n## acceptance\n- `true`\n", encoding="utf-8")
+            rc = km.main(["run", "--workdir", str(d), "--planner", "none",
+                          "--flow-planner", "stub", "--executor", "stub", "--dry-run",
+                          "--max-project-cycles", "1"])
+            self.assertEqual(rc, 1)                       # 収束候補→人待ち
+            self.assertTrue((proot / "project.json").exists())
+            # milestone id は --project 名（default）が一次（charter 名でなく）
+            self.assertTrue((proot / "needs" / "default.md").exists())
+
+    def test_run_without_charter_is_plain_loop(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            proot = d / ".kiro-autonomous" / "projects" / "default"
+            (proot / "backlog").mkdir(parents=True)
+            (proot / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: ready\n- verify: `true`\n", encoding="utf-8")
+            rc = km.main(["run", "--workdir", str(d), "--planner", "none",
+                          "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
+            self.assertEqual(rc, 0)                       # charter 無し→従来の backlog ループで drained
+            self.assertFalse((proot / "project.json").exists())
+
     def test_missing_charter_errors(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -2149,7 +2177,102 @@ def _drained():
             "counts": {s: 0 for s in km.VALID_STATUS}, "cost": 0.0, "tokens": 0}
 
 
+class TestVerifyAssist(unittest.TestCase):
+    def test_template_expands_deterministically(self):
+        self.assertEqual(km.expand_verify_template("file-contains :: web/x.html :: 最終更新"),
+                         "grep -qF -- '最終更新' 'web/x.html'")
+        self.assertEqual(km.expand_verify_template("file-exists :: report.py"),
+                         "test -e 'report.py'")
+        self.assertEqual(km.expand_verify_template("cmd-succeeds :: pytest -q tests/"),
+                         "pytest -q tests/")
+        self.assertIn("KIRO_BASE_REV", km.expand_verify_template("diff-contains :: def foo"))
+        self.assertIsNone(km.expand_verify_template("unknown-template :: x"))
+
+    def test_enqueue_template_materializes_verify_and_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = km.enqueue_task(cfg, {"title": "X", "verify_template": "file-exists :: out.txt"})
+            self.assertEqual(t.verify, "test -e 'out.txt'")
+            self.assertEqual(t.norm_status(), "ready")
+            self.assertIn(("verify_source", "template"), t.extra)
+
+    def test_accept_task_is_ready_and_synthesized_in_loop(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            # accept だけ（verify 無し）でも ready になる
+            t = km.enqueue_task(cfg, {"title": "概要を書く", "accept": "README に ## 概要 がある"})
+            self.assertEqual(t.norm_status(), "ready")
+            self.assertEqual(t.verify, "")
+            # run_loop の S0 で synth_verify（kiro_run を差し替え）により verify が用意される
+            orig = km._run_kiro_cli
+            km._run_kiro_cli = lambda prompt, model: "grep -q '## 概要' README.md"
+            try:
+                km.run_loop(cfg_for(d, dry_run=True, max_cycles=1))
+            finally:
+                km._run_kiro_cli = orig
+            reloaded = km.parse_task((cfg.backlog / f"{t.id}.md").read_text(), t.id)
+            self.assertEqual(reloaded.verify, "grep -q '## 概要' README.md")
+            self.assertEqual(dict(reloaded.extra).get("verify_source"), "synth")
+
+    def test_synth_failure_leaves_unverified(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", verify="", extra=[("accept", "曖昧な条件")])
+            def boom(prompt, model):
+                raise RuntimeError("no kiro-cli")
+            self.assertFalse(km.ensure_verify(cfg, t, kiro_run=boom))   # 合成不能→verify 空のまま
+            self.assertEqual(t.verify, "")
+
+    def test_rot_excludes_accept_or_template(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t_acc = km.Task(id="A", title="a", verify="", status="ready", extra=[("accept", "…")])
+            t_bare = km.Task(id="B", title="b", verify="", status="ready")
+            rot = dict((t.id, why) for t, why in km.detect_rot(cfg, [t_acc, t_bare]))
+            self.assertNotIn("A", rot)               # accept ありは unverifiable にしない
+            self.assertIn("B", rot)                  # 素の verify 無しは rot
+
+    def test_audit_does_not_flag_accept_task(self):
+        # バグ修正: audit は accept/verify_template を持つ ready タスクを「verify 無し（critical）」にしない
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.enqueue_task(cfg, {"title": "X", "accept": "README に概要がある"})
+            audit = km.compute_audit(cfg)
+            self.assertFalse(any(rf["severity"] == "critical" for rf in audit["red_flags"]))
+            verify_check = next(c for c in audit["checks"] if c["id"] == "verify_coverage")
+            self.assertTrue(verify_check["ok"])
+
+    def test_inbox_md_accept_stays_ready(self):
+        # バグ修正: inbox の .md に accept があれば verify 無しでも inbox 落ちせず ready のまま
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, inbox=d / "inbox")
+            cfg.inbox.mkdir(parents=True, exist_ok=True)
+            (cfg.inbox / "t.md").write_text(
+                "## t1: やる\n- status: ready\n- accept: README に概要がある\n", encoding="utf-8")
+            created = km.ingest_inbox(cfg)
+            self.assertEqual(created[0].norm_status(), "ready")
+
+
 class TestMultiProject(unittest.TestCase):
+    def test_run_creates_default_project_folder(self):
+        # project 指定なしで起動すると default プロジェクトのフォルダが（無ければ）作られ、その下に集約される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            km.main(["run", "--workdir", str(d), "--root", str(root),
+                     "--planner", "none", "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
+            dflt = root / "projects" / "default"
+            self.assertTrue((dflt / "backlog").is_dir())
+            self.assertTrue((dflt / "needs").is_dir())
+            self.assertTrue((dflt / "decisions").is_dir())
+            self.assertFalse((root / "inbox").exists())     # グローバル inbox は作らない
+
     def test_enqueue_targets_project_dir(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

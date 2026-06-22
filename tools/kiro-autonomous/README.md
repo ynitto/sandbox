@@ -17,9 +17,12 @@
 
 | 層 | 担当 | 実体 |
 |----|------|------|
-| プロジェクト層 | 目標(charter)→backlog 生成 / 達成評価 / 改善サイクル | `kiro-autonomous project` |
-| 外側（制御） | 優先順位付け / 検証ゲート / 積み直し / 収束 / 決定記録 / 安全ゲート | `kiro-autonomous run` |
+| 上位（目標駆動） | 目標(charter)→backlog 生成 / 達成評価 / 改善サイクル | `run`（charter あり） |
+| 外側（制御） | 優先順位付け / 検証ゲート / 積み直し / 収束 / 決定記録 / 安全ゲート | `run`（charter 無し） |
 | 内側（実行） | タスクの分解 → act → 内側 verify ループ | `kiro-flow run`（別ツール） |
+
+> **プロセスは `run` に一本化**。`<project>/charter.md` があれば `run` が自動で目標駆動（plan→execute→evaluate）に入る。
+> charter 無しは従来の backlog 消化ループ。`--watch` がそのまま「目標を満たすまで回り続ける常駐」になる。
 
 **正準ループ（5 点）**:
 
@@ -54,9 +57,9 @@ kiro-autonomous run --executor kiro                    # 自律消化（default 
 kiro-autonomous enqueue --project payments --title "…" --verify '…'
 kiro-autonomous run     --project payments --executor kiro
 
-# 目標から回す（プロジェクト層）。charter.md を書いて plan→execute→evaluate を回す
+# 目標から回す。charter.md を置けば run が自動で plan→execute→evaluate に入る（専用コマンド不要）
 cp tools/kiro-autonomous/charter.md.example .kiro-autonomous/projects/default/charter.md
-kiro-autonomous project --executor kiro
+kiro-autonomous run --executor kiro
 
 # 常駐: 新規タスク/フィードバックを監視して自動消化（idle 中はエージェント非起動）
 kiro-autonomous run --watch --poll 10 --executor kiro
@@ -126,6 +129,25 @@ kiro-autonomous run --location daemon --concurrency 3 --executor kiro
 ## 検証ゲートと安全（done を守る）
 
 verify は done 確定の唯一の根拠だが機械的合否でしかない。以下のゲートが多層で守る（既定はいずれも最小限）。
+
+### verify を人が書かなくてよくする（accept / verify_template）
+
+完了条件の決定的シェルは人には書きにくい。タスクは `verify` の代わりに次を持てる（最終的に concrete な `verify` に
+materialize され、「done は verify のみが根拠」の鉄則は不変）:
+
+- **`- verify_template: <名前> :: <引数…>`** … 決定的に展開（**エージェント不要**）。`file-contains :: <path> :: <文字列>` /
+  `file-exists :: <path>` / `defines :: <symbol> :: <path>` / `diff-contains :: <文字列>`（act 後の差分・`$KIRO_BASE_REV`）/
+  `cmd-succeeds :: <コマンド>`。enqueue 時に即展開。
+- **`- accept: <自然言語の完了条件>`** … 実行時にエージェントが**偽 done 防止規則を織り込んで決定的 verify を合成**し、
+  タスクへ書き戻す（`verify_source: synth`）。合成できなければ verify 空のまま＝従来どおり人へ。
+
+```bash
+kiro-autonomous enqueue --title "規約に最終更新日を表示" --verify-template 'file-contains :: web/terms.html :: 最終更新'
+kiro-autonomous enqueue --title "概要見出しを追加"       --accept "README に ## 概要 の見出しがある"
+```
+
+> verify を自分で書ければそれが最良（最も確実）。accept/template は「書けない人」の入口で、生成物はレビューできる
+> （タスクに残る）。シェルで検証できないものは auto-done させず検収ゲート（`- review: human`）で人承認に回すとよい。
 
 ### verify の鉄則と偽 done 対策
 
@@ -250,10 +272,11 @@ echo '{"title":"X","verify":"make test","priority":5,"after":"T1"}' | kiro-auton
 cp task.md .kiro-autonomous/projects/default/inbox/
 ```
 
-## プロジェクト層（`project`）— charter 駆動の長期改善ループ
+## 目標駆動（charter）— `run` の charter モード（長期改善ループ）
 
 backlog の上に、人が書く**目標（charter）**から逆算する evaluator-optimizer のもう一段。backlog を消化して
-`drained` で止まる正準ループに対し、`project` は「**枯渇**」と「**目標達成**」を分離して長期に回す。
+`drained` で止まる正準ループに対し、「**枯渇**」と「**目標達成**」を分離して長期に回す。**プロセスは `run` に一本化**され、
+`<project>/charter.md` があれば `run` が自動でこの三相に入る（専用 `project` コマンドは廃止）。
 
 ```
 charter.md（goal / constraints / assumptions / deliverables / acceptance=受入 verify ／ 任意 links）
@@ -271,14 +294,14 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   policy・feedback で方向修正。`--watch` は milestone 提示後も常駐し charter 更新を待つ。状態は `<project>/project.json`、
   各評価は `decisions/` に `project-evaluate` で監査記録。
 - **ワーカーへの定義/判断の注入**: kiro-flow への act 依頼に **charter（定義）と `decisions/<id>.md`（判断結果）**を有界に
-  注入（charter 1400 字・decisions 末尾 1000 字）。**`project` でも通常 `run` でも** charter.md があれば全 act に乗る
-  （無ければ空＝後方互換）。`## links` 先プロジェクトの定義＋判断（learn）も横展開で取り込む。
+  注入（charter 1400 字・decisions 末尾 1000 字）。charter.md があれば全 act に乗る（無ければ空＝後方互換）。`## links` 先
+  プロジェクトの定義＋判断（learn）も横展開で取り込む。
 
 ```bash
-kiro-autonomous project                      # plan→execute→evaluate（収束で人へ）
-kiro-autonomous project --watch              # 収束/人待ちでも常駐し charter 更新を待つ
-kiro-autonomous project --review-project     # acceptance 全 PASS でも短絡的達成を疑う
-kiro-autonomous approve <project> --reason "受領"   # 完了確定（最終納品書）
+kiro-autonomous run                          # charter があれば plan→execute→evaluate（収束で人へ）
+kiro-autonomous run --watch                  # 目標を満たすまで回り続ける常駐（charter 更新も待つ）
+kiro-autonomous run --review-project         # acceptance 全 PASS でも短絡的達成を疑う
+kiro-autonomous approve <project> --reason "受領"   # 完了確定（最終納品書）／続行は charter を更新して再実行
 ```
 
 ### 横展開リンク（charter.md の `## links`）
@@ -300,8 +323,7 @@ kiro-autonomous approve <project> --reason "受領"   # 完了確定（最終納
 
 ```bash
 kiro-autonomous enqueue --project payments --title "…" --verify '…'
-kiro-autonomous run     --project payments
-kiro-autonomous project --project payments
+kiro-autonomous run     --project payments        # charter があれば目標駆動・無ければ backlog 消化
 kiro-autonomous needs   --project payments        # per-project の判断待ち
 kiro-autonomous start   --project payments        # そのプロジェクトを常駐監視
 ```
@@ -360,10 +382,9 @@ kiro-autonomous runlog [--json --tail N]   # run 毎1行 JSON（reason/done/esca
 
 | コマンド | 役割 |
 |----------|------|
-| （省略）/ `run` [`--watch`] | 正準ループ（省略時は `run --watch`） |
-| `project` [`--watch`] | charter 駆動の plan→execute→evaluate |
+| （省略）/ `run` [`--watch`] | 正準ループ（省略時は `run --watch`）。**charter.md があれば自動で目標駆動** |
 | `triage` / `needs` / `rot` [`--fix`] | 優先順位付けのみ / 判断待ち表示 / rot 検出 |
-| `enqueue` [`--title --verify …`\|`--json`] | 取り込み口（`--project`） |
+| `enqueue` [`--title --verify\|--accept\|--verify-template …`\|`--json`] | 取り込み口（`--project`） |
 | `approve <id>` / `hold <id>` / `reprioritize <id> --pin\|--defer` | 決定記録を残す人の操作 |
 | `stats` / `runlog` / `audit` [`--strict`] | 計測 / 構造化ログ / Loop Readiness 採点 |
 | `promote` | 効いた学習を ltm-use へ昇格（手動） |

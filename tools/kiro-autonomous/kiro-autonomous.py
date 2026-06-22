@@ -81,7 +81,19 @@ class Task:
         return bool(p) and (p in self.id.lower() or p in self.title.lower())
 
     def feedback(self) -> "str | None":
-        return next((v for k, v in self.extra if k == "feedback"), None)
+        return self.get("feedback")
+
+    def get(self, key: str, default=None):
+        """追加フィールド（extra）の値。重複キーは dict と同じく最後を採る。"""
+        return dict(self.extra).get(key, default)
+
+    def set(self, key: str, value) -> None:
+        """追加フィールドを 1 つに正規化して設定（既存の同名は落としてから付け直す）。"""
+        self.drop(key)
+        self.extra.append((key, str(value)))
+
+    def drop(self, *keys: str) -> None:
+        self.extra = [(k, v) for k, v in self.extra if k not in keys]
 
 
 def _strip_code(val: str) -> str:
@@ -161,7 +173,7 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 #   ここへ流し込む。コアは stdlib のみ・ネットワーク非依存・決定的を保つ。
 # ---------------------------------------------------------------------------
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
-                      "after", "review", "note"}
+                      "after", "review", "note", "accept", "verify_template"}
 
 
 def _slug_id(text: str) -> str:
@@ -196,21 +208,30 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     if not title:
         raise ValueError("title は必須です")
     verify = _strip_code(str(spec.get("verify", "") or "").strip())
+    accept = str(spec.get("accept", "") or "").strip()
+    tmpl = str(spec.get("verify_template", "") or "").strip()
     tid = _gen_task_id(cfg, spec.get("id"), title)
-    status = str(spec.get("status", "") or "").strip() or ("ready" if verify else "inbox")
+    # verify が無くても accept / verify_template があれば「verify を用意できる」ので ready 扱い（後で展開/合成）
+    has_plan = bool(verify or accept or tmpl)
+    status = str(spec.get("status", "") or "").strip() or ("ready" if has_plan else "inbox")
     t = Task(id=tid, title=title, status=status, verify=verify,
              source=str(spec.get("source", "") or "enqueue"))
     try:
         t.priority = int(spec.get("priority", 0) or 0)
     except (TypeError, ValueError):
         t.priority = 0
-    for k in ("after", "review", "note"):           # 既知の追加フィールド
+    for k in ("after", "review", "note", "accept", "verify_template"):   # 既知の追加フィールド
         v = spec.get(k)
         if v not in (None, "", []):
             t.extra.append((k, ",".join(map(str, v)) if isinstance(v, list) else str(v)))
     for k, v in spec.items():                        # 未知キーも保持（取りこぼさない）
         if k not in ENQUEUE_KNOWN_KEYS and v not in (None, "", []):
             t.extra.append((str(k), str(v)))
+    if not t.verify and tmpl:                        # テンプレは決定的＝enqueue 時に即展開（エージェント不要）
+        ex = expand_verify_template(tmpl)
+        if ex:
+            t.verify = ex
+            t.extra.append(("verify_source", "template"))
     return t
 
 
@@ -242,8 +263,8 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
                 t.id = _unique_task_id(cfg, _slug_id(t.id) or "task")
                 if t.source == "human":
                     t.source = "inbox"
-                if t.norm_status() == "ready" and not t.verify:
-                    t.status = "inbox"               # verify 無しは人の triage へ（鉄則）
+                if t.norm_status() == "ready" and not has_verify_plan(t):
+                    t.status = "inbox"               # verify も用意材料(accept/template)も無ければ人の triage へ
                 cfg.backlog.mkdir(parents=True, exist_ok=True)
                 persist_task(cfg, t)
                 created.append(t)
@@ -352,7 +373,7 @@ _REVIEW_VALUES = {"human", "manual", "required", "yes", "true", "1"}
 def needs_human_review(task: "Task", policy: "Policy") -> bool:
     """verify PASS でも人の承認(検収)を要するか。タスクの `- review: human` か policy の
     `gate: <パターン>` 一致で gate（高リスク・不可逆・質的受け入れ等を人へ）。既定はゲート無し。"""
-    if dict(task.extra).get("review", "").strip().lower() in _REVIEW_VALUES:
+    if task.get("review", "").strip().lower() in _REVIEW_VALUES:
         return True
     return any(task.matches(p) for p in policy.gate)
 
@@ -397,11 +418,11 @@ def _autonomy_get(cfg: "Config", track: str, cache: "dict | None" = None) -> "di
 
 def resolve_level(task: "Task", cfg: "Config", cache: "dict | None" = None) -> str:
     """タスクの実効自律レベル。明示 `- level:` を最優先（ピン）、次に track の自動昇格、無ければグローバル。"""
-    explicit = dict(task.extra).get("level", "").strip().lower()
+    explicit = task.get("level", "").strip().lower()
     if explicit in LEVELS:
         return explicit
     if cfg.auto_level:
-        track = dict(task.extra).get("track", "").strip()
+        track = task.get("track", "").strip()
         if track:
             rec = _autonomy_get(cfg, track, cache)
             lvl = (rec or {}).get("level")
@@ -418,7 +439,7 @@ def autonomy_record(cfg: "Config", task: "Task", clean: bool,
     降格: 手戻り1件で assisted を下限に1段下げ、累計2回で assisted にピンし自動管理を停止。"""
     if not cfg.auto_level:
         return None
-    track = dict(task.extra).get("track", "").strip()
+    track = task.get("track", "").strip()
     if not track:
         return None
     rec = _autonomy_get(cfg, track, cache) or {
@@ -1211,7 +1232,7 @@ def detect_rot(cfg: "Config", tasks: "list[Task]") -> "list[tuple[Task, str]]":
     for t in tasks:
         if not t.consumable():
             continue
-        if not t.verify.strip():
+        if not has_verify_plan(t):                # accept / verify_template があれば verify を用意できる
             out.append((t, "unverifiable（verify 未定義）"))
             continue
         nt = normalize_title(t)
@@ -1295,7 +1316,7 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         fb = read_feedback(nf)
         was_review = t.norm_status() == "review"     # 検収待ちからの復帰か（自律度の clean/手戻り判定用）
         t.status = "ready"
-        t.extra = [(k, v) for k, v in t.extra if k != "feedback"]
+        t.drop("feedback")
         if fb:
             t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
         if was_review:                               # review→ feedback あり=差し戻し(手戻り) / 無し=承認(clean)
@@ -1326,7 +1347,7 @@ def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None
         lines.append("## 検収待ち（verify=PASS・承認で done 確定）")
         for t in review:
             lines.append(f"- {t.id}: {t.title}")
-            lines.append(f"    成果: {dict(t.extra).get('gate_ref', '')}")
+            lines.append(f"    成果: {t.get('gate_ref', '')}")
             lines.append(f"    対応: `kiro-autonomous approve {t.id}`（承認）／needs に方針を書いて差し戻し")
         lines.append("")
     if blocked:
@@ -1369,7 +1390,7 @@ def consumable_tasks(tasks: "list[Task]") -> "list[Task]":
 
 def task_deps(task: "Task") -> "list[str]":
     """`- after: T1, T2` の依存 ID 群（カンマ/空白区切り）。無ければ空。"""
-    raw = dict(task.extra).get("after", "")
+    raw = task.get("after", "")
     return [d for d in re.split(r"[,\s]+", raw.strip()) if d]
 
 
@@ -1539,7 +1560,7 @@ def triage(tasks, policy) -> "list[tuple[Task, str]]":
     transitions = []
     for t in tasks:
         st = t.norm_status()
-        if st == "inbox" and t.verify.strip():
+        if st == "inbox" and has_verify_plan(t):   # verify か、用意できる材料(accept/verify_template)があれば昇格
             t.status = "ready"
             st = "ready"
         if st in CONSUMABLE and any(t.matches(p) for p in policy.deny):
@@ -1578,6 +1599,97 @@ def run_verify_stable(cmd: str, workdir: Path, timeout: float,
             return (ok, True, f"flaky: verify が不安定（{confirm} 回中で PASS/FAIL 混在）"
                               f" — 1回目:[{msg}] 別回:[{msg2}]"[:500])
     return (ok, False, msg)                    # 全回一致＝安定した結果
+
+
+# ---------------------------------------------------------------------------
+# verify の用意（人が書く負担を減らす）。完了条件は決定的なシェルが正典だが、人が書くのは難しい。
+#   - `- verify_template: <名前> :: <引数...>` … 決定的に展開（エージェント不要）。
+#   - `- accept: <自然言語の完了条件>`         … エージェントが決定的 verify を合成（偽 done 防止規則を織込）。
+# どちらも最終的に concrete な `verify`（終了コード0=PASS）になり、done は verify のみが根拠の不変条件を保つ。
+# 合成/展開できなければ verify は空のまま＝従来どおり人へ（done 不能）。
+# ---------------------------------------------------------------------------
+def _sh_q(s: str) -> str:
+    return "'" + str(s).replace("'", "'\\''") + "'"
+
+
+def expand_verify_template(spec: str) -> "str | None":
+    """`<名前> :: <引数...>` を決定的なシェル verify に展開する（エージェント不要）。未知の名前は None。
+    鉄則どおり「履歴でなく最終状態/差分」を見る形にする（diff-contains は $KIRO_BASE_REV を使う）。"""
+    name, _, rest = (spec or "").partition("::")
+    name = name.strip().lower()
+    rest = rest.strip()
+    args = [x.strip() for x in rest.split("::")] if rest else []
+    if name in ("file-contains", "contains") and len(args) >= 2:
+        return f"grep -qF -- {_sh_q(args[1])} {_sh_q(args[0])}"        # path に needle を含む
+    if name in ("file-exists", "exists") and args:
+        return f"test -e {_sh_q(args[0])}"
+    if name in ("defines", "symbol") and len(args) >= 2:               # path に symbol を定義
+        sym, path = args[0], args[1]
+        pat = f"def +{sym}|function +{sym}|{sym} *=|class +{sym}"
+        return f"grep -qE {_sh_q(pat)} {_sh_q(path)}"
+    if name in ("diff-contains", "grep-diff") and args:               # act 後の差分に needle（履歴に騙されない）
+        return f'git log "$KIRO_BASE_REV"..HEAD -p 2>/dev/null | grep -qF -- {_sh_q(args[0])}'
+    if name in ("cmd-succeeds", "tests-pass", "cmd", "run") and rest:  # 残り全体をコマンドとして実行
+        return rest
+    return None
+
+
+def _synth_verify_prompt(title: str, accept: str) -> str:
+    return (
+        "次のタスクの『完了条件（自然言語）』を、**決定的なシェルコマンド**に変換してください。"
+        "終了コード 0 を PASS とみなします。\n"
+        "規則: ①「履歴」ではなく「望む最終状態 / 差分」を検査する"
+        "（`git log|grep` で過去コミットに当てない）②差分を見るなら環境変数 `$KIRO_BASE_REV`"
+        "（act 前の HEAD）を使い `git log \"$KIRO_BASE_REV\"..HEAD ...` の形にする"
+        "③外部状態に依存せず再現可能にする。\n"
+        f"タスク: {title}\n完了条件: {accept}\n\n"
+        "出力はコマンド 1 行のみ（説明・コードフェンス不要）。検証コマンドを書けない場合は空行を返す。")
+
+
+def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None) -> str:
+    """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
+    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。"""
+    run = kiro_run or _run_kiro_cli
+    try:
+        out = run(_synth_verify_prompt(title, accept), cfg.model)
+    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は合成せず人へ
+        return ""
+    for line in (out or "").splitlines():       # 先頭の意味ある行をコマンドとみなす
+        line = _strip_code(line.strip())
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
+def ensure_verify(cfg: "Config", task: "Task", kiro_run=None) -> bool:
+    """task に concrete な verify が無ければ `verify_template`（決定的）→ `accept`（合成）の順で用意する。
+    用意できたら task.verify を埋め `verify_source` を記録して True を返す（呼び出し側が persist する）。"""
+    if task.verify:
+        return False
+    ex = dict(task.extra)
+    tmpl = ex.get("verify_template", "").strip()
+    if tmpl:
+        cmd = expand_verify_template(tmpl)
+        if cmd:
+            task.verify = cmd
+            task.extra.append(("verify_source", "template"))
+            return True
+    accept = ex.get("accept", "").strip()
+    if accept:
+        cmd = synth_verify(cfg, task.title, accept, kiro_run)
+        if cmd:
+            task.verify = cmd
+            task.extra.append(("verify_source", "synth"))
+            return True
+    return False
+
+
+def has_verify_plan(task: "Task") -> bool:
+    """concrete な verify か、それを用意する材料（accept / verify_template）を持つか。"""
+    if task.verify:
+        return True
+    ex = dict(task.extra)
+    return bool(ex.get("accept", "").strip() or ex.get("verify_template", "").strip())
 
 
 def resolve_kiro_flow(explicit: "str | None") -> "list[str]":
@@ -2063,12 +2175,11 @@ def _escalate(cfg, task, reason, reasons, cycle):
     kiro-cli へ『自律的に積み直して解けるか』を諮り、可能なら needs を作らず ready に戻して回し続ける。
     verify を持たないタスク（acceptance 未定義）は対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
     if cfg.auto_adjudicate and not cfg.dry_run and task.verify:
-        done_n = int(dict(task.extra).get("adjudicated", "0") or "0")
+        done_n = int(task.get("adjudicated", "0") or "0")
         if done_n < cfg.adjudicate_max:
             decision, guide = adjudicate_escalation(cfg, task, reason)
             if decision == "requeue":
-                task.extra = [(k, v) for k, v in task.extra
-                              if k not in ("feedback", "adjudicated")]
+                task.drop("feedback", "adjudicated")
                 if guide:
                     task.extra.append(("feedback", guide.replace("\n", " ⏎ ")))
                 task.extra.append(("adjudicated", str(done_n + 1)))
@@ -2206,6 +2317,135 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
     return results
 
 
+def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle: int,
+                 dtok: int, dusd: float, git_base, verify_env, policy: "Policy",
+                 autonomy_cache: dict, reasons: dict) -> dict:
+    """act 済みタスクを検証ゲート（verify→回帰→保護→進捗→flake）に通し、done/review/retry/escalate を
+    確定する。副作用（persist/journal/needs/decision/delivery/archive）は内部で行い、run_loop が集計に使う
+    deltas（archived・followups）を返す。run_loop の per-task 本体を 1 か所に切り出したもの（挙動は不変）。"""
+    if location != "local":
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
+                       + (f"（{cfg.git_bus}）" if location == "remote" else ""))
+
+    ok, flaky, vmsg = run_verify_stable(task.verify, cfg.workdir, cfg.verify_timeout,
+                                        cfg.verify_confirm, verify_env)
+    regressed = False
+    if ok and not flaky and cfg.regression_cmd:        # done 確定前のグローバル回帰ゲート（巻き込み事故）
+        rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout, verify_env)
+        if not rok:
+            regressed = True
+            if cfg.regression_revert:
+                _revert_workdir(cfg)
+            _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}", reasons)
+            autonomy_record(cfg, task, clean=False, cache=autonomy_cache)   # 手戻り（track 信頼を下げる）
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
+                           + ("・revert 済" if cfg.regression_revert else ""))
+
+    changed: set = set()
+    protect_hits: list = []
+    if ok and not flaky and not regressed:
+        changed = meaningful_changes(cfg, git_base)    # act が生んだ成果差分（kiro 状態ファイルは除外）
+        if policy.protect:                             # act が保護パスを触ったか（safety denylist）
+            protect_hits = sorted({(p, m) for p in changed
+                                   if (m := path_protected(p, policy.protect))})
+    # no-progress: verify=PASS でも変更ゼロ＝履歴一致 verify による偽 done の疑い（opt-in）
+    _expect = task.get("expect", "")
+    require_prog = ((cfg.require_progress or _expect == "changes") and _expect != "none"
+                    and (cfg.workdir / ".git").exists())
+    no_progress = (ok and not flaky and not regressed and require_prog and not changed)
+    # 実効自律レベル（明示 - level: > track 自動昇格 > グローバル）。report は選択時に除外済み
+    assisted = resolve_level(task, cfg, autonomy_cache) == "assisted"
+
+    if flaky:
+        # verify が不安定（flake）→ 自動修正せず人へ隔離（NG churn / flaky PASS の done を防ぐ）
+        task.set("flake", "1")
+        _block(cfg, task, f"flake 検知（verify 不安定・自動修正せず隔離）: {vmsg}", reasons)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（flake 検知・quarantine）")
+    elif regressed:
+        pass                                  # 既に blocked 化済み。done/review にしない
+    elif no_progress:
+        # verify=PASS だが act が何も変更していない＝履歴一致 verify 等による偽 done の疑い → 人へ
+        task.set("noprogress", "1")
+        _block(cfg, task, "no-progress: verify=PASS だが baseline 以降の変更が無い"
+               "（履歴一致 verify による偽 done の疑い。verify を差分基準で見直すか expect: none を付与）",
+               reasons)
+        autonomy_record(cfg, task, clean=False, cache=autonomy_cache)       # 偽 done 疑い＝手戻り
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
+    elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
+        # verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ref = extract_delivery_ref(act_msg, cfg, git_base)
+        task.status = "review"
+        task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")
+        task.set("gate_ref", ref)
+        task.set("gate_ts", ts)
+        task.set("gate_vmsg", vmsg.replace("\n", " ")[:200])
+        if protect_hits:
+            paths = ", ".join(p for p, _ in protect_hits)
+            task.set("gate_protect", paths[:200])
+            gate_why = f"保護パス変更（protect）: {paths[:160]} — approve で done 確定"
+        elif assisted and not needs_human_review(task, policy):
+            gate_why = "assisted レベル（done は人が承認）。approve で done 確定、" \
+                       "フィードバック記入で差し戻し（再実行）"
+        else:
+            gate_why = "承認ゲート対象（review/policy.gate）。approve で done 確定、" \
+                       "フィードバック記入で差し戻し（再実行）"
+        disp = (f"（保護パス: {paths[:80]}）" if protect_hits
+                else "（assisted）" if assisted else "（承認ゲート）")
+        reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
+                            if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
+        persist_task(cfg, task)
+        write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
+    elif ok:
+        task.status = "done"
+        autonomy_record(cfg, task, clean=True, cache=autonomy_cache)        # 無人 auto-done＝clean 実績
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ref = extract_delivery_ref(act_msg, cfg, git_base)   # 成果参照（baseline 以降の新規のみ）
+        if dtok or dusd:                                  # コストを納品書に残し stats で集計可能に
+            task.extra.append(("cost", f"tokens={dtok} usd={dusd:.4f}"))
+        append_delivery(cfg, task, ref, ts)               # 受領書一覧に追記
+        if cfg.do_archive:
+            archive_task(cfg, task, vmsg, ref, ts)        # backlog → archive/（納品書付き）
+            done_disp = "DONE → archive（納品書）"
+        else:
+            delete_task_file(cfg, task)
+            done_disp = "DONE 削除"
+        clear_needs_file(cfg, task.id)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {ref}")
+        return {"archived": 1 if cfg.do_archive else 0, "followups": parse_followups(task, act_msg)}
+    else:
+        task.retries += 1
+        if not task.verify:
+            _escalate(cfg, task, "verify 未定義", reasons, cycle)
+            if task.norm_status() == "blocked":
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
+        elif task.retries > cfg.max_retries:
+            learned = find_learned_resolution(cfg, task) if cfg.learn else None
+            if learned and not task.get("autolearned"):
+                src, guide = learned
+                task.drop("feedback", "autolearned")
+                task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", "1")]
+                task.status = "ready"
+                persist_task(cfg, task)
+                append_decision(cfg, task.id, "auto",
+                                context=f"{task.id}（{task.title}）を学習で自動解決",
+                                action="auto-resolve", reason=f"learned from {src}: {guide[:120]}",
+                                affects=f"{task.id} → ready")
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
+                                            f"（{src} に倣う・通知を抑制）")
+            else:
+                _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons, cycle)
+                if task.norm_status() == "blocked":
+                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
+        else:
+            task.status = "ready"
+            persist_task(cfg, task)
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
+                                        f"({task.retries}/{cfg.max_retries}) — {vmsg}")
+    return {"archived": 0, "followups": []}
+
+
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     ensure_dirs(cfg)
     inboxed = ingest_inbox(cfg)                       # 外部ドロップ(inbox/)を backlog へ取り込む
@@ -2215,7 +2455,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
 
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
     pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review")}
-    transitions = list(triage(tasks, policy))
+    transitions = list(triage(tasks, policy))        # inbox→ready 昇格（verify か用意材料あり）・deny→blocked
     if cfg.rot:                                       # rot 検知（古い/重複/実行不能を掃除）
         transitions += [(t, f"rot: {why}") for t, why in detect_rot(cfg, tasks)]
     for t, why in transitions:
@@ -2224,6 +2464,10 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         reasons[t.id] = why
         write_needs_file(cfg, t, why)
         persist_task(cfg, t)
+    for t in tasks:                                   # accept/verify_template から concrete な verify を用意
+        if t.norm_status() in CONSUMABLE and not t.verify and ensure_verify(cfg, t):
+            persist_task(cfg, t)
+            append_journal(cfg.journal, f"verify 用意: {t.id} ← {t.get('verify_source')}")
 
     append_journal(cfg.journal, f"=== kiro-autonomous 開始 tasks={len(tasks)} "
                                 f"ingested={len(ingested)} planner={cfg.planner} "
@@ -2291,146 +2535,21 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             cycle += 1
             cycle_start = time.time()
             location, act_msg = act_results[task.id]
-            if location != "local":
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
-                                            + (f"（{cfg.git_bus}）" if location == "remote" else ""))
             dtok, dusd = parse_cost(act_msg)             # このサイクルのコストを計上（予算ゲート用）
             tokens_used += dtok
             cost_used += dusd
             if dtok or dusd:
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
                                             f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
-
-            ok, flaky, vmsg = run_verify_stable(task.verify, cfg.workdir, cfg.verify_timeout,
-                                                cfg.verify_confirm, verify_env)
-            regressed = False
-            if ok and not flaky and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故の検知）
-                rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout, verify_env)
-                if not rok:
-                    regressed = True
-                    if cfg.regression_revert:
-                        _revert_workdir(cfg)
-                    _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}",
-                           reasons)
-                    autonomy_record(cfg, task, clean=False, cache=autonomy_cache)  # 手戻り（track 信頼を下げる）
-                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
-                                   + ("・revert 済" if cfg.regression_revert else ""))
-            changed = set()
-            protect_hits = []
-            if ok and not flaky and not regressed:
-                changed = meaningful_changes(cfg, git_base)   # act が生んだ成果差分（kiro 状態ファイルは除外）
-                if policy.protect:                        # act が保護パスを触ったか（safety denylist）
-                    protect_hits = sorted({(p, m) for p in changed
-                                           if (m := path_protected(p, policy.protect))})
-            # no-progress: verify=PASS でも変更ゼロ＝履歴一致 verify による偽 done の疑い（opt-in）
-            _expect = dict(task.extra).get("expect", "")
-            require_prog = ((cfg.require_progress or _expect == "changes") and _expect != "none"
-                            and (cfg.workdir / ".git").exists())
-            no_progress = (ok and not flaky and not regressed and require_prog and not changed)
-            # 実効自律レベル（明示 - level: > track 自動昇格 > グローバル）。report は選択時に除外済み
-            assisted = resolve_level(task, cfg, autonomy_cache) == "assisted"
-            if flaky:
-                # verify が不安定（flake）→ 自動修正せず人へ隔離（NG churn / flaky PASS の done を防ぐ）
-                task.extra = [(k, v) for k, v in task.extra if k != "flake"]
-                task.extra.append(("flake", "1"))
-                _block(cfg, task, f"flake 検知（verify 不安定・自動修正せず隔離）: {vmsg}", reasons)
-                append_journal(cfg.journal,
-                               f"cycle {cycle}: {task.id} → 人の判断（flake 検知・quarantine）")
-            elif regressed:
-                pass                          # 既に blocked 化済み。done/review にしない
-            elif no_progress:
-                # verify=PASS だが act が何も変更していない＝履歴一致 verify 等による偽 done の疑い → 人へ
-                task.extra = [(k, v) for k, v in task.extra if k != "noprogress"]
-                task.extra.append(("noprogress", "1"))
-                _block(cfg, task, "no-progress: verify=PASS だが baseline 以降の変更が無い"
-                       "（履歴一致 verify による偽 done の疑い。verify を差分基準で見直すか expect: none を付与）",
-                       reasons)
-                autonomy_record(cfg, task, clean=False, cache=autonomy_cache)  # 偽 done 疑い＝手戻り
-                append_journal(cfg.journal,
-                               f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
-            elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
-                # verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ref = extract_delivery_ref(act_msg, cfg, git_base)
-                task.status = "review"
-                task.extra = [(k, v) for k, v in task.extra
-                              if k not in ("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")]
-                task.extra += [("gate_ref", ref), ("gate_ts", ts),
-                               ("gate_vmsg", vmsg.replace("\n", " ")[:200])]
-                if protect_hits:
-                    paths = ", ".join(p for p, _ in protect_hits)
-                    task.extra.append(("gate_protect", paths[:200]))
-                    gate_why = f"保護パス変更（protect）: {paths[:160]} — approve で done 確定"
-                elif assisted and not needs_human_review(task, policy):
-                    gate_why = "assisted レベル（done は人が承認）。approve で done 確定、" \
-                               "フィードバック記入で差し戻し（再実行）"
-                else:
-                    gate_why = "承認ゲート対象（review/policy.gate）。approve で done 確定、" \
-                               "フィードバック記入で差し戻し（再実行）"
-                reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
-                                    if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
-                persist_task(cfg, task)
-                write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True)
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち"
-                               + (f"（保護パス: {paths[:80]}）" if protect_hits
-                                  else "（assisted）" if assisted else "（承認ゲート）")
-                               + f" — {ref}")
-            elif ok:
-                task.status = "done"
-                autonomy_record(cfg, task, clean=True, cache=autonomy_cache)  # 無人 auto-done＝clean 実績
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ref = extract_delivery_ref(act_msg, cfg, git_base)  # 成果参照（baseline 以降の新規のみ）
-                if dtok or dusd:                             # コストを納品書に残し stats で集計可能に
-                    task.extra.append(("cost", f"tokens={dtok} usd={dusd:.4f}"))
-                append_delivery(cfg, task, ref, ts)          # 受領書一覧に追記
-                if cfg.do_archive:
-                    archive_task(cfg, task, vmsg, ref, ts)   # backlog → archive/（納品書付き）
-                    archived += 1
-                    done_disp = "DONE → archive（納品書）"
-                else:
-                    delete_task_file(cfg, task)
-                    done_disp = "DONE 削除"
-                clear_needs_file(cfg, task.id)
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {ref}")
-                specs = parse_followups(task, act_msg)        # done から派生タスクを生む（backlog 自走）
-                if specs and spawned_total < cfg.max_spawn:
-                    new = spawn_followups(cfg, task, specs, tasks, cfg.max_spawn - spawned_total)
-                    spawned_total += len(new)
-                    if new:
-                        append_journal(cfg.journal, f"cycle {cycle}: {task.id} から派生生成 "
-                                                    f"{[t.id for t in new]}")
-            else:
-                task.retries += 1
-                if not task.verify:
-                    _escalate(cfg, task, "verify 未定義", reasons, cycle)
-                    if task.norm_status() == "blocked":
-                        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
-                elif task.retries > cfg.max_retries:
-                    learned = find_learned_resolution(cfg, task) if cfg.learn else None
-                    if learned and not dict(task.extra).get("autolearned"):
-                        src, guide = learned
-                        task.extra = [(k, v) for k, v in task.extra
-                                      if k not in ("feedback", "autolearned")]
-                        task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", "1")]
-                        task.status = "ready"
-                        persist_task(cfg, task)
-                        append_decision(cfg, task.id, "auto",
-                                        context=f"{task.id}（{task.title}）を学習で自動解決",
-                                        action="auto-resolve", reason=f"learned from {src}: {guide[:120]}",
-                                        affects=f"{task.id} → ready")
-                        append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
-                                                    f"（{src} に倣う・通知を抑制）")
-                    else:
-                        _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}",
-                                  reasons, cycle)
-                        if task.norm_status() == "blocked":
-                            append_journal(cfg.journal,
-                                           f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
-                else:
-                    task.status = "ready"
-                    persist_task(cfg, task)
-                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
-                                                f"({task.retries}/{cfg.max_retries}) — {vmsg}")
+            res = _settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,
+                               verify_env, policy, autonomy_cache, reasons)
+            archived += res["archived"]
+            if res["followups"] and spawned_total < cfg.max_spawn:   # done から派生タスク（backlog 自走）
+                new = spawn_followups(cfg, task, res["followups"], tasks, cfg.max_spawn - spawned_total)
+                spawned_total += len(new)
+                if new:
+                    append_journal(cfg.journal,
+                                   f"cycle {cycle}: {task.id} から派生生成 {[t.id for t in new]}")
 
             release_claim(cfg, task)          # doing でなくなったので実行権を解放
             if cfg.once:
@@ -2552,7 +2671,7 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         vmsg = ex.get("gate_vmsg", "")
         t.status = "done"
         autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
-        t.extra = [(k, v) for k, v in t.extra if k not in ("gate_ref", "gate_ts", "gate_vmsg")]
+        t.drop("gate_ref", "gate_ts", "gate_vmsg")
         append_delivery(cfg, t, ref, ts)
         disp = "done（承認・納品書）"
         if cfg.do_archive:
@@ -2648,7 +2767,7 @@ def compute_stats(cfg: Config) -> dict:
     pending_human = by_status.get("blocked", 0) + by_status.get("review", 0)
     tok_total, usd_total = 0, 0.0                         # 納品書の `- cost: tokens=.. usd=..` を集計
     for t in arch_tasks:
-        dt, du = parse_cost("@cost " + dict(t.extra).get("cost", ""))
+        dt, du = parse_cost("@cost " + t.get("cost", ""))
         tok_total += dt
         usd_total += du
     return {
@@ -2681,7 +2800,9 @@ def compute_audit(cfg: Config) -> dict:
     policy = load_policy(cfg.policy)
     protect = list(getattr(policy, "protect", []) or [])
     ready = consumable_tasks(tasks)
-    ready_no_verify = [t.id for t in ready if not (t.verify or "").strip()]
+    # accept / verify_template を持つタスクは実行時に concrete な verify が用意されるので「verify 無し」に数えない
+    # （detect_rot / run_loop S0 と整合させる）。
+    ready_no_verify = [t.id for t in ready if not has_verify_plan(t)]
     has_cost_budget = bool(cfg.max_tokens) or bool(cfg.max_cost)
     near_cap = [t.id for t in ready if cfg.max_retries and t.retries >= cfg.max_retries]
     state_ok = cfg.decisions.exists() or cfg.journal.exists()
@@ -2898,7 +3019,8 @@ def cmd_enqueue(cfg: Config, args) -> int:
     else:
         specs = [{"id": args.id, "title": args.title, "verify": args.verify,
                   "priority": args.priority, "source": args.source, "status": args.status,
-                  "after": args.after, "review": args.review, "note": args.note}]
+                  "after": args.after, "review": args.review, "note": args.note,
+                  "accept": args.accept, "verify_template": args.verify_template}]
     created = []
     for sp in specs:
         if not isinstance(sp, dict):
@@ -2910,7 +3032,14 @@ def cmd_enqueue(cfg: Config, args) -> int:
             print(f"enqueue 失敗: {e}", file=sys.stderr)
             return 2
     for t in created:
-        warn = "" if t.verify else "  ⚠ verify 未定義 → inbox（人の triage へ）"
+        if t.verify:
+            warn = ""
+        elif t.get("accept"):
+            warn = "  （accept から実行時に verify を合成）"
+        elif t.get("verify_template"):
+            warn = "  ⚠ verify_template が未知 → inbox"
+        else:
+            warn = "  ⚠ verify 未定義 → inbox（人の triage へ）"
         print(f"enqueued {t.id} [{t.norm_status()}] {t.title}{warn}")
     return 0
 
@@ -2933,7 +3062,9 @@ def cmd_triage(cfg: Config) -> int:
 
 def cmd_run(cfg: Config) -> int:
     ensure_dirs(cfg)
+    charter = load_charter(cfg)                  # charter.md があれば run が自動で目標駆動になる（§6）
     reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
+    hb = lambda: refresh_instance(reg)
     try:
         if cfg.watch:
             # 常駐のみ: stop からの SIGTERM を KeyboardInterrupt 化し finally で後始末させる
@@ -2942,8 +3073,13 @@ def cmd_run(cfg: Config) -> int:
                               lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
             except (ValueError, OSError):  # メインスレッド以外/未対応では無視
                 pass
-            run_watch(cfg, heartbeat=lambda: refresh_instance(reg))
+            if charter is not None:
+                project_watch(cfg, heartbeat=hb)       # 目標を満たすまで回り続ける常駐
+            else:
+                run_watch(cfg, heartbeat=hb)           # backlog 監視の常駐
             return 0
+        if charter is not None:
+            return cmd_project(cfg, heartbeat=hb)       # charter 駆動の単発（plan→execute→evaluate）
         result = run_loop(cfg)
         counts = result["counts"]
         if result.get("level") == "report":          # report: 消化せず計画だけ提示
@@ -2978,7 +3114,7 @@ def cmd_run(cfg: Config) -> int:
 
 # ---------------------------------------------------------------------------
 # プロジェクト層（charter 駆動の plan→execute→evaluate ループ）
-#   設計: docs/designs/kiro-autonomous-design.md §11（プロジェクト層）
+#   設計: docs/designs/kiro-autonomous-design.md §6（プロジェクト層）
 #   backlog の上に「目標→分解→消化→評価→改善」のもう一段を載せる。内側の正準ループ（run_loop）は
 #   無改造で呼ぶ。done は acceptance(=verify) 全 PASS のみが根拠。知能（分解・敵対的レビュー）は
 #   エージェントへ委譲し、本体は決定的なファイル操作（charter 解釈・enqueue・acceptance 実行・収束計算）
@@ -3301,9 +3437,9 @@ def project_exit_code(reason: str) -> int:
     return 1   # converged / no-progress / blocked / no-acceptance は人の対応待ち
 
 
-def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop) -> int:
-    """charter 駆動の plan→execute→evaluate ループ（1 プロジェクトパス）。planner/reviewer/runner は
-    テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
+def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None) -> int:
+    """charter 駆動の plan→execute→evaluate ループ（1 プロジェクトパス。`run` が charter 検出時に呼ぶ）。
+    planner/reviewer/runner は テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
     ensure_dirs(cfg)
     charter = load_charter(cfg)
     if charter is None:
@@ -3336,6 +3472,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop) -> 
 
     while True:
         cycle += 1
+        if heartbeat:
+            heartbeat()                  # 長い改善ループ中も生存信号を更新（リモート発見の鮮度）
         if cycle > cfg.max_project_cycles:
             reason = REASON_PROJECT_BUDGET
             break
@@ -3412,26 +3550,28 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop) -> 
         write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）")
     append_journal(cfg.journal, f"=== project 停止 reason={reason} cycles={cycle} "
                                 f"cost={cost_used:.4f} ===")
-    print(f"\n=== kiro-autonomous project: {charter.name} ===")
+    print(f"\n=== kiro-autonomous run（charter 駆動: {charter.name}）===")
     print(f"停止理由 : {reason}")
     print(f"概況     : {last_summary or '（評価前に停止）'}")
     if reason == REASON_PROJECT_CONVERGED:
         print(f"→ 収束候補。受領: kiro-autonomous approve {pid} --reason ...  "
-              f"／ 続行: charter.md を更新して再実行")
+              f"／ 続行: charter.md を更新して run を再実行")
     elif reason != REASON_PROJECT_ACCEPTED:
         print(f"→ 人の対応待ち: needs/{pid}.md を確認")
     return project_exit_code(reason)
 
 
 def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
-                  sleeper=time.sleep, max_passes=None) -> int:
-    """`project --watch`: 1 パスごとに plan→execute→evaluate を回し、人待ちで止まったら charter 更新/
-    フィードバックを poll で拾って再開する（idle 中はエージェント非起動）。"""
+                  sleeper=time.sleep, max_passes=None, heartbeat=None) -> int:
+    """`run --watch`（charter あり）: 1 パスごとに plan→execute→evaluate を回し、人待ちで止まったら
+    charter 更新/フィードバックを poll で拾って再開する（idle 中はエージェント非起動）。"""
     passes = 0
     code = 0
     while True:
-        code = cmd_project(cfg, planner, reviewer, runner)
+        code = cmd_project(cfg, planner, reviewer, runner, heartbeat=heartbeat)
         passes += 1
+        if heartbeat:
+            heartbeat()
         if max_passes is not None and passes >= max_passes:
             return code
         charter = load_charter(cfg)
@@ -3442,6 +3582,8 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
         append_journal(cfg.journal, "=== project watch: 監視中（charter 更新/フィードバック待ち）===")
         while True:                  # idle: charter が変わるか、人のフィードバックが来たら再開
             sleeper(cfg.poll)
+            if heartbeat:
+                heartbeat()
             nf = needs_path(cfg, pid)
             if nf.exists() and read_feedback(nf):
                 clear_needs_file(cfg, pid)
@@ -3655,7 +3797,7 @@ def _add_common(sp):
     sp.add_argument("--needs", default=None, help="要対応ディレクトリ（既定 <root>/needs）")
     sp.add_argument("--archive", default=None, help="done の退避先（既定 <root>/archive）")
     sp.add_argument("--delivery", default=None, help="納品一覧（既定 <root>/DELIVERY.md）")
-    sp.add_argument("--inbox", default=None, help="取り込み待ちのドロップ口（既定 <root>/inbox）")
+    sp.add_argument("--inbox", default=None, help="取り込み待ちのドロップ口（既定 <project>/inbox）")
     sp.add_argument("--debounce", type=float, default=None,
                     help="watch 中、最終保存からこの秒数は feedback 取込を待つ（誤発火防止。既定 3）")
     sp.add_argument("--workdir", default=None)
@@ -3724,7 +3866,8 @@ def main(argv=None) -> int:
                     "サブコマンドを省略すると常駐監視（run --watch）で起動し backlog 投入を待ち続ける")
     sub = p.add_subparsers(dest="cmd", required=False)
 
-    run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束）")
+    run = sub.add_parser("run", help="正準ループ（優先順位付け→実行→検証→積み直し→収束）。"
+                                     "<project>/charter.md があれば自動で目標駆動（plan→execute→evaluate）")
     _add_common(run)
     run.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
@@ -3760,30 +3903,17 @@ def main(argv=None) -> int:
                      help="act を飛ばし verify のみ")
     run.add_argument("--once", action=argparse.BooleanOptionalAction, default=None,
                      help="1 タスクだけ処理して終了")
-
-    # project: charter 駆動の plan→execute→evaluate ループ（run を内側に呼ぶ外側の一段）
-    prj = sub.add_parser("project",
-                         help="charter（目標/制約/前提/成果物/acceptance）駆動の長期改善ループ")
-    _add_common(prj)
-    prj.add_argument("--charter", default=None,
-                     help="プロジェクト憲章ファイル（既定 <root>/charter.md）")
-    prj.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
-                     help="収束/人待ちで止まっても常駐し charter 更新/フィードバックを待つ")
-    prj.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
-    prj.add_argument("--review-project", action=argparse.BooleanOptionalAction, default=None,
-                     help="evaluate で敵対的レビューを上乗せ（acceptance 全 PASS でも短絡的達成を疑う・opt-in）")
-    prj.add_argument("--max-project-cycles", type=int, default=None,
-                     help="改善サイクルの上限（有限停止・既定 5）")
-    prj.add_argument("--max-project-cost", type=float, default=None,
-                     help="プロジェクト累計コスト上限(USD・0=無制限)")
-    prj.add_argument("--project-stall", type=int, default=None,
-                     help="acceptance PASS 数が増えない連続回数の上限→人へ（既定 2）")
-    prj.add_argument("--level", default=None, choices=["report", "assisted", "unattended"],
-                     help="内側 run の自律度（既定 unattended）")
-    prj.add_argument("--no-archive", dest="do_archive", action="store_const", const=False,
-                     default=None, help="done を archive/ へ退避せず削除")
-    prj.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None,
-                     help="内側 act を飛ばし verify のみ")
+    # charter 駆動（目標から回す）。<project>/charter.md があれば run が自動で plan→execute→evaluate に入る
+    run.add_argument("--charter", default=None,
+                     help="プロジェクト憲章ファイル（既定 <project>/charter.md。あれば run が目標駆動になる）")
+    run.add_argument("--review-project", action=argparse.BooleanOptionalAction, default=None,
+                     help="charter 駆動時、evaluate で敵対的レビューを上乗せ（全 PASS でも短絡的達成を疑う・opt-in）")
+    run.add_argument("--max-project-cycles", type=int, default=None,
+                     help="charter 駆動時の改善サイクル上限（有限停止・既定 5）")
+    run.add_argument("--max-project-cost", type=float, default=None,
+                     help="charter 駆動時のプロジェクト累計コスト上限(USD・0=無制限)")
+    run.add_argument("--project-stall", type=int, default=None,
+                     help="charter 駆動時、acceptance PASS 数が増えない連続回数の上限→人へ（既定 2）")
 
     for name, helptext in [("triage", "優先順位付けのみ（inbox→ready 昇格・policy 適用）"),
                            ("needs", "人の判断待ち（blocked / need_intake）を表示"),
@@ -3807,7 +3937,11 @@ def main(argv=None) -> int:
     enq = sub.add_parser("enqueue", help="汎用の取り込み口（CLI/stdin/JSON から backlog タスクを作る）")
     _add_common(enq)
     enq.add_argument("--title", default=None, help="タスクのタイトル（必須・--json 時は不要）")
-    enq.add_argument("--verify", default=None, help="done 確定の verify コマンド（無いと inbox=人の triage へ）")
+    enq.add_argument("--verify", default=None, help="done 確定の verify コマンド（書ければこれが最良）")
+    enq.add_argument("--accept", default=None,
+                     help="完了条件を自然言語で（verify が書けない人向け。実行時にエージェントが決定的 verify を合成）")
+    enq.add_argument("--verify-template", default=None,
+                     help="決定的テンプレで verify を生成（例 'file-contains :: path :: 文字列'。エージェント不要）")
     enq.add_argument("--priority", type=int, default=0, help="優先度（大きいほど高優先・既定 0）")
     enq.add_argument("--source", default=None, help="出所（既定 enqueue）")
     enq.add_argument("--status", default=None, help="status を明示（既定: verify 有→ready / 無→inbox）")
@@ -3855,7 +3989,7 @@ def main(argv=None) -> int:
 
     # サブコマンドを省略して呼ばれたら「常駐監視（run --watch）」を既定にする。
     # PC 起動時に立ち上げっぱなしにして backlog 投入を待つ使い方を一級にするため。
-    _subcommands = {"run", "project", "triage", "needs", "promote", "rot", "stats", "audit",
+    _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "enqueue", "approve", "hold", "reprioritize", "instances",
                     "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
@@ -3888,7 +4022,6 @@ def main(argv=None) -> int:
 
     return {
         "run": lambda: cmd_run(cfg),
-        "project": lambda: (project_watch(cfg) if cfg.watch else cmd_project(cfg)),
         "triage": lambda: cmd_triage(cfg),
         "needs": lambda: cmd_needs(cfg),
         "enqueue": lambda: cmd_enqueue(cfg, args),
