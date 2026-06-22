@@ -6,7 +6,9 @@ kiro-flow の --planner flow-planner で呼び出される。
 
 Usage:
     python3 plan.py "<要求>" [--model <model>] [--review auto|true|false]
+                    [--granularity coarse|fine|finest]
     → JSON を stdout に出力: {"strategy": {...}, "tasks": [...]}
+    granularity は分解の細かさ（coarse=現状/fine=1段細/finest=2段細）。kiro-flow は finest を渡す。
 """
 from __future__ import annotations
 
@@ -348,8 +350,22 @@ def phase2_select(request: str, analysis: dict, catalog: dict,
     return strategy
 
 
+GRANULARITY_FACTORS = {"coarse": 1, "fine": 2, "finest": 3}
+
+
+def granularity_directive(level: str) -> str:
+    """分解の細かさ指示。coarse は空（現状どおり）。fine/finest で原子的な細分化を促す。"""
+    f = GRANULARITY_FACTORS.get((level or "coarse").lower(), 1)
+    if f <= 1:
+        return ""
+    unit = "1ファイル/1関数/1観点" if f >= 3 else "意味のある最小単位"
+    return (f"分解の粒度: 通常より細かく、各タスクを{unit}まで原子的に分解すること。"
+            f"目安は通常の約{f}倍の数の小さなタスク（ただし無意味な細分化・重複は避け、"
+            "各タスクは独立に検証可能に保つこと）。")
+
+
 def phase3_build(request: str, analysis: dict, strategy: dict,
-                 model: str | None) -> list[dict]:
+                 model: str | None, granularity: str = "coarse") -> list[dict]:
     """Phase 3: グラフ生成。"""
     subtasks = "\n".join(
         f"- {s}" for s in analysis.get("subtasks", [])
@@ -363,6 +379,9 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
         subtasks=subtasks or "(Phase 1 で特定されず)",
         request=request,
     )
+    note = granularity_directive(granularity)
+    if note:
+        prompt = note + "\n\n" + prompt
     raw = run_kiro(prompt, model)
     tasks = extract_json(raw)
     if not isinstance(tasks, list):
@@ -373,7 +392,8 @@ def phase3_build(request: str, analysis: dict, strategy: dict,
     return tasks
 
 
-def plan(request: str, model: str | None = None, review="auto") -> tuple[dict, list[dict]]:
+def plan(request: str, model: str | None = None, review="auto",
+         granularity: str = "coarse") -> tuple[dict, list[dict]]:
     """3段パイプラインを実行し (strategy, tasks) を返す。"""
     catalog = load_catalog()
     if catalog is None:
@@ -385,8 +405,8 @@ def plan(request: str, model: str | None = None, review="auto") -> tuple[dict, l
     # Phase 2
     strategy = phase2_select(request, analysis, catalog, model, review)
 
-    # Phase 3
-    tasks = phase3_build(request, analysis, strategy, model)
+    # Phase 3（granularity で分解の細かさを指示）
+    tasks = phase3_build(request, analysis, strategy, model, granularity)
 
     # 正規化（kiro-flow 互換）
     valid_kinds = {"work", "generate", "classify", "synthesize", "verify",
@@ -434,6 +454,9 @@ def main():
     parser.add_argument("--model", default=None, help="kiro-cli に渡すモデル")
     parser.add_argument("--review", default="auto",
                         help="検証gate: auto/true/false")
+    parser.add_argument("--granularity", default="coarse",
+                        choices=["coarse", "fine", "finest"],
+                        help="分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細)")
     args = parser.parse_args()
 
     review = args.review
@@ -443,7 +466,7 @@ def main():
         review = False
 
     try:
-        strategy, tasks = plan(args.request, args.model, review)
+        strategy, tasks = plan(args.request, args.model, review, args.granularity)
         result = {"strategy": strategy, "tasks": tasks}
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except Exception as e:

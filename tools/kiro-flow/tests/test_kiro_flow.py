@@ -511,6 +511,48 @@ class PatternStrategyTests(unittest.TestCase):
         self.assertEqual(len([t for t in tasks if t["kind"] == "judge"]), 1)
 
 
+class GranularityTests(unittest.TestCase):
+    def test_factor_levels(self):
+        self.assertEqual(kf.granularity_factor("coarse"), 1)
+        self.assertEqual(kf.granularity_factor("fine"), 2)
+        self.assertEqual(kf.granularity_factor("finest"), 3)
+        self.assertEqual(kf.granularity_factor(None), 3)        # 既定は最も細かい
+        self.assertEqual(kf.granularity_factor("unknown"), 3)
+
+    def test_directive_empty_for_coarse(self):
+        self.assertEqual(kf.granularity_directive("coarse"), "")
+        self.assertIn("細か", kf.granularity_directive("fine"))
+        self.assertIn("細か", kf.granularity_directive("finest"))
+
+    def test_stub_scales_node_count_by_granularity(self):
+        # 同じ要求でも粒度が細かいほど並列ノードが増える（明示並列が無い場合）。
+        # plan_stub は単一セグメントで乱数を使うため、同一 base になるよう seed を固定する
+        import random
+        req = "最良案を選ぶ tournament"            # generate ノード数 = parallelism
+
+        def plan(g):
+            random.seed(0)
+            return kf.plan_strategy_stub(req, granularity=g)
+
+        coarse, ctasks = plan("coarse")
+        fine, _ = plan("fine")
+        finest, ftasks = plan("finest")
+        self.assertLess(coarse["parallelism"], fine["parallelism"])
+        self.assertLess(fine["parallelism"], finest["parallelism"])
+        self.assertEqual(fine["parallelism"], coarse["parallelism"] * 2)
+        self.assertEqual(finest["parallelism"], coarse["parallelism"] * 3)
+        gens = lambda ts: len([t for t in ts if t["kind"] == "generate"])
+        self.assertGreater(gens(ftasks), gens(ctasks))           # 細かいほどノードが多い
+
+    def test_explicit_parallelism_not_scaled(self):
+        # 要求に "x3" 等の明示があれば粒度倍率は効かせない（ユーザ指定を尊重）
+        strat, _ = kf.plan_strategy_stub("案を出して選ぶ tournament x3", granularity="finest")
+        self.assertEqual(strat["parallelism"], 3)
+
+    def test_scale_parallelism_caps_at_16(self):
+        self.assertEqual(kf.scale_parallelism(6, "finest"), 16)   # 6*3=18 → 16 にクランプ
+
+
 class DaemonPrimitiveTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-daemon-")

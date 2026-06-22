@@ -112,6 +112,7 @@ CONFIG_DEFAULTS = {
     "model": None,
     "planner": "flow-planner",
     "executor": "kiro",
+    "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
     "max_workers": 4,
     "max_iterations": 3,
     "max_fanout": 50,
@@ -836,6 +837,44 @@ def _parallelism(request: str, default: int) -> int:
     return max(2, min(6, default))
 
 
+# --------------------------------------------------------------------------
+# 分解の粒度（granularity）— 設定ファイルで調整。coarse=現状 / fine=1段細かい /
+#   finest=2段細かい（既定）。factor は並列ノード数の倍率＋プロンプトの分解指示に効く。
+# --------------------------------------------------------------------------
+GRANULARITY_FACTORS = {"coarse": 1, "fine": 2, "finest": 3}
+
+
+def granularity_factor(level: "str | None") -> int:
+    """粒度レベルを倍率（1/2/3）に。未知値は既定（finest=3）。"""
+    return GRANULARITY_FACTORS.get((level or "finest").lower(), 3)
+
+
+def scale_parallelism(par: int, level: "str | None") -> int:
+    """並列ノード数を粒度倍率でスケールする（細かいほど多く・上限 16）。"""
+    return max(1, min(16, int(par) * granularity_factor(level)))
+
+
+def _explicit_parallelism(request: str) -> bool:
+    """要求に並列数が明示（"x3"/"並列3"）されているか。明示なら粒度倍率を効かせない。"""
+    return bool(re.search(r"[x×]\s*\d+", request) or re.search(r"並列\s*\d+", request))
+
+
+def maybe_scale_parallelism(request: str, par: int, level: "str | None") -> int:
+    """要求に明示が無いときだけ並列数を粒度倍率でスケールする（明示指定は尊重）。"""
+    return par if _explicit_parallelism(request) else scale_parallelism(par, level)
+
+
+def granularity_directive(level: "str | None") -> str:
+    """プランナーへ渡す分解の細かさ指示。coarse は空（現状どおり）。"""
+    f = granularity_factor(level)
+    if f <= 1:
+        return ""
+    unit = "1ファイル/1関数/1観点" if f >= 3 else "意味のある最小単位"
+    return (f"分解の粒度: 通常より細かく、各タスクを{unit}まで原子的に分解すること。"
+            f"目安は通常の約{f}倍の数の小さなタスク（ただし無意味な細分化・重複は避け、"
+            "各タスクは独立に検証可能に保つこと）。")
+
+
 def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = False):
     """選んだパターンを初期タスクグラフ（kind 付き）へ落とし込む。"""
     short = request.strip()[:48]
@@ -879,23 +918,27 @@ def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = Fals
                     "deps": gen_ids, "kind": "synthesize"}]
 
 
-def plan_strategy_stub(request: str, review="auto"):
+def plan_strategy_stub(request: str, review="auto", granularity="finest"):
     """要求からパターンと並列数を選び、初期グラフを作る（kiro 無し版）。
-    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。"""
+    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
+    granularity で並列ノード数（=分解の細かさ）をスケールする。"""
     pattern = _detect_pattern(request)
     base = plan_stub(request)
-    par = _parallelism(request, len([t for t in base if not t["deps"]]))
+    par = maybe_scale_parallelism(request, _parallelism(request, len([t for t in base if not t["deps"]])),
+                                  granularity)
     review = _review_decision(review, [pattern])
     tasks = _strategy_to_graph(pattern, request, par, review)
     patterns = [pattern] + (["adversarial-verification"] if review and pattern != "adversarial-verification" else [])
     strategy = {"patterns": patterns, "parallelism": par, "review": review,
-                "reason": f"stub heuristic → {pattern}" + ("（統合前レビュー有）" if review else "")}
+                "reason": f"stub heuristic → {pattern}（粒度 {granularity}）"
+                          + ("（統合前レビュー有）" if review else "")}
     return strategy, tasks
 
 
-def plan_strategy_kiro(request: str, model: str | None, review="auto"):
+def plan_strategy_kiro(request: str, model: str | None, review="auto", granularity="finest"):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
-    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。"""
+    review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
+    granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。"""
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     compose = ("必要なら複数パターンを多段に複合してよい（例: classify-and-act の各分岐を "
                "fan-out-and-synthesize にする / generate-and-filter の通過案で tournament を行う）。")
@@ -903,12 +946,14 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto"):
     # 返ってきた patterns を見て _review_decision で確定する）。
     review_note = ("統合（synthesize/reduce）を伴うパターンでは、集約の前に verify ノードを 1 つ挟み、"
                    "事前チェック・敵対的レビューを行ってください。" if review is not False else "")
+    gran_note = granularity_directive(granularity)
     prompt = (
         "あなたは分散 Dynamic Workflow の計画役です。以下のワークフローパターンを知っています:\n"
         f"{catalog}\n\n"
         "patterns に書けるのは上記 7 つのパターン名だけです。派生語・同義語は使わず、"
         "近いものは必ず上記の正規名へ読み替えてください（例: 'panel of verifiers'→adversarial-verification）。\n"
-        f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
+        + (gran_note + "\n" if gran_note else "")
+        + f"要求に最も適したパターンと並列数を選び、{compose}{review_note}"
         "それを反映した初期タスクグラフを作ってください。各タスクには kind を付けます"
         "（kind はノード種別であってパターン名ではありません。patterns には書かないこと）: "
         "work/generate/classify/synthesize/verify/filter/judge/reduce/split"
@@ -934,13 +979,13 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto"):
         patterns = [p for p in (data.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"]
         strategy = {
             "patterns": patterns,
-            "parallelism": int(data.get("parallelism", 2) or 2),
+            "parallelism": maybe_scale_parallelism(request, int(data.get("parallelism", 2) or 2), granularity),
             "review": _review_decision(review, patterns),
             "reason": str(data.get("reason", "")),
         }
         return strategy, tasks
     except Exception:  # noqa: BLE001 — 解釈できなければ stub の戦略に倒す
-        return plan_strategy_stub(request, review)
+        return plan_strategy_stub(request, review, granularity)
 
 
 def _find_flow_planner_script():
@@ -982,14 +1027,15 @@ def _find_flow_planner_script():
     return None
 
 
-def plan_strategy_flow_planner(request: str, model: str | None, review="auto"):
+def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="finest"):
     """flow-planner スキルの3段パイプラインを呼び出す。
-    スキルが見つからない / 失敗した場合は plan_strategy_kiro にフォールバック。"""
+    スキルが見つからない / 失敗した場合は plan_strategy_kiro にフォールバック。
+    granularity はスキルへ `--granularity` で渡し、返ってきた並列数も粒度倍率でスケールする。"""
     script = _find_flow_planner_script()
     if not script:
         # flow-planner スキル未インストール → kiro planner にフォールバック
-        return plan_strategy_kiro(request, model, review)
-    cmd = [sys.executable, script, request]
+        return plan_strategy_kiro(request, model, review, granularity)
+    cmd = [sys.executable, script, request, "--granularity", str(granularity)]
     if model:
         cmd += ["--model", model]
     if isinstance(review, bool):
@@ -1009,14 +1055,14 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto"):
         patterns = [p for p in (strategy.get("patterns") or []) if p in PATTERNS] or ["fan-out-and-synthesize"]
         final_strategy = {
             "patterns": patterns,
-            "parallelism": int(strategy.get("parallelism", 2) or 2),
+            "parallelism": maybe_scale_parallelism(request, int(strategy.get("parallelism", 2) or 2), granularity),
             "review": _review_decision(review, patterns) if not isinstance(strategy.get("review"), bool)
                       else strategy["review"],
-            "reason": f"[flow-planner] {strategy.get('reason', '')}",
+            "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {granularity}）",
         }
         return final_strategy, tasks
     except Exception:  # noqa: BLE001 — flow-planner 失敗時は kiro にフォールバック
-        return plan_strategy_kiro(request, model, review)
+        return plan_strategy_kiro(request, model, review, granularity)
 
 
 # --------------------------------------------------------------------------
@@ -1360,11 +1406,12 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
 # --------------------------------------------------------------------------
 def _plan_strategy(args):
     review = getattr(args, "review", "auto")  # 'auto'/True/False の三値
+    gran = getattr(args, "granularity", "finest")
     if args.planner == "flow-planner":
-        return plan_strategy_flow_planner(args.request, args.model, review)
+        return plan_strategy_flow_planner(args.request, args.model, review, gran)
     if args.planner == "kiro":
-        return plan_strategy_kiro(args.request, args.model, review)
-    return plan_strategy_stub(args.request, review)
+        return plan_strategy_kiro(args.request, args.model, review, gran)
+    return plan_strategy_stub(args.request, review, gran)
 
 
 def _continue(args, request, nodes, results, iteration, strategy=None):
@@ -1661,6 +1708,7 @@ def cmd_run(args) -> int:
         base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
     for r in (getattr(args, "repos", None) or []):
         base += ["--repo", r]     # 成果物リポジトリを orchestrator/worker へ伝搬
+    base += ["--granularity", str(getattr(args, "granularity", "finest") or "finest")]  # 分解粒度
     mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus_root}"
 
     procs = []
@@ -1842,6 +1890,7 @@ def cmd_daemon(args) -> int:
                 for r in (req.get("repos") or []):   # 要求に紐づく成果物リポジトリを run meta へ載せる
                     repo_args += ["--repo", r]
                 p = subprocess.Popen(base + repo_args + [
+                    "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
                     "--run-id", req_id, "orchestrate", "--request", req["request"],
                     "--planner", args.planner, "--executor", args.executor,
                     "--max-iterations", str(args.max_iterations),
@@ -2346,6 +2395,9 @@ def main() -> int:
     p.add_argument("--repo", dest="repos", action="append", default=None,
                    help="成果物リポジトリ URL（複数指定可）。worker が temp 領域へ clone してから"
                         "作業し、作業後に必ず消す。push が必要・中身を読む必要があるタスク用")
+    p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
+                   help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
+                        "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     p.add_argument("--keep-clone", dest="cleanup_clone", action="store_const", const=False,
