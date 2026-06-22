@@ -183,7 +183,7 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 #   ここへ流し込む。コアは stdlib のみ・ネットワーク非依存・決定的を保つ。
 # ---------------------------------------------------------------------------
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
-                      "after", "review", "note", "accept", "verify_template"}
+                      "after", "review", "note", "accept", "verify_template", "repos"}
 
 
 def _slug_id(text: str) -> str:
@@ -230,7 +230,7 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
         t.priority = int(spec.get("priority", 0) or 0)
     except (TypeError, ValueError):
         t.priority = 0
-    for k in ("after", "review", "note", "accept", "verify_template"):   # 既知の追加フィールド
+    for k in ("after", "review", "note", "accept", "verify_template", "repos"):   # 既知の追加フィールド
         v = spec.get(k)
         if v not in (None, "", []):
             t.extra.append((k, ",".join(map(str, v)) if isinstance(v, list) else str(v)))
@@ -1875,9 +1875,41 @@ def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
     return base
 
 
+def task_repo_urls(cfg: "Config", task: Task) -> "list[str]":
+    """タスクの `- repos:` を charter の repos で解決して URL の列にする。
+    トークンは charter の name/url、または素の URL。必要なタスクだけが repos を持つ
+    （宣言の無いタスクは空＝従来どおり clone しない）。"""
+    raw = task.get("repos")
+    if not raw:
+        return []
+    try:
+        rmap = charter_repo_map(load_charter(cfg))
+    except (OSError, ValueError):
+        rmap = {}
+    out: "list[str]" = []
+    for tok in re.split(r"[,\s]+", str(raw).strip()):
+        tok = _strip_code(tok)
+        if not tok:
+            continue
+        url = rmap.get(tok)
+        if not url and ("://" in tok or "@" in tok or tok.endswith(".git")):
+            url = tok                       # charter に無くても素の URL ならそのまま使う
+        if url and url not in out:
+            out.append(url)
+    return out
+
+
+def _repo_cmd_args(cfg: "Config", task: Task) -> "list[str]":
+    """kiro-flow へ渡す `--repo <url>` 列（成果物リポジトリの伝搬）。"""
+    args: "list[str]" = []
+    for url in task_repo_urls(cfg, task):
+        args += ["--repo", url]
+    return args
+
+
 def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
     """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。"""
-    return _kf_base(cfg, use_git) + [
+    return _kf_base(cfg, use_git) + _repo_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
         "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
 
@@ -1972,7 +2004,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
 
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
-    base = _kf_base(cfg, use_git)
+    base = _kf_base(cfg, use_git) + _repo_cmd_args(cfg, task)
     try:
         sub = subprocess.run(base + ["submit", build_request(task, cfg)], cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
@@ -3085,7 +3117,8 @@ def cmd_enqueue(cfg: Config, args) -> int:
         specs = [{"id": args.id, "title": args.title, "verify": args.verify,
                   "priority": args.priority, "source": args.source, "status": args.status,
                   "after": args.after, "review": args.review, "note": args.note,
-                  "accept": args.accept, "verify_template": args.verify_template}]
+                  "accept": args.accept, "verify_template": args.verify_template,
+                  "repos": _coerce_repos(getattr(args, "repos", None))}]
     created = []
     for sp in specs:
         if not isinstance(sp, dict):
@@ -3300,6 +3333,7 @@ class Charter:
     deliverables: "list[str]" = field(default_factory=list)
     acceptance: "list[str]" = field(default_factory=list)   # 受入 verify（シェルコマンド）
     links: "list[str]" = field(default_factory=list)        # 横展開リンク（他プロジェクト名/相対パス）
+    repos: "list[str]" = field(default_factory=list)        # 成果物リポジトリ URL（`name = url` も可）
     raw: str = ""
 
 
@@ -3343,7 +3377,34 @@ def parse_charter(text: str) -> Charter:
     ch.deliverables = _charter_bullets(sections.get("deliverables", []))
     ch.acceptance = _charter_bullets(sections.get("acceptance", []))
     ch.links = _charter_bullets(sections.get("links", []))
+    ch.repos = _charter_bullets(sections.get("repos", [])) or _charter_bullets(
+        sections.get("repositories", []))
     return ch
+
+
+def _repo_token_parts(token: str) -> "tuple[str, str]":
+    """charter の repos 行 `name = url` または `url` を (name, url) に分解する。
+    name 省略時は URL の末尾（.git 除く）を name とする。"""
+    if "=" in token:
+        name, url = token.split("=", 1)
+        name, url = name.strip(), url.strip()
+    else:
+        name, url = "", token.strip()
+    if not name:
+        base = url.rstrip("/").split("/")[-1]
+        name = base[:-4] if base.endswith(".git") else base
+    return name, url
+
+
+def charter_repo_map(ch: "Charter | None") -> "dict[str, str]":
+    """charter の repos を {name: url} と {url: url} の両引きできる辞書にする。"""
+    out: "dict[str, str]" = {}
+    for token in (ch.repos if ch else []):
+        name, url = _repo_token_parts(token)
+        if url:
+            out[name] = url
+            out[url] = url
+    return out
 
 
 def load_charter(cfg: "Config") -> "Charter | None":
@@ -3439,6 +3500,17 @@ def _extract_json_array(text: str) -> "list | None":
     return None
 
 
+def _coerce_repos(v) -> "list[str]":
+    """エージェント出力の repos（list/str/None）を name/url の文字列リストへ正規化する。"""
+    if not v:
+        return []
+    if isinstance(v, str):
+        return [x for x in (s.strip() for s in re.split(r"[,\s]+", v)) if x]
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return []
+
+
 def build_charter_request(charter: "Charter") -> str:
     """charter を分解要求の文章に組み立てる（plan フェーズで kiro-flow/エージェントへ渡す）。"""
     parts = [f"プロジェクト目標: {charter.goal}"]
@@ -3450,6 +3522,11 @@ def build_charter_request(charter: "Charter") -> str:
         parts.append("成果物:\n" + "\n".join(f"- {d}" for d in charter.deliverables))
     if charter.acceptance:
         parts.append("受入条件(満たすべき検証):\n" + "\n".join(f"- {a}" for a in charter.acceptance))
+    rmap = charter_repo_map(charter)
+    names = [n for n in rmap if rmap.get(n) != n]   # name → url の name 側だけ列挙
+    if names:
+        parts.append("利用可能なリポジトリ（中身を読む/ push する必要があるタスクにのみ割当）:\n"
+                     + "\n".join(f"- {n} = {rmap[n]}" for n in names))
     return "\n\n".join(parts)
 
 
@@ -3460,6 +3537,8 @@ def _plan_decompose_prompt(charter: "Charter") -> str:
         + build_charter_request(charter)
         + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str} で、verify は"
         " 終了コード0をPASSとみなすシェルコマンド（『履歴』でなく『望む最終状態/差分』を見ること）。"
+        " そのタスクが特定リポジトリの中身を読む/ push する必要があるなら、利用可能なリポジトリの名前で"
+        " \"repos\": [\"name\", ...] を付ける（不要なタスクには付けない）。"
         " 検証コマンドを書けない曖昧なタスクは含めないでください。")
 
 
@@ -3477,6 +3556,7 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
         if isinstance(item, dict) and str(item.get("title", "")).strip():
             specs.append({"title": str(item["title"]).strip(),
                           "verify": _strip_code(str(item.get("verify", "") or "").strip()),
+                          "repos": _coerce_repos(item.get("repos")),
                           "source": "charter"})
     return specs
 
@@ -3500,6 +3580,7 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     arr = _extract_json_array(out) or []
     return [{"title": str(i["title"]).strip(),
              "verify": _strip_code(str(i.get("verify", "") or "").strip()),
+             "repos": _coerce_repos(i.get("repos")),
              "source": "review"}
             for i in arr if isinstance(i, dict) and str(i.get("title", "")).strip()]
 
@@ -4126,6 +4207,9 @@ def main(argv=None) -> int:
     enq.add_argument("--source", default=None, help="出所（既定 enqueue）")
     enq.add_argument("--status", default=None, help="status を明示（既定: verify 有→ready / 無→inbox）")
     enq.add_argument("--after", default=None, help="依存タスク ID（カンマ区切り。DAG）")
+    enq.add_argument("--repos", default=None,
+                     help="このタスクが clone して作業する成果物リポジトリ（charter の name か URL・"
+                          "カンマ区切りで複数可）。worker が temp 領域へ clone してから作業し作業後に消す")
     enq.add_argument("--review", default=None, help="検収ゲート（human で done 前に承認）")
     enq.add_argument("--note", default=None, help="メモ（保持される）")
     enq.add_argument("--id", default=None, help="タスク ID を明示（既定はタイトルから自動生成）")

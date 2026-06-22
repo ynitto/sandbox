@@ -300,6 +300,12 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
 - **ワーカーへの定義/判断の注入**: kiro-flow への act 依頼に **charter（定義）と `decisions/<id>.md`（判断結果）**を有界に
   注入（charter 1400 字・decisions 末尾 1000 字）。charter.md があれば全 act に乗る（無ければ空＝後方互換）。`## links` 先
   プロジェクトの定義＋判断（learn）も横展開で取り込む。
+- **成果物リポジトリ（`## repos`）の伝搬**: charter の `## repos`（`name = url` か素の url・複数可）を repo レジストリとし、
+  プランナーが「その repo の中身を読む / push する必要があるタスク」にだけ `repos` を割り当てる（手積みは
+  `enqueue --repos app,lib`）。kiro-autonomous は該当タスクの act 依頼に `--repo <url>` を付け、**kiro-flow の worker が
+  各 repo を temp 領域へ clone してから作業し、作業後に必ず消す**（orchestrator の作業ツリーを汚さない）。repos を
+  宣言しないタスクは clone しない（必要なものだけ・後方互換）。local / daemon / remote のどの location でも同じ
+  （repos は run の bus メタ経由で worker に届く）。
 
 ```bash
 kiro-autonomous run                          # charter があれば plan→execute→evaluate（収束で人へ）

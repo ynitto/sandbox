@@ -106,6 +106,7 @@ CONFIG_DEFAULTS = {
     "git_branch": "main",
     "git_subdir": "",
     "lock_dir": None,   # daemon singleton ロックの置き場（外部 daemon の発見性を担保。既定 tempdir 配下）
+    "repos": [],        # 成果物リポジトリ URL。worker が temp 領域へ clone してから作業し、作業後に消す
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
@@ -269,14 +270,21 @@ class Bus:
         for d in (self.tasks_dir, self.claims_dir, self.results_dir, self.events_dir):
             os.makedirs(d, exist_ok=True)
 
-    def ensure_run(self, request: str) -> None:
+    def ensure_run(self, request: str, repos: "list[str] | None" = None) -> None:
         self.ensure_dirs()
         if read_json(self.meta_path) is None:
             write_json_atomic(self.meta_path, {
                 "request": request,
+                "repos": list(repos or []),   # 成果物リポジトリ（worker が clone してから作業）
                 "status": "planning",
                 "created_at": now_iso(),
             })
+
+    def run_repos(self) -> "list[str]":
+        """この run の成果物リポジトリ URL 一覧（meta に記録、worker が clone する）。"""
+        meta = read_json(self.meta_path) or {}
+        r = meta.get("repos")
+        return list(r) if isinstance(r, list) else []
 
     # --- メタ / グラフ ---
     def set_status(self, status: str) -> None:
@@ -471,11 +479,13 @@ class Bus:
                    if v.node_state(nid) == "pending" and deps_satisfied(v, node))
 
     # --- inbox（要求キュー）と要求 claim ---
-    def submit_request(self, req_id: str, request: str, submitter: str) -> None:
+    def submit_request(self, req_id: str, request: str, submitter: str,
+                       repos: "list[str] | None" = None) -> None:
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), {
             "id": req_id,
             "request": request,
             "submitter": submitter,
+            "repos": list(repos or []),   # 成果物リポジトリを daemon の orchestrate へ伝搬する
             "submitted_at": now_iso(),
         })
 
@@ -617,6 +627,76 @@ def cleanup_active_clones() -> None:
             bus.cleanup_clone()
         except Exception:  # noqa: BLE001 — 掃除失敗で終了処理を止めない
             pass
+
+
+# --------------------------------------------------------------------------
+# 成果物リポジトリ — worker が temp 領域へ clone してから作業し、作業後に必ず消す。
+#   push が必要なもの・中身を読む必要があるもの（複数可）を、orchestrator の
+#   作業ツリーを汚さずに分離して扱うための仕組み。clone はプロセス内で再利用する。
+# --------------------------------------------------------------------------
+_work_repos_cache: "dict[str, str]" = {}   # url -> clone パス（""=clone 失敗）
+_work_repos_root: "str | None" = None
+
+
+def _repo_name(url: str) -> str:
+    base = url.rstrip("/").split("/")[-1]
+    if base.endswith(".git"):
+        base = base[:-4]
+    return _safe(base) or "repo"
+
+
+def ensure_work_repos(repos: "list[str]", node_id: str) -> "list[tuple[str, str]]":
+    """成果物リポジトリを worker 専用の temp 領域へ clone する（プロセス内でキャッシュ）。
+    (url, path) の列を返す（path=""=clone 失敗）。作業後に cleanup_work_repos で必ず消す。"""
+    global _work_repos_root
+    out: "list[tuple[str, str]]" = []
+    if not repos:
+        return out
+    if _work_repos_root is None:
+        _work_repos_root = tempfile.mkdtemp(prefix=f"kiro-flow-repos-{_safe(node_id)}-")
+    for url in repos:
+        if url in _work_repos_cache:
+            out.append((url, _work_repos_cache[url]))
+            continue
+        dest = os.path.join(_work_repos_root, _repo_name(url))
+        n = 2
+        while os.path.exists(dest):                 # 同名 repo の衝突回避
+            dest = os.path.join(_work_repos_root, f"{_repo_name(url)}-{n}")
+            n += 1
+        try:
+            r = subprocess.run(["git", "clone", url, dest],
+                               capture_output=True, text=True, timeout=600)
+            path = dest if r.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            path = ""
+        _work_repos_cache[url] = path
+        out.append((url, path))
+    return out
+
+
+def cleanup_work_repos() -> None:
+    """worker が clone した成果物リポジトリを丸ごと削除する（作業後クリーンは必須）。"""
+    global _work_repos_root
+    if _work_repos_root and os.path.isdir(_work_repos_root):
+        shutil.rmtree(_work_repos_root, ignore_errors=True)
+    _work_repos_root = None
+    _work_repos_cache.clear()
+
+
+def repo_instruction(clones: "list[tuple[str, str]]") -> str:
+    """clone 済みの成果物リポジトリをエージェントに伝える決定的な指示ブロック。"""
+    if not clones:
+        return ""
+    lines = ["【成果物リポジトリ】以下はこのタスク用に clone 済みです。"
+             "読み書きは必ずこのパス内で行い、変更は commit して push すること"
+             "（orchestrator の作業ツリーなど他の場所は編集しない）:"]
+    for url, path in clones:
+        if path:
+            lines.append(f"  - {url} → {path}")
+    failed = [url for url, path in clones if not path]
+    if failed:
+        lines.append("  ※ clone 失敗（必要なら手動で取得・push 不可の可能性）: " + ", ".join(failed))
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
@@ -1360,7 +1440,7 @@ def cmd_orchestrate(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
     bus.sync_pull()
-    bus.ensure_run(args.request)
+    bus.ensure_run(args.request, getattr(args, "repos", None))
     graph = bus.read_graph()
 
     # 既存グラフがあれば計画をやり直さず再開（resume）
@@ -1490,6 +1570,8 @@ def cmd_work(args) -> int:
     idle_exit = getattr(args, "idle_exit", False)
     log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive}, "
              f"idle_exit={idle_exit})")
+    # 親（run/daemon）からの SIGTERM でも成果物リポジトリの clone を消してから抜ける
+    signal.signal(signal.SIGTERM, lambda *_: (cleanup_work_repos(), sys.exit(143)))
     time.sleep(random.uniform(0, args.poll))  # 負荷分散: 起動位相をずらす
 
     idle_polls = 0
@@ -1521,15 +1603,20 @@ def cmd_work(args) -> int:
 
         # 依存の成果は構造化データ込みの完全な result dict で渡す
         dep_results = _collect_dep_results(bus, node, kind)
+        # 成果物リポジトリ（この run のもの）を temp 領域へ clone し、エージェントへパスを渡す
+        goal = node["goal"]
+        clones = ensure_work_repos(bus.run_repos(), who)
+        if clones:
+            goal = repo_instruction(clones) + "\n\n" + goal
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
         rdata = None
         try:
             if args.executor == "kiro":
-                output, rdata = execute_kiro(kind, node["goal"], dep_results, args.model)
+                output, rdata = execute_kiro(kind, goal, dep_results, args.model)
             else:
-                output, rdata = execute_stub(kind, node["goal"], dep_results, args.model)
+                output, rdata = execute_stub(kind, goal, dep_results, args.model)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
@@ -1572,6 +1659,8 @@ def cmd_run(args) -> int:
                  "--git-subdir", args.git_subdir or ""]
     if not getattr(args, "cleanup_clone", True):
         base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
+    for r in (getattr(args, "repos", None) or []):
+        base += ["--repo", r]     # 成果物リポジトリを orchestrator/worker へ伝搬
     mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus_root}"
 
     procs = []
@@ -1641,7 +1730,8 @@ def cmd_submit(args) -> int:
     req_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
     bus = make_bus(args, "submitter")
     bus.sync_pull()
-    bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}")
+    bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
+                       repos=getattr(args, "repos", None))
     bus.sync_push(f"submit request {req_id}")
     print(req_id)  # run-id を標準出力（スクリプトから拾える）
     print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
@@ -1748,7 +1838,10 @@ def cmd_daemon(args) -> int:
             if not req:
                 continue
             if bus.claim_request(req_id, daemon_id, args.lease):
-                p = subprocess.Popen(base + [
+                repo_args = []
+                for r in (req.get("repos") or []):   # 要求に紐づく成果物リポジトリを run meta へ載せる
+                    repo_args += ["--repo", r]
+                p = subprocess.Popen(base + repo_args + [
                     "--run-id", req_id, "orchestrate", "--request", req["request"],
                     "--planner", args.planner, "--executor", args.executor,
                     "--max-iterations", str(args.max_iterations),
@@ -2250,6 +2343,9 @@ def main() -> int:
     p.add_argument("--lock-dir", dest="lock_dir", default=None,
                    help="daemon singleton ロックの置き場（設定ファイル lock_dir と同義。"
                         "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
+    p.add_argument("--repo", dest="repos", action="append", default=None,
+                   help="成果物リポジトリ URL（複数指定可）。worker が temp 領域へ clone してから"
+                        "作業し、作業後に必ず消す。push が必要・中身を読む必要があるタスク用")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     p.add_argument("--keep-clone", dest="cleanup_clone", action="store_const", const=False,
@@ -2360,6 +2456,7 @@ def main() -> int:
         # 作業後に sparse-checkout クローンを削除する（--keep-clone で抑止可）
         if getattr(args, "cleanup_clone", True):
             cleanup_active_clones()
+        cleanup_work_repos()   # 成果物リポジトリの clone は常に消す（作業後クリーンは必須）
 
 
 if __name__ == "__main__":

@@ -2088,6 +2088,49 @@ class TestProjectLayer(unittest.TestCase):
         self.assertEqual(ch.deliverables, ["report.py"])
         self.assertEqual(ch.acceptance, ["test -f x"])
 
+    def test_parse_charter_repos(self):
+        ch = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- app = https://git/app.git\n- https://git/lib.git\n")
+        self.assertEqual(ch.repos, ["app = https://git/app.git", "https://git/lib.git"])
+        rmap = km.charter_repo_map(ch)
+        self.assertEqual(rmap["app"], "https://git/app.git")     # name 引き
+        self.assertEqual(rmap["lib"], "https://git/lib.git")     # URL 末尾を name に
+        self.assertEqual(rmap["https://git/app.git"], "https://git/app.git")  # URL 引き
+
+    def test_task_repo_urls_resolved_from_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n- app = https://git/app.git\n")
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "app")])
+            self.assertEqual(km.task_repo_urls(cfg, t), ["https://git/app.git"])
+            # charter に無い素の URL はそのまま通す。宣言の無いタスクは空（clone しない）
+            t2 = km.Task(id="T2", title="y", verify="true", extra=[("repos", "https://x/raw.git")])
+            self.assertEqual(km.task_repo_urls(cfg, t2), ["https://x/raw.git"])
+            self.assertEqual(km.task_repo_urls(cfg, km.Task(id="T3", title="z")), [])
+
+    def test_repos_propagated_to_kiro_flow_cmd(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n- app = https://git/app.git\n")
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "app")])
+            cmd = km.build_kiro_flow_cmd(t, cfg)
+            self.assertIn("--repo", cmd)
+            self.assertIn("https://git/app.git", cmd)
+            # repos の無いタスクは --repo を付けない（必要なものだけ）
+            self.assertNotIn("--repo", km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg))
+
+    def test_repos_spec_roundtrips_to_task(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = km.task_from_spec(cfg, {"title": "x", "verify": "true", "repos": ["app", "lib"]})
+            self.assertEqual(t.get("repos"), "app,lib")
+            t2 = km.parse_task(km.serialize_task(t), t.id)      # 永続化往復で保持
+            self.assertEqual(t2.get("repos"), "app,lib")
+
     def test_run_autodetects_charter(self):
         # run は charter.md があれば自動で目標駆動になる（project サブコマンドは廃止・1プロセス統合）
         with tempfile.TemporaryDirectory() as d:

@@ -533,6 +533,40 @@ class DaemonPrimitiveTests(unittest.TestCase):
         kf.Bus(self.tmp, "req1").ensure_run("x")  # 既に run が作られている
         self.assertFalse(self.bus.claim_request("req1", "daemonC", 60))
 
+    def test_run_repos_roundtrip_via_meta(self):
+        # 成果物リポジトリは run meta に載り、submit→inbox でも伝搬する
+        b = kf.Bus(self.tmp, "runR")
+        b.ensure_run("goal", repos=["https://x/a.git", "https://x/b.git"])
+        self.assertEqual(b.run_repos(), ["https://x/a.git", "https://x/b.git"])
+        self.bus.submit_request("reqR", "do", "t", repos=["https://x/c.git"])
+        self.assertEqual(self.bus.read_inbox("reqR")["repos"], ["https://x/c.git"])
+
+    def test_ensure_work_repos_clones_and_cleans(self):
+        # ローカルの「リモート」を git init で用意し、clone→作業後 cleanup を検証
+        remote = os.path.join(self.tmp, "remote_repo")
+        os.makedirs(remote)
+        subprocess.run(["git", "init", "-q", remote], check=True)
+        subprocess.run(["git", "-C", remote, "config", "user.email", "t@t"], check=True)
+        subprocess.run(["git", "-C", remote, "config", "user.name", "t"], check=True)
+        open(os.path.join(remote, "f.txt"), "w").close()
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "init"], check=True)
+        try:
+            clones = kf.ensure_work_repos([remote], "worker-1")
+            self.assertEqual(len(clones), 1)
+            url, path = clones[0]
+            self.assertTrue(path and os.path.isdir(os.path.join(path, ".git")))
+            self.assertIn(path, kf.repo_instruction(clones))   # エージェントへ渡す指示にパスが入る
+        finally:
+            kf.cleanup_work_repos()
+        self.assertFalse(path and os.path.exists(path))        # 作業後に消える（クリーン必須）
+
+    def test_ensure_work_repos_marks_failed_clone(self):
+        clones = kf.ensure_work_repos([os.path.join(self.tmp, "does_not_exist")], "w")
+        self.addCleanup(kf.cleanup_work_repos)
+        self.assertEqual(clones[0][1], "")                     # clone 失敗は path 空
+        self.assertIn("clone 失敗", kf.repo_instruction(clones))
+
     def test_remove_run_also_purges_inbox(self):
         # gc（remove_run）は対応する inbox 要求と claim も消す。残すと run_exists が
         # 再び False になり、デーモンが完了済み要求を再実行してしまう（resurrection 防止）。

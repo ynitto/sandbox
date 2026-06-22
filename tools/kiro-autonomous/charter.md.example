@@ -12,7 +12,7 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
     kiro-autonomous run --watch              # 目標を満たすまで回り続ける常駐（charter 更新も待つ）
     kiro-autonomous approve <project> --reason "受領"   # 収束候補を完了確定（最終納品書）
 
-書式（`## <key>` セクション。key は goal/constraints/assumptions/deliverables/acceptance）:
+書式（`## <key>` セクション。key は goal/constraints/assumptions/deliverables/acceptance/repos/links）:
 
 鉄則:
 1. **プロジェクト done の唯一の根拠は `acceptance` 全 PASS**（各行＝終了コード0をPASSとみなすシェルコマンド）。
@@ -45,6 +45,14 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 - `pytest -q tests/`
 - `python report.py sample.csv | grep -q "Summary"`
 - `grep -q "## Usage" README.md`
+
+## repos
+# 成果物リポジトリ（任意・複数可）。`name = url` か素の `url` で書く。プランナーは「その repo の中身を
+# 読む / push する必要があるタスク」にだけ repos を割り当て、kiro-flow の worker がそのリポジトリを
+# temp 領域へ clone してから作業し、作業後に必ず消す（orchestrator の作業ツリーを汚さない）。
+# 手で積むタスクには `kiro-autonomous enqueue --repos app,lib ...` で明示も可能。
+# - app = git@example.com:team/app.git
+# - https://example.com/team/lib.git
 
 ## links
 # 他プロジェクトへの横展開リンク（任意）。リンク先の charter 定義(目標/制約)と decisions の learn(人の判断)を
