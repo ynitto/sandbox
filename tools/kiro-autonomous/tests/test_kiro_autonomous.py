@@ -1566,6 +1566,23 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(km.cmd_stop(root=str(work), project="default"), 0)
         self.assertEqual(km.select_instances(root=root), [])    # 停止で消える
 
+    def test_start_defaults_to_all_daemon(self):
+        # daemon（start）は --project 未指定なら all で起動し、"all" センチネルを登録する
+        work = Path(tempfile.mkdtemp())
+        (work / "kiro-autonomous.json").write_text(
+            '{"executor":"stub","planner":"none","flow_planner":"stub","poll":0.3}', encoding="utf-8")
+        cfgp = str(work / "kiro-autonomous.json")
+        self.assertEqual(km.cmd_start(root=str(work), config=cfgp), 0)   # --project なし → all
+        all_root = str((work / "projects" / "all").resolve())
+        for _ in range(50):
+            if km.select_instances(root=all_root):
+                break
+            time.sleep(0.1)
+        self.assertTrue(km.select_instances(root=all_root))             # all センチネルが登録された
+        self.assertEqual(km.cmd_start(root=str(work), config=cfgp), 1)  # 重複起動は拒否
+        self.assertEqual(km.cmd_stop(root=str(work), project="all"), 0)  # all daemon を停止
+        self.assertEqual(km.select_instances(root=all_root), [])
+
     def test_watch_sigterm_graceful_exit(self):
         # SIGTERM 化された KeyboardInterrupt は graceful 停止: traceback を出さず 0 で終え、
         # finally で登録を掃除する（README の「stop は graceful…終了」を担保）。

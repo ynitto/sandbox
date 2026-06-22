@@ -1015,6 +1015,8 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
              want_all: bool = False, timeout: float = 5.0,
              extra: "list | str | None" = None, project: "str | None" = None) -> int:
     """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する（自ホストのみ）。"""
+    if not project and not pid and not want_all and not root:
+        project = "all"                           # daemon の既定（start と対称）。all センチネルを止める
     if project and not pid and not want_all:      # --project 指定はその per-project root に解決して照合
         root = _container_project_root(root, project)
     targets = select_instances(root, pid, want_all, extra=extra)
@@ -1062,7 +1064,9 @@ def _container_project_root(root: "str | None", project: "str | None") -> str:
 def cmd_start(root: "str | None" = None, config: "str | None" = None,
               force: bool = False, extra: "list | str | None" = None,
               project: "str | None" = None) -> int:
-    """`run --watch` を切り離して常駐起動する（detached）。重複監視は既定で拒否（--force で許可）。"""
+    """`run --watch` を切り離して常駐起動する（detached）。重複監視は既定で拒否（--force で許可）。
+    daemon は既定で **--project all**（1 プロセスで全プロジェクトを回す）。明示 --project でその 1 つだけにできる。"""
+    project = project or "all"
     expected = _container_project_root(root, project)
     me = socket.gethostname()
     dup = [r for r in list_instances(prune=True, extra=extra)
@@ -1116,7 +1120,8 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
 
 def cmd_restart(root: "str | None" = None, config: "str | None" = None,
                 extra: "list | str | None" = None, project: "str | None" = None) -> int:
-    """同じプロジェクト root の監視を停止してから起動し直す。"""
+    """同じプロジェクト root の監視を停止してから起動し直す（daemon は既定で --project all）。"""
+    project = project or "all"
     proot = _container_project_root(root, project)
     if select_instances(root=proot, extra=extra):
         cmd_stop(root=proot, extra=extra)
@@ -3179,6 +3184,9 @@ def cmd_run_all(cfg: Config) -> int:
             for c in cfgs:
                 worst = max(worst, _run_single(c))    # 各プロジェクトを順に単発実行
             return worst
+        # watch（daemon）: コンテナ全体を表す "all" センチネルも登録して start/stop/restart の
+        #   重複検出・停止・再起動が <root>/projects/all 一致で効くようにする（実体ディレクトリは作らない）。
+        registered["all"] = register_instance(project_cfg(cfg, "all"), cfg.registry)
         # watch: ラウンドロビンで全プロジェクトを駆動し、誰も仕事が無ければ idle
         _install_sigterm()
         charter_mtime: dict[str, float] = {}
@@ -4079,21 +4087,24 @@ def main(argv=None) -> int:
     inst.add_argument("--json", action="store_true", help="JSON で出力（スキル等が機械処理する用）")
     inst.add_argument("--registry", action="append", default=None, help=_reg_help)
 
-    sta = sub.add_parser("start", help="run --watch を切り離して常駐起動（detached。重複は --force）")
+    sta = sub.add_parser("start",
+                         help="run --watch を切り離して常駐起動（detached。既定 --project all・重複は --force）")
     sta.add_argument("--root", default=None, help="コンテナ（既定 ./.kiro-autonomous）")
-    sta.add_argument("--project", default=None, help="監視するプロジェクト（既定 default）")
+    sta.add_argument("--project", default=None,
+                     help="監視するプロジェクト（既定 all＝全プロジェクトを1プロセスで。1つだけなら名前を指定）")
     sta.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
     sta.add_argument("--force", action="store_true", help="同じプロジェクトを既に監視中でも起動する")
     sta.add_argument("--registry", action="append", default=None, help=_reg_help)
     sto = sub.add_parser("stop", help="稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除）")
     sto.add_argument("--root", default=None, help="停止対象のコンテナ/プロジェクト root")
-    sto.add_argument("--project", default=None, help="停止対象のプロジェクト（--root と併せて per-project root に解決）")
+    sto.add_argument("--project", default=None,
+                     help="停止対象のプロジェクト（既定: 他指定が無ければ all daemon を停止）")
     sto.add_argument("--pid", type=int, default=None, help="停止対象の PID（instances で確認）")
     sto.add_argument("--all", action="store_true", help="稼働中インスタンスを全停止")
     sto.add_argument("--registry", action="append", default=None, help=_reg_help)
     res = sub.add_parser("restart", help="同じプロジェクトの監視を停止してから起動し直す")
     res.add_argument("--root", default=None, help="コンテナ（既定 ./.kiro-autonomous）")
-    res.add_argument("--project", default=None, help="再起動するプロジェクト（既定 default）")
+    res.add_argument("--project", default=None, help="再起動するプロジェクト（既定 all）")
     res.add_argument("--config", default=None, help="子プロセスへ渡す設定ファイル")
     res.add_argument("--registry", action="append", default=None, help=_reg_help)
 

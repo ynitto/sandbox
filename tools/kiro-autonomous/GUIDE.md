@@ -167,10 +167,10 @@ kiro-autonomous audit --strict      # L0–L3 基準を満たさなければ非0
 
 **OS 起動時から常駐**（lifecycle）:
 ```bash
-kiro-autonomous start               # run --watch を切り離して常駐起動（重複監視は拒否）
-kiro-autonomous instances           # いまどのフォルダを監視中か発見
-kiro-autonomous stop --all          # 停止（SIGTERM→必要なら SIGKILL・登録掃除）
-# systemd は ExecStart を `kiro-autonomous` だけにし、調整は .yaml で完結
+kiro-autonomous start               # 既定で全プロジェクト（--project all）を1プロセスで常駐起動（重複は拒否）
+kiro-autonomous instances           # いまどのプロジェクトを監視中か発見（all＋各プロジェクト）
+kiro-autonomous stop                # all daemon を停止（--project <name> で個別・--all で全部）
+# systemd は ExecStart を `kiro-autonomous run --watch --project all` にし、調整は .yaml で完結
 ```
 
 **監視**: `runlog --json` を集計、`stats` で自動化率/コストを定点観測、`notify_cmd` で判断待ちを push。
