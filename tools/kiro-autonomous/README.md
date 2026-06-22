@@ -314,6 +314,8 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   で消化する。charter のプランナーも「繰り返しタスクは `cohort_items` でまとめよ」と指示され、分解から自然に cohort を作れる。
   手積みは `enqueue --title "{item} を移行" --verify "test -f {item}" --cohort-items a,b,c`。
   （人を介さない自動版＝「1件先行→自動検証→残り展開」は kiro-flow の `exemplar_first` が担う。）
+  選択肢としての when_to_use / when_not_to_use / 例示 / 適用具体例は flow-planner カタログの
+  `variants.pilot-then-batch`（`.github/skills/flow-planner/patterns-catalog.yaml`）にまとめてある。
 
 ```bash
 kiro-autonomous run                          # charter があれば plan→execute→evaluate（収束で人へ）

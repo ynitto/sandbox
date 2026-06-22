@@ -114,6 +114,24 @@ LLMには各ノードの goal 具体化のみを依頼。
 - 典型的な並列数レンジ
 - 組み合わせ可能なパターン
 - ユースケース別推奨パターン（複合テンプレート）
+- バリアント（基本パターンの実行モード。`variants`）
+
+## バリアント（pilot-then-batch / 見本先行）
+
+`variants.pilot-then-batch` は **map-reduce の実行モード**で、同様手順を多数の対象に
+繰り返すとき「まず 1 件(pilot)を走らせて検証・レビューで指示を固め、その定義で残りを
+生成・実行する」。全件を一斉に流して全滅する無駄を避ける。2 実装がある:
+
+- **kiro-flow `exemplar_first`**（自動ゲート）: split→pilot map→verify ゲート→残り map→reduce。
+  設定 `exemplar_first: true` か `--exemplar-first` で有効化。
+- **kiro-autonomous `cohort`**（人ゲート）: pilot に `review:human`。人が approve(+feedback)
+  で指示を固めてから残りを生成。`enqueue --cohort-items a,b,c` か charter プランナーが
+  `{title, verify, cohort_items:[…]}` で自動生成。
+
+**バリアントは `patterns` ではない**（`patterns` 配列には書かない）。基本パターン
+（map-reduce）を選んだうえで、繰り返し量産・見本先行が要るときに上記フラグ/cohort で
+有効化する選択肢。詳細な when_to_use / when_not_to_use / 例示 / 適用具体例は
+`patterns-catalog.yaml` の `variants` を参照。
 
 ## ユースケース別推奨戦略
 
