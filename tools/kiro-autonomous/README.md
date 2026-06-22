@@ -306,6 +306,14 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   各 repo を temp 領域へ clone してから作業し、作業後に必ず消す**（orchestrator の作業ツリーを汚さない）。repos を
   宣言しないタスクは clone しない（必要なものだけ・後方互換）。local / daemon / remote のどの location でも同じ
   （repos は run の bus メタ経由で worker に届く）。
+- **cohort（pilot-then-batch）**: 「同じ手順を多数の対象に繰り返す」タスクを、**まず 1 件だけ走らせて指示を固めてから残りを
+  生成・実行**する。`cohort_items` を持つ spec を投入すると、先頭要素が **pilot** として `review: human` 付きで 1 件だけ作られ、
+  verify→検収ゲートで人が `approve`（必要なら feedback）して指示を固める。承認時にその定義を元に**残りのタスクを生成**し、
+  各メンバには固めた指示（承認理由＋feedback）が `feedback` として乗って act に必ず反映される。`title`/`verify` 中の `{item}` に
+  各対象が差し込まれる。状態は `cohorts/<id>.json`。**実行は act 非依存**＝残りは通常ループが任意の location（local/daemon/remote）
+  で消化する。charter のプランナーも「繰り返しタスクは `cohort_items` でまとめよ」と指示され、分解から自然に cohort を作れる。
+  手積みは `enqueue --title "{item} を移行" --verify "test -f {item}" --cohort-items a,b,c`。
+  （人を介さない自動版＝「1件先行→自動検証→残り展開」は kiro-flow の `exemplar_first` が担う。）
 
 ```bash
 kiro-autonomous run                          # charter があれば plan→execute→evaluate（収束で人へ）

@@ -233,6 +233,39 @@ class DataDrivenFanoutTests(unittest.TestCase):
         red = next(t for t in new if t["kind"] == "reduce")
         self.assertEqual(red["deps"], ["split1-m1", "split1-m2", "split1-m3"])
 
+    def test_exemplar_first_stages_pilot_then_rest(self):
+        # Stage 1: split 完了直後は pilot map 1件＋検証ゲートだけ（残りは出さない）
+        nodes = {"s": {"goal": "各件を移行", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": ["a", "b", "c"]}}
+        _, new, _ = kf.continue_stub("各件を移行", nodes, results, 0, exemplar_first=True)
+        ids = [t["id"] for t in new]
+        self.assertEqual(ids, ["s-m1", "s-pilot"])               # 先行1件＋ゲートのみ
+        self.assertEqual(next(t for t in new if t["id"] == "s-pilot")["kind"], "verify")
+        self.assertNotIn("s-reduce", ids)
+
+        # pilot ゲート未了の間は残りを展開しない
+        nodes.update({"s-m1": {"goal": "", "deps": [], "kind": "map"},
+                      "s-pilot": {"goal": "", "deps": ["s-m1"], "kind": "verify"}})
+        results.update({"s-m1": {"status": "done"}, "s-pilot": {"status": "running"}})
+        _, new2, _ = kf.continue_stub("各件を移行", nodes, results, 1, exemplar_first=True)
+        self.assertEqual([t for t in new2 if t["id"].startswith("s-")], [])
+
+        # Stage 2: pilot ゲート done → 残り map（pilot＋ゲートに依存）＋ reduce を展開
+        results["s-pilot"] = {"status": "done"}
+        _, new3, _ = kf.continue_stub("各件を移行", nodes, results, 2, exemplar_first=True)
+        ids3 = [t["id"] for t in new3]
+        self.assertEqual(ids3, ["s-m2", "s-m3", "s-reduce"])
+        self.assertEqual(next(t for t in new3 if t["id"] == "s-m2")["deps"], ["s-m1", "s-pilot"])
+        self.assertEqual(set(next(t for t in new3 if t["id"] == "s-reduce")["deps"]),
+                         {"s-m1", "s-m2", "s-m3"})
+
+    def test_default_fanout_unchanged_without_exemplar_first(self):
+        # exemplar_first 無し（既定）は従来どおり一括 fan-out
+        nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
+        results = {"s": {"status": "done", "data": ["a", "b"]}}
+        _, new, _ = kf.continue_stub("g", nodes, results, 0)
+        self.assertEqual([t["id"] for t in new], ["s-m1", "s-m2", "s-reduce"])
+
     def test_fanout_respects_max(self):
         nodes = {"s": {"goal": "g", "deps": [], "kind": "split"}}
         results = {"s": {"status": "done", "data": list(range(100))}}

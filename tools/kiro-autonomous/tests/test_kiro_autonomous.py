@@ -1927,6 +1927,58 @@ class TestApprovalGate(unittest.TestCase):
             self.assertEqual(km.load_tasks(cfg.backlog)[0].status, "ready")
 
 
+class TestCohort(unittest.TestCase):
+    """pilot-then-batch: 同様手順の繰り返しは pilot を1件先行→人レビューで指示を固め→残りを生成。"""
+
+    def test_apply_item_placeholder_and_fallback(self):
+        self.assertEqual(km._apply_item("Tを{item}に適用", "a"), "Tをaに適用")
+        self.assertEqual(km._apply_item("手順を実施", "b"), "手順を実施（対象: b）")  # プレースホルダ無し
+
+    def test_create_cohort_makes_pilot_and_holds_rest(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            pilot = km.enqueue_task(cfg, {"title": "{item} を移行", "verify": "test -f {item}",
+                                          "cohort_items": ["a", "b", "c"]})
+            self.assertEqual(pilot.title, "a を移行")
+            self.assertEqual(pilot.verify, "test -f a")
+            self.assertEqual(pilot.get("cohort_role"), "pilot")
+            self.assertEqual(pilot.get("review"), "human")          # pilot は人の承認で固める
+            self.assertEqual(len(km.load_tasks(cfg.backlog)), 1)    # 残りはまだ作らない
+            state = km._read_cohort(cfg, pilot.get("cohort"))
+            self.assertEqual(state["items"], ["b", "c"])
+            self.assertEqual(state["status"], "pending")
+
+    def test_materialize_rest_after_pilot_approval(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            pilot = km.enqueue_task(cfg, {"title": "{item} を移行", "verify": "true",
+                                          "cohort_items": ["a", "b", "c"]})
+            # pilot は verify PASS でも review:human で検収待ち（review）になる
+            res = km.run_loop(cfg)
+            self.assertEqual(res["counts"]["review"], 1)
+            self.assertEqual(res["counts"]["done"], 0)
+            # pilot 承認 → 残り 2 件が固めた指示（feedback）付きで ready 生成される
+            self.assertEqual(km.cmd_approve(cfg, pilot.id, "命名規則に従うこと"), 0)
+            members = [t for t in km.load_tasks(cfg.backlog) if t.get("cohort_role") == "member"]
+            self.assertEqual(len(members), 2)
+            self.assertEqual(sorted(m.title for m in members), ["b を移行", "c を移行"])
+            for m in members:
+                self.assertEqual(m.norm_status(), "ready")
+                self.assertIn("命名規則に従うこと", m.feedback() or "")   # 固めた指示が伝わる
+            self.assertEqual(km._read_cohort(cfg, pilot.get("cohort"))["status"], "done")
+
+    def test_materialize_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            pilot = km.enqueue_task(cfg, {"title": "{item}", "verify": "true",
+                                          "cohort_items": ["a", "b"]})
+            self.assertEqual(len(km.materialize_cohort_rest(cfg, pilot, "ok")), 1)
+            self.assertEqual(km.materialize_cohort_rest(cfg, pilot, "ok"), [])  # 二度目は空（done）
+
+
 class TestLoopEngineering(unittest.TestCase):
     """Loop Engineering 拡張: 計測・タスク自己生成・依存(DAG)・回帰ゲート。"""
 

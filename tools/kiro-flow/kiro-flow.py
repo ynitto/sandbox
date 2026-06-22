@@ -113,6 +113,7 @@ CONFIG_DEFAULTS = {
     "planner": "flow-planner",
     "executor": "kiro",
     "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
+    "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     "max_workers": 4,
     "max_iterations": 3,
     "max_fanout": 50,
@@ -1269,13 +1270,17 @@ def _reconcile_count(data):
 # Continuation — パターンに応じて done / replan（タスク追加）を決める
 # --------------------------------------------------------------------------
 def _expand_splits(nodes: dict, results: dict, max_fanout: int,
-                   review: bool = False, request: str = ""):
+                   review: bool = False, request: str = "", exemplar_first: bool = False):
     """データ駆動の動的 fan-out: 完了した split ノードの data(リスト)を見て、
     実行時に要素ごとの map タスクと、それらを集約する reduce タスクを生成する。
     （reduce は展開時に作るので、split 完了直後に reduce が先走り実行されない）
     review 時は map と reduce の間に検証 gate を挟む。
     map・reduce ゴールには元の要求（intent）を埋め込み、各要素への適用と最終整形
-    （並べ替え・重複排除など要求由来の集約条件）が失われないようにする。"""
+    （並べ替え・重複排除など要求由来の集約条件）が失われないようにする。
+
+    exemplar_first=True のときは「見本先行」分解にする: まず先頭1件(pilot map)と
+    その検証ゲートだけを出し、ゲート通過後に残りの map（pilot を範に取る = pilot に依存）
+    と reduce を展開する。同様手順の繰り返しで、1件で手順を固めてから残りを流す。"""
     new = []
     have = set(nodes)
     for nid, node in nodes.items():
@@ -1284,42 +1289,66 @@ def _expand_splits(nodes: dict, results: dict, max_fanout: int,
         r = results.get(nid, {})
         if r.get("status") != "done":
             continue
-        if f"{nid}-reduce" in have:  # 既に展開済み
+        if f"{nid}-reduce" in have:  # 既に完全展開済み
             continue
         items = r.get("data")
         if not isinstance(items, list) or not items:
             continue
         items = items[:max(1, max_fanout)]  # 暴走防止のクランプ
         intent = (request or node.get("goal", "")).strip()
-        map_ids = []
-        for i, item in enumerate(items):
-            mid = f"{nid}-m{i+1}"
-            map_ids.append(mid)
-            # 要素だけでなく「何をするか」を渡さないと map が意図を失う
-            goal = f"{intent}（対象要素: {item}）" if intent else f"{nid} 要素{i+1}: {item}"
-            new.append({"id": mid, "goal": goal, "deps": [], "kind": "map"})
+
+        def _mgoal(i, item):
+            return f"{intent}（対象要素: {item}）" if intent else f"{nid} 要素{i+1}: {item}"
+
+        reduce_goal = (f"{intent}（各 map の結果を要求どおりに集約・整形して最終成果にまとめる）"
+                       if intent else f"{nid} の結果を集約")
+        pilot_gate = f"{nid}-pilot"
+        m1 = f"{nid}-m1"
+
+        if exemplar_first:
+            if m1 not in have:
+                # Stage 1: pilot map 1件＋その検証ゲートだけを出す（残りはまだ展開しない）
+                new.append({"id": m1, "goal": _mgoal(0, items[0]), "deps": [], "kind": "map"})
+                new.append({"id": pilot_gate,
+                            "goal": f"先行1件(map)を検証し、残りに使う手順・基準を固める: {intent}"[:200],
+                            "deps": [m1], "kind": "verify"})
+                continue
+            if results.get(pilot_gate, {}).get("status") != "done":
+                continue  # pilot ゲート通過まで残りは展開しない
+            # Stage 2: 残り map（pilot を範に取り、ゲート通過後に走る）＋ reduce
+            map_ids = [m1]
+            for i, item in enumerate(items[1:], start=1):
+                mid = f"{nid}-m{i+1}"
+                map_ids.append(mid)
+                new.append({"id": mid, "goal": _mgoal(i, item),
+                            "deps": [m1, pilot_gate], "kind": "map"})
+        else:
+            map_ids = []
+            for i, item in enumerate(items):
+                mid = f"{nid}-m{i+1}"
+                map_ids.append(mid)
+                # 要素だけでなく「何をするか」を渡さないと map が意図を失う
+                new.append({"id": mid, "goal": _mgoal(i, item), "deps": [], "kind": "map"})
+
         reduce_deps = map_ids
         if review:  # 集約前の事前チェック / 敵対的レビュー。reduce は map＋gate に依存
             gid = f"{nid}-gate"
             new.append({"id": gid, "goal": f"{nid} の map 結果を集約前に検証",
                         "deps": map_ids, "kind": "verify"})
             reduce_deps = map_ids + [gid]
-        # reduce も intent を保持（「アルファベット順」「重複排除」等の集約条件を失わない）
-        reduce_goal = (f"{intent}（各 map の結果を要求どおりに集約・整形して最終成果にまとめる）"
-                       if intent else f"{nid} の結果を集約")
         new.append({"id": f"{nid}-reduce", "goal": reduce_goal,
                     "deps": reduce_deps, "kind": "reduce"})
     return new
 
 
 def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
-                  max_fanout: int = 50, review: bool = False):
+                  max_fanout: int = 50, review: bool = False, exemplar_first: bool = False):
     """パターン継続（kiro 無し版）:
        - データ駆動 fan-out: split 完了 → 要素ごとの map + reduce を生成
        - classify-and-act: 分類完了 → 振り分け先の専門タスクを追加
        - adversarial / loop-until-done: verify が fail → 作り直し + 再検証
        - 失敗タスク: retry を 1 回追加"""
-    new = _expand_splits(nodes, results, max_fanout, review, request)
+    new = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first)
     have = set(nodes)
 
     def fresh(tid):
@@ -1364,9 +1393,9 @@ def continue_stub(request: str, nodes: dict, results: dict, iteration: int,
 
 
 def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
-                  max_fanout: int = 50, review: bool = False):
+                  max_fanout: int = 50, review: bool = False, exemplar_first: bool = False):
     # データ駆動 fan-out は機械的に展開（LLM 判断不要）。先に処理する。
-    fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request)
+    fanout_tasks = _expand_splits(nodes, results, max_fanout, review, request, exemplar_first)
     if fanout_tasks:
         return "replan", fanout_tasks, f"data-driven fan-out: +{len(fanout_tasks)}"
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
@@ -1425,9 +1454,10 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
         review = bool(strategy["review"])
     else:
         review = _review_decision(cli, (strategy or {}).get("patterns", []))
+    ef = bool(getattr(args, "exemplar_first", False))
     if args.executor == "kiro":
-        return continue_kiro(request, nodes, results, iteration, mf, review)
-    return continue_stub(request, nodes, results, iteration, mf, review)
+        return continue_kiro(request, nodes, results, iteration, mf, review, ef)
+    return continue_stub(request, nodes, results, iteration, mf, review, ef)
 
 
 def _node_entry(t):
@@ -1709,6 +1739,8 @@ def cmd_run(args) -> int:
     for r in (getattr(args, "repos", None) or []):
         base += ["--repo", r]     # 成果物リポジトリを orchestrator/worker へ伝搬
     base += ["--granularity", str(getattr(args, "granularity", "finest") or "finest")]  # 分解粒度
+    if getattr(args, "exemplar_first", False):
+        base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
     mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus_root}"
 
     procs = []
@@ -1891,6 +1923,7 @@ def cmd_daemon(args) -> int:
                     repo_args += ["--repo", r]
                 p = subprocess.Popen(base + repo_args + [
                     "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
+                    *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
                     "--run-id", req_id, "orchestrate", "--request", req["request"],
                     "--planner", args.planner, "--executor", args.executor,
                     "--max-iterations", str(args.max_iterations),
@@ -2398,6 +2431,10 @@ def main() -> int:
     p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                    help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
                         "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")
+    p.add_argument("--exemplar-first", dest="exemplar_first", action="store_const", const=True,
+                   default=None,
+                   help="map-reduce の fan-out を見本先行にする（設定 exemplar_first と同義）。"
+                        "先頭1件を検証ゲートに通してから残りを展開し、同様手順を1件で固めてから流す")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
     p.add_argument("--keep-clone", dest="cleanup_clone", action="store_const", const=False,

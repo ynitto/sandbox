@@ -183,7 +183,8 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 #   ここへ流し込む。コアは stdlib のみ・ネットワーク非依存・決定的を保つ。
 # ---------------------------------------------------------------------------
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
-                      "after", "review", "note", "accept", "verify_template", "repos"}
+                      "after", "review", "note", "accept", "verify_template", "repos",
+                      "cohort_items", "cohort", "cohort_role"}
 
 
 def _slug_id(text: str) -> str:
@@ -246,10 +247,142 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
 
 
 def enqueue_task(cfg: "Config", spec: dict) -> Task:
-    t = task_from_spec(cfg, spec)
+    # cohort_items があれば「pilot 先行 → 人レビューで指示を固める → 残りを生成」の cohort にする
+    if spec.get("cohort_items"):
+        t = create_cohort(cfg, spec)
+    else:
+        t = task_from_spec(cfg, spec)
     cfg.backlog.mkdir(parents=True, exist_ok=True)
     persist_task(cfg, t)
     return t
+
+
+# ---------------------------------------------------------------------------
+# cohort（pilot-then-batch）— タスク分解で生じた「同様手順の繰り返しタスク」を、
+#   まず 1 件（pilot）だけ走らせて verify→review:human で指示を固め、その定義を元に
+#   残りのタスク指示を生成して実行する。act 非依存（残りは通常ループが任意の act で消化）。
+#   pilot 承認の検知は既存の review/approve を再利用し、承認時に残りを materialize する。
+# ---------------------------------------------------------------------------
+COHORT_ITEM_TOKEN = "{item}"
+
+
+def _apply_item(template: str, item: str, fallback: bool = True) -> str:
+    """テンプレ中の {item} を対象で差し込む。
+    fallback=True（title 用）はプレースホルダ無しなら末尾に対象を付す。
+    fallback=False（verify 用）はプレースホルダ無しならコマンドをそのまま使う（全要素で共通）。"""
+    if COHORT_ITEM_TOKEN in template:
+        return template.replace(COHORT_ITEM_TOKEN, item)
+    if not fallback:
+        return template
+    return f"{template}（対象: {item}）" if template else item
+
+
+def _cohort_path(cfg: "Config", cid: str) -> Path:
+    return cfg.cohorts_dir() / f"{cid}.json"
+
+
+def _write_cohort(cfg: "Config", state: dict) -> None:
+    cfg.cohorts_dir().mkdir(parents=True, exist_ok=True)
+    _cohort_path(cfg, state["id"]).write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_cohort(cfg: "Config", cid: str) -> "dict | None":
+    p = _cohort_path(cfg, cid)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _unique_cohort_id(cfg: "Config", base: str) -> str:
+    existing = {p.stem for p in cfg.cohorts_dir().glob("*.json")} if cfg.cohorts_dir().exists() else set()
+    base = base or "cohort"
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}-{n}" in existing:
+        n += 1
+    return f"{base}-{n}"
+
+
+def create_cohort(cfg: "Config", spec: dict) -> Task:
+    """同様手順の cohort を作る: 先頭要素を pilot（review:human）として 1 件だけ作り、
+    残りは cohort 状態へ保持する。pilot 承認後に materialize_cohort_rest が残りを生成する。"""
+    items = [str(x).strip() for x in (spec.get("cohort_items") or []) if str(x).strip()]
+    title_t = str(spec.get("title", "") or "").strip()
+    verify_t = _strip_code(str(spec.get("verify", "") or "").strip())
+    if not title_t:
+        raise ValueError("cohort には title が必要です")
+    if not items:
+        raise ValueError("cohort には cohort_items が必要です")
+    cid = _unique_cohort_id(cfg, _slug_id(title_t) or "cohort")
+    pilot_item, rest = items[0], items[1:]
+    repos = spec.get("repos")
+    pilot_spec = {
+        "title": _apply_item(title_t, pilot_item),
+        "verify": _apply_item(verify_t, pilot_item, fallback=False) if verify_t else "",
+        "accept": spec.get("accept"),
+        "review": "human",                 # pilot は人の承認（feedback）で指示を固める
+        "source": str(spec.get("source", "") or "cohort"),
+        "repos": repos,
+        "priority": spec.get("priority", 0),
+    }
+    pilot = task_from_spec(cfg, pilot_spec)
+    pilot.set("cohort", cid)
+    pilot.set("cohort_role", "pilot")
+    persist_task(cfg, pilot)
+    _write_cohort(cfg, {
+        "id": cid,
+        "pilot_id": pilot.id,
+        "title_template": title_t,
+        "verify_template": verify_t,
+        "accept": str(spec.get("accept", "") or ""),
+        "items": rest,                     # pilot 承認後に生成する残り要素
+        "repos": ",".join(repos) if isinstance(repos, list) else (repos or ""),
+        "source": str(spec.get("source", "") or "cohort"),
+        "status": "pending",
+        "feedback": "",
+    })
+    append_journal(cfg.journal, f"cohort {cid}: pilot {pilot.id} を作成（残り {len(rest)} 件は承認後に生成）")
+    return pilot
+
+
+def materialize_cohort_rest(cfg: "Config", pilot: Task, feedback: str = "") -> "list[Task]":
+    """pilot で固まった定義を元に残りの cohort タスクを生成して ready にする。
+    pilot の承認理由・feedback を各メンバの feedback に載せ、固めた指示を必ず反映させる。"""
+    cid = pilot.get("cohort")
+    if not cid:
+        return []
+    state = _read_cohort(cfg, cid)
+    if not state or state.get("status") != "pending":
+        return []
+    guidance = "\n".join(x for x in [state.get("feedback", ""), feedback, pilot.feedback() or ""] if x).strip()
+    repos = state.get("repos") or None
+    created: "list[Task]" = []
+    for item in state.get("items", []):
+        mspec = {
+            "title": _apply_item(state["title_template"], item),
+            "verify": _apply_item(state["verify_template"], item, fallback=False) if state.get("verify_template") else "",
+            "accept": state.get("accept") or None,
+            "source": str(state.get("source", "") or "cohort"),
+            "repos": repos,
+        }
+        m = task_from_spec(cfg, mspec)
+        m.set("cohort", cid)
+        m.set("cohort_role", "member")
+        if guidance:
+            m.set("feedback", guidance)     # build_request が「必ず反映」として act へ渡す
+        persist_task(cfg, m)
+        created.append(m)
+    state["status"] = "done"
+    state["feedback"] = guidance
+    _write_cohort(cfg, state)
+    append_journal(cfg.journal,
+                   f"cohort {cid}: pilot {pilot.id} 承認 → 固めた定義から残り {len(created)} 件を生成")
+    return created
 
 
 def ingest_inbox(cfg: "Config") -> "list[Task]":
@@ -2124,6 +2257,9 @@ class Config:
     def archive_dir(self) -> Path:
         return self.archive or (self.backlog.parent / "archive")
 
+    def cohorts_dir(self) -> Path:
+        return self.backlog.parent / "cohorts"
+
     def __post_init__(self):
         if self.delivery is None:
             self.delivery = self.backlog.parent / "DELIVERY.md"
@@ -2780,6 +2916,12 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を検収承認",
                              action="approve-done", reason=reason, affects=f"{tid} → done")
         print(f"{dr}: {tid} を承認し {disp} 確定しました。")
+        # cohort の pilot 承認なら、固めた定義から残りのタスクを生成して ready にする
+        if t.get("cohort_role") == "pilot":
+            members = materialize_cohort_rest(cfg, t, feedback=reason)
+            if members:
+                print(f"cohort {t.get('cohort')}: 残り {len(members)} 件を生成しました "
+                      f"（{', '.join(m.id for m in members[:6])}{' …' if len(members) > 6 else ''}）。")
         return 0
     t.status = "ready"
     persist_task(cfg, t)
@@ -3118,7 +3260,8 @@ def cmd_enqueue(cfg: Config, args) -> int:
                   "priority": args.priority, "source": args.source, "status": args.status,
                   "after": args.after, "review": args.review, "note": args.note,
                   "accept": args.accept, "verify_template": args.verify_template,
-                  "repos": _coerce_repos(getattr(args, "repos", None))}]
+                  "repos": _coerce_repos(getattr(args, "repos", None)),
+                  "cohort_items": _coerce_repos(getattr(args, "cohort_items", None))}]
     created = []
     for sp in specs:
         if not isinstance(sp, dict):
@@ -3539,6 +3682,9 @@ def _plan_decompose_prompt(charter: "Charter") -> str:
         " 終了コード0をPASSとみなすシェルコマンド（『履歴』でなく『望む最終状態/差分』を見ること）。"
         " そのタスクが特定リポジトリの中身を読む/ push する必要があるなら、利用可能なリポジトリの名前で"
         " \"repos\": [\"name\", ...] を付ける（不要なタスクには付けない）。"
+        " 同じ手順を多数の対象に繰り返すタスクは 1 件ずつ列挙せず、"
+        " {\"title\": \"…{item}…\", \"verify\": \"…{item}…\", \"cohort_items\": [\"対象1\", \"対象2\", …]} の"
+        " 1 件にまとめること（{item} に各対象が差し込まれ、先頭を pilot として人が指示を固めてから残りが生成される）。"
         " 検証コマンドを書けない曖昧なタスクは含めないでください。")
 
 
@@ -3557,6 +3703,7 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
             specs.append({"title": str(item["title"]).strip(),
                           "verify": _strip_code(str(item.get("verify", "") or "").strip()),
                           "repos": _coerce_repos(item.get("repos")),
+                          "cohort_items": _coerce_repos(item.get("cohort_items")),
                           "source": "charter"})
     return specs
 
@@ -4210,6 +4357,10 @@ def main(argv=None) -> int:
     enq.add_argument("--repos", default=None,
                      help="このタスクが clone して作業する成果物リポジトリ（charter の name か URL・"
                           "カンマ区切りで複数可）。worker が temp 領域へ clone してから作業し作業後に消す")
+    enq.add_argument("--cohort-items", dest="cohort_items", default=None,
+                     help="同様手順の繰り返しタスクの対象一覧（カンマ区切り）。先頭を pilot として"
+                          "先行実行し review:human で指示を固め、承認後に残りを生成する。"
+                          "title/verify 中の {item} に各対象を差し込む")
     enq.add_argument("--review", default=None, help="検収ゲート（human で done 前に承認）")
     enq.add_argument("--note", default=None, help="メモ（保持される）")
     enq.add_argument("--id", default=None, help="タスク ID を明示（既定はタイトルから自動生成）")
