@@ -328,6 +328,19 @@ kiro-autonomous needs   --project payments        # per-project の判断待ち
 kiro-autonomous start   --project payments        # そのプロジェクトを常駐監視
 ```
 
+### 1 プロセスで全プロジェクトを回す（`--project all`）
+
+複数プロジェクトを 1 つの kiro-autonomous で扱える。`run --project all` はコンテナ配下の全プロジェクトを**ラウンド
+ロビン**で回す（各プロジェクトは独立に＝charter ありは目標駆動 `cmd_project`、無しは backlog 消化 `run_loop`）。
+`--watch` は毎ラウンド `projects/` を再走査して**新規プロジェクトも自動で拾い**、どこにも仕事が無ければ idle。
+`instances` はプロジェクト毎に登録されるので、外部操作（スキル）は各プロジェクトを `--project <name>` で個別に操作できる。
+
+```bash
+kiro-autonomous run --project all                 # 全プロジェクトを1プロセスで順に消化
+kiro-autonomous run --project all --watch         # 全プロジェクトを1プロセスで常駐監視（新規も自動追従）
+kiro-autonomous start --project all               # 上を detached 常駐起動（systemd を1ユニットで済ませられる）
+```
+
 ## 常駐運用（watch / lifecycle / 発見 / OS 自動起動）
 
 - **watch**: 1 パスが終わってもプロセスを残し backlog を監視。idle 中は kiro-cli/kiro-flow を起動せず（安価な FS

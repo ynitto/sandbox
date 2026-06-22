@@ -429,6 +429,12 @@ kiro-flow への act 依頼（`build_request`）に **charter（定義）と `de
   charter リンクは**人が明示した参照先**を確実に引く。
 - **発見の横断**: instances レジストリはグローバル（§5.8）。外部操作者は `container`/`project` を使って `--root <container>
   --project <name>` で操作する（per-project root を `--root` に渡すと二重ネストするので使わない）。
+- **1 プロセスで全プロジェクト（`run --project all`）**: 1 つの kiro-autonomous がコンテナ配下の全プロジェクトを
+  ラウンドロビンで回す。各プロジェクトは従来どおり独立（charter/policy/needs/予算）に駆動され、charter ありは
+  `cmd_project`（目標駆動）、無しは `run_loop`（backlog 消化）が 1 単位。`--watch` では毎ラウンド projects/ を
+  再走査して新規プロジェクトも拾い、どのプロジェクトにも仕事が無ければ idle（エージェント非起動）。instances は
+  プロジェクト毎に登録（ファイル名に project を付与し同一 PID 内で衝突しない）。実装は `cmd_run_all` / `project_cfg`
+  （per-project パスを差し替えた Config）/ `project_dir_names` / `_project_has_work`。
 
 > 方針（本構成の前提）: **全て per-project ／ 新レイアウトのみ（flat 互換は持たない）／ リンクは定義＋判断を取込**。
 

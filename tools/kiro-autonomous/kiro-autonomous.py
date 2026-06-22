@@ -28,7 +28,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -768,9 +768,12 @@ def _split_registry(arg: "list | str | None") -> "list[str]":
 
 
 def _instance_filename(rec: dict) -> str:
-    """ホスト修飾のレコードファイル名。共有レジストリで別ホストの同一 PID が衝突しないように。"""
+    """ホスト・プロジェクト修飾のレコードファイル名。共有レジストリで別ホストの同一 PID や、
+    1 プロセスが複数プロジェクトを回す（--project all）ときに同一 PID 内で衝突しないように。"""
     host = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(rec.get("host", "host")) or "host")
-    return f"{host}-{rec.get('pid', 0)}.json"
+    proj = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(rec.get("project", "") or ""))
+    suffix = f"-{proj}" if proj else ""
+    return f"{host}-{rec.get('pid', 0)}{suffix}.json"
 
 
 def _record_alive(rec: dict) -> bool:
@@ -3060,47 +3063,47 @@ def cmd_triage(cfg: Config) -> int:
     return 0
 
 
+def _run_single(cfg: Config) -> int:
+    """1 プロジェクトの単発実行（charter があれば目標駆動・無ければ backlog ループ）。要約を表示する。"""
+    if load_charter(cfg) is not None:
+        return cmd_project(cfg)                      # charter 駆動（plan→execute→evaluate）
+    result = run_loop(cfg)
+    counts = result["counts"]
+    if result.get("level") == "report":              # report: 消化せず計画だけ提示
+        plan = result.get("plan", [])
+        print(f"\n=== kiro-autonomous report（level=report・実行なし）===")
+        print(f"実行待ち {len(plan)} 件（この順で回す予定）:")
+        for i, tid in enumerate(plan, 1):
+            print(f"  {i}. {tid}")
+        print(f"人の対応待ち: blocked={counts['blocked']} review={counts.get('review', 0)}")
+        return exit_code_for(result)
+    print(f"\n=== kiro-autonomous 完了（project={cfg.project_name}）===")
+    print(f"停止理由 : {result['reason']}（level={result.get('level')}）")
+    print(f"サイクル : {result['cycles']}")
+    print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
+          f"inbox={counts['inbox']} archived={result.get('archived', 0)} "
+          f"ingested={len(result.get('ingested', []))} "
+          f"promoted={len(result.get('promoted', []))}")
+    return exit_code_for(result)
+
+
 def cmd_run(cfg: Config) -> int:
+    if cfg.project_name == "all":                # 1 プロセスで全プロジェクトを回す（多重化）
+        return cmd_run_all(cfg)
     ensure_dirs(cfg)
-    charter = load_charter(cfg)                  # charter.md があれば run が自動で目標駆動になる（§6）
     reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
     hb = lambda: refresh_instance(reg)
     try:
         if cfg.watch:
-            # 常駐のみ: stop からの SIGTERM を KeyboardInterrupt 化し finally で後始末させる
-            try:
-                signal.signal(signal.SIGTERM,
-                              lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-            except (ValueError, OSError):  # メインスレッド以外/未対応では無視
-                pass
-            if charter is not None:
-                project_watch(cfg, heartbeat=hb)       # 目標を満たすまで回り続ける常駐
+            _install_sigterm()                   # stop の SIGTERM を KeyboardInterrupt 化（graceful 停止）
+            if load_charter(cfg) is not None:
+                project_watch(cfg, heartbeat=hb)  # 目標を満たすまで回り続ける常駐
             else:
-                run_watch(cfg, heartbeat=hb)           # backlog 監視の常駐
+                run_watch(cfg, heartbeat=hb)      # backlog 監視の常駐
             return 0
-        if charter is not None:
-            return cmd_project(cfg, heartbeat=hb)       # charter 駆動の単発（plan→execute→evaluate）
-        result = run_loop(cfg)
-        counts = result["counts"]
-        if result.get("level") == "report":          # report: 消化せず計画だけ提示
-            print("\n=== kiro-autonomous report（level=report・実行なし）===")
-            plan = result.get("plan", [])
-            print(f"実行待ち {len(plan)} 件（この順で回す予定）:")
-            for i, tid in enumerate(plan, 1):
-                print(f"  {i}. {tid}")
-            print(f"人の対応待ち: blocked={counts['blocked']} review={counts.get('review', 0)}")
-            return exit_code_for(result)
-        print("\n=== kiro-autonomous 完了 ===")
-        print(f"停止理由 : {result['reason']}（level={result.get('level')}）")
-        print(f"サイクル : {result['cycles']}")
-        print(f"done={counts['done']} blocked={counts['blocked']} ready={counts['ready']} "
-              f"inbox={counts['inbox']} archived={result.get('archived', 0)} "
-              f"ingested={len(result.get('ingested', []))} "
-              f"promoted={len(result.get('promoted', []))}")
-        return exit_code_for(result)
+        return _run_single(cfg)
     except KeyboardInterrupt:
-        # stop(SIGTERM) / Ctrl-C: graceful 停止。finally でレジストリを掃除し、
-        # traceback を出さずに 0 終了する（KeyboardInterrupt を top-level へ伝播させない）。
+        # stop(SIGTERM) / Ctrl-C: graceful 停止。finally でレジストリを掃除し 0 終了する。
         if cfg.watch:
             print("\n=== kiro-autonomous 停止（SIGTERM/Ctrl-C 受信）===")
         return 0
@@ -3110,6 +3113,101 @@ def cmd_run(cfg: Config) -> int:
                 p.unlink()
             except OSError:
                 pass
+
+
+def _install_sigterm() -> None:
+    """stop からの SIGTERM を KeyboardInterrupt 化して finally で後始末させる（watch 常駐用）。"""
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    except (ValueError, OSError):  # メインスレッド以外/未対応では無視
+        pass
+
+
+def project_dir_names(cfg: "Config") -> "list[str]":
+    """コンテナ配下 <root>/projects/ の各プロジェクト名を返す（無ければ ['default']）。"""
+    pdir = container_dir(cfg) / "projects"
+    names = sorted(p.name for p in pdir.iterdir() if p.is_dir()) if pdir.exists() else []
+    return names or ["default"]
+
+
+def project_cfg(cfg: "Config", name: str) -> "Config":
+    """同コンテナ配下の特定プロジェクト用に per-project パスを差し替えた Config を作る。"""
+    proot = container_dir(cfg) / "projects" / _project_dirname(name)
+    return replace(cfg, project_name=_project_dirname(name),
+                   backlog=proot / "backlog", needs=proot / "needs", decisions=proot / "decisions",
+                   archive=proot / "archive", policy=proot / "policy.md", journal=proot / "journal.md",
+                   delivery=proot / "DELIVERY.md", runlog=proot / "run-log.jsonl",
+                   inbox=proot / "inbox", bus=proot / "bus", charter=proot / "charter.md")
+
+
+def _project_has_work(cfg: "Config") -> bool:
+    """そのプロジェクトに今やる仕事があるか（消化待ち/inbox/フィードバック、または未収束の charter 目標）。"""
+    if has_work(cfg):
+        return True
+    if load_charter(cfg) is None:
+        return False
+    # charter あり: 収束/承認/停滞などの人待ち状態でなければ目標の仕事が残っている
+    st = load_project_state(cfg).get("status")
+    return st not in (REASON_PROJECT_ACCEPTED, REASON_PROJECT_CONVERGED,
+                      REASON_PROJECT_STALL, REASON_PROJECT_BLOCKED, "no-acceptance")
+
+
+def cmd_run_all(cfg: Config) -> int:
+    """1 プロセスでコンテナ配下の全プロジェクトを回す（--project all）。各プロジェクトは従来どおり独立
+    （charter/policy/needs/予算）に、ラウンドロビンで駆動する。watch では新規プロジェクトも毎回再発見する。"""
+    registered: dict[str, list] = {}      # project 名 → 登録レコードのパス（クリーンアップ用）
+
+    def _ensure_registered(c: "Config") -> None:
+        ensure_dirs(c)
+        if c.project_name not in registered:
+            registered[c.project_name] = register_instance(c, c.registry)
+
+    def _cleanup() -> None:
+        for paths in registered.values():
+            for p in paths:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
+    try:
+        cfgs = [project_cfg(cfg, n) for n in project_dir_names(cfg)]
+        for c in cfgs:
+            _ensure_registered(c)
+        if not cfg.watch:
+            worst = 0
+            for c in cfgs:
+                worst = max(worst, _run_single(c))    # 各プロジェクトを順に単発実行
+            return worst
+        # watch: ラウンドロビンで全プロジェクトを駆動し、誰も仕事が無ければ idle
+        _install_sigterm()
+        charter_mtime: dict[str, float] = {}
+        while True:
+            cfgs = [project_cfg(cfg, n) for n in project_dir_names(cfg)]   # 新規プロジェクトを再発見
+            any_work = False
+            for c in cfgs:
+                _ensure_registered(c)
+                mt = c.charter.stat().st_mtime if c.charter.exists() else 0.0
+                changed = charter_mtime.get(c.project_name) != mt
+                charter_mtime[c.project_name] = mt
+                if _project_has_work(c) or changed:
+                    print(f"[all] project={c.project_name} を駆動", flush=True)
+                    if load_charter(c) is not None:
+                        cmd_project(c)
+                    else:
+                        run_loop(c)
+                    any_work = True
+                for paths in registered.values():
+                    refresh_instance(paths)
+            if not any_work:                          # idle: どのプロジェクトにも仕事が無い
+                time.sleep(cfg.poll)
+                for paths in registered.values():
+                    refresh_instance(paths)
+    except KeyboardInterrupt:
+        print("\n=== kiro-autonomous 停止（SIGTERM/Ctrl-C 受信・全プロジェクト）===")
+        return 0
+    finally:
+        _cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -3711,14 +3809,25 @@ def _project_dirname(name: str) -> str:
     return safe or "default"
 
 
+def container_dir(cfg: "Config") -> Path:
+    """projects/<name>/ の 1 段上＝コンテナ（標準レイアウト）。逸脱時は project root の親で best-effort。"""
+    proot = cfg.backlog.parent
+    if proot.parent.name == "projects":
+        return proot.parent.parent
+    return proot.parent
+
+
 def build_config(args) -> Config:
     workdir = Path(args.workdir).resolve()
     container = Path(args.root)
     container = container if container.is_absolute() else (workdir / container)
     # プロジェクトを最上位コンテナにする: <root>/projects/<name>/ を per-project の effective root にする。
     # 全 per-project パスは backlog.parent から派生するため、root を 1 段深くするだけで全体が配下へ移る。
-    project_name = getattr(args, "project", None) or "default"
-    root = container / "projects" / _project_dirname(project_name)
+    # `--project all` は「コンテナ配下の全プロジェクトを 1 プロセスで回す」特別値（cmd_run が多重化する）。
+    raw_project = (getattr(args, "project", None) or "default").strip()
+    multi = raw_project.lower() == "all"
+    project_name = "all" if multi else _project_dirname(raw_project)
+    root = container / "projects" / ("default" if multi else project_name)
 
     def under(name, sub):
         """個別指定があればそれを、無ければルート（既定 ./.kiro-autonomous）配下に集約。"""
@@ -3789,7 +3898,8 @@ def _add_common(sp):
     sp.add_argument("--root", default=None,
                     help="コンテナ（cwd 相対、既定 ./.kiro-autonomous）。配下の projects/<name>/ が各プロジェクト")
     sp.add_argument("--project", default=None,
-                    help="操作対象プロジェクト（既定 default。未指定なら作成）。実体は <root>/projects/<name>/")
+                    help="操作対象プロジェクト（既定 default。未指定なら作成）。実体は <root>/projects/<name>/。"
+                         "run では `all` で 1 プロセスがコンテナ配下の全プロジェクトを回す")
     sp.add_argument("--backlog", default=None, help="バックログディレクトリ（既定 <root>/backlog）")
     sp.add_argument("--policy", default=None, help="（既定 <root>/policy.md）")
     sp.add_argument("--decisions", default=None, help="決定記録ディレクトリ（既定 <root>/decisions）")

@@ -1441,13 +1441,14 @@ class TestRemoteDiscovery(unittest.TestCase):
 
     def test_register_writes_to_shared_and_refresh_bumps_heartbeat(self):
         with tempfile.TemporaryDirectory() as wd:
-            cfg = cfg_for(Path(wd), watch=True)
+            cfg = cfg_for(Path(wd), watch=True, project_name="default")
             paths = km.register_instance(cfg, [self._shared])
             self.addCleanup(lambda: [p.unlink() for p in paths if p.exists()])
-            # ローカル home と共有先の両方へホスト修飾名で書かれる
+            # ローカル home と共有先の両方へ「ホスト-PID-プロジェクト」修飾名で書かれる
             self.assertEqual(len(paths), 2)
             self.assertTrue(any(Path(self._shared) in p.parents for p in paths))
-            self.assertTrue(all(p.name == f"{socket.gethostname()}-{os.getpid()}.json" for p in paths))
+            self.assertTrue(all(p.name == f"{socket.gethostname()}-{os.getpid()}-default.json"
+                                for p in paths))
             before = __import__("json").loads(paths[0].read_text())["heartbeat"]
             time.sleep(0.01)
             km.refresh_instance(paths)
@@ -2260,6 +2261,31 @@ class TestVerifyAssist(unittest.TestCase):
 
 
 class TestMultiProject(unittest.TestCase):
+    def test_run_all_consumes_every_project(self):
+        # 1 プロセス（--project all）でコンテナ配下の全プロジェクトを回す
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            for name in ("alpha", "beta"):
+                km.main(["enqueue", "--project", name, "--title", f"T-{name}", "--verify", "true",
+                         "--workdir", str(d), "--root", str(root)])
+            rc = km.main(["run", "--project", "all", "--workdir", str(d), "--root", str(root),
+                          "--planner", "none", "--flow-planner", "stub", "--executor", "stub",
+                          "--dry-run", "--max-cycles", "3"])
+            self.assertEqual(rc, 0)
+            # 両プロジェクトとも消化され archive に入る
+            self.assertEqual(len(list((root / "projects" / "alpha" / "archive").glob("*.md"))), 1)
+            self.assertEqual(len(list((root / "projects" / "beta" / "archive").glob("*.md"))), 1)
+
+    def test_project_cfg_repoints_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            base = cfg_for(d / ".ka" / "projects" / "default", project_name="default")
+            pc = km.project_cfg(base, "payments")
+            self.assertEqual(pc.project_name, "payments")
+            self.assertTrue(str(pc.backlog).endswith("projects/payments/backlog"))
+            self.assertEqual(km.container_dir(pc), d / ".ka")
+
     def test_run_creates_default_project_folder(self):
         # project 指定なしで起動すると default プロジェクトのフォルダが（無ければ）作られ、その下に集約される
         with tempfile.TemporaryDirectory() as d:
