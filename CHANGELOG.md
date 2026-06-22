@@ -25,7 +25,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （`--max-iterations` と二重ガード）。
 - 依存タスクの成果物が大きいとき、kiro-cli へ渡すプロンプトが OS のコマンドライン長
   制限（ARG_MAX）に達して起動失敗する不具合を修正。一定サイズを超えるプロンプトは
-  一時ファイルへ退避し参照渡しに切り替える（`KIRO_FLOW_ARGV_LIMIT` で調整）。
+  一時ファイルへ退避し参照渡しに切り替える（設定 `argv_limit` / `--argv-limit` で調整、既定 100000）。
 
 ---
 

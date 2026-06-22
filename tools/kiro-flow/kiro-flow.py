@@ -120,6 +120,9 @@ CONFIG_DEFAULTS = {
     # judge/評価役のサーキットブレーカー: 同一系統（verify/失敗）の作り直しをこの回数で打ち切る。
     # 達成不可能な完了条件で無限に再タスクを生み続けるのを防ぐ（max_iterations と二重ガード）。
     "max_retries": 3,
+    # kiro-cli へ argv で渡すプロンプトの最大バイト数。超過分は一時ファイルへ退避し参照渡しに
+    # 切り替える（依存成果物が大きいときに OS の ARG_MAX に達して起動失敗するのを防ぐ）。
+    "argv_limit": 100000,
     "review": "auto",  # auto: 集約パターンで自動有効 / True/False: 明示上書き
     "workers": 2,
     # 一時ファイルの自動クリーンアップ（daemon ループ内で定期実行）
@@ -1135,16 +1138,29 @@ def _kiro_timeout() -> float | None:
     return to if to > 0 else None
 
 
+# 設定ファイル/CLI で解決した閾値を、args を持たない free 関数（run_kiro 等）が参照できる
+# よう、main の resolve 後に _configure_thresholds がここへ反映する（既定は CONFIG_DEFAULTS）。
+_ARGV_LIMIT = CONFIG_DEFAULTS["argv_limit"]
+
+
+def _configure_thresholds(args) -> None:
+    """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
+    run_kiro は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
+    global _ARGV_LIMIT
+    v = getattr(args, "argv_limit", None)
+    if v:
+        try:
+            _ARGV_LIMIT = int(v)
+        except (TypeError, ValueError):
+            pass
+
+
 def _kiro_argv_limit() -> int:
     """kiro-cli へ argv（コマンドライン）で渡すプロンプトの最大バイト数。
     これを超えるプロンプトは一時ファイルへ退避し参照渡しに切り替える。依存タスクの
     成果物が大きいとプロンプトが肥大し、OS の ARG_MAX（コマンドライン長制限）に達して
-    プロセス起動自体が失敗するため。env KIRO_FLOW_ARGV_LIMIT で調整（既定 100000）。"""
-    try:
-        n = int(os.environ.get("KIRO_FLOW_ARGV_LIMIT", "100000"))
-    except ValueError:
-        n = 100000
-    return n if n > 0 else 100000
+    プロセス起動自体が失敗するため。設定 argv_limit / CLI --argv-limit で調整（既定 100000）。"""
+    return _ARGV_LIMIT if _ARGV_LIMIT > 0 else CONFIG_DEFAULTS["argv_limit"]
 
 
 def run_kiro(prompt: str, model: str | None) -> str:
@@ -2593,6 +2609,9 @@ def main() -> int:
                         "先頭1件を検証ゲートに通してから残りを展開し、同様手順を1件で固めてから流す")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
+    p.add_argument("--argv-limit", dest="argv_limit", type=int, default=None,
+                   help="kiro-cli へ argv で渡すプロンプトの最大バイト数（設定 argv_limit と同義）。"
+                        "超過分は一時ファイルへ退避し参照渡しにする（既定 100000）")
     p.add_argument("--keep-clone", dest="cleanup_clone", action="store_const", const=False,
                    default=None,
                    help="作業後に sparse-checkout クローンを削除せず残す（既定: 削除して再利用しない）")
@@ -2692,6 +2711,8 @@ def main() -> int:
     args = p.parse_args()
     # CLI 未指定の設定値を設定ファイル→組み込み既定で確定（CLI > config > 既定）
     resolve_config(args)
+    # args を持たない free 関数（run_kiro 等）が読む閾値をモジュール変数へ確定させる
+    _configure_thresholds(args)
     # 子プロセスから渡る空文字の --model_opt は「モデル指定なし」を意味する
     if getattr(args, "model", None) == "":
         args.model = None

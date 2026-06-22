@@ -287,6 +287,7 @@ tmux attach -t flow
 | `--max-iterations` | 3 | 再計画（evaluator-optimizer）の最大反復回数 |
 | `--max-fanout` | 50 | データ駆動 fan-out（split→map）の最大展開数 |
 | `--max-retries` | 3 | サーキットブレーカー：同一系統の作り直し（verify=fail 再生成・失敗 retry）の打ち切り回数。達成不可能な完了条件での無限再タスクを防ぐ |
+| `--argv-limit` | 100000 | kiro-cli へ argv で渡すプロンプトの最大バイト数（設定 `argv_limit`）。超過分は一時ファイルへ退避し参照渡しにして ARG_MAX 失敗を回避 |
 | `--review` / `--no-review` | auto | 検証 gate の有効化。既定 `auto`（集約パターンで自動 ON）／`--review` 常時 ON ／`--no-review` OFF。設定は `review: auto\|true\|false` |
 | `--poll` | 2.0 | ポーリング間隔（秒） |
 | `--cleanup-interval` / `--no-cleanup` | 3600 | 一時ファイル自動掃除の間隔（秒, `daemon`）。`--no-cleanup` または `0` で無効化 |

@@ -1099,11 +1099,29 @@ class ArtifactProtocolTests(unittest.TestCase):
 class ArgvLimitTests(unittest.TestCase):
     """大きなプロンプトをコマンドライン長制限で落とさず、一時ファイル参照に切り替える。"""
 
-    def test_argv_limit_env_override(self):
-        with mock.patch.dict(os.environ, {"KIRO_FLOW_ARGV_LIMIT": "123"}):
-            self.assertEqual(kf._kiro_argv_limit(), 123)
-        with mock.patch.dict(os.environ, {"KIRO_FLOW_ARGV_LIMIT": "0"}):
-            self.assertEqual(kf._kiro_argv_limit(), 100000)  # 0/不正は既定へ
+    def test_argv_limit_from_config(self):
+        import argparse
+        # 解決済み設定値（argv_limit）はモジュール変数へ確定し、free 関数が参照する
+        orig = kf._ARGV_LIMIT
+        self.addCleanup(setattr, kf, "_ARGV_LIMIT", orig)
+        kf._configure_thresholds(argparse.Namespace(argv_limit=123))
+        self.assertEqual(kf._kiro_argv_limit(), 123)
+        kf._configure_thresholds(argparse.Namespace(argv_limit=None))  # 未指定は据え置き
+        self.assertEqual(kf._kiro_argv_limit(), 123)
+        kf._ARGV_LIMIT = 0  # 0/不正は組み込み既定へフォールバック
+        self.assertEqual(kf._kiro_argv_limit(), kf.CONFIG_DEFAULTS["argv_limit"])
+
+    def test_argv_limit_resolved_from_config_file(self):
+        # 設定ファイルの argv_limit が resolve_config 経由で args に載る（env 非依存）
+        import argparse
+        cfg_dir = tempfile.mkdtemp(prefix="kf-cfg-")
+        self.addCleanup(shutil.rmtree, cfg_dir, ignore_errors=True)
+        cfg = os.path.join(cfg_dir, "kiro-flow.json")
+        with open(cfg, "w") as f:
+            json.dump({"argv_limit": 4096}, f)
+        args = argparse.Namespace(config=cfg, argv_limit=None)
+        kf.resolve_config(args)
+        self.assertEqual(args.argv_limit, 4096)
 
     def test_small_prompt_passed_inline(self):
         seen = {}
