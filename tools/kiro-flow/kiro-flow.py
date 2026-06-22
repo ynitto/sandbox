@@ -130,6 +130,18 @@ CONFIG_DEFAULTS = {
     "cleanup_age": 24.0,         # 孤立クローンを掃除するまでのアイドル時間（時間）
     # 作業後に sparse-checkout クローンを削除するか（True で削除 / False で残して再利用）
     "cleanup_clone": True,
+    # gitlab executor（opt-in のワーカーバス）。executor: gitlab を選んだときだけ使われる。
+    # タスクを gitlab-idd スキルでイシュー化し、リモートのワーカーが拾って実行する。
+    # status:approved ラベルが付く（レビュー承認）まで get-issue でポーリングし完了とみなす。
+    "gitlab": {
+        "conn_label": "default",            # connections.yaml の接続ラベル（gitlab-idd と共通）
+        "labels": "status:open,assignee:any",  # 起票するイシューに付ける初期ラベル
+        "priority": "priority:normal",      # 付与する優先度ラベル（空文字で付けない）
+        "poll_interval": 30.0,              # イシューのポーリング間隔（秒）
+        "timeout": 86400.0,                 # approved 待ちのタイムアウト（秒）。0/負で無限待ち
+        "approved_label": "status:approved",  # この状態に達したら完了とみなす（= 受け入れ承認）
+        "done_label": "status:done",        # approved 以外に完了とみなすラベル
+    },
 }
 
 # 集約点（reduce/synthesize）を持ち、独立レビューが結果の信頼性を高めるパターン。
@@ -1141,18 +1153,23 @@ def _kiro_timeout() -> float | None:
 # 設定ファイル/CLI で解決した閾値を、args を持たない free 関数（run_kiro 等）が参照できる
 # よう、main の resolve 後に _configure_thresholds がここへ反映する（既定は CONFIG_DEFAULTS）。
 _ARGV_LIMIT = CONFIG_DEFAULTS["argv_limit"]
+# gitlab executor の設定（execute_gitlab は args を受け取らないため module 変数で受け渡す）。
+_GITLAB_CFG: dict = {}
 
 
 def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
     run_kiro は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
-    global _ARGV_LIMIT
+    global _ARGV_LIMIT, _GITLAB_CFG
     v = getattr(args, "argv_limit", None)
     if v:
         try:
             _ARGV_LIMIT = int(v)
         except (TypeError, ValueError):
             pass
+    g = getattr(args, "gitlab", None)
+    if isinstance(g, dict):
+        _GITLAB_CFG = g
 
 
 def _kiro_argv_limit() -> int:
@@ -1318,6 +1335,193 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
         data = _reconcile_count(data)
     elif kind == "verify":
         data = _normalize_verify(text, data)
+    return text, data
+
+
+# --------------------------------------------------------------------------
+# gitlab executor — GitLab イシューを非同期ワーカーバスにする（opt-in）
+#
+#   タスクを gitlab-idd スキルの gl.py でイシュー化し、リモートの（別マシン/別人の）
+#   ワーカーが拾って実装する。kiro-flow はイシューを get-issue でポーリングし、
+#   レビュアーが status:approved を付ける（= 受け入れ承認）まで待って完了とみなす。
+#   ローカルに kiro-cli が無くても、GitLab 越しに作業を委譲できる。
+#
+#   ※ ポーリングするのは kiro-flow（Python オーケストレータ）であって LLM セッション
+#      ではない。gitlab-idd の「LLM ポーリング禁止」はワーカー/レビュアー LLM への指針で、
+#      ここでの定期確認とは別物。
+# --------------------------------------------------------------------------
+def _find_gl_script():
+    """gitlab-idd スキルの scripts/gl.py を探す（flow-planner の探索と同じ流儀）。
+    検索順: .github/skills/ → git root/.github/skills/ → ~/.kiro/skills/ → skill_home。"""
+    candidates = []
+    cwd = os.getcwd()
+    candidates.append(os.path.join(cwd, ".github", "skills", "gitlab-idd", "scripts", "gl.py"))
+    try:
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+        ).stdout.strip()
+        if root:
+            candidates.append(os.path.join(root, ".github", "skills", "gitlab-idd", "scripts", "gl.py"))
+    except Exception:  # noqa: BLE001
+        pass
+    candidates.append(os.path.join(os.path.expanduser("~/.kiro/skills"),
+                                   "gitlab-idd", "scripts", "gl.py"))
+    for agent_dir in [os.path.expanduser("~/.kiro"), os.path.expanduser("~/.copilot"),
+                      os.path.expanduser("~/.claude"), os.path.expanduser("~/.codex")]:
+        reg = os.path.join(agent_dir, "skill-registry.json")
+        if os.path.isfile(reg):
+            try:
+                with open(reg, encoding="utf-8") as f:
+                    home = json.load(f).get("skill_home", "")
+                if home:
+                    candidates.append(os.path.join(home, "gitlab-idd", "scripts", "gl.py"))
+            except Exception:  # noqa: BLE001
+                pass
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def _gitlab_cfg() -> dict:
+    """gitlab executor の設定（既定 ＜ 設定ファイル/CLI）を解決して返す。"""
+    cfg = dict(CONFIG_DEFAULTS["gitlab"])
+    if isinstance(_GITLAB_CFG, dict):
+        cfg.update(_GITLAB_CFG)
+    return cfg
+
+
+def run_gl(subargs: "list[str]", conn_label: str = "default", parse_json: bool = True):
+    """gitlab-idd の gl.py を 1 回呼び出す。parse_json=True なら出力 JSON を返す。
+    gl.py が見つからない / 失敗したときは RuntimeError を送出する（結果は failed 記録）。"""
+    script = _find_gl_script()
+    if script is None:
+        raise RuntimeError(
+            "gitlab executor には gitlab-idd スキルの scripts/gl.py が必要です。"
+            "スキルを導入し connections.yaml で接続を設定してください（opt-in）。")
+    cmd = [sys.executable, script, "--label-conn", conn_label] + subargs
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"gl.py タイムアウト: {' '.join(subargs[:2])}")
+    if proc.returncode != 0:
+        raise RuntimeError(f"gl.py 失敗 ({subargs[0]}): {proc.stderr.strip()[:300]}")
+    out_text = strip_ansi(proc.stdout).strip()
+    if not parse_json:
+        return out_text
+    try:
+        return json.loads(out_text) if out_text else {}
+    except json.JSONDecodeError:
+        raise RuntimeError(f"gl.py の出力を JSON として解釈できません: {out_text[:200]}")
+
+
+def _gitlab_issue_body(kind: str, goal: str, dep_results: dict,
+                       art_dir: "str | None", dep_arts: "dict | None") -> str:
+    """イシュー本文（GitLab Markdown）を組み立てる。gitlab-idd 規約に従い
+    『## 受け入れ条件』を必ず含める（ワーカー/レビュアーが完了判定に使う）。"""
+    # 集約・選別系では gate（verify 判定）を参考成果から除く（execute_kiro と同様）
+    deps = dep_results
+    if kind in ("reduce", "synthesize", "filter", "judge"):
+        deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}
+    lines = ["## 目的", "", goal, ""]
+    if deps:
+        lines += ["## 依存タスクの成果（参考）", ""]
+        for d, r in deps.items():
+            lines.append(f"- **{d}**: {_dep_text(r)[:500]}")
+            dv = _dep_data(r)
+            if dv is not None:
+                lines.append(f"  - `data`: `{json.dumps(dv, ensure_ascii=False)[:300]}`")
+        lines.append("")
+    lines += [
+        "## 受け入れ条件", "",
+        f"- [ ] 次のタスクが完了している: {goal}",
+        "- [ ] 変更がブランチに push され、レビュー可能な状態（MR）になっている",
+        "",
+        "---",
+        f"_kiro-flow ワーカーバス（kind=`{kind}`）により自動起票。"
+        "完了したらレビュアーが `status:approved` を付与すると kiro-flow が完了とみなします。_",
+    ]
+    return "\n".join(lines)
+
+
+def execute_gitlab(kind: str, goal: str, dep_results: dict, model: "str | None" = None,
+                   art_dir: "str | None" = None, dep_arts: "dict | None" = None):
+    """opt-in のワーカーバス: タスクを GitLab イシューにして委譲し、approved を待つ。
+
+    1. gl.py create-issue でイシューを起票（status:open,assignee:any ＋ 優先度）
+    2. gl.py get-issue でラベルをポーリングし、status:approved（または status:done /
+       クローズ）に達したら完了
+    3. ワーカーの最終コメント（完了報告）を成果テキストとして取り込んで返す
+    """
+    cfg = _gitlab_cfg()
+    conn = cfg.get("conn_label", "default")
+    # opt-in 前提チェック: gl.py が無ければ即失敗（誤って選んだときに無限待ちにしない）
+    if _find_gl_script() is None:
+        raise RuntimeError(
+            "gitlab executor には gitlab-idd スキルの scripts/gl.py が必要です（opt-in）。")
+
+    title = f"[kiro-flow] {goal.strip()[:80]}"
+    body = _gitlab_issue_body(kind, goal, dep_results, art_dir, dep_arts)
+    labels = str(cfg.get("labels") or "status:open,assignee:any")
+    priority = str(cfg.get("priority") or "").strip()
+    if priority:
+        labels = f"{labels},{priority}"
+
+    # 本文は argv 長制限を避けてファイル経由で渡す（依存成果が大きいときの起動失敗を防ぐ）
+    fd, body_file = tempfile.mkstemp(prefix="kiro-flow-issue-", suffix=".md")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(body)
+    try:
+        created = run_gl(["create-issue", "--title", title,
+                          "--body-file", body_file, "--labels", labels], conn)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(body_file)
+
+    iid = created.get("iid") or created.get("id")
+    url = created.get("web_url", "")
+    if not iid:
+        raise RuntimeError(f"GitLab イシューの作成に失敗しました: {str(created)[:200]}")
+    log("gitlab", f"イシュー #{iid} を起票し承認待ち: {url}")
+
+    approved = str(cfg.get("approved_label") or "status:approved")
+    done = str(cfg.get("done_label") or "status:done")
+    # 0 を有効値として尊重する（`x or default` は 0.0 を弾くため使わない）
+    def _as_float(v, default):
+        try:
+            return float(v) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+    interval = _as_float(cfg.get("poll_interval"), 30.0)
+    timeout = _as_float(cfg.get("timeout"), 0.0)
+    deadline = (time.time() + timeout) if timeout > 0 else None
+
+    labels_now: set = set()
+    while True:
+        issue = run_gl(["get-issue", str(iid)], conn)
+        labels_now = set(issue.get("labels") or [])
+        state = issue.get("state")
+        if approved in labels_now or done in labels_now or state == "closed":
+            break
+        if deadline is not None and time.time() >= deadline:
+            raise RuntimeError(
+                f"イシュー #{iid} が {timeout:.0f}s 以内に {approved} になりませんでした（{url}）")
+        time.sleep(max(0.0, interval))
+
+    # ワーカーの最終コメント（完了報告）を成果として取り込む（ベストエフォート）
+    report = ""
+    try:
+        comments = run_gl(["get-comments", str(iid)], conn)
+        if isinstance(comments, list) and comments:
+            report = str(comments[-1].get("body") or "").strip()
+    except Exception:  # noqa: BLE001 — コメント取得失敗は致命的ではない
+        report = ""
+
+    text = f"[gitlab] イシュー #{iid} approved（{url}）"
+    if report:
+        text += "\n\n" + report[:1000]
+    data = {"issue_iid": iid, "web_url": url,
+            "labels": sorted(labels_now), "approved": True}
     return text, data
 
 
@@ -1611,7 +1815,9 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
         review = _review_decision(cli, (strategy or {}).get("patterns", []))
     ef = bool(getattr(args, "exemplar_first", False))
     mr = int(getattr(args, "max_retries", 3) or 3)
-    if args.executor == "kiro":
+    # gitlab バスでも再計画（evaluator-optimizer）はオーケストレータ側でローカルに
+    # kiro で判断する（ワーカータスクの実行だけを GitLab へ委譲する）。
+    if args.executor in ("kiro", "gitlab"):
         return continue_kiro(request, nodes, results, iteration, mf, review, ef, mr)
     return continue_stub(request, nodes, results, iteration, mf, review, ef, mr)
 
@@ -1856,6 +2062,9 @@ def cmd_work(args) -> int:
             if args.executor == "kiro":
                 output, rdata = execute_kiro(kind, goal, dep_results, args.model,
                                              art_dir, dep_arts)
+            elif args.executor == "gitlab":
+                output, rdata = execute_gitlab(kind, goal, dep_results, args.model,
+                                               art_dir, dep_arts)
             else:
                 output, rdata = execute_stub(kind, goal, dep_results, args.model,
                                              art_dir, dep_arts)
@@ -2623,7 +2832,9 @@ def main() -> int:
                      help="ワークフローへの要求（再開時は省略可）")
     run.add_argument("--workers", type=int, default=None)
     run.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
-    run.add_argument("--executor", choices=["kiro", "stub"], default=None)
+    run.add_argument("--executor", choices=["kiro", "stub", "gitlab"], default=None,
+                     help="ワーカーバス: kiro / stub / gitlab（opt-in: タスクを GitLab "
+                          "イシューにして委譲し approved まで待つ）")
     run.add_argument("--max-iterations", type=int, default=None,
                      help="再計画（evaluator-optimizer）の最大反復回数")
     run.add_argument("--max-fanout", type=int, default=None,
@@ -2641,8 +2852,8 @@ def main() -> int:
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
     orch.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
-    orch.add_argument("--executor", choices=["kiro", "stub"], default=None,
-                      help="評価役（evaluator）に使うバックエンド")
+    orch.add_argument("--executor", choices=["kiro", "stub", "gitlab"], default=None,
+                      help="ワーカーバス。評価役（evaluator）は gitlab でもローカル kiro で判断")
     orch.add_argument("--max-iterations", type=int, default=None)
     orch.add_argument("--max-fanout", type=int, default=None)
     orch.add_argument("--max-retries", type=int, default=None)
@@ -2655,7 +2866,7 @@ def main() -> int:
 
     work = sub.add_parser("work", help="ワーカー役")
     work.add_argument("--node-id", default=f"{socket.gethostname()}-{os.getpid()}")
-    work.add_argument("--executor", choices=["kiro", "stub"], default=None)
+    work.add_argument("--executor", choices=["kiro", "stub", "gitlab"], default=None)
     work.add_argument("--model_opt", dest="model", default=None)
     work.add_argument("--poll", type=float, default=None)
     work.add_argument("--keep-alive", action="store_true", help="run 完了後も待機し続ける")
@@ -2668,7 +2879,7 @@ def main() -> int:
     dm.add_argument("--max-workers", type=int, default=None,
                     help="このデーモンが同時に走らせる worker 上限（既定 4）")
     dm.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
-    dm.add_argument("--executor", choices=["kiro", "stub"], default=None)
+    dm.add_argument("--executor", choices=["kiro", "stub", "gitlab"], default=None)
     dm.add_argument("--max-iterations", type=int, default=None)
     dm.add_argument("--max-fanout", type=int, default=None)
     dm.add_argument("--max-retries", type=int, default=None)

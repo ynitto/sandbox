@@ -344,6 +344,34 @@ while True:
   （設定 `argv_limit` / `--argv-limit`、既定 100000 bytes）を超えるプロンプトを一時ファイルへ退避し、
   「そのファイルを読んで実行」する短い指示に置き換える（実行後に一時ファイルは掃除）。
 
+### 9.1 ワーカーバス（executor）
+
+ワーカーがタスクを実際に実行するバックエンド。`--executor` / 設定 `executor` で選ぶ。
+
+| executor | 実行 | 構造化 data |
+|----------|------|-------------|
+| `kiro`（既定） | ローカルで `kiro-cli` を呼ぶ | STRUCTURED_KINDS を寛容パース |
+| `stub` | LLM 非依存の擬似実行 | kind ごとに決定的 |
+| `gitlab`（opt-in） | GitLab イシューへ委譲し承認を待つ | イシューのメタ（iid/url/labels） |
+
+**gitlab ワーカーバス**（opt-in）: 各ワーカータスクを gitlab-idd スキルの `gl.py` で
+GitLab イシュー化して委譲する。設計上の要点:
+
+- **起票**: `gl.py create-issue` で `## 目的` ＋（依存成果）＋ `## 受け入れ条件` を本文に持つ
+  イシューを `status:open,assignee:any`（＋優先度）で作る。本文は argv 長制限を避け
+  `--body-file` 経由で渡す。リモートのワーカーが gitlab-idd の規約でこれを拾って実装する。
+- **完了判定**: `gl.py get-issue` でラベルをポーリングし、レビュアーが付ける
+  `status:approved`（または `status:done` / クローズ）に達したらそのタスクを **done** とみなす。
+  `timeout`（既定 86400s、0 で無限）超過は **failed** として記録し、再計画に回す。
+  ポーリングするのは kiro-flow（Python オーケストレータ）であって LLM セッションではないため、
+  gitlab-idd の「LLM ポーリング禁止」指針とは別物。
+- **成果**: ワーカーの最終コメントを成果テキストに取り込み、`data` にイシュー
+  iid/web_url/labels を残す（成果物の実体は GitLab 上のブランチ/MR にある）。
+- **再計画はローカル**: evaluator-optimizer の継続判断は gitlab バスでもオーケストレータ側で
+  `kiro` を使う（GitLab へ委譲するのはワーカータスクの実行だけ）。
+- **opt-in**: 既定 executor は `kiro` のまま。明示選択時のみ有効で、`gl.py` 未発見/接続未設定なら
+  起票時に明確に失敗する（誤選択で無限待ちにしない）。設定は `gitlab:` ブロック。
+
 ---
 
 ## 10. デーモン（オンデマンド起動）

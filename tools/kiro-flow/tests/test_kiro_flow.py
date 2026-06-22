@@ -411,6 +411,93 @@ class StructuredExtractionTests(unittest.TestCase):
         self.assertEqual(data["count"], 3)  # 実リスト長へ補正
 
 
+class GitlabExecutorTests(unittest.TestCase):
+    """gitlab ワーカーバス（opt-in）: イシュー起票 → approved ポーリング → 完了。"""
+
+    def setUp(self):
+        # ポーリング待ちを無くし、gl.py 探索は常に成功扱いにする
+        self._cfg = {"conn_label": "default", "labels": "status:open,assignee:any",
+                     "priority": "priority:normal", "poll_interval": 0.0,
+                     "timeout": 0.0, "approved_label": "status:approved",
+                     "done_label": "status:done"}
+
+    def _run_with(self, gl_side_effect, cfg=None):
+        with mock.patch.object(kf, "_GITLAB_CFG", cfg or self._cfg), \
+             mock.patch.object(kf, "_find_gl_script", return_value="/fake/gl.py"), \
+             mock.patch.object(kf, "run_gl", side_effect=gl_side_effect) as m:
+            text, data = kf.execute_gitlab("work", "ログイン画面を追加", {})
+        return text, data, m
+
+    def test_creates_issue_and_waits_for_approved(self):
+        # get-issue を 2 回呼ばせ、2 回目で approved にする
+        states = [["status:open"], ["status:approved"]]
+
+        def side(subargs, *a, **k):
+            cmd = subargs[0]
+            if cmd == "create-issue":
+                return {"iid": 42, "web_url": "https://gl/x/42"}
+            if cmd == "get-issue":
+                return {"labels": states.pop(0), "state": "opened"}
+            if cmd == "get-comments":
+                return [{"body": "実装しました。MR を用意済みです。"}]
+            return {}
+
+        text, data, m = self._run_with(side)
+        self.assertIn("#42 approved", text)
+        self.assertIn("MR を用意済み", text)
+        self.assertEqual(data["issue_iid"], 42)
+        self.assertTrue(data["approved"])
+        # create-issue に priority ラベルが連結されていること
+        create_call = next(c for c in m.call_args_list if c.args[0][0] == "create-issue")
+        labels = create_call.args[0][create_call.args[0].index("--labels") + 1]
+        self.assertIn("priority:normal", labels)
+        self.assertIn("assignee:any", labels)
+
+    def test_closed_issue_counts_as_done(self):
+        def side(subargs, *a, **k):
+            cmd = subargs[0]
+            if cmd == "create-issue":
+                return {"iid": 7, "web_url": "https://gl/x/7"}
+            if cmd == "get-issue":
+                return {"labels": ["status:open"], "state": "closed"}
+            if cmd == "get-comments":
+                return []
+            return {}
+
+        text, data, _ = self._run_with(side)
+        self.assertEqual(data["issue_iid"], 7)
+        self.assertTrue(data["approved"])
+
+    def test_timeout_raises(self):
+        cfg = dict(self._cfg, timeout=0.01, poll_interval=0.0)
+
+        def side(subargs, *a, **k):
+            cmd = subargs[0]
+            if cmd == "create-issue":
+                return {"iid": 1, "web_url": "https://gl/x/1"}
+            if cmd == "get-issue":
+                return {"labels": ["status:open"], "state": "opened"}
+            return {}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(side, cfg=cfg)
+        self.assertIn("approved", str(ctx.exception))
+
+    def test_missing_gl_script_raises(self):
+        with mock.patch.object(kf, "_find_gl_script", return_value=None):
+            with self.assertRaises(RuntimeError) as ctx:
+                kf.execute_gitlab("work", "なにか", {})
+        self.assertIn("gl.py", str(ctx.exception))
+
+    def test_issue_body_has_acceptance_criteria_and_deps(self):
+        deps = {"t1": {"output": "上流の成果", "data": {"n": 3}}}
+        body = kf._gitlab_issue_body("synthesize", "統合する", deps, None, None)
+        self.assertIn("## 受け入れ条件", body)
+        self.assertIn("統合する", body)
+        self.assertIn("t1", body)
+        self.assertIn("kiro-flow", body)
+
+
 class GraphHealthTests(unittest.TestCase):
     def test_unknown_deps_dropped(self):
         nodes = {"a": {"id": "a", "goal": "", "deps": ["ghost"], "kind": "work"},
