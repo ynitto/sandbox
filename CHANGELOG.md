@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ---
 
+## [Unreleased]
+
+### kiro-flow
+
+#### Added
+- 作業後に sparse-checkout クローンを自動削除（既定 ON）。各コマンド終了時に
+  ノード専用クローンを丸ごと掃除しクローンの溜まり込みを防ぐ。`--keep-clone` /
+  設定 `cleanup_clone: false` で従来どおり残して再利用も可能。
+
+---
+
 ## [v1.0.0] — 2026-06-20
 
 Initial release. 188 tests passing (kiro-flow + kiro-autonomous).

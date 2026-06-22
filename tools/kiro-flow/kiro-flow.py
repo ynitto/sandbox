@@ -118,6 +118,8 @@ CONFIG_DEFAULTS = {
     # 一時ファイルの自動クリーンアップ（daemon ループ内で定期実行）
     "cleanup_interval": 3600.0,  # 掃除の実行間隔（秒）。0 以下で無効化
     "cleanup_age": 24.0,         # 孤立クローンを掃除するまでのアイドル時間（時間）
+    # 作業後に sparse-checkout クローンを削除するか（True で削除 / False で残して再利用）
+    "cleanup_clone": True,
 }
 
 # 集約点（reduce/synthesize）を持ち、独立レビューが結果の信頼性を高めるパターン。
@@ -577,9 +579,21 @@ class GitBus(Bus):
         self._git(["rm", "-r", "-q", "--ignore-unmatch", rel], check=False)
         super().remove_run(run_id)  # 未追跡の残骸も掃除（commit/push は呼び出し側）
 
+    def cleanup_clone(self) -> None:
+        """作業後にこのノード専用の sparse-checkout クローンを丸ごと削除する。
+        共有リポジトリ本体ではなく、ローカルの作業ツリー（.git を含むクローン）だけを
+        対象にする。push 済みのデータはリモートにあるため、消しても情報は失われない。"""
+        wd = os.path.abspath(self.workdir)
+        if os.path.isdir(os.path.join(wd, ".git")):
+            shutil.rmtree(wd, ignore_errors=True)
+
 
 def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+
+
+# 作業後に削除する候補の GitBus クローン（make_bus で登録し main の finally で掃除）
+_active_clones: list = []
 
 
 def make_bus(args, node_id: str) -> Bus:
@@ -587,9 +601,21 @@ def make_bus(args, node_id: str) -> Bus:
     run_id = args.run_id or "_"  # gc 等 run 横断コマンドでは run_id 不要
     if getattr(args, "git", None):
         clone_dir = os.path.join(os.path.abspath(args.bus), _safe(node_id))
-        return GitBus(clone_dir, run_id, remote=args.git, branch=args.git_branch,
-                      subdir=getattr(args, "git_subdir", "") or "")
+        bus = GitBus(clone_dir, run_id, remote=args.git, branch=args.git_branch,
+                     subdir=getattr(args, "git_subdir", "") or "")
+        _active_clones.append(bus)  # 作業後に cleanup_clone で消す
+        return bus
     return Bus(os.path.abspath(args.bus), run_id)
+
+
+def cleanup_active_clones() -> None:
+    """このプロセスが作った sparse-checkout クローンを作業後にまとめて削除する。"""
+    while _active_clones:
+        bus = _active_clones.pop()
+        try:
+            bus.cleanup_clone()
+        except Exception:  # noqa: BLE001 — 掃除失敗で終了処理を止めない
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -1543,6 +1569,8 @@ def cmd_run(args) -> int:
     if args.git:
         base += ["--git", args.git, "--git-branch", args.git_branch,
                  "--git-subdir", args.git_subdir or ""]
+    if not getattr(args, "cleanup_clone", True):
+        base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
     mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus_root}"
 
     procs = []
@@ -1656,6 +1684,8 @@ def cmd_daemon(args) -> int:
     if args.git:
         base += ["--git", args.git, "--git-branch", args.git_branch,
                  "--git-subdir", args.git_subdir or ""]
+    if not getattr(args, "cleanup_clone", True):
+        base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
     mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.abspath(args.bus)}"
 
     orchestrators = {}   # run_id -> Popen
@@ -2202,6 +2232,9 @@ def main() -> int:
                    help="リポジトリ内のバスにするサブディレクトリ（既定: リポジトリ直下）")
     p.add_argument("--lease", type=float, default=None,
                    help="claim のリース秒数（超過すると他ノードが再 claim 可能。既定 1800）")
+    p.add_argument("--keep-clone", dest="cleanup_clone", action="store_const", const=False,
+                   default=None,
+                   help="作業後に sparse-checkout クローンを削除せず残す（既定: 削除して再利用しない）")
     # サブコマンド未指定なら daemon として扱う（required=False）
     sub = p.add_subparsers(dest="cmd")
 
@@ -2298,10 +2331,15 @@ def main() -> int:
     if getattr(args, "model", None) == "":
         args.model = None
     # サブコマンド未指定 → daemon として処理
-    if getattr(args, "func", None) is None:
-        args.node_id = getattr(args, "node_id", None)
-        return cmd_daemon(args)
-    return args.func(args)
+    try:
+        if getattr(args, "func", None) is None:
+            args.node_id = getattr(args, "node_id", None)
+            return cmd_daemon(args)
+        return args.func(args)
+    finally:
+        # 作業後に sparse-checkout クローンを削除する（--keep-clone で抑止可）
+        if getattr(args, "cleanup_clone", True):
+            cleanup_active_clones()
 
 
 if __name__ == "__main__":

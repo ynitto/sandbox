@@ -751,6 +751,28 @@ class GitDistributedTests(unittest.TestCase):
         self.assertNotIn("unrelated", entries)  # sparse で無関係ディレクトリは未展開
         self.assertIn(".git", entries)
 
+    def test_cleanup_clone_removes_worktree(self):
+        # 作業後にクローン（.git を含む作業ツリー）を丸ごと削除できる。
+        clone = os.path.join(self.clones, "to-remove")
+        bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        self.assertTrue(os.path.isdir(os.path.join(clone, ".git")))
+        bus.cleanup_clone()
+        self.assertFalse(os.path.exists(clone))  # クローンごと消える
+        bus.cleanup_clone()  # 既に無くても安全（冪等）
+
+    def test_make_bus_cleanup_removes_active_clones(self):
+        # make_bus で作ったクローンは cleanup_active_clones でまとめて削除される。
+        kf._active_clones.clear()
+        self.addCleanup(kf._active_clones.clear)
+        args = mock.Mock(bus=self.clones, run_id="run1", git=self.bare,
+                         git_branch="main", git_subdir="")
+        bus = kf.make_bus(args, "node-x")
+        self.assertIn(bus, kf._active_clones)
+        self.assertTrue(os.path.isdir(bus.workdir))
+        kf.cleanup_active_clones()
+        self.assertFalse(os.path.exists(bus.workdir))
+        self.assertEqual(kf._active_clones, [])
+
 
 class CleanupTests(unittest.TestCase):
     """一時ファイルの自動クリーンアップ（A: ロック / B: 中間 .tmp / C: 孤立クローン）。"""

@@ -64,3 +64,9 @@ lease: 1800                # claim のリース秒数。実タスク時間より
 #   - git モードのノード別クローン（run 終了後に孤立し、cleanup_age 時間アイドルのもの）
 cleanup_interval: 3600     # 掃除の実行間隔（秒）。0 以下で無効化（--no-cleanup 相当）
 cleanup_age: 24            # 孤立クローンを掃除するまでのアイドル時間（時間）
+
+# 各コマンド（run/work/orchestrate/daemon など）が作る sparse-checkout クローンを、
+# 作業後（プロセス終了時）に丸ごと削除する。クローンの溜まり込みを防ぐ既定の挙動。
+# false にすると次回起動で再利用するため残す（フル再クローンを避け高速化）。
+# CLI では --keep-clone で false 相当（作業後も残す）。
+cleanup_clone: true
