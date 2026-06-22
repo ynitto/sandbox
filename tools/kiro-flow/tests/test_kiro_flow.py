@@ -411,21 +411,40 @@ class StructuredExtractionTests(unittest.TestCase):
         self.assertEqual(data["count"], 3)  # 実リスト長へ補正
 
 
-class GitlabExecutorTests(unittest.TestCase):
-    """gitlab ワーカーバス（opt-in）: イシュー起票 → approved ポーリング → 完了。"""
+def _load_executor_plugin(name):
+    """executors/<name>.py をテスト用にロードする。"""
+    path = HERE.parent / "executors" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"kf_exec_{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+gl_plugin = _load_executor_plugin("gitlab")
+
+
+class GitlabExecutorPluginTests(unittest.TestCase):
+    """gitlab executor プラグイン（opt-in）: イシュー起票 → approved ポーリング → 完了。"""
 
     def setUp(self):
-        # ポーリング待ちを無くし、gl.py 探索は常に成功扱いにする
+        # ポーリング待ちを無くす設定を環境変数（KIRO_FLOW_EXECUTOR_CONFIG）で渡す
         self._cfg = {"conn_label": "default", "labels": "status:open,assignee:any",
                      "priority": "priority:normal", "poll_interval": 0.0,
                      "timeout": 0.0, "approved_label": "status:approved",
                      "done_label": "status:done"}
+        self._prev_env = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(self._cfg)
 
-    def _run_with(self, gl_side_effect, cfg=None):
-        with mock.patch.object(kf, "_GITLAB_CFG", cfg or self._cfg), \
-             mock.patch.object(kf, "_find_gl_script", return_value="/fake/gl.py"), \
-             mock.patch.object(kf, "run_gl", side_effect=gl_side_effect) as m:
-            text, data = kf.execute_gitlab("work", "ログイン画面を追加", {})
+    def tearDown(self):
+        if self._prev_env is None:
+            os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
+        else:
+            os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = self._prev_env
+
+    def _run_with(self, gl_side_effect):
+        with mock.patch.object(gl_plugin, "_find_gl_script", return_value="/fake/gl.py"), \
+             mock.patch.object(gl_plugin, "run_gl", side_effect=gl_side_effect) as m:
+            text, data = gl_plugin.execute("work", "ログイン画面を追加", {})
         return text, data, m
 
     def test_creates_issue_and_waits_for_approved(self):
@@ -469,7 +488,8 @@ class GitlabExecutorTests(unittest.TestCase):
         self.assertTrue(data["approved"])
 
     def test_timeout_raises(self):
-        cfg = dict(self._cfg, timeout=0.01, poll_interval=0.0)
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
+            dict(self._cfg, timeout=0.01, poll_interval=0.0))
 
         def side(subargs, *a, **k):
             cmd = subargs[0]
@@ -480,22 +500,96 @@ class GitlabExecutorTests(unittest.TestCase):
             return {}
 
         with self.assertRaises(RuntimeError) as ctx:
-            self._run_with(side, cfg=cfg)
+            self._run_with(side)
         self.assertIn("approved", str(ctx.exception))
 
     def test_missing_gl_script_raises(self):
-        with mock.patch.object(kf, "_find_gl_script", return_value=None):
+        with mock.patch.object(gl_plugin, "_find_gl_script", return_value=None):
             with self.assertRaises(RuntimeError) as ctx:
-                kf.execute_gitlab("work", "なにか", {})
+                gl_plugin.execute("work", "なにか", {})
         self.assertIn("gl.py", str(ctx.exception))
+
+    def test_config_zero_poll_interval_respected(self):
+        # 0.0 が `x or default` で 30 に潰れないこと（プラグイン側 _as_float の確認）
+        self.assertEqual(gl_plugin._as_float(0.0, 30.0), 0.0)
+        self.assertEqual(gl_plugin._as_float(None, 30.0), 30.0)
+        self.assertEqual(gl_plugin._as_float("bad", 30.0), 30.0)
+
+    def test_env_override_beats_config_block(self):
+        # 個別環境変数 KIRO_FLOW_GITLAB_* が KIRO_FLOW_EXECUTOR_CONFIG より優先される
+        os.environ["KIRO_FLOW_GITLAB_CONN_LABEL"] = "work"
+        try:
+            self.assertEqual(gl_plugin._config()["conn_label"], "work")
+        finally:
+            os.environ.pop("KIRO_FLOW_GITLAB_CONN_LABEL", None)
 
     def test_issue_body_has_acceptance_criteria_and_deps(self):
         deps = {"t1": {"output": "上流の成果", "data": {"n": 3}}}
-        body = kf._gitlab_issue_body("synthesize", "統合する", deps, None, None)
+        body = gl_plugin._issue_body("synthesize", "統合する", deps)
         self.assertIn("## 受け入れ条件", body)
         self.assertIn("統合する", body)
         self.assertIn("t1", body)
         self.assertIn("kiro-flow", body)
+
+
+class ExecutorResolutionTests(unittest.TestCase):
+    """executor のプラグイン解決（kiro-loop の event_hook 流のローダ）。"""
+
+    def _args(self, **kw):
+        import types
+        return types.SimpleNamespace(**kw)
+
+    def test_builtin_kiro_and_stub(self):
+        self.assertIs(kf.make_executor(self._args(executor="kiro")), kf.execute_kiro)
+        self.assertIs(kf.make_executor(self._args(executor="stub")), kf.execute_stub)
+
+    def test_default_is_kiro(self):
+        self.assertIs(kf.make_executor(self._args(executor=None)), kf.execute_kiro)
+
+    def test_resolves_bundled_gitlab_plugin(self):
+        fn = kf.make_executor(self._args(executor="gitlab", gitlab={"poll_interval": 1}))
+        self.assertTrue(callable(fn))
+        # プラグイン設定が環境変数で渡されていること
+        self.assertEqual(json.loads(os.environ["KIRO_FLOW_EXECUTOR_CONFIG"]),
+                         {"poll_interval": 1})
+
+    def test_explicit_path_plugin(self):
+        path = str(HERE.parent / "executors" / "gitlab.py")
+        fn = kf.make_executor(self._args(executor=path))
+        self.assertTrue(callable(fn))
+
+    def test_unresolvable_executor_exits(self):
+        with self.assertRaises(SystemExit):
+            kf.make_executor(self._args(executor="does-not-exist-xyz"))
+
+    def test_plugin_missing_execute_exits(self):
+        # execute() を持たないダミープラグインを一時生成して読み込ませる
+        d = tempfile.mkdtemp(prefix="kf-exec-")
+        try:
+            p = pathlib.Path(d) / "noexec.py"
+            p.write_text("X = 1\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                kf.make_executor(self._args(executor=str(p)))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_module_cache_reloads_on_mtime_change(self):
+        d = tempfile.mkdtemp(prefix="kf-exec-")
+        try:
+            p = pathlib.Path(d) / "p.py"
+            p.write_text("VALUE = 1\ndef execute(*a, **k):\n    return ('', None)\n",
+                         encoding="utf-8")
+            m1 = kf._load_executor_module(str(p))
+            self.assertEqual(m1.VALUE, 1)
+            # mtime を進めて内容を変える → 再ロードされること
+            time.sleep(0.01)
+            p.write_text("VALUE = 2\ndef execute(*a, **k):\n    return ('', None)\n",
+                         encoding="utf-8")
+            os.utime(p, (time.time() + 5, time.time() + 5))
+            m2 = kf._load_executor_module(str(p))
+            self.assertEqual(m2.VALUE, 2)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 class GraphHealthTests(unittest.TestCase):

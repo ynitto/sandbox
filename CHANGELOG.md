@@ -10,12 +10,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-flow
 
 #### Added
-- gitlab ワーカーバス（opt-in）。`--executor gitlab` / 設定 `executor: gitlab` を選ぶと、
-  各ワーカータスクを gitlab-idd スキルの `gl.py` で GitLab イシュー化して委譲し、
-  リモートのワーカーが実装・レビュアーが承認した結果を `get-issue` でポーリングする。
-  `status:approved`（または `status:done` / クローズ）に達したらそのタスクを完了とみなす。
-  ポーリング間隔・タイムアウト・付与ラベルは設定 `gitlab:` ブロックで調整可。既定の
-  executor は `kiro` のままで、明示選択時のみ有効になる。
+- executor（ワーカーバス）のプラグイン化。kiro-loop の hooks（event_hook）と同じ流儀で、
+  `--executor` に組み込み名（`kiro`/`stub`）に加えてプラグイン名（例 `gitlab`）や `.py` パスを
+  指定できる。プラグインは標準ライブラリのみの単一ファイルで `execute(kind, goal, dep_results,
+  model, art_dir, dep_arts)` を公開し、本体が `importlib` で動的ロードする（mtime キャッシュ付き）。
+  検索順は スクリプト同階層 `executors/` → リポジトリ `tools/kiro-flow/executors/` →
+  `~/.kiro/kiro-flow/executors/`（インストーラ配置）→ 設定 `executor_dir`。プラグイン固有設定は
+  同名のトップレベル設定ブロックを JSON 化し環境変数 `KIRO_FLOW_EXECUTOR_CONFIG` で渡す。
+  `install.sh` は同梱プラグインを `~/.kiro/kiro-flow/executors/` へコピーする。
+- gitlab ワーカーバス（opt-in・`executors/gitlab.py` プラグイン）。`--executor gitlab` /
+  設定 `executor: gitlab` を選ぶと、各ワーカータスクを gitlab-idd スキルの `gl.py` で GitLab
+  イシュー化して委譲し、リモートのワーカーが実装・レビュアーが承認した結果を `get-issue` で
+  ポーリングする。`status:approved`（または `status:done` / クローズ）に達したらそのタスクを
+  完了とみなす。ポーリング間隔・タイムアウト・付与ラベルは設定 `gitlab:` ブロックで調整可。
+  既定の executor は `kiro` のままで、明示選択時のみ有効になる。
 - 作業後に sparse-checkout クローンを自動削除（既定 ON）。各コマンド終了時に
   ノード専用クローンを丸ごと掃除しクローンの溜まり込みを防ぐ。`--keep-clone` /
   設定 `cleanup_clone: false` で従来どおり残して再利用も可能。

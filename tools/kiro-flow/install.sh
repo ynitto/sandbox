@@ -176,6 +176,35 @@ fi
 ok "インストールしました: $INSTALL_PATH"
 
 # ---------------------------------------------------------------------------
+# 6.5 executor プラグインのインストール
+# ---------------------------------------------------------------------------
+# kiro-loop の hooks と同じ流儀で、executor をプラグイン（executors/<name>.py）として
+# 管理する。本体は単一ファイルで配布されるため、同梱プラグインを ~/.kiro/kiro-flow/
+# executors/ に配置し、`--executor <name>` がインストール後も名前で解決できるようにする。
+info "executor プラグインをインストールしています..."
+
+EXEC_SRC_DIR="${SCRIPT_DIR}/executors"
+EXEC_DEST_DIR="${HOME}/.kiro/kiro-flow/executors"
+
+if [[ -d "$EXEC_SRC_DIR" ]]; then
+  mkdir -p "$EXEC_DEST_DIR"
+  installed=0
+  for f in "$EXEC_SRC_DIR"/*.py; do
+    [[ -e "$f" ]] || continue
+    cp "$f" "$EXEC_DEST_DIR/"
+    installed=$((installed + 1))
+  done
+  if [[ "$installed" -gt 0 ]]; then
+    ok "executor プラグインを ${installed} 件配置しました: $EXEC_DEST_DIR"
+    info "  例: kiro-flow run \"<要求>\" --executor gitlab   # opt-in の GitLab ワーカーバス"
+  else
+    warn "executor プラグインが見つかりませんでした（$EXEC_SRC_DIR）。"
+  fi
+else
+  warn "executors/ ディレクトリが見つかりません（$EXEC_SRC_DIR）。プラグインはスキップします。"
+fi
+
+# ---------------------------------------------------------------------------
 # 7. 動作確認
 # ---------------------------------------------------------------------------
 info "動作確認をしています..."

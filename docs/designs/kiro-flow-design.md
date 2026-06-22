@@ -344,18 +344,39 @@ while True:
   （設定 `argv_limit` / `--argv-limit`、既定 100000 bytes）を超えるプロンプトを一時ファイルへ退避し、
   「そのファイルを読んで実行」する短い指示に置き換える（実行後に一時ファイルは掃除）。
 
-### 9.1 ワーカーバス（executor）
+### 9.1 ワーカーバス（executor）— プラグイン方式
 
 ワーカーがタスクを実際に実行するバックエンド。`--executor` / 設定 `executor` で選ぶ。
+組み込みの `kiro` / `stub` に加え、**kiro-loop の hooks（event_hook）と同じ流儀で
+プラグイン化**されている。`--executor` には次を指定できる:
+
+- 組み込み名 `kiro` / `stub`
+- プラグイン名（例 `gitlab`）→ 検索ディレクトリの `executors/<name>.py` を解決
+- `.py` への明示パス
 
 | executor | 実行 | 構造化 data |
 |----------|------|-------------|
-| `kiro`（既定） | ローカルで `kiro-cli` を呼ぶ | STRUCTURED_KINDS を寛容パース |
-| `stub` | LLM 非依存の擬似実行 | kind ごとに決定的 |
-| `gitlab`（opt-in） | GitLab イシューへ委譲し承認を待つ | イシューのメタ（iid/url/labels） |
+| `kiro`（既定・組み込み） | ローカルで `kiro-cli` を呼ぶ | STRUCTURED_KINDS を寛容パース |
+| `stub`（組み込み） | LLM 非依存の擬似実行 | kind ごとに決定的 |
+| `gitlab`（opt-in・プラグイン） | GitLab イシューへ委譲し承認を待つ | イシューのメタ（iid/url/labels） |
 
-**gitlab ワーカーバス**（opt-in）: 各ワーカータスクを gitlab-idd スキルの `gl.py` で
-GitLab イシュー化して委譲する。設計上の要点:
+**プラグイン契約**: 各プラグインは標準ライブラリのみの単一ファイルで、
+`execute(kind, goal, dep_results, model, art_dir, dep_arts) -> (text, data)` を公開する。
+`make_executor(args)` が解決し、`_load_executor_module` が `importlib` で動的ロードする
+（mtime キャッシュで再ロード対応）。
+
+- **検索順**: スクリプト同階層 `executors/` → リポジトリ `tools/kiro-flow/executors/` →
+  `~/.kiro/kiro-flow/executors/`（インストーラ配置）→ 設定 `executor_dir`。
+- **設定渡し**: 同名のトップレベル設定ブロック（例 `gitlab:`）を JSON 化し、環境変数
+  `KIRO_FLOW_EXECUTOR_CONFIG` でプラグインへ渡す（プラグインは個別環境変数で上書き可）。
+  組み込み executor の実体は import 時参照を握らず呼び出し時に `globals()` から解決する
+  （monkeypatch・ホットリロードを効かせるため）。
+- **インストール**: `install.sh` が同梱プラグインを `~/.kiro/kiro-flow/executors/` へコピーする
+  （kiro-loop が補助アセットを `~/.kiro/` 配下へ置くのと同じ流儀）。単一ファイル配布後も
+  `--executor <name>` が名前解決できる。
+
+**gitlab ワーカーバス**（opt-in・`executors/gitlab.py`）: 各ワーカータスクを gitlab-idd
+スキルの `gl.py` で GitLab イシュー化して委譲する。設計上の要点:
 
 - **起票**: `gl.py create-issue` で `## 目的` ＋（依存成果）＋ `## 受け入れ条件` を本文に持つ
   イシューを `status:open,assignee:any`（＋優先度）で作る。本文は argv 長制限を避け
@@ -367,8 +388,9 @@ GitLab イシュー化して委譲する。設計上の要点:
   gitlab-idd の「LLM ポーリング禁止」指針とは別物。
 - **成果**: ワーカーの最終コメントを成果テキストに取り込み、`data` にイシュー
   iid/web_url/labels を残す（成果物の実体は GitLab 上のブランチ/MR にある）。
-- **再計画はローカル**: evaluator-optimizer の継続判断は gitlab バスでもオーケストレータ側で
-  `kiro` を使う（GitLab へ委譲するのはワーカータスクの実行だけ）。
+- **再計画はローカル**: evaluator-optimizer の継続判断はオーケストレータ側で行う。`_continue`
+  は executor が `stub` のときだけ stub 継続、それ以外（`kiro` や任意のプラグイン）はローカル
+  `kiro` で判断する（プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
 - **opt-in**: 既定 executor は `kiro` のまま。明示選択時のみ有効で、`gl.py` 未発見/接続未設定なら
   起票時に明確に失敗する（誤選択で無限待ちにしない）。設定は `gitlab:` ブロック。
 
