@@ -2271,6 +2271,42 @@ class TestMultiProject(unittest.TestCase):
             self.assertEqual(rec["container"], str((d / ".ka").resolve()))
             self.assertEqual(rec["root"], str(proot.resolve()))
 
+    def test_enqueue_no_project_goes_to_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            km.main(["enqueue", "--title", "A", "--verify", "true",
+                     "--workdir", str(d), "--root", str(root)])           # project 指定なし
+            self.assertEqual(len(list((root / "projects" / "default" / "backlog").glob("*.md"))), 1)
+
+    def test_enqueue_json_item_project_routes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            payload = '[{"title":"X","verify":"true","project":"payments"},{"title":"Y","verify":"true"}]'
+            p = d / "in.json"; p.write_text(payload, encoding="utf-8")
+            km.main(["enqueue", "--json", "--file", str(p),
+                     "--workdir", str(d), "--root", str(root)])
+            # project 付きは payments、無しは default（呼び出しの既定プロジェクト）
+            self.assertEqual(len(list((root / "projects" / "payments" / "backlog").glob("*.md"))), 1)
+            self.assertEqual(len(list((root / "projects" / "default" / "backlog").glob("*.md"))), 1)
+
+    def test_global_inbox_routes_to_default_or_named(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root = d / ".ka"
+            cfg = cfg_for(root / "projects" / "default", project_name="default")
+            gin = root / "inbox"; gin.mkdir(parents=True)
+            (gin / "a.json").write_text('{"title":"no-proj","verify":"true"}', encoding="utf-8")
+            (gin / "b.json").write_text('{"title":"to-pay","verify":"true","project":"payments"}',
+                                        encoding="utf-8")
+            routed = km.ingest_global_inbox(cfg)
+            names = sorted(p for p, _ in routed)
+            self.assertEqual(names, ["default", "payments"])
+            self.assertEqual(len(list((root / "projects" / "default" / "backlog").glob("*.md"))), 1)
+            self.assertEqual(len(list((root / "projects" / "payments" / "backlog").glob("*.md"))), 1)
+            self.assertFalse(any(gin.glob("*.json")))     # 取り込んだら消える
+
     def test_project_dirname_sanitizes(self):
         self.assertEqual(km._project_dirname("a/b:c"), "a_b_c")
         self.assertEqual(km._project_dirname("  "), "default")

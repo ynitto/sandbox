@@ -135,6 +135,7 @@
 
 ```
 .kiro-autonomous/                    ← コンテナ（--root）。projects/ を束ねるだけ
+  inbox/               外部＋人 │ グローバル投入口（project 不問）。S0 で各 item の project（無→default）へ振り分け
   projects/
     default/                         ← 1 プロジェクト（--project。未指定はこれを作成）
       charter.md          人が書く │ プロジェクト定義（目標/制約/受入 verify/links）。S2 注入・§6 で読む
@@ -195,6 +196,11 @@
 - **取り込み口（inbox）**: `<project>/inbox/` の `.json`（1 件/配列）/`.md`（タスク形式）を取り込み元ファイルを消す。外部
   ソース（webhook/メール/issue 抽出）は薄いアダプタでここへ流し込む（コアは stdlib・ネットワーク非依存）。`enqueue`
   コマンドも同経路。**verify を持たない投入は必ず `inbox`**＝人の triage 行き（鉄則）。
+- **プロジェクト振り分け（project 指定なし → default）**: コンテナ直下の**グローバル inbox `<root>/inbox/`** は「どの
+  プロジェクトか分からない」投入の共通口。`ingest_global_inbox` が各 item を `project` フィールド（あれば）へ、無ければ
+  **`default`** へ振り分けて per-project backlog に入れる（どの run/triage からでも実行・決定的）。`enqueue --json` の各
+  item の `project` も同様に尊重し、無指定は呼び出しの `--project`（既定 `default`）へ。これで「指定なしの投入は default
+  プロジェクトの下で管理」が成立する。
 - **rot 検知**: triage 時に古い/重複/実行不能を検出して人へ回す（消さず棚卸し）。`unverifiable`（verify を用意できない）/
   `duplicate`（正規化タイトル一致）/ `stale`（mtime が `--rot-age-days` 既定 14 日より古い）。`run --rot` で毎回、`rot [--fix]`
   で随時。
@@ -422,8 +428,10 @@ kiro-flow への act 依頼（`build_request`）に **charter（定義）と `de
   policy/journal/DELIVERY/project.json/autonomy/bus/inbox/claims）。全サブコマンドに `--project <name>`（既定 `default`）。
   effective root = `<root>/projects/<safe(name)>/`（unicode を保つ FS セーフ化）。実装は build_config の root 計算を 1 段深く
   するだけで、全 per-project パスは `backlog.parent`（=project root）から派生して自動的に配下へ移る（Config 構造は不変）。
-- **作成・分離**: `enqueue --project X` で積む（無ければ作成）。未指定なら default を作成。needs/decisions/policy/検収ゲート/
-  自律裁定/DR 学習は**そのプロジェクト内に閉じる**。milestone/state の id は project 名を一次採用（未設定は charter 名から導出）。
+- **作成・分離**: `enqueue --project X` で積む（無ければ作成）。**project 指定なしの投入は default の下で管理**（CLI の
+  `--project` 既定 / グローバル inbox `<root>/inbox/` の振り分け先 / `enqueue --json` の item に `project` が無いとき・§5.1）。
+  needs/decisions/policy/検収ゲート/自律裁定/DR 学習は**そのプロジェクト内に閉じる**。milestone/state の id は project 名を
+  一次採用（未設定は charter 名から導出）。
 - **横展開リンク（charter `## links`）**: リンク先の定義（charter）と判断（decisions の `- learn:`）を act ワーカー文脈に取り込む
   （横断 recall・1 階層・有界）。名前は `<root>/projects/<name>`、`/`・`..` を含めば相対。ltm-use（実績で自動昇格）に対し
   charter リンクは**人が明示した参照先**を確実に引く。

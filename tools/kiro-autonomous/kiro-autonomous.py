@@ -28,7 +28,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -268,6 +268,97 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
     if created:
         append_journal(cfg.journal, f"inbox 取り込み {[t.id for t in created]}")
     return created
+
+
+# ---------------------------------------------------------------------------
+# プロジェクト振り分け（project 指定なしの投入は default プロジェクトの下で管理する）
+#   コンテナ直下の **グローバル inbox `<container>/inbox/`** は「どのプロジェクトか分からない」投入の共通口。
+#   各 item の `project` フィールド（あれば）へ、無ければ **default** へ振り分けて per-project backlog に入れる。
+# ---------------------------------------------------------------------------
+def container_dir(cfg: "Config") -> Path:
+    """projects/<name>/ の 1 段上＝コンテナ（標準レイアウト）。逸脱時は project root の親で best-effort。"""
+    proot = cfg.backlog.parent
+    if proot.parent.name == "projects":
+        return proot.parent.parent
+    return proot.parent
+
+
+def global_inbox_dir(cfg: "Config") -> Path:
+    return container_dir(cfg) / "inbox"
+
+
+def _cfg_for_project(cfg: "Config", name: "str | None") -> "Config":
+    """同コンテナ配下の別プロジェクトへ書くための Config（per-project パスを差し替え）。
+    name 未指定や現プロジェクトと同じならそのまま cfg を返す。"""
+    safe = _project_dirname(name or "")
+    if not (name or "").strip() or safe == (cfg.project_name or ""):
+        return cfg
+    proot = container_dir(cfg) / "projects" / safe
+    return replace(cfg, project_name=safe,
+                   backlog=proot / "backlog", needs=proot / "needs", decisions=proot / "decisions",
+                   archive=proot / "archive", policy=proot / "policy.md", journal=proot / "journal.md",
+                   delivery=proot / "DELIVERY.md", runlog=proot / "run-log.jsonl",
+                   inbox=proot / "inbox", bus=proot / "bus", charter=proot / "charter.md")
+
+
+def _spec_project(spec: dict) -> str:
+    return str(spec.get("project", "") or "").strip() if isinstance(spec, dict) else ""
+
+
+def enqueue_routed(cfg: "Config", spec: dict, fallback: str = "self") -> "tuple[Task, Config]":
+    """spec の `project` があればそのプロジェクトへ、無ければ fallback（'self'=cfg のプロジェクト /
+    'default'=既定プロジェクト）へ enqueue する。`project` キーは保存しない。"""
+    name = _spec_project(spec)
+    if not name:
+        name = "default" if fallback == "default" else (cfg.project_name or "default")
+    target = _cfg_for_project(cfg, name)
+    sp = {k: v for k, v in spec.items() if k != "project"}
+    return enqueue_task(target, sp), target
+
+
+def ingest_global_inbox(cfg: "Config") -> "list[tuple[str, Task]]":
+    """コンテナ直下のグローバル inbox を per-project backlog へ振り分ける（project 指定なしは default）。
+    どの run/triage からでも実行され、決定的なファイル操作のみ。取り込めたら元ファイルを消す。"""
+    gin = global_inbox_dir(cfg)
+    if not gin.exists():
+        return []
+    routed: list[tuple[str, Task]] = []
+    for f in sorted(gin.glob("*")):
+        if f.is_dir():
+            continue
+        try:
+            if f.suffix.lower() == ".json":
+                data = json.loads(f.read_text(encoding="utf-8"))
+                for sp in (data if isinstance(data, list) else [data]):
+                    if isinstance(sp, dict):
+                        t, tgt = enqueue_routed(cfg, sp, fallback="default")
+                        routed.append((tgt.project_name, t))
+            elif f.suffix.lower() in (".md", ".markdown", ".txt"):
+                t = parse_task(f.read_text(encoding="utf-8"), f.stem)
+                name = dict(t.extra).get("project", "").strip() or "default"
+                tgt = _cfg_for_project(cfg, name)
+                t.extra = [(k, v) for k, v in t.extra if k != "project"]
+                t.id = _unique_task_id(tgt, _slug_id(t.id) or "task")
+                if t.source == "human":
+                    t.source = "inbox"
+                if t.norm_status() == "ready" and not has_verify_plan(t):
+                    t.status = "inbox"               # verify を用意できないものは triage で人へ（鉄則）
+                tgt.backlog.mkdir(parents=True, exist_ok=True)
+                persist_task(tgt, t)
+                routed.append((tgt.project_name, t))
+            else:
+                continue
+        except (OSError, ValueError) as e:
+            append_journal(cfg.journal, f"global inbox 取り込み失敗: {f.name}: {e}")
+            continue
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    if routed:
+        append_journal(cfg.journal,
+                       "global inbox 振り分け " + ", ".join(f"{t.id}→{p}" for p, t in routed))
+    return routed
 
 
 _FOLLOWUP_LINE_RE = re.compile(r"^@followup\s+(?P<spec>.+)$")
@@ -2029,6 +2120,10 @@ def ensure_dirs(cfg: Config) -> None:
         d.mkdir(parents=True, exist_ok=True)
     if cfg.inbox:                       # 外部ソースが投入先を見つけられるよう作っておく
         cfg.inbox.mkdir(parents=True, exist_ok=True)
+    try:                                # コンテナ直下のグローバル inbox（project 不問の共通ドロップ口）
+        global_inbox_dir(cfg).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -2308,7 +2403,8 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
 
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     ensure_dirs(cfg)
-    inboxed = ingest_inbox(cfg)                       # 外部ドロップ(inbox/)を backlog へ取り込む
+    ingest_global_inbox(cfg)                          # コンテナ直下のグローバル inbox を per-project へ振り分け
+    inboxed = ingest_inbox(cfg)                       # このプロジェクトの inbox/ を backlog へ取り込む
     tasks = load_tasks(cfg.backlog)
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
@@ -2600,6 +2696,9 @@ def has_work(cfg: Config) -> bool:
             return True
     if cfg.inbox and cfg.inbox.exists() and any(cfg.inbox.glob("*")):
         return True               # 外部ドロップ(inbox/)が来たら起こす
+    gin = global_inbox_dir(cfg)
+    if gin.exists() and any(p for p in gin.glob("*") if not p.is_dir()):
+        return True               # コンテナ直下のグローバル inbox に投入が来たら起こす（default へ振り分け）
     if cfg.needs.exists():
         for nf in cfg.needs.glob("*.md"):
             if read_feedback(nf):
@@ -3004,17 +3103,19 @@ def cmd_enqueue(cfg: Config, args) -> int:
                   "priority": args.priority, "source": args.source, "status": args.status,
                   "after": args.after, "review": args.review, "note": args.note,
                   "accept": args.accept, "verify_template": args.verify_template}]
-    created = []
+    created: list[tuple[Task, str]] = []
     for sp in specs:
         if not isinstance(sp, dict):
             print(f"enqueue 失敗: オブジェクトでない要素: {sp!r}", file=sys.stderr)
             return 2
         try:
-            created.append(enqueue_task(cfg, sp))
+            # project 未指定なら現プロジェクト（既定 default）へ。item に project があればそこへ振り分け
+            t, tgt = enqueue_routed(cfg, sp, fallback="self")
+            created.append((t, tgt.project_name))
         except ValueError as e:
             print(f"enqueue 失敗: {e}", file=sys.stderr)
             return 2
-    for t in created:
+    for t, pname in created:
         if t.verify:
             warn = ""
         elif dict(t.extra).get("accept"):
@@ -3023,12 +3124,14 @@ def cmd_enqueue(cfg: Config, args) -> int:
             warn = "  ⚠ verify_template が未知 → inbox"
         else:
             warn = "  ⚠ verify 未定義 → inbox（人の triage へ）"
-        print(f"enqueued {t.id} [{t.norm_status()}] {t.title}{warn}")
+        print(f"enqueued {t.id} [{t.norm_status()}] (project={pname}) {t.title}{warn}")
     return 0
 
 
 def cmd_triage(cfg: Config) -> int:
     ensure_dirs(cfg)
+    ingest_global_inbox(cfg)                          # グローバル inbox を per-project へ振り分け
+    ingest_inbox(cfg)
     tasks = load_tasks(cfg.backlog)
     policy = load_policy(cfg.policy)
     for t, why in triage(tasks, policy):
