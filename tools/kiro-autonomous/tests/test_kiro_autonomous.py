@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 _MOD = Path(__file__).resolve().parent.parent / "kiro-autonomous.py"
@@ -1313,6 +1314,45 @@ class TestDaemonRouting(unittest.TestCase):
             finally:
                 km.fcntl.flock(f, km.fcntl.LOCK_UN)
                 f.close()
+
+    def test_lock_path_canonical_across_symlink(self):
+        # symlink 経由で起動した外部 daemon でも、同じ実バスなら同じロックパスになる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            real = d / "real_bus"
+            real.mkdir()
+            link = d / "link_bus"
+            try:
+                link.symlink_to(real)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink 不可")
+            p_real = km.daemon_lock_path(cfg_for(d, bus=real), False)
+            p_link = km.daemon_lock_path(cfg_for(d, bus=link), False)
+            self.assertEqual(p_real, p_link)
+
+    def test_lock_dir_env_override(self):
+        # KIRO_FLOW_LOCK_DIR を起動側・プローブ側で共有すれば TMPDIR 差を吸収できる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            with mock.patch.dict(os.environ, {"KIRO_FLOW_LOCK_DIR": str(d / "locks")}):
+                p = km.daemon_lock_path(cfg_for(d), False)
+            self.assertEqual(p.parent, d / "locks")
+
+    def test_pid_liveness_fallback_when_flock_unavailable(self):
+        # fcntl 無し（Windows 等）でも、daemon が記録した pid の生存で発見できる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            lp = km.daemon_lock_path(cfg, False)
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(km, "fcntl", None):
+                lp.write_text(str(os.getpid()))          # 自分（生存）= daemon 稼働とみなす
+                self.assertTrue(km.daemon_running(cfg))
+                lp.write_text("999999999")               # 不在 pid = daemon 無し
+                self.assertFalse(km.daemon_running(cfg))
+                lp.write_text("")                        # pid 不明 = daemon 無し
+                self.assertFalse(km.daemon_running(cfg))
+            self.addCleanup(lambda: lp.exists() and lp.unlink())
 
 
 class TestBareDefault(unittest.TestCase):

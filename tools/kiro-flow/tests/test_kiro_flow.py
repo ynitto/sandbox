@@ -549,6 +549,25 @@ class DaemonPrimitiveTests(unittest.TestCase):
         # 消えた後は再 claim 可能にならない（要求自体が無い）
         self.assertEqual(self.bus.list_inbox(), [])
 
+    def test_lock_path_canonical_and_env_dir(self):
+        import argparse
+        # local キーは realpath で canonical 化 → symlink 経由でも同一ロックパス
+        real = os.path.join(self.tmp, "real_bus")
+        os.makedirs(real)
+        link = os.path.join(self.tmp, "link_bus")
+        try:
+            os.symlink(real, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink 不可")
+        a_real = argparse.Namespace(bus=real, git=None, git_branch="main", git_subdir=None)
+        a_link = argparse.Namespace(bus=link, git=None, git_branch="main", git_subdir=None)
+        self.assertEqual(kf._daemon_lock_path(a_real), kf._daemon_lock_path(a_link))
+        # KIRO_FLOW_LOCK_DIR でロック置き場を共有できる（TMPDIR 差の吸収）
+        lockdir = os.path.join(self.tmp, "locks")
+        with mock.patch.dict(os.environ, {"KIRO_FLOW_LOCK_DIR": lockdir}):
+            p = kf._daemon_lock_path(a_real)
+        self.assertEqual(os.path.dirname(p), lockdir)
+
     def test_active_runs_and_claimable_count(self):
         v = kf.Bus(self.tmp, "runA")
         v.ensure_run("req")

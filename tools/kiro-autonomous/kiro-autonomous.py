@@ -1883,34 +1883,78 @@ def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "li
 
 
 def daemon_lock_path(cfg: "Config", use_git: bool) -> Path:
-    """kiro-flow daemon の singleton ロックパス（kiro-flow と同一規則）。"""
+    """kiro-flow daemon の singleton ロックパス（kiro-flow と同一規則）。
+
+    外部起動の daemon を取りこぼさないため、kiro-flow と完全に同じ導出をする:
+      - ロック置き場は env `KIRO_FLOW_LOCK_DIR`（無ければ tempdir 配下）
+      - local キーは realpath で canonical 化（symlink/相対パスのズレを吸収）"""
     if use_git and cfg.git_bus:
         key = f"git::{cfg.git_bus}@{cfg.git_branch}/{cfg.git_subdir or ''}"
     else:
-        key = "local::" + os.path.abspath(str(cfg.bus))
+        key = "local::" + os.path.realpath(str(cfg.bus))
     h = hashlib.sha1(key.encode()).hexdigest()
-    return Path(tempfile.gettempdir()) / "kiro-flow-locks" / f"daemon-{h}.lock"
+    base = os.environ.get("KIRO_FLOW_LOCK_DIR") or str(Path(tempfile.gettempdir()) / "kiro-flow-locks")
+    return Path(base) / f"daemon-{h}.lock"
 
 
-def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
-    """対象バスの kiro-flow daemon が稼働中か（ロックが保持されているか）を判定する。"""
+def _pid_alive(pid: int) -> bool:
+    """pid が生存しているか（POSIX）。0/負や不在は False。別ユーザのプロセスは生存扱い。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True            # 別ユーザの生存プロセス（送れないだけ）
+    except OSError:
+        return False
+    return True
+
+
+def _lock_pid(p: Path) -> int:
+    """ロックファイル先頭行の pid を読む（kiro-flow daemon が記録）。読めなければ 0。"""
+    try:
+        lines = p.read_text(encoding="utf-8").strip().splitlines()
+    except OSError:
+        return 0
+    try:
+        return int(lines[0]) if lines else 0
+    except ValueError:
+        return 0
+
+
+def _flock_held(p: Path) -> "bool | None":
+    """flock の保持状況。True=保持中 / False=未保持 / None=判定不能（fcntl 無し・非対応FS 等）。"""
     if fcntl is None:
-        return False
-    p = daemon_lock_path(cfg, use_git)
-    if not p.exists():
-        return False
+        return None
     try:
         f = open(p, "r+")
     except OSError:
-        return False
+        return None
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(f, fcntl.LOCK_UN)
-        return False  # 取得できた = 誰も保持していない = daemon 無し
+        return False           # 取得できた = 誰も保持していない
     except BlockingIOError:
-        return True   # 保持されている = daemon 稼働中
+        return True            # 保持されている = daemon 稼働中
+    except OSError:
+        return None            # flock 非対応FS 等 → pid で判定へ
     finally:
         f.close()
+
+
+def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
+    """対象バスの kiro-flow daemon が稼働中かを判定する。
+    flock を第一の根拠とし、判定不能（fcntl 無し / 異種FS）なら daemon が記録した
+    pid の生存で補完する。これで外部起動・Windows・NFS 上の daemon も発見できる。"""
+    p = daemon_lock_path(cfg, use_git)
+    if not p.exists():
+        return False
+    held = _flock_held(p)
+    if held is not None:
+        return held
+    return _pid_alive(_lock_pid(p))
 
 
 def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, str]":

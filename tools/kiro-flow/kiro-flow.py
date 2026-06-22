@@ -1650,32 +1650,48 @@ def cmd_submit(args) -> int:
 # --------------------------------------------------------------------------
 # daemon — 常駐し、要求に応じて orchestrator/worker をオンデマンド起動
 # --------------------------------------------------------------------------
+def daemon_lock_dir() -> str:
+    """daemon ロックを置く共有ディレクトリ。
+    起動側とプローブ側（kiro-autonomous 等）で必ず一致させる必要があるため、
+    env `KIRO_FLOW_LOCK_DIR` で明示でき、既定は tempdir 配下。TMPDIR 差で
+    別ディレクトリを見て「外部 daemon を発見できない」事故を防ぐ。"""
+    d = os.environ.get("KIRO_FLOW_LOCK_DIR") or os.path.join(tempfile.gettempdir(), "kiro-flow-locks")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def daemon_lock_key(args) -> str:
+    """バスを正規化した singleton キー。symlink/相対パス/別 cwd で起動された
+    外部 daemon でも同じ論理バスなら同一キーになるよう realpath で canonical 化する。"""
+    if getattr(args, "git", None):
+        return f"git::{args.git}@{args.git_branch}/{args.git_subdir or ''}"
+    return "local::" + os.path.realpath(args.bus)
+
+
 def _daemon_lock_path(args) -> str:
     """バス単位のデーモン singleton 用ロックパス（バス外の一時領域）。"""
-    if getattr(args, "git", None):
-        key = f"git::{args.git}@{args.git_branch}/{args.git_subdir or ''}"
-    else:
-        key = "local::" + os.path.abspath(args.bus)
-    h = hashlib.sha1(key.encode()).hexdigest()
-    d = os.path.join(tempfile.gettempdir(), "kiro-flow-locks")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"daemon-{h}.lock")
+    h = hashlib.sha1(daemon_lock_key(args).encode()).hexdigest()
+    return os.path.join(daemon_lock_dir(), f"daemon-{h}.lock")
 
 
 def cmd_daemon(args) -> int:
     # 冪等化: 同一バスのデーモンが既に稼働していれば何もしない（多重起動しない）
     lock_path = _daemon_lock_path(args)
-    lock_file = open(lock_path, "w")
+    # 既存ホルダの pid を消さないよう truncate せず開く（flock 取得後にだけ書く）
+    lock_file = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
     if fcntl is not None:
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            mode0 = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.abspath(args.bus)}"
+            mode0 = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.realpath(args.bus)}"
             print(f">>> kiro-flow daemon は既に稼働中です（{mode0}）。起動をスキップします。", flush=True)
             lock_file.close()
             return 0
-        lock_file.write(str(os.getpid()))
-        lock_file.flush()
+    # pid は flock の有無に関わらず記録する（flock 非対応環境でも pid 生存で発見できるように）
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
 
     daemon_id = args.node_id or f"{socket.gethostname()}-{os.getpid()}"
     bus = make_bus(args, f"daemon-{_safe(daemon_id)}")
