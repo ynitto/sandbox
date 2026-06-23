@@ -47,15 +47,29 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 - `grep -q "## Usage" README.md`
 
 ## repos
-# 成果物リポジトリ（任意・複数可）。`name = url` か素の `url` で書く。プランナーは「その repo の中身を
-# 読む / push する必要があるタスク」にだけ repos を割り当て、kiro-flow の worker がそのリポジトリを
-# temp 領域へ clone してから作業し、作業後に必ず消す（orchestrator の作業ツリーを汚さない）。
+# 対象/成果物リポジトリ（任意・複数可）。見出しは `name = url` か素の `url`。各 repo に構造化サブ箇条で
+# メタ情報を付ける（インデントした `- key: value`。日本語キー desc=説明/base=ベース/target=ターゲット も可）:
+#   - desc   … 内容物・関与範囲の説明【必須】。タスクは説明を見て「自分に関係する repo」を選び、その
+#              情報を個別タスク（gitlab イシュー等）へ伝搬する。書ききれない場合はフォルダ構成や README 参照でも可。
+#   - base   … 作業のベースブランチ【必須】（ここから分岐する）。
+#   - target … MR/PR のターゲットブランチ【任意・既定 = base】。
+# プランナーは「その repo を読む / push する必要があるタスク」にだけ repos を割り当て、kiro-flow の worker が
+# temp 領域へ clone して作業し、作業後に必ず消す（orchestrator の作業ツリーを汚さない）。
 # 手で積むタスクには `kiro-autonomous enqueue --repos app,lib ...` で明示も可能。
 # - app = git@example.com:team/app.git
-# - https://example.com/team/lib.git
+#   - desc: アプリ本体（API ハンドラ・UI）。エンドポイント追加・画面変更はここ。
+#   - base: main
+#   - target: develop
+# - lib = https://example.com/team/lib.git
+#   - desc: 共有ライブラリ（型定義・ユーティリティ）。app から参照される。
+#   - base: develop                       # target 省略 → develop で作業
 
 ## links
-# 他プロジェクトへの横展開リンク（任意）。リンク先の charter 定義(目標/制約)と decisions の learn(人の判断)を
-# act ワーカーの文脈に取り込む。名前は <root>/projects/<name>、'/' や '..' を含めば相対パス。
+# 参考リンク（任意・複数可）。横展開先プロジェクト名/相対パス、または wiki/ドキュメント URL 等を置ける。
+# プロジェクト名/相対パス（<root>/projects/<name>・'/' や '..' を含む）はリンク先の charter 定義(目標/制約)と
+# decisions の learn(人の判断) を act ワーカーの文脈に取り込む。URL 等はそのまま文脈/イシューへ伝搬する。
+# 各リンクにも `- desc:` を付けられる（内容の説明）。
 # - shared-conventions
 # - ../infra-rules
+# - https://wiki.example.com/team/onboarding
+#   - desc: オンボーディング手順とコーディング規約

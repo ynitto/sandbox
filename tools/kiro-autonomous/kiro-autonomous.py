@@ -1891,13 +1891,29 @@ def _charter_definition(ch: "Charter") -> str:
     parts = []
     if ch.goal:
         parts.append(f"目標: {ch.goal}")
-    # 対象リポジトリ・リンク（ブランチ等）は「どこで作業するか」の重要情報。goal の直後に置き、
+    # 対象リポジトリ・リンクは「どこで・何に対して作業するか」の重要情報。goal 直後に置き、
     # ワーカー（gitlab イシュー等）へ確実に伝わるよう truncation で落ちにくい位置にする。
-    if ch.repos:
-        parts.append("対象リポジトリ:\n" + "\n".join(f"- {r}" for r in ch.repos))
-    if ch.links:
-        parts.append("関連リンク（対象リポジトリ/ブランチ・横展開先など。踏まえること）:\n"
-                     + "\n".join(f"- {x}" for x in ch.links))
+    # タスクは説明（desc）を見て関係する repo を選び、その base/target ブランチを踏まえて作業する。
+    if ch.repo_specs:
+        lines = ["対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業）:"]
+        for r in ch.repo_specs:
+            head = f"- {r['name']} = {r['url']}" if r["name"] else f"- {r['url']}"
+            br = []
+            if r["base"]:
+                br.append(f"base={r['base']}")
+            if r["target"]:
+                br.append(f"target={r['target']}")
+            if br:
+                head += "（" + ", ".join(br) + "）"
+            lines.append(head)
+            if r["desc"]:
+                lines.append(f"    説明: {r['desc']}")
+        parts.append("\n".join(lines))
+    if ch.link_specs:
+        lines = ["関連リンク（wiki/ドキュメント/横展開先など。踏まえること）:"]
+        for l in ch.link_specs:
+            lines.append(f"- {l['text']}" + (f" — {l['desc']}" if l["desc"] else ""))
+        parts.append("\n".join(lines))
     if ch.constraints:
         parts.append("制約:\n" + "\n".join(f"- {c}" for c in ch.constraints))
     if ch.assumptions:
@@ -3931,8 +3947,10 @@ class Charter:
     assumptions: "list[str]" = field(default_factory=list)
     deliverables: "list[str]" = field(default_factory=list)
     acceptance: "list[str]" = field(default_factory=list)   # 受入 verify（シェルコマンド）
-    links: "list[str]" = field(default_factory=list)        # 横展開リンク（他プロジェクト名/相対パス）
-    repos: "list[str]" = field(default_factory=list)        # 成果物リポジトリ URL（`name = url` も可）
+    links: "list[str]" = field(default_factory=list)        # 横展開/参考リンク（見出し文字列）
+    repos: "list[str]" = field(default_factory=list)        # 対象リポジトリ見出し（`name = url`。後方互換）
+    repo_specs: "list[dict]" = field(default_factory=list)  # 構造化 repos: {name,url,desc,base,target}
+    link_specs: "list[dict]" = field(default_factory=list)  # 構造化 links: {text,desc}（wiki/doc 等も可）
     raw: str = ""
 
 
@@ -3952,6 +3970,83 @@ def _charter_bullets(lines: "list[str]") -> "list[str]":
         elif s.startswith(("-", "*", "+")) and len(s) > 1 and not s[1].isspace():
             out.append(_strip_code(s[1:].strip()))
     return [x for x in out if x]
+
+
+def _bullet_text(s: str) -> str:
+    """箇条書きマーカー（- * +）を剥がした本文（コード除去）。マーカー以外は空。"""
+    if s.startswith(("- ", "* ", "+ ")):
+        return _strip_code(s[2:].strip())
+    if s[:1] in "-*+" and len(s) > 1 and not s[1].isspace():
+        return _strip_code(s[1:].strip())
+    return ""
+
+
+def _charter_entries(lines: "list[str]") -> "list[dict]":
+    """セクションを構造化エントリに分解する。最小インデントの箇条書きを「見出し」とし、
+    より深くインデントした `- key: value`（`：` も可）をその見出しの属性（attrs）にする。
+    旧来のフラットな箇条書き（サブ箇条なし）は、各行が属性なしの見出しになる（後方互換）。"""
+    entries: "list[dict]" = []
+    head_indent: "int | None" = None
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("<!--"):
+            continue
+        if s[:1] not in "-*+":
+            continue
+        body = _bullet_text(s)
+        if not body:
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        if head_indent is None or indent <= head_indent:
+            head_indent = indent
+            entries.append({"head": body, "attrs": {}})
+        elif entries:                      # サブ箇条書き = 直近見出しの属性
+            for sep in (":", "："):
+                if sep in body:
+                    k, v = body.split(sep, 1)
+                    entries[-1]["attrs"][k.strip().lower()] = v.strip()
+                    break
+    return entries
+
+
+# 構造化 charter の属性キー別名（日本語表記も受ける）
+_REPO_KEY_ALIASES = {
+    "desc": ("desc", "description", "説明", "内容", "内容物"),
+    "base": ("base", "base_branch", "ベース", "ベースブランチ"),
+    "target": ("target", "target_branch", "ターゲット", "ターゲットブランチ"),
+}
+
+
+def _entry_attr(attrs: dict, key: str) -> str:
+    for alias in _REPO_KEY_ALIASES.get(key, (key,)):
+        v = attrs.get(alias)
+        if v:
+            return str(v).strip()
+    return ""
+
+
+def _repo_spec_from_entry(e: dict) -> dict:
+    """repos エントリ（見出し `name = url` ＋ 属性 desc/base/target）を構造化する。
+    target 省略時は base と同じ（同一ブランチで作業）。"""
+    name, url = _repo_token_parts(e["head"])
+    desc = _entry_attr(e["attrs"], "desc")
+    base = _entry_attr(e["attrs"], "base")
+    target = _entry_attr(e["attrs"], "target") or base
+    return {"name": name, "url": url, "desc": desc, "base": base, "target": target}
+
+
+def validate_charter(ch: "Charter") -> "list[str]":
+    """構造化 repos の必須項目（desc・base）を検証し、問題点の説明リストを返す（空＝OK）。
+    『説明は原則必須・base は必須・target は省略可（既定 base）』という charter 規約を強制する。"""
+    problems: list[str] = []
+    for r in ch.repo_specs:
+        label = r["name"] or r["url"] or "(無名 repo)"
+        if not r["desc"]:
+            problems.append(f"repo '{label}': 説明（desc）が必須です（内容物・関与範囲を 1 行で）")
+        if not r["base"]:
+            problems.append(f"repo '{label}': base ブランチが必須です（例 `- base: main`）")
+    return problems
+
 
 
 def parse_charter(text: str) -> Charter:
@@ -3975,9 +4070,16 @@ def parse_charter(text: str) -> Charter:
     ch.assumptions = _charter_bullets(sections.get("assumptions", []))
     ch.deliverables = _charter_bullets(sections.get("deliverables", []))
     ch.acceptance = _charter_bullets(sections.get("acceptance", []))
-    ch.links = _charter_bullets(sections.get("links", []))
-    ch.repos = _charter_bullets(sections.get("repos", [])) or _charter_bullets(
-        sections.get("repositories", []))
+    # links: 構造化（見出し＋任意の desc）。wiki/doc/横展開先など何でも置ける。
+    link_entries = _charter_entries(sections.get("links", []))
+    ch.links = [e["head"] for e in link_entries]
+    ch.link_specs = [{"text": e["head"], "desc": _entry_attr(e["attrs"], "desc")}
+                     for e in link_entries]
+    # repos: 構造化（見出し `name = url` ＋ desc/base/target）。後方互換で ch.repos は見出し列を維持。
+    repo_entries = (_charter_entries(sections.get("repos", []))
+                    or _charter_entries(sections.get("repositories", [])))
+    ch.repos = [e["head"] for e in repo_entries]
+    ch.repo_specs = [_repo_spec_from_entry(e) for e in repo_entries]
     return ch
 
 
@@ -4293,6 +4395,14 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         print(f"エラー: charter が見つかりません: {cfg.charter}", file=sys.stderr)
         print("  ヒント: 目標/制約/前提/成果物/acceptance を charter.md に書いてください。",
               file=sys.stderr)
+        return 2
+    problems = validate_charter(charter)
+    if problems:
+        print(f"エラー: charter の repos 定義が不正です（{cfg.charter}）:", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        print("  ヒント: 各 repo に `- desc:`（説明・必須）と `- base:`（ベースブランチ・必須）を、"
+              "必要なら `- target:`（既定 base）を付けてください。", file=sys.stderr)
         return 2
     pid = _project_id(cfg, charter)
     if not charter.acceptance:

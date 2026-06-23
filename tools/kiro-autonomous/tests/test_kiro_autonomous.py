@@ -2419,6 +2419,55 @@ class TestProjectLayer(unittest.TestCase):
         self.assertEqual(rmap["lib"], "https://git/lib.git")     # URL 末尾を name に
         self.assertEqual(rmap["https://git/app.git"], "https://git/app.git")  # URL 引き
 
+    def test_parse_charter_repos_structured(self):
+        # 構造化 repos: name=url ＋ desc/base/target（target 省略時は base）
+        ch = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- app = https://git/app.git\n"
+            "  - desc: アプリ本体（API/UI）\n"
+            "  - base: main\n"
+            "  - target: develop\n"
+            "- lib = https://git/lib.git\n"
+            "  - 説明: 共有ライブラリ\n"
+            "  - ベース: release\n")
+        self.assertEqual(ch.repos, ["app = https://git/app.git", "lib = https://git/lib.git"])
+        a, b = ch.repo_specs
+        self.assertEqual((a["name"], a["url"], a["desc"], a["base"], a["target"]),
+                         ("app", "https://git/app.git", "アプリ本体（API/UI）", "main", "develop"))
+        # 日本語キー・target 省略（既定 base）
+        self.assertEqual((b["name"], b["desc"], b["base"], b["target"]),
+                         ("lib", "共有ライブラリ", "release", "release"))
+        # charter_repo_map は従来どおり name/url 解決できる
+        self.assertEqual(km.charter_repo_map(ch)["app"], "https://git/app.git")
+
+    def test_validate_charter_requires_desc_and_base(self):
+        ok = km.parse_charter("# Charter: r\n## goal\nx\n## repos\n"
+                              "- app = u\n  - desc: d\n  - base: main\n")
+        self.assertEqual(km.validate_charter(ok), [])
+        bad = km.parse_charter("# Charter: r\n## goal\nx\n## repos\n- app = u\n")
+        probs = km.validate_charter(bad)
+        self.assertEqual(len(probs), 2)                  # desc と base の両方
+        self.assertTrue(any("desc" in p or "説明" in p for p in probs))
+        self.assertTrue(any("base" in p for p in probs))
+
+    def test_charter_definition_renders_base_target_desc(self):
+        ch = km.parse_charter("# Charter: r\n## goal\nやる\n## repos\n"
+                              "- app = https://git/app.git\n  - desc: 本体\n  - base: main\n  - target: develop\n"
+                              "## links\n- https://wiki/x — 仕様\n  - desc: 仕様メモ\n")
+        d = km._charter_definition(ch)
+        self.assertIn("base=main", d)
+        self.assertIn("target=develop", d)
+        self.assertIn("本体", d)
+        self.assertIn("仕様メモ", d)
+
+    def test_cmd_project_errors_on_invalid_repos(self):
+        # desc/base 欠落の repos を持つ charter は cmd_project がエラー停止（return 2）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: X\n## goal\nやる\n## acceptance\n- true\n"
+                             "## repos\n- app = https://git/app.git\n")
+            self.assertEqual(km.cmd_project(cfg_for(d)), 2)
+
     def test_task_repo_urls_resolved_from_charter(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
