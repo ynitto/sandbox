@@ -38,7 +38,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   参照でき、kiro-flow daemon を同じ bus で起動すれば warm worker を共有・再利用できる（submit の run_id は
   一意採番のため衝突しない）。example / README にも設定方法を追記。
 
+#### Added
+- charter の `## repos` / `## links` を**構造化サブ箇条書き**に対応。`- name = url` の下にインデントして
+  `- desc:`（説明）/ `- base:`（ベースブランチ）/ `- target:`（ターゲット・既定 base）を付けられる（日本語キー
+  desc=説明 / base=ベース / target=ターゲット も可）。複数リポジトリそれぞれに「内容物の説明」と「base/target
+  ブランチ」を明示でき、タスクは説明を見て関係する repo を選び、その情報を個別タスク（gitlab イシュー等）へ
+  伝搬できる。`## links` は wiki/ドキュメント URL 等も `- desc:` 付きで置ける。
+- repos の必須項目検証。charter 駆動の実行開始時（`cmd_project`）に、各 repo の **`desc`（説明）と `base`
+  ブランチが必須**であることを検証し、欠けていればエラーで停止して人へ知らせる（`target` は省略可・既定 base）。
+
 #### Fixed
+- charter の `## repos`（対象リポジトリ）/`## links`（参考リンク）が act ワーカーへ渡る文脈
+  （`charter_context`/`build_request`）に含まれていなかった不具合を修正。これらは parse 済みだったが
+  `_charter_definition` が goal/constraints/assumptions/deliverables しか出力していなかったため、
+  gitlab executor のイシュー等で**対象リポジトリ/ブランチ/説明が欠落**していた。goal 直後（truncation で
+  落ちにくい位置）に、各 repo の説明・base/target ブランチと関連リンク（desc 付き）を含めるようにした。
 - all-daemon の watch ループで heartbeat をラウンド毎に1回だけ更新するよう修正（従来は内側ループに
   あり、登録数 N に対し毎ラウンド N×(N+1) 回の無駄なファイル書き込みが発生していた）。
 - `approve` / `hold`（`_block`）で古い claim ロック（`claims/<id>.lock`）を解放するよう修正。worker の
