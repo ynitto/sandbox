@@ -1093,6 +1093,39 @@ class TestRunLoop(unittest.TestCase):
             self.assertTrue((d / "backlog" / "T1.md").exists())
             self.assertTrue((d / "needs" / "T1.md").exists())
 
+    def test_needs_file_includes_evidence(self):
+        # blocked の needs に「判断材料（所在・差分・検証）」が載り、人がレビューせず判断できる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="test -f never_exists")     # 必ず FAIL
+            km.run_loop(cfg_for(d, max_retries=0))
+            body = (d / "needs" / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("## 判断材料", body)
+            self.assertIn("- 成果物:", body)
+            self.assertIn("- 所在:", body)
+            self.assertIn("- 検証:", body)
+            self.assertIn("FAIL", body)
+
+    def test_delivery_evidence_reports_location_and_diff(self):
+        # delivery_evidence が所在（ブランチ）・差分・検証を含む
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            subprocess.run(["git", "-C", str(d), "init", "-q", "-b", "feat"], check=True,
+                           capture_output=True)
+            (d / "a.txt").write_text("x")
+            for c in (["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"]):
+                subprocess.run(["git", "-C", str(d)] + c, check=True, capture_output=True)
+            base = km.git_change_baseline(d)
+            (d / "b.txt").write_text("y")                    # baseline 以降の変更
+            ev = km.delivery_evidence(cfg_for(d, workdir=d),
+                                      "https://gitlab.com/g/r/merge_requests/7",
+                                      base, location="remote", verify="true", vmsg="ok", ok=True)
+            self.assertIn("merge_requests/7", ev)            # 成果物 ref（MR URL）
+            self.assertIn("ブランチ feat", ev)               # 所在ブランチ
+            self.assertIn("b.txt", ev)                       # 差分
+            self.assertIn("→ PASS", ev)                      # 検証
+
     def test_budget_stop(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

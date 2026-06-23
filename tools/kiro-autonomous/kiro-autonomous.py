@@ -1411,7 +1411,8 @@ def needs_path(cfg: "Config", tid: str) -> Path:
     return cfg.needs / f"{tid}.md"
 
 
-def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False) -> None:
+def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False,
+                     evidence: str = "") -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
     if review:    # verify=PASS の承認ゲート（検収待ち）
         state = "review（検収待ち・verify=PASS）"
@@ -1422,10 +1423,13 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
         hint = (f"<!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。\n"
                 f"     下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。\n"
                 f"     コマンドなら `kiro-autonomous approve {task.id}`。 -->\n")
+    # 判断材料（成果物の所在・差分・検証）。人がレビューせずに済むよう「どこに・何が・なぜ」を載せる。
+    evidence_block = f"\n## 判断材料（成果物の所在・差分・検証）\n{evidence}\n" if evidence else ""
     body = (
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"- なぜ: {reason}\n"
-        f"- 状態: {state}\n\n"
+        f"- 状態: {state}\n"
+        f"{evidence_block}\n"
         f"{FEEDBACK_MARKER}\n"
         f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
         f"{hint}"
@@ -2368,6 +2372,42 @@ def extract_delivery_ref(act_msg: str, cfg: Config,
     return "(参照なし)"
 
 
+def _current_branch(cfg: "Config") -> str:
+    """作業ツリーの現在ブランチ（git でなければ空）。成果物の所在をブランチ単位で示すのに使う。"""
+    if not (cfg.workdir / ".git").exists():
+        return ""
+    return _git_out(cfg.workdir, "rev-parse", "--abbrev-ref", "HEAD").strip()
+
+
+def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "local",
+                      verify: "str | None" = None, vmsg: str = "", ok: "bool | None" = None,
+                      max_files: int = 12) -> str:
+    """人が「成果物がどこにあり・何が差分で・検証はどうだったか」を判断できる材料を作る。
+    needs（判断待ち）と DELIVERY/archive（受領）双方の説明欄に使う。git でなければ ref/差分は空。"""
+    ref = extract_delivery_ref(act_msg, cfg, git_base)
+    branch = _current_branch(cfg)
+    changed = sorted(meaningful_changes(cfg, git_base)) if git_base is not None else []
+    where = str(cfg.workdir)
+    if location == "remote" and cfg.git_bus:
+        where += f"（git-bus: {cfg.git_bus}@{cfg.git_branch}）"
+    lines = [f"- 成果物: {ref}",
+             f"- 所在: {where}" + (f" / ブランチ {branch}" if branch else ""),
+             f"- 実行先: {location}"]
+    if changed:
+        shown = changed[:max_files]
+        lines.append(f"- 差分: {len(changed)} ファイル")
+        lines += [f"    - {p}" for p in shown]
+        if len(changed) > len(shown):
+            lines.append(f"    - …他 {len(changed) - len(shown)} 件")
+    elif git_base is not None:
+        lines.append("- 差分: baseline 以降の変更なし")
+    if verify is not None:
+        res = "PASS" if ok else ("FAIL" if ok is not None else "?")
+        vm = (vmsg or "").replace("\n", " ").strip()[:200]
+        lines.append(f"- 検証: `{verify}` → {res}" + (f"（{vm}）" if vm else ""))
+    return "\n".join(lines)
+
+
 _COST_RE = re.compile(r"@cost\b(?P<rest>.*)")
 
 
@@ -2389,19 +2429,23 @@ def parse_cost(act_msg: str) -> "tuple[int, float]":
     return tokens, usd
 
 
-def append_delivery(cfg: Config, task: Task, ref: str, ts: str) -> None:
-    """納品一覧（受領書）DELIVERY.md に1行追記する。"""
+def append_delivery(cfg: Config, task: Task, ref: str, ts: str, branch: str = "") -> None:
+    """納品一覧（受領書）DELIVERY.md に1行追記する。成果参照はブランチも併記して所在を明確にする。"""
     path = cfg.delivery
     path.parent.mkdir(parents=True, exist_ok=True)
     header = "" if path.exists() else (
         "# 納品一覧（受領書）\n\n| id | タイトル | 検収 | 成果参照 | 完了 |\n|---|---|---|---|---|\n")
     title = task.title.replace("|", "\\|")
+    # 実成果物があるときだけブランチを併記する（"(変更なし)"/"(参照なし)" 等のセンチネルには付けない）
+    show_branch = branch and not ref.startswith("(")
+    cell = (f"{ref} @ {branch}" if show_branch else ref).replace("|", "\\|").replace("\n", " ")
     with path.open("a", encoding="utf-8") as f:
-        f.write(f"{header}| {task.id} | {title} | PASS | {ref} | {ts} |\n")
+        f.write(f"{header}| {task.id} | {title} | PASS | {cell} | {ts} |\n")
 
 
-def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str) -> None:
-    """done タスクを archive/<id>.md へ退避し、検収用の『納品書』を付す（backlog と1:1）。"""
+def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence: str = "") -> None:
+    """done タスクを archive/<id>.md へ退避し、検収用の『納品書』を付す（backlog と1:1）。
+    evidence（成果物の所在・差分・検証）を載せ、後から「どこに何が入ったか」を辿れるようにする。"""
     cfg.archive_dir().mkdir(parents=True, exist_ok=True)
     task.extra.append(("archived", ts))
     body = serialize_task(task) + (
@@ -2410,6 +2454,8 @@ def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str) -> None:
         f"- verify: `{task.verify}` → PASS（{vmsg}）\n"
         f"- 成果 : {ref}\n"
     )
+    if evidence:
+        body += f"\n## 判断材料（成果物の所在・差分・検証）\n{evidence}\n"
     (cfg.archive_dir() / f"{task.id}.md").write_text(body, encoding="utf-8")
     delete_task_file(cfg, task)
 
@@ -2443,11 +2489,11 @@ def append_runlog(path: "Path | None", record: dict) -> None:
         pass
 
 
-def _block(cfg, task, reason, reasons):
+def _block(cfg, task, reason, reasons, evidence: str = ""):
     task.status = "blocked"
     reasons[task.id] = reason
     persist_task(cfg, task)
-    write_needs_file(cfg, task, reason)
+    write_needs_file(cfg, task, reason, evidence=evidence)
     release_claim(cfg, task)              # blocked は doing でなくなる＝実行権（claim）を解放（人手 hold 含む）
 
 
@@ -2464,7 +2510,7 @@ def _revert_workdir(cfg) -> None:
             pass
 
 
-def _escalate(cfg, task, reason, reasons, cycle):
+def _escalate(cfg, task, reason, reasons, cycle, evidence: str = ""):
     """ループ内で人の判断(needs)へ回す直前のフック。auto_adjudicate が有効なら、人へ送る前に
     kiro-cli へ『自律的に積み直して解けるか』を諮り、可能なら needs を作らず ready に戻して回し続ける。
     verify を持たないタスク（acceptance 未定義）は対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
@@ -2488,7 +2534,7 @@ def _escalate(cfg, task, reason, reasons, cycle):
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} 自律裁定で積み直し"
                                             f"（人の判断を回避 {done_n + 1}/{cfg.adjudicate_max}）")
                 return
-    _block(cfg, task, reason, reasons)
+    _block(cfg, task, reason, reasons, evidence=evidence)
 
 
 # ---------------------------------------------------------------------------
@@ -2623,6 +2669,11 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
 
     ok, flaky, vmsg = run_verify_stable(task.verify, cfg.workdir, cfg.verify_timeout,
                                         cfg.verify_confirm, verify_env)
+    # 人が「成果物の所在（リポジトリ/ブランチ/コミット）・差分・検証」を見て判断できる材料。
+    # needs（判断待ち）と DELIVERY/archive（受領）双方に載せる。
+    branch = _current_branch(cfg)
+    ev = delivery_evidence(cfg, act_msg, git_base, location,
+                           verify=task.verify, vmsg=vmsg, ok=ok)
     regressed = False
     if ok and not flaky and cfg.regression_cmd:        # done 確定前のグローバル回帰ゲート（巻き込み事故）
         rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout, verify_env)
@@ -2630,7 +2681,8 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
             regressed = True
             if cfg.regression_revert:
                 _revert_workdir(cfg)
-            _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}", reasons)
+            _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}", reasons,
+                   evidence=ev)
             autonomy_record(cfg, task, clean=False, cache=autonomy_cache)   # 手戻り（track 信頼を下げる）
             append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
                            + ("・revert 済" if cfg.regression_revert else ""))
@@ -2653,7 +2705,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     if flaky:
         # verify が不安定（flake）→ 自動修正せず人へ隔離（NG churn / flaky PASS の done を防ぐ）
         task.set("flake", "1")
-        _block(cfg, task, f"flake 検知（verify 不安定・自動修正せず隔離）: {vmsg}", reasons)
+        _block(cfg, task, f"flake 検知（verify 不安定・自動修正せず隔離）: {vmsg}", reasons, evidence=ev)
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（flake 検知・quarantine）")
     elif regressed:
         pass                                  # 既に blocked 化済み。done/review にしない
@@ -2662,7 +2714,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         task.set("noprogress", "1")
         _block(cfg, task, "no-progress: verify=PASS だが baseline 以降の変更が無い"
                "（履歴一致 verify による偽 done の疑い。verify を差分基準で見直すか expect: none を付与）",
-               reasons)
+               reasons, evidence=ev)
         autonomy_record(cfg, task, clean=False, cache=autonomy_cache)       # 偽 done 疑い＝手戻り
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
     elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
@@ -2673,6 +2725,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")
         task.set("gate_ref", ref)
         task.set("gate_ts", ts)
+        task.set("gate_branch", branch)             # approve 時の受領書に所在（ブランチ）を引き継ぐ
         task.set("gate_vmsg", vmsg.replace("\n", " ")[:200])
         if protect_hits:
             paths = ", ".join(p for p, _ in protect_hits)
@@ -2689,7 +2742,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
                             if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
         persist_task(cfg, task)
-        write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True)
+        write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True, evidence=ev)
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
     elif ok:
         task.status = "done"
@@ -2698,9 +2751,9 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         ref = extract_delivery_ref(act_msg, cfg, git_base)   # 成果参照（baseline 以降の新規のみ）
         if dtok or dusd:                                  # コストを納品書に残し stats で集計可能に
             task.extra.append(("cost", f"tokens={dtok} usd={dusd:.4f}"))
-        append_delivery(cfg, task, ref, ts)               # 受領書一覧に追記
+        append_delivery(cfg, task, ref, ts, branch=branch)   # 受領書一覧に追記（所在ブランチ併記）
         if cfg.do_archive:
-            archive_task(cfg, task, vmsg, ref, ts)        # backlog → archive/（納品書付き）
+            archive_task(cfg, task, vmsg, ref, ts, evidence=ev)  # backlog → archive/（納品書＋判断材料）
             done_disp = "DONE → archive（納品書）"
         else:
             delete_task_file(cfg, task)
@@ -2711,7 +2764,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     else:
         task.retries += 1
         if not task.verify:
-            _escalate(cfg, task, "verify 未定義", reasons, cycle)
+            _escalate(cfg, task, "verify 未定義", reasons, cycle, evidence=ev)
             if task.norm_status() == "blocked":
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
         elif task.retries > cfg.max_retries:
@@ -2729,7 +2782,8 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
                                             f"（{src} に倣う・通知を抑制）")
             else:
-                _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons, cycle)
+                _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons, cycle,
+                          evidence=ev)
                 if task.norm_status() == "blocked":
                     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
         else:
@@ -2967,13 +3021,17 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         ref = ex.get("gate_ref", "")
         ts = ex.get("gate_ts") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         vmsg = ex.get("gate_vmsg", "")
+        gate_branch = ex.get("gate_branch", "")
         t.status = "done"
         autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
-        t.drop("gate_ref", "gate_ts", "gate_vmsg")
-        append_delivery(cfg, t, ref, ts)
+        t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch")
+        # review 時に保持した所在（ref/ブランチ）を受領書へ引き継ぐ（どこに成果物があるかを残す）
+        gate_ev = (f"- 成果物: {ref}\n- 所在: {cfg.workdir}"
+                   + (f" / ブランチ {gate_branch}" if gate_branch else "")) if ref else ""
+        append_delivery(cfg, t, ref, ts, branch=gate_branch)
         disp = "done（承認・納品書）"
         if cfg.do_archive:
-            archive_task(cfg, t, vmsg or f"承認: {reason}", ref, ts)
+            archive_task(cfg, t, vmsg or f"承認: {reason}", ref, ts, evidence=gate_ev)
         else:
             delete_task_file(cfg, t)
             disp = "done（承認・削除）"

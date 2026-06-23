@@ -47,6 +47,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - repos の必須項目検証。charter 駆動の実行開始時（`cmd_project`）に、各 repo の **`desc`（説明）と `base`
   ブランチが必須**であることを検証し、欠けていればエラーで停止して人へ知らせる（`target` は省略可・既定 base）。
 
+#### Changed
+- needs（判断待ち）と DELIVERY/archive（受領）の記述を充実化。人が成果物を見に行かずに判断できるよう、
+  **「成果物の所在（リポジトリ/ブランチ/コミット・PR/MR）・差分（変更ファイル）・検証結果（PASS/FAIL）」**を
+  まとめた「判断材料」を、blocked/review の needs ファイルと archive の納品書に載せるようにした（`delivery_evidence`）。
+  DELIVERY.md の成果参照にも所在ブランチを併記。これまで「どこに成果物があるか・何が差分か・なぜ止めた/
+  スキップしたか」が分からず判断できなかった問題を解消する。
+
 #### Fixed
 - charter の `## repos`（対象リポジトリ）/`## links`（参考リンク）が act ワーカーへ渡る文脈
   （`charter_context`/`build_request`）に含まれていなかった不具合を修正。これらは parse 済みだったが
