@@ -83,6 +83,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   隠してしまう**ことがあった。再利用は「`self.remote` を origin とする自前クローンのルート」に限定し、
   それ以外（親/別リポジトリ・非空の他ディレクトリ）には sparse-checkout を適用せず明示的に中断する。
 
+#### Changed
+- `install.sh` の executor プラグイン配置先を **本体（kiro-flow バイナリ）と同じフォルダ**
+  （`<install-prefix>/executors/`、既定 `~/.local/bin/executors/`）に変更（旧: `~/.kiro/kiro-flow/executors/`）。
+  kiro-loop と同じ「本体隣」の補助アセット配置に揃え、検索順 #1「スクリプト同階層の `executors/`」で
+  名前解決できるようにした。`~/.kiro/kiro-flow/executors/` は後方互換の検索先として残す。
+
 ---
 
 ## [v1.0.0] — 2026-06-20

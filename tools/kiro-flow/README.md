@@ -93,11 +93,12 @@ def execute(kind, goal, dep_results, model=None, art_dir=None, dep_arts=None):
 ```
 
 - **検索順**：`<スクリプトと同階層>/executors/` → リポジトリの `tools/kiro-flow/executors/` →
-  `~/.kiro/kiro-flow/executors/`（インストーラが配置）→ 設定 `executor_dir`（`--executor-dir`）。
+  `~/.kiro/kiro-flow/executors/`（旧インストーラ配置・後方互換）→ 設定 `executor_dir`（`--executor-dir`）。
 - **プラグイン設定**：同名のトップレベル設定ブロック（例 `gitlab:`）を JSON 化し、環境変数
   `KIRO_FLOW_EXECUTOR_CONFIG` でプラグインへ渡します。プラグインは個別の環境変数で上書きも可能。
-- **インストール**：`install.sh` が同梱プラグインを `~/.kiro/kiro-flow/executors/` へコピーするため、
-  単一ファイル配布後も `--executor <name>` が名前で解決できます（kiro-loop と同じ補助アセット配置）。
+- **インストール**：`install.sh` が同梱プラグインを **本体と同じフォルダ**（`<install-prefix>/executors/`、
+  既定 `~/.local/bin/executors/`）へコピーするため、単一ファイル配布後も `--executor <name>` が検索順 #1
+  「スクリプト同階層の `executors/`」で名前解決できます（kiro-loop と同じ「本体隣」の補助アセット配置）。
 
 ### gitlab ワーカーバス（同梱プラグイン）
 
