@@ -1166,6 +1166,39 @@ class GitDistributedTests(unittest.TestCase):
                              capture_output=True, text=True).stdout.strip()
         self.assertNotEqual(cfg, "true")
 
+    def test_reuse_full_checkout_of_same_remote_is_refused(self):
+        # 同一 remote の既存フルチェックアウト（ユーザーの作業リポジトリ等）を --bus に指定しても、
+        # sparse-checkout で subdir 以外の追跡ファイルを隠さず、上書きせず中断する。
+        seed = tempfile.mkdtemp(prefix="kf-seed-")
+        subprocess.run(["git", "clone", "-q", self.bare, seed], check=True, capture_output=True)
+        for d in ("flow", "src", "docs"):
+            os.makedirs(os.path.join(seed, d))
+            with open(os.path.join(seed, d, "f.txt"), "w") as f:
+                f.write("x")
+        for c in (["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "s"],
+                  ["push", "-q", "origin", "main"]):
+            subprocess.run(["git", "-C", seed] + c, check=True, capture_output=True)
+        userwork = tempfile.mkdtemp(prefix="kf-userwork-")
+        subprocess.run(["git", "clone", "-q", self.bare, userwork], check=True, capture_output=True)
+        before = set(os.listdir(userwork))
+        self.assertEqual(before, {".git", "flow", "src", "docs"})
+        with self.assertRaises(RuntimeError):
+            kf.GitBus(userwork, "run1", remote=self.bare, branch="main", subdir="flow")
+        # 追跡ファイルは隠されず、作業ツリーは無傷
+        self.assertEqual(set(os.listdir(userwork)), before)
+        sparse = subprocess.run(["git", "-C", userwork, "config", "--get", "core.sparseCheckout"],
+                                capture_output=True, text=True).stdout.strip()
+        self.assertNotEqual(sparse.lower(), "true")
+
+    def test_managed_bus_clone_is_reused(self):
+        # 自前で作ったバスクローン（目印つき）は二度目以降そのまま再利用される（中断しない）。
+        clone = os.path.join(self.clones, "managed")
+        kf.GitBus(clone, "run1", remote=self.bare, branch="main", subdir="flow")
+        marker = subprocess.run(["git", "-C", clone, "config", "--get", "kiro-flow.busclone"],
+                                capture_output=True, text=True).stdout.strip()
+        self.assertEqual(marker, "1")
+        kf.GitBus(clone, "run2", remote=self.bare, branch="main", subdir="flow")  # 再利用で例外なし
+
     def test_clone_into_foreign_nonempty_dir_is_refused(self):
         # 別リポジトリの非空ディレクトリを誤ってバスのクローン先に指定したら、上書きせず中断する。
         foreign = tempfile.mkdtemp(prefix="kf-foreign-")

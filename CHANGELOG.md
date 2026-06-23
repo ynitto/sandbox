@@ -82,6 +82,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   git が親へ遡って最寄りの `.git` を掴み、`sparse-checkout` が**親リポジトリの作業ツリーを cone 化して
   隠してしまう**ことがあった。再利用は「`self.remote` を origin とする自前クローンのルート」に限定し、
   それ以外（親/別リポジトリ・非空の他ディレクトリ）には sparse-checkout を適用せず明示的に中断する。
+- `GitBus` が **同一 remote の既存フルチェックアウト**（ユーザーの作業リポジトリ等）を `--bus` のクローン先に
+  指定された場合に、`sparse-checkout`（cone）で **subdir 以外の追跡ファイルを作業ツリーから隠してしまう**
+  不具合を修正（kiro-autonomous の `--git-bus`/`--git-subdir` 経由で発生しうる）。自前管理のバスクローンに
+  目印（git config `kiro-flow.busclone=1`）を付け、再利用は「目印付き／既に sparse 済みの自前クローン」に
+  限定。kiro-flow 管理外の既存チェックアウトには sparse-checkout せず明示的に中断する。あわせて全ての
+  `git -C <workdir>` 実行に `GIT_CEILING_DIRECTORIES` を設定し、workdir 直下に `.git` が無くても親リポジトリへ
+  遡れないよう多重防御した。
 
 #### Changed
 - `install.sh` の executor プラグイン配置先を **本体（kiro-flow バイナリ）と同じフォルダ**

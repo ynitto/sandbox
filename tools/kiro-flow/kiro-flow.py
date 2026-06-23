@@ -594,40 +594,66 @@ class GitBus(Bus):
     def _sparse_paths(self):
         return [self.subdir] if self.subdir else ["runs", "inbox"]
 
+    # 自前管理のバスクローンに付ける目印（git config）。ユーザーのフルチェックアウトを
+    # 誤って sparse-checkout で間引かないため、再利用は「この目印を持つ／既に sparse 済みの
+    # 自前バスクローン」に限定する。
+    MANAGED_FLAG = "kiro-flow.busclone"
+
+    def _git_env(self) -> dict:
+        """`git -C workdir` が workdir の親ディレクトリへ遡ってリポジトリを探さないようにする環境。
+        GIT_CEILING_DIRECTORIES に workdir の親を指定し、workdir 直下に .git が無い場合でも
+        親リポジトリを掴んで sparse-checkout 等を波及させる事故を物理的に防ぐ（多重防御）。"""
+        env = dict(os.environ)
+        parent = os.path.dirname(os.path.realpath(self.workdir)) or "/"
+        ceil = env.get("GIT_CEILING_DIRECTORIES")
+        env["GIT_CEILING_DIRECTORIES"] = parent + (os.pathsep + ceil if ceil else "")
+        env["GIT_DISCOVERY_ACROSS_FILESYSTEM"] = "0"
+        return env
+
     def _git(self, args, check=True):
-        p = subprocess.run(["git", "-C", self.workdir] + args, capture_output=True, text=True)
+        p = subprocess.run(["git", "-C", self.workdir] + args, capture_output=True, text=True,
+                           env=self._git_env())
         if check and p.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失敗: {p.stderr.strip()[:300]}")
         return p
 
     def _is_own_repo_root(self) -> bool:
-        """workdir が「ある git リポジトリの作業ツリーのルート」か。
-        git は workdir 直下に .git が無いと親ディレクトリへ遡って最寄りの .git を探すため、
-        単に `git -C workdir` が成功するだけでは親リポジトリを掴んでいる可能性がある。"""
+        """workdir が「自分自身を root とする git 作業ツリー」か（親リポジトリを掴んでいない）。
+        _git_env の ceiling により、workdir 直下に .git が無ければ rev-parse は失敗するので親を拾わない。"""
         top = self._git(["rev-parse", "--show-toplevel"], check=False).stdout.strip()
         return bool(top) and os.path.realpath(top) == os.path.realpath(self.workdir)
 
-    def _is_own_clone(self) -> bool:
-        """workdir が self.remote を origin とする自前クローンのルートか。
-        これを満たすときのみ sparse-checkout/checkout を適用してよい（親リポジトリや別リポジトリへ
-        誤って sparse-checkout を効かせて作業ツリーを壊さないためのガード）。"""
-        if not self._is_own_repo_root():
-            return False
+    def _origin_matches(self) -> bool:
         origin = self._git(["remote", "get-url", "origin"], check=False).stdout.strip()
         return origin == self.remote or (
             bool(origin) and os.path.realpath(origin) == os.path.realpath(self.remote))
 
+    def _is_managed_bus_clone(self) -> bool:
+        """workdir が「kiro-flow が管理する self.remote の sparse バスクローン」か。
+        これを満たすときのみ sparse-checkout/checkout を適用してよい。ユーザーのフルチェックアウト
+        （目印も sparse 設定も無い）を間引いて作業ファイルを隠す事故を防ぐためのガード。"""
+        if not self._is_own_repo_root() or not self._origin_matches():
+            return False
+        # 1) 自前で付けた目印があれば管理クローン
+        if self._git(["config", "--get", self.MANAGED_FLAG], check=False).stdout.strip() == "1":
+            return True
+        # 2) 目印が無くても、既に sparse-checkout 済みなら過去の自前バスクローンとみなし採用（後方互換）。
+        #    ユーザーのフルチェックアウトは sparseCheckout 未設定なので false になり、間引かれない。
+        sparse = self._git(["config", "--get", "core.sparseCheckout"], check=False).stdout.strip()
+        return sparse.lower() == "true"
+
     def _ensure_clone(self) -> None:
-        # workdir が self.remote の自前クローンなら再利用。そうでなければ新規 clone する。
-        # （workdir 直下に .git が無いまま sparse-checkout すると親リポジトリに作用してしまうため、
-        #   「自分のクローンのルートである」ことを確認してからでないと sparse-checkout に進まない。）
-        if not self._is_own_clone():
+        # workdir が自前管理の sparse バスクローンなら再利用。そうでなければ新規 clone する。
+        # （ユーザーのフルチェックアウトや親/別リポジトリへ sparse-checkout を効かせて作業ツリーを
+        #   壊さないため、「自前のバスクローンである」ことを確認してからでないと sparse-checkout に進まない。）
+        if not self._is_managed_bus_clone():
             if os.path.isdir(self.workdir) and os.listdir(self.workdir):
-                # 既存の非空ディレクトリ（親/別リポジトリの作業ツリーや無関係なリポジトリ）には clone
-                # できない。誤って親・別リポジトリへ sparse-checkout を効かせる事故を防ぐため、上書きせず中断。
+                # 既存の非空ディレクトリ（ユーザーの作業チェックアウト・親/別リポジトリ等）は上書きせず中断。
+                # ここで sparse-checkout すると subdir 以外の追跡ファイルを作業ツリーから隠してしまう。
                 raise RuntimeError(
-                    f"クローン先 {self.workdir} が空でないか別リポジトリの作業ツリーです。"
-                    "親・別リポジトリへの sparse-checkout を防ぐため中断します（別の --bus を指定してください）。")
+                    f"クローン先 {self.workdir} が空でない既存ディレクトリ（kiro-flow 管理外のクローン/作業"
+                    f"ツリー）です。sparse-checkout で作業ファイルを隠す事故を防ぐため中断します"
+                    f"（専用の空ディレクトリを --bus に指定してください）。")
             os.makedirs(os.path.dirname(self.workdir) or ".", exist_ok=True)
             # sparse checkout: --no-checkout で取得し、必要なパスだけ展開する
             r = subprocess.run(
@@ -645,6 +671,7 @@ class GitBus(Bus):
                 raise RuntimeError(
                     f"git clone 後も {self.workdir} がクローンのルートになっていません。"
                     "親リポジトリへの sparse-checkout を防ぐため中断します。")
+            self._git(["config", self.MANAGED_FLAG, "1"])   # 自前管理クローンの目印
         # コミット用 ID（未設定環境向けのフォールバック）
         if not self._git(["config", "user.email"], check=False).stdout.strip():
             self._git(["config", "user.email", "kiro-flow@local"])
