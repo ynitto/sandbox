@@ -107,8 +107,8 @@ cleanup_clone: true
 #
 # gitlab:
 #   conn_label: default                  # connections.yaml の接続ラベル（gitlab-idd と共通）
-#   repo_url: ""                         # 委譲先リポジトリ URL（例 https://gitlab.com/group/repo）。
-#                                        # 空なら conn_label の接続 / git remote origin から解決
+#   repo_url: "https://gitlab.com/group/repo"  # 委譲先リポジトリ URL。
+#                                        # 空 / 未指定なら conn_label の接続 / git remote origin から解決
 #   labels: "status:open,assignee:any"   # 起票するイシューの初期ラベル
 #   priority: "priority:normal"          # 付与する優先度ラベル（空文字 "" で付けない）
 #   poll_interval: 30                    # イシューのポーリング間隔（秒）
