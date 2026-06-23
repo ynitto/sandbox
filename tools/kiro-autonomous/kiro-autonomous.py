@@ -1891,6 +1891,13 @@ def _charter_definition(ch: "Charter") -> str:
     parts = []
     if ch.goal:
         parts.append(f"目標: {ch.goal}")
+    # 対象リポジトリ・リンク（ブランチ等）は「どこで作業するか」の重要情報。goal の直後に置き、
+    # ワーカー（gitlab イシュー等）へ確実に伝わるよう truncation で落ちにくい位置にする。
+    if ch.repos:
+        parts.append("対象リポジトリ:\n" + "\n".join(f"- {r}" for r in ch.repos))
+    if ch.links:
+        parts.append("関連リンク（対象リポジトリ/ブランチ・横展開先など。踏まえること）:\n"
+                     + "\n".join(f"- {x}" for x in ch.links))
     if ch.constraints:
         parts.append("制約:\n" + "\n".join(f"- {c}" for c in ch.constraints))
     if ch.assumptions:

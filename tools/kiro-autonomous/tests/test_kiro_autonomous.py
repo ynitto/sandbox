@@ -2626,6 +2626,30 @@ class TestProjectLayer(unittest.TestCase):
             self.assertNotIn("プロジェクト定義", km.build_request(t, cfg))
             self.assertEqual(km.build_request(t), km.build_request(t, None))  # cfg 無しは従来どおり
 
+    def test_charter_definition_includes_repos_and_links(self):
+        # charter の repos（対象リポジトリ）と links（ブランチ等）が定義文に含まれる
+        ch = km.parse_charter(
+            "# Charter: r\n## goal\nやる\n"
+            "## repos\n- app = https://git/app.git\n"
+            "## links\n- https://git/app.git@release ブランチで作業\n")
+        d = km._charter_definition(ch)
+        self.assertIn("対象リポジトリ", d)
+        self.assertIn("https://git/app.git", d)
+        self.assertIn("関連リンク", d)
+        self.assertIn("release ブランチで作業", d)
+
+    def test_request_carries_charter_repos_and_links(self):
+        # build_request（→ kiro-flow ワーカー/gitlab イシュー）に repos/links が伝わる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nやる\n"
+                             "## repos\n- app = https://git/app.git\n"
+                             "## links\n- https://git/app.git@release で作業\n")
+            cfg = cfg_for(d)
+            req = km.build_request(km.Task(id="T1", title="やる", verify="true"), cfg)
+            self.assertIn("https://git/app.git", req)
+            self.assertIn("release で作業", req)
+
     def test_idempotent_plan_dedup(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

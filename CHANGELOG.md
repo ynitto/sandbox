@@ -39,6 +39,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   一意採番のため衝突しない）。example / README にも設定方法を追記。
 
 #### Fixed
+- charter の `## repos`（対象リポジトリ）と `## links`（リンク・ブランチ等）が act ワーカーへ渡る文脈
+  （`charter_context`/`build_request`）に含まれていなかった不具合を修正。これらは parse 済みだったが
+  `_charter_definition` が goal/constraints/assumptions/deliverables しか出力していなかったため、
+  gitlab executor のイシュー等で**対象リポジトリ/ブランチ情報が欠落**していた。goal 直後（truncation で
+  落ちにくい位置）に対象リポジトリと関連リンクを含めるようにした。
 - all-daemon の watch ループで heartbeat をラウンド毎に1回だけ更新するよう修正（従来は内側ループに
   あり、登録数 N に対し毎ラウンド N×(N+1) 回の無駄なファイル書き込みが発生していた）。
 - `approve` / `hold`（`_block`）で古い claim ロック（`claims/<id>.lock`）を解放するよう修正。worker の
