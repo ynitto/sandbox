@@ -113,6 +113,11 @@ def _strip_code(val: str) -> str:
     return v
 
 
+def _now_ts() -> str:
+    """人間可読のローカル時刻 `YYYY-MM-DD HH:MM:SS`（journal/納品書/needs などの記録に使う共通形式）。"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def parse_task(text: str, tid: str) -> Task:
     """1ファイル＝1タスク。id はファイル名（tid）を正とする。"""
     t = Task(id=tid, title=tid)
@@ -1028,18 +1033,6 @@ def refresh_instance(paths: "list[Path]") -> None:
             p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
         except (OSError, ValueError):
             continue
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True       # 別ユーザーの生存プロセス
-    except OSError:
-        return False
-    return True
 
 
 def _maybe_prune(rec: dict, f: Path) -> None:
@@ -2471,7 +2464,7 @@ def summarize(tasks: "list[Task]") -> "dict[str, int]":
 
 
 def append_journal(path: Path, line: str) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = _now_ts()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(f"- {ts} {line}\n")
@@ -2657,6 +2650,90 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
     return results
 
 
+def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
+                   policy, reasons, cycle):
+    """verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ。
+    所在（ref/ブランチ）を gate_* に保持し、approve 時の受領書へ引き継ぐ。"""
+    ts = _now_ts()
+    ref = extract_delivery_ref(act_msg, cfg, git_base)
+    task.status = "review"
+    task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")
+    task.set("gate_ref", ref)
+    task.set("gate_ts", ts)
+    task.set("gate_branch", branch)             # approve 時の受領書に所在（ブランチ）を引き継ぐ
+    task.set("gate_vmsg", vmsg.replace("\n", " ")[:200])
+    if protect_hits:
+        paths = ", ".join(p for p, _ in protect_hits)
+        task.set("gate_protect", paths[:200])
+        gate_why = f"保護パス変更（protect）: {paths[:160]} — approve で done 確定"
+    elif assisted and not needs_human_review(task, policy):
+        gate_why = "assisted レベル（done は人が承認）。approve で done 確定、" \
+                   "フィードバック記入で差し戻し（再実行）"
+    else:
+        gate_why = "承認ゲート対象（review/policy.gate）。approve で done 確定、" \
+                   "フィードバック記入で差し戻し（再実行）"
+    disp = (f"（保護パス: {paths[:80]}）" if protect_hits
+            else "（assisted）" if assisted else "（承認ゲート）")
+    reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
+                        if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
+    persist_task(cfg, task)
+    write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True, evidence=ev)
+    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
+
+
+def _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle, autonomy_cache):
+    """verify=PASS かつゲート対象外 → 無人 auto-done（受領書＋archive）。集計 delta を返す。"""
+    task.status = "done"
+    autonomy_record(cfg, task, clean=True, cache=autonomy_cache)        # 無人 auto-done＝clean 実績
+    ts = _now_ts()
+    ref = extract_delivery_ref(act_msg, cfg, git_base)   # 成果参照（baseline 以降の新規のみ）
+    if dtok or dusd:                                  # コストを納品書に残し stats で集計可能に
+        task.extra.append(("cost", f"tokens={dtok} usd={dusd:.4f}"))
+    append_delivery(cfg, task, ref, ts, branch=branch)   # 受領書一覧に追記（所在ブランチ併記）
+    if cfg.do_archive:
+        archive_task(cfg, task, vmsg, ref, ts, evidence=ev)  # backlog → archive/（納品書＋判断材料）
+        done_disp = "DONE → archive（納品書）"
+    else:
+        delete_task_file(cfg, task)
+        done_disp = "DONE 削除"
+    clear_needs_file(cfg, task.id)
+    append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {ref}")
+    return {"archived": 1 if cfg.do_archive else 0, "followups": parse_followups(task, act_msg)}
+
+
+def _settle_failure(cfg, task, vmsg, cycle, ev, reasons):
+    """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。"""
+    task.retries += 1
+    if not task.verify:
+        _escalate(cfg, task, "verify 未定義", reasons, cycle, evidence=ev)
+        if task.norm_status() == "blocked":
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
+    elif task.retries > cfg.max_retries:
+        learned = find_learned_resolution(cfg, task) if cfg.learn else None
+        if learned and not task.get("autolearned"):
+            src, guide = learned
+            task.drop("feedback", "autolearned")
+            task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", "1")]
+            task.status = "ready"
+            persist_task(cfg, task)
+            append_decision(cfg, task.id, "auto",
+                            context=f"{task.id}（{task.title}）を学習で自動解決",
+                            action="auto-resolve", reason=f"learned from {src}: {guide[:120]}",
+                            affects=f"{task.id} → ready")
+            append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
+                                        f"（{src} に倣う・通知を抑制）")
+        else:
+            _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons, cycle,
+                      evidence=ev)
+            if task.norm_status() == "blocked":
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
+    else:
+        task.status = "ready"
+        persist_task(cfg, task)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
+                                    f"({task.retries}/{cfg.max_retries}) — {vmsg}")
+
+
 def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle: int,
                  dtok: int, dusd: float, git_base, verify_env, policy: "Policy",
                  autonomy_cache: dict, reasons: dict) -> dict:
@@ -2718,89 +2795,24 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         autonomy_record(cfg, task, clean=False, cache=autonomy_cache)       # 偽 done 疑い＝手戻り
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
     elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
-        # verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ref = extract_delivery_ref(act_msg, cfg, git_base)
-        task.status = "review"
-        task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")
-        task.set("gate_ref", ref)
-        task.set("gate_ts", ts)
-        task.set("gate_branch", branch)             # approve 時の受領書に所在（ブランチ）を引き継ぐ
-        task.set("gate_vmsg", vmsg.replace("\n", " ")[:200])
-        if protect_hits:
-            paths = ", ".join(p for p, _ in protect_hits)
-            task.set("gate_protect", paths[:200])
-            gate_why = f"保護パス変更（protect）: {paths[:160]} — approve で done 確定"
-        elif assisted and not needs_human_review(task, policy):
-            gate_why = "assisted レベル（done は人が承認）。approve で done 確定、" \
-                       "フィードバック記入で差し戻し（再実行）"
-        else:
-            gate_why = "承認ゲート対象（review/policy.gate）。approve で done 確定、" \
-                       "フィードバック記入で差し戻し（再実行）"
-        disp = (f"（保護パス: {paths[:80]}）" if protect_hits
-                else "（assisted）" if assisted else "（承認ゲート）")
-        reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
-                            if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
-        persist_task(cfg, task)
-        write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True, evidence=ev)
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
+        _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
+                       policy, reasons, cycle)
     elif ok:
-        task.status = "done"
-        autonomy_record(cfg, task, clean=True, cache=autonomy_cache)        # 無人 auto-done＝clean 実績
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ref = extract_delivery_ref(act_msg, cfg, git_base)   # 成果参照（baseline 以降の新規のみ）
-        if dtok or dusd:                                  # コストを納品書に残し stats で集計可能に
-            task.extra.append(("cost", f"tokens={dtok} usd={dusd:.4f}"))
-        append_delivery(cfg, task, ref, ts, branch=branch)   # 受領書一覧に追記（所在ブランチ併記）
-        if cfg.do_archive:
-            archive_task(cfg, task, vmsg, ref, ts, evidence=ev)  # backlog → archive/（納品書＋判断材料）
-            done_disp = "DONE → archive（納品書）"
-        else:
-            delete_task_file(cfg, task)
-            done_disp = "DONE 削除"
-        clear_needs_file(cfg, task.id)
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} {done_disp} — {ref}")
-        return {"archived": 1 if cfg.do_archive else 0, "followups": parse_followups(task, act_msg)}
+        return _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
+                            autonomy_cache)
     else:
-        task.retries += 1
-        if not task.verify:
-            _escalate(cfg, task, "verify 未定義", reasons, cycle, evidence=ev)
-            if task.norm_status() == "blocked":
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（verify 未定義）")
-        elif task.retries > cfg.max_retries:
-            learned = find_learned_resolution(cfg, task) if cfg.learn else None
-            if learned and not task.get("autolearned"):
-                src, guide = learned
-                task.drop("feedback", "autolearned")
-                task.extra += [("feedback", guide.replace("\n", " ⏎ ")), ("autolearned", "1")]
-                task.status = "ready"
-                persist_task(cfg, task)
-                append_decision(cfg, task.id, "auto",
-                                context=f"{task.id}（{task.title}）を学習で自動解決",
-                                action="auto-resolve", reason=f"learned from {src}: {guide[:120]}",
-                                affects=f"{task.id} → ready")
-                append_journal(cfg.journal, f"cycle {cycle}: {task.id} 学習で自動解決"
-                                            f"（{src} に倣う・通知を抑制）")
-            else:
-                _escalate(cfg, task, f"繰り返し NG（retries={task.retries}）: {vmsg}", reasons, cycle,
-                          evidence=ev)
-                if task.norm_status() == "blocked":
-                    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
-        else:
-            task.status = "ready"
-            persist_task(cfg, task)
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
-                                        f"({task.retries}/{cfg.max_retries}) — {vmsg}")
+        _settle_failure(cfg, task, vmsg, cycle, ev, reasons)
     return {"archived": 0, "followups": []}
 
 
-def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
+def _run_setup(cfg: "Config") -> tuple:
+    """run_loop の前処理: inbox 取り込み → 読み込み → 人のフィードバック解除 → triage/rot で
+    ready/blocked を確定 → verify を用意する。(tasks, policy, reasons, ingested, inboxed, pre_blocked)。"""
     ensure_dirs(cfg)
     inboxed = ingest_inbox(cfg)                       # 外部ドロップ(inbox/)を backlog へ取り込む
     tasks = load_tasks(cfg.backlog)
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
-
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
     pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review")}
     transitions = list(triage(tasks, policy))        # inbox→ready 昇格（verify か用意材料あり）・deny→blocked
@@ -2816,7 +2828,29 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         if t.norm_status() in CONSUMABLE and not t.verify and ensure_verify(cfg, t):
             persist_task(cfg, t)
             append_journal(cfg.journal, f"verify 用意: {t.id} ← {t.get('verify_source')}")
+    return tasks, policy, reasons, ingested, inboxed, pre_blocked
 
+
+def _budget_reason(cfg: "Config", cycle: int, start: float,
+                   tokens_used: int, cost_used: float) -> "str | None":
+    """予算ゲート: サイクル/実時間/トークン/コスト/ソフト(throttle) の上限到達なら停止理由を返す。"""
+    if cycle >= cfg.max_cycles:
+        return REASON_BUDGET
+    if cfg.max_seconds and (time.time() - start) >= cfg.max_seconds:
+        return REASON_BUDGET
+    if cfg.max_tokens and tokens_used >= cfg.max_tokens:
+        return REASON_COST
+    if cfg.max_cost and cost_used >= cfg.max_cost:
+        return REASON_COST
+    if cfg.throttle > 0 and (                 # ソフト予算: ハード上限の手前で緩やかに打ち切る
+        (cfg.max_tokens and tokens_used >= cfg.throttle * cfg.max_tokens)
+        or (cfg.max_cost and cost_used >= cfg.throttle * cfg.max_cost)):
+        return REASON_THROTTLE
+    return None
+
+
+def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
+    tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg)
     append_journal(cfg.journal, f"=== kiro-autonomous 開始 tasks={len(tasks)} "
                                 f"ingested={len(ingested)} planner={cfg.planner} "
                                 f"executor={cfg.executor} dry_run={cfg.dry_run} ===")
@@ -2834,22 +2868,9 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     autonomy_cache: dict = {}                  # track→自動昇格レコードの読みキャッシュ
 
     while True:                                # report タスクは actionable から除外し有限停止で収束
-        if cycle >= cfg.max_cycles:
-            reason = REASON_BUDGET
-            break
-        if cfg.max_seconds and (time.time() - start) >= cfg.max_seconds:
-            reason = REASON_BUDGET
-            break
-        if cfg.max_tokens and tokens_used >= cfg.max_tokens:
-            reason = REASON_COST
-            break
-        if cfg.max_cost and cost_used >= cfg.max_cost:
-            reason = REASON_COST
-            break
-        if cfg.throttle > 0 and (                 # ソフト予算: ハード上限の手前で緩やかに打ち切る
-            (cfg.max_tokens and tokens_used >= cfg.throttle * cfg.max_tokens)
-            or (cfg.max_cost and cost_used >= cfg.throttle * cfg.max_cost)):
-            reason = REASON_THROTTLE
+        budget_stop_reason = _budget_reason(cfg, cycle, start, tokens_used, cost_used)
+        if budget_stop_reason:
+            reason = budget_stop_reason
             break
 
         order_all = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
@@ -3019,7 +3040,7 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
         ex = dict(t.extra)
         ref = ex.get("gate_ref", "")
-        ts = ex.get("gate_ts") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = ex.get("gate_ts") or _now_ts()
         vmsg = ex.get("gate_vmsg", "")
         gate_branch = ex.get("gate_branch", "")
         t.status = "done"
@@ -3551,12 +3572,7 @@ def collect_flow_findings(cfg: "Config", fix: bool, runner=None) -> "list[dict]"
     cfg.with_flow が off・kiro-flow 不在・タイムアウト・解析不能は空で無害にスキップ。"""
     if not cfg.with_flow:
         return []
-    cmd = resolve_kiro_flow(cfg.kiro_flow) + ["--bus", str(cfg.bus)]
-    if cfg.git_bus:
-        cmd += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
-        if cfg.git_subdir:
-            cmd += ["--git-subdir", cfg.git_subdir]
-    cmd += ["doctor", "--json"]
+    cmd = _kf_base(cfg, bool(cfg.git_bus)) + ["doctor", "--json"]
     if fix:
         cmd.append("--fix")
     run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=600))
@@ -4424,7 +4440,7 @@ def finalize_project(cfg: "Config", state: dict, reason: str) -> None:
     pid = state.get("id", "project")
     name = state.get("name", pid)
     total = int(state.get("acceptance_total", 0))
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = _now_ts()
     summary = f"acceptance {total}/{total} PASS"
     final = Task(id=pid, title=f"[project] {name}", status="done",
                  source="project", verify=f"acceptance×{total}")
@@ -4442,6 +4458,43 @@ def project_exit_code(reason: str) -> int:
     if reason in (REASON_PROJECT_BUDGET, REASON_PROJECT_COST):
         return 2
     return 1   # converged / no-progress / blocked / no-acceptance は人の対応待ち
+
+
+def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
+                      cycle: int, cost_used: float, review_fn) -> "tuple[str | None, str]":
+    """③ evaluate: acceptance 評価 → 未達/レビュー所見を改善タスク化 → 収束/コスト/停滞を判定する。
+    停止すべきなら停止理由を、続行なら None を返す（last_summary も返す）。state(history/best/stall) を更新。"""
+    passed, total, results = evaluate_acceptance(cfg, charter)
+    state["history"] = list(state.get("history", [])) + [passed]
+    existing = _existing_titles(cfg)
+    improved: list[Task] = []
+    if passed < total:                        # 未達 acceptance を、それ自体を verify とする改善タスクへ
+        improved += _enqueue_specs(cfg, _failing_acceptance_specs(results),
+                                   existing, cfg.learn_threshold)
+    findings: list[dict] = []
+    if cfg.review_project and passed == total:  # 短絡的達成を疑い敵対的レビュー（opt-in）
+        findings = review_fn(charter)
+        improved += _enqueue_specs(cfg, findings, existing, cfg.learn_threshold)
+    last_summary = (f"cycle {cycle}: acceptance {passed}/{total} PASS, "
+                    f"改善 {len(improved)} 件, cost={cost_used:.4f}")
+    append_decision(cfg, pid, "auto",
+                    context=f"cycle {cycle}: acceptance {passed}/{total} PASS",
+                    action="project-evaluate",
+                    reason=("収束候補" if passed == total and not improved else "改善継続"),
+                    affects=f"改善 {len(improved)} 件 / findings {len(findings)}")
+    append_journal(cfg.journal, "project " + last_summary)
+    if passed == total and not improved:      # 収束: acceptance 全 PASS かつ改善ゼロ
+        return REASON_PROJECT_CONVERGED, last_summary
+    if cfg.max_project_cost and cost_used >= cfg.max_project_cost:
+        return REASON_PROJECT_COST, last_summary
+    best = int(state.get("best", 0))          # 停滞: PASS 数が過去最高を更新しないなら人へ（自動チャーン止め）
+    if passed > best:
+        state["best"], state["stall"] = passed, 0
+    else:
+        state["stall"] = int(state.get("stall", 0)) + 1
+    if state["stall"] >= cfg.project_stall:
+        return REASON_PROJECT_STALL, last_summary
+    return None, last_summary
 
 
 def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None) -> int:
@@ -4515,44 +4568,11 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
             reason = REASON_PROJECT_BLOCKED      # 内側が人へ → プロジェクトも人待ちで止める
             break
 
-        # ③ evaluate — 「枯渇」と「達成」を分離する
-        passed, total, results = evaluate_acceptance(cfg, charter)
-        history = list(state.get("history", [])) + [passed]
-        state["history"] = history
-        existing = _existing_titles(cfg)
-        improved: list[Task] = []
-        if passed < total:                        # 未達 acceptance を、それ自体を verify とする改善タスクへ
-            improved += _enqueue_specs(cfg, _failing_acceptance_specs(results),
-                                       existing, cfg.learn_threshold)
-        findings: list[dict] = []
-        if cfg.review_project and passed == total:  # 短絡的達成を疑い敵対的レビュー（opt-in）
-            findings = review_fn(charter)
-            improved += _enqueue_specs(cfg, findings, existing, cfg.learn_threshold)
-        last_summary = (f"cycle {cycle}: acceptance {passed}/{total} PASS, "
-                        f"改善 {len(improved)} 件, cost={cost_used:.4f}")
-        append_decision(cfg, pid, "auto",
-                        context=f"cycle {cycle}: acceptance {passed}/{total} PASS",
-                        action="project-evaluate",
-                        reason=("収束候補" if passed == total and not improved else "改善継続"),
-                        affects=f"改善 {len(improved)} 件 / findings {len(findings)}")
-        append_journal(cfg.journal, "project " + last_summary)
-
-        # 収束: acceptance 全 PASS かつ改善ゼロ
-        if passed == total and not improved:
-            reason = REASON_PROJECT_CONVERGED
-            break
-        # コスト予算
-        if cfg.max_project_cost and cost_used >= cfg.max_project_cost:
-            reason = REASON_PROJECT_COST
-            break
-        # 停滞: PASS 数が過去最高を更新しない状態が続く→人へ（自動チャーンを止める）
-        best = int(state.get("best", 0))
-        if passed > best:
-            state["best"], state["stall"] = passed, 0
-        else:
-            state["stall"] = int(state.get("stall", 0)) + 1
-        if state["stall"] >= cfg.project_stall:
-            reason = REASON_PROJECT_STALL
+        # ③ evaluate — acceptance 評価・改善起票・収束/コスト/停滞判定（停止理由 or None）
+        stop_reason, last_summary = _project_evaluate(cfg, charter, pid, state, cycle,
+                                                      cost_used, review_fn)
+        if stop_reason:
+            reason = stop_reason
             break
 
     state["cost"] = round(cost_used, 4)
