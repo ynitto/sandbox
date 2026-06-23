@@ -62,22 +62,40 @@ DEFAULT_ASSIGNED_LOCK_MINUTES = 1440.0     # 24h  (check-assigned-defer)
 # Core helpers
 # ---------------------------------------------------------------------------
 
+def _parse_project_url(url: str):
+    """Parse an http(s) GitLab project URL into (host, project_path).
+
+    Returns (None, None) when the URL cannot be parsed.
+    """
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname
+    project = parsed.path.lstrip("/").rstrip("/")
+    if project.endswith(".git"):
+        project = project[:-4]
+    if host and project:
+        return host, project
+    return None, None
+
+
 def get_project_info(label: str = "default"):
     """Parse GitLab host and project path.
 
     Priority:
-      1. connections.yaml gitlab.url for the given label
-      2. git remote get-url origin (fallback)
+      1. GL_PROJECT_URL / GITLAB_PROJECT_URL env var (highest, e.g. kiro-flow の repo_url)
+      2. connections.yaml gitlab.url for the given label
+      3. git remote get-url origin (fallback)
     """
+    env_url = os.environ.get("GL_PROJECT_URL") or os.environ.get("GITLAB_PROJECT_URL")
+    if env_url:
+        host, project = _parse_project_url(env_url)
+        if host and project:
+            return host, project
+
     if _HAS_CONFIG_LOADER:
         conn = get_connection("gitlab", label)
         url = conn.get("url", "")
         if url:
-            parsed = urllib.parse.urlparse(url)
-            host = parsed.hostname
-            project = parsed.path.lstrip("/").rstrip("/")
-            if project.endswith(".git"):
-                project = project[:-4]
+            host, project = _parse_project_url(url)
             if host and project:
                 return host, project
 

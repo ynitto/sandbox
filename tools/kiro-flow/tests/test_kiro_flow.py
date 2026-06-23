@@ -390,6 +390,34 @@ class KiroTimeoutTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"KIRO_FLOW_KIRO_TIMEOUT": "120"}):
             self.assertEqual(kf._kiro_timeout(), 120.0)
 
+    def test_kiro_timeout_config_beats_env(self):
+        # 設定ファイル（_configure_thresholds 経由）が環境変数より優先される
+        with mock.patch.object(kf, "_KIRO_TIMEOUT", 300.0), \
+             mock.patch.dict(os.environ, {"KIRO_FLOW_KIRO_TIMEOUT": "120"}):
+            self.assertEqual(kf._kiro_timeout(), 300.0)
+        with mock.patch.object(kf, "_KIRO_TIMEOUT", 0.0):
+            self.assertIsNone(kf._kiro_timeout())   # 設定の 0/負も無効化として尊重
+
+    def test_stub_sleep_max_config_beats_env(self):
+        # stub_sleep_max も設定が環境変数より優先される（0 で即時）
+        calls = []
+        with mock.patch.object(kf, "_STUB_SLEEP_MAX", 0.0), \
+             mock.patch.dict(os.environ, {"KIRO_FLOW_STUB_SLEEP_MAX": "5"}), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: calls.append(s)):
+            kf._stub_sleep()
+        self.assertEqual(calls, [])   # 設定 0 → sleep されない
+
+    def test_configure_thresholds_pins_config_values(self):
+        # resolve_config 済みの args から kiro_timeout / stub_sleep_max が確定すること
+        import argparse
+        args = argparse.Namespace(argv_limit=None, executor_dir=None,
+                                  kiro_timeout=45.0, stub_sleep_max=0.0)
+        with mock.patch.object(kf, "_KIRO_TIMEOUT", None), \
+             mock.patch.object(kf, "_STUB_SLEEP_MAX", None):
+            kf._configure_thresholds(args)
+            self.assertEqual(kf._KIRO_TIMEOUT, 45.0)
+            self.assertEqual(kf._STUB_SLEEP_MAX, 0.0)
+
 
 class StructuredExtractionTests(unittest.TestCase):
     """自由記述 kind の本文に紛れた JSON 風断片を data に誤昇格させないこと。"""
@@ -521,6 +549,48 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertEqual(gl_plugin._as_float(0.0, 30.0), 0.0)
         self.assertEqual(gl_plugin._as_float(None, 30.0), 30.0)
         self.assertEqual(gl_plugin._as_float("bad", 30.0), 30.0)
+
+    def test_repo_url_passed_to_run_gl(self):
+        # repo_url を設定すると各 run_gl 呼び出しに repo_url が渡る（gl.py へ GL_PROJECT_URL）
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
+            dict(self._cfg, repo_url="https://gitlab.com/group/repo"))
+
+        def side(subargs, *a, **k):
+            cmd = subargs[0]
+            if cmd == "create-issue":
+                return {"iid": 9, "web_url": "https://gl/x/9"}
+            if cmd == "get-issue":
+                return {"labels": ["status:approved"], "state": "opened"}
+            if cmd == "get-comments":
+                return []
+            return {}
+
+        _, _, m = self._run_with(side)
+        for call in m.call_args_list:
+            self.assertEqual(call.kwargs.get("repo_url"), "https://gitlab.com/group/repo")
+
+    def test_repo_url_default_empty(self):
+        self.assertEqual(gl_plugin._config()["repo_url"], "")
+
+    def test_run_gl_sets_gl_project_url_env(self):
+        # repo_url 指定時、gl.py 起動の env に GL_PROJECT_URL が入ること
+        captured = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        def fake_run(cmd, *a, **k):
+            captured["env"] = k.get("env", {})
+            return _Proc()
+
+        with mock.patch.object(gl_plugin, "_find_gl_script", return_value="/fake/gl.py"), \
+             mock.patch.object(gl_plugin.subprocess, "run", side_effect=fake_run):
+            gl_plugin.run_gl(["project-info"], "default",
+                             repo_url="https://gitlab.com/group/repo")
+        self.assertEqual(captured["env"].get("GL_PROJECT_URL"),
+                         "https://gitlab.com/group/repo")
 
     def test_env_override_beats_config_block(self):
         # 個別環境変数 KIRO_FLOW_GITLAB_* が KIRO_FLOW_EXECUTOR_CONFIG より優先される
