@@ -887,7 +887,9 @@ class DaemonPrimitiveTests(unittest.TestCase):
         try:
             clones = kf.ensure_work_repos([remote], "worker-1")
             self.assertEqual(len(clones), 1)
-            url, path = clones[0]
+            c = clones[0]
+            path = c["clone"]
+            self.assertEqual(c["url"], remote)
             self.assertTrue(path and os.path.isdir(os.path.join(path, ".git")))
             self.assertIn(path, kf.repo_instruction(clones))   # エージェントへ渡す指示にパスが入る
         finally:
@@ -897,8 +899,57 @@ class DaemonPrimitiveTests(unittest.TestCase):
     def test_ensure_work_repos_marks_failed_clone(self):
         clones = kf.ensure_work_repos([os.path.join(self.tmp, "does_not_exist")], "w")
         self.addCleanup(kf.cleanup_work_repos)
-        self.assertEqual(clones[0][1], "")                     # clone 失敗は path 空
+        self.assertEqual(clones[0]["clone"], "")               # clone 失敗は path 空
         self.assertIn("clone 失敗", kf.repo_instruction(clones))
+
+    def test_parse_repo_token_url_or_json(self):
+        # 素の URL は url だけの spec。JSON はメタを構造化して受ける（後方互換）
+        u = kf.parse_repo_token("https://git/app.git")
+        self.assertEqual((u["url"], u["readonly"], u["path"]), ("https://git/app.git", False, ""))
+        j = kf.parse_repo_token(
+            '{"url":"https://git/shop.git","name":"api","path":"apps/api",'
+            '"base":"main","target":"develop","readonly":true,"desc":"API"}')
+        self.assertEqual((j["name"], j["path"], j["base"], j["target"], j["readonly"], j["desc"]),
+                         ("api", "apps/api", "main", "develop", True, "API"))
+
+    def test_ensure_work_repos_checks_out_base_branch(self):
+        # base 指定があればそのブランチを checkout して clone する
+        remote = os.path.join(self.tmp, "branched_repo")
+        os.makedirs(remote)
+        for cmd in (["git", "init", "-q", "-b", "main", remote],
+                    ["git", "-C", remote, "config", "user.email", "t@t"],
+                    ["git", "-C", remote, "config", "user.name", "t"]):
+            subprocess.run(cmd, check=True)
+        open(os.path.join(remote, "f.txt"), "w").close()
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "init"], check=True)
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "-b", "develop"], check=True)
+        open(os.path.join(remote, "dev.txt"), "w").close()
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "dev"], check=True)
+        token = json.dumps({"url": remote, "name": "svc", "base": "develop",
+                            "path": "apps/api", "desc": "API", "readonly": False})
+        try:
+            clones = kf.ensure_work_repos([token], "w")
+            path = clones[0]["clone"]
+            self.assertTrue(path)
+            head = subprocess.run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+            self.assertEqual(head, "develop")                  # base ブランチが checkout される
+            instr = kf.repo_instruction(clones)
+            self.assertIn("apps/api", instr)
+            self.assertIn("develop", instr)
+        finally:
+            kf.cleanup_work_repos()
+
+    def test_repo_instruction_marks_readonly(self):
+        ro = [{"url": "https://git/lib.git", "name": "lib", "path": "", "base": "main",
+               "target": "main", "readonly": True, "desc": "参照元", "clone": "/tmp/lib"}]
+        instr = kf.repo_instruction(ro)
+        self.assertIn("参照のみ", instr)
+        self.assertNotIn("commit して push すること", instr)   # 参照のみだけなら push 指示を出さない
+        rw = [dict(ro[0], readonly=False)]
+        self.assertIn("commit して push すること", kf.repo_instruction(rw))
 
     def test_remove_run_also_purges_inbox(self):
         # gc（remove_run）は対応する inbox 要求と claim も消す。残すと run_exists が

@@ -54,6 +54,8 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 #   - base   … 作業のベースブランチ【必須】（ここから分岐する）。
 #   - target … MR/PR のターゲットブランチ【任意・既定 = base】。
 #   - path   … モノレポ内の作業フォルダ【任意】（例 apps/api）。worker はそのフォルダ配下のみ変更する。
+#   - readonly … 参照のみ（読むだけ・push しない）フラグ【任意】。`- readonly: true` か『- 参照のみ:』。
+#              worker/イシューには「参照のみ・push しない」と明示され、kiro-flow は push を指示しない。
 # プランナーは「その repo を読む / push する必要があるタスク」にだけ repos を割り当て、kiro-flow の worker が
 # temp 領域へ clone して作業し、作業後に必ず消す（orchestrator の作業ツリーを汚さない）。
 # 手で積むタスクには `kiro-autonomous enqueue --repos app,lib ...` で明示も可能。
@@ -77,10 +79,12 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 #   - desc: 画面・UI コンポーネント。
 #   - base: main
 #
-# ■ 参照のみ（読むだけ・push しない）repo は desc にその旨を明記する（push は差分が出たときだけ起きるので、
-#   読むだけのタスクは何も push しない）。コードでなく規約/wiki/設計の参照は ## repos でなく ## links に置く。
+# ■ 参照のみ（読むだけ・push しない）repo は `- readonly: true` を付ける。worker への指示と gitlab イシューに
+#   「参照のみ・push しない」と構造的に伝わり、kiro-flow は push を指示しない（push は差分が出たときだけ起きる）。
+#   コードでなく規約/wiki/設計の参照は ## repos でなく ## links に置く。
 # - core-lib = git@example.com:team/core-lib.git
-#   - desc: 参照のみ（push しない）。型定義・既存実装を読んで合わせるための参照元。
+#   - readonly: true
+#   - desc: 型定義・既存実装を読んで合わせるための参照元。
 #   - base: main                          # 読む対象ブランチ（target は不要）
 
 ## links

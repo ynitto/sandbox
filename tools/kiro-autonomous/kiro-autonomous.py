@@ -1903,6 +1903,8 @@ def _charter_definition(ch: "Charter") -> str:
                 br.append(f"base={r['base']}")
             if r["target"]:
                 br.append(f"target={r['target']}")
+            if r.get("readonly"):
+                br.append("参照のみ・push しない")
             if br:
                 head += "（" + ", ".join(br) + "）"
             lines.append(head)
@@ -2087,11 +2089,59 @@ def task_repo_urls(cfg: "Config", task: Task) -> "list[str]":
     return out
 
 
+def task_repo_specs(cfg: "Config", task: Task) -> "list[dict]":
+    """タスクの `- repos:` を charter の構造化 repos で解決して spec の列にする。
+    name/url トークンは charter エントリ（path/base/target/役割/参照のみ込み）へ、charter に無い素の URL は
+    url だけの spec へ解決する。同一 URL でも path が違えば別 spec（モノレポの役割別フォルダ）。"""
+    raw = task.get("repos")
+    if not raw:
+        return []
+    try:
+        smap = charter_repo_spec_map(load_charter(cfg))
+    except (OSError, ValueError):
+        smap = {}
+    out: "list[dict]" = []
+    seen: "set[tuple[str, str]]" = set()
+    for tok in re.split(r"[,\s]+", str(raw).strip()):
+        tok = _strip_code(tok)
+        if not tok:
+            continue
+        spec = smap.get(tok)
+        if spec is None and ("://" in tok or "@" in tok or tok.endswith(".git")):
+            spec = {"name": "", "url": tok, "desc": "", "base": "",
+                    "target": "", "path": "", "readonly": False}
+        if not spec:
+            continue
+        key = (spec["url"], spec.get("path", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(spec)
+    return out
+
+
+def _repo_token(spec: dict) -> str:
+    """repo spec を kiro-flow の `--repo` 値にする。ルーティング上のメタ（path/base/target/desc/readonly）が
+    無ければ素の URL（後方互換。name は URL から導けるのでメタ扱いしない）、あれば JSON で構造化伝搬する。
+    JSON は worker（clone・ブランチ checkout）と gitlab イシュー指示の双方で使われる。"""
+    meta = {k: spec[k] for k in ("path", "base", "target", "desc") if spec.get(k)}
+    if spec.get("readonly"):
+        meta["readonly"] = True
+    if not meta:
+        return spec["url"]                      # 後方互換: ルーティングメタ無しは素の URL
+    if spec.get("name"):
+        meta["name"] = spec["name"]             # 実メタがあるときだけ name も載せる（clone 名/表示用）
+    if meta.get("desc") and len(meta["desc"]) > 300:
+        meta["desc"] = meta["desc"][:300]       # argv 肥大を防ぐ（説明は有界に）
+    return json.dumps({"url": spec["url"], **meta}, ensure_ascii=False,
+                      separators=(",", ":"))
+
+
 def _repo_cmd_args(cfg: "Config", task: Task) -> "list[str]":
-    """kiro-flow へ渡す `--repo <url>` 列（成果物リポジトリの伝搬）。"""
+    """kiro-flow へ渡す `--repo` 列（成果物リポジトリの構造化伝搬）。"""
     args: "list[str]" = []
-    for url in task_repo_urls(cfg, task):
-        args += ["--repo", url]
+    for spec in task_repo_specs(cfg, task):
+        args += ["--repo", _repo_token(spec)]
     return args
 
 
@@ -4093,7 +4143,21 @@ _REPO_KEY_ALIASES = {
     "target": ("target", "target_branch", "ターゲット", "ターゲットブランチ"),
     "path": ("path", "dir", "folder", "subdir", "subpath",
              "パス", "ディレクトリ", "フォルダ", "サブディレクトリ"),
+    "readonly": ("readonly", "read_only", "read-only", "ref", "reference",
+                 "参照のみ", "参照", "読み取り専用", "読取専用"),
 }
+
+# readonly フラグの真値表記（値なし＝キーだけ書いた場合も True 扱い）
+_REPO_TRUTHY = {"", "true", "yes", "y", "1", "on", "参照のみ", "参照",
+                "readonly", "read-only", "読み取り専用", "読取専用"}
+
+
+def _entry_readonly(attrs: dict) -> bool:
+    """repos エントリの参照のみ（readonly）フラグを判定する。`- readonly: true` /『- 参照のみ:』など。"""
+    for alias in _REPO_KEY_ALIASES["readonly"]:
+        if alias in attrs:
+            return str(attrs[alias]).strip().lower() in _REPO_TRUTHY
+    return False
 
 
 def _entry_attr(attrs: dict, key: str) -> str:
@@ -4113,8 +4177,9 @@ def _repo_spec_from_entry(e: dict) -> dict:
     base = _entry_attr(e["attrs"], "base")
     target = _entry_attr(e["attrs"], "target") or base
     path = _entry_attr(e["attrs"], "path").strip("/")
+    readonly = _entry_readonly(e["attrs"])
     return {"name": name, "url": url, "desc": desc, "base": base,
-            "target": target, "path": path}
+            "target": target, "path": path, "readonly": readonly}
 
 
 def validate_charter(ch: "Charter") -> "list[str]":
@@ -4209,6 +4274,20 @@ def charter_repo_map(ch: "Charter | None") -> "dict[str, str]":
         if url:
             out[name] = url
             out[url] = url
+    return out
+
+
+def charter_repo_spec_map(ch: "Charter | None") -> "dict[str, dict]":
+    """charter の構造化 repos を {name: spec} と {url: spec} で両引きできる辞書にする。
+    name はエントリ一意（モノレポの役割別フォルダも name で区別）。url は先勝ち（同一 URL の
+    複数エントリは name で参照させる）。"""
+    out: "dict[str, dict]" = {}
+    for spec in (ch.repo_specs if ch else []):
+        if not spec.get("url"):
+            continue
+        if spec.get("name"):
+            out[spec["name"]] = spec
+        out.setdefault(spec["url"], spec)
     return out
 
 
@@ -4334,8 +4413,13 @@ def build_charter_request(charter: "Charter") -> str:
         for r in charter.repo_specs:
             label = r["name"] or r["url"]
             line = f"- {label} = {r['url']}"
+            tags = []
             if r.get("path"):
-                line += f"（フォルダ {r['path']}）"
+                tags.append(f"フォルダ {r['path']}")
+            if r.get("readonly"):
+                tags.append("参照のみ")
+            if tags:
+                line += "（" + "・".join(tags) + "）"
             if r["desc"]:
                 line += f" — {r['desc']}"
             rlines.append(line)

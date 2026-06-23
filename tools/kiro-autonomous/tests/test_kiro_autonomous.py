@@ -2547,6 +2547,70 @@ class TestProjectLayer(unittest.TestCase):
         self.assertIn("APIロジック", req)
         self.assertIn("api = https://git/shop.git", req)
 
+    def test_parse_charter_repos_readonly(self):
+        # 参照のみフラグ（readonly）。値あり/値なし/日本語別名/既定 False
+        ch = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- a = u1\n  - readonly: true\n  - desc: d\n  - base: main\n"
+            "- b = u2\n  - 参照のみ:\n  - desc: d\n  - base: main\n"
+            "- c = u3\n  - desc: d\n  - base: main\n")
+        a, b, c = ch.repo_specs
+        self.assertTrue(a["readonly"])
+        self.assertTrue(b["readonly"])      # キーだけ（値なし）でも True
+        self.assertFalse(c["readonly"])     # 既定は False
+
+    def test_task_repo_specs_resolves_full_spec(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
+                          "- api = https://git/shop.git\n  - path: apps/api\n  - desc: API\n"
+                          "  - base: main\n  - target: develop\n"
+                          "- lib = https://git/lib.git\n  - readonly: true\n  - desc: 参照元\n  - base: main\n")
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "api,lib")])
+            specs = km.task_repo_specs(cfg, t)
+            api = next(s for s in specs if s["name"] == "api")
+            lib = next(s for s in specs if s["name"] == "lib")
+            self.assertEqual((api["path"], api["base"], api["target"]), ("apps/api", "main", "develop"))
+            self.assertTrue(lib["readonly"])
+            # 宣言の無いタスクは空
+            self.assertEqual(km.task_repo_specs(cfg, km.Task(id="T2", title="y")), [])
+
+    def test_repo_token_structured_and_bare(self):
+        # メタ有り → JSON（url/path/base/target/readonly を構造化）。メタ無し → 素の URL
+        tok = km._repo_token({"name": "api", "url": "https://git/shop.git", "desc": "API",
+                              "base": "main", "target": "develop", "path": "apps/api", "readonly": False})
+        obj = json.loads(tok)
+        self.assertEqual((obj["url"], obj["name"], obj["path"], obj["base"], obj["target"]),
+                         ("https://git/shop.git", "api", "apps/api", "main", "develop"))
+        self.assertNotIn("readonly", obj)        # False は載せない（既定）
+        ro = json.loads(km._repo_token({"name": "", "url": "u", "desc": "", "base": "",
+                                        "target": "", "path": "", "readonly": True}))
+        self.assertTrue(ro["readonly"])
+        bare = km._repo_token({"name": "", "url": "https://git/x.git", "desc": "", "base": "",
+                               "target": "", "path": "", "readonly": False})
+        self.assertEqual(bare, "https://git/x.git")   # メタ無しは素の URL（後方互換）
+
+    def test_structured_repo_propagated_to_kiro_flow(self):
+        # path/base/target/readonly が --repo の JSON トークンとして kiro-flow へ伝搬する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
+                          "- api = https://git/shop.git\n  - path: apps/api\n  - desc: API\n"
+                          "  - base: main\n  - target: develop\n")
+            cfg = cfg_for(d)
+            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "api")])
+            cmd = km.build_kiro_flow_cmd(t, cfg)
+            tok = cmd[cmd.index("--repo") + 1]
+            obj = json.loads(tok)
+            self.assertEqual((obj["path"], obj["base"], obj["target"]), ("apps/api", "main", "develop"))
+
+    def test_charter_renders_readonly(self):
+        ch = km.parse_charter("# Charter: r\n## goal\nやる\n## repos\n"
+                              "- lib = https://git/lib.git\n  - readonly: true\n  - desc: 参照元\n  - base: main\n")
+        self.assertIn("参照のみ", km._charter_definition(ch))
+        self.assertIn("参照のみ", km.build_charter_request(ch))
+
     def test_cmd_project_errors_on_invalid_repos(self):
         # desc/base 欠落の repos を持つ charter は cmd_project がエラー停止（return 2）
         with tempfile.TemporaryDirectory() as d:

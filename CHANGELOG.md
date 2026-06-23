@@ -14,8 +14,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   エントリ」に分けてフォルダ別の役割を表現できる**（`desc` に役割、`path` に作業フォルダ）。プランナー提示
   （`build_charter_request`）に path＋役割(desc) を載せ、worker 文脈（`_charter_definition`）にも path を伝搬。
   同一 url を複数エントリで使う場合は distinct な `path` を必須化する検証を追加（曖昧さ防止）。`desc` は `役割`/`role`
-  の別名も受ける。参照のみ repo は `desc` に明記する運用（push は差分が出たときだけ）を例示。
-  charter.md.example / README にモノレポ・参照のみの書き方を追記し、テスト 4 件を追加。
+  の別名も受ける。charter.md.example / README にモノレポの書き方を追記。
+- charter `## repos` に `readonly`（参照のみ）フラグを追加（`- readonly: true` /『- 参照のみ:』。値なしでも True）。
+- **repos のメタ（path/base/target/readonly/役割）をタスク単位で構造化 `--repo`（JSON）として kiro-flow へ伝搬**。
+  従来は URL のみ・全 repo 一覧のテキストだけだったのを、`task_repo_specs`/`_repo_token`/`charter_repo_spec_map` で
+  そのタスクの repo だけを構造化して渡す。kiro-flow 側は `parse_repo_token`（URL or JSON）/`_clone_repo`（base ブランチを
+  checkout）/`ensure_work_repos`（spec＋clone パスを返す）/`repo_instruction`（フォルダ・作業ブランチ・push 先・参照のみを
+  出し分け）を実装。**この指示は gitlab executor 経由でイシュー本文（## 目的）にも載る**ため、フォルダ/ブランチ/参照のみが
+  イシューに構造的に表現される。参照のみは push を指示しない。後方互換: 素の URL トークンは従来どおり。
+  kiro-autonomous 5 件・kiro-flow 4 件のテストを追加（全 240 / 149 OK）。
 - 黒箱 CLI 統合テスト（`TestCliEndToEnd`）。`kiro-autonomous.py` を実プロセスとして argv 起動し、
   ループ機構を end-to-end で検証: drain→exit 0・成果物退避（archive）、verify 失敗→blocked→exit 1＋
   needs ファイル生成、予算超過→budget→exit 2、`--no-archive` で退避せず削除。`run_loop()` の in-process

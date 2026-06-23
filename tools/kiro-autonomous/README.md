@@ -322,10 +322,13 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   各 repo を temp 領域へ clone してから作業し、作業後に必ず消す**（orchestrator の作業ツリーを汚さない）。repos を
   宣言しないタスクは clone しない（必要なものだけ・後方互換）。local / daemon / remote のどの location でも同じ
   （repos は run の bus メタ経由で worker に届く）。各 repo は `- desc:`（役割・必須）/`- base:`（必須）/`- target:`/
-  `- path:` を構造化サブ箇条で持てる。**モノレポは「同じ url で name と path を変えた複数エントリ」**にすると
-  フォルダ別の役割を分けられ（プランナーが役割に合う name をタスクへ割当・worker は path 配下のみ変更）、
-  同一 url を複数エントリで使う場合は path が必須（distinct なフォルダ）。参照のみの repo は `- desc:` にその旨を
-  書く（push は差分が出たときだけ起きるため、読むだけのタスクは何も push しない）。
+  `- path:`/`- readonly:` を構造化サブ箇条で持てる。**モノレポは「同じ url で name と path を変えた複数エントリ」**に
+  するとフォルダ別の役割を分けられ（プランナーが役割に合う name をタスクへ割当・worker は path 配下のみ変更）、
+  同一 url を複数エントリで使う場合は path が必須（distinct なフォルダ）。参照のみの repo は `- readonly: true`。
+  **これらのメタ（path/base/target/readonly/役割）はタスク単位で構造化 `--repo`（JSON）として kiro-flow へ伝搬する**。
+  worker は `base` ブランチを checkout して clone し（`repo_instruction` で path 配下のみ・push 先 target を指示）、
+  readonly は「参照のみ・push しない」と指示する。gitlab executor 経由ならこの指示はイシュー本文（## 目的）にも
+  そのまま載るため、フォルダ・作業ブランチ・参照のみがイシューに構造的に表現される。
 - **cohort（pilot-then-batch）**: 「同じ手順を多数の対象に繰り返す」タスクを、**まず 1 件だけ走らせて指示を固めてから残りを
   生成・実行**する。`cohort_items` を持つ spec を投入すると、先頭要素が **pilot** として `review: human` 付きで 1 件だけ作られ、
   verify→検収ゲートで人が `approve`（必要なら feedback）して指示を固める。承認時にその定義を元に**残りのタスクを生成**し、

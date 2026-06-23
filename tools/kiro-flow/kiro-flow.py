@@ -761,32 +761,72 @@ def _repo_name(url: str) -> str:
     return _safe(base) or "repo"
 
 
-def ensure_work_repos(repos: "list[str]", node_id: str) -> "list[tuple[str, str]]":
-    """成果物リポジトリを worker 専用の temp 領域へ clone する（プロセス内でキャッシュ）。
-    (url, path) の列を返す（path=""=clone 失敗）。作業後に cleanup_work_repos で必ず消す。"""
+def parse_repo_token(token: str) -> dict:
+    """`--repo` トークンを構造化 spec に正規化する。素の URL でも、kiro-autonomous が付ける
+    JSON（{url,name,path,base,target,readonly,desc}）でも受ける（後方互換）。
+    同一 URL でも path/役割が違えば別 spec（モノレポの役割別フォルダ）。"""
+    spec = {"url": "", "name": "", "path": "", "base": "",
+            "target": "", "readonly": False, "desc": ""}
+    token = (token or "").strip()
+    if token.startswith("{"):
+        try:
+            d = json.loads(token)
+        except (ValueError, TypeError):
+            d = None
+        if isinstance(d, dict) and d.get("url"):
+            for k in ("url", "name", "path", "base", "target", "desc"):
+                if d.get(k):
+                    spec[k] = str(d[k]).strip()
+            spec["readonly"] = bool(d.get("readonly"))
+            return spec
+    spec["url"] = token                           # 素の URL（メタ無し）
+    return spec
+
+
+def _clone_repo(url: str, base: str, dest: str) -> str:
+    """url を dest へ clone する。base 指定があればそのブランチを checkout（無ければ既定にフォールバック）。
+    成功で dest、失敗で "" を返す。"""
+    attempts = []
+    if base:
+        attempts.append(["git", "clone", "-b", base, url, dest])
+    attempts.append(["git", "clone", url, dest])
+    for cmd in attempts:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if r.returncode == 0:
+                return dest
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if os.path.exists(dest):                  # 失敗の残骸を消してからフォールバック
+            shutil.rmtree(dest, ignore_errors=True)
+    return ""
+
+
+def ensure_work_repos(repos: "list[str]", node_id: str) -> "list[dict]":
+    """成果物リポジトリを worker 専用の temp 領域へ clone する（URL 単位でプロセス内キャッシュ）。
+    各 spec に clone 先パスを足した dict の列を返す（clone="" は clone 失敗）。base 指定があれば
+    そのブランチを checkout する。作業後に cleanup_work_repos で必ず消す。"""
     global _work_repos_root
-    out: "list[tuple[str, str]]" = []
+    out: "list[dict]" = []
     if not repos:
         return out
     if _work_repos_root is None:
         _work_repos_root = tempfile.mkdtemp(prefix=f"kiro-flow-repos-{_safe(node_id)}-")
-    for url in repos:
-        if url in _work_repos_cache:
-            out.append((url, _work_repos_cache[url]))
+    for token in repos:
+        spec = parse_repo_token(token)
+        url = spec["url"]
+        if url in _work_repos_cache:              # 同一 URL は一度だけ clone（役割別 spec は指示で出し分け）
+            out.append({**spec, "clone": _work_repos_cache[url]})
             continue
-        dest = os.path.join(_work_repos_root, _repo_name(url))
+        stem = _safe(spec["name"]) or _repo_name(url)
+        dest = os.path.join(_work_repos_root, stem)
         n = 2
-        while os.path.exists(dest):                 # 同名 repo の衝突回避
-            dest = os.path.join(_work_repos_root, f"{_repo_name(url)}-{n}")
+        while os.path.exists(dest):               # 同名 repo の衝突回避
+            dest = os.path.join(_work_repos_root, f"{stem}-{n}")
             n += 1
-        try:
-            r = subprocess.run(["git", "clone", url, dest],
-                               capture_output=True, text=True, timeout=600)
-            path = dest if r.returncode == 0 else ""
-        except (OSError, subprocess.SubprocessError):
-            path = ""
+        path = _clone_repo(url, spec["base"], dest)
         _work_repos_cache[url] = path
-        out.append((url, path))
+        out.append({**spec, "clone": path})
     return out
 
 
@@ -799,17 +839,38 @@ def cleanup_work_repos() -> None:
     _work_repos_cache.clear()
 
 
-def repo_instruction(clones: "list[tuple[str, str]]") -> str:
-    """clone 済みの成果物リポジトリをエージェントに伝える決定的な指示ブロック。"""
+def repo_instruction(clones: "list[dict]") -> str:
+    """clone 済みの成果物リポジトリをエージェントに伝える決定的な指示ブロック。
+    フォルダ(path)・作業ブランチ(base→target)・役割(desc)・参照のみ(readonly) を出し分ける
+    （この指示は gitlab executor 経由でイシュー本文にもそのまま載る）。"""
     if not clones:
         return ""
-    lines = ["【成果物リポジトリ】以下はこのタスク用に clone 済みです。"
-             "読み書きは必ずこのパス内で行い、変更は commit して push すること"
-             "（orchestrator の作業ツリーなど他の場所は編集しない）:"]
-    for url, path in clones:
-        if path:
-            lines.append(f"  - {url} → {path}")
-    failed = [url for url, path in clones if not path]
+    lines = ["【成果物リポジトリ】このタスク用に clone 済みです。読み書きは必ず各パス内で行い、"
+             "他の場所（orchestrator の作業ツリーなど）は編集しないこと:"]
+    has_write = False
+    for c in clones:
+        path = c.get("clone")
+        if not path:
+            continue
+        label = (f"{c['name']} = " if c.get("name") else "") + c["url"]
+        lines.append(f"  - {label} → {path}")
+        if c.get("base"):
+            br = f"      作業ブランチ: {c['base']} から分岐"
+            if c.get("target") and c["target"] != c["base"]:
+                br += f"・push 先（MR/PR ターゲット）= {c['target']}"
+            lines.append(br)
+        if c.get("path"):
+            lines.append(f"      フォルダ: {c['path']} 配下のみ変更すること")
+        if c.get("desc"):
+            lines.append(f"      役割: {c['desc']}")
+        if c.get("readonly"):
+            lines.append("      ※参照のみ: 読むだけのリポジトリ。変更・commit・push はしないこと")
+        else:
+            has_write = True
+    if has_write:
+        lines.append("変更したリポジトリは commit して push すること"
+                     "（※参照のみと記したものは push しない）。")
+    failed = [c["url"] for c in clones if not c.get("clone")]
     if failed:
         lines.append("  ※ clone 失敗（必要なら手動で取得・push 不可の可能性）: " + ", ".join(failed))
     return "\n".join(lines)
@@ -3175,8 +3236,10 @@ def main() -> int:
     p.add_argument("--executor-dir", dest="executor_dir", default=None,
                    help="executor プラグイン（<name>.py）の追加検索ディレクトリ（設定 executor_dir と同義）")
     p.add_argument("--repo", dest="repos", action="append", default=None,
-                   help="成果物リポジトリ URL（複数指定可）。worker が temp 領域へ clone してから"
-                        "作業し、作業後に必ず消す。push が必要・中身を読む必要があるタスク用")
+                   help="成果物リポジトリ（複数指定可）。素の URL でも、構造化 JSON "
+                        "（{url,name,path,base,target,readonly,desc}）でも可。worker が temp 領域へ"
+                        " clone（base 指定があればそのブランチ）してから作業し、作業後に必ず消す。"
+                        "readonly は参照のみ（push しない）、path はモノレポの作業フォルダを表す")
     p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                    help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
                         "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")
