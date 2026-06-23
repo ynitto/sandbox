@@ -10,13 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-autonomous
 
 #### Added
-- **自動アップデート（opt-in・既定 off）**。スキルリポジトリ（配布元）の `main` に更新が入ったら、
-  `run --watch` の **アイドル時** に取り込む。doctor と同じ流儀で決定的: `git ls-remote` で main の先頭を
+- **自動アップデート（既定 on・6 時間毎・起動直後にも実施）**。スキルリポジトリ（配布元）の `main` に更新が
+  入ったら、`run --watch` の **アイドル時** に取り込む。停止中に入った更新も起動直後の初回アイドルで拾う。doctor と同じ流儀で決定的: `git ls-remote` で main の先頭を
   確認 → 適用済み SHA（`~/.kiro/kiro-autonomous.update.json`）と違えば、temp 領域へ `tools/kiro-autonomous/`
   だけを **sparse-checkout** → `install.sh` 実行 → **動いていた cwd のまま `os.execv` で graceful 再起動**
   （レジストリ登録は再起動前に後始末）。手動は `update [--check|--now]`。**更新元 URL は `install.py` が
   生成する `skill-registry.json`（`repositories.origin.url` → `install_dir`）から自動解決**（`update_repo`
-  未指定でよい）。設定キー `update_enabled`（off スイッチ）/ `update_check_interval` / `update_repo` /
+  未指定でよい）。設定キー `update_enabled`（off スイッチ・既定 on）/ `update_check_interval`（既定 21600=6h） / `update_repo` /
   `update_branch` / `update_subdir` / `update_installer`。初回はベースライン記録のみ（無更新）。タスク実行中は
   何もしない。単体テスト `SelfUpdateTests`（11 件）を追加。
 - 黒箱 CLI 統合テスト（`TestCliEndToEnd`）。`kiro-autonomous.py` を実プロセスとして argv 起動し、
@@ -92,14 +92,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-flow
 
 #### Added
-- **自動アップデート（opt-in・既定 off）**。スキルリポジトリ（配布元）の `main` に更新が入ったら、
-  **daemon のアイドル時**（要求も子プロセスも無いとき）に取り込む。doctor と同じ流儀で決定的:
+- **自動アップデート（既定 on・6 時間毎・起動直後にも実施）**。スキルリポジトリ（配布元）の `main` に更新が
+  入ったら、**daemon のアイドル時**（要求も子プロセスも無いとき）に取り込む。停止中に入った更新も起動直後に拾う。doctor と同じ流儀で決定的:
   `git ls-remote` で main の先頭を確認 → 適用済み SHA（`~/.kiro/kiro-flow.update.json`）と違えば、temp
   領域へ `tools/kiro-flow/` だけを **sparse-checkout** → `install.sh` 実行 → **動いていた cwd のまま
   `os.execv` で graceful 再起動**（子の terminate と daemon ロック解放を経て再起動）。手動は
   `update [--check|--now]`。**更新元 URL は `install.py` が生成する `skill-registry.json`
   （`repositories.origin.url` → `install_dir`）から自動解決**（`update_repo` 未指定でよい）。設定キー
-  `update_enabled`（off スイッチ）/ `update_check_interval` / `update_repo` / `update_branch` /
+  `update_enabled`（off スイッチ・既定 on）/ `update_check_interval`（既定 21600=6h） / `update_repo` / `update_branch` /
   `update_subdir` / `update_installer`。初回はベースライン記録のみ（無更新）。仕事中は何もしない。
   単体テスト `SelfUpdateTests`（11 件）を追加。
 - `doctor` サブコマンド。run 状態/イベント/環境から稼働を診断し、原因を **env / config / program** に

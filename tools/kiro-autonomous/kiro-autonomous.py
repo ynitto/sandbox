@@ -2324,11 +2324,11 @@ class Config:
     max_project_cost: float = 0.0        # プロジェクト累計コスト上限(USD・0=無制限)
     project_stall: int = 2               # acceptance PASS 数が増えない連続回数の上限→人へ
     with_flow: bool = False              # doctor: 実行層 kiro-flow doctor も連携実行し findings を統合（CLI 既定 on）
-    # 自動アップデート（opt-in）。update_repo を設定し update_check_interval を正にしたときだけ有効。
-    # watch のアイドル時に git ls-remote で main の先頭を確認し、適用済みと違えば temp 領域へ
-    # sparse-checkout（tools/kiro-autonomous/ だけ）→ install.sh 実行 → graceful 再起動する。
+    # 自動アップデート（既定 on）。更新元は skill-registry.json から自動解決。watch のアイドル時に
+    # git ls-remote で main の先頭を確認し、適用済みと違えば temp 領域へ sparse-checkout
+    # （tools/kiro-autonomous/ だけ）→ install.sh 実行 → graceful 再起動する。起動直後にも 1 回実施。
     update_enabled: bool = True          # 自動アップデートの ON/OFF（false で完全無効・既定 on）
-    update_check_interval: float = 0.0   # 更新チェック間隔（秒）。0 以下で自動チェック無効（既定 off）
+    update_check_interval: float = 21600.0  # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
     update_repo: "str | None" = None     # スキルリポジトリ（git URL/パス）。空/None なら registry から自動解決
     update_branch: str = "main"          # 追従するブランチ
     update_subdir: str = TOOL_SUBDIR     # リポジトリ内のこのツールのサブディレクトリ
@@ -4746,9 +4746,9 @@ CONFIG_DEFAULTS = {
     "max_project_cycles": 5,        # project: 改善サイクルの上限（有限停止）
     "max_project_cost": 0.0,        # project: 累計コスト上限(USD・0=無制限)
     "project_stall": 2,             # project: acceptance PASS 数が増えない連続回数→人へ
-    # 自動アップデート（opt-in・既定 off）。update_check_interval を正にすると watch のアイドル時に有効
+    # 自動アップデート（既定 on）。watch のアイドル時に更新を取り込む。更新元は skill-registry.json から自動解決
     "update_enabled": True,              # 自動アップデートの ON/OFF（false で完全無効）
-    "update_check_interval": 0.0,        # 更新チェック間隔（秒）。0 以下で自動チェック無効
+    "update_check_interval": 21600.0,    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
     "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
     "update_branch": "main",             # 追従するブランチ
     "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
@@ -5025,15 +5025,15 @@ def remote_branch_sha(repo: str, branch: str, runner=None) -> "str | None":
 
 def find_skill_registry(home: "str | None" = None) -> "str | None":
     """install.py が生成する skill-registry.json を探す（無ければ None）。
-    検索順: $KIRO_SKILL_REGISTRY（ファイル or ディレクトリ）→ 各エージェントホーム（~/.kiro 等）。"""
-    cands: list[str] = []
+    $KIRO_SKILL_REGISTRY（ファイル or ディレクトリ）が指定されていれば**それを権威として使い**
+    （フォールバックしない）、未指定なら各エージェントホーム（~/.kiro / ~/.claude 等）を探す。"""
     env = home or os.environ.get("KIRO_SKILL_REGISTRY")
     if env:
         p = os.path.expanduser(env)
-        cands.append(os.path.join(p, "skill-registry.json") if os.path.isdir(p) else p)
+        cand = os.path.join(p, "skill-registry.json") if os.path.isdir(p) else p
+        return cand if os.path.isfile(cand) else None
     for d in _AGENT_HOME_DIRS:
-        cands.append(os.path.join(os.path.expanduser("~"), d, "skill-registry.json"))
-    for c in cands:
+        c = os.path.join(os.path.expanduser("~"), d, "skill-registry.json")
         if os.path.isfile(c):
             return c
     return None

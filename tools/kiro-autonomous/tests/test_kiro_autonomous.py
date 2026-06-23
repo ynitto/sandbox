@@ -29,6 +29,12 @@ os.environ["GIT_CONFIG_COUNT"] = "1"
 os.environ["GIT_CONFIG_KEY_0"] = "commit.gpgsign"
 os.environ["GIT_CONFIG_VALUE_0"] = "false"
 
+# 自動アップデートは既定 on のため、テスト中にコントリビューターの実 skill-registry.json から
+# 更新元が解決されて実ネットワーク/再起動が走るのを防ぐ。存在しないパスを権威指定して registry
+# 解決を無効化する（SelfUpdateTests は必要なテストでだけ KIRO_SKILL_REGISTRY を一時上書きする）。
+os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
+    tempfile.gettempdir(), "ka-tests-no-such-registry", "skill-registry.json")
+
 _MOD = Path(__file__).resolve().parent.parent / "kiro-autonomous.py"
 _spec = importlib.util.spec_from_file_location("kiro_autonomous", _MOD)
 km = importlib.util.module_from_spec(_spec)

@@ -146,12 +146,13 @@ CONFIG_DEFAULTS = {
     "cleanup_age": 24.0,         # 孤立クローンを掃除するまでのアイドル時間（時間）
     # 作業後に sparse-checkout クローンを削除するか（True で削除 / False で残して再利用）
     "cleanup_clone": True,
-    # --- 自動アップデート（opt-in）。スキルリポジトリ main の更新を daemon のアイドル時に取り込む ---
-    # update_repo を設定し update_check_interval を正にしたときだけ有効。アイドル時に
-    # git ls-remote で main の先頭コミットを確認し、適用済みと違えば temp 領域へ
+    # --- 自動アップデート（既定 on）。スキルリポジトリ main の更新を daemon のアイドル時に取り込む ---
+    # 更新元は skill-registry.json から自動解決（repositories.origin.url → install_dir）。
+    # アイドル時に git ls-remote で main の先頭コミットを確認し、適用済みと違えば temp 領域へ
     # sparse-checkout（tools/kiro-flow/ だけ）→ install.sh 実行 → graceful 再起動する。
+    # 起動直後の最初のアイドルでも 1 回実施する（停止中に入った更新を取りこぼさない）。
     "update_enabled": True,              # 自動アップデートの ON/OFF（false で完全無効・既定 on）
-    "update_check_interval": 0.0,        # 更新チェック間隔（秒）。0 以下で自動チェック無効（既定 off）
+    "update_check_interval": 21600.0,    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
     "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
     "update_branch": "main",             # 追従するブランチ
     "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
@@ -2358,9 +2359,9 @@ def cmd_daemon(args) -> int:
     cleanup_interval = float(args.cleanup_interval)
     # 起動直後に 1 回掃除しないよう、最初の判定は interval 後になるよう初期化
     last_cleanup = time.time()
-    # 自己更新（opt-in）: 起動直後に走らせないよう last を now で初期化し、cwd を保持しておく
+    # 自己更新（既定 on）: 起動直後の最初のアイドルでも実施するため last=0 で初期化し、cwd を保持
     start_cwd = os.getcwd()
-    update_state = {"last": time.time()}
+    update_state = {"last": 0.0}
 
     while not stop["v"]:
         bus.sync_pull()
@@ -3245,15 +3246,15 @@ def remote_branch_sha(repo: str, branch: str, runner=None) -> "str | None":
 
 def find_skill_registry(home: "str | None" = None) -> "str | None":
     """install.py が生成する skill-registry.json を探す（無ければ None）。
-    検索順: $KIRO_SKILL_REGISTRY（ファイル or ディレクトリ）→ 各エージェントホーム（~/.kiro 等）。"""
-    cands: list[str] = []
+    $KIRO_SKILL_REGISTRY（ファイル or ディレクトリ）が指定されていれば**それを権威として使い**
+    （フォールバックしない）、未指定なら各エージェントホーム（~/.kiro / ~/.claude 等）を探す。"""
     env = home or os.environ.get("KIRO_SKILL_REGISTRY")
     if env:
         p = os.path.expanduser(env)
-        cands.append(os.path.join(p, "skill-registry.json") if os.path.isdir(p) else p)
+        cand = os.path.join(p, "skill-registry.json") if os.path.isdir(p) else p
+        return cand if os.path.isfile(cand) else None
     for d in _AGENT_HOME_DIRS:
-        cands.append(os.path.join(os.path.expanduser("~"), d, "skill-registry.json"))
-    for c in cands:
+        c = os.path.join(os.path.expanduser("~"), d, "skill-registry.json")
         if os.path.isfile(c):
             return c
     return None
