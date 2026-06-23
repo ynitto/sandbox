@@ -894,7 +894,9 @@ class DaemonPrimitiveTests(unittest.TestCase):
         try:
             clones = kf.ensure_work_repos([remote], "worker-1")
             self.assertEqual(len(clones), 1)
-            url, path = clones[0]
+            c = clones[0]
+            path = c["clone"]
+            self.assertEqual(c["url"], remote)
             self.assertTrue(path and os.path.isdir(os.path.join(path, ".git")))
             self.assertIn(path, kf.repo_instruction(clones))   # エージェントへ渡す指示にパスが入る
         finally:
@@ -904,8 +906,123 @@ class DaemonPrimitiveTests(unittest.TestCase):
     def test_ensure_work_repos_marks_failed_clone(self):
         clones = kf.ensure_work_repos([os.path.join(self.tmp, "does_not_exist")], "w")
         self.addCleanup(kf.cleanup_work_repos)
-        self.assertEqual(clones[0][1], "")                     # clone 失敗は path 空
+        self.assertEqual(clones[0]["clone"], "")               # clone 失敗は path 空
         self.assertIn("clone 失敗", kf.repo_instruction(clones))
+
+    def test_parse_repo_token_url_or_json(self):
+        # 素の URL は url だけの spec。JSON はメタを構造化して受ける（後方互換）
+        u = kf.parse_repo_token("https://git/app.git")
+        self.assertEqual((u["url"], u["readonly"], u["path"]), ("https://git/app.git", False, ""))
+        j = kf.parse_repo_token(
+            '{"url":"https://git/shop.git","name":"api","path":"apps/api",'
+            '"base":"main","target":"develop","readonly":true,"desc":"API"}')
+        self.assertEqual((j["name"], j["path"], j["base"], j["target"], j["readonly"], j["desc"]),
+                         ("api", "apps/api", "main", "develop", True, "API"))
+
+    def test_ensure_work_repos_checks_out_base_branch(self):
+        # base 指定があればそのブランチを checkout して clone する
+        remote = os.path.join(self.tmp, "branched_repo")
+        os.makedirs(remote)
+        for cmd in (["git", "init", "-q", "-b", "main", remote],
+                    ["git", "-C", remote, "config", "user.email", "t@t"],
+                    ["git", "-C", remote, "config", "user.name", "t"]):
+            subprocess.run(cmd, check=True)
+        open(os.path.join(remote, "f.txt"), "w").close()
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "init"], check=True)
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "-b", "develop"], check=True)
+        open(os.path.join(remote, "dev.txt"), "w").close()
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "dev"], check=True)
+        token = json.dumps({"url": remote, "name": "svc", "base": "develop",
+                            "path": "apps/api", "desc": "API", "readonly": False})
+        try:
+            clones = kf.ensure_work_repos([token], "w")
+            path = clones[0]["clone"]
+            self.assertTrue(path)
+            head = subprocess.run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+            self.assertEqual(head, "develop")                  # base ブランチが checkout される
+            instr = kf.repo_instruction(clones)
+            self.assertIn("apps/api", instr)
+            self.assertIn("develop", instr)
+        finally:
+            kf.cleanup_work_repos()
+
+    def test_sweep_work_repo_dirs_reaps_dead_pid_only(self):
+        # SIGKILL リーク回収: 死んだ pid の孤立 clone は消し、生存 pid（自分）のものは残す
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        dead_pid = 2147480000          # 存在しない（はずの）pid
+        live = os.path.join(tmp, f"kiro-flow-repos-{os.getpid()}-n-aaa")
+        dead = os.path.join(tmp, f"kiro-flow-repos-{dead_pid}-n-bbb")
+        other = os.path.join(tmp, "unrelated-dir")
+        for d in (live, dead, other):
+            os.makedirs(d)
+        with mock.patch("tempfile.gettempdir", return_value=tmp):
+            removed = kf.sweep_work_repo_dirs(min_age_sec=0.0)
+        self.assertEqual(removed, 1)
+        self.assertTrue(os.path.isdir(live))      # 生存 pid → 残す
+        self.assertFalse(os.path.exists(dead))    # 死亡 pid → 回収
+        self.assertTrue(os.path.isdir(other))     # 無関係ディレクトリ → 触らない
+
+    def test_sweep_work_repo_dirs_keeps_recent_even_if_pid_unknown(self):
+        # min_age 未満かつ pid 生存中は残す（稼働中の clone を誤削除しない）
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        recent = os.path.join(tmp, f"kiro-flow-repos-{os.getpid()}-n-ccc")
+        os.makedirs(recent)
+        with mock.patch("tempfile.gettempdir", return_value=tmp):
+            self.assertEqual(kf.sweep_work_repo_dirs(min_age_sec=3600.0), 0)
+        self.assertTrue(os.path.isdir(recent))
+
+    def test_resolve_node_repos_selects_subset(self):
+        api = json.dumps({"url": "https://git/shop.git", "name": "api", "path": "apps/api"})
+        web = json.dumps({"url": "https://git/shop.git", "name": "web", "path": "apps/web"})
+        run = [api, web, "https://git/lib.git"]
+        # 未注釈ノード → 全 repo（後方互換）
+        self.assertEqual(kf.resolve_node_repos({"goal": "x"}, run), run)
+        # subset 指定 → 一致する token だけ
+        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["api"]}, run), [api])
+        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["web", "lib"]}, run),
+                         [web, "https://git/lib.git"])
+        # 空配列 → clone しない
+        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": []}, run), [])
+        # run に repo が無ければ常に空
+        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["api"]}, []), [])
+
+    def test_assign_node_repos_stub_assigns_all_llm_keeps(self):
+        import types
+        run = [json.dumps({"url": "https://git/a.git", "name": "a"}), "https://git/b.git"]
+        # stub プランナー: 全ノードへ全 repo を割り当てる
+        stub_args = types.SimpleNamespace(planner="stub", repos=run)
+        tasks = [{"id": "t1", "goal": "x"}, {"id": "t2", "goal": "y", "repos": ["a"]}]
+        kf._assign_node_repos(tasks, stub_args)
+        self.assertEqual(tasks[0]["repos"], ["a", "b"])     # 未注釈 → 全 repo（id 化）
+        self.assertEqual(tasks[1]["repos"], ["a"])          # 既に割当済みは尊重
+        # LLM プランナー: プランナー出力に委ね、本体は触らない
+        llm_args = types.SimpleNamespace(planner="kiro", repos=run)
+        t2 = [{"id": "t1", "goal": "x"}]
+        kf._assign_node_repos(t2, llm_args)
+        self.assertNotIn("repos", t2[0])                    # 未注釈のまま（worker で全 repo にフォールバック）
+
+    def test_node_entry_and_coerce_preserve_repos(self):
+        e = kf._node_entry({"goal": "g", "deps": [], "kind": "work", "repos": ["a", "b"]})
+        self.assertEqual(e["repos"], ["a", "b"])
+        self.assertNotIn("repos", kf._node_entry({"goal": "g", "deps": [], "kind": "work"}))
+        coerced = kf._coerce_tasks([{"id": "t1", "goal": "g", "repos": ["a"]},
+                                    {"id": "t2", "goal": "h"}])
+        self.assertEqual(coerced[0]["repos"], ["a"])
+        self.assertNotIn("repos", coerced[1])               # 未指定はキーを作らない（フォールバック用）
+
+    def test_repo_instruction_marks_readonly(self):
+        ro = [{"url": "https://git/lib.git", "name": "lib", "path": "", "base": "main",
+               "target": "main", "readonly": True, "desc": "参照元", "clone": "/tmp/lib"}]
+        instr = kf.repo_instruction(ro)
+        self.assertIn("参照のみ", instr)
+        self.assertNotIn("commit して push すること", instr)   # 参照のみだけなら push 指示を出さない
+        rw = [dict(ro[0], readonly=False)]
+        self.assertIn("commit して push すること", kf.repo_instruction(rw))
 
     def test_remove_run_also_purges_inbox(self):
         # gc（remove_run）は対応する inbox 要求と claim も消す。残すと run_exists が

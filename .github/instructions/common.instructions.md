@@ -140,6 +140,12 @@ python {skill_home}/ltm-use/scripts/recall_memory.py "キーワード procedural
 
 コーディングタスクに着手する際は `{skill_home}/karpathy-guidelines/SKILL.md` を読み込み、その内容を作業全体に常時適用する。
 
+### 日本語ライティング規範（slop-police）
+
+セッション開始時に `{skill_home}/slop-police/SKILL.md` を読み込み、その内容を**常に**適用する（ワークスペースに `.github/skills/slop-police/` があればそちらを優先）。
+ユーザーへの回答・ドキュメント・コメント・記事など、**日本語の文章を生成・編集・レビューするたび**に、AI臭（主体の不在、false agency、命題型H2、体験の壮大化、両論併記、リズムの均一さ、全角ダッシュ・偏愛語・装飾絵文字など）を検出して直してから出力する。
+コードそのものではなく、人間が読む散文が対象。
+
 ### 調査・情報収集
 
 wiki-use 有効時は **Wiki をファーストチョイス**として参照し、外部検索やコードリーディングより先に必ず確認する:
