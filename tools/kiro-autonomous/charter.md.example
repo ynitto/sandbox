@@ -48,11 +48,12 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 
 ## repos
 # 対象/成果物リポジトリ（任意・複数可）。見出しは `name = url` か素の `url`。各 repo に構造化サブ箇条で
-# メタ情報を付ける（インデントした `- key: value`。日本語キー desc=説明/base=ベース/target=ターゲット も可）:
-#   - desc   … 内容物・関与範囲の説明【必須】。タスクは説明を見て「自分に関係する repo」を選び、その
+# メタ情報を付ける（インデントした `- key: value`。日本語キー desc=説明/base=ベース/target=ターゲット/path=パス も可）:
+#   - desc   … 内容物・関与範囲（役割）の説明【必須】。タスクは説明を見て「自分に関係する repo」を選び、その
 #              情報を個別タスク（gitlab イシュー等）へ伝搬する。書ききれない場合はフォルダ構成や README 参照でも可。
 #   - base   … 作業のベースブランチ【必須】（ここから分岐する）。
 #   - target … MR/PR のターゲットブランチ【任意・既定 = base】。
+#   - path   … モノレポ内の作業フォルダ【任意】（例 apps/api）。worker はそのフォルダ配下のみ変更する。
 # プランナーは「その repo を読む / push する必要があるタスク」にだけ repos を割り当て、kiro-flow の worker が
 # temp 領域へ clone して作業し、作業後に必ず消す（orchestrator の作業ツリーを汚さない）。
 # 手で積むタスクには `kiro-autonomous enqueue --repos app,lib ...` で明示も可能。
@@ -63,6 +64,24 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 # - lib = https://example.com/team/lib.git
 #   - desc: 共有ライブラリ（型定義・ユーティリティ）。app から参照される。
 #   - base: develop                       # target 省略 → develop で作業
+#
+# ■ モノレポ：1 つの URL をフォルダ別の役割に分ける場合は、同じ url で name と path を変えた複数エントリにする。
+#   各エントリに path（作業フォルダ）と役割別の desc を書くと、プランナーが役割に合う name をタスクへ割り当て、
+#   worker は該当フォルダ配下だけを変更する。※同一 URL を複数エントリで使うときは path が必須（distinct なフォルダ）。
+# - shop-api = git@example.com:team/shop.git
+#   - path: apps/api
+#   - desc: API ハンドラ・エンドポイント。サーバ側ロジックはここ。
+#   - base: main
+# - shop-web = git@example.com:team/shop.git
+#   - path: apps/web
+#   - desc: 画面・UI コンポーネント。
+#   - base: main
+#
+# ■ 参照のみ（読むだけ・push しない）repo は desc にその旨を明記する（push は差分が出たときだけ起きるので、
+#   読むだけのタスクは何も push しない）。コードでなく規約/wiki/設計の参照は ## repos でなく ## links に置く。
+# - core-lib = git@example.com:team/core-lib.git
+#   - desc: 参照のみ（push しない）。型定義・既存実装を読んで合わせるための参照元。
+#   - base: main                          # 読む対象ブランチ（target は不要）
 
 ## links
 # 参考リンク（任意・複数可）。横展開先プロジェクト名/相対パス、または wiki/ドキュメント URL 等を置ける。

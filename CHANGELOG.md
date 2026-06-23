@@ -10,6 +10,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-autonomous
 
 #### Added
+- charter `## repos` に `path`（作業フォルダ）属性を追加。**モノレポを「同じ url で name と path を変えた複数
+  エントリ」に分けてフォルダ別の役割を表現できる**（`desc` に役割、`path` に作業フォルダ）。プランナー提示
+  （`build_charter_request`）に path＋役割(desc) を載せ、worker 文脈（`_charter_definition`）にも path を伝搬。
+  同一 url を複数エントリで使う場合は distinct な `path` を必須化する検証を追加（曖昧さ防止）。`desc` は `役割`/`role`
+  の別名も受ける。参照のみ repo は `desc` に明記する運用（push は差分が出たときだけ）を例示。
+  charter.md.example / README にモノレポ・参照のみの書き方を追記し、テスト 4 件を追加。
 - 黒箱 CLI 統合テスト（`TestCliEndToEnd`）。`kiro-autonomous.py` を実プロセスとして argv 起動し、
   ループ機構を end-to-end で検証: drain→exit 0・成果物退避（archive）、verify 失敗→blocked→exit 1＋
   needs ファイル生成、予算超過→budget→exit 2、`--no-archive` で退避せず削除。`run_loop()` の in-process

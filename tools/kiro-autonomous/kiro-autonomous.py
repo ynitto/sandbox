@@ -1892,10 +1892,13 @@ def _charter_definition(ch: "Charter") -> str:
     # ワーカー（gitlab イシュー等）へ確実に伝わるよう truncation で落ちにくい位置にする。
     # タスクは説明（desc）を見て関係する repo を選び、その base/target ブランチを踏まえて作業する。
     if ch.repo_specs:
-        lines = ["対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業）:"]
+        lines = ["対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。"
+                 "path 指定があればそのフォルダ配下のみ変更）:"]
         for r in ch.repo_specs:
             head = f"- {r['name']} = {r['url']}" if r["name"] else f"- {r['url']}"
             br = []
+            if r.get("path"):
+                br.append(f"path={r['path']}")
             if r["base"]:
                 br.append(f"base={r['base']}")
             if r["target"]:
@@ -4085,9 +4088,11 @@ def _charter_entries(lines: "list[str]") -> "list[dict]":
 
 # 構造化 charter の属性キー別名（日本語表記も受ける）
 _REPO_KEY_ALIASES = {
-    "desc": ("desc", "description", "説明", "内容", "内容物"),
+    "desc": ("desc", "description", "説明", "内容", "内容物", "役割", "role"),
     "base": ("base", "base_branch", "ベース", "ベースブランチ"),
     "target": ("target", "target_branch", "ターゲット", "ターゲットブランチ"),
+    "path": ("path", "dir", "folder", "subdir", "subpath",
+             "パス", "ディレクトリ", "フォルダ", "サブディレクトリ"),
 }
 
 
@@ -4100,25 +4105,50 @@ def _entry_attr(attrs: dict, key: str) -> str:
 
 
 def _repo_spec_from_entry(e: dict) -> dict:
-    """repos エントリ（見出し `name = url` ＋ 属性 desc/base/target）を構造化する。
-    target 省略時は base と同じ（同一ブランチで作業）。"""
+    """repos エントリ（見出し `name = url` ＋ 属性 desc/base/target/path）を構造化する。
+    target 省略時は base と同じ（同一ブランチで作業）。path はモノレポ内の作業フォルダ（任意）で、
+    同一 URL を役割別に複数エントリへ分けるときの識別子になる。"""
     name, url = _repo_token_parts(e["head"])
     desc = _entry_attr(e["attrs"], "desc")
     base = _entry_attr(e["attrs"], "base")
     target = _entry_attr(e["attrs"], "target") or base
-    return {"name": name, "url": url, "desc": desc, "base": base, "target": target}
+    path = _entry_attr(e["attrs"], "path").strip("/")
+    return {"name": name, "url": url, "desc": desc, "base": base,
+            "target": target, "path": path}
 
 
 def validate_charter(ch: "Charter") -> "list[str]":
-    """構造化 repos の必須項目（desc・base）を検証し、問題点の説明リストを返す（空＝OK）。
-    『説明は原則必須・base は必須・target は省略可（既定 base）』という charter 規約を強制する。"""
+    """構造化 repos の必須項目（desc・base）と、同一 URL を役割分割する際の規約を検証し、
+    問題点の説明リストを返す（空＝OK）。
+    『説明は原則必須・base は必須・target は省略可（既定 base）』に加え、**同じ URL を複数エントリで
+    使う（モノレポを役割別フォルダに分ける）場合は各エントリに distinct な path が必須**
+    （どのフォルダの役割かを曖昧にしない）。"""
     problems: list[str] = []
+    by_url: "dict[str, list[dict]]" = {}
     for r in ch.repo_specs:
         label = r["name"] or r["url"] or "(無名 repo)"
         if not r["desc"]:
             problems.append(f"repo '{label}': 説明（desc）が必須です（内容物・関与範囲を 1 行で）")
         if not r["base"]:
             problems.append(f"repo '{label}': base ブランチが必須です（例 `- base: main`）")
+        if r["url"]:
+            by_url.setdefault(r["url"], []).append(r)
+    for url, group in by_url.items():
+        if len(group) < 2:
+            continue                         # 単独エントリは path 任意（後方互換）
+        seen: "dict[str, str]" = {}
+        for r in group:
+            label = r["name"] or url
+            if not r["path"]:
+                problems.append(
+                    f"repo '{label}': 同じ URL を複数の役割で使う場合は path（作業フォルダ）が必須です"
+                    f"（例 `- path: apps/api`）。{url} が path 無しで重複しています")
+            elif r["path"] in seen:
+                problems.append(
+                    f"repo '{label}': path '{r['path']}' が同一 URL 内で '{seen[r['path']]}' と重複しています"
+                    "（役割ごとに別フォルダにすること）")
+            else:
+                seen[r["path"]] = label
     return problems
 
 
@@ -4297,11 +4327,19 @@ def build_charter_request(charter: "Charter") -> str:
         parts.append("成果物:\n" + "\n".join(f"- {d}" for d in charter.deliverables))
     if charter.acceptance:
         parts.append("受入条件(満たすべき検証):\n" + "\n".join(f"- {a}" for a in charter.acceptance))
-    rmap = charter_repo_map(charter)
-    names = [n for n in rmap if rmap.get(n) != n]   # name → url の name 側だけ列挙
-    if names:
-        parts.append("利用可能なリポジトリ（中身を読む/ push する必要があるタスクにのみ割当）:\n"
-                     + "\n".join(f"- {n} = {rmap[n]}" for n in names))
+    if charter.repo_specs:
+        # 名前・フォルダ(path)・役割(desc) を提示し、プランナーが「役割に合うエントリ」を選べるようにする。
+        # 同一 URL でも path/役割が違えば別エントリ＝別タスクに割り当てられる（モノレポの役割分割）。
+        rlines = ["利用可能なリポジトリ（中身を読む/ push する必要があるタスクにのみ、その name で割当）:"]
+        for r in charter.repo_specs:
+            label = r["name"] or r["url"]
+            line = f"- {label} = {r['url']}"
+            if r.get("path"):
+                line += f"（フォルダ {r['path']}）"
+            if r["desc"]:
+                line += f" — {r['desc']}"
+            rlines.append(line)
+        parts.append("\n".join(rlines))
     return "\n\n".join(parts)
 
 
