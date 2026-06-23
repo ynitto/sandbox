@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-autonomous
 
 #### Added
+- 黒箱 CLI 統合テスト（`TestCliEndToEnd`）。`kiro-autonomous.py` を実プロセスとして argv 起動し、
+  ループ機構を end-to-end で検証: drain→exit 0・成果物退避（archive）、verify 失敗→blocked→exit 1＋
+  needs ファイル生成、予算超過→budget→exit 2、`--no-archive` で退避せず削除。`run_loop()` の in-process
+  テスト（`TestRunLoop`）に対し、CLI 配線（argparse・パス解決・停止理由→exit code）を実バイナリで担保する。
+- クロスツール統合テスト（`TestCliKiroFlowDelegation`）。autonomous CLI の act が実際に `kiro-flow.py` へ
+  サブプロセス委譲して完走することを検証する。`--kiro-flow` にラッパを噛ませ、委譲 argv
+  （`run --planner stub --executor stub …`）と委譲先 kiro-flow の正常終了（exit 0）を捕捉して assert する。
 - `--executor`（設定 `executor`）に kiro-flow の executor プラグインを指定できるようにした。組み込みの
   `kiro` / `stub` に加え、プラグイン名（例 `gitlab`）や `.py` パスをそのまま `kiro-flow run --executor <値>`
   へ委譲する（`choices` 制限を撤廃）。`kiro-autonomous.yaml.example` / README にも記載。`doctor` の
@@ -125,6 +132,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   限定。kiro-flow 管理外の既存チェックアウトには sparse-checkout せず明示的に中断する。あわせて全ての
   `git -C <workdir>` 実行に `GIT_CEILING_DIRECTORIES` を設定し、workdir 直下に `.git` が無くても親リポジトリへ
   遡れないよう多重防御した。
+
+#### Added
+- daemon/submit の黒箱統合テスト（`DaemonE2ETests`）。`daemon` を実プロセスとして常駐させ、`submit` 投入から
+  orchestrator/worker のオンデマンド起動を経て `final.json` 生成（全ノード done）まで通す。複数 submit を
+  並行に独立 run として完走させる経路も検証。bus プリミティブの in-process テスト（`DaemonPrimitiveTests`）に
+  対し、常駐プロセス＋オンデマンド起動の配線を実プロセスで担保する。
 
 #### Changed
 - 内部リファクタリング（振る舞い不変・全機能維持・144 テスト green）。kiro-autonomous と同様に、

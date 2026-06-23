@@ -10,6 +10,7 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -2988,6 +2989,117 @@ class TestKiroFlowIntegration(unittest.TestCase):
             res = km.run_loop(cfg_for(d, dry_run=False, act_timeout=120, max_cycles=3))
             self.assertEqual(res["counts"]["done"], 1)
             self.assertEqual(res["reason"], km.REASON_DRAINED)
+
+
+def _write_backlog_task(backlog: Path, tid: str, verify: str, title: "str | None" = None):
+    """CLI e2e 用に backlog/<id>.md を書く（mkb の最小版・絶対パス前提）。"""
+    backlog.mkdir(parents=True, exist_ok=True)
+    (backlog / f"{tid}.md").write_text(
+        f"## {tid}: {title or tid}\n- status: ready\n- verify: `{verify}`\n", encoding="utf-8")
+
+
+class TestCliEndToEnd(unittest.TestCase):
+    """kiro-autonomous.py を実プロセスとして argv 起動する黒箱 CLI e2e。
+
+    TestRunLoop が run_loop() を in-process で呼ぶのに対し、こちらは CLI 配線（argparse・パス解決・
+    停止理由→exit code・成果物の書き出し）を実バイナリで検証する。act は --dry-run で省略し、
+    ループ機構そのもの（優先順位→verify→done/archive/blocked/needs）を確認する。
+    パスは絶対（mkdtemp）で渡す: 相対パスは --workdir 基準で解決され picked up されないため。"""
+
+    def _run(self, d: Path, *extra, timeout=60):
+        cmd = [sys.executable, str(_MOD), "run",
+               "--workdir", str(d), "--backlog", str(d / "backlog"),
+               "--policy", str(d / "policy.md"), "--decisions", str(d / "decisions"),
+               "--journal", str(d / "journal.md"), "--needs", str(d / "needs"),
+               "--bus", str(d / "bus"), "--planner", "none",
+               "--executor", "stub", "--flow-planner", "stub"]
+        cmd += list(extra)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    def test_drains_and_archives(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            _write_backlog_task(d / "backlog", "T1", "true")
+            _write_backlog_task(d / "backlog", "T2", "true")
+            p = self._run(d, "--dry-run", "--max-cycles", "10")
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)   # drained → 0
+            self.assertIn("drained", p.stdout)
+            self.assertIn("done=2", p.stdout)
+            self.assertEqual(list((d / "backlog").glob("*.md")), [])  # backlog から消える
+
+    def test_blocked_when_verify_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            _write_backlog_task(d / "backlog", "T1", "false")        # verify は必ず FAIL
+            p = self._run(d, "--dry-run", "--max-retries", "0", "--max-cycles", "10")
+            self.assertEqual(p.returncode, 1, p.stdout + p.stderr)   # blocked → 1
+            self.assertIn("blocked=1", p.stdout)
+            self.assertTrue((d / "needs" / "T1.md").exists())        # 人の判断へ委譲
+            self.assertTrue((d / "backlog" / "T1.md").exists())      # backlog には残す
+
+    def test_budget_stop(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            _write_backlog_task(d / "backlog", "T1", "false")
+            # 無限リトライ相当 + サイクル上限 → drain せず予算で停止
+            p = self._run(d, "--dry-run", "--max-retries", "999", "--max-cycles", "3")
+            self.assertEqual(p.returncode, 2, p.stdout + p.stderr)   # budget → 2
+            self.assertIn("budget", p.stdout)
+
+    def test_no_archive_deletes_instead(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            _write_backlog_task(d / "backlog", "T1", "true")
+            p = self._run(d, "--dry-run", "--no-archive", "--max-cycles", "10")
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertIn("done=1", p.stdout)
+            self.assertIn("archived=0", p.stdout)                    # 退避せず削除
+            self.assertEqual(list((d / "backlog").glob("*.md")), [])
+
+
+class TestCliKiroFlowDelegation(unittest.TestCase):
+    """kiro-autonomous CLI が act を実際に kiro-flow.py へサブプロセス委譲し、完走することを検証する
+    クロスツール e2e。委譲の証跡（argv）と委譲先 kiro-flow の正常終了をラッパで捕捉して検証する。"""
+
+    def test_cli_delegates_to_real_kiro_flow(self):
+        kf = Path(__file__).resolve().parents[2] / "kiro-flow" / "kiro-flow.py"
+        if not kf.exists():
+            self.skipTest("kiro-flow.py が見つからない")
+        os.environ["KIRO_FLOW_STUB_SLEEP_MAX"] = "0"   # stub の擬似スリープ無効化（子へ継承）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            log = d / "kf.log"
+            # ラッパ: 委譲 argv を記録 → 本物の kiro-flow へ転送 → その exit code も記録/伝播
+            wrapper = d / "kfwrap.py"
+            wrapper.write_text(
+                "import sys, subprocess\n"
+                "argv = sys.argv[1:]\n"
+                f"open(r'{log}', 'a').write('ARGV\\t' + '\\t'.join(argv) + '\\n')\n"
+                f"rc = subprocess.run([sys.executable, r'{kf}'] + argv).returncode\n"
+                f"open(r'{log}', 'a').write('RC\\t%d\\n' % rc)\n"
+                "sys.exit(rc)\n", encoding="utf-8")
+            marker = d / "marker"
+            marker.write_text("done")   # act は best-effort。verify が真実の源なので事前に通る状態を作る
+            _write_backlog_task(d / "backlog", "T1", f"test -f {marker}", title="何かを実装")
+            cmd = [sys.executable, str(_MOD), "run",
+                   "--workdir", str(d), "--backlog", str(d / "backlog"),
+                   "--policy", str(d / "policy.md"), "--decisions", str(d / "decisions"),
+                   "--journal", str(d / "journal.md"), "--needs", str(d / "needs"),
+                   "--bus", str(d / "bus"), "--planner", "none",
+                   "--executor", "stub", "--flow-planner", "stub",
+                   "--kiro-flow", str(wrapper),
+                   "--act-timeout", "150", "--max-cycles", "3"]
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertIn("done=1", p.stdout)
+            logtext = log.read_text(encoding="utf-8")
+            # 実際に kiro-flow が `run --planner stub --executor stub …` で起動された証跡
+            self.assertIn("\trun\t", logtext)
+            self.assertIn("--planner", logtext)
+            self.assertIn("--executor", logtext)
+            self.assertIn("stub", logtext)
+            # 委譲先 kiro-flow（orchestrator/worker まで含む）自身が正常終了した
+            self.assertIn("RC\t0", logtext)
 
 
 if __name__ == "__main__":
