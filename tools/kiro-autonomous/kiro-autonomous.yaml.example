@@ -137,3 +137,26 @@ promote_threshold: 2        # learn ルールがこの回数以上効いたら l
 rot_age_days: 14.0          # rot の stale 判定（経過日数）
 # notify_cmd: "teams-use post"   # 判断待ち遷移時のダイジェストを渡す通知コマンド
 # actor: alice               # 決定記録に残す操作者名（既定 $USER）
+
+# ---------------------------------------------------------------------------
+# 自動アップデート（既定 on・6 時間毎・起動直後にも実施）
+# ---------------------------------------------------------------------------
+# スキルリポジトリ（このツールの配布元）の main ブランチに更新が入ったら、run --watch の
+# アイドル時（消化待ち/フィードバックが無いとき）に自動で取り込む。【既定で有効】（6 時間ごと・
+# 起動直後の最初のアイドルでも 1 回実施し、停止中に入った更新を取りこぼさない）。手順は doctor と
+# 同じ流儀で決定的: git ls-remote で main の先頭を確認し、適用済みと違えば temp 領域へ
+# tools/kiro-autonomous/ だけを sparse-checkout → install.sh を実行 → 動いていた cwd のまま
+# graceful 再起動する（os.execv）。手動なら `kiro-autonomous update [--check|--now]`。
+# 初回チェックは「いま動いている本体を最新」とみなしベースラインを記録するだけ（無更新）。
+#
+# 更新元 URL は通常は設定不要: install.py が生成する skill-registry.json の
+# repositories.origin.url（無ければ install_dir）から自動解決する。別リポジトリを使うときだけ
+# update_repo を明示する。止めたいときは update_enabled: false か update_check_interval: 0。
+#
+# 以下はすべて任意（既定のままで有効）。
+# update_enabled: true                  # 自動アップデートの ON/OFF（false で完全に止める。既定 on）
+# update_check_interval: 21600          # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
+# update_repo: ""                       # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
+# update_branch: main                   # 追従するブランチ（空/既定なら registry の branch を採用）
+# update_subdir: tools/kiro-autonomous  # リポジトリ内のこのツールのサブディレクトリ
+# update_installer: install.sh          # サブディレクトリ内で実行するインストーラ

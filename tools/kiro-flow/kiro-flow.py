@@ -100,6 +100,16 @@ except ImportError:  # PyYAML 無し → JSON のみ
 
 DEFAULT_CONFIG_NAMES = ["kiro-flow.yaml", "kiro-flow.yml", "kiro-flow.json"]
 
+# このツールがスキルリポジトリ内に置かれているサブディレクトリ（自動アップデートの参照先）。
+# 自動アップデートは update_repo のこのパス以下だけを temp 領域へ sparse-checkout して
+# install.sh を実行する（doctor と同じ流儀で、操作は決定的・無関係ファイルは取得しない）。
+TOOL_SUBDIR = "tools/kiro-flow"
+# スキルリポジトリ（git URL/パス）の既定。空なら install.py が生成する skill-registry.json から
+# 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
+DEFAULT_UPDATE_REPO = ""
+# skill-registry.json を探すエージェントホーム（install.py の AGENT_DIRS に対応）。
+_AGENT_HOME_DIRS = (".kiro", ".claude", ".copilot", ".codex")
+
 # 環境ごとに変わる値の組み込み既定。設定ファイルのキーもこの名前（snake_case）。
 CONFIG_DEFAULTS = {
     "bus": "./.kiro-flow",
@@ -138,6 +148,17 @@ CONFIG_DEFAULTS = {
     # 作業後に sparse-checkout クローンを削除するか（True で削除 / False で残して再利用）
     "cleanup_clone": True,
     "cleanup_per_node": False,   # 各ノード完了後に成果物リポジトリの clone を即削除（長命 worker のディスク抑制）
+    # --- 自動アップデート（既定 on）。スキルリポジトリ main の更新を daemon のアイドル時に取り込む ---
+    # 更新元は skill-registry.json から自動解決（repositories.origin.url → install_dir）。
+    # アイドル時に git ls-remote で main の先頭コミットを確認し、適用済みと違えば temp 領域へ
+    # sparse-checkout（tools/kiro-flow/ だけ）→ install.sh 実行 → graceful 再起動する。
+    # 起動直後の最初のアイドルでも 1 回実施する（停止中に入った更新を取りこぼさない）。
+    "update_enabled": True,              # 自動アップデートの ON/OFF（false で完全無効・既定 on）
+    "update_check_interval": 21600.0,    # 更新チェック間隔（秒）。既定 6 時間。0 以下で自動チェック無効
+    "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
+    "update_branch": "main",             # 追従するブランチ
+    "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
+    "update_installer": "install.sh",    # サブディレクトリ内で実行するインストーラ
     # executor プラグインの追加検索ディレクトリ（既定の検索先に加えて優先探索する）。
     "executor_dir": None,
     # gitlab executor プラグイン（opt-in のワーカーバス）の設定。executor: gitlab を選んだ
@@ -2293,6 +2314,22 @@ def _acquire_daemon_lock(args):
     return lock_file
 
 
+def _release_daemon_lock(lock_file) -> None:
+    """daemon singleton ロックを解放して fd を閉じる（自己更新の再起動前に呼ぶ）。
+    flock は fd に紐づくため、execv で再起動する前に解放しないと再取得で多重起動扱いになる。"""
+    if lock_file is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        lock_file.close()
+    except OSError:
+        pass
+
+
 def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     """要求 req を担当する orchestrator を base argv から起動する（daemon のオンデマンド起動）。"""
     repo_args = []
@@ -2479,6 +2516,9 @@ def cmd_daemon(args) -> int:
     cleanup_interval = float(args.cleanup_interval)
     # 起動直後に 1 回掃除しないよう、最初の判定は interval 後になるよう初期化
     last_cleanup = time.time()
+    # 自己更新（既定 on）: 起動直後の最初のアイドルでも実施するため last=0 で初期化し、cwd を保持
+    start_cwd = os.getcwd()
+    update_state = {"last": 0.0}
 
     while not stop["v"]:
         bus.sync_pull()
@@ -2523,6 +2563,14 @@ def cmd_daemon(args) -> int:
                 workers.append((rid, _spawn_worker(base, args, rid, wid)))
                 have += 1
                 log(daemon_id, f"ワーカー起動: {wid} → run {rid}（claim可能={want}）")
+
+        # 3) アイドル（要求も子も無い）なら自己更新を確認。更新を取り込めたら graceful 再起動。
+        idle = not orchestrators and not workers and not bus.list_inbox()
+        if maybe_self_update(args, idle, update_state):
+            log(daemon_id, "自己更新を適用しました。子を停止し graceful 再起動します。")
+            shutdown()                       # 残っている子があれば terminate（idle なので基本居ない）
+            _release_daemon_lock(lock_file)  # flock を解放してから再取得できるようにする
+            restart_self(start_cwd)          # 動いていた cwd のまま新しい本体へ（戻らない）
 
         time.sleep(args.poll)
     return 0
@@ -3347,6 +3395,260 @@ def self_path() -> str:
     return os.path.abspath(__file__)
 
 
+# --------------------------------------------------------------------------
+# 自動アップデート — スキルリポジトリ（main）の更新を取り込み graceful 再起動する
+# --------------------------------------------------------------------------
+# doctor と同じ流儀（知能は委譲・操作は決定的）で、本体は「決定的な取り込み」だけを行う:
+#   1. git ls-remote でスキルリポジトリ main の最新コミットを得る
+#   2. 適用済み SHA（state ファイル）と違えば「更新あり」
+#   3. アイドル時に temp 領域へ sparse-checkout（このツールの tools/kiro-flow/ だけ）
+#   4. install.sh を実行して ~/.local/bin の本体を更新
+#   5. 動いていた cwd のまま os.execv で新しい本体へ graceful 再起動
+# update_repo 未設定 or update_check_interval<=0 のときは完全に無効（既定 off）。
+def _update_state_path() -> str:
+    base = os.environ.get("KIRO_STATE_HOME") or os.path.expanduser("~/.kiro")
+    return os.path.join(base, "kiro-flow.update.json")
+
+
+def read_update_state() -> dict:
+    return read_json(_update_state_path()) or {}
+
+
+def write_update_state(state: dict) -> None:
+    write_json_atomic(_update_state_path(), state)
+
+
+def remote_branch_sha(repo: str, branch: str, runner=None) -> "str | None":
+    """git ls-remote でリモート branch の先頭コミット SHA を得る（取得不能なら None）。"""
+    if not repo:
+        return None
+    run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=60))
+    try:
+        r = run(["git", "ls-remote", repo, f"refs/heads/{branch}"])
+    except Exception:  # noqa: BLE001  git 不在・ネットワーク不通・タイムアウト
+        return None
+    if getattr(r, "returncode", 1) != 0:
+        return None
+    line = (getattr(r, "stdout", "") or "").strip().splitlines()
+    if not line:
+        return None
+    sha = line[0].split()[0].strip()
+    return sha if len(sha) >= 7 else None
+
+
+def find_skill_registry(home: "str | None" = None) -> "str | None":
+    """install.py が生成する skill-registry.json を探す（無ければ None）。
+    $KIRO_SKILL_REGISTRY（ファイル or ディレクトリ）が指定されていれば**それを権威として使い**
+    （フォールバックしない）、未指定なら各エージェントホーム（~/.kiro / ~/.claude 等）を探す。"""
+    env = home or os.environ.get("KIRO_SKILL_REGISTRY")
+    if env:
+        p = os.path.expanduser(env)
+        cand = os.path.join(p, "skill-registry.json") if os.path.isdir(p) else p
+        return cand if os.path.isfile(cand) else None
+    for d in _AGENT_HOME_DIRS:
+        c = os.path.join(os.path.expanduser("~"), d, "skill-registry.json")
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def registry_update_source(registry: "str | None" = None) -> "tuple[str | None, str | None]":
+    """skill-registry.json からスキルリポジトリの (url, branch) を解決する（無ければ (None, None)）。
+    repositories の origin（無ければ priority 昇順の先頭）を採り、url が無ければ install_dir
+    （インストール元のローカルクローン＝『自動更新の参照元』）にフォールバックする。"""
+    path = registry or find_skill_registry()
+    if not path or not os.path.isfile(path):
+        return (None, None)
+    try:
+        with open(path, encoding="utf-8") as f:
+            reg = json.load(f)
+    except (OSError, ValueError):
+        return (None, None)
+    repos = reg.get("repositories") or []
+    chosen = next((r for r in repos if r.get("name") == "origin"), None)
+    if chosen is None and repos:
+        chosen = sorted(repos, key=lambda r: r.get("priority", 99))[0]
+    if chosen and chosen.get("url"):
+        return (chosen["url"], chosen.get("branch") or "main")
+    idir = reg.get("install_dir")               # フォールバック: ローカルクローンを直接 clone 元に
+    if idir and os.path.isdir(idir):
+        return (idir, (chosen.get("branch") if chosen else None) or "main")
+    return (None, None)
+
+
+def resolve_update_target(args) -> "tuple[str, str]":
+    """更新元リポジトリと branch を確定する。優先順位 設定の update_repo > skill-registry.json > 無効。
+    update_repo 未指定（自動）のときは registry の branch を採用（設定 update_branch が既定 main のまま時）。"""
+    repo = getattr(args, "update_repo", "") or ""
+    branch = getattr(args, "update_branch", "main") or "main"
+    if not repo:
+        rurl, rbranch = registry_update_source()
+        if rurl:
+            repo = rurl
+            if rbranch and branch == "main":     # 設定で branch を変えていなければ registry を採用
+                branch = rbranch
+    return repo, branch
+
+
+def check_update(args, runner=None) -> dict:
+    """更新の有無を判定する（取り込みはしない）。戻り値の dict:
+      {enabled, repo, branch, remote_sha, applied_sha, available, baseline}
+    repo は設定 update_repo か skill-registry.json から解決する。
+    初回（applied_sha 未記録）は現在の本体を最新とみなし remote_sha をベースライン記録して
+    available=False を返す（無用な初回更新ループを避ける）。"""
+    repo, branch = resolve_update_target(args)
+    info = {"enabled": bool(repo), "repo": repo, "branch": branch, "remote_sha": None,
+            "applied_sha": None, "available": False, "baseline": False}
+    if not repo:
+        return info
+    state = read_update_state()
+    info["applied_sha"] = state.get("applied_sha")
+    remote = remote_branch_sha(repo, branch, runner=runner)
+    info["remote_sha"] = remote
+    if not remote:
+        return info
+    if not info["applied_sha"]:
+        state["applied_sha"] = remote
+        state["baseline_at"] = now_iso()
+        write_update_state(state)
+        info["applied_sha"] = remote
+        info["baseline"] = True
+        return info
+    info["available"] = (remote != info["applied_sha"])
+    return info
+
+
+def sparse_checkout_tool(repo: str, branch: str, subdir: str, dest: str, runner=None) -> str:
+    """repo の branch から subdir 以下だけを dest へ sparse-checkout し dest/subdir のパスを返す。
+    無関係ファイルを取得しないため --no-checkout + blob フィルタ + sparse-checkout を使う。"""
+    run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True,
+                                                   timeout=600, **k))
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    r = run(["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none",
+             "--branch", branch, repo, dest])
+    if getattr(r, "returncode", 1) != 0:   # blob フィルタ非対応サーバ向けフォールバック
+        r = run(["git", "clone", "--no-checkout", "--depth", "1", "--branch", branch, repo, dest])
+    if getattr(r, "returncode", 1) != 0:
+        raise RuntimeError(f"git clone 失敗: {(getattr(r, 'stderr', '') or '').strip()[:300]}")
+
+    def g(cmd):
+        return run(["git", "-C", dest] + cmd)
+    g(["sparse-checkout", "init", "--cone"])
+    g(["sparse-checkout", "set", subdir])
+    co = g(["checkout", branch])
+    if getattr(co, "returncode", 1) != 0:
+        raise RuntimeError(f"git checkout 失敗: {(getattr(co, 'stderr', '') or '').strip()[:300]}")
+    tool_dir = os.path.join(dest, subdir)
+    if not os.path.isdir(tool_dir):
+        raise RuntimeError(f"sparse-checkout 後に {subdir} が見つかりません（リポジトリ構成を確認）")
+    return tool_dir
+
+
+def run_installer(tool_dir: str, installer: str = "install.sh", runner=None) -> "tuple[bool, str]":
+    """tool_dir 内の installer を実行して本体を更新する。(成功, 末尾出力) を返す。"""
+    path = os.path.join(tool_dir, installer)
+    if not os.path.isfile(path):
+        return False, f"インストーラが見つかりません: {path}"
+    run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True,
+                                                   timeout=600, **k))
+    try:
+        r = run(["bash", path], cwd=tool_dir)
+    except Exception as e:  # noqa: BLE001
+        return False, f"インストーラ実行に失敗: {e}"
+    out = ((getattr(r, "stdout", "") or "") + (getattr(r, "stderr", "") or "")).strip()
+    return getattr(r, "returncode", 1) == 0, out[-2000:]
+
+
+def apply_update(args, info: dict, runner=None) -> bool:
+    """temp 領域へ sparse-checkout → install.sh → 適用済み SHA を記録。成功で True。
+    temp は必ず後始末する。失敗時は state を変えない（次回再試行）。"""
+    subdir = getattr(args, "update_subdir", TOOL_SUBDIR) or TOOL_SUBDIR
+    installer = getattr(args, "update_installer", "install.sh") or "install.sh"
+    tmp = tempfile.mkdtemp(prefix="kiro-flow-update-")
+    dest = os.path.join(tmp, "repo")
+    try:
+        tool_dir = sparse_checkout_tool(info["repo"], info["branch"], subdir, dest, runner=runner)
+        ok, out = run_installer(tool_dir, installer, runner=runner)
+        if not ok:
+            log("update", f"install.sh 失敗（更新を見送り）: {out[-300:]}")
+            return False
+        state = read_update_state()
+        state["applied_sha"] = info["remote_sha"]
+        state["applied_at"] = now_iso()
+        write_update_state(state)
+        log("update", f"更新を適用しました（{info['remote_sha'][:8]}）。")
+        return True
+    except Exception as e:  # noqa: BLE001  clone/checkout/installer の失敗は次回再試行
+        log("update", f"更新の取り込みに失敗（次回再試行）: {e}")
+        return False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def restart_self(cwd: "str | None" = None) -> None:
+    """更新後の本体へ os.execv で graceful 再起動する。動いていた cwd を保ったまま起動し直す。"""
+    if cwd and os.path.isdir(cwd):
+        try:
+            os.chdir(cwd)
+        except OSError:
+            pass
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable, self_path()] + sys.argv[1:])
+
+
+def maybe_self_update(args, idle: bool, state: dict, runner=None) -> bool:
+    """daemon のループから定期的に呼ぶ自己更新チェック。更新を適用したら True
+    （呼び出し側は graceful shutdown して restart_self する）。
+    state は {"last": <epoch>} を持つ可変 dict（呼び出し側がループ間で保持）。
+    update_enabled=false / update_check_interval<=0 で無効。アイドルでなければ何もしない。"""
+    if not getattr(args, "update_enabled", True):
+        return False
+    interval = float(getattr(args, "update_check_interval", 0) or 0)
+    if interval <= 0 or not idle:
+        return False
+    now = time.time()
+    if now - state.get("last", 0.0) < interval:
+        return False
+    state["last"] = now
+    info = check_update(args, runner=runner)
+    if not info.get("available"):
+        return False
+    log("update", f"スキルリポジトリ {info['branch']} に更新を検出: "
+                  f"{(info['applied_sha'] or '')[:8]} → {(info['remote_sha'] or '')[:8]}")
+    return apply_update(args, info, runner=runner)
+
+
+def cmd_update(args) -> int:
+    """手動アップデート: 更新の有無を確認し、--now で取り込んで再起動する。
+    終了コード: 0=最新/ベースライン記録/更新あり表示 / 1=取り込み失敗 / 2=未設定・取得不能。"""
+    info = check_update(args)
+    if not info["enabled"]:
+        print("[kiro-flow] update: update_repo が未設定です（設定ファイルで指定してください）。",
+              file=sys.stderr)
+        return 2
+    if info["remote_sha"] is None:
+        print(f"[kiro-flow] update: リモート {info['repo']}@{info['branch']} を取得できませんでした。",
+              file=sys.stderr)
+        return 2
+    if info.get("baseline"):
+        print(f"[kiro-flow] update: ベースラインを記録しました（{info['remote_sha'][:8]}）。"
+              "以降この地点からの更新を検出します。")
+        return 0
+    if not info["available"]:
+        print(f"[kiro-flow] update: 最新です（{info['applied_sha'][:8]}）。")
+        return 0
+    print(f"[kiro-flow] update: 更新があります {info['applied_sha'][:8]} → {info['remote_sha'][:8]}")
+    if getattr(args, "check", False) or not getattr(args, "now", False):
+        print("  取り込むには `kiro-flow update --now` を実行してください。")
+        return 0
+    if apply_update(args, info):
+        print("  install.sh を実行して更新しました。再起動します。")
+        restart_self(os.getcwd())   # 戻らない
+    print("  更新の取り込みに失敗しました（ログを確認してください）。", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow")
     # 設定値の優先順位: CLI > 設定ファイル(kiro-flow.yaml) > 組み込み既定。
@@ -3496,6 +3798,14 @@ def main() -> int:
                     help="env/config の問題を修正し、program の不具合を gitlab-idd で起票"
                          "（スキルが無ければ出力のみ。既定は診断のみ）")
     dr.set_defaults(func=cmd_doctor)
+
+    up = sub.add_parser("update",
+                        help="スキルリポジトリ(main)の更新を確認。--now で temp に sparse-checkout "
+                             "して install.sh を実行し再起動する")
+    up.add_argument("--now", action="store_true",
+                    help="更新があれば即座に install.sh を実行して再起動する")
+    up.add_argument("--check", action="store_true", help="更新の有無だけを表示（取り込まない）")
+    up.set_defaults(func=cmd_update)
 
     args = p.parse_args()
     # CLI 未指定の設定値を設定ファイル→組み込み既定で確定（CLI > config > 既定）

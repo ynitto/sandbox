@@ -11,6 +11,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import types
 import sys
 import tempfile
 import threading
@@ -30,6 +31,12 @@ os.environ["KIRO_FLOW_STUB_SLEEP_MAX"] = "0"
 os.environ["GIT_CONFIG_COUNT"] = "1"
 os.environ["GIT_CONFIG_KEY_0"] = "commit.gpgsign"
 os.environ["GIT_CONFIG_VALUE_0"] = "false"
+
+# 自動アップデートは既定 on のため、テスト中にコントリビューターの実 skill-registry.json から
+# 更新元が解決されて実ネットワーク/再起動が走るのを防ぐ。存在しないパスを権威指定して registry
+# 解決を無効化する（SelfUpdateTests は必要なテストでだけ KIRO_SKILL_REGISTRY を一時上書きする）。
+os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
+    tempfile.gettempdir(), "kf-tests-no-such-registry", "skill-registry.json")
 
 
 def _load_module():
@@ -1916,6 +1923,162 @@ class DoctorTests(unittest.TestCase):
             rc = kf.cmd_doctor(args, kiro_run=agent, skill_finder=lambda _n: skill)
         self.assertEqual(filed, ["file"])                          # gitlab-idd へ委譲
         self.assertEqual(rc, 0)                                    # 唯一の所見が起票で解消 → healthy
+
+
+def _make_skill_repo(root: str, tool_subdir: str = "tools/kiro-flow",
+                     installer_body: str = None) -> str:
+    """temp に「スキルリポジトリ」を作る: main ブランチに tool_subdir/install.sh を持つ git リポジトリ。
+    install.sh は --prefix で渡されたディレクトリに marker を書くだけの最小実装。リポジトリ path を返す。"""
+    repo = os.path.join(root, "skillrepo")
+    td = os.path.join(repo, tool_subdir)
+    os.makedirs(td, exist_ok=True)
+    other = os.path.join(repo, "tools", "kiro-autonomous")   # sparse 除外の確認用
+    os.makedirs(other, exist_ok=True)
+    pathlib.Path(other, "FILE.txt").write_text("unrelated\n")
+    body = installer_body or (
+        "#!/usr/bin/env bash\nset -e\nPREFIX=\"$HOME/.local/bin\"\n"
+        "[ \"$1\" = --prefix ] && PREFIX=\"$2\"\nmkdir -p \"$PREFIX\"\n"
+        "echo installed > \"$PREFIX/INSTALLED_MARKER\"\n")
+    pathlib.Path(td, "install.sh").write_text(body)
+    pathlib.Path(td, "kiro-flow.py").write_text("# tool body\n")
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    for c in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
+              ["git", "commit", "-q", "-m", "init"]):
+        subprocess.run(c, cwd=repo, env=env, check=True, capture_output=True)
+    return repo
+
+
+def _commit_change(repo: str, relpath: str, content: str = "x\n") -> None:
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    p = os.path.join(repo, relpath)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    pathlib.Path(p).write_text(content)
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "update"], cwd=repo, env=env,
+                   check=True, capture_output=True)
+
+
+class SelfUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-update-")
+        self.state = os.path.join(self.tmp, "state")
+        os.makedirs(self.state, exist_ok=True)
+        self._old = os.environ.get("KIRO_STATE_HOME")
+        os.environ["KIRO_STATE_HOME"] = self.state
+        self.repo = _make_skill_repo(self.tmp)
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("KIRO_STATE_HOME", None)
+        else:
+            os.environ["KIRO_STATE_HOME"] = self._old
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _args(self, **kw):
+        base = dict(update_repo=self.repo, update_branch="main",
+                    update_subdir="tools/kiro-flow", update_installer="install.sh",
+                    update_check_interval=60.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def test_remote_branch_sha(self):
+        sha = kf.remote_branch_sha(self.repo, "main")
+        self.assertTrue(sha and len(sha) >= 7)
+        self.assertIsNone(kf.remote_branch_sha("", "main"))
+        self.assertIsNone(kf.remote_branch_sha(self.repo, "no-such-branch"))
+
+    def test_check_update_baseline_then_latest(self):
+        a = self._args()
+        info = kf.check_update(a)              # 初回: ベースライン記録・更新なし
+        self.assertTrue(info["enabled"])
+        self.assertTrue(info["baseline"])
+        self.assertFalse(info["available"])
+        info2 = kf.check_update(a)             # 2 回目: 最新
+        self.assertFalse(info2["baseline"])
+        self.assertFalse(info2["available"])
+
+    def test_check_update_detects_new_commit(self):
+        a = self._args()
+        kf.check_update(a)                     # ベースライン
+        _commit_change(self.repo, "tools/kiro-flow/NEW.txt")
+        self.assertTrue(kf.check_update(a)["available"])
+
+    def test_disabled_when_no_repo(self):
+        a = self._args(update_repo="")
+        self.assertFalse(kf.check_update(a)["enabled"])
+        self.assertFalse(kf.maybe_self_update(a, idle=True, state={"last": 0.0}))
+
+    def test_sparse_checkout_only_subdir(self):
+        dest = os.path.join(self.tmp, "co", "repo")
+        tool_dir = kf.sparse_checkout_tool(self.repo, "main", "tools/kiro-flow", dest)
+        self.assertTrue(os.path.isfile(os.path.join(tool_dir, "install.sh")))
+        # sparse: 無関係な tools/kiro-autonomous は作業ツリーに展開されない
+        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-autonomous")))
+
+    def test_run_installer(self):
+        dest = os.path.join(self.tmp, "co2", "repo")
+        tool_dir = kf.sparse_checkout_tool(self.repo, "main", "tools/kiro-flow", dest)
+        prefix = os.path.join(self.tmp, "prefix")
+        ok, out = kf.run_installer(tool_dir, "install.sh",
+                                   runner=lambda c, **k: subprocess.run(
+                                       c + ["--prefix", prefix], capture_output=True,
+                                       text=True, **k))
+        self.assertTrue(ok, out)
+        self.assertTrue(os.path.isfile(os.path.join(prefix, "INSTALLED_MARKER")))
+
+    def test_apply_update_records_sha(self):
+        a = self._args()
+        kf.check_update(a)                     # baseline
+        _commit_change(self.repo, "tools/kiro-flow/N2.txt")
+        info = kf.check_update(a)
+        self.assertTrue(info["available"])
+        prefix = os.path.join(self.tmp, "prefix2")
+
+        def runner(c, **k):                    # install.sh だけ --prefix を足す
+            cmd = c + ["--prefix", prefix] if c[:1] == ["bash"] else c
+            return subprocess.run(cmd, capture_output=True, text=True, **k)
+        self.assertTrue(kf.apply_update(a, info, runner=runner))
+        self.assertEqual(kf.read_update_state()["applied_sha"], info["remote_sha"])
+        self.assertFalse(kf.check_update(a)["available"])   # 適用後は最新
+
+    def test_maybe_self_update_interval_gate(self):
+        a = self._args(update_check_interval=3600.0, update_enabled=True)
+        st = {"last": time.time()}            # 直近にチェック済み → interval 内は何もしない
+        self.assertFalse(kf.maybe_self_update(a, idle=True, state=st))
+        # idle でなければチェックしない
+        self.assertFalse(kf.maybe_self_update(a, idle=False, state={"last": 0.0}))
+
+    def test_update_enabled_false_disables(self):
+        a = self._args(update_enabled=False, update_check_interval=3600.0)
+        self.assertFalse(kf.maybe_self_update(a, idle=True, state={"last": 0.0}))
+
+    def test_registry_auto_resolution(self):
+        # update_repo 未指定でも skill-registry.json から repo/branch を解決して検出できる
+        regdir = os.path.join(self.tmp, "agenthome")
+        os.makedirs(regdir, exist_ok=True)
+        pathlib.Path(regdir, "skill-registry.json").write_text(json.dumps({
+            "version": 7, "install_dir": self.tmp,
+            "repositories": [{"name": "origin", "url": self.repo,
+                              "branch": "main", "priority": 1}]}))
+        old = os.environ.get("KIRO_SKILL_REGISTRY")
+        os.environ["KIRO_SKILL_REGISTRY"] = regdir
+        try:
+            self.assertEqual(kf.registry_update_source()[0], self.repo)
+            a = self._args(update_repo="")     # 明示なし → registry から解決
+            info = kf.check_update(a)
+            self.assertTrue(info["enabled"])
+            self.assertEqual(info["repo"], self.repo)
+        finally:
+            if old is None:
+                os.environ.pop("KIRO_SKILL_REGISTRY", None)
+            else:
+                os.environ["KIRO_SKILL_REGISTRY"] = old
+
+    def test_explicit_repo_overrides_registry(self):
+        a = self._args(update_repo="/explicit/path", update_branch="dev")
+        self.assertEqual(kf.resolve_update_target(a), ("/explicit/path", "dev"))
 
 
 if __name__ == "__main__":
