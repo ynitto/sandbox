@@ -981,6 +981,10 @@ def instance_record(cfg: "Config") -> dict:
         "journal": str(cfg.journal.resolve()),
         "workdir": str(cfg.workdir.resolve()),
         "watch": cfg.watch,
+        # all-daemon の「all」センチネル（root=<container>/projects/all は実体の無い擬似フォルダで、
+        # start/stop/restart の重複検出・停止・再起動を効かせるためだけに登録する）。実プロジェクトの
+        # 監視レコードと区別し、instances で別フォルダの監視と誤認されないようにする目印。
+        "sentinel": cfg.project_name == "all",
         "started_at": time.time(),
         "started_iso": datetime.now().isoformat(timespec="seconds"),
         "heartbeat": time.time(),                               # 生存信号（リモート発見の鮮度判定に使う）
@@ -1095,6 +1099,10 @@ def cmd_instances(as_json: bool = False, extra: "list | str | None" = None) -> i
         flags = "watch" if r.get("watch") else "run"
         host = str(r.get("host", "?"))
         where = "" if host == me else f" @{host}(remote)"
+        if r.get("sentinel"):                          # 実フォルダの監視ではなく all-daemon の操作センチネル
+            print(f"pid={r['pid']} [{rt}] {flags} all-daemon{where}  "
+                  f"（全プロジェクトを1プロセスで監視。stop/restart 用センチネル: {r['root']}）")
+            continue
         print(f"pid={r['pid']} [{rt}] {flags}{where}  root={r['root']}")
         if r.get("root_windows"):
             print(f"    Windows: {r['root_windows']}")
@@ -3748,6 +3756,10 @@ def _run_single(cfg: Config) -> int:
 
 
 def cmd_run(cfg: Config) -> int:
+    # 起動時に死んだインスタンスのゴミレコードを掃除する。前回の異常終了（kill -9 / クラッシュ /
+    # マシン再起動）では finally が走らず *.json が残るため、自分を register する前に一掃して
+    # instances の発見ノイズと start の偽の重複検出を防ぐ（prune は自ホストの死レコードを即削除）。
+    list_instances(prune=True, extra=cfg.registry)
     if cfg.project_name == "all":                # 1 プロセスで全プロジェクトを回す（多重化）
         return cmd_run_all(cfg)
     ensure_dirs(cfg)
@@ -3860,8 +3872,10 @@ def cmd_run_all(cfg: Config) -> int:
                     else:
                         run_loop(c)
                     any_work = True
-                for paths in registered.values():
-                    refresh_instance(paths)
+            # heartbeat はラウンドに1回だけ更新する（内側 for に置くと登録数 N に対し N×(N+1) 回
+            # 書き込む無駄が出る。poll より十分長い ttl のためラウンド1回で生存判定は十分）。
+            for paths in registered.values():
+                refresh_instance(paths)
             if not any_work:                          # idle: どのプロジェクトにも仕事が無い
                 time.sleep(cfg.poll)
                 for paths in registered.values():

@@ -1657,6 +1657,34 @@ class TestInstances(unittest.TestCase):
         self.assertEqual(km.cmd_instances(as_json=True), 0)
         self.assertEqual(km.cmd_instances(as_json=False), 0)
 
+    def test_run_prunes_dead_garbage_on_invocation(self):
+        # 前回の異常終了で残った自ホストの死レコードは、run 起動時（register 前）に掃除される
+        d = km.instances_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        garbage = d / f"{km.socket.gethostname()}-999999999-projectA.json"
+        garbage.write_text(
+            '{"pid": 999999999, "host": "%s", "root": "/x/projects/projectA",'
+            ' "project": "projectA", "watch": true}' % km.socket.gethostname(),
+            encoding="utf-8")
+        with tempfile.TemporaryDirectory() as wd:
+            wd = Path(wd)
+            mkb(wd, "T1", title="x", verify="true")
+            km.main(["run", "--workdir", str(wd), "--root", str(wd / ".ka"),
+                     "--planner", "none", "--flow-planner", "stub",
+                     "--executor", "stub", "--dry-run"])
+        self.assertFalse(garbage.exists())             # 起動時に掃除済み
+
+    def test_all_sentinel_is_marked(self):
+        # all-daemon の「all」センチネルは実フォルダ監視と区別する目印（sentinel=True）を持つ
+        with tempfile.TemporaryDirectory() as d:
+            proot = Path(d) / ".ka" / "projects" / "all"
+            rec = km.instance_record(cfg_for(proot, project_name="all"))
+            self.assertTrue(rec["sentinel"])
+            # 実プロジェクトのレコードはセンチネルではない
+            rec2 = km.instance_record(cfg_for(Path(d) / ".ka" / "projects" / "projectA",
+                                              project_name="projectA"))
+            self.assertFalse(rec2["sentinel"])
+
 
 class TestRemoteDiscovery(unittest.TestCase):
     """共有レジストリ越しの別ホスト発見（§11-7）。core はファイル操作のみ・ネットワーク非依存を保つ。"""

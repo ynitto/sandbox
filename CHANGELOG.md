@@ -20,6 +20,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   同じバスに対して `kiro-flow doctor --json` を呼び、実行層の所見を `[flow]` 印で統合する。`--fix` 時は
   kiro-flow 側にも委譲し、kiro-flow が自分の env/config 修正と program 起票を担う（二重作業を避ける）。
 
+#### Changed
+- `run` 起動時に、前回の異常終了（`kill -9` / クラッシュ / マシン再起動で `finally` が走らず残った）
+  自ホストの死インスタンスレコードを register 前に prune するようにした。`instances` の発見ノイズと
+  `start` の偽の重複検出を防ぐ。
+- all-daemon の「all」センチネル（実体の無い擬似 root `<container>/projects/all`）を `instances` で
+  `all-daemon` 印（`sentinel` フラグ）として表示し、実プロジェクトの監視レコードと明確に区別するように
+  した。`projectA/default` 等は実プロジェクトの監視として従来どおり全件表示する。
+
+#### Fixed
+- all-daemon の watch ループで heartbeat をラウンド毎に1回だけ更新するよう修正（従来は内側ループに
+  あり、登録数 N に対し毎ラウンド N×(N+1) 回の無駄なファイル書き込みが発生していた）。
+
 ### kiro-flow
 
 #### Added
