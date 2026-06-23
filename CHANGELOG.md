@@ -31,6 +31,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - all-daemon の「all」センチネル（実体の無い擬似 root `<container>/projects/all`）を `instances` で
   `all-daemon` 印（`sentinel` フラグ）として表示し、実プロジェクトの監視レコードと明確に区別するように
   した。`projectA/default` 等は実プロジェクトの監視として従来どおり全件表示する。
+- バスを明示設定（CLI `--bus` / 設定 `bus:`）したときは **`--project all` でも per-project バスへ上書きせず、
+  全プロジェクトでその共有バスを使う**ようにした。従来は `--project all` が常に `<root>/projects/<name>/bus` へ
+  上書きしていたため、別途常駐させた**単一の kiro-flow daemon を全プロジェクトから検知できなかった**
+  （`location=auto/daemon` が常に local へフォールバック）。共有バスにすると同じ daemon ロックを全プロジェクトで
+  参照でき、kiro-flow daemon を同じ bus で起動すれば warm worker を共有・再利用できる（submit の run_id は
+  一意採番のため衝突しない）。example / README にも設定方法を追記。
 
 #### Fixed
 - all-daemon の watch ループで heartbeat をラウンド毎に1回だけ更新するよう修正（従来は内側ループに

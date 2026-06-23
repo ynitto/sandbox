@@ -2223,6 +2223,10 @@ class Config:
     needs: Path        # ディレクトリ（案件毎）
     workdir: Path
     bus: Path
+    # bus を明示設定（CLI --bus / 設定 bus:）したか。True なら `--project all` でも全プロジェクトで
+    # この共有バスを使う（per-project バスへ上書きしない）。単一の kiro-flow daemon を全プロジェクトで
+    # 共有・検知できるようにするため。未設定（False）なら従来どおりプロジェクト毎の bus を使う。
+    shared_bus: bool = False
     git_bus: "str | None" = None
     git_branch: str = "main"
     git_subdir: "str | None" = None
@@ -3810,11 +3814,15 @@ def project_dir_names(cfg: "Config") -> "list[str]":
 def project_cfg(cfg: "Config", name: str) -> "Config":
     """同コンテナ配下の特定プロジェクト用に per-project パスを差し替えた Config を作る。"""
     proot = container_dir(cfg) / "projects" / _project_dirname(name)
+    # bus を明示設定（共有バス）しているときは per-project へ上書きせず全プロジェクトで共有する。
+    # これで単一の kiro-flow daemon を全プロジェクトから検知・利用できる（kiro-flow の run_id は
+    # submit ごとに一意採番されるためプロジェクト間で衝突しない）。未設定なら従来どおり per-project bus。
+    bus = cfg.bus if cfg.shared_bus else proot / "bus"
     return replace(cfg, project_name=_project_dirname(name),
                    backlog=proot / "backlog", needs=proot / "needs", decisions=proot / "decisions",
                    archive=proot / "archive", policy=proot / "policy.md", journal=proot / "journal.md",
                    delivery=proot / "DELIVERY.md", runlog=proot / "run-log.jsonl",
-                   inbox=proot / "inbox", bus=proot / "bus", charter=proot / "charter.md")
+                   inbox=proot / "inbox", bus=bus, charter=proot / "charter.md")
 
 
 def _project_has_work(cfg: "Config") -> bool:
@@ -4581,6 +4589,8 @@ def build_config(args) -> Config:
         needs=under("needs", "needs"),
         workdir=workdir,
         bus=under("bus", "bus"),
+        # bus を明示指定（CLI/設定）したら共有バス扱い: `--project all` でも per-project へ上書きしない
+        shared_bus=bool(getattr(args, "bus", None)),
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
