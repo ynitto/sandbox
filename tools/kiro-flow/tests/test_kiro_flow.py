@@ -522,6 +522,48 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertEqual(gl_plugin._as_float(None, 30.0), 30.0)
         self.assertEqual(gl_plugin._as_float("bad", 30.0), 30.0)
 
+    def test_repo_url_passed_to_run_gl(self):
+        # repo_url を設定すると各 run_gl 呼び出しに repo_url が渡る（gl.py へ GL_PROJECT_URL）
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
+            dict(self._cfg, repo_url="https://gitlab.com/group/repo"))
+
+        def side(subargs, *a, **k):
+            cmd = subargs[0]
+            if cmd == "create-issue":
+                return {"iid": 9, "web_url": "https://gl/x/9"}
+            if cmd == "get-issue":
+                return {"labels": ["status:approved"], "state": "opened"}
+            if cmd == "get-comments":
+                return []
+            return {}
+
+        _, _, m = self._run_with(side)
+        for call in m.call_args_list:
+            self.assertEqual(call.kwargs.get("repo_url"), "https://gitlab.com/group/repo")
+
+    def test_repo_url_default_empty(self):
+        self.assertEqual(gl_plugin._config()["repo_url"], "")
+
+    def test_run_gl_sets_gl_project_url_env(self):
+        # repo_url 指定時、gl.py 起動の env に GL_PROJECT_URL が入ること
+        captured = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        def fake_run(cmd, *a, **k):
+            captured["env"] = k.get("env", {})
+            return _Proc()
+
+        with mock.patch.object(gl_plugin, "_find_gl_script", return_value="/fake/gl.py"), \
+             mock.patch.object(gl_plugin.subprocess, "run", side_effect=fake_run):
+            gl_plugin.run_gl(["project-info"], "default",
+                             repo_url="https://gitlab.com/group/repo")
+        self.assertEqual(captured["env"].get("GL_PROJECT_URL"),
+                         "https://gitlab.com/group/repo")
+
     def test_env_override_beats_config_block(self):
         # 個別環境変数 KIRO_FLOW_GITLAB_* が KIRO_FLOW_EXECUTOR_CONFIG より優先される
         os.environ["KIRO_FLOW_GITLAB_CONN_LABEL"] = "work"

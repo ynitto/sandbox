@@ -122,6 +122,9 @@ worker タスク ──▶ gl.py create-issue（status:open,assignee:any ＋ pri
   GitLab へ委譲するのは**ワーカータスクの実行**だけ。
 - **設定**：ポーリング間隔・タイムアウト・付与ラベルは設定ファイルの `gitlab:` ブロックで調整する
   （[`kiro-flow.yaml.example`](kiro-flow.yaml.example) 参照）。`timeout` を `0` にすると無限待ち。
+- **委譲先リポジトリ**：`gitlab:` ブロックの `repo_url` で委譲先の GitLab プロジェクト URL を明示できる。
+  空の場合は `conn_label` の接続（`connections.yaml`）か、無ければ作業ディレクトリの `git remote origin`
+  から解決する。手元とは別のリポジトリへ委譲したいときに指定する。
 
 ```bash
 # 例: タスクを GitLab に委譲して承認まで待つ（要 gitlab-idd 接続設定）

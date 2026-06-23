@@ -138,6 +138,7 @@ CONFIG_DEFAULTS = {
     # status:approved ラベルが付く（レビュー承認）まで get-issue でポーリングし完了とみなす。
     "gitlab": {
         "conn_label": "default",            # connections.yaml の接続ラベル（gitlab-idd と共通）
+        "repo_url": "",                     # 委譲先リポジトリ URL（空なら接続/ git origin から解決）
         "labels": "status:open,assignee:any",  # 起票するイシューに付ける初期ラベル
         "priority": "priority:normal",      # 付与する優先度ラベル（空文字で付けない）
         "poll_interval": 30.0,              # イシューのポーリング間隔（秒）
