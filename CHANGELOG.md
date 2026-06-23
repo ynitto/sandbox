@@ -127,6 +127,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   遡れないよう多重防御した。
 
 #### Changed
+- 内部リファクタリング（振る舞い不変・全機能維持・144 テスト green）。kiro-autonomous と同様に、
+  パッチ的に重複した実装を整理: 子プロセス argv 構築を `_child_base()` に統一（`cmd_run`/`cmd_daemon` の重複解消）、
+  モード表記を `_mode_string()` に集約、daemon の singleton ロック取得を `_acquire_daemon_lock()`・
+  orchestrator/worker 起動を `_spawn_orchestrator()`/`_spawn_worker()` に分割、`cmd_orchestrate` の統合処理を
+  `_finalize_run()` に分割。CLI・出力・挙動は不変（argparse は `--model`/`--model_opt` 等の差があるため共通化せず温存）。
 - `install.sh` の executor プラグイン配置先を **本体（kiro-flow バイナリ）と同じフォルダ**
   （`<install-prefix>/executors/`、既定 `~/.local/bin/executors/`）に変更（旧: `~/.kiro/kiro-flow/executors/`）。
   kiro-loop と同じ「本体隣」の補助アセット配置に揃え、検索順 #1「スクリプト同階層の `executors/`」で
