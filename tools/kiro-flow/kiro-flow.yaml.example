@@ -83,6 +83,8 @@ lease: 1800                # claim のリース秒数。実タスク時間より
 #   - $TMPDIR/kiro-flow-locks/ の未使用ロック（lease の 2 倍以上アイドルで未保持のもの）
 #   - <path>.tmp.<pid> の中間ファイル残骸（プロセス crash 由来）
 #   - git モードのノード別クローン（run 終了後に孤立し、cleanup_age 時間アイドルのもの）
+#   - 成果物リポジトリの孤立 temp clone（$TMPDIR/kiro-flow-repos-<pid>-…。SIGKILL/OOM 等で
+#     finally が走らず残ったもの。所有 pid の死亡＋cleanup_age 経過で回収）
 cleanup_interval: 3600     # 掃除の実行間隔（秒）。0 以下で無効化（--no-cleanup 相当）
 cleanup_age: 24            # 孤立クローンを掃除するまでのアイドル時間（時間）
 
@@ -91,6 +93,11 @@ cleanup_age: 24            # 孤立クローンを掃除するまでのアイド
 # false にすると次回起動で再利用するため残す（フル再クローンを避け高速化）。
 # CLI では --keep-clone で false 相当（作業後も残す）。
 cleanup_clone: true
+
+# 成果物リポジトリ（--repo）の clone を「各ノード完了/失敗ごと」に即削除する。既定は worker
+# プロセス終了時に一括削除。長命 worker（--keep-alive）でディスク積み上がりを抑えたいとき true。
+# trade-off: 同じ repo を次ノードで再 clone するコスト。CLI では --cleanup-per-node。
+cleanup_per_node: false
 
 # ---------------------------------------------------------------------------
 # gitlab ワーカーバス（opt-in / executor プラグイン executors/gitlab.py）
