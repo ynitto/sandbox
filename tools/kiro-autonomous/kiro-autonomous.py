@@ -3234,11 +3234,11 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
             "evidence": (f"planner={cfg.planner} executor={cfg.executor} "
                          f"auto_adjudicate={cfg.auto_adjudicate} は kiro-cli を要求する"),
             "fix": "kiro-cli をインストールして PATH を通す（暫定回避は --planner none / --executor stub）"})
-    if cfg.executor == "kiro" and not (cfg.kiro_flow or which("kiro-flow")):
+    if cfg.executor != "stub" and not (cfg.kiro_flow or which("kiro-flow")):
         findings.append({
             "category": "env", "severity": "warn",
             "title": "kiro-flow が見つからない（PATH / --kiro-flow / 同梱のいずれにも無い）",
-            "evidence": "act(local run) の委譲先 kiro-flow を解決できない",
+            "evidence": f"act(local run) の委譲先 kiro-flow を解決できない（executor={cfg.executor}）",
             "fix": "kiro-flow を PATH に置くか --kiro-flow で実体を指定する"})
     if not which("git"):
         findings.append({
@@ -4663,7 +4663,9 @@ def _add_common(sp):
                     choices=["flow-planner", "kiro", "stub"], help="kiro-flow run に渡す planner（既定 flow-planner）")
     sp.add_argument("--location", default=None,
                     choices=["auto", "local", "daemon", "remote"], help="act の実行モード（既定 auto）")
-    sp.add_argument("--executor", default=None, choices=["kiro", "stub"], help="（既定 kiro）")
+    sp.add_argument("--executor", default=None,
+                    help="act の実体（kiro-flow run へ委譲）。組み込み kiro / stub、または kiro-flow の "
+                         "executor プラグイン名（例 gitlab）/ .py パスを指定できる（既定 kiro）")
     sp.add_argument("--model", default=None)
     sp.add_argument("--max-iterations", type=int, default=None)
     sp.add_argument("--max-cycles", type=int, default=None, help="予算: サイクル数（既定 20）")

@@ -2420,6 +2420,28 @@ class TestProjectLayer(unittest.TestCase):
             # repos の無いタスクは --repo を付けない（必要なものだけ）
             self.assertNotIn("--repo", km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg))
 
+    def test_plugin_executor_forwarded_to_kiro_flow(self):
+        # executor に kiro-flow プラグイン名/パスを指定すると、そのまま kiro-flow run へ委譲される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, executor="gitlab")
+            cmd = km.build_kiro_flow_cmd(km.Task(id="T1", title="x", verify="true"), cfg)
+            i = cmd.index("--executor")
+            self.assertEqual(cmd[i + 1], "gitlab")
+            cfg2 = cfg_for(d, executor="/path/to/my_executor.py")
+            cmd2 = km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg2)
+            self.assertEqual(cmd2[cmd2.index("--executor") + 1], "/path/to/my_executor.py")
+
+    def test_cli_accepts_plugin_executor(self):
+        # CLI の --executor は choices で縛らず、プラグイン名をそのまま受理する（dry-run で act はしない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(Path(d), "T1", title="x", verify="true")
+            rc = km.main(["run", "--workdir", str(d), "--root", str(Path(d) / ".ka"),
+                          "--planner", "none", "--flow-planner", "stub",
+                          "--executor", "gitlab", "--dry-run"])
+            self.assertEqual(rc, 0)
+
     def test_repos_spec_roundtrips_to_task(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

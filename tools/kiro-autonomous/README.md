@@ -130,6 +130,15 @@ kiro-flow --bus .kiro-autonomous-bus daemon --workers 3 &       # warm worker
 kiro-autonomous run --location daemon --concurrency 3 --executor kiro
 ```
 
+**executor プラグイン**: `--executor`（設定 `executor`）には組み込みの `kiro` / `stub` に加えて、
+kiro-flow の executor プラグイン名（例 `gitlab`）や `.py` パスをそのまま渡せる。値は `kiro-flow run --executor <値>`
+へ委譲され、プラグイン固有設定は kiro-flow 側の設定（例 `gitlab:` ブロック）で行う。
+
+```bash
+kiro-autonomous run --executor gitlab               # 各タスクを GitLab イシュー化し approved まで待つ
+kiro-autonomous run --executor /path/to/my_exec.py  # 任意の executor プラグイン（.py パス）
+```
+
 ## 検証ゲートと安全（done を守る）
 
 verify は done 確定の唯一の根拠だが機械的合否でしかない。以下のゲートが多層で守る（既定はいずれも最小限）。
