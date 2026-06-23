@@ -76,6 +76,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `result` コマンドでも一覧できる。
 
 #### Fixed
+- gitlab executor プラグインで、イシューの起票先が設定 `gitlab.repo_url` にならず git remote origin に
+  フォールバックする不具合を修正。`run`/`daemon` が子プロセス（orchestrator/worker）へ **`--config` を
+  引き継いでいなかった**ため、実際に `execute()` を呼ぶ worker が `gitlab:` ブロック（`repo_url` 含む）を
+  再解決できず既定（空）になっていた。親が解決した設定パスを絶対パスで全子プロセスへ伝搬するようにした
+  （プラグイン固有設定全般に効く）。
 - judge/評価役のサーキットブレーカー。同一系統の作り直し（verify=fail の再生成・
   失敗タスクの retry）が `--max-retries`（設定 `max_retries`, 既定 3）に達したら
   打ち切る。達成不可能な完了条件に対し無限に再タスクを積み続ける暴走を防ぐ
