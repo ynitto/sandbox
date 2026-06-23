@@ -17,6 +17,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - クロスツール統合テスト（`TestCliKiroFlowDelegation`）。autonomous CLI の act が実際に `kiro-flow.py` へ
   サブプロセス委譲して完走することを検証する。`--kiro-flow` にラッパを噛ませ、委譲 argv
   （`run --planner stub --executor stub …`）と委譲先 kiro-flow の正常終了（exit 0）を捕捉して assert する。
+- GUIDE に「おすすめ構成（本番）」セクションを追加。**PC 起動時に両 daemon 常駐 ／ executor=gitlab ／
+  bus=git** の完成形レシピ（kiro-flow.yaml / kiro-autonomous.yaml の雛形、systemd ユーザーサービス 2 本、
+  `lock_dir` 一致・git 認証・`~/.kiro/` 自動探索の勘所、稼働確認コマンド）。L0–L4 を通した後の到達点を明示する。
 - `--executor`（設定 `executor`）に kiro-flow の executor プラグインを指定できるようにした。組み込みの
   `kiro` / `stub` に加え、プラグイン名（例 `gitlab`）や `.py` パスをそのまま `kiro-flow run --executor <値>`
   へ委譲する（`choices` 制限を撤廃）。`kiro-autonomous.yaml.example` / README にも記載。`doctor` の
