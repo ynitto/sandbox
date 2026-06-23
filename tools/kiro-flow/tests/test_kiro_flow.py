@@ -1022,6 +1022,80 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(out["final_nodes"][0]["output"])
 
 
+class DaemonE2ETests(unittest.TestCase):
+    """実 daemon プロセスが submit を拾い、orchestrator/worker をオンデマンド起動して run を完走させる黒箱 e2e。
+
+    DaemonPrimitiveTests が bus プリミティブ（submit/claim/inbox）を in-process で検証するのに対し、
+    こちらは `daemon` を実プロセスとして常駐させ、`submit` 投入 → final.json 生成まで通す。"""
+
+    def setUp(self):
+        self.bus = tempfile.mkdtemp(prefix="kf-daemon-e2e-")
+        self.daemon = None
+
+    def tearDown(self):
+        if self.daemon and self.daemon.poll() is None:
+            self.daemon.terminate()
+            try:
+                self.daemon.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.daemon.kill()
+                self.daemon.wait(timeout=5)
+        if self.daemon:
+            for s in (self.daemon.stdout, self.daemon.stderr):
+                if s:
+                    s.close()
+        shutil.rmtree(self.bus, ignore_errors=True)
+
+    def _start_daemon(self):
+        self.daemon = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "--bus", self.bus, "daemon",
+             "--max-workers", "3", "--planner", "stub", "--executor", "stub",
+             "--poll", "0.2", "--no-cleanup"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _submit(self, request):
+        p = subprocess.run([sys.executable, str(SCRIPT), "--bus", self.bus, "submit", request],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        return p.stdout.strip().splitlines()[0]   # submit は run-id を標準出力の先頭に出す
+
+    def _wait_final(self, run_id, timeout=90):
+        final = os.path.join(self.bus, "runs", run_id, "final.json")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.daemon.poll() is not None:    # daemon が落ちたら即座に失敗（無駄に待たない）
+                _, err = self.daemon.communicate()
+                self.fail(f"daemon が早期終了 rc={self.daemon.returncode}\n{(err or b'').decode()[-800:]}")
+            data = kf.read_json(final) if os.path.exists(final) else None
+            if data:                              # final.json は atomic write なので存在＝完成
+                return data
+            time.sleep(0.3)
+        self.fail(f"final.json がタイムアウト({timeout}s)内に現れず: {run_id}")
+
+    def test_daemon_picks_up_submit_and_completes(self):
+        self._start_daemon()
+        run_id = self._submit("x; y; z")
+        final = self._wait_final(run_id)
+        results = final["results"]
+        # daemon → orchestrator → worker で fan-out-and-synthesize が完走（並列ノード + 統合）
+        self.assertGreaterEqual(len(results), 4)
+        self.assertIn("synth", results)
+        for nid, r in results.items():
+            self.assertEqual(r["status"], "done", f"{nid}: {r}")
+            self.assertTrue(r["who"])             # worker が実行した
+
+    def test_daemon_completes_multiple_submits(self):
+        # 1 デーモンが複数要求を並行に受理し、それぞれ独立 run として完走させる
+        self._start_daemon()
+        r1 = self._submit("a; b")
+        r2 = self._submit("c; d")
+        for run_id in (r1, r2):
+            final = self._wait_final(run_id)
+            self.assertIn("synth", final["results"])
+            for nid, r in final["results"].items():
+                self.assertEqual(r["status"], "done", f"{run_id}/{nid}: {r}")
+
+
 class FinalResultNodeTests(unittest.TestCase):
     def test_prefers_aggregation_sink(self):
         nodes = {

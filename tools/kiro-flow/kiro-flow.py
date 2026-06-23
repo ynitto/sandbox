@@ -1890,6 +1890,26 @@ def _sanitize_graph(nodes: dict) -> dict:
     return nodes
 
 
+def _finalize_run(bus, args, iteration: int) -> None:
+    """全ノードの結果を集約して final.json を書き出し、run を done にして push・ログ出力する。"""
+    results = {nid: (bus.read_result(nid) or {}) for nid in bus.task_ids()}
+    summary = "\n".join(
+        f"- {nid} [{r.get('status')}]: {str(r.get('output',''))[:200]}"
+        for nid, r in results.items())
+    write_json_atomic(bus.final_path, {
+        "request": args.request,
+        "finished_at": now_iso(),
+        "iterations": iteration,
+        "strategy": (bus.read_graph() or {}).get("strategy", {}),
+        "summary": summary,
+        "results": results,
+    })
+    bus.set_status("done")
+    bus.sync_push(f"finalize run {args.run_id}")
+    log(args.node_id, f"完了（iteration={iteration}）。final.json を書き出しました。")
+    log(args.node_id, "結果サマリ:\n" + summary)
+
+
 def cmd_orchestrate(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
@@ -1963,24 +1983,7 @@ def cmd_orchestrate(args) -> int:
             continue
         break
 
-    # 統合
-    results = {nid: (bus.read_result(nid) or {}) for nid in bus.task_ids()}
-    summary = "\n".join(
-        f"- {nid} [{r.get('status')}]: {str(r.get('output',''))[:200]}"
-        for nid, r in results.items()
-    )
-    write_json_atomic(bus.final_path, {
-        "request": args.request,
-        "finished_at": now_iso(),
-        "iterations": iteration,
-        "strategy": (bus.read_graph() or {}).get("strategy", {}),
-        "summary": summary,
-        "results": results,
-    })
-    bus.set_status("done")
-    bus.sync_push(f"finalize run {args.run_id}")
-    log(who, f"完了（iteration={iteration}）。final.json を書き出しました。")
-    log(who, "結果サマリ:\n" + summary)
+    _finalize_run(bus, args, iteration)   # 全ノード結果を集約 → final.json 書き出し → done/push
     return 0
 
 
@@ -2094,6 +2097,72 @@ def cmd_work(args) -> int:
 # --------------------------------------------------------------------------
 # run — 単発実行。既存 run-id なら再開、無ければ新規（状態で自動判断）
 # --------------------------------------------------------------------------
+def _mode_string(args, bus: str) -> str:
+    """ログ用のモード表記。git バスなら `git:<repo>@<branch>`、ローカルなら `local:<bus>`。"""
+    return f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus}"
+
+
+def _child_base(args, bus_abs: str) -> list:
+    """子プロセス（orchestrator/worker）へ引き継ぐ共通先頭 argv（バス・lease・設定・git・keep-clone）。
+    グローバル引数のみ。run_id / repos / granularity 等はサブコマンド毎に呼び出し側で付け足す。"""
+    base = [sys.executable, self_path(), "--bus", bus_abs, "--lease", str(args.lease)]
+    cfg_path = getattr(args, "_config_path", None)
+    if cfg_path:
+        # 設定（executor プラグインの gitlab: ブロック等）を子へ伝搬。子は cwd が異なりうるので絶対パスで渡す。
+        base += ["--config", os.path.abspath(cfg_path)]
+    if args.git:
+        base += ["--git", args.git, "--git-branch", args.git_branch, "--git-subdir", args.git_subdir or ""]
+    if not getattr(args, "cleanup_clone", True):
+        base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
+    return base
+
+
+def _acquire_daemon_lock(args):
+    """daemon singleton ロックを取得して pid を記録し、lock_file を返す。既に保持中なら None。
+    pid は flock の有無に関わらず記録する（flock 非対応環境でも pid 生存で発見できるように）。"""
+    lock_path = _daemon_lock_path(args)
+    # 既存ホルダの pid を消さないよう truncate せず開く（flock 取得後にだけ書く）
+    lock_file = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
+    if fcntl is not None:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_file.close()
+            return None
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
+def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
+    """要求 req を担当する orchestrator を base argv から起動する（daemon のオンデマンド起動）。"""
+    repo_args = []
+    for r in (req.get("repos") or []):   # 要求に紐づく成果物リポジトリを run meta へ載せる
+        repo_args += ["--repo", r]
+    return subprocess.Popen(base + repo_args + [
+        "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
+        *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
+        "--run-id", req_id, "orchestrate", "--request", req["request"],
+        "--planner", args.planner, "--executor", args.executor,
+        "--max-iterations", str(args.max_iterations),
+        "--max-fanout", str(args.max_fanout),
+        "--max-retries", str(args.max_retries),
+        "--model_opt", args.model or "", "--poll", str(args.poll),
+        "--node-id", f"orchestrator-{req_id}",
+    ])
+
+
+def _spawn_worker(base: list, args, rid: str, wid: str):
+    """run rid のワーカーを1つ base argv から起動する（idle-exit のオンデマンド worker）。"""
+    return subprocess.Popen(base + [
+        "--run-id", rid, "work", "--node-id", wid,
+        "--executor", args.executor, "--model_opt", args.model or "",
+        "--poll", str(args.poll), "--idle-exit",
+    ])
+
+
 def cmd_run(args) -> int:
     probe = make_bus(args, "run")
     probe.sync_pull()
@@ -2111,24 +2180,14 @@ def cmd_run(args) -> int:
     run_id = args.run_id
 
     bus_root = os.path.abspath(args.bus)
-    me = self_path()
-    # グローバル引数（バス・転送）を子プロセスへ引き継ぐ
-    base = [sys.executable, me, "--bus", bus_root, "--run-id", run_id, "--lease", str(args.lease)]
-    cfg_path = getattr(args, "_config_path", None)
-    if cfg_path:
-        # 設定（executor プラグインの gitlab: ブロック等）を子へ伝搬。子は cwd が異なりうるので絶対パスで渡す。
-        base += ["--config", os.path.abspath(cfg_path)]
-    if args.git:
-        base += ["--git", args.git, "--git-branch", args.git_branch,
-                 "--git-subdir", args.git_subdir or ""]
-    if not getattr(args, "cleanup_clone", True):
-        base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
+    # グローバル引数（バス・転送・run_id・成果物リポジトリ・分解粒度）を子プロセスへ引き継ぐ
+    base = _child_base(args, bus_root) + ["--run-id", run_id]
     for r in (getattr(args, "repos", None) or []):
         base += ["--repo", r]     # 成果物リポジトリを orchestrator/worker へ伝搬
     base += ["--granularity", str(getattr(args, "granularity", "finest") or "finest")]  # 分解粒度
     if getattr(args, "exemplar_first", False):
         base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
-    mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{bus_root}"
+    mode = _mode_string(args, bus_root)
 
     procs = []
     orch = subprocess.Popen(base + [
@@ -2235,37 +2294,16 @@ def _daemon_lock_path(args) -> str:
 
 def cmd_daemon(args) -> int:
     # 冪等化: 同一バスのデーモンが既に稼働していれば何もしない（多重起動しない）
-    lock_path = _daemon_lock_path(args)
-    # 既存ホルダの pid を消さないよう truncate せず開く（flock 取得後にだけ書く）
-    lock_file = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
-    if fcntl is not None:
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            mode0 = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.realpath(args.bus)}"
-            print(f">>> kiro-flow daemon は既に稼働中です（{mode0}）。起動をスキップします。", flush=True)
-            lock_file.close()
-            return 0
-    # pid は flock の有無に関わらず記録する（flock 非対応環境でも pid 生存で発見できるように）
-    lock_file.seek(0)
-    lock_file.truncate()
-    lock_file.write(str(os.getpid()))
-    lock_file.flush()
+    lock_file = _acquire_daemon_lock(args)
+    if lock_file is None:
+        print(f">>> kiro-flow daemon は既に稼働中です（{_mode_string(args, os.path.realpath(args.bus))}）。"
+              "起動をスキップします。", flush=True)
+        return 0
 
     daemon_id = args.node_id or f"{socket.gethostname()}-{os.getpid()}"
     bus = make_bus(args, f"daemon-{_safe(daemon_id)}")
-    me = self_path()
-    base = [sys.executable, me, "--bus", os.path.abspath(args.bus), "--lease", str(args.lease)]
-    cfg_path = getattr(args, "_config_path", None)
-    if cfg_path:
-        # 設定（executor プラグインの gitlab: ブロック等）を子へ伝搬。子は cwd が異なりうるので絶対パスで渡す。
-        base += ["--config", os.path.abspath(cfg_path)]
-    if args.git:
-        base += ["--git", args.git, "--git-branch", args.git_branch,
-                 "--git-subdir", args.git_subdir or ""]
-    if not getattr(args, "cleanup_clone", True):
-        base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
-    mode = f"git:{args.git}@{args.git_branch}" if args.git else f"local:{os.path.abspath(args.bus)}"
+    base = _child_base(args, os.path.abspath(args.bus))
+    mode = _mode_string(args, os.path.abspath(args.bus))
 
     orchestrators = {}   # run_id -> Popen
     workers = []         # list of (run_id, Popen)
@@ -2310,21 +2348,7 @@ def cmd_daemon(args) -> int:
             if not req:
                 continue
             if bus.claim_request(req_id, daemon_id, args.lease):
-                repo_args = []
-                for r in (req.get("repos") or []):   # 要求に紐づく成果物リポジトリを run meta へ載せる
-                    repo_args += ["--repo", r]
-                p = subprocess.Popen(base + repo_args + [
-                    "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
-                    *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
-                    "--run-id", req_id, "orchestrate", "--request", req["request"],
-                    "--planner", args.planner, "--executor", args.executor,
-                    "--max-iterations", str(args.max_iterations),
-                    "--max-fanout", str(args.max_fanout),
-                    "--max-retries", str(args.max_retries),
-                    "--model_opt", args.model or "", "--poll", str(args.poll),
-                    "--node-id", f"orchestrator-{req_id}",
-                ])
-                orchestrators[req_id] = p
+                orchestrators[req_id] = _spawn_orchestrator(base, args, req_id, req)
                 log(daemon_id, f"要求 {req_id} を受理 → orchestrator 起動: {req['request'][:50]}")
 
         # 2) claim 可能タスク量に応じてワーカーをオンデマンド起動
@@ -2338,12 +2362,7 @@ def cmd_daemon(args) -> int:
             while have < want and len(workers) < args.max_workers:
                 wcounter += 1
                 wid = f"{daemon_id}-w{wcounter}"
-                p = subprocess.Popen(base + [
-                    "--run-id", rid, "work", "--node-id", wid,
-                    "--executor", args.executor, "--model_opt", args.model or "",
-                    "--poll", str(args.poll), "--idle-exit",
-                ])
-                workers.append((rid, p))
+                workers.append((rid, _spawn_worker(base, args, rid, wid)))
                 have += 1
                 log(daemon_id, f"ワーカー起動: {wid} → run {rid}（claim可能={want}）")
 
