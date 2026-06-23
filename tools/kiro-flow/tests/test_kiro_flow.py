@@ -24,6 +24,13 @@ SCRIPT = HERE.parent / "kiro-flow.py"
 # stub の擬似実行スリープを無効化してテストを高速化（子プロセスにも継承される）
 os.environ["KIRO_FLOW_STUB_SLEEP_MAX"] = "0"
 
+# テストの git コミットを環境のコミット署名設定（commit.gpgsign）から切り離す。
+# 署名が有効な環境では署名が間欠的に失敗して `git commit` がコミットを作らず、git バス系の
+# テストが偶発的に落ちる。GIT_CONFIG_* で commit.gpgsign=false を上乗せして決定的にする。
+os.environ["GIT_CONFIG_COUNT"] = "1"
+os.environ["GIT_CONFIG_KEY_0"] = "commit.gpgsign"
+os.environ["GIT_CONFIG_VALUE_0"] = "false"
+
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("kiroflow", SCRIPT)
@@ -1399,6 +1406,131 @@ class CircuitBreakerTests(unittest.TestCase):
         self.assertEqual(decision, "done")
         self.assertEqual(new, [])
         self.assertIn("サーキットブレーカー", reason)
+
+
+class _Args:
+    """doctor の決定的チェック/シグナル/cmd が読む args の最小スタブ。"""
+    def __init__(self, bus, **kw):
+        self.bus = bus
+        self.run_id = None
+        self.git = None
+        self.git_branch = "main"
+        self.git_subdir = ""
+        self.model = None
+        self.executor = "stub"     # 既定は stub（kiro-cli を要求しない）
+        self.planner = "stub"
+        self.max_iterations = 3
+        self.max_retries = 3
+        self.lease = 1800.0
+        self.argv_limit = 100000
+        self.fix = False
+        self.json = False
+        self.cleanup_clone = True
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+class DoctorTests(unittest.TestCase):
+    """kiro-flow の稼働診断（doctor）: env/config チェック・シグナル・修正・分類・連携用 JSON。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-doc-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_env_findings_kiro_cli_and_finite_stop(self):
+        args = _Args(os.path.join(self.tmp, "bus"), executor="kiro",
+                     max_iterations=0, lease=0)
+        fs = kf.doctor_env_findings(args, which=lambda _n: None)
+        ids = {f["title"]: f for f in fs}
+        self.assertTrue(any("kiro-cli" in t for t in ids))          # executor=kiro → env critical
+        self.assertTrue(any("max_iterations" in t for t in ids))    # ≤0 → config critical
+        self.assertTrue(any("リース" in t for t in ids))             # lease≤0 → config warn
+        # バス未作成は ensure-bus アクション付き
+        bus = next(f for f in fs if f.get("fix_action") == "ensure-bus")
+        self.assertEqual(bus["category"], "config")
+
+    def test_env_findings_clean_when_ready(self):
+        bus = os.path.join(self.tmp, "bus")
+        os.makedirs(bus)
+        args = _Args(bus)                                            # executor=stub・正の閾値
+        fs = kf.doctor_env_findings(args, which=lambda n: "/usr/bin/" + n)
+        self.assertEqual(fs, [])                                     # 所見なし
+
+    def test_apply_fix_ensure_bus(self):
+        bus = os.path.join(self.tmp, "bus")
+        args = _Args(bus)
+        msg = kf.apply_doctor_fix(args, {"fix_action": "ensure-bus"})
+        self.assertTrue(os.path.isdir(bus))
+        self.assertIn("作成", msg)
+
+    def test_signals_flag_stuck_and_failed_runs(self):
+        bus_root = os.path.join(self.tmp, "bus")
+        b = kf.Bus(bus_root, "runOld")
+        b.ensure_run("古い要求")
+        b.write_graph({"nodes": {"t1": {"goal": "g", "deps": []}}, "iteration": 4})
+        b.write_task({"id": "t1", "goal": "g", "deps": []})
+        b.write_result("t1", "w1", "failed", "例外: Traceback ...")
+        # 滞留判定のため updated_at を十分過去にする
+        meta = kf.read_json(b.meta_path)
+        meta["status"] = "running"
+        meta["updated_at"] = "2000-01-01T00:00:00Z"
+        meta["created_at"] = "2000-01-01T00:00:00Z"
+        kf.write_json_atomic(b.meta_path, meta)
+
+        sig = kf.collect_doctor_signals(_Args(bus_root))
+        self.assertEqual(sig["runs_total"], 1)
+        self.assertTrue(any(s["run"] == "runOld" for s in sig["stuck"]))   # 非終端＋高齢→滞留
+        self.assertTrue(any(fl["run"] == "runOld" for fl in sig["failed"]))
+        self.assertTrue(any("runOld" == e.get("run") for e in sig["errors"]))
+
+    def test_cmd_doctor_json_and_program_routing(self):
+        bus_root = os.path.join(self.tmp, "bus")
+        os.makedirs(bus_root)
+        args = _Args(bus_root, json=True, fix=True)
+        filed = []
+
+        def agent(prompt, model):
+            if "稼働診断医" in prompt:
+                return ('[{"category":"program","severity":"critical",'
+                        '"title":"グラフ生成バグ","evidence":"run","fix":"例外"}]')
+            filed.append("file")
+            return "起票"
+
+        import io
+        import contextlib as _ctx
+        buf = io.StringIO()
+        with _ctx.redirect_stdout(buf):
+            rc = kf.cmd_doctor(args, kiro_run=agent, skill_finder=lambda _n: None)
+        # スキルが見つからない → 出力のみ（起票しない）
+        self.assertEqual(filed, [])
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["tool"], "kiro-flow")
+        self.assertTrue(any(f["category"] == "program" for f in out["findings"]))
+        self.assertEqual(rc, 2)                                     # 未解決 critical program
+
+    def test_cmd_doctor_files_via_gitlab_idd_when_present(self):
+        bus_root = os.path.join(self.tmp, "bus")
+        os.makedirs(bus_root)
+        args = _Args(bus_root, json=True, fix=True)
+        skill = os.path.join(self.tmp, "skills", "gitlab-idd")
+        os.makedirs(skill)
+        filed = []
+
+        def agent(prompt, model):
+            if "稼働診断医" in prompt:
+                return ('[{"category":"program","severity":"critical",'
+                        '"title":"バグ","evidence":"e","fix":"f"}]')
+            filed.append("file")
+            return "起票しました"
+
+        import io
+        import contextlib as _ctx
+        with _ctx.redirect_stdout(io.StringIO()):
+            rc = kf.cmd_doctor(args, kiro_run=agent, skill_finder=lambda _n: skill)
+        self.assertEqual(filed, ["file"])                          # gitlab-idd へ委譲
+        self.assertEqual(rc, 0)                                    # 唯一の所見が起票で解消 → healthy
 
 
 if __name__ == "__main__":

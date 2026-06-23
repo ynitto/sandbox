@@ -479,6 +479,7 @@ kiro-flow への act 依頼（`build_request`）に **charter（定義）と `de
 | `enqueue` [`--title --verify …`\|`--json`] | 取り込み口（`--project`） | S0 |
 | `approve <id>` / `hold <id>` / `reprioritize <id> --pin\|--defer` | 決定記録を残す人の操作 | S4/S5 |
 | `stats` / `runlog` / `audit` [`--strict`] | 計測 / 構造化ログ / Loop Readiness 採点 | §10 |
+| `doctor` [`--fix`] | 稼働診断（kiro-cli）。env/config 修正・program は gitlab-idd 起票 | §10 |
 | `promote` | 効いた学習を ltm-use へ昇格（手動） | S5 |
 | `instances` / `start` / `stop` / `restart` | 稼働発見・常駐ライフサイクル | §5.8 |
 
@@ -500,6 +501,20 @@ kiro-flow への act 依頼（`build_request`）に **charter（定義）と `de
 - **計測**: `stats` は archive/decisions/DELIVERY/backlog から決定的に KPI を集計（完了・納品・status 別・人対応待ち・
   **自動化率**=auto-resolve＋auto-adjudicate÷自動＋人・**一発 done 率**=retry 0・累計コスト）。`run-log.jsonl` は run 毎 1 行
   JSON（reason/done/blocked/review/archived/escalations/tokens/cost/duration/level）で監視に流せる。
+- **稼働診断**: `doctor` は**収集・修正・起票の駆動を決定的に・診断と分類を kiro-cli へ委譲**して稼働の問題を洗い出し、
+  原因を **env（ユーザー環境固有）/ config（設定）/ program（プログラム上の不具合）** に分類する。材料は決定的チェック
+  （依存コマンド `kiro-cli`/`kiro-flow`/`git`・必須ディレクトリ・`audit` の未達）＋稼働シグナル（`stats`/`run-log`/`journal`
+  末尾/`needs`/blocked）。kiro-cli 不在・解析不能なら**決定的チェックのみ**で続行。`--fix` のとき env/config は既知の修正
+  アクション（`create-dirs`／`policy-protect` の既定保護デニーリスト追記）を適用し、判断が要るもの（コスト予算・git
+  初期化等）は提案表示のみ。**program は `gitlab-idd` スキルのリクエスター役（kiro-cli 委譲）で GitLab イシューを起票**し、
+  **スキルが見つからなければ出力のみ**（探索: `$KIRO_SKILLS_HOME`→cwd 上方向 `.github/skills`→`~/.claude/skills`）。
+  適用/起票は journal に記録。終了コードは `0`=健康／`1`=未解決の所見／`2`=未解決の critical（`--fix` 無しは診断のみ）。
+  知能（診断・分類・起票文面）の委譲と決定的なファイル操作の二層構成は §1 不変条件（done 確定を緩めず外周を足す）を保つ。
+  **実行層 kiro-flow との連携**（`--with-flow`・既定 on）: 内側＝act の実体である `kiro-flow doctor --json` を同じバスに対して
+  呼び、同一スキーマの findings を `[flow]` 印で統合する。`--fix` 時は kiro-flow 側にも `--fix` を委譲し、kiro-flow が自分の
+  env/config 修正と program 起票を担う（本体は kiro-flow 由来を再修正・再起票しない＝二重作業を避ける）。kiro-flow は同じ
+  doctor 機構を独立コマンドとしても持ち（run 状態/滞留/失敗ノード/kiro-cli エラーを材料に env/config/program へ分類）、
+  単独でも kiro-autonomous からの連携呼び出しでも使える。連携は決定的なサブプロセス呼び出し＋JSON 統合で不変条件を保つ。
 - **テスト**: `tools/kiro-autonomous/tests/test_kiro_autonomous.py`（標準 `unittest`）。kiro-flow/kiro-cli を呼ばずに検証
   （stub・注入）。S0–S7 の各ゲート・自律度・原子的クレーム・偽 done/flake・プロジェクト層・複数プロジェクト/charter リンクを網羅。
   `KIRO_FLOW_STUB_SLEEP_MAX=0 python -m unittest discover -s tools/kiro-autonomous/tests`。
