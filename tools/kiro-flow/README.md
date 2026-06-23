@@ -369,17 +369,23 @@ program 起票を担い、二重作業を避ける）。
 4. その中の `install.sh` を実行して `~/.local/bin` の本体を更新する
 5. **動いていたカレントディレクトリのまま** `os.execv` で新しい本体へ **graceful 再起動**する
 
+**更新元 URL は通常は設定不要**。`install.py` がインストール時に生成する `skill-registry.json`
+（`~/.kiro` / `~/.claude` / `~/.copilot` / `~/.codex` のいずれか）の `repositories.origin.url`
+（無ければ `install_dir` のローカルクローン）から自動解決する。別リポジトリを使うときだけ `update_repo` を明示する。
+
 ```bash
 kiro-flow update --check    # 更新の有無だけ表示（取り込まない）
 kiro-flow update --now      # 更新があれば install.sh を実行して再起動
 ```
 
-設定ファイル（`~/.kiro/kiro-flow.yaml`）で有効化する。**既定は off**（`update_repo` 未設定 or `update_check_interval<=0`）。
+設定ファイル（`~/.kiro/kiro-flow.yaml`）で有効化する。**既定は off**（`update_check_interval<=0`）。
+有効化は基本これ 1 つでよい（更新元は registry から自動解決）。
 
 ```yaml
-update_repo: "https://github.com/ynitto/sandbox"  # スキルリポジトリ（git URL/パス）
-update_check_interval: 3600     # 更新チェック間隔（秒）。0 以下で無効
-update_branch: main             # 追従するブランチ
+update_check_interval: 3600     # 更新チェック間隔（秒）。0 以下で自動チェック無効。これを正にすると有効
+update_enabled: true            # 自動アップデートの ON/OFF（false で完全に止める。既定 on）
+update_repo: ""                 # 空なら skill-registry.json から自動解決。別 repo を使うときだけ指定
+update_branch: main             # 追従するブランチ（空/既定なら registry の branch を採用）
 update_subdir: tools/kiro-flow  # リポジトリ内のこのツールのサブディレクトリ
 update_installer: install.sh    # サブディレクトリ内で実行するインストーラ
 ```

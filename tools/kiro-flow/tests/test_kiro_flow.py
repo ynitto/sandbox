@@ -1921,11 +1921,41 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertFalse(kf.check_update(a)["available"])   # 適用後は最新
 
     def test_maybe_self_update_interval_gate(self):
-        a = self._args(update_check_interval=3600.0)
+        a = self._args(update_check_interval=3600.0, update_enabled=True)
         st = {"last": time.time()}            # 直近にチェック済み → interval 内は何もしない
         self.assertFalse(kf.maybe_self_update(a, idle=True, state=st))
         # idle でなければチェックしない
         self.assertFalse(kf.maybe_self_update(a, idle=False, state={"last": 0.0}))
+
+    def test_update_enabled_false_disables(self):
+        a = self._args(update_enabled=False, update_check_interval=3600.0)
+        self.assertFalse(kf.maybe_self_update(a, idle=True, state={"last": 0.0}))
+
+    def test_registry_auto_resolution(self):
+        # update_repo 未指定でも skill-registry.json から repo/branch を解決して検出できる
+        regdir = os.path.join(self.tmp, "agenthome")
+        os.makedirs(regdir, exist_ok=True)
+        pathlib.Path(regdir, "skill-registry.json").write_text(json.dumps({
+            "version": 7, "install_dir": self.tmp,
+            "repositories": [{"name": "origin", "url": self.repo,
+                              "branch": "main", "priority": 1}]}))
+        old = os.environ.get("KIRO_SKILL_REGISTRY")
+        os.environ["KIRO_SKILL_REGISTRY"] = regdir
+        try:
+            self.assertEqual(kf.registry_update_source()[0], self.repo)
+            a = self._args(update_repo="")     # 明示なし → registry から解決
+            info = kf.check_update(a)
+            self.assertTrue(info["enabled"])
+            self.assertEqual(info["repo"], self.repo)
+        finally:
+            if old is None:
+                os.environ.pop("KIRO_SKILL_REGISTRY", None)
+            else:
+                os.environ["KIRO_SKILL_REGISTRY"] = old
+
+    def test_explicit_repo_overrides_registry(self):
+        a = self._args(update_repo="/explicit/path", update_branch="dev")
+        self.assertEqual(kf.resolve_update_target(a), ("/explicit/path", "dev"))
 
 
 if __name__ == "__main__":

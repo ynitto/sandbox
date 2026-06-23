@@ -126,8 +126,13 @@ cleanup_clone: true
 # graceful 再起動する（os.execv）。手動なら `kiro-flow update [--check|--now]`。
 # 初回チェックは「いま動いている本体を最新」とみなしベースラインを記録するだけ（無更新）。
 #
-# update_repo: "https://github.com/ynitto/sandbox"  # スキルリポジトリ（git URL/パス）。空なら無効
-# update_check_interval: 3600     # 更新チェック間隔（秒）。0 以下で無効（既定 off）
-# update_branch: main             # 追従するブランチ
+# 更新元 URL は通常は設定不要: install.py が生成する skill-registry.json の
+# repositories.origin.url（無ければ install_dir）から自動解決する。別リポジトリを使うときだけ
+# update_repo を明示する。
+#
+# update_check_interval: 3600     # 更新チェック間隔（秒）。0 以下で自動チェック無効（既定 off）。有効化はこれだけでよい
+# update_enabled: true            # 自動アップデートの ON/OFF（false で完全に止める。既定 on）
+# update_repo: ""                 # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
+# update_branch: main             # 追従するブランチ（空/既定なら registry の branch を採用）
 # update_subdir: tools/kiro-flow  # リポジトリ内のこのツールのサブディレクトリ
 # update_installer: install.sh    # サブディレクトリ内で実行するインストーラ

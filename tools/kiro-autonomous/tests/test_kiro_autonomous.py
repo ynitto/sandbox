@@ -3212,6 +3212,36 @@ class SelfUpdateTests(unittest.TestCase):
         cfg = self._cfg(update_check_interval=0.0)   # interval<=0 で無効
         self.assertFalse(km.maybe_self_update(cfg))
 
+    def test_update_enabled_false_disables(self):
+        cfg = self._cfg(update_enabled=False, update_check_interval=3600.0)
+        self.assertFalse(km.maybe_self_update(cfg))
+
+    def test_registry_auto_resolution(self):
+        # update_repo 未指定でも skill-registry.json から repo/branch を解決して検出できる
+        regdir = self.tmp / "agenthome"
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "skill-registry.json").write_text(json.dumps({
+            "version": 7, "install_dir": str(self.tmp),
+            "repositories": [{"name": "origin", "url": str(self.repo),
+                              "branch": "main", "priority": 1}]}))
+        old = os.environ.get("KIRO_SKILL_REGISTRY")
+        os.environ["KIRO_SKILL_REGISTRY"] = str(regdir)
+        try:
+            self.assertEqual(km.registry_update_source()[0], str(self.repo))
+            cfg = self._cfg(update_repo=None)     # 明示なし → registry から解決
+            info = km.check_update(cfg)
+            self.assertTrue(info["enabled"])
+            self.assertEqual(info["repo"], str(self.repo))
+        finally:
+            if old is None:
+                os.environ.pop("KIRO_SKILL_REGISTRY", None)
+            else:
+                os.environ["KIRO_SKILL_REGISTRY"] = old
+
+    def test_explicit_repo_overrides_registry(self):
+        cfg = self._cfg(update_repo="/explicit/path", update_branch="dev")
+        self.assertEqual(km.resolve_update_target(cfg), ("/explicit/path", "dev"))
+
     def test_run_watch_restarts_on_update(self):
         # アイドルの watch ループで自己更新が成立したら _RestartRequested が送出されること。
         # （idle 配線の検証。更新判定そのものは maybe_self_update を True に差し替える）

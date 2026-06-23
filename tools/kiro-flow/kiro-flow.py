@@ -103,9 +103,11 @@ DEFAULT_CONFIG_NAMES = ["kiro-flow.yaml", "kiro-flow.yml", "kiro-flow.json"]
 # 自動アップデートは update_repo のこのパス以下だけを temp 領域へ sparse-checkout して
 # install.sh を実行する（doctor と同じ流儀で、操作は決定的・無関係ファイルは取得しない）。
 TOOL_SUBDIR = "tools/kiro-flow"
-# スキルリポジトリ（git URL/パス）の既定。空なら自動アップデートは無効（設定ファイルで指定する）。
-# 例: "https://github.com/ynitto/sandbox"
+# スキルリポジトリ（git URL/パス）の既定。空なら install.py が生成する skill-registry.json から
+# 自動解決する（repositories.origin.url → install_dir）。設定ファイルの update_repo で明示も可。
 DEFAULT_UPDATE_REPO = ""
+# skill-registry.json を探すエージェントホーム（install.py の AGENT_DIRS に対応）。
+_AGENT_HOME_DIRS = (".kiro", ".claude", ".copilot", ".codex")
 
 # 環境ごとに変わる値の組み込み既定。設定ファイルのキーもこの名前（snake_case）。
 CONFIG_DEFAULTS = {
@@ -148,8 +150,9 @@ CONFIG_DEFAULTS = {
     # update_repo を設定し update_check_interval を正にしたときだけ有効。アイドル時に
     # git ls-remote で main の先頭コミットを確認し、適用済みと違えば temp 領域へ
     # sparse-checkout（tools/kiro-flow/ だけ）→ install.sh 実行 → graceful 再起動する。
-    "update_check_interval": 0.0,        # 更新チェック間隔（秒）。0 以下で無効（既定 off）
-    "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら無効
+    "update_enabled": True,              # 自動アップデートの ON/OFF（false で完全無効・既定 on）
+    "update_check_interval": 0.0,        # 更新チェック間隔（秒）。0 以下で自動チェック無効（既定 off）
+    "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら skill-registry.json から自動解決
     "update_branch": "main",             # 追従するブランチ
     "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
     "update_installer": "install.sh",    # サブディレクトリ内で実行するインストーラ
@@ -3240,13 +3243,67 @@ def remote_branch_sha(repo: str, branch: str, runner=None) -> "str | None":
     return sha if len(sha) >= 7 else None
 
 
+def find_skill_registry(home: "str | None" = None) -> "str | None":
+    """install.py が生成する skill-registry.json を探す（無ければ None）。
+    検索順: $KIRO_SKILL_REGISTRY（ファイル or ディレクトリ）→ 各エージェントホーム（~/.kiro 等）。"""
+    cands: list[str] = []
+    env = home or os.environ.get("KIRO_SKILL_REGISTRY")
+    if env:
+        p = os.path.expanduser(env)
+        cands.append(os.path.join(p, "skill-registry.json") if os.path.isdir(p) else p)
+    for d in _AGENT_HOME_DIRS:
+        cands.append(os.path.join(os.path.expanduser("~"), d, "skill-registry.json"))
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def registry_update_source(registry: "str | None" = None) -> "tuple[str | None, str | None]":
+    """skill-registry.json からスキルリポジトリの (url, branch) を解決する（無ければ (None, None)）。
+    repositories の origin（無ければ priority 昇順の先頭）を採り、url が無ければ install_dir
+    （インストール元のローカルクローン＝『自動更新の参照元』）にフォールバックする。"""
+    path = registry or find_skill_registry()
+    if not path or not os.path.isfile(path):
+        return (None, None)
+    try:
+        with open(path, encoding="utf-8") as f:
+            reg = json.load(f)
+    except (OSError, ValueError):
+        return (None, None)
+    repos = reg.get("repositories") or []
+    chosen = next((r for r in repos if r.get("name") == "origin"), None)
+    if chosen is None and repos:
+        chosen = sorted(repos, key=lambda r: r.get("priority", 99))[0]
+    if chosen and chosen.get("url"):
+        return (chosen["url"], chosen.get("branch") or "main")
+    idir = reg.get("install_dir")               # フォールバック: ローカルクローンを直接 clone 元に
+    if idir and os.path.isdir(idir):
+        return (idir, (chosen.get("branch") if chosen else None) or "main")
+    return (None, None)
+
+
+def resolve_update_target(args) -> "tuple[str, str]":
+    """更新元リポジトリと branch を確定する。優先順位 設定の update_repo > skill-registry.json > 無効。
+    update_repo 未指定（自動）のときは registry の branch を採用（設定 update_branch が既定 main のまま時）。"""
+    repo = getattr(args, "update_repo", "") or ""
+    branch = getattr(args, "update_branch", "main") or "main"
+    if not repo:
+        rurl, rbranch = registry_update_source()
+        if rurl:
+            repo = rurl
+            if rbranch and branch == "main":     # 設定で branch を変えていなければ registry を採用
+                branch = rbranch
+    return repo, branch
+
+
 def check_update(args, runner=None) -> dict:
     """更新の有無を判定する（取り込みはしない）。戻り値の dict:
       {enabled, repo, branch, remote_sha, applied_sha, available, baseline}
+    repo は設定 update_repo か skill-registry.json から解決する。
     初回（applied_sha 未記録）は現在の本体を最新とみなし remote_sha をベースライン記録して
     available=False を返す（無用な初回更新ループを避ける）。"""
-    repo = getattr(args, "update_repo", "") or ""
-    branch = getattr(args, "update_branch", "main") or "main"
+    repo, branch = resolve_update_target(args)
     info = {"enabled": bool(repo), "repo": repo, "branch": branch, "remote_sha": None,
             "applied_sha": None, "available": False, "baseline": False}
     if not repo:
@@ -3351,7 +3408,9 @@ def maybe_self_update(args, idle: bool, state: dict, runner=None) -> bool:
     """daemon のループから定期的に呼ぶ自己更新チェック。更新を適用したら True
     （呼び出し側は graceful shutdown して restart_self する）。
     state は {"last": <epoch>} を持つ可変 dict（呼び出し側がループ間で保持）。
-    update_check_interval<=0 で無効。アイドルでなければ（仕事中は）何もしない。"""
+    update_enabled=false / update_check_interval<=0 で無効。アイドルでなければ何もしない。"""
+    if not getattr(args, "update_enabled", True):
+        return False
     interval = float(getattr(args, "update_check_interval", 0) or 0)
     if interval <= 0 or not idle:
         return False
