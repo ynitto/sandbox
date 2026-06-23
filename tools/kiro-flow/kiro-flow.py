@@ -783,6 +783,40 @@ def parse_repo_token(token: str) -> dict:
     return spec
 
 
+def repo_token_id(token: str) -> str:
+    """`--repo` トークンの参照識別子（name 優先、無ければ URL 末尾名）。ノードへの repo 割当はこの id で行う。"""
+    spec = parse_repo_token(token)
+    return spec.get("name") or _repo_name(spec["url"]) or spec["url"]
+
+
+def resolve_node_repos(node: dict, run_tokens: "list[str]") -> "list[str]":
+    """このノードが clone すべき repo トークンを決める（必要なものだけを必要な時に clone するための判断）。
+    - run に repo が無ければ空。
+    - ノードに `repos` キーが無い（未注釈・後方互換）→ run の全 repo。
+    - `repos` がある → その id（name/url）に一致する run トークンだけ（空配列＝何も clone しない）。"""
+    if not run_tokens:
+        return []
+    if "repos" not in node:
+        return list(run_tokens)               # 未注釈は全 repo（安全側・後方互換）
+    want = node.get("repos") or []
+    if not want:
+        return []                             # 明示的に「不要」＝ clone しない
+    by_id: "dict[str, str]" = {}
+    for tok in run_tokens:
+        by_id.setdefault(repo_token_id(tok), tok)
+        url = parse_repo_token(tok)["url"]
+        if url:
+            by_id.setdefault(url, tok)
+    out: "list[str]" = []
+    seen: "set[str]" = set()
+    for w in want:
+        tok = by_id.get(str(w))
+        if tok and tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
+
+
 def _clone_repo(url: str, base: str, dest: str) -> str:
     """url を dest へ clone する。base 指定があればそのブランチを checkout（無ければ既定にフォールバック）。
     成功で dest、失敗で "" を返す。"""
@@ -976,12 +1010,15 @@ def _coerce_tasks(raw, existing=()):
         kind = str(t.get("kind", "work"))
         if kind not in VALID_KINDS:
             kind = "work"
-        out.append({
+        node = {
             "id": tid,
             "goal": str(t.get("goal", "")),
             "deps": [str(d) for d in (t.get("deps") or [])],
             "kind": kind,
-        })
+        }
+        if "repos" in t:                       # ノード単位の clone 対象（空配列＝不要）。プランナーの判断を保持
+            node["repos"] = [str(r) for r in (t.get("repos") or [])]
+        out.append(node)
     return out
 
 
@@ -1135,10 +1172,36 @@ def plan_strategy_stub(request: str, review="auto", granularity="finest"):
     return strategy, tasks
 
 
-def plan_strategy_kiro(request: str, model: str | None, review="auto", granularity="finest"):
+def _repos_planner_note(repos: "list[str] | None") -> str:
+    """プランナーへ「利用可能な repo 一覧」と「各タスクに必要な repo だけ割り当てよ」を伝える指示。
+    repos が無ければ空文字（従来どおり repos 非対応）。"""
+    if not repos:
+        return ""
+    lines = []
+    for tok in repos:
+        spec = parse_repo_token(tok)
+        rid = spec.get("name") or _repo_name(spec["url"])
+        tags = []
+        if spec.get("path"):
+            tags.append(f"フォルダ {spec['path']}")
+        if spec.get("readonly"):
+            tags.append("参照のみ")
+        label = f"- {rid}" + ("（" + "・".join(tags) + "）" if tags else "")
+        if spec.get("desc"):
+            label += f": {spec['desc']}"
+        lines.append(label)
+    return ("\n利用可能なリポジトリ（中身を読む/ push する必要があるタスクにのみ割当）:\n"
+            + "\n".join(lines)
+            + "\n各タスクには、そのタスクが実際に必要とするリポジトリ id だけを \"repos\": [\"id\", ...] で"
+            " 付けてください（不要なタスクは空配列 [] にする＝何も clone しない）。判断できない場合は省略可。\n")
+
+
+def plan_strategy_kiro(request: str, model: str | None, review="auto", granularity="finest",
+                       repos: "list[str] | None" = None):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
-    granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。"""
+    granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。
+    repos があれば各タスクへ必要な repo だけを割り当てさせる（必要なものだけ clone）。"""
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     compose = ("必要なら複数パターンを多段に複合してよい（例: classify-and-act の各分岐を "
                "fan-out-and-synthesize にする / generate-and-filter の通過案で tournament を行う）。")
@@ -1163,7 +1226,8 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto", granulari
         "（split→work→reduce のような固定チェーンにすると並列展開されない）。"
         "並列にできるタスクは deps を空に、順序や統合が要るものは deps に先行 id を入れます。"
         "依存は既存タスク id のみ、循環は作らないこと。\n"
-        "出力は JSON オブジェクトのみ:\n"
+        + _repos_planner_note(repos)
+        + "出力は JSON オブジェクトのみ:\n"
         '{"patterns": ["..."], "parallelism": N, "reason": "...", '
         '"tasks": [{"id": "t1", "goal": "...", "deps": [], "kind": "work"}]}\n\n'
         f"要求: {request}"
@@ -1870,7 +1934,8 @@ def _plan_strategy(args):
     if args.planner == "flow-planner":
         return plan_strategy_flow_planner(args.request, args.model, review, gran)
     if args.planner == "kiro":
-        return plan_strategy_kiro(args.request, args.model, review, gran)
+        return plan_strategy_kiro(args.request, args.model, review, gran,
+                                  getattr(args, "repos", None))
     return plan_strategy_stub(args.request, review, gran)
 
 
@@ -1897,9 +1962,28 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
 
 def _node_entry(t):
     e = {"goal": t["goal"], "deps": t["deps"], "kind": t.get("kind", "work")}
+    if "repos" in t:  # ノード単位の clone 対象（必要なものだけ）。空配列＝clone 不要
+        e["repos"] = list(t.get("repos") or [])
     if t.get("retries"):  # サーキットブレーカー用の作り直し回数（>0 のときだけ保持）
         e["retries"] = int(t["retries"])
     return e
+
+
+def _assign_node_repos(tasks, args) -> None:
+    """計画時に各ノードへ clone 対象 repo を割り当てる（『必要な時に必要なものを判断して clone』の計画層）。
+    - stub プランナー（知能なし）は全 repo を割り当てる（安全側・現状維持）。
+    - LLM プランナー（kiro/flow-planner）が既に subset を付けたノードはそれを尊重する。
+    - LLM で未注釈のノードは worker 側で全 repo にフォールバックする（取りこぼし防止）。"""
+    tokens = getattr(args, "repos", None) or []
+    if not tokens:
+        return
+    intelligent = getattr(args, "planner", "stub") in ("kiro", "flow-planner")
+    if intelligent:
+        return                                 # プランナー出力の repos をそのまま使う（未注釈は worker で全 repo）
+    ids = [repo_token_id(t) for t in tokens]
+    for t in tasks:
+        if not t.get("repos"):
+            t["repos"] = list(ids)             # stub: 全 repo を割り当てる
 
 
 def _collapse_split_successors(nodes: dict) -> dict:
@@ -1988,6 +2072,7 @@ def cmd_orchestrate(args) -> int:
     else:
         # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
         strategy, tasks = _plan_strategy(args)
+        _assign_node_repos(tasks, args)   # 各ノードへ clone 対象 repo を割当（stub=全 / LLM=判断済みを尊重）
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
@@ -2025,6 +2110,7 @@ def cmd_orchestrate(args) -> int:
 
         if decision == "replan" and new_tasks:
             iteration += 1
+            _assign_node_repos(new_tasks, args)   # 追加ノードにも clone 対象 repo を割当
             for t in new_tasks:
                 graph["nodes"][t["id"]] = _node_entry(t)
                 bus.write_task({k: v for k, v in t.items() if k != "replaces"})
@@ -2127,9 +2213,10 @@ def cmd_work(args) -> int:
         # これにより大きな成果物は output/data に貼らずファイル参照で受け渡せる。
         art_dir = bus.ensure_artifact_dir(nid)
         dep_arts = {d: bus.node_artifact_dir(d) for d in node.get("deps", [])}
-        # 成果物リポジトリ（この run のもの）を temp 領域へ clone し、エージェントへパスを渡す
+        # 成果物リポジトリを temp 領域へ clone し、エージェントへパスを渡す。
+        # このノードに必要な repo だけを clone する（計画時にノードへ割り当てた subset。未注釈は全 repo）。
         goal = node["goal"]
-        clones = ensure_work_repos(bus.run_repos(), who)
+        clones = ensure_work_repos(resolve_node_repos(node, bus.run_repos()), who)
         if clones:
             goal = repo_instruction(clones) + "\n\n" + goal
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする

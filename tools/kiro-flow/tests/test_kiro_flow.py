@@ -942,6 +942,45 @@ class DaemonPrimitiveTests(unittest.TestCase):
         finally:
             kf.cleanup_work_repos()
 
+    def test_resolve_node_repos_selects_subset(self):
+        api = json.dumps({"url": "https://git/shop.git", "name": "api", "path": "apps/api"})
+        web = json.dumps({"url": "https://git/shop.git", "name": "web", "path": "apps/web"})
+        run = [api, web, "https://git/lib.git"]
+        # 未注釈ノード → 全 repo（後方互換）
+        self.assertEqual(kf.resolve_node_repos({"goal": "x"}, run), run)
+        # subset 指定 → 一致する token だけ
+        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["api"]}, run), [api])
+        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["web", "lib"]}, run),
+                         [web, "https://git/lib.git"])
+        # 空配列 → clone しない
+        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": []}, run), [])
+        # run に repo が無ければ常に空
+        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["api"]}, []), [])
+
+    def test_assign_node_repos_stub_assigns_all_llm_keeps(self):
+        import types
+        run = [json.dumps({"url": "https://git/a.git", "name": "a"}), "https://git/b.git"]
+        # stub プランナー: 全ノードへ全 repo を割り当てる
+        stub_args = types.SimpleNamespace(planner="stub", repos=run)
+        tasks = [{"id": "t1", "goal": "x"}, {"id": "t2", "goal": "y", "repos": ["a"]}]
+        kf._assign_node_repos(tasks, stub_args)
+        self.assertEqual(tasks[0]["repos"], ["a", "b"])     # 未注釈 → 全 repo（id 化）
+        self.assertEqual(tasks[1]["repos"], ["a"])          # 既に割当済みは尊重
+        # LLM プランナー: プランナー出力に委ね、本体は触らない
+        llm_args = types.SimpleNamespace(planner="kiro", repos=run)
+        t2 = [{"id": "t1", "goal": "x"}]
+        kf._assign_node_repos(t2, llm_args)
+        self.assertNotIn("repos", t2[0])                    # 未注釈のまま（worker で全 repo にフォールバック）
+
+    def test_node_entry_and_coerce_preserve_repos(self):
+        e = kf._node_entry({"goal": "g", "deps": [], "kind": "work", "repos": ["a", "b"]})
+        self.assertEqual(e["repos"], ["a", "b"])
+        self.assertNotIn("repos", kf._node_entry({"goal": "g", "deps": [], "kind": "work"}))
+        coerced = kf._coerce_tasks([{"id": "t1", "goal": "g", "repos": ["a"]},
+                                    {"id": "t2", "goal": "h"}])
+        self.assertEqual(coerced[0]["repos"], ["a"])
+        self.assertNotIn("repos", coerced[1])               # 未指定はキーを作らない（フォールバック用）
+
     def test_repo_instruction_marks_readonly(self):
         ro = [{"url": "https://git/lib.git", "name": "lib", "path": "", "base": "main",
                "target": "main", "readonly": True, "desc": "参照元", "clone": "/tmp/lib"}]

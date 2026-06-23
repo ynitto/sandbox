@@ -22,7 +22,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   checkout）/`ensure_work_repos`（spec＋clone パスを返す）/`repo_instruction`（フォルダ・作業ブランチ・push 先・参照のみを
   出し分け）を実装。**この指示は gitlab executor 経由でイシュー本文（## 目的）にも載る**ため、フォルダ/ブランチ/参照のみが
   イシューに構造的に表現される。参照のみは push を指示しない。後方互換: 素の URL トークンは従来どおり。
-  kiro-autonomous 5 件・kiro-flow 4 件のテストを追加（全 240 / 149 OK）。
+- **必要な repo だけを必要なノードで clone**（kiro-flow）。repo を run 全体ではなくノード（タスク）単位で割り当て、
+  worker は `resolve_node_repos` でそのノードに割り当てられた repo だけを clone する（空配列＝何も clone しない・未注釈は
+  全 repo にフォールバック）。計画時に `_assign_node_repos` で割当: **stub プランナーは全 repo（安全側）、kiro プランナーは
+  利用可能 repo 一覧（フォルダ/役割/参照のみ込み）を見て各タスクに必要な repo だけを判断**（`_repos_planner_note`）。
+  ノードに `repos` フィールドを追加（`_node_entry`/`_coerce_tasks` が保持）。fan-out で多数ノードに分解されても各ノードは
+  自分に必要な repo だけ clone する（URL 単位の重複排除と併せ無駄 clone を最小化）。
+  kiro-autonomous 5 件・kiro-flow 7 件のテストを追加（全 240 / 152 OK）。
 - 黒箱 CLI 統合テスト（`TestCliEndToEnd`）。`kiro-autonomous.py` を実プロセスとして argv 起動し、
   ループ機構を end-to-end で検証: drain→exit 0・成果物退避（archive）、verify 失敗→blocked→exit 1＋
   needs ファイル生成、予算超過→budget→exit 2、`--no-archive` で退避せず削除。`run_loop()` の in-process
