@@ -2606,6 +2606,25 @@ class TestVerifyAssist(unittest.TestCase):
         self.assertEqual(cmd, "grep -q '## 概要' README.md")
         self.assertNotIn("\x1b", cmd)
 
+    def test_synth_verify_rejects_japanese_prose(self):
+        # バグ修正: エージェントが自然言語（説明/拒否文）を返しても shell へ流さない
+        cfg = cfg_for(Path("."))
+        prose = "この完了条件は曖昧なため、決定的な検証コマンドに変換できません。"
+        self.assertEqual(km.synth_verify(cfg, "x", "曖昧", kiro_run=lambda p, m: prose), "")
+
+    def test_synth_verify_rejects_malformed_shell_prose(self):
+        # 不完全なシェル構文（散文）も弾く（sh -n が syntax error にする）
+        cfg = cfg_for(Path("."))
+        prose = "Run the tests; if they pass, you are done"
+        self.assertEqual(km.synth_verify(cfg, "x", "tests", kiro_run=lambda p, m: prose), "")
+
+    def test_looks_like_shell_command(self):
+        self.assertTrue(km._looks_like_shell_command("grep -q foo bar.txt"))
+        self.assertTrue(km._looks_like_shell_command("test -f out && pytest -q"))
+        self.assertFalse(km._looks_like_shell_command(""))
+        self.assertFalse(km._looks_like_shell_command("検証できません。"))      # 全角句読点
+        self.assertFalse(km._looks_like_shell_command("grep -q 'unterminated"))  # 未閉じクォート
+
     def test_rot_excludes_accept_or_template(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

@@ -1799,6 +1799,27 @@ def _synth_verify_prompt(title: str, accept: str) -> str:
         "出力はコマンド 1 行のみ（説明・コードフェンス不要）。検証コマンドを書けない場合は空行を返す。")
 
 
+# 全角の文/句読点。シェルコマンドにはまず現れず、自然言語（散文・拒否文）の強い指標。
+_PROSE_PUNCT = "。、！？；：「」『』（）"
+
+
+def _looks_like_shell_command(line: str) -> bool:
+    """合成された 1 行が「決定的なシェルコマンド」か、エージェントの自然言語かを判定する。
+    全角の文/句読点を含むものは散文とみなして弾き、残りは `sh -n`（構文解析のみ・非実行）で
+    妥当性を確認する。疑わしきは False（→ verify 未定義のまま人の判断へ）。"""
+    s = line.strip()
+    if not s:
+        return False
+    if any(ch in s for ch in _PROSE_PUNCT):       # 全角の文/句読点 → 自然言語
+        return False
+    try:
+        # sh -n は構文チェックのみで実行しない。不完全な if/未閉じクォート等の散文を弾く。
+        chk = subprocess.run(["sh", "-n", "-c", s], capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return True          # 構文チェック不能な環境では句読点判定のみで通す（best-effort）
+    return chk.returncode == 0
+
+
 def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None) -> str:
     """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
     失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。"""
@@ -1810,7 +1831,10 @@ def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None) -> str:
     for line in (out or "").splitlines():       # 先頭の意味ある行をコマンドとみなす
         line = _strip_code(line.strip())
         if line and not line.startswith("#"):
-            return line
+            # エージェントがコマンドではなく自然言語（説明・拒否文）を返すことがある。
+            # それをそのまま run_verify の shell=True に流すと、文中の ; | && ` > rm 等が
+            # 誤って実行されうるため、妥当なシェルコマンドでなければ合成失敗扱いにする。
+            return line if _looks_like_shell_command(line) else ""
     return ""
 
 
