@@ -942,6 +942,33 @@ class DaemonPrimitiveTests(unittest.TestCase):
         finally:
             kf.cleanup_work_repos()
 
+    def test_sweep_work_repo_dirs_reaps_dead_pid_only(self):
+        # SIGKILL リーク回収: 死んだ pid の孤立 clone は消し、生存 pid（自分）のものは残す
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        dead_pid = 2147480000          # 存在しない（はずの）pid
+        live = os.path.join(tmp, f"kiro-flow-repos-{os.getpid()}-n-aaa")
+        dead = os.path.join(tmp, f"kiro-flow-repos-{dead_pid}-n-bbb")
+        other = os.path.join(tmp, "unrelated-dir")
+        for d in (live, dead, other):
+            os.makedirs(d)
+        with mock.patch("tempfile.gettempdir", return_value=tmp):
+            removed = kf.sweep_work_repo_dirs(min_age_sec=0.0)
+        self.assertEqual(removed, 1)
+        self.assertTrue(os.path.isdir(live))      # 生存 pid → 残す
+        self.assertFalse(os.path.exists(dead))    # 死亡 pid → 回収
+        self.assertTrue(os.path.isdir(other))     # 無関係ディレクトリ → 触らない
+
+    def test_sweep_work_repo_dirs_keeps_recent_even_if_pid_unknown(self):
+        # min_age 未満かつ pid 生存中は残す（稼働中の clone を誤削除しない）
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        recent = os.path.join(tmp, f"kiro-flow-repos-{os.getpid()}-n-ccc")
+        os.makedirs(recent)
+        with mock.patch("tempfile.gettempdir", return_value=tmp):
+            self.assertEqual(kf.sweep_work_repo_dirs(min_age_sec=3600.0), 0)
+        self.assertTrue(os.path.isdir(recent))
+
     def test_resolve_node_repos_selects_subset(self):
         api = json.dumps({"url": "https://git/shop.git", "name": "api", "path": "apps/api"})
         web = json.dumps({"url": "https://git/shop.git", "name": "web", "path": "apps/web"})
