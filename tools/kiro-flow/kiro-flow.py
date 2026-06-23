@@ -123,6 +123,12 @@ CONFIG_DEFAULTS = {
     # kiro-cli へ argv で渡すプロンプトの最大バイト数。超過分は一時ファイルへ退避し参照渡しに
     # 切り替える（依存成果物が大きいときに OS の ARG_MAX に達して起動失敗するのを防ぐ）。
     "argv_limit": 100000,
+    # kiro-cli 1 呼び出しのタイムアウト秒（既定 600、0/負で無効化）。None なら環境変数
+    # KIRO_FLOW_KIRO_TIMEOUT → 600 にフォールバック。ハングした kiro-cli を止める唯一の手段。
+    "kiro_timeout": None,
+    # stub executor の擬似実行スリープ上限秒（既定 1〜5 秒）。None なら環境変数
+    # KIRO_FLOW_STUB_SLEEP_MAX → 5 にフォールバック。テスト/動作確認では 0 で高速化できる。
+    "stub_sleep_max": None,
     "review": "auto",  # auto: 集約パターンで自動有効 / True/False: 明示上書き
     "workers": 2,
     # 一時ファイルの自動クリーンアップ（daemon ループ内で定期実行）
@@ -1144,13 +1150,16 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
 # Executor — タスク実行（kiro-cli or stub）
 # --------------------------------------------------------------------------
 def _kiro_timeout() -> float | None:
-    """kiro-cli 1 呼び出しのタイムアウト秒。既定 600。env で調整、0/負で無効化。
+    """kiro-cli 1 呼び出しのタイムアウト秒。設定ファイル `kiro_timeout` で調整、0/負で無効化。
+    設定が無ければ環境変数 KIRO_FLOW_KIRO_TIMEOUT → 既定 600 にフォールバックする。
     心拍が lease を延長し続けるため、ハングした kiro-cli はこのタイムアウトでしか
     止められない（無いと worker が無限ブロックし run 全体が停止する）。"""
-    try:
-        to = float(os.environ.get("KIRO_FLOW_KIRO_TIMEOUT", "600"))
-    except ValueError:
-        to = 600.0
+    to = _KIRO_TIMEOUT
+    if to is None:
+        try:
+            to = float(os.environ.get("KIRO_FLOW_KIRO_TIMEOUT", "600"))
+        except ValueError:
+            to = 600.0
     return to if to > 0 else None
 
 
@@ -1159,12 +1168,16 @@ def _kiro_timeout() -> float | None:
 _ARGV_LIMIT = CONFIG_DEFAULTS["argv_limit"]
 # executor プラグインの追加検索ディレクトリ（設定 executor_dir）。
 _EXECUTOR_DIR: "str | None" = None
+# kiro-cli タイムアウト秒 / stub スリープ上限秒（設定 kiro_timeout / stub_sleep_max）。
+# None のままなら _kiro_timeout / _stub_sleep が環境変数→組み込み既定にフォールバックする。
+_KIRO_TIMEOUT: "float | None" = None
+_STUB_SLEEP_MAX: "float | None" = None
 
 
 def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
     run_kiro / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
-    global _ARGV_LIMIT, _EXECUTOR_DIR
+    global _ARGV_LIMIT, _EXECUTOR_DIR, _KIRO_TIMEOUT, _STUB_SLEEP_MAX
     v = getattr(args, "argv_limit", None)
     if v:
         try:
@@ -1174,6 +1187,18 @@ def _configure_thresholds(args) -> None:
     d = getattr(args, "executor_dir", None)
     if d:
         _EXECUTOR_DIR = str(d)
+    kt = getattr(args, "kiro_timeout", None)
+    if kt is not None:
+        try:
+            _KIRO_TIMEOUT = float(kt)
+        except (TypeError, ValueError):
+            pass
+    ss = getattr(args, "stub_sleep_max", None)
+    if ss is not None:
+        try:
+            _STUB_SLEEP_MAX = float(ss)
+        except (TypeError, ValueError):
+            pass
 
 
 def _kiro_argv_limit() -> int:
@@ -1224,12 +1249,15 @@ def _dep_data(r: dict):
 
 
 def _stub_sleep() -> None:
-    """stub の擬似実行時間。既定 1〜5 秒。環境変数 KIRO_FLOW_STUB_SLEEP_MAX で調整
-    （テストや動作確認では 0 にして高速化できる）。"""
-    try:
-        mx = float(os.environ.get("KIRO_FLOW_STUB_SLEEP_MAX", "5"))
-    except ValueError:
-        mx = 5.0
+    """stub の擬似実行時間。既定 1〜5 秒。設定ファイル `stub_sleep_max` で調整
+    （テストや動作確認では 0 にして高速化できる）。設定が無ければ環境変数
+    KIRO_FLOW_STUB_SLEEP_MAX → 既定 5 にフォールバックする。"""
+    mx = _STUB_SLEEP_MAX
+    if mx is None:
+        try:
+            mx = float(os.environ.get("KIRO_FLOW_STUB_SLEEP_MAX", "5"))
+        except ValueError:
+            mx = 5.0
     if mx > 0:
         time.sleep(random.uniform(min(1.0, mx), mx))
 

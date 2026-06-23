@@ -390,6 +390,34 @@ class KiroTimeoutTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"KIRO_FLOW_KIRO_TIMEOUT": "120"}):
             self.assertEqual(kf._kiro_timeout(), 120.0)
 
+    def test_kiro_timeout_config_beats_env(self):
+        # 設定ファイル（_configure_thresholds 経由）が環境変数より優先される
+        with mock.patch.object(kf, "_KIRO_TIMEOUT", 300.0), \
+             mock.patch.dict(os.environ, {"KIRO_FLOW_KIRO_TIMEOUT": "120"}):
+            self.assertEqual(kf._kiro_timeout(), 300.0)
+        with mock.patch.object(kf, "_KIRO_TIMEOUT", 0.0):
+            self.assertIsNone(kf._kiro_timeout())   # 設定の 0/負も無効化として尊重
+
+    def test_stub_sleep_max_config_beats_env(self):
+        # stub_sleep_max も設定が環境変数より優先される（0 で即時）
+        calls = []
+        with mock.patch.object(kf, "_STUB_SLEEP_MAX", 0.0), \
+             mock.patch.dict(os.environ, {"KIRO_FLOW_STUB_SLEEP_MAX": "5"}), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: calls.append(s)):
+            kf._stub_sleep()
+        self.assertEqual(calls, [])   # 設定 0 → sleep されない
+
+    def test_configure_thresholds_pins_config_values(self):
+        # resolve_config 済みの args から kiro_timeout / stub_sleep_max が確定すること
+        import argparse
+        args = argparse.Namespace(argv_limit=None, executor_dir=None,
+                                  kiro_timeout=45.0, stub_sleep_max=0.0)
+        with mock.patch.object(kf, "_KIRO_TIMEOUT", None), \
+             mock.patch.object(kf, "_STUB_SLEEP_MAX", None):
+            kf._configure_thresholds(args)
+            self.assertEqual(kf._KIRO_TIMEOUT, 45.0)
+            self.assertEqual(kf._STUB_SLEEP_MAX, 0.0)
+
 
 class StructuredExtractionTests(unittest.TestCase):
     """自由記述 kind の本文に紛れた JSON 風断片を data に誤昇格させないこと。"""
