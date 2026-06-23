@@ -358,6 +358,30 @@ class TestAtomicClaim(unittest.TestCase):
             claims = d / "claims"
             self.assertEqual(list(claims.glob("*.lock")) if claims.exists() else [], [])
 
+    def test_approve_clears_stale_claim_lock(self):
+        # worker クラッシュ等で残った古い claim ロックは、人手 approve で掃除される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog" / "R1.md").parent.mkdir(parents=True, exist_ok=True)
+            (d / "backlog" / "R1.md").write_text(
+                "## R1: x\n- status: review\n- verify: `true`\n", encoding="utf-8")
+            lock = d / "claims" / "R1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text('{"host":"dead","pid":1,"ts":0,"id":"R1"}', encoding="utf-8")
+            km.cmd_approve(cfg_for(d, learn=False), "R1", "ok")
+            self.assertFalse(lock.exists())                  # 承認時に古いロックを掃除
+
+    def test_hold_clears_stale_claim_lock(self):
+        # hold（blocked 化）でも doing を離れるので claim ロックを残さない
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "H1", verify="true")
+            lock = d / "claims" / "H1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text('{"host":"dead","pid":1,"ts":0,"id":"H1"}', encoding="utf-8")
+            km.cmd_hold(cfg_for(d, learn=False), "H1", "保留")
+            self.assertFalse(lock.exists())
+
     def test_held_claim_makes_task_skipped(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

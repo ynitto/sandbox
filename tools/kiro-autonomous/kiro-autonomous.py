@@ -2421,6 +2421,7 @@ def _block(cfg, task, reason, reasons):
     reasons[task.id] = reason
     persist_task(cfg, task)
     write_needs_file(cfg, task, reason)
+    release_claim(cfg, task)              # blocked は doing でなくなる＝実行権（claim）を解放（人手 hold 含む）
 
 
 def _revert_workdir(cfg) -> None:
@@ -2929,6 +2930,10 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
             return 0
         print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
         return 2
+    # 人手の承認はタスクを consumable/doing から確定遷移させる。worker のクラッシュや
+    # review/blocked 滞留で残った古い claim ロック（claims/<id>.lock）を先に掃除しておく。
+    # release_claim は冪等（無ければ no-op）なので、新鮮なロックが無い通常ケースでも無害。
+    release_claim(cfg, t)
     if t.norm_status() == "review":
         # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
         ex = dict(t.extra)

@@ -31,6 +31,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 #### Fixed
 - all-daemon の watch ループで heartbeat をラウンド毎に1回だけ更新するよう修正（従来は内側ループに
   あり、登録数 N に対し毎ラウンド N×(N+1) 回の無駄なファイル書き込みが発生していた）。
+- `approve` / `hold`（`_block`）で古い claim ロック（`claims/<id>.lock`）を解放するよう修正。worker の
+  クラッシュや review/blocked 滞留で残ったロックが人手解決後も残留し、TTL 切れまで次の実行を阻害しうる
+  不備を解消（`release_claim` は冪等のため通常ケースは無害）。
 
 ### kiro-flow
 
