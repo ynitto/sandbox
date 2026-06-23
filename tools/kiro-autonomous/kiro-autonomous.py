@@ -1999,6 +1999,17 @@ def decide_location(task: Task, policy: Policy, cfg: "Config") -> str:
     return loc
 
 
+def _kf_env(cfg: "Config") -> "dict | None":
+    """kiro-flow サブプロセスへ渡す環境。executor=gitlab の委譲先リポジトリ URL を
+    KIRO_FLOW_GITLAB_REPO_URL（gitlab プラグインの個別上書き）で伝搬する。
+    設定 gitlab_repo_url が空なら None を返し、親プロセスの環境をそのまま継承させる。"""
+    if not cfg.gitlab_repo_url:
+        return None
+    env = dict(os.environ)
+    env["KIRO_FLOW_GITLAB_REPO_URL"] = cfg.gitlab_repo_url
+    return env
+
+
 def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
     base = resolve_kiro_flow(cfg.kiro_flow) + ["--bus", str(cfg.bus)]
     if use_git and cfg.git_bus:
@@ -2127,7 +2138,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     cmd = build_kiro_flow_cmd(task, cfg, use_git)
     try:
         proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=cfg.act_timeout,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=_kf_env(cfg))
     except subprocess.TimeoutExpired:
         return (False, f"kiro-flow run タイムアウト（{cfg.act_timeout}s）")
     except FileNotFoundError as e:
@@ -2200,6 +2211,7 @@ class Config:
     flow_planner: str = "flow-planner"  # kiro-flow run に渡す planner
     location: str = "auto"         # act の実行モード: auto / local / daemon / remote
     executor: str = "kiro"
+    gitlab_repo_url: str = ""       # executor=gitlab のとき委譲先リポジトリ URL（kiro-flow の gitlab.repo_url へ伝搬）
     model: "str | None" = None
     max_iterations: int = 3
     max_cycles: int = 20
@@ -4418,6 +4430,7 @@ CONFIG_DEFAULTS = {
     "root": ".kiro-autonomous",
     "workdir": ".",
     "executor": "kiro",
+    "gitlab_repo_url": "",   # executor=gitlab のとき委譲先リポジトリ URL（kiro-flow の gitlab.repo_url へ伝搬）
     "planner": "kiro",
     "flow_planner": "flow-planner",
     "location": "auto",
@@ -4542,6 +4555,7 @@ def build_config(args) -> Config:
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
         location=args.location, executor=args.executor,
+        gitlab_repo_url=str(getattr(args, "gitlab_repo_url", "") or ""),
         model=args.model, max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_tokens=getattr(args, "max_tokens", 0) or 0,
@@ -4620,7 +4634,10 @@ def _add_common(sp):
                     choices=["flow-planner", "kiro", "stub"], help="kiro-flow run に渡す planner（既定 flow-planner）")
     sp.add_argument("--location", default=None,
                     choices=["auto", "local", "daemon", "remote"], help="act の実行モード（既定 auto）")
-    sp.add_argument("--executor", default=None, choices=["kiro", "stub"], help="（既定 kiro）")
+    sp.add_argument("--executor", default=None, choices=["kiro", "stub", "gitlab"], help="（既定 kiro）")
+    sp.add_argument("--gitlab-repo-url", dest="gitlab_repo_url", default=None,
+                    help="executor=gitlab の委譲先リポジトリ URL（kiro-flow の gitlab.repo_url へ伝搬。"
+                         "設定ファイル gitlab_repo_url と同義）")
     sp.add_argument("--model", default=None)
     sp.add_argument("--max-iterations", type=int, default=None)
     sp.add_argument("--max-cycles", type=int, default=None, help="予算: サイクル数（既定 20）")

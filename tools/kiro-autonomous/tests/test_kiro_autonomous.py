@@ -1489,6 +1489,20 @@ class TestDaemonRouting(unittest.TestCase):
             self.assertNotIn("--git", km._kf_base(c, False))
             self.assertIn("--git", km._kf_base(c, True))
 
+    def test_kf_env_propagates_gitlab_repo_url(self):
+        # gitlab_repo_url を設定すると KIRO_FLOW_GITLAB_REPO_URL で kiro-flow へ伝搬する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d, executor="gitlab", gitlab_repo_url="https://gitlab.com/g/r")
+            env = km._kf_env(c)
+            self.assertIsNotNone(env)
+            self.assertEqual(env["KIRO_FLOW_GITLAB_REPO_URL"], "https://gitlab.com/g/r")
+
+    def test_kf_env_none_when_repo_url_empty(self):
+        # 未設定なら None（親プロセスの環境をそのまま継承）
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(km._kf_env(cfg_for(Path(d))))
+
     def test_daemon_detection(self):
         if km.fcntl is None:
             self.skipTest("fcntl 無し")
@@ -1879,6 +1893,18 @@ class TestConfigFile(unittest.TestCase):
             ns = self._resolve(str(p), executor="kiro")   # CLI 明示は維持される
             self.assertEqual(ns.executor, "kiro")          # CLI 勝ち
             self.assertEqual(ns.planner, "none")           # config 採用
+
+    def test_gitlab_repo_url_from_config(self):
+        # gitlab_repo_url を設定ファイルから解決できる（CLI > config > 既定）
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "kiro-autonomous.json"
+            p.write_text('{"executor":"gitlab","gitlab_repo_url":"https://gitlab.com/g/r"}',
+                         encoding="utf-8")
+            ns = self._resolve(str(p))
+            self.assertEqual(ns.gitlab_repo_url, "https://gitlab.com/g/r")
+            ns2 = self._resolve(str(p), gitlab_repo_url="https://gitlab.com/o/v")  # CLI 勝ち
+            self.assertEqual(ns2.gitlab_repo_url, "https://gitlab.com/o/v")
+            self.assertEqual(self._resolve(None).gitlab_repo_url, "")            # 既定は空
 
     def test_builtin_defaults_when_no_config(self):
         ns = self._resolve(None)
