@@ -8,6 +8,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -3100,6 +3101,125 @@ class TestCliKiroFlowDelegation(unittest.TestCase):
             self.assertIn("stub", logtext)
             # 委譲先 kiro-flow（orchestrator/worker まで含む）自身が正常終了した
             self.assertIn("RC\t0", logtext)
+
+
+def _make_skill_repo(root: Path, tool_subdir: str = "tools/kiro-autonomous") -> Path:
+    """temp に「スキルリポジトリ」を作る: main に tool_subdir/install.sh を持つ git リポジトリ。
+    install.sh は --prefix のディレクトリに marker を書くだけの最小実装。リポジトリ path を返す。"""
+    repo = root / "skillrepo"
+    td = repo / tool_subdir
+    td.mkdir(parents=True, exist_ok=True)
+    other = repo / "tools" / "kiro-flow"           # sparse 除外の確認用
+    other.mkdir(parents=True, exist_ok=True)
+    (other / "FILE.txt").write_text("unrelated\n")
+    (td / "install.sh").write_text(
+        "#!/usr/bin/env bash\nset -e\nPREFIX=\"$HOME/.local/bin\"\n"
+        "[ \"$1\" = --prefix ] && PREFIX=\"$2\"\nmkdir -p \"$PREFIX\"\n"
+        "echo installed > \"$PREFIX/INSTALLED_MARKER\"\n")
+    (td / "kiro-autonomous.py").write_text("# tool body\n")
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    for c in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
+              ["git", "commit", "-q", "-m", "init"]):
+        subprocess.run(c, cwd=repo, env=env, check=True, capture_output=True)
+    return repo
+
+
+def _commit_change(repo: Path, relpath: str, content: str = "x\n") -> None:
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    p = repo / relpath
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "update"], cwd=repo, env=env,
+                   check=True, capture_output=True)
+
+
+class SelfUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ka-update-"))
+        self.state = self.tmp / "state"
+        self.state.mkdir(parents=True, exist_ok=True)
+        self._old = os.environ.get("KIRO_STATE_HOME")
+        os.environ["KIRO_STATE_HOME"] = str(self.state)
+        km._UPDATE_LAST_CHECK["t"] = 0.0          # モジュール状態を毎テストでリセット
+        self.repo = _make_skill_repo(self.tmp)
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("KIRO_STATE_HOME", None)
+        else:
+            os.environ["KIRO_STATE_HOME"] = self._old
+        km._UPDATE_LAST_CHECK["t"] = 0.0
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cfg(self, **kw):
+        base = dict(update_repo=str(self.repo), update_branch="main",
+                    update_subdir="tools/kiro-autonomous", update_installer="install.sh",
+                    update_check_interval=60.0)
+        base.update(kw)
+        return cfg_for(self.tmp, **base)
+
+    def test_remote_branch_sha(self):
+        sha = km.remote_branch_sha(str(self.repo), "main")
+        self.assertTrue(sha and len(sha) >= 7)
+        self.assertIsNone(km.remote_branch_sha("", "main"))
+        self.assertIsNone(km.remote_branch_sha(str(self.repo), "no-such-branch"))
+
+    def test_check_update_baseline_then_latest(self):
+        cfg = self._cfg()
+        info = km.check_update(cfg)             # 初回: ベースライン
+        self.assertTrue(info["enabled"] and info["baseline"])
+        self.assertFalse(info["available"])
+        self.assertFalse(km.check_update(cfg)["available"])   # 2 回目: 最新
+
+    def test_check_update_detects_new_commit(self):
+        cfg = self._cfg()
+        km.check_update(cfg)
+        _commit_change(self.repo, "tools/kiro-autonomous/NEW.txt")
+        self.assertTrue(km.check_update(cfg)["available"])
+
+    def test_disabled_when_no_repo(self):
+        cfg = self._cfg(update_repo=None)
+        self.assertFalse(km.check_update(cfg)["enabled"])
+        self.assertFalse(km.maybe_self_update(cfg))
+
+    def test_sparse_checkout_only_subdir(self):
+        dest = str(self.tmp / "co" / "repo")
+        tool_dir = km.sparse_checkout_tool(str(self.repo), "main",
+                                           "tools/kiro-autonomous", dest)
+        self.assertTrue(os.path.isfile(os.path.join(tool_dir, "install.sh")))
+        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-flow")))
+
+    def test_apply_update_records_sha(self):
+        cfg = self._cfg()
+        km.check_update(cfg)                    # baseline
+        _commit_change(self.repo, "tools/kiro-autonomous/N2.txt")
+        info = km.check_update(cfg)
+        self.assertTrue(info["available"])
+        prefix = str(self.tmp / "prefix")
+
+        def runner(c, **k):                     # install.sh だけ --prefix を足す
+            cmd = c + ["--prefix", prefix] if c[:1] == ["bash"] else c
+            return subprocess.run(cmd, capture_output=True, text=True, **k)
+        self.assertTrue(km.apply_update(cfg, info, runner=runner))
+        self.assertEqual(km.read_update_state()["applied_sha"], info["remote_sha"])
+        self.assertTrue(os.path.isfile(os.path.join(prefix, "INSTALLED_MARKER")))
+        self.assertFalse(km.check_update(cfg)["available"])   # 適用後は最新
+
+    def test_maybe_self_update_disabled_interval(self):
+        cfg = self._cfg(update_check_interval=0.0)   # interval<=0 で無効
+        self.assertFalse(km.maybe_self_update(cfg))
+
+    def test_run_watch_restarts_on_update(self):
+        # アイドルの watch ループで自己更新が成立したら _RestartRequested が送出されること。
+        # （idle 配線の検証。更新判定そのものは maybe_self_update を True に差し替える）
+        cfg = self._cfg()
+        with mock.patch.object(km, "maybe_self_update", return_value=True):
+            with self.assertRaises(km._RestartRequested):
+                # backlog 空 → run_loop は即 drain → idle ループへ。sleeper は即戻り。
+                km.run_watch(cfg, sleeper=lambda _s: None)
 
 
 if __name__ == "__main__":

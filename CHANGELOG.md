@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-autonomous
 
 #### Added
+- **自動アップデート（opt-in・既定 off）**。スキルリポジトリ（配布元）の `main` に更新が入ったら、
+  `run --watch` の **アイドル時** に取り込む。doctor と同じ流儀で決定的: `git ls-remote` で main の先頭を
+  確認 → 適用済み SHA（`~/.kiro/kiro-autonomous.update.json`）と違えば、temp 領域へ `tools/kiro-autonomous/`
+  だけを **sparse-checkout** → `install.sh` 実行 → **動いていた cwd のまま `os.execv` で graceful 再起動**
+  （レジストリ登録は再起動前に後始末）。手動は `update [--check|--now]`。設定キー `update_repo` /
+  `update_check_interval` / `update_branch` / `update_subdir` / `update_installer`。初回はベースライン記録のみ
+  （無更新）。タスク実行中は何もしない。単体テスト `SelfUpdateTests`（8 件）を追加。
 - 黒箱 CLI 統合テスト（`TestCliEndToEnd`）。`kiro-autonomous.py` を実プロセスとして argv 起動し、
   ループ機構を end-to-end で検証: drain→exit 0・成果物退避（archive）、verify 失敗→blocked→exit 1＋
   needs ファイル生成、予算超過→budget→exit 2、`--no-archive` で退避せず削除。`run_loop()` の in-process
@@ -83,6 +90,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-flow
 
 #### Added
+- **自動アップデート（opt-in・既定 off）**。スキルリポジトリ（配布元）の `main` に更新が入ったら、
+  **daemon のアイドル時**（要求も子プロセスも無いとき）に取り込む。doctor と同じ流儀で決定的:
+  `git ls-remote` で main の先頭を確認 → 適用済み SHA（`~/.kiro/kiro-flow.update.json`）と違えば、temp
+  領域へ `tools/kiro-flow/` だけを **sparse-checkout** → `install.sh` 実行 → **動いていた cwd のまま
+  `os.execv` で graceful 再起動**（子の terminate と daemon ロック解放を経て再起動）。手動は
+  `update [--check|--now]`。設定キー `update_repo` / `update_check_interval` / `update_branch` /
+  `update_subdir` / `update_installer`。初回はベースライン記録のみ（無更新）。仕事中は何もしない。
+  単体テスト `SelfUpdateTests`（8 件）を追加。
 - `doctor` サブコマンド。run 状態/イベント/環境から稼働を診断し、原因を **env / config / program** に
   分類する。収集・修正・起票の駆動は決定的に、診断と分類は kiro-cli へ委譲（不在時は決定的チェックのみ）。
   `--fix` で env/config を修正（`ensure-bus`＝バス作成）し、program の不具合は `gitlab-idd` スキルで

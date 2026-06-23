@@ -137,3 +137,19 @@ promote_threshold: 2        # learn ルールがこの回数以上効いたら l
 rot_age_days: 14.0          # rot の stale 判定（経過日数）
 # notify_cmd: "teams-use post"   # 判断待ち遷移時のダイジェストを渡す通知コマンド
 # actor: alice               # 決定記録に残す操作者名（既定 $USER）
+
+# ---------------------------------------------------------------------------
+# 自動アップデート（opt-in・既定 off）
+# ---------------------------------------------------------------------------
+# スキルリポジトリ（このツールの配布元）の main ブランチに更新が入ったら、run --watch の
+# アイドル時（消化待ち/フィードバックが無いとき）に自動で取り込む。手順は doctor と同じ流儀で
+# 決定的: git ls-remote で main の先頭を確認し、適用済みと違えば temp 領域へ
+# tools/kiro-autonomous/ だけを sparse-checkout → install.sh を実行 → 動いていた cwd のまま
+# graceful 再起動する（os.execv）。手動なら `kiro-autonomous update [--check|--now]`。
+# 初回チェックは「いま動いている本体を最新」とみなしベースラインを記録するだけ（無更新）。
+#
+# update_repo: "https://github.com/ynitto/sandbox"        # スキルリポジトリ（git URL/パス）。空なら無効
+# update_check_interval: 3600           # 更新チェック間隔（秒）。0 以下で無効（既定 off）
+# update_branch: main                   # 追従するブランチ
+# update_subdir: tools/kiro-autonomous  # リポジトリ内のこのツールのサブディレクトリ
+# update_installer: install.sh          # サブディレクトリ内で実行するインストーラ

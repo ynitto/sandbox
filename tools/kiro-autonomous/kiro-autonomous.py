@@ -2234,6 +2234,18 @@ def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tu
 # ---------------------------------------------------------------------------
 # 設定
 # ---------------------------------------------------------------------------
+# このツールがスキルリポジトリ内に置かれているサブディレクトリ（自動アップデートの参照先）。
+# 自動アップデートは update_repo のこのパス以下だけを temp 領域へ sparse-checkout して
+# install.sh を実行する（doctor と同じ流儀で、操作は決定的・無関係ファイルは取得しない）。
+TOOL_SUBDIR = "tools/kiro-autonomous"
+# スキルリポジトリ（git URL/パス）の既定。空なら自動アップデートは無効（設定ファイルで指定する）。
+# 例: "https://github.com/ynitto/sandbox"
+DEFAULT_UPDATE_REPO = ""
+
+# 自己更新の再起動先 cwd（main で起動時の cwd を捕捉。「動いていたカレントディレクトリ」へ戻す）。
+_START_CWD: "str | None" = None
+
+
 @dataclass
 class Config:
     backlog: Path      # ディレクトリ（案件毎ファイル）
@@ -2310,6 +2322,14 @@ class Config:
     max_project_cost: float = 0.0        # プロジェクト累計コスト上限(USD・0=無制限)
     project_stall: int = 2               # acceptance PASS 数が増えない連続回数の上限→人へ
     with_flow: bool = False              # doctor: 実行層 kiro-flow doctor も連携実行し findings を統合（CLI 既定 on）
+    # 自動アップデート（opt-in）。update_repo を設定し update_check_interval を正にしたときだけ有効。
+    # watch のアイドル時に git ls-remote で main の先頭を確認し、適用済みと違えば temp 領域へ
+    # sparse-checkout（tools/kiro-autonomous/ だけ）→ install.sh 実行 → graceful 再起動する。
+    update_check_interval: float = 0.0   # 更新チェック間隔（秒）。0 以下で無効（既定 off）
+    update_repo: "str | None" = None     # スキルリポジトリ（git URL/パス）。空/None なら無効
+    update_branch: str = "main"          # 追従するブランチ
+    update_subdir: str = TOOL_SUBDIR     # リポジトリ内のこのツールのサブディレクトリ
+    update_installer: str = "install.sh"  # サブディレクトリ内で実行するインストーラ
 
     def archive_dir(self) -> Path:
         return self.archive or (self.backlog.parent / "archive")
@@ -3015,6 +3035,8 @@ def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.slee
             sleeper(cfg.poll)
             if heartbeat:
                 heartbeat()          # idle 中も heartbeat を保ち、リモートから生存が見えるようにする
+            if maybe_self_update(cfg):   # アイドル時のみ自己更新を確認・取り込み（取り込めたら再起動）
+                raise _RestartRequested()
 
 
 # ---------------------------------------------------------------------------
@@ -3885,12 +3907,18 @@ def cmd_run(cfg: Config) -> int:
         if cfg.watch:
             print("\n=== kiro-autonomous 停止（SIGTERM/Ctrl-C 受信）===")
         return 0
+    except _RestartRequested:
+        # 自己更新を適用済み。finally でレジストリを掃除してから新しい本体へ exec する。
+        print("\n=== kiro-autonomous 自己更新を適用。graceful 再起動します ===")
     finally:
         for p in reg:
             try:
                 p.unlink()
             except OSError:
                 pass
+    # _RestartRequested 経由でここに到達（return 済みの正常/停止系は通らない）。後始末後に再起動。
+    restart_self(_START_CWD)
+    return 0
 
 
 def _install_sigterm() -> None:
@@ -3990,11 +4018,18 @@ def cmd_run_all(cfg: Config) -> int:
                 time.sleep(cfg.poll)
                 for paths in registered.values():
                     refresh_instance(paths)
+                if maybe_self_update(cfg):            # アイドル時のみ自己更新（取り込めたら再起動）
+                    raise _RestartRequested()
     except KeyboardInterrupt:
         print("\n=== kiro-autonomous 停止（SIGTERM/Ctrl-C 受信・全プロジェクト）===")
         return 0
+    except _RestartRequested:
+        print("\n=== kiro-autonomous 自己更新を適用。graceful 再起動します（全プロジェクト）===")
     finally:
         _cleanup()
+    # _RestartRequested 経由でここに到達。レジストリ後始末（finally 済み）の後に再起動。
+    restart_self(_START_CWD)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -4627,6 +4662,8 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 break
             if has_work(cfg):
                 break
+            if maybe_self_update(cfg):   # アイドル時のみ自己更新（取り込めたら再起動）
+                raise _RestartRequested()
 
 
 # ---------------------------------------------------------------------------
@@ -4706,6 +4743,12 @@ CONFIG_DEFAULTS = {
     "max_project_cycles": 5,        # project: 改善サイクルの上限（有限停止）
     "max_project_cost": 0.0,        # project: 累計コスト上限(USD・0=無制限)
     "project_stall": 2,             # project: acceptance PASS 数が増えない連続回数→人へ
+    # 自動アップデート（opt-in・既定 off）。update_repo を設定し update_check_interval を正にすると有効
+    "update_check_interval": 0.0,        # 更新チェック間隔（秒）。0 以下で無効
+    "update_repo": DEFAULT_UPDATE_REPO,  # スキルリポジトリ（git URL/パス）。空なら無効
+    "update_branch": "main",             # 追従するブランチ
+    "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
+    "update_installer": "install.sh",    # サブディレクトリ内で実行するインストーラ
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,
@@ -4830,6 +4873,11 @@ def build_config(args) -> Config:
         max_project_cost=max(0.0, float(getattr(args, "max_project_cost", 0.0) or 0.0)),
         project_stall=max(1, int(getattr(args, "project_stall", 2) or 2)),
         with_flow=bool(getattr(args, "with_flow", False)),
+        update_check_interval=max(0.0, float(getattr(args, "update_check_interval", 0.0) or 0.0)),
+        update_repo=getattr(args, "update_repo", None) or None,
+        update_branch=str(getattr(args, "update_branch", "main") or "main"),
+        update_subdir=str(getattr(args, "update_subdir", TOOL_SUBDIR) or TOOL_SUBDIR),
+        update_installer=str(getattr(args, "update_installer", "install.sh") or "install.sh"),
     )
 
 
@@ -4915,7 +4963,223 @@ def _add_common(sp):
                     help="rot の stale 判定（経過日数。既定 14）")
 
 
+# ---------------------------------------------------------------------------
+# 自動アップデート — スキルリポジトリ（main）の更新を取り込み graceful 再起動する
+# ---------------------------------------------------------------------------
+# doctor と同じ流儀（知能は委譲・操作は決定的）で、本体は「決定的な取り込み」だけを行う:
+#   1. git ls-remote でスキルリポジトリ main の最新コミットを得る
+#   2. 適用済み SHA（state ファイル）と違えば「更新あり」
+#   3. アイドル時に temp 領域へ sparse-checkout（このツールの tools/kiro-autonomous/ だけ）
+#   4. install.sh を実行して ~/.local/bin の本体を更新
+#   5. 動いていた cwd のまま os.execv で新しい本体へ graceful 再起動
+# update_repo 未設定 or update_check_interval<=0 のときは完全に無効（既定 off）。
+class _RestartRequested(Exception):
+    """自己更新の適用後に graceful 再起動を要求する内部シグナル。
+    watch 常駐の finally（レジストリ後始末）を必ず通してから exec するため例外で伝播する。"""
+
+
+# 更新チェックの最終実行時刻（プロセス内 1 watcher 前提のモジュール状態）。
+_UPDATE_LAST_CHECK = {"t": 0.0}
+
+
+def _update_state_path() -> Path:
+    base = os.environ.get("KIRO_STATE_HOME") or os.path.expanduser("~/.kiro")
+    return Path(base) / "kiro-autonomous.update.json"
+
+
+def read_update_state() -> dict:
+    try:
+        return json.loads(_update_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def write_update_state(state: dict) -> None:
+    p = _update_state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def remote_branch_sha(repo: str, branch: str, runner=None) -> "str | None":
+    """git ls-remote でリモート branch の先頭コミット SHA を得る（取得不能なら None）。"""
+    if not repo:
+        return None
+    run = runner or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=60))
+    try:
+        r = run(["git", "ls-remote", repo, f"refs/heads/{branch}"])
+    except Exception:  # noqa: BLE001  git 不在・ネットワーク不通・タイムアウト
+        return None
+    if getattr(r, "returncode", 1) != 0:
+        return None
+    lines = (getattr(r, "stdout", "") or "").strip().splitlines()
+    if not lines:
+        return None
+    sha = lines[0].split()[0].strip()
+    return sha if len(sha) >= 7 else None
+
+
+def check_update(cfg: "Config", runner=None) -> dict:
+    """更新の有無を判定する（取り込みはしない）。戻り値の dict:
+      {enabled, repo, branch, remote_sha, applied_sha, available, baseline}
+    初回（applied_sha 未記録）は現在の本体を最新とみなし remote_sha をベースライン記録して
+    available=False を返す（無用な初回更新ループを避ける）。"""
+    repo = cfg.update_repo or ""
+    branch = cfg.update_branch or "main"
+    info = {"enabled": bool(repo), "repo": repo, "branch": branch, "remote_sha": None,
+            "applied_sha": None, "available": False, "baseline": False}
+    if not repo:
+        return info
+    state = read_update_state()
+    info["applied_sha"] = state.get("applied_sha")
+    remote = remote_branch_sha(repo, branch, runner=runner)
+    info["remote_sha"] = remote
+    if not remote:
+        return info
+    if not info["applied_sha"]:
+        state["applied_sha"] = remote
+        state["baseline_at"] = _now_ts()
+        write_update_state(state)
+        info["applied_sha"] = remote
+        info["baseline"] = True
+        return info
+    info["available"] = (remote != info["applied_sha"])
+    return info
+
+
+def sparse_checkout_tool(repo: str, branch: str, subdir: str, dest: str, runner=None) -> str:
+    """repo の branch から subdir 以下だけを dest へ sparse-checkout し dest/subdir のパスを返す。
+    無関係ファイルを取得しないため --no-checkout + blob フィルタ + sparse-checkout を使う。"""
+    run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True,
+                                                   timeout=600, **k))
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    r = run(["git", "clone", "--no-checkout", "--depth", "1", "--filter=blob:none",
+             "--branch", branch, repo, dest])
+    if getattr(r, "returncode", 1) != 0:   # blob フィルタ非対応サーバ向けフォールバック
+        r = run(["git", "clone", "--no-checkout", "--depth", "1", "--branch", branch, repo, dest])
+    if getattr(r, "returncode", 1) != 0:
+        raise RuntimeError(f"git clone 失敗: {(getattr(r, 'stderr', '') or '').strip()[:300]}")
+
+    def g(cmd):
+        return run(["git", "-C", dest] + cmd)
+    g(["sparse-checkout", "init", "--cone"])
+    g(["sparse-checkout", "set", subdir])
+    co = g(["checkout", branch])
+    if getattr(co, "returncode", 1) != 0:
+        raise RuntimeError(f"git checkout 失敗: {(getattr(co, 'stderr', '') or '').strip()[:300]}")
+    tool_dir = os.path.join(dest, subdir)
+    if not os.path.isdir(tool_dir):
+        raise RuntimeError(f"sparse-checkout 後に {subdir} が見つかりません（リポジトリ構成を確認）")
+    return tool_dir
+
+
+def run_installer(tool_dir: str, installer: str = "install.sh", runner=None) -> "tuple[bool, str]":
+    """tool_dir 内の installer を実行して本体を更新する。(成功, 末尾出力) を返す。"""
+    path = os.path.join(tool_dir, installer)
+    if not os.path.isfile(path):
+        return False, f"インストーラが見つかりません: {path}"
+    run = runner or (lambda c, **k: subprocess.run(c, capture_output=True, text=True,
+                                                   timeout=600, **k))
+    try:
+        r = run(["bash", path], cwd=tool_dir)
+    except Exception as e:  # noqa: BLE001
+        return False, f"インストーラ実行に失敗: {e}"
+    out = ((getattr(r, "stdout", "") or "") + (getattr(r, "stderr", "") or "")).strip()
+    return getattr(r, "returncode", 1) == 0, out[-2000:]
+
+
+def apply_update(cfg: "Config", info: dict, runner=None) -> bool:
+    """temp 領域へ sparse-checkout → install.sh → 適用済み SHA を記録。成功で True。
+    temp は必ず後始末する。失敗時は state を変えない（次回再試行）。"""
+    subdir = cfg.update_subdir or TOOL_SUBDIR
+    installer = cfg.update_installer or "install.sh"
+    tmp = tempfile.mkdtemp(prefix="kiro-autonomous-update-")
+    dest = os.path.join(tmp, "repo")
+    try:
+        tool_dir = sparse_checkout_tool(info["repo"], info["branch"], subdir, dest, runner=runner)
+        ok, out = run_installer(tool_dir, installer, runner=runner)
+        if not ok:
+            print(f"[update] install.sh 失敗（更新を見送り）: {out[-300:]}", flush=True)
+            append_journal(cfg.journal, "=== update: install.sh 失敗（更新を見送り・次回再試行）===")
+            return False
+        state = read_update_state()
+        state["applied_sha"] = info["remote_sha"]
+        state["applied_at"] = _now_ts()
+        write_update_state(state)
+        print(f"[update] 更新を適用しました（{info['remote_sha'][:8]}）。", flush=True)
+        append_journal(cfg.journal, f"=== update: 更新を適用（{info['remote_sha'][:8]}）===")
+        return True
+    except Exception as e:  # noqa: BLE001  clone/checkout/installer の失敗は次回再試行
+        print(f"[update] 更新の取り込みに失敗（次回再試行）: {e}", flush=True)
+        return False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def restart_self(cwd: "str | None" = None) -> None:
+    """更新後の本体へ os.execv で graceful 再起動する。動いていた cwd を保ったまま起動し直す。"""
+    if cwd and os.path.isdir(cwd):
+        try:
+            os.chdir(cwd)
+        except OSError:
+            pass
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable, _self_script()] + sys.argv[1:])
+
+
+def maybe_self_update(cfg: "Config", runner=None) -> bool:
+    """watch のアイドル時に定期的に呼ぶ自己更新チェック。更新を適用したら True
+    （呼び出し側は _RestartRequested を投げて finally 後始末の後に restart_self する）。
+    update_check_interval<=0 で無効。チェック間隔は前回からの経過で律速する。"""
+    interval = float(cfg.update_check_interval or 0)
+    if interval <= 0:
+        return False
+    now = time.time()
+    if now - _UPDATE_LAST_CHECK["t"] < interval:
+        return False
+    _UPDATE_LAST_CHECK["t"] = now
+    info = check_update(cfg, runner=runner)
+    if not info.get("available"):
+        return False
+    print(f"[update] スキルリポジトリ {info['branch']} に更新を検出: "
+          f"{(info['applied_sha'] or '')[:8]} → {(info['remote_sha'] or '')[:8]}", flush=True)
+    return apply_update(cfg, info, runner=runner)
+
+
+def cmd_update(cfg: "Config", now: bool = False, check: bool = False) -> int:
+    """手動アップデート: 更新の有無を確認し、--now で取り込んで再起動する。
+    終了コード: 0=最新/ベースライン記録/更新あり表示 / 1=取り込み失敗 / 2=未設定・取得不能。"""
+    info = check_update(cfg)
+    if not info["enabled"]:
+        print("[kiro-autonomous] update: update_repo が未設定です（設定ファイルで指定してください）。",
+              file=sys.stderr)
+        return 2
+    if info["remote_sha"] is None:
+        print(f"[kiro-autonomous] update: リモート {info['repo']}@{info['branch']} を取得できませんでした。",
+              file=sys.stderr)
+        return 2
+    if info.get("baseline"):
+        print(f"[kiro-autonomous] update: ベースラインを記録しました（{info['remote_sha'][:8]}）。"
+              "以降この地点からの更新を検出します。")
+        return 0
+    if not info["available"]:
+        print(f"[kiro-autonomous] update: 最新です（{info['applied_sha'][:8]}）。")
+        return 0
+    print(f"[kiro-autonomous] update: 更新があります "
+          f"{info['applied_sha'][:8]} → {info['remote_sha'][:8]}")
+    if check or not now:
+        print("  取り込むには `kiro-autonomous update --now` を実行してください。")
+        return 0
+    if apply_update(cfg, info):
+        print("  install.sh を実行して更新しました。再起動します。")
+        restart_self(_START_CWD or os.getcwd())   # 戻らない
+    print("  更新の取り込みに失敗しました（ログを確認してください）。", file=sys.stderr)
+    return 1
+
+
 def main(argv=None) -> int:
+    global _START_CWD
+    _START_CWD = os.getcwd()   # 自己更新の graceful 再起動で「動いていた cwd」へ戻すために捕捉
     if argv is None:
         argv = sys.argv[1:]
     p = argparse.ArgumentParser(
@@ -5003,6 +5267,14 @@ def main(argv=None) -> int:
     dr.add_argument("--no-flow", dest="with_flow", action="store_false",
                     help="kiro-flow との連携を無効化し本体のみ診断する")
 
+    up = sub.add_parser("update",
+                        help="スキルリポジトリ(main)の更新を確認。--now で temp に sparse-checkout "
+                             "して install.sh を実行し再起動する")
+    _add_common(up)
+    up.add_argument("--now", action="store_true",
+                    help="更新があれば即座に install.sh を実行して再起動する")
+    up.add_argument("--check", action="store_true", help="更新の有無だけを表示（取り込まない）")
+
     enq = sub.add_parser("enqueue", help="汎用の取り込み口（CLI/stdin/JSON から backlog タスクを作る）")
     _add_common(enq)
     enq.add_argument("--title", default=None, help="タスクのタイトル（必須・--json 時は不要）")
@@ -5070,7 +5342,7 @@ def main(argv=None) -> int:
     # PC 起動時に立ち上げっぱなしにして全プロジェクトを面倒見る daemon 用途を一級にするため。
     # （`--project all` を前置きするだけ＝後続に明示 --project があればそちらが勝つ。明示 `run` は単一 default のまま）
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
-                    "runlog", "doctor", "enqueue", "approve", "hold", "reprioritize",
+                    "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
                     "instances", "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", "--project", "all", *argv]
@@ -5112,6 +5384,8 @@ def main(argv=None) -> int:
                                      getattr(args, "tail", 10)),
         "doctor": lambda: cmd_doctor(cfg, getattr(args, "fix", False),
                                      getattr(args, "json", False)),
+        "update": lambda: cmd_update(cfg, getattr(args, "now", False),
+                                     getattr(args, "check", False)),
         "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason),
