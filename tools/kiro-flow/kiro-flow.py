@@ -600,9 +600,34 @@ class GitBus(Bus):
             raise RuntimeError(f"git {' '.join(args)} 失敗: {p.stderr.strip()[:300]}")
         return p
 
+    def _is_own_repo_root(self) -> bool:
+        """workdir が「ある git リポジトリの作業ツリーのルート」か。
+        git は workdir 直下に .git が無いと親ディレクトリへ遡って最寄りの .git を探すため、
+        単に `git -C workdir` が成功するだけでは親リポジトリを掴んでいる可能性がある。"""
+        top = self._git(["rev-parse", "--show-toplevel"], check=False).stdout.strip()
+        return bool(top) and os.path.realpath(top) == os.path.realpath(self.workdir)
+
+    def _is_own_clone(self) -> bool:
+        """workdir が self.remote を origin とする自前クローンのルートか。
+        これを満たすときのみ sparse-checkout/checkout を適用してよい（親リポジトリや別リポジトリへ
+        誤って sparse-checkout を効かせて作業ツリーを壊さないためのガード）。"""
+        if not self._is_own_repo_root():
+            return False
+        origin = self._git(["remote", "get-url", "origin"], check=False).stdout.strip()
+        return origin == self.remote or (
+            bool(origin) and os.path.realpath(origin) == os.path.realpath(self.remote))
+
     def _ensure_clone(self) -> None:
-        first = not os.path.isdir(os.path.join(self.workdir, ".git"))
-        if first:
+        # workdir が self.remote の自前クローンなら再利用。そうでなければ新規 clone する。
+        # （workdir 直下に .git が無いまま sparse-checkout すると親リポジトリに作用してしまうため、
+        #   「自分のクローンのルートである」ことを確認してからでないと sparse-checkout に進まない。）
+        if not self._is_own_clone():
+            if os.path.isdir(self.workdir) and os.listdir(self.workdir):
+                # 既存の非空ディレクトリ（親/別リポジトリの作業ツリーや無関係なリポジトリ）には clone
+                # できない。誤って親・別リポジトリへ sparse-checkout を効かせる事故を防ぐため、上書きせず中断。
+                raise RuntimeError(
+                    f"クローン先 {self.workdir} が空でないか別リポジトリの作業ツリーです。"
+                    "親・別リポジトリへの sparse-checkout を防ぐため中断します（別の --bus を指定してください）。")
             os.makedirs(os.path.dirname(self.workdir) or ".", exist_ok=True)
             # sparse checkout: --no-checkout で取得し、必要なパスだけ展開する
             r = subprocess.run(
@@ -614,6 +639,12 @@ class GitBus(Bus):
                                    capture_output=True, text=True)
             if r.returncode != 0:
                 raise RuntimeError(f"git clone 失敗: {r.stderr.strip()[:300]}")
+            if not self._is_own_repo_root():
+                # clone 後も workdir 自身がリポジトリのルートでなければ、以降の sparse-checkout が
+                # 親リポジトリへ波及しうる。安全側に倒して中断する。
+                raise RuntimeError(
+                    f"git clone 後も {self.workdir} がクローンのルートになっていません。"
+                    "親リポジトリへの sparse-checkout を防ぐため中断します。")
         # コミット用 ID（未設定環境向けのフォールバック）
         if not self._git(["config", "user.email"], check=False).stdout.strip():
             self._git(["config", "user.email", "kiro-flow@local"])
