@@ -1555,6 +1555,29 @@ class TestDaemonRouting(unittest.TestCase):
             p = km.daemon_lock_path(cfg_for(d, lock_dir=str(d / "locks")), False)
             self.assertEqual(p.parent, d / "locks")
 
+    def test_shared_bus_kept_across_projects(self):
+        # 共有バス（明示設定）なら --project all でも全プロジェクトが同じバス＝同じ daemon ロックを使う
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            shared = d / "shared-bus"
+            cfg = cfg_for(d, bus=shared, shared_bus=True)
+            a = km.project_cfg(cfg, "projectA")
+            b = km.project_cfg(cfg, "projectB")
+            self.assertEqual(a.bus, shared)
+            self.assertEqual(b.bus, shared)
+            # 同じバス → 同じ daemon ロックパス（単一 daemon を全プロジェクトから検知できる）
+            self.assertEqual(km.daemon_lock_path(a, False), km.daemon_lock_path(b, False))
+
+    def test_per_project_bus_when_not_shared(self):
+        # 共有バス未設定なら従来どおりプロジェクト毎の bus（分離）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, shared_bus=False)
+            a = km.project_cfg(cfg, "projectA")
+            b = km.project_cfg(cfg, "projectB")
+            self.assertNotEqual(a.bus, b.bus)
+            self.assertEqual(a.bus.name, "bus")
+
     def test_pid_liveness_fallback_when_flock_unavailable(self):
         # fcntl 無し（Windows 等）でも、daemon が記録した pid の生存で発見できる
         with tempfile.TemporaryDirectory() as d:
