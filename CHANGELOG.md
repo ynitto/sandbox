@@ -25,6 +25,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   kiro-flow 側にも委譲し、kiro-flow が自分の env/config 修正と program 起票を担う（二重作業を避ける）。
 
 #### Changed
+- 内部リファクタリング（振る舞い不変・全機能維持・226 テスト green）。パッチ的に肥大化した実装を整理:
+  重複していた `_pid_alive` 定義を削除、タイムスタンプ整形を `_now_ts()` に集約、kiro-flow コマンド構築の
+  重複を `_kf_base` に統一。長い関数を凝集したヘルパに分割（`_settle_task`→review/done/failure、
+  `run_loop`→`_run_setup`/`_budget_reason`、`cmd_project`→`_project_evaluate`）。外部挙動・CLI・出力は不変。
 - `run` 起動時に、前回の異常終了（`kill -9` / クラッシュ / マシン再起動で `finally` が走らず残った）
   自ホストの死インスタンスレコードを register 前に prune するようにした。`instances` の発見ノイズと
   `start` の偽の重複検出を防ぐ。
