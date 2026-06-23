@@ -1424,7 +1424,8 @@ _executor_module_cache: "dict[str, tuple[float, object]]" = {}
 def _executor_search_dirs() -> "list[str]":
     """executor プラグイン（<name>.py）を探すディレクトリ群（優先順）。"""
     dirs = []
-    # 1. スクリプトと同階層の executors/（リポジトリ実行時に同梱プラグインを発見）
+    # 1. スクリプトと同階層の executors/（リポジトリ実行時の同梱プラグイン／インストーラが
+    #    本体 bin と同じフォルダに配置した同梱プラグインを発見＝kiro-loop と同じ「本体隣」流儀）
     dirs.append(os.path.join(os.path.dirname(self_path()), "executors"))
     # 2. git リポジトリの tools/kiro-flow/executors（cwd がサブディレクトリでも届く）
     try:
@@ -1435,7 +1436,7 @@ def _executor_search_dirs() -> "list[str]":
             dirs.append(os.path.join(root, "tools", "kiro-flow", "executors"))
     except Exception:  # noqa: BLE001
         pass
-    # 3. インストーラが配置する ~/.kiro/kiro-flow/executors（単一ファイル配布後の発見性）
+    # 3. ~/.kiro/kiro-flow/executors（旧インストーラの配置先・後方互換）
     dirs.append(os.path.expanduser("~/.kiro/kiro-flow/executors"))
     # 4. 設定 executor_dir（任意の追加ディレクトリ）
     extra = _EXECUTOR_DIR

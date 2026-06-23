@@ -179,12 +179,13 @@ ok "インストールしました: $INSTALL_PATH"
 # 6.5 executor プラグインのインストール
 # ---------------------------------------------------------------------------
 # kiro-loop の hooks と同じ流儀で、executor をプラグイン（executors/<name>.py）として
-# 管理する。本体は単一ファイルで配布されるため、同梱プラグインを ~/.kiro/kiro-flow/
-# executors/ に配置し、`--executor <name>` がインストール後も名前で解決できるようにする。
+# 管理する。本体は単一ファイルで配布されるため、同梱プラグインを「本体と同じフォルダ」
+# （${INSTALL_PREFIX}/executors/）に配置し、`--executor <name>` がインストール後も名前で
+# 解決できるようにする（kiro-flow の検索順 #1「スクリプト同階層の executors/」に一致）。
 info "executor プラグインをインストールしています..."
 
 EXEC_SRC_DIR="${SCRIPT_DIR}/executors"
-EXEC_DEST_DIR="${HOME}/.kiro/kiro-flow/executors"
+EXEC_DEST_DIR="${INSTALL_PREFIX}/executors"
 
 if [[ -d "$EXEC_SRC_DIR" ]]; then
   mkdir -p "$EXEC_DEST_DIR"
