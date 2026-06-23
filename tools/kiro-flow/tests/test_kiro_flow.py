@@ -1446,6 +1446,65 @@ class ArgvLimitTests(unittest.TestCase):
         kf.resolve_config(args)
         self.assertEqual(args.argv_limit, 4096)
 
+    def test_gitlab_block_resolved_from_config_file(self):
+        # 設定ファイルの gitlab: ブロック（repo_url 含む）が args.gitlab に載り、_config_path も確定する。
+        # これで --config を渡された worker が repo_url を gl.py へ伝えられる（GL_PROJECT_URL）。
+        import argparse
+        cfg_dir = tempfile.mkdtemp(prefix="kf-cfg-")
+        self.addCleanup(shutil.rmtree, cfg_dir, ignore_errors=True)
+        cfg = os.path.join(cfg_dir, "kiro-flow.json")
+        with open(cfg, "w") as f:
+            json.dump({"gitlab": {"repo_url": "https://gitlab.com/grp/repo"}}, f)
+        args = argparse.Namespace(config=cfg, gitlab=None)
+        kf.resolve_config(args)
+        self.assertEqual(args.gitlab.get("repo_url"), "https://gitlab.com/grp/repo")
+        self.assertEqual(args._config_path, cfg)
+        # make_executor がこの gitlab ブロックを KIRO_FLOW_EXECUTOR_CONFIG へ載せる
+        prev = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
+        self.addCleanup(lambda: os.environ.__setitem__("KIRO_FLOW_EXECUTOR_CONFIG", prev)
+                        if prev is not None else os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None))
+        kf.make_executor(argparse.Namespace(executor="gitlab", gitlab=args.gitlab))
+        self.assertEqual(json.loads(os.environ["KIRO_FLOW_EXECUTOR_CONFIG"]).get("repo_url"),
+                         "https://gitlab.com/grp/repo")
+
+    def test_child_spawn_propagates_config(self):
+        # run/daemon が子（orchestrator/worker）へ --config を引き継ぐ。これが無いと worker は設定を
+        # 再解決できず gitlab.repo_url が既定（空）になり、起票先が git origin にフォールバックする。
+        import argparse
+        cfg_dir = tempfile.mkdtemp(prefix="kf-cfg-")
+        self.addCleanup(shutil.rmtree, cfg_dir, ignore_errors=True)
+        cfg = os.path.join(cfg_dir, "kiro-flow.json")
+        with open(cfg, "w") as f:
+            json.dump({"executor": "gitlab", "gitlab": {"repo_url": "https://gitlab.com/grp/repo"}}, f)
+        bus = tempfile.mkdtemp(prefix="kf-bus-")
+        self.addCleanup(shutil.rmtree, bus, ignore_errors=True)
+        spawned = []
+
+        class _FakePopen:
+            def __init__(self, cmd, *a, **k):
+                spawned.append(cmd)
+            def poll(self): return 0
+            def wait(self, *a, **k): return 0
+            def terminate(self): pass
+
+        base_args = dict(config=cfg, bus=bus, git=None, git_branch="main", git_subdir=None,
+                         lease=30.0, run_id="run-x", workers=1, request="x", planner="stub",
+                         executor=None, model=None, poll=0.01, max_iterations=1, max_fanout=4,
+                         max_retries=1, review=None, granularity="finest", exemplar_first=False,
+                         cleanup_clone=True, repos=None, keep_clone=False)
+        args = argparse.Namespace(**base_args)
+        kf.resolve_config(args)   # executor=gitlab / gitlab block / _config_path を確定
+        with mock.patch.object(kf.subprocess, "Popen", _FakePopen), \
+             mock.patch.object(kf, "make_bus", lambda *a, **k: mock.Mock()):
+            try:
+                kf.cmd_run(args)
+            except Exception:
+                pass  # bus/poll をモックしているので途中で抜けてよい（spawn コマンドだけ検証）
+        self.assertTrue(spawned, "子プロセスが起動されていない")
+        for cmd in spawned:
+            self.assertIn("--config", cmd)
+            self.assertEqual(cmd[cmd.index("--config") + 1], os.path.abspath(cfg))
+
     def test_small_prompt_passed_inline(self):
         seen = {}
 

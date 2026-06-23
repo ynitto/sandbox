@@ -2114,6 +2114,10 @@ def cmd_run(args) -> int:
     me = self_path()
     # グローバル引数（バス・転送）を子プロセスへ引き継ぐ
     base = [sys.executable, me, "--bus", bus_root, "--run-id", run_id, "--lease", str(args.lease)]
+    cfg_path = getattr(args, "_config_path", None)
+    if cfg_path:
+        # 設定（executor プラグインの gitlab: ブロック等）を子へ伝搬。子は cwd が異なりうるので絶対パスで渡す。
+        base += ["--config", os.path.abspath(cfg_path)]
     if args.git:
         base += ["--git", args.git, "--git-branch", args.git_branch,
                  "--git-subdir", args.git_subdir or ""]
@@ -2252,6 +2256,10 @@ def cmd_daemon(args) -> int:
     bus = make_bus(args, f"daemon-{_safe(daemon_id)}")
     me = self_path()
     base = [sys.executable, me, "--bus", os.path.abspath(args.bus), "--lease", str(args.lease)]
+    cfg_path = getattr(args, "_config_path", None)
+    if cfg_path:
+        # 設定（executor プラグインの gitlab: ブロック等）を子へ伝搬。子は cwd が異なりうるので絶対パスで渡す。
+        base += ["--config", os.path.abspath(cfg_path)]
     if args.git:
         base += ["--git", args.git, "--git-branch", args.git_branch,
                  "--git-subdir", args.git_subdir or ""]
