@@ -10,6 +10,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-autonomous
 
 #### Added
+- `--executor`（設定 `executor`）に kiro-flow の executor プラグインを指定できるようにした。組み込みの
+  `kiro` / `stub` に加え、プラグイン名（例 `gitlab`）や `.py` パスをそのまま `kiro-flow run --executor <値>`
+  へ委譲する（`choices` 制限を撤廃）。`kiro-autonomous.yaml.example` / README にも記載。`doctor` の
+  kiro-flow 解決チェックも `executor != stub` の全 executor（プラグイン含む）を対象に拡張した。
 - `doctor` サブコマンド。ログ/状態/環境から稼働を診断し、原因を **env（ユーザー環境固有）/
   config（設定）/ program（プログラム上の不具合）** に分類する。収集・修正・起票の駆動は決定的に、
   診断と分類は kiro-cli へ委譲（kiro-cli 不在時は決定的チェックのみで続行）。`--fix` で env/config を
@@ -19,6 +23,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - `doctor` の **実行層 kiro-flow との連携**（`--with-flow`・既定 on／`--no-flow` で本体のみ）。
   同じバスに対して `kiro-flow doctor --json` を呼び、実行層の所見を `[flow]` 印で統合する。`--fix` 時は
   kiro-flow 側にも委譲し、kiro-flow が自分の env/config 修正と program 起票を担う（二重作業を避ける）。
+
+#### Changed
+- `run` 起動時に、前回の異常終了（`kill -9` / クラッシュ / マシン再起動で `finally` が走らず残った）
+  自ホストの死インスタンスレコードを register 前に prune するようにした。`instances` の発見ノイズと
+  `start` の偽の重複検出を防ぐ。
+- all-daemon の「all」センチネル（実体の無い擬似 root `<container>/projects/all`）を `instances` で
+  `all-daemon` 印（`sentinel` フラグ）として表示し、実プロジェクトの監視レコードと明確に区別するように
+  した。`projectA/default` 等は実プロジェクトの監視として従来どおり全件表示する。
+
+#### Fixed
+- all-daemon の watch ループで heartbeat をラウンド毎に1回だけ更新するよう修正（従来は内側ループに
+  あり、登録数 N に対し毎ラウンド N×(N+1) 回の無駄なファイル書き込みが発生していた）。
+- `approve` / `hold`（`_block`）で古い claim ロック（`claims/<id>.lock`）を解放するよう修正。worker の
+  クラッシュや review/blocked 滞留で残ったロックが人手解決後も残留し、TTL 切れまで次の実行を阻害しうる
+  不備を解消（`release_claim` は冪等のため通常ケースは無害）。
 
 ### kiro-flow
 
@@ -58,6 +77,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 依存タスクの成果物が大きいとき、kiro-cli へ渡すプロンプトが OS のコマンドライン長
   制限（ARG_MAX）に達して起動失敗する不具合を修正。一定サイズを超えるプロンプトは
   一時ファイルへ退避し参照渡しに切り替える（設定 `argv_limit` / `--argv-limit` で調整、既定 100000）。
+- `GitBus._ensure_clone()` の sparse-checkout が親リポジトリに作用しうる不具合を修正。クローン先
+  （`<bus>/<node>`）が親リポジトリの作業ツリー配下にある場合、workdir 直下に自前の `.git` が無いと
+  git が親へ遡って最寄りの `.git` を掴み、`sparse-checkout` が**親リポジトリの作業ツリーを cone 化して
+  隠してしまう**ことがあった。再利用は「`self.remote` を origin とする自前クローンのルート」に限定し、
+  それ以外（親/別リポジトリ・非空の他ディレクトリ）には sparse-checkout を適用せず明示的に中断する。
 
 ---
 

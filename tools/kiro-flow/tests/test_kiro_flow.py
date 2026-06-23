@@ -1145,6 +1145,38 @@ class GitDistributedTests(unittest.TestCase):
         self.assertFalse(os.path.exists(clone))  # クローンごと消える
         bus.cleanup_clone()  # 既に無くても安全（冪等）
 
+    def test_clone_inside_parent_repo_does_not_touch_parent(self):
+        # クローン先が親リポジトリの作業ツリー配下にあっても、sparse-checkout が親へ波及しない。
+        # 親リポジトリを用意し、その配下にバス用クローンを作る。
+        parent = tempfile.mkdtemp(prefix="kf-parent-")
+        subprocess.run(["git", "-C", parent, "init", "-q"], check=True, capture_output=True)
+        for name in ("keepA", "keepB"):
+            with open(os.path.join(parent, name), "w") as f:
+                f.write("x")
+        for c in (["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "p"]):
+            subprocess.run(["git", "-C", parent] + c, check=True, capture_output=True)
+        clone = os.path.join(parent, "bus", "node")     # 親リポジトリの作業ツリー配下
+        kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        # クローンは自分自身の .git を持ち、親の作業ツリーは無傷（sparse で隠されない）
+        self.assertTrue(os.path.isdir(os.path.join(clone, ".git")))
+        self.assertTrue(os.path.exists(os.path.join(parent, "keepA")))
+        self.assertTrue(os.path.exists(os.path.join(parent, "keepB")))
+        # 親リポジトリに sparse-checkout が設定されていない（cone 化していない）
+        cfg = subprocess.run(["git", "-C", parent, "config", "--get", "core.sparseCheckout"],
+                             capture_output=True, text=True).stdout.strip()
+        self.assertNotEqual(cfg, "true")
+
+    def test_clone_into_foreign_nonempty_dir_is_refused(self):
+        # 別リポジトリの非空ディレクトリを誤ってバスのクローン先に指定したら、上書きせず中断する。
+        foreign = tempfile.mkdtemp(prefix="kf-foreign-")
+        subprocess.run(["git", "-C", foreign, "init", "-q"], check=True, capture_output=True)
+        with open(os.path.join(foreign, "important.txt"), "w") as f:
+            f.write("do not touch")
+        with self.assertRaises(RuntimeError):
+            kf.GitBus(foreign, "run1", remote=self.bare, branch="main")
+        # 既存ファイルは無傷
+        self.assertTrue(os.path.exists(os.path.join(foreign, "important.txt")))
+
     def test_make_bus_cleanup_removes_active_clones(self):
         # make_bus で作ったクローンは cleanup_active_clones でまとめて削除される。
         kf._active_clones.clear()

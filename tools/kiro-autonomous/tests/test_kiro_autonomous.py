@@ -358,6 +358,30 @@ class TestAtomicClaim(unittest.TestCase):
             claims = d / "claims"
             self.assertEqual(list(claims.glob("*.lock")) if claims.exists() else [], [])
 
+    def test_approve_clears_stale_claim_lock(self):
+        # worker クラッシュ等で残った古い claim ロックは、人手 approve で掃除される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog" / "R1.md").parent.mkdir(parents=True, exist_ok=True)
+            (d / "backlog" / "R1.md").write_text(
+                "## R1: x\n- status: review\n- verify: `true`\n", encoding="utf-8")
+            lock = d / "claims" / "R1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text('{"host":"dead","pid":1,"ts":0,"id":"R1"}', encoding="utf-8")
+            km.cmd_approve(cfg_for(d, learn=False), "R1", "ok")
+            self.assertFalse(lock.exists())                  # 承認時に古いロックを掃除
+
+    def test_hold_clears_stale_claim_lock(self):
+        # hold（blocked 化）でも doing を離れるので claim ロックを残さない
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "H1", verify="true")
+            lock = d / "claims" / "H1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text('{"host":"dead","pid":1,"ts":0,"id":"H1"}', encoding="utf-8")
+            km.cmd_hold(cfg_for(d, learn=False), "H1", "保留")
+            self.assertFalse(lock.exists())
+
     def test_held_claim_makes_task_skipped(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -1657,6 +1681,34 @@ class TestInstances(unittest.TestCase):
         self.assertEqual(km.cmd_instances(as_json=True), 0)
         self.assertEqual(km.cmd_instances(as_json=False), 0)
 
+    def test_run_prunes_dead_garbage_on_invocation(self):
+        # 前回の異常終了で残った自ホストの死レコードは、run 起動時（register 前）に掃除される
+        d = km.instances_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        garbage = d / f"{km.socket.gethostname()}-999999999-projectA.json"
+        garbage.write_text(
+            '{"pid": 999999999, "host": "%s", "root": "/x/projects/projectA",'
+            ' "project": "projectA", "watch": true}' % km.socket.gethostname(),
+            encoding="utf-8")
+        with tempfile.TemporaryDirectory() as wd:
+            wd = Path(wd)
+            mkb(wd, "T1", title="x", verify="true")
+            km.main(["run", "--workdir", str(wd), "--root", str(wd / ".ka"),
+                     "--planner", "none", "--flow-planner", "stub",
+                     "--executor", "stub", "--dry-run"])
+        self.assertFalse(garbage.exists())             # 起動時に掃除済み
+
+    def test_all_sentinel_is_marked(self):
+        # all-daemon の「all」センチネルは実フォルダ監視と区別する目印（sentinel=True）を持つ
+        with tempfile.TemporaryDirectory() as d:
+            proot = Path(d) / ".ka" / "projects" / "all"
+            rec = km.instance_record(cfg_for(proot, project_name="all"))
+            self.assertTrue(rec["sentinel"])
+            # 実プロジェクトのレコードはセンチネルではない
+            rec2 = km.instance_record(cfg_for(Path(d) / ".ka" / "projects" / "projectA",
+                                              project_name="projectA"))
+            self.assertFalse(rec2["sentinel"])
+
 
 class TestRemoteDiscovery(unittest.TestCase):
     """共有レジストリ越しの別ホスト発見（§11-7）。core はファイル操作のみ・ネットワーク非依存を保つ。"""
@@ -2367,6 +2419,28 @@ class TestProjectLayer(unittest.TestCase):
             self.assertIn("https://git/app.git", cmd)
             # repos の無いタスクは --repo を付けない（必要なものだけ）
             self.assertNotIn("--repo", km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg))
+
+    def test_plugin_executor_forwarded_to_kiro_flow(self):
+        # executor に kiro-flow プラグイン名/パスを指定すると、そのまま kiro-flow run へ委譲される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, executor="gitlab")
+            cmd = km.build_kiro_flow_cmd(km.Task(id="T1", title="x", verify="true"), cfg)
+            i = cmd.index("--executor")
+            self.assertEqual(cmd[i + 1], "gitlab")
+            cfg2 = cfg_for(d, executor="/path/to/my_executor.py")
+            cmd2 = km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg2)
+            self.assertEqual(cmd2[cmd2.index("--executor") + 1], "/path/to/my_executor.py")
+
+    def test_cli_accepts_plugin_executor(self):
+        # CLI の --executor は choices で縛らず、プラグイン名をそのまま受理する（dry-run で act はしない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(Path(d), "T1", title="x", verify="true")
+            rc = km.main(["run", "--workdir", str(d), "--root", str(Path(d) / ".ka"),
+                          "--planner", "none", "--flow-planner", "stub",
+                          "--executor", "gitlab", "--dry-run"])
+            self.assertEqual(rc, 0)
 
     def test_repos_spec_roundtrips_to_task(self):
         with tempfile.TemporaryDirectory() as d:

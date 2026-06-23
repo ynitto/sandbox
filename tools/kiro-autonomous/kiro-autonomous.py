@@ -981,6 +981,10 @@ def instance_record(cfg: "Config") -> dict:
         "journal": str(cfg.journal.resolve()),
         "workdir": str(cfg.workdir.resolve()),
         "watch": cfg.watch,
+        # all-daemon の「all」センチネル（root=<container>/projects/all は実体の無い擬似フォルダで、
+        # start/stop/restart の重複検出・停止・再起動を効かせるためだけに登録する）。実プロジェクトの
+        # 監視レコードと区別し、instances で別フォルダの監視と誤認されないようにする目印。
+        "sentinel": cfg.project_name == "all",
         "started_at": time.time(),
         "started_iso": datetime.now().isoformat(timespec="seconds"),
         "heartbeat": time.time(),                               # 生存信号（リモート発見の鮮度判定に使う）
@@ -1095,6 +1099,10 @@ def cmd_instances(as_json: bool = False, extra: "list | str | None" = None) -> i
         flags = "watch" if r.get("watch") else "run"
         host = str(r.get("host", "?"))
         where = "" if host == me else f" @{host}(remote)"
+        if r.get("sentinel"):                          # 実フォルダの監視ではなく all-daemon の操作センチネル
+            print(f"pid={r['pid']} [{rt}] {flags} all-daemon{where}  "
+                  f"（全プロジェクトを1プロセスで監視。stop/restart 用センチネル: {r['root']}）")
+            continue
         print(f"pid={r['pid']} [{rt}] {flags}{where}  root={r['root']}")
         if r.get("root_windows"):
             print(f"    Windows: {r['root_windows']}")
@@ -2413,6 +2421,7 @@ def _block(cfg, task, reason, reasons):
     reasons[task.id] = reason
     persist_task(cfg, task)
     write_needs_file(cfg, task, reason)
+    release_claim(cfg, task)              # blocked は doing でなくなる＝実行権（claim）を解放（人手 hold 含む）
 
 
 def _revert_workdir(cfg) -> None:
@@ -2921,6 +2930,10 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
             return 0
         print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
         return 2
+    # 人手の承認はタスクを consumable/doing から確定遷移させる。worker のクラッシュや
+    # review/blocked 滞留で残った古い claim ロック（claims/<id>.lock）を先に掃除しておく。
+    # release_claim は冪等（無ければ no-op）なので、新鮮なロックが無い通常ケースでも無害。
+    release_claim(cfg, t)
     if t.norm_status() == "review":
         # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
         ex = dict(t.extra)
@@ -3221,11 +3234,11 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
             "evidence": (f"planner={cfg.planner} executor={cfg.executor} "
                          f"auto_adjudicate={cfg.auto_adjudicate} は kiro-cli を要求する"),
             "fix": "kiro-cli をインストールして PATH を通す（暫定回避は --planner none / --executor stub）"})
-    if cfg.executor == "kiro" and not (cfg.kiro_flow or which("kiro-flow")):
+    if cfg.executor != "stub" and not (cfg.kiro_flow or which("kiro-flow")):
         findings.append({
             "category": "env", "severity": "warn",
             "title": "kiro-flow が見つからない（PATH / --kiro-flow / 同梱のいずれにも無い）",
-            "evidence": "act(local run) の委譲先 kiro-flow を解決できない",
+            "evidence": f"act(local run) の委譲先 kiro-flow を解決できない（executor={cfg.executor}）",
             "fix": "kiro-flow を PATH に置くか --kiro-flow で実体を指定する"})
     if not which("git"):
         findings.append({
@@ -3748,6 +3761,10 @@ def _run_single(cfg: Config) -> int:
 
 
 def cmd_run(cfg: Config) -> int:
+    # 起動時に死んだインスタンスのゴミレコードを掃除する。前回の異常終了（kill -9 / クラッシュ /
+    # マシン再起動）では finally が走らず *.json が残るため、自分を register する前に一掃して
+    # instances の発見ノイズと start の偽の重複検出を防ぐ（prune は自ホストの死レコードを即削除）。
+    list_instances(prune=True, extra=cfg.registry)
     if cfg.project_name == "all":                # 1 プロセスで全プロジェクトを回す（多重化）
         return cmd_run_all(cfg)
     ensure_dirs(cfg)
@@ -3860,8 +3877,10 @@ def cmd_run_all(cfg: Config) -> int:
                     else:
                         run_loop(c)
                     any_work = True
-                for paths in registered.values():
-                    refresh_instance(paths)
+            # heartbeat はラウンドに1回だけ更新する（内側 for に置くと登録数 N に対し N×(N+1) 回
+            # 書き込む無駄が出る。poll より十分長い ttl のためラウンド1回で生存判定は十分）。
+            for paths in registered.values():
+                refresh_instance(paths)
             if not any_work:                          # idle: どのプロジェクトにも仕事が無い
                 time.sleep(cfg.poll)
                 for paths in registered.values():
@@ -4644,7 +4663,9 @@ def _add_common(sp):
                     choices=["flow-planner", "kiro", "stub"], help="kiro-flow run に渡す planner（既定 flow-planner）")
     sp.add_argument("--location", default=None,
                     choices=["auto", "local", "daemon", "remote"], help="act の実行モード（既定 auto）")
-    sp.add_argument("--executor", default=None, choices=["kiro", "stub"], help="（既定 kiro）")
+    sp.add_argument("--executor", default=None,
+                    help="act の実体（kiro-flow run へ委譲）。組み込み kiro / stub、または kiro-flow の "
+                         "executor プラグイン名（例 gitlab）/ .py パスを指定できる（既定 kiro）")
     sp.add_argument("--model", default=None)
     sp.add_argument("--max-iterations", type=int, default=None)
     sp.add_argument("--max-cycles", type=int, default=None, help="予算: サイクル数（既定 20）")
