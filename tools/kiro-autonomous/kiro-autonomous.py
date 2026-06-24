@@ -2270,6 +2270,12 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
                                 cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True)
             data = json.loads(res.stdout)
             if data.get("done"):
+                # done=True は終端（done/failed の両方）を意味する。failed は act 失敗として
+                # 扱い（verify=NG 相当で後段が retry/エスカレーション）、success と取り違えない。
+                # orchestrator がクラッシュして daemon が failed に確定した場合もここで即検知でき、
+                # act_timeout までの永久待機を避けられる。
+                if data.get("status") == "failed":
+                    return (False, f"daemon run {run_id} failed")
                 return (True, f"daemon run {run_id} done")
         except Exception:  # noqa: BLE001 — 取得失敗は次ポーリングで再試行
             pass

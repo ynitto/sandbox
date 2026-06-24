@@ -1203,6 +1203,62 @@ class TestLocation(unittest.TestCase):
             self.assertEqual(seen["T2"], "local")
 
 
+class TestActSubmitTerminal(unittest.TestCase):
+    """daemon/remote submit 待ちが kiro-flow run の終端 status を正しく解釈する。
+    failed を success と取り違えず、orchestrator 異常終了（daemon が failed に確定）でも
+    execute フェーズが永久待機せず即座に失敗として返ることを検証する。"""
+
+    def _fake_run(self, result_payload, advance=None):
+        """submit は run-id を返し、result --json は result_payload を返す擬似 subprocess.run。"""
+        def fake(cmd, *a, **kw):
+            if "submit" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="run-XYZ\n", stderr="")
+            if "result" in cmd:
+                if advance is not None:
+                    advance()
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps(result_payload), stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return fake
+
+    def _task(self):
+        return km.Task(id="T1", title="x", verify="true")
+
+    def test_failed_run_reported_as_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
+            with mock.patch.object(km.subprocess, "run",
+                                   self._fake_run({"done": True, "status": "failed"})), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None):
+                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
+            self.assertFalse(ok)              # failed を success と取り違えない
+            self.assertIn("failed", msg)
+
+    def test_done_run_reported_as_success(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
+            with mock.patch.object(km.subprocess, "run",
+                                   self._fake_run({"done": True, "status": "done"})), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None):
+                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
+            self.assertTrue(ok)
+            self.assertIn("done", msg)
+
+    def test_nonterminal_run_times_out_without_hanging(self):
+        # done=False のまま（orchestrator 失踪を daemon が終端化できていない最悪ケース）でも、
+        # act_timeout を境に必ず返る（永久待機しない）ことを擬似クロックで確認する。
+        clock = [1000.0]
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=10.0)
+            fake = self._fake_run({"done": False, "status": "running"})
+            with mock.patch.object(km.subprocess, "run", fake), \
+                 mock.patch.object(km.time, "time", lambda: clock[0]), \
+                 mock.patch.object(km.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
+                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
+            self.assertFalse(ok)
+            self.assertIn("タイムアウト", msg)
+
+
 class TestPace(unittest.TestCase):
     def test_decide_pace(self):
         with tempfile.TemporaryDirectory() as d:

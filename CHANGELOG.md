@@ -123,6 +123,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   スキップしたか」が分からず判断できなかった問題を解消する。
 
 #### Fixed
+- **charter 駆動 watch が kiro-flow run の失敗終了を検知できず execute フェーズで永久待機する不具合を修正**。
+  daemon/remote へ submit した run を待つ `_act_submit` は、`result --json` の `done`（＝終端 done/failed の両方）
+  だけを見て **failed を success と取り違えて**いた。`status == "failed"` を act 失敗として返すようにし、
+  orchestrator が異常終了して daemon が run を `failed` に確定したケースも**1 ポーリングで即検知**して
+  `act_timeout` までの空待ちを避ける（verify=NG 相当で後段が retry/エスカレーション）。単体テスト 3 件
+  （failed→失敗・done→成功・非終端は act_timeout で必ず返り永久待機しない）を追加。
 - charter の `## repos`（対象リポジトリ）/`## links`（参考リンク）が act ワーカーへ渡る文脈
   （`charter_context`/`build_request`）に含まれていなかった不具合を修正。これらは parse 済みだったが
   `_charter_definition` が goal/constraints/assumptions/deliverables しか出力していなかったため、
@@ -175,6 +181,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `result` コマンドでも一覧できる。
 
 #### Fixed
+- **daemon が orchestrator の異常終了を run の失敗として確定せず、run が非終端のまま放置される不具合を修正**。
+  orchestrator（`orchestrate`）が `done` を書く前にクラッシュ／kill／起動失敗で終了すると、daemon は死んだ子を
+  `del orchestrators[rid]` するだけで run の `status` を更新せず、`result`/`status` を待つ消費者
+  （kiro-autonomous の charter 駆動 watch 等）が**永久待機**に陥っていた。死んだ orchestrator を刈り取る際に
+  exit code を確認し、run がまだ終端でなければ `Bus.mark_run_failed` で `failed`（`failure_reason` 付き）に
+  確定して `run-failed` イベントを記録・push するようにした（正常完了済みの run は上書きしない冪等動作）。
+  これで `result --json` の `done=True`/`status=failed` として失敗終了が即座に消費者へ伝わる。単体テスト 4 件を追加。
 - gitlab executor プラグインで、イシューの起票先が設定 `gitlab.repo_url` にならず git remote origin に
   フォールバックする不具合を修正。`run`/`daemon` が子プロセス（orchestrator/worker）へ **`--config` を
   引き継いでいなかった**ため、実際に `execute()` を呼ぶ worker が `gitlab:` ブロック（`repo_url` 含む）を

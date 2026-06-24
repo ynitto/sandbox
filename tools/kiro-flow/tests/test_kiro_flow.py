@@ -121,6 +121,43 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(self.bus.all_terminal())  # done/failed はどちらも terminal
 
 
+class RunFailureTests(unittest.TestCase):
+    """orchestrator が done を書く前に異常終了したケースの終端化（失敗終了の検知）。
+    これが無いと run が非終端のまま放置され、result/status を待つ消費者
+    （kiro-autonomous の charter 駆動 watch）が execute フェーズで永久待機する。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-test-")
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("test request")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_mark_run_failed_terminalizes_running(self):
+        self.bus.set_status("running")
+        self.assertTrue(self.bus.mark_run_failed("run1", "orchestrator crash"))
+        meta = self.bus.run_meta("run1")
+        self.assertEqual(meta["status"], "failed")
+        self.assertEqual(meta["failure_reason"], "orchestrator crash")
+        # 終端 = result --json の done=True/status=failed として消費者から即検知できる
+        self.assertIn(meta["status"], kf.TERMINAL)
+
+    def test_mark_run_failed_noop_when_already_done(self):
+        self.bus.set_status("done")
+        self.assertFalse(self.bus.mark_run_failed("run1", "late crash"))
+        meta = self.bus.run_meta("run1")
+        self.assertEqual(meta["status"], "done")            # 正常完了を上書きしない
+        self.assertNotIn("failure_reason", meta)
+
+    def test_mark_run_failed_noop_when_already_failed(self):
+        self.bus.set_status("failed")
+        self.assertFalse(self.bus.mark_run_failed("run1"))  # 冪等: 既に終端
+
+    def test_mark_run_failed_missing_run(self):
+        self.assertFalse(self.bus.mark_run_failed("no-such-run"))
+
+
 class PlannerTests(unittest.TestCase):
     def test_parallel_split(self):
         tasks = kf.plan_stub("a; b; c")

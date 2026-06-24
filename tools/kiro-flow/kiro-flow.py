@@ -559,6 +559,22 @@ class Bus:
         return sum(1 for nid, node in graph["nodes"].items()
                    if v.node_state(nid) == "pending" and deps_satisfied(v, node))
 
+    def mark_run_failed(self, run_id: str, reason: str = "") -> bool:
+        """run_id がまだ終端でなければ status を failed に確定する。
+        orchestrator が done を書く前に異常終了した（クラッシュ・kill 等）ケースを終端化し、
+        result/status を待つ消費者（kiro-autonomous の submit 待ちなど）が永久待機に陥らないようにする。
+        終端化できたら True、既に終端 / run が存在しないなら False。"""
+        v = self.run_view(run_id)
+        meta = read_json(v.meta_path)
+        if not meta or meta.get("status") in TERMINAL:
+            return False
+        meta["status"] = "failed"
+        meta["updated_at"] = now_iso()
+        if reason:
+            meta["failure_reason"] = reason
+        write_json_atomic(v.meta_path, meta)
+        return True
+
     # --- inbox（要求キュー）と要求 claim ---
     def submit_request(self, req_id: str, request: str, submitter: str,
                        repos: "list[str] | None" = None) -> None:
@@ -2556,10 +2572,19 @@ def cmd_daemon(args) -> int:
                                    f"clones={c['clones']} work_repos={c['work_repos']}")
             except Exception as e:  # noqa: BLE001 — 掃除失敗は daemon を止めない
                 log(daemon_id, f"cleanup でエラー（無視して継続）: {e}")
-        # 死んだ子を刈り取る
+        # 死んだ子を刈り取る。orchestrator が done を書く前に異常終了（クラッシュ / kill /
+        # 起動失敗）した場合は run が終端に達さないまま放置され、result/status を待つ消費者
+        # （kiro-autonomous の charter 駆動 watch など）が永久待機に陥る。終端でなければ
+        # failed に確定し、失敗終了を検知可能にする。
         for rid in [r for r, p in orchestrators.items() if p.poll() is not None]:
-            log(daemon_id, f"orchestrator 終了: {rid}")
+            rc = orchestrators[rid].poll()
             del orchestrators[rid]
+            if bus.mark_run_failed(rid, f"orchestrator が終端化前に終了しました（rc={rc}）"):
+                bus.run_view(rid).event(daemon_id, "run-failed", run=rid, rc=rc)
+                bus.sync_push(f"run {rid} failed: orchestrator 異常終了（rc={rc}）")
+                log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ run を failed に確定")
+            else:
+                log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
         workers = [(r, p) for r, p in workers if p.poll() is None]
 
         # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）
