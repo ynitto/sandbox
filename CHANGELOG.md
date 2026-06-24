@@ -181,6 +181,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `result` コマンドでも一覧できる。
 
 #### Fixed
+- **daemon が再起動すると孤児 run（owning daemon が消失した非終端 run）を復旧できず永久待機する不具合を修正**。
+  上記の異常終了検知は「死んだ子（orchestrator）を自分で刈り取れる」前提で、**daemon プロセス自体が落ちて
+  再起動した**ケース（remote/分散実行）を救えていなかった。再起動した新プロセスは `orchestrators` を引き継がず、
+  前プロセスが残した `status:running` を見て `run_exists` で受理をスキップするだけ＝何もせず、remote へ
+  `submit` した消費者は `act_timeout`（既定 1800s）まで待たされていた。**run 生存リース（heartbeat）**を導入し、
+  daemon は駆動中の run の `meta` に `orch_lease_until`/`heartbeat_at` を毎 poll 更新（git バスへは間引いて push）。
+  各 poll で **inbox 由来・自分が回しておらず・リース切れ**の run を `mark_run_failed` で `failed` 確定する
+  （`Bus.touch_run`/`run_is_orphaned`/`_recover_orphan_runs`、リース窓 `_run_lease_window` ＝ `max(poll×10, 120s)`）。
+  リース未記録の旧 run／heartbeat 前に死んだ run は作成 age で判定し、作成直後の run は孤児扱いしない（spawn 直後の
+  race と他デーモンの生存 run の誤回収を防止）。これで再起動／別デーモンが ~リース窓内に run を `failed` 化し、
+  消費者（PR の `_act_submit` 失敗検知と連携）が `act_timeout` を待たず復旧できる。単体テスト 11 件を追加。
 - **daemon が orchestrator の異常終了を run の失敗として確定せず、run が非終端のまま放置される不具合を修正**。
   orchestrator（`orchestrate`）が `done` を書く前にクラッシュ／kill／起動失敗で終了すると、daemon は死んだ子を
   `del orchestrators[rid]` するだけで run の `status` を更新せず、`result`/`status` を待つ消費者

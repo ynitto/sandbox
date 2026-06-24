@@ -575,6 +575,30 @@ class Bus:
         write_json_atomic(v.meta_path, meta)
         return True
 
+    def touch_run(self, run_id: str, lease_sec: float) -> None:
+        """自分が orchestrator を回している run の生存リース（heartbeat）を更新する。
+        これにより別デーモン／再起動後の自分が「この run は生きている（owner が駆動中）」と判定でき、
+        孤児回収で誤って failed にしない。終端済み／不在の run には何もしない。"""
+        v = self.run_view(run_id)
+        meta = read_json(v.meta_path)
+        if not meta or meta.get("status") in TERMINAL:
+            return
+        meta["orch_lease_until"] = time.time() + lease_sec
+        meta["heartbeat_at"] = now_iso()
+        write_json_atomic(v.meta_path, meta)
+
+    def run_is_orphaned(self, run_id: str, grace_sec: float) -> bool:
+        """run が非終端なのに生存リースが切れている（owning daemon/orchestrator が消失した）か。
+        owner が一度でも heartbeat していれば orch_lease_until で判定する。リース未記録の古い run
+        （owner が heartbeat する前に死んだ／本変更前から残る run）は age を grace と比較して判定する。"""
+        meta = read_json(self.run_view(run_id).meta_path)
+        if not meta or meta.get("status") in TERMINAL:
+            return False
+        lease = meta.get("orch_lease_until")
+        if isinstance(lease, (int, float)):
+            return lease < time.time()
+        return _age_hours(meta) * 3600.0 > grace_sec
+
     # --- inbox（要求キュー）と要求 claim ---
     def submit_request(self, req_id: str, request: str, submitter: str,
                        repos: "list[str] | None" = None) -> None:
@@ -2363,6 +2387,30 @@ def _release_daemon_lock(lock_file) -> None:
         pass
 
 
+def _run_lease_window(args) -> float:
+    """run 生存リース（heartbeat）の猶予秒。健康な daemon は poll 毎に更新するので、
+    poll の十数倍を確保すれば一過性の遅延（GC/ネットワーク）で誤回収しない。一方 act_timeout
+    （消費者側の上限・既定 1800s）より十分短くして、owner 消失後すばやく孤児回収できるようにする。"""
+    return max(float(getattr(args, "poll", 2.0) or 2.0) * 10.0, 120.0)
+
+
+def _recover_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float) -> "list[str]":
+    """inbox 由来で自分が回しておらず生存リースの切れた（owning daemon が消失した）run を failed に
+    確定し、回収した run_id を返す。これが無いと、再起動した新プロセスは前プロセスが残した
+    status:running を見て受理をスキップするだけで、remote submit を待つ消費者が act_timeout まで
+    永久待機してしまう。`owned` は自分が今 orchestrator を回している run（誤回収しない）。"""
+    recovered: "list[str]" = []
+    for req_id in bus.list_inbox():
+        if req_id in owned or not bus.run_exists(req_id):
+            continue
+        if bus.run_is_orphaned(req_id, lease_window) and \
+                bus.mark_run_failed(req_id, "orphaned: owning daemon が消失（生存リース切れ）"):
+            bus.run_view(req_id).event(daemon_id, "run-orphaned", run=req_id)
+            bus.sync_push(f"run {req_id} failed: orphaned（生存リース切れ）")
+            recovered.append(req_id)
+    return recovered
+
+
 def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     """要求 req を担当する orchestrator を base argv から起動する（daemon のオンデマンド起動）。"""
     repo_args = []
@@ -2559,6 +2607,10 @@ def cmd_daemon(args) -> int:
     # 自己更新（既定 on）: 起動直後の最初のアイドルでも実施するため last=0 で初期化し、cwd を保持
     start_cwd = os.getcwd()
     update_state = {"last": 0.0}
+    # 自分が回している run の生存リース（heartbeat）。ローカル meta は毎 poll 更新（安価）、
+    # git バスへの push は lease_window/3 毎に間引く（毎 poll の push を避ける）。
+    lease_window = _run_lease_window(args)
+    next_heartbeat_push = 0.0
 
     while not stop["v"]:
         bus.sync_pull()
@@ -2587,6 +2639,19 @@ def cmd_daemon(args) -> int:
                 log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
         workers = [(r, p) for r, p in workers if p.poll() is None]
 
+        # 自分が回している run の生存リースを更新（再起動後の自分・別デーモンへ「駆動中」を示す）。
+        # ローカル meta は毎 poll 更新し、git バスへの伝搬は間引いて push する。
+        for rid in orchestrators:
+            bus.touch_run(rid, lease_window)
+        if orchestrators and time.time() >= next_heartbeat_push:
+            bus.sync_push("heartbeat: 駆動中の run の生存リースを更新")
+            next_heartbeat_push = time.time() + lease_window / 3.0
+
+        # 孤児 run の回収: owning daemon が消失した非終端 run を failed に確定する（再起動した
+        # 新プロセスが status:running を放置せず、消費者が act_timeout まで待たずに復旧できるように）。
+        for rid in _recover_orphan_runs(bus, daemon_id, set(orchestrators), lease_window):
+            log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失）")
+
         # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）
         for req_id in bus.list_inbox():
             if bus.run_exists(req_id) or req_id in orchestrators:
@@ -2596,6 +2661,7 @@ def cmd_daemon(args) -> int:
                 continue
             if bus.claim_request(req_id, daemon_id, args.lease):
                 orchestrators[req_id] = _spawn_orchestrator(base, args, req_id, req)
+                bus.touch_run(req_id, lease_window)   # 受理直後に生存リースを張る（孤児誤判定を防ぐ）
                 log(daemon_id, f"要求 {req_id} を受理 → orchestrator 起動: {req['request'][:50]}")
 
         # 2) claim 可能タスク量に応じてワーカーをオンデマンド起動
