@@ -2624,62 +2624,86 @@ class TestProjectLayer(unittest.TestCase):
         self.assertIn("APIロジック", req)
         self.assertIn("api = https://git/shop.git", req)
 
-    def test_parse_charter_repos_readonly(self):
-        # 参照のみフラグ（readonly）。値あり/値なし/日本語別名/既定 False
+    def test_parse_charter_repos_owns_marks_reference(self):
+        # owns: があれば書込先候補（readonly False）。owns 未指定は参照リポジトリ（readonly True）。
         ch = km.parse_charter(
             "# Charter: r\n## goal\nx\n## repos\n"
-            "- a = u1\n  - readonly: true\n  - desc: d\n  - base: main\n"
-            "- b = u2\n  - 参照のみ:\n  - desc: d\n  - base: main\n"
-            "- c = u3\n  - desc: d\n  - base: main\n")
+            "- a = u1\n  - owns: apps/api/**\n  - desc: d\n  - base: main\n"
+            "- b = u2\n  - desc: d\n  - base: main\n"
+            "- c = u3\n  - readonly: true\n  - owns: x/**\n  - desc: d\n  - base: main\n")
         a, b, c = ch.repo_specs
-        self.assertTrue(a["readonly"])
-        self.assertTrue(b["readonly"])      # キーだけ（値なし）でも True
-        self.assertFalse(c["readonly"])     # 既定は False
+        self.assertEqual(a["owns"], ["apps/api/**"])
+        self.assertFalse(a["readonly"])     # owns 有り → 書込先候補
+        self.assertEqual(b["owns"], [])
+        self.assertTrue(b["readonly"])      # owns 未指定 → 参照リポジトリ
+        self.assertTrue(c["readonly"])      # readonly 明示は owns 有りでも参照
 
-    def test_task_repo_specs_resolves_full_spec(self):
+    def test_resolve_workspace_explicit_and_owns_and_default(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
-                          "- api = https://git/shop.git\n  - path: apps/api\n  - desc: API\n"
-                          "  - base: main\n  - target: develop\n"
-                          "- lib = https://git/lib.git\n  - readonly: true\n  - desc: 参照元\n  - base: main\n")
-            cfg = cfg_for(d)
-            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "api,lib")])
-            specs = km.task_repo_specs(cfg, t)
-            api = next(s for s in specs if s["name"] == "api")
-            lib = next(s for s in specs if s["name"] == "lib")
-            self.assertEqual((api["path"], api["base"], api["target"]), ("apps/api", "main", "develop"))
-            self.assertTrue(lib["readonly"])
-            # 宣言の無いタスクは空
-            self.assertEqual(km.task_repo_specs(cfg, km.Task(id="T2", title="y")), [])
+                          "- app = https://git/app.git\n  - owns: apps/api/**\n  - path: apps/api\n"
+                          "  - base: main\n  - target: develop\n  - desc: API\n"
+                          "- lib = https://git/lib.git\n  - owns: packages/**\n  - base: main\n"
+                          "- docs = https://git/docs.git\n  - desc: 参照元\n  - base: main\n")
+            cfg = cfg_for(d, route_planner="none")
+            pol = km.Policy()
+            # 1. 明示 - workspace:
+            t = km.Task(id="T1", title="x", extra=[("workspace", "lib")])
+            spec, by = km.resolve_workspace(cfg, t, pol)
+            self.assertEqual((spec["name"], by), ("lib", "explicit"))
+            # 2. route: ルール（パターンはタイトル/ID の部分一致）
+            pol2 = km.Policy(route=["API -> app"])
+            spec, by = km.resolve_workspace(cfg, km.Task(id="T2", title="API 改修"), pol2)
+            self.assertEqual((spec["name"], by), ("app", "rule"))
+            # 3. owns: パス推定（- paths: ヒント）
+            t3 = km.Task(id="T3", title="z", extra=[("paths", "packages/util.py")])
+            spec, by = km.resolve_workspace(cfg, t3, pol)
+            self.assertEqual((spec["name"], by), ("lib", "owns"))
+            # 4. 既定ワークスペース（決まらないとき）
+            cfg2 = cfg_for(d, route_planner="none", default_workspace="app")
+            spec, by = km.resolve_workspace(cfg2, km.Task(id="T4", title="謎"), km.Policy())
+            self.assertEqual((spec["name"], by), ("app", "default"))
+            # docs は owns 無し → 参照リポジトリ（書込先候補にならない）
+            docs = km.charter_repo_spec_map(km.load_charter(cfg))["docs"]
+            self.assertTrue(km._is_reference_repo(docs))
 
-    def test_repo_token_structured_and_bare(self):
-        # メタ有り → JSON（url/path/base/target/readonly を構造化）。メタ無し → 素の URL
-        tok = km._repo_token({"name": "api", "url": "https://git/shop.git", "desc": "API",
-                              "base": "main", "target": "develop", "path": "apps/api", "readonly": False})
+    def test_resolve_workspace_persists_decision(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
+                          "- app = https://git/app.git\n  - owns: **\n  - base: main\n")
+            cfg = cfg_for(d, route_planner="none")
+            (cfg.backlog).mkdir(parents=True, exist_ok=True)
+            t = km.Task(id="T1", title="x", verify="true")
+            km.persist_task(cfg, t)
+            km.resolve_and_persist_workspace(cfg, t, km.Policy())
+            reloaded = km.parse_task((cfg.backlog / "T1.md").read_text(), "T1")
+            self.assertEqual(reloaded.get("workspace"), "app")   # 決定を md へ書き戻す
+            self.assertEqual(reloaded.get("routed_by"), "sole")
+
+    def test_workspace_token_json(self):
+        # url/path/base/target/desc を JSON で構造化（readonly/name は載せない）
+        tok = km._workspace_token({"name": "api", "url": "https://git/shop.git", "desc": "API",
+                                   "base": "main", "target": "develop", "path": "apps/api"})
         obj = json.loads(tok)
-        self.assertEqual((obj["url"], obj["name"], obj["path"], obj["base"], obj["target"]),
-                         ("https://git/shop.git", "api", "apps/api", "main", "develop"))
-        self.assertNotIn("readonly", obj)        # False は載せない（既定）
-        ro = json.loads(km._repo_token({"name": "", "url": "u", "desc": "", "base": "",
-                                        "target": "", "path": "", "readonly": True}))
-        self.assertTrue(ro["readonly"])
-        bare = km._repo_token({"name": "", "url": "https://git/x.git", "desc": "", "base": "",
-                               "target": "", "path": "", "readonly": False})
-        self.assertEqual(bare, "https://git/x.git")   # メタ無しは素の URL（後方互換）
+        self.assertEqual((obj["url"], obj["path"], obj["base"], obj["target"]),
+                         ("https://git/shop.git", "apps/api", "main", "develop"))
+        self.assertNotIn("name", obj)
+        self.assertNotIn("readonly", obj)
 
-    def test_structured_repo_propagated_to_kiro_flow(self):
-        # path/base/target/readonly が --repo の JSON トークンとして kiro-flow へ伝搬する
+    def test_workspace_propagated_to_kiro_flow(self):
+        # 解決済み - workspace: が --workspace の JSON トークンとして kiro-flow へ伝搬する
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
-                          "- api = https://git/shop.git\n  - path: apps/api\n  - desc: API\n"
+                          "- api = https://git/shop.git\n  - owns: apps/api/**\n  - path: apps/api\n"
                           "  - base: main\n  - target: develop\n")
             cfg = cfg_for(d)
-            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "api")])
+            t = km.Task(id="T1", title="x", verify="true", extra=[("workspace", "api")])
             cmd = km.build_kiro_flow_cmd(t, cfg)
-            tok = cmd[cmd.index("--repo") + 1]
-            obj = json.loads(tok)
+            self.assertNotIn("--repo", cmd)
+            obj = json.loads(cmd[cmd.index("--workspace") + 1])
             self.assertEqual((obj["path"], obj["base"], obj["target"]), ("apps/api", "main", "develop"))
 
     def test_charter_renders_readonly(self):
@@ -2696,29 +2720,32 @@ class TestProjectLayer(unittest.TestCase):
                              "## repos\n- app = https://git/app.git\n")
             self.assertEqual(km.cmd_project(cfg_for(d)), 2)
 
-    def test_task_repo_urls_resolved_from_charter(self):
+    def test_reference_repos_folded_into_request(self):
+        # owns 無し（参照リポジトリ）はタスク本文へ記述として埋め込む（書込先にはしない）
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n- app = https://git/app.git\n")
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
+                          "- app = https://git/app.git\n  - owns: **\n  - base: main\n"
+                          "- spec = https://git/spec.git\n  - desc: API 仕様\n  - base: main\n")
             cfg = cfg_for(d)
-            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "app")])
-            self.assertEqual(km.task_repo_urls(cfg, t), ["https://git/app.git"])
-            # charter に無い素の URL はそのまま通す。宣言の無いタスクは空（clone しない）
-            t2 = km.Task(id="T2", title="y", verify="true", extra=[("repos", "https://x/raw.git")])
-            self.assertEqual(km.task_repo_urls(cfg, t2), ["https://x/raw.git"])
-            self.assertEqual(km.task_repo_urls(cfg, km.Task(id="T3", title="z")), [])
+            refs = km.task_reference_specs(cfg, km.Task(id="T1", title="x"))
+            self.assertEqual([s["name"] for s in refs], ["spec"])      # owns 無しだけ参照に
+            req = km.build_request(km.Task(id="T1", title="x", verify="true"), cfg)
+            self.assertIn("参照用リポジトリ", req)
+            self.assertIn("https://git/spec.git", req)
 
-    def test_repos_propagated_to_kiro_flow_cmd(self):
+    def test_workspace_only_propagated_when_resolved(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n- app = https://git/app.git\n")
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
+                          "- app = https://git/app.git\n  - owns: **\n  - base: main\n")
             cfg = cfg_for(d)
-            t = km.Task(id="T1", title="x", verify="true", extra=[("repos", "app")])
+            t = km.Task(id="T1", title="x", verify="true", extra=[("workspace", "app")])
             cmd = km.build_kiro_flow_cmd(t, cfg)
-            self.assertIn("--repo", cmd)
-            self.assertIn("https://git/app.git", cmd)
-            # repos の無いタスクは --repo を付けない（必要なものだけ）
-            self.assertNotIn("--repo", km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg))
+            self.assertIn("--workspace", cmd)
+            self.assertIn("https://git/app.git", cmd[cmd.index("--workspace") + 1])
+            # 未解決（- workspace: 無し）のタスクは --workspace を付けない＝読み取り専用 run
+            self.assertNotIn("--workspace", km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg))
 
     def test_plugin_executor_forwarded_to_kiro_flow(self):
         # executor に kiro-flow プラグイン名/パスを指定すると、そのまま kiro-flow run へ委譲される
@@ -2929,7 +2956,7 @@ class TestProjectLayer(unittest.TestCase):
             # base/target を省く（branch 非依存で既定ブランチを clone）。url は単一・非 readonly。
             charter = km.parse_charter(
                 f"# Charter: c\n## goal\nx\n## acceptance\n- test -f MARKER.txt\n"
-                f"## repos\n- app = {remote}\n  - desc: 対象\n")
+                f"## repos\n- app = {remote}\n  - owns: **\n  - desc: 対象\n")
             passed, total, _ = km.evaluate_acceptance(cfg_for(d), charter)
             self.assertEqual((passed, total), (1, 1))   # 一時 clone 先で検証 → PASS
 
@@ -2938,7 +2965,7 @@ class TestProjectLayer(unittest.TestCase):
             d = Path(d)
             charter = km.parse_charter(
                 "# Charter: c\n## goal\nx\n## acceptance\n- true\n"
-                f"## repos\n- app = {d / 'does-not-exist'}\n  - desc: 対象\n")
+                f"## repos\n- app = {d / 'does-not-exist'}\n  - owns: **\n  - desc: 対象\n")
             passed, total, results = km.evaluate_acceptance(cfg_for(d), charter)
             self.assertEqual(passed, 0)                 # clone 失敗 → 黙ってフォールバックせず全 NG
             self.assertTrue(any("clone" in m for _, _, m in results))

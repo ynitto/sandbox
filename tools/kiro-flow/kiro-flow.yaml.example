@@ -83,7 +83,7 @@ lease: 1800                # claim のリース秒数。実タスク時間より
 #   - $TMPDIR/kiro-flow-locks/ の未使用ロック（lease の 2 倍以上アイドルで未保持のもの）
 #   - <path>.tmp.<pid> の中間ファイル残骸（プロセス crash 由来）
 #   - git モードのノード別クローン（run 終了後に孤立し、cleanup_age 時間アイドルのもの）
-#   - 成果物リポジトリの孤立 temp clone（$TMPDIR/kiro-flow-repos-<pid>-…。SIGKILL/OOM 等で
+#   - ワークスペースの孤立 temp clone（$TMPDIR/kiro-flow-ws-<pid>-…。SIGKILL/OOM 等で
 #     finally が走らず残ったもの。所有 pid の死亡＋cleanup_age 経過で回収）
 cleanup_interval: 3600     # 掃除の実行間隔（秒）。0 以下で無効化（--no-cleanup 相当）
 cleanup_age: 24            # 孤立クローンを掃除するまでのアイドル時間（時間）
@@ -94,10 +94,14 @@ cleanup_age: 24            # 孤立クローンを掃除するまでのアイド
 # CLI では --keep-clone で false 相当（作業後も残す）。
 cleanup_clone: true
 
-# 成果物リポジトリ（--repo）の clone を「各ノード完了/失敗ごと」に即削除する。既定は worker
+# ワークスペース（--workspace）の clone を「各ノード完了/失敗ごと」に即削除する。既定は worker
 # プロセス終了時に一括削除。長命 worker（--keep-alive）でディスク積み上がりを抑えたいとき true。
-# trade-off: 同じ repo を次ノードで再 clone するコスト。CLI では --cleanup-per-node。
+# trade-off: 同じワークスペースを次ノードで再 clone するコスト。CLI では --cleanup-per-node。
 cleanup_per_node: false
+
+# 書込先ワークスペースは run（=バックログ単位）ごとに 1 つ。CLI/submit に --workspace で渡す
+# （素の URL か JSON {url,path,base,target}）。設定ファイルには置かない（run 毎に変わるため）。
+# 省略時は読み取り専用 run（commit/push しない）。参照だけのリポジトリは要求本文に記述で伝える。
 
 # ---------------------------------------------------------------------------
 # gitlab ワーカーバス（opt-in / executor プラグイン executors/gitlab.py）
@@ -111,8 +115,9 @@ cleanup_per_node: false
 # イシュー API は GitLab REST API（v4）を stdlib だけで直叩きする（外部 gl.py 不要・
 # フォールバックもしない）。
 #
-# 起票先 URL は repo_url が権威。設定した URL をそのまま使い、git remote origin へ
-# 曖昧にフォールバックしない（誤ったプロジェクトへの起票を防ぐ）。
+# 起票先 URL は **その run のワークスペース URL（--workspace）を優先**し、無ければ下の repo_url を
+# 使う。git remote origin へ曖昧にフォールバックしない（誤ったプロジェクトへの起票を防ぐ）。
+# SSH 形（git@host:group/repo.git）と https 形のどちらの URL でも host/project を解釈する。
 #
 # トークンは kiro-flow.yaml には置かない。gl.py と同じ場所から解決する（優先順）:
 #   1. connections.yaml の gitlab/<conn_label> の token（.github/skills 配下 or ~/ のスキルホーム）
@@ -121,8 +126,8 @@ cleanup_per_node: false
 #
 # gitlab:
 #   conn_label: default                  # connections.yaml の接続ラベル（トークン解決に使用）
-#   repo_url: "https://gitlab.com/group/repo"  # 起票先プロジェクト URL（権威・必須）。
-#                                        # 必ずこの URL を使う（git origin へ流れない）
+#   repo_url: "https://gitlab.com/group/repo"  # 起票先プロジェクト URL（--workspace 無しのときの
+#                                        # フォールバック。ワークスペース URL があればそちらを優先）
 #   labels: "status:open,assignee:any"   # 起票するイシューの初期ラベル
 #   priority: "priority:normal"          # 付与する優先度ラベル（空文字 "" で付けない）
 #   poll_interval: 30                    # イシューのポーリング間隔（秒）
