@@ -158,6 +158,100 @@ class RunFailureTests(unittest.TestCase):
         self.assertFalse(self.bus.mark_run_failed("no-such-run"))
 
 
+class OrphanRecoveryTests(unittest.TestCase):
+    """owning daemon が消失した非終端 run（孤児）を生存リースで検知して回収する。
+    これが無いと、再起動した新プロセスが前プロセスの status:running を見て何もせず、
+    remote submit を待つ消費者が act_timeout まで永久待機する。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-test-")
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("test request")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _set_meta(self, **kw):
+        meta = kf.read_json(self.bus.meta_path) or {}
+        meta.update(kw)
+        kf.write_json_atomic(self.bus.meta_path, meta)
+
+    def test_touch_run_marks_alive(self):
+        self.bus.set_status("running")
+        self.bus.touch_run("run1", 120.0)
+        meta = self.bus.run_meta("run1")
+        self.assertIn("orch_lease_until", meta)
+        self.assertIn("heartbeat_at", meta)
+        self.assertFalse(self.bus.run_is_orphaned("run1", 120.0))   # 新鮮なリース = 生存
+
+    def test_touch_run_noop_when_terminal(self):
+        self.bus.set_status("done")
+        self.bus.touch_run("run1", 120.0)
+        self.assertNotIn("orch_lease_until", self.bus.run_meta("run1"))
+
+    def test_expired_lease_is_orphan(self):
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        self.assertTrue(self.bus.run_is_orphaned("run1", 120.0))
+
+    def test_no_lease_old_run_is_orphan(self):
+        # owner が heartbeat する前に死んだ／本変更前から残る run はリース未記録 → age で判定
+        self.bus.set_status("running")
+        self._set_meta(created_at="2000-01-01T00:00:00Z", updated_at="2000-01-01T00:00:00Z")
+        self.assertTrue(self.bus.run_is_orphaned("run1", 120.0))
+
+    def test_no_lease_fresh_run_not_orphan(self):
+        # リース未記録でも作成直後の run は孤児扱いしない（orchestrator spawn 直後の race を守る）
+        self.bus.set_status("running")        # created_at は ensure_run の now
+        self.assertFalse(self.bus.run_is_orphaned("run1", 120.0))
+
+    def test_terminal_run_never_orphan(self):
+        self.bus.set_status("done")
+        self._set_meta(orch_lease_until=time.time() - 999.0)
+        self.assertFalse(self.bus.run_is_orphaned("run1", 120.0))
+
+    def test_orphan_recovered_via_mark_failed(self):
+        # 孤児（非終端＋リース切れ）は mark_run_failed で終端化でき、消費者が失敗を検知して復旧できる
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        self.assertTrue(self.bus.run_is_orphaned("run1", 120.0))
+        self.assertTrue(self.bus.mark_run_failed("run1", "orphaned"))
+        self.assertEqual(self.bus.run_meta("run1")["status"], "failed")
+        self.assertFalse(self.bus.run_is_orphaned("run1", 120.0))    # 終端化後は孤児でない
+
+    def test_run_lease_window_bounds(self):
+        self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=2.0)), 120.0)
+        self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=20.0)), 200.0)
+        self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=None)), 120.0)
+
+    def test_recover_fails_stale_inbox_run(self):
+        # submit 由来（inbox に req）で孤児化した run を、別デーモン/再起動後の自分が回収する
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        recovered = kf._recover_orphan_runs(self.bus, "d2", set(), 120.0)
+        self.assertEqual(recovered, ["run1"])
+        self.assertEqual(self.bus.run_meta("run1")["status"], "failed")
+
+    def test_recover_skips_owned_run(self):
+        # 自分が今 orchestrator を回している run は（リースが古くても）回収しない
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        recovered = kf._recover_orphan_runs(self.bus, "d2", {"run1"}, 120.0)
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.bus.run_meta("run1")["status"], "running")
+
+    def test_recover_skips_live_run(self):
+        # 別デーモンが heartbeat 中（リース新鮮）の run は回収しない（誤って横取りしない）
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.set_status("running")
+        self.bus.touch_run("run1", 120.0)
+        recovered = kf._recover_orphan_runs(self.bus, "d2", set(), 120.0)
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.bus.run_meta("run1")["status"], "running")
+
+
 class PlannerTests(unittest.TestCase):
     def test_parallel_split(self):
         tasks = kf.plan_stub("a; b; c")
