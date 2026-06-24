@@ -371,6 +371,13 @@ while True:
   `KIRO_FLOW_EXECUTOR_CONFIG` でプラグインへ渡す（プラグインは個別環境変数で上書き可）。
   組み込み executor の実体は import 時参照を握らず呼び出し時に `globals()` から解決する
   （monkeypatch・ホットリロードを効かせるため）。
+  - **daemon → worker への確実な伝搬**: 設定ブロックの解決は `resolve_executor_config_json(args)` に
+    集約し、`make_executor`（worker 内）と `_spawn_worker`（daemon が worker を起動する側）で共有する。
+    daemon は親で解決した JSON を `KIRO_FLOW_EXECUTOR_CONFIG` として **worker の起動 env に明示注入**する。
+    これにより worker が `--config` を再解決できない／別の設定ファイルを拾う場合でも、親（daemon）が
+    解決した値（例 gitlab の `repo_url`/`conn_label`）が確実に届く。worker 側 `make_executor` は、
+    自分で設定ブロックを解決できたときだけ env を更新し、解決できない（空/None）ときは親が注入した
+    値を尊重して上書きしない。
 - **インストール**: `install.sh` が同梱プラグインを `~/.kiro/kiro-flow/executors/` へコピーする
   （kiro-loop が補助アセットを `~/.kiro/` 配下へ置くのと同じ流儀）。単一ファイル配布後も
   `--executor <name>` が名前解決できる。

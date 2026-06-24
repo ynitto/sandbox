@@ -1663,6 +1663,22 @@ def _load_executor_module(path: str):
     return module
 
 
+def resolve_executor_config_json(args) -> "str | None":
+    """executor プラグインの設定ブロック（executor 名と同名のトップレベル設定。例 `executor: gitlab`
+    なら `args.gitlab`）を親（daemon/orchestrator）で解決し、JSON 文字列にして返す。組み込み executor
+    （kiro/stub）や、設定ブロックが無い/空のときは None。
+    worker 起動時に環境変数 `KIRO_FLOW_EXECUTOR_CONFIG` として明示的に渡し、worker が `--config` を
+    再解決できない/別の設定を拾う場合でも、親が解決した設定（例 gitlab の repo_url/conn_label）を
+    確実に届けるために使う。"""
+    spec = getattr(args, "executor", None) or "kiro"
+    if spec in BUILTIN_EXECUTORS:
+        return None
+    cfg = getattr(args, spec, None)
+    if isinstance(cfg, dict) and cfg:
+        return json.dumps(cfg, ensure_ascii=False)
+    return None
+
+
 def make_executor(args):
     """args.executor を解決し、execute(kind, goal, dep_results, model, art_dir, dep_arts)
     形の呼び出し可能オブジェクトを返す。プラグインのときは設定ブロックを環境変数で渡す。"""
@@ -1679,10 +1695,11 @@ def make_executor(args):
     fn = getattr(module, "execute", None)
     if not callable(fn):
         raise SystemExit(f"[kiro-flow] executor プラグインに execute() がありません: {path}")
-    # プラグイン固有設定: 同名のトップレベル設定ブロック（例 gitlab:）を JSON で渡す
-    cfg = getattr(args, spec, None)
-    if isinstance(cfg, dict):
-        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(cfg, ensure_ascii=False)
+    # プラグイン固有設定: 同名のトップレベル設定ブロック（例 gitlab:）を JSON で環境変数に渡す。
+    # 親が解決済みで既に渡されている（worker が再解決できない）場合は、その値を尊重して上書きしない。
+    cfgjson = resolve_executor_config_json(args)
+    if cfgjson is not None:
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = cfgjson
     log("executor", f"プラグイン '{spec}' をロードしました: {path}")
     return fn
 
@@ -2349,12 +2366,19 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
 
 
 def _spawn_worker(base: list, args, rid: str, wid: str):
-    """run rid のワーカーを1つ base argv から起動する（idle-exit のオンデマンド worker）。"""
+    """run rid のワーカーを1つ base argv から起動する（idle-exit のオンデマンド worker）。
+    親（daemon）で解決した executor プラグイン設定（例 gitlab: の repo_url/conn_label）を
+    `KIRO_FLOW_EXECUTOR_CONFIG` として worker の環境に明示的に渡す。worker が `--config` を
+    再解決できない/別の設定を拾う場合でも、親の設定が確実に届くようにする。"""
+    env = os.environ.copy()
+    cfgjson = resolve_executor_config_json(args)
+    if cfgjson is not None:
+        env["KIRO_FLOW_EXECUTOR_CONFIG"] = cfgjson
     return subprocess.Popen(base + [
         "--run-id", rid, "work", "--node-id", wid,
         "--executor", args.executor, "--model_opt", args.model or "",
         "--poll", str(args.poll), "--idle-exit",
-    ])
+    ], env=env)
 
 
 def cmd_run(args) -> int:
