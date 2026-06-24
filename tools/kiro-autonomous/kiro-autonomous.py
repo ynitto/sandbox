@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -41,7 +42,7 @@ VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
-POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate|protect):\s*(?P<val>.+)$")
+POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate|protect|route):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
 LTM_CATEGORY = "kiro-autonomous"  # ltm-use home 内のカテゴリ（昇格先サブディレクトリ）
@@ -189,6 +190,7 @@ def delete_task_file(cfg: "Config", task: Task) -> None:
 # ---------------------------------------------------------------------------
 ENQUEUE_KNOWN_KEYS = {"id", "title", "verify", "priority", "source", "status",
                       "after", "review", "note", "accept", "verify_template", "repos",
+                      "workspace", "refs", "paths", "routed_by",
                       "cohort_items", "cohort", "cohort_role"}
 
 
@@ -236,7 +238,8 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
         t.priority = int(spec.get("priority", 0) or 0)
     except (TypeError, ValueError):
         t.priority = 0
-    for k in ("after", "review", "note", "accept", "verify_template", "repos"):   # 既知の追加フィールド
+    for k in ("after", "review", "note", "accept", "verify_template", "repos",   # 既知の追加フィールド
+              "workspace", "refs", "paths", "routed_by"):   # ルーティング: 書込先・参照repo・触るパス・解決経路
         v = spec.get(k)
         if v not in (None, "", []):
             t.extra.append((k, ",".join(map(str, v)) if isinstance(v, list) else str(v)))
@@ -497,6 +500,7 @@ class Policy:
     offload: "list[str]" = field(default_factory=list)
     gate: "list[str]" = field(default_factory=list)   # verify PASS でも人の承認を要する（検収ゲート）
     protect: "list[str]" = field(default_factory=list)  # この**パス**を act が触ったら done にせず人の承認へ
+    route: "list[str]" = field(default_factory=list)  # `<パターン> -> <repo名>`: タスク→書込先ワークスペースの割当ルール
 
 
 def parse_policy(text: str) -> Policy:
@@ -2024,6 +2028,9 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
     if fb:
         base += f"\n\n人からのフィードバック（必ず反映すること）:\n{fb}"
     if cfg is not None:
+        rn = reference_repos_note(task_reference_specs(cfg, task))   # 参照repoはタスク記述として伝搬
+        if rn:
+            base += "\n\n" + rn
         # 定義（charter）と判断結果（decisions）を、project でも通常 run でもワーカーへ渡す。
         cc = charter_context(cfg)
         if cc:
@@ -2074,89 +2081,188 @@ def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
     return base
 
 
-def task_repo_urls(cfg: "Config", task: Task) -> "list[str]":
-    """タスクの `- repos:` を charter の repos で解決して URL の列にする。
-    トークンは charter の name/url、または素の URL。必要なタスクだけが repos を持つ
-    （宣言の無いタスクは空＝従来どおり clone しない）。"""
-    raw = task.get("repos")
-    if not raw:
-        return []
+def _is_reference_repo(spec: dict) -> bool:
+    """owns: が無い repo は参照リポジトリ（read-only）。書込先ワークスペースの候補にしない。"""
+    return not spec.get("owns")
+
+
+def _split_tokens(raw) -> "list[str]":
+    return [_strip_code(t) for t in re.split(r"[,\s]+", str(raw or "").strip()) if _strip_code(t)]
+
+
+def _raw_url_spec(tok: str) -> "dict | None":
+    """charter に無い素の URL トークンを最小の workspace spec にする（owns 無し＝参照ではなく明示指定用）。"""
+    if "://" in tok or "@" in tok or tok.endswith(".git"):
+        return {"name": "", "url": tok, "desc": "", "base": "", "target": "", "path": "",
+                "readonly": False, "owns": []}
+    return None
+
+
+def route_target(task: Task, policy: "Policy") -> str:
+    """policy の `route: <パターン> -> <repo名>` を順に評価し、最初に一致した repo 名を返す（無ければ ""）。"""
+    for rule in policy.route:
+        for sep in ("->", "=>", "→"):
+            if sep in rule:
+                pattern, name = rule.split(sep, 1)
+                if task.matches(pattern.strip()):
+                    return _strip_code(name.strip())
+                break
+    return ""
+
+
+def _owns_infer(task: Task, workspaces: "list[dict]") -> "dict | None":
+    """タスクが触る予定パス（`- paths:` ヒント）を charter の owns: グロブと突き合わせ、所有する
+    ワークスペースを推定する。曖昧（複数一致）なら推定しない（決定論を壊さない）。"""
+    paths = _split_tokens(task.get("paths"))
+    if not paths:
+        return None
+    hits = [s for s in workspaces
+            if any(fnmatch.fnmatch(p, g) or fnmatch.fnmatch(p, g.rstrip("/") + "/*")
+                   for p in paths for g in s.get("owns", []))]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _route_agent_prompt(task: Task, workspaces: "list[dict]") -> str:
+    lines = ["次のタスクをコミットすべき書込先リポジトリ（ワークスペース）を1つだけ選んでください。",
+             f"タスク: {task.title}", f"verify: {task.verify or '（未定義）'}", "", "候補リポジトリ:"]
+    for s in workspaces:
+        owns = "・".join(s.get("owns", []))
+        lines.append(f"- {s.get('name') or s['url']}"
+                     + (f"（担当: {owns}）" if owns else "")
+                     + (f": {s['desc']}" if s.get("desc") else ""))
+    lines.append('\n出力は JSON のみ: {"workspace": "<repo名>"}（判断できなければ {"workspace": ""}）')
+    return "\n".join(lines)
+
+
+def route_agent(cfg: "Config", task: Task, workspaces: "list[dict]",
+                kiro_run=_run_kiro_cli) -> str:
+    """曖昧なタスクの書込先を LLM に1つ選ばせる（決定論で決まらなかったときのみ）。失敗時は ""。"""
     try:
-        rmap = charter_repo_map(load_charter(cfg))
+        out = kiro_run(_route_agent_prompt(task, workspaces), cfg.model)
+        data = _extract_json_obj(out)
+        return _strip_code(str((data or {}).get("workspace") or "").strip())
+    except Exception:  # noqa: BLE001 — 推定失敗は「決まらない」に倒す
+        return ""
+
+
+def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dict | None, str]":
+    """タスク → ちょうど1つの書込先ワークスペース spec を決める。解決順（上が優先）:
+      1. 明示 `- workspace:`  2. policy `route:`  3. charter owns: 推定
+      4. auto-route エージェント（route_planner=kiro）  5. 既定（default_workspace / 候補が1つ）
+    返り値 (spec or None, routed_by)。None は書込先なし＝読み取り専用 run（調査タスク等）。"""
+    try:
+        ch = load_charter(cfg)
     except (OSError, ValueError):
-        rmap = {}
-    out: "list[str]" = []
-    for tok in re.split(r"[,\s]+", str(raw).strip()):
-        tok = _strip_code(tok)
-        if not tok:
-            continue
-        url = rmap.get(tok)
-        if not url and ("://" in tok or "@" in tok or tok.endswith(".git")):
-            url = tok                       # charter に無くても素の URL ならそのまま使う
-        if url and url not in out:
-            out.append(url)
-    return out
+        ch = None
+    smap = charter_repo_spec_map(ch)
+    workspaces = [s for s in (ch.repo_specs if ch else []) if not _is_reference_repo(s)]
+
+    explicit = _strip_code(str(task.get("workspace") or "").strip())
+    if explicit:                                  # 1. 人/過去ルーティングの明示指定（最優先）
+        sp = smap.get(explicit) or _raw_url_spec(explicit)
+        if sp:
+            return sp, "explicit"
+    name = route_target(task, policy)             # 2. route: パターンルール（決定論）
+    if name and smap.get(name) and not _is_reference_repo(smap[name]):
+        return smap[name], "rule"
+    sp = _owns_infer(task, workspaces)            # 3. charter owns: パス推定（決定論）
+    if sp:
+        return sp, "owns"
+    if cfg.route_planner == "kiro" and workspaces:  # 4. auto-route エージェント（曖昧時のみ）
+        nm = route_agent(cfg, task, workspaces)
+        if nm and smap.get(nm) and not _is_reference_repo(smap[nm]):
+            return smap[nm], "agent"
+    if cfg.default_workspace and smap.get(cfg.default_workspace):  # 5a. 既定ワークスペース
+        return smap[cfg.default_workspace], "default"
+    if len(workspaces) == 1:                       # 5b. 書込先候補が1つだけ → それ
+        return workspaces[0], "sole"
+    return None, "none"
 
 
-def task_repo_specs(cfg: "Config", task: Task) -> "list[dict]":
-    """タスクの `- repos:` を charter の構造化 repos で解決して spec の列にする。
-    name/url トークンは charter エントリ（path/base/target/役割/参照のみ込み）へ、charter に無い素の URL は
-    url だけの spec へ解決する。同一 URL でも path が違えば別 spec（モノレポの役割別フォルダ）。"""
-    raw = task.get("repos")
-    if not raw:
-        return []
+def resolve_and_persist_workspace(cfg: "Config", task: Task, policy: "Policy") -> "dict | None":
+    """タスクを書込先ワークスペースへルーティングし、決定を md（`- workspace:`/`- routed_by:`）へ
+    書き戻して安定・監査可能にする（毎サイクル LLM を呼ばない）。返り値は解決した spec か None。"""
+    spec, routed_by = resolve_workspace(cfg, task, policy)
+    if spec and routed_by != "explicit":          # 明示指定はそのまま（上書きしない）
+        task.set("workspace", spec.get("name") or spec["url"])
+        task.set("routed_by", routed_by)
+        persist_task(cfg, task)
+    return spec
+
+
+def _workspace_token(spec: dict) -> str:
+    """workspace spec を kiro-flow の `--workspace` 値（JSON）にする。url/path/base/target/desc を伝搬。
+    worker（clone・作業ブランチ）と gitlab の起票先解決の双方で使われる。"""
+    meta = {k: spec[k] for k in ("path", "base", "target", "desc") if spec.get(k)}
+    if meta.get("desc") and len(meta["desc"]) > 300:
+        meta["desc"] = meta["desc"][:300]         # argv 肥大を防ぐ（説明は有界に）
+    return json.dumps({"url": spec["url"], **meta}, ensure_ascii=False, separators=(",", ":"))
+
+
+def _workspace_spec_for(cfg: "Config", task: Task) -> "dict | None":
+    """既に解決・永続化済みの `- workspace:`（_act_batch で確定）を charter spec へ。
+    未解決なら None（読み取り専用 run）。ルーティングはここでは行わない（決定は1度だけ）。"""
+    name = _strip_code(str(task.get("workspace") or "").strip())
+    if not name:
+        return None
     try:
         smap = charter_repo_spec_map(load_charter(cfg))
     except (OSError, ValueError):
         smap = {}
+    return smap.get(name) or _raw_url_spec(name)
+
+
+def _workspace_cmd_args(cfg: "Config", task: Task) -> "list[str]":
+    """kiro-flow へ渡す `--workspace`（唯一の書込先）。書込先が無ければ空＝読み取り専用 run。"""
+    spec = _workspace_spec_for(cfg, task)
+    return ["--workspace", _workspace_token(spec)] if spec else []
+
+
+def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
+    """このタスクが参照する（書き込まない）リポジトリの spec 列。charter の owns: 無しエントリ全部に
+    タスクの `- refs:` で明示したものを足す。要求本文へ記述として埋め込む（clone はしない）。"""
+    try:
+        ch = load_charter(cfg)
+    except (OSError, ValueError):
+        ch = None
+    smap = charter_repo_spec_map(ch)
     out: "list[dict]" = []
-    seen: "set[tuple[str, str]]" = set()
-    for tok in re.split(r"[,\s]+", str(raw).strip()):
-        tok = _strip_code(tok)
-        if not tok:
-            continue
-        spec = smap.get(tok)
-        if spec is None and ("://" in tok or "@" in tok or tok.endswith(".git")):
-            spec = {"name": "", "url": tok, "desc": "", "base": "",
-                    "target": "", "path": "", "readonly": False}
-        if not spec:
-            continue
-        key = (spec["url"], spec.get("path", ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(spec)
+    seen: "set[str]" = set()
+    refs = [s for s in (ch.repo_specs if ch else []) if _is_reference_repo(s)]
+    for tok in _split_tokens(task.get("refs")):
+        sp = smap.get(tok) or _raw_url_spec(tok)
+        if sp:
+            refs.append(sp)
+    for s in refs:
+        if s.get("url") and s["url"] not in seen:
+            seen.add(s["url"])
+            out.append(s)
     return out
 
 
-def _repo_token(spec: dict) -> str:
-    """repo spec を kiro-flow の `--repo` 値にする。ルーティング上のメタ（path/base/target/desc/readonly）が
-    無ければ素の URL（後方互換。name は URL から導けるのでメタ扱いしない）、あれば JSON で構造化伝搬する。
-    JSON は worker（clone・ブランチ checkout）と gitlab イシュー指示の双方で使われる。"""
-    meta = {k: spec[k] for k in ("path", "base", "target", "desc") if spec.get(k)}
-    if spec.get("readonly"):
-        meta["readonly"] = True
-    if not meta:
-        return spec["url"]                      # 後方互換: ルーティングメタ無しは素の URL
-    if spec.get("name"):
-        meta["name"] = spec["name"]             # 実メタがあるときだけ name も載せる（clone 名/表示用）
-    if meta.get("desc") and len(meta["desc"]) > 300:
-        meta["desc"] = meta["desc"][:300]       # argv 肥大を防ぐ（説明は有界に）
-    return json.dumps({"url": spec["url"], **meta}, ensure_ascii=False,
-                      separators=(",", ":"))
-
-
-def _repo_cmd_args(cfg: "Config", task: Task) -> "list[str]":
-    """kiro-flow へ渡す `--repo` 列（成果物リポジトリの構造化伝搬）。"""
-    args: "list[str]" = []
-    for spec in task_repo_specs(cfg, task):
-        args += ["--repo", _repo_token(spec)]
-    return args
+def reference_repos_note(specs: "list[dict]") -> str:
+    """参照リポジトリ（read-only）をタスク記述として伝搬する文面。書込先ではないことを明示する。"""
+    if not specs:
+        return ""
+    lines = ["参照用リポジトリ（読み取り専用・変更/commit はしない。必要に応じて内容を参照すること）:"]
+    for s in specs:
+        label = (f"{s['name']} = " if s.get("name") else "") + s["url"]
+        tags = []
+        if s.get("path"):
+            tags.append(f"フォルダ {s['path']}")
+        if s.get("base"):
+            tags.append(f"ブランチ {s['base']}")
+        line = f"- {label}" + ("（" + "・".join(tags) + "）" if tags else "")
+        if s.get("desc"):
+            line += f": {s['desc']}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
-    """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。"""
-    return _kf_base(cfg, use_git) + _repo_cmd_args(cfg, task) + [
+    """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。
+    書込先は _act_batch で確定・永続化済みの `- workspace:` を読む（再ルーティングしない）。"""
+    return _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
         "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
 
@@ -2251,7 +2357,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
 
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
-    base = _kf_base(cfg, use_git) + _repo_cmd_args(cfg, task)
+    base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task)
     try:
         sub = subprocess.run(base + ["submit", build_request(task, cfg)], cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
@@ -2336,6 +2442,10 @@ class Config:
     kiro_flow: "str | None" = None
     planner: str = "kiro"          # 優先順位付け戦略: kiro（エージェント）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # kiro-flow run に渡す planner
+    # ルーティング: タスク → ちょうど1つの書込先ワークスペースを決める自動判断。kiro=曖昧時に
+    # LLM で推定（charter owns: と route: の決定論を先に適用）/ none=決定論のみ（LLM 推定しない）。
+    route_planner: str = "kiro"
+    default_workspace: str = ""    # route で決まらないタスクの既定ワークスペース（charter の name/url）。空で無効
     location: str = "auto"         # act の実行モード: auto / local / daemon / remote
     executor: str = "kiro"
     model: "str | None" = None
@@ -2722,6 +2832,7 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
     claimed = [t for t in batch if claim_task(cfg, t)]   # 二重実行防止: 取れた者だけ進む
     for t in claimed:
         t.status = "doing"
+        resolve_and_persist_workspace(cfg, t, policy)    # タスク→1つの書込先へルーティング（決定を md へ永続化）
         persist_task(cfg, t)
     locs = {t.id: decide_location(t, policy, cfg) for t in claimed}
     if cfg.dry_run:
@@ -3452,7 +3563,7 @@ def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
         findings.append({
             "category": "env", "severity": "info", "title": "workdir が git リポジトリでない",
             "evidence": f"workdir={cfg.workdir} に .git が無い",
-            "fix": "成果物リポジトリ上で実行するか、各タスクに repos: を指定する"})
+            "fix": "成果物リポジトリ上で実行するか、charter の repos に owns: を付けて route で書込先を割り当てる"})
     missing = [str(d) for d in (cfg.backlog, cfg.needs, cfg.decisions) if not d.exists()]
     if missing:
         findings.append({
@@ -4204,6 +4315,8 @@ _REPO_KEY_ALIASES = {
              "パス", "ディレクトリ", "フォルダ", "サブディレクトリ"),
     "readonly": ("readonly", "read_only", "read-only", "ref", "reference",
                  "参照のみ", "参照", "読み取り専用", "読取専用"),
+    "owns": ("owns", "own", "owned", "owns_paths", "paths",
+             "所有", "担当", "管轄", "担当パス"),
 }
 
 # readonly フラグの真値表記（値なし＝キーだけ書いた場合も True 扱い）
@@ -4228,17 +4341,20 @@ def _entry_attr(attrs: dict, key: str) -> str:
 
 
 def _repo_spec_from_entry(e: dict) -> dict:
-    """repos エントリ（見出し `name = url` ＋ 属性 desc/base/target/path）を構造化する。
+    """repos エントリ（見出し `name = url` ＋ 属性 desc/base/target/path/owns）を構造化する。
     target 省略時は base と同じ（同一ブランチで作業）。path はモノレポ内の作業フォルダ（任意）で、
-    同一 URL を役割別に複数エントリへ分けるときの識別子になる。"""
+    同一 URL を役割別に複数エントリへ分けるときの識別子になる。owns は担当パス（グロブ）の列で、
+    ルーティング（タスク→書込先）の根拠になる。**owns 未指定＝参照リポジトリ**（書込先にしない）。"""
     name, url = _repo_token_parts(e["head"])
     desc = _entry_attr(e["attrs"], "desc")
     base = _entry_attr(e["attrs"], "base")
     target = _entry_attr(e["attrs"], "target") or base
     path = _entry_attr(e["attrs"], "path").strip("/")
-    readonly = _entry_readonly(e["attrs"])
+    owns = [g for g in re.split(r"[,\s]+", _entry_attr(e["attrs"], "owns")) if g]
+    # owns があれば書込先候補。owns 未指定は参照リポジトリ（readonly 明示と同義に倒す）。
+    readonly = _entry_readonly(e["attrs"]) or not owns
     return {"name": name, "url": url, "desc": desc, "base": base,
-            "target": target, "path": path, "readonly": readonly}
+            "target": target, "path": path, "readonly": readonly, "owns": owns}
 
 
 def validate_charter(ch: "Charter") -> "list[str]":
@@ -4962,6 +5078,8 @@ CONFIG_DEFAULTS = {
     "executor": "kiro",
     "planner": "kiro",
     "flow_planner": "flow-planner",
+    "route_planner": "kiro",
+    "default_workspace": "",
     "location": "auto",
     "model": None,
     "poll": 5.0,
@@ -5093,6 +5211,8 @@ def build_config(args) -> Config:
         git_bus=args.git_bus, git_branch=args.git_branch, git_subdir=args.git_subdir,
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
+        route_planner=str(getattr(args, "route_planner", "kiro") or "kiro"),
+        default_workspace=str(getattr(args, "default_workspace", "") or ""),
         location=args.location, executor=args.executor,
         model=args.model, max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,

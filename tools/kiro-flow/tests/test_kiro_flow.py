@@ -778,14 +778,24 @@ class GitlabNativeApiTests(unittest.TestCase):
             gl_plugin._resolve_project({"repo_url": ""})
         self.assertIn("repo_url", str(ctx.exception))
 
-    def test_resolve_project_rejects_ssh_url(self):
-        with self.assertRaises(RuntimeError):
-            gl_plugin._resolve_project({"repo_url": "git@gitlab.com:group/repo.git"})
+    def test_resolve_project_parses_ssh_url(self):
+        # SSH 形のワークスペース URL も起票先として解釈できる（パス・末尾 .git を剥がす）
+        host, project, _ = gl_plugin._resolve_project(
+            {}, workspace_url="git@gitlab.com:group/repo.git")
+        self.assertEqual((host, project), ("gitlab.com", "group/repo"))
 
     def test_resolve_project_parses_repo_url(self):
         host, project, repo_url = gl_plugin._resolve_project(
             {"repo_url": "https://gitlab.com/group/sub/repo"})
         self.assertEqual((host, project), ("gitlab.com", "group/sub/repo"))
+
+    def test_resolve_project_prefers_workspace_over_config(self):
+        # ワークスペース URL が config の repo_url より優先される（その run の唯一の書込先へ起票）
+        host, project, used = gl_plugin._resolve_project(
+            {"repo_url": "https://gitlab.com/fallback/repo"},
+            workspace_url="https://gitlab.com/team/app")
+        self.assertEqual((host, project), ("gitlab.com", "team/app"))
+        self.assertEqual(used, "https://gitlab.com/team/app")
 
     def test_gl_api_builds_v4_request(self):
         captured = {}
@@ -871,9 +881,9 @@ class CallExecutorDispatchTests(unittest.TestCase):
         def kwargs_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None, **kw):
             return "ok", None
 
-        self.assertTrue(kf._executor_accepts_repo_instruction(new_exec))
-        self.assertTrue(kf._executor_accepts_repo_instruction(kwargs_exec))
-        self.assertFalse(kf._executor_accepts_repo_instruction(legacy_exec))
+        self.assertTrue(kf._executor_accepts(new_exec, "repo_instruction"))
+        self.assertTrue(kf._executor_accepts(kwargs_exec, "repo_instruction"))
+        self.assertFalse(kf._executor_accepts(legacy_exec, "repo_instruction"))
 
     def test_new_executor_gets_clean_goal_and_instruction(self):
         seen = {}
@@ -1274,89 +1284,132 @@ class DaemonPrimitiveTests(unittest.TestCase):
         kf.Bus(self.tmp, "req1").ensure_run("x")  # 既に run が作られている
         self.assertFalse(self.bus.claim_request("req1", "daemonC", 60))
 
-    def test_run_repos_roundtrip_via_meta(self):
-        # 成果物リポジトリは run meta に載り、submit→inbox でも伝搬する
+    def test_workspace_roundtrip_via_meta(self):
+        # ワークスペース（唯一の書込先）は run meta に載り、submit→inbox でも伝搬する
+        ws = {"url": "https://x/a.git", "path": "apps/api", "base": "main", "target": "develop"}
         b = kf.Bus(self.tmp, "runR")
-        b.ensure_run("goal", repos=["https://x/a.git", "https://x/b.git"])
-        self.assertEqual(b.run_repos(), ["https://x/a.git", "https://x/b.git"])
-        self.bus.submit_request("reqR", "do", "t", repos=["https://x/c.git"])
-        self.assertEqual(self.bus.read_inbox("reqR")["repos"], ["https://x/c.git"])
+        b.ensure_run("goal", workspace=ws)
+        self.assertEqual(b.run_workspace(), ws)
+        self.bus.submit_request("reqR", "do", "t", workspace={"url": "https://x/c.git"})
+        self.assertEqual(self.bus.read_inbox("reqR")["workspace"], {"url": "https://x/c.git"})
+        # ワークスペース無し → 読み取り専用 run（None）
+        b2 = kf.Bus(self.tmp, "runRO")
+        b2.ensure_run("just investigate")
+        self.assertIsNone(b2.run_workspace())
 
-    def test_ensure_work_repos_clones_and_cleans(self):
-        # ローカルの「リモート」を git init で用意し、clone→作業後 cleanup を検証
-        remote = os.path.join(self.tmp, "remote_repo")
+    def _make_remote(self, name="remote_repo", base="main", subfile=None):
+        """ローカルの『リモート』を git init で用意する（push 先になる非 bare リポジトリ）。"""
+        remote = os.path.join(self.tmp, name)
         os.makedirs(remote)
-        subprocess.run(["git", "init", "-q", remote], check=True)
-        subprocess.run(["git", "-C", remote, "config", "user.email", "t@t"], check=True)
-        subprocess.run(["git", "-C", remote, "config", "user.name", "t"], check=True)
-        open(os.path.join(remote, "f.txt"), "w").close()
-        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
-        subprocess.run(["git", "-C", remote, "commit", "-qm", "init"], check=True)
-        try:
-            clones = kf.ensure_work_repos([remote], "worker-1")
-            self.assertEqual(len(clones), 1)
-            c = clones[0]
-            path = c["clone"]
-            self.assertEqual(c["url"], remote)
-            self.assertTrue(path and os.path.isdir(os.path.join(path, ".git")))
-            self.assertIn(path, kf.repo_instruction(clones))   # エージェントへ渡す指示にパスが入る
-        finally:
-            kf.cleanup_work_repos()
-        self.assertFalse(path and os.path.exists(path))        # 作業後に消える（クリーン必須）
-
-    def test_ensure_work_repos_marks_failed_clone(self):
-        clones = kf.ensure_work_repos([os.path.join(self.tmp, "does_not_exist")], "w")
-        self.addCleanup(kf.cleanup_work_repos)
-        self.assertEqual(clones[0]["clone"], "")               # clone 失敗は path 空
-        self.assertIn("clone 失敗", kf.repo_instruction(clones))
-
-    def test_parse_repo_token_url_or_json(self):
-        # 素の URL は url だけの spec。JSON はメタを構造化して受ける（後方互換）
-        u = kf.parse_repo_token("https://git/app.git")
-        self.assertEqual((u["url"], u["readonly"], u["path"]), ("https://git/app.git", False, ""))
-        j = kf.parse_repo_token(
-            '{"url":"https://git/shop.git","name":"api","path":"apps/api",'
-            '"base":"main","target":"develop","readonly":true,"desc":"API"}')
-        self.assertEqual((j["name"], j["path"], j["base"], j["target"], j["readonly"], j["desc"]),
-                         ("api", "apps/api", "main", "develop", True, "API"))
-
-    def test_ensure_work_repos_checks_out_base_branch(self):
-        # base 指定があればそのブランチを checkout して clone する
-        remote = os.path.join(self.tmp, "branched_repo")
-        os.makedirs(remote)
-        for cmd in (["git", "init", "-q", "-b", "main", remote],
+        for cmd in (["git", "init", "-q", "-b", base, remote],
                     ["git", "-C", remote, "config", "user.email", "t@t"],
                     ["git", "-C", remote, "config", "user.name", "t"]):
             subprocess.run(cmd, check=True)
-        open(os.path.join(remote, "f.txt"), "w").close()
+        target = os.path.join(remote, subfile) if subfile else os.path.join(remote, "f.txt")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        open(target, "w").close()
         subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
         subprocess.run(["git", "-C", remote, "commit", "-qm", "init"], check=True)
+        return remote
+
+    def test_ensure_workspace_clone_creates_run_branch(self):
+        # clone され、作業ブランチ kf/<run-id> が base から作られてエージェントへ渡る
+        remote = self._make_remote()
+        try:
+            ws = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-1")
+            path = ws["clone"]
+            self.assertTrue(path and os.path.isdir(os.path.join(path, ".git")))
+            self.assertEqual(ws["branch"], "kf/run-1")
+            head = subprocess.run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+            self.assertEqual(head, "kf/run-1")             # kiro-flow が作業ブランチを checkout
+            self.assertIn(path, kf.workspace_instruction(ws))
+        finally:
+            kf.cleanup_workspace()
+        self.assertFalse(path and os.path.exists(path))    # 作業後に消える（クリーン必須）
+
+    def test_finalize_workspace_commits_and_pushes_changes(self):
+        # エージェントが編集 → finalize が作業ブランチへ commit して push する
+        remote = self._make_remote(name="ws_push")
+        try:
+            ws = kf.ensure_workspace_clone({"url": remote, "base": "main", "target": "main"},
+                                           "run-2")
+            with open(os.path.join(ws["clone"], "new.txt"), "w") as fh:
+                fh.write("change")
+            delivery = kf.finalize_workspace(ws, "run-2", "t1")
+            self.assertIsNotNone(delivery)
+            self.assertEqual(delivery["branch"], "kf/run-2")
+            self.assertTrue(delivery["commit"])
+            # リモートに作業ブランチが反映され、変更が含まれる
+            ls = subprocess.run(["git", "-C", remote, "rev-parse", "--verify", "kf/run-2"],
+                                capture_output=True, text=True)
+            self.assertEqual(ls.returncode, 0)
+            files = subprocess.run(["git", "-C", remote, "ls-tree", "-r", "--name-only", "kf/run-2"],
+                                   capture_output=True, text=True).stdout
+            self.assertIn("new.txt", files)
+        finally:
+            kf.cleanup_workspace()
+
+    def test_finalize_workspace_noop_when_no_changes(self):
+        # 調査タスク等（変更ゼロ）はブランチを push しない＝読み取り専用グラフでは何もしない
+        remote = self._make_remote(name="ws_noop")
+        try:
+            ws = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-3")
+            self.assertIsNone(kf.finalize_workspace(ws, "run-3", "t1"))  # 変更なし → None
+            ls = subprocess.run(["git", "-C", remote, "rev-parse", "--verify", "kf/run-3"],
+                                capture_output=True, text=True)
+            self.assertNotEqual(ls.returncode, 0)         # 作業ブランチは push されない
+        finally:
+            kf.cleanup_workspace()
+
+    def test_ensure_workspace_clone_checks_out_base_content(self):
+        # base 指定があればそのブランチ内容から作業ブランチを作る（base の成果物が見える）
+        remote = self._make_remote(name="branched_repo", base="main")
         subprocess.run(["git", "-C", remote, "checkout", "-q", "-b", "develop"], check=True)
         open(os.path.join(remote, "dev.txt"), "w").close()
         subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
         subprocess.run(["git", "-C", remote, "commit", "-qm", "dev"], check=True)
-        token = json.dumps({"url": remote, "name": "svc", "base": "develop",
-                            "path": "apps/api", "desc": "API", "readonly": False})
+        ws_spec = {"url": remote, "base": "develop", "path": "apps/api",
+                   "target": "main", "desc": "API"}
         try:
-            clones = kf.ensure_work_repos([token], "w")
-            path = clones[0]["clone"]
-            self.assertTrue(path)
-            head = subprocess.run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"],
-                                  capture_output=True, text=True).stdout.strip()
-            self.assertEqual(head, "develop")                  # base ブランチが checkout される
-            instr = kf.repo_instruction(clones)
-            self.assertIn("apps/api", instr)
-            self.assertIn("develop", instr)
+            ws = kf.ensure_workspace_clone(ws_spec, "run-4")
+            path = ws["clone"]
+            self.assertTrue(os.path.exists(os.path.join(path, "dev.txt")))   # develop の内容
+            instr = kf.workspace_instruction(ws)
+            self.assertIn("apps/api", instr)               # path（モノレポのフォルダ）
+            self.assertIn("kf/run-4", instr)               # 作業ブランチ
+            self.assertIn("main", instr)                   # target（MR/PR ターゲット）
         finally:
-            kf.cleanup_work_repos()
+            kf.cleanup_workspace()
+
+    def test_parse_workspace_url_or_json(self):
+        # 素の URL は url だけの spec。JSON は構造化メタを受ける。空は None（読み取り専用）
+        u = kf.parse_workspace("https://git/app.git")
+        self.assertEqual((u["url"], u["path"], u["base"]), ("https://git/app.git", "", ""))
+        j = kf.parse_workspace(
+            '{"url":"https://git/shop.git","path":"apps/api","base":"main",'
+            '"target":"develop","desc":"API"}')
+        self.assertEqual((j["path"], j["base"], j["target"], j["desc"]),
+                         ("apps/api", "main", "develop", "API"))
+        self.assertIsNone(kf.parse_workspace(None))
+        self.assertIsNone(kf.parse_workspace(""))
+
+    def test_workspace_id_includes_path_and_base(self):
+        # 同 URL でも path（モノレポのフォルダ）や base（作業ブランチ）が違えば別ワークスペース
+        a = {"url": "https://git/shop.git", "path": "apps/api", "base": "main"}
+        b = {"url": "https://git/shop.git", "path": "apps/web", "base": "main"}
+        c = {"url": "https://git/shop.git", "path": "apps/api", "base": "develop"}
+        self.assertNotEqual(kf.workspace_id(a), kf.workspace_id(b))   # path 違い
+        self.assertNotEqual(kf.workspace_id(a), kf.workspace_id(c))   # base 違い
+        self.assertEqual(kf.workspace_id(a), kf.workspace_id(dict(a)))
 
     def test_sweep_work_repo_dirs_reaps_dead_pid_only(self):
         # SIGKILL リーク回収: 死んだ pid の孤立 clone は消し、生存 pid（自分）のものは残す
         tmp = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
         dead_pid = 2147480000          # 存在しない（はずの）pid
-        live = os.path.join(tmp, f"kiro-flow-repos-{os.getpid()}-n-aaa")
-        dead = os.path.join(tmp, f"kiro-flow-repos-{dead_pid}-n-bbb")
+        live = os.path.join(tmp, f"kiro-flow-ws-{os.getpid()}-aaa")
+        dead = os.path.join(tmp, f"kiro-flow-ws-{dead_pid}-bbb")
         other = os.path.join(tmp, "unrelated-dir")
         for d in (live, dead, other):
             os.makedirs(d)
@@ -1371,59 +1424,29 @@ class DaemonPrimitiveTests(unittest.TestCase):
         # min_age 未満かつ pid 生存中は残す（稼働中の clone を誤削除しない）
         tmp = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        recent = os.path.join(tmp, f"kiro-flow-repos-{os.getpid()}-n-ccc")
+        recent = os.path.join(tmp, f"kiro-flow-ws-{os.getpid()}-ccc")
         os.makedirs(recent)
         with mock.patch("tempfile.gettempdir", return_value=tmp):
             self.assertEqual(kf.sweep_work_repo_dirs(min_age_sec=3600.0), 0)
         self.assertTrue(os.path.isdir(recent))
 
-    def test_resolve_node_repos_selects_subset(self):
-        api = json.dumps({"url": "https://git/shop.git", "name": "api", "path": "apps/api"})
-        web = json.dumps({"url": "https://git/shop.git", "name": "web", "path": "apps/web"})
-        run = [api, web, "https://git/lib.git"]
-        # 未注釈ノード → 全 repo（後方互換）
-        self.assertEqual(kf.resolve_node_repos({"goal": "x"}, run), run)
-        # subset 指定 → 一致する token だけ
-        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["api"]}, run), [api])
-        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["web", "lib"]}, run),
-                         [web, "https://git/lib.git"])
-        # 空配列 → clone しない
-        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": []}, run), [])
-        # run に repo が無ければ常に空
-        self.assertEqual(kf.resolve_node_repos({"goal": "x", "repos": ["api"]}, []), [])
-
-    def test_assign_node_repos_stub_assigns_all_llm_keeps(self):
-        import types
-        run = [json.dumps({"url": "https://git/a.git", "name": "a"}), "https://git/b.git"]
-        # stub プランナー: 全ノードへ全 repo を割り当てる
-        stub_args = types.SimpleNamespace(planner="stub", repos=run)
-        tasks = [{"id": "t1", "goal": "x"}, {"id": "t2", "goal": "y", "repos": ["a"]}]
-        kf._assign_node_repos(tasks, stub_args)
-        self.assertEqual(tasks[0]["repos"], ["a", "b"])     # 未注釈 → 全 repo（id 化）
-        self.assertEqual(tasks[1]["repos"], ["a"])          # 既に割当済みは尊重
-        # LLM プランナー: プランナー出力に委ね、本体は触らない
-        llm_args = types.SimpleNamespace(planner="kiro", repos=run)
-        t2 = [{"id": "t1", "goal": "x"}]
-        kf._assign_node_repos(t2, llm_args)
-        self.assertNotIn("repos", t2[0])                    # 未注釈のまま（worker で全 repo にフォールバック）
-
-    def test_node_entry_and_coerce_preserve_repos(self):
+    def test_node_entry_drops_repos(self):
+        # ワークスペースは run 単位なので、ノードに repo は持たせない
         e = kf._node_entry({"goal": "g", "deps": [], "kind": "work", "repos": ["a", "b"]})
-        self.assertEqual(e["repos"], ["a", "b"])
-        self.assertNotIn("repos", kf._node_entry({"goal": "g", "deps": [], "kind": "work"}))
-        coerced = kf._coerce_tasks([{"id": "t1", "goal": "g", "repos": ["a"]},
-                                    {"id": "t2", "goal": "h"}])
-        self.assertEqual(coerced[0]["repos"], ["a"])
-        self.assertNotIn("repos", coerced[1])               # 未指定はキーを作らない（フォールバック用）
+        self.assertNotIn("repos", e)
+        self.assertEqual((e["goal"], e["kind"]), ("g", "work"))
 
-    def test_repo_instruction_marks_readonly(self):
-        ro = [{"url": "https://git/lib.git", "name": "lib", "path": "", "base": "main",
-               "target": "main", "readonly": True, "desc": "参照元", "clone": "/tmp/lib"}]
-        instr = kf.repo_instruction(ro)
-        self.assertIn("参照のみ", instr)
-        self.assertNotIn("commit して push すること", instr)   # 参照のみだけなら push 指示を出さない
-        rw = [dict(ro[0], readonly=False)]
-        self.assertIn("commit して push すること", kf.repo_instruction(rw))
+    def test_workspace_instruction_describes_single_writable(self):
+        ws = {"url": "https://git/app.git", "path": "apps/api", "base": "develop",
+              "target": "main", "desc": "API", "branch": "kf/run-9", "clone": "/tmp/app"}
+        instr = kf.workspace_instruction(ws)
+        self.assertIn("唯一の書込先", instr)
+        self.assertIn("apps/api", instr)
+        self.assertIn("kf/run-9", instr)
+        self.assertIn("commit と push は kiro-flow", instr)   # エージェントは編集のみ
+        # clone 失敗時は書き込めない旨を明示
+        self.assertIn("clone に失敗", kf.workspace_instruction({"url": "https://x/y.git"}))
+        self.assertEqual(kf.workspace_instruction(None), "")
 
     def test_remove_run_also_purges_inbox(self):
         # gc（remove_run）は対応する inbox 要求と claim も消す。残すと run_exists が

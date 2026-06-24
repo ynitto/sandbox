@@ -7,6 +7,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### マルチリポジトリ・ルーティング（kiro-autonomous × kiro-flow・破壊的変更）
+
+大規模・複数リポジトリのプロジェクトを自律運用するため、「タスク → コミット先リポジトリ」のルーティングを導入した。
+**判断は制御層（kiro-autonomous）に集約し、執行は実行層（kiro-flow）が担保する。** 設計の詳細は
+`tools/kiro-autonomous/ROUTING.md`。後方互換は取らない（旧 `--repo`／タスク `- repos:` は廃止）。
+
+#### kiro-flow
+
+- **1 run（=バックログ単位）= 1 ワークスペース（唯一の書込先）に固定。** `--repo`（複数・成果物リポジトリ）を
+  廃止し、`--workspace`（ちょうど1つ・素の URL か JSON `{url,path,base,target,desc}`）へ刷新。**リポジトリの同一性は
+  (url, path, base)**（同 URL でも path・ブランチが違えば別ワークスペース。`_workspace_clone` のキャッシュキーも修正）。
+- **kiro-flow が作業ブランチを作ってワーカーへ渡す。** worker はワークスペースを clone し、`kf/<run-id>` を base から作成。
+  エージェントは作業ツリーを編集するだけで、**変更があれば kiro-flow が commit して push**（分散 worker は同じ
+  `kf/<run-id>` へ push し rebase リトライで統合）。**変更が無ければブランチを push しない**＝調査だけの読み取り専用
+  グラフでは何も書き込まない。デリバリ（branch/commit/target）を result に記録。
+- ノード単位の repo 割り当て（`resolve_node_repos`／プランナーの repos 注釈）を撤廃し、run 内の全ノードが同一
+  ワークスペースを共有する形に単純化。参照だけのリポジトリは kiro-flow では扱わず、要求本文（goal）として伝搬する。
+- executor 契約に構造化 `workspace`（spec dict）引数を追加。**gitlab executor は起票先 GitLab プロジェクトを
+  ワークスペース URL から解決**（SSH/https 両形）し、無ければ `gitlab.repo_url` をフォールバックに使う。
+- 孤立 clone の janitor 接頭辞を `kiro-flow-repos-` → `kiro-flow-ws-` に変更。
+
+#### kiro-autonomous
+
+- **ルーティング解決を新設**（`resolve_workspace`）: タスクを**ちょうど1つの書込先ワークスペース**へ。解決順は
+  明示 `- workspace:` > policy `route:` > charter `owns:` 推定 > auto-route（LLM）> `default_workspace`／候補1つ。
+  決定はタスク md（`- workspace:` / `- routed_by:`）へ書き戻して安定・監査可能にする。
+- charter `## repos` に **`owns:`（担当パスのグロブ）** を追加。**owns 有り=書込先候補、owns 無し=参照リポジトリ**
+  （読むだけ・タスク本文へ伝搬・clone しない）。policy に **`route: <パターン> -> <repo名>`** ルールを追加。
+- 設定 `route_planner`（kiro/none）と `default_workspace` を追加。タスクに `- workspace:` / `- paths:` / `- refs:` /
+  `- routed_by:` フィールドを追加。kiro-flow へは `--workspace`（単一）を渡す（旧 `--repo` 列を廃止）。
+- 単体テストを新 API へ更新（kiro-flow・kiro-autonomous 両スイート、計 472 件 green）。
+
 ### kiro-autonomous
 
 #### Added
