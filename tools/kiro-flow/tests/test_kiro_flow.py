@@ -598,74 +598,63 @@ gl_plugin = _load_executor_plugin("gitlab")
 
 
 class GitlabExecutorPluginTests(unittest.TestCase):
-    """gitlab executor プラグイン（opt-in）: イシュー起票 → approved ポーリング → 完了。"""
-
-    # 起票先トークンが解決されると native バックエンドに切り替わるため、これらのテストが
-    # 想定する gl 委譲経路を保つよう、トークン系環境変数を退避してから消す。
-    _TOKEN_ENV = ("GITLAB_TOKEN", "GL_TOKEN", "KIRO_FLOW_GITLAB_TOKEN")
+    """gitlab executor プラグイン（opt-in）: GitLab REST を直叩きしてイシュー起票 →
+    approved ポーリング → 完了。起票先は repo_url（kiro-flow.yaml）を権威に使う。"""
 
     def setUp(self):
         # ポーリング待ちを無くす設定を環境変数（KIRO_FLOW_EXECUTOR_CONFIG）で渡す
-        self._cfg = {"conn_label": "default", "labels": "status:open,assignee:any",
-                     "priority": "priority:normal", "poll_interval": 0.0,
-                     "timeout": 0.0, "approved_label": "status:approved",
-                     "done_label": "status:done"}
+        self._cfg = {"conn_label": "default", "repo_url": "https://gitlab.com/group/repo",
+                     "labels": "status:open,assignee:any", "priority": "priority:normal",
+                     "poll_interval": 0.0, "timeout": 0.0,
+                     "approved_label": "status:approved", "done_label": "status:done"}
         self._prev_env = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(self._cfg)
-        self._prev_tok = {k: os.environ.pop(k, None) for k in self._TOKEN_ENV}
 
     def tearDown(self):
         if self._prev_env is None:
             os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
         else:
             os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = self._prev_env
-        for k, v in self._prev_tok.items():
-            if v is not None:
-                os.environ[k] = v
 
-    def _run_with(self, gl_side_effect):
-        with mock.patch.object(gl_plugin, "_find_gl_script", return_value="/fake/gl.py"), \
-             mock.patch.object(gl_plugin, "run_gl", side_effect=gl_side_effect) as m:
+    def _run_with(self, api_side, list_side=lambda *a, **k: [], token="glpat-x"):
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value=token), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api_side) as m, \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
             text, data = gl_plugin.execute("work", "ログイン画面を追加", {})
         return text, data, m
 
     def test_creates_issue_and_waits_for_approved(self):
-        # get-issue を 2 回呼ばせ、2 回目で approved にする
+        # get-issue 相当を 2 回呼ばせ、2 回目で approved にする
         states = [["status:open"], ["status:approved"]]
 
-        def side(subargs, *a, **k):
-            cmd = subargs[0]
-            if cmd == "create-issue":
-                return {"iid": 42, "web_url": "https://gl/x/42"}
-            if cmd == "get-issue":
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST" and path.endswith("/issues"):
+                return {"iid": 42, "web_url": "https://gitlab.com/group/repo/-/issues/42"}
+            if method == "GET" and path.endswith("/issues/42"):
                 return {"labels": states.pop(0), "state": "opened"}
-            if cmd == "get-comments":
-                return [{"body": "実装しました。MR を用意済みです。"}]
             return {}
 
-        text, data, m = self._run_with(side)
+        text, data, m = self._run_with(
+            api, list_side=lambda *a, **k: [{"body": "実装しました。MR を用意済みです。"}])
         self.assertIn("#42 approved", text)
         self.assertIn("MR を用意済み", text)
         self.assertEqual(data["issue_iid"], 42)
         self.assertTrue(data["approved"])
-        # create-issue に priority ラベルが連結されていること
-        create_call = next(c for c in m.call_args_list if c.args[0][0] == "create-issue")
-        labels = create_call.args[0][create_call.args[0].index("--labels") + 1]
-        self.assertIn("priority:normal", labels)
-        self.assertIn("assignee:any", labels)
+        # 起票は repo_url のプロジェクト（group%2Frepo）に対して POST される
+        post = next(c for c in m.call_args_list if c.args[2] == "POST")
+        self.assertIn("group%2Frepo", post.args[3])
+        # priority ラベルが連結され、作成者ノード ID タグが本文に入る
+        self.assertIn("priority:normal", post.kwargs["data"]["labels"])
+        self.assertIn("assignee:any", post.kwargs["data"]["labels"])
+        self.assertIn("gitlab-idd:creator-node-id", post.kwargs["data"]["description"])
 
     def test_closed_issue_counts_as_done(self):
-        def side(subargs, *a, **k):
-            cmd = subargs[0]
-            if cmd == "create-issue":
-                return {"iid": 7, "web_url": "https://gl/x/7"}
-            if cmd == "get-issue":
-                return {"labels": ["status:open"], "state": "closed"}
-            if cmd == "get-comments":
-                return []
-            return {}
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 7, "web_url": "https://gitlab.com/group/repo/-/issues/7"}
+            return {"labels": ["status:open"], "state": "closed"}
 
-        text, data, _ = self._run_with(side)
+        text, data, _ = self._run_with(api)
         self.assertEqual(data["issue_iid"], 7)
         self.assertTrue(data["approved"])
 
@@ -673,23 +662,27 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
             dict(self._cfg, timeout=0.01, poll_interval=0.0))
 
-        def side(subargs, *a, **k):
-            cmd = subargs[0]
-            if cmd == "create-issue":
-                return {"iid": 1, "web_url": "https://gl/x/1"}
-            if cmd == "get-issue":
-                return {"labels": ["status:open"], "state": "opened"}
-            return {}
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 1, "web_url": "https://gitlab.com/group/repo/-/issues/1"}
+            return {"labels": ["status:open"], "state": "opened"}
 
         with self.assertRaises(RuntimeError) as ctx:
-            self._run_with(side)
+            self._run_with(api)
         self.assertIn("approved", str(ctx.exception))
 
-    def test_missing_gl_script_raises(self):
-        with mock.patch.object(gl_plugin, "_find_gl_script", return_value=None):
-            with self.assertRaises(RuntimeError) as ctx:
-                gl_plugin.execute("work", "なにか", {})
-        self.assertIn("gl.py", str(ctx.exception))
+    def test_missing_repo_url_raises(self):
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(dict(self._cfg, repo_url=""))
+        with self.assertRaises(RuntimeError) as ctx:
+            with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"):
+                gl_plugin.execute("work", "x", {})
+        self.assertIn("repo_url", str(ctx.exception))
+
+    def test_missing_token_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            with mock.patch.object(gl_plugin, "_resolve_token", return_value=""):
+                gl_plugin.execute("work", "x", {})
+        self.assertIn("トークン", str(ctx.exception))
 
     def test_config_zero_poll_interval_respected(self):
         # 0.0 が `x or default` で 30 に潰れないこと（プラグイン側 _as_float の確認）
@@ -697,47 +690,9 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertEqual(gl_plugin._as_float(None, 30.0), 30.0)
         self.assertEqual(gl_plugin._as_float("bad", 30.0), 30.0)
 
-    def test_repo_url_passed_to_run_gl(self):
-        # repo_url を設定すると各 run_gl 呼び出しに repo_url が渡る（gl.py へ GL_PROJECT_URL）
-        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
-            dict(self._cfg, repo_url="https://gitlab.com/group/repo"))
-
-        def side(subargs, *a, **k):
-            cmd = subargs[0]
-            if cmd == "create-issue":
-                return {"iid": 9, "web_url": "https://gl/x/9"}
-            if cmd == "get-issue":
-                return {"labels": ["status:approved"], "state": "opened"}
-            if cmd == "get-comments":
-                return []
-            return {}
-
-        _, _, m = self._run_with(side)
-        for call in m.call_args_list:
-            self.assertEqual(call.kwargs.get("repo_url"), "https://gitlab.com/group/repo")
-
     def test_repo_url_default_empty(self):
+        os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
         self.assertEqual(gl_plugin._config()["repo_url"], "")
-
-    def test_run_gl_sets_gl_project_url_env(self):
-        # repo_url 指定時、gl.py 起動の env に GL_PROJECT_URL が入ること
-        captured = {}
-
-        class _Proc:
-            returncode = 0
-            stdout = "{}"
-            stderr = ""
-
-        def fake_run(cmd, *a, **k):
-            captured["env"] = k.get("env", {})
-            return _Proc()
-
-        with mock.patch.object(gl_plugin, "_find_gl_script", return_value="/fake/gl.py"), \
-             mock.patch.object(gl_plugin.subprocess, "run", side_effect=fake_run):
-            gl_plugin.run_gl(["project-info"], "default",
-                             repo_url="https://gitlab.com/group/repo")
-        self.assertEqual(captured["env"].get("GL_PROJECT_URL"),
-                         "https://gitlab.com/group/repo")
 
     def test_env_override_beats_config_block(self):
         # 個別環境変数 KIRO_FLOW_GITLAB_* が KIRO_FLOW_EXECUTOR_CONFIG より優先される
@@ -756,32 +711,18 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertIn("kiro-flow", body)
 
 
-class GitlabNativeBackendTests(unittest.TestCase):
-    """native バックエンド: kiro-flow.yaml の repo_url を権威に GitLab REST を直叩きする
-    （gl.py 不要・起票先 URL を確実に使用）。"""
+class GitlabNativeApiTests(unittest.TestCase):
+    """native レイヤ（URL 解析・REST 組立・トークン解決）の単体検証。"""
 
-    _TOKEN_ENV = ("GITLAB_TOKEN", "GL_TOKEN", "KIRO_FLOW_GITLAB_TOKEN")
+    _TOKEN_ENV = ("GITLAB_TOKEN", "GL_TOKEN")
 
     def setUp(self):
-        self._prev_env = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
         self._prev_tok = {k: os.environ.pop(k, None) for k in self._TOKEN_ENV}
 
     def tearDown(self):
-        if self._prev_env is None:
-            os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
-        else:
-            os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = self._prev_env
         for k, v in self._prev_tok.items():
             if v is not None:
                 os.environ[k] = v
-
-    def _set_cfg(self, **over):
-        base = {"repo_url": "https://gitlab.com/group/repo", "token": "glpat-x",
-                "labels": "status:open,assignee:any", "priority": "priority:normal",
-                "poll_interval": 0.0, "timeout": 0.0,
-                "approved_label": "status:approved", "done_label": "status:done"}
-        base.update(over)
-        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(base)
 
     def test_parse_project_url_variants(self):
         self.assertEqual(gl_plugin._parse_project_url("https://gitlab.com/g/r.git"),
@@ -790,83 +731,19 @@ class GitlabNativeBackendTests(unittest.TestCase):
                          ("gl.example.com", "a/b/c"))
         self.assertEqual(gl_plugin._parse_project_url("not-a-url"), (None, None))
 
-    def test_backend_native_with_repo_url_and_token(self):
-        self._set_cfg()
-        be = gl_plugin._resolve_backend(gl_plugin._config())
-        self.assertEqual(be["mode"], "native")
-        self.assertEqual(be["host"], "gitlab.com")
-        self.assertEqual(be["project"], "group/repo")
-        self.assertEqual(be["token"], "glpat-x")
-
-    def test_backend_gl_when_token_missing(self):
-        self._set_cfg(token="")
-        be = gl_plugin._resolve_backend(gl_plugin._config())
-        self.assertEqual(be["mode"], "gl")
-
-    def test_backend_gl_when_repo_url_missing(self):
-        self._set_cfg(repo_url="")
-        be = gl_plugin._resolve_backend(gl_plugin._config())
-        self.assertEqual(be["mode"], "gl")
-
-    def test_token_resolved_from_env(self):
-        self._set_cfg(token="")
-        os.environ["GITLAB_TOKEN"] = "glpat-env"
-        be = gl_plugin._resolve_backend(gl_plugin._config())
-        self.assertEqual(be["mode"], "native")
-        self.assertEqual(be["token"], "glpat-env")
-
-    def test_backend_invalid_repo_url_raises(self):
-        self._set_cfg(repo_url="git@gitlab.com:group/repo.git")  # SSH は native 非対応
+    def test_resolve_project_requires_repo_url(self):
         with self.assertRaises(RuntimeError) as ctx:
-            gl_plugin._resolve_backend(gl_plugin._config())
+            gl_plugin._resolve_project({"repo_url": ""})
         self.assertIn("repo_url", str(ctx.exception))
 
-    def test_native_execute_create_poll_comments(self):
-        self._set_cfg()
-        calls = []
-        states = [["status:open"], ["status:approved"]]
+    def test_resolve_project_rejects_ssh_url(self):
+        with self.assertRaises(RuntimeError):
+            gl_plugin._resolve_project({"repo_url": "git@gitlab.com:group/repo.git"})
 
-        def fake_api(host, token, method, path, data=None, params=None):
-            calls.append((method, path, data))
-            if method == "POST" and path.endswith("/issues"):
-                return {"iid": 5, "web_url": "https://gitlab.com/group/repo/-/issues/5"}
-            if method == "GET" and path.endswith("/issues/5"):
-                return {"labels": states.pop(0), "state": "opened"}
-            return {}
-
-        def fake_api_list(host, token, path, params=None):
-            return [{"body": "実装完了。MR を用意しました。"}]
-
-        with mock.patch.object(gl_plugin, "gl_api", side_effect=fake_api), \
-             mock.patch.object(gl_plugin, "gl_api_list", side_effect=fake_api_list):
-            text, data = gl_plugin.execute("work", "ログイン画面を追加", {})
-
-        self.assertIn("#5 approved", text)
-        self.assertIn("MR を用意しました", text)
-        self.assertEqual(data["issue_iid"], 5)
-        self.assertTrue(data["approved"])
-        # 起票先プロジェクトは repo_url（group/repo）を URL エンコードして使う（git origin に流れない）
-        post = next(c for c in calls if c[0] == "POST")
-        self.assertIn("group%2Frepo", post[1])
-        # priority ラベルが連結されていること
-        self.assertIn("priority:normal", post[2]["labels"])
-        # 作成者ノード ID の隠しタグ（gitlab-idd 規約）が本文に含まれること
-        self.assertIn("gitlab-idd:creator-node-id", post[2]["description"])
-
-    def test_native_skips_gl_script_check(self):
-        # native は gl.py 不在でも動く（gl フォールバックのときだけ gl.py を要求する）
-        self._set_cfg()
-
-        def fake_api(host, token, method, path, data=None, params=None):
-            if method == "POST":
-                return {"iid": 1, "web_url": "u"}
-            return {"labels": ["status:approved"], "state": "opened"}
-
-        with mock.patch.object(gl_plugin, "_find_gl_script", return_value=None), \
-             mock.patch.object(gl_plugin, "gl_api", side_effect=fake_api), \
-             mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
-            text, data = gl_plugin.execute("work", "x", {})
-        self.assertTrue(data["approved"])
+    def test_resolve_project_parses_repo_url(self):
+        host, project, repo_url = gl_plugin._resolve_project(
+            {"repo_url": "https://gitlab.com/group/sub/repo"})
+        self.assertEqual((host, project), ("gitlab.com", "group/sub/repo"))
 
     def test_gl_api_builds_v4_request(self):
         captured = {}
@@ -905,6 +782,35 @@ class GitlabNativeBackendTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 gl_plugin.gl_api("gitlab.com", "t", "GET", "/projects/1")
         self.assertIn("404", str(ctx.exception))
+
+    def test_token_prefers_connections_yaml(self):
+        # gl.py と同じく connections.yaml（接続ラベル）を最優先で読む
+        with mock.patch.object(gl_plugin, "_token_from_connections", return_value="tok-conn"), \
+             mock.patch.object(gl_plugin, "_token_from_shell_files", return_value="tok-shell"):
+            os.environ["GITLAB_TOKEN"] = "tok-env"
+            self.assertEqual(gl_plugin._resolve_token({"conn_label": "default"}), "tok-conn")
+
+    def test_token_env_fallback(self):
+        with mock.patch.object(gl_plugin, "_token_from_connections", return_value=""), \
+             mock.patch.object(gl_plugin, "_token_from_shell_files", return_value="tok-shell"):
+            os.environ["GITLAB_TOKEN"] = "tok-env"
+            self.assertEqual(gl_plugin._resolve_token({"conn_label": "default"}), "tok-env")
+
+    def test_token_shell_fallback(self):
+        with mock.patch.object(gl_plugin, "_token_from_connections", return_value=""), \
+             mock.patch.object(gl_plugin, "_token_from_shell_files", return_value="tok-shell"):
+            self.assertEqual(gl_plugin._resolve_token({"conn_label": "default"}), "tok-shell")
+
+    def test_token_not_read_from_kiro_flow_yaml(self):
+        # kiro-flow.yaml 由来の cfg に token を置いても無視される（gl.py の場所だけを読む）
+        with mock.patch.object(gl_plugin, "_token_from_connections", return_value=""), \
+             mock.patch.object(gl_plugin, "_token_from_shell_files", return_value=""):
+            self.assertEqual(
+                gl_plugin._resolve_token({"conn_label": "default", "token": "glpat-yaml"}), "")
+
+    def test_token_from_connections_no_scripts_dir(self):
+        with mock.patch.object(gl_plugin, "_find_gitlab_idd_scripts_dir", return_value=None):
+            self.assertEqual(gl_plugin._token_from_connections("default"), "")
 
 
 class ExecutorResolutionTests(unittest.TestCase):

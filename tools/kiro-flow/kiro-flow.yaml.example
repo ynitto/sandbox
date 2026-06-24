@@ -108,21 +108,21 @@ cleanup_per_node: false
 # イシューをポーリングし、レビュアーが status:approved を付与する（= 受け入れ承認）まで
 # 待って完了とみなす。ローカルに kiro-cli が無くても GitLab 越しに作業を委譲できる。
 #
-# イシュー API のバックエンドは自動選択:
-#   - native（優先）: repo_url とトークンが揃えば、GitLab REST API を stdlib だけで直叩き
-#     する（外部 gl.py 不要）。起票先は repo_url をそのまま使うため確実。
-#   - gl（フォールバック）: repo_url かトークンが欠けるときだけ gitlab-idd スキルの gl.py へ
-#     委譲する（前提: .github/skills/gitlab-idd が導入済みで connections.yaml 等が設定済み）。
+# イシュー API は GitLab REST API（v4）を stdlib だけで直叩きする（外部 gl.py 不要・
+# フォールバックもしない）。
 #
-# 起票先 URL は repo_url が権威。設定すれば native でも gl でも必ずこの URL が使われ、
-# git remote origin へ曖昧にフォールバックしない（誤ったプロジェクトへの起票を防ぐ）。
+# 起票先 URL は repo_url が権威。設定した URL をそのまま使い、git remote origin へ
+# 曖昧にフォールバックしない（誤ったプロジェクトへの起票を防ぐ）。
+#
+# トークンは kiro-flow.yaml には置かない。gl.py と同じ場所から解決する（優先順）:
+#   1. connections.yaml の gitlab/<conn_label> の token（.github/skills 配下 or ~/ のスキルホーム）
+#   2. 環境変数 GITLAB_TOKEN / GL_TOKEN
+#   3. シェル rc ファイル（~/.bashrc / ~/.bash_profile / ~/.profile / ~/.zshrc）
 #
 # gitlab:
-#   conn_label: default                  # connections.yaml の接続ラベル（gl 委譲時のみ使用）
-#   repo_url: "https://gitlab.com/group/repo"  # 起票先プロジェクト URL（権威）。設定推奨。
-#                                        # native/gl どちらでも必ずこの URL を使う
-#   token: ""                            # GitLab トークン。空なら環境変数 GITLAB_TOKEN/GL_TOKEN
-#                                        # から解決（秘密情報なので環境変数推奨）。native は必須
+#   conn_label: default                  # connections.yaml の接続ラベル（トークン解決に使用）
+#   repo_url: "https://gitlab.com/group/repo"  # 起票先プロジェクト URL（権威・必須）。
+#                                        # 必ずこの URL を使う（git origin へ流れない）
 #   labels: "status:open,assignee:any"   # 起票するイシューの初期ラベル
 #   priority: "priority:normal"          # 付与する優先度ラベル（空文字 "" で付けない）
 #   poll_interval: 30                    # イシューのポーリング間隔（秒）
