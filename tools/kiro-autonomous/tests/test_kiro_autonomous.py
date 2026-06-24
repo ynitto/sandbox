@@ -2722,6 +2722,72 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertTrue((d / "needs" / "X.md").exists())
 
+    def test_acceptance_kind_classifies(self):
+        self.assertEqual(km._acceptance_kind("pytest -q tests/"), ("command", "pytest -q tests/"))
+        self.assertEqual(km._acceptance_kind("test -f x && grep -q y z"),
+                         ("command", "test -f x && grep -q y z"))
+        # 明示の accept: 接頭辞 → 自然言語（接頭辞を剥がす）
+        self.assertEqual(km._acceptance_kind("accept: README に概要がある"),
+                         ("accept", "README に概要がある"))
+        self.assertEqual(km._acceptance_kind("受入: 画面が表示される"),
+                         ("accept", "画面が表示される"))
+        # 接頭辞なしの散文（全角句読点）も自然言語に倒す
+        self.assertEqual(km._acceptance_kind("レポートに要約が出力される。"),
+                         ("accept", "レポートに要約が出力される。"))
+
+    def test_resolve_acceptance_synthesizes_natural_language(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
+                                  "- `test -f keep`\n- accept: README に概要がある\n")
+            state = {}
+            resolved, unresolved = km.resolve_charter_acceptance(
+                cfg, ch, state, kiro_run=lambda p, m: "grep -q 概要 README.md")
+            self.assertEqual(resolved, ["test -f keep", "grep -q 概要 README.md"])
+            self.assertEqual(unresolved, [])
+            # 合成結果は原文キーでキャッシュされ、再実行で安定する（再合成不要）
+            self.assertEqual(state["acceptance_synth"]["README に概要がある"],
+                             "grep -q 概要 README.md")
+            again, _ = km.resolve_charter_acceptance(
+                cfg, ch, state, kiro_run=lambda p, m: self.fail("再合成された"))
+            self.assertEqual(again, ["test -f keep", "grep -q 概要 README.md"])
+
+    def test_resolve_acceptance_unresolved_when_synth_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
+                                  "- accept: 曖昧で検証できない\n")
+            resolved, unresolved = km.resolve_charter_acceptance(
+                cfg, ch, {}, kiro_run=lambda p, m: "やはり検証できません。")  # 散文 → 合成失敗
+            self.assertEqual(resolved, [])
+            self.assertEqual(unresolved, ["曖昧で検証できない"])
+
+    def test_natural_language_acceptance_converges(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            write_charter(d, "# Charter: nl\n## goal\nやる\n## acceptance\n"
+                             f"- accept: flag ファイルが存在する\n")
+            code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
+                                  runner=lambda c: (flag.write_text("x"), _drained())[1],
+                                  kiro_run=lambda p, m: f"test -f {flag}")
+            self.assertEqual(code, 1)            # converged → 人の承認待ち
+            self.assertEqual(km.load_project_state(cfg_for(d))["status"],
+                             km.REASON_PROJECT_CONVERGED)
+
+    def test_unsynthesizable_acceptance_escalates(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: nl\n## goal\nやる\n## acceptance\n"
+                             "- accept: 曖昧な完了条件\n")
+            code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
+                                  runner=lambda c: _drained(),
+                                  kiro_run=lambda p, m: "")   # 合成不能
+            self.assertEqual(code, 1)            # done 判定不能 → 人へ
+            self.assertTrue((d / "needs" / "nl.md").exists())
+
     def test_plan_enqueues_then_converges(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

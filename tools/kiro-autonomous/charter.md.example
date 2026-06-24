@@ -17,6 +17,10 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 鉄則:
 1. **プロジェクト done の唯一の根拠は `acceptance` 全 PASS**（各行＝終了コード0をPASSとみなすシェルコマンド）。
    AI の自己申告や敵対的レビューだけでは done にしない（タスクの verify と同じ鉄則）。
+   検証コマンドを書けない人は **自然文でも書ける**（タスクの `accept:` と同じ）。`- accept: <自然言語の完了条件>`
+   と書くか、全角句読点を含む散文をそのまま箇条書きにすると、run 時にエージェントが**決定的なシェル
+   コマンドへ合成**する（合成結果は安定キャッシュされ done 基準がブレない）。合成できなければ done 判定
+   不能＝人へ回る（鉄則は保たれる）。英文など句読点で判別しにくい散文は `accept:` を明示すること。
 2. acceptance は **「履歴」ではなく「望む最終状態/差分」を見る**こと（偽 done 対策。`$KIRO_BASE_REV` 利用可）。
    acceptance を書けないプロジェクトは done 判定不能 → 必ず人へ回る。
 3. plan（目標→backlog 分解）と evaluate の敵対的レビューの知能はエージェントへ委譲し、enqueue・acceptance 実行・
@@ -45,6 +49,9 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 - `pytest -q tests/`
 - `python report.py sample.csv | grep -q "Summary"`
 - `grep -q "## Usage" README.md`
+# 検証コマンドを書けない条件は自然文でも可（run 時にエージェントが決定的 verify を合成する）:
+- accept: README に使用例（## Usage）が載っている
+- 不正な CSV を渡すとエラーメッセージを表示して異常終了する。
 
 ## repos
 # 対象/成果物リポジトリ（任意・複数可）。見出しは `name = url` か素の `url`。各 repo に構造化サブ箇条で

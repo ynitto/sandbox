@@ -308,7 +308,9 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
 ```
 
 - **done の唯一の根拠は `acceptance`（=verify）全 PASS**（タスク verify と同じ鉄則）。acceptance 無しの charter は
-  done 判定不能＝必ず人へ。**有限停止**: 内側 run ＋ `--max-project-cycles`（既定 5）/`--max-project-cost`/
+  done 判定不能＝必ず人へ。検証コマンドを書けない条件は **自然文でも可**（`- accept: …` か散文の箇条書き）。run 時に
+  エージェントが決定的なシェル verify へ合成し（結果は安定キャッシュ＝done 基準がブレない）、合成できなければ人へ。
+  **有限停止**: 内側 run ＋ `--max-project-cycles`（既定 5）/`--max-project-cost`/
   `--project-stall`（PASS 数が増えない連続回数で人へ・既定 2）。**知能は委譲**し enqueue・acceptance・収束は決定的。
 - **収束候補は人へ**: `approve <project> --reason …` で完了確定（最終納品書）／charter を更新して次フェーズへ続行／
   policy・feedback で方向修正。`--watch` は milestone 提示後も常駐し charter 更新を待つ。状態は `<project>/project.json`、
