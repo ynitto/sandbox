@@ -1093,21 +1093,39 @@ def _coerce_tasks(raw, existing=()):
     return out
 
 
+def _first_line(text: str, limit: int = 48) -> str:
+    """要求の先頭の非空行を limit 文字までで返す（イシューのタイトル等に使う簡潔な見出し）。
+    構造化された複数行の要求でも、見出しを 1 行に保ち本来の目的が読めるようにする。"""
+    for line in text.splitlines():
+        s = line.strip()
+        if s:
+            return s[:limit]
+    return text.strip()[:limit]
+
+
 def plan_stub(request: str):
     """kiro-cli 無しの簡易分解。
 
     区切り記号で依存も表現:
-      ';' / 改行 … 独立（並列）タスクの境界
+      ';' / 改行 … 独立（並列）タスクの境界。**ただし改行は空行を含まないフラットな簡易
+                   リストのときだけ区切りとみなす**（後述）。
       '->'        … 逐次依存チェーン（各タスクが直前のタスクに依存）
 
-    区切り記号が無い単一文字列ならタスク数をランダム（2−5件）で決める。"""
-    segments = [s.strip() for s in request.replace("\n", ";").split(";") if s.strip()]
+    区切り記号が無い単一文字列ならタスク数をランダム（2−5件）で決める。
+
+    改行の扱い: 空行（段落 = "\\n\\n"）を含む**構造化された要求**（build_request が組み立てる
+    charter 文脈・完了条件つきの要求など）は 1 件の要求として扱い、行ごとに細切れのタスクへ
+    分割しない。さもないと対象リポジトリ一覧などの 1 行 1 行が別タスク（=別イシュー）になり、
+    gitlab executor のタイトル/本文が文脈行で埋まってしまう。空行の無いフラットなリスト
+    （例 "task1\\ntask2\\ntask3"）は従来どおり改行を区切りとして扱う。"""
+    src = request if "\n\n" in request else request.replace("\n", ";")
+    segments = [s.strip() for s in src.split(";") if s.strip()]
     if not segments:
         segments = [request.strip() or "no-op"]
     # 単一セグメントかつ依存記号（'->')も無い場合はタスク数をランダム展開
     if len(segments) == 1 and "->" not in segments[0]:
         n = random.randint(2, 5)
-        base = segments[0][:48]
+        base = _first_line(segments[0])   # 構造化要求でも見出しを 1 行に保つ（文脈行で埋めない）
         segments = [f"{base}（サブタスク{j + 1}）" for j in range(n)]
     tasks = []
     idx = 0
@@ -1185,7 +1203,7 @@ def granularity_directive(level: "str | None") -> str:
 
 def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = False):
     """選んだパターンを初期タスクグラフ（kind 付き）へ落とし込む。"""
-    short = request.strip()[:48]
+    short = _first_line(request)   # 見出しは先頭の非空行（構造化要求でも目的が 1 行で読める）
     if pattern == "classify-and-act":
         # 分類ノードのみ。専門タスクは分類結果を見て継続段階で追加（ルーティング）
         return [{"id": "classify", "goal": f"分類: {short}", "deps": [], "kind": "classify"}]

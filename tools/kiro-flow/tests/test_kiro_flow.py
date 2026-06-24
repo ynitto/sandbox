@@ -267,6 +267,48 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(by_id["t3"]["deps"], ["t2"])     # test after build
         self.assertEqual(by_id["t4"]["deps"], [])         # docs independent
 
+    def test_simple_newline_list_still_splits(self):
+        # 空行の無いフラットなリストは従来どおり改行を区切りとして扱う
+        tasks = kf.plan_stub("task1\ntask2\ntask3")
+        self.assertEqual([t["goal"] for t in tasks], ["task1", "task2", "task3"])
+
+    # 回帰: 構造化された複数行の要求（charter 文脈＝対象リポジトリ一覧つき）を、行ごとの
+    # 細切れタスクへ分割しないこと。さもないと 1 行 1 行が別イシューになり、gitlab の
+    # タイトル/本文が repos 行で埋まる（報告された不具合）。
+    _STRUCTURED_REQ = (
+        "ログイン画面のバグを修正する\n\n"
+        "完了条件: pytest\n\n"
+        "対象リポジトリ:\n"
+        "- web = https://gitlab.com/acme/web（base=main）\n"
+        "    説明: フロントエンド\n"
+        "- api = https://gitlab.com/acme/api（base=main）\n"
+        "制約:\n- 既存テストを壊さない\n"
+    )
+
+    def test_structured_request_not_shredded_per_line(self):
+        tasks = kf.plan_stub(self._STRUCTURED_REQ)
+        # repos 行や charter 見出しが個別タスクの goal になっていないこと
+        for t in tasks:
+            self.assertNotIn("gitlab.com", t["goal"])
+            self.assertNotIn("対象リポジトリ", t["goal"])
+            self.assertNotIn("制約:", t["goal"])
+        # 見出しは本来の目的（先頭行）から始まる
+        self.assertTrue(all(t["goal"].startswith("ログイン画面のバグを修正する") for t in tasks))
+
+    def test_structured_request_strategy_goals_have_no_repos(self):
+        # plan_stub を使う既定パターン（fan-out-and-synthesize）でも repos が goal に出ない
+        strat, tasks = kf.plan_strategy_stub(self._STRUCTURED_REQ)
+        for t in tasks:
+            self.assertNotIn("gitlab.com", t["goal"])
+            self.assertNotIn("対象リポジトリ", t["goal"])
+        # タイトル相当（先頭行）が本来の目的であること
+        heads = [t["goal"] for t in tasks if t["kind"] in ("work", "generate", "synthesize")]
+        self.assertTrue(any("ログイン画面のバグを修正する" in g for g in heads))
+
+    def test_first_line_helper(self):
+        self.assertEqual(kf._first_line("\n\n  目的の行  \n詳細\n"), "目的の行")
+        self.assertEqual(kf._first_line("x" * 60), "x" * 48)   # limit で切る
+
 
 class StructuredResultTests(unittest.TestCase):
     def setUp(self):
