@@ -46,6 +46,10 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 - README の使用例
 
 ## acceptance
+# acceptance の実行先: 既定は workdir。offload（git-bus/remote）で worker が対象 repo を temp に clone・push して
+# 消すと workdir に成果が出ないため、下記 repos がちょうど 1 つ（非 readonly）なら、その target ブランチを毎評価で
+# 一時 clone してそこで検証する。明示するなら `--verify-cwd <クローン先>`（設定 verify_cwd）。複数 repo は曖昧なので
+# 自動 clone せず --verify-cwd で指定する。
 - `pytest -q tests/`
 - `python report.py sample.csv | grep -q "Summary"`
 - `grep -q "## Usage" README.md`

@@ -10,6 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-autonomous
 
 #### Added
+- **acceptance/verify を「対象 repo のクローン先」で実行できるようにした**（offload で worker が対象 repo を temp に
+  clone・push して消すと workdir に成果が出ず、verify を git-bus 等の workdir で実行してエラーになる問題への対処）。
+  実行先を **明示 `--verify-cwd`（設定 `verify_cwd`）> 単一対象 repo の一時 clone > workdir** の順で解決
+  （`_acceptance_cwd`）。charter の非 readonly repo がちょうど 1 つなら、その `target` ブランチ（worker の push 先）を
+  毎評価で `git clone --depth 1` し `$KIRO_BASE_REV`＝clone HEAD で検証して後始末する。clone 失敗は workdir へ黙って
+  フォールバックせず**全 NG 扱い**（成果の無い場所での偽判定を防ぐ）。複数 repo は曖昧なので自動 clone せず `--verify-cwd`
+  で明示。タスク verify／回帰検査も `--verify-cwd` 指定時はその先で実行。CLI `--verify-cwd` / 設定 `verify_cwd` を追加。
+  単体テスト 5 件（cwd 解決・明示上書き・単一 repo clone・clone 失敗で全 NG・複数 repo は workdir）を追加。
 - **charter `## acceptance` に自然文を書けるようにした**（検証コマンドを書けない人向け。タスクの `accept:` と同じ流儀）。
   `- accept: <自然言語の完了条件>` か、全角句読点を含む散文の箇条書きを自然言語とみなし、run 時に `resolve_charter_acceptance`
   がエージェント（`synth_verify` 共用）で**決定的なシェル verify へ合成**する。合成結果は `project.json` の `acceptance_synth`
