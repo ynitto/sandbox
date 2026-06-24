@@ -388,30 +388,33 @@ while True:
 - **起票**: `gl.py create-issue` で `## 目的` ＋（依存成果）＋ `## 受け入れ条件` を本文に持つ
   イシューを `status:open,assignee:any`（＋優先度）で作る。本文は argv 長制限を避け
   `--body-file` 経由で渡す。リモートのワーカーが gitlab-idd の規約でこれを拾って実装する。
-- **完了判定**: `gl.py get-issue` でラベルをポーリングし、レビュアーが付ける
-  `status:approved`（または `status:done` / クローズ）に達したらそのタスクを **done** とみなす。
-  `timeout`（既定 86400s、0 で無限）超過は **failed** として記録し、再計画に回す。
-  ポーリングするのは kiro-flow（Python オーケストレータ）であって LLM セッションではないため、
-  gitlab-idd の「LLM ポーリング禁止」指針とは別物。
+- **完了判定（人がマージ＝クローズ）**: イシューをポーリングし、**イシューがクローズ**
+  （＝人が MR をマージ）したらそのタスクを **done** とみなす。kiro-flow は**自動マージしない**
+  （シンプルに人の操作へ委ねる）。`status:approved`/`status:done` は進捗の目印で、検知すると
+  「マージ（クローズ）待ち」へ移行する。人の確認は時間がかかるため待機は長め・設定可能:
+  `timeout`（既定 7 日・クローズまでの全体上限）と `approved_timeout`（既定 14 日・承認検知後の猶予）。
+  いずれも 0 で無限。超過は **failed** として記録し再計画に回す。ポーリングするのは kiro-flow
+  （Python オーケストレータ）であって LLM セッションではないため、gitlab-idd の「LLM ポーリング禁止」
+  指針とは別物。
 - **成果**: ワーカーの最終コメントを成果テキストに取り込み、`data` にイシュー
-  iid/web_url/labels を残す（成果物の実体は GitLab 上のブランチ/MR にある）。
+  iid/web_url/labels/closed を残す（成果物の実体は GitLab 上のマージ済み MR にある）。
 - **再計画はローカル**: evaluator-optimizer の継続判断はオーケストレータ側で行う。`_continue`
   は executor が `stub` のときだけ stub 継続、それ以外（`kiro` や任意のプラグイン）はローカル
   `kiro` で判断する（プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
 - **opt-in**: 既定 executor は `kiro` のまま。明示選択時のみ有効で、`gl.py` 未発見/接続未設定なら
   起票時に明確に失敗する（誤選択で無限待ちにしない）。設定は `gitlab:` ブロック。
 
-### 9.2 成果物リポジトリへの納品（delivery）と propose → verify → finalize
+### 9.2 成果物リポジトリへの納品（delivery）とロール
 
 成果物（プログラム/ドキュメント）の実体は**バスではなく成果物リポジトリ**（`--repo`）に置き、
-バスには「サマリー＋リンク（どのブランチ/MR/イシューに成果があるか）」だけを残す。これを
-executor 横断で **propose（提案）→ verify（検証）→ finalize（納品確定）** の 3 段に統一する。
+バスには「サマリー＋リンク（どのブランチ/MR/イシューに成果があるか）」だけを残す。
 
-| 段 | 担当 | kiro executor | gitlab executor |
-|----|------|--------------|-----------------|
-| **propose** | executor（本層） | clone 内で作業 → 決定的ブランチ `kiro-flow/<run>/<node>`（`target` 指定時はそれ）へ commit/push | イシュー起票 → リモート worker が MR 作成 → レビュアーが `status:approved`（内容承認） |
-| **verify** | 上位（kiro-autonomous） | 成果ブランチを検証（done の唯一根拠＝exit 0） | 同左 |
-| **finalize** | 上位が判定→本層へ委譲 | （ローカルで push 済み・追加操作なし） | **MR マージ ＋ イシューを明示的にクローズ** |
+| executor | 成果物の置き場 | 完了の確定 |
+|----------|--------------|-----------|
+| **kiro** | ローカル clone を成果ブランチへ commit/push（`capture_deliveries`） | 上位（kiro-autonomous）の verify（exit 0） |
+| **gitlab** | リモート worker が MR を作成 | **人が MR をマージ＝イシュークローズ**（kiro-flow は自動マージしない） |
+
+> 両 executor で対称性は持たせない。kiro はローカルで push、gitlab は人のマージ（クローズ）で完了。
 
 - **ロール・スキーマ（executor 横断の正準インターフェース）**: 各成果物リポジトリ（`--repo`）は
   `role` を持つ――**`write`＝成果物をコミットする単一の対象**（push 先）、**`read`＝参照のみ**（clone するが
@@ -429,19 +432,10 @@ executor 横断で **propose（提案）→ verify（検証）→ finalize（納
   コミットを伴うとは限らない**（調査系タスク等）ため、変更が無い repo は捕捉せず、その場合の納品物は
   バス上の `result.output/data`（サマリー）になる。捕捉は `executor=kiro` のときだけ走る（stub は実変更
   なし、gitlab 等は別マシン作業＝ローカル clone に変更が出ない）。
-- **finalize（プラグイン契約・任意）**: executor は `finalize(delivery, action) -> data` を任意で公開できる。
-  gitlab は `status:approved`（worker＋人の内容レビュー完了）を**提案**として扱い、done ではない――done は
-  上位の verify（exit 0）だけが確定する（不変条件）。verify が通った**帰結**として finalize が
-  イシューに紐づく MR を冪等にマージし（`/merge_requests/:iid/merge`、既マージは再取得で吸収）、
-  **イシューを明示的にクローズ**する（`state_event=close` ＋ `status:done`）。**GitLab では MR マージが
-  必ずしもイシューをクローズしない**ため、マージとクローズは別個に行う。MR が無い委譲（調査系など）は
-  クローズのみ。組み込み kiro/stub はローカル完結＝finalize 不要（no-op）。
-- **finalize サブコマンド**: `kiro-flow finalize [--run-id <id>] [--node-id <id>] --executor <name>
-  [--action merge|close] [--delivery-json <json>]`。バス上の各ノード `result.data` の delivery に対して
-  `make_finalizer` が解決した executor の finalize を呼ぶ。`--delivery-json` を渡すと**バスを読まず**その
-  delivery を直接 finalize する（人の承認が後日＝run/バスが gc 済みでも、保持しておいた delivery で確実に
-  納品確定できる）。呼び出し元（kiro-autonomous）が done を確定してから呼ぶ。done を緩めない（マージは
-  done の帰結）ので不変条件を破らない。
+- **gitlab の納品（自動マージはしない）**: gitlab executor は MR を**自動マージしない**。
+  リモート worker が MR を用意し、レビュー後に**人が MR をマージ（＝イシューをクローズ）**した時点で
+  タスク完了とみなす（§9.1 完了判定）。`status:approved`/`status:done` は進捗の目印で、検知後は
+  `approved_timeout`（長め・設定可能）でマージ（クローズ）待ちに移行する。
 
 ---
 
@@ -478,7 +472,6 @@ while 常駐:
 | `submit <要求>` | 要求を inbox に投入（run-id を返す） |
 | `run [要求]` | 単発実行。**既存 --run-id なら再開、無ければ新規**（状態で自動判断） |
 | `status` | 状態表示。既定 1 回 / `--follow` でライブ監視（`--until-done`） |
-| `finalize` | verify 通過後の納品確定を executor へ委譲（gitlab: MR マージ＋イシュークローズ）。`--delivery-json` でバス非依存。done の*帰結*であり done を確定するものではない |
 | `gc` | 古い run を削除（`--older-than` / `--keep` / `--status` / `--dry-run`） |
 | `orchestrate` / `work` | 内部コマンド（`run` / `daemon` が起動） |
 

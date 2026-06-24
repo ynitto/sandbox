@@ -2240,22 +2240,6 @@ def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
     return _pid_alive(_lock_pid(p))
 
 
-# act 出力に run_id を運ぶための隠しマーカー（finalize が委譲先 run を特定するのに使う）。
-_RUN_ID_MARK_RE = re.compile(r"\[\[run_id=([\w.\-]+)\]\]")
-_RUN_ID_OUT_RE = re.compile(r"run_id=([\w.\-]+)")
-
-
-def _mark_run_id(msg: str, run_id: str) -> str:
-    """act メッセージに run_id マーカーを付す（finalize が委譲先 run を特定する手掛かり）。"""
-    return f"{msg}\n[[run_id={run_id}]]" if run_id else msg
-
-
-def parse_act_run_id(act_msg: str) -> str:
-    """act メッセージから run_id マーカーを取り出す（無ければ空）。"""
-    m = _RUN_ID_MARK_RE.search(act_msg or "")
-    return m.group(1) if m else ""
-
-
 def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, str]":
     """kiro-flow run で都度起動（同期実行）。daemon 不要。"""
     cmd = build_kiro_flow_cmd(task, cfg, use_git)
@@ -2266,10 +2250,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
         return (False, f"kiro-flow run タイムアウト（{cfg.act_timeout}s）")
     except FileNotFoundError as e:
         return (False, f"kiro-flow を起動できません: {e}")
-    out = proc.stdout or ""
-    # run_id は stdout 先頭（`run_id=...`）に出るため、末尾 300 字に切る前に取り出す。
-    m = _RUN_ID_OUT_RE.search(out)
-    return (proc.returncode == 0, _mark_run_id(out[-300:].strip(), m.group(1) if m else ""))
+    return (proc.returncode == 0, (proc.stdout or "")[-300:].strip())
 
 
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
@@ -2298,12 +2279,12 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
                 # orchestrator がクラッシュして daemon が failed に確定した場合もここで即検知でき、
                 # act_timeout までの永久待機を避けられる。
                 if data.get("status") == "failed":
-                    return (False, _mark_run_id(f"daemon run {run_id} failed", run_id))
-                return (True, _mark_run_id(f"daemon run {run_id} done", run_id))
+                    return (False, f"daemon run {run_id} failed")
+                return (True, f"daemon run {run_id} done")
         except Exception:  # noqa: BLE001 — 取得失敗は次ポーリングで再試行
             pass
         time.sleep(2.0)
-    return (False, _mark_run_id(f"daemon run {run_id} タイムアウト", run_id))
+    return (False, f"daemon run {run_id} タイムアウト")
 
 
 def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tuple[bool, str]":
@@ -2320,85 +2301,6 @@ def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tu
             return _act_submit(task, cfg, use_git=False)
         return _act_run(task, cfg, use_git=False)  # daemon 不在 → run
     return _act_run(task, cfg, use_git=False)
-
-
-# ---------------------------------------------------------------------------
-# finalize — done 確定（verify exit 0 ＋ 全ゲート通過）の*帰結*として、委譲 executor の
-#   納品物を確定する決定的アクションを kiro-flow へ委譲する。gitlab executor では
-#   `status:approved`（worker＋人の内容レビュー完了）＝提案であり done ではない。done は
-#   verify だけが確定する（不変条件）。verify が通った帰結として、ここで MR をマージし、
-#   イシューを明示的にクローズする（MR マージ≠イシュークローズなのでイシューも別個にケアする）。
-#   組み込み executor（kiro/stub・ローカルで push 済み or 実変更なし）は委譲しない（no-op）。
-# ---------------------------------------------------------------------------
-def executor_delegates(cfg: "Config") -> bool:
-    """この executor が外部へ委譲し finalize（MR マージ＋イシュークローズ等）を要するか。
-    組み込み kiro/stub はローカル完結＝finalize 不要。"""
-    return cfg.executor not in ("kiro", "stub")
-
-
-def read_run_deliveries(cfg: "Config", run_id: str, use_git: bool) -> "list[dict]":
-    """完了 run の最終ノード result.data から finalize 対象の delivery（イシュー等）を集める。
-    後日の人承認（run が gc 済み）でも確実にクローズできるよう、タスクに保持しておくための材料。
-    `kiro-flow result --json` を読むだけ（決定的）。取得失敗は空リスト。"""
-    if not executor_delegates(cfg):
-        return []
-    base = _kf_base(cfg, use_git)
-    cmd = base + (["--run-id", run_id] if run_id else []) + ["result", "--json"]
-    try:
-        proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
-                              capture_output=True, text=True)
-        data = json.loads(proc.stdout or "{}")
-    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
-        return []
-    out: "list[dict]" = []
-    for n in data.get("final_nodes", []):
-        d = (n or {}).get("data")
-        if isinstance(d, dict) and (d.get("issue_iid") or d.get("delivery")):
-            sub = d.get("delivery")
-            out.extend(x for x in (sub if isinstance(sub, list) else [d])
-                       if isinstance(x, dict) and x.get("issue_iid"))
-    return out
-
-
-def finalize_delivery(cfg: "Config", task: "Task", act_msg: str, location: str,
-                      cycle: int) -> None:
-    """done 確定後に kiro-flow finalize を呼び、委譲先の MR マージ＋イシュークローズを行う。
-    バス上の run（run_id は act_msg のマーカーから特定、無ければ最新 run）に対して実行する。"""
-    if not executor_delegates(cfg):
-        return
-    use_git = location == "remote"
-    run_id = parse_act_run_id(act_msg)
-    cmd = _kf_base(cfg, use_git) + (["--run-id", run_id] if run_id else []) + [
-        "finalize", "--executor", cfg.executor, "--action", "merge"]
-    _run_finalize_cmd(cfg, task, cmd, cycle)
-
-
-def finalize_from_payload(cfg: "Config", task: "Task", deliveries: "list[dict]",
-                          cycle: int) -> None:
-    """保持しておいた delivery（イシュー等）から、バス非依存で finalize する（人承認が後日でも確実）。"""
-    if not deliveries or not executor_delegates(cfg):
-        return
-    cmd = _kf_base(cfg, False) + [
-        "finalize", "--executor", cfg.executor, "--action", "merge",
-        "--delivery-json", json.dumps(deliveries, ensure_ascii=False)]
-    _run_finalize_cmd(cfg, task, cmd, cycle)
-
-
-def _run_finalize_cmd(cfg: "Config", task: "Task", cmd: "list[str]", cycle: int) -> None:
-    """finalize サブプロセスを実行し、結果を journal に残す（失敗は run を止めない）。"""
-    try:
-        proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=cfg.verify_timeout,
-                              capture_output=True, text=True)
-    except (subprocess.SubprocessError, FileNotFoundError) as e:
-        append_journal(cfg.journal, f"cycle {cycle}: {task.id} finalize 失敗（{e}）")
-        return
-    if proc.returncode == 0:
-        append_journal(cfg.journal,
-                       f"cycle {cycle}: {task.id} finalize 完了（MR マージ＋イシュークローズ）")
-    else:
-        detail = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")[:150]
-        append_journal(cfg.journal,
-                       f"cycle {cycle}: {task.id} finalize 非0（rc={proc.returncode}）: {detail}")
 
 
 # ---------------------------------------------------------------------------
@@ -2847,19 +2749,13 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
 
 
 def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
-                   policy, reasons, cycle, location="local"):
+                   policy, reasons, cycle):
     """verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ。
-    所在（ref/ブランチ）を gate_* に保持し、approve 時の受領書へ引き継ぐ。
-    委譲 executor では、後日の approve でも確実に MR マージ＋イシュークローズできるよう、
-    委譲先の delivery（イシュー等）も今のうちに gate_delivery へ保持する（run の gc に備える）。"""
+    所在（ref/ブランチ）を gate_* に保持し、approve 時の受領書へ引き継ぐ。"""
     ts = _now_ts()
     ref = extract_delivery_ref(act_msg, cfg, git_base)
     task.status = "review"
-    task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect", "gate_delivery")
-    if executor_delegates(cfg):
-        dels = read_run_deliveries(cfg, parse_act_run_id(act_msg), location == "remote")
-        if dels:
-            task.set("gate_delivery", json.dumps(dels, ensure_ascii=False))
+    task.drop("gate_ref", "gate_vmsg", "gate_ts", "gate_protect")
     task.set("gate_ref", ref)
     task.set("gate_ts", ts)
     task.set("gate_branch", branch)             # approve 時の受領書に所在（ブランチ）を引き継ぐ
@@ -2999,14 +2895,10 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
     elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
         _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
-                       policy, reasons, cycle, location)
+                       policy, reasons, cycle)
     elif ok:
-        delta = _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
-                             autonomy_cache)
-        # done の*帰結*として委譲先の納品を確定（gitlab: MR マージ＋イシュークローズ）。
-        # verify=PASS が前提なので不変条件（done は verify のみ）を破らない。
-        finalize_delivery(cfg, task, act_msg, location, cycle)
-        return delta
+        return _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
+                            autonomy_cache)
     else:
         _settle_failure(cfg, task, vmsg, cycle, ev, reasons)
     return {"archived": 0, "followups": []}
@@ -3252,10 +3144,9 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         ts = ex.get("gate_ts") or _now_ts()
         vmsg = ex.get("gate_vmsg", "")
         gate_branch = ex.get("gate_branch", "")
-        gate_delivery = ex.get("gate_delivery", "")
         t.status = "done"
         autonomy_record(cfg, t, clean=True)          # 検収承認＝手戻りなし。track の信頼を上げる
-        t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch", "gate_delivery")
+        t.drop("gate_ref", "gate_ts", "gate_vmsg", "gate_branch")
         # review 時に保持した所在（ref/ブランチ）を受領書へ引き継ぐ（どこに成果物があるかを残す）
         gate_ev = (f"- 成果物: {ref}\n- 所在: {cfg.workdir}"
                    + (f" / ブランチ {gate_branch}" if gate_branch else "")) if ref else ""
@@ -3270,13 +3161,6 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を検収承認",
                              action="approve-done", reason=reason, affects=f"{tid} → done")
         print(f"{dr}: {tid} を承認し {disp} 確定しました。")
-        # 検収承認＝done 確定の帰結として、委譲先の納品を確定（MR マージ＋イシュークローズ）。
-        # review 時に保持した delivery を使い、run が gc 済みでもバス非依存で確実にクローズする。
-        if gate_delivery:
-            try:
-                finalize_from_payload(cfg, t, json.loads(gate_delivery), cycle=0)
-            except json.JSONDecodeError:
-                pass
         # cohort の pilot 承認なら、固めた定義から残りのタスクを生成して ready にする
         if t.get("cohort_role") == "pilot":
             members = materialize_cohort_rest(cfg, t, feedback=reason)

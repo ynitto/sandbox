@@ -175,9 +175,11 @@ CONFIG_DEFAULTS = {
         "labels": "status:open,assignee:any",  # 起票するイシューに付ける初期ラベル
         "priority": "priority:normal",      # 付与する優先度ラベル（空文字で付けない）
         "poll_interval": 30.0,              # イシューのポーリング間隔（秒）
-        "timeout": 86400.0,                 # approved 待ちのタイムアウト（秒）。0/負で無限待ち
-        "approved_label": "status:approved",  # この状態に達したら完了とみなす（= 受け入れ承認）
-        "done_label": "status:done",        # approved 以外に完了とみなすラベル
+        # 完了＝人がマージ＝イシュークローズ。人の確認は時間がかかるため待機は長め（0/負で無限）。
+        "timeout": 604800.0,                # クローズに達するまでの全体上限（秒・既定 7 日）
+        "approved_timeout": 1209600.0,      # approved/done 検知後のマージ待ち猶予（秒・既定 14 日）
+        "approved_label": "status:approved",  # 進捗の目印（検知後はマージ＝クローズ待ちへ移行）
+        "done_label": "status:done",        # 同上（進捗の目印。完了はクローズで確定）
     },
 }
 
@@ -1950,29 +1952,6 @@ def make_executor(args):
     return fn
 
 
-def make_finalizer(args):
-    """args.executor の `finalize(delivery, action)` を解決する（任意のプラグイン契約）。
-
-    finalize は verify 通過後に呼ばれる決定的な納品アクション（例: gitlab の MR マージ＋
-    イシュークローズ）。組み込み（kiro/stub）はローカルで commit/push 済み or 実変更なしの
-    ため追加の finalize は不要＝None（no-op）。finalize を持たないプラグインも None。"""
-    spec = getattr(args, "executor", None) or "kiro"
-    if spec in BUILTIN_EXECUTORS:
-        return None
-    path = _resolve_executor_plugin(spec)
-    if not path:
-        return None
-    module = _load_executor_module(path)
-    fn = getattr(module, "finalize", None)
-    if not callable(fn):
-        return None
-    # finalize もプラグイン設定（例 gitlab: の repo_url/conn_label/トークン解決元）を要する
-    cfgjson = resolve_executor_config_json(args)
-    if cfgjson is not None:
-        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = cfgjson
-    return fn
-
-
 def _is_gate_result(r: dict) -> bool:
     """verify gate の結果か（data が {"ok": ...} を持つ）。集約対象から除くのに使う。"""
     dv = _dep_data(r)
@@ -3422,90 +3401,6 @@ def cmd_result(args) -> int:
 
 
 # --------------------------------------------------------------------------
-# finalize — verify 通過後の決定的な納品アクションを executor へ委譲する。
-#   呼び出し元（kiro-autonomous）が done を確定（verify exit 0 ＋ 全ゲート通過）したあとに
-#   呼ぶ。executor の finalize(delivery, action) を各ノードの result.data に対して実行する。
-#   gitlab executor は MR をマージしイシューを明示的にクローズする（MR マージ≠イシュー
-#   クローズなので別個に行う）。finalize を持たない executor（kiro 等・ローカルで push 済み）は
-#   no-op。done を緩めない（マージは done の*帰結*）ので不変条件を破らない。
-# --------------------------------------------------------------------------
-def _node_deliveries(data) -> "list[dict]":
-    """ノードの result.data から finalize 対象の delivery dict 群を取り出す。
-    kiro: data.delivery=[{repo...}]（複数 repo）。gitlab: data 自体が {issue_iid,...}。"""
-    if not isinstance(data, dict):
-        return []
-    d = data.get("delivery")
-    if isinstance(d, list):
-        return [x for x in d if isinstance(x, dict)]
-    return [data]
-
-
-def cmd_finalize(args) -> int:
-    """run の各ノード result.data に対し executor の finalize を実行する。
-
-    --node-id 指定で 1 ノードのみ。--action（既定 merge）を executor へ渡す。
-    --delivery-json を渡すと **バスを読まず**その delivery（dict か dict の配列）を直接
-    finalize する（人の承認が後日＝run/バスが gc 済みでも、保持しておいた delivery で
-    確実に MR マージ＋イシュークローズできる）。finalize を持たない executor は no-op。
-    1 件でも失敗すれば exit 1。"""
-    fin = make_finalizer(args)
-    action = getattr(args, "action", None) or "merge"
-    # --delivery-json: バス非依存の直接 finalize（run/バスのライフサイクルから切り離す）
-    raw = getattr(args, "delivery_json", None)
-    if raw:
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as e:
-            print(f"エラー: --delivery-json を解釈できません: {e}", file=sys.stderr)
-            return 2
-        deliveries = payload if isinstance(payload, list) else [payload]
-        results: "list[dict]" = []
-        for d in deliveries:
-            if not isinstance(d, dict) or fin is None:
-                continue
-            try:
-                out = fin(d, action)
-                results.append({"ok": True, "result": out})
-                log("finalize", json.dumps(out, ensure_ascii=False)[:200])
-            except Exception as e:  # noqa: BLE001
-                results.append({"ok": False, "error": str(e)})
-                log("finalize", f"finalize 失敗: {e}")
-        print(json.dumps({"action": action, "finalized": results},
-                         ensure_ascii=False, indent=2))
-        return 0 if all(r.get("ok", True) for r in results) else 1
-    if not args.run_id:
-        resolved = _resolve_run_id(args)
-        if not resolved:
-            print("エラー: run が見つかりません。", file=sys.stderr)
-            return 1
-        args.run_id = resolved
-    bus = make_bus(args, "finalize")
-    bus.sync_pull()
-    graph = bus.read_graph() or {}
-    nodes = list(graph.get("nodes", {}))
-    node_ids = [args.node_id] if getattr(args, "node_id", None) else nodes
-    results = []
-    for nid in node_ids:
-        r = bus.read_result(nid) or {}
-        for d in _node_deliveries(r.get("data")):
-            if fin is None:
-                continue   # finalize 不要な executor（kiro 等）
-            if not d.get("issue_iid") and not d.get("branch"):
-                continue   # 委譲も成果ブランチも無い（調査系等）→ 対象外
-            try:
-                out = fin(d, action)
-                results.append({"node": nid, "ok": True, "result": out})
-                log("finalize", f"{nid}: {json.dumps(out, ensure_ascii=False)[:200]}")
-            except Exception as e:  # noqa: BLE001 — 失敗は記録し他ノードは続行
-                results.append({"node": nid, "ok": False, "error": str(e)})
-                log("finalize", f"{nid}: finalize 失敗: {e}")
-    bus.sync_push("finalize")
-    print(json.dumps({"run_id": args.run_id, "action": action, "finalized": results},
-                     ensure_ascii=False, indent=2))
-    return 0 if all(r.get("ok", True) for r in results) else 1
-
-
-# --------------------------------------------------------------------------
 # doctor（稼働診断）— bus 上の run（meta/events/results）と環境から稼働状況を
 #   kiro-cli に診断させ、原因を env（ユーザー環境固有）/ config（設定）/
 #   program（プログラム上の不具合）へ分類する。env/config は --fix で修正、program は
@@ -4232,20 +4127,6 @@ def main() -> int:
                         help="完了した run の最終結果を探して提示（status 相当・進捗でなく成果を返す）")
     rs.add_argument("--json", action="store_true", help="機械可読な JSON で出力")
     rs.set_defaults(func=cmd_result)
-
-    fin = sub.add_parser("finalize",
-                         help="verify 通過後の納品アクションを executor へ委譲（gitlab: MR マージ＋"
-                              "イシュークローズ）。done の*帰結*であって done を確定するものではない")
-    fin.add_argument("--executor", default=None,
-                     help="ワーカーバス（kiro/stub/プラグイン名/.py パス）。finalize を持つ "
-                          "executor（例 gitlab）でのみ実効。kiro 等は no-op")
-    fin.add_argument("--node-id", default=None, help="このノードのみ finalize（既定: 全ノード）")
-    fin.add_argument("--action", default=None, choices=["merge", "close"],
-                     help="finalize アクション（既定 merge＝MR マージ＋イシュークローズ）")
-    fin.add_argument("--delivery-json", default=None,
-                     help="バスを読まず、この delivery（JSON の dict か配列）を直接 finalize する。"
-                          "人の承認が後日（run が gc 済み）でも保持した delivery で確実に納品確定できる")
-    fin.set_defaults(func=cmd_finalize)
 
     gc = sub.add_parser("gc", help="古い run を掃除（対応する inbox 要求・claim も削除）")
     gc.add_argument("--older-than", type=float, default=7.0, help="この日数より古い run が対象")
