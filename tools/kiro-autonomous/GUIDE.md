@@ -241,6 +241,7 @@ cp tools/kiro-autonomous/charter.md.example .kiro-autonomous/projects/default/ch
 ## deliverables  # 成果物
 ## acceptance    # 受入 verify＝**プロジェクト done の唯一の根拠**（タスク verify と同じ鉄則）
 - `pytest -q tests/`
+- accept: README に使用例が載っている   # 自然文も可。run 時にエージェントが決定的 verify へ合成（不能なら人へ）
 ## links         # 任意。他プロジェクトの定義＋判断(learn)を横展開で取り込む
 - shared-conventions
 ```

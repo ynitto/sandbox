@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-autonomous
 
 #### Added
+- **charter `## acceptance` に自然文を書けるようにした**（検証コマンドを書けない人向け。タスクの `accept:` と同じ流儀）。
+  `- accept: <自然言語の完了条件>` か、全角句読点を含む散文の箇条書きを自然言語とみなし、run 時に `resolve_charter_acceptance`
+  がエージェント（`synth_verify` 共用）で**決定的なシェル verify へ合成**する。合成結果は `project.json` の `acceptance_synth`
+  （原文→コマンド）に**キャッシュ**してサイクル/再実行をまたいで done 基準を安定させる（再合成のブレ防止）。合成できない
+  自然言語が残れば `no-acceptance`（done 判定不能）で人へ回す＝**「done は acceptance 全 PASS のみが根拠」の鉄則を保全**。
+  散文を shell へ誤って流す事故は `_looks_like_shell_command` の二段チェックで防止。charter.md.example / README / GUIDE /
+  design に追記。単体テスト 5 件（`_acceptance_kind` 分類・合成・キャッシュ安定・収束・合成不能で人へ）を追加。
 - **自動アップデート（既定 on・6 時間毎・起動直後にも実施）**。スキルリポジトリ（配布元）の `main` に更新が
   入ったら、`run --watch` の **アイドル時** に取り込む。停止中に入った更新も起動直後の初回アイドルで拾う。doctor と同じ流儀で決定的: `git ls-remote` で main の先頭を
   確認 → 適用済み SHA（`~/.kiro/kiro-autonomous.update.json`）と違えば、temp 領域へ `tools/kiro-autonomous/`

@@ -4121,6 +4121,8 @@ class Charter:
 
 _CHARTER_NAME_RE = re.compile(r"^#\s+(?:Charter|憲章)\s*[:：]?\s*(?P<name>.+?)\s*$", re.M)
 _CHARTER_SECTION_RE = re.compile(r"^##\s+(?P<key>[A-Za-z]+)\b")
+# acceptance 行を自然言語として明示する接頭辞（`accept: …` / `受入: …`）。タスクの `accept:` と同じ流儀。
+_ACCEPT_PREFIX_RE = re.compile(r"^(?:accept|受入|受入条件|自然文|自然言語)\s*[:：]\s*(?P<text>.+)$", re.I)
 
 
 def _charter_bullets(lines: "list[str]") -> "list[str]":
@@ -4558,6 +4560,49 @@ def evaluate_acceptance(cfg: "Config", charter: "Charter") -> "tuple[int, int, l
     return passed, len(results), results
 
 
+def _acceptance_kind(line: str) -> "tuple[str, str]":
+    """acceptance 1 行を (kind, text) に分類する。kind は 'command'（決定的シェル・そのまま実行）
+    か 'accept'（自然言語・要合成）。明示の `accept:` 接頭辞、または『シェルに見えない散文』
+    （全角句読点を含む等）を自然言語とみなす。散文をそのまま shell に流して誤実行するのを防ぐため、
+    判定不明な行は command でなく accept（合成 → 失敗時は人へ）に倒す。"""
+    s = line.strip()
+    m = _ACCEPT_PREFIX_RE.match(s)
+    if m:
+        return "accept", m.group("text").strip()
+    if _looks_like_shell_command(s):
+        return "command", s
+    return "accept", s
+
+
+def resolve_charter_acceptance(cfg: "Config", charter: "Charter", state: "dict | None" = None,
+                               kiro_run=None) -> "tuple[list[str], list[str]]":
+    """charter.acceptance の各行を実行可能なシェルコマンドへ解決し (resolved, unresolved) を返す。
+    決定的コマンドはそのまま、自然言語（`accept:` 接頭辞 or 散文）はエージェントが決定的 verify を合成する
+    （タスクの synth_verify を流用＝偽 done 防止規則を織込）。合成結果は state['acceptance_synth'] に
+    原文キーでキャッシュし、サイクル/再実行をまたいで done 基準（acceptance）を安定させる（毎回の再合成と
+    非決定的なブレを防ぐ）。合成できない自然言語は unresolved に積み、呼び出し側が done 判定不能として人へ回す。"""
+    cache = dict((state or {}).get("acceptance_synth") or {})
+    resolved: "list[str]" = []
+    unresolved: "list[str]" = []
+    for line in charter.acceptance:
+        kind, text = _acceptance_kind(line)
+        if kind == "command":
+            resolved.append(text)
+            continue
+        cmd = cache.get(text)
+        if not cmd:
+            cmd = synth_verify(cfg, charter.name or "project", text, kiro_run)
+            if cmd:
+                cache[text] = cmd
+        if cmd:
+            resolved.append(cmd)
+        else:
+            unresolved.append(text)
+    if state is not None:
+        state["acceptance_synth"] = cache
+    return resolved, unresolved
+
+
 def _failing_acceptance_specs(results: "list") -> "list[dict]":
     """未達 acceptance を、それ自体を verify とする改善タスク spec にする（決定的・的が外れない）。"""
     specs = []
@@ -4657,9 +4702,10 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
     return None, last_summary
 
 
-def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None) -> int:
+def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None,
+                kiro_run=None) -> int:
     """charter 駆動の plan→execute→evaluate ループ（1 プロジェクトパス。`run` が charter 検出時に呼ぶ）。
-    planner/reviewer/runner は テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
+    planner/reviewer/runner/kiro_run は テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
     ensure_dirs(cfg)
     charter = load_charter(cfg)
     if charter is None:
@@ -4687,6 +4733,19 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     state = load_project_state(cfg)
     if state.get("id") != pid:
         state = {"id": pid, "name": charter.name, "history": [], "best": 0, "stall": 0}
+    # acceptance を実行可能なコマンドへ解決（自然言語は決定的 verify へ合成し、結果を state にキャッシュ）。
+    # 合成できない自然言語が残れば done 判定不能＝人へ（acceptance を書けないプロジェクトは人へ回す鉄則）。
+    resolved, unresolved = resolve_charter_acceptance(cfg, charter, state, kiro_run)
+    if unresolved:
+        save_project_state(cfg, state)        # 合成済みキャッシュは残す（次回は再合成不要）
+        summary = ("自然言語の acceptance を決定的 verify に合成できません（done 判定不能）: "
+                   + " / ".join(unresolved))
+        write_milestone(cfg, charter, "no-acceptance", summary)
+        print(f"[project] {charter.name}: acceptance を合成できず → 人へ（needs/{pid}.md）")
+        for u in unresolved:
+            print(f"  - 未合成: {u}", file=sys.stderr)
+        return project_exit_code("no-acceptance")
+    charter.acceptance = resolved             # 以降の評価は合成済みの決定的コマンドで行う
     state.update({"id": pid, "name": charter.name,
                   "acceptance_total": len(charter.acceptance), "status": "running"})
     save_project_state(cfg, state)
