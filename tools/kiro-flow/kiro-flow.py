@@ -29,6 +29,7 @@ import argparse
 import atexit
 import contextlib
 import hashlib
+import inspect
 import json
 import os
 import random
@@ -944,8 +945,9 @@ def cleanup_work_repos() -> None:
 
 def repo_instruction(clones: "list[dict]") -> str:
     """clone 済みの成果物リポジトリをエージェントに伝える決定的な指示ブロック。
-    フォルダ(path)・作業ブランチ(base→target)・役割(desc)・参照のみ(readonly) を出し分ける
-    （この指示は gitlab executor 経由でイシュー本文にもそのまま載る）。"""
+    フォルダ(path)・作業ブランチ(base→target)・役割(desc)・参照のみ(readonly) を出し分ける。
+    この指示は call_executor 経由で executor へ goal とは別引数（repo_instruction）として渡る
+    （gitlab executor はイシュー本文の独立した節に載せる。goal のタイトル/目的は汚さない）。"""
     if not clones:
         return ""
     lines = ["【成果物リポジトリ】このタスク用に clone 済みです。読み書きは必ず各パス内で行い、"
@@ -1515,7 +1517,9 @@ def _stub_sleep() -> None:
 
 
 def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None,
-                 art_dir: "str | None" = None, dep_arts: "dict | None" = None):
+                 art_dir: "str | None" = None, dep_arts: "dict | None" = None,
+                 repo_instruction: str = ""):
+    # repo_instruction（成果物リポジトリの clone 指示）は stub の判定に使わない（goal は本来の goal）。
     _stub_sleep()  # 実行時間を模す（KIRO_FLOW_STUB_SLEEP_MAX で調整可）
     # 失敗注入: "FAIL" を含むと失敗（retry される）/ "FLAKY" は一旦 issue を残す（verify loop 用）
     if "FAIL" in goal:
@@ -1567,7 +1571,8 @@ def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None,
 
 
 def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
-                 art_dir: "str | None" = None, dep_arts: "dict | None" = None):
+                 art_dir: "str | None" = None, dep_arts: "dict | None" = None,
+                 repo_instruction: str = ""):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -1593,6 +1598,8 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
     if kind in ("reduce", "synthesize", "filter", "judge"):
         deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}
     prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
+    if repo_instruction:  # 成果物リポジトリの clone 指示（ローカル実行のエージェントへ伝える）
+        prompt += repo_instruction + "\n"
     art_note = artifact_instruction(art_dir, dep_arts)
     if art_note:  # 中間成果物のファイル参照プロトコル（出力先・依存成果物のパス）
         prompt += art_note + "\n"
@@ -1631,12 +1638,41 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
 #     - プラグイン名（例 "gitlab"）: 検索ディレクトリの executors/<name>.py を解決
 #     - .py への明示パス : そのファイルをプラグインとしてロード
 #   プラグインは `execute(kind, goal, dep_results, model, art_dir, dep_arts)` を公開し、
-#   (text, data) を返す。プラグイン固有の設定は、同名のトップレベル設定ブロック
-#   （例 gitlab:）を JSON 化して環境変数 KIRO_FLOW_EXECUTOR_CONFIG で渡す。
+#   (text, data) を返す。任意で末尾に `repo_instruction`（成果物リポジトリの clone 指示・
+#   キーワード可）を受け取れる。受け取れる executor には goal とは別引数で渡すので、
+#   本来の goal を汚さずに使える（gitlab はイシューのタイトル/目的に本来の goal を出せる）。
+#   受け取れない旧プラグインには、従来どおり clone 指示を goal 先頭へ結合して渡す（後方互換）。
+#   プラグイン固有の設定は、同名のトップレベル設定ブロック（例 gitlab:）を JSON 化して
+#   環境変数 KIRO_FLOW_EXECUTOR_CONFIG で渡す。
 # --------------------------------------------------------------------------
 # 組み込み executor の名前 → 実体は呼び出し時に globals() から解決する
 # （テストの monkeypatch やホットリロードが効くよう、import 時の参照を握らない）。
 BUILTIN_EXECUTORS = {"kiro": "execute_kiro", "stub": "execute_stub"}
+
+
+def _executor_accepts_repo_instruction(execute) -> bool:
+    """executor が `repo_instruction` を別引数で受け取れるか（名前付き引数 or **kwargs）。"""
+    try:
+        sig = inspect.signature(execute)
+    except (TypeError, ValueError):
+        return False
+    for p in sig.parameters.values():
+        if p.name == "repo_instruction" or p.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+    return False
+
+
+def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str | None",
+                  art_dir, dep_arts, repo_instruction: str = ""):
+    """executor を呼ぶ単一の入口。`repo_instruction`（成果物リポジトリの clone 指示）を
+    受け取れる executor には**別引数**で渡して goal を汚さない（イシューのタイトル/目的が
+    clone 指示で埋まらないようにする）。受け取れない旧 executor には従来どおり goal 先頭へ
+    結合して渡す（後方互換）。"""
+    if repo_instruction and _executor_accepts_repo_instruction(execute):
+        return execute(kind, goal, dep_results, model, art_dir, dep_arts,
+                       repo_instruction=repo_instruction)
+    g = (repo_instruction + "\n\n" + goal) if repo_instruction else goal
+    return execute(kind, g, dep_results, model, art_dir, dep_arts)
 
 # executor プラグインモジュールの mtime キャッシュ: {path: (mtime, module)}
 _executor_module_cache: "dict[str, tuple[float, object]]" = {}
@@ -2303,15 +2339,16 @@ def cmd_work(args) -> int:
         # このノードに必要な repo だけを clone する（計画時にノードへ割り当てた subset。未注釈は全 repo）。
         goal = node["goal"]
         clones = ensure_work_repos(resolve_node_repos(node, bus.run_repos()), who)
-        if clones:
-            goal = repo_instruction(clones) + "\n\n" + goal
+        # clone 指示は goal に結合せず別引数で渡す（goal を汚さない）。対応 executor は
+        # 本来の goal をそのまま使い（gitlab はタイトル/目的に出す）、clone 指示は別枠で扱う。
+        instruction = repo_instruction(clones) if clones else ""
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
         rdata = None
         try:
-            output, rdata = execute(kind, goal, dep_results, args.model,
-                                    art_dir, dep_arts)
+            output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
+                                          art_dir, dep_arts, instruction)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
