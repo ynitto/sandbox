@@ -180,6 +180,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   引き継いでいなかった**ため、実際に `execute()` を呼ぶ worker が `gitlab:` ブロック（`repo_url` 含む）を
   再解決できず既定（空）になっていた。親が解決した設定パスを絶対パスで全子プロセスへ伝搬するようにした
   （プラグイン固有設定全般に効く）。
+- 上記をさらに堅牢化: daemon が worker を起動する `_spawn_worker` で、親（daemon）が解決した executor
+  プラグイン設定ブロック（例 `gitlab:` の `repo_url`/`conn_label`）を **`KIRO_FLOW_EXECUTOR_CONFIG` として
+  worker の起動 env に明示注入**するようにした。worker が `--config` を再解決できない／別の設定ファイルを
+  拾う状況でも親の設定が確実に届く。解決ロジックを `resolve_executor_config_json(args)` に集約し
+  `make_executor` と共有。worker 側 `make_executor` は自分で設定を解決できたときだけ env を更新し、
+  解決できない（空/None）ときは親が注入した値を上書きしない。テスト 4 件を追加。
 - judge/評価役のサーキットブレーカー。同一系統の作り直し（verify=fail の再生成・
   失敗タスクの retry）が `--max-retries`（設定 `max_retries`, 既定 3）に達したら
   打ち切る。達成不可能な完了条件に対し無限に再タスクを積み続ける暴走を防ぐ
