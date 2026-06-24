@@ -322,6 +322,45 @@ def _get_comments(host: str, token: str, project: str, iid) -> list:
     return res if isinstance(res, list) else []
 
 
+def _add_issue_note(host: str, token: str, project: str, iid, body: str) -> dict:
+    """イシューに完了報告コメント（note）を追記する。"""
+    ep = _encode_project(project)
+    return gl_api(host, token, "POST", f"/projects/{ep}/issues/{iid}/notes",
+                  data={"body": body})
+
+
+def _related_merge_requests(host: str, token: str, project: str, iid) -> list:
+    """イシューに紐づく MR 一覧を取得する（『このイシューに関連する MR』）。"""
+    ep = _encode_project(project)
+    res = gl_api_list(host, token, f"/projects/{ep}/issues/{iid}/related_merge_requests")
+    return res if isinstance(res, list) else []
+
+
+def _get_mr(host: str, token: str, project: str, mr_iid) -> dict:
+    """MR を 1 件取得する（state 確認＝冪等判定に使う）。"""
+    ep = _encode_project(project)
+    return gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{mr_iid}")
+
+
+def _merge_mr(host: str, token: str, project: str, mr_iid) -> dict:
+    """MR をマージする。既にマージ済みなら GitLab は 405/406 を返すので、呼び出し側で
+    再取得して冪等に扱う（_finalize_merge を参照）。"""
+    ep = _encode_project(project)
+    return gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{mr_iid}/merge")
+
+
+def _close_issue(host: str, token: str, project: str, iid,
+                 labels: "list | None" = None) -> dict:
+    """イシューを明示的にクローズする（state_event=close）。labels 指定時は同時に更新。
+    GitLab では MR マージが必ずしもイシューをクローズしない（本文に `Closes #n` が無い等）ため、
+    finalize はマージとは別個に必ずこのクローズを行う。"""
+    ep = _encode_project(project)
+    data: dict = {"state_event": "close"}
+    if labels is not None:
+        data["labels"] = ",".join(labels)
+    return gl_api(host, token, "PUT", f"/projects/{ep}/issues/{iid}", data=data)
+
+
 def _issue_body(kind: str, goal: str, dep_results: dict, repo_instruction: str = "") -> str:
     """イシュー本文（GitLab Markdown）を組み立てる。gitlab-idd 規約に従い
     『## 受け入れ条件』を必ず含める（ワーカー/レビュアーが完了判定に使う）。
@@ -426,6 +465,93 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     data = {"issue_iid": iid, "web_url": url,
             "labels": sorted(labels_now), "approved": True}
     return text, data
+
+
+def finalize(delivery: dict, action: str = "merge") -> dict:
+    """verify 通過後に呼ばれる決定的な納品アクション（kiro-flow finalize から委譲）。
+
+    対称性の要点: gitlab executor では `status:approved` は『worker＋人の内容レビュー完了』
+    （＝提案 = レビュー可能な MR が用意された状態）であって、done ではない。done は
+    kiro-autonomous の verify（exit 0）だけが確定する（不変条件）。verify が通った帰結として、
+    このアクションが **MR をマージ** し、**イシューを明示的にクローズ** する。人が手で
+    マージするのではなく、verify 通過後にシステムが決定的に行う。
+
+    GitLab では MR マージが必ずしもイシューをクローズしない（本文に `Closes #n` が無い等）ため、
+    マージとクローズは **別個に** 行う（ご要望どおりイシューまでケアする）。
+
+    冪等: 既にマージ済み MR / クローズ済みイシューでも成功扱いにする（人が先に手動マージ
+    していても安全。`already` フラグで区別）。
+
+    引数:
+        delivery: ノードの result.data（execute が返したもの）。`issue_iid` を読む。
+        action:   "merge"（MR マージ＋クローズ・既定）/ "close"（マージせずクローズのみ）。
+    返り値: {issue_iid, merged, issue_closed, mr_iid, mr_url, already, action}
+    """
+    delivery = delivery or {}
+    iid = delivery.get("issue_iid")
+    out = {"issue_iid": iid, "merged": False, "issue_closed": False,
+           "mr_iid": None, "mr_url": None, "already": False, "action": action}
+    if not iid:
+        return out  # gitlab へ委譲していないノード（kiro 等）→ no-op
+
+    cfg = _config()
+    host, project, _ = _resolve_project(cfg)
+    token = _resolve_token(cfg)
+    if not token:
+        raise RuntimeError("gitlab finalize: GitLab トークンが見つかりません。")
+
+    if action == "merge":
+        _finalize_merge(host, token, project, iid, out)
+
+    # --- イシューを明示的にクローズ（MR マージ≠クローズなので必ず別個に行う） ---
+    done_label = str(cfg.get("done_label") or "status:done")
+    note = "kiro-flow: verify 通過により納品を確定します。"
+    if out["merged"]:
+        note += f" MR !{out['mr_iid']} を{'（既に）' if out['already'] else ''}マージしました。"
+    note += " このイシューをクローズします。"
+    try:
+        _add_issue_note(host, token, project, iid, note)
+    except RuntimeError:
+        pass  # コメント追記失敗は致命的でない（クローズは続行）
+
+    issue = _get_issue(host, token, project, iid)
+    if issue.get("state") == "closed":
+        out["issue_closed"] = True
+        out["already"] = True
+    else:
+        labels = sorted(set(issue.get("labels") or []) | {done_label})
+        closed = _close_issue(host, token, project, iid, labels)
+        out["issue_closed"] = closed.get("state") == "closed"
+    _log(f"finalize: イシュー #{iid} をクローズ"
+         + (f" / MR !{out['mr_iid']} マージ" if out["merged"] else "（マージ対象 MR なし）"))
+    return out
+
+
+def _finalize_merge(host: str, token: str, project: str, iid, out: dict) -> None:
+    """イシューに紐づく MR を冪等にマージし、結果を out に書き込む。"""
+    mrs = _related_merge_requests(host, token, project, iid)
+    # open な MR を優先、無ければ先頭（既にマージ済みでも state を確認して冪等に扱う）
+    mr = next((m for m in mrs if m.get("state") == "opened"), (mrs[0] if mrs else None))
+    if not mr:
+        return  # MR がまだ無い（worker が作らなかった）→ マージはスキップしクローズのみ
+    mr_iid = mr.get("iid")
+    out["mr_iid"] = mr_iid
+    out["mr_url"] = mr.get("web_url", "")
+    if mr.get("state") == "merged":
+        out["merged"] = True
+        out["already"] = True
+        return
+    try:
+        merged = _merge_mr(host, token, project, mr_iid)
+        out["merged"] = (merged.get("state") == "merged") if isinstance(merged, dict) else True
+    except RuntimeError:
+        # 既にマージ済み等で API がエラーを返した可能性 → 再取得して冪等判定
+        cur = _get_mr(host, token, project, mr_iid)
+        if cur.get("state") == "merged":
+            out["merged"] = True
+            out["already"] = True
+        else:
+            raise
 
 
 if __name__ == "__main__":

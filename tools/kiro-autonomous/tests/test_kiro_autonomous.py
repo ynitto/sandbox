@@ -3575,5 +3575,84 @@ class SelfUpdateTests(unittest.TestCase):
                 km.run_watch(cfg, sleeper=lambda _s: None)
 
 
+class TestFinalizeDelegation(unittest.TestCase):
+    """done 確定の*帰結*として委譲先の納品を確定（gitlab: MR マージ＋イシュークローズ）。
+    verify=PASS が前提＝done は verify のみが確定する不変条件を破らない。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ka-fin-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_run_id_marker_roundtrip(self):
+        msg = km._mark_run_id("done", "run-123")
+        self.assertIn("[[run_id=run-123]]", msg)
+        self.assertEqual(km.parse_act_run_id(msg), "run-123")
+        self.assertEqual(km.parse_act_run_id("no marker"), "")
+
+    def test_executor_delegates(self):
+        self.assertFalse(km.executor_delegates(cfg_for(self.tmp, executor="kiro")))
+        self.assertFalse(km.executor_delegates(cfg_for(self.tmp, executor="stub")))
+        self.assertTrue(km.executor_delegates(cfg_for(self.tmp, executor="gitlab")))
+
+    def test_finalize_delivery_noop_for_builtin(self):
+        cfg = cfg_for(self.tmp, executor="kiro")
+        with mock.patch.object(km.subprocess, "run") as m:
+            km.finalize_delivery(cfg, km.Task(id="t1", title="x"), "done", "local", 1)
+        m.assert_not_called()          # kiro はローカル push 済み＝finalize 委譲しない
+
+    def test_finalize_delivery_invokes_kiro_flow_with_run_id(self):
+        cfg = cfg_for(self.tmp, executor="gitlab")
+        act_msg = km._mark_run_id("daemon run run-77 done", "run-77")
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            km.finalize_delivery(cfg, km.Task(id="t1", title="x"), act_msg, "local", 3)
+        cmd = captured["cmd"]
+        self.assertIn("finalize", cmd)
+        self.assertIn("--executor", cmd)
+        self.assertIn("gitlab", cmd)
+        # run_id はグローバル位置（サブコマンド finalize より前）に置く
+        self.assertIn("--run-id", cmd)
+        self.assertLess(cmd.index("--run-id"), cmd.index("finalize"))
+        self.assertEqual(cmd[cmd.index("--run-id") + 1], "run-77")
+
+    def test_finalize_from_payload_passes_delivery_json(self):
+        cfg = cfg_for(self.tmp, executor="gitlab")
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            km.finalize_from_payload(cfg, km.Task(id="t1", title="x"),
+                                     [{"issue_iid": 42}], cycle=0)
+        cmd = captured["cmd"]
+        self.assertIn("--delivery-json", cmd)
+        payload = json.loads(cmd[cmd.index("--delivery-json") + 1])
+        self.assertEqual(payload[0]["issue_iid"], 42)
+
+    def test_read_run_deliveries_extracts_issue_nodes(self):
+        cfg = cfg_for(self.tmp, executor="gitlab")
+        result_json = json.dumps({"final_nodes": [
+            {"id": "n1", "data": {"issue_iid": 9, "web_url": "u", "approved": True}},
+            {"id": "n2", "data": {"ok": True}},     # gate（issue 無し）は対象外
+        ]})
+
+        def fake_run(cmd, **kw):
+            return types.SimpleNamespace(returncode=0, stdout=result_json, stderr="")
+
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            dels = km.read_run_deliveries(cfg, "run-1", use_git=False)
+        self.assertEqual(len(dels), 1)
+        self.assertEqual(dels[0]["issue_iid"], 9)
+
+
 if __name__ == "__main__":
     unittest.main()

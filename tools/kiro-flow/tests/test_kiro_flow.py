@@ -1421,9 +1421,13 @@ class DaemonPrimitiveTests(unittest.TestCase):
                "target": "main", "readonly": True, "desc": "参照元", "clone": "/tmp/lib"}]
         instr = kf.repo_instruction(ro)
         self.assertIn("参照のみ", instr)
-        self.assertNotIn("commit して push すること", instr)   # 参照のみだけなら push 指示を出さない
+        self.assertNotIn("commit すること", instr)   # 参照のみだけなら書込み指示を出さない
         rw = [dict(ro[0], readonly=False)]
-        self.assertIn("commit して push すること", kf.repo_instruction(rw))
+        out = kf.repo_instruction(rw)
+        self.assertIn("commit すること", out)         # 書込み repo には commit を指示
+        # 新モデル: ローカルは kiro-flow が push、調査系はコミット不要でバスに残す旨を伝える
+        self.assertIn("kiro-flow が成果ブランチへ push", out)
+        self.assertIn("コミットを伴わない", out)
 
     def test_remove_run_also_purges_inbox(self):
         # gc（remove_run）は対応する inbox 要求と claim も消す。残すと run_exists が
@@ -2480,6 +2484,163 @@ class SelfUpdateTests(unittest.TestCase):
     def test_explicit_repo_overrides_registry(self):
         a = self._args(update_repo="/explicit/path", update_branch="dev")
         self.assertEqual(kf.resolve_update_target(a), ("/explicit/path", "dev"))
+
+
+class CaptureDeliveriesTests(unittest.TestCase):
+    """kiro executor の成果物リポジトリ捕捉: 変更があれば決定的ブランチへ commit/push し
+    delivery（branch/SHA/リンク）を記録、変更が無い（調査系）なら何も残さない。"""
+
+    def setUp(self):
+        if not shutil.which("git"):
+            self.skipTest("git が無い環境ではスキップ")
+        self.root = tempfile.mkdtemp(prefix="kf-deliv-")
+        self.bare = os.path.join(self.root, "repo.git")
+        r = subprocess.run(["git", "init", "--bare", "-b", "main", self.bare],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            subprocess.run(["git", "init", "--bare", self.bare], check=True, capture_output=True)
+        # main に初期コミットを置く（クローン元の base を用意）
+        seed = os.path.join(self.root, "seed")
+        for cmd in (["git", "clone", "-q", self.bare, seed],
+                    ["git", "-C", seed, "checkout", "-q", "-B", "main"]):
+            subprocess.run(cmd, check=True, capture_output=True)
+        pathlib.Path(seed, "README.md").write_text("seed\n", encoding="utf-8")
+        for cmd in (["git", "-C", seed, "add", "-A"],
+                    ["git", "-C", seed, "commit", "-q", "-m", "seed"],
+                    ["git", "-C", seed, "push", "-q", "origin", "main"]):
+            subprocess.run(cmd, check=True, capture_output=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _clone(self):
+        dest = os.path.join(self.root, "work")
+        subprocess.run(["git", "clone", "-q", "-b", "main", self.bare, dest],
+                       check=True, capture_output=True)
+        return dest
+
+    def test_commits_and_pushes_to_deterministic_branch(self):
+        work = self._clone()
+        pathlib.Path(work, "feature.py").write_text("print('hi')\n", encoding="utf-8")
+        clones = [{"url": self.bare, "base": "main", "clone": work, "name": "app"}]
+        dels = kf.capture_deliveries(clones, "run-xyz", "n1")
+        self.assertEqual(len(dels), 1)
+        d = dels[0]
+        self.assertEqual(d["branch"], "kiro-flow/run-xyz/n1")
+        self.assertTrue(d["pushed"])
+        self.assertTrue(d["changed"])
+        self.assertTrue(d["head_sha"])
+        # bare 側に成果ブランチが push されている
+        out = subprocess.run(["git", "-C", self.bare, "branch", "--list",
+                              "kiro-flow/run-xyz/n1"], capture_output=True, text=True).stdout
+        self.assertIn("kiro-flow/run-xyz/n1", out)
+
+    def test_target_branch_is_used_when_specified(self):
+        work = self._clone()
+        pathlib.Path(work, "x.txt").write_text("y\n", encoding="utf-8")
+        clones = [{"url": self.bare, "base": "main", "target": "feature/login", "clone": work}]
+        dels = kf.capture_deliveries(clones, "r", "n")
+        self.assertEqual(dels[0]["branch"], "feature/login")
+
+    def test_no_changes_yields_no_delivery(self):
+        # 調査系タスク: clone を編集しない → delivery 無し（納品物はバス上の成果に委ねる）
+        work = self._clone()
+        self.assertEqual(kf.capture_deliveries(
+            [{"url": self.bare, "base": "main", "clone": work}], "r", "n"), [])
+
+    def test_readonly_repo_is_skipped(self):
+        work = self._clone()
+        pathlib.Path(work, "z.txt").write_text("z\n", encoding="utf-8")
+        self.assertEqual(kf.capture_deliveries(
+            [{"url": self.bare, "base": "main", "clone": work, "readonly": True}], "r", "n"), [])
+
+
+class GitlabFinalizeTests(unittest.TestCase):
+    """gitlab executor の finalize: verify 通過後に MR をマージ（冪等）し、イシューを
+    *明示的に* クローズする（MR マージ≠イシュークローズ）。kiro-flow finalize から呼ばれる。"""
+
+    def setUp(self):
+        self._cfg = {"conn_label": "default", "repo_url": "https://gitlab.com/group/repo",
+                     "done_label": "status:done"}
+        self._prev = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(self._cfg)
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
+        else:
+            os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = self._prev
+
+    def test_merges_mr_and_closes_issue(self):
+        calls = []
+
+        def api(host, token, method, path, data=None, params=None):
+            calls.append((method, path, data))
+            if method == "GET" and path.endswith("/issues/42"):
+                return {"labels": ["status:approved"], "state": "opened"}
+            if method == "PUT" and path.endswith("/merge_requests/7/merge"):
+                return {"state": "merged"}
+            if method == "PUT" and path.endswith("/issues/42"):
+                return {"state": "closed"}
+            return {}
+
+        def list_side(host, token, path, params=None):
+            if path.endswith("/related_merge_requests"):
+                return [{"iid": 7, "state": "opened",
+                         "web_url": "https://gitlab.com/group/repo/-/merge_requests/7"}]
+            return []
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            out = gl_plugin.finalize({"issue_iid": 42}, "merge")
+        self.assertTrue(out["merged"])
+        self.assertTrue(out["issue_closed"])
+        self.assertEqual(out["mr_iid"], 7)
+        # イシュークローズは MR マージとは別個の PUT /issues/42（state_event=close）で行う
+        close = next(c for c in calls if c[0] == "PUT" and c[1].endswith("/issues/42"))
+        self.assertEqual(close[2]["state_event"], "close")
+        self.assertIn("status:done", close[2]["labels"])
+
+    def test_idempotent_when_already_merged_and_closed(self):
+        def api(host, token, method, path, data=None, params=None):
+            if method == "GET" and path.endswith("/issues/9"):
+                return {"labels": [], "state": "closed"}   # 既にクローズ済み
+            return {}
+
+        def list_side(host, token, path, params=None):
+            return [{"iid": 3, "state": "merged",
+                     "web_url": "u"}] if path.endswith("/related_merge_requests") else []
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            out = gl_plugin.finalize({"issue_iid": 9}, "merge")
+        self.assertTrue(out["merged"])
+        self.assertTrue(out["issue_closed"])
+        self.assertTrue(out["already"])
+
+    def test_no_mr_closes_issue_only(self):
+        # 調査系などコミット/MR を伴わない委譲: MR は無い → クローズのみ（イシューはケアする）
+        def api(host, token, method, path, data=None, params=None):
+            if method == "GET" and path.endswith("/issues/5"):
+                return {"labels": ["status:approved"], "state": "opened"}
+            if method == "PUT" and path.endswith("/issues/5"):
+                return {"state": "closed"}
+            return {}
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
+            out = gl_plugin.finalize({"issue_iid": 5}, "merge")
+        self.assertFalse(out["merged"])
+        self.assertTrue(out["issue_closed"])
+
+    def test_no_issue_is_noop(self):
+        # kiro executor の repo delivery（issue_iid 無し）→ gitlab finalize は no-op
+        out = gl_plugin.finalize({"branch": "kiro-flow/r/n", "head_sha": "abc"}, "merge")
+        self.assertFalse(out["merged"])
+        self.assertFalse(out["issue_closed"])
 
 
 if __name__ == "__main__":

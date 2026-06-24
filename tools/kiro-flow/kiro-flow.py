@@ -303,6 +303,7 @@ def strip_ansi(text: str) -> str:
 class Bus:
     def __init__(self, root: str, run_id: str):
         self.root = root
+        self.run_id = run_id
         self.runs_root = os.path.join(root, "runs")
         self.inbox_dir = os.path.join(root, "inbox")
         self.inbox_claims_dir = os.path.join(root, "inbox", "claims")
@@ -973,12 +974,89 @@ def repo_instruction(clones: "list[dict]") -> str:
         else:
             has_write = True
     if has_write:
-        lines.append("変更したリポジトリは commit して push すること"
-                     "（※参照のみと記したものは push しない）。")
+        lines.append("変更したリポジトリは commit すること（※参照のみと記したものは触らない）。"
+                     "ローカル実行では kiro-flow が成果ブランチへ push してリンクを記録する"
+                     "（リモート委譲の場合は push して MR/PR を用意すること）。"
+                     "なお、調査など成果物がコミットを伴わないタスクは、無理にコミットせず"
+                     "成果を本文にまとめること（その場合はバス上の成果が納品物になる）。")
     failed = [c["url"] for c in clones if not c.get("clone")]
     if failed:
         lines.append("  ※ clone 失敗（必要なら手動で取得・push 不可の可能性）: " + ", ".join(failed))
     return "\n".join(lines)
+
+
+# 決定的 commit の作者（環境の git config に依存せず再現可能にする）。
+_DELIVERY_GIT_AUTHOR = ["-c", "user.name=kiro-flow", "-c", "user.email=kiro-flow@localhost"]
+
+
+def _git_io(path: str, *args: str) -> "tuple[int, str, str]":
+    """clone 内で git を実行し (returncode, stdout, stderr) を返す。"""
+    r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True)
+    return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+
+
+def _delivery_branch(spec: dict, run_id: str, node_id: str) -> str:
+    """この repo への push 先（成果ブランチ）を決定的に決める。
+    `target`（MR/PR ターゲット指定）があればそれ、無ければ `kiro-flow/<run>/<node>`。"""
+    if spec.get("target"):
+        return str(spec["target"])
+    rid = re.sub(r"[^A-Za-z0-9._-]", "-", str(run_id))[:40]
+    nid = re.sub(r"[^A-Za-z0-9._-]", "-", str(node_id))
+    return f"kiro-flow/{rid}/{nid}"
+
+
+def capture_deliveries(clones: "list[dict]", run_id: str, node_id: str) -> "list[dict]":
+    """エージェント実行後に、書込み対象の成果物リポジトリの状態を決定的に捕捉する。
+
+    **成果物がコミットを伴うとは限らない**（調査系タスク等）。変更があった repo だけを
+    commit→決定的ブランチへ push し、`delivery`（branch/SHA/URL のリンク）として返す。
+    変更が無ければ何も返さない＝その場合の納品物はバス上の `result.output/data`。
+
+    各 write リポジトリにつき:
+      1. 未コミット変更があれば `add -A` して commit（エージェントの commit 忘れの保険）
+      2. base（クローン地点）から HEAD が進んでいれば（＝コミットがある）成果ブランチへ push
+      3. {url, base, target, branch, head_sha, pushed, changed[, name]} を記録
+    temp clone は作業後に削除されるため、push が成果の永続化になる（push 失敗は記録に残す）。
+    """
+    deliveries: "list[dict]" = []
+    for c in clones or []:
+        path = c.get("clone")
+        if not path or c.get("readonly") or not os.path.isdir(path):
+            continue
+        base = str(c.get("base") or "")
+        branch = _delivery_branch(c, run_id, node_id)
+        # 1. 未コミット変更を取り込む（編集だけして commit しなかった場合の保険）
+        _, porcelain, _ = _git_io(path, "status", "--porcelain")
+        committed_here = False
+        if porcelain:
+            _git_io(path, "add", "-A")
+            rc, _, _ = _git_io(path, *_DELIVERY_GIT_AUTHOR, "commit", "-m",
+                               f"[kiro-flow] {node_id}")
+            committed_here = rc == 0
+        # 2. base から HEAD が進んでいるか（＝コミットが存在するか）を判定
+        rc, head, _ = _git_io(path, "rev-parse", "HEAD")
+        if rc != 0:
+            continue
+        ahead = committed_here
+        ref = f"origin/{base}" if base else "origin/HEAD"
+        rc_b, base_sha, _ = _git_io(path, "rev-parse", ref)
+        if rc_b == 0:
+            ahead = ahead or (head != base_sha)
+        if not ahead:
+            continue  # 変更なし（調査系など）→ 納品物はバス上の成果に委ねる
+        # 3. 決定的な成果ブランチへ push（temp clone 削除前の永続化）
+        rc_p, _, perr = _git_io(path, "push", "origin", f"HEAD:refs/heads/{branch}")
+        d: dict = {"url": c.get("url", ""), "base": base, "target": c.get("target", ""),
+                   "branch": branch, "head_sha": head, "pushed": rc_p == 0, "changed": True}
+        if c.get("name"):
+            d["name"] = c["name"]
+        if rc_p != 0:
+            d["push_error"] = perr[:200]
+            log(node_id, f"成果ブランチ push 失敗（{c.get('url','')} → {branch}）: {perr[:120]}")
+        else:
+            log(node_id, f"成果を push: {c.get('url','')} → {branch} @ {head[:8]}")
+        deliveries.append(d)
+    return deliveries
 
 
 def artifact_instruction(self_dir: "str | None", dep_arts: "dict[str, str] | None") -> str:
@@ -1801,6 +1879,29 @@ def make_executor(args):
     return fn
 
 
+def make_finalizer(args):
+    """args.executor の `finalize(delivery, action)` を解決する（任意のプラグイン契約）。
+
+    finalize は verify 通過後に呼ばれる決定的な納品アクション（例: gitlab の MR マージ＋
+    イシュークローズ）。組み込み（kiro/stub）はローカルで commit/push 済み or 実変更なしの
+    ため追加の finalize は不要＝None（no-op）。finalize を持たないプラグインも None。"""
+    spec = getattr(args, "executor", None) or "kiro"
+    if spec in BUILTIN_EXECUTORS:
+        return None
+    path = _resolve_executor_plugin(spec)
+    if not path:
+        return None
+    module = _load_executor_module(path)
+    fn = getattr(module, "finalize", None)
+    if not callable(fn):
+        return None
+    # finalize もプラグイン設定（例 gitlab: の repo_url/conn_label/トークン解決元）を要する
+    cfgjson = resolve_executor_config_json(args)
+    if cfgjson is not None:
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = cfgjson
+    return fn
+
+
 def _is_gate_result(r: dict) -> bool:
     """verify gate の結果か（data が {"ok": ...} を持つ）。集約対象から除くのに使う。"""
     dv = _dep_data(r)
@@ -2373,6 +2474,24 @@ def cmd_work(args) -> int:
             rstatus = "failed"
         finally:
             hb.stop()
+
+        # 成果物リポジトリへの実体（コミット）を決定的に捕捉する。kiro executor のみ
+        # （stub は実変更なし、gitlab 等は別マシンで作業＝ローカル clone に変更が出ない）。
+        # 変更があった repo だけを成果ブランチへ push し、リンクを result.data.delivery に残す。
+        # 成果物がコミットを伴わない調査系タスクは捕捉対象外＝納品物はバス上の output/data。
+        if rstatus == "done" and clones and getattr(args, "executor", "kiro") == "kiro":
+            try:
+                dels = capture_deliveries(clones, bus.run_id, nid)
+            except Exception as e:  # noqa: BLE001 — 捕捉失敗で run 全体を止めない
+                dels = []
+                log(who, f"delivery 捕捉に失敗: {e}")
+            if dels:
+                if isinstance(rdata, dict):
+                    rdata = {**rdata, "delivery": dels}
+                elif rdata is None:
+                    rdata = {"delivery": dels}
+                else:
+                    rdata = {"value": rdata, "delivery": dels}
 
         # 生成された中間成果物を run_dir 相対パスで記録（後続・status から発見できる）
         artifacts = [os.path.relpath(p, bus.run_dir) for p in bus.list_artifacts(nid)]
@@ -3232,6 +3351,90 @@ def cmd_result(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# finalize — verify 通過後の決定的な納品アクションを executor へ委譲する。
+#   呼び出し元（kiro-autonomous）が done を確定（verify exit 0 ＋ 全ゲート通過）したあとに
+#   呼ぶ。executor の finalize(delivery, action) を各ノードの result.data に対して実行する。
+#   gitlab executor は MR をマージしイシューを明示的にクローズする（MR マージ≠イシュー
+#   クローズなので別個に行う）。finalize を持たない executor（kiro 等・ローカルで push 済み）は
+#   no-op。done を緩めない（マージは done の*帰結*）ので不変条件を破らない。
+# --------------------------------------------------------------------------
+def _node_deliveries(data) -> "list[dict]":
+    """ノードの result.data から finalize 対象の delivery dict 群を取り出す。
+    kiro: data.delivery=[{repo...}]（複数 repo）。gitlab: data 自体が {issue_iid,...}。"""
+    if not isinstance(data, dict):
+        return []
+    d = data.get("delivery")
+    if isinstance(d, list):
+        return [x for x in d if isinstance(x, dict)]
+    return [data]
+
+
+def cmd_finalize(args) -> int:
+    """run の各ノード result.data に対し executor の finalize を実行する。
+
+    --node-id 指定で 1 ノードのみ。--action（既定 merge）を executor へ渡す。
+    --delivery-json を渡すと **バスを読まず**その delivery（dict か dict の配列）を直接
+    finalize する（人の承認が後日＝run/バスが gc 済みでも、保持しておいた delivery で
+    確実に MR マージ＋イシュークローズできる）。finalize を持たない executor は no-op。
+    1 件でも失敗すれば exit 1。"""
+    fin = make_finalizer(args)
+    action = getattr(args, "action", None) or "merge"
+    # --delivery-json: バス非依存の直接 finalize（run/バスのライフサイクルから切り離す）
+    raw = getattr(args, "delivery_json", None)
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"エラー: --delivery-json を解釈できません: {e}", file=sys.stderr)
+            return 2
+        deliveries = payload if isinstance(payload, list) else [payload]
+        results: "list[dict]" = []
+        for d in deliveries:
+            if not isinstance(d, dict) or fin is None:
+                continue
+            try:
+                out = fin(d, action)
+                results.append({"ok": True, "result": out})
+                log("finalize", json.dumps(out, ensure_ascii=False)[:200])
+            except Exception as e:  # noqa: BLE001
+                results.append({"ok": False, "error": str(e)})
+                log("finalize", f"finalize 失敗: {e}")
+        print(json.dumps({"action": action, "finalized": results},
+                         ensure_ascii=False, indent=2))
+        return 0 if all(r.get("ok", True) for r in results) else 1
+    if not args.run_id:
+        resolved = _resolve_run_id(args)
+        if not resolved:
+            print("エラー: run が見つかりません。", file=sys.stderr)
+            return 1
+        args.run_id = resolved
+    bus = make_bus(args, "finalize")
+    bus.sync_pull()
+    graph = bus.read_graph() or {}
+    nodes = list(graph.get("nodes", {}))
+    node_ids = [args.node_id] if getattr(args, "node_id", None) else nodes
+    results = []
+    for nid in node_ids:
+        r = bus.read_result(nid) or {}
+        for d in _node_deliveries(r.get("data")):
+            if fin is None:
+                continue   # finalize 不要な executor（kiro 等）
+            if not d.get("issue_iid") and not d.get("branch"):
+                continue   # 委譲も成果ブランチも無い（調査系等）→ 対象外
+            try:
+                out = fin(d, action)
+                results.append({"node": nid, "ok": True, "result": out})
+                log("finalize", f"{nid}: {json.dumps(out, ensure_ascii=False)[:200]}")
+            except Exception as e:  # noqa: BLE001 — 失敗は記録し他ノードは続行
+                results.append({"node": nid, "ok": False, "error": str(e)})
+                log("finalize", f"{nid}: finalize 失敗: {e}")
+    bus.sync_push("finalize")
+    print(json.dumps({"run_id": args.run_id, "action": action, "finalized": results},
+                     ensure_ascii=False, indent=2))
+    return 0 if all(r.get("ok", True) for r in results) else 1
+
+
+# --------------------------------------------------------------------------
 # doctor（稼働診断）— bus 上の run（meta/events/results）と環境から稼働状況を
 #   kiro-cli に診断させ、原因を env（ユーザー環境固有）/ config（設定）/
 #   program（プログラム上の不具合）へ分類する。env/config は --fix で修正、program は
@@ -3956,6 +4159,20 @@ def main() -> int:
                         help="完了した run の最終結果を探して提示（status 相当・進捗でなく成果を返す）")
     rs.add_argument("--json", action="store_true", help="機械可読な JSON で出力")
     rs.set_defaults(func=cmd_result)
+
+    fin = sub.add_parser("finalize",
+                         help="verify 通過後の納品アクションを executor へ委譲（gitlab: MR マージ＋"
+                              "イシュークローズ）。done の*帰結*であって done を確定するものではない")
+    fin.add_argument("--executor", default=None,
+                     help="ワーカーバス（kiro/stub/プラグイン名/.py パス）。finalize を持つ "
+                          "executor（例 gitlab）でのみ実効。kiro 等は no-op")
+    fin.add_argument("--node-id", default=None, help="このノードのみ finalize（既定: 全ノード）")
+    fin.add_argument("--action", default=None, choices=["merge", "close"],
+                     help="finalize アクション（既定 merge＝MR マージ＋イシュークローズ）")
+    fin.add_argument("--delivery-json", default=None,
+                     help="バスを読まず、この delivery（JSON の dict か配列）を直接 finalize する。"
+                          "人の承認が後日（run が gc 済み）でも保持した delivery で確実に納品確定できる")
+    fin.set_defaults(func=cmd_finalize)
 
     gc = sub.add_parser("gc", help="古い run を掃除（対応する inbox 要求・claim も削除）")
     gc.add_argument("--older-than", type=float, default=7.0, help="この日数より古い run が対象")
