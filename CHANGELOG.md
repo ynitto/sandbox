@@ -199,6 +199,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `result` コマンドでも一覧できる。
 
 #### Fixed
+- **成果物リポジトリの clone 指示が goal 先頭に結合され、gitlab executor のイシュー タイトル/目的が
+  指示テキストで埋まって本来の goal が見えなくなる不具合を修正**。`cmd_work` が clone 指示
+  （`repo_instruction`）を `goal` の先頭へ文字列結合してから executor に渡していたため、gitlab は
+  タイトル（`goal[:80]`）も本文の『## 目的』も clone 指示で占有されていた。executor 契約に任意の
+  `repo_instruction` 引数を追加し、新設の `call_executor` が **clone 指示を goal とは別引数で渡す**
+  ように変更（受け取れない旧プラグインには従来どおり goal 先頭へ結合してフォールバック＝後方互換）。
+  `execute_kiro`/`execute_stub` は `repo_instruction` を受理（kiro はプロンプトへ別途付与）。gitlab は
+  タイトルと『## 目的』に**本来の goal のみ**を出し、clone 指示は本文の独立節『## 成果物リポジトリ』に
+  載せる。単体テスト 8 件（引数受理判定・新/旧 executor の分岐・kiro プロンプト・イシュー本文の節分離・
+  タイトル/目的が本来の goal）を追加。
 - **daemon が再起動すると孤児 run（owning daemon が消失した非終端 run）を復旧できず永久待機する不具合を修正**。
   上記の異常終了検知は「死んだ子（orchestrator）を自分で刈り取れる」前提で、**daemon プロセス自体が落ちて
   再起動した**ケース（remote/分散実行）を救えていなかった。再起動した新プロセスは `orchestrators` を引き継がず、

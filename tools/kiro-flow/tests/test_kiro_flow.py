@@ -813,6 +813,122 @@ class GitlabNativeApiTests(unittest.TestCase):
             self.assertEqual(gl_plugin._token_from_connections("default"), "")
 
 
+class CallExecutorDispatchTests(unittest.TestCase):
+    """call_executor: clone 指示（repo_instruction）を goal に結合せず別引数で渡す。
+    受け取れない旧 executor には従来どおり goal 先頭へ結合する（後方互換）。"""
+
+    INSTR = "【成果物リポジトリ】… /tmp/clone/x"
+
+    def test_accepts_detection(self):
+        def new_exec(kind, goal, dep_results, model, art_dir, dep_arts, repo_instruction=""):
+            return "ok", None
+
+        def legacy_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None):
+            return "ok", None
+
+        def kwargs_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None, **kw):
+            return "ok", None
+
+        self.assertTrue(kf._executor_accepts_repo_instruction(new_exec))
+        self.assertTrue(kf._executor_accepts_repo_instruction(kwargs_exec))
+        self.assertFalse(kf._executor_accepts_repo_instruction(legacy_exec))
+
+    def test_new_executor_gets_clean_goal_and_instruction(self):
+        seen = {}
+
+        def new_exec(kind, goal, dep_results, model, art_dir, dep_arts, repo_instruction=""):
+            seen["goal"] = goal
+            seen["instr"] = repo_instruction
+            return "ok", None
+
+        kf.call_executor(new_exec, "work", "本来のゴール", {}, None, None, None, self.INSTR)
+        self.assertEqual(seen["goal"], "本来のゴール")        # goal は汚れない
+        self.assertEqual(seen["instr"], self.INSTR)
+
+    def test_legacy_executor_gets_prepended_goal(self):
+        seen = {}
+
+        def legacy_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None):
+            seen["goal"] = goal
+            return "ok", None
+
+        kf.call_executor(legacy_exec, "work", "本来のゴール", {}, None, None, None, self.INSTR)
+        self.assertTrue(seen["goal"].startswith(self.INSTR))   # 旧契約は従来どおり結合
+        self.assertIn("本来のゴール", seen["goal"])
+
+    def test_no_instruction_passes_goal_unchanged(self):
+        seen = {}
+
+        def new_exec(kind, goal, dep_results, model, art_dir, dep_arts, repo_instruction=""):
+            seen["goal"], seen["instr"] = goal, repo_instruction
+            return "ok", None
+
+        kf.call_executor(new_exec, "work", "ゴール", {}, None, None, None, "")
+        self.assertEqual(seen["goal"], "ゴール")
+        self.assertEqual(seen["instr"], "")
+
+    def test_execute_kiro_puts_instruction_in_prompt_not_polluting_goal(self):
+        captured = {}
+
+        def fake_run_kiro(prompt, model):
+            captured["prompt"] = prompt
+            return "成果"
+
+        with mock.patch.object(kf, "run_kiro", side_effect=fake_run_kiro):
+            kf.call_executor(kf.execute_kiro, "work", "ログイン追加", {}, None, None, None,
+                             self.INSTR)
+        # タスク行の goal は本来のゴールのまま、clone 指示はプロンプト内に別途含まれる
+        self.assertIn("タスク(work): ログイン追加", captured["prompt"])
+        self.assertIn(self.INSTR, captured["prompt"])
+
+
+class GitlabRepoInstructionTests(unittest.TestCase):
+    """gitlab: clone 指示はイシュー本文の独立節に載せ、タイトル/目的は本来の goal を保つ。"""
+
+    def test_issue_body_separates_instruction_from_purpose(self):
+        body = gl_plugin._issue_body("work", "ログイン画面を追加", {},
+                                     repo_instruction="【成果物リポジトリ】… /tmp/clone/x")
+        self.assertIn("## 目的", body)
+        self.assertIn("## 成果物リポジトリ", body)
+        # 目的節の直後は本来の goal（clone 指示で埋まらない）
+        purpose = body.split("## 目的", 1)[1].split("##", 1)[0]
+        self.assertIn("ログイン画面を追加", purpose)
+        self.assertNotIn("成果物リポジトリ】", purpose)
+
+    def test_issue_body_omits_section_when_no_instruction(self):
+        body = gl_plugin._issue_body("work", "ゴール", {})
+        self.assertNotIn("## 成果物リポジトリ", body)
+
+    def test_execute_title_and_purpose_use_clean_goal(self):
+        instr = "【成果物リポジトリ】このタスク用に clone 済み: /tmp/clone/x"
+        calls = []
+
+        def api(host, token, method, path, data=None, params=None):
+            calls.append((method, data))
+            if method == "POST":
+                return {"iid": 3, "web_url": "https://gitlab.com/group/repo/-/issues/3"}
+            return {"labels": ["status:approved"], "state": "opened"}
+
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
+            {"repo_url": "https://gitlab.com/group/repo", "poll_interval": 0.0, "timeout": 0.0})
+        prev = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
+        try:
+            with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+                 mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+                 mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
+                gl_plugin.execute("work", "ログイン画面を追加", {}, repo_instruction=instr)
+        finally:
+            os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
+        post = next(c for c in calls if c[0] == "POST")
+        # タイトルは本来の goal（clone 指示が先頭に来ない）
+        self.assertIn("ログイン画面を追加", post[1]["title"])
+        self.assertNotIn("成果物リポジトリ", post[1]["title"])
+        # 本文は目的＝本来の goal、clone 指示は別節
+        self.assertIn("## 成果物リポジトリ", post[1]["description"])
+        purpose = post[1]["description"].split("## 目的", 1)[1].split("##", 1)[0]
+        self.assertIn("ログイン画面を追加", purpose)
+
+
 class ExecutorResolutionTests(unittest.TestCase):
     """executor のプラグイン解決（kiro-loop の event_hook 流のローダ）。"""
 
