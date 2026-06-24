@@ -1759,6 +1759,15 @@ def run_verify_stable(cmd: str, workdir: Path, timeout: float,
     return (ok, False, msg)                    # 全回一致＝安定した結果
 
 
+def resolve_verify_cwd(cfg: "Config") -> Path:
+    """verify/acceptance を実行する作業ディレクトリ。明示の `verify_cwd`（CLI/設定）があればそれを、
+    無ければ従来どおり `workdir`。git-bus 等で workdir に成果が出ないとき、対象 repo のクローン先を指す。"""
+    if cfg.verify_cwd:
+        p = Path(cfg.verify_cwd)
+        return p if p.is_absolute() else (cfg.workdir / p)
+    return cfg.workdir
+
+
 # ---------------------------------------------------------------------------
 # verify の用意（人が書く負担を減らす）。完了条件は決定的なシェルが正典だが、人が書くのは難しい。
 #   - `- verify_template: <名前> :: <引数...>` … 決定的に展開（エージェント不要）。
@@ -2333,6 +2342,9 @@ class Config:
     pace: float = 0.0
     verify_timeout: float = 120.0
     verify_confirm: int = 1         # verify を最大この回数まで再実行し PASS/FAIL が跨いだら flake として人へ隔離（1=従来）
+    verify_cwd: "str | None" = None  # verify/acceptance を実行する作業ディレクトリ（既定 workdir）。git-bus 等で
+                                     # workdir に成果が無いとき、対象 repo のクローン先を指す。未指定かつ charter に
+                                     # 単一 repo があれば acceptance はその repo を一時 clone して実行する。
     require_progress: bool = False  # verify=PASS でも act が baseline 以降に変更を生んでなければ done せず人へ（履歴一致 verify の偽 done 対策）
     auto_level: bool = False         # 実績連動の自動昇格（track 毎に手戻り率で level を上げ下げ）。既定 off
     auto_level_max: str = "assisted" # 自動昇格の ceiling。既定 assisted（unattended への自動到達は明示時のみ）
@@ -2820,7 +2832,8 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
                        + (f"（{cfg.git_bus}）" if location == "remote" else ""))
 
-    ok, flaky, vmsg = run_verify_stable(task.verify, cfg.workdir, cfg.verify_timeout,
+    vcwd = resolve_verify_cwd(cfg)             # 明示 verify_cwd があれば成果のあるクローン先で検証
+    ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
                                         cfg.verify_confirm, verify_env)
     # 人が「成果物の所在（リポジトリ/ブランチ/コミット）・差分・検証」を見て判断できる材料。
     # needs（判断待ち）と DELIVERY/archive（受領）双方に載せる。
@@ -2829,7 +2842,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                            verify=task.verify, vmsg=vmsg, ok=ok)
     regressed = False
     if ok and not flaky and cfg.regression_cmd:        # done 確定前のグローバル回帰ゲート（巻き込み事故）
-        rok, rmsg = run_verify(cfg.regression_cmd, cfg.workdir, cfg.verify_timeout, verify_env)
+        rok, rmsg = run_verify(cfg.regression_cmd, vcwd, cfg.verify_timeout, verify_env)
         if not rok:
             regressed = True
             if cfg.regression_revert:
@@ -4545,21 +4558,75 @@ def _enqueue_specs(cfg: "Config", specs: "list[dict]", existing: "list[str]",
     return created
 
 
+def _charter_single_repo(charter: "Charter") -> "dict | None":
+    """charter が「成果を push する対象 repo」を 1 つだけ持つならその spec を返す（複数/0 は None）。
+    参照のみ（readonly）repo は成果の出る先ではないので除外する。"""
+    work = [r for r in charter.repo_specs if r.get("url") and not r.get("readonly")]
+    return work[0] if len(work) == 1 else None
+
+
+def _clone_repo_shallow(url: str, branch: str, dest: str, timeout: float = 300) -> None:
+    """url の branch（空なら既定ブランチ）を dest へ浅く clone する。失敗時 RuntimeError。"""
+    cmd = ["git", "clone", "--depth", "1"]
+    if branch:
+        cmd += ["--branch", branch]
+    cmd += [url, dest]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(str(e)) from e
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout or "").strip()[:300] or "git clone 失敗")
+
+
+def _acceptance_cwd(cfg: "Config", charter: "Charter") -> "tuple[Path, str | None]":
+    """acceptance を実行する作業ディレクトリと、片付けが要る一時 clone のパス（無ければ None）を返す。
+    優先順位: 明示 verify_cwd > 単一対象 repo の一時 clone（target ブランチ＝worker の push 先）> workdir。
+    git-bus 等で workdir に成果が出ないケースに対応する。"""
+    if cfg.verify_cwd:
+        return resolve_verify_cwd(cfg), None
+    spec = _charter_single_repo(charter)
+    if spec:
+        tmp = tempfile.mkdtemp(prefix="kiro-accept-")
+        dest = str(Path(tmp) / "repo")
+        branch = spec.get("target") or spec.get("base") or ""
+        try:
+            _clone_repo_shallow(spec["url"], branch, dest)
+        except (OSError, RuntimeError) as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError(f"対象 repo の clone 失敗（{spec['url']}@{branch or '既定'}）: {e}") from e
+        append_journal(cfg.journal, f"project acceptance: {spec['url']}@{branch or '既定'}"
+                                    " を clone して検証")
+        return Path(dest), tmp
+    return cfg.workdir, None
+
+
 def evaluate_acceptance(cfg: "Config", charter: "Charter") -> "tuple[int, int, list]":
     """charter の acceptance（受入 verify）を実行し (passed, total, [(cmd, ok, msg)]) を返す。
-    プロジェクト done の唯一の根拠＝全 PASS。verify と同じ flake 耐性/差分基準で実行する。"""
-    env = None
-    if (cfg.workdir / ".git").exists():
-        head = _git_out(cfg.workdir, "rev-parse", "HEAD").strip()
-        if head:
-            env = {"KIRO_BASE_REV": head}
-    results = []
-    for cmd in charter.acceptance:
-        ok, _flaky, msg = run_verify_stable(cmd, cfg.workdir, cfg.verify_timeout,
-                                            cfg.verify_confirm, env)
-        results.append((cmd, ok, msg))
-    passed = sum(1 for _, ok, _ in results if ok)
-    return passed, len(results), results
+    プロジェクト done の唯一の根拠＝全 PASS。実行先は 明示 verify_cwd > 単一 repo の一時 clone > workdir。
+    clone は worker の push 先（target ブランチ）を反映するため毎評価で取り直す。clone 失敗は全 NG 扱い
+    （workdir へ黙ってフォールバックすると成果の無い場所で誤判定するため）。"""
+    try:
+        wd, tmp = _acceptance_cwd(cfg, charter)
+    except RuntimeError as e:
+        append_journal(cfg.journal, f"project acceptance: {e} → 全 NG 扱い")
+        return 0, len(charter.acceptance), [(c, False, str(e)[:500]) for c in charter.acceptance]
+    try:
+        env = None
+        if (wd / ".git").exists():
+            head = _git_out(wd, "rev-parse", "HEAD").strip()
+            if head:
+                env = {"KIRO_BASE_REV": head}
+        results = []
+        for cmd in charter.acceptance:
+            ok, _flaky, msg = run_verify_stable(cmd, wd, cfg.verify_timeout,
+                                                cfg.verify_confirm, env)
+            results.append((cmd, ok, msg))
+        passed = sum(1 for _, ok, _ in results if ok)
+        return passed, len(results), results
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _acceptance_kind(line: str) -> "tuple[str, str]":
@@ -4905,6 +4972,7 @@ CONFIG_DEFAULTS = {
     "max_iterations": 3,
     "verify_timeout": 120.0,
     "verify_confirm": 1,
+    "verify_cwd": None,
     "act_timeout": 1800.0,
     "git_bus": None,
     "git_branch": "main",
@@ -5026,6 +5094,7 @@ def build_config(args) -> Config:
         max_cost=getattr(args, "max_cost", 0.0) or 0.0,
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         verify_confirm=max(1, int(getattr(args, "verify_confirm", 1) or 1)),
+        verify_cwd=getattr(args, "verify_cwd", None),
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
         learn=bool(getattr(args, "learn", True)), learn_threshold=args.learn_threshold,
@@ -5121,6 +5190,10 @@ def _add_common(sp):
     sp.add_argument("--verify-confirm", type=int, default=None,
                     help="verify をこの回数まで再実行し PASS/FAIL が跨いだら flake として人へ隔離（既定 1）。"
                          "揺れる verify の NG churn / flaky PASS の done を防ぐ（コストは回数分）")
+    sp.add_argument("--verify-cwd", default=None,
+                    help="verify/acceptance を実行する作業ディレクトリ（既定 workdir）。git-bus 等で workdir に"
+                         "成果が無いとき、対象 repo のクローン先を指す。未指定でも charter に単一 repo があれば"
+                         "acceptance はその repo を一時 clone して実行する")
     sp.add_argument("--act-timeout", type=float, default=None)
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
     sp.add_argument("--actor", default=None)

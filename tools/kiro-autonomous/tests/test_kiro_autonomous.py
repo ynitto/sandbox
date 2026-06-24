@@ -2835,6 +2835,70 @@ class TestProjectLayer(unittest.TestCase):
             titles = [t.title for t in km.load_tasks(cfg.backlog)]
             self.assertTrue(any("受入条件を満たす" in t for t in titles))
 
+    def test_resolve_verify_cwd(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self.assertEqual(km.resolve_verify_cwd(cfg_for(d)), d)        # 既定は workdir
+            self.assertEqual(km.resolve_verify_cwd(cfg_for(d, verify_cwd="/abs/clone")),
+                             Path("/abs/clone"))                          # 絶対パスはそのまま
+            self.assertEqual(km.resolve_verify_cwd(cfg_for(d, verify_cwd="clone")),
+                             d / "clone")                                 # 相対は workdir 起点
+
+    def test_verify_cwd_overrides_acceptance_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            clone = d / "clone"; clone.mkdir(); (clone / "M").write_text("x")
+            charter = km.parse_charter("# Charter: c\n## goal\nx\n## acceptance\n- test -f M\n")
+            # workdir(d) には M が無い → 未指定なら FAIL
+            self.assertEqual(km.evaluate_acceptance(cfg_for(d), charter)[0], 0)
+            # verify_cwd をクローン先に向けると PASS（成果のある場所で検証）
+            passed, total, _ = km.evaluate_acceptance(cfg_for(d, verify_cwd=str(clone)), charter)
+            self.assertEqual((passed, total), (1, 1))
+
+    def _make_git_repo(self, path: Path, marker: str = "MARKER.txt") -> None:
+        g = ["git", "-C", str(path)]
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        (path / marker).write_text("ok")
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["-c", "user.email=a@b", "-c", "user.name=x",
+                            "commit", "-qm", "init"], check=True)
+
+    def test_acceptance_clones_single_repo_when_workdir_lacks_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote)
+            # workdir(d) には MARKER が無いので、clone せず workdir で見ると FAIL になるはず。
+            # base/target を省く（branch 非依存で既定ブランチを clone）。url は単一・非 readonly。
+            charter = km.parse_charter(
+                f"# Charter: c\n## goal\nx\n## acceptance\n- test -f MARKER.txt\n"
+                f"## repos\n- app = {remote}\n  - desc: 対象\n")
+            passed, total, _ = km.evaluate_acceptance(cfg_for(d), charter)
+            self.assertEqual((passed, total), (1, 1))   # 一時 clone 先で検証 → PASS
+
+    def test_acceptance_clone_failure_is_all_ng(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            charter = km.parse_charter(
+                "# Charter: c\n## goal\nx\n## acceptance\n- true\n"
+                f"## repos\n- app = {d / 'does-not-exist'}\n  - desc: 対象\n")
+            passed, total, results = km.evaluate_acceptance(cfg_for(d), charter)
+            self.assertEqual(passed, 0)                 # clone 失敗 → 黙ってフォールバックせず全 NG
+            self.assertTrue(any("clone" in m for _, _, m in results))
+
+    def test_acceptance_multi_repo_uses_workdir(self):
+        # 対象 repo が複数なら（どれを cwd にするか曖昧）従来どおり workdir で実行する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "M").write_text("x")
+            charter = km.parse_charter(
+                "# Charter: c\n## goal\nx\n## acceptance\n- test -f M\n## repos\n"
+                "- a = https://git/a.git\n  - desc: A\n  - base: main\n"
+                "- b = https://git/b.git\n  - desc: B\n  - base: main\n")
+            self.assertIsNone(km._charter_single_repo(charter))
+            self.assertEqual(km.evaluate_acceptance(cfg_for(d), charter)[0], 1)  # workdir(d) で PASS
+
     def test_stall_escalates(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

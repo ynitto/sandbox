@@ -453,6 +453,7 @@ kiro-autonomous needs           # 人の判断待ち（承認は GitLab の stat
 | `watch` / `poll` | `false` / `5.0` | L2+ | 常駐監視。idle 中はエージェント非起動 |
 | `max_cycles` | `20` | L1 | 試運転は `5` 程度に絞る |
 | `verify_confirm` | `1` | L2+ | flake が疑わしければ `2`（コストは回数分） |
+| `verify_cwd` | なし | project | verify/acceptance の実行先。git-bus 等で workdir に成果が無いとき repo のクローン先を指す（未指定でも単一 repo は自動 clone） |
 | `require_progress` | `false` | L2+ | 偽 done を全体で弾く。`expect:` で個別調整 |
 | `regression_cmd` | なし | L2+ | done 前のグローバル検査（例 `pytest -q`） |
 | `max_cost`/`max_tokens` | `0` | L3+ | 無人運用は必ず上限を入れる |

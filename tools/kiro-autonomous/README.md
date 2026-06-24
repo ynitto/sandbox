@@ -310,6 +310,10 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
 - **done の唯一の根拠は `acceptance`（=verify）全 PASS**（タスク verify と同じ鉄則）。acceptance 無しの charter は
   done 判定不能＝必ず人へ。検証コマンドを書けない条件は **自然文でも可**（`- accept: …` か散文の箇条書き）。run 時に
   エージェントが決定的なシェル verify へ合成し（結果は安定キャッシュ＝done 基準がブレない）、合成できなければ人へ。
+- **acceptance の実行先**: 既定は workdir だが、offload で worker が対象 repo を temp に clone・push して消すと workdir に
+  成果が出ない。実行先は **明示 `--verify-cwd`（設定 `verify_cwd`）> 単一対象 repo の一時 clone（charter の非 readonly repo が
+  1 つなら target ブランチを毎評価で `git clone --depth 1`）> workdir** の順で解決。clone 失敗は全 NG 扱い（成果の無い場所で
+  偽判定しない）。複数 repo は曖昧なので自動 clone せず `--verify-cwd` で指定。
   **有限停止**: 内側 run ＋ `--max-project-cycles`（既定 5）/`--max-project-cost`/
   `--project-stall`（PASS 数が増えない連続回数で人へ・既定 2）。**知能は委譲**し enqueue・acceptance・収束は決定的。
 - **収束候補は人へ**: `approve <project> --reason …` で完了確定（最終納品書）／charter を更新して次フェーズへ続行／
