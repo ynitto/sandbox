@@ -4226,8 +4226,9 @@ def validate_charter(ch: "Charter") -> "list[str]":
     """構造化 repos の必須項目（desc・base）と、同一 URL を役割分割する際の規約を検証し、
     問題点の説明リストを返す（空＝OK）。
     『説明は原則必須・base は必須・target は省略可（既定 base）』に加え、**同じ URL を複数エントリで
-    使う（モノレポを役割別フォルダに分ける）場合は各エントリに distinct な path が必須**
-    （どのフォルダの役割かを曖昧にしない）。"""
+    使う場合は path（作業フォルダ）か base/target（ブランチ）のいずれかで区別する**こと
+    （どのフォルダ／どのブランチの役割かを曖昧にしない）。path も branch も全て一致するエントリだけを
+    曖昧な重複として弾く。"""
     problems: list[str] = []
     by_url: "dict[str, list[dict]]" = {}
     for r in ch.repo_specs:
@@ -4240,20 +4241,21 @@ def validate_charter(ch: "Charter") -> "list[str]":
             by_url.setdefault(r["url"], []).append(r)
     for url, group in by_url.items():
         if len(group) < 2:
-            continue                         # 単独エントリは path 任意（後方互換）
-        seen: "dict[str, str]" = {}
+            continue                         # 単独エントリは path/branch 任意（後方互換）
+        # 同一 URL のエントリは path（作業フォルダ）か base/target（ブランチ）で区別する。
+        # どちらかが違えば別エントリとして成立し、3 つとも一致するものだけを曖昧な重複として弾く。
+        seen: "dict[tuple, str]" = {}
         for r in group:
             label = r["name"] or url
-            if not r["path"]:
+            key = (r["path"], r["base"], r["target"])
+            if key in seen:
+                where = f"path '{r['path']}'" if r["path"] else "path 無し"
                 problems.append(
-                    f"repo '{label}': 同じ URL を複数の役割で使う場合は path（作業フォルダ）が必須です"
-                    f"（例 `- path: apps/api`）。{url} が path 無しで重複しています")
-            elif r["path"] in seen:
-                problems.append(
-                    f"repo '{label}': path '{r['path']}' が同一 URL 内で '{seen[r['path']]}' と重複しています"
-                    "（役割ごとに別フォルダにすること）")
+                    f"repo '{label}': 同一 URL のエントリが {where}・base '{r['base']}'・"
+                    f"target '{r['target']}' まで一致して '{seen[key]}' と重複しています"
+                    "（path＝作業フォルダ か base/target＝ブランチ のいずれかで区別してください）")
             else:
-                seen[r["path"]] = label
+                seen[key] = label
     return problems
 
 

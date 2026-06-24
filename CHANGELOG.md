@@ -76,6 +76,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   kiro-flow 側にも委譲し、kiro-flow が自分の env/config 修正と program 起票を担う（二重作業を避ける）。
 
 #### Changed
+- **charter `## repos` で同一 URL のエントリを base/target（ブランチ）でも区別できるようにした**。従来は同じ URL を
+  複数エントリで使うと distinct な `path`（作業フォルダ）が必須だったが、`validate_charter` の一意キーを `path` 単独から
+  `(path, base, target)` に拡張。ブランチ違い（例：`main` への修正と `release/1.x` へのバックポート）なら path 無しでも
+  別エントリとして成立し、path も branch も全て一致するものだけを曖昧な重複として弾く。charter.md.example / README に
+  ブランチ別の書き方を追記、単体テスト 1 件（ブランチ/target での区別）を追加し既存テストを新仕様へ更新。
 - 内部リファクタリング（振る舞い不変・全機能維持・226 テスト green）。パッチ的に肥大化した実装を整理:
   重複していた `_pid_alive` 定義を削除、タイムスタンプ整形を `_now_ts()` に集約、kiro-flow コマンド構築の
   重複を `_kf_base` に統一。長い関数を凝集したヘルパに分割（`_settle_task`→review/done/failure、

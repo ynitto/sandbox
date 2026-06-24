@@ -76,7 +76,9 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 #
 # ■ モノレポ：1 つの URL をフォルダ別の役割に分ける場合は、同じ url で name と path を変えた複数エントリにする。
 #   各エントリに path（作業フォルダ）と役割別の desc を書くと、プランナーが役割に合う name をタスクへ割り当て、
-#   worker は該当フォルダ配下だけを変更する。※同一 URL を複数エントリで使うときは path が必須（distinct なフォルダ）。
+#   worker は該当フォルダ配下だけを変更する。※同一 URL を複数エントリで使うときは、各エントリを
+#   **path（作業フォルダ）か base/target（ブランチ）のいずれかで区別**する（全て一致すると曖昧な重複として弾く）。
+#   どのエントリをタスクへ割り当てるかは name で指すので、複数エントリの name は別名にすること。
 # - shop-api = git@example.com:team/shop.git
 #   - path: apps/api
 #   - desc: API ハンドラ・エンドポイント。サーバ側ロジックはここ。
@@ -85,6 +87,15 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 #   - path: apps/web
 #   - desc: 画面・UI コンポーネント。
 #   - base: main
+#
+# ■ ブランチ別：同じ repo（同じフォルダ）を別ブランチで扱う場合は、path でなく base/target を変えて区別する
+#   （path は不要）。例：main への修正と release ブランチへのバックポートを別エントリにする。
+# - app-main = git@example.com:team/app.git
+#   - desc: 本流の修正。
+#   - base: main
+# - app-backport = git@example.com:team/app.git
+#   - desc: 同じ修正の release/1.x へのバックポート。
+#   - base: release/1.x                     # base が違うので path 無しでも別エントリとして成立
 #
 # ■ 参照のみ（読むだけ・push しない）repo は `- readonly: true` を付ける。worker への指示と gitlab イシューに
 #   「参照のみ・push しない」と構造的に伝わり、kiro-flow は push を指示しない（push は差分が出たときだけ起きる）。
