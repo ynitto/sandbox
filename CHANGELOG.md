@@ -143,6 +143,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 ### kiro-flow
 
 #### Added
+- **gitlab executor に native バックエンド（GitLab REST 直叩き）を追加し、起票先 URL を
+  kiro-flow.yaml から確実に渡すようにした**。従来は gitlab-idd スキルの外部 `gl.py` を
+  subprocess 起動してイシュー化しており、起票先プロジェクトの解決が gl.py 側の
+  `GL_PROJECT_URL`／connections.yaml／**git remote origin** フォールバックに依存していた。
+  `gl.py` 相当の必要処理（create-issue / get-issue / get-comments と REST 呼び出し・
+  ページング）を **stdlib のみ**でプラグインへ移植（`gl_api`/`gl_api_list`/`_parse_project_url` 等）。
+  `gitlab.repo_url`（＋トークン `gitlab.token` または環境変数 `GITLAB_TOKEN`/`GL_TOKEN`）が
+  揃えば **native** で GitLab API v4 を直接叩き、**起票先は repo_url をそのまま使う**ため
+  git remote origin へ流れず確実（外部 gl.py も不要）。トークンや repo_url が欠けるときだけ
+  従来の **gl 委譲**へフォールバック（このときも repo_url 指定があれば `GL_PROJECT_URL` で
+  確実に渡す）。バックエンドは `_resolve_backend` が自動選択し、イシュー操作は
+  `_create_issue`/`_get_issue`/`_get_comments` でバックエンド非依存に統一。設定キー
+  `gitlab.token` を追加し kiro-flow.yaml.example / CONFIG_DEFAULTS に明記。単体テスト 11 件
+  （URL 解析・バックエンド選択・native 起票/ポーリング/コメント取得・REST リクエスト組立・
+  HTTP エラー処理・トークンの環境変数解決）を追加。
 - **自動アップデート（既定 on・6 時間毎・起動直後にも実施）**。スキルリポジトリ（配布元）の `main` に更新が
   入ったら、**daemon のアイドル時**（要求も子プロセスも無いとき）に取り込む。停止中に入った更新も起動直後に拾う。doctor と同じ流儀で決定的:
   `git ls-remote` で main の先頭を確認 → 適用済み SHA（`~/.kiro/kiro-flow.update.json`）と違えば、temp

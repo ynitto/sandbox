@@ -2,21 +2,31 @@
 """gitlab — kiro-flow の executor プラグイン（opt-in のワーカーバス）
 
 kiro-loop の event_hook と同じ流儀で、kiro-flow 本体から importlib で動的にロードされ、
-`execute()` が呼び出される。タスクを gitlab-idd スキルの `gl.py` で **GitLab イシュー**
-にして委譲し、リモートの（別マシン/別人の）ワーカーが拾って実装する。kiro-flow は
-イシューを `get-issue` でポーリングし、レビュアーが `status:approved` を付ける
-（= 受け入れ承認）まで待って完了とみなす。ローカルに kiro-cli が無くても、GitLab
-越しに作業を委譲できる。
+`execute()` が呼び出される。タスクを **GitLab イシュー** にして委譲し、リモートの
+（別マシン/別人の）ワーカーが拾って実装する。kiro-flow はイシューをポーリングし、
+レビュアーが `status:approved` を付ける（= 受け入れ承認）まで待って完了とみなす。
+ローカルに kiro-cli が無くても、GitLab 越しに作業を委譲できる。
 
 プラグイン契約:
     execute(kind, goal, dep_results, model=None, art_dir=None, dep_arts=None) -> (text, data)
+
+イシュー API のバックエンド（自動選択）:
+    - **native**（既定・優先）: `kiro-flow.yaml` の `gitlab.repo_url` が設定され、トークンも
+      解決できるとき、GitLab REST API（v4）を **stdlib だけで直叩き**する（gl.py 相当の
+      create-issue / get-issue / get-comments を移植）。**起票先プロジェクトは repo_url を
+      そのまま使う**ため、git remote origin 等への曖昧なフォールバックが無く確実。
+      外部の gitlab-idd スキル（gl.py）が無くても動く。
+    - **gl**（フォールバック）: repo_url かトークンが欠けるときだけ、従来どおり gitlab-idd
+      スキルの `gl.py` へ委譲する（repo_url 指定時は `GL_PROJECT_URL` で確実に渡す）。
 
 設定の渡し方（優先度: 個別環境変数 > KIRO_FLOW_EXECUTOR_CONFIG(JSON) > 既定）:
     - kiro-flow 本体は設定ファイルの `gitlab:` ブロックを JSON 化して環境変数
       `KIRO_FLOW_EXECUTOR_CONFIG` で渡す。
     - 個別の上書きは `KIRO_FLOW_GITLAB_<KEY>`（例: KIRO_FLOW_GITLAB_POLL_INTERVAL）。
-    - `repo_url` を設定すると、委譲先リポジトリ（GitLab プロジェクト URL）を明示できる。
-      未設定なら gl.py が connections.yaml の接続ラベル / git remote origin から解決する。
+    - `repo_url`（kiro-flow.yaml の `gitlab.repo_url`）が起票先プロジェクト URL の権威。
+      native でも gl フォールバックでも、設定されていれば必ずこの URL が使われる。
+    - トークンは `gitlab.token`（設定）/ 環境変数 `GITLAB_TOKEN` / `GL_TOKEN` から解決する
+      （秘密情報なので環境変数推奨）。native はトークンが必須。
 
 ※ ポーリングするのは kiro-flow（Python プロセス）であって LLM セッションではない。
    gitlab-idd の「LLM ポーリング禁止」はワーカー/レビュアー LLM への指針で、ここでの
@@ -32,6 +42,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from datetime import datetime, timezone
 
 NAME = "gitlab"
@@ -40,6 +54,7 @@ NAME = "gitlab"
 _DEFAULTS = {
     "conn_label": "default",
     "repo_url": "",
+    "token": "",
     "labels": "status:open,assignee:any",
     "priority": "priority:normal",
     "poll_interval": 30.0,
@@ -167,6 +182,160 @@ def run_gl(subargs, conn_label: str = "default", parse_json: bool = True,
         raise RuntimeError(f"gl.py の出力を JSON として解釈できません: {out_text[:200]}")
 
 
+# --- native GitLab REST（gl.py 相当の必要処理を移植・stdlib のみ） -------------
+# create-issue / get-issue / get-comments を gl.py に頼らず直接叩く。起票先プロジェクトは
+# kiro-flow.yaml の repo_url から確実に解決し、git remote origin へはフォールバックしない。
+def _parse_project_url(url: str) -> "tuple[str | None, str | None]":
+    """http(s) の GitLab プロジェクト URL を (host, project_path) に分解する。
+    解釈できなければ (None, None)。例: https://gitlab.com/group/sub/repo → ('gitlab.com','group/sub/repo')"""
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname
+    project = parsed.path.lstrip("/").rstrip("/")
+    if project.endswith(".git"):
+        project = project[:-4]
+    if host and project:
+        return host, project
+    return None, None
+
+
+def _resolve_token(cfg: dict) -> str:
+    """トークンを 設定 gitlab.token ＜ 環境変数 GITLAB_TOKEN / GL_TOKEN の順で解決する。"""
+    return (str(cfg.get("token") or "").strip()
+            or os.environ.get("GITLAB_TOKEN", "").strip()
+            or os.environ.get("GL_TOKEN", "").strip())
+
+
+def _gl_headers(token: str) -> dict:
+    return {"PRIVATE-TOKEN": token, "Content-Type": "application/json",
+            "Accept": "application/json"}
+
+
+def _encode_project(project: str) -> str:
+    """namespace/repo を namespace%2Frepo に URL エンコード（API パス用）。"""
+    return urllib.parse.quote(project, safe="")
+
+
+def _http_error_detail(e: "urllib.error.HTTPError") -> str:
+    try:
+        return e.read().decode("utf-8", errors="replace")[:300]
+    except Exception:  # noqa: BLE001
+        return "(詳細なし)"
+
+
+def gl_api(host: str, token: str, method: str, path: str,
+           data: "dict | None" = None, params: "dict | None" = None):
+    """GitLab REST API（v4）を 1 回叩いて JSON を返す。失敗は RuntimeError（→ failed 記録）。"""
+    url = f"https://{host}/api/v4{path}"
+    if params:
+        url = url + "?" + urllib.parse.urlencode(
+            {k: v for k, v in params.items() if v is not None})
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(url, data=body, headers=_gl_headers(token), method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+            return json.loads(content) if content.strip() else {}
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(
+            f"GitLab API {method} {path} 失敗: HTTP {e.code} {e.reason} {_http_error_detail(e)}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"GitLab API {method} {path} へ接続できません: {e.reason}")
+
+
+def gl_api_list(host: str, token: str, path: str, params: "dict | None" = None) -> list:
+    """ページングする GET をすべて辿って 1 つのリストに結合して返す。"""
+    params = dict(params or {})
+    params.setdefault("per_page", 100)
+    results: list = []
+    page = 1
+    while True:
+        params["page"] = page
+        url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(
+            {k: v for k, v in params.items() if v is not None})
+        req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read()
+                page_data = json.loads(content) if content.strip() else []
+                if not isinstance(page_data, list):
+                    return page_data
+                results.extend(page_data)
+                nxt = (resp.headers.get("X-Next-Page", "") or "").strip()
+                if not nxt:
+                    break
+                page = int(nxt)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"GitLab API GET {path} 失敗: HTTP {e.code} {e.reason} {_http_error_detail(e)}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"GitLab API GET {path} へ接続できません: {e.reason}")
+    return results
+
+
+def _creator_tag() -> str:
+    """gitlab-idd 規約の作成者ノード ID 隠しコメント（check-defer が作成者を識別する）。
+    GITLAB_NODE_ID があれば尊重し、無ければ kiro-flow 由来の一意 ID を付す。"""
+    node = os.environ.get("GITLAB_NODE_ID", "").strip() or f"kiro-flow-{uuid.uuid4().hex[:12]}"
+    return f"<!-- gitlab-idd:creator-node-id:{node} -->"
+
+
+def _resolve_backend(cfg: dict) -> dict:
+    """イシュー API のバックエンドを決める。
+    repo_url（kiro-flow.yaml）とトークンが揃えば native（REST 直叩き・gl.py 不要）。
+    どちらか欠ければ gl（gl.py 委譲・repo_url は GL_PROJECT_URL で渡す）。"""
+    repo_url = str(cfg.get("repo_url") or "").strip()
+    conn = str(cfg.get("conn_label") or "default")
+    token = _resolve_token(cfg)
+    if repo_url and token:
+        host, project = _parse_project_url(repo_url)
+        if not (host and project):
+            raise RuntimeError(
+                f"gitlab.repo_url を GitLab プロジェクト URL として解釈できません: {repo_url}"
+                "（例: https://gitlab.com/group/repo）")
+        return {"mode": "native", "host": host, "project": project,
+                "token": token, "conn": conn, "repo_url": repo_url}
+    return {"mode": "gl", "conn": conn, "repo_url": repo_url}
+
+
+# --- バックエンド非依存のイシュー操作（native / gl を内部で切り替える） --------
+def _create_issue(be: dict, title: str, body: str, labels: str) -> dict:
+    """イシューを起票して {iid, web_url, ...} 相当を返す。"""
+    if be["mode"] == "native":
+        ep = _encode_project(be["project"])
+        description = (body + "\n\n" + _creator_tag()) if body else _creator_tag()
+        data = {"title": title, "description": description}
+        if labels:
+            data["labels"] = labels
+        return gl_api(be["host"], be["token"], "POST", f"/projects/{ep}/issues", data=data)
+    # gl フォールバック: 本文は argv 長制限を避けてファイル経由で渡す
+    fd, body_file = tempfile.mkstemp(prefix="kiro-flow-issue-", suffix=".md")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(body)
+    try:
+        return run_gl(["create-issue", "--title", title, "--body-file", body_file,
+                       "--labels", labels], be["conn"], repo_url=be["repo_url"])
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(body_file)
+
+
+def _get_issue(be: dict, iid) -> dict:
+    """イシュー 1 件を取得する（labels / state を含む）。"""
+    if be["mode"] == "native":
+        ep = _encode_project(be["project"])
+        return gl_api(be["host"], be["token"], "GET", f"/projects/{ep}/issues/{iid}")
+    return run_gl(["get-issue", str(iid)], be["conn"], repo_url=be["repo_url"])
+
+
+def _get_comments(be: dict, iid) -> list:
+    """イシューのコメント（notes）一覧を取得する。"""
+    if be["mode"] == "native":
+        ep = _encode_project(be["project"])
+        return gl_api_list(be["host"], be["token"], f"/projects/{ep}/issues/{iid}/notes")
+    res = run_gl(["get-comments", str(iid)], be["conn"], repo_url=be["repo_url"])
+    return res if isinstance(res, list) else []
+
+
 def _issue_body(kind: str, goal: str, dep_results: dict) -> str:
     """イシュー本文（GitLab Markdown）を組み立てる。gitlab-idd 規約に従い
     『## 受け入れ条件』を必ず含める（ワーカー/レビュアーが完了判定に使う）。"""
@@ -199,18 +368,22 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
             art_dir=None, dep_arts=None):
     """opt-in のワーカーバス: タスクを GitLab イシューにして委譲し、approved を待つ。
 
-    1. gl.py create-issue でイシューを起票（status:open,assignee:any ＋ 優先度）
-    2. gl.py get-issue でラベルをポーリングし、status:approved（または status:done /
-       クローズ）に達したら完了
+    1. イシューを起票（status:open,assignee:any ＋ 優先度）
+    2. ラベルをポーリングし、status:approved（または status:done / クローズ）で完了
     3. ワーカーの最終コメント（完了報告）を成果テキストとして取り込んで返す
+
+    起票先プロジェクトは kiro-flow.yaml の `gitlab.repo_url` を権威とし、トークンも揃えば
+    GitLab REST を直叩き（native）、欠ければ gl.py へ委譲（gl）する（`_resolve_backend`）。
     """
     cfg = _config()
-    conn = str(cfg.get("conn_label") or "default")
-    repo_url = str(cfg.get("repo_url") or "").strip()
-    # opt-in 前提チェック: gl.py が無ければ即失敗（誤って選んだときに無限待ちにしない）
-    if _find_gl_script() is None:
+    be = _resolve_backend(cfg)
+    # opt-in 前提チェック: 誤って選んだときに無限待ちにしないため、起票前に到達可能性を確かめる。
+    # native はトークン＋repo_url で自己完結。gl フォールバックは gl.py が無ければ即失敗。
+    if be["mode"] == "gl" and _find_gl_script() is None:
         raise RuntimeError(
-            "gitlab executor には gitlab-idd スキルの scripts/gl.py が必要です（opt-in）。")
+            "gitlab executor: 起票先を解決できません。kiro-flow.yaml の `gitlab.repo_url` と"
+            "トークン（`gitlab.token` または環境変数 GITLAB_TOKEN）を設定するか、"
+            "フォールバック用に gitlab-idd スキルの scripts/gl.py を導入してください（opt-in）。")
 
     title = f"[kiro-flow] {goal.strip()[:80]}"
     body = _issue_body(kind, goal, dep_results)
@@ -219,23 +392,13 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     if priority:
         labels = f"{labels},{priority}"
 
-    # 本文は argv 長制限を避けてファイル経由で渡す（依存成果が大きいときの起動失敗を防ぐ）
-    fd, body_file = tempfile.mkstemp(prefix="kiro-flow-issue-", suffix=".md")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(body)
-    try:
-        created = run_gl(["create-issue", "--title", title,
-                          "--body-file", body_file, "--labels", labels],
-                         conn, repo_url=repo_url)
-    finally:
-        with contextlib.suppress(OSError):
-            os.remove(body_file)
+    created = _create_issue(be, title, body, labels)
 
     iid = created.get("iid") or created.get("id")
     url = created.get("web_url", "")
     if not iid:
         raise RuntimeError(f"GitLab イシューの作成に失敗しました: {str(created)[:200]}")
-    _log(f"イシュー #{iid} を起票し承認待ち: {url}")
+    _log(f"イシュー #{iid} を起票し承認待ち（{be['mode']}）: {url}")
 
     approved = str(cfg.get("approved_label") or "status:approved")
     done = str(cfg.get("done_label") or "status:done")
@@ -245,7 +408,7 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
 
     labels_now: set = set()
     while True:
-        issue = run_gl(["get-issue", str(iid)], conn, repo_url=repo_url)
+        issue = _get_issue(be, iid)
         labels_now = set(issue.get("labels") or [])
         state = issue.get("state")
         if approved in labels_now or done in labels_now or state == "closed":
@@ -258,7 +421,7 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     # ワーカーの最終コメント（完了報告）を成果として取り込む（ベストエフォート）
     report = ""
     try:
-        comments = run_gl(["get-comments", str(iid)], conn, repo_url=repo_url)
+        comments = _get_comments(be, iid)
         if isinstance(comments, list) and comments:
             report = str(comments[-1].get("body") or "").strip()
     except Exception:  # noqa: BLE001 — コメント取得失敗は致命的ではない
@@ -273,6 +436,17 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
 
 
 if __name__ == "__main__":
-    # 手動デバッグ用: 単体実行すると簡単な接続確認をする。
+    # 手動デバッグ用: 単体実行すると解決結果（バックエンド・起票先・gl.py）を表示する。
+    _cfg = _config()
+    try:
+        _be = _resolve_backend(_cfg)
+        if _be["mode"] == "native":
+            print(f"backend: native（host={_be['host']} project={_be['project']}）")
+        else:
+            print(f"backend: gl（repo_url={_be.get('repo_url') or '(未設定)'}）")
+    except RuntimeError as e:
+        print(f"backend: 解決エラー: {e}")
+    print("token:", "あり" if _resolve_token(_cfg) else "なし")
     print("gl.py:", _find_gl_script() or "(見つかりません)")
-    print("config:", json.dumps(_config(), ensure_ascii=False))
+    _safe_cfg = {k: ("***" if k == "token" and v else v) for k, v in _cfg.items()}
+    print("config:", json.dumps(_safe_cfg, ensure_ascii=False))
