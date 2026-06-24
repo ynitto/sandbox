@@ -103,19 +103,26 @@ cleanup_per_node: false
 # gitlab ワーカーバス（opt-in / executor プラグイン executors/gitlab.py）
 # ---------------------------------------------------------------------------
 # executor: gitlab を選んだときだけ使われる委譲バス。この gitlab: ブロックは JSON 化され
-# 環境変数 KIRO_FLOW_EXECUTOR_CONFIG でプラグインへ渡される。各ワーカータスクを gitlab-idd
-# スキルでイシュー化し、リモートの（別マシン/別人の）ワーカーが拾って実装する。
-# kiro-flow はイシューを get-issue でポーリングし、レビュアーが status:approved を
-# 付与する（= 受け入れ承認）まで待って完了とみなす。ローカルに kiro-cli が無くても
-# GitLab 越しに作業を委譲できる。
+# 環境変数 KIRO_FLOW_EXECUTOR_CONFIG でプラグインへ渡される。各ワーカータスクを GitLab
+# イシュー化し、リモートの（別マシン/別人の）ワーカーが拾って実装する。kiro-flow は
+# イシューをポーリングし、レビュアーが status:approved を付与する（= 受け入れ承認）まで
+# 待って完了とみなす。ローカルに kiro-cli が無くても GitLab 越しに作業を委譲できる。
 #
-# 前提: gitlab-idd スキル（.github/skills/gitlab-idd）が導入済みで、connections.yaml
-#       または GITLAB_TOKEN で接続が設定されていること。
+# イシュー API は GitLab REST API（v4）を stdlib だけで直叩きする（外部 gl.py 不要・
+# フォールバックもしない）。
+#
+# 起票先 URL は repo_url が権威。設定した URL をそのまま使い、git remote origin へ
+# 曖昧にフォールバックしない（誤ったプロジェクトへの起票を防ぐ）。
+#
+# トークンは kiro-flow.yaml には置かない。gl.py と同じ場所から解決する（優先順）:
+#   1. connections.yaml の gitlab/<conn_label> の token（.github/skills 配下 or ~/ のスキルホーム）
+#   2. 環境変数 GITLAB_TOKEN / GL_TOKEN
+#   3. シェル rc ファイル（~/.bashrc / ~/.bash_profile / ~/.profile / ~/.zshrc）
 #
 # gitlab:
-#   conn_label: default                  # connections.yaml の接続ラベル（gitlab-idd と共通）
-#   repo_url: "https://gitlab.com/group/repo"  # 委譲先リポジトリ URL。
-#                                        # 空 / 未指定なら conn_label の接続 / git remote origin から解決
+#   conn_label: default                  # connections.yaml の接続ラベル（トークン解決に使用）
+#   repo_url: "https://gitlab.com/group/repo"  # 起票先プロジェクト URL（権威・必須）。
+#                                        # 必ずこの URL を使う（git origin へ流れない）
 #   labels: "status:open,assignee:any"   # 起票するイシューの初期ラベル
 #   priority: "priority:normal"          # 付与する優先度ラベル（空文字 "" で付けない）
 #   poll_interval: 30                    # イシューのポーリング間隔（秒）

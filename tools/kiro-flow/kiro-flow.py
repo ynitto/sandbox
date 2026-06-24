@@ -163,11 +163,14 @@ CONFIG_DEFAULTS = {
     "executor_dir": None,
     # gitlab executor プラグイン（opt-in のワーカーバス）の設定。executor: gitlab を選んだ
     # ときだけ使われ、この dict が JSON 化され環境変数経由でプラグインに渡される。
-    # タスクを gitlab-idd スキルでイシュー化し、リモートのワーカーが拾って実行する。
-    # status:approved ラベルが付く（レビュー承認）まで get-issue でポーリングし完了とみなす。
+    # タスクを GitLab イシュー化し、リモートのワーカーが拾って実行する。status:approved
+    # ラベルが付く（レビュー承認）まで起票したイシューをポーリングし完了とみなす。
+    # イシュー API は GitLab REST を stdlib で直叩き（gl.py 不要・フォールバックもしない）。
+    # 起票先 URL は repo_url が権威（git origin へ流れない）。トークンはここには置かず、
+    # gl.py と同じ場所（connections.yaml / 環境変数 GITLAB_TOKEN・GL_TOKEN / シェル rc）から解決する。
     "gitlab": {
-        "conn_label": "default",            # connections.yaml の接続ラベル（gitlab-idd と共通）
-        "repo_url": "",                     # 委譲先リポジトリ URL（空なら接続/ git origin から解決）
+        "conn_label": "default",            # connections.yaml の接続ラベル（トークン解決に使用）
+        "repo_url": "",                     # 起票先プロジェクト URL（権威）。必ずこの URL を使う
         "labels": "status:open,assignee:any",  # 起票するイシューに付ける初期ラベル
         "priority": "priority:normal",      # 付与する優先度ラベル（空文字で付けない）
         "poll_interval": 30.0,              # イシューのポーリング間隔（秒）
