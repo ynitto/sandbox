@@ -3575,6 +3575,38 @@ class SelfUpdateTests(unittest.TestCase):
                 km.run_watch(cfg, sleeper=lambda _s: None)
 
 
+class TestRepoRolePropagation(unittest.TestCase):
+    """charter の repos ロール（成果物コミット先=write 単一 / 参照=read 複数）を kiro-flow へ伝搬。
+    write 明示の別名（成果物/コミット先/write）は desc の別名（役割/role）と衝突させない。"""
+
+    def test_entry_write_designation(self):
+        self.assertTrue(km._entry_write({"write": "true"}))
+        self.assertTrue(km._entry_write({"成果物": ""}))      # キーだけ＝True
+        self.assertTrue(km._entry_write({"コミット先": "yes"}))
+        self.assertFalse(km._entry_write({"desc": "説明"}))
+
+    def test_spec_role_from_entry(self):
+        w = km._repo_spec_from_entry({"head": "app = https://g/app", "attrs": {"base": "main", "write": "true"}})
+        self.assertEqual(w["role"], "write")
+        r = km._repo_spec_from_entry({"head": "lib = https://g/lib", "attrs": {"base": "main", "参照のみ": ""}})
+        self.assertEqual(r["role"], "read")
+        a = km._repo_spec_from_entry({"head": "x = https://g/x", "attrs": {"base": "main"}})
+        self.assertEqual(a["role"], "")          # 未指定＝auto（executor 任せ）
+
+    def test_role_alias_does_not_clobber_desc(self):
+        # 『役割: ...』は desc（説明）であって構造ロールではない（write 指定にしない）
+        e = km._repo_spec_from_entry({"head": "x = https://g/x",
+                                      "attrs": {"base": "main", "役割": "認証基盤"}})
+        self.assertEqual(e["desc"], "認証基盤")
+        self.assertEqual(e["role"], "")
+
+    def test_repo_token_carries_role(self):
+        tok = km._repo_token({"url": "https://g/app", "name": "app", "base": "main",
+                              "target": "main", "role": "write"})
+        d = json.loads(tok)
+        self.assertEqual(d["role"], "write")
+
+
 class TestFinalizeDelegation(unittest.TestCase):
     """done 確定の*帰結*として委譲先の納品を確定（gitlab: MR マージ＋イシュークローズ）。
     verify=PASS が前提＝done は verify のみが確定する不変条件を破らない。"""

@@ -831,10 +831,16 @@ def _repo_name(url: str) -> str:
 
 def parse_repo_token(token: str) -> dict:
     """`--repo` トークンを構造化 spec に正規化する。素の URL でも、kiro-autonomous が付ける
-    JSON（{url,name,path,base,target,readonly,desc}）でも受ける（後方互換）。
-    同一 URL でも path/役割が違えば別 spec（モノレポの役割別フォルダ）。"""
+    JSON（{url,name,path,base,target,role,readonly,desc}）でも受ける（後方互換）。
+    同一 URL でも path/役割が違えば別 spec（モノレポの役割別フォルダ）。
+
+    `role`（成果物リポジトリのロール・executor 横断の正準スキーマ）:
+      - `write` … 成果物をコミットする単一の対象（push 先）。
+      - `read`  … 参照のみ（clone するが push しない）。複数可。
+      - `auto`/未指定 … planner が判別しなかった。executor が決める（classify_repos）。
+    後方互換: `readonly: true` は `role: read` と同義（role 未指定時に適用）。"""
     spec = {"url": "", "name": "", "path": "", "base": "",
-            "target": "", "readonly": False, "desc": ""}
+            "target": "", "role": "", "readonly": False, "desc": ""}
     token = (token or "").strip()
     if token.startswith("{"):
         try:
@@ -842,13 +848,49 @@ def parse_repo_token(token: str) -> dict:
         except (ValueError, TypeError):
             d = None
         if isinstance(d, dict) and d.get("url"):
-            for k in ("url", "name", "path", "base", "target", "desc"):
+            for k in ("url", "name", "path", "base", "target", "role", "desc"):
                 if d.get(k):
                     spec[k] = str(d[k]).strip()
             spec["readonly"] = bool(d.get("readonly"))
             return spec
     spec["url"] = token                           # 素の URL（メタ無し）
     return spec
+
+
+def repo_role(spec: dict) -> str:
+    """spec の実効ロールを返す（write/read/auto）。executor 横断で同じ判定を使う。
+    明示 `role` を優先し、無ければ `readonly`→read、それも無ければ auto（未決定）。"""
+    r = str(spec.get("role") or "").strip().lower()
+    if r in ("write", "read"):
+        return r
+    if spec.get("readonly"):
+        return "read"
+    return "auto"
+
+
+def classify_repos(specs: "list[dict]") -> dict:
+    """成果物リポジトリのロールを解決する正準リゾルバ（どの executor もこの結果に従う）。
+
+    規約: **成果物をコミットするのは単一（write）**、**参照は複数可（read）**、
+    planner が判別しなかった `auto` は **executor がここで決める**。
+
+    解決則:
+      - 明示 write が 1 つ以上 → 先頭を write、残りの write と全 auto は read に降格
+        （単一 write 規則。`extra_writes` に降格元を残す）。
+      - 明示 write が無い:
+          - auto がちょうど 1 つで read が無い → その 1 つを write（単一 repo は自明に成果物先）。
+          - それ以外（auto 複数 / read 併存）→ write 未定（`undecided` に auto を残す）。
+            LLM executor は指示で 1 つだけ選び、決定的処理（capture）は変更のある候補を採用する。
+    返り値: {"write": spec|None, "reads": [spec], "undecided": [spec], "extra_writes": [spec]}。"""
+    writes = [s for s in specs if repo_role(s) == "write"]
+    reads = [s for s in specs if repo_role(s) == "read"]
+    autos = [s for s in specs if repo_role(s) == "auto"]
+    if writes:
+        return {"write": writes[0], "reads": reads + writes[1:] + autos,
+                "undecided": [], "extra_writes": writes[1:]}
+    if len(autos) == 1 and not reads:
+        return {"write": autos[0], "reads": [], "undecided": [], "extra_writes": []}
+    return {"write": None, "reads": reads, "undecided": autos, "extra_writes": []}
 
 
 def repo_token_id(token: str) -> str:
@@ -944,42 +986,58 @@ def cleanup_work_repos() -> None:
     _work_repos_cache.clear()
 
 
+def _repo_line(c: dict) -> "list[str]":
+    """1 リポジトリの clone 情報（ラベル・パス・ブランチ・フォルダ・説明）を行に整形する。"""
+    label = (f"{c['name']} = " if c.get("name") else "") + c.get("url", "")
+    lines = [f"  - {label} → {c.get('clone')}"]
+    if c.get("base"):
+        br = f"      作業ブランチ: {c['base']} から分岐"
+        if c.get("target") and c["target"] != c["base"]:
+            br += f"・push 先（MR/PR ターゲット）= {c['target']}"
+        lines.append(br)
+    if c.get("path"):
+        lines.append(f"      フォルダ: {c['path']} 配下のみ変更すること")
+    if c.get("desc"):
+        lines.append(f"      内容: {c['desc']}")
+    return lines
+
+
 def repo_instruction(clones: "list[dict]") -> str:
     """clone 済みの成果物リポジトリをエージェントに伝える決定的な指示ブロック。
-    フォルダ(path)・作業ブランチ(base→target)・役割(desc)・参照のみ(readonly) を出し分ける。
+
+    ロール（classify_repos）に従い、**成果物をコミットする単一の対象（write）**と
+    **参照のみ（read・複数可）**を明確に出し分ける。planner が判別しなかった（auto）場合は、
+    『どれにコミットするかを 1 つだけ選べ』と executor（エージェント）に委ねる。
     この指示は call_executor 経由で executor へ goal とは別引数（repo_instruction）として渡る
     （gitlab executor はイシュー本文の独立した節に載せる。goal のタイトル/目的は汚さない）。"""
-    if not clones:
-        return ""
+    have = [c for c in clones if c.get("clone")]
+    if not have:
+        failed = [c.get("url", "") for c in clones if not c.get("clone")]
+        return ("【成果物リポジトリ】clone 失敗（手動取得が必要・push 不可の可能性）: "
+                + ", ".join(failed)) if failed else ""
+    res = classify_repos(have)
     lines = ["【成果物リポジトリ】このタスク用に clone 済みです。読み書きは必ず各パス内で行い、"
-             "他の場所（orchestrator の作業ツリーなど）は編集しないこと:"]
-    has_write = False
-    for c in clones:
-        path = c.get("clone")
-        if not path:
-            continue
-        label = (f"{c['name']} = " if c.get("name") else "") + c["url"]
-        lines.append(f"  - {label} → {path}")
-        if c.get("base"):
-            br = f"      作業ブランチ: {c['base']} から分岐"
-            if c.get("target") and c["target"] != c["base"]:
-                br += f"・push 先（MR/PR ターゲット）= {c['target']}"
-            lines.append(br)
-        if c.get("path"):
-            lines.append(f"      フォルダ: {c['path']} 配下のみ変更すること")
-        if c.get("desc"):
-            lines.append(f"      役割: {c['desc']}")
-        if c.get("readonly"):
-            lines.append("      ※参照のみ: 読むだけのリポジトリ。変更・commit・push はしないこと")
-        else:
-            has_write = True
-    if has_write:
-        lines.append("変更したリポジトリは commit すること（※参照のみと記したものは触らない）。"
-                     "ローカル実行では kiro-flow が成果ブランチへ push してリンクを記録する"
-                     "（リモート委譲の場合は push して MR/PR を用意すること）。"
-                     "なお、調査など成果物がコミットを伴わないタスクは、無理にコミットせず"
-                     "成果を本文にまとめること（その場合はバス上の成果が納品物になる）。")
-    failed = [c["url"] for c in clones if not c.get("clone")]
+             "他の場所（orchestrator の作業ツリーなど）は編集しないこと。"]
+    if res["write"]:
+        lines.append("■ 成果物をコミットする対象（ここだけに commit・push する。単一）:")
+        lines += _repo_line(res["write"])
+    if res["reads"]:
+        lines.append("■ 参照のみ（読むだけ。変更・commit・push しないこと）:")
+        for c in res["reads"]:
+            lines += _repo_line(c)
+    if res["undecided"]:
+        lines.append("■ 成果物のコミット先が未確定（planner が判別しませんでした）。"
+                     "次のうち**最も関連の深い 1 つだけ**を選んでコミットし、残りは参照のみとすること:")
+        for c in res["undecided"]:
+            lines += _repo_line(c)
+    if res["write"] or res["undecided"]:
+        lines.append("コミットした対象は commit すること。ローカル実行では kiro-flow が成果ブランチへ "
+                     "push してリンクを記録する（リモート委譲の場合は push して MR/PR を用意すること）。"
+                     "なお、調査など成果物がコミットを伴わないタスクは、無理にコミットせず成果を本文に"
+                     "まとめること（その場合はバス上の成果が納品物になる）。")
+    else:
+        lines.append("いずれも参照のみです。成果は本文にまとめること（バス上の成果が納品物になる）。")
+    failed = [c.get("url", "") for c in clones if not c.get("clone")]
     if failed:
         lines.append("  ※ clone 失敗（必要なら手動で取得・push 不可の可能性）: " + ", ".join(failed))
     return "\n".join(lines)
@@ -1005,57 +1063,70 @@ def _delivery_branch(spec: dict, run_id: str, node_id: str) -> str:
     return f"kiro-flow/{rid}/{nid}"
 
 
+def _capture_one(c: dict, run_id: str, node_id: str) -> "dict | None":
+    """1 リポジトリの変更を決定的に捕捉する。変更があれば成果ブランチへ commit/push して
+    delivery dict を返す。変更が無ければ None（＝コミットを伴わない＝納品物はバス上）。"""
+    path = c.get("clone")
+    if not path or not os.path.isdir(path):
+        return None
+    base = str(c.get("base") or "")
+    branch = _delivery_branch(c, run_id, node_id)
+    # 1. 未コミット変更を取り込む（編集だけして commit しなかった場合の保険）
+    _, porcelain, _ = _git_io(path, "status", "--porcelain")
+    committed_here = False
+    if porcelain:
+        _git_io(path, "add", "-A")
+        rc, _, _ = _git_io(path, *_DELIVERY_GIT_AUTHOR, "commit", "-m", f"[kiro-flow] {node_id}")
+        committed_here = rc == 0
+    # 2. base から HEAD が進んでいるか（＝コミットが存在するか）を判定
+    rc, head, _ = _git_io(path, "rev-parse", "HEAD")
+    if rc != 0:
+        return None
+    ahead = committed_here
+    ref = f"origin/{base}" if base else "origin/HEAD"
+    rc_b, base_sha, _ = _git_io(path, "rev-parse", ref)
+    if rc_b == 0:
+        ahead = ahead or (head != base_sha)
+    if not ahead:
+        return None  # 変更なし（調査系など）→ 納品物はバス上の成果に委ねる
+    # 3. 決定的な成果ブランチへ push（temp clone 削除前の永続化）
+    rc_p, _, perr = _git_io(path, "push", "origin", f"HEAD:refs/heads/{branch}")
+    d: dict = {"url": c.get("url", ""), "base": base, "target": c.get("target", ""),
+               "branch": branch, "head_sha": head, "pushed": rc_p == 0, "changed": True}
+    if c.get("name"):
+        d["name"] = c["name"]
+    if rc_p != 0:
+        d["push_error"] = perr[:200]
+        log(node_id, f"成果ブランチ push 失敗（{c.get('url','')} → {branch}）: {perr[:120]}")
+    else:
+        log(node_id, f"成果を push: {c.get('url','')} → {branch} @ {head[:8]}")
+    return d
+
+
 def capture_deliveries(clones: "list[dict]", run_id: str, node_id: str) -> "list[dict]":
-    """エージェント実行後に、書込み対象の成果物リポジトリの状態を決定的に捕捉する。
+    """エージェント実行後に、成果物リポジトリの状態を決定的に捕捉する。
 
-    **成果物がコミットを伴うとは限らない**（調査系タスク等）。変更があった repo だけを
-    commit→決定的ブランチへ push し、`delivery`（branch/SHA/URL のリンク）として返す。
-    変更が無ければ何も返さない＝その場合の納品物はバス上の `result.output/data`。
-
-    各 write リポジトリにつき:
-      1. 未コミット変更があれば `add -A` して commit（エージェントの commit 忘れの保険）
-      2. base（クローン地点）から HEAD が進んでいれば（＝コミットがある）成果ブランチへ push
-      3. {url, base, target, branch, head_sha, pushed, changed[, name]} を記録
-    temp clone は作業後に削除されるため、push が成果の永続化になる（push 失敗は記録に残す）。
+    ロール（classify_repos）に従い、**成果物のコミットは単一の write 対象だけ**を push する。
+    参照のみ（read）は決して push しない。planner 未確定（auto・undecided）のときは、
+    エージェントが実際にコミットした候補（＝変更のある repo）を採用する（executor が決めた結果を尊重）。
+    **成果物がコミットを伴うとは限らない**（調査系）ので、変更が無ければ何も返さない
+    （その場合の納品物はバス上の `result.output/data`）。
     """
+    have = [c for c in (clones or []) if c.get("clone") and os.path.isdir(c.get("clone"))]
+    res = classify_repos(have)
+    if res["write"]:
+        candidates = [res["write"]]              # 単一 write のみ push（read は対象外）
+    else:
+        candidates = res["undecided"]            # 未確定 → 変更のある候補を採用
     deliveries: "list[dict]" = []
-    for c in clones or []:
-        path = c.get("clone")
-        if not path or c.get("readonly") or not os.path.isdir(path):
-            continue
-        base = str(c.get("base") or "")
-        branch = _delivery_branch(c, run_id, node_id)
-        # 1. 未コミット変更を取り込む（編集だけして commit しなかった場合の保険）
-        _, porcelain, _ = _git_io(path, "status", "--porcelain")
-        committed_here = False
-        if porcelain:
-            _git_io(path, "add", "-A")
-            rc, _, _ = _git_io(path, *_DELIVERY_GIT_AUTHOR, "commit", "-m",
-                               f"[kiro-flow] {node_id}")
-            committed_here = rc == 0
-        # 2. base から HEAD が進んでいるか（＝コミットが存在するか）を判定
-        rc, head, _ = _git_io(path, "rev-parse", "HEAD")
-        if rc != 0:
-            continue
-        ahead = committed_here
-        ref = f"origin/{base}" if base else "origin/HEAD"
-        rc_b, base_sha, _ = _git_io(path, "rev-parse", ref)
-        if rc_b == 0:
-            ahead = ahead or (head != base_sha)
-        if not ahead:
-            continue  # 変更なし（調査系など）→ 納品物はバス上の成果に委ねる
-        # 3. 決定的な成果ブランチへ push（temp clone 削除前の永続化）
-        rc_p, _, perr = _git_io(path, "push", "origin", f"HEAD:refs/heads/{branch}")
-        d: dict = {"url": c.get("url", ""), "base": base, "target": c.get("target", ""),
-                   "branch": branch, "head_sha": head, "pushed": rc_p == 0, "changed": True}
-        if c.get("name"):
-            d["name"] = c["name"]
-        if rc_p != 0:
-            d["push_error"] = perr[:200]
-            log(node_id, f"成果ブランチ push 失敗（{c.get('url','')} → {branch}）: {perr[:120]}")
-        else:
-            log(node_id, f"成果を push: {c.get('url','')} → {branch} @ {head[:8]}")
-        deliveries.append(d)
+    for c in candidates:
+        d = _capture_one(c, run_id, node_id)
+        if d:
+            deliveries.append(d)
+    if len(deliveries) > 1:
+        # 単一 write 規則: 未確定で複数 repo に変更が出た（成果物先が割れた）→ 記録して可視化する
+        log(node_id, f"警告: 成果物コミット先が複数に分かれました（{len(deliveries)} 件）。"
+                     "planner で write/read を明示するか、1 リポジトリに集約してください。")
     return deliveries
 
 
@@ -4046,9 +4117,11 @@ def main() -> int:
                    help="executor プラグイン（<name>.py）の追加検索ディレクトリ（設定 executor_dir と同義）")
     p.add_argument("--repo", dest="repos", action="append", default=None,
                    help="成果物リポジトリ（複数指定可）。素の URL でも、構造化 JSON "
-                        "（{url,name,path,base,target,readonly,desc}）でも可。worker が temp 領域へ"
+                        "（{url,name,path,base,target,role,readonly,desc}）でも可。worker が temp 領域へ"
                         " clone（base 指定があればそのブランチ）してから作業し、作業後に必ず消す。"
-                        "readonly は参照のみ（push しない）、path はモノレポの作業フォルダを表す")
+                        "role は write（成果物コミット先・単一）/ read（参照のみ・push しない・複数可）/ "
+                        "未指定（auto＝executor が判断）。readonly:true は role:read と同義。"
+                        "path はモノレポの作業フォルダを表す")
     p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                    help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
                         "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")

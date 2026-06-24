@@ -413,6 +413,15 @@ executor 横断で **propose（提案）→ verify（検証）→ finalize（納
 | **verify** | 上位（kiro-autonomous） | 成果ブランチを検証（done の唯一根拠＝exit 0） | 同左 |
 | **finalize** | 上位が判定→本層へ委譲 | （ローカルで push 済み・追加操作なし） | **MR マージ ＋ イシューを明示的にクローズ** |
 
+- **ロール・スキーマ（executor 横断の正準インターフェース）**: 各成果物リポジトリ（`--repo`）は
+  `role` を持つ――**`write`＝成果物をコミットする単一の対象**（push 先）、**`read`＝参照のみ**（clone するが
+  push しない・複数可）、**`auto`/未指定＝planner が判別しなかった**（executor が決める）。後方互換で
+  `readonly:true` は `role:read` と同義。**基本は planner が role を決めて伝える**が、stub や判別不能なら
+  executor に委ねる。`classify_repos(specs)` が**唯一のリゾルバ**で、どの executor もこの結果に従う:
+  明示 write があれば先頭を write・残りと auto は read へ降格（**単一 write 規則**）、明示 write が無く auto が
+  ちょうど 1 つなら自明に write、それ以外（auto 複数）は **undecided** として LLM executor に「1 つだけ選べ」と
+  委ねる。この役割は `repo_instruction`（全 executor へ渡す指示文＝LLM 向けインターフェース）に
+  「成果物コミット先（単一）／参照のみ／未確定なら1つ選べ」として明示され、gitlab はイシュー本文へそのまま載る。
 - **delivery 捕捉（kiro executor）**: `capture_deliveries` がエージェント実行後に書込み repo の git
   状態を決定的に捕捉する。未コミット変更があれば `add -A` して commit（commit 忘れの保険）、base から
   HEAD が進んでいれば成果ブランチへ push し、`result.data.delivery=[{url,base,target,branch,head_sha,

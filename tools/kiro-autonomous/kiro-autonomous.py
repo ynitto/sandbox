@@ -1912,7 +1912,9 @@ def _charter_definition(ch: "Charter") -> str:
                 br.append(f"base={r['base']}")
             if r["target"]:
                 br.append(f"target={r['target']}")
-            if r.get("readonly"):
+            if r.get("role") == "write":
+                br.append("成果物コミット先（単一）")
+            elif r.get("role") == "read" or r.get("readonly"):
                 br.append("参照のみ・push しない")
             if br:
                 head += "（" + ", ".join(br) + "）"
@@ -2118,7 +2120,7 @@ def task_repo_specs(cfg: "Config", task: Task) -> "list[dict]":
         spec = smap.get(tok)
         if spec is None and ("://" in tok or "@" in tok or tok.endswith(".git")):
             spec = {"name": "", "url": tok, "desc": "", "base": "",
-                    "target": "", "path": "", "readonly": False}
+                    "target": "", "path": "", "readonly": False, "role": ""}
         if not spec:
             continue
         key = (spec["url"], spec.get("path", ""))
@@ -2134,8 +2136,10 @@ def _repo_token(spec: dict) -> str:
     無ければ素の URL（後方互換。name は URL から導けるのでメタ扱いしない）、あれば JSON で構造化伝搬する。
     JSON は worker（clone・ブランチ checkout）と gitlab イシュー指示の双方で使われる。"""
     meta = {k: spec[k] for k in ("path", "base", "target", "desc") if spec.get(k)}
+    if spec.get("role") in ("write", "read"):
+        meta["role"] = spec["role"]              # ロール（write/read）を kiro-flow へ伝搬
     if spec.get("readonly"):
-        meta["readonly"] = True
+        meta["readonly"] = True                  # 後方互換（role 未対応の経路でも read を保つ）
     if not meta:
         return spec["url"]                      # 後方互換: ルーティングメタ無しは素の URL
     if spec.get("name"):
@@ -4320,16 +4324,28 @@ _REPO_KEY_ALIASES = {
              "パス", "ディレクトリ", "フォルダ", "サブディレクトリ"),
     "readonly": ("readonly", "read_only", "read-only", "ref", "reference",
                  "参照のみ", "参照", "読み取り専用", "読取専用"),
+    # 成果物をコミットする対象（write）の明示指定。desc の別名（役割/role）とは衝突させない。
+    "write": ("write", "commit", "deliverable", "成果物", "成果物リポジトリ", "コミット先"),
 }
 
 # readonly フラグの真値表記（値なし＝キーだけ書いた場合も True 扱い）
 _REPO_TRUTHY = {"", "true", "yes", "y", "1", "on", "参照のみ", "参照",
-                "readonly", "read-only", "読み取り専用", "読取専用"}
+                "readonly", "read-only", "読み取り専用", "読取専用",
+                "write", "commit", "成果物", "コミット先"}
 
 
 def _entry_readonly(attrs: dict) -> bool:
     """repos エントリの参照のみ（readonly）フラグを判定する。`- readonly: true` /『- 参照のみ:』など。"""
     for alias in _REPO_KEY_ALIASES["readonly"]:
+        if alias in attrs:
+            return str(attrs[alias]).strip().lower() in _REPO_TRUTHY
+    return False
+
+
+def _entry_write(attrs: dict) -> bool:
+    """repos エントリの『成果物をコミットする対象（write）』指定を判定する。
+    `- write: true` /『- 成果物:』/『- コミット先:』など（値なし＝キーだけでも True）。"""
+    for alias in _REPO_KEY_ALIASES["write"]:
         if alias in attrs:
             return str(attrs[alias]).strip().lower() in _REPO_TRUTHY
     return False
@@ -4353,8 +4369,10 @@ def _repo_spec_from_entry(e: dict) -> dict:
     target = _entry_attr(e["attrs"], "target") or base
     path = _entry_attr(e["attrs"], "path").strip("/")
     readonly = _entry_readonly(e["attrs"])
+    # ロール（executor 横断の正準スキーマ）: write 明示＞readonly＞auto（未指定＝planner 任せ）。
+    role = "write" if _entry_write(e["attrs"]) else ("read" if readonly else "")
     return {"name": name, "url": url, "desc": desc, "base": base,
-            "target": target, "path": path, "readonly": readonly}
+            "target": target, "path": path, "readonly": readonly, "role": role}
 
 
 def validate_charter(ch: "Charter") -> "list[str]":

@@ -2486,6 +2486,68 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertEqual(kf.resolve_update_target(a), ("/explicit/path", "dev"))
 
 
+class RepoRoleTests(unittest.TestCase):
+    """成果物リポジトリのロール（executor 横断スキーマ）: 成果物コミット先は単一(write)、
+    参照は複数可(read)、planner 未確定(auto)は executor が決める。classify_repos が正準リゾルバ。"""
+
+    def test_repo_role_resolution(self):
+        self.assertEqual(kf.repo_role({"role": "write"}), "write")
+        self.assertEqual(kf.repo_role({"role": "read"}), "read")
+        self.assertEqual(kf.repo_role({"readonly": True}), "read")   # 後方互換
+        self.assertEqual(kf.repo_role({}), "auto")                   # 未指定＝未確定
+
+    def test_parse_repo_token_carries_role(self):
+        spec = kf.parse_repo_token('{"url":"https://g/r","role":"write"}')
+        self.assertEqual(spec["role"], "write")
+
+    def test_single_write_multiple_reads(self):
+        specs = [{"url": "w", "role": "write"}, {"url": "r1", "role": "read"},
+                 {"url": "r2", "role": "read"}]
+        res = kf.classify_repos(specs)
+        self.assertEqual(res["write"]["url"], "w")
+        self.assertEqual([r["url"] for r in res["reads"]], ["r1", "r2"])
+        self.assertEqual(res["undecided"], [])
+
+    def test_single_auto_repo_is_write(self):
+        # 単一 repo（auto）は自明に成果物コミット先
+        res = kf.classify_repos([{"url": "only"}])
+        self.assertEqual(res["write"]["url"], "only")
+        self.assertEqual(res["undecided"], [])
+
+    def test_multiple_autos_are_undecided(self):
+        # planner が判別しなかった複数 repo → executor が決める（undecided）
+        res = kf.classify_repos([{"url": "a"}, {"url": "b"}])
+        self.assertIsNone(res["write"])
+        self.assertEqual([r["url"] for r in res["undecided"]], ["a", "b"])
+
+    def test_explicit_write_demotes_extra_to_read(self):
+        # 単一 write 規則: 余分な write と auto は read（参照）へ降格
+        specs = [{"url": "w1", "role": "write"}, {"url": "w2", "role": "write"}, {"url": "a"}]
+        res = kf.classify_repos(specs)
+        self.assertEqual(res["write"]["url"], "w1")
+        self.assertEqual({r["url"] for r in res["reads"]}, {"w2", "a"})
+        self.assertEqual([r["url"] for r in res["extra_writes"]], ["w2"])
+
+    def test_all_reads_no_write(self):
+        res = kf.classify_repos([{"url": "r1", "role": "read"}, {"url": "r2", "role": "read"}])
+        self.assertIsNone(res["write"])
+        self.assertEqual(res["undecided"], [])
+
+    def test_instruction_marks_write_and_reads(self):
+        clones = [{"url": "w", "role": "write", "base": "main", "clone": "/t/w"},
+                  {"url": "ref", "role": "read", "clone": "/t/ref"}]
+        instr = kf.repo_instruction(clones)
+        self.assertIn("成果物をコミットする対象", instr)
+        self.assertIn("参照のみ", instr)
+        self.assertIn("単一", instr)
+
+    def test_instruction_undecided_asks_to_pick_one(self):
+        clones = [{"url": "a", "clone": "/t/a"}, {"url": "b", "clone": "/t/b"}]
+        instr = kf.repo_instruction(clones)
+        self.assertIn("コミット先が未確定", instr)
+        self.assertIn("1 つだけ", instr)
+
+
 class CaptureDeliveriesTests(unittest.TestCase):
     """kiro executor の成果物リポジトリ捕捉: 変更があれば決定的ブランチへ commit/push し
     delivery（branch/SHA/リンク）を記録、変更が無い（調査系）なら何も残さない。"""
@@ -2513,11 +2575,31 @@ class CaptureDeliveriesTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def _clone(self):
-        dest = os.path.join(self.root, "work")
+    def _clone(self, name="work"):
+        dest = os.path.join(self.root, name)
         subprocess.run(["git", "clone", "-q", "-b", "main", self.bare, dest],
                        check=True, capture_output=True)
         return dest
+
+    def test_role_read_not_pushed_even_with_changes(self):
+        # 参照のみ（read）は変更があっても push しない（ロールに従う）
+        work = self._clone()
+        pathlib.Path(work, "noise.txt").write_text("x\n", encoding="utf-8")
+        self.assertEqual(kf.capture_deliveries(
+            [{"url": self.bare, "base": "main", "clone": work, "role": "read"}], "r", "n"), [])
+
+    def test_single_write_pushed_reads_skipped(self):
+        # write + read が混在 → write だけ push（単一成果物コミット先）
+        w = self._clone("w")
+        r = self._clone("r")
+        pathlib.Path(w, "out.py").write_text("ok\n", encoding="utf-8")
+        pathlib.Path(r, "ref_edit.txt").write_text("edit\n", encoding="utf-8")
+        dels = kf.capture_deliveries([
+            {"url": self.bare, "base": "main", "clone": w, "role": "write", "name": "w"},
+            {"url": self.bare, "base": "main", "clone": r, "role": "read", "name": "r"},
+        ], "run-z", "n2")
+        self.assertEqual(len(dels), 1)
+        self.assertEqual(dels[0].get("name"), "w")
 
     def test_commits_and_pushes_to_deterministic_branch(self):
         work = self._clone()
