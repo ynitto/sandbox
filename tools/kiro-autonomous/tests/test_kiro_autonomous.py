@@ -2512,20 +2512,19 @@ class TestProjectLayer(unittest.TestCase):
         self.assertEqual((b["path"], b["desc"]), ("apps/web", "画面"))   # 役割=desc 別名
 
     def test_validate_charter_monorepo_requires_distinct_path(self):
-        # 同一 URL を役割分割するなら distinct な path が必須
+        # 同一 URL を役割分割するなら distinct な path で区別できる
         ok = km.parse_charter(
             "# Charter: r\n## goal\nx\n## repos\n"
             "- api = https://git/shop.git\n  - path: apps/api\n  - desc: API\n  - base: main\n"
             "- web = https://git/shop.git\n  - path: apps/web\n  - desc: 画面\n  - base: main\n")
         self.assertEqual(km.validate_charter(ok), [])
-        # path 無しで URL 重複 → 各エントリで問題
-        nopath = km.parse_charter(
+        # path も branch も全て一致 → 曖昧な重複として弾く
+        dupall = km.parse_charter(
             "# Charter: r\n## goal\nx\n## repos\n"
             "- api = https://git/shop.git\n  - desc: API\n  - base: main\n"
             "- web = https://git/shop.git\n  - desc: 画面\n  - base: main\n")
-        probs = km.validate_charter(nopath)
-        self.assertEqual(len([p for p in probs if "path" in p]), 2)
-        # path 重複 → 問題
+        self.assertTrue(any("重複" in p for p in km.validate_charter(dupall)))
+        # path 重複（同一フォルダ・同一ブランチ）→ 問題
         dup = km.parse_charter(
             "# Charter: r\n## goal\nx\n## repos\n"
             "- api = https://git/shop.git\n  - path: apps/x\n  - desc: API\n  - base: main\n"
@@ -2535,6 +2534,21 @@ class TestProjectLayer(unittest.TestCase):
         single = km.parse_charter(
             "# Charter: r\n## goal\nx\n## repos\n- app = u\n  - desc: d\n  - base: main\n")
         self.assertEqual(km.validate_charter(single), [])
+
+    def test_validate_charter_distinguishes_same_url_by_branch(self):
+        # 同一 URL・path 無しでも base（ブランチ）が違えば別エントリとして成立する
+        bybase = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- app-main = https://git/app.git\n  - desc: 本流\n  - base: main\n"
+            "- app-rel = https://git/app.git\n  - desc: backport\n  - base: release/1.x\n")
+        self.assertEqual(km.validate_charter(bybase), [])
+        # 同一 URL・同一 path でも target（PR 先ブランチ）が違えば成立する
+        bytarget = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- a = https://git/app.git\n  - path: svc\n  - desc: develop 向け\n"
+            "  - base: main\n  - target: develop\n"
+            "- b = https://git/app.git\n  - path: svc\n  - desc: main 向け\n  - base: main\n")
+        self.assertEqual(km.validate_charter(bytarget), [])
 
     def test_charter_definition_renders_path(self):
         ch = km.parse_charter(

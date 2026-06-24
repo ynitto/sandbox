@@ -326,7 +326,8 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   （repos は run の bus メタ経由で worker に届く）。各 repo は `- desc:`（役割・必須）/`- base:`（必須）/`- target:`/
   `- path:`/`- readonly:` を構造化サブ箇条で持てる。**モノレポは「同じ url で name と path を変えた複数エントリ」**に
   するとフォルダ別の役割を分けられ（プランナーが役割に合う name をタスクへ割当・worker は path 配下のみ変更）、
-  同一 url を複数エントリで使う場合は path が必須（distinct なフォルダ）。参照のみの repo は `- readonly: true`。
+  同一 url を複数エントリで使う場合は **path（作業フォルダ）か base/target（ブランチ）のいずれかで区別**する
+  （ブランチ違いなら path 無しでも可。例：main と release へのバックポート）。参照のみの repo は `- readonly: true`。
   **これらのメタ（path/base/target/readonly/役割）はタスク単位で構造化 `--repo`（JSON）として kiro-flow へ伝搬する**。
   worker は `base` ブランチを checkout して clone し（`repo_instruction` で path 配下のみ・push 先 target を指示）、
   readonly は「参照のみ・push しない」と指示する。gitlab executor 経由ならこの指示はイシュー本文（## 目的）にも
