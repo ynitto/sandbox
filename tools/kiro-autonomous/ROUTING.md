@@ -35,6 +35,14 @@
 
 決まらなければ書込先なし＝**読み取り専用 run**。
 
+### plan フェーズ（charter → バックログ生成）での明示
+
+charter を分解してタスクを生成する plan/review フェーズでは、**各タスクに書込先 `workspace` を必ず明示する**
+（`assign_plan_workspace`）。書込先は **verify コマンドが操作するパスの `owns` を持つリポジトリ**として
+決定論的に確定し（プランナーが付けた owns 持ちの workspace 指定は尊重）、それ以外の charter repo・
+プランナーが挙げた repo はすべて **参照（`refs`）** に振り分ける。これにより、生成直後のタスクが
+「書込先が未確定のまま」になることを防ぎ、後段の route 層は明示済みの workspace をそのまま使う。
+
 ## charter `## repos`（書込先 vs 参照）
 
 ```markdown

@@ -334,18 +334,40 @@ def _get_comments(host: str, token: str, project: str, iid) -> list:
     return res if isinstance(res, list) else []
 
 
-def _issue_body(kind: str, goal: str, dep_results: dict, repo_instruction: str = "") -> str:
+def _workspace_section(workspace: "dict | None") -> "list[str]":
+    """対象リポジトリ節（GitLab Markdown）を構造化 workspace から組み立てる。
+    リモートの人間ワーカー向けなので、ローカルの clone パス（作業ディレクトリ）は載せない。
+    各項目は Markdown の箇条書き（`- **key**: value`）にして、レイアウト崩れを防ぐ。"""
+    if not workspace or not workspace.get("url"):
+        return []
+    base = workspace.get("base") or ""
+    target = workspace.get("target") or base
+    lines = ["## 対象リポジトリ", "", f"- **リポジトリ**: {workspace['url']}"]
+    if workspace.get("path"):
+        lines.append(f"- **変更対象フォルダ**: `{workspace['path']}` 配下のみ")
+    if base:
+        br = f"- **作業ブランチ**: `{base}` から分岐"
+        if target and target != base:
+            br += f"し、`{target}` へ MR"
+        lines.append(br)
+    if workspace.get("desc"):
+        lines.append(f"- **役割**: {workspace['desc']}")
+    lines.append("")
+    return lines
+
+
+def _issue_body(kind: str, goal: str, dep_results: dict,
+                workspace: "dict | None" = None) -> str:
     """イシュー本文（GitLab Markdown）を組み立てる。gitlab-idd 規約に従い
     『## 受け入れ条件』を必ず含める（ワーカー/レビュアーが完了判定に使う）。
-    repo_instruction（成果物リポジトリの clone 指示）は『## 目的』とは別の節に置き、
-    本来の goal が指示テキストで埋もれないようにする。"""
+    対象リポジトリは構造化 workspace から『## 目的』とは別の節として整形して載せる
+    （本来の goal が埋もれないように、かつ Markdown のレイアウトが崩れないように）。"""
     # 集約・選別系では gate（verify 判定）を参考成果から除く（execute_kiro と同様）
     deps = dep_results
     if kind in ("reduce", "synthesize", "filter", "judge"):
         deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}
     lines = ["## 目的", "", goal, ""]
-    if repo_instruction.strip():     # 成果物リポジトリの指示は独立した節に（目的と混ぜない）
-        lines += ["## 成果物リポジトリ", "", repo_instruction.strip(), ""]
+    lines += _workspace_section(workspace)
     if deps:
         lines += ["## 依存タスクの成果（参考）", ""]
         for d, r in deps.items():
@@ -378,8 +400,9 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     起票先プロジェクトは **ワークスペース URL（その run の唯一の書込先）** を優先し、無ければ
     kiro-flow.yaml の `gitlab.repo_url` をフォールバックに解決する。トークンは gl.py と同じ場所
     （connections.yaml / 環境変数 / シェル rc）から解決し、GitLab REST を直叩きする。`goal` は
-    本来の目的のみ（タイトル・『## 目的』に使う）。ワークスペースの作業指示は `repo_instruction`
-    で別途受け取り、本文の独立した節に載せる（goal を埋もれさせない）。
+    本来の目的のみ（タイトル・『## 目的』に使う）。対象リポジトリは構造化 `workspace`（url/path/base/
+    target/desc）から人間ワーカー向けに整形して別節に載せる（ローカルの clone パスは載せない。
+    `repo_instruction` はローカルエージェント向けの指示なのでイシューには使わない）。
     """
     cfg = _config()
     # opt-in 前提チェック（誤って選んだときに無限待ちにしない）: 起票先 URL とトークンを起票前に解決。
@@ -394,7 +417,7 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
             "設定してください（kiro-flow.yaml には置きません）。")
 
     title = f"[kiro-flow] {goal.strip()[:80]}"
-    body = _issue_body(kind, goal, dep_results, repo_instruction)
+    body = _issue_body(kind, goal, dep_results, workspace)
     labels = str(cfg.get("labels") or "status:open,assignee:any")
     priority = str(cfg.get("priority") or "").strip()
     if priority:
