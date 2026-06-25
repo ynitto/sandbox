@@ -3045,8 +3045,9 @@ class TestProjectLayer(unittest.TestCase):
                 if tmp:
                     shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_task_verify_cwd_uses_workspace_path_as_root(self):
-        # spec の path（モノレポのサブフォルダ）をルートに取る
+    def test_task_verify_cwd_uses_clone_root_not_path(self):
+        # path（モノレポのサブフォルダ）があっても cwd はクローンのルート。verify は
+        # リポジトリ直下からの相対（例 `cd pkg && …`）で書かれる規約なので path には潜らない。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             remote = d / "remote"
@@ -3058,15 +3059,29 @@ class TestProjectLayer(unittest.TestCase):
                             "-c", "user.name=x", "commit", "-qm", "sub"], check=True)
             write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
                              f"- app = {remote}\n  - owns: **\n  - path: pkg\n  - desc: 対象\n")
-            task = km.Task(id="T1", title="x", verify="test -f IN_SUB.txt")
+            task = km.Task(id="T1", title="x", verify="test -f pkg/IN_SUB.txt")
             task.set("workspace", "app")
             vcwd, tmp = km._task_verify_cwd(cfg_for(d), task)
             try:
-                self.assertEqual(vcwd.name, "pkg")           # path をルートに取った
-                self.assertTrue((vcwd / "IN_SUB.txt").exists())
+                self.assertNotEqual(vcwd.name, "pkg")        # path には潜らない（クローンのルート）
+                self.assertTrue((vcwd / ".git").exists())    # ルートなので $KIRO_BASE_REV を取り直せる
+                self.assertTrue((vcwd / "pkg" / "IN_SUB.txt").exists())   # path はルートからの相対で届く
             finally:
                 if tmp:
                     shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_task_verify_cwd_bad_path_raises(self):
+        # path: が clone 内に無い（誤設定）は RuntimeError（黙って workdir に倒さない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote)
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - path: nope\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x", verify="true")
+            task.set("workspace", "app")
+            with self.assertRaises(RuntimeError):
+                km._task_verify_cwd(cfg_for(d), task)
 
     def test_task_verify_cwd_no_workspace_falls_back_to_workdir(self):
         # workspace 未指定は従来どおり workdir（一時 clone を作らない）

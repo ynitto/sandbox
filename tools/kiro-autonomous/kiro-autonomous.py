@@ -1774,12 +1774,18 @@ def resolve_verify_cwd(cfg: "Config") -> Path:
 
 def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
     """このタスクの verify/回帰を実行する作業ディレクトリと、片付けが要る一時 clone のパス（無ければ None）を返す。
-    優先順位: 明示 verify_cwd > タスクの `- workspace:` 該当 repo の一時 clone（target/base ブランチ・path を
-    ルート）> workdir。workspace 指定タスクは worker が成果を該当 repo の作業ブランチへ push し、git-bus
-    ルートの workdir には出ない。そこを検証先にすると「成果の無い場所」で誤判定するため、該当 repo を
-    指定 branch で clone し（path 指定があればそれをルートに）その中で検証する。clone は worker の push 先を
-    反映するため都度取り直す。clone 失敗・path 不在は RuntimeError（呼び出し側で NG 扱い・黙って workdir に
-    倒さない）。"""
+    優先順位: 明示 verify_cwd > タスクの `- workspace:` 該当 repo の一時 clone（target/base ブランチ）> workdir。
+    workspace 指定タスクは worker が成果を該当 repo の作業ブランチへ push し、git-bus ルートの workdir には
+    出ない。そこを検証先にすると「成果の無い場所」で誤判定するため、該当 repo を指定 branch で clone し
+    その中で検証する。clone は worker の push 先を反映するため都度取り直す。clone 失敗・path 不在は
+    RuntimeError（呼び出し側で NG 扱い・黙って workdir に倒さない）。
+
+    cwd は常に **clone のルート**に取る。verify コマンドはリポジトリのルートからの相対（例
+    `cd api && yarn test`）で書かれる規約で、プランナーの生成指示・owns 突き合わせ（_verify_paths）・
+    kiro-flow のワークスペース（エージェントはリポジトリ直下で path 配下のみ編集）と一致する。
+    `path`（モノレポのサブフォルダ）は編集範囲/owns 用であり verify の cwd ではない。ここで
+    `clone/path` に潜ると `cd api` 等の相対指定が二重になって verify が壊れ、$KIRO_BASE_REV を
+    取り直す `.git` 判定（呼び出し側）も外れる。"""
     if cfg.verify_cwd:                              # 明示指定は常に最優先（運用の上書き）
         return resolve_verify_cwd(cfg), None
     spec = _workspace_spec_for(cfg, task)
@@ -1793,15 +1799,13 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
             shutil.rmtree(tmp, ignore_errors=True)
             raise RuntimeError(f"workspace repo の clone 失敗（{spec['url']}@{branch or '既定'}）: {e}") from e
         root = Path(dest)
-        sub = (spec.get("path") or "").strip().strip("/")       # 指定 path をルートに（モノレポのサブディレクトリ等）
-        if sub:
-            root = root / sub
-            if not root.is_dir():
-                shutil.rmtree(tmp, ignore_errors=True)
-                raise RuntimeError(f"workspace の path が clone 内に無い: {sub}"
-                                   f"（{spec['url']}@{branch or '既定'}）")
+        sub = (spec.get("path") or "").strip().strip("/")       # path は編集範囲。誤設定検出のため在処だけ確認
+        if sub and not (root / sub).is_dir():
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError(f"workspace の path が clone 内に無い: {sub}"
+                               f"（{spec['url']}@{branch or '既定'}）")
         append_journal(cfg.journal, f"verify: {task.id} を {spec['url']}@{branch or '既定'}"
-                                    + (f"/{sub}" if sub else "") + " のクローン内で検証")
+                                    + (f"（path={sub}）" if sub else "") + " のクローン内で検証")
         return root, tmp
     return resolve_verify_cwd(cfg), None            # workspace 未指定は従来どおり workdir
 
@@ -3030,8 +3034,9 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     regressed = False
     vtmp = None
     try:
-        # workspace 指定タスクは git-bus ルート（workdir）でなく該当 repo のクローン内で検証する
-        # （指定 branch/path をルートに取る）。明示 verify_cwd はそれを優先。
+        # workspace 指定タスクは git-bus ルート（workdir）でなく該当 repo のクローン内（指定 branch・
+        # クローンのルート）で検証する。verify はリポジトリ直下からの相対で書かれる規約なので path
+        # 配下には潜らない。明示 verify_cwd はそれを優先。
         vcwd, vtmp = _task_verify_cwd(cfg, task)
         venv = verify_env
         if vtmp and (vcwd / ".git").exists():          # 一時 clone は差分基準を clone の HEAD に取り直す
