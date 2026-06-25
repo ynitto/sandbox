@@ -2747,6 +2747,50 @@ class TestProjectLayer(unittest.TestCase):
             # 未解決（- workspace: 無し）のタスクは --workspace を付けない＝読み取り専用 run
             self.assertNotIn("--workspace", km.build_kiro_flow_cmd(km.Task(id="T2", title="y"), cfg))
 
+    def test_assign_plan_workspace_from_verify_paths(self):
+        # plan が生成したタスクは、verify が操作するパスの owns を持つ repo を書込先にする
+        ch = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- app = https://git/app.git\n  - owns: apps/app/**\n  - base: main\n"
+            "- lib = https://git/lib.git\n  - owns: packages/**\n  - base: main\n"
+            "- spec = https://git/spec.git\n  - desc: 仕様（参照）\n  - base: main\n")
+        sp = km.assign_plan_workspace(ch, {"title": "型を追加",
+                                           "verify": "test -f packages/types.ts"})
+        self.assertEqual(sp["workspace"], "lib")            # owns packages/** に一致 → lib が書込先
+        self.assertIn("app", sp["refs"]); self.assertIn("spec", sp["refs"])  # 他は参照
+        self.assertNotIn("lib", sp["refs"].split(","))      # 書込先は参照に含めない
+        self.assertNotIn("repos", sp)                       # repos は廃止
+
+    def test_assign_plan_workspace_respects_owning_hint(self):
+        # プランナーが付けた workspace（owns 持ち）は尊重。owns を持たない指定は無視して推定に倒す
+        ch = km.parse_charter(
+            "# Charter: r\n## goal\nx\n## repos\n"
+            "- app = https://git/app.git\n  - owns: apps/app/**\n  - base: main\n"
+            "- lib = https://git/lib.git\n  - owns: packages/**\n  - base: main\n")
+        sp = km.assign_plan_workspace(ch, {"title": "t", "verify": "test -f packages/x",
+                                           "workspace": "app"})
+        self.assertEqual(sp["workspace"], "app")            # プランナー指定（owns 持ち）を尊重
+        sp2 = km.assign_plan_workspace(ch, {"title": "t", "verify": "test -f packages/x",
+                                            "workspace": "spec"})  # owns 無し指定は無効
+        self.assertEqual(sp2["workspace"], "lib")           # → verify パスの owns で確定
+
+    def test_plan_via_agent_sets_workspace(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
+                          "- app = https://git/app.git\n  - owns: apps/app/**\n  - base: main\n"
+                          "- lib = https://git/lib.git\n  - owns: packages/**\n  - base: main\n")
+            cfg = cfg_for(d)
+            ch = km.load_charter(cfg)
+            orig = km._run_kiro_cli
+            km._run_kiro_cli = lambda prompt, model: (
+                '[{"title":"lib に型追加","verify":"test -f packages/t.ts"}]')
+            try:
+                specs = km.plan_via_agent(cfg, ch)
+            finally:
+                km._run_kiro_cli = orig
+            self.assertEqual(specs[0]["workspace"], "lib")  # verify=packages/** → lib（必ず明示される）
+
     def test_plugin_executor_forwarded_to_kiro_flow(self):
         # executor に kiro-flow プラグイン名/パスを指定すると、そのまま kiro-flow run へ委譲される
         with tempfile.TemporaryDirectory() as d:

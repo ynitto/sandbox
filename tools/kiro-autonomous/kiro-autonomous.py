@@ -2110,15 +2110,52 @@ def route_target(task: Task, policy: "Policy") -> str:
     return ""
 
 
+def _glob_prefix(g: str) -> str:
+    """グロブの先頭の非ワイルドカード部分（`apps/api/**` → `apps/api/`）。"""
+    m = re.search(r"[*?\[]", g)
+    return g[:m.start()] if m else g
+
+
+def _owns_matches(owns: "list[str]", tok: str) -> bool:
+    """パストークン tok が owns グロブのどれかに該当するか（fnmatch ＋ 先頭プレフィックス一致）。"""
+    for g in owns:
+        if fnmatch.fnmatch(tok, g) or fnmatch.fnmatch(tok, g.rstrip("/") + "/*"):
+            return True
+        pre = _glob_prefix(g).rstrip("/")
+        if pre and (tok == pre or tok.startswith(pre + "/")):
+            return True
+    return False
+
+
+def _verify_paths(verify: str) -> "list[str]":
+    """verify シェルコマンドから「操作するパス」らしきトークンを抽出する（owns 突き合わせ用）。
+    シェル区切りで割り、引用符/先頭 ./ を外し、`/` か拡張子を含むパスらしいものだけ残す。"""
+    out: "list[str]" = []
+    for t in re.split(r"[\s;|&()<>=]+", verify or ""):
+        t = t.strip().strip("'\"`").lstrip("./")
+        if t and ("/" in t or re.search(r"\.\w+$", t)):
+            out.append(t)
+    return out
+
+
+def _infer_workspace_from_paths(workspaces: "list[dict]", paths: "list[str]") -> "dict | None":
+    """パス群を各ワークスペースの owns: と突き合わせ、所有する1つを返す。曖昧（複数一致）/不一致なら
+    候補が1つだけのときはそれ、そうでなければ None。"""
+    if not paths:
+        return workspaces[0] if len(workspaces) == 1 else None
+    hits = [s for s in workspaces if any(_owns_matches(s.get("owns", []), p) for p in paths)]
+    if len(hits) == 1:
+        return hits[0]
+    return workspaces[0] if (not hits and len(workspaces) == 1) else None
+
+
 def _owns_infer(task: Task, workspaces: "list[dict]") -> "dict | None":
-    """タスクが触る予定パス（`- paths:` ヒント）を charter の owns: グロブと突き合わせ、所有する
-    ワークスペースを推定する。曖昧（複数一致）なら推定しない（決定論を壊さない）。"""
-    paths = _split_tokens(task.get("paths"))
+    """タスクが触る予定パス（`- paths:` ヒント。無ければ verify コマンドから抽出）を charter の owns:
+    グロブと突き合わせ、所有するワークスペースを推定する。曖昧（複数一致）なら推定しない。"""
+    paths = _split_tokens(task.get("paths")) or _verify_paths(task.verify)
     if not paths:
         return None
-    hits = [s for s in workspaces
-            if any(fnmatch.fnmatch(p, g) or fnmatch.fnmatch(p, g.rstrip("/") + "/*")
-                   for p in paths for g in s.get("owns", []))]
+    hits = [s for s in workspaces if any(_owns_matches(s.get("owns", []), p) for p in paths)]
     return hits[0] if len(hits) == 1 else None
 
 
@@ -2219,23 +2256,27 @@ def _workspace_cmd_args(cfg: "Config", task: Task) -> "list[str]":
 
 
 def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
-    """このタスクが参照する（書き込まない）リポジトリの spec 列。charter の owns: 無しエントリ全部に
-    タスクの `- refs:` で明示したものを足す。要求本文へ記述として埋め込む（clone はしない）。"""
+    """このタスクが参照する（書き込まない）リポジトリの spec 列。charter の owns: 無しエントリ全部に、
+    タスクの `- refs:`（および `- repos:` に挙げた参照先）で明示したものを足す。書込先 `- workspace:`
+    に解決された url は除く（書込先は参照に含めない）。要求本文へ記述として埋め込む（clone はしない）。"""
     try:
         ch = load_charter(cfg)
     except (OSError, ValueError):
         ch = None
     smap = charter_repo_spec_map(ch)
+    ws = _workspace_spec_for(cfg, task)
+    ws_url = ws["url"] if ws else None
     out: "list[dict]" = []
     seen: "set[str]" = set()
     refs = [s for s in (ch.repo_specs if ch else []) if _is_reference_repo(s)]
-    for tok in _split_tokens(task.get("refs")):
+    for tok in _split_tokens(task.get("refs")) + _split_tokens(task.get("repos")):
         sp = smap.get(tok) or _raw_url_spec(tok)
         if sp:
             refs.append(sp)
     for s in refs:
-        if s.get("url") and s["url"] not in seen:
-            seen.add(s["url"])
+        url = s.get("url")
+        if url and url not in seen and url != ws_url:   # 書込先は参照に含めない
+            seen.add(url)
             out.append(s)
     return out
 
@@ -4604,24 +4645,79 @@ def build_charter_request(charter: "Charter") -> str:
     return "\n\n".join(parts)
 
 
+def _charter_owns_note(charter: "Charter") -> str:
+    """プランナーへ「どの repo がどのパスを担当（owns）するか」を伝える。書込先（workspace）選定の根拠。"""
+    ws = [s for s in charter.repo_specs if s.get("owns")]
+    refs = [s for s in charter.repo_specs if s.get("url") and not s.get("owns")]
+    lines = []
+    if ws:
+        lines.append("書込先候補（owns＝担当パス。verify が操作するパスの owns を持つ repo を workspace にする）:")
+        lines += [f"- {s.get('name') or s['url']}: owns {', '.join(s['owns'])}"
+                  + (f" — {s['desc']}" if s.get("desc") else "") for s in ws]
+    if refs:
+        lines.append("参照リポジトリ（読むだけ。書込先にはしない）:")
+        lines += [f"- {s.get('name') or s['url']}" + (f": {s['desc']}" if s.get("desc") else "")
+                  for s in refs]
+    return "\n".join(lines)
+
+
 def _plan_decompose_prompt(charter: "Charter") -> str:
     return (
         "あなたはプロジェクトを実行可能なタスクに分解するプランナーです。以下の憲章を、"
         "それぞれ機械的に検証できる小さなタスクへ分解してください。\n\n"
         + build_charter_request(charter)
+        + "\n\n" + _charter_owns_note(charter)
         + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str} で、verify は"
         " 終了コード0をPASSとみなすシェルコマンド（『履歴』でなく『望む最終状態/差分』を見ること）。"
-        " そのタスクが特定リポジトリの中身を読む/ push する必要があるなら、利用可能なリポジトリの名前で"
-        " \"repos\": [\"name\", ...] を付ける（不要なタスクには付けない）。"
+        " 各タスクには **\"workspace\": \"name\"（唯一の書込先・必須）** を付ける。workspace は"
+        " **verify が操作するパスの owns を持つリポジトリ**にすること。読むだけの他リポジトリは"
+        " \"refs\": [\"name\", ...] に入れる（書込先にはしない）。"
         " 同じ手順を多数の対象に繰り返すタスクは 1 件ずつ列挙せず、"
         " {\"title\": \"…{item}…\", \"verify\": \"…{item}…\", \"cohort_items\": [\"対象1\", \"対象2\", …]} の"
         " 1 件にまとめること（{item} に各対象が差し込まれ、先頭を pilot として人が指示を固めてから残りが生成される）。"
         " 検証コマンドを書けない曖昧なタスクは含めないでください。")
 
 
+def assign_plan_workspace(charter: "Charter", spec: dict) -> dict:
+    """plan で生成した spec に**書込先 workspace を必ず明示**し、参照を refs に振り分ける。
+    workspace = verify が操作するパスの owns を持つリポジトリ（プランナーが付けた workspace が
+    owns を持つ書込先候補ならそれを尊重）。それ以外の charter repo・プランナーが挙げた repo は
+    すべて参照（refs）として扱う。書込先が決まらなければ何も設定しない（route 層が後段で解決）。"""
+    smap = charter_repo_spec_map(charter)
+    workspaces = [s for s in charter.repo_specs if s.get("owns")]
+    ws = None
+    hint = _strip_code(str(spec.get("workspace") or ""))
+    if hint and smap.get(hint) and smap[hint].get("owns"):     # プランナー指定（owns 持ち）を尊重
+        ws = smap[hint]
+    if ws is None:                                             # verify が操作するパスの owns で決定論的に確定
+        paths = _split_tokens(spec.get("paths")) or _verify_paths(str(spec.get("verify") or ""))
+        ws = _infer_workspace_from_paths(workspaces, paths)
+    # 参照: 書込先以外の charter repo すべて＋プランナーが挙げた repos/refs（書込先 url は除く）
+    ref_names: "list[str]" = []
+    seen: "set[str]" = set()
+    cand = list(charter.repo_specs)
+    for tok in _coerce_repos(spec.get("refs")) + _coerce_repos(spec.get("repos")):
+        sp = smap.get(tok) or _raw_url_spec(tok)
+        if sp:
+            cand.append(sp)
+    for s in cand:
+        url = s.get("url")
+        if not url or (ws and url == ws["url"]) or url in seen:
+            continue
+        seen.add(url)
+        ref_names.append(s.get("name") or url)
+    spec.pop("repos", None)                                   # repos は廃止: workspace/refs へ置換
+    if ws is not None:
+        spec["workspace"] = ws.get("name") or ws["url"]
+    if ref_names:
+        spec["refs"] = ",".join(ref_names)
+    return spec
+
+
 def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     """charter をエージェント（kiro-flow/kiro-cli）に分解させ、[{title, verify}, ...] を得る。
-    知能は委譲し、取り込み（enqueue）は本体が決定的に行う。失敗時は空（plan を諦め人へ）。"""
+    知能は委譲し、取り込み（enqueue）は本体が決定的に行う。失敗時は空（plan を諦め人へ）。
+    各タスクには書込先 workspace を必ず明示する（verify が操作するパスの owns を持つ repo）。"""
     try:
         out = _run_kiro_cli(_plan_decompose_prompt(charter), cfg.model)
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
@@ -4631,11 +4727,13 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     specs = []
     for item in arr:
         if isinstance(item, dict) and str(item.get("title", "")).strip():
-            specs.append({"title": str(item["title"]).strip(),
-                          "verify": _strip_code(str(item.get("verify", "") or "").strip()),
-                          "repos": _coerce_repos(item.get("repos")),
-                          "cohort_items": _coerce_repos(item.get("cohort_items")),
-                          "source": "charter"})
+            sp = {"title": str(item["title"]).strip(),
+                  "verify": _strip_code(str(item.get("verify", "") or "").strip()),
+                  "workspace": _strip_code(str(item.get("workspace") or "").strip()),
+                  "refs": _coerce_repos(item.get("refs")) or _coerce_repos(item.get("repos")),
+                  "cohort_items": _coerce_repos(item.get("cohort_items")),
+                  "source": "charter"}
+            specs.append(assign_plan_workspace(charter, sp))
     return specs
 
 
@@ -4644,23 +4742,32 @@ def _review_prompt(charter: "Charter") -> str:
         "あなたは成果物を批判的にレビューする敵対的レビュアです。以下の憲章の目標・成果物に対し、"
         "現状の成果物がまだ満たせていない点（短絡的達成・抜け漏れ・品質不足）を洗い出してください。\n\n"
         + build_charter_request(charter)
-        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str}（改善タスクと検証）。"
+        + "\n\n" + _charter_owns_note(charter)
+        + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str,"
+        " \"workspace\": \"name\"（唯一の書込先・必須。verify が操作するパスの owns を持つ repo）,"
+        " \"refs\": [\"name\", ...]（読むだけの参照）}（改善タスクと検証）。"
         " 問題が無ければ空配列 [] を返してください。")
 
 
 def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
-    """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, verify}] として返す。"""
+    """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, verify}] として返す。
+    plan と同様、各タスクに書込先 workspace を必ず明示する。"""
     try:
         out = _run_kiro_cli(_review_prompt(charter), cfg.model)
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project review: レビューに失敗（{e}）")
         return []
     arr = _extract_json_array(out) or []
-    return [{"title": str(i["title"]).strip(),
-             "verify": _strip_code(str(i.get("verify", "") or "").strip()),
-             "repos": _coerce_repos(i.get("repos")),
-             "source": "review"}
-            for i in arr if isinstance(i, dict) and str(i.get("title", "")).strip()]
+    specs = []
+    for i in arr:
+        if isinstance(i, dict) and str(i.get("title", "")).strip():
+            sp = {"title": str(i["title"]).strip(),
+                  "verify": _strip_code(str(i.get("verify", "") or "").strip()),
+                  "workspace": _strip_code(str(i.get("workspace") or "").strip()),
+                  "refs": _coerce_repos(i.get("refs")) or _coerce_repos(i.get("repos")),
+                  "source": "review"}
+            specs.append(assign_plan_workspace(charter, sp))
+    return specs
 
 
 def _enqueue_specs(cfg: "Config", specs: "list[dict]", existing: "list[str]",

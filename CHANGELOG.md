@@ -32,7 +32,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 - **ルーティング解決を新設**（`resolve_workspace`）: タスクを**ちょうど1つの書込先ワークスペース**へ。解決順は
   明示 `- workspace:` > policy `route:` > charter `owns:` 推定 > auto-route（LLM）> `default_workspace`／候補1つ。
-  決定はタスク md（`- workspace:` / `- routed_by:`）へ書き戻して安定・監査可能にする。
+  決定はタスク md（`- workspace:` / `- routed_by:`）へ書き戻して安定・監査可能にする。owns 推定は
+  タスクの `- paths:` ヒントに加え **verify コマンドが操作するパス**からも行う。
+- **plan/review フェーズで書込先を必ず明示**（`assign_plan_workspace`）: charter からバックログを生成する時点で、
+  各タスクの workspace を **verify が操作するパスの owns を持つ repo** として決定論的に確定し、それ以外（charter の
+  他 repo・プランナーが挙げた repo）は参照（`refs`）へ振り分ける。生成直後から書込先が明示され、route 層は
+  それを尊重する。`task_reference_specs` は `- refs:` に加え `- repos:` のトークンも参照として扱い、書込先 url は除外する。
 - charter `## repos` に **`owns:`（担当パスのグロブ）** を追加。**owns 有り=書込先候補、owns 無し=参照リポジトリ**
   （読むだけ・タスク本文へ伝搬・clone しない）。policy に **`route: <パターン> -> <repo名>`** ルールを追加。
 - 設定 `route_planner`（kiro/none）と `default_workspace` を追加。タスクに `- workspace:` / `- paths:` / `- refs:` /
