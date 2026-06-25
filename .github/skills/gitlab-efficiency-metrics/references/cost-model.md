@@ -1,0 +1,122 @@
+# コストモデルと前提
+
+`scripts/efficiency.py` が使うコスト推定モデル・パラメータ・GitLab ソースの詳細。
+
+## 目次
+
+- [基本的な考え方](#基本的な考え方)
+- [生メトリクスと GitLab ソース](#生メトリクスと-gitlab-ソース)
+- [コスト計算の式](#コスト計算の式)
+- [パラメータ一覧と既定値](#パラメータ一覧と既定値)
+- [レンジ（楽観/最頻/悲観）の作り方](#レンジ楽観最頻悲観の作り方)
+- [前提の較正（calibration）](#前提の較正calibration)
+- [既知の限界・注意点](#既知の限界注意点)
+
+## 基本的な考え方
+
+2 つのシナリオのコストを比較する。
+
+1. **人手のみシナリオ（counterfactual）**: 同じ成果物を人が実装し、別の人がレビューする
+2. **エージェント利用シナリオ（実績）**: エージェントが実装し、人はレビューと差し戻し・破棄対応を行う
+
+```
+削減額 = 人手のみシナリオの総コスト − エージェント利用シナリオの総コスト
+```
+
+レビュー工数は **両シナリオに共通** で発生すると仮定する（エージェント生成物にも人手生成物にも
+同等のレビューが要る）。したがって削減は主に「**実装工数がエージェントに置き換わったぶん**」から生じ、
+そこから「差し戻し・破棄・計算コスト」という追加オーバーヘッドを差し引く。
+
+## 生メトリクスと GitLab ソース
+
+| メトリクス | 算出方法 | API |
+|-----------|---------|-----|
+| `deliverable_bytes` / `deliverable_lines` | 期間内に **マージ済み**・エージェント作成の MR について、diff の追加行（`+`、`+++` ヘッダ除く）のバイト数・行数を合計 | `GET /merge_requests/:iid/changes` |
+| `discarded_mr_count` | 期間内に state=closed かつ merged_at が無い MR の数 | `GET /merge_requests?state=all` |
+| `agent_comment_bytes` | エージェント author の非 system note のバイト数（イシュー＋MR） | `GET /issues/:iid/notes`, `GET /merge_requests/:iid/notes` |
+| `rework_count` | 期間内のイシュー reopen イベント + `status:needs-rework` ラベル付与イベントの合計 | `resource_state_events`, `resource_label_events` |
+| `review_minutes_est` | マージ済み MR ごとに `追加バイト数 / review_bytes_per_minute + review_fixed_min_per_mr`（上限 `review_cap_min_per_mr`）を合計 | 上記 changes から計算 |
+
+「エージェント」は GitLab username 集合（`--agent-users`、既定は認証ユーザー）で判定する。
+
+## コスト計算の式
+
+記号:
+- `D` = `deliverable_bytes`、`rate` = `human_hourly_rate`
+- `W` = 実装スループット（バイト/時）= `loc_per_day × bytes_per_loc / productive_hours_per_day`
+
+```
+実装時間（人）   author_hours = D / W
+レビュー時間（人） review_hours = review_minutes_est / 60
+
+人手のみ総コスト  human_only = (author_hours + review_hours) × rate
+
+差し戻しオーバーヘッド = rework_count × per_rework_human_min/60 × rate
+破棄オーバーヘッド    = discarded_mr_count × per_discard_human_min/60 × rate
+計算コスト agent_compute:
+   agent_cost_override があればその値
+   無ければ (D + agent_comment_bytes) × rework_redo_factor / bytes_per_token / 1000 × price_per_1k_output_tokens
+
+エージェント利用総コスト agent_scenario =
+   agent_compute + review_hours×rate + 差し戻しOH + 破棄OH
+
+削減額 savings   = human_only − agent_scenario
+削減率 savings_% = savings / human_only × 100
+削減人時         = author_hours（実装ぶんがまるごと人手から消える）
+```
+
+レビュー（`review_hours×rate`）は両シナリオに含まれるため削減には寄与しないが、レポートには内訳として表示する。
+
+## パラメータ一覧と既定値
+
+`--params-file` の JSON で任意のキーを上書きできる。既定値は **概算** であり、組織実績での較正を前提とする。
+
+| キー | 既定 | 意味 |
+|------|------|------|
+| `currency` | `"JPY"` | 通貨表記 |
+| `human_hourly_rate` | `6000` | エンジニア 1 時間の人件費 |
+| `productive_hours_per_day` | `6` | 1 人日あたりの正味実装時間 |
+| `bytes_per_loc` | `40` | 1 行あたり平均バイト数（バイト⇄行換算） |
+| `write_loc_per_day_low` | `30` | 実装スループット 悲観（生産性低） |
+| `write_loc_per_day_mid` | `60` | 実装スループット 最頻 |
+| `write_loc_per_day_high` | `120` | 実装スループット 楽観（生産性高） |
+| `review_bytes_per_minute` | `270` | レビュー速度（≒400 LOC/h） |
+| `review_fixed_min_per_mr` | `5` | MR 1 件あたりの固定レビュー時間 |
+| `review_cap_min_per_mr` | `120` | MR 1 件あたりレビュー時間の上限 |
+| `per_rework_human_min` | `20` | 差し戻し 1 回あたりの人の追加時間 |
+| `per_discard_human_min` | `15` | 破棄 MR 1 件あたりの人の追加時間 |
+| `bytes_per_token` | `4` | バイト→トークン概算 |
+| `rework_redo_factor` | `1.3` | 差し戻しによる再生成ぶんの係数 |
+| `price_per_1k_output_tokens` | `0` | 1k 出力トークン単価（0=計算コスト無視） |
+| `agent_cost_override` | `null` | 指定すると計算コストをこの固定値に |
+
+`--rework-labels`（CLI）で差し戻しとみなすラベルを変更できる（既定 `status:needs-rework`）。
+
+## レンジ（楽観/最頻/悲観）の作り方
+
+最大の不確実性は「人の実装スループット」にある。これを 3 点（low/mid/high LOC/人日）で振って削減額のレンジを作る:
+
+- **楽観（savings.low）** = `write_loc_per_day_high`：人が速く書ける前提 → 置き換えた工数が小さい → **削減小**
+- **最頻（savings.mid）** = `write_loc_per_day_mid`
+- **悲観（savings.high）** = `write_loc_per_day_low`：人が遅い前提 → 置き換えた工数が大きい → **削減大**
+
+> 命名に注意: 「楽観/悲観」は **人手コストの楽観/悲観** ではなく **削減額の小/大** を指す。レポートでは
+> 「楽観（削減小）/悲観（削減大）」と明示する。
+
+## 前提の較正（calibration）
+
+精度を上げるには既定値を組織実績に寄せる:
+
+1. **スループット**: 過去スプリントの「マージ済み追加行 ÷ 投入人日」から逆算して `write_loc_per_day_*` を設定
+2. **人件費**: 実際の時間単価（賞与・間接費込み）を `human_hourly_rate` に
+3. **レビュー速度**: チームのコードレビュー速度（一般に 300–500 LOC/h 程度が上限）を `review_bytes_per_minute` に
+4. **計算コスト**: 実トークン課金があれば `agent_cost_override` に実費を入れる
+
+## 既知の限界・注意点
+
+- **バイト数 ≠ 価値**: `deliverable_bytes` は追加行の総量にすぎない。自動生成・vendor・ロックファイル・
+  大量データ投入が混入すると過大評価になる。桁外れな値は中身を確認し、必要なら対象 MR を除外する
+- **`changes` エンドポイント**: 大きな MR では diff が切り詰められることがある。GitLab 設定の差分サイズ上限に依存する
+- **API 呼び出し量**: イシュー・MR ごとに notes / events を取得するため、対象が多いと呼び出しが増える。期間を区切って実行する
+- **差し戻しの解釈**: reopen / needs-rework は学習・探索の結果でもあり、多い＝悪とは限らない。因果を断定しない
+- **counterfactual の不確実性**: 「人がやっていたら」のコストは本質的に推定であり、レンジと前提の明示が必須
