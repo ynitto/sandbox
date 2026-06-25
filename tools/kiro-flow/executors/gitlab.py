@@ -324,6 +324,45 @@ def _get_comments(host: str, token: str, project: str, iid) -> list:
     return res if isinstance(res, list) else []
 
 
+def _related_merge_requests(host: str, token: str, project: str, iid) -> list:
+    """イシューに紐づく MR 一覧を取得する（人が管理する『関連 MR』）。各要素は state を持つ
+    （opened / closed / merged / locked）。完了/却下の判定に使う。"""
+    ep = _encode_project(project)
+    res = gl_api_list(host, token, f"/projects/{ep}/issues/{iid}/related_merge_requests")
+    return res if isinstance(res, list) else []
+
+
+def _close_issue(host: str, token: str, project: str, iid,
+                 labels: "list | None" = None) -> dict:
+    """イシューを明示的にクローズする（state_event=close）。labels 指定時は同時に更新。
+    kiro-flow は MR を**マージしない**（人が管理）。承認（全マージ）/却下（未マージクローズ）の
+    どちらの決着でも、後始末としてこのイシューをクローズするだけ。"""
+    ep = _encode_project(project)
+    data: dict = {"state_event": "close"}
+    if labels is not None:
+        data["labels"] = ",".join(labels)
+    return gl_api(host, token, "PUT", f"/projects/{ep}/issues/{iid}", data=data)
+
+
+def _human_comments(host: str, token: str, project: str, iid) -> str:
+    """イシューの**人間のコメント**を新しい順に連結して返す（却下時のやり直し指示に活かす）。
+    GitLab の system note（ラベル変更等の自動記録）と、kiro-flow が付けた creator-node-id タグを含む
+    自動コメントは除外する。人のコメントが無ければ空文字（呼び出し側は『自動で判断』に倒す）。"""
+    try:
+        notes = _get_comments(host, token, project, iid)
+    except RuntimeError:
+        return ""
+    out = []
+    for n in reversed(notes if isinstance(notes, list) else []):
+        if n.get("system"):
+            continue                                   # ラベル変更等の自動記録は除外
+        body = str(n.get("body") or "").strip()
+        if not body or "gitlab-idd:creator-node-id" in body or body.startswith("kiro-flow:"):
+            continue                                   # kiro-flow 自身の自動コメントは除外
+        out.append(body)
+    return "\n\n".join(out)[:2000]
+
+
 def _issue_body(kind: str, goal: str, dep_results: dict, repo_instruction: str = "") -> str:
     """イシュー本文（GitLab Markdown）を組み立てる。gitlab-idd 規約に従い
     『## 受け入れ条件』を必ず含める（ワーカー/レビュアーが完了判定に使う）。
@@ -347,32 +386,35 @@ def _issue_body(kind: str, goal: str, dep_results: dict, repo_instruction: str =
     lines += [
         "## 受け入れ条件", "",
         f"- [ ] 次のタスクが完了している: {goal}",
-        "- [ ] 変更がブランチに push され、レビュー可能な状態（MR）になっている",
-        "- [ ] レビュー後、**人が MR をマージ（＝このイシューをクローズ）** すると完了になる",
+        "- [ ] 変更を **MR** にして push し、レビュー可能にする（複数 MR 可）",
+        "- [ ] レビュー後、**人が関連 MR を管理**する: 採用するなら**マージ**、却下するなら**未マージのままクローズ**",
         "",
         "---",
-        f"_kiro-flow ワーカーバス（kind=`{kind}`）により自動起票。"
-        "**人が MR をマージ（イシューをクローズ）した時点で完了**とみなします"
-        "（kiro-flow は自動マージしません）。`status:approved`/`status:done` は進捗の目印で、"
-        "付与後はマージ（クローズ）待ちに移行します。_",
+        f"_kiro-flow ワーカーバス（kind=`{kind}`）により自動起票。完了判定は**関連 MR の状態**で行う:_"
+        "\n_・関連 MR が**すべてマージ**された → 承認とみなし、このイシューをクローズして完了。_"
+        "\n_・関連 MR が**一つでも未マージでクローズ**された → 却下とみなし、やり直す"
+        "（このイシューのコメントをやり直しの指示に使う）。kiro-flow は MR を自動マージしません。_",
     ]
     return "\n".join(lines)
 
 
 def execute(kind: str, goal: str, dep_results: dict, model=None,
             art_dir=None, dep_arts=None, repo_instruction: str = ""):
-    """opt-in のワーカーバス: タスクを GitLab イシューにして委譲し、**人がマージ＝クローズ**するまで待つ。
+    """opt-in のワーカーバス: タスクを GitLab イシューにして委譲し、**人が関連 MR を管理**するのを待つ。
 
-    1. イシューを起票（status:open,assignee:any ＋ 優先度）
-    2. ポーリングして **イシューがクローズ**（人が MR をマージ）したら完了とみなす。
-       kiro-flow は自動マージしない（シンプルに人の操作に委ねる）。
-    3. ワーカーの最終コメント（完了報告）を成果テキストとして取り込んで返す
+    1. イシューを起票（status:open,assignee:any ＋ 優先度）。
+    2. **関連 MR の状態**をポーリングして決着を待つ（executor 内で完結）:
+       - 関連 MR が**すべてマージ** → 承認。イシューをクローズ（status:done）して **成功** を返す。
+         （verify はこの後 kiro-autonomous が downstream で実施する。）
+       - 関連 MR が**一つでも未マージでクローズ** → 却下。**人のコメント**を取り込み（無ければ空＝
+         呼び出し側が自動判断）、元イシューをクローズして **RuntimeError（[gitlab-reject] …）** を送出。
+         上位（kiro-autonomous）の通常リトライがコメントを活かして再委譲する。
+       - MR がまだ open のうちは待機。
 
-    タイムアウト（人の確認は時間がかかるため長め・設定可能）:
-      - `timeout`（既定 7 日）… クローズに達するまでの全体上限。
-      - `approved_timeout`（既定 14 日）… `status:approved`/`status:done` 検知後の猶予。
-        承認後は人のマージ（クローズ）待ちなので、検知時点から長い猶予に切り替える。
-      - いずれも 0 で無限待ち。
+    タイムアウト（人の確認は時間がかかるため長め・設定可能。0 で無限）:
+      - `timeout`（既定 7 日）… 全体上限。
+      - `approved_timeout`（既定 14 日）… MR 出現または `status:approved`/`status:done` 検知後の猶予
+        （人が能動的に作業中とみなして長く待つ）。
 
     起票先プロジェクトは kiro-flow.yaml の `gitlab.repo_url` を権威に、トークンは gl.py と
     同じ場所（connections.yaml / 環境変数 / シェル rc）から解決し、GitLab REST を直叩きする。
@@ -403,52 +445,91 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     url = created.get("web_url", "")
     if not iid:
         raise RuntimeError(f"GitLab イシューの作成に失敗しました: {str(created)[:200]}")
-    _log(f"イシュー #{iid} を起票しマージ（クローズ）待ち（{url_base}）: {url}")
+    _log(f"イシュー #{iid} を起票し関連 MR の決着待ち（{url_base}）: {url}")
 
     approved = str(cfg.get("approved_label") or "status:approved")
-    done = str(cfg.get("done_label") or "status:done")
+    done_label = str(cfg.get("done_label") or "status:done")
     interval = _as_float(cfg.get("poll_interval"), 30.0)
     timeout = _as_float(cfg.get("timeout"), 0.0)
     approved_timeout = _as_float(cfg.get("approved_timeout"), 0.0)
     deadline = (time.time() + timeout) if timeout > 0 else None
-    approved_seen = False
+    active_seen = False  # MR 出現 or approved/done ラベル＝人が能動的に作業中
 
-    labels_now: set = set()
     while True:
         issue = _get_issue(host, token, project, iid)
         labels_now = set(issue.get("labels") or [])
-        state = issue.get("state")
-        # 完了は「人がマージ＝イシュークローズ」だけ。kiro-flow は自動マージしない。
-        if state == "closed":
-            break
-        # 承認/完了ラベルを検知したら、人のマージ待ちへ移行し猶予を長く取り直す（設定可能）。
-        if not approved_seen and (approved in labels_now or done in labels_now):
-            approved_seen = True
+        issue_closed = issue.get("state") == "closed"
+        mrs = _related_merge_requests(host, token, project, iid)
+        states = [str(m.get("state") or "") for m in mrs]
+        decision = _mr_decision(states, issue_closed)
+
+        if decision == "approved":
+            return _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label)
+        if decision == "rejected":
+            _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label)
+
+        # まだ決着せず（MR が open / 未作成）。人が動き出したら長い猶予へ切り替える。
+        if not active_seen and (mrs or approved in labels_now or done_label in labels_now):
+            active_seen = True
             deadline = (time.time() + approved_timeout) if approved_timeout > 0 else None
-            _log(f"イシュー #{iid} に {approved}/{done} を検知。"
-                 f"マージ（クローズ）待ちへ移行（猶予 {approved_timeout:.0f}s, 0=無限）")
+            _log(f"イシュー #{iid}: 人の作業を検知（MR {len(mrs)} 件 / ラベル）。"
+                 f"決着待ちの猶予を延長（{approved_timeout:.0f}s, 0=無限）")
         if deadline is not None and time.time() >= deadline:
-            phase = "マージ（クローズ）" if approved_seen else "レビュー/マージ"
-            raise RuntimeError(
-                f"イシュー #{iid} が期限内に {phase} されませんでした（{url}）")
+            phase = "MR の決着（全マージ/却下クローズ）" if active_seen else "レビュー/MR 作成"
+            raise RuntimeError(f"イシュー #{iid} が期限内に {phase} に至りませんでした（{url}）")
         time.sleep(max(0.0, interval))
 
-    # ワーカーの最終コメント（完了報告）を成果として取り込む（ベストエフォート）
-    report = ""
-    try:
-        comments = _get_comments(host, token, project, iid)
-        if isinstance(comments, list) and comments:
-            report = str(comments[-1].get("body") or "").strip()
-    except Exception:  # noqa: BLE001 — コメント取得失敗は致命的ではない
-        report = ""
 
-    _log(f"イシュー #{iid} がクローズ（マージ完了）: {url}")
-    text = f"[gitlab] イシュー #{iid} クローズ＝マージ完了（{url}）"
-    if report:
-        text += "\n\n" + report[:1000]
-    data = {"issue_iid": iid, "web_url": url,
-            "labels": sorted(labels_now), "closed": True}
+def _mr_decision(states: "list[str]", issue_closed: bool) -> str:
+    """関連 MR の状態（と issue の closed）から決着を判定する。
+      - "approved": MR が 1 つ以上ありすべて merged（人が全採用）。
+      - "rejected": MR に未マージの closed が 1 つでもある（人が却下）。または MR が無いまま
+                    issue が人手でクローズ（取り下げ）。
+      - "": 未決着（open な MR がある / MR 未作成で issue も open）。"""
+    opened = [s for s in states if s in ("opened", "locked")]
+    closed_unmerged = [s for s in states if s == "closed"]
+    merged = [s for s in states if s == "merged"]
+    if opened:
+        return ""                                   # 人がまだ作業中（open な MR がある）
+    if closed_unmerged:
+        return "rejected"                           # 一つでも未マージクローズ＝却下
+    if merged and len(merged) == len(states):
+        return "approved"                           # すべてマージ＝承認
+    if issue_closed:
+        # MR が無い/曖昧なまま人が issue をクローズ → 取り下げ＝却下扱い（やり直し判断へ）
+        return "rejected"
+    return ""
+
+
+def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label):
+    """承認（全 MR マージ）: イシューをクローズ（status:done）して成果を返す。"""
+    try:
+        _close_issue(host, token, project, iid, sorted(set(labels_now) | {done_label}))
+    except RuntimeError as e:  # 既にクローズ済み等は致命的でない
+        _log(f"イシュー #{iid} のクローズに失敗（無視）: {e}")
+    _log(f"イシュー #{iid}: 関連 MR を全マージ＝承認。イシューをクローズ（{url}）")
+    merged_urls = [m.get("web_url", "") for m in mrs]
+    text = (f"[gitlab] イシュー #{iid} 承認（関連 MR を全マージ）。イシューをクローズ（{url}）\n"
+            f"マージ済み MR: {', '.join(u for u in merged_urls if u) or '(URL なし)'}")
+    data = {"issue_iid": iid, "web_url": url, "decision": "approved",
+            "merged_mrs": [m.get("iid") for m in mrs], "closed": True}
     return text, data
+
+
+def _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label):
+    """却下（未マージクローズ）: 人コメントを取り込み、元イシューをクローズして例外を送出する。
+    例外メッセージ先頭の `[gitlab-reject]` を上位（kiro-autonomous）が検知し、やり直しに活かす。"""
+    guidance = _human_comments(host, token, project, iid)
+    try:
+        _close_issue(host, token, project, iid, sorted(set(labels_now) | {done_label}))
+    except RuntimeError as e:
+        _log(f"イシュー #{iid} のクローズに失敗（無視）: {e}")
+    if guidance:
+        _log(f"イシュー #{iid}: 却下（未マージクローズ）。人コメントをやり直しに活かす。")
+        raise RuntimeError(f"[gitlab-reject] 却下されました（{url}）。やり直し指示: {guidance}")
+    _log(f"イシュー #{iid}: 却下（未マージクローズ）。人コメント無し＝自動で判断してやり直す。")
+    raise RuntimeError(f"[gitlab-reject] 却下されました（{url}）。"
+                       "人コメントが無いため自動で原因を判断してやり直してください。")
 
 
 if __name__ == "__main__":

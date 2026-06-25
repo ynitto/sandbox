@@ -2160,9 +2160,14 @@ def _repo_cmd_args(cfg: "Config", task: Task) -> "list[str]":
 
 def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
     """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。"""
-    return _kf_base(cfg, use_git) + _repo_cmd_args(cfg, task) + [
+    cmd = _kf_base(cfg, use_git) + _repo_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
         "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
+    # 委譲 executor（gitlab）の却下は kiro-flow 内部で再委譲せず即失敗させ、kiro-autonomous の
+    # 通常リトライ（人コメント注入つき）に委ねる。複数イシューの濫造を防ぐ。
+    if executor_delegates(cfg):
+        cmd += ["--max-retries", "0"]
+    return cmd
 
 
 def daemon_lock_path(cfg: "Config", use_git: bool) -> Path:
@@ -2301,6 +2306,42 @@ def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tu
             return _act_submit(task, cfg, use_git=False)
         return _act_run(task, cfg, use_git=False)  # daemon 不在 → run
     return _act_run(task, cfg, use_git=False)
+
+
+# ---------------------------------------------------------------------------
+# 委譲 executor（gitlab 等）のやり直し連携。
+#   gitlab executor は「関連 MR が全マージ＝承認 / 一つでも未マージクローズ＝却下」を判定し、
+#   却下時は人コメント（無ければ自動判断）を `[gitlab-reject]` 付きで失敗にする。kiro-flow run は
+#   failed で非 0 終了し、kiro-autonomous は verify=NG 相当として通常リトライする。その際、却下時の
+#   人コメントを次 act の feedback に注入して活かす。
+# ---------------------------------------------------------------------------
+_REJECT_MARK = "[gitlab-reject]"
+
+
+def executor_delegates(cfg: "Config") -> bool:
+    """この executor が外部（人）へ委譲し、却下→やり直しのコメント連携を要するか。
+    組み込み kiro/stub はローカル完結＝対象外。"""
+    return cfg.executor not in ("kiro", "stub")
+
+
+def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
+    """直近 run のノード出力から `[gitlab-reject]` のやり直し指示（人コメント）を取り出す。
+    `kiro-flow result --json` を読むだけ（決定的）。見つからなければ空（＝自動判断）。"""
+    if not executor_delegates(cfg):
+        return ""
+    cmd = _kf_base(cfg, use_git) + ["result", "--json"]
+    try:
+        proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
+                              capture_output=True, text=True)
+        data = json.loads(proc.stdout or "{}")
+    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
+        return ""
+    for n in data.get("final_nodes", []):
+        out = str((n or {}).get("output", ""))
+        i = out.find(_REJECT_MARK)
+        if i >= 0:
+            return out[i + len(_REJECT_MARK):].strip()[:1500]
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -2799,8 +2840,9 @@ def _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cyc
     return {"archived": 1 if cfg.do_archive else 0, "followups": parse_followups(task, act_msg)}
 
 
-def _settle_failure(cfg, task, vmsg, cycle, ev, reasons):
-    """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。"""
+def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
+    """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。
+    委譲 executor（gitlab）の却下なら、人コメント（やり直し指示）を次 act の feedback に注入する。"""
     task.retries += 1
     if not task.verify:
         _escalate(cfg, task, "verify 未定義", reasons, cycle, evidence=ev)
@@ -2827,6 +2869,15 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons):
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（繰り返し NG）")
     else:
         task.status = "ready"
+        # 委譲 executor の却下: 人コメント（やり直し指示）を feedback に載せて次 act で活かす。
+        # コメントが無ければ空＝注入なし（ワーカーが自動で原因判断してやり直す）。
+        if executor_delegates(cfg):
+            guidance = read_reject_guidance(cfg, location == "remote")
+            if guidance:
+                task.drop("feedback")
+                task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
+                append_journal(cfg.journal,
+                               f"cycle {cycle}: {task.id} 却下コメントを次 act に注入")
         persist_task(cfg, task)
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
                                     f"({task.retries}/{cfg.max_retries}) — {vmsg}")
@@ -2900,7 +2951,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         return _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
                             autonomy_cache)
     else:
-        _settle_failure(cfg, task, vmsg, cycle, ev, reasons)
+        _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location)
     return {"archived": 0, "followups": []}
 
 

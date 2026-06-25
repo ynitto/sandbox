@@ -388,16 +388,19 @@ while True:
 - **起票**: `gl.py create-issue` で `## 目的` ＋（依存成果）＋ `## 受け入れ条件` を本文に持つ
   イシューを `status:open,assignee:any`（＋優先度）で作る。本文は argv 長制限を避け
   `--body-file` 経由で渡す。リモートのワーカーが gitlab-idd の規約でこれを拾って実装する。
-- **完了判定（人がマージ＝クローズ）**: イシューをポーリングし、**イシューがクローズ**
-  （＝人が MR をマージ）したらそのタスクを **done** とみなす。kiro-flow は**自動マージしない**
-  （シンプルに人の操作へ委ねる）。`status:approved`/`status:done` は進捗の目印で、検知すると
-  「マージ（クローズ）待ち」へ移行する。人の確認は時間がかかるため待機は長め・設定可能:
-  `timeout`（既定 7 日・クローズまでの全体上限）と `approved_timeout`（既定 14 日・承認検知後の猶予）。
-  いずれも 0 で無限。超過は **failed** として記録し再計画に回す。ポーリングするのは kiro-flow
-  （Python オーケストレータ）であって LLM セッションではないため、gitlab-idd の「LLM ポーリング禁止」
-  指針とは別物。
-- **成果**: ワーカーの最終コメントを成果テキストに取り込み、`data` にイシュー
-  iid/web_url/labels/closed を残す（成果物の実体は GitLab 上のマージ済み MR にある）。
+- **完了判定（人が関連 MR を管理）**: kiro-flow は MR を**自動マージしない**。**関連 MR の状態**を
+  ポーリングして決着を判定する（`_mr_decision`・executor 内で完結）:
+  - **すべてマージ** → 承認。イシューをクローズ（status:done）して **成功** を返す。
+    verify はこの後 kiro-autonomous が downstream で実施する（NG なら新規やり直し）。
+  - **一つでも未マージでクローズ** → 却下。イシューの**人コメント**を取り込み（無ければ空＝自動判断）、
+    元イシューをクローズして `RuntimeError([gitlab-reject] …)` を送出。上位（kiro-autonomous）が通常
+    リトライで再委譲し、コメントを次 act の指示に活かす。
+  - MR がまだ open のうちは待機。MR が無いまま人が issue をクローズしたら取り下げ＝却下扱い。
+  人の確認は時間がかかるため待機は長め・設定可能: `timeout`（既定 7 日・全体上限）と
+  `approved_timeout`（既定 14 日・MR 出現/approved ラベル検知後の猶予）。いずれも 0 で無限。
+  ポーリングは kiro-flow（Python）であって LLM ではないため、gitlab-idd の「LLM ポーリング禁止」とは別物。
+- **成果**: 承認時は `data` に issue iid/web_url/`decision:"approved"`/`merged_mrs`/closed を残す
+  （成果物の実体は GitLab 上のマージ済み MR にある）。
 - **再計画はローカル**: evaluator-optimizer の継続判断はオーケストレータ側で行う。`_continue`
   は executor が `stub` のときだけ stub 継続、それ以外（`kiro` や任意のプラグイン）はローカル
   `kiro` で判断する（プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
@@ -412,9 +415,9 @@ while True:
 | executor | 成果物の置き場 | 完了の確定 |
 |----------|--------------|-----------|
 | **kiro** | ローカル clone を成果ブランチへ commit/push（`capture_deliveries`） | 上位（kiro-autonomous）の verify（exit 0） |
-| **gitlab** | リモート worker が MR を作成 | **人が MR をマージ＝イシュークローズ**（kiro-flow は自動マージしない） |
+| **gitlab** | リモート worker が MR を作成 | **人が関連 MR を管理**: 全マージ＝承認（イシュークローズ）／一つでも未マージクローズ＝却下（やり直し）。kiro-flow は自動マージしない |
 
-> 両 executor で対称性は持たせない。kiro はローカルで push、gitlab は人のマージ（クローズ）で完了。
+> 両 executor で対称性は持たせない。kiro はローカルで push、gitlab は人の MR 管理（全マージ=承認 / 未マージクローズ=却下）で決着。
 
 - **ロール・スキーマ（executor 横断の正準インターフェース）**: 各成果物リポジトリ（`--repo`）は
   `role` を持つ――**`write`＝成果物をコミットする単一の対象**（push 先）、**`read`＝参照のみ**（clone するが
@@ -432,10 +435,11 @@ while True:
   コミットを伴うとは限らない**（調査系タスク等）ため、変更が無い repo は捕捉せず、その場合の納品物は
   バス上の `result.output/data`（サマリー）になる。捕捉は `executor=kiro` のときだけ走る（stub は実変更
   なし、gitlab 等は別マシン作業＝ローカル clone に変更が出ない）。
-- **gitlab の納品（自動マージはしない）**: gitlab executor は MR を**自動マージしない**。
-  リモート worker が MR を用意し、レビュー後に**人が MR をマージ（＝イシューをクローズ）**した時点で
-  タスク完了とみなす（§9.1 完了判定）。`status:approved`/`status:done` は進捗の目印で、検知後は
-  `approved_timeout`（長め・設定可能）でマージ（クローズ）待ちに移行する。
+- **gitlab の納品（自動マージはしない）**: gitlab executor は MR を**自動マージしない**。リモート
+  worker が MR を用意し、**人が関連 MR を管理**する。**全 MR マージ＝承認**（イシューをクローズして
+  成功）、**一つでも未マージクローズ＝却下**（人コメントを取り込み元イシューをクローズして失敗を送出。
+  上位の通常リトライがコメントを活かして再委譲）。詳細は §9.1 完了判定。`approved_timeout`（長め・
+  設定可能）で MR の決着を待つ。
 
 ---
 
