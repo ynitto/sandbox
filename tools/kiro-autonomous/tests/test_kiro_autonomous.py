@@ -3742,5 +3742,63 @@ class SelfUpdateTests(unittest.TestCase):
                 km.run_watch(cfg, sleeper=lambda _s: None)
 
 
+class TestGitlabRejectRetry(unittest.TestCase):
+    """委譲 executor（gitlab）の却下→通常リトライ連携: 内部再委譲を抑止（--max-retries 0）し、
+    却下時の人コメント（[gitlab-reject]）を次 act の feedback に注入する。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ka-rej-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_executor_delegates(self):
+        self.assertFalse(km.executor_delegates(cfg_for(self.tmp, executor="kiro")))
+        self.assertTrue(km.executor_delegates(cfg_for(self.tmp, executor="gitlab")))
+
+    def test_build_cmd_sets_max_retries_zero_for_gitlab(self):
+        mkb(self.tmp, "t1")
+        t = km.load_tasks((self.tmp / "backlog"))[0]
+        cmd = km.build_kiro_flow_cmd(t, cfg_for(self.tmp, executor="gitlab"))
+        self.assertIn("--max-retries", cmd)
+        self.assertEqual(cmd[cmd.index("--max-retries") + 1], "0")
+        # kiro executor では付けない
+        cmd2 = km.build_kiro_flow_cmd(t, cfg_for(self.tmp, executor="kiro"))
+        self.assertNotIn("--max-retries", cmd2)
+
+    def test_read_reject_guidance_extracts_marker(self):
+        cfg = cfg_for(self.tmp, executor="gitlab")
+        result_json = json.dumps({"final_nodes": [
+            {"id": "n1", "output": "実行エラー: [gitlab-reject] 却下されました（u）。"
+                                   "やり直し指示: 命名を要件に合わせる"}]})
+
+        def fake_run(cmd, **kw):
+            return types.SimpleNamespace(returncode=1, stdout=result_json, stderr="")
+
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            g = km.read_reject_guidance(cfg, use_git=False)
+        self.assertIn("命名を要件に合わせる", g)
+        self.assertNotIn("[gitlab-reject]", g)
+
+    def test_read_reject_guidance_empty_when_no_marker(self):
+        cfg = cfg_for(self.tmp, executor="gitlab")
+
+        def fake_run(cmd, **kw):
+            return types.SimpleNamespace(
+                returncode=0, stdout='{"final_nodes":[{"output":"ok"}]}', stderr="")
+
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(km.read_reject_guidance(cfg, use_git=False), "")
+
+    def test_settle_failure_injects_reject_comment_as_feedback(self):
+        cfg = cfg_for(self.tmp, executor="gitlab", max_retries=2)
+        (self.tmp / "backlog").mkdir(parents=True, exist_ok=True)
+        t = km.Task(id="t1", title="ログイン", verify="true", status="doing")
+        with mock.patch.object(km, "read_reject_guidance", return_value="命名を直す"):
+            km._settle_failure(cfg, t, "verify NG", cycle=1, ev="", reasons={}, location="local")
+        self.assertEqual(t.norm_status(), "ready")          # 積み直し
+        self.assertEqual(t.feedback(), "命名を直す")          # 却下コメントを feedback に注入
+
+
 if __name__ == "__main__":
     unittest.main()

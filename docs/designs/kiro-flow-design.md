@@ -388,18 +388,48 @@ while True:
 - **起票**: `gl.py create-issue` で `## 目的` ＋（依存成果）＋ `## 受け入れ条件` を本文に持つ
   イシューを `status:open,assignee:any`（＋優先度）で作る。本文は argv 長制限を避け
   `--body-file` 経由で渡す。リモートのワーカーが gitlab-idd の規約でこれを拾って実装する。
-- **完了判定**: `gl.py get-issue` でラベルをポーリングし、レビュアーが付ける
-  `status:approved`（または `status:done` / クローズ）に達したらそのタスクを **done** とみなす。
-  `timeout`（既定 86400s、0 で無限）超過は **failed** として記録し、再計画に回す。
-  ポーリングするのは kiro-flow（Python オーケストレータ）であって LLM セッションではないため、
-  gitlab-idd の「LLM ポーリング禁止」指針とは別物。
-- **成果**: ワーカーの最終コメントを成果テキストに取り込み、`data` にイシュー
-  iid/web_url/labels を残す（成果物の実体は GitLab 上のブランチ/MR にある）。
+- **完了判定（人が関連 MR を管理）**: kiro-flow は MR を**自動マージしない**。**関連 MR の状態**を
+  ポーリングして決着を判定する（`_mr_decision`・executor 内で完結）:
+  - **すべてマージ** → 承認。イシューをクローズ（status:done）して **成功** を返す。
+    verify はこの後 kiro-autonomous が downstream で実施する（NG なら新規やり直し）。
+  - **一つでも未マージでクローズ** → 却下。イシューの**人コメント**を取り込み（無ければ空＝自動判断）、
+    元イシューをクローズして `RuntimeError([gitlab-reject] …)` を送出。上位（kiro-autonomous）が通常
+    リトライで再委譲し、コメントを次 act の指示に活かす。
+  - MR がまだ open のうちは待機。MR が無いまま人が issue をクローズしたら取り下げ＝却下扱い。
+  人の確認は時間がかかるため待機は長め・設定可能: `timeout`（既定 7 日・全体上限）と
+  `approved_timeout`（既定 14 日・MR 出現/approved ラベル検知後の猶予）。いずれも 0 で無限。
+  ポーリングは kiro-flow（Python）であって LLM ではないため、gitlab-idd の「LLM ポーリング禁止」とは別物。
+- **成果**: 承認時は `data` に issue iid/web_url/`decision:"approved"`/`merged_mrs`/closed を残す
+  （成果物の実体は GitLab 上のマージ済み MR にある）。
 - **再計画はローカル**: evaluator-optimizer の継続判断はオーケストレータ側で行う。`_continue`
   は executor が `stub` のときだけ stub 継続、それ以外（`kiro` や任意のプラグイン）はローカル
   `kiro` で判断する（プラグインはワーカータスクの実行のみを委譲し、メタ評価はローカルに残す）。
 - **opt-in**: 既定 executor は `kiro` のまま。明示選択時のみ有効で、`gl.py` 未発見/接続未設定なら
   起票時に明確に失敗する（誤選択で無限待ちにしない）。設定は `gitlab:` ブロック。
+
+### 9.2 成果物リポジトリへの納品（delivery）
+
+成果物（プログラム/ドキュメント）の実体は**バスではなく成果物リポジトリ**に置き、バスには
+「サマリー＋リンク（どのブランチ/MR/イシューに成果があるか）」だけを残す。リポジトリのルーティング
+（タスク→書込先）は制御層 kiro-autonomous が担う（詳細は `tools/kiro-autonomous/ROUTING.md`）。
+kiro-flow は **1 run = 1 ワークスペース（唯一の書込先）** に固定する。
+
+- **ワークスペース（`--workspace`・ちょうど 1 つ）**: その run の唯一の書込先。素の URL か JSON
+  `{url,path,base,target,desc}`。kiro-flow が clone し、`kf/<run-id>` を base から作成してワーカーへ渡す。
+  エージェントは作業ツリーを編集するだけで、**変更があれば kiro-flow が commit して push**（分散 worker は
+  同じ `kf/<run-id>` へ push し rebase リトライで統合）。**変更が無ければ push しない**＝調査だけの読み取り
+  専用グラフでは何も書き込まない（`finalize_workspace`）。デリバリ（branch/commit/target）を result に記録。
+- **参照リポジトリ（`--reference`・複数可・読むだけ）**: clone はせず、エージェントのプロンプト（参照節）と
+  gitlab イシュー本文の『## 参照リポジトリ』節へ描画する。書込先は参照に含めない。
+- **executor 横断インターフェース**: executor 契約に構造化 `workspace`（spec dict）と `references`（spec の列）を
+  渡す。`workspace_instruction` が全 executor へ渡る指示文（LLM 向け）。gitlab executor は **workspace URL から
+  起票先 GitLab プロジェクトを解決**（無ければ `gitlab.repo_url` フォールバック）し、対象/参照リポジトリ節を
+  構造化 spec から Markdown 整形する（ローカル clone パスは載せない）。
+- **gitlab の納品（自動マージはしない・人が関連 MR を管理）**: gitlab executor は MR を**自動マージしない**。
+  リモート worker が MR を用意し、人が関連 MR を管理する。**全 MR マージ＝承認**（イシューをクローズして
+  成功）、**一つでも未マージクローズ＝却下**（人コメントを取り込み元イシューをクローズして失敗を送出。
+  上位の通常リトライがコメントを活かして再委譲）。詳細は §9.1 完了判定。`approved_timeout`（長め・
+  設定可能）で MR の決着を待つ。kiro（ローカル push）と gitlab（人の MR 管理）で対称性は持たせない。
 
 ---
 

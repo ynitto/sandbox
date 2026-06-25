@@ -640,8 +640,8 @@ gl_plugin = _load_executor_plugin("gitlab")
 
 
 class GitlabExecutorPluginTests(unittest.TestCase):
-    """gitlab executor プラグイン（opt-in）: GitLab REST を直叩きしてイシュー起票 →
-    approved ポーリング → 完了。起票先は repo_url（kiro-flow.yaml）を権威に使う。"""
+    """gitlab executor プラグイン（opt-in）: イシュー起票 → **関連 MR の状態**をポーリング →
+    全マージ＝承認（イシュークローズして成功）/ 一つでも未マージクローズ＝却下（やり直し）。"""
 
     def setUp(self):
         # ポーリング待ちを無くす設定を環境変数（KIRO_FLOW_EXECUTOR_CONFIG）で渡す
@@ -658,51 +658,104 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         else:
             os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = self._prev_env
 
-    def _run_with(self, api_side, list_side=lambda *a, **k: [], token="glpat-x"):
+    def _run_with(self, api_side, mrs_seq=None, notes=None, token="glpat-x"):
+        """gl_api（issue GET/POST/PUT）と gl_api_list（related_merge_requests / notes）を
+        モックして execute を回す。mrs_seq は poll 毎の関連 MR リスト列、notes は人コメント。"""
+        mrs_seq = list(mrs_seq or [[]])
+
+        def list_side(host, token_, path, params=None):
+            if path.endswith("/related_merge_requests"):
+                return mrs_seq.pop(0) if len(mrs_seq) > 1 else mrs_seq[0]
+            if path.endswith("/notes"):
+                return notes or []
+            return []
+
         with mock.patch.object(gl_plugin, "_resolve_token", return_value=token), \
              mock.patch.object(gl_plugin, "gl_api", side_effect=api_side) as m, \
              mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
             text, data = gl_plugin.execute("work", "ログイン画面を追加", {})
         return text, data, m
 
-    def test_creates_issue_and_waits_for_approved(self):
-        # get-issue 相当を 2 回呼ばせ、2 回目で approved にする
-        states = [["status:open"], ["status:approved"]]
-
+    def test_all_mrs_merged_approves_and_closes(self):
+        # 関連 MR が全てマージ → 承認。イシューをクローズして成功を返す。
         def api(host, token, method, path, data=None, params=None):
             if method == "POST" and path.endswith("/issues"):
                 return {"iid": 42, "web_url": "https://gitlab.com/group/repo/-/issues/42"}
             if method == "GET" and path.endswith("/issues/42"):
-                return {"labels": states.pop(0), "state": "opened"}
+                return {"labels": ["status:approved"], "state": "opened"}
+            if method == "PUT" and path.endswith("/issues/42"):
+                return {"state": "closed"}     # クローズ
             return {}
 
-        text, data, m = self._run_with(
-            api, list_side=lambda *a, **k: [{"body": "実装しました。MR を用意済みです。"}])
-        self.assertIn("#42 approved", text)
-        self.assertIn("MR を用意済み", text)
-        self.assertEqual(data["issue_iid"], 42)
-        self.assertTrue(data["approved"])
-        # 起票は repo_url のプロジェクト（group%2Frepo）に対して POST される
+        mrs = [{"iid": 1, "state": "merged", "web_url": "mr1"},
+               {"iid": 2, "state": "merged", "web_url": "mr2"}]
+        text, data, m = self._run_with(api, mrs_seq=[mrs])
+        self.assertEqual(data["decision"], "approved")
+        self.assertTrue(data["closed"])
+        self.assertEqual(data["merged_mrs"], [1, 2])
+        # イシュークローズの PUT（state_event=close）が出る
+        close = next(c for c in m.call_args_list if c.args[2] == "PUT")
+        self.assertEqual(close.kwargs["data"]["state_event"], "close")
+        # 起票の POST も検証
         post = next(c for c in m.call_args_list if c.args[2] == "POST")
-        self.assertIn("group%2Frepo", post.args[3])
-        # priority ラベルが連結され、作成者ノード ID タグが本文に入る
         self.assertIn("priority:normal", post.kwargs["data"]["labels"])
-        self.assertIn("assignee:any", post.kwargs["data"]["labels"])
         self.assertIn("gitlab-idd:creator-node-id", post.kwargs["data"]["description"])
 
-    def test_closed_issue_counts_as_done(self):
+    def test_one_mr_closed_unmerged_rejects_with_comments(self):
+        # 一つでも未マージでクローズ → 却下。人コメントを [gitlab-reject] に載せて送出。
+        closed = {"n": 0}
+
         def api(host, token, method, path, data=None, params=None):
             if method == "POST":
-                return {"iid": 7, "web_url": "https://gitlab.com/group/repo/-/issues/7"}
-            return {"labels": ["status:open"], "state": "closed"}
+                return {"iid": 9, "web_url": "https://gitlab.com/group/repo/-/issues/9"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            if method == "PUT":
+                closed["n"] += 1               # イシュークローズが呼ばれた
+                return {"state": "closed"}
+            return {}
 
-        text, data, _ = self._run_with(api)
-        self.assertEqual(data["issue_iid"], 7)
-        self.assertTrue(data["approved"])
+        mrs = [{"iid": 1, "state": "merged"}, {"iid": 2, "state": "closed"}]  # 一つ却下
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(api, mrs_seq=[mrs],
+                           notes=[{"body": "命名が要件と違う。修正して。", "system": False}])
+        msg = str(ctx.exception)
+        self.assertIn("[gitlab-reject]", msg)
+        self.assertIn("命名が要件と違う", msg)        # 人コメントをやり直し指示に活かす
+        self.assertEqual(closed["n"], 1)              # 元イシューはクローズされる
 
-    def test_timeout_raises(self):
+    def test_reject_without_comments_says_auto(self):
+        # 人コメントが無い却下 → 自動判断の指示で送出
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 3, "web_url": "u"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(api, mrs_seq=[[{"iid": 1, "state": "closed"}]], notes=[])
+        self.assertIn("[gitlab-reject]", str(ctx.exception))
+        self.assertIn("自動で", str(ctx.exception))
+
+    def test_open_mr_keeps_waiting_until_merged(self):
+        # MR が open のうちは待機し、全マージで承認。
+        seq = [[{"iid": 1, "state": "opened"}],          # まだ作業中
+               [{"iid": 1, "state": "merged"}]]          # マージ完了
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 8, "web_url": "u"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        text, data, _ = self._run_with(api, mrs_seq=seq)
+        self.assertEqual(data["decision"], "approved")
+
+    def test_timeout_raises_before_any_mr(self):
+        # MR が一つも出ない（レビュー前）まま全体 timeout 超過で失敗する
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
-            dict(self._cfg, timeout=0.01, poll_interval=0.0))
+            dict(self._cfg, timeout=0.01, approved_timeout=0.01, poll_interval=0.0))
 
         def api(host, token, method, path, data=None, params=None):
             if method == "POST":
@@ -710,8 +763,15 @@ class GitlabExecutorPluginTests(unittest.TestCase):
             return {"labels": ["status:open"], "state": "opened"}
 
         with self.assertRaises(RuntimeError) as ctx:
-            self._run_with(api)
-        self.assertIn("approved", str(ctx.exception))
+            self._run_with(api, mrs_seq=[[]])
+        self.assertIn("レビュー/MR 作成", str(ctx.exception))
+
+    def test_mr_decision_helper(self):
+        self.assertEqual(gl_plugin._mr_decision(["merged", "merged"], False), "approved")
+        self.assertEqual(gl_plugin._mr_decision(["merged", "closed"], False), "rejected")
+        self.assertEqual(gl_plugin._mr_decision(["opened", "merged"], False), "")  # 待機
+        self.assertEqual(gl_plugin._mr_decision([], True), "rejected")  # MR無しで人がクローズ
+        self.assertEqual(gl_plugin._mr_decision([], False), "")          # 未決着
 
     def test_missing_repo_url_raises(self):
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(dict(self._cfg, repo_url=""))
@@ -982,14 +1042,21 @@ class GitlabRepoInstructionTests(unittest.TestCase):
             calls.append((method, data))
             if method == "POST":
                 return {"iid": 3, "web_url": "https://gitlab.com/group/repo/-/issues/3"}
+            if method == "PUT":
+                return {"state": "closed"}
             return {"labels": ["status:approved"], "state": "opened"}
+
+        def list_side(host, token, path, params=None):
+            return [{"iid": 1, "state": "merged"}] if path.endswith(
+                "/related_merge_requests") else []   # 全マージ＝承認
 
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
             {"repo_url": "https://gitlab.com/group/repo", "poll_interval": 0.0, "timeout": 0.0})
         try:
             with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
                  mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
-                 mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
+                 mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+                # 全 MR マージ＝承認でクローズして完了。workspace 節がイシュー本文に出る。
                 gl_plugin.execute("work", "ログイン画面を追加", {}, workspace=ws,
                                   repo_instruction="【ワークスペース】… /tmp/kiro-flow-ws-9/repo")
         finally:

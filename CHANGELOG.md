@@ -31,6 +31,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   プロンプト（参照節）と **gitlab イシュー本文の『## 参照リポジトリ』節**に描画する。従来は要求本文へ畳んで
   いたため、分解後の各ノード/イシューに参照情報が届かなかったのを解消。gitlab イシューの対象/参照リポジトリ節は
   構造化 spec から Markdown 整形し、ローカルの clone パス（作業ディレクトリ）は載せない。
+- **gitlab executor の完了判定を「関連 MR の状態」ベースに（人が MR を管理）**: kiro-flow は MR を
+  **自動マージしない**。リモート worker が MR を用意し、人が関連 MR を管理する。**全 MR マージ＝承認**
+  （イシューをクローズして成功）／**一つでも未マージでクローズ＝却下**（人コメントを取り込み元イシューを
+  クローズし `[gitlab-reject]` 付きで失敗。コメントが無ければ自動判断）。MR が open のうちは待機。人の確認は
+  時間がかかるため待機は長め・設定可能（`gitlab.timeout` 既定 7 日 / `gitlab.approved_timeout` 既定 14 日・0=無限）。
+- run が `failed` で終端したら `kiro-flow run` は**非 0 終了**（委譲先の却下を上位が act 失敗として検知できる）。
 
 #### kiro-autonomous
 
@@ -55,7 +61,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   clone は worker の push 先を反映するため都度取り直す。clone 失敗・`path` 不在は黙って workdir に倒さず NG 扱い
   （成果の無い場所での偽判定を防ぐ）。単体テスト 5 件（clone 実行先・`path` をルート・未指定は workdir・明示 `verify_cwd`
   優先・clone 失敗で RuntimeError）を追加。README / GUIDE に追記。
-- 単体テストを新 API へ更新（kiro-flow・kiro-autonomous 両スイート、計 472 件 green）。
+- **委譲 executor（gitlab）の却下→やり直し連携**: gitlab の却下（未マージ MR クローズ）を kiro-flow 内部で
+  再委譲せず即失敗化するため、委譲 executor へ `--max-retries 0` を渡す（複数イシューの濫造を防止）。act 失敗時は
+  `read_reject_guidance` が直近 run の `[gitlab-reject]` 指示（人コメント）を読み、`_settle_failure` が `feedback` に
+  注入して通常リトライの次 act で活かす（コメントが無ければ自動判断）。
+- 単体テストを新 API へ更新（kiro-flow・kiro-autonomous 両スイート、計 494 件 green）。
 
 ### kiro-autonomous
 

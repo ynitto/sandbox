@@ -2629,7 +2629,9 @@ def cmd_run(args) -> int:
     if final:
         print("\n=== 最終結果 ===")
         print(final.get("summary", ""))
-    return 0
+    # run が failed で終端したら非 0 を返す（委譲先の却下など、上位＝kiro-autonomous が
+    # act 失敗として検知しリトライできるようにする）。done は 0。
+    return 1 if bus.get_status() == "failed" else 0
 
 
 # --------------------------------------------------------------------------

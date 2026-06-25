@@ -132,9 +132,12 @@ cleanup_per_node: false
 #   labels: "status:open,assignee:any"   # 起票するイシューの初期ラベル
 #   priority: "priority:normal"          # 付与する優先度ラベル（空文字 "" で付けない）
 #   poll_interval: 30                    # イシューのポーリング間隔（秒）
-#   timeout: 86400                       # approved 待ちのタイムアウト（秒）。0/負で無限待ち
-#   approved_label: "status:approved"    # この状態に達したら完了とみなす
-#   done_label: "status:done"            # approved 以外に完了とみなすラベル
+#   # 完了＝人が MR をマージ＝イシュークローズ（kiro-flow は自動マージしない）。
+#   # 人の確認は時間がかかるため待機は長め・設定可能（いずれも 0/負で無限）。
+#   timeout: 604800                      # クローズに達するまでの全体上限（秒・既定 7 日）
+#   approved_timeout: 1209600            # approved/done 検知後のマージ待ち猶予（秒・既定 14 日）
+#   approved_label: "status:approved"    # 進捗の目印（検知後はマージ＝クローズ待ちへ移行）
+#   done_label: "status:done"            # 同上（完了はクローズで確定）
 
 # ---------------------------------------------------------------------------
 # 自動アップデート（既定 on・6 時間毎・起動直後にも実施）
