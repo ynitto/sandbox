@@ -326,9 +326,10 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
 - **ワークスペース・ルーティング（`## repos` の `owns:` ＋ policy `route:`）**: 大規模・複数リポジトリ運用で「どのタスクを
   どのリポジトリへコミットするか」を**制御層（kiro-autonomous）が1つに決め**、kiro-flow へ `--workspace`（唯一の書込先）として
   渡す。charter の `## repos` を repo レジストリとし、各 repo に `- owns:`（担当パスのグロブ）を付けると**書込先候補
-  （ワークスペース）**になる。**owns を書かない repo は参照リポジトリ（読むだけ）**で、書込先にはせずタスク本文へ
-  「参照用リポジトリ（読み取り専用）」として伝搬する（clone しない）。1 タスク（=1 kiro-flow run）が書き込むのは
-  ちょうど 1 リポジトリ。複数 repo にまたがる変更は repo 別タスクへ分割し `after` で順序付ける。
+  （ワークスペース）**になる。**owns を書かない repo は参照リポジトリ（読むだけ）**で、書込先にはせず kiro-flow へ
+  `--reference` で構造化伝搬する（clone しない。エージェントのプロンプトと gitlab イシューの参照節に描画される）。
+  1 タスク（=1 kiro-flow run）が書き込むのはちょうど 1 リポジトリ。複数 repo にまたがる変更は repo 別タスクへ
+  分割し `after` で順序付ける。
   - **解決順（上が優先・決定はタスク md の `- workspace:`/`- routed_by:` に書き戻して安定/監査可能）**:
     1. タスクの `- workspace: <name>`（明示）  2. `policy.md` の `route: <パターン> -> <name>`（決定論）
     3. `owns:` のパスグロブ × タスクの `- paths:` ヒント（決定論推定）  4. auto-route（`route_planner: kiro` のとき LLM が

@@ -2720,8 +2720,9 @@ class TestProjectLayer(unittest.TestCase):
                              "## repos\n- app = https://git/app.git\n")
             self.assertEqual(km.cmd_project(cfg_for(d)), 2)
 
-    def test_reference_repos_folded_into_request(self):
-        # owns 無し（参照リポジトリ）はタスク本文へ記述として埋め込む（書込先にはしない）
+    def test_reference_repos_passed_as_structured_args(self):
+        # owns 無し（参照リポジトリ）は --reference として構造化伝搬する（分解後の各ノード/gitlab
+        # イシューにも届くように。要求本文へは畳まない）
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, "# Charter: r\n## goal\nx\n## repos\n"
@@ -2730,9 +2731,14 @@ class TestProjectLayer(unittest.TestCase):
             cfg = cfg_for(d)
             refs = km.task_reference_specs(cfg, km.Task(id="T1", title="x"))
             self.assertEqual([s["name"] for s in refs], ["spec"])      # owns 無しだけ参照に
-            req = km.build_request(km.Task(id="T1", title="x", verify="true"), cfg)
-            self.assertIn("参照用リポジトリ", req)
-            self.assertIn("https://git/spec.git", req)
+            t = km.Task(id="T1", title="x", verify="true", extra=[("workspace", "app")])
+            cmd = km.build_kiro_flow_cmd(t, cfg)
+            # --reference の値だけを集める（書込先 app は参照に含めない）
+            ref_vals = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--reference"]
+            self.assertEqual([json.loads(v)["url"] for v in ref_vals], ["https://git/spec.git"])
+            self.assertFalse(any("app.git" in v for v in ref_vals))
+            # 要求本文へは畳まない（構造化伝搬に一本化）
+            self.assertNotIn("参照用リポジトリ", km.build_request(t, cfg))
 
     def test_workspace_only_propagated_when_resolved(self):
         with tempfile.TemporaryDirectory() as d:

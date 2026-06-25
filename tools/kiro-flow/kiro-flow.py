@@ -327,7 +327,8 @@ class Bus:
         for d in (self.tasks_dir, self.claims_dir, self.results_dir, self.events_dir):
             os.makedirs(d, exist_ok=True)
 
-    def ensure_run(self, request: str, workspace: "dict | None" = None) -> None:
+    def ensure_run(self, request: str, workspace: "dict | None" = None,
+                   references: "list[dict] | None" = None) -> None:
         self.ensure_dirs()
         if read_json(self.meta_path) is None:
             write_json_atomic(self.meta_path, {
@@ -335,6 +336,8 @@ class Bus:
                 # この run（=バックログ単位）の唯一の書込先リポジトリ（worker が clone し、
                 # 作業ブランチを作って作業する）。None なら読み取り専用 run（commit/push しない）。
                 "workspace": workspace or None,
+                # 参照リポジトリ（読むだけ・書き込まない）。executor がイシュー/プロンプトに描画する。
+                "references": list(references or []),
                 "status": "planning",
                 "created_at": now_iso(),
             })
@@ -344,6 +347,12 @@ class Bus:
         meta = read_json(self.meta_path) or {}
         w = meta.get("workspace")
         return w if isinstance(w, dict) and w.get("url") else None
+
+    def run_references(self) -> "list[dict]":
+        """この run の参照リポジトリ spec 一覧（読むだけ。meta に記録、executor が描画する）。"""
+        meta = read_json(self.meta_path) or {}
+        r = meta.get("references")
+        return [s for s in r if isinstance(s, dict) and s.get("url")] if isinstance(r, list) else []
 
     # --- メタ / グラフ ---
     def set_status(self, status: str) -> None:
@@ -606,12 +615,14 @@ class Bus:
 
     # --- inbox（要求キュー）と要求 claim ---
     def submit_request(self, req_id: str, request: str, submitter: str,
-                       workspace: "dict | None" = None) -> None:
+                       workspace: "dict | None" = None,
+                       references: "list[dict] | None" = None) -> None:
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), {
             "id": req_id,
             "request": request,
             "submitter": submitter,
             "workspace": workspace or None,   # 唯一の書込先を daemon の orchestrate へ伝搬する
+            "references": list(references or []),  # 参照リポジトリも daemon の orchestrate へ伝搬する
             "submitted_at": now_iso(),
         })
 
@@ -852,6 +863,38 @@ def parse_workspace(token: "str | None") -> "dict | None":
         return None
     spec["url"] = token                           # 素の URL（メタ無し）
     return spec
+
+
+def parse_references(tokens: "list[str] | None") -> "list[dict]":
+    """`--reference` トークン列を参照リポジトリ spec 列へ正規化する（読むだけ・書き込まない）。
+    各トークンは素の URL でも JSON（{url,path,base,desc}）でも可。url の無いものは捨てる。"""
+    out: "list[dict]" = []
+    seen: "set[str]" = set()
+    for tok in (tokens or []):
+        spec = parse_workspace(tok)               # 同じ正規化を流用（target は参照では未使用）
+        if spec and spec["url"] and spec["url"] not in seen:
+            seen.add(spec["url"])
+            out.append(spec)
+    return out
+
+
+def reference_instruction(refs: "list[dict]") -> str:
+    """参照リポジトリ（読むだけ）をエージェントへ伝える指示ブロック。書込先ではないことを明示する。"""
+    if not refs:
+        return ""
+    lines = ["【参照リポジトリ】読み取り専用。変更・commit・push はしないこと。必要に応じて内容を参照する:"]
+    for s in refs:
+        label = s["url"]
+        tags = []
+        if s.get("path"):
+            tags.append(f"フォルダ {s['path']}")
+        if s.get("base"):
+            tags.append(f"ブランチ {s['base']}")
+        line = f"  - {label}" + ("（" + "・".join(tags) + "）" if tags else "")
+        if s.get("desc"):
+            line += f": {s['desc']}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def workspace_id(spec: dict) -> tuple:
@@ -1664,18 +1707,23 @@ def _executor_accepts(execute, name: str) -> bool:
 
 
 def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str | None",
-                  art_dir, dep_arts, repo_instruction: str = "", workspace: "dict | None" = None):
+                  art_dir, dep_arts, repo_instruction: str = "", workspace: "dict | None" = None,
+                  references: "list[dict] | None" = None):
     """executor を呼ぶ単一の入口。
-    - `repo_instruction`（ワークスペースの作業指示テキスト）は、受け取れる executor には**別引数**で
+    - `repo_instruction`（ワークスペース＋参照の作業指示テキスト）は、受け取れる executor には**別引数**で
       渡して goal を汚さない（gitlab のイシュータイトル/目的が指示で埋まらないようにする）。
     - `workspace`（構造化 spec dict: url/path/base/target）は、受け取れる executor へそのまま渡す
       （gitlab は起票先プロジェクトをこの url から解決する）。
-    どちらも受け取れない executor には、指示を goal 先頭へ結合して渡す。"""
+    - `references`（参照リポジトリ spec 列）も、受け取れる executor へそのまま渡す
+      （gitlab はイシュー本文に参照節を出す）。
+    どれも受け取れない executor には、指示を goal 先頭へ結合して渡す。"""
     kwargs = {}
     if repo_instruction and _executor_accepts(execute, "repo_instruction"):
         kwargs["repo_instruction"] = repo_instruction
     if workspace is not None and _executor_accepts(execute, "workspace"):
         kwargs["workspace"] = workspace
+    if references and _executor_accepts(execute, "references"):
+        kwargs["references"] = references
     if kwargs or not repo_instruction:
         return execute(kind, goal, dep_results, model, art_dir, dep_arts, **kwargs)
     g = (repo_instruction + "\n\n" + goal) if repo_instruction else goal
@@ -2168,7 +2216,8 @@ def cmd_orchestrate(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
     bus.sync_pull()
-    bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)))
+    bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
+                   parse_references(getattr(args, "references", None)))
     graph = bus.read_graph()
 
     # 既存グラフがあれば計画をやり直さず再開（resume）
@@ -2326,7 +2375,10 @@ def cmd_work(args) -> int:
         ws = ensure_workspace_clone(bus.run_workspace(), args.run_id)
         # 作業指示は goal に結合せず別引数で渡す（goal を汚さない）。対応 executor は本来の goal を
         # そのまま使い（gitlab はタイトル/目的に出す）、ワークスペース指示・spec は別枠で扱う。
-        instruction = workspace_instruction(ws) if ws else ""
+        # 参照リポジトリ（読むだけ）は run メタから取り、ワークスペース指示に続けてエージェントへ伝える。
+        references = bus.run_references()
+        ref_note = reference_instruction(references)
+        instruction = "\n".join(s for s in (workspace_instruction(ws) if ws else "", ref_note) if s)
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
@@ -2334,7 +2386,8 @@ def cmd_work(args) -> int:
         delivery = None
         try:
             output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
-                                          art_dir, dep_arts, instruction, workspace=ws)
+                                          art_dir, dep_arts, instruction, workspace=ws,
+                                          references=references)
             # エージェントが編集したらワークスペースの作業ブランチへ commit して push する
             # （変更が無ければ何もしない＝調査タスク等ではブランチを作らない）。
             delivery = finalize_workspace(ws, args.run_id, nid)
@@ -2446,6 +2499,8 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     """要求 req を担当する orchestrator を base argv から起動する（daemon のオンデマンド起動）。"""
     ws = req.get("workspace")   # 要求に紐づく唯一の書込先ワークスペースを run meta へ載せる
     ws_args = ["--workspace", json.dumps(ws, ensure_ascii=False)] if ws else []
+    for r in (req.get("references") or []):   # 参照リポジトリも run meta へ伝搬する
+        ws_args += ["--reference", json.dumps(r, ensure_ascii=False)]
     return subprocess.Popen(base + ws_args + [
         "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
@@ -2496,6 +2551,8 @@ def cmd_run(args) -> int:
     base = _child_base(args, bus_root) + ["--run-id", run_id]
     if getattr(args, "workspace", None):
         base += ["--workspace", args.workspace]   # 唯一の書込先を orchestrator/worker へ伝搬
+    for r in (getattr(args, "references", None) or []):
+        base += ["--reference", r]                # 参照リポジトリを orchestrator/worker へ伝搬
     base += ["--granularity", str(getattr(args, "granularity", "finest") or "finest")]  # 分解粒度
     if getattr(args, "exemplar_first", False):
         base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
@@ -2570,7 +2627,8 @@ def cmd_submit(args) -> int:
     bus = make_bus(args, "submitter")
     bus.sync_pull()
     bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
-                       workspace=parse_workspace(getattr(args, "workspace", None)))
+                       workspace=parse_workspace(getattr(args, "workspace", None)),
+                       references=parse_references(getattr(args, "references", None)))
     bus.sync_push(f"submit request {req_id}")
     print(req_id)  # run-id を標準出力（スクリプトから拾える）
     print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
@@ -3818,7 +3876,11 @@ def main() -> int:
                         "（{url,path,base,target,desc}）でも可。worker が temp 領域へ clone し、作業ブランチ "
                         "kf/<run-id> を base から作って作業、変更があれば kiro-flow が commit/push する。"
                         "path はモノレポの作業フォルダ、target は MR/PR のターゲットブランチ。"
-                        "省略時は読み取り専用 run（参照リポジトリは要求本文に記述する）")
+                        "省略時は読み取り専用 run")
+    p.add_argument("--reference", dest="references", action="append", default=None,
+                   help="参照リポジトリ（読むだけ・書き込まない／複数可）。素の URL でも JSON "
+                        "（{url,path,base,desc}）でも可。エージェントのプロンプトと gitlab イシュー本文に"
+                        "参照節として載る（clone はしない）")
     p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                    help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
                         "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")
