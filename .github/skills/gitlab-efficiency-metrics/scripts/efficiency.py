@@ -1,49 +1,64 @@
 #!/usr/bin/env python3
 """
-efficiency.py - GitLab のイシュー / MR データから「エージェント活用による効率（コスト削減）」を推定する。
+efficiency.py - GitLab のイシュー / MR から「エージェント活用による効率（コスト削減）」を推定する。
 
 生メトリクス（GitLab から収集）:
   - deliverable_bytes  : マージ済み MR の差分で追加された行のバイト数（= 成果物として生成したコード量）
-  - agent_comment_bytes: イシュー / MR にエージェントが投稿したコメントのバイト数
+  - agent_comment_bytes: イシュー / MR に投稿されたコメントのバイト数
   - rework_count       : 差し戻し回数（イシューの reopen + needs-rework ラベル付与）
   - discarded_mr_count : 破棄した MR の数（マージされずにクローズされた MR）
   - review_minutes_est : 推定レビュー時間（MR の変更量から見積もり）
 
-コストモデル（references/cost-model.md 参照）:
-  人手のみで作った場合のコスト（counterfactual）と、エージェント利用時の実コストを比較し、
-  PERT 風の楽観 / 最頻 / 悲観レンジで削減額・削減率を出す。前提パラメータはすべて上書き可能。
+軸（breakdown）:
+  各メトリクスを (リポジトリ, ユーザー, 種別=ai/human) のセルに割り当て、
+  totals / by_repo / by_user / by_kind に集計する。
+
+AI / 人の判定:
+  コメント・MR 本文の AI マーカー（gitlab-idd の worker-node-id 等、Co-Authored-By: Claude など）と
+  username 集合（--agent-users）の両方で、投稿・MR ごとに ai / human を分類する。
+  アカウントを共有していても本文マーカーで判別できる。
+
+状態記録（差分・再解析）:
+  --state-file でリポジトリ毎の処理済み時刻（カーソル）とラン履歴を記録する。
+  --since 未指定かつカーソルがあれば、その続きから増分集計する（--save-state で更新）。
+  サブコマンド history / diff で過去ランの確認・差分が取れる。
+
+サブコマンド:
+  collect (既定)  集計して JSON / Markdown を出力
+  history          --state-file のラン履歴を一覧
+  diff             --state-file の 2 ラン（既定: 直近 2 件）の差分
 
 依存:
-  GitLab 接続・認証は同梱リポジトリ内の gitlab-idd スキルの gl.py を再利用する
-  （../../gitlab-idd/scripts/gl.py）。GITLAB_TOKEN とリポジトリの git remote / connections.yaml が必要。
+  GitLab 接続・認証は同じ skills 配下の gitlab-idd スキルの gl.py を再利用する。
+  GITLAB_TOKEN と git remote / connections.yaml が必要。Python 3.8+ / stdlib のみ。
 
 使い方:
-  python efficiency.py --days 30
-  python efficiency.py --since 2026-05-01 --until 2026-06-01 --agent-users alice,bob
-  python efficiency.py --days 30 --params-file params.json --format markdown
-  python efficiency.py --days 30 --get savings.mid   # 単一フィールド抽出
-
-Python 3.8+ / stdlib のみ。
+  python efficiency.py collect --days 30 --format markdown
+  python efficiency.py collect --projects ns/a,ns/b --axis repo,user
+  python efficiency.py collect --conn-labels default,work --state-file s.json --save-state
+  python efficiency.py history --state-file s.json
+  python efficiency.py diff --state-file s.json
 """
 
 import argparse
 import importlib.util
 import json
-import os
+import re
 import sys
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
 
 # ---------------------------------------------------------------------------
 # gitlab-idd の gl.py を動的ロードして接続・API ヘルパを再利用する
 # ---------------------------------------------------------------------------
 
 def _load_gl():
-    """同じ .github/skills/ 配下にある gitlab-idd/scripts/gl.py を import する。"""
     here = Path(__file__).resolve().parent
     candidates = [
-        here.parent.parent / "gitlab-idd" / "scripts" / "gl.py",   # 標準配置
-        here.parent / "gl.py",                                       # 同梱した場合
+        here.parent.parent / "gitlab-idd" / "scripts" / "gl.py",
+        here.parent / "gl.py",
     ]
     gl_path = next((p for p in candidates if p.exists()), None)
     if gl_path is None:
@@ -62,42 +77,49 @@ GL = _load_gl()
 
 
 # ---------------------------------------------------------------------------
-# 既定パラメータ（references/cost-model.md に解説）。すべて上書き可能。
+# 既定パラメータ（references/cost-model.md に解説）。--params-file で上書き可能。
 # ---------------------------------------------------------------------------
 
 DEFAULT_PARAMS = {
     "currency": "JPY",
-    "human_hourly_rate": 6000,          # エンジニア 1 時間あたりの人件費
-
-    # 人手での実装スループット（LOC/人日）。楽観=生産性が高い→人コスト小→削減小。
-    "productive_hours_per_day": 6,      # 1 人日あたりの正味実装時間
-    "bytes_per_loc": 40,                # 1 行あたりの平均バイト数（成果物バイト→行数換算）
-    "write_loc_per_day_low": 30,        # 悲観（生産性低い）
-    "write_loc_per_day_mid": 60,        # 最頻
-    "write_loc_per_day_high": 120,      # 楽観（生産性高い）
-
-    # レビュー（人）の見積もり
-    "review_bytes_per_minute": 270,     # レビュー速度（≒ 400 LOC/h）
-    "review_fixed_min_per_mr": 5,       # MR 1 件あたりの固定オーバーヘッド
-    "review_cap_min_per_mr": 120,       # MR 1 件あたりのレビュー時間の上限
-
-    # エージェント利用時に人側へ発生する追加オーバーヘッド
-    "per_rework_human_min": 20,         # 差し戻し 1 回あたりの人の追加時間（再レビュー・指摘）
-    "per_discard_human_min": 15,        # 破棄 MR 1 件あたりの人の追加時間（確認・判断）
-
-    # エージェントの計算コスト（出力トークン課金の概算）。実請求があれば agent_cost_override で上書き。
-    "bytes_per_token": 4,               # バイト→トークン概算
-    "rework_redo_factor": 1.3,          # 差し戻しによる再生成ぶんの係数
-    "price_per_1k_output_tokens": 0,    # 1k 出力トークンあたりの単価（0=計算コストを無視）
-    "agent_cost_override": None,        # 指定すると計算コストをこの固定値にする
+    "human_hourly_rate": 6000,
+    "productive_hours_per_day": 6,
+    "bytes_per_loc": 40,
+    "write_loc_per_day_low": 30,
+    "write_loc_per_day_mid": 60,
+    "write_loc_per_day_high": 120,
+    "review_bytes_per_minute": 270,
+    "review_fixed_min_per_mr": 5,
+    "review_cap_min_per_mr": 120,
+    "per_rework_human_min": 20,
+    "per_discard_human_min": 15,
+    "bytes_per_token": 4,
+    "rework_redo_factor": 1.3,
+    "price_per_1k_output_tokens": 0,
+    "agent_cost_override": None,
 }
 
-# 差し戻しとみなすイシューラベル
 DEFAULT_REWORK_LABELS = ["status:needs-rework"]
+
+# 投稿・MR を「AI 生成」と判定するための本文マーカー（正規表現）
+DEFAULT_AI_MARKERS = [
+    r"<!--\s*gitlab-idd:(?:creator-node-id|worker-node-id|non-requester-reviewed|requester-approved):",
+    r"Co-Authored-By:\s*Claude",
+    r"Co-authored-by:\s*Claude",
+    r"🤖 Generated with",
+    r"Generated by \[Claude",
+]
+
+METRIC_KEYS = [
+    "deliverable_bytes", "deliverable_lines", "merged_mr_count",
+    "discarded_mr_count", "rework_count",
+    "issue_comment_bytes", "mr_comment_bytes",
+    "review_minutes_est", "reviewed_mr_count",
+]
 
 
 # ---------------------------------------------------------------------------
-# 収集ヘルパ
+# 小ヘルパ
 # ---------------------------------------------------------------------------
 
 def _to_utc_iso(d: datetime) -> str:
@@ -105,7 +127,6 @@ def _to_utc_iso(d: datetime) -> str:
 
 
 def _parse_date(s: str) -> datetime:
-    """YYYY-MM-DD または ISO8601 を UTC aware datetime に。"""
     dt = GL._parse_iso8601_utc(s if "T" in s else s + "T00:00:00+00:00")
     if dt is None:
         sys.exit(f"ERROR: 日付を解釈できません: {s}（YYYY-MM-DD 形式で指定してください）")
@@ -121,8 +142,7 @@ def _in_window(ts, since, until) -> bool:
 
 def _diff_added_bytes(diff_text: str):
     """unified diff から追加行のバイト数・行数を数える（'+++' ヘッダは除外）。"""
-    added_bytes = 0
-    added_lines = 0
+    added_bytes = added_lines = 0
     for line in diff_text.splitlines():
         if line.startswith("+") and not line.startswith("+++"):
             added_bytes += len(line[1:].encode("utf-8"))
@@ -130,176 +150,160 @@ def _diff_added_bytes(diff_text: str):
     return added_bytes, added_lines
 
 
-def collect(host, token, project, since, until, agent_users, rework_labels, verbose=False):
-    """GitLab から生メトリクスを収集して dict で返す。"""
-    ep = GL.encode_project(project)
-    agent_set = set(agent_users)
-    since_iso = _to_utc_iso(since)
+def _matches(text, regexes) -> bool:
+    return bool(text) and any(r.search(text) for r in regexes)
 
-    def log(msg):
-        if verbose:
-            print(f"  [collect] {msg}", file=sys.stderr)
 
-    # --- Merge Requests ---------------------------------------------------
-    mrs = GL.api_list(host, token, f"/projects/{ep}/merge_requests",
-                      params={"state": "all", "updated_after": since_iso, "scope": "all"})
-    log(f"MR 候補 {len(mrs)} 件")
+def metrics_zero():
+    return {k: 0 for k in METRIC_KEYS}
 
-    deliverable_bytes = 0
-    deliverable_lines = 0
-    merged_mr_count = 0
-    discarded_mr_count = 0
-    review_minutes_est = 0.0
-    mr_comment_bytes = 0
-    reviewed_mr_iids = []
 
-    for mr in mrs:
-        iid = mr.get("iid")
+def add_metrics(dst, **deltas):
+    for k, v in deltas.items():
+        dst[k] += v
+
+
+# ---------------------------------------------------------------------------
+# AI / 人 の分類
+# ---------------------------------------------------------------------------
+
+def classify_note(note, agent_set, ai_res) -> str:
+    if _matches(note.get("body") or "", ai_res):
+        return "ai"
+    if (note.get("author") or {}).get("username", "") in agent_set:
+        return "ai"
+    return "human"
+
+
+def classify_authored(description, author, notes, agent_set, ai_res) -> str:
+    """MR / イシューの種別を本文・作成者・付随コメントから判定する。"""
+    if _matches(description or "", ai_res):
+        return "ai"
+    if author in agent_set:
+        return "ai"
+    for n in notes or []:
+        if _matches(n.get("body") or "", ai_res):
+            return "ai"
+    return "human"
+
+
+# ---------------------------------------------------------------------------
+# 集計（テスト可能なように、取得済み raw 構造を入力にする）
+# ---------------------------------------------------------------------------
+
+def process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
+                 params, cells, rework_cells):
+    """取得済みの raw（mrs / issues）をセルに集計する。
+
+    cells:        defaultdict キー (project, user, kind) -> metrics（ユーザー帰属可能な指標）
+    rework_cells: defaultdict キー (project, kind)       -> {"rework_count": n}（ユーザー帰属しない指標）
+    """
+    review_bpm = max(1, params["review_bytes_per_minute"])
+    review_fixed = params["review_fixed_min_per_mr"]
+    review_cap = params["review_cap_min_per_mr"]
+    rework_label_set = set(rework_labels)
+
+    # --- MR ---
+    for mr in raw.get("mrs", []):
         author = (mr.get("author") or {}).get("username", "")
-        is_agent = author in agent_set
-        state = mr.get("state")
+        notes = mr.get("_notes", [])
+        kind = classify_authored(mr.get("description"), author, notes, agent_set, ai_res)
         merged_at = mr.get("merged_at")
         closed_at = mr.get("closed_at")
+        state = mr.get("state")
 
-        # 成果物（マージ済み・エージェント作成・期間内）
-        if state == "merged" and is_agent and _in_window(merged_at, since, until):
-            changes = GL.api(host, token, "GET",
-                             f"/projects/{ep}/merge_requests/{iid}/changes")
-            added_b = 0
-            added_l = 0
-            for ch in changes.get("changes", []):
+        if state == "merged" and _in_window(merged_at, since, until):
+            added_b = added_l = 0
+            for ch in (mr.get("_changes") or {}).get("changes", []):
                 b, l = _diff_added_bytes(ch.get("diff", ""))
                 added_b += b
                 added_l += l
-            deliverable_bytes += added_b
-            deliverable_lines += added_l
-            merged_mr_count += 1
-            # 推定レビュー時間（変更量ベース）
-            rmin = added_b / max(1, params_review_bpm) + params_review_fixed
-            review_minutes_est += min(rmin, params_review_cap)
-            reviewed_mr_iids.append(iid)
-            log(f"MR !{iid} merged: +{added_b}B / +{added_l}行")
+            rmin = min(added_b / review_bpm + review_fixed, review_cap)
+            add_metrics(cells[(project, author, kind)],
+                        deliverable_bytes=added_b, deliverable_lines=added_l,
+                        merged_mr_count=1, review_minutes_est=rmin, reviewed_mr_count=1)
 
-        # 破棄（マージされずクローズ・期間内）
         if state == "closed" and not merged_at and _in_window(closed_at, since, until):
-            discarded_mr_count += 1
-            log(f"MR !{iid} discarded")
+            add_metrics(cells[(project, author, kind)], discarded_mr_count=1)
 
-        # MR コメント（エージェント投稿・期間内）
-        notes = GL.api_list(host, token, f"/projects/{ep}/merge_requests/{iid}/notes")
         for n in notes:
-            if n.get("system"):
+            if n.get("system") or not _in_window(n.get("created_at"), since, until):
                 continue
-            if (n.get("author") or {}).get("username", "") not in agent_set:
-                continue
-            if not _in_window(n.get("created_at"), since, until):
-                continue
-            mr_comment_bytes += len((n.get("body") or "").encode("utf-8"))
+            nk = classify_note(n, agent_set, ai_res)
+            nu = (n.get("author") or {}).get("username", "")
+            add_metrics(cells[(project, nu, nk)],
+                        mr_comment_bytes=len((n.get("body") or "").encode("utf-8")))
 
-    # --- Issues -----------------------------------------------------------
-    issues = GL.api_list(host, token, f"/projects/{ep}/issues",
-                         params={"state": "all", "updated_after": since_iso, "scope": "all"})
-    log(f"イシュー候補 {len(issues)} 件")
+    # --- イシュー ---
+    for issue in raw.get("issues", []):
+        author = (issue.get("author") or {}).get("username", "")
+        notes = issue.get("_notes", [])
+        ikind = classify_authored(issue.get("description"), author, notes, agent_set, ai_res)
 
-    issue_comment_bytes = 0
-    rework_count = 0
-    rework_label_set = set(rework_labels)
-
-    for issue in issues:
-        iid = issue.get("iid")
-
-        # エージェント投稿コメント
-        notes = GL.api_list(host, token, f"/projects/{ep}/issues/{iid}/notes")
         for n in notes:
-            if n.get("system"):
+            if n.get("system") or not _in_window(n.get("created_at"), since, until):
                 continue
-            if (n.get("author") or {}).get("username", "") not in agent_set:
-                continue
-            if not _in_window(n.get("created_at"), since, until):
-                continue
-            issue_comment_bytes += len((n.get("body") or "").encode("utf-8"))
+            nk = classify_note(n, agent_set, ai_res)
+            nu = (n.get("author") or {}).get("username", "")
+            add_metrics(cells[(project, nu, nk)],
+                        issue_comment_bytes=len((n.get("body") or "").encode("utf-8")))
 
-        # 差し戻し: reopen 状態イベント
-        state_events = GL.api_list(
-            host, token, f"/projects/{ep}/issues/{iid}/resource_state_events")
-        for ev in state_events:
+        for ev in issue.get("_state_events", []):
             if ev.get("state") == "reopened" and _in_window(ev.get("created_at"), since, until):
-                rework_count += 1
-
-        # 差し戻し: needs-rework ラベル付与イベント
-        label_events = GL.api_list(
-            host, token, f"/projects/{ep}/issues/{iid}/resource_label_events")
-        for ev in label_events:
+                rework_cells[(project, ikind)]["rework_count"] += 1
+        for ev in issue.get("_label_events", []):
             if ev.get("action") != "add":
                 continue
-            label_name = (ev.get("label") or {}).get("name", "")
-            if label_name in rework_label_set and _in_window(ev.get("created_at"), since, until):
-                rework_count += 1
-
-    agent_comment_bytes = issue_comment_bytes + mr_comment_bytes
-
-    return {
-        "window": {"since": _to_utc_iso(since), "until": _to_utc_iso(until)},
-        "agent_users": sorted(agent_set),
-        "raw_metrics": {
-            "deliverable_bytes": deliverable_bytes,
-            "deliverable_lines": deliverable_lines,
-            "merged_mr_count": merged_mr_count,
-            "discarded_mr_count": discarded_mr_count,
-            "rework_count": rework_count,
-            "agent_comment_bytes": agent_comment_bytes,
-            "issue_comment_bytes": issue_comment_bytes,
-            "mr_comment_bytes": mr_comment_bytes,
-            "review_minutes_est": round(review_minutes_est, 1),
-            "reviewed_mr_count": len(reviewed_mr_iids),
-        },
-    }
+            name = (ev.get("label") or {}).get("name", "")
+            if name in rework_label_set and _in_window(ev.get("created_at"), since, until):
+                rework_cells[(project, ikind)]["rework_count"] += 1
 
 
-# レビュー見積もり用のモジュールグローバル（collect から参照）
-params_review_bpm = DEFAULT_PARAMS["review_bytes_per_minute"]
-params_review_fixed = DEFAULT_PARAMS["review_fixed_min_per_mr"]
-params_review_cap = DEFAULT_PARAMS["review_cap_min_per_mr"]
+def metrics_for(cells, rework_cells, repo=None, user=None, kind=None):
+    """軸でフィルタしてメトリクスを合算する。rework はユーザー帰属しないため user 指定時は除外。"""
+    m = metrics_zero()
+    for (r, u, k), cm in cells.items():
+        if (repo and r != repo) or (user and u != user) or (kind and k != kind):
+            continue
+        for key in METRIC_KEYS:
+            m[key] += cm[key]
+    if user is None:
+        for (r, k), rc in rework_cells.items():
+            if (repo and r != repo) or (kind and k != kind):
+                continue
+            m["rework_count"] += rc["rework_count"]
+    return m
 
 
 # ---------------------------------------------------------------------------
 # コスト計算
 # ---------------------------------------------------------------------------
 
-def _scenario_cost(deliverable_bytes, review_minutes, rework_count,
-                   discarded_mr_count, agent_comment_bytes, p, loc_per_day):
-    """1 つの生産性前提でのコスト内訳を返す。"""
+def _scenario_cost(m, p, loc_per_day):
     rate = p["human_hourly_rate"]
-    write_bytes_per_hour = (loc_per_day * p["bytes_per_loc"]) / p["productive_hours_per_day"]
-    author_hours = deliverable_bytes / write_bytes_per_hour if write_bytes_per_hour else 0.0
-    review_hours = review_minutes / 60.0
+    write_bph = (loc_per_day * p["bytes_per_loc"]) / p["productive_hours_per_day"]
+    author_hours = m["deliverable_bytes"] / write_bph if write_bph else 0.0
+    review_hours = m["review_minutes_est"] / 60.0
+    agent_comment_bytes = m["issue_comment_bytes"] + m["mr_comment_bytes"]
 
-    # 人手のみで作った場合（counterfactual）: 実装 + レビュー
     human_authoring_cost = author_hours * rate
     human_review_cost = review_hours * rate
     human_only_cost = human_authoring_cost + human_review_cost
 
-    # エージェント利用時の追加オーバーヘッド（人側）
-    rework_overhead_cost = (rework_count * p["per_rework_human_min"] / 60.0) * rate
-    discard_overhead_cost = (discarded_mr_count * p["per_discard_human_min"] / 60.0) * rate
+    rework_overhead_cost = (m["rework_count"] * p["per_rework_human_min"] / 60.0) * rate
+    discard_overhead_cost = (m["discarded_mr_count"] * p["per_discard_human_min"] / 60.0) * rate
 
-    # エージェント計算コスト
     if p["agent_cost_override"] is not None:
         agent_compute_cost = p["agent_cost_override"]
     else:
-        gen_bytes = (deliverable_bytes + agent_comment_bytes) * p["rework_redo_factor"]
+        gen_bytes = (m["deliverable_bytes"] + agent_comment_bytes) * p["rework_redo_factor"]
         tokens = gen_bytes / p["bytes_per_token"]
         agent_compute_cost = tokens / 1000.0 * p["price_per_1k_output_tokens"]
 
-    # エージェント利用時の総コスト: 計算コスト + 人のレビュー + 追加オーバーヘッド
-    # （レビューは両シナリオに共通。実装ぶんがエージェントに置き換わる）
     agent_scenario_cost = (agent_compute_cost + human_review_cost
                            + rework_overhead_cost + discard_overhead_cost)
-
     savings = human_only_cost - agent_scenario_cost
     savings_pct = (savings / human_only_cost * 100.0) if human_only_cost else 0.0
-    human_hours_saved = author_hours  # 実装ぶんがまるごと人手から消える
-
     return {
         "loc_per_day_assumed": loc_per_day,
         "author_hours": round(author_hours, 2),
@@ -315,67 +319,187 @@ def _scenario_cost(deliverable_bytes, review_minutes, rework_count,
         },
         "savings": round(savings),
         "savings_pct": round(savings_pct, 1),
-        "human_hours_saved": round(human_hours_saved, 2),
+        "human_hours_saved": round(author_hours, 2),
     }
 
 
-def estimate(raw, p):
-    rm = raw["raw_metrics"]
-    args_common = dict(
-        deliverable_bytes=rm["deliverable_bytes"],
-        review_minutes=rm["review_minutes_est"],
-        rework_count=rm["rework_count"],
-        discarded_mr_count=rm["discarded_mr_count"],
-        agent_comment_bytes=rm["agent_comment_bytes"],
-        p=p,
-    )
-    # 楽観 = 人の生産性が高い = 削減が小さい / 悲観 = 生産性が低い = 削減が大きい
-    high = _scenario_cost(loc_per_day=p["write_loc_per_day_high"], **args_common)  # 削減 低
-    mid = _scenario_cost(loc_per_day=p["write_loc_per_day_mid"], **args_common)
-    low = _scenario_cost(loc_per_day=p["write_loc_per_day_low"], **args_common)   # 削減 高
+def estimate_metrics(m, p):
+    """メトリクス（通常は ai 分）からコスト削減を 3 点レンジで推定する。"""
+    high = _scenario_cost(m, p, p["write_loc_per_day_high"])  # 生産性高 → 削減小
+    mid = _scenario_cost(m, p, p["write_loc_per_day_mid"])
+    low = _scenario_cost(m, p, p["write_loc_per_day_low"])    # 生産性低 → 削減大
     return {
         "currency": p["currency"],
         "savings": {"low": high["savings"], "mid": mid["savings"], "high": low["savings"]},
         "savings_pct": {"low": high["savings_pct"], "mid": mid["savings_pct"], "high": low["savings_pct"]},
         "human_hours_saved": {"low": high["human_hours_saved"], "mid": mid["human_hours_saved"], "high": low["human_hours_saved"]},
         "scenarios": {"optimistic": high, "most_likely": mid, "pessimistic": low},
-        "assumptions": p,
     }
 
 
+def metrics_out(m):
+    o = dict(m)
+    o["agent_comment_bytes"] = m["issue_comment_bytes"] + m["mr_comment_bytes"]
+    o["review_minutes_est"] = round(m["review_minutes_est"], 1)
+    return o
+
+
 # ---------------------------------------------------------------------------
-# 出力
+# 出力の組み立て
 # ---------------------------------------------------------------------------
 
-def render_markdown(result):
-    rm = result["raw_metrics"]
-    est = result["estimate"]
+def build_output(cells, rework_cells, repos, since, until, agent_set, ai_marker_src,
+                 params, axes):
+    repo_names = sorted({r for (r, _u, _k) in cells} | {r for (r, _k) in rework_cells} | set(repos))
+    users = sorted({u for (_r, u, _k) in cells if u})
+
+    total_all = metrics_for(cells, rework_cells)
+    total_ai = metrics_for(cells, rework_cells, kind="ai")
+    total_human = metrics_for(cells, rework_cells, kind="human")
+
+    out = {
+        "window": {"since": _to_utc_iso(since), "until": _to_utc_iso(until)},
+        "repos": repo_names,
+        "classification": {"agent_users": sorted(agent_set), "ai_markers": ai_marker_src},
+        "totals": {
+            "raw_metrics": metrics_out(total_all),
+            "by_kind": {"ai": metrics_out(total_ai), "human": metrics_out(total_human)},
+            "estimate": estimate_metrics(total_ai, params),
+        },
+    }
+
+    if "repo" in axes:
+        out["by_repo"] = {}
+        for r in repo_names:
+            r_all = metrics_for(cells, rework_cells, repo=r)
+            r_ai = metrics_for(cells, rework_cells, repo=r, kind="ai")
+            out["by_repo"][r] = {
+                "raw_metrics": metrics_out(r_all),
+                "by_kind": {
+                    "ai": metrics_out(r_ai),
+                    "human": metrics_out(metrics_for(cells, rework_cells, repo=r, kind="human")),
+                },
+                "estimate": estimate_metrics(r_ai, params),
+            }
+
+    if "user" in axes:
+        out["by_user"] = {}
+        for u in users:
+            u_all = metrics_for(cells, rework_cells, user=u)
+            u_ai = metrics_for(cells, rework_cells, user=u, kind="ai")
+            u_human = metrics_for(cells, rework_cells, user=u, kind="human")
+            kinds = [k for k, mm in (("ai", u_ai), ("human", u_human))
+                     if any(mm[x] for x in METRIC_KEYS)]
+            out["by_user"][u] = {
+                "kinds": kinds,
+                "raw_metrics": metrics_out(u_all),
+                "by_kind": {"ai": metrics_out(u_ai), "human": metrics_out(u_human)},
+                "estimate": estimate_metrics(u_ai, params),  # rework はユーザー帰属外のため 0 として扱う
+            }
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# GitLab からの取得
+# ---------------------------------------------------------------------------
+
+def fetch_repo(host, token, project, since, until, verbose=False):
+    """1 リポジトリの MR / イシューを取得し、changes / notes / events を添付して返す。"""
+    ep = GL.encode_project(project)
+    since_iso = _to_utc_iso(since)
+
+    def log(msg):
+        if verbose:
+            print(f"  [{project}] {msg}", file=sys.stderr)
+
+    mrs = GL.api_list(host, token, f"/projects/{ep}/merge_requests",
+                      params={"state": "all", "updated_after": since_iso, "scope": "all"})
+    log(f"MR {len(mrs)} 件")
+    for mr in mrs:
+        iid = mr.get("iid")
+        mr["_notes"] = GL.api_list(host, token, f"/projects/{ep}/merge_requests/{iid}/notes")
+        if mr.get("state") == "merged" and _in_window(mr.get("merged_at"), since, until):
+            mr["_changes"] = GL.api(host, token, "GET",
+                                    f"/projects/{ep}/merge_requests/{iid}/changes")
+
+    issues = GL.api_list(host, token, f"/projects/{ep}/issues",
+                         params={"state": "all", "updated_after": since_iso, "scope": "all"})
+    log(f"イシュー {len(issues)} 件")
+    for issue in issues:
+        iid = issue.get("iid")
+        issue["_notes"] = GL.api_list(host, token, f"/projects/{ep}/issues/{iid}/notes")
+        issue["_state_events"] = GL.api_list(
+            host, token, f"/projects/{ep}/issues/{iid}/resource_state_events")
+        issue["_label_events"] = GL.api_list(
+            host, token, f"/projects/{ep}/issues/{iid}/resource_label_events")
+
+    return {"mrs": mrs, "issues": issues}
+
+
+def resolve_repos(args):
+    """対象リポジトリを (host, project, token) のリストで返す。"""
+    if args.conn_labels:
+        out = []
+        for label in [x.strip() for x in args.conn_labels.split(",") if x.strip()]:
+            h, p = GL.get_project_info(label)
+            out.append((h, p, GL.get_token(label)))
+        return out
+    host, project = GL.get_project_info(args.label_conn)
+    token = GL.get_token(args.label_conn)
+    if args.projects:
+        return [(host, p.strip(), token) for p in args.projects.split(",") if p.strip()]
+    return [(host, project, token)]
+
+
+# ---------------------------------------------------------------------------
+# 状態ファイル（カーソル + ラン履歴）
+# ---------------------------------------------------------------------------
+
+def load_state(path):
+    p = Path(path)
+    if not p.exists():
+        return {"version": 1, "cursors": {}, "runs": []}
+    with open(p, encoding="utf-8") as f:
+        st = json.load(f)
+    st.setdefault("cursors", {})
+    st.setdefault("runs", [])
+    return st
+
+
+def save_state(path, state):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def repo_key(host, project):
+    return f"{host}/{project}"
+
+
+# ---------------------------------------------------------------------------
+# Markdown レンダリング
+# ---------------------------------------------------------------------------
+
+def render_markdown(out):
+    t = out["totals"]
+    rm = t["raw_metrics"]
+    est = t["estimate"]
     cur = est["currency"]
-    w = result["window"]
-    s = est["savings"]
-    sp = est["savings_pct"]
-    hh = est["human_hours_saved"]
+    s, sp, hh = est["savings"], est["savings_pct"], est["human_hours_saved"]
+    ai = t["by_kind"]["ai"]
+    hu = t["by_kind"]["human"]
 
     def money(v):
         return f"{v:,} {cur}"
 
-    lines = [
+    L = [
         "# GitLab 効率性メトリクス レポート",
         "",
-        f"- 対象期間: {w['since']} 〜 {w['until']}",
-        f"- エージェントユーザー: {', '.join(result['agent_users'])}",
+        f"- 対象期間: {out['window']['since']} 〜 {out['window']['until']}",
+        f"- リポジトリ: {', '.join(out['repos'])}",
+        f"- エージェントユーザー: {', '.join(out['classification']['agent_users']) or '(マーカー判定のみ)'}",
         "",
-        "## 生メトリクス",
-        "",
-        "| 指標 | 値 |",
-        "|------|----|",
-        f"| 成果物バイト数（マージ済み MR の追加行） | {rm['deliverable_bytes']:,} B（{rm['deliverable_lines']:,} 行 / {rm['merged_mr_count']} MR） |",
-        f"| エージェント投稿バイト数（イシュー+MR コメント） | {rm['agent_comment_bytes']:,} B（イシュー {rm['issue_comment_bytes']:,} / MR {rm['mr_comment_bytes']:,}） |",
-        f"| 差し戻し回数（reopen + needs-rework） | {rm['rework_count']} 回 |",
-        f"| 破棄した MR | {rm['discarded_mr_count']} 件 |",
-        f"| 推定レビュー時間 | {rm['review_minutes_est']:.0f} 分（{rm['reviewed_mr_count']} MR） |",
-        "",
-        "## コスト削減の推定（レンジ）",
+        "## 全体サマリ（AI 種別）",
         "",
         "| | 楽観（削減小） | 最頻 | 悲観（削減大） |",
         "|------|------|------|------|",
@@ -383,34 +507,41 @@ def render_markdown(result):
         f"| 削減率 | {sp['low']}% | {sp['mid']}% | {sp['high']}% |",
         f"| 削減人時 | {hh['low']} h | {hh['mid']} h | {hh['high']} h |",
         "",
-        "## 最頻シナリオの内訳",
+        "## 生メトリクス（AI / 人）",
+        "",
+        "| 指標 | AI | 人 |",
+        "|------|----|----|",
+        f"| 成果物バイト数 | {ai['deliverable_bytes']:,} B（{ai['deliverable_lines']:,} 行 / {ai['merged_mr_count']} MR） | {hu['deliverable_bytes']:,} B（{hu['merged_mr_count']} MR） |",
+        f"| 投稿バイト数 | {ai['agent_comment_bytes']:,} B | {hu['agent_comment_bytes']:,} B |",
+        f"| 差し戻し回数 | {ai['rework_count']} | {hu['rework_count']} |",
+        f"| 破棄 MR | {ai['discarded_mr_count']} | {hu['discarded_mr_count']} |",
+        f"| 推定レビュー時間 | {ai['review_minutes_est']:.0f} 分 | {hu['review_minutes_est']:.0f} 分 |",
         "",
     ]
-    ml = est["scenarios"]["most_likely"]
-    bd = ml["breakdown"]
-    lines += [
-        "| 項目 | 金額 |",
-        "|------|------|",
-        f"| 人手のみの総コスト | {money(ml['human_only_cost'])} |",
-        f"| ├ 実装（人） | {money(bd['human_authoring_cost'])} |",
-        f"| └ レビュー（人） | {money(bd['human_review_cost'])} |",
-        f"| エージェント利用時の総コスト | {money(ml['agent_scenario_cost'])} |",
-        f"| ├ エージェント計算コスト | {money(bd['agent_compute_cost'])} |",
-        f"| ├ レビュー（人・共通） | {money(bd['human_review_cost'])} |",
-        f"| ├ 差し戻し対応（人） | {money(bd['rework_overhead_cost'])} |",
-        f"| └ 破棄 MR 対応（人） | {money(bd['discard_overhead_cost'])} |",
-        f"| **削減額** | **{money(ml['savings'])}（{ml['savings_pct']}%）** |",
-        "",
-        "## 前提",
-        "",
-        f"- 人件費: {est['assumptions']['human_hourly_rate']:,} {cur}/h",
-        f"- 実装スループット（LOC/人日）: 楽観 {est['assumptions']['write_loc_per_day_high']} / 最頻 {est['assumptions']['write_loc_per_day_mid']} / 悲観 {est['assumptions']['write_loc_per_day_low']}",
-        f"- 1 行あたりバイト数: {est['assumptions']['bytes_per_loc']} B、正味実装時間: {est['assumptions']['productive_hours_per_day']} h/人日",
-        f"- レビュー速度: {est['assumptions']['review_bytes_per_minute']} B/分、差し戻し {est['assumptions']['per_rework_human_min']} 分/回、破棄 {est['assumptions']['per_discard_human_min']} 分/件",
-        "",
-        "> 前提値は概算のデフォルト。自組織の実績値に合わせて --params-file で上書きすること。",
+
+    if out.get("by_repo"):
+        L += ["## リポジトリ別（AI 削減・最頻）", "",
+              "| リポジトリ | 成果物(AI) | 削減額(最頻) | 削減率 |", "|------|------|------|------|"]
+        for r, d in out["by_repo"].items():
+            e = d["estimate"]
+            L.append(f"| {r} | {d['by_kind']['ai']['deliverable_bytes']:,} B | {money(e['savings']['mid'])} | {e['savings_pct']['mid']}% |")
+        L.append("")
+
+    if out.get("by_user"):
+        L += ["## ユーザー別（最頻）", "",
+              "| ユーザー | 種別 | 成果物 | 投稿 | 削減額(最頻) |", "|------|------|------|------|------|"]
+        rows = sorted(out["by_user"].items(),
+                      key=lambda kv: kv[1]["estimate"]["savings"]["mid"], reverse=True)
+        for u, d in rows:
+            e = d["estimate"]
+            L.append(f"| {u} | {'/'.join(d['kinds']) or '-'} | {d['raw_metrics']['deliverable_bytes']:,} B | {d['raw_metrics']['agent_comment_bytes']:,} B | {money(e['savings']['mid'])} |")
+        L.append("")
+
+    L += [
+        "> 削減額は AI 種別の成果物に対する推定。前提（人件費・スループット・レビュー速度）は",
+        "> `--params-file` で組織実績に合わせて上書きすること。`by_user` の削減は差し戻し分を含まない。",
     ]
-    return "\n".join(lines)
+    return "\n".join(L)
 
 
 def _extract(obj, field_path):
@@ -426,44 +557,11 @@ def _extract(obj, field_path):
 
 
 # ---------------------------------------------------------------------------
-# エントリポイント
+# サブコマンド
 # ---------------------------------------------------------------------------
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--days", type=int, default=30, help="直近 N 日を対象（--since 未指定時、既定 30）")
-    ap.add_argument("--since", help="集計開始日 YYYY-MM-DD（指定時は --days より優先）")
-    ap.add_argument("--until", help="集計終了日 YYYY-MM-DD（既定: 現在）")
-    ap.add_argument("--agent-users", help="エージェントの GitLab username（カンマ区切り、既定: 認証ユーザー）")
-    ap.add_argument("--rework-labels", default=",".join(DEFAULT_REWORK_LABELS),
-                    help="差し戻しとみなすラベル（カンマ区切り）")
-    ap.add_argument("--params-file", help="コスト前提を上書きする JSON ファイル")
-    ap.add_argument("--label-conn", default="default", help="connections.yaml の接続ラベル")
-    ap.add_argument("--format", choices=["json", "markdown"], default="json")
-    ap.add_argument("--get", help="JSON 出力から単一フィールドを抽出（例: estimate.savings.mid）")
-    ap.add_argument("--verbose", action="store_true", help="収集過程を stderr に出力")
-    args = ap.parse_args()
-
-    # 接続
-    host, project = GL.get_project_info(args.label_conn)
-    token = GL.get_token(args.label_conn)
-
-    # 期間
-    until = _parse_date(args.until) if args.until else datetime.now(timezone.utc)
-    if args.since:
-        since = _parse_date(args.since)
-    else:
-        since = until - timedelta(days=args.days)
-
-    # エージェントユーザー
-    if args.agent_users:
-        agent_users = [u.strip() for u in args.agent_users.split(",") if u.strip()]
-    else:
-        me = GL.api(host, token, "GET", "/user")
-        agent_users = [me.get("username", "")]
-
-    rework_labels = [l.strip() for l in args.rework_labels.split(",") if l.strip()]
+def cmd_collect(args):
+    repos = resolve_repos(args)
 
     # パラメータ
     params = dict(DEFAULT_PARAMS)
@@ -471,15 +569,68 @@ def main():
         with open(args.params_file, encoding="utf-8") as f:
             params.update(json.load(f))
 
-    # レビュー見積もり用グローバルを反映
-    global params_review_bpm, params_review_fixed, params_review_cap
-    params_review_bpm = params["review_bytes_per_minute"]
-    params_review_fixed = params["review_fixed_min_per_mr"]
-    params_review_cap = params["review_cap_min_per_mr"]
+    # AI マーカー
+    marker_src = (DEFAULT_AI_MARKERS if args.ai_markers is None
+                  else [x for x in args.ai_markers.split("||") if x])
+    ai_res = [re.compile(p) for p in marker_src]
 
-    raw = collect(host, token, project, since, until, agent_users, rework_labels, args.verbose)
-    est = estimate(raw, params)
-    result = {**raw, "estimate": est}
+    # エージェントユーザー集合（未指定なら各接続の認証ユーザー）
+    if args.agent_users is not None:
+        agent_set = {u.strip() for u in args.agent_users.split(",") if u.strip()}
+    else:
+        agent_set = set()
+        seen = set()
+        for host, _project, token in repos:
+            if (host, token) in seen:
+                continue
+            seen.add((host, token))
+            me = GL.api(host, token, "GET", "/user")
+            if me.get("username"):
+                agent_set.add(me["username"])
+
+    rework_labels = [x.strip() for x in args.rework_labels.split(",") if x.strip()]
+    axes = {x.strip() for x in args.axis.split(",") if x.strip()}
+
+    until = _parse_date(args.until) if args.until else datetime.now(timezone.utc)
+    default_since = _parse_date(args.since) if args.since else until - timedelta(days=args.days)
+
+    state = load_state(args.state_file) if args.state_file else None
+
+    cells = defaultdict(metrics_zero)
+    rework_cells = defaultdict(lambda: {"rework_count": 0})
+    repo_paths = []
+    per_repo_since = {}
+
+    for host, project, token in repos:
+        repo_paths.append(project)
+        since = default_since
+        # 増分: --since 未指定かつカーソルがあればそこから
+        if state is not None and not args.since:
+            cur = state["cursors"].get(repo_key(host, project), {}).get("last_until")
+            if cur:
+                since = _parse_date(cur)
+        per_repo_since[repo_key(host, project)] = since
+        raw = fetch_repo(host, token, project, since, until, args.verbose)
+        process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
+                     params, cells, rework_cells)
+
+    overall_since = min(per_repo_since.values()) if per_repo_since else default_since
+    result = build_output(cells, rework_cells, repo_paths, overall_since, until,
+                          agent_set, marker_src, params, axes)
+
+    # 状態の更新
+    if state is not None and args.save_state:
+        for host, project, _token in repos:
+            state["cursors"][repo_key(host, project)] = {"last_until": _to_utc_iso(until)}
+        state["runs"].append({
+            "recorded_at": _to_utc_iso(datetime.now(timezone.utc)),
+            "since": result["window"]["since"],
+            "until": result["window"]["until"],
+            "repos": result["repos"],
+            "totals_ai": result["totals"]["by_kind"]["ai"],
+            "savings": result["totals"]["estimate"]["savings"],
+        })
+        save_state(args.state_file, state)
 
     if args.get:
         val = _extract(result, args.get)
@@ -488,6 +639,97 @@ def main():
         print(render_markdown(result))
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_history(args):
+    state = load_state(args.state_file)
+    runs = state.get("runs", [])
+    if not runs:
+        print("（ラン履歴はありません）")
+        return
+    print(json.dumps([
+        {"index": i, "recorded_at": r.get("recorded_at"),
+         "window": [r.get("since"), r.get("until")], "repos": r.get("repos"),
+         "savings_mid": r.get("savings", {}).get("mid")}
+        for i, r in enumerate(runs)
+    ], ensure_ascii=False, indent=2))
+
+
+def cmd_diff(args):
+    state = load_state(args.state_file)
+    runs = state.get("runs", [])
+    if len(runs) < 2:
+        sys.exit("ERROR: 差分には 2 件以上のラン履歴が必要です（--save-state で記録してください）")
+    a = runs[args.a]
+    b = runs[args.b]
+    delta_metrics = {k: (b["totals_ai"].get(k, 0) - a["totals_ai"].get(k, 0))
+                     for k in set(a["totals_ai"]) | set(b["totals_ai"])}
+    delta_savings = {k: (b["savings"].get(k, 0) - a["savings"].get(k, 0))
+                     for k in set(a["savings"]) | set(b["savings"])}
+    print(json.dumps({
+        "a": {"index": args.a, "recorded_at": a.get("recorded_at"), "window": [a.get("since"), a.get("until")]},
+        "b": {"index": args.b, "recorded_at": b.get("recorded_at"), "window": [b.get("since"), b.get("until")]},
+        "delta_metrics_ai": delta_metrics,
+        "delta_savings": delta_savings,
+    }, ensure_ascii=False, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# エントリポイント
+# ---------------------------------------------------------------------------
+
+def build_parser():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd")
+
+    c = sub.add_parser("collect", help="集計して JSON / Markdown を出力（既定）")
+    c.add_argument("--days", type=int, default=30, help="直近 N 日（--since 未指定時、既定 30）")
+    c.add_argument("--since", help="集計開始日 YYYY-MM-DD（指定時は --days・カーソルより優先）")
+    c.add_argument("--until", help="集計終了日 YYYY-MM-DD（既定: 現在）")
+    c.add_argument("--projects", help="対象プロジェクトパス（カンマ区切り、同一接続のホスト上）")
+    c.add_argument("--conn-labels", help="connections.yaml の接続ラベル（カンマ区切り、複数インスタンス可）")
+    c.add_argument("--agent-users", help="エージェント username（カンマ区切り、既定: 認証ユーザー。空文字でマーカー判定のみ）")
+    c.add_argument("--ai-markers", help="AI 判定の本文正規表現（'||' 区切り、既定の組み込みマーカーを置換）")
+    c.add_argument("--rework-labels", default=",".join(DEFAULT_REWORK_LABELS),
+                   help="差し戻しとみなすラベル（カンマ区切り）")
+    c.add_argument("--axis", default="repo,user", help="出力する軸（repo,user。totals は常に出力）")
+    c.add_argument("--params-file", help="コスト前提を上書きする JSON ファイル")
+    c.add_argument("--state-file", help="カーソル・ラン履歴を読み書きする JSON ファイル")
+    c.add_argument("--save-state", action="store_true", help="実行後に状態へカーソル・ラン履歴を記録する")
+    c.add_argument("--label-conn", default="default", help="connections.yaml の接続ラベル（単一接続時）")
+    c.add_argument("--format", choices=["json", "markdown"], default="json")
+    c.add_argument("--get", help="JSON 出力から単一フィールドを抽出（例: totals.estimate.savings.mid）")
+    c.add_argument("--verbose", action="store_true", help="収集過程を stderr に出力")
+
+    h = sub.add_parser("history", help="状態ファイルのラン履歴を一覧")
+    h.add_argument("--state-file", required=True)
+
+    d = sub.add_parser("diff", help="状態ファイルの 2 ラン差分（既定: 直近 2 件）")
+    d.add_argument("--state-file", required=True)
+    d.add_argument("--a", type=int, default=-2, help="比較元のラン index（既定 -2）")
+    d.add_argument("--b", type=int, default=-1, help="比較先のラン index（既定 -1）")
+
+    return ap
+
+
+def main():
+    argv = sys.argv[1:]
+    known = {"collect", "history", "diff"}
+    if argv and argv[0] in ("-h", "--help"):
+        pass
+    else:
+        first = next((a for a in argv if not a.startswith("-")), None)
+        if first not in known:
+            argv = ["collect"] + argv  # 後方互換: サブコマンド省略時は collect
+
+    args = build_parser().parse_args(argv)
+    if args.cmd == "history":
+        cmd_history(args)
+    elif args.cmd == "diff":
+        cmd_diff(args)
+    else:
+        cmd_collect(args)
 
 
 if __name__ == "__main__":
