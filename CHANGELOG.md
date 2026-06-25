@@ -37,6 +37,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   （読むだけ・タスク本文へ伝搬・clone しない）。policy に **`route: <パターン> -> <repo名>`** ルールを追加。
 - 設定 `route_planner`（kiro/none）と `default_workspace` を追加。タスクに `- workspace:` / `- paths:` / `- refs:` /
   `- routed_by:` フィールドを追加。kiro-flow へは `--workspace`（単一）を渡す（旧 `--repo` 列を廃止）。
+- **【修正】`- workspace:` 指定タスクの verify を該当ワークスペースのクローン内で実行するようにした**（バグ修正）。
+  ワークスペースへルーティングされたタスクは成果が workdir（git-bus ルート）でなく該当 repo の作業ブランチへ push される
+  ため、verify／回帰を従来どおり workdir で回すと「成果の無い場所」で偽 NG になっていた。`_task_verify_cwd` を新設し、
+  verify の実行先を **明示 `verify_cwd` > タスクの `- workspace:` 該当 repo の一時 clone（`target`→`base` ブランチ・`path`
+  をルート）> workdir** の順で解決（`_acceptance_cwd` と同流儀）。差分基準 `$KIRO_BASE_REV` はクローンの HEAD に取り直し、
+  clone は worker の push 先を反映するため都度取り直す。clone 失敗・`path` 不在は黙って workdir に倒さず NG 扱い
+  （成果の無い場所での偽判定を防ぐ）。単体テスト 5 件（clone 実行先・`path` をルート・未指定は workdir・明示 `verify_cwd`
+  優先・clone 失敗で RuntimeError）を追加。README / GUIDE に追記。
 - 単体テストを新 API へ更新（kiro-flow・kiro-autonomous 両スイート、計 472 件 green）。
 
 ### kiro-autonomous

@@ -336,6 +336,11 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   - **リポジトリの同一性は (url, path, base)**：モノレポは「同じ url で path と owns を変えた複数エントリ」でフォルダ別の
     ワークスペースに、ブランチ別は base を変えて区別する。`path`/`base`/`target`/`desc` は構造化 `--workspace`（JSON）として
     kiro-flow へ伝搬し、worker は `kf/<run-id>` ブランチを base から作って作業、変更があれば kiro-flow が commit/push する。
+  - **verify の実行先もワークスペースに従う**: `- workspace:` を持つタスクは成果が workdir（git-bus ルート）でなく該当 repo の
+    作業ブランチへ push されるため、verify/回帰を workdir で回すと「成果の無い場所」で偽 NG になる。そこで verify は**該当 repo を
+    指定ブランチ（`target`→`base`）で `git clone --depth 1` し、`path` 指定があればそれをルートに**したクローン内で実行する
+    （差分基準 `$KIRO_BASE_REV` はクローンの HEAD に取り直す）。clone は worker の push 先を反映するため都度取り直し、clone 失敗・
+    `path` 不在は黙って workdir に倒さず NG 扱い（成果の無い場所で偽判定しない）。明示 `--verify-cwd`（設定 `verify_cwd`）は常に最優先。
   - gitlab executor 経由なら**起票先プロジェクトをワークスペース URL から解決**し、フォルダ・作業ブランチ・参照リポジトリが
     イシュー本文に構造的に表現される。
 - **cohort（pilot-then-batch）**: 「同じ手順を多数の対象に繰り返す」タスクを、**まず 1 件だけ走らせて指示を固めてから残りを
