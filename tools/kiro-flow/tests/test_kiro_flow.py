@@ -937,22 +937,32 @@ class CallExecutorDispatchTests(unittest.TestCase):
 class GitlabRepoInstructionTests(unittest.TestCase):
     """gitlab: clone 指示はイシュー本文の独立節に載せ、タイトル/目的は本来の goal を保つ。"""
 
-    def test_issue_body_separates_instruction_from_purpose(self):
-        body = gl_plugin._issue_body("work", "ログイン画面を追加", {},
-                                     repo_instruction="【成果物リポジトリ】… /tmp/clone/x")
+    def test_issue_body_renders_workspace_as_markdown(self):
+        ws = {"url": "https://git/app.git", "path": "apps/api", "base": "main",
+              "target": "develop", "desc": "API", "branch": "kf/run-1",
+              "clone": "/tmp/kiro-flow-ws-123/app"}
+        body = gl_plugin._issue_body("work", "ログイン画面を追加", {}, ws)
         self.assertIn("## 目的", body)
-        self.assertIn("## 成果物リポジトリ", body)
-        # 目的節の直後は本来の goal（clone 指示で埋まらない）
+        self.assertIn("## 対象リポジトリ", body)
+        # 構造化 Markdown 箇条書き（レイアウトが崩れない）
+        self.assertIn("- **リポジトリ**: https://git/app.git", body)
+        self.assertIn("- **変更対象フォルダ**: `apps/api` 配下のみ", body)
+        self.assertIn("`main` から分岐", body)
+        self.assertIn("`develop` へ MR", body)
+        # ローカルの作業ディレクトリ（clone パス）はリモートには無いので載せない
+        self.assertNotIn("作業ディレクトリ", body)
+        self.assertNotIn("/tmp/kiro-flow-ws-123/app", body)
+        # 目的節は本来の goal のまま
         purpose = body.split("## 目的", 1)[1].split("##", 1)[0]
         self.assertIn("ログイン画面を追加", purpose)
-        self.assertNotIn("成果物リポジトリ】", purpose)
 
-    def test_issue_body_omits_section_when_no_instruction(self):
+    def test_issue_body_omits_section_when_no_workspace(self):
         body = gl_plugin._issue_body("work", "ゴール", {})
-        self.assertNotIn("## 成果物リポジトリ", body)
+        self.assertNotIn("## 対象リポジトリ", body)
 
-    def test_execute_title_and_purpose_use_clean_goal(self):
-        instr = "【成果物リポジトリ】このタスク用に clone 済み: /tmp/clone/x"
+    def test_execute_renders_workspace_section_without_clone_path(self):
+        ws = {"url": "https://gitlab.com/group/repo.git", "base": "main", "target": "main",
+              "clone": "/tmp/kiro-flow-ws-9/repo"}
         calls = []
 
         def api(host, token, method, path, data=None, params=None):
@@ -963,20 +973,21 @@ class GitlabRepoInstructionTests(unittest.TestCase):
 
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
             {"repo_url": "https://gitlab.com/group/repo", "poll_interval": 0.0, "timeout": 0.0})
-        prev = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
         try:
             with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
                  mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
                  mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
-                gl_plugin.execute("work", "ログイン画面を追加", {}, repo_instruction=instr)
+                gl_plugin.execute("work", "ログイン画面を追加", {}, workspace=ws,
+                                  repo_instruction="【ワークスペース】… /tmp/kiro-flow-ws-9/repo")
         finally:
             os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
         post = next(c for c in calls if c[0] == "POST")
-        # タイトルは本来の goal（clone 指示が先頭に来ない）
+        # タイトルは本来の goal
         self.assertIn("ログイン画面を追加", post[1]["title"])
-        self.assertNotIn("成果物リポジトリ", post[1]["title"])
-        # 本文は目的＝本来の goal、clone 指示は別節
-        self.assertIn("## 成果物リポジトリ", post[1]["description"])
+        # 本文は構造化された対象リポジトリ節（ローカル clone パスは載らない）
+        self.assertIn("## 対象リポジトリ", post[1]["description"])
+        self.assertNotIn("/tmp/kiro-flow-ws-9/repo", post[1]["description"])
+        self.assertNotIn("作業ディレクトリ", post[1]["description"])
         purpose = post[1]["description"].split("## 目的", 1)[1].split("##", 1)[0]
         self.assertIn("ログイン画面を追加", purpose)
 
