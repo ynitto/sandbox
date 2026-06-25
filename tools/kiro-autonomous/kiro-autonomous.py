@@ -1772,6 +1772,40 @@ def resolve_verify_cwd(cfg: "Config") -> Path:
     return cfg.workdir
 
 
+def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
+    """このタスクの verify/回帰を実行する作業ディレクトリと、片付けが要る一時 clone のパス（無ければ None）を返す。
+    優先順位: 明示 verify_cwd > タスクの `- workspace:` 該当 repo の一時 clone（target/base ブランチ・path を
+    ルート）> workdir。workspace 指定タスクは worker が成果を該当 repo の作業ブランチへ push し、git-bus
+    ルートの workdir には出ない。そこを検証先にすると「成果の無い場所」で誤判定するため、該当 repo を
+    指定 branch で clone し（path 指定があればそれをルートに）その中で検証する。clone は worker の push 先を
+    反映するため都度取り直す。clone 失敗・path 不在は RuntimeError（呼び出し側で NG 扱い・黙って workdir に
+    倒さない）。"""
+    if cfg.verify_cwd:                              # 明示指定は常に最優先（運用の上書き）
+        return resolve_verify_cwd(cfg), None
+    spec = _workspace_spec_for(cfg, task)
+    if spec and spec.get("url"):
+        tmp = tempfile.mkdtemp(prefix="kiro-verify-")
+        dest = str(Path(tmp) / "repo")
+        branch = spec.get("target") or spec.get("base") or ""   # worker の push 先＝target、無ければ base
+        try:
+            _clone_repo_shallow(spec["url"], branch, dest)
+        except (OSError, RuntimeError) as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise RuntimeError(f"workspace repo の clone 失敗（{spec['url']}@{branch or '既定'}）: {e}") from e
+        root = Path(dest)
+        sub = (spec.get("path") or "").strip().strip("/")       # 指定 path をルートに（モノレポのサブディレクトリ等）
+        if sub:
+            root = root / sub
+            if not root.is_dir():
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise RuntimeError(f"workspace の path が clone 内に無い: {sub}"
+                                   f"（{spec['url']}@{branch or '既定'}）")
+        append_journal(cfg.journal, f"verify: {task.id} を {spec['url']}@{branch or '既定'}"
+                                    + (f"/{sub}" if sub else "") + " のクローン内で検証")
+        return root, tmp
+    return resolve_verify_cwd(cfg), None            # workspace 未指定は従来どおり workdir
+
+
 # ---------------------------------------------------------------------------
 # verify の用意（人が書く負担を減らす）。完了条件は決定的なシェルが正典だが、人が書くのは難しい。
 #   - `- verify_template: <名前> :: <引数...>` … 決定的に展開（エージェント不要）。
@@ -2949,26 +2983,41 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
                        + (f"（{cfg.git_bus}）" if location == "remote" else ""))
 
-    vcwd = resolve_verify_cwd(cfg)             # 明示 verify_cwd があれば成果のあるクローン先で検証
-    ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
-                                        cfg.verify_confirm, verify_env)
     # 人が「成果物の所在（リポジトリ/ブランチ/コミット）・差分・検証」を見て判断できる材料。
     # needs（判断待ち）と DELIVERY/archive（受領）双方に載せる。
     branch = _current_branch(cfg)
-    ev = delivery_evidence(cfg, act_msg, git_base, location,
-                           verify=task.verify, vmsg=vmsg, ok=ok)
     regressed = False
-    if ok and not flaky and cfg.regression_cmd:        # done 確定前のグローバル回帰ゲート（巻き込み事故）
-        rok, rmsg = run_verify(cfg.regression_cmd, vcwd, cfg.verify_timeout, verify_env)
-        if not rok:
-            regressed = True
-            if cfg.regression_revert:
-                _revert_workdir(cfg)
-            _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}", reasons,
-                   evidence=ev)
-            autonomy_record(cfg, task, clean=False, cache=autonomy_cache)   # 手戻り（track 信頼を下げる）
-            append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
-                           + ("・revert 済" if cfg.regression_revert else ""))
+    vtmp = None
+    try:
+        # workspace 指定タスクは git-bus ルート（workdir）でなく該当 repo のクローン内で検証する
+        # （指定 branch/path をルートに取る）。明示 verify_cwd はそれを優先。
+        vcwd, vtmp = _task_verify_cwd(cfg, task)
+        venv = verify_env
+        if vtmp and (vcwd / ".git").exists():          # 一時 clone は差分基準を clone の HEAD に取り直す
+            head = _git_out(vcwd, "rev-parse", "HEAD").strip()
+            venv = {"KIRO_BASE_REV": head} if head else None
+        ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
+                                            cfg.verify_confirm, venv)
+        ev = delivery_evidence(cfg, act_msg, git_base, location,
+                               verify=task.verify, vmsg=vmsg, ok=ok)
+        if ok and not flaky and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故）
+            rok, rmsg = run_verify(cfg.regression_cmd, vcwd, cfg.verify_timeout, venv)
+            if not rok:
+                regressed = True
+                if cfg.regression_revert:
+                    _revert_workdir(cfg)
+                _block(cfg, task, f"回帰検知: グローバル検査 `{cfg.regression_cmd}` 失敗 — {rmsg}", reasons,
+                       evidence=ev)
+                autonomy_record(cfg, task, clean=False, cache=autonomy_cache)   # 手戻り（track 信頼を下げる）
+                append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（回帰検知）"
+                               + ("・revert 済" if cfg.regression_revert else ""))
+    except RuntimeError as e:      # workspace clone 失敗等は黙って workdir に倒さず NG（成果の無い場所で誤判定しない）
+        ok, flaky, vmsg = False, False, str(e)[:500]
+        ev = delivery_evidence(cfg, act_msg, git_base, location,
+                               verify=task.verify, vmsg=vmsg, ok=ok)
+    finally:
+        if vtmp:
+            shutil.rmtree(vtmp, ignore_errors=True)
 
     changed: set = set()
     protect_hits: list = []

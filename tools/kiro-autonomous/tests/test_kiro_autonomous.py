@@ -2982,6 +2982,81 @@ class TestProjectLayer(unittest.TestCase):
             self.assertIsNone(km._charter_single_repo(charter))
             self.assertEqual(km.evaluate_acceptance(cfg_for(d), charter)[0], 1)  # workdir(d) で PASS
 
+    def test_task_verify_cwd_clones_workspace_repo(self):
+        # workspace 指定タスクは git-bus ルート(workdir)でなく該当 repo のクローン内で検証する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote, marker="WS.txt")     # workdir(d) には WS.txt が無い
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x", verify="test -f WS.txt")
+            task.set("workspace", "app")
+            vcwd, tmp = km._task_verify_cwd(cfg_for(d), task)
+            try:
+                self.assertIsNotNone(tmp)                    # 一時 clone を作った
+                self.assertTrue((vcwd / "WS.txt").exists())  # クローン内に成果がある
+                self.assertNotEqual(vcwd, d)                 # workdir ではない
+            finally:
+                if tmp:
+                    shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_task_verify_cwd_uses_workspace_path_as_root(self):
+        # spec の path（モノレポのサブフォルダ）をルートに取る
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote)
+            (remote / "pkg").mkdir()
+            (remote / "pkg" / "IN_SUB.txt").write_text("ok")
+            subprocess.run(["git", "-C", str(remote), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(remote), "-c", "user.email=a@b",
+                            "-c", "user.name=x", "commit", "-qm", "sub"], check=True)
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - path: pkg\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x", verify="test -f IN_SUB.txt")
+            task.set("workspace", "app")
+            vcwd, tmp = km._task_verify_cwd(cfg_for(d), task)
+            try:
+                self.assertEqual(vcwd.name, "pkg")           # path をルートに取った
+                self.assertTrue((vcwd / "IN_SUB.txt").exists())
+            finally:
+                if tmp:
+                    shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_task_verify_cwd_no_workspace_falls_back_to_workdir(self):
+        # workspace 未指定は従来どおり workdir（一時 clone を作らない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            vcwd, tmp = km._task_verify_cwd(cfg_for(d), km.Task(id="T1", title="x"))
+            self.assertEqual(vcwd, d)
+            self.assertIsNone(tmp)
+
+    def test_task_verify_cwd_explicit_verify_cwd_wins(self):
+        # 明示 verify_cwd は workspace 指定より優先（運用の上書き・clone しない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            remote = d / "remote"
+            self._make_git_repo(remote)
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {remote}\n  - owns: **\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x")
+            task.set("workspace", "app")
+            vcwd, tmp = km._task_verify_cwd(cfg_for(d, verify_cwd="/abs/clone"), task)
+            self.assertEqual(vcwd, Path("/abs/clone"))
+            self.assertIsNone(tmp)
+
+    def test_task_verify_cwd_clone_failure_raises(self):
+        # clone 失敗は黙って workdir に倒さず RuntimeError（成果の無い場所で誤判定しない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: c\n## goal\nx\n## repos\n"
+                             f"- app = {d / 'nope'}\n  - owns: **\n  - desc: 対象\n")
+            task = km.Task(id="T1", title="x")
+            task.set("workspace", "app")
+            with self.assertRaises(RuntimeError):
+                km._task_verify_cwd(cfg_for(d), task)
+
     def test_stall_escalates(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
