@@ -101,7 +101,8 @@ cleanup_per_node: false
 
 # 書込先ワークスペースは run（=バックログ単位）ごとに 1 つ。CLI/submit に --workspace で渡す
 # （素の URL か JSON {url,path,base,target}）。設定ファイルには置かない（run 毎に変わるため）。
-# 省略時は読み取り専用 run（commit/push しない）。参照だけのリポジトリは要求本文に記述で伝える。
+# 省略時は読み取り専用 run（commit/push しない）。参照だけのリポジトリは --reference（複数可・読むだけ）
+# で渡す（エージェントのプロンプトと gitlab イシューの参照節に描画され、clone はしない）。
 
 # ---------------------------------------------------------------------------
 # gitlab ワーカーバス（opt-in / executor プラグイン executors/gitlab.py）

@@ -959,6 +959,19 @@ class GitlabRepoInstructionTests(unittest.TestCase):
     def test_issue_body_omits_section_when_no_workspace(self):
         body = gl_plugin._issue_body("work", "ゴール", {})
         self.assertNotIn("## 対象リポジトリ", body)
+        self.assertNotIn("## 参照リポジトリ", body)
+
+    def test_issue_body_renders_reference_section(self):
+        # 参照リポジトリ（読むだけ）がイシュー本文に独立節として載る
+        refs = [{"url": "https://git/spec.git", "path": "openapi", "base": "main", "desc": "API 仕様"},
+                {"url": "https://git/lib.git"}]
+        body = gl_plugin._issue_body("work", "実装する", {}, None, refs)
+        self.assertIn("## 参照リポジトリ", body)
+        self.assertIn("- **https://git/spec.git**", body)
+        self.assertIn("フォルダ `openapi`", body)
+        self.assertIn("API 仕様", body)
+        self.assertIn("- **https://git/lib.git**", body)
+        self.assertIn("読み取り専用", body)
 
     def test_execute_renders_workspace_section_without_clone_path(self):
         ws = {"url": "https://gitlab.com/group/repo.git", "base": "main", "target": "main",
@@ -1307,6 +1320,20 @@ class DaemonPrimitiveTests(unittest.TestCase):
         b2 = kf.Bus(self.tmp, "runRO")
         b2.ensure_run("just investigate")
         self.assertIsNone(b2.run_workspace())
+
+    def test_references_roundtrip_via_meta(self):
+        # 参照リポジトリ（読むだけ）は run meta に載り、submit→inbox でも伝搬する
+        refs = kf.parse_references(["https://x/spec.git",
+                                    '{"url":"https://x/lib.git","path":"src","desc":"lib"}'])
+        self.assertEqual([r["url"] for r in refs], ["https://x/spec.git", "https://x/lib.git"])
+        b = kf.Bus(self.tmp, "runRef")
+        b.ensure_run("goal", workspace={"url": "https://x/app.git"}, references=refs)
+        self.assertEqual(b.run_references(), refs)
+        self.bus.submit_request("reqRef", "do", "t", references=refs)
+        self.assertEqual(self.bus.read_inbox("reqRef")["references"], refs)
+        # 参照節の指示文（エージェント向け）に url が載る
+        self.assertIn("https://x/lib.git", kf.reference_instruction(refs))
+        self.assertEqual(kf.reference_instruction([]), "")
 
     def _make_remote(self, name="remote_repo", base="main", subfile=None):
         """ローカルの『リモート』を git init で用意する（push 先になる非 bare リポジトリ）。"""

@@ -27,6 +27,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - executor 契約に構造化 `workspace`（spec dict）引数を追加。**gitlab executor は起票先 GitLab プロジェクトを
   ワークスペース URL から解決**（SSH/https 両形）し、無ければ `gitlab.repo_url` をフォールバックに使う。
 - 孤立 clone の janitor 接頭辞を `kiro-flow-repos-` → `kiro-flow-ws-` に変更。
+- **参照リポジトリ（読むだけ）を `--reference` で構造化伝搬**（run メタ `references`）。worker がエージェントの
+  プロンプト（参照節）と **gitlab イシュー本文の『## 参照リポジトリ』節**に描画する。従来は要求本文へ畳んで
+  いたため、分解後の各ノード/イシューに参照情報が届かなかったのを解消。gitlab イシューの対象/参照リポジトリ節は
+  構造化 spec から Markdown 整形し、ローカルの clone パス（作業ディレクトリ）は載せない。
 
 #### kiro-autonomous
 
@@ -39,9 +43,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   他 repo・プランナーが挙げた repo）は参照（`refs`）へ振り分ける。生成直後から書込先が明示され、route 層は
   それを尊重する。`task_reference_specs` は `- refs:` に加え `- repos:` のトークンも参照として扱い、書込先 url は除外する。
 - charter `## repos` に **`owns:`（担当パスのグロブ）** を追加。**owns 有り=書込先候補、owns 無し=参照リポジトリ**
-  （読むだけ・タスク本文へ伝搬・clone しない）。policy に **`route: <パターン> -> <repo名>`** ルールを追加。
+  （読むだけ・`--reference` で伝搬・clone しない）。policy に **`route: <パターン> -> <repo名>`** ルールを追加。
 - 設定 `route_planner`（kiro/none）と `default_workspace` を追加。タスクに `- workspace:` / `- paths:` / `- refs:` /
-  `- routed_by:` フィールドを追加。kiro-flow へは `--workspace`（単一）を渡す（旧 `--repo` 列を廃止）。
+  `- routed_by:` フィールドを追加。kiro-flow へは `--workspace`（単一）と `--reference`（参照・複数）を渡す
+  （旧 `--repo` 列を廃止）。参照は要求本文へ畳まず構造化伝搬する（`_reference_cmd_args`）。
 - **【修正】`- workspace:` 指定タスクの verify を該当ワークスペースのクローン内で実行するようにした**（バグ修正）。
   ワークスペースへルーティングされたタスクは成果が workdir（git-bus ルート）でなく該当 repo の作業ブランチへ push される
   ため、verify／回帰を従来どおり workdir で回すと「成果の無い場所」で偽 NG になっていた。`_task_verify_cwd` を新設し、

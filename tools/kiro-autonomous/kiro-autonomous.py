@@ -2062,9 +2062,8 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
     if fb:
         base += f"\n\n人からのフィードバック（必ず反映すること）:\n{fb}"
     if cfg is not None:
-        rn = reference_repos_note(task_reference_specs(cfg, task))   # 参照repoはタスク記述として伝搬
-        if rn:
-            base += "\n\n" + rn
+        # 参照リポジトリは要求本文に畳まず、kiro-flow へ `--reference` で構造化伝搬する
+        # （分解後の各ノード／gitlab イシューにも確実に届くように）。
         # 定義（charter）と判断結果（decisions）を、project でも通常 run でもワーカーへ渡す。
         cc = charter_context(cfg)
         if cc:
@@ -2289,6 +2288,22 @@ def _workspace_cmd_args(cfg: "Config", task: Task) -> "list[str]":
     return ["--workspace", _workspace_token(spec)] if spec else []
 
 
+def _reference_token(spec: dict) -> str:
+    """参照リポジトリ spec を kiro-flow の `--reference` 値（JSON）にする。url/path/base/desc を伝搬。"""
+    meta = {k: spec[k] for k in ("path", "base", "desc") if spec.get(k)}
+    if meta.get("desc") and len(meta["desc"]) > 300:
+        meta["desc"] = meta["desc"][:300]
+    return json.dumps({"url": spec["url"], **meta}, ensure_ascii=False, separators=(",", ":"))
+
+
+def _reference_cmd_args(cfg: "Config", task: Task) -> "list[str]":
+    """kiro-flow へ渡す `--reference` 列（参照リポジトリ＝読むだけ。executor が描画する）。"""
+    args: "list[str]" = []
+    for spec in task_reference_specs(cfg, task):
+        args += ["--reference", _reference_token(spec)]
+    return args
+
+
 def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
     """このタスクが参照する（書き込まない）リポジトリの spec 列。charter の owns: 無しエントリ全部に、
     タスクの `- refs:`（および `- repos:` に挙げた参照先）で明示したものを足す。書込先 `- workspace:`
@@ -2315,31 +2330,13 @@ def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
     return out
 
 
-def reference_repos_note(specs: "list[dict]") -> str:
-    """参照リポジトリ（read-only）をタスク記述として伝搬する文面。書込先ではないことを明示する。"""
-    if not specs:
-        return ""
-    lines = ["参照用リポジトリ（読み取り専用・変更/commit はしない。必要に応じて内容を参照すること）:"]
-    for s in specs:
-        label = (f"{s['name']} = " if s.get("name") else "") + s["url"]
-        tags = []
-        if s.get("path"):
-            tags.append(f"フォルダ {s['path']}")
-        if s.get("base"):
-            tags.append(f"ブランチ {s['base']}")
-        line = f"- {label}" + ("（" + "・".join(tags) + "）" if tags else "")
-        if s.get("desc"):
-            line += f": {s['desc']}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
 def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
     """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。
     書込先は _act_batch で確定・永続化済みの `- workspace:` を読む（再ルーティングしない）。"""
-    return _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + [
+    return (_kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task)
+            + _reference_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
-        "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)]
+        "--executor", cfg.executor, "--max-iterations", str(cfg.max_iterations)])
 
 
 def daemon_lock_path(cfg: "Config", use_git: bool) -> Path:
@@ -2432,7 +2429,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
 
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
-    base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task)
+    base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
     try:
         sub = subprocess.run(base + ["submit", build_request(task, cfg)], cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
