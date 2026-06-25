@@ -118,7 +118,6 @@ CONFIG_DEFAULTS = {
     "git_branch": "main",
     "git_subdir": "",
     "lock_dir": None,   # daemon singleton ロックの置き場（外部 daemon の発見性を担保。既定 tempdir 配下）
-    "repos": [],        # 成果物リポジトリ URL。worker が temp 領域へ clone してから作業し、作業後に消す
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
@@ -175,11 +174,9 @@ CONFIG_DEFAULTS = {
         "labels": "status:open,assignee:any",  # 起票するイシューに付ける初期ラベル
         "priority": "priority:normal",      # 付与する優先度ラベル（空文字で付けない）
         "poll_interval": 30.0,              # イシューのポーリング間隔（秒）
-        # 完了＝人がマージ＝イシュークローズ。人の確認は時間がかかるため待機は長め（0/負で無限）。
-        "timeout": 604800.0,                # クローズに達するまでの全体上限（秒・既定 7 日）
-        "approved_timeout": 1209600.0,      # approved/done 検知後のマージ待ち猶予（秒・既定 14 日）
-        "approved_label": "status:approved",  # 進捗の目印（検知後はマージ＝クローズ待ちへ移行）
-        "done_label": "status:done",        # 同上（進捗の目印。完了はクローズで確定）
+        "timeout": 86400.0,                 # approved 待ちのタイムアウト（秒）。0/負で無限待ち
+        "approved_label": "status:approved",  # この状態に達したら完了とみなす（= 受け入れ承認）
+        "done_label": "status:done",        # approved 以外に完了とみなすラベル
     },
 }
 
@@ -305,7 +302,6 @@ def strip_ansi(text: str) -> str:
 class Bus:
     def __init__(self, root: str, run_id: str):
         self.root = root
-        self.run_id = run_id
         self.runs_root = os.path.join(root, "runs")
         self.inbox_dir = os.path.join(root, "inbox")
         self.inbox_claims_dir = os.path.join(root, "inbox", "claims")
@@ -331,21 +327,32 @@ class Bus:
         for d in (self.tasks_dir, self.claims_dir, self.results_dir, self.events_dir):
             os.makedirs(d, exist_ok=True)
 
-    def ensure_run(self, request: str, repos: "list[str] | None" = None) -> None:
+    def ensure_run(self, request: str, workspace: "dict | None" = None,
+                   references: "list[dict] | None" = None) -> None:
         self.ensure_dirs()
         if read_json(self.meta_path) is None:
             write_json_atomic(self.meta_path, {
                 "request": request,
-                "repos": list(repos or []),   # 成果物リポジトリ（worker が clone してから作業）
+                # この run（=バックログ単位）の唯一の書込先リポジトリ（worker が clone し、
+                # 作業ブランチを作って作業する）。None なら読み取り専用 run（commit/push しない）。
+                "workspace": workspace or None,
+                # 参照リポジトリ（読むだけ・書き込まない）。executor がイシュー/プロンプトに描画する。
+                "references": list(references or []),
                 "status": "planning",
                 "created_at": now_iso(),
             })
 
-    def run_repos(self) -> "list[str]":
-        """この run の成果物リポジトリ URL 一覧（meta に記録、worker が clone する）。"""
+    def run_workspace(self) -> "dict | None":
+        """この run の唯一の書込先ワークスペース spec（meta に記録）。無ければ None（読み取り専用 run）。"""
         meta = read_json(self.meta_path) or {}
-        r = meta.get("repos")
-        return list(r) if isinstance(r, list) else []
+        w = meta.get("workspace")
+        return w if isinstance(w, dict) and w.get("url") else None
+
+    def run_references(self) -> "list[dict]":
+        """この run の参照リポジトリ spec 一覧（読むだけ。meta に記録、executor が描画する）。"""
+        meta = read_json(self.meta_path) or {}
+        r = meta.get("references")
+        return [s for s in r if isinstance(s, dict) and s.get("url")] if isinstance(r, list) else []
 
     # --- メタ / グラフ ---
     def set_status(self, status: str) -> None:
@@ -608,12 +615,14 @@ class Bus:
 
     # --- inbox（要求キュー）と要求 claim ---
     def submit_request(self, req_id: str, request: str, submitter: str,
-                       repos: "list[str] | None" = None) -> None:
+                       workspace: "dict | None" = None,
+                       references: "list[dict] | None" = None) -> None:
         write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), {
             "id": req_id,
             "request": request,
             "submitter": submitter,
-            "repos": list(repos or []),   # 成果物リポジトリを daemon の orchestrate へ伝搬する
+            "workspace": workspace or None,   # 唯一の書込先を daemon の orchestrate へ伝搬する
+            "references": list(references or []),  # 参照リポジトリも daemon の orchestrate へ伝搬する
             "submitted_at": now_iso(),
         })
 
@@ -805,6 +814,19 @@ def make_bus(args, node_id: str) -> Bus:
     return Bus(os.path.abspath(args.bus), run_id)
 
 
+def ensure_bus_root(args) -> None:
+    """起動初回にバスフォルダが無ければ作成する。git バスでは各ノードのクローンが
+    作業後に削除されてフォルダが空になるため、空ディレクトリを git 管理下に残せるよう
+    .gitkeep も置く（既にあれば触らない＝冪等）。"""
+    bus_root = os.path.abspath(args.bus)
+    os.makedirs(bus_root, exist_ok=True)
+    if getattr(args, "git", None):
+        keep = os.path.join(bus_root, ".gitkeep")
+        if not os.path.exists(keep):
+            with open(keep, "w", encoding="utf-8"):
+                pass
+
+
 def cleanup_active_clones() -> None:
     """このプロセスが作った sparse-checkout クローンを作業後にまとめて削除する。"""
     while _active_clones:
@@ -816,12 +838,15 @@ def cleanup_active_clones() -> None:
 
 
 # --------------------------------------------------------------------------
-# 成果物リポジトリ — worker が temp 領域へ clone してから作業し、作業後に必ず消す。
-#   push が必要なもの・中身を読む必要があるもの（複数可）を、orchestrator の
-#   作業ツリーを汚さずに分離して扱うための仕組み。clone はプロセス内で再利用する。
+# ワークスペース — この run（=バックログ単位）の唯一の書込先リポジトリ。
+#   worker が temp 領域へ clone し、作業ブランチ kf/<run_id> を base から作って作業する。
+#   変更があれば kiro-flow が commit して push する（エージェントは編集のみ）。読み取り専用
+#   グラフ（変更ゼロ）なら何も push しない。参照だけのリポジトリはワークスペースではなく、
+#   タスク記述（goal 本文）として伝搬する（kiro-autonomous が埋め込む）。
+#   リポジトリの同一性は (url, path, base) で判定する（同 URL でも path/ブランチが違えば別）。
 # --------------------------------------------------------------------------
-_work_repos_cache: "dict[str, str]" = {}   # url -> clone パス（""=clone 失敗）
-_work_repos_root: "str | None" = None
+_workspace_clone: "dict[tuple, str]" = {}   # (url,path,base) -> clone パス（""=clone 失敗）
+_workspace_root: "str | None" = None
 
 
 def _repo_name(url: str) -> str:
@@ -831,102 +856,69 @@ def _repo_name(url: str) -> str:
     return _safe(base) or "repo"
 
 
-def parse_repo_token(token: str) -> dict:
-    """`--repo` トークンを構造化 spec に正規化する。素の URL でも、kiro-autonomous が付ける
-    JSON（{url,name,path,base,target,role,readonly,desc}）でも受ける（後方互換）。
-    同一 URL でも path/役割が違えば別 spec（モノレポの役割別フォルダ）。
-
-    `role`（成果物リポジトリのロール・executor 横断の正準スキーマ）:
-      - `write` … 成果物をコミットする単一の対象（push 先）。
-      - `read`  … 参照のみ（clone するが push しない）。複数可。
-      - `auto`/未指定 … planner が判別しなかった。executor が決める（classify_repos）。
-    後方互換: `readonly: true` は `role: read` と同義（role 未指定時に適用）。"""
-    spec = {"url": "", "name": "", "path": "", "base": "",
-            "target": "", "role": "", "readonly": False, "desc": ""}
+def parse_workspace(token: "str | None") -> "dict | None":
+    """`--workspace` トークンをワークスペース spec に正規化する。素の URL でも、kiro-autonomous が
+    付ける JSON（{url,path,base,target,desc}）でも受ける。url が無ければ None（読み取り専用 run）。"""
     token = (token or "").strip()
+    if not token:
+        return None
+    spec = {"url": "", "path": "", "base": "", "target": "", "desc": ""}
     if token.startswith("{"):
         try:
             d = json.loads(token)
         except (ValueError, TypeError):
             d = None
         if isinstance(d, dict) and d.get("url"):
-            for k in ("url", "name", "path", "base", "target", "role", "desc"):
+            for k in ("url", "path", "base", "target", "desc"):
                 if d.get(k):
                     spec[k] = str(d[k]).strip()
-            spec["readonly"] = bool(d.get("readonly"))
             return spec
+        return None
     spec["url"] = token                           # 素の URL（メタ無し）
     return spec
 
 
-def repo_role(spec: dict) -> str:
-    """spec の実効ロールを返す（write/read/auto）。executor 横断で同じ判定を使う。
-    明示 `role` を優先し、無ければ `readonly`→read、それも無ければ auto（未決定）。"""
-    r = str(spec.get("role") or "").strip().lower()
-    if r in ("write", "read"):
-        return r
-    if spec.get("readonly"):
-        return "read"
-    return "auto"
-
-
-def classify_repos(specs: "list[dict]") -> dict:
-    """成果物リポジトリのロールを解決する正準リゾルバ（どの executor もこの結果に従う）。
-
-    規約: **成果物をコミットするのは単一（write）**、**参照は複数可（read）**、
-    planner が判別しなかった `auto` は **executor がここで決める**。
-
-    解決則:
-      - 明示 write が 1 つ以上 → 先頭を write、残りの write と全 auto は read に降格
-        （単一 write 規則。`extra_writes` に降格元を残す）。
-      - 明示 write が無い:
-          - auto がちょうど 1 つで read が無い → その 1 つを write（単一 repo は自明に成果物先）。
-          - それ以外（auto 複数 / read 併存）→ write 未定（`undecided` に auto を残す）。
-            LLM executor は指示で 1 つだけ選び、決定的処理（capture）は変更のある候補を採用する。
-    返り値: {"write": spec|None, "reads": [spec], "undecided": [spec], "extra_writes": [spec]}。"""
-    writes = [s for s in specs if repo_role(s) == "write"]
-    reads = [s for s in specs if repo_role(s) == "read"]
-    autos = [s for s in specs if repo_role(s) == "auto"]
-    if writes:
-        return {"write": writes[0], "reads": reads + writes[1:] + autos,
-                "undecided": [], "extra_writes": writes[1:]}
-    if len(autos) == 1 and not reads:
-        return {"write": autos[0], "reads": [], "undecided": [], "extra_writes": []}
-    return {"write": None, "reads": reads, "undecided": autos, "extra_writes": []}
-
-
-def repo_token_id(token: str) -> str:
-    """`--repo` トークンの参照識別子（name 優先、無ければ URL 末尾名）。ノードへの repo 割当はこの id で行う。"""
-    spec = parse_repo_token(token)
-    return spec.get("name") or _repo_name(spec["url"]) or spec["url"]
-
-
-def resolve_node_repos(node: dict, run_tokens: "list[str]") -> "list[str]":
-    """このノードが clone すべき repo トークンを決める（必要なものだけを必要な時に clone するための判断）。
-    - run に repo が無ければ空。
-    - ノードに `repos` キーが無い（未注釈・後方互換）→ run の全 repo。
-    - `repos` がある → その id（name/url）に一致する run トークンだけ（空配列＝何も clone しない）。"""
-    if not run_tokens:
-        return []
-    if "repos" not in node:
-        return list(run_tokens)               # 未注釈は全 repo（安全側・後方互換）
-    want = node.get("repos") or []
-    if not want:
-        return []                             # 明示的に「不要」＝ clone しない
-    by_id: "dict[str, str]" = {}
-    for tok in run_tokens:
-        by_id.setdefault(repo_token_id(tok), tok)
-        url = parse_repo_token(tok)["url"]
-        if url:
-            by_id.setdefault(url, tok)
-    out: "list[str]" = []
+def parse_references(tokens: "list[str] | None") -> "list[dict]":
+    """`--reference` トークン列を参照リポジトリ spec 列へ正規化する（読むだけ・書き込まない）。
+    各トークンは素の URL でも JSON（{url,path,base,desc}）でも可。url の無いものは捨てる。"""
+    out: "list[dict]" = []
     seen: "set[str]" = set()
-    for w in want:
-        tok = by_id.get(str(w))
-        if tok and tok not in seen:
-            seen.add(tok)
-            out.append(tok)
+    for tok in (tokens or []):
+        spec = parse_workspace(tok)               # 同じ正規化を流用（target は参照では未使用）
+        if spec and spec["url"] and spec["url"] not in seen:
+            seen.add(spec["url"])
+            out.append(spec)
     return out
+
+
+def reference_instruction(refs: "list[dict]") -> str:
+    """参照リポジトリ（読むだけ）をエージェントへ伝える指示ブロック。書込先ではないことを明示する。"""
+    if not refs:
+        return ""
+    lines = ["【参照リポジトリ】読み取り専用。変更・commit・push はしないこと。必要に応じて内容を参照する:"]
+    for s in refs:
+        label = s["url"]
+        tags = []
+        if s.get("path"):
+            tags.append(f"フォルダ {s['path']}")
+        if s.get("base"):
+            tags.append(f"ブランチ {s['base']}")
+        line = f"  - {label}" + ("（" + "・".join(tags) + "）" if tags else "")
+        if s.get("desc"):
+            line += f": {s['desc']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def workspace_id(spec: dict) -> tuple:
+    """ワークスペースの一意キー = (url, path, base)。同 URL でも path（モノレポのフォルダ）や
+    base（作業ブランチ）が違えば別ワークスペースとして扱う。"""
+    return (spec.get("url", ""), spec.get("path", ""), spec.get("base", ""))
+
+
+def run_branch_name(run_id: str) -> str:
+    """この run の作業ブランチ名。worker が base から作り、変更を push する先。"""
+    return f"kf/{_safe(run_id)}"
 
 
 def _clone_repo(url: str, base: str, dest: str) -> str:
@@ -948,188 +940,112 @@ def _clone_repo(url: str, base: str, dest: str) -> str:
     return ""
 
 
-def ensure_work_repos(repos: "list[str]", node_id: str) -> "list[dict]":
-    """成果物リポジトリを worker 専用の temp 領域へ clone する（URL 単位でプロセス内キャッシュ）。
-    各 spec に clone 先パスを足した dict の列を返す（clone="" は clone 失敗）。base 指定があれば
-    そのブランチを checkout する。作業後に cleanup_work_repos で必ず消す。"""
-    global _work_repos_root
-    out: "list[dict]" = []
-    if not repos:
-        return out
-    if _work_repos_root is None:
-        # 所有プロセスの pid を名前に埋める → SIGKILL 等で finally が走らず残った孤立 clone を
-        # janitor（sweep_work_repo_dirs）が「pid 死亡」を根拠に安全に回収できる（稼働中は消さない）。
-        _work_repos_root = tempfile.mkdtemp(
-            prefix=f"kiro-flow-repos-{os.getpid()}-{_safe(node_id)}-")
-    for token in repos:
-        spec = parse_repo_token(token)
-        url = spec["url"]
-        if url in _work_repos_cache:              # 同一 URL は一度だけ clone（役割別 spec は指示で出し分け）
-            out.append({**spec, "clone": _work_repos_cache[url]})
-            continue
-        stem = _safe(spec["name"]) or _repo_name(url)
-        dest = os.path.join(_work_repos_root, stem)
-        n = 2
-        while os.path.exists(dest):               # 同名 repo の衝突回避
-            dest = os.path.join(_work_repos_root, f"{stem}-{n}")
-            n += 1
-        path = _clone_repo(url, spec["base"], dest)
-        _work_repos_cache[url] = path
-        out.append({**spec, "clone": path})
-    return out
+def _ws_git(clone: str, *args: str):
+    """clone 内で git を実行（capture, check しない）。"""
+    return subprocess.run(["git", "-C", clone, *args], capture_output=True, text=True)
 
 
-def cleanup_work_repos() -> None:
-    """worker が clone した成果物リポジトリを丸ごと削除する（作業後クリーンは必須）。"""
-    global _work_repos_root
-    if _work_repos_root and os.path.isdir(_work_repos_root):
-        shutil.rmtree(_work_repos_root, ignore_errors=True)
-    _work_repos_root = None
-    _work_repos_cache.clear()
-
-
-def _repo_line(c: dict) -> "list[str]":
-    """1 リポジトリの clone 情報（ラベル・パス・ブランチ・フォルダ・説明）を行に整形する。"""
-    label = (f"{c['name']} = " if c.get("name") else "") + c.get("url", "")
-    lines = [f"  - {label} → {c.get('clone')}"]
-    if c.get("base"):
-        br = f"      作業ブランチ: {c['base']} から分岐"
-        if c.get("target") and c["target"] != c["base"]:
-            br += f"・push 先（MR/PR ターゲット）= {c['target']}"
-        lines.append(br)
-    if c.get("path"):
-        lines.append(f"      フォルダ: {c['path']} 配下のみ変更すること")
-    if c.get("desc"):
-        lines.append(f"      内容: {c['desc']}")
-    return lines
-
-
-def repo_instruction(clones: "list[dict]") -> str:
-    """clone 済みの成果物リポジトリをエージェントに伝える決定的な指示ブロック。
-
-    ロール（classify_repos）に従い、**成果物をコミットする単一の対象（write）**と
-    **参照のみ（read・複数可）**を明確に出し分ける。planner が判別しなかった（auto）場合は、
-    『どれにコミットするかを 1 つだけ選べ』と executor（エージェント）に委ねる。
-    この指示は call_executor 経由で executor へ goal とは別引数（repo_instruction）として渡る
-    （gitlab executor はイシュー本文の独立した節に載せる。goal のタイトル/目的は汚さない）。"""
-    have = [c for c in clones if c.get("clone")]
-    if not have:
-        failed = [c.get("url", "") for c in clones if not c.get("clone")]
-        return ("【成果物リポジトリ】clone 失敗（手動取得が必要・push 不可の可能性）: "
-                + ", ".join(failed)) if failed else ""
-    res = classify_repos(have)
-    lines = ["【成果物リポジトリ】このタスク用に clone 済みです。読み書きは必ず各パス内で行い、"
-             "他の場所（orchestrator の作業ツリーなど）は編集しないこと。"]
-    if res["write"]:
-        lines.append("■ 成果物をコミットする対象（ここだけに commit・push する。単一）:")
-        lines += _repo_line(res["write"])
-    if res["reads"]:
-        lines.append("■ 参照のみ（読むだけ。変更・commit・push しないこと）:")
-        for c in res["reads"]:
-            lines += _repo_line(c)
-    if res["undecided"]:
-        lines.append("■ 成果物のコミット先が未確定（planner が判別しませんでした）。"
-                     "次のうち**最も関連の深い 1 つだけ**を選んでコミットし、残りは参照のみとすること:")
-        for c in res["undecided"]:
-            lines += _repo_line(c)
-    if res["write"] or res["undecided"]:
-        lines.append("コミットした対象は commit すること。ローカル実行では kiro-flow が成果ブランチへ "
-                     "push してリンクを記録する（リモート委譲の場合は push して MR/PR を用意すること）。"
-                     "なお、調査など成果物がコミットを伴わないタスクは、無理にコミットせず成果を本文に"
-                     "まとめること（その場合はバス上の成果が納品物になる）。")
+def _prepare_run_branch(clone: str, branch: str, base: str) -> None:
+    """clone 内に run の作業ブランチ branch を用意する（kiro-flow がブランチを作りエージェントへ渡す）。
+    リモートに既に branch があれば fetch して追従、無ければ base（または現在の HEAD）から作成する。
+    分散の別ワーカーが同じ branch を共有するので、push 時の rebase リトライで統合される。"""
+    if not _ws_git(clone, "config", "user.email").stdout.strip():
+        _ws_git(clone, "config", "user.email", "kiro-flow@local")
+        _ws_git(clone, "config", "user.name", "kiro-flow")
+    _ws_git(clone, "fetch", "--quiet", "origin", branch)
+    if _ws_git(clone, "rev-parse", "--verify", f"origin/{branch}").returncode == 0:
+        _ws_git(clone, "checkout", "-B", branch, f"origin/{branch}")    # 既存の run ブランチに追従
+    elif base and _ws_git(clone, "rev-parse", "--verify", base).returncode == 0:
+        _ws_git(clone, "checkout", "-B", branch, base)                  # base から分岐
     else:
-        lines.append("いずれも参照のみです。成果は本文にまとめること（バス上の成果が納品物になる）。")
-    failed = [c.get("url", "") for c in clones if not c.get("clone")]
-    if failed:
-        lines.append("  ※ clone 失敗（必要なら手動で取得・push 不可の可能性）: " + ", ".join(failed))
+        _ws_git(clone, "checkout", "-B", branch)                        # 現在の HEAD から分岐
+
+
+def ensure_workspace_clone(spec: "dict | None", run_id: str) -> "dict | None":
+    """run のワークスペースを worker 専用 temp へ clone し、作業ブランチ kf/<run_id> を用意する。
+    (url,path,base) 単位でプロセス内キャッシュ。spec が無ければ None（読み取り専用 run）。
+    返り値は spec に clone 先パス（clone="" は失敗）と branch を足した dict。"""
+    global _workspace_root
+    if not spec or not spec.get("url"):
+        return None
+    branch = run_branch_name(run_id)
+    key = workspace_id(spec)
+    if key in _workspace_clone:
+        return {**spec, "clone": _workspace_clone[key], "branch": branch}
+    if _workspace_root is None:
+        # pid を名に埋める → SIGKILL 等で残った孤立 clone を janitor が安全に回収できる。
+        _workspace_root = tempfile.mkdtemp(prefix=f"kiro-flow-ws-{os.getpid()}-")
+    stem = _repo_name(spec["url"])
+    dest = os.path.join(_workspace_root, stem)
+    n = 2
+    while os.path.exists(dest):
+        dest = os.path.join(_workspace_root, f"{stem}-{n}")
+        n += 1
+    path = _clone_repo(spec["url"], spec.get("base") or "", dest)
+    if path:
+        _prepare_run_branch(path, branch, spec.get("base") or "")
+    _workspace_clone[key] = path
+    return {**spec, "clone": path, "branch": branch}
+
+
+def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | None":
+    """エージェント実行後、ワークスペースに変更があれば作業ブランチへ commit し push する
+    （rebase リトライで分散ワーカーの push を統合）。変更が無ければ何もしない＝読み取り専用
+    グラフ（調査タスク等）ではブランチを push しない。返り値: 反映したデリバリ dict か None。"""
+    if not ws:
+        return None
+    clone, branch = ws.get("clone"), ws.get("branch")
+    if not clone or not os.path.isdir(clone):
+        return None
+    _ws_git(clone, "add", "-A")
+    if _ws_git(clone, "diff", "--cached", "--quiet").returncode == 0:
+        return None                               # 変更なし → commit/push しない
+    _ws_git(clone, "commit", "-m", f"[kiro-flow] {node_id} ({run_id})")
+    for i in range(5):
+        if _ws_git(clone, "push", "-u", "origin", branch).returncode == 0:
+            head = _ws_git(clone, "rev-parse", "HEAD").stdout.strip()
+            return {"url": ws.get("url"), "branch": branch, "commit": head,
+                    "target": ws.get("target") or ws.get("base") or "", "path": ws.get("path") or ""}
+        _ws_git(clone, "fetch", "--quiet", "origin", branch)
+        _ws_git(clone, "rebase", f"origin/{branch}")
+        time.sleep(2 ** i if i < 4 else 16)
+    raise RuntimeError(f"workspace push が {branch} へ反映できませんでした")
+
+
+def cleanup_workspace() -> None:
+    """worker が clone したワークスペースを丸ごと削除する（作業後クリーンは必須）。"""
+    global _workspace_root
+    if _workspace_root and os.path.isdir(_workspace_root):
+        shutil.rmtree(_workspace_root, ignore_errors=True)
+    _workspace_root = None
+    _workspace_clone.clear()
+
+
+def workspace_instruction(ws: "dict | None") -> str:
+    """唯一の書込先ワークスペースをエージェントに伝える決定的な指示ブロック。
+    clone 先・対象フォルダ(path)・作業ブランチ(base→target)・役割(desc) を示し、編集だけ行わせる
+    （commit/push は kiro-flow が行う）。この指示は call_executor 経由で executor へ goal とは別引数
+    （repo_instruction）として渡る（gitlab executor は起票先の解決とイシュー本文に使う）。"""
+    if not ws:
+        return ""
+    if not ws.get("clone"):
+        return f"【ワークスペース】clone に失敗しました（{ws.get('url') or ''}）。書き込みはできません。"
+    lines = [f"【ワークスペース】このタスクの唯一の書込先リポジトリ（clone 済み）: {ws.get('url')}",
+             f"  作業ディレクトリ: {ws['clone']}"]
+    if ws.get("path"):
+        lines.append(f"  変更してよいのは {ws['path']} 配下のみ（他フォルダは触らないこと）")
+    br = f"  作業ブランチ: {ws.get('branch')}"
+    if ws.get("base"):
+        br += f"（{ws['base']} から分岐"
+        if ws.get("target") and ws["target"] != ws["base"]:
+            br += f"・最終的な MR/PR ターゲット = {ws['target']}"
+        br += "）"
+    lines.append(br)
+    if ws.get("desc"):
+        lines.append(f"  役割: {ws['desc']}")
+    lines.append("  作業ツリー内のファイルを編集すること。commit と push は kiro-flow が自動で行うので、"
+                 "あなたは commit/push やブランチ切替をしないこと。変更が不要（調査のみ）なら何も書き換えない。")
     return "\n".join(lines)
-
-
-# 決定的 commit の作者（環境の git config に依存せず再現可能にする）。
-_DELIVERY_GIT_AUTHOR = ["-c", "user.name=kiro-flow", "-c", "user.email=kiro-flow@localhost"]
-
-
-def _git_io(path: str, *args: str) -> "tuple[int, str, str]":
-    """clone 内で git を実行し (returncode, stdout, stderr) を返す。"""
-    r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True)
-    return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
-
-
-def _delivery_branch(spec: dict, run_id: str, node_id: str) -> str:
-    """この repo への push 先（成果ブランチ）を決定的に決める。
-    `target`（MR/PR ターゲット指定）があればそれ、無ければ `kiro-flow/<run>/<node>`。"""
-    if spec.get("target"):
-        return str(spec["target"])
-    rid = re.sub(r"[^A-Za-z0-9._-]", "-", str(run_id))[:40]
-    nid = re.sub(r"[^A-Za-z0-9._-]", "-", str(node_id))
-    return f"kiro-flow/{rid}/{nid}"
-
-
-def _capture_one(c: dict, run_id: str, node_id: str) -> "dict | None":
-    """1 リポジトリの変更を決定的に捕捉する。変更があれば成果ブランチへ commit/push して
-    delivery dict を返す。変更が無ければ None（＝コミットを伴わない＝納品物はバス上）。"""
-    path = c.get("clone")
-    if not path or not os.path.isdir(path):
-        return None
-    base = str(c.get("base") or "")
-    branch = _delivery_branch(c, run_id, node_id)
-    # 1. 未コミット変更を取り込む（編集だけして commit しなかった場合の保険）
-    _, porcelain, _ = _git_io(path, "status", "--porcelain")
-    committed_here = False
-    if porcelain:
-        _git_io(path, "add", "-A")
-        rc, _, _ = _git_io(path, *_DELIVERY_GIT_AUTHOR, "commit", "-m", f"[kiro-flow] {node_id}")
-        committed_here = rc == 0
-    # 2. base から HEAD が進んでいるか（＝コミットが存在するか）を判定
-    rc, head, _ = _git_io(path, "rev-parse", "HEAD")
-    if rc != 0:
-        return None
-    ahead = committed_here
-    ref = f"origin/{base}" if base else "origin/HEAD"
-    rc_b, base_sha, _ = _git_io(path, "rev-parse", ref)
-    if rc_b == 0:
-        ahead = ahead or (head != base_sha)
-    if not ahead:
-        return None  # 変更なし（調査系など）→ 納品物はバス上の成果に委ねる
-    # 3. 決定的な成果ブランチへ push（temp clone 削除前の永続化）
-    rc_p, _, perr = _git_io(path, "push", "origin", f"HEAD:refs/heads/{branch}")
-    d: dict = {"url": c.get("url", ""), "base": base, "target": c.get("target", ""),
-               "branch": branch, "head_sha": head, "pushed": rc_p == 0, "changed": True}
-    if c.get("name"):
-        d["name"] = c["name"]
-    if rc_p != 0:
-        d["push_error"] = perr[:200]
-        log(node_id, f"成果ブランチ push 失敗（{c.get('url','')} → {branch}）: {perr[:120]}")
-    else:
-        log(node_id, f"成果を push: {c.get('url','')} → {branch} @ {head[:8]}")
-    return d
-
-
-def capture_deliveries(clones: "list[dict]", run_id: str, node_id: str) -> "list[dict]":
-    """エージェント実行後に、成果物リポジトリの状態を決定的に捕捉する。
-
-    ロール（classify_repos）に従い、**成果物のコミットは単一の write 対象だけ**を push する。
-    参照のみ（read）は決して push しない。planner 未確定（auto・undecided）のときは、
-    エージェントが実際にコミットした候補（＝変更のある repo）を採用する（executor が決めた結果を尊重）。
-    **成果物がコミットを伴うとは限らない**（調査系）ので、変更が無ければ何も返さない
-    （その場合の納品物はバス上の `result.output/data`）。
-    """
-    have = [c for c in (clones or []) if c.get("clone") and os.path.isdir(c.get("clone"))]
-    res = classify_repos(have)
-    if res["write"]:
-        candidates = [res["write"]]              # 単一 write のみ push（read は対象外）
-    else:
-        candidates = res["undecided"]            # 未確定 → 変更のある候補を採用
-    deliveries: "list[dict]" = []
-    for c in candidates:
-        d = _capture_one(c, run_id, node_id)
-        if d:
-            deliveries.append(d)
-    if len(deliveries) > 1:
-        # 単一 write 規則: 未確定で複数 repo に変更が出た（成果物先が割れた）→ 記録して可視化する
-        log(node_id, f"警告: 成果物コミット先が複数に分かれました（{len(deliveries)} 件）。"
-                     "planner で write/read を明示するか、1 リポジトリに集約してください。")
-    return deliveries
 
 
 def artifact_instruction(self_dir: "str | None", dep_arts: "dict[str, str] | None") -> str:
@@ -1238,8 +1154,6 @@ def _coerce_tasks(raw, existing=()):
             "deps": [str(d) for d in (t.get("deps") or [])],
             "kind": kind,
         }
-        if "repos" in t:                       # ノード単位の clone 対象（空配列＝不要）。プランナーの判断を保持
-            node["repos"] = [str(r) for r in (t.get("repos") or [])]
         out.append(node)
     return out
 
@@ -1412,36 +1326,11 @@ def plan_strategy_stub(request: str, review="auto", granularity="finest"):
     return strategy, tasks
 
 
-def _repos_planner_note(repos: "list[str] | None") -> str:
-    """プランナーへ「利用可能な repo 一覧」と「各タスクに必要な repo だけ割り当てよ」を伝える指示。
-    repos が無ければ空文字（従来どおり repos 非対応）。"""
-    if not repos:
-        return ""
-    lines = []
-    for tok in repos:
-        spec = parse_repo_token(tok)
-        rid = spec.get("name") or _repo_name(spec["url"])
-        tags = []
-        if spec.get("path"):
-            tags.append(f"フォルダ {spec['path']}")
-        if spec.get("readonly"):
-            tags.append("参照のみ")
-        label = f"- {rid}" + ("（" + "・".join(tags) + "）" if tags else "")
-        if spec.get("desc"):
-            label += f": {spec['desc']}"
-        lines.append(label)
-    return ("\n利用可能なリポジトリ（中身を読む/ push する必要があるタスクにのみ割当）:\n"
-            + "\n".join(lines)
-            + "\n各タスクには、そのタスクが実際に必要とするリポジトリ id だけを \"repos\": [\"id\", ...] で"
-            " 付けてください（不要なタスクは空配列 [] にする＝何も clone しない）。判断できない場合は省略可。\n")
-
-
-def plan_strategy_kiro(request: str, model: str | None, review="auto", granularity="finest",
-                       repos: "list[str] | None" = None):
+def plan_strategy_kiro(request: str, model: str | None, review="auto", granularity="finest"):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
     granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。
-    repos があれば各タスクへ必要な repo だけを割り当てさせる（必要なものだけ clone）。"""
+    ワークスペース（唯一の書込先）は run 単位なので、ノードへの repo 割当はしない。"""
     catalog = "\n".join(f"- {k}: {v}" for k, v in PATTERNS.items())
     compose = ("必要なら複数パターンを多段に複合してよい（例: classify-and-act の各分岐を "
                "fan-out-and-synthesize にする / generate-and-filter の通過案で tournament を行う）。")
@@ -1466,7 +1355,6 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto", granulari
         "（split→work→reduce のような固定チェーンにすると並列展開されない）。"
         "並列にできるタスクは deps を空に、順序や統合が要るものは deps に先行 id を入れます。"
         "依存は既存タスク id のみ、循環は作らないこと。\n"
-        + _repos_planner_note(repos)
         + "出力は JSON オブジェクトのみ:\n"
         '{"patterns": ["..."], "parallelism": N, "reason": "...", '
         '"tasks": [{"id": "t1", "goal": "...", "deps": [], "kind": "work"}]}\n\n'
@@ -1819,27 +1707,38 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
 BUILTIN_EXECUTORS = {"kiro": "execute_kiro", "stub": "execute_stub"}
 
 
-def _executor_accepts_repo_instruction(execute) -> bool:
-    """executor が `repo_instruction` を別引数で受け取れるか（名前付き引数 or **kwargs）。"""
+def _executor_accepts(execute, name: str) -> bool:
+    """executor が キーワード引数 `name` を受け取れるか（名前付き引数 or **kwargs）。"""
     try:
         sig = inspect.signature(execute)
     except (TypeError, ValueError):
         return False
     for p in sig.parameters.values():
-        if p.name == "repo_instruction" or p.kind is inspect.Parameter.VAR_KEYWORD:
+        if p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD:
             return True
     return False
 
 
 def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str | None",
-                  art_dir, dep_arts, repo_instruction: str = ""):
-    """executor を呼ぶ単一の入口。`repo_instruction`（成果物リポジトリの clone 指示）を
-    受け取れる executor には**別引数**で渡して goal を汚さない（イシューのタイトル/目的が
-    clone 指示で埋まらないようにする）。受け取れない旧 executor には従来どおり goal 先頭へ
-    結合して渡す（後方互換）。"""
-    if repo_instruction and _executor_accepts_repo_instruction(execute):
-        return execute(kind, goal, dep_results, model, art_dir, dep_arts,
-                       repo_instruction=repo_instruction)
+                  art_dir, dep_arts, repo_instruction: str = "", workspace: "dict | None" = None,
+                  references: "list[dict] | None" = None):
+    """executor を呼ぶ単一の入口。
+    - `repo_instruction`（ワークスペース＋参照の作業指示テキスト）は、受け取れる executor には**別引数**で
+      渡して goal を汚さない（gitlab のイシュータイトル/目的が指示で埋まらないようにする）。
+    - `workspace`（構造化 spec dict: url/path/base/target）は、受け取れる executor へそのまま渡す
+      （gitlab は起票先プロジェクトをこの url から解決する）。
+    - `references`（参照リポジトリ spec 列）も、受け取れる executor へそのまま渡す
+      （gitlab はイシュー本文に参照節を出す）。
+    どれも受け取れない executor には、指示を goal 先頭へ結合して渡す。"""
+    kwargs = {}
+    if repo_instruction and _executor_accepts(execute, "repo_instruction"):
+        kwargs["repo_instruction"] = repo_instruction
+    if workspace is not None and _executor_accepts(execute, "workspace"):
+        kwargs["workspace"] = workspace
+    if references and _executor_accepts(execute, "references"):
+        kwargs["references"] = references
+    if kwargs or not repo_instruction:
+        return execute(kind, goal, dep_results, model, art_dir, dep_arts, **kwargs)
     g = (repo_instruction + "\n\n" + goal) if repo_instruction else goal
     return execute(kind, g, dep_results, model, art_dir, dep_arts)
 
@@ -2225,8 +2124,7 @@ def _plan_strategy(args):
     if args.planner == "flow-planner":
         return plan_strategy_flow_planner(args.request, args.model, review, gran)
     if args.planner == "kiro":
-        return plan_strategy_kiro(args.request, args.model, review, gran,
-                                  getattr(args, "repos", None))
+        return plan_strategy_kiro(args.request, args.model, review, gran)
     return plan_strategy_stub(args.request, review, gran)
 
 
@@ -2253,28 +2151,9 @@ def _continue(args, request, nodes, results, iteration, strategy=None):
 
 def _node_entry(t):
     e = {"goal": t["goal"], "deps": t["deps"], "kind": t.get("kind", "work")}
-    if "repos" in t:  # ノード単位の clone 対象（必要なものだけ）。空配列＝clone 不要
-        e["repos"] = list(t.get("repos") or [])
     if t.get("retries"):  # サーキットブレーカー用の作り直し回数（>0 のときだけ保持）
         e["retries"] = int(t["retries"])
     return e
-
-
-def _assign_node_repos(tasks, args) -> None:
-    """計画時に各ノードへ clone 対象 repo を割り当てる（『必要な時に必要なものを判断して clone』の計画層）。
-    - stub プランナー（知能なし）は全 repo を割り当てる（安全側・現状維持）。
-    - LLM プランナー（kiro/flow-planner）が既に subset を付けたノードはそれを尊重する。
-    - LLM で未注釈のノードは worker 側で全 repo にフォールバックする（取りこぼし防止）。"""
-    tokens = getattr(args, "repos", None) or []
-    if not tokens:
-        return
-    intelligent = getattr(args, "planner", "stub") in ("kiro", "flow-planner")
-    if intelligent:
-        return                                 # プランナー出力の repos をそのまま使う（未注釈は worker で全 repo）
-    ids = [repo_token_id(t) for t in tokens]
-    for t in tasks:
-        if not t.get("repos"):
-            t["repos"] = list(ids)             # stub: 全 repo を割り当てる
 
 
 def _collapse_split_successors(nodes: dict) -> dict:
@@ -2350,7 +2229,8 @@ def cmd_orchestrate(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
     bus.sync_pull()
-    bus.ensure_run(args.request, getattr(args, "repos", None))
+    bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
+                   parse_references(getattr(args, "references", None)))
     graph = bus.read_graph()
 
     # 既存グラフがあれば計画をやり直さず再開（resume）
@@ -2363,7 +2243,6 @@ def cmd_orchestrate(args) -> int:
     else:
         # 要求から 7 パターンの組み合わせと並列数を選び、初期グラフを形作る
         strategy, tasks = _plan_strategy(args)
-        _assign_node_repos(tasks, args)   # 各ノードへ clone 対象 repo を割当（stub=全 / LLM=判断済みを尊重）
         graph = {"strategy": strategy,
                  "nodes": {t["id"]: _node_entry(t) for t in tasks},
                  "iteration": 0}
@@ -2401,7 +2280,6 @@ def cmd_orchestrate(args) -> int:
 
         if decision == "replan" and new_tasks:
             iteration += 1
-            _assign_node_repos(new_tasks, args)   # 追加ノードにも clone 対象 repo を割当
             for t in new_tasks:
                 graph["nodes"][t["id"]] = _node_entry(t)
                 bus.write_task({k: v for k, v in t.items() if k != "replaces"})
@@ -2467,8 +2345,8 @@ def cmd_work(args) -> int:
              f"idle_exit={idle_exit})")
     # executor を一度だけ解決する（組み込み kiro/stub or プラグイン）。
     execute = make_executor(args)
-    # 親（run/daemon）からの SIGTERM でも成果物リポジトリの clone を消してから抜ける
-    signal.signal(signal.SIGTERM, lambda *_: (cleanup_work_repos(), sys.exit(143)))
+    # 親（run/daemon）からの SIGTERM でもワークスペースの clone を消してから抜ける
+    signal.signal(signal.SIGTERM, lambda *_: (cleanup_workspace(), sys.exit(143)))
     time.sleep(random.uniform(0, args.poll))  # 負荷分散: 起動位相をずらす
 
     idle_polls = 0
@@ -2504,20 +2382,28 @@ def cmd_work(args) -> int:
         # これにより大きな成果物は output/data に貼らずファイル参照で受け渡せる。
         art_dir = bus.ensure_artifact_dir(nid)
         dep_arts = {d: bus.node_artifact_dir(d) for d in node.get("deps", [])}
-        # 成果物リポジトリを temp 領域へ clone し、エージェントへパスを渡す。
-        # このノードに必要な repo だけを clone する（計画時にノードへ割り当てた subset。未注釈は全 repo）。
+        # ワークスペース（この run の唯一の書込先）を temp 領域へ clone し、作業ブランチ kf/<run_id>
+        # を base から作ってエージェントへ渡す（書込先が無ければ読み取り専用 run）。
         goal = node["goal"]
-        clones = ensure_work_repos(resolve_node_repos(node, bus.run_repos()), who)
-        # clone 指示は goal に結合せず別引数で渡す（goal を汚さない）。対応 executor は
-        # 本来の goal をそのまま使い（gitlab はタイトル/目的に出す）、clone 指示は別枠で扱う。
-        instruction = repo_instruction(clones) if clones else ""
+        ws = ensure_workspace_clone(bus.run_workspace(), args.run_id)
+        # 作業指示は goal に結合せず別引数で渡す（goal を汚さない）。対応 executor は本来の goal を
+        # そのまま使い（gitlab はタイトル/目的に出す）、ワークスペース指示・spec は別枠で扱う。
+        # 参照リポジトリ（読むだけ）は run メタから取り、ワークスペース指示に続けてエージェントへ伝える。
+        references = bus.run_references()
+        ref_note = reference_instruction(references)
+        instruction = "\n".join(s for s in (workspace_instruction(ws) if ws else "", ref_note) if s)
         # 実行中は心拍で lease を延長し続け、長時間タスクでも再 claim されないようにする
         hb = Heartbeat(bus, nid, who, args.lease)
         hb.start()
         rdata = None
+        delivery = None
         try:
             output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
-                                          art_dir, dep_arts, instruction)
+                                          art_dir, dep_arts, instruction, workspace=ws,
+                                          references=references)
+            # エージェントが編集したらワークスペースの作業ブランチへ commit して push する
+            # （変更が無ければ何もしない＝調査タスク等ではブランチを作らない）。
+            delivery = finalize_workspace(ws, args.run_id, nid)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
@@ -2525,32 +2411,16 @@ def cmd_work(args) -> int:
         finally:
             hb.stop()
 
-        # 成果物リポジトリへの実体（コミット）を決定的に捕捉する。kiro executor のみ
-        # （stub は実変更なし、gitlab 等は別マシンで作業＝ローカル clone に変更が出ない）。
-        # 変更があった repo だけを成果ブランチへ push し、リンクを result.data.delivery に残す。
-        # 成果物がコミットを伴わない調査系タスクは捕捉対象外＝納品物はバス上の output/data。
-        if rstatus == "done" and clones and getattr(args, "executor", "kiro") == "kiro":
-            try:
-                dels = capture_deliveries(clones, bus.run_id, nid)
-            except Exception as e:  # noqa: BLE001 — 捕捉失敗で run 全体を止めない
-                dels = []
-                log(who, f"delivery 捕捉に失敗: {e}")
-            if dels:
-                if isinstance(rdata, dict):
-                    rdata = {**rdata, "delivery": dels}
-                elif rdata is None:
-                    rdata = {"delivery": dels}
-                else:
-                    rdata = {"value": rdata, "delivery": dels}
-
         # 生成された中間成果物を run_dir 相対パスで記録（後続・status から発見できる）
         artifacts = [os.path.relpath(p, bus.run_dir) for p in bus.list_artifacts(nid)]
+        if delivery:  # ワークスペースへ push したブランチ/コミットを result に残す（消費側が追跡）
+            rdata = {**(rdata if isinstance(rdata, dict) else {}), "delivery": delivery}
         bus.write_result(nid, who, rstatus, output, rdata, artifacts=artifacts)
         bus.event(who, "result", node=nid, status=rstatus)
         bus.sync_push(f"result {nid} [{rstatus}] by {who}")
         log(who, f"完了: {nid} [{rstatus}]")
-        if getattr(args, "cleanup_per_node", False) and clones:
-            cleanup_work_repos()  # ノード完了/失敗ごとに clone を即削除（長命 worker のディスク抑制）
+        if getattr(args, "cleanup_per_node", False) and ws:
+            cleanup_workspace()  # ノード完了/失敗ごとに clone を即削除（長命 worker のディスク抑制）
         time.sleep(random.uniform(0, 0.3))  # 負荷分散: 他ノードに claim の機会を渡す
 
 
@@ -2640,10 +2510,11 @@ def _recover_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: flo
 
 def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     """要求 req を担当する orchestrator を base argv から起動する（daemon のオンデマンド起動）。"""
-    repo_args = []
-    for r in (req.get("repos") or []):   # 要求に紐づく成果物リポジトリを run meta へ載せる
-        repo_args += ["--repo", r]
-    return subprocess.Popen(base + repo_args + [
+    ws = req.get("workspace")   # 要求に紐づく唯一の書込先ワークスペースを run meta へ載せる
+    ws_args = ["--workspace", json.dumps(ws, ensure_ascii=False)] if ws else []
+    for r in (req.get("references") or []):   # 参照リポジトリも run meta へ伝搬する
+        ws_args += ["--reference", json.dumps(r, ensure_ascii=False)]
+    return subprocess.Popen(base + ws_args + [
         "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
         "--run-id", req_id, "orchestrate", "--request", req["request"],
@@ -2689,10 +2560,12 @@ def cmd_run(args) -> int:
     run_id = args.run_id
 
     bus_root = os.path.abspath(args.bus)
-    # グローバル引数（バス・転送・run_id・成果物リポジトリ・分解粒度）を子プロセスへ引き継ぐ
+    # グローバル引数（バス・転送・run_id・ワークスペース・分解粒度）を子プロセスへ引き継ぐ
     base = _child_base(args, bus_root) + ["--run-id", run_id]
-    for r in (getattr(args, "repos", None) or []):
-        base += ["--repo", r]     # 成果物リポジトリを orchestrator/worker へ伝搬
+    if getattr(args, "workspace", None):
+        base += ["--workspace", args.workspace]   # 唯一の書込先を orchestrator/worker へ伝搬
+    for r in (getattr(args, "references", None) or []):
+        base += ["--reference", r]                # 参照リポジトリを orchestrator/worker へ伝搬
     base += ["--granularity", str(getattr(args, "granularity", "finest") or "finest")]  # 分解粒度
     if getattr(args, "exemplar_first", False):
         base += ["--exemplar-first"]   # 見本先行分解を orchestrator へ伝搬
@@ -2769,7 +2642,8 @@ def cmd_submit(args) -> int:
     bus = make_bus(args, "submitter")
     bus.sync_pull()
     bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
-                       repos=getattr(args, "repos", None))
+                       workspace=parse_workspace(getattr(args, "workspace", None)),
+                       references=parse_references(getattr(args, "references", None)))
     bus.sync_push(f"submit request {req_id}")
     print(req_id)  # run-id を標準出力（スクリプトから拾える）
     print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
@@ -3014,12 +2888,12 @@ def sweep_tmp_files(root: str, min_age_sec: float = 300.0) -> int:
     return removed
 
 
-_WORK_REPO_DIR_RE = re.compile(r"^kiro-flow-repos-(\d+)-")
+_WORK_REPO_DIR_RE = re.compile(r"^kiro-flow-ws-(\d+)-")
 
 
 def sweep_work_repo_dirs(min_age_sec: float = 3600.0) -> int:
-    """SIGKILL/OOM/電源断で finally が走らず残った成果物リポジトリの孤立 clone を回収し、削除数を返す。
-    名前に埋めた pid（`kiro-flow-repos-<pid>-…`）で所有プロセスの生死を判定し、**死んでいるものだけ**消す
+    """SIGKILL/OOM/電源断で finally が走らず残ったワークスペースの孤立 clone を回収し、削除数を返す。
+    名前に埋めた pid（`kiro-flow-ws-<pid>-…`）で所有プロセスの生死を判定し、**死んでいるものだけ**消す
     （稼働中・`--keep-alive` 長命 worker の clone は残す）。pid 再利用の誤判定を避けるため min_age も併用。"""
     root = tempfile.gettempdir()
     if not os.path.isdir(root):
@@ -4012,13 +3886,16 @@ def main() -> int:
                         "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
     p.add_argument("--executor-dir", dest="executor_dir", default=None,
                    help="executor プラグイン（<name>.py）の追加検索ディレクトリ（設定 executor_dir と同義）")
-    p.add_argument("--repo", dest="repos", action="append", default=None,
-                   help="成果物リポジトリ（複数指定可）。素の URL でも、構造化 JSON "
-                        "（{url,name,path,base,target,role,readonly,desc}）でも可。worker が temp 領域へ"
-                        " clone（base 指定があればそのブランチ）してから作業し、作業後に必ず消す。"
-                        "role は write（成果物コミット先・単一）/ read（参照のみ・push しない・複数可）/ "
-                        "未指定（auto＝executor が判断）。readonly:true は role:read と同義。"
-                        "path はモノレポの作業フォルダを表す")
+    p.add_argument("--workspace", dest="workspace", default=None,
+                   help="この run（=バックログ単位）の唯一の書込先リポジトリ。素の URL でも、構造化 JSON "
+                        "（{url,path,base,target,desc}）でも可。worker が temp 領域へ clone し、作業ブランチ "
+                        "kf/<run-id> を base から作って作業、変更があれば kiro-flow が commit/push する。"
+                        "path はモノレポの作業フォルダ、target は MR/PR のターゲットブランチ。"
+                        "省略時は読み取り専用 run")
+    p.add_argument("--reference", dest="references", action="append", default=None,
+                   help="参照リポジトリ（読むだけ・書き込まない／複数可）。素の URL でも JSON "
+                        "（{url,path,base,desc}）でも可。エージェントのプロンプトと gitlab イシュー本文に"
+                        "参照節として載る（clone はしない）")
     p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                    help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
                         "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")
@@ -4158,8 +4035,8 @@ def main() -> int:
     resolve_config(args)
     # args を持たない free 関数（run_kiro 等）が読む閾値をモジュール変数へ確定させる
     _configure_thresholds(args)
-    # 成果物リポジトリ clone の削除を二重化（main の finally に加え、想定外の早期 exit でも回収）
-    atexit.register(cleanup_work_repos)
+    # ワークスペース clone の削除を二重化（main の finally に加え、想定外の早期 exit でも回収）
+    atexit.register(cleanup_workspace)
     # 子プロセスから渡る空文字の --model_opt は「モデル指定なし」を意味する
     if getattr(args, "model", None) == "":
         args.model = None
@@ -4171,6 +4048,11 @@ def main() -> int:
         print(f"[kiro-flow] executor '{spec}' を解決できません。組み込み（kiro/stub）か、"
               f"プラグイン .py（検索: {dirs}）か、明示パスを指定してください。", file=sys.stderr)
         return 2
+    # 起動初回にバスフォルダが無ければ作成する（git バスでは .gitkeep も置く）。
+    # 診断/読み取り専用コマンドは副作用を持たせない（doctor の「未作成」所見を潰さない）。
+    if getattr(args, "func", None) in (
+            cmd_run, cmd_daemon, cmd_orchestrate, cmd_work, cmd_submit, None):
+        ensure_bus_root(args)
     # サブコマンド未指定 → daemon として処理
     try:
         if getattr(args, "func", None) is None:
@@ -4181,7 +4063,7 @@ def main() -> int:
         # 作業後に sparse-checkout クローンを削除する（--keep-clone で抑止可）
         if getattr(args, "cleanup_clone", True):
             cleanup_active_clones()
-        cleanup_work_repos()   # 成果物リポジトリの clone は常に消す（作業後クリーンは必須）
+        cleanup_workspace()   # ワークスペースの clone は常に消す（作業後クリーンは必須）
 
 
 if __name__ == "__main__":

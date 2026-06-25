@@ -407,39 +407,29 @@ while True:
 - **opt-in**: 既定 executor は `kiro` のまま。明示選択時のみ有効で、`gl.py` 未発見/接続未設定なら
   起票時に明確に失敗する（誤選択で無限待ちにしない）。設定は `gitlab:` ブロック。
 
-### 9.2 成果物リポジトリへの納品（delivery）とロール
+### 9.2 成果物リポジトリへの納品（delivery）
 
-成果物（プログラム/ドキュメント）の実体は**バスではなく成果物リポジトリ**（`--repo`）に置き、
-バスには「サマリー＋リンク（どのブランチ/MR/イシューに成果があるか）」だけを残す。
+成果物（プログラム/ドキュメント）の実体は**バスではなく成果物リポジトリ**に置き、バスには
+「サマリー＋リンク（どのブランチ/MR/イシューに成果があるか）」だけを残す。リポジトリのルーティング
+（タスク→書込先）は制御層 kiro-autonomous が担う（詳細は `tools/kiro-autonomous/ROUTING.md`）。
+kiro-flow は **1 run = 1 ワークスペース（唯一の書込先）** に固定する。
 
-| executor | 成果物の置き場 | 完了の確定 |
-|----------|--------------|-----------|
-| **kiro** | ローカル clone を成果ブランチへ commit/push（`capture_deliveries`） | 上位（kiro-autonomous）の verify（exit 0） |
-| **gitlab** | リモート worker が MR を作成 | **人が関連 MR を管理**: 全マージ＝承認（イシュークローズ）／一つでも未マージクローズ＝却下（やり直し）。kiro-flow は自動マージしない |
-
-> 両 executor で対称性は持たせない。kiro はローカルで push、gitlab は人の MR 管理（全マージ=承認 / 未マージクローズ=却下）で決着。
-
-- **ロール・スキーマ（executor 横断の正準インターフェース）**: 各成果物リポジトリ（`--repo`）は
-  `role` を持つ――**`write`＝成果物をコミットする単一の対象**（push 先）、**`read`＝参照のみ**（clone するが
-  push しない・複数可）、**`auto`/未指定＝planner が判別しなかった**（executor が決める）。後方互換で
-  `readonly:true` は `role:read` と同義。**基本は planner が role を決めて伝える**が、stub や判別不能なら
-  executor に委ねる。`classify_repos(specs)` が**唯一のリゾルバ**で、どの executor もこの結果に従う:
-  明示 write があれば先頭を write・残りと auto は read へ降格（**単一 write 規則**）、明示 write が無く auto が
-  ちょうど 1 つなら自明に write、それ以外（auto 複数）は **undecided** として LLM executor に「1 つだけ選べ」と
-  委ねる。この役割は `repo_instruction`（全 executor へ渡す指示文＝LLM 向けインターフェース）に
-  「成果物コミット先（単一）／参照のみ／未確定なら1つ選べ」として明示され、gitlab はイシュー本文へそのまま載る。
-- **delivery 捕捉（kiro executor）**: `capture_deliveries` がエージェント実行後に書込み repo の git
-  状態を決定的に捕捉する。未コミット変更があれば `add -A` して commit（commit 忘れの保険）、base から
-  HEAD が進んでいれば成果ブランチへ push し、`result.data.delivery=[{url,base,target,branch,head_sha,
-  pushed,changed}]` を記録する。temp clone は作業後に消えるため push が永続化になる。**成果物が
-  コミットを伴うとは限らない**（調査系タスク等）ため、変更が無い repo は捕捉せず、その場合の納品物は
-  バス上の `result.output/data`（サマリー）になる。捕捉は `executor=kiro` のときだけ走る（stub は実変更
-  なし、gitlab 等は別マシン作業＝ローカル clone に変更が出ない）。
-- **gitlab の納品（自動マージはしない）**: gitlab executor は MR を**自動マージしない**。リモート
-  worker が MR を用意し、**人が関連 MR を管理**する。**全 MR マージ＝承認**（イシューをクローズして
+- **ワークスペース（`--workspace`・ちょうど 1 つ）**: その run の唯一の書込先。素の URL か JSON
+  `{url,path,base,target,desc}`。kiro-flow が clone し、`kf/<run-id>` を base から作成してワーカーへ渡す。
+  エージェントは作業ツリーを編集するだけで、**変更があれば kiro-flow が commit して push**（分散 worker は
+  同じ `kf/<run-id>` へ push し rebase リトライで統合）。**変更が無ければ push しない**＝調査だけの読み取り
+  専用グラフでは何も書き込まない（`finalize_workspace`）。デリバリ（branch/commit/target）を result に記録。
+- **参照リポジトリ（`--reference`・複数可・読むだけ）**: clone はせず、エージェントのプロンプト（参照節）と
+  gitlab イシュー本文の『## 参照リポジトリ』節へ描画する。書込先は参照に含めない。
+- **executor 横断インターフェース**: executor 契約に構造化 `workspace`（spec dict）と `references`（spec の列）を
+  渡す。`workspace_instruction` が全 executor へ渡る指示文（LLM 向け）。gitlab executor は **workspace URL から
+  起票先 GitLab プロジェクトを解決**（無ければ `gitlab.repo_url` フォールバック）し、対象/参照リポジトリ節を
+  構造化 spec から Markdown 整形する（ローカル clone パスは載せない）。
+- **gitlab の納品（自動マージはしない・人が関連 MR を管理）**: gitlab executor は MR を**自動マージしない**。
+  リモート worker が MR を用意し、人が関連 MR を管理する。**全 MR マージ＝承認**（イシューをクローズして
   成功）、**一つでも未マージクローズ＝却下**（人コメントを取り込み元イシューをクローズして失敗を送出。
   上位の通常リトライがコメントを活かして再委譲）。詳細は §9.1 完了判定。`approved_timeout`（長め・
-  設定可能）で MR の決着を待つ。
+  設定可能）で MR の決着を待つ。kiro（ローカル push）と gitlab（人の MR 管理）で対称性は持たせない。
 
 ---
 

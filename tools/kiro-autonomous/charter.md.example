@@ -58,56 +58,67 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 - 不正な CSV を渡すとエラーメッセージを表示して異常終了する。
 
 ## repos
-# 対象/成果物リポジトリ（任意・複数可）。見出しは `name = url` か素の `url`。各 repo に構造化サブ箇条で
-# メタ情報を付ける（インデントした `- key: value`。日本語キー desc=説明/base=ベース/target=ターゲット/path=パス も可）:
-#   - desc   … 内容物・関与範囲（役割）の説明【必須】。タスクは説明を見て「自分に関係する repo」を選び、その
-#              情報を個別タスク（gitlab イシュー等）へ伝搬する。書ききれない場合はフォルダ構成や README 参照でも可。
-#   - base   … 作業のベースブランチ【必須】（ここから分岐する）。
+# 対象リポジトリ（任意・複数可）。見出しは `name = url` か素の `url`。各 repo に構造化サブ箇条で
+# メタ情報を付ける（インデントした `- key: value`。日本語キー desc=説明/base=ベース/target=ターゲット/
+# path=パス/owns=担当 も可）:
+#   - owns   … このリポジトリが担当するパス（グロブ、カンマ/空白区切り）【書込先にするなら必須】。
+#              kiro-autonomous のルーティングが「タスク → どの書込先（ワークスペース）か」を決める根拠。
+#              **owns を書かない repo は『参照リポジトリ（読むだけ）』** とみなし、書込先にはせず、タスク本文へ
+#              参照情報として伝搬する（clone もしない）。
+#   - desc   … 内容物・関与範囲（役割）の説明【推奨】。auto-route（LLM 推定）や gitlab イシューで使う。
+#   - base   … 作業のベースブランチ【書込先なら推奨】（kiro-flow はここから作業ブランチ kf/<run-id> を作る）。
 #   - target … MR/PR のターゲットブランチ【任意・既定 = base】。
 #   - path   … モノレポ内の作業フォルダ【任意】（例 apps/api）。worker はそのフォルダ配下のみ変更する。
-#   - readonly … 参照のみ（読むだけ・push しない）フラグ【任意】。`- readonly: true` か『- 参照のみ:』。
-#              worker/イシューには「参照のみ・push しない」と明示され、kiro-flow は push を指示しない。
-# プランナーは「その repo を読む / push する必要があるタスク」にだけ repos を割り当て、kiro-flow の worker が
-# temp 領域へ clone して作業し、作業後に必ず消す（orchestrator の作業ツリーを汚さない）。
-# 手で積むタスクには `kiro-autonomous enqueue --repos app,lib ...` で明示も可能。
+#
+# ■ ルーティング（タスク → ちょうど1つの書込先ワークスペース）の決まり方（上が優先）:
+#   1. タスクの `- workspace: <name>`（明示。enqueue --workspace でも可）
+#   2. policy.md の `route: <パターン> -> <name>`（決定論ルール）
+#   3. この owns: のパスグロブと、タスクの `- paths:` ヒントの一致（決定論推定）
+#   4. auto-route（route_planner: kiro のとき LLM が desc/owns から1つ選ぶ）
+#   5. default_workspace 設定 / 書込先候補が1つだけならそれ
+#   決定はタスク md（`- workspace:` / `- routed_by:`）へ書き戻され、安定・監査可能になる。
+#   1 つの kiro-flow run（=バックログ単位）が書き込むのはちょうど1リポジトリ。複数 repo へまたがる変更は
+#   repo 別タスクへ分割し依存（after）で順序付ける。
 # - app = git@example.com:team/app.git
+#   - owns: apps/app/**, services/api/**     # ここに該当するタスクは app へルーティング
 #   - desc: アプリ本体（API ハンドラ・UI）。エンドポイント追加・画面変更はここ。
 #   - base: main
 #   - target: develop
 # - lib = https://example.com/team/lib.git
-#   - desc: 共有ライブラリ（型定義・ユーティリティ）。app から参照される。
+#   - owns: packages/**
+#   - desc: 共有ライブラリ（型定義・ユーティリティ）。
 #   - base: develop                       # target 省略 → develop で作業
 #
-# ■ モノレポ：1 つの URL をフォルダ別の役割に分ける場合は、同じ url で name と path を変えた複数エントリにする。
-#   各エントリに path（作業フォルダ）と役割別の desc を書くと、プランナーが役割に合う name をタスクへ割り当て、
-#   worker は該当フォルダ配下だけを変更する。※同一 URL を複数エントリで使うときは、各エントリを
-#   **path（作業フォルダ）か base/target（ブランチ）のいずれかで区別**する（全て一致すると曖昧な重複として弾く）。
-#   どのエントリをタスクへ割り当てるかは name で指すので、複数エントリの name は別名にすること。
+# ■ モノレポ：1 つの URL をフォルダ別の役割（=別ワークスペース）に分ける場合は、同じ url で name/path/owns を
+#   変えた複数エントリにする。リポジトリの同一性は (url, path, base) で判定されるので、path か base が違えば
+#   別ワークスペースとして clone・作業ブランチが分かれる。name は別名にすること。
 # - shop-api = git@example.com:team/shop.git
 #   - path: apps/api
+#   - owns: apps/api/**
 #   - desc: API ハンドラ・エンドポイント。サーバ側ロジックはここ。
 #   - base: main
 # - shop-web = git@example.com:team/shop.git
 #   - path: apps/web
+#   - owns: apps/web/**
 #   - desc: 画面・UI コンポーネント。
 #   - base: main
 #
-# ■ ブランチ別：同じ repo（同じフォルダ）を別ブランチで扱う場合は、path でなく base/target を変えて区別する
-#   （path は不要）。例：main への修正と release ブランチへのバックポートを別エントリにする。
+# ■ ブランチ別：同じ repo（同じフォルダ）を別ブランチで扱う場合は、path でなく base を変えて区別する。
+#   例：main への修正と release ブランチへのバックポートを別エントリにする。
 # - app-main = git@example.com:team/app.git
+#   - owns: apps/app/**
 #   - desc: 本流の修正。
 #   - base: main
 # - app-backport = git@example.com:team/app.git
-#   - desc: 同じ修正の release/1.x へのバックポート。
+#   - desc: 同じ修正の release/1.x へのバックポート（明示 - workspace: app-backport で割り当てる）。
 #   - base: release/1.x                     # base が違うので path 無しでも別エントリとして成立
 #
-# ■ 参照のみ（読むだけ・push しない）repo は `- readonly: true` を付ける。worker への指示と gitlab イシューに
-#   「参照のみ・push しない」と構造的に伝わり、kiro-flow は push を指示しない（push は差分が出たときだけ起きる）。
-#   コードでなく規約/wiki/設計の参照は ## repos でなく ## links に置く。
+# ■ 参照リポジトリ（読むだけ・書き込まない）は owns を書かない。worker は clone せず、タスク本文に
+#   「参照用リポジトリ（読み取り専用）」として url/path/branch が伝わる。コードでなく規約/wiki/設計の参照は
+#   ## repos でなく ## links に置く。
 # - core-lib = git@example.com:team/core-lib.git
-#   - readonly: true
-#   - desc: 型定義・既存実装を読んで合わせるための参照元。
-#   - base: main                          # 読む対象ブランチ（target は不要）
+#   - desc: 型定義・既存実装を読んで合わせるための参照元（owns 無し＝参照のみ）。
+#   - base: main                          # 読む対象ブランチ
 
 ## links
 # 参考リンク（任意・複数可）。横展開先プロジェクト名/相対パス、または wiki/ドキュメント URL 等を置ける。

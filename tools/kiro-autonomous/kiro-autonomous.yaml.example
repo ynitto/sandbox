@@ -42,6 +42,10 @@ executor: kiro              # 実行・評価役: kiro（kiro-cli）/ stub（オ
 # executor: /path/to/my_executor.py   # 例: 任意の executor プラグイン（.py パス指定）
 planner: kiro               # 優先順位付け: kiro=エージェントが priority も加味 / none=priority 降順→最古
 flow_planner: flow-planner  # kiro-flow run に渡す planner: flow-planner / kiro / stub
+# ルーティング（タスク → ちょうど1つの書込先ワークスペース）。決定論（明示 - workspace: > policy route: >
+# charter owns: 推定）で決まらないときの扱い:
+route_planner: kiro         # kiro=LLM が charter の desc/owns から1つ推定 / none=決定論のみ（推定しない）
+# default_workspace: app    # それでも決まらないタスクの既定書込先（charter の name/url）。空=無効
 location: auto              # act の実行先: auto / local / daemon / remote
 concurrency: 1             # daemon/remote へ並行 submit する独立タスク数（1=逐次。local 単発 run は常に逐次）
 # model: claude-sonnet      # kiro-cli に渡すモデル（省略可）

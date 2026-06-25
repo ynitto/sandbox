@@ -200,6 +200,7 @@ pin:     T3          # 最優先 ／ defer: cleanup（後回し）
 offload: heavy       # 分散環境へ移譲（--git-bus 設定時）
 gate:    release     # verify PASS でも done 前に人の承認（検収ゲート・タスク一致）
 protect: auth/**     # act が触ったら done せず承認へ（パス一致。glob: *=非/ **=/含む・**/ は0階層可）
+route:   API -> app  # タスク（id/タイトル一致）の書込先ワークスペースを charter の repo 名へ割り当てる
 ```
 
 `deny` は**実行前**で止め、`gate`/`protect` は**実行・verify は通すが done 確定前**で止める（止める位置が違う）。
@@ -322,20 +323,27 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
 - **ワーカーへの定義/判断の注入**: kiro-flow への act 依頼に **charter（定義）と `decisions/<id>.md`（判断結果）**を有界に
   注入（charter 1400 字・decisions 末尾 1000 字）。charter.md があれば全 act に乗る（無ければ空＝後方互換）。`## links` 先
   プロジェクトの定義＋判断（learn）も横展開で取り込む。
-- **成果物リポジトリ（`## repos`）の伝搬**: charter の `## repos`（`name = url` か素の url・複数可）を repo レジストリとし、
-  プランナーが「その repo の中身を読む / push する必要があるタスク」にだけ `repos` を割り当てる（手積みは
-  `enqueue --repos app,lib`）。kiro-autonomous は該当タスクの act 依頼に `--repo <url>` を付け、**kiro-flow の worker が
-  各 repo を temp 領域へ clone してから作業し、作業後に必ず消す**（orchestrator の作業ツリーを汚さない）。repos を
-  宣言しないタスクは clone しない（必要なものだけ・後方互換）。local / daemon / remote のどの location でも同じ
-  （repos は run の bus メタ経由で worker に届く）。各 repo は `- desc:`（役割・必須）/`- base:`（必須）/`- target:`/
-  `- path:`/`- readonly:` を構造化サブ箇条で持てる。**モノレポは「同じ url で name と path を変えた複数エントリ」**に
-  するとフォルダ別の役割を分けられ（プランナーが役割に合う name をタスクへ割当・worker は path 配下のみ変更）、
-  同一 url を複数エントリで使う場合は **path（作業フォルダ）か base/target（ブランチ）のいずれかで区別**する
-  （ブランチ違いなら path 無しでも可。例：main と release へのバックポート）。参照のみの repo は `- readonly: true`。
-  **これらのメタ（path/base/target/readonly/役割）はタスク単位で構造化 `--repo`（JSON）として kiro-flow へ伝搬する**。
-  worker は `base` ブランチを checkout して clone し（`repo_instruction` で path 配下のみ・push 先 target を指示）、
-  readonly は「参照のみ・push しない」と指示する。gitlab executor 経由ならこの指示はイシュー本文（## 目的）にも
-  そのまま載るため、フォルダ・作業ブランチ・参照のみがイシューに構造的に表現される。
+- **ワークスペース・ルーティング（`## repos` の `owns:` ＋ policy `route:`）**: 大規模・複数リポジトリ運用で「どのタスクを
+  どのリポジトリへコミットするか」を**制御層（kiro-autonomous）が1つに決め**、kiro-flow へ `--workspace`（唯一の書込先）として
+  渡す。charter の `## repos` を repo レジストリとし、各 repo に `- owns:`（担当パスのグロブ）を付けると**書込先候補
+  （ワークスペース）**になる。**owns を書かない repo は参照リポジトリ（読むだけ）**で、書込先にはせず kiro-flow へ
+  `--reference` で構造化伝搬する（clone しない。エージェントのプロンプトと gitlab イシューの参照節に描画される）。
+  1 タスク（=1 kiro-flow run）が書き込むのはちょうど 1 リポジトリ。複数 repo にまたがる変更は repo 別タスクへ
+  分割し `after` で順序付ける。
+  - **解決順（上が優先・決定はタスク md の `- workspace:`/`- routed_by:` に書き戻して安定/監査可能）**:
+    1. タスクの `- workspace: <name>`（明示）  2. `policy.md` の `route: <パターン> -> <name>`（決定論）
+    3. `owns:` のパスグロブ × タスクの `- paths:` ヒント（決定論推定）  4. auto-route（`route_planner: kiro` のとき LLM が
+    desc/owns から1つ推定）  5. `default_workspace` 設定 / 書込先候補が1つだけならそれ。
+  - **リポジトリの同一性は (url, path, base)**：モノレポは「同じ url で path と owns を変えた複数エントリ」でフォルダ別の
+    ワークスペースに、ブランチ別は base を変えて区別する。`path`/`base`/`target`/`desc` は構造化 `--workspace`（JSON）として
+    kiro-flow へ伝搬し、worker は `kf/<run-id>` ブランチを base から作って作業、変更があれば kiro-flow が commit/push する。
+  - **verify の実行先もワークスペースに従う**: `- workspace:` を持つタスクは成果が workdir（git-bus ルート）でなく該当 repo の
+    作業ブランチへ push されるため、verify/回帰を workdir で回すと「成果の無い場所」で偽 NG になる。そこで verify は**該当 repo を
+    指定ブランチ（`target`→`base`）で `git clone --depth 1` し、`path` 指定があればそれをルートに**したクローン内で実行する
+    （差分基準 `$KIRO_BASE_REV` はクローンの HEAD に取り直す）。clone は worker の push 先を反映するため都度取り直し、clone 失敗・
+    `path` 不在は黙って workdir に倒さず NG 扱い（成果の無い場所で偽判定しない）。明示 `--verify-cwd`（設定 `verify_cwd`）は常に最優先。
+  - gitlab executor 経由なら**起票先プロジェクトをワークスペース URL から解決**し、フォルダ・作業ブランチ・参照リポジトリが
+    イシュー本文に構造的に表現される。
 - **cohort（pilot-then-batch）**: 「同じ手順を多数の対象に繰り返す」タスクを、**まず 1 件だけ走らせて指示を固めてから残りを
   生成・実行**する。`cohort_items` を持つ spec を投入すると、先頭要素が **pilot** として `review: human` 付きで 1 件だけ作られ、
   verify→検収ゲートで人が `approve`（必要なら feedback）して指示を固める。承認時にその定義を元に**残りのタスクを生成**し、

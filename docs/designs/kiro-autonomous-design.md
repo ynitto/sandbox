@@ -421,11 +421,11 @@ clone 失敗は workdir へ黙ってフォールバックせず**全 NG 扱い**
 どれを cwd にするか曖昧なため自動 clone はせず、`--verify-cwd` の明示で対応する。タスク verify／回帰検査も `--verify-cwd` 指定時は
 その先で実行する（明示時のみ。baseline/protect/no-progress の差分検知は従来どおり workdir の git を見る）。
 
-**成果物リポジトリのロール（charter `## repos`）**: 各 repo は **`write`（成果物をコミットする単一の対象）/
-`read`（参照のみ・複数可）/ 未指定（auto＝planner 任せ）** のロールを持つ。charter では `- write:`（別名
-`成果物`/`コミット先`）で write を、`- 参照のみ:`（`readonly`）で read を明示できる（`役割`/`role` は説明＝desc
-であってロールではない）。`_repo_spec_from_entry` が `role` を決め、`_repo_token` が kiro-flow へ `role` を伝搬する。
-kiro-flow 側の `classify_repos` が単一 write 規則で解決し、未確定（auto）は executor に委ねる（§kiro-flow 9.2）。
+**成果物リポジトリのルーティング（charter `## repos`）**: タスクは**ちょうど 1 つの書込先ワークスペース**へ
+ルーティングされる（`resolve_workspace`）。charter の各 repo は `- owns:`（担当パスのグロブ）を持てば**書込先候補**、
+`- owns:` 未指定（または `- 参照のみ:`）は**参照リポジトリ**（読むだけ）。解決順は明示 `- workspace:` > policy
+`route:` > charter `owns:` 推定 > auto-route（LLM）> `default_workspace`。kiro-flow へは `--workspace`（唯一の
+書込先）と `--reference`（参照・複数）で渡す。設計の詳細は `tools/kiro-autonomous/ROUTING.md`。
 
 ### 6.3 収束・milestone gate
 
