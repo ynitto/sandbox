@@ -192,11 +192,15 @@ def classify_authored(description, author, notes, agent_set, ai_res) -> str:
 # ---------------------------------------------------------------------------
 
 def process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
-                 params, cells, rework_cells):
+                 params, cells, rework_cells, review_credit="issue-author"):
     """取得済みの raw（mrs / issues）をセルに集計する。
 
     cells:        defaultdict キー (project, user, kind) -> metrics（ユーザー帰属可能な指標）
     rework_cells: defaultdict キー (project, kind)       -> {"rework_count": n}（ユーザー帰属しない指標）
+    review_credit: 推定レビューコストの帰属先。
+        "issue-author": MR が closes する元イシューの作成者（リクエスター）。紐付け不可なら MR 作成者へフォールバック
+        "mr-author":    MR の作成者（実装者）
+    成果物バイト数は常に MR 作成者（実装者）に帰属する。
     """
     review_bpm = max(1, params["review_bytes_per_minute"])
     review_fixed = params["review_fixed_min_per_mr"]
@@ -219,9 +223,19 @@ def process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
                 added_b += b
                 added_l += l
             rmin = min(added_b / review_bpm + review_fixed, review_cap)
+            # 成果物は実装者（MR 作成者）に帰属
             add_metrics(cells[(project, author, kind)],
                         deliverable_bytes=added_b, deliverable_lines=added_l,
-                        merged_mr_count=1, review_minutes_est=rmin, reviewed_mr_count=1)
+                        merged_mr_count=1)
+            # レビューコストの帰属先を決定（kind は MR と同じ＝ai 成果物のレビューは ai 側に残る）
+            reviewer = author
+            if review_credit == "issue-author":
+                closes = mr.get("_closes_issues") or []
+                ra = (closes[0].get("author") or {}).get("username", "") if closes else ""
+                if ra:
+                    reviewer = ra
+            add_metrics(cells[(project, reviewer, kind)],
+                        review_minutes_est=rmin, reviewed_mr_count=1)
 
         if state == "closed" and not merged_at and _in_window(closed_at, since, until):
             add_metrics(cells[(project, author, kind)], discarded_mr_count=1)
@@ -404,7 +418,7 @@ def build_output(cells, rework_cells, repos, since, until, agent_set, ai_marker_
 # GitLab からの取得
 # ---------------------------------------------------------------------------
 
-def fetch_repo(host, token, project, since, until, verbose=False):
+def fetch_repo(host, token, project, since, until, verbose=False, review_credit="issue-author"):
     """1 リポジトリの MR / イシューを取得し、changes / notes / events を添付して返す。"""
     ep = GL.encode_project(project)
     since_iso = _to_utc_iso(since)
@@ -422,6 +436,10 @@ def fetch_repo(host, token, project, since, until, verbose=False):
         if mr.get("state") == "merged" and _in_window(mr.get("merged_at"), since, until):
             mr["_changes"] = GL.api(host, token, "GET",
                                     f"/projects/{ep}/merge_requests/{iid}/changes")
+            # レビューを元イシュー作成者に帰属する場合のみ closes_issues を取得
+            if review_credit == "issue-author":
+                mr["_closes_issues"] = GL.api(
+                    host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/closes_issues")
 
     issues = GL.api_list(host, token, f"/projects/{ep}/issues",
                          params={"state": "all", "updated_after": since_iso, "scope": "all"})
@@ -610,9 +628,9 @@ def cmd_collect(args):
             if cur:
                 since = _parse_date(cur)
         per_repo_since[repo_key(host, project)] = since
-        raw = fetch_repo(host, token, project, since, until, args.verbose)
+        raw = fetch_repo(host, token, project, since, until, args.verbose, args.review_credit)
         process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
-                     params, cells, rework_cells)
+                     params, cells, rework_cells, args.review_credit)
 
     overall_since = min(per_repo_since.values()) if per_repo_since else default_since
     result = build_output(cells, rework_cells, repo_paths, overall_since, until,
@@ -693,6 +711,8 @@ def build_parser():
     c.add_argument("--ai-markers", help="AI 判定の本文正規表現（'||' 区切り、既定の組み込みマーカーを置換）")
     c.add_argument("--rework-labels", default=",".join(DEFAULT_REWORK_LABELS),
                    help="差し戻しとみなすラベル（カンマ区切り）")
+    c.add_argument("--review-credit", choices=["issue-author", "mr-author"], default="issue-author",
+                   help="推定レビューコストの帰属先（既定: issue-author=元イシュー作成者。紐付け不可なら MR 作成者）")
     c.add_argument("--axis", default="repo,user", help="出力する軸（repo,user。totals は常に出力）")
     c.add_argument("--params-file", help="コスト前提を上書きする JSON ファイル")
     c.add_argument("--state-file", help="カーソル・ラン履歴を読み書きする JSON ファイル")
