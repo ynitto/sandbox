@@ -1884,6 +1884,42 @@ class GitDistributedTests(unittest.TestCase):
         self.assertEqual(kf._active_clones, [])
 
 
+class EnsureBusRootTests(unittest.TestCase):
+    """起動初回のバスフォルダ作成（git バスでは .gitkeep も置く）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-ensurebus-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_creates_local_bus_root_without_gitkeep(self):
+        # ローカルバスは初回に作成され、.gitkeep は置かない（runs/ 等で埋まるため）。
+        bus = os.path.join(self.tmp, "newbus")
+        args = mock.Mock(bus=bus, git=None)
+        kf.ensure_bus_root(args)
+        self.assertTrue(os.path.isdir(bus))
+        self.assertFalse(os.path.exists(os.path.join(bus, ".gitkeep")))
+
+    def test_creates_git_bus_root_with_gitkeep(self):
+        # git バスはクローンが作業後に消えて空になるため、.gitkeep で空フォルダを残す。
+        bus = os.path.join(self.tmp, "gitbus")
+        args = mock.Mock(bus=bus, git="/some/remote")
+        kf.ensure_bus_root(args)
+        self.assertTrue(os.path.isdir(bus))
+        self.assertTrue(os.path.isfile(os.path.join(bus, ".gitkeep")))
+
+    def test_idempotent_and_preserves_existing(self):
+        # 既存フォルダ/.gitkeep は壊さず冪等（中身を上書きしない）。
+        bus = os.path.join(self.tmp, "exists")
+        os.makedirs(bus)
+        keep = os.path.join(bus, ".gitkeep")
+        with open(keep, "w") as f:
+            f.write("keep-me")
+        args = mock.Mock(bus=bus, git="/some/remote")
+        kf.ensure_bus_root(args)
+        with open(keep) as f:
+            self.assertEqual(f.read(), "keep-me")
+
+
 class CleanupTests(unittest.TestCase):
     """一時ファイルの自動クリーンアップ（A: ロック / B: 中間 .tmp / C: 孤立クローン）。"""
 

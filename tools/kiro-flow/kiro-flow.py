@@ -814,6 +814,19 @@ def make_bus(args, node_id: str) -> Bus:
     return Bus(os.path.abspath(args.bus), run_id)
 
 
+def ensure_bus_root(args) -> None:
+    """起動初回にバスフォルダが無ければ作成する。git バスでは各ノードのクローンが
+    作業後に削除されてフォルダが空になるため、空ディレクトリを git 管理下に残せるよう
+    .gitkeep も置く（既にあれば触らない＝冪等）。"""
+    bus_root = os.path.abspath(args.bus)
+    os.makedirs(bus_root, exist_ok=True)
+    if getattr(args, "git", None):
+        keep = os.path.join(bus_root, ".gitkeep")
+        if not os.path.exists(keep):
+            with open(keep, "w", encoding="utf-8"):
+                pass
+
+
 def cleanup_active_clones() -> None:
     """このプロセスが作った sparse-checkout クローンを作業後にまとめて削除する。"""
     while _active_clones:
@@ -4033,6 +4046,11 @@ def main() -> int:
         print(f"[kiro-flow] executor '{spec}' を解決できません。組み込み（kiro/stub）か、"
               f"プラグイン .py（検索: {dirs}）か、明示パスを指定してください。", file=sys.stderr)
         return 2
+    # 起動初回にバスフォルダが無ければ作成する（git バスでは .gitkeep も置く）。
+    # 診断/読み取り専用コマンドは副作用を持たせない（doctor の「未作成」所見を潰さない）。
+    if getattr(args, "func", None) in (
+            cmd_run, cmd_daemon, cmd_orchestrate, cmd_work, cmd_submit, None):
+        ensure_bus_root(args)
     # サブコマンド未指定 → daemon として処理
     try:
         if getattr(args, "func", None) is None:
