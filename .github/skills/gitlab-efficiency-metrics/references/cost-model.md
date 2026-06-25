@@ -69,23 +69,31 @@
 
 コスト（人件費）とは別に「期間＝リードタイム」でも効率を見る。`totals` / `by_repo` の `time` ブロックに出力する。
 
-- **AI = 実測**: イシューの `created_at`（起票）→ `closed_at`（クローズ）の経過時間を合計・平均する（`ai_actual`）。
-  種別が ai のイシューのみ。`human_actual` は人起票イシューの実測（参考）
+- **AI = 実測**（`ai_actual`、種別 ai のイシューのみ）。2 種類のリードタイムを出す:
+  - **総 `cycle_time`**: `created_at`（起票）→ `closed_at`（クローズ）。バックログ滞留・待ち時間を**含む**
+  - **正味 `active_time`**: **着手**→ `closed_at`。滞留を**除く**。着手時刻は `worker-node-id` 着手コメント
+    または `status:in-progress` ラベル付与の**最早時刻**（`--in-progress-labels` で変更可）。着手シグナルが無い
+    イシューは正味の対象外（`active_counted` 件数で可視化）
+  - `human_actual` は人起票イシューの実測（参考、総・正味とも）
 - **人 = 見積もり**: 同じ AI 成果物を人が作る場合の所要**実働日**（`human_estimate_for_ai_work_days`）。
   式は `成果物LOC ÷ 1日に書けるコード量(loc_per_day) × 手戻り係数`。`loc_per_day` は楽観/最頻/悲観の 3 点、
   手戻り係数は `human_rework_multiplier`（既定 1.2、`--params-file` で設定可能）
-- **時間削減** `time_saved_days` = 人の見積もり日数 − AI 実測日数（3 点レンジ）
+- **時間削減**（3 点レンジ）:
+  - `time_saved_days` = 人見積もり − AI **総**日数
+  - `time_saved_net_days` = 人見積もり − AI **正味**日数
 
 ```
-AI 実測日数      ai_days = ai_cycle_time_hours / 24
+AI 総日数        ai_days        = ai_cycle_time_hours  / 24    （滞留込み）
+AI 正味日数      ai_active_days = ai_active_time_hours / 24    （着手→クローズ）
 人の実働日数      human_days(loc) = (deliverable_bytes_ai / (loc×bytes_per_loc/productive_hours_per_day))
                                     / productive_hours_per_day × human_rework_multiplier
-時間削減          time_saved_days = human_days(loc) − ai_days   （loc は high/mid/low の 3 点）
+時間削減          time_saved_days     = human_days(loc) − ai_days
+                 time_saved_net_days = human_days(loc) − ai_active_days   （loc は high/mid/low の 3 点）
 ```
 
-> **次元の注意（caveat）**: AI の実測リードタイムは**待ち時間・キュー（バックログ滞留）を含む実時間**、人の見積もりは
-> **正味の実働日**で、厳密には同次元でない。`time_saved_days` が負になることもある（例: 起票後すぐ着手されず
-> 滞留した AI イシュー vs 楽観的な人の実働見積もり）。傾向把握用の概算として扱い、断定しない。
+> **次元の注意（caveat）**: 人の見積もりは**正味の実働日**。これと比べるなら AI も**正味**（`time_saved_net_days`）の方が
+> 同次元に近い。**総**（`time_saved_days`）は滞留を含むため負になりやすく（起票後すぐ着手されない AI イシュー等）、
+> 「滞留がどれだけ効いているか」を見る指標として読む。いずれも傾向把握用の概算で、断定しない。
 
 ## AI / 人 の判定
 

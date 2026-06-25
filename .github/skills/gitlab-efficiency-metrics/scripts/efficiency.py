@@ -102,6 +102,9 @@ DEFAULT_PARAMS = {
 
 DEFAULT_REWORK_LABELS = ["status:needs-rework"]
 
+# 「着手」とみなすラベル（worker-node-id 着手コメントと合わせて開始時刻判定に使う）
+DEFAULT_IN_PROGRESS_LABELS = ["status:in-progress"]
+
 # 投稿・MR を「AI 生成」と判定するための本文マーカー（正規表現）
 DEFAULT_AI_MARKERS = [
     r"<!--\s*gitlab-idd:(?:creator-node-id|worker-node-id|non-requester-reviewed|requester-approved):",
@@ -155,6 +158,22 @@ def _matches(text, regexes) -> bool:
     return bool(text) and any(r.search(text) for r in regexes)
 
 
+def _detect_start(notes, label_events, in_progress_labels):
+    """着手時刻を判定する。worker-node-id 着手コメント / in-progress ラベル付与の最早時刻。"""
+    candidates = []
+    for n in notes or []:
+        if GL._WORKER_NODE_RE.search(n.get("body") or ""):
+            dt = GL._parse_iso8601_utc(n.get("created_at"))
+            if dt:
+                candidates.append(dt)
+    for ev in label_events or []:
+        if ev.get("action") == "add" and (ev.get("label") or {}).get("name", "") in in_progress_labels:
+            dt = GL._parse_iso8601_utc(ev.get("created_at"))
+            if dt:
+                candidates.append(dt)
+    return min(candidates) if candidates else None
+
+
 def metrics_zero():
     return {k: 0 for k in METRIC_KEYS}
 
@@ -193,7 +212,8 @@ def classify_authored(description, author, notes, agent_set, ai_res) -> str:
 # ---------------------------------------------------------------------------
 
 def process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
-                 params, cells, rework_cells, review_credit="issue-author", time_cells=None):
+                 params, cells, rework_cells, review_credit="issue-author", time_cells=None,
+                 in_progress_labels=None):
     """取得済みの raw（mrs / issues）をセルに集計する。
 
     cells:        defaultdict キー (project, user, kind) -> metrics（ユーザー帰属可能な指標）
@@ -209,6 +229,8 @@ def process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
     review_fixed = params["review_fixed_min_per_mr"]
     review_cap = params["review_cap_min_per_mr"]
     rework_label_set = set(rework_labels)
+    in_progress_set = set(in_progress_labels if in_progress_labels is not None
+                          else DEFAULT_IN_PROGRESS_LABELS)
 
     # --- MR ---
     for mr in raw.get("mrs", []):
@@ -268,6 +290,11 @@ def process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
                     tc = time_cells[(project, ikind)]
                     tc["cycle_time_hours"] += hrs
                     tc["closed_issue_count"] += 1
+                    # 正味（着手→クローズ）: 滞留時間を除く
+                    start = _detect_start(notes, issue.get("_label_events"), in_progress_set)
+                    if start and closed >= start:
+                        tc["active_time_hours"] += (closed - start).total_seconds() / 3600.0
+                        tc["active_counted"] += 1
 
         for n in notes:
             if n.get("system") or not _in_window(n.get("created_at"), since, until):
@@ -306,14 +333,14 @@ def metrics_for(cells, rework_cells, repo=None, user=None, kind=None):
 
 def time_for(time_cells, repo=None, kind=None):
     """時間軸セルを合算する。"""
-    hours = 0.0
-    count = 0
+    acc = {"cycle_time_hours": 0.0, "closed_issue_count": 0,
+           "active_time_hours": 0.0, "active_counted": 0}
     for (r, k), tc in time_cells.items():
         if (repo and r != repo) or (kind and k != kind):
             continue
-        hours += tc["cycle_time_hours"]
-        count += tc["closed_issue_count"]
-    return {"cycle_time_hours": hours, "closed_issue_count": count}
+        for key in acc:
+            acc[key] += tc.get(key, 0)
+    return acc
 
 
 def time_block(time_cells, deliverable_bytes_ai, params, repo=None):
@@ -327,7 +354,8 @@ def time_block(time_cells, deliverable_bytes_ai, params, repo=None):
     p = params
     ai = time_for(time_cells, repo=repo, kind="ai")
     hu = time_for(time_cells, repo=repo, kind="human")
-    ai_days = ai["cycle_time_hours"] / 24.0
+    ai_days = ai["cycle_time_hours"] / 24.0              # gross: 起票→クローズ（滞留込み）
+    ai_active_days = ai["active_time_hours"] / 24.0      # net: 着手→クローズ（滞留除く）
     mult = p.get("human_rework_multiplier", 1.0)
 
     def human_work_days(loc_per_day):
@@ -341,17 +369,26 @@ def time_block(time_cells, deliverable_bytes_ai, params, repo=None):
 
     def actual(d):
         n = d["closed_issue_count"]
+        na = d["active_counted"]
         return {
             "cycle_time_hours": round(d["cycle_time_hours"], 1),
             "closed_issue_count": n,
             "avg_cycle_time_hours": round(d["cycle_time_hours"] / n, 1) if n else 0.0,
+            "active_time_hours": round(d["active_time_hours"], 1),
+            "active_counted": na,
+            "avg_active_time_hours": round(d["active_time_hours"] / na, 1) if na else 0.0,
         }
 
+    def saved(ref_days):
+        return {"low": round(hi - ref_days, 2), "mid": round(mid - ref_days, 2), "high": round(lo - ref_days, 2)}
+
     return {
-        "ai_actual": {**actual(ai), "cycle_time_days": round(ai_days, 2)},
+        "ai_actual": {**actual(ai), "cycle_time_days": round(ai_days, 2),
+                      "active_time_days": round(ai_active_days, 2)},
         "human_actual": actual(hu),
         "human_estimate_for_ai_work_days": {"low": round(hi, 2), "mid": round(mid, 2), "high": round(lo, 2)},
-        "time_saved_days": {"low": round(hi - ai_days, 2), "mid": round(mid - ai_days, 2), "high": round(lo - ai_days, 2)},
+        "time_saved_days": saved(ai_days),            # gross 基準（滞留込みの AI 実測）
+        "time_saved_net_days": saved(ai_active_days),  # net 基準（着手→クローズ）
         "human_rework_multiplier": mult,
     }
 
@@ -613,16 +650,19 @@ def render_markdown(out):
         aia = tm["ai_actual"]
         he = tm["human_estimate_for_ai_work_days"]
         ts = tm["time_saved_days"]
+        tsn = tm["time_saved_net_days"]
         L += [
             "## 時間軸（リードタイム）",
             "",
             "| 指標 | 値 |",
             "|------|----|",
-            f"| AI 実測リードタイム（起票→クローズ） | {aia['cycle_time_days']} 日（{aia['closed_issue_count']} 件 / 平均 {aia['avg_cycle_time_hours']:.1f} h） |",
+            f"| AI 総リードタイム（起票→クローズ・滞留込み） | {aia['cycle_time_days']} 日（{aia['closed_issue_count']} 件 / 平均 {aia['avg_cycle_time_hours']:.1f} h） |",
+            f"| AI 正味リードタイム（着手→クローズ・滞留除く） | {aia['active_time_days']} 日（{aia['active_counted']} 件 / 平均 {aia['avg_active_time_hours']:.1f} h） |",
             f"| 人の所要見積もり（同 AI 成果物・実働日） | 楽観 {he['low']} / 最頻 {he['mid']} / 悲観 {he['high']} 日 |",
-            f"| 時間削減（人見積もり − AI 実測） | 楽観 {ts['low']} / 最頻 {ts['mid']} / 悲観 {ts['high']} 日 |",
+            f"| 時間削減（人見積もり − AI 総） | 楽観 {ts['low']} / 最頻 {ts['mid']} / 悲観 {ts['high']} 日 |",
+            f"| 時間削減（人見積もり − AI 正味） | 楽観 {tsn['low']} / 最頻 {tsn['mid']} / 悲観 {tsn['high']} 日 |",
             "",
-            f"> AI は待ち時間込みの実時間、人は実働日の見積もり（成果物量÷日産×手戻り係数 {tm['human_rework_multiplier']}）。次元が異なる概算。",
+            f"> AI は実時間（総=滞留込み / 正味=着手→クローズ）、人は実働日の見積もり（成果物量÷日産×手戻り係数 {tm['human_rework_multiplier']}）。次元が異なる概算。",
             "",
         ]
 
@@ -696,6 +736,7 @@ def cmd_collect(args):
                 agent_set.add(me["username"])
 
     rework_labels = [x.strip() for x in args.rework_labels.split(",") if x.strip()]
+    in_progress_labels = [x.strip() for x in args.in_progress_labels.split(",") if x.strip()]
     axes = {x.strip() for x in args.axis.split(",") if x.strip()}
 
     until = _parse_date(args.until) if args.until else datetime.now(timezone.utc)
@@ -705,7 +746,8 @@ def cmd_collect(args):
 
     cells = defaultdict(metrics_zero)
     rework_cells = defaultdict(lambda: {"rework_count": 0})
-    time_cells = defaultdict(lambda: {"cycle_time_hours": 0.0, "closed_issue_count": 0})
+    time_cells = defaultdict(lambda: {"cycle_time_hours": 0.0, "closed_issue_count": 0,
+                                      "active_time_hours": 0.0, "active_counted": 0})
     repo_paths = []
     per_repo_since = {}
 
@@ -720,7 +762,8 @@ def cmd_collect(args):
         per_repo_since[repo_key(host, project)] = since
         raw = fetch_repo(host, token, project, since, until, args.verbose, args.review_credit)
         process_repo(project, raw, since, until, agent_set, ai_res, rework_labels,
-                     params, cells, rework_cells, args.review_credit, time_cells)
+                     params, cells, rework_cells, args.review_credit, time_cells,
+                     in_progress_labels)
 
     overall_since = min(per_repo_since.values()) if per_repo_since else default_since
     result = build_output(cells, rework_cells, repo_paths, overall_since, until,
@@ -738,7 +781,9 @@ def cmd_collect(args):
             "totals_ai": result["totals"]["by_kind"]["ai"],
             "savings": result["totals"]["estimate"]["savings"],
             "time_saved_days": result["totals"]["time"]["time_saved_days"],
+            "time_saved_net_days": result["totals"]["time"]["time_saved_net_days"],
             "ai_cycle_time_days": result["totals"]["time"]["ai_actual"]["cycle_time_days"],
+            "ai_active_time_days": result["totals"]["time"]["ai_actual"]["active_time_days"],
         })
         save_state(args.state_file, state)
 
@@ -762,7 +807,9 @@ def cmd_history(args):
          "window": [r.get("since"), r.get("until")], "repos": r.get("repos"),
          "savings_mid": r.get("savings", {}).get("mid"),
          "ai_cycle_time_days": r.get("ai_cycle_time_days"),
-         "time_saved_days_mid": (r.get("time_saved_days") or {}).get("mid")}
+         "ai_active_time_days": r.get("ai_active_time_days"),
+         "time_saved_days_mid": (r.get("time_saved_days") or {}).get("mid"),
+         "time_saved_net_days_mid": (r.get("time_saved_net_days") or {}).get("mid")}
         for i, r in enumerate(runs)
     ], ensure_ascii=False, indent=2))
 
@@ -778,17 +825,20 @@ def cmd_diff(args):
                      for k in set(a["totals_ai"]) | set(b["totals_ai"])}
     delta_savings = {k: (b["savings"].get(k, 0) - a["savings"].get(k, 0))
                      for k in set(a["savings"]) | set(b["savings"])}
-    a_ts = a.get("time_saved_days") or {}
-    b_ts = b.get("time_saved_days") or {}
-    delta_time_saved = {k: round(b_ts.get(k, 0) - a_ts.get(k, 0), 2)
-                        for k in set(a_ts) | set(b_ts)}
+    def _delta_saved(key):
+        av = a.get(key) or {}
+        bv = b.get(key) or {}
+        return {k: round(bv.get(k, 0) - av.get(k, 0), 2) for k in set(av) | set(bv)}
+
     print(json.dumps({
         "a": {"index": args.a, "recorded_at": a.get("recorded_at"), "window": [a.get("since"), a.get("until")]},
         "b": {"index": args.b, "recorded_at": b.get("recorded_at"), "window": [b.get("since"), b.get("until")]},
         "delta_metrics_ai": delta_metrics,
         "delta_savings": delta_savings,
-        "delta_time_saved_days": delta_time_saved,
+        "delta_time_saved_days": _delta_saved("time_saved_days"),
+        "delta_time_saved_net_days": _delta_saved("time_saved_net_days"),
         "ai_cycle_time_days": {"a": a.get("ai_cycle_time_days"), "b": b.get("ai_cycle_time_days")},
+        "ai_active_time_days": {"a": a.get("ai_active_time_days"), "b": b.get("ai_active_time_days")},
     }, ensure_ascii=False, indent=2))
 
 
@@ -811,6 +861,8 @@ def build_parser():
     c.add_argument("--ai-markers", help="AI 判定の本文正規表現（'||' 区切り、既定の組み込みマーカーを置換）")
     c.add_argument("--rework-labels", default=",".join(DEFAULT_REWORK_LABELS),
                    help="差し戻しとみなすラベル（カンマ区切り）")
+    c.add_argument("--in-progress-labels", default=",".join(DEFAULT_IN_PROGRESS_LABELS),
+                   help="着手とみなすラベル（カンマ区切り。worker-node-id 着手コメントと合わせて正味時間の開始判定に使う）")
     c.add_argument("--review-credit", choices=["issue-author", "mr-author"], default="issue-author",
                    help="推定レビューコストの帰属先（既定: issue-author=元イシュー作成者。紐付け不可なら MR 作成者）")
     c.add_argument("--axis", default="repo,user", help="出力する軸（repo,user。totals は常に出力）")
