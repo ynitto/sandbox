@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### gitlab-gatekeeper（旧 review-concierge をリネーム＋門番化・破壊的変更）
+
+AI が量産する MR/イシューのレビュー負荷を下げるため、`review-concierge` スキルを **`gitlab-gatekeeper`** に
+リネームし、マージ承認の「門番」として 3 モード構成に拡張した。判断は人間が下し、スキルは執行に徹する。
+
+- **packet モード（既定）に Gate A を追加。** レビューパケット生成を指示されたら、判断材料を集める**前に**
+  紐づく MR の未対応レビューコメント（`get-mr-discussions --unresolved`）を確認し、**1 件でもあれば
+  `status:needs-review` へ差し戻し、未対応スレッドの要点をコメントして終了**（パケットは作らない）。
+- **decision モードを新設。** ユーザーの承認/否認を受け取り GitLab へ執行する。
+  - **承認** → マージ可否（未対応コメント無し・非ドラフト・コンフリクト無し・CI 成功）を事前確認して
+    `merge-mr` → イシューを `--state-event close`。**マージできない場合（事前不可、または merge-mr が非 2xx）は
+    `status:needs-review` へ差し戻し、不可理由を具体的にコメント**（「マージした」と誤報告しない）。
+  - **否認** → `status:needs-review` へ差し戻し、**ユーザーの自然文コメントを解釈して実行可能な差し戻しコメントを
+    生成・投稿**（ユーザーが述べていない要求は足さない。曖昧なら 1 問確認）。
+- ラベル/マージのポリシー（`needs_review_label` 既定 `status:needs-review`、`ready_labels` 既定
+  `status:review-ready`、`merge.squash`/`merge.remove_source_branch`、`require_ci_success`）は呼び出し側が上書き可能。
+- 後方互換は取らない（`review-concierge` のディレクトリ/スキル名は廃止）。GitLab 操作は従来どおり
+  `gitlab-idd` の `gl.py` を再利用し、レビュー観点は `agent-reviewer` の references を再利用する。
+
 ### マルチリポジトリ・ルーティング（kiro-autonomous × kiro-flow・破壊的変更）
 
 大規模・複数リポジトリのプロジェクトを自律運用するため、「タスク → コミット先リポジトリ」のルーティングを導入した。

@@ -1,0 +1,58 @@
+io_contract:
+  input:
+    - name: mode
+      format: enum(packet|decision)
+      description: >-
+        実行モード。packet=マージ判断パケット生成（既定。ただし未対応レビューコメントがあれば
+        needs-review へ差し戻して終了）。decision=人間の承認/否認を執行する。省略時は依頼文から推定し、
+        曖昧なら対象 IID とモードを1問だけ確認する。
+      required: false
+    - name: selector
+      format: free-text
+      description: >-
+        packet モードの対象を限定するセレクタ。gl.py に渡すフィルタ（--label / --state / --assignee）か、
+        明示の MR/イシュー IID 群。スキルはステータスを内部で限定しないため、絞り込み方針は
+        呼び出し側がここで与える。省略時は opened を対象にし、件数が多ければ範囲を確認する。
+      required: false
+    - name: output_target
+      format: free-text
+      description: >-
+        packet モードの成果物の出力先。Obsidian Vault のパス（→ obsidian-use）、.html ファイル
+        （→ spec-to-readable-html）、Markdown ファイル/ディレクトリ、または stdout。出力先に応じて整形を委譲する。
+      required: false
+    - name: decision
+      format: free-text
+      description: >-
+        decision モードの入力。対象イシュー IID と承認/否認（approve|reject）。reject の場合は
+        ユーザーの自然文コメント（差し戻し理由）を伴う。packet 成果物のフロントマター
+        （decision: / confirmed_by:）からも読める。人間の明示決定が無い限り何も実行しない。
+      required: false
+    - name: policy
+      format: free-text
+      description: >-
+        ラベル/マージのポリシー上書き。needs_review_label（既定 status:needs-review）、
+        ready_labels（差し戻し時に外すレビュー/承認待ちラベル・既定 status:review-ready）、
+        merge.squash / merge.remove_source_branch（既定 false）、require_ci_success（承認マージ前提に
+        CI 成功を要求するか・既定 true）。省略時は既定を使う。
+      required: false
+  output:
+    - name: decision_packet
+      format: markdown|html
+      schema: >-
+        packet モードの成果物。必読3点 / 受け入れ条件トレーサビリティ / 観点別所見(信頼度つき) /
+        リスク段階開示 を段階開示で含む「1枚見て決める」成果物。出力先スキルの形式に整形して
+        output_target へ書き出す。未対応レビューコメントで差し戻した対象はパケットを作らず差し戻し報告のみ。
+      required: false
+    - name: execution_result
+      format: free-text
+      description: >-
+        decision モードの執行結果。承認: マージ＋イシュークローズ（不可時は needs-review へ差し戻し＋理由コメント）。
+        否認: needs-review へ差し戻し＋ユーザーコメントを解釈した差し戻しコメント投稿。実施した GitLab 操作を要約する。
+      required: false
+notes:
+  - スケジューリング（間隔・常駐）は呼び出し側（/loop・cron・kiro-loop 等）の責務。スキルは1回処理に徹する。
+  - GitLab 操作は gitlab-idd の scripts/gl.py を再利用する（GITLAB_TOKEN 必須）。
+  - レビュー観点は agent-reviewer の references/ を再利用する。
+  - packet モードは Gate A（未対応レビューコメント検出 → needs-review 差し戻し）をパケット生成より先に必ず通す。
+  - decision モードのマージ/クローズ/差し戻しは人間の明示決定の「執行」であり、判断の代行ではない。
+    merge-mr が非 2xx で失敗したら必ず needs-review へ差し戻し、「マージした」と報告しない。
