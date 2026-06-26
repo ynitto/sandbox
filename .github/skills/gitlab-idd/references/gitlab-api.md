@@ -263,8 +263,28 @@ python scripts/gl.py update-mr MR_IID \
 python scripts/gl.py update-mr MR_IID --description "更新後の説明" --no-draft
 ```
 
+MR を未マージのままクローズ（却下）／再オープン:
+
+```
+python scripts/gl.py update-mr MR_IID --state-event close
+python scripts/gl.py update-mr MR_IID --state-event reopen
+```
+
 ```
 python scripts/gl.py merge-mr MR_ID --squash --remove-source-branch
+```
+
+MR の差分（変更ファイル一覧と unified diff）を取得（ローカルクローンが無い場合のフォールバック）:
+
+```
+python scripts/gl.py get-mr-changes MR_IID
+python scripts/gl.py get-mr-changes MR_IID --get 0.new_path
+```
+
+ブランチの削除（却下した MR のソースブランチ整理など）:
+
+```
+python scripts/gl.py delete-branch "feature/issue-42-add-login-form"
 ```
 
 CI パイプラインの確認（マージ前に実行）:

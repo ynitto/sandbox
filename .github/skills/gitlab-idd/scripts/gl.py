@@ -671,7 +671,7 @@ def cmd_create_mr(args, host, project, token):
 
 
 def cmd_update_mr(args, host, project, token):
-    """Update a merge request (description, draft status)."""
+    """Update a merge request (description, draft status, or state)."""
     ep = encode_project(project)
     data = {}
     if args.description is not None or args.description_file is not None:
@@ -684,6 +684,15 @@ def cmd_update_mr(args, host, project, token):
             data["title"] = title[len("Draft: "):]
         elif title.startswith("WIP: "):
             data["title"] = title[len("WIP: "):]
+    if args.state_event:
+        data["state_event"] = args.state_event  # "close" or "reopen"
+
+    if not data:
+        sys.exit(
+            "ERROR: No update fields specified. "
+            "Use --description/--description-file, --no-draft, or --state-event."
+        )
+
     out(api(host, token, "PUT", f"/projects/{ep}/merge_requests/{args.mr_id}", data=data), args.get)
 
 
@@ -700,6 +709,25 @@ def cmd_merge_mr(args, host, project, token):
         f"/projects/{ep}/merge_requests/{args.mr_id}/merge",
         data=data,
     ), args.get)
+
+
+def cmd_delete_branch(args, host, project, token):
+    """Delete a repository branch (e.g. an abandoned MR source branch)."""
+    ep = encode_project(project)
+    branch = urllib.parse.quote(args.branch, safe="")
+    api(host, token, "DELETE", f"/projects/{ep}/repository/branches/{branch}")
+    out({"deleted": True, "branch": args.branch}, args.get)
+
+
+def cmd_get_mr_changes(args, host, project, token):
+    """Get the file-level diff (changes) of a merge request.
+
+    Returns the list of changed files with their unified diffs. Useful when no
+    local clone is available to run `git diff`.
+    """
+    ep = encode_project(project)
+    mr = api(host, token, "GET", f"/projects/{ep}/merge_requests/{args.mr_id}/changes")
+    out(mr.get("changes", []), args.get)
 
 
 def cmd_make_branch_name(args, host, project, token):
@@ -1172,11 +1200,20 @@ def build_parser():
                    help="Read MR description from FILE (use - for stdin). "
                         "Mutually exclusive with --description.")
     p.add_argument("--no-draft", action="store_true", help="Remove draft status")
+    p.add_argument("--state-event", choices=["close", "reopen"], default=None,
+                   help="Close (unmerged) or reopen the merge request")
 
     p = sub.add_parser("merge-mr", help="Merge a merge request")
     p.add_argument("mr_id", type=int)
     p.add_argument("--squash", action="store_true")
     p.add_argument("--remove-source-branch", action="store_true")
+
+    p = sub.add_parser("delete-branch", help="Delete a repository branch")
+    p.add_argument("branch", help="Branch name to delete (e.g. feature/issue-42-...)")
+
+    p = sub.add_parser("get-mr-changes",
+                       help="Get the file-level diff (changes) of a merge request")
+    p.add_argument("mr_id", type=int)
 
     p = sub.add_parser("get-mr-pipeline",
                        help="Get the latest CI pipeline for a merge request")
@@ -1280,6 +1317,8 @@ COMMANDS = {
     "create-mr":       cmd_create_mr,
     "update-mr":       cmd_update_mr,
     "merge-mr":        cmd_merge_mr,
+    "delete-branch":   cmd_delete_branch,
+    "get-mr-changes":  cmd_get_mr_changes,
     "get-mr-pipeline": cmd_get_mr_pipeline,
     "add-mr-comment":  cmd_add_mr_comment,
     "get-mr-discussions": cmd_get_mr_discussions,

@@ -532,3 +532,92 @@ def test_get_assigned_lock_minutes_clamps_to_zero(monkeypatch):
         "skill_configs": {"gitlab-idd": {"assigned_lock_minutes": -1}}
     })
     assert gl.get_assigned_lock_minutes() == 0.0
+
+# ---------------------------------------------------------------------------
+# update-mr / delete-branch / get-mr-changes
+# ---------------------------------------------------------------------------
+
+def test_update_mr_closes_with_state_event(monkeypatch):
+    """--state-event close → PUT sends state_event=close (unmerged close)."""
+    gl = load_gl_module()
+    captured = {}
+
+    def fake_api(host, token, method, path, data=None, params=None):
+        captured.update({"method": method, "path": path, "data": data})
+        return {"iid": 5, "state": "closed"}
+
+    monkeypatch.setattr(gl, "api", fake_api)
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: None)
+
+    args = SimpleNamespace(
+        mr_id=5,
+        description=None,
+        description_file=None,
+        no_draft=False,
+        state_event="close",
+        get=None,
+    )
+
+    gl.cmd_update_mr(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["method"] == "PUT"
+    assert captured["path"].endswith("/merge_requests/5")
+    assert captured["data"]["state_event"] == "close"
+
+
+def test_update_mr_errors_when_no_fields(monkeypatch):
+    """No update fields → exits with an error instead of an empty PUT."""
+    gl = load_gl_module()
+    monkeypatch.setattr(gl, "api", lambda *a, **k: {})
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: None)
+
+    args = SimpleNamespace(
+        mr_id=5,
+        description=None,
+        description_file=None,
+        no_draft=False,
+        state_event=None,
+        get=None,
+    )
+
+    import pytest
+    with pytest.raises(SystemExit):
+        gl.cmd_update_mr(args, "gitlab.example.com", "group/project", "token")
+
+
+def test_delete_branch_issues_delete_with_encoded_name(monkeypatch):
+    """delete-branch → DELETE with the branch name URL-encoded (slashes escaped)."""
+    gl = load_gl_module()
+    captured = {}
+
+    def fake_api(host, token, method, path, data=None, params=None):
+        captured.update({"method": method, "path": path})
+        return {}
+
+    monkeypatch.setattr(gl, "api", fake_api)
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: None)
+
+    args = SimpleNamespace(branch="feature/issue-42-add-login", get=None)
+    gl.cmd_delete_branch(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["method"] == "DELETE"
+    assert captured["path"].endswith("/repository/branches/feature%2Fissue-42-add-login")
+
+
+def test_get_mr_changes_returns_changes_list(monkeypatch):
+    """get-mr-changes → returns the `changes` array from the MR changes endpoint."""
+    gl = load_gl_module()
+    changes = [{"old_path": "a.py", "new_path": "a.py", "diff": "@@ -1 +1 @@"}]
+
+    def fake_api(host, token, method, path, data=None, params=None):
+        assert path.endswith("/merge_requests/9/changes")
+        return {"iid": 9, "changes": changes}
+
+    captured = {}
+    monkeypatch.setattr(gl, "api", fake_api)
+    monkeypatch.setattr(gl, "out", lambda obj, get_field=None: captured.setdefault("out", obj))
+
+    args = SimpleNamespace(mr_id=9, get=None)
+    gl.cmd_get_mr_changes(args, "gitlab.example.com", "group/project", "token")
+
+    assert captured["out"] == changes
