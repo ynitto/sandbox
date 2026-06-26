@@ -214,6 +214,24 @@ python scripts/gl.py make-branch-name 42
 # → "feature/issue-42-add-login-form"
 ```
 
+## パケット ID（リポジトリ横断・人が入力できる長さ）
+
+レビューパケットに付ける**リポジトリ横断で一意・人が手入力できる短い ID**を生成／正規化する。
+Crockford base32（紛らわしい I/L/O/U を除外）で、既定は `GK-` + 6 文字（≈30bit）。オフライン動作（トークン不要）。
+
+```
+python scripts/gl.py gen-packet-id
+# → "GK-7F3KQ9"
+python scripts/gl.py gen-packet-id --length 8 --prefix "PKT-"
+# → "PKT-QB46CFWJ"
+
+# 人が打ち込んだ ID を照合用に正規化（大文字化・前置詞/空白/ハイフン許容・I/L→1・O→0・U除去）
+python scripts/gl.py normalize-packet-id "gk 7f3 kq9"
+# → "GK-7F3KQ9"
+python scripts/gl.py normalize-packet-id "7F3KQ9"
+# → "GK-7F3KQ9"
+```
+
 ---
 
 ## MR（マージリクエスト）操作
@@ -263,8 +281,28 @@ python scripts/gl.py update-mr MR_IID \
 python scripts/gl.py update-mr MR_IID --description "更新後の説明" --no-draft
 ```
 
+MR を未マージのままクローズ（却下）／再オープン:
+
+```
+python scripts/gl.py update-mr MR_IID --state-event close
+python scripts/gl.py update-mr MR_IID --state-event reopen
+```
+
 ```
 python scripts/gl.py merge-mr MR_ID --squash --remove-source-branch
+```
+
+MR の差分（変更ファイル一覧と unified diff）を取得（ローカルクローンが無い場合のフォールバック）:
+
+```
+python scripts/gl.py get-mr-changes MR_IID
+python scripts/gl.py get-mr-changes MR_IID --get 0.new_path
+```
+
+ブランチの削除（却下した MR のソースブランチ整理など）:
+
+```
+python scripts/gl.py delete-branch "feature/issue-42-add-login-form"
 ```
 
 CI パイプラインの確認（マージ前に実行）:

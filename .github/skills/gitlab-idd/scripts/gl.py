@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import unicodedata
@@ -286,6 +287,42 @@ def title_to_slug(title: str) -> str:
     if not slug:
         slug = "issue"
     return slug
+
+
+# Crockford base32 — excludes I, L, O, U to stay unambiguous when typed by a human.
+_CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+DEFAULT_PACKET_ID_PREFIX = "GK-"
+DEFAULT_PACKET_ID_LENGTH = 6
+
+
+def generate_packet_id(length: int = DEFAULT_PACKET_ID_LENGTH,
+                       prefix: str = DEFAULT_PACKET_ID_PREFIX) -> str:
+    """Generate a short, cross-repository, human-typeable packet ID.
+
+    Random Crockford base32 body (default 6 chars ≈ 30 bits) keeps it unique
+    across repositories without coordination while staying short enough to type.
+    """
+    body = "".join(secrets.choice(_CROCKFORD_ALPHABET) for _ in range(max(1, length)))
+    return f"{prefix}{body}"
+
+
+def normalize_packet_id(raw: str, prefix: str = DEFAULT_PACKET_ID_PREFIX) -> str:
+    """Canonicalize a human-typed packet ID.
+
+    - Case-insensitive (upper-cased).
+    - Tolerates a present/absent prefix, spaces, and grouping dashes.
+    - Maps Crockford confusables (I/L→1, O→0, drops U).
+    """
+    s = (raw or "").strip().upper()
+    pfx = prefix.upper()
+    bare = pfx.rstrip("-")
+    if s.startswith(pfx):
+        s = s[len(pfx):]
+    elif bare and s.startswith(bare):
+        s = s[len(bare):]
+    s = re.sub(r"[^0-9A-Z]", "", s)
+    s = s.translate(str.maketrans({"I": "1", "L": "1", "O": "0", "U": ""}))
+    return f"{prefix}{s}"
 
 
 def _make_headers(token: str) -> dict:
@@ -671,7 +708,7 @@ def cmd_create_mr(args, host, project, token):
 
 
 def cmd_update_mr(args, host, project, token):
-    """Update a merge request (description, draft status)."""
+    """Update a merge request (description, draft status, or state)."""
     ep = encode_project(project)
     data = {}
     if args.description is not None or args.description_file is not None:
@@ -684,6 +721,15 @@ def cmd_update_mr(args, host, project, token):
             data["title"] = title[len("Draft: "):]
         elif title.startswith("WIP: "):
             data["title"] = title[len("WIP: "):]
+    if args.state_event:
+        data["state_event"] = args.state_event  # "close" or "reopen"
+
+    if not data:
+        sys.exit(
+            "ERROR: No update fields specified. "
+            "Use --description/--description-file, --no-draft, or --state-event."
+        )
+
     out(api(host, token, "PUT", f"/projects/{ep}/merge_requests/{args.mr_id}", data=data), args.get)
 
 
@@ -700,6 +746,35 @@ def cmd_merge_mr(args, host, project, token):
         f"/projects/{ep}/merge_requests/{args.mr_id}/merge",
         data=data,
     ), args.get)
+
+
+def cmd_delete_branch(args, host, project, token):
+    """Delete a repository branch (e.g. an abandoned MR source branch)."""
+    ep = encode_project(project)
+    branch = urllib.parse.quote(args.branch, safe="")
+    api(host, token, "DELETE", f"/projects/{ep}/repository/branches/{branch}")
+    out({"deleted": True, "branch": args.branch}, args.get)
+
+
+def cmd_get_mr_changes(args, host, project, token):
+    """Get the file-level diff (changes) of a merge request.
+
+    Returns the list of changed files with their unified diffs. Useful when no
+    local clone is available to run `git diff`.
+    """
+    ep = encode_project(project)
+    mr = api(host, token, "GET", f"/projects/{ep}/merge_requests/{args.mr_id}/changes")
+    out(mr.get("changes", []), args.get)
+
+
+def cmd_gen_packet_id(args, host, project, token):
+    """Print a fresh cross-repository, human-typeable packet ID (e.g. GK-7F3KQ9)."""
+    print(generate_packet_id(length=args.length, prefix=args.prefix))
+
+
+def cmd_normalize_packet_id(args, host, project, token):
+    """Canonicalize a human-typed packet ID so decision mode can match it reliably."""
+    print(normalize_packet_id(args.raw, prefix=args.prefix))
 
 
 def cmd_make_branch_name(args, host, project, token):
@@ -1172,11 +1247,20 @@ def build_parser():
                    help="Read MR description from FILE (use - for stdin). "
                         "Mutually exclusive with --description.")
     p.add_argument("--no-draft", action="store_true", help="Remove draft status")
+    p.add_argument("--state-event", choices=["close", "reopen"], default=None,
+                   help="Close (unmerged) or reopen the merge request")
 
     p = sub.add_parser("merge-mr", help="Merge a merge request")
     p.add_argument("mr_id", type=int)
     p.add_argument("--squash", action="store_true")
     p.add_argument("--remove-source-branch", action="store_true")
+
+    p = sub.add_parser("delete-branch", help="Delete a repository branch")
+    p.add_argument("branch", help="Branch name to delete (e.g. feature/issue-42-...)")
+
+    p = sub.add_parser("get-mr-changes",
+                       help="Get the file-level diff (changes) of a merge request")
+    p.add_argument("mr_id", type=int)
 
     p = sub.add_parser("get-mr-pipeline",
                        help="Get the latest CI pipeline for a merge request")
@@ -1203,6 +1287,19 @@ def build_parser():
     p = sub.add_parser("make-branch-name",
                        help="Generate branch name for an issue (feature/issue-{id}-{slug})")
     p.add_argument("issue_id", type=int)
+
+    p = sub.add_parser("gen-packet-id",
+                       help="Generate a short, cross-repository, human-typeable packet ID (e.g. GK-7F3KQ9)")
+    p.add_argument("--length", type=int, default=DEFAULT_PACKET_ID_LENGTH,
+                   help=f"Number of random chars after the prefix (default: {DEFAULT_PACKET_ID_LENGTH})")
+    p.add_argument("--prefix", default=DEFAULT_PACKET_ID_PREFIX,
+                   help=f"ID prefix (default: {DEFAULT_PACKET_ID_PREFIX!r})")
+
+    p = sub.add_parser("normalize-packet-id",
+                       help="Canonicalize a human-typed packet ID (case/prefix/spacing tolerant)")
+    p.add_argument("raw", help="The raw ID as typed by a human")
+    p.add_argument("--prefix", default=DEFAULT_PACKET_ID_PREFIX,
+                   help=f"ID prefix (default: {DEFAULT_PACKET_ID_PREFIX!r})")
 
     p = sub.add_parser("check-review-defer",
                        help="Check if the reviewer should skip an issue they implemented")
@@ -1280,11 +1377,15 @@ COMMANDS = {
     "create-mr":       cmd_create_mr,
     "update-mr":       cmd_update_mr,
     "merge-mr":        cmd_merge_mr,
+    "delete-branch":   cmd_delete_branch,
+    "get-mr-changes":  cmd_get_mr_changes,
     "get-mr-pipeline": cmd_get_mr_pipeline,
     "add-mr-comment":  cmd_add_mr_comment,
     "get-mr-discussions": cmd_get_mr_discussions,
     "resolve-mr-discussion": cmd_resolve_mr_discussion,
     "make-branch-name": cmd_make_branch_name,
+    "gen-packet-id":        cmd_gen_packet_id,
+    "normalize-packet-id":  cmd_normalize_packet_id,
     "check-review-defer":   cmd_check_review_defer,
     "check-assigned-defer": cmd_check_assigned_defer,
     "check-defer":          cmd_check_defer,
@@ -1294,11 +1395,20 @@ COMMANDS = {
 }
 
 
+_OFFLINE_COMMANDS = frozenset((
+    "gen-packet-id",       # no GitLab call: pure local generation
+    "normalize-packet-id",  # no GitLab call: pure local string canonicalization
+))
+
+
 def main():
     args = build_parser().parse_args()
     label = getattr(args, "label", "default") or "default"
     if args.command == "configure":
         cmd_configure(args, None, None, None)
+        return
+    if args.command in _OFFLINE_COMMANDS:
+        COMMANDS[args.command](args, None, None, None)
         return
     host, project = get_project_info(label)
     token = get_token(label)

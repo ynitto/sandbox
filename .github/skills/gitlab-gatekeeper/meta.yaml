@@ -3,9 +3,10 @@ io_contract:
     - name: mode
       format: enum(packet|decision)
       description: >-
-        実行モード。packet=マージ判断パケット生成（既定。ただし未対応レビューコメントがあれば
-        needs-review へ差し戻して終了）。decision=人間の承認/否認を執行する。省略時は依頼文から推定し、
-        曖昧なら対象 IID とモードを1問だけ確認する。
+        実行モード。packet=マージ判断パケット生成（既定。実際の修正内容 diff を段階開示で同梱。
+        ただし未対応レビューコメントがあれば needs-review へ差し戻して終了）。
+        decision=人間の承認/否認/却下を執行する（執行前に最新状態でパケットを更新し RE-GATE）。
+        省略時は依頼文から推定し、曖昧なら対象 IID とモードを1問だけ確認する。
       required: false
     - name: selector
       format: free-text
@@ -23,9 +24,15 @@ io_contract:
     - name: decision
       format: free-text
       description: >-
-        decision モードの入力。対象イシュー IID と承認/否認（approve|reject）。reject の場合は
-        ユーザーの自然文コメント（差し戻し理由）を伴う。packet 成果物のフロントマター
-        （decision: / confirmed_by:）からも読める。人間の明示決定が無い限り何も実行しない。
+        decision モードの入力。対象（パケット ID 例 GK-7F3KQ9、またはイシュー IID）と
+        承認/否認/却下（approve|reject|dismiss）。対象指定はパケット ID を推奨（リポジトリ横断で一意・
+        人が入力しやすく、IID 衝突で取り違えない）。ID は normalize-packet-id で正規化し、packet_store
+        （無ければ output_target）から該当パケットを引いて host/project/project_url/issue/mr を解決、
+        GL_PROJECT_URL=project_url でそのリポジトリに対して執行する。reject（差し戻し）と
+        dismiss（却下＝イシュー/MR クローズ＋ブランチ削除）はユーザーの自然文コメント（理由）を伴う。
+        packet 成果物のフロントマター（decision: / confirmed_by:）からも読める。執行前に最新の issue/MR を
+        再取得してパケットを更新し、未対応レビューコメントが増えていれば packet モードと同様に needs-review へ
+        差し戻す（特に approve はマージを止める）。人間の明示決定が無い限り何も実行しない。
       required: false
     - name: policy
       format: free-text
@@ -33,26 +40,43 @@ io_contract:
         ラベル/マージのポリシー上書き。needs_review_label（既定 status:needs-review）、
         ready_labels（差し戻し時に外すレビュー/承認待ちラベル・既定 status:review-ready）、
         merge.squash / merge.remove_source_branch（既定 false）、require_ci_success（承認マージ前提に
-        CI 成功を要求するか・既定 true）。省略時は既定を使う。
+        CI 成功を要求するか・既定 true）、dismiss.delete_source_branch（却下時にソースブランチを削除するか・
+        既定 true、既定/保護ブランチは対象外）、packet_id.prefix / packet_id.length（パケット ID の前置詞と
+        本体文字数・既定 GK- / 6）、packet_store（ID からパケットを引く保管場所・既定は output_target）。
+        省略時は既定を使う。
       required: false
   output:
     - name: decision_packet
       format: markdown|html
       schema: >-
-        packet モードの成果物。必読3点 / 受け入れ条件トレーサビリティ / 観点別所見(信頼度つき) /
-        リスク段階開示 を段階開示で含む「1枚見て決める」成果物。出力先スキルの形式に整形して
-        output_target へ書き出す。未対応レビューコメントで差し戻した対象はパケットを作らず差し戻し報告のみ。
+        packet モードの成果物。フロントマターにリポジトリ横断で一意・人が入力できる短い ID（例 GK-7F3KQ9）と
+        host/project/project_url/issue/mr/decision/confirmed_by を持ち、冒頭に ID と対象を1行明示する。
+        本文は必読3点 / 受け入れ条件トレーサビリティ / 観点別所見(信頼度つき) / 実際の修正内容(diff・段階開示) /
+        リスク段階開示 を段階開示で含む「1枚見て決める」成果物。diff 本文・低リスク差分・観点別所見は既定で畳み、
+        人間の操作（details / 折りたたみ callout）で開く。出力先スキルの形式に整形して output_target へ書き出し、
+        ファイル名にも ID を含める。未対応レビューコメントで差し戻した対象はパケットを作らず差し戻し報告のみ。
+        decision モードでも執行前にこの形式で最新状態に再生成する（id と識別情報は保持）。
       required: false
     - name: execution_result
       format: free-text
       description: >-
-        decision モードの執行結果。承認: マージ＋イシュークローズ（不可時は needs-review へ差し戻し＋理由コメント）。
-        否認: needs-review へ差し戻し＋ユーザーコメントを解釈した差し戻しコメント投稿。実施した GitLab 操作を要約する。
+        decision モードの執行結果。執行前に最新状態でパケットを更新し、未対応レビューコメントが増えていれば
+        packet モードと同様に差し戻す（RE-GATE）。承認: マージ＋イシュークローズ（不可時は needs-review へ
+        差し戻し＋理由コメント）。否認: needs-review へ差し戻し＋ユーザーコメントを解釈した差し戻しコメント投稿。
+        却下: 却下コメント投稿＋イシュークローズ＋紐づく MR を未マージでクローズ＋ソースブランチ削除。
+        実施した GitLab 操作を成否つきで要約する。
       required: false
 notes:
   - スケジューリング（間隔・常駐）は呼び出し側（/loop・cron・kiro-loop 等）の責務。スキルは1回処理に徹する。
   - GitLab 操作は gitlab-idd の scripts/gl.py を再利用する（GITLAB_TOKEN 必須）。
+    却下では update-mr --state-event close（MR の未マージクローズ）と delete-branch（ソースブランチ削除）を使う。
   - レビュー観点は agent-reviewer の references/ を再利用する。
+  - packet モードはパケットに実際の修正内容（diff）を段階開示で同梱し、最初の視界を「急所＋変更ファイル一覧」に絞る。
+  - パケットにはリポジトリ横断で一意・人が入力できる短い ID を採番（gen-packet-id。既定 GK- + 6 文字、Crockford base32）。
+    decision モードは ID を受け付け（normalize-packet-id で正規化）、packet_store から対象を解決して
+    GL_PROJECT_URL でそのリポジトリに執行する。これにより IID がリポジトリ間で衝突しても取り違えない。
   - packet モードは Gate A（未対応レビューコメント検出 → needs-review 差し戻し）をパケット生成より先に必ず通す。
-  - decision モードのマージ/クローズ/差し戻しは人間の明示決定の「執行」であり、判断の代行ではない。
-    merge-mr が非 2xx で失敗したら必ず needs-review へ差し戻し、「マージした」と報告しない。
+  - decision モードは執行より先に D0（最新状態でパケット更新 → 未対応コメントがあれば RE-GATE 差し戻し）を必ず通す。
+  - decision モードのマージ/クローズ/差し戻し/却下は人間の明示決定の「執行」であり、判断の代行ではない。
+    merge-mr や却下の各操作が非 2xx で失敗したら、「マージした」「却下完了」と報告せず途中経過を正直に残す。
+    否認（差し戻し・再申請前提）と却下（クローズ・再申請なし）の取り違えに注意し、曖昧なら執行前に1問だけ確認する。
