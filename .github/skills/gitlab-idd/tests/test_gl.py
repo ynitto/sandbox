@@ -621,3 +621,53 @@ def test_get_mr_changes_returns_changes_list(monkeypatch):
     gl.cmd_get_mr_changes(args, "gitlab.example.com", "group/project", "token")
 
     assert captured["out"] == changes
+
+
+# ---------------------------------------------------------------------------
+# packet ID (cross-repo, human-typeable)
+# ---------------------------------------------------------------------------
+
+def test_generate_packet_id_format_and_alphabet():
+    gl = load_gl_module()
+    pid = gl.generate_packet_id()
+    assert pid.startswith("GK-")
+    body = pid[len("GK-"):]
+    assert len(body) == gl.DEFAULT_PACKET_ID_LENGTH
+    # Crockford alphabet only — no ambiguous I/L/O/U
+    assert all(c in gl._CROCKFORD_ALPHABET for c in body)
+    assert not (set("ILOU") & set(body))
+
+
+def test_generate_packet_id_respects_length_and_prefix():
+    gl = load_gl_module()
+    pid = gl.generate_packet_id(length=10, prefix="PKT-")
+    assert pid.startswith("PKT-")
+    assert len(pid[len("PKT-"):]) == 10
+
+
+def test_generate_packet_id_is_random():
+    gl = load_gl_module()
+    ids = {gl.generate_packet_id() for _ in range(50)}
+    assert len(ids) > 45  # overwhelmingly distinct
+
+
+def test_normalize_packet_id_tolerates_case_prefix_and_spacing():
+    gl = load_gl_module()
+    assert gl.normalize_packet_id("gk 7f3 kq9") == "GK-7F3KQ9"
+    assert gl.normalize_packet_id("7F3KQ9") == "GK-7F3KQ9"
+    assert gl.normalize_packet_id("GK-7F3KQ9") == "GK-7F3KQ9"
+
+
+def test_normalize_packet_id_maps_confusable_chars():
+    gl = load_gl_module()
+    # I/L → 1, O → 0, U dropped
+    assert gl.normalize_packet_id("gk-il0o") == "GK-1100"
+
+
+def test_cmd_gen_packet_id_prints_id(capsys):
+    gl = load_gl_module()
+    args = SimpleNamespace(length=gl.DEFAULT_PACKET_ID_LENGTH, prefix=gl.DEFAULT_PACKET_ID_PREFIX)
+    gl.cmd_gen_packet_id(args, None, None, None)
+    printed = capsys.readouterr().out.strip()
+    assert printed.startswith("GK-")
+    assert len(printed) == len("GK-") + gl.DEFAULT_PACKET_ID_LENGTH

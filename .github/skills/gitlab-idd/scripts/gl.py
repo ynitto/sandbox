@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import unicodedata
@@ -286,6 +287,42 @@ def title_to_slug(title: str) -> str:
     if not slug:
         slug = "issue"
     return slug
+
+
+# Crockford base32 — excludes I, L, O, U to stay unambiguous when typed by a human.
+_CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+DEFAULT_PACKET_ID_PREFIX = "GK-"
+DEFAULT_PACKET_ID_LENGTH = 6
+
+
+def generate_packet_id(length: int = DEFAULT_PACKET_ID_LENGTH,
+                       prefix: str = DEFAULT_PACKET_ID_PREFIX) -> str:
+    """Generate a short, cross-repository, human-typeable packet ID.
+
+    Random Crockford base32 body (default 6 chars ≈ 30 bits) keeps it unique
+    across repositories without coordination while staying short enough to type.
+    """
+    body = "".join(secrets.choice(_CROCKFORD_ALPHABET) for _ in range(max(1, length)))
+    return f"{prefix}{body}"
+
+
+def normalize_packet_id(raw: str, prefix: str = DEFAULT_PACKET_ID_PREFIX) -> str:
+    """Canonicalize a human-typed packet ID.
+
+    - Case-insensitive (upper-cased).
+    - Tolerates a present/absent prefix, spaces, and grouping dashes.
+    - Maps Crockford confusables (I/L→1, O→0, drops U).
+    """
+    s = (raw or "").strip().upper()
+    pfx = prefix.upper()
+    bare = pfx.rstrip("-")
+    if s.startswith(pfx):
+        s = s[len(pfx):]
+    elif bare and s.startswith(bare):
+        s = s[len(bare):]
+    s = re.sub(r"[^0-9A-Z]", "", s)
+    s = s.translate(str.maketrans({"I": "1", "L": "1", "O": "0", "U": ""}))
+    return f"{prefix}{s}"
 
 
 def _make_headers(token: str) -> dict:
@@ -728,6 +765,16 @@ def cmd_get_mr_changes(args, host, project, token):
     ep = encode_project(project)
     mr = api(host, token, "GET", f"/projects/{ep}/merge_requests/{args.mr_id}/changes")
     out(mr.get("changes", []), args.get)
+
+
+def cmd_gen_packet_id(args, host, project, token):
+    """Print a fresh cross-repository, human-typeable packet ID (e.g. GK-7F3KQ9)."""
+    print(generate_packet_id(length=args.length, prefix=args.prefix))
+
+
+def cmd_normalize_packet_id(args, host, project, token):
+    """Canonicalize a human-typed packet ID so decision mode can match it reliably."""
+    print(normalize_packet_id(args.raw, prefix=args.prefix))
 
 
 def cmd_make_branch_name(args, host, project, token):
@@ -1241,6 +1288,19 @@ def build_parser():
                        help="Generate branch name for an issue (feature/issue-{id}-{slug})")
     p.add_argument("issue_id", type=int)
 
+    p = sub.add_parser("gen-packet-id",
+                       help="Generate a short, cross-repository, human-typeable packet ID (e.g. GK-7F3KQ9)")
+    p.add_argument("--length", type=int, default=DEFAULT_PACKET_ID_LENGTH,
+                   help=f"Number of random chars after the prefix (default: {DEFAULT_PACKET_ID_LENGTH})")
+    p.add_argument("--prefix", default=DEFAULT_PACKET_ID_PREFIX,
+                   help=f"ID prefix (default: {DEFAULT_PACKET_ID_PREFIX!r})")
+
+    p = sub.add_parser("normalize-packet-id",
+                       help="Canonicalize a human-typed packet ID (case/prefix/spacing tolerant)")
+    p.add_argument("raw", help="The raw ID as typed by a human")
+    p.add_argument("--prefix", default=DEFAULT_PACKET_ID_PREFIX,
+                   help=f"ID prefix (default: {DEFAULT_PACKET_ID_PREFIX!r})")
+
     p = sub.add_parser("check-review-defer",
                        help="Check if the reviewer should skip an issue they implemented")
     p.add_argument("issue_id", type=int)
@@ -1324,6 +1384,8 @@ COMMANDS = {
     "get-mr-discussions": cmd_get_mr_discussions,
     "resolve-mr-discussion": cmd_resolve_mr_discussion,
     "make-branch-name": cmd_make_branch_name,
+    "gen-packet-id":        cmd_gen_packet_id,
+    "normalize-packet-id":  cmd_normalize_packet_id,
     "check-review-defer":   cmd_check_review_defer,
     "check-assigned-defer": cmd_check_assigned_defer,
     "check-defer":          cmd_check_defer,
@@ -1333,11 +1395,20 @@ COMMANDS = {
 }
 
 
+_OFFLINE_COMMANDS = frozenset((
+    "gen-packet-id",       # no GitLab call: pure local generation
+    "normalize-packet-id",  # no GitLab call: pure local string canonicalization
+))
+
+
 def main():
     args = build_parser().parse_args()
     label = getattr(args, "label", "default") or "default"
     if args.command == "configure":
         cmd_configure(args, None, None, None)
+        return
+    if args.command in _OFFLINE_COMMANDS:
+        COMMANDS[args.command](args, None, None, None)
         return
     host, project = get_project_info(label)
     token = get_token(label)
