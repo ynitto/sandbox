@@ -11,6 +11,7 @@
 - [v5.0.0 記憶タイプ自動分類](#v500-記憶タイプ自動分類)
 - [v5.0.0 重要度に基づくスコア調整](#v500-重要度に基づくスコア調整)
 - [v5.0.0 文脈依存想起](#v500-文脈依存想起)
+- [v5.4.0 Agentic Search（反復探索ループ）](#v540-agentic-search反復探索ループ)
 
 ---
 
@@ -373,3 +374,85 @@ final_score = 0.5 * keyword + 0.35 * tfidf_sim + 0.15 * meta_boost
 1. `git diff --stat HEAD` の変更ファイル名
 2. 現在のディレクトリ名（プロジェクト/モジュール推定）
 3. 直近に recall したキーワード（セッション内キャッシュ）
+
+---
+
+## v5.4.0 Agentic Search（反復探索ループ）
+
+> **設計思想**: 単発の retrieve では複雑な情報ニーズ（横断調査・うろ覚え想起・多段の関連辿り）を
+> 満たせない。検索エンジンが一発で正解を返すモデルではなく、**エージェント（Claude）が
+> 「検索 → 評価 → 再構成 → 再検索 → 統合」を反復する** agentic search を採る。
+> ltm-use の哲学（「Markdownの読み書きだけ・ループの駆動役はエージェント自身」）に従い、
+> スクリプトは反復を内蔵せず、**1 ステップの検索 ＋ 次の一手の手がかり**を返すプリミティブに徹する。
+
+### 役割分担
+
+| 主体 | 責務 |
+|------|------|
+| **スクリプト**（`recall_memory.py`） | 1 ステップのハイブリッド検索、関連参照の抽出、ヒント計算、機械可読出力（`--json`） |
+| **エージェント**（Claude） | クエリ分解・再構成、`next_action` に基づく分岐、マルチホップ展開、収束判定、結果統合 |
+
+### ヒント計算
+
+検索結果から「次の一手」を計算して `hints` として返す（`--suggest` / `--json`）。
+
+```
+max_score   = max(result.score for result in results)        # 0件なら 0.0
+sufficient  = (count >= 1) and (max_score >= SUFFICIENT_SCORE)   # SUFFICIENT_SCORE = 0.5
+
+related_ids = 各結果の related / consolidated_from / consolidated_to のうち
+              mem-ID 形式かつ「結果集合に未出」のもの（= まだ見ていないマルチホップ先）
+related_refs= 上記に related のパス参照も加えた全関連参照
+
+suggested_queries = 上位結果（score >= 0.15）のタグを頻度順に並べ、
+                    元クエリに無いタグで「元クエリ + タグ」の絞り込み候補を生成（最大 5 件）
+
+gap_keywords = title/summary/tags/body のどれにもヒットしなかったクエリ語
+```
+
+### next_action 決定ロジック
+
+```
+if count == 0:                       next_action = "broaden"     # 語を減らす / 同義語で広げる
+elif max_score < SUFFICIENT_SCORE:   next_action = "refine"      # suggested_queries で再構成
+elif related_ids:                    next_action = "expand"      # related_ids を --ids で辿る
+else:                                next_action = "synthesize"  # 十分。反復終了して統合
+```
+
+### 反復ループ（疑似コード）
+
+```
+visited = set()           # 取得済み記憶ID（重複辿りを防ぐ）
+collected = []
+queries = decompose(information_need)   # ニーズを 1〜2 のキーワード集合に分解
+for round in range(MAX_ROUNDS):         # 既定 2〜3 周で打ち切り
+    out = recall(queries.pop(), json=True, suggest=True, no_track=True)
+    collected += [r for r in out.results if r.id not in visited]
+    visited |= {r.id for r in out.results}
+    h = out.hints
+    if h.next_action == "synthesize":
+        break                                  # 収束
+    elif h.next_action == "refine":
+        queries += h.suggested_queries         # クエリ再構成
+    elif h.next_action == "expand":
+        out2 = recall(ids=h.related_ids, json=True, no_track=True)   # マルチホップ
+        collected += [r for r in out2.results if r.id not in visited]
+        visited |= {r.id for r in out2.results}
+    elif h.next_action == "broaden":
+        queries.append(broaden(gap_keywords))  # 語を減らす / 同義語
+synthesize(collected)     # 得た記憶群を統合して回答
+```
+
+### 収束条件
+
+以下のいずれかでループを終了する:
+
+- `next_action == "synthesize"`（十分な手がかりを得た）
+- 新規 ID が 1 件も増えなかった周がある（情報が飽和）
+- `MAX_ROUNDS`（既定 2〜3）に到達
+
+### access_count の扱い
+
+反復中の探索検索は `--no-track` を付け、`access_count` / `retention_score` を汚さない。
+**最終的に回答へ採用した記憶のみ** 追跡対象とする（または通常の recall で確定 recall する）。
+これにより、探索的な空振り検索が忘却曲線（間隔反復）を誤って強化することを防ぐ。

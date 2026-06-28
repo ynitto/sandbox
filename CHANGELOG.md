@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### ltm-use v5.4.0 — agentic search（反復探索）の導入
+
+recall を単発のハイブリッド検索から、**エージェント（Claude）が「検索 → 評価 → 再構成 → 再検索 → 統合」を
+反復する** agentic search へ拡張した。ltm-use の哲学（Markdown の読み書きだけ・ループの駆動役はエージェント）に
+従い、スクリプトは反復を内蔵せず**「1 ステップの検索 ＋ 次の一手の手がかり」を返すプリミティブ**に徹する。
+
+- **`recall_memory.py`**: `--json`（機械可読出力）、`--suggest`（`next_action` / `suggested_queries` /
+  `related_ids` / `gap_keywords` / `sufficient` を返すヒント）、`--ids`（関連記憶 ID の直接取得＝
+  マルチホップ展開の入口）を追加。探索中は `--no-track` で `access_count`／忘却曲線を汚さない運用とする。
+- **ドキュメント**: `SKILL.md` に「agentic recall（反復探索）🔍」の手順、`references/operations.md` に
+  全オプションと `hints` 構造、`references/algorithms.md` に「v5.4.0 Agentic Search」
+  （ヒント計算・`next_action` 決定・反復ループ疑似コード・収束条件）を追記。version を 5.4.0 に更新。
+
 ### gitlab-gatekeeper（旧 review-concierge をリネーム＋門番化・破壊的変更）
 
 AI が量産する MR/イシューのレビュー負荷を下げるため、`review-concierge` スキルを **`gitlab-gatekeeper`** に

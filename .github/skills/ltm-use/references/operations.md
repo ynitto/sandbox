@@ -111,7 +111,45 @@ python scripts/recall_memory.py "[キーワード1] [キーワード2]"
 --memory-type episodic         # エピソード記憶のみ検索
 --memory-type semantic         # 意味記憶のみ検索
 --memory-type procedural       # 手続き記憶のみ検索
+
+# v5.4.0 Agentic Search（反復探索）
+--json                         # 機械可読な JSON で出力（ループ駆動用）。情報メッセージは stderr へ
+--suggest                      # 次の一手ヒント（next_action / suggested_queries / related_ids / gap_keywords / sufficient）を付与
+--ids mem-XXXX,mem-YYYY        # 記憶IDを直接取得（related_ids のマルチホップ展開用。query 不要）
 ```
+
+### Agentic Search の使い方（v5.4.0）
+
+反復ループはエージェントが駆動する。スクリプトは 1 ステップ検索 ＋ 次の一手ヒントを返す。
+
+```bash
+# 1) 検索 + ヒント取得（ループ中は --no-track で access_count を汚さない）
+python scripts/recall_memory.py "JWT 認証" --json --suggest --no-track
+
+# 2) hints.next_action に従って分岐
+#    refine    → suggested_queries で再検索
+#    expand    → related_ids を --ids で辿る
+#    broaden   → gap_keywords を手がかりに語を減らす
+#    synthesize→ ループ終了・結果を統合
+
+# 3) related_ids のマルチホップ展開
+python scripts/recall_memory.py --ids mem-20260301-002 --json --no-track
+```
+
+`hints` の構造:
+
+| キー | 意味 |
+|------|------|
+| `sufficient` | `max_score >= 0.5` かつ 1 件以上なら `true`（十分な手がかり） |
+| `max_score` | 最上位結果のスコア（0.0〜） |
+| `result_count` | 結果件数 |
+| `next_action` | `synthesize` / `refine` / `expand` / `broaden` の推奨次アクション |
+| `suggested_queries` | 上位結果のタグから生成した再検索クエリ候補（最大 5 件） |
+| `related_ids` | 結果から辿れる関連記憶 ID（`--ids` で取得可。既出結果は除外） |
+| `related_refs` | related / consolidated 由来の全関連参照（パス含む） |
+| `gap_keywords` | どの結果にもヒットしなかったクエリ語（再構成シグナル） |
+
+ヒント計算・収束条件の詳細は [`algorithms.md`](algorithms.md) の「Agentic Search」を参照。
 
 ### 手順（スクリプトなし・手動）
 
