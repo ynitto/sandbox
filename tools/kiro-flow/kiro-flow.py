@@ -649,6 +649,10 @@ class Bus:
 # --------------------------------------------------------------------------
 # GitBus — git 共有リポジトリをバスにする（複数 PC 分散）
 # --------------------------------------------------------------------------
+# 初回クローンの最大試行回数（push/pull と同じ指数バックオフでリトライ）。
+CLONE_RETRIES = 5
+
+
 class GitBus(Bus):
     """共有 git リポジトリをメッセージバスにする転送実装。
 
@@ -721,6 +725,38 @@ class GitBus(Bus):
         sparse = self._git(["config", "--get", "core.sparseCheckout"], check=False).stdout.strip()
         return sparse.lower() == "true"
 
+    def _reset_clone_dir(self) -> None:
+        """失敗したクローンが残した部分ディレクトリを消す（再試行が「宛先が空でない」で
+        失敗しないように）。対象はクローン専用の workdir のみ。非空の管理外ディレクトリは
+        _ensure_clone の事前ガードで既に除外済みなので、ここで消すのは自前のクローン残骸だけ。"""
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def _clone_once(self):
+        """blob フィルタ付き → 非対応サーバ向けフォールバックの順でクローンを 1 回試みる。"""
+        r = subprocess.run(
+            ["git", "clone", "--no-checkout", "--filter=blob:none", self.remote, self.workdir],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            # blob filter 非対応サーバ向けフォールバック（フィルタ版が残した部分クローンを消してから）
+            self._reset_clone_dir()
+            r = subprocess.run(["git", "clone", "--no-checkout", self.remote, self.workdir],
+                               capture_output=True, text=True)
+        return r
+
+    def _clone_with_retry(self):
+        """初回クローンを指数バックオフ（2,4,8,16s）でリトライする。push/pull と同じ流儀で、
+        一過性のネットワーク障害による起動失敗を吸収する。成否は CompletedProcess で返す
+        （最終的に失敗なら returncode != 0）。"""
+        r = None
+        for i in range(CLONE_RETRIES):
+            r = self._clone_once()
+            if r.returncode == 0:
+                return r
+            if i < CLONE_RETRIES - 1:
+                self._reset_clone_dir()                 # 部分クローンを消してから
+                time.sleep(2 ** i if i < 4 else 16)     # バックオフして再試行
+        return r
+
     def _ensure_clone(self) -> None:
         # workdir が自前管理の sparse バスクローンなら再利用。そうでなければ新規 clone する。
         # （ユーザーのフルチェックアウトや親/別リポジトリへ sparse-checkout を効かせて作業ツリーを
@@ -734,16 +770,14 @@ class GitBus(Bus):
                     f"ツリー）です。sparse-checkout で作業ファイルを隠す事故を防ぐため中断します"
                     f"（専用の空ディレクトリを --bus に指定してください）。")
             os.makedirs(os.path.dirname(self.workdir) or ".", exist_ok=True)
-            # sparse checkout: --no-checkout で取得し、必要なパスだけ展開する
-            r = subprocess.run(
-                ["git", "clone", "--no-checkout", "--filter=blob:none", self.remote, self.workdir],
-                capture_output=True, text=True)
+            # sparse checkout: --no-checkout で取得し、必要なパスだけ展開する。
+            # 一過性のネットワーク障害で起動時クローンが即死しないよう、push/pull と同様に
+            # 指数バックオフでリトライする（分散・委譲構成では各ノードが起動毎に clone するため、
+            # ここがネットワーク不安定時の「起動できない」原因になりやすい）。
+            r = self._clone_with_retry()
             if r.returncode != 0:
-                # blob filter 非対応サーバ向けフォールバック
-                r = subprocess.run(["git", "clone", "--no-checkout", self.remote, self.workdir],
-                                   capture_output=True, text=True)
-            if r.returncode != 0:
-                raise RuntimeError(f"git clone 失敗: {r.stderr.strip()[:300]}")
+                raise RuntimeError(
+                    f"git clone が {CLONE_RETRIES} 回失敗しました: {r.stderr.strip()[:300]}")
             if not self._is_own_repo_root():
                 # clone 後も workdir 自身がリポジトリのルートでなければ、以降の sparse-checkout が
                 # 親リポジトリへ波及しうる。安全側に倒して中断する。
@@ -923,20 +957,25 @@ def run_branch_name(run_id: str) -> str:
 
 def _clone_repo(url: str, base: str, dest: str) -> str:
     """url を dest へ clone する。base 指定があればそのブランチを checkout（無ければ既定にフォールバック）。
-    成功で dest、失敗で "" を返す。"""
+    成功で dest、失敗で "" を返す。一過性のネットワーク障害に備え、バスクローン／push／pull と同じ
+    指数バックオフでリトライする（委譲される側＝実作業ノードが起動毎にワークスペースを clone するため、
+    ここがネットワーク不安定時に「clone 失敗→タスク失敗」になりやすい）。"""
     attempts = []
     if base:
         attempts.append(["git", "clone", "-b", base, url, dest])
     attempts.append(["git", "clone", url, dest])
-    for cmd in attempts:
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            if r.returncode == 0:
-                return dest
-        except (OSError, subprocess.SubprocessError):
-            pass
-        if os.path.exists(dest):                  # 失敗の残骸を消してからフォールバック
-            shutil.rmtree(dest, ignore_errors=True)
+    for i in range(CLONE_RETRIES):
+        for cmd in attempts:
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                if r.returncode == 0:
+                    return dest
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if os.path.exists(dest):              # 失敗の残骸を消してからフォールバック／再試行
+                shutil.rmtree(dest, ignore_errors=True)
+        if i < CLONE_RETRIES - 1:
+            time.sleep(2 ** i if i < 4 else 16)   # バックオフして再試行
     return ""
 
 

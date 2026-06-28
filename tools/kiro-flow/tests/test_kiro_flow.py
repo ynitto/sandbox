@@ -1577,6 +1577,39 @@ class DaemonPrimitiveTests(unittest.TestCase):
         subprocess.run(["git", "-C", remote, "commit", "-qm", "init"], check=True)
         return remote
 
+    def test_clone_repo_retries_then_succeeds(self):
+        # 委譲される側（実作業ノード）のワークスペース clone も一過性障害でリトライして成功する。
+        remote = self._make_remote()
+        dest = os.path.join(self.dir if hasattr(self, "dir") else tempfile.mkdtemp(), "ws-clone")
+        real_run = subprocess.run
+        calls = {"n": 0}
+
+        def flaky(cmd, *a, **kw):
+            # 1 パス目（`-b main` とフォールバックの 2 呼び出し）を両方失敗させ、2 パス目で成功させる
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clone"]:
+                calls["n"] += 1
+                if calls["n"] <= 2:
+                    return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access")
+            return real_run(cmd, *a, **kw)
+
+        slept = []
+        with mock.patch.object(kf.subprocess, "run", side_effect=flaky), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: slept.append(s)):
+            out = kf._clone_repo(remote, "main", dest)
+        self.assertEqual(out, dest)                       # 最終的に成功
+        self.assertTrue(os.path.isdir(os.path.join(dest, ".git")))
+        self.assertEqual(slept, [1])                      # 1 パス目失敗 → バックオフ → 2 パス目で成功
+
+    def test_clone_repo_gives_up_after_retries(self):
+        # ずっと失敗するなら CLONE_RETRIES 回試して "" を返す（呼び出し側が clone 失敗を検知できる）。
+        def always_fail(cmd, *a, **kw):
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=always_fail), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: None):
+            out = kf._clone_repo("https://x/y.git", "main", os.path.join(tempfile.mkdtemp(), "d"))
+        self.assertEqual(out, "")
+
     def test_ensure_workspace_clone_creates_run_branch(self):
         # clone され、作業ブランチ kf/<run-id> が base から作られてエージェントへ渡る
         remote = self._make_remote()
@@ -2031,6 +2064,45 @@ class GitDistributedTests(unittest.TestCase):
         bus.cleanup_clone()
         self.assertFalse(os.path.exists(clone))  # クローンごと消える
         bus.cleanup_clone()  # 既に無くても安全（冪等）
+
+    def test_clone_retries_on_transient_network_failure(self):
+        # 一過性のネットワーク障害でも、起動時クローンはリトライして成功する（即死しない）。
+        clone = os.path.join(self.clones, "flaky")
+        real_run = subprocess.run
+        calls = {"n": 0}
+
+        def flaky_run(cmd, *a, **kw):
+            # 1 回目の試行（filtered + fallback の 2 呼び出し）だけネットワーク障害を模して失敗させ、
+            # 2 回目の試行で成功させる（_clone_once は 1 試行で git clone を最大 2 回呼ぶ）。
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clone"]:
+                calls["n"] += 1
+                if calls["n"] <= 2:
+                    return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access (timeout)")
+            return real_run(cmd, *a, **kw)
+
+        slept = []
+        with mock.patch.object(kf.subprocess, "run", side_effect=flaky_run), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: slept.append(s)):
+            kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        self.assertTrue(os.path.isdir(os.path.join(clone, ".git")))  # 最終的にクローン成功
+        self.assertGreaterEqual(calls["n"], 3)                       # 1 試行目が失敗 → 2 試行目で成功
+        self.assertEqual(slept, [1])                                 # 試行の合間に 1 回バックオフ（2^0）
+
+    def test_clone_gives_up_after_retries(self):
+        # ずっと失敗するなら CLONE_RETRIES 回試して諦め、明示的な RuntimeError を出す。
+        clone = os.path.join(self.clones, "dead")
+        real_run = subprocess.run
+
+        def always_fail(cmd, *a, **kw):
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clone"]:
+                return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access")
+            return real_run(cmd, *a, **kw)
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=always_fail), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: None):
+            with self.assertRaises(RuntimeError) as ctx:
+                kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        self.assertIn(f"{kf.CLONE_RETRIES} 回失敗", str(ctx.exception))
 
     def test_clone_inside_parent_repo_does_not_touch_parent(self):
         # クローン先が親リポジトリの作業ツリー配下にあっても、sparse-checkout が親へ波及しない。

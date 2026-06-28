@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: git バスのクローンをリトライ化（不安定なネットワークでの起動失敗を修正）
+
+イシュー委譲のような分散構成では、daemon／orchestrator／worker が**起動毎に git バスを clone** する。
+従来この初回 clone（`GitBus._ensure_clone`）には**リトライが無く**、一過性のネットワーク障害で
+即 `RuntimeError` となり「移譲側が起動できない」原因になっていた（push/pull は指数バックオフで
+リトライ済みだったのに、clone だけ未対応だった）。
+
+- `GitBus._clone_with_retry` を新設し、初回 clone を **push/pull と同じ指数バックオフ（2,4,8,16s・
+  `CLONE_RETRIES` 回）**でリトライする。再試行の前に部分 clone の残骸を消す（`_reset_clone_dir`）ので
+  「宛先が空でない」で二次失敗しない。blob フィルタ非対応サーバ向けフォールバックは従来どおり。
+- **委譲される側（実作業ノード）**も同様に脆かったため、ワークスペースの per-task clone
+  （`_clone_repo`）にも同じバックオフリトライを追加。clone 失敗で即タスク失敗にならないようにした。
+
 ### kiro-flow: gitlab executor の起票を冪等化（再 claim 時の二重起票を修正）
 
 `--executor gitlab` で各タスクを GitLab イシューに委譲する際、ワーカーが MR の決着待ち（最長 7 日）の
