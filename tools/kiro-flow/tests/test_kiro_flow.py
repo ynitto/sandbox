@@ -766,6 +766,106 @@ class GitlabExecutorPluginTests(unittest.TestCase):
             self._run_with(api, mrs_seq=[[]])
         self.assertIn("レビュー/MR 作成", str(ctx.exception))
 
+    # --- 冪等性: 再 claim 時に同じタスクのイシューを二重起票しない ---------------
+    def test_task_token_is_deterministic_from_art_dir(self):
+        # art_dir（runs/<run>/artifacts/<node>）から決定的トークンを作る。再 claim で同一になる。
+        a = gl_plugin._task_token("/bus/runs/r1/artifacts/n1")
+        b = gl_plugin._task_token("/other/runs/r1/artifacts/n1")  # 別バスでも同じ run/node
+        self.assertTrue(a.startswith("kf-"))
+        self.assertEqual(a, b)
+        # run か node が違えば別トークン
+        self.assertNotEqual(a, gl_plugin._task_token("/bus/runs/r1/artifacts/n2"))
+        self.assertNotEqual(a, gl_plugin._task_token("/bus/runs/r2/artifacts/n1"))
+        # 想定外の形（art_dir 無し / artifacts 区切りが無い）は None（＝従来どおり毎回新規起票）
+        self.assertIsNone(gl_plugin._task_token(None))
+        self.assertIsNone(gl_plugin._task_token(""))
+        self.assertIsNone(gl_plugin._task_token("/some/random/path"))
+
+    def test_new_issue_embeds_task_marker(self):
+        # art_dir を渡すと本文に隠しマーカーが埋まり、検索（open イシュー）も走る。
+        art_dir = "/bus/runs/r1/artifacts/n1"
+        token = gl_plugin._task_token(art_dir)
+
+        def api(host, tok, method, path, data=None, params=None):
+            if method == "POST" and path.endswith("/issues"):
+                return {"iid": 7, "web_url": "u7"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        searched = {"n": 0}
+
+        def list_side(host, tok, path, params=None):
+            if path.endswith("/issues"):       # 起票前の重複検索（既存なし）
+                searched["n"] += 1
+                self.assertEqual(params.get("state"), "opened")
+                self.assertEqual(params.get("search"), token)
+                return []
+            if path.endswith("/related_merge_requests"):
+                return [{"iid": 1, "state": "merged"}]
+            return []
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api) as m, \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            _text, data = gl_plugin.execute("work", "ログイン画面を追加", {}, art_dir=art_dir)
+        self.assertEqual(data["decision"], "approved")
+        self.assertEqual(searched["n"], 1)                      # 起票前に検索した
+        post = next(c for c in m.call_args_list if c.args[2] == "POST")
+        self.assertIn(gl_plugin._task_marker(token), post.kwargs["data"]["description"])
+
+    def test_reattaches_to_existing_open_issue_no_duplicate(self):
+        # 再 claim: 同じトークンの open イシューが既にあれば**新規起票せず**再アタッチする。
+        art_dir = "/bus/runs/r1/artifacts/n1"
+        token = gl_plugin._task_token(art_dir)
+        marker = gl_plugin._task_marker(token)
+
+        def api(host, tok, method, path, data=None, params=None):
+            if method == "POST":
+                raise AssertionError("二重起票してはならない（再アタッチすべき）")
+            if method == "GET" and path.endswith("/issues/42"):
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        def list_side(host, tok, path, params=None):
+            if path.endswith("/issues"):       # 既存の open イシューがヒット
+                return [{"iid": 42, "web_url": "u42", "description": f"本文\n{marker}"}]
+            if path.endswith("/related_merge_requests"):
+                return [{"iid": 1, "state": "merged"}]
+            return []
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            _text, data = gl_plugin.execute("work", "ログイン画面を追加", {}, art_dir=art_dir)
+        self.assertEqual(data["decision"], "approved")
+        self.assertEqual(data["issue_iid"], 42)                # 既存イシューで決着
+
+    def test_search_hit_without_marker_is_ignored(self):
+        # 検索が別タスクのイシューを取りこぼし誤ヒットしても、マーカー不一致なら新規起票する。
+        art_dir = "/bus/runs/r1/artifacts/n1"
+
+        def api(host, tok, method, path, data=None, params=None):
+            if method == "POST" and path.endswith("/issues"):
+                return {"iid": 99, "web_url": "u99"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        def list_side(host, tok, path, params=None):
+            if path.endswith("/issues"):       # マーカーを持たない別イシュー（誤ヒット）
+                return [{"iid": 5, "web_url": "u5", "description": "無関係なイシュー"}]
+            if path.endswith("/related_merge_requests"):
+                return [{"iid": 1, "state": "merged"}]
+            return []
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api) as m, \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            _text, data = gl_plugin.execute("work", "x", {}, art_dir=art_dir)
+        self.assertEqual(data["issue_iid"], 99)                # 新規起票で決着
+        self.assertTrue(any(c.args[2] == "POST" for c in m.call_args_list))
+
     def test_mr_decision_helper(self):
         self.assertEqual(gl_plugin._mr_decision(["merged", "merged"], False), "approved")
         self.assertEqual(gl_plugin._mr_decision(["merged", "closed"], False), "rejected")

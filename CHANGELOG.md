@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: gitlab executor の起票を冪等化（再 claim 時の二重起票を修正）
+
+`--executor gitlab` で各タスクを GitLab イシューに委譲する際、ワーカーが MR の決着待ち（最長 7 日）の
+最中に**夜間停止などで殺される**と、result が書かれないまま claim の `lease`（既定 30 分）が失効し、
+タスクが `pending` に戻って**別の（リモートの）ワーカーに再 claim** される。従来はそのとき
+`execute()` が無条件に新規イシューを起票していたため、**同一タスクのイシューが二重に立つ**現象が起きていた。
+
+- **冪等な起票に修正。** イシュー本文にタスクごとの決定的トークン（`art_dir` ＝ `runs/<run>/artifacts/<node>`
+  由来の `kf-<hex12>`）を隠しマーカーとして埋め込む。起票前に同じトークンの **open イシュー**を検索し、
+  見つかれば**新規起票せず再アタッチ**してポーリングを再開する（`_task_token` / `_task_marker` /
+  `_find_open_issue_by_token`、ポーリングループを `_wait_for_decision` に分離）。
+- 検索の取りこぼし・別タスクの誤ヒットに備え、検索後にマーカーが description に**実在することを検証**して
+  から再アタッチする。`art_dir` が想定形でない場合は従来どおり毎回新規起票（後方互換）。
+
 ### gitlab-gatekeeper（旧 review-concierge をリネーム＋門番化・破壊的変更）
 
 AI が量産する MR/イシューのレビュー負荷を下げるため、`review-concierge` スキルを **`gitlab-gatekeeper`** に

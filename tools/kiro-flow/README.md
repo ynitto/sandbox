@@ -136,6 +136,11 @@ worker タスク ──▶ gl.py create-issue（status:open,assignee:any ＋ pri
   GitLab へ委譲するのは**ワーカータスクの実行**だけ。
 - **設定**：ポーリング間隔・タイムアウト・付与ラベルは設定ファイルの `gitlab:` ブロックで調整する
   （[`kiro-flow.yaml.example`](kiro-flow.yaml.example) 参照）。`timeout` を `0` にすると無限待ち。
+- **冪等な起票（二重起票しない）**：イシュー本文にタスクごとの決定的トークン（`art_dir` ＝
+  `runs/<run>/artifacts/<node>` 由来）を隠しマーカーとして埋め込む。起票前に同じトークンの **open
+  イシュー**を検索し、見つかれば**再アタッチ**してポーリングを再開する。これにより、ワーカーが
+  MR の決着待ちの最中に夜間停止などで殺され、`lease` 失効後にタスクが再 claim されても、同じタスクの
+  イシューが二重に立たない（リモートの別ワーカーが拾い直すケースも含む）。
 - **委譲先リポジトリ**：`gitlab:` ブロックの `repo_url` で委譲先の GitLab プロジェクト URL を明示できる。
   空の場合は `conn_label` の接続（`connections.yaml`）か、無ければ作業ディレクトリの `git remote origin`
   から解決する。手元とは別のリポジトリへ委譲したいときに指定する。
