@@ -21,6 +21,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 検索の取りこぼし・別タスクの誤ヒットに備え、検索後にマーカーが description に**実在することを検証**して
   から再アタッチする。`art_dir` が想定形でない場合は従来どおり毎回新規起票（後方互換）。
 
+### kiro-flow: gitlab executor が外部クローズの承認/却下を判定してタスクグラフへ反映
+
+イシューが（人手・自動化など）**外部でクローズ**されることがある。従来は MR で決着がつかないまま
+クローズされると一律「取り下げ＝却下」にしていたため、人が手動マージ後にクローズしたケースなどを
+取りこぼしていた。MR の状態 → `status:approved`/`status:done` ラベル → イシューコメントの内容
+（承認語/却下語）の順で承認・却下を推定し、結果をタスクグラフへ反映するよう改めた。
+
+- `_mr_decision` は MR の状態のみで判定する責務に縮小（外部クローズの扱いを分離）。新設の
+  `_closed_issue_decision` がラベル→コメント（`_decision_from_comments`、却下語を承認語より優先）の順で
+  推定する。判断材料が無いクローズは従来どおり取り下げ＝却下。
+- 承認なら `done` 成果として下流へ、却下なら `[gitlab-reject]` 例外で上位（kiro-autonomous）が
+  コメントを活かしてやり直す。承認/却下の根拠（reason）をログ・成果テキスト・例外メッセージに出す。
+
 ### gitlab-gatekeeper（旧 review-concierge をリネーム＋門番化・破壊的変更）
 
 AI が量産する MR/イシューのレビュー負荷を下げるため、`review-concierge` スキルを **`gitlab-gatekeeper`** に

@@ -504,7 +504,10 @@ def _issue_body(kind: str, goal: str, dep_results: dict,
         f"_kiro-flow ワーカーバス（kind=`{kind}`）により自動起票。完了判定は**関連 MR の状態**で行う:_"
         "\n_・関連 MR が**すべてマージ**された → 承認とみなし、このイシューをクローズして完了。_"
         "\n_・関連 MR が**一つでも未マージでクローズ**された → 却下とみなし、やり直す"
-        "（このイシューのコメントをやり直しの指示に使う）。kiro-flow は MR を自動マージしません。_",
+        "（このイシューのコメントをやり直しの指示に使う）。kiro-flow は MR を自動マージしません。_"
+        "\n_・MR で決着がつかないまま**このイシューが外部でクローズ**された場合は、"
+        "`status:approved`/`status:done` ラベルやコメントの内容（承認/却下の語）から判断する。"
+        "判断材料が無いクローズは取り下げ＝却下として扱う。_",
     ]
     return "\n".join(lines)
 
@@ -597,12 +600,20 @@ def _wait_for_decision(host, token, project, iid, url, cfg):
         issue_closed = issue.get("state") == "closed"
         mrs = _related_merge_requests(host, token, project, iid)
         states = [str(m.get("state") or "") for m in mrs]
-        decision = _mr_decision(states, issue_closed)
+        # まず関連 MR の状態だけで判定する（全マージ＝承認 / 未マージクローズ＝却下）。
+        decision = _mr_decision(states)
+        reason = ""
+        # MR で決着がつかないままイシューが**外部でクローズ**されたら、ラベル→コメントの順で
+        # 承認/却下を推定し、タスクグラフに反映する（done なら下流へ、却下なら上位がやり直す）。
+        if not decision and issue_closed:
+            decision, reason = _closed_issue_decision(
+                host, token, project, iid, labels_now, approved, done_label)
 
         if decision == "approved":
-            return _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label)
+            return _finish_approved(host, token, project, iid, url, mrs,
+                                    labels_now, done_label, reason)
         if decision == "rejected":
-            _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label)
+            _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label, reason)
 
         # まだ決着せず（MR が open / 未作成）。人が動き出したら長い猶予へ切り替える。
         if not active_seen and (mrs or approved in labels_now or done_label in labels_now):
@@ -616,12 +627,11 @@ def _wait_for_decision(host, token, project, iid, url, cfg):
         time.sleep(max(0.0, interval))
 
 
-def _mr_decision(states: "list[str]", issue_closed: bool) -> str:
-    """関連 MR の状態（と issue の closed）から決着を判定する。
+def _mr_decision(states: "list[str]") -> str:
+    """関連 MR の状態だけから決着を判定する（イシューの外部クローズは _closed_issue_decision が扱う）。
       - "approved": MR が 1 つ以上ありすべて merged（人が全採用）。
-      - "rejected": MR に未マージの closed が 1 つでもある（人が却下）。または MR が無いまま
-                    issue が人手でクローズ（取り下げ）。
-      - "": 未決着（open な MR がある / MR 未作成で issue も open）。"""
+      - "rejected": MR に未マージの closed が 1 つでもある（人が却下）。
+      - "": 未決着（open な MR がある / MR 未作成）。"""
     opened = [s for s in states if s in ("opened", "locked")]
     closed_unmerged = [s for s in states if s == "closed"]
     merged = [s for s in states if s == "merged"]
@@ -631,40 +641,88 @@ def _mr_decision(states: "list[str]", issue_closed: bool) -> str:
         return "rejected"                           # 一つでも未マージクローズ＝却下
     if merged and len(merged) == len(states):
         return "approved"                           # すべてマージ＝承認
-    if issue_closed:
-        # MR が無い/曖昧なまま人が issue をクローズ → 取り下げ＝却下扱い（やり直し判断へ）
-        return "rejected"
     return ""
 
 
-def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label):
-    """承認（全 MR マージ）: イシューをクローズ（status:done）して成果を返す。"""
+# 外部クローズ時に承認/却下を推定するための手掛かり語（イシューコメント本文を新しい順に走査）。
+# 同一コメントに両方あればやり直し指示とみなし、却下語を承認語より優先する。
+_REJECT_HINTS = ("却下", "リジェクト", "取り下げ", "取下げ", "不採用", "やり直し", "作り直し",
+                 "見送り", "reject", "wontfix", "won't fix", "not merging", "won't merge")
+_APPROVE_HINTS = ("承認", "approve", "approved", "lgtm", "採用", "問題ありません", "問題なし",
+                  "マージしました", "merged", "完了", "close as done")
+
+
+def _decision_from_comments(host, token, project, iid) -> str:
+    """イシューの**人間のコメント**を新しい順に走査し、承認/却下の手掛かりがある最初のコメントで
+    判定する（却下語を承認語より優先）。system note / kiro-flow 自身の自動コメントは無視。
+    手掛かりが無ければ ""。"""
+    try:
+        notes = _get_comments(host, token, project, iid)
+    except RuntimeError:
+        return ""
+    for n in reversed(notes if isinstance(notes, list) else []):
+        if n.get("system"):
+            continue
+        body = str(n.get("body") or "")
+        if not body or "gitlab-idd:creator-node-id" in body or body.startswith("kiro-flow:"):
+            continue
+        low = body.lower()
+        if any(h in body or h in low for h in _REJECT_HINTS):
+            return "rejected"
+        if any(h in body or h in low for h in _APPROVE_HINTS):
+            return "approved"
+    return ""
+
+
+def _closed_issue_decision(host, token, project, iid, labels_now,
+                           approved_label, done_label) -> "tuple[str, str]":
+    """イシューが**外部でクローズ**され、関連 MR では決着がつかないときに承認/却下を推定する。
+    優先順: ラベル（approved/done）→ イシューコメント → 手掛かり無しは取り下げ＝却下扱い。
+    返り値 (decision, reason)。reason は承認/却下の根拠（ログ・成果テキストに出す）。"""
+    if approved_label in labels_now:
+        return "approved", f"クローズ済み＋ラベル {approved_label}"
+    if done_label in labels_now:
+        return "approved", f"クローズ済み＋ラベル {done_label}"
+    c = _decision_from_comments(host, token, project, iid)
+    if c == "approved":
+        return "approved", "クローズ済み＋イシューコメントが承認を示唆"
+    if c == "rejected":
+        return "rejected", "クローズ済み＋イシューコメントが却下を示唆"
+    return "rejected", "MR 無しのまま外部クローズ（取り下げ）"
+
+
+def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label, reason=""):
+    """承認: イシューをクローズ（status:done）して成果を返す。reason は承認の根拠
+    （全 MR マージ / 外部クローズ＋ラベル / 外部クローズ＋コメント承認 のいずれか）。"""
+    why = reason or "関連 MR を全マージ"
     try:
         _close_issue(host, token, project, iid, sorted(set(labels_now) | {done_label}))
     except RuntimeError as e:  # 既にクローズ済み等は致命的でない
         _log(f"イシュー #{iid} のクローズに失敗（無視）: {e}")
-    _log(f"イシュー #{iid}: 関連 MR を全マージ＝承認。イシューをクローズ（{url}）")
+    _log(f"イシュー #{iid}: {why}＝承認。イシューをクローズ（{url}）")
     merged_urls = [m.get("web_url", "") for m in mrs]
-    text = (f"[gitlab] イシュー #{iid} 承認（関連 MR を全マージ）。イシューをクローズ（{url}）\n"
+    text = (f"[gitlab] イシュー #{iid} 承認（{why}）。イシューをクローズ（{url}）\n"
             f"マージ済み MR: {', '.join(u for u in merged_urls if u) or '(URL なし)'}")
-    data = {"issue_iid": iid, "web_url": url, "decision": "approved",
+    data = {"issue_iid": iid, "web_url": url, "decision": "approved", "reason": why,
             "merged_mrs": [m.get("iid") for m in mrs], "closed": True}
     return text, data
 
 
-def _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label):
-    """却下（未マージクローズ）: 人コメントを取り込み、元イシューをクローズして例外を送出する。
+def _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label, reason=""):
+    """却下: 人コメントを取り込み、元イシューをクローズして例外を送出する。reason は却下の根拠
+    （未マージクローズ / 外部クローズ＋コメント却下 / MR 無しの取り下げ のいずれか）。
     例外メッセージ先頭の `[gitlab-reject]` を上位（kiro-autonomous）が検知し、やり直しに活かす。"""
+    why = reason or "未マージクローズ"
     guidance = _human_comments(host, token, project, iid)
     try:
         _close_issue(host, token, project, iid, sorted(set(labels_now) | {done_label}))
     except RuntimeError as e:
         _log(f"イシュー #{iid} のクローズに失敗（無視）: {e}")
     if guidance:
-        _log(f"イシュー #{iid}: 却下（未マージクローズ）。人コメントをやり直しに活かす。")
-        raise RuntimeError(f"[gitlab-reject] 却下されました（{url}）。やり直し指示: {guidance}")
-    _log(f"イシュー #{iid}: 却下（未マージクローズ）。人コメント無し＝自動で判断してやり直す。")
-    raise RuntimeError(f"[gitlab-reject] 却下されました（{url}）。"
+        _log(f"イシュー #{iid}: 却下（{why}）。人コメントをやり直しに活かす。")
+        raise RuntimeError(f"[gitlab-reject] 却下されました（{why}）（{url}）。やり直し指示: {guidance}")
+    _log(f"イシュー #{iid}: 却下（{why}）。人コメント無し＝自動で判断してやり直す。")
+    raise RuntimeError(f"[gitlab-reject] 却下されました（{why}）（{url}）。"
                        "人コメントが無いため自動で原因を判断してやり直してください。")
 
 

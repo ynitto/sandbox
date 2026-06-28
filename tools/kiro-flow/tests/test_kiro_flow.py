@@ -867,11 +867,71 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertTrue(any(c.args[2] == "POST" for c in m.call_args_list))
 
     def test_mr_decision_helper(self):
-        self.assertEqual(gl_plugin._mr_decision(["merged", "merged"], False), "approved")
-        self.assertEqual(gl_plugin._mr_decision(["merged", "closed"], False), "rejected")
-        self.assertEqual(gl_plugin._mr_decision(["opened", "merged"], False), "")  # 待機
-        self.assertEqual(gl_plugin._mr_decision([], True), "rejected")  # MR無しで人がクローズ
-        self.assertEqual(gl_plugin._mr_decision([], False), "")          # 未決着
+        self.assertEqual(gl_plugin._mr_decision(["merged", "merged"]), "approved")
+        self.assertEqual(gl_plugin._mr_decision(["merged", "closed"]), "rejected")
+        self.assertEqual(gl_plugin._mr_decision(["opened", "merged"]), "")  # 待機
+        self.assertEqual(gl_plugin._mr_decision([]), "")                    # MR 無し＝未決着
+
+    # --- イシューが外部でクローズされたときの承認/却下判定 ----------------------
+    def test_closed_issue_approved_by_label(self):
+        # MR で決着がつかないまま外部クローズ＋status:approved → 承認
+        d, why = gl_plugin._closed_issue_decision(
+            "h", "t", "p", 1, {"status:approved"}, "status:approved", "status:done")
+        self.assertEqual(d, "approved")
+        self.assertIn("status:approved", why)
+
+    def test_closed_issue_approved_by_comment(self):
+        # ラベル無しでも、コメントが承認を示唆していれば承認
+        with mock.patch.object(gl_plugin, "_get_comments",
+                               return_value=[{"body": "確認しました。承認します。", "system": False}]):
+            d, why = gl_plugin._closed_issue_decision(
+                "h", "t", "p", 1, set(), "status:approved", "status:done")
+        self.assertEqual(d, "approved")
+
+    def test_closed_issue_rejected_by_comment(self):
+        # コメントが却下を示唆していれば却下（却下語は承認語より優先）
+        with mock.patch.object(gl_plugin, "_get_comments",
+                               return_value=[{"body": "これは却下。やり直してください。", "system": False}]):
+            d, _why = gl_plugin._closed_issue_decision(
+                "h", "t", "p", 1, set(), "status:approved", "status:done")
+        self.assertEqual(d, "rejected")
+
+    def test_closed_issue_no_hint_is_withdrawn_reject(self):
+        # 手掛かりが無い外部クローズは取り下げ＝却下扱い
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=[]):
+            d, why = gl_plugin._closed_issue_decision(
+                "h", "t", "p", 1, set(), "status:approved", "status:done")
+        self.assertEqual(d, "rejected")
+        self.assertIn("取り下げ", why)
+
+    def test_externally_closed_with_approve_comment_returns_done(self):
+        # execute 全体: MR 無し・外部クローズ・承認コメント → done（成果を返す）でグラフへ反映
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 5, "web_url": "u5"}
+            if method == "GET":
+                return {"labels": [], "state": "closed"}   # 外部クローズ
+            return {"state": "closed"}
+
+        text, data, _ = self._run_with(
+            api, mrs_seq=[[]],
+            notes=[{"body": "対応ありがとう。承認します。", "system": False}])
+        self.assertEqual(data["decision"], "approved")
+        self.assertIn("承認", data["reason"])
+
+    def test_externally_closed_with_reject_comment_raises(self):
+        # execute 全体: MR 無し・外部クローズ・却下コメント → [gitlab-reject] で送出（failed→やり直し）
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 6, "web_url": "u6"}
+            if method == "GET":
+                return {"labels": [], "state": "closed"}
+            return {"state": "closed"}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(api, mrs_seq=[[]],
+                           notes=[{"body": "要件と違うため却下。", "system": False}])
+        self.assertIn("[gitlab-reject]", str(ctx.exception))
 
     def test_missing_repo_url_raises(self):
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(dict(self._cfg, repo_url=""))
