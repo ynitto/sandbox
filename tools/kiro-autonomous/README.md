@@ -339,9 +339,14 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
     kiro-flow へ伝搬し、worker は `kf/<run-id>` ブランチを base から作って作業、変更があれば kiro-flow が commit/push する。
   - **verify の実行先もワークスペースに従う**: `- workspace:` を持つタスクは成果が workdir（git-bus ルート）でなく該当 repo の
     作業ブランチへ push されるため、verify/回帰を workdir で回すと「成果の無い場所」で偽 NG になる。そこで verify は**該当 repo を
-    指定ブランチ（`target`→`base`）で `git clone --depth 1` し、`path` 指定があればそれをルートに**したクローン内で実行する
-    （差分基準 `$KIRO_BASE_REV` はクローンの HEAD に取り直す）。clone は worker の push 先を反映するため都度取り直し、clone 失敗・
-    `path` 不在は黙って workdir に倒さず NG 扱い（成果の無い場所で偽判定しない）。明示 `--verify-cwd`（設定 `verify_cwd`）は常に最優先。
+    指定ブランチ（`target`→`base`）で取得し、`path` 指定があればそれをルートに**したクローン内で実行する
+    （差分基準 `$KIRO_BASE_REV` はクローンの HEAD に取り直す）。取得は **URL 単位のホスト共有 bare ミラー
+    （`--mirror --filter=blob:none`）から detached worktree を生やす**方式で、毎回 fetch してから最新で worktree を作るので
+    都度 clone と鮮度は同等のまま GitLab の pack 生成負荷を抑える（ミラー root は `KIRO_GIT_CACHE_DIR`、既定
+    `$TMPDIR/kiro-git-cache`、kiro-flow と共有。詳細は
+    [docs/designs/git-worktree-cache-pattern.md](../../docs/designs/git-worktree-cache-pattern.md)）。ミラーが使えなければ
+    従来の `git clone --depth 1` に自動フォールバック。取得失敗・`path` 不在は黙って workdir に倒さず NG 扱い（成果の無い場所で
+    偽判定しない）。明示 `--verify-cwd`（設定 `verify_cwd`）は常に最優先。
   - gitlab executor 経由なら**起票先プロジェクトをワークスペース URL から解決**し、フォルダ・作業ブランチ・参照リポジトリが
     イシュー本文に構造的に表現される。
 - **cohort（pilot-then-batch）**: 「同じ手順を多数の対象に繰り返す」タスクを、**まず 1 件だけ走らせて指示を固めてから残りを
