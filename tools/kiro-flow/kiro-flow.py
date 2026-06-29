@@ -872,6 +872,205 @@ def cleanup_active_clones() -> None:
 
 
 # --------------------------------------------------------------------------
+# 共有 git キャッシュ + worktree（docs/designs/git-worktree-cache-pattern.md）
+#   リモート URL 単位のホスト共有 bare ミラー（--mirror --filter=blob:none）を 1 本持ち、
+#   タスク/検証のたびに detached worktree を temp へ生やす。フル clone を「初回1回+増分」へ圧縮し、
+#   GitLab の重い pack 生成を避ける。kiro-autonomous の verify/acceptance と同じ root を共有する。
+#   不変条件: INV-1 鮮度（毎 fetch→fetch 後 SHA で worktree）/ INV-2 直列化・自己修復・gc.auto=0 /
+#   INV-3 失敗時は従来の direct clone へフォールバック（下限を現状に固定）。
+# --------------------------------------------------------------------------
+_CACHE_CORRUPT = ("not a git repository", "bad object", "corrupt", "broken link",
+                  "unable to read", "object directory", "fatal: bad")
+_provisioned_urls: "set[str]" = set()   # cleanup で worktree prune する対象 URL
+
+
+def cache_root() -> str:
+    """ホスト共有 git キャッシュの root。環境変数 KIRO_GIT_CACHE_DIR で上書き可
+    （kiro-autonomous と必ず同じ既定にすること＝ホスト内でミラーを共有するため）。"""
+    return os.environ.get("KIRO_GIT_CACHE_DIR") or os.path.join(
+        tempfile.gettempdir(), "kiro-git-cache")
+
+
+def _cache_path_for(url: str) -> str:
+    h = hashlib.sha1(url.strip().encode()).hexdigest()
+    return os.path.join(cache_root(), f"{h}.git")
+
+
+@contextlib.contextmanager
+def _cache_lock(url: str):
+    """URL 単位のホスト内ロック（INV-2: cache の全変更を直列化）。"""
+    root = cache_root()
+    os.makedirs(root, exist_ok=True)
+    h = hashlib.sha1(url.strip().encode()).hexdigest()
+    with _file_lock(os.path.join(root, f"{h}.lock")):
+        yield
+
+
+def _git_cache(cache: str, *args: str, timeout: float = 600):
+    return subprocess.run(["git", "-C", cache, *args],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def _is_cache_valid(cache: str) -> bool:
+    if not os.path.isdir(cache):
+        return False
+    try:
+        return _git_cache(cache, "rev-parse", "--git-dir", timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _mirror_clone(url: str, cache: str) -> bool:
+    """url を blob:none の bare ミラーとして cache に作る。partial 非対応サーバには filter 無しで再試行。"""
+    shutil.rmtree(cache, ignore_errors=True)
+    os.makedirs(os.path.dirname(cache) or ".", exist_ok=True)
+    attempts = [["git", "clone", "--mirror", "--filter=blob:none", url, cache],
+                ["git", "clone", "--mirror", url, cache]]   # INV-3: partial 非対応フォールバック
+    for cmd in attempts:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.SubprocessError):
+            r = None
+        if r is not None and r.returncode == 0:
+            _git_cache(cache, "config", "gc.auto", "0")            # INV-2: 自動 repack 事故を防ぐ
+            # --mirror が付ける remote.origin.mirror=true を無効化（refspec 付き push が拒否されるため）。
+            _git_cache(cache, "config", "remote.origin.mirror", "false")
+            _git_cache(cache, "config", "user.email", "kiro-flow@local")
+            _git_cache(cache, "config", "user.name", "kiro-flow")
+            return True
+        shutil.rmtree(cache, ignore_errors=True)
+    return False
+
+
+def ensure_cache(url: str) -> "str | None":
+    """URL の共有 bare ミラーを用意（無ければ作成・壊れていれば再作成）。ここでは fetch しない
+    （鮮度は provision 側＝INV-1）。失敗時 None（呼び出し側は direct clone へフォールバック）。要 _cache_lock。"""
+    cache = _cache_path_for(url)
+    if _is_cache_valid(cache):
+        return cache
+    for i in range(CLONE_RETRIES):
+        if _mirror_clone(url, cache):
+            return cache
+        if i < CLONE_RETRIES - 1:
+            time.sleep(2 ** i if i < 4 else 16)
+    return None
+
+
+def _cache_fetch(cache: str) -> bool:
+    """INV-1: 全 heads を増分 fetch（リトライ付き）。blob:none ミラーなので転送はメタデータ差分のみ。
+    破損系エラーは False（呼び出し側で nuke & re-mirror を誘発）。"""
+    for i in range(CLONE_RETRIES):
+        try:
+            r = _git_cache(cache, "fetch", "--prune", "--no-tags", "origin",
+                           "+refs/heads/*:refs/heads/*")
+        except (OSError, subprocess.SubprocessError):
+            r = None
+        if r is not None and r.returncode == 0:
+            return True
+        if r is not None and any(s in (r.stderr or "").lower() for s in _CACHE_CORRUPT):
+            return False
+        if i < CLONE_RETRIES - 1:
+            time.sleep(2 ** i if i < 4 else 16)
+    return False
+
+
+def _resolve_sha(cache: str, refs: "list[str]") -> str:
+    """優先順 refs の先頭で解決できたコミット SHA を返す（"" は既定ブランチ=HEAD）。無ければ ""。"""
+    for ref in refs:
+        cand = f"refs/heads/{ref}" if ref else "HEAD"
+        try:
+            r = _git_cache(cache, "rev-parse", "--verify", "--quiet",
+                           f"{cand}^{{commit}}", timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    return ""
+
+
+def provision_worktree(url: str, refs: "list[str]", dest: str) -> "str | None":
+    """INV-1/2 を満たして dest に detached worktree を用意する（要 _cache_lock）。失敗時 None。
+    refs は作業起点の優先順（例: [run ブランチ, base, ""=既定]）。"""
+    cache = ensure_cache(url)
+    if not cache:
+        return None
+    if not _cache_fetch(cache):
+        shutil.rmtree(cache, ignore_errors=True)   # INV-2: 破損疑い → 一度だけ再ミラー
+        cache = ensure_cache(url)
+        if not cache or not _cache_fetch(cache):
+            return None
+    sha = _resolve_sha(cache, refs)
+    if not sha:
+        return None
+    os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
+    for _ in range(2):
+        try:
+            r = _git_cache(cache, "worktree", "add", "--detach", "--force",
+                           dest, sha, timeout=300)
+        except (OSError, subprocess.SubprocessError):
+            r = None
+        if r is not None and r.returncode == 0:
+            return dest
+        _git_cache(cache, "worktree", "prune", timeout=60)   # locked/registered → prune して再試行
+        shutil.rmtree(dest, ignore_errors=True)
+    return None
+
+
+def provision_tree(url: str, refs: "list[str] | str", dest: str) -> "str | None":
+    """共有 cache から detached worktree を用意。失敗時は従来の direct clone へフォールバック（INV-3）。
+    返り値: 作業ツリーのパス、または None（最終的に失敗）。"""
+    ref_list = [refs] if isinstance(refs, str) else list(refs)
+    try:
+        with _cache_lock(url):
+            wt = provision_worktree(url, ref_list, dest)
+        if wt:
+            _provisioned_urls.add(url)
+            return wt
+    except Exception:  # noqa: BLE001 — cache 系の想定外失敗は黙ってフォールバックへ
+        pass
+    base = next((r for r in ref_list if r), "")
+    return _clone_repo(url, base, dest) or None
+
+
+def _prune_caches(urls) -> None:
+    """指定 URL の共有 cache の worktree 登録を回収する（temp を rmtree した後の後始末）。"""
+    for url in list(urls):
+        try:
+            with _cache_lock(url):
+                cache = _cache_path_for(url)
+                if os.path.isdir(cache):
+                    _git_cache(cache, "worktree", "prune", timeout=60)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def sweep_cache_dirs(min_age_sec: float) -> int:
+    """長期間未使用の共有ミラーを削除し、削除数を返す（disk 逼迫対策）。生存中の worktree は
+    prune してから、mtime が min_age 以上古い bare ミラーのみ消す。共有のため通常は残す。"""
+    root = cache_root()
+    if not os.path.isdir(root):
+        return 0
+    removed = 0
+    now = time.time()
+    for name in os.listdir(root):
+        if not name.endswith(".git"):
+            continue
+        cache = os.path.join(root, name)
+        if not os.path.isdir(cache):
+            continue
+        try:
+            age = now - os.path.getmtime(cache)
+        except OSError:
+            continue
+        _git_cache(cache, "worktree", "prune", timeout=60)   # 生存 worktree の登録は常に整理
+        if age < min_age_sec:
+            continue
+        shutil.rmtree(cache, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+# --------------------------------------------------------------------------
 # ワークスペース — この run（=バックログ単位）の唯一の書込先リポジトリ。
 #   worker が temp 領域へ clone し、作業ブランチ kf/<run_id> を base から作って作業する。
 #   変更があれば kiro-flow が commit して push する（エージェントは編集のみ）。読み取り専用
@@ -985,19 +1184,14 @@ def _ws_git(clone: str, *args: str):
 
 
 def _prepare_run_branch(clone: str, branch: str, base: str) -> None:
-    """clone 内に run の作業ブランチ branch を用意する（kiro-flow がブランチを作りエージェントへ渡す）。
-    リモートに既に branch があれば fetch して追従、無ければ base（または現在の HEAD）から作成する。
-    分散の別ワーカーが同じ branch を共有するので、push 時の rebase リトライで統合される。"""
+    """作業ツリーを run の作業起点に整える（commit 用の identity を保証する）。
+    worktree は detached のまま・direct clone フォールバックは現在の HEAD（base/既定）から作業し、
+    実際の作業ブランチは finalize_workspace が push 時に `HEAD:refs/heads/<branch>` で作る。
+    ブランチを checkout しないので「同一ブランチを2つの worktree で同時 checkout 不可」制約を受けない。
+    既存の run ブランチへの追従は provision 時に refs 優先順 [branch, base] で起点に反映済み。"""
     if not _ws_git(clone, "config", "user.email").stdout.strip():
         _ws_git(clone, "config", "user.email", "kiro-flow@local")
         _ws_git(clone, "config", "user.name", "kiro-flow")
-    _ws_git(clone, "fetch", "--quiet", "origin", branch)
-    if _ws_git(clone, "rev-parse", "--verify", f"origin/{branch}").returncode == 0:
-        _ws_git(clone, "checkout", "-B", branch, f"origin/{branch}")    # 既存の run ブランチに追従
-    elif base and _ws_git(clone, "rev-parse", "--verify", base).returncode == 0:
-        _ws_git(clone, "checkout", "-B", branch, base)                  # base から分岐
-    else:
-        _ws_git(clone, "checkout", "-B", branch)                        # 現在の HEAD から分岐
 
 
 def ensure_workspace_clone(spec: "dict | None", run_id: str) -> "dict | None":
@@ -1020,9 +1214,11 @@ def ensure_workspace_clone(spec: "dict | None", run_id: str) -> "dict | None":
     while os.path.exists(dest):
         dest = os.path.join(_workspace_root, f"{stem}-{n}")
         n += 1
-    path = _clone_repo(spec["url"], spec.get("base") or "", dest)
+    base = spec.get("base") or ""
+    # 作業起点の優先順: 既存の run ブランチ → base → 既定（detached worktree で作り、push 時に作業ブランチ化）。
+    path = provision_tree(spec["url"], [branch, base], dest) or ""
     if path:
-        _prepare_run_branch(path, branch, spec.get("base") or "")
+        _prepare_run_branch(path, branch, base)
     _workspace_clone[key] = path
     return {**spec, "clone": path, "branch": branch}
 
@@ -1041,23 +1237,29 @@ def finalize_workspace(ws: "dict | None", run_id: str, node_id: str) -> "dict | 
         return None                               # 変更なし → commit/push しない
     _ws_git(clone, "commit", "-m", f"[kiro-flow] {node_id} ({run_id})")
     for i in range(5):
-        if _ws_git(clone, "push", "-u", "origin", branch).returncode == 0:
+        # detached HEAD のまま作業ブランチへ push（ローカルでブランチを checkout しない）。
+        if _ws_git(clone, "push", "origin", f"HEAD:refs/heads/{branch}").returncode == 0:
             head = _ws_git(clone, "rev-parse", "HEAD").stdout.strip()
             return {"url": ws.get("url"), "branch": branch, "commit": head,
                     "target": ws.get("target") or ws.get("base") or "", "path": ws.get("path") or ""}
+        # reject → リモートの branch を FETCH_HEAD に取り込み（共有 cache の ref は書き換えない）、
+        # detached のまま rebase して再 push。分散ワーカーの push を統合する。
         _ws_git(clone, "fetch", "--quiet", "origin", branch)
-        _ws_git(clone, "rebase", f"origin/{branch}")
+        _ws_git(clone, "rebase", "FETCH_HEAD")
         time.sleep(2 ** i if i < 4 else 16)
     raise RuntimeError(f"workspace push が {branch} へ反映できませんでした")
 
 
 def cleanup_workspace() -> None:
-    """worker が clone したワークスペースを丸ごと削除する（作業後クリーンは必須）。"""
+    """worker の作業ツリー（temp の worktree／フォールバック clone）を丸ごと削除する（作業後クリーンは必須）。
+    共有 cache 本体は残し、worktree 登録だけ prune して回収する。"""
     global _workspace_root
     if _workspace_root and os.path.isdir(_workspace_root):
         shutil.rmtree(_workspace_root, ignore_errors=True)
     _workspace_root = None
     _workspace_clone.clear()
+    _prune_caches(_provisioned_urls)
+    _provisioned_urls.clear()
 
 
 def workspace_instruction(ws: "dict | None") -> str:
@@ -2763,7 +2965,8 @@ def cmd_daemon(args) -> int:
                 c = run_cleanup(args, bus)
                 if any(c.values()):
                     log(daemon_id, f"cleanup: locks={c['locks']} tmp={c['tmp']} "
-                                   f"clones={c['clones']} work_repos={c['work_repos']}")
+                                   f"clones={c['clones']} work_repos={c['work_repos']} "
+                                   f"cache={c.get('cache', 0)}")
             except Exception as e:  # noqa: BLE001 — 掃除失敗は daemon を止めない
                 log(daemon_id, f"cleanup でエラー（無視して継続）: {e}")
         # 死んだ子を刈り取る。orchestrator が done を書く前に異常終了（クラッシュ / kill /
@@ -2998,7 +3201,10 @@ def run_cleanup(args, bus: Bus) -> dict:
         n_clone = sweep_clone_dirs(bus_parent, keep, float(args.cleanup_age) * 3600.0)
     # 成果物リポジトリの孤立 temp clone（pid 死亡）を回収（SIGKILL リーク対策・local/git 共通）
     n_work = sweep_work_repo_dirs(float(args.cleanup_age) * 3600.0)
-    return {"locks": n_lock, "tmp": n_tmp, "clones": n_clone, "work_repos": n_work}
+    # 共有 git キャッシュ: 生存 worktree を prune し、長期未使用のミラーを回収
+    n_cache = sweep_cache_dirs(float(args.cleanup_age) * 3600.0)
+    return {"locks": n_lock, "tmp": n_tmp, "clones": n_clone,
+            "work_repos": n_work, "cache": n_cache}
 
 
 # --------------------------------------------------------------------------
