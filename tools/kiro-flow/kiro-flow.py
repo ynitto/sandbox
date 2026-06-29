@@ -1002,7 +1002,8 @@ def provision_worktree(url: str, refs: "list[str]", dest: str) -> "str | None":
     sha = _resolve_sha(cache, refs)
     if not sha:
         return None
-    os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
+    dest = os.path.abspath(dest)   # `git -C <cache> worktree add` は相対パスを cache 基準で解くため絶対化
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     for _ in range(2):
         try:
             r = _git_cache(cache, "worktree", "add", "--detach", "--force",
