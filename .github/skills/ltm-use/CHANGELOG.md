@@ -28,6 +28,10 @@
     `gap_keywords`（未ヒット語）、`sufficient`（充足判定）を返す。
   - `--ids mem-XXXX,mem-YYYY`: 記憶 ID 直接取得。`related_ids` を辿るマルチホップ展開の入口
     （query 不要）。
+- **共有スキル agentic-search への委譲**: ヒント計算（`next_action` / `suggested_queries` /
+  `related_ids` / `gap_keywords` / `sufficient`）を検索系スキル横断の共有スキル **agentic-search**
+  の `hints.py` に委譲。recall は結果を正規化済み契約に変換して渡す。共有スキル未導入時は
+  同等のローカル実装にフォールバックする（オプショナル依存）。
 - **`SKILL.md`**: 「agentic recall（反復探索）🔍」セクションを追加。計画→検索→評価→
   再検索→統合の反復ループ手順とトリガーを明文化。version を 5.4.0 に更新。
 - **`references/operations.md`**: recall に `--json` / `--suggest` / `--ids` の全オプションと

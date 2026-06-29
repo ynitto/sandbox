@@ -146,10 +146,12 @@ python scripts/recall_memory.py --ids mem-20260301-002 --json --no-track
 | `next_action` | `synthesize` / `refine` / `expand` / `broaden` の推奨次アクション |
 | `suggested_queries` | 上位結果のタグから生成した再検索クエリ候補（最大 5 件） |
 | `related_ids` | 結果から辿れる関連記憶 ID（`--ids` で取得可。既出結果は除外） |
-| `related_refs` | related / consolidated 由来の全関連参照（パス含む） |
 | `gap_keywords` | どの結果にもヒットしなかったクエリ語（再構成シグナル） |
 
-ヒント計算・収束条件の詳細は [`algorithms.md`](algorithms.md) の「Agentic Search」を参照。
+ヒント計算は共有スキル **agentic-search** の `hints.py` に委譲される（未導入時はローカル実装に
+フォールバック）。反復ループ・収束条件の正典は
+[`agentic-search/references/protocol.md`](../../agentic-search/references/protocol.md)、
+ltm-use 固有の連携は [`algorithms.md`](algorithms.md) の「Agentic Search」を参照。
 
 ### 手順（スクリプトなし・手動）
 

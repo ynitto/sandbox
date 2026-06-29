@@ -7,18 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### ltm-use v5.4.0 — agentic search（反復探索）の導入
+### agentic-search v1.0.0 — 反復探索を共有スキル化し検索系スキルへ一括導入
 
-recall を単発のハイブリッド検索から、**エージェント（Claude）が「検索 → 評価 → 再構成 → 再検索 → 統合」を
-反復する** agentic search へ拡張した。ltm-use の哲学（Markdown の読み書きだけ・ループの駆動役はエージェント）に
-従い、スクリプトは反復を内蔵せず**「1 ステップの検索 ＋ 次の一手の手がかり」を返すプリミティブ**に徹する。
+検索を **単発の retrieve** から **エージェント（Claude）が「検索 → 評価 → 再構成 → 再検索 → 統合」を
+反復する** agentic search へ引き上げた。反復ループの「頭脳」を検索系スキル横断の共有スキルとして切り出し、
+コーパスごとの検索（retrieve）は各スキルに残す構成とした。各スキルの哲学（Markdown の読み書きだけ・
+ループの駆動役はエージェント）に従い、スクリプトは反復を内蔵せず
+**「1 ステップの検索 ＋ 次の一手の手がかり」を返すプリミティブ** に徹する。
 
-- **`recall_memory.py`**: `--json`（機械可読出力）、`--suggest`（`next_action` / `suggested_queries` /
-  `related_ids` / `gap_keywords` / `sufficient` を返すヒント）、`--ids`（関連記憶 ID の直接取得＝
-  マルチホップ展開の入口）を追加。探索中は `--no-track` で `access_count`／忘却曲線を汚さない運用とする。
-- **ドキュメント**: `SKILL.md` に「agentic recall（反復探索）🔍」の手順、`references/operations.md` に
-  全オプションと `hints` 構造、`references/algorithms.md` に「v5.4.0 Agentic Search」
-  （ヒント計算・`next_action` 決定・反復ループ疑似コード・収束条件）を追記。version を 5.4.0 に更新。
+- **新規スキル `agentic-search`（tier: core）**: `scripts/hints.py` がバックエンド非依存のヒント
+  エンジン。正規化済み結果リスト＋クエリから `next_action`（synthesize/refine/expand/broaden）、
+  `suggested_queries`、`related_ids`、`gap_keywords`、`sufficient` を計算する（ライブラリ／CLI 両対応）。
+  反復ループ・収束条件の正典は `references/protocol.md`。
+- **ltm-use v5.4.0**: `recall_memory.py` に `--json` / `--suggest` / `--ids`（マルチホップ取得）を追加し、
+  ヒント計算を agentic-search に委譲（未導入時はローカル実装にフォールバック）。探索中は `--no-track` で
+  `access_count`／忘却曲線を汚さない運用とする。
+- **wiki-use**: `wiki_query.py search` に `--json` / `--suggest` を追加。被覆率を score、本文の
+  `[[wikilink]]` を related（マルチホップの種）として正規化する。
+- **moltbook-use**: `moltbook.py search` に `--json` / `--suggest` を追加。連邦検索（issues/blobs/notes）の
+  ヒットを正規化し、トピックラベルを tags として扱う。
+- **オプショナル依存**: wiki-use / moltbook-use は agentic-search 未導入時はヒントを省略して通常検索のみ
+  返す（graceful degradation）。
 
 ### gitlab-gatekeeper（旧 review-concierge をリネーム＋門番化・破壊的変更）
 

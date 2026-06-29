@@ -25,6 +25,7 @@ wiki_query.py — Wiki を検索・閲覧するスクリプト
 """
 
 import argparse
+import json
 import re
 import sys
 import unicodedata
@@ -33,6 +34,30 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from wiki_utils import load_config, resolve_wiki_root
+
+
+def _load_shared_hints():
+    """共有スキル agentic-search の hints モジュールを読み込む（無ければ None）。
+
+    検索系スキル横断の反復探索（agentic search）ヒントエンジン。オプショナル依存で、
+    未導入時は hints を出さずに通常の検索結果のみを返す（graceful degradation）。
+    """
+    as_dir = Path(__file__).resolve().parent.parent.parent / "agentic-search" / "scripts"
+    if not as_dir.is_dir():
+        return None
+    if str(as_dir) not in sys.path:
+        sys.path.insert(0, str(as_dir))
+    try:
+        import hints as shared_hints  # type: ignore
+        return shared_hints
+    except ImportError:
+        return None
+
+
+_SHARED_HINTS = _load_shared_hints()
+
+# 本文中の [[wikilink]] 参照（マルチホップの種）
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
 
 
 # --- トークン化・frontmatter 解析（builtin 検索エンジン） ---
@@ -223,15 +248,48 @@ def score_page(fields: dict, query_tokens: set) -> tuple:
     return score, hit_tokens
 
 
+def _normalize_search_results(primary: list, wiki_root: Path) -> list[dict]:
+    """検索結果を agentic-search の正規化済み結果契約へ変換する。
+
+    score は被覆率（0..1）を用いる。related は本文の [[wikilink]] 参照（マルチホップの種）。
+    id はページの相対パス stem（show / 再検索の手がかり）。
+    """
+    norm = []
+    for score, coverage, cat, page_path, hit_tokens in primary:
+        fields = get_page_fields(page_path)
+        rel = page_path.relative_to(wiki_root)
+        links = sorted({m.strip() for m in _WIKILINK_RE.findall(fields["raw"]) if m.strip()})
+        norm.append({
+            "id": str(rel.with_suffix("")),
+            "title": fields["title"],
+            "summary": fields["summary"],
+            "tags": fields["tags"] + fields["aliases"],
+            "score": round(coverage, 3),
+            "related": links,
+            "text": fields["body"],
+        })
+    return norm
+
+
 def cmd_search(args, wiki_root: Path) -> None:
-    """キーワードで Wiki ページを検索する（トークン化＋フィールド重み付け）。"""
+    """キーワードで Wiki ページを検索する（トークン化＋フィールド重み付け）。
+
+    --json / --suggest 指定時は agentic-search（反復探索）のヒントを併せて返す。
+    """
+    as_json = getattr(args, "json", False)
+    suggest = getattr(args, "suggest", False)
+    keywords = args.keyword.split()
     query_tokens = set(tokenize(args.keyword))
-    pages = collect_wiki_pages(wiki_root)
 
     if not query_tokens:
-        print(f"[INFO] 検索可能なトークンがありません: '{args.keyword}'")
+        if as_json:
+            print(json.dumps({"query": args.keyword, "count": 0, "results": []},
+                             ensure_ascii=False, indent=2))
+        else:
+            print(f"[INFO] 検索可能なトークンがありません: '{args.keyword}'")
         return
 
+    pages = collect_wiki_pages(wiki_root)
     scored = []
     for cat, page_path in pages:
         fields = get_page_fields(page_path)
@@ -249,11 +307,23 @@ def cmd_search(args, wiki_root: Path) -> None:
     partial = [r for r in scored if PARTIAL_COVERAGE_MIN <= r[1] < 1.0]
     primary = full if full else partial
 
+    # ── JSON 出力（agentic search のループ駆動用） ──
+    if as_json:
+        norm = _normalize_search_results(primary, wiki_root)
+        out = {"query": args.keyword, "count": len(norm), "results": norm}
+        if _SHARED_HINTS is not None:
+            out["hints"] = _SHARED_HINTS.compute_hints(norm, keywords)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
     if not primary:
         # 近傍提示: 何もヒットしなければ全ページ一覧へ誘導する
         print(f"[INFO] '{args.keyword}' にマッチするページはありません")
         print("       list-pages で全体を確認してください:")
         print("       python scripts/wiki_query.py list-pages")
+        if suggest and _SHARED_HINTS is not None:
+            print()
+            print(_SHARED_HINTS.format_hints(_SHARED_HINTS.compute_hints([], keywords)))
         return
 
     label = "完全一致" if full else "部分一致（全キーワードは揃っていません）"
@@ -271,6 +341,15 @@ def cmd_search(args, wiki_root: Path) -> None:
     # 完全一致を出したが部分一致も残っている場合、近傍候補として件数を示す
     if full and partial:
         print(f"  （ほか部分一致 {len(partial)} 件。list-pages で全体を確認できます）")
+
+    # ── agentic search ヒント（--suggest） ──
+    if suggest:
+        if _SHARED_HINTS is None:
+            print("\n[INFO] agentic-search 未導入のためヒントは省略（検索結果のみ）")
+        else:
+            norm = _normalize_search_results(primary, wiki_root)
+            print()
+            print(_SHARED_HINTS.format_hints(_SHARED_HINTS.compute_hints(norm, keywords)))
 
 
 def cmd_list_pages(args, wiki_root: Path) -> None:
@@ -424,6 +503,11 @@ def main() -> None:
     # search
     p_search = subparsers.add_parser("search", help="キーワードで全文検索する")
     p_search.add_argument("keyword", help="検索キーワード")
+    # agentic-search（反復探索）連携
+    p_search.add_argument("--json", action="store_true",
+                          help="機械可読な JSON で出力（agentic search のループ駆動用）")
+    p_search.add_argument("--suggest", action="store_true",
+                          help="検索後に次の一手のヒント（agentic-search 導入時）を提示する")
 
     # list-pages
     p_list = subparsers.add_parser("list-pages", help="ページ一覧を表示する")

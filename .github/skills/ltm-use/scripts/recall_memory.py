@@ -311,6 +311,9 @@ def fetch_by_ids(ids: list[str], scope: str) -> list[dict]:
 
 
 # ─── Agentic Search ヒント計算 ───────────────────────────────
+#
+# ヒント計算は共有スキル agentic-search（兄弟ディレクトリの hints.py）に委譲する。
+# 未導入時はローカルのフォールバック実装に切り替える（オプショナル依存）。
 
 def _as_list(value) -> list[str]:
     """frontmatter のリスト系フィールドを文字列リストに正規化する。"""
@@ -321,104 +324,91 @@ def _as_list(value) -> list[str]:
     return []
 
 
-def _collect_related_refs(results: list[dict]) -> tuple[list[str], list[str]]:
-    """結果群から関連参照を収集する（マルチホップの種）。
+def _load_shared_hints():
+    """共有スキル agentic-search の hints モジュールを読み込む（無ければ None）。"""
+    as_dir = os.path.join(memory_utils.get_skill_dir(), os.pardir,
+                          "agentic-search", "scripts")
+    if not os.path.isdir(as_dir):
+        return None
+    if as_dir not in sys.path:
+        sys.path.insert(0, as_dir)
+    try:
+        import hints as shared_hints  # type: ignore
+        return shared_hints
+    except ImportError:
+        return None
 
-    Returns:
-        (related_ids, related_refs):
-          related_ids  … `--ids` で直接引ける mem-ID（既出の結果は除外）
-          related_refs … 上記に加え related フィールドのパス参照も含む全関連参照
+
+_SHARED_HINTS = _load_shared_hints()
+
+
+def _to_normalized(results: list[dict]) -> list[dict]:
+    """ltm の recall 結果を agentic-search の正規化済み結果契約へ変換する。
+
+    related は `--ids` で直接引ける mem-ID のみに絞る（related フィールドのパス参照は除外）。
     """
-    result_ids = {r["meta"].get("id", "") for r in results}
-    related_ids: list[str] = []
-    related_refs: list[str] = []
+    norm = []
     for r in results:
         meta = r["meta"]
         refs = (_as_list(meta.get("related"))
                 + _as_list(meta.get("consolidated_from"))
                 + _as_list(meta.get("consolidated_to")))
-        for ref in refs:
-            if ref in related_refs:
-                continue
-            related_refs.append(ref)
-            if MEM_ID_RE.match(ref) and ref not in result_ids and ref not in related_ids:
-                related_ids.append(ref)
-    return related_ids, related_refs
+        related = [ref for ref in refs if MEM_ID_RE.match(ref)]
+        norm.append({
+            "id": meta.get("id", ""),
+            "title": meta.get("title", ""),
+            "summary": meta.get("summary", ""),
+            "tags": _as_list(meta.get("tags")),
+            "score": r["score"],
+            "related": related,
+            "text": r.get("body", ""),
+        })
+    return norm
 
 
-def _suggest_followup_queries(results: list[dict], keywords: list[str]) -> list[str]:
-    """上位結果のタグから「次に検索すべきクエリ」を提案する（クエリ再構成の手がかり）。
-
-    元クエリに含まれないタグを頻度順に並べ、元クエリを絞り込む refine 候補を生成する。
-    """
+def _fallback_compute_hints(norm: list[dict], keywords: list[str]) -> dict:
+    """agentic-search 未導入時のローカル・フォールバック（同等のスキーマを返す）。"""
     query_lower = {k.lower() for k in keywords}
+    result_ids = {n["id"] for n in norm}
+
+    related_ids: list[str] = []
+    for n in norm:
+        for ref in n["related"]:
+            if ref not in result_ids and ref not in related_ids:
+                related_ids.append(ref)
+
     tag_freq: dict[str, int] = {}
-    for r in results:
-        if r["score"] < MIN_SUGGEST_SCORE:
+    for n in norm:
+        if n["score"] < MIN_SUGGEST_SCORE:
             continue
-        for tag in _as_list(r["meta"].get("tags")):
-            tl = tag.lower()
-            if tl in query_lower:
+        for tag in n["tags"]:
+            if tag.lower() in query_lower:
                 continue
             tag_freq[tag] = tag_freq.get(tag, 0) + 1
-
-    ranked = sorted(tag_freq.items(), key=lambda kv: kv[1], reverse=True)
     base = " ".join(keywords).strip()
-    suggestions: list[str] = []
-    for tag, _freq in ranked:
-        suggestion = f"{base} {tag}".strip() if base else tag
-        if suggestion not in suggestions:
-            suggestions.append(suggestion)
-        if len(suggestions) >= MAX_SUGGESTED_QUERIES:
+    suggested: list[str] = []
+    for tag, _f in sorted(tag_freq.items(), key=lambda kv: kv[1], reverse=True):
+        s = f"{base} {tag}".strip() if base else tag
+        if s not in suggested:
+            suggested.append(s)
+        if len(suggested) >= MAX_SUGGESTED_QUERIES:
             break
-    return suggestions
 
+    texts = [" ".join([n["title"], n["summary"], " ".join(n["tags"]),
+                       n.get("text", "")]).lower() for n in norm]
+    gaps = [kw for kw in keywords if not any(kw.lower() in t for t in texts)]
 
-def _gap_keywords(keywords: list[str], results: list[dict]) -> list[str]:
-    """どの結果にもヒットしなかったクエリ語を返す（再構成が必要なシグナル）。"""
-    gaps: list[str] = []
-    for kw in keywords:
-        kl = kw.lower()
-        hit = False
-        for r in results:
-            meta = r["meta"]
-            haystack = " ".join([
-                str(meta.get("title", "")),
-                str(meta.get("summary", "")),
-                " ".join(_as_list(meta.get("tags"))),
-                r.get("body", ""),
-            ]).lower()
-            if kl in haystack:
-                hit = True
-                break
-        if not hit:
-            gaps.append(kw)
-    return gaps
-
-
-def build_hints(results: list[dict], keywords: list[str]) -> dict:
-    """agentic search の「次の一手」ヒントを構築する。
-
-    エージェントはこのヒントを読み、再検索（refine/broaden/expand）するか
-    結果を統合（synthesize）するかを判断する。
-    """
-    count = len(results)
-    max_score = max((r["score"] for r in results), default=0.0)
-    related_ids, related_refs = _collect_related_refs(results)
-    gaps = _gap_keywords(keywords, results)
-    suggested = _suggest_followup_queries(results, keywords)
+    count = len(norm)
+    max_score = max((n["score"] for n in norm), default=0.0)
     sufficient = count > 0 and max_score >= SUFFICIENT_SCORE
-
-    # 推奨される次アクションを決定する
     if count == 0:
-        next_action = "broaden"      # 0件 → 語を減らす / 同義語で広げる
+        next_action = "broaden"
     elif max_score < SUFFICIENT_SCORE:
-        next_action = "refine"       # 弱一致のみ → suggested_queries で再構成
+        next_action = "refine"
     elif related_ids:
-        next_action = "expand"       # 十分だが関連記憶あり → --ids でマルチホップ
+        next_action = "expand"
     else:
-        next_action = "synthesize"   # 十分 → 反復終了して結果を統合
-
+        next_action = "synthesize"
     return {
         "sufficient": sufficient,
         "max_score": round(max_score, 3),
@@ -426,9 +416,21 @@ def build_hints(results: list[dict], keywords: list[str]) -> dict:
         "next_action": next_action,
         "suggested_queries": suggested,
         "related_ids": related_ids,
-        "related_refs": related_refs,
         "gap_keywords": gaps,
     }
+
+
+def build_hints(results: list[dict], keywords: list[str]) -> dict:
+    """agentic search の「次の一手」ヒントを構築する（共有スキルへ委譲）。
+
+    エージェントはこのヒントを読み、再検索（refine/broaden/expand）するか
+    結果を統合（synthesize）するかを判断する。
+    """
+    norm = _to_normalized(results)
+    if _SHARED_HINTS is not None:
+        return _SHARED_HINTS.compute_hints(norm, keywords,
+                                           sufficient_score=SUFFICIENT_SCORE)
+    return _fallback_compute_hints(norm, keywords)
 
 
 def build_json_output(query: str, scope: str, results: list[dict],
