@@ -53,6 +53,46 @@ try:
 except ImportError:
     _HAS_CONFIG_LOADER = False
 
+import contextlib
+
+
+def _load_gitguard():
+    """gitguard を best-effort で読み込む（無ければ None＝従来どおり素通り）。
+    GitLab アクセスを横断サーキットブレーカー + 監視に載せる（特定ツール非依存の共有機構）。
+    詳細: docs/designs/git-gitlab-circuit-breaker-pattern.md。"""
+    try:
+        import gitguard as _gg  # PYTHONPATH 上にあれば優先
+        return _gg
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import importlib.util
+        # repo 直下の tools/gitguard/gitguard.py（scripts の親 4 つ上が repo root）
+        cand = _SCRIPTS_DIR.parents[3] / "tools" / "gitguard" / "gitguard.py"
+        if cand.is_file():
+            spec = importlib.util.spec_from_file_location("gitguard", cand)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            return mod
+    except Exception:  # noqa: BLE001 — 監視機構の読み込み失敗で本処理を止めない
+        pass
+    return None
+
+
+_GG = _load_gitguard()
+_CircuitOpen = getattr(_GG, "CircuitOpenError", ()) if _GG else ()
+
+
+@contextlib.contextmanager
+def _guard(host, op):
+    """host への 1 アクセスを gitguard で包む（未導入なら no-op）。"""
+    if _GG is None:
+        yield None
+        return
+    ep = _GG.endpoint_for_url(f"https://{host}", "gitlab")
+    with _GG.guard(ep, op) as g:
+        yield g
+
 
 DEFAULT_SELF_DEFER_MINUTES = 60.0           #  1h  (check-defer)
 DEFAULT_SELF_REVIEW_LOCK_MINUTES = 1440.0  # 24h  (check-review-defer)
@@ -340,15 +380,23 @@ def api(host, token, method, path, data=None, params=None):
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            content = resp.read()
-            return json.loads(content) if content.strip() else {}
-    except urllib.error.HTTPError as e:
-        try:
-            msg = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            msg = "(no details)"
-        sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
+        with _guard(host, f"{method} {path}") as g:
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    content = resp.read()
+                    if g:
+                        g.http_status(getattr(resp, "status", 200))
+                    return json.loads(content) if content.strip() else {}
+            except urllib.error.HTTPError as e:
+                if g:
+                    g.http_status(e.code, f"HTTP {e.code}")   # 429/5xx だけブレーカーに数える
+                try:
+                    msg = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    msg = "(no details)"
+                sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
+    except _CircuitOpen as e:
+        sys.exit(f"ERROR: gitguard circuit open for {host}（一過性障害が連続。時間をおいて再試行）: {e}")
 
 
 def encode_project(project):
@@ -393,22 +441,30 @@ def api_list(host, token, path, params=None):
         headers = _make_headers(token)
         req = urllib.request.Request(url, headers=headers, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                content = resp.read()
-                page_data = json.loads(content) if content.strip() else []
-                if not isinstance(page_data, list):
-                    return page_data
-                all_results.extend(page_data)
-                next_page = resp.headers.get("X-Next-Page", "").strip()
-                if not next_page:
-                    break
-                page = int(next_page)
-        except urllib.error.HTTPError as e:
-            try:
-                msg = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                msg = "(no details)"
-            sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
+            with _guard(host, f"GET {path} p{page}") as g:
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        content = resp.read()
+                        if g:
+                            g.http_status(getattr(resp, "status", 200))
+                        page_data = json.loads(content) if content.strip() else []
+                        if not isinstance(page_data, list):
+                            return page_data
+                        all_results.extend(page_data)
+                        next_page = resp.headers.get("X-Next-Page", "").strip()
+                        if not next_page:
+                            break
+                        page = int(next_page)
+                except urllib.error.HTTPError as e:
+                    if g:
+                        g.http_status(e.code, f"HTTP {e.code}")
+                    try:
+                        msg = e.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        msg = "(no details)"
+                    sys.exit(f"ERROR: HTTP {e.code} {e.reason}\n{msg}")
+        except _CircuitOpen as e:
+            sys.exit(f"ERROR: gitguard circuit open for {host}（一過性障害が連続。時間をおいて再試行）: {e}")
     return all_results
 
 
