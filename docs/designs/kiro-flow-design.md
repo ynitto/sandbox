@@ -415,10 +415,15 @@ while True:
 kiro-flow は **1 run = 1 ワークスペース（唯一の書込先）** に固定する。
 
 - **ワークスペース（`--workspace`・ちょうど 1 つ）**: その run の唯一の書込先。素の URL か JSON
-  `{url,path,base,target,desc}`。kiro-flow が clone し、`kf/<run-id>` を base から作成してワーカーへ渡す。
-  エージェントは作業ツリーを編集するだけで、**変更があれば kiro-flow が commit して push**（分散 worker は
-  同じ `kf/<run-id>` へ push し rebase リトライで統合）。**変更が無ければ push しない**＝調査だけの読み取り
-  専用グラフでは何も書き込まない（`finalize_workspace`）。デリバリ（branch/commit/target）を result に記録。
+  `{url,path,base,target,desc}`。kiro-flow が作業ツリーを用意してワーカーへ渡す。**作業ツリーは URL 単位の
+  ホスト共有 bare ミラー（`--mirror --filter=blob:none`）から detached worktree を生やして用意**し、フル clone を
+  「初回 1 回+増分 fetch」へ圧縮して GitLab の pack 生成負荷を抑える（詳細は
+  [git-worktree-cache-pattern.md](git-worktree-cache-pattern.md)）。detached のまま編集し、**変更があれば
+  kiro-flow が commit して `push HEAD:refs/heads/kf/<run-id>`**（ブランチを checkout しないので「同一ブランチの
+  二重 checkout 不可」制約を受けない／分散 worker は同じ `kf/<run-id>` へ push し rebase リトライで統合）。
+  毎回 fetch してから最新コミットで worktree を作るので**鮮度は都度 clone と同等**、ミラー不可なら従来の direct
+  clone へフォールバック。**変更が無ければ push しない**＝調査だけの読み取り専用グラフでは何も書き込まない
+  （`finalize_workspace`）。デリバリ（branch/commit/target）を result に記録。
 - **参照リポジトリ（`--reference`・複数可・読むだけ）**: clone はせず、エージェントのプロンプト（参照節）と
   gitlab イシュー本文の『## 参照リポジトリ』節へ描画する。書込先は参照に含めない。
 - **executor 横断インターフェース**: executor 契約に構造化 `workspace`（spec dict）と `references`（spec の列）を

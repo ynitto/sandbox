@@ -3800,5 +3800,66 @@ class TestGitlabRejectRetry(unittest.TestCase):
         self.assertEqual(t.feedback(), "命名を直す")          # 却下コメントを feedback に注入
 
 
+class SharedGitCacheTests(unittest.TestCase):
+    """検証用の共有 git キャッシュ + worktree（docs/designs/git-worktree-cache-pattern.md）。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ka-cache-"))
+        self._prev = os.environ.get("KIRO_GIT_CACHE_DIR")
+        os.environ["KIRO_GIT_CACHE_DIR"] = str(self.tmp / "gitcache")
+
+    def tearDown(self):
+        km._prune_caches(km._provisioned_urls)
+        km._provisioned_urls.clear()
+        if self._prev is None:
+            os.environ.pop("KIRO_GIT_CACHE_DIR", None)
+        else:
+            os.environ["KIRO_GIT_CACHE_DIR"] = self._prev
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_remote(self, name="remote"):
+        remote = self.tmp / name
+        remote.mkdir(parents=True)
+        for cmd in (["git", "init", "-q", "-b", "main", str(remote)],
+                    ["git", "-C", str(remote), "config", "user.email", "t@t"],
+                    ["git", "-C", str(remote), "config", "user.name", "t"]):
+            subprocess.run(cmd, check=True)
+        (remote / "f.txt").write_text("init")
+        subprocess.run(["git", "-C", str(remote), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(remote), "commit", "-qm", "init"], check=True)
+        return str(remote)
+
+    def test_clone_repo_shallow_uses_worktree_and_reflects_latest(self):
+        # _clone_repo_shallow は共有 cache 経由で worktree を生やし、毎回 fetch して最新を反映する（INV-1）。
+        remote = self._make_remote()
+        dest1 = str(self.tmp / "w1")
+        km._clone_repo_shallow(remote, "main", dest1)
+        self.assertTrue(os.path.exists(os.path.join(dest1, ".git")))   # worktree なら .git はファイル
+        self.assertTrue(os.path.exists(os.path.join(dest1, "f.txt")))
+        # ミラーが共有 root にできている
+        self.assertTrue(any(n.endswith(".git") for n in os.listdir(os.environ["KIRO_GIT_CACHE_DIR"])))
+        # リモートに新コミット → 次の取得は最新を反映
+        (Path(remote) / "more.txt").write_text("x")
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "more"], check=True)
+        dest2 = str(self.tmp / "w2")
+        km._clone_repo_shallow(remote, "main", dest2)
+        self.assertTrue(os.path.exists(os.path.join(dest2, "more.txt")))
+
+    def test_clone_repo_shallow_falls_back_when_cache_unavailable(self):
+        # INV-3: cache が使えなければ従来の浅 clone に倒れる（.git はディレクトリ）。
+        remote = self._make_remote(name="fb")
+        dest = str(self.tmp / "fb-dest")
+        with mock.patch.object(km, "ensure_cache", return_value=None):
+            km._clone_repo_shallow(remote, "main", dest)
+        self.assertTrue(os.path.isdir(os.path.join(dest, ".git")))
+
+    def test_clone_repo_shallow_raises_on_total_failure(self):
+        # cache もフォールバック clone も失敗するなら RuntimeError（呼び出し側で全 NG 扱い）。
+        with mock.patch.object(km, "ensure_cache", return_value=None):
+            with self.assertRaises(RuntimeError):
+                km._clone_repo_shallow("/no/such/repo.git", "main", str(self.tmp / "none"))
+
+
 if __name__ == "__main__":
     unittest.main()

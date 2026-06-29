@@ -1611,16 +1611,20 @@ class DaemonPrimitiveTests(unittest.TestCase):
         self.assertEqual(out, "")
 
     def test_ensure_workspace_clone_creates_run_branch(self):
-        # clone され、作業ブランチ kf/<run-id> が base から作られてエージェントへ渡る
+        # 作業ツリーが用意され、作業ブランチ名 kf/<run-id> がエージェントへ渡る。
+        # 共有 cache 経由では detached worktree（.git はファイル）で、実ブランチは push 時に作る。
         remote = self._make_remote()
         try:
             ws = kf.ensure_workspace_clone({"url": remote, "base": "main"}, "run-1")
             path = ws["clone"]
-            self.assertTrue(path and os.path.isdir(os.path.join(path, ".git")))
+            self.assertTrue(path and os.path.exists(os.path.join(path, ".git")))  # worktree=ファイル/clone=dir
             self.assertEqual(ws["branch"], "kf/run-1")
+            inside = subprocess.run(["git", "-C", path, "rev-parse", "--is-inside-work-tree"],
+                                    capture_output=True, text=True).stdout.strip()
+            self.assertEqual(inside, "true")               # git 作業ツリーである
             head = subprocess.run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"],
                                   capture_output=True, text=True).stdout.strip()
-            self.assertEqual(head, "kf/run-1")             # kiro-flow が作業ブランチを checkout
+            self.assertEqual(head, "HEAD")                 # detached（ブランチ二重 checkout 制約を受けない）
             self.assertIn(path, kf.workspace_instruction(ws))
         finally:
             kf.cleanup_workspace()
@@ -1679,6 +1683,84 @@ class DaemonPrimitiveTests(unittest.TestCase):
             self.assertIn("main", instr)                   # target（MR/PR ターゲット）
         finally:
             kf.cleanup_workspace()
+
+    def test_provision_tree_reuses_shared_mirror(self):
+        # 共有 cache: 2 回 provision してもミラー clone は 1 回きり（再 clone しない＝負荷削減の本体）。
+        remote = self._make_remote(name="cache_reuse")
+        cache_dir = os.path.join(self.tmp, "gitcache")
+        prev = os.environ.get("KIRO_GIT_CACHE_DIR")
+        os.environ["KIRO_GIT_CACHE_DIR"] = cache_dir
+        mirror_calls = {"n": 0}
+        real_clone = kf._mirror_clone
+
+        def counting(url, cache):
+            mirror_calls["n"] += 1
+            return real_clone(url, cache)
+
+        try:
+            with mock.patch.object(kf, "_mirror_clone", side_effect=counting):
+                d1 = os.path.join(self.tmp, "wt1")
+                d2 = os.path.join(self.tmp, "wt2")
+                p1 = kf.provision_tree(remote, ["main"], d1)
+                p2 = kf.provision_tree(remote, ["main"], d2)
+            self.assertEqual(p1, d1)
+            self.assertEqual(p2, d2)
+            self.assertEqual(mirror_calls["n"], 1)         # ミラーは初回 1 回のみ
+            # 2 つの worktree は同じ共有ミラーに登録される
+            self.assertTrue(os.path.exists(os.path.join(d1, ".git")))
+            self.assertTrue(os.path.exists(os.path.join(d2, ".git")))
+        finally:
+            kf._prune_caches(kf._provisioned_urls)
+            kf._provisioned_urls.clear()
+            if prev is None:
+                os.environ.pop("KIRO_GIT_CACHE_DIR", None)
+            else:
+                os.environ["KIRO_GIT_CACHE_DIR"] = prev
+
+    def test_provision_tree_reflects_latest_after_fetch(self):
+        # INV-1 鮮度: ミラーは再利用しつつ、provision のたびに fetch して最新コミットで worktree を作る。
+        remote = self._make_remote(name="cache_fresh")
+        cache_dir = os.path.join(self.tmp, "gitcache2")
+        prev = os.environ.get("KIRO_GIT_CACHE_DIR")
+        os.environ["KIRO_GIT_CACHE_DIR"] = cache_dir
+        try:
+            d1 = os.path.join(self.tmp, "f1")
+            self.assertEqual(kf.provision_tree(remote, ["main"], d1), d1)
+            self.assertFalse(os.path.exists(os.path.join(d1, "added.txt")))
+            # リモートに新コミットを追加 → 次の provision はそれを反映する
+            open(os.path.join(remote, "added.txt"), "w").close()
+            subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+            subprocess.run(["git", "-C", remote, "commit", "-qm", "add"], check=True)
+            d2 = os.path.join(self.tmp, "f2")
+            self.assertEqual(kf.provision_tree(remote, ["main"], d2), d2)
+            self.assertTrue(os.path.exists(os.path.join(d2, "added.txt")))   # 最新が見える
+        finally:
+            kf._prune_caches(kf._provisioned_urls)
+            kf._provisioned_urls.clear()
+            if prev is None:
+                os.environ.pop("KIRO_GIT_CACHE_DIR", None)
+            else:
+                os.environ["KIRO_GIT_CACHE_DIR"] = prev
+
+    def test_provision_tree_falls_back_to_direct_clone(self):
+        # INV-3: cache が使えない（ミラー作成不可）ときは従来の direct clone に倒れて作業を継続する。
+        remote = self._make_remote(name="cache_fallback")
+        cache_dir = os.path.join(self.tmp, "gitcache3")
+        prev = os.environ.get("KIRO_GIT_CACHE_DIR")
+        os.environ["KIRO_GIT_CACHE_DIR"] = cache_dir
+        try:
+            dest = os.path.join(self.tmp, "fb")
+            with mock.patch.object(kf, "ensure_cache", return_value=None):
+                out = kf.provision_tree(remote, ["main"], dest)
+            self.assertEqual(out, dest)
+            self.assertTrue(os.path.isdir(os.path.join(dest, ".git")))   # direct clone（.git はディレクトリ）
+        finally:
+            kf._prune_caches(kf._provisioned_urls)
+            kf._provisioned_urls.clear()
+            if prev is None:
+                os.environ.pop("KIRO_GIT_CACHE_DIR", None)
+            else:
+                os.environ["KIRO_GIT_CACHE_DIR"] = prev
 
     def test_parse_workspace_url_or_json(self):
         # 素の URL は url だけの spec。JSON は構造化メタを受ける。空は None（読み取り専用）
