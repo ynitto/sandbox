@@ -766,12 +766,172 @@ class GitlabExecutorPluginTests(unittest.TestCase):
             self._run_with(api, mrs_seq=[[]])
         self.assertIn("レビュー/MR 作成", str(ctx.exception))
 
+    # --- 冪等性: 再 claim 時に同じタスクのイシューを二重起票しない ---------------
+    def test_task_token_is_deterministic_from_art_dir(self):
+        # art_dir（runs/<run>/artifacts/<node>）から決定的トークンを作る。再 claim で同一になる。
+        a = gl_plugin._task_token("/bus/runs/r1/artifacts/n1")
+        b = gl_plugin._task_token("/other/runs/r1/artifacts/n1")  # 別バスでも同じ run/node
+        self.assertTrue(a.startswith("kf-"))
+        self.assertEqual(a, b)
+        # run か node が違えば別トークン
+        self.assertNotEqual(a, gl_plugin._task_token("/bus/runs/r1/artifacts/n2"))
+        self.assertNotEqual(a, gl_plugin._task_token("/bus/runs/r2/artifacts/n1"))
+        # 想定外の形（art_dir 無し / artifacts 区切りが無い）は None（＝従来どおり毎回新規起票）
+        self.assertIsNone(gl_plugin._task_token(None))
+        self.assertIsNone(gl_plugin._task_token(""))
+        self.assertIsNone(gl_plugin._task_token("/some/random/path"))
+
+    def test_new_issue_embeds_task_marker(self):
+        # art_dir を渡すと本文に隠しマーカーが埋まり、検索（open イシュー）も走る。
+        art_dir = "/bus/runs/r1/artifacts/n1"
+        token = gl_plugin._task_token(art_dir)
+
+        def api(host, tok, method, path, data=None, params=None):
+            if method == "POST" and path.endswith("/issues"):
+                return {"iid": 7, "web_url": "u7"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        searched = {"n": 0}
+
+        def list_side(host, tok, path, params=None):
+            if path.endswith("/issues"):       # 起票前の重複検索（既存なし）
+                searched["n"] += 1
+                self.assertEqual(params.get("state"), "opened")
+                self.assertEqual(params.get("search"), token)
+                return []
+            if path.endswith("/related_merge_requests"):
+                return [{"iid": 1, "state": "merged"}]
+            return []
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api) as m, \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            _text, data = gl_plugin.execute("work", "ログイン画面を追加", {}, art_dir=art_dir)
+        self.assertEqual(data["decision"], "approved")
+        self.assertEqual(searched["n"], 1)                      # 起票前に検索した
+        post = next(c for c in m.call_args_list if c.args[2] == "POST")
+        self.assertIn(gl_plugin._task_marker(token), post.kwargs["data"]["description"])
+
+    def test_reattaches_to_existing_open_issue_no_duplicate(self):
+        # 再 claim: 同じトークンの open イシューが既にあれば**新規起票せず**再アタッチする。
+        art_dir = "/bus/runs/r1/artifacts/n1"
+        token = gl_plugin._task_token(art_dir)
+        marker = gl_plugin._task_marker(token)
+
+        def api(host, tok, method, path, data=None, params=None):
+            if method == "POST":
+                raise AssertionError("二重起票してはならない（再アタッチすべき）")
+            if method == "GET" and path.endswith("/issues/42"):
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        def list_side(host, tok, path, params=None):
+            if path.endswith("/issues"):       # 既存の open イシューがヒット
+                return [{"iid": 42, "web_url": "u42", "description": f"本文\n{marker}"}]
+            if path.endswith("/related_merge_requests"):
+                return [{"iid": 1, "state": "merged"}]
+            return []
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            _text, data = gl_plugin.execute("work", "ログイン画面を追加", {}, art_dir=art_dir)
+        self.assertEqual(data["decision"], "approved")
+        self.assertEqual(data["issue_iid"], 42)                # 既存イシューで決着
+
+    def test_search_hit_without_marker_is_ignored(self):
+        # 検索が別タスクのイシューを取りこぼし誤ヒットしても、マーカー不一致なら新規起票する。
+        art_dir = "/bus/runs/r1/artifacts/n1"
+
+        def api(host, tok, method, path, data=None, params=None):
+            if method == "POST" and path.endswith("/issues"):
+                return {"iid": 99, "web_url": "u99"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        def list_side(host, tok, path, params=None):
+            if path.endswith("/issues"):       # マーカーを持たない別イシュー（誤ヒット）
+                return [{"iid": 5, "web_url": "u5", "description": "無関係なイシュー"}]
+            if path.endswith("/related_merge_requests"):
+                return [{"iid": 1, "state": "merged"}]
+            return []
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api) as m, \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            _text, data = gl_plugin.execute("work", "x", {}, art_dir=art_dir)
+        self.assertEqual(data["issue_iid"], 99)                # 新規起票で決着
+        self.assertTrue(any(c.args[2] == "POST" for c in m.call_args_list))
+
     def test_mr_decision_helper(self):
-        self.assertEqual(gl_plugin._mr_decision(["merged", "merged"], False), "approved")
-        self.assertEqual(gl_plugin._mr_decision(["merged", "closed"], False), "rejected")
-        self.assertEqual(gl_plugin._mr_decision(["opened", "merged"], False), "")  # 待機
-        self.assertEqual(gl_plugin._mr_decision([], True), "rejected")  # MR無しで人がクローズ
-        self.assertEqual(gl_plugin._mr_decision([], False), "")          # 未決着
+        self.assertEqual(gl_plugin._mr_decision(["merged", "merged"]), "approved")
+        self.assertEqual(gl_plugin._mr_decision(["merged", "closed"]), "rejected")
+        self.assertEqual(gl_plugin._mr_decision(["opened", "merged"]), "")  # 待機
+        self.assertEqual(gl_plugin._mr_decision([]), "")                    # MR 無し＝未決着
+
+    # --- イシューが外部でクローズされたときの承認/却下判定 ----------------------
+    def test_closed_issue_approved_by_label(self):
+        # MR で決着がつかないまま外部クローズ＋status:approved → 承認
+        d, why = gl_plugin._closed_issue_decision(
+            "h", "t", "p", 1, {"status:approved"}, "status:approved", "status:done")
+        self.assertEqual(d, "approved")
+        self.assertIn("status:approved", why)
+
+    def test_closed_issue_approved_by_comment(self):
+        # ラベル無しでも、コメントが承認を示唆していれば承認
+        with mock.patch.object(gl_plugin, "_get_comments",
+                               return_value=[{"body": "確認しました。承認します。", "system": False}]):
+            d, why = gl_plugin._closed_issue_decision(
+                "h", "t", "p", 1, set(), "status:approved", "status:done")
+        self.assertEqual(d, "approved")
+
+    def test_closed_issue_rejected_by_comment(self):
+        # コメントが却下を示唆していれば却下（却下語は承認語より優先）
+        with mock.patch.object(gl_plugin, "_get_comments",
+                               return_value=[{"body": "これは却下。やり直してください。", "system": False}]):
+            d, _why = gl_plugin._closed_issue_decision(
+                "h", "t", "p", 1, set(), "status:approved", "status:done")
+        self.assertEqual(d, "rejected")
+
+    def test_closed_issue_no_hint_is_withdrawn_reject(self):
+        # 手掛かりが無い外部クローズは取り下げ＝却下扱い
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=[]):
+            d, why = gl_plugin._closed_issue_decision(
+                "h", "t", "p", 1, set(), "status:approved", "status:done")
+        self.assertEqual(d, "rejected")
+        self.assertIn("取り下げ", why)
+
+    def test_externally_closed_with_approve_comment_returns_done(self):
+        # execute 全体: MR 無し・外部クローズ・承認コメント → done（成果を返す）でグラフへ反映
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 5, "web_url": "u5"}
+            if method == "GET":
+                return {"labels": [], "state": "closed"}   # 外部クローズ
+            return {"state": "closed"}
+
+        text, data, _ = self._run_with(
+            api, mrs_seq=[[]],
+            notes=[{"body": "対応ありがとう。承認します。", "system": False}])
+        self.assertEqual(data["decision"], "approved")
+        self.assertIn("承認", data["reason"])
+
+    def test_externally_closed_with_reject_comment_raises(self):
+        # execute 全体: MR 無し・外部クローズ・却下コメント → [gitlab-reject] で送出（failed→やり直し）
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 6, "web_url": "u6"}
+            if method == "GET":
+                return {"labels": [], "state": "closed"}
+            return {"state": "closed"}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(api, mrs_seq=[[]],
+                           notes=[{"body": "要件と違うため却下。", "system": False}])
+        self.assertIn("[gitlab-reject]", str(ctx.exception))
 
     def test_missing_repo_url_raises(self):
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(dict(self._cfg, repo_url=""))
@@ -1417,6 +1577,39 @@ class DaemonPrimitiveTests(unittest.TestCase):
         subprocess.run(["git", "-C", remote, "commit", "-qm", "init"], check=True)
         return remote
 
+    def test_clone_repo_retries_then_succeeds(self):
+        # 委譲される側（実作業ノード）のワークスペース clone も一過性障害でリトライして成功する。
+        remote = self._make_remote()
+        dest = os.path.join(self.dir if hasattr(self, "dir") else tempfile.mkdtemp(), "ws-clone")
+        real_run = subprocess.run
+        calls = {"n": 0}
+
+        def flaky(cmd, *a, **kw):
+            # 1 パス目（`-b main` とフォールバックの 2 呼び出し）を両方失敗させ、2 パス目で成功させる
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clone"]:
+                calls["n"] += 1
+                if calls["n"] <= 2:
+                    return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access")
+            return real_run(cmd, *a, **kw)
+
+        slept = []
+        with mock.patch.object(kf.subprocess, "run", side_effect=flaky), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: slept.append(s)):
+            out = kf._clone_repo(remote, "main", dest)
+        self.assertEqual(out, dest)                       # 最終的に成功
+        self.assertTrue(os.path.isdir(os.path.join(dest, ".git")))
+        self.assertEqual(slept, [1])                      # 1 パス目失敗 → バックオフ → 2 パス目で成功
+
+    def test_clone_repo_gives_up_after_retries(self):
+        # ずっと失敗するなら CLONE_RETRIES 回試して "" を返す（呼び出し側が clone 失敗を検知できる）。
+        def always_fail(cmd, *a, **kw):
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=always_fail), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: None):
+            out = kf._clone_repo("https://x/y.git", "main", os.path.join(tempfile.mkdtemp(), "d"))
+        self.assertEqual(out, "")
+
     def test_ensure_workspace_clone_creates_run_branch(self):
         # clone され、作業ブランチ kf/<run-id> が base から作られてエージェントへ渡る
         remote = self._make_remote()
@@ -1871,6 +2064,45 @@ class GitDistributedTests(unittest.TestCase):
         bus.cleanup_clone()
         self.assertFalse(os.path.exists(clone))  # クローンごと消える
         bus.cleanup_clone()  # 既に無くても安全（冪等）
+
+    def test_clone_retries_on_transient_network_failure(self):
+        # 一過性のネットワーク障害でも、起動時クローンはリトライして成功する（即死しない）。
+        clone = os.path.join(self.clones, "flaky")
+        real_run = subprocess.run
+        calls = {"n": 0}
+
+        def flaky_run(cmd, *a, **kw):
+            # 1 回目の試行（filtered + fallback の 2 呼び出し）だけネットワーク障害を模して失敗させ、
+            # 2 回目の試行で成功させる（_clone_once は 1 試行で git clone を最大 2 回呼ぶ）。
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clone"]:
+                calls["n"] += 1
+                if calls["n"] <= 2:
+                    return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access (timeout)")
+            return real_run(cmd, *a, **kw)
+
+        slept = []
+        with mock.patch.object(kf.subprocess, "run", side_effect=flaky_run), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: slept.append(s)):
+            kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        self.assertTrue(os.path.isdir(os.path.join(clone, ".git")))  # 最終的にクローン成功
+        self.assertGreaterEqual(calls["n"], 3)                       # 1 試行目が失敗 → 2 試行目で成功
+        self.assertEqual(slept, [1])                                 # 試行の合間に 1 回バックオフ（2^0）
+
+    def test_clone_gives_up_after_retries(self):
+        # ずっと失敗するなら CLONE_RETRIES 回試して諦め、明示的な RuntimeError を出す。
+        clone = os.path.join(self.clones, "dead")
+        real_run = subprocess.run
+
+        def always_fail(cmd, *a, **kw):
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clone"]:
+                return subprocess.CompletedProcess(cmd, 128, "", "fatal: unable to access")
+            return real_run(cmd, *a, **kw)
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=always_fail), \
+             mock.patch.object(kf.time, "sleep", side_effect=lambda s: None):
+            with self.assertRaises(RuntimeError) as ctx:
+                kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        self.assertIn(f"{kf.CLONE_RETRIES} 回失敗", str(ctx.exception))
 
     def test_clone_inside_parent_repo_does_not_touch_parent(self):
         # クローン先が親リポジトリの作業ツリー配下にあっても、sparse-checkout が親へ波及しない。
