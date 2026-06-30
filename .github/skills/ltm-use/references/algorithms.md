@@ -11,6 +11,7 @@
 - [v5.0.0 記憶タイプ自動分類](#v500-記憶タイプ自動分類)
 - [v5.0.0 重要度に基づくスコア調整](#v500-重要度に基づくスコア調整)
 - [v5.0.0 文脈依存想起](#v500-文脈依存想起)
+- [v5.4.0 Agentic Search（反復探索ループ）](#v540-agentic-search反復探索ループ)
 
 ---
 
@@ -373,3 +374,35 @@ final_score = 0.5 * keyword + 0.35 * tfidf_sim + 0.15 * meta_boost
 1. `git diff --stat HEAD` の変更ファイル名
 2. 現在のディレクトリ名（プロジェクト/モジュール推定）
 3. 直近に recall したキーワード（セッション内キャッシュ）
+
+---
+
+## v5.4.0 Agentic Search（反復探索ループ）
+
+> **設計思想**: 単発の retrieve では複雑な情報ニーズ（横断調査・うろ覚え想起・多段の関連辿り）を
+> 満たせない。検索エンジンが一発で正解を返すモデルではなく、**エージェント（Claude）が
+> 「検索 → 評価 → 再構成 → 再検索 → 統合」を反復する** agentic search を採る。
+> ltm-use の哲学（「Markdownの読み書きだけ・ループの駆動役はエージェント自身」）に従い、
+> `recall_memory.py` は反復を内蔵せず、**1 ステップの検索 ＋ 次の一手の手がかり**を返すプリミティブに徹する。
+
+### 反復ループ・ヒント計算の正典は共有スキル
+
+反復ループ（plan→search→evaluate→reformulate→expand→synthesize）・ヒント計算・`next_action`
+決定ロジック・収束条件は、検索系スキル横断の共有スキル **agentic-search** に集約されている。
+正典は [`agentic-search/references/protocol.md`](../../agentic-search/references/protocol.md) を参照。
+
+`recall_memory.py` のヒント計算は agentic-search の `hints.py` に委譲する（`build_hints`）。
+共有スキルが未導入の場合は同等のローカル実装にフォールバックする（オプショナル依存）。
+
+### ltm-use 固有の連携
+
+- **正規化マッピング**: recall 結果を agentic-search の正規化済み結果契約へ変換する（`_to_normalized`）。
+  - `score` ← ハイブリッドランキングの最終スコア
+  - `tags` ← frontmatter の tags
+  - `related` ← `related` / `consolidated_from` / `consolidated_to` のうち **mem-ID 形式のみ**
+    （`--ids` で直接引けるものに限定。related のパス参照は除外）
+  - `text` ← 記憶本文（gap 判定に使用）
+- **expand（マルチホップ）**: `hints.related_ids`（mem-ID）を `recall_memory.py --ids mem-X,mem-Y` で辿る。
+- **access_count の扱い**: 反復中の探索検索は `--no-track` を付け、`access_count` / `retention_score`
+  を汚さない。**最終的に回答へ採用した記憶のみ** 追跡対象とする。これにより、探索的な空振り検索が
+  忘却曲線（間隔反復）を誤って強化することを防ぐ。

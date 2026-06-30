@@ -17,12 +17,25 @@ Usage:
 """
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import sys
 
 import memory_utils
 import similarity
+
+
+# ─── Agentic Search（反復探索）パラメータ ─────────────────────
+#
+# recall は単発のハイブリッド検索を行うプリミティブであり、反復ループの駆動役は
+# エージェント（Claude）が担う。スクリプトは「1ステップの検索 + 次の一手の手がかり」を
+# 返すことで agentic search を支援する（--suggest / --json）。
+SUFFICIENT_SCORE = 0.5      # max_score がこの値以上なら「十分な手がかりあり」と判定
+MIN_SUGGEST_SCORE = 0.15    # フォローアップ候補の抽出に使う結果の足切りスコア
+MAX_SUGGESTED_QUERIES = 5   # 提示するフォローアップクエリの最大数
+MEM_ID_RE = re.compile(r"^mem-\d{8}-\d+$")
 
 
 # ─── インデックス検索 ────────────────────────────────────────
@@ -255,6 +268,201 @@ def fallback_search(keywords: list[str], limit: int,
     return [], False
 
 
+# ─── ID 指定取得（マルチホップ展開用） ────────────────────────
+
+def fetch_by_ids(ids: list[str], scope: str) -> list[dict]:
+    """記憶IDを指定して直接取得する（agentic search のマルチホップ展開で使用）。
+
+    related / consolidated_from / consolidated_to で得た関連IDを次ステップで
+    引き当てるための入口。スコア計算は行わず frontmatter と body を返す。
+    """
+    wanted = set(ids)
+    results: list[dict] = []
+    seen: set[str] = set()
+    for memory_dir in memory_utils.get_memory_dirs(scope):
+        if not wanted or not os.path.isdir(memory_dir):
+            continue
+        index = memory_utils.load_index(memory_dir)
+        if not index.get("entries"):
+            index = memory_utils.refresh_index(memory_dir)
+        for entry in index.get("entries", []):
+            mem_id = entry.get("id", "")
+            if mem_id not in wanted or mem_id in seen:
+                continue
+            fpath = os.path.join(memory_dir, entry["filepath"])
+            if not os.path.exists(fpath):
+                continue
+            try:
+                with open(fpath, encoding="utf-8") as f:
+                    meta, body = memory_utils.parse_frontmatter(f.read())
+            except (OSError, IOError):
+                continue
+            seen.add(mem_id)
+            results.append({
+                "filepath": fpath,
+                "memory_dir": memory_dir,
+                "score": 1.0,
+                "keyword_score": 0,
+                "meta": meta,
+                "body": body,
+                "entry": entry,
+            })
+    return results
+
+
+# ─── Agentic Search ヒント計算 ───────────────────────────────
+#
+# ヒント計算は共有スキル agentic-search（兄弟ディレクトリの hints.py）に委譲する。
+# 未導入時はローカルのフォールバック実装に切り替える（オプショナル依存）。
+
+def _as_list(value) -> list[str]:
+    """frontmatter のリスト系フィールドを文字列リストに正規化する。"""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [v.strip() for v in re.split(r"[,\n]", value) if v.strip()]
+    return []
+
+
+def _load_shared_hints():
+    """共有スキル agentic-search の hints モジュールを読み込む（無ければ None）。"""
+    as_dir = os.path.join(memory_utils.get_skill_dir(), os.pardir,
+                          "agentic-search", "scripts")
+    if not os.path.isdir(as_dir):
+        return None
+    if as_dir not in sys.path:
+        sys.path.insert(0, as_dir)
+    try:
+        import hints as shared_hints  # type: ignore
+        return shared_hints
+    except ImportError:
+        return None
+
+
+_SHARED_HINTS = _load_shared_hints()
+
+
+def _to_normalized(results: list[dict]) -> list[dict]:
+    """ltm の recall 結果を agentic-search の正規化済み結果契約へ変換する。
+
+    related は `--ids` で直接引ける mem-ID のみに絞る（related フィールドのパス参照は除外）。
+    """
+    norm = []
+    for r in results:
+        meta = r["meta"]
+        refs = (_as_list(meta.get("related"))
+                + _as_list(meta.get("consolidated_from"))
+                + _as_list(meta.get("consolidated_to")))
+        related = [ref for ref in refs if MEM_ID_RE.match(ref)]
+        norm.append({
+            "id": meta.get("id", ""),
+            "title": meta.get("title", ""),
+            "summary": meta.get("summary", ""),
+            "tags": _as_list(meta.get("tags")),
+            "score": r["score"],
+            "related": related,
+            "text": r.get("body", ""),
+        })
+    return norm
+
+
+def _fallback_compute_hints(norm: list[dict], keywords: list[str]) -> dict:
+    """agentic-search 未導入時のローカル・フォールバック（同等のスキーマを返す）。"""
+    query_lower = {k.lower() for k in keywords}
+    result_ids = {n["id"] for n in norm}
+
+    related_ids: list[str] = []
+    for n in norm:
+        for ref in n["related"]:
+            if ref not in result_ids and ref not in related_ids:
+                related_ids.append(ref)
+
+    tag_freq: dict[str, int] = {}
+    for n in norm:
+        if n["score"] < MIN_SUGGEST_SCORE:
+            continue
+        for tag in n["tags"]:
+            if tag.lower() in query_lower:
+                continue
+            tag_freq[tag] = tag_freq.get(tag, 0) + 1
+    base = " ".join(keywords).strip()
+    suggested: list[str] = []
+    for tag, _f in sorted(tag_freq.items(), key=lambda kv: kv[1], reverse=True):
+        s = f"{base} {tag}".strip() if base else tag
+        if s not in suggested:
+            suggested.append(s)
+        if len(suggested) >= MAX_SUGGESTED_QUERIES:
+            break
+
+    texts = [" ".join([n["title"], n["summary"], " ".join(n["tags"]),
+                       n.get("text", "")]).lower() for n in norm]
+    gaps = [kw for kw in keywords if not any(kw.lower() in t for t in texts)]
+
+    count = len(norm)
+    max_score = max((n["score"] for n in norm), default=0.0)
+    sufficient = count > 0 and max_score >= SUFFICIENT_SCORE
+    if count == 0:
+        next_action = "broaden"
+    elif max_score < SUFFICIENT_SCORE:
+        next_action = "refine"
+    elif related_ids:
+        next_action = "expand"
+    else:
+        next_action = "synthesize"
+    return {
+        "sufficient": sufficient,
+        "max_score": round(max_score, 3),
+        "result_count": count,
+        "next_action": next_action,
+        "suggested_queries": suggested,
+        "related_ids": related_ids,
+        "gap_keywords": gaps,
+    }
+
+
+def build_hints(results: list[dict], keywords: list[str]) -> dict:
+    """agentic search の「次の一手」ヒントを構築する（共有スキルへ委譲）。
+
+    エージェントはこのヒントを読み、再検索（refine/broaden/expand）するか
+    結果を統合（synthesize）するかを判断する。
+    """
+    norm = _to_normalized(results)
+    if _SHARED_HINTS is not None:
+        return _SHARED_HINTS.compute_hints(norm, keywords,
+                                           sufficient_score=SUFFICIENT_SCORE)
+    return _fallback_compute_hints(norm, keywords)
+
+
+def build_json_output(query: str, scope: str, results: list[dict],
+                      keywords: list[str], with_hints: bool) -> dict:
+    """recall 結果を機械可読な JSON 構造にまとめる（agentic search 用）。"""
+    items = []
+    for rank, r in enumerate(results, 1):
+        meta = r["meta"]
+        items.append({
+            "rank": rank,
+            "id": meta.get("id", ""),
+            "title": meta.get("title", ""),
+            "summary": meta.get("summary", ""),
+            "tags": _as_list(meta.get("tags")),
+            "memory_type": meta.get("memory_type", memory_utils.DEFAULT_MEMORY_TYPE),
+            "importance": meta.get("importance", "normal"),
+            "status": meta.get("status", "active"),
+            "score": round(r["score"], 3),
+            "keyword_score": r["keyword_score"],
+            "retention_score": meta.get("retention_score", ""),
+            "access_count": meta.get("access_count", 0),
+            "filepath": os.path.relpath(r["filepath"], r["memory_dir"]),
+            "related": _as_list(meta.get("related")),
+            "consolidated_from": _as_list(meta.get("consolidated_from")),
+            "consolidated_to": meta.get("consolidated_to", ""),
+        })
+    out = {"query": query, "scope": scope, "count": len(items), "results": items}
+    if with_hints:
+        out["hints"] = build_hints(results, keywords)
+    return out
+
+
 # ─── access_count 追跡 ────────────────────────────────────────
 
 def track_access(result: dict) -> None:
@@ -314,6 +522,31 @@ def format_result(result: dict, index: int, full: bool = False) -> str:
     ]
     if full:
         lines += ["", "    --- 全文 ---"] + [f"    {line}" for line in result["body"].splitlines()]
+    return "\n".join(lines)
+
+
+def format_hints(hints: dict) -> str:
+    """ヒントを人間可読に整形する（--suggest 時に結果末尾へ表示）。"""
+    action_label = {
+        "broaden": "broaden（語を減らす／同義語で広げる）",
+        "refine": "refine（suggested_queries でクエリを再構成して再検索）",
+        "expand": "expand（related_ids を --ids で辿りマルチホップ展開）",
+        "synthesize": "synthesize（手がかり十分。反復を終了して結果を統合）",
+    }
+    lines = [
+        "─── 🔍 agentic search hints ───",
+        f"  sufficient: {hints['sufficient']} "
+        f"(max_score={hints['max_score']}, count={hints['result_count']})",
+        f"  next_action: {action_label.get(hints['next_action'], hints['next_action'])}",
+    ]
+    if hints["suggested_queries"]:
+        lines.append("  suggested_queries:")
+        for q in hints["suggested_queries"]:
+            lines.append(f"    - {q}")
+    if hints["related_ids"]:
+        lines.append(f"  related_ids (--ids で取得可): {', '.join(hints['related_ids'])}")
+    if hints["gap_keywords"]:
+        lines.append(f"  gap_keywords (未ヒット): {', '.join(hints['gap_keywords'])}")
     return "\n".join(lines)
 
 
@@ -380,22 +613,47 @@ def main():
                         help="記憶タイプでフィルタリング")
     parser.add_argument("--no-hybrid", action="store_true",
                         help="TF-IDF/コンテキストを無効化しキーワード一致のみで検索（v3互換モード）")
+    # v5.4.0 Agentic Search（反復探索）
+    parser.add_argument("--json", action="store_true",
+                        help="機械可読な JSON で出力（agentic search のループ駆動用）")
+    parser.add_argument("--suggest", action="store_true",
+                        help="検索後に次の一手のヒント（フォローアップ候補・関連ID・充足判定）を提示する")
+    parser.add_argument("--ids", default="",
+                        help="記憶IDをカンマ区切りで直接取得（マルチホップ展開用。クエリ不要）")
     args = parser.parse_args()
 
-    if not args.query and not args.auto_context:
-        parser.error("query または --auto-context が必要です")
+    ids = [i.strip() for i in args.ids.split(",") if i.strip()]
+    if not args.query and not args.auto_context and not ids:
+        parser.error("query / --auto-context / --ids のいずれかが必要です")
+
+    # --json 時は情報メッセージを stderr に逃がして stdout を JSON 専用にする
+    def info(msg: str) -> None:
+        print(msg, file=sys.stderr if args.json else sys.stdout)
+
+    keywords = args.query.split() if args.query else []
+    status = None if args.status == "all" else args.status
+    use_hybrid = not args.no_hybrid
+
+    # ── マルチホップ展開: ID 指定取得（agentic search の expand ステップ） ──
+    if ids:
+        results = fetch_by_ids(ids, args.scope if args.scope != "home" else "all")
+        if not results:
+            if args.json:
+                print(json.dumps(build_json_output(args.ids, args.scope, [], keywords,
+                                                   args.suggest), ensure_ascii=False, indent=2))
+            else:
+                info(f"指定ID {args.ids} に該当する記憶が見つかりませんでした。")
+            sys.exit(0)
+        _emit_results(args, args.ids, results, keywords, synced=False, info=info)
+        return
 
     # v5 コンテキスト収集
     context_text = args.context
     if args.auto_context and not context_text:
         context_text = _collect_auto_context()
         if context_text:
-            print(f"[auto-context] {context_text}\n")
+            info(f"[auto-context] {context_text}\n")
 
-    keywords = args.query.split() if args.query else []
-    status = None if args.status == "all" else args.status
-
-    use_hybrid = not args.no_hybrid
     results = search_all_scopes(args.scope, keywords, status, args.limit, args.category,
                                 context_text=context_text,
                                 memory_type_filter=args.memory_type or "",
@@ -405,21 +663,40 @@ def main():
     synced = False
     if not results and args.scope == "home":
         query_label = args.query or "(auto-context)"
-        print(f"「{query_label}」: home に記憶なし → shared を検索します...\n")
+        info(f"「{query_label}」: home に記憶なし → shared を検索します...\n")
         results, synced = fallback_search(keywords, args.limit,
                                           memory_type_filter=args.memory_type or "",
                                           use_hybrid=use_hybrid)
 
     if not results:
+        if args.json:
+            print(json.dumps(build_json_output(args.query, args.scope, [], keywords,
+                                               args.suggest), ensure_ascii=False, indent=2))
+            sys.exit(0)
         print(f"「{args.query}」に関連する記憶が見つかりませんでした。")
+        if args.suggest:
+            print(format_hints(build_hints([], keywords)))
         print("保存するには: python save_memory.py --title '...' --summary '...'")
         sys.exit(0)
 
-    note = "（git pull して取得）" if synced else ""
-    print(f"「{args.query}」の検索結果: {len(results)}件{note}\n")
-    for i, r in enumerate(results, 1):
-        print(format_result(r, i, full=args.full))
-        print()
+    _emit_results(args, args.query, results, keywords, synced=synced, info=info)
+
+
+def _emit_results(args, query: str, results: list[dict], keywords: list[str],
+                  synced: bool, info) -> None:
+    """結果を出力し（人間可読 or JSON）、access_count を追跡する共通処理。"""
+    if args.json:
+        out = build_json_output(query, args.scope, results, keywords, args.suggest)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    else:
+        note = "（git pull して取得）" if synced else ""
+        print(f"「{query}」の検索結果: {len(results)}件{note}\n")
+        for i, r in enumerate(results, 1):
+            print(format_result(r, i, full=args.full))
+            print()
+        if args.suggest:
+            print(format_hints(build_hints(results, keywords)))
+            print()
 
     # access_count を追跡
     if not args.no_track:
@@ -429,8 +706,8 @@ def main():
             except Exception:
                 pass
 
-    # 結果に対してインタラクティブ評価
-    if args.rate_after:
+    # 結果に対してインタラクティブ評価（JSON モードでは無効）
+    if args.rate_after and not args.json:
         interactive_rate(results)
 
 

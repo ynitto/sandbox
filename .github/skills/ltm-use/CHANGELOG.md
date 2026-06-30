@@ -2,6 +2,7 @@
 
 ## 目次
 
+- [v5.4.0](#v540-2026-06-28)
 - [v5.3.3](#v533-2026-05-31)
 - [v5.3.2](#v532-2026-05-30)
 - [v5.3.1](#v531-2026-04-07)
@@ -12,6 +13,32 @@
 - [v4.0.0](#v400)
 - [v3.0.0](#v300)
 - [v2.0.0](#v200)
+
+## v5.4.0（2026-06-28）
+
+### Added
+
+- **`recall_memory.py`**: agentic search（反復探索）プリミティブを追加。recall を単発検索から
+  「エージェント駆動の反復ループ」へ拡張する。ループの駆動役はエージェント（Claude）が担い、
+  スクリプトは「1 ステップの検索 ＋ 次の一手の手がかり」を返すプリミティブに徹する。
+  - `--json`: 機械可読な JSON 出力（スコア内訳・related/consolidated リンク・retention 等）。
+    情報メッセージは stderr に逃がし stdout を JSON 専用にする。
+  - `--suggest`: 次の一手ヒントを付与。`next_action`（synthesize/refine/expand/broaden）、
+    `suggested_queries`（上位結果タグからのクエリ再構成候補）、`related_ids`（マルチホップ先）、
+    `gap_keywords`（未ヒット語）、`sufficient`（充足判定）を返す。
+  - `--ids mem-XXXX,mem-YYYY`: 記憶 ID 直接取得。`related_ids` を辿るマルチホップ展開の入口
+    （query 不要）。
+- **共有スキル agentic-search への委譲**: ヒント計算（`next_action` / `suggested_queries` /
+  `related_ids` / `gap_keywords` / `sufficient`）を検索系スキル横断の共有スキル **agentic-search**
+  の `hints.py` に委譲。recall は結果を正規化済み契約に変換して渡す。共有スキル未導入時は
+  同等のローカル実装にフォールバックする（オプショナル依存）。
+- **`SKILL.md`**: 「agentic recall（反復探索）🔍」セクションを追加。計画→検索→評価→
+  再検索→統合の反復ループ手順とトリガーを明文化。version を 5.4.0 に更新。
+- **`references/operations.md`**: recall に `--json` / `--suggest` / `--ids` の全オプションと
+  `hints` 構造の一覧、agentic search の使い方を追記。
+- **`references/algorithms.md`**: 「v5.4.0 Agentic Search（反復探索ループ）」を追加。
+  ヒント計算・`next_action` 決定ロジック・反復ループ疑似コード・収束条件・
+  探索中の `--no-track` 運用（忘却曲線の誤強化防止）を文書化。
 
 ## v5.3.3（2026-05-31）
 

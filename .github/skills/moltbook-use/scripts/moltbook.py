@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import hashlib
+import json
 import os
 import re
 import socket
@@ -36,6 +37,27 @@ from gitlab_api import GitLabClient, GitLabError  # noqa: E402
 from privacy_gate import evaluate as gate_evaluate  # noqa: E402
 from moltbook_config import get_moltbook_home  # noqa: E402
 from mb_state import can_reply, record_reply  # noqa: E402
+
+
+def _load_shared_hints():
+    """共有スキル agentic-search の hints モジュールを読み込む（無ければ None）。
+
+    検索系スキル横断の反復探索（agentic search）ヒントエンジン。オプショナル依存で、
+    未導入時はヒントを出さず通常の検索結果のみを返す（graceful degradation）。
+    """
+    as_dir = Path(__file__).resolve().parent.parent.parent / "agentic-search" / "scripts"
+    if not as_dir.is_dir():
+        return None
+    if str(as_dir) not in sys.path:
+        sys.path.insert(0, str(as_dir))
+    try:
+        import hints as shared_hints  # type: ignore
+        return shared_hints
+    except ImportError:
+        return None
+
+
+_SHARED_HINTS = _load_shared_hints()
 
 # --- label namespace (gitlab-idd 非衝突) ------------------------------------
 L_POST = "moltbook:post"          # 判別子（全 Moltbook Issue に付与）
@@ -310,6 +332,7 @@ def cmd_search(args) -> int:
         scopes.append("notes")
 
     rows: list[tuple[float, str]] = []
+    norm: list[dict] = []   # agentic-search 正規化済み結果（--json / --suggest 用）
     for scope in scopes:
         for hit in client.search(scope, args.query, max_items=args.limit):
             if scope == "issues":
@@ -323,7 +346,18 @@ def cmd_search(args) -> int:
                 kind = "Q" if L_QUESTION in labels else ("K" if L_KNOWLEDGE in labels else "-")
                 up = hit.get("upvotes") or 0
                 score = 10 + up
-                rows.append((score, f"#{hit.get('iid')}\t[{kind}]\t👍{up}\t{hit.get('title','')}"))
+                title = hit.get("title", "")
+                rows.append((score, f"#{hit.get('iid')}\t[{kind}]\t👍{up}\t{title}"))
+                # upvote を 0..0.3 のブーストに換算し 0.7 を基準スコアとする
+                norm.append({
+                    "id": f"#{hit.get('iid')}",
+                    "title": title,
+                    "summary": hit.get("description", "") or "",
+                    "tags": [t.split(":")[-1] for t in labels if t.startswith("moltbook:topic:")],
+                    "score": round(min(0.7 + up * 0.05, 1.0), 3),
+                    "related": [],
+                    "text": f"{title} {hit.get('description', '') or ''}",
+                })
             elif scope == "blobs":
                 path = hit.get("path", "") or ""
                 if not path.startswith("knowledge/"):
@@ -331,16 +365,60 @@ def cmd_search(args) -> int:
                 snippet = (hit.get("data", "") or "").strip().splitlines()
                 line = snippet[0][:120] if snippet else ""
                 rows.append((5.0, f"知{_iid_from_blob_path(path)}\t{path}\t{line}"))
+                norm.append({
+                    "id": f"知{_iid_from_blob_path(path)}",
+                    "title": path,
+                    "summary": line,
+                    "tags": [],
+                    "score": 0.6,
+                    "related": [],
+                    "text": (hit.get("data", "") or ""),
+                })
             else:  # notes
-                rows.append((3.0, f"note\t{(hit.get('body','') or '')[:120]}"))
+                body = hit.get("body", "") or ""
+                rows.append((3.0, f"note\t{body[:120]}"))
+                norm.append({
+                    "id": "note",
+                    "title": body[:60],
+                    "summary": body[:120],
+                    "tags": [],
+                    "score": 0.4,
+                    "related": [],
+                    "text": body,
+                })
 
     if args.dry_run:
         return 0
+
+    keywords = args.query.split()
+
+    # ── JSON 出力（agentic search のループ駆動用） ──
+    if getattr(args, "json", False):
+        norm.sort(key=lambda n: n["score"], reverse=True)
+        norm = norm[: args.limit]
+        out = {"query": args.query, "count": len(norm), "results": norm}
+        if _SHARED_HINTS is not None:
+            out["hints"] = _SHARED_HINTS.compute_hints(norm, keywords)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
     if not rows:
         print("該当する投稿はありません。")
+        if getattr(args, "suggest", False) and _SHARED_HINTS is not None:
+            print()
+            print(_SHARED_HINTS.format_hints(_SHARED_HINTS.compute_hints([], keywords)))
         return 0
     for _, text in sorted(rows, key=lambda r: r[0], reverse=True)[: args.limit]:
         print(text)
+
+    # ── agentic search ヒント（--suggest） ──
+    if getattr(args, "suggest", False):
+        if _SHARED_HINTS is None:
+            print("\n[INFO] agentic-search 未導入のためヒントは省略（検索結果のみ）")
+        else:
+            ranked = sorted(norm, key=lambda n: n["score"], reverse=True)[: args.limit]
+            print()
+            print(_SHARED_HINTS.format_hints(_SHARED_HINTS.compute_hints(ranked, keywords)))
     return 0
 
 
@@ -446,6 +524,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="all=ホット(issues)+コールド(blobs)")
     sp.add_argument("--notes", action="store_true", help="返信本文(notes)も検索する")
     sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--json", action="store_true",
+                    help="機械可読な JSON で出力（agentic search のループ駆動用）")
+    sp.add_argument("--suggest", action="store_true",
+                    help="検索後に次の一手のヒント（agentic-search 導入時）を提示する")
     sp.set_defaults(func=cmd_search)
 
     sp = sub.add_parser("timeline", help="未解決の質問一覧を表示する")
