@@ -5042,7 +5042,8 @@ def provision_worktree(url: str, refs: "list[str]", dest: str) -> "str | None":
     sha = _resolve_sha(cache, refs)
     if not sha:
         return None
-    os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
+    dest = os.path.abspath(dest)   # `git -C <cache> worktree add` は相対パスを cache 基準で解くため絶対化
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     for _ in range(2):
         try:
             r = _git_cache(cache, "worktree", "add", "--detach", "--force",
@@ -5069,8 +5070,12 @@ def _prune_caches(urls) -> None:
 
 def _clone_repo_shallow(url: str, branch: str, dest: str, timeout: float = 300) -> None:
     """検証用に dest へ対象 repo を用意する。まず共有 cache から detached worktree を生やし（最新化済み・
-    INV-1）、失敗時は従来どおり branch（空なら既定）を浅 clone する（INV-3）。最終的に失敗なら RuntimeError。"""
-    refs = [branch, ""] if branch else [""]
+    INV-1）、失敗時は従来どおり branch（空なら既定）を浅 clone する（INV-3）。最終的に失敗なら RuntimeError。
+
+    branch を明示した場合は **その branch が無ければ既定へ無言フォールバックしない**（refs に "" を
+    足さない）。target が消えている等は「成果の無い場所での偽判定」を避けるため NG にする必要があり、
+    元の `git clone --depth 1 --branch <target>`（無ければ失敗）と同じ厳密さを保つ。"""
+    refs = [branch] if branch else [""]
     try:
         with _cache_lock(url):
             wt = provision_worktree(url, refs, dest)

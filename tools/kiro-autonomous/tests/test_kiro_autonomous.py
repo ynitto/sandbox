@@ -3860,6 +3860,25 @@ class SharedGitCacheTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 km._clone_repo_shallow("/no/such/repo.git", "main", str(self.tmp / "none"))
 
+    def test_missing_target_branch_is_ng_not_silent_default(self):
+        # 明示した target ブランチが存在しないなら NG（RuntimeError）。既定ブランチへ無言フォールバック
+        # して「成果の無い場所で偽 PASS」しないこと（worktree 化で壊しやすい不変条件の回帰防止）。
+        remote = self._make_remote(name="tgt")
+        with self.assertRaises(RuntimeError):
+            km._clone_repo_shallow(remote, "nonexistent-target", str(self.tmp / "wt"))
+
+    def test_explicit_branch_checks_out_that_branch(self):
+        # 実在する非既定ブランチを指定したら、その内容で worktree ができる（target 伝搬が効く）。
+        remote = self._make_remote(name="tgt2")
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "-b", "feature"], check=True)
+        (Path(remote) / "only_on_feature.txt").write_text("x")
+        subprocess.run(["git", "-C", remote, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", remote, "commit", "-qm", "feat"], check=True)
+        subprocess.run(["git", "-C", remote, "checkout", "-q", "main"], check=True)
+        dest = str(self.tmp / "wtf" / "repo")
+        km._clone_repo_shallow(remote, "feature", dest)
+        self.assertTrue(os.path.exists(os.path.join(dest, "only_on_feature.txt")))
+
 
 if __name__ == "__main__":
     unittest.main()
