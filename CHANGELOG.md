@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-gate v1.0.0 — doc/code/test 一貫性ゲート（kiro-autonomous プラグイン）
+
+[CoDD (Coherence-Driven Development)](https://github.com/yohey-w/codd-dev) の設計
+（Trace＝接続マップ / Impact＝Green・Amber・Gray 分類 / Verify＝no fake green）を kiro エコシステムに
+翻案した決定的ツールを追加。**kiro-autonomous 本体は無改造**で、既存フック（regression_cmd・
+charter acceptance・タスク verify・enqueue --json / inbox）だけで結合するプラグイン方式。
+ブラウンフィールド前提で、既存負債は止めずに「棚卸し→ラチェット→backlog 返済」、新規変更だけを
+差分ゲートで護る。
+
+- **新規ツール `tools/codd-gate/`**（stdlib のみ・LLM 不要）: `scan`（doc↔code↔test の接続マップと
+  壊れた参照/未文書化/未テストの負債棚卸し）/ `impact`（差分の Green/Amber/Gray/**Followup** 分類）/
+  `verify`（差分ゲート＋ `--debt` 負債ラチェット。exit 0/1）/ `tasks`（ドリフト・負債を
+  kiro-autonomous の修復タスクへ変換。同一 repo は決定的 verify、別 repo は accept＋workspace で
+  ルーティングに乗せる）/ `check`（修復タスク verify 用の状態アサーション: 接続・参照解決・鮮度）。
+- **複数リポジトリ**: レジストリは charter `## repos` を共用し identity は (url, path, base)＝
+  パス＋ブランチで一意。codd-gate 専用キー `- docs:`/`- tests:`/`- code:` は kiro-autonomous に
+  無害（未知キーは無視される）。リポジトリ横断参照は `repo名:相対パス`。
+- **接続の推定は決定的**: 明示注釈 `coherence: doc|code|test=…`（最優先）＞ md のインラインコード/
+  リンク ＞ Python import ＞ 命名規約（一意時のみ）。曖昧は接続も負債もしない。
+- **新規スキル `codd-gate`**: 結線手順（regression_cmd → acceptance ラチェット → tasks 返済）の運用。
+- 設計書 `docs/designs/codd-gate-design.md`（codd-dev からの翻案対応表つき）とテスト 25 件を同梱。
+
 ### agentic-search v1.0.0 — 反復探索を共有スキル化し検索系スキルへ一括導入
 
 検索を **単発の retrieve** から **エージェント（Claude）が「検索 → 評価 → 再構成 → 再検索 → 統合」を
