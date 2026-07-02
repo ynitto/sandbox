@@ -292,6 +292,8 @@ kiro-autonomous hold prod-deploy --reason "本番は手動"
   backlog に居れば飛ばす＝同じ発見の重複投入を防ぐ）。exit≠0・非 JSON・タイムアウト
   （verify_timeout）は journal に残して無視（ループは殺さない）。**コマンドは単発・有界であること**（常駐はこちらが
   持つ）。例: `intake_cmd: codd-gate tasks --debt`（doc/code/test 一貫性の負債を修復タスク化して自動返済）。
+  > 外部 CLI を差し込める公式の口（verify/acceptance・regression_cmd・intake_cmd・inbox/enqueue・
+  > notify_cmd・executor）の契約は設計書 §4.1「外部 CLI の差し込み点」にカタログ化してある。
 - **依存（DAG）** `- after: T1, T2`: 依存が done（archive へ退避）になるまで消化対象に入らない。依存が blocked/review で
   止まれば従属も待つ。
 - **自己生成（followup）**: 完了タスクから派生を生む。静的（タスクの `- followup: <title> :: <verify>`）／動的（act 出力の

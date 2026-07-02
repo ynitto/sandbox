@@ -445,6 +445,32 @@ class ScanCliTests(unittest.TestCase):
             self.assertIn("app:src/x.py", m["nodes"])
             self.assertEqual(m["repos"]["app"]["branch"], "main")   # (パス+ブランチ) を記録
 
+    def test_native_config_registry(self):
+        """レジストリの正は codd-gate ネイティブの設定ファイル repos:（charter 書式に依存しない）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "app"
+            init_repo(d)
+            write(d, "src/x.py", "X = 1\n")
+            write(d, "manual/x.md", "`src/x.py`\n")
+            commit(d, "init")
+            conf = Path(tmp) / "codd-gate.json"
+            conf.write_text(json.dumps({
+                "repos": {"app": {"url": "git@x:app.git", "base": "main",
+                                  "dir": str(d), "docs": ["manual/**"]}},
+            }), encoding="utf-8")
+            out = Path(tmp) / "map.json"
+            rc, _ = run_cli(["scan", "--config", str(conf), "--map", str(out)])
+            self.assertEqual(rc, 0)
+            m = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(m["nodes"]["app:manual/x.md"]["kind"], "doc")   # docs: グロブが効く
+            self.assertEqual(m["repos"]["app"]["url"], "git@x:app.git")
+            edges = {(e["src"], e["dst"]) for e in m["edges"]}
+            self.assertIn(("app:manual/x.md", "app:src/x.py"), edges)
+            # CLI の --repo-dir は設定より勝つ（同名 repo の checkout 差し替え）
+            rc, _ = run_cli(["scan", "--config", str(conf), "--map", str(out),
+                             "--repo-dir", f"app={d}"])
+            self.assertEqual(rc, 0)
+
     def test_charter_registry(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp) / "app"

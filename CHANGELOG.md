@@ -22,9 +22,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `verify`（差分ゲート＋ `--debt` 負債ラチェット。exit 0/1）/ `tasks`（ドリフト・負債を
   kiro-autonomous の修復タスクへ変換。同一 repo は決定的 verify、別 repo は accept＋workspace で
   ルーティングに乗せる）/ `check`（修復タスク verify 用の状態アサーション: 接続・参照解決・鮮度）。
-- **複数リポジトリ**: レジストリは charter `## repos` を共用し identity は (url, path, base)＝
-  パス＋ブランチで一意。codd-gate 専用キー `- docs:`/`- tests:`/`- code:` は kiro-autonomous に
-  無害（未知キーは無視される）。リポジトリ横断参照は `repo名:相対パス`。
+- **複数リポジトリ（外部フォーマット非依存）**: レジストリの正は codd-gate 自身の設定ファイル
+  `repos:`（`.kiro/codd-gate.{yaml,json}`。dir / docs / tests / code を per-repo 指定）。identity は
+  (url, path, base)＝パス＋ブランチで一意。リポジトリ横断参照は `repo名:相対パス`。連携時のみ
+  `--charter` **アダプタ**で kiro-autonomous の charter `## repos` を共用できる（任意。アダプタ専用キー
+  `- docs:`/`- tests:`/`- code:` は kiro-autonomous には未知キーとして無害）。
 - **接続の推定は決定的**: 明示注釈 `coherence: doc|code|test=…`（最優先）＞ md のインラインコード/
   リンク ＞ Python import ＞ 命名規約（一意時のみ）。曖昧は接続も負債もしない。
 - **kiro-autonomous に汎用取り込みフック `intake_cmd` を追加**（設定/CLI `--intake-cmd[-interval]`）:
@@ -37,9 +39,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **`tasks --debt --cohort`**: 未文書化/未テストのような同種負債の山を repo 単位の cohort
   （`cohort_items`＋`{item}`）に集約し、後段の分解を kiro-autonomous の pilot-then-batch に委ねる。
   タスク id は発見内容から決定的（48 字・末尾ハッシュ）＝intake の冪等キー。
-- **新規スキル `codd-gate`**: 結線手順（regression_cmd → acceptance ラチェット → intake_cmd 返済）の運用。
-- 設計書 `docs/designs/codd-gate-design.md`（codd-dev からの翻案対応表つき）とテスト（codd-gate 27 件
-  ＋kiro-autonomous intake 5 件）を同梱。
+- **外部 CLI の差し込み点をカタログ化**: kiro-autonomous 設計書 §4.1 に公式の 6 点（E1 verify/
+  acceptance・E2 regression_cmd・E3 intake_cmd・E4 inbox/enqueue・E5 notify_cmd・E6 executor）の契約
+  （入出力・環境・制約）と選び方・妥当性を明文化。暗黙の拡張点は作らない（S1 優先順位・S5 エスカレー
+  ション・S7 予算にはフックを設けない理由も記載）。codd-gate は E1+E2+E3 を使う適用例。
+- **新規スキル `codd-gate`**: 単体運用（git hook / CI）を主、kiro-autonomous 結線
+  （regression_cmd → acceptance ラチェット → intake_cmd 返済）を追加情報として整理。
+- 設計書 `docs/designs/codd-gate-design.md`（codd-dev からの翻案対応表・差し込み点選択の妥当性検証
+  つき）とテスト（codd-gate 28 件＋kiro-autonomous intake 5 件）を同梱。
 
 ### agentic-search v1.0.0 — 反復探索を共有スキル化し検索系スキルへ一括導入
 
