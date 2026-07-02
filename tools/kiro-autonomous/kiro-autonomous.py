@@ -47,7 +47,9 @@ POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate|protect|route):\s*
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
 LTM_CATEGORY = "kiro-autonomous"  # ltm-use home 内のカテゴリ（昇格先サブディレクトリ）
-FEEDBACK_MARKER = "## フィードバック"
+FEEDBACK_MARKER = "## フィードバック"                  # 旧形式（読み取りは継続サポート）
+DECISION_MARKER = "## Decision Outcome"               # MADR 形式の決定記入欄（needs の生成はこちら）
+FEEDBACK_MARKERS = (FEEDBACK_MARKER, DECISION_MARKER)
 CHECKBOX_RE = re.compile(r"^\s*-\s*\[[ xX]\]")        # 確定チェックボックス行（任意状態）
 CHECKED_RE = re.compile(r"^\s*-\s*\[[xX]\]")          # チェック済み（= 確定）
 
@@ -1409,26 +1411,46 @@ def needs_path(cfg: "Config", tid: str) -> Path:
     return cfg.needs / f"{tid}.md"
 
 
+def _madr_frontmatter(rec_id: str, kind: str) -> str:
+    """needs/<id>.md の MADR（Markdown Any Decision Records）互換 frontmatter。
+    status は常に proposed で生成し、人の確定（[x]）＝決定。ファイル自体は取り込み時に
+    消費され、恒久の決定記録は decisions/<id>.md（DR）に残る。"""
+    return (
+        "---\n"
+        "status: proposed\n"
+        f"date: {_now_ts()[:10]}\n"
+        "decision-makers: [human]\n"
+        f"task-id: {rec_id}\n"
+        f"kind: {kind}\n"
+        "---\n\n"
+    )
+
+
 def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False,
                      evidence: str = "") -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
     if review:    # verify=PASS の承認ゲート（検収待ち）
         state = "review（検収待ち・verify=PASS）"
+        kind = "review"
         hint = (f"<!-- 承認して done 確定するなら `kiro-autonomous approve {task.id}`。\n"
                 f"     差し戻すなら下に修正方針を書いて [x] にする（再実行されます）。 -->\n")
     else:
         state = "blocked（kiro-autonomous の判断待ち）"
+        kind = "blocked"
         hint = (f"<!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。\n"
                 f"     下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。\n"
                 f"     コマンドなら `kiro-autonomous approve {task.id}`。 -->\n")
     # 判断材料（成果物の所在・差分・検証）。人がレビューせずに済むよう「どこに・何が・なぜ」を載せる。
     evidence_block = f"\n## 判断材料（成果物の所在・差分・検証）\n{evidence}\n" if evidence else ""
     body = (
+        f"{_madr_frontmatter(task.id, kind)}"
         f"# 要対応: {task.id} — {task.title}\n\n"
+        f"## Context and Problem Statement\n\n"
         f"- なぜ: {reason}\n"
         f"- 状態: {state}\n"
         f"{evidence_block}\n"
-        f"{FEEDBACK_MARKER}\n"
+        f"{DECISION_MARKER}\n\n"
+        f"<!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->\n"
         f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
         f"{hint}"
     )
@@ -1442,12 +1464,15 @@ def clear_needs_file(cfg: "Config", tid: str) -> None:
 
 
 def read_feedback(path: Path) -> str:
-    """『## フィードバック』以降の人の記入（HTMLコメント・チェックボックス行は除く）を取り出す。"""
+    """決定記入欄（『## Decision Outcome』または旧『## フィードバック』）以降の人の記入
+    （HTMLコメント・チェックボックス行は除く）を取り出す。"""
     text = re.sub(r"<!--.*?-->", "", path.read_text(encoding="utf-8"), flags=re.S)
-    i = text.find(FEEDBACK_MARKER)
-    if i < 0:
+    hits = [(text.find(m), m) for m in FEEDBACK_MARKERS]
+    hits = [(i, m) for i, m in hits if i >= 0]
+    if not hits:
         return ""
-    body = text[i + len(FEEDBACK_MARKER):]
+    i, marker = min(hits)
+    body = text[i + len(marker):]
     lines = [ln for ln in body.splitlines() if not CHECKBOX_RE.match(ln)]
     return "\n".join(lines).strip()
 
@@ -5216,12 +5241,15 @@ def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str
         f"     次フェーズへ続けるなら charter.md の goal/acceptance を更新して再実行。\n"
         f"     方向修正なら下に方針を書いて [x]（または policy.md を編集）。 -->\n")
     body = (
+        f"{_madr_frontmatter(pid, 'milestone')}"
         f"# マイルストーン: {charter.name}\n\n"
+        f"## Context and Problem Statement\n\n"
         f"- なぜ: {labels.get(reason, reason)}\n"
         f"- 状態: {reason}\n"
         f"- 概況: {summary}\n\n"
         f"## goal\n{charter.goal}\n\n"
-        f"{FEEDBACK_MARKER}\n"
+        f"{DECISION_MARKER}\n\n"
+        f"<!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->\n"
         f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
         f"{hint}")
     (cfg.needs / f"{pid}.md").write_text(body, encoding="utf-8")

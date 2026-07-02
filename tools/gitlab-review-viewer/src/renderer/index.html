@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
+  <title>GitLab Review Viewer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1>GitLab Review Viewer</h1>
+        <button id="btn-settings" title="設定">⚙</button>
+      </div>
+
+      <div id="mode-tabs">
+        <button id="mode-gitlab" class="active">GitLab</button>
+        <button id="mode-needs">Needs</button>
+      </div>
+
+      <section id="filters">
+        <div class="field">
+          <label for="group-search">グループ</label>
+          <div class="row">
+            <input id="group-search" type="text" placeholder="グループ名で検索" />
+            <button id="btn-load-groups" title="グループを取得">🔍</button>
+          </div>
+          <select id="group-select">
+            <option value="">（指定なし）</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="project-select">リポジトリ（プロジェクト）</label>
+          <div class="row">
+            <input id="project-search" type="text" placeholder="プロジェクト名で検索" />
+            <button id="btn-load-projects" title="プロジェクトを取得">🔍</button>
+          </div>
+          <select id="project-select">
+            <option value="">（指定なし）</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="label-input">ラベル（カンマ区切り・AND 条件）</label>
+          <input id="label-input" type="text" list="label-list"
+                 placeholder="例: status:review-ready,priority:high" />
+          <datalist id="label-list"></datalist>
+        </div>
+
+        <div class="field row2">
+          <div>
+            <label for="type-select">種別</label>
+            <select id="type-select">
+              <option value="both">イシュー + MR</option>
+              <option value="issue">イシューのみ</option>
+              <option value="mr">MR のみ</option>
+            </select>
+          </div>
+          <div>
+            <label for="state-select">状態</label>
+            <select id="state-select">
+              <option value="opened">オープン</option>
+              <option value="closed">クローズ</option>
+              <option value="merged">マージ済（MR）</option>
+              <option value="all">すべて</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="keyword-input">キーワード</label>
+          <input id="keyword-input" type="text" placeholder="タイトル・本文を検索" />
+        </div>
+
+        <button id="btn-search" class="primary">候補を検索</button>
+      </section>
+
+      <section id="needs-controls" hidden>
+        <div class="field">
+          <label>kiro-autonomous コンテナ</label>
+          <div id="needs-root" class="muted"></div>
+        </div>
+        <button id="btn-load-needs" class="primary">Needs を更新</button>
+      </section>
+
+      <div id="candidate-count" class="muted"></div>
+      <ul id="candidates"></ul>
+      <ul id="needs-list" hidden></ul>
+    </aside>
+
+    <main id="main">
+      <div id="panes">
+        <section class="pane" data-pane="0">
+          <div class="tabbar" id="tabbar-0"></div>
+          <div class="urlbar">
+            <input id="url-0" type="text" spellcheck="false" />
+            <button data-act="reload" data-pane="0" title="再読み込み">↻</button>
+            <button data-act="copy" data-pane="0" title="URL をコピー">⧉</button>
+            <button data-act="external" data-pane="0" title="ブラウザで開く">↗</button>
+          </div>
+          <webview id="wv-0" partition="persist:gitlab" src="about:blank"></webview>
+          <div class="local-view" id="lv-0" hidden></div>
+        </section>
+        <section class="pane" data-pane="1">
+          <div class="tabbar" id="tabbar-1"></div>
+          <div class="urlbar">
+            <input id="url-1" type="text" spellcheck="false" />
+            <button data-act="reload" data-pane="1" title="再読み込み">↻</button>
+            <button data-act="copy" data-pane="1" title="URL をコピー">⧉</button>
+            <button data-act="external" data-pane="1" title="ブラウザで開く">↗</button>
+          </div>
+          <webview id="wv-1" partition="persist:gitlab" src="about:blank"></webview>
+          <div class="local-view" id="lv-1" hidden></div>
+        </section>
+      </div>
+
+      <section id="actionbar">
+        <div class="action-row">
+          <label for="target-select">操作対象</label>
+          <select id="target-select"></select>
+          <span id="target-state" class="chip"></span>
+          <span id="target-labels"></span>
+        </div>
+        <div class="action-row" id="preset-buttons"></div>
+        <div class="action-row">
+          <textarea id="comment-input" rows="2"
+                    placeholder="コメントを入力（Ctrl+Enter で投稿）"></textarea>
+          <div class="action-buttons">
+            <button id="btn-comment">コメント投稿</button>
+            <button id="btn-summarize">要約</button>
+            <button id="btn-merge">マージ</button>
+            <button id="btn-close">クローズ</button>
+            <button id="btn-reopen">リオープン</button>
+            <button id="btn-export">Obsidian へ</button>
+            <button id="btn-feedback" hidden>フィードバック確定 [x]</button>
+            <button id="btn-approve" hidden>approve</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="summary-dialog">
+    <h2>要約</h2>
+    <div id="summary-status" class="muted"></div>
+    <textarea id="summary-text" rows="16" spellcheck="false"></textarea>
+    <div class="dialog-buttons">
+      <button id="btn-summary-to-comment">コメント欄へ挿入</button>
+      <button id="btn-summary-copy">コピー</button>
+      <button id="btn-summary-export">Obsidian へ送る</button>
+      <button id="btn-summary-close">閉じる</button>
+    </div>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <h2>設定</h2>
+    <div class="settings-grid">
+      <label>GitLab URL</label>
+      <input id="cfg-gitlab-url" type="text" placeholder="https://gitlab.com" />
+      <label>アクセストークン</label>
+      <input id="cfg-gitlab-token" type="password" placeholder="glpat-..." />
+      <label>エージェントコマンド</label>
+      <input id="cfg-agent-command" type="text" />
+      <label>タイムアウト（秒）</label>
+      <input id="cfg-agent-timeout" type="number" min="0" />
+      <label>要約プロンプト</label>
+      <textarea id="cfg-agent-prompt" rows="8" spellcheck="false"></textarea>
+      <label>needs 要約プロンプト</label>
+      <textarea id="cfg-agent-needs-prompt" rows="6" spellcheck="false"></textarea>
+      <label>kiro-autonomous コンテナ</label>
+      <input id="cfg-kiro-root" type="text" placeholder="C:\work\repo\.kiro-autonomous" />
+      <label>approve コマンド</label>
+      <input id="cfg-kiro-approve" type="text" />
+      <label>Obsidian Vault パス</label>
+      <input id="cfg-obsidian-vault" type="text" placeholder="C:\Users\you\Documents\Vault" />
+      <label>Vault 内サブフォルダ</label>
+      <input id="cfg-obsidian-subdir" type="text" />
+      <label>書き出し後に Obsidian を開く</label>
+      <input id="cfg-obsidian-open" type="checkbox" />
+      <label>ラベルプリセット（JSON）</label>
+      <textarea id="cfg-label-presets" rows="8" spellcheck="false"></textarea>
+      <label>操作ショートカット（JSON）</label>
+      <textarea id="cfg-action-shortcuts" rows="5" spellcheck="false"></textarea>
+    </div>
+    <div class="dialog-buttons">
+      <button id="btn-settings-save" class="primary">保存</button>
+      <button id="btn-settings-cancel">キャンセル</button>
+    </div>
+  </dialog>
+
+  <div id="toast" hidden></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

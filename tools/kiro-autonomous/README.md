@@ -84,7 +84,7 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
       project.json         project のサイクル状態（PASS 履歴・stall・cost。project が増分更新）
       policy.md            優先順位・実行先・安全ゲートの上書き（人だけが書く）
       backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
-      needs/<id>.md        判断待ち/検収待ちの通知＋フィードバック記入欄（人が記入→自動再開）
+      needs/<id>.md        判断待ち/検収待ちの通知＋決定記入欄（MADR 互換 ADR。人が記入→自動再開）
       decisions/<id>.md    人の判断・承認・フィードバックの決定記録（learn＝学習材料。append-only）
       archive/<id>.md      完了タスクの保全先（検収用「納品書」付き。backlog と 1:1）
       DELIVERY.md          納品一覧（受領書）。done を1行ずつ追記
@@ -252,7 +252,7 @@ kiro-autonomous audit --strict                     # 無人運用に値するか
 
 タスクが人の判断へ回ると案件毎 `needs/<id>.md` が生成される。
 
-- **フィードバック往復**: 「## フィードバック」欄に方針を書き `- [ ] 確定` を `- [x]` にして保存すると、次パスで拾われ
+- **フィードバック往復**: 「## Decision Outcome」欄（MADR 互換。旧「## フィードバック」も可）に方針を書き `- [ ] 確定` を `- [x]` にして保存すると、次パスで拾われ
   ブロック解除＋内容を次 act に反映し `decisions/<id>.md` に記録。**誤発火防止**は ①チェックボックス `[x]`（空でも「そのまま
   再実行」）②`status: draft`（消化対象外）③`--debounce`（既定 3 秒）。
 - **決定記録（DR）**: 人の判断は承認操作と不可分に `decisions/<id>.md` へ append-only。`approve`（修正承認）/
