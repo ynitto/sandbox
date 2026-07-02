@@ -73,6 +73,7 @@
         ▼
  S0 取り込み・再開                                             │ files: needs/ inbox/ backlog/ journal.md
     ・needs/<id> の [x] フィードバック → ready 復帰＋次 act に添付（ingest_feedback）  │ --debounce
+    ・intake_cmd の stdout(JSON) を冪等取り込み（run_intake）     │ --intake-cmd --intake-interval
     ・inbox/ の .json/.md を backlog 化（ingest_inbox）          │
     ・triage（inbox→ready 昇格・rot 検知で blocked→needs）       │ --rot --rot-age-days
     ・verify の用意（accept→合成 / verify_template→展開）         │ task: - accept / - verify_template
@@ -167,7 +168,7 @@
 
 | ステージ | 何をする | 主な機能（節） | 効く設定 / policy / タスク欄 | 主に触るファイル |
 |---------|---------|---------------|---------------------------|-----------------|
-| **S0** 取り込み・再開 | フィードバック反映・inbox 取込・triage・rot・verify 用意 | フィードバック往復(§5.1)・取り込み口(§5.1)・rot(§5.1)・verify 用意(§5.1) | `--debounce` `--rot`／task `accept/verify_template` | needs/ inbox/ backlog/ |
+| **S0** 取り込み・再開 | フィードバック反映・intake/inbox 取込・triage・rot・verify 用意 | フィードバック往復(§5.1)・取り込み口(§5.1)・取り込みコマンド(§5.1)・rot(§5.1)・verify 用意(§5.1) | `--debounce` `--rot` `--intake-cmd[-interval]`／task `accept/verify_template` | needs/ inbox/ backlog/ |
 | **S1** 優先順位付け・選択 | 順位決定・policy 上書き・依存/level 除外・claim | 優先順位(§5.2)・依存(§5.7)・原子的クレーム(§5.8)・level(§5.5) | `--planner` `--concurrency`／policy `deny/pin/defer`／task `priority/after/level` | policy.md claims/ |
 | **S2** 実行 act | 要求文＋文脈注入・委譲先決定 | act 委譲・location(§5.3)・文脈注入(§6.4)・pace(§5.3) | `--location` `--flow-planner` `--executor` `--git-bus` `--pace` | charter.md decisions/ bus/ |
 | **S3** 検証ゲート | verify・回帰・保護・進捗・コスト計上 | 検証(§5.4)・偽done対策(§5.4)・flake(§5.4)・回帰(§5.4)・保護(§5.4) | `--verify-confirm` `--regression-cmd` `--require-progress`／policy `protect`／task `verify/expect` | （workdir の git） |
@@ -195,6 +196,15 @@
 - **取り込み口（inbox）**: `<project>/inbox/` の `.json`（1 件/配列）/`.md`（タスク形式）を取り込み元ファイルを消す。外部
   ソース（webhook/メール/issue 抽出）は薄いアダプタでここへ流し込む（コアは stdlib・ネットワーク非依存）。`enqueue`
   コマンドも同経路。**verify を持たない投入は必ず `inbox`**＝人の triage 行き（鉄則）。
+- **取り込みコマンド（intake_cmd・pull 型）**: push 型の inbox と対になる汎用フック。設定/CLI の `intake_cmd` を
+  **パス開始時（S0）と watch の idle 中**に `intake_interval`（既定 600 秒・0 以下で毎回。`--project all` に備え
+  backlog パス毎に律速）で実行し、stdout の enqueue --json 形式（spec 1 件/配列）を backlog へ取り込む（`run_intake`）。
+  - **冪等**: spec の `id`（slug 化）が**現役 backlog**（blocked/review 含む）に居れば飛ばす。定期実行しても同じ発見が
+    重複投入されない。done→archive 後に同じ発見が再発したら新タスクとして積み直せる（archive とは突合しない）。
+  - **有限・無害**: `verify_timeout` で打ち切り。exit≠0・非 JSON・例外は journal に残して無視（ループは殺さない）。
+    intake_cmd 自体は**単発・有界**であること（常駐＝長期実行は kiro-autonomous 側だけが持つ、の役割分担）。
+  - 想定例: `intake_cmd: codd-gate tasks --debt`（doc/code/test 一貫性の負債→修復タスク。
+    `docs/designs/codd-gate-design.md`）。issue 抽出・監視アラート等の決定的検出器も同じ口に乗る。
 - **rot 検知**: triage 時に古い/重複/実行不能を検出して人へ回す（消さず棚卸し）。`unverifiable`（verify を用意できない）/
   `duplicate`（正規化タイトル一致）/ `stale`（mtime が `--rot-age-days` 既定 14 日より古い）。`run --rot` で毎回、`rot [--fix]`
   で随時。
