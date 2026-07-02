@@ -44,6 +44,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **`tasks --debt --cohort`**: 未文書化/未テストのような同種負債の山を repo 単位の cohort
   （`cohort_items`＋`{item}`）に集約し、後段の分解を kiro-autonomous の pilot-then-batch に委ねる。
   タスク id は発見内容から決定的（48 字・末尾ハッシュ）＝intake の冪等キー。
+- **タスク追加の責務境界を明文化**: kiro-autonomous は元よりタスクを入力とする設計（enqueue＝汎用の
+  取り込み口・外部ソースは薄いアダプタで流し込む思想）で、タスク契約（正典 `backlog.md.example`・
+  未知キー保持の前方互換）の所有者は kiro-autonomous。codd-gate コアの正は**所見**（`impact --json` /
+  `verify --debt --json`。コアは kiro-autonomous を知らない）で、`tasks` は所見→タスク契約への
+  **出力アダプタ**（`--charter` 入力アダプタと対。依存は公開データ契約のみ＝JUnit/SARIF エミッタと
+  同じ関係。消費側の実行モデルの知識はアダプタにだけ置く）。
 - **外部 CLI の差し込み点をカタログ化**: kiro-autonomous 設計書 §4.1 に公式の 6 点（E1 verify/
   acceptance・E2 regression_cmd・E3 intake_cmd・E4 inbox/enqueue・E5 notify_cmd・E6 executor）の契約
   （入出力・環境・制約）と選び方・妥当性を明文化。暗黙の拡張点は作らない（S1 優先順位・S5 エスカレー
