@@ -188,7 +188,7 @@
 
 ### 5.1 S0 取り込み・再開（needs / inbox / triage / rot）
 
-- **フィードバック往復**: `needs/<id>.md` の「## フィードバック」欄に記入し `- [x]` で確定すると、`ingest_feedback` が
+- **フィードバック往復**: `needs/<id>.md` の「## Decision Outcome」欄（MADR 互換。旧「## フィードバック」も可）に記入し `- [x]` で確定すると、`ingest_feedback` が
   対象を ready 復帰 → 本文を次 act の要求文へ添付 → `decisions/<id>.md` に記録 → needs を消費。**書きかけ誤発火を 3 層で
   防ぐ**: ①チェックボックス `[x]`（空でも「そのまま再実行」）②新規は `status: draft`（消化対象外）③`--watch` は最終保存から
   `--debounce`（既定 3 秒）待つ。
