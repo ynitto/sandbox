@@ -434,6 +434,65 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
     return created
 
 
+# intake の最終実行時刻（プロジェクト＝backlog パス毎。--project all の 1 プロセス多重化に対応）
+_INTAKE_LAST: "dict[str, float]" = {}
+
+
+def run_intake(cfg: "Config") -> "list[Task]":
+    """取り込みコマンド（intake_cmd）を実行し、stdout の JSON（spec オブジェクト/配列＝
+    `enqueue --json` と同形式）を backlog へ**冪等に**取り込む。外部の決定的ゲート/検出器
+    （例: `codd-gate tasks --debt`）を watch の周期で汲み上げる汎用フック。
+
+    - **冪等**: spec の `id` が現役 backlog（blocked/review 含む）に居れば飛ばす。定期実行しても
+      同じ発見が重複投入されない（done→archive 後に同じ発見が再発したら新タスクとして積み直せる）。
+    - **有限・無害**: verify_timeout で打ち切り、exit≠0・非 JSON・例外は journal に残して無視
+      （ループは殺さない）。intake_interval（秒）で律速し、0 以下なら毎回。
+    - 常駐（長期実行）は kiro-autonomous 側が持つ。intake_cmd 自体は単発・有界であること。"""
+    if not cfg.intake_cmd:
+        return []
+    interval = float(cfg.intake_interval or 0)
+    key = str(cfg.backlog)
+    now = time.time()
+    if interval > 0 and now - _INTAKE_LAST.get(key, 0.0) < interval:
+        return []
+    _INTAKE_LAST[key] = now
+    try:
+        p = subprocess.run(cfg.intake_cmd, shell=True, cwd=str(cfg.workdir),
+                           capture_output=True, text=True, timeout=cfg.verify_timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        append_journal(cfg.journal, f"intake 実行失敗: {e}")
+        return []
+    if p.returncode != 0:
+        append_journal(cfg.journal, f"intake NG (exit {p.returncode}): {cfg.intake_cmd}")
+        return []
+    out = (p.stdout or "").strip()
+    if not out:
+        return []
+    try:
+        data = json.loads(out)
+    except ValueError:
+        append_journal(cfg.journal, "intake 出力が JSON でないため無視")
+        return []
+    created: "list[Task]" = []
+    existing = {f.stem for f in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
+    for sp in (data if isinstance(data, list) else [data]):
+        if not isinstance(sp, dict):
+            continue
+        sid = _slug_id(str(sp.get("id", "") or ""))
+        if sid and sid in existing:
+            continue                        # 冪等: 現役 backlog に居る発見は再投入しない
+        try:
+            created.append(enqueue_task(cfg, sp))
+        except ValueError as e:
+            append_journal(cfg.journal, f"intake spec 無効: {e}")
+            continue
+        if sid:
+            existing.add(sid)
+    if created:
+        append_journal(cfg.journal, f"intake 取り込み {[t.id for t in created]}")
+    return created
+
+
 _FOLLOWUP_LINE_RE = re.compile(r"^@followup\s+(?P<spec>.+)$")
 
 
@@ -2599,6 +2658,8 @@ class Config:
     max_spawn: int = 20             # 1 run で生成できる派生タスク数の上限（0 で生成無効。暴走防止）
     regression_cmd: "str | None" = None  # done 確定前に走らせるグローバル回帰検査（巻き込み事故の検知）
     regression_revert: bool = False      # 回帰時に作業ツリーの未コミット変更を巻き戻す（既定 off）
+    intake_cmd: "str | None" = None      # 外部の決定的ゲート/検出器から修復タスクを汲み上げる取り込みコマンド
+    intake_interval: float = 600.0       # intake_cmd の実行間隔（秒）。0 以下なら毎回（パス開始/idle poll 毎）
     ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
     ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
     promote_threshold: int = 2      # learn ルールがこの回数以上効いたら昇格
@@ -3162,7 +3223,7 @@ def _run_setup(cfg: "Config") -> tuple:
     """run_loop の前処理: inbox 取り込み → 読み込み → 人のフィードバック解除 → triage/rot で
     ready/blocked を確定 → verify を用意する。(tasks, policy, reasons, ingested, inboxed, pre_blocked)。"""
     ensure_dirs(cfg)
-    inboxed = ingest_inbox(cfg)                       # 外部ドロップ(inbox/)を backlog へ取り込む
+    inboxed = run_intake(cfg) + ingest_inbox(cfg)     # 取り込みコマンド＋外部ドロップ(inbox/)を backlog へ
     tasks = load_tasks(cfg.backlog)
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
@@ -3368,6 +3429,7 @@ def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.slee
             sleeper(cfg.poll)
             if heartbeat:
                 heartbeat()          # idle 中も heartbeat を保ち、リモートから生存が見えるようにする
+            run_intake(cfg)          # 外部ゲートからの汲み上げ（間隔律速。積まれれば has_work が起こす）
             if maybe_self_update(cfg):   # アイドル時のみ自己更新を確認・取り込み（取り込めたら再起動）
                 raise _RestartRequested()
 
@@ -5510,6 +5572,8 @@ CONFIG_DEFAULTS = {
     "max_spawn": 20,            # 1 run の派生タスク生成上限（0 で無効）
     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
     "regression_revert": False,
+    "intake_cmd": None,         # 外部ゲート/検出器から修復タスクを汲み上げるコマンド（例: codd-gate tasks --debt）
+    "intake_interval": 600.0,   # intake の実行間隔（秒）。0 以下で毎パス/毎 poll
     "auto_level_max": "assisted",   # 自動昇格の ceiling（unattended への自動到達は明示時のみ）
     "level_promote_after": 5,       # 昇格に要する連続 clean 数
     "level_window": 10,             # 手戻り率の評価窓（直近 N 件）
@@ -5625,6 +5689,8 @@ def build_config(args) -> Config:
         max_spawn=getattr(args, "max_spawn", 20),
         regression_cmd=getattr(args, "regression_cmd", None),
         regression_revert=bool(getattr(args, "regression_revert", False)),
+        intake_cmd=getattr(args, "intake_cmd", None),
+        intake_interval=float(getattr(args, "intake_interval", 600.0) or 0.0),
         require_progress=bool(getattr(args, "require_progress", False)),
         auto_level=bool(getattr(args, "auto_level", False)),
         auto_level_max=str(getattr(args, "auto_level_max", "assisted") or "assisted"),
@@ -5736,6 +5802,12 @@ def _add_common(sp):
                     help="done 確定前に走らせるグローバル回帰検査（失敗で done にせず人へ。巻き込み事故の検知）")
     sp.add_argument("--regression-revert", action=argparse.BooleanOptionalAction, default=None,
                     help="回帰検知時に作業ツリーの未コミット変更を巻き戻す（best-effort・既定 off）")
+    sp.add_argument("--intake-cmd", default=None,
+                    help="外部の決定的ゲート/検出器から修復タスクを汲み上げるコマンド（stdout の "
+                         "enqueue --json 形式を冪等取り込み。例: codd-gate tasks --debt。"
+                         "単発・有界なコマンドであること＝常駐はこちらが持つ）")
+    sp.add_argument("--intake-interval", type=float, default=None,
+                    help="intake の実行間隔（秒。既定 600。0 以下で毎パス/毎 poll）")
     sp.add_argument("--ltm", action=argparse.BooleanOptionalAction, default=None,
                     help="効いた学習を ltm-use 長期記憶へ昇格＋プロジェクト横断 recall（既定 off）")
     sp.add_argument("--ltm-home", default=None,

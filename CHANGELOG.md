@@ -27,8 +27,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   無害（未知キーは無視される）。リポジトリ横断参照は `repo名:相対パス`。
 - **接続の推定は決定的**: 明示注釈 `coherence: doc|code|test=…`（最優先）＞ md のインラインコード/
   リンク ＞ Python import ＞ 命名規約（一意時のみ）。曖昧は接続も負債もしない。
-- **新規スキル `codd-gate`**: 結線手順（regression_cmd → acceptance ラチェット → tasks 返済）の運用。
-- 設計書 `docs/designs/codd-gate-design.md`（codd-dev からの翻案対応表つき）とテスト 25 件を同梱。
+- **kiro-autonomous に汎用取り込みフック `intake_cmd` を追加**（設定/CLI `--intake-cmd[-interval]`）:
+  外部の決定的ゲート/検出器を watch の周期で pull し、stdout の enqueue --json を**冪等取り込み**
+  （id が現役 backlog に居れば飛ばす）。パス開始時と idle 中に間隔律速で実行、失敗は journal に残して
+  無視。**常駐は kiro-autonomous 側だけが持ち、intake_cmd（codd-gate 含む）は単発・有界**という役割
+  分担を固定。有効化は設定だけ: `regression_cmd`（差分ゲート）＋`intake_cmd: codd-gate tasks --debt`
+  （負債の自動返済）＋charter acceptance（ラチェット）。kiro-autonomous の install.sh は隣に
+  codd-gate があれば同梱インストールする。
+- **`tasks --debt --cohort`**: 未文書化/未テストのような同種負債の山を repo 単位の cohort
+  （`cohort_items`＋`{item}`）に集約し、後段の分解を kiro-autonomous の pilot-then-batch に委ねる。
+  タスク id は発見内容から決定的（48 字・末尾ハッシュ）＝intake の冪等キー。
+- **新規スキル `codd-gate`**: 結線手順（regression_cmd → acceptance ラチェット → intake_cmd 返済）の運用。
+- 設計書 `docs/designs/codd-gate-design.md`（codd-dev からの翻案対応表つき）とテスト（codd-gate 27 件
+  ＋kiro-autonomous intake 5 件）を同梱。
 
 ### agentic-search v1.0.0 — 反復探索を共有スキル化し検索系スキルへ一括導入
 

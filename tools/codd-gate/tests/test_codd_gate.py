@@ -315,6 +315,31 @@ class TasksTests(unittest.TestCase):
         self.assertNotIn("verify", specs[0])                     # 別 repo は accept（合成/人）へ
         self.assertEqual(specs[0]["workspace"], "lib")
 
+    def test_task_ids_fit_enqueue_slug_rules(self):
+        """id は kiro-autonomous の _slug_id（[A-Za-z0-9_-]・48 字）をそのまま通る＝intake の冪等キー。"""
+        long = "src/very/long/nested/path/some_component_with_long_name.py"
+        tid = cg._task_id("cohort", f"app:docs/x.md", f"app:{long}")   # cohort が最長の kind
+        self.assertLessEqual(len(tid), 48)
+        self.assertRegex(tid, r"^[A-Za-z0-9_-]+$")
+        self.assertEqual(tid, cg._task_id("cohort", "app:docs/x.md", f"app:{long}"))   # 決定的
+        other = cg._task_id("cohort", "app:docs/x.md", f"app:{long.replace('some', 'anot')}")
+        self.assertNotEqual(tid, other)                  # 切り詰めても別発見は別 id（ハッシュ）
+
+    def test_debt_cohort_groups_homogeneous_debt(self):
+        for i in range(3):
+            write(self.d, f"src/mod{i}.py", f"V{i} = 1\n")
+        commit(self.d, "orphans")
+        rc, out = run_cli(["tasks", "--repo-dir", f"app={self.d}", "--debt", "--cohort"])
+        self.assertEqual(rc, 0)
+        specs = json.loads(out)
+        cohorts = [s for s in specs if "cohort_items" in s]
+        self.assertEqual(len(cohorts), 2)                # 未文書化 / 未テスト × repo app
+        doc = next(s for s in cohorts if "--need doc" in s["verify"])
+        self.assertIn("{item}", doc["title"])            # pilot-then-batch の差し込みプレースホルダ
+        self.assertIn("{item}", doc["verify"])
+        self.assertIn("src/mod0.py", doc["cohort_items"])
+        self.assertGreaterEqual(len(doc["cohort_items"]), 3)
+
     def test_debt_tasks_and_inbox(self):
         write(self.d, "docs/util.md", "`src/util.py` と `src/gone.py` の説明。\n")
         write(self.d, "src/orphan.py", "B = 1\n")

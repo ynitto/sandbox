@@ -198,6 +198,70 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
 
+class TestIntake(unittest.TestCase):
+    """取り込みコマンド（intake_cmd）。外部の決定的ゲート/検出器（codd-gate 等）から修復タスクを
+    watch の周期で汲み上げる。冪等（id が現役 backlog に居れば飛ばす）・有限・無害。"""
+
+    def setUp(self):
+        km._INTAKE_LAST.clear()
+
+    def _cfg(self, d, cmd, interval=0.0):
+        return cfg_for(d, inbox=d / "inbox", learn=False, auto_adjudicate=False,
+                       max_cycles=10, intake_cmd=cmd, intake_interval=interval)
+
+    def test_run_intake_enqueues_and_dedups_by_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            cmd = ("printf '%s' '[{\"id\":\"I1\",\"title\":\"i1\",\"verify\":\"true\"},"
+                   "{\"id\":\"I2\",\"title\":\"i2\",\"verify\":\"true\"}]'")
+            cfg = self._cfg(Path(d), cmd)
+            km.ensure_dirs(cfg)
+            got = km.run_intake(cfg)
+            self.assertEqual(sorted(t.id for t in got), ["I1", "I2"])
+            self.assertEqual(km.run_intake(cfg), [])       # 冪等: 現役 backlog に居る id は再投入しない
+            self.assertEqual(sorted(p.stem for p in cfg.backlog.glob("*.md")), ["I1", "I2"])
+
+    def test_run_intake_interval_throttles(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), "printf '%s' '[{\"id\":\"T1\",\"title\":\"t\",\"verify\":\"true\"}]'",
+                            interval=3600.0)
+            km.ensure_dirs(cfg)
+            self.assertEqual(len(km.run_intake(cfg)), 1)
+            (cfg.backlog / "T1.md").unlink()               # backlog から消しても…
+            self.assertEqual(km.run_intake(cfg), [])       # …間隔内は実行自体をしない（律速）
+
+    def test_run_intake_tolerates_failures(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for cmd in ("printf not-json", "exit 3", "true"):   # 非JSON / exit≠0 / 空出力
+                cfg = self._cfg(d, cmd)
+                km.ensure_dirs(cfg)
+                self.assertEqual(km.run_intake(cfg), [])
+            self.assertEqual(list(cfg.backlog.glob("*.md")), [])
+
+    def test_run_loop_intakes_and_consumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), "printf '%s' '{\"id\":\"L1\",\"title\":\"l\",\"verify\":\"true\"}'")
+            km.ensure_dirs(cfg)
+            res = km.run_loop(cfg)
+            self.assertEqual(len(res["inboxed"]), 1)       # パス開始時の intake で取り込み
+            self.assertEqual(res["counts"]["done"], 1)     # 同じ run で消化
+
+    def test_watch_idle_intake_wakes_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), "printf '%s' '{\"id\":\"W1\",\"title\":\"w\",\"verify\":\"true\"}'")
+            km.ensure_dirs(cfg)
+            calls = {"n": 0}
+
+            def slp(_s):
+                calls["n"] += 1
+                if calls["n"] > 50:                        # idle intake が壊れたらハングでなく失敗させる
+                    raise TimeoutError("idle 中の intake がパスを起こさない")
+
+            # pass1: 開始時 intake→W1 消化(archive)。idle: intake が W1 を再投入→has_work→pass2 が起きる
+            last = km.run_watch(cfg, sleeper=slp, max_passes=2)
+            self.assertEqual(last["counts"]["done"], 1)
+
+
 class TestFlakeTolerantVerify(unittest.TestCase):
     """フレーク耐性 verify（--verify-confirm）。揺れる verify を NG churn せず人へ隔離。"""
 
