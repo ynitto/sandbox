@@ -45,7 +45,29 @@ html, body {
 
 .sidebar-header h1 { font-size: 14px; margin: 0; color: var(--accent); }
 
-#filters { padding: 10px; border-bottom: 1px solid var(--border); }
+#mode-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+
+#mode-tabs button {
+  flex: 1;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 0;
+}
+
+#mode-tabs button.active {
+  color: var(--fg);
+  background: var(--bg3);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+#filters, #needs-controls { padding: 10px; border-bottom: 1px solid var(--border); }
+
+#needs-root { word-break: break-all; font-size: 11px; margin-bottom: 8px; }
 
 .field { margin-bottom: 8px; }
 .field label { display: block; color: var(--muted); margin-bottom: 3px; }
@@ -75,7 +97,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 #candidate-count { padding: 4px 10px; }
 .muted { color: var(--muted); }
 
-#candidates {
+#candidates, #needs-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -83,14 +105,17 @@ button:disabled { opacity: 0.4; cursor: default; }
   flex: 1;
 }
 
-#candidates li {
+#candidates li, #needs-list li {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
 
-#candidates li:hover { background: var(--bg3); }
-#candidates li.selected { background: var(--bg3); border-left: 3px solid var(--accent); }
+#candidates li:hover, #needs-list li:hover { background: var(--bg3); }
+#candidates li.selected, #needs-list li.selected {
+  background: var(--bg3);
+  border-left: 3px solid var(--accent);
+}
 
 .cand-title { display: block; margin: 2px 0; }
 .cand-meta { color: var(--muted); font-size: 11px; }
@@ -104,6 +129,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .badge.issue { background: var(--accent2); color: #fff; }
 .badge.mr { background: var(--green); color: #fff; }
+.badge.needs { background: var(--accent); color: #fff; }
 
 .chip {
   display: inline-block;
@@ -170,6 +196,37 @@ button:disabled { opacity: 0.4; cursor: default; }
 .urlbar button { padding: 2px 8px; }
 
 webview { flex: 1; background: #fff; }
+
+/* needs（ローカル Markdown）表示 */
+.local-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 20px;
+  background: var(--bg);
+  line-height: 1.6;
+}
+
+.local-view h1 { font-size: 17px; color: var(--accent); }
+.local-view h2 { font-size: 14px; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+.local-view pre {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  overflow-x: auto;
+}
+.local-view code { background: var(--bg3); border-radius: 3px; padding: 0 4px; }
+.local-view a { color: var(--accent2); }
+.local-view .md-fm {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
 
 /* ---------- アクションバー ---------- */
 

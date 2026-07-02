@@ -15,6 +15,11 @@
         <button id="btn-settings" title="設定">⚙</button>
       </div>
 
+      <div id="mode-tabs">
+        <button id="mode-gitlab" class="active">GitLab</button>
+        <button id="mode-needs">Needs</button>
+      </div>
+
       <section id="filters">
         <div class="field">
           <label for="group-search">グループ</label>
@@ -73,8 +78,17 @@
         <button id="btn-search" class="primary">候補を検索</button>
       </section>
 
+      <section id="needs-controls" hidden>
+        <div class="field">
+          <label>kiro-autonomous コンテナ</label>
+          <div id="needs-root" class="muted"></div>
+        </div>
+        <button id="btn-load-needs" class="primary">Needs を更新</button>
+      </section>
+
       <div id="candidate-count" class="muted"></div>
       <ul id="candidates"></ul>
+      <ul id="needs-list" hidden></ul>
     </aside>
 
     <main id="main">
@@ -88,6 +102,7 @@
             <button data-act="external" data-pane="0" title="ブラウザで開く">↗</button>
           </div>
           <webview id="wv-0" partition="persist:gitlab" src="about:blank"></webview>
+          <div class="local-view" id="lv-0" hidden></div>
         </section>
         <section class="pane" data-pane="1">
           <div class="tabbar" id="tabbar-1"></div>
@@ -98,6 +113,7 @@
             <button data-act="external" data-pane="1" title="ブラウザで開く">↗</button>
           </div>
           <webview id="wv-1" partition="persist:gitlab" src="about:blank"></webview>
+          <div class="local-view" id="lv-1" hidden></div>
         </section>
       </div>
 
@@ -119,6 +135,8 @@
             <button id="btn-close">クローズ</button>
             <button id="btn-reopen">リオープン</button>
             <button id="btn-export">Obsidian へ</button>
+            <button id="btn-feedback" hidden>フィードバック確定 [x]</button>
+            <button id="btn-approve" hidden>approve</button>
           </div>
         </div>
       </section>
@@ -150,6 +168,12 @@
       <input id="cfg-agent-timeout" type="number" min="0" />
       <label>要約プロンプト</label>
       <textarea id="cfg-agent-prompt" rows="8" spellcheck="false"></textarea>
+      <label>needs 要約プロンプト</label>
+      <textarea id="cfg-agent-needs-prompt" rows="6" spellcheck="false"></textarea>
+      <label>kiro-autonomous コンテナ</label>
+      <input id="cfg-kiro-root" type="text" placeholder="C:\work\repo\.kiro-autonomous" />
+      <label>approve コマンド</label>
+      <input id="cfg-kiro-approve" type="text" />
       <label>Obsidian Vault パス</label>
       <input id="cfg-obsidian-vault" type="text" placeholder="C:\Users\you\Documents\Vault" />
       <label>Vault 内サブフォルダ</label>

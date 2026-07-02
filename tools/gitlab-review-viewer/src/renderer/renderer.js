@@ -8,9 +8,12 @@
 
 const state = {
   config: null,
+  mode: 'gitlab', // 'gitlab' | 'needs'
   candidates: [],
   selectedIndex: -1,
-  // pages[0] = 選択した候補、pages[1..] = 関連イシュー / MR
+  needsItems: [],
+  needsSelectedIndex: -1,
+  // pages[0] = 選択した候補、pages[1..] = 関連イシュー / MR（needs 選択時は 1 件のみ）
   pages: [],
   paneActive: [0, 1], // 各ペインが表示している pages のインデックス
   targetIndex: 0, // コメント・ラベル等の操作対象（pages のインデックス)
@@ -64,6 +67,72 @@ function escapeHtml(s) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
+}
+
+// needs（ローカル Markdown）表示用の最小レンダラ。
+// 見出し・箇条書き・コードブロック・太字・インラインコード・リンク・frontmatter に対応。
+function mdToHtml(md) {
+  const inline = (s) =>
+    escapeHtml(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1">$1</a>');
+
+  const text = String(md).replace(/<!--[\s\S]*?-->/g, '');
+  const lines = text.split(/\r?\n/);
+  const out = [];
+  let inCode = false;
+  let listOpen = false;
+  const closeList = () => {
+    if (listOpen) {
+      out.push('</ul>');
+      listOpen = false;
+    }
+  };
+  let idx = 0;
+  if (lines[0] === '---') {
+    const end = lines.indexOf('---', 1);
+    if (end > 0) {
+      out.push('<div class="md-fm">');
+      for (let j = 1; j < end; j++) out.push(`<div>${inline(lines[j])}</div>`);
+      out.push('</div>');
+      idx = end + 1;
+    }
+  }
+  for (; idx < lines.length; idx++) {
+    const ln = lines[idx];
+    if (ln.startsWith('```')) {
+      closeList();
+      inCode = !inCode;
+      out.push(inCode ? '<pre>' : '</pre>');
+      continue;
+    }
+    if (inCode) {
+      out.push(escapeHtml(ln));
+      continue;
+    }
+    const h = ln.match(/^(#{1,4}) (.+)$/);
+    if (h) {
+      closeList();
+      const lv = h[1].length;
+      out.push(`<h${lv}>${inline(h[2])}</h${lv}>`);
+      continue;
+    }
+    const li = ln.match(/^\s*- (.+)$/);
+    if (li) {
+      if (!listOpen) {
+        out.push('<ul>');
+        listOpen = true;
+      }
+      out.push(`<li>${inline(li[1])}</li>`);
+      continue;
+    }
+    closeList();
+    if (ln.trim() !== '') out.push(`<p>${inline(ln)}</p>`);
+  }
+  closeList();
+  if (inCode) out.push('</pre>');
+  return out.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -190,10 +259,116 @@ async function selectCandidate(index) {
 }
 
 // ---------------------------------------------------------------------------
-// ペイン表示（タブ + URL バー + webview）
+// kiro-autonomous needs（判断待ち/検収待ち・MADR 互換 ADR）
+// ---------------------------------------------------------------------------
+
+function setMode(mode) {
+  state.mode = mode;
+  $('mode-gitlab').classList.toggle('active', mode === 'gitlab');
+  $('mode-needs').classList.toggle('active', mode === 'needs');
+  $('filters').hidden = mode !== 'gitlab';
+  $('candidates').hidden = mode !== 'gitlab';
+  $('needs-controls').hidden = mode !== 'needs';
+  $('needs-list').hidden = mode !== 'needs';
+  $('candidate-count').textContent =
+    mode === 'gitlab'
+      ? state.candidates.length
+        ? `候補: ${state.candidates.length} 件`
+        : ''
+      : state.needsItems.length
+        ? `needs: ${state.needsItems.length} 件`
+        : '';
+  if (mode === 'needs') {
+    $('needs-root').textContent =
+      (state.config.kiroAutonomous && state.config.kiroAutonomous.root) || '（未設定）';
+  }
+}
+
+async function loadNeedsCore() {
+  const items = await api.kiroNeedsList();
+  state.needsItems = items;
+  state.needsSelectedIndex = -1;
+  renderNeedsList();
+  $('candidate-count').textContent = `needs: ${items.length} 件`;
+}
+
+function renderNeedsList() {
+  const ul = $('needs-list');
+  ul.innerHTML = '';
+  state.needsItems.forEach((n, i) => {
+    const li = document.createElement('li');
+    li.classList.toggle('selected', i === state.needsSelectedIndex);
+    const meta = [n.project || '(root)', n.kind || '-', n.submitted ? '確定済' : '未確定']
+      .map(escapeHtml)
+      .join(' · ');
+    li.innerHTML =
+      `<span class="badge needs">Needs</span>` +
+      `<span class="cand-meta">${meta}</span>` +
+      `<span class="cand-title">${escapeHtml(n.title || n.id)}</span>` +
+      (n.why ? `<span class="cand-meta">${escapeHtml(n.why.slice(0, 80))}</span>` : '');
+    li.addEventListener('click', () => selectNeeds(i));
+    ul.appendChild(li);
+  });
+}
+
+async function selectNeeds(index) {
+  await guard('needs 読み込み', async () => {
+    state.needsSelectedIndex = index;
+    renderNeedsList();
+    const item = state.needsItems[index];
+    const detail = await api.kiroNeedsRead(item.file);
+    const page = {
+      kind: 'needs',
+      type: 'needs',
+      id: item.id,
+      project: item.project,
+      file: item.file,
+      title: detail.title || item.id,
+      raw: detail.raw,
+      status: detail.status,
+      needsKind: detail.kind,
+      submitted: detail.submitted,
+      why: detail.why,
+      url: item.file,
+      labels: [],
+    };
+    state.pages = [page];
+    state.paneActive = [0, 0];
+    state.targetIndex = 0;
+    state.lastSummary = '';
+    renderPanes();
+    renderTargetSelect();
+    renderTargetInfo();
+  });
+}
+
+// 選択中 needs ページの内容を読み直す（フィードバック確定後など）
+async function refreshNeedsPage(t) {
+  try {
+    const d = await api.kiroNeedsRead(t.file);
+    t.raw = d.raw;
+    t.submitted = d.submitted;
+    t.status = d.status;
+  } catch {
+    /* 取り込まれて消えた場合はそのまま */
+  }
+  renderPanes();
+  renderTargetInfo();
+  try {
+    await loadNeedsCore();
+  } catch {
+    /* 一覧更新失敗は無視 */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ペイン表示（タブ + URL バー + webview / ローカル表示）
 // ---------------------------------------------------------------------------
 
 function pageLabel(p) {
+  if (p.kind === 'needs') {
+    return `Needs ${p.id}${p.project ? ` @${p.project}` : ''}`;
+  }
   const kind = p.type === 'issue' ? 'Issue' : 'MR';
   return `${kind} ${p.ref || `#${p.iid}`}`;
 }
@@ -222,6 +397,17 @@ function setPaneTab(pane, index) {
 function syncPane(pane) {
   const page = state.pages[state.paneActive[pane]];
   const wv = $(`wv-${pane}`);
+  const lv = $(`lv-${pane}`);
+  if (page && page.kind === 'needs') {
+    // ローカル Markdown 表示（webview は隠す）
+    wv.style.display = 'none';
+    lv.hidden = false;
+    lv.innerHTML = mdToHtml(page.raw || '');
+    $(`url-${pane}`).value = page.file;
+    return;
+  }
+  wv.style.display = 'flex';
+  lv.hidden = true;
   const url = page ? page.url : 'about:blank';
   if (wv.getAttribute('src') !== url) {
     wv.setAttribute('src', url);
@@ -231,6 +417,14 @@ function syncPane(pane) {
 
 function bindPaneEvents() {
   for (const pane of [0, 1]) {
+    // needs 表示内のリンクは OS 既定ブラウザで開く
+    $(`lv-${pane}`).addEventListener('click', (e) => {
+      const a = e.target.closest('a[href]');
+      if (a) {
+        e.preventDefault();
+        api.openExternal(a.getAttribute('href')).catch((err) => toast(err.message, true));
+      }
+    });
     const wv = $(`wv-${pane}`);
     for (const ev of ['did-navigate', 'did-navigate-in-page']) {
       wv.addEventListener(ev, (e) => {
@@ -278,9 +472,35 @@ function renderTargetSelect() {
 
 function renderTargetInfo() {
   const t = currentTarget();
-  $('target-state').textContent = t ? t.state : '';
+  const isNeeds = !!(t && t.kind === 'needs');
+
+  // GitLab 用とニーズ用でアクションバーを切り替える
+  for (const id of ['btn-comment', 'btn-merge', 'btn-close', 'btn-reopen', 'btn-export']) {
+    $(id).hidden = isNeeds;
+  }
+  $('btn-feedback').hidden = !isNeeds;
+  $('btn-approve').hidden = !isNeeds;
+  $('preset-buttons').hidden = isNeeds;
+  $('comment-input').placeholder = isNeeds
+    ? 'フィードバック（方針・指示）を入力（Ctrl+Enter で確定 [x]）'
+    : 'コメントを入力（Ctrl+Enter で投稿）';
+
   const wrap = $('target-labels');
   wrap.innerHTML = '';
+  if (isNeeds) {
+    $('target-state').textContent = `${t.needsKind || 'needs'}${t.submitted ? '・確定済' : ''}`;
+    for (const text of [t.status ? `status: ${t.status}` : '', t.project ? `@${t.project}` : '']) {
+      if (!text) continue;
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = text;
+      wrap.appendChild(chip);
+    }
+    renderPresetButtons();
+    return;
+  }
+
+  $('target-state').textContent = t ? t.state : '';
   if (t) {
     for (const l of t.labels) {
       const chip = document.createElement('span');
@@ -327,7 +547,7 @@ function renderPresetButtons() {
 async function applyPreset(index) {
   const preset = (state.config.labelPresets || [])[index];
   const t = currentTarget();
-  if (!preset || !t) return;
+  if (!preset || !t || t.kind === 'needs') return;
   await guard('ラベル更新', async () => {
     let add = [preset.label];
     let remove = [];
@@ -355,6 +575,7 @@ async function applyPreset(index) {
 
 async function postComment() {
   const t = currentTarget();
+  if (t && t.kind === 'needs') return doFeedback(); // needs では Ctrl+Enter = フィードバック確定
   const body = $('comment-input').value.trim();
   if (!t) return toast('操作対象がありません', true);
   if (!body) return toast('コメントが空です', true);
@@ -362,6 +583,41 @@ async function postComment() {
     await api.glComment(targetOf(t), body);
     $('comment-input').value = '';
     toast(`${pageLabel(t)} にコメントを投稿しました`);
+  });
+}
+
+// needs: フィードバックを書き込み、確定チェックボックスを [x] にする
+async function doFeedback() {
+  const t = currentTarget();
+  if (!t || t.kind !== 'needs') return toast('Needs を操作対象に選択してください', true);
+  const text = $('comment-input').value.trim();
+  const msg = text
+    ? 'フィードバックを書き込み、確定（[x]）します。'
+    : 'フィードバックなしで確定（[x]）します（blocked はそのまま再実行 / review は承認扱い）。';
+  if (!window.confirm(`${pageLabel(t)}: ${msg}\nkiro-autonomous が次パスで自動取り込みします。よろしいですか？`)) {
+    return;
+  }
+  await guard('フィードバック確定', async () => {
+    await api.kiroNeedsFeedback(t.file, text);
+    $('comment-input').value = '';
+    toast('フィードバックを確定しました（次パスで取り込まれます）');
+    await refreshNeedsPage(t);
+  });
+}
+
+// needs: kiro-autonomous approve <id> を実行（検収承認 / 修正承認）
+async function doApprove() {
+  const t = currentTarget();
+  if (!t || t.kind !== 'needs') return toast('Needs を操作対象に選択してください', true);
+  const reason = $('comment-input').value.trim() || 'ビュアーから承認';
+  if (!window.confirm(`kiro-autonomous approve ${t.id} を実行します。\n理由: ${reason}\nよろしいですか？`)) {
+    return;
+  }
+  await guard('approve', async () => {
+    const { output } = await api.kiroNeedsApprove(t.id, t.project, reason);
+    $('comment-input').value = '';
+    toast(`approve 完了: ${(output || '').split('\n')[0] || 'OK'}`);
+    await refreshNeedsPage(t);
   });
 }
 
@@ -378,7 +634,7 @@ async function doMerge() {
 
 async function doClose() {
   const t = currentTarget();
-  if (!t) return;
+  if (!t || t.kind === 'needs') return;
   if (!window.confirm(`${pageLabel(t)} をクローズします。よろしいですか？`)) return;
   await guard('クローズ', async () => {
     const updated = await api.glSetState(targetOf(t), 'close');
@@ -389,7 +645,7 @@ async function doClose() {
 
 async function doReopen() {
   const t = currentTarget();
-  if (!t) return;
+  if (!t || t.kind === 'needs') return;
   await guard('リオープン', async () => {
     const updated = await api.glSetState(targetOf(t), 'reopen');
     applyUpdatedItem(updated);
@@ -411,7 +667,10 @@ async function doSummarize() {
   $('summary-text').value = '';
   dlg.showModal();
   await guard('要約', async () => {
-    const { summary } = await api.agentSummarize(targetOf(t));
+    const { summary } =
+      t.kind === 'needs'
+        ? await api.agentSummarizeNeeds(t.file)
+        : await api.agentSummarize(targetOf(t));
     state.lastSummary = summary;
     $('summary-text').value = summary;
     $('summary-status').textContent = `${pageLabel(t)} の要約が完了しました`;
@@ -424,6 +683,7 @@ async function doSummarize() {
 async function doExport() {
   const t = currentTarget();
   if (!t) return toast('操作対象がありません', true);
+  if (t.kind === 'needs') return toast('Obsidian エクスポートは GitLab の対象のみ対応です', true);
   const summary = $('summary-dialog').open ? $('summary-text').value : state.lastSummary;
   await guard('Obsidian エクスポート', async () => {
     const { file } = await api.obsidianExport(targetOf(t), summary);
@@ -502,6 +762,9 @@ function openSettings() {
   $('cfg-agent-command').value = c.agent.command;
   $('cfg-agent-timeout').value = c.agent.timeoutSec;
   $('cfg-agent-prompt').value = c.agent.promptTemplate;
+  $('cfg-agent-needs-prompt').value = c.agent.needsPromptTemplate;
+  $('cfg-kiro-root').value = c.kiroAutonomous.root;
+  $('cfg-kiro-approve').value = c.kiroAutonomous.approveCommand;
   $('cfg-obsidian-vault').value = c.obsidian.vaultDir;
   $('cfg-obsidian-subdir').value = c.obsidian.subDir;
   $('cfg-obsidian-open').checked = !!c.obsidian.openAfterExport;
@@ -530,6 +793,12 @@ async function saveSettings() {
       command: $('cfg-agent-command').value.trim(),
       timeoutSec: Number($('cfg-agent-timeout').value) || 0,
       promptTemplate: $('cfg-agent-prompt').value,
+      needsPromptTemplate: $('cfg-agent-needs-prompt').value,
+    },
+    kiroAutonomous: {
+      ...state.config.kiroAutonomous,
+      root: $('cfg-kiro-root').value.trim(),
+      approveCommand: $('cfg-kiro-approve').value.trim(),
     },
     obsidian: {
       vaultDir: $('cfg-obsidian-vault').value.trim(),
@@ -543,6 +812,7 @@ async function saveSettings() {
     state.config = await api.saveConfig(cfg);
     $('settings-dialog').close();
     renderPresetButtons();
+    if (state.mode === 'needs') setMode('needs'); // needs-root 表示を更新
     toast('設定を保存しました');
   });
 }
@@ -565,6 +835,12 @@ async function init() {
   $('keyword-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') searchCandidates();
   });
+
+  $('mode-gitlab').addEventListener('click', () => setMode('gitlab'));
+  $('mode-needs').addEventListener('click', () => setMode('needs'));
+  $('btn-load-needs').addEventListener('click', () => guard('Needs 取得', loadNeedsCore));
+  $('btn-feedback').addEventListener('click', doFeedback);
+  $('btn-approve').addEventListener('click', doApprove);
 
   bindPaneEvents();
 

@@ -1336,6 +1336,41 @@ class TestFeedback(unittest.TestCase):
             _submit_feedback(d / "needs" / "T1.md", "急いで保存した")
             self.assertEqual(km.ingest_feedback(cfg, km.load_tasks(d / "backlog")), [])
 
+    def test_needs_is_madr_format(self):
+        # needs/<id>.md は MADR 互換（frontmatter + Decision Outcome 欄）で生成され、
+        # そのままフィードバック往復が成立する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            km.write_needs_file(cfg, km.Task(id="T1", title="T1"), "NG")
+            nf = d / "needs" / "T1.md"
+            text = nf.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("---\n"))
+            self.assertIn("status: proposed", text)
+            self.assertIn("kind: blocked", text)
+            self.assertIn("## Context and Problem Statement", text)
+            self.assertIn(km.DECISION_MARKER, text)
+            _submit_feedback(nf, "この方針で")
+            tasks = km.load_tasks(d / "backlog")
+            self.assertEqual(km.ingest_feedback(cfg, tasks), ["T1"])
+            self.assertEqual(dict(tasks[0].extra)["feedback"], "この方針で")
+
+    def test_legacy_feedback_marker_still_ingested(self):
+        # 旧形式（## フィードバック）の needs ファイルも引き続き取り込める
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            (d / "needs" / "T1.md").write_text(
+                "# 要対応: T1\n\n## フィードバック\n- [x] 確定\n旧形式の方針\n",
+                encoding="utf-8")
+            tasks = km.load_tasks(d / "backlog")
+            self.assertEqual(km.ingest_feedback(cfg, tasks), ["T1"])
+            self.assertEqual(dict(tasks[0].extra)["feedback"], "旧形式の方針")
+
 
 class TestDraft(unittest.TestCase):
     def test_draft_not_consumed(self):

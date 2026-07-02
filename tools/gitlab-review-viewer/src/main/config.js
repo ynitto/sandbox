@@ -49,10 +49,30 @@ const DEFAULT_PROMPT_TEMPLATE = [
   '{changes}',
 ].join('\n');
 
+const DEFAULT_NEEDS_PROMPT_TEMPLATE = [
+  'あなたは自律開発ループ（kiro-autonomous）の判断を補佐するアシスタントです。',
+  '以下は人の判断を求めている案件（needs/ の ADR、MADR 互換）です。',
+  '内容を日本語で要約し、次の構成で出力してください:',
+  '- 何が起きているか（3 行以内）',
+  '- 判断のポイント・選択肢',
+  '- 推奨（あれば理由つきで）',
+  '',
+  '# 案件: {title}',
+  '',
+  '{content}',
+].join('\n');
+
 const DEFAULT_CONFIG = {
   gitlab: {
     baseUrl: 'https://gitlab.com',
     token: '',
+  },
+  // kiro-autonomous の needs（判断待ち/検収待ち）連携。
+  // root はコンテナ（例: C:\work\repo\.kiro-autonomous）。配下の projects/<name>/needs を走査する。
+  kiroAutonomous: {
+    root: '',
+    approveCommand:
+      'kiro-autonomous approve {id} --root "{root}" --project "{project}" --reason "{reason}"',
   },
   agent: {
     // {promptFile} はプロンプト全文を書き出した一時ファイルのパスに置換される。
@@ -63,6 +83,7 @@ const DEFAULT_CONFIG = {
       '"{promptFile} に要約タスクの指示があります。このファイルを読み込み、指示に従って要約だけを出力してください。"',
     timeoutSec: 300,
     promptTemplate: DEFAULT_PROMPT_TEMPLATE,
+    needsPromptTemplate: DEFAULT_NEEDS_PROMPT_TEMPLATE,
   },
   obsidian: {
     vaultDir: '',

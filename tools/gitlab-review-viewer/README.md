@@ -39,6 +39,9 @@ Windows 用の exe としてビルドして起動できる Electron アプリ。
   リオープンもボタン / ショートカットで実行
 - **Obsidian エクスポート（オプション）** — 完了したイシュー / MR を要約付きの
   Markdown（frontmatter 付き）にして Vault のフォルダへ書き出す
+- **kiro-autonomous needs 対応** — 自律開発ループが人へ差し出す判断待ち / 検収待ち
+  （`needs/<id>.md`、MADR 互換 ADR）を一覧・表示し、フィードバック記入 → 確定（`[x]`）
+  や `approve` をビュアーから実行できる
 
 ## セットアップ
 
@@ -142,6 +145,53 @@ copilot --no-interactive {promptFile}
 要約プロンプト本文（`{title}` `{url}` `{state}` `{labels}` `{description}`
 `{notes}` `{changes}` `{typeLabel}` が使える）も設定画面で編集できる。
 
+## kiro-autonomous needs（判断待ち / 検収待ち）
+
+サイドバー上部の **Needs** タブに切り替えると、kiro-autonomous が人へ差し出した
+案件（`<コンテナ>/projects/<プロジェクト>/needs/<id>.md`）を一覧できる。
+
+1. 設定画面で **kiro-autonomous コンテナ**（例: `C:\work\repo\.kiro-autonomous`）を指定
+2. 「Needs を更新」で走査 → 一覧から案件を選択するとペインに ADR を表示
+3. 下部のアクションバーで操作
+   - **フィードバック確定 [x]** — 入力欄の方針を Decision Outcome 欄に書き込み、
+     確定チェックを `[x]` にする。kiro-autonomous が次パス（`--watch` なら次 poll）で
+     自動取り込みして再開する。空のまま確定すると blocked は「そのまま再実行」、
+     review は「承認」扱い
+   - **approve** — `kiro-autonomous approve <id>` を実行（検収承認 = done 確定 /
+     修正承認 = ready 積み直し）。コマンドは設定画面の `approve コマンド` で変更可能
+     （`{id}` `{root}` `{project}` `{reason}` が使える）
+   - **要約** — 案件の全文をエージェントに送り、判断ポイントを整理させる
+
+### needs ファイルの形式（MADR 互換）
+
+kiro-autonomous の needs は標準 ADR フォーマットの
+[MADR](https://adr.github.io/madr/)（Markdown Any Decision Records）互換で生成される:
+
+```markdown
+---
+status: proposed        # 確定すると accepted に更新される
+date: 2026-07-02
+decision-makers: [human]
+task-id: T1
+kind: blocked           # blocked / review / milestone
+---
+
+# 要対応: T1 — <タイトル>
+
+## Context and Problem Statement
+
+- なぜ: <理由>
+- 状態: <状態>
+
+## 判断材料（成果物の所在・差分・検証）
+
+## Decision Outcome
+
+- [ ] 確定（このボックスを [x] にして保存すると取り込みます）
+```
+
+旧形式（`## フィードバック` 欄）のファイルも表示・確定とも互換で扱える。
+
 ## Obsidian エクスポート
 
 設定画面で **Obsidian Vault パス**（と任意のサブフォルダ）を指定すると、
@@ -163,7 +213,8 @@ tools/gitlab-review-viewer/
       main.js           # ウィンドウ生成・webview 制御
       config.js         # 設定の読み書き（既定値は gitlab-idd ラベル規約）
       gitlab.js         # GitLab REST API v4 クライアント（fetch のみ）
-      agent.js          # ローカル CLI エージェント実行（要約）
+      kiro.js           # kiro-autonomous needs の一覧・フィードバック・approve
+      agent.js          # ローカル CLI エージェント実行（要約・approve コマンド）
       obsidian.js       # Markdown 生成・Vault への書き出し
       ipc.js            # IPC ハンドラ
     preload.js          # contextBridge（renderer へ安全に API を公開）
