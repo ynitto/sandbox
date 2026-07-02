@@ -231,6 +231,15 @@ kiro-autonomous の pilot-then-batch（1 件を人の検収で固めてから残
   その正位置に置くしかない。
 - **E5（notify_cmd）・E6（executor）は使わない**: codd-gate は通知も実行も持たない（分類とタスク生成
   まで）。修復の実行は正準ループ→kiro-flow の領分。
+- **kiro-flow（実行層）には差し込まない**: kiro-flow が公式に持つプラグイン機構は executor（E6 相当・
+  「どう実行するか」の差し替え口）のみで、exit code を契約とする決定的ゲートの差し込み口は無い。
+  kiro-flow 内の verify / gate ノードは**エージェントによる内側の品質ループ**（敵対的レビュー等）で
+  あり、決定的な合否とは別物。これは 3 層の責務分担どおり——**決定的な合否（done の根拠）は制御層
+  kiro-autonomous の専管**で、kiro-flow の act の成果は必ず外側の E1/E2 ゲートを通ってから done に
+  なるため、内側に同じゲートを重ねると責務の一元性が崩れる。kiro-flow を単体で使うときはフック不要の
+  シェル合成で足りる（`kiro-flow run "…" && codd-gate verify --base …`）。将来、内側の決定的ゲートが
+  本当に必要になれば、kiro-flow に「静止後・final 確定前に走る `gate_cmd`」を E2 の相似形（単発・
+  有界・exit code 契約）として追加する道はあるが、現状は外側で必ずゲートされるため設けない。
 
 ## 5. codd-dev からの主な翻案（差分）
 
