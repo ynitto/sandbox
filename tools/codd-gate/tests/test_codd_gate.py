@@ -493,5 +493,75 @@ class ScanCliTests(unittest.TestCase):
             self.assertIn(("app:manual/x.md", "app:src/x.py"), edges)
 
 
+class SyncTests(unittest.TestCase):
+    """--sync: 共有ミラー＋worktree による url-only repo の実体化（git-worktree-cache-pattern 準拠）。
+    フル clone をしない（ミラー初回のみ・以後増分 fetch）・毎回最新（INV-1）・worktree は後始末。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.origin = base / "origin"
+        init_repo(self.origin)
+        write(self.origin, "src/x.py", "X = 1\n")
+        write(self.origin, "README.md", "`src/x.py`\n")
+        commit(self.origin, "init")
+        self.cache = base / "cache"
+        self._old_cache = os.environ.get("KIRO_GIT_CACHE_DIR")
+        os.environ["KIRO_GIT_CACHE_DIR"] = str(self.cache)
+        self.conf = base / "codd-gate.json"
+        self.conf.write_text(json.dumps(
+            {"repos": {"app": {"url": str(self.origin), "base": "main"}}}), encoding="utf-8")
+        self.map = base / "map.json"
+
+    def tearDown(self):
+        if self._old_cache is None:
+            os.environ.pop("KIRO_GIT_CACHE_DIR", None)
+        else:
+            os.environ["KIRO_GIT_CACHE_DIR"] = self._old_cache
+        self.tmp.cleanup()
+
+    def _scan(self):
+        rc, _ = run_cli(["scan", "--sync", "--config", str(self.conf), "--map", str(self.map)])
+        self.assertEqual(rc, 0)
+        return json.loads(self.map.read_text(encoding="utf-8"))
+
+    def test_sync_fresh_worktree_reused_mirror_and_cleanup(self):
+        m = self._scan()
+        self.assertIn("app:src/x.py", m["nodes"])
+        self.assertEqual(m["unscanned"], [])
+        wt = Path(m["repos"]["app"]["dir"])
+        self.assertFalse(wt.exists())                      # 一時 worktree は run 後に回収
+        mirrors = list(self.cache.glob("*.git"))
+        self.assertEqual(len(mirrors), 1)                  # ミラーは残る（次回は増分 fetch）
+        # origin に新コミット → 再 scan は fetch 後の最新を見る（INV-1: 古い cache を使わない）
+        write(self.origin, "src/y.py", "Y = 1\n")
+        commit(self.origin, "add y")
+        m2 = self._scan()
+        self.assertIn("app:src/y.py", m2["nodes"])
+        self.assertEqual(len(list(self.cache.glob("*.git"))), 1)   # 再 clone していない
+
+    def test_sync_unresolvable_never_fakes_pass(self):
+        self.conf.write_text(json.dumps(
+            {"repos": {"ghost": {"url": str(Path(self.tmp.name) / "no-such"), "base": "main"}}}),
+            encoding="utf-8")
+        rc, _ = run_cli(["scan", "--sync", "--config", str(self.conf), "--map", str(self.map)])
+        self.assertEqual(rc, 2)                            # 実体化不能 → 黙って PASS 側に倒さない
+
+    def test_sync_leaves_local_dirs_untouched(self):
+        local = Path(self.tmp.name) / "local"
+        init_repo(local)
+        write(local, "src/z.py", "Z = 1\n")
+        commit(local, "init")
+        head = _git(local, "rev-parse", "HEAD").strip()
+        self.conf.write_text(json.dumps(
+            {"repos": {"app": {"url": str(self.origin), "base": "main"},
+                       "loc": {"url": str(self.origin), "path": "", "dir": str(local)}}}),
+            encoding="utf-8")
+        m = self._scan()
+        self.assertIn("loc:src/z.py", m["nodes"])
+        self.assertEqual(m["repos"]["loc"]["dir"], str(local))     # dir 指定 repo はそのまま
+        self.assertEqual(_git(local, "rev-parse", "HEAD").strip(), head)
+
+
 if __name__ == "__main__":
     unittest.main()

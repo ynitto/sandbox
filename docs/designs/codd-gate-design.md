@@ -195,6 +195,23 @@ kiro-autonomous の pilot-then-batch（1 件を人の検収で固めてから残
 （doc の実質最終変更 ≥ code のそれ。未コミット変更は「今」とみなす）を状態としてアサートする。
 `git log | grep` 型の履歴 verify を書かせないための部品。
 
+### git アクセスの原則（リモート負荷と鮮度）
+
+1. **通常動作はローカル読み取りのみ**。git 操作は `ls-files` / `diff --name-status` / `rev-parse` /
+   `status --porcelain` / `log -1` に限られ、clone / fetch は一切しない（ネットワーク非依存・
+   **フル clone はどの経路にも存在しない**）。
+2. **`--sync`（opt-in）**: `dir` 未解決かつ `url` を持つ repo だけを、
+   [`git-worktree-cache-pattern.md`](git-worktree-cache-pattern.md) 準拠で実体化する——
+   共有 bare ミラー（初回のみ `--mirror --filter=blob:none`・以後は増分 fetch。root は
+   `KIRO_GIT_CACHE_DIR`＝kiro-flow / kiro-autonomous と共有）→ **fetch 後の SHA** から
+   detached worktree（INV-1 鮮度）。URL ロック・`gc.auto=0`・破損時 nuke&re-mirror（INV-2）、
+   全滅時は浅 clone `--depth 1` へフォールバック（INV-3）。run 後に worktree だけ回収し
+   ミラーは残す（次回は増分のみ＝リモートの pack 生成負荷を「初回＋増分」に圧縮）。
+   実体化できない repo は未解決のまま＝**黙って PASS 側に倒さない**（不変条件 2）。
+3. **`dir` 解決済みの repo には fetch も clone もしない**。差分ゲートの判定対象は
+   **作業ツリーそのもの**（いま手元にある変更）であり、鮮度の主語が違う——リモートの最新
+   base 起点で負債を測りたい参照 repo は url＋`--sync` で与えるのが正しい使い分け。
+
 ---
 
 ## 4. kiro-autonomous との結合点（オプション連携・プラグイン境界）
@@ -257,7 +274,6 @@ kiro-autonomous の pilot-then-batch（1 件を人の検収で固めてから残
   将来拡張（マップ形式に `anchor` を足す後方互換の道を残してある）。
 - **import 解決は Python のみ**構文対応（他言語はパス文字列・注釈・命名規約で接続する）。
   言語を足すときは `extract_refs` に閉じて足す。
-- **未解決 repo の自動 clone はしない**（v1）。kiro-autonomous の mirror-cache パターン
-  （`docs/designs/git-worktree-cache-pattern.md`）への追随は、必要になったときに `--clone` opt-in で
-  足す（黙って clone して判定を遅く/不安定にしない）。
+- **未解決 repo の実体化は `--sync` opt-in**（既定はローカル読み取りのみ・ネットワークゼロ）。
+  実体化は mirror-cache パターン準拠で、フル clone はしない（§3「git アクセスの原則」）。
 - doc→doc の接続はエッジとして張るが Amber 判定には使わない（ドキュメント間の伝搬は将来課題）。

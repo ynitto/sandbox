@@ -29,6 +29,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `- docs:`/`- tests:`/`- code:` は kiro-autonomous には未知キーとして無害）。
 - **接続の推定は決定的**: 明示注釈 `coherence: doc|code|test=…`（最優先）＞ md のインラインコード/
   リンク ＞ Python import ＞ 命名規約（一意時のみ）。曖昧は接続も負債もしない。
+- **git アクセスの原則**: 通常動作はローカル読み取りのみ（clone/fetch ゼロ・フル clone はどの経路にも
+  無い）。url-only repo は `--sync`（opt-in）で git-worktree-cache-pattern 準拠に実体化——共有 bare
+  ミラー（初回のみ blob:none・以後増分 fetch。`KIRO_GIT_CACHE_DIR` で kiro ツール群と共有）から
+  **fetch 後の SHA** で detached worktree（INV-1 鮮度）を生やし、run 後に worktree だけ回収。
+  実体化不能は黙って PASS 側に倒さない。`dir:` 指定 repo には触れない（判定対象は作業ツリーそのもの）。
 - **kiro-autonomous に汎用取り込みフック `intake_cmd` を追加**（設定/CLI `--intake-cmd[-interval]`）:
   外部の決定的ゲート/検出器を watch の周期で pull し、stdout の enqueue --json を**冪等取り込み**
   （id が現役 backlog に居れば飛ばす）。パス開始時と idle 中に間隔律速で実行、失敗は journal に残して
