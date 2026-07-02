@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""codd-gate — ドキュメント・コード・テストの一貫性ゲート（kiro-autonomous プラグイン）。
+"""codd-gate — ドキュメント・コード・テストの一貫性ゲート（単体で動く決定的 CLI）。
 
 CoDD（Coherence-Driven Development, https://github.com/yohey-w/codd-dev）の設計
-（Trace=接続マップ / Impact=Green・Amber・Gray 分類 / Verify=偽グリーンを許さない検証）を
-kiro エコシステムに翻案した決定的ツール。標準ライブラリのみ・LLM 不要。
+（Trace=接続マップ / Impact=Green・Amber・Gray 分類 / Verify=偽グリーンを許さない検証）の翻案。
+依存は python3 と git のみ（pip 依存なし・LLM 不要）。単体で CI・git hook・手元の点検に使え、
+kiro-autonomous とは既存フック経由でオプション連携できる（依存は一方向・本体無改造）。
 
   scan    … 接続マップ（doc↔code↔test のエッジ）と既存負債（壊れた参照・未文書化・未テスト）の棚卸し
   impact  … 差分（$KIRO_BASE_REV..作業ツリー）を Green / Amber / Gray / Followup に分類
@@ -12,8 +13,9 @@ kiro エコシステムに翻案した決定的ツール。標準ライブラリ
   tasks   … ドリフト/負債を kiro-autonomous の enqueue --json / inbox 形式の修復タスクに変換
   check   … 修復タスクの verify 用の状態アサーション（エッジ存在・参照解決・鮮度）
 
-kiro-autonomous 本体は無改造で、既存の決定的フックだけで結合する（＝プラグイン）:
+kiro-autonomous と連携する場合も本体は無改造で、既存の決定的フックだけで結合する（＝プラグイン）:
   - charter の `## repos` をリポジトリレジストリとして共用（identity は (url, path, base)＝パス＋ブランチ）。
+    単体利用では `--charter` に「## repos セクションを持つ Markdown」を渡せば同じ書式がレジストリになる。
     プラグイン専用キー `- docs:` `- tests:` `- code:` は kiro-autonomous には無害（未知キーは無視される）。
   - タスク verify / regression_cmd に `codd-gate verify --base "$KIRO_BASE_REV"` を差し込む（差分ゲート）。
   - charter acceptance に `codd-gate verify --debt --max-broken N` を置く（負債ラチェット）。

@@ -191,10 +191,11 @@ kiro-autonomous enqueue --title "概要見出しを追加"       --accept "READM
   `review`（検収待ち）になり `needs/<id>.md` を生成。`approve <id>` で done 確定／フィードバックで差し戻し。
 - **パス保護**（safety denylist）: policy `protect: <glob>` に一致するファイルを act が**変更したら** verify=PASS でも
   done せず検収待ちへ。`gate` がタスク一致なのに対し `protect` は**変更されたパス**一致。
-- **一貫性ゲート（外部プラグイン）**: ドキュメント・コード・テストの整合は [`codd-gate`](../codd-gate/README.md) を
+- **一貫性ゲート（外部ツール連携・オプション）**: ドキュメント・コード・テストの整合は独立ツール
+  [`codd-gate`](../codd-gate/README.md)（別インストール: `bash tools/codd-gate/install.sh`）を
   `--regression-cmd 'codd-gate verify --base "$KIRO_BASE_REV"'` や charter acceptance
-  （`codd-gate verify --debt --max-broken N`）に差し込んで護れる（本体無改造。ドリフトは
-  `codd-gate tasks` が修復タスクとして backlog に返す）。
+  （`codd-gate verify --debt --max-broken N`）に差し込んで護れる（kiro-autonomous 本体は無改造・
+  依存なし。ドリフトは `codd-gate tasks` が修復タスクとして backlog に返す）。
 
 ### policy.md（人による上書き・per-project）
 

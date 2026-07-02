@@ -7,14 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### codd-gate v1.0.0 — doc/code/test 一貫性ゲート（kiro-autonomous プラグイン）
+### codd-gate v1.0.0 — doc/code/test 一貫性ゲート（単体 CLI・kiro-autonomous 連携はオプション）
 
 [CoDD (Coherence-Driven Development)](https://github.com/yohey-w/codd-dev) の設計
-（Trace＝接続マップ / Impact＝Green・Amber・Gray 分類 / Verify＝no fake green）を kiro エコシステムに
-翻案した決定的ツールを追加。**kiro-autonomous 本体は無改造**で、既存フック（regression_cmd・
-charter acceptance・タスク verify・enqueue --json / inbox）だけで結合するプラグイン方式。
-ブラウンフィールド前提で、既存負債は止めずに「棚卸し→ラチェット→backlog 返済」、新規変更だけを
-差分ゲートで護る。
+（Trace＝接続マップ / Impact＝Green・Amber・Gray 分類 / Verify＝no fake green）を翻案した
+決定的ツールを追加。**kiro-autonomous に依存しない独立ツール**（python3＋git のみ・独立インストーラ
+`install.sh`）として単体で CI / git hook から使え、kiro-autonomous とは**本体無改造**の一方向
+オプション連携（既存フック regression_cmd・charter acceptance・タスク verify・enqueue --json / inbox
+のみで結合するプラグイン方式）。ブラウンフィールド前提で、既存負債は止めずに
+「棚卸し→ラチェット→backlog 返済」、新規変更だけを差分ゲートで護る。
 
 - **新規ツール `tools/codd-gate/`**（stdlib のみ・LLM 不要）: `scan`（doc↔code↔test の接続マップと
   壊れた参照/未文書化/未テストの負債棚卸し）/ `impact`（差分の Green/Amber/Gray/**Followup** 分類）/
