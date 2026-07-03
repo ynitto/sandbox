@@ -268,24 +268,38 @@ webview { flex: 1; background: #fff; }
 }
 
 .action-row label { color: var(--muted); }
-#target-select { width: auto; max-width: 420px; }
 #comment-input { flex: 1; resize: vertical; min-width: 200px; }
 .action-buttons { display: flex; flex-direction: column; gap: 4px; }
 .action-buttons button { min-width: 110px; }
 
-#preset-buttons button {
+#btn-approve { border-color: var(--green); }
+#btn-reject { border-color: var(--red); }
+
+/* 変更ダイアログのプリセット選択 */
+#change-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 10px 0;
+  max-width: 640px;
+}
+
+#change-presets button {
   font-size: 12px;
   padding: 3px 8px;
 }
-#preset-buttons button.on { border-color: var(--green); color: var(--green); }
-#preset-buttons .kbd {
+
+#change-presets button.current { border-style: dashed; } /* 現在付いているラベル */
+#change-presets button.on { border-color: var(--green); color: var(--green); } /* 選択中 */
+#change-presets .kbd {
   color: var(--muted);
   font-size: 10px;
   margin-left: 4px;
 }
 
-#btn-merge { border-color: var(--green); }
-#btn-close { border-color: var(--red); }
+/* 却下ダイアログ */
+.reject-notes { margin: 6px 0 0 0; padding-left: 18px; font-size: 12px; }
+button.danger { border-color: var(--red); color: var(--red); }
 
 /* ---------- ダイアログ ---------- */
 

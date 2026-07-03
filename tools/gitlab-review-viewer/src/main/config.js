@@ -75,9 +75,6 @@ const DEFAULT_CONFIG = {
   labelPresets: DEFAULT_LABEL_PRESETS,
   actionShortcuts: {
     postComment: 'Ctrl+Enter',
-    merge: 'Ctrl+Shift+M',
-    close: 'Ctrl+Shift+D',
-    reopen: 'Ctrl+Shift+R',
     summarize: 'Ctrl+Shift+S',
     exportObsidian: 'Ctrl+Shift+E',
   },

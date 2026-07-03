@@ -127,21 +127,23 @@
 
       <section id="actionbar">
         <div class="action-row">
-          <label for="target-select">操作対象</label>
-          <select id="target-select"></select>
+          <span class="muted">操作対象:</span>
+          <span id="target-label"></span>
           <span id="target-state" class="chip"></span>
           <span id="target-labels"></span>
         </div>
-        <div class="action-row" id="preset-buttons"></div>
         <div class="action-row">
           <textarea id="comment-input" rows="2"
-                    placeholder="コメントを入力（Ctrl+Enter で投稿）"></textarea>
+                    placeholder="コメント本文を入力（各ボタン実行時に「# ボタン名」見出し付きで投稿・Ctrl+Enter で単独投稿）"></textarea>
+          <div class="action-buttons">
+            <button id="btn-approve">承認</button>
+            <button id="btn-sendback">差し戻し</button>
+            <button id="btn-reject">却下</button>
+            <button id="btn-change">変更</button>
+          </div>
           <div class="action-buttons">
             <button id="btn-comment">コメント投稿</button>
             <button id="btn-summarize">要約</button>
-            <button id="btn-merge">マージ</button>
-            <button id="btn-close">クローズ</button>
-            <button id="btn-reopen">リオープン</button>
             <button id="btn-export">Obsidian へ</button>
           </div>
         </div>
@@ -158,6 +160,30 @@
       <button id="btn-summary-copy">コピー</button>
       <button id="btn-summary-export">Obsidian へ送る</button>
       <button id="btn-summary-close">閉じる</button>
+    </div>
+  </dialog>
+
+  <dialog id="reject-dialog">
+    <h2>却下</h2>
+    <p id="reject-desc"></p>
+    <ul class="muted reject-notes">
+      <li><strong>削除</strong> — 同じタイトルの MR をクローズし、そのソースブランチを削除して、イシューを削除する</li>
+      <li><strong>閉じる</strong> — 同じタイトルの MR をクローズし、イシューを閉じる</li>
+    </ul>
+    <div class="dialog-buttons">
+      <button id="btn-reject-delete" class="danger">削除</button>
+      <button id="btn-reject-close">閉じる</button>
+      <button id="btn-reject-cancel">キャンセル</button>
+    </div>
+  </dialog>
+
+  <dialog id="change-dialog">
+    <h2>変更</h2>
+    <div class="muted">変更するステータス / ラベルを選択して「実行」を押してください</div>
+    <div id="change-presets"></div>
+    <div class="dialog-buttons">
+      <button id="btn-change-run" class="primary">実行</button>
+      <button id="btn-change-cancel">キャンセル</button>
     </div>
   </dialog>
 

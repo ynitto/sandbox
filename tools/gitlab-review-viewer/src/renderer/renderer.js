@@ -19,7 +19,6 @@ const state = {
     { tabs: [], active: -1 },
     { tabs: [], active: -1 },
   ],
-  targetIndex: 0, // コメント・ラベル等の操作対象（pages のインデックス）
   lastSummary: '',
   busy: false,
 };
@@ -60,8 +59,35 @@ function targetOf(page) {
   return { projectId: page.projectId, type: page.type, iid: page.iid };
 }
 
-function currentTarget() {
-  return state.pages[state.targetIndex] || null;
+// ペインの表示中ページ（リーダー / 要約タブが手前ならその元ページ）を返す
+function activePage(pane) {
+  const tab = paneCurrentPageTab(pane);
+  return tab ? tab.page : null;
+}
+
+// 操作対象: 表示されているイシューがあればそれ、MR だけなら MR
+function primaryTarget() {
+  return activePage(0) || activePage(1);
+}
+
+function statusOf(item) {
+  const label = (item.labels || []).find((l) => l.startsWith('status:'));
+  return label ? label.slice('status:'.length) : '';
+}
+
+// イシューとタイトルが同じ（正規化して比較）表示中の MR を返す
+function findMatchingMR(issue) {
+  return (
+    state.pages.find(
+      (p) => p.type === 'mr' && normalizeTitle(p.title) === normalizeTitle(issue.title)
+    ) || null
+  );
+}
+
+// 各アクションボタン共通のコメント本文（# ボタン名 + 入力テキスト）
+function actionComment(name) {
+  const text = $('comment-input').value.trim();
+  return text ? `# ${name}\n\n${text}` : `# ${name}`;
 }
 
 function escapeHtml(s) {
@@ -333,10 +359,8 @@ async function selectCandidate(index) {
       const same = mrs.findIndex((m) => normalizeTitle(m.title) === normalizeTitle(cand.title));
       if (same >= 0) state.panes[1].active = same;
     }
-    state.targetIndex = 0;
     state.lastSummary = '';
     renderPanes();
-    renderTargetSelect();
     renderTargetInfo();
     if (related.length === 0) {
       toast('紐づくイシュー / MR は見つかりませんでした');
@@ -375,6 +399,7 @@ function renderPane(pane) {
     btn.addEventListener('click', () => {
       p.active = i;
       renderPane(pane);
+      renderTargetInfo(); // 操作対象は表示中タブに追従する
     });
     if (tab.kind !== 'page') {
       const x = document.createElement('span');
@@ -397,6 +422,31 @@ function closeTab(pane, index) {
   p.tabs.splice(index, 1);
   if (p.active >= p.tabs.length) p.active = p.tabs.length - 1;
   renderPane(pane);
+  renderTargetInfo();
+}
+
+// 削除済みアイテムを pages / candidates / ペインから取り除く
+function removePage(target) {
+  const match = (p) =>
+    p.projectId === target.projectId && p.type === target.type && p.iid === target.iid;
+  state.pages = state.pages.filter((p) => !match(p));
+  state.candidates = state.candidates.filter((c) => !match(c));
+  rebuildPanes();
+  renderCandidates();
+  renderTargetInfo();
+}
+
+// pages からペインのタブを組み直す（リーダー / 要約のローカルタブは残す）
+function rebuildPanes() {
+  for (const [pane, kind] of [[0, 'issue'], [1, 'mr']]) {
+    const pageTabs = state.pages
+      .filter((p) => p.type === kind)
+      .map((p) => ({ kind: 'page', page: p }));
+    const locals = state.panes[pane].tabs.filter((t) => t.kind !== 'page');
+    const tabs = [...pageTabs, ...locals];
+    state.panes[pane] = { tabs, active: tabs.length ? 0 : -1 };
+  }
+  renderPanes();
 }
 
 function syncPane(pane) {
@@ -598,23 +648,18 @@ function bindSplitter() {
 }
 
 // ---------------------------------------------------------------------------
-// 操作対象・ラベル表示
+// 操作対象・ラベル表示とアクションボタンの活性制御
 // ---------------------------------------------------------------------------
 
-function renderTargetSelect() {
-  const sel = $('target-select');
-  sel.innerHTML = '';
-  state.pages.forEach((p, i) => {
-    const opt = document.createElement('option');
-    opt.value = i;
-    opt.textContent = `${pageLabel(p)} — ${p.title.slice(0, 40)}`;
-    sel.appendChild(opt);
-  });
-  sel.value = String(state.targetIndex);
-}
+// 承認ボタンのマージ可否チェックは非同期のため、タブ切替などで対象が
+// 変わった後に古い結果を反映しないようトークンで世代管理する
+let approveCheckToken = 0;
 
 function renderTargetInfo() {
-  const t = currentTarget();
+  const t = primaryTarget();
+  approveCheckToken++; // 進行中の可否チェックを無効化
+
+  $('target-label').textContent = t ? `${pageLabel(t)} — ${t.title.slice(0, 40)}` : '（対象なし）';
   $('target-state').textContent = t ? t.state : '';
   const wrap = $('target-labels');
   wrap.innerHTML = '';
@@ -626,10 +671,59 @@ function renderTargetInfo() {
       wrap.appendChild(chip);
     }
   }
-  $('btn-merge').disabled = !t || t.type !== 'mr' || t.state !== 'opened';
-  $('btn-close').disabled = !t || t.state !== 'opened';
-  $('btn-reopen').disabled = !t || t.state === 'opened' || t.state === 'merged';
-  renderPresetButtons();
+
+  const status = t ? statusOf(t) : '';
+
+  const sendback = $('btn-sendback');
+  sendback.disabled = !t || status !== 'elaborated';
+  sendback.title = sendback.disabled
+    ? 'status:elaborated のときだけ status:draft へ戻せます'
+    : 'status:draft へ戻す';
+
+  $('btn-reject').disabled = !t;
+  $('btn-change').disabled = !t;
+
+  const approve = $('btn-approve');
+  if (!t) {
+    approve.disabled = true;
+    approve.title = '';
+  } else if (status === 'elaborated') {
+    approve.disabled = false;
+    approve.title = 'status:open に進める';
+  } else if (status === 'approved') {
+    approve.disabled = true;
+    refreshApproveMergeability(t, approveCheckToken);
+  } else {
+    approve.disabled = true;
+    approve.title = 'status:elaborated / status:approved のときだけ使えます';
+  }
+}
+
+// status:approved の対象について、マージ対象 MR の可否を確認して承認ボタンへ反映
+async function refreshApproveMergeability(t, token) {
+  const approve = $('btn-approve');
+  const mr = t.type === 'mr' ? t : findMatchingMR(t);
+  if (!mr) {
+    approve.title = 'イシューと同じタイトルの MR が見つかりません';
+    return;
+  }
+  approve.title = 'マージ可能か確認しています…';
+  try {
+    const cur = await api.glMRStatus(targetOf(mr));
+    if (token !== approveCheckToken) return; // 対象が変わっている
+    if (cur.state !== 'opened') {
+      approve.title = `MR がオープンではありません（${cur.state}）`;
+    } else if (cur.hasConflicts) {
+      approve.title = 'コンフリクトがあるためマージできません';
+    } else if (!cur.blockingDiscussionsResolved) {
+      approve.title = '未解決のレビューコメントがあるためマージできません';
+    } else {
+      approve.disabled = false;
+      approve.title = `${pageLabel(mr)} をマージ${t.type === 'issue' ? 'してイシューをクローズ' : ''}する`;
+    }
+  } catch (err) {
+    if (token === approveCheckToken) approve.title = `MR の状態確認に失敗: ${err.message}`;
+  }
 }
 
 function applyUpdatedItem(updated) {
@@ -646,39 +740,31 @@ function applyUpdatedItem(updated) {
 }
 
 // ---------------------------------------------------------------------------
-// ラベルプリセット
+// ラベルプリセット（「変更」ダイアログとキーボードショートカットで使用）
 // ---------------------------------------------------------------------------
 
-function renderPresetButtons() {
-  const row = $('preset-buttons');
-  row.innerHTML = '';
-  const t = currentTarget();
-  (state.config.labelPresets || []).forEach((preset, i) => {
-    const btn = document.createElement('button');
-    btn.innerHTML =
-      escapeHtml(preset.label) +
-      (preset.shortcut ? `<span class="kbd">${escapeHtml(preset.shortcut)}</span>` : '');
-    if (t && t.labels.includes(preset.label)) btn.classList.add('on');
-    btn.addEventListener('click', () => applyPreset(i));
-    row.appendChild(btn);
-  });
+// プリセットのラベル変更内容（付ける / 外す）を計算する
+function presetChange(preset, t) {
+  let add = [preset.label];
+  let remove = [];
+  if (preset.toggle && t.labels.includes(preset.label)) {
+    add = [];
+    remove = [preset.label];
+  } else if (preset.exclusivePrefix) {
+    remove = t.labels.filter(
+      (l) => l.startsWith(preset.exclusivePrefix) && l !== preset.label
+    );
+  }
+  return { add, remove };
 }
 
+// キーボードショートカットからの即時適用（コメントなし・従来動作）
 async function applyPreset(index) {
   const preset = (state.config.labelPresets || [])[index];
-  const t = currentTarget();
+  const t = primaryTarget();
   if (!preset || !t) return;
   await guard('ラベル更新', async () => {
-    let add = [preset.label];
-    let remove = [];
-    if (preset.toggle && t.labels.includes(preset.label)) {
-      add = [];
-      remove = [preset.label];
-    } else if (preset.exclusivePrefix) {
-      remove = t.labels.filter(
-        (l) => l.startsWith(preset.exclusivePrefix) && l !== preset.label
-      );
-    }
+    const { add, remove } = presetChange(preset, t);
     const updated = await api.glUpdateLabels(targetOf(t), add, remove);
     applyUpdatedItem(updated);
     toast(
@@ -690,11 +776,11 @@ async function applyPreset(index) {
 }
 
 // ---------------------------------------------------------------------------
-// コメント / マージ / クローズ / リオープン
+// コメント / 承認 / 差し戻し / 却下 / 変更
 // ---------------------------------------------------------------------------
 
 async function postComment() {
-  const t = currentTarget();
+  const t = primaryTarget();
   const body = $('comment-input').value.trim();
   if (!t) return toast('操作対象がありません', true);
   if (!body) return toast('コメントが空です', true);
@@ -705,35 +791,155 @@ async function postComment() {
   });
 }
 
-async function doMerge() {
-  const t = currentTarget();
-  if (!t || t.type !== 'mr') return toast('MR を操作対象に選択してください', true);
-  if (!window.confirm(`${pageLabel(t)} をマージします。よろしいですか？`)) return;
-  await guard('マージ', async () => {
-    const updated = await api.glMerge(targetOf(t));
-    applyUpdatedItem(updated);
-    toast(`${pageLabel(t)} をマージしました`);
+// 対象の status:* ラベルを newLabel に付け替え、アクションコメントを投稿する
+async function commentAndSetStatus(t, actionName, newLabel) {
+  await api.glComment(targetOf(t), actionComment(actionName));
+  const remove = t.labels.filter((l) => l.startsWith('status:') && l !== newLabel);
+  const updated = await api.glUpdateLabels(targetOf(t), [newLabel], remove);
+  applyUpdatedItem(updated);
+  $('comment-input').value = '';
+}
+
+// 承認: status:elaborated → status:open。
+// status:approved はイシューと同タイトルの MR をマージしてイシューをクローズ。
+async function doApprove() {
+  const t = primaryTarget();
+  if (!t) return;
+  const status = statusOf(t);
+  if (status === 'elaborated') {
+    await guard('承認', async () => {
+      await commentAndSetStatus(t, '承認', 'status:open');
+      toast(`${pageLabel(t)} を status:open に進めました`);
+    });
+    return;
+  }
+  if (status !== 'approved') return;
+  const mr = t.type === 'mr' ? t : findMatchingMR(t);
+  if (!mr) return toast('イシューと同じタイトルの MR が見つかりません', true);
+  const closesIssue = t.type === 'issue';
+  const msg = `${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
+  if (!window.confirm(msg)) return;
+  await guard('承認', async () => {
+    await api.glComment(targetOf(t), actionComment('承認'));
+    const merged = await api.glMerge(targetOf(mr));
+    applyUpdatedItem(merged);
+    if (closesIssue) {
+      const closed = await api.glSetState(targetOf(t), 'close');
+      applyUpdatedItem(closed);
+    }
+    $('comment-input').value = '';
+    toast(`${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}しました`);
   });
 }
 
-async function doClose() {
-  const t = currentTarget();
-  if (!t) return;
-  if (!window.confirm(`${pageLabel(t)} をクローズします。よろしいですか？`)) return;
-  await guard('クローズ', async () => {
-    const updated = await api.glSetState(targetOf(t), 'close');
-    applyUpdatedItem(updated);
-    toast(`${pageLabel(t)} をクローズしました`);
+// 差し戻し: status:elaborated → status:draft
+async function doSendBack() {
+  const t = primaryTarget();
+  if (!t || statusOf(t) !== 'elaborated') return;
+  await guard('差し戻し', async () => {
+    await commentAndSetStatus(t, '差し戻し', 'status:draft');
+    toast(`${pageLabel(t)} を status:draft に戻しました`);
   });
 }
 
-async function doReopen() {
-  const t = currentTarget();
+// 却下: 削除 / 閉じる / キャンセルの 3 択ダイアログ
+function openRejectDialog() {
+  const t = primaryTarget();
   if (!t) return;
-  await guard('リオープン', async () => {
-    const updated = await api.glSetState(targetOf(t), 'reopen');
+  $('reject-desc').textContent = `${pageLabel(t)} — ${t.title.slice(0, 60)} を破棄します。`;
+  $('reject-dialog').showModal();
+}
+
+async function doReject(choice) {
+  // choice: 'delete'（MR クローズ + ソースブランチ削除 + イシュー削除）
+  //         'close' （MR クローズ + イシューを閉じる）
+  $('reject-dialog').close();
+  const t = primaryTarget();
+  if (!t) return;
+  await guard('却下', async () => {
+    await api.glComment(targetOf(t), actionComment('却下'));
+
+    // 同じタイトルの MR（対象が MR ならそれ自身）をクローズする
+    const mrs =
+      t.type === 'mr'
+        ? [t]
+        : state.pages.filter(
+            (p) => p.type === 'mr' && normalizeTitle(p.title) === normalizeTitle(t.title)
+          );
+    for (const mr of mrs) {
+      if (mr.state === 'opened') {
+        const closed = await api.glSetState(targetOf(mr), 'close');
+        applyUpdatedItem(closed);
+      }
+      if (choice === 'delete' && mr.sourceBranch) {
+        try {
+          await api.glDeleteBranch(mr.projectId, mr.sourceBranch);
+        } catch (err) {
+          toast(`ソースブランチ ${mr.sourceBranch} の削除に失敗: ${err.message}`, true);
+        }
+      }
+    }
+
+    if (t.type === 'issue') {
+      if (choice === 'delete') {
+        await api.glDeleteIssue(targetOf(t));
+        removePage(t);
+        toast(`${pageLabel(t)} を削除しました`);
+      } else {
+        if (t.state === 'opened') {
+          const closed = await api.glSetState(targetOf(t), 'close');
+          applyUpdatedItem(closed);
+        }
+        toast(`${pageLabel(t)} を閉じました`);
+      }
+    } else {
+      toast(`${pageLabel(t)} を${choice === 'delete' ? 'クローズしてブランチを削除' : 'クローズ'}しました`);
+    }
+    $('comment-input').value = '';
+  });
+}
+
+// 変更: 従来の下ペインと同じプリセット UI をダイアログに出し、実行で適用
+let changeSelected = -1;
+
+function openChangeDialog() {
+  const t = primaryTarget();
+  if (!t) return;
+  changeSelected = -1;
+  const row = $('change-presets');
+  row.innerHTML = '';
+  (state.config.labelPresets || []).forEach((preset, i) => {
+    const btn = document.createElement('button');
+    btn.innerHTML =
+      escapeHtml(preset.label) +
+      (preset.shortcut ? `<span class="kbd">${escapeHtml(preset.shortcut)}</span>` : '');
+    if (t.labels.includes(preset.label)) btn.classList.add('current');
+    btn.addEventListener('click', () => {
+      changeSelected = changeSelected === i ? -1 : i;
+      [...row.children].forEach((b, j) => b.classList.toggle('on', j === changeSelected));
+    });
+    row.appendChild(btn);
+  });
+  $('change-dialog').showModal();
+}
+
+async function executeChange() {
+  const preset = (state.config.labelPresets || [])[changeSelected];
+  const t = primaryTarget();
+  if (!preset) return toast('変更するラベルを選択してください', true);
+  if (!t) return;
+  $('change-dialog').close();
+  await guard('変更', async () => {
+    await api.glComment(targetOf(t), actionComment('変更'));
+    const { add, remove } = presetChange(preset, t);
+    const updated = await api.glUpdateLabels(targetOf(t), add, remove);
     applyUpdatedItem(updated);
-    toast(`${pageLabel(t)} をリオープンしました`);
+    $('comment-input').value = '';
+    toast(
+      add.length
+        ? `ラベルを ${preset.label} に更新しました`
+        : `ラベル ${preset.label} を外しました`
+    );
   });
 }
 
@@ -742,7 +948,7 @@ async function doReopen() {
 // ---------------------------------------------------------------------------
 
 async function doSummarize() {
-  const t = currentTarget();
+  const t = primaryTarget();
   if (!t) return toast('操作対象がありません', true);
   const dlg = $('summary-dialog');
   $('summary-status').textContent =
@@ -762,7 +968,7 @@ async function doSummarize() {
 }
 
 async function doExport() {
-  const t = currentTarget();
+  const t = primaryTarget();
   if (!t) return toast('操作対象がありません', true);
   const summary = $('summary-dialog').open ? $('summary-text').value : state.lastSummary;
   await guard('Obsidian エクスポート', async () => {
@@ -808,9 +1014,6 @@ function handleKeydown(e) {
   const sc = state.config.actionShortcuts || {};
   const actions = {
     postComment,
-    merge: doMerge,
-    close: doClose,
-    reopen: doReopen,
     summarize: doSummarize,
     exportObsidian: doExport,
   };
@@ -882,7 +1085,6 @@ async function saveSettings() {
   await guard('設定保存', async () => {
     state.config = await api.saveConfig(cfg);
     $('settings-dialog').close();
-    renderPresetButtons();
     toast('設定を保存しました');
   });
 }
@@ -926,10 +1128,6 @@ async function init() {
   bindPaneEvents();
   bindSplitter();
 
-  $('target-select').addEventListener('change', (e) => {
-    state.targetIndex = Number(e.target.value) || 0;
-    renderTargetInfo();
-  });
   $('btn-comment').addEventListener('click', postComment);
   $('comment-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.ctrlKey) {
@@ -937,9 +1135,15 @@ async function init() {
       postComment();
     }
   });
-  $('btn-merge').addEventListener('click', doMerge);
-  $('btn-close').addEventListener('click', doClose);
-  $('btn-reopen').addEventListener('click', doReopen);
+  $('btn-approve').addEventListener('click', doApprove);
+  $('btn-sendback').addEventListener('click', doSendBack);
+  $('btn-reject').addEventListener('click', openRejectDialog);
+  $('btn-change').addEventListener('click', openChangeDialog);
+  $('btn-reject-delete').addEventListener('click', () => doReject('delete'));
+  $('btn-reject-close').addEventListener('click', () => doReject('close'));
+  $('btn-reject-cancel').addEventListener('click', () => $('reject-dialog').close());
+  $('btn-change-run').addEventListener('click', executeChange);
+  $('btn-change-cancel').addEventListener('click', () => $('change-dialog').close());
   $('btn-summarize').addEventListener('click', doSummarize);
   $('btn-export').addEventListener('click', doExport);
 
@@ -964,7 +1168,6 @@ async function init() {
 
   document.addEventListener('keydown', handleKeydown);
 
-  renderPresetButtons();
   renderTargetInfo();
   loadLabelSuggestions();
 

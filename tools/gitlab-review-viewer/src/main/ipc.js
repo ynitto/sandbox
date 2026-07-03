@@ -66,7 +66,13 @@ function registerIpcHandlers() {
   handle('gitlab:related', ({ target }) => client().listRelated(target));
   handle('gitlab:detail', ({ target }) => client().getDetail(target));
 
+  handle('gitlab:mrStatus', ({ target }) => client().getMR(target));
+
   handle('gitlab:comment', ({ target, body }) => client().addComment(target, body));
+  handle('gitlab:deleteIssue', ({ target }) => client().deleteIssue(target));
+  handle('gitlab:deleteBranch', ({ projectId, branch }) =>
+    client().deleteBranch(projectId, branch)
+  );
   handle('gitlab:updateLabels', ({ target, add, remove }) =>
     client().updateLabels(target, { add, remove })
   );

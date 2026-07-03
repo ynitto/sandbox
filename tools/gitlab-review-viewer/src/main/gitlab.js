@@ -218,10 +218,28 @@ class GitLabClient {
     };
   }
 
+  // 単一 MR の現在状態（コンフリクト有無・未解決ディスカッション含む）を取得する。
+  // 承認ボタンのマージ可否判定に使う。
+  async getMR(target) {
+    const mr = await this.api(this.itemPath({ ...target, type: 'mr' }));
+    return normalizeItem(mr, 'mr');
+  }
+
   // ---- 操作 ----
 
   addComment(target, body) {
     return this.api(`${this.itemPath(target)}/notes`, { method: 'POST', body: { body } });
+  }
+
+  deleteIssue(target) {
+    return this.api(this.itemPath({ ...target, type: 'issue' }), { method: 'DELETE' });
+  }
+
+  deleteBranch(projectId, branch) {
+    return this.api(
+      `/projects/${projectId}/repository/branches/${encodeURIComponent(branch)}`,
+      { method: 'DELETE' }
+    );
   }
 
   async updateLabels(target, { add = [], remove = [] } = {}) {
@@ -263,6 +281,11 @@ function normalizeItem(it, type) {
     author: it.author ? it.author.username : '',
     updatedAt: it.updated_at || '',
     createdAt: it.created_at || '',
+    // MR のみ意味を持つ（イシューや未提供の API では既定値のまま）
+    sourceBranch: it.source_branch || '',
+    hasConflicts: !!it.has_conflicts,
+    // 未提供（undefined）の場合は true 扱い（ブロックしない）
+    blockingDiscussionsResolved: it.blocking_discussions_resolved !== false,
   };
 }
 
