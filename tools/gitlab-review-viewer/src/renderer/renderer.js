@@ -101,23 +101,11 @@ function statusOf(item) {
   return label ? label.slice('status:'.length) : '';
 }
 
-// イシューとタイトルが同じ（正規化して比較）表示中の MR を返す
-function findMatchingMR(issue) {
-  return (
-    state.pages.find(
-      (p) => p.type === 'mr' && normalizeTitle(p.title) === normalizeTitle(issue.title)
-    ) || null
-  );
-}
-
-// 承認（マージ）対象の MR を返す。タイトル一致を優先し、見つからない場合は
-// 表示中のオープンな MR が 1 件だけならそれを対象とする（エージェントが
-// イシューと異なるタイトルで MR を作るケースの救済）。
-function findTargetMR(issue) {
-  const matched = findMatchingMR(issue);
-  if (matched) return matched;
-  const opened = state.pages.filter((p) => p.type === 'mr' && p.state === 'opened');
-  return opened.length === 1 ? opened[0] : null;
+// 承認・却下の操作対象 MR: 右ペインのアクティブタブに表示中の MR。
+// イシューと MR のタイトルはブレることがあるため、タイトルの一致は
+// 操作対象の解決やボタンのグレーアウト条件には使わない。
+function activeMR() {
+  return activePage(1);
 }
 
 // 各アクションボタン共通のコメント本文（# ボタン名 + 入力テキスト）
@@ -370,6 +358,32 @@ function normalizeTitle(s) {
   return t.toLowerCase();
 }
 
+// タイトルの類似度（0〜1）。正規化後の文字バイグラムの Dice 係数による簡易判定。
+// イシューと MR のタイトルは完全一致しないことが多いため、アクティブタブの
+// 初期選択には一致ではなくこの類似度を使う。
+// 「feat:」等の conventional commit 接頭辞と空白・記号は比較から除外する。
+function titleSimilarity(a, b) {
+  const strip = (s) =>
+    normalizeTitle(s)
+      .replace(/^[a-z]+(\([^)]*\))?!?\s*:\s*/, '')
+      .replace(/[\s　!-/:-@[-`{-~、。・「」『』（）]/g, '');
+  const na = strip(a);
+  const nb = strip(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const grams = (s) => {
+    const set = new Set();
+    if (s.length < 2) set.add(s);
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+    return set;
+  };
+  const ga = grams(na);
+  const gb = grams(nb);
+  let hit = 0;
+  for (const g of ga) if (gb.has(g)) hit++;
+  return (2 * hit) / (ga.size + gb.size);
+}
+
 // 候補を選択すると、候補 + 紐づくページを取得し、
 // イシューを左ペイン・MR を右ペインへ振り分けてタブ表示する。
 async function selectCandidate(index) {
@@ -389,11 +403,19 @@ async function selectCandidate(index) {
       tabs: mrs.map((p) => ({ kind: 'page', page: p })),
       active: mrs.length ? 0 : -1,
     };
-    // イシューに紐づく MR が複数ある場合は、イシューとタイトルが同じ
-    // （Draft: / Resolve "…" 形式は同一視）MR のタブをアクティブにする
+    // イシューに紐づく MR が複数ある場合は、イシューとタイトルが最も似ている
+    // MR のタブをアクティブにする（タイトルはブレるため一致ではなく類似度で判定）
     if (cand.type === 'issue' && mrs.length > 1) {
-      const same = mrs.findIndex((m) => normalizeTitle(m.title) === normalizeTitle(cand.title));
-      if (same >= 0) state.panes[1].active = same;
+      let best = -1;
+      let bestScore = 0;
+      mrs.forEach((m, i) => {
+        const score = titleSimilarity(m.title, cand.title);
+        if (score > bestScore) {
+          bestScore = score;
+          best = i;
+        }
+      });
+      if (best >= 0) state.panes[1].active = best;
     }
     state.lastSummary = '';
     renderPanes();
@@ -800,14 +822,13 @@ function renderTargetInfo() {
     approve.disabled = false;
     approve.title = 'status:open に進める';
   } else if (status === 'approved') {
-    // マージ可否（コンフリクト等）の確認は実行時に行い、ここでは
-    // 対象 MR の有無だけで活性を決める。事前の非同期チェックで無効化すると
-    // タイトル不一致などで理由が分からないままグレーアウトしてしまうため。
-    const mr = t.type === 'mr' ? t : findTargetMR(t);
+    // マージ対象は右ペインのアクティブタブの MR。マージ可否（コンフリクト等）の
+    // 確認は実行時に行い、ここでは対象 MR の有無だけで活性を決める。
+    const mr = t.type === 'mr' ? t : activeMR();
     approve.disabled = !mr;
     approve.title = mr
       ? `${pageLabel(mr)} をマージ${t.type === 'issue' ? 'してイシューをクローズ' : ''}する`
-      : 'マージ対象のオープンな MR が見つかりません';
+      : '右ペインに操作対象の MR がありません';
   } else {
     approve.disabled = true;
     approve.title = 'status:elaborated / status:approved のときだけ使えます';
@@ -915,8 +936,8 @@ async function doApprove() {
     return;
   }
   if (status !== 'approved') return;
-  const mr = t.type === 'mr' ? t : findTargetMR(t);
-  if (!mr) return toast('マージ対象のオープンな MR が見つかりません', true);
+  const mr = t.type === 'mr' ? t : activeMR();
+  if (!mr) return toast('右ペインに操作対象の MR がありません', true);
   const closesIssue = t.type === 'issue';
   await guard('承認', async () => {
     // マージ可否は実行時に確認し、できない理由をトーストで明示する
@@ -979,13 +1000,10 @@ async function doReject(choice) {
   await guard('却下', async () => {
     await api.glComment(targetOf(t), actionComment('却下'));
 
-    // 同じタイトルの MR（対象が MR ならそれ自身）をクローズする
-    const mrs =
-      t.type === 'mr'
-        ? [t]
-        : state.pages.filter(
-            (p) => p.type === 'mr' && normalizeTitle(p.title) === normalizeTitle(t.title)
-          );
+    // 右ペインのアクティブタブの MR（対象が MR ならそれ自身）をクローズする。
+    // タイトルはブレることがあるため、タイトル一致では対象を探さない。
+    const target = t.type === 'mr' ? t : activeMR();
+    const mrs = target ? [target] : [];
     for (const mr of mrs) {
       if (mr.state === 'opened') {
         const closed = await api.glSetState(targetOf(mr), 'close');
