@@ -67,6 +67,11 @@ class GitLabClient {
 
   // ---- 検索用マスタ ----
 
+  // トークンの持ち主（自分）。検索条件の「自分」ボタンで使う。
+  getCurrentUser() {
+    return this.api('/user');
+  }
+
   listGroups(search) {
     return this.api('/groups', {
       query: { search, per_page: 50, order_by: 'path', sort: 'asc' },

@@ -47,7 +47,10 @@
 
         <div class="field">
           <label for="author-input">作成者（ユーザー名）</label>
-          <input id="author-input" type="text" placeholder="例: taro.yamada" />
+          <div class="row">
+            <input id="author-input" type="text" placeholder="例: taro.yamada" />
+            <button id="btn-author-self" title="自分のユーザー名を入力">自分</button>
+          </div>
         </div>
 
         <div class="field row2">
@@ -134,18 +137,19 @@
           <span id="target-state" class="chip"></span>
           <span id="target-labels"></span>
         </div>
-        <div class="action-row">
+        <div class="action-row action-main">
           <textarea id="comment-input" rows="2"
                     placeholder="コメント本文を入力（各ボタン実行時に「# ボタン名」見出し付きで投稿・Ctrl+Enter で単独投稿）"></textarea>
           <div class="action-buttons">
-            <button id="btn-approve">承認</button>
-            <button id="btn-sendback">差し戻し</button>
-            <button id="btn-reject">却下</button>
-            <button id="btn-change">変更</button>
-          </div>
-          <div class="action-buttons">
-            <button id="btn-comment">コメント投稿</button>
-            <button id="btn-summarize">要約</button>
+            <div class="btn-row">
+              <button id="btn-approve">承認</button>
+              <button id="btn-sendback">差し戻し</button>
+              <button id="btn-reject">却下</button>
+            </div>
+            <div class="btn-row">
+              <button id="btn-change">変更</button>
+              <button id="btn-comment">コメント投稿</button>
+            </div>
           </div>
         </div>
       </section>
@@ -180,7 +184,7 @@
 
   <dialog id="change-dialog">
     <h2>変更</h2>
-    <div class="muted">変更するステータス / ラベルを選択して「実行」を押してください</div>
+    <div class="muted">変更するステータス / ラベルを選択して「実行」を押してください（現在付いているラベルは選択済み・点線枠）</div>
     <div id="change-presets"></div>
     <div class="dialog-buttons">
       <button id="btn-change-run" class="primary">実行</button>

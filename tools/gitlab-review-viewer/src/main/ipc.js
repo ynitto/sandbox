@@ -80,6 +80,7 @@ function registerIpcHandlers() {
   handle('config:get', () => loadConfig());
   handle('config:save', ({ config }) => saveConfig(config));
 
+  handle('gitlab:currentUser', () => client().getCurrentUser());
   handle('gitlab:groups', ({ search }) => client().listGroups(search));
   handle('gitlab:projects', (args) => client().listProjects(args));
   handle('gitlab:labels', (args) => client().listLabels(args));

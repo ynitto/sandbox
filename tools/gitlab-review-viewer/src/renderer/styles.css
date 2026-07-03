@@ -49,6 +49,8 @@ html, body {
 
 .field { margin-bottom: 8px; }
 .field label { display: block; color: var(--muted); margin-bottom: 3px; }
+/* ラベル・作成者・キーワード等の入力欄は「候補を検索」ボタンと同じ横幅（100%）にする */
+.field > input { width: 100%; }
 .row { display: flex; gap: 4px; }
 .row input { flex: 1; }
 .row2 { display: flex; gap: 8px; }
@@ -201,6 +203,9 @@ body.splitting webview { pointer-events: none; }
 
 .menu-wrap { position: relative; display: flex; }
 
+/* display: flex が hidden 属性（UA の display: none）を上書きしないようにする */
+.pane-menu[hidden] { display: none; }
+
 .pane-menu {
   position: absolute;
   top: 100%;
@@ -268,30 +273,61 @@ webview { flex: 1; background: #fff; }
 }
 
 .action-row label { color: var(--muted); }
-#comment-input { flex: 1; resize: vertical; min-width: 200px; }
+
+/* コメント入力 + 操作ボタン（承認/差し戻し/却下 と 変更/コメント投稿 の 2 段） */
+.action-row.action-main { align-items: stretch; flex-wrap: nowrap; }
+#comment-input { flex: 1; resize: vertical; min-width: 200px; height: auto; }
 .action-buttons { display: flex; flex-direction: column; gap: 4px; }
-.action-buttons button { min-width: 110px; }
+.action-buttons .btn-row { display: flex; gap: 4px; flex: 1; }
+.action-buttons .btn-row button { flex: 1; min-width: 96px; }
 
 #btn-approve { border-color: var(--green); }
 #btn-reject { border-color: var(--red); }
 
-/* 変更ダイアログのプリセット選択 */
+/* 変更ダイアログのプリセット選択（プレフィックスごとのブロック単位で表示） */
 #change-presets {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-direction: column;
+  gap: 10px;
   margin: 10px 0;
-  max-width: 640px;
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
-#change-presets button {
+.preset-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--bg);
+}
+
+.preset-group-title {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 6px;
+}
+
+.preset-grid button {
   font-size: 12px;
-  padding: 3px 8px;
+  padding: 5px 8px;
+  width: 100%;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-#change-presets button.current { border-style: dashed; } /* 現在付いているラベル */
-#change-presets button.on { border-color: var(--green); color: var(--green); } /* 選択中 */
-#change-presets .kbd {
+.preset-grid button.current { border-style: dashed; } /* 現在付いているラベル */
+.preset-grid button.on { border-color: var(--green); color: var(--green); border-style: solid; } /* 選択中 */
+.preset-grid .kbd {
   color: var(--muted);
   font-size: 10px;
   margin-left: 4px;
@@ -324,6 +360,15 @@ dialog h2 { margin-top: 0; font-size: 15px; color: var(--accent); }
   gap: 6px;
   margin-top: 10px;
 }
+
+.dialog-buttons button {
+  min-width: 96px;
+  white-space: nowrap;
+  padding: 6px 14px;
+}
+
+/* button.primary の width: 100% はサイドバーの検索ボタン用。ダイアログ内では通常幅にする */
+.dialog-buttons button.primary { width: auto; }
 
 .settings-grid {
   display: grid;
