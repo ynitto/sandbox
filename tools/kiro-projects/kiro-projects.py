@@ -2526,11 +2526,26 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     return (proc.returncode == 0, (proc.stdout or "")[-300:].strip())
 
 
+def _submit_req_id(task: Task, cfg: "Config") -> str:
+    """リブート跨ぎで同じ act 試行へ再接続するための決定的 req_id。
+
+    （backlog パス, task.id, retries）で一意にする——PC のシャットダウン等で submit の
+    待機ごと消えても、再起動後の同じ試行は同じ req_id を再 submit するため、kiro-flow 側の
+    既存 run（daemon が孤児を自動再開する）に合流して結果を受け取れる＝二重実行しない。
+    リトライ（retries+1）は新しい試行＝新しい run。backlog パスの hash は共有バスに
+    複数プロジェクトが乗るときの衝突を防ぐ。"""
+    h = hashlib.sha1(str(cfg.backlog.resolve()).encode()).hexdigest()[:8]
+    tid = re.sub(r"[^\w.-]+", "_", str(task.id))[:60]
+    return f"req-{h}-{tid}-r{task.retries}"
+
+
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
-    """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
+    """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。
+    req_id は決定的（_submit_req_id）——リブート後の再実行は既存 run に合流する。"""
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
     try:
-        sub = subprocess.run(base + ["submit", build_request(task, cfg)], cwd=str(cfg.workdir),
+        sub = subprocess.run(base + ["--run-id", _submit_req_id(task, cfg),
+                                     "submit", build_request(task, cfg)], cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         return (False, f"submit 失敗: {e}")

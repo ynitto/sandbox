@@ -55,6 +55,9 @@ workers: 2                 # run（単発実行）で起動する worker 数
 max_iterations: 3          # 再計画（evaluator-optimizer）の最大反復回数
 max_retries: 3             # サーキットブレーカー: 同一系統（verify=fail の再生成・失敗 retry）の
                            #   作り直しをこの回数で打ち切る。達成不可能な完了条件での無限再タスクを防ぐ
+max_resumes: 3             # 孤児 run（owning daemon 消失 = PC シャットダウン/クラッシュ）の自動再開の
+                           #   上限。「進捗なしの連続回数」で数え、進捗（新しい results/）があれば数え直す
+                           #   ＝毎日シャットダウンされる PC でも長期 run を継続できる。0 以下で無効
 argv_limit: 100000         # kiro-cli へ argv で渡すプロンプトの最大バイト数。超過分は一時ファイルへ
                            #   退避し参照渡しにする（依存成果物が大きいときの ARG_MAX 起動失敗を防ぐ）
 # kiro_timeout: 600        # kiro-cli 1 呼び出しのタイムアウト秒（0/負で無効化）。ハングした kiro-cli を

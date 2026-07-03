@@ -154,6 +154,7 @@ function readRun(runDir) {
     // owner が消えた」孤児の可能性を示す（kiro-flow が回収するまでの間の表示）
     alive: TERMINAL.has(status) ? null : runAlive(meta, now),
     heartbeatAt: meta.heartbeat_at || null,
+    resumeCount: Number(meta.resume_count || 0), // daemon が孤児を自動再開した回数（進捗でリセット）
     request: String(meta.request || ''),
     createdAt: meta.created_at || null,
     updatedAt: meta.updated_at || null,

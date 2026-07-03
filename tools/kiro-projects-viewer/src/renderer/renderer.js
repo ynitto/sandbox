@@ -751,9 +751,10 @@ function renderFlowDetail() {
     run.alive === false
       ? ` <span class="status-chip st-stalled">応答なし</span>`
       : '';
+  const resumed = run.resumeCount > 0 ? `（自動再開 #${run.resumeCount}）` : '';
   const heartbeat =
     run.alive !== null && run.heartbeatAt
-      ? `<div class="muted">orchestrator heartbeat: ${esc(fmtAgo(run.heartbeatAt))}${run.alive === false ? '（生存リース切れ — daemon 消失の可能性。kiro-flow が孤児回収します）' : ''}</div>`
+      ? `<div class="muted">orchestrator heartbeat: ${esc(fmtAgo(run.heartbeatAt))}${resumed}${run.alive === false ? '（生存リース切れ — daemon が再起動すれば続きから自動再開されます）' : ''}</div>`
       : '';
   return `
     <div class="card full">

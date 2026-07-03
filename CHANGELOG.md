@@ -7,6 +7,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: PC の毎日シャットダウンに耐える（孤児 run を failed でなく自動再開）
+
+- **孤児 run の引き継ぎ（resume）**: owning daemon が消失した（生存リース切れの）非終端 run を、
+  次に起動した daemon が reclaim して**同じ run-id で orchestrator を再起動**する。確定済みの
+  `results/` はバスに残っているため、未完了ノードだけが続きから実行される（従来は
+  `orphaned: owning daemon が消失` として即 failed に確定していた）
+- **暴走ガード `max_resumes`**（設定/`--max-resumes`・既定 3）: 「進捗なしの連続再開回数」で
+  数え、前回の再開以降に results が増えていれば 1 から数え直す＝進捗のある長期 run は毎日の
+  シャットダウンを跨いで何日でも継続できる。上限超過・要求ファイル欠損・無効化（0 以下）の
+  ときだけ従来どおり failed に確定し、result を待つ消費者の永久待機を防ぐ
+- daemon 稼働中の orchestrator 異常終了（クラッシュ）も同じ資格（max_resumes）で即時再開する
+- 新 Bus API: `reclaim_request`（run が存在していても引き継ぎ claim できる）・
+  `record_resume`（進捗リセット付きの再開カウンタ。meta の `resume_count` / `resume_progress`）。
+  再開時は `run-resumed` イベントを events に記録
+
+### kiro-projects: daemon 委譲の submit をリブート跨ぎで再接続可能に
+
+- `_act_submit` の req_id を決定的に（`req-<backlogハッシュ>-<task.id>-r<retries>`）。
+  PC のシャットダウンで submit の待機ごと消えても、再起動後の同じ試行は同じ req_id を
+  再 submit して kiro-flow 側の既存 run（daemon が自動再開）に合流する＝**二重実行しない**。
+  リトライ（retries+1）は新しい run になる
+
+### kiro-projects-viewer: 自動再開の可視化
+
+- run 詳細の heartbeat 行に自動再開回数（`resume_count`）を表示。「応答なし」の説明を
+  「daemon が再起動すれば続きから自動再開されます」に更新
+
 ### kiro-projects: 指示のファイルドロップ口（commands/）を追加
 
 - **新しい入力契約** `<project>/commands/<name>.json`

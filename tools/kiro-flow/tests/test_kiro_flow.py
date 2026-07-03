@@ -225,32 +225,112 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=20.0)), 200.0)
         self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=None)), 120.0)
 
-    def test_recover_fails_stale_inbox_run(self):
-        # submit 由来（inbox に req）で孤児化した run を、別デーモン/再起動後の自分が回収する
+    def _args(self, **kw):
+        base = dict(max_resumes=3, lease=1800.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _adopt(self, owned=None, spawn=None, **kw):
+        spawned = []
+
+        def fake_spawn(base, args, req_id, req):
+            spawned.append(req_id)
+            return types.SimpleNamespace(poll=lambda: None)   # 生きている子のふり
+
+        adopted, failed = kf._adopt_orphan_runs(
+            self.bus, "d2", owned or set(), 120.0, self._args(**kw), [],
+            spawn=spawn or fake_spawn)
+        return adopted, failed, spawned
+
+    def test_orphan_inbox_run_is_resumed_not_failed(self):
+        # PC シャットダウン等で owning daemon が消えた run は failed でなく再開（引き継ぎ）する
         self.bus.submit_request("run1", "req", "submitter")
         self.bus.set_status("running")
         self._set_meta(orch_lease_until=time.time() - 1.0)
-        recovered = kf._recover_orphan_runs(self.bus, "d2", set(), 120.0)
-        self.assertEqual(recovered, ["run1"])
+        adopted, failed, spawned = self._adopt()
+        self.assertEqual(list(adopted), ["run1"])
+        self.assertEqual(failed, [])
+        self.assertEqual(spawned, ["run1"])
+        meta = self.bus.run_meta("run1")
+        self.assertEqual(meta["status"], "running")             # failed にしない
+        self.assertEqual(meta["resume_count"], 1)
+        self.assertGreater(meta.get("orch_lease_until", 0), time.time())  # 生存リースを張り直す
+
+    def test_orphan_failed_after_max_resumes_without_progress(self):
+        # 進捗（results/）ゼロのまま連続再開が上限を超えたら従来どおり failed に確定する
+        self.bus.submit_request("run1", "req", "submitter")
+        for i in range(2):
+            self.bus.set_status("running")
+            self._set_meta(orch_lease_until=time.time() - 1.0)
+            adopted, failed, _ = self._adopt(max_resumes=2)
+            self.assertEqual(list(adopted), ["run1"], f"resume #{i+1}")
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        adopted, failed, _ = self._adopt(max_resumes=2)
+        self.assertEqual(adopted, {})
+        self.assertEqual(failed, ["run1"])
+        self.assertEqual(self.bus.run_meta("run1")["status"], "failed")
+        self.assertIn("orphaned", self.bus.run_meta("run1")["failure_reason"])
+
+    def test_resume_count_resets_on_progress(self):
+        # 前回の再開以降に results が増えていれば数え直す＝進捗のある長期 run は何度でも再開できる
+        self.bus.submit_request("run1", "req", "submitter")
+        for i in range(4):                                       # max_resumes=2 を超える回数
+            self.bus.set_status("running")
+            self._set_meta(orch_lease_until=time.time() - 1.0)
+            adopted, failed, _ = self._adopt(max_resumes=2)
+            self.assertEqual(list(adopted), ["run1"], f"resume #{i+1}")
+            self.assertEqual(self.bus.run_meta("run1")["resume_count"], 1)  # 進捗ありで毎回リセット
+            self.bus.write_result(f"t{i}", "w1", "done", "ok")   # 再開後に進捗が出た
+        self.assertEqual(failed, [])
+
+    def test_orphan_failed_when_resume_disabled(self):
+        # max_resumes<=0 は従来動作（孤児は即 failed）へのオプトアウト
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        adopted, failed, spawned = self._adopt(max_resumes=0)
+        self.assertEqual(adopted, {})
+        self.assertEqual(failed, ["run1"])
+        self.assertEqual(spawned, [])
         self.assertEqual(self.bus.run_meta("run1")["status"], "failed")
 
-    def test_recover_skips_owned_run(self):
-        # 自分が今 orchestrator を回している run は（リースが古くても）回収しない
+    def test_adopt_skips_owned_run(self):
+        # 自分が今 orchestrator を回している run は（リースが古くても）引き継がない
         self.bus.submit_request("run1", "req", "submitter")
         self.bus.set_status("running")
         self._set_meta(orch_lease_until=time.time() - 1.0)
-        recovered = kf._recover_orphan_runs(self.bus, "d2", {"run1"}, 120.0)
-        self.assertEqual(recovered, [])
+        adopted, failed, _ = self._adopt(owned={"run1"})
+        self.assertEqual((adopted, failed), ({}, []))
         self.assertEqual(self.bus.run_meta("run1")["status"], "running")
 
-    def test_recover_skips_live_run(self):
-        # 別デーモンが heartbeat 中（リース新鮮）の run は回収しない（誤って横取りしない）
+    def test_adopt_skips_live_run(self):
+        # 別デーモンが heartbeat 中（リース新鮮）の run は引き継がない（誤って横取りしない）
         self.bus.submit_request("run1", "req", "submitter")
         self.bus.set_status("running")
         self.bus.touch_run("run1", 120.0)
-        recovered = kf._recover_orphan_runs(self.bus, "d2", set(), 120.0)
-        self.assertEqual(recovered, [])
+        adopted, failed, _ = self._adopt()
+        self.assertEqual((adopted, failed), ({}, []))
         self.assertEqual(self.bus.run_meta("run1")["status"], "running")
+
+    def test_adopt_waits_for_stale_claim_lease(self):
+        # 消失した旧 owner の inbox claim がまだ lease 内なら引き継ぎを保留する
+        # （lease 失効後の poll で自然に再試行される。failed にはしない）
+        self.bus.submit_request("run1", "req", "submitter")
+        self.assertTrue(self.bus.reclaim_request("run1", "dead-daemon", 1800.0))
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        adopted, failed, _ = self._adopt()
+        self.assertEqual((adopted, failed), ({}, []))
+        self.assertEqual(self.bus.run_meta("run1")["status"], "running")
+
+    def test_reclaim_after_owner_lease_expiry(self):
+        # 旧 owner の claim が lease 切れなら reclaim できる（run が存在していても）
+        self.bus.submit_request("run1", "req", "submitter")
+        self.assertTrue(self.bus.reclaim_request("run1", "dead-daemon", 0.01))
+        time.sleep(0.05)
+        self.assertFalse(self.bus.claim_request("run1", "d2", 120.0))   # 従来 API は run 存在で拒否
+        self.assertTrue(self.bus.reclaim_request("run1", "d2", 120.0))  # 引き継ぎ用は claim できる
 
 
 class PlannerTests(unittest.TestCase):
