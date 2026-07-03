@@ -23,6 +23,13 @@ const DEFAULT_CONFIG = {
     // kiro-projects CLI。PATH に無い場合はフルパスや
     // "python3 /path/to/kiro-projects.py" 形式でも指定できる。
     command: 'kiro-projects',
+    // kiro-flow の共有バス（kiro-projects を --bus / 設定 bus: 付きで運用している
+    // 場合）の明示パス。空なら <project>/bus → <container>/bus →
+    // kiro-projects 設定ファイル（.kiro/）の bus: の順にファイルから自動発見する。
+    flowBus: '',
+    // kiro-flow daemon ロック（daemon-<sha1>.lock）の置き場。空なら ~/.kiro の
+    // 設定ファイル lock_dir → 両ツール既定の $TMPDIR/kiro-flow-locks を使う。
+    flowLockDir: '',
   },
   gitlab: {
     // gitlab-review-viewer と同じ形。タスクに紐づく GitLab イシューの

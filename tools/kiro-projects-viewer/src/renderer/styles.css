@@ -251,6 +251,11 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .status-chip.st-opened { color: var(--green); border-color: var(--green); }
 .status-chip.st-closed { color: var(--muted); }
 .status-chip.st-merged { color: var(--accent); border-color: var(--accent); }
+/* kiro-flow run（meta.status）と生存判定 */
+.status-chip.st-running { color: var(--accent2); border-color: var(--accent2); }
+.status-chip.st-planning { color: var(--blue); border-color: var(--blue); }
+.status-chip.st-failed { color: var(--red); border-color: var(--red); }
+.status-chip.st-stalled { color: var(--yellow); border-color: var(--yellow); }
 
 .label-chip {
   display: inline-block;

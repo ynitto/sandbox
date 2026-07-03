@@ -25,7 +25,7 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 | 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md` |
 | バックログ | `backlog/<id>.md`（1 ファイル = 1 タスク。status / priority / verify / after 等）・`archive/<id>.md`（done） |
 | 要対応 | `needs/<id>.md`（MADR 形式。blocked / review / milestone。「ファイルを開いて回答」でエディタへ） |
-| フロー | `<project>/bus/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き） |
+| フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。バスは `<project>/bus` → `<container>/bus` → ⚙ 設定 → kiro-projects 設定ファイル（`.kiro/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock` の pid）から判定 — **kiro-flow CLI には一切聞かない** |
 | GitLab | kiro-flow gitlab executor が results に残した `{issue_iid, web_url, decision, merged_mrs}` ＋ `repos.json` の GitLab リポジトリのオープンイシュー（API 設定時） |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
 
@@ -101,7 +101,14 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   `tools/kiro-projects/backlog.md.example` / `charter.md.example`）
 - `src/main/flow.js` … kiro-flow バスのリーダー。状態はファイル存在から導出
   （`results/` → done/failed、lease 内 `claims/` → claimed、依存未達 → waiting）。
-  claim 勝者の決定的タイブレーク `(ts, who)` も kiro-flow 本体と同じ
+  claim 勝者の決定的タイブレーク `(ts, who)` も kiro-flow 本体と同じ。
+  run の生存判定は kiro-flow の `run_is_orphaned` と同じ導出（`orch_lease_until`
+  のリース、無ければ `updated_at` の age）。daemon 稼働はロックパスの同一導出
+  （`sha1("local::" + realpath(bus))`）＋記録 pid の生存確認（kiro-projects の
+  fcntl 不在時フォールバックと同じ根拠）で、CLI を起動せずに判定する
+- `src/main/toolconfig.js` … `.kiro/` の kiro-projects / kiro-flow 設定ファイルから
+  `bus` / `lock_dir` などトップレベルのスカラだけを読む簡易リーダー
+  （共有バス構成・ロック置き場の自動発見に使う）
 - `src/main/gitlab.js` … GitLab REST v4 の読み取り専用クライアント（net.fetch・プロキシ対応）
 - `src/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / command）
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
@@ -117,4 +124,8 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   --root/--project を組み立てられないため CLI 直接実行を案内する）
 - `bus/` は kiro-projects が local run 後に掃除するため（`--no-cleanup` で保持）、
   フロータブは稼働中の run が主対象
+- kiro-flow の状態（run 一覧・生存・daemon 稼働）はすべてファイルから判定するため
+  kiro-flow CLI は不要。ただし daemon 稼働の pid 判定は同一ホスト上でのみ有効
+  （Windows のビュアーから WSL 内の daemon は temp 領域が別のため見えない — その
+  場合も run の生存リースによる「応答なし」判定は共有バスのファイルだけで機能する）
 - GitLab 書き込み操作は持たない（レビュー操作は gitlab-review-viewer の役割）
