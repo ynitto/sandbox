@@ -125,7 +125,7 @@ class ProtocolTests(unittest.TestCase):
 class RunFailureTests(unittest.TestCase):
     """orchestrator が done を書く前に異常終了したケースの終端化（失敗終了の検知）。
     これが無いと run が非終端のまま放置され、result/status を待つ消費者
-    （kiro-autonomous の charter 駆動 watch）が execute フェーズで永久待機する。"""
+    （kiro-projects の charter 駆動 watch）が execute フェーズで永久待機する。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-test-")
@@ -2811,7 +2811,7 @@ def _make_skill_repo(root: str, tool_subdir: str = "tools/kiro-flow",
     repo = os.path.join(root, "skillrepo")
     td = os.path.join(repo, tool_subdir)
     os.makedirs(td, exist_ok=True)
-    other = os.path.join(repo, "tools", "kiro-autonomous")   # sparse 除外の確認用
+    other = os.path.join(repo, "tools", "kiro-projects")   # sparse 除外の確認用
     os.makedirs(other, exist_ok=True)
     pathlib.Path(other, "FILE.txt").write_text("unrelated\n")
     body = installer_body or (
@@ -2893,8 +2893,8 @@ class SelfUpdateTests(unittest.TestCase):
         dest = os.path.join(self.tmp, "co", "repo")
         tool_dir = kf.sparse_checkout_tool(self.repo, "main", "tools/kiro-flow", dest)
         self.assertTrue(os.path.isfile(os.path.join(tool_dir, "install.sh")))
-        # sparse: 無関係な tools/kiro-autonomous は作業ツリーに展開されない
-        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-autonomous")))
+        # sparse: 無関係な tools/kiro-projects は作業ツリーに展開されない
+        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-projects")))
 
     def test_run_installer(self):
         dest = os.path.join(self.tmp, "co2", "repo")

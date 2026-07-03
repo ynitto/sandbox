@@ -17,7 +17,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-# テストの git コミットを環境の署名設定から切り離す（kiro-autonomous のテストと同じ流儀）
+# テストの git コミットを環境の署名設定から切り離す（kiro-projects のテストと同じ流儀）
 os.environ["GIT_CONFIG_COUNT"] = "1"
 os.environ["GIT_CONFIG_KEY_0"] = "commit.gpgsign"
 os.environ["GIT_CONFIG_VALUE_0"] = "false"
@@ -277,7 +277,7 @@ class TasksTests(unittest.TestCase):
         self.assertEqual(specs[0]["workspace"], "lib")
 
     def test_task_ids_fit_enqueue_slug_rules(self):
-        """id は kiro-autonomous の _slug_id（[A-Za-z0-9_-]・48 字）をそのまま通る＝intake の冪等キー。"""
+        """id は kiro-projects の _slug_id（[A-Za-z0-9_-]・48 字）をそのまま通る＝intake の冪等キー。"""
         long = "src/very/long/nested/path/some_component_with_long_name.py"
         tid = cg._task_id("cohort", f"app:docs/x.md", f"app:{long}")   # cohort が最長の kind
         self.assertLessEqual(len(tid), 48)
@@ -458,7 +458,7 @@ class ScanCliTests(unittest.TestCase):
 
     def test_shared_repos_file(self):
         """--repos: 共通スキーマ（schemas/repos.schema.json）のレジストリファイル。
-        kiro-autonomous の <project>/repos.yaml と同じファイルを共有できる。"""
+        kiro-projects の <project>/repos.yaml と同じファイルを共有できる。"""
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp) / "app"
             init_repo(d)
@@ -467,7 +467,7 @@ class ScanCliTests(unittest.TestCase):
             commit(d, "init")
             reg = Path(tmp) / "repos.json"
             reg.write_text(json.dumps(
-                {"_meta": {"generated_from": "charter.md ## repos"},   # kiro-autonomous の生成物マーカー
+                {"_meta": {"generated_from": "charter.md ## repos"},   # kiro-projects の生成物マーカー
                  "app": {"url": "git@x:app.git", "base": "main", "dir": str(d),
                          "owns": ["src/**"], "docs": ["manual/**"]}}), encoding="utf-8")
             out = Path(tmp) / "map.json"

@@ -391,9 +391,9 @@ while True:
 - **完了判定（人が関連 MR を管理）**: kiro-flow は MR を**自動マージしない**。**関連 MR の状態**を
   ポーリングして決着を判定する（`_mr_decision`・executor 内で完結）:
   - **すべてマージ** → 承認。イシューをクローズ（status:done）して **成功** を返す。
-    verify はこの後 kiro-autonomous が downstream で実施する（NG なら新規やり直し）。
+    verify はこの後 kiro-projects が downstream で実施する（NG なら新規やり直し）。
   - **一つでも未マージでクローズ** → 却下。イシューの**人コメント**を取り込み（無ければ空＝自動判断）、
-    元イシューをクローズして `RuntimeError([gitlab-reject] …)` を送出。上位（kiro-autonomous）が通常
+    元イシューをクローズして `RuntimeError([gitlab-reject] …)` を送出。上位（kiro-projects）が通常
     リトライで再委譲し、コメントを次 act の指示に活かす。
   - MR がまだ open のうちは待機。MR が無いまま人が issue をクローズしたら取り下げ＝却下扱い。
   人の確認は時間がかかるため待機は長め・設定可能: `timeout`（既定 7 日・全体上限）と
@@ -411,7 +411,7 @@ while True:
 
 成果物（プログラム/ドキュメント）の実体は**バスではなく成果物リポジトリ**に置き、バスには
 「サマリー＋リンク（どのブランチ/MR/イシューに成果があるか）」だけを残す。リポジトリのルーティング
-（タスク→書込先）は制御層 kiro-autonomous が担う（詳細は `tools/kiro-autonomous/ROUTING.md`）。
+（タスク→書込先）は制御層 kiro-projects が担う（詳細は `tools/kiro-projects/ROUTING.md`）。
 kiro-flow は **1 run = 1 ワークスペース（唯一の書込先）** に固定する。
 
 - **ワークスペース（`--workspace`・ちょうど 1 つ）**: その run の唯一の書込先。素の URL か JSON

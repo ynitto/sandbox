@@ -36,10 +36,10 @@ cp "${SRC}" "${DEST}"
 chmod +x "${DEST}"
 ok "インストールしました: ${DEST}"
 
-if command -v kiro-autonomous >/dev/null 2>&1; then
-  ok "kiro-autonomous を検出（regression_cmd / acceptance / tasks で連携できます）"
+if command -v kiro-projects >/dev/null 2>&1; then
+  ok "kiro-projects を検出（regression_cmd / acceptance / tasks で連携できます）"
 else
-  info "kiro-autonomous が無くても単体の一貫性ゲートとして使えます"
+  info "kiro-projects が無くても単体の一貫性ゲートとして使えます"
 fi
 
 case ":${PATH}:" in

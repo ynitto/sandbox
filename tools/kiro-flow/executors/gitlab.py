@@ -522,10 +522,10 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
        （worker が夜間停止などで殺され lease 失効後に再 claim されても二重起票しない）。
     2. **関連 MR の状態**をポーリングして決着を待つ（executor 内で完結）:
        - 関連 MR が**すべてマージ** → 承認。イシューをクローズ（status:done）して **成功** を返す。
-         （verify はこの後 kiro-autonomous が downstream で実施する。）
+         （verify はこの後 kiro-projects が downstream で実施する。）
        - 関連 MR が**一つでも未マージでクローズ** → 却下。**人のコメント**を取り込み（無ければ空＝
          呼び出し側が自動判断）、元イシューをクローズして **RuntimeError（[gitlab-reject] …）** を送出。
-         上位（kiro-autonomous）の通常リトライがコメントを活かして再委譲する。
+         上位（kiro-projects）の通常リトライがコメントを活かして再委譲する。
        - MR がまだ open のうちは待機。
 
     タイムアウト（人の確認は時間がかかるため長め・設定可能。0 で無限）:
@@ -711,7 +711,7 @@ def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label
 def _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label, reason=""):
     """却下: 人コメントを取り込み、元イシューをクローズして例外を送出する。reason は却下の根拠
     （未マージクローズ / 外部クローズ＋コメント却下 / MR 無しの取り下げ のいずれか）。
-    例外メッセージ先頭の `[gitlab-reject]` を上位（kiro-autonomous）が検知し、やり直しに活かす。"""
+    例外メッセージ先頭の `[gitlab-reject]` を上位（kiro-projects）が検知し、やり直しに活かす。"""
     why = reason or "未マージクローズ"
     guidance = _human_comments(host, token, project, iid)
     try:
