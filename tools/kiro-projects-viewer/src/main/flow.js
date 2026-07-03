@@ -1,14 +1,43 @@
 'use strict';
 
 // kiro-flow のバス（<bus>/runs/<run-id>/）を読み取り専用で解析する。
-// 状態は kiro-flow 本体と同じく「ファイルの存在」から導出する:
+// 状態は kiro-flow 本体と同じく「ファイルの存在」から導出する（CLI には聞かない）:
 //   results/<id>.json があれば その status（done/failed）
 //   claims/<id>/ に lease 内の claim があれば claimed
 //   tasks/<id>.json（または graph.json のノード）だけなら pending
 // 依存未達の pending は表示上 waiting として区別する（kiro-flow に明示状態は無い）。
+// run の生存（orchestrator が駆動中か）も meta.json の生存リース
+// （orch_lease_until / heartbeat_at）から、daemon の稼働はロックファイル
+// （$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock）から、いずれもファイルだけで判定する。
 
+const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+
+const TERMINAL = new Set(['done', 'failed']);
+
+// 生存リース未記録の run（heartbeat 前に owner が死んだ／古い kiro-flow の run）を
+// 停止扱いにするまでの猶予秒。kiro-flow の孤児回収リース（poll*10、最低 120s）より
+// 保守的に長くとる（表示専用で、誤って「応答なし」と見せないため）。
+const NO_LEASE_GRACE_SEC = 600;
+
+function parseTsSec(ts) {
+  const t = Date.parse(ts || '');
+  return isNaN(t) ? null : t / 1000;
+}
+
+// run の orchestrator が生きているか。kiro-flow の run_is_orphaned と同じ導出:
+// 非終端で orch_lease_until があればリースで、無ければ updated_at の age で判定。
+// 戻り値: true=駆動中 / false=応答なし（孤児の可能性） / null=終端（判定対象外）
+function runAlive(meta, now) {
+  if (!meta || TERMINAL.has(String(meta.status))) return null;
+  const lease = meta.orch_lease_until;
+  if (typeof lease === 'number') return lease >= now;
+  const ts = parseTsSec(meta.updated_at || meta.created_at);
+  if (ts === null) return false;
+  return now - ts <= NO_LEASE_GRACE_SEC;
+}
 
 function readJson(file) {
   try {
@@ -117,9 +146,14 @@ function readRun(runDir) {
     }
   }
 
+  const status = String(meta.status || (finalJson ? 'done' : 'unknown'));
   return {
     runId,
-    status: String(meta.status || (finalJson ? 'done' : 'unknown')),
+    status,
+    // orchestrator の生存（meta の生存リースから）。false は「running のまま
+    // owner が消えた」孤児の可能性を示す（kiro-flow が回収するまでの間の表示）
+    alive: TERMINAL.has(status) ? null : runAlive(meta, now),
+    heartbeatAt: meta.heartbeat_at || null,
     request: String(meta.request || ''),
     createdAt: meta.created_at || null,
     updatedAt: meta.updated_at || null,
@@ -182,4 +216,50 @@ function listRuns(busDir, limit = 30) {
   return entries.slice(0, limit);
 }
 
-module.exports = { readRun, readRunEvents, listRuns };
+// ---------------------------------------------------------------------------
+// kiro-flow daemon の稼働検知（CLI 不要・ロックファイルだけで判定）
+// ---------------------------------------------------------------------------
+
+// kiro-flow / kiro-projects と完全に同じ導出でロックパスを組む:
+//   sha1("local::" + realpath(bus)) → <lock_dir>/daemon-<hash>.lock
+// lock_dir 未指定時の既定も両ツールと同じ tempdir 配下。
+function daemonLockPath(busDir, lockDir) {
+  let real;
+  try {
+    real = fs.realpathSync(busDir);
+  } catch {
+    real = path.resolve(busDir); // バス未作成でも Python の realpath と同じ値になる
+  }
+  const h = crypto.createHash('sha1').update(`local::${real}`).digest('hex');
+  const base = lockDir || path.join(os.tmpdir(), 'kiro-flow-locks');
+  return path.join(base, `daemon-${h}.lock`);
+}
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM'; // 別ユーザの生存プロセス（シグナルを送れないだけ）
+  }
+}
+
+// 対象バスの kiro-flow daemon が稼働中か。kiro-projects の daemon_running と同じく
+// daemon が記録した pid の生存で判定する（Node に flock 判定は無いため pid のみ。
+// これは kiro-projects の fcntl 不在時フォールバックと同じ根拠）。
+// running: true=稼働中 / false=停止 / null=判定不能（ロックはあるが pid を読めない等）
+function daemonStatus(busDir, lockDir) {
+  const lockPath = daemonLockPath(busDir, lockDir);
+  let raw;
+  try {
+    raw = fs.readFileSync(lockPath, 'utf8');
+  } catch {
+    return { running: false, pid: 0, lockPath };
+  }
+  const pid = parseInt(raw.trim().split('\n')[0], 10) || 0;
+  if (!pid) return { running: null, pid: 0, lockPath };
+  return { running: pidAlive(pid), pid, lockPath };
+}
+
+module.exports = { readRun, readRunEvents, listRuns, daemonStatus, runAlive };

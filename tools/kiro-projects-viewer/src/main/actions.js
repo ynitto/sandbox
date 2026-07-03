@@ -5,14 +5,18 @@
 //      → ingest_feedback が取り込む（フィードバック往復の正規ルート）
 //   2. inbox/<name>.json のドロップ（E4 push 型の取り込み口）
 //      → ingest_inbox が backlog 化する（タスク投入の正規ルート）
-//   3. kiro-projects CLI（approve / hold / reprioritize）
-//      → 決定記録（DR）を残す人の操作はロジックを二重実装せず CLI に委譲する
+//   3. commands/<name>.json のドロップ（approve / hold / pin / defer）
+//      → ingest_commands が CLI と同一ロジック・同一の決定記録（DR）で実行する。
+//      ファイルだけで届くため、本体が WSL 内で稼働していても操作できる。
+//      本体が稼働していないときは kiro-projects CLI に委譲し、CLI も使えなければ
+//      指示ファイルを置いて次回起動時の取り込みに委ねる（ロジックの二重実装はしない）。
 // done の確定・状態遷移そのものをこのアプリが直接書き換えることはしない
 // （「done は verify のみが根拠」の不変条件を壊さない）。
 
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const kiro = require('./kiro');
 
 const DECISION_MARKER = '## Decision Outcome';
 
@@ -77,8 +81,28 @@ function enqueueToInbox(projectDir, spec) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. kiro-projects CLI（approve / hold / reprioritize）
+// 3. 人の指示（approve / hold / pin / defer）
 // ---------------------------------------------------------------------------
+
+const COMMAND_ACTIONS = new Set(['approve', 'hold', 'pin', 'defer']);
+
+// commands/<name>.json のドロップ（kiro-projects の ingest_commands が拾う）。
+// 書きかけを watch に読ませないよう .tmp に書いてから rename する。
+function dropCommand(projectDir, { action, id, reason }) {
+  const dir = path.join(projectDir, 'commands');
+  fs.mkdirSync(dir, { recursive: true });
+  const rec = {
+    command: action,
+    id: String(id),
+    reason: String(reason || ''),
+    actor: 'kiro-projects-viewer',
+    ts: new Date().toISOString(),
+  };
+  const file = path.join(dir, `viewer-${action}-${slugify(id)}-${Date.now()}.json`);
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2), 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { file, rec };
+}
 
 // プロジェクトディレクトリ <root>/projects/<name> から --root / --project を導く
 function cliScope(projectDir) {
@@ -123,19 +147,54 @@ function runKiroCli(command, args, timeoutMs = 60000) {
   });
 }
 
-// action: approve | hold | pin | defer
-async function runAction(cfg, { dir, action, id, reason }) {
+// CLI 実行（approve / hold / reprioritize）。本体が稼働していないときの経路
+async function runActionViaCli(cfg, { dir, action, id, reason }) {
   const command = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
   const { root, project } = cliScope(dir);
-  const why = String(reason || '').trim() || 'kiro-projects-viewer から操作';
   const base = ['--root', root, '--project', project];
   let args;
-  if (action === 'approve') args = ['approve', id, '--reason', why, ...base];
-  else if (action === 'hold') args = ['hold', id, '--reason', why, ...base];
-  else if (action === 'pin') args = ['reprioritize', id, '--pin', '--reason', why, ...base];
-  else if (action === 'defer') args = ['reprioritize', id, '--defer', '--reason', why, ...base];
-  else throw new Error(`不明なアクション: ${action}`);
+  if (action === 'approve') args = ['approve', id, '--reason', reason, ...base];
+  else if (action === 'hold') args = ['hold', id, '--reason', reason, ...base];
+  else if (action === 'pin') args = ['reprioritize', id, '--pin', '--reason', reason, ...base];
+  else args = ['reprioritize', id, '--defer', '--reason', reason, ...base];
   return runKiroCli(command, args);
 }
 
-module.exports = { submitFeedback, enqueueToInbox, runAction, DECISION_MARKER };
+// action: approve | hold | pin | defer
+// 経路は kiro.actionMode で制御する:
+//   auto（既定）… 本体が稼働中（instances の heartbeat）なら commands/ ドロップ、
+//                 稼働していなければ CLI、CLI も使えなければドロップにフォールバック
+//   file        … 常に commands/ ドロップ（WSL 内の本体・CLI 無し環境向け）
+//   cli         … 常に CLI（従来の挙動）
+async function runAction(cfg, { dir, action, id, reason }) {
+  if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
+  const why = String(reason || '').trim() || 'kiro-projects-viewer から操作';
+  const mode = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
+
+  if (mode === 'file' || (mode !== 'cli' && kiro.isProjectRunning(dir))) {
+    const { file } = dropCommand(dir, { action, id, reason: why });
+    return {
+      output: `${action} ${id}: 指示ファイルを投入しました（稼働中の kiro-projects が取り込みます）`,
+      file,
+      via: 'file',
+    };
+  }
+  try {
+    const res = await runActionViaCli(cfg, { dir, action, id, reason: why });
+    return { ...res, via: 'cli' };
+  } catch (err) {
+    if (mode === 'cli') throw err;
+    // CLI が無い/失敗 → ファイルドロップに退避（次回の kiro-projects 起動時に取り込まれる）
+    const { file } = dropCommand(dir, { action, id, reason: why });
+    return {
+      output:
+        `${action} ${id}: CLI を実行できないため指示ファイルを置きました` +
+        `（次回の kiro-projects 起動時に取り込まれます）`,
+      file,
+      via: 'file-fallback',
+      cliError: err.message,
+    };
+  }
+}
+
+module.exports = { submitFeedback, enqueueToInbox, dropCommand, runAction, DECISION_MARKER };

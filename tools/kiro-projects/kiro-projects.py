@@ -796,7 +796,7 @@ def _kiro_managed_rels(cfg: "Config") -> "set[str]":
     wd = cfg.workdir.resolve()
     cand = [cfg.backlog, cfg.needs, cfg.decisions, cfg.archive_dir(), cfg.journal,
             Path(cfg.delivery) if cfg.delivery else None, cfg.runlog, cfg.policy,
-            cfg.bus, cfg.inbox, _claims_dir(cfg)]
+            cfg.bus, cfg.inbox, _claims_dir(cfg), commands_dir(cfg)]
     rels: set[str] = set()
     for p in cand:
         if not p:
@@ -1045,6 +1045,7 @@ def instance_record(cfg: "Config") -> dict:
         "container": str(container),
         "backlog": str(cfg.backlog.resolve()),
         "needs": str(cfg.needs.resolve()),
+        "commands": str(commands_dir(cfg).resolve()),
         "decisions": str(cfg.decisions.resolve()),
         "archive": str(cfg.archive_dir().resolve()),
         "policy": str(cfg.policy.resolve()),
@@ -2743,6 +2744,7 @@ def ensure_dirs(cfg: Config) -> None:
         d.mkdir(parents=True, exist_ok=True)
     if cfg.inbox:                       # 外部ソースが投入先を見つけられるよう作っておく
         cfg.inbox.mkdir(parents=True, exist_ok=True)
+    commands_dir(cfg).mkdir(parents=True, exist_ok=True)  # 指示ドロップ口も同様に作っておく
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -3250,6 +3252,7 @@ def _run_setup(cfg: "Config") -> tuple:
     """run_loop の前処理: inbox 取り込み → 読み込み → 人のフィードバック解除 → triage/rot で
     ready/blocked を確定 → verify を用意する。(tasks, policy, reasons, ingested, inboxed, pre_blocked)。"""
     ensure_dirs(cfg)
+    ingest_commands(cfg)          # 人の指示（approve/hold/pin/defer のファイルドロップ）を先に適用
     inboxed = run_intake(cfg) + ingest_inbox(cfg)     # 取り込みコマンド＋外部ドロップ(inbox/)を backlog へ
     tasks = load_tasks(cfg.backlog)
     policy = load_policy(cfg.policy)
@@ -3425,6 +3428,9 @@ def has_work(cfg: Config) -> bool:
             return True
     if cfg.inbox and cfg.inbox.exists() and any(cfg.inbox.glob("*")):
         return True               # 外部ドロップ(inbox/)が来たら起こす
+    cdir = commands_dir(cfg)
+    if cdir.exists() and any(cdir.glob("*.json")):
+        return True               # 人の指示ドロップ(commands/)が来たら起こす
     if cfg.needs.exists():
         for nf in cfg.needs.glob("*.md"):
             if read_feedback(nf):
@@ -3543,6 +3549,78 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
                          affects=f"policy.{kind} += {tid}")
     print(f"{dr}: {tid} を {kind}（policy.{kind} 追加）しました。")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# 指示のファイル取り込み（commands/<name>.json）
+# ---------------------------------------------------------------------------
+# CLI を実行できない環境（ビュアーが Windows・本体が WSL 内で稼働、など）から、
+# approve / hold / reprioritize と同じ人の指示をファイルだけで渡すための口。
+# inbox/（タスク投入）・needs/（フィードバック）と同じ push 型の入力契約で、
+# watch がこの口を監視して起こす。実行は CLI と同一の関数へ委譲する
+# （ロジックの二重実装はしない＝効果・決定記録 DR も CLI と同一）。
+
+COMMAND_ACTIONS = ("approve", "hold", "pin", "defer")
+
+
+def commands_dir(cfg: "Config") -> Path:
+    return cfg.backlog.parent / "commands"
+
+
+def _reject_command(cfg: "Config", f: Path, why: str) -> None:
+    """処理できない指示ファイルは .err に退避して journal に残す（無限再試行を防ぐ）。"""
+    append_journal(cfg.journal, f"commands 取り込み失敗: {f.name}: {why}")
+    try:
+        f.rename(f.with_name(f.name + ".err"))
+    except OSError:
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
+
+def ingest_commands(cfg: "Config") -> "list[str]":
+    """commands/*.json（{"command": "approve|hold|pin|defer", "id": ..., "reason": ...}）を
+    読み、CLI と同一のロジック（cmd_approve / cmd_hold / cmd_reprioritize）を実行する。
+    処理できたらファイルを消す。watch 中は書きかけ保護のため最終保存から debounce 秒待つ。
+    実行した指示（"action:tid"）の一覧を返す。"""
+    cdir = commands_dir(cfg)
+    done: "list[str]" = []
+    if not cdir.exists():
+        return done
+    for f in sorted(cdir.glob("*.json")):
+        if cfg.watch and cfg.debounce > 0 and (time.time() - f.stat().st_mtime) < cfg.debounce:
+            continue                                    # 直近に編集 → 静穏化を待つ
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            _reject_command(cfg, f, f"JSON 解析失敗: {e}")
+            continue
+        if not isinstance(rec, dict):
+            _reject_command(cfg, f, "オブジェクトではない")
+            continue
+        action = str(rec.get("command", "")).strip()
+        tid = str(rec.get("id", "")).strip()
+        reason = str(rec.get("reason", "") or "").strip() or "commands/ からの指示"
+        if action not in COMMAND_ACTIONS or not tid:
+            _reject_command(cfg, f, f"未知の指示: command={action!r} id={tid!r}")
+            continue
+        if action == "approve":
+            rc = cmd_approve(cfg, tid, reason)
+        elif action == "hold":
+            rc = cmd_hold(cfg, tid, reason)
+        else:
+            rc = cmd_reprioritize(cfg, tid, action, reason)
+        if rc == 0:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+            append_journal(cfg.journal, f"commands 取り込み: {action} {tid}（{f.name}）")
+            done.append(f"{action}:{tid}")
+        else:
+            _reject_command(cfg, f, f"{action} {tid} が失敗 (exit {rc})")
+    return done
 
 
 def cmd_needs(cfg: Config) -> int:

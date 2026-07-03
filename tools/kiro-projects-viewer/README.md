@@ -25,7 +25,7 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 | 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md` |
 | バックログ | `backlog/<id>.md`（1 ファイル = 1 タスク。status / priority / verify / after 等）・`archive/<id>.md`（done） |
 | 要対応 | `needs/<id>.md`（MADR 形式。blocked / review / milestone。「ファイルを開いて回答」でエディタへ） |
-| フロー | `<project>/bus/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き） |
+| フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。バスは `<project>/bus` → `<container>/bus` → ⚙ 設定 → kiro-projects 設定ファイル（`.kiro/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock` の pid）から判定 — **kiro-flow CLI には一切聞かない** |
 | GitLab | kiro-flow gitlab executor が results に残した `{issue_iid, web_url, decision, merged_mrs}` ＋ `repos.json` の GitLab リポジトリのオープンイシュー（API 設定時） |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
 
@@ -46,18 +46,20 @@ kiro-projects の人間ループはこのアプリ内で完結できる。いず
 |------|------|-----------------|
 | フィードバックして再開 | 要対応カード | `needs/<id>.md` の「## Decision Outcome」に記入 + `- [x]` 確定（`ingest_feedback` の正規ルート） |
 | そのまま再実行 | 要対応カード（blocked） | 空記入で `- [x]` 確定 |
-| 承認して done 確定 | 要対応カード（review / milestone） | `kiro-projects approve <id> --reason ...`（CLI 委譲・決定記録が残る） |
+| 承認して done 確定 | 要対応カード（review / milestone） | `commands/<name>.json` ドロップ（`ingest_commands` が CLI と同一ロジック・同一 DR で実行）。稼働していなければ CLI にフォールバック |
 | 差し戻す | 要対応カード（review） | 修正方針の記入必須 → feedback として確定（手戻り扱い） |
-| 保留（hold） | 要対応カード・タスク詳細 | `kiro-projects hold <id>`（policy.deny 追加） |
-| 最優先へ / 後回し | タスク詳細 | `kiro-projects reprioritize <id> --pin/--defer` |
+| 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
+| 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
 | ＋ タスクを追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口。verify / accept / priority / note 付き） |
 | レビュー操作（承認/差し戻し/コメント） | GitLab タブ →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
 
 - 理由・方針の記入はすべて決定記録（`decisions/` の DR）や次 act への feedback として
   kiro-projects 側に残る
-- ファイル書き込み（needs / inbox）は稼働中の kiro-projects の watch が自動で取り込む。
-  CLI 操作は ⚙ 設定の「kiro-projects CLI」コマンドを使う（PATH に無ければ
-  `python3 /path/to/kiro-projects.py` 形式で指定）
+- ファイル書き込み（needs / inbox / commands）は稼働中の kiro-projects の watch が自動で
+  取り込む。**指示（承認/保留/優先度変更）は既定でファイルドロップ**（本体が WSL 内で
+  稼働していても届く。CLI は不要）。届け方は ⚙ 設定「指示の届け方」で制御できる:
+  auto（稼働中はファイル・停止中は CLI・CLI 不可ならファイルに退避）／file（常にファイル）／
+  cli（常に CLI。PATH に無ければ `python3 /path/to/kiro-projects.py` 形式で指定）
 - 入力中は自動更新を一時停止する（書きかけのフィードバックが消えない）
 
 ## gitlab-review-viewer との連携（レビューの引き継ぎ）
@@ -101,11 +103,19 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   `tools/kiro-projects/backlog.md.example` / `charter.md.example`）
 - `src/main/flow.js` … kiro-flow バスのリーダー。状態はファイル存在から導出
   （`results/` → done/failed、lease 内 `claims/` → claimed、依存未達 → waiting）。
-  claim 勝者の決定的タイブレーク `(ts, who)` も kiro-flow 本体と同じ
+  claim 勝者の決定的タイブレーク `(ts, who)` も kiro-flow 本体と同じ。
+  run の生存判定は kiro-flow の `run_is_orphaned` と同じ導出（`orch_lease_until`
+  のリース、無ければ `updated_at` の age）。daemon 稼働はロックパスの同一導出
+  （`sha1("local::" + realpath(bus))`）＋記録 pid の生存確認（kiro-projects の
+  fcntl 不在時フォールバックと同じ根拠）で、CLI を起動せずに判定する
+- `src/main/toolconfig.js` … `.kiro/` の kiro-projects / kiro-flow 設定ファイルから
+  `bus` / `lock_dir` などトップレベルのスカラだけを読む簡易リーダー
+  （共有バス構成・ロック置き場の自動発見に使う）
 - `src/main/gitlab.js` … GitLab REST v4 の読み取り専用クライアント（net.fetch・プロキシ対応）
 - `src/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / command）
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
-  inbox JSON ドロップ・kiro-projects CLI（approve/hold/reprioritize）の 3 契約のみを使う
+  inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer。稼働していなければ
+  CLI にフォールバック）の 3 契約のみを使う
 - IPC は gitlab-review-viewer と同じ `{ok, data|error}` 形式・`window.api` 公開
 
 ## 制限事項
@@ -113,8 +123,13 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
 - タスク本文（verify 等）の編集はファイルで行う（詳細ダイアログから開ける）。
   状態遷移を直接書き換える操作は意図的に持たない（done は verify のみが根拠、の
   不変条件をアプリから壊さないため）
-- approve / hold / reprioritize は kiro-projects CLI が必要（旧フラット構成では
-  --root/--project を組み立てられないため CLI 直接実行を案内する）
+- approve / hold / reprioritize は既定でファイルドロップ（`commands/`）のため CLI 不要。
+  本体が稼働していないときだけ CLI を試み、CLI も使えなければ指示ファイルを置いて
+  次回の kiro-projects 起動時の取り込みに委ねる（即時には反映されない）
 - `bus/` は kiro-projects が local run 後に掃除するため（`--no-cleanup` で保持）、
   フロータブは稼働中の run が主対象
+- kiro-flow の状態（run 一覧・生存・daemon 稼働）はすべてファイルから判定するため
+  kiro-flow CLI は不要。ただし daemon 稼働の pid 判定は同一ホスト上でのみ有効
+  （Windows のビュアーから WSL 内の daemon は temp 領域が別のため見えない — その
+  場合も run の生存リースによる「応答なし」判定は共有バスのファイルだけで機能する）
 - GitLab 書き込み操作は持たない（レビュー操作は gitlab-review-viewer の役割）

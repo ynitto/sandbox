@@ -69,9 +69,30 @@
           <input id="cfg-refresh" type="number" min="0" step="1" />
         </div>
       </div>
-      <div class="field">
-        <label>kiro-projects CLI（承認 / 保留 / 優先度変更に使用。PATH に無ければフルパスや "python3 /path/kiro-projects.py"）</label>
-        <input id="cfg-kiro-command" class="mono" placeholder="kiro-projects" />
+      <div class="row2">
+        <div class="field">
+          <label>指示（承認 / 保留 / 優先度変更）の届け方</label>
+          <select id="cfg-action-mode">
+            <option value="auto">自動（稼働中はファイル、停止中は CLI）</option>
+            <option value="file">常にファイル（commands/ ドロップ。WSL 向け）</option>
+            <option value="cli">常に CLI（従来）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>kiro-projects CLI（停止中の指示に使用。PATH に無ければ "python3 /path/kiro-projects.py"）</label>
+          <input id="cfg-kiro-command" class="mono" placeholder="kiro-projects" />
+        </div>
+      </div>
+      <h3>kiro-flow（状態はファイルから判定・CLI 不要）</h3>
+      <div class="row2">
+        <div class="field">
+          <label>共有バス（--bus 運用時のみ。空なら bus/ を自動発見）</label>
+          <input id="cfg-flow-bus" class="mono" placeholder="例: /home/me/work/.kiro-flow" />
+        </div>
+        <div class="field">
+          <label>daemon ロック置き場（lock_dir。空なら既定を導出）</label>
+          <input id="cfg-flow-lockdir" class="mono" placeholder="例: /tmp/kiro-flow-locks" />
+        </div>
       </div>
       <h3>GitLab（イシュー状態の補完・任意）</h3>
       <div class="row2">

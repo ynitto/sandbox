@@ -10,6 +10,7 @@ const state = {
   selectedDir: null, // 選択中プロジェクトのディレクトリ
   project: null, // readProject のスナップショット
   flowRuns: [],
+  flowDaemon: null, // {running, pid, lockPath}（ロックファイルからの判定）
   flowRunId: null,
   flowRun: null, // {run, events}
   flowNodeId: null,
@@ -199,19 +200,16 @@ async function reloadProject() {
   const project = await guard('プロジェクト読込', () => api.readProject(state.selectedDir));
   if (!project) return;
   state.project = project;
-  if (project.hasBus) {
-    state.flowRuns = (await guard('フロー読込', () => api.flowRuns(project.busDir))) || [];
-    if (state.flowRunId && !state.flowRuns.some((r) => r.runId === state.flowRunId)) {
-      state.flowRunId = null;
-      state.flowRun = null;
-    }
-    if (state.flowRunId) {
-      state.flowRun = await guard('run 読込', () => api.flowRun(project.busDir, state.flowRunId));
-    }
-  } else {
-    state.flowRuns = [];
+  // バスが未作成でも daemon の稼働はロックファイルから判定できるため常に読む
+  const fr = (await guard('フロー読込', () => api.flowRuns(project.busDir))) || {};
+  state.flowRuns = fr.runs || [];
+  state.flowDaemon = fr.daemon || null;
+  if (state.flowRunId && !state.flowRuns.some((r) => r.runId === state.flowRunId)) {
     state.flowRunId = null;
     state.flowRun = null;
+  }
+  if (state.flowRunId) {
+    state.flowRun = await guard('run 読込', () => api.flowRun(project.busDir, state.flowRunId));
   }
   renderHeader();
   renderAllTabs();
@@ -652,6 +650,17 @@ const FLOW_STATE_LABEL = {
   waiting: '依存待ち',
 };
 
+// kiro-flow daemon の稼働バッジ（ロックファイル＋pid のファイル判定。CLI 不要）
+function daemonBadge() {
+  const d = state.flowDaemon;
+  if (!d) return '';
+  if (d.running === true)
+    return `<span class="status-chip st-running" title="pid ${d.pid}（${esc(d.lockPath)}）">daemon 稼働中</span>`;
+  if (d.running === false)
+    return `<span class="status-chip st-closed" title="${esc(d.lockPath)}">daemon 停止</span>`;
+  return `<span class="status-chip" title="ロックはあるが pid を読めない: ${esc(d.lockPath)}">daemon 不明</span>`;
+}
+
 function renderFlow() {
   const p = state.project;
   const el = $('tab-flow');
@@ -659,16 +668,28 @@ function renderFlow() {
     el.innerHTML = '';
     return;
   }
-  if (!p.hasBus && !state.flowRuns.length) {
-    el.innerHTML =
-      '<div class="empty">kiro-flow の run がありません。<br>（bus/ は run 完了後に掃除されるため、稼働中または --no-cleanup 時に表示されます）</div>';
+  const busLine = `<div class="muted" style="margin-bottom:8px">
+    バス: <code class="mono">${esc(p.busDir)}</code>${p.busSource && p.busSource !== 'project' ? `（${esc(p.busSource)} から発見）` : ''}
+    ${daemonBadge()}
+  </div>`;
+  if (!state.flowRuns.length) {
+    const checked = (p.busCandidates || [])
+      .map((c) => `<code class="mono">${esc(c.dir)}</code>`)
+      .join('<br>');
+    el.innerHTML = `${busLine}<div class="empty">kiro-flow の run がありません。<br>
+      （bus/ は run 完了後に掃除されるため、稼働中または --no-cleanup 時に表示されます）<br>
+      ${checked ? `<span class="muted">探索したバス候補:<br>${checked}</span>` : ''}</div>`;
     return;
   }
   const runList = state.flowRuns
     .map((r) => {
       const pct = Math.round(r.progress * 100);
+      const stalled =
+        r.alive === false
+          ? ` <span class="status-chip st-stalled" title="orchestrator の生存リースが切れています（heartbeat: ${esc(fmtAgo(r.heartbeatAt) || 'なし')}）">応答なし</span>`
+          : '';
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}">
-        <div class="row2"><span class="mono">${esc(r.runId)}</span><span>${statusChip(r.status)}</span></div>
+        <div class="row2"><span class="mono">${esc(r.runId)}</span><span>${statusChip(r.status)}${stalled}</span></div>
         <div class="req">${esc((r.request || '').slice(0, 120))}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
         <div class="muted">${r.counts.done}✓ ${r.counts.failed}✗ ${r.counts.claimed}▶ ／ ${r.total} ノード ｜ ${fmtAgo(r.updatedAt || r.createdAt)}</div>
@@ -676,7 +697,7 @@ function renderFlow() {
     })
     .join('');
 
-  el.innerHTML = `<div id="flow-layout">
+  el.innerHTML = `${busLine}<div id="flow-layout">
     <div id="flow-runs">${runList || '<div class="empty">run なし</div>'}</div>
     <div id="flow-detail">${renderFlowDetail()}</div>
   </div>`;
@@ -726,10 +747,19 @@ function renderFlowDetail() {
         )}</div>`
     )
     .join('');
+  const stalled =
+    run.alive === false
+      ? ` <span class="status-chip st-stalled">応答なし</span>`
+      : '';
+  const heartbeat =
+    run.alive !== null && run.heartbeatAt
+      ? `<div class="muted">orchestrator heartbeat: ${esc(fmtAgo(run.heartbeatAt))}${run.alive === false ? '（生存リース切れ — daemon 消失の可能性。kiro-flow が孤児回収します）' : ''}</div>`
+      : '';
   return `
     <div class="card full">
-      <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)} ${esc(strat)}</h3>
+      <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)}</h3>
       <div>${esc(run.request || '')}</div>
+      ${heartbeat}
       ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(run.failureReason)}</div>` : ''}
       <div class="row2" style="align-items:center;margin-top:6px">
         <div class="progress" style="flex:1"><div style="width:${pct}%"></div></div>
@@ -1059,6 +1089,9 @@ function openSettings() {
   $('cfg-autodiscover').checked = !cfg.kiro || cfg.kiro.autoDiscover !== false;
   $('cfg-refresh').value = cfg.kiro ? cfg.kiro.refreshSec : 5;
   $('cfg-kiro-command').value = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
+  $('cfg-action-mode').value = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
+  $('cfg-flow-bus').value = (cfg.kiro && cfg.kiro.flowBus) || '';
+  $('cfg-flow-lockdir').value = (cfg.kiro && cfg.kiro.flowLockDir) || '';
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
   $('cfg-gl-token').value = cfg.gitlab.token || '';
   $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
@@ -1076,6 +1109,9 @@ async function saveSettings() {
   cfg.kiro.autoDiscover = $('cfg-autodiscover').checked;
   cfg.kiro.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
   cfg.kiro.command = $('cfg-kiro-command').value.trim() || 'kiro-projects';
+  cfg.kiro.actionMode = $('cfg-action-mode').value;
+  cfg.kiro.flowBus = $('cfg-flow-bus').value.trim();
+  cfg.kiro.flowLockDir = $('cfg-flow-lockdir').value.trim();
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();
   cfg.gitlab.token = $('cfg-gl-token').value.trim();
   cfg.reviewViewer.mode = $('cfg-rv-mode').value;

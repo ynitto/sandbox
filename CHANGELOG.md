@@ -7,6 +7,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects: 指示のファイルドロップ口（commands/）を追加
+
+- **新しい入力契約** `<project>/commands/<name>.json`
+  （`{"command": "approve|hold|pin|defer", "id": "<task-id>", "reason": "..."}`）:
+  CLI を実行できない環境（操作側が Windows・本体が WSL 内で稼働、など）から
+  approve / hold / reprioritize と同じ人の指示をファイルだけで渡せる
+- run/watch が取り込み、**CLI と同一のロジック（`cmd_approve` / `cmd_hold` /
+  `cmd_reprioritize`）・同一の決定記録（DR）**で実行する（二重実装しない）。
+  処理したファイルは削除、壊れた JSON・未知の指示・対象不在は `.err` へ退避して
+  journal に記録（無限再試行を防ぐ）。watch 中は `--debounce` の静穏化が効く
+- `has_work` が commands/ のドロップでも watch を起こす。`ensure_dirs` が口を作成し、
+  instances レコードに `commands` パスを追加（外部操作者が発見できる）
+
+### kiro-projects-viewer: 指示（承認/保留/優先度変更）をファイルベース化
+
+- approve / hold / pin / defer を CLI 起動から `commands/<name>.json` ドロップに変更
+  （上記の新契約）。**本体が WSL 内で稼働していてもファイル共有経由で届く**
+- 届け方は ⚙ 設定「指示の届け方」で制御: auto（既定。instances の heartbeat で稼働中なら
+  ファイル、停止中は CLI、CLI 不可ならファイルに退避）／file（常にファイル）／cli（従来）
+- 書きかけ保護のため `.tmp` に書いてから rename（watch の debounce と二重の保護）
+- 稼働判定は WSL 内の本体が登録する `root_windows`（`\\wsl.localhost\...`）にも一致
+
+### kiro-projects-viewer: kiro-flow の状態を CLI に聞かずファイルだけで判定
+
+- **run の生存判定**: `meta.json` の生存リース（`orch_lease_until` / `heartbeat_at`）から
+  orchestrator の駆動中 / 応答なし（孤児の可能性）を導出（kiro-flow の `run_is_orphaned` と
+  同じ規則。リース未記録の古い run は `updated_at` の age で判定）。running のまま owner が
+  消えた run にフロータブで「応答なし」チップと heartbeat 経過を表示
+- **daemon 稼働検知**: kiro-flow / kiro-projects と同一導出のロックパス
+  （`sha1("local::" + realpath(bus))` → `<lock_dir>/daemon-<hash>.lock`）を読み、記録 pid の
+  生存でバスごとの daemon 稼働をバッジ表示（kiro-projects の fcntl 不在時フォールバックと
+  同じ根拠。CLI は起動しない）
+- **共有バスの自動発見**: フロータブのバスを `<project>/bus` → `<container>/bus` →
+  ⚙ 設定 `kiro.flowBus` → kiro-projects 設定ファイル（`<workdir>/.kiro` → `~/.kiro` の
+  `bus:`）の順にファイルの存在だけで解決（`--bus` の共有バス構成でも run が見える）。
+  run が無いときは探索した候補パスを表示
+- **新設定**: `kiro.flowBus`（共有バスの明示指定）・`kiro.flowLockDir`（daemon ロック置き場。
+  空なら `.kiro/` 設定の `lock_dir` → 既定 `$TMPDIR/kiro-flow-locks` を導出）
+- 新モジュール `src/main/toolconfig.js`: `.kiro/` の kiro-projects / kiro-flow 設定から
+  トップレベルのスカラ（`bus` / `lock_dir`）だけを読む簡易リーダー
+
 ### kiro-projects-viewer: プロジェクトダッシュボードを新規追加
 
 - **新規ツール** `tools/kiro-projects-viewer/`: kiro-projects のプロジェクト状態を可視化する

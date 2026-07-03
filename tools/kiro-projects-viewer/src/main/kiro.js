@@ -9,6 +9,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { readToolConfig } = require('./toolconfig');
 
 // kiro-projects.py と同じ正規表現
 const HEAD_RE = /^##\s+(\S+?):\s*(.*)$/;
@@ -307,6 +308,27 @@ function listInstances() {
   return out;
 }
 
+// プロジェクトの kiro-projects が稼働中か（instances の heartbeat 鮮度から判定。CLI 不要）。
+// WSL 内の本体が登録する root_windows（\\wsl.localhost\...）にも一致させる
+// （Windows のビュアーから WSL 内の稼働を発見するため）。
+function isProjectRunning(dir) {
+  const norm = (p) => {
+    try {
+      return path.resolve(String(p || '')).toLowerCase();
+    } catch {
+      return '';
+    }
+  };
+  const target = norm(dir);
+  if (!target) return false;
+  for (const inst of listInstances()) {
+    if (!inst.fresh || inst.sentinel) continue;
+    if (norm(inst.root) === target) return true;
+    if (inst.root_windows && norm(inst.root_windows) === target) return true;
+  }
+  return false;
+}
+
 function isProjectDir(dir) {
   return (
     fs.existsSync(path.join(dir, 'backlog')) ||
@@ -384,8 +406,51 @@ function discover(cfg) {
   return { containers, instances };
 }
 
+// ---------------------------------------------------------------------------
+// kiro-flow バスの発見
+// ---------------------------------------------------------------------------
+
+// kiro-projects の既定は per-project の <project>/bus だが、--bus / 設定 `bus:` の
+// 共有バス構成では別の場所になる。CLI に聞かず、ファイルの存在だけで候補を順に当たる:
+//   1. <project>/bus（既定の per-project バス）
+//   2. <container>/bus（共有バスをコンテナ直下に置く運用）
+//   3. ⚙ 設定 kiro.flowBus（明示指定）
+//   4. kiro-projects 設定ファイル（<workdir>/.kiro → ~/.kiro）の bus:
+//      （相対パスは kiro-projects の workdir 相当＝コンテナの親で解決する）
+// runs/ を持つ最初の候補を採用。どれにも無ければ既定の 1 を返す（hasBus=false）。
+function resolveBusDir(projectDir, cfg) {
+  const candidates = [];
+  const push = (dir, source) => {
+    if (!dir) return;
+    const resolved = path.resolve(String(dir).replace(/^~(?=$|\/|\\)/, os.homedir()));
+    if (!candidates.some((c) => c.dir === resolved)) candidates.push({ dir: resolved, source });
+  };
+
+  push(path.join(projectDir, 'bus'), 'project');
+  const parent = path.dirname(path.resolve(projectDir));
+  const container = path.basename(parent) === 'projects' ? path.dirname(parent) : null;
+  if (container) push(path.join(container, 'bus'), 'container');
+  if (cfg && cfg.kiro && cfg.kiro.flowBus) push(cfg.kiro.flowBus, 'config');
+
+  // kiro-projects 設定ファイルの bus:（コンテナの親 = workdir 相当の .kiro を優先）
+  const kiroDirs = container ? [path.join(path.dirname(container), '.kiro')] : [];
+  const toolCfg = readToolConfig('kiro-projects', kiroDirs);
+  if (toolCfg && toolCfg.values.bus) {
+    const raw = String(toolCfg.values.bus);
+    const base = container ? path.dirname(container) : path.dirname(projectDir);
+    push(path.isAbsolute(raw) ? raw : path.join(base, raw), 'kiro-projects.yaml');
+  }
+
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c.dir, 'runs'))) {
+      return { busDir: c.dir, hasBus: true, source: c.source, candidates };
+    }
+  }
+  return { busDir: candidates[0].dir, hasBus: false, source: 'project', candidates };
+}
+
 // 1 プロジェクトの完全なスナップショット
-function readProject(dir) {
+function readProject(dir, cfg) {
   const backlog = listTasks(path.join(dir, 'backlog'));
   const archive = listTasks(path.join(dir, 'archive'));
   const needs = listMdDir(path.join(dir, 'needs'), parseNeeds);
@@ -418,6 +483,8 @@ function readProject(dir) {
     /\.(json|md|markdown|txt)$/i.test(f)
   );
 
+  const bus = resolveBusDir(dir, cfg);
+
   return {
     dir,
     inboxFiles,
@@ -436,8 +503,10 @@ function readProject(dir) {
     projectState: readJson(path.join(dir, 'project.json')),
     repos: readJson(path.join(dir, 'repos.json')),
     autonomy,
-    busDir: path.join(dir, 'bus'),
-    hasBus: fs.existsSync(path.join(dir, 'bus', 'runs')),
+    busDir: bus.busDir,
+    hasBus: bus.hasBus,
+    busSource: bus.source,
+    busCandidates: bus.candidates,
   };
 }
 
@@ -448,6 +517,8 @@ module.exports = {
   parseNeeds,
   parseDecisions,
   listInstances,
+  isProjectRunning,
   discover,
   readProject,
+  resolveBusDir,
 };

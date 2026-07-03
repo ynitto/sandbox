@@ -5,6 +5,7 @@ const { ipcMain, shell } = require('electron');
 const { loadConfig, saveConfig } = require('./config');
 const kiro = require('./kiro');
 const flow = require('./flow');
+const { lookupScalar } = require('./toolconfig');
 const { GitLabClient } = require('./gitlab');
 const { openInReviewViewer } = require('./review');
 const actions = require('./actions');
@@ -24,6 +25,14 @@ function client() {
   return new GitLabClient(loadConfig().gitlab);
 }
 
+// kiro-flow daemon ロックの置き場。⚙ 設定 > ~/.kiro の kiro-projects/kiro-flow 設定の
+// lock_dir > 両ツール共通の既定（tempdir 配下。daemonStatus 側で導出）。
+function flowLockDir(cfg) {
+  if (cfg.kiro && cfg.kiro.flowLockDir) return cfg.kiro.flowLockDir;
+  const found = lookupScalar('lock_dir');
+  return found ? found.value : null;
+}
+
 function registerIpcHandlers() {
   handle('config:get', () => loadConfig());
   handle('config:save', ({ config }) => saveConfig(config));
@@ -31,14 +40,18 @@ function registerIpcHandlers() {
   // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー
   handle('kiro:discover', () => kiro.discover(loadConfig()));
 
-  // 1 プロジェクトの完全スナップショット
+  // 1 プロジェクトの完全スナップショット（バスの発見に設定 kiro.flowBus も使う）
   handle('kiro:project', ({ dir }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
-    return kiro.readProject(dir);
+    return kiro.readProject(dir, loadConfig());
   });
 
-  // kiro-flow バス（プロジェクト内 bus/ または設定の共有バス）
-  handle('flow:runs', ({ busDir, limit }) => flow.listRuns(busDir, limit || 30));
+  // kiro-flow バス（per-project bus/ または共有バス）。run 一覧に加えて daemon の
+  // 稼働もロックファイルから判定して返す（kiro-flow CLI には一切聞かない）
+  handle('flow:runs', ({ busDir, limit }) => ({
+    runs: flow.listRuns(busDir, limit || 30),
+    daemon: flow.daemonStatus(busDir, flowLockDir(loadConfig())),
+  }));
   handle('flow:run', ({ busDir, runId }) => {
     const runDir = path.join(busDir, 'runs', runId);
     return {
