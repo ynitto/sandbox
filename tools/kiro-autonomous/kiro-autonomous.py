@@ -4528,6 +4528,10 @@ _REPO_KEY_ALIASES = {
                  "参照のみ", "参照", "読み取り専用", "読取専用"),
     "owns": ("owns", "own", "owned", "owns_paths", "paths",
              "所有", "担当", "管轄", "担当パス"),
+    # 分類グロブ（repos スキーマの拡張キー。本体は使わず repos.json への書き出しで引き継ぐ）
+    "docs": ("docs", "doc", "ドキュメント", "文書"),
+    "tests": ("tests", "test", "テスト"),
+    "code": ("code", "コード", "実装"),
 }
 
 # readonly フラグの真値表記（値なし＝キーだけ書いた場合も True 扱い）
@@ -4564,8 +4568,13 @@ def _repo_spec_from_entry(e: dict) -> dict:
     owns = [g for g in re.split(r"[,\s]+", _entry_attr(e["attrs"], "owns")) if g]
     # owns があれば書込先候補。owns 未指定は参照リポジトリ（readonly 明示と同義に倒す）。
     readonly = _entry_readonly(e["attrs"]) or not owns
-    return {"name": name, "url": url, "desc": desc, "base": base,
+    spec = {"name": name, "url": url, "desc": desc, "base": base,
             "target": target, "path": path, "readonly": readonly, "owns": owns}
+    for k in ("docs", "tests", "code"):   # 分類グロブは repos スキーマへ損失なく引き継ぐ（本体は不使用）
+        globs = [g for g in re.split(r"[,\s]+", _entry_attr(e["attrs"], k)) if g]
+        if globs:
+            spec[k] = globs
+    return spec
 
 
 def validate_charter(ch: "Charter") -> "list[str]":
@@ -4711,12 +4720,19 @@ def _registry_entry(name: str, e: dict) -> dict:
     if isinstance(owns, str):
         owns = [g for g in re.split(r"[,\s]+", owns) if g]
     base = str(e.get("base", "") or "")
-    return {"name": str(name), "url": str(e.get("url", "") or ""),
+    spec = {"name": str(name), "url": str(e.get("url", "") or ""),
             "desc": str(e.get("desc", "") or ""), "base": base,
             "target": str(e.get("target", "") or "") or base,
             "path": str(e.get("path", "") or "").strip("/"),
             "readonly": bool(e.get("readonly")) or not owns,
             "owns": [str(g) for g in owns]}
+    for k in ("docs", "tests", "code"):   # 分類グロブ（repos スキーマの拡張キー）も引き回す
+        v = e.get(k) or []
+        if isinstance(v, str):
+            v = [g for g in re.split(r"[,\s]+", v) if g]
+        if v:
+            spec[k] = [str(g) for g in v]
+    return spec
 
 
 def repo_registry_path(cfg: "Config") -> "Path | None":
@@ -4726,6 +4742,27 @@ def repo_registry_path(cfg: "Config") -> "Path | None":
         if p.is_file():
             return p
     return None
+
+
+def _specs_from_registry(data) -> "list[dict]":
+    specs: "list[dict]" = []
+    if isinstance(data, dict):
+        for name, e in data.items():
+            if str(name).startswith("_"):            # "_" 接頭辞キーはメタデータ予約（_meta 等）
+                continue
+            if isinstance(e, dict):
+                specs.append(_registry_entry(str(name), e))
+    elif isinstance(data, list):                     # [{name: ..., url: ...}, ...] も許容
+        for e in data:
+            if isinstance(e, dict) and e.get("name"):
+                specs.append(_registry_entry(str(e["name"]), e))
+    return specs
+
+
+def _registry_generated(data) -> bool:
+    """repos ファイルが「charter からの自動生成物」か（_meta.generated_from マーカー）。"""
+    return (isinstance(data, dict) and isinstance(data.get("_meta"), dict)
+            and bool(data["_meta"].get("generated_from")))
 
 
 def load_repo_registry(cfg: "Config") -> "list[dict] | None":
@@ -4739,16 +4776,37 @@ def load_repo_registry(cfg: "Config") -> "list[dict] | None":
     except (OSError, ValueError) as e:
         print(f"[kiro-autonomous] repos レジストリを解釈できません: {p}: {e}", file=sys.stderr)
         return None
-    specs: "list[dict]" = []
-    if isinstance(data, dict):
-        for name, e in data.items():
-            if isinstance(e, dict):
-                specs.append(_registry_entry(str(name), e))
-    elif isinstance(data, list):                     # [{name: ..., url: ...}, ...] も許容
-        for e in data:
-            if isinstance(e, dict) and e.get("name"):
-                specs.append(_registry_entry(str(e["name"]), e))
-    return specs
+    return _specs_from_registry(data)
+
+
+def export_repo_registry(cfg: "Config", specs: "list[dict]",
+                         path: "Path | None" = None) -> None:
+    """charter の ## repos を共通スキーマ（schemas/repos.schema.json）の repos.json へ書き出す。
+    codd-gate 等の外部ツールへ**レジストリファイルとして渡す**ための派生物（codd-gate は charter を
+    読まない）。_meta.generated_from を刻み、charter 変更のたび同期する（**正は charter のまま**。
+    手で管理したくなったら _meta を消す＝以後は手書きが正で本体は上書きしない）。
+    内容が同じなら書かない（ルーティング解決のたびに呼ばれるため）。"""
+    path = path or (cfg.backlog.parent / "repos.json")
+    entries: "dict[str, dict]" = {}
+    for s in specs:
+        e = {k: s[k] for k in ("url", "desc", "base", "target", "path") if s.get(k)}
+        for k in ("owns", "docs", "tests", "code"):
+            if s.get(k):
+                e[k] = list(s[k])
+        if s.get("readonly") and not s.get("owns"):
+            e["readonly"] = True
+        entries[s.get("name") or s.get("url") or f"repo{len(entries) + 1}"] = e
+    payload = {"_meta": {"generated_from": "charter.md ## repos",
+                         "note": "kiro-autonomous が自動生成（正は charter）。手で管理するなら _meta を消す"},
+               **entries}
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def registry_specs(cfg: "Config", ch: "Charter | None") -> "list[dict]":
@@ -4764,11 +4822,27 @@ def load_charter(cfg: "Config") -> "Charter | None":
     if not p or not p.exists():
         return None
     ch = parse_charter(p.read_text(encoding="utf-8"))
-    reg = load_repo_registry(cfg)
-    if reg is not None:                              # repos ファイルが正・## repos は互換入力
-        ch.repo_specs = reg
-        ch.repos = [f"{s['name']} = {s['url']}" if s.get("name") else s["url"]
-                    for s in reg if s.get("url")]
+    rp = repo_registry_path(cfg)
+    if rp is not None:
+        try:
+            data = _read_structured(rp)
+        except (OSError, ValueError) as e:
+            print(f"[kiro-autonomous] repos レジストリを解釈できません: {rp}: {e}", file=sys.stderr)
+            return ch                                # 壊れた手書きは上書きせず charter のまま
+        if _registry_generated(data):                # 自動生成物 → 正は charter・毎回同期
+            if ch.repo_specs:
+                export_repo_registry(cfg, ch.repo_specs, rp)
+            else:
+                rp.unlink(missing_ok=True)           # charter から repos が消えたら生成物も消す
+            return ch
+        specs = _specs_from_registry(data)
+        if specs:                                    # 手書きレジストリが正・## repos は互換入力
+            ch.repo_specs = specs
+            ch.repos = [f"{s['name']} = {s['url']}" if s.get("name") else s["url"]
+                        for s in specs if s.get("url")]
+        return ch
+    if ch.repo_specs:                                # レジストリ無し → charter から生成して外部ツールへ渡す
+        export_repo_registry(cfg, ch.repo_specs)
     return ch
 
 

@@ -277,10 +277,13 @@ class TestRepoRegistry(unittest.TestCase):
             (d / "repos.json").write_text(__import__("json").dumps(
                 {"app": {"url": "git@x:app.git", "desc": "新", "base": "main",
                          "owns": ["src/**"], "docs": ["docs/**"]}}), encoding="utf-8")
+            before = (d / "repos.json").read_text(encoding="utf-8")
             ch = km.load_charter(cfg)
             self.assertEqual([s["name"] for s in ch.repo_specs], ["app"])   # ファイルが勝つ
             self.assertEqual(ch.repo_specs[0]["target"], "main")            # target 省略 = base
             self.assertFalse(ch.repo_specs[0]["readonly"])                  # owns あり = 書込先
+            self.assertEqual((d / "repos.json").read_text(encoding="utf-8"),
+                             before)                                        # 手書きは上書きしない
 
     def test_registry_without_charter_routes_but_no_charter_mode(self):
         with tempfile.TemporaryDirectory() as d:
@@ -298,6 +301,36 @@ class TestRepoRegistry(unittest.TestCase):
             t = [x for x in km.load_tasks(cfg.backlog) if x.id == "T1"][0]
             spec, routed = km.resolve_workspace(cfg, t, km.load_policy(cfg.policy))
             self.assertEqual((spec["name"], routed), ("app", "owns"))       # レジストリ単独で解決
+
+    def test_charter_exports_generated_registry(self):
+        """repos ファイルが無ければ charter から自動生成して外部ツール（codd-gate --repos）へ渡す。
+        生成物には _meta マーカーが付き、正は charter のまま（charter 変更に追従・手書きなら不干渉）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "charter.md").write_text(
+                "# Charter: x\n## goal\ny\n## repos\n- app = git@x:app.git\n"
+                "  - desc: 本体\n  - base: main\n  - owns: src/**\n"
+                "  - docs: docs/**, README.md\n", encoding="utf-8")
+            ch = km.load_charter(cfg)
+            rp = d / "repos.json"
+            self.assertTrue(rp.exists())                       # charter から自動生成
+            data = __import__("json").loads(rp.read_text(encoding="utf-8"))
+            self.assertIn("generated_from", data["_meta"])     # 生成物マーカー
+            self.assertEqual(data["app"]["url"], "git@x:app.git")
+            self.assertEqual(data["app"]["docs"], ["docs/**", "README.md"])   # 分類グロブも損失なし
+            self.assertEqual([s["name"] for s in ch.repo_specs], ["app"])     # 正は charter のまま
+            (d / "charter.md").write_text(                     # charter 更新 → 生成物が追従
+                "# Charter: x\n## goal\ny\n## repos\n- app2 = git@x:app2.git\n"
+                "  - desc: 本体2\n  - base: main\n  - owns: src/**\n", encoding="utf-8")
+            km.load_charter(cfg)
+            data = __import__("json").loads(rp.read_text(encoding="utf-8"))
+            self.assertIn("app2", data)
+            self.assertNotIn("app", data)
+            (d / "charter.md").write_text(                     # ## repos が消えたら生成物も消す
+                "# Charter: x\n## goal\ny\n", encoding="utf-8")
+            km.load_charter(cfg)
+            self.assertFalse(rp.exists())
 
     def test_broken_registry_falls_back_to_charter(self):
         with tempfile.TemporaryDirectory() as d:

@@ -81,8 +81,10 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
   projects/
     default/                       ← 1 プロジェクト（--project。未指定はこれを作成）
       charter.md           プロジェクト憲章（人が書く・project の最上位入力。正典 charter.md.example）
-      repos.yaml           リポジトリレジストリ（任意・共通スキーマ schemas/repos.schema.json。あれば
-                           これが正で charter の ## repos は互換入力。charter 無しでもルーティングに効く）
+      repos.yaml|json      リポジトリレジストリ（共通スキーマ schemas/repos.schema.json）。手書きが
+                           あればそれが正（charter の ## repos は互換入力）。無ければ charter から
+                           repos.json を自動生成（_meta 付き・正は charter に追従）＝codd-gate 等の
+                           外部ツールへ「ファイルとして渡す」。charter 無しでもルーティングに効く
       project.json         project のサイクル状態（PASS 履歴・stall・cost。project が増分更新）
       policy.md            優先順位・実行先・安全ゲートの上書き（人だけが書く）
       backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
@@ -193,11 +195,13 @@ kiro-autonomous enqueue --title "概要見出しを追加"       --accept "READM
   `review`（検収待ち）になり `needs/<id>.md` を生成。`approve <id>` で done 確定／フィードバックで差し戻し。
 - **パス保護**（safety denylist）: policy `protect: <glob>` に一致するファイルを act が**変更したら** verify=PASS でも
   done せず検収待ちへ。`gate` がタスク一致なのに対し `protect` は**変更されたパス**一致。
-- **一貫性ゲート（codd-gate 連携・オプション）**: ドキュメント・コード・テストの整合は独立ツール
-  [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で護れる。
-  **有効化は設定だけ**: `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV"'`（done 確定前の差分
-  ゲート）＋ `intake_cmd: codd-gate tasks --debt`（負債を修復タスクとして自動返済）＋ charter acceptance に
-  `codd-gate verify --debt --max-broken N`（受入の負債ラチェット）。本体は無改造・依存なし。
+- **一貫性ゲート（codd-gate 連携・オプション）**: ドキュメント・コード・テストの整合は**完全独立**の
+  ツール [`codd-gate`](../codd-gate/README.md)（本ツールの install.sh が隣にあれば同梱インストールする）で
+  護れる。結合は共通スキーマ（`schemas/`）のみ——リポジトリ定義は本ツールが charter から自動生成する
+  `<project>/repos.json` を codd-gate が `--repos` で読む。**有効化は設定だけ**:
+  `regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos <project>/repos.json'`（done 確定前の
+  差分ゲート）＋ `intake_cmd: 'codd-gate tasks --debt --repos <project>/repos.json'`（負債を修復タスクとして
+  自動返済）＋ charter acceptance に `codd-gate verify --debt --max-broken N …`（受入の負債ラチェット）。
 
 ### policy.md（人による上書き・per-project）
 
@@ -339,10 +343,12 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
   注入（charter 1400 字・decisions 末尾 1000 字）。charter.md があれば全 act に乗る（無ければ空＝後方互換）。`## links` 先
   プロジェクトの定義＋判断（learn）も横展開で取り込む。
 - **ワークスペース・ルーティング（repos レジストリの `owns:` ＋ policy `route:`）**: リポジトリ定義は
-  独立スキーマ（`schemas/repos.schema.json`）で管理でき、`<project>/repos.{yaml,yml,json}` があれば
-  **それがレジストリの正**（charter の `## repos` は互換入力で、内部的には同じ形に正規化して引き回す。
-  charter 無しの backlog 消化でもルーティングに効く）。以下の `## repos` の説明はレジストリの内容の
-  説明としてそのまま当てはまる。大規模・複数リポジトリ運用で「どのタスクを
+  独立スキーマ（`schemas/repos.schema.json`）で管理する。手書きの `<project>/repos.{yaml,yml,json}` が
+  あれば**それがレジストリの正**（charter の `## repos` は互換入力で、内部的には同じ形に正規化して
+  引き回す。charter 無しの backlog 消化でもルーティングに効く）。手書きが無ければ **charter から
+  repos.json を自動生成**して外部ツール（codd-gate の `--repos` 等）へ渡す（`_meta` マーカー付き・
+  正は charter のまま追従。手で管理したくなったら `_meta` を消す）。以下の `## repos` の説明は
+  レジストリの内容の説明としてそのまま当てはまる。大規模・複数リポジトリ運用で「どのタスクを
   どのリポジトリへコミットするか」を**制御層（kiro-autonomous）が1つに決め**、kiro-flow へ `--workspace`（唯一の書込先）として
   渡す。charter の `## repos` を repo レジストリとし、各 repo に `- owns:`（担当パスのグロブ）を付けると**書込先候補
   （ワークスペース）**になる。**owns を書かない repo は参照リポジトリ（読むだけ）**で、書込先にはせず kiro-flow へ

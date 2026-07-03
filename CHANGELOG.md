@@ -19,14 +19,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 - **新規ツール `tools/codd-gate/`**（stdlib のみ・LLM 不要）: `scan`（doc↔code↔test の接続マップと
   壊れた参照/未文書化/未テストの負債棚卸し）/ `impact`（差分の Green/Amber/Gray/**Followup** 分類）/
-  `verify`（差分ゲート＋ `--debt` 負債ラチェット。exit 0/1）/ `tasks`（ドリフト・負債を
-  kiro-autonomous の修復タスクへ変換。同一 repo は決定的 verify、別 repo は accept＋workspace で
+  `verify`（差分ゲート＋ `--debt` 負債ラチェット。exit 0/1）/ `tasks`（ドリフト・負債を共通 task
+  スキーマの修復タスクへ変換。同一 repo は決定的 verify、別 repo は accept＋workspace で
   ルーティングに乗せる）/ `check`（修復タスク verify 用の状態アサーション: 接続・参照解決・鮮度）。
-- **複数リポジトリ（外部フォーマット非依存）**: レジストリの正は codd-gate 自身の設定ファイル
-  `repos:`（`.kiro/codd-gate.{yaml,json}`。dir / docs / tests / code を per-repo 指定）。identity は
-  (url, path, base)＝パス＋ブランチで一意。リポジトリ横断参照は `repo名:相対パス`。連携時のみ
-  `--charter` **アダプタ**で kiro-autonomous の charter `## repos` を共用できる（任意。アダプタ専用キー
-  `- docs:`/`- tests:`/`- code:` は kiro-autonomous には未知キーとして無害）。
+- **複数リポジトリ（外部フォーマット非依存）**: レジストリは共通スキーマ（`--repos` ファイル /
+  設定 `repos:`。dir / docs / tests / code を per-repo 指定）。identity は (url, path, base)＝
+  パス＋ブランチで一意。リポジトリ横断参照は `repo名:相対パス`。charter.md は読まない。
 - **接続の推定は決定的**: 明示注釈 `coherence: doc|code|test=…`（最優先）＞ md のインラインコード/
   リンク ＞ Python import ＞ 命名規約（一意時のみ）。曖昧は接続も負債もしない。
 - **git アクセスの原則**: 通常動作はローカル読み取りのみ（clone/fetch ゼロ・フル clone はどの経路にも
@@ -47,17 +45,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **共通スキーマ `schemas/` を新設（repos / task をツール横断の独立スキーマとして管理）**:
   `repos.schema.json`（リポジトリレジストリ。identity = (url, path, base)）と `task.schema.json`
   （制御層タスクの JSON 表現。Markdown 形の正典は backlog.md.example・未知キー保持）。
-  kiro-autonomous は `<project>/repos.{yaml,yml,json}` があれば**レジストリの正**として読み
-  （charter の `## repos` は互換入力＝内部で同形に正規化して引き回す。repos ファイル単独では
-  charter モードは発動しないがルーティング/参照解決には効く）、codd-gate は同じファイルを
-  `--repos` で読む。kiro-flow の `--workspace`/`--reference` はこのスキーマの 1 エントリの射影。
-  codd-gate のタスク出力がスキーマに適合することはテストで突き合わせる。
+  kiro-autonomous は手書きの `<project>/repos.{yaml,yml,json}` があれば**レジストリの正**として読み
+  （charter の `## repos` は互換入力＝内部で同形に正規化して引き回す）、**無ければ charter から
+  repos.json を自動生成**して外部ツールへ「ファイルとして渡す」（_meta マーカー付き・正は charter に
+  追従・## repos が消えれば生成物も消す。分類グロブ docs/tests/code も損失なく引き継ぐ）。
+  repos ファイル単独では charter モードは発動しないがルーティング/参照解決には効く。kiro-flow の
+  `--workspace`/`--reference` はこのスキーマの 1 エントリの射影。codd-gate のタスク出力がスキーマに
+  適合することはテストで突き合わせる。
+- **codd-gate は kiro-autonomous から完全独立に**: charter アダプタ（--charter）を廃止し、レジストリは
+  共通スキーマ（--repos ファイル / 設定 repos:）のみに。`tasks` は共通 task スキーマへの**直接出力**
+  であり特定ツール向けアダプタではない。結合は入力（repos スキーマ）・出力（task スキーマ）とも
+  `schemas/` のデータ契約だけ。
 - **タスク追加の責務境界を明文化**: kiro-autonomous は元よりタスクを入力とする設計（enqueue＝汎用の
   取り込み口・外部ソースは薄いアダプタで流し込む思想）で、タスク契約（正典 `backlog.md.example`・
   未知キー保持の前方互換）の所有者は kiro-autonomous。codd-gate コアの正は**所見**（`impact --json` /
-  `verify --debt --json`。コアは kiro-autonomous を知らない）で、`tasks` は所見→タスク契約への
-  **出力アダプタ**（`--charter` 入力アダプタと対。依存は公開データ契約のみ＝JUnit/SARIF エミッタと
-  同じ関係。消費側の実行モデルの知識はアダプタにだけ置く）。
+  `verify --debt --json`）で、`tasks` はそれを共通 task スキーマへ直接出力する。
 - **外部 CLI の差し込み点をカタログ化**: kiro-autonomous 設計書 §4.1 に公式の 6 点（E1 verify/
   acceptance・E2 regression_cmd・E3 intake_cmd・E4 inbox/enqueue・E5 notify_cmd・E6 executor）の契約
   （入出力・環境・制約）と選び方・妥当性を明文化。暗黙の拡張点は作らない（S1 優先順位・S5 エスカレー

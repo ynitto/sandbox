@@ -69,45 +69,6 @@ def run_cli(argv: "list[str]") -> "tuple[int, str]":
     return rc, buf.getvalue()
 
 
-class CharterParseTests(unittest.TestCase):
-    CHARTER = """# Charter: demo
-
-## goal
-リアーキテクチャの指針（機能要件ではない）。
-
-## repos
-- app = git@example.com:team/app.git
-  - owns: src/**
-  - desc: アプリ本体
-  - base: main
-  - target: develop
-  - docs: docs/**, README.md
-  - tests: tests/**
-- lib = https://example.com/team/lib.git   # 行内コメント
-  - desc: 共有ライブラリ
-  - base: develop
-- shop-api = git@example.com:team/shop.git
-  - path: apps/api
-  - base: main
-  - desc: モノレポの API 側
-"""
-
-    def test_parse(self):
-        specs = cg.parse_charter_repos(self.CHARTER)
-        self.assertEqual([s["name"] for s in specs], ["app", "lib", "shop-api"])
-        app = specs[0]
-        self.assertEqual(app["base"], "main")
-        self.assertEqual(app["target"], "develop")
-        self.assertEqual(app["docs"], ["docs/**", "README.md"])
-        self.assertEqual(app["tests"], ["tests/**"])
-        self.assertEqual(specs[1]["url"], "https://example.com/team/lib.git")
-        self.assertEqual(specs[1]["target"], "develop")   # target 省略 = base
-        self.assertEqual(specs[2]["path"], "apps/api")    # (url, path, base) で一意
-
-    def test_no_repos_section(self):
-        self.assertEqual(cg.parse_charter_repos("# Charter: x\n## goal\ny\n"), [])
-
-
 class ClassifyTests(unittest.TestCase):
     def test_defaults(self):
         r = cg.Repo(name="a")
@@ -506,34 +467,14 @@ class ScanCliTests(unittest.TestCase):
             commit(d, "init")
             reg = Path(tmp) / "repos.json"
             reg.write_text(json.dumps(
-                {"app": {"url": "git@x:app.git", "base": "main", "dir": str(d),
+                {"_meta": {"generated_from": "charter.md ## repos"},   # kiro-autonomous の生成物マーカー
+                 "app": {"url": "git@x:app.git", "base": "main", "dir": str(d),
                          "owns": ["src/**"], "docs": ["manual/**"]}}), encoding="utf-8")
             out = Path(tmp) / "map.json"
             rc, _ = run_cli(["scan", "--repos", str(reg), "--map", str(out)])
             self.assertEqual(rc, 0)
             m = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(m["nodes"]["app:manual/x.md"]["kind"], "doc")
-            edges = {(e["src"], e["dst"]) for e in m["edges"]}
-            self.assertIn(("app:manual/x.md", "app:src/x.py"), edges)
-
-    def test_charter_registry(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp) / "app"
-            init_repo(d)
-            write(d, "src/x.py", "X = 1\n")
-            write(d, "manual/x.md", "`src/x.py`\n")
-            commit(d, "init")
-            charter = Path(tmp) / "charter.md"
-            charter.write_text(
-                "# Charter: demo\n\n## repos\n- app = git@x:app.git\n"
-                "  - desc: 本体\n  - base: main\n  - owns: src/**\n"
-                "  - docs: manual/**\n", encoding="utf-8")
-            out = Path(tmp) / "map.json"
-            rc, _ = run_cli(["scan", "--charter", str(charter),
-                             "--repo-dir", f"app={d}", "--map", str(out)])
-            self.assertEqual(rc, 0)
-            m = json.loads(out.read_text(encoding="utf-8"))
-            self.assertEqual(m["nodes"]["app:manual/x.md"]["kind"], "doc")   # プラグインキー docs: が効く
             edges = {(e["src"], e["dst"]) for e in m["edges"]}
             self.assertIn(("app:manual/x.md", "app:src/x.py"), edges)
 
