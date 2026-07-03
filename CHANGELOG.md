@@ -31,6 +31,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `<root>/projects/<name>/` 標準レイアウトと旧フラット構成の両対応
 - **ディープリンク**: `kiro-projects-viewer://open?root=<container>&project=<name>` で
   特定プロジェクトを直接開ける（シングルインスタンス）
+- **人のアクション層**: 可視化だけでなく、人間ループの判断をアプリ内で完結できる。
+  kiro-projects の公式な入力契約のみを使用（done 確定の不変条件を迂回しない）:
+  - 要対応カードから **フィードバックして再開 / そのまま再実行**（needs の
+    「## Decision Outcome」記入 + `- [x]` 確定 = `ingest_feedback` の正規ルート。
+    本体の `read_feedback` / `feedback_submitted` で取り込み可能なことを相互検証済み）
+  - **承認して done 確定**（review / milestone）・**保留（hold）**・
+    **最優先へ / 後回し（pin / defer）** は kiro-projects CLI へ委譲（決定記録 DR が残る。
+    CLI コマンドは設定可能）
+  - **＋ タスクを追加**: `inbox/<name>.json` ドロップ（E4 push 型取り込み口）で投入。
+    inbox 取り込み待ち件数もバックログタブに表示
+  - 差し戻し（review）は修正方針の記入必須ガード付き。入力中は自動更新を一時停止し
+    書きかけの回答を保護
 
 ### gitlab-review-viewer: ディープリンク対応（kiro-projects-viewer 連携）
 

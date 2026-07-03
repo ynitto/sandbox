@@ -19,6 +19,10 @@ const DEFAULT_CONFIG = {
     autoDiscover: true,
     // 自動リロードの間隔（秒）。0 で無効（手動リロードのみ）。
     refreshSec: 5,
+    // approve / hold / reprioritize（決定記録を残す人の操作）に使う
+    // kiro-projects CLI。PATH に無い場合はフルパスや
+    // "python3 /path/to/kiro-projects.py" 形式でも指定できる。
+    command: 'kiro-projects',
   },
   gitlab: {
     // gitlab-review-viewer と同じ形。タスクに紐づく GitLab イシューの

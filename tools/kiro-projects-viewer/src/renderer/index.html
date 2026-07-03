@@ -69,6 +69,10 @@
           <input id="cfg-refresh" type="number" min="0" step="1" />
         </div>
       </div>
+      <div class="field">
+        <label>kiro-projects CLI（承認 / 保留 / 優先度変更に使用。PATH に無ければフルパスや "python3 /path/kiro-projects.py"）</label>
+        <input id="cfg-kiro-command" class="mono" placeholder="kiro-projects" />
+      </div>
       <h3>GitLab（イシュー状態の補完・任意）</h3>
       <div class="row2">
         <div class="field">
@@ -99,6 +103,38 @@
         <button id="btn-save-settings" value="default" class="primary-inline">保存</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- ======== タスク追加ダイアログ（inbox へ投入） ======== -->
+  <dialog id="dlg-enqueue">
+    <h2>タスクを追加（inbox へ投入）</h2>
+    <div class="field">
+      <label>タイトル（必須）</label>
+      <input id="enq-title" placeholder="例: README に使用例を追加する" />
+    </div>
+    <div class="field">
+      <label>verify — done 確定のシェルコマンド（exit 0 = PASS。書ければこれが最良）</label>
+      <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
+    </div>
+    <div class="field">
+      <label>accept — 自然言語の完了条件（verify が書けないとき。実行時にエージェントが verify を合成）</label>
+      <input id="enq-accept" placeholder="例: README に使用例が載っている" />
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>優先度（整数・大ほど高）</label>
+        <input id="enq-priority" type="number" step="1" value="0" />
+      </div>
+      <div class="field">
+        <label>メモ（note）</label>
+        <input id="enq-note" />
+      </div>
+    </div>
+    <div class="muted">verify / accept のどちらも無い場合、タスクは inbox 状態のまま人の triage 待ちになります。</div>
+    <div class="dialog-actions">
+      <button id="btn-enq-cancel">キャンセル</button>
+      <button id="btn-enq-submit" class="primary-inline">投入</button>
+    </div>
   </dialog>
 
   <!-- ======== タスク詳細ダイアログ ======== -->

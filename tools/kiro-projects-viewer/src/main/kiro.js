@@ -413,8 +413,14 @@ function readProject(dir) {
   const byStatus = {};
   for (const t of backlog) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
 
+  // inbox/ に置かれて取り込み待ちのファイル（次サイクルで backlog 化される）
+  const inboxFiles = safeList(path.join(dir, 'inbox')).filter((f) =>
+    /\.(json|md|markdown|txt)$/i.test(f)
+  );
+
   return {
     dir,
+    inboxFiles,
     name: path.basename(dir),
     charter: parseCharter(readText(path.join(dir, 'charter.md'))),
     policy: parsePolicy(readText(path.join(dir, 'policy.md'))),

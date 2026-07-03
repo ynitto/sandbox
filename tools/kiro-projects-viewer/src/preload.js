@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('api', {
   flowRuns: (busDir, limit) => invoke('flow:runs', { busDir, limit }),
   flowRun: (busDir, runId) => invoke('flow:run', { busDir, runId }),
 
+  submitFeedback: (file, feedback) => invoke('kiro:feedback', { file, feedback }),
+  enqueueTask: (dir, spec) => invoke('kiro:enqueue', { dir, spec }),
+  runAction: (args) => invoke('kiro:action', args),
+
   glEnrich: (urls) => invoke('gitlab:enrich', { urls }),
   glProjectIssues: (args) => invoke('gitlab:projectIssues', args),
 

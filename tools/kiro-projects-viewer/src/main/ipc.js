@@ -7,6 +7,7 @@ const kiro = require('./kiro');
 const flow = require('./flow');
 const { GitLabClient } = require('./gitlab');
 const { openInReviewViewer } = require('./review');
+const actions = require('./actions');
 
 // すべてのハンドラを {ok, data|error} 形式に揃える（gitlab-review-viewer と同じ）
 function handle(channel, fn) {
@@ -68,6 +69,11 @@ function registerIpcHandlers() {
       .listProjectIssues({ projectPath, state, labels })
       .then((issues) => ({ enabled: true, issues }));
   });
+
+  // 人のアクション（needs 回答・タスク投入・決定記録を残す CLI 操作）
+  handle('kiro:feedback', ({ file, feedback }) => actions.submitFeedback(file, feedback));
+  handle('kiro:enqueue', ({ dir, spec }) => actions.enqueueToInbox(dir, spec || {}));
+  handle('kiro:action', (args) => actions.runAction(loadConfig(), args));
 
   // gitlab-review-viewer へレビューを引き継ぐ
   handle('review:open', ({ target }) => openInReviewViewer(loadConfig(), target || {}));

@@ -423,12 +423,25 @@ function renderBacklog() {
     .join('');
 
   el.innerHTML = `
-    <div class="filters">${chips}<span class="muted">${tasks.length} 件</span></div>
+    <div class="filters">${chips}<span class="muted">${tasks.length} 件</span>
+      ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="${esc(p.inboxFiles.join(', '))}">inbox 取り込み待ち ${p.inboxFiles.length}</span>` : ''}
+      <span class="spacer"></span>
+      <button id="btn-enqueue" class="primary-inline">＋ タスクを追加</button>
+    </div>
     ${
       rows
         ? `<table class="list"><tr><th>ID</th><th>タイトル</th><th>状態</th><th>優先度</th><th>retry</th><th>verify</th><th>属性</th></tr>${rows}</table>`
         : '<div class="empty">タスクなし</div>'
     }`;
+
+  $('btn-enqueue').addEventListener('click', () => {
+    $('enq-title').value = '';
+    $('enq-verify').value = '';
+    $('enq-accept').value = '';
+    $('enq-priority').value = '0';
+    $('enq-note').value = '';
+    $('dlg-enqueue').showModal();
+  });
 
   for (const chip of el.querySelectorAll('.chip')) {
     chip.addEventListener('click', () => {
@@ -449,6 +462,20 @@ function showTaskDialog(id, scope) {
   const extraRows = Object.entries(t.extra)
     .map(([k, v]) => `<tr><th>${esc(k)}</th><td><pre class="mono">${esc(v)}</pre></td></tr>`)
     .join('');
+  // 決定記録を残す人の操作（backlog のタスクのみ。archive は閲覧のみ）
+  const canApprove = ['blocked', 'review'].includes(t.status);
+  const actionArea =
+    scope === 'archive'
+      ? ''
+      : `<div class="need-actions">
+          <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録 decisions/ に残ります）"></textarea>
+          <div class="row need-buttons">
+            ${canApprove ? `<button class="primary-inline" data-taskact="approve">✓ 承認</button>` : ''}
+            <button data-taskact="pin">▲ 最優先へ（pin）</button>
+            <button data-taskact="defer">▽ 後回し（defer）</button>
+            <button data-taskact="hold">⏸ 保留（hold）</button>
+          </div>
+        </div>`;
   $('dlg-task-body').innerHTML = `
     <h2><span class="mono">${esc(t.id)}</span>: ${esc(t.title)}</h2>
     <table class="list">
@@ -459,18 +486,91 @@ function showTaskDialog(id, scope) {
       <tr><th>verify</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
       ${extraRows}
       <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>
-    </table>`;
+    </table>
+    ${actionArea}`;
   const link = $('task-open-file');
   if (link) link.addEventListener('click', (e) => {
     e.preventDefault();
     guard('ファイルを開く', () => api.openPath(t.file));
   });
+  for (const btn of document.querySelectorAll('#dlg-task-body button[data-taskact]')) {
+    btn.addEventListener('click', async () => {
+      const reason = $('task-reason') ? $('task-reason').value.trim() : '';
+      const ok = await guard('操作', async () => {
+        const res = await api.runAction({ dir: p.dir, action: btn.dataset.taskact, id: t.id, reason });
+        toast(res.output || '操作しました', true);
+        return true;
+      });
+      if (ok) {
+        $('dlg-task').close();
+        await reloadProject();
+      }
+    });
+  }
   $('dlg-task').showModal();
+}
+
+async function submitEnqueue() {
+  const p = state.project;
+  if (!p) return;
+  const spec = {
+    title: $('enq-title').value,
+    verify: $('enq-verify').value,
+    accept: $('enq-accept').value,
+    priority: $('enq-priority').value,
+    note: $('enq-note').value,
+  };
+  const ok = await guard('タスク追加', async () => {
+    const res = await api.enqueueTask(p.dir, spec);
+    toast(
+      `inbox に投入しました: ${res.spec.title}\n` +
+        (res.spec.verify || res.spec.accept
+          ? '（次のサイクルで backlog 化されます）'
+          : '（verify / accept が無いので取り込み後は人の triage 行きです）'),
+      true
+    );
+    return true;
+  });
+  if (ok) {
+    $('dlg-enqueue').close();
+    await reloadProject();
+  }
 }
 
 // ---------------------------------------------------------------------------
 // タブ: 要対応（needs）
 // ---------------------------------------------------------------------------
+
+// needs の種類ごとに出すアクション。
+//   blocked   … フィードバック再開（[x] 記入）/ そのまま再実行 / 保留（hold）
+//   review    … 承認して done 確定（approve CLI）/ 差し戻し（フィードバック必須）
+//   milestone … プロジェクト承認（approve <project>）
+function needActionsHtml(n) {
+  const kind = n.kind || 'blocked';
+  const buttons = [];
+  if (kind === 'review') {
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認して done 確定</button>`);
+    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1">↩ 差し戻す（記入必須）</button>`);
+  } else if (kind === 'milestone') {
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ プロジェクトを承認（完了確定）</button>`);
+    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ フィードバックを送る</button>`);
+  } else {
+    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">➤ フィードバックして再開</button>`);
+    buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">↻ そのまま再実行</button>`);
+    buttons.push(`<button data-act="hold" data-id="${esc(n.id)}">⏸ 保留（hold）</button>`);
+  }
+  const ph =
+    kind === 'review'
+      ? '差し戻す場合の修正方針（承認だけなら空欄で OK。approve の理由にも使われます）'
+      : '修正方針・指示（空のまま再実行も可）';
+  return `<div class="need-actions" data-need="${esc(n.id)}">
+    <textarea rows="2" class="need-input" placeholder="${esc(ph)}"></textarea>
+    <div class="row need-buttons">${buttons.join('')}
+      <span class="spacer"></span>
+      <button data-open="${esc(n.file)}" title="エディタで直接編集">ファイルを開く</button>
+    </div>
+  </div>`;
+}
 
 function renderNeeds() {
   const p = state.project;
@@ -491,18 +591,53 @@ function renderNeeds() {
           <span class="badge ${n.decided ? '' : 'warn'}">${esc(n.kind || 'blocked')}</span>
           <span class="title">${esc(n.title || n.id)}</span>
           <span class="muted">${esc(n.date || '')}</span>
-          ${n.decided ? '<span class="status-chip st-done">記入済み</span>' : '<span class="status-chip st-blocked">未対応</span>'}
-          <button data-open="${esc(n.file)}">ファイルを開いて回答</button>
+          ${n.decided ? '<span class="status-chip st-done">記入済み（取り込み待ち）</span>' : '<span class="status-chip st-blocked">未対応</span>'}
         </div>
         <div class="body">${mdToHtml(n.body)}</div>
+        ${n.decided ? '' : needActionsHtml(n)}
       </div>`
     )
     .join('');
   el.innerHTML = `<div class="muted" style="margin-bottom:8px">
-      needs/&lt;id&gt;.md の「## Decision Outcome」に記入し <code>- [x]</code> にすると kiro-projects が取り込みます。</div>${cards}`;
+      回答はこの画面から送信できます（needs/&lt;id&gt;.md の「## Decision Outcome」記入 + <code>- [x]</code> 確定と同じ。
+      稼働中の kiro-projects が自動で取り込みます）。</div>${cards}`;
+
   for (const btn of el.querySelectorAll('button[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
   }
+  for (const btn of el.querySelectorAll('button[data-act]')) {
+    btn.addEventListener('click', () => handleNeedAction(btn));
+  }
+}
+
+async function handleNeedAction(btn) {
+  const p = state.project;
+  const id = btn.dataset.id;
+  const act = btn.dataset.act;
+  const need = p.needs.find((n) => n.id === id);
+  if (!need) return;
+  const box = btn.closest('.need-actions');
+  const text = box ? box.querySelector('.need-input').value.trim() : '';
+  if (btn.dataset.require && !text) {
+    return toast('差し戻しには修正方針の記入が必要です');
+  }
+  const ok = await guard('操作', async () => {
+    if (act === 'feedback') {
+      await api.submitFeedback(need.file, text);
+      toast(text ? 'フィードバックを確定しました（次のサイクルで再開）' : '確定しました', true);
+    } else if (act === 'rerun') {
+      await api.submitFeedback(need.file, '');
+      toast('そのまま再実行として確定しました', true);
+    } else if (act === 'approve') {
+      const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason: text });
+      toast(res.output || '承認しました', true);
+    } else if (act === 'hold') {
+      const res = await api.runAction({ dir: p.dir, action: 'hold', id, reason: text });
+      toast(res.output || '保留（policy.deny）にしました', true);
+    }
+    return true;
+  });
+  if (ok) await reloadProject();
 }
 
 // ---------------------------------------------------------------------------
@@ -923,6 +1058,7 @@ function openSettings() {
   $('cfg-roots').value = ((cfg.kiro && cfg.kiro.roots) || []).join('\n');
   $('cfg-autodiscover').checked = !cfg.kiro || cfg.kiro.autoDiscover !== false;
   $('cfg-refresh').value = cfg.kiro ? cfg.kiro.refreshSec : 5;
+  $('cfg-kiro-command').value = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
   $('cfg-gl-token').value = cfg.gitlab.token || '';
   $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
@@ -939,6 +1075,7 @@ async function saveSettings() {
     .filter(Boolean);
   cfg.kiro.autoDiscover = $('cfg-autodiscover').checked;
   cfg.kiro.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
+  cfg.kiro.command = $('cfg-kiro-command').value.trim() || 'kiro-projects';
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();
   cfg.gitlab.token = $('cfg-gl-token').value.trim();
   cfg.reviewViewer.mode = $('cfg-rv-mode').value;
@@ -965,8 +1102,12 @@ function setupPolling() {
   const sec = state.config && state.config.kiro ? Number(state.config.kiro.refreshSec) : 5;
   if (sec > 0) {
     state.timer = setInterval(() => {
-      // ダイアログを開いている間は更新しない（入力を消さない）
-      if ($('dlg-settings').open || $('dlg-task').open) return;
+      // ダイアログを開いている間・入力中は更新しない（書きかけの入力を消さない）
+      if ($('dlg-settings').open || $('dlg-task').open || $('dlg-enqueue').open) return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) return;
+      const typed = [...document.querySelectorAll('#content .need-input')].some((t) => t.value.trim());
+      if (typed) return;
       refreshAll();
     }, sec * 1000);
   }
@@ -1002,6 +1143,8 @@ async function init() {
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-save-settings').addEventListener('click', () => saveSettings());
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
+  $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
+  $('btn-enq-submit').addEventListener('click', submitEnqueue);
   api.onOpenTarget(handleOpenTarget);
 
   await refreshDiscovery();

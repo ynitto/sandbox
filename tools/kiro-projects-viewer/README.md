@@ -37,6 +37,29 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 
 `<root>/projects/<name>/` の標準レイアウトと、`projects/` を持たない旧フラット構成の両方に対応。
 
+## 人のアクション（見るだけでなく、その場で判断を返せる）
+
+kiro-projects の人間ループはこのアプリ内で完結できる。いずれも kiro-projects の
+**公式な入力契約だけ**を使い、done の確定条件（verify のみが根拠）を迂回しない。
+
+| 操作 | 場所 | 実装（入力契約） |
+|------|------|-----------------|
+| フィードバックして再開 | 要対応カード | `needs/<id>.md` の「## Decision Outcome」に記入 + `- [x]` 確定（`ingest_feedback` の正規ルート） |
+| そのまま再実行 | 要対応カード（blocked） | 空記入で `- [x]` 確定 |
+| 承認して done 確定 | 要対応カード（review / milestone） | `kiro-projects approve <id> --reason ...`（CLI 委譲・決定記録が残る） |
+| 差し戻す | 要対応カード（review） | 修正方針の記入必須 → feedback として確定（手戻り扱い） |
+| 保留（hold） | 要対応カード・タスク詳細 | `kiro-projects hold <id>`（policy.deny 追加） |
+| 最優先へ / 後回し | タスク詳細 | `kiro-projects reprioritize <id> --pin/--defer` |
+| ＋ タスクを追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口。verify / accept / priority / note 付き） |
+| レビュー操作（承認/差し戻し/コメント） | GitLab タブ →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
+
+- 理由・方針の記入はすべて決定記録（`decisions/` の DR）や次 act への feedback として
+  kiro-projects 側に残る
+- ファイル書き込み（needs / inbox）は稼働中の kiro-projects の watch が自動で取り込む。
+  CLI 操作は ⚙ 設定の「kiro-projects CLI」コマンドを使う（PATH に無ければ
+  `python3 /path/to/kiro-projects.py` 形式で指定）
+- 入力中は自動更新を一時停止する（書きかけのフィードバックが消えない）
+
 ## gitlab-review-viewer との連携（レビューの引き継ぎ）
 
 GitLab タブの「**レビューで開く**」を押すと、そのイシューを gitlab-review-viewer で開く。
@@ -81,12 +104,17 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   claim 勝者の決定的タイブレーク `(ts, who)` も kiro-flow 本体と同じ
 - `src/main/gitlab.js` … GitLab REST v4 の読み取り専用クライアント（net.fetch・プロキシ対応）
 - `src/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / command）
+- `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
+  inbox JSON ドロップ・kiro-projects CLI（approve/hold/reprioritize）の 3 契約のみを使う
 - IPC は gitlab-review-viewer と同じ `{ok, data|error}` 形式・`window.api` 公開
 
 ## 制限事項
 
-- 表示専用。タスクの編集・approve・needs への回答はファイル / kiro-projects CLI で行う
-  （needs はボタンからファイルを開ける）
+- タスク本文（verify 等）の編集はファイルで行う（詳細ダイアログから開ける）。
+  状態遷移を直接書き換える操作は意図的に持たない（done は verify のみが根拠、の
+  不変条件をアプリから壊さないため）
+- approve / hold / reprioritize は kiro-projects CLI が必要（旧フラット構成では
+  --root/--project を組み立てられないため CLI 直接実行を案内する）
 - `bus/` は kiro-projects が local run 後に掃除するため（`--no-cleanup` で保持）、
   フロータブは稼働中の run が主対象
 - GitLab 書き込み操作は持たない（レビュー操作は gitlab-review-viewer の役割）
