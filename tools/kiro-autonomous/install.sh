@@ -36,6 +36,18 @@ cp "${SRC}" "${DEST}"
 chmod +x "${DEST}"
 ok "インストールしました: ${DEST}"
 
+# 同リポジトリの独立ツール codd-gate（doc/code/test 一貫性ゲート）も隣にあれば同じ prefix へ入れる。
+# 有効化は設定だけ（intake_cmd / regression_cmd / charter acceptance。本体は無改造・任意連携）。
+# sparse-checkout（自動アップデート）等で隣に無ければ何もしない（codd-gate は独立に更新する）。
+CODD_INSTALLER="${SCRIPT_DIR}/../codd-gate/install.sh"
+if [[ -f "${CODD_INSTALLER}" ]]; then
+  if bash "${CODD_INSTALLER}" --prefix "${INSTALL_PREFIX}" >/dev/null; then
+    ok "codd-gate も同梱インストールしました（有効化は設定で: intake_cmd / regression_cmd / acceptance）"
+  else
+    warn "codd-gate のインストールに失敗しました（kiro-autonomous 本体には影響ありません）"
+  fi
+fi
+
 if command -v kiro-flow >/dev/null 2>&1; then
   ok "kiro-flow を検出（act の委譲先として連携できます）"
 else

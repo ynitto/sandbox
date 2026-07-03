@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "schemas/repos.schema.json",
+  "title": "repos registry",
+  "description": "リポジトリレジストリの共通スキーマ（kiro-autonomous / kiro-flow / codd-gate 共用）。トップレベルは「repo 名 → エントリ」のマッピング。リポジトリの identity は (url, path, base)＝モノレポは path 別・ブランチ別は base 別のエントリで区別し、name はエントリ一意。charter.md の `## repos` は互換入力（アダプタ）で、各ツールは内部的にこの形へ正規化して引き回す。ファイル形式は YAML（PyYAML 任意）または JSON。運用の正典は schemas/README.md。",
+  "type": "object",
+  "additionalProperties": { "$ref": "#/definitions/repo" },
+  "definitions": {
+    "globs": {
+      "description": "グロブの列（配列、またはカンマ/空白区切りの文字列）",
+      "type": ["array", "string"],
+      "items": { "type": "string" }
+    },
+    "repo": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "git URL（例 git@host:team/app.git）。kiro-autonomous のワークスペース/参照・kiro-flow の clone/push 先・codd-gate --sync の実体化元・リポジトリ横断参照の識別に使う"
+        },
+        "desc": {
+          "type": "string",
+          "description": "内容物・関与範囲の説明。kiro-autonomous の auto-route（LLM 推定）と gitlab 起票が読む【書込先なら推奨】"
+        },
+        "base": {
+          "type": "string",
+          "description": "作業のベースブランチ。kiro-flow は kf/<run-id> をここから切る。codd-gate --sync はこのブランチの最新を実体化する【書込先なら必須】"
+        },
+        "target": {
+          "type": "string",
+          "description": "MR/PR のターゲットブランチ【省略時 base】"
+        },
+        "path": {
+          "type": "string",
+          "description": "モノレポ内の担当フォルダ（例 apps/api）。worker はこの配下のみ変更し、codd-gate はここをスキャンのルートにする"
+        },
+        "owns": {
+          "$ref": "#/definitions/globs",
+          "description": "担当パスのグロブ。kiro-autonomous のワークスペース・ルーティング（タスク→書込先）の根拠。無指定＝参照リポジトリ（読むだけ・書込先にしない）"
+        },
+        "readonly": {
+          "type": "boolean",
+          "description": "参照リポジトリの明示フラグ（owns 無指定と同義）"
+        },
+        "docs": {
+          "$ref": "#/definitions/globs",
+          "description": "codd-gate: ドキュメント分類グロブの上書き（既定 **/*.md 等）。他ツールは無視"
+        },
+        "tests": {
+          "$ref": "#/definitions/globs",
+          "description": "codd-gate: テスト分類グロブの上書き。他ツールは無視"
+        },
+        "code": {
+          "$ref": "#/definitions/globs",
+          "description": "codd-gate: コード分類グロブの上書き（既定は拡張子表）。他ツールは無視"
+        },
+        "dir": {
+          "type": "string",
+          "description": "ローカル checkout のパス（ローカル運用ヒント。codd-gate が読む。CLI --repo-dir が常に優先）"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -7,6 +7,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### codd-gate v1.0.0 — doc/code/test 一貫性ゲート（単体 CLI・kiro-autonomous 連携はオプション）
+
+[CoDD (Coherence-Driven Development)](https://github.com/yohey-w/codd-dev) の設計
+（Trace＝接続マップ / Impact＝Green・Amber・Gray 分類 / Verify＝no fake green）を翻案した
+決定的ツールを追加。**kiro-autonomous に依存しない独立ツール**（python3＋git のみ・独立インストーラ
+`install.sh`）として単体で CI / git hook から使え、kiro-autonomous とは**本体無改造**の一方向
+オプション連携（既存フック regression_cmd・charter acceptance・タスク verify・enqueue --json / inbox
+のみで結合するプラグイン方式）。ブラウンフィールド前提で、既存負債は止めずに
+「棚卸し→ラチェット→backlog 返済」、新規変更だけを差分ゲートで護る。
+
+- **新規ツール `tools/codd-gate/`**（stdlib のみ・LLM 不要）: `scan`（doc↔code↔test の接続マップと
+  壊れた参照/未文書化/未テストの負債棚卸し）/ `impact`（差分の Green/Amber/Gray/**Followup** 分類）/
+  `verify`（差分ゲート＋ `--debt` 負債ラチェット。exit 0/1）/ `tasks`（ドリフト・負債を共通 task
+  スキーマの修復タスクへ変換。同一 repo は決定的 verify、別 repo は accept＋workspace で
+  ルーティングに乗せる）/ `check`（修復タスク verify 用の状態アサーション: 接続・参照解決・鮮度）。
+- **複数リポジトリ（外部フォーマット非依存）**: レジストリは共通スキーマ（`--repos` ファイル /
+  設定 `repos:`。dir / docs / tests / code を per-repo 指定）。identity は (url, path, base)＝
+  パス＋ブランチで一意。リポジトリ横断参照は `repo名:相対パス`。charter.md は読まない。
+- **接続の推定は決定的**: 明示注釈 `coherence: doc|code|test=…`（最優先）＞ md のインラインコード/
+  リンク ＞ Python import ＞ 命名規約（一意時のみ）。曖昧は接続も負債もしない。
+- **git アクセスの原則**: 通常動作はローカル読み取りのみ（clone/fetch ゼロ・フル clone はどの経路にも
+  無い）。url-only repo は `--sync`（opt-in）で git-worktree-cache-pattern 準拠に実体化——共有 bare
+  ミラー（初回のみ blob:none・以後増分 fetch。`KIRO_GIT_CACHE_DIR` で kiro ツール群と共有）から
+  **fetch 後の SHA** で detached worktree（INV-1 鮮度）を生やし、run 後に worktree だけ回収。
+  実体化不能は黙って PASS 側に倒さない。`dir:` 指定 repo には触れない（判定対象は作業ツリーそのもの）。
+- **kiro-autonomous に汎用取り込みフック `intake_cmd` を追加**（設定/CLI `--intake-cmd[-interval]`）:
+  外部の決定的ゲート/検出器を watch の周期で pull し、stdout の enqueue --json を**冪等取り込み**
+  （id が現役 backlog に居れば飛ばす）。パス開始時と idle 中に間隔律速で実行、失敗は journal に残して
+  無視。**常駐は kiro-autonomous 側だけが持ち、intake_cmd（codd-gate 含む）は単発・有界**という役割
+  分担を固定。有効化は設定だけ: `regression_cmd`（差分ゲート）＋`intake_cmd: codd-gate tasks --debt`
+  （負債の自動返済）＋charter acceptance（ラチェット）。kiro-autonomous の install.sh は隣に
+  codd-gate があれば同梱インストールする。
+- **`tasks --debt --cohort`**: 未文書化/未テストのような同種負債の山を repo 単位の cohort
+  （`cohort_items`＋`{item}`）に集約し、後段の分解を kiro-autonomous の pilot-then-batch に委ねる。
+  タスク id は発見内容から決定的（48 字・末尾ハッシュ）＝intake の冪等キー。
+- **共通スキーマ `schemas/` を新設（repos / task をツール横断の独立スキーマとして管理）**:
+  `repos.schema.json`（リポジトリレジストリ。identity = (url, path, base)）と `task.schema.json`
+  （制御層タスクの JSON 表現。Markdown 形の正典は backlog.md.example・未知キー保持）。
+  kiro-autonomous は手書きの `<project>/repos.{yaml,yml,json}` があれば**レジストリの正**として読み
+  （charter の `## repos` は互換入力＝内部で同形に正規化して引き回す）、**無ければ charter から
+  repos.json を自動生成**して外部ツールへ「ファイルとして渡す」（_meta マーカー付き・正は charter に
+  追従・## repos が消えれば生成物も消す。分類グロブ docs/tests/code も損失なく引き継ぐ）。
+  repos ファイル単独では charter モードは発動しないがルーティング/参照解決には効く。kiro-flow の
+  `--workspace`/`--reference` はこのスキーマの 1 エントリの射影。codd-gate のタスク出力がスキーマに
+  適合することはテストで突き合わせる。
+- **codd-gate は kiro-autonomous から完全独立に**: charter アダプタ（--charter）を廃止し、レジストリは
+  共通スキーマ（--repos ファイル / 設定 repos:）のみに。`tasks` は共通 task スキーマへの**直接出力**
+  であり特定ツール向けアダプタではない。結合は入力（repos スキーマ）・出力（task スキーマ）とも
+  `schemas/` のデータ契約だけ。
+- **タスク追加の責務境界を明文化**: kiro-autonomous は元よりタスクを入力とする設計（enqueue＝汎用の
+  取り込み口・外部ソースは薄いアダプタで流し込む思想）で、タスク契約（正典 `backlog.md.example`・
+  未知キー保持の前方互換）の所有者は kiro-autonomous。codd-gate コアの正は**所見**（`impact --json` /
+  `verify --debt --json`）で、`tasks` はそれを共通 task スキーマへ直接出力する。
+- **外部 CLI の差し込み点をカタログ化**: kiro-autonomous 設計書 §4.1 に公式の 6 点（E1 verify/
+  acceptance・E2 regression_cmd・E3 intake_cmd・E4 inbox/enqueue・E5 notify_cmd・E6 executor）の契約
+  （入出力・環境・制約）と選び方・妥当性を明文化。暗黙の拡張点は作らない（S1 優先順位・S5 エスカレー
+  ション・S7 予算にはフックを設けない理由も記載）。codd-gate は E1+E2+E3 を使う適用例。
+- **新規スキル `codd-gate`**: 単体運用（git hook / CI）を主、kiro-autonomous 結線
+  （regression_cmd → acceptance ラチェット → intake_cmd 返済）を追加情報として整理。
+- 設計書 `docs/designs/codd-gate-design.md`（codd-dev からの翻案対応表・差し込み点選択の妥当性検証
+  つき）とテスト（codd-gate 28 件＋kiro-autonomous intake 5 件）を同梱。
+
 ### agentic-search v1.0.0 — 反復探索を共有スキル化し検索系スキルへ一括導入
 
 検索を **単発の retrieve** から **エージェント（Claude）が「検索 → 評価 → 再構成 → 再検索 → 統合」を

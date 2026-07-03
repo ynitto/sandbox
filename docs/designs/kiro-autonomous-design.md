@@ -73,6 +73,7 @@
         ▼
  S0 取り込み・再開                                             │ files: needs/ inbox/ backlog/ journal.md
     ・needs/<id> の [x] フィードバック → ready 復帰＋次 act に添付（ingest_feedback）  │ --debounce
+    ・intake_cmd の stdout(JSON) を冪等取り込み（run_intake）     │ --intake-cmd --intake-interval
     ・inbox/ の .json/.md を backlog 化（ingest_inbox）          │
     ・triage（inbox→ready 昇格・rot 検知で blocked→needs）       │ --rot --rot-age-days
     ・verify の用意（accept→合成 / verify_template→展開）         │ task: - accept / - verify_template
@@ -167,7 +168,7 @@
 
 | ステージ | 何をする | 主な機能（節） | 効く設定 / policy / タスク欄 | 主に触るファイル |
 |---------|---------|---------------|---------------------------|-----------------|
-| **S0** 取り込み・再開 | フィードバック反映・inbox 取込・triage・rot・verify 用意 | フィードバック往復(§5.1)・取り込み口(§5.1)・rot(§5.1)・verify 用意(§5.1) | `--debounce` `--rot`／task `accept/verify_template` | needs/ inbox/ backlog/ |
+| **S0** 取り込み・再開 | フィードバック反映・intake/inbox 取込・triage・rot・verify 用意 | フィードバック往復(§5.1)・取り込み口(§5.1)・取り込みコマンド(§5.1)・rot(§5.1)・verify 用意(§5.1) | `--debounce` `--rot` `--intake-cmd[-interval]`／task `accept/verify_template` | needs/ inbox/ backlog/ |
 | **S1** 優先順位付け・選択 | 順位決定・policy 上書き・依存/level 除外・claim | 優先順位(§5.2)・依存(§5.7)・原子的クレーム(§5.8)・level(§5.5) | `--planner` `--concurrency`／policy `deny/pin/defer`／task `priority/after/level` | policy.md claims/ |
 | **S2** 実行 act | 要求文＋文脈注入・委譲先決定 | act 委譲・location(§5.3)・文脈注入(§6.4)・pace(§5.3) | `--location` `--flow-planner` `--executor` `--git-bus` `--pace` | charter.md decisions/ bus/ |
 | **S3** 検証ゲート | verify・回帰・保護・進捗・コスト計上 | 検証(§5.4)・偽done対策(§5.4)・flake(§5.4)・回帰(§5.4)・保護(§5.4) | `--verify-confirm` `--regression-cmd` `--require-progress`／policy `protect`／task `verify/expect` | （workdir の git） |
@@ -182,6 +183,52 @@
 > **設定の優先順位は常に `CLI > 設定ファイル > 既定`**、かつ**人の policy/決定記録 ＞ 設定の既定値**（§1 不変条件 3）。
 > タスク欄（`- level:` 等）はそのタスクに限ってグローバル設定を上書きする（締める安全網は常に上乗せ・§5.5）。
 
+### 4.1 外部 CLI の差し込み点（フック契約カタログ）
+
+外部ツール（決定的なゲート/検出器/通知先。例: codd-gate・lint・スモークテスト・issue 抽出器）を
+**コード改造なしで差し込める公式の口**は次の 6 つ。ここに列挙の無い場所へは差し込まない（暗黙の
+拡張点を作らない）。すべて §1 の不変条件に従属する——**外部 CLI は「タスクを足す」「done を止める」
+「外へ知らせる」ことしかできず、done を作る・予算を破る・人の policy を上書きすることはできない**。
+
+| # | 差し込み点 | ステージ | 拡張する機能 | 契約（入力 → 出力） | 制約 |
+|---|-----------|---------|-------------|--------------------|------|
+| E1 | タスクの `- verify:` ／ charter `## acceptance` | S3 ／ 上位 evaluate | **done の根拠そのもの** | cwd=workdir/verify_cwd/ワークスペース clone・env `$KIRO_BASE_REV`（act 前 HEAD）→ exit 0=PASS | 履歴でなく状態/差分を見る（§5.4 鉄則）・有界 |
+| E2 | `regression_cmd`（設定/CLI） | S3 の後・done 確定前 | 検証ゲート（全タスク共通の横断検査） | E1 と同じ env/cwd → exit≠0 で done せず人へ | タスク非依存・有界。「止める」方向のみ |
+| E3 | `intake_cmd`（設定/CLI） | S0・watch idle | backlog の自走（**pull 型**のタスク供給） | cwd=workdir → stdout に enqueue --json（spec/配列）。`id` が冪等キー | 単発・有界・冪等。exit≠0/非 JSON は無視（ループ健在） |
+| E4 | `inbox/` ドロップ ／ `enqueue --json` | S0 | 取り込み口（**push 型**のタスク供給） | .json/.md ファイル or stdin JSON | verify 無しは inbox=人の triage 行き |
+| E5 | `notify_cmd`（設定/CLI） | 人の対応待ちへの遷移時 | 通知の出口 | stdin にダイジェスト | 送信のみ・失敗しても無害 |
+| E6 | `--executor`（kiro-flow executor プラグイン名/.py） | S2 act | 実行バックエンドの差し替え | kiro-flow 側の executor 契約 | 契約の正典は kiro-flow 設計書 |
+
+**選び方**: 判定を足したい→E1（タスク固有）/E2（全タスク横断）。仕事を足したい→E3（周期 pull・冪等）/
+E4（イベント push）。人へ知らせたい→E5。実行のしかたを替えたい→E6。
+
+**タスク契約の所有権（E3/E4）**: kiro-autonomous は設計当初から**タスクを入力とするツール**であり
+（enqueue＝「汎用の取り込み口」・外部ソースは薄いアダプタで流し込む思想）、その入力形式——タスク spec
+（正典 `backlog.md.example`・JSON 表現の共通スキーマは `schemas/task.schema.json`・未知キー保持の
+前方互換）——の所有者は kiro-autonomous。供給側ツール（codd-gate 等）は自分の所見を正としつつ、
+**この公開データ契約への変換アダプタ**を持てばよく、kiro-autonomous 本体への依存は生まれない
+（受け側も供給元ツールを知らない。結合は双方向ともデータ契約のみ）。
+
+**repos レジストリの独立スキーマ（`schemas/repos.schema.json`）**: リポジトリ定義（identity =
+(url, path, base)）はツール横断の共通スキーマとして切り出されている。**手書き**の
+`<project>/repos.{yaml,yml,json}` があれば**それがレジストリの正**（charter の `## repos` は互換入力。
+どちらも内部では同じ repo_specs 形に正規化して引き回す）。手書きが**無ければ charter の `## repos`
+から `repos.json` を自動生成**（`export_repo_registry`。`_meta.generated_from` マーカー付き・正は
+charter のまま毎ロードで同期、`## repos` が消えれば生成物も消す。手で管理したくなったら `_meta` を
+消す＝以後は手書きが正）。これが**外部ツールへの受け渡し口**——codd-gate は charter を一切読まず、
+この repos ファイルを `--repos` で読むだけ（**完全独立**。分類グロブ docs/tests/code も charter から
+損失なく引き継がれる）。repos ファイル単独では charter モード（目標駆動）は**発動しない**が、
+ワークスペース・ルーティング／参照リポジトリの解決には効く（`registry_specs`）。kiro-flow の
+`--workspace` / `--reference` はこのスキーマの 1 エントリの射影（{url, path, base, target, desc}）。
+
+**妥当性（なぜこの 6 点か）**: どれも「決定的なファイル/プロセス境界」で切れており、外部 CLI が
+ループの内部状態に触れない。E1/E2 は exit code、E3/E4 は JSON/ファイル、E5 は stdin、E6 は別ツールの
+プラグイン機構——結合は**コマンド文字列と入出力契約だけ**なので、外しても戻り、更新も独立にできる。
+逆に S1（優先順位）・S5（エスカレーション）・S7（予算）へのフックは**設けない**: そこは人の policy と
+本体の決定性が支配すべき領域で、外部コマンドに開けると不変条件（人＞エージェント・必ず止まる）を
+外から破れてしまう。適用例は codd-gate（E1+E2+E3 を使う一貫性ゲート。
+[`codd-gate-design.md`](codd-gate-design.md) §4）。
+
 ---
 
 ## 5. ステージ別詳細
@@ -195,6 +242,15 @@
 - **取り込み口（inbox）**: `<project>/inbox/` の `.json`（1 件/配列）/`.md`（タスク形式）を取り込み元ファイルを消す。外部
   ソース（webhook/メール/issue 抽出）は薄いアダプタでここへ流し込む（コアは stdlib・ネットワーク非依存）。`enqueue`
   コマンドも同経路。**verify を持たない投入は必ず `inbox`**＝人の triage 行き（鉄則）。
+- **取り込みコマンド（intake_cmd・pull 型）**: push 型の inbox と対になる汎用フック。設定/CLI の `intake_cmd` を
+  **パス開始時（S0）と watch の idle 中**に `intake_interval`（既定 600 秒・0 以下で毎回。`--project all` に備え
+  backlog パス毎に律速）で実行し、stdout の enqueue --json 形式（spec 1 件/配列）を backlog へ取り込む（`run_intake`）。
+  - **冪等**: spec の `id`（slug 化）が**現役 backlog**（blocked/review 含む）に居れば飛ばす。定期実行しても同じ発見が
+    重複投入されない。done→archive 後に同じ発見が再発したら新タスクとして積み直せる（archive とは突合しない）。
+  - **有限・無害**: `verify_timeout` で打ち切り。exit≠0・非 JSON・例外は journal に残して無視（ループは殺さない）。
+    intake_cmd 自体は**単発・有界**であること（常駐＝長期実行は kiro-autonomous 側だけが持つ、の役割分担）。
+  - 想定例: `intake_cmd: codd-gate tasks --debt`（doc/code/test 一貫性の負債→修復タスク。
+    `docs/designs/codd-gate-design.md`）。issue 抽出・監視アラート等の決定的検出器も同じ口に乗る。
 - **rot 検知**: triage 時に古い/重複/実行不能を検出して人へ回す（消さず棚卸し）。`unverifiable`（verify を用意できない）/
   `duplicate`（正規化タイトル一致）/ `stale`（mtime が `--rot-age-days` 既定 14 日より古い）。`run --rot` で毎回、`rot [--fix]`
   で随時。

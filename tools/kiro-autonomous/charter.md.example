@@ -58,6 +58,10 @@ kiro-autonomous の charter.md 規約（プロジェクト憲章の正典）
 - 不正な CSV を渡すとエラーメッセージを表示して異常終了する。
 
 ## repos
+# リポジトリ定義は独立スキーマ（schemas/repos.schema.json）で管理される: 手書きの
+# <project>/repos.{yaml,yml,json} を置くと**そちらがレジストリの正**になり、この ## repos は互換入力。
+# 手書きが無ければ kiro-autonomous がこの ## repos から <project>/repos.json を**自動生成**して
+# 外部ツール（codd-gate の --repos 等）へ渡す（_meta マーカー付き・正はこの charter のまま追従）。
 # 対象リポジトリ（任意・複数可）。見出しは `name = url` か素の `url`。各 repo に構造化サブ箇条で
 # メタ情報を付ける（インデントした `- key: value`。日本語キー desc=説明/base=ベース/target=ターゲット/
 # path=パス/owns=担当 も可）:

@@ -198,6 +198,152 @@ class TestEnqueue(unittest.TestCase):
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
 
+class TestIntake(unittest.TestCase):
+    """取り込みコマンド（intake_cmd）。外部の決定的ゲート/検出器（codd-gate 等）から修復タスクを
+    watch の周期で汲み上げる。冪等（id が現役 backlog に居れば飛ばす）・有限・無害。"""
+
+    def setUp(self):
+        km._INTAKE_LAST.clear()
+
+    def _cfg(self, d, cmd, interval=0.0):
+        return cfg_for(d, inbox=d / "inbox", learn=False, auto_adjudicate=False,
+                       max_cycles=10, intake_cmd=cmd, intake_interval=interval)
+
+    def test_run_intake_enqueues_and_dedups_by_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            cmd = ("printf '%s' '[{\"id\":\"I1\",\"title\":\"i1\",\"verify\":\"true\"},"
+                   "{\"id\":\"I2\",\"title\":\"i2\",\"verify\":\"true\"}]'")
+            cfg = self._cfg(Path(d), cmd)
+            km.ensure_dirs(cfg)
+            got = km.run_intake(cfg)
+            self.assertEqual(sorted(t.id for t in got), ["I1", "I2"])
+            self.assertEqual(km.run_intake(cfg), [])       # 冪等: 現役 backlog に居る id は再投入しない
+            self.assertEqual(sorted(p.stem for p in cfg.backlog.glob("*.md")), ["I1", "I2"])
+
+    def test_run_intake_interval_throttles(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), "printf '%s' '[{\"id\":\"T1\",\"title\":\"t\",\"verify\":\"true\"}]'",
+                            interval=3600.0)
+            km.ensure_dirs(cfg)
+            self.assertEqual(len(km.run_intake(cfg)), 1)
+            (cfg.backlog / "T1.md").unlink()               # backlog から消しても…
+            self.assertEqual(km.run_intake(cfg), [])       # …間隔内は実行自体をしない（律速）
+
+    def test_run_intake_tolerates_failures(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for cmd in ("printf not-json", "exit 3", "true"):   # 非JSON / exit≠0 / 空出力
+                cfg = self._cfg(d, cmd)
+                km.ensure_dirs(cfg)
+                self.assertEqual(km.run_intake(cfg), [])
+            self.assertEqual(list(cfg.backlog.glob("*.md")), [])
+
+    def test_run_loop_intakes_and_consumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), "printf '%s' '{\"id\":\"L1\",\"title\":\"l\",\"verify\":\"true\"}'")
+            km.ensure_dirs(cfg)
+            res = km.run_loop(cfg)
+            self.assertEqual(len(res["inboxed"]), 1)       # パス開始時の intake で取り込み
+            self.assertEqual(res["counts"]["done"], 1)     # 同じ run で消化
+
+    def test_watch_idle_intake_wakes_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d), "printf '%s' '{\"id\":\"W1\",\"title\":\"w\",\"verify\":\"true\"}'")
+            km.ensure_dirs(cfg)
+            calls = {"n": 0}
+
+            def slp(_s):
+                calls["n"] += 1
+                if calls["n"] > 50:                        # idle intake が壊れたらハングでなく失敗させる
+                    raise TimeoutError("idle 中の intake がパスを起こさない")
+
+            # pass1: 開始時 intake→W1 消化(archive)。idle: intake が W1 を再投入→has_work→pass2 が起きる
+            last = km.run_watch(cfg, sleeper=slp, max_passes=2)
+            self.assertEqual(last["counts"]["done"], 1)
+
+
+class TestRepoRegistry(unittest.TestCase):
+    """repos レジストリ（schemas/repos.schema.json）。<project>/repos.{yaml,yml,json} があれば
+    レジストリの正になり、charter の ## repos は互換入力。repos ファイル単独では charter モード
+    （目標駆動）は発動しないが、ワークスペース・ルーティングには使える。"""
+
+    def test_registry_file_overrides_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "charter.md").write_text(
+                "# Charter: x\n## goal\ny\n## repos\n- old = git@x:old.git\n"
+                "  - desc: 旧\n  - base: main\n  - owns: src/**\n", encoding="utf-8")
+            (d / "repos.json").write_text(__import__("json").dumps(
+                {"app": {"url": "git@x:app.git", "desc": "新", "base": "main",
+                         "owns": ["src/**"], "docs": ["docs/**"]}}), encoding="utf-8")
+            before = (d / "repos.json").read_text(encoding="utf-8")
+            ch = km.load_charter(cfg)
+            self.assertEqual([s["name"] for s in ch.repo_specs], ["app"])   # ファイルが勝つ
+            self.assertEqual(ch.repo_specs[0]["target"], "main")            # target 省略 = base
+            self.assertFalse(ch.repo_specs[0]["readonly"])                  # owns あり = 書込先
+            self.assertEqual((d / "repos.json").read_text(encoding="utf-8"),
+                             before)                                        # 手書きは上書きしない
+
+    def test_registry_without_charter_routes_but_no_charter_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "repos.json").write_text(__import__("json").dumps(
+                {"app": {"url": "git@x:app.git", "desc": "本体", "base": "main",
+                         "owns": ["src/**"]}}), encoding="utf-8")
+            self.assertIsNone(km.load_charter(cfg))          # 目標駆動は発動しない（charter.md 無し）
+            bd = d / "backlog"
+            bd.mkdir(parents=True, exist_ok=True)
+            (bd / "T1.md").write_text(
+                "## T1: x を直す\n- status: ready\n- verify: `true`\n- paths: src/x.py\n",
+                encoding="utf-8")
+            t = [x for x in km.load_tasks(cfg.backlog) if x.id == "T1"][0]
+            spec, routed = km.resolve_workspace(cfg, t, km.load_policy(cfg.policy))
+            self.assertEqual((spec["name"], routed), ("app", "owns"))       # レジストリ単独で解決
+
+    def test_charter_exports_generated_registry(self):
+        """repos ファイルが無ければ charter から自動生成して外部ツール（codd-gate --repos）へ渡す。
+        生成物には _meta マーカーが付き、正は charter のまま（charter 変更に追従・手書きなら不干渉）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "charter.md").write_text(
+                "# Charter: x\n## goal\ny\n## repos\n- app = git@x:app.git\n"
+                "  - desc: 本体\n  - base: main\n  - owns: src/**\n"
+                "  - docs: docs/**, README.md\n", encoding="utf-8")
+            ch = km.load_charter(cfg)
+            rp = d / "repos.json"
+            self.assertTrue(rp.exists())                       # charter から自動生成
+            data = __import__("json").loads(rp.read_text(encoding="utf-8"))
+            self.assertIn("generated_from", data["_meta"])     # 生成物マーカー
+            self.assertEqual(data["app"]["url"], "git@x:app.git")
+            self.assertEqual(data["app"]["docs"], ["docs/**", "README.md"])   # 分類グロブも損失なし
+            self.assertEqual([s["name"] for s in ch.repo_specs], ["app"])     # 正は charter のまま
+            (d / "charter.md").write_text(                     # charter 更新 → 生成物が追従
+                "# Charter: x\n## goal\ny\n## repos\n- app2 = git@x:app2.git\n"
+                "  - desc: 本体2\n  - base: main\n  - owns: src/**\n", encoding="utf-8")
+            km.load_charter(cfg)
+            data = __import__("json").loads(rp.read_text(encoding="utf-8"))
+            self.assertIn("app2", data)
+            self.assertNotIn("app", data)
+            (d / "charter.md").write_text(                     # ## repos が消えたら生成物も消す
+                "# Charter: x\n## goal\ny\n", encoding="utf-8")
+            km.load_charter(cfg)
+            self.assertFalse(rp.exists())
+
+    def test_broken_registry_falls_back_to_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "charter.md").write_text(
+                "# Charter: x\n## goal\ny\n## repos\n- old = git@x:old.git\n"
+                "  - desc: 旧\n  - base: main\n  - owns: src/**\n", encoding="utf-8")
+            (d / "repos.json").write_text("{ 壊れた json", encoding="utf-8")
+            ch = km.load_charter(cfg)
+            self.assertEqual([s["name"] for s in ch.repo_specs], ["old"])   # 黙って空にしない
+
+
 class TestFlakeTolerantVerify(unittest.TestCase):
     """フレーク耐性 verify（--verify-confirm）。揺れる verify を NG churn せず人へ隔離。"""
 

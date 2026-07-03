@@ -436,6 +436,65 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
     return created
 
 
+# intake の最終実行時刻（プロジェクト＝backlog パス毎。--project all の 1 プロセス多重化に対応）
+_INTAKE_LAST: "dict[str, float]" = {}
+
+
+def run_intake(cfg: "Config") -> "list[Task]":
+    """取り込みコマンド（intake_cmd）を実行し、stdout の JSON（spec オブジェクト/配列＝
+    `enqueue --json` と同形式）を backlog へ**冪等に**取り込む。外部の決定的ゲート/検出器
+    （例: `codd-gate tasks --debt`）を watch の周期で汲み上げる汎用フック。
+
+    - **冪等**: spec の `id` が現役 backlog（blocked/review 含む）に居れば飛ばす。定期実行しても
+      同じ発見が重複投入されない（done→archive 後に同じ発見が再発したら新タスクとして積み直せる）。
+    - **有限・無害**: verify_timeout で打ち切り、exit≠0・非 JSON・例外は journal に残して無視
+      （ループは殺さない）。intake_interval（秒）で律速し、0 以下なら毎回。
+    - 常駐（長期実行）は kiro-autonomous 側が持つ。intake_cmd 自体は単発・有界であること。"""
+    if not cfg.intake_cmd:
+        return []
+    interval = float(cfg.intake_interval or 0)
+    key = str(cfg.backlog)
+    now = time.time()
+    if interval > 0 and now - _INTAKE_LAST.get(key, 0.0) < interval:
+        return []
+    _INTAKE_LAST[key] = now
+    try:
+        p = subprocess.run(cfg.intake_cmd, shell=True, cwd=str(cfg.workdir),
+                           capture_output=True, text=True, timeout=cfg.verify_timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        append_journal(cfg.journal, f"intake 実行失敗: {e}")
+        return []
+    if p.returncode != 0:
+        append_journal(cfg.journal, f"intake NG (exit {p.returncode}): {cfg.intake_cmd}")
+        return []
+    out = (p.stdout or "").strip()
+    if not out:
+        return []
+    try:
+        data = json.loads(out)
+    except ValueError:
+        append_journal(cfg.journal, "intake 出力が JSON でないため無視")
+        return []
+    created: "list[Task]" = []
+    existing = {f.stem for f in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
+    for sp in (data if isinstance(data, list) else [data]):
+        if not isinstance(sp, dict):
+            continue
+        sid = _slug_id(str(sp.get("id", "") or ""))
+        if sid and sid in existing:
+            continue                        # 冪等: 現役 backlog に居る発見は再投入しない
+        try:
+            created.append(enqueue_task(cfg, sp))
+        except ValueError as e:
+            append_journal(cfg.journal, f"intake spec 無効: {e}")
+            continue
+        if sid:
+            existing.add(sid)
+    if created:
+        append_journal(cfg.journal, f"intake 取り込み {[t.id for t in created]}")
+    return created
+
+
 _FOLLOWUP_LINE_RE = re.compile(r"^@followup\s+(?P<spec>.+)$")
 
 
@@ -2256,8 +2315,9 @@ def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dic
         ch = load_charter(cfg)
     except (OSError, ValueError):
         ch = None
-    smap = charter_repo_spec_map(ch)
-    workspaces = [s for s in (ch.repo_specs if ch else []) if not _is_reference_repo(s)]
+    specs = registry_specs(cfg, ch)               # repos ファイル単独（charter 無し）でも解決できる
+    smap = repo_spec_map(specs)
+    workspaces = [s for s in specs if not _is_reference_repo(s)]
 
     explicit = _strip_code(str(task.get("workspace") or "").strip())
     if explicit:                                  # 1. 人/過去ルーティングの明示指定（最優先）
@@ -2308,7 +2368,7 @@ def _workspace_spec_for(cfg: "Config", task: Task) -> "dict | None":
     if not name:
         return None
     try:
-        smap = charter_repo_spec_map(load_charter(cfg))
+        smap = repo_spec_map(registry_specs(cfg, load_charter(cfg)))
     except (OSError, ValueError):
         smap = {}
     return smap.get(name) or _raw_url_spec(name)
@@ -2344,12 +2404,13 @@ def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
         ch = load_charter(cfg)
     except (OSError, ValueError):
         ch = None
-    smap = charter_repo_spec_map(ch)
+    specs = registry_specs(cfg, ch)
+    smap = repo_spec_map(specs)
     ws = _workspace_spec_for(cfg, task)
     ws_url = ws["url"] if ws else None
     out: "list[dict]" = []
     seen: "set[str]" = set()
-    refs = [s for s in (ch.repo_specs if ch else []) if _is_reference_repo(s)]
+    refs = [s for s in specs if _is_reference_repo(s)]
     for tok in _split_tokens(task.get("refs")) + _split_tokens(task.get("repos")):
         sp = smap.get(tok) or _raw_url_spec(tok)
         if sp:
@@ -2624,6 +2685,8 @@ class Config:
     max_spawn: int = 20             # 1 run で生成できる派生タスク数の上限（0 で生成無効。暴走防止）
     regression_cmd: "str | None" = None  # done 確定前に走らせるグローバル回帰検査（巻き込み事故の検知）
     regression_revert: bool = False      # 回帰時に作業ツリーの未コミット変更を巻き戻す（既定 off）
+    intake_cmd: "str | None" = None      # 外部の決定的ゲート/検出器から修復タスクを汲み上げる取り込みコマンド
+    intake_interval: float = 600.0       # intake_cmd の実行間隔（秒）。0 以下なら毎回（パス開始/idle poll 毎）
     ltm: bool = False               # ltm-use 長期記憶への昇格＋横断 recall（既定 off: home へ書くため明示）
     ltm_home: "Path | None" = None  # ltm-use ストアのルート（既定 KIRO_LTM_HOME→~/.claude）
     promote_threshold: int = 2      # learn ルールがこの回数以上効いたら昇格
@@ -3187,7 +3250,7 @@ def _run_setup(cfg: "Config") -> tuple:
     """run_loop の前処理: inbox 取り込み → 読み込み → 人のフィードバック解除 → triage/rot で
     ready/blocked を確定 → verify を用意する。(tasks, policy, reasons, ingested, inboxed, pre_blocked)。"""
     ensure_dirs(cfg)
-    inboxed = ingest_inbox(cfg)                       # 外部ドロップ(inbox/)を backlog へ取り込む
+    inboxed = run_intake(cfg) + ingest_inbox(cfg)     # 取り込みコマンド＋外部ドロップ(inbox/)を backlog へ
     tasks = load_tasks(cfg.backlog)
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
@@ -3393,6 +3456,7 @@ def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.slee
             sleeper(cfg.poll)
             if heartbeat:
                 heartbeat()          # idle 中も heartbeat を保ち、リモートから生存が見えるようにする
+            run_intake(cfg)          # 外部ゲートからの汲み上げ（間隔律速。積まれれば has_work が起こす）
             if maybe_self_update(cfg):   # アイドル時のみ自己更新を確認・取り込み（取り込めたら再起動）
                 raise _RestartRequested()
 
@@ -4489,6 +4553,10 @@ _REPO_KEY_ALIASES = {
                  "参照のみ", "参照", "読み取り専用", "読取専用"),
     "owns": ("owns", "own", "owned", "owns_paths", "paths",
              "所有", "担当", "管轄", "担当パス"),
+    # 分類グロブ（repos スキーマの拡張キー。本体は使わず repos.json への書き出しで引き継ぐ）
+    "docs": ("docs", "doc", "ドキュメント", "文書"),
+    "tests": ("tests", "test", "テスト"),
+    "code": ("code", "コード", "実装"),
 }
 
 # readonly フラグの真値表記（値なし＝キーだけ書いた場合も True 扱い）
@@ -4525,8 +4593,13 @@ def _repo_spec_from_entry(e: dict) -> dict:
     owns = [g for g in re.split(r"[,\s]+", _entry_attr(e["attrs"], "owns")) if g]
     # owns があれば書込先候補。owns 未指定は参照リポジトリ（readonly 明示と同義に倒す）。
     readonly = _entry_readonly(e["attrs"]) or not owns
-    return {"name": name, "url": url, "desc": desc, "base": base,
+    spec = {"name": name, "url": url, "desc": desc, "base": base,
             "target": target, "path": path, "readonly": readonly, "owns": owns}
+    for k in ("docs", "tests", "code"):   # 分類グロブは repos スキーマへ損失なく引き継ぐ（本体は不使用）
+        globs = [g for g in re.split(r"[,\s]+", _entry_attr(e["attrs"], k)) if g]
+        if globs:
+            spec[k] = globs
+    return spec
 
 
 def validate_charter(ch: "Charter") -> "list[str]":
@@ -4626,12 +4699,12 @@ def charter_repo_map(ch: "Charter | None") -> "dict[str, str]":
     return out
 
 
-def charter_repo_spec_map(ch: "Charter | None") -> "dict[str, dict]":
-    """charter の構造化 repos を {name: spec} と {url: spec} で両引きできる辞書にする。
+def repo_spec_map(specs: "list[dict]") -> "dict[str, dict]":
+    """構造化 repos を {name: spec} と {url: spec} で両引きできる辞書にする。
     name はエントリ一意（モノレポの役割別フォルダも name で区別）。url は先勝ち（同一 URL の
     複数エントリは name で参照させる）。"""
     out: "dict[str, dict]" = {}
-    for spec in (ch.repo_specs if ch else []):
+    for spec in specs:
         if not spec.get("url"):
             continue
         if spec.get("name"):
@@ -4640,11 +4713,162 @@ def charter_repo_spec_map(ch: "Charter | None") -> "dict[str, dict]":
     return out
 
 
+def charter_repo_spec_map(ch: "Charter | None") -> "dict[str, dict]":
+    return repo_spec_map(ch.repo_specs if ch else [])
+
+
+# ---------------------------------------------------------------------------
+# repos レジストリ（schemas/repos.schema.json）— リポジトリ定義の独立スキーマ
+#   <project>/repos.{yaml,yml,json} があればそれがレジストリの正。charter の ## repos は
+#   互換入力（アダプタ）として残るが、内部的には同じ構造（repo_specs）へ正規化して引き回す。
+#   両方あるときは repos ファイルが勝つ。repos ファイル単独では charter モード（目標駆動）は
+#   発動しない（発動条件は charter.md の存在のまま）。
+# ---------------------------------------------------------------------------
+REPOS_FILE_NAMES = ("repos.yaml", "repos.yml", "repos.json")
+
+
+def _read_structured(path: Path):
+    """YAML（PyYAML 任意）/ JSON を読む（他ツールと同じフォールバック規約）。"""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+            return yaml.safe_load(text) or {}
+        except ImportError:
+            pass
+    return json.loads(text)
+
+
+def _registry_entry(name: str, e: dict) -> dict:
+    """repos スキーマの 1 エントリを内部の repo_spec 形へ正規化する（charter パースと同じ形）。"""
+    owns = e.get("owns") or []
+    if isinstance(owns, str):
+        owns = [g for g in re.split(r"[,\s]+", owns) if g]
+    base = str(e.get("base", "") or "")
+    spec = {"name": str(name), "url": str(e.get("url", "") or ""),
+            "desc": str(e.get("desc", "") or ""), "base": base,
+            "target": str(e.get("target", "") or "") or base,
+            "path": str(e.get("path", "") or "").strip("/"),
+            "readonly": bool(e.get("readonly")) or not owns,
+            "owns": [str(g) for g in owns]}
+    for k in ("docs", "tests", "code"):   # 分類グロブ（repos スキーマの拡張キー）も引き回す
+        v = e.get(k) or []
+        if isinstance(v, str):
+            v = [g for g in re.split(r"[,\s]+", v) if g]
+        if v:
+            spec[k] = [str(g) for g in v]
+    return spec
+
+
+def repo_registry_path(cfg: "Config") -> "Path | None":
+    base = cfg.backlog.parent
+    for name in REPOS_FILE_NAMES:
+        p = base / name
+        if p.is_file():
+            return p
+    return None
+
+
+def _specs_from_registry(data) -> "list[dict]":
+    specs: "list[dict]" = []
+    if isinstance(data, dict):
+        for name, e in data.items():
+            if str(name).startswith("_"):            # "_" 接頭辞キーはメタデータ予約（_meta 等）
+                continue
+            if isinstance(e, dict):
+                specs.append(_registry_entry(str(name), e))
+    elif isinstance(data, list):                     # [{name: ..., url: ...}, ...] も許容
+        for e in data:
+            if isinstance(e, dict) and e.get("name"):
+                specs.append(_registry_entry(str(e["name"]), e))
+    return specs
+
+
+def _registry_generated(data) -> bool:
+    """repos ファイルが「charter からの自動生成物」か（_meta.generated_from マーカー）。"""
+    return (isinstance(data, dict) and isinstance(data.get("_meta"), dict)
+            and bool(data["_meta"].get("generated_from")))
+
+
+def load_repo_registry(cfg: "Config") -> "list[dict] | None":
+    """<project>/repos.{yaml,yml,json} を読んで repo_specs 形にする。無ければ None。
+    壊れたファイルは警告して None（黙って空レジストリにせず charter へフォールバック）。"""
+    p = repo_registry_path(cfg)
+    if p is None:
+        return None
+    try:
+        data = _read_structured(p)
+    except (OSError, ValueError) as e:
+        print(f"[kiro-autonomous] repos レジストリを解釈できません: {p}: {e}", file=sys.stderr)
+        return None
+    return _specs_from_registry(data)
+
+
+def export_repo_registry(cfg: "Config", specs: "list[dict]",
+                         path: "Path | None" = None) -> None:
+    """charter の ## repos を共通スキーマ（schemas/repos.schema.json）の repos.json へ書き出す。
+    codd-gate 等の外部ツールへ**レジストリファイルとして渡す**ための派生物（codd-gate は charter を
+    読まない）。_meta.generated_from を刻み、charter 変更のたび同期する（**正は charter のまま**。
+    手で管理したくなったら _meta を消す＝以後は手書きが正で本体は上書きしない）。
+    内容が同じなら書かない（ルーティング解決のたびに呼ばれるため）。"""
+    path = path or (cfg.backlog.parent / "repos.json")
+    entries: "dict[str, dict]" = {}
+    for s in specs:
+        e = {k: s[k] for k in ("url", "desc", "base", "target", "path") if s.get(k)}
+        for k in ("owns", "docs", "tests", "code"):
+            if s.get(k):
+                e[k] = list(s[k])
+        if s.get("readonly") and not s.get("owns"):
+            e["readonly"] = True
+        entries[s.get("name") or s.get("url") or f"repo{len(entries) + 1}"] = e
+    payload = {"_meta": {"generated_from": "charter.md ## repos",
+                         "note": "kiro-autonomous が自動生成（正は charter）。手で管理するなら _meta を消す"},
+               **entries}
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def registry_specs(cfg: "Config", ch: "Charter | None") -> "list[dict]":
+    """実効レジストリ: charter があればその repo_specs（load_charter が repos ファイルで
+    上書き済み）、無ければ repos ファイル単独でも読める（ルーティング/参照用）。"""
+    if ch is not None:
+        return ch.repo_specs
+    return load_repo_registry(cfg) or []
+
+
 def load_charter(cfg: "Config") -> "Charter | None":
     p = cfg.charter
     if not p or not p.exists():
         return None
-    return parse_charter(p.read_text(encoding="utf-8"))
+    ch = parse_charter(p.read_text(encoding="utf-8"))
+    rp = repo_registry_path(cfg)
+    if rp is not None:
+        try:
+            data = _read_structured(rp)
+        except (OSError, ValueError) as e:
+            print(f"[kiro-autonomous] repos レジストリを解釈できません: {rp}: {e}", file=sys.stderr)
+            return ch                                # 壊れた手書きは上書きせず charter のまま
+        if _registry_generated(data):                # 自動生成物 → 正は charter・毎回同期
+            if ch.repo_specs:
+                export_repo_registry(cfg, ch.repo_specs, rp)
+            else:
+                rp.unlink(missing_ok=True)           # charter から repos が消えたら生成物も消す
+            return ch
+        specs = _specs_from_registry(data)
+        if specs:                                    # 手書きレジストリが正・## repos は互換入力
+            ch.repo_specs = specs
+            ch.repos = [f"{s['name']} = {s['url']}" if s.get("name") else s["url"]
+                        for s in specs if s.get("url")]
+        return ch
+    if ch.repo_specs:                                # レジストリ無し → charter から生成して外部ツールへ渡す
+        export_repo_registry(cfg, ch.repo_specs)
+    return ch
 
 
 def project_state_path(cfg: "Config") -> Path:
@@ -5538,6 +5762,8 @@ CONFIG_DEFAULTS = {
     "max_spawn": 20,            # 1 run の派生タスク生成上限（0 で無効）
     "regression_cmd": None,     # done 確定前のグローバル回帰検査コマンド（巻き込み事故の検知）
     "regression_revert": False,
+    "intake_cmd": None,         # 外部ゲート/検出器から修復タスクを汲み上げるコマンド（例: codd-gate tasks --debt）
+    "intake_interval": 600.0,   # intake の実行間隔（秒）。0 以下で毎パス/毎 poll
     "auto_level_max": "assisted",   # 自動昇格の ceiling（unattended への自動到達は明示時のみ）
     "level_promote_after": 5,       # 昇格に要する連続 clean 数
     "level_window": 10,             # 手戻り率の評価窓（直近 N 件）
@@ -5653,6 +5879,8 @@ def build_config(args) -> Config:
         max_spawn=getattr(args, "max_spawn", 20),
         regression_cmd=getattr(args, "regression_cmd", None),
         regression_revert=bool(getattr(args, "regression_revert", False)),
+        intake_cmd=getattr(args, "intake_cmd", None),
+        intake_interval=float(getattr(args, "intake_interval", 600.0) or 0.0),
         require_progress=bool(getattr(args, "require_progress", False)),
         auto_level=bool(getattr(args, "auto_level", False)),
         auto_level_max=str(getattr(args, "auto_level_max", "assisted") or "assisted"),
@@ -5764,6 +5992,12 @@ def _add_common(sp):
                     help="done 確定前に走らせるグローバル回帰検査（失敗で done にせず人へ。巻き込み事故の検知）")
     sp.add_argument("--regression-revert", action=argparse.BooleanOptionalAction, default=None,
                     help="回帰検知時に作業ツリーの未コミット変更を巻き戻す（best-effort・既定 off）")
+    sp.add_argument("--intake-cmd", default=None,
+                    help="外部の決定的ゲート/検出器から修復タスクを汲み上げるコマンド（stdout の "
+                         "enqueue --json 形式を冪等取り込み。例: codd-gate tasks --debt。"
+                         "単発・有界なコマンドであること＝常駐はこちらが持つ）")
+    sp.add_argument("--intake-interval", type=float, default=None,
+                    help="intake の実行間隔（秒。既定 600。0 以下で毎パス/毎 poll）")
     sp.add_argument("--ltm", action=argparse.BooleanOptionalAction, default=None,
                     help="効いた学習を ltm-use 長期記憶へ昇格＋プロジェクト横断 recall（既定 off）")
     sp.add_argument("--ltm-home", default=None,
