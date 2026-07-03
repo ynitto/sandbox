@@ -21,11 +21,29 @@ function handle(channel, fn) {
   });
 }
 
+// 要約プロンプトへ渡す入力の上限。プロンプトが大きいほどエージェントが
+// 遅くなるため、本文・コメント・変更ファイル一覧をここで切り詰める。
+const PROMPT_LIMITS = {
+  description: 4000, // 本文の最大文字数
+  noteCount: 20, // 直近コメント数
+  noteBody: 400, // コメント 1 件あたりの最大文字数
+  changedFiles: 50, // 変更ファイル一覧の最大件数
+};
+
+function clip(text, max, suffix = '\n…（以下省略）') {
+  const s = String(text || '');
+  return s.length > max ? s.slice(0, max) + suffix : s;
+}
+
 function formatNotes(notes) {
   if (!notes.length) return '(コメントなし)';
-  return notes
-    .map((n) => `- @${n.author} (${n.createdAt}):\n${indent(n.body)}`)
-    .join('\n\n');
+  const recent = notes.slice(-PROMPT_LIMITS.noteCount);
+  const omitted = notes.length - recent.length;
+  const lines = recent.map(
+    (n) => `- @${n.author} (${n.createdAt}):\n${indent(clip(n.body, PROMPT_LIMITS.noteBody, '…'))}`
+  );
+  if (omitted > 0) lines.unshift(`（古いコメント ${omitted} 件を省略）`);
+  return lines.join('\n\n');
 }
 
 function indent(text) {
@@ -39,8 +57,11 @@ async function buildSummaryPrompt(target) {
   const cfg = loadConfig();
   const detail = await client().getDetail(target);
   const it = detail.item;
-  const changes = detail.changedFiles.length
-    ? `# 変更ファイル\n${detail.changedFiles.map((f) => `- ${f}`).join('\n')}`
+  const files = detail.changedFiles.slice(0, PROMPT_LIMITS.changedFiles);
+  const omittedFiles = detail.changedFiles.length - files.length;
+  const changes = files.length
+    ? `# 変更ファイル\n${files.map((f) => `- ${f}`).join('\n')}` +
+      (omittedFiles > 0 ? `\n（ほか ${omittedFiles} 件）` : '')
     : '';
   const prompt = buildPrompt(cfg.agent.promptTemplate, {
     typeLabel: it.type === 'issue' ? 'イシュー' : 'マージリクエスト',
@@ -48,7 +69,7 @@ async function buildSummaryPrompt(target) {
     url: it.url,
     state: it.state,
     labels: it.labels.join(', ') || '(なし)',
-    description: detail.description || '(説明なし)',
+    description: clip(detail.description, PROMPT_LIMITS.description) || '(説明なし)',
     notes: formatNotes(detail.notes),
     changes,
   });
