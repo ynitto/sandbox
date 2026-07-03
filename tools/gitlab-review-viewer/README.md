@@ -49,8 +49,8 @@ Windows 用の exe としてビルドして起動できる Electron アプリ。
   - **承認** — `status:elaborated` → `status:open` に進める。`status:approved` の
     場合はイシューと同タイトルの MR をマージしてイシューをクローズ（コンフリクトや
     未解決レビューコメントがある場合はグレーアウト）。他のステータスはグレーアウト
-  - **差し戻し** — `status:elaborated` → `status:draft` に戻す。他のステータスは
-    グレーアウト
+  - **差し戻し** — `status:elaborated` → `status:draft`、`status:approved` →
+    `status:needs-rework` に戻す。他のステータスはグレーアウト
   - **却下** — 「削除 / 閉じる / キャンセル」の 3 択。削除・閉じるとも同タイトルの
     MR をクローズし、削除はさらにソースブランチ削除 + イシュー削除、閉じるは
     イシューを閉じる

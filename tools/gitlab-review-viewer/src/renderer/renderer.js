@@ -675,10 +675,11 @@ function renderTargetInfo() {
   const status = t ? statusOf(t) : '';
 
   const sendback = $('btn-sendback');
-  sendback.disabled = !t || status !== 'elaborated';
-  sendback.title = sendback.disabled
-    ? 'status:elaborated のときだけ status:draft へ戻せます'
-    : 'status:draft へ戻す';
+  const sendbackTo = SENDBACK_FLOW[status];
+  sendback.disabled = !t || !sendbackTo;
+  sendback.title = sendbackTo
+    ? `${sendbackTo} へ戻す`
+    : 'status:elaborated → status:draft / status:approved → status:needs-rework のときだけ使えます';
 
   $('btn-reject').disabled = !t;
   $('btn-change').disabled = !t;
@@ -832,13 +833,20 @@ async function doApprove() {
   });
 }
 
-// 差し戻し: status:elaborated → status:draft
+// 差し戻しのステータス遷移（現在のステータス → 戻し先）
+const SENDBACK_FLOW = {
+  elaborated: 'status:draft',
+  approved: 'status:needs-rework',
+};
+
+// 差し戻し: ステータスを前に戻す（SENDBACK_FLOW にあるものだけ）
 async function doSendBack() {
   const t = primaryTarget();
-  if (!t || statusOf(t) !== 'elaborated') return;
+  const to = t && SENDBACK_FLOW[statusOf(t)];
+  if (!to) return;
   await guard('差し戻し', async () => {
-    await commentAndSetStatus(t, '差し戻し', 'status:draft');
-    toast(`${pageLabel(t)} を status:draft に戻しました`);
+    await commentAndSetStatus(t, '差し戻し', to);
+    toast(`${pageLabel(t)} を ${to} に戻しました`);
   });
 }
 

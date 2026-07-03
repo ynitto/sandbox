@@ -30,7 +30,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   - **承認**: `status:elaborated` → `status:open`。`status:approved` は同タイトル MR を
     マージしてイシューをクローズ（コンフリクト / 未解決レビューコメント / 他ステータスは
     グレーアウト。可否は MR の `has_conflicts` / `blocking_discussions_resolved` で判定）
-  - **差し戻し**: `status:elaborated` → `status:draft`（他ステータスはグレーアウト）
+  - **差し戻し**: `status:elaborated` → `status:draft`、`status:approved` → `status:needs-rework`
+    （他ステータスはグレーアウト）
   - **却下**: 削除 / 閉じる / キャンセルの 3 択ダイアログ。両者とも同タイトル MR を
     クローズし、削除はソースブランチ削除 + イシュー削除、閉じるはイシューをクローズ
   - **変更**: ラベルプリセット（従来の下ペイン UI）をダイアログ表示し「実行」で適用
