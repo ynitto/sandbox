@@ -124,7 +124,7 @@ LLMには各ノードの goal 具体化のみを依頼。
 
 - **kiro-flow `exemplar_first`**（自動ゲート）: split→pilot map→verify ゲート→残り map→reduce。
   設定 `exemplar_first: true` か `--exemplar-first` で有効化。
-- **kiro-autonomous `cohort`**（人ゲート）: pilot に `review:human`。人が approve(+feedback)
+- **kiro-projects `cohort`**（人ゲート）: pilot に `review:human`。人が approve(+feedback)
   で指示を固めてから残りを生成。`enqueue --cohort-items a,b,c` か charter プランナーが
   `{title, verify, cohort_items:[…]}` で自動生成。
 

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "schemas/repos.schema.json",
   "title": "repos registry",
-  "description": "リポジトリレジストリの共通スキーマ（kiro-autonomous / kiro-flow / codd-gate 共用）。トップレベルは「repo 名 → エントリ」のマッピング。リポジトリの identity は (url, path, base)＝モノレポは path 別・ブランチ別は base 別のエントリで区別し、name はエントリ一意。charter.md の `## repos` は互換入力（アダプタ）で、各ツールは内部的にこの形へ正規化して引き回す。ファイル形式は YAML（PyYAML 任意）または JSON。運用の正典は schemas/README.md。",
+  "description": "リポジトリレジストリの共通スキーマ（kiro-projects / kiro-flow / codd-gate 共用）。トップレベルは「repo 名 → エントリ」のマッピング。リポジトリの identity は (url, path, base)＝モノレポは path 別・ブランチ別は base 別のエントリで区別し、name はエントリ一意。charter.md の `## repos` は互換入力（アダプタ）で、各ツールは内部的にこの形へ正規化して引き回す。ファイル形式は YAML（PyYAML 任意）または JSON。運用の正典は schemas/README.md。",
   "type": "object",
   "additionalProperties": { "$ref": "#/definitions/repo" },
   "definitions": {
@@ -16,11 +16,11 @@
       "properties": {
         "url": {
           "type": "string",
-          "description": "git URL（例 git@host:team/app.git）。kiro-autonomous のワークスペース/参照・kiro-flow の clone/push 先・codd-gate --sync の実体化元・リポジトリ横断参照の識別に使う"
+          "description": "git URL（例 git@host:team/app.git）。kiro-projects のワークスペース/参照・kiro-flow の clone/push 先・codd-gate --sync の実体化元・リポジトリ横断参照の識別に使う"
         },
         "desc": {
           "type": "string",
-          "description": "内容物・関与範囲の説明。kiro-autonomous の auto-route（LLM 推定）と gitlab 起票が読む【書込先なら推奨】"
+          "description": "内容物・関与範囲の説明。kiro-projects の auto-route（LLM 推定）と gitlab 起票が読む【書込先なら推奨】"
         },
         "base": {
           "type": "string",
@@ -36,7 +36,7 @@
         },
         "owns": {
           "$ref": "#/definitions/globs",
-          "description": "担当パスのグロブ。kiro-autonomous のワークスペース・ルーティング（タスク→書込先）の根拠。無指定＝参照リポジトリ（読むだけ・書込先にしない）"
+          "description": "担当パスのグロブ。kiro-projects のワークスペース・ルーティング（タスク→書込先）の根拠。無指定＝参照リポジトリ（読むだけ・書込先にしない）"
         },
         "readonly": {
           "type": "boolean",

@@ -162,7 +162,7 @@ gitlab_api(host, method, path, token=None, data=None, params=None) -> (status, j
 - **`tools/gitguard/`**: 本パターンの実体（`gitguard.py` ライブラリ + `git-guard` CLI + テスト）。
 - **`gl.py`（gitlab-idd）**: REST 呼び出し `api()`/`api_list()` を best-effort で `guard()` 経由にし、
   gitlab-idd 配下の全 GitLab アクセスをブレーカー + 監視へ載せる参照採用。
-- **kiro-flow / kiro-autonomous**: ネットワーク git（ミラー clone/fetch・workspace push・verify 取得）を
+- **kiro-flow / kiro-projects**: ネットワーク git（ミラー clone/fetch・workspace push・verify 取得）を
   `gitguard.git()` 経由にすると、worktree キャッシュ（別パターン）と合わせて
   「負荷を減らし・壊れたら素早く止め・全アクセスを観測する」が揃う（段階採用）。
 

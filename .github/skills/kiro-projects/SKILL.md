@@ -1,22 +1,22 @@
 ---
-name: kiro-autonomous
-description: kiro-autonomous（自律バックログ消化ループ）を外部から操作するスキル。いま稼働中のプロセスが監視しているプロジェクト（フォルダ）を発見し（WSL/Windows のパス差を吸収）、バックログへのタスク投入・人の判断待ち（needs）の確認と指示・成果物（納品書）の検収・プロジェクト目標（charter）の確認と承認を CLI とファイル操作で支援する。「バックログに積んで」「kiro-autonomous にタスクを投げて」「判断待ちを確認して」「needs を見せて」「承認して」「保留して」「優先度を上げて」「成果物を確認して」「納品物を見せて」「ループを回して/常駐させて」「稼働中のループに繋いで」「プロジェクトの目標を回して」「charter を確認して」などで発動する。kiro-autonomous の運用が含まれる場合に優先して選択する。
+name: kiro-projects
+description: kiro-projects（自律バックログ消化ループ）を外部から操作するスキル。いま稼働中のプロセスが監視しているプロジェクト（フォルダ）を発見し（WSL/Windows のパス差を吸収）、バックログへのタスク投入・人の判断待ち（needs）の確認と指示・成果物（納品書）の検収・プロジェクト目標（charter）の確認と承認を CLI とファイル操作で支援する。「バックログに積んで」「kiro-projects にタスクを投げて」「判断待ちを確認して」「needs を見せて」「承認して」「保留して」「優先度を上げて」「成果物を確認して」「納品物を見せて」「ループを回して/常駐させて」「稼働中のループに繋いで」「プロジェクトの目標を回して」「charter を確認して」などで発動する。kiro-projects の運用が含まれる場合に優先して選択する。
 metadata:
   version: 1.1.0
   tier: experimental
   category: operations
   tags:
-    - kiro-autonomous
+    - kiro-projects
     - backlog
     - loop-engineering
     - human-in-the-loop
     - operations
 ---
 
-# kiro-autonomous — 自律ループの外部操作
+# kiro-projects — 自律ループの外部操作
 
-`kiro-autonomous`（`backlog/` を優先順位付け→実行→`verify` ゲート→収束させる制御層）を、**人間の運用側**
-から操作するスキル。ループ本体は `kiro-autonomous run` が担い（`<project>/charter.md` があれば run が自動で
+`kiro-projects`（`backlog/` を優先順位付け→実行→`verify` ゲート→収束させる制御層）を、**人間の運用側**
+から操作するスキル。ループ本体は `kiro-projects run` が担い（`<project>/charter.md` があれば run が自動で
 目標駆動になる＝専用 project コマンドは無い）。本スキルが担うのは、その**外部からのアクション**である:
 
 | モード | 発動フレーズ | やること |
@@ -28,7 +28,7 @@ metadata:
 | （補助）**起動/状態** | 「回して」「常駐させて」「状態を見せて」 | ループ起動（常駐含む）・順位確認・stats/journal 確認 |
 | （補助）**方針** | 「prod は手動に」「これを最優先に固定」 | `policy.md` に `deny`/`pin`/`defer`/`offload`/`gate`/`protect` を記述 |
 
-ループの**自律消化そのもの**を依頼されたら、それは kiro-autonomous 本体の仕事なので「起動/状態」モードで
+ループの**自律消化そのもの**を依頼されたら、それは kiro-projects 本体の仕事なので「起動/状態」モードで
 `run` を起こす（charter があれば run が自動で目標駆動になる）。本スキルは投入・判断・検収・目標確認という**人の接点**に徹する。
 
 ---
@@ -36,13 +36,13 @@ metadata:
 ## 構成（プロジェクト > バックログ）と CLI 解決
 
 - `python3`（標準ライブラリのみ）。`kiro-flow` / `kiro-cli` はループ実行時のみ必要（投入・判断・検収だけなら不要）。
-- **プロジェクトが最上位コンテナ**。実体は `<container>/projects/<name>/`（既定 `./.kiro-autonomous/projects/default/`）に
+- **プロジェクトが最上位コンテナ**。実体は `<container>/projects/<name>/`（既定 `./.kiro-projects/projects/default/`）に
   `backlog/`・`needs/`・`decisions/`・`archive/`・`charter.md`・`policy.md`・`DELIVERY.md` などが**プロジェクト毎**に集約される。
   **複数プロジェクトが併存**し、操作対象は **`--project <name>`**（既定 `default`）で選ぶ。
 - CLI を解決する（PATH 優先、無ければリポジトリ内のスクリプト）:
 
 ```bash
-KA="$(command -v kiro-autonomous || echo 'python3 tools/kiro-autonomous/kiro-autonomous.py')"
+KA="$(command -v kiro-projects || echo 'python3 tools/kiro-projects/kiro-projects.py')"
 $KA --help
 ```
 
@@ -50,15 +50,15 @@ $KA --help
   意味がない。必ず下記「稼働インスタンスへの接続」で実体を発見し、CLI には **`--root <container> --project <name>`** を付ける。
   > ⚠ 発見レコードの `root`（= `<container>/projects/<name>`）を `--root` に渡してはいけない（`projects/<name>` が
   > 二重に付く）。**`--root` にはレコードの `container`、`--project` にはレコードの `project`** を渡す。
-- タスク書式の正典は `tools/kiro-autonomous/backlog.md.example`、charter は `charter.md.example`、運用詳細は同 `README.md`。
+- タスク書式の正典は `tools/kiro-projects/backlog.md.example`、charter は `charter.md.example`、運用詳細は同 `README.md`。
 
 ---
 
 ## 稼働インスタンスへの接続（WSL / Windows）
 
 **最重要**: 投入・needs 記入・検収・目標確認は、**稼働中プロセスが実際に見ているプロジェクト**に対して行う。
-`run`（特に `--watch`）中のプロセスは監視対象を `~/.kiro-autonomous/instances/<pid>.json`
-（`$KIRO_AUTONOMOUS_HOME` で変更可）に登録している。
+`run`（特に `--watch`）中のプロセスは監視対象を `~/.kiro-projects/instances/<pid>.json`
+（`$KIRO_PROJECTS_HOME` で変更可）に登録している。
 
 ### 手順
 
@@ -70,7 +70,7 @@ $KA --help
 
    ```bash
    $KA instances --json                                    # 自分も WSL/プロセスと同じ OS の場合
-   wsl.exe -d <distro> -- bash -lc 'kiro-autonomous instances --json'   # 自分は Windows・プロセスは WSL
+   wsl.exe -d <distro> -- bash -lc 'kiro-projects instances --json'   # 自分は Windows・プロセスは WSL
    ```
 
    出力は配列。各レコードに `pid` / **`container`**（`--root` に渡す値）/ **`project`**（`--project` に渡す名）/
@@ -80,13 +80,13 @@ $KA --help
 
    **別ホストも横断したい**ときは共有レジストリ（複数ホストから見える1ディレクトリ）を指す:
    ```bash
-   $KA instances --json --registry /mnt/shared/kiro-registry   # env KIRO_AUTONOMOUS_REGISTRY でも可
+   $KA instances --json --registry /mnt/shared/kiro-registry   # env KIRO_PROJECTS_REGISTRY でも可
    ```
    別ホストのレコードは `host` が異なり `@host(remote)` と表示される。**別ホストの操作（stop 等）はそのホスト上で行う**
    （リモート PID へシグナルは送れない）。読み書きは共有ファイルシステム越しに可能。
 
 3. **対象を選ぶ**: 生存インスタンスが 1 つならそれ。複数（プロジェクト違い）あれば **`project` 名（と root）を提示して
-   選ばせる**。0 件なら「稼働中の kiro-autonomous が無い」ことを伝え、起動するか対象プロジェクトを確認する。
+   選ばせる**。0 件なら「稼働中の kiro-projects が無い」ことを伝え、起動するか対象プロジェクトを確認する。
 
 ### CLI の組み立てと読み書きの原則（境界をまたがない）
 
@@ -101,7 +101,7 @@ $KA enqueue --root "$CONT" --project "$PROJ" --title "…" --verify '…'
 
 # Windows 側のスキルから WSL 側を操作する（推奨パターン）
 DISTRO=<wsl_distro>
-wsl.exe -d "$DISTRO" -- bash -lc "kiro-autonomous needs --root '$CONT' --project '$PROJ'"
+wsl.exe -d "$DISTRO" -- bash -lc "kiro-projects needs --root '$CONT' --project '$PROJ'"
 wsl.exe -d "$DISTRO" -- bash -lc "cat > '<レコードの backlog>/T42.md'" < /tmp/T42.md   # ファイル直接投入
 ```
 
@@ -257,9 +257,9 @@ $KA instances                                 # どの project を誰(pid)が監
 有無と停止理由を報告**する（勝手に done 扱いしない）。終了コード: `0`=完走で判断待ち無し / `1`=判断待ちあり / `2`=予算停止。
 巻き込み事故を防ぎたい案件では `run --regression-cmd "<共通スモーク>"` を提案する。
 
-**設定ファイル**で既定を恒久化できる（`CLI > 設定ファイル > 既定`）。`./.kiro/kiro-autonomous.yaml`（or `~/.kiro/…`）に
-置くと自動検出。サンプルは `tools/kiro-autonomous/kiro-autonomous.yaml.example`。executor/planner/poll/予算/level/throttle 等の
-スカラ＋真偽フラグを書ける（個別パス・`--project` は CLI 専用）。PyYAML 無しなら同キーの JSON（`kiro-autonomous.json`）。
+**設定ファイル**で既定を恒久化できる（`CLI > 設定ファイル > 既定`）。`./.kiro/kiro-projects.yaml`（or `~/.kiro/…`）に
+置くと自動検出。サンプルは `tools/kiro-projects/kiro-projects.yaml.example`。executor/planner/poll/予算/level/throttle 等の
+スカラ＋真偽フラグを書ける（個別パス・`--project` は CLI 専用）。PyYAML 無しなら同キーの JSON（`kiro-projects.json`）。
 
 **自律裁定は既定 on**: verify 失敗を人へ送る前に kiro-cli が「積み直して解けるか／人が要るか」を一次裁定する
 （人の policy/承認は飛ばさない・kiro-cli 不在は必ず人へ）。**人の判断を機械に任せたくない**と言われたら
@@ -285,4 +285,4 @@ protect: auth/**    # act が触ったら done せず承認へ（パス一致の
 - **投入時は必ず `verify` を付ける。** 機械検証できないタスクは積まず、ユーザーに確認する。
 - **判断を代行しない。** `needs`・milestone の内容はユーザーに要約し、方針を確認してから `approve`/`hold`/feedback に落とす。
 - **done は verify（プロジェクトは acceptance 全 PASS）でしか確定しない。** 検収は自己申告でなく納品書（verify=PASS・成果参照）を根拠にする。
-- ループの自律消化・目標評価のロジック自体は kiro-autonomous 本体の責務。本スキルはその外周（投入・判断・検収・目標確認）に徹する。
+- ループの自律消化・目標評価のロジック自体は kiro-projects 本体の責務。本スキルはその外周（投入・判断・検収・目標確認）に徹する。

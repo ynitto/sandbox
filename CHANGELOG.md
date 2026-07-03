@@ -7,9 +7,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### gitlab-review-viewer: kiro-autonomous 連携を削除し、レビュー特化に再設計（破壊的変更）
+### gitlab-review-viewer: kiro-projects 連携を削除し、レビュー特化に再設計（破壊的変更）
 
-- **削除**: kiro-autonomous needs（判断待ち/検収待ち）連携を全面削除（Needs タブ・
+- **削除**: kiro-projects needs（判断待ち/検収待ち）連携を全面削除（Needs タブ・
   フィードバック確定・approve・needs 要約と関連設定 `kiroAutonomous` / `needsPromptTemplate`）。
   GitLab のイシュー / MR レビューに特化する
 - **プロキシ引き継ぎ**: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` 環境変数を
@@ -41,12 +41,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   - 実行後（コメント投稿・ショートカットのラベル変更を含む）は左右ペインの
     イシュー / MR 表示を自動で再読み込みして結果を反映
 
-### codd-gate v1.0.0 — doc/code/test 一貫性ゲート（単体 CLI・kiro-autonomous 連携はオプション）
+### codd-gate v1.0.0 — doc/code/test 一貫性ゲート（単体 CLI・kiro-projects 連携はオプション）
 
 [CoDD (Coherence-Driven Development)](https://github.com/yohey-w/codd-dev) の設計
 （Trace＝接続マップ / Impact＝Green・Amber・Gray 分類 / Verify＝no fake green）を翻案した
-決定的ツールを追加。**kiro-autonomous に依存しない独立ツール**（python3＋git のみ・独立インストーラ
-`install.sh`）として単体で CI / git hook から使え、kiro-autonomous とは**本体無改造**の一方向
+決定的ツールを追加。**kiro-projects に依存しない独立ツール**（python3＋git のみ・独立インストーラ
+`install.sh`）として単体で CI / git hook から使え、kiro-projects とは**本体無改造**の一方向
 オプション連携（既存フック regression_cmd・charter acceptance・タスク verify・enqueue --json / inbox
 のみで結合するプラグイン方式）。ブラウンフィールド前提で、既存負債は止めずに
 「棚卸し→ラチェット→backlog 返済」、新規変更だけを差分ゲートで護る。
@@ -66,42 +66,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   ミラー（初回のみ blob:none・以後増分 fetch。`KIRO_GIT_CACHE_DIR` で kiro ツール群と共有）から
   **fetch 後の SHA** で detached worktree（INV-1 鮮度）を生やし、run 後に worktree だけ回収。
   実体化不能は黙って PASS 側に倒さない。`dir:` 指定 repo には触れない（判定対象は作業ツリーそのもの）。
-- **kiro-autonomous に汎用取り込みフック `intake_cmd` を追加**（設定/CLI `--intake-cmd[-interval]`）:
+- **kiro-projects に汎用取り込みフック `intake_cmd` を追加**（設定/CLI `--intake-cmd[-interval]`）:
   外部の決定的ゲート/検出器を watch の周期で pull し、stdout の enqueue --json を**冪等取り込み**
   （id が現役 backlog に居れば飛ばす）。パス開始時と idle 中に間隔律速で実行、失敗は journal に残して
-  無視。**常駐は kiro-autonomous 側だけが持ち、intake_cmd（codd-gate 含む）は単発・有界**という役割
+  無視。**常駐は kiro-projects 側だけが持ち、intake_cmd（codd-gate 含む）は単発・有界**という役割
   分担を固定。有効化は設定だけ: `regression_cmd`（差分ゲート）＋`intake_cmd: codd-gate tasks --debt`
-  （負債の自動返済）＋charter acceptance（ラチェット）。kiro-autonomous の install.sh は隣に
+  （負債の自動返済）＋charter acceptance（ラチェット）。kiro-projects の install.sh は隣に
   codd-gate があれば同梱インストールする。
 - **`tasks --debt --cohort`**: 未文書化/未テストのような同種負債の山を repo 単位の cohort
-  （`cohort_items`＋`{item}`）に集約し、後段の分解を kiro-autonomous の pilot-then-batch に委ねる。
+  （`cohort_items`＋`{item}`）に集約し、後段の分解を kiro-projects の pilot-then-batch に委ねる。
   タスク id は発見内容から決定的（48 字・末尾ハッシュ）＝intake の冪等キー。
 - **共通スキーマ `schemas/` を新設（repos / task をツール横断の独立スキーマとして管理）**:
   `repos.schema.json`（リポジトリレジストリ。identity = (url, path, base)）と `task.schema.json`
   （制御層タスクの JSON 表現。Markdown 形の正典は backlog.md.example・未知キー保持）。
-  kiro-autonomous は手書きの `<project>/repos.{yaml,yml,json}` があれば**レジストリの正**として読み
+  kiro-projects は手書きの `<project>/repos.{yaml,yml,json}` があれば**レジストリの正**として読み
   （charter の `## repos` は互換入力＝内部で同形に正規化して引き回す）、**無ければ charter から
   repos.json を自動生成**して外部ツールへ「ファイルとして渡す」（_meta マーカー付き・正は charter に
   追従・## repos が消えれば生成物も消す。分類グロブ docs/tests/code も損失なく引き継ぐ）。
   repos ファイル単独では charter モードは発動しないがルーティング/参照解決には効く。kiro-flow の
   `--workspace`/`--reference` はこのスキーマの 1 エントリの射影。codd-gate のタスク出力がスキーマに
   適合することはテストで突き合わせる。
-- **codd-gate は kiro-autonomous から完全独立に**: charter アダプタ（--charter）を廃止し、レジストリは
+- **codd-gate は kiro-projects から完全独立に**: charter アダプタ（--charter）を廃止し、レジストリは
   共通スキーマ（--repos ファイル / 設定 repos:）のみに。`tasks` は共通 task スキーマへの**直接出力**
   であり特定ツール向けアダプタではない。結合は入力（repos スキーマ）・出力（task スキーマ）とも
   `schemas/` のデータ契約だけ。
-- **タスク追加の責務境界を明文化**: kiro-autonomous は元よりタスクを入力とする設計（enqueue＝汎用の
+- **タスク追加の責務境界を明文化**: kiro-projects は元よりタスクを入力とする設計（enqueue＝汎用の
   取り込み口・外部ソースは薄いアダプタで流し込む思想）で、タスク契約（正典 `backlog.md.example`・
-  未知キー保持の前方互換）の所有者は kiro-autonomous。codd-gate コアの正は**所見**（`impact --json` /
+  未知キー保持の前方互換）の所有者は kiro-projects。codd-gate コアの正は**所見**（`impact --json` /
   `verify --debt --json`）で、`tasks` はそれを共通 task スキーマへ直接出力する。
-- **外部 CLI の差し込み点をカタログ化**: kiro-autonomous 設計書 §4.1 に公式の 6 点（E1 verify/
+- **外部 CLI の差し込み点をカタログ化**: kiro-projects 設計書 §4.1 に公式の 6 点（E1 verify/
   acceptance・E2 regression_cmd・E3 intake_cmd・E4 inbox/enqueue・E5 notify_cmd・E6 executor）の契約
   （入出力・環境・制約）と選び方・妥当性を明文化。暗黙の拡張点は作らない（S1 優先順位・S5 エスカレー
   ション・S7 予算にはフックを設けない理由も記載）。codd-gate は E1+E2+E3 を使う適用例。
-- **新規スキル `codd-gate`**: 単体運用（git hook / CI）を主、kiro-autonomous 結線
+- **新規スキル `codd-gate`**: 単体運用（git hook / CI）を主、kiro-projects 結線
   （regression_cmd → acceptance ラチェット → intake_cmd 返済）を追加情報として整理。
 - 設計書 `docs/designs/codd-gate-design.md`（codd-dev からの翻案対応表・差し込み点選択の妥当性検証
-  つき）とテスト（codd-gate 28 件＋kiro-autonomous intake 5 件）を同梱。
+  つき）とテスト（codd-gate 28 件＋kiro-projects intake 5 件）を同梱。
 
 ### agentic-search v1.0.0 — 反復探索を共有スキル化し検索系スキルへ一括導入
 
@@ -162,7 +162,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - `_mr_decision` は MR の状態のみで判定する責務に縮小（外部クローズの扱いを分離）。新設の
   `_closed_issue_decision` がラベル→コメント（`_decision_from_comments`、却下語を承認語より優先）の順で
   推定する。判断材料が無いクローズは従来どおり取り下げ＝却下。
-- 承認なら `done` 成果として下流へ、却下なら `[gitlab-reject]` 例外で上位（kiro-autonomous）が
+- 承認なら `done` 成果として下流へ、却下なら `[gitlab-reject]` 例外で上位（kiro-projects）が
   コメントを活かしてやり直す。承認/却下の根拠（reason）をログ・成果テキスト・例外メッセージに出す。
 
 ### gitlab-gatekeeper（旧 review-concierge をリネーム＋門番化・破壊的変更）
@@ -184,11 +184,11 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
 - 後方互換は取らない（`review-concierge` のディレクトリ/スキル名は廃止）。GitLab 操作は従来どおり
   `gitlab-idd` の `gl.py` を再利用し、レビュー観点は `agent-reviewer` の references を再利用する。
 
-### マルチリポジトリ・ルーティング（kiro-autonomous × kiro-flow・破壊的変更）
+### マルチリポジトリ・ルーティング（kiro-projects × kiro-flow・破壊的変更）
 
 大規模・複数リポジトリのプロジェクトを自律運用するため、「タスク → コミット先リポジトリ」のルーティングを導入した。
-**判断は制御層（kiro-autonomous）に集約し、執行は実行層（kiro-flow）が担保する。** 設計の詳細は
-`tools/kiro-autonomous/ROUTING.md`。後方互換は取らない（旧 `--repo`／タスク `- repos:` は廃止）。
+**判断は制御層（kiro-projects）に集約し、執行は実行層（kiro-flow）が担保する。** 設計の詳細は
+`tools/kiro-projects/ROUTING.md`。後方互換は取らない（旧 `--repo`／タスク `- repos:` は廃止）。
 
 #### kiro-flow
 
@@ -215,7 +215,7 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
   時間がかかるため待機は長め・設定可能（`gitlab.timeout` 既定 7 日 / `gitlab.approved_timeout` 既定 14 日・0=無限）。
 - run が `failed` で終端したら `kiro-flow run` は**非 0 終了**（委譲先の却下を上位が act 失敗として検知できる）。
 
-#### kiro-autonomous
+#### kiro-projects
 
 - **ルーティング解決を新設**（`resolve_workspace`）: タスクを**ちょうど1つの書込先ワークスペース**へ。解決順は
   明示 `- workspace:` > policy `route:` > charter `owns:` 推定 > auto-route（LLM）> `default_workspace`／候補1つ。
@@ -242,9 +242,9 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
   再委譲せず即失敗化するため、委譲 executor へ `--max-retries 0` を渡す（複数イシューの濫造を防止）。act 失敗時は
   `read_reject_guidance` が直近 run の `[gitlab-reject]` 指示（人コメント）を読み、`_settle_failure` が `feedback` に
   注入して通常リトライの次 act で活かす（コメントが無ければ自動判断）。
-- 単体テストを新 API へ更新（kiro-flow・kiro-autonomous 両スイート、計 494 件 green）。
+- 単体テストを新 API へ更新（kiro-flow・kiro-projects 両スイート、計 494 件 green）。
 
-### kiro-autonomous
+### kiro-projects
 
 #### Added
 - **acceptance/verify を「対象 repo のクローン先」で実行できるようにした**（offload で worker が対象 repo を temp に
@@ -264,7 +264,7 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
   design に追記。単体テスト 5 件（`_acceptance_kind` 分類・合成・キャッシュ安定・収束・合成不能で人へ）を追加。
 - **自動アップデート（既定 on・6 時間毎・起動直後にも実施）**。スキルリポジトリ（配布元）の `main` に更新が
   入ったら、`run --watch` の **アイドル時** に取り込む。停止中に入った更新も起動直後の初回アイドルで拾う。doctor と同じ流儀で決定的: `git ls-remote` で main の先頭を
-  確認 → 適用済み SHA（`~/.kiro/kiro-autonomous.update.json`）と違えば、temp 領域へ `tools/kiro-autonomous/`
+  確認 → 適用済み SHA（`~/.kiro/kiro-projects.update.json`）と違えば、temp 領域へ `tools/kiro-projects/`
   だけを **sparse-checkout** → `install.sh` 実行 → **動いていた cwd のまま `os.execv` で graceful 再起動**
   （レジストリ登録は再起動前に後始末）。手動は `update [--check|--now]`。**更新元 URL は `install.py` が
   生成する `skill-registry.json`（`repositories.origin.url` → `install_dir`）から自動解決**（`update_repo`
@@ -289,14 +289,14 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
   利用可能 repo 一覧（フォルダ/役割/参照のみ込み）を見て各タスクに必要な repo だけを判断**（`_repos_planner_note`）。
   ノードに `repos` フィールドを追加（`_node_entry`/`_coerce_tasks` が保持）。fan-out で多数ノードに分解されても各ノードは
   自分に必要な repo だけ clone する（URL 単位の重複排除と併せ無駄 clone を最小化）。
-  kiro-autonomous 5 件・kiro-flow 7 件のテストを追加（全 240 / 152 OK）。
+  kiro-projects 5 件・kiro-flow 7 件のテストを追加（全 240 / 152 OK）。
 - **成果物リポジトリ clone の削除機構を強化**（kiro-flow）。temp clone 名に所有 pid を埋め込み
   （`kiro-flow-repos-<pid>-…`）、daemon の定期掃除に `sweep_work_repo_dirs` を追加: **SIGKILL/OOM/電源断で
   finally が走らず残った孤立 clone を「所有 pid 死亡」を根拠に回収**（稼働中・`--keep-alive` 長命 worker の clone は
   経過時間に関わらず残す）。`cleanup_per_node`（CLI `--cleanup-per-node`）で各ノード完了/失敗ごとの即時削除を
   opt-in（長命 worker のディスク抑制）。`atexit` でプロセス終了時削除を二重化。テスト 2 件追加（kiro-flow 154 OK）。
   既存の削除経路（正常終了/エラー/agent タイムアウト/SIGTERM の finally＋signal）は従来どおり。
-- 黒箱 CLI 統合テスト（`TestCliEndToEnd`）。`kiro-autonomous.py` を実プロセスとして argv 起動し、
+- 黒箱 CLI 統合テスト（`TestCliEndToEnd`）。`kiro-projects.py` を実プロセスとして argv 起動し、
   ループ機構を end-to-end で検証: drain→exit 0・成果物退避（archive）、verify 失敗→blocked→exit 1＋
   needs ファイル生成、予算超過→budget→exit 2、`--no-archive` で退避せず削除。`run_loop()` の in-process
   テスト（`TestRunLoop`）に対し、CLI 配線（argparse・パス解決・停止理由→exit code）を実バイナリで担保する。
@@ -304,11 +304,11 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
   サブプロセス委譲して完走することを検証する。`--kiro-flow` にラッパを噛ませ、委譲 argv
   （`run --planner stub --executor stub …`）と委譲先 kiro-flow の正常終了（exit 0）を捕捉して assert する。
 - GUIDE に「おすすめ構成（本番）」セクションを追加。**PC 起動時に両 daemon 常駐 ／ executor=gitlab ／
-  bus=git** の完成形レシピ（kiro-flow.yaml / kiro-autonomous.yaml の雛形、systemd ユーザーサービス 2 本、
+  bus=git** の完成形レシピ（kiro-flow.yaml / kiro-projects.yaml の雛形、systemd ユーザーサービス 2 本、
   `lock_dir` 一致・git 認証・`~/.kiro/` 自動探索の勘所、稼働確認コマンド）。L0–L4 を通した後の到達点を明示する。
 - `--executor`（設定 `executor`）に kiro-flow の executor プラグインを指定できるようにした。組み込みの
   `kiro` / `stub` に加え、プラグイン名（例 `gitlab`）や `.py` パスをそのまま `kiro-flow run --executor <値>`
-  へ委譲する（`choices` 制限を撤廃）。`kiro-autonomous.yaml.example` / README にも記載。`doctor` の
+  へ委譲する（`choices` 制限を撤廃）。`kiro-projects.yaml.example` / README にも記載。`doctor` の
   kiro-flow 解決チェックも `executor != stub` の全 executor（プラグイン含む）を対象に拡張した。
 - `doctor` サブコマンド。ログ/状態/環境から稼働を診断し、原因を **env（ユーザー環境固有）/
   config（設定）/ program（プログラム上の不具合）** に分類する。収集・修正・起票の駆動は決定的に、
@@ -411,8 +411,8 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
 - `doctor` サブコマンド。run 状態/イベント/環境から稼働を診断し、原因を **env / config / program** に
   分類する。収集・修正・起票の駆動は決定的に、診断と分類は kiro-cli へ委譲（不在時は決定的チェックのみ）。
   `--fix` で env/config を修正（`ensure-bus`＝バス作成）し、program の不具合は `gitlab-idd` スキルで
-  GitLab イシューを起票する（スキルが無ければ出力のみ）。`--json` の findings は kiro-autonomous の doctor と
-  同一スキーマで、単独でも kiro-autonomous からの連携呼び出しでも使える。終了コード `0`/`1`/`2`。
+  GitLab イシューを起票する（スキルが無ければ出力のみ）。`--json` の findings は kiro-projects の doctor と
+  同一スキーマで、単独でも kiro-projects からの連携呼び出しでも使える。終了コード `0`/`1`/`2`。
 - executor（ワーカーバス）のプラグイン化。kiro-loop の hooks（event_hook）と同じ流儀で、
   `--executor` に組み込み名（`kiro`/`stub`）に加えてプラグイン名（例 `gitlab`）や `.py` パスを
   指定できる。プラグインは標準ライブラリのみの単一ファイルで `execute(kind, goal, dep_results,
@@ -470,7 +470,7 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
 - **daemon が orchestrator の異常終了を run の失敗として確定せず、run が非終端のまま放置される不具合を修正**。
   orchestrator（`orchestrate`）が `done` を書く前にクラッシュ／kill／起動失敗で終了すると、daemon は死んだ子を
   `del orchestrators[rid]` するだけで run の `status` を更新せず、`result`/`status` を待つ消費者
-  （kiro-autonomous の charter 駆動 watch 等）が**永久待機**に陥っていた。死んだ orchestrator を刈り取る際に
+  （kiro-projects の charter 駆動 watch 等）が**永久待機**に陥っていた。死んだ orchestrator を刈り取る際に
   exit code を確認し、run がまだ終端でなければ `Bus.mark_run_failed` で `failed`（`failure_reason` 付き）に
   確定して `run-failed` イベントを記録・push するようにした（正常完了済みの run は上書きしない冪等動作）。
   これで `result --json` の `done=True`/`status=failed` として失敗終了が即座に消費者へ伝わる。単体テスト 4 件を追加。
@@ -499,7 +499,7 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
   それ以外（親/別リポジトリ・非空の他ディレクトリ）には sparse-checkout を適用せず明示的に中断する。
 - `GitBus` が **同一 remote の既存フルチェックアウト**（ユーザーの作業リポジトリ等）を `--bus` のクローン先に
   指定された場合に、`sparse-checkout`（cone）で **subdir 以外の追跡ファイルを作業ツリーから隠してしまう**
-  不具合を修正（kiro-autonomous の `--git-bus`/`--git-subdir` 経由で発生しうる）。自前管理のバスクローンに
+  不具合を修正（kiro-projects の `--git-bus`/`--git-subdir` 経由で発生しうる）。自前管理のバスクローンに
   目印（git config `kiro-flow.busclone=1`）を付け、再利用は「目印付き／既に sparse 済みの自前クローン」に
   限定。kiro-flow 管理外の既存チェックアウトには sparse-checkout せず明示的に中断する。あわせて全ての
   `git -C <workdir>` 実行に `GIT_CEILING_DIRECTORIES` を設定し、workdir 直下に `.git` が無くても親リポジトリへ
@@ -512,7 +512,7 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
   対し、常駐プロセス＋オンデマンド起動の配線を実プロセスで担保する。
 
 #### Changed
-- 内部リファクタリング（振る舞い不変・全機能維持・144 テスト green）。kiro-autonomous と同様に、
+- 内部リファクタリング（振る舞い不変・全機能維持・144 テスト green）。kiro-projects と同様に、
   パッチ的に重複した実装を整理: 子プロセス argv 構築を `_child_base()` に統一（`cmd_run`/`cmd_daemon` の重複解消）、
   モード表記を `_mode_string()` に集約、daemon の singleton ロック取得を `_acquire_daemon_lock()`・
   orchestrator/worker 起動を `_spawn_orchestrator()`/`_spawn_worker()` に分割、`cmd_orchestrate` の統合処理を
@@ -526,9 +526,9 @@ AI が量産する MR/イシューのレビュー負荷を下げるため、`rev
 
 ## [v1.0.0] — 2026-06-20
 
-Initial release. 188 tests passing (kiro-flow + kiro-autonomous).
+Initial release. 188 tests passing (kiro-flow + kiro-projects).
 
-### kiro-autonomous
+### kiro-projects
 
 #### Added
 - 並列消費 — kiro-flow の worker 並列へ寄せる（§11）
@@ -546,7 +546,7 @@ Initial release. 188 tests passing (kiro-flow + kiro-autonomous).
 - サブコマンド省略時を `run --watch`（常駐監視）の既定に
 - ltm-use への学習昇格（プロジェクト横断・エージェント不要）
 - 編集完了の明示検知と成果物の納品書
-- ファイルを `.kiro-autonomous/` に集約・一時バスを自動クリーンアップ
+- ファイルを `.kiro-projects/` に集約・一時バスを自動クリーンアップ
 - DR 学習と rot 検知
 
 #### Changed

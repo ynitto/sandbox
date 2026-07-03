@@ -1,3 +1,0 @@
-- 2026-06-19 13:34:54 === kiro-autonomous 開始 tasks=0 ingested=0 planner=kiro executor=kiro dry_run=False ===
-- 2026-06-19 13:34:54 === kiro-autonomous 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
-- 2026-06-19 13:34:54 === watch: 監視中（新規タスク/フィードバック待ち。エージェントは待機しない）===

@@ -1,9 +1,9 @@
-"""kiro-autonomous の単体テスト（標準ライブラリ unittest）。
+"""kiro-projects の単体テスト（標準ライブラリ unittest）。
 
 案件毎ファイル（backlog/<id>.md）・done でファイル削除・watch 常駐・フィードバック往復・
 案件毎の needs/decisions を、kiro-flow を呼ばずに検証する。kiro-flow stub 統合も含む。
 
-    python -m unittest discover -s tools/kiro-autonomous/tests
+    python -m unittest discover -s tools/kiro-projects/tests
 """
 import importlib.util
 import json
@@ -35,10 +35,10 @@ os.environ["GIT_CONFIG_VALUE_0"] = "false"
 os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
     tempfile.gettempdir(), "ka-tests-no-such-registry", "skill-registry.json")
 
-_MOD = Path(__file__).resolve().parent.parent / "kiro-autonomous.py"
-_spec = importlib.util.spec_from_file_location("kiro_autonomous", _MOD)
+_MOD = Path(__file__).resolve().parent.parent / "kiro-projects.py"
+_spec = importlib.util.spec_from_file_location("kiro_projects", _MOD)
 km = importlib.util.module_from_spec(_spec)
-sys.modules["kiro_autonomous"] = km
+sys.modules["kiro_projects"] = km
 _spec.loader.exec_module(km)
 
 
@@ -1583,7 +1583,7 @@ class TestPromotion(unittest.TestCase):
             cfg = cfg_for(d, ltm=True, ltm_home=home, promote_threshold=2)
             promoted = km.promote_learnings(cfg)
             self.assertEqual([s for s, _ in promoted], ["T1"])
-            mems = list((home / "memory" / "home" / "memories" / "kiro-autonomous").glob("*.md"))
+            mems = list((home / "memory" / "home" / "memories" / "kiro-projects").glob("*.md"))
             self.assertEqual(len(mems), 1)
             txt = mems[0].read_text()
             self.assertIn("- learn: build を直す :: make を使え", txt)
@@ -1613,7 +1613,7 @@ class TestPromotion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             home = d / "ltmhome"
-            mem = home / "memory" / "home" / "memories" / "kiro-autonomous"
+            mem = home / "memory" / "home" / "memories" / "kiro-projects"
             mem.mkdir(parents=True)
             (mem / "m.md").write_text(
                 "---\nid: mem-1\n---\n## 学び・結論\n- learn: build を直す :: make を使え\n",
@@ -1748,7 +1748,7 @@ class TestLayout(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             # 新レイアウト: per-project root は <root>/projects/default/
-            proot = d / ".kiro-autonomous" / "projects" / "default"
+            proot = d / ".kiro-projects" / "projects" / "default"
             bl = proot / "backlog"
             bl.mkdir(parents=True)
             (bl / "T1.md").write_text(
@@ -1761,7 +1761,7 @@ class TestLayout(unittest.TestCase):
             self.assertFalse((bl / "T1.md").exists())
             # プロジェクト root 以外に散らばっていない
             self.assertFalse((d / "backlog").exists())
-            self.assertFalse((d / ".kiro-autonomous" / "backlog").exists())
+            self.assertFalse((d / ".kiro-projects" / "backlog").exists())
             self.assertFalse((d / "journal.md").exists())
 
     def test_cleanup_bus_removes_run_state(self):
@@ -1934,14 +1934,14 @@ class TestInstances(unittest.TestCase):
 
     def setUp(self):
         self._home = tempfile.mkdtemp()
-        self._prev = os.environ.get("KIRO_AUTONOMOUS_HOME")
-        os.environ["KIRO_AUTONOMOUS_HOME"] = self._home
+        self._prev = os.environ.get("KIRO_PROJECTS_HOME")
+        os.environ["KIRO_PROJECTS_HOME"] = self._home
 
     def tearDown(self):
         if self._prev is None:
-            os.environ.pop("KIRO_AUTONOMOUS_HOME", None)
+            os.environ.pop("KIRO_PROJECTS_HOME", None)
         else:
-            os.environ["KIRO_AUTONOMOUS_HOME"] = self._prev
+            os.environ["KIRO_PROJECTS_HOME"] = self._prev
 
     def test_register_then_discover(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2017,14 +2017,14 @@ class TestRemoteDiscovery(unittest.TestCase):
     def setUp(self):
         self._home = tempfile.mkdtemp()
         self._shared = tempfile.mkdtemp()
-        self._prev = os.environ.get("KIRO_AUTONOMOUS_HOME")
-        self._prev_reg = os.environ.get("KIRO_AUTONOMOUS_REGISTRY")
-        os.environ["KIRO_AUTONOMOUS_HOME"] = self._home
-        os.environ.pop("KIRO_AUTONOMOUS_REGISTRY", None)
+        self._prev = os.environ.get("KIRO_PROJECTS_HOME")
+        self._prev_reg = os.environ.get("KIRO_PROJECTS_REGISTRY")
+        os.environ["KIRO_PROJECTS_HOME"] = self._home
+        os.environ.pop("KIRO_PROJECTS_REGISTRY", None)
 
     def tearDown(self):
-        for k, v in (("KIRO_AUTONOMOUS_HOME", self._prev),
-                     ("KIRO_AUTONOMOUS_REGISTRY", self._prev_reg)):
+        for k, v in (("KIRO_PROJECTS_HOME", self._prev),
+                     ("KIRO_PROJECTS_REGISTRY", self._prev_reg)):
             if v is None:
                 os.environ.pop(k, None)
             else:
@@ -2096,7 +2096,7 @@ class TestRemoteDiscovery(unittest.TestCase):
 
     def test_env_registry_is_read(self):
         self._remote("hostB", 303, hb_age=3)
-        os.environ["KIRO_AUTONOMOUS_REGISTRY"] = self._shared
+        os.environ["KIRO_PROJECTS_REGISTRY"] = self._shared
         seen = {(r["host"], r["pid"]) for r in km.list_instances()}
         self.assertIn(("hostB", 303), seen)               # env でも共有先を読む
 
@@ -2112,15 +2112,15 @@ class TestLifecycle(unittest.TestCase):
 
     def setUp(self):
         self._home = tempfile.mkdtemp()
-        self._prev = os.environ.get("KIRO_AUTONOMOUS_HOME")
-        os.environ["KIRO_AUTONOMOUS_HOME"] = self._home
+        self._prev = os.environ.get("KIRO_PROJECTS_HOME")
+        os.environ["KIRO_PROJECTS_HOME"] = self._home
 
     def tearDown(self):
         km.cmd_stop(want_all=True)            # 取りこぼした daemon を確実に止める
         if self._prev is None:
-            os.environ.pop("KIRO_AUTONOMOUS_HOME", None)
+            os.environ.pop("KIRO_PROJECTS_HOME", None)
         else:
-            os.environ["KIRO_AUTONOMOUS_HOME"] = self._prev
+            os.environ["KIRO_PROJECTS_HOME"] = self._prev
 
     def _write_rec(self, pid, root):
         import socket
@@ -2134,7 +2134,7 @@ class TestLifecycle(unittest.TestCase):
 
     def test_select_by_pid_root_and_all(self):
         me = os.getpid()
-        root = "/tmp/wrk/.kiro-autonomous"
+        root = "/tmp/wrk/.kiro-projects"
         self._write_rec(me, root)
         self.assertEqual([r["pid"] for r in km.select_instances(pid=me)], [me])
         self.assertEqual([r["pid"] for r in km.select_instances(root=root)], [me])  # root 直指定
@@ -2146,7 +2146,7 @@ class TestLifecycle(unittest.TestCase):
         import subprocess as sp
         child = sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         self.addCleanup(lambda: child.poll() is None and child.kill())
-        self._write_rec(child.pid, "/tmp/x/.kiro-autonomous")
+        self._write_rec(child.pid, "/tmp/x/.kiro-projects")
         rc = km.cmd_stop(pid=child.pid, timeout=5.0)
         self.assertEqual(rc, 0)
         self.assertFalse(km._pid_alive(child.pid))
@@ -2157,9 +2157,9 @@ class TestLifecycle(unittest.TestCase):
 
     def test_start_registers_then_stop(self):
         work = Path(tempfile.mkdtemp())
-        (work / "kiro-autonomous.json").write_text(
+        (work / "kiro-projects.json").write_text(
             '{"executor":"stub","planner":"none","flow_planner":"stub","poll":0.3}', encoding="utf-8")
-        cfg = str(work / "kiro-autonomous.json")
+        cfg = str(work / "kiro-projects.json")
         rc = km.cmd_start(root=str(work), config=cfg)
         self.assertEqual(rc, 0)
         # 登録の出現を待つ（最大 ~5s）。記録 root は per-project（projects/default）
@@ -2176,9 +2176,9 @@ class TestLifecycle(unittest.TestCase):
     def test_start_defaults_to_all_daemon(self):
         # daemon（start）は --project 未指定なら all で起動し、"all" センチネルを登録する
         work = Path(tempfile.mkdtemp())
-        (work / "kiro-autonomous.json").write_text(
+        (work / "kiro-projects.json").write_text(
             '{"executor":"stub","planner":"none","flow_planner":"stub","poll":0.3}', encoding="utf-8")
-        cfgp = str(work / "kiro-autonomous.json")
+        cfgp = str(work / "kiro-projects.json")
         self.assertEqual(km.cmd_start(root=str(work), config=cfgp), 0)   # --project なし → all
         all_root = str((work / "projects" / "all").resolve())
         for _ in range(50):
@@ -2218,7 +2218,7 @@ class TestConfigFile(unittest.TestCase):
 
     def test_json_config_fills_values(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-autonomous.json"
+            p = Path(d) / "kiro-projects.json"
             p.write_text('{"executor":"stub","planner":"none","poll":9,"max_cycles":3}',
                          encoding="utf-8")
             ns = self._resolve(str(p))
@@ -2227,7 +2227,7 @@ class TestConfigFile(unittest.TestCase):
 
     def test_cli_overrides_config(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-autonomous.json"
+            p = Path(d) / "kiro-projects.json"
             p.write_text('{"executor":"stub","planner":"none"}', encoding="utf-8")
             ns = self._resolve(str(p), executor="kiro")   # CLI 明示は維持される
             self.assertEqual(ns.executor, "kiro")          # CLI 勝ち
@@ -2243,7 +2243,7 @@ class TestConfigFile(unittest.TestCase):
         if km.yaml is None:
             self.skipTest("PyYAML 未導入（JSON 経路は別テストで担保）")
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-autonomous.yaml"
+            p = Path(d) / "kiro-projects.yaml"
             p.write_text("executor: stub\nmax_retries: 5\ngit_branch: develop\n", encoding="utf-8")
             ns = self._resolve(str(p))
             self.assertEqual((ns.executor, ns.max_retries, ns.git_branch),
@@ -2251,13 +2251,13 @@ class TestConfigFile(unittest.TestCase):
 
     def test_missing_explicit_config_exits(self):
         with self.assertRaises(SystemExit):
-            self._resolve("/no/such/kiro-autonomous.yaml")
+            self._resolve("/no/such/kiro-projects.yaml")
 
     def test_boolean_flags_from_config(self):
         # 真偽フラグ（watch/do_archive/learn/rot/cleanup/once/dry_run/ltm/regression_revert）が
         # 設定ファイルで効く。resolve_config は CLI 未指定（None）のみ config→既定 で埋める。
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-autonomous.json"
+            p = Path(d) / "kiro-projects.json"
             p.write_text('{"watch":true,"do_archive":false,"learn":false,"rot":true}',
                          encoding="utf-8")
             ns = self._resolve(str(p), watch=None, do_archive=None, learn=None, rot=None,
@@ -2270,7 +2270,7 @@ class TestConfigFile(unittest.TestCase):
     def test_cli_overrides_boolean_config(self):
         # CLI 明示（--no-watch / --learn 等で None でない値）が config に勝つ。
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-autonomous.json"
+            p = Path(d) / "kiro-projects.json"
             p.write_text('{"watch":true,"learn":false}', encoding="utf-8")
             ns = self._resolve(str(p), watch=False, learn=True)
             self.assertEqual((ns.watch, ns.learn), (False, True))     # CLI 勝ち
@@ -3013,7 +3013,7 @@ class TestProjectLayer(unittest.TestCase):
         # run は charter.md があれば自動で目標駆動になる（project サブコマンドは廃止・1プロセス統合）
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            proot = d / ".kiro-autonomous" / "projects" / "default"
+            proot = d / ".kiro-projects" / "projects" / "default"
             proot.mkdir(parents=True)
             (proot / "charter.md").write_text(
                 "# Charter: demo\n## goal\nやる\n## acceptance\n- `true`\n", encoding="utf-8")
@@ -3028,7 +3028,7 @@ class TestProjectLayer(unittest.TestCase):
     def test_run_without_charter_is_plain_loop(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            proot = d / ".kiro-autonomous" / "projects" / "default"
+            proot = d / ".kiro-projects" / "projects" / "default"
             (proot / "backlog").mkdir(parents=True)
             (proot / "backlog" / "T1.md").write_text(
                 "## T1: x\n- status: ready\n- verify: `true`\n", encoding="utf-8")
@@ -3671,7 +3671,7 @@ def _write_backlog_task(backlog: Path, tid: str, verify: str, title: "str | None
 
 
 class TestCliEndToEnd(unittest.TestCase):
-    """kiro-autonomous.py を実プロセスとして argv 起動する黒箱 CLI e2e。
+    """kiro-projects.py を実プロセスとして argv 起動する黒箱 CLI e2e。
 
     TestRunLoop が run_loop() を in-process で呼ぶのに対し、こちらは CLI 配線（argparse・パス解決・
     停止理由→exit code・成果物の書き出し）を実バイナリで検証する。act は --dry-run で省略し、
@@ -3730,7 +3730,7 @@ class TestCliEndToEnd(unittest.TestCase):
 
 
 class TestCliKiroFlowDelegation(unittest.TestCase):
-    """kiro-autonomous CLI が act を実際に kiro-flow.py へサブプロセス委譲し、完走することを検証する
+    """kiro-projects CLI が act を実際に kiro-flow.py へサブプロセス委譲し、完走することを検証する
     クロスツール e2e。委譲の証跡（argv）と委譲先 kiro-flow の正常終了をラッパで捕捉して検証する。"""
 
     def test_cli_delegates_to_real_kiro_flow(self):
@@ -3774,7 +3774,7 @@ class TestCliKiroFlowDelegation(unittest.TestCase):
             self.assertIn("RC\t0", logtext)
 
 
-def _make_skill_repo(root: Path, tool_subdir: str = "tools/kiro-autonomous") -> Path:
+def _make_skill_repo(root: Path, tool_subdir: str = "tools/kiro-projects") -> Path:
     """temp に「スキルリポジトリ」を作る: main に tool_subdir/install.sh を持つ git リポジトリ。
     install.sh は --prefix のディレクトリに marker を書くだけの最小実装。リポジトリ path を返す。"""
     repo = root / "skillrepo"
@@ -3787,7 +3787,7 @@ def _make_skill_repo(root: Path, tool_subdir: str = "tools/kiro-autonomous") -> 
         "#!/usr/bin/env bash\nset -e\nPREFIX=\"$HOME/.local/bin\"\n"
         "[ \"$1\" = --prefix ] && PREFIX=\"$2\"\nmkdir -p \"$PREFIX\"\n"
         "echo installed > \"$PREFIX/INSTALLED_MARKER\"\n")
-    (td / "kiro-autonomous.py").write_text("# tool body\n")
+    (td / "kiro-projects.py").write_text("# tool body\n")
     env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
     for c in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
@@ -3827,7 +3827,7 @@ class SelfUpdateTests(unittest.TestCase):
 
     def _cfg(self, **kw):
         base = dict(update_repo=str(self.repo), update_branch="main",
-                    update_subdir="tools/kiro-autonomous", update_installer="install.sh",
+                    update_subdir="tools/kiro-projects", update_installer="install.sh",
                     update_check_interval=60.0)
         base.update(kw)
         return cfg_for(self.tmp, **base)
@@ -3848,7 +3848,7 @@ class SelfUpdateTests(unittest.TestCase):
     def test_check_update_detects_new_commit(self):
         cfg = self._cfg()
         km.check_update(cfg)
-        _commit_change(self.repo, "tools/kiro-autonomous/NEW.txt")
+        _commit_change(self.repo, "tools/kiro-projects/NEW.txt")
         self.assertTrue(km.check_update(cfg)["available"])
 
     def test_disabled_when_no_repo(self):
@@ -3859,14 +3859,14 @@ class SelfUpdateTests(unittest.TestCase):
     def test_sparse_checkout_only_subdir(self):
         dest = str(self.tmp / "co" / "repo")
         tool_dir = km.sparse_checkout_tool(str(self.repo), "main",
-                                           "tools/kiro-autonomous", dest)
+                                           "tools/kiro-projects", dest)
         self.assertTrue(os.path.isfile(os.path.join(tool_dir, "install.sh")))
         self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-flow")))
 
     def test_apply_update_records_sha(self):
         cfg = self._cfg()
         km.check_update(cfg)                    # baseline
-        _commit_change(self.repo, "tools/kiro-autonomous/N2.txt")
+        _commit_change(self.repo, "tools/kiro-projects/N2.txt")
         info = km.check_update(cfg)
         self.assertTrue(info["available"])
         prefix = str(self.tmp / "prefix")
