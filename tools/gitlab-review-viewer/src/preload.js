@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   getConfig: () => invoke('config:get'),
   saveConfig: (config) => invoke('config:save', { config }),
 
+  glCurrentUser: () => invoke('gitlab:currentUser'),
   glGroups: (search) => invoke('gitlab:groups', { search }),
   glProjects: (args) => invoke('gitlab:projects', args),
   glLabels: (args) => invoke('gitlab:labels', args),

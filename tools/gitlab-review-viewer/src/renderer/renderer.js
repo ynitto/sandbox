@@ -980,48 +980,114 @@ async function doReject(choice) {
   });
 }
 
-// 変更: 従来の下ペインと同じプリセット UI をダイアログに出し、実行で適用
-let changeSelected = -1;
+// 変更: プリセットをプレフィックス（status: など）ごとのブロックに分類して表示。
+// 現在対象に付いているラベルを選択済み状態で開き、選択の差分を「実行」で適用する。
+let changeSelection = new Set(); // 選択中のプリセット index
+let changeInitial = new Set(); // ダイアログを開いた時点の選択（= 現在のラベル）
+
+// ブロック分類キー: exclusivePrefix があればそれ、なければラベルの「xxx:」部分
+function presetGroupKey(preset) {
+  if (preset.exclusivePrefix) return preset.exclusivePrefix;
+  const m = String(preset.label).match(/^([^:]+:)/);
+  return m ? m[1] : '';
+}
 
 function openChangeDialog() {
   const t = primaryTarget();
   if (!t) return;
-  changeSelected = -1;
-  const row = $('change-presets');
-  row.innerHTML = '';
-  (state.config.labelPresets || []).forEach((preset, i) => {
-    const btn = document.createElement('button');
-    btn.innerHTML =
-      escapeHtml(preset.label) +
-      (preset.shortcut ? `<span class="kbd">${escapeHtml(preset.shortcut)}</span>` : '');
-    if (t.labels.includes(preset.label)) btn.classList.add('current');
-    btn.addEventListener('click', () => {
-      changeSelected = changeSelected === i ? -1 : i;
-      [...row.children].forEach((b, j) => b.classList.toggle('on', j === changeSelected));
-    });
-    row.appendChild(btn);
+  const presets = state.config.labelPresets || [];
+
+  const groups = new Map();
+  presets.forEach((preset, i) => {
+    const key = presetGroupKey(preset);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(i);
   });
+
+  changeSelection = new Set(
+    presets.map((_, i) => i).filter((i) => t.labels.includes(presets[i].label))
+  );
+  changeInitial = new Set(changeSelection);
+
+  const wrap = $('change-presets');
+  wrap.innerHTML = '';
+  for (const [key, indices] of groups) {
+    const block = document.createElement('div');
+    block.className = 'preset-group';
+    const title = document.createElement('div');
+    title.className = 'preset-group-title';
+    title.textContent = key ? key.replace(/:$/, '') : 'その他';
+    block.appendChild(title);
+    const grid = document.createElement('div');
+    grid.className = 'preset-grid';
+    for (const i of indices) {
+      const preset = presets[i];
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.dataset.index = String(i);
+      btn.innerHTML =
+        escapeHtml(preset.label) +
+        (preset.shortcut ? `<span class="kbd">${escapeHtml(preset.shortcut)}</span>` : '');
+      if (t.labels.includes(preset.label)) btn.classList.add('current');
+      btn.classList.toggle('on', changeSelection.has(i));
+      btn.addEventListener('click', () => {
+        if (changeSelection.has(i)) {
+          changeSelection.delete(i); // 再クリックで解除（ラベルを外す）
+        } else {
+          for (const j of indices) changeSelection.delete(j); // 同一ブロック内は排他
+          changeSelection.add(i);
+        }
+        for (const b of grid.querySelectorAll('button')) {
+          b.classList.toggle('on', changeSelection.has(Number(b.dataset.index)));
+        }
+      });
+      grid.appendChild(btn);
+    }
+    block.appendChild(grid);
+    wrap.appendChild(block);
+  }
   $('change-dialog').showModal();
 }
 
 async function executeChange() {
-  const preset = (state.config.labelPresets || [])[changeSelected];
   const t = primaryTarget();
-  if (!preset) return toast('変更するラベルを選択してください', true);
   if (!t) return;
+  const presets = state.config.labelPresets || [];
+
+  // 開いた時点との選択差分から付ける / 外すラベルを求める
+  const add = [];
+  const remove = [];
+  presets.forEach((preset, i) => {
+    const selected = changeSelection.has(i);
+    if (selected === changeInitial.has(i)) return;
+    if (selected) {
+      add.push(preset.label);
+      if (preset.exclusivePrefix) {
+        for (const l of t.labels) {
+          if (l.startsWith(preset.exclusivePrefix) && l !== preset.label) remove.push(l);
+        }
+      }
+    } else {
+      remove.push(preset.label);
+    }
+  });
+  const addSet = new Set(add);
+  const removeList = [...new Set(remove)].filter((l) => !addSet.has(l));
+  if (!add.length && !removeList.length) {
+    return toast('変更するラベルを選択してください', true);
+  }
+
   $('change-dialog').close();
   await guard('変更', async () => {
     await api.glComment(targetOf(t), actionComment('変更'));
-    const { add, remove } = presetChange(preset, t);
-    const updated = await api.glUpdateLabels(targetOf(t), add, remove);
+    const updated = await api.glUpdateLabels(targetOf(t), add, removeList);
     applyUpdatedItem(updated);
     $('comment-input').value = '';
     reloadPanes();
-    toast(
-      add.length
-        ? `ラベルを ${preset.label} に更新しました`
-        : `ラベル ${preset.label} を外しました`
-    );
+    const parts = [];
+    if (add.length) parts.push(`${add.join(', ')} を付けました`);
+    if (removeList.length) parts.push(`${removeList.join(', ')} を外しました`);
+    toast(`ラベルを更新しました: ${parts.join(' / ')}`);
   });
 }
 
@@ -1187,6 +1253,13 @@ async function init() {
   });
   $('project-select').addEventListener('change', loadLabelSuggestions);
   $('btn-search').addEventListener('click', searchCandidates);
+  $('btn-author-self').addEventListener('click', () =>
+    guard('自分のユーザー名取得', async () => {
+      const user = await api.glCurrentUser();
+      $('author-input').value = user.username || '';
+      persistSearchCache();
+    })
+  );
   $('keyword-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') searchCandidates();
   });
@@ -1226,7 +1299,6 @@ async function init() {
   $('btn-reject-cancel').addEventListener('click', () => $('reject-dialog').close());
   $('btn-change-run').addEventListener('click', executeChange);
   $('btn-change-cancel').addEventListener('click', () => $('change-dialog').close());
-  $('btn-summarize').addEventListener('click', doSummarize);
 
   $('btn-summary-close').addEventListener('click', () => $('summary-dialog').close());
   $('btn-summary-copy').addEventListener('click', () => {
