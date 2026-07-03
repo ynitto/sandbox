@@ -308,6 +308,27 @@ function listInstances() {
   return out;
 }
 
+// プロジェクトの kiro-projects が稼働中か（instances の heartbeat 鮮度から判定。CLI 不要）。
+// WSL 内の本体が登録する root_windows（\\wsl.localhost\...）にも一致させる
+// （Windows のビュアーから WSL 内の稼働を発見するため）。
+function isProjectRunning(dir) {
+  const norm = (p) => {
+    try {
+      return path.resolve(String(p || '')).toLowerCase();
+    } catch {
+      return '';
+    }
+  };
+  const target = norm(dir);
+  if (!target) return false;
+  for (const inst of listInstances()) {
+    if (!inst.fresh || inst.sentinel) continue;
+    if (norm(inst.root) === target) return true;
+    if (inst.root_windows && norm(inst.root_windows) === target) return true;
+  }
+  return false;
+}
+
 function isProjectDir(dir) {
   return (
     fs.existsSync(path.join(dir, 'backlog')) ||
@@ -496,6 +517,7 @@ module.exports = {
   parseNeeds,
   parseDecisions,
   listInstances,
+  isProjectRunning,
   discover,
   readProject,
   resolveBusDir,

@@ -23,6 +23,13 @@ const DEFAULT_CONFIG = {
     // kiro-projects CLI。PATH に無い場合はフルパスや
     // "python3 /path/to/kiro-projects.py" 形式でも指定できる。
     command: 'kiro-projects',
+    // 人の指示（approve / hold / pin / defer）の届け方。
+    //   auto … 本体が稼働中なら commands/<name>.json のファイルドロップ
+    //          （WSL 内の本体にも届く）、稼働していなければ CLI、
+    //          CLI も使えなければファイルドロップにフォールバック
+    //   file … 常にファイルドロップ（次回の watch/起動が取り込む）
+    //   cli  … 常に CLI（従来の挙動）
+    actionMode: 'auto',
     // kiro-flow の共有バス（kiro-projects を --bus / 設定 bus: 付きで運用している
     // 場合）の明示パス。空なら <project>/bus → <container>/bus →
     // kiro-projects 設定ファイル（.kiro/）の bus: の順にファイルから自動発見する。

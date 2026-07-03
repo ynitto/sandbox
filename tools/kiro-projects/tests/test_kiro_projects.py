@@ -1661,6 +1661,73 @@ class TestDecisionRecords(unittest.TestCase):
             self.assertIn("DR-0002", (d / "decisions" / "T1.md").read_text())
 
 
+class TestCommandsIngest(unittest.TestCase):
+    """指示のファイル取り込み（commands/*.json）。CLI と同一ロジックへの委譲・
+    掃除・不正ファイルの退避・watch の起床を検証する。"""
+
+    def test_ingest_commands_runs_cli_logic(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            mkb(d, "T2", verify="true")
+            c = cfg_for(d, actor="bob")
+            km.ensure_dirs(c)
+            cd = km.commands_dir(c)
+            (cd / "a.json").write_text(json.dumps(
+                {"command": "approve", "id": "T1", "reason": "直した"}), encoding="utf-8")
+            (cd / "b.json").write_text(json.dumps(
+                {"command": "hold", "id": "T2", "reason": "本番は手動"}), encoding="utf-8")
+            (cd / "c.json").write_text(json.dumps(
+                {"command": "pin", "id": "T1"}), encoding="utf-8")
+            done = km.ingest_commands(c)
+            self.assertEqual(sorted(done), ["approve:T1", "hold:T2", "pin:T1"])
+            self.assertEqual(list(cd.glob("*.json")), [])            # 処理したら消す
+            t1 = next(t for t in km.load_tasks(d / "backlog") if t.id == "T1")
+            self.assertEqual(t1.status, "ready")                     # CLI approve と同じ効果
+            self.assertIn("deny: T2", (d / "policy.md").read_text())
+            self.assertIn("pin: T1", (d / "policy.md").read_text())
+            self.assertIn("DR-", (d / "decisions" / "T1.md").read_text())  # 決定記録も同一
+
+    def test_ingest_commands_rejects_bad_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            cd = km.commands_dir(c)
+            (cd / "broken.json").write_text("{oops", encoding="utf-8")
+            (cd / "unknown.json").write_text(json.dumps(
+                {"command": "explode", "id": "T1"}), encoding="utf-8")
+            (cd / "missing.json").write_text(json.dumps(
+                {"command": "approve", "id": "NOPE"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), [])
+            self.assertEqual(list(cd.glob("*.json")), [])            # 再試行ループにしない
+            self.assertEqual(len(list(cd.glob("*.json.err"))), 3)    # .err に退避
+            self.assertIn("commands 取り込み失敗", (d / "journal.md").read_text())
+
+    def test_has_work_wakes_on_commands(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")            # consumable 無し
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            self.assertFalse(km.has_work(c))
+            (km.commands_dir(c) / "a.json").write_text(json.dumps(
+                {"command": "approve", "id": "T1"}), encoding="utf-8")
+            self.assertTrue(km.has_work(c))                          # 指示ドロップで起きる
+
+    def test_watch_debounce_defers_fresh_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            c = cfg_for(d, watch=True, debounce=999.0)
+            km.ensure_dirs(c)
+            f = km.commands_dir(c) / "a.json"
+            f.write_text(json.dumps({"command": "approve", "id": "T1"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), [])              # 静穏化待ちで保留
+            self.assertTrue(f.exists())
+
+
 class TestLearning(unittest.TestCase):
     def _seed_learn(self, d, src_id, title, guide):
         cfg = cfg_for(d)

@@ -1089,6 +1089,7 @@ function openSettings() {
   $('cfg-autodiscover').checked = !cfg.kiro || cfg.kiro.autoDiscover !== false;
   $('cfg-refresh').value = cfg.kiro ? cfg.kiro.refreshSec : 5;
   $('cfg-kiro-command').value = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
+  $('cfg-action-mode').value = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.kiro && cfg.kiro.flowBus) || '';
   $('cfg-flow-lockdir').value = (cfg.kiro && cfg.kiro.flowLockDir) || '';
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
@@ -1108,6 +1109,7 @@ async function saveSettings() {
   cfg.kiro.autoDiscover = $('cfg-autodiscover').checked;
   cfg.kiro.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
   cfg.kiro.command = $('cfg-kiro-command').value.trim() || 'kiro-projects';
+  cfg.kiro.actionMode = $('cfg-action-mode').value;
   cfg.kiro.flowBus = $('cfg-flow-bus').value.trim();
   cfg.kiro.flowLockDir = $('cfg-flow-lockdir').value.trim();
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();

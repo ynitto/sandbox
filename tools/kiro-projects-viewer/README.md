@@ -46,18 +46,20 @@ kiro-projects の人間ループはこのアプリ内で完結できる。いず
 |------|------|-----------------|
 | フィードバックして再開 | 要対応カード | `needs/<id>.md` の「## Decision Outcome」に記入 + `- [x]` 確定（`ingest_feedback` の正規ルート） |
 | そのまま再実行 | 要対応カード（blocked） | 空記入で `- [x]` 確定 |
-| 承認して done 確定 | 要対応カード（review / milestone） | `kiro-projects approve <id> --reason ...`（CLI 委譲・決定記録が残る） |
+| 承認して done 確定 | 要対応カード（review / milestone） | `commands/<name>.json` ドロップ（`ingest_commands` が CLI と同一ロジック・同一 DR で実行）。稼働していなければ CLI にフォールバック |
 | 差し戻す | 要対応カード（review） | 修正方針の記入必須 → feedback として確定（手戻り扱い） |
-| 保留（hold） | 要対応カード・タスク詳細 | `kiro-projects hold <id>`（policy.deny 追加） |
-| 最優先へ / 後回し | タスク詳細 | `kiro-projects reprioritize <id> --pin/--defer` |
+| 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
+| 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
 | ＋ タスクを追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口。verify / accept / priority / note 付き） |
 | レビュー操作（承認/差し戻し/コメント） | GitLab タブ →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
 
 - 理由・方針の記入はすべて決定記録（`decisions/` の DR）や次 act への feedback として
   kiro-projects 側に残る
-- ファイル書き込み（needs / inbox）は稼働中の kiro-projects の watch が自動で取り込む。
-  CLI 操作は ⚙ 設定の「kiro-projects CLI」コマンドを使う（PATH に無ければ
-  `python3 /path/to/kiro-projects.py` 形式で指定）
+- ファイル書き込み（needs / inbox / commands）は稼働中の kiro-projects の watch が自動で
+  取り込む。**指示（承認/保留/優先度変更）は既定でファイルドロップ**（本体が WSL 内で
+  稼働していても届く。CLI は不要）。届け方は ⚙ 設定「指示の届け方」で制御できる:
+  auto（稼働中はファイル・停止中は CLI・CLI 不可ならファイルに退避）／file（常にファイル）／
+  cli（常に CLI。PATH に無ければ `python3 /path/to/kiro-projects.py` 形式で指定）
 - 入力中は自動更新を一時停止する（書きかけのフィードバックが消えない）
 
 ## gitlab-review-viewer との連携（レビューの引き継ぎ）
@@ -112,7 +114,8 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
 - `src/main/gitlab.js` … GitLab REST v4 の読み取り専用クライアント（net.fetch・プロキシ対応）
 - `src/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / command）
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
-  inbox JSON ドロップ・kiro-projects CLI（approve/hold/reprioritize）の 3 契約のみを使う
+  inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer。稼働していなければ
+  CLI にフォールバック）の 3 契約のみを使う
 - IPC は gitlab-review-viewer と同じ `{ok, data|error}` 形式・`window.api` 公開
 
 ## 制限事項
@@ -120,8 +123,9 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
 - タスク本文（verify 等）の編集はファイルで行う（詳細ダイアログから開ける）。
   状態遷移を直接書き換える操作は意図的に持たない（done は verify のみが根拠、の
   不変条件をアプリから壊さないため）
-- approve / hold / reprioritize は kiro-projects CLI が必要（旧フラット構成では
-  --root/--project を組み立てられないため CLI 直接実行を案内する）
+- approve / hold / reprioritize は既定でファイルドロップ（`commands/`）のため CLI 不要。
+  本体が稼働していないときだけ CLI を試み、CLI も使えなければ指示ファイルを置いて
+  次回の kiro-projects 起動時の取り込みに委ねる（即時には反映されない）
 - `bus/` は kiro-projects が local run 後に掃除するため（`--no-cleanup` で保持）、
   フロータブは稼働中の run が主対象
 - kiro-flow の状態（run 一覧・生存・daemon 稼働）はすべてファイルから判定するため
