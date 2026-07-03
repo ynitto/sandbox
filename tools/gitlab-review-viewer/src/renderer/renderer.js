@@ -59,6 +59,32 @@ function targetOf(page) {
   return { projectId: page.projectId, type: page.type, iid: page.iid };
 }
 
+// window.confirm は Electron ではダイアログを閉じた後にキーボード入力が
+// 効かなくなる既知問題があるため、<dialog> ベースの確認を使う
+function confirmDialog(message) {
+  return new Promise((resolve) => {
+    const dlg = $('confirm-dialog');
+    $('confirm-desc').textContent = message;
+    const finish = (ok) => {
+      cleanup();
+      if (dlg.open) dlg.close();
+      resolve(ok);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onClose = () => finish(false); // Esc キーで閉じた場合
+    function cleanup() {
+      $('btn-confirm-ok').removeEventListener('click', onOk);
+      $('btn-confirm-cancel').removeEventListener('click', onCancel);
+      dlg.removeEventListener('close', onClose);
+    }
+    $('btn-confirm-ok').addEventListener('click', onOk);
+    $('btn-confirm-cancel').addEventListener('click', onCancel);
+    dlg.addEventListener('close', onClose);
+    dlg.showModal();
+  });
+}
+
 // ペインの表示中ページ（リーダー / 要約タブが手前ならその元ページ）を返す
 function activePage(pane) {
   const tab = paneCurrentPageTab(pane);
@@ -82,6 +108,16 @@ function findMatchingMR(issue) {
       (p) => p.type === 'mr' && normalizeTitle(p.title) === normalizeTitle(issue.title)
     ) || null
   );
+}
+
+// 承認（マージ）対象の MR を返す。タイトル一致を優先し、見つからない場合は
+// 表示中のオープンな MR が 1 件だけならそれを対象とする（エージェントが
+// イシューと異なるタイトルで MR を作るケースの救済）。
+function findTargetMR(issue) {
+  const matched = findMatchingMR(issue);
+  if (matched) return matched;
+  const opened = state.pages.filter((p) => p.type === 'mr' && p.state === 'opened');
+  return opened.length === 1 ? opened[0] : null;
 }
 
 // 各アクションボタン共通のコメント本文（# ボタン名 + 入力テキスト）
@@ -567,6 +603,25 @@ function closeAllMenus() {
   document.querySelectorAll('.pane-menu').forEach((m) => (m.hidden = true));
 }
 
+// Electron の webview はキーボードフォーカスを保持したままになることがあり、
+// ホスト側の入力欄にカーソルは出るのに文字が入力できなくなる（既知問題）。
+// ホスト側の入力欄へフォーカスが移ったら webview のフォーカスを明示的に解放する。
+function bindWebviewFocusFix() {
+  document.addEventListener('focusin', (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement)) return;
+    if (!el.matches('input, textarea, select')) return;
+    for (const pane of [0, 1]) {
+      const wv = $(`wv-${pane}`);
+      const frame = wv.shadowRoot && wv.shadowRoot.querySelector('iframe');
+      if (frame) frame.blur();
+      wv.blur();
+    }
+    // webview の blur でフォーカスが外れてしまった場合は入力欄へ戻す
+    if (document.activeElement !== el) el.focus();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // リーダーモード / 要約（ペインメニュー → ローカルタブ表示）
 // ---------------------------------------------------------------------------
@@ -709,13 +764,8 @@ function bindSplitter() {
 // 操作対象・ラベル表示とアクションボタンの活性制御
 // ---------------------------------------------------------------------------
 
-// 承認ボタンのマージ可否チェックは非同期のため、タブ切替などで対象が
-// 変わった後に古い結果を反映しないようトークンで世代管理する
-let approveCheckToken = 0;
-
 function renderTargetInfo() {
   const t = primaryTarget();
-  approveCheckToken++; // 進行中の可否チェックを無効化
 
   $('target-label').textContent = t ? `${pageLabel(t)} — ${t.title.slice(0, 40)}` : '（対象なし）';
   $('target-state').textContent = t ? t.state : '';
@@ -750,38 +800,17 @@ function renderTargetInfo() {
     approve.disabled = false;
     approve.title = 'status:open に進める';
   } else if (status === 'approved') {
-    approve.disabled = true;
-    refreshApproveMergeability(t, approveCheckToken);
+    // マージ可否（コンフリクト等）の確認は実行時に行い、ここでは
+    // 対象 MR の有無だけで活性を決める。事前の非同期チェックで無効化すると
+    // タイトル不一致などで理由が分からないままグレーアウトしてしまうため。
+    const mr = t.type === 'mr' ? t : findTargetMR(t);
+    approve.disabled = !mr;
+    approve.title = mr
+      ? `${pageLabel(mr)} をマージ${t.type === 'issue' ? 'してイシューをクローズ' : ''}する`
+      : 'マージ対象のオープンな MR が見つかりません';
   } else {
     approve.disabled = true;
     approve.title = 'status:elaborated / status:approved のときだけ使えます';
-  }
-}
-
-// status:approved の対象について、マージ対象 MR の可否を確認して承認ボタンへ反映
-async function refreshApproveMergeability(t, token) {
-  const approve = $('btn-approve');
-  const mr = t.type === 'mr' ? t : findMatchingMR(t);
-  if (!mr) {
-    approve.title = 'イシューと同じタイトルの MR が見つかりません';
-    return;
-  }
-  approve.title = 'マージ可能か確認しています…';
-  try {
-    const cur = await api.glMRStatus(targetOf(mr));
-    if (token !== approveCheckToken) return; // 対象が変わっている
-    if (cur.state !== 'opened') {
-      approve.title = `MR がオープンではありません（${cur.state}）`;
-    } else if (cur.hasConflicts) {
-      approve.title = 'コンフリクトがあるためマージできません';
-    } else if (!cur.blockingDiscussionsResolved) {
-      approve.title = '未解決のレビューコメントがあるためマージできません';
-    } else {
-      approve.disabled = false;
-      approve.title = `${pageLabel(mr)} をマージ${t.type === 'issue' ? 'してイシューをクローズ' : ''}する`;
-    }
-  } catch (err) {
-    if (token === approveCheckToken) approve.title = `MR の状態確認に失敗: ${err.message}`;
   }
 }
 
@@ -873,7 +902,7 @@ async function commentAndSetStatus(t, actionName, newLabel) {
 }
 
 // 承認: status:elaborated → status:open。
-// status:approved はイシューと同タイトルの MR をマージしてイシューをクローズ。
+// status:approved は対象 MR をマージしてイシューをクローズ。
 async function doApprove() {
   const t = primaryTarget();
   if (!t) return;
@@ -886,12 +915,23 @@ async function doApprove() {
     return;
   }
   if (status !== 'approved') return;
-  const mr = t.type === 'mr' ? t : findMatchingMR(t);
-  if (!mr) return toast('イシューと同じタイトルの MR が見つかりません', true);
+  const mr = t.type === 'mr' ? t : findTargetMR(t);
+  if (!mr) return toast('マージ対象のオープンな MR が見つかりません', true);
   const closesIssue = t.type === 'issue';
-  const msg = `${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
-  if (!window.confirm(msg)) return;
   await guard('承認', async () => {
+    // マージ可否は実行時に確認し、できない理由をトーストで明示する
+    const cur = await api.glMRStatus(targetOf(mr));
+    if (cur.state !== 'opened') {
+      throw new Error(`${pageLabel(mr)} がオープンではありません（${cur.state}）`);
+    }
+    if (cur.hasConflicts) {
+      throw new Error(`${pageLabel(mr)} にコンフリクトがあるためマージできません`);
+    }
+    if (!cur.blockingDiscussionsResolved) {
+      throw new Error(`${pageLabel(mr)} に未解決のレビューコメントがあるためマージできません`);
+    }
+    const msg = `${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
+    if (!(await confirmDialog(msg))) return;
     await api.glComment(targetOf(t), actionComment('承認'));
     const merged = await api.glMerge(targetOf(mr));
     applyUpdatedItem(merged);
@@ -1282,6 +1322,7 @@ async function init() {
 
   bindPaneEvents();
   bindSplitter();
+  bindWebviewFocusFix();
 
   $('btn-comment').addEventListener('click', postComment);
   $('comment-input').addEventListener('keydown', (e) => {
