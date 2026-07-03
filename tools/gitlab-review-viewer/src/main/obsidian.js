@@ -54,6 +54,40 @@ function buildMarkdown({ detail, summary, exportedAt }) {
   return lines.join('\n');
 }
 
+// ペインのアクティブタブの内容（リーダーモード抽出テキスト / 要約 Markdown）を
+// そのまま本文として書き出す。page は出典のイシュー / MR（あれば frontmatter に載せる）。
+function buildContentMarkdown({ page, kind, title, sourceUrl, content, exportedAt }) {
+  const lines = ['---', `title: "${yamlEscape(title || (page ? page.title : 'untitled'))}"`];
+  if (sourceUrl) lines.push(`url: ${sourceUrl}`);
+  if (page) {
+    lines.push(
+      `type: ${page.type === 'issue' ? 'issue' : 'merge_request'}`,
+      `ref: "${yamlEscape(page.ref || '')}"`,
+      `state: ${page.state || ''}`,
+      `labels: [${(page.labels || []).map((l) => `"${yamlEscape(l)}"`).join(', ')}]`,
+      `author: ${page.author || ''}`
+    );
+  }
+  lines.push(`content: ${kind}`, `exported: ${exportedAt}`, '---', '');
+  lines.push(String(content || '').trim(), '');
+  return lines.join('\n');
+}
+
+function exportContentToObsidian({ vaultDir, subDir }, payload) {
+  if (!vaultDir) {
+    throw new Error('Obsidian Vault のフォルダが設定されていません（設定画面から指定してください）');
+  }
+  const { page, kind, title } = payload;
+  const dir = subDir ? path.join(vaultDir, subDir) : vaultDir;
+  fs.mkdirSync(dir, { recursive: true });
+  const kindLabel = kind === 'summary' ? '要約' : '本文';
+  const base = page ? `${page.ref} ${page.title}` : title || 'untitled';
+  const name = sanitizeFileName(`${base} (${kindLabel})`) || `export-${Date.now()}`;
+  const file = path.join(dir, `${name}.md`);
+  fs.writeFileSync(file, buildContentMarkdown(payload), 'utf8');
+  return file;
+}
+
 function exportToObsidian({ vaultDir, subDir }, { detail, summary, exportedAt }) {
   if (!vaultDir) {
     throw new Error('Obsidian Vault のフォルダが設定されていません（設定画面から指定してください）');
@@ -67,4 +101,9 @@ function exportToObsidian({ vaultDir, subDir }, { detail, summary, exportedAt })
   return file;
 }
 
-module.exports = { exportToObsidian, buildMarkdown, sanitizeFileName };
+module.exports = {
+  exportToObsidian,
+  exportContentToObsidian,
+  buildMarkdown,
+  sanitizeFileName,
+};

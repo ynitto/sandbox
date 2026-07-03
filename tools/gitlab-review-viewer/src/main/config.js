@@ -76,7 +76,6 @@ const DEFAULT_CONFIG = {
   actionShortcuts: {
     postComment: 'Ctrl+Enter',
     summarize: 'Ctrl+Shift+S',
-    exportObsidian: 'Ctrl+Shift+E',
   },
 };
 

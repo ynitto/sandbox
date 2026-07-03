@@ -531,6 +531,7 @@ function bindPaneEvents() {
       const pane = Number(btn.dataset.pane);
       if (btn.dataset.menu === 'reader') doReaderMode(pane);
       else if (btn.dataset.menu === 'summary') doSummarizeTab(pane);
+      else if (btn.dataset.menu === 'obsidian') doExportPaneTab(pane);
     });
   });
   document.addEventListener('click', closeAllMenus);
@@ -619,6 +620,37 @@ async function doSummarizeTab(pane) {
     tab.content = '要約に失敗しました。設定のエージェントコマンドを確認してください。';
     renderPanes();
   }
+}
+
+// Obsidian へ送る（ペインメニュー）: アクティブタブの内容をそのまま書き出す。
+// GitLab ページのタブならリーダーモードと同等の本文抽出テキストを送る。
+async function doExportPaneTab(pane) {
+  const p = state.panes[pane];
+  const tab = p.tabs[p.active];
+  if (!tab) return toast('Obsidian へ送るタブがありません', true);
+  const pageTab = paneCurrentPageTab(pane); // 出典メタデータ用（ローカルタブは元ページ）
+  const page = pageTab ? pageTab.page : null;
+  await guard('Obsidian へ送る', async () => {
+    let kind;
+    let content;
+    if (tab.kind === 'page') {
+      const res = await $(`wv-${pane}`).executeJavaScript(READER_EXTRACT);
+      if (!res || !res.text) throw new Error('本文を抽出できませんでした');
+      kind = 'reader';
+      content = res.text;
+    } else {
+      kind = tab.kind; // 'reader' | 'summary'
+      content = tab.content || '';
+    }
+    const { file } = await api.obsidianExportContent({
+      page,
+      kind,
+      title: tab.kind === 'page' ? (page ? page.title : '') : tab.title,
+      sourceUrl: tab.kind === 'page' ? (page ? page.url : '') : tab.sourceUrl || '',
+      content,
+    });
+    toast(`Obsidian に書き出しました: ${file}`);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -991,6 +1023,7 @@ async function doSummarize() {
   }
 }
 
+// 要約ダイアログの「Obsidian へ送る」用（本文・コメント・変更ファイル付きの詳細形式）
 async function doExport() {
   const t = primaryTarget();
   if (!t) return toast('操作対象がありません', true);
@@ -1039,7 +1072,6 @@ function handleKeydown(e) {
   const actions = {
     postComment,
     summarize: doSummarize,
-    exportObsidian: doExport,
   };
   for (const [name, fn] of Object.entries(actions)) {
     if (matchShortcut(e, parseShortcut(sc[name]))) {
@@ -1169,7 +1201,6 @@ async function init() {
   $('btn-change-run').addEventListener('click', executeChange);
   $('btn-change-cancel').addEventListener('click', () => $('change-dialog').close());
   $('btn-summarize').addEventListener('click', doSummarize);
-  $('btn-export').addEventListener('click', doExport);
 
   $('btn-summary-close').addEventListener('click', () => $('summary-dialog').close());
   $('btn-summary-copy').addEventListener('click', () => {

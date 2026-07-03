@@ -33,5 +33,6 @@ contextBridge.exposeInMainWorld('api', {
 
   agentSummarize: (target) => invoke('agent:summarize', { target }),
   obsidianExport: (target, summary) => invoke('obsidian:export', { target, summary }),
+  obsidianExportContent: (payload) => invoke('obsidian:exportContent', payload),
   openExternal: (url) => invoke('shell:openExternal', { url }),
 });

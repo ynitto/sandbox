@@ -4,7 +4,7 @@ const { ipcMain, shell } = require('electron');
 const { loadConfig, saveConfig } = require('./config');
 const { GitLabClient } = require('./gitlab');
 const { runAgent, buildPrompt } = require('./agent');
-const { exportToObsidian } = require('./obsidian');
+const { exportToObsidian, exportContentToObsidian } = require('./obsidian');
 
 function client() {
   return new GitLabClient(loadConfig().gitlab);
@@ -92,6 +92,19 @@ function registerIpcHandlers() {
     const file = exportToObsidian(cfg.obsidian, {
       detail,
       summary: summary || '',
+      exportedAt: new Date().toISOString(),
+    });
+    if (cfg.obsidian.openAfterExport) {
+      shell.openExternal(`obsidian://open?path=${encodeURIComponent(file)}`);
+    }
+    return { file };
+  });
+
+  // ペインのアクティブタブの内容（リーダー抽出テキスト / 要約）をそのまま書き出す
+  handle('obsidian:exportContent', async (payload) => {
+    const cfg = loadConfig();
+    const file = exportContentToObsidian(cfg.obsidian, {
+      ...payload,
       exportedAt: new Date().toISOString(),
     });
     if (cfg.obsidian.openAfterExport) {
