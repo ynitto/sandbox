@@ -768,6 +768,7 @@ async function applyPreset(index) {
     const { add, remove } = presetChange(preset, t);
     const updated = await api.glUpdateLabels(targetOf(t), add, remove);
     applyUpdatedItem(updated);
+    reloadPanes();
     toast(
       add.length
         ? `ラベルを ${preset.label} に更新しました`
@@ -788,8 +789,19 @@ async function postComment() {
   await guard('コメント投稿', async () => {
     await api.glComment(targetOf(t), body);
     $('comment-input').value = '';
+    reloadPanes();
     toast(`${pageLabel(t)} にコメントを投稿しました`);
   });
+}
+
+// 左右ペインに表示中の GitLab ページを再読み込みする。
+// ステータス変更・コメント投稿などの結果を埋め込み表示へ反映させる。
+function reloadPanes() {
+  for (const pane of [0, 1]) {
+    const p = state.panes[pane];
+    const tab = p.tabs[p.active];
+    if (tab && tab.kind === 'page') $(`wv-${pane}`).reload();
+  }
 }
 
 // 対象の status:* ラベルを newLabel に付け替え、アクションコメントを投稿する
@@ -799,6 +811,7 @@ async function commentAndSetStatus(t, actionName, newLabel) {
   const updated = await api.glUpdateLabels(targetOf(t), [newLabel], remove);
   applyUpdatedItem(updated);
   $('comment-input').value = '';
+  reloadPanes();
 }
 
 // 承認: status:elaborated → status:open。
@@ -829,6 +842,7 @@ async function doApprove() {
       applyUpdatedItem(closed);
     }
     $('comment-input').value = '';
+    reloadPanes();
     toast(`${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}しました`);
   });
 }
@@ -904,6 +918,7 @@ async function doReject(choice) {
       toast(`${pageLabel(t)} を${choice === 'delete' ? 'クローズしてブランチを削除' : 'クローズ'}しました`);
     }
     $('comment-input').value = '';
+    reloadPanes();
   });
 }
 
@@ -943,6 +958,7 @@ async function executeChange() {
     const updated = await api.glUpdateLabels(targetOf(t), add, remove);
     applyUpdatedItem(updated);
     $('comment-input').value = '';
+    reloadPanes();
     toast(
       add.length
         ? `ラベルを ${preset.label} に更新しました`
