@@ -7,6 +7,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### gitlab-review-viewer: kiro-autonomous 連携を削除し、レビュー特化に再設計（破壊的変更）
+
+- **削除**: kiro-autonomous needs（判断待ち/検収待ち）連携を全面削除（Needs タブ・
+  フィードバック確定・approve・needs 要約と関連設定 `kiroAutonomous` / `needsPromptTemplate`）。
+  GitLab のイシュー / MR レビューに特化する
+- **プロキシ引き継ぎ**: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` 環境変数を
+  Chromium に引き継ぎ、webview 表示と GitLab API 呼び出し（`net.fetch` 化）の両方に適用
+- **検索条件のキャッシュ**: グループ / プロジェクトの取得結果と選択値を含む検索条件すべてを
+  `config.searchCache` に自動保存し、次回起動時に復元
+- **作成者フィルタ**: イシュー / MR をユーザー名（`author_username`）で絞り込み可能に
+- **ペイン振り分けの変更**: 種別（イシュー / MR）条件は候補一覧の絞り込みのみに適用。
+  候補を選択すると紐づくイシューを左ペイン・MR を右ペインにタブ表示。イシューに紐づく
+  MR が複数ある場合は、イシューとタイトルが同じ MR（`Draft:` / `Resolve "…"` 形式は
+  同一視）のタブを自動でアクティブにする
+- **スプリッター**: 左右ペイン間をドラッグしてサイズ変更可能に
+- **URL バーメニュー（☰）**: 各ペインに「リーダーモード（本文テキストのみをタブ表示）」
+  「要約を作成してタブ表示」「Obsidian へ送る」を追加。生成されたローカルタブは × で閉じられる。
+  Obsidian 送信はアクションバーから ☰ メニューへ移動し、アクティブなタブの内容
+  （GitLab ページのタブはリーダーモードと同等の本文抽出テキスト）を書き出す
+- **アクションバー再編（承認 / 差し戻し / 却下 / 変更）**: 操作対象は表示中のイシュー
+  （無ければ MR）に自動決定。旧マージ / クローズ / リオープンボタンと操作対象セレクト・
+  常設ラベルプリセット行を撤去
+  - **承認**: `status:elaborated` → `status:open`。`status:approved` は同タイトル MR を
+    マージしてイシューをクローズ（コンフリクト / 未解決レビューコメント / 他ステータスは
+    グレーアウト。可否は MR の `has_conflicts` / `blocking_discussions_resolved` で判定）
+  - **差し戻し**: `status:elaborated` → `status:draft`、`status:approved` → `status:needs-rework`
+    （他ステータスはグレーアウト）
+  - **却下**: 削除 / 閉じる / キャンセルの 3 択ダイアログ。両者とも同タイトル MR を
+    クローズし、削除はソースブランチ削除 + イシュー削除、閉じるはイシューをクローズ
+  - **変更**: ラベルプリセット（従来の下ペイン UI）をダイアログ表示し「実行」で適用
+  - いずれも入力テキストを本文として `# ボタン名` 見出し付きコメントを対象へ投稿
+  - 実行後（コメント投稿・ショートカットのラベル変更を含む）は左右ペインの
+    イシュー / MR 表示を自動で再読み込みして結果を反映
+
 ### codd-gate v1.0.0 — doc/code/test 一貫性ゲート（単体 CLI・kiro-autonomous 連携はオプション）
 
 [CoDD (Coherence-Driven Development)](https://github.com/yohey-w/codd-dev) の設計

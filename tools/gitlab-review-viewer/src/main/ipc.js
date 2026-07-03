@@ -4,8 +4,7 @@ const { ipcMain, shell } = require('electron');
 const { loadConfig, saveConfig } = require('./config');
 const { GitLabClient } = require('./gitlab');
 const { runAgent, buildPrompt } = require('./agent');
-const { exportToObsidian } = require('./obsidian');
-const kiro = require('./kiro');
+const { exportToObsidian, exportContentToObsidian } = require('./obsidian');
 
 function client() {
   return new GitLabClient(loadConfig().gitlab);
@@ -67,7 +66,13 @@ function registerIpcHandlers() {
   handle('gitlab:related', ({ target }) => client().listRelated(target));
   handle('gitlab:detail', ({ target }) => client().getDetail(target));
 
+  handle('gitlab:mrStatus', ({ target }) => client().getMR(target));
+
   handle('gitlab:comment', ({ target, body }) => client().addComment(target, body));
+  handle('gitlab:deleteIssue', ({ target }) => client().deleteIssue(target));
+  handle('gitlab:deleteBranch', ({ projectId, branch }) =>
+    client().deleteBranch(projectId, branch)
+  );
   handle('gitlab:updateLabels', ({ target, add, remove }) =>
     client().updateLabels(target, { add, remove })
   );
@@ -95,27 +100,17 @@ function registerIpcHandlers() {
     return { file };
   });
 
-  // kiro-autonomous needs（判断待ち/検収待ち・MADR 互換 ADR）
-  handle('kiro:needs:list', () => kiro.listNeeds(loadConfig().kiroAutonomous.root));
-  handle('kiro:needs:read', ({ file }) =>
-    kiro.readNeeds(loadConfig().kiroAutonomous.root, file)
-  );
-  handle('kiro:needs:feedback', ({ file, text }) =>
-    kiro.submitFeedback(loadConfig().kiroAutonomous.root, file, text)
-  );
-  handle('kiro:needs:approve', ({ id, project, reason }) =>
-    kiro.approveNeeds(loadConfig().kiroAutonomous, { id, project, reason })
-  );
-
-  handle('agent:summarizeNeeds', async ({ file }) => {
+  // ペインのアクティブタブの内容（リーダー抽出テキスト / 要約）をそのまま書き出す
+  handle('obsidian:exportContent', async (payload) => {
     const cfg = loadConfig();
-    const n = kiro.readNeeds(cfg.kiroAutonomous.root, file);
-    const prompt = buildPrompt(cfg.agent.needsPromptTemplate, {
-      title: n.title || file,
-      content: n.raw,
+    const file = exportContentToObsidian(cfg.obsidian, {
+      ...payload,
+      exportedAt: new Date().toISOString(),
     });
-    const summary = await runAgent(cfg.agent, prompt);
-    return { summary };
+    if (cfg.obsidian.openAfterExport) {
+      shell.openExternal(`obsidian://open?path=${encodeURIComponent(file)}`);
+    }
+    return { file };
   });
 
   handle('shell:openExternal', ({ url }) => {

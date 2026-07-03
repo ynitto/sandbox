@@ -21,20 +21,18 @@ contextBridge.exposeInMainWorld('api', {
   glRelated: (target) => invoke('gitlab:related', { target }),
   glDetail: (target) => invoke('gitlab:detail', { target }),
 
+  glMRStatus: (target) => invoke('gitlab:mrStatus', { target }),
   glComment: (target, body) => invoke('gitlab:comment', { target, body }),
+  glDeleteIssue: (target) => invoke('gitlab:deleteIssue', { target }),
+  glDeleteBranch: (projectId, branch) =>
+    invoke('gitlab:deleteBranch', { projectId, branch }),
   glUpdateLabels: (target, add, remove) =>
     invoke('gitlab:updateLabels', { target, add, remove }),
   glMerge: (target) => invoke('gitlab:merge', { target }),
   glSetState: (target, event) => invoke('gitlab:setState', { target, event }),
 
-  kiroNeedsList: () => invoke('kiro:needs:list'),
-  kiroNeedsRead: (file) => invoke('kiro:needs:read', { file }),
-  kiroNeedsFeedback: (file, text) => invoke('kiro:needs:feedback', { file, text }),
-  kiroNeedsApprove: (id, project, reason) =>
-    invoke('kiro:needs:approve', { id, project, reason }),
-  agentSummarizeNeeds: (file) => invoke('agent:summarizeNeeds', { file }),
-
   agentSummarize: (target) => invoke('agent:summarize', { target }),
   obsidianExport: (target, summary) => invoke('obsidian:export', { target, summary }),
+  obsidianExportContent: (payload) => invoke('obsidian:exportContent', payload),
   openExternal: (url) => invoke('shell:openExternal', { url }),
 });

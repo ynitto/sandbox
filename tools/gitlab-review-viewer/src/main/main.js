@@ -4,6 +4,37 @@ const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
 
+// 環境変数のプロキシ設定を Chromium に引き継ぐ。webview の表示と
+// net.fetch 経由の GitLab API 呼び出しの両方がこの設定を経由する。
+// app.ready より前に設定する必要がある。
+function applyProxyFromEnv() {
+  const env = process.env;
+  const httpProxy = env.HTTP_PROXY || env.http_proxy || '';
+  const httpsProxy = env.HTTPS_PROXY || env.https_proxy || '';
+  const allProxy = env.ALL_PROXY || env.all_proxy || '';
+  const noProxy = env.NO_PROXY || env.no_proxy || '';
+
+  let server = '';
+  if (httpProxy && httpsProxy && httpProxy !== httpsProxy) {
+    server = `http=${httpProxy};https=${httpsProxy}`;
+  } else {
+    server = httpsProxy || httpProxy || allProxy;
+  }
+  if (!server) return;
+
+  app.commandLine.appendSwitch('proxy-server', server);
+  if (noProxy) {
+    const bypass = noProxy
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join(';');
+    if (bypass) app.commandLine.appendSwitch('proxy-bypass-list', bypass);
+  }
+}
+
+applyProxyFromEnv();
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1600,
