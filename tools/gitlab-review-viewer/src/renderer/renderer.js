@@ -294,6 +294,20 @@ function renderCandidates() {
   });
 }
 
+// タイトル比較用の正規化。GitLab がイシューから MR を作るときの
+// 「Draft:」「WIP:」接頭辞と『Resolve "<イシュータイトル>"』形式を吸収する。
+function normalizeTitle(s) {
+  let t = String(s || '').trim();
+  let prev;
+  do {
+    prev = t;
+    t = t.replace(/^(draft|wip)\s*:\s*/i, '');
+  } while (t !== prev);
+  const m = t.match(/^resolve\s+"(.+)"$/i);
+  if (m) t = m[1];
+  return t.toLowerCase();
+}
+
 // 候補を選択すると、候補 + 紐づくページを取得し、
 // イシューを左ペイン・MR を右ペインへ振り分けてタブ表示する。
 async function selectCandidate(index) {
@@ -313,6 +327,12 @@ async function selectCandidate(index) {
       tabs: mrs.map((p) => ({ kind: 'page', page: p })),
       active: mrs.length ? 0 : -1,
     };
+    // イシューに紐づく MR が複数ある場合は、イシューとタイトルが同じ
+    // （Draft: / Resolve "…" 形式は同一視）MR のタブをアクティブにする
+    if (cand.type === 'issue' && mrs.length > 1) {
+      const same = mrs.findIndex((m) => normalizeTitle(m.title) === normalizeTitle(cand.title));
+      if (same >= 0) state.panes[1].active = same;
+    }
     state.targetIndex = 0;
     state.lastSummary = '';
     renderPanes();
