@@ -42,6 +42,38 @@ function stripAnsi(text) {
   return String(text).replace(/\[[0-9;?]*[a-zA-Z]/g, '');
 }
 
+// 既定プロンプト（config.js）が要約をこのマーカーで挟むよう指示している
+const SUMMARY_START = '===SUMMARY_START===';
+const SUMMARY_END = '===SUMMARY_END===';
+
+// エージェント出力から要約本文のみを取り出す。
+// マーカーがあればその間だけを返す（プロンプトのエコーを避けるため最後の
+// 出現を使う）。無ければ CLI のノイズ行を落とすフォールバックにとどめる。
+function extractSummary(text) {
+  const t = String(text);
+  const start = t.lastIndexOf(SUMMARY_START);
+  const end = t.lastIndexOf(SUMMARY_END);
+  if (start !== -1 && end > start) {
+    return t.slice(start + SUMMARY_START.length, end).trim();
+  }
+  return t
+    .split(/\r?\n/)
+    .filter((ln) => !isNoiseLine(ln))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// kiro-cli 等が混ぜてくる進捗・装飾行の判定（本文を消しすぎない保守的な条件のみ）
+function isNoiseLine(ln) {
+  const s = ln.trim();
+  if (/[⠁-⣿]/.test(s) && /^[⠁-⣿.·•\s]*$/.test(s)) return true; // スピナー
+  if (s !== '' && /^[╭╮╰╯│─┃━┏┓┗┛\s]+$/.test(s)) return true; // 枠線
+  if (/^(Thinking|Loading|Initializing|Warming up)(\.{2,3}|…)?$/i.test(s)) return true;
+  if (/^(🛠️|⚙|✓|↻)\s/.test(s)) return true; // ツール実行・進捗などの表示
+  return false;
+}
+
 async function runAgent({ command, timeoutSec = 300 }, prompt) {
   if (!command || !command.trim()) {
     throw new Error('エージェントコマンドが設定されていません（設定画面から指定してください）');
@@ -77,7 +109,9 @@ async function runAgent({ command, timeoutSec = 300 }, prompt) {
   });
 
   try {
-    return await spawnAndCollect(tokens, useStdin ? prompt : null, timeoutSec);
+    const output = await spawnAndCollect(tokens, useStdin ? prompt : null, timeoutSec);
+    // CLI の進捗表示やあいさつ等を除き、要約本文のみを返す
+    return extractSummary(output);
   } finally {
     if (promptFile) {
       try {
