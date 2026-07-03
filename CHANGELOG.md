@@ -44,6 +44,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **`tasks --debt --cohort`**: 未文書化/未テストのような同種負債の山を repo 単位の cohort
   （`cohort_items`＋`{item}`）に集約し、後段の分解を kiro-autonomous の pilot-then-batch に委ねる。
   タスク id は発見内容から決定的（48 字・末尾ハッシュ）＝intake の冪等キー。
+- **共通スキーマ `schemas/` を新設（repos / task をツール横断の独立スキーマとして管理）**:
+  `repos.schema.json`（リポジトリレジストリ。identity = (url, path, base)）と `task.schema.json`
+  （制御層タスクの JSON 表現。Markdown 形の正典は backlog.md.example・未知キー保持）。
+  kiro-autonomous は `<project>/repos.{yaml,yml,json}` があれば**レジストリの正**として読み
+  （charter の `## repos` は互換入力＝内部で同形に正規化して引き回す。repos ファイル単独では
+  charter モードは発動しないがルーティング/参照解決には効く）、codd-gate は同じファイルを
+  `--repos` で読む。kiro-flow の `--workspace`/`--reference` はこのスキーマの 1 エントリの射影。
+  codd-gate のタスク出力がスキーマに適合することはテストで突き合わせる。
 - **タスク追加の責務境界を明文化**: kiro-autonomous は元よりタスクを入力とする設計（enqueue＝汎用の
   取り込み口・外部ソースは薄いアダプタで流し込む思想）で、タスク契約（正典 `backlog.md.example`・
   未知キー保持の前方互換）の所有者は kiro-autonomous。codd-gate コアの正は**所見**（`impact --json` /

@@ -81,6 +81,8 @@ kiro-autonomous run --planner none --flow-planner stub --executor stub
   projects/
     default/                       ← 1 プロジェクト（--project。未指定はこれを作成）
       charter.md           プロジェクト憲章（人が書く・project の最上位入力。正典 charter.md.example）
+      repos.yaml           リポジトリレジストリ（任意・共通スキーマ schemas/repos.schema.json。あれば
+                           これが正で charter の ## repos は互換入力。charter 無しでもルーティングに効く）
       project.json         project のサイクル状態（PASS 履歴・stall・cost。project が増分更新）
       policy.md            優先順位・実行先・安全ゲートの上書き（人だけが書く）
       backlog/<id>.md      タスク本体（案件毎・人が追加できる。done で archive/ へ退避）
@@ -336,7 +338,11 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
 - **ワーカーへの定義/判断の注入**: kiro-flow への act 依頼に **charter（定義）と `decisions/<id>.md`（判断結果）**を有界に
   注入（charter 1400 字・decisions 末尾 1000 字）。charter.md があれば全 act に乗る（無ければ空＝後方互換）。`## links` 先
   プロジェクトの定義＋判断（learn）も横展開で取り込む。
-- **ワークスペース・ルーティング（`## repos` の `owns:` ＋ policy `route:`）**: 大規模・複数リポジトリ運用で「どのタスクを
+- **ワークスペース・ルーティング（repos レジストリの `owns:` ＋ policy `route:`）**: リポジトリ定義は
+  独立スキーマ（`schemas/repos.schema.json`）で管理でき、`<project>/repos.{yaml,yml,json}` があれば
+  **それがレジストリの正**（charter の `## repos` は互換入力で、内部的には同じ形に正規化して引き回す。
+  charter 無しの backlog 消化でもルーティングに効く）。以下の `## repos` の説明はレジストリの内容の
+  説明としてそのまま当てはまる。大規模・複数リポジトリ運用で「どのタスクを
   どのリポジトリへコミットするか」を**制御層（kiro-autonomous）が1つに決め**、kiro-flow へ `--workspace`（唯一の書込先）として
   渡す。charter の `## repos` を repo レジストリとし、各 repo に `- owns:`（担当パスのグロブ）を付けると**書込先候補
   （ワークスペース）**になる。**owns を書かない repo は参照リポジトリ（読むだけ）**で、書込先にはせず kiro-flow へ

@@ -71,7 +71,10 @@ echo 'codd-gate verify --base "@{push}"' >> .git/hooks/pre-push && chmod +x .git
 ### 複数リポジトリ（パス＋ブランチで一意）
 
 リポジトリのレジストリは**設定ファイルの `repos:`**（codd-gate ネイティブ。外部フォーマット非依存）。
-identity は **(url, path, base)** — モノレポは path 別、ブランチ別は base 別のエントリで区別する。
+同じ形を独立ファイルに切り出して `--repos <file>`（設定 `repos_file:`）で渡すこともでき、その形式は
+ツール横断の共通スキーマ [`schemas/repos.schema.json`](../../schemas/repos.schema.json) — kiro-autonomous
+の `<project>/repos.yaml` と**同じファイルを共有**できる。identity は **(url, path, base)** —
+モノレポは path 別、ブランチ別は base 別のエントリで区別する。
 設定ファイルは `.kiro/codd-gate.{yaml,yml,json}`（探索順: `--config` → `./.kiro/` → `~/.kiro/`。
 YAML は PyYAML 任意・無ければ JSON）。
 
@@ -211,10 +214,12 @@ kiro-autonomous**であり、codd-gate コアの正はあくまで**所見**（`
 依存は生まれない（JUnit XML / SARIF を吐くのと同じ関係）。別の消化先（issue tracker 等）が必要なら、
 所見 JSON から別のアダプタを書く。
 
-**レジストリ共用（charter アダプタ）**: 連携時は `--charter <charter.md>`（設定 `charter:`）で
-kiro-autonomous の charter `## repos` をレジストリとして読める（ネイティブ `repos:` との二重管理を
-避けたいとき。使わなくてよい）。アダプタ専用キー `- docs:` `- tests:` `- code:` は kiro-autonomous
-には未知キーとして無害に無視される。identity の規約 (url, path, base) は両者で同じ。
+**レジストリ共用**: 推奨は**共通スキーマの独立ファイル**を両ツールで指すこと —
+kiro-autonomous は `<project>/repos.yaml` として読み（あればそれが正）、codd-gate は同じファイルを
+`--repos` で読む（`schemas/repos.schema.json` が正典。identity (url, path, base) も共通）。
+互換手段として `--charter <charter.md>`（設定 `charter:`）で charter の `## repos` を直接読む
+アダプタも残る（アダプタ専用キー `- docs:` `- tests:` `- code:` は kiro-autonomous には未知キーとして
+無害に無視される）。
 
 **① 差分ゲート（done 確定前・毎タスク）** — `regression_cmd` に差し込む。verify PASS 後・
 done 確定前に走り、ドキュメント置き去りの done を止める（`$KIRO_BASE_REV` は kiro-autonomous が

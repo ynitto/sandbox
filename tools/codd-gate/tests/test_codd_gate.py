@@ -340,6 +340,30 @@ class TasksTests(unittest.TestCase):
         self.assertIn("src/mod0.py", doc["cohort_items"])
         self.assertGreaterEqual(len(doc["cohort_items"]), 3)
 
+    def test_tasks_conform_to_shared_task_schema(self):
+        """出力アダプタの生成物が共通 task スキーマ（schemas/task.schema.json）に適合する。"""
+        schema = json.loads((Path(__file__).resolve().parents[3] / "schemas" / "task.schema.json")
+                            .read_text(encoding="utf-8"))
+        props = schema["properties"]
+        pymap = {"string": str, "integer": int, "array": list, "boolean": bool}
+        write(self.d, "src/util.py", "A = 9\n")
+        _, out = run_cli(["tasks", "--repo-dir", f"app={self.d}", "--base", self.base])
+        _, out2 = run_cli(["tasks", "--repo-dir", f"app={self.d}", "--debt", "--cohort"])
+        specs = json.loads(out) + json.loads(out2)
+        self.assertTrue(specs)
+        for s in specs:
+            for req in schema["required"]:
+                self.assertIn(req, s)
+            for k, v in s.items():
+                if k not in props:
+                    continue                             # additionalProperties: true（未知キー保持）
+                types = props[k]["type"]
+                types = types if isinstance(types, list) else [types]
+                self.assertTrue(any(isinstance(v, pymap[t]) for t in types if t in pymap),
+                                f"{k}={v!r} が schema 型 {types} に合わない")
+                if "enum" in props[k]:
+                    self.assertIn(v, props[k]["enum"], f"{k}={v!r} が enum 外")
+
     def test_debt_tasks_and_inbox(self):
         write(self.d, "docs/util.md", "`src/util.py` と `src/gone.py` の説明。\n")
         write(self.d, "src/orphan.py", "B = 1\n")
@@ -470,6 +494,27 @@ class ScanCliTests(unittest.TestCase):
             rc, _ = run_cli(["scan", "--config", str(conf), "--map", str(out),
                              "--repo-dir", f"app={d}"])
             self.assertEqual(rc, 0)
+
+    def test_shared_repos_file(self):
+        """--repos: 共通スキーマ（schemas/repos.schema.json）のレジストリファイル。
+        kiro-autonomous の <project>/repos.yaml と同じファイルを共有できる。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "app"
+            init_repo(d)
+            write(d, "src/x.py", "X = 1\n")
+            write(d, "manual/x.md", "`src/x.py`\n")
+            commit(d, "init")
+            reg = Path(tmp) / "repos.json"
+            reg.write_text(json.dumps(
+                {"app": {"url": "git@x:app.git", "base": "main", "dir": str(d),
+                         "owns": ["src/**"], "docs": ["manual/**"]}}), encoding="utf-8")
+            out = Path(tmp) / "map.json"
+            rc, _ = run_cli(["scan", "--repos", str(reg), "--map", str(out)])
+            self.assertEqual(rc, 0)
+            m = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(m["nodes"]["app:manual/x.md"]["kind"], "doc")
+            edges = {(e["src"], e["dst"]) for e in m["edges"]}
+            self.assertIn(("app:manual/x.md", "app:src/x.py"), edges)
 
     def test_charter_registry(self):
         with tempfile.TemporaryDirectory() as tmp:

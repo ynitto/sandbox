@@ -240,14 +240,65 @@ def _globs_value(v) -> "list[str]":
     return [str(g) for g in (v or [])]
 
 
-def load_repos(charter_path: "Path | None", conf: dict,
+def _read_structured(path: Path):
+    """YAML（PyYAML 任意）/ JSON を読む（kiro ツール群と同じフォールバック規約）。"""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+            return yaml.safe_load(text) or {}
+        except ImportError:
+            pass
+    return json.loads(text)
+
+
+def _repos_from_data(data, repo_dirs: "dict[str, Path]") -> "list[Repo]":
+    """repos スキーマ（schemas/repos.schema.json。name→エントリのマッピング。
+    [{name: …}, …] のリスト形も許容）を Repo 列にする。dir は CLI --repo-dir が勝つ。"""
+    if isinstance(data, dict):
+        items = [(str(n), e) for n, e in data.items()]
+    elif isinstance(data, list):
+        items = [(str(e.get("name")), e) for e in data if isinstance(e, dict) and e.get("name")]
+    else:
+        items = []
+    repos = []
+    for name, s in sorted(items):
+        if not isinstance(s, dict):
+            _die(f"repos.{name} はマッピングで書いてください（url/base/dir/docs/tests/code…）")
+        d = repo_dirs.get(name) or (Path(str(s["dir"])).expanduser() if s.get("dir") else None)
+        repos.append(Repo(
+            name=name, url=str(s.get("url", "") or ""),
+            base=str(s.get("base", "") or ""),
+            target=str(s.get("target", "") or s.get("base", "") or ""),
+            path=str(s.get("path", "") or "").strip("/"),
+            owns=_globs_value(s.get("owns")),
+            docs=_globs_value(s.get("docs")) or None,
+            tests=_globs_value(s.get("tests")) or None,
+            code=_globs_value(s.get("code")) or None, dir=d))
+    return repos
+
+
+def load_repos(charter_path: "Path | None", repos_path: "Path | None", conf: dict,
                repo_dirs: "dict[str, Path]") -> "list[Repo]":
     """リポジトリレジストリを解決する（上から優先）:
-    1. --charter … kiro-autonomous **連携アダプタ**（charter.md の ## repos を読む。単体では不要）
-    2. 設定ファイルの `repos:` … codd-gate ネイティブのレジストリ（charter 書式に依存しない）
-    3. --repo-dir の名前をそのまま repo にする（グロブは既定）
-    4. どれも無ければカレントディレクトリを単一 repo `default` として扱う
+    1. --repos / 設定 repos_file … **共通スキーマのレジストリファイル**（schemas/repos.schema.json。
+       kiro-autonomous の <project>/repos.yaml と同じファイルを共有できる）
+    2. --charter … kiro-autonomous **連携アダプタ**（charter.md の ## repos を読む）
+    3. 設定ファイルの `repos:` … インラインレジストリ（形は 1 と同じ）
+    4. --repo-dir の名前をそのまま repo にする（グロブは既定）
+    5. どれも無ければカレントディレクトリを単一 repo `default` として扱う
     ローカル checkout は常に CLI の --repo-dir が設定より勝つ。"""
+    if repos_path:
+        if not repos_path.is_file():
+            _die(f"repos レジストリが見つかりません: {repos_path}")
+        try:
+            data = _read_structured(repos_path)
+        except (OSError, ValueError) as e:
+            _die(f"repos レジストリを解釈できません: {repos_path}: {e}")
+        repos = _repos_from_data(data, repo_dirs)
+        if not repos:
+            _die(f"repos レジストリが空です: {repos_path}")
+        return repos
     if charter_path:
         if not charter_path.is_file():
             _die(f"charter が見つかりません: {charter_path}")
@@ -261,24 +312,8 @@ def load_repos(charter_path: "Path | None", conf: dict,
                               tests=s["tests"] or None, code=s["code"] or None,
                               dir=repo_dirs.get(s["name"])))
         return repos
-    conf_repos = conf.get("repos") or {}
-    if conf_repos:                              # ネイティブレジストリ（identity は (url, path, base)）
-        repos = []
-        for name in sorted(conf_repos):
-            s = conf_repos[name] or {}
-            if not isinstance(s, dict):
-                _die(f"設定 repos.{name} はマッピングで書いてください（dir/base/docs/tests/code…）")
-            d = repo_dirs.get(str(name)) or (
-                Path(str(s["dir"])).expanduser() if s.get("dir") else None)
-            repos.append(Repo(
-                name=str(name), url=str(s.get("url", "") or ""),
-                base=str(s.get("base", "") or ""),
-                target=str(s.get("target", "") or s.get("base", "") or ""),
-                path=str(s.get("path", "") or "").strip("/"),
-                docs=_globs_value(s.get("docs")) or None,
-                tests=_globs_value(s.get("tests")) or None,
-                code=_globs_value(s.get("code")) or None, dir=d))
-        return repos
+    if conf.get("repos"):
+        return _repos_from_data(conf["repos"], repo_dirs)
     if repo_dirs:                               # レジストリ無し = --repo-dir の名前をそのまま repo にする
         return [Repo(name=n, dir=d) for n, d in sorted(repo_dirs.items())]
     return [Repo(name="default", dir=Path.cwd())]
@@ -1030,8 +1065,11 @@ def main(argv: "list[str] | None" = None) -> int:
     common.add_argument("--charter", default=None,
                         help="kiro-autonomous 連携アダプタ: charter.md の ## repos をレジストリとして"
                              "読む（単体利用では設定ファイルの repos: を使う）")
+    common.add_argument("--repos", default=None, metavar="FILE",
+                        help="repos レジストリファイル（共通スキーマ schemas/repos.schema.json。"
+                             "kiro-autonomous の <project>/repos.yaml と同じファイルを共有できる）")
     common.add_argument("--config", default=None,
-                        help="設定ファイル（.kiro/codd-gate.{yaml,json}。repos:/repo_dirs:/map: を持てる）")
+                        help="設定ファイル（.kiro/codd-gate.{yaml,json}。repos_file:/repos:/repo_dirs:/map: を持てる）")
     common.add_argument("--repo-dir", action="append", default=[], metavar="NAME=DIR",
                         help="repo 名 → ローカル checkout の対応（複数可。NAME 省略は default）")
     common.add_argument("--sync", action="store_true",
@@ -1082,8 +1120,10 @@ def main(argv: "list[str] | None" = None) -> int:
     args = ap.parse_args(argv)
     conf = _load_config(Path(args.config).expanduser() if args.config else None)
     charter = args.charter or conf.get("charter")
+    repos_file = args.repos or conf.get("repos_file")
     repo_dirs = _parse_repo_dirs(args.repo_dir, conf)
-    repos = load_repos(Path(charter).expanduser() if charter else None, conf, repo_dirs)
+    repos = load_repos(Path(charter).expanduser() if charter else None,
+                       Path(repos_file).expanduser() if repos_file else None, conf, repo_dirs)
     synced = sync_repos(repos) if (args.sync or conf.get("sync")) else []
     try:
         return _run(args, conf, repos)

@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "schemas/task.schema.json",
+  "title": "task spec",
+  "description": "制御層タスク（バックログ 1 件）の共通スキーマ。書式の正典は tools/kiro-autonomous/backlog.md.example（Markdown 形）で、本スキーマはその JSON 表現（enqueue --json / inbox の *.json / intake_cmd の stdout / codd-gate tasks の出力）。契約の所有者は kiro-autonomous。**未知キーは保持される**（前方互換）ため additionalProperties: true。kiro-flow のタスクグラフノード {id, goal, deps, kind} は実行層内部の分解ステップであり本スキーマの対象外（層が違う）。",
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "タスク id（省略時は title から生成）。定期投入（intake_cmd）では冪等キーになる。規約: [A-Za-z0-9_-]・48 字以内（超過は slug 化で切り詰め）"
+    },
+    "title": { "type": "string", "description": "タスクの題（必須）" },
+    "verify": {
+      "type": "string",
+      "description": "done 確定の唯一の根拠となるシェルコマンド（exit 0=PASS）。履歴でなく最終状態/差分を見ること（$KIRO_BASE_REV=act 前 HEAD が使える）"
+    },
+    "accept": {
+      "type": "string",
+      "description": "自然言語の完了条件（verify を書けないとき。実行時にエージェントが決定的 verify を合成）"
+    },
+    "verify_template": {
+      "type": "string",
+      "description": "決定的テンプレートで verify を生成（file-contains :: path :: 文字列 等。エージェント不要）"
+    },
+    "priority": { "type": ["integer", "string"], "description": "優先度（整数・大ほど高。既定 0）" },
+    "status": {
+      "type": "string",
+      "enum": ["inbox", "draft", "ready", "doing", "done", "blocked", "review"],
+      "description": "省略時: verify（または accept/verify_template）有→ready / 無→inbox（人の triage 行き）"
+    },
+    "source": { "type": "string", "description": "出自（human / enqueue / inbox / triage / followup / charter 等）" },
+    "after": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "依存タスク id（done になるまで消化対象に入らない。DAG）"
+    },
+    "review": { "type": "string", "description": "human = verify PASS でも done 前に人の承認（検収ゲート）" },
+    "note": { "type": "string", "description": "自由記述（保持される）" },
+    "expect": {
+      "type": "string",
+      "enum": ["changes", "none"],
+      "description": "changes = verify PASS でも act が変更を生まねば done しない（偽 done 対策）/ none = 無変更許可"
+    },
+    "level": {
+      "type": "string",
+      "enum": ["report", "assisted", "unattended"],
+      "description": "このタスクの自律度（グローバル --level を上書き）"
+    },
+    "track": { "type": "string", "description": "同種タスク群の名（--auto-level の実績連動昇格の単位）" },
+    "followup": { "type": ["array", "string"], "items": { "type": "string" }, "description": "done 時の派生タスク（次の作業 :: verify）" },
+    "workspace": {
+      "type": "string",
+      "description": "書込先ワークスペース（repos レジストリの repo 名）。ルーティングの明示指定"
+    },
+    "refs": { "type": ["array", "string"], "items": { "type": "string" }, "description": "参照リポジトリ（repo 名/URL。読むだけ）" },
+    "paths": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "触る予定パスのヒント（repos の owns: との突き合わせ＝ルーティング推定の根拠）"
+    },
+    "routed_by": { "type": "string", "description": "ルーティングの解決経路（system が書き戻す監査情報）" },
+    "cohort_items": {
+      "type": ["array", "string"],
+      "items": { "type": "string" },
+      "description": "pilot-then-batch の対象リスト。title/verify 中の {item} に差し込まれる。先頭が pilot（review: human）"
+    },
+    "cohort": { "type": "string", "description": "所属 cohort id（system が管理）" },
+    "cohort_role": { "type": "string", "description": "pilot / member（system が管理）" }
+  },
+  "additionalProperties": true
+}

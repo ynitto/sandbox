@@ -91,11 +91,13 @@ codd-gate は呼ばれるたびに 1 パスで判定して終わる。
 
 ### ノード＝成果物、識別子は「repo 名 : repo 相対パス」
 
-リポジトリの identity は **(url, path, base)**＝「パス＋ブランチで一意」（kiro-autonomous と同じ規約を
-採るが、依存はしない）。**レジストリの正は codd-gate 自身の設定ファイル `repos:`**（外部フォーマット
-非依存）で、エントリ名がノード識別子のプレフィックスになる（モノレポは path 別エントリ、ブランチ別は
-base 別エントリで、それぞれ**別 repo 名＝別ノード空間**になる）。解決順:
-`--charter`（連携アダプタ・任意）＞ 設定 `repos:`（ネイティブ）＞ `--repo-dir` の名前 ＞ cwd 単一 repo。
+リポジトリの identity は **(url, path, base)**＝「パス＋ブランチで一意」。レジストリの形式は
+**ツール横断の共通スキーマ [`schemas/repos.schema.json`](../../schemas/repos.schema.json)**
+（kiro-autonomous の `<project>/repos.yaml`・kiro-flow の `--workspace` 射影と共通。正典は
+`schemas/README.md`）で、エントリ名がノード識別子のプレフィックスになる（モノレポは path 別
+エントリ、ブランチ別は base 別エントリで、それぞれ**別 repo 名＝別ノード空間**になる）。解決順:
+`--repos` / 設定 `repos_file`（共通スキーマの独立ファイル）＞ `--charter`（連携アダプタ・任意）＞
+設定 `repos:`（インライン・同形）＞ `--repo-dir` の名前 ＞ cwd 単一 repo。
 ローカル checkout は常に CLI `--repo-dir` が設定より勝つ。
 
 ```

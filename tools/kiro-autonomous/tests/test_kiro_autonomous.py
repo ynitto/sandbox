@@ -262,6 +262,55 @@ class TestIntake(unittest.TestCase):
             self.assertEqual(last["counts"]["done"], 1)
 
 
+class TestRepoRegistry(unittest.TestCase):
+    """repos レジストリ（schemas/repos.schema.json）。<project>/repos.{yaml,yml,json} があれば
+    レジストリの正になり、charter の ## repos は互換入力。repos ファイル単独では charter モード
+    （目標駆動）は発動しないが、ワークスペース・ルーティングには使える。"""
+
+    def test_registry_file_overrides_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "charter.md").write_text(
+                "# Charter: x\n## goal\ny\n## repos\n- old = git@x:old.git\n"
+                "  - desc: 旧\n  - base: main\n  - owns: src/**\n", encoding="utf-8")
+            (d / "repos.json").write_text(__import__("json").dumps(
+                {"app": {"url": "git@x:app.git", "desc": "新", "base": "main",
+                         "owns": ["src/**"], "docs": ["docs/**"]}}), encoding="utf-8")
+            ch = km.load_charter(cfg)
+            self.assertEqual([s["name"] for s in ch.repo_specs], ["app"])   # ファイルが勝つ
+            self.assertEqual(ch.repo_specs[0]["target"], "main")            # target 省略 = base
+            self.assertFalse(ch.repo_specs[0]["readonly"])                  # owns あり = 書込先
+
+    def test_registry_without_charter_routes_but_no_charter_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "repos.json").write_text(__import__("json").dumps(
+                {"app": {"url": "git@x:app.git", "desc": "本体", "base": "main",
+                         "owns": ["src/**"]}}), encoding="utf-8")
+            self.assertIsNone(km.load_charter(cfg))          # 目標駆動は発動しない（charter.md 無し）
+            bd = d / "backlog"
+            bd.mkdir(parents=True, exist_ok=True)
+            (bd / "T1.md").write_text(
+                "## T1: x を直す\n- status: ready\n- verify: `true`\n- paths: src/x.py\n",
+                encoding="utf-8")
+            t = [x for x in km.load_tasks(cfg.backlog) if x.id == "T1"][0]
+            spec, routed = km.resolve_workspace(cfg, t, km.load_policy(cfg.policy))
+            self.assertEqual((spec["name"], routed), ("app", "owns"))       # レジストリ単独で解決
+
+    def test_broken_registry_falls_back_to_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            (d / "charter.md").write_text(
+                "# Charter: x\n## goal\ny\n## repos\n- old = git@x:old.git\n"
+                "  - desc: 旧\n  - base: main\n  - owns: src/**\n", encoding="utf-8")
+            (d / "repos.json").write_text("{ 壊れた json", encoding="utf-8")
+            ch = km.load_charter(cfg)
+            self.assertEqual([s["name"] for s in ch.repo_specs], ["old"])   # 黙って空にしない
+
+
 class TestFlakeTolerantVerify(unittest.TestCase):
     """フレーク耐性 verify（--verify-confirm）。揺れる verify を NG churn せず人へ隔離。"""
 

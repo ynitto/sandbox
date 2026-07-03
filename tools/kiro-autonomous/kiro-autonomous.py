@@ -2290,8 +2290,9 @@ def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dic
         ch = load_charter(cfg)
     except (OSError, ValueError):
         ch = None
-    smap = charter_repo_spec_map(ch)
-    workspaces = [s for s in (ch.repo_specs if ch else []) if not _is_reference_repo(s)]
+    specs = registry_specs(cfg, ch)               # repos ファイル単独（charter 無し）でも解決できる
+    smap = repo_spec_map(specs)
+    workspaces = [s for s in specs if not _is_reference_repo(s)]
 
     explicit = _strip_code(str(task.get("workspace") or "").strip())
     if explicit:                                  # 1. 人/過去ルーティングの明示指定（最優先）
@@ -2342,7 +2343,7 @@ def _workspace_spec_for(cfg: "Config", task: Task) -> "dict | None":
     if not name:
         return None
     try:
-        smap = charter_repo_spec_map(load_charter(cfg))
+        smap = repo_spec_map(registry_specs(cfg, load_charter(cfg)))
     except (OSError, ValueError):
         smap = {}
     return smap.get(name) or _raw_url_spec(name)
@@ -2378,12 +2379,13 @@ def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
         ch = load_charter(cfg)
     except (OSError, ValueError):
         ch = None
-    smap = charter_repo_spec_map(ch)
+    specs = registry_specs(cfg, ch)
+    smap = repo_spec_map(specs)
     ws = _workspace_spec_for(cfg, task)
     ws_url = ws["url"] if ws else None
     out: "list[dict]" = []
     seen: "set[str]" = set()
-    refs = [s for s in (ch.repo_specs if ch else []) if _is_reference_repo(s)]
+    refs = [s for s in specs if _is_reference_repo(s)]
     for tok in _split_tokens(task.get("refs")) + _split_tokens(task.get("repos")):
         sp = smap.get(tok) or _raw_url_spec(tok)
         if sp:
@@ -4663,12 +4665,12 @@ def charter_repo_map(ch: "Charter | None") -> "dict[str, str]":
     return out
 
 
-def charter_repo_spec_map(ch: "Charter | None") -> "dict[str, dict]":
-    """charter の構造化 repos を {name: spec} と {url: spec} で両引きできる辞書にする。
+def repo_spec_map(specs: "list[dict]") -> "dict[str, dict]":
+    """構造化 repos を {name: spec} と {url: spec} で両引きできる辞書にする。
     name はエントリ一意（モノレポの役割別フォルダも name で区別）。url は先勝ち（同一 URL の
     複数エントリは name で参照させる）。"""
     out: "dict[str, dict]" = {}
-    for spec in (ch.repo_specs if ch else []):
+    for spec in specs:
         if not spec.get("url"):
             continue
         if spec.get("name"):
@@ -4677,11 +4679,97 @@ def charter_repo_spec_map(ch: "Charter | None") -> "dict[str, dict]":
     return out
 
 
+def charter_repo_spec_map(ch: "Charter | None") -> "dict[str, dict]":
+    return repo_spec_map(ch.repo_specs if ch else [])
+
+
+# ---------------------------------------------------------------------------
+# repos レジストリ（schemas/repos.schema.json）— リポジトリ定義の独立スキーマ
+#   <project>/repos.{yaml,yml,json} があればそれがレジストリの正。charter の ## repos は
+#   互換入力（アダプタ）として残るが、内部的には同じ構造（repo_specs）へ正規化して引き回す。
+#   両方あるときは repos ファイルが勝つ。repos ファイル単独では charter モード（目標駆動）は
+#   発動しない（発動条件は charter.md の存在のまま）。
+# ---------------------------------------------------------------------------
+REPOS_FILE_NAMES = ("repos.yaml", "repos.yml", "repos.json")
+
+
+def _read_structured(path: Path):
+    """YAML（PyYAML 任意）/ JSON を読む（他ツールと同じフォールバック規約）。"""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+            return yaml.safe_load(text) or {}
+        except ImportError:
+            pass
+    return json.loads(text)
+
+
+def _registry_entry(name: str, e: dict) -> dict:
+    """repos スキーマの 1 エントリを内部の repo_spec 形へ正規化する（charter パースと同じ形）。"""
+    owns = e.get("owns") or []
+    if isinstance(owns, str):
+        owns = [g for g in re.split(r"[,\s]+", owns) if g]
+    base = str(e.get("base", "") or "")
+    return {"name": str(name), "url": str(e.get("url", "") or ""),
+            "desc": str(e.get("desc", "") or ""), "base": base,
+            "target": str(e.get("target", "") or "") or base,
+            "path": str(e.get("path", "") or "").strip("/"),
+            "readonly": bool(e.get("readonly")) or not owns,
+            "owns": [str(g) for g in owns]}
+
+
+def repo_registry_path(cfg: "Config") -> "Path | None":
+    base = cfg.backlog.parent
+    for name in REPOS_FILE_NAMES:
+        p = base / name
+        if p.is_file():
+            return p
+    return None
+
+
+def load_repo_registry(cfg: "Config") -> "list[dict] | None":
+    """<project>/repos.{yaml,yml,json} を読んで repo_specs 形にする。無ければ None。
+    壊れたファイルは警告して None（黙って空レジストリにせず charter へフォールバック）。"""
+    p = repo_registry_path(cfg)
+    if p is None:
+        return None
+    try:
+        data = _read_structured(p)
+    except (OSError, ValueError) as e:
+        print(f"[kiro-autonomous] repos レジストリを解釈できません: {p}: {e}", file=sys.stderr)
+        return None
+    specs: "list[dict]" = []
+    if isinstance(data, dict):
+        for name, e in data.items():
+            if isinstance(e, dict):
+                specs.append(_registry_entry(str(name), e))
+    elif isinstance(data, list):                     # [{name: ..., url: ...}, ...] も許容
+        for e in data:
+            if isinstance(e, dict) and e.get("name"):
+                specs.append(_registry_entry(str(e["name"]), e))
+    return specs
+
+
+def registry_specs(cfg: "Config", ch: "Charter | None") -> "list[dict]":
+    """実効レジストリ: charter があればその repo_specs（load_charter が repos ファイルで
+    上書き済み）、無ければ repos ファイル単独でも読める（ルーティング/参照用）。"""
+    if ch is not None:
+        return ch.repo_specs
+    return load_repo_registry(cfg) or []
+
+
 def load_charter(cfg: "Config") -> "Charter | None":
     p = cfg.charter
     if not p or not p.exists():
         return None
-    return parse_charter(p.read_text(encoding="utf-8"))
+    ch = parse_charter(p.read_text(encoding="utf-8"))
+    reg = load_repo_registry(cfg)
+    if reg is not None:                              # repos ファイルが正・## repos は互換入力
+        ch.repo_specs = reg
+        ch.repos = [f"{s['name']} = {s['url']}" if s.get("name") else s["url"]
+                    for s in reg if s.get("url")]
+    return ch
 
 
 def project_state_path(cfg: "Config") -> Path:
