@@ -45,29 +45,7 @@ html, body {
 
 .sidebar-header h1 { font-size: 14px; margin: 0; color: var(--accent); }
 
-#mode-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border);
-}
-
-#mode-tabs button {
-  flex: 1;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  padding: 7px 0;
-}
-
-#mode-tabs button.active {
-  color: var(--fg);
-  background: var(--bg3);
-  box-shadow: inset 0 -2px 0 var(--accent);
-}
-
-#filters, #needs-controls { padding: 10px; border-bottom: 1px solid var(--border); }
-
-#needs-root { word-break: break-all; font-size: 11px; margin-bottom: 8px; }
+#filters { padding: 10px; border-bottom: 1px solid var(--border); }
 
 .field { margin-bottom: 8px; }
 .field label { display: block; color: var(--muted); margin-bottom: 3px; }
@@ -97,7 +75,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 #candidate-count { padding: 4px 10px; }
 .muted { color: var(--muted); }
 
-#candidates, #needs-list {
+#candidates {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -105,14 +83,14 @@ button:disabled { opacity: 0.4; cursor: default; }
   flex: 1;
 }
 
-#candidates li, #needs-list li {
+#candidates li {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
 
-#candidates li:hover, #needs-list li:hover { background: var(--bg3); }
-#candidates li.selected, #needs-list li.selected {
+#candidates li:hover { background: var(--bg3); }
+#candidates li.selected {
   background: var(--bg3);
   border-left: 3px solid var(--accent);
 }
@@ -129,7 +107,6 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .badge.issue { background: var(--accent2); color: #fff; }
 .badge.mr { background: var(--green); color: #fff; }
-.badge.needs { background: var(--accent); color: #fff; }
 
 .chip {
   display: inline-block;
@@ -152,10 +129,28 @@ button:disabled { opacity: 0.4; cursor: default; }
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border-right: 1px solid var(--border);
 }
 
-.pane:last-child { border-right: none; }
+.pane-caption {
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+
+/* 左右ペイン間のスプリッター（ドラッグでサイズ変更） */
+#splitter {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: var(--border);
+}
+
+#splitter:hover { background: var(--accent); }
+
+/* ドラッグ中は webview がマウスイベントを奪わないようにする */
+body.splitting { cursor: col-resize; user-select: none; }
+body.splitting webview { pointer-events: none; }
 
 .tabbar {
   display: flex;
@@ -184,6 +179,15 @@ button:disabled { opacity: 0.4; cursor: default; }
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 
+.tab-close {
+  margin-left: 6px;
+  padding: 0 3px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.tab-close:hover { color: var(--fg); background: var(--bg2); }
+
 .urlbar {
   display: flex;
   gap: 4px;
@@ -195,9 +199,37 @@ button:disabled { opacity: 0.4; cursor: default; }
 .urlbar input { flex: 1; font-size: 12px; color: var(--muted); }
 .urlbar button { padding: 2px 8px; }
 
+.menu-wrap { position: relative; display: flex; }
+
+.pane-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  min-width: 240px;
+  margin-top: 2px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-menu button {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+.pane-menu button:hover { background: var(--bg3); }
+
 webview { flex: 1; background: #fff; }
 
-/* needs（ローカル Markdown）表示 */
+/* リーダーモード / 要約タブ（ローカル表示） */
 .local-view {
   flex: 1;
   overflow-y: auto;
@@ -217,16 +249,7 @@ webview { flex: 1; background: #fff; }
 }
 .local-view code { background: var(--bg3); border-radius: 3px; padding: 0 4px; }
 .local-view a { color: var(--accent2); }
-.local-view .md-fm {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 6px 10px;
-  margin-bottom: 10px;
-  font-family: Consolas, monospace;
-  font-size: 12px;
-  color: var(--muted);
-}
+.reader-text { white-space: pre-wrap; word-break: break-word; }
 
 /* ---------- アクションバー ---------- */
 

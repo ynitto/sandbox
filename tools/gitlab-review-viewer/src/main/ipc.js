@@ -5,7 +5,6 @@ const { loadConfig, saveConfig } = require('./config');
 const { GitLabClient } = require('./gitlab');
 const { runAgent, buildPrompt } = require('./agent');
 const { exportToObsidian } = require('./obsidian');
-const kiro = require('./kiro');
 
 function client() {
   return new GitLabClient(loadConfig().gitlab);
@@ -93,29 +92,6 @@ function registerIpcHandlers() {
       shell.openExternal(`obsidian://open?path=${encodeURIComponent(file)}`);
     }
     return { file };
-  });
-
-  // kiro-autonomous needs（判断待ち/検収待ち・MADR 互換 ADR）
-  handle('kiro:needs:list', () => kiro.listNeeds(loadConfig().kiroAutonomous.root));
-  handle('kiro:needs:read', ({ file }) =>
-    kiro.readNeeds(loadConfig().kiroAutonomous.root, file)
-  );
-  handle('kiro:needs:feedback', ({ file, text }) =>
-    kiro.submitFeedback(loadConfig().kiroAutonomous.root, file, text)
-  );
-  handle('kiro:needs:approve', ({ id, project, reason }) =>
-    kiro.approveNeeds(loadConfig().kiroAutonomous, { id, project, reason })
-  );
-
-  handle('agent:summarizeNeeds', async ({ file }) => {
-    const cfg = loadConfig();
-    const n = kiro.readNeeds(cfg.kiroAutonomous.root, file);
-    const prompt = buildPrompt(cfg.agent.needsPromptTemplate, {
-      title: n.title || file,
-      content: n.raw,
-    });
-    const summary = await runAgent(cfg.agent, prompt);
-    return { summary };
   });
 
   handle('shell:openExternal', ({ url }) => {

@@ -1,6 +1,17 @@
 'use strict';
 
-// GitLab REST API v4 クライアント。標準の fetch のみ使用（追加依存なし）。
+// GitLab REST API v4 クライアント（追加依存なし）。
+// Electron の net.fetch を使うことで、環境変数から引き継いだ Chromium の
+// プロキシ設定（main.js 参照）を API 呼び出しにも適用する。
+// main プロセス以外（テスト等）では標準 fetch にフォールバックする。
+
+let netFetch = fetch;
+try {
+  const { net } = require('electron');
+  if (net && typeof net.fetch === 'function') netFetch = net.fetch.bind(net);
+} catch {
+  /* electron 外では標準 fetch を使う */
+}
 
 class GitLabError extends Error {
   constructor(message, status, body) {
@@ -25,7 +36,7 @@ class GitLabClient {
         url.searchParams.set(k, String(v));
       }
     }
-    const res = await fetch(url, {
+    const res = await netFetch(url, {
       method,
       headers: {
         'PRIVATE-TOKEN': this.token,
@@ -90,10 +101,19 @@ class GitLabClient {
   }
 
   // ---- 候補検索 ----
-  // 条件（グループ / プロジェクト / ラベル / 種別 / 状態 / キーワード）は
+  // 条件（グループ / プロジェクト / ラベル / 種別 / 状態 / キーワード / 作成者）は
   // すべて AND で組み合わせる。GitLab API の仕様上、labels パラメータも AND。
+  // 種別（issue / mr）は候補一覧の絞り込みにのみ使う。
 
-  async searchCandidates({ type = 'both', groupId, projectId, labels = [], state = 'opened', search = '' } = {}) {
+  async searchCandidates({
+    type = 'both',
+    groupId,
+    projectId,
+    labels = [],
+    state = 'opened',
+    search = '',
+    author = '',
+  } = {}) {
     const kinds = [];
     if (type === 'both' || type === 'issue') kinds.push('issues');
     if (type === 'both' || type === 'mr') kinds.push('merge_requests');
@@ -104,6 +124,7 @@ class GitLabClient {
       const query = {
         labels: labels.length ? labels.join(',') : undefined,
         search: search || undefined,
+        author_username: author || undefined,
         order_by: 'updated_at',
         sort: 'desc',
         per_page: 50,

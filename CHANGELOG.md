@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### gitlab-review-viewer: kiro-autonomous 連携を削除し、レビュー特化に再設計（破壊的変更）
+
+- **削除**: kiro-autonomous needs（判断待ち/検収待ち）連携を全面削除（Needs タブ・
+  フィードバック確定・approve・needs 要約と関連設定 `kiroAutonomous` / `needsPromptTemplate`）。
+  GitLab のイシュー / MR レビューに特化する
+- **プロキシ引き継ぎ**: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` 環境変数を
+  Chromium に引き継ぎ、webview 表示と GitLab API 呼び出し（`net.fetch` 化）の両方に適用
+- **検索条件のキャッシュ**: グループ / プロジェクトの取得結果と選択値を含む検索条件すべてを
+  `config.searchCache` に自動保存し、次回起動時に復元
+- **作成者フィルタ**: イシュー / MR をユーザー名（`author_username`）で絞り込み可能に
+- **ペイン振り分けの変更**: 種別（イシュー / MR）条件は候補一覧の絞り込みのみに適用。
+  候補を選択すると紐づくイシューを左ペイン・MR を右ペインにタブ表示
+- **スプリッター**: 左右ペイン間をドラッグしてサイズ変更可能に
+- **URL バーメニュー（☰）**: 各ペインに「リーダーモード（本文テキストのみをタブ表示）」と
+  「要約を作成してタブ表示」を追加。生成されたローカルタブは × で閉じられる
+
 ### codd-gate v1.0.0 — doc/code/test 一貫性ゲート（単体 CLI・kiro-autonomous 連携はオプション）
 
 [CoDD (Coherence-Driven Development)](https://github.com/yohey-w/codd-dev) の設計

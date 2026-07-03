@@ -27,13 +27,6 @@ contextBridge.exposeInMainWorld('api', {
   glMerge: (target) => invoke('gitlab:merge', { target }),
   glSetState: (target, event) => invoke('gitlab:setState', { target, event }),
 
-  kiroNeedsList: () => invoke('kiro:needs:list'),
-  kiroNeedsRead: (file) => invoke('kiro:needs:read', { file }),
-  kiroNeedsFeedback: (file, text) => invoke('kiro:needs:feedback', { file, text }),
-  kiroNeedsApprove: (id, project, reason) =>
-    invoke('kiro:needs:approve', { id, project, reason }),
-  agentSummarizeNeeds: (file) => invoke('agent:summarizeNeeds', { file }),
-
   agentSummarize: (target) => invoke('agent:summarize', { target }),
   obsidianExport: (target, summary) => invoke('obsidian:export', { target, summary }),
   openExternal: (url) => invoke('shell:openExternal', { url }),

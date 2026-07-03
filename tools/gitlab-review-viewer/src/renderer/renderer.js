@@ -8,15 +8,18 @@
 
 const state = {
   config: null,
-  mode: 'gitlab', // 'gitlab' | 'needs'
   candidates: [],
   selectedIndex: -1,
-  needsItems: [],
-  needsSelectedIndex: -1,
-  // pages[0] = 選択した候補、pages[1..] = 関連イシュー / MR（needs 選択時は 1 件のみ）
+  // 選択した候補とそれに紐づくイシュー / MR（コメント等の操作対象の母集団）
   pages: [],
-  paneActive: [0, 1], // 各ペインが表示している pages のインデックス
-  targetIndex: 0, // コメント・ラベル等の操作対象（pages のインデックス)
+  // 左ペイン(0)=イシュー、右ペイン(1)=MR。
+  // タブは GitLab ページ（kind:'page'）のほか、リーダーモード（kind:'reader'）と
+  // 要約（kind:'summary'）のローカルタブを持てる。
+  panes: [
+    { tabs: [], active: -1 },
+    { tabs: [], active: -1 },
+  ],
+  targetIndex: 0, // コメント・ラベル等の操作対象（pages のインデックス）
   lastSummary: '',
   busy: false,
 };
@@ -69,8 +72,8 @@ function escapeHtml(s) {
     .replaceAll('"', '&quot;');
 }
 
-// needs（ローカル Markdown）表示用の最小レンダラ。
-// 見出し・箇条書き・コードブロック・太字・インラインコード・リンク・frontmatter に対応。
+// 要約（Markdown）タブ表示用の最小レンダラ。
+// 見出し・箇条書き・コードブロック・太字・インラインコード・リンクに対応。
 function mdToHtml(md) {
   const inline = (s) =>
     escapeHtml(s)
@@ -89,18 +92,7 @@ function mdToHtml(md) {
       listOpen = false;
     }
   };
-  let idx = 0;
-  if (lines[0] === '---') {
-    const end = lines.indexOf('---', 1);
-    if (end > 0) {
-      out.push('<div class="md-fm">');
-      for (let j = 1; j < end; j++) out.push(`<div>${inline(lines[j])}</div>`);
-      out.push('</div>');
-      idx = end + 1;
-    }
-  }
-  for (; idx < lines.length; idx++) {
-    const ln = lines[idx];
+  for (const ln of lines) {
     if (ln.startsWith('```')) {
       closeList();
       inCode = !inCode;
@@ -136,21 +128,84 @@ function mdToHtml(md) {
 }
 
 // ---------------------------------------------------------------------------
+// 検索条件のキャッシュ（config.searchCache に保存し、次回起動時に復元）
+// ---------------------------------------------------------------------------
+
+function selectOptions(sel) {
+  return [...sel.options]
+    .slice(1) // 先頭の「（指定なし）」を除く
+    .map((o) => ({ value: o.value, text: o.textContent }));
+}
+
+function fillSelect(sel, options, selected) {
+  sel.innerHTML = '<option value="">（指定なし）</option>';
+  for (const o of options || []) {
+    const opt = document.createElement('option');
+    opt.value = o.value;
+    opt.textContent = o.text;
+    sel.appendChild(opt);
+  }
+  sel.value = selected || '';
+  if (sel.value !== (selected || '')) sel.value = '';
+}
+
+function collectSearchCache() {
+  return {
+    groupSearch: $('group-search').value,
+    groups: selectOptions($('group-select')),
+    groupId: $('group-select').value,
+    projectSearch: $('project-search').value,
+    projects: selectOptions($('project-select')),
+    projectId: $('project-select').value,
+    labels: $('label-input').value,
+    author: $('author-input').value,
+    type: $('type-select').value,
+    state: $('state-select').value,
+    keyword: $('keyword-input').value,
+  };
+}
+
+let persistTimer = null;
+function persistSearchCache() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(async () => {
+    try {
+      state.config.searchCache = collectSearchCache();
+      state.config = await api.saveConfig(state.config);
+    } catch {
+      /* キャッシュ保存の失敗は致命的ではない */
+    }
+  }, 400);
+}
+
+function restoreSearchCache() {
+  const c = state.config.searchCache;
+  if (!c || typeof c !== 'object') return;
+  $('group-search').value = c.groupSearch || '';
+  fillSelect($('group-select'), c.groups, c.groupId);
+  $('project-search').value = c.projectSearch || '';
+  fillSelect($('project-select'), c.projects, c.projectId);
+  $('label-input').value = c.labels || '';
+  $('author-input').value = c.author || '';
+  if (c.type) $('type-select').value = c.type;
+  if (c.state) $('state-select').value = c.state;
+  $('keyword-input').value = c.keyword || '';
+}
+
+// ---------------------------------------------------------------------------
 // フィルタ（グループ / プロジェクト / ラベル）
 // ---------------------------------------------------------------------------
 
 async function loadGroups() {
   await guard('グループ取得', async () => {
     const groups = await api.glGroups($('group-search').value.trim());
-    const sel = $('group-select');
-    sel.innerHTML = '<option value="">（指定なし）</option>';
-    for (const g of groups) {
-      const opt = document.createElement('option');
-      opt.value = g.id;
-      opt.textContent = g.full_path;
-      sel.appendChild(opt);
-    }
+    fillSelect(
+      $('group-select'),
+      groups.map((g) => ({ value: String(g.id), text: g.full_path })),
+      $('group-select').value
+    );
     toast(`グループ ${groups.length} 件を取得しました`);
+    persistSearchCache();
   });
 }
 
@@ -161,15 +216,13 @@ async function loadProjects() {
       groupId,
       search: $('project-search').value.trim() || undefined,
     });
-    const sel = $('project-select');
-    sel.innerHTML = '<option value="">（指定なし）</option>';
-    for (const p of projects) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.path_with_namespace;
-      sel.appendChild(opt);
-    }
+    fillSelect(
+      $('project-select'),
+      projects.map((p) => ({ value: String(p.id), text: p.path_with_namespace })),
+      $('project-select').value
+    );
     toast(`プロジェクト ${projects.length} 件を取得しました`);
+    persistSearchCache();
   });
 }
 
@@ -197,7 +250,7 @@ async function loadLabelSuggestions() {
 
 function collectFilters() {
   return {
-    type: $('type-select').value,
+    type: $('type-select').value, // 種別は候補一覧の絞り込みにのみ使う
     groupId: $('group-select').value || undefined,
     projectId: $('project-select').value || undefined,
     labels: $('label-input')
@@ -206,6 +259,7 @@ function collectFilters() {
       .filter(Boolean),
     state: $('state-select').value,
     search: $('keyword-input').value.trim(),
+    author: $('author-input').value.trim(),
   };
 }
 
@@ -216,6 +270,7 @@ async function searchCandidates() {
     state.selectedIndex = -1;
     renderCandidates();
     $('candidate-count').textContent = `候補: ${items.length} 件`;
+    persistSearchCache();
   });
 }
 
@@ -239,6 +294,8 @@ function renderCandidates() {
   });
 }
 
+// 候補を選択すると、候補 + 紐づくページを取得し、
+// イシューを左ペイン・MR を右ペインへ振り分けてタブ表示する。
 async function selectCandidate(index) {
   await guard('関連ページ取得', async () => {
     state.selectedIndex = index;
@@ -246,119 +303,25 @@ async function selectCandidate(index) {
     const cand = state.candidates[index];
     const related = await api.glRelated(targetOf(cand));
     state.pages = [cand, ...related];
-    state.paneActive = [0, state.pages.length > 1 ? 1 : 0];
+    const issues = state.pages.filter((p) => p.type === 'issue');
+    const mrs = state.pages.filter((p) => p.type === 'mr');
+    state.panes[0] = {
+      tabs: issues.map((p) => ({ kind: 'page', page: p })),
+      active: issues.length ? 0 : -1,
+    };
+    state.panes[1] = {
+      tabs: mrs.map((p) => ({ kind: 'page', page: p })),
+      active: mrs.length ? 0 : -1,
+    };
     state.targetIndex = 0;
     state.lastSummary = '';
     renderPanes();
     renderTargetSelect();
     renderTargetInfo();
     if (related.length === 0) {
-      toast('関連するイシュー / MR は見つかりませんでした');
+      toast('紐づくイシュー / MR は見つかりませんでした');
     }
   });
-}
-
-// ---------------------------------------------------------------------------
-// kiro-autonomous needs（判断待ち/検収待ち・MADR 互換 ADR）
-// ---------------------------------------------------------------------------
-
-function setMode(mode) {
-  state.mode = mode;
-  $('mode-gitlab').classList.toggle('active', mode === 'gitlab');
-  $('mode-needs').classList.toggle('active', mode === 'needs');
-  $('filters').hidden = mode !== 'gitlab';
-  $('candidates').hidden = mode !== 'gitlab';
-  $('needs-controls').hidden = mode !== 'needs';
-  $('needs-list').hidden = mode !== 'needs';
-  $('candidate-count').textContent =
-    mode === 'gitlab'
-      ? state.candidates.length
-        ? `候補: ${state.candidates.length} 件`
-        : ''
-      : state.needsItems.length
-        ? `needs: ${state.needsItems.length} 件`
-        : '';
-  if (mode === 'needs') {
-    $('needs-root').textContent =
-      (state.config.kiroAutonomous && state.config.kiroAutonomous.root) || '（未設定）';
-  }
-}
-
-async function loadNeedsCore() {
-  const items = await api.kiroNeedsList();
-  state.needsItems = items;
-  state.needsSelectedIndex = -1;
-  renderNeedsList();
-  $('candidate-count').textContent = `needs: ${items.length} 件`;
-}
-
-function renderNeedsList() {
-  const ul = $('needs-list');
-  ul.innerHTML = '';
-  state.needsItems.forEach((n, i) => {
-    const li = document.createElement('li');
-    li.classList.toggle('selected', i === state.needsSelectedIndex);
-    const meta = [n.project || '(root)', n.kind || '-', n.submitted ? '確定済' : '未確定']
-      .map(escapeHtml)
-      .join(' · ');
-    li.innerHTML =
-      `<span class="badge needs">Needs</span>` +
-      `<span class="cand-meta">${meta}</span>` +
-      `<span class="cand-title">${escapeHtml(n.title || n.id)}</span>` +
-      (n.why ? `<span class="cand-meta">${escapeHtml(n.why.slice(0, 80))}</span>` : '');
-    li.addEventListener('click', () => selectNeeds(i));
-    ul.appendChild(li);
-  });
-}
-
-async function selectNeeds(index) {
-  await guard('needs 読み込み', async () => {
-    state.needsSelectedIndex = index;
-    renderNeedsList();
-    const item = state.needsItems[index];
-    const detail = await api.kiroNeedsRead(item.file);
-    const page = {
-      kind: 'needs',
-      type: 'needs',
-      id: item.id,
-      project: item.project,
-      file: item.file,
-      title: detail.title || item.id,
-      raw: detail.raw,
-      status: detail.status,
-      needsKind: detail.kind,
-      submitted: detail.submitted,
-      why: detail.why,
-      url: item.file,
-      labels: [],
-    };
-    state.pages = [page];
-    state.paneActive = [0, 0];
-    state.targetIndex = 0;
-    state.lastSummary = '';
-    renderPanes();
-    renderTargetSelect();
-    renderTargetInfo();
-  });
-}
-
-// 選択中 needs ページの内容を読み直す（フィードバック確定後など）
-async function refreshNeedsPage(t) {
-  try {
-    const d = await api.kiroNeedsRead(t.file);
-    t.raw = d.raw;
-    t.submitted = d.submitted;
-    t.status = d.status;
-  } catch {
-    /* 取り込まれて消えた場合はそのまま */
-  }
-  renderPanes();
-  renderTargetInfo();
-  try {
-    await loadNeedsCore();
-  } catch {
-    /* 一覧更新失敗は無視 */
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -366,58 +329,89 @@ async function refreshNeedsPage(t) {
 // ---------------------------------------------------------------------------
 
 function pageLabel(p) {
-  if (p.kind === 'needs') {
-    return `Needs ${p.id}${p.project ? ` @${p.project}` : ''}`;
-  }
   const kind = p.type === 'issue' ? 'Issue' : 'MR';
   return `${kind} ${p.ref || `#${p.iid}`}`;
 }
 
-function renderPanes() {
-  for (const pane of [0, 1]) {
-    const bar = $(`tabbar-${pane}`);
-    bar.innerHTML = '';
-    state.pages.forEach((p, i) => {
-      const btn = document.createElement('button');
-      btn.textContent = pageLabel(p);
-      btn.title = p.title;
-      btn.classList.toggle('active', state.paneActive[pane] === i);
-      btn.addEventListener('click', () => setPaneTab(pane, i));
-      bar.appendChild(btn);
-    });
-    syncPane(pane);
-  }
+function tabLabel(tab) {
+  if (tab.kind === 'page') return pageLabel(tab.page);
+  return tab.title;
 }
 
-function setPaneTab(pane, index) {
-  state.paneActive[pane] = index;
-  renderPanes();
+function renderPanes() {
+  renderPane(0);
+  renderPane(1);
+}
+
+function renderPane(pane) {
+  const p = state.panes[pane];
+  const bar = $(`tabbar-${pane}`);
+  bar.innerHTML = '';
+  p.tabs.forEach((tab, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = tabLabel(tab);
+    btn.title = tab.kind === 'page' ? tab.page.title : tab.title;
+    btn.classList.toggle('active', p.active === i);
+    btn.addEventListener('click', () => {
+      p.active = i;
+      renderPane(pane);
+    });
+    if (tab.kind !== 'page') {
+      const x = document.createElement('span');
+      x.className = 'tab-close';
+      x.textContent = '×';
+      x.title = 'タブを閉じる';
+      x.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeTab(pane, i);
+      });
+      btn.appendChild(x);
+    }
+    bar.appendChild(btn);
+  });
+  syncPane(pane);
+}
+
+function closeTab(pane, index) {
+  const p = state.panes[pane];
+  p.tabs.splice(index, 1);
+  if (p.active >= p.tabs.length) p.active = p.tabs.length - 1;
+  renderPane(pane);
 }
 
 function syncPane(pane) {
-  const page = state.pages[state.paneActive[pane]];
+  const p = state.panes[pane];
+  const tab = p.tabs[p.active];
   const wv = $(`wv-${pane}`);
   const lv = $(`lv-${pane}`);
-  if (page && page.kind === 'needs') {
-    // ローカル Markdown 表示（webview は隠す）
-    wv.style.display = 'none';
-    lv.hidden = false;
-    lv.innerHTML = mdToHtml(page.raw || '');
-    $(`url-${pane}`).value = page.file;
+  const urlEl = $(`url-${pane}`);
+  if (!tab) {
+    wv.style.display = 'flex';
+    lv.hidden = true;
+    if (wv.getAttribute('src') !== 'about:blank') wv.setAttribute('src', 'about:blank');
+    urlEl.value = '';
     return;
   }
-  wv.style.display = 'flex';
-  lv.hidden = true;
-  const url = page ? page.url : 'about:blank';
-  if (wv.getAttribute('src') !== url) {
-    wv.setAttribute('src', url);
+  if (tab.kind === 'page') {
+    wv.style.display = 'flex';
+    lv.hidden = true;
+    if (wv.getAttribute('src') !== tab.page.url) wv.setAttribute('src', tab.page.url);
+    urlEl.value = tab.page.url;
+    return;
   }
-  $(`url-${pane}`).value = page ? page.url : '';
+  // リーダーモード / 要約のローカルタブ
+  wv.style.display = 'none';
+  lv.hidden = false;
+  lv.innerHTML =
+    tab.kind === 'summary'
+      ? mdToHtml(tab.content || '')
+      : `<div class="reader-text">${escapeHtml(tab.content || '')}</div>`;
+  urlEl.value = tab.sourceUrl || '';
 }
 
 function bindPaneEvents() {
   for (const pane of [0, 1]) {
-    // needs 表示内のリンクは OS 既定ブラウザで開く
+    // ローカルタブ内のリンクは OS 既定ブラウザで開く
     $(`lv-${pane}`).addEventListener('click', (e) => {
       const a = e.target.closest('a[href]');
       if (a) {
@@ -428,7 +422,10 @@ function bindPaneEvents() {
     const wv = $(`wv-${pane}`);
     for (const ev of ['did-navigate', 'did-navigate-in-page']) {
       wv.addEventListener(ev, (e) => {
-        if (e.url && e.url !== 'about:blank') $(`url-${pane}`).value = e.url;
+        const p = state.panes[pane];
+        const tab = p.tabs[p.active];
+        const isPage = !tab || tab.kind === 'page';
+        if (isPage && e.url && e.url !== 'about:blank') $(`url-${pane}`).value = e.url;
       });
     }
     $(`url-${pane}`).addEventListener('keydown', (e) => {
@@ -438,11 +435,17 @@ function bindPaneEvents() {
       }
     });
   }
-  document.querySelectorAll('.urlbar button').forEach((btn) => {
-    btn.addEventListener('click', () => {
+  document.querySelectorAll('.urlbar > button, .menu-wrap > button').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
       const pane = btn.dataset.pane;
       const url = $(`url-${pane}`).value;
-      if (btn.dataset.act === 'reload') {
+      if (btn.dataset.act === 'menu') {
+        e.stopPropagation();
+        const menu = $(`menu-${pane}`);
+        const wasHidden = menu.hidden;
+        closeAllMenus();
+        menu.hidden = !wasHidden;
+      } else if (btn.dataset.act === 'reload') {
         $(`wv-${pane}`).reload();
       } else if (btn.dataset.act === 'copy') {
         navigator.clipboard.writeText(url);
@@ -451,6 +454,126 @@ function bindPaneEvents() {
         api.openExternal(url).catch((err) => toast(err.message, true));
       }
     });
+  });
+  document.querySelectorAll('.pane-menu button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      closeAllMenus();
+      const pane = Number(btn.dataset.pane);
+      if (btn.dataset.menu === 'reader') doReaderMode(pane);
+      else if (btn.dataset.menu === 'summary') doSummarizeTab(pane);
+    });
+  });
+  document.addEventListener('click', closeAllMenus);
+}
+
+function closeAllMenus() {
+  document.querySelectorAll('.pane-menu').forEach((m) => (m.hidden = true));
+}
+
+// ---------------------------------------------------------------------------
+// リーダーモード / 要約（ペインメニュー → ローカルタブ表示）
+// ---------------------------------------------------------------------------
+
+// webview 内で本文テキストのみを抽出するスクリプト。
+// ナビゲーションやスクリプト等を除去した innerText を返す。
+const READER_EXTRACT = `(() => {
+  const root =
+    document.querySelector('main') ||
+    document.querySelector('article') ||
+    document.querySelector('[role="main"]') ||
+    document.body;
+  const clone = root.cloneNode(true);
+  clone
+    .querySelectorAll('script,style,noscript,svg,canvas,nav,header,footer,aside,form,button')
+    .forEach((n) => n.remove());
+  const text = (clone.innerText || '').replace(/\\n{3,}/g, '\\n\\n').trim();
+  return { title: document.title || location.href, text };
+})();`;
+
+async function doReaderMode(pane) {
+  const p = state.panes[pane];
+  const active = p.tabs[p.active];
+  if (!active || active.kind !== 'page') {
+    return toast('リーダーモードは GitLab ページのタブで実行してください', true);
+  }
+  const wv = $(`wv-${pane}`);
+  await guard('リーダーモード', async () => {
+    const res = await wv.executeJavaScript(READER_EXTRACT);
+    if (!res || !res.text) throw new Error('本文を抽出できませんでした');
+    p.tabs.push({
+      kind: 'reader',
+      title: `リーダー: ${pageLabel(active.page)}`,
+      content: res.text,
+      sourceUrl: $(`url-${pane}`).value || active.page.url,
+    });
+    p.active = p.tabs.length - 1;
+    renderPane(pane);
+  });
+}
+
+// ペインの表示中ページ（ローカルタブが手前でも、その元ページ）を返す
+function paneCurrentPageTab(pane) {
+  const p = state.panes[pane];
+  const active = p.tabs[p.active];
+  if (active && active.kind === 'page') return active;
+  return (
+    p.tabs.find((t) => t.kind === 'page' && active && t.page.url === active.sourceUrl) ||
+    p.tabs.find((t) => t.kind === 'page') ||
+    null
+  );
+}
+
+const SUMMARY_PLACEHOLDER = '要約を生成しています…';
+
+async function doSummarizeTab(pane) {
+  const p = state.panes[pane];
+  const pageTab = paneCurrentPageTab(pane);
+  if (!pageTab) return toast('要約対象の GitLab ページがありません', true);
+  const page = pageTab.page;
+  const tab = {
+    kind: 'summary',
+    title: `要約: ${pageLabel(page)}`,
+    content: SUMMARY_PLACEHOLDER,
+    sourceUrl: page.url,
+  };
+  p.tabs.push(tab);
+  p.active = p.tabs.length - 1;
+  renderPane(pane);
+  await guard('要約', async () => {
+    const { summary } = await api.agentSummarize(targetOf(page));
+    tab.content = summary;
+    state.lastSummary = summary;
+    renderPanes();
+  });
+  if (tab.content === SUMMARY_PLACEHOLDER) {
+    tab.content = '要約に失敗しました。設定のエージェントコマンドを確認してください。';
+    renderPanes();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// スプリッター（左右ペインのドラッグリサイズ）
+// ---------------------------------------------------------------------------
+
+function bindSplitter() {
+  const splitter = $('splitter');
+  const leftPane = document.querySelector('#panes .pane[data-pane="0"]');
+  let dragging = false;
+  splitter.addEventListener('mousedown', (e) => {
+    dragging = true;
+    document.body.classList.add('splitting'); // webview のマウスイベントを止める
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const rect = $('panes').getBoundingClientRect();
+    const pct = Math.min(85, Math.max(15, ((e.clientX - rect.left) / rect.width) * 100));
+    leftPane.style.flex = `0 0 ${pct}%`;
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove('splitting');
   });
 }
 
@@ -472,35 +595,9 @@ function renderTargetSelect() {
 
 function renderTargetInfo() {
   const t = currentTarget();
-  const isNeeds = !!(t && t.kind === 'needs');
-
-  // GitLab 用とニーズ用でアクションバーを切り替える
-  for (const id of ['btn-comment', 'btn-merge', 'btn-close', 'btn-reopen', 'btn-export']) {
-    $(id).hidden = isNeeds;
-  }
-  $('btn-feedback').hidden = !isNeeds;
-  $('btn-approve').hidden = !isNeeds;
-  $('preset-buttons').hidden = isNeeds;
-  $('comment-input').placeholder = isNeeds
-    ? 'フィードバック（方針・指示）を入力（Ctrl+Enter で確定 [x]）'
-    : 'コメントを入力（Ctrl+Enter で投稿）';
-
+  $('target-state').textContent = t ? t.state : '';
   const wrap = $('target-labels');
   wrap.innerHTML = '';
-  if (isNeeds) {
-    $('target-state').textContent = `${t.needsKind || 'needs'}${t.submitted ? '・確定済' : ''}`;
-    for (const text of [t.status ? `status: ${t.status}` : '', t.project ? `@${t.project}` : '']) {
-      if (!text) continue;
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      chip.textContent = text;
-      wrap.appendChild(chip);
-    }
-    renderPresetButtons();
-    return;
-  }
-
-  $('target-state').textContent = t ? t.state : '';
   if (t) {
     for (const l of t.labels) {
       const chip = document.createElement('span');
@@ -516,10 +613,13 @@ function renderTargetInfo() {
 }
 
 function applyUpdatedItem(updated) {
-  // pages / candidates 双方の同一アイテムを更新後の状態に置き換える
+  // pages / candidates 双方の同一アイテムを更新後の状態に置き換える。
+  // pages はペインのタブが同じオブジェクトを参照しているため、その場で書き換える。
   const match = (p) =>
     p.projectId === updated.projectId && p.type === updated.type && p.iid === updated.iid;
-  state.pages = state.pages.map((p) => (match(p) ? { ...p, ...updated } : p));
+  for (const p of state.pages) {
+    if (match(p)) Object.assign(p, updated);
+  }
   state.candidates = state.candidates.map((c) => (match(c) ? { ...c, ...updated } : c));
   renderCandidates();
   renderTargetInfo();
@@ -547,7 +647,7 @@ function renderPresetButtons() {
 async function applyPreset(index) {
   const preset = (state.config.labelPresets || [])[index];
   const t = currentTarget();
-  if (!preset || !t || t.kind === 'needs') return;
+  if (!preset || !t) return;
   await guard('ラベル更新', async () => {
     let add = [preset.label];
     let remove = [];
@@ -575,7 +675,6 @@ async function applyPreset(index) {
 
 async function postComment() {
   const t = currentTarget();
-  if (t && t.kind === 'needs') return doFeedback(); // needs では Ctrl+Enter = フィードバック確定
   const body = $('comment-input').value.trim();
   if (!t) return toast('操作対象がありません', true);
   if (!body) return toast('コメントが空です', true);
@@ -583,41 +682,6 @@ async function postComment() {
     await api.glComment(targetOf(t), body);
     $('comment-input').value = '';
     toast(`${pageLabel(t)} にコメントを投稿しました`);
-  });
-}
-
-// needs: フィードバックを書き込み、確定チェックボックスを [x] にする
-async function doFeedback() {
-  const t = currentTarget();
-  if (!t || t.kind !== 'needs') return toast('Needs を操作対象に選択してください', true);
-  const text = $('comment-input').value.trim();
-  const msg = text
-    ? 'フィードバックを書き込み、確定（[x]）します。'
-    : 'フィードバックなしで確定（[x]）します（blocked はそのまま再実行 / review は承認扱い）。';
-  if (!window.confirm(`${pageLabel(t)}: ${msg}\nkiro-autonomous が次パスで自動取り込みします。よろしいですか？`)) {
-    return;
-  }
-  await guard('フィードバック確定', async () => {
-    await api.kiroNeedsFeedback(t.file, text);
-    $('comment-input').value = '';
-    toast('フィードバックを確定しました（次パスで取り込まれます）');
-    await refreshNeedsPage(t);
-  });
-}
-
-// needs: kiro-autonomous approve <id> を実行（検収承認 / 修正承認）
-async function doApprove() {
-  const t = currentTarget();
-  if (!t || t.kind !== 'needs') return toast('Needs を操作対象に選択してください', true);
-  const reason = $('comment-input').value.trim() || 'ビュアーから承認';
-  if (!window.confirm(`kiro-autonomous approve ${t.id} を実行します。\n理由: ${reason}\nよろしいですか？`)) {
-    return;
-  }
-  await guard('approve', async () => {
-    const { output } = await api.kiroNeedsApprove(t.id, t.project, reason);
-    $('comment-input').value = '';
-    toast(`approve 完了: ${(output || '').split('\n')[0] || 'OK'}`);
-    await refreshNeedsPage(t);
   });
 }
 
@@ -634,7 +698,7 @@ async function doMerge() {
 
 async function doClose() {
   const t = currentTarget();
-  if (!t || t.kind === 'needs') return;
+  if (!t) return;
   if (!window.confirm(`${pageLabel(t)} をクローズします。よろしいですか？`)) return;
   await guard('クローズ', async () => {
     const updated = await api.glSetState(targetOf(t), 'close');
@@ -645,7 +709,7 @@ async function doClose() {
 
 async function doReopen() {
   const t = currentTarget();
-  if (!t || t.kind === 'needs') return;
+  if (!t) return;
   await guard('リオープン', async () => {
     const updated = await api.glSetState(targetOf(t), 'reopen');
     applyUpdatedItem(updated);
@@ -654,7 +718,7 @@ async function doReopen() {
 }
 
 // ---------------------------------------------------------------------------
-// 要約（ローカル CLI エージェント）と Obsidian エクスポート
+// 要約（アクションバー → ダイアログ）と Obsidian エクスポート
 // ---------------------------------------------------------------------------
 
 async function doSummarize() {
@@ -667,10 +731,7 @@ async function doSummarize() {
   $('summary-text').value = '';
   dlg.showModal();
   await guard('要約', async () => {
-    const { summary } =
-      t.kind === 'needs'
-        ? await api.agentSummarizeNeeds(t.file)
-        : await api.agentSummarize(targetOf(t));
+    const { summary } = await api.agentSummarize(targetOf(t));
     state.lastSummary = summary;
     $('summary-text').value = summary;
     $('summary-status').textContent = `${pageLabel(t)} の要約が完了しました`;
@@ -683,7 +744,6 @@ async function doSummarize() {
 async function doExport() {
   const t = currentTarget();
   if (!t) return toast('操作対象がありません', true);
-  if (t.kind === 'needs') return toast('Obsidian エクスポートは GitLab の対象のみ対応です', true);
   const summary = $('summary-dialog').open ? $('summary-text').value : state.lastSummary;
   await guard('Obsidian エクスポート', async () => {
     const { file } = await api.obsidianExport(targetOf(t), summary);
@@ -762,9 +822,6 @@ function openSettings() {
   $('cfg-agent-command').value = c.agent.command;
   $('cfg-agent-timeout').value = c.agent.timeoutSec;
   $('cfg-agent-prompt').value = c.agent.promptTemplate;
-  $('cfg-agent-needs-prompt').value = c.agent.needsPromptTemplate;
-  $('cfg-kiro-root').value = c.kiroAutonomous.root;
-  $('cfg-kiro-approve').value = c.kiroAutonomous.approveCommand;
   $('cfg-obsidian-vault').value = c.obsidian.vaultDir;
   $('cfg-obsidian-subdir').value = c.obsidian.subDir;
   $('cfg-obsidian-open').checked = !!c.obsidian.openAfterExport;
@@ -793,12 +850,6 @@ async function saveSettings() {
       command: $('cfg-agent-command').value.trim(),
       timeoutSec: Number($('cfg-agent-timeout').value) || 0,
       promptTemplate: $('cfg-agent-prompt').value,
-      needsPromptTemplate: $('cfg-agent-needs-prompt').value,
-    },
-    kiroAutonomous: {
-      ...state.config.kiroAutonomous,
-      root: $('cfg-kiro-root').value.trim(),
-      approveCommand: $('cfg-kiro-approve').value.trim(),
     },
     obsidian: {
       vaultDir: $('cfg-obsidian-vault').value.trim(),
@@ -812,7 +863,6 @@ async function saveSettings() {
     state.config = await api.saveConfig(cfg);
     $('settings-dialog').close();
     renderPresetButtons();
-    if (state.mode === 'needs') setMode('needs'); // needs-root 表示を更新
     toast('設定を保存しました');
   });
 }
@@ -823,6 +873,7 @@ async function saveSettings() {
 
 async function init() {
   state.config = await api.getConfig();
+  restoreSearchCache();
 
   $('btn-load-groups').addEventListener('click', loadGroups);
   $('btn-load-projects').addEventListener('click', loadProjects);
@@ -836,13 +887,24 @@ async function init() {
     if (e.key === 'Enter') searchCandidates();
   });
 
-  $('mode-gitlab').addEventListener('click', () => setMode('gitlab'));
-  $('mode-needs').addEventListener('click', () => setMode('needs'));
-  $('btn-load-needs').addEventListener('click', () => guard('Needs 取得', loadNeedsCore));
-  $('btn-feedback').addEventListener('click', doFeedback);
-  $('btn-approve').addEventListener('click', doApprove);
+  // 検索条件はすべて変更のたびにキャッシュへ保存する
+  for (const id of [
+    'group-search',
+    'group-select',
+    'project-search',
+    'project-select',
+    'label-input',
+    'author-input',
+    'type-select',
+    'state-select',
+    'keyword-input',
+  ]) {
+    $(id).addEventListener('change', persistSearchCache);
+    $(id).addEventListener('input', persistSearchCache);
+  }
 
   bindPaneEvents();
+  bindSplitter();
 
   $('target-select').addEventListener('change', (e) => {
     state.targetIndex = Number(e.target.value) || 0;
@@ -884,6 +946,7 @@ async function init() {
 
   renderPresetButtons();
   renderTargetInfo();
+  loadLabelSuggestions();
 
   if (!state.config.gitlab.token) {
     toast('GitLab のアクセストークンが未設定です。⚙ 設定から登録してください。', true);

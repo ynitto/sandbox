@@ -77,7 +77,7 @@ async function runAgent({ command, timeoutSec = 300 }, prompt) {
   });
 
   try {
-    return await spawnAndCollect(tokens, useStdin ? prompt : null, timeoutSec, undefined);
+    return await spawnAndCollect(tokens, useStdin ? prompt : null, timeoutSec);
   } finally {
     if (promptFile) {
       try {
@@ -89,13 +89,13 @@ async function runAgent({ command, timeoutSec = 300 }, prompt) {
   }
 }
 
-function spawnAndCollect(tokens, stdinText, timeoutSec, cwd) {
+function spawnAndCollect(tokens, stdinText, timeoutSec) {
   return new Promise((resolve, reject) => {
     // Windows では kiro-cli 等が .cmd シムのことがあるため shell 経由で起動する
     const useShell = process.platform === 'win32';
     const child = useShell
-      ? spawn(buildCommandLine(tokens), { shell: true, windowsHide: true, cwd })
-      : spawn(tokens[0], tokens.slice(1), { shell: false, cwd });
+      ? spawn(buildCommandLine(tokens), { shell: true, windowsHide: true })
+      : spawn(tokens[0], tokens.slice(1), { shell: false });
 
     let stdout = '';
     let stderr = '';
@@ -159,12 +159,4 @@ function buildPrompt(template, vars) {
   return out;
 }
 
-// 短い外部コマンドの実行（kiro-autonomous approve など）。プレースホルダは
-// 呼び出し側で置換済みの前提。
-async function runCommand(command, { timeoutSec = 120, cwd } = {}) {
-  const tokens = tokenize(String(command || ''));
-  if (!tokens.length) throw new Error('コマンドが空です');
-  return spawnAndCollect(tokens, null, timeoutSec, cwd);
-}
-
-module.exports = { runAgent, runCommand, buildPrompt, tokenize };
+module.exports = { runAgent, buildPrompt, tokenize };
