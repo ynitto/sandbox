@@ -368,6 +368,32 @@ async function selectCandidate(index) {
   });
 }
 
+// ディープリンク（gitlab-review-viewer://open?url=<GitLab web_url>）から
+// 対象を解決し、候補一覧の先頭に挿入して選択する。kiro-projects-viewer 等の
+// 外部ツールがレビューをシームレスに引き継ぐための入り口。
+async function openFromUrl(rawUrl) {
+  let target = String(rawUrl || '');
+  try {
+    const u = new URL(target);
+    if (u.protocol === 'gitlab-review-viewer:') target = u.searchParams.get('url') || '';
+  } catch {
+    /* そのまま GitLab URL として扱う */
+  }
+  if (!target) return toast('開く対象の URL がありません', true);
+  const resolved = await guard('外部から開く', async () => {
+    const item = await api.glResolveUrl(target);
+    const i = state.candidates.findIndex(
+      (c) => c.projectId === item.projectId && c.type === item.type && c.iid === item.iid
+    );
+    if (i >= 0) state.candidates.splice(i, 1);
+    state.candidates.unshift(item);
+    $('candidate-count').textContent = `候補: ${state.candidates.length} 件`;
+    return item;
+  });
+  // selectCandidate は自前の guard を持つためネストさせずに続けて呼ぶ
+  if (resolved) await selectCandidate(0);
+}
+
 // ---------------------------------------------------------------------------
 // ペイン表示（タブ + URL バー + webview / ローカル表示）
 // ---------------------------------------------------------------------------
@@ -1222,6 +1248,11 @@ async function init() {
   $('btn-settings-cancel').addEventListener('click', () => $('settings-dialog').close());
 
   document.addEventListener('keydown', handleKeydown);
+
+  // 外部ツール（kiro-projects-viewer 等）からのディープリンク
+  if (api.onOpenTarget) {
+    api.onOpenTarget(({ url }) => openFromUrl(url));
+  }
 
   renderTargetInfo();
   loadLabelSuggestions();

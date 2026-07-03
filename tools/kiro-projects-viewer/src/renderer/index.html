@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:" />
+  <title>Kiro Projects Viewer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ======== サイドバー: コンテナ → プロジェクト ======== -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1>Kiro Projects</h1>
+        <div class="row">
+          <button id="btn-refresh" title="再読み込み">⟳</button>
+          <button id="btn-settings" title="設定">⚙</button>
+        </div>
+      </div>
+      <div id="tree"></div>
+      <div id="sidebar-footer" class="muted"></div>
+    </aside>
+
+    <!-- ======== メイン ======== -->
+    <main id="main">
+      <header id="project-header">
+        <div id="project-title">
+          <span id="project-name" class="muted">プロジェクトを選択してください</span>
+          <span id="project-badges"></span>
+        </div>
+        <div id="project-meta" class="muted"></div>
+      </header>
+
+      <nav id="tabs">
+        <button class="tab active" data-tab="overview">概要</button>
+        <button class="tab" data-tab="backlog">バックログ</button>
+        <button class="tab" data-tab="needs">要対応 <span id="needs-badge" class="badge hidden"></span></button>
+        <button class="tab" data-tab="flow">フロー</button>
+        <button class="tab" data-tab="gitlab">GitLab</button>
+        <button class="tab" data-tab="history">履歴</button>
+      </nav>
+
+      <section id="content">
+        <div id="tab-overview" class="tabpane active"></div>
+        <div id="tab-backlog" class="tabpane"></div>
+        <div id="tab-needs" class="tabpane"></div>
+        <div id="tab-flow" class="tabpane"></div>
+        <div id="tab-gitlab" class="tabpane"></div>
+        <div id="tab-history" class="tabpane"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ======== 設定ダイアログ ======== -->
+  <dialog id="dlg-settings">
+    <form method="dialog">
+      <h2>設定</h2>
+      <div class="field">
+        <label>kiro-projects コンテナ（--root のパス。1 行に 1 つ）</label>
+        <textarea id="cfg-roots" rows="4" placeholder="例: C:\work\repo\.kiro-projects&#10;/home/me/proj/.kiro-projects"></textarea>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label><input type="checkbox" id="cfg-autodiscover" /> 稼働中インスタンスを自動発見（~/.kiro-projects/instances）</label>
+        </div>
+        <div class="field">
+          <label>自動更新間隔（秒・0 で無効）</label>
+          <input id="cfg-refresh" type="number" min="0" step="1" />
+        </div>
+      </div>
+      <div class="field">
+        <label>kiro-projects CLI（承認 / 保留 / 優先度変更に使用。PATH に無ければフルパスや "python3 /path/kiro-projects.py"）</label>
+        <input id="cfg-kiro-command" class="mono" placeholder="kiro-projects" />
+      </div>
+      <h3>GitLab（イシュー状態の補完・任意）</h3>
+      <div class="row2">
+        <div class="field">
+          <label>Base URL</label>
+          <input id="cfg-gl-url" placeholder="https://gitlab.example.com" />
+        </div>
+        <div class="field">
+          <label>アクセストークン（read_api）</label>
+          <input id="cfg-gl-token" type="password" placeholder="glpat-..." />
+        </div>
+      </div>
+      <h3>gitlab-review-viewer 連携</h3>
+      <div class="row2">
+        <div class="field">
+          <label>起動方法</label>
+          <select id="cfg-rv-mode">
+            <option value="protocol">プロトコル（gitlab-review-viewer://）</option>
+            <option value="command">コマンド</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>コマンド（{url} {projectPath} {type} {iid} を置換）</label>
+          <input id="cfg-rv-command" placeholder='例: "C:\Apps\GitLab Review Viewer.exe" "{url}"' />
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button value="cancel">キャンセル</button>
+        <button id="btn-save-settings" value="default" class="primary-inline">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ======== タスク追加ダイアログ（inbox へ投入） ======== -->
+  <dialog id="dlg-enqueue">
+    <h2>タスクを追加（inbox へ投入）</h2>
+    <div class="field">
+      <label>タイトル（必須）</label>
+      <input id="enq-title" placeholder="例: README に使用例を追加する" />
+    </div>
+    <div class="field">
+      <label>verify — done 確定のシェルコマンド（exit 0 = PASS。書ければこれが最良）</label>
+      <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
+    </div>
+    <div class="field">
+      <label>accept — 自然言語の完了条件（verify が書けないとき。実行時にエージェントが verify を合成）</label>
+      <input id="enq-accept" placeholder="例: README に使用例が載っている" />
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>優先度（整数・大ほど高）</label>
+        <input id="enq-priority" type="number" step="1" value="0" />
+      </div>
+      <div class="field">
+        <label>メモ（note）</label>
+        <input id="enq-note" />
+      </div>
+    </div>
+    <div class="muted">verify / accept のどちらも無い場合、タスクは inbox 状態のまま人の triage 待ちになります。</div>
+    <div class="dialog-actions">
+      <button id="btn-enq-cancel">キャンセル</button>
+      <button id="btn-enq-submit" class="primary-inline">投入</button>
+    </div>
+  </dialog>
+
+  <!-- ======== タスク詳細ダイアログ ======== -->
+  <dialog id="dlg-task">
+    <div id="dlg-task-body"></div>
+    <div class="dialog-actions">
+      <button id="btn-task-close">閉じる</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

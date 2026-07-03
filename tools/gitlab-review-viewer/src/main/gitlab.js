@@ -218,6 +218,24 @@ class GitLabClient {
     };
   }
 
+  // GitLab の web_url（https://host/group/proj/-/issues/123 等）から
+  // 対象を解決して正規化アイテムを返す。ディープリンク
+  // （gitlab-review-viewer://open?url=...）の入り口で使う。
+  async resolveUrl(webUrl) {
+    let parsed;
+    try {
+      parsed = new URL(String(webUrl));
+    } catch {
+      throw new Error(`URL を解釈できません: ${webUrl}`);
+    }
+    const m = parsed.pathname.match(/^\/(.+?)\/-\/(issues|merge_requests)\/(\d+)/);
+    if (!m) throw new Error(`イシュー / MR の URL ではありません: ${webUrl}`);
+    const type = m[2] === 'issues' ? 'issue' : 'mr';
+    const enc = encodeURIComponent(m[1]);
+    const item = await this.api(`/projects/${enc}/${m[2]}/${m[3]}`);
+    return normalizeItem(item, type);
+  }
+
   // 単一 MR の現在状態（コンフリクト有無・未解決ディスカッション含む）を取得する。
   // 承認ボタンのマージ可否判定に使う。
   async getMR(target) {

@@ -1,7 +1,7 @@
 {
-  "name": "gitlab-review-viewer",
+  "name": "kiro-projects-viewer",
   "version": "0.1.0",
-  "description": "GitLab イシューと MR を並べて表示するレビュー専用ビュアー",
+  "description": "kiro-projects のプロジェクト状態（charter / backlog / needs / kiro-flow / GitLab）を可視化するダッシュボードビュアー",
   "author": "sandbox",
   "license": "MIT",
   "main": "src/main/main.js",
@@ -15,8 +15,8 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "jp.sandbox.gitlab-review-viewer",
-    "productName": "GitLab Review Viewer",
+    "appId": "jp.sandbox.kiro-projects-viewer",
+    "productName": "Kiro Projects Viewer",
     "directories": {
       "output": "release"
     },
@@ -36,9 +36,9 @@
     },
     "protocols": [
       {
-        "name": "GitLab Review Viewer",
+        "name": "Kiro Projects Viewer",
         "schemes": [
-          "gitlab-review-viewer"
+          "kiro-projects-viewer"
         ]
       }
     ]
