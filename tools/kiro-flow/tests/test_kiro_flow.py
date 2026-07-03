@@ -682,7 +682,8 @@ class GitlabExecutorPluginTests(unittest.TestCase):
             if method == "POST" and path.endswith("/issues"):
                 return {"iid": 42, "web_url": "https://gitlab.com/group/repo/-/issues/42"}
             if method == "GET" and path.endswith("/issues/42"):
-                return {"labels": ["status:approved"], "state": "opened"}
+                return {"labels": ["status:approved"], "state": "opened",
+                        "title": "[kiro-flow] ログイン画面を追加"}
             if method == "PUT" and path.endswith("/issues/42"):
                 return {"state": "closed"}     # クローズ
             return {}
@@ -693,6 +694,8 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertEqual(data["decision"], "approved")
         self.assertTrue(data["closed"])
         self.assertEqual(data["merged_mrs"], [1, 2])
+        # 成果 data にタイトルが載り、下流イシューの『## 依存イシュー』節が参照できる
+        self.assertEqual(data["title"], "[kiro-flow] ログイン画面を追加")
         # イシュークローズの PUT（state_event=close）が出る
         close = next(c for c in m.call_args_list if c.args[2] == "PUT")
         self.assertEqual(close.kwargs["data"]["state_event"], "close")
@@ -971,6 +974,49 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertIn("統合する", body)
         self.assertIn("t1", body)
         self.assertIn("kiro-flow", body)
+
+    # --- 依存関係のイシュー表現（gitlab-idd の『## 依存イシュー』節を踏襲） --------
+    def test_issue_body_lists_dependency_issues(self):
+        # gitlab executor で実行された依存（data に issue_iid/title）を
+        # gitlab-idd 規約の『## 依存イシュー』節に `- #番号 タイトル（完了済み）` で列挙する。
+        deps = {
+            "t1": {"output": "スキーマ作成済み",
+                   "data": {"issue_iid": 42, "title": "[kiro-flow] DB スキーマを作成する",
+                            "decision": "approved"}},
+            "t2": {"output": "API 実装済み",
+                   "data": {"issue_iid": 43, "decision": "approved"}},  # title 無し（旧成果）
+        }
+        body = gl_plugin._issue_body("work", "ユーザー一覧画面を実装する", deps)
+        self.assertIn("## 依存イシュー", body)
+        self.assertIn("- #42 [kiro-flow] DB スキーマを作成する（完了済み）", body)
+        self.assertIn("- #43 タスク t2（完了済み）", body)   # title 無しはタスク id で補完
+        section = body.split("## 依存イシュー")[1].split("---")[0]
+        self.assertNotIn("なし", [ln.strip() for ln in section.splitlines()])
+        # 成果（参考）側にもイシュー番号を併記して辿れるようにする
+        self.assertIn("**t1**（イシュー #42）", body)
+
+    def test_issue_body_dependency_issues_none_when_no_issue_backed_deps(self):
+        # イシューを持たない依存（kiro executor 等）だけなら gitlab-idd テンプレートどおり「なし」
+        deps = {"t1": {"output": "ローカル実行の成果", "data": {"n": 3}}}
+        body = gl_plugin._issue_body("work", "実装する", deps)
+        section = body.split("## 依存イシュー")[1].split("---")[0]
+        self.assertIn("なし", section)
+        # 依存ゼロでも節そのものは必ず載る（gitlab-idd の本文構造に合わせる）
+        self.assertIn("## 依存イシュー", gl_plugin._issue_body("work", "単独タスク", {}))
+
+    def test_issue_body_dependency_issues_include_gates(self):
+        # 集約系で gate は『成果（参考）』から除かれるが、依存イシューとしては実在の先行
+        # イシューなので『## 依存イシュー』には列挙される。
+        deps = {
+            "t1": {"output": "成果", "data": {"issue_iid": 10, "title": "[kiro-flow] 作る"}},
+            "gate": {"output": "verify=pass",
+                     "data": {"ok": True, "issue_iid": 11, "title": "[kiro-flow] 検証する"}},
+        }
+        body = gl_plugin._issue_body("synthesize", "統合する", deps)
+        aggregated = body.split("## 依存イシュー")[0]
+        self.assertNotIn("**gate**", aggregated)               # 参考成果からは除外
+        self.assertIn("- #11 [kiro-flow] 検証する（完了済み）", body)  # 依存イシューには載る
+        self.assertIn("- #10 [kiro-flow] 作る（完了済み）", body)
 
 
 class GitlabNativeApiTests(unittest.TestCase):
