@@ -211,6 +211,25 @@ copilot --no-interactive {promptFile}
 「書き出し後に Obsidian を開く」を有効にすると `obsidian://` URI で
 Obsidian が起動する。
 
+## ディープリンク（外部ツールからの起動）
+
+`gitlab-review-viewer://open?url=<GitLab の web_url>` のカスタム URL スキームで、
+外部ツールから特定のイシュー / MR をレビュー画面として開ける。
+[kiro-projects-viewer](../kiro-projects-viewer/) の GitLab タブ「レビューで開く」が
+この入り口を使う。
+
+- シングルインスタンス化されており、起動済みならそのウィンドウで対象を開く
+  （未起動なら起動してから開く）
+- URL の対象は API で解決され、候補一覧の先頭へ挿入 → 選択（関連 MR / イシューも
+  通常の選択と同じように左右のペインへ展開される）
+- プロトコル登録は NSIS インストーラ、または起動時の `setAsDefaultProtocolClient` で
+  行われる（portable exe は一度起動すれば登録される）
+
+```bash
+# 例: コマンドラインから
+start "" "gitlab-review-viewer://open?url=https%3A%2F%2Fgitlab.example.com%2Fteam%2Fapp%2F-%2Fissues%2F42"
+```
+
 ## 構成
 
 ```
@@ -218,7 +237,7 @@ tools/gitlab-review-viewer/
   package.json          # electron + electron-builder のみ（実行時依存なし）
   src/
     main/
-      main.js           # ウィンドウ生成・webview 制御・プロキシ引き継ぎ
+      main.js           # ウィンドウ生成・webview 制御・プロキシ引き継ぎ・ディープリンク
       config.js         # 設定と検索条件キャッシュの読み書き
       gitlab.js         # GitLab REST API v4 クライアント（net.fetch）
       agent.js          # ローカル CLI エージェント実行（要約）

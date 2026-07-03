@@ -4,8 +4,8 @@ const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
 
-// 環境変数のプロキシ設定を Chromium に引き継ぐ。webview の表示と
-// net.fetch 経由の GitLab API 呼び出しの両方がこの設定を経由する。
+// 環境変数のプロキシ設定を Chromium に引き継ぐ（gitlab-review-viewer と同じ）。
+// GitLab API 呼び出し（net.fetch）がこの設定を経由する。
 // app.ready より前に設定する必要がある。
 function applyProxyFromEnv() {
   const env = process.env;
@@ -37,57 +37,19 @@ applyProxyFromEnv();
 
 let mainWindow = null;
 
-// gitlab-review-viewer://open?url=<GitLab の web_url> のディープリンク。
-// kiro-projects-viewer などの外部ツールが「このイシュー / MR をレビューで
-// 開いて」と指示するための入り口。renderer に転送して対象を解決させる。
-function handleDeepLink(url) {
-  if (!url || !url.startsWith('gitlab-review-viewer://')) return;
-  if (!mainWindow) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.focus();
-  mainWindow.webContents.send('app:openTarget', { url });
-}
-
-function deepLinkFromArgv(argv) {
-  return argv.find((a) => typeof a === 'string' && a.startsWith('gitlab-review-viewer://'));
-}
-
-function registerProtocolClient() {
-  // 開発起動（electron .）でも OS にプロトコルを登録できるようにする
-  if (process.defaultApp) {
-    if (process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient('gitlab-review-viewer', process.execPath, [
-        path.resolve(process.argv[1]),
-      ]);
-    }
-  } else {
-    app.setAsDefaultProtocolClient('gitlab-review-viewer');
-  }
-}
-
 function createWindow() {
   const win = new BrowserWindow({
     width: 1600,
     height: 950,
-    title: 'GitLab Review Viewer',
+    title: 'Kiro Projects Viewer',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // GitLab ページの埋め込み表示に <webview> を使う
-      webviewTag: true,
     },
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-
-  // webview 内から window.open されたリンクは OS 既定ブラウザで開く
-  win.webContents.on('did-attach-webview', (_event, contents) => {
-    contents.setWindowOpenHandler(({ url }) => {
-      if (/^https?:\/\//.test(url)) shell.openExternal(url);
-      return { action: 'deny' };
-    });
-  });
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
   });
@@ -95,8 +57,33 @@ function createWindow() {
   return win;
 }
 
-// ディープリンクを 1 つのウィンドウで受けるためシングルインスタンスにする。
-// 2 個目の起動は既存ウィンドウへ URL を転送して終了する。
+// kiro-projects-viewer://open?root=...&project=... のディープリンクで
+// 特定プロジェクトを直接開けるようにしておく（他ツールからの起動口）。
+function handleDeepLink(url) {
+  if (!url || !url.startsWith('kiro-projects-viewer://')) return;
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+  mainWindow.webContents.send('app:openTarget', { url });
+}
+
+function deepLinkFromArgv(argv) {
+  return argv.find((a) => typeof a === 'string' && a.startsWith('kiro-projects-viewer://'));
+}
+
+function registerProtocolClient() {
+  // 開発起動（electron .）でも OS にプロトコルを登録できるようにする
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient('kiro-projects-viewer', process.execPath, [
+        path.resolve(process.argv[1]),
+      ]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient('kiro-projects-viewer');
+  }
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();

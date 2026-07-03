@@ -7,6 +7,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: プロジェクトダッシュボードを新規追加
+
+- **新規ツール** `tools/kiro-projects-viewer/`: kiro-projects のプロジェクト状態を可視化する
+  Electron アプリ（gitlab-review-viewer と同じプレーン Electron・実行時依存なしの構成）
+- **概要タブ**: charter（goal / deliverables / constraints）・acceptance 達成状況
+  （`project.json` の PASS 履歴スパークライン付き）・バックログの status 別集計・
+  実行中クレーム・policy・直近 run（`run-log.jsonl`）・納品（`DELIVERY.md`）
+- **バックログタブ**: `backlog/` / `archive/` のタスク一覧（status / priority / verify /
+  after / level 等。フィルタチップ・詳細ダイアログ・ファイルを開く）
+- **要対応タブ**: `needs/`（MADR 形式）の判断待ち / 検収待ちをカード表示。
+  「ファイルを開いて回答」でエディタへ
+- **フロータブ**: kiro-flow バス（`bus/runs/<run-id>/`）のタスクグラフを SVG の DAG で描画。
+  ノード状態（done / failed / claimed / pending / 依存待ち）はファイル存在から kiro-flow と
+  同じ規則で導出（lease 内 claim の決定的タイブレーク含む）。ノード詳細・進捗バー・
+  アクティビティ（`events/*.jsonl`）付き
+- **GitLab タブ**: gitlab executor が委譲したイシュー（results の issue_iid / web_url /
+  decision / merged_mrs）と `repos.json` の GitLab リポジトリのオープンイシューを一覧。
+  GitLab API（read）設定時はラベル・関連 MR の最新状態を補完
+- **履歴タブ**: run-log・決定記録（`decisions/` の DR / learn）・納品・journal
+- **プロジェクト発見**: 設定の roots に加え `~/.kiro-projects/instances/*.json`
+  （稼働発見レコード）から稼働中コンテナを自動発見（heartbeat 鮮度で ● 稼働中表示）。
+  `<root>/projects/<name>/` 標準レイアウトと旧フラット構成の両対応
+- **ディープリンク**: `kiro-projects-viewer://open?root=<container>&project=<name>` で
+  特定プロジェクトを直接開ける（シングルインスタンス）
+
+### gitlab-review-viewer: ディープリンク対応（kiro-projects-viewer 連携）
+
+- **カスタム URL スキーム** `gitlab-review-viewer://open?url=<web_url>` で外部ツールから
+  特定イシュー / MR をレビュー画面として開けるように（対象は API で解決 → 候補一覧の
+  先頭へ挿入 → 自動選択で関連イシュー / MR ごと左右ペインへ展開）
+- **シングルインスタンス化**: 二重起動時は既存ウィンドウへディープリンクを転送
+  （`second-instance` / macOS `open-url`）。electron-builder に `protocols` を宣言
+- kiro-projects-viewer の GitLab タブ「レビューで開く」がこの入り口を使い、
+  タスク→イシュー→レビューをシームレスに接続する
+
 ### gitlab-review-viewer: kiro-projects 連携を削除し、レビュー特化に再設計（破壊的変更）
 
 - **削除**: kiro-projects needs（判断待ち/検収待ち）連携を全面削除（Needs タブ・

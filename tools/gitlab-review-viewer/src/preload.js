@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   glDetail: (target) => invoke('gitlab:detail', { target }),
 
   glMRStatus: (target) => invoke('gitlab:mrStatus', { target }),
+  glResolveUrl: (url) => invoke('gitlab:resolveUrl', { url }),
   glComment: (target, body) => invoke('gitlab:comment', { target, body }),
   glDeleteIssue: (target) => invoke('gitlab:deleteIssue', { target }),
   glDeleteBranch: (projectId, branch) =>
@@ -35,4 +36,8 @@ contextBridge.exposeInMainWorld('api', {
   obsidianExport: (target, summary) => invoke('obsidian:export', { target, summary }),
   obsidianExportContent: (payload) => invoke('obsidian:exportContent', payload),
   openExternal: (url) => invoke('shell:openExternal', { url }),
+
+  // ディープリンク（gitlab-review-viewer://open?url=...）の受信。
+  // main プロセスが second-instance / open-url で受けた URL を転送してくる。
+  onOpenTarget: (cb) => ipcRenderer.on('app:openTarget', (_event, payload) => cb(payload)),
 });
