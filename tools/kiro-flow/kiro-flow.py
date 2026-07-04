@@ -595,6 +595,30 @@ class Bus:
         write_json_atomic(v.meta_path, meta)
         return True
 
+    def fail_request(self, req_id: str, reason: str = "") -> bool:
+        """inbox 要求 req_id を failed run として終端化する（run 未作成でも）。
+        orchestrator が run の meta を一度も書けずに死に続ける（例: クローンの git ロック残骸で
+        sync_push が失敗し続ける）と run_exists が偽のままになり、daemon が毎 poll 同じ要求を
+        再 claim → orchestrator 起動 → 即死 を繰り返す無限ループに陥る。meta が無ければ failed で
+        新規作成して run_exists を真にし、このループを断ち切る（消費者も失敗を即検知できる）。
+        既に run があれば mark_run_failed に委ねる（終端済みなら上書きせず False）。"""
+        v = self.run_view(req_id)
+        if read_json(v.meta_path) is not None:
+            return self.mark_run_failed(req_id, reason)
+        req = self.read_inbox(req_id) or {}
+        meta = {
+            "request": req.get("request", ""),
+            "workspace": req.get("workspace"),
+            "references": list(req.get("references") or []),
+            "status": "failed",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+        }
+        if reason:
+            meta["failure_reason"] = reason
+        write_json_atomic(v.meta_path, meta)
+        return True
+
     def touch_run(self, run_id: str, lease_sec: float) -> None:
         """自分が orchestrator を回している run の生存リース（heartbeat）を更新する。
         これにより別デーモン／再起動後の自分が「この run は生きている（owner が駆動中）」と判定でき、
@@ -689,6 +713,13 @@ class Bus:
 # --------------------------------------------------------------------------
 # 初回クローンの最大試行回数（push/pull と同じ指数バックオフでリトライ）。
 CLONE_RETRIES = 5
+# .git 直下のロック（index.lock 等）を「異常終了の残骸」と断定する最小経過秒。
+# バスの git 操作は数 KB の JSON の add/commit で数秒あれば終わるため、これ以上
+# 更新の無いロックは SIGKILL・電源断・daemon の terminate が残した残骸とみなせる。
+# 新しいロックは（同一クローンを共有する）稼働中の git が保持している可能性があるので残す。
+GIT_LOCK_STALE_SEC = 30.0
+# ロック起因で git コマンドが失敗したときの再試行回数（合間に 1,2,4s バックオフ）。
+GIT_LOCK_RETRIES = 4
 
 
 class GitBus(Bus):
@@ -729,11 +760,49 @@ class GitBus(Bus):
         ceil = env.get("GIT_CEILING_DIRECTORIES")
         env["GIT_CEILING_DIRECTORIES"] = parent + (os.pathsep + ceil if ceil else "")
         env["GIT_DISCOVERY_ACROSS_FILESYSTEM"] = "0"
+        # ロック競合の検知はエラーメッセージの文字列マッチに頼るため、翻訳されない C ロケールに固定する
+        env["LC_ALL"] = "C"
         return env
 
+    # 異常終了した git が .git 直下に残すロックの残骸。これがあると以後の add/commit/
+    # checkout/pull が「File exists」で失敗し続け、orchestrator の run 作成（sync_push）が
+    # 恒久的に失敗する（→ daemon が同じ要求を再 claim し続ける）原因になる。
+    _STALE_GIT_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock",
+                        "packed-refs.lock")
+
+    def _remove_stale_git_locks(self, min_age_sec: float) -> int:
+        """min_age_sec 以上更新の無いロック残骸を削除して削除数を返す。
+        新しいロックは稼働中の git が保持している可能性があるため残す。"""
+        removed = 0
+        gitdir = os.path.join(self.workdir, ".git")
+        now = time.time()
+        for name in self._STALE_GIT_LOCKS:
+            path = os.path.join(gitdir, name)
+            try:
+                if os.path.isfile(path) and now - os.path.getmtime(path) >= min_age_sec:
+                    os.remove(path)
+                    removed += 1
+            except OSError:
+                pass
+        return removed
+
+    @staticmethod
+    def _is_lock_error(p) -> bool:
+        err = p.stderr or ""
+        return ".lock" in err and ("File exists" in err or "another git process" in err.lower())
+
     def _git(self, args, check=True):
-        p = subprocess.run(["git", "-C", self.workdir] + args, capture_output=True, text=True,
-                           env=self._git_env())
+        p = None
+        for i in range(GIT_LOCK_RETRIES):
+            p = subprocess.run(["git", "-C", self.workdir] + args, capture_output=True, text=True,
+                               env=self._git_env())
+            if p.returncode == 0 or not self._is_lock_error(p):
+                break
+            # ロック起因の失敗: 残骸（十分古い）なら消して即再試行、稼働中の他 git が
+            # 保持する新しいロックなら短く待って再試行する。クローンはノード専有が原則
+            # なので、恒久的に残るロックはほぼ残骸＝ここで自己回復できる。
+            if self._remove_stale_git_locks(GIT_LOCK_STALE_SEC) == 0 and i < GIT_LOCK_RETRIES - 1:
+                time.sleep(2 ** i)
         if check and p.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} 失敗: {p.stderr.strip()[:300]}")
         return p
@@ -795,44 +864,71 @@ class GitBus(Bus):
                 time.sleep(2 ** i if i < 4 else 16)     # バックオフして再試行
         return r
 
-    def _ensure_clone(self) -> None:
-        # workdir が自前管理の sparse バスクローンなら再利用。そうでなければ新規 clone する。
-        # （ユーザーのフルチェックアウトや親/別リポジトリへ sparse-checkout を効かせて作業ツリーを
-        #   壊さないため、「自前のバスクローンである」ことを確認してからでないと sparse-checkout に進まない。）
-        if not self._is_managed_bus_clone():
-            if os.path.isdir(self.workdir) and os.listdir(self.workdir):
-                # 既存の非空ディレクトリ（ユーザーの作業チェックアウト・親/別リポジトリ等）は上書きせず中断。
-                # ここで sparse-checkout すると subdir 以外の追跡ファイルを作業ツリーから隠してしまう。
-                raise RuntimeError(
-                    f"クローン先 {self.workdir} が空でない既存ディレクトリ（kiro-flow 管理外のクローン/作業"
-                    f"ツリー）です。sparse-checkout で作業ファイルを隠す事故を防ぐため中断します"
-                    f"（専用の空ディレクトリを --bus に指定してください）。")
-            os.makedirs(os.path.dirname(self.workdir) or ".", exist_ok=True)
-            # sparse checkout: --no-checkout で取得し、必要なパスだけ展開する。
-            # 一過性のネットワーク障害で起動時クローンが即死しないよう、push/pull と同様に
-            # 指数バックオフでリトライする（分散・委譲構成では各ノードが起動毎に clone するため、
-            # ここがネットワーク不安定時の「起動できない」原因になりやすい）。
-            r = self._clone_with_retry()
-            if r.returncode != 0:
-                raise RuntimeError(
-                    f"git clone が {CLONE_RETRIES} 回失敗しました: {r.stderr.strip()[:300]}")
-            if not self._is_own_repo_root():
-                # clone 後も workdir 自身がリポジトリのルートでなければ、以降の sparse-checkout が
-                # 親リポジトリへ波及しうる。安全側に倒して中断する。
-                raise RuntimeError(
-                    f"git clone 後も {self.workdir} がクローンのルートになっていません。"
-                    "親リポジトリへの sparse-checkout を防ぐため中断します。")
-            self._git(["config", self.MANAGED_FLAG, "1"])   # 自前管理クローンの目印
+    def _recover_reused_clone(self) -> None:
+        """再利用する管理クローンから、前プロセスの異常終了（SIGKILL・電源断・daemon の
+        terminate）が残した残骸を回復する。ロック残骸は以後の add/checkout が「File exists」
+        で失敗し続ける原因、中断 rebase の残骸は以後の pull --rebase が失敗し続ける原因になる。"""
+        self._remove_stale_git_locks(GIT_LOCK_STALE_SEC)
+        gitdir = os.path.join(self.workdir, ".git")
+        if any(os.path.isdir(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply")):
+            self._git(["rebase", "--abort"], check=False)
+            for d in ("rebase-merge", "rebase-apply"):
+                shutil.rmtree(os.path.join(gitdir, d), ignore_errors=True)
+
+    def _setup_worktree(self, strict: bool = True) -> bool:
+        """コミット用 ID・sparse-checkout・対象ブランチへの checkout を整える。
+        strict=False は失敗を False で返す（呼び出し側がクローンを作り直して再試行する）。"""
         # コミット用 ID（未設定環境向けのフォールバック）
         if not self._git(["config", "user.email"], check=False).stdout.strip():
-            self._git(["config", "user.email", "kiro-flow@local"])
-            self._git(["config", "user.name", "kiro-flow"])
+            self._git(["config", "user.email", "kiro-flow@local"], check=False)
+            self._git(["config", "user.name", "kiro-flow"], check=False)
         # sparse checkout（cone モード）を設定 — バスのサブツリーだけ作業ツリーに置く
         self._git(["sparse-checkout", "init", "--cone"], check=False)
         self._git(["sparse-checkout", "set"] + self._sparse_paths(), check=False)
         # 対象ブランチへ。無ければ作成（空リポジトリ初回も含む）
-        if self._git(["checkout", self.branch], check=False).returncode != 0:
-            self._git(["checkout", "-B", self.branch])
+        if self._git(["checkout", self.branch], check=False).returncode == 0:
+            return True
+        return self._git(["checkout", "-B", self.branch], check=strict).returncode == 0
+
+    def _ensure_clone(self) -> None:
+        # workdir が自前管理の sparse バスクローンなら回復して再利用。そうでなければ新規 clone する。
+        # （ユーザーのフルチェックアウトや親/別リポジトリへ sparse-checkout を効かせて作業ツリーを
+        #   壊さないため、「自前のバスクローンである」ことを確認してからでないと sparse-checkout に進まない。）
+        if self._is_managed_bus_clone():
+            self._recover_reused_clone()
+            if self._setup_worktree(strict=False):
+                return
+            # 回復しても使えない（新しいロックを他プロセスが握ったまま消えた・index 破損等）。
+            # バスの真実はリモート側にあり管理クローンは使い捨てにできるため、作り直して
+            # 自己回復する（作り直せないままだと orchestrator の run 作成が失敗し続け、
+            # daemon が同じ要求を毎 poll 再 claim する無限ループの起点になる）。
+            log(os.path.basename(self.workdir),
+                f"再利用クローン {self.workdir} を回復できないため作り直します")
+            self._reset_clone_dir()
+        elif os.path.isdir(self.workdir) and os.listdir(self.workdir):
+            # 既存の非空ディレクトリ（ユーザーの作業チェックアウト・親/別リポジトリ等）は上書きせず中断。
+            # ここで sparse-checkout すると subdir 以外の追跡ファイルを作業ツリーから隠してしまう。
+            raise RuntimeError(
+                f"クローン先 {self.workdir} が空でない既存ディレクトリ（kiro-flow 管理外のクローン/作業"
+                f"ツリー）です。sparse-checkout で作業ファイルを隠す事故を防ぐため中断します"
+                f"（専用の空ディレクトリを --bus に指定してください）。")
+        os.makedirs(os.path.dirname(self.workdir) or ".", exist_ok=True)
+        # sparse checkout: --no-checkout で取得し、必要なパスだけ展開する。
+        # 一過性のネットワーク障害で起動時クローンが即死しないよう、push/pull と同様に
+        # 指数バックオフでリトライする（分散・委譲構成では各ノードが起動毎に clone するため、
+        # ここがネットワーク不安定時の「起動できない」原因になりやすい）。
+        r = self._clone_with_retry()
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"git clone が {CLONE_RETRIES} 回失敗しました: {r.stderr.strip()[:300]}")
+        if not self._is_own_repo_root():
+            # clone 後も workdir 自身がリポジトリのルートでなければ、以降の sparse-checkout が
+            # 親リポジトリへ波及しうる。安全側に倒して中断する。
+            raise RuntimeError(
+                f"git clone 後も {self.workdir} がクローンのルートになっていません。"
+                "親リポジトリへの sparse-checkout を防ぐため中断します。")
+        self._git(["config", self.MANAGED_FLAG, "1"])   # 自前管理クローンの目印
+        self._setup_worktree(strict=True)
 
     def sync_pull(self) -> None:
         # リモートに当該ブランチが無い初回などは黙って無視
@@ -2959,7 +3055,10 @@ def cmd_run(args) -> int:
 # --------------------------------------------------------------------------
 def cmd_submit(args) -> int:
     req_id = args.run_id or f"run-{datetime.now():%Y%m%d-%H%M%S}-{random.randint(1000,9999)}"
-    bus = make_bus(args, "submitter")
+    # ノード ID に pid を含め、並行 submit（kiro-projects の一括 offload 等）が同じ
+    # クローン作業ツリーを共有して index.lock を取り合う事故を避ける（クローンは
+    # 終了時に削除され、SIGKILL 残骸も daemon の cleanup が回収する）。
+    bus = make_bus(args, f"submitter-{os.getpid()}")
     bus.sync_pull()
     bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
                        workspace=parse_workspace(getattr(args, "workspace", None)),
@@ -3067,7 +3166,10 @@ def cmd_daemon(args) -> int:
                 orchestrators[rid] = p
                 log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ 同じ run-id で再開"
                                f"（resume #{bus.run_meta(rid).get('resume_count', '?')}）")
-            elif bus.mark_run_failed(rid, f"orchestrator が終端化前に終了しました（rc={rc}）"):
+            elif bus.fail_request(rid, f"orchestrator が終端化前に終了しました（rc={rc}）"):
+                # fail_request は run 未作成（orchestrator が meta を一度も push できずに死んだ）
+                # でも failed run を作って終端化する。ここで終端化しないと run_exists が偽の
+                # ままになり、次 poll の受理ループが同じ要求を再 claim（commit/push）し続ける。
                 bus.run_view(rid).event(daemon_id, "run-failed", run=rid, rc=rc)
                 bus.sync_push(f"run {rid} failed: orchestrator 異常終了（rc={rc}）")
                 log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ run を failed に確定")

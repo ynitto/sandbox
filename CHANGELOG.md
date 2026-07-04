@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: git バスクローンの index.lock 残骸を自己回復（daemon の再 claim 無限ループを解消）
+
+- **背景**: kiro-projects（autonomous）と kiro-flow を同じリポジトリのバスで併用中、前プロセスの
+  異常終了（SIGKILL・電源断・daemon の terminate）がノードクローンに `.git/index.lock` を残すと、
+  orchestrator の run 作成（`sync_push` の `git add`）が「File exists」で恒久的に失敗。run の meta が
+  一度も push されず `run_exists` が偽のままなので、daemon が毎 poll 同じ要求を
+  再 claim → commit → push → orchestrator 起動 → 即死 と繰り返す無限ループに陥っていた
+- **ロック残骸の自己回復**: 管理クローンの再利用時に、十分古い（`GIT_LOCK_STALE_SEC`=30s 以上
+  更新の無い）`index.lock` 等のロック残骸と中断 rebase（`rebase-merge/`）を除去してから使う。
+  実行中に遭遇したロックも、新しいうちは短いバックオフで解放を待ち（稼働中の他 git を壊さない）、
+  残骸と判明したら除去して再試行する（`git` 呼び出し共通のリトライ）。ロック検知を決定的にするため
+  バスの git は `LC_ALL=C` で実行
+- **使えないクローンは作り直す**: ロック除去でも回復できない管理クローン（index 破損等）は
+  削除して再クローンする（バスの真実はリモート側にあるため使い捨てで安全）
+- **daemon の終端化フォールバック（`fail_request`）**: orchestrator が run の meta を一度も
+  書けずに死に続けた要求は、failed run を新規作成して終端化する。`run_exists` が真になり
+  再 claim ループが有限回で必ず止まる。要求内容（request/workspace/references）は meta に
+  引き写すので、消費者（kiro-projects の submit 待ち）も失敗を即検知できる
+- **並行 submit の隔離**: submit のノード ID に pid を付与し、並行 submit が同じクローン
+  作業ツリーを共有して index.lock を取り合う事故を予防
+
 ### kiro-projects-viewer: GitLab タブを「レビュー待ち」に特化
 
 - GitLab タブを「レビュー待ち」に改名し、**repos のオープンイシュー＋関連 MR の

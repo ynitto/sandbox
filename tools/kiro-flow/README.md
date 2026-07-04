@@ -284,6 +284,16 @@ claim は lease 超過で自動的に無効化され、別ノードが再 claim 
   final.json           # 統合結果
 ```
 
+**ノードクローンの自己回復（git バス）**：各ノードのクローンは使い捨てのキャッシュで、
+真実は常にリモート側にある。前プロセスの異常終了（SIGKILL・電源断・daemon の terminate）が
+`.git/index.lock` 等のロック残骸や中断 rebase を残しても、再利用時に残骸を除去して回復し、
+それでも使えなければクローンを作り直す。実行中にロックへ遭遇した場合も、新しいロック
+（稼働中の他 git の可能性）は短く待ち、古いロック（残骸）は除去して再試行する。これが無いと
+orchestrator の run 作成（`sync_push`）が恒久的に失敗し、daemon が同じ要求を毎 poll
+再 claim し続ける無限ループに陥る。加えて daemon 側でも、orchestrator が run の meta を
+一度も書けずに死んだ要求は failed run を新規作成して終端化する（`fail_request`）ため、
+最悪ケースでも要求の再 claim ループは有限回で止まる。
+
 ## インストール
 
 ```bash
