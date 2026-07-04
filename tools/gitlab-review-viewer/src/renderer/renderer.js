@@ -1313,9 +1313,48 @@ async function saveSettings() {
 // 初期化
 // ---------------------------------------------------------------------------
 
+// 設定を読めなかったときの最小構成。設定ダイアログを開いて保存し直せるよう、
+// UI が参照するセクションだけ揃える（正式な既定値は main 側の DEFAULT_CONFIG）。
+function fallbackConfig() {
+  return {
+    gitlab: { baseUrl: 'https://gitlab.com', token: '' },
+    searchCache: {},
+    agent: { command: '', timeoutSec: 300, promptTemplate: '' },
+    obsidian: { vaultDir: '', subDir: '', openAfterExport: false },
+    labelPresets: [],
+    actionShortcuts: {},
+  };
+}
+
+// 受け取った設定の形を検証し、壊れたセクションだけ最小構成で置き換える。
+// 旧バージョンが書いた config.json や手編集で形が崩れていても起動できるようにする
+function ensureConfigShape(cfg) {
+  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const base = fallbackConfig();
+  if (!isObj(cfg)) return base;
+  for (const [k, def] of Object.entries(base)) {
+    if (Array.isArray(def)) {
+      if (!Array.isArray(cfg[k])) cfg[k] = def;
+    } else if (!isObj(cfg[k])) {
+      cfg[k] = def;
+    }
+  }
+  return cfg;
+}
+
 async function init() {
-  state.config = await api.getConfig();
-  restoreSearchCache();
+  let configError = null;
+  try {
+    state.config = ensureConfigShape(await api.getConfig());
+  } catch (err) {
+    configError = err;
+    state.config = fallbackConfig();
+  }
+  try {
+    restoreSearchCache();
+  } catch {
+    /* 前回の検索条件の復元に失敗しても起動は続ける */
+  }
 
   $('btn-load-groups').addEventListener('click', loadGroups);
   $('btn-load-projects').addEventListener('click', loadProjects);
@@ -1401,7 +1440,12 @@ async function init() {
   renderTargetInfo();
   loadLabelSuggestions();
 
-  if (!state.config.gitlab.token) {
+  if (configError) {
+    toast(
+      `設定の読み込みに失敗したため既定値で起動しました。⚙ 設定から保存し直してください: ${configError.message}`,
+      true
+    );
+  } else if (!state.config.gitlab.token) {
     toast('GitLab のアクセストークンが未設定です。⚙ 設定から登録してください。', true);
   }
 }
