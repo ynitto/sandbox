@@ -155,6 +155,38 @@ git_branch: main            # バスに使う git ブランチ
 # state_git_branch: main                # 同期先ブランチ
 # state_git_subdir: kiro-projects       # リポジトリ内の保存先サブディレクトリ（名前空間分離）
 # state_git_interval: 300               # fetch/push の最短間隔（秒）。0 で毎同期（負荷は増える）
+#
+# ★推奨構成 — 「daemon 1 台（kiro-projects + kiro-flow）＋ gitlab executor で作業を各 PC に
+#   分散 ＋ 別 PC の viewer で監視 ＋ 状態を GitLab にバックアップ」のとき:
+#
+#   bus: /home/me/work/.kiro-flow-bus    # ★絶対パスで 1 本に共有（kiro-flow 側と同じ値。必須）
+#   executor: gitlab
+#   state_git: git@gitlab.example.com:team/kiro-state.git
+#   # state_git_subdir は既定（kiro-projects）のまま。kiro-flow 側にも同じ state_git URL を
+#   # subdir: kiro-flow で設定する → リポジトリは kiro-projects/ と kiro-flow/ の 2 名前空間になる。
+#
+#   バスを絶対パスで 1 本にするのが要点: プロジェクト毎バス（既定）のままだと、複数のバスが
+#   同じ state_git_subdir へ同期して互いの run を取り込み合う（混線）。1 本に共有すれば解消し、
+#   常駐 kiro-flow daemon の検知（location=auto/daemon）も全プロジェクトで効く。
+#   バックアップは state_git リポジトリそのもの（全変更がコミット履歴で残る）。復元は clone して
+#   subdir の中身を新しい <root>/バスへコピーするだけ（manifest 消失時も次の同期が決定的に再収束）。
+#
+# 同一リポジトリを他プロセス（別ディレクトリへ push する別ツール等）と共有するときの取り決め
+# （競合・デッドロックはこの取り決めの範囲で構造的に起きない）:
+#   ・本機能は自分専用クローン（<root>/.state-git）だけを使い、ステージも自 subdir のみ
+#     （git add -A -- <subdir>）。作業ツリーを他プロセスと共有しないため index ロックで衝突しない。
+#     他プロセスも各自のクローン/作業ツリーから push すること（.state-git を共用・改変しない）。
+#   ・push 競合（非 fast-forward）は pull --rebase → 再 push（指数バックオフ・最大 5 回）で自動吸収。
+#     使い切っても失敗はログに残して次の同期間隔で再試行する＝ロックを保持したまま待ち合う構造が
+#     無く、デッドロックしない。他プロセス側も「reject されたら pull --rebase して再 push」を推奨。
+#   ・共有ブランチへの force push は全員禁止（GitLab の保護ブランチで強制するのが確実）。
+#   ・他プロセスは kiro の subdir 配下に書かない（viewer の指示ドロップ等、意図した書き込みは可。
+#     subdir 内のリモート変更は「人の入力」裁定で取り込まれる）。
+#   ・subdir 名は既定の「kiro-projects」（ドット無し）を推奨。`.kiro-projects` のようなドット始まり
+#     でも動作する（sparse-checkout/同期とも対応済み）が、シェルグロブ（*）や一部のバックアップ
+#     スクリプトは隠しディレクトリを見落とすため、多重コミッタのリポジトリでは「見える名前空間」の
+#     方が消し忘れ・バックアップ漏れ・レビュー見落としの事故が少ない。他プロセスの成果物と同居して
+#     いて目立たせたくない場合にだけドット始まりを選ぶとよい。
 
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し
