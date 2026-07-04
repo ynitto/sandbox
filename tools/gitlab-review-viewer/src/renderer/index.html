@@ -181,13 +181,12 @@
     <h2>却下</h2>
     <p id="reject-desc"></p>
     <ul class="muted reject-notes">
-      <li id="reject-note-delete"><strong>削除</strong> — 右ペインに表示中の MR をクローズし、そのソースブランチを削除して、イシューを削除する</li>
-      <li><strong>閉じる</strong> — 右ペインに表示中の MR をクローズし、イシューを明示的に閉じる</li>
-      <li id="reject-note-kiroflow" hidden><strong>kiro-flow 委譲イシュー</strong> — 却下は「閉じる」で kiro-flow に伝わります（イシューを削除すると人コメント・決着検知ごと壊れるため、削除は選べません）</li>
+      <li>関連する<strong>マージリクエストをクローズ</strong>し、そのソースブランチを削除する</li>
+      <li>イシューは<strong>閉じる</strong>（削除しない — コメント・経緯が記録として残り、
+        委譲元ツール（kiro-flow 等）にはクローズで却下が伝わる）</li>
     </ul>
     <div class="dialog-buttons">
-      <button id="btn-reject-delete" class="danger">削除</button>
-      <button id="btn-reject-close">閉じる</button>
+      <button id="btn-reject-ok" class="danger">却下する</button>
       <button id="btn-reject-cancel">キャンセル</button>
     </div>
   </dialog>

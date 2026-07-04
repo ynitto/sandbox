@@ -92,7 +92,6 @@ function registerIpcHandlers() {
   handle('gitlab:resolveUrl', ({ url }) => client().resolveUrl(url));
 
   handle('gitlab:comment', ({ target, body }) => client().addComment(target, body));
-  handle('gitlab:deleteIssue', ({ target }) => client().deleteIssue(target));
   handle('gitlab:deleteBranch', ({ projectId, branch }) =>
     client().deleteBranch(projectId, branch)
   );

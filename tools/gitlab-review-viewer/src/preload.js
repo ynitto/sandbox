@@ -25,7 +25,6 @@ contextBridge.exposeInMainWorld('api', {
   glMRStatus: (target) => invoke('gitlab:mrStatus', { target }),
   glResolveUrl: (url) => invoke('gitlab:resolveUrl', { url }),
   glComment: (target, body) => invoke('gitlab:comment', { target, body }),
-  glDeleteIssue: (target) => invoke('gitlab:deleteIssue', { target }),
   glDeleteBranch: (projectId, branch) =>
     invoke('gitlab:deleteBranch', { projectId, branch }),
   glUpdateLabels: (target, add, remove) =>

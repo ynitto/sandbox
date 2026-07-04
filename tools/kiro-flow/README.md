@@ -170,7 +170,8 @@ worker タスク ──▶ gl.py create-issue（status:open,assignee:any ＋ pri
 - **イシュー削除への防御**：決着待ち中にイシューが**削除**された（404）場合も、一般エラーでなく
   **取り下げ＝却下**として決着させる（`decision: rejected`・reason に「削除された」。コメントは
   イシューごと消えているため guidance は空＝上位が自動判断でやり直す）。正規の却下はイシューの
-  **クローズ**で伝えること（gitlab-review-viewer も kiro-flow 委譲イシューでは削除を出さない）。
+  **クローズ**で伝えること（gitlab-review-viewer の却下もイシューを削除せず閉じる。関連 MR の
+  クローズ＋ソースブランチ削除のみ行う）。
 - **委譲先リポジトリ**：`gitlab:` ブロックの `repo_url` で委譲先の GitLab プロジェクト URL を明示できる。
   空の場合は `conn_label` の接続（`connections.yaml`）か、無ければ作業ディレクトリの `git remote origin`
   から解決する。手元とは別のリポジトリへ委譲したいときに指定する。
