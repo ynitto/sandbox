@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: GitLab タブを「レビュー待ち」に特化
+
+- GitLab タブを「レビュー待ち」に改名し、**repos のオープンイシュー＋関連 MR の
+  横断一覧**（レビュー待ち・作業中）に特化。bus 由来の委譲イシュー一覧セクションは
+  廃止 — run/ノード単位の決着（承認/却下）はフロータブのノード詳細が担当し、
+  役割の重複を解消（bus は run 後に掃除されるため一覧としても不完全だった）
+- 関連 MR の補完（glEnrich）を repos のオープンイシューに対して行うように変更
+  （レビュー対象の MR チップが「レビュー待ち」一覧に出る）
+
 ### gitlab-review-viewer: 却下を「MR クローズ＋ブランチ削除・イシューは閉じる」に一本化
 
 - 却下の「削除 / 閉じる」の 3 択を廃止し、**イシューは常に閉じる（削除しない）**に統一。

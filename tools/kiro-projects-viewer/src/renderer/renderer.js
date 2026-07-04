@@ -1031,19 +1031,12 @@ function bindFlowDetail(root) {
 }
 
 // ---------------------------------------------------------------------------
-// タブ: GitLab
+// タブ: レビュー待ち（charter repos のオープンイシュー）
 // ---------------------------------------------------------------------------
-
-function collectBusIssues() {
-  // 全 run の results から gitlab executor の成果（issue）を集める
-  const byUrl = new Map();
-  for (const r of state.flowRuns) {
-    for (const gi of r.gitlabIssues || []) {
-      if (gi.url && !byUrl.has(gi.url)) byUrl.set(gi.url, { ...gi, runId: r.runId });
-    }
-  }
-  return [...byUrl.values()];
-}
+// プロジェクトが扱うリポジトリ（repos.json）の「いまレビュー待ち・作業中のイシュー」を
+// GitLab API で横断一覧し、gitlab-review-viewer へ引き継ぐ入口。bus に依存しないため
+// kiro-flow が起票したもの以外（人が直接立てたイシュー）も見える。
+// run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当。
 
 function charterGitlabRepos() {
   const p = state.project;
@@ -1065,18 +1058,17 @@ function renderGitLab() {
     el.innerHTML = '';
     return;
   }
-  const busIssues = collectBusIssues();
   const repos = charterGitlabRepos();
   const gl = state.gitlab;
 
-  const issueRow = (it, extra = '') => {
+  const issueRow = (it) => {
     const enriched = gl.byUrl[it.url];
     const labels = (enriched ? enriched.labels : it.labels) || [];
-    const stateStr = enriched ? enriched.state : it.decision || it.state || '';
+    const stateStr = enriched ? enriched.state : it.state || '';
     const mrs = enriched && enriched.relatedMrs ? enriched.relatedMrs : [];
     return `<tr>
-      <td class="mono">${it.issueIid || it.iid ? `#${it.issueIid || it.iid}` : ''}</td>
-      <td>${enriched && enriched.title ? esc(enriched.title) : linkify(it.url)}${extra}</td>
+      <td class="mono">${it.iid ? `#${it.iid}` : ''}</td>
+      <td>${it.title ? esc(it.title) : linkify(it.url)} <span class="muted">${esc(it.projectPath || '')}</span></td>
       <td>${stateStr ? statusChip(stateStr) : ''}</td>
       <td>${labels.map((l) => `<span class="label-chip">${esc(l)}</span>`).join('')}</td>
       <td>${mrs
@@ -1089,25 +1081,24 @@ function renderGitLab() {
     </tr>`;
   };
 
-  const busSection = busIssues.length
-    ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th></th></tr>
-        ${busIssues.map((it) => issueRow(it, ` <span class="muted">(run ${esc(it.runId)} / ${esc(it.nodeId)})</span>`)).join('')}</table>`
-    : '<div class="muted">bus 上に gitlab executor の起票イシューはありません</div>';
-
   const repoIssuesSection = gl.repoIssues.length
     ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th></th></tr>
         ${gl.repoIssues.map((it) => issueRow(it)).join('')}</table>`
-    : `<div class="muted">${gl.enabled === false ? '⚙ 設定で GitLab の URL とトークンを設定すると、charter の repos からイシュー一覧を取得できます' : 'イシューなし'}</div>`;
+    : `<div class="muted">${
+        gl.enabled === false
+          ? '⚙ 設定で GitLab の URL とトークンを設定すると、repos のオープンイシューを一覧できます'
+          : repos.length
+            ? 'レビュー待ちのイシューはありません'
+            : 'repos が未定義です（charter の ## repos か <project>/repos.{yaml,json} で定義）'
+      }</div>`;
 
   el.innerHTML = `
     <div class="toolbar">
-      <span class="muted">タスクに紐づく GitLab イシュー（gitlab executor 委譲分と charter repos のイシュー）</span>
+      <span class="muted">repos のオープンイシュー（レビュー待ち・作業中）。委譲イシューの決着（承認/却下）はフロータブのノード詳細へ</span>
       <span class="spacer"></span>
       <button id="btn-gl-refresh" ${gl.loading ? 'disabled' : ''}>${gl.loading ? '取得中…' : 'GitLab から最新化'}</button>
     </div>
-    <div class="section-title">kiro-flow が委譲したイシュー（bus の結果から）</div>
-    ${busSection}
-    <div class="section-title">charter repos のオープンイシュー ${repos.map((r) => `<span class="label-chip">${esc(r.projectPath)}</span>`).join('')}</div>
+    <div class="section-title">レビュー待ち ${repos.map((r) => `<span class="label-chip">${esc(r.projectPath)}</span>`).join('')}</div>
     ${repoIssuesSection}`;
 
   $('btn-gl-refresh').addEventListener('click', () => refreshGitLab(true));
@@ -1127,20 +1118,11 @@ function renderGitLab() {
 async function refreshGitLab(force) {
   const gl = state.gitlab;
   if (gl.loading) return;
-  const busIssues = collectBusIssues();
   const repos = charterGitlabRepos();
-  if (!force && !busIssues.length && !repos.length) return;
+  if (!force && !repos.length) return;
   gl.loading = true;
   renderGitLab();
   try {
-    const urls = busIssues.map((i) => i.url).filter(Boolean);
-    if (urls.length) {
-      const res = await api.glEnrich(urls);
-      gl.enabled = res.enabled;
-      for (const issue of res.issues || []) {
-        if (issue && issue.url && !issue.error) gl.byUrl[issue.url] = issue;
-      }
-    }
     const seen = new Set();
     const repoIssues = [];
     for (const repo of repos) {
@@ -1152,6 +1134,14 @@ async function refreshGitLab(force) {
       repoIssues.push(...(res.issues || []));
     }
     gl.repoIssues = repoIssues;
+    // 関連 MR（レビュー対象）を補完する。「レビュー待ち」の主目的なので repo イシューに行う
+    const urls = repoIssues.map((i) => i.url).filter(Boolean);
+    if (urls.length && gl.enabled !== false) {
+      const res = await api.glEnrich(urls);
+      for (const issue of res.issues || []) {
+        if (issue && issue.url && !issue.error) gl.byUrl[issue.url] = issue;
+      }
+    }
   } catch (err) {
     toast(`GitLab 取得: ${err.message}`);
   } finally {

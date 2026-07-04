@@ -10,7 +10,7 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 │  └ プロジェクト     ││ バックログ  タスク一覧（status / priority / verify）│
 │     ● 稼働中        ││ 要対応     needs/（人の判断待ち・検収待ち）        │
 │     [needs] [tasks] ││ フロー     kiro-flow run のタスクグラフ（DAG）     │
-│                     ││ GitLab    委譲イシュー → レビューへ引き継ぎ       │
+│                     ││ レビュー待ち repos のオープンイシュー → レビューへ │
 │                     ││ 履歴      run-log / 決定記録 / 納品 / journal     │
 └─────────────────────┘└──────────────────────────────────────────────┘
 ```
@@ -26,7 +26,7 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 | バックログ | `backlog/<id>.md`（1 ファイル = 1 タスク。status / priority / verify / after 等）・`archive/<id>.md`（done） |
 | 要対応 | `needs/<id>.md`（MADR 形式。blocked / review / milestone。「ファイルを開いて回答」でエディタへ） |
 | フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。バスは `<project>/bus` → `<container>/bus` → ⚙ 設定 → kiro-projects 設定ファイル（`.kiro/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock` の pid）から判定 — **kiro-flow CLI には一切聞かない**。ノード詳細では進捗（開始・経過・worker heartbeat/lease・所要・作り直し回数・claimed/result のタイムライン）と、gitlab executor の**関連イシュー**（承認は `data`、却下は output の URL、実行中は決定的タスクトークンの GitLab 検索）を表示し「レビューで開く」で gitlab-review-viewer へ引き継ぐ |
-| GitLab | kiro-flow gitlab executor が results に残した `{issue_iid, web_url, decision, merged_mrs}` ＋ `repos.json` の GitLab リポジトリのオープンイシュー（API 設定時） |
+| レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー＋関連 MR（API 設定時）。プロジェクトが扱うリポジトリの「いまレビュー待ち・作業中」を横断一覧し gitlab-review-viewer へ引き継ぐ。run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当 |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
 
 プロジェクトの発見は次の 2 系統:
@@ -51,7 +51,7 @@ kiro-projects の人間ループはこのアプリ内で完結できる。いず
 | 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
 | 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
 | ＋ タスクを追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口。verify / accept / priority / note 付き） |
-| レビュー操作（承認/差し戻し/コメント） | GitLab タブ →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
+| レビュー操作（承認/差し戻し/コメント） | レビュー待ちタブ／フロータブのノード詳細 →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
 
 - 理由・方針の記入はすべて決定記録（`decisions/` の DR）や次 act への feedback として
   kiro-projects 側に残る
@@ -98,14 +98,14 @@ task の retries 上限 → blocked ＋ needs/<id>.md 生成 ＝ ここで初め
   | 場面 | 見る場所 | できる指示 |
   |------|---------|-----------|
   | ノードの進捗・失敗理由 | フロータブ → ノード詳細（経過・heartbeat・output・タイムライン） | — |
-  | gitlab 委譲の判断待ち | ノード詳細の「関連イシュー」（実行中はタスクトークン検索）／GitLab タブ | 「レビューで開く」→ gitlab-review-viewer で MR のマージ/差し戻し・コメント |
+  | gitlab 委譲の判断待ち | ノード詳細の「関連イシュー」（実行中はタスクトークン検索）／レビュー待ちタブ | 「レビューで開く」→ gitlab-review-viewer で MR のマージ/差し戻し・コメント |
   | 却下されたタスク | ノード詳細（output の却下理由・イシューリンク） | イシューのコメントが次の act に効く（レビューで開いて記入） |
   | run 自体の失敗（orchestrator 消失・再開上限） | フロータブ run 詳細（失敗理由・自動再開回数） | 「↻ 同じ要求で再投入」（inbox へ新しい run として投入） |
   | retry が尽きて人待ち（blocked/review） | 要対応タブ（needs/） | フィードバックして再開・承認・保留 |
 
 ## gitlab-review-viewer との連携（レビューの引き継ぎ）
 
-GitLab タブの「**レビューで開く**」を押すと、そのイシューを gitlab-review-viewer で開く。
+レビュー待ちタブ（またはフロータブのノード詳細）の「**レビューで開く**」を押すと、そのイシューを gitlab-review-viewer で開く。
 
 - 既定は **カスタム URL スキーム**: `gitlab-review-viewer://open?url=<イシューの web_url>` を
   OS 経由で開く。gitlab-review-viewer 側はディープリンク対応済み（シングルインスタンス化
