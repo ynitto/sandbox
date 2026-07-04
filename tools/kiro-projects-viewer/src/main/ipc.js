@@ -1,10 +1,12 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const { ipcMain, shell } = require('electron');
 const { loadConfig, saveConfig } = require('./config');
 const kiro = require('./kiro');
 const flow = require('./flow');
+const git = require('./git');
 const { lookupScalar } = require('./toolconfig');
 const { GitLabClient } = require('./gitlab');
 const { openInReviewViewer } = require('./review');
@@ -33,9 +35,29 @@ function flowLockDir(cfg) {
   return found ? found.value : null;
 }
 
+// ゴミ箱へ移動（可能な環境ではリカバリできる）。ゴミ箱が無い環境では完全削除
+async function removeToTrash(target) {
+  try {
+    await shell.trashItem(target);
+    return 'trash';
+  } catch {
+    fs.rmSync(target, { recursive: true, force: true });
+    return 'delete';
+  }
+}
+
 function registerIpcHandlers() {
   handle('config:get', () => loadConfig());
   handle('config:save', ({ config }) => saveConfig(config));
+
+  // 選択中プロジェクトのリポジトリを git pull で最新化する。
+  // 自動（force=false）は設定間隔・下限 60 秒のスロットリングでリモート負荷を抑える
+  handle('git:pull', ({ dir, force }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const cfg = loadConfig();
+    const intervalSec = (cfg.kiro && Number(cfg.kiro.gitPullSec)) || 300;
+    return git.pull(dir, { intervalSec, force: !!force });
+  });
 
   // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー
   handle('kiro:discover', () => kiro.discover(loadConfig()));
@@ -63,6 +85,29 @@ function registerIpcHandlers() {
 
   // 失敗/完了した run を同じ要求で inbox へ再投入（人の明示アクション。新しい run になる）
   handle('flow:resubmit', ({ busDir, runId }) => flow.resubmitRun(busDir, runId));
+
+  // 不要な run の削除（人の明示アクション）。実行中（orchestrator 生存）は拒否し、
+  // 終端（done/failed）と応答なし（孤児）だけを runs/<id> ごとゴミ箱へ移動する
+  handle('flow:deleteRun', async ({ busDir, runId }) => {
+    const { runDir, status } = flow.prepareRunDeletion(busDir, runId);
+    const via = await removeToTrash(runDir);
+    return { runDir, status, via };
+  });
+
+  // 不要なバックログタスクの削除（人の明示アクション）。backlog/<id>.md だけを
+  // 対象にし、クレーム中（実行中）のタスクは拒否する。kiro-projects に削除の
+  // 公式契約は無いため、ファイルをゴミ箱へ移動する（決定記録 DR は残らない）
+  handle('kiro:deleteTask', async ({ dir, id }) => {
+    const tid = String(id || '');
+    if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
+    const file = path.join(dir, 'backlog', `${tid}.md`);
+    if (!fs.existsSync(file)) throw new Error(`タスクファイルがありません: ${file}`);
+    if (fs.existsSync(path.join(dir, 'claims', `${tid}.lock`))) {
+      throw new Error(`${tid} は実行中（クレーム中）のため削除できません`);
+    }
+    const via = await removeToTrash(file);
+    return { file, via };
+  });
 
   // 実行中ノードの関連イシューを決定的タスクトークンで検索（gitlab executor 連動）
   handle('gitlab:findIssueByToken', ({ repoUrl, projectPath, token }) => {
