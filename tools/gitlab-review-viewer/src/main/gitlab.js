@@ -254,10 +254,6 @@ class GitLabClient {
     return this.api(`${this.itemPath(target)}/notes`, { method: 'POST', body: { body } });
   }
 
-  deleteIssue(target) {
-    return this.api(this.itemPath({ ...target, type: 'issue' }), { method: 'DELETE' });
-  }
-
   deleteBranch(projectId, branch) {
     return this.api(
       `/projects/${projectId}/repository/branches/${encodeURIComponent(branch)}`,

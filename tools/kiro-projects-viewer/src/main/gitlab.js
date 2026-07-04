@@ -102,6 +102,39 @@ class GitLabClient {
     };
   }
 
+  // リポジトリ URL（https://host/group/proj(.git)）→ "group/proj" パス。
+  // kiro-flow の run meta にはワークスペースのリポジトリ URL しか無いため、
+  // イシュー検索はこれで起票先プロジェクトを解決する（gitlab executor と同じ考え方）。
+  static repoUrlToProjectPath(repoUrl) {
+    try {
+      const u = new URL(String(repoUrl));
+      const p = u.pathname.replace(/\.git$/, '').replace(/^\/+|\/+$/g, '');
+      return p || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // kiro-flow gitlab executor の決定的タスクトークン（イシュー本文の隠しマーカー
+  // `<!-- kiro-flow:task-token:kf-... -->`）で関連イシューを探す。実行中（result 未確定）の
+  // ノードでもイシューへたどり着ける。検索ヒットは本文のマーカー一致で必ず検証する
+  // （executor の _find_open_issue_by_token と同じ流儀。state は絞らない＝却下済みも見つかる）。
+  async findIssueByToken({ repoUrl, projectPath, token }) {
+    const pp = projectPath || GitLabClient.repoUrlToProjectPath(repoUrl);
+    if (!pp) throw new Error(`起票先プロジェクトを解決できません: ${repoUrl || '(URL なし)'}`);
+    const enc = encodeURIComponent(pp);
+    const marker = `kiro-flow:task-token:${token}`;
+    const issues = await this.api(`/projects/${enc}/issues`, {
+      query: { search: token, in: 'description', per_page: 20, order_by: 'updated_at' },
+    });
+    for (const it of issues || []) {
+      if (String(it.description || '').includes(marker)) {
+        return this.getIssueByUrl(it.web_url); // 関連 MR 込みの完全な形で返す
+      }
+    }
+    return null;
+  }
+
   // プロジェクト（"group/proj" パス）のイシュー一覧（gitlab executor の
   // 規約ラベル status:* での絞り込みに対応）
   async listProjectIssues({ projectPath, state, labels, perPage = 50 }) {

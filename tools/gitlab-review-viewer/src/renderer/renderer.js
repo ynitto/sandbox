@@ -509,17 +509,6 @@ function closeTab(pane, index) {
   renderTargetInfo();
 }
 
-// 削除済みアイテムを pages / candidates / ペインから取り除く
-function removePage(target) {
-  const match = (p) =>
-    p.projectId === target.projectId && p.type === target.type && p.iid === target.iid;
-  state.pages = state.pages.filter((p) => !match(p));
-  state.candidates = state.candidates.filter((c) => !match(c));
-  rebuildPanes();
-  renderCandidates();
-  renderTargetInfo();
-}
-
 // pages からペインのタブを組み直す（リーダー / 要約のローカルタブは残す）
 function rebuildPanes() {
   for (const [pane, kind] of [[0, 'issue'], [1, 'mr']]) {
@@ -983,33 +972,64 @@ async function doSendBack() {
   });
 }
 
-// 却下: 削除 / 閉じる / キャンセルの 3 択ダイアログ
-function openRejectDialog() {
+// 却下: イシュー名と似たタイトルの MR をクローズしてソースブランチを削除し、
+// イシューは「閉じる」。
+// - MR の絞り込み: related_merge_requests には本文で言及しただけの無関係な MR も
+//   混ざるため、破壊的操作（クローズ＋ブランチ削除）は**イシューとタイトルが似ている
+//   MR のみ**を対象にする（タブ選択と同じ titleSimilarity。対象はダイアログに事前表示）
+// - イシューは削除しない — コメント・経緯が記録として残り、委譲元ツール
+//   （kiro-flow はイシューのクローズで却下を検知し、人コメントをやり直し指示として
+//   取り込む。削除すると 404 の一般エラーになりフィードバックごと壊れる）にも
+//   決着が正しく伝わる。
+const REJECT_TITLE_SIMILARITY = 0.5;
+
+let rejectTargets = { mrs: [], skipped: 0 };
+
+async function openRejectDialog() {
   const t = primaryTarget();
   if (!t) return;
-  $('reject-desc').textContent = `${pageLabel(t)} — ${t.title.slice(0, 60)} を破棄します。`;
-  $('reject-dialog').showModal();
+  await guard('却下対象の取得', async () => {
+    let mrs = [];
+    let skipped = 0;
+    if (t.type === 'mr') {
+      mrs = [t];
+    } else {
+      const related = ((await api.glRelated(targetOf(t)).catch(() => [])) || []).filter(
+        (r) => r.type === 'mr' && r.state === 'opened'
+      );
+      mrs = related.filter((m) => titleSimilarity(m.title, t.title) >= REJECT_TITLE_SIMILARITY);
+      skipped = related.length - mrs.length;
+    }
+    rejectTargets = { mrs, skipped };
+    $('reject-desc').textContent = `${pageLabel(t)} — ${t.title.slice(0, 60)} を却下します。`;
+    $('reject-mrs').innerHTML = [
+      mrs.length
+        ? `クローズしてブランチを削除する MR: ${mrs
+            .map((m) => `<span class="mono">!${m.iid}</span> ${escapeHtml(String(m.title || '').slice(0, 40))}`)
+            .join(' ／ ')}`
+        : '対象の MR はありません（イシューのみ閉じます）',
+      skipped ? `（タイトルが似ていない関連 MR ${skipped} 件は対象外）` : '',
+    ]
+      .filter(Boolean)
+      .join('<br>');
+    $('reject-dialog').showModal();
+  });
 }
 
-async function doReject(choice) {
-  // choice: 'delete'（MR クローズ + ソースブランチ削除 + イシュー削除）
-  //         'close' （MR クローズ + イシューを閉じる）
+async function doReject() {
   $('reject-dialog').close();
   const t = primaryTarget();
   if (!t) return;
+  const mrs = rejectTargets.mrs;
   await guard('却下', async () => {
     await api.glComment(targetOf(t), actionComment('却下'));
 
-    // 右ペインのアクティブタブの MR（対象が MR ならそれ自身）をクローズする。
-    // タイトルはブレることがあるため、タイトル一致では対象を探さない。
-    const target = t.type === 'mr' ? t : activeMR();
-    const mrs = target ? [target] : [];
     for (const mr of mrs) {
       if (mr.state === 'opened') {
         const closed = await api.glSetState(targetOf(mr), 'close');
         applyUpdatedItem(closed);
       }
-      if (choice === 'delete' && mr.sourceBranch) {
+      if (mr.sourceBranch) {
         try {
           await api.glDeleteBranch(mr.projectId, mr.sourceBranch);
         } catch (err) {
@@ -1019,19 +1039,13 @@ async function doReject(choice) {
     }
 
     if (t.type === 'issue') {
-      if (choice === 'delete') {
-        await api.glDeleteIssue(targetOf(t));
-        removePage(t);
-        toast(`${pageLabel(t)} を削除しました`);
-      } else {
-        if (t.state === 'opened') {
-          const closed = await api.glSetState(targetOf(t), 'close');
-          applyUpdatedItem(closed);
-        }
-        toast(`${pageLabel(t)} を閉じました`);
-      }
+      // 表示キャッシュの state に頼らず常に明示的にクローズする（既にクローズ済みなら
+      // no-op）。委譲元の自動クローズ（kiro-flow）は daemon 停止中などで走らないことがある
+      const closed = await api.glSetState(targetOf(t), 'close');
+      applyUpdatedItem(closed);
+      toast(`${pageLabel(t)} を却下しました（MR ${mrs.length} 件をクローズ・ブランチ削除、イシューは閉じる）`);
     } else {
-      toast(`${pageLabel(t)} を${choice === 'delete' ? 'クローズしてブランチを削除' : 'クローズ'}しました`);
+      toast(`${pageLabel(t)} をクローズしてソースブランチを削除しました`);
     }
     $('comment-input').value = '';
     reloadPanes();
@@ -1352,9 +1366,8 @@ async function init() {
   $('btn-approve').addEventListener('click', doApprove);
   $('btn-sendback').addEventListener('click', doSendBack);
   $('btn-reject').addEventListener('click', openRejectDialog);
+  $('btn-reject-ok').addEventListener('click', () => doReject());
   $('btn-change').addEventListener('click', openChangeDialog);
-  $('btn-reject-delete').addEventListener('click', () => doReject('delete'));
-  $('btn-reject-close').addEventListener('click', () => doReject('close'));
   $('btn-reject-cancel').addEventListener('click', () => $('reject-dialog').close());
   $('btn-change-run').addEventListener('click', executeChange);
   $('btn-change-cancel').addEventListener('click', () => $('change-dialog').close());

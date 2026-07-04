@@ -225,32 +225,112 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=20.0)), 200.0)
         self.assertEqual(kf._run_lease_window(types.SimpleNamespace(poll=None)), 120.0)
 
-    def test_recover_fails_stale_inbox_run(self):
-        # submit 由来（inbox に req）で孤児化した run を、別デーモン/再起動後の自分が回収する
+    def _args(self, **kw):
+        base = dict(max_resumes=3, lease=1800.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _adopt(self, owned=None, spawn=None, **kw):
+        spawned = []
+
+        def fake_spawn(base, args, req_id, req):
+            spawned.append(req_id)
+            return types.SimpleNamespace(poll=lambda: None)   # 生きている子のふり
+
+        adopted, failed = kf._adopt_orphan_runs(
+            self.bus, "d2", owned or set(), 120.0, self._args(**kw), [],
+            spawn=spawn or fake_spawn)
+        return adopted, failed, spawned
+
+    def test_orphan_inbox_run_is_resumed_not_failed(self):
+        # PC シャットダウン等で owning daemon が消えた run は failed でなく再開（引き継ぎ）する
         self.bus.submit_request("run1", "req", "submitter")
         self.bus.set_status("running")
         self._set_meta(orch_lease_until=time.time() - 1.0)
-        recovered = kf._recover_orphan_runs(self.bus, "d2", set(), 120.0)
-        self.assertEqual(recovered, ["run1"])
+        adopted, failed, spawned = self._adopt()
+        self.assertEqual(list(adopted), ["run1"])
+        self.assertEqual(failed, [])
+        self.assertEqual(spawned, ["run1"])
+        meta = self.bus.run_meta("run1")
+        self.assertEqual(meta["status"], "running")             # failed にしない
+        self.assertEqual(meta["resume_count"], 1)
+        self.assertGreater(meta.get("orch_lease_until", 0), time.time())  # 生存リースを張り直す
+
+    def test_orphan_failed_after_max_resumes_without_progress(self):
+        # 進捗（results/）ゼロのまま連続再開が上限を超えたら従来どおり failed に確定する
+        self.bus.submit_request("run1", "req", "submitter")
+        for i in range(2):
+            self.bus.set_status("running")
+            self._set_meta(orch_lease_until=time.time() - 1.0)
+            adopted, failed, _ = self._adopt(max_resumes=2)
+            self.assertEqual(list(adopted), ["run1"], f"resume #{i+1}")
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        adopted, failed, _ = self._adopt(max_resumes=2)
+        self.assertEqual(adopted, {})
+        self.assertEqual(failed, ["run1"])
+        self.assertEqual(self.bus.run_meta("run1")["status"], "failed")
+        self.assertIn("orphaned", self.bus.run_meta("run1")["failure_reason"])
+
+    def test_resume_count_resets_on_progress(self):
+        # 前回の再開以降に results が増えていれば数え直す＝進捗のある長期 run は何度でも再開できる
+        self.bus.submit_request("run1", "req", "submitter")
+        for i in range(4):                                       # max_resumes=2 を超える回数
+            self.bus.set_status("running")
+            self._set_meta(orch_lease_until=time.time() - 1.0)
+            adopted, failed, _ = self._adopt(max_resumes=2)
+            self.assertEqual(list(adopted), ["run1"], f"resume #{i+1}")
+            self.assertEqual(self.bus.run_meta("run1")["resume_count"], 1)  # 進捗ありで毎回リセット
+            self.bus.write_result(f"t{i}", "w1", "done", "ok")   # 再開後に進捗が出た
+        self.assertEqual(failed, [])
+
+    def test_orphan_failed_when_resume_disabled(self):
+        # max_resumes<=0 は従来動作（孤児は即 failed）へのオプトアウト
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        adopted, failed, spawned = self._adopt(max_resumes=0)
+        self.assertEqual(adopted, {})
+        self.assertEqual(failed, ["run1"])
+        self.assertEqual(spawned, [])
         self.assertEqual(self.bus.run_meta("run1")["status"], "failed")
 
-    def test_recover_skips_owned_run(self):
-        # 自分が今 orchestrator を回している run は（リースが古くても）回収しない
+    def test_adopt_skips_owned_run(self):
+        # 自分が今 orchestrator を回している run は（リースが古くても）引き継がない
         self.bus.submit_request("run1", "req", "submitter")
         self.bus.set_status("running")
         self._set_meta(orch_lease_until=time.time() - 1.0)
-        recovered = kf._recover_orphan_runs(self.bus, "d2", {"run1"}, 120.0)
-        self.assertEqual(recovered, [])
+        adopted, failed, _ = self._adopt(owned={"run1"})
+        self.assertEqual((adopted, failed), ({}, []))
         self.assertEqual(self.bus.run_meta("run1")["status"], "running")
 
-    def test_recover_skips_live_run(self):
-        # 別デーモンが heartbeat 中（リース新鮮）の run は回収しない（誤って横取りしない）
+    def test_adopt_skips_live_run(self):
+        # 別デーモンが heartbeat 中（リース新鮮）の run は引き継がない（誤って横取りしない）
         self.bus.submit_request("run1", "req", "submitter")
         self.bus.set_status("running")
         self.bus.touch_run("run1", 120.0)
-        recovered = kf._recover_orphan_runs(self.bus, "d2", set(), 120.0)
-        self.assertEqual(recovered, [])
+        adopted, failed, _ = self._adopt()
+        self.assertEqual((adopted, failed), ({}, []))
         self.assertEqual(self.bus.run_meta("run1")["status"], "running")
+
+    def test_adopt_waits_for_stale_claim_lease(self):
+        # 消失した旧 owner の inbox claim がまだ lease 内なら引き継ぎを保留する
+        # （lease 失効後の poll で自然に再試行される。failed にはしない）
+        self.bus.submit_request("run1", "req", "submitter")
+        self.assertTrue(self.bus.reclaim_request("run1", "dead-daemon", 1800.0))
+        self.bus.set_status("running")
+        self._set_meta(orch_lease_until=time.time() - 1.0)
+        adopted, failed, _ = self._adopt()
+        self.assertEqual((adopted, failed), ({}, []))
+        self.assertEqual(self.bus.run_meta("run1")["status"], "running")
+
+    def test_reclaim_after_owner_lease_expiry(self):
+        # 旧 owner の claim が lease 切れなら reclaim できる（run が存在していても）
+        self.bus.submit_request("run1", "req", "submitter")
+        self.assertTrue(self.bus.reclaim_request("run1", "dead-daemon", 0.01))
+        time.sleep(0.05)
+        self.assertFalse(self.bus.claim_request("run1", "d2", 120.0))   # 従来 API は run 存在で拒否
+        self.assertTrue(self.bus.reclaim_request("run1", "d2", 120.0))  # 引き継ぎ用は claim できる
 
 
 class PlannerTests(unittest.TestCase):
@@ -723,6 +803,13 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertIn("[gitlab-reject]", msg)
         self.assertIn("命名が要件と違う", msg)        # 人コメントをやり直し指示に活かす
         self.assertEqual(closed["n"], 1)              # 元イシューはクローズされる
+        # 承認と対称の機械可読な決着: 例外に data が載る（worker が failed result に書く）
+        d = ctx.exception.data
+        self.assertEqual(d["decision"], "rejected")
+        self.assertEqual(d["issue_iid"], 9)
+        self.assertIn("命名が要件と違う", d["guidance"])
+        self.assertEqual(d["merged_mrs"], [1])        # マージ済みだった MR も分かる
+        self.assertTrue(d["closed"])
 
     def test_reject_without_comments_says_auto(self):
         # 人コメントが無い却下 → 自動判断の指示で送出
@@ -737,6 +824,39 @@ class GitlabExecutorPluginTests(unittest.TestCase):
             self._run_with(api, mrs_seq=[[{"iid": 1, "state": "closed"}]], notes=[])
         self.assertIn("[gitlab-reject]", str(ctx.exception))
         self.assertIn("自動で", str(ctx.exception))
+
+    def test_deleted_issue_treated_as_rejected(self):
+        # 決着待ち中にイシューが削除（404）されたら、一般エラーでなく却下（取り下げ）として
+        # 決着させる（誤削除でもフィードバックループを壊さない防御）。guidance は空＝自動判断。
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 7, "web_url": "https://gitlab.com/group/repo/-/issues/7"}
+            if method == "GET":
+                raise RuntimeError("GitLab API GET /projects/x/issues/7 失敗: HTTP 404 Not Found")
+            return {}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(api, mrs_seq=[[]])
+        self.assertIn("[gitlab-reject]", str(ctx.exception))
+        self.assertIn("削除", str(ctx.exception))
+        d = ctx.exception.data
+        self.assertEqual(d["decision"], "rejected")
+        self.assertIn("削除", d["reason"])
+        self.assertEqual(d["guidance"], "")
+
+    def test_non_404_error_still_raises_plain_failure(self):
+        # ネットワーク断・権限エラー等（404 以外）は却下でなく従来どおりの失敗として送出
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 7, "web_url": "u"}
+            if method == "GET":
+                raise RuntimeError("GitLab API GET /projects/x/issues/7 失敗: HTTP 500 Server Error")
+            return {}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(api, mrs_seq=[[]])
+        self.assertNotIn("[gitlab-reject]", str(ctx.exception))
+        self.assertIn("HTTP 500", str(ctx.exception))
 
     def test_open_mr_keeps_waiting_until_merged(self):
         # MR が open のうちは待機し、全マージで承認。
@@ -2494,6 +2614,34 @@ class ArtifactProtocolTests(unittest.TestCase):
         r = bus.read_result("t1")
         self.assertEqual(r["status"], "done")
         self.assertIn(os.path.join("artifacts", "t1", "result.bin"), r["artifacts"])
+
+    def test_worker_records_exception_data_on_failure(self):
+        # executor が例外に載せた構造化データ（gitlab 却下の issue_iid / guidance 等）は
+        # 承認と対称に failed result の data として残る（消費側の文字列マッチ依存を無くす）
+        bus = self.bus
+        bus.write_graph({"nodes": {"t1": {"goal": "g", "deps": [], "kind": "work"}},
+                         "iteration": 0})
+        bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
+        bus.set_status("running")
+
+        def fake_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None):
+            err = RuntimeError("[gitlab-reject] 却下されました（未マージクローズ）（u）。やり直し指示: 命名を直す")
+            err.data = {"issue_iid": 9, "web_url": "u", "decision": "rejected",
+                        "reason": "未マージクローズ", "guidance": "命名を直す", "closed": True}
+            raise err
+
+        args = mock.Mock(bus=self.tmp, run_id="run1", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        with mock.patch.object(kf, "execute_stub", side_effect=fake_exec), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        r = bus.read_result("t1")
+        self.assertEqual(r["status"], "failed")
+        self.assertIn("[gitlab-reject]", r["output"])          # 従来のテキストも維持（後方互換）
+        self.assertEqual(r["data"]["decision"], "rejected")
+        self.assertEqual(r["data"]["issue_iid"], 9)
+        self.assertEqual(r["data"]["guidance"], "命名を直す")
 
 
 class ArgvLimitTests(unittest.TestCase):

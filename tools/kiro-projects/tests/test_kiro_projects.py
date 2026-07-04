@@ -1390,6 +1390,36 @@ class TestActSubmitTerminal(unittest.TestCase):
             self.assertTrue(ok)
             self.assertIn("done", msg)
 
+    def test_submit_req_id_deterministic_and_passed_to_submit(self):
+        # リブート跨ぎの再接続の前提: 同一試行は同じ req_id（決定的）、リトライ・別プロジェクトは別 id
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
+            t = self._task()
+            rid = km._submit_req_id(t, cfg)
+            self.assertEqual(rid, km._submit_req_id(t, cfg))                  # 決定的
+            self.assertNotEqual(rid, km._submit_req_id(
+                km.Task(id="T1", title="x", verify="true", retries=1), cfg))  # リトライは新 run
+            cfg2 = cfg_for(Path(d) / "other", dry_run=False)
+            self.assertNotEqual(rid, km._submit_req_id(t, cfg2))              # 別 backlog と衝突しない
+            self.assertNotIn("/", rid)                                        # run ディレクトリ名に安全
+
+            seen = []
+
+            def fake(cmd, *a, **kw):
+                seen.append(list(cmd))
+                if "submit" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, stdout=f"{rid}\n", stderr="")
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps({"done": True, "status": "done"}), stderr="")
+
+            with mock.patch.object(km.subprocess, "run", fake), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None):
+                ok, _ = km._act_submit(t, cfg, use_git=False)
+            self.assertTrue(ok)
+            sub_cmd = next(c for c in seen if "submit" in c)
+            self.assertIn("--run-id", sub_cmd)                                # 再接続の入口
+            self.assertEqual(sub_cmd[sub_cmd.index("--run-id") + 1], rid)
+
     def test_nonterminal_run_times_out_without_hanging(self):
         # done=False のまま（orchestrator 失踪を daemon が終端化できていない最悪ケース）でも、
         # act_timeout を境に必ず返る（永久待機しない）ことを擬似クロックで確認する。
@@ -4027,6 +4057,23 @@ class TestGitlabRejectRetry(unittest.TestCase):
             g = km.read_reject_guidance(cfg, use_git=False)
         self.assertIn("命名を要件に合わせる", g)
         self.assertNotIn("[gitlab-reject]", g)
+
+    def test_read_reject_guidance_prefers_structured_data(self):
+        # kiro-flow の gitlab executor は却下時に failed result へ構造化 data を残す。
+        # 文字列マーカーより data（decision=rejected の guidance）を優先して読む。
+        cfg = cfg_for(self.tmp, executor="gitlab")
+        result_json = json.dumps({"final_nodes": [
+            {"id": "n1",
+             "output": "実行エラー: [gitlab-reject] 却下されました（u）。やり直し指示: 古い方の指示",
+             "data": {"decision": "rejected", "issue_iid": 9,
+                      "guidance": "構造化データ側の指示"}}]})
+
+        def fake_run(cmd, **kw):
+            return types.SimpleNamespace(returncode=1, stdout=result_json, stderr="")
+
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            g = km.read_reject_guidance(cfg, use_git=False)
+        self.assertEqual(g, "構造化データ側の指示")
 
     def test_read_reject_guidance_empty_when_no_marker(self):
         cfg = cfg_for(self.tmp, executor="gitlab")

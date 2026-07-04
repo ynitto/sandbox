@@ -12,8 +12,9 @@ const state = {
   flowRuns: [],
   flowDaemon: null, // {running, pid, lockPath}（ロックファイルからの判定）
   flowRunId: null,
-  flowRun: null, // {run, events}
+  flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
+  flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）
   backlogFilter: 'active',
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false },
   timer: null,
@@ -730,15 +731,7 @@ function renderFlowDetail() {
     )
     .join('');
   const node = state.flowNodeId ? run.nodes[state.flowNodeId] : null;
-  const nodeDetail = node
-    ? `<div class="card full">
-        <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${esc(FLOW_STATE_LABEL[node.state] || node.state)}${node.who ? ` @${esc(node.who)}` : ''}</h3>
-        <div>${esc(node.goal)}</div>
-        ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
-        ${node.output ? `<div class="section-title">output</div><pre class="mono">${esc(node.output.slice(0, 3000))}</pre>` : ''}
-        ${node.data ? `<div class="section-title">data</div><pre class="mono">${esc(JSON.stringify(node.data, null, 2).slice(0, 2000))}</pre>` : ''}
-      </div>`
-    : '';
+  const nodeDetail = node ? renderFlowNode(run, node) : '';
   const events = (fr.events || [])
     .map(
       (ev) =>
@@ -751,13 +744,19 @@ function renderFlowDetail() {
     run.alive === false
       ? ` <span class="status-chip st-stalled">応答なし</span>`
       : '';
+  const resumed = run.resumeCount > 0 ? `（自動再開 #${run.resumeCount}）` : '';
   const heartbeat =
     run.alive !== null && run.heartbeatAt
-      ? `<div class="muted">orchestrator heartbeat: ${esc(fmtAgo(run.heartbeatAt))}${run.alive === false ? '（生存リース切れ — daemon 消失の可能性。kiro-flow が孤児回収します）' : ''}</div>`
+      ? `<div class="muted">orchestrator heartbeat: ${esc(fmtAgo(run.heartbeatAt))}${resumed}${run.alive === false ? '（生存リース切れ — daemon が再起動すれば続きから自動再開されます）' : ''}</div>`
+      : '';
+  // 失敗した run は人が「同じ要求で再投入」できる（新しい run として inbox へ。公式契約のみ）
+  const resubmit =
+    run.status === 'failed'
+      ? `<button class="chip" id="flow-resubmit" title="meta の要求・ワークスペースをそのまま新しい run として inbox へ投入します（daemon が拾う）">↻ 同じ要求で再投入</button>`
       : '';
   return `
     <div class="card full">
-      <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)}</h3>
+      <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${resubmit}</h3>
       <div>${esc(run.request || '')}</div>
       ${heartbeat}
       ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(run.failureReason)}</div>` : ''}
@@ -771,6 +770,157 @@ function renderFlowDetail() {
     ${nodeDetail}
     <div class="section-title">アクティビティ</div>
     <div class="events">${events || '<span class="muted">イベントなし</span>'}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// ノード詳細（進捗・タイムライン・関連イシュー）
+// ---------------------------------------------------------------------------
+
+// ノードのタイムライン（events の claimed / result。新しい順で届く）
+function nodeTimeline(nodeId) {
+  return ((state.flowRun && state.flowRun.nodeEvents) || {})[nodeId] || [];
+}
+
+// ノードの進捗行: 実行中は 開始/経過/heartbeat/lease、終端は 所要/完了時刻 を出す
+function nodeProgressLine(node) {
+  const evs = nodeTimeline(node.id);
+  const claims = evs.filter((e) => e.kind === 'claimed');
+  const lastClaimTs = claims.length ? claims[0].ts : null; // 直近の claim（この試行の開始）
+  const bits = [];
+  if (node.retries > 0) bits.push(`作り直し #${node.retries}`);
+  if (node.state === 'claimed') {
+    if (lastClaimTs) bits.push(`開始 ${fmtTime(lastClaimTs)}（経過 ${fmtAgo(lastClaimTs)}）`);
+    if (node.heartbeatAt) {
+      const aliveLease = node.leaseUntil && node.leaseUntil * 1000 > Date.now();
+      bits.push(
+        `heartbeat ${fmtAgo(node.heartbeatAt)} ${aliveLease ? '<span class="status-chip st-running">生存</span>' : '<span class="status-chip st-stalled">lease 切れ（再クレーム待ち）</span>'}`
+      );
+    }
+  } else if (node.finishedAt) {
+    const dur =
+      lastClaimTs && Date.parse(node.finishedAt) > Date.parse(lastClaimTs)
+        ? `（所要 ${Math.round((Date.parse(node.finishedAt) - Date.parse(lastClaimTs)) / 1000)}s）`
+        : '';
+    bits.push(`完了 ${fmtTime(node.finishedAt)}${dur}`);
+  }
+  return bits.length ? `<div class="muted" style="margin-top:4px">${bits.join(' ／ ')}</div>` : '';
+}
+
+// 関連 GitLab イシューのブロック。承認/却下は結果から、実行中は決定的タスクトークンで検索
+function nodeIssueBlock(run, node) {
+  const cached =
+    state.flowNodeIssue && state.flowNodeIssue.token === node.taskToken
+      ? state.flowNodeIssue
+      : null;
+  const found = cached ? cached.issue : undefined;
+  const repoUrl = run.workspace && run.workspace.url;
+
+  const rows = [];
+  const url = node.issueUrl || (found && found.url);
+  if (url) {
+    const d = node.data && typeof node.data === 'object' ? node.data : {};
+    const decision = node.rejected ? 'rejected' : d.decision || (found && found.state) || '';
+    const chip = decision
+      ? `<span class="status-chip ${node.rejected ? 'st-blocked' : 'st-done'}">${esc(node.rejected ? '却下' : decision)}</span>`
+      : '';
+    rows.push(`<div class="row2" style="align-items:center;gap:8px">
+      <a href="#" data-ext="${esc(url)}" class="mono">${esc(url)}</a> ${chip}
+      <button data-review="${esc(url)}" title="gitlab-review-viewer で開く">レビューで開く</button>
+      <button data-ext-btn="${esc(url)}" title="ブラウザで開く">↗</button>
+    </div>`);
+    if (found && found.title) {
+      rows.push(
+        `<div class="muted">#${found.iid} ${esc(found.title)}（${esc(found.state)}${found.labels && found.labels.length ? ` ／ ${found.labels.map(esc).join(', ')}` : ''}）</div>`
+      );
+    }
+    const mrs = (found && found.relatedMrs) || [];
+    if (mrs.length) {
+      rows.push(
+        `<div>${mrs
+          .map(
+            (mr) =>
+              `<span class="status-chip st-${esc(mr.state)}" title="${esc(mr.title)}">!${mr.iid} ${esc(mr.state)}</span>`
+          )
+          .join(' ')}</div>`
+      );
+    }
+    if (node.rejected) {
+      if (d.reason) rows.push(`<div class="muted">却下理由: ${esc(String(d.reason))}</div>`);
+      if (d.guidance) {
+        rows.push(
+          `<div><span class="label-chip">やり直し指示（人コメント）</span> ${esc(String(d.guidance).slice(0, 500))}</div>`
+        );
+      }
+      rows.push(
+        `<div class="muted">却下（未マージクローズ等）→ ノードは failed。kiro-projects 管理下なら
+        イシューの人コメントを feedback に注入して自動で再委譲されます（retries 上限で「要対応」へ）。</div>`
+      );
+    }
+  } else if (repoUrl && node.state === 'claimed') {
+    // 実行中（result 未確定）: イシュー URL はまだ bus に無い。タスクトークンで検索できる
+    if (cached && found === null) {
+      rows.push(`<div class="muted">関連イシューは見つかりませんでした（起票前か、gitlab executor 以外のタスク）</div>`);
+    } else {
+      rows.push(
+        `<button id="btn-find-issue" data-token="${esc(node.taskToken)}" data-repo="${esc(repoUrl)}"
+          title="イシュー本文の隠しマーカー（task-token）で検索します">関連イシューを探す（GitLab API）</button>`
+      );
+    }
+  }
+  if (!rows.length) return '';
+  return `<div class="section-title">関連イシュー（gitlab executor）</div>${rows.join('\n')}`;
+}
+
+function renderFlowNode(run, node) {
+  const evs = nodeTimeline(node.id);
+  const timeline = evs.length
+    ? `<div class="section-title">タイムライン</div><div class="events">${evs
+        .map(
+          (e) =>
+            `<div>${fmtTime(e.ts)} <strong>${esc(e.who || '')}</strong> ${esc(e.kind)}${e.status ? ` [${esc(e.status)}]` : ''}</div>`
+        )
+        .join('')}</div>`
+    : '';
+  return `<div class="card full">
+      <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${esc(FLOW_STATE_LABEL[node.state] || node.state)}${node.who ? ` @${esc(node.who)}` : ''}</h3>
+      <div>${esc(node.goal)}</div>
+      ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
+      ${nodeProgressLine(node)}
+      ${nodeIssueBlock(run, node)}
+      ${node.output ? `<div class="section-title">output</div><pre class="mono">${esc(node.output.slice(0, 3000))}</pre>` : ''}
+      ${node.data ? `<div class="section-title">data</div><pre class="mono">${esc(JSON.stringify(node.data, null, 2).slice(0, 2000))}</pre>` : ''}
+      ${timeline}
+    </div>`;
+}
+
+// 実行中ノードの関連イシューをタスクトークンで検索して表示に反映する
+async function findNodeIssue(btn) {
+  const token = btn.dataset.token;
+  const res = await guard('イシュー検索', () =>
+    api.glFindIssueByToken({ repoUrl: btn.dataset.repo, token })
+  );
+  if (res === undefined) return;
+  if (!res.enabled) {
+    toast('GitLab API が未設定です（⚙ 設定で Base URL とトークンを設定してください）');
+    return;
+  }
+  state.flowNodeIssue = { token, issue: res.issue };
+  renderFlow();
+}
+
+// 失敗 run を同じ要求で inbox へ再投入（新しい run として最初から実行される）
+async function resubmitFlowRun() {
+  const run = state.flowRun && state.flowRun.run;
+  if (!run) return;
+  const res = await guard('再投入', () => api.flowResubmit(state.project.busDir, run.runId));
+  if (res) {
+    const d = state.flowDaemon;
+    toast(
+      `再投入しました: ${res.runId}${d && d.running === false ? '（daemon 停止中 — 起動後に拾われます）' : ''}`,
+      true
+    );
+    await reloadProject();
+  }
 }
 
 function summarizeEvent(ev) {
@@ -859,25 +1009,34 @@ function bindFlowDetail(root) {
   for (const g of root.querySelectorAll('g.node[data-node]')) {
     g.addEventListener('click', () => {
       state.flowNodeId = g.dataset.node;
+      state.flowNodeIssue = null; // ノードを切り替えたら検索結果を破棄
       renderFlow();
     });
   }
-}
-
-// ---------------------------------------------------------------------------
-// タブ: GitLab
-// ---------------------------------------------------------------------------
-
-function collectBusIssues() {
-  // 全 run の results から gitlab executor の成果（issue）を集める
-  const byUrl = new Map();
-  for (const r of state.flowRuns) {
-    for (const gi of r.gitlabIssues || []) {
-      if (gi.url && !byUrl.has(gi.url)) byUrl.set(gi.url, { ...gi, runId: r.runId });
-    }
+  const rs = root.querySelector('#flow-resubmit');
+  if (rs) rs.addEventListener('click', () => resubmitFlowRun());
+  const fi = root.querySelector('#btn-find-issue');
+  if (fi) fi.addEventListener('click', () => findNodeIssue(fi));
+  for (const btn of root.querySelectorAll('#flow-detail button[data-review]')) {
+    btn.addEventListener('click', () =>
+      guard('レビュー起動', async () => {
+        const res = await api.openReview({ url: btn.dataset.review });
+        toast(`gitlab-review-viewer を起動しました（${res.via}）`, true);
+      })
+    );
   }
-  return [...byUrl.values()];
+  for (const btn of root.querySelectorAll('#flow-detail button[data-ext-btn]')) {
+    btn.addEventListener('click', () => guard('外部リンク', () => api.openExternal(btn.dataset.extBtn)));
+  }
 }
+
+// ---------------------------------------------------------------------------
+// タブ: レビュー待ち（charter repos のオープンイシュー）
+// ---------------------------------------------------------------------------
+// プロジェクトが扱うリポジトリ（repos.json）の「いまレビュー待ち・作業中のイシュー」を
+// GitLab API で横断一覧し、gitlab-review-viewer へ引き継ぐ入口。bus に依存しないため
+// kiro-flow が起票したもの以外（人が直接立てたイシュー）も見える。
+// run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当。
 
 function charterGitlabRepos() {
   const p = state.project;
@@ -899,18 +1058,17 @@ function renderGitLab() {
     el.innerHTML = '';
     return;
   }
-  const busIssues = collectBusIssues();
   const repos = charterGitlabRepos();
   const gl = state.gitlab;
 
-  const issueRow = (it, extra = '') => {
+  const issueRow = (it) => {
     const enriched = gl.byUrl[it.url];
     const labels = (enriched ? enriched.labels : it.labels) || [];
-    const stateStr = enriched ? enriched.state : it.decision || it.state || '';
+    const stateStr = enriched ? enriched.state : it.state || '';
     const mrs = enriched && enriched.relatedMrs ? enriched.relatedMrs : [];
     return `<tr>
-      <td class="mono">${it.issueIid || it.iid ? `#${it.issueIid || it.iid}` : ''}</td>
-      <td>${enriched && enriched.title ? esc(enriched.title) : linkify(it.url)}${extra}</td>
+      <td class="mono">${it.iid ? `#${it.iid}` : ''}</td>
+      <td>${it.title ? esc(it.title) : linkify(it.url)} <span class="muted">${esc(it.projectPath || '')}</span></td>
       <td>${stateStr ? statusChip(stateStr) : ''}</td>
       <td>${labels.map((l) => `<span class="label-chip">${esc(l)}</span>`).join('')}</td>
       <td>${mrs
@@ -923,25 +1081,24 @@ function renderGitLab() {
     </tr>`;
   };
 
-  const busSection = busIssues.length
-    ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th></th></tr>
-        ${busIssues.map((it) => issueRow(it, ` <span class="muted">(run ${esc(it.runId)} / ${esc(it.nodeId)})</span>`)).join('')}</table>`
-    : '<div class="muted">bus 上に gitlab executor の起票イシューはありません</div>';
-
   const repoIssuesSection = gl.repoIssues.length
     ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th></th></tr>
         ${gl.repoIssues.map((it) => issueRow(it)).join('')}</table>`
-    : `<div class="muted">${gl.enabled === false ? '⚙ 設定で GitLab の URL とトークンを設定すると、charter の repos からイシュー一覧を取得できます' : 'イシューなし'}</div>`;
+    : `<div class="muted">${
+        gl.enabled === false
+          ? '⚙ 設定で GitLab の URL とトークンを設定すると、repos のオープンイシューを一覧できます'
+          : repos.length
+            ? 'レビュー待ちのイシューはありません'
+            : 'repos が未定義です（charter の ## repos か <project>/repos.{yaml,json} で定義）'
+      }</div>`;
 
   el.innerHTML = `
     <div class="toolbar">
-      <span class="muted">タスクに紐づく GitLab イシュー（gitlab executor 委譲分と charter repos のイシュー）</span>
+      <span class="muted">repos のオープンイシュー（レビュー待ち・作業中）。委譲イシューの決着（承認/却下）はフロータブのノード詳細へ</span>
       <span class="spacer"></span>
       <button id="btn-gl-refresh" ${gl.loading ? 'disabled' : ''}>${gl.loading ? '取得中…' : 'GitLab から最新化'}</button>
     </div>
-    <div class="section-title">kiro-flow が委譲したイシュー（bus の結果から）</div>
-    ${busSection}
-    <div class="section-title">charter repos のオープンイシュー ${repos.map((r) => `<span class="label-chip">${esc(r.projectPath)}</span>`).join('')}</div>
+    <div class="section-title">レビュー待ち ${repos.map((r) => `<span class="label-chip">${esc(r.projectPath)}</span>`).join('')}</div>
     ${repoIssuesSection}`;
 
   $('btn-gl-refresh').addEventListener('click', () => refreshGitLab(true));
@@ -961,20 +1118,11 @@ function renderGitLab() {
 async function refreshGitLab(force) {
   const gl = state.gitlab;
   if (gl.loading) return;
-  const busIssues = collectBusIssues();
   const repos = charterGitlabRepos();
-  if (!force && !busIssues.length && !repos.length) return;
+  if (!force && !repos.length) return;
   gl.loading = true;
   renderGitLab();
   try {
-    const urls = busIssues.map((i) => i.url).filter(Boolean);
-    if (urls.length) {
-      const res = await api.glEnrich(urls);
-      gl.enabled = res.enabled;
-      for (const issue of res.issues || []) {
-        if (issue && issue.url && !issue.error) gl.byUrl[issue.url] = issue;
-      }
-    }
     const seen = new Set();
     const repoIssues = [];
     for (const repo of repos) {
@@ -986,6 +1134,14 @@ async function refreshGitLab(force) {
       repoIssues.push(...(res.issues || []));
     }
     gl.repoIssues = repoIssues;
+    // 関連 MR（レビュー対象）を補完する。「レビュー待ち」の主目的なので repo イシューに行う
+    const urls = repoIssues.map((i) => i.url).filter(Boolean);
+    if (urls.length && gl.enabled !== false) {
+      const res = await api.glEnrich(urls);
+      for (const issue of res.issues || []) {
+        if (issue && issue.url && !issue.error) gl.byUrl[issue.url] = issue;
+      }
+    }
   } catch (err) {
     toast(`GitLab 取得: ${err.message}`);
   } finally {

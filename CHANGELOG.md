@@ -7,6 +7,92 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: GitLab タブを「レビュー待ち」に特化
+
+- GitLab タブを「レビュー待ち」に改名し、**repos のオープンイシュー＋関連 MR の
+  横断一覧**（レビュー待ち・作業中）に特化。bus 由来の委譲イシュー一覧セクションは
+  廃止 — run/ノード単位の決着（承認/却下）はフロータブのノード詳細が担当し、
+  役割の重複を解消（bus は run 後に掃除されるため一覧としても不完全だった）
+- 関連 MR の補完（glEnrich）を repos のオープンイシューに対して行うように変更
+  （レビュー対象の MR チップが「レビュー待ち」一覧に出る）
+
+### gitlab-review-viewer: 却下を「MR クローズ＋ブランチ削除・イシューは閉じる」に一本化
+
+- 却下の「削除 / 閉じる」の 3 択を廃止し、**イシューは常に閉じる（削除しない）**に統一。
+  コメント・経緯が記録として残り、委譲元ツール（kiro-flow はイシューのクローズで却下を
+  検知し人コメントをやり直し指示として取り込む）にも決着が正しく伝わる。イシュー削除
+  API（`glDeleteIssue`）は廃止
+- 関連するマージリクエストは**クローズしてソースブランチを削除**する。対象はイシューの
+  `related_merge_requests`（open）のうち**イシュー名と似たタイトルの MR のみ**
+  （タブ選択と同じ `titleSimilarity` ≥ 0.5。本文で言及しただけの無関係な MR は対象外）。
+  クローズ対象はダイアログに事前表示され、確認してから実行できる
+- イシューのクローズは表示キャッシュの state に頼らず常に明示的に行う（委譲元の
+  自動クローズは daemon 停止中は走らないため。クローズ済みなら no-op）
+- **kiro-flow gitlab executor（防御）**: 決着待ち中にイシューが削除（404）されても
+  一般エラーでなく**取り下げ＝却下**として決着させる（`decision: rejected`・
+  guidance 空＝自動判断でやり直し）。404 以外のエラー（ネットワーク断・権限）は
+  従来どおり失敗として送出
+
+### kiro-flow: gitlab executor の却下を機械可読な決着に（data 付き failed）
+
+- 却下時の failed result に、承認と対称の構造化データ（`issue_iid` / `web_url` /
+  `decision: rejected` / `reason` / `guidance`（人コメント）/ `merged_mrs` / `closed`）を
+  `data` として残す（却下例外に `data` 属性を載せ、worker が failed result に書く）。
+  **status は failed のまま**——done は「後続が成果に依存してよい」契約であり、成果の無い
+  却下では満たせない（却下=done にすると verify が緩いタスクで「人が却下したのに done 確定」の
+  取り違えが起き得る）。やり直しの判断とループは従来どおり上位（kiro-projects）が担う
+- kiro-projects の `read_reject_guidance` は構造化 data（`decision=rejected` の `guidance`）を
+  優先し、無ければ従来の `[gitlab-reject]` 文字列マーカーにフォールバック（旧 run 互換）
+- viewer は却下判定を `data.decision` からも導出し、ノード詳細に**却下理由と
+  「やり直し指示（人コメント）」**を明示表示
+
+### kiro-projects-viewer: ノード進捗の可視化・失敗時の人の指示・GitLab イシュー連動
+
+- **ノード毎の進捗**: フロータブのノード詳細に、開始時刻・経過（実行中）・worker の
+  heartbeat 鮮度と lease 生存・完了時刻と所要・作り直し回数（`retries`）・
+  claimed/result のタイムライン（`events/*.jsonl` から）を表示
+- **関連 GitLab イシュー（gitlab executor 連動）**: ノード詳細に関連イシューを表示し
+  「レビューで開く」で gitlab-review-viewer へ引き継ぎ。承認済みは result の `data`、
+  却下は output のイシュー URL（`decision=rejected` として GitLab タブにも並ぶ）、
+  **実行中ノードは gitlab executor と同一導出の決定的タスクトークン**
+  （`kf-<sha1(run_id/node_id)[:12]>`・イシュー本文の隠しマーカー）を GitLab API で
+  検索して発見する（起票直後から追える）
+- **失敗 run への指示**: run 詳細に「↻ 同じ要求で再投入」を追加。meta の要求・
+  ワークスペース・参照リポジトリをそのまま新しい run として `inbox/` へ投入する
+  （kiro-flow の公式入力契約のみ。daemon が新規要求として拾う）
+- **README**: 「エラー時の流れとビュアーの役割」を追加 — kiro-flow 内の自動回復
+  （retry → サーキットブレーカー）、gitlab executor の承認/却下と `[gitlab-reject]` の
+  feedback 連携、人の出番（needs）とビュアーの対応窓口を 1 枚に整理
+- 修正: アクティビティのイベント並び順が ISO タイムスタンプで正しくソートされて
+  いなかった（数値減算前提だった）のを修正
+
+### kiro-flow: PC の毎日シャットダウンに耐える（孤児 run を failed でなく自動再開）
+
+- **孤児 run の引き継ぎ（resume）**: owning daemon が消失した（生存リース切れの）非終端 run を、
+  次に起動した daemon が reclaim して**同じ run-id で orchestrator を再起動**する。確定済みの
+  `results/` はバスに残っているため、未完了ノードだけが続きから実行される（従来は
+  `orphaned: owning daemon が消失` として即 failed に確定していた）
+- **暴走ガード `max_resumes`**（設定/`--max-resumes`・既定 3）: 「進捗なしの連続再開回数」で
+  数え、前回の再開以降に results が増えていれば 1 から数え直す＝進捗のある長期 run は毎日の
+  シャットダウンを跨いで何日でも継続できる。上限超過・要求ファイル欠損・無効化（0 以下）の
+  ときだけ従来どおり failed に確定し、result を待つ消費者の永久待機を防ぐ
+- daemon 稼働中の orchestrator 異常終了（クラッシュ）も同じ資格（max_resumes）で即時再開する
+- 新 Bus API: `reclaim_request`（run が存在していても引き継ぎ claim できる）・
+  `record_resume`（進捗リセット付きの再開カウンタ。meta の `resume_count` / `resume_progress`）。
+  再開時は `run-resumed` イベントを events に記録
+
+### kiro-projects: daemon 委譲の submit をリブート跨ぎで再接続可能に
+
+- `_act_submit` の req_id を決定的に（`req-<backlogハッシュ>-<task.id>-r<retries>`）。
+  PC のシャットダウンで submit の待機ごと消えても、再起動後の同じ試行は同じ req_id を
+  再 submit して kiro-flow 側の既存 run（daemon が自動再開）に合流する＝**二重実行しない**。
+  リトライ（retries+1）は新しい run になる
+
+### kiro-projects-viewer: 自動再開の可視化
+
+- run 詳細の heartbeat 行に自動再開回数（`resume_count`）を表示。「応答なし」の説明を
+  「daemon が再起動すれば続きから自動再開されます」に更新
+
 ### kiro-projects: 指示のファイルドロップ口（commands/）を追加
 
 - **新しい入力契約** `<project>/commands/<name>.json`

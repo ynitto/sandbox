@@ -2526,11 +2526,26 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     return (proc.returncode == 0, (proc.stdout or "")[-300:].strip())
 
 
+def _submit_req_id(task: Task, cfg: "Config") -> str:
+    """リブート跨ぎで同じ act 試行へ再接続するための決定的 req_id。
+
+    （backlog パス, task.id, retries）で一意にする——PC のシャットダウン等で submit の
+    待機ごと消えても、再起動後の同じ試行は同じ req_id を再 submit するため、kiro-flow 側の
+    既存 run（daemon が孤児を自動再開する）に合流して結果を受け取れる＝二重実行しない。
+    リトライ（retries+1）は新しい試行＝新しい run。backlog パスの hash は共有バスに
+    複数プロジェクトが乗るときの衝突を防ぐ。"""
+    h = hashlib.sha1(str(cfg.backlog.resolve()).encode()).hexdigest()[:8]
+    tid = re.sub(r"[^\w.-]+", "_", str(task.id))[:60]
+    return f"req-{h}-{tid}-r{task.retries}"
+
+
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
-    """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。"""
+    """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。
+    req_id は決定的（_submit_req_id）——リブート後の再実行は既存 run に合流する。"""
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
     try:
-        sub = subprocess.run(base + ["submit", build_request(task, cfg)], cwd=str(cfg.workdir),
+        sub = subprocess.run(base + ["--run-id", _submit_req_id(task, cfg),
+                                     "submit", build_request(task, cfg)], cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         return (False, f"submit 失敗: {e}")
@@ -2593,8 +2608,11 @@ def executor_delegates(cfg: "Config") -> bool:
 
 
 def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
-    """直近 run のノード出力から `[gitlab-reject]` のやり直し指示（人コメント）を取り出す。
-    `kiro-flow result --json` を読むだけ（決定的）。見つからなければ空（＝自動判断）。"""
+    """直近 run のノード結果から却下のやり直し指示（人コメント）を取り出す。
+    `kiro-flow result --json` を読むだけ（決定的）。まず構造化 data
+    （decision=rejected の guidance。gitlab executor が却下例外に載せる）を見て、
+    無ければ従来どおり output の `[gitlab-reject]` マーカーから取り出す（後方互換）。
+    見つからなければ空（＝自動判断）。"""
     if not executor_delegates(cfg):
         return ""
     cmd = _kf_base(cfg, use_git) + ["result", "--json"]
@@ -2604,6 +2622,12 @@ def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
         data = json.loads(proc.stdout or "{}")
     except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
         return ""
+    for n in data.get("final_nodes", []):
+        d = (n or {}).get("data")
+        if isinstance(d, dict) and d.get("decision") == "rejected":
+            g = str(d.get("guidance") or "").strip()
+            if g:
+                return g[:1500]
     for n in data.get("final_nodes", []):
         out = str((n or {}).get("output", ""))
         i = out.find(_REJECT_MARK)

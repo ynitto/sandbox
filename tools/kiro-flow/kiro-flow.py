@@ -131,6 +131,12 @@ CONFIG_DEFAULTS = {
     # judge/評価役のサーキットブレーカー: 同一系統（verify/失敗）の作り直しをこの回数で打ち切る。
     # 達成不可能な完了条件で無限に再タスクを生み続けるのを防ぐ（max_iterations と二重ガード）。
     "max_retries": 3,
+    # 孤児 run（owning daemon の消失＝PC シャットダウン・クラッシュ等）の自動再開の上限。
+    # 「前回の再開から進捗（新しい results/）ゼロのままの連続再開」をこの回数で打ち切り
+    # failed に確定する（起動のたびに即死する壊れた run を無限に蘇生しない）。進捗があれば
+    # 数え直すため、毎日シャットダウンされる PC 上の長期 run は何日でも再開を継続できる。
+    # 0 以下で自動再開を無効化（従来どおり孤児は即 failed）。
+    "max_resumes": 3,
     # kiro-cli へ argv で渡すプロンプトの最大バイト数。超過分は一時ファイルへ退避し参照渡しに
     # 切り替える（依存成果物が大きいときに OS の ARG_MAX に達して起動失敗するのを防ぐ）。
     "argv_limit": 100000,
@@ -613,6 +619,29 @@ class Bus:
             return lease < time.time()
         return _age_hours(meta) * 3600.0 > grace_sec
 
+    def record_resume(self, run_id: str) -> int:
+        """自動再開の試行を meta に記録し、「進捗なしの連続再開回数」を返す。
+        前回の再開以降に results/ が増えていれば 1 から数え直す＝進捗のある長期 run は
+        （毎日の PC シャットダウンを跨いで）何度でも再開できる。進捗ゼロのまま数字だけ
+        増える壊れた run だけが max_resumes に達して failed に確定される。"""
+        v = self.run_view(run_id)
+        meta = read_json(v.meta_path) or {}
+        try:
+            done_now = sum(1 for f in os.listdir(v.results_dir) if f.endswith(".json"))
+        except OSError:
+            done_now = 0
+        prev = meta.get("resume_progress")
+        if prev is None or done_now > int(prev):
+            n = 1                                     # 進捗あり（または初回）→ 数え直し
+        else:
+            n = int(meta.get("resume_count", 0) or 0) + 1
+        meta["resume_count"] = n
+        meta["resume_progress"] = done_now
+        meta["resumed_at"] = now_iso()
+        meta["updated_at"] = now_iso()
+        write_json_atomic(v.meta_path, meta)
+        return n
+
     # --- inbox（要求キュー）と要求 claim ---
     def submit_request(self, req_id: str, request: str, submitter: str,
                        workspace: "dict | None" = None,
@@ -644,6 +673,15 @@ class Bus:
             return False  # 既に誰かが run を作って処理開始済み
         return self._try_claim_in(os.path.join(self.inbox_claims_dir, req_id),
                                   who, lease_sec, f"claim request {req_id} by {who}")
+
+    def reclaim_request(self, req_id: str, who: str, lease_sec: float) -> bool:
+        """孤児 run の再開担当を 1 台に決める。run が既に存在していても claim できる点が
+        claim_request と違う（あちらは新規要求の受理用）。消失した旧 owner の claim は
+        lease 切れで勝者判定から自然に外れるため、再起動後の自分や別 daemon が引き継げる
+        （lease がまだ残っていれば False＝claim 失効まで次の poll で再試行される）。"""
+        self.sync_pull()
+        return self._try_claim_in(os.path.join(self.inbox_claims_dir, req_id),
+                                  who, lease_sec, f"reclaim request {req_id} by {who}")
 
 
 # --------------------------------------------------------------------------
@@ -2650,6 +2688,11 @@ def cmd_work(args) -> int:
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
             rstatus = "failed"
+            # executor が例外に載せた構造化データ（gitlab 却下の issue_iid / guidance 等）は
+            # 承認と対称に failed result の data として残す（消費側の文字列マッチ依存を無くす）
+            edata = getattr(e, "data", None)
+            if isinstance(edata, dict):
+                rdata = edata
         finally:
             hb.stop()
 
@@ -2733,21 +2776,56 @@ def _run_lease_window(args) -> float:
     return max(float(getattr(args, "poll", 2.0) or 2.0) * 10.0, 120.0)
 
 
-def _recover_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float) -> "list[str]":
-    """inbox 由来で自分が回しておらず生存リースの切れた（owning daemon が消失した）run を failed に
-    確定し、回収した run_id を返す。これが無いと、再起動した新プロセスは前プロセスが残した
-    status:running を見て受理をスキップするだけで、remote submit を待つ消費者が act_timeout まで
-    永久待機してしまう。`owned` は自分が今 orchestrator を回している run（誤回収しない）。"""
-    recovered: "list[str]" = []
+def _resume_run(bus: Bus, daemon_id: str, args, base: list, req_id: str, req: dict,
+                lease_window: float, spawn=None):
+    """孤児 run の orchestrator を同じ run-id で再起動する（cmd_orchestrate の resume）。
+    確定済みの results/ はバスに残っているため、未完了ノードだけが続きから実行される。
+    進捗なしの連続再開が max_resumes を超えたら None を返す（呼び出し側が failed に確定）。"""
+    n = bus.record_resume(req_id)
+    max_r = int(getattr(args, "max_resumes", 3) or 0)
+    if n > max_r:
+        return None
+    p = (spawn or _spawn_orchestrator)(base, args, req_id, req)
+    bus.touch_run(req_id, lease_window)   # 引き継ぎ直後に生存リースを張る（孤児の再判定を防ぐ）
+    bus.run_view(req_id).event(daemon_id, "run-resumed", run=req_id, resume=n)
+    bus.sync_push(f"run {req_id} resumed（孤児を引き継ぎ #{n}）")
+    return p
+
+
+def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
+                       args, base: list, spawn=None) -> "tuple[dict, list]":
+    """inbox 由来で owning daemon が消失した（生存リース切れ）非終端 run を引き継ぐ。
+
+    PC の毎日シャットダウン等で daemon ごと消えても run を失敗にしない中核。孤児を
+    見つけたら reclaim（1 台に決める）→ orchestrator を同じ run-id で再起動（resume）し、
+    途中まで確定した results/ を活かして続きから回す。再開できないもの——自動再開が
+    無効（max_resumes<=0）・要求ファイル欠損・進捗なしの連続再開が上限超過——だけを
+    従来どおり failed に確定し、result を待つ消費者（kiro-projects の submit 等）の
+    永久待機を防ぐ。`owned` は自分が今回している run（誤引き継ぎしない）。
+    戻り値は（再開した run_id→Popen, failed に確定した run_id 一覧）。"""
+    adopted: dict = {}
+    failed: "list[str]" = []
+    max_r = int(getattr(args, "max_resumes", 3) or 0)
     for req_id in bus.list_inbox():
         if req_id in owned or not bus.run_exists(req_id):
             continue
-        if bus.run_is_orphaned(req_id, lease_window) and \
-                bus.mark_run_failed(req_id, "orphaned: owning daemon が消失（生存リース切れ）"):
+        if not bus.run_is_orphaned(req_id, lease_window):
+            continue
+        req = bus.read_inbox(req_id)
+        why = "自動再開が無効（max_resumes<=0）" if max_r <= 0 else "要求ファイルを読めない"
+        if req and max_r > 0:
+            if not bus.reclaim_request(req_id, daemon_id, args.lease):
+                continue      # 旧 owner の claim がまだ lease 内 → 失効後の poll で再試行
+            p = _resume_run(bus, daemon_id, args, base, req_id, req, lease_window, spawn)
+            if p is not None:
+                adopted[req_id] = p
+                continue
+            why = f"進捗なしの連続再開が上限超過（max_resumes={max_r}）"
+        if bus.mark_run_failed(req_id, f"orphaned: owning daemon が消失（生存リース切れ・{why}）"):
             bus.run_view(req_id).event(daemon_id, "run-orphaned", run=req_id)
-            bus.sync_push(f"run {req_id} failed: orphaned（生存リース切れ）")
-            recovered.append(req_id)
-    return recovered
+            bus.sync_push(f"run {req_id} failed: orphaned（生存リース切れ・{why}）")
+            failed.append(req_id)
+    return adopted, failed
 
 
 def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
@@ -2973,11 +3051,23 @@ def cmd_daemon(args) -> int:
         # 死んだ子を刈り取る。orchestrator が done を書く前に異常終了（クラッシュ / kill /
         # 起動失敗）した場合は run が終端に達さないまま放置され、result/status を待つ消費者
         # （kiro-projects の charter 駆動 watch など）が永久待機に陥る。終端でなければ
-        # failed に確定し、失敗終了を検知可能にする。
+        # まず同じ run-id で再起動（resume。確定済み results/ を活かして続きから）を試み、
+        # 進捗なしの連続再開が max_resumes を超えたときだけ failed に確定する。
         for rid in [r for r, p in orchestrators.items() if p.poll() is not None]:
             rc = orchestrators[rid].poll()
             del orchestrators[rid]
-            if bus.mark_run_failed(rid, f"orchestrator が終端化前に終了しました（rc={rc}）"):
+            if bus.run_meta(rid).get("status") in TERMINAL:
+                log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
+                continue
+            req = bus.read_inbox(rid)
+            p = None
+            if req and int(args.max_resumes or 0) > 0 and not stop["v"]:
+                p = _resume_run(bus, daemon_id, args, base, rid, req, lease_window)
+            if p is not None:
+                orchestrators[rid] = p
+                log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ 同じ run-id で再開"
+                               f"（resume #{bus.run_meta(rid).get('resume_count', '?')}）")
+            elif bus.mark_run_failed(rid, f"orchestrator が終端化前に終了しました（rc={rc}）"):
                 bus.run_view(rid).event(daemon_id, "run-failed", run=rid, rc=rc)
                 bus.sync_push(f"run {rid} failed: orchestrator 異常終了（rc={rc}）")
                 log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ run を failed に確定")
@@ -2993,10 +3083,18 @@ def cmd_daemon(args) -> int:
             bus.sync_push("heartbeat: 駆動中の run の生存リースを更新")
             next_heartbeat_push = time.time() + lease_window / 3.0
 
-        # 孤児 run の回収: owning daemon が消失した非終端 run を failed に確定する（再起動した
+        # 孤児 run の引き継ぎ: owning daemon が消失した非終端 run（PC シャットダウン・クラッシュ等）
+        # を同じ run-id で再開する（続きから）。再開できないものだけ failed に確定する（再起動した
         # 新プロセスが status:running を放置せず、消費者が act_timeout まで待たずに復旧できるように）。
-        for rid in _recover_orphan_runs(bus, daemon_id, set(orchestrators), lease_window):
-            log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失）")
+        if not stop["v"]:
+            adopted, orphan_failed = _adopt_orphan_runs(
+                bus, daemon_id, set(orchestrators), lease_window, args, base)
+            for rid, p in adopted.items():
+                orchestrators[rid] = p
+                log(daemon_id, f"孤児 run を引き継ぎ: {rid} → 再開"
+                               f"（resume #{bus.run_meta(rid).get('resume_count', '?')}）")
+            for rid in orphan_failed:
+                log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失・再開不可）")
 
         # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）
         for req_id in bus.list_inbox():
@@ -4224,6 +4322,9 @@ def main() -> int:
     dm.add_argument("--max-iterations", type=int, default=None)
     dm.add_argument("--max-fanout", type=int, default=None)
     dm.add_argument("--max-retries", type=int, default=None)
+    dm.add_argument("--max-resumes", dest="max_resumes", type=int, default=None,
+                    help="孤児 run（owning daemon 消失）の自動再開の上限（進捗なしの連続回数, "
+                         "既定 3）。進捗があれば数え直す。0 以下で無効（孤児は即 failed）")
     dm.add_argument("--review", dest="review", action="store_const", const=True, default=None)
     dm.add_argument("--no-review", dest="review", action="store_const", const=False)
     dm.add_argument("--model", default=None)
