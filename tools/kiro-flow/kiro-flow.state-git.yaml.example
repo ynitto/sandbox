@@ -1,0 +1,33 @@
+# kiro-flow の実構成サンプル — 状態を GitLab に保存・共有する常駐構成
+# ファイル名: kiro-flow.yaml（このサンプルを丸ごと使う。汎用のキー解説は kiro-flow.yaml.example）
+#
+# 構成: 「daemon 1 台（WSL）＋ gitlab executor で作業を各 PC に分散 ＋ 別 PC の viewer で監視 ＋
+#        状態（バスのワーク内容）を GitLab にバックアップ ＋ 同じリポジトリへ他プロセスも push する」
+# 対になる kiro-projects 側の設定 → kiro-projects.state-git.yaml.example
+# （前提の配置・起動手順・他プロセスとの取り決め・閲覧側の組み方はそちらに集約。
+#   このファイルは kiro-flow 側で一致させるべき値だけを持つ）
+#
+# ── WSL メモ ──
+#   Windows: C:\work\ops\.kiro\kiro-flow.yaml          ← このファイル（Windows 側クローンで管理）
+#   WSL:     ln -s /mnt/c/work/ops/.kiro/kiro-flow.yaml ~/.kiro/kiro-flow.yaml
+#   読むのは WSL のプロセスなので【パス類は WSL 側のパスで書く】。バスと .state-git クローンは
+#   WSL 側ファイルシステム（ext4）に置く（/mnt/c は遅く flock 系ロックも不安定）。
+#   起動（WSL）: kiro-flow daemon
+
+# --- バス（kiro-projects 側と同じ絶対パスで 1 本に共有。必須）---
+# バスが複数あると、複数のバスが同じ state_git_subdir へ同期して互いの run を取り込み合う（混線）。
+# 1 本に共有すれば混線が消え、kiro-projects からの daemon 検知（location=auto/daemon）も効く。
+bus: /home/me/kiro/.kiro-flow-bus
+
+# --- 実行（作業は GitLab イシューで各 PC へ分散。従来どおり）---
+executor: gitlab
+gitlab:
+  repo_url: https://gitlab.example.com/team/tasks   # 起票先プロジェクト（権威）
+
+# --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
+# kiro-projects 側と同じリポジトリ・別 subdir。viewer は <clone>/kiro-flow をバスとして登録する。
+state_git: git@gitlab.example.com:team/kiro-state.git
+state_git_subdir: kiro-flow
+# state_git_interval: 300             # fetch/push の最短間隔（秒）。daemon の毎 poll から
+#                                     #   呼ばれてもこの間隔でしか GitLab に触れない
+#                                     #   （run の終端時だけは間隔を待たず即 push）
