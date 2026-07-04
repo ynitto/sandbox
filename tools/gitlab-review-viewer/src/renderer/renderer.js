@@ -939,8 +939,8 @@ async function doApprove() {
   if (!mr) return toast('右ペインに操作対象の MR がありません', true);
   const closesIssue = t.type === 'issue';
   await guard('承認', async () => {
-    // マージ可否は実行時に確認し、できない理由をトーストで明示する
-    const cur = await api.glMRStatus(targetOf(mr));
+    // マージ可否は実行時に確認する（未解決ディスカッション数も含めて取得）
+    const cur = await api.glMRReview(targetOf(mr));
     // 既にマージ済み（手元の表示が古い・外部でマージされた等）の場合は、
     // マージをスキップしてイシューのクローズだけを確認のうえ実行する
     if (cur.state === 'merged') {
@@ -961,12 +961,9 @@ async function doApprove() {
     if (cur.state !== 'opened') {
       throw new Error(`${pageLabel(mr)} がオープンではありません（${cur.state}）`);
     }
-    if (cur.hasConflicts) {
-      throw new Error(`${pageLabel(mr)} にコンフリクトがあるためマージできません`);
-    }
-    if (!cur.blockingDiscussionsResolved) {
-      throw new Error(`${pageLabel(mr)} に未解決のレビューコメントがあるためマージできません`);
-    }
+    // コンフリクト / 未解決レビューコメントがあればマージせず、事前チェックと
+    // 同じ差し戻し確認ダイアログを出す（「差し戻す」で固定コメント + ステータス差し戻し）
+    if (openMRSendbackDialog(mr, cur)) return;
     const msg = `${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
     if (!(await confirmDialog(msg))) return;
     await api.glComment(targetOf(t), actionComment('承認'));
@@ -1021,21 +1018,10 @@ const MR_SENDBACK_COMMENTS = {
 const mrHealthChecked = new Set();
 let mrSendback = null; // { mr, kinds: ('conflict'|'unresolved')[] }
 
-async function checkActiveMRHealth() {
-  const mr = activeMR();
-  if (!mr || mr.type !== 'mr' || (mr.state && mr.state !== 'opened')) return;
-  const key = `${mr.projectId}:${mr.iid}`;
-  if (mrHealthChecked.has(key)) return;
-  mrHealthChecked.add(key);
-  let cur;
-  try {
-    cur = await api.glMRReview(targetOf(mr));
-  } catch {
-    mrHealthChecked.delete(key); // 取得失敗は未チェック扱い（次の表示で再試行）
-    return;
-  }
-  if (cur.state !== 'opened') return;
-
+// glMRReview の現在状態から問題（コンフリクト / 未解決レビューコメント）を検知し、
+// あれば差し戻し確認ダイアログを開く。問題が無ければ false を返す。
+// 表示時の事前チェックと、承認実行時のマージ前チェックの両方から使う。
+function openMRSendbackDialog(mr, cur) {
   const kinds = [];
   const problems = [];
   if (cur.hasConflicts) {
@@ -1050,10 +1036,10 @@ async function checkActiveMRHealth() {
       }あります`
     );
   }
-  if (!kinds.length) return;
+  if (!kinds.length) return false;
 
   const dlg = $('mr-sendback-dialog');
-  if (dlg.open) return; // 別 MR の確認を表示中なら重ねない
+  if (dlg.open) return true; // 同じ確認を表示中なら重ねない
   mrSendback = { mr, kinds };
   $('mr-sendback-desc').textContent = `${pageLabel(mr)} — ${mr.title.slice(0, 60)}`;
   $('mr-sendback-problems').innerHTML = problems
@@ -1067,6 +1053,24 @@ async function checkActiveMRHealth() {
     ? `「差し戻す」を押すと、上記の内容を伝える固定コメントを ${destLabel} に投稿し、${pageLabel(t)} を ${to} に戻します。`
     : `「差し戻す」を押すと、上記の内容を伝える固定コメントを ${destLabel} に投稿します（対象のステータスが差し戻し対象外のため、ラベルは変更しません）。`;
   dlg.showModal();
+  return true;
+}
+
+async function checkActiveMRHealth() {
+  const mr = activeMR();
+  if (!mr || mr.type !== 'mr' || (mr.state && mr.state !== 'opened')) return;
+  const key = `${mr.projectId}:${mr.iid}`;
+  if (mrHealthChecked.has(key)) return;
+  mrHealthChecked.add(key);
+  let cur;
+  try {
+    cur = await api.glMRReview(targetOf(mr));
+  } catch {
+    mrHealthChecked.delete(key); // 取得失敗は未チェック扱い（次の表示で再試行）
+    return;
+  }
+  if (cur.state !== 'opened') return;
+  openMRSendbackDialog(mr, cur);
 }
 
 // 差し戻し（固定コメント投稿 + ステータス差し戻し）: 検知内容ごとの定型文を
