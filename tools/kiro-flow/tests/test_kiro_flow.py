@@ -158,6 +158,32 @@ class RunFailureTests(unittest.TestCase):
     def test_mark_run_failed_missing_run(self):
         self.assertFalse(self.bus.mark_run_failed("no-such-run"))
 
+    def test_fail_request_without_run_creates_failed_meta(self):
+        # orchestrator が run の meta を一度も書けずに死んだ要求は、fail_request が failed run を
+        # 新規作成して終端化する（run_exists が真になり、daemon が同じ要求を毎 poll
+        # 再 claim → 起動 → 即死 を繰り返す無限ループが止まる）
+        self.bus.submit_request("req9", "do it", "submitter",
+                                workspace={"url": "https://x/repo.git"})
+        self.assertFalse(self.bus.run_exists("req9"))
+        self.assertTrue(self.bus.fail_request("req9", "orchestrator died before run creation"))
+        self.assertTrue(self.bus.run_exists("req9"))
+        meta = self.bus.run_meta("req9")
+        self.assertEqual(meta["status"], "failed")
+        self.assertIn(meta["status"], kf.TERMINAL)
+        self.assertEqual(meta["request"], "do it")                       # 要求内容を引き写す
+        self.assertEqual(meta["workspace"], {"url": "https://x/repo.git"})
+        self.assertIn("died before run creation", meta["failure_reason"])
+
+    def test_fail_request_delegates_to_mark_run_failed_when_run_exists(self):
+        self.bus.set_status("running")
+        self.assertTrue(self.bus.fail_request("run1", "orchestrator crash"))
+        self.assertEqual(self.bus.run_meta("run1")["status"], "failed")
+
+    def test_fail_request_noop_when_already_terminal(self):
+        self.bus.set_status("done")
+        self.assertFalse(self.bus.fail_request("run1", "late crash"))
+        self.assertEqual(self.bus.run_meta("run1")["status"], "done")   # 正常完了を上書きしない
+
 
 class OrphanRecoveryTests(unittest.TestCase):
     """owning daemon が消失した非終端 run（孤児）を生存リースで検知して回収する。
@@ -2359,6 +2385,87 @@ class GitDistributedTests(unittest.TestCase):
                                 capture_output=True, text=True).stdout.strip()
         self.assertEqual(marker, "1")
         kf.GitBus(clone, "run2", remote=self.bare, branch="main", subdir="flow")  # 再利用で例外なし
+
+    def test_stale_index_lock_recovered_on_reuse(self):
+        # SIGKILL/電源断が残した古い index.lock は、クローン再利用時に残骸として除去され、
+        # 以後の add/commit/push（run 作成の sync_push 相当）が失敗し続けない。
+        clone = os.path.join(self.clones, "stale-lock")
+        kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        lock = os.path.join(clone, ".git", "index.lock")
+        open(lock, "w").close()
+        old = time.time() - 3600
+        os.utime(lock, (old, old))
+        bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")   # 例外なく再利用
+        self.assertFalse(os.path.exists(lock))                            # 残骸は除去済み
+        bus.submit_request("req1", "do it", "submitter")
+        bus.sync_push("submit req1")                                      # add/commit/push が通る
+        self.assertEqual(bus._git(["status", "--porcelain"]).stdout.strip(), "")
+
+    def test_corrupt_index_clone_is_rebuilt(self):
+        # ロック除去でも回復できないほど壊れたクローン（index 破損等）は作り直して
+        # 自己回復する（バスの真実はリモートにあるため使い捨てで安全）。
+        clone = os.path.join(self.clones, "corrupt-index")
+        first = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        first.submit_request("req0", "seed", "submitter")
+        first.sync_push("seed main")                                      # main を実体化させる
+        with open(os.path.join(clone, ".git", "index"), "wb") as f:
+            f.write(b"broken")                                            # index を破壊
+        with mock.patch.object(kf.time, "sleep", lambda s: None):         # 競合待ちを高速化
+            bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        marker = subprocess.run(["git", "-C", clone, "config", "--get", "kiro-flow.busclone"],
+                                capture_output=True, text=True).stdout.strip()
+        self.assertEqual(marker, "1")                                     # 管理クローンとして再生
+        bus.submit_request("req1", "do it", "submitter")
+        bus.sync_push("submit req1")                                      # 作り直し後は普通に使える
+
+    def test_lock_going_stale_during_retry_is_removed(self):
+        # 実行中に遭遇したロックも、リトライ中に残骸（十分古い）と判明すれば除去して成功する
+        # （新しいうちは消さない＝稼働中の他 git を壊さない）。
+        clone = os.path.join(self.clones, "aging-lock")
+        bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        lock = os.path.join(clone, ".git", "index.lock")
+        open(lock, "w").close()                                           # mtime = 今 → まだ消さない
+
+        def age_lock(_):                                                  # 時間経過の代わりに mtime を過去へ
+            old = time.time() - kf.GIT_LOCK_STALE_SEC - 1
+            os.utime(lock, (old, old))
+
+        with open(os.path.join(clone, "poke.txt"), "w") as f:
+            f.write("x")
+        with mock.patch.object(kf.time, "sleep", side_effect=age_lock):
+            p = bus._git(["add", "-A"])
+        self.assertEqual(p.returncode, 0)
+        self.assertFalse(os.path.exists(lock))                            # 残骸化した時点で除去された
+
+    def test_interrupted_rebase_recovered_on_reuse(self):
+        # 中断された pull --rebase の残骸（rebase-merge/）があると以後の pull が失敗し続けるため、
+        # クローン再利用時に破棄して回復する。
+        clone = os.path.join(self.clones, "half-rebase")
+        kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        os.makedirs(os.path.join(clone, ".git", "rebase-merge"))
+        bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        self.assertFalse(os.path.isdir(os.path.join(clone, ".git", "rebase-merge")))
+        bus.sync_pull()                                                   # pull --rebase が通る
+
+    def test_git_retries_while_live_lock_is_held(self):
+        # 稼働中の他 git が保持する新しいロックは消さず、短いバックオフで解放を待って成功する。
+        clone = os.path.join(self.clones, "live-lock")
+        bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        lock = os.path.join(clone, ".git", "index.lock")
+        open(lock, "w").close()
+        released = []
+
+        def release(_):
+            if os.path.exists(lock):                                      # 相手の git が終わった想定
+                os.remove(lock)
+                released.append(True)
+
+        with open(os.path.join(clone, "poke.txt"), "w") as f:
+            f.write("x")
+        with mock.patch.object(kf.time, "sleep", side_effect=release):
+            p = bus._git(["add", "-A"])
+        self.assertEqual(p.returncode, 0)
+        self.assertEqual(released, [True])                                # 1 回待って解放を拾った
 
     def test_clone_into_foreign_nonempty_dir_is_refused(self):
         # 別リポジトリの非空ディレクトリを誤ってバスのクローン先に指定したら、上書きせず中断する。
