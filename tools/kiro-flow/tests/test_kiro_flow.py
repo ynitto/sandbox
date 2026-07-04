@@ -3215,5 +3215,168 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertEqual(kf.resolve_update_target(a), ("/explicit/path", "dev"))
 
 
+class StateGitSyncTests(unittest.TestCase):
+    """状態の git 保存・共有（state_git）: ローカルバスのワーク内容（runs/・inbox/）を共有
+    リポジトリへ双方向同期する。リモート負荷の律速（interval）・多重コミッタ・3-way 裁定
+    （inbox はリモート優先/機械状態はローカル優先）・GitBus 時の無効化を検証する。"""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-sg-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        kf._STATE_GITS.clear()
+        self.remote = self.tmp / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
+        # 既定ブランチ名に依存しない: state_git_branch（main）へ HEAD を向けて clone が追従するように
+        subprocess.run(["git", "-C", str(self.remote), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        self.bus_root = self.tmp / "bus"
+
+    def _args(self, **kw):
+        base = dict(bus=str(self.bus_root), git=None, run_id=None,
+                    state_git=str(self.remote), state_git_branch="main",
+                    state_git_subdir="kf", state_git_interval=0.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _bus(self, run_id="run1"):
+        bus = kf.Bus(str(self.bus_root), run_id)
+        bus.ensure_run("test request")
+        return bus
+
+    def _other(self, name="other") -> pathlib.Path:
+        """「他のプログラム」役: 同一リポジトリを普通に clone して commit/push するクローン。"""
+        d = self.tmp / name
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(d)],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(d), "config", "user.email", "other@test"], check=True)
+        subprocess.run(["git", "-C", str(d), "config", "user.name", "other"], check=True)
+        return d
+
+    @staticmethod
+    def _commit_push(d: pathlib.Path, msg="other"):
+        subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(d), "commit", "-qm", msg], check=True)
+        subprocess.run(["git", "-C", str(d), "push", "-q", "-u", "origin", "main"],
+                       check=True, capture_output=True)
+
+    @staticmethod
+    def _pull(d: pathlib.Path):
+        subprocess.run(["git", "-C", str(d), "pull", "-q", "--rebase", "origin", "main"],
+                       check=True, capture_output=True)
+
+    def test_export_pushes_run_state_under_subdir(self):
+        bus = self._bus()
+        bus.write_task({"id": "T1", "goal": "g", "deps": []})
+        kf.state_sync(self._args(), force=True)
+        got = self._other("check")
+        self.assertTrue((got / "kf" / "runs" / "run1" / "meta.json").exists())
+        self.assertTrue((got / "kf" / "runs" / "run1" / "tasks" / "T1.json").exists())
+
+    def test_import_inbox_drop(self):
+        self._bus()
+        kf.state_sync(self._args(), force=True)                  # 初期化（ブランチ作成）
+        other = self._other()
+        drop = other / "kf" / "inbox" / "req-9.json"
+        drop.parent.mkdir(parents=True, exist_ok=True)
+        drop.write_text(json.dumps({"request": "from viewer", "submitter": "viewer"}),
+                        encoding="utf-8")
+        self._commit_push(other, "viewer: submit")
+        kf.state_sync(self._args(), force=True)                  # 投入がローカルバスへ届く
+        bus = kf.Bus(str(self.bus_root), "_")
+        self.assertIn("req-9", bus.list_inbox())
+        self.assertEqual((bus.read_inbox("req-9") or {}).get("request"), "from viewer")
+
+    def test_conflict_inbox_prefers_remote_and_runs_prefer_local(self):
+        bus = self._bus()
+        os.makedirs(self.bus_root / "inbox", exist_ok=True)
+        req = self.bus_root / "inbox" / "req-1.json"
+        req.write_text('{"request": "local"}', encoding="utf-8")
+        meta = pathlib.Path(bus.meta_path)
+        kf.state_sync(self._args(), force=True)
+        other = self._other()
+        (other / "kf" / "inbox" / "req-1.json").write_text('{"request": "remote"}',
+                                                           encoding="utf-8")
+        rmeta = other / "kf" / "runs" / "run1" / "meta.json"
+        rmeta.write_text('{"status": "remote edit"}', encoding="utf-8")
+        self._commit_push(other, "both edited")
+        req.write_text('{"request": "local2"}', encoding="utf-8")   # 同時変更を作る
+        bus.set_status("running")                                   # 機械状態のローカル変更
+        kf.state_sync(self._args(), force=True)
+        self.assertEqual(json.loads(req.read_text(encoding="utf-8"))["request"], "remote")
+        self.assertEqual((kf.read_json(str(meta)) or {}).get("status"), "running")
+        self._pull(other)
+        self.assertEqual(json.loads(rmeta.read_text(encoding="utf-8")).get("status"), "running")
+
+    def test_concurrent_committer_is_not_clobbered(self):
+        # 他プログラムが（我々の pull の後に）同一リポジトリへ push しても、push 競合を
+        # pull --rebase → 再 push で吸収して自分の変更を反映し、相手のコミットも壊さない。
+        bus = self._bus()
+        args = self._args()
+        kf.state_sync(args, force=True)
+        sg = kf.state_git_for(args)
+        other = self._other()
+        (other / "unrelated.txt").write_text("theirs\n", encoding="utf-8")
+        self._commit_push(other, "other program commit")
+        bus.write_task({"id": "T2", "goal": "g", "deps": []})
+        real_git = sg._git
+        state = {"skipped": False}
+
+        def no_first_pull(*a, **kw):   # sync 冒頭の pull を 1 回落とし「pull 後に push された」競合を再現
+            if a[:2] == ("pull", "--rebase") and not state["skipped"]:
+                state["skipped"] = True
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="skipped")
+            return real_git(*a, **kw)
+        with mock.patch.object(sg, "_git", side_effect=no_first_pull):
+            kf.state_sync(args, force=True)
+        self._pull(other)
+        self.assertTrue((other / "unrelated.txt").exists())
+        self.assertTrue((other / "kf" / "runs" / "run1" / "tasks" / "T2.json").exists())
+
+    def test_interval_rate_limits_sync(self):
+        args = self._args(state_git_interval=3600.0)
+        self._bus()
+        kf.state_sync(args, force=True)                          # 初回は必ず同期
+        other = self._other()
+        drop = other / "kf" / "inbox" / "req-5.json"
+        drop.parent.mkdir(parents=True, exist_ok=True)
+        drop.write_text('{"request": "x"}', encoding="utf-8")
+        self._commit_push(other, "drop")
+        kf.state_sync(args)                                      # interval 内 → 何もしない（負荷律速）
+        self.assertFalse((self.bus_root / "inbox" / "req-5.json").exists())
+        kf.state_git_for(args)._last_remote = 0.0                # interval 経過を模擬
+        kf.state_sync(args)
+        self.assertTrue((self.bus_root / "inbox" / "req-5.json").exists())
+
+    def test_disabled_with_git_bus_or_without_state_git(self):
+        self.assertIsNone(kf.state_git_for(self._args(git="https://example/bus.git")))
+        self.assertIsNone(kf.state_git_for(self._args(state_git=None)))
+        kf.state_sync(self._args(git="https://example/bus.git"), force=True)   # 何もしない
+        self.assertFalse((self.bus_root / ".state-git").exists())
+
+    def test_tmp_and_dot_files_excluded(self):
+        bus = self._bus()
+        with open(os.path.join(bus.run_dir, "meta.json.tmp"), "w", encoding="utf-8") as f:
+            f.write("{}")                                        # 書きかけの中間ファイル
+        kf.state_sync(self._args(), force=True)
+        got = self._other("check")
+        self.assertTrue((got / "kf" / "runs" / "run1" / "meta.json").exists())
+        self.assertFalse((got / "kf" / "runs" / "run1" / "meta.json.tmp").exists())
+        self.assertFalse((got / "kf" / ".state-git").exists())
+
+    def test_sync_failure_does_not_kill_caller(self):
+        args = self._args(state_git=str(self.tmp / "no-such-remote.git"))
+        self._bus()
+        kf.state_sync(args, force=True)                          # 不通でも例外を漏らさない
+        self.assertFalse((self.bus_root / ".state-git" / ".git").exists())
+
+    def test_deletion_propagates_like_gc(self):
+        bus = self._bus()
+        kf.state_sync(self._args(), force=True)
+        shutil.rmtree(bus.run_dir)                               # gc / remove_run 相当の掃除
+        kf.state_sync(self._args(), force=True)
+        got = self._other("check")
+        self.assertFalse((got / "kf" / "runs" / "run1").exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

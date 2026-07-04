@@ -37,6 +37,27 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 
 `<root>/projects/<name>/` の標準レイアウトと、`projects/` を持たない旧フラット構成の両方に対応。
 
+### リモートで稼働する kiro-projects を見る（state_git 経由）
+
+本体が別マシン（リモートサーバ・WSL 外のホスト等）で稼働していてコンテナを直接読めない場合は、
+kiro-projects の **状態 git 同期（`state_git`）** で共有できる（本体側 README の
+「状態の git 保存・共有」参照）。本体がコンテナ状態を共有 git リポジトリへ双方向同期するので、
+viewer 側は:
+
+1. 共有リポジトリを clone し、[git-file-sync](../git-file-sync/) の pair
+   （`repo_subpath: kiro-projects`・`bidirectional`）などで定期同期する
+2. ⚙ 設定「コンテナのパス」に `<clone>/kiro-projects`（本体側 `state_git_subdir` のパス）を登録する
+
+viewer の操作（needs 記入・commands/ ドロップ・inbox/ 投入）は通常どおりファイルとして書かれ、
+git-file-sync（または手動 commit/push）が同一リポジトリへコミットすると、本体側が idle の pull で
+取り込んで次パスを起こす。指示の反映は同期間隔（本体側 `state_git_interval`・既定 300 秒）ぶん遅れる。
+
+フロータブも同様: kiro-flow 側の `state_git`（kiro-flow README「状態の git 保存・共有」）で
+ローカルバス（`runs/`・`inbox/`）が同じ共有リポジトリの別 subdir（既定 `kiro-flow`）に同期される
+ので、⚙ 設定（または `.kiro/` の kiro-flow 設定の `bus:`）でバスとして `<clone>/kiro-flow` を
+指すと、リモートの run の進捗/結果を DAG で追える（鏡なので daemon 稼働判定など同一ホスト
+前提の表示は効かない。run の生存は meta の生存リース `orch_lease_until` から従来どおり判定される）。
+
 ## 人のアクション（見るだけでなく、その場で判断を返せる）
 
 kiro-projects の人間ループはこのアプリ内で完結できる。いずれも kiro-projects の

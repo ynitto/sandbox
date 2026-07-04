@@ -142,6 +142,21 @@ git_branch: main            # バスに使う git ブランチ
 #                            # TMPDIR が食い違う構成で明示すると確実。
 
 # ---------------------------------------------------------------------------
+# 状態の git 保存・共有（state_git）— リモートの kiro-projects-viewer と結果/指示を往復
+# ---------------------------------------------------------------------------
+# ワークの内容（<root> コンテナ配下の backlog/needs/decisions/journal/… の状態）を共有 git
+# リポジトリへ双方向同期する。機械の状態は外へ、人の指示（commands/ ドロップ・inbox/ 投入・
+# needs の記入・policy/charter の編集）は中へ。fetch/push は state_git_interval で律速され、
+# push は共有すべきローカルコミットがあるときだけ行う（リモートサーバの負荷を一定に保つ）。
+# 同一リポジトリには他プログラム（viewer 側の git-file-sync 等）もコミットしてよい:
+# ステージは state_git_subdir 配下のみ・push 競合は pull --rebase で吸収・force push はしない。
+# 一時状態（bus/・claims/）は同期しない。
+# state_git: git@example.com:team/kiro-state.git   # 共有リポジトリ（URL/パス。未指定で無効）
+# state_git_branch: main                # 同期先ブランチ
+# state_git_subdir: kiro-projects       # リポジトリ内の保存先サブディレクトリ（名前空間分離）
+# state_git_interval: 300               # fetch/push の最短間隔（秒）。0 で毎同期（負荷は増える）
+
+# ---------------------------------------------------------------------------
 # 学習・通知・棚卸し
 # ---------------------------------------------------------------------------
 # auto_adjudicate: true      # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on。false で無効）
