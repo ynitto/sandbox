@@ -972,34 +972,58 @@ async function doSendBack() {
   });
 }
 
-// 却下: 関連する MR をクローズしてソースブランチを削除し、イシューは「閉じる」。
-// イシューは削除しない — コメント・経緯が記録として残り、委譲元ツール
-// （kiro-flow はイシューのクローズで却下を検知し、人コメントをやり直し指示として
-// 取り込む。削除すると 404 の一般エラーになりフィードバックごと壊れる）にも
-// 決着が正しく伝わる。作業リポジトリはブランチ削除できれいに保つ。
-function openRejectDialog() {
+// 却下: イシュー名と似たタイトルの MR をクローズしてソースブランチを削除し、
+// イシューは「閉じる」。
+// - MR の絞り込み: related_merge_requests には本文で言及しただけの無関係な MR も
+//   混ざるため、破壊的操作（クローズ＋ブランチ削除）は**イシューとタイトルが似ている
+//   MR のみ**を対象にする（タブ選択と同じ titleSimilarity。対象はダイアログに事前表示）
+// - イシューは削除しない — コメント・経緯が記録として残り、委譲元ツール
+//   （kiro-flow はイシューのクローズで却下を検知し、人コメントをやり直し指示として
+//   取り込む。削除すると 404 の一般エラーになりフィードバックごと壊れる）にも
+//   決着が正しく伝わる。
+const REJECT_TITLE_SIMILARITY = 0.5;
+
+let rejectTargets = { mrs: [], skipped: 0 };
+
+async function openRejectDialog() {
   const t = primaryTarget();
   if (!t) return;
-  $('reject-desc').textContent = `${pageLabel(t)} — ${t.title.slice(0, 60)} を却下します。`;
-  $('reject-dialog').showModal();
+  await guard('却下対象の取得', async () => {
+    let mrs = [];
+    let skipped = 0;
+    if (t.type === 'mr') {
+      mrs = [t];
+    } else {
+      const related = ((await api.glRelated(targetOf(t)).catch(() => [])) || []).filter(
+        (r) => r.type === 'mr' && r.state === 'opened'
+      );
+      mrs = related.filter((m) => titleSimilarity(m.title, t.title) >= REJECT_TITLE_SIMILARITY);
+      skipped = related.length - mrs.length;
+    }
+    rejectTargets = { mrs, skipped };
+    $('reject-desc').textContent = `${pageLabel(t)} — ${t.title.slice(0, 60)} を却下します。`;
+    $('reject-mrs').innerHTML = [
+      mrs.length
+        ? `クローズしてブランチを削除する MR: ${mrs
+            .map((m) => `<span class="mono">!${m.iid}</span> ${escapeHtml(String(m.title || '').slice(0, 40))}`)
+            .join(' ／ ')}`
+        : '対象の MR はありません（イシューのみ閉じます）',
+      skipped ? `（タイトルが似ていない関連 MR ${skipped} 件は対象外）` : '',
+    ]
+      .filter(Boolean)
+      .join('<br>');
+    $('reject-dialog').showModal();
+  });
 }
 
 async function doReject() {
   $('reject-dialog').close();
   const t = primaryTarget();
   if (!t) return;
+  const mrs = rejectTargets.mrs;
   await guard('却下', async () => {
     await api.glComment(targetOf(t), actionComment('却下'));
 
-    // 関連 MR を集める: イシューなら related_merge_requests（API）で全件、
-    // MR を直接開いているならそれ自身。open のものをクローズ＋ソースブランチ削除。
-    let mrs;
-    if (t.type === 'mr') {
-      mrs = [t];
-    } else {
-      const related = (await api.glRelated(targetOf(t)).catch(() => [])) || [];
-      mrs = related.filter((r) => r.type === 'mr' && r.state === 'opened');
-    }
     for (const mr of mrs) {
       if (mr.state === 'opened') {
         const closed = await api.glSetState(targetOf(mr), 'close');

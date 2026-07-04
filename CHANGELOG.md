@@ -23,7 +23,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   検知し人コメントをやり直し指示として取り込む）にも決着が正しく伝わる。イシュー削除
   API（`glDeleteIssue`）は廃止
 - 関連するマージリクエストは**クローズしてソースブランチを削除**する。対象はイシューの
-  `related_merge_requests`（open 全件。従来は右ペインのアクティブ MR 1 件だけだった）
+  `related_merge_requests`（open）のうち**イシュー名と似たタイトルの MR のみ**
+  （タブ選択と同じ `titleSimilarity` ≥ 0.5。本文で言及しただけの無関係な MR は対象外）。
+  クローズ対象はダイアログに事前表示され、確認してから実行できる
 - イシューのクローズは表示キャッシュの state に頼らず常に明示的に行う（委譲元の
   自動クローズは daemon 停止中は走らないため。クローズ済みなら no-op）
 - **kiro-flow gitlab executor（防御）**: 決着待ち中にイシューが削除（404）されても
