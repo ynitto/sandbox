@@ -531,6 +531,7 @@ function showTaskDialog(id, scope) {
         return true;
       });
       if (ok) {
+        gitPushAfterWrite(`kiro-projects-viewer: ${btn.dataset.taskact} ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }
@@ -553,6 +554,7 @@ function showTaskDialog(id, scope) {
         return true;
       });
       if (ok) {
+        gitPushAfterWrite(`kiro-projects-viewer: delete task ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }
@@ -583,6 +585,7 @@ async function submitEnqueue() {
     return true;
   });
   if (ok) {
+    gitPushAfterWrite(`kiro-projects-viewer: enqueue ${spec.title || ''}`.trim(), p.dir);
     $('dlg-enqueue').close();
     await reloadProject();
   }
@@ -688,7 +691,10 @@ async function handleNeedAction(btn) {
     }
     return true;
   });
-  if (ok) await reloadProject();
+  if (ok) {
+    gitPushAfterWrite(`kiro-projects-viewer: ${act} ${id}`, p.dir);
+    await reloadProject();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +990,7 @@ async function resubmitFlowRun() {
       `再投入しました: ${res.runId}${d && d.running === false ? '（daemon 停止中 — 起動後に拾われます）' : ''}`,
       true
     );
+    gitPushAfterWrite(`kiro-projects-viewer: resubmit run ${run.runId}`, state.project.busDir);
     await reloadProject();
   }
 }
@@ -1006,6 +1013,7 @@ async function deleteFlowRun() {
     return true;
   });
   if (ok) {
+    gitPushAfterWrite(`kiro-projects-viewer: delete run ${run.runId}`, state.project.busDir);
     state.flowRunId = null;
     state.flowRun = null;
     state.flowNodeId = null;
@@ -1354,6 +1362,7 @@ function openSettings() {
   $('cfg-autodiscover').checked = !cfg.kiro || cfg.kiro.autoDiscover !== false;
   $('cfg-refresh').value = cfg.kiro ? cfg.kiro.refreshSec : 5;
   $('cfg-git-pull').value = cfg.kiro && cfg.kiro.gitPullSec !== undefined ? cfg.kiro.gitPullSec : 300;
+  $('cfg-git-autopush').checked = !!(cfg.kiro && cfg.kiro.gitAutoPush);
   $('cfg-kiro-command').value = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
   $('cfg-action-mode').value = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.kiro && cfg.kiro.flowBus) || '';
@@ -1375,6 +1384,7 @@ async function saveSettings() {
   cfg.kiro.autoDiscover = $('cfg-autodiscover').checked;
   cfg.kiro.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
   cfg.kiro.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
+  cfg.kiro.gitAutoPush = $('cfg-git-autopush').checked;
   cfg.kiro.command = $('cfg-kiro-command').value.trim() || 'kiro-projects';
   cfg.kiro.actionMode = $('cfg-action-mode').value;
   cfg.kiro.flowBus = $('cfg-flow-bus').value.trim();
@@ -1410,6 +1420,20 @@ async function maybeAutoGitPull() {
       toast(`git pull（自動）: ${msg}`);
     }
   }
+}
+
+// 管理ファイルを書き換えた操作（指示ドロップ・inbox 投入・needs 記入・削除）の後に呼ぶ。
+// 設定 gitAutoPush が有効なら、操作したディレクトリの変更をコミットして push する
+// （状態共有 git への都度反映）。書き込み本体は成功済みなので待たずに走らせ、
+// 失敗（push 不可など）だけトーストで知らせる。
+function gitPushAfterWrite(message, dir) {
+  const cfg = state.config;
+  if (!cfg || !cfg.kiro || !cfg.kiro.gitAutoPush) return;
+  const target = dir || state.selectedDir;
+  if (!target) return;
+  api.gitCommitPush(target, message).catch((err) => {
+    toast(`git 同期（プッシュ）: ${err.message || err}`);
+  });
 }
 
 // 手動（⇣ ボタン）: スロットリングを無視して即 pull し、結果をトーストで知らせる

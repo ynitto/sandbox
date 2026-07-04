@@ -24,6 +24,12 @@ const DEFAULT_CONFIG = {
     // ポーリング（refreshSec）よりずっと長い間隔にしてリモートへの負荷を抑える。
     // 60 秒未満は 60 秒に切り上げる。
     gitPullSec: 300,
+    // 状態共有 git 同期の push 側: ユーザー操作（指示ドロップ・inbox 投入・
+    // needs 記入・削除）のたびに、操作したディレクトリだけをコミットして push する。
+    // コンテナが独立した状態共有リポジトリ（state_git の clone 等）であることが
+    // 前提のため既定は無効（ソースリポジトリ内の .kiro-projects へ意図しない
+    // コミットを作らない）。有効時は pull も --rebase で取り込む。
+    gitAutoPush: false,
     // approve / hold / reprioritize（決定記録を残す人の操作）に使う
     // kiro-projects CLI。PATH に無い場合はフルパスや
     // "python3 /path/to/kiro-projects.py" 形式でも指定できる。

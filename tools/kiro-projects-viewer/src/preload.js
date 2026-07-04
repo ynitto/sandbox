@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   discover: () => invoke('kiro:discover'),
   readProject: (dir) => invoke('kiro:project', { dir }),
   gitPull: (dir, force) => invoke('git:pull', { dir, force }),
+  gitCommitPush: (dir, message) => invoke('git:commitPush', { dir, message }),
   deleteTask: (dir, id) => invoke('kiro:deleteTask', { dir, id }),
 
   flowRuns: (busDir, limit) => invoke('flow:runs', { busDir, limit }),
