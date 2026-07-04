@@ -90,15 +90,22 @@ function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+// 既定値の型を保つマージ。config.json が手編集や書き込み失敗で
+// 想定外の形（セクションが null・オブジェクトが文字列 等）になっていても、
+// 既定値の構造を壊さない — 壊れた値で起動不能になるのを防ぐ。
 function deepMerge(base, over) {
-  if (!isPlainObject(base) || !isPlainObject(over)) {
-    return over === undefined ? base : over;
+  if (isPlainObject(base)) {
+    if (!isPlainObject(over)) return base;
+    const out = { ...base };
+    for (const [k, v] of Object.entries(over)) {
+      out[k] = deepMerge(base[k], v);
+    }
+    return out;
   }
-  const out = { ...base };
-  for (const [k, v] of Object.entries(over)) {
-    out[k] = isPlainObject(base[k]) && isPlainObject(v) ? deepMerge(base[k], v) : v;
+  if (Array.isArray(base)) {
+    return Array.isArray(over) ? over : base;
   }
-  return out;
+  return over === undefined || over === null ? base : over;
 }
 
 function configPath() {

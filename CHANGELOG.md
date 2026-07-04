@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### gitlab-review-viewer: 起動時の「初期化に失敗しました」を修正
+
+- `config.json` が想定外の形（全体が `null`・セクションが `null` や非オブジェクト等）に
+  なっていると、設定マージ（`deepMerge`）が既定値を守らずそのまま通し、起動直後の
+  `state.config.searchCache` / `state.config.gitlab.token` 参照で
+  「初期化に失敗しました: Cannot read properties of null …」になっていた
+- `deepMerge` を**既定値の型を保つマージ**に変更 — 既定値がオブジェクト / 配列のキーに
+  型の合わない保存値（`null` 含む）が来た場合は既定値を採用し、壊れた設定ファイルでも
+  起動できるようにした
+- renderer 側の初期化も防御的に変更 — 設定の取得失敗時は最小構成で起動して
+  「⚙ 設定から保存し直してください」と案内し、受け取った設定は形を検証してから使う。
+  前回の検索条件の復元失敗も起動を妨げない
+
 ### kiro-projects-viewer: GitLab タブを「レビュー待ち」に特化
 
 - GitLab タブを「レビュー待ち」に改名し、**repos のオープンイシュー＋関連 MR の
