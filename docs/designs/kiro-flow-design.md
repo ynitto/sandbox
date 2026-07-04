@@ -178,6 +178,27 @@ try_claim(node, who):
   クローンしたてのノードでも `results/` 等へ書ける）。
 - `run_view(run_id)` で同一クローン内の別 run を**再クローンせず**読み取れる（デーモンの判断用）。
 
+### 6.1 状態の git 保存・共有（state_git）— GitBus とは別物の「状態の鏡」
+
+GitBus が「バスそのものを git にして実行を分散する」のに対し、`state_git`（config
+`state_git[-branch/-subdir/-interval]`）は「**実行はローカルのまま、状態の鏡だけを共有する**」。
+ローカルバスのワーク内容（`runs/`・`inbox/`）を共有 git リポジトリの `state_git_subdir`
+（既定 `kiro-flow`）へ双方向同期し、リモートの kiro-projects-viewer（フロータブ）が run の
+進捗/結果を読める。kiro-projects の同名機能と同じ設計:
+
+- **負荷律速**: subdir だけの sparse・blob:none 管理クローン（`<bus>/.state-git`）を再利用し、
+  fetch/push（バス走査も）は `state_git_interval`（既定 300s）で律速。push は共有すべき
+  コミットがあるときだけ（run の終端時は間隔を待たず押し出す）。
+- **多重コミッタ前提**: ステージは自 subdir のみ・push 競合は pull --rebase → 再 push の指数
+  バックオフ・force push しない。同一リポジトリを kiro-projects の state_git や viewer 側の
+  git-file-sync と共有できる。
+- **3-way 裁定**: manifest（前回同期スナップショット）基準で発生源を判定し、同時変更のみ
+  「`inbox/`（人の投入）はリモート優先・`runs/`（機械状態）はローカル優先」で決定的に裁定。
+  `*.tmp`（書きかけ）と `.` 始まりは同期しない。gc/cleanup の削除も伝播する。
+- **実行は依存しない**: 同期は daemon の poll ループ・run 終端・`run` の待機ループで走り、
+  失敗はログに残して続行（run の実行・終端は state_git に一切依存しない）。`--git` 指定時は
+  バス自体が共有 git なので無視される。
+
 ---
 
 ## 7. ワークフローパターン（7 パターン）

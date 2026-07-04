@@ -118,6 +118,13 @@ CONFIG_DEFAULTS = {
     "git_branch": "main",
     "git_subdir": "",
     "lock_dir": None,   # daemon singleton ロックの置き場（外部 daemon の発見性を担保。既定 tempdir 配下）
+    # 状態の git 保存・共有（state_git）: ローカルバスのワーク内容（runs/・inbox/）を共有 git
+    # リポジトリへ双方向同期し、リモートの kiro-projects-viewer が run の進捗/結果を読めるようにする。
+    # GitBus（--git）とは独立（--git 指定時はバス自体が共有 git なので state_git は無視される）。
+    "state_git": None,                  # 共有リポジトリ（URL/パス）。None で無効
+    "state_git_branch": "main",         # 同期先ブランチ
+    "state_git_subdir": "kiro-flow",    # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
+    "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
@@ -1003,6 +1010,346 @@ def cleanup_active_clones() -> None:
             bus.cleanup_clone()
         except Exception:  # noqa: BLE001 — 掃除失敗で終了処理を止めない
             pass
+
+
+# --------------------------------------------------------------------------
+# 状態の git 保存・共有（state_git）— kiro-projects の同名機能と同じ流儀
+# --------------------------------------------------------------------------
+# ローカルバスのワーク内容（<bus>/runs/・<bus>/inbox/）を共有 git リポジトリへ保存し、
+# リモートの kiro-projects-viewer（フロータブ）が run の進捗/結果を読めるようにする。
+# GitBus（--git）が「バスそのものを git にして実行を分散する」のに対し、これは
+# 「実行はローカルのまま、状態の鏡だけを共有する」——実行は state_git に一切依存しない。
+#   ・リモート負荷を抑える: subdir だけの sparse・blob:none の管理クローンを 1 本再利用し、
+#     fetch/push は state_git_interval（既定 300 秒）で律速。push は共有すべきローカル
+#     コミットがあるときだけ（run の終端時は間隔を待たず押し出す）。
+#   ・多重コミッタ前提: 同一リポジトリには他プログラム（kiro-projects の state_git・
+#     viewer 側の git-file-sync 等）もコミットする。ステージは自 subdir のみ、push 競合は
+#     pull --rebase → 再 push の指数バックオフで吸収し、force push はしない。
+#   ・双方向: 機械の状態（runs/）は外へ、人の投入（inbox/ の要求ドロップ）は中へ。前回同期
+#     スナップショット（manifest）基準の 3-way で発生源を判定し、同時変更のみ
+#     「inbox/ はリモート優先・runs/ 等の機械状態はローカル優先」で決定的に裁定する。
+STATE_GIT_MARKER = "kiro-flow.stateclone"       # 自前管理クローンの目印（git config）
+_STATE_LOCK_STALE_SEC = 30.0                    # これ以上古い .git ロックは残骸とみなし自己回復
+_STATE_GIT_RETRIES = 4                          # ロック起因の git 失敗の再試行回数
+_STATE_PUSH_RETRIES = 5                         # push 競合の再試行回数（2,4,8,16s バックオフ）
+
+
+class StateGit:
+    """ローカルバス状態 ⇔ 共有 git リポジトリの双方向同期（GitBus と同じ管理クローン流儀）。
+
+    真実は常にファイル側（ローカルはバス・リモートは共有リポジトリ）にあり、このクラスは
+    「前回同期時点のスナップショット（manifest）」を基準に差分の発生源を判定して橋渡しするだけ。
+    クローンや manifest を失っても、次の同期が裁定規則で決定的に再収束させる。"""
+
+    def __init__(self, bus_root: str, remote: str, branch: str = "main",
+                 subdir: str = "kiro-flow", interval: float = 300.0,
+                 clone_dir: "str | None" = None):
+        self.bus_root = os.path.abspath(bus_root)
+        self.remote = remote
+        self.branch = branch or "main"
+        self.subdir = (subdir or "").strip("/")
+        self.interval = max(0.0, interval)
+        self.clone = clone_dir or os.path.join(self.bus_root, ".state-git")
+        self._ready = False
+        self._last_remote = 0.0     # 最後にリモートへ触れた時刻（fetch/push の間隔律速）
+        self._last_attempt = 0.0    # クローン準備の失敗も間隔律速（不通のリモートを連打しない）
+
+    # --- git 低レベル（GitBus と同じ護り: ceiling / C ロケール / ロック残骸の自己回復） ---
+    def _env(self) -> dict:
+        env = dict(os.environ)
+        parent = os.path.dirname(os.path.realpath(self.clone)) or "/"
+        ceil = env.get("GIT_CEILING_DIRECTORIES")
+        env["GIT_CEILING_DIRECTORIES"] = parent + (os.pathsep + ceil if ceil else "")
+        env["GIT_DISCOVERY_ACROSS_FILESYSTEM"] = "0"
+        env["LC_ALL"] = "C"              # ロック競合の検知は英語メッセージの文字列マッチに頼る
+        env["GIT_EDITOR"] = "true"       # rebase --continue がエディタを開かないように
+        return env
+
+    _STALE_LOCKS = ("index.lock", "HEAD.lock", "config.lock", "shallow.lock", "packed-refs.lock")
+
+    def _remove_stale_locks(self) -> int:
+        removed = 0
+        gitdir = os.path.join(self.clone, ".git")
+        now = time.time()
+        for name in self._STALE_LOCKS:
+            p = os.path.join(gitdir, name)
+            try:
+                if os.path.isfile(p) and now - os.path.getmtime(p) >= _STATE_LOCK_STALE_SEC:
+                    os.remove(p)
+                    removed += 1
+            except OSError:
+                pass
+        return removed
+
+    @staticmethod
+    def _is_lock_error(p) -> bool:
+        err = p.stderr or ""
+        return ".lock" in err and ("File exists" in err or "another git process" in err.lower())
+
+    def _git(self, *args: str, check: bool = False):
+        p = None
+        for i in range(_STATE_GIT_RETRIES):
+            p = subprocess.run(["git", "-C", self.clone, *args],
+                               capture_output=True, text=True, env=self._env())
+            if p.returncode == 0 or not self._is_lock_error(p):
+                break
+            if self._remove_stale_locks() == 0 and i < _STATE_GIT_RETRIES - 1:
+                time.sleep(2 ** i)
+        if check and p.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args)} 失敗: {(p.stderr or '').strip()[:300]}")
+        return p
+
+    # --- クローンの用意（自前管理クローンのみ再利用。他人の作業ツリーは決して触らない） ---
+    def _is_managed(self) -> bool:
+        if not os.path.isdir(os.path.join(self.clone, ".git")):
+            return False
+        top = self._git("rev-parse", "--show-toplevel").stdout.strip()
+        if not top or os.path.realpath(top) != os.path.realpath(self.clone):
+            return False
+        origin = self._git("remote", "get-url", "origin").stdout.strip()
+        same_origin = origin == self.remote or (
+            bool(origin) and os.path.realpath(origin) == os.path.realpath(self.remote))
+        return same_origin and self._git("config", "--get", STATE_GIT_MARKER).stdout.strip() == "1"
+
+    def _recover(self) -> None:
+        """前プロセスの異常終了が残したロック残骸・中断 rebase を自己回復する。"""
+        self._remove_stale_locks()
+        gitdir = os.path.join(self.clone, ".git")
+        if any(os.path.isdir(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply")):
+            self._git("rebase", "--abort")
+            for d in ("rebase-merge", "rebase-apply"):
+                shutil.rmtree(os.path.join(gitdir, d), ignore_errors=True)
+
+    def _setup_worktree(self) -> None:
+        if not self._git("config", "user.email").stdout.strip():
+            self._git("config", "user.email", "kiro-flow@local")
+            self._git("config", "user.name", "kiro-flow")
+        if self.subdir:                  # 自分の名前空間だけを作業ツリーに展開（他者のパスを引かない）
+            self._git("sparse-checkout", "init", "--cone")
+            self._git("sparse-checkout", "set", self.subdir)
+        if self._git("checkout", self.branch).returncode != 0:
+            self._git("checkout", "-B", self.branch, check=True)   # 空リポジトリ初回など
+
+    def _ensure_clone(self) -> None:
+        if self._is_managed():
+            self._recover()
+            self._setup_worktree()
+            return
+        if os.path.isdir(self.clone) and os.listdir(self.clone):
+            raise RuntimeError(
+                f"state_git のクローン先 {self.clone} が管理外の非空ディレクトリです"
+                "（作業ツリーを壊さないため中断。空のパスを指定してください）")
+        os.makedirs(os.path.dirname(self.clone) or ".", exist_ok=True)
+        # blob:none で履歴の実体を引かない（非対応サーバはフィルタ無しへフォールバック）
+        for extra in (["--filter=blob:none"], []):
+            r = subprocess.run(["git", "clone", "--no-checkout", *extra, self.remote, self.clone],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                break
+            shutil.rmtree(self.clone, ignore_errors=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"state_git クローン失敗: {(r.stderr or '').strip()[:300]}")
+        self._git("config", STATE_GIT_MARKER, "1")
+        self._setup_worktree()
+
+    # --- 3-way 同期（manifest = 前回同期時点の path→sha256 スナップショット） ---
+    @property
+    def _manifest_path(self) -> str:
+        return os.path.join(self.clone, ".git", "kiro-flow-state.json")
+
+    def _load_manifest(self) -> dict:
+        try:
+            with open(self._manifest_path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _save_manifest(self, manifest: dict) -> None:
+        tmp = self._manifest_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, sort_keys=True)
+        os.replace(tmp, self._manifest_path)
+
+    @staticmethod
+    def _excluded(parts: "tuple[str, ...]") -> bool:
+        # "." 始まり（.state-git 自身・.gitkeep 等の管理領域）と書きかけの .tmp は同期しない
+        return any(s.startswith(".") for s in parts) or parts[-1].endswith(".tmp")
+
+    @staticmethod
+    def _remote_wins(rel: str) -> bool:
+        """同時変更の裁定: 人の投入口 inbox/（claims を除く）はリモート優先、機械状態はローカル優先。"""
+        parts = tuple(rel.split("/"))
+        return bool(parts) and parts[0] == "inbox" and "claims" not in parts
+
+    @classmethod
+    def _scan(cls, root: str) -> "dict[str, str]":
+        """root 配下の同期対象ファイルを {相対パス: sha256} で返す（除外規則は両側で同一）。"""
+        out: "dict[str, str]" = {}
+        if not os.path.isdir(root):
+            return out
+        for base, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            rel_base = os.path.relpath(base, root)
+            for name in files:
+                rel = name if rel_base == "." else f"{rel_base}/{name}"
+                parts = tuple(rel.replace(os.sep, "/").split("/"))
+                if cls._excluded(parts):
+                    continue
+                p = os.path.join(base, name)
+                if os.path.islink(p) or not os.path.isfile(p):
+                    continue
+                try:
+                    with open(p, "rb") as f:
+                        out["/".join(parts)] = hashlib.sha256(f.read()).hexdigest()
+                except OSError:
+                    pass
+        return out
+
+    def _remote_root(self) -> str:
+        return os.path.join(self.clone, self.subdir) if self.subdir else self.clone
+
+    def _three_way(self) -> "tuple[int, int]":
+        """manifest 基準の 3-way でローカル⇔クローンを橋渡しする。(imported, exported) を返す。"""
+        base = self._load_manifest()
+        lroot, rroot = self.bus_root, self._remote_root()
+        local, remote = self._scan(lroot), self._scan(rroot)
+        manifest: "dict[str, str]" = {}
+        imported = exported = 0
+        for rel in sorted(set(base) | set(local) | set(remote)):
+            lh, rh, bh = local.get(rel), remote.get(rel), base.get(rel)
+            if lh == rh:                      # 一致（双方無し含む）→ そのまま
+                if lh is not None:
+                    manifest[rel] = lh
+                continue
+            if rh == bh:                      # ローカルだけが変えた（or 消した）→ export
+                take_local = True
+            elif lh == bh:                    # リモートだけが変えた → import
+                take_local = False
+            else:                             # 同時変更 → 決定的裁定
+                take_local = not self._remote_wins(rel)
+            src, dst, h = (lroot, rroot, lh) if take_local else (rroot, lroot, rh)
+            sub = rel.replace("/", os.sep)
+            try:
+                if h is None:                 # 片側の削除を伝播（gc/cleanup の掃除もリモートへ届く）
+                    try:
+                        os.remove(os.path.join(dst, sub))
+                    except FileNotFoundError:
+                        pass
+                else:
+                    d = os.path.join(dst, sub)
+                    os.makedirs(os.path.dirname(d) or ".", exist_ok=True)
+                    shutil.copyfile(os.path.join(src, sub), d)
+                    manifest[rel] = h
+                imported, exported = (imported, exported + 1) if take_local \
+                    else (imported + 1, exported)
+            except OSError:
+                if bh is not None:            # 反映できなかった分は次回また差分として現れるように
+                    manifest[rel] = bh
+        self._save_manifest(manifest)
+        return imported, exported
+
+    # --- push（多重コミッタ吸収: rebase 再試行・コンフリクトは裁定規則で決着・force しない） ---
+    def _resolve_rebase(self) -> None:
+        """pull --rebase が同一ファイルの同時変更で止まったら、パス種別の裁定で決着して続行する。
+        rebase 中は --ours=リモート（upstream）/ --theirs=ローカルのコミット側。"""
+        gitdir = os.path.join(self.clone, ".git")
+        for _ in range(50):                   # 有限（1 コミットずつしか進まない）
+            if not any(os.path.isdir(os.path.join(gitdir, d))
+                       for d in ("rebase-merge", "rebase-apply")):
+                return
+            conflicted = [ln for ln in self._git(
+                "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if ln.strip()]
+            for path in conflicted:
+                rel = path[len(self.subdir) + 1:] if self.subdir and \
+                    path.startswith(self.subdir + "/") else path
+                side = "--ours" if self._remote_wins(rel) else "--theirs"
+                if self._git("checkout", side, "--", path).returncode != 0:
+                    self._git("rm", "-q", "--", path)   # add/delete 衝突: 消えた側に合わせる
+                self._git("add", "--", path)
+            if self._git("rebase", "--continue").returncode != 0 and \
+                    self._git("rebase", "--skip").returncode != 0:
+                self._git("rebase", "--abort")          # 進められない → 次回の 3-way で再収束
+                return
+
+    def _ahead(self) -> int:
+        r = self._git("rev-list", "--count", f"origin/{self.branch}..HEAD")
+        if r.returncode == 0:
+            try:
+                return int(r.stdout.strip() or 0)
+            except ValueError:
+                return 0
+        # リモートにブランチが無い（初回）→ ローカルにコミットがあれば push が必要
+        return 1 if self._git("rev-parse", "-q", "--verify", "HEAD").returncode == 0 else 0
+
+    def _push(self) -> None:
+        for i in range(_STATE_PUSH_RETRIES):
+            if self._git("push", "-u", "origin", self.branch).returncode == 0:
+                self._last_remote = time.time()
+                return
+            self._git("pull", "--rebase", "origin", self.branch)   # 競合 → 取り込んで再試行
+            self._resolve_rebase()
+            self._last_remote = time.time()
+            if i < _STATE_PUSH_RETRIES - 1:
+                time.sleep(2 ** i if i < 4 else 16)
+        raise RuntimeError(f"state_git push が {self.branch} へ反映できませんでした")
+
+    def sync(self, force: bool = False) -> "tuple[int, int]":
+        """双方向同期を 1 回行い (imported, exported) を返す。リモート操作もバス走査も
+        interval で律速する（daemon の毎 poll から呼ばれても負荷を一定に保つ）。
+        force=True は間隔を待たず同期する（run 終端時の結果共有用）。"""
+        now = time.time()
+        due = force or self.interval <= 0 or (now - self._last_remote) >= self.interval
+        if not due:
+            return (0, 0)
+        if not self._ready:
+            if not force and self.interval > 0 and now - self._last_attempt < self.interval:
+                return (0, 0)                 # 不通のリモートへの再クローン連打を防ぐ
+            self._last_attempt = now
+            self._ensure_clone()
+            self._ready = True
+        with _file_lock(self.clone + ".lock"):   # 同一ホストの多重プロセスを直列化
+            self._git("pull", "--rebase", "origin", self.branch)
+            self._resolve_rebase()
+            self._last_remote = now
+            imported, exported = self._three_way()
+            pathspec = self.subdir or "."
+            self._git("add", "-A", "--", pathspec)               # 自分の名前空間だけをステージ
+            # 空コミットを試みない: unborn ブランチでの失敗 commit は index を汚し以後の pull を壊す
+            if self._git("status", "--porcelain", "--", pathspec).stdout.strip():
+                self._git("commit", "-q", "-m", f"kiro-flow: state sync {now_iso()}")
+            if self._ahead() > 0:
+                self._push()
+        return imported, exported
+
+
+# バス単位で管理クローンを再利用する（daemon の毎 poll・run の待機ループで作り直さない）
+_STATE_GITS: "dict[tuple, StateGit]" = {}
+
+
+def state_git_for(args) -> "StateGit | None":
+    """state_git 設定時のみ StateGit を返す。GitBus（--git）はバス自体が共有 git なので対象外。"""
+    if not getattr(args, "state_git", None) or getattr(args, "git", None):
+        return None
+    bus_root = os.path.abspath(args.bus)
+    key = (bus_root, args.state_git, args.state_git_branch, args.state_git_subdir)
+    if key not in _STATE_GITS:
+        _STATE_GITS[key] = StateGit(bus_root, args.state_git, args.state_git_branch,
+                                    args.state_git_subdir, args.state_git_interval)
+    return _STATE_GITS[key]
+
+
+def state_sync(args, force: bool = False) -> None:
+    """状態の git 同期（best-effort）。ネットワーク断・リポジトリ不通でもループは殺さず
+    ログに残して続行する（run の実行・終端は state_git に一切依存しない）。"""
+    sg = state_git_for(args)
+    if sg is None:
+        return
+    try:
+        imported, exported = sg.sync(force=force)
+        if imported or exported:
+            log("state-git", f"同期: import={imported} export={exported}")
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        log("state-git", f"同期失敗（続行）: {e}")
 
 
 # --------------------------------------------------------------------------
@@ -3030,6 +3377,7 @@ def cmd_run(args) -> int:
     try:
         while True:
             bus.sync_pull()
+            state_sync(args)   # 状態 git: 進捗をリモートの viewer へ共有（間隔律速・ローカルバス時のみ）
             if bus.get_status() in TERMINAL:
                 print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
                 break
@@ -3041,6 +3389,7 @@ def cmd_run(args) -> int:
         shutdown()
 
     bus.sync_pull()
+    state_sync(args, force=True)   # 状態 git: run の結末（results/final/meta）を間隔を待たず共有側へ
     final = read_json(bus.final_path)
     if final:
         print("\n=== 最終結果 ===")
@@ -3136,6 +3485,7 @@ def cmd_daemon(args) -> int:
 
     while not stop["v"]:
         bus.sync_pull()
+        state_sync(args)   # 状態 git: バス状態の共有と inbox 投入の取り込み（間隔律速・ローカルバス時のみ）
         # 一時ファイルの自動クリーンアップ（ロック / 中間 .tmp / 孤立クローン）を定期実行
         if cleanup_interval > 0 and time.time() - last_cleanup >= cleanup_interval:
             last_cleanup = time.time()
@@ -3152,11 +3502,13 @@ def cmd_daemon(args) -> int:
         # （kiro-projects の charter 駆動 watch など）が永久待機に陥る。終端でなければ
         # まず同じ run-id で再起動（resume。確定済み results/ を活かして続きから）を試み、
         # 進捗なしの連続再開が max_resumes を超えたときだけ failed に確定する。
+        finished_runs = False   # このラウンドで終端に達した run（state git へ間隔を待たず押し出す）
         for rid in [r for r, p in orchestrators.items() if p.poll() is not None]:
             rc = orchestrators[rid].poll()
             del orchestrators[rid]
             if bus.run_meta(rid).get("status") in TERMINAL:
                 log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
+                finished_runs = True
                 continue
             req = bus.read_inbox(rid)
             p = None
@@ -3173,9 +3525,12 @@ def cmd_daemon(args) -> int:
                 bus.run_view(rid).event(daemon_id, "run-failed", run=rid, rc=rc)
                 bus.sync_push(f"run {rid} failed: orchestrator 異常終了（rc={rc}）")
                 log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ run を failed に確定")
+                finished_runs = True
             else:
                 log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
         workers = [(r, p) for r, p in workers if p.poll() is None]
+        if finished_runs:
+            state_sync(args, force=True)   # 状態 git: 終端した run の結果を間隔を待たず共有側へ
 
         # 自分が回している run の生存リースを更新（再起動後の自分・別デーモンへ「駆動中」を示す）。
         # ローカル meta は毎 poll 更新し、git バスへの伝搬は間引いて push する。
@@ -4330,6 +4685,18 @@ def main() -> int:
     p.add_argument("--lock-dir", dest="lock_dir", default=None,
                    help="daemon singleton ロックの置き場（設定ファイル lock_dir と同義。"
                         "外部起動の daemon を別ツールから発見させるため起動側と一致させる）")
+    p.add_argument("--state-git", dest="state_git", default=None,
+                   help="ワーク内容（ローカルバスの runs/・inbox/）を保存・共有する git リポジトリ"
+                        "（URL/パス）。リモートの kiro-projects-viewer が進捗/結果を読める"
+                        "（未指定で無効。--git のバス分散とは独立で、--git 指定時は無視）")
+    p.add_argument("--state-git-branch", dest="state_git_branch", default=None,
+                   help="state_git の同期先ブランチ（既定 main）")
+    p.add_argument("--state-git-subdir", dest="state_git_subdir", default=None,
+                   help="state_git リポジトリ内の保存先サブディレクトリ（既定 kiro-flow）。"
+                        "同一リポジトリへ他プログラムもコミットする前提の名前空間分離")
+    p.add_argument("--state-git-interval", dest="state_git_interval", type=float, default=None,
+                   help="state_git の fetch/push の最短間隔（秒。既定 300）。リモートサーバへの"
+                        "負荷を一定に保つ律速。0 で毎同期")
     p.add_argument("--executor-dir", dest="executor_dir", default=None,
                    help="executor プラグイン（<name>.py）の追加検索ディレクトリ（設定 executor_dir と同義）")
     p.add_argument("--workspace", dest="workspace", default=None,
