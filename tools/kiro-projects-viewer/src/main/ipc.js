@@ -51,12 +51,23 @@ function registerIpcHandlers() {
   handle('config:save', ({ config }) => saveConfig(config));
 
   // 選択中プロジェクトのリポジトリを git pull で最新化する。
-  // 自動（force=false）は設定間隔・下限 60 秒のスロットリングでリモート負荷を抑える
+  // 自動（force=false）は設定間隔・下限 60 秒のスロットリングでリモート負荷を抑える。
+  // 都度プッシュ（gitAutoPush）が有効なときはローカルコミットと共存できる --rebase で取り込む
   handle('git:pull', ({ dir, force }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     const cfg = loadConfig();
     const intervalSec = (cfg.kiro && Number(cfg.kiro.gitPullSec)) || 300;
-    return git.pull(dir, { intervalSec, force: !!force });
+    const rebase = !!(cfg.kiro && cfg.kiro.gitAutoPush);
+    return git.pull(dir, { intervalSec, force: !!force, rebase });
+  });
+
+  // ユーザー操作（指示・投入・記入・削除）の書き込みをコミットして push する
+  // （状態共有 git への都度反映）。設定 gitAutoPush が無効なら何もしない
+  handle('git:commitPush', ({ dir, message }) => {
+    if (!dir) throw new Error('対象ディレクトリが指定されていません');
+    const cfg = loadConfig();
+    if (!(cfg.kiro && cfg.kiro.gitAutoPush)) return { skipped: true, disabled: true };
+    return git.commitPush(dir, { message });
   });
 
   // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー

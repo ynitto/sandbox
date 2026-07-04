@@ -69,9 +69,15 @@
           <label>自動更新間隔（秒・0 で無効）</label>
           <input id="cfg-refresh" type="number" min="0" step="1" />
         </div>
+      </div>
+      <div class="row2">
         <div class="field">
           <label>git pull 間隔（秒・0 で自動なし。下限 60 秒）</label>
           <input id="cfg-git-pull" type="number" min="0" step="1" />
+        </div>
+        <div class="field">
+          <label class="check" title="指示ドロップ・inbox 投入・needs 記入・削除のたびに、操作したディレクトリだけをコミットして push します（状態共有 git 前提。push 競合は pull --rebase で自動吸収）">
+            <input type="checkbox" id="cfg-git-autopush" /> 操作を都度コミットしてプッシュ（状態共有 git）</label>
         </div>
       </div>
       <div class="row2">

@@ -939,8 +939,8 @@ async function doApprove() {
   if (!mr) return toast('右ペインに操作対象の MR がありません', true);
   const closesIssue = t.type === 'issue';
   await guard('承認', async () => {
-    // マージ可否は実行時に確認し、できない理由をトーストで明示する
-    const cur = await api.glMRStatus(targetOf(mr));
+    // マージ可否は実行時に確認する（未解決ディスカッション数も含めて取得）
+    const cur = await api.glMRReview(targetOf(mr));
     // 既にマージ済み（手元の表示が古い・外部でマージされた等）の場合は、
     // マージをスキップしてイシューのクローズだけを確認のうえ実行する
     if (cur.state === 'merged') {
@@ -961,12 +961,9 @@ async function doApprove() {
     if (cur.state !== 'opened') {
       throw new Error(`${pageLabel(mr)} がオープンではありません（${cur.state}）`);
     }
-    if (cur.hasConflicts) {
-      throw new Error(`${pageLabel(mr)} にコンフリクトがあるためマージできません`);
-    }
-    if (!cur.blockingDiscussionsResolved) {
-      throw new Error(`${pageLabel(mr)} に未解決のレビューコメントがあるためマージできません`);
-    }
+    // コンフリクト / 未解決レビューコメントがあればマージせず、事前チェックと
+    // 同じ差し戻し確認ダイアログを出す（「差し戻す」で固定コメント + ステータス差し戻し）
+    if (openMRSendbackDialog(mr, cur)) return;
     const msg = `${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
     if (!(await confirmDialog(msg))) return;
     await api.glComment(targetOf(t), actionComment('承認'));
@@ -1004,9 +1001,11 @@ async function doSendBack() {
 // ---------------------------------------------------------------------------
 // MR を表示したとき（候補選択・MR タブ切替）に現在状態を取得し、コンフリクトまたは
 // 未解決（未クローズ）のレビューコメントがあれば「差し戻すか」の確認ダイアログを出す。
-// 差し戻しは、検知内容を伝える固定コメントを MR へ投稿し、操作対象のステータスを
-// アクションバーの差し戻しと同じ遷移（SENDBACK_FLOW）で戻す（対象のステータスが
-// 遷移表に無ければコメント投稿のみ）。
+// 差し戻しは、検知内容を伝える固定コメントを操作対象（表示中のイシューを優先。
+// 無ければ MR）へ投稿し、ステータスをアクションバーの差し戻しと同じ遷移
+// （SENDBACK_FLOW）で戻す（対象のステータスが遷移表に無ければコメント投稿のみ）。
+// イシューを優先するのは、委譲元ツール（kiro-flow 等）がイシューの人コメントを
+// フィードバックとして取り込むため。イシューへ投稿するときは対象 MR の参照を添える。
 // 同じ MR への確認はセッション中 1 回だけ（タブ切替のたびに出すと邪魔になる）。
 
 const MR_SENDBACK_COMMENTS = {
@@ -1018,6 +1017,44 @@ const MR_SENDBACK_COMMENTS = {
 
 const mrHealthChecked = new Set();
 let mrSendback = null; // { mr, kinds: ('conflict'|'unresolved')[] }
+
+// glMRReview の現在状態から問題（コンフリクト / 未解決レビューコメント）を検知し、
+// あれば差し戻し確認ダイアログを開く。問題が無ければ false を返す。
+// 表示時の事前チェックと、承認実行時のマージ前チェックの両方から使う。
+function openMRSendbackDialog(mr, cur) {
+  const kinds = [];
+  const problems = [];
+  if (cur.hasConflicts) {
+    kinds.push('conflict');
+    problems.push('ベースブランチとコンフリクトしています（このままではマージできません）');
+  }
+  if (cur.unresolvedCount > 0 || !cur.blockingDiscussionsResolved) {
+    kinds.push('unresolved');
+    problems.push(
+      `未解決（未クローズ）のレビューコメントが${
+        cur.unresolvedCount > 0 ? ` ${cur.unresolvedCount} 件` : ''
+      }あります`
+    );
+  }
+  if (!kinds.length) return false;
+
+  const dlg = $('mr-sendback-dialog');
+  if (dlg.open) return true; // 同じ確認を表示中なら重ねない
+  mrSendback = { mr, kinds };
+  $('mr-sendback-desc').textContent = `${pageLabel(mr)} — ${mr.title.slice(0, 60)}`;
+  $('mr-sendback-problems').innerHTML = problems
+    .map((p) => `<li>${escapeHtml(p)}</li>`)
+    .join('');
+  const t = primaryTarget();
+  const to = t && SENDBACK_FLOW[statusOf(t)];
+  // コメント先: 表示中のイシューを優先（無ければ MR）。ラベル遷移も同じ対象
+  const destLabel = t && t.type === 'issue' ? pageLabel(t) : 'MR';
+  $('mr-sendback-status').textContent = to
+    ? `「差し戻す」を押すと、上記の内容を伝える固定コメントを ${destLabel} に投稿し、${pageLabel(t)} を ${to} に戻します。`
+    : `「差し戻す」を押すと、上記の内容を伝える固定コメントを ${destLabel} に投稿します（対象のステータスが差し戻し対象外のため、ラベルは変更しません）。`;
+  dlg.showModal();
+  return true;
+}
 
 async function checkActiveMRHealth() {
   const mr = activeMR();
@@ -1033,49 +1070,26 @@ async function checkActiveMRHealth() {
     return;
   }
   if (cur.state !== 'opened') return;
-
-  const kinds = [];
-  const problems = [];
-  if (cur.hasConflicts) {
-    kinds.push('conflict');
-    problems.push('ベースブランチとコンフリクトしています（このままではマージできません）');
-  }
-  if (cur.unresolvedCount > 0 || !cur.blockingDiscussionsResolved) {
-    kinds.push('unresolved');
-    problems.push(
-      `未解決（未クローズ）のレビューコメントが${
-        cur.unresolvedCount > 0 ? ` ${cur.unresolvedCount} 件` : ''
-      }あります`
-    );
-  }
-  if (!kinds.length) return;
-
-  const dlg = $('mr-sendback-dialog');
-  if (dlg.open) return; // 別 MR の確認を表示中なら重ねない
-  mrSendback = { mr, kinds };
-  $('mr-sendback-desc').textContent = `${pageLabel(mr)} — ${mr.title.slice(0, 60)}`;
-  $('mr-sendback-problems').innerHTML = problems
-    .map((p) => `<li>${escapeHtml(p)}</li>`)
-    .join('');
-  const t = primaryTarget();
-  const to = t && SENDBACK_FLOW[statusOf(t)];
-  $('mr-sendback-status').textContent = to
-    ? `「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿し、${pageLabel(t)} を ${to} に戻します。`
-    : '「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿します（対象のステータスが差し戻し対象外のため、ラベルは変更しません）。';
-  dlg.showModal();
+  openMRSendbackDialog(mr, cur);
 }
 
 // 差し戻し（固定コメント投稿 + ステータス差し戻し）: 検知内容ごとの定型文を
-// 「# 差し戻し」見出しで MR に投稿し、操作対象のステータスを SENDBACK_FLOW で戻す
+// 「# 差し戻し」見出しで操作対象（イシュー優先。無ければ MR）に投稿し、
+// 同じ対象のステータスを SENDBACK_FLOW で戻す
 async function doMRSendback() {
   $('mr-sendback-dialog').close();
   const sb = mrSendback;
   mrSendback = null;
   if (!sb) return;
   await guard('差し戻し', async () => {
+    // コメント先: 表示中のイシューがあればイシュー（委譲元ツールが人コメントを
+    // フィードバックとして取り込むため）、無ければ MR
+    const t = primaryTarget() || sb.mr;
+    const dest = t.type === 'issue' ? t : sb.mr;
+    const mrRef = sb.mr.ref || `!${sb.mr.iid}`;
+    const head = dest.type === 'issue' ? `対象 MR: ${mrRef}\n\n` : '';
     const lines = sb.kinds.map((k) => `- ${MR_SENDBACK_COMMENTS[k]}`);
-    await api.glComment(targetOf(sb.mr), `# 差し戻し\n\n${lines.join('\n')}`);
-    const t = primaryTarget();
+    await api.glComment(targetOf(dest), `# 差し戻し\n\n${head}${lines.join('\n')}`);
     const to = t && SENDBACK_FLOW[statusOf(t)];
     if (to) {
       const remove = t.labels.filter((l) => l.startsWith('status:') && l !== to);
@@ -1085,8 +1099,8 @@ async function doMRSendback() {
     reloadPanes();
     toast(
       to
-        ? `${pageLabel(sb.mr)} に差し戻しコメントを投稿し、${pageLabel(t)} を ${to} に戻しました`
-        : `${pageLabel(sb.mr)} に差し戻しコメントを投稿しました`
+        ? `${pageLabel(dest)} に差し戻しコメントを投稿し、${pageLabel(t)} を ${to} に戻しました`
+        : `${pageLabel(dest)} に差し戻しコメントを投稿しました`
     );
   });
 }
