@@ -157,6 +157,9 @@ class GitLabClient {
       url: it.web_url,
       updatedAt: it.updated_at,
       author: it.author ? it.author.username : '',
+      // kiro-flow の gitlab executor が起票したイシューか（本文の隠しマーカー
+      // `<!-- kiro-flow:task-token:kf-... -->` で判定。「レビュー待ち」の絞り込みに使う）
+      kiroFlow: /kiro-flow:task-token:/.test(String(it.description || '')),
     }));
   }
 }

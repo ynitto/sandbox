@@ -16,10 +16,13 @@ contextBridge.exposeInMainWorld('api', {
 
   discover: () => invoke('kiro:discover'),
   readProject: (dir) => invoke('kiro:project', { dir }),
+  gitPull: (dir, force) => invoke('git:pull', { dir, force }),
+  deleteTask: (dir, id) => invoke('kiro:deleteTask', { dir, id }),
 
   flowRuns: (busDir, limit) => invoke('flow:runs', { busDir, limit }),
   flowRun: (busDir, runId) => invoke('flow:run', { busDir, runId }),
   flowResubmit: (busDir, runId) => invoke('flow:resubmit', { busDir, runId }),
+  flowDeleteRun: (busDir, runId) => invoke('flow:deleteRun', { busDir, runId }),
   glFindIssueByToken: (args) => invoke('gitlab:findIssueByToken', args),
 
   submitFeedback: (file, feedback) => invoke('kiro:feedback', { file, feedback }),

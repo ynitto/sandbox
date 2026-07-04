@@ -16,7 +16,7 @@ const state = {
   flowNodeId: null,
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）
   backlogFilter: 'active',
-  gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false },
+  gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
   timer: null,
   busy: false,
 };
@@ -133,6 +133,32 @@ function parseRepoUrl(url) {
   m = s.match(/^https?:\/\/([^/]+)\/(.+?)(?:\.git)?\/?$/);
   if (m) return { host: m[1], projectPath: m[2] };
   return null;
+}
+
+// window.confirm は Electron でダイアログを閉じた後にキーボード入力が効かなくなる
+// 既知問題があるため、<dialog> ベースの確認を使う（gitlab-review-viewer と同じ流儀）
+function confirmDialog(message) {
+  return new Promise((resolve) => {
+    const dlg = $('dlg-confirm');
+    $('confirm-desc').textContent = message;
+    const finish = (ok) => {
+      cleanup();
+      if (dlg.open) dlg.close();
+      resolve(ok);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onClose = () => finish(false); // Esc キーで閉じた場合
+    function cleanup() {
+      $('btn-confirm-ok').removeEventListener('click', onOk);
+      $('btn-confirm-cancel').removeEventListener('click', onCancel);
+      dlg.removeEventListener('close', onClose);
+    }
+    $('btn-confirm-ok').addEventListener('click', onOk);
+    $('btn-confirm-cancel').addEventListener('click', onCancel);
+    dlg.addEventListener('close', onClose);
+    dlg.showModal();
+  });
 }
 
 // クリック委譲: data-ext 属性のリンクは既定ブラウザで開く
@@ -463,6 +489,7 @@ function showTaskDialog(id, scope) {
     .join('');
   // 決定記録を残す人の操作（backlog のタスクのみ。archive は閲覧のみ）
   const canApprove = ['blocked', 'review'].includes(t.status);
+  const claimed = p.claims.includes(t.id);
   const actionArea =
     scope === 'archive'
       ? ''
@@ -473,6 +500,9 @@ function showTaskDialog(id, scope) {
             <button data-taskact="pin">▲ 最優先へ（pin）</button>
             <button data-taskact="defer">▽ 後回し（defer）</button>
             <button data-taskact="hold">⏸ 保留（hold）</button>
+            <span class="spacer"></span>
+            <button class="danger" id="btn-task-delete" ${claimed ? 'disabled' : ''}
+              title="${claimed ? '実行中（クレーム中）のタスクは削除できません' : 'backlog のタスクファイルをゴミ箱へ移動します（決定記録は残りません）'}">🗑 削除</button>
           </div>
         </div>`;
   $('dlg-task-body').innerHTML = `
@@ -498,6 +528,28 @@ function showTaskDialog(id, scope) {
       const ok = await guard('操作', async () => {
         const res = await api.runAction({ dir: p.dir, action: btn.dataset.taskact, id: t.id, reason });
         toast(res.output || '操作しました', true);
+        return true;
+      });
+      if (ok) {
+        $('dlg-task').close();
+        await reloadProject();
+      }
+    });
+  }
+  // 削除（人の明示アクション）。kiro-projects に削除の公式契約は無いため、
+  // backlog/<id>.md をゴミ箱へ移動する。実行中（クレーム中）は main 側でも拒否される
+  const delBtn = $('btn-task-delete');
+  if (delBtn) {
+    delBtn.addEventListener('click', async () => {
+      const yes = await confirmDialog(
+        `タスク ${t.id}「${t.title}」を削除します。\n` +
+          'backlog のタスクファイルをゴミ箱へ移動します（決定記録 DR は残りません）。\n' +
+          '一時的に止めたいだけなら「⏸ 保留（hold）」を使ってください。よろしいですか？'
+      );
+      if (!yes) return;
+      const ok = await guard('タスク削除', async () => {
+        const res = await api.deleteTask(p.dir, t.id);
+        toast(`${t.id} を削除しました（${res.via === 'trash' ? 'ゴミ箱へ移動' : '完全削除'}）`, true);
         return true;
       });
       if (ok) {
@@ -698,10 +750,18 @@ function renderFlow() {
     })
     .join('');
 
+  // 左右ペインは独立スクロール。再描画（ポーリング）でスクロール位置を失わないよう
+  // 描画前の位置を控えて復元する
+  const prevScroll = {
+    runs: ($('flow-runs') || {}).scrollTop || 0,
+    detail: ($('flow-detail') || {}).scrollTop || 0,
+  };
   el.innerHTML = `${busLine}<div id="flow-layout">
     <div id="flow-runs">${runList || '<div class="empty">run なし</div>'}</div>
     <div id="flow-detail">${renderFlowDetail()}</div>
   </div>`;
+  $('flow-runs').scrollTop = prevScroll.runs;
+  $('flow-detail').scrollTop = prevScroll.detail;
 
   for (const item of el.querySelectorAll('.run-item[data-run]')) {
     item.addEventListener('click', () => selectFlowRun(item.dataset.run));
@@ -754,9 +814,14 @@ function renderFlowDetail() {
     run.status === 'failed'
       ? `<button class="chip" id="flow-resubmit" title="meta の要求・ワークスペースをそのまま新しい run として inbox へ投入します（daemon が拾う）">↻ 同じ要求で再投入</button>`
       : '';
+  // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ
+  const deletable = run.status === 'done' || run.status === 'failed' || run.alive === false;
+  const deleteBtn = deletable
+    ? `<button class="chip danger" id="flow-delete" title="この run のディレクトリ（runs/${esc(run.runId)}）をゴミ箱へ移動します">🗑 削除</button>`
+    : '';
   return `
     <div class="card full">
-      <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${resubmit}</h3>
+      <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${resubmit} ${deleteBtn}</h3>
       <div>${esc(run.request || '')}</div>
       ${heartbeat}
       ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(run.failureReason)}</div>` : ''}
@@ -923,6 +988,31 @@ async function resubmitFlowRun() {
   }
 }
 
+// 不要な run を削除する（人の明示アクション）。実行中は main 側でも拒否される
+async function deleteFlowRun() {
+  const run = state.flowRun && state.flowRun.run;
+  if (!run) return;
+  const warn =
+    run.status !== 'done' && run.status !== 'failed'
+      ? '\nこの run は終端していません（応答なし）。削除すると daemon 再起動時の自動再開もできなくなります。'
+      : '';
+  const yes = await confirmDialog(
+    `run ${run.runId} を削除します。\nバスの runs/ ディレクトリごとゴミ箱へ移動します。${warn}\nよろしいですか？`
+  );
+  if (!yes) return;
+  const ok = await guard('run 削除', async () => {
+    const res = await api.flowDeleteRun(state.project.busDir, run.runId);
+    toast(`run を削除しました（${res.via === 'trash' ? 'ゴミ箱へ移動' : '完全削除'}）: ${run.runId}`, true);
+    return true;
+  });
+  if (ok) {
+    state.flowRunId = null;
+    state.flowRun = null;
+    state.flowNodeId = null;
+    await reloadProject();
+  }
+}
+
 function summarizeEvent(ev) {
   const skip = new Set(['ts', 'who', 'kind']);
   const rest = Object.entries(ev)
@@ -1015,6 +1105,8 @@ function bindFlowDetail(root) {
   }
   const rs = root.querySelector('#flow-resubmit');
   if (rs) rs.addEventListener('click', () => resubmitFlowRun());
+  const fd = root.querySelector('#flow-delete');
+  if (fd) fd.addEventListener('click', () => deleteFlowRun());
   const fi = root.querySelector('#btn-find-issue');
   if (fi) fi.addEventListener('click', () => findNodeIssue(fi));
   for (const btn of root.querySelectorAll('#flow-detail button[data-review]')) {
@@ -1081,26 +1173,43 @@ function renderGitLab() {
     </tr>`;
   };
 
-  const repoIssuesSection = gl.repoIssues.length
+  // kiro-flow 由来（gitlab executor が起票 = 本文に task-token マーカー）だけに絞る。
+  // 人が直接立てたイシューも見たいときはチップで解除できる
+  const flowOnly = gl.flowOnly !== false;
+  const shown = flowOnly ? gl.repoIssues.filter((it) => it.kiroFlow) : gl.repoIssues;
+  const hiddenCount = gl.repoIssues.length - shown.length;
+
+  const repoIssuesSection = shown.length
     ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th></th></tr>
-        ${gl.repoIssues.map((it) => issueRow(it)).join('')}</table>`
+        ${shown.map((it) => issueRow(it)).join('')}</table>`
     : `<div class="muted">${
         gl.enabled === false
           ? '⚙ 設定で GitLab の URL とトークンを設定すると、repos のオープンイシューを一覧できます'
-          : repos.length
-            ? 'レビュー待ちのイシューはありません'
-            : 'repos が未定義です（charter の ## repos か <project>/repos.{yaml,json} で定義）'
+          : !repos.length
+            ? 'repos が未定義です（charter の ## repos か <project>/repos.{yaml,json} で定義）'
+            : flowOnly && hiddenCount
+              ? `kiro-flow 由来のレビュー待ちはありません（フィルタを解除すると ${hiddenCount} 件表示されます）`
+              : 'レビュー待ちのイシューはありません'
       }</div>`;
 
   el.innerHTML = `
     <div class="toolbar">
       <span class="muted">repos のオープンイシュー（レビュー待ち・作業中）。委譲イシューの決着（承認/却下）はフロータブのノード詳細へ</span>
       <span class="spacer"></span>
+      <button id="btn-gl-flowonly" class="chip ${flowOnly ? 'active' : ''}"
+        title="kiro-flow の gitlab executor が起票したイシュー（本文の task-token マーカー）だけに絞る">kiro-flow 由来のみ</button>
       <button id="btn-gl-refresh" ${gl.loading ? 'disabled' : ''}>${gl.loading ? '取得中…' : 'GitLab から最新化'}</button>
     </div>
-    <div class="section-title">レビュー待ち ${repos.map((r) => `<span class="label-chip">${esc(r.projectPath)}</span>`).join('')}</div>
+    <div class="section-title">レビュー待ち ${[...new Set(repos.map((r) => r.projectPath))]
+      .map((path) => `<span class="label-chip">${esc(path)}</span>`)
+      .join('')}
+      ${flowOnly && hiddenCount ? `<span class="muted">（kiro-flow 由来以外 ${hiddenCount} 件を非表示）</span>` : ''}</div>
     ${repoIssuesSection}`;
 
+  $('btn-gl-flowonly').addEventListener('click', () => {
+    gl.flowOnly = !flowOnly;
+    renderGitLab();
+  });
   $('btn-gl-refresh').addEventListener('click', () => refreshGitLab(true));
   for (const btn of el.querySelectorAll('button[data-review]')) {
     btn.addEventListener('click', () =>
@@ -1244,6 +1353,7 @@ function openSettings() {
   $('cfg-roots').value = ((cfg.kiro && cfg.kiro.roots) || []).join('\n');
   $('cfg-autodiscover').checked = !cfg.kiro || cfg.kiro.autoDiscover !== false;
   $('cfg-refresh').value = cfg.kiro ? cfg.kiro.refreshSec : 5;
+  $('cfg-git-pull').value = cfg.kiro && cfg.kiro.gitPullSec !== undefined ? cfg.kiro.gitPullSec : 300;
   $('cfg-kiro-command').value = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
   $('cfg-action-mode').value = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.kiro && cfg.kiro.flowBus) || '';
@@ -1264,6 +1374,7 @@ async function saveSettings() {
     .filter(Boolean);
   cfg.kiro.autoDiscover = $('cfg-autodiscover').checked;
   cfg.kiro.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
+  cfg.kiro.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
   cfg.kiro.command = $('cfg-kiro-command').value.trim() || 'kiro-projects';
   cfg.kiro.actionMode = $('cfg-action-mode').value;
   cfg.kiro.flowBus = $('cfg-flow-bus').value.trim();
@@ -1278,10 +1389,44 @@ async function saveSettings() {
   toast('設定を保存しました', true);
 }
 
+// ---------------------------------------------------------------------------
+// git pull（選択中プロジェクトのリポジトリ最新化）
+// ---------------------------------------------------------------------------
+// 自動: ポーリングのたびに呼ぶが、実際の pull は main 側が設定間隔（下限 60 秒）で
+// スロットリングする（リモートサーバへ負荷をかけない）。git リポジトリでない
+// プロジェクトは黙ってスキップされる。エラーは同じ内容を繰り返しトーストしない。
+let lastGitPullError = null;
+
+async function maybeAutoGitPull() {
+  const sec = state.config && state.config.kiro ? Number(state.config.kiro.gitPullSec) : 0;
+  if (!sec || !state.selectedDir) return;
+  try {
+    const res = await api.gitPull(state.selectedDir, false);
+    if (res && !res.skipped) lastGitPullError = null;
+  } catch (err) {
+    const msg = err.message || String(err);
+    if (lastGitPullError !== msg) {
+      lastGitPullError = msg;
+      toast(`git pull（自動）: ${msg}`);
+    }
+  }
+}
+
+// 手動（⇣ ボタン）: スロットリングを無視して即 pull し、結果をトーストで知らせる
+async function manualGitPull() {
+  if (!state.selectedDir) return toast('プロジェクトを選択してください');
+  const res = await guard('git pull', () => api.gitPull(state.selectedDir, true));
+  if (!res) return;
+  lastGitPullError = null;
+  toast(`git pull: ${res.output || '完了'}`, true);
+  await refreshAll();
+}
+
 async function refreshAll() {
   if (state.busy) return;
   state.busy = true;
   try {
+    await maybeAutoGitPull();
     await refreshDiscovery();
     if (state.selectedDir) await reloadProject();
   } finally {
@@ -1295,7 +1440,7 @@ function setupPolling() {
   if (sec > 0) {
     state.timer = setInterval(() => {
       // ダイアログを開いている間・入力中は更新しない（書きかけの入力を消さない）
-      if ($('dlg-settings').open || $('dlg-task').open || $('dlg-enqueue').open) return;
+      if ($('dlg-settings').open || $('dlg-task').open || $('dlg-enqueue').open || $('dlg-confirm').open) return;
       const ae = document.activeElement;
       if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) return;
       const typed = [...document.querySelectorAll('#content .need-input')].some((t) => t.value.trim());
@@ -1332,6 +1477,7 @@ async function init() {
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
   $('btn-refresh').addEventListener('click', refreshAll);
+  $('btn-git-pull').addEventListener('click', manualGitPull);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-save-settings').addEventListener('click', () => saveSettings());
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());

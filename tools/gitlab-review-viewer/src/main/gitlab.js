@@ -248,6 +248,32 @@ class GitLabClient {
     return normalizeItem(mr, 'mr');
   }
 
+  // MR の未解決（未クローズ）レビューコメント数。resolvable な議論のうち
+  // resolved になっていないものを数える（システムノートのみの議論は対象外）。
+  async countUnresolvedDiscussions(target) {
+    const discussions = await this.api(
+      `${this.itemPath({ ...target, type: 'mr' })}/discussions`,
+      { query: { per_page: 100 } }
+    );
+    let count = 0;
+    for (const d of discussions || []) {
+      const notes = Array.isArray(d.notes) ? d.notes : [];
+      if (notes.some((n) => n.resolvable && !n.resolved)) count++;
+    }
+    return count;
+  }
+
+  // レビュー表示時の事前チェック用: MR の現在状態 + 未解決ディスカッション数。
+  // blocking_discussions_resolved はプロジェクト設定に依存するため、
+  // 未解決の検知はディスカッションを直接数えた値を優先する。
+  async getMRReview(target) {
+    const [mr, unresolvedCount] = await Promise.all([
+      this.getMR(target),
+      this.countUnresolvedDiscussions(target).catch(() => 0),
+    ]);
+    return { ...mr, unresolvedCount };
+  }
+
   // ---- 操作 ----
 
   addComment(target, body) {

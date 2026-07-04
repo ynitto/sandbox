@@ -14,6 +14,7 @@
       <div class="sidebar-header">
         <h1>Kiro Projects</h1>
         <div class="row">
+          <button id="btn-git-pull" title="選択中プロジェクトのリポジトリを git pull で最新化">⇣</button>
           <button id="btn-refresh" title="再読み込み">⟳</button>
           <button id="btn-settings" title="設定">⚙</button>
         </div>
@@ -62,11 +63,15 @@
       </div>
       <div class="row2">
         <div class="field">
-          <label><input type="checkbox" id="cfg-autodiscover" /> 稼働中インスタンスを自動発見（~/.kiro-projects/instances）</label>
+          <label class="check"><input type="checkbox" id="cfg-autodiscover" /> 稼働中インスタンスを自動発見（~/.kiro-projects/instances）</label>
         </div>
         <div class="field">
           <label>自動更新間隔（秒・0 で無効）</label>
           <input id="cfg-refresh" type="number" min="0" step="1" />
+        </div>
+        <div class="field">
+          <label>git pull 間隔（秒・0 で自動なし。下限 60 秒）</label>
+          <input id="cfg-git-pull" type="number" min="0" step="1" />
         </div>
       </div>
       <div class="row2">
@@ -155,6 +160,16 @@
     <div class="dialog-actions">
       <button id="btn-enq-cancel">キャンセル</button>
       <button id="btn-enq-submit" class="primary-inline">投入</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 確認ダイアログ（削除など破壊的操作の前に出す） ======== -->
+  <dialog id="dlg-confirm">
+    <h2>確認</h2>
+    <p id="confirm-desc" style="white-space:pre-wrap"></p>
+    <div class="dialog-actions">
+      <button id="btn-confirm-cancel">キャンセル</button>
+      <button id="btn-confirm-ok" class="danger">実行</button>
     </div>
   </dialog>
 

@@ -288,6 +288,26 @@ function resubmitRun(busDir, runId) {
   return { runId: newId, file };
 }
 
+// run の削除可否を検証して対象ディレクトリを返す（実削除は ipc 側 = Electron shell）。
+// 実行中（orchestrator の生存リースが有効）の run は削除できない。
+// 終端（done/failed）と応答なし（リース切れ＝孤児）の run だけが対象。
+function prepareRunDeletion(busDir, runId) {
+  const id = String(runId || '');
+  if (!id || id !== path.basename(id)) {
+    throw new Error(`不正な run ID です: ${runId}`);
+  }
+  const runDir = path.join(busDir, 'runs', id);
+  if (!fs.existsSync(runDir)) throw new Error(`run が見つかりません: ${id}`);
+  const meta = readJson(path.join(runDir, 'meta.json')) || {};
+  const status = String(meta.status || 'unknown');
+  if (!TERMINAL.has(status) && runAlive(meta, Date.now() / 1000) === true) {
+    throw new Error(
+      `run は実行中です（status=${status}）。終端（done/failed）または応答なしの run だけ削除できます`
+    );
+  }
+  return { runDir, status };
+}
+
 // バス配下の run を新しい順に一覧する（各 run はサマリのみ）
 function listRuns(busDir, limit = 30) {
   const runsDir = path.join(busDir, 'runs');
@@ -360,5 +380,6 @@ module.exports = {
   daemonStatus,
   runAlive,
   resubmitRun,
+  prepareRunDeletion,
   nodeTaskToken,
 };

@@ -423,6 +423,9 @@ async function selectCandidate(index) {
     if (related.length === 0) {
       toast('紐づくイシュー / MR は見つかりませんでした');
     }
+    // 表示した MR のコンフリクト / 未解決レビューコメントを事前チェックする
+    // （guard の完了を待たせないため待たずに走らせる。失敗は内部で握りつぶす）
+    checkActiveMRHealth();
   });
 }
 
@@ -461,6 +464,11 @@ function pageLabel(p) {
   return `${kind} ${p.ref || `#${p.iid}`}`;
 }
 
+// タブを開いたときの初期 URL。MR はレビュー対象の差分（/diffs）を最初から表示する
+function pageStartUrl(p) {
+  return p.type === 'mr' && p.url ? `${p.url}/diffs` : p.url;
+}
+
 function tabLabel(tab) {
   if (tab.kind === 'page') return pageLabel(tab.page);
   return tab.title;
@@ -484,6 +492,7 @@ function renderPane(pane) {
       p.active = i;
       renderPane(pane);
       renderTargetInfo(); // 操作対象は表示中タブに追従する
+      if (pane === 1) checkActiveMRHealth(); // 切り替えた MR を事前チェックする
     });
     if (tab.kind !== 'page') {
       const x = document.createElement('span');
@@ -538,8 +547,9 @@ function syncPane(pane) {
   if (tab.kind === 'page') {
     wv.style.display = 'flex';
     lv.hidden = true;
-    if (wv.getAttribute('src') !== tab.page.url) wv.setAttribute('src', tab.page.url);
-    urlEl.value = tab.page.url;
+    const startUrl = pageStartUrl(tab.page);
+    if (wv.getAttribute('src') !== startUrl) wv.setAttribute('src', startUrl);
+    urlEl.value = startUrl;
     return;
   }
   // リーダーモード / 要約のローカルタブ
@@ -931,6 +941,23 @@ async function doApprove() {
   await guard('承認', async () => {
     // マージ可否は実行時に確認し、できない理由をトーストで明示する
     const cur = await api.glMRStatus(targetOf(mr));
+    // 既にマージ済み（手元の表示が古い・外部でマージされた等）の場合は、
+    // マージをスキップしてイシューのクローズだけを確認のうえ実行する
+    if (cur.state === 'merged') {
+      applyUpdatedItem(cur);
+      if (!closesIssue) {
+        throw new Error(`${pageLabel(mr)} は既にマージ済みです`);
+      }
+      const msg = `${pageLabel(mr)} は既にマージ済みです。${pageLabel(t)} のクローズだけを行います。よろしいですか？`;
+      if (!(await confirmDialog(msg))) return;
+      await api.glComment(targetOf(t), actionComment('承認'));
+      const closed = await api.glSetState(targetOf(t), 'close');
+      applyUpdatedItem(closed);
+      $('comment-input').value = '';
+      reloadPanes();
+      toast(`${pageLabel(t)} をクローズしました（${pageLabel(mr)} はマージ済み）`);
+      return;
+    }
     if (cur.state !== 'opened') {
       throw new Error(`${pageLabel(mr)} がオープンではありません（${cur.state}）`);
     }
@@ -969,6 +996,98 @@ async function doSendBack() {
   await guard('差し戻し', async () => {
     await commentAndSetStatus(t, '差し戻し', to);
     toast(`${pageLabel(t)} を ${to} に戻しました`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// MR の事前チェック（コンフリクト / 未解決レビューコメントの検知 → 差し戻し確認）
+// ---------------------------------------------------------------------------
+// MR を表示したとき（候補選択・MR タブ切替）に現在状態を取得し、コンフリクトまたは
+// 未解決（未クローズ）のレビューコメントがあれば「差し戻すか」の確認ダイアログを出す。
+// 差し戻しは、検知内容を伝える固定コメントを MR へ投稿し、操作対象のステータスを
+// アクションバーの差し戻しと同じ遷移（SENDBACK_FLOW）で戻す（対象のステータスが
+// 遷移表に無ければコメント投稿のみ）。
+// 同じ MR への確認はセッション中 1 回だけ（タブ切替のたびに出すと邪魔になる）。
+
+const MR_SENDBACK_COMMENTS = {
+  conflict:
+    'ベースブランチとコンフリクトしています。ベースブランチを取り込んで解消し、MR を更新してください。',
+  unresolved:
+    '未解決（未クローズ）のレビューコメントが残っています。各スレッドに対応して解決（Resolve）してください。',
+};
+
+const mrHealthChecked = new Set();
+let mrSendback = null; // { mr, kinds: ('conflict'|'unresolved')[] }
+
+async function checkActiveMRHealth() {
+  const mr = activeMR();
+  if (!mr || mr.type !== 'mr' || (mr.state && mr.state !== 'opened')) return;
+  const key = `${mr.projectId}:${mr.iid}`;
+  if (mrHealthChecked.has(key)) return;
+  mrHealthChecked.add(key);
+  let cur;
+  try {
+    cur = await api.glMRReview(targetOf(mr));
+  } catch {
+    mrHealthChecked.delete(key); // 取得失敗は未チェック扱い（次の表示で再試行）
+    return;
+  }
+  if (cur.state !== 'opened') return;
+
+  const kinds = [];
+  const problems = [];
+  if (cur.hasConflicts) {
+    kinds.push('conflict');
+    problems.push('ベースブランチとコンフリクトしています（このままではマージできません）');
+  }
+  if (cur.unresolvedCount > 0 || !cur.blockingDiscussionsResolved) {
+    kinds.push('unresolved');
+    problems.push(
+      `未解決（未クローズ）のレビューコメントが${
+        cur.unresolvedCount > 0 ? ` ${cur.unresolvedCount} 件` : ''
+      }あります`
+    );
+  }
+  if (!kinds.length) return;
+
+  const dlg = $('mr-sendback-dialog');
+  if (dlg.open) return; // 別 MR の確認を表示中なら重ねない
+  mrSendback = { mr, kinds };
+  $('mr-sendback-desc').textContent = `${pageLabel(mr)} — ${mr.title.slice(0, 60)}`;
+  $('mr-sendback-problems').innerHTML = problems
+    .map((p) => `<li>${escapeHtml(p)}</li>`)
+    .join('');
+  const t = primaryTarget();
+  const to = t && SENDBACK_FLOW[statusOf(t)];
+  $('mr-sendback-status').textContent = to
+    ? `「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿し、${pageLabel(t)} を ${to} に戻します。`
+    : '「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿します（対象のステータスが差し戻し対象外のため、ラベルは変更しません）。';
+  dlg.showModal();
+}
+
+// 差し戻し（固定コメント投稿 + ステータス差し戻し）: 検知内容ごとの定型文を
+// 「# 差し戻し」見出しで MR に投稿し、操作対象のステータスを SENDBACK_FLOW で戻す
+async function doMRSendback() {
+  $('mr-sendback-dialog').close();
+  const sb = mrSendback;
+  mrSendback = null;
+  if (!sb) return;
+  await guard('差し戻し', async () => {
+    const lines = sb.kinds.map((k) => `- ${MR_SENDBACK_COMMENTS[k]}`);
+    await api.glComment(targetOf(sb.mr), `# 差し戻し\n\n${lines.join('\n')}`);
+    const t = primaryTarget();
+    const to = t && SENDBACK_FLOW[statusOf(t)];
+    if (to) {
+      const remove = t.labels.filter((l) => l.startsWith('status:') && l !== to);
+      const updated = await api.glUpdateLabels(targetOf(t), [to], remove);
+      applyUpdatedItem(updated);
+    }
+    reloadPanes();
+    toast(
+      to
+        ? `${pageLabel(sb.mr)} に差し戻しコメントを投稿し、${pageLabel(t)} を ${to} に戻しました`
+        : `${pageLabel(sb.mr)} に差し戻しコメントを投稿しました`
+    );
   });
 }
 
@@ -1408,6 +1527,11 @@ async function init() {
   $('btn-reject-ok').addEventListener('click', () => doReject());
   $('btn-change').addEventListener('click', openChangeDialog);
   $('btn-reject-cancel').addEventListener('click', () => $('reject-dialog').close());
+  $('btn-mr-sendback-ok').addEventListener('click', doMRSendback);
+  $('btn-mr-sendback-cancel').addEventListener('click', () => {
+    mrSendback = null;
+    $('mr-sendback-dialog').close();
+  });
   $('btn-change-run').addEventListener('click', executeChange);
   $('btn-change-cancel').addEventListener('click', () => $('change-dialog').close());
 
