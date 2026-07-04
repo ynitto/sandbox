@@ -192,6 +192,18 @@
     </div>
   </dialog>
 
+  <dialog id="mr-sendback-dialog">
+    <h2>差し戻しの確認</h2>
+    <p id="mr-sendback-desc"></p>
+    <ul id="mr-sendback-problems" class="muted reject-notes"></ul>
+    <p class="muted">「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿します
+      （ステータスラベルは変更しません）。</p>
+    <div class="dialog-buttons">
+      <button id="btn-mr-sendback-ok" class="danger">差し戻す（固定コメント投稿）</button>
+      <button id="btn-mr-sendback-cancel">そのままレビュー</button>
+    </div>
+  </dialog>
+
   <dialog id="change-dialog">
     <h2>変更</h2>
     <div class="muted">変更するステータス / ラベルを選択して「実行」を押してください（現在付いているラベルは選択済み・点線枠）</div>
