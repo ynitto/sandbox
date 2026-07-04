@@ -89,8 +89,10 @@ task の retries 上限 → blocked ＋ needs/<id>.md 生成 ＝ ここで初め
   ユーザーアクションは GitLab 上（MR のマージ/クローズ・イシューへのコメント）。
   - **承認**: イシューを status:done でクローズ → ノード done（`data` に issue_iid /
     web_url / decision / merged_mrs が残る）
-  - **却下**: 人コメントを取り込み → イシューをクローズ → ノード failed
-    （output に `[gitlab-reject] …（イシュー URL）やり直し指示: <人コメント>`）。
+  - **却下**: 人コメントを取り込み → イシューをクローズ → ノード failed。承認と対称の
+    構造化データ（`data` に issue_iid / web_url / decision: rejected / reason /
+    guidance（人コメント）/ merged_mrs）が残り、output にも
+    `[gitlab-reject] …（イシュー URL）やり直し指示: <人コメント>` が残る（旧 run 互換）。
     kiro-projects 管理下ならコメントを feedback に注入して自動で再委譲される
 - **ビュアーの役割**:
   | 場面 | 見る場所 | できる指示 |

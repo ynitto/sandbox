@@ -135,7 +135,10 @@ function readRun(runDir) {
       output,
       data,
       issueUrl,
-      rejected: Boolean(output && output.includes('[gitlab-reject]')),
+      rejected: Boolean(
+        (data && typeof data === 'object' && data.decision === 'rejected') ||
+          (output && output.includes('[gitlab-reject]'))
+      ),
       taskToken: nodeTaskToken(runId, id),
     };
   }

@@ -2608,8 +2608,11 @@ def executor_delegates(cfg: "Config") -> bool:
 
 
 def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
-    """直近 run のノード出力から `[gitlab-reject]` のやり直し指示（人コメント）を取り出す。
-    `kiro-flow result --json` を読むだけ（決定的）。見つからなければ空（＝自動判断）。"""
+    """直近 run のノード結果から却下のやり直し指示（人コメント）を取り出す。
+    `kiro-flow result --json` を読むだけ（決定的）。まず構造化 data
+    （decision=rejected の guidance。gitlab executor が却下例外に載せる）を見て、
+    無ければ従来どおり output の `[gitlab-reject]` マーカーから取り出す（後方互換）。
+    見つからなければ空（＝自動判断）。"""
     if not executor_delegates(cfg):
         return ""
     cmd = _kf_base(cfg, use_git) + ["result", "--json"]
@@ -2619,6 +2622,12 @@ def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
         data = json.loads(proc.stdout or "{}")
     except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
         return ""
+    for n in data.get("final_nodes", []):
+        d = (n or {}).get("data")
+        if isinstance(d, dict) and d.get("decision") == "rejected":
+            g = str(d.get("guidance") or "").strip()
+            if g:
+                return g[:1500]
     for n in data.get("final_nodes", []):
         out = str((n or {}).get("output", ""))
         i = out.find(_REJECT_MARK)

@@ -845,8 +845,14 @@ function nodeIssueBlock(run, node) {
       );
     }
     if (node.rejected) {
+      if (d.reason) rows.push(`<div class="muted">却下理由: ${esc(String(d.reason))}</div>`);
+      if (d.guidance) {
+        rows.push(
+          `<div><span class="label-chip">やり直し指示（人コメント）</span> ${esc(String(d.guidance).slice(0, 500))}</div>`
+        );
+      }
       rows.push(
-        `<div class="muted">却下（未マージクローズ等）→ この run は failed。kiro-projects 管理下なら
+        `<div class="muted">却下（未マージクローズ等）→ ノードは failed。kiro-projects 管理下なら
         イシューの人コメントを feedback に注入して自動で再委譲されます（retries 上限で「要対応」へ）。</div>`
       );
     }

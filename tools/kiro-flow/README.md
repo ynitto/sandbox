@@ -161,6 +161,12 @@ worker タスク ──▶ gl.py create-issue（status:open,assignee:any ＋ pri
   場合は、`status:approved`/`status:done` ラベル → イシューコメントの内容（承認語/却下語）の順で
   承認・却下を推定し、タスクグラフへ反映する（承認なら `done` で下流へ、却下なら `[gitlab-reject]` で
   上位がやり直す）。判断材料が無いクローズは取り下げ＝却下扱い。
+- **却下も機械可読な決着として残る**：却下時は failed result の `data` に承認と対称の構造化データ
+  （`issue_iid` / `web_url` / `decision: rejected` / `reason` / `guidance`（人コメント）/ `merged_mrs`）
+  が書かれる。status は failed のまま——done は「後続が成果に依存してよい」契約であり、成果の無い
+  却下では満たせない。やり直しの判断とループは上位（kiro-projects が `guidance` を feedback に注入して
+  再委譲）が担う。消費側は output の `[gitlab-reject]` 文字列マッチに頼らず data で却下を検知できる
+  （旧 kiro-flow の run には data が無いため、文字列マッチはフォールバックとして残る）。
 - **委譲先リポジトリ**：`gitlab:` ブロックの `repo_url` で委譲先の GitLab プロジェクト URL を明示できる。
   空の場合は `conn_label` の接続（`connections.yaml`）か、無ければ作業ディレクトリの `git remote origin`
   から解決する。手元とは別のリポジトリへ委譲したいときに指定する。

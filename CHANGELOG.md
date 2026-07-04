@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: gitlab executor の却下を機械可読な決着に（data 付き failed）
+
+- 却下時の failed result に、承認と対称の構造化データ（`issue_iid` / `web_url` /
+  `decision: rejected` / `reason` / `guidance`（人コメント）/ `merged_mrs` / `closed`）を
+  `data` として残す（却下例外に `data` 属性を載せ、worker が failed result に書く）。
+  **status は failed のまま**——done は「後続が成果に依存してよい」契約であり、成果の無い
+  却下では満たせない（却下=done にすると verify が緩いタスクで「人が却下したのに done 確定」の
+  取り違えが起き得る）。やり直しの判断とループは従来どおり上位（kiro-projects）が担う
+- kiro-projects の `read_reject_guidance` は構造化 data（`decision=rejected` の `guidance`）を
+  優先し、無ければ従来の `[gitlab-reject]` 文字列マーカーにフォールバック（旧 run 互換）
+- viewer は却下判定を `data.decision` からも導出し、ノード詳細に**却下理由と
+  「やり直し指示（人コメント）」**を明示表示
+
 ### kiro-projects-viewer: ノード進捗の可視化・失敗時の人の指示・GitLab イシュー連動
 
 - **ノード毎の進捗**: フロータブのノード詳細に、開始時刻・経過（実行中）・worker の

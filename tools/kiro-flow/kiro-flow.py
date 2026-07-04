@@ -2688,6 +2688,11 @@ def cmd_work(args) -> int:
         except Exception as e:  # noqa: BLE001 — 結果として記録する
             output = f"実行エラー: {e}"
             rstatus = "failed"
+            # executor が例外に載せた構造化データ（gitlab 却下の issue_iid / guidance 等）は
+            # 承認と対称に failed result の data として残す（消費側の文字列マッチ依存を無くす）
+            edata = getattr(e, "data", None)
+            if isinstance(edata, dict):
+                rdata = edata
         finally:
             hb.stop()
 

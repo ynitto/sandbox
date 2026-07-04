@@ -803,6 +803,13 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertIn("[gitlab-reject]", msg)
         self.assertIn("命名が要件と違う", msg)        # 人コメントをやり直し指示に活かす
         self.assertEqual(closed["n"], 1)              # 元イシューはクローズされる
+        # 承認と対称の機械可読な決着: 例外に data が載る（worker が failed result に書く）
+        d = ctx.exception.data
+        self.assertEqual(d["decision"], "rejected")
+        self.assertEqual(d["issue_iid"], 9)
+        self.assertIn("命名が要件と違う", d["guidance"])
+        self.assertEqual(d["merged_mrs"], [1])        # マージ済みだった MR も分かる
+        self.assertTrue(d["closed"])
 
     def test_reject_without_comments_says_auto(self):
         # 人コメントが無い却下 → 自動判断の指示で送出
@@ -2574,6 +2581,34 @@ class ArtifactProtocolTests(unittest.TestCase):
         r = bus.read_result("t1")
         self.assertEqual(r["status"], "done")
         self.assertIn(os.path.join("artifacts", "t1", "result.bin"), r["artifacts"])
+
+    def test_worker_records_exception_data_on_failure(self):
+        # executor が例外に載せた構造化データ（gitlab 却下の issue_iid / guidance 等）は
+        # 承認と対称に failed result の data として残る（消費側の文字列マッチ依存を無くす）
+        bus = self.bus
+        bus.write_graph({"nodes": {"t1": {"goal": "g", "deps": [], "kind": "work"}},
+                         "iteration": 0})
+        bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
+        bus.set_status("running")
+
+        def fake_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None):
+            err = RuntimeError("[gitlab-reject] 却下されました（未マージクローズ）（u）。やり直し指示: 命名を直す")
+            err.data = {"issue_iid": 9, "web_url": "u", "decision": "rejected",
+                        "reason": "未マージクローズ", "guidance": "命名を直す", "closed": True}
+            raise err
+
+        args = mock.Mock(bus=self.tmp, run_id="run1", git=None, node_id="w1",
+                         executor="stub", model=None, lease=60, poll=0,
+                         keep_alive=False, idle_exit=True)
+        with mock.patch.object(kf, "execute_stub", side_effect=fake_exec), \
+             mock.patch.object(kf, "make_bus", return_value=bus):
+            kf.cmd_work(args)
+        r = bus.read_result("t1")
+        self.assertEqual(r["status"], "failed")
+        self.assertIn("[gitlab-reject]", r["output"])          # 従来のテキストも維持（後方互換）
+        self.assertEqual(r["data"]["decision"], "rejected")
+        self.assertEqual(r["data"]["issue_iid"], 9)
+        self.assertEqual(r["data"]["guidance"], "命名を直す")
 
 
 class ArgvLimitTests(unittest.TestCase):

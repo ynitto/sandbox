@@ -4058,6 +4058,23 @@ class TestGitlabRejectRetry(unittest.TestCase):
         self.assertIn("命名を要件に合わせる", g)
         self.assertNotIn("[gitlab-reject]", g)
 
+    def test_read_reject_guidance_prefers_structured_data(self):
+        # kiro-flow の gitlab executor は却下時に failed result へ構造化 data を残す。
+        # 文字列マーカーより data（decision=rejected の guidance）を優先して読む。
+        cfg = cfg_for(self.tmp, executor="gitlab")
+        result_json = json.dumps({"final_nodes": [
+            {"id": "n1",
+             "output": "実行エラー: [gitlab-reject] 却下されました（u）。やり直し指示: 古い方の指示",
+             "data": {"decision": "rejected", "issue_iid": 9,
+                      "guidance": "構造化データ側の指示"}}]})
+
+        def fake_run(cmd, **kw):
+            return types.SimpleNamespace(returncode=1, stdout=result_json, stderr="")
+
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            g = km.read_reject_guidance(cfg, use_git=False)
+        self.assertEqual(g, "構造化データ側の指示")
+
     def test_read_reject_guidance_empty_when_no_marker(self):
         cfg = cfg_for(self.tmp, executor="gitlab")
 

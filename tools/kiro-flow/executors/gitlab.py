@@ -711,19 +711,30 @@ def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label
 def _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label, reason=""):
     """却下: 人コメントを取り込み、元イシューをクローズして例外を送出する。reason は却下の根拠
     （未マージクローズ / 外部クローズ＋コメント却下 / MR 無しの取り下げ のいずれか）。
-    例外メッセージ先頭の `[gitlab-reject]` を上位（kiro-projects）が検知し、やり直しに活かす。"""
+    例外メッセージ先頭の `[gitlab-reject]` を上位（kiro-projects）が検知し、やり直しに活かす。
+    承認（_finish_approved）の data と対称の機械可読な決着として、例外にも `data` 属性で
+    構造化データを載せる——worker がそれを failed result の data に書き、消費側（viewer /
+    kiro-projects）が文字列マッチに頼らず却下を扱える。status は failed のまま
+    （done の「後続が成果に依存してよい」契約を、成果の無い却下では満たせないため）。"""
     why = reason or "未マージクローズ"
     guidance = _human_comments(host, token, project, iid)
     try:
         _close_issue(host, token, project, iid, sorted(set(labels_now) | {done_label}))
     except RuntimeError as e:
         _log(f"イシュー #{iid} のクローズに失敗（無視）: {e}")
+    data = {"issue_iid": iid, "web_url": url, "decision": "rejected", "reason": why,
+            "guidance": guidance or "",
+            "merged_mrs": [m.get("iid") for m in mrs if str(m.get("state") or "") == "merged"],
+            "closed": True}
     if guidance:
         _log(f"イシュー #{iid}: 却下（{why}）。人コメントをやり直しに活かす。")
-        raise RuntimeError(f"[gitlab-reject] 却下されました（{why}）（{url}）。やり直し指示: {guidance}")
-    _log(f"イシュー #{iid}: 却下（{why}）。人コメント無し＝自動で判断してやり直す。")
-    raise RuntimeError(f"[gitlab-reject] 却下されました（{why}）（{url}）。"
-                       "人コメントが無いため自動で原因を判断してやり直してください。")
+        err = RuntimeError(f"[gitlab-reject] 却下されました（{why}）（{url}）。やり直し指示: {guidance}")
+    else:
+        _log(f"イシュー #{iid}: 却下（{why}）。人コメント無し＝自動で判断してやり直す。")
+        err = RuntimeError(f"[gitlab-reject] 却下されました（{why}）（{url}）。"
+                           "人コメントが無いため自動で原因を判断してやり直してください。")
+    err.data = data
+    raise err
 
 
 if __name__ == "__main__":
