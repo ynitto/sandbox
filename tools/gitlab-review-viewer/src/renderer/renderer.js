@@ -1004,9 +1004,11 @@ async function doSendBack() {
 // ---------------------------------------------------------------------------
 // MR を表示したとき（候補選択・MR タブ切替）に現在状態を取得し、コンフリクトまたは
 // 未解決（未クローズ）のレビューコメントがあれば「差し戻すか」の確認ダイアログを出す。
-// 差し戻しは、検知内容を伝える固定コメントを MR へ投稿し、操作対象のステータスを
-// アクションバーの差し戻しと同じ遷移（SENDBACK_FLOW）で戻す（対象のステータスが
-// 遷移表に無ければコメント投稿のみ）。
+// 差し戻しは、検知内容を伝える固定コメントを操作対象（表示中のイシューを優先。
+// 無ければ MR）へ投稿し、ステータスをアクションバーの差し戻しと同じ遷移
+// （SENDBACK_FLOW）で戻す（対象のステータスが遷移表に無ければコメント投稿のみ）。
+// イシューを優先するのは、委譲元ツール（kiro-flow 等）がイシューの人コメントを
+// フィードバックとして取り込むため。イシューへ投稿するときは対象 MR の参照を添える。
 // 同じ MR への確認はセッション中 1 回だけ（タブ切替のたびに出すと邪魔になる）。
 
 const MR_SENDBACK_COMMENTS = {
@@ -1059,23 +1061,31 @@ async function checkActiveMRHealth() {
     .join('');
   const t = primaryTarget();
   const to = t && SENDBACK_FLOW[statusOf(t)];
+  // コメント先: 表示中のイシューを優先（無ければ MR）。ラベル遷移も同じ対象
+  const destLabel = t && t.type === 'issue' ? pageLabel(t) : 'MR';
   $('mr-sendback-status').textContent = to
-    ? `「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿し、${pageLabel(t)} を ${to} に戻します。`
-    : '「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿します（対象のステータスが差し戻し対象外のため、ラベルは変更しません）。';
+    ? `「差し戻す」を押すと、上記の内容を伝える固定コメントを ${destLabel} に投稿し、${pageLabel(t)} を ${to} に戻します。`
+    : `「差し戻す」を押すと、上記の内容を伝える固定コメントを ${destLabel} に投稿します（対象のステータスが差し戻し対象外のため、ラベルは変更しません）。`;
   dlg.showModal();
 }
 
 // 差し戻し（固定コメント投稿 + ステータス差し戻し）: 検知内容ごとの定型文を
-// 「# 差し戻し」見出しで MR に投稿し、操作対象のステータスを SENDBACK_FLOW で戻す
+// 「# 差し戻し」見出しで操作対象（イシュー優先。無ければ MR）に投稿し、
+// 同じ対象のステータスを SENDBACK_FLOW で戻す
 async function doMRSendback() {
   $('mr-sendback-dialog').close();
   const sb = mrSendback;
   mrSendback = null;
   if (!sb) return;
   await guard('差し戻し', async () => {
+    // コメント先: 表示中のイシューがあればイシュー（委譲元ツールが人コメントを
+    // フィードバックとして取り込むため）、無ければ MR
+    const t = primaryTarget() || sb.mr;
+    const dest = t.type === 'issue' ? t : sb.mr;
+    const mrRef = sb.mr.ref || `!${sb.mr.iid}`;
+    const head = dest.type === 'issue' ? `対象 MR: ${mrRef}\n\n` : '';
     const lines = sb.kinds.map((k) => `- ${MR_SENDBACK_COMMENTS[k]}`);
-    await api.glComment(targetOf(sb.mr), `# 差し戻し\n\n${lines.join('\n')}`);
-    const t = primaryTarget();
+    await api.glComment(targetOf(dest), `# 差し戻し\n\n${head}${lines.join('\n')}`);
     const to = t && SENDBACK_FLOW[statusOf(t)];
     if (to) {
       const remove = t.labels.filter((l) => l.startsWith('status:') && l !== to);
@@ -1085,8 +1095,8 @@ async function doMRSendback() {
     reloadPanes();
     toast(
       to
-        ? `${pageLabel(sb.mr)} に差し戻しコメントを投稿し、${pageLabel(t)} を ${to} に戻しました`
-        : `${pageLabel(sb.mr)} に差し戻しコメントを投稿しました`
+        ? `${pageLabel(dest)} に差し戻しコメントを投稿し、${pageLabel(t)} を ${to} に戻しました`
+        : `${pageLabel(dest)} に差し戻しコメントを投稿しました`
     );
   });
 }
