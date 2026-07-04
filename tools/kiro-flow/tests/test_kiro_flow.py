@@ -3363,6 +3363,13 @@ class StateGitSyncTests(unittest.TestCase):
         self.assertFalse((got / "kf" / "runs" / "run1" / "meta.json.tmp").exists())
         self.assertFalse((got / "kf" / ".state-git").exists())
 
+    def test_dot_prefixed_subdir_works(self):
+        # state_git_subdir はドット始まり（.kiro-flow 等）でも同期できる（推奨は非ドット）。
+        self._bus()
+        kf.state_sync(self._args(state_git_subdir=".kiro-flow"), force=True)
+        got = self._other("check")
+        self.assertTrue((got / ".kiro-flow" / "runs" / "run1" / "meta.json").exists())
+
     def test_sync_failure_does_not_kill_caller(self):
         args = self._args(state_git=str(self.tmp / "no-such-remote.git"))
         self._bus()

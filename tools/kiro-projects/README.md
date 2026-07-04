@@ -525,7 +525,9 @@ Windows はタスクスケジューラの「ログオン時」トリガで同等
 
 環境ごと・常駐ごとに決まる値を `.kiro/kiro-projects.{yaml,yml,json}` に書ける（**CLI > 設定ファイル > 既定**）。
 探索順: `--config` 明示 → `./.kiro/` → `~/.kiro/`。YAML は PyYAML 任意・無ければ JSON フォールバック。サンプルは
-[`kiro-projects.yaml.example`](kiro-projects.yaml.example)。スカラ＋真偽フラグ（三値 `--flag`/`--no-flag`）が対象で、
+[`kiro-projects.yaml.example`](kiro-projects.yaml.example)（実運用の組み方＝WSL 常駐＋gitlab executor 分散＋
+viewer 監視＋GitLab バックアップは [`kiro-projects.state-git.yaml.example`](kiro-projects.state-git.yaml.example)）。
+スカラ＋真偽フラグ（三値 `--flag`/`--no-flag`）が対象で、
 個別パス上書き（`--backlog` 等）・実行限定フラグ（`--json`/`--fix`/`--pin`）・`--project` は CLI 専用。
 
 ## 計測（stats / runlog）

@@ -4339,6 +4339,16 @@ class TestStateGitSync(unittest.TestCase):
         km.state_sync(cfg, force=True)                       # 不通でも例外を漏らさない
         self.assertIn("state-git 同期失敗", cfg.journal.read_text(encoding="utf-8"))
 
+    def test_dot_prefixed_subdir_works(self):
+        # state_git_subdir はドット始まり（.kiro-projects 等）でも同期できる（推奨は非ドットだが、
+        # 他プロセスの成果物と同居するリポジトリで隠したい構成をサポートする）。
+        cfg = self._cfg(state_git_subdir=".kiro-projects")
+        mkb(cfg.backlog.parent, "T1")
+        km.state_sync(cfg, force=True)
+        got = self._other("check")
+        self.assertTrue(
+            (got / ".kiro-projects" / "projects" / "default" / "backlog" / "T1.md").exists())
+
     def test_clone_is_reused_across_syncs(self):
         cfg = self._cfg()
         mkb(cfg.backlog.parent, "T1")

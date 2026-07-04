@@ -148,9 +148,12 @@ git_branch: main            # バスに使う git ブランチ
 # リポジトリへ双方向同期する。機械の状態は外へ、人の指示（commands/ ドロップ・inbox/ 投入・
 # needs の記入・policy/charter の編集）は中へ。fetch/push は state_git_interval で律速され、
 # push は共有すべきローカルコミットがあるときだけ行う（リモートサーバの負荷を一定に保つ）。
-# 同一リポジトリには他プログラム（viewer 側の git-file-sync 等）もコミットしてよい:
-# ステージは state_git_subdir 配下のみ・push 競合は pull --rebase で吸収・force push はしない。
-# 一時状態（bus/・claims/）は同期しない。
+# 同一リポジトリには他プログラムもコミットしてよい: ステージは state_git_subdir 配下のみ・
+# push 競合は pull --rebase → 再 push で吸収・force push はしない。一時状態（bus/・claims/）と
+# ルート内側のドット始まり（.swp 等）は同期しない。
+#
+# ★実運用の組み方（WSL 常駐＋gitlab executor 分散＋別 PC の viewer 監視＋GitLab バックアップ＋
+#   他プロセスと同一リポジトリを共有するときの取り決め）は kiro-projects.state-git.yaml.example 参照。
 # state_git: git@example.com:team/kiro-state.git   # 共有リポジトリ（URL/パス。未指定で無効）
 # state_git_branch: main                # 同期先ブランチ
 # state_git_subdir: kiro-projects       # リポジトリ内の保存先サブディレクトリ（名前空間分離）
