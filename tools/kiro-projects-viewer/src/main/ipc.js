@@ -57,7 +57,20 @@ function registerIpcHandlers() {
     return {
       run: flow.readRun(runDir),
       events: flow.readRunEvents(runDir, 50),
+      nodeEvents: flow.readNodeEvents(runDir), // ノード別タイムライン（開始・所要の根拠）
     };
+  });
+
+  // 失敗/完了した run を同じ要求で inbox へ再投入（人の明示アクション。新しい run になる）
+  handle('flow:resubmit', ({ busDir, runId }) => flow.resubmitRun(busDir, runId));
+
+  // 実行中ノードの関連イシューを決定的タスクトークンで検索（gitlab executor 連動）
+  handle('gitlab:findIssueByToken', ({ repoUrl, projectPath, token }) => {
+    const gl = client();
+    if (!gl.enabled) return { enabled: false, issue: null };
+    return gl
+      .findIssueByToken({ repoUrl, projectPath, token })
+      .then((issue) => ({ enabled: true, issue }));
   });
 
   // GitLab イシューの最新状態を API で補完（設定が無ければ enabled:false）

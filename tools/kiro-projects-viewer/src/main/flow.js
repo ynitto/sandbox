@@ -72,6 +72,16 @@ function claimWinner(claimDir, now) {
   return claims[0];
 }
 
+// gitlab executor が output に残すイシュー URL（却下時は data が無いため output から拾う）
+const ISSUE_URL_RE = /https?:\/\/[^\s)）」』]+\/-\/issues\/\d+/;
+
+// gitlab executor の決定的タスクトークン（_task_token と同一導出）。
+// 実行中（result 未確定）のノードでも、このトークンでイシュー本文の隠しマーカー
+// `<!-- kiro-flow:task-token:kf-... -->` を検索すれば関連イシューへたどり着ける。
+function nodeTaskToken(runId, nodeId) {
+  return 'kf-' + crypto.createHash('sha1').update(`${runId}/${nodeId}`).digest('hex').slice(0, 12);
+}
+
 // 1 つの run ディレクトリを読み、グラフ＋状態＋進捗のスナップショットにする
 function readRun(runDir) {
   const runId = path.basename(runDir);
@@ -89,6 +99,8 @@ function readRun(runDir) {
     let finishedAt = null;
     let output = null;
     let data = null;
+    let heartbeatAt = null; // 実行中: 直近の心拍時刻（Heartbeat が claim を書き換える）
+    let leaseUntil = null; // 実行中: claim の lease 期限（now < lease = worker 生存）
     if (result) {
       state = result.status === 'failed' ? 'failed' : 'done';
       who = result.who || null;
@@ -100,8 +112,15 @@ function readRun(runDir) {
       if (winner) {
         state = 'claimed';
         who = winner.who || null;
+        heartbeatAt = winner.claimed_at || null;
+        leaseUntil = Number(winner.lease_until || 0) || null;
       }
     }
+    // 関連 GitLab イシュー: 承認済みは data、却下（failed）は output の URL から拾う
+    const issueUrl =
+      (data && typeof data === 'object' && !Array.isArray(data) && data.web_url) ||
+      (output && (output.match(ISSUE_URL_RE) || [])[0]) ||
+      null;
     nodes[id] = {
       id,
       goal: String(spec.goal || ''),
@@ -111,8 +130,13 @@ function readRun(runDir) {
       state,
       who,
       finishedAt,
+      heartbeatAt,
+      leaseUntil,
       output,
       data,
+      issueUrl,
+      rejected: Boolean(output && output.includes('[gitlab-reject]')),
+      taskToken: nodeTaskToken(runId, id),
     };
   }
 
@@ -130,7 +154,8 @@ function readRun(runDir) {
   for (const n of Object.values(nodes)) counts[n.state] = (counts[n.state] || 0) + 1;
   const total = Object.keys(nodes).length;
 
-  // gitlab executor の成果（issue_iid / web_url / decision / merged_mrs）を拾い上げる
+  // gitlab executor の成果（issue_iid / web_url / decision / merged_mrs）を拾い上げる。
+  // 却下（failed）は data が無いため output のイシュー URL から拾う（decision=rejected）
   const gitlabIssues = [];
   for (const n of Object.values(nodes)) {
     const d = n.data;
@@ -141,6 +166,15 @@ function readRun(runDir) {
         url: d.web_url || '',
         decision: d.decision || null,
         mergedMrs: Array.isArray(d.merged_mrs) ? d.merged_mrs : [],
+        state: n.state,
+      });
+    } else if (n.issueUrl) {
+      gitlabIssues.push({
+        nodeId: n.id,
+        issueIid: null,
+        url: n.issueUrl,
+        decision: n.rejected ? 'rejected' : null,
+        mergedMrs: [],
         state: n.state,
       });
     }
@@ -155,6 +189,8 @@ function readRun(runDir) {
     alive: TERMINAL.has(status) ? null : runAlive(meta, now),
     heartbeatAt: meta.heartbeat_at || null,
     resumeCount: Number(meta.resume_count || 0), // daemon が孤児を自動再開した回数（進捗でリセット）
+    workspace: meta.workspace || null, // 唯一の書込先（gitlab executor の起票先解決に使う）
+    references: Array.isArray(meta.references) ? meta.references : [],
     request: String(meta.request || ''),
     createdAt: meta.created_at || null,
     updatedAt: meta.updated_at || null,
@@ -195,8 +231,58 @@ function readRunEvents(runDir, limit = 50) {
       }
     }
   }
-  events.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  // ts は ISO 文字列（now_iso）。UTC Z 固定なので辞書順＝時刻順で新しい順に並べる
+  events.sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')));
   return events.slice(0, limit);
+}
+
+// ノード別のタイムライン（claimed / result イベント）。開始時刻・所要時間の根拠になる
+// （claims/ の claimed_at は Heartbeat が書き換えるため「開始」には使えない）。
+function readNodeEvents(runDir, perNode = 10) {
+  const byNode = {};
+  for (const ev of readRunEvents(runDir, 5000)) {
+    const nid = ev.node;
+    if (!nid || !['claimed', 'result'].includes(ev.kind)) continue;
+    (byNode[nid] = byNode[nid] || []).push({
+      ts: ev.ts || null,
+      kind: ev.kind,
+      who: ev.who || '',
+      status: ev.status || null,
+    });
+  }
+  for (const nid of Object.keys(byNode)) {
+    byNode[nid] = byNode[nid].slice(0, perNode); // 新しい順（readRunEvents が降順）
+  }
+  return byNode;
+}
+
+// 失敗した run を「同じ要求の新しい run」として inbox へ再投入する（人の明示アクション）。
+// kiro-flow の公式な入力契約（inbox/<req-id>.json = submit_request と同形）だけを使い、
+// 稼働中の daemon が新規要求として拾う。結果の再利用はしない（新しい run として最初から）。
+function resubmitRun(busDir, runId) {
+  const runDir = path.join(busDir, 'runs', runId);
+  const meta = readJson(path.join(runDir, 'meta.json'));
+  if (!meta) throw new Error(`run が見つかりません: ${runId}`);
+  if (!TERMINAL.has(String(meta.status))) {
+    throw new Error(`run はまだ終端していません（status=${meta.status}）。再投入は失敗/完了後に使えます`);
+  }
+  const request = String(meta.request || '').trim();
+  if (!request) throw new Error('meta.json に request がありません（再投入できません）');
+  const newId = `${runId}-retry-${Date.now()}`.slice(-80);
+  const inbox = path.join(busDir, 'inbox');
+  fs.mkdirSync(inbox, { recursive: true });
+  const rec = {
+    id: newId,
+    request,
+    submitter: 'kiro-projects-viewer',
+    workspace: meta.workspace || null,
+    references: Array.isArray(meta.references) ? meta.references : [],
+    submitted_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+  };
+  const file = path.join(inbox, `${newId}.json`);
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2), 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+  return { runId: newId, file };
 }
 
 // バス配下の run を新しい順に一覧する（各 run はサマリのみ）
@@ -263,4 +349,13 @@ function daemonStatus(busDir, lockDir) {
   return { running: pidAlive(pid), pid, lockPath };
 }
 
-module.exports = { readRun, readRunEvents, listRuns, daemonStatus, runAlive };
+module.exports = {
+  readRun,
+  readRunEvents,
+  readNodeEvents,
+  listRuns,
+  daemonStatus,
+  runAlive,
+  resubmitRun,
+  nodeTaskToken,
+};

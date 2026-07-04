@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('api', {
 
   flowRuns: (busDir, limit) => invoke('flow:runs', { busDir, limit }),
   flowRun: (busDir, runId) => invoke('flow:run', { busDir, runId }),
+  flowResubmit: (busDir, runId) => invoke('flow:resubmit', { busDir, runId }),
+  glFindIssueByToken: (args) => invoke('gitlab:findIssueByToken', args),
 
   submitFeedback: (file, feedback) => invoke('kiro:feedback', { file, feedback }),
   enqueueTask: (dir, spec) => invoke('kiro:enqueue', { dir, spec }),

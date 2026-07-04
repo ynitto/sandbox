@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: ノード進捗の可視化・失敗時の人の指示・GitLab イシュー連動
+
+- **ノード毎の進捗**: フロータブのノード詳細に、開始時刻・経過（実行中）・worker の
+  heartbeat 鮮度と lease 生存・完了時刻と所要・作り直し回数（`retries`）・
+  claimed/result のタイムライン（`events/*.jsonl` から）を表示
+- **関連 GitLab イシュー（gitlab executor 連動）**: ノード詳細に関連イシューを表示し
+  「レビューで開く」で gitlab-review-viewer へ引き継ぎ。承認済みは result の `data`、
+  却下は output のイシュー URL（`decision=rejected` として GitLab タブにも並ぶ）、
+  **実行中ノードは gitlab executor と同一導出の決定的タスクトークン**
+  （`kf-<sha1(run_id/node_id)[:12]>`・イシュー本文の隠しマーカー）を GitLab API で
+  検索して発見する（起票直後から追える）
+- **失敗 run への指示**: run 詳細に「↻ 同じ要求で再投入」を追加。meta の要求・
+  ワークスペース・参照リポジトリをそのまま新しい run として `inbox/` へ投入する
+  （kiro-flow の公式入力契約のみ。daemon が新規要求として拾う）
+- **README**: 「エラー時の流れとビュアーの役割」を追加 — kiro-flow 内の自動回復
+  （retry → サーキットブレーカー）、gitlab executor の承認/却下と `[gitlab-reject]` の
+  feedback 連携、人の出番（needs）とビュアーの対応窓口を 1 枚に整理
+- 修正: アクティビティのイベント並び順が ISO タイムスタンプで正しくソートされて
+  いなかった（数値減算前提だった）のを修正
+
 ### kiro-flow: PC の毎日シャットダウンに耐える（孤児 run を failed でなく自動再開）
 
 - **孤児 run の引き継ぎ（resume）**: owning daemon が消失した（生存リース切れの）非終端 run を、

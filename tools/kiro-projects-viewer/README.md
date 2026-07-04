@@ -25,7 +25,7 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 | 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md` |
 | バックログ | `backlog/<id>.md`（1 ファイル = 1 タスク。status / priority / verify / after 等）・`archive/<id>.md`（done） |
 | 要対応 | `needs/<id>.md`（MADR 形式。blocked / review / milestone。「ファイルを開いて回答」でエディタへ） |
-| フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。バスは `<project>/bus` → `<container>/bus` → ⚙ 設定 → kiro-projects 設定ファイル（`.kiro/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock` の pid）から判定 — **kiro-flow CLI には一切聞かない** |
+| フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。バスは `<project>/bus` → `<container>/bus` → ⚙ 設定 → kiro-projects 設定ファイル（`.kiro/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock` の pid）から判定 — **kiro-flow CLI には一切聞かない**。ノード詳細では進捗（開始・経過・worker heartbeat/lease・所要・作り直し回数・claimed/result のタイムライン）と、gitlab executor の**関連イシュー**（承認は `data`、却下は output の URL、実行中は決定的タスクトークンの GitLab 検索）を表示し「レビューで開く」で gitlab-review-viewer へ引き継ぐ |
 | GitLab | kiro-flow gitlab executor が results に残した `{issue_iid, web_url, decision, merged_mrs}` ＋ `repos.json` の GitLab リポジトリのオープンイシュー（API 設定時） |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
 
@@ -61,6 +61,45 @@ kiro-projects の人間ループはこのアプリ内で完結できる。いず
   auto（稼働中はファイル・停止中は CLI・CLI 不可ならファイルに退避）／file（常にファイル）／
   cli（常に CLI。PATH に無ければ `python3 /path/to/kiro-projects.py` 形式で指定）
 - 入力中は自動更新を一時停止する（書きかけのフィードバックが消えない）
+
+## エラー時の流れとビュアーの役割
+
+kiro-flow でタスクが失敗したとき、どの層が何をし、人（ビュアー）はどこで関与するか。
+
+```
+ノード失敗（実行エラー / verify fail / gitlab 却下）
+  │ kiro-flow 内で自動回復: 評価役が [retry] 置換ノードを追加して再実行
+  │ 同一系統の作り直しが max_retries（既定 3）に達すると打ち切り
+  ▼
+run は done で終端（失敗ノードを含んだまま。run が failed になるのは
+orchestrator の消失＝クラッシュ/シャットダウンで自動再開も尽きたときだけ）
+  │ kiro-projects が結果を verify ゲートで検証 → NG なら retry
+  │ （gitlab 却下 [gitlab-reject] は人コメントを feedback として次 act に注入）
+  ▼
+task の retries 上限 → blocked ＋ needs/<id>.md 生成 ＝ ここで初めて人の出番
+  │
+  ▼ ビュアーの「要対応」タブで方針を記入して再開 / 承認 / 保留
+```
+
+- **kiro-flow 単体では人は関与しない**（自動 retry → サーキットブレーカーで打ち切り）。
+  人へのエスカレーションは kiro-projects の役割（needs/ 経由）で、ビュアーの
+  「要対応」タブが対応窓口。
+- **gitlab executor だけは実行中に人の判断を待つ**: タスクをイシュー化し、関連 MR の
+  決着（全マージ＝承認 ／ 未マージクローズ＝却下）をポーリングする。ここでの
+  ユーザーアクションは GitLab 上（MR のマージ/クローズ・イシューへのコメント）。
+  - **承認**: イシューを status:done でクローズ → ノード done（`data` に issue_iid /
+    web_url / decision / merged_mrs が残る）
+  - **却下**: 人コメントを取り込み → イシューをクローズ → ノード failed
+    （output に `[gitlab-reject] …（イシュー URL）やり直し指示: <人コメント>`）。
+    kiro-projects 管理下ならコメントを feedback に注入して自動で再委譲される
+- **ビュアーの役割**:
+  | 場面 | 見る場所 | できる指示 |
+  |------|---------|-----------|
+  | ノードの進捗・失敗理由 | フロータブ → ノード詳細（経過・heartbeat・output・タイムライン） | — |
+  | gitlab 委譲の判断待ち | ノード詳細の「関連イシュー」（実行中はタスクトークン検索）／GitLab タブ | 「レビューで開く」→ gitlab-review-viewer で MR のマージ/差し戻し・コメント |
+  | 却下されたタスク | ノード詳細（output の却下理由・イシューリンク） | イシューのコメントが次の act に効く（レビューで開いて記入） |
+  | run 自体の失敗（orchestrator 消失・再開上限） | フロータブ run 詳細（失敗理由・自動再開回数） | 「↻ 同じ要求で再投入」（inbox へ新しい run として投入） |
+  | retry が尽きて人待ち（blocked/review） | 要対応タブ（needs/） | フィードバックして再開・承認・保留 |
 
 ## gitlab-review-viewer との連携（レビューの引き継ぎ）
 
@@ -111,7 +150,9 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
 - `src/main/toolconfig.js` … `.kiro/` の kiro-projects / kiro-flow 設定ファイルから
   `bus` / `lock_dir` などトップレベルのスカラだけを読む簡易リーダー
   （共有バス構成・ロック置き場の自動発見に使う）
-- `src/main/gitlab.js` … GitLab REST v4 の読み取り専用クライアント（net.fetch・プロキシ対応）
+- `src/main/gitlab.js` … GitLab REST v4 の読み取り専用クライアント（net.fetch・プロキシ対応）。
+  実行中ノードの関連イシューは、gitlab executor と同一導出の決定的タスクトークン
+  （`kf-<sha1(run_id/node_id)[:12]>`）でイシュー本文の隠しマーカーを検索して見つける
 - `src/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / command）
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
   inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer。稼働していなければ
