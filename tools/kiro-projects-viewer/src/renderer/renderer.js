@@ -1098,7 +1098,9 @@ function renderGitLab() {
       <span class="spacer"></span>
       <button id="btn-gl-refresh" ${gl.loading ? 'disabled' : ''}>${gl.loading ? '取得中…' : 'GitLab から最新化'}</button>
     </div>
-    <div class="section-title">レビュー待ち ${repos.map((r) => `<span class="label-chip">${esc(r.projectPath)}</span>`).join('')}</div>
+    <div class="section-title">レビュー待ち ${[...new Set(repos.map((r) => r.projectPath))]
+      .map((path) => `<span class="label-chip">${esc(path)}</span>`)
+      .join('')}</div>
     ${repoIssuesSection}`;
 
   $('btn-gl-refresh').addEventListener('click', () => refreshGitLab(true));
