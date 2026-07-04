@@ -941,6 +941,23 @@ async function doApprove() {
   await guard('承認', async () => {
     // マージ可否は実行時に確認し、できない理由をトーストで明示する
     const cur = await api.glMRStatus(targetOf(mr));
+    // 既にマージ済み（手元の表示が古い・外部でマージされた等）の場合は、
+    // マージをスキップしてイシューのクローズだけを確認のうえ実行する
+    if (cur.state === 'merged') {
+      applyUpdatedItem(cur);
+      if (!closesIssue) {
+        throw new Error(`${pageLabel(mr)} は既にマージ済みです`);
+      }
+      const msg = `${pageLabel(mr)} は既にマージ済みです。${pageLabel(t)} のクローズだけを行います。よろしいですか？`;
+      if (!(await confirmDialog(msg))) return;
+      await api.glComment(targetOf(t), actionComment('承認'));
+      const closed = await api.glSetState(targetOf(t), 'close');
+      applyUpdatedItem(closed);
+      $('comment-input').value = '';
+      reloadPanes();
+      toast(`${pageLabel(t)} をクローズしました（${pageLabel(mr)} はマージ済み）`);
+      return;
+    }
     if (cur.state !== 'opened') {
       throw new Error(`${pageLabel(mr)} がオープンではありません（${cur.state}）`);
     }
@@ -987,8 +1004,9 @@ async function doSendBack() {
 // ---------------------------------------------------------------------------
 // MR を表示したとき（候補選択・MR タブ切替）に現在状態を取得し、コンフリクトまたは
 // 未解決（未クローズ）のレビューコメントがあれば「差し戻すか」の確認ダイアログを出す。
-// 差し戻しは検知内容を伝える固定コメントの MR への投稿で行う（ステータスラベルは
-// 変えない — ラベル遷移を伴う差し戻しは従来どおりアクションバーのボタンで行う）。
+// 差し戻しは、検知内容を伝える固定コメントを MR へ投稿し、操作対象のステータスを
+// アクションバーの差し戻しと同じ遷移（SENDBACK_FLOW）で戻す（対象のステータスが
+// 遷移表に無ければコメント投稿のみ）。
 // 同じ MR への確認はセッション中 1 回だけ（タブ切替のたびに出すと邪魔になる）。
 
 const MR_SENDBACK_COMMENTS = {
@@ -1039,10 +1057,16 @@ async function checkActiveMRHealth() {
   $('mr-sendback-problems').innerHTML = problems
     .map((p) => `<li>${escapeHtml(p)}</li>`)
     .join('');
+  const t = primaryTarget();
+  const to = t && SENDBACK_FLOW[statusOf(t)];
+  $('mr-sendback-status').textContent = to
+    ? `「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿し、${pageLabel(t)} を ${to} に戻します。`
+    : '「差し戻す」を押すと、上記の内容を伝える固定コメントを MR に投稿します（対象のステータスが差し戻し対象外のため、ラベルは変更しません）。';
   dlg.showModal();
 }
 
-// 差し戻し（固定コメント投稿）: 検知内容ごとの定型文を「# 差し戻し」見出しで投稿する
+// 差し戻し（固定コメント投稿 + ステータス差し戻し）: 検知内容ごとの定型文を
+// 「# 差し戻し」見出しで MR に投稿し、操作対象のステータスを SENDBACK_FLOW で戻す
 async function doMRSendback() {
   $('mr-sendback-dialog').close();
   const sb = mrSendback;
@@ -1051,8 +1075,19 @@ async function doMRSendback() {
   await guard('差し戻し', async () => {
     const lines = sb.kinds.map((k) => `- ${MR_SENDBACK_COMMENTS[k]}`);
     await api.glComment(targetOf(sb.mr), `# 差し戻し\n\n${lines.join('\n')}`);
+    const t = primaryTarget();
+    const to = t && SENDBACK_FLOW[statusOf(t)];
+    if (to) {
+      const remove = t.labels.filter((l) => l.startsWith('status:') && l !== to);
+      const updated = await api.glUpdateLabels(targetOf(t), [to], remove);
+      applyUpdatedItem(updated);
+    }
     reloadPanes();
-    toast(`${pageLabel(sb.mr)} に差し戻しコメントを投稿しました`);
+    toast(
+      to
+        ? `${pageLabel(sb.mr)} に差し戻しコメントを投稿し、${pageLabel(t)} を ${to} に戻しました`
+        : `${pageLabel(sb.mr)} に差し戻しコメントを投稿しました`
+    );
   });
 }
 
