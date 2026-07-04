@@ -595,7 +595,17 @@ def _wait_for_decision(host, token, project, iid, url, cfg):
     active_seen = False  # MR 出現 or approved/done ラベル＝人が能動的に作業中
 
     while True:
-        issue = _get_issue(host, token, project, iid)
+        try:
+            issue = _get_issue(host, token, project, iid)
+        except RuntimeError as e:
+            # イシューが消えた（削除された）＝取り下げ。人が誤って削除しても
+            # 一般エラーではなく却下として決着させ、上位のやり直しループに乗せる
+            # （コメントはイシューごと消えているため guidance は空＝自動判断）。
+            # 404 以外（ネットワーク断・権限等）は従来どおり失敗として送出する。
+            if "HTTP 404" in str(e):
+                _log(f"イシュー #{iid} が見つかりません（削除された＝取り下げとみなす）: {url}")
+                _raise_deleted(iid, url)
+            raise
         labels_now = set(issue.get("labels") or [])
         issue_closed = issue.get("state") == "closed"
         mrs = _related_merge_requests(host, token, project, iid)
@@ -706,6 +716,20 @@ def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label
     data = {"issue_iid": iid, "web_url": url, "decision": "approved", "reason": why,
             "merged_mrs": [m.get("iid") for m in mrs], "closed": True}
     return text, data
+
+
+def _raise_deleted(iid, url):
+    """イシュー削除（決着待ち中の 404）＝取り下げとして却下扱いで送出する。
+    コメントはイシューごと消えているため guidance は空（＝上位が自動で判断してやり直す）。
+    正規の却下経路はイシューの「クローズ」（gitlab-review-viewer も削除でなくクローズで
+    伝える）——これは誤って削除されたときにフィードバックループを壊さないための防御。"""
+    data = {"issue_iid": iid, "web_url": url, "decision": "rejected",
+            "reason": "イシューが削除された（取り下げ）", "guidance": "",
+            "merged_mrs": [], "closed": True}
+    err = RuntimeError(f"[gitlab-reject] 却下されました（イシューが削除された＝取り下げ）（{url}）。"
+                       "人コメントは読めないため自動で原因を判断してやり直してください。")
+    err.data = data
+    raise err
 
 
 def _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label, reason=""):

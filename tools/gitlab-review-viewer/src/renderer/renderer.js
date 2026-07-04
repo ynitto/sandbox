@@ -983,20 +983,42 @@ async function doSendBack() {
   });
 }
 
-// 却下: 削除 / 閉じる / キャンセルの 3 択ダイアログ
-function openRejectDialog() {
+// kiro-flow が起票したイシューか（タイトル接頭辞 or 本文の隠しマーカーで判別）。
+// kiro-flow は「イシューのクローズ」で却下を検知し、人コメントをやり直し指示として
+// 取り込む契約——削除するとコメント・決着検知ごと壊れる（ポーリングは 404 になる）ため、
+// kiro-flow 委譲イシューでは削除を出さず、明示的なクローズで却下を伝える。
+async function isKiroFlowIssue(t) {
+  if (!t || t.type !== 'issue') return false;
+  if (String(t.title || '').startsWith('[kiro-flow]')) return true;
+  try {
+    const detail = await api.glDetail(targetOf(t));
+    return String((detail && detail.description) || '').includes('kiro-flow:task-token:');
+  } catch {
+    return false; // 判別できなければ従来どおり（削除も選べる）
+  }
+}
+
+// 却下: 削除 / 閉じる / キャンセルの 3 択ダイアログ（kiro-flow 委譲イシューは閉じるのみ）
+async function openRejectDialog() {
   const t = primaryTarget();
   if (!t) return;
+  const kf = await isKiroFlowIssue(t);
   $('reject-desc').textContent = `${pageLabel(t)} — ${t.title.slice(0, 60)} を破棄します。`;
+  $('btn-reject-delete').hidden = kf;
+  $('reject-note-delete').hidden = kf;
+  $('reject-note-kiroflow').hidden = !kf;
   $('reject-dialog').showModal();
 }
 
 async function doReject(choice) {
   // choice: 'delete'（MR クローズ + ソースブランチ削除 + イシュー削除）
-  //         'close' （MR クローズ + イシューを閉じる）
+  //         'close' （MR クローズ + イシューを明示的に閉じる）
   $('reject-dialog').close();
   const t = primaryTarget();
   if (!t) return;
+  if (choice === 'delete' && (await isKiroFlowIssue(t))) {
+    choice = 'close'; // 防御: kiro-flow 委譲イシューは削除せずクローズで却下を伝える
+  }
   await guard('却下', async () => {
     await api.glComment(targetOf(t), actionComment('却下'));
 
@@ -1024,10 +1046,10 @@ async function doReject(choice) {
         removePage(t);
         toast(`${pageLabel(t)} を削除しました`);
       } else {
-        if (t.state === 'opened') {
-          const closed = await api.glSetState(targetOf(t), 'close');
-          applyUpdatedItem(closed);
-        }
+        // 表示キャッシュの state に頼らず常に明示的にクローズする（既にクローズ済みなら
+        // no-op）。kiro-flow 側の自動クローズは daemon 停止中などで走らないことがある
+        const closed = await api.glSetState(targetOf(t), 'close');
+        applyUpdatedItem(closed);
         toast(`${pageLabel(t)} を閉じました`);
       }
     } else {

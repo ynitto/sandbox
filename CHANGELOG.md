@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### 却下時のイシュー削除がフィードバックループを壊す問題の修正（両側）
+
+- **gitlab-review-viewer**: kiro-flow が委譲したイシュー（タイトル `[kiro-flow]` /
+  本文の `kiro-flow:task-token:` マーカーで判別）では却下ダイアログの「削除」を出さず、
+  **明示的なクローズ**で却下を伝える（kiro-flow はイシューのクローズで却下を検知し、
+  人コメントをやり直し指示として取り込む契約のため。削除は 404 の一般エラーになり
+  コメント・決着検知ごと壊れる）。「閉じる」は表示キャッシュの state に頼らず常に
+  明示的にクローズする（kiro-flow 側の自動クローズは daemon 停止中は走らない）
+- **kiro-flow gitlab executor（防御）**: 決着待ち中にイシューが削除（404）されても
+  一般エラーでなく**取り下げ＝却下**として決着させる（`decision: rejected`・
+  guidance 空＝自動判断でやり直し）。404 以外のエラー（ネットワーク断・権限）は
+  従来どおり失敗として送出
+
 ### kiro-flow: gitlab executor の却下を機械可読な決着に（data 付き failed）
 
 - 却下時の failed result に、承認と対称の構造化データ（`issue_iid` / `web_url` /

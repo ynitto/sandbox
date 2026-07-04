@@ -825,6 +825,39 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertIn("[gitlab-reject]", str(ctx.exception))
         self.assertIn("自動で", str(ctx.exception))
 
+    def test_deleted_issue_treated_as_rejected(self):
+        # 決着待ち中にイシューが削除（404）されたら、一般エラーでなく却下（取り下げ）として
+        # 決着させる（誤削除でもフィードバックループを壊さない防御）。guidance は空＝自動判断。
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 7, "web_url": "https://gitlab.com/group/repo/-/issues/7"}
+            if method == "GET":
+                raise RuntimeError("GitLab API GET /projects/x/issues/7 失敗: HTTP 404 Not Found")
+            return {}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(api, mrs_seq=[[]])
+        self.assertIn("[gitlab-reject]", str(ctx.exception))
+        self.assertIn("削除", str(ctx.exception))
+        d = ctx.exception.data
+        self.assertEqual(d["decision"], "rejected")
+        self.assertIn("削除", d["reason"])
+        self.assertEqual(d["guidance"], "")
+
+    def test_non_404_error_still_raises_plain_failure(self):
+        # ネットワーク断・権限エラー等（404 以外）は却下でなく従来どおりの失敗として送出
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 7, "web_url": "u"}
+            if method == "GET":
+                raise RuntimeError("GitLab API GET /projects/x/issues/7 失敗: HTTP 500 Server Error")
+            return {}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with(api, mrs_seq=[[]])
+        self.assertNotIn("[gitlab-reject]", str(ctx.exception))
+        self.assertIn("HTTP 500", str(ctx.exception))
+
     def test_open_mr_keeps_waiting_until_merged(self):
         # MR が open のうちは待機し、全マージで承認。
         seq = [[{"iid": 1, "state": "opened"}],          # まだ作業中

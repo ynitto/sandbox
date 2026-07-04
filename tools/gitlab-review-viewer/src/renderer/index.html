@@ -181,8 +181,9 @@
     <h2>却下</h2>
     <p id="reject-desc"></p>
     <ul class="muted reject-notes">
-      <li><strong>削除</strong> — 右ペインに表示中の MR をクローズし、そのソースブランチを削除して、イシューを削除する</li>
-      <li><strong>閉じる</strong> — 右ペインに表示中の MR をクローズし、イシューを閉じる</li>
+      <li id="reject-note-delete"><strong>削除</strong> — 右ペインに表示中の MR をクローズし、そのソースブランチを削除して、イシューを削除する</li>
+      <li><strong>閉じる</strong> — 右ペインに表示中の MR をクローズし、イシューを明示的に閉じる</li>
+      <li id="reject-note-kiroflow" hidden><strong>kiro-flow 委譲イシュー</strong> — 却下は「閉じる」で kiro-flow に伝わります（イシューを削除すると人コメント・決着検知ごと壊れるため、削除は選べません）</li>
     </ul>
     <div class="dialog-buttons">
       <button id="btn-reject-delete" class="danger">削除</button>
