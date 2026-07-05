@@ -308,25 +308,64 @@ function listInstances() {
   return out;
 }
 
-// プロジェクトの kiro-projects が稼働中か（instances の heartbeat 鮮度から判定。CLI 不要）。
+// <project>/status.json — 生存信号（kiro-projects.py の write_status が書く）。本体が別ホストで
+// 稼働し state_git 経由でしか届かない場合、instances（同一ホストのローカルレジストリ）は空になる。
+// この場合の唯一の生存根拠が、同期されてきた status.json の updated_iso の新しさ。
+// fresh_after_sec は書き手（本体）が自分の同期間隔（state_git_interval / --status-interval）から
+// 計算した値なので、ビュアー側は単純比較するだけでよい。存在しない/壊れていれば null。
+function readStatus(dir) {
+  const rec = readJson(path.join(dir, 'status.json'));
+  if (!rec || typeof rec !== 'object') return null;
+  const updatedMs = Date.parse(rec.updated_iso || '');
+  if (isNaN(updatedMs)) return null;
+  const ageSec = (Date.now() - updatedMs) / 1000;
+  const freshSec = Number(rec.fresh_after_sec) || 120;
+  return { ...rec, ageSec, fresh: ageSec >= 0 && ageSec <= freshSec };
+}
+
+const _norm = (p) => {
+  try {
+    return path.resolve(String(p || '')).toLowerCase();
+  } catch {
+    return '';
+  }
+};
+
+// プロジェクトの kiro-projects の稼働判定。判定根拠と経過時間も返す（UI 表示用）:
+//   'instances'   … 同一ホストの instances（heartbeat 鮮度）から確定判定（従来どおり。CLI 不要）
+//   'status-sync' … リモート本体（state_git 越し）は同期されてきた status.json の新しさで近似判定
+//                    （同期遅延ぶんの誤差を許容する。running:false でも「最終確認 N 分前」は分かる）
+//   'none'        … 判定材料が無い（instances も status.json も無い）
 // WSL 内の本体が登録する root_windows（\\wsl.localhost\...）にも一致させる
 // （Windows のビュアーから WSL 内の稼働を発見するため）。
-function isProjectRunning(dir) {
-  const norm = (p) => {
-    try {
-      return path.resolve(String(p || '')).toLowerCase();
-    } catch {
-      return '';
+function projectLiveness(dir) {
+  const target = _norm(dir);
+  if (target) {
+    for (const inst of listInstances()) {
+      if (!inst.fresh || inst.sentinel) continue;
+      if (_norm(inst.root) === target || (inst.root_windows && _norm(inst.root_windows) === target)) {
+        return { running: true, via: 'instances', ageSec: 0 };
+      }
     }
-  };
-  const target = norm(dir);
-  if (!target) return false;
-  for (const inst of listInstances()) {
-    if (!inst.fresh || inst.sentinel) continue;
-    if (norm(inst.root) === target) return true;
-    if (inst.root_windows && norm(inst.root_windows) === target) return true;
   }
-  return false;
+  const status = readStatus(dir);
+  if (status) {
+    return {
+      running: status.fresh,
+      via: 'status-sync',
+      ageSec: Math.round(status.ageSec),
+      level: status.level,
+      watch: status.watch,
+    };
+  }
+  return { running: false, via: 'none', ageSec: null };
+}
+
+// actions.js の指示ルーティング（commands/ ドロップ vs CLI）が使う真偽値。
+// リモート稼働を status.json 経由で推定できる場合もここで true にする — CLI はほぼ確実に
+// 使えない（別ホスト）ので、file-drop を優先させるのが実態に合っている。
+function isProjectRunning(dir) {
+  return projectLiveness(dir).running;
 }
 
 function isProjectDir(dir) {
@@ -390,6 +429,12 @@ function discover(cfg) {
       const byStatus = {};
       for (const t of tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
       const needs = safeList(path.join(dir, 'needs')).filter((f) => f.endsWith('.md')).length;
+      // instances（同一ホスト・確定）を先に見て、無ければ status.json（リモート・同期経由の推定）
+      // にフォールバックする。サイドバーの ● はどちらの根拠でも「稼働中」として表示するが、
+      // 経過時間・根拠はプロジェクト選択後の概要タブで詳しく出す（liveness）。
+      const liveness = runningKeys.has(`${root}::${name}`)
+        ? { running: true, via: 'instances', ageSec: 0 }
+        : projectLiveness(dir);
       return {
         name,
         dir,
@@ -398,7 +443,8 @@ function discover(cfg) {
         backlogCount: tasks.length,
         byStatus,
         needsCount: needs,
-        running: runningKeys.has(`${root}::${name}`),
+        running: liveness.running,
+        liveness,
       };
     });
     containers.push({ root, source, exists: fs.existsSync(root), projects });
@@ -503,6 +549,7 @@ function readProject(dir, cfg) {
     projectState: readJson(path.join(dir, 'project.json')),
     repos: readJson(path.join(dir, 'repos.json')),
     autonomy,
+    liveness: projectLiveness(dir),
     busDir: bus.busDir,
     hasBus: bus.hasBus,
     busSource: bus.source,
@@ -518,6 +565,8 @@ module.exports = {
   parseDecisions,
   listInstances,
   isProjectRunning,
+  readStatus,
+  projectLiveness,
   discover,
   readProject,
   resolveBusDir,

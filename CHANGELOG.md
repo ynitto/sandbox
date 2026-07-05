@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects / kiro-projects-viewer: リモート daemon の生存信号（status.json）— 別ホストでも稼働判定できるように
+
+- **背景**: kiro-projects-viewer を daemon の稼働ホストとは別の PC で使う場合（`state_git` 経由でリモート本体の
+  結果を見る構成）、操作（approve/hold/revise 等）は既存の `commands/`/`needs`/`inbox` ファイル契約でリモートでも
+  同等に効いていたが、**daemon が今も生きているか」は分からなかった** — `~/.kiro-projects/instances/` はローカルの
+  生存レジストリで state_git の同期対象外のため、リモートの viewer では「● 稼働中」バッジも概要の実行状況も
+  常に空白になっていた
+- **`status.json`（生存信号）**: 本体が `<project>/status.json`（`watch`/`level`/`updated_iso`/`fresh_after_sec`）を
+  書き、これも state_git で同期する。実データ（backlog/needs/decisions/run-log 等）は既に同期されているため
+  重複させず、生存信号だけの最小ファイルにした
+- **idle 中の git 負荷は既定でゼロ**: `write_status` は実パス完了時にのみ呼ばれ、その他ファイルの変更と
+  **同じコミットに相乗り**する（単体では追加の commit/push を生まない）。watch の idle 中は
+  `--status-interval`（既定 `0`＝無効）を明示指定しない限り status.json に一切触れない。指定すればその間隔で
+  idle 中も生存信号を更新でき、鮮度と git 負荷のトレードオフを利用者が選べる
+- **`fresh_after_sec` は書き手が計算**: 本体が自分の同期間隔（`state_git_interval`/`status_interval` の大きい方の
+  2 倍・下限 120 秒）から計算して埋め込むため、viewer 側は単純な経過時間比較だけで済む
+- **kiro-projects-viewer**: instances（同一ホスト・確定）に無ければ status.json（同期経由・推定）へ
+  フォールバックして稼働判定する。サイドバーの ● は判定根拠を区別して表示（同期経由の推定は輪郭のみの
+  ◯＋プロジェクト名に `~`）。概要タブに「daemon の生存」カードを追加し、判定根拠・最終確認からの経過時間・
+  `watch`/`level`・最終サイクル（`run-log.jsonl`）を表示する
+
 ### kiro-projects / kiro-projects-viewer: 人の即時フィードバック（revise）— 実行中でも気づいた時点で軌道修正
 
 - **背景**: 自律バックログ消化中に人が「方向が違う」と気づいても（例: LLM がローカルサーバを

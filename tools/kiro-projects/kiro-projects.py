@@ -2716,6 +2716,9 @@ class Config:
     state_git_branch: str = "main"        # 同期先ブランチ
     state_git_subdir: str = "kiro-projects"  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
     state_git_interval: float = 300.0     # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
+    status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
+                                           # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
+                                           # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
     lock_dir: "str | None" = None   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     kiro_flow: "str | None" = None
     planner: str = "kiro"          # 優先順位付け戦略: kiro（エージェント）/ none（priority＋古さ）
@@ -3698,6 +3701,50 @@ def state_git_for(cfg: "Config") -> "StateGit | None":
     return _STATE_GITS[key]
 
 
+def status_path(cfg: "Config") -> Path:
+    return cfg.backlog.parent / "status.json"
+
+
+def _status_fresh_after_sec(cfg: "Config") -> float:
+    """リモート viewer が『稼働中』と信じてよい経過秒数の目安。state_git/status の同期間隔
+    から書き手（自分の設定を知っている側）が計算し、viewer 側は単純比較だけで済むようにする。"""
+    intervals = [i for i in (cfg.state_git_interval, cfg.status_interval) if i and i > 0]
+    return max([2.0 * i for i in intervals] + [120.0])
+
+
+def write_status(cfg: "Config") -> None:
+    """status.json（生存信号）を書く。state_git 越しにリモートの kiro-projects-viewer が
+    『daemon が今も生きているか』を判定するための最小スナップショット（watch/level の
+    現在値＋更新時刻のみ）。backlog/needs/decisions/run-log 等の実データはここで重複を
+    持たない（既に state_git で同期されるため）。実パス完了時に呼べば、そのパスが触った
+    他ファイルの変更と同じコミットに相乗りする＝これ単体で追加の push を生まない。"""
+    rec = {
+        "host": socket.gethostname(), "watch": cfg.watch, "level": cfg.level,
+        "updated_iso": _now_ts(), "fresh_after_sec": _status_fresh_after_sec(cfg),
+    }
+    try:
+        p = status_path(cfg)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def maybe_heartbeat_status(cfg: "Config") -> None:
+    """watch アイドル中の任意の生存信号更新（`--status-interval`。既定 0＝無効）。
+    無効時は status.json に一切触れない＝state_git の commit-if-diff で追加コミットを
+    作らない（idle の git 負荷は今日と同じゼロ）。有効時も前回書き込みから
+    status_interval 秒経つまでは触らず、書き込み頻度を利用者の指定した間隔に抑える。"""
+    if cfg.status_interval <= 0:
+        return
+    try:
+        age = time.time() - status_path(cfg).stat().st_mtime
+    except OSError:
+        age = float("inf")     # 未作成 → 書く
+    if age >= cfg.status_interval:
+        write_status(cfg)
+
+
 def state_sync(cfg: "Config", force: bool = False) -> None:
     """状態の git 同期（best-effort）。ネットワーク断・リポジトリ不通でもループは殺さず
     journal に残して続行する（done の確定や消化は state_git に一切依存しない）。"""
@@ -3826,6 +3873,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
         "spawned": spawned_total, "inboxed": len(inboxed),
         "tokens": tokens_used, "cost": round(cost_used, 4),
         "duration_s": round(time.time() - start, 2)})
+    write_status(cfg)             # 生存信号（このパスが触った他ファイルの変更と同じコミットに相乗り）
     state_sync(cfg, force=True)   # 状態 git: このパスの結果（done/needs/journal）を共有側へ押し出す
     return {"reason": reason, "cycles": cycle, "counts": counts, "tasks": tasks,
             "reasons": reasons, "newly_blocked": newly_blocked, "notified": notified,
@@ -3904,6 +3952,7 @@ def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.slee
             cfg.level = "report"     # ソフト予算超過 → 以降は report 降格（spend を止め監視は継続）
             print("[watch] throttle: ソフト予算超過につき report レベルへ降格（act 停止）", flush=True)
             append_journal(cfg.journal, "=== watch: throttle 降格（report・act 停止）===")
+            write_status(cfg)        # 直近パスの生存信号は降格前の level だったため上書きしておく
         if max_passes is not None and passes >= max_passes:
             return last
         append_journal(cfg.journal, "=== watch: 監視中（新規タスク/フィードバック待ち。"
@@ -3913,6 +3962,7 @@ def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.slee
             if heartbeat:
                 heartbeat()          # idle 中も heartbeat を保ち、リモートから生存が見えるようにする
             run_intake(cfg)          # 外部ゲートからの汲み上げ（間隔律速。積まれれば has_work が起こす）
+            maybe_heartbeat_status(cfg)  # --status-interval のときだけ idle 中も生存信号を更新（既定は無効＝無干渉）
             state_sync(cfg)          # 状態 git: リモートの指示を取り込む（間隔律速。届けば has_work が起こす）
             if maybe_self_update(cfg):   # アイドル時のみ自己更新を確認・取り込み（取り込めたら再起動）
                 raise _RestartRequested()
@@ -6453,6 +6503,7 @@ CONFIG_DEFAULTS = {
     "state_git_branch": "main",
     "state_git_subdir": "kiro-projects",  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期
+    "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
     "notify_cmd": None,
@@ -6567,6 +6618,7 @@ def build_config(args) -> Config:
         state_git_branch=str(getattr(args, "state_git_branch", "main") or "main"),
         state_git_subdir=str(getattr(args, "state_git_subdir", "kiro-projects") or "").strip("/"),
         state_git_interval=max(0.0, float(getattr(args, "state_git_interval", 300.0) or 0.0)),
+        status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
         route_planner=str(getattr(args, "route_planner", "kiro") or "kiro"),
@@ -6659,6 +6711,12 @@ def _add_common(sp):
     sp.add_argument("--state-git-interval", type=float, default=None,
                     help="state_git の fetch/push の最短間隔（秒。既定 300）。リモートサーバへの"
                          "負荷を一定に保つ律速。0 で毎同期")
+    sp.add_argument("--status-interval", type=float, default=None,
+                    help="watch アイドル中に status.json（生存信号。リモート viewer の稼働判定に使う）を"
+                         "更新する間隔（秒。既定 0＝無効）。0 のままなら idle 中に status.json は触らず、"
+                         "state_git への追加コミットは生まない（実パスの完了時にのみ書く＝相乗り）。"
+                         ">0 にすると idle でもこの間隔で 1 回だけ書き直し、その分だけ state_git の"
+                         "コミットが増える（負荷とリモートでの生存判定の鮮度のトレードオフ）")
     sp.add_argument("--lock-dir", dest="lock_dir", default=None,
                     help="kiro-flow daemon ロックの置き場（設定ファイル lock_dir と同義）。"
                          "外部起動の daemon を発見するため kiro-flow 側と一致させる")
