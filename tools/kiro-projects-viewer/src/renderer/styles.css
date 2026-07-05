@@ -439,3 +439,63 @@ button.danger { border-color: var(--red); color: var(--red); }
 
 .toolbar { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
 .toolbar .spacer { flex: 1; }
+
+/* 関係性の可視化（charter → backlog → run → issue） */
+.rel-strip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin: 6px 0; padding: 6px 8px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+}
+.rel-arrow { color: var(--muted); font-size: 11px; }
+.rel-seg {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--fg);
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 5px; padding: 2px 7px;
+}
+button.rel-seg { cursor: pointer; font-family: inherit; }
+button.rel-seg:hover { border-color: var(--accent); }
+.rel-seg.charter { border-color: var(--accent2); color: var(--accent2); }
+.rel-seg.task:hover { color: var(--accent); }
+.rel-seg.issue { border-color: var(--orange); color: var(--orange); }
+.rel-seg.runs { gap: 3px; flex-wrap: wrap; }
+
+/* リトライ系統のピル（r0/r1/…）。状態色で塗り、現在選択は枠を強調 */
+.rel-pill {
+  cursor: pointer; font-family: inherit; font-size: 11px; line-height: 1.4;
+  padding: 1px 6px; border-radius: 10px;
+  background: var(--bg3); color: var(--muted);
+  border: 1px solid var(--border);
+}
+.rel-pill:hover { border-color: var(--accent); }
+.rel-pill.current { outline: 1px solid var(--accent); font-weight: 600; }
+.rel-pill.st-done { color: var(--green); border-color: var(--green); }
+.rel-pill.st-failed { color: var(--red); border-color: var(--red); }
+.rel-pill.st-running { color: var(--accent2); border-color: var(--accent2); }
+.rel-pill.st-planning { color: var(--blue); border-color: var(--blue); }
+
+/* バックログ行／run 一覧のクロスリンク用バッジ */
+.badge.run-link, .badge.task-link {
+  cursor: pointer; font-family: inherit;
+  border-color: var(--accent); color: var(--accent);
+}
+.badge.run-link:hover, .badge.task-link:hover { background: var(--bg3); }
+
+/* run 一覧のリトライ・ストリップ */
+.run-retries {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin-top: 6px; font-size: 11px; color: var(--muted);
+}
+
+/* タスクダイアログの関連 run 一覧 */
+.rel-runs { display: flex; flex-direction: column; gap: 4px; }
+.rel-run-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 4px 6px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 5px; font-size: 12px;
+}
+.linklike {
+  cursor: pointer; background: none; border: none; padding: 0;
+  color: var(--blue); font-family: inherit; text-decoration: underline;
+}
+.linklike:hover { color: var(--accent); }

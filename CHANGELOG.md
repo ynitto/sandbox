@@ -7,6 +7,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: charter → backlog → run → issue の関係性を可視化・相互遷移
+
+- **背景**: 従来はタブ（概要/バックログ/要対応/フロー/レビュー/履歴）が独立し、**バックログのタスクと
+  kiro-flow の run（＝GitLab イシュー）を結ぶリンクが UI に無かった**。run-id はただの文字列として
+  表示され、リトライ（`…-r0`/`…-r1`）も個別の run として並ぶだけだった
+- **run-id の解析**（`flow.js` `parseRunId`）: 決定的 run-id `req-<hash>-<taskid>-r<retries>[-v<rev>]` を
+  `taskId`/`retries`/`rev`/`lineageId`（同一タスクの系統キー）に分解し、`readRun` が surface する。
+  `meta.inherited_from`（`--inherit-from` の引き継ぎ元）も返す
+- **リトライを束ねる**: フロー一覧を系統（同一タスク）でまとめ、最新試行を見出しに過去試行を色付き
+  ピル（`r0`/`r1`…）で畳む。「意味的に同一のオブジェクトはまとめる」を実装
+- **パンくずと相互遷移**: タスクダイアログ・run 詳細に `🎯 charter ▸ 🗒 task ▸ ⚙ run ▸ 🔗 issue` の
+  クリック可能なパンくずを追加。バックログ行の `⚙N` バッジ→フロー、フロー一覧の `🗒 taskid`→
+  バックログ、issue→GitLab へワンクリック遷移（`switchTab`/`gotoRun`/`gotoTask`）
+- テスト: `test/flow-relationship.test.js`（`npm test`）
+
+### kiro-projects: `act_timeout=0` でタイムアウト無効（長時間委譲の空リトライを根治）＋ kiro-flow: リトライ時の run データ引き継ぎ・掃除
+
+- **背景**: gitlab executor のような委譲は、人のレビュー往復で数日かかりうる（gitlab
+  executor 側の待ちは `timeout=7日`/`approved_timeout=14日`）。一方 kiro-projects は run の結果を
+  `act_timeout`（既定 1800 秒）しか待たず、**待ち切れずに retry を空増やし＆イシューを二重起票**し、
+  `max_retries` 超過で誤エスカレーションしていた（`req-…-r2` のように「verify 未到達なのに
+  リトライ番号だけ増える」症状の正体）
+- **`act_timeout=0`＝無制限待ち**: `_act_submit`（daemon 待ち）・`_act_run`（都度起動）を「0 以下なら
+  タイムアウトせず完了まで待つ」に変更。`_claim_ttl` も `act_timeout=0` のとき無限にし、長時間委譲中に
+  他インスタンスへ claim を奪われて二重実行するのを防ぐ。設定例
+  （`kiro-projects.yaml.example` / `kiro-projects.state-git.yaml.example`）の gitlab 委譲欄に
+  `act_timeout: 0` 推奨を明記
+- **kiro-flow `--inherit-from <先行run-id>`**: リトライ run 作成時に、タイムアウト/失敗した先行 run から
+  **確定済み（done）ノードの結果・計画（graph）・中間成果物（artifacts）を引き継ぎ**、workspace 付き run
+  では新 run の作業ブランチを旧 `kf/<old>` から派生させて**確定済み commit を失わない**。引き継ぎ後は
+  **先行 run を掃除**（`runs/`＋inbox 要求＋claim を削除）。安全条件として、走っている run には触れず、
+  「完全 done」（verify=NG 相当）の先行 run は状態を引き継がず掃除だけ行う（同一出力で即 done→再 NG の
+  無限ループを防ぐ）。判断はすべて kiro-flow の `Bus.inherit_from` に閉じ込め、kiro-projects は直前試行の
+  run-id を渡すだけ（`_prev_req_id`）
+- 設計: `docs/designs/kiro-flow-retry-inheritance-design.md`。テスト: `InheritTests`（kiro-flow）/
+  `TestActTimeoutZeroAndInherit`（kiro-projects）
+
 ### kiro-flow / kiro-projects-viewer: フロータブでもリモート daemon の生存信号（status.json）を追加
 
 - **背景**: kiro-projects 側に実装した daemon 生存信号（state_git 経由でリモート viewer が稼働判定

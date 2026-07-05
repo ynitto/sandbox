@@ -569,6 +569,81 @@ class Bus:
         """同じ作業ツリー上の別 run を読み取るための軽量ビュー（git 再クローンしない）。"""
         return Bus(self.root, run_id)
 
+    # --- リトライ時の引き継ぎ（先行 run のデータ破棄設計） ---
+    def _seed_from(self, old: "Bus") -> int:
+        """先行 run `old` の再利用可能な状態をこの（新しい）run dir へコピーする。
+        戻り値＝引き継いだ done ノード数。graph.json（計画）・tasks/（ノード仕様）・
+        artifacts/（node-id で決定的にアドレスされる中間成果物）を丸ごと、results/ は
+        status==done のノードだけ引き継ぐ（failed はやり直させる）。workspace 付き run では
+        確定済みノードの commit を失わないよう、新 run の作業ブランチを旧ブランチ kf/<old> から
+        派生させる（spec.base を旧ブランチに差す。旧ブランチが無ければ clone 側が既定へ
+        フォールバックするので安全）。meta の lease/resume 簿記・claims/・events/ は引き継がない
+        （wall-clock リースや孤児判定を汚染しないため）。"""
+        old_id = os.path.basename(old.run_dir)
+        self.ensure_dirs()
+        g = read_json(old.graph_path)
+        if g is not None:
+            write_json_atomic(self.graph_path, g)
+        for nid in old.task_ids():                     # ノード仕様（tasks/<id>.json）
+            spec = read_json(os.path.join(old.tasks_dir, f"{nid}.json"))
+            if spec is not None:
+                write_json_atomic(os.path.join(self.tasks_dir, f"{nid}.json"), spec)
+        if os.path.isdir(old.artifacts_dir):           # 中間成果物（node-id アドレス）
+            shutil.copytree(old.artifacts_dir, self.artifacts_dir, dirs_exist_ok=True)
+        seeded = 0
+        for nid in old.task_ids():                     # 確定済み（done）ノードの結果だけ
+            res = old.read_result(nid)
+            if res and res.get("status") == "done":
+                write_json_atomic(self.result_path(nid), res)
+                seeded += 1
+        old_meta = read_json(old.meta_path) or {}
+        ws = old_meta.get("workspace")
+        if isinstance(ws, dict) and ws.get("url"):
+            ws = dict(ws)
+            ws["base"] = run_branch_name(old_id)       # 旧ブランチから派生＝done の commit を保つ
+        write_json_atomic(self.meta_path, {
+            "request": old_meta.get("request", ""),
+            "workspace": ws or None,
+            "references": list(old_meta.get("references") or []),
+            "status": "planning",
+            "created_at": now_iso(),
+            "inherited_from": old_id,                  # 由来（可視化・監査用）
+        })
+        return seeded
+
+    def inherit_from(self, old_run_id: str, orphan_grace: float = 0.0) -> dict:
+        """タイムアウト/失敗した先行 run から再利用可能な状態をこの run へ引き継ぎ、先行 run を
+        削除する。リトライで毎回ゼロからやり直して確定済みノードの作業（トークン/時間）を捨てるのを
+        防ぐための「引き継いでから掃除する」操作。
+
+        安全条件: 先行 run が終端（done/failed）か孤児（生存リース切れ）のときだけ触る。実行中で
+        リースが有効な run には seed も削除もしない（走っている run を壊さない）。
+        先行 run が「完全に done」（全ノード確定＝verify=NG 等）なら状態は引き継がず掃除だけ行う
+        （同一出力で即 done→再び NG の無限ループを避け、feedback 付きで新規にやり直させる）。
+        戻り値: {inherited, seeded_nodes, deleted, reason}。"""
+        if old_run_id == os.path.basename(self.run_dir):
+            return {"inherited": False, "seeded_nodes": 0, "deleted": False,
+                    "reason": "自分自身は引き継がない"}
+        old = self.run_view(old_run_id)
+        old_meta = read_json(old.meta_path)
+        if old_meta is None:
+            return {"inherited": False, "seeded_nodes": 0, "deleted": False,
+                    "reason": "先行 run が見つからない"}
+        terminal = old_meta.get("status") in TERMINAL
+        if not terminal and not self.run_is_orphaned(old_run_id, orphan_grace):
+            return {"inherited": False, "seeded_nodes": 0, "deleted": False,
+                    "reason": f"先行 run は実行中（status={old_meta.get('status')}）＝触らない"}
+        ids = old.task_ids()
+        fully_done = bool(ids) and all(old.node_state(i) == "done" for i in ids)
+        seeded = 0
+        # この run が既に実体を持つ（別経路で再開中）なら seed しない＝上書き事故を防ぐ
+        if read_json(self.meta_path) is None and not fully_done:
+            seeded = self._seed_from(old)
+        self.remove_run(old_run_id)                    # 終端/孤児のみ到達＝安全に掃除
+        return {"inherited": seeded > 0, "seeded_nodes": seeded, "deleted": True,
+                "reason": ("完全 done のため状態は引き継がず掃除のみ" if fully_done
+                           else f"確定済み {seeded} ノードを引き継いで先行 run を掃除")}
+
     def active_runs(self):
         """planning/running な run の id 一覧（終端した run は除く）。"""
         out = []
@@ -677,15 +752,19 @@ class Bus:
     # --- inbox（要求キュー）と要求 claim ---
     def submit_request(self, req_id: str, request: str, submitter: str,
                        workspace: "dict | None" = None,
-                       references: "list[dict] | None" = None) -> None:
-        write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), {
+                       references: "list[dict] | None" = None,
+                       inherit_from: "str | None" = None) -> None:
+        rec = {
             "id": req_id,
             "request": request,
             "submitter": submitter,
             "workspace": workspace or None,   # 唯一の書込先を daemon の orchestrate へ伝搬する
             "references": list(references or []),  # 参照リポジトリも daemon の orchestrate へ伝搬する
             "submitted_at": now_iso(),
-        })
+        }
+        if inherit_from:                      # リトライ: 先行 run の引き継ぎ元を orchestrate へ伝搬
+            rec["inherit_from"] = inherit_from
+        write_json_atomic(os.path.join(self.inbox_dir, f"{req_id}.json"), rec)
 
     def list_inbox(self):
         if not os.path.isdir(self.inbox_dir):
@@ -3014,6 +3093,14 @@ def cmd_orchestrate(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
     bus.sync_pull()
+    # リトライ: 先行 run（--inherit-from）から確定済みノードを引き継ぎ、先行 run を掃除する。
+    # ensure_run より前に行う＝seed した meta を ensure_run が上書きしないようにする。
+    inh = getattr(args, "inherit_from", None)
+    if inh and read_json(bus.meta_path) is None:
+        info = bus.inherit_from(inh, getattr(args, "orphan_grace", 0.0) or 0.0)
+        log(who, f"先行 run {inh} を処理: {info['reason']}"
+                 f"（引き継ぎ {info['seeded_nodes']} ノード・削除={info['deleted']}）")
+        bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
                    parse_references(getattr(args, "references", None)))
     graph = bus.read_graph()
@@ -3339,9 +3426,11 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     ws_args = ["--workspace", json.dumps(ws, ensure_ascii=False)] if ws else []
     for r in (req.get("references") or []):   # 参照リポジトリも run meta へ伝搬する
         ws_args += ["--reference", json.dumps(r, ensure_ascii=False)]
+    inh = req.get("inherit_from")             # リトライ: 先行 run の引き継ぎ元を orchestrate へ
     return subprocess.Popen(base + ws_args + [
         "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
+        *(["--inherit-from", inh] if inh else []),
         "--run-id", req_id, "orchestrate", "--request", req["request"],
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
@@ -3399,6 +3488,8 @@ def cmd_run(args) -> int:
     procs = []
     orch = subprocess.Popen(base + [
         "orchestrate", "--request", args.request,
+        *(["--inherit-from", args.inherit_from] if getattr(args, "inherit_from", None)
+          and not resuming else []),   # 新規時のみ: 先行 run から引き継ぐ（再開時は不要）
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
         "--max-fanout", str(args.max_fanout),
@@ -3473,7 +3564,8 @@ def cmd_submit(args) -> int:
     bus.sync_pull()
     bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
                        workspace=parse_workspace(getattr(args, "workspace", None)),
-                       references=parse_references(getattr(args, "references", None)))
+                       references=parse_references(getattr(args, "references", None)),
+                       inherit_from=getattr(args, "inherit_from", None))
     bus.sync_push(f"submit request {req_id}")
     print(req_id)  # run-id を標準出力（スクリプトから拾える）
     print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
@@ -4821,6 +4913,10 @@ def main() -> int:
                      help="自動の検証 gate を無効化する")
     run.add_argument("--model", default=None)
     run.add_argument("--poll", type=float, default=None)
+    run.add_argument("--inherit-from", dest="inherit_from", default=None,
+                     help="リトライ: 指定した先行 run-id から確定済み（done）ノードの結果・計画・"
+                          "中間成果物を引き継ぎ、先行 run を掃除する（新規時のみ有効）。先行 run が"
+                          "完全 done なら状態は引き継がず掃除だけ行う（feedback 付きで新規にやり直す）")
     run.set_defaults(func=cmd_run)
 
     orch = sub.add_parser("orchestrate", help="計画役")
@@ -4837,6 +4933,8 @@ def main() -> int:
     orch.add_argument("--node-id", default="orchestrator")
     orch.add_argument("--model_opt", dest="model", default=None)
     orch.add_argument("--poll", type=float, default=None)
+    orch.add_argument("--inherit-from", dest="inherit_from", default=None,
+                      help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する")
     orch.set_defaults(func=cmd_orchestrate)
 
     work = sub.add_parser("work", help="ワーカー役")
@@ -4883,6 +4981,9 @@ def main() -> int:
 
     sb = sub.add_parser("submit", help="要求を inbox に投入（デーモンが拾う）")
     sb.add_argument("request", help="ワークフローへの要求")
+    sb.add_argument("--inherit-from", dest="inherit_from", default=None,
+                    help="リトライ: 先行 run-id から確定済みノードを引き継ぎ先行 run を掃除する"
+                         "（daemon の orchestrate に伝搬される）")
     sb.set_defaults(func=cmd_submit)
 
     st = sub.add_parser("status", help="run の状態表示（既定 1 回 / --follow でライブ監視）")

@@ -32,6 +32,9 @@ bus: /home/me/kiro/.kiro-flow-bus    # ★kiro-flow 側と同じ絶対パスで 
 # --- 実行（作業そのものは GitLab イシューで各 PC へ分散。従来どおり）---
 executor: gitlab
 watch: true
+act_timeout: 0             # 委譲は人のレビュー往復で数日かかりうる。0=無制限で完了まで待つ。
+                           #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシューを
+                           #   二重起票する（この構成では 0 を強く推奨）。
 
 # --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
 state_git: git@gitlab.example.com:team/kiro-state.git
