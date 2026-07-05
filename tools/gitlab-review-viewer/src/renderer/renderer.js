@@ -531,6 +531,26 @@ function rebuildPanes() {
   renderPanes();
 }
 
+// ページタブをペインの webview に表示する。MR は常にレビュー対象の差分（/diffs）を
+// 既定にする。通常表示（force=false）は開始 URL と異なるときだけナビゲートするが、
+// アクション後のリロード（force=true）では GitLab 埋め込み内でタブ移動して概要へ
+// ドリフトしていても差分ビューへ確実に戻す。src 属性の同値では webview が再読込
+// しないため、force 時は loadURL で明示的に読み込む（未 attach 時は reload で代替）。
+function loadPageTab(pane, tab, { force = false } = {}) {
+  const wv = $(`wv-${pane}`);
+  const startUrl = pageStartUrl(tab.page);
+  $(`url-${pane}`).value = startUrl;
+  const attrInSync = wv.getAttribute('src') === startUrl;
+  if (!force) {
+    if (!attrInSync) wv.setAttribute('src', startUrl);
+    return;
+  }
+  wv.setAttribute('src', startUrl);
+  if (attrInSync && typeof wv.loadURL === 'function') {
+    wv.loadURL(startUrl).catch(() => wv.reload());
+  }
+}
+
 function syncPane(pane) {
   const p = state.panes[pane];
   const tab = p.tabs[p.active];
@@ -547,9 +567,7 @@ function syncPane(pane) {
   if (tab.kind === 'page') {
     wv.style.display = 'flex';
     lv.hidden = true;
-    const startUrl = pageStartUrl(tab.page);
-    if (wv.getAttribute('src') !== startUrl) wv.setAttribute('src', startUrl);
-    urlEl.value = startUrl;
+    loadPageTab(pane, tab);
     return;
   }
   // リーダーモード / 要約のローカルタブ
@@ -907,7 +925,9 @@ function reloadPanes() {
   for (const pane of [0, 1]) {
     const p = state.panes[pane];
     const tab = p.tabs[p.active];
-    if (tab && tab.kind === 'page') $(`wv-${pane}`).reload();
+    // 表示中の GitLab ページを再読込する。MR は概要へドリフトしていても
+    // レビュー対象の差分（/diffs）へ確実に戻す（loadPageTab の force）。
+    if (tab && tab.kind === 'page') loadPageTab(pane, tab, { force: true });
   }
 }
 
