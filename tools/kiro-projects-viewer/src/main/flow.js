@@ -84,6 +84,22 @@ function nodeTaskToken(runId, nodeId) {
   return 'kf-' + crypto.createHash('sha1').update(`${runId}/${nodeId}`).digest('hex').slice(0, 12);
 }
 
+// kiro-projects が付ける決定的 run-id `req-<backlogハッシュ>-<taskid>-r<retries>[-v<rev>]` を
+// 分解する。バックログのタスク（安定オブジェクト）と、そのリトライ/リバイズ系統を UI が
+// 突き合わせられるようにする。素の `run-<ts>-<rand>`（手動/単発）は taskId 無しで単独扱い。
+const REQ_ID_RE = /^req-([0-9a-f]{6,})-(.+)-r(\d+)(?:-v(.+))?$/;
+function parseRunId(runId) {
+  const m = REQ_ID_RE.exec(runId);
+  if (!m) return { taskId: null, retries: null, rev: null, lineageId: null };
+  const [, hash, taskId, retries, rev] = m;
+  return {
+    taskId, // 一意化前の task.id（バックログ突き合わせは同じ正規化を掛けて行う）
+    retries: Number(retries),
+    rev: rev || null,
+    lineageId: `req-${hash}-${taskId}`, // リトライ/リバイズを束ねる系統キー（＝同一タスク）
+  };
+}
+
 // 1 つの run ディレクトリを読み、グラフ＋状態＋進捗のスナップショットにする
 function readRun(runDir) {
   const runId = path.basename(runDir);
@@ -186,9 +202,15 @@ function readRun(runDir) {
   }
 
   const status = String(meta.status || (finalJson ? 'done' : 'unknown'));
+  const idParts = parseRunId(runId);
   return {
     runId,
     status,
+    taskId: idParts.taskId, // 紐づくバックログタスク（req- 形式のときのみ）
+    retries: idParts.retries, // この試行のリトライ世代（req- 形式のときのみ）
+    rev: idParts.rev, // 人の revise 世代（あれば）
+    lineageId: idParts.lineageId, // 同一タスクのリトライ/リバイズを束ねる系統キー
+    inheritedFrom: meta.inherited_from || null, // --inherit-from で引き継いだ先行 run-id
     // orchestrator の生存（meta の生存リースから）。false は「running のまま
     // owner が消えた」孤児の可能性を示す（kiro-flow が回収するまでの間の表示）
     alive: TERMINAL.has(status) ? null : runAlive(meta, now),
@@ -402,6 +424,7 @@ function daemonStatus(busDir, lockDir) {
 
 module.exports = {
   readRun,
+  parseRunId,
   readRunEvents,
   readNodeEvents,
   listRuns,

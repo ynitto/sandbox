@@ -448,6 +448,184 @@ const BACKLOG_FILTERS = [
   ['archive', 'done（archive）'],
 ];
 
+// ---------------------------------------------------------------------------
+// 関係性（charter → backlog → run → issue）の突き合わせと画面遷移
+//   run-id `req-<hash>-<taskid>-r<retries>` を鍵に、バックログのタスク（安定オブジェクト）と
+//   その kiro-flow run（リトライ系統）を結ぶ。リトライは「意味的に同一」なので系統でまとめる。
+// ---------------------------------------------------------------------------
+
+// kiro-projects の run-id 生成（_submit_req_id）と同じ task.id 正規化。バックログの task.id を
+// run-id 内の taskId 断片へ合わせるために使う。
+function sanitizeTaskId(id) {
+  return String(id == null ? '' : id)
+    .replace(/[^\w.-]+/g, '_')
+    .slice(0, 60);
+}
+
+// あるバックログタスクに紐づく kiro-flow run を、リトライ世代の新しい順で返す。
+function runsForTask(taskId) {
+  const key = sanitizeTaskId(taskId);
+  return state.flowRuns
+    .filter((r) => r.taskId && sanitizeTaskId(r.taskId) === key)
+    .sort(
+      (a, b) =>
+        (b.retries || 0) - (a.retries || 0) ||
+        String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+    );
+}
+
+// run 一覧を「系統（lineageId＝同一タスク）」でまとめる。req- 形式でない run（手動/単発）は単独系統。
+function lineageGroups(runs) {
+  const groups = new Map();
+  for (const r of runs) {
+    const key = r.lineageId || r.runId; // 素の run は自分だけの系統
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  const out = [];
+  for (const [key, list] of groups) {
+    list.sort(
+      (a, b) =>
+        (b.retries || 0) - (a.retries || 0) ||
+        String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+    );
+    out.push({ key, latest: list[0], attempts: list });
+  }
+  out.sort((a, b) =>
+    String(b.latest.updatedAt || b.latest.createdAt || '').localeCompare(
+      String(a.latest.updatedAt || a.latest.createdAt || '')
+    )
+  );
+  return out;
+}
+
+// タブを切り替える（initTabs のクリックと同じ DOM 操作をプログラムから行う）。
+function switchTab(name) {
+  document
+    .querySelectorAll('.tab')
+    .forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tabpane').forEach((pane) => pane.classList.remove('active'));
+  const pane = $(`tab-${name}`);
+  if (pane) pane.classList.add('active');
+  if (name === 'gitlab') refreshGitLab(false);
+}
+
+// run を選んでフロータブへ遷移。
+function gotoRun(runId) {
+  switchTab('flow');
+  selectFlowRun(runId);
+}
+
+// バックログタスク（run-id 内の taskId 断片でも可）を開いてバックログタブへ遷移。
+function gotoTask(taskId) {
+  const p = state.project;
+  if (!p) return;
+  const key = sanitizeTaskId(taskId);
+  let t = p.backlog.find((x) => sanitizeTaskId(x.id) === key);
+  let scope = 'backlog';
+  if (!t) {
+    t = p.archive.find((x) => sanitizeTaskId(x.id) === key);
+    scope = 'archive';
+  }
+  switchTab('backlog');
+  if (scope === 'archive') {
+    state.backlogFilter = 'archive';
+    renderBacklog();
+  }
+  if (t) showTaskDialog(t.id, scope);
+  else toast(`タスク ${taskId} は現在のバックログに見つかりません（gc/archive 済みかも）`);
+}
+
+// run 1 件を表す小さなクリップ（リトライ世代＋状態色）。クリックで run へ遷移。
+function runPill(r, current = false) {
+  const gen = r.retries != null ? `r${r.retries}` : 'run';
+  const rev = r.rev ? `·v${r.rev}` : '';
+  return `<button class="rel-pill st-${esc(r.status)}${current ? ' current' : ''}"
+    data-goto-run="${esc(r.runId)}" title="${esc(r.runId)} — ${esc(r.status)}">${gen}${rev}</button>`;
+}
+
+// 関係性のパンくず: charter ▸ task ▸ run(系統) ▸ issue。各セグメントはクリックで該当画面へ。
+function relationshipStrip({ taskId, run } = {}) {
+  const p = state.project;
+  const segs = [];
+  if (p && p.charter && p.charter.name) {
+    segs.push(`<span class="rel-seg charter" title="プロジェクト定義">🎯 ${esc(p.charter.name)}</span>`);
+  }
+  const tid = taskId || (run && run.taskId);
+  if (tid) {
+    segs.push(
+      `<button class="rel-seg task" data-goto-task="${esc(tid)}" title="バックログのタスクへ">🗒 ${esc(tid)}</button>`
+    );
+  }
+  const attempts = tid ? runsForTask(tid) : run ? [run] : [];
+  if (attempts.length) {
+    const pills = attempts
+      .slice()
+      .reverse()
+      .map((r) => runPill(r, run && r.runId === run.runId))
+      .join('');
+    segs.push(`<span class="rel-seg runs">⚙ ${pills}</span>`);
+  } else if (run) {
+    segs.push(`<span class="rel-seg runs">⚙ ${runPill(run, true)}</span>`);
+  }
+  const issues = run ? run.gitlabIssues || [] : attempts.flatMap((r) => r.gitlabIssues || []);
+  const url = issues[0] && issues[0].url;
+  if (url) {
+    segs.push(
+      `<button class="rel-seg issue" data-open-ext="${esc(url)}" title="GitLab イシューを開く">🔗 issue${issues.length > 1 ? ` ×${issues.length}` : ''}</button>`
+    );
+  }
+  if (segs.length < 2) return ''; // 単独セグメントだけならパンくずの意味がない
+  return `<div class="rel-strip">${segs.join('<span class="rel-arrow">▸</span>')}</div>`;
+}
+
+// タスクダイアログ用: 関連する run（リトライ系統）を一覧する。
+function relatedRunsBlock(taskId) {
+  const rr = runsForTask(taskId);
+  if (!rr.length) return '';
+  const items = rr
+    .map(
+      (r) => `<div class="rel-run-row">
+        <button class="linklike mono" data-goto-run="${esc(r.runId)}">${esc(r.runId)}</button>
+        ${statusChip(r.status)}
+        <span class="muted">${r.counts.done}✓ ${r.counts.failed}✗ ／ ${r.total} ノード</span>
+        ${r.inheritedFrom ? `<span class="muted" title="このリトライが引き継いだ先行 run">↩ ${esc(r.inheritedFrom)}</span>` : ''}
+      </div>`
+    )
+    .join('');
+  return `<div class="section-title">関連する kiro-flow run（リトライ系統）</div>
+    <div class="rel-runs">${items}</div>`;
+}
+
+// パンくず／リンクのクリック配線（dialog・detail・backlog 各ルートから呼ぶ）。
+function bindRelationship(root) {
+  for (const b of root.querySelectorAll('[data-goto-run]')) {
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const dlg = $('dlg-task');
+      if (dlg && dlg.open) dlg.close();
+      gotoRun(b.dataset.gotoRun);
+    });
+  }
+  for (const b of root.querySelectorAll('[data-goto-task]')) {
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const dlg = $('dlg-task');
+      if (dlg && dlg.open) dlg.close();
+      gotoTask(b.dataset.gotoTask);
+    });
+  }
+  for (const b of root.querySelectorAll('[data-open-ext]')) {
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      guard('リンクを開く', () => api.openExternal(b.dataset.openExt));
+    });
+  }
+}
+
 function renderBacklog() {
   const p = state.project;
   const el = $('tab-backlog');
@@ -475,10 +653,14 @@ function renderBacklog() {
       if (t.extra.level) extras.push(`level: ${t.extra.level}`);
       if (t.extra.track) extras.push(`track: ${t.extra.track}`);
       if (t.extra.review) extras.push(`review: ${t.extra.review}`);
+      const rr = runsForTask(t.id); // 紐づく kiro-flow run（リトライ系統）
+      const runBadge = rr.length
+        ? ` <button class="badge run-link" data-goto-run="${esc(rr[0].runId)}" title="関連 run ${rr.length} 件（最新 ${esc(rr[0].runId)} — ${esc(rr[0].status)}）へ移動">⚙${rr.length}</button>`
+        : '';
       return `<tr class="clickable" data-task="${esc(t.id)}" data-scope="${state.backlogFilter === 'archive' ? 'archive' : 'backlog'}">
         <td class="mono">${esc(t.id)}</td>
         <td>${esc(t.title)}</td>
-        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示送信済み（取り込み待ち）">✎</span>' : ''}</td>
+        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示送信済み（取り込み待ち）">✎</span>' : ''}${runBadge}</td>
         <td>${t.priority}</td>
         <td>${t.retries}</td>
         <td>${t.verify ? '✓' : t.extra.accept || t.extra.verify_template ? '△' : '—'}</td>
@@ -517,6 +699,7 @@ function renderBacklog() {
   for (const row of el.querySelectorAll('tr[data-task]')) {
     row.addEventListener('click', () => showTaskDialog(row.dataset.task, row.dataset.scope));
   }
+  bindRelationship(el); // 行内の run バッジ（⚙N）クリックでフロータブへ（行クリックより優先）
 }
 
 // revise（人の即時フィードバック）も commands/ 経由で届くためタスクファイル自体は
@@ -606,6 +789,7 @@ function showTaskDialog(id, scope) {
         </div>`;
   $('dlg-task-body').innerHTML = `
     <h2><span class="mono">${esc(t.id)}</span>: ${esc(t.title)}</h2>
+    ${relationshipStrip({ taskId: t.id })}
     <table class="list">
       <tr><th>状態</th><td>${statusChip(t.status)}</td></tr>
       <tr><th>出自</th><td>${esc(t.source)}</td></tr>
@@ -615,8 +799,10 @@ function showTaskDialog(id, scope) {
       ${extraRows}
       <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>
     </table>
+    ${relatedRunsBlock(t.id)}
     ${actionArea}
     ${scope === 'archive' ? '' : reviseAreaHtml(t)}`;
+  bindRelationship($('dlg-task-body')); // パンくず・関連 run のクリック配線
   const link = $('task-open-file');
   if (link) link.addEventListener('click', (e) => {
     e.preventDefault();
@@ -929,18 +1115,35 @@ function renderFlow() {
       ${checked ? `<span class="muted">探索したバス候補:<br>${checked}</span>` : ''}</div>`;
     return;
   }
-  const runList = state.flowRuns
-    .map((r) => {
+  // 同一タスクのリトライ（req-…-r0/r1/…）は「意味的に同一」なので系統でまとめ、
+  // 最新試行を見出しにして過去の試行はリトライ・ピルで畳む。素の run は単独系統。
+  const runList = lineageGroups(state.flowRuns)
+    .map((g) => {
+      const r = g.latest;
       const pct = Math.round(r.progress * 100);
       const stalled =
         r.alive === false
           ? ` <span class="status-chip st-stalled" title="orchestrator の生存リースが切れています（heartbeat: ${esc(fmtAgo(r.heartbeatAt) || 'なし')}）">応答なし</span>`
           : '';
+      const taskLink = r.taskId
+        ? ` <button class="badge task-link" data-goto-task="${esc(r.taskId)}" title="バックログのタスクへ移動">🗒 ${esc(r.taskId)}</button>`
+        : '';
+      const retryStrip =
+        g.attempts.length > 1
+          ? `<div class="run-retries" title="このタスクのリトライ系統">試行 ${g.attempts.length}: ${g.attempts
+              .slice()
+              .reverse()
+              .map((a) => runPill(a, a.runId === state.flowRunId))
+              .join('')}</div>`
+          : r.inheritedFrom
+            ? `<div class="muted" title="引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(r.inheritedFrom)}</span></div>`
+            : '';
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}">
         <div class="row2"><span class="mono">${esc(r.runId)}</span><span>${statusChip(r.status)}${stalled}</span></div>
         <div class="req">${esc((r.request || '').slice(0, 120))}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
-        <div class="muted">${r.counts.done}✓ ${r.counts.failed}✗ ${r.counts.claimed}▶ ／ ${r.total} ノード ｜ ${fmtAgo(r.updatedAt || r.createdAt)}</div>
+        <div class="muted">${r.counts.done}✓ ${r.counts.failed}✗ ${r.counts.claimed}▶ ／ ${r.total} ノード ｜ ${fmtAgo(r.updatedAt || r.createdAt)}${taskLink}</div>
+        ${retryStrip}
       </div>`;
     })
     .join('');
@@ -970,6 +1173,7 @@ function renderFlow() {
     item.addEventListener('click', () => selectFlowRun(item.dataset.run));
   }
   bindFlowDetail(el);
+  bindRelationship(el); // リトライ・ピル／タスクリンク／パンくずのクリック配線（行クリックより優先）
 }
 
 async function selectFlowRun(runId) {
@@ -1025,7 +1229,9 @@ function renderFlowDetail() {
   return `
     <div class="card full">
       <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${resubmit} ${deleteBtn}</h3>
+      ${relationshipStrip({ run })}
       <div>${esc(run.request || '')}</div>
+      ${run.inheritedFrom ? `<div class="muted" title="このリトライが引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(run.inheritedFrom)}</span></div>` : ''}
       ${heartbeat}
       ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(run.failureReason)}</div>` : ''}
       <div class="row2" style="align-items:center;margin-top:6px">

@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: charter → backlog → run → issue の関係性を可視化・相互遷移
+
+- **背景**: 従来はタブ（概要/バックログ/要対応/フロー/レビュー/履歴）が独立し、**バックログのタスクと
+  kiro-flow の run（＝GitLab イシュー）を結ぶリンクが UI に無かった**。run-id はただの文字列として
+  表示され、リトライ（`…-r0`/`…-r1`）も個別の run として並ぶだけだった
+- **run-id の解析**（`flow.js` `parseRunId`）: 決定的 run-id `req-<hash>-<taskid>-r<retries>[-v<rev>]` を
+  `taskId`/`retries`/`rev`/`lineageId`（同一タスクの系統キー）に分解し、`readRun` が surface する。
+  `meta.inherited_from`（`--inherit-from` の引き継ぎ元）も返す
+- **リトライを束ねる**: フロー一覧を系統（同一タスク）でまとめ、最新試行を見出しに過去試行を色付き
+  ピル（`r0`/`r1`…）で畳む。「意味的に同一のオブジェクトはまとめる」を実装
+- **パンくずと相互遷移**: タスクダイアログ・run 詳細に `🎯 charter ▸ 🗒 task ▸ ⚙ run ▸ 🔗 issue` の
+  クリック可能なパンくずを追加。バックログ行の `⚙N` バッジ→フロー、フロー一覧の `🗒 taskid`→
+  バックログ、issue→GitLab へワンクリック遷移（`switchTab`/`gotoRun`/`gotoTask`）
+- テスト: `test/flow-relationship.test.js`（`npm test`）
+
 ### kiro-projects: `act_timeout=0` でタイムアウト無効（長時間委譲の空リトライを根治）＋ kiro-flow: リトライ時の run データ引き継ぎ・掃除
 
 - **背景**: gitlab executor のような委譲は、人のレビュー往復で数日かかりうる（gitlab

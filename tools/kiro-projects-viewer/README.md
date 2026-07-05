@@ -29,6 +29,21 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 | レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー＋関連 MR（API 設定時）。プロジェクトが扱うリポジトリの「いまレビュー待ち・作業中」を横断一覧し gitlab-review-viewer へ引き継ぐ。既定では **kiro-flow 由来のイシュー**（gitlab executor が起票 = 本文の `task-token` マーカー）だけに絞る（「kiro-flow 由来のみ」チップで解除可）。run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当 |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
 
+### 関係性のたどり（charter → backlog → run → issue）
+
+タブ構成はそのままに、**どのタスクがどの run（GitLab イシュー）につながっているか**を可視化し、
+クリックで関連画面へ遷移できる。鍵は kiro-flow の決定的 run-id
+`req-<backlogハッシュ>-<taskid>-r<retries>` — ここから紐づくバックログタスクとリトライ系統を復元する。
+
+- **リトライは「意味的に同一」なので束ねる**: 同一タスクの `…-r0 / …-r1 / …` は 1 系統として
+  フロー一覧にまとめ、最新試行を見出しに、過去の試行は色付きピル（`r0` `r1` …）で畳む。
+  `--inherit-from` で先行 run を引き継いだ run には「↩ 引き継ぎ元」を併記する。
+- **パンくず**（タスクダイアログ・run 詳細）: `🎯 charter ▸ 🗒 task ▸ ⚙ run(系統) ▸ 🔗 issue`。
+  各セグメントはクリックで対応する画面へ飛ぶ（run→フロー、task→バックログ、issue→GitLab）。
+- **相互リンク**: バックログ各行に関連 run バッジ `⚙N`（クリックでフローへ）、フロー一覧に
+  タスクリンク `🗒 <taskid>`（クリックでバックログのタスクダイアログへ）、タスクダイアログに
+  「関連する kiro-flow run（リトライ系統）」一覧。
+
 プロジェクトの発見は次の 2 系統:
 
 1. **設定の roots** — ⚙ 設定に `.kiro-projects` コンテナ（kiro-projects の `--root` に渡す値）を登録
