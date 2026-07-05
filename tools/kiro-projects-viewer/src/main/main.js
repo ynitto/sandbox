@@ -42,6 +42,8 @@ function createWindow() {
     width: 1600,
     height: 950,
     title: 'Kiro Projects Viewer',
+    // dist:portable の exe アイコンと同じものを開発起動（electron .）時にも使う
+    icon: path.join(__dirname, '..', '..', 'assets', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,

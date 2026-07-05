@@ -26,6 +26,7 @@
       "package.json"
     ],
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         "portable",
         "nsis"
