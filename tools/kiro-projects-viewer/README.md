@@ -91,6 +91,7 @@ kiro-projects の人間ループはこのアプリ内で完結できる。いず
 | 差し戻す | 要対応カード（review） | 修正方針の記入必須 → feedback として確定（手戻り扱い） |
 | 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
 | 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
+| ✎ 修正して指示（revise） | タスク詳細（backlog のみ） | 同上（`{"command":"revise"}` ドロップ）。タイトル・優先度・依存 after・verify・accept の**置換**とフィードバック注入。**実行中（doing）のタスクにも送れ**、本体は現在の試行の結果を確定せず（verify も done もせず）修正内容で積み直す＝気づいた時点の早い軌道修正。変更した項目だけが送られ、DR（`action: revise`）に記録される |
 | ＋ タスクを追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口。verify / accept / priority / note 付き） |
 | レビュー操作（承認/差し戻し/コメント） | レビュー待ちタブ／フロータブのノード詳細 →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
 | 🗑 タスク削除 | タスク詳細（backlog のみ） | **例外的にファイル操作**（削除の公式契約が無いため）。確認のうえ `backlog/<id>.md` をゴミ箱へ移動。実行中（**doing かつクレーム中**）だけ拒否 — クレームロックは worker クラッシュや review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除でき、残骸ロックも一緒に掃除する。決定記録 DR は残らない — 記録を残したい場合は「保留（hold）」を使う |
@@ -100,7 +101,9 @@ kiro-projects の人間ループはこのアプリ内で完結できる。いず
   kiro-projects 側に残る
 - 承認 / 保留の指示は needs ファイル自体を変えない（commands/ 経由）ため、送信後の
   カードは「**指示送信済み（取り込み待ち）**」表示になり操作ボタンを出さない
-  （二重送信防止。ファイルパス + mtime で照合し、ファイルが書き換わったら解除）
+  （二重送信防止。ファイルパス + mtime で照合し、ファイルが書き換わったら解除）。
+  revise も同様に、送信後はタスク行に ✎ バッジ・詳細に「修正指示送信済み」を出し、
+  本体が取り込んでタスクファイルが書き換わるまで再送を防ぐ
 - ファイル書き込み（needs / inbox / commands）は稼働中の kiro-projects の watch が自動で
   取り込む。**指示（承認/保留/優先度変更）は既定でファイルドロップ**（本体が WSL 内で
   稼働していても届く。CLI は不要）。届け方は ⚙ 設定「指示の届け方」で制御できる:
@@ -203,17 +206,20 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   （`kf-<sha1(run_id/node_id)[:12]>`）でイシュー本文の隠しマーカーを検索して見つける
 - `src/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / command）
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
-  inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer。稼働していなければ
+  inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer/revise。稼働していなければ
   CLI にフォールバック）の 3 契約のみを使う
 - IPC は gitlab-review-viewer と同じ `{ok, data|error}` 形式・`window.api` 公開
 
 ## 制限事項
 
-- タスク本文（verify 等）の編集はファイルで行う（詳細ダイアログから開ける）。
+- タスク本文の編集は「✎ 修正して指示（revise）」から公式契約（commands/）経由で行える
+  （title・優先度・依存 after・verify・accept の置換とフィードバック注入）。それ以外の
+  フィールドはファイルで編集する（詳細ダイアログから開ける）。
   状態遷移を直接書き換える操作は意図的に持たない（done は verify のみが根拠、の
-  不変条件をアプリから壊さないため）。例外は 🗑 削除（タスク / run）のみ —
+  不変条件をアプリから壊さないため。revise も状態を書かず、本体側の同一ロジックが遷移を決める）。
+  例外は 🗑 削除（タスク / run）のみ —
   削除の公式契約が無いため、確認ダイアログのうえゴミ箱への移動として行う
-- approve / hold / reprioritize は既定でファイルドロップ（`commands/`）のため CLI 不要。
+- approve / hold / reprioritize / revise は既定でファイルドロップ（`commands/`）のため CLI 不要。
   本体が稼働していないときだけ CLI を試み、CLI も使えなければ指示ファイルを置いて
   次回の kiro-projects 起動時の取り込みに委ねる（即時には反映されない）
 - `bus/` は kiro-projects が local run 後に掃除するため（`--no-cleanup` で保持）、

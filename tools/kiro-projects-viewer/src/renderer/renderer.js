@@ -438,7 +438,7 @@ function renderBacklog() {
       return `<tr class="clickable" data-task="${esc(t.id)}" data-scope="${state.backlogFilter === 'archive' ? 'archive' : 'backlog'}">
         <td class="mono">${esc(t.id)}</td>
         <td>${esc(t.title)}</td>
-        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}</td>
+        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示送信済み（取り込み待ち）">✎</span>' : ''}</td>
         <td>${t.priority}</td>
         <td>${t.retries}</td>
         <td>${t.verify ? '✓' : t.extra.accept || t.extra.verify_template ? '△' : '—'}</td>
@@ -477,6 +477,63 @@ function renderBacklog() {
   for (const row of el.querySelectorAll('tr[data-task]')) {
     row.addEventListener('click', () => showTaskDialog(row.dataset.task, row.dataset.scope));
   }
+}
+
+// revise（人の即時フィードバック）も commands/ 経由で届くためタスクファイル自体は
+// すぐには変わらない。needs と同じく「送信済み（取り込み待ち）」をファイルパス + mtime で
+// 覚え、本体が取り込んでファイルが書き換わる（mtime 変化）まで再送を防ぐ。
+function loadReviseSent() {
+  try {
+    const v = JSON.parse(localStorage.getItem('kpv:reviseSent') || '{}');
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+const reviseSent = loadReviseSent();
+
+function markReviseSent(t) {
+  reviseSent[t.file] = t.mtime;
+  localStorage.setItem('kpv:reviseSent', JSON.stringify(reviseSent));
+}
+
+function isReviseSent(t) {
+  if (reviseSent[t.file] === undefined) return false;
+  if (reviseSent[t.file] === t.mtime) return true;
+  // 本体が取り込んでファイルが書き換わった → マーカーは古い（掃除して再度操作可能に）
+  delete reviseSent[t.file];
+  localStorage.setItem('kpv:reviseSent', JSON.stringify(reviseSent));
+  return false;
+}
+
+// revise フォーム。フィールドは「置換」で、変更した項目 + フィードバックだけを送る。
+// 実行中（doing）のタスクにも送れる: 本体は現在の試行を確定せず修正内容で積み直す。
+function reviseAreaHtml(t) {
+  if (isReviseSent(t)) {
+    return `<div class="muted" style="margin-top:8px">✎ 修正指示を送信済みです（本体の取り込み待ち。取り込まれると再度操作できます）</div>`;
+  }
+  const doingNote =
+    t.status === 'doing'
+      ? '<div class="muted">実行中のタスクです: 送信すると現在の試行の結果は確定されず、修正内容とフィードバックで積み直されます（早い軌道修正）。</div>'
+      : '';
+  return `<details class="revise-area"><summary>✎ 修正して指示（revise）</summary>
+    ${doingNote}
+    <div class="field"><label>フィードバック（次の実行に必ず反映される指示）</label>
+      <textarea rows="2" id="rv-feedback" placeholder="例: e2e はローカルサーバでなく実サーバに配備して実施すること"></textarea></div>
+    <div class="field"><label>タイトル</label><input id="rv-title" value="${esc(t.title)}" /></div>
+    <div class="row2">
+      <div class="field"><label>優先度（整数・大ほど高）</label><input id="rv-priority" type="number" step="1" value="${t.priority}" /></div>
+      <div class="field"><label>依存 after（カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
+    </div>
+    <div class="field"><label>verify（空にすると削除）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" /></div>
+    <div class="field"><label>accept（空にすると削除）</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" /></div>
+    <div class="row need-buttons">
+      <span class="muted">変更した項目とフィードバックだけが送られ、決定記録（DR）に残ります</span>
+      <span class="spacer"></span>
+      <button class="primary-inline" id="btn-revise-send">➤ 修正を送信</button>
+    </div>
+  </details>`;
 }
 
 function showTaskDialog(id, scope) {
@@ -518,7 +575,8 @@ function showTaskDialog(id, scope) {
       ${extraRows}
       <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>
     </table>
-    ${actionArea}`;
+    ${actionArea}
+    ${scope === 'archive' ? '' : reviseAreaHtml(t)}`;
   const link = $('task-open-file');
   if (link) link.addEventListener('click', (e) => {
     e.preventDefault();
@@ -534,6 +592,40 @@ function showTaskDialog(id, scope) {
       });
       if (ok) {
         gitPushAfterWrite(`kiro-projects-viewer: ${btn.dataset.taskact} ${t.id}`, p.dir);
+        $('dlg-task').close();
+        await reloadProject();
+      }
+    });
+  }
+  // 修正して指示（revise）。変更したフィールド + フィードバックだけを届ける
+  const rvBtn = $('btn-revise-send');
+  if (rvBtn) {
+    rvBtn.addEventListener('click', async () => {
+      const fields = {};
+      const cmp = [
+        ['title', $('rv-title').value.trim(), String(t.title || '')],
+        ['priority', $('rv-priority').value.trim(), String(t.priority)],
+        ['after', $('rv-after').value.trim(), String(t.extra.after || '')],
+        ['verify', $('rv-verify').value.trim(), String(t.verify || '')],
+        ['accept', $('rv-accept').value.trim(), String(t.extra.accept || '')],
+      ];
+      for (const [key, cur, orig] of cmp) {
+        if (key === 'priority' && cur === '') continue; // 空欄は「変更なし」（priority に削除は無い）
+        if (cur !== orig.trim()) fields[key] = cur;
+      }
+      const feedback = $('rv-feedback').value.trim();
+      if (!Object.keys(fields).length && !feedback) {
+        return toast('変更する項目かフィードバックを入力してください');
+      }
+      const reason = $('task-reason') ? $('task-reason').value.trim() : '';
+      const ok = await guard('修正（revise）', async () => {
+        const res = await api.runAction({ dir: p.dir, action: 'revise', id: t.id, reason, fields, feedback });
+        markReviseSent(t);
+        toast(res.output || `${t.id} の修正を送信しました`, true);
+        return true;
+      });
+      if (ok) {
+        gitPushAfterWrite(`kiro-projects-viewer: revise ${t.id}`, p.dir);
         $('dlg-task').close();
         await reloadProject();
       }

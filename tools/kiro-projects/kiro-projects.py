@@ -2526,6 +2526,40 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     return (proc.returncode == 0, (proc.stdout or "")[-300:].strip())
 
 
+def _load_task_file(cfg: "Config", tid: str) -> "Task | None":
+    """backlog/<id>.md をディスクから読み直す（無い/読めないなら None）。"""
+    p = cfg.backlog / f"{tid}.md"
+    try:
+        return parse_task(p.read_text(encoding="utf-8"), tid) if p.exists() else None
+    except OSError:
+        return None
+
+
+def _task_file_revised(cfg: "Config", task: Task) -> bool:
+    """実行中の revise（軌道修正）が入ったか＝backlog ファイルに `revised` マーカーがあるか。
+    act の結果待ちループから毎ポーリング呼ばれるため、小さなファイル読みだけで判定する。"""
+    fresh = _load_task_file(cfg, task.id)
+    return fresh is not None and bool(fresh.get("revised"))
+
+
+def _adopt_task(task: Task, fresh: Task) -> None:
+    """in-memory の Task をディスクの内容（fresh）へ合わせる（人の revise/直接編集の採用）。"""
+    task.title, task.status, task.source = fresh.title, fresh.status, fresh.source
+    task.priority, task.verify, task.retries = fresh.priority, fresh.verify, fresh.retries
+    task.extra = list(fresh.extra)
+
+
+def _requeue_revised(cfg: "Config", task: Task, fresh: Task, cycle: int) -> None:
+    """実行中に人が revise したタスクを、結果を確定させずに修正内容で積み直す。
+    verify も done もしない（方向の変わった成果を判定しても意味を持たないため）。"""
+    fresh.drop("revised")
+    fresh.status = "ready"
+    _adopt_task(task, fresh)
+    persist_task(cfg, task)
+    append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の revise により積み直し"
+                                "（この試行の結果は確定しない）")
+
+
 def _submit_req_id(task: Task, cfg: "Config") -> str:
     """リブート跨ぎで同じ act 試行へ再接続するための決定的 req_id。
 
@@ -2533,10 +2567,12 @@ def _submit_req_id(task: Task, cfg: "Config") -> str:
     待機ごと消えても、再起動後の同じ試行は同じ req_id を再 submit するため、kiro-flow 側の
     既存 run（daemon が孤児を自動再開する）に合流して結果を受け取れる＝二重実行しない。
     リトライ（retries+1）は新しい試行＝新しい run。backlog パスの hash は共有バスに
-    複数プロジェクトが乗るときの衝突を防ぐ。"""
+    複数プロジェクトが乗るときの衝突を防ぐ。人の revise（rev 世代）も新しい試行＝
+    新しい run にする（軌道修正後の act が修正前の古い run に合流しないように）。"""
     h = hashlib.sha1(str(cfg.backlog.resolve()).encode()).hexdigest()[:8]
     tid = re.sub(r"[^\w.-]+", "_", str(task.id))[:60]
-    return f"req-{h}-{tid}-r{task.retries}"
+    rev = str(task.get("rev", "") or "").strip()
+    return f"req-{h}-{tid}-r{task.retries}" + (f"-v{rev}" if rev else "")
 
 
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
@@ -2571,6 +2607,11 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
                 return (True, f"daemon run {run_id} done")
         except Exception:  # noqa: BLE001 — 取得失敗は次ポーリングで再試行
             pass
+        if _task_file_revised(cfg, task):
+            # 実行中に人が revise（軌道修正）→ 結果待ちを打ち切り、settle 側の積み直しへ。
+            # daemon 側の run は完走しうるが結果は確定させない。次の試行は rev 世代で
+            # 新しい req_id になるため、この古い run に合流することもない。
+            return (False, f"daemon run {run_id} の結果待ちを中断（人の revise を検知）")
         time.sleep(2.0)
     return (False, f"daemon run {run_id} タイムアウト")
 
@@ -3047,14 +3088,14 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
         os.close(fd)
     # クレーム後の再検証: 別インスタンスが既に消化（archive/削除）や状態変更をしていないか。
     # （ロック取得は「同時実行」を防ぐが、こちらの in-memory ビューが古い場合に二重実行を防ぐ）
-    disk = cfg.backlog / f"{task.id}.md"
-    try:
-        live = parse_task(disk.read_text(encoding="utf-8"), task.id) if disk.exists() else None
-    except OSError:
-        live = None
+    live = _load_task_file(cfg, task.id)
     if live is None or live.norm_status() not in CONSUMABLE:
         release_claim(cfg, task)              # 既に done/review/blocked 等 → 実行しない
         return False
+    # 実行直前のディスク内容を採用する（in-memory がパス開始時点で止まっていても、
+    # 人の revise・直接編集をこの試行に反映し、doing 永続化で上書き消失させない）。
+    live.drop("revised")                      # これから走る試行は最新内容を含む＝マーカー消化
+    _adopt_task(task, live)
     return True
 
 
@@ -3195,6 +3236,12 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     """act 済みタスクを検証ゲート（verify→回帰→保護→進捗→flake）に通し、done/review/retry/escalate を
     確定する。副作用（persist/journal/needs/decision/delivery/archive）は内部で行い、run_loop が集計に使う
     deltas（archived・followups）を返す。run_loop の per-task 本体を 1 か所に切り出したもの（挙動は不変）。"""
+    # act 中に人が revise（軌道修正）していたら、この試行の結果は確定せず修正内容で積み直す。
+    # verify より先に判定する（方向の変わった成果に PASS/FAIL を付けない・verify コストも省く）。
+    fresh = _load_task_file(cfg, task.id)
+    if fresh is not None and fresh.get("revised"):
+        _requeue_revised(cfg, task, fresh, cycle)
+        return {"archived": 0, "followups": []}
     if location != "local":
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} を {location} で実行"
                        + (f"（{cfg.git_bus}）" if location == "remote" else ""))
@@ -3282,9 +3329,10 @@ def _run_setup(cfg: "Config") -> tuple:
     """run_loop の前処理: inbox 取り込み → 読み込み → 人のフィードバック解除 → triage/rot で
     ready/blocked を確定 → verify を用意する。(tasks, policy, reasons, ingested, inboxed, pre_blocked)。"""
     ensure_dirs(cfg)
-    ingest_commands(cfg)          # 人の指示（approve/hold/pin/defer のファイルドロップ）を先に適用
+    ingest_commands(cfg)          # 人の指示（approve/hold/pin/defer/revise のファイルドロップ）を先に適用
     inboxed = run_intake(cfg) + ingest_inbox(cfg)     # 取り込みコマンド＋外部ドロップ(inbox/)を backlog へ
     tasks = load_tasks(cfg.backlog)
+    recover_revised(cfg, tasks)   # 実行側が settle できなかった revise 予約の回収（クラッシュ自己回復）
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
@@ -3689,6 +3737,19 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             reason = budget_stop_reason
             break
 
+        # 人の指示（commands/ ドロップ・needs 記入）はパス途中でも取り込む＝フィードバック即応。
+        # この時点で act 中のタスクは無く（バッチは同期で settle 済み）、変更は都度 persist
+        # されているため、ファイル（＝真実）から再読しても安全。バックログが長くても、
+        # 人の revise（依存 after・優先度・内容の修正）が次のサイクルからすぐ効く。
+        if cycle:
+            state_sync(cfg)                    # リモートの指示も間隔律速の範囲で取り込む
+            if _has_pending_input(cfg):
+                ingest_commands(cfg)
+                tasks = load_tasks(cfg.backlog)
+                recover_revised(cfg, tasks)
+                policy = load_policy(cfg.policy)
+                ingested += ingest_feedback(cfg, tasks)
+
         order_all = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
                      if t.id not in unavailable]  # 他 worker/インスタンスがクレーム済みは除外
         levels = {t.id: resolve_level(t, cfg, autonomy_cache) for t in order_all}
@@ -3811,6 +3872,22 @@ def has_work(cfg: Config) -> bool:
     return False
 
 
+def _has_pending_input(cfg: Config) -> bool:
+    """パス途中に取り込むべき人の入力があるか（commands/ ドロップ or needs の確定記入）。
+    安価な FS 走査のみ（has_work の入力側サブセット。タスクの有無は見ない）。"""
+    cdir = commands_dir(cfg)
+    if cdir.exists() and any(cdir.glob("*.json")):
+        return True
+    if cfg.needs.exists():
+        for nf in cfg.needs.glob("*.md"):
+            try:
+                if feedback_submitted(nf):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep,
               max_passes=None, heartbeat=None) -> dict:
     passes = 0
@@ -3926,6 +4003,171 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# revise（人の即時フィードバック）— ループがブロックする前に、人が気づいた時点で
+#   タスクの内容（title/verify/accept/依存 after/優先度 等）を修正し、自由記述の
+#   feedback を次の act に必ず届ける口。needs（ループ起点・受動）の対になる能動ルート。
+#   実行中（doing・新鮮なクレームあり）のタスクは `revised` マーカーを付けて予約し、
+#   現在の試行の結果は確定させず（done にせず）修正内容で積み直す＝早い軌道修正。
+# ---------------------------------------------------------------------------
+REVISE_FIELDS = ("title", "priority", "verify", "accept", "after",
+                 "note", "level", "track")
+_CLEAR_VALUES = ("", "-", "none")      # フィールド削除の明示値（revise の置換規約）
+
+
+def _claim_fresh(cfg: "Config", tid: str) -> bool:
+    """claims/<id>.lock が新鮮（= 誰かが実行中）か。stale/欠損は False（実行者不在）。"""
+    p = _claims_dir(cfg) / f"{tid}.lock"
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (time.time() - float(rec.get("ts", 0) or 0)) <= _claim_ttl(cfg)
+
+
+def _after_introduces_cycle(tasks: "list[Task]", start: "Task") -> bool:
+    """start の after 依存を辿って start 自身へ戻るか（DAG を壊す循環の検知）。"""
+    by_id = {t.id: t for t in tasks}
+    seen: set = set()
+    stack = list(task_deps(start))
+    while stack:
+        d = stack.pop()
+        if d == start.id:
+            return True
+        if d in seen:
+            continue
+        seen.add(d)
+        nxt = by_id.get(d)
+        if nxt is not None:
+            stack.extend(task_deps(nxt))
+    return False
+
+
+def _apply_revise_fields(t: Task, tasks: "list[Task]", fields: dict) -> "list[str]":
+    """revise のフィールド編集を Task へ適用し、変更内容の一覧を返す。
+    規約: 値が None のキーは触らない。''/'-'/'none' は削除（置換の明示規約）。
+    ValueError = 人へ返す入力エラー（level 不正・after 循環/自己依存）。"""
+    changes: list[str] = []
+    for key in REVISE_FIELDS:
+        if key not in fields or fields[key] is None:
+            continue
+        val = str(fields[key]).strip()
+        if key == "title":
+            if val and val != t.title:
+                changes.append(f"title: {t.title} → {val}")
+                t.title = val
+        elif key == "priority":
+            try:
+                pv = int(val)
+            except ValueError:
+                raise ValueError(f"priority は整数で指定してください: {val!r}")
+            if pv != t.priority:
+                changes.append(f"priority: {t.priority} → {pv}")
+                t.priority = pv
+        elif key == "verify":
+            v = _strip_code(val)
+            if v.lower() in _CLEAR_VALUES:
+                v = ""
+            if v != t.verify:
+                changes.append(f"verify: {v or '（削除）'}")
+                t.verify = v
+        else:                                   # extra フィールド（after/accept/note/level/track）
+            if val.lower() in _CLEAR_VALUES:
+                if t.get(key) is not None:
+                    t.drop(key)
+                    changes.append(f"{key}: （削除）")
+                continue
+            if key == "level" and val not in LEVELS:
+                raise ValueError(f"level は {'/'.join(LEVELS)} のいずれかです: {val!r}")
+            if val != t.get(key, ""):
+                t.set(key, val)
+                changes.append(f"{key}: {val}")
+            if key == "after":
+                deps = task_deps(t)
+                if t.id in deps:
+                    raise ValueError(f"after に自分自身は指定できません: {t.id}")
+                if _after_introduces_cycle(tasks, t):
+                    raise ValueError(f"after が循環します（DAG を壊すため拒否）: {val}")
+    return changes
+
+
+def recover_revised(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """実行側が settle できなかった `revised` マーカーの回収（クラッシュ後の自己回復）。
+    doing かつ実行者不在（stale claim）は修正内容のまま ready に積み直す。
+    実行中（新鮮なクレーム）は settle 側の積み直しに任せて触らない。
+    それ以外に残ったマーカーは、内容が既にファイルへ反映済みのため落とすだけでよい。"""
+    out: list[str] = []
+    for t in tasks:
+        if not t.get("revised"):
+            continue
+        st = t.norm_status()
+        if st == "doing" and _claim_fresh(cfg, t.id):
+            continue
+        t.drop("revised")
+        if st == "doing":
+            release_claim(cfg, t)
+            t.status = "ready"
+            append_journal(cfg.journal, f"revise 回収: {t.id} を ready に積み直し（実行者不在）")
+        persist_task(cfg, t)
+        out.append(t.id)
+    return out
+
+
+def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) -> int:
+    """バックログのタスクを人が即時修正する（内容・依存・優先度＋feedback 注入。決定記録）。
+
+      ready/inbox/draft  : 即時にファイルへ反映（次の選択・実行から効く）
+      blocked/review     : 反映して ready に積み直す（needs 記入＋[x] と同じ復帰。needs は消す）
+      doing（実行中）    : 反映して `revised` マーカーを付ける。実行側は現在の試行の結果を
+                           確定せず（verify も done もしない）修正内容で積み直す
+    done の確定には一切触れない（「done は verify のみが根拠」の不変条件を保つ）。"""
+    tasks = load_tasks(cfg.backlog)
+    t = next((x for x in tasks if x.id == tid), None)
+    if t is None:
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    try:
+        changes = _apply_revise_fields(t, tasks, fields or {})
+    except ValueError as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 2
+    fb = str(feedback or "").strip()
+    if fb:
+        t.drop("feedback")
+        t.extra.append(("feedback", fb.replace("\n", " ⏎ ")))
+        changes.append("feedback 注入")
+    if not changes:
+        print("エラー: 変更がありません（フィールドか --feedback を指定してください）", file=sys.stderr)
+        return 2
+
+    status = t.norm_status()
+    doing = status == "doing" and _claim_fresh(cfg, tid)
+    # rev は act 試行の世代番号（req_id に載る）。実行中の古い run に次の試行が
+    # 合流しないよう、revise のたびに上げて新しい run を強制する。
+    t.set("rev", int(str(t.get("rev", "0") or "0")) + 1)
+    disp = ""
+    if doing:
+        t.set("revised", _now_ts())     # 実行側が settle 時に検知して積み直す（結果は確定しない）
+        disp = "実行中のため現在の試行は確定せず、修正内容で積み直されます"
+    elif status in ("blocked", "review", "doing"):   # doing でも実行者不在（stale claim）はここ
+        release_claim(cfg, t)            # 残骸クレームの掃除（無ければ no-op）
+        clear_needs_file(cfg, tid)
+        if status == "review":
+            autonomy_record(cfg, t, clean=False)     # 検収からの修正＝差し戻し（手戻り）
+        t.status = "ready"
+        disp = "ready に積み直しました"
+    persist_task(cfg, t)
+    affects = "; ".join(changes)
+    dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を人が修正（revise）",
+                         action="revise", reason=reason or fb[:200] or "revise",
+                         affects=(affects[:200] + (f"; {tid} → ready" if disp and not doing else "")),
+                         learn=(t.title, fb) if fb else None)
+    append_journal(cfg.journal, f"revise: {tid} — {affects}"
+                   + ("（実行中→積み直し予約）" if doing else ""))
+    print(f"{dr}: {tid} を修正しました（{affects}）。" + (disp and f"{disp}。"))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # 指示のファイル取り込み（commands/<name>.json）
 # ---------------------------------------------------------------------------
 # CLI を実行できない環境（ビュアーが Windows・本体が WSL 内で稼働、など）から、
@@ -3934,7 +4176,7 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
 # watch がこの口を監視して起こす。実行は CLI と同一の関数へ委譲する
 # （ロジックの二重実装はしない＝効果・決定記録 DR も CLI と同一）。
 
-COMMAND_ACTIONS = ("approve", "hold", "pin", "defer")
+COMMAND_ACTIONS = ("approve", "hold", "pin", "defer", "revise")
 
 
 def commands_dir(cfg: "Config") -> Path:
@@ -3954,8 +4196,9 @@ def _reject_command(cfg: "Config", f: Path, why: str) -> None:
 
 
 def ingest_commands(cfg: "Config") -> "list[str]":
-    """commands/*.json（{"command": "approve|hold|pin|defer", "id": ..., "reason": ...}）を
-    読み、CLI と同一のロジック（cmd_approve / cmd_hold / cmd_reprioritize）を実行する。
+    """commands/*.json（{"command": "approve|hold|pin|defer|revise", "id": ..., "reason": ...}）を
+    読み、CLI と同一のロジック（cmd_approve / cmd_hold / cmd_reprioritize / cmd_revise）を実行する。
+    revise は加えて title/priority/verify/accept/after/note/level/track/feedback キーを受ける。
     処理できたらファイルを消す。watch 中は書きかけ保護のため最終保存から debounce 秒待つ。
     実行した指示（"action:tid"）の一覧を返す。"""
     cdir = commands_dir(cfg)
@@ -3983,6 +4226,9 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             rc = cmd_approve(cfg, tid, reason)
         elif action == "hold":
             rc = cmd_hold(cfg, tid, reason)
+        elif action == "revise":
+            fields = {k: rec[k] for k in REVISE_FIELDS if k in rec}
+            rc = cmd_revise(cfg, tid, fields, str(rec.get("feedback", "") or ""), reason)
         else:
             rc = cmd_reprioritize(cfg, tid, action, reason)
         if rc == 0:
@@ -6883,6 +7129,29 @@ def main(argv=None) -> int:
     g.add_argument("--pin", action="store_true"); g.add_argument("--defer", action="store_true")
     rp.add_argument("--reason", required=True)
 
+    rv = sub.add_parser("revise",
+                        help="タスクを人が即時修正（内容・依存 after・優先度＋feedback 注入。"
+                             "実行中なら現在の試行を確定せず修正内容で積み直す。決定記録）")
+    _add_common(rv); rv.add_argument("id")
+    # dest は rv_ プレフィックスで分離する（level 等は CONFIG_DEFAULTS のキーでもあり、
+    # 素の dest だと resolve_config が設定既定値を注入して「指定していない編集」になるため）
+    rv.add_argument("--title", dest="rv_title", default=None, help="タイトルを置換")
+    rv.add_argument("--priority", dest="rv_priority", type=int, default=None,
+                    help="優先度を置換（整数・大ほど高）")
+    rv.add_argument("--verify", dest="rv_verify", default=None,
+                    help="verify コマンドを置換（'' / none で削除）")
+    rv.add_argument("--accept", dest="rv_accept", default=None,
+                    help="自然言語の完了条件を置換（'' / none で削除）")
+    rv.add_argument("--after", dest="rv_after", default=None,
+                    help="依存タスク ID を置換（カンマ区切り。'' / none で解除。循環は拒否）")
+    rv.add_argument("--note", dest="rv_note", default=None, help="メモを置換（'' / none で削除）")
+    rv.add_argument("--level", dest="rv_level", default=None,
+                    help="自律度を置換（report/assisted/unattended）")
+    rv.add_argument("--track", dest="rv_track", default=None, help="track を置換（'' / none で削除）")
+    rv.add_argument("--feedback", dest="rv_feedback", default=None,
+                    help="次の act に必ず反映させる指示（例: e2e はローカルでなく実サーバに配備して実施）")
+    rv.add_argument("--reason", default=None, help="決定記録に残す理由（省略時は feedback を流用）")
+
     _reg_help = ("共有レジストリ（os.pathsep 区切り可）。NFS/同期フォルダ/git バスのチェックアウト等を"
                  "指すと別ホストを相互発見。環境変数 KIRO_PROJECTS_REGISTRY でも指定可")
     inst = sub.add_parser("instances",
@@ -6916,7 +7185,7 @@ def main(argv=None) -> int:
     # （`--project all` を前置きするだけ＝後続に明示 --project があればそちらが勝つ。明示 `run` は単一 default のまま）
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
-                    "instances", "start", "stop", "restart"}
+                    "revise", "instances", "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", "--project", "all", *argv]
 
@@ -6965,6 +7234,9 @@ def main(argv=None) -> int:
         "hold": lambda: cmd_hold(cfg, args.id, args.reason),
         "reprioritize": lambda: cmd_reprioritize(
             cfg, args.id, "pin" if args.pin else "defer", args.reason),
+        "revise": lambda: cmd_revise(
+            cfg, args.id, {k: getattr(args, f"rv_{k}") for k in REVISE_FIELDS},
+            args.rv_feedback or "", args.reason or ""),
     }[args.cmd]()
 
 

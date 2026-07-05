@@ -1758,6 +1758,182 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertTrue(f.exists())
 
 
+class TestRevise(unittest.TestCase):
+    """人の即時フィードバック（revise）。内容・依存 after の修正と feedback 注入、
+    実行中タスクの積み直し予約（revised マーカー）、CLI/commands ドロップの同一実装を検証する。"""
+
+    def test_revise_updates_fields_deps_and_feedback(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            mkb(d, "T2", verify="true")
+            c = cfg_for(d, actor="alice")
+            km.ensure_dirs(c)
+            rc = km.cmd_revise(c, "T2", {"title": "実サーバで e2e", "priority": 5, "after": "T1"},
+                               "ローカルサーバでなく実サーバに配備して e2e を実施すること", "軌道修正")
+            self.assertEqual(rc, 0)
+            t2 = next(t for t in km.load_tasks(d / "backlog") if t.id == "T2")
+            self.assertEqual(t2.title, "実サーバで e2e")
+            self.assertEqual(t2.priority, 5)
+            self.assertEqual(km.task_deps(t2), ["T1"])
+            self.assertIn("実サーバに配備", t2.feedback())
+            self.assertEqual(t2.get("rev"), "1")                     # act 試行の世代番号
+            self.assertEqual(t2.status, "ready")                     # 状態は変えない
+            drs = (d / "decisions" / "T2.md").read_text(encoding="utf-8")
+            self.assertIn("action  : revise", drs)                   # 決定記録
+            self.assertIn("- learn:", drs)                           # feedback は学習材料にも
+            # 依存が効く: T2 は T1 が残る間は選ばれない
+            tasks = km.load_tasks(d / "backlog")
+            self.assertEqual([t.id for t in km.ready_after_deps(tasks)], ["T1"])
+
+    def test_revise_validates_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            self.assertEqual(km.cmd_revise(c, "NOPE", {"title": "x"}, "", ""), 2)   # 不在
+            self.assertEqual(km.cmd_revise(c, "T1", {}, "", ""), 2)                 # 変更なし
+            self.assertEqual(km.cmd_revise(c, "T1", {"level": "bogus"}, "", ""), 2)  # level 不正
+            self.assertEqual(km.cmd_revise(c, "T1", {"after": "T1"}, "", ""), 2)     # 自己依存
+            # 循環（T1 after T2, T2 after T1）は拒否し、ファイルは変えない
+            mkb(d, "T2", verify="true")
+            self.assertEqual(km.cmd_revise(c, "T2", {"after": "T1"}, "", ""), 0)
+            self.assertEqual(km.cmd_revise(c, "T1", {"after": "T2"}, "", ""), 2)
+            t1 = next(t for t in km.load_tasks(d / "backlog") if t.id == "T1")
+            self.assertEqual(km.task_deps(t1), [])
+
+    def test_revise_clears_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            mkb(d, "T2", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            km.cmd_revise(c, "T2", {"after": "T1", "note": "旧メモ"}, "", "")
+            km.cmd_revise(c, "T2", {"after": "none", "note": ""}, "", "")
+            t2 = next(t for t in km.load_tasks(d / "backlog") if t.id == "T2")
+            self.assertEqual(km.task_deps(t2), [])
+            self.assertIsNone(t2.get("note"))
+
+    def test_revise_blocked_requeues_and_clears_needs(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            t = km.load_tasks(d / "backlog")[0]
+            km.write_needs_file(c, t, "検証 NG")
+            rc = km.cmd_revise(c, "T1", {"verify": "test -f ok.txt"}, "ok.txt を作る方式にする", "")
+            self.assertEqual(rc, 0)
+            t1 = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(t1.status, "ready")                     # 積み直し（needs 記入と同じ復帰）
+            self.assertEqual(t1.verify, "test -f ok.txt")
+            self.assertFalse((d / "needs" / "T1.md").exists())
+
+    def test_ingest_commands_revise(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            (km.commands_dir(c) / "r.json").write_text(json.dumps(
+                {"command": "revise", "id": "T1", "priority": 9,
+                 "feedback": "実サーバで e2e", "reason": "軌道修正"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(c), ["revise:T1"])
+            t1 = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(t1.priority, 9)
+            self.assertIn("実サーバ", t1.feedback())
+
+    def test_claim_adopts_disk_edits(self):
+        # パス途中の CLI revise / 直接編集が、doing 永続化で上書き消失しないこと
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            stale = km.load_tasks(d / "backlog")[0]                  # パス開始時点の in-memory 相当
+            km.cmd_revise(c, "T1", {"priority": 7}, "最新の指示", "")  # その後の人の修正
+            self.assertTrue(km.claim_task(c, stale))
+            self.assertEqual(stale.priority, 7)                      # ディスク内容を採用
+            self.assertIn("最新の指示", stale.feedback())
+
+    def test_submit_req_id_changes_with_rev(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d)
+            t = km.Task(id="T1", title="x")
+            base = km._submit_req_id(t, c)
+            t.set("rev", "1")
+            self.assertNotEqual(base, km._submit_req_id(t, c))       # 世代が上がれば新しい run
+            self.assertTrue(km._submit_req_id(t, c).endswith("-v1"))
+
+    def test_revise_during_act_requeues_without_settling(self):
+        # 実行中の revise: 現在の試行は verify=PASS 相当でも確定せず、修正内容で再実行される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False, max_cycles=10)
+            km.ensure_dirs(c)
+            seen = []
+
+            def act(t, cfg, loc):
+                seen.append(t.feedback())
+                if len(seen) == 1:      # 人が act 中に気づいて revise した想定（別プロセス相当）
+                    rc = km.cmd_revise(cfg, "T1", {"title": "実サーバ e2e"},
+                                       "ローカルサーバでなく実サーバに配備して実施", "軌道修正")
+                    assert rc == 0
+                return (True, "ok")
+
+            res = km.run_loop(c, act=act)
+            self.assertEqual(res["reason"], km.REASON_DRAINED)
+            self.assertEqual(len(seen), 2)                           # 積み直し → 再実行
+            self.assertIsNone(seen[0])
+            self.assertIn("実サーバに配備", seen[1])                  # 修正が次 act に届いた
+            self.assertIn("revise により積み直し", (d / "journal.md").read_text(encoding="utf-8"))
+            self.assertEqual(list((d / "backlog").glob("*.md")), []) # 2回目で done
+
+    def test_midpass_command_applies_before_next_task(self):
+        # パス途中の commands/ ドロップが、後続タスクの実行前に取り込まれること
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            (d / "backlog" / "T2.md").write_text(
+                "## T2: 後続\n- status: ready\n- verify: `true`\n- priority: -1\n",
+                encoding="utf-8")
+            c = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False, max_cycles=10)
+            km.ensure_dirs(c)
+            seen = {}
+
+            def act(t, cfg, loc):
+                if t.id == "T1":        # T1 実行中に人が T2 へ指示を落とした想定
+                    (km.commands_dir(cfg) / "r.json").write_text(json.dumps(
+                        {"command": "revise", "id": "T2",
+                         "feedback": "実サーバで e2e"}), encoding="utf-8")
+                seen[t.id] = t.feedback()
+                return (True, "ok")
+
+            res = km.run_loop(c, act=act)
+            self.assertEqual(res["reason"], km.REASON_DRAINED)
+            self.assertIn("実サーバ", seen["T2"] or "")               # 次サイクル開始時に反映済み
+
+    def test_recover_revised_requeues_orphan(self):
+        # 実行者不在（stale claim）の revised マーカーは自己回復で ready に戻す
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing", verify="true")
+            c = cfg_for(d)
+            km.ensure_dirs(c)
+            tasks = km.load_tasks(d / "backlog")
+            tasks[0].set("revised", "2026-01-01 00:00:00")
+            km.persist_task(c, tasks[0])
+            tasks = km.load_tasks(d / "backlog")
+            self.assertEqual(km.recover_revised(c, tasks), ["T1"])
+            t1 = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(t1.status, "ready")
+            self.assertIsNone(t1.get("revised"))
+
+
 class TestLearning(unittest.TestCase):
     def _seed_learn(self, d, src_id, title, guide):
         cfg = cfg_for(d)

@@ -5,8 +5,10 @@
 //      → ingest_feedback が取り込む（フィードバック往復の正規ルート）
 //   2. inbox/<name>.json のドロップ（E4 push 型の取り込み口）
 //      → ingest_inbox が backlog 化する（タスク投入の正規ルート）
-//   3. commands/<name>.json のドロップ（approve / hold / pin / defer）
+//   3. commands/<name>.json のドロップ（approve / hold / pin / defer / revise）
 //      → ingest_commands が CLI と同一ロジック・同一の決定記録（DR）で実行する。
+//      revise は人の即時フィードバック: タスクの内容・依存（after）・優先度の修正と
+//      feedback（次の act に必ず届く指示）を、ループがブロックする前に能動的に届ける。
 //      ファイルだけで届くため、本体が WSL 内で稼働していても操作できる。
 //      本体が稼働していないときは kiro-projects CLI に委譲し、CLI も使えなければ
 //      指示ファイルを置いて次回起動時の取り込みに委ねる（ロジックの二重実装はしない）。
@@ -81,14 +83,31 @@ function enqueueToInbox(projectDir, spec) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. 人の指示（approve / hold / pin / defer）
+// 3. 人の指示（approve / hold / pin / defer / revise）
 // ---------------------------------------------------------------------------
 
-const COMMAND_ACTIONS = new Set(['approve', 'hold', 'pin', 'defer']);
+const COMMAND_ACTIONS = new Set(['approve', 'hold', 'pin', 'defer', 'revise']);
+
+// revise が受けるフィールド編集キー（kiro-projects の REVISE_FIELDS と同じ）。
+// 値は「置換」規約: '' / '-' / 'none' はフィールド削除、未指定（undefined/null）は触らない。
+const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', 'level', 'track'];
+
+// revise ペイロード（フィールド編集 + feedback）を commands/CLI 両経路の形へ正規化する。
+// undefined/null は「触らない」の意味なので落とす（'' は削除の明示指定として残す）
+function revisePayload({ fields, feedback }) {
+  const out = {};
+  for (const key of REVISE_KEYS) {
+    const v = fields && fields[key];
+    if (v !== undefined && v !== null) out[key] = String(v);
+  }
+  const fb = String(feedback || '').trim();
+  if (fb) out.feedback = fb;
+  return out;
+}
 
 // commands/<name>.json のドロップ（kiro-projects の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
-function dropCommand(projectDir, { action, id, reason }) {
+function dropCommand(projectDir, { action, id, reason, fields, feedback }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
   const rec = {
@@ -97,6 +116,7 @@ function dropCommand(projectDir, { action, id, reason }) {
     reason: String(reason || ''),
     actor: 'kiro-projects-viewer',
     ts: new Date().toISOString(),
+    ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
   };
   const file = path.join(dir, `viewer-${action}-${slugify(id)}-${Date.now()}.json`);
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2), 'utf8');
@@ -147,8 +167,8 @@ function runKiroCli(command, args, timeoutMs = 60000) {
   });
 }
 
-// CLI 実行（approve / hold / reprioritize）。本体が稼働していないときの経路
-async function runActionViaCli(cfg, { dir, action, id, reason }) {
+// CLI 実行（approve / hold / reprioritize / revise）。本体が稼働していないときの経路
+async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback }) {
   const command = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
   const { root, project } = cliScope(dir);
   const base = ['--root', root, '--project', project];
@@ -156,23 +176,34 @@ async function runActionViaCli(cfg, { dir, action, id, reason }) {
   if (action === 'approve') args = ['approve', id, '--reason', reason, ...base];
   else if (action === 'hold') args = ['hold', id, '--reason', reason, ...base];
   else if (action === 'pin') args = ['reprioritize', id, '--pin', '--reason', reason, ...base];
-  else args = ['reprioritize', id, '--defer', '--reason', reason, ...base];
+  else if (action === 'revise') {
+    const payload = revisePayload({ fields, feedback });
+    args = ['revise', id, '--reason', reason];
+    for (const [key, value] of Object.entries(payload)) args.push(`--${key}`, value);
+    args.push(...base);
+  } else args = ['reprioritize', id, '--defer', '--reason', reason, ...base];
   return runKiroCli(command, args);
 }
 
-// action: approve | hold | pin | defer
+// action: approve | hold | pin | defer | revise
+//   revise は fields（title/priority/verify/accept/after/note/level/track の置換）と
+//   feedback（次の act に必ず届く指示）を追加で受ける。実行中（doing）のタスクは
+//   本体側が現在の試行を確定せず修正内容で積み直す（早い軌道修正）。
 // 経路は kiro.actionMode で制御する:
 //   auto（既定）… 本体が稼働中（instances の heartbeat）なら commands/ ドロップ、
 //                 稼働していなければ CLI、CLI も使えなければドロップにフォールバック
 //   file        … 常に commands/ ドロップ（WSL 内の本体・CLI 無し環境向け）
 //   cli         … 常に CLI（従来の挙動）
-async function runAction(cfg, { dir, action, id, reason }) {
+async function runAction(cfg, { dir, action, id, reason, fields, feedback }) {
   if (!COMMAND_ACTIONS.has(action)) throw new Error(`不明なアクション: ${action}`);
   const why = String(reason || '').trim() || 'kiro-projects-viewer から操作';
   const mode = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
+  if (action === 'revise' && Object.keys(revisePayload({ fields, feedback })).length === 0) {
+    throw new Error('revise には変更フィールドかフィードバックの指定が必要です');
+  }
 
   if (mode === 'file' || (mode !== 'cli' && kiro.isProjectRunning(dir))) {
-    const { file } = dropCommand(dir, { action, id, reason: why });
+    const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback });
     return {
       output: `${action} ${id}: 指示ファイルを投入しました（稼働中の kiro-projects が取り込みます）`,
       file,
@@ -180,12 +211,12 @@ async function runAction(cfg, { dir, action, id, reason }) {
     };
   }
   try {
-    const res = await runActionViaCli(cfg, { dir, action, id, reason: why });
+    const res = await runActionViaCli(cfg, { dir, action, id, reason: why, fields, feedback });
     return { ...res, via: 'cli' };
   } catch (err) {
     if (mode === 'cli') throw err;
     // CLI が無い/失敗 → ファイルドロップに退避（次回の kiro-projects 起動時に取り込まれる）
-    const { file } = dropCommand(dir, { action, id, reason: why });
+    const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback });
     return {
       output:
         `${action} ${id}: CLI を実行できないため指示ファイルを置きました` +

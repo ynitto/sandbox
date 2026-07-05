@@ -7,6 +7,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects / kiro-projects-viewer: 人の即時フィードバック（revise）— 実行中でも気づいた時点で軌道修正
+
+- **背景**: 自律バックログ消化中に人が「方向が違う」と気づいても（例: LLM がローカルサーバを
+  立てて e2e を始めたが、実サーバに配備して実施してほしい）、従来はループがブロック（needs）
+  するまで指示を届ける口が無かった。needs は**ループ起点（受動）**の往復であり、
+  **人起点（能動）**でタスク内容やバックログ間の依存を直す経路が欠けていた
+- **`revise` サブコマンド（CLI）**: `revise <id> [--title|--priority|--verify|--accept|--after|--note|--level|--track] [--feedback 指示] [--reason 理由]`。
+  フィールドは置換（`''`/`none` で削除。`after` の自己依存・循環は拒否）、`--feedback` は次の act の
+  要求文に必ず添付される。決定記録（DR `action: revise`）と `- learn:`（学習材料）を残す
+- **効き方はタスク状態で決まる**: ready 等は即時反映 ／ blocked・review は ready へ積み直し
+  （needs 消費・review からは手戻り記録）／ **doing（実行中）は `revised` マーカーで予約**し、
+  実行側が settle 時に検知して**現在の試行の結果を確定しない**（verify も done もせず修正内容で
+  積み直す）。daemon/remote の結果待ちもマーカー検知で早期に打ち切る。`rev` 世代番号が act の
+  req_id に載るため、積み直し後の試行が修正前の古い run に合流しない
+- **実行ループの即応性を強化**: ①パス途中（サイクル間）でも commands/・needs 記入を取り込む
+  （長いパスでも人の修正が次のサイクルから効く）②claim 直後にディスク内容を採用してから
+  doing 化（パス途中の CLI revise・直接編集を in-memory の古い内容で上書きしない）
+  ③宙に浮いた `revised`（クラッシュ等）はパス開始時に回収して ready へ戻す（自己回復）
+- **commands/ ドロップ契約に `revise` を追加**: `{"command": "revise", "id": ..., "feedback": ...,
+  "after": ..., ...}`。CLI と同一ロジック・同一 DR（ビュアーや WSL 境界越しの操作向け）
+- **kiro-projects-viewer**: タスク詳細に「✎ 修正して指示（revise）」フォームを追加
+  （タイトル・優先度・依存 after・verify・accept の置換＋フィードバック。変更した項目だけ送信）。
+  **実行中（doing）のタスクにも送れる**。送信後はタスク行に ✎ バッジ・詳細に「修正指示送信済み
+  （取り込み待ち）」を表示し、本体が取り込むまで再送を防ぐ（needs と同じ file+mtime 照合）。
+  経路は既存の指示と同じ auto/file/cli（既定はファイルドロップ・CLI 不要）
+- **スキル更新**: `kiro-projects` スキルに「軌道修正（revise）」モードを追加
+  （「タスクを直して」「やり方を変えさせて」「依存を付けて」等で発動）
+
 ### kiro-flow: git バスクローンの index.lock 残骸を自己回復（daemon の再 claim 無限ループを解消）
 
 - **背景**: kiro-projects（autonomous）と kiro-flow を同じリポジトリのバスで併用中、前プロセスの
