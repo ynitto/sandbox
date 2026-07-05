@@ -6537,6 +6537,11 @@ CONFIG_DEFAULTS = {
     "verify_confirm": 1,
     "verify_cwd": None,
     "act_timeout": 1800.0,
+    # kiro-flow バスの置き場（絶対パスで明示すると全プロジェクトが 1 本を共有し、外部 daemon を
+    # 検知できる）。None なら per-project の <root>/projects/<name>/bus。設定ファイルの bus: を
+    # ここに載せておかないと resolve_config が読まず黙って per-project バスに落ちる（daemon 非検知・
+    # state_git でバスが鏡写しされない原因になる）。CLI --bus と同義。
+    "bus": None,
     "git_bus": None,
     "git_branch": "main",
     "git_subdir": None,
