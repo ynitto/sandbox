@@ -324,6 +324,15 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .need-buttons { align-items: center; gap: 6px; flex-wrap: wrap; }
 .need-buttons .spacer { flex: 1; }
 
+/* revise（人の即時フィードバック）フォーム — タスク詳細ダイアログ内 */
+.revise-area {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.revise-area summary { cursor: pointer; color: var(--accent); margin-bottom: 8px; }
+.revise-area textarea { width: 100%; resize: vertical; }
+
 /* ---------- フロー（kiro-flow） ---------- */
 
 /* 左（run 一覧）と右（run 詳細）は独立してスクロールする */

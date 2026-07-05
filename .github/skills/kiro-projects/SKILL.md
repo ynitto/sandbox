@@ -1,8 +1,8 @@
 ---
 name: kiro-projects
-description: kiro-projects（自律バックログ消化ループ）を外部から操作するスキル。いま稼働中のプロセスが監視しているプロジェクト（フォルダ）を発見し（WSL/Windows のパス差を吸収）、バックログへのタスク投入・人の判断待ち（needs）の確認と指示・成果物（納品書）の検収・プロジェクト目標（charter）の確認と承認を CLI とファイル操作で支援する。「バックログに積んで」「kiro-projects にタスクを投げて」「判断待ちを確認して」「needs を見せて」「承認して」「保留して」「優先度を上げて」「成果物を確認して」「納品物を見せて」「ループを回して/常駐させて」「稼働中のループに繋いで」「プロジェクトの目標を回して」「charter を確認して」などで発動する。kiro-projects の運用が含まれる場合に優先して選択する。
+description: kiro-projects（自律バックログ消化ループ）を外部から操作するスキル。いま稼働中のプロセスが監視しているプロジェクト（フォルダ）を発見し（WSL/Windows のパス差を吸収）、バックログへのタスク投入・人の判断待ち（needs）の確認と指示・タスクの軌道修正（revise。実行中でも内容/依存/優先度の修正とフィードバック注入）・成果物（納品書）の検収・プロジェクト目標（charter）の確認と承認を CLI とファイル操作で支援する。「バックログに積んで」「kiro-projects にタスクを投げて」「判断待ちを確認して」「needs を見せて」「承認して」「保留して」「優先度を上げて」「タスクを直して」「やり方を変えさせて」「依存を付けて」「成果物を確認して」「納品物を見せて」「ループを回して/常駐させて」「稼働中のループに繋いで」「プロジェクトの目標を回して」「charter を確認して」などで発動する。kiro-projects の運用が含まれる場合に優先して選択する。
 metadata:
-  version: 1.1.0
+  version: 1.2.0
   tier: experimental
   category: operations
   tags:
@@ -23,6 +23,7 @@ metadata:
 |--------|------------|---------|
 | **投入（enqueue）** | 「バックログに積んで」「タスクを投げて」「○○をやらせて」 | `enqueue`（完了条件は `--verify`／書けなければ `--accept`/`--verify-template`）。プロジェクトは `--project` |
 | **判断（decide）** | 「判断待ちを確認して」「needs を見せて」「承認して」「保留して」「優先度を上げて/下げて」 | `needs` 確認 → フィードバック記入 or `approve`/`hold`/`reprioritize` |
+| **軌道修正（revise）** | 「タスクを直して」「やり方を変えさせて」「依存を付けて/外して」「いまやってるのを○○の方式でやり直させて」 | `revise <id>` でフィールド置換＋`--feedback` 注入（実行中でも現在の試行を確定せず積み直す） |
 | **検収（deliver）** | 「成果物を確認して」「納品物を見せて」「何が完了した?」 | `DELIVERY.md` と `archive/<id>.md` の納品書を読む |
 | **目標（charter）** | 「プロジェクトの目標を回して」「charter を確認して」「収束したか」 | `charter.md` 確認・`run`（charter 駆動）起動・milestone の承認/続行 |
 | （補助）**起動/状態** | 「回して」「常駐させて」「状態を見せて」 | ループ起動（常駐含む）・順位確認・stats/journal 確認 |
@@ -185,6 +186,32 @@ $KA hold    <id> --root <CONT> --project <PROJ> --reason "本番反映は手動"
 $KA reprioritize <id> --pin   --root <CONT> --project <PROJ> --reason "今日中に必要"          # 最優先
 $KA reprioritize <id> --defer --root <CONT> --project <PROJ> --reason "後回し"
 ```
+
+## モード2.5: 能動の軌道修正（revise）
+
+needs は**ループが人へ回した時**の受動の口。対して revise は、**人が気づいた時点で**タスクの内容・
+依存・優先度を修正し、指示（feedback）を次の実行へ必ず届ける能動の口。典型は「実行中の作業の方向が
+違う」と気づいた時（例: ローカルサーバで e2e を始めた →「実サーバに配備して実施」へ即修正）。
+
+```bash
+# 実行中でも軌道修正: 現在の試行は確定されず（done にならず）、修正内容で積み直される
+$KA revise <id> --root <CONT> --project <PROJ> \
+  --feedback "e2e はローカルサーバでなく実サーバに配備して実施すること" --reason "軌道修正"
+
+# フィールドの置換（'' / none で削除。after の循環は拒否される）
+$KA revise <id> --after "T1,T2" --priority 5 --root <CONT> --project <PROJ> --reason "依存と優先度を整理"
+$KA revise <id> --verify "curl -fsS https://staging.example.com/health" --root <CONT> --project <PROJ> \
+  --reason "検証を実サーバ基準に変更"
+```
+
+- 置換できるフィールド: `--title` `--priority` `--verify` `--accept` `--after` `--note` `--level` `--track`。
+- 効き方: `ready` 等は即時反映 ／ `blocked`/`review` は反映して ready に積み直し（needs は消える）／
+  `doing`（実行中）は反映を予約し**現在の試行の結果を確定しない**（verify も done もせず積み直し）。
+- CLI を実行できない環境では `commands/<name>.json` のドロップでも同じ
+  （`{"command": "revise", "id": "<id>", "feedback": "...", "after": "...", ...}`）。
+- 決定は DR（`action: revise`）に残り、feedback は `- learn:` として類似案件の学習材料にもなる。
+- ユーザーの意図が「このタスクを二度とやらせない」なら revise でなく `hold`、「順序だけ」なら
+  `reprioritize`。内容ややり方を変えるのが revise。
 
 ### 検収待ち（review）の承認 — verify=PASS でも人の承認が要る案件
 
