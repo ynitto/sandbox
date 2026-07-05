@@ -963,26 +963,33 @@ async function doApprove() {
     }
     // 差分なし MR（作業が既に取り込み済み等）: マージするものが無く、GitLab が
     // コンフリクト扱いにすることもあるため区別する。承認は「MR をクローズ →
-    // イシューをクローズ」で決着する（ブランチは残す — 削除は却下の役割）
+    // ソースブランチを削除 → イシューをクローズ」で決着する
     if (cur.noDiff) {
-      const msg = `${pageLabel(mr)} は差分がありません（マージするものがありません）。MR をクローズ${closesIssue ? `し、その後 ${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
+      const msg = `${pageLabel(mr)} は差分がありません（マージするものがありません）。MR をクローズしてソースブランチを削除${closesIssue ? `し、その後 ${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
       if (!(await confirmDialog(msg))) return;
       await api.glComment(targetOf(t), actionComment('承認'));
       const closedMr = await api.glSetState(targetOf(mr), 'close');
       applyUpdatedItem(closedMr);
+      if (cur.sourceBranch) {
+        try {
+          await api.glDeleteBranch(mr.projectId, cur.sourceBranch);
+        } catch (err) {
+          toast(`ソースブランチ ${cur.sourceBranch} の削除に失敗: ${err.message}`, true);
+        }
+      }
       if (closesIssue) {
         const closed = await api.glSetState(targetOf(t), 'close');
         applyUpdatedItem(closed);
       }
       $('comment-input').value = '';
       reloadPanes();
-      toast(`${pageLabel(mr)} をクローズ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}しました（差分なし）`);
+      toast(`${pageLabel(mr)} をクローズ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}しました（差分なし・ブランチ削除）`);
       return;
     }
     // コンフリクト / 未解決レビューコメントがあればマージせず、事前チェックと
     // 同じ差し戻し確認ダイアログを出す（「差し戻す」で固定コメント + ステータス差し戻し）
     if (openMRSendbackDialog(mr, cur)) return;
-    const msg = `${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
+    const msg = `${pageLabel(mr)} をマージ（ソースブランチは削除）${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
     if (!(await confirmDialog(msg))) return;
     await api.glComment(targetOf(t), actionComment('承認'));
     const merged = await api.glMerge(targetOf(mr));

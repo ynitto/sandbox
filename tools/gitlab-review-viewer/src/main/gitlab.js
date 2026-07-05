@@ -309,8 +309,13 @@ class GitLabClient {
     return normalizeItem(updated, target.type);
   }
 
+  // マージオプションでソースブランチも削除する（承認で決着した作業ブランチを残さない。
+  // 保護ブランチは GitLab 側が削除を拒否するだけでマージ自体は成功する）
   async mergeMR(target) {
-    const merged = await this.api(`${this.itemPath(target)}/merge`, { method: 'PUT' });
+    const merged = await this.api(`${this.itemPath(target)}/merge`, {
+      method: 'PUT',
+      body: { should_remove_source_branch: true },
+    });
     return normalizeItem(merged, 'mr');
   }
 
