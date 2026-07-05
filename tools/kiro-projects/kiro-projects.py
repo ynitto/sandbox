@@ -1688,8 +1688,8 @@ def _run_kiro_cli(prompt: str, model: "str | None") -> str:
 
 
 def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=_run_kiro_cli) -> "list[Task] | None":
-    if not ready:
-        return []
+    if len(ready) <= 1:
+        return list(ready)     # 0/1 件は並べ替えの余地が無い＝LLM を呼ばない（コスト・レイテンシ削減）
     listing = "\n".join(
         f"- {t.id}: {t.title}（priority={t.priority}, source={t.source}）" for t in ready)
     prompt = ("あなたはバックログの優先順位付け役。次のタスク群を、重要度・緊急度・依存関係に加え、"
@@ -1793,7 +1793,9 @@ def by_priority_then_age(ready: "list[Task]") -> "list[Task]":
 def prioritize(tasks, policy, planner, model=None, ranker=None) -> "list[Task]":
     """planner=none: priority＋古さ。planner=kiro: エージェント（priority も加味）。policy が最終上書き。"""
     ready = ready_after_deps(tasks)  # mtime 昇順（最古優先）。依存(after)未達は除外
-    if planner == "none":
+    # 0/1 件は並べ替えの余地が無く順序が自明＝planner を問わず LLM 優先順位付けを呼ばない
+    # （kiro-cli 起動のコスト・レイテンシを丸ごと省く）。policy（pin/defer）は後段で必ず効く。
+    if planner == "none" or len(ready) <= 1:
         base = by_priority_then_age(ready)
     else:  # kiro（エージェント順位付け。失敗時は priority＋古さにフォールバック）
         rank = (ranker or rank_agent)(ready, model)

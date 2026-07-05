@@ -108,6 +108,35 @@ class TestPrioritize(unittest.TestCase):
         self.assertIsNone(km.rank_agent(
             ready, None, kiro_run=lambda p, m: (_ for _ in ()).throw(RuntimeError())))
 
+    def test_rank_agent_skips_llm_for_zero_or_one(self):
+        # 0/1 件は並べ替えの余地が無い＝kiro-cli（LLM）を呼ばずに即返す
+        def boom(p, m):
+            raise AssertionError("LLM は呼ばれないはず")
+
+        self.assertEqual(km.rank_agent([], None, kiro_run=boom), [])
+        one = [km.Task(id="only", title="x")]
+        self.assertEqual([t.id for t in km.rank_agent(one, None, kiro_run=boom)], ["only"])
+
+    def test_prioritize_skips_llm_for_single_task(self):
+        # prioritize（planner=kiro）でも ready が 1 件なら ranker（LLM）を呼ばない。
+        # policy（pin/defer）は 1 件でも後段で効くことも併せて確認する。
+        called = {"n": 0}
+
+        def ranker(ready, model):
+            called["n"] += 1
+            return list(reversed(ready))
+
+        one = [km.Task(id="solo", title="x")]
+        order = km.prioritize(one, km.Policy(), planner="kiro", ranker=ranker)
+        self.assertEqual([t.id for t in order], ["solo"])
+        self.assertEqual(called["n"], 0, "1 件では ranker（LLM）を呼ばない")
+
+        # 2 件になると従来どおり ranker が呼ばれる（回帰防止）
+        two = [km.Task(id="a", title="a"), km.Task(id="b", title="b")]
+        order2 = km.prioritize(two, km.Policy(), planner="kiro", ranker=ranker)
+        self.assertEqual(called["n"], 1)
+        self.assertEqual([t.id for t in order2], ["b", "a"])
+
 
 class TestTriage(unittest.TestCase):
     def test_promote_and_deny(self):
