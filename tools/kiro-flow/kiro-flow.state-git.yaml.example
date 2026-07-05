@@ -31,3 +31,21 @@ state_git_subdir: kiro-flow
 # state_git_interval: 300             # fetch/push の最短間隔（秒）。daemon の毎 poll から
 #                                     #   呼ばれてもこの間隔でしか GitLab に触れない
 #                                     #   （run の終端時だけは間隔を待たず即 push）
+
+# ── バスが同期されない/viewer で見えないときの切り分け ──
+# バスを鏡写しするのは【kiro-flow daemon の state_sync ループだけ】（kiro-projects 側の
+# state_git はコンテナ状態のみで、バスは同期しない）。上から順に確認する:
+#   1. daemon がこの設定を読めているか
+#      → daemon 起動ログの2行目に `state-git: 有効 → …（バス … をリモートへ鏡写し）` が出るか。
+#        `無効（未設定）` なら kiro-flow.yaml が読めていない（--config か 起動 cwd の .kiro/ を確認）。
+#        cwd の .kiro/ に別の kiro-flow.yaml があるとそちらが勝つ点に注意。
+#   2. クローンとコミットができているか
+#      → <bus>/.state-git/ が生成され、そこで `git log` にコミットが増えるか。
+#        SSH 鍵など push 認証が WSL 側ユーザーで通ること（手動 `git -C <bus>/.state-git push` で確認）。
+#   3. そもそもバスに run があるか
+#      → <bus>/runs/ に run-* が出来ているか。無ければ kiro-projects が daemon を検知できず
+#        local 実行に落ちている可能性（kiro-projects 側で lock_dir / bus 絶対パスの一致を確認）。
+#        ※ この構成では local 実行でもバスは消さない（state_git 設定時は _cleanup_bus が保護）。
+#   4. viewer 側
+#      → 別 PC は <clone>/kiro-flow をバスとして登録（clone が git pull で更新され続けているか）。
+#        フロータブは meta の生存リースで run の生死を判定する（daemon の pid 判定は同一ホストのみ）。

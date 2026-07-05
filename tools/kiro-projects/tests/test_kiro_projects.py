@@ -2227,6 +2227,16 @@ class TestLayout(unittest.TestCase):
             km._cleanup_bus(cfg)
             self.assertTrue((cfg.bus / "runs").exists())
 
+    def test_state_git_keeps_bus(self):
+        # state_git でバスをリモート viewer へ鏡写ししている構成では、local run 後も runs/ を
+        # 消さない（消すとフロータブに見せたい run 状態を破壊し、削除がリモートへ伝播する）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, state_git="git@example.com:team/kiro-state.git")
+            (cfg.bus / "runs" / "r1").mkdir(parents=True)
+            km._cleanup_bus(cfg)
+            self.assertTrue((cfg.bus / "runs").exists())
+
 
 class TestDaemonRouting(unittest.TestCase):
     def test_kf_base_git_flag(self):
@@ -2677,6 +2687,27 @@ class TestConfigFile(unittest.TestCase):
             ns = self._resolve(str(p), executor="kiro")   # CLI 明示は維持される
             self.assertEqual(ns.executor, "kiro")          # CLI 勝ち
             self.assertEqual(ns.planner, "none")           # config 採用
+
+    def test_bus_config_is_honored_and_shared(self):
+        # 設定ファイルの bus: が読まれ、共有バス（絶対パス 1 本）として使われること。
+        # これが読まれないと per-project バスに落ち、kiro-flow daemon 非検知・state_git で
+        # バスが鏡写しされない（status.json は上がるが runs が上がらない）原因になる。
+        with tempfile.TemporaryDirectory() as d:
+            shared = str(Path(d) / "shared-bus")
+            p = Path(d) / "kiro-projects.json"
+            p.write_text(json.dumps({"bus": shared}), encoding="utf-8")
+            ns = self._resolve(str(p))
+            self.assertEqual(ns.bus, shared)               # config の bus が args に載る
+            cfg = km.build_config(ns)
+            self.assertEqual(str(cfg.bus), shared)          # 実際に使うバス = 共有バス
+            self.assertTrue(cfg.shared_bus)                 # --project all でも per-project へ落とさない
+
+    def test_bus_absent_stays_per_project(self):
+        # bus 未指定は従来どおり per-project（後方互換）。
+        ns = self._resolve(None)
+        self.assertIsNone(ns.bus)
+        cfg = km.build_config(ns)
+        self.assertFalse(cfg.shared_bus)
 
     def test_builtin_defaults_when_no_config(self):
         ns = self._resolve(None)

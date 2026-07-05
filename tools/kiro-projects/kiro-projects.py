@@ -3715,6 +3715,17 @@ class StateGit:
 _STATE_GITS: "dict[tuple, StateGit]" = {}
 
 
+def state_git_status_line(cfg: "Config") -> str:
+    """起動時に「state_git が有効か・何を鏡写しするか」を一行で示す（silent な設定ミスの切り分け用）。
+    注意: これはコンテナ状態（backlog/needs/…）の鏡写し。kiro-flow のバス（フロータブの run 表示）は
+    別途 kiro-flow 側の state_git が担う（本ツールはバスを同期しない）。"""
+    if not getattr(cfg, "state_git", None):
+        return "state-git: 無効（未設定）"
+    return (f"state-git: 有効 → {cfg.state_git} subdir={cfg.state_git_subdir} "
+            f"interval={cfg.state_git_interval}s（コンテナ状態を鏡写し。kiro-flow のバスは "
+            f"kiro-flow 側 state_git が別途担当）")
+
+
 def state_git_for(cfg: "Config") -> "StateGit | None":
     if not getattr(cfg, "state_git", None):
         return None
@@ -3790,6 +3801,7 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     append_journal(cfg.journal, f"=== kiro-projects 開始 tasks={len(tasks)} "
                                 f"ingested={len(ingested)} planner={cfg.planner} "
                                 f"executor={cfg.executor} dry_run={cfg.dry_run} ===")
+    append_journal(cfg.journal, state_git_status_line(cfg))
     start = time.time()
     cycle = 0
     archived = 0
@@ -3909,8 +3921,12 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
 
 def _cleanup_bus(cfg: Config) -> None:
     """local run 後に不要となる kiro-flow バスの一時状態（runs/inbox）を削除する。
-    daemon 稼働中や git バス（remote）は作業中のため触らない。"""
-    if not cfg.cleanup or cfg.git_bus or daemon_running(cfg, use_git=False):
+    daemon 稼働中や git バス（remote）は作業中のため触らない。また state_git でバスを
+    リモート viewer へ鏡写ししている構成では、ここで runs/ を消すと『フロータブに見せたい
+    run 状態』を破壊し、削除が次の同期でリモートへ伝播してしまうため触らない
+    （kiro-flow 側の state_git がバスの寿命を管理する＝gc に委ねる）。"""
+    if (not cfg.cleanup or cfg.git_bus or cfg.state_git
+            or daemon_running(cfg, use_git=False)):
         return
     for sub in ("runs", "inbox"):
         shutil.rmtree(cfg.bus / sub, ignore_errors=True)
@@ -6521,6 +6537,11 @@ CONFIG_DEFAULTS = {
     "verify_confirm": 1,
     "verify_cwd": None,
     "act_timeout": 1800.0,
+    # kiro-flow バスの置き場（絶対パスで明示すると全プロジェクトが 1 本を共有し、外部 daemon を
+    # 検知できる）。None なら per-project の <root>/projects/<name>/bus。設定ファイルの bus: を
+    # ここに載せておかないと resolve_config が読まず黙って per-project バスに落ちる（daemon 非検知・
+    # state_git でバスが鏡写しされない原因になる）。CLI --bus と同義。
+    "bus": None,
     "git_bus": None,
     "git_branch": "main",
     "git_subdir": None,

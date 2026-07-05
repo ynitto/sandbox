@@ -1479,6 +1479,19 @@ def maybe_heartbeat_daemon_status(args, bus: Bus, daemon_id: str, orchestrators:
         write_daemon_status(args, bus, daemon_id, orchestrators, workers)
 
 
+def state_git_status_line(args) -> str:
+    """起動時に「state_git が有効か・どこへ鏡写しするか」を一行で示す。無効時は理由も出す
+    （silent な設定ミス＝バスが見えない原因の切り分けを容易にする）。"""
+    if getattr(args, "git", None):
+        return "state-git: 無効（--git バス使用時はバス自体が共有 git のため不要）"
+    if not getattr(args, "state_git", None):
+        return ("state-git: 無効（未設定）。リモート viewer にバスを見せるには kiro-flow.yaml に "
+                "state_git を設定し、この daemon がその設定を読めていること（--config か "
+                "起動 cwd の .kiro/kiro-flow.yaml）を確認")
+    return (f"state-git: 有効 → {args.state_git} subdir={args.state_git_subdir} "
+            f"interval={args.state_git_interval}s（バス {os.path.abspath(args.bus)} をリモートへ鏡写し）")
+
+
 def state_sync(args, force: bool = False) -> None:
     """状態の git 同期（best-effort）。ネットワーク断・リポジトリ不通でもループは殺さず
     ログに残して続行する（run の実行・終端は state_git に一切依存しない）。"""
@@ -3510,6 +3523,7 @@ def cmd_run(args) -> int:
         procs.append((wid, w))
 
     print(f"\n>>> kiro-flow run: run_id={run_id} bus={mode} ({'resume' if resuming else 'new'})")
+    print(f">>> {state_git_status_line(args)}", flush=True)
     print(f">>> orchestrator x1 + worker x{args.workers} を起動しました。Ctrl-C で全停止。\n", flush=True)
 
     bus = make_bus(args, "run")
@@ -3626,6 +3640,7 @@ def cmd_daemon(args) -> int:
     signal.signal(signal.SIGTERM, lambda *_: (shutdown(), sys.exit(143)))
 
     log(daemon_id, f"daemon 起動 bus={mode} max_workers={args.max_workers} poll={args.poll}")
+    log(daemon_id, state_git_status_line(args))   # バスがリモートへ鏡写しされるかを起動時に明示
     # 起動直後に一度だけ書いておく（ここでは push しない＝新規 push トリガーは増やさない）。
     # state_git 有効時は既存の毎 tick state_sync(args) が自分の interval で自然に拾って
     # 押し出すため、完全アイドルのままでも state_git_interval 以内に生存が可視化される。
