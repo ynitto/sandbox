@@ -2517,7 +2517,9 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     """kiro-flow run で都度起動（同期実行）。daemon 不要。"""
     cmd = build_kiro_flow_cmd(task, cfg, use_git)
     try:
-        proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=cfg.act_timeout,
+        # act_timeout=0（以下）はタイムアウト無効＝完了まで待つ（gitlab 等の長時間委譲向け）。
+        proc = subprocess.run(cmd, cwd=str(cfg.workdir),
+                              timeout=(cfg.act_timeout if cfg.act_timeout > 0 else None),
                               capture_output=True, text=True)
     except subprocess.TimeoutExpired:
         return (False, f"kiro-flow run タイムアウト（{cfg.act_timeout}s）")
@@ -2569,19 +2571,34 @@ def _submit_req_id(task: Task, cfg: "Config") -> str:
     リトライ（retries+1）は新しい試行＝新しい run。backlog パスの hash は共有バスに
     複数プロジェクトが乗るときの衝突を防ぐ。人の revise（rev 世代）も新しい試行＝
     新しい run にする（軌道修正後の act が修正前の古い run に合流しないように）。"""
+    return _req_id_for(task, cfg, task.retries)
+
+
+def _req_id_for(task: Task, cfg: "Config", retries: int) -> str:
+    """指定 retries 世代の決定的 req_id（_submit_req_id の一般化）。"""
     h = hashlib.sha1(str(cfg.backlog.resolve()).encode()).hexdigest()[:8]
     tid = re.sub(r"[^\w.-]+", "_", str(task.id))[:60]
     rev = str(task.get("rev", "") or "").strip()
-    return f"req-{h}-{tid}-r{task.retries}" + (f"-v{rev}" if rev else "")
+    return f"req-{h}-{tid}-r{retries}" + (f"-v{rev}" if rev else "")
+
+
+def _prev_req_id(task: Task, cfg: "Config") -> "str | None":
+    """直前の試行（retries-1・同 rev）の run-id。retries==0（初回）なら None。
+    kiro-flow の --inherit-from に渡し、タイムアウト/失敗した先行 run から確定済みノードを
+    引き継ぎつつ先行 run を掃除させる。"""
+    return _req_id_for(task, cfg, task.retries - 1) if task.retries > 0 else None
 
 
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。
     req_id は決定的（_submit_req_id）——リブート後の再実行は既存 run に合流する。"""
     base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
+    prev = _prev_req_id(task, cfg)   # リトライ: 先行 run から引き継ぎ＆掃除させる
+    inherit = ["--inherit-from", prev] if prev else []
     try:
         sub = subprocess.run(base + ["--run-id", _submit_req_id(task, cfg),
-                                     "submit", build_request(task, cfg)], cwd=str(cfg.workdir),
+                                     "submit", build_request(task, cfg)] + inherit,
+                             cwd=str(cfg.workdir),
                              timeout=60, capture_output=True, text=True)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         return (False, f"submit 失敗: {e}")
@@ -2591,8 +2608,10 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     run_id = out[0].strip() if out else ""
     if not run_id:
         return (False, "run-id を取得できません")
-    deadline = time.time() + cfg.act_timeout
-    while time.time() < deadline:
+    # act_timeout=0（以下）はタイムアウト無効＝終端に達するまで待つ。gitlab 等の長時間委譲
+    # （人のレビュー往復で数日かかりうる）で、待ち切れずに retry を空増やしする事故を防ぐ。
+    deadline = (time.time() + cfg.act_timeout) if cfg.act_timeout > 0 else None
+    while deadline is None or time.time() < deadline:
         try:
             res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
                                 cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True)
@@ -3059,6 +3078,10 @@ def _claims_dir(cfg: "Config") -> Path:
 
 
 def _claim_ttl(cfg: "Config") -> float:
+    # act_timeout=0（無制限待ち）なら claim も期限なし＝長時間委譲中に他インスタンスへ
+    # 奪われて二重実行するのを防ぐ（owner が生きている限り握り続ける）。
+    if cfg.act_timeout <= 0:
+        return float("inf")
     return cfg.act_timeout + cfg.verify_timeout + 60.0   # act+verify を十分に上回る猶予（失踪検知用）
 
 

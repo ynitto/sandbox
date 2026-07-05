@@ -122,6 +122,98 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(self.bus.all_terminal())  # done/failed はどちらも terminal
 
 
+class InheritTests(unittest.TestCase):
+    """リトライ時の引き継ぎ（inherit_from）: 先行 run から確定済みノードを引き継ぎ、
+    先行 run を掃除する。タイムアウト/失敗で毎回ゼロからやり直すのを防ぐ。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-inherit-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _mk_run(self, rid, request="req", workspace=None):
+        b = kf.Bus(self.tmp, rid)
+        b.ensure_run(request, workspace=workspace)
+        return b
+
+    def _add_task(self, bus, tid, deps=None):
+        bus.write_task({"id": tid, "goal": "g", "deps": deps or []})
+        graph = bus.read_graph() or {"strategy": {}, "nodes": {}, "iteration": 0}
+        graph["nodes"][tid] = {"goal": "g", "deps": deps or []}
+        bus.write_graph(graph)
+
+    def test_partial_inherit_copies_done_and_removes_old(self):
+        old = self._mk_run("req-x-t-r0")
+        self._add_task(old, "t1")
+        self._add_task(old, "t2")
+        old.write_result("t1", "w", "done", "out1", data={"k": 1})
+        old.write_result("t2", "w", "failed", "boom")   # 失敗ノードは引き継がない
+        old.mark_run_failed("req-x-t-r0", "timed out")   # 終端化（削除の安全条件）
+
+        new = kf.Bus(self.tmp, "req-x-t-r1")
+        info = new.inherit_from("req-x-t-r0")
+
+        self.assertEqual(info["seeded_nodes"], 1)
+        self.assertTrue(info["inherited"])
+        self.assertTrue(info["deleted"])
+        # done ノードだけ引き継ぐ＝t1 は done 扱い、t2 は引き継がれず再実行対象
+        self.assertEqual(new.node_state("t1"), "done")
+        self.assertEqual(new.read_result("t1").get("data"), {"k": 1})
+        self.assertIsNone(new.read_result("t2"))
+        self.assertIsNotNone(new.read_graph())           # 計画（graph）も引き継ぐ
+        # 先行 run は掃除済み
+        self.assertNotIn("req-x-t-r0", new.list_runs())
+        self.assertEqual(new.run_meta("req-x-t-r1").get("inherited_from"), "req-x-t-r0")
+
+    def test_fully_done_predecessor_seeds_nothing_but_cleans_up(self):
+        old = self._mk_run("req-y-t-r0")
+        self._add_task(old, "t1")
+        old.write_result("t1", "w", "done", "out")
+        old.set_status("done")                           # verify=NG 相当（全ノード done で終端）
+
+        new = kf.Bus(self.tmp, "req-y-t-r1")
+        info = new.inherit_from("req-y-t-r0")
+
+        self.assertEqual(info["seeded_nodes"], 0)        # 同一出力で即 done の無限ループを避ける
+        self.assertTrue(info["deleted"])
+        self.assertIsNone(kf.read_json(new.meta_path))   # 新 run は白紙（feedback 付きで再計画）
+        self.assertNotIn("req-y-t-r0", new.list_runs())
+
+    def test_live_predecessor_is_untouched(self):
+        old = self._mk_run("req-z-t-r0")
+        self._add_task(old, "t1")
+        old.set_status("running")
+        old.touch_run("req-z-t-r0", 9999)                # 生存リースが有効＝実行中
+
+        new = kf.Bus(self.tmp, "req-z-t-r1")
+        info = new.inherit_from("req-z-t-r0")
+
+        self.assertFalse(info["deleted"])
+        self.assertFalse(info["inherited"])
+        self.assertIn("req-z-t-r0", new.list_runs())     # 走っている run は消さない
+
+    def test_missing_predecessor_is_noop(self):
+        new = kf.Bus(self.tmp, "req-none-r1")
+        info = new.inherit_from("req-none-r0")
+        self.assertFalse(info["deleted"])
+        self.assertFalse(info["inherited"])
+
+    def test_workspace_branch_is_chained_from_old(self):
+        ws = {"url": "https://git.example/g/r", "path": "", "base": "main",
+              "target": "main", "desc": ""}
+        old = self._mk_run("req-w-t-r0", workspace=ws)
+        self._add_task(old, "t1")
+        self._add_task(old, "t2")                        # 未完ノードを残す＝部分引き継ぎ
+        old.write_result("t1", "w", "done", "out")
+        old.mark_run_failed("req-w-t-r0", "timed out")
+
+        new = kf.Bus(self.tmp, "req-w-t-r1")
+        new.inherit_from("req-w-t-r0")
+        # 確定済みノードの commit を失わないよう、新 run は旧ブランチ kf/<old> から派生する
+        self.assertEqual(new.run_workspace().get("base"), kf.run_branch_name("req-w-t-r0"))
+
+
 class RunFailureTests(unittest.TestCase):
     """orchestrator が done を書く前に異常終了したケースの終端化（失敗終了の検知）。
     これが無いと run が非終端のまま放置され、result/status を待つ消費者

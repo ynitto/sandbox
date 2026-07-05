@@ -39,6 +39,7 @@ executor: kiro              # 実行・評価役: kiro（kiro-cli）/ stub（オ
                             # `kiro-flow run --executor <値>` に委譲される）。
 # executor: gitlab          #   例: 同梱の gitlab プラグイン（タスクを GitLab イシュー化し approved まで待つ）。
                             #   プラグイン固有設定は kiro-flow 側の設定（例 gitlab: ブロック）で行う。
+                            #   委譲は人のレビュー往復で長時間かかるため act_timeout: 0（無制限待ち）推奨。
 # executor: /path/to/my_executor.py   # 例: 任意の executor プラグイン（.py パス指定）
 planner: kiro               # 優先順位付け: kiro=エージェントが priority も加味 / none=priority 降順→最古
 flow_planner: flow-planner  # kiro-flow run に渡す planner: flow-planner / kiro / stub
@@ -86,7 +87,10 @@ max_cost: 0.0              # 金額(USD)の上限（0=無制限。act 出力の 
 max_retries: 2             # verify NG の再挑戦上限。超えたら人の判断（blocked）へ
 max_iterations: 3          # kiro-flow 内の再計画の最大反復
 verify_timeout: 120.0      # verify コマンドのタイムアウト（秒）
-act_timeout: 1800.0        # act（kiro-flow 実行）のタイムアウト（秒）
+act_timeout: 1800.0        # act（kiro-flow 実行）の結果待ちタイムアウト（秒）。0=無制限（完了まで待つ）。
+                           #   executor: gitlab など人のレビュー往復で数日かかる長時間委譲では、
+                           #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシュー二重起票を
+                           #   起こす。委譲運用では 0（無制限）を推奨。下の「gitlab 委譲」欄も参照。
 # throttle: 0.0            # ソフト予算比率（例 0.8）。上限の手前で打ち切り、watch は report 降格（0=off）
 
 # ---------------------------------------------------------------------------

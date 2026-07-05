@@ -1435,6 +1435,75 @@ class TestActSubmitTerminal(unittest.TestCase):
             self.assertIn("タイムアウト", msg)
 
 
+class TestActTimeoutZeroAndInherit(unittest.TestCase):
+    """act_timeout=0（無制限待ち）と、リトライ時の先行 run 引き継ぎ（--inherit-from）の配線。
+    gitlab 等の長時間委譲で待ち切れず retry を空増やしする事故を防ぐための変更。"""
+
+    def _task(self, retries=0):
+        return km.Task(id="T1", title="x", verify="true", retries=retries)
+
+    def test_claim_ttl_infinite_when_act_timeout_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg0 = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
+            self.assertEqual(km._claim_ttl(cfg0), float("inf"))   # 委譲中に claim を奪われない
+            cfg30 = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
+            self.assertTrue(km._claim_ttl(cfg30) < float("inf"))
+
+    def test_act_timeout_zero_waits_until_done(self):
+        # act_timeout=0 は無制限。擬似クロックが大きく進んでもタイムアウトせず、done で success。
+        clock = [1000.0]
+        state = {"polls": 0}
+
+        def fake(cmd, *a, **kw):
+            if "submit" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="run-XYZ\n", stderr="")
+            if "result" in cmd:
+                state["polls"] += 1
+                done = state["polls"] >= 5
+                payload = {"done": done, "status": "done" if done else "running"}
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=0.0)
+            with mock.patch.object(km.subprocess, "run", fake), \
+                 mock.patch.object(km.time, "time", lambda: clock[0]), \
+                 mock.patch.object(km.time, "sleep",
+                                   lambda s: clock.__setitem__(0, clock[0] + 100000)):
+                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
+            self.assertTrue(ok)                          # 巨大なクロック前進でもタイムアウトしない
+            self.assertIn("done", msg)
+            self.assertGreaterEqual(state["polls"], 5)
+
+    def test_inherit_from_passed_on_retry_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
+            self.assertIsNone(km._prev_req_id(self._task(0), cfg))          # 初回は先行 run なし
+            self.assertEqual(km._prev_req_id(self._task(2), cfg),
+                             km._req_id_for(self._task(2), cfg, 1))         # retries-1 世代
+
+            def capture(retries):
+                seen = []
+
+                def fake(cmd, *a, **kw):
+                    seen.append(list(cmd))
+                    if "submit" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="rid\n", stderr="")
+                    return subprocess.CompletedProcess(
+                        cmd, 0, stdout=json.dumps({"done": True, "status": "done"}), stderr="")
+
+                with mock.patch.object(km.subprocess, "run", fake), \
+                     mock.patch.object(km.time, "sleep", lambda *_: None):
+                    km._act_submit(self._task(retries), cfg, use_git=False)
+                return next(c for c in seen if "submit" in c)
+
+            self.assertNotIn("--inherit-from", capture(0))                  # 初回は引き継ぎなし
+            retry = capture(3)
+            self.assertIn("--inherit-from", retry)                         # リトライは引き継ぐ
+            self.assertEqual(retry[retry.index("--inherit-from") + 1],
+                             km._req_id_for(self._task(3), cfg, 2))
+
+
 class TestPace(unittest.TestCase):
     def test_decide_pace(self):
         with tempfile.TemporaryDirectory() as d:
