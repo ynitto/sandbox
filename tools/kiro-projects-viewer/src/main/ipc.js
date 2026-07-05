@@ -106,17 +106,27 @@ function registerIpcHandlers() {
   });
 
   // 不要なバックログタスクの削除（人の明示アクション）。backlog/<id>.md だけを
-  // 対象にし、クレーム中（実行中）のタスクは拒否する。kiro-projects に削除の
-  // 公式契約は無いため、ファイルをゴミ箱へ移動する（決定記録 DR は残らない）
+  // 対象にし、実行中（doing かつクレームあり）のタスクは拒否する。
+  // クレームロック（claims/<id>.lock）は worker のクラッシュや review/blocked
+  // 滞留で残骸が残るため（kiro-projects 本体も approve 時に掃除する）、
+  // ロックの存在だけでは拒否せず、削除時に残骸ロックも一緒に片付ける。
+  // kiro-projects に削除の公式契約は無いため、ファイルをゴミ箱へ移動する
   handle('kiro:deleteTask', async ({ dir, id }) => {
     const tid = String(id || '');
     if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
     const file = path.join(dir, 'backlog', `${tid}.md`);
     if (!fs.existsSync(file)) throw new Error(`タスクファイルがありません: ${file}`);
-    if (fs.existsSync(path.join(dir, 'claims', `${tid}.lock`))) {
-      throw new Error(`${tid} は実行中（クレーム中）のため削除できません`);
+    const lockFile = path.join(dir, 'claims', `${tid}.lock`);
+    const status = kiro.parseTask(fs.readFileSync(file, 'utf8'), tid).status;
+    if (status === 'doing' && fs.existsSync(lockFile)) {
+      throw new Error(`${tid} は実行中（doing・クレーム中）のため削除できません`);
     }
     const via = await removeToTrash(file);
+    try {
+      fs.rmSync(lockFile, { force: true }); // 残骸ロックを掃除（無ければ no-op）
+    } catch {
+      /* ロックの掃除失敗は削除自体の失敗にしない */
+    }
     return { file, via };
   });
 
