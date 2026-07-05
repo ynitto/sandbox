@@ -61,7 +61,12 @@ function fmtTime(v) {
 function fmtAgo(v) {
   const t = typeof v === 'number' ? v * 1000 : Date.parse(v);
   if (!t || isNaN(t)) return '';
-  const sec = Math.max(0, (Date.now() - t) / 1000);
+  return fmtAgoSec((Date.now() - t) / 1000);
+}
+
+function fmtAgoSec(sec) {
+  if (sec === null || sec === undefined || isNaN(sec)) return '';
+  sec = Math.max(0, sec);
   if (sec < 60) return `${Math.floor(sec)}秒前`;
   if (sec < 3600) return `${Math.floor(sec / 60)}分前`;
   if (sec < 86400) return `${Math.floor(sec / 3600)}時間前`;
@@ -194,9 +199,20 @@ function renderTree() {
             if (p.needsCount) badges.push(`<span class="badge warn" title="要対応">${p.needsCount}</span>`);
             if (p.backlogCount) badges.push(`<span class="badge" title="バックログ">${p.backlogCount}</span>`);
             if (p.hasCharter) badges.push('<span class="badge info" title="charter あり">C</span>');
+            // via='status-sync' はリモート本体を state_git 越しに推定した稼働判定（同期遅延を許容）。
+            // ローカル確定（instances）と見分けられるよう dot に補助クラスと ~ 印を付ける
+            const live = p.liveness || { via: p.running ? 'instances' : 'none' };
+            const remoteGuess = live.via === 'status-sync';
+            const dotTitle = p.running
+              ? remoteGuess
+                ? `稼働中（同期経由の推定・約${Math.round((live.ageSec || 0) / 60)}分前に確認）`
+                : '稼働中'
+              : remoteGuess
+                ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前・同期経由）`
+                : '停止中';
             return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}">
-              <span class="dot ${p.running ? 'running' : ''}" title="${p.running ? '稼働中' : '停止中'}"></span>
-              <span class="name">${esc(p.name)}</span>${badges.join('')}
+              <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''}" title="${esc(dotTitle)}"></span>
+              <span class="name">${esc(p.name)}${remoteGuess && p.running ? '~' : ''}</span>${badges.join('')}
             </div>`;
           })
           .join('');
@@ -333,6 +349,30 @@ function renderOverview() {
       `<div class="card full"><h3>CHARTER</h3><div class="muted">charter.md はありません（バックログ消化モード）</div></div>`
     );
   }
+
+  // daemon 生存（liveness）。同一ホストなら instances で確定、リモートは status.json
+  // （state_git 経由の同期・遅延許容の推定）でしか分からない。最終サイクルは run-log.jsonl
+  // （既に同期済み）から補う — idle 中は status.json だけが唯一の「生きている」根拠になる
+  const live = p.liveness || { running: false, via: 'none', ageSec: null };
+  const lastRunLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
+  const liveDesc =
+    live.via === 'instances'
+      ? '<span class="status-chip st-done">● 稼働中</span><span class="muted">（同一ホスト・instances で確定）</span>'
+      : live.via === 'status-sync'
+        ? `<span class="status-chip ${live.running ? 'st-done' : 'st-blocked'}">${live.running ? '● 稼働中（推定）' : '○ 不明'}</span>` +
+          `<span class="muted">（status.json 同期経由・最終確認 ${fmtAgoSec(live.ageSec)}` +
+          (live.watch !== undefined ? `・watch=${live.watch ? 'on' : 'off'}` : '') +
+          (live.level ? `・level=${esc(live.level)}` : '') +
+          '）</span>'
+        : '<span class="status-chip st-blocked">○ 判定不能</span><span class="muted">（instances も status.json も無し。ローカルで稼働させるか state_git 同期を設定してください）</span>';
+  parts.push(`
+    <div class="card full">
+      <h3>daemon の生存</h3>
+      <div>${liveDesc}</div>
+      <div class="muted" style="margin-top:4px">
+        最終サイクル: ${lastRunLog ? `${fmtTime(lastRunLog.ts)}（${esc(lastRunLog.reason || '')}・${fmtAgo(lastRunLog.ts)}）` : 'run 履歴なし'}
+      </div>
+    </div>`);
 
   // 実行中・run-log サマリ
   const doing = p.claims.length

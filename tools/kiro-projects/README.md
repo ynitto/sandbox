@@ -93,6 +93,8 @@ kiro-projects run --planner none --flow-planner stub --executor stub
       archive/<id>.md      完了タスクの保全先（検収用「納品書」付き。backlog と 1:1）
       DELIVERY.md          納品一覧（受領書）。done を1行ずつ追記
       journal.md           機械のサイクルログ（人間可読）／ run-log.jsonl  構造化 run-log（JSON）
+      status.json           daemon の生存信号（watch/level/updated_iso）。state_git 経由でリモート
+                            viewer の稼働判定に使う（[daemon の生存信号](#daemon-の生存信号statusjson--リモート-viewer-の稼働判定)）
       inbox/  claims/  autonomy/  bus/   取り込み口 / 原子的クレーム / track 状態 / kiro-flow 一時バス
       commands/<name>.json 人の指示（approve/hold/pin/defer/revise）のドロップ口（CLI 不要。run/watch が取り込む）
     payments-api/          ← もう 1 つのプロジェクト（同じ一式・併存可）
@@ -501,6 +503,34 @@ kiro-projects run --watch --state-git git@example.com:team/kiro-state.git   # CL
 > 注意: `claims/` を同期しない＝**git 越しの多重実行防止は提供しない**。同じ backlog を複数ホストで
 > 消化したい場合は従来どおり NFS 等の共有 FS（原子的クレーム）か git-bus の分散移譲を使う。state_git は
 > 「実行は 1 箇所・閲覧と指示を多箇所」の共有に最適化している。
+
+### daemon の生存信号（status.json）— リモート viewer の稼働判定
+
+リモート（別ホスト・state_git 越し）の viewer からは、本体のローカル生存レジストリ
+（`~/.kiro-projects/instances/`）が見えないため、従来「稼働中」バッジが出せなかった。
+`<project>/status.json` に最小の生存スナップショット（`watch` / `level` / `updated_iso` /
+`fresh_after_sec`）を書き、これも state_git で同期することで、リモートの viewer が
+「同期経由の推定」として稼働判定・最終確認時刻を出せるようにしている。
+
+```json
+{"host": "myserver", "watch": true, "level": "unattended",
+ "updated_iso": "2026-07-05T21:03:11", "fresh_after_sec": 600}
+```
+
+- **idle 中の追加コミットはデフォルトで発生しない**: `write_status` は実パス（backlog 等の実データが
+  変わり得たタイミング）完了時にのみ呼ばれ、その他ファイルの変更と**同じコミットに相乗り**する
+  （state_git の「差分があれば commit」に任せる。単体では何も追加しない）。watch の idle 中は
+  `--status-interval`（既定 `0`＝無効）を明示指定しない限り status.json に一切触れない。
+- **`--status-interval N`**（任意）: idle 中も N 秒間隔で status.json だけを更新し、実パスが
+  長時間発生しない場合でも viewer 側で「生きている」ことを近い間隔で確認できるようにする。
+  この間だけ state_git の追加コミットが増える（負荷とリモートでの鮮度のトレードオフ）。
+  例: `--state-git-interval 300 --status-interval 3600` なら、実際の作業が無くても
+  1 時間おきに 1 コミットだけ増える。
+- `fresh_after_sec` は本体が自分の同期間隔（`state_git_interval` と `status_interval` の大きい方の
+  2 倍・下限 120 秒）から計算して埋め込むため、**viewer 側は単純な経過時間比較だけで済む**
+  （同期間隔を変えても viewer 側の調整は不要）。
+- 実データ（backlog / needs / decisions / run-log 等）は既に state_git で同期されているため、
+  status.json はそれらを重複させない（生存信号だけの最小ファイル）。
 
 ## 常駐運用（watch / lifecycle / 発見 / OS 自動起動）
 

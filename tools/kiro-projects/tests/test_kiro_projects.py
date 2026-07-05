@@ -1758,6 +1758,80 @@ class TestCommandsIngest(unittest.TestCase):
             self.assertTrue(f.exists())
 
 
+class TestStatusHeartbeat(unittest.TestCase):
+    """リモート kiro-projects-viewer 向けの生存信号（status.json）。idle 中は既定で
+    state_git への追加コミットを一切生まないこと（--status-interval は opt-in）を検証する。"""
+
+    def test_write_status_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d, watch=True, level="assisted", state_git_interval=300.0)
+            km.write_status(c)
+            rec = json.loads((d / "status.json").read_text(encoding="utf-8"))
+            self.assertTrue(rec["watch"])
+            self.assertEqual(rec["level"], "assisted")
+            self.assertIn("updated_iso", rec)
+            self.assertEqual(rec["fresh_after_sec"], 600.0)          # 2 * state_git_interval
+
+    def test_fresh_after_sec_floor_and_max(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            # 両方 0（未設定）でもフロア 120 秒を下回らない
+            c0 = cfg_for(d, state_git_interval=0.0, status_interval=0.0)
+            self.assertEqual(km._status_fresh_after_sec(c0), 120.0)
+            # 大きい方（status_interval）が勝つ
+            c1 = cfg_for(d, state_git_interval=300.0, status_interval=1000.0)
+            self.assertEqual(km._status_fresh_after_sec(c1), 2000.0)
+
+    def test_maybe_heartbeat_disabled_by_default_touches_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d, status_interval=0.0)                       # 既定 0 = 無効
+            km.maybe_heartbeat_status(c)
+            self.assertFalse((d / "status.json").exists())            # idle 中の追加コミット元を作らない
+
+    def test_maybe_heartbeat_enabled_throttles_to_interval(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            c = cfg_for(d, status_interval=100.0)
+            km.maybe_heartbeat_status(c)                              # 未作成 → 書く
+            self.assertTrue((d / "status.json").exists())
+            first_mtime = (d / "status.json").stat().st_mtime
+            km.maybe_heartbeat_status(c)                              # 直後の再呼び出しは間隔未満 → 書かない
+            self.assertEqual((d / "status.json").stat().st_mtime, first_mtime)
+            # 間隔を過ぎたことにする（mtime を過去へ）
+            old = time.time() - 101.0
+            os.utime(d / "status.json", (old, old))
+            km.maybe_heartbeat_status(c)
+            self.assertGreater((d / "status.json").stat().st_mtime, old)
+
+    def test_run_loop_piggybacks_status_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False, level="assisted")
+            km.ensure_dirs(c)
+            km.run_loop(c, act=lambda t, cfg, loc: (True, "ok"))
+            rec = json.loads((d / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(rec["level"], "assisted")
+            self.assertTrue(rec["watch"] is False)                    # cfg_for 既定は watch=False
+
+    def test_throttle_demotion_refreshes_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d, dry_run=False, learn=False, auto_adjudicate=False,
+                       watch=True, max_tokens=100, throttle=0.5)
+
+            def act(t, cfg, loc):
+                t.extra.append(("_cost_marker", "1"))
+                return (True, "ok @cost tokens=80")
+
+            km.run_watch(c, act=act, sleeper=lambda s: None, max_passes=1)
+            rec = json.loads((d / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(rec["level"], "report")                  # 降格後の値で上書きされている
+
+
 class TestRevise(unittest.TestCase):
     """人の即時フィードバック（revise）。内容・依存 after の修正と feedback 注入、
     実行中タスクの積み直し予約（revised マーカー）、CLI/commands ドロップの同一実装を検証する。"""

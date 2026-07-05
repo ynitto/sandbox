@@ -100,6 +100,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 .project-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex: none; }
 .dot.running { background: var(--green); box-shadow: 0 0 4px var(--green); }
+/* synced = リモート本体を status.json（state_git 同期）経由で推定した稼働判定。
+   instances による確定判定と区別できるよう、輪郭のみで塗りは弱める（不確実性の表現） */
+.dot.synced { box-shadow: none; border: 1.5px solid var(--green); background: transparent; }
+.dot.synced:not(.running) { border-color: var(--muted); }
 
 .badge {
   display: inline-block;
