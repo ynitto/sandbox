@@ -489,7 +489,9 @@ function showTaskDialog(id, scope) {
     .join('');
   // 決定記録を残す人の操作（backlog のタスクのみ。archive は閲覧のみ）
   const canApprove = ['blocked', 'review'].includes(t.status);
-  const claimed = p.claims.includes(t.id);
+  // 削除を拒むのは「実行中」だけ。クレームロックは worker クラッシュや
+  // review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除できる
+  const claimed = p.claims.includes(t.id) && t.status === 'doing';
   const actionArea =
     scope === 'archive'
       ? ''
@@ -502,7 +504,7 @@ function showTaskDialog(id, scope) {
             <button data-taskact="hold">⏸ 保留（hold）</button>
             <span class="spacer"></span>
             <button class="danger" id="btn-task-delete" ${claimed ? 'disabled' : ''}
-              title="${claimed ? '実行中（クレーム中）のタスクは削除できません' : 'backlog のタスクファイルをゴミ箱へ移動します（決定記録は残りません）'}">🗑 削除</button>
+              title="${claimed ? '実行中（doing・クレーム中）のタスクは削除できません' : 'backlog のタスクファイルをゴミ箱へ移動します（決定記録は残りません）'}">🗑 削除</button>
           </div>
         </div>`;
   $('dlg-task-body').innerHTML = `
@@ -595,6 +597,36 @@ async function submitEnqueue() {
 // タブ: 要対応（needs）
 // ---------------------------------------------------------------------------
 
+// 承認 / 保留は commands/ ドロップ（または CLI）で届けるため needs/<id>.md 自体は
+// 変わらず、本体が取り込んでファイルを消すまでカードが「未対応」のまま残って
+// ボタンも再送できてしまう。送信済みをファイルパス + mtime で覚えておき
+// （localStorage — 再起動しても保持）、「指示送信済み（取り込み待ち）」表示に変える。
+// ファイルが書き換わったら（mtime 変化）マーカーは無効になり、操作は再び可能になる。
+function loadNeedsSent() {
+  try {
+    const v = JSON.parse(localStorage.getItem('kpv:needsSent') || '{}');
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+const needsSent = loadNeedsSent();
+
+function markNeedSent(need) {
+  needsSent[need.file] = need.mtime;
+  localStorage.setItem('kpv:needsSent', JSON.stringify(needsSent));
+}
+
+function isNeedSent(need) {
+  if (needsSent[need.file] === undefined) return false;
+  if (needsSent[need.file] === need.mtime) return true;
+  // ファイルが書き換わった → マーカーは古い（掃除して操作を再度出す）
+  delete needsSent[need.file];
+  localStorage.setItem('kpv:needsSent', JSON.stringify(needsSent));
+  return false;
+}
+
 // needs の種類ごとに出すアクション。
 //   blocked   … フィードバック再開（[x] 記入）/ そのまま再実行 / 保留（hold）
 //   review    … 承認して done 確定（approve CLI）/ 差し戻し（フィードバック必須）
@@ -637,20 +669,26 @@ function renderNeeds() {
     el.innerHTML = '<div class="empty">人の判断待ちはありません 🎉</div>';
     return;
   }
+  const settled = (n) => n.decided || isNeedSent(n); // 対応済み（本体の取り込み待ち）
   const cards = [...p.needs]
-    .sort((a, b) => Number(a.decided) - Number(b.decided) || b.mtime - a.mtime)
-    .map(
-      (n) => `<div class="need-card kind-${esc(n.kind || 'blocked')}">
+    .sort((a, b) => Number(settled(a)) - Number(settled(b)) || b.mtime - a.mtime)
+    .map((n) => {
+      const chip = n.decided
+        ? '<span class="status-chip st-done">記入済み（取り込み待ち）</span>'
+        : isNeedSent(n)
+          ? '<span class="status-chip st-review">指示送信済み（取り込み待ち）</span>'
+          : '<span class="status-chip st-blocked">未対応</span>';
+      return `<div class="need-card kind-${esc(n.kind || 'blocked')}">
         <div class="need-head">
-          <span class="badge ${n.decided ? '' : 'warn'}">${esc(n.kind || 'blocked')}</span>
+          <span class="badge ${settled(n) ? '' : 'warn'}">${esc(n.kind || 'blocked')}</span>
           <span class="title">${esc(n.title || n.id)}</span>
           <span class="muted">${esc(n.date || '')}</span>
-          ${n.decided ? '<span class="status-chip st-done">記入済み（取り込み待ち）</span>' : '<span class="status-chip st-blocked">未対応</span>'}
+          ${chip}
         </div>
         <div class="body">${mdToHtml(n.body)}</div>
-        ${n.decided ? '' : needActionsHtml(n)}
-      </div>`
-    )
+        ${settled(n) ? '' : needActionsHtml(n)}
+      </div>`;
+    })
     .join('');
   el.innerHTML = `<div class="muted" style="margin-bottom:8px">
       回答はこの画面から送信できます（needs/&lt;id&gt;.md の「## Decision Outcome」記入 + <code>- [x]</code> 確定と同じ。
@@ -684,9 +722,13 @@ async function handleNeedAction(btn) {
       toast('そのまま再実行として確定しました', true);
     } else if (act === 'approve') {
       const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason: text });
+      // 指示は commands/CLI 経由で needs ファイル自体は変わらない。取り込みまで
+      // カードが未対応のまま残らないよう送信済みマーカーを付ける
+      markNeedSent(need);
       toast(res.output || '承認しました', true);
     } else if (act === 'hold') {
       const res = await api.runAction({ dir: p.dir, action: 'hold', id, reason: text });
+      markNeedSent(need);
       toast(res.output || '保留（policy.deny）にしました', true);
     }
     return true;
@@ -756,11 +798,14 @@ function renderFlow() {
     })
     .join('');
 
-  // 左右ペインは独立スクロール。再描画（ポーリング）でスクロール位置を失わないよう
-  // 描画前の位置を控えて復元する
+  // 左右ペインとタスクグラフ（#graph-box）は再描画（ポーリング・ノード選択）で
+  // スクロール位置を失わないよう、描画前の位置を控えて復元する
+  const prevGraph = $('graph-box');
   const prevScroll = {
     runs: ($('flow-runs') || {}).scrollTop || 0,
     detail: ($('flow-detail') || {}).scrollTop || 0,
+    graphX: prevGraph ? prevGraph.scrollLeft : 0,
+    graphY: prevGraph ? prevGraph.scrollTop : 0,
   };
   el.innerHTML = `${busLine}<div id="flow-layout">
     <div id="flow-runs">${runList || '<div class="empty">run なし</div>'}</div>
@@ -768,6 +813,11 @@ function renderFlow() {
   </div>`;
   $('flow-runs').scrollTop = prevScroll.runs;
   $('flow-detail').scrollTop = prevScroll.detail;
+  const graph = $('graph-box');
+  if (graph) {
+    graph.scrollLeft = prevScroll.graphX;
+    graph.scrollTop = prevScroll.graphY;
+  }
 
   for (const item of el.querySelectorAll('.run-item[data-run]')) {
     item.addEventListener('click', () => selectFlowRun(item.dataset.run));

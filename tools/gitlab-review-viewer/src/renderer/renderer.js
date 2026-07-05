@@ -961,10 +961,35 @@ async function doApprove() {
     if (cur.state !== 'opened') {
       throw new Error(`${pageLabel(mr)} がオープンではありません（${cur.state}）`);
     }
+    // 差分なし MR（作業が既に取り込み済み等）: マージするものが無く、GitLab が
+    // コンフリクト扱いにすることもあるため区別する。承認は「MR をクローズ →
+    // ソースブランチを削除 → イシューをクローズ」で決着する
+    if (cur.noDiff) {
+      const msg = `${pageLabel(mr)} は差分がありません（マージするものがありません）。MR をクローズしてソースブランチを削除${closesIssue ? `し、その後 ${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
+      if (!(await confirmDialog(msg))) return;
+      await api.glComment(targetOf(t), actionComment('承認'));
+      const closedMr = await api.glSetState(targetOf(mr), 'close');
+      applyUpdatedItem(closedMr);
+      if (cur.sourceBranch) {
+        try {
+          await api.glDeleteBranch(mr.projectId, cur.sourceBranch);
+        } catch (err) {
+          toast(`ソースブランチ ${cur.sourceBranch} の削除に失敗: ${err.message}`, true);
+        }
+      }
+      if (closesIssue) {
+        const closed = await api.glSetState(targetOf(t), 'close');
+        applyUpdatedItem(closed);
+      }
+      $('comment-input').value = '';
+      reloadPanes();
+      toast(`${pageLabel(mr)} をクローズ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}しました（差分なし・ブランチ削除）`);
+      return;
+    }
     // コンフリクト / 未解決レビューコメントがあればマージせず、事前チェックと
     // 同じ差し戻し確認ダイアログを出す（「差し戻す」で固定コメント + ステータス差し戻し）
     if (openMRSendbackDialog(mr, cur)) return;
-    const msg = `${pageLabel(mr)} をマージ${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
+    const msg = `${pageLabel(mr)} をマージ（ソースブランチは削除）${closesIssue ? `し、${pageLabel(t)} をクローズ` : ''}します。よろしいですか？`;
     if (!(await confirmDialog(msg))) return;
     await api.glComment(targetOf(t), actionComment('承認'));
     const merged = await api.glMerge(targetOf(mr));
@@ -1024,7 +1049,9 @@ let mrSendback = null; // { mr, kinds: ('conflict'|'unresolved')[] }
 function openMRSendbackDialog(mr, cur) {
   const kinds = [];
   const problems = [];
-  if (cur.hasConflicts) {
+  // 差分なし MR は GitLab がコンフリクト扱い（has_conflicts）にすることがあるが、
+  // 直すものが無いので差し戻し対象にしない（承認 → MR クローズ → イシュークローズで決着）
+  if (cur.hasConflicts && !cur.noDiff) {
     kinds.push('conflict');
     problems.push('ベースブランチとコンフリクトしています（このままではマージできません）');
   }
@@ -1070,7 +1097,11 @@ async function checkActiveMRHealth() {
     return;
   }
   if (cur.state !== 'opened') return;
-  openMRSendbackDialog(mr, cur);
+  const shown = openMRSendbackDialog(mr, cur);
+  // 差分なし MR はコンフリクトと区別して知らせる（差し戻しではなく承認で決着できる）
+  if (!shown && cur.noDiff) {
+    toast(`${pageLabel(mr)} は差分がありません。承認すると MR をクローズし、イシューをクローズします`, true);
+  }
 }
 
 // 差し戻し（固定コメント投稿 + ステータス差し戻し）: 検知内容ごとの定型文を
