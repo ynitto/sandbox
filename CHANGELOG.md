@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: タスクグラフの gitlab ノードにイシューアイコン（1 クリックでレビュー起動）
+
+- **背景**: これまでタスクグラフのノードをクリックすると詳細パネルが開くだけで、関連 GitLab
+  イシューを開くには詳細内の「レビューで開く」を**もう一度**押す 2 ステップだった
+- **変更**: gitlab executor 由来で**関連イシュー URL が確定済み**のノードには、右上に小さな
+  イシューアイコン（↗）を重ね、**1 クリックで gitlab-review-viewer を起動**する（`api.openReview`）。
+  ノード選択（詳細表示）とは伝播を分離し、アイコンはイシュー起動を優先。却下ノードは赤で示す。
+  実行中で URL 未確定のノードは対象外（従来どおり詳細パネルの「関連イシューを探す」が担当）
+
 ### kiro-projects: 優先順位付けでタスク 0/1 件のとき LLM 呼び出しをスキップ
 
 - **背景**: `prioritize`（planner=kiro）は ready なタスクを kiro-cli（LLM）に並べ替えさせるが、

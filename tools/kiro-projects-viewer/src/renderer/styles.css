@@ -374,6 +374,12 @@ svg.graph .node.state-claimed rect { fill: #17313d; stroke: var(--accent2); }
 svg.graph .node.state-pending rect { fill: var(--bg3); stroke: var(--blue); }
 svg.graph .node.state-waiting rect { fill: var(--bg3); stroke: var(--border); }
 svg.graph .node.selected rect { stroke-width: 3; }
+/* gitlab executor ノードの右上イシューアイコン（1 クリックでレビュー起動） */
+svg.graph .node-issue { cursor: pointer; }
+svg.graph .node-issue circle { fill: var(--orange); stroke: var(--bg); stroke-width: 1.5; }
+svg.graph .node-issue.rejected circle { fill: var(--red); }
+svg.graph .node-issue .node-issue-glyph { fill: #fff; font-size: 12px; font-weight: 700; }
+svg.graph .node-issue:hover circle { stroke: var(--fg); }
 
 .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
 .legend .key { display: inline-flex; align-items: center; gap: 4px; }

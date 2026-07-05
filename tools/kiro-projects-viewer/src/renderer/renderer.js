@@ -1494,13 +1494,25 @@ function renderGraphSvg(run) {
   }
   const boxes = nodes.map((n) => {
     const { x, y } = pos[n.id];
-    const idLabel = n.id.length > 20 ? `${n.id.slice(0, 19)}…` : n.id;
+    // gitlab executor で関連イシュー URL が確定済みのノードには、1 クリックで
+    // レビュー（gitlab-review-viewer）を起動するイシューアイコンを右上に重ねる。
+    // 実行中で URL 未確定のノードは対象外（詳細パネルの「探す」導線が担う）。
+    const idMax = n.issueUrl ? 17 : 20; // アイコン分だけ id ラベルを詰める
+    const idLabel = n.id.length > idMax ? `${n.id.slice(0, idMax - 1)}…` : n.id;
     const goal = n.goal.length > 24 ? `${n.goal.slice(0, 23)}…` : n.goal;
+    const issueIcon = n.issueUrl
+      ? `<g class="node-issue${n.rejected ? ' rejected' : ''}" data-issue-open="${esc(n.issueUrl)}" transform="translate(${NW - 22},4)">
+          <title>関連 GitLab イシューをレビューで開く（gitlab-review-viewer 起動）</title>
+          <circle cx="9" cy="9" r="9"></circle>
+          <text x="9" y="13" text-anchor="middle" class="node-issue-glyph">↗</text>
+        </g>`
+      : '';
     return `<g class="node state-${n.state} ${state.flowNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}" transform="translate(${x},${y})">
       <rect width="${NW}" height="${NH}" rx="6"></rect>
       <text x="8" y="17" class="mono">${esc(idLabel)}${n.who ? ` @${esc(n.who).slice(0, 8)}` : ''}</text>
       <text x="8" y="31">${esc(goal)}</text>
       <text x="8" y="42" class="kind">[${esc(n.kind)}]</text>
+      ${issueIcon}
     </g>`;
   });
   return `<svg class="graph" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${edges.join('')}${boxes.join('')}</svg>`;
@@ -1512,6 +1524,17 @@ function bindFlowDetail(root) {
       state.flowNodeId = g.dataset.node;
       state.flowNodeIssue = null; // ノードを切り替えたら検索結果を破棄
       renderFlow();
+    });
+  }
+  // ノード右上のイシューアイコン: 1 クリックでレビュー（gitlab-review-viewer）を起動する。
+  // ノード選択（詳細表示）より優先させるため伝播を止める。
+  for (const g of root.querySelectorAll('.node-issue[data-issue-open]')) {
+    g.addEventListener('click', (e) => {
+      e.stopPropagation();
+      guard('レビュー起動', async () => {
+        const res = await api.openReview({ url: g.dataset.issueOpen });
+        toast(`gitlab-review-viewer を起動しました（${res.via}）`, true);
+      });
     });
   }
   const rs = root.querySelector('#flow-resubmit');
