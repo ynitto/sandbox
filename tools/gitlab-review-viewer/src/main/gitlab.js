@@ -263,15 +263,26 @@ class GitLabClient {
     return count;
   }
 
-  // レビュー表示時の事前チェック用: MR の現在状態 + 未解決ディスカッション数。
-  // blocking_discussions_resolved はプロジェクト設定に依存するため、
+  // MR に差分（変更ファイル）が無いか。作業が既に取り込み済み等で空になった MR は
+  // GitLab がマージ不可（merge_status=cannot_be_merged → has_conflicts）扱いに
+  // することがあるため、本物のコンフリクトと区別するのに使う。
+  // 判定できないときは false（差分あり扱い）に倒す。
+  async mrHasNoDiff(target) {
+    const res = await this.api(`${this.itemPath({ ...target, type: 'mr' })}/changes`);
+    const changes = res && Array.isArray(res.changes) ? res.changes : null;
+    return changes ? changes.length === 0 : false;
+  }
+
+  // レビュー表示時の事前チェック用: MR の現在状態 + 未解決ディスカッション数 +
+  // 差分なし判定。blocking_discussions_resolved はプロジェクト設定に依存するため、
   // 未解決の検知はディスカッションを直接数えた値を優先する。
   async getMRReview(target) {
-    const [mr, unresolvedCount] = await Promise.all([
+    const [mr, unresolvedCount, noDiff] = await Promise.all([
       this.getMR(target),
       this.countUnresolvedDiscussions(target).catch(() => 0),
+      this.mrHasNoDiff(target).catch(() => false),
     ]);
-    return { ...mr, unresolvedCount };
+    return { ...mr, unresolvedCount, noDiff };
   }
 
   // ---- 操作 ----
