@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: タスクグラフの gitlab ノードにイシューアイコン（1 クリックでレビュー起動）
+
+- **背景**: これまでタスクグラフのノードをクリックすると詳細パネルが開くだけで、関連 GitLab
+  イシューを開くには詳細内の「レビューで開く」を**もう一度**押す 2 ステップだった
+- **変更**: gitlab executor 由来で**関連イシュー URL が確定済み**のノードには、右上に小さな
+  イシューアイコン（↗）を重ね、**1 クリックで gitlab-review-viewer を起動**する（`api.openReview`）。
+  ノード選択（詳細表示）とは伝播を分離し、アイコンはイシュー起動を優先。却下ノードは赤で示す。
+  実行中で URL 未確定のノードは対象外（従来どおり詳細パネルの「関連イシューを探す」が担当）
+
+### kiro-projects: 優先順位付けでタスク 0/1 件のとき LLM 呼び出しをスキップ
+
+- **背景**: `prioritize`（planner=kiro）は ready なタスクを kiro-cli（LLM）に並べ替えさせるが、
+  対象が 0 件または 1 件のときは**並べ替えの余地が無く順序が自明**なのに、毎サイクル kiro-cli を
+  起動していた（コスト・レイテンシの無駄）
+- **変更**: `prioritize` は `len(ready) <= 1` のとき planner を問わず LLM を呼ばず決定的順序
+  （priority＋古さ）にする。LLM 境界の `rank_agent` も 0/1 件は入力をそのまま返して短絡する。
+  policy（pin/defer）は 1 件でも後段で必ず効く
+- テスト: `test_rank_agent_skips_llm_for_zero_or_one` / `test_prioritize_skips_llm_for_single_task`
+
 ### kiro-projects-viewer: charter → backlog → run → issue の関係性を可視化・相互遷移
 
 - **背景**: 従来はタブ（概要/バックログ/要対応/フロー/レビュー/履歴）が独立し、**バックログのタスクと
