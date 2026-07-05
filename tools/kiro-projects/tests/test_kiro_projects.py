@@ -2227,6 +2227,16 @@ class TestLayout(unittest.TestCase):
             km._cleanup_bus(cfg)
             self.assertTrue((cfg.bus / "runs").exists())
 
+    def test_state_git_keeps_bus(self):
+        # state_git でバスをリモート viewer へ鏡写ししている構成では、local run 後も runs/ を
+        # 消さない（消すとフロータブに見せたい run 状態を破壊し、削除がリモートへ伝播する）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, state_git="git@example.com:team/kiro-state.git")
+            (cfg.bus / "runs" / "r1").mkdir(parents=True)
+            km._cleanup_bus(cfg)
+            self.assertTrue((cfg.bus / "runs").exists())
+
 
 class TestDaemonRouting(unittest.TestCase):
     def test_kf_base_git_flag(self):
