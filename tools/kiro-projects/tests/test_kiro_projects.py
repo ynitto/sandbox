@@ -2149,6 +2149,105 @@ class TestLearning(unittest.TestCase):
             self.assertEqual(res["counts"]["blocked"], 1)
 
 
+class TestDecisionCapture(unittest.TestCase):
+    """人の判断（approve 理由・hold 理由）から learn/avoid を自動抽出して蓄積する（learn_capture）。"""
+
+    def test_approve_done_emits_learn(self):
+        # 検収ゲート承認（review→done）でも承認理由が learn 化され、類似案件の判断材料になる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="review", title="deploy the payments service", verify="true")
+            c = cfg_for(d, actor="bob")
+            self.assertEqual(km.cmd_approve(c, "T1", "本番相当の設定でのみ許可"), 0)
+            dec = (d / "decisions" / "T1.md").read_text()
+            self.assertIn("action  : approve-done", dec)
+            self.assertIn("- learn: deploy the payments service :: 本番相当の設定でのみ許可", dec)
+            # learn として横断照合に載る
+            hit = km.find_learned_resolution(c, km.Task(id="NEW", title="deploy the payments service now"))
+            self.assertIsNotNone(hit)
+            self.assertEqual(hit[0], "T1")
+
+    def test_hold_emits_avoid_but_not_learn(self):
+        # hold は avoid（予防知識）を残す。auto-resolve 用の learn には混ぜない（意味が逆のため）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", title="deploy to production", verify="true")
+            c = cfg_for(d)
+            km.cmd_hold(c, "T1", "本番は手動でのみ行う")
+            dec = (d / "decisions" / "T1.md").read_text()
+            self.assertIn("- avoid: deploy to production :: 本番は手動でのみ行う", dec)
+            self.assertNotIn("- learn:", dec)
+            av = km.find_avoidance(c, km.Task(id="NEW", title="deploy to production again"))
+            self.assertIsNotNone(av)
+            self.assertEqual(av[0], "T1")
+
+    def test_capture_disabled(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="review", title="deploy x", verify="true")
+            c = cfg_for(d, learn_capture=False)
+            km.cmd_approve(c, "T1", "ok")
+            self.assertNotIn("- learn:", (d / "decisions" / "T1.md").read_text())
+            mkb(d, "T2", title="hold y", verify="true")
+            km.cmd_hold(c, "T2", "手動")
+            self.assertNotIn("- avoid:", (d / "decisions" / "T2.md").read_text())
+
+
+class TestIntakeRecall(unittest.TestCase):
+    """投入/triage 時の予防リコール（shift-left）: 過去の hold（avoid）に類似する新規 ready を、
+    実行せず inbox（人の triage）へ寄せる。DR 学習が『失敗してから』人を絞るのに対し先回りで止める。"""
+
+    def _seed_avoid(self, d, src_id, title, reason):
+        c = cfg_for(d)
+        km.ensure_dirs(c)
+        km.append_decision(c, src_id, "human", context=f"{src_id}（{title}）を保留",
+                           action="hold(deny)", reason=reason,
+                           affects=f"{src_id} → blocked", avoid=(title, reason))
+
+    def test_enqueue_similar_to_hold_routes_to_human(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            proj = d / ".ka" / "projects" / "default"
+            self._seed_avoid(proj, "OLD", "deploy to production", "本番は手動")
+            rc = km.main(["enqueue", "--title", "deploy to production tonight", "--verify", "true",
+                          "--workdir", str(d), "--root", str(d / ".ka")])
+            self.assertEqual(rc, 0)
+            t = km.load_tasks(proj / "backlog")[0]
+            self.assertEqual(t.norm_status(), "blocked")    # ready にせず人の判断へ（verify 持ちでも実行させない）
+            self.assertIn("本番は手動", t.get("recall", ""))   # 出典と理由（OLD :: 本番は手動）を残す
+            self.assertTrue((proj / "needs" / f"{t.id}.md").exists())   # 人が approve/hold で裁定
+            dec = (proj / "decisions" / f"{t.id}.md").read_text()
+            self.assertIn("intake-recall", dec)
+
+    def test_unrelated_enqueue_stays_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_avoid(d, "OLD", "deploy to production", "本番は手動")
+            t = km.enqueue_task(cfg_for(d), {"title": "update the readme heading", "verify": "true"})
+            self.assertIsNone(km.apply_intake_recall(cfg_for(d), t))
+            self.assertEqual(t.norm_status(), "ready")
+
+    def test_recall_disabled(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_avoid(d, "OLD", "deploy to production", "本番は手動")
+            t = km.enqueue_task(cfg_for(d, intake_recall=False),
+                                {"title": "deploy to production tonight", "verify": "true"})
+            self.assertIsNone(km.apply_intake_recall(cfg_for(d, intake_recall=False), t))
+            self.assertEqual(t.norm_status(), "ready")
+
+    def test_triage_diverts_similar_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._seed_avoid(d, "OLD", "delete production database", "破壊的。人の承認必須")
+            mkb(d, "T1", title="delete production database backup", verify="true")
+            c = cfg_for(d)
+            self.assertEqual(km.cmd_triage(c), 0)
+            t = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(t.norm_status(), "blocked")    # triage の inbox→ready 昇格に呑まれず人へ残る
+            self.assertTrue((d / "needs" / "T1.md").exists())
+
+
 class TestRot(unittest.TestCase):
     def test_detect_unverifiable_and_duplicate(self):
         with tempfile.TemporaryDirectory() as d:

@@ -46,6 +46,11 @@ FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate|protect|route):\s*(?P<val>.+)$")
 DR_HEADER_RE = re.compile(r"^##\s+DR-(\d+)\b")
 LEARN_RE = re.compile(r"^- learn:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
+# 回避知識（hold/deny 由来）。learn が「どう解けば良いか（auto-resolve 向け）」なのに対し、
+# avoid は「この種のタスクは自動実行してはいけない（人の判断が要る）」を運ぶ。投入/triage 時に
+# 類似タスクを検出して ready へ落とさず inbox（人の triage）へ寄せる予防リコールに使う。
+# 第2グループ名を guide に揃え、learn 用の照合ヘルパ（_best_learn_match）をそのまま再利用する。
+AVOID_RE = re.compile(r"^- avoid:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
 LTM_CATEGORY = "kiro-projects"  # ltm-use home 内のカテゴリ（昇格先サブディレクトリ）
 FEEDBACK_MARKER = "## フィードバック"                  # 旧形式（読み取りは継続サポート）
 DECISION_MARKER = "## Decision Outcome"               # MADR 形式の決定記入欄（needs の生成はこちら）
@@ -841,9 +846,12 @@ def next_dr_id(path: Path) -> str:
 
 def append_decision(cfg: "Config", tid: str, actor: str, context: str,
                     action: str, reason: str, affects: str,
-                    learn: "tuple[str, str] | None" = None) -> str:
+                    learn: "tuple[str, str] | None" = None,
+                    avoid: "tuple[str, str] | None" = None) -> str:
     """決定記録を追記。learn=(title, guidance) を渡すと『- learn:』行を残し、
-    将来 find_learned_resolution が類似タスクへ自動適用できる学習材料にする。"""
+    将来 find_learned_resolution が類似タスクへ自動適用できる学習材料にする。
+    avoid=(title, reason) を渡すと『- avoid:』行を残し、hold/deny の予防知識として
+    投入/triage 時の類似タスク検出（find_avoidance）に使えるようにする。"""
     cfg.decisions.mkdir(parents=True, exist_ok=True)
     path = decision_path(cfg, tid)
     dr = next_dr_id(path)
@@ -854,6 +862,9 @@ def append_decision(cfg: "Config", tid: str, actor: str, context: str,
     if learn:
         title, guide = learn
         block += f"- learn: {title.replace(chr(10), ' ')} :: {guide.replace(chr(10), ' ')}\n"
+    if avoid:
+        title, guide = avoid
+        block += f"- avoid: {title.replace(chr(10), ' ')} :: {guide.replace(chr(10), ' ')}\n"
     with path.open("a", encoding="utf-8") as f:
         f.write(block + "\n")
     return dr
@@ -871,14 +882,16 @@ def _title_overlap(a: str, b: str) -> float:
 
 
 def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
-                      label, skip_id: "str | None" = None) -> "tuple[str, str] | None":
-    """与えた md 群の『- learn:』を Jaccard でタイトル照合し最良を返す（決定的・LLM 不要）。"""
+                      label, skip_id: "str | None" = None,
+                      pattern: "re.Pattern" = LEARN_RE) -> "tuple[str, str] | None":
+    """与えた md 群の該当行（既定 `- learn:`／pattern で `- avoid:` 等に切替）を Jaccard で
+    タイトル照合し最良を返す（決定的・LLM 不要）。pattern は title/guide の名前付きグループを持つこと。"""
     best, best_score = None, 0.0
     for f in sorted(files):
         if skip_id is not None and f.stem == skip_id:  # 自分の履歴は除く（自己ループ防止）
             continue
         for line in f.read_text(encoding="utf-8").splitlines():
-            m = LEARN_RE.match(line)
+            m = pattern.match(line)
             if not m:
                 continue
             score = _title_overlap(task.title, m.group("title"))
@@ -905,6 +918,44 @@ def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | Non
             return _best_learn_match(task, cfg.learn_threshold, list(mem_dir.glob("*.md")),
                                      label=lambda f: f"ltm:{f.stem}")
     return None
+
+
+def find_avoidance(cfg: "Config", task: Task) -> "tuple[str, str] | None":
+    """過去の hold/deny 判断（`- avoid:`）からタイトルが十分似た案件を探す。返り値 (出典, 理由)。
+
+    learn（どう解けば良いか＝auto-resolve 向け）とは別軸で、『この種は自動実行させない＝人へ』の
+    予防知識。投入/triage の段階で ready へ落とす前に照合し、一致すれば inbox（人の triage）へ寄せる。
+    ローカル `decisions/` の決定的走査＋Jaccard のみ（エージェント不要）。"""
+    if not cfg.decisions.exists():
+        return None
+    return _best_learn_match(task, cfg.learn_threshold, list(cfg.decisions.glob("*.md")),
+                             label=lambda f: f.stem, skip_id=task.id, pattern=AVOID_RE)
+
+
+def apply_intake_recall(cfg: "Config", task: Task) -> "str | None":
+    """投入/triage 時の予防リコール（shift-left）。intake_recall 有効かつ task が消化対象(ready)で、
+    過去の hold 判断（avoid）に類似するなら、実行前に **blocked＋needs（人の判断）へ寄せて**理由を残す。
+    DR 学習が『失敗してから』人を絞るのに対し、これは『投入の時点で』先回りして止める。人は
+    `approve`（実行を許可）か `hold`（恒久デニー化）で裁定できる。返り値は寄せた理由（表示用）。
+    該当なし・無効・非消化なら None（タスクは素通り）。
+
+    ※ inbox ではなく blocked にするのは、verify を持つタスクは triage が inbox→ready へ自動昇格する
+    ため（人の判断を待たずに実行され得る）。hold と同じ blocked＋needs が『人の裁定待ち』の正しい状態。"""
+    if not cfg.intake_recall or task.norm_status() not in CONSUMABLE:
+        return None
+    hit = find_avoidance(cfg, task)
+    if not hit:
+        return None
+    src, reason = hit
+    task.set("recall", f"{src} :: {reason}")   # 人が needs で見えるよう出典と理由を残す
+    why = (f"予防リコール: 過去に hold した案件（{src}）に類似するため実行前に人の判断へ。"
+           f"理由: {reason}（許可するなら approve、恒久デニーなら hold）")
+    _block(cfg, task, why, {})                 # blocked＋needs/<id>.md（persist はここで行う）
+    append_decision(cfg, task.id, "auto",
+                    context=f"{task.id}（{task.title}）を投入時リコールで人の判断へ",
+                    action="intake-recall", reason=f"過去の hold（{src}）に類似: {reason}",
+                    affects=f"{task.id} → blocked, needs/{task.id}.md")
+    return reason
 
 
 # ---------------------------------------------------------------------------
@@ -2775,6 +2826,8 @@ class Config:
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）
     do_archive: bool = True         # done を archive/ へ退避（False なら削除）
     learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
+    learn_capture: bool = True      # 人の判断（approve 理由・hold 理由）から learn/avoid を自動抽出して蓄積
+    intake_recall: bool = True      # 投入/triage 時に過去の hold 判断（avoid）と照合し類似は inbox（人へ）へ寄せる
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
     auto_adjudicate: bool = True    # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on）
     adjudicate_max: int = 1         # 1タスクあたりの自律裁定の上限回数（有限停止のため）
@@ -4050,7 +4103,9 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
             disp = "done（承認・削除）"
         clear_needs_file(cfg, tid)
         dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を検収承認",
-                             action="approve-done", reason=reason, affects=f"{tid} → done")
+                             action="approve-done", reason=reason, affects=f"{tid} → done",
+                             # 承認理由を learn 化して類似案件の判断材料に残す（approve-and-fix と対称）
+                             learn=(t.title, reason) if reason and cfg.learn_capture else None)
         print(f"{dr}: {tid} を承認し {disp} 確定しました。")
         # cohort の pilot 承認なら、固めた定義から残りのタスクを生成して ready にする
         if t.get("cohort_role") == "pilot":
@@ -4079,7 +4134,10 @@ def cmd_hold(cfg: Config, tid: str, reason: str) -> int:
     _block(cfg, t, f"hold（人が保留）: {reason}", {})
     dr = append_decision(cfg, tid, cfg.actor, context=f"{tid} を保留（denylist 化）",
                          action="hold(deny)", reason=reason,
-                         affects=f"{tid} → blocked, policy.deny += {tid}")
+                         affects=f"{tid} → blocked, policy.deny += {tid}",
+                         # hold 理由を avoid 化＝『この種は自動実行させない』予防知識として蓄積
+                         # （policy.deny はこの id 限定だが、avoid は類似の新規タスクも投入時に捕まえる）
+                         avoid=(t.title, reason) if reason and cfg.learn_capture else None)
     print(f"{dr}: {tid} を hold（policy.deny 追加）しました。")
     return 0
 
@@ -5042,7 +5100,10 @@ def cmd_enqueue(cfg: Config, args) -> int:
             print(f"enqueue 失敗: {e}", file=sys.stderr)
             return 2
     for t in created:
-        if t.verify:
+        recalled = apply_intake_recall(cfg, t)   # 過去の hold に類似すれば実行前に人の判断へ
+        if recalled:
+            warn = f"  ⚠ 過去の hold に類似 → 人の判断へ（needs）: {recalled}"
+        elif t.verify:
             warn = ""
         elif t.get("accept"):
             warn = "  （accept から実行時に verify を合成）"
@@ -5058,6 +5119,8 @@ def cmd_triage(cfg: Config) -> int:
     ensure_dirs(cfg)
     tasks = load_tasks(cfg.backlog)
     policy = load_policy(cfg.policy)
+    for t in tasks:                              # 予防リコール: 過去 hold に類似する ready は実行前に人へ
+        apply_intake_recall(cfg, t)              # 一致すれば blocked＋needs（_block が persist 済み）
     for t, why in triage(tasks, policy):
         write_needs_file(cfg, t, why)
         persist_task(cfg, t)
@@ -6554,6 +6617,8 @@ CONFIG_DEFAULTS = {
     "kiro_flow": None,
     "notify_cmd": None,
     "actor": os.environ.get("USER", "user"),
+    "learn_capture": True,      # approve/hold 理由から learn/avoid を自動抽出（三値 --learn-capture/--no-...）
+    "intake_recall": True,      # 投入/triage 時の予防リコール（過去 hold に類似→inbox）（三値フラグ）
     "learn_threshold": 0.5,
     "promote_threshold": 2,
     "ltm_home": None,
@@ -6679,7 +6744,10 @@ def build_config(args) -> Config:
         verify_cwd=getattr(args, "verify_cwd", None),
         act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
-        learn=bool(getattr(args, "learn", True)), learn_threshold=args.learn_threshold,
+        learn=bool(getattr(args, "learn", True)),
+        learn_capture=bool(getattr(args, "learn_capture", True)),
+        intake_recall=bool(getattr(args, "intake_recall", True)),
+        learn_threshold=args.learn_threshold,
         auto_adjudicate=bool(getattr(args, "auto_adjudicate", True)),
         adjudicate_max=getattr(args, "adjudicate_max", 1),
         max_spawn=getattr(args, "max_spawn", 20),
@@ -6799,8 +6867,14 @@ def _add_common(sp):
     sp.add_argument("--actor", default=None)
     sp.add_argument("--learn", action=argparse.BooleanOptionalAction, default=None,
                     help="DR 学習（過去の人の判断から類似案件を自動解決）。--no-learn で無効化（既定 on）")
+    sp.add_argument("--learn-capture", action=argparse.BooleanOptionalAction, default=None,
+                    help="人の判断（approve 理由→learn / hold 理由→avoid）を自動抽出して蓄積。"
+                         "--no-learn-capture で無効化（既定 on）")
+    sp.add_argument("--intake-recall", action=argparse.BooleanOptionalAction, default=None,
+                    help="投入/triage 時に過去の hold（avoid）と照合し、類似は ready へ落とさず inbox（人へ）"
+                         "寄せる予防リコール。--no-intake-recall で無効化（既定 on）")
     sp.add_argument("--learn-threshold", type=float, default=None,
-                    help="DR 学習のタイトル類似度しきい値（0〜1。既定 0.5）")
+                    help="DR 学習・予防リコールのタイトル類似度しきい値（0〜1。既定 0.5）")
     # 自律裁定: needs に落とす前に kiro-cli が積み直し可否を判断（三値: 未指定→設定ファイル/既定 on）
     sp.add_argument("--auto-adjudicate", dest="auto_adjudicate", action="store_true", default=None,
                     help="人の判断(needs)へ送る前に kiro-cli が『自律的に積み直すか人へ回すか』を裁定（既定 on）")
