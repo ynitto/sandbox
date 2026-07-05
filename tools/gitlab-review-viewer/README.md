@@ -262,6 +262,8 @@ start "" "gitlab-review-viewer://open?url=https%3A%2F%2Fgitlab.example.com%2Ftea
 ```
 tools/gitlab-review-viewer/
   package.json          # electron + electron-builder のみ（実行時依存なし）
+  assets/
+    icon.ico            # exe / ウィンドウアイコン（Fluent UI System Icons を加工）
   src/
     main/
       main.js           # ウィンドウ生成・webview 制御・プロキシ引き継ぎ・ディープリンク

@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### gitlab-review-viewer / kiro-projects-viewer: exe アイコンを追加
+
+- これまで未設定（Electron既定のアイコン）だった Windows exe / ウィンドウの
+  アイコンを設定。[Fluent UI System Icons](https://github.com/microsoft/fluentui-system-icons)
+  （Microsoft・MIT license）のグリフに角丸カラー背景を合成して `assets/icon.ico`
+  として生成し、`electron-builder` の `build.win.icon` と `BrowserWindow` の
+  `icon` オプション（開発起動時用）の両方から参照する
+  - gitlab-review-viewer: `clipboard_checkmark`（レビュー承認）＋ 赤系背景
+  - kiro-projects-viewer: `board`（ダッシュボード）＋ 青系背景
+
 ### kiro-projects-viewer: タスクグラフの gitlab ノードにイシューアイコン（1 クリックでレビュー起動）
 
 - **背景**: これまでタスクグラフのノードをクリックすると詳細パネルが開くだけで、関連 GitLab
