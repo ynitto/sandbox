@@ -212,7 +212,17 @@ function collectSearchCache() {
     type: $('type-select').value,
     state: $('state-select').value,
     keyword: $('keyword-input').value,
+    filtersCollapsed: $('filters').hidden,
   };
+}
+
+// 絞り込み条件パネルの折り畳み。折り畳むと下の候補一覧（flex:1）が縦に広がる。
+function setFiltersCollapsed(collapsed) {
+  $('filters').hidden = collapsed;
+  const btn = $('btn-toggle-filters');
+  btn.setAttribute('aria-expanded', String(!collapsed));
+  const chevron = btn.querySelector('.chevron');
+  if (chevron) chevron.textContent = collapsed ? '▸' : '▾';
 }
 
 let persistTimer = null;
@@ -240,6 +250,7 @@ function restoreSearchCache() {
   if (c.type) $('type-select').value = c.type;
   if (c.state) $('state-select').value = c.state;
   $('keyword-input').value = c.keyword || '';
+  setFiltersCollapsed(!!c.filtersCollapsed);
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +285,56 @@ async function loadProjects() {
     toast(`プロジェクト ${projects.length} 件を取得しました`);
     persistSearchCache();
   });
+}
+
+// 絞り込みのラベル欄は「カンマ区切りの文字列」を唯一の値として扱う。
+// プリセットのチップ選択も直接入力も、この文字列を編集するだけにして両立させる。
+function parseLabelInput() {
+  return $('label-input')
+    .value.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// ラベル変更ダイアログと同じプリセットを絞り込み用の選択チップとして表示する。
+// クリックでその 1 ラベルを付け外しする（複数選択可・AND）。直接入力とも同期。
+function renderLabelPresets() {
+  const wrap = $('label-presets');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const presets = (state.config && state.config.labelPresets) || [];
+  const current = new Set(parseLabelInput());
+  for (const preset of presets) {
+    if (!preset || !preset.label) continue;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'label-preset';
+    btn.dataset.label = preset.label;
+    btn.textContent = preset.label;
+    btn.classList.toggle('on', current.has(preset.label));
+    btn.addEventListener('click', () => toggleLabelPreset(preset.label));
+    wrap.appendChild(btn);
+  }
+}
+
+// 入力欄（＝直接入力）の内容に合わせてチップの選択状態を反映する
+function syncLabelPresetStates() {
+  const wrap = $('label-presets');
+  if (!wrap) return;
+  const current = new Set(parseLabelInput());
+  for (const btn of wrap.querySelectorAll('button')) {
+    btn.classList.toggle('on', current.has(btn.dataset.label));
+  }
+}
+
+function toggleLabelPreset(label) {
+  const labels = parseLabelInput();
+  const idx = labels.indexOf(label);
+  if (idx >= 0) labels.splice(idx, 1); // 再クリックで解除
+  else labels.push(label);
+  $('label-input').value = labels.join(',');
+  syncLabelPresetStates();
+  persistSearchCache();
 }
 
 async function loadLabelSuggestions() {
@@ -531,6 +592,26 @@ function rebuildPanes() {
   renderPanes();
 }
 
+// ページタブをペインの webview に表示する。MR は常にレビュー対象の差分（/diffs）を
+// 既定にする。通常表示（force=false）は開始 URL と異なるときだけナビゲートするが、
+// アクション後のリロード（force=true）では GitLab 埋め込み内でタブ移動して概要へ
+// ドリフトしていても差分ビューへ確実に戻す。src 属性の同値では webview が再読込
+// しないため、force 時は loadURL で明示的に読み込む（未 attach 時は reload で代替）。
+function loadPageTab(pane, tab, { force = false } = {}) {
+  const wv = $(`wv-${pane}`);
+  const startUrl = pageStartUrl(tab.page);
+  $(`url-${pane}`).value = startUrl;
+  const attrInSync = wv.getAttribute('src') === startUrl;
+  if (!force) {
+    if (!attrInSync) wv.setAttribute('src', startUrl);
+    return;
+  }
+  wv.setAttribute('src', startUrl);
+  if (attrInSync && typeof wv.loadURL === 'function') {
+    wv.loadURL(startUrl).catch(() => wv.reload());
+  }
+}
+
 function syncPane(pane) {
   const p = state.panes[pane];
   const tab = p.tabs[p.active];
@@ -547,9 +628,7 @@ function syncPane(pane) {
   if (tab.kind === 'page') {
     wv.style.display = 'flex';
     lv.hidden = true;
-    const startUrl = pageStartUrl(tab.page);
-    if (wv.getAttribute('src') !== startUrl) wv.setAttribute('src', startUrl);
-    urlEl.value = startUrl;
+    loadPageTab(pane, tab);
     return;
   }
   // リーダーモード / 要約のローカルタブ
@@ -907,7 +986,9 @@ function reloadPanes() {
   for (const pane of [0, 1]) {
     const p = state.panes[pane];
     const tab = p.tabs[p.active];
-    if (tab && tab.kind === 'page') $(`wv-${pane}`).reload();
+    // 表示中の GitLab ページを再読込する。MR は概要へドリフトしていても
+    // レビュー対象の差分（/diffs）へ確実に戻す（loadPageTab の force）。
+    if (tab && tab.kind === 'page') loadPageTab(pane, tab, { force: true });
   }
 }
 
@@ -1468,6 +1549,7 @@ async function saveSettings() {
   };
   await guard('設定保存', async () => {
     state.config = await api.saveConfig(cfg);
+    renderLabelPresets(); // ラベルプリセットの変更を絞り込みチップへ反映
     $('settings-dialog').close();
     toast('設定を保存しました');
   });
@@ -1519,6 +1601,14 @@ async function init() {
   } catch {
     /* 前回の検索条件の復元に失敗しても起動は続ける */
   }
+  renderLabelPresets(); // 復元した入力値に合わせてラベル選択チップを描画
+
+  $('btn-toggle-filters').addEventListener('click', () => {
+    setFiltersCollapsed(!$('filters').hidden);
+    persistSearchCache();
+  });
+  // 直接入力に合わせてラベル選択チップの状態を同期する
+  $('label-input').addEventListener('input', syncLabelPresetStates);
 
   $('btn-load-groups').addEventListener('click', loadGroups);
   $('btn-load-projects').addEventListener('click', loadProjects);

@@ -15,6 +15,11 @@
         <button id="btn-settings" title="設定">⚙</button>
       </div>
 
+      <button id="btn-toggle-filters" class="section-toggle" aria-expanded="true"
+              title="絞り込み条件パネルの表示 / 折り畳み">
+        <span>絞り込み条件</span><span class="chevron">▾</span>
+      </button>
+
       <section id="filters">
         <div class="field">
           <label for="group-search">グループ</label>
@@ -39,10 +44,11 @@
         </div>
 
         <div class="field">
-          <label for="label-input">ラベル（カンマ区切り・AND 条件）</label>
+          <label for="label-input">ラベル（AND 条件・クリック選択 / 直接入力可）</label>
           <input id="label-input" type="text" list="label-list"
                  placeholder="例: status:review-ready,priority:high" />
           <datalist id="label-list"></datalist>
+          <div id="label-presets" class="label-presets"></div>
         </div>
 
         <div class="field">

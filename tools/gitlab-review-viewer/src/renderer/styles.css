@@ -45,7 +45,39 @@ html, body {
 
 .sidebar-header h1 { font-size: 14px; margin: 0; color: var(--accent); }
 
+/* 絞り込み条件パネルの折り畳みトグル */
+.section-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  background: var(--bg2);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 6px 10px;
+  color: var(--muted);
+}
+.section-toggle:hover { color: var(--fg); border-color: var(--border); }
+.section-toggle .chevron { font-size: 10px; }
+
 #filters { padding: 10px; border-bottom: 1px solid var(--border); }
+
+/* ラベル絞り込みの選択チップ（ラベル変更ダイアログと同じプリセット・複数選択可） */
+.label-presets { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.label-preset {
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 1px 7px;
+  border-radius: 8px;
+  background: var(--bg3);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.label-preset.on { border-color: var(--green); color: var(--green); }
 
 .field { margin-bottom: 8px; }
 .field label { display: block; color: var(--muted); margin-bottom: 3px; }
