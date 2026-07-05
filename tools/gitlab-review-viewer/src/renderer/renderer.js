@@ -893,23 +893,27 @@ function renderTargetInfo() {
   $('btn-change').disabled = !t;
 
   const approve = $('btn-approve');
+  // マージ対象は右ペインのアクティブタブの MR（対象が MR ならそれ自身）。
+  const approveMr = t && (t.type === 'mr' ? t : activeMR());
   if (!t) {
     approve.disabled = true;
     approve.title = '';
   } else if (status === 'elaborated') {
     approve.disabled = false;
     approve.title = 'status:open に進める';
-  } else if (status === 'approved') {
-    // マージ対象は右ペインのアクティブタブの MR。マージ可否（コンフリクト等）の
-    // 確認は実行時に行い、ここでは対象 MR の有無だけで活性を決める。
-    const mr = t.type === 'mr' ? t : activeMR();
-    approve.disabled = !mr;
-    approve.title = mr
-      ? `${pageLabel(mr)} をマージ${t.type === 'issue' ? 'してイシューをクローズ' : ''}する`
-      : '右ペインに操作対象の MR がありません';
+  } else if (status === 'approved' && approveMr) {
+    // マージ可否（コンフリクト等）の確認は実行時に行う。
+    approve.disabled = false;
+    approve.title = `${pageLabel(approveMr)} をマージ${t.type === 'issue' ? 'してイシューをクローズ' : ''}する`;
+  } else if (t.type === 'issue' && !approveMr) {
+    // 紐づく MR のないイシューは、承認で確認のうえイシューをクローズできる
+    approve.disabled = false;
+    approve.title = 'イシューをクローズする（MR なし・確認あり）';
   } else {
     approve.disabled = true;
-    approve.title = 'status:elaborated / status:approved のときだけ使えます';
+    approve.title = approveMr
+      ? 'status:approved のときだけマージできます'
+      : 'status:elaborated / status:approved のときだけ使えます';
   }
 }
 
@@ -1015,8 +1019,23 @@ async function doApprove() {
     });
     return;
   }
-  if (status !== 'approved') return;
   const mr = t.type === 'mr' ? t : activeMR();
+  // 紐づく MR のないイシュー: 承認として確認のうえイシューをクローズする
+  // （マージ対象が無いのでステータスによらずクローズできる。elaborated は上で処理済み）
+  if (t.type === 'issue' && !mr) {
+    await guard('承認', async () => {
+      const msg = `${pageLabel(t)} には紐づく MR がありません。承認としてこのイシューをクローズします。よろしいですか？`;
+      if (!(await confirmDialog(msg))) return;
+      await api.glComment(targetOf(t), actionComment('承認'));
+      const closed = await api.glSetState(targetOf(t), 'close');
+      applyUpdatedItem(closed);
+      $('comment-input').value = '';
+      reloadPanes();
+      toast(`${pageLabel(t)} をクローズしました（MR なし）`);
+    });
+    return;
+  }
+  if (status !== 'approved') return;
   if (!mr) return toast('右ペインに操作対象の MR がありません', true);
   const closesIssue = t.type === 'issue';
   await guard('承認', async () => {
