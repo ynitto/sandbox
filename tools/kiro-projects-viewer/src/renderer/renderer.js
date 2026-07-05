@@ -883,14 +883,29 @@ const FLOW_STATE_LABEL = {
   waiting: '依存待ち',
 };
 
-// kiro-flow daemon の稼働バッジ（ロックファイル＋pid のファイル判定。CLI 不要）
+// kiro-flow daemon の稼働バッジ。
+//   via='lock'        … 同一ホストのロックファイル（pid 生存）で確定判定
+//   via='status-sync' … state_git（鏡）越しに同期された status.json による推定（同期遅延を許容）
+//   via='none'         … 判定材料なし
 function daemonBadge() {
   const d = state.flowDaemon;
   if (!d) return '';
-  if (d.running === true)
-    return `<span class="status-chip st-running" title="pid ${d.pid}（${esc(d.lockPath)}）">daemon 稼働中</span>`;
-  if (d.running === false)
+  const synced = d.via === 'status-sync';
+  if (d.running === true) {
+    const detail = synced
+      ? `同期経由の推定・最終確認 ${fmtAgoSec(d.ageSec)}${d.orchestrators !== undefined ? `・run ${d.orchestrators}/worker ${d.workers}` : ''}`
+      : `pid ${d.pid}（${esc(d.lockPath)}）`;
+    return `<span class="status-chip st-running" title="${esc(detail)}">daemon 稼働中${synced ? '（推定）' : ''}</span>`;
+  }
+  if (d.running === false) {
+    if (synced) {
+      return `<span class="status-chip" title="status.json 同期経由・最終確認 ${fmtAgoSec(d.ageSec)}が鮮度窓を超過">daemon 不明（同期経由）</span>`;
+    }
+    if (d.via === 'none') {
+      return `<span class="status-chip" title="ロックも status.json も無し">daemon 停止/判定不能</span>`;
+    }
     return `<span class="status-chip st-closed" title="${esc(d.lockPath)}">daemon 停止</span>`;
+  }
   return `<span class="status-chip" title="ロックはあるが pid を読めない: ${esc(d.lockPath)}">daemon 不明</span>`;
 }
 

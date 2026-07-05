@@ -2169,6 +2169,21 @@ class DaemonE2ETests(unittest.TestCase):
             for nid, r in final["results"].items():
                 self.assertEqual(r["status"], "done", f"{run_id}/{nid}: {r}")
 
+    def test_daemon_writes_status_json_on_startup(self):
+        # cmd_daemon の起動直後の write_daemon_status 呼び出しが実際に配線されていることを、
+        # サブプロセスとして起動した実 daemon で確認する（state_git 無しでもローカルに書く）。
+        self._start_daemon()
+        status = os.path.join(self.bus, "status.json")
+        deadline = time.time() + 15
+        rec = None
+        while time.time() < deadline and rec is None:
+            rec = kf.read_json(status) if os.path.exists(status) else None
+            if rec is None:
+                time.sleep(0.2)
+        self.assertIsNotNone(rec, "status.json が起動後に現れませんでした")
+        self.assertIn("pid", rec)
+        self.assertIn("updated_iso", rec)
+
 
 class FinalResultNodeTests(unittest.TestCase):
     def test_prefers_aggregation_sink(self):
@@ -3383,6 +3398,128 @@ class StateGitSyncTests(unittest.TestCase):
         kf.state_sync(self._args(), force=True)
         got = self._other("check")
         self.assertFalse((got / "kf" / "runs" / "run1").exists())
+
+
+class DaemonStatusHeartbeatTests(unittest.TestCase):
+    """daemon の生存信号（status.json）。kiro-projects の write_status/--status-interval と
+    同じ考え方: 実イベント（run 終端・生存リース push）時は既存の state_sync/push に相乗り
+    （追加 push 無し）、アイドル中の更新は --status-interval（既定 0=無効）が opt-in。
+    GitBus（--git）モードでは書かない（sparse-checkout が対象外パスのため）。"""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-status-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus_root = self.tmp / "bus"
+
+    def _args(self, **kw):
+        base = dict(bus=str(self.bus_root), git=None, state_git_interval=300.0,
+                    status_interval=0.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _bus(self):
+        return kf.Bus(str(self.bus_root), "_")
+
+    def _status_path(self):
+        return self.bus_root / "status.json"
+
+    def test_write_daemon_status_content(self):
+        bus = self._bus()
+        kf.write_daemon_status(self._args(status_interval=60.0), bus, "host-1", {"r1": None}, [1, 2])
+        rec = json.loads(self._status_path().read_text(encoding="utf-8"))
+        self.assertEqual(rec["node_id"], "host-1")
+        self.assertEqual(rec["orchestrators"], 1)
+        self.assertEqual(rec["workers"], 2)
+        self.assertIn("updated_iso", rec)
+        self.assertEqual(rec["fresh_after_sec"], 600.0)   # 2 * state_git_interval
+
+    def test_fresh_after_sec_floor_and_larger_wins(self):
+        self.assertEqual(kf._daemon_status_fresh_after_sec(
+            self._args(state_git_interval=0.0, status_interval=0.0)), 120.0)   # フロア
+        self.assertEqual(kf._daemon_status_fresh_after_sec(
+            self._args(state_git_interval=300.0, status_interval=1000.0)), 2000.0)  # 大きい方
+
+    def test_write_daemon_status_noop_in_gitbus_mode(self):
+        bus = self._bus()
+        kf.write_daemon_status(self._args(git="https://example/bus.git"), bus, "host-1", {}, [])
+        self.assertFalse(self._status_path().exists())
+
+    def test_maybe_heartbeat_disabled_by_default_touches_nothing(self):
+        bus = self._bus()
+        kf.maybe_heartbeat_daemon_status(self._args(status_interval=0.0), bus, "host-1", {}, [])
+        self.assertFalse(self._status_path().exists())
+
+    def test_maybe_heartbeat_enabled_throttles_to_interval(self):
+        bus = self._bus()
+        args = self._args(status_interval=100.0)
+        kf.maybe_heartbeat_daemon_status(args, bus, "host-1", {}, [])   # 未作成 → 書く
+        self.assertTrue(self._status_path().exists())
+        first_mtime = self._status_path().stat().st_mtime
+        kf.maybe_heartbeat_daemon_status(args, bus, "host-1", {}, [])   # 直後の再呼び出しは間隔未満
+        self.assertEqual(self._status_path().stat().st_mtime, first_mtime)
+        old = time.time() - 101.0
+        os.utime(self._status_path(), (old, old))                       # 間隔経過を模擬
+        kf.maybe_heartbeat_daemon_status(args, bus, "host-1", {}, [])
+        self.assertGreater(self._status_path().stat().st_mtime, old)
+
+    def test_maybe_heartbeat_noop_in_gitbus_mode(self):
+        bus = self._bus()
+        kf.maybe_heartbeat_daemon_status(
+            self._args(git="https://example/bus.git", status_interval=1.0), bus, "host-1", {}, [])
+        self.assertFalse(self._status_path().exists())
+
+
+class DaemonStatusStateGitSyncTests(unittest.TestCase):
+    """status.json は StateGit._scan() がバス全体を走査するため、既存の state_git 機構へ
+    追加設定なしで乗る（GitBus 側のような sparse-checkout の拡張は不要）ことを確認する。
+    StateGitSyncTests と同じ道具立て（bare remote + 別クローンで検証）。"""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-status-sg-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        kf._STATE_GITS.clear()
+        self.remote = self.tmp / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
+        subprocess.run(["git", "-C", str(self.remote), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        self.bus_root = self.tmp / "bus"
+
+    def _args(self, **kw):
+        base = dict(bus=str(self.bus_root), git=None, run_id=None,
+                    state_git=str(self.remote), state_git_branch="main",
+                    state_git_subdir="kf", state_git_interval=0.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _other(self, name="other") -> pathlib.Path:
+        d = self.tmp / name
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(d)],
+                       check=True, capture_output=True)
+        return d
+
+    def test_status_json_mirrors_via_existing_state_sync(self):
+        bus = kf.Bus(str(self.bus_root), "_")
+        kf.write_daemon_status(self._args(), bus, "host-1", {}, [])
+        kf.state_sync(self._args(), force=True)
+        got = self._other()
+        rec = json.loads((got / "kf" / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(rec["node_id"], "host-1")
+
+    def test_idle_heartbeat_disabled_produces_no_extra_commit_beyond_status_write(self):
+        # --status-interval 無効時、アイドル中に status.json を書き直さなければ、2 回目の
+        # sync（interval 経過を模擬）は新しいコミットを作らない（＝追加の push が無い）。
+        bus = kf.Bus(str(self.bus_root), "_")
+        args = self._args(state_git_interval=3600.0)
+        kf.write_daemon_status(args, bus, "host-1", {}, [])
+        kf.state_sync(args, force=True)
+        sg = kf.state_git_for(args)
+        before = subprocess.run(["git", "-C", str(sg.clone), "rev-parse", "HEAD"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        sg._last_remote = 0.0                     # interval 経過を模擬（次回は "due" になる）
+        kf.state_sync(args)                        # status.json を書き直していないので差分なし
+        after = subprocess.run(["git", "-C", str(sg.clone), "rev-parse", "HEAD"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

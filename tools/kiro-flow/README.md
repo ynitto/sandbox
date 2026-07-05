@@ -449,6 +449,34 @@ state_git_interval: 300                          # fetch/push の最短間隔（
 同期が走るのは `daemon` の poll ループ（間隔律速）・run 終端時（即時）・`run` の待機ループ。viewer 側の
 組み方（clone または git-file-sync の pair + フロータブのバス発見）は kiro-projects-viewer の README を参照。
 
+### daemon の生存信号（status.json）— リモート viewer の稼働判定
+
+daemon の稼働検知は本来ロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock`。
+pid のみ記録）で行うが、これは**同一ホスト限定**——state_git（鏡）越しにバスを見ているリモートの
+viewer からは、daemon 自身の一時領域にあるこのファイルへ絶対に届かない。`<bus>/status.json`
+（`host`/`pid`/`node_id`/`orchestrators`/`workers`/`updated_iso`/`fresh_after_sec`）を daemon が
+書き、これも state_git で同期することで、viewer 側にロック不在時のフォールバック判定材料を渡す。
+
+```json
+{"host": "myserver", "pid": 4242, "node_id": "myserver-4242",
+ "orchestrators": 1, "workers": 2,
+ "updated_iso": "2026-07-05T03:34:24Z", "fresh_after_sec": 600}
+```
+
+- **`bus.root` 直下に置くだけで既存の state_git がそのまま同期する**: `StateGit._scan()` はバスの
+  ツリー全体を走査するため、GitBus（`--git`）側のような sparse-checkout の追加設定は不要。
+  GitBus モードでは書かない（sparse-checkout が `runs/`/`inbox/`（or `--git-subdir`）しか
+  展開せず、対象外パスへの書き込みが `git add -A` を壊しかねないため。state_git と `--git` は
+  元々ここでも相互排他）。
+- **アイドル中の追加コミットは既定でゼロ**: 起動時に一度だけローカルへ書き、以降は実イベント
+  （run 終端・「駆動中の run の生存リース」push）のタイミングで書き直し、その他ファイルの変更と
+  **同じコミットに相乗り**する（単体では追加の push を生まない）。`--status-interval`
+  （daemon サブコマンドの引数。既定 `0`＝無効）を指定しない限り、アイドル中は status.json に
+  一切触れない。完全アイドルのままでも、起動直後に一度書いた内容が既存の `state_sync`（自身の
+  `state_git_interval` で律速）に拾われるため、`state_git_interval` 以内には生存が可視化される。
+- `fresh_after_sec` は daemon が自分の同期間隔（`state_git_interval`/`status_interval` の
+  大きい方の 2 倍・下限 120 秒）から計算して埋め込むため、viewer 側は単純な経過時間比較だけで済む。
+
 ## 自動アップデート（既定 on）
 
 スキルリポジトリ（このツールの配布元）の **main ブランチに更新が入ったら、daemon のアイドル時に自動で取り込む**。

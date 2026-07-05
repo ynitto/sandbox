@@ -125,6 +125,7 @@ CONFIG_DEFAULTS = {
     "state_git_branch": "main",         # 同期先ブランチ
     "state_git_subdir": "kiro-flow",    # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
+    "status_interval": 0.0,             # daemon アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
@@ -1336,6 +1337,67 @@ def state_git_for(args) -> "StateGit | None":
         _STATE_GITS[key] = StateGit(bus_root, args.state_git, args.state_git_branch,
                                     args.state_git_subdir, args.state_git_interval)
     return _STATE_GITS[key]
+
+
+def daemon_status_path(bus: Bus) -> str:
+    return os.path.join(bus.root, "status.json")
+
+
+def _daemon_status_fresh_after_sec(args) -> float:
+    """リモート viewer が『稼働中』と信じてよい経過秒数の目安。state_git/status の同期間隔
+    から書き手（自分の設定を知っている側）が計算し、viewer 側は単純比較だけで済むようにする。
+    kiro-projects の同名関数（write_status 側）と同じ考え方。"""
+    intervals = [v for v in (getattr(args, "state_git_interval", 0.0),
+                             getattr(args, "status_interval", 0.0)) if v and v > 0]
+    return max([2.0 * v for v in intervals] + [120.0])
+
+
+def write_daemon_status(args, bus: Bus, daemon_id: str, orchestrators: dict, workers: list) -> None:
+    """status.json（生存信号）を書く。state_git（鏡）越しにリモートの kiro-projects-viewer が
+    『daemon が今も生きているか』を判定するための最小スナップショット（bus.root 直下）。
+    _scan() はバスのツリー全体を走査するため、ここに置くだけで既存の StateGit がそのまま
+    同期対象に含める（GitBus 側のような sparse-checkout の追加設定は不要）。
+    実イベント（run 終端・生存リース push）のタイミングで呼べば、そのイベントで既に走る
+    state_sync/push に相乗りする＝これ単体で追加の push を生まない。
+
+    GitBus（--git）モードでは書かない: GitBus の sparse-checkout は `runs/`/`inbox/`（or
+    --git-subdir）しか作業ツリーに展開しないため、bus_root 直下のファイルは対象外の
+    パスになり、GitBus.sync_push() の `git add -A` を壊しかねない（state_git と --git は
+    元々ここでも相互排他 — state_git_for() と同じ前提）。"""
+    if getattr(args, "git", None):
+        return
+    rec = {
+        "host": socket.gethostname(), "pid": os.getpid(), "node_id": daemon_id,
+        "orchestrators": len(orchestrators), "workers": len(workers),
+        "updated_iso": now_iso(), "fresh_after_sec": _daemon_status_fresh_after_sec(args),
+    }
+    try:
+        p = daemon_status_path(bus)
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def maybe_heartbeat_daemon_status(args, bus: Bus, daemon_id: str, orchestrators: dict,
+                                  workers: list) -> None:
+    """daemon アイドル中の任意の生存信号更新（`--status-interval`。既定 0＝無効）。
+    無効時は status.json に一切触れない＝state_git の commit-if-diff で追加コミットを
+    作らない（idle の git 負荷は今日と同じゼロ）。有効時も前回書き込みから
+    status_interval 秒経つまでは触らず、書き込み頻度を利用者の指定した間隔に抑える。
+    GitBus（--git）モードでは何もしない（write_daemon_status 側の理由と同じ）。"""
+    if getattr(args, "git", None):
+        return
+    interval = float(getattr(args, "status_interval", 0.0) or 0.0)
+    if interval <= 0:
+        return
+    try:
+        age = time.time() - os.path.getmtime(daemon_status_path(bus))
+    except OSError:
+        age = float("inf")     # 未作成 → 書く
+    if age >= interval:
+        write_daemon_status(args, bus, daemon_id, orchestrators, workers)
 
 
 def state_sync(args, force: bool = False) -> None:
@@ -3472,6 +3534,10 @@ def cmd_daemon(args) -> int:
     signal.signal(signal.SIGTERM, lambda *_: (shutdown(), sys.exit(143)))
 
     log(daemon_id, f"daemon 起動 bus={mode} max_workers={args.max_workers} poll={args.poll}")
+    # 起動直後に一度だけ書いておく（ここでは push しない＝新規 push トリガーは増やさない）。
+    # state_git 有効時は既存の毎 tick state_sync(args) が自分の interval で自然に拾って
+    # 押し出すため、完全アイドルのままでも state_git_interval 以内に生存が可視化される。
+    write_daemon_status(args, bus, daemon_id, orchestrators, workers)
     cleanup_interval = float(args.cleanup_interval)
     # 起動直後に 1 回掃除しないよう、最初の判定は interval 後になるよう初期化
     last_cleanup = time.time()
@@ -3486,6 +3552,7 @@ def cmd_daemon(args) -> int:
     while not stop["v"]:
         bus.sync_pull()
         state_sync(args)   # 状態 git: バス状態の共有と inbox 投入の取り込み（間隔律速・ローカルバス時のみ）
+        maybe_heartbeat_daemon_status(args, bus, daemon_id, orchestrators, workers)  # --status-interval のときだけ
         # 一時ファイルの自動クリーンアップ（ロック / 中間 .tmp / 孤立クローン）を定期実行
         if cleanup_interval > 0 and time.time() - last_cleanup >= cleanup_interval:
             last_cleanup = time.time()
@@ -3530,6 +3597,7 @@ def cmd_daemon(args) -> int:
                 log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
         workers = [(r, p) for r, p in workers if p.poll() is None]
         if finished_runs:
+            write_daemon_status(args, bus, daemon_id, orchestrators, workers)  # 相乗り（追加 push 無し）
             state_sync(args, force=True)   # 状態 git: 終端した run の結果を間隔を待たず共有側へ
 
         # 自分が回している run の生存リースを更新（再起動後の自分・別デーモンへ「駆動中」を示す）。
@@ -3537,6 +3605,7 @@ def cmd_daemon(args) -> int:
         for rid in orchestrators:
             bus.touch_run(rid, lease_window)
         if orchestrators and time.time() >= next_heartbeat_push:
+            write_daemon_status(args, bus, daemon_id, orchestrators, workers)  # 相乗り（追加 push 無し）
             bus.sync_push("heartbeat: 駆動中の run の生存リースを更新")
             next_heartbeat_push = time.time() + lease_window / 3.0
 
@@ -4804,6 +4873,12 @@ def main() -> int:
                     help="孤立クローンを掃除するまでのアイドル時間（時間, 既定 24）")
     dm.add_argument("--no-cleanup", dest="cleanup_interval", action="store_const", const=0.0,
                     help="一時ファイルの自動掃除を無効化する")
+    dm.add_argument("--status-interval", dest="status_interval", type=float, default=None,
+                    help="state_git（鏡）越しにリモートの kiro-projects-viewer が daemon の生存を"
+                         "判定するための status.json を、アイドル中もこの間隔（秒）で更新する"
+                         "（既定 0＝無効。無効時はアイドル中 status.json に一切触れず、state_git の"
+                         "commit-if-diff で追加コミットを作らない）。real な run イベント時は"
+                         "この設定に関わらず既存の sync に相乗りして常に最新化される")
     dm.set_defaults(func=cmd_daemon)
 
     sb = sub.add_parser("submit", help="要求を inbox に投入（デーモンが拾う）")

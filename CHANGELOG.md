@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow / kiro-projects-viewer: フロータブでもリモート daemon の生存信号（status.json）を追加
+
+- **背景**: kiro-projects 側に実装した daemon 生存信号（state_git 経由でリモート viewer が稼働判定
+  できるようにする機能）と同じギャップが、kiro-flow の daemon にもあった——フロータブの daemon
+  稼働判定はロックファイル（`$TMPDIR/kiro-flow-locks/`）の pid 判定のみで、**同一ホスト限定**。
+  state_git（鏡）越しにバスを見ているリモート viewer からは daemon の一時領域に届かず、常に
+  「判定不能」になっていた
+- **`<bus>/status.json`**: kiro-flow の daemon が `host`/`pid`/`node_id`/`orchestrators`/`workers`/
+  `updated_iso`/`fresh_after_sec` を書く。`StateGit._scan()` はバスのツリー全体を走査するため、
+  `bus.root` 直下に置くだけで既存の state_git がそのまま同期対象に含める（GitBus 側のような
+  sparse-checkout の追加設定は不要）
+- **idle 中の追加コミットは既定でゼロ**: 起動時に一度だけローカルへ書き、以降は実イベント
+  （run 終端・「駆動中の run の生存リース」push）時に既存の sync/push へ相乗りする。
+  `--status-interval`（`daemon` サブコマンドの引数。既定 `0`＝無効）を指定したときだけ、
+  アイドル中もその間隔で status.json を更新する（kiro-projects 側と同じトレードオフ）
+- **GitBus（`--git`）モードでは書かない**: sparse-checkout が `runs/`/`inbox/`（or
+  `--git-subdir`）しか作業ツリーに展開せず、対象外パスへの書き込みが `sync_push()` の
+  `git add -A` を壊しかねないため（state_git と `--git` は元々ここでも相互排他）
+- **kiro-projects-viewer（フロータブ）**: `daemonStatus()` がロックファイル（同一ホスト・確定）→
+  status.json（同期経由・推定）の順でフォールバックするようになった。daemon バッジは
+  判定根拠を区別して表示（「稼働中（推定）」／「不明（同期経由）」＋最終確認からの経過時間・
+  run/worker 数）
+
 ### kiro-projects / kiro-projects-viewer: リモート daemon の生存信号（status.json）— 別ホストでも稼働判定できるように
 
 - **背景**: kiro-projects-viewer を daemon の稼働ホストとは別の PC で使う場合（`state_git` 経由でリモート本体の

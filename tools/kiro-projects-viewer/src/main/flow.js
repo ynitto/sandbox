@@ -8,7 +8,9 @@
 // 依存未達の pending は表示上 waiting として区別する（kiro-flow に明示状態は無い）。
 // run の生存（orchestrator が駆動中か）も meta.json の生存リース
 // （orch_lease_until / heartbeat_at）から、daemon の稼働はロックファイル
-// （$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock）から、いずれもファイルだけで判定する。
+// （$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock。同一ホストのみ）から、無ければ
+// <bus>/status.json（state_git 越しに同期された生存信号。別ホスト構成のフォールバック）
+// から、いずれもファイルだけで判定する。
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -355,21 +357,47 @@ function pidAlive(pid) {
   }
 }
 
-// 対象バスの kiro-flow daemon が稼働中か。kiro-projects の daemon_running と同じく
-// daemon が記録した pid の生存で判定する（Node に flock 判定は無いため pid のみ。
-// これは kiro-projects の fcntl 不在時フォールバックと同じ根拠）。
+// <busDir>/status.json — kiro-flow の生存信号（write_daemon_status が書く）。本体が state_git
+// （鏡）越しにバス状態を同期する別ホスト構成のとき、ロックファイルは本体側の一時領域にあって
+// ここには絶対に無い（sha1 の元になる bus パス自体が別ホストの --bus 値で、このクローンの
+// busDir とは無関係）。その場合の唯一の生存根拠がこれ。kiro-projects の readStatus と同じ考え方。
+function readDaemonStatus(busDir) {
+  const rec = readJson(path.join(busDir, 'status.json'));
+  if (!rec || typeof rec !== 'object') return null;
+  const updatedMs = Date.parse(rec.updated_iso || '');
+  if (isNaN(updatedMs)) return null;
+  const ageSec = (Date.now() - updatedMs) / 1000;
+  const freshSec = Number(rec.fresh_after_sec) || 120;
+  return { ...rec, ageSec, fresh: ageSec >= 0 && ageSec <= freshSec };
+}
+
+// 対象バスの kiro-flow daemon が稼働中か。
+//  1. 同一ホストのロックファイル（pid 生存）で確定判定（従来どおり。kiro-projects の
+//     daemon_running と同じく pid のみ判定＝fcntl 不在時フォールバックと同じ根拠）
+//  2. ロックが無ければ status.json（state_git 越しの同期・同期遅延を許容した推定）へ
+//     フォールバック（GitBus 分散実行のバスは対象外＝write_daemon_status が書かないため
+//     status.json 自体が存在せず、自然に判定不能へ落ちる）
 // running: true=稼働中 / false=停止 / null=判定不能（ロックはあるが pid を読めない等）
+// via: 'lock'（確定）／'status-sync'（同期経由の推定）／'none'（判定材料なし）
 function daemonStatus(busDir, lockDir) {
   const lockPath = daemonLockPath(busDir, lockDir);
   let raw;
   try {
     raw = fs.readFileSync(lockPath, 'utf8');
   } catch {
-    return { running: false, pid: 0, lockPath };
+    const status = readDaemonStatus(busDir);
+    if (status) {
+      return {
+        running: status.fresh, pid: status.pid || 0, lockPath, via: 'status-sync',
+        ageSec: Math.round(status.ageSec), nodeId: status.node_id,
+        orchestrators: status.orchestrators, workers: status.workers,
+      };
+    }
+    return { running: false, pid: 0, lockPath, via: 'none' };
   }
   const pid = parseInt(raw.trim().split('\n')[0], 10) || 0;
-  if (!pid) return { running: null, pid: 0, lockPath };
-  return { running: pidAlive(pid), pid, lockPath };
+  if (!pid) return { running: null, pid: 0, lockPath, via: 'lock' };
+  return { running: pidAlive(pid), pid, lockPath, via: 'lock' };
 }
 
 module.exports = {
@@ -378,6 +406,7 @@ module.exports = {
   readNodeEvents,
   listRuns,
   daemonStatus,
+  readDaemonStatus,
   runAlive,
   resubmitRun,
   prepareRunDeletion,
