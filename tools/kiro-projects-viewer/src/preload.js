@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('api', {
   enqueueTask: (dir, spec) => invoke('kiro:enqueue', { dir, spec }),
   runAction: (args) => invoke('kiro:action', args),
 
+  createProject: (spec) => invoke('kiro:createProject', { spec }),
+  readProjectFile: (dir, name) => invoke('kiro:readFile', { dir, name }),
+  writeProjectFile: (dir, name, content) => invoke('kiro:writeFile', { dir, name, content }),
+
   glEnrich: (urls) => invoke('gitlab:enrich', { urls }),
   glProjectIssues: (args) => invoke('gitlab:projectIssues', args),
 

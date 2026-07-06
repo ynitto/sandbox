@@ -255,6 +255,21 @@ Obsidian が起動する。
 - プロトコル登録は NSIS インストーラ、または起動時の `setAsDefaultProtocolClient` で
   行われる（portable exe は一度起動すれば登録される）
 
+### 起動済みインスタンスへの即時ハンドオフ（ローカル IPC・portable 連携の高速化）
+
+起動時にローカル IPC エンドポイント（Windows: 名前付きパイプ `\\.\pipe\gitlab-review-viewer-<key>`
+／その他: `os.tmpdir()` 配下の Unix ドメインソケット。`<key>` は username から決定的に導出＝
+ユーザーごとに分離）を開き、`gitlab-review-viewer://…` を 1 行受け取ると `second-instance`
+（argv 経由の連携起動）と同じく対象を開く（`src/main/handoff.js`）。
+
+これは **portable exe の連携起動を速くするため**。呼び出し側（kiro-projects-viewer の `exe`
+モード）が portable exe を argv 付きで再起動すると、既に起動済みでも OS は毎回「自己展開 →
+Electron 起動 → single-instance で転送 → 即終了」の 2 個目プロセス立ち上げコスト（数秒）を
+必ず払う。呼び出し側はまずこのエンドポイントへ接続を試み、**届けば URL を送るだけで即座に
+既存ウィンドウが対象を開く**（exe を再起動しない）。未起動なら接続に失敗するので、そのときだけ
+従来どおり exe を argv 付きで起動する。ローカルユーザー限定のソケットで、扱う URL は
+`gitlab-review-viewer://` のみ（既存の argv / protocol 経路と同じ信頼境界）。アプリ終了時に閉じる。
+
 ```bash
 # 例: コマンドラインから
 start "" "gitlab-review-viewer://open?url=https%3A%2F%2Fgitlab.example.com%2Fteam%2Fapp%2F-%2Fissues%2F42"
@@ -270,6 +285,7 @@ tools/gitlab-review-viewer/
   src/
     main/
       main.js           # ウィンドウ生成・webview 制御・プロキシ引き継ぎ・ディープリンク
+      handoff.js        # 起動済みインスタンスへの即時ハンドオフ（ローカル IPC サーバ）
       config.js         # 設定と検索条件キャッシュの読み書き
       gitlab.js         # GitLab REST API v4 クライアント（net.fetch）
       agent.js          # ローカル CLI エージェント実行（要約）

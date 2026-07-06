@@ -494,8 +494,10 @@ kiro-projects run --watch --state-git git@example.com:team/kiro-state.git   # CL
   **force push は決してしない**（他者のコミットを壊さない）。
 - **双方向で、衝突は決定的に裁定**: 前回同期スナップショット（manifest）基準の 3-way で「どちらが変えたか」を
   判定して橋渡しする。同時変更だけを **人の入力パス（`commands/`・`inbox/`・`needs/`・`policy.md`・
-  `charter.md`）はリモート優先／機械状態（backlog・journal・decisions …）はローカル優先**の規則で決める。
-  一時/ホスト局所の状態（`bus/`・`claims/`）は同期しない。
+  `charter.md`・`repos.{json,yaml,yml}`）はリモート優先／機械状態（backlog・journal・decisions …）は
+  ローカル優先**の規則で決める。一時/ホスト局所の状態（`bus/`・`claims/`）は同期しない。
+  （`repos.*` は人が書くレジストリ。charter から自動生成された `repos.json` はリモート優先で取り込んでも
+  次の run が charter から再生成するため charter が正のまま保たれ、手書き＝`_meta` 無しだけが残る）。
 
 同期は run のパス開始（指示の取り込み）・パス終了（結果の押し出し）・watch の idle（間隔律速の pull）で走る。
 ネットワーク断・リポジトリ不通でも**ループは殺さず** journal に残して続行する（done の確定・消化は state_git に

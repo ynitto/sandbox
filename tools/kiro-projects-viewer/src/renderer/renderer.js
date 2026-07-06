@@ -17,6 +17,8 @@ const state = {
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）
   backlogFilter: 'active',
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
+  editFile: null, // {dir, name, file}（編集中のプロジェクトファイル）
+  enqueueExtra: null, // {level, track}（再投入で引き継ぐが UI に出さない値）
   timer: null,
   busy: false,
 };
@@ -40,6 +42,17 @@ function toast(msg, ok = false) {
   el.classList.remove('hidden');
   clearTimeout(toast._t);
   toast._t = setTimeout(() => el.classList.add('hidden'), ok ? 3000 : 8000);
+}
+
+// レビュー引き継ぎ結果のトースト。exe-running は「起動」ではなく既に起動中の
+// gitlab-review-viewer への即時ハンドオフ（portable exe の再起動コストを回避した経路）。
+function reviewToast(via) {
+  toast(
+    via === 'exe-running'
+      ? '起動中の gitlab-review-viewer に引き継ぎました'
+      : `gitlab-review-viewer を起動しました（${via}）`,
+    true
+  );
 }
 
 async function guard(label, fn) {
@@ -189,7 +202,9 @@ function renderTree() {
   const { containers, instances } = state.discovery;
   if (!containers.length) {
     tree.innerHTML =
-      '<div class="empty">コンテナが見つかりません。<br>⚙ 設定で .kiro-projects のパスを追加するか、<br>kiro-projects を稼働させてください。</div>';
+      '<div class="empty">コンテナが見つかりません。<br>⚙ 設定で .kiro-projects のパスを追加するか、<br>kiro-projects を稼働させてください。<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>';
+    const nb = $('btn-empty-new');
+    if (nb) nb.addEventListener('click', openNewProject);
   } else {
     tree.innerHTML = containers
       .map((c) => {
@@ -293,6 +308,17 @@ function renderOverview() {
     return;
   }
   const parts = [];
+
+  // プロジェクトファイルの編集（人が書く上位入力: charter / policy / repos）
+  parts.push(`<div class="card full edit-toolbar">
+    <h3>プロジェクトファイル</h3>
+    <div class="row">
+      <button class="chip" data-edit="charter.md">✎ charter.md</button>
+      <button class="chip" data-edit="policy.md">✎ policy.md</button>
+      <button class="chip" data-edit="repos.json">✎ repos.json</button>
+      <span class="muted">charter を編集すると次の run で backlog（後段データ）に反映されます</span>
+    </div>
+  </div>`);
 
   // ステータスタイル
   const tiles = STATUS_ORDER.map(
@@ -427,6 +453,10 @@ function renderOverview() {
   }
 
   el.innerHTML = parts.join('\n');
+
+  for (const b of el.querySelectorAll('button[data-edit]')) {
+    b.addEventListener('click', () => openEditFile(b.dataset.edit));
+  }
 }
 
 function linkify(text) {
@@ -711,22 +741,24 @@ function renderBacklog() {
     <div class="filters">${chips}<span class="muted">${tasks.length} 件</span>
       ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="${esc(p.inboxFiles.join(', '))}">inbox 取り込み待ち ${p.inboxFiles.length}</span>` : ''}
       <span class="spacer"></span>
-      <button id="btn-enqueue" class="primary-inline">＋ タスクを追加</button>
+      <button id="btn-enqueue" class="primary-inline" title="バックログにタスクを 1 件追加します（inbox 経由）">＋ バックログに追加</button>
     </div>
+    <details class="backlog-help">
+      <summary>バックログの変え方（すべて公式契約・即時ではありません）</summary>
+      <div class="muted">
+        <b>追加</b>: 「＋ バックログに追加」→ <code class="mono">inbox</code> に 1 件投入。本体が次サイクルで backlog タスク（<code class="mono">backlog/&lt;id&gt;.md</code>）にします。<br>
+        <b>変更</b>: 行をクリック →「✎ 修正して指示（revise）」で title・優先度・verify・accept・依存 after・note・level・track を置換＋フィードバック注入。<br>
+        <b>タスクグラフの再構築</b>: revise は本体が取り込むと <code class="mono">rev</code> を上げ、kiro-flow に新しいタスクグラフ（run の DAG）を作らせます（実行中タスクは現在の試行を破棄して積み直し）。依存 after を変えるとグラフの形が変わります。<br>
+        いずれも状態（done 等）は直接書き換えません（done は verify のみが根拠、の不変条件を保つため）。
+      </div>
+    </details>
     ${
       rows
         ? `<table class="list"><tr><th>ID</th><th>タイトル</th><th>状態</th><th>優先度</th><th>retry</th><th>verify</th><th>属性</th></tr>${rows}</table>`
         : '<div class="empty">タスクなし</div>'
     }`;
 
-  $('btn-enqueue').addEventListener('click', () => {
-    $('enq-title').value = '';
-    $('enq-verify').value = '';
-    $('enq-accept').value = '';
-    $('enq-priority').value = '0';
-    $('enq-note').value = '';
-    $('dlg-enqueue').showModal();
-  });
+  $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
 
   for (const chip of el.querySelectorAll('.chip')) {
     chip.addEventListener('click', () => {
@@ -776,8 +808,8 @@ function reviseAreaHtml(t) {
   }
   const doingNote =
     t.status === 'doing'
-      ? '<div class="muted">実行中のタスクです: 送信すると現在の試行の結果は確定されず、修正内容とフィードバックで積み直されます（早い軌道修正）。</div>'
-      : '';
+      ? '<div class="muted">実行中のタスクです: 送信すると現在の試行の結果は確定されず、修正内容とフィードバックでタスクグラフ（kiro-flow run）を積み直します（早い軌道修正）。</div>'
+      : '<div class="muted">本体が取り込むと <code class="mono">rev</code> を上げ、次の実行で新しいタスクグラフ（kiro-flow run）が作られます。依存 after を変えるとグラフの形が変わります。</div>';
   return `<details class="revise-area"><summary>✎ 修正して指示（revise）</summary>
     ${doingNote}
     <div class="field"><label>フィードバック（次の実行に必ず反映される指示）</label>
@@ -785,10 +817,18 @@ function reviseAreaHtml(t) {
     <div class="field"><label>タイトル</label><input id="rv-title" value="${esc(t.title)}" /></div>
     <div class="row2">
       <div class="field"><label>優先度（整数・大ほど高）</label><input id="rv-priority" type="number" step="1" value="${t.priority}" /></div>
-      <div class="field"><label>依存 after（カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
+      <div class="field"><label>依存 after（タスクグラフの形。カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
     </div>
     <div class="field"><label>verify（空にすると削除）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" /></div>
     <div class="field"><label>accept（空にすると削除）</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" /></div>
+    <div class="row2">
+      <div class="field"><label>level（report/assisted/unattended。空にすると削除）</label>
+        <input id="rv-level" list="rv-level-list" value="${esc(t.extra.level || '')}" />
+        <datalist id="rv-level-list"><option value="report"></option><option value="assisted"></option><option value="unattended"></option></datalist>
+      </div>
+      <div class="field"><label>track（同種タスクの群名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
+    </div>
+    <div class="field"><label>note（メモ。空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
     <div class="row need-buttons">
       <span class="muted">変更した項目とフィードバックだけが送られ、決定記録（DR）に残ります</span>
       <span class="spacer"></span>
@@ -812,7 +852,13 @@ function showTaskDialog(id, scope) {
   const claimed = p.claims.includes(t.id) && t.status === 'doing';
   const actionArea =
     scope === 'archive'
-      ? ''
+      ? `<div class="need-actions">
+          <div class="row need-buttons">
+            <span class="muted">done として archive 済み。誤 done などの復帰に、内容を編集して inbox へ再投入できます。</span>
+            <span class="spacer"></span>
+            <button class="primary-inline" id="btn-task-reinject" title="この archive タスクの内容を編集して inbox へ再投入します（新しいタスクとして triage→verify を通ります）">↻ revise して再投入</button>
+          </div>
+        </div>`
       : `<div class="need-actions">
           <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録 decisions/ に残ります）"></textarea>
           <div class="row need-buttons">
@@ -872,6 +918,9 @@ function showTaskDialog(id, scope) {
         ['after', $('rv-after').value.trim(), String(t.extra.after || '')],
         ['verify', $('rv-verify').value.trim(), String(t.verify || '')],
         ['accept', $('rv-accept').value.trim(), String(t.extra.accept || '')],
+        ['level', $('rv-level').value.trim(), String(t.extra.level || '')],
+        ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
+        ['note', $('rv-note').value.trim(), String(t.extra.note || '')],
       ];
       for (const [key, cur, orig] of cmp) {
         if (key === 'priority' && cur === '') continue; // 空欄は「変更なし」（priority に削除は無い）
@@ -918,18 +967,71 @@ function showTaskDialog(id, scope) {
       }
     });
   }
+  // archive（done）タスクの revise 再投入。元タスクの内容を prefill した inbox 投入
+  // ダイアログを開く（エラー復帰用途。archive の記録は消さず新しいタスクとして通す）
+  const reBtn = $('btn-task-reinject');
+  if (reBtn) {
+    reBtn.addEventListener('click', () => {
+      $('dlg-task').close();
+      openEnqueueDialog({
+        reinject: true,
+        id: t.id,
+        title: t.title,
+        verify: t.verify,
+        accept: t.extra.accept || '',
+        priority: t.priority,
+        note: t.extra.note || '',
+        after: t.extra.after || '',
+        level: t.extra.level || '',
+        track: t.extra.track || '',
+      });
+    });
+  }
   $('dlg-task').showModal();
+}
+
+// タスク追加ダイアログを開く。prefill.reinject が真のときは archive タスクの
+// 「revise して再投入」モード（エラー復帰用途）— 元タスクの内容を編集して inbox へ入れる。
+function openEnqueueDialog(prefill = {}) {
+  const reinject = !!prefill.reinject;
+  $('enq-heading').textContent = reinject
+    ? 'archive タスクを revise して再投入'
+    : 'バックログにタスクを 1 件追加（inbox 経由）';
+  const note = $('enq-reinject-note');
+  if (reinject) {
+    note.textContent =
+      `archive/${prefill.id || ''}.md を編集して inbox へ再投入します。新しいタスクとして triage→verify を通り、` +
+      'アーカイブの記録はそのまま残ります（誤 done などのエラー復帰用途）。';
+    note.classList.remove('hidden');
+  } else {
+    note.classList.add('hidden');
+  }
+  $('enq-title').value = prefill.title || '';
+  $('enq-verify').value = prefill.verify || '';
+  $('enq-accept').value = prefill.accept || '';
+  $('enq-priority').value = prefill.priority != null && prefill.priority !== '' ? String(prefill.priority) : '0';
+  $('enq-note').value = prefill.note || '';
+  $('enq-id').value = prefill.id || '';
+  $('enq-after').value = prefill.after || '';
+  // level / track はフォームに出さないが、再投入では元タスクの値を引き継いで送る
+  state.enqueueExtra = { level: prefill.level || '', track: prefill.track || '' };
+  $('dlg-enqueue').showModal();
 }
 
 async function submitEnqueue() {
   const p = state.project;
   if (!p) return;
+  const extra = state.enqueueExtra || {};
   const spec = {
     title: $('enq-title').value,
     verify: $('enq-verify').value,
     accept: $('enq-accept').value,
     priority: $('enq-priority').value,
     note: $('enq-note').value,
+    id: $('enq-id').value,
+    after: $('enq-after').value,
+    level: extra.level,
+    track: extra.track,
   };
   const ok = await guard('タスク追加', async () => {
     const res = await api.enqueueTask(p.dir, spec);
@@ -945,6 +1047,136 @@ async function submitEnqueue() {
   if (ok) {
     gitPushAfterWrite(`kiro-projects-viewer: enqueue ${spec.title || ''}`.trim(), p.dir);
     $('dlg-enqueue').close();
+    await reloadProject();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// オーサリング: 新規プロジェクト作成・プロジェクトファイル編集
+// ---------------------------------------------------------------------------
+
+// 発見済みコンテナ ＋ 設定 roots の一覧（新規作成のコンテナ候補）
+function knownRoots() {
+  const roots = new Set();
+  for (const c of state.discovery.containers || []) if (c.root) roots.add(c.root);
+  for (const r of (state.config && state.config.kiro && state.config.kiro.roots) || []) if (r) roots.add(r);
+  return [...roots];
+}
+
+// 新規プロジェクトの repos 行を 1 つ追加する（任意・複数可）
+function addRepoRow(prefill = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'np-repo-row';
+  wrap.innerHTML = `
+    <input class="np-r-name mono" placeholder="name" value="${esc(prefill.name || '')}" />
+    <input class="np-r-url mono" placeholder="git URL（必須）" value="${esc(prefill.url || '')}" />
+    <input class="np-r-base mono" placeholder="base 例 main" value="${esc(prefill.base || '')}" />
+    <input class="np-r-owns mono" placeholder="owns グロブ（省略=参照のみ）" value="${esc(prefill.owns || '')}" />
+    <input class="np-r-desc" placeholder="説明（desc）" value="${esc(prefill.desc || '')}" />
+    <button type="button" class="np-r-del" title="この行を削除">✕</button>`;
+  wrap.querySelector('.np-r-del').addEventListener('click', () => wrap.remove());
+  $('np-repos').appendChild(wrap);
+}
+
+function openNewProject() {
+  const roots = knownRoots();
+  $('np-root-list').innerHTML = roots.map((r) => `<option value="${esc(r)}"></option>`).join('');
+  $('np-root').value = state.selectedDir
+    ? (state.discovery.containers.find((c) => (c.projects || []).some((p) => p.dir === state.selectedDir)) || {}).root ||
+      roots[0] ||
+      ''
+    : roots[0] || '';
+  $('np-name').value = '';
+  $('np-goal').value = '';
+  $('np-deliverables').value = '';
+  $('np-constraints').value = '';
+  $('np-acceptance').value = '';
+  $('np-repos').innerHTML = '';
+  $('dlg-new-project').showModal();
+}
+
+async function submitNewProject() {
+  const repos = [...document.querySelectorAll('#np-repos .np-repo-row')]
+    .map((row) => ({
+      name: row.querySelector('.np-r-name').value.trim(),
+      url: row.querySelector('.np-r-url').value.trim(),
+      base: row.querySelector('.np-r-base').value.trim(),
+      owns: row.querySelector('.np-r-owns').value.trim(),
+      desc: row.querySelector('.np-r-desc').value.trim(),
+    }))
+    .filter((r) => r.url);
+  const spec = {
+    root: $('np-root').value.trim(),
+    name: $('np-name').value.trim(),
+    goal: $('np-goal').value,
+    deliverables: $('np-deliverables').value,
+    constraints: $('np-constraints').value,
+    acceptance: $('np-acceptance').value,
+    repos,
+  };
+  const res = await guard('プロジェクト作成', async () => {
+    const r = await api.createProject(spec);
+    toast(`作成しました: ${r.dir}`, true);
+    return r;
+  });
+  if (!res) return;
+  // 発見対象に入るよう、コンテナが未登録なら設定 roots に追加する
+  // （discovery は config roots を resolve して並べるため、生パスの追加で表示される）
+  const known = (state.discovery.containers || []).some((c) => c.root === res.root);
+  if (!known) {
+    const cfg = state.config;
+    cfg.kiro = cfg.kiro || {};
+    cfg.kiro.roots = cfg.kiro.roots || [];
+    if (!cfg.kiro.roots.includes(spec.root)) {
+      cfg.kiro.roots.push(spec.root);
+      state.config = await api.saveConfig(cfg);
+    }
+  }
+  gitPushAfterWrite(`kiro-projects-viewer: create project ${spec.name}`, res.dir);
+  $('dlg-new-project').close();
+  await refreshDiscovery();
+  await selectProject(res.dir);
+}
+
+// charter.md / policy.md / repos.json の直接編集ダイアログを開く。
+// これらは kiro-projects の「人が書く入力」— 編集して保存すると次の run で後段
+// （backlog 生成・ルーティング）に反映される。タスク状態は編集対象にしない。
+async function openEditFile(name) {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const info = await guard('ファイル読込', () => api.readProjectFile(p.dir, name));
+  if (!info) return;
+  state.editFile = { dir: p.dir, name, file: info.file };
+  $('ef-title').textContent = `編集: ${info.label}`;
+  $('ef-content').value = info.content || '';
+  const warn = $('ef-warning');
+  if (info.generated) {
+    warn.textContent =
+      '⚠ この repos.json は charter.md の ## repos から自動生成されています（_meta.generated_from）。' +
+      '直接編集しても run 時に charter から上書きされます。恒久的に手で管理するなら _meta を消すか、' +
+      'charter の ## repos を編集してください。';
+    warn.classList.remove('hidden');
+  } else {
+    warn.classList.add('hidden');
+  }
+  $('ef-hint').textContent = info.exists
+    ? `${info.file}｜保存すると次の kiro-projects run から後段データに反映されます`
+    : `${info.file}（未作成 — 保存すると新規作成します）`;
+  $('dlg-edit-file').showModal();
+}
+
+async function saveEditFile() {
+  const ef = state.editFile;
+  if (!ef) return;
+  const content = $('ef-content').value;
+  const ok = await guard('保存', async () => {
+    await api.writeProjectFile(ef.dir, ef.name, content);
+    toast(`${ef.name} を保存しました`, true);
+    return true;
+  });
+  if (ok) {
+    gitPushAfterWrite(`kiro-projects-viewer: edit ${ef.name}`, ef.dir);
+    $('dlg-edit-file').close();
     await reloadProject();
   }
 }
@@ -1588,7 +1820,7 @@ function bindFlowDetail(root) {
       e.stopPropagation();
       guard('レビュー起動', async () => {
         const res = await api.openReview({ url: g.dataset.issueOpen });
-        toast(`gitlab-review-viewer を起動しました（${res.via}）`, true);
+        reviewToast(res.via);
       });
     });
   }
@@ -1602,7 +1834,7 @@ function bindFlowDetail(root) {
     btn.addEventListener('click', () =>
       guard('レビュー起動', async () => {
         const res = await api.openReview({ url: btn.dataset.review });
-        toast(`gitlab-review-viewer を起動しました（${res.via}）`, true);
+        reviewToast(res.via);
       })
     );
   }
@@ -1725,7 +1957,7 @@ function renderGitLab() {
     btn.addEventListener('click', () =>
       guard('レビュー起動', async () => {
         const res = await api.openReview({ url: btn.dataset.review });
-        toast(`gitlab-review-viewer を起動しました（${res.via}）`, true);
+        reviewToast(res.via);
       })
     );
   }
@@ -1968,7 +2200,15 @@ function setupPolling() {
   if (sec > 0) {
     state.timer = setInterval(() => {
       // ダイアログを開いている間・入力中は更新しない（書きかけの入力を消さない）
-      if ($('dlg-settings').open || $('dlg-task').open || $('dlg-enqueue').open || $('dlg-confirm').open) return;
+      if (
+        $('dlg-settings').open ||
+        $('dlg-task').open ||
+        $('dlg-enqueue').open ||
+        $('dlg-confirm').open ||
+        $('dlg-new-project').open ||
+        $('dlg-edit-file').open
+      )
+        return;
       const ae = document.activeElement;
       if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) return;
       const typed = [...document.querySelectorAll('#content .need-input')].some((t) => t.value.trim());
@@ -2011,6 +2251,17 @@ async function init() {
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
+  // 新規プロジェクト作成
+  $('btn-new-project').addEventListener('click', openNewProject);
+  $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());
+  $('btn-np-submit').addEventListener('click', submitNewProject);
+  $('np-add-repo').addEventListener('click', () => addRepoRow());
+  // プロジェクトファイル編集
+  $('btn-ef-cancel').addEventListener('click', () => $('dlg-edit-file').close());
+  $('btn-ef-save').addEventListener('click', saveEditFile);
+  $('btn-ef-open').addEventListener('click', () => {
+    if (state.editFile) guard('ファイルを開く', () => api.openPath(state.editFile.file));
+  });
   api.onOpenTarget(handleOpenTarget);
 
   await refreshDiscovery();

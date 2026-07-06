@@ -7,6 +7,77 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: バックログ操作の明確化（ボタン名・UI）と revise の柔軟化
+
+- **背景**: 「＋ タスクを追加」が**バックログを 1 件追加する**機能だと UI から分かりにくかった
+  （実体は inbox に 1 件投入 → 本体が次サイクルで `backlog/<id>.md` にする）。現状の設計思想
+  （**公式契約だけを使い、タスク状態＝done は直接書かない**）は崩さず、名前と UI を分かりやすくした
+- **ボタン名・UI の明確化**: 「＋ タスクを追加」→「**＋ バックログに追加**」に改称し、ダイアログ見出しも
+  「バックログにタスクを 1 件追加（inbox 経由）」に。バックログタブに折りたたみヘルプ
+  「バックログの変え方」を追加し、**追加＝inbox／変更＝revise／タスクグラフ再構築＝revise**、いずれも
+  状態（done 等）は直接書き換えない、という関係を一貫して示す
+- **revise の柔軟化（既存バックログの更新）**: 修正フォームに **note / level / track** を追加
+  （kiro-projects の `REVISE_FIELDS` 全項目に対応）。依存 **after** の編集は従来どおり本体側が DAG 循環を拒否
+- **タスクグラフ再構築の明示**: revise は本体が取り込むと `rev` を上げて kiro-flow に**新しいタスク
+  グラフ（run の DAG）**を作らせる（実行中タスクは現在の試行を破棄して積み直し）ことを、修正フォームに明記
+- **実装**: renderer の UI 文言・revise フォームのみの変更。**main 側の契約・kiro-projects 本体は変更なし**
+  （追加は既存の `inbox` 投入、更新は既存の `commands/` revise のまま）
+
+### kiro-projects-viewer / gitlab-review-viewer: 起動済み portable exe への即時ハンドオフ（連携起動の高速化）
+
+- **症状**: kiro-projects-viewer（portable exe）の「レビューで開く」で `exe` モードを使うと、
+  gitlab-review-viewer（portable exe）が**既に起動していても**引き継ぎ表示までに数秒かかる
+- **原因**: portable exe を argv 付きで再起動すると、起動済みでも OS が毎回「自己展開（一時
+  ディレクトリ）→ Electron 起動 → single-instance で argv 転送 → 即終了」の 2 個目プロセス
+  立ち上げコストを必ず払う。argv 転送自体は機能するが、その前段の自己展開が遅い
+- **変更**: gitlab-review-viewer が起動時に**ローカル IPC エンドポイント**（Windows: 名前付き
+  パイプ／その他: Unix ドメインソケット。username から決定的に導出＝ユーザーごとに分離）を開き、
+  `gitlab-review-viewer://…` を 1 行受け取ると `second-instance` と同じく対象を開く
+  （`src/main/handoff.js`）。kiro-projects-viewer の `exe` モードは exe を spawn する前にこの
+  エンドポイントへ接続を試み、**届けば URL を送るだけで即ハンドオフ**（exe を再起動しない・
+  トーストは「起動中の gitlab-review-viewer に引き継ぎました」）。未起動＝接続失敗のときだけ
+  従来どおり exe を起動する（cold start のときにだけ自己展開コストを払う）
+- **後方互換 / 安全性**: 設定不要・自動。エンドポイント非対応の古い gitlab-review-viewer が
+  相手でも接続に失敗して従来の argv 起動へ素通りする。ローカルユーザー限定ソケットで、扱う URL は
+  `gitlab-review-viewer://` のみ（既存の argv / protocol 経路と同じ信頼境界）。アプリ終了時に閉じる
+- **実装**: gitlab-review-viewer に `src/main/handoff.js`（サーバ）を追加し main で起動/停止。
+  kiro-projects-viewer に electron 非依存の `src/main/reviewHandoff.js`（クライアント）を追加し
+  `review.js` の `exe` モードから利用。両側のエンドポイント導出一致と往復を検証する
+  `test/review-handoff.test.js`（クライアントとサーバを実ソケットでつなぐ）を追加
+
+### kiro-projects-viewer: プロジェクトの新規作成・上位入力ファイルの編集・archive タスクの再投入
+
+- **背景**: これまでビュアーは既存プロジェクトの**閲覧**と、公式契約経由の人アクション
+  （needs 記入・inbox 投入・commands 指示）に限られ、プロジェクトの**立ち上げ**や
+  charter の**編集**、誤 done の**復帰**はアプリ外（エディタ・CLI）で行う必要があった
+- **追加**: 3 つのオーサリング機能を、いずれも「人が書く入力だけを書き、タスク状態
+  （done の不変条件）は触らない」原則を守って実装した
+  - **＋ 新規プロジェクト**（サイドバー ＋・空状態にも導線）: フォーム（goal /
+    constraints / deliverables / acceptance / repos）から `<root>/projects/<name>/charter.md` を
+    生成し、repos があれば `repos.json`（kiro-projects の `export_repo_registry` と同一の
+    `_meta.generated_from` 付き・キーソート）も作る。作成後はコンテナを設定 roots へ登録して
+    発見対象にし、そのプロジェクトを選択する。backlog 生成は従来どおり本体の run が行う
+  - **✎ プロジェクトファイル編集**（概要タブ）: `charter.md` / `policy.md` / `repos.json` を
+    アプリ内で直接編集。保存すると次の run で後段（backlog 生成・ルーティング）に反映される。
+    自動生成 repos.json（`_meta`）は「run 時に charter で上書きされる」旨を警告し、JSON は
+    保存前に構文検証する。編集対象はホワイトリスト（人が書く上位入力）に限定
+  - **↻ revise して再投入**（タスク詳細・archive のみ）: archive（done）タスクの内容を
+    prefill した投入フォームを開き、編集して inbox へ**新しいタスク**として投入する
+    （triage→verify を通す＝done を取り直す。archive の記録は残す）。誤 done などの
+    エラー復帰用途。inbox 投入フォームには id / after 欄を追加した
+- **実装**: `src/main/authoring.js`（charter 雛形生成・repos.json 生成・作成・
+  ホワイトリスト読み書き）を追加し、IPC（`kiro:createProject` / `kiro:readFile` /
+  `kiro:writeFile`）と `window.api` に公開。archive 再投入は既存の inbox 契約
+  （`actions.enqueueToInbox`）を流用。`test/authoring.test.js` を追加
+- **リモート連携（state_git 経由のファイルドロップ）**: 3 操作はすべて既存の状態共有 git
+  （⚙ 設定「操作を都度コミットしてプッシュ」）に乗る — 編集/投入したディレクトリを
+  pathspec 限定でコミット＆プッシュし、リモートの kiro-projects が state_git 同期で取り込む。
+  charter.md / policy.md / inbox は既に「人の入力＝リモート優先」で裁定され、新規プロジェクトは
+  ディレクトリ丸ごとの追加として同期され、`--project all` 常駐が watch ループで新規発見して回す。
+  これに合わせ kiro-projects 側の同時変更裁定に **`repos.{json,yaml,yml}` をリモート優先**へ追加
+  （手書きレジストリの viewer 編集を取りこぼさない。自動生成 repos.json は次 run が charter から
+  再生成するので charter が正のまま）。`TestStateGitSync.test_conflict_repos_registry_prefers_remote` を追加
+
 ### kiro-flow: 孤児 run の resume で orchestrator が usage エラーで即死する不具合を修正
 
 - **症状**: daemon が孤児 run を「同じ run-id で再開」した直後に
