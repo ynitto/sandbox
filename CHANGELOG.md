@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: 孤児 run の resume で orchestrator が usage エラーで即死する不具合を修正
+
+- **症状**: daemon が孤児 run を「同じ run-id で再開」した直後に
+  `usage: kiro-flow [-h] …` とオプション不正のようなログを出して orchestrator が
+  即終了し、引き継ぎ（resume）が静かに失敗していた
+- **原因**: `_spawn_orchestrator` が組み立てる子プロセス argv で、`--inherit-from`
+  （`orchestrate` サブコマンドの引数）を `orchestrate` トークン**より前**に置いていた。
+  グローバル引数として親パーサに拾われ、`argument cmd: invalid choice` で exit 2 になっていた
+  （`--inherit-from` を持つ＝リトライ引き継ぎ由来の run を resume したときに発現）
+- **修正**: `cmd_run` の起動と同じく `--inherit-from` を `orchestrate` の**後ろ**へ移動。
+  子プロセス argv が実 CLI パーサでそのまま parse できることを検証する回帰テスト
+  （`SpawnArgvTests`）を追加し、パーサ構築を `build_parser()` として切り出して共有
+
 ### gitlab-review-viewer / kiro-projects-viewer: exe アイコンを追加
 
 - これまで未設定（Electron既定のアイコン）だった Windows exe / ウィンドウの

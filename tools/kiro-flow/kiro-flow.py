@@ -3443,8 +3443,11 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     return subprocess.Popen(base + ws_args + [
         "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
         *(["--exemplar-first"] if getattr(args, "exemplar_first", False) else []),
-        *(["--inherit-from", inh] if inh else []),
         "--run-id", req_id, "orchestrate", "--request", req["request"],
+        # --inherit-from は orchestrate サブコマンドの引数（グローバルではない）。
+        # サブコマンド名より前に置くと親 parser に拾われ usage エラーで即死するため、
+        # 必ず "orchestrate" の後ろに付ける（cmd_run の起動と同じ並び）。
+        *(["--inherit-from", inh] if inh else []),
         "--planner", args.planner, "--executor", args.executor,
         "--max-iterations", str(args.max_iterations),
         "--max-fanout", str(args.max_fanout),
@@ -4844,7 +4847,11 @@ def cmd_update(args) -> int:
     return 1
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """CLI パーサを構築して返す。main と、子プロセス起動 argv の妥当性を検証する
+    テスト（_spawn_orchestrator/_spawn_worker が組み立てた argv を parse できるか）で共有する。
+    グローバル引数とサブコマンド引数の置き場を取り違えると usage エラーで子が即死するため、
+    その回帰を単体テストで捕まえられるように公開関数として切り出している。"""
     p = argparse.ArgumentParser(description="kiro-flow — git 共有型・分散 Dynamic Workflow")
     # 設定値の優先順位: CLI > 設定ファイル(kiro-flow.yaml) > 組み込み既定。
     # 設定ファイル対象のオプションは既定 None にし、parse 後 resolve_config で確定する。
@@ -5036,7 +5043,11 @@ def main() -> int:
                     help="更新があれば即座に install.sh を実行して再起動する")
     up.add_argument("--check", action="store_true", help="更新の有無だけを表示（取り込まない）")
     up.set_defaults(func=cmd_update)
+    return p
 
+
+def main() -> int:
+    p = build_parser()
     args = p.parse_args()
     # CLI 未指定の設定値を設定ファイル→組み込み既定で確定（CLI > config > 既定）
     resolve_config(args)

@@ -451,6 +451,65 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertTrue(self.bus.reclaim_request("run1", "d2", 120.0))  # 引き継ぎ用は claim できる
 
 
+class SpawnArgvTests(unittest.TestCase):
+    """daemon がオンデマンド起動する子（orchestrator/worker）の argv が、実際の CLI パーサで
+    そのまま parse できることを保証する。グローバル引数とサブコマンド引数の置き場を取り違えると
+    子が起動直後に usage エラー（exit 2）で即死し、resume/引き継ぎが静かに壊れる。"""
+
+    def _args(self, **kw):
+        base = dict(granularity="finest", exemplar_first=False, planner="stub",
+                    executor="kiro", max_iterations=1, max_fanout=4, max_retries=3,
+                    model=None, poll=1.0)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _capture(self, spawn, *spawn_args, **spawn_kw):
+        captured = {}
+
+        def fake_popen(cmd, *a, **kw):
+            captured["cmd"] = cmd
+            return object()
+
+        with mock.patch.object(kf.subprocess, "Popen", side_effect=fake_popen):
+            spawn(*spawn_args, **spawn_kw)
+        return captured["cmd"]
+
+    def _parse_child(self, cmd):
+        # base の先頭2つ（sys.executable, self_path）を除いた残りが CLI 引数。実パーサで検証する。
+        return kf.build_parser().parse_args(cmd[2:])
+
+    def _base(self):
+        return [sys.executable, kf.self_path(), "--bus", "/tmp/bus"]
+
+    def test_spawn_orchestrator_argv_parses(self):
+        args = self._args()
+        req = {"request": "do the thing"}
+        cmd = self._capture(kf._spawn_orchestrator, self._base(), args, "run-42", req)
+        parsed = self._parse_child(cmd)
+        self.assertEqual(parsed.cmd, "orchestrate")
+        self.assertEqual(parsed.run_id, "run-42")
+        self.assertEqual(parsed.request, "do the thing")
+
+    def test_spawn_orchestrator_with_inherit_from_argv_parses(self):
+        # 回帰: --inherit-from は orchestrate サブコマンドの引数。以前は "orchestrate" より前に
+        # 置かれており、親パーサが拾って usage エラー（同じ run-id で再開の直後）になっていた。
+        args = self._args()
+        req = {"request": "retry it", "inherit_from": "run-prev"}
+        cmd = self._capture(kf._spawn_orchestrator, self._base(), args, "run-43", req)
+        parsed = self._parse_child(cmd)
+        self.assertEqual(parsed.cmd, "orchestrate")
+        self.assertEqual(parsed.inherit_from, "run-prev")
+        self.assertEqual(parsed.run_id, "run-43")
+
+    def test_spawn_worker_argv_parses(self):
+        args = self._args()
+        cmd = self._capture(kf._spawn_worker, self._base(), args, "run-44", "worker-1")
+        parsed = self._parse_child(cmd)
+        self.assertEqual(parsed.cmd, "work")
+        self.assertEqual(parsed.run_id, "run-44")
+        self.assertEqual(parsed.node_id, "worker-1")
+
+
 class PlannerTests(unittest.TestCase):
     def test_parallel_split(self):
         tasks = kf.plan_stub("a; b; c")
