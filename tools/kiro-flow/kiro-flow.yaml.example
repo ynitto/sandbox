@@ -157,8 +157,11 @@ cleanup_per_node: false
 #   poll_interval: 30                    # イシューのポーリング間隔（秒）
 #   # 完了＝人が MR をマージ＝イシュークローズ（kiro-flow は自動マージしない）。
 #   # 人の確認は時間がかかるため待機は長め・設定可能（いずれも 0/負で無限）。
-#   timeout: 604800                      # クローズに達するまでの全体上限（秒・既定 7 日）
-#   approved_timeout: 1209600            # approved/done 検知後のマージ待ち猶予（秒・既定 14 日）
+#   # ★誤タイムアウト由来の retry ループ／イシュー二重起票を完全に避けたいなら 0（無限）にする。
+#   #   run の本当の失敗（却下・orchestrator 異常）は終端ステータスで検知されるので、待ち上限を
+#   #   安全網にする必要はない（kiro-projects 側 act_timeout: 0 / act_async: true と併用推奨）。
+#   timeout: 604800                      # クローズに達するまでの全体上限（秒・既定 7 日。0=無限）
+#   approved_timeout: 1209600            # approved/done 検知後のマージ待ち猶予（秒・既定 14 日。0=無限）
 #   approved_label: "status:approved"    # 進捗の目印（検知後はマージ＝クローズ待ちへ移行）
 #   done_label: "status:done"            # 同上（完了はクローズで確定）
 

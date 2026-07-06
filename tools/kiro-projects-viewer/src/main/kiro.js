@@ -17,7 +17,9 @@ const FIELD_RE = /^-\s+(\w+):\s*(.*)$/;
 const POLICY_RE = /^(deny|pin|defer|offload|gate|protect|route):\s*(.+)$/;
 const DR_HEAD_RE = /^##\s+(DR-\d+)\s+(\S+)\s+actor:\s*(.*)$/;
 
-const TASK_STATUSES = ['inbox', 'draft', 'ready', 'doing', 'done', 'blocked', 'review'];
+// offloaded: 非ブロッキング委譲（act_async）で kiro-flow daemon へ submit 済み・結果待ち。
+//   flow_run（run-id）を extra に持ち、フロータブの該当 run へ辿れる。
+const TASK_STATUSES = ['inbox', 'draft', 'ready', 'doing', 'done', 'blocked', 'review', 'offloaded'];
 
 function readText(file) {
   try {
@@ -460,8 +462,10 @@ function discover(cfg) {
 // 共有バス構成では別の場所になる。CLI に聞かず、ファイルの存在だけで候補を順に当たる:
 //   1. <project>/bus（既定の per-project バス）
 //   2. <container>/bus（共有バスをコンテナ直下に置く運用）
-//   3. ⚙ 設定 kiro.flowBus（明示指定）
-//   4. kiro-projects 設定ファイル（<workdir>/.kiro → ~/.kiro）の bus:
+//   3. ⚙ 設定 kiro.flowBusByProject[<name>]（プロジェクト単位リポジトリの clone。本体の
+//      state_git_projects で kiro-flow を分けている場合）
+//   4. ⚙ 設定 kiro.flowBus（単一の明示指定）
+//   5. kiro-projects 設定ファイル（<workdir>/.kiro → ~/.kiro）の bus:
 //      （相対パスは kiro-projects の workdir 相当＝コンテナの親で解決する）
 // runs/ を持つ最初の候補を採用。どれにも無ければ既定の 1 を返す（hasBus=false）。
 function resolveBusDir(projectDir, cfg) {
@@ -476,6 +480,14 @@ function resolveBusDir(projectDir, cfg) {
   const parent = path.dirname(path.resolve(projectDir));
   const container = path.basename(parent) === 'projects' ? path.dirname(parent) : null;
   if (container) push(path.join(container, 'bus'), 'container');
+  // プロジェクト単位で kiro-flow の保存先リポジトリを分けている場合の per-project バス写像。
+  // pure-remote（clone だけ・ローカル daemon 無し）では <project>/bus に runs/ が無いため、
+  // ここで割り当てた <clone>/kiro-flow が採用される。
+  const projName = path.basename(path.resolve(projectDir));
+  const byProject = cfg && cfg.kiro && cfg.kiro.flowBusByProject;
+  if (byProject && typeof byProject === 'object' && byProject[projName]) {
+    push(byProject[projName], 'config-per-project');
+  }
   if (cfg && cfg.kiro && cfg.kiro.flowBus) push(cfg.kiro.flowBus, 'config');
 
   // kiro-projects 設定ファイルの bus:（コンテナの親 = workdir 相当の .kiro を優先）

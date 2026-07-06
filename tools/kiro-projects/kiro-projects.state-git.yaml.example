@@ -35,6 +35,11 @@ watch: true
 act_timeout: 0             # 委譲は人のレビュー往復で数日かかりうる。0=無制限で完了まで待つ。
                            #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシューを
                            #   二重起票する（この構成では 0 を強く推奨）。
+act_async: true            # 非ブロッキング委譲: submit して待たず offloaded にし、次パスでポーリングして
+                           #   回収する。長期委譲でループを塞がず、複数タスク／プロジェクトを並行に進める。
+                           #   専用 daemon が run を保持するので、待たなくても結果は取りこぼさない。
+                           #   併せて kiro-flow 側 gitlab: の timeout/approved_timeout を 0（無限）にすると
+                           #   誤タイムアウト由来の retry ループが完全に消える（kiro-flow.state-git.yaml 参照）。
 
 # --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
 state_git: git@gitlab.example.com:team/kiro-state.git

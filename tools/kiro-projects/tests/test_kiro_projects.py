@@ -4857,5 +4857,268 @@ class TestStateGitSync(unittest.TestCase):
         self.assertTrue((got / "kp" / "projects" / "default" / "backlog" / "T2.md").exists())
 
 
+class TestStateGitPerProject(unittest.TestCase):
+    """プロジェクト単位で保存先リポジトリを分ける（state_git_projects）。default は個人リポジトリ、
+    他プロジェクトは固有リポジトリへ、各々そのプロジェクトの subtree だけをスコープして同期する。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        km._STATE_GITS.clear()
+        self.personal = self._bare("personal.git")   # default（個人）
+        self.team = self._bare("team-alpha.git")      # alpha（プロジェクト固有・共有）
+
+    def _bare(self, name: str) -> Path:
+        r = self.tmp / name
+        subprocess.run(["git", "init", "-q", "--bare", str(r)], check=True)
+        subprocess.run(["git", "-C", str(r), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        return r
+
+    def _cfg(self, project: str, **kw):
+        proot = self.tmp / "c" / "projects" / project
+        base = dict(project_name=project,
+                    backlog=proot / "backlog", policy=proot / "policy.md",
+                    decisions=proot / "decisions", journal=proot / "journal.md",
+                    needs=proot / "needs", workdir=self.tmp, bus=proot / "bus",
+                    inbox=proot / "inbox", charter=proot / "charter.md",
+                    planner="none", flow_planner="stub", executor="stub", dry_run=True,
+                    state_git=str(self.personal), state_git_subdir="kp", state_git_interval=0.0,
+                    state_git_projects={"alpha": str(self.team)})
+        base.update(kw)
+        cfg = km.Config(**base)
+        km.ensure_dirs(cfg)
+        return cfg
+
+    def _check(self, remote: Path, name: str) -> Path:
+        d = self.tmp / f"chk-{name}-{remote.stem}"
+        subprocess.run(["git", "clone", "-q", str(remote), str(d)], check=True, capture_output=True)
+        return d
+
+    def test_mapped_project_goes_to_its_own_repo(self):
+        cfg = self._cfg("alpha")
+        mkb(cfg.backlog.parent, "T1")
+        km.state_sync(cfg, force=True)
+        got = self._check(self.team, "alpha")
+        self.assertTrue((got / "kp" / "projects" / "alpha" / "backlog" / "T1.md").exists())
+        # 個人リポジトリには入らない（プロジェクト固有リポジトリへ分離されている）
+        personal = self._check(self.personal, "alpha")
+        self.assertFalse((personal / "kp" / "projects" / "alpha").exists())
+
+    def test_unmapped_default_falls_to_personal_repo(self):
+        cfg = self._cfg("default")
+        mkb(cfg.backlog.parent, "T1")
+        km.state_sync(cfg, force=True)
+        got = self._check(self.personal, "default")
+        self.assertTrue((got / "kp" / "projects" / "default" / "backlog" / "T1.md").exists())
+        # チームリポジトリには default は入らない
+        team = self._check(self.team, "default")
+        self.assertFalse((team / "kp" / "projects" / "default").exists())
+
+    def test_scoped_to_own_subtree_only(self):
+        # alpha の同期は alpha の subtree だけを見る（兄弟プロジェクト default のファイルを引かない）。
+        default_cfg = self._cfg("default")
+        mkb(default_cfg.backlog.parent, "D1")         # 兄弟プロジェクトの実体をディスク上に作る
+        cfg = self._cfg("alpha")
+        mkb(cfg.backlog.parent, "A1")
+        km.state_sync(cfg, force=True)
+        got = self._check(self.team, "scope")
+        self.assertTrue((got / "kp" / "projects" / "alpha" / "backlog" / "A1.md").exists())
+        self.assertFalse((got / "kp" / "projects" / "default").exists())
+
+    def test_dict_spec_overrides_branch_and_subdir(self):
+        cfg = self._cfg("alpha", state_git_projects={
+            "alpha": {"remote": str(self.team), "subdir": "shared"}})
+        mkb(cfg.backlog.parent, "T1")
+        km.state_sync(cfg, force=True)
+        got = self._check(self.team, "dict")
+        self.assertTrue((got / "shared" / "projects" / "alpha" / "backlog" / "T1.md").exists())
+
+    def test_member_drives_via_remote_input(self):
+        # プロジェクトメンバーが viewer 相当でチームリポジトリへ指示（commands）をドロップ →
+        # 本体（alpha を回す側）が取り込む。共有リポジトリ越しの「誰でもドライブ」を検証。
+        cfg = self._cfg("alpha")
+        km.state_sync(cfg, force=True)                # ブランチ作成
+        member = self._check(self.team, "member")
+        subprocess.run(["git", "-C", str(member), "config", "user.email", "m@t"], check=True)
+        subprocess.run(["git", "-C", str(member), "config", "user.name", "m"], check=True)
+        cmd = member / "kp" / "projects" / "alpha" / "commands" / "ok.json"
+        cmd.parent.mkdir(parents=True, exist_ok=True)
+        cmd.write_text('{"command": "approve", "id": "T1"}', encoding="utf-8")
+        subprocess.run(["git", "-C", str(member), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(member), "commit", "-qm", "member approve"], check=True)
+        subprocess.run(["git", "-C", str(member), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+        km.state_sync(cfg, force=True)
+        self.assertTrue((km.commands_dir(cfg) / "ok.json").exists())
+
+    def test_disabled_when_unmapped_and_no_personal(self):
+        cfg = self._cfg("beta", state_git=None)       # beta は未記載・個人リポジトリも無し
+        km.state_sync(cfg, force=True)
+        self.assertIsNone(km.state_git_for(cfg))
+
+    def test_project_flow_remote_resolves_repo(self):
+        # 各プロジェクトの kiro-flow バスの鏡写し先＝そのプロジェクトのリポジトリ。
+        self.assertEqual(km.project_flow_remote(self._cfg("alpha"))[0], str(self.team))
+        self.assertEqual(km.project_flow_remote(self._cfg("default"))[0], str(self.personal))
+
+    def test_project_flow_remote_none_for_shared_legacy_or_no_repo(self):
+        shared = self.tmp / "shared-bus"
+        self.assertIsNone(km.project_flow_remote(self._cfg("alpha", bus=shared, shared_bus=True)))
+        self.assertIsNone(km.project_flow_remote(self._cfg("alpha", state_git_projects={})))
+        self.assertIsNone(km.project_flow_remote(self._cfg("beta", state_git=None)))
+
+    def test_flow_daemon_cmd_injects_bus_state_git_and_budget(self):
+        cfg = self._cfg("alpha", executor="stub")
+        cmd = km.flow_daemon_cmd(cfg, 3)
+        self.assertIn(str(cfg.bus), cmd)
+        self.assertIn("--state-git", cmd)
+        self.assertIn(str(self.team), cmd)
+        self.assertEqual(cmd[cmd.index("--state-git-subdir") + 1], km.FLOW_STATE_SUBDIR)
+        self.assertIn("daemon", cmd)
+        self.assertEqual(cmd[cmd.index("--max-workers") + 1], "3")
+        self.assertEqual(cmd[cmd.index("--executor") + 1], "stub")
+
+    def test_ensure_flow_daemon_spawns_when_managed_and_absent(self):
+        cfg = self._cfg("alpha", manage_flow_daemon=True)
+        with mock.patch.object(km, "daemon_running", return_value=False), \
+             mock.patch.object(km.subprocess, "Popen") as popen:
+            started = km.ensure_flow_daemon(cfg, 2)
+        self.assertTrue(started)
+        popen.assert_called_once()
+        spawned = popen.call_args[0][0]
+        self.assertIn("--state-git", spawned)
+        self.assertIn(str(self.team), spawned)
+
+    def test_ensure_flow_daemon_idempotent_when_running(self):
+        cfg = self._cfg("alpha", manage_flow_daemon=True)
+        with mock.patch.object(km, "daemon_running", return_value=True), \
+             mock.patch.object(km.subprocess, "Popen") as popen:
+            self.assertFalse(km.ensure_flow_daemon(cfg, 2))
+        popen.assert_not_called()
+
+    def test_ensure_flow_daemon_noop_when_unmanaged_or_shared(self):
+        with mock.patch.object(km.subprocess, "Popen") as popen:
+            self.assertFalse(km.ensure_flow_daemon(self._cfg("alpha", manage_flow_daemon=False), 2))
+            self.assertFalse(km.ensure_flow_daemon(
+                self._cfg("alpha", manage_flow_daemon=True,
+                          bus=self.tmp / "shared", shared_bus=True), 2))
+        popen.assert_not_called()
+
+    def test_ensure_flow_daemons_divides_budget_by_targets(self):
+        a = self._cfg("alpha", manage_flow_daemon=True, flow_max_workers=6)
+        cfgs = [km.project_cfg(a, n) for n in ("alpha", "default")]   # 両方が対象 → 6//2=3
+        seen = []
+        with mock.patch.object(km, "ensure_flow_daemon", side_effect=lambda c, b: seen.append(b)):
+            km.ensure_flow_daemons(a, cfgs)
+        self.assertEqual(seen, [3, 3])
+
+    def test_doctor_warns_when_daemon_absent(self):
+        cfg = self._cfg("alpha")
+        with mock.patch.object(km, "daemon_running", return_value=False):
+            fs = km.doctor_flow_bus_coverage_findings(cfg)
+        self.assertTrue(any("不在" in f["title"] and "alpha" in f["title"] for f in fs))
+        self.assertTrue(all(f["severity"] == "warn" for f in fs))
+
+    def test_doctor_coverage_skips_shared_bus_and_legacy(self):
+        shared = self.tmp / "shared-bus"
+        self.assertEqual(km.doctor_flow_bus_coverage_findings(
+            self._cfg("alpha", bus=shared, shared_bus=True)), [])
+        self.assertEqual(km.doctor_flow_bus_coverage_findings(
+            self._cfg("alpha", state_git_projects={})), [])
+
+
+class TestAsyncOffload(unittest.TestCase):
+    """非ブロッキング委譲（act_async）: daemon/remote への submit で待たず offloaded にし、次パスで
+    ポーリングして終端した run だけ settle する（gitlab 等の長期委譲でループを塞がない）。"""
+
+    def _cfg(self, d, **kw):
+        return cfg_for(d, dry_run=False, act_async=True, executor="gitlab", **kw)
+
+    def _offloaded(self, d, tid, run_id, verify="true"):
+        bd = d / "backlog"
+        bd.mkdir(parents=True, exist_ok=True)
+        (bd / f"{tid}.md").write_text(
+            f"## {tid}: {tid}\n- status: offloaded\n- source: human\n- verify: `{verify}`\n"
+            f"- retries: 0\n- flow_run: {run_id}\n- flow_loc: daemon\n", encoding="utf-8")
+
+    def test_pending_act_marks_task_offloaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = self._cfg(d)
+            with mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")):
+                km.run_loop(cfg, act=lambda t, c, loc: (km._Pending("run-T1"), "実行中"))
+            t = km._load_task_file(cfg, "T1")
+            self.assertEqual(t.norm_status(), "offloaded")
+            self.assertEqual(t.get("flow_run"), "run-T1")
+
+    def test_reap_settles_terminal_run_to_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1", verify="true")
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = km.load_tasks(cfg.backlog)
+            with mock.patch.object(km, "_flow_result_once", return_value=(True, True, "done")):
+                deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
+            self.assertEqual(deltas["settled"], 1)
+            self.assertEqual(deltas["archived"], 1)            # verify PASS → done → archive
+            self.assertIsNone(km._load_task_file(cfg, "T1"))   # backlog から消えた（archive 済み）
+
+    def test_reap_leaves_nonterminal_offloaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1")
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = km.load_tasks(cfg.backlog)
+            with mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")):
+                deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
+            self.assertEqual(deltas["settled"], 0)
+            self.assertEqual(km._load_task_file(cfg, "T1").norm_status(), "offloaded")
+
+    def test_reap_failed_run_does_not_mark_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1", verify="false")   # verify も失敗
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = km.load_tasks(cfg.backlog)
+            with mock.patch.object(km, "_flow_result_once", return_value=(True, False, "failed")):
+                km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
+            self.assertNotEqual(km._load_task_file(cfg, "T1").norm_status(), "done")
+
+    def test_has_work_true_for_offloaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1")
+            self.assertTrue(km.has_work(self._cfg(d)))
+
+    def test_act_via_kiro_flow_offloads_when_async(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.load_tasks(cfg.backlog)[0]
+            with mock.patch.object(km, "daemon_running", return_value=True), \
+                 mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")), \
+                 mock.patch.object(km.subprocess, "run", return_value=types.SimpleNamespace(
+                     returncode=0, stdout="run-T1\n", stderr="")):
+                status, _ = km.act_via_kiro_flow(t, cfg, "daemon")
+            self.assertIsInstance(status, km._Pending)
+
+    def test_sync_path_unaffected_when_async_off(self):
+        # act_async 未指定なら従来どおり待つ（_act_submit）。daemon_running False → _act_run（同期）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = cfg_for(d, dry_run=False, executor="stub")   # act_async=False（既定）
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "ok"))
+            self.assertEqual(res["reason"], km.REASON_DRAINED)
+            self.assertGreaterEqual(res["archived"], 1)        # done → archive（従来どおり同期で確定）
+            self.assertIsNone(km._load_task_file(cfg, "T1"))   # backlog から消えた（archive 済み）
+
+
 if __name__ == "__main__":
     unittest.main()

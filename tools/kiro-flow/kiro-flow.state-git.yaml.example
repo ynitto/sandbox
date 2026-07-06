@@ -23,6 +23,10 @@ bus: /home/me/kiro/.kiro-flow-bus
 executor: gitlab
 gitlab:
   repo_url: https://gitlab.example.com/team/tasks   # 起票先プロジェクト（権威）
+  timeout: 0            # 全体タイムアウト無効（0=無限）。人のレビュー往復が数日でも run を失敗にしない。
+  approved_timeout: 0   # 承認/決着待ちの猶予も無限。誤タイムアウト由来の retry ループを消す
+                        #   （run の本当の失敗は終端ステータスで検知される＝待ち上限は安全網に不要）。
+                        #   kiro-projects 側は act_timeout: 0 ＋ act_async: true と併用する。
 
 # --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
 # kiro-projects 側と同じリポジトリ・別 subdir。viewer は <clone>/kiro-flow をバスとして登録する。

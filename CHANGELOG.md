@@ -7,6 +7,66 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: 非ブロッキング委譲（`offloaded`）の表示対応
+
+- **バグ修正**: パーサの既知ステータス一覧に `offloaded` が無く、offloaded タスクが既定 `inbox` に
+  化けていた（`TASK_STATUSES` に追加）。
+- **表示整合**: 概要タブのステータスタイル（`STATUS_ORDER`）・バックログのフィルタ（`BACKLOG_FILTERS`）に
+  `offloaded` を追加。status-chip / tile に `.st-offloaded` 色（doing と同系＝機械稼働中）を追加。
+- **run 連携**: offloaded タスクは `flow_run`（委譲先 run-id）を持つので、バックログ行に「▶ run」バッジ、
+  タスク詳細の `flow_run` をクリックでフロータブの該当 run へ移動できるようにした。extras に
+  「委譲実行中: <loc>」を表示。revise ダイアログに offloaded 用の注記（反映は run 完了時）を追加。
+
+### kiro-projects: 非ブロッキング委譲（`act_async`）— gitlab 長期委譲でループを塞がない
+
+- **背景**: `executor: gitlab` は MR 承認まで数日かかる。従来は act が結果を待つ（ブロック）ため、
+  `act_timeout`（既定 30 分）が承認より先に切れて「タイムアウト→retry」を繰り返し、他タスクも
+  待たされていた。専用 daemon が run を保持するようになったので、**待たずに次へ進める**ようにした。
+- **`act_async`（opt-in）**: daemon/remote への submit で**結果を待たず**タスクを新状態 `offloaded` に退避し、
+  次パスで `kiro-flow result` を1回だけポーリングして**終端した run だけ settle**する（未終端は次パスへ）。
+  ループを塞がないので、同じプロジェクトの他タスクや他プロジェクトを並行に進められる。run の本当の
+  失敗（却下・orchestrator 異常）は終端ステータスで検知されるため、待ち上限（タイムアウト）を安全網に
+  する必要がない＝`act_timeout: 0` ＋ kiro-flow `gitlab.timeout/approved_timeout: 0` と併用で
+  **誤タイムアウト由来の retry ループが完全に消える**。
+- submit は決定的 run_id なので、`offloaded` のまま kiro-projects が再起動しても同じ run に再合流する
+  （二重実行・イシュー二重起票なし）。`offloaded` は watch を起こし続け（ポーリング継続）、CONSUMABLE
+  ではない（再 submit しない）。既定 off＝**完全後方互換**（従来どおり同期で待つ）。
+- CLI `--act-async`、設定 `act_async`。テストと `*.yaml.example`（gitlab 委譲サンプル）を更新。
+
+### kiro-projects / viewer: プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
+
+- **背景・目的**: これまで状態の git 同期（`state_git`）は**コンテナ丸ごと**（全プロジェクト）を 1
+  リポジトリへ同期していた。プロジェクトごとに**別々のリポジトリ**へ分け、プロジェクト固有リポジトリで
+  kiro-projects / kiro-flow の情報をメンバーと共有し、誰でも kiro-projects-viewer でドライブできるように
+  する。`default` はユーザー個人リポジトリで管理し、他プロジェクトはプロジェクト固有リポジトリで共有・
+  可視化する構成。**使う人ごとにアサインされるプロジェクトが違う点は、各自の設定で写像を変えるだけ**で
+  吸収できる（リポジトリの設定で解決）。
+- **kiro-projects の状態**: 設定 `state_git_projects`（`{プロジェクト名: URL/パス}` または
+  `{名前: {remote/branch/subdir/interval}}`）を追加。写像に載ったプロジェクトは**そのプロジェクトの
+  subtree だけ**をスコープして固有リポジトリ（`<subdir>/projects/<name>/…`。従来レイアウトを維持）へ
+  同期し、未記載（`default` 含む）は既定の `state_git`（個人リポジトリ・未設定なら無効）へ落ちる。
+  各プロジェクトは自分専用の管理クローン（`<container>/projects/<name>/.state-git`）を使い、多重
+  コミッタの護りはそのまま。写像未設定なら従来どおりコンテナ丸ごと（**完全後方互換**）。
+- **実行層 kiro-flow の run（kiro-flow は無改修）**: kiro-flow に「プロジェクト」の概念は持ち込まない。
+  代わりに **kiro-projects が per-project の kiro-flow daemon を起動・監視**し、「このバスを、このプロジェクト
+  のリポジトリの `kiro-flow` 名前空間へ鏡写しせよ」を**daemon 起動時の CLI（`--bus`/`--state-git*`）で
+  注入**する（kiro-flow 側の設定ファイルや宣言ファイルは不要）。設定 `manage_flow_daemon: true`（opt-in）で
+  watch ループが各プロジェクトの daemon を不在なら起動（バスロックで冪等）、`flow_max_workers` をマシン
+  全体の予算として対象プロジェクト数で割り各 daemon の上限にする。`flow_config` で共有 kiro-flow.yaml を
+  `--config` として渡せる。**kiro-projects を止めても daemon は detached で残る**ので、in-flight run
+  （gitlab の長期委譲・夜間停止からの孤児再開）は daemon 側でそのまま継続し、再起動時はロックで再検知して
+  二重起動しない。`doctor` は各プロジェクトバスに daemon がいるかを warn で点検する。プロジェクト固有
+  リポジトリは `kiro-projects/projects/<name>/`（状態）と `kiro-flow/`（run）の 2 名前空間を持つ。
+- **kiro-projects-viewer**: コンテナ（`roots`）は従来から複数登録できるため、プロジェクト固有リポジトリの
+  clone `<clone>/kiro-projects` を 1 行ずつ足すだけで全プロジェクトを 1 画面に束ねられる。フローバスは
+  設定 `flowBusByProject`（⚙「プロジェクト単位バス」・`プロジェクト名 = <clone>/kiro-flow`）を追加し、
+  pure-remote 監視でプロジェクトごとの kiro-flow clone を割り当てられるようにした（ローカル `<project>/bus`
+  に `runs/` があればそちらを優先）。
+- **テスト・ドキュメント**: kiro-projects の per-project 同期・裁定、kiro-flow daemon の起動コマンド注入・
+  冪等・予算分配・doctor 点検、viewer のバス解決テストを追加。README と `*.yaml.example` に構成方法を追記。
+  既存の 1 リポジトリ複数プロジェクト構成からの**移行手順書**
+  [`docs/guides/migrate-per-project-repos.md`](docs/guides/migrate-per-project-repos.md) を追加。
+
 ### kiro-projects-viewer: バックログ操作の明確化（ボタン名・UI）と revise の柔軟化
 
 - **背景**: 「＋ タスクを追加」が**バックログを 1 件追加する**機能だと UI から分かりにくかった

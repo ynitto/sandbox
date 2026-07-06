@@ -106,6 +106,18 @@
           <input id="cfg-flow-lockdir" class="mono" placeholder="例: /tmp/kiro-flow-locks" />
         </div>
       </div>
+      <div class="field">
+        <label
+          >プロジェクト単位バス（本体 state_git_projects で kiro-flow を分けている場合。1 行 1 件
+          <code>プロジェクト名 = &lt;clone&gt;/kiro-flow</code>）</label
+        >
+        <textarea
+          id="cfg-flow-bus-by-project"
+          class="mono"
+          rows="3"
+          placeholder="例:&#10;alpha = /home/me/clones/alpha/kiro-flow&#10;beta = C:\clones\beta\kiro-flow"
+        ></textarea>
+      </div>
       <h3>GitLab（イシュー状態の補完・任意）</h3>
       <div class="row2">
         <div class="field">

@@ -39,8 +39,10 @@ try:
 except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
     fcntl = None
 
-VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review")
+VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review", "offloaded")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
+# offloaded: 実行層 daemon へ非ブロッキングで submit 済み・結果待ち（act_async）。CONSUMABLE ではない
+#   （再 submit しない）が「機械が実行中」＝人待ちでもない。次パスでポーリングして終端したら settle する。
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate|protect|route):\s*(?P<val>.+)$")
@@ -2642,6 +2644,56 @@ def _prev_req_id(task: Task, cfg: "Config") -> "str | None":
     return _req_id_for(task, cfg, task.retries - 1) if task.retries > 0 else None
 
 
+class _Pending:
+    """act の第3の結果＝『実行層 daemon へ非ブロッキング submit 済み・まだ終端していない』。
+    run_loop はこれを受けたらタスクを offloaded にして settle をスキップし、次パスでポーリングする。"""
+    __slots__ = ("run_id",)
+
+    def __init__(self, run_id: str):
+        self.run_id = run_id
+
+
+def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool, bool, str]":
+    """kiro-flow result を1回だけ読む（待たない）。(terminal, ok, msg) を返す。
+    terminal=run が done/failed に達したか、ok=failed でないか。取得不能は (False,...) で継続待ち扱い。"""
+    base = _kf_base(cfg, use_git)
+    try:
+        res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
+                             cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True)
+        data = json.loads(res.stdout or "{}")
+    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError, ValueError):
+        return (False, False, "")
+    if not data.get("done"):
+        return (False, False, "")
+    if data.get("status") == "failed":
+        return (True, False, f"daemon run {run_id} failed")
+    return (True, True, f"daemon run {run_id} done")
+
+
+def _act_offload(task: Task, cfg: "Config", use_git: bool) -> "tuple":
+    """非ブロッキング委譲: run が無ければ submit し、結果を1回だけ確認する。終端なら (ok, msg)、
+    未終端なら (_Pending(run_id), msg) を返す（待たない）。専用 daemon が run を保持するので、
+    gitlab の長期委譲でもループをブロックせず次のタスクへ進める（結果は次パスで回収する）。"""
+    base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
+    run_id = _submit_req_id(task, cfg)
+    term, ok, msg = _flow_result_once(cfg, use_git, run_id)
+    if not term:                                  # 未作成/実行中: 未作成なら submit（作成済みは冪等 no-op）
+        prev = _prev_req_id(task, cfg)
+        inherit = ["--inherit-from", prev] if prev else []
+        try:
+            sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)]
+                                 + inherit, cwd=str(cfg.workdir),
+                                 timeout=60, capture_output=True, text=True)
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            return (False, f"submit 失敗: {e}")
+        if sub.returncode != 0:
+            return (False, f"submit rc={sub.returncode}: {sub.stderr.strip()[:200]}")
+        term, ok, msg = _flow_result_once(cfg, use_git, run_id)   # submit 直後に一応もう一度
+        if not term:
+            return (_Pending(run_id), f"daemon run {run_id} 実行中（offload・非ブロッキング）")
+    return (ok, msg)
+
+
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。
     req_id は決定的（_submit_req_id）——リブート後の再実行は既存 run に合流する。"""
@@ -2695,12 +2747,15 @@ def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tu
       daemon → ローカル daemon に submit＋結果待ち（daemon が無ければ run にフォールバック）
       remote → git バスの remote daemon に submit＋結果待ち（オフロード。フォールバックしない）
     """
+    async_ok = bool(getattr(cfg, "act_async", False))
     if location == "remote":
-        return _act_submit(task, cfg, use_git=True)
+        return _act_offload(task, cfg, True) if async_ok else _act_submit(task, cfg, use_git=True)
     if location == "daemon":
         if daemon_running(cfg, use_git=False):
-            return _act_submit(task, cfg, use_git=False)
-        return _act_run(task, cfg, use_git=False)  # daemon 不在 → run
+            # 非ブロッキング（act_async）: submit して待たず次へ。専用 daemon が run を保持し、
+            # 結果は次パスのポーリングで回収する（gitlab 等の長期委譲でループを塞がない）。
+            return _act_offload(task, cfg, False) if async_ok else _act_submit(task, cfg, use_git=False)
+        return _act_run(task, cfg, use_git=False)  # daemon 不在 → run（同期・待つ）
     return _act_run(task, cfg, use_git=False)
 
 
@@ -2788,6 +2843,19 @@ class Config:
     state_git_branch: str = "main"        # 同期先ブランチ
     state_git_subdir: str = "kiro-projects"  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
     state_git_interval: float = 300.0     # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
+    # プロジェクト単位で保存先リポジトリを分ける（プロジェクト固有リポジトリでメンバーと共有・可視化）。
+    # {プロジェクト名: リポジトリ} の写像。値は文字列（URL/パス。他は state_git_* の既定を流用）か、
+    # dict（remote/branch/subdir/interval を個別指定）。この写像に載ったプロジェクトは【そのプロジェクト
+    # の subtree だけ】を自分のリポジトリへ同期し、載っていないプロジェクト（既定の default 含む）は
+    # 従来どおり state_git（個人リポジトリ・未設定なら無効）へ落ちる。使う人ごとにアサインされる
+    # プロジェクトが違う点は、各自の設定でこの写像を変えるだけで吸収できる（リポジトリの設定で解決）。
+    state_git_projects: dict = field(default_factory=dict)
+    # 実行層 kiro-flow daemon をプロジェクト単位で kiro-projects が起動・監視する（opt-in）。
+    # per-project バスをそのプロジェクトのリポジトリ（state_git_projects）へ鏡写しする設定を
+    # 起動時 CLI で注入する（.kiro-flow-remote.json のようなファイルは使わない）。
+    manage_flow_daemon: bool = False
+    flow_config: "str | None" = None   # 各 daemon に --config で渡す共有 kiro-flow.yaml（任意。未指定は既定発見）
+    flow_max_workers: int = 4          # マシン全体の worker 予算。対象プロジェクト数で割り各 daemon の上限に
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
@@ -2821,6 +2889,9 @@ class Config:
     level_window: int = 10           # 手戻り率の評価窓（直近 N 件の完了）
     level_rework_max: float = 0.0    # 昇格を許す最大 rework_rate（既定 0＝手戻りゼロ）
     act_timeout: float = 1800.0
+    # 非ブロッキング委譲: daemon/remote への submit で結果を待たず次のタスクへ進み、offloaded にして
+    # 次パスでポーリングして回収する。gitlab 等の長期委譲でループを塞がない（専用 daemon が run を保持）。
+    act_async: bool = False
     notify_cmd: "str | None" = None
     actor: str = "user"
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）
@@ -3170,7 +3241,8 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
     # クレーム後の再検証: 別インスタンスが既に消化（archive/削除）や状態変更をしていないか。
     # （ロック取得は「同時実行」を防ぐが、こちらの in-memory ビューが古い場合に二重実行を防ぐ）
     live = _load_task_file(cfg, task.id)
-    if live is None or live.norm_status() not in CONSUMABLE:
+    # offloaded（非ブロッキング委譲・結果待ち）は reap が doing へ確定させる正当な遷移なので claim を許す。
+    if live is None or (live.norm_status() not in CONSUMABLE and live.norm_status() != "offloaded"):
         release_claim(cfg, task)              # 既に done/review/blocked 等 → 実行しない
         return False
     # 実行直前のディスク内容を採用する（in-memory がパス開始時点で止まっていても、
@@ -3198,22 +3270,25 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
         persist_task(cfg, t)
     locs = {t.id: decide_location(t, policy, cfg) for t in claimed}
     if cfg.dry_run:
-        return {t.id: (locs[t.id], "(dry-run)") for t in claimed}
+        return {t.id: (locs[t.id], None, "(dry-run)") for t in claimed}
     if not claimed:
         return {}
+
+    def _one(t):
+        # act は (bool|_Pending, msg)。_Pending は「非ブロッキング submit 済み・未終端」＝offload。
+        status, msg = act(t, cfg, locs[t.id])
+        return (locs[t.id], status if isinstance(status, _Pending) else None, msg)
+
     if len(claimed) == 1:
-        t = claimed[0]
-        _, msg = act(t, cfg, locs[t.id])
-        return {t.id: (locs[t.id], msg)}
-    results: dict[str, tuple[str, str]] = {}
+        return {claimed[0].id: _one(claimed[0])}
+    results: "dict[str, tuple]" = {}
     with ThreadPoolExecutor(max_workers=len(claimed)) as ex:
-        futs = {ex.submit(act, t, cfg, locs[t.id]): t for t in claimed}
+        futs = {ex.submit(_one, t): t for t in claimed}
         for fut, t in futs.items():
             try:
-                _, msg = fut.result()
+                results[t.id] = fut.result()
             except Exception as e:     # noqa: BLE001 — act 失敗は verify=NG 相当として後段で扱う
-                msg = f"act 失敗: {e}"
-            results[t.id] = (locs[t.id], msg)
+                results[t.id] = (locs[t.id], None, f"act 失敗: {e}")
     return results
 
 
@@ -3772,10 +3847,64 @@ class StateGit:
 _STATE_GITS: "dict[tuple, StateGit]" = {}
 
 
+def project_state_spec(cfg: "Config", name: str) -> "tuple[str, str, str, float] | None":
+    """プロジェクト `name` の状態保存先 (remote, branch, subdir, interval) を解決する。
+
+    state_git_projects に載っていればそのプロジェクト固有リポジトリ（値は URL 文字列か
+    remote/branch/subdir/interval の dict）。載っていなければ既定の state_git（個人リポジトリ）へ
+    落とす。どちらも無ければ None（同期無効）。subdir はリポジトリ内の名前空間ルート（この配下に
+    projects/<name>/ が入る）。"""
+    projmap = getattr(cfg, "state_git_projects", None) or {}
+    spec = projmap.get(name)
+    if spec is None:                      # 写像に無い（default 含む）→ 既定の個人リポジトリ
+        if not getattr(cfg, "state_git", None):
+            return None
+        remote, branch = cfg.state_git, cfg.state_git_branch
+        subdir, interval = cfg.state_git_subdir, cfg.state_git_interval
+    elif isinstance(spec, str):           # {名前: URL} の短縮形。他は state_git_* の既定を流用
+        remote = spec.strip()
+        if not remote:
+            return None
+        branch, subdir, interval = cfg.state_git_branch, cfg.state_git_subdir, cfg.state_git_interval
+    elif isinstance(spec, dict):          # {名前: {remote/branch/subdir/interval}}
+        remote = str(spec.get("remote") or spec.get("state_git") or spec.get("url") or "").strip()
+        if not remote:
+            return None
+        branch = str(spec.get("branch", cfg.state_git_branch) or "main")
+        subdir = str(spec.get("subdir", cfg.state_git_subdir) or "")
+        try:
+            interval = max(0.0, float(spec.get("interval", cfg.state_git_interval)))
+        except (TypeError, ValueError):
+            interval = cfg.state_git_interval
+    else:
+        return None
+    return remote, branch, (subdir or "").strip("/"), max(0.0, float(interval))
+
+
+def _uses_per_project_state_git(cfg: "Config") -> bool:
+    """プロジェクト単位リポジトリ（state_git_projects）が設定されているか。設定時は各プロジェクトを
+    自分の subtree だけスコープして固有リポジトリへ同期する（既定 state_git はコンテナ丸ごと）。"""
+    return bool(getattr(cfg, "state_git_projects", None))
+
+
 def state_git_status_line(cfg: "Config") -> str:
     """起動時に「state_git が有効か・何を鏡写しするか」を一行で示す（silent な設定ミスの切り分け用）。
     注意: これはコンテナ状態（backlog/needs/…）の鏡写し。kiro-flow のバス（フロータブの run 表示）は
     別途 kiro-flow 側の state_git が担う（本ツールはバスを同期しない）。"""
+    if _uses_per_project_state_git(cfg):
+        name = cfg.project_name or "default"
+        if name == "all":                 # コンテナ全体の起動行（各プロジェクトは自分の行で個別に出す）
+            n = len(getattr(cfg, "state_git_projects", None) or {})
+            base = f"（既定 → {cfg.state_git}）" if getattr(cfg, "state_git", None) else "（既定なし）"
+            return (f"state-git: プロジェクト単位 有効 → 固有リポジトリ {n} 件{base} "
+                    f"interval={cfg.state_git_interval}s（各プロジェクトを自分の subtree だけ鏡写し）")
+        spec = project_state_spec(cfg, name)
+        if spec is None:
+            return f"state-git: 無効（project={name} は未設定・既定 state_git も無し）"
+        remote, branch, subdir, interval = spec
+        return (f"state-git: 有効 → project={name} {remote} branch={branch} "
+                f"subdir={subdir}/projects/{_project_dirname(name)} interval={interval}s"
+                "（このプロジェクトの subtree だけを固有リポジトリへ鏡写し）")
     if not getattr(cfg, "state_git", None):
         return "state-git: 無効（未設定）"
     return (f"state-git: 有効 → {cfg.state_git} subdir={cfg.state_git_subdir} "
@@ -3784,6 +3913,26 @@ def state_git_status_line(cfg: "Config") -> str:
 
 
 def state_git_for(cfg: "Config") -> "StateGit | None":
+    # プロジェクト単位リポジトリ: そのプロジェクトの subtree（<container>/projects/<name>）だけを
+    # スコープし、固有リポジトリの <subdir>/projects/<name>/ へ鏡写しする（viewer は <clone>/<subdir>
+    # をコンテナ root として登録すれば従来どおり projects/<name> を辿れる）。
+    if _uses_per_project_state_git(cfg):
+        name = cfg.project_name or "default"
+        if name == "all":                 # コンテナ全体センチネル自体は同期対象にしない（各プロジェクトで同期）
+            return None
+        spec = project_state_spec(cfg, name)
+        if spec is None:
+            return None
+        remote, branch, base_subdir, interval = spec
+        proot = cfg.backlog.parent        # <container>/projects/<name>
+        dirname = _project_dirname(name)
+        subdir = "/".join(p for p in (base_subdir, "projects", dirname) if p)
+        key = (str(proot), remote, branch, subdir)
+        if key not in _STATE_GITS:
+            _STATE_GITS[key] = StateGit(proot, remote, branch, subdir, interval,
+                                        clone_dir=proot / ".state-git")
+        return _STATE_GITS[key]
+    # 従来（コンテナ丸ごと）: state_git だけ設定。全プロジェクトを 1 リポジトリの subdir へ鏡写し。
     if not getattr(cfg, "state_git", None):
         return None
     container = container_dir(cfg)
@@ -3792,6 +3941,97 @@ def state_git_for(cfg: "Config") -> "StateGit | None":
         _STATE_GITS[key] = StateGit(container, cfg.state_git, cfg.state_git_branch,
                                     cfg.state_git_subdir, cfg.state_git_interval)
     return _STATE_GITS[key]
+
+
+# 実行層 kiro-flow を「プロジェクト単位で kiro-projects が起動・監視」する。
+# kiro-flow は project の概念を持たず素の単一バス daemon のまま。プロジェクトとリポジトリの対応
+# （＝どのバスがどこへ鏡写しするか）は制御層 kiro-projects が握り、daemon 起動時に CLI で注入する:
+#   kiro-flow --bus <project>/bus --state-git <repo> --state-git-subdir kiro-flow ... daemon ...
+# 起動はバスロックで冪等（既に稼働なら二重起動しない）。kiro-projects 停止時も detached で残すため、
+# in-flight run（gitlab 長期委譲・夜間停止からの孤児再開）は daemon 側でそのまま継続する。
+FLOW_STATE_SUBDIR = "kiro-flow"   # プロジェクト固有リポジトリ内の kiro-flow 名前空間（viewer は <clone>/kiro-flow）
+
+
+def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
+    """このプロジェクトの kiro-flow バスを鏡写しすべき (remote, branch, interval)。無ければ None。
+    プロジェクト単位リポジトリ（state_git_projects）かつ per-project バス（共有バスでない）のときだけ、
+    そのプロジェクトのリポジトリの kiro-flow 名前空間へ向ける。共有バスは per-project に割れないので対象外。"""
+    if not _uses_per_project_state_git(cfg) or getattr(cfg, "shared_bus", False):
+        return None
+    name = cfg.project_name or "default"
+    if name == "all":
+        return None
+    spec = project_state_spec(cfg, name)
+    if spec is None:
+        return None
+    remote, branch, _base_subdir, interval = spec
+    return remote, branch, interval
+
+
+def flow_daemon_cmd(cfg: "Config", budget: int) -> "list[str]":
+    """このプロジェクトの kiro-flow daemon 起動コマンド。per-project バスをそのプロジェクトの
+    リポジトリ（kiro-flow 名前空間）へ鏡写しする設定を CLI で注入する（設定ファイル不要）。
+    executor 等の共有設定は flow_config（--config）または各 daemon の既定発見に委ねる。"""
+    base = resolve_kiro_flow(cfg.kiro_flow) + ["--bus", str(cfg.bus)]
+    rf = project_flow_remote(cfg)
+    if rf is not None:
+        remote, branch, interval = rf
+        base += ["--state-git", remote, "--state-git-branch", branch,
+                 "--state-git-subdir", FLOW_STATE_SUBDIR, "--state-git-interval", str(interval)]
+    fc = getattr(cfg, "flow_config", None)
+    if fc:
+        base += ["--config", os.path.abspath(os.path.expanduser(str(fc)))]
+    if cfg.lock_dir:
+        base += ["--lock-dir", str(cfg.lock_dir)]   # kiro-flow と同じロック置き場（検知の一致）
+    base += ["daemon", "--max-workers", str(max(1, int(budget))), "--executor", cfg.executor]
+    return base
+
+
+def ensure_flow_daemon(cfg: "Config", budget: int) -> bool:
+    """このプロジェクトの kiro-flow daemon を（無ければ）detached で起動する。起動したら True。
+    manage_flow_daemon が off・per-project 対象でない・既に稼働中、のときは何もしない（冪等）。
+    kiro-projects 停止後も残す（start_new_session）＝in-flight run を跨いで維持する。"""
+    if not getattr(cfg, "manage_flow_daemon", False):
+        return False
+    if project_flow_remote(cfg) is None:        # 共有バス/従来モード/落とし先なし → 対象外
+        return False
+    if daemon_running(cfg, use_git=False):      # 既にこのバスの daemon が稼働（ロック保持）→ 冪等スキップ
+        return False
+    cmd = flow_daemon_cmd(cfg, budget)
+    try:
+        cfg.bus.mkdir(parents=True, exist_ok=True)
+        logp = cfg.backlog.parent / "flow-daemon.log"
+        try:
+            logf = open(logp, "a", encoding="utf-8")
+        except OSError:
+            logf = subprocess.DEVNULL
+        try:
+            subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, start_new_session=True,
+                             cwd=str(cfg.workdir))
+        finally:
+            if hasattr(logf, "close"):
+                logf.close()
+        append_journal(cfg.journal,
+                       f"kiro-flow daemon 起動: bus={cfg.bus} max_workers={max(1, int(budget))}")
+        return True
+    except OSError as e:
+        append_journal(cfg.journal, f"kiro-flow daemon 起動失敗（続行）: {e}")
+        return False
+
+
+def ensure_flow_daemons(cfg: "Config", cfgs: "list[Config]") -> None:
+    """管理対象の各プロジェクトについて kiro-flow daemon を確保する（不在なら起動）。
+    flow_max_workers をマシン全体の予算として、対象プロジェクト数で割り各 daemon の上限にする。"""
+    if not getattr(cfg, "manage_flow_daemon", False):
+        return
+    targets = [c for c in cfgs if project_flow_remote(c) is not None]
+    if not targets:
+        return
+    total = max(1, int(getattr(cfg, "flow_max_workers", 4) or 4))
+    budget = max(1, total // len(targets))
+    for c in targets:
+        ensure_flow_daemon(c, budget)
 
 
 def status_path(cfg: "Config") -> Path:
@@ -3852,6 +4092,52 @@ def state_sync(cfg: "Config", force: bool = False) -> None:
         append_journal(cfg.journal, f"state-git 同期失敗（続行）: {e}")
 
 
+def _mark_offloaded(cfg: "Config", task: "Task", location: str, run_id: str) -> None:
+    """タスクを『非ブロッキング委譲・結果待ち』に退避する（run_loop が settle をスキップ）。"""
+    task.status = "offloaded"
+    task.set("flow_run", run_id)
+    task.set("flow_loc", location)
+    persist_task(cfg, task)
+
+
+def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
+                    autonomy_cache: dict, reasons: dict, cycle0: int,
+                    spawn_budget: int) -> dict:
+    """offloaded タスク（非ブロッキング委譲・結果待ち）を1回ずつポーリングし、終端した run だけ
+    settle する（未終端はそのまま次パスへ）。専用 daemon が run を保持するので、ここでは待たない。
+    deltas（settled/archived/spawned/tokens/cost）を返す。"""
+    settled = archived = spawned = tokens = 0
+    cost = 0.0
+    for task in [t for t in tasks if t.norm_status() == "offloaded"]:
+        run_id = str(task.get("flow_run", "") or "")
+        loc = str(task.get("flow_loc", "daemon") or "daemon")
+        if not run_id:
+            continue
+        term, ok, msg = _flow_result_once(cfg, loc == "remote", run_id)
+        if not term:
+            continue                       # まだ実行中 → 次パスで再確認（ブロックしない）
+        if not claim_task(cfg, task):      # 実行権を取ってから確定（他インスタンスと競合しない）
+            continue
+        gb = git_change_baseline(cfg.workdir)   # 完了時点の基準（remote/daemon 委譲は local 差分なし）
+        venv = {"KIRO_BASE_REV": gb[0]} if gb[0] else None
+        task.drop("flow_run", "flow_loc")
+        task.status = "doing"
+        persist_task(cfg, task)
+        dtok, dusd = parse_cost(msg)
+        tokens += dtok
+        cost += dusd
+        res = _settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
+                           policy, autonomy_cache, reasons)
+        archived += res["archived"]
+        if res["followups"] and spawned < spawn_budget:
+            new = spawn_followups(cfg, task, res["followups"], tasks, spawn_budget - spawned)
+            spawned += len(new)
+        release_claim(cfg, task)
+        settled += 1
+    return {"settled": settled, "archived": archived, "spawned": spawned,
+            "tokens": tokens, "cost": cost}
+
+
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     state_sync(cfg)                    # 状態 git: リモートの指示（commands/inbox/needs 記入）を先に取り込む
     tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg)
@@ -3891,6 +4177,19 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                 policy = load_policy(cfg.policy)
                 ingested += ingest_feedback(cfg, tasks)
 
+        # 非ブロッキング委譲（act_async）の回収: offloaded タスクの run を1回ずつポーリングし、
+        # 終端したものだけ settle する（待たない）。専用 daemon が run を保持するので、gitlab の
+        # 長期委譲でもループを塞がず、完了したものから順に消化できる。
+        reaped = _reap_offloaded(cfg, tasks, policy, autonomy_cache, reasons, cycle,
+                                 cfg.max_spawn - spawned_total)
+        if reaped["settled"]:
+            cycle += reaped["settled"]
+            archived += reaped["archived"]
+            spawned_total += reaped["spawned"]
+            tokens_used += reaped["tokens"]
+            cost_used += reaped["cost"]
+            tasks = load_tasks(cfg.backlog)    # settle が状態を変えたので再読
+
         order_all = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
                      if t.id not in unavailable]  # 他 worker/インスタンスがクレーム済みは除外
         levels = {t.id: resolve_level(t, cfg, autonomy_cache) for t in order_all}
@@ -3919,9 +4218,15 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             if task.id not in act_results:        # クレームできなかった分はこの run では飛ばす
                 unavailable.add(task.id)
                 continue
+            location, pend, act_msg = act_results[task.id]
+            if pend is not None:                  # 非ブロッキング委譲（offload）: 待たず offloaded に退避
+                _mark_offloaded(cfg, task, location, pend.run_id)
+                release_claim(cfg, task)          # 実行権は解放（次パスでポーリングして終端したら settle）
+                append_journal(cfg.journal, f"{task.id} を offload（run={pend.run_id}）→ 結果待ち")
+                unavailable.add(task.id)          # この run ではもう触らない（再選択しない）
+                continue
             cycle += 1
             cycle_start = time.time()
-            location, act_msg = act_results[task.id]
             dtok, dusd = parse_cost(act_msg)             # このサイクルのコストを計上（予算ゲート用）
             tokens_used += dtok
             cost_used += dusd
@@ -4004,7 +4309,8 @@ def exit_code_for(result: dict) -> int:
 def has_work(cfg: Config) -> bool:
     """次パスを起こすべき仕事があるか（新規/実行待ちタスク or フィードバック）。安価な FS 走査のみ。"""
     for t in load_tasks(cfg.backlog):
-        if t.norm_status() in CONSUMABLE or t.norm_status() == "inbox":
+        # offloaded は「機械が委譲実行中・結果待ち」＝次パスでポーリングして回収するため起こす
+        if t.norm_status() in CONSUMABLE or t.norm_status() in ("inbox", "offloaded"):
             return True
     if cfg.inbox and cfg.inbox.exists() and any(cfg.inbox.glob("*")):
         return True               # 外部ドロップ(inbox/)が来たら起こす
@@ -4688,6 +4994,35 @@ def doctor_audit_findings(cfg: "Config") -> "list[dict]":
     return out
 
 
+def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
+    """プロジェクト単位バス構成で、各プロジェクトのバスに稼働中の kiro-flow daemon がいるかを確認し、
+    不在を warn にする（未担当だと run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の
+    継続が効かない）。manage_flow_daemon が on なら kiro-projects が自動起動するので通常は満たされ、
+    起動失敗や off での起動忘れのときに気づける。プロジェクト単位リポジトリ（state_git_projects）かつ
+    per-project バス（共有バスでない）のときだけ確認する。"""
+    if not _uses_per_project_state_git(cfg) or getattr(cfg, "shared_bus", False):
+        return []
+    managed = bool(getattr(cfg, "manage_flow_daemon", False))
+    out: "list[dict]" = []
+    for name in project_dir_names(cfg):
+        pcfg = project_cfg(cfg, name)
+        if project_flow_remote(pcfg) is None:        # 固有リポジトリへ鏡写しする対象のバスだけ見る
+            continue
+        if not daemon_running(pcfg, use_git=False):
+            fix = ("manage_flow_daemon: true を設定（kiro-projects が自動起動）"
+                   if not managed else
+                   f"起動失敗の可能性。手動確認: kiro-flow --bus {pcfg.bus} "
+                   f"--state-git <repo> --state-git-subdir {FLOW_STATE_SUBDIR} daemon")
+            out.append({
+                "category": "config", "severity": "warn",
+                "title": f"kiro-flow daemon 不在: project={name}",
+                "evidence": f"{pcfg.bus} を担当する kiro-flow daemon が見つかりません"
+                            "（run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効きません）",
+                "fix": fix,
+            })
+    return out
+
+
 def collect_doctor_signals(cfg: "Config") -> dict:
     """ログ/状態から診断材料を決定的に集める（kiro-cli へ渡す・有界）。"""
     tasks = load_tasks(cfg.backlog)
@@ -4892,7 +5227,8 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     実行層 kiro-flow の doctor も連携実行し findings を統合する（cfg.with_flow 時）。
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
-    deterministic = doctor_env_findings(cfg) + doctor_audit_findings(cfg)
+    deterministic = (doctor_env_findings(cfg) + doctor_audit_findings(cfg)
+                     + doctor_flow_bus_coverage_findings(cfg))
     for f in deterministic:
         f["source"] = "check"
     signals = collect_doctor_signals(cfg)
@@ -5275,6 +5611,7 @@ def cmd_run_all(cfg: Config) -> int:
         charter_mtime: dict[str, float] = {}
         while True:
             cfgs = [project_cfg(cfg, n) for n in project_dir_names(cfg)]   # 新規プロジェクトを再発見
+            ensure_flow_daemons(cfg, cfgs)   # 各プロジェクトの kiro-flow daemon を確保（opt-in・冪等）
             any_work = False
             for c in cfgs:
                 _ensure_registered(c)
@@ -5296,7 +5633,13 @@ def cmd_run_all(cfg: Config) -> int:
                 time.sleep(cfg.poll)
                 for paths in registered.values():
                     refresh_instance(paths)
-                state_sync(cfg)                       # 状態 git: リモートの指示を取り込む（間隔律速）
+                # 状態 git: リモートの指示を取り込む（間隔律速）。プロジェクト単位リポジトリなら
+                # 各プロジェクトを自分の固有リポジトリへ、そうでなければコンテナ丸ごとを 1 回同期。
+                if _uses_per_project_state_git(cfg):
+                    for c in cfgs:
+                        state_sync(c)
+                else:
+                    state_sync(cfg)
                 if maybe_self_update(cfg):            # アイドル時のみ自己更新（取り込めたら再起動）
                     raise _RestartRequested()
     except KeyboardInterrupt:
@@ -6604,6 +6947,7 @@ CONFIG_DEFAULTS = {
     "verify_confirm": 1,
     "verify_cwd": None,
     "act_timeout": 1800.0,
+    "act_async": False,   # 非ブロッキング委譲（daemon/remote へ submit して待たず offloaded で回収）
     # kiro-flow バスの置き場（絶対パスで明示すると全プロジェクトが 1 本を共有し、外部 daemon を
     # 検知できる）。None なら per-project の <root>/projects/<name>/bus。設定ファイルの bus: を
     # ここに載せておかないと resolve_config が読まず黙って per-project バスに落ちる（daemon 非検知・
@@ -6616,6 +6960,13 @@ CONFIG_DEFAULTS = {
     "state_git_branch": "main",
     "state_git_subdir": "kiro-projects",  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期
+    # プロジェクト単位の保存先リポジトリ写像（{名前: URL/パス} か {名前: {remote/branch/subdir/interval}}）。
+    # 載ったプロジェクトはそのプロジェクトの subtree だけを固有リポジトリへ同期。未記載は state_git へ。
+    "state_git_projects": {},
+    # 実行層 kiro-flow daemon をプロジェクト単位で kiro-projects が起動・監視する（opt-in）。
+    "manage_flow_daemon": False,
+    "flow_config": None,        # 各 daemon に --config で渡す共有 kiro-flow.yaml（任意）
+    "flow_max_workers": 4,      # マシン全体の worker 予算（対象プロジェクト数で割り各 daemon の上限に）
     "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
@@ -6733,6 +7084,10 @@ def build_config(args) -> Config:
         state_git_branch=str(getattr(args, "state_git_branch", "main") or "main"),
         state_git_subdir=str(getattr(args, "state_git_subdir", "kiro-projects") or "").strip("/"),
         state_git_interval=max(0.0, float(getattr(args, "state_git_interval", 300.0) or 0.0)),
+        state_git_projects=dict(getattr(args, "state_git_projects", None) or {}),
+        manage_flow_daemon=bool(getattr(args, "manage_flow_daemon", False)),
+        flow_config=getattr(args, "flow_config", None) or None,
+        flow_max_workers=max(1, int(getattr(args, "flow_max_workers", 4) or 4)),
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
@@ -6746,7 +7101,8 @@ def build_config(args) -> Config:
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         verify_confirm=max(1, int(getattr(args, "verify_confirm", 1) or 1)),
         verify_cwd=getattr(args, "verify_cwd", None),
-        act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
+        act_timeout=args.act_timeout, act_async=bool(getattr(args, "act_async", False)),
+        notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
         learn=bool(getattr(args, "learn", True)),
         learn_capture=bool(getattr(args, "learn_capture", True)),
@@ -6867,6 +7223,9 @@ def _add_common(sp):
                          "成果が無いとき、対象 repo のクローン先を指す。未指定でも charter に単一 repo があれば"
                          "acceptance はその repo を一時 clone して実行する")
     sp.add_argument("--act-timeout", type=float, default=None)
+    sp.add_argument("--act-async", dest="act_async", action="store_true", default=None,
+                    help="非ブロッキング委譲: daemon/remote へ submit して待たず offloaded にし、"
+                         "次パスでポーリングして回収する（gitlab 等の長期委譲でループを塞がない）")
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
     sp.add_argument("--actor", default=None)
     sp.add_argument("--learn", action=argparse.BooleanOptionalAction, default=None,

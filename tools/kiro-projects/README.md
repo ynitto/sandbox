@@ -114,6 +114,14 @@ kiro-projects run --planner none --flow-planner stub --executor stub
 | `daemon` | `submit` → `result` で done 待ち | ローカル daemon（無ければ local にフォールバック） | warm worker 再利用 |
 | `remote` | `submit`（`--git`）→ `result` で done 待ち | 共有 git バスの remote daemon が必須 | 別マシンへオフロード |
 
+**非ブロッキング委譲（`act_async`）**: `daemon`/`remote` は既定では結果を待つ（ブロック）。`act_async: true` に
+すると **submit して待たず**タスクを `offloaded` に退避し、次パスで `result` を1回だけポーリングして
+**終端した run だけ**を消化する。`executor: gitlab` のように MR 承認まで数日かかる委譲でループを塞がず、
+同じプロジェクトの他タスク・他プロジェクトを並行に進められる。専用 daemon が run を保持するので待たなくても
+結果は取りこぼさず、submit は決定的 run_id なので kiro-projects が再起動しても同じ run に再合流する。
+`act_timeout: 0`（＋ kiro-flow `gitlab.timeout/approved_timeout: 0`）と併用すると、誤タイムアウト由来の
+retry ループが完全に消える。既定 off＝従来どおり同期で待つ（完全後方互換）。
+
 `auto` = offload 一致＋`--git-bus` → remote ／ ローカル daemon 稼働 → daemon ／ 他 → local。daemon 検知は
 kiro-flow と同じロックで行う：バスを `realpath` で正規化したキーで `flock` を見て、`flock` が使えない環境
 （Windows・一部の異種FS）では daemon が記録した PID の生存で補完する。**外部で起動した daemon を取りこぼさない
@@ -502,6 +510,67 @@ kiro-projects run --watch --state-git git@example.com:team/kiro-state.git   # CL
 同期は run のパス開始（指示の取り込み）・パス終了（結果の押し出し）・watch の idle（間隔律速の pull）で走る。
 ネットワーク断・リポジトリ不通でも**ループは殺さず** journal に残して続行する（done の確定・消化は state_git に
 一切依存しない）。
+
+### プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
+
+> 既存の 1 リポジトリ複数プロジェクト構成から移行する手順は
+> [移行手順書](../../docs/guides/migrate-per-project-repos.md) を参照。
+
+`state_git` だけだと**コンテナ丸ごと**（全プロジェクト）が 1 リポジトリの `state_git_subdir/` へ入る。
+プロジェクトごとに**別々のリポジトリ**へ分けたいとき（プロジェクト固有リポジトリで kiro-projects / kiro-flow の
+情報をメンバーと共有し、誰でも [kiro-projects-viewer](../kiro-projects-viewer/) でドライブできるようにする）は
+`state_git_projects` にプロジェクト名 → リポジトリの写像を書く。
+
+```yaml
+# .kiro/kiro-projects.yaml
+state_git: git@example.com:me/kiro-personal.git   # 既定（個人）＝未記載プロジェクトの落とし先。省略で無効
+state_git_subdir: kiro-projects
+state_git_interval: 300
+state_git_projects:                               # プロジェクト固有リポジトリ（共有・可視化）
+  alpha: git@example.com:team-alpha/kiro-state.git         # 値は URL/パスの短縮形、または
+  beta:                                                    # dict で個別上書き
+    remote: git@example.com:team-beta/kiro-state.git
+    branch: main
+    subdir: kiro-projects        # 既定は state_git_subdir
+    interval: 120                # 既定は state_git_interval
+```
+
+- **default はユーザー個人で管理**、他プロジェクトはプロジェクト固有リポジトリで共有 — の構成そのもの。
+  `default`（や写像に**無い**プロジェクト）は既定の `state_git`（個人リポジトリ・未設定なら同期無効）へ、
+  写像に**ある**プロジェクトは**そのプロジェクトの subtree だけ**をスコープして固有リポジトリへ同期する。
+- **使う人ごとにアサインされるプロジェクトが違う点は、各自の設定でこの写像を変えるだけ**で吸収できる
+  （＝リポジトリの設定で解決）。alpha を担当する人だけが `alpha:` を書けば、その人の daemon だけが
+  alpha をチームリポジトリへ同期する。
+- **リポジトリ内のレイアウトは分けても同じ**（`<subdir>/projects/<name>/…`）。固有リポジトリでも
+  `projects/<name>/` を保つので、viewer 側は `<clone>/<subdir>` を**コンテナ root として追加登録**する
+  だけで従来どおり辿れる（[viewer README](../kiro-projects-viewer/README.md) の「コンテナのパス」は複数行
+  登録できる。プロジェクトごとの clone を 1 行ずつ足す）。
+- 各プロジェクトは**自分専用の管理クローン**（`<container>/projects/<name>/.state-git`）を使い、
+  多重コミッタの護り（sparse-checkout・`add -A -- <subdir>`・`pull --rebase` 吸収・force 禁止）は
+  そのまま効く。写像に載ったプロジェクトは既定 `state_git`（コンテナ丸ごと）へは**二重同期しない**。
+- **実行層 [kiro-flow](../kiro-flow/) のバス（run）も同じリポジトリへ**：kiro-flow に「プロジェクト」の
+  概念は持ち込まない。代わりに **kiro-projects が per-project の kiro-flow daemon を起動・監視**し、
+  「このバス（`<root>/projects/<name>/bus`）を、このプロジェクトのリポジトリの `kiro-flow` 名前空間へ
+  鏡写しせよ」を**起動時の CLI で注入**する（設定ファイルは要らない）:
+  ```bash
+  kiro-flow --bus <root>/projects/<name>/bus \
+            --state-git <repo> --state-git-subdir kiro-flow ... daemon --max-workers <n>
+  ```
+  → プロジェクト固有リポジトリは `kiro-projects/projects/<name>/`（状態）と `kiro-flow/`（run）の
+  2 名前空間を持ち、viewer は前者をコンテナ、後者をバスとして登録できる。この連携は per-project バス前提
+  （共有バス `bus:` を明示したときは対象外＝flow は従来どおり kiro-flow.yaml の `state_git` で扱う）。
+- **実行層の常駐は kiro-projects が握る（opt-in）**: 設定 `manage_flow_daemon: true` にすると、
+  `kiro-projects` の watch ループが各プロジェクトの kiro-flow daemon を**不在なら起動（バスロックで冪等）**
+  する。`kiro-projects` を止めても daemon は detached で残るので、**in-flight run（gitlab の長期委譲・
+  夜間停止からの孤児再開）は daemon 側でそのまま継続**し、再起動時はロックで再検知して二重起動しない。
+
+  ```yaml
+  # .kiro/kiro-projects.yaml
+  manage_flow_daemon: true             # 各プロジェクトの kiro-flow daemon を自動起動・監視
+  flow_config: ~/.kiro/kiro-flow.yaml  # 各 daemon に --config で渡す共有設定（executor/gitlab 等・任意）
+  flow_max_workers: 6                  # マシン全体の worker 予算（対象プロジェクト数で割り各 daemon の上限に）
+  ```
+  daemon が不在のプロジェクトバスは `kiro-projects doctor` が warn で知らせる（起動失敗・off での起動忘れの検知）。
 
 **viewer 側（別マシン）の組み方**:
 

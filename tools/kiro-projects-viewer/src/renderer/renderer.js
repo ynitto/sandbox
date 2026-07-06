@@ -298,7 +298,7 @@ function renderHeader() {
 // タブ: 概要
 // ---------------------------------------------------------------------------
 
-const STATUS_ORDER = ['ready', 'doing', 'review', 'blocked', 'inbox', 'draft'];
+const STATUS_ORDER = ['ready', 'doing', 'offloaded', 'review', 'blocked', 'inbox', 'draft'];
 
 function renderOverview() {
   const p = state.project;
@@ -471,6 +471,7 @@ const BACKLOG_FILTERS = [
   ['active', '進行中'],
   ['ready', 'ready'],
   ['doing', 'doing'],
+  ['offloaded', 'offloaded'],
   ['review', 'review'],
   ['blocked', 'blocked'],
   ['inbox', 'inbox'],
@@ -721,14 +722,24 @@ function renderBacklog() {
       if (t.extra.level) extras.push(`level: ${t.extra.level}`);
       if (t.extra.track) extras.push(`track: ${t.extra.track}`);
       if (t.extra.review) extras.push(`review: ${t.extra.review}`);
+      if (t.status === 'offloaded' && t.extra.flow_loc) {
+        extras.push(`委譲実行中: ${t.extra.flow_loc}`); // act_async: kiro-flow daemon で結果待ち
+      }
       const rr = runsForTask(t.id); // 紐づく kiro-flow run（リトライ系統）
       const runBadge = rr.length
         ? ` <button class="badge run-link" data-goto-run="${esc(rr[0].runId)}" title="関連 run ${rr.length} 件（最新 ${esc(rr[0].runId)} — ${esc(rr[0].status)}）へ移動">⚙${rr.length}</button>`
         : '';
+      // 非ブロッキング委譲（offloaded）は flow_run（実行中の run-id）へ直接リンクする
+      // （runsForTask が拾えない＝フローバス未登録でも辿れるように明示リンクを出す）。
+      const offloadRun = t.status === 'offloaded' ? String(t.extra.flow_run || '').trim() : '';
+      const offloadBadge =
+        offloadRun && !(rr.length && rr[0].runId === offloadRun)
+          ? ` <button class="badge run-link" data-goto-run="${esc(offloadRun)}" title="委譲実行中の run ${esc(offloadRun)} へ移動">▶ run</button>`
+          : '';
       return `<tr class="clickable" data-task="${esc(t.id)}" data-scope="${state.backlogFilter === 'archive' ? 'archive' : 'backlog'}">
         <td class="mono">${esc(t.id)}</td>
         <td>${esc(t.title)}</td>
-        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示送信済み（取り込み待ち）">✎</span>' : ''}${runBadge}</td>
+        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示送信済み（取り込み待ち）">✎</span>' : ''}${runBadge}${offloadBadge}</td>
         <td>${t.priority}</td>
         <td>${t.retries}</td>
         <td>${t.verify ? '✓' : t.extra.accept || t.extra.verify_template ? '△' : '—'}</td>
@@ -809,7 +820,9 @@ function reviseAreaHtml(t) {
   const doingNote =
     t.status === 'doing'
       ? '<div class="muted">実行中のタスクです: 送信すると現在の試行の結果は確定されず、修正内容とフィードバックでタスクグラフ（kiro-flow run）を積み直します（早い軌道修正）。</div>'
-      : '<div class="muted">本体が取り込むと <code class="mono">rev</code> を上げ、次の実行で新しいタスクグラフ（kiro-flow run）が作られます。依存 after を変えるとグラフの形が変わります。</div>';
+      : t.status === 'offloaded'
+        ? '<div class="muted">委譲実行中（kiro-flow daemon で結果待ち・act_async）です: 送信するとこの run の結果は確定されず、修正を反映した新しいタスクグラフが作られます（反映は run 完了時に行われます）。</div>'
+        : '<div class="muted">本体が取り込むと <code class="mono">rev</code> を上げ、次の実行で新しいタスクグラフ（kiro-flow run）が作られます。依存 after を変えるとグラフの形が変わります。</div>';
   return `<details class="revise-area"><summary>✎ 修正して指示（revise）</summary>
     ${doingNote}
     <div class="field"><label>フィードバック（次の実行に必ず反映される指示）</label>
@@ -843,7 +856,14 @@ function showTaskDialog(id, scope) {
   const t = list.find((x) => x.id === id);
   if (!t) return;
   const extraRows = Object.entries(t.extra)
-    .map(([k, v]) => `<tr><th>${esc(k)}</th><td><pre class="mono">${esc(v)}</pre></td></tr>`)
+    .map(([k, v]) => {
+      // flow_run（offloaded の委譲先 run-id）はフロータブの該当 run へのリンクにする
+      const cell =
+        k === 'flow_run' && String(v).trim()
+          ? `<button class="linklike mono" data-goto-run="${esc(String(v).trim())}" title="委譲実行中の run へ移動">${esc(v)}</button>`
+          : `<pre class="mono">${esc(v)}</pre>`;
+      return `<tr><th>${esc(k)}</th><td>${cell}</td></tr>`;
+    })
     .join('');
   // 決定記録を残す人の操作（backlog のタスクのみ。archive は閲覧のみ）
   const canApprove = ['blocked', 'review'].includes(t.status);
@@ -2101,6 +2121,11 @@ function openSettings() {
   $('cfg-action-mode').value = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.kiro && cfg.kiro.flowBus) || '';
   $('cfg-flow-lockdir').value = (cfg.kiro && cfg.kiro.flowLockDir) || '';
+  $('cfg-flow-bus-by-project').value = Object.entries(
+    (cfg.kiro && cfg.kiro.flowBusByProject) || {}
+  )
+    .map(([name, bus]) => `${name} = ${bus}`)
+    .join('\n');
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
   $('cfg-gl-token').value = cfg.gitlab.token || '';
   $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
@@ -2124,6 +2149,18 @@ async function saveSettings() {
   cfg.kiro.actionMode = $('cfg-action-mode').value;
   cfg.kiro.flowBus = $('cfg-flow-bus').value.trim();
   cfg.kiro.flowLockDir = $('cfg-flow-lockdir').value.trim();
+  // 1 行 1 件「プロジェクト名 = バスパス」を写像へ。空行・不正行は無視する。
+  cfg.kiro.flowBusByProject = $('cfg-flow-bus-by-project')
+    .value.split('\n')
+    .map((line) => {
+      const i = line.indexOf('=');
+      if (i < 0) return null;
+      const name = line.slice(0, i).trim();
+      const bus = line.slice(i + 1).trim();
+      return name && bus ? [name, bus] : null;
+    })
+    .filter(Boolean)
+    .reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();
   cfg.gitlab.token = $('cfg-gl-token').value.trim();
   cfg.reviewViewer.mode = $('cfg-rv-mode').value;
