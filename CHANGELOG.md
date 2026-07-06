@@ -31,6 +31,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   ホワイトリスト読み書き）を追加し、IPC（`kiro:createProject` / `kiro:readFile` /
   `kiro:writeFile`）と `window.api` に公開。archive 再投入は既存の inbox 契約
   （`actions.enqueueToInbox`）を流用。`test/authoring.test.js` を追加
+- **リモート連携（state_git 経由のファイルドロップ）**: 3 操作はすべて既存の状態共有 git
+  （⚙ 設定「操作を都度コミットしてプッシュ」）に乗る — 編集/投入したディレクトリを
+  pathspec 限定でコミット＆プッシュし、リモートの kiro-projects が state_git 同期で取り込む。
+  charter.md / policy.md / inbox は既に「人の入力＝リモート優先」で裁定され、新規プロジェクトは
+  ディレクトリ丸ごとの追加として同期され、`--project all` 常駐が watch ループで新規発見して回す。
+  これに合わせ kiro-projects 側の同時変更裁定に **`repos.{json,yaml,yml}` をリモート優先**へ追加
+  （手書きレジストリの viewer 編集を取りこぼさない。自動生成 repos.json は次 run が charter から
+  再生成するので charter が正のまま）。`TestStateGitSync.test_conflict_repos_registry_prefers_remote` を追加
 
 ### kiro-flow: 孤児 run の resume で orchestrator が usage エラーで即死する不具合を修正
 

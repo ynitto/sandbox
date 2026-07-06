@@ -4739,6 +4739,21 @@ class TestStateGitSync(unittest.TestCase):
         km.state_sync(cfg, force=True)
         self.assertEqual(nf.read_text(encoding="utf-8"), "human answer\n")
 
+    def test_conflict_repos_registry_prefers_remote(self):
+        # repos.{json,yaml,yml} は人が書くレジストリ（charter ## repos の互換入力）なので
+        # policy.md / charter.md と同じくリモート優先（viewer 側の編集を取りこぼさない）。
+        cfg = self._cfg()
+        rf = cfg.backlog.parent / "repos.json"
+        rf.write_text('{"app": {"url": "git@h:t/a.git"}}\n', encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        other = self._other()
+        rr = other / "kp" / "projects" / "default" / "repos.json"
+        rr.write_text('{"app": {"url": "git@h:t/a.git", "base": "main"}}\n', encoding="utf-8")
+        self._commit_push(other, "viewer: edit repos")
+        rf.write_text('{"app": {"url": "git@h:t/a.git", "base": "dev"}}\n', encoding="utf-8")
+        km.state_sync(cfg, force=True)
+        self.assertIn('"base": "main"', rf.read_text(encoding="utf-8"))
+
     def test_conflict_machine_state_prefers_local(self):
         cfg = self._cfg()
         mkb(cfg.backlog.parent, "T1")
