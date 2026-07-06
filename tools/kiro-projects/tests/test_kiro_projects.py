@@ -5027,5 +5027,98 @@ class TestStateGitPerProject(unittest.TestCase):
             self._cfg("alpha", state_git_projects={})), [])
 
 
+class TestAsyncOffload(unittest.TestCase):
+    """非ブロッキング委譲（act_async）: daemon/remote への submit で待たず offloaded にし、次パスで
+    ポーリングして終端した run だけ settle する（gitlab 等の長期委譲でループを塞がない）。"""
+
+    def _cfg(self, d, **kw):
+        return cfg_for(d, dry_run=False, act_async=True, executor="gitlab", **kw)
+
+    def _offloaded(self, d, tid, run_id, verify="true"):
+        bd = d / "backlog"
+        bd.mkdir(parents=True, exist_ok=True)
+        (bd / f"{tid}.md").write_text(
+            f"## {tid}: {tid}\n- status: offloaded\n- source: human\n- verify: `{verify}`\n"
+            f"- retries: 0\n- flow_run: {run_id}\n- flow_loc: daemon\n", encoding="utf-8")
+
+    def test_pending_act_marks_task_offloaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = self._cfg(d)
+            with mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")):
+                km.run_loop(cfg, act=lambda t, c, loc: (km._Pending("run-T1"), "実行中"))
+            t = km._load_task_file(cfg, "T1")
+            self.assertEqual(t.norm_status(), "offloaded")
+            self.assertEqual(t.get("flow_run"), "run-T1")
+
+    def test_reap_settles_terminal_run_to_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1", verify="true")
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = km.load_tasks(cfg.backlog)
+            with mock.patch.object(km, "_flow_result_once", return_value=(True, True, "done")):
+                deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
+            self.assertEqual(deltas["settled"], 1)
+            self.assertEqual(deltas["archived"], 1)            # verify PASS → done → archive
+            self.assertIsNone(km._load_task_file(cfg, "T1"))   # backlog から消えた（archive 済み）
+
+    def test_reap_leaves_nonterminal_offloaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1")
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = km.load_tasks(cfg.backlog)
+            with mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")):
+                deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
+            self.assertEqual(deltas["settled"], 0)
+            self.assertEqual(km._load_task_file(cfg, "T1").norm_status(), "offloaded")
+
+    def test_reap_failed_run_does_not_mark_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1", verify="false")   # verify も失敗
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = km.load_tasks(cfg.backlog)
+            with mock.patch.object(km, "_flow_result_once", return_value=(True, False, "failed")):
+                km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
+            self.assertNotEqual(km._load_task_file(cfg, "T1").norm_status(), "done")
+
+    def test_has_work_true_for_offloaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1")
+            self.assertTrue(km.has_work(self._cfg(d)))
+
+    def test_act_via_kiro_flow_offloads_when_async(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.load_tasks(cfg.backlog)[0]
+            with mock.patch.object(km, "daemon_running", return_value=True), \
+                 mock.patch.object(km, "_flow_result_once", return_value=(False, False, "")), \
+                 mock.patch.object(km.subprocess, "run", return_value=types.SimpleNamespace(
+                     returncode=0, stdout="run-T1\n", stderr="")):
+                status, _ = km.act_via_kiro_flow(t, cfg, "daemon")
+            self.assertIsInstance(status, km._Pending)
+
+    def test_sync_path_unaffected_when_async_off(self):
+        # act_async 未指定なら従来どおり待つ（_act_submit）。daemon_running False → _act_run（同期）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1")
+            cfg = cfg_for(d, dry_run=False, executor="stub")   # act_async=False（既定）
+            res = km.run_loop(cfg, act=lambda t, c, loc: (True, "ok"))
+            self.assertEqual(res["reason"], km.REASON_DRAINED)
+            self.assertGreaterEqual(res["archived"], 1)        # done → archive（従来どおり同期で確定）
+            self.assertIsNone(km._load_task_file(cfg, "T1"))   # backlog から消えた（archive 済み）
+
+
 if __name__ == "__main__":
     unittest.main()

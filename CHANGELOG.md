@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects: 非ブロッキング委譲（`act_async`）— gitlab 長期委譲でループを塞がない
+
+- **背景**: `executor: gitlab` は MR 承認まで数日かかる。従来は act が結果を待つ（ブロック）ため、
+  `act_timeout`（既定 30 分）が承認より先に切れて「タイムアウト→retry」を繰り返し、他タスクも
+  待たされていた。専用 daemon が run を保持するようになったので、**待たずに次へ進める**ようにした。
+- **`act_async`（opt-in）**: daemon/remote への submit で**結果を待たず**タスクを新状態 `offloaded` に退避し、
+  次パスで `kiro-flow result` を1回だけポーリングして**終端した run だけ settle**する（未終端は次パスへ）。
+  ループを塞がないので、同じプロジェクトの他タスクや他プロジェクトを並行に進められる。run の本当の
+  失敗（却下・orchestrator 異常）は終端ステータスで検知されるため、待ち上限（タイムアウト）を安全網に
+  する必要がない＝`act_timeout: 0` ＋ kiro-flow `gitlab.timeout/approved_timeout: 0` と併用で
+  **誤タイムアウト由来の retry ループが完全に消える**。
+- submit は決定的 run_id なので、`offloaded` のまま kiro-projects が再起動しても同じ run に再合流する
+  （二重実行・イシュー二重起票なし）。`offloaded` は watch を起こし続け（ポーリング継続）、CONSUMABLE
+  ではない（再 submit しない）。既定 off＝**完全後方互換**（従来どおり同期で待つ）。
+- CLI `--act-async`、設定 `act_async`。テストと `*.yaml.example`（gitlab 委譲サンプル）を更新。
+
 ### kiro-projects / viewer: プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
 
 - **背景・目的**: これまで状態の git 同期（`state_git`）は**コンテナ丸ごと**（全プロジェクト）を 1

@@ -114,6 +114,14 @@ kiro-projects run --planner none --flow-planner stub --executor stub
 | `daemon` | `submit` → `result` で done 待ち | ローカル daemon（無ければ local にフォールバック） | warm worker 再利用 |
 | `remote` | `submit`（`--git`）→ `result` で done 待ち | 共有 git バスの remote daemon が必須 | 別マシンへオフロード |
 
+**非ブロッキング委譲（`act_async`）**: `daemon`/`remote` は既定では結果を待つ（ブロック）。`act_async: true` に
+すると **submit して待たず**タスクを `offloaded` に退避し、次パスで `result` を1回だけポーリングして
+**終端した run だけ**を消化する。`executor: gitlab` のように MR 承認まで数日かかる委譲でループを塞がず、
+同じプロジェクトの他タスク・他プロジェクトを並行に進められる。専用 daemon が run を保持するので待たなくても
+結果は取りこぼさず、submit は決定的 run_id なので kiro-projects が再起動しても同じ run に再合流する。
+`act_timeout: 0`（＋ kiro-flow `gitlab.timeout/approved_timeout: 0`）と併用すると、誤タイムアウト由来の
+retry ループが完全に消える。既定 off＝従来どおり同期で待つ（完全後方互換）。
+
 `auto` = offload 一致＋`--git-bus` → remote ／ ローカル daemon 稼働 → daemon ／ 他 → local。daemon 検知は
 kiro-flow と同じロックで行う：バスを `realpath` で正規化したキーで `flock` を見て、`flock` が使えない環境
 （Windows・一部の異種FS）では daemon が記録した PID の生存で補完する。**外部で起動した daemon を取りこぼさない

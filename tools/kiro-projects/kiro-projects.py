@@ -39,8 +39,10 @@ try:
 except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
     fcntl = None
 
-VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review")
+VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review", "offloaded")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
+# offloaded: 実行層 daemon へ非ブロッキングで submit 済み・結果待ち（act_async）。CONSUMABLE ではない
+#   （再 submit しない）が「機械が実行中」＝人待ちでもない。次パスでポーリングして終端したら settle する。
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
 FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 POLICY_RE = re.compile(r"^(?P<key>deny|pin|defer|offload|gate|protect|route):\s*(?P<val>.+)$")
@@ -2642,6 +2644,56 @@ def _prev_req_id(task: Task, cfg: "Config") -> "str | None":
     return _req_id_for(task, cfg, task.retries - 1) if task.retries > 0 else None
 
 
+class _Pending:
+    """act の第3の結果＝『実行層 daemon へ非ブロッキング submit 済み・まだ終端していない』。
+    run_loop はこれを受けたらタスクを offloaded にして settle をスキップし、次パスでポーリングする。"""
+    __slots__ = ("run_id",)
+
+    def __init__(self, run_id: str):
+        self.run_id = run_id
+
+
+def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool, bool, str]":
+    """kiro-flow result を1回だけ読む（待たない）。(terminal, ok, msg) を返す。
+    terminal=run が done/failed に達したか、ok=failed でないか。取得不能は (False,...) で継続待ち扱い。"""
+    base = _kf_base(cfg, use_git)
+    try:
+        res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
+                             cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True)
+        data = json.loads(res.stdout or "{}")
+    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError, ValueError):
+        return (False, False, "")
+    if not data.get("done"):
+        return (False, False, "")
+    if data.get("status") == "failed":
+        return (True, False, f"daemon run {run_id} failed")
+    return (True, True, f"daemon run {run_id} done")
+
+
+def _act_offload(task: Task, cfg: "Config", use_git: bool) -> "tuple":
+    """非ブロッキング委譲: run が無ければ submit し、結果を1回だけ確認する。終端なら (ok, msg)、
+    未終端なら (_Pending(run_id), msg) を返す（待たない）。専用 daemon が run を保持するので、
+    gitlab の長期委譲でもループをブロックせず次のタスクへ進める（結果は次パスで回収する）。"""
+    base = _kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task) + _reference_cmd_args(cfg, task)
+    run_id = _submit_req_id(task, cfg)
+    term, ok, msg = _flow_result_once(cfg, use_git, run_id)
+    if not term:                                  # 未作成/実行中: 未作成なら submit（作成済みは冪等 no-op）
+        prev = _prev_req_id(task, cfg)
+        inherit = ["--inherit-from", prev] if prev else []
+        try:
+            sub = subprocess.run(base + ["--run-id", run_id, "submit", build_request(task, cfg)]
+                                 + inherit, cwd=str(cfg.workdir),
+                                 timeout=60, capture_output=True, text=True)
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            return (False, f"submit 失敗: {e}")
+        if sub.returncode != 0:
+            return (False, f"submit rc={sub.returncode}: {sub.stderr.strip()[:200]}")
+        term, ok, msg = _flow_result_once(cfg, use_git, run_id)   # submit 直後に一応もう一度
+        if not term:
+            return (_Pending(run_id), f"daemon run {run_id} 実行中（offload・非ブロッキング）")
+    return (ok, msg)
+
+
 def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     """daemon があるとき: submit して、その run が終端に達するまで待つ（verify は待機後）。
     req_id は決定的（_submit_req_id）——リブート後の再実行は既存 run に合流する。"""
@@ -2695,12 +2747,15 @@ def act_via_kiro_flow(task: Task, cfg: "Config", location: str = "local") -> "tu
       daemon → ローカル daemon に submit＋結果待ち（daemon が無ければ run にフォールバック）
       remote → git バスの remote daemon に submit＋結果待ち（オフロード。フォールバックしない）
     """
+    async_ok = bool(getattr(cfg, "act_async", False))
     if location == "remote":
-        return _act_submit(task, cfg, use_git=True)
+        return _act_offload(task, cfg, True) if async_ok else _act_submit(task, cfg, use_git=True)
     if location == "daemon":
         if daemon_running(cfg, use_git=False):
-            return _act_submit(task, cfg, use_git=False)
-        return _act_run(task, cfg, use_git=False)  # daemon 不在 → run
+            # 非ブロッキング（act_async）: submit して待たず次へ。専用 daemon が run を保持し、
+            # 結果は次パスのポーリングで回収する（gitlab 等の長期委譲でループを塞がない）。
+            return _act_offload(task, cfg, False) if async_ok else _act_submit(task, cfg, use_git=False)
+        return _act_run(task, cfg, use_git=False)  # daemon 不在 → run（同期・待つ）
     return _act_run(task, cfg, use_git=False)
 
 
@@ -2834,6 +2889,9 @@ class Config:
     level_window: int = 10           # 手戻り率の評価窓（直近 N 件の完了）
     level_rework_max: float = 0.0    # 昇格を許す最大 rework_rate（既定 0＝手戻りゼロ）
     act_timeout: float = 1800.0
+    # 非ブロッキング委譲: daemon/remote への submit で結果を待たず次のタスクへ進み、offloaded にして
+    # 次パスでポーリングして回収する。gitlab 等の長期委譲でループを塞がない（専用 daemon が run を保持）。
+    act_async: bool = False
     notify_cmd: "str | None" = None
     actor: str = "user"
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）
@@ -3183,7 +3241,8 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
     # クレーム後の再検証: 別インスタンスが既に消化（archive/削除）や状態変更をしていないか。
     # （ロック取得は「同時実行」を防ぐが、こちらの in-memory ビューが古い場合に二重実行を防ぐ）
     live = _load_task_file(cfg, task.id)
-    if live is None or live.norm_status() not in CONSUMABLE:
+    # offloaded（非ブロッキング委譲・結果待ち）は reap が doing へ確定させる正当な遷移なので claim を許す。
+    if live is None or (live.norm_status() not in CONSUMABLE and live.norm_status() != "offloaded"):
         release_claim(cfg, task)              # 既に done/review/blocked 等 → 実行しない
         return False
     # 実行直前のディスク内容を採用する（in-memory がパス開始時点で止まっていても、
@@ -3211,22 +3270,25 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
         persist_task(cfg, t)
     locs = {t.id: decide_location(t, policy, cfg) for t in claimed}
     if cfg.dry_run:
-        return {t.id: (locs[t.id], "(dry-run)") for t in claimed}
+        return {t.id: (locs[t.id], None, "(dry-run)") for t in claimed}
     if not claimed:
         return {}
+
+    def _one(t):
+        # act は (bool|_Pending, msg)。_Pending は「非ブロッキング submit 済み・未終端」＝offload。
+        status, msg = act(t, cfg, locs[t.id])
+        return (locs[t.id], status if isinstance(status, _Pending) else None, msg)
+
     if len(claimed) == 1:
-        t = claimed[0]
-        _, msg = act(t, cfg, locs[t.id])
-        return {t.id: (locs[t.id], msg)}
-    results: dict[str, tuple[str, str]] = {}
+        return {claimed[0].id: _one(claimed[0])}
+    results: "dict[str, tuple]" = {}
     with ThreadPoolExecutor(max_workers=len(claimed)) as ex:
-        futs = {ex.submit(act, t, cfg, locs[t.id]): t for t in claimed}
+        futs = {ex.submit(_one, t): t for t in claimed}
         for fut, t in futs.items():
             try:
-                _, msg = fut.result()
+                results[t.id] = fut.result()
             except Exception as e:     # noqa: BLE001 — act 失敗は verify=NG 相当として後段で扱う
-                msg = f"act 失敗: {e}"
-            results[t.id] = (locs[t.id], msg)
+                results[t.id] = (locs[t.id], None, f"act 失敗: {e}")
     return results
 
 
@@ -4030,6 +4092,52 @@ def state_sync(cfg: "Config", force: bool = False) -> None:
         append_journal(cfg.journal, f"state-git 同期失敗（続行）: {e}")
 
 
+def _mark_offloaded(cfg: "Config", task: "Task", location: str, run_id: str) -> None:
+    """タスクを『非ブロッキング委譲・結果待ち』に退避する（run_loop が settle をスキップ）。"""
+    task.status = "offloaded"
+    task.set("flow_run", run_id)
+    task.set("flow_loc", location)
+    persist_task(cfg, task)
+
+
+def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
+                    autonomy_cache: dict, reasons: dict, cycle0: int,
+                    spawn_budget: int) -> dict:
+    """offloaded タスク（非ブロッキング委譲・結果待ち）を1回ずつポーリングし、終端した run だけ
+    settle する（未終端はそのまま次パスへ）。専用 daemon が run を保持するので、ここでは待たない。
+    deltas（settled/archived/spawned/tokens/cost）を返す。"""
+    settled = archived = spawned = tokens = 0
+    cost = 0.0
+    for task in [t for t in tasks if t.norm_status() == "offloaded"]:
+        run_id = str(task.get("flow_run", "") or "")
+        loc = str(task.get("flow_loc", "daemon") or "daemon")
+        if not run_id:
+            continue
+        term, ok, msg = _flow_result_once(cfg, loc == "remote", run_id)
+        if not term:
+            continue                       # まだ実行中 → 次パスで再確認（ブロックしない）
+        if not claim_task(cfg, task):      # 実行権を取ってから確定（他インスタンスと競合しない）
+            continue
+        gb = git_change_baseline(cfg.workdir)   # 完了時点の基準（remote/daemon 委譲は local 差分なし）
+        venv = {"KIRO_BASE_REV": gb[0]} if gb[0] else None
+        task.drop("flow_run", "flow_loc")
+        task.status = "doing"
+        persist_task(cfg, task)
+        dtok, dusd = parse_cost(msg)
+        tokens += dtok
+        cost += dusd
+        res = _settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
+                           policy, autonomy_cache, reasons)
+        archived += res["archived"]
+        if res["followups"] and spawned < spawn_budget:
+            new = spawn_followups(cfg, task, res["followups"], tasks, spawn_budget - spawned)
+            spawned += len(new)
+        release_claim(cfg, task)
+        settled += 1
+    return {"settled": settled, "archived": archived, "spawned": spawned,
+            "tokens": tokens, "cost": cost}
+
+
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
     state_sync(cfg)                    # 状態 git: リモートの指示（commands/inbox/needs 記入）を先に取り込む
     tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg)
@@ -4069,6 +4177,19 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                 policy = load_policy(cfg.policy)
                 ingested += ingest_feedback(cfg, tasks)
 
+        # 非ブロッキング委譲（act_async）の回収: offloaded タスクの run を1回ずつポーリングし、
+        # 終端したものだけ settle する（待たない）。専用 daemon が run を保持するので、gitlab の
+        # 長期委譲でもループを塞がず、完了したものから順に消化できる。
+        reaped = _reap_offloaded(cfg, tasks, policy, autonomy_cache, reasons, cycle,
+                                 cfg.max_spawn - spawned_total)
+        if reaped["settled"]:
+            cycle += reaped["settled"]
+            archived += reaped["archived"]
+            spawned_total += reaped["spawned"]
+            tokens_used += reaped["tokens"]
+            cost_used += reaped["cost"]
+            tasks = load_tasks(cfg.backlog)    # settle が状態を変えたので再読
+
         order_all = [t for t in prioritize(tasks, policy, cfg.planner, cfg.model, ranker)
                      if t.id not in unavailable]  # 他 worker/インスタンスがクレーム済みは除外
         levels = {t.id: resolve_level(t, cfg, autonomy_cache) for t in order_all}
@@ -4097,9 +4218,15 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
             if task.id not in act_results:        # クレームできなかった分はこの run では飛ばす
                 unavailable.add(task.id)
                 continue
+            location, pend, act_msg = act_results[task.id]
+            if pend is not None:                  # 非ブロッキング委譲（offload）: 待たず offloaded に退避
+                _mark_offloaded(cfg, task, location, pend.run_id)
+                release_claim(cfg, task)          # 実行権は解放（次パスでポーリングして終端したら settle）
+                append_journal(cfg.journal, f"{task.id} を offload（run={pend.run_id}）→ 結果待ち")
+                unavailable.add(task.id)          # この run ではもう触らない（再選択しない）
+                continue
             cycle += 1
             cycle_start = time.time()
-            location, act_msg = act_results[task.id]
             dtok, dusd = parse_cost(act_msg)             # このサイクルのコストを計上（予算ゲート用）
             tokens_used += dtok
             cost_used += dusd
@@ -4182,7 +4309,8 @@ def exit_code_for(result: dict) -> int:
 def has_work(cfg: Config) -> bool:
     """次パスを起こすべき仕事があるか（新規/実行待ちタスク or フィードバック）。安価な FS 走査のみ。"""
     for t in load_tasks(cfg.backlog):
-        if t.norm_status() in CONSUMABLE or t.norm_status() == "inbox":
+        # offloaded は「機械が委譲実行中・結果待ち」＝次パスでポーリングして回収するため起こす
+        if t.norm_status() in CONSUMABLE or t.norm_status() in ("inbox", "offloaded"):
             return True
     if cfg.inbox and cfg.inbox.exists() and any(cfg.inbox.glob("*")):
         return True               # 外部ドロップ(inbox/)が来たら起こす
@@ -6819,6 +6947,7 @@ CONFIG_DEFAULTS = {
     "verify_confirm": 1,
     "verify_cwd": None,
     "act_timeout": 1800.0,
+    "act_async": False,   # 非ブロッキング委譲（daemon/remote へ submit して待たず offloaded で回収）
     # kiro-flow バスの置き場（絶対パスで明示すると全プロジェクトが 1 本を共有し、外部 daemon を
     # 検知できる）。None なら per-project の <root>/projects/<name>/bus。設定ファイルの bus: を
     # ここに載せておかないと resolve_config が読まず黙って per-project バスに落ちる（daemon 非検知・
@@ -6972,7 +7101,8 @@ def build_config(args) -> Config:
         max_retries=args.max_retries, pace=args.pace, verify_timeout=args.verify_timeout,
         verify_confirm=max(1, int(getattr(args, "verify_confirm", 1) or 1)),
         verify_cwd=getattr(args, "verify_cwd", None),
-        act_timeout=args.act_timeout, notify_cmd=args.notify_cmd, actor=args.actor,
+        act_timeout=args.act_timeout, act_async=bool(getattr(args, "act_async", False)),
+        notify_cmd=args.notify_cmd, actor=args.actor,
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
         learn=bool(getattr(args, "learn", True)),
         learn_capture=bool(getattr(args, "learn_capture", True)),
@@ -7093,6 +7223,9 @@ def _add_common(sp):
                          "成果が無いとき、対象 repo のクローン先を指す。未指定でも charter に単一 repo があれば"
                          "acceptance はその repo を一時 clone して実行する")
     sp.add_argument("--act-timeout", type=float, default=None)
+    sp.add_argument("--act-async", dest="act_async", action="store_true", default=None,
+                    help="非ブロッキング委譲: daemon/remote へ submit して待たず offloaded にし、"
+                         "次パスでポーリングして回収する（gitlab 等の長期委譲でループを塞がない）")
     sp.add_argument("--notify-cmd", default=None, help="要対応ダイジェストを渡す通知コマンド")
     sp.add_argument("--actor", default=None)
     sp.add_argument("--learn", action=argparse.BooleanOptionalAction, default=None,
