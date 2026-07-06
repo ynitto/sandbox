@@ -149,7 +149,7 @@
 
   <!-- ======== タスク追加ダイアログ（inbox へ投入） ======== -->
   <dialog id="dlg-enqueue">
-    <h2 id="enq-heading">タスクを追加（inbox へ投入）</h2>
+    <h2 id="enq-heading">バックログにタスクを 1 件追加（inbox 経由）</h2>
     <div id="enq-reinject-note" class="muted hidden" style="margin-bottom:8px"></div>
     <div class="field">
       <label>タイトル（必須）</label>
@@ -187,24 +187,6 @@
     <div class="dialog-actions">
       <button id="btn-enq-cancel">キャンセル</button>
       <button id="btn-enq-submit" class="primary-inline">投入</button>
-    </div>
-  </dialog>
-
-  <!-- ======== バックログ一括追加ダイアログ（inbox へ配列投入） ======== -->
-  <dialog id="dlg-enqueue-batch" class="wide">
-    <h2>バックログをまとめて追加（inbox へ一括投入）</h2>
-    <div class="muted" style="margin-bottom:8px">
-      1 行 = 1 タスク。<code class="mono">inbox/*.json</code> に配列で投入し、本体が次のサイクルで backlog 化します
-      （即時ではありません）。verify / accept が無い行は取り込み後に人の triage 待ちになります。
-    </div>
-    <div class="batch-head">
-      <span>タイトル（必須）</span><span>verify</span><span>accept</span><span>優先度</span><span>after</span><span></span>
-    </div>
-    <div id="eb-rows"></div>
-    <button id="eb-add-row" type="button" class="chip">＋ 行を追加</button>
-    <div class="dialog-actions">
-      <button id="btn-eb-cancel">キャンセル</button>
-      <button id="btn-eb-submit" class="primary-inline">一括投入</button>
     </div>
   </dialog>
 

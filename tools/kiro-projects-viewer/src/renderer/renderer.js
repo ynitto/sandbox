@@ -741,13 +741,12 @@ function renderBacklog() {
     <div class="filters">${chips}<span class="muted">${tasks.length} 件</span>
       ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="${esc(p.inboxFiles.join(', '))}">inbox 取り込み待ち ${p.inboxFiles.length}</span>` : ''}
       <span class="spacer"></span>
-      <button id="btn-enqueue-batch" title="複数タスクを 1 度に inbox へ投入します">＋ まとめて追加</button>
-      <button id="btn-enqueue" class="primary-inline">＋ タスクを追加</button>
+      <button id="btn-enqueue" class="primary-inline" title="バックログにタスクを 1 件追加します（inbox 経由）">＋ バックログに追加</button>
     </div>
     <details class="backlog-help">
       <summary>バックログの変え方（すべて公式契約・即時ではありません）</summary>
       <div class="muted">
-        <b>追加</b>: 「＋ タスクを追加 / ＋ まとめて追加」→ <code class="mono">inbox</code> に投入。本体が次サイクルで backlog 化します。<br>
+        <b>追加</b>: 「＋ バックログに追加」→ <code class="mono">inbox</code> に 1 件投入。本体が次サイクルで backlog タスク（<code class="mono">backlog/&lt;id&gt;.md</code>）にします。<br>
         <b>変更</b>: 行をクリック →「✎ 修正して指示（revise）」で title・優先度・verify・accept・依存 after・note・level・track を置換＋フィードバック注入。<br>
         <b>タスクグラフの再構築</b>: revise は本体が取り込むと <code class="mono">rev</code> を上げ、kiro-flow に新しいタスクグラフ（run の DAG）を作らせます（実行中タスクは現在の試行を破棄して積み直し）。依存 after を変えるとグラフの形が変わります。<br>
         いずれも状態（done 等）は直接書き換えません（done は verify のみが根拠、の不変条件を保つため）。
@@ -760,7 +759,6 @@ function renderBacklog() {
     }`;
 
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
-  $('btn-enqueue-batch').addEventListener('click', () => openBatchEnqueue());
 
   for (const chip of el.querySelectorAll('.chip')) {
     chip.addEventListener('click', () => {
@@ -998,7 +996,7 @@ function openEnqueueDialog(prefill = {}) {
   const reinject = !!prefill.reinject;
   $('enq-heading').textContent = reinject
     ? 'archive タスクを revise して再投入'
-    : 'タスクを追加（inbox へ投入）';
+    : 'バックログにタスクを 1 件追加（inbox 経由）';
   const note = $('enq-reinject-note');
   if (reinject) {
     note.textContent =
@@ -1049,55 +1047,6 @@ async function submitEnqueue() {
   if (ok) {
     gitPushAfterWrite(`kiro-projects-viewer: enqueue ${spec.title || ''}`.trim(), p.dir);
     $('dlg-enqueue').close();
-    await reloadProject();
-  }
-}
-
-// バックログ一括追加（複数タスクを 1 つの inbox 配列で投入）。行エディタは
-// 新規プロジェクトの repos 行と同じ操作パターンで揃える（UI の一貫性）。
-function addBatchRow(prefill = {}) {
-  const wrap = document.createElement('div');
-  wrap.className = 'eb-row';
-  wrap.innerHTML = `
-    <input class="eb-title" placeholder="タイトル（必須）" value="${esc(prefill.title || '')}" />
-    <input class="eb-verify mono" placeholder='verify 例 grep -q X f' value="${esc(prefill.verify || '')}" />
-    <input class="eb-accept" placeholder="accept（自然文）" value="${esc(prefill.accept || '')}" />
-    <input class="eb-priority" type="number" step="1" value="${prefill.priority != null ? esc(prefill.priority) : '0'}" />
-    <input class="eb-after mono" placeholder="after 例 T1,T2" value="${esc(prefill.after || '')}" />
-    <button type="button" class="eb-del" title="この行を削除">✕</button>`;
-  wrap.querySelector('.eb-del').addEventListener('click', () => wrap.remove());
-  $('eb-rows').appendChild(wrap);
-}
-
-function openBatchEnqueue() {
-  const p = state.project;
-  if (!p) return toast('プロジェクトを選択してください');
-  $('eb-rows').innerHTML = '';
-  for (let i = 0; i < 3; i += 1) addBatchRow(); // 初期は空行 3 つ
-  $('dlg-enqueue-batch').showModal();
-}
-
-async function submitBatchEnqueue() {
-  const p = state.project;
-  if (!p) return;
-  const specs = [...document.querySelectorAll('#eb-rows .eb-row')]
-    .map((row) => ({
-      title: row.querySelector('.eb-title').value.trim(),
-      verify: row.querySelector('.eb-verify').value.trim(),
-      accept: row.querySelector('.eb-accept').value.trim(),
-      priority: row.querySelector('.eb-priority').value.trim(),
-      after: row.querySelector('.eb-after').value.trim(),
-    }))
-    .filter((s) => s.title);
-  if (!specs.length) return toast('タイトルのある行を 1 つ以上入力してください');
-  const ok = await guard('一括追加', async () => {
-    const res = await api.enqueueTasks(p.dir, specs);
-    toast(`inbox に ${res.count} 件を一括投入しました（次のサイクルで backlog 化されます）`, true);
-    return true;
-  });
-  if (ok) {
-    gitPushAfterWrite(`kiro-projects-viewer: enqueue batch ${specs.length}`, p.dir);
-    $('dlg-enqueue-batch').close();
     await reloadProject();
   }
 }
@@ -2257,8 +2206,7 @@ function setupPolling() {
         $('dlg-enqueue').open ||
         $('dlg-confirm').open ||
         $('dlg-new-project').open ||
-        $('dlg-edit-file').open ||
-        $('dlg-enqueue-batch').open
+        $('dlg-edit-file').open
       )
         return;
       const ae = document.activeElement;
@@ -2303,10 +2251,6 @@ async function init() {
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
-  // バックログ一括追加
-  $('btn-eb-cancel').addEventListener('click', () => $('dlg-enqueue-batch').close());
-  $('btn-eb-submit').addEventListener('click', submitBatchEnqueue);
-  $('eb-add-row').addEventListener('click', () => addBatchRow());
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());

@@ -148,9 +148,8 @@ kiro-projects の人間ループはこのアプリ内で完結できる。いず
 | 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
 | 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
 | ✎ 修正して指示（revise） | タスク詳細（backlog のみ） | 同上（`{"command":"revise"}` ドロップ）。タイトル・優先度・依存 after・verify・accept の**置換**とフィードバック注入。**実行中（doing）のタスクにも送れ**、本体は現在の試行の結果を確定せず（verify も done もせず）修正内容で積み直す＝気づいた時点の早い軌道修正。変更した項目だけが送られ、DR（`action: revise`）に記録される |
-| ＋ タスクを追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口。verify / accept / priority / note / id / after 付き） |
-| ＋ まとめて追加 | バックログタブ | 複数タスクを 1 つの `inbox/<name>.json`（**JSON 配列**）で一括投入（`ingest_inbox` が 1 件ずつ backlog 化）。行エディタ（title / verify / accept / priority / after）で「新規バックログをまとめて追加」を単発と同じ公式契約のまま行う |
-| ✎ タスクグラフを積み直す（after 含む revise） | タスク詳細（backlog のみ） | revise（`commands/`）で **依存 after** を含む項目を置換。本体が取り込むと `rev` を上げ、kiro-flow に**新しいタスクグラフ（run の DAG）**を作らせる（実行中タスクは現在の試行を破棄して積み直し）。after 編集は DAG 循環を本体側が拒否。状態（done 等）は書かない |
+| ＋ バックログに追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口）で**バックログにタスクを 1 件追加**（本体が次サイクルで `backlog/<id>.md` にする）。verify / accept / priority / note / id / after 付き |
+| ✎ タスクグラフを積み直す（after 含む revise） | タスク詳細（backlog のみ） | revise（`commands/`）で **依存 after** を含む項目（title / 優先度 / verify / accept / after / note / level / track）を置換。本体が取り込むと `rev` を上げ、kiro-flow に**新しいタスクグラフ（run の DAG）**を作らせる（実行中タスクは現在の試行を破棄して積み直し）。after 編集は DAG 循環を本体側が拒否。状態（done 等）は書かない |
 | ＋ 新規プロジェクト | サイドバー ＋（コンテナが無い空状態にも導線） | `<root>/projects/<name>/charter.md`（goal / constraints / deliverables / acceptance / repos をフォームから）と、repos があれば `repos.json`（`_meta.generated_from` 付き＝正は charter）を作成。以後は kiro-projects の run が charter から backlog を生成する（専用の作成コマンドは無く、charter を置くだけが公式手順）。コンテナが未登録なら設定 roots に追加して発見対象にする |
 | ✎ プロジェクトファイル編集 | 概要タブ「プロジェクトファイル」 | 人が書く**上位入力だけ**をアプリ内で直接編集: `charter.md`（最上位入力）／`policy.md`（運用ルール）／`repos.json`（レジストリ）。保存すると次の run で後段データ（backlog 生成・ルーティング）に反映される。repos.json が charter からの自動生成物（`_meta`）のときは「run 時に charter で上書きされる」旨を警告する。JSON は保存前に構文検証。タスク状態ファイル（`backlog/*.md` の status 等）は編集対象にしない — done の不変条件を壊さないため |
 | ↻ revise して再投入 | タスク詳細（**archive のみ**） | archive（done）タスクの内容（title / verify / accept / priority / note / after / level / track）を prefill した投入フォームを開き、編集して `inbox/<name>.json` ドロップ。**新しいタスク**として triage→verify を通す（archive の記録はそのまま残る）。誤 done などの**エラー復帰用途**。元 ID を引き継ぐが衝突時は本体が採番し直す |
