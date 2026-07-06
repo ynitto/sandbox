@@ -174,6 +174,15 @@ git_branch: main            # バスに使う git ブランチ
 #     branch: main
 #     subdir: kiro-projects
 #     interval: 120
+#
+# 実行層 kiro-flow の run（バス）も同じプロジェクトのリポジトリで共有するには、kiro-projects に
+# per-project の kiro-flow daemon を起動・監視させる（opt-in）。daemon 起動時に「このバス→この
+# リポジトリの kiro-flow 名前空間」を CLI で注入するので、kiro-flow 側の設定ファイルは要らない。
+# kiro-projects を止めても daemon は残り、in-flight run（gitlab 長期委譲・夜間停止からの再開）を継続。
+# 詳細は README「プロジェクト単位で保存先リポジトリを分ける」。
+# manage_flow_daemon: true               # 各プロジェクトの kiro-flow daemon を自動起動・監視
+# flow_config: ~/.kiro/kiro-flow.yaml    # 各 daemon に --config で渡す共有設定（executor/gitlab 等・任意）
+# flow_max_workers: 6                    # マシン全体の worker 予算（対象プロジェクト数で割り各 daemon の上限に）
 
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し

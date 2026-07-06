@@ -4956,45 +4956,68 @@ class TestStateGitPerProject(unittest.TestCase):
         km.state_sync(cfg, force=True)
         self.assertIsNone(km.state_git_for(cfg))
 
-    def test_writes_flow_bus_remote_pointer(self):
-        # per-project バス（共有でない）に、kiro-flow の鏡写し先宣言を置く（ensure_dirs 経由）。
-        cfg = self._cfg("alpha")                       # ensure_dirs が宣言を書く
-        p = cfg.bus / km.FLOW_BUS_REMOTE_FILE
-        self.assertTrue(p.exists())
-        rec = json.loads(p.read_text(encoding="utf-8"))
-        self.assertEqual(rec["remote"], str(self.team))   # プロジェクト固有リポジトリへ
-        self.assertEqual(rec["subdir"], km.FLOW_STATE_SUBDIR)
+    def test_project_flow_remote_resolves_repo(self):
+        # 各プロジェクトの kiro-flow バスの鏡写し先＝そのプロジェクトのリポジトリ。
+        self.assertEqual(km.project_flow_remote(self._cfg("alpha"))[0], str(self.team))
+        self.assertEqual(km.project_flow_remote(self._cfg("default"))[0], str(self.personal))
 
-    def test_flow_pointer_uses_personal_repo_for_unmapped(self):
-        cfg = self._cfg("default")                     # 未記載 → 個人リポジトリ
-        rec = km.flow_bus_remote_record(cfg)
-        self.assertEqual(rec["remote"], str(self.personal))
-
-    def test_no_flow_pointer_when_shared_bus(self):
-        # 共有バスは per-project に割れない → 宣言を書かない（誤って共有バスを1リポへ縛らない）。
+    def test_project_flow_remote_none_for_shared_legacy_or_no_repo(self):
         shared = self.tmp / "shared-bus"
-        cfg = self._cfg("alpha", bus=shared, shared_bus=True)
-        self.assertIsNone(km.flow_bus_remote_record(cfg))
-        self.assertFalse((shared / km.FLOW_BUS_REMOTE_FILE).exists())
+        self.assertIsNone(km.project_flow_remote(self._cfg("alpha", bus=shared, shared_bus=True)))
+        self.assertIsNone(km.project_flow_remote(self._cfg("alpha", state_git_projects={})))
+        self.assertIsNone(km.project_flow_remote(self._cfg("beta", state_git=None)))
 
-    def test_no_flow_pointer_in_legacy_mode(self):
-        # state_git_projects 未使用（従来のコンテナ丸ごと）では宣言を書かない。
-        cfg = self._cfg("alpha", state_git_projects={})
-        self.assertIsNone(km.flow_bus_remote_record(cfg))
-        self.assertFalse((cfg.bus / km.FLOW_BUS_REMOTE_FILE).exists())
+    def test_flow_daemon_cmd_injects_bus_state_git_and_budget(self):
+        cfg = self._cfg("alpha", executor="stub")
+        cmd = km.flow_daemon_cmd(cfg, 3)
+        self.assertIn(str(cfg.bus), cmd)
+        self.assertIn("--state-git", cmd)
+        self.assertIn(str(self.team), cmd)
+        self.assertEqual(cmd[cmd.index("--state-git-subdir") + 1], km.FLOW_STATE_SUBDIR)
+        self.assertIn("daemon", cmd)
+        self.assertEqual(cmd[cmd.index("--max-workers") + 1], "3")
+        self.assertEqual(cmd[cmd.index("--executor") + 1], "stub")
 
-    def test_flow_pointer_disabled_when_unmapped_and_no_personal(self):
-        cfg = self._cfg("beta", state_git=None)        # 落とし先が無い → 宣言なし
-        self.assertIsNone(km.flow_bus_remote_record(cfg))
+    def test_ensure_flow_daemon_spawns_when_managed_and_absent(self):
+        cfg = self._cfg("alpha", manage_flow_daemon=True)
+        with mock.patch.object(km, "daemon_running", return_value=False), \
+             mock.patch.object(km.subprocess, "Popen") as popen:
+            started = km.ensure_flow_daemon(cfg, 2)
+        self.assertTrue(started)
+        popen.assert_called_once()
+        spawned = popen.call_args[0][0]
+        self.assertIn("--state-git", spawned)
+        self.assertIn(str(self.team), spawned)
 
-    def test_doctor_warns_on_uncovered_bus(self):
-        # daemon 未起動 → 各プロジェクトバスが未カバー warn（複数バス daemon の起動忘れ検知）。
+    def test_ensure_flow_daemon_idempotent_when_running(self):
+        cfg = self._cfg("alpha", manage_flow_daemon=True)
+        with mock.patch.object(km, "daemon_running", return_value=True), \
+             mock.patch.object(km.subprocess, "Popen") as popen:
+            self.assertFalse(km.ensure_flow_daemon(cfg, 2))
+        popen.assert_not_called()
+
+    def test_ensure_flow_daemon_noop_when_unmanaged_or_shared(self):
+        with mock.patch.object(km.subprocess, "Popen") as popen:
+            self.assertFalse(km.ensure_flow_daemon(self._cfg("alpha", manage_flow_daemon=False), 2))
+            self.assertFalse(km.ensure_flow_daemon(
+                self._cfg("alpha", manage_flow_daemon=True,
+                          bus=self.tmp / "shared", shared_bus=True), 2))
+        popen.assert_not_called()
+
+    def test_ensure_flow_daemons_divides_budget_by_targets(self):
+        a = self._cfg("alpha", manage_flow_daemon=True, flow_max_workers=6)
+        cfgs = [km.project_cfg(a, n) for n in ("alpha", "default")]   # 両方が対象 → 6//2=3
+        seen = []
+        with mock.patch.object(km, "ensure_flow_daemon", side_effect=lambda c, b: seen.append(b)):
+            km.ensure_flow_daemons(a, cfgs)
+        self.assertEqual(seen, [3, 3])
+
+    def test_doctor_warns_when_daemon_absent(self):
         cfg = self._cfg("alpha")
-        fs = km.doctor_flow_bus_coverage_findings(cfg)
-        titles = [f["title"] for f in fs]
-        self.assertTrue(any("未カバー" in t and "alpha" in t for t in titles))
+        with mock.patch.object(km, "daemon_running", return_value=False):
+            fs = km.doctor_flow_bus_coverage_findings(cfg)
+        self.assertTrue(any("不在" in f["title"] and "alpha" in f["title"] for f in fs))
         self.assertTrue(all(f["severity"] == "warn" for f in fs))
-        self.assertTrue(any("--buses-glob" in f["fix"] for f in fs))
 
     def test_doctor_coverage_skips_shared_bus_and_legacy(self):
         shared = self.tmp / "shared-bus"

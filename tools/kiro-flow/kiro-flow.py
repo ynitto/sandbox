@@ -28,7 +28,6 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
-import glob as _glob
 import hashlib
 import inspect
 import json
@@ -132,13 +131,6 @@ CONFIG_DEFAULTS = {
     "model": None,
     "planner": "flow-planner",
     "executor": "kiro",
-    # 複数バスを 1 台の daemon で面倒見る（プロジェクト単位バスをまとめて常駐監視する）。
-    # buses は明示リスト、buses_glob は毎 tick 再スキャンする glob（新規バスを自動追従・消えたら手放す）。
-    # どちらも空なら従来どおり単一 --bus。max_workers はマシン全体の予算として全バスで共有する。
-    "buses": [],                # 明示バスリスト（絶対/相対パス。~ 展開あり）
-    "buses_glob": None,         # 例: '/home/me/.kiro-projects/projects/*/bus'（文字列 or リスト）
-    "worker_policy": "fair",    # 複数バス時の worker 配分: fair（公平ラウンドロビン・既定）/ greedy
-
     "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     "max_workers": 4,
@@ -1414,63 +1406,15 @@ class StateGit:
 _STATE_GITS: "dict[tuple, StateGit]" = {}
 
 
-# バスが自分の鏡写し先（remote）を宣言するファイル。バスの所有者（例: kiro-projects の制御層）が
-# 置き、kiro-flow は「このバスをここへ鏡写しする」とだけ解釈する（バスの識別＝どのバスか、に閉じており
-# kiro-flow 自身は上位の概念を一切持たない）。ドット始まりなので同期対象からは除外される。
-BUS_REMOTE_FILE = ".kiro-flow-remote.json"
-
-
-def bus_declared_state_git(bus_root: str, args=None) -> "tuple | None":
-    """バス直下の宣言ファイル（BUS_REMOTE_FILE）から (remote, branch, subdir, interval) を読む。
-    無ければ None。remote 必須。branch/subdir/interval は省略時 args の既定（無ければ組込既定）。"""
-    try:
-        with open(os.path.join(bus_root, BUS_REMOTE_FILE), encoding="utf-8") as f:
-            rec = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(rec, dict):
-        return None
-    remote = str(rec.get("remote") or rec.get("state_git") or rec.get("url") or "").strip()
-    if not remote:
-        return None
-    branch = str(rec.get("branch") or getattr(args, "state_git_branch", None) or "main")
-    subdir = rec.get("subdir")
-    if subdir is None:
-        subdir = getattr(args, "state_git_subdir", None) or "kiro-flow"
-    try:
-        interval = float(rec.get("interval", getattr(args, "state_git_interval", 300.0)))
-    except (TypeError, ValueError):
-        interval = float(getattr(args, "state_git_interval", 300.0) or 300.0)
-    return remote, branch, str(subdir or "").strip("/"), max(0.0, interval)
-
-
-def _resolve_state_git(args) -> "tuple | None":
-    """このバスの鏡写し先 (remote, branch, subdir, interval)。GitBus（--git）は対象外＝None。
-    優先順位: バスが宣言した remote（BUS_REMOTE_FILE）> 設定/CLI の state_git。
-    バス宣言が「バス＝どこへ鏡写しするか」の一次ソース。設定 state_git は宣言が無いときの既定。"""
-    if getattr(args, "git", None):
-        return None
-    bus_root = os.path.abspath(args.bus)
-    declared = bus_declared_state_git(bus_root, args)
-    if declared is not None:
-        return declared
-    if getattr(args, "state_git", None):
-        return (args.state_git, args.state_git_branch, args.state_git_subdir,
-                args.state_git_interval)
-    return None
-
-
 def state_git_for(args) -> "StateGit | None":
-    """state_git 有効時のみ StateGit を返す。鏡写し先はバス宣言（BUS_REMOTE_FILE）→設定の順で解決。
-    GitBus（--git）はバス自体が共有 git なので対象外。"""
-    rs = _resolve_state_git(args)
-    if rs is None:
+    """state_git 設定時のみ StateGit を返す。GitBus（--git）はバス自体が共有 git なので対象外。"""
+    if not getattr(args, "state_git", None) or getattr(args, "git", None):
         return None
-    remote, branch, subdir, interval = rs
     bus_root = os.path.abspath(args.bus)
-    key = (bus_root, remote, branch, subdir)
+    key = (bus_root, args.state_git, args.state_git_branch, args.state_git_subdir)
     if key not in _STATE_GITS:
-        _STATE_GITS[key] = StateGit(bus_root, remote, branch, subdir, interval)
+        _STATE_GITS[key] = StateGit(bus_root, args.state_git, args.state_git_branch,
+                                    args.state_git_subdir, args.state_git_interval)
     return _STATE_GITS[key]
 
 
@@ -1540,17 +1484,12 @@ def state_git_status_line(args) -> str:
     （silent な設定ミス＝バスが見えない原因の切り分けを容易にする）。"""
     if getattr(args, "git", None):
         return "state-git: 無効（--git バス使用時はバス自体が共有 git のため不要）"
-    bus_root = os.path.abspath(args.bus)
-    declared = bus_declared_state_git(bus_root, args)
-    rs = _resolve_state_git(args)
-    if rs is None:
+    if not getattr(args, "state_git", None):
         return ("state-git: 無効（未設定）。リモート viewer にバスを見せるには kiro-flow.yaml に "
-                "state_git を設定するか、バス直下に " + BUS_REMOTE_FILE + " を置く（この daemon が "
-                "その設定を読めていること＝--config か 起動 cwd の .kiro/kiro-flow.yaml を確認）")
-    remote, branch, subdir, interval = rs
-    src = f"バス宣言 {BUS_REMOTE_FILE}" if declared is not None else "設定 state_git"
-    return (f"state-git: 有効 → {remote} subdir={subdir} interval={interval}s"
-            f"（{src} により バス {bus_root} をリモートへ鏡写し）")
+                "state_git を設定し、この daemon がその設定を読めていること（--config か "
+                "起動 cwd の .kiro/kiro-flow.yaml）を確認")
+    return (f"state-git: 有効 → {args.state_git} subdir={args.state_git_subdir} "
+            f"interval={args.state_git_interval}s（バス {os.path.abspath(args.bus)} をリモートへ鏡写し）")
 
 
 def state_sync(args, force: bool = False) -> None:
@@ -3677,297 +3616,157 @@ def _daemon_lock_path(args) -> str:
     return os.path.join(daemon_lock_dir(getattr(args, "lock_dir", None)), f"daemon-{h}.lock")
 
 
-# --------------------------------------------------------------------------
-# 複数バス daemon — 1 台の daemon で複数のローカルバス（プロジェクト単位バス等）を面倒見る。
-#   kiro-flow は「プロジェクト」を知らないまま、各バスを独立に駆動し、各バスは自分の宣言
-#   （.kiro-flow-remote.json）先へ鏡写しする。max_workers はマシン全体の予算として全バスで共有。
-#   単一 --bus（buses/buses_glob 未指定）なら従来と bit 互換（1 バス・従来ロック）。
-# --------------------------------------------------------------------------
-def _bus_view(args, bus_root: str):
-    """args を bus だけ差し替えた浅いコピー（per-bus のロック/クローン/宣言解決に使う）。"""
-    a = argparse.Namespace(**vars(args))
-    a.bus = bus_root
-    return a
-
-
-def _daemon_bus_config(args) -> "tuple[list, bool]":
-    """daemon が面倒を見るバス群と複数バスモードか (roots, multi) を返す。
-    buses（明示リスト）＋buses_glob（毎 tick 再スキャンする glob）の和集合。どちらも空なら単一 --bus。"""
-    roots: "list[str]" = []
-    seen: "set[str]" = set()
-
-    def add(path):
-        r = os.path.abspath(os.path.expanduser(str(path)))
-        if r not in seen:
-            seen.add(r)
-            roots.append(r)
-
-    for b in (getattr(args, "buses", None) or []):
-        add(b)
-    globs = getattr(args, "buses_glob", None) or []
-    if isinstance(globs, str):
-        globs = [globs]
-    for pat in globs:
-        for m in sorted(_glob.glob(os.path.expanduser(str(pat)))):
-            if os.path.isdir(m):
-                add(m)
-    if roots:
-        return roots, True
-    return [os.path.abspath(args.bus)], False
-
-
-class _BusCtx:
-    """複数バス daemon が 1 バス分の駆動状態（バス・子プロセス・base argv・ロック・heartbeat）を束ねる。"""
-
-    def __init__(self, args, bus_root: str, daemon_id: str, lock_file):
-        self.root = os.path.abspath(bus_root)
-        self.args = _bus_view(args, self.root)
-        self.bus = make_bus(self.args, f"daemon-{_safe(daemon_id)}")
-        self.base = _child_base(self.args, self.root)
-        self.orchestrators: dict = {}     # run_id -> Popen
-        self.workers: list = []           # list of (run_id, Popen)
-        self.wcounter = 0
-        self.lock_file = lock_file
-        self.next_heartbeat_push = 0.0
-
-
-def _bus_tick(c: "_BusCtx", daemon_id: str, args, lease_window: float, stopped) -> None:
-    """1 バスの 1 tick 分（同期・死んだ子の刈り取り/再開・生存リース・孤児引き継ぎ・要求受理）。
-    worker 起動は含めない（max_workers を全バスで共有するグローバル配分で別途行う）。"""
-    c.bus.sync_pull()
-    state_sync(c.args)   # 状態 git: このバスの宣言先へ鏡写し（間隔律速・ローカルバス時のみ）
-    maybe_heartbeat_daemon_status(c.args, c.bus, daemon_id, c.orchestrators, c.workers)
-    # 死んだ子を刈り取る。非終端なら同じ run-id で resume、無理なら failed 確定（消費者の永久待機を防ぐ）。
-    finished = False
-    for rid in [r for r, p in c.orchestrators.items() if p.poll() is not None]:
-        rc = c.orchestrators[rid].poll()
-        del c.orchestrators[rid]
-        if c.bus.run_meta(rid).get("status") in TERMINAL:
-            log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
-            finished = True
-            continue
-        req = c.bus.read_inbox(rid)
-        p = None
-        if req and int(args.max_resumes or 0) > 0 and not stopped():
-            p = _resume_run(c.bus, daemon_id, c.args, c.base, rid, req, lease_window)
-        if p is not None:
-            c.orchestrators[rid] = p
-            log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ 同じ run-id で再開"
-                           f"（resume #{c.bus.run_meta(rid).get('resume_count', '?')}）")
-        elif c.bus.fail_request(rid, f"orchestrator が終端化前に終了しました（rc={rc}）"):
-            c.bus.run_view(rid).event(daemon_id, "run-failed", run=rid, rc=rc)
-            c.bus.sync_push(f"run {rid} failed: orchestrator 異常終了（rc={rc}）")
-            log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ run を failed に確定")
-            finished = True
-        else:
-            log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
-    c.workers = [(r, p) for r, p in c.workers if p.poll() is None]
-    if finished:
-        write_daemon_status(c.args, c.bus, daemon_id, c.orchestrators, c.workers)
-        state_sync(c.args, force=True)   # 状態 git: 終端した run の結果を間隔を待たず共有側へ
-    # 生存リース更新（ローカル meta は毎 poll・git バス push は間引き）
-    for rid in c.orchestrators:
-        c.bus.touch_run(rid, lease_window)
-    if c.orchestrators and time.time() >= c.next_heartbeat_push:
-        write_daemon_status(c.args, c.bus, daemon_id, c.orchestrators, c.workers)
-        c.bus.sync_push("heartbeat: 駆動中の run の生存リースを更新")
-        c.next_heartbeat_push = time.time() + lease_window / 3.0
-    # 孤児 run の引き継ぎ（owning daemon 消失＝夜間停止/クラッシュ。同じ run-id で続きから）
-    if not stopped():
-        adopted, orphan_failed = _adopt_orphan_runs(
-            c.bus, daemon_id, set(c.orchestrators), lease_window, args, c.base)
-        for rid, p in adopted.items():
-            c.orchestrators[rid] = p
-            log(daemon_id, f"孤児 run を引き継ぎ: {rid} → 再開"
-                           f"（resume #{c.bus.run_meta(rid).get('resume_count', '?')}）")
-        for rid in orphan_failed:
-            log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失・再開不可）")
-    # 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）
-    for req_id in c.bus.list_inbox():
-        if c.bus.run_exists(req_id) or req_id in c.orchestrators:
-            continue
-        req = c.bus.read_inbox(req_id)
-        if not req:
-            continue
-        if c.bus.claim_request(req_id, daemon_id, args.lease):
-            c.orchestrators[req_id] = _spawn_orchestrator(c.base, args, req_id, req)
-            c.bus.touch_run(req_id, lease_window)   # 受理直後に生存リースを張る（孤児誤判定を防ぐ）
-            log(daemon_id, f"要求 {req_id} を受理 → orchestrator 起動: {req['request'][:50]}")
-
-
-def _spawn_worker_ctx(c: "_BusCtx", rid: str, daemon_id: str, args) -> None:
-    c.wcounter += 1
-    wid = f"{daemon_id}-w{c.wcounter}"
-    c.workers.append((rid, _spawn_worker(c.base, c.args, rid, wid)))
-    tag = os.path.basename(c.root.rstrip("/")) or c.root
-    log(daemon_id, f"ワーカー起動: {wid} → run {rid}（bus={tag}）")
-
-
-def _allocate_workers(ctxs: "list[_BusCtx]", args, daemon_id: str) -> None:
-    """全バス横断で max_workers を予算に worker を配る（グローバル予算＝過剰起動を防ぐ）。
-    fair=公平ラウンドロビン（仕事のあるバスへ 1 台ずつ順番に）/ greedy=claim 可能数の多い順に詰める。"""
-    max_w = int(getattr(args, "max_workers", 4) or 0)
-    free = max_w - sum(len(c.workers) for c in ctxs)
-    if free <= 0:
-        return
-    demand: "dict[_BusCtx, list]" = {}   # ctx -> [[rid, unmet], ...]（unmet 降順）
-    for c in ctxs:
-        have: dict = {}
-        for r, _ in c.workers:
-            have[r] = have.get(r, 0) + 1
-        lst = [[rid, c.bus.run_claimable_count(rid) - have.get(rid, 0)]
-               for rid in c.bus.active_runs()]
-        lst = [e for e in lst if e[1] > 0]
-        if lst:
-            lst.sort(key=lambda e: -e[1])
-            demand[c] = lst
-    if not demand:
-        return
-    if (getattr(args, "worker_policy", "fair") or "fair") == "greedy":
-        for c, e in sorted(((c, e) for c, lst in demand.items() for e in lst),
-                           key=lambda ce: -ce[1][1]):
-            while e[1] > 0 and free > 0:
-                _spawn_worker_ctx(c, e[0], daemon_id, args)
-                free -= 1
-                e[1] -= 1
-            if free <= 0:
-                break
-        return
-    # fair: バス単位のラウンドロビン（1 巡で各バスへ 1 台ずつ配り、予算が尽きるまで繰り返す）
-    order = [c for c in ctxs if c in demand]
-    while free > 0 and order:
-        progressed = False
-        for c in list(order):
-            lst = demand.get(c)
-            if not lst:
-                order.remove(c)
-                continue
-            e = lst[0]
-            _spawn_worker_ctx(c, e[0], daemon_id, args)
-            free -= 1
-            e[1] -= 1
-            progressed = True
-            if e[1] <= 0:
-                lst.pop(0)
-            if not lst:
-                demand.pop(c, None)
-                order.remove(c)
-            if free <= 0:
-                break
-        if not progressed:
-            break
-
-
-def _reconcile_buses(ctxs: dict, args, daemon_id: str, acquire) -> None:
-    """複数バスモードで buses/buses_glob を再評価し、新規バスを担当開始・消えたバスを手放す。"""
-    cur, _ = _daemon_bus_config(args)
-    curset = set(cur)
-    for root in cur:
-        if root not in ctxs:
-            ctx = acquire(root)
-            if ctx is not None:
-                ctxs[root] = ctx
-                log(daemon_id, f"バス {root} を担当開始")
-    for root in list(ctxs):
-        if root not in curset:
-            c = ctxs.pop(root)
-            for _, p in list(c.orchestrators.items()) + c.workers:
-                if p.poll() is None:
-                    p.terminate()
-            _release_daemon_lock(c.lock_file)
-            log(daemon_id, f"バス {root} の担当を終了（消失）")
-
-
 def cmd_daemon(args) -> int:
-    roots, multi = _daemon_bus_config(args)
-    daemon_id = args.node_id or f"{socket.gethostname()}-{os.getpid()}"
-
-    # 単一バス（従来）: 冪等化＝同一バスの daemon が既に稼働していればスキップ（多重起動しない）
-    single_lock = None
-    if not multi:
-        single_lock = _acquire_daemon_lock(args)
-        if single_lock is None:
-            print(f">>> kiro-flow daemon は既に稼働中です（{_mode_string(args, os.path.realpath(args.bus))}）。"
-                  "起動をスキップします。", flush=True)
-            return 0
-
-    ctxs: "dict[str, _BusCtx]" = {}   # root -> _BusCtx
-    stop = {"v": False}
-
-    def _acquire_ctx(root):
-        # 各バスの singleton ロックを個別取得（kiro-projects はバス単位で daemon 稼働を検知する）。
-        lf = _acquire_daemon_lock(_bus_view(args, root))
-        return _BusCtx(args, root, daemon_id, lf) if lf is not None else None
-
-    for root in roots:
-        if not multi:
-            ctxs[root] = _BusCtx(args, root, daemon_id, single_lock)
-        else:
-            ctx = _acquire_ctx(root)
-            if ctx is None:
-                log(daemon_id, f"バス {root} は既に別 daemon が担当中 → スキップ")
-                continue
-            ctxs[root] = ctx
-    if not ctxs:
-        print(">>> 担当できるバスがありません（全て別 daemon が担当中、または未存在）。", flush=True)
+    # 冪等化: 同一バスのデーモンが既に稼働していれば何もしない（多重起動しない）
+    lock_file = _acquire_daemon_lock(args)
+    if lock_file is None:
+        print(f">>> kiro-flow daemon は既に稼働中です（{_mode_string(args, os.path.realpath(args.bus))}）。"
+              "起動をスキップします。", flush=True)
         return 0
+
+    daemon_id = args.node_id or f"{socket.gethostname()}-{os.getpid()}"
+    bus = make_bus(args, f"daemon-{_safe(daemon_id)}")
+    base = _child_base(args, os.path.abspath(args.bus))
+    mode = _mode_string(args, os.path.abspath(args.bus))
+
+    orchestrators = {}   # run_id -> Popen
+    workers = []         # list of (run_id, Popen)
+    wcounter = 0
+    stop = {"v": False}
 
     def shutdown(*_):
         stop["v"] = True
-        for c in ctxs.values():
-            for _, p in list(c.orchestrators.items()) + c.workers:
-                if p.poll() is None:
-                    p.terminate()
+        for _, p in list(orchestrators.items()) + workers:
+            if p.poll() is None:
+                p.terminate()
     signal.signal(signal.SIGINT, lambda *_: (shutdown(), sys.exit(130)))
     signal.signal(signal.SIGTERM, lambda *_: (shutdown(), sys.exit(143)))
 
-    if multi:
-        log(daemon_id, f"daemon 起動（複数バス {len(ctxs)} 本）max_workers={args.max_workers} "
-                       f"policy={getattr(args, 'worker_policy', 'fair')} poll={args.poll}")
-        for c in ctxs.values():
-            log(daemon_id, f"  バス {c.root}: {state_git_status_line(c.args)}")
-    else:
-        log(daemon_id, f"daemon 起動 bus={_mode_string(args, os.path.abspath(args.bus))} "
-                       f"max_workers={args.max_workers} poll={args.poll}")
-        log(daemon_id, state_git_status_line(args))   # バスがリモートへ鏡写しされるかを起動時に明示
-    # 起動直後に一度だけ status を書く（push はしない＝新規 push トリガーを増やさない）。
-    for c in ctxs.values():
-        write_daemon_status(c.args, c.bus, daemon_id, c.orchestrators, c.workers)
-
+    log(daemon_id, f"daemon 起動 bus={mode} max_workers={args.max_workers} poll={args.poll}")
+    log(daemon_id, state_git_status_line(args))   # バスがリモートへ鏡写しされるかを起動時に明示
+    # 起動直後に一度だけ書いておく（ここでは push しない＝新規 push トリガーは増やさない）。
+    # state_git 有効時は既存の毎 tick state_sync(args) が自分の interval で自然に拾って
+    # 押し出すため、完全アイドルのままでも state_git_interval 以内に生存が可視化される。
+    write_daemon_status(args, bus, daemon_id, orchestrators, workers)
     cleanup_interval = float(args.cleanup_interval)
-    last_cleanup = time.time()   # 起動直後に掃除しないよう interval 後を最初の判定に
-    start_cwd = os.getcwd()      # 自己更新の graceful 再起動で cwd を保つ
+    # 起動直後に 1 回掃除しないよう、最初の判定は interval 後になるよう初期化
+    last_cleanup = time.time()
+    # 自己更新（既定 on）: 起動直後の最初のアイドルでも実施するため last=0 で初期化し、cwd を保持
+    start_cwd = os.getcwd()
     update_state = {"last": 0.0}
+    # 自分が回している run の生存リース（heartbeat）。ローカル meta は毎 poll 更新（安価）、
+    # git バスへの push は lease_window/3 毎に間引く（毎 poll の push を避ける）。
     lease_window = _run_lease_window(args)
-    stopped = lambda: stop["v"]  # noqa: E731 — 子ヘルパへ停止状態を渡す軽量クロージャ
+    next_heartbeat_push = 0.0
 
     while not stop["v"]:
-        if multi:                                     # glob/リスト再評価（新規追従・消失手放し）
-            _reconcile_buses(ctxs, args, daemon_id, _acquire_ctx)
-        for c in list(ctxs.values()):
-            _bus_tick(c, daemon_id, args, lease_window, stopped)
-        _allocate_workers(list(ctxs.values()), args, daemon_id)   # 全バス横断で worker 予算配分
-        # 一時ファイルの自動クリーンアップ（間隔律速。ロック/tmp はグローバル、クローンは per-bus）
+        bus.sync_pull()
+        state_sync(args)   # 状態 git: バス状態の共有と inbox 投入の取り込み（間隔律速・ローカルバス時のみ）
+        maybe_heartbeat_daemon_status(args, bus, daemon_id, orchestrators, workers)  # --status-interval のときだけ
+        # 一時ファイルの自動クリーンアップ（ロック / 中間 .tmp / 孤立クローン）を定期実行
         if cleanup_interval > 0 and time.time() - last_cleanup >= cleanup_interval:
             last_cleanup = time.time()
-            for c in ctxs.values():
-                try:
-                    r = run_cleanup(c.args, c.bus)
-                    if any(r.values()):
-                        log(daemon_id, f"cleanup[{os.path.basename(c.root)}]: locks={r['locks']} "
-                                       f"tmp={r['tmp']} clones={r['clones']} "
-                                       f"work_repos={r['work_repos']} cache={r.get('cache', 0)}")
-                except Exception as e:  # noqa: BLE001 — 掃除失敗は daemon を止めない
-                    log(daemon_id, f"cleanup でエラー（無視して継続）: {e}")
-        # 全バス idle（要求も子も無い）なら自己更新を確認。取り込めたら graceful 再起動。
-        idle = all(not c.orchestrators and not c.workers and not c.bus.list_inbox()
-                   for c in ctxs.values())
+            try:
+                c = run_cleanup(args, bus)
+                if any(c.values()):
+                    log(daemon_id, f"cleanup: locks={c['locks']} tmp={c['tmp']} "
+                                   f"clones={c['clones']} work_repos={c['work_repos']} "
+                                   f"cache={c.get('cache', 0)}")
+            except Exception as e:  # noqa: BLE001 — 掃除失敗は daemon を止めない
+                log(daemon_id, f"cleanup でエラー（無視して継続）: {e}")
+        # 死んだ子を刈り取る。orchestrator が done を書く前に異常終了（クラッシュ / kill /
+        # 起動失敗）した場合は run が終端に達さないまま放置され、result/status を待つ消費者
+        # （kiro-projects の charter 駆動 watch など）が永久待機に陥る。終端でなければ
+        # まず同じ run-id で再起動（resume。確定済み results/ を活かして続きから）を試み、
+        # 進捗なしの連続再開が max_resumes を超えたときだけ failed に確定する。
+        finished_runs = False   # このラウンドで終端に達した run（state git へ間隔を待たず押し出す）
+        for rid in [r for r, p in orchestrators.items() if p.poll() is not None]:
+            rc = orchestrators[rid].poll()
+            del orchestrators[rid]
+            if bus.run_meta(rid).get("status") in TERMINAL:
+                log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
+                finished_runs = True
+                continue
+            req = bus.read_inbox(rid)
+            p = None
+            if req and int(args.max_resumes or 0) > 0 and not stop["v"]:
+                p = _resume_run(bus, daemon_id, args, base, rid, req, lease_window)
+            if p is not None:
+                orchestrators[rid] = p
+                log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ 同じ run-id で再開"
+                               f"（resume #{bus.run_meta(rid).get('resume_count', '?')}）")
+            elif bus.fail_request(rid, f"orchestrator が終端化前に終了しました（rc={rc}）"):
+                # fail_request は run 未作成（orchestrator が meta を一度も push できずに死んだ）
+                # でも failed run を作って終端化する。ここで終端化しないと run_exists が偽の
+                # ままになり、次 poll の受理ループが同じ要求を再 claim（commit/push）し続ける。
+                bus.run_view(rid).event(daemon_id, "run-failed", run=rid, rc=rc)
+                bus.sync_push(f"run {rid} failed: orchestrator 異常終了（rc={rc}）")
+                log(daemon_id, f"orchestrator 異常終了: {rid}（rc={rc}）→ run を failed に確定")
+                finished_runs = True
+            else:
+                log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
+        workers = [(r, p) for r, p in workers if p.poll() is None]
+        if finished_runs:
+            write_daemon_status(args, bus, daemon_id, orchestrators, workers)  # 相乗り（追加 push 無し）
+            state_sync(args, force=True)   # 状態 git: 終端した run の結果を間隔を待たず共有側へ
+
+        # 自分が回している run の生存リースを更新（再起動後の自分・別デーモンへ「駆動中」を示す）。
+        # ローカル meta は毎 poll 更新し、git バスへの伝搬は間引いて push する。
+        for rid in orchestrators:
+            bus.touch_run(rid, lease_window)
+        if orchestrators and time.time() >= next_heartbeat_push:
+            write_daemon_status(args, bus, daemon_id, orchestrators, workers)  # 相乗り（追加 push 無し）
+            bus.sync_push("heartbeat: 駆動中の run の生存リースを更新")
+            next_heartbeat_push = time.time() + lease_window / 3.0
+
+        # 孤児 run の引き継ぎ: owning daemon が消失した非終端 run（PC シャットダウン・クラッシュ等）
+        # を同じ run-id で再開する（続きから）。再開できないものだけ failed に確定する（再起動した
+        # 新プロセスが status:running を放置せず、消費者が act_timeout まで待たずに復旧できるように）。
+        if not stop["v"]:
+            adopted, orphan_failed = _adopt_orphan_runs(
+                bus, daemon_id, set(orchestrators), lease_window, args, base)
+            for rid, p in adopted.items():
+                orchestrators[rid] = p
+                log(daemon_id, f"孤児 run を引き継ぎ: {rid} → 再開"
+                               f"（resume #{bus.run_meta(rid).get('resume_count', '?')}）")
+            for rid in orphan_failed:
+                log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失・再開不可）")
+
+        # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）
+        for req_id in bus.list_inbox():
+            if bus.run_exists(req_id) or req_id in orchestrators:
+                continue
+            req = bus.read_inbox(req_id)
+            if not req:
+                continue
+            if bus.claim_request(req_id, daemon_id, args.lease):
+                orchestrators[req_id] = _spawn_orchestrator(base, args, req_id, req)
+                bus.touch_run(req_id, lease_window)   # 受理直後に生存リースを張る（孤児誤判定を防ぐ）
+                log(daemon_id, f"要求 {req_id} を受理 → orchestrator 起動: {req['request'][:50]}")
+
+        # 2) claim 可能タスク量に応じてワーカーをオンデマンド起動
+        claim_by_run = {r: bus.run_claimable_count(r) for r in bus.active_runs()}
+        alive_by_run = {}
+        for r, _ in workers:
+            alive_by_run[r] = alive_by_run.get(r, 0) + 1
+        for rid in sorted(claim_by_run, key=lambda x: -claim_by_run[x]):
+            want = claim_by_run[rid]
+            have = alive_by_run.get(rid, 0)
+            while have < want and len(workers) < args.max_workers:
+                wcounter += 1
+                wid = f"{daemon_id}-w{wcounter}"
+                workers.append((rid, _spawn_worker(base, args, rid, wid)))
+                have += 1
+                log(daemon_id, f"ワーカー起動: {wid} → run {rid}（claim可能={want}）")
+
+        # 3) アイドル（要求も子も無い）なら自己更新を確認。更新を取り込めたら graceful 再起動。
+        idle = not orchestrators and not workers and not bus.list_inbox()
         if maybe_self_update(args, idle, update_state):
             log(daemon_id, "自己更新を適用しました。子を停止し graceful 再起動します。")
-            shutdown()
-            for c in ctxs.values():
-                _release_daemon_lock(c.lock_file)   # 全バスのロックを解放してから execv
-            restart_self(start_cwd)
+            shutdown()                       # 残っている子があれば terminate（idle なので基本居ない）
+            _release_daemon_lock(lock_file)  # flock を解放してから再取得できるようにする
+            restart_self(start_cwd)          # 動いていた cwd のまま新しい本体へ（戻らない）
+
         time.sleep(args.poll)
     return 0
 
@@ -5060,13 +4859,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="設定ファイルのパス（未指定なら CWD → ~/.kiro の kiro-flow.{yaml,yml,json}）")
     p.add_argument("--bus", default=None,
                    help="ローカルバスのルート / git モードでは各ノードのクローン親ディレクトリ")
-    p.add_argument("--buses-glob", dest="buses_glob", action="append", default=None,
-                   help="daemon: 面倒を見るバスの glob（繰り返し可。毎 tick 再スキャンし新規バスを"
-                        "自動追従・消えたバスは手放す）。例 '<container>/projects/*/bus'。"
-                        "buses/buses_glob 指定時は複数バス daemon になる（max_workers を全バスで共有）")
-    p.add_argument("--worker-policy", dest="worker_policy", default=None,
-                   choices=["fair", "greedy"],
-                   help="複数バス時の worker 配分: fair（公平ラウンドロビン・既定）/ greedy（claim 多い順）")
     p.add_argument("--run-id", default=None, help="run 識別子")
     p.add_argument("--git", default=None,
                    help="共有 git リポジトリ URL/パス。指定で複数 PC 分散モードになる")

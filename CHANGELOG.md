@@ -7,26 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### kiro-flow: 1 台の daemon で複数バスを面倒見る（`--buses-glob` / `buses`）
-
-- **背景**: プロジェクト単位でバスを分ける（各バスが別リポジトリへ鏡写し）と素朴には「バス 1 本＝daemon 1 台」
-  になる。1 台の daemon に複数バスを担当させてプロセス増を畳めるようにした。**kiro-flow は「プロジェクト」を
-  知らないまま**、複数バスをそれぞれ独立に駆動する（バスの識別だけで宛先が決まる思想は不変）。
-- **バス集合**: 設定 `buses`（明示リスト）＋`buses_glob`（毎 tick 再スキャンする glob。`--buses-glob` は
-  繰り返し可）の和集合。どちらも未指定なら従来どおり単一 `--bus`（**bit 互換**）。glob は新規バスを自動で
-  担当開始し、消えたバスは手放す。
-- **per-bus ロック**: 各バスの singleton ロックを個別取得 → kiro-projects は従来どおりバス単位で daemon
-  稼働を検知できる（無改修）。別 daemon 担当済みのバスはスキップ。
-- **グローバル worker 予算**: `max_workers` をマシン全体の予算として全バスで共有し、`worker_policy`
-  （既定 `fair`＝公平ラウンドロビン／`greedy`）で配分。1 プロジェクトの予算独占・他バスの飢餓を防ぐ。
-- **復旧性は維持**: 孤児再開・gitlab 長期委譲・生存リース・status.json・鏡写しはすべてバス単位でそのまま。
-  自己更新は全バス idle 時のみ。
-- **kiro-projects**: `doctor` に「各 `projects/*/bus` が稼働中 daemon にカバーされているか」の warn を追加
-  （複数バス daemon の起動忘れ・glob ミスの早期発見）。それ以外は無改修。
-- テスト: バス集合解決・公平/貪欲の予算配分・グローバル上限・複数バス e2e（1 daemon が 2 バスを完走）、
-  kiro-projects の doctor カバレッジ warn を追加。README/CHANGELOG/yaml.example を更新。
-
-### kiro-projects / kiro-flow / viewer: プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
+### kiro-projects / viewer: プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
 
 - **背景・目的**: これまで状態の git 同期（`state_git`）は**コンテナ丸ごと**（全プロジェクト）を 1
   リポジトリへ同期していた。プロジェクトごとに**別々のリポジトリ**へ分け、プロジェクト固有リポジトリで
@@ -34,30 +15,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   する。`default` はユーザー個人リポジトリで管理し、他プロジェクトはプロジェクト固有リポジトリで共有・
   可視化する構成。**使う人ごとにアサインされるプロジェクトが違う点は、各自の設定で写像を変えるだけ**で
   吸収できる（リポジトリの設定で解決）。
-- **kiro-projects**: 設定 `state_git_projects`（`{プロジェクト名: URL/パス}` または
+- **kiro-projects の状態**: 設定 `state_git_projects`（`{プロジェクト名: URL/パス}` または
   `{名前: {remote/branch/subdir/interval}}`）を追加。写像に載ったプロジェクトは**そのプロジェクトの
   subtree だけ**をスコープして固有リポジトリ（`<subdir>/projects/<name>/…`。従来レイアウトを維持）へ
   同期し、未記載（`default` 含む）は既定の `state_git`（個人リポジトリ・未設定なら無効）へ落ちる。
   各プロジェクトは自分専用の管理クローン（`<container>/projects/<name>/.state-git`）を使い、多重
   コミッタの護りはそのまま。写像未設定なら従来どおりコンテナ丸ごと（**完全後方互換**）。
-- **kiro-flow（project 概念を持ち込まない）**: kiro-flow は「プロジェクト」を知らないまま、per-project
-  バスをプロジェクト固有リポジトリへ鏡写しできるようにした。**バスが自分の鏡写し先を宣言**する
-  `.kiro-flow-remote.json`（`{remote, branch, subdir, interval}`）をバス直下から読み、`state_git` より
-  優先して「このバスをここへ鏡写しする」とだけ解釈する（`--git` 時は無効）。どのバスがどのリポジトリへ
-  行くか（＝プロジェクトとの対応）は制御層 kiro-projects が握る。宣言が無ければ従来どおり `state_git`
-  1 本（完全後方互換）。
-- **kiro-projects（バスに宣言を書く側）**: per-project モード（`state_git_projects`）かつ per-project バス
-  （共有バスでない）のとき、各プロジェクトのバス直下に `.kiro-flow-remote.json` を自動生成し、そのプロジェクト
-  のリポジトリの `kiro-flow` 名前空間を指す。プロジェクト固有リポジトリは `kiro-projects/projects/<name>/`
-  （状態）と `kiro-flow/`（run）の 2 名前空間を持つ。共有バス構成では宣言しない（1 バスを 1 リポジトリに
-  縛れないため）。
+- **実行層 kiro-flow の run（kiro-flow は無改修）**: kiro-flow に「プロジェクト」の概念は持ち込まない。
+  代わりに **kiro-projects が per-project の kiro-flow daemon を起動・監視**し、「このバスを、このプロジェクト
+  のリポジトリの `kiro-flow` 名前空間へ鏡写しせよ」を**daemon 起動時の CLI（`--bus`/`--state-git*`）で
+  注入**する（kiro-flow 側の設定ファイルや宣言ファイルは不要）。設定 `manage_flow_daemon: true`（opt-in）で
+  watch ループが各プロジェクトの daemon を不在なら起動（バスロックで冪等）、`flow_max_workers` をマシン
+  全体の予算として対象プロジェクト数で割り各 daemon の上限にする。`flow_config` で共有 kiro-flow.yaml を
+  `--config` として渡せる。**kiro-projects を止めても daemon は detached で残る**ので、in-flight run
+  （gitlab の長期委譲・夜間停止からの孤児再開）は daemon 側でそのまま継続し、再起動時はロックで再検知して
+  二重起動しない。`doctor` は各プロジェクトバスに daemon がいるかを warn で点検する。プロジェクト固有
+  リポジトリは `kiro-projects/projects/<name>/`（状態）と `kiro-flow/`（run）の 2 名前空間を持つ。
 - **kiro-projects-viewer**: コンテナ（`roots`）は従来から複数登録できるため、プロジェクト固有リポジトリの
   clone `<clone>/kiro-projects` を 1 行ずつ足すだけで全プロジェクトを 1 画面に束ねられる。フローバスは
   設定 `flowBusByProject`（⚙「プロジェクト単位バス」・`プロジェクト名 = <clone>/kiro-flow`）を追加し、
   pure-remote 監視でプロジェクトごとの kiro-flow clone を割り当てられるようにした（ローカル `<project>/bus`
   に `runs/` があればそちらを優先）。
-- **テスト・ドキュメント**: kiro-projects/kiro-flow の per-project 同期・振り分け・裁定のテスト、viewer の
-  バス解決テストを追加。3 ツールの README と `*.yaml.example` に構成方法を追記。
+- **テスト・ドキュメント**: kiro-projects の per-project 同期・裁定、kiro-flow daemon の起動コマンド注入・
+  冪等・予算分配・doctor 点検、viewer のバス解決テストを追加。README と `*.yaml.example` に構成方法を追記。
 
 ### kiro-projects-viewer: バックログ操作の明確化（ボタン名・UI）と revise の柔軟化
 

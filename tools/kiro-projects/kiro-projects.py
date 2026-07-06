@@ -2795,6 +2795,12 @@ class Config:
     # 従来どおり state_git（個人リポジトリ・未設定なら無効）へ落ちる。使う人ごとにアサインされる
     # プロジェクトが違う点は、各自の設定でこの写像を変えるだけで吸収できる（リポジトリの設定で解決）。
     state_git_projects: dict = field(default_factory=dict)
+    # 実行層 kiro-flow daemon をプロジェクト単位で kiro-projects が起動・監視する（opt-in）。
+    # per-project バスをそのプロジェクトのリポジトリ（state_git_projects）へ鏡写しする設定を
+    # 起動時 CLI で注入する（.kiro-flow-remote.json のようなファイルは使わない）。
+    manage_flow_daemon: bool = False
+    flow_config: "str | None" = None   # 各 daemon に --config で渡す共有 kiro-flow.yaml（任意。未指定は既定発見）
+    flow_max_workers: int = 4          # マシン全体の worker 予算。対象プロジェクト数で割り各 daemon の上限に
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
@@ -2901,7 +2907,6 @@ def ensure_dirs(cfg: Config) -> None:
         cfg.inbox.mkdir(parents=True, exist_ok=True)
     commands_dir(cfg).mkdir(parents=True, exist_ok=True)  # 指示ドロップ口も同様に作っておく
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
-    write_flow_bus_remote(cfg)          # per-project バスに kiro-flow の鏡写し先を宣言（該当時のみ）
 
 
 def extract_delivery_ref(act_msg: str, cfg: Config,
@@ -3876,21 +3881,20 @@ def state_git_for(cfg: "Config") -> "StateGit | None":
     return _STATE_GITS[key]
 
 
-# 実行層 kiro-flow のバス直下に置く「鏡写し先の宣言」ファイル（kiro-flow 側 BUS_REMOTE_FILE と一致）。
-# kiro-flow は project の概念を持たず「このバスをここへ鏡写しする」とだけ解釈する。プロジェクトと
-# リポジトリの対応（＝どのバスがどこへ行くか）は制御層 kiro-projects が握り、per-project バスに宣言を置く。
-FLOW_BUS_REMOTE_FILE = ".kiro-flow-remote.json"
+# 実行層 kiro-flow を「プロジェクト単位で kiro-projects が起動・監視」する。
+# kiro-flow は project の概念を持たず素の単一バス daemon のまま。プロジェクトとリポジトリの対応
+# （＝どのバスがどこへ鏡写しするか）は制御層 kiro-projects が握り、daemon 起動時に CLI で注入する:
+#   kiro-flow --bus <project>/bus --state-git <repo> --state-git-subdir kiro-flow ... daemon ...
+# 起動はバスロックで冪等（既に稼働なら二重起動しない）。kiro-projects 停止時も detached で残すため、
+# in-flight run（gitlab 長期委譲・夜間停止からの孤児再開）は daemon 側でそのまま継続する。
 FLOW_STATE_SUBDIR = "kiro-flow"   # プロジェクト固有リポジトリ内の kiro-flow 名前空間（viewer は <clone>/kiro-flow）
 
 
-def flow_bus_remote_record(cfg: "Config") -> "dict | None":
-    """このプロジェクトの per-project バスが鏡写しすべき先（kiro-flow の宣言 rec）。無ければ None。
-    プロジェクト単位リポジトリ（state_git_projects）を使っていて、かつ per-project バス（共有バスでない）
-    のときだけ、そのプロジェクトのリポジトリの kiro-flow 名前空間へ向ける（kiro-projects 状態と同じ
-    リポジトリの別 subdir）。共有バスは per-project に割れないので対象外。"""
-    if not _uses_per_project_state_git(cfg):
-        return None
-    if getattr(cfg, "shared_bus", False):
+def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
+    """このプロジェクトの kiro-flow バスを鏡写しすべき (remote, branch, interval)。無ければ None。
+    プロジェクト単位リポジトリ（state_git_projects）かつ per-project バス（共有バスでない）のときだけ、
+    そのプロジェクトのリポジトリの kiro-flow 名前空間へ向ける。共有バスは per-project に割れないので対象外。"""
+    if not _uses_per_project_state_git(cfg) or getattr(cfg, "shared_bus", False):
         return None
     name = cfg.project_name or "default"
     if name == "all":
@@ -3899,23 +3903,73 @@ def flow_bus_remote_record(cfg: "Config") -> "dict | None":
     if spec is None:
         return None
     remote, branch, _base_subdir, interval = spec
-    return {"remote": remote, "branch": branch, "subdir": FLOW_STATE_SUBDIR, "interval": interval}
+    return remote, branch, interval
 
 
-def write_flow_bus_remote(cfg: "Config") -> None:
-    """per-project バス直下に kiro-flow の鏡写し先宣言を書く（冪等）。kiro-flow はこれを読んで
-    バスをプロジェクト固有リポジトリへ鏡写しする（kiro-flow に project の概念は持ち込まない）。"""
-    rec = flow_bus_remote_record(cfg)
-    if rec is None or not cfg.bus:
-        return
+def flow_daemon_cmd(cfg: "Config", budget: int) -> "list[str]":
+    """このプロジェクトの kiro-flow daemon 起動コマンド。per-project バスをそのプロジェクトの
+    リポジトリ（kiro-flow 名前空間）へ鏡写しする設定を CLI で注入する（設定ファイル不要）。
+    executor 等の共有設定は flow_config（--config）または各 daemon の既定発見に委ねる。"""
+    base = resolve_kiro_flow(cfg.kiro_flow) + ["--bus", str(cfg.bus)]
+    rf = project_flow_remote(cfg)
+    if rf is not None:
+        remote, branch, interval = rf
+        base += ["--state-git", remote, "--state-git-branch", branch,
+                 "--state-git-subdir", FLOW_STATE_SUBDIR, "--state-git-interval", str(interval)]
+    fc = getattr(cfg, "flow_config", None)
+    if fc:
+        base += ["--config", os.path.abspath(os.path.expanduser(str(fc)))]
+    if cfg.lock_dir:
+        base += ["--lock-dir", str(cfg.lock_dir)]   # kiro-flow と同じロック置き場（検知の一致）
+    base += ["daemon", "--max-workers", str(max(1, int(budget))), "--executor", cfg.executor]
+    return base
+
+
+def ensure_flow_daemon(cfg: "Config", budget: int) -> bool:
+    """このプロジェクトの kiro-flow daemon を（無ければ）detached で起動する。起動したら True。
+    manage_flow_daemon が off・per-project 対象でない・既に稼働中、のときは何もしない（冪等）。
+    kiro-projects 停止後も残す（start_new_session）＝in-flight run を跨いで維持する。"""
+    if not getattr(cfg, "manage_flow_daemon", False):
+        return False
+    if project_flow_remote(cfg) is None:        # 共有バス/従来モード/落とし先なし → 対象外
+        return False
+    if daemon_running(cfg, use_git=False):      # 既にこのバスの daemon が稼働（ロック保持）→ 冪等スキップ
+        return False
+    cmd = flow_daemon_cmd(cfg, budget)
     try:
         cfg.bus.mkdir(parents=True, exist_ok=True)
-        p = cfg.bus / FLOW_BUS_REMOTE_FILE
-        new = json.dumps(rec, ensure_ascii=False, sort_keys=True)
-        if not p.exists() or p.read_text(encoding="utf-8") != new:
-            p.write_text(new, encoding="utf-8")
-    except OSError:
-        pass
+        logp = cfg.backlog.parent / "flow-daemon.log"
+        try:
+            logf = open(logp, "a", encoding="utf-8")
+        except OSError:
+            logf = subprocess.DEVNULL
+        try:
+            subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, start_new_session=True,
+                             cwd=str(cfg.workdir))
+        finally:
+            if hasattr(logf, "close"):
+                logf.close()
+        append_journal(cfg.journal,
+                       f"kiro-flow daemon 起動: bus={cfg.bus} max_workers={max(1, int(budget))}")
+        return True
+    except OSError as e:
+        append_journal(cfg.journal, f"kiro-flow daemon 起動失敗（続行）: {e}")
+        return False
+
+
+def ensure_flow_daemons(cfg: "Config", cfgs: "list[Config]") -> None:
+    """管理対象の各プロジェクトについて kiro-flow daemon を確保する（不在なら起動）。
+    flow_max_workers をマシン全体の予算として、対象プロジェクト数で割り各 daemon の上限にする。"""
+    if not getattr(cfg, "manage_flow_daemon", False):
+        return
+    targets = [c for c in cfgs if project_flow_remote(c) is not None]
+    if not targets:
+        return
+    total = max(1, int(getattr(cfg, "flow_max_workers", 4) or 4))
+    budget = max(1, total // len(targets))
+    for c in targets:
+        ensure_flow_daemon(c, budget)
 
 
 def status_path(cfg: "Config") -> Path:
@@ -4813,26 +4867,30 @@ def doctor_audit_findings(cfg: "Config") -> "list[dict]":
 
 
 def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
-    """プロジェクト単位バス構成で、各プロジェクトのバスが稼働中の kiro-flow daemon にカバー
-    （ロック）されているかを確認し、漏れを warn にする。複数バス daemon の起動忘れ・buses_glob の
-    ミスを早期に気づけるようにする（未カバーだと run が local 実行に落ち、夜間停止からの自動再開や
-    gitlab の長期委譲の継続が効かない）。プロジェクト単位リポジトリ（state_git_projects）かつ
+    """プロジェクト単位バス構成で、各プロジェクトのバスに稼働中の kiro-flow daemon がいるかを確認し、
+    不在を warn にする（未担当だと run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の
+    継続が効かない）。manage_flow_daemon が on なら kiro-projects が自動起動するので通常は満たされ、
+    起動失敗や off での起動忘れのときに気づける。プロジェクト単位リポジトリ（state_git_projects）かつ
     per-project バス（共有バスでない）のときだけ確認する。"""
     if not _uses_per_project_state_git(cfg) or getattr(cfg, "shared_bus", False):
         return []
-    glob_hint = f"{container_dir(cfg)}/projects/*/bus"
+    managed = bool(getattr(cfg, "manage_flow_daemon", False))
     out: "list[dict]" = []
     for name in project_dir_names(cfg):
         pcfg = project_cfg(cfg, name)
-        if flow_bus_remote_record(pcfg) is None:     # 固有リポジトリへ鏡写しする対象のバスだけ見る
+        if project_flow_remote(pcfg) is None:        # 固有リポジトリへ鏡写しする対象のバスだけ見る
             continue
         if not daemon_running(pcfg, use_git=False):
+            fix = ("manage_flow_daemon: true を設定（kiro-projects が自動起動）"
+                   if not managed else
+                   f"起動失敗の可能性。手動確認: kiro-flow --bus {pcfg.bus} "
+                   f"--state-git <repo> --state-git-subdir {FLOW_STATE_SUBDIR} daemon")
             out.append({
                 "category": "config", "severity": "warn",
-                "title": f"kiro-flow daemon 未カバー: project={name}",
+                "title": f"kiro-flow daemon 不在: project={name}",
                 "evidence": f"{pcfg.bus} を担当する kiro-flow daemon が見つかりません"
                             "（run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効きません）",
-                "fix": f"複数バス daemon をコンテナに常駐: kiro-flow daemon --buses-glob '{glob_hint}'",
+                "fix": fix,
             })
     return out
 
@@ -5425,6 +5483,7 @@ def cmd_run_all(cfg: Config) -> int:
         charter_mtime: dict[str, float] = {}
         while True:
             cfgs = [project_cfg(cfg, n) for n in project_dir_names(cfg)]   # 新規プロジェクトを再発見
+            ensure_flow_daemons(cfg, cfgs)   # 各プロジェクトの kiro-flow daemon を確保（opt-in・冪等）
             any_work = False
             for c in cfgs:
                 _ensure_registered(c)
@@ -6775,6 +6834,10 @@ CONFIG_DEFAULTS = {
     # プロジェクト単位の保存先リポジトリ写像（{名前: URL/パス} か {名前: {remote/branch/subdir/interval}}）。
     # 載ったプロジェクトはそのプロジェクトの subtree だけを固有リポジトリへ同期。未記載は state_git へ。
     "state_git_projects": {},
+    # 実行層 kiro-flow daemon をプロジェクト単位で kiro-projects が起動・監視する（opt-in）。
+    "manage_flow_daemon": False,
+    "flow_config": None,        # 各 daemon に --config で渡す共有 kiro-flow.yaml（任意）
+    "flow_max_workers": 4,      # マシン全体の worker 予算（対象プロジェクト数で割り各 daemon の上限に）
     "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
@@ -6893,6 +6956,9 @@ def build_config(args) -> Config:
         state_git_subdir=str(getattr(args, "state_git_subdir", "kiro-projects") or "").strip("/"),
         state_git_interval=max(0.0, float(getattr(args, "state_git_interval", 300.0) or 0.0)),
         state_git_projects=dict(getattr(args, "state_git_projects", None) or {}),
+        manage_flow_daemon=bool(getattr(args, "manage_flow_daemon", False)),
+        flow_config=getattr(args, "flow_config", None) or None,
+        flow_max_workers=max(1, int(getattr(args, "flow_max_workers", 4) or 4)),
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
