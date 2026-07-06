@@ -166,6 +166,7 @@ function registerIpcHandlers() {
   // 人のアクション（needs 回答・タスク投入・決定記録を残す CLI 操作）
   handle('kiro:feedback', ({ file, feedback }) => actions.submitFeedback(file, feedback));
   handle('kiro:enqueue', ({ dir, spec }) => actions.enqueueToInbox(dir, spec || {}));
+  handle('kiro:enqueueMany', ({ dir, specs }) => actions.enqueueManyToInbox(dir, specs || []));
   handle('kiro:action', (args) => actions.runAction(loadConfig(), args));
 
   // オーサリング（作成・編集）。人が書く上位入力ファイル（charter/policy/repos）だけを

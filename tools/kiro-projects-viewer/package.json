@@ -7,7 +7,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/flow-relationship.test.js && node test/authoring.test.js && node test/review-handoff.test.js",
+    "test": "node test/flow-relationship.test.js && node test/authoring.test.js && node test/review-handoff.test.js && node test/enqueue.test.js",
     "dist": "electron-builder --win",
     "dist:portable": "electron-builder --win portable"
   },

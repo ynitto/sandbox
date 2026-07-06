@@ -500,6 +500,38 @@ button.danger { border-color: var(--red); color: var(--red); }
 .np-repo-row .np-r-desc { flex: 1.6; }
 .np-repo-row .np-r-del { flex: none; border-color: var(--red); color: var(--red); }
 
+/* バックログ一括追加の行エディタ（repos 行と同じ操作パターン） */
+.batch-head {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.batch-head > span:nth-child(1) { flex: 2; }
+.batch-head > span:nth-child(2) { flex: 2; }
+.batch-head > span:nth-child(3) { flex: 1.6; }
+.batch-head > span:nth-child(4) { flex: 0 0 70px; }
+.batch-head > span:nth-child(5) { flex: 1; }
+.batch-head > span:nth-child(6) { flex: 0 0 28px; }
+.eb-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  align-items: center;
+}
+.eb-row .eb-title { flex: 2; }
+.eb-row .eb-verify { flex: 2; }
+.eb-row .eb-accept { flex: 1.6; }
+.eb-row .eb-priority { flex: 0 0 70px; }
+.eb-row .eb-after { flex: 1; }
+.eb-row .eb-del { flex: none; border-color: var(--red); color: var(--red); }
+
+/* バックログの変え方ヘルプ（公式契約の説明） */
+.backlog-help { margin: 6px 0 10px; font-size: 12px; }
+.backlog-help summary { cursor: pointer; color: var(--muted); }
+.backlog-help > .muted { padding: 6px 4px; line-height: 1.6; }
+
 .acceptance-item { display: flex; gap: 6px; padding: 3px 0; align-items: baseline; }
 .acceptance-item code { flex: 1; }
 

@@ -741,8 +741,18 @@ function renderBacklog() {
     <div class="filters">${chips}<span class="muted">${tasks.length} 件</span>
       ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="${esc(p.inboxFiles.join(', '))}">inbox 取り込み待ち ${p.inboxFiles.length}</span>` : ''}
       <span class="spacer"></span>
+      <button id="btn-enqueue-batch" title="複数タスクを 1 度に inbox へ投入します">＋ まとめて追加</button>
       <button id="btn-enqueue" class="primary-inline">＋ タスクを追加</button>
     </div>
+    <details class="backlog-help">
+      <summary>バックログの変え方（すべて公式契約・即時ではありません）</summary>
+      <div class="muted">
+        <b>追加</b>: 「＋ タスクを追加 / ＋ まとめて追加」→ <code class="mono">inbox</code> に投入。本体が次サイクルで backlog 化します。<br>
+        <b>変更</b>: 行をクリック →「✎ 修正して指示（revise）」で title・優先度・verify・accept・依存 after・note・level・track を置換＋フィードバック注入。<br>
+        <b>タスクグラフの再構築</b>: revise は本体が取り込むと <code class="mono">rev</code> を上げ、kiro-flow に新しいタスクグラフ（run の DAG）を作らせます（実行中タスクは現在の試行を破棄して積み直し）。依存 after を変えるとグラフの形が変わります。<br>
+        いずれも状態（done 等）は直接書き換えません（done は verify のみが根拠、の不変条件を保つため）。
+      </div>
+    </details>
     ${
       rows
         ? `<table class="list"><tr><th>ID</th><th>タイトル</th><th>状態</th><th>優先度</th><th>retry</th><th>verify</th><th>属性</th></tr>${rows}</table>`
@@ -750,6 +760,7 @@ function renderBacklog() {
     }`;
 
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
+  $('btn-enqueue-batch').addEventListener('click', () => openBatchEnqueue());
 
   for (const chip of el.querySelectorAll('.chip')) {
     chip.addEventListener('click', () => {
@@ -799,8 +810,8 @@ function reviseAreaHtml(t) {
   }
   const doingNote =
     t.status === 'doing'
-      ? '<div class="muted">実行中のタスクです: 送信すると現在の試行の結果は確定されず、修正内容とフィードバックで積み直されます（早い軌道修正）。</div>'
-      : '';
+      ? '<div class="muted">実行中のタスクです: 送信すると現在の試行の結果は確定されず、修正内容とフィードバックでタスクグラフ（kiro-flow run）を積み直します（早い軌道修正）。</div>'
+      : '<div class="muted">本体が取り込むと <code class="mono">rev</code> を上げ、次の実行で新しいタスクグラフ（kiro-flow run）が作られます。依存 after を変えるとグラフの形が変わります。</div>';
   return `<details class="revise-area"><summary>✎ 修正して指示（revise）</summary>
     ${doingNote}
     <div class="field"><label>フィードバック（次の実行に必ず反映される指示）</label>
@@ -808,10 +819,18 @@ function reviseAreaHtml(t) {
     <div class="field"><label>タイトル</label><input id="rv-title" value="${esc(t.title)}" /></div>
     <div class="row2">
       <div class="field"><label>優先度（整数・大ほど高）</label><input id="rv-priority" type="number" step="1" value="${t.priority}" /></div>
-      <div class="field"><label>依存 after（カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
+      <div class="field"><label>依存 after（タスクグラフの形。カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
     </div>
     <div class="field"><label>verify（空にすると削除）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" /></div>
     <div class="field"><label>accept（空にすると削除）</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" /></div>
+    <div class="row2">
+      <div class="field"><label>level（report/assisted/unattended。空にすると削除）</label>
+        <input id="rv-level" list="rv-level-list" value="${esc(t.extra.level || '')}" />
+        <datalist id="rv-level-list"><option value="report"></option><option value="assisted"></option><option value="unattended"></option></datalist>
+      </div>
+      <div class="field"><label>track（同種タスクの群名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
+    </div>
+    <div class="field"><label>note（メモ。空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
     <div class="row need-buttons">
       <span class="muted">変更した項目とフィードバックだけが送られ、決定記録（DR）に残ります</span>
       <span class="spacer"></span>
@@ -901,6 +920,9 @@ function showTaskDialog(id, scope) {
         ['after', $('rv-after').value.trim(), String(t.extra.after || '')],
         ['verify', $('rv-verify').value.trim(), String(t.verify || '')],
         ['accept', $('rv-accept').value.trim(), String(t.extra.accept || '')],
+        ['level', $('rv-level').value.trim(), String(t.extra.level || '')],
+        ['track', $('rv-track').value.trim(), String(t.extra.track || '')],
+        ['note', $('rv-note').value.trim(), String(t.extra.note || '')],
       ];
       for (const [key, cur, orig] of cmp) {
         if (key === 'priority' && cur === '') continue; // 空欄は「変更なし」（priority に削除は無い）
@@ -1027,6 +1049,55 @@ async function submitEnqueue() {
   if (ok) {
     gitPushAfterWrite(`kiro-projects-viewer: enqueue ${spec.title || ''}`.trim(), p.dir);
     $('dlg-enqueue').close();
+    await reloadProject();
+  }
+}
+
+// バックログ一括追加（複数タスクを 1 つの inbox 配列で投入）。行エディタは
+// 新規プロジェクトの repos 行と同じ操作パターンで揃える（UI の一貫性）。
+function addBatchRow(prefill = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'eb-row';
+  wrap.innerHTML = `
+    <input class="eb-title" placeholder="タイトル（必須）" value="${esc(prefill.title || '')}" />
+    <input class="eb-verify mono" placeholder='verify 例 grep -q X f' value="${esc(prefill.verify || '')}" />
+    <input class="eb-accept" placeholder="accept（自然文）" value="${esc(prefill.accept || '')}" />
+    <input class="eb-priority" type="number" step="1" value="${prefill.priority != null ? esc(prefill.priority) : '0'}" />
+    <input class="eb-after mono" placeholder="after 例 T1,T2" value="${esc(prefill.after || '')}" />
+    <button type="button" class="eb-del" title="この行を削除">✕</button>`;
+  wrap.querySelector('.eb-del').addEventListener('click', () => wrap.remove());
+  $('eb-rows').appendChild(wrap);
+}
+
+function openBatchEnqueue() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  $('eb-rows').innerHTML = '';
+  for (let i = 0; i < 3; i += 1) addBatchRow(); // 初期は空行 3 つ
+  $('dlg-enqueue-batch').showModal();
+}
+
+async function submitBatchEnqueue() {
+  const p = state.project;
+  if (!p) return;
+  const specs = [...document.querySelectorAll('#eb-rows .eb-row')]
+    .map((row) => ({
+      title: row.querySelector('.eb-title').value.trim(),
+      verify: row.querySelector('.eb-verify').value.trim(),
+      accept: row.querySelector('.eb-accept').value.trim(),
+      priority: row.querySelector('.eb-priority').value.trim(),
+      after: row.querySelector('.eb-after').value.trim(),
+    }))
+    .filter((s) => s.title);
+  if (!specs.length) return toast('タイトルのある行を 1 つ以上入力してください');
+  const ok = await guard('一括追加', async () => {
+    const res = await api.enqueueTasks(p.dir, specs);
+    toast(`inbox に ${res.count} 件を一括投入しました（次のサイクルで backlog 化されます）`, true);
+    return true;
+  });
+  if (ok) {
+    gitPushAfterWrite(`kiro-projects-viewer: enqueue batch ${specs.length}`, p.dir);
+    $('dlg-enqueue-batch').close();
     await reloadProject();
   }
 }
@@ -2186,7 +2257,8 @@ function setupPolling() {
         $('dlg-enqueue').open ||
         $('dlg-confirm').open ||
         $('dlg-new-project').open ||
-        $('dlg-edit-file').open
+        $('dlg-edit-file').open ||
+        $('dlg-enqueue-batch').open
       )
         return;
       const ae = document.activeElement;
@@ -2231,6 +2303,10 @@ async function init() {
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
   $('btn-enq-submit').addEventListener('click', submitEnqueue);
+  // バックログ一括追加
+  $('btn-eb-cancel').addEventListener('click', () => $('dlg-enqueue-batch').close());
+  $('btn-eb-submit').addEventListener('click', submitBatchEnqueue);
+  $('eb-add-row').addEventListener('click', () => addBatchRow());
   // 新規プロジェクト作成
   $('btn-new-project').addEventListener('click', openNewProject);
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());

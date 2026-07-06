@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('api', {
 
   submitFeedback: (file, feedback) => invoke('kiro:feedback', { file, feedback }),
   enqueueTask: (dir, spec) => invoke('kiro:enqueue', { dir, spec }),
+  enqueueTasks: (dir, specs) => invoke('kiro:enqueueMany', { dir, specs }),
   runAction: (args) => invoke('kiro:action', args),
 
   createProject: (spec) => invoke('kiro:createProject', { spec }),

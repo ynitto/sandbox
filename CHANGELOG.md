@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: バックログの柔軟な変更（一括追加・revise 拡張・タスクグラフ再構築の明示）
+
+- **背景**: バックログの追加は単発の inbox 投入のみ、変更（revise）は title/優先度/verify/accept/after
+  だけで、しかも「バックログを変えるとタスクグラフ（kiro-flow run）がどう変わるか」が UI 上で
+  分かりにくかった。現状の設計思想（**公式契約だけを使い、タスク状態＝done は直接書かない**）を
+  崩さずに、バックログを柔軟に変更できるよう UI を整えた（即時性は求めず、本体が次サイクルで取り込む）
+- **＋ まとめて追加（新規バックログの一括投入）**: 複数タスクを 1 つの `inbox/*.json`（JSON 配列）で
+  一括投入する行エディタ（title / verify / accept / priority / after）を追加。`ingest_inbox` は配列を
+  1 件ずつ backlog 化するため、単発投入と同じ公式契約のまま「バックログをまとめて追加」できる。
+  行エディタは新規プロジェクトの repos 行と同じ操作パターンで揃えた（UI の一貫性）
+- **revise の拡張（既存バックログの柔軟な更新）**: 修正フォームに **note / level / track** を追加
+  （kiro-projects の `REVISE_FIELDS` 全項目に対応）。依存 **after** の編集は従来どおり本体側が DAG 循環を拒否
+- **タスクグラフ再構築の明示**: revise は本体が取り込むと `rev` を上げて kiro-flow に**新しいタスク
+  グラフ（run の DAG）**を作らせる（実行中タスクは現在の試行を破棄して積み直し）ことを、修正フォームと
+  バックログタブのヘルプ（「バックログの変え方」）に明記。追加＝inbox／変更＝revise／グラフ再構築＝revise、
+  いずれも状態は直接書き換えない、という関係を UI で一貫して示す
+- **実装**: `actions.enqueueManyToInbox`（配列投入）＋ IPC `kiro:enqueueMany` ＋ `window.api.enqueueTasks`。
+  renderer に一括追加ダイアログ・行エディタ・ヘルプ・revise 拡張を追加。`test/enqueue.test.js` を追加。
+  **kiro-projects 本体・契約は変更なし**（inbox の配列・revise の全フィールドは既存機能）
+
 ### kiro-projects-viewer / gitlab-review-viewer: 起動済み portable exe への即時ハンドオフ（連携起動の高速化）
 
 - **症状**: kiro-projects-viewer（portable exe）の「レビューで開く」で `exe` モードを使うと、

@@ -82,6 +82,33 @@ function enqueueToInbox(projectDir, spec) {
   return { file, spec: clean };
 }
 
+// 複数タスクを 1 つの inbox ファイル（JSON 配列）としてまとめて投入する。
+// kiro-projects の ingest_inbox は .json が配列なら 1 件ずつ backlog 化するため、
+// 「新規バックログをまとめて追加」を単発投入と同じ公式契約のまま実現できる。
+// タイトルの無い行は黙って無視する（空行を許容する編集 UI 向け）。
+function enqueueManyToInbox(projectDir, specs) {
+  const list = Array.isArray(specs) ? specs : [];
+  const clean = [];
+  for (const spec of list) {
+    const title = String((spec && spec.title) || '').trim();
+    if (!title) continue;
+    const one = { title };
+    for (const key of ['id', 'verify', 'accept', 'verify_template', 'note', 'after', 'level', 'track']) {
+      const v = spec[key];
+      if (v !== undefined && v !== null && String(v).trim() !== '') one[key] = String(v).trim();
+    }
+    const pr = parseInt(spec.priority, 10);
+    if (!isNaN(pr) && pr !== 0) one.priority = pr;
+    clean.push(one);
+  }
+  if (!clean.length) throw new Error('タイトルのあるタスクが 1 件もありません');
+  const inbox = path.join(projectDir, 'inbox');
+  fs.mkdirSync(inbox, { recursive: true });
+  const file = path.join(inbox, `viewer-batch-${slugify(clean[0].title)}-${Date.now()}.json`);
+  fs.writeFileSync(file, JSON.stringify(clean, null, 2), 'utf8');
+  return { file, count: clean.length, specs: clean };
+}
+
 // ---------------------------------------------------------------------------
 // 3. 人の指示（approve / hold / pin / defer / revise）
 // ---------------------------------------------------------------------------
@@ -228,4 +255,11 @@ async function runAction(cfg, { dir, action, id, reason, fields, feedback }) {
   }
 }
 
-module.exports = { submitFeedback, enqueueToInbox, dropCommand, runAction, DECISION_MARKER };
+module.exports = {
+  submitFeedback,
+  enqueueToInbox,
+  enqueueManyToInbox,
+  dropCommand,
+  runAction,
+  DECISION_MARKER,
+};
