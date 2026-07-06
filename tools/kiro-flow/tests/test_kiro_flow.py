@@ -3754,5 +3754,174 @@ class DaemonStatusStateGitSyncTests(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+class MultiBusConfigTests(unittest.TestCase):
+    """複数バス daemon のバス集合解決（_daemon_bus_config）: buses 明示 / buses_glob / 単一 --bus。"""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-mbcfg-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _mkbus(self, *rel):
+        p = self.tmp.joinpath(*rel)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _args(self, **kw):
+        base = dict(bus=str(self.tmp / "single"), buses=None, buses_glob=None)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def test_single_bus_when_unset(self):
+        roots, multi = kf._daemon_bus_config(self._args())
+        self.assertFalse(multi)
+        self.assertEqual(roots, [os.path.abspath(str(self.tmp / "single"))])
+
+    def test_explicit_list(self):
+        a = self._mkbus("a", "bus")
+        b = self._mkbus("b", "bus")
+        roots, multi = kf._daemon_bus_config(self._args(buses=[str(a), str(b)]))
+        self.assertTrue(multi)
+        self.assertEqual(sorted(roots), sorted([str(a.resolve()), str(b.resolve())]))
+
+    def test_glob_discovers_project_buses(self):
+        self._mkbus("projects", "alpha", "bus")
+        self._mkbus("projects", "beta", "bus")
+        self._mkbus("projects", "gamma")   # bus なし → 対象外
+        pat = str(self.tmp / "projects" / "*" / "bus")
+        roots, multi = kf._daemon_bus_config(self._args(buses_glob=pat))
+        self.assertTrue(multi)
+        names = sorted(os.path.basename(os.path.dirname(r)) for r in roots)
+        self.assertEqual(names, ["alpha", "beta"])
+
+    def test_list_and_glob_union_dedup(self):
+        a = self._mkbus("projects", "alpha", "bus")
+        self._mkbus("projects", "beta", "bus")
+        pat = str(self.tmp / "projects" / "*" / "bus")
+        roots, multi = kf._daemon_bus_config(
+            self._args(buses=[str(a)], buses_glob=[pat]))   # alpha は両方に出る → 重複排除
+        self.assertTrue(multi)
+        self.assertEqual(len(roots), len(set(roots)))
+        self.assertEqual(len(roots), 2)
+
+
+class MultiBusWorkerAllocTests(unittest.TestCase):
+    """全バス横断の worker 予算配分（_allocate_workers）: fair=公平RR / greedy=多い順詰め。"""
+
+    class _FakeBus:
+        def __init__(self, claim):
+            self._claim = dict(claim)
+
+        def active_runs(self):
+            return list(self._claim)
+
+        def run_claimable_count(self, rid):
+            return self._claim.get(rid, 0)
+
+    class _FakeCtx:
+        def __init__(self, root, claim):
+            self.root = root
+            self.bus = MultiBusWorkerAllocTests._FakeBus(claim)
+            self.workers = []
+            self.base = ["kf", "--bus", root]
+            self.args = types.SimpleNamespace()
+            self.wcounter = 0
+
+    def _run(self, ctxs, max_workers, policy):
+        args = types.SimpleNamespace(max_workers=max_workers, worker_policy=policy)
+        # 実 worker は起動せず、(rid, ダミー) を workers に積む
+        with mock.patch.object(kf, "_spawn_worker", return_value=object()):
+            kf._allocate_workers(ctxs, args, "d")
+        return {c.root: len(c.workers) for c in ctxs}
+
+    def test_fair_splits_budget_evenly(self):
+        a = self._FakeCtx("a", {"ra": 10})
+        b = self._FakeCtx("b", {"rb": 10})
+        got = self._run([a, b], 4, "fair")
+        self.assertEqual(got, {"a": 2, "b": 2})   # 公平RR: a,b,a,b
+
+    def test_fair_does_not_starve_small_bus(self):
+        a = self._FakeCtx("a", {"ra": 10})
+        b = self._FakeCtx("b", {"rb": 1})
+        got = self._run([a, b], 3, "fair")
+        self.assertEqual(got, {"a": 2, "b": 1})   # 1巡目 a,b / 2巡目 b は枯れ→a
+
+    def test_greedy_fills_largest_first(self):
+        a = self._FakeCtx("a", {"ra": 10})
+        b = self._FakeCtx("b", {"rb": 1})
+        got = self._run([a, b], 3, "greedy")
+        self.assertEqual(got, {"a": 3, "b": 0})   # 貪欲: 需要の多い a に全予算
+
+    def test_global_budget_caps_total(self):
+        a = self._FakeCtx("a", {"ra": 10})
+        b = self._FakeCtx("b", {"rb": 10})
+        got = self._run([a, b], 2, "fair")
+        self.assertEqual(sum(got.values()), 2)    # N×max_workers ではなく全体で max_workers
+
+
+class MultiBusDaemonE2ETests(unittest.TestCase):
+    """1 台の daemon が複数バス（--buses-glob）を面倒見て、各バスの submit を独立に完走させる e2e。"""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="kf-mbe2e-"))
+        self.container = self.root / "projects"
+        (self.container / "alpha").mkdir(parents=True)
+        (self.container / "beta").mkdir(parents=True)
+        self.alpha = self.container / "alpha" / "bus"
+        self.beta = self.container / "beta" / "bus"
+        self.daemon = None
+
+    def tearDown(self):
+        if self.daemon and self.daemon.poll() is None:
+            self.daemon.terminate()
+            try:
+                self.daemon.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.daemon.kill()
+                self.daemon.wait(timeout=5)
+        if self.daemon:
+            for s in (self.daemon.stdout, self.daemon.stderr):
+                if s:
+                    s.close()
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _submit(self, bus, request):
+        p = subprocess.run([sys.executable, str(SCRIPT), "--bus", str(bus), "submit", request],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.returncode, 0, p.stderr[-800:])
+        return p.stdout.strip().splitlines()[0]
+
+    def _wait_final(self, bus, run_id, timeout=90):
+        final = os.path.join(str(bus), "runs", run_id, "final.json")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.daemon.poll() is not None:
+                _, err = self.daemon.communicate()
+                self.fail(f"daemon 早期終了 rc={self.daemon.returncode}\n{(err or b'').decode()[-800:]}")
+            if os.path.exists(final) and kf.read_json(final):
+                return kf.read_json(final)
+            time.sleep(0.3)
+        self.fail(f"final.json がタイムアウト内に現れず: {bus}/{run_id}")
+
+    def test_one_daemon_serves_multiple_buses(self):
+        # 事前にバスディレクトリを作る（glob が初回スキャンで拾えるように）
+        self.alpha.mkdir(parents=True, exist_ok=True)
+        self.beta.mkdir(parents=True, exist_ok=True)
+        pat = str(self.container / "*" / "bus")
+        self.daemon = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "--buses-glob", pat, "daemon",
+             "--max-workers", "4", "--planner", "stub", "--executor", "stub",
+             "--poll", "0.2", "--no-cleanup"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ra = self._submit(self.alpha, "a; b")
+        rb = self._submit(self.beta, "c; d")
+        fa = self._wait_final(self.alpha, ra)
+        fb = self._wait_final(self.beta, rb)
+        self.assertIn("synth", fa["results"])
+        self.assertIn("synth", fb["results"])
+        # 各 run はそれぞれのバス配下にだけ存在する（バスが混ざらない）
+        self.assertTrue((self.alpha / "runs" / ra).exists())
+        self.assertFalse((self.beta / "runs" / ra).exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

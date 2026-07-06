@@ -4812,6 +4812,31 @@ def doctor_audit_findings(cfg: "Config") -> "list[dict]":
     return out
 
 
+def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
+    """プロジェクト単位バス構成で、各プロジェクトのバスが稼働中の kiro-flow daemon にカバー
+    （ロック）されているかを確認し、漏れを warn にする。複数バス daemon の起動忘れ・buses_glob の
+    ミスを早期に気づけるようにする（未カバーだと run が local 実行に落ち、夜間停止からの自動再開や
+    gitlab の長期委譲の継続が効かない）。プロジェクト単位リポジトリ（state_git_projects）かつ
+    per-project バス（共有バスでない）のときだけ確認する。"""
+    if not _uses_per_project_state_git(cfg) or getattr(cfg, "shared_bus", False):
+        return []
+    glob_hint = f"{container_dir(cfg)}/projects/*/bus"
+    out: "list[dict]" = []
+    for name in project_dir_names(cfg):
+        pcfg = project_cfg(cfg, name)
+        if flow_bus_remote_record(pcfg) is None:     # 固有リポジトリへ鏡写しする対象のバスだけ見る
+            continue
+        if not daemon_running(pcfg, use_git=False):
+            out.append({
+                "category": "config", "severity": "warn",
+                "title": f"kiro-flow daemon 未カバー: project={name}",
+                "evidence": f"{pcfg.bus} を担当する kiro-flow daemon が見つかりません"
+                            "（run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効きません）",
+                "fix": f"複数バス daemon をコンテナに常駐: kiro-flow daemon --buses-glob '{glob_hint}'",
+            })
+    return out
+
+
 def collect_doctor_signals(cfg: "Config") -> dict:
     """ログ/状態から診断材料を決定的に集める（kiro-cli へ渡す・有界）。"""
     tasks = load_tasks(cfg.backlog)
@@ -5016,7 +5041,8 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     実行層 kiro-flow の doctor も連携実行し findings を統合する（cfg.with_flow 時）。
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     # 決定的所見は ensure_dirs より前に集める（create-dirs 所見を消さないため）
-    deterministic = doctor_env_findings(cfg) + doctor_audit_findings(cfg)
+    deterministic = (doctor_env_findings(cfg) + doctor_audit_findings(cfg)
+                     + doctor_flow_bus_coverage_findings(cfg))
     for f in deterministic:
         f["source"] = "check"
     signals = collect_doctor_signals(cfg)

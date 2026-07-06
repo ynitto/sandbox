@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: 1 台の daemon で複数バスを面倒見る（`--buses-glob` / `buses`）
+
+- **背景**: プロジェクト単位でバスを分ける（各バスが別リポジトリへ鏡写し）と素朴には「バス 1 本＝daemon 1 台」
+  になる。1 台の daemon に複数バスを担当させてプロセス増を畳めるようにした。**kiro-flow は「プロジェクト」を
+  知らないまま**、複数バスをそれぞれ独立に駆動する（バスの識別だけで宛先が決まる思想は不変）。
+- **バス集合**: 設定 `buses`（明示リスト）＋`buses_glob`（毎 tick 再スキャンする glob。`--buses-glob` は
+  繰り返し可）の和集合。どちらも未指定なら従来どおり単一 `--bus`（**bit 互換**）。glob は新規バスを自動で
+  担当開始し、消えたバスは手放す。
+- **per-bus ロック**: 各バスの singleton ロックを個別取得 → kiro-projects は従来どおりバス単位で daemon
+  稼働を検知できる（無改修）。別 daemon 担当済みのバスはスキップ。
+- **グローバル worker 予算**: `max_workers` をマシン全体の予算として全バスで共有し、`worker_policy`
+  （既定 `fair`＝公平ラウンドロビン／`greedy`）で配分。1 プロジェクトの予算独占・他バスの飢餓を防ぐ。
+- **復旧性は維持**: 孤児再開・gitlab 長期委譲・生存リース・status.json・鏡写しはすべてバス単位でそのまま。
+  自己更新は全バス idle 時のみ。
+- **kiro-projects**: `doctor` に「各 `projects/*/bus` が稼働中 daemon にカバーされているか」の warn を追加
+  （複数バス daemon の起動忘れ・glob ミスの早期発見）。それ以外は無改修。
+- テスト: バス集合解決・公平/貪欲の予算配分・グローバル上限・複数バス e2e（1 daemon が 2 バスを完走）、
+  kiro-projects の doctor カバレッジ warn を追加。README/CHANGELOG/yaml.example を更新。
+
 ### kiro-projects / kiro-flow / viewer: プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
 
 - **背景・目的**: これまで状態の git 同期（`state_git`）は**コンテナ丸ごと**（全プロジェクト）を 1

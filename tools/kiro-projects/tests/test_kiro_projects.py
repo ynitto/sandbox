@@ -4987,6 +4987,22 @@ class TestStateGitPerProject(unittest.TestCase):
         cfg = self._cfg("beta", state_git=None)        # 落とし先が無い → 宣言なし
         self.assertIsNone(km.flow_bus_remote_record(cfg))
 
+    def test_doctor_warns_on_uncovered_bus(self):
+        # daemon 未起動 → 各プロジェクトバスが未カバー warn（複数バス daemon の起動忘れ検知）。
+        cfg = self._cfg("alpha")
+        fs = km.doctor_flow_bus_coverage_findings(cfg)
+        titles = [f["title"] for f in fs]
+        self.assertTrue(any("未カバー" in t and "alpha" in t for t in titles))
+        self.assertTrue(all(f["severity"] == "warn" for f in fs))
+        self.assertTrue(any("--buses-glob" in f["fix"] for f in fs))
+
+    def test_doctor_coverage_skips_shared_bus_and_legacy(self):
+        shared = self.tmp / "shared-bus"
+        self.assertEqual(km.doctor_flow_bus_coverage_findings(
+            self._cfg("alpha", bus=shared, shared_bus=True)), [])
+        self.assertEqual(km.doctor_flow_bus_coverage_findings(
+            self._cfg("alpha", state_git_projects={})), [])
+
 
 if __name__ == "__main__":
     unittest.main()

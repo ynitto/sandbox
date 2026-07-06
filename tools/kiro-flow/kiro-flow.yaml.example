@@ -19,6 +19,13 @@
 # ---------------------------------------------------------------------------
 bus: ./.kiro-flow          # ローカルバスのルート。git モードでは各ノードのクローン親ディレクトリ
 
+# 複数バスを 1 台の daemon で面倒見る（プロジェクト単位バスをまとめて常駐監視）。kiro-flow は
+# 「プロジェクト」を知らないまま各バスを独立に駆動し、各バスは自分の宣言（.kiro-flow-remote.json）先へ
+# 鏡写しする。どちらも未指定なら従来どおり単一 bus。max_workers はマシン全体の予算として全バスで共有。
+# buses_glob: '/home/me/.kiro-projects/projects/*/bus'   # 毎 tick 再スキャン（新規バス自動追従・消失は手放し）
+# buses: [/path/a/bus, /path/b/bus]                      # 明示リスト（glob と併用可）
+# worker_policy: fair        # 複数バス時の worker 配分: fair（公平ラウンドロビン・既定）/ greedy
+
 # 複数 PC 分散にする場合は共有 git リポジトリを指定（コメントアウトを外す）
 # git: git@example.com:team/flow-bus.git
 # git_branch: main         # バスに使う git ブランチ（既定 main）

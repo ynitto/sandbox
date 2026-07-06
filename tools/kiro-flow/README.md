@@ -471,6 +471,36 @@ state_git_interval: 300                          # fetch/push の最短間隔（
   project 概念を kiro-flow に持ち込まずに、per-project バス＝per-project リポジトリの鏡写しが成立する。
 - 宣言ファイルはドット始まりなので**バスの同期対象からは除外**される（リポジトリへは載らない）。
 
+### 複数バスを 1 台の daemon で面倒見る（`--buses-glob` / `buses`）
+
+プロジェクトごとにバスを分ける（各バスが別リポジトリへ鏡写しする）と、素朴には「バス 1 本＝daemon 1 台」
+でプロセスが増える。**1 台の daemon に複数バスを担当させる**ことでこれを畳める。kiro-flow は「プロジェクト」を
+知らないまま、**複数のバスをそれぞれ独立に駆動**し、各バスは自分の宣言先へ鏡写しする。
+
+```yaml
+# kiro-flow.yaml（daemon が読む）
+buses_glob: '/home/me/.kiro-projects/projects/*/bus'   # 毎 tick 再スキャン（新規バス自動追従・消失は手放し）
+# buses: [/path/a/bus, /path/b/bus]                    # 明示リスト（glob と併用可）
+max_workers: 6                                          # ★マシン全体の予算（全バスで共有。過剰起動を防ぐ）
+# worker_policy: fair                                  # fair（公平RR・既定）/ greedy
+```
+```bash
+kiro-flow daemon --buses-glob '/home/me/.kiro-projects/projects/*/bus'   # CLI でも可（繰り返し可）
+```
+
+- **バス集合**: `buses`（明示）＋`buses_glob`（毎 tick 再スキャン）の和集合。どちらも未指定なら従来どおり
+  単一 `--bus`（**bit 互換**）。glob は kiro-projects の per-project レイアウトに一致し、**新規プロジェクト＝
+  新規バスを自動で担当開始、アーカイブ＝消えたバスは手放す**。
+- **per-bus ロック**: 各バスの singleton ロックを個別取得する。だから kiro-projects は従来どおり
+  **バス単位で daemon 稼働を検知**でき（`daemon_running`）、submit 経路（決定的 run_id）に乗る。別 daemon が
+  担当済みのバスはスキップする。
+- **worker はグローバル予算 `max_workers` を全バスで共有**。既定 `fair`＝仕事のあるバスへ 1 台ずつ公平に配り、
+  1 プロジェクトが予算を独占して他を飢餓させない（`greedy` で claim 数の多い順に詰める挙動にも切替可）。
+- **孤児再開・gitlab 長期委譲・生存リース・status.json・鏡写し**はすべて**バス単位**でそのまま効く
+  （夜間停止からの復旧も各バスで成立）。自己更新は全バス idle 時のみ。
+- 起動 UX は「ユーザーが 1 コマンドで複数バス daemon を常駐 → kiro-projects は従来どおり」。カバー漏れは
+  `kiro-projects doctor` が warn で検知する（起動忘れ・glob ミスの早期発見）。
+
 ### daemon の生存信号（status.json）— リモート viewer の稼働判定
 
 daemon の稼働検知は本来ロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock`。
