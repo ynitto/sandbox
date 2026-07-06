@@ -125,10 +125,6 @@ CONFIG_DEFAULTS = {
     "state_git_branch": "main",         # 同期先ブランチ
     "state_git_subdir": "kiro-flow",    # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
-    # プロジェクト単位で保存先リポジトリを分ける（{プロジェクト名: URL/パス} か {名前: {remote/branch/
-    # subdir/interval}}）。kiro-projects 側と同じ写像。run/inbox を meta の project で振り分け、載った
-    # プロジェクトはそのプロジェクトの run/inbox だけを固有リポジトリへ、未タグ/未割当は state_git（既定）へ。
-    "state_git_projects": {},
     "status_interval": 0.0,             # daemon アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lease": 1800.0,
     "poll": 2.0,
@@ -346,8 +342,7 @@ class Bus:
             os.makedirs(d, exist_ok=True)
 
     def ensure_run(self, request: str, workspace: "dict | None" = None,
-                   references: "list[dict] | None" = None,
-                   project: "str | None" = None) -> None:
+                   references: "list[dict] | None" = None) -> None:
         self.ensure_dirs()
         if read_json(self.meta_path) is None:
             write_json_atomic(self.meta_path, {
@@ -357,9 +352,6 @@ class Bus:
                 "workspace": workspace or None,
                 # 参照リポジトリ（読むだけ・書き込まない）。executor がイシュー/プロンプトに描画する。
                 "references": list(references or []),
-                # 所属プロジェクト（kiro-projects の --project）。state_git のプロジェクト単位
-                # リポジトリ振り分けに使う（None＝未タグ＝既定リポジトリへ）。
-                "project": project or None,
                 "status": "planning",
                 "created_at": now_iso(),
             })
@@ -701,7 +693,6 @@ class Bus:
             "request": req.get("request", ""),
             "workspace": req.get("workspace"),
             "references": list(req.get("references") or []),
-            "project": req.get("project") or None,
             "status": "failed",
             "created_at": now_iso(),
             "updated_at": now_iso(),
@@ -762,15 +753,13 @@ class Bus:
     def submit_request(self, req_id: str, request: str, submitter: str,
                        workspace: "dict | None" = None,
                        references: "list[dict] | None" = None,
-                       inherit_from: "str | None" = None,
-                       project: "str | None" = None) -> None:
+                       inherit_from: "str | None" = None) -> None:
         rec = {
             "id": req_id,
             "request": request,
             "submitter": submitter,
             "workspace": workspace or None,   # 唯一の書込先を daemon の orchestrate へ伝搬する
             "references": list(references or []),  # 参照リポジトリも daemon の orchestrate へ伝搬する
-            "project": project or None,       # 所属プロジェクト（state_git の振り分け用）を伝搬する
             "submitted_at": now_iso(),
         }
         if inherit_from:                      # リトライ: 先行 run の引き継ぎ元を orchestrate へ伝搬
@@ -1134,48 +1123,16 @@ class StateGit:
 
     def __init__(self, bus_root: str, remote: str, branch: str = "main",
                  subdir: str = "kiro-flow", interval: float = 300.0,
-                 clone_dir: "str | None" = None,
-                 project: "str | None" = None, mapped: "set | None" = None):
+                 clone_dir: "str | None" = None):
         self.bus_root = os.path.abspath(bus_root)
         self.remote = remote
         self.branch = branch or "main"
         self.subdir = (subdir or "").strip("/")
         self.interval = max(0.0, interval)
         self.clone = clone_dir or os.path.join(self.bus_root, ".state-git")
-        # プロジェクト単位で保存先リポジトリを分ける（state_git_projects）: このクローンが受け持つ
-        # プロジェクト。None は「既定（フォールバック）」＝どのプロジェクト固有リポジトリにも
-        # 割り当てられていない run/inbox（未タグ含む）を受け持つ。mapped は固有リポジトリを持つ
-        # プロジェクト名の集合（フォールバックが自分の担当外を弾くのに使う）。両方 None/空なら
-        # 従来どおりバス全体を 1 リポジトリへ（ルーティング無効）。
-        self.project = project
-        self.mapped = set(mapped or ())
-        self._routing = bool(project) or bool(self.mapped)
         self._ready = False
         self._last_remote = 0.0     # 最後にリモートへ触れた時刻（fetch/push の間隔律速）
         self._last_attempt = 0.0    # クローン準備の失敗も間隔律速（不通のリモートを連打しない）
-
-    def _route(self, root: str, rel: str) -> "tuple[str, str | None]":
-        """rel パスの帰属を返す。("routed", project) は run/inbox（project は未タグなら None）、
-        ("shared", None) はバス直下の共有ファイル（status.json 等・全リポジトリに配る）。"""
-        parts = rel.split("/")
-        if parts[0] == "runs" and len(parts) >= 2:
-            meta = read_json(os.path.join(root, "runs", parts[1], "meta.json")) or {}
-            return ("routed", meta.get("project"))
-        if parts[0] == "inbox" and len(parts) == 2 and parts[1].endswith(".json"):
-            rec = read_json(os.path.join(root, rel)) or {}
-            return ("routed", rec.get("project"))
-        return ("shared", None)
-
-    def _included(self, root: str, rel: str) -> bool:
-        """このクローンがこのパスを受け持つか（ルーティング無効なら常に True＝従来のバス全体）。"""
-        if not self._routing:
-            return True
-        kind, proj = self._route(root, rel)
-        if kind == "shared":                      # 共有（生存信号など）は全リポジトリに配る
-            return True
-        if self.project is not None:              # プロジェクト固有リポジトリ: 自分の run だけ
-            return proj == self.project
-        return proj is None or proj not in self.mapped   # フォールバック: 未タグ＋未割当だけ
 
     # --- git 低レベル（GitBus と同じ護り: ceiling / C ロケール / ロック残骸の自己回復） ---
     def _env(self) -> dict:
@@ -1278,9 +1235,7 @@ class StateGit:
     # --- 3-way 同期（manifest = 前回同期時点の path→sha256 スナップショット） ---
     @property
     def _manifest_path(self) -> str:
-        # プロジェクト単位リポジトリで同一クローンを共有する場合でも manifest が混ざらないよう名前を分ける
-        name = f"kiro-flow-state-{self.project}.json" if self.project else "kiro-flow-state.json"
-        return os.path.join(self.clone, ".git", name)
+        return os.path.join(self.clone, ".git", "kiro-flow-state.json")
 
     def _load_manifest(self) -> dict:
         try:
@@ -1306,9 +1261,9 @@ class StateGit:
         parts = tuple(rel.split("/"))
         return bool(parts) and parts[0] == "inbox" and "claims" not in parts
 
-    def _scan(self, root: str) -> "dict[str, str]":
-        """root 配下の同期対象ファイルを {相対パス: sha256} で返す（除外規則は両側で同一）。
-        プロジェクト単位リポジトリ時は _included で自分の担当 run/inbox だけに絞る。"""
+    @classmethod
+    def _scan(cls, root: str) -> "dict[str, str]":
+        """root 配下の同期対象ファイルを {相対パス: sha256} で返す（除外規則は両側で同一）。"""
         out: "dict[str, str]" = {}
         if not os.path.isdir(root):
             return out
@@ -1318,17 +1273,14 @@ class StateGit:
             for name in files:
                 rel = name if rel_base == "." else f"{rel_base}/{name}"
                 parts = tuple(rel.replace(os.sep, "/").split("/"))
-                if self._excluded(parts):
-                    continue
-                relposix = "/".join(parts)
-                if not self._included(root, relposix):
+                if cls._excluded(parts):
                     continue
                 p = os.path.join(base, name)
                 if os.path.islink(p) or not os.path.isfile(p):
                     continue
                 try:
                     with open(p, "rb") as f:
-                        out[relposix] = hashlib.sha256(f.read()).hexdigest()
+                        out["/".join(parts)] = hashlib.sha256(f.read()).hexdigest()
                 except OSError:
                     pass
         return out
@@ -1454,69 +1406,64 @@ class StateGit:
 _STATE_GITS: "dict[tuple, StateGit]" = {}
 
 
-def _flow_project_spec(args, spec) -> "tuple[str, str, str, float] | None":
-    """state_git_projects の 1 エントリ（URL 文字列 or dict）を (remote, branch, subdir, interval) へ。"""
-    branch = getattr(args, "state_git_branch", "main") or "main"
-    subdir = getattr(args, "state_git_subdir", "kiro-flow")
-    interval = getattr(args, "state_git_interval", 300.0)
-    if isinstance(spec, str):
-        remote = spec.strip()
-    elif isinstance(spec, dict):
-        remote = str(spec.get("remote") or spec.get("state_git") or spec.get("url") or "").strip()
-        branch = str(spec.get("branch", branch) or "main")
-        subdir = spec.get("subdir", subdir)
-        try:
-            interval = max(0.0, float(spec.get("interval", interval)))
-        except (TypeError, ValueError):
-            pass
-    else:
+# バスが自分の鏡写し先（remote）を宣言するファイル。バスの所有者（例: kiro-projects の制御層）が
+# 置き、kiro-flow は「このバスをここへ鏡写しする」とだけ解釈する（バスの識別＝どのバスか、に閉じており
+# kiro-flow 自身は上位の概念を一切持たない）。ドット始まりなので同期対象からは除外される。
+BUS_REMOTE_FILE = ".kiro-flow-remote.json"
+
+
+def bus_declared_state_git(bus_root: str, args=None) -> "tuple | None":
+    """バス直下の宣言ファイル（BUS_REMOTE_FILE）から (remote, branch, subdir, interval) を読む。
+    無ければ None。remote 必須。branch/subdir/interval は省略時 args の既定（無ければ組込既定）。"""
+    try:
+        with open(os.path.join(bus_root, BUS_REMOTE_FILE), encoding="utf-8") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
         return None
+    if not isinstance(rec, dict):
+        return None
+    remote = str(rec.get("remote") or rec.get("state_git") or rec.get("url") or "").strip()
     if not remote:
         return None
-    return remote, branch, (subdir or "").strip("/"), max(0.0, float(interval))
+    branch = str(rec.get("branch") or getattr(args, "state_git_branch", None) or "main")
+    subdir = rec.get("subdir")
+    if subdir is None:
+        subdir = getattr(args, "state_git_subdir", None) or "kiro-flow"
+    try:
+        interval = float(rec.get("interval", getattr(args, "state_git_interval", 300.0)))
+    except (TypeError, ValueError):
+        interval = float(getattr(args, "state_git_interval", 300.0) or 300.0)
+    return remote, branch, str(subdir or "").strip("/"), max(0.0, interval)
 
 
-def state_gits_for(args) -> "list[StateGit]":
-    """同期すべき StateGit の一覧。GitBus（--git）はバス自体が共有 git なので対象外＝空。
-
-    プロジェクト単位リポジトリ（state_git_projects）があれば、各プロジェクト固有リポジトリ＋既定
-    リポジトリ（フォールバック）をそれぞれ返す（run/inbox を meta の project で振り分ける）。
-    無ければ従来どおり state_git 1 本（ルーティング無効・バス全体）。"""
+def _resolve_state_git(args) -> "tuple | None":
+    """このバスの鏡写し先 (remote, branch, subdir, interval)。GitBus（--git）は対象外＝None。
+    優先順位: バスが宣言した remote（BUS_REMOTE_FILE）> 設定/CLI の state_git。
+    バス宣言が「バス＝どこへ鏡写しするか」の一次ソース。設定 state_git は宣言が無いときの既定。"""
     if getattr(args, "git", None):
-        return []
+        return None
     bus_root = os.path.abspath(args.bus)
-    projmap = getattr(args, "state_git_projects", None) or {}
-    out: "list[StateGit]" = []
-    mapped = set(projmap)
-    for name, spec in sorted(projmap.items()):
-        rs = _flow_project_spec(args, spec)
-        if rs is None:
-            continue
-        remote, branch, subdir, interval = rs
-        clone = os.path.join(bus_root, f".state-git-{re.sub(r'[^A-Za-z0-9_.-]+', '_', name)}")
-        key = (bus_root, remote, branch, subdir, name)
-        if key not in _STATE_GITS:
-            _STATE_GITS[key] = StateGit(bus_root, remote, branch, subdir, interval,
-                                        clone_dir=clone, project=name, mapped=mapped)
-        out.append(_STATE_GITS[key])
-    # 既定（フォールバック）: 未タグ/未割当の run/inbox を受け持つ。写像だけで state_git 未設定なら省略。
+    declared = bus_declared_state_git(bus_root, args)
+    if declared is not None:
+        return declared
     if getattr(args, "state_git", None):
-        key = (bus_root, args.state_git, args.state_git_branch, args.state_git_subdir, None)
-        if key not in _STATE_GITS:
-            _STATE_GITS[key] = StateGit(bus_root, args.state_git, args.state_git_branch,
-                                        args.state_git_subdir, args.state_git_interval,
-                                        mapped=mapped)
-        out.append(_STATE_GITS[key])
-    return out
+        return (args.state_git, args.state_git_branch, args.state_git_subdir,
+                args.state_git_interval)
+    return None
 
 
 def state_git_for(args) -> "StateGit | None":
-    """既定（フォールバック）の StateGit 1 本を返す（状態行・単一同期の後方互換）。"""
-    gits = state_gits_for(args)
-    for sg in gits:                    # 既定（project=None）を優先して返す
-        if sg.project is None:
-            return sg
-    return gits[0] if gits else None
+    """state_git 有効時のみ StateGit を返す。鏡写し先はバス宣言（BUS_REMOTE_FILE）→設定の順で解決。
+    GitBus（--git）はバス自体が共有 git なので対象外。"""
+    rs = _resolve_state_git(args)
+    if rs is None:
+        return None
+    remote, branch, subdir, interval = rs
+    bus_root = os.path.abspath(args.bus)
+    key = (bus_root, remote, branch, subdir)
+    if key not in _STATE_GITS:
+        _STATE_GITS[key] = StateGit(bus_root, remote, branch, subdir, interval)
+    return _STATE_GITS[key]
 
 
 def daemon_status_path(bus: Bus) -> str:
@@ -1585,32 +1532,31 @@ def state_git_status_line(args) -> str:
     （silent な設定ミス＝バスが見えない原因の切り分けを容易にする）。"""
     if getattr(args, "git", None):
         return "state-git: 無効（--git バス使用時はバス自体が共有 git のため不要）"
-    projmap = getattr(args, "state_git_projects", None) or {}
-    if projmap:
-        base = f"・既定 → {args.state_git}" if getattr(args, "state_git", None) else "・既定なし"
-        names = ", ".join(sorted(projmap))
-        return (f"state-git: プロジェクト単位 有効 → 固有リポジトリ {len(projmap)} 件"
-                f"（{names}）{base} interval={args.state_git_interval}s"
-                f"（run/inbox を meta.project で振り分けて鏡写し。バス {os.path.abspath(args.bus)}）")
-    if not getattr(args, "state_git", None):
+    bus_root = os.path.abspath(args.bus)
+    declared = bus_declared_state_git(bus_root, args)
+    rs = _resolve_state_git(args)
+    if rs is None:
         return ("state-git: 無効（未設定）。リモート viewer にバスを見せるには kiro-flow.yaml に "
-                "state_git を設定し、この daemon がその設定を読めていること（--config か "
-                "起動 cwd の .kiro/kiro-flow.yaml）を確認")
-    return (f"state-git: 有効 → {args.state_git} subdir={args.state_git_subdir} "
-            f"interval={args.state_git_interval}s（バス {os.path.abspath(args.bus)} をリモートへ鏡写し）")
+                "state_git を設定するか、バス直下に " + BUS_REMOTE_FILE + " を置く（この daemon が "
+                "その設定を読めていること＝--config か 起動 cwd の .kiro/kiro-flow.yaml を確認）")
+    remote, branch, subdir, interval = rs
+    src = f"バス宣言 {BUS_REMOTE_FILE}" if declared is not None else "設定 state_git"
+    return (f"state-git: 有効 → {remote} subdir={subdir} interval={interval}s"
+            f"（{src} により バス {bus_root} をリモートへ鏡写し）")
 
 
 def state_sync(args, force: bool = False) -> None:
     """状態の git 同期（best-effort）。ネットワーク断・リポジトリ不通でもループは殺さず
     ログに残して続行する（run の実行・終端は state_git に一切依存しない）。"""
-    for sg in state_gits_for(args):
-        try:
-            imported, exported = sg.sync(force=force)
-            if imported or exported:
-                tag = f"[{sg.project}]" if sg.project else ""
-                log("state-git", f"同期{tag}: import={imported} export={exported}")
-        except (RuntimeError, OSError, subprocess.SubprocessError) as e:
-            log("state-git", f"同期失敗（続行）: {e}")
+    sg = state_git_for(args)
+    if sg is None:
+        return
+    try:
+        imported, exported = sg.sync(force=force)
+        if imported or exported:
+            log("state-git", f"同期: import={imported} export={exported}")
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        log("state-git", f"同期失敗（続行）: {e}")
 
 
 # --------------------------------------------------------------------------
@@ -3222,8 +3168,7 @@ def cmd_orchestrate(args) -> int:
                  f"（引き継ぎ {info['seeded_nodes']} ノード・削除={info['deleted']}）")
         bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
-                   parse_references(getattr(args, "references", None)),
-                   project=getattr(args, "project", None) or None)
+                   parse_references(getattr(args, "references", None)))
     graph = bus.read_graph()
 
     # 既存グラフがあれば計画をやり直さず再開（resume）
@@ -3444,8 +3389,6 @@ def _child_base(args, bus_abs: str) -> list:
         base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
     if getattr(args, "cleanup_per_node", False):
         base += ["--cleanup-per-node"]  # ノード単位の即時削除も子へ引き継ぐ
-    if getattr(args, "project", None):
-        base += ["--project", str(args.project)]  # 所属プロジェクト（state_git 振り分け）を子へ引き継ぐ
     return base
 
 
@@ -3549,9 +3492,6 @@ def _spawn_orchestrator(base: list, args, req_id: str, req: dict):
     ws_args = ["--workspace", json.dumps(ws, ensure_ascii=False)] if ws else []
     for r in (req.get("references") or []):   # 参照リポジトリも run meta へ伝搬する
         ws_args += ["--reference", json.dumps(r, ensure_ascii=False)]
-    proj = req.get("project")                 # 所属プロジェクトを run meta へ載せる（state_git 振り分け）
-    if proj:                                  # グローバル引数なのでサブコマンドより前に置く
-        ws_args += ["--project", str(proj)]
     inh = req.get("inherit_from")             # リトライ: 先行 run の引き継ぎ元を orchestrate へ
     return subprocess.Popen(base + ws_args + [
         "--granularity", str(getattr(args, "granularity", "finest") or "finest"),
@@ -3695,8 +3635,7 @@ def cmd_submit(args) -> int:
     bus.submit_request(req_id, args.request, f"{socket.gethostname()}-{os.getpid()}",
                        workspace=parse_workspace(getattr(args, "workspace", None)),
                        references=parse_references(getattr(args, "references", None)),
-                       inherit_from=getattr(args, "inherit_from", None),
-                       project=getattr(args, "project", None) or None)
+                       inherit_from=getattr(args, "inherit_from", None))
     bus.sync_push(f"submit request {req_id}")
     print(req_id)  # run-id を標準出力（スクリプトから拾える）
     print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
@@ -4974,10 +4913,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bus", default=None,
                    help="ローカルバスのルート / git モードでは各ノードのクローン親ディレクトリ")
     p.add_argument("--run-id", default=None, help="run 識別子")
-    p.add_argument("--project", dest="project", default=None,
-                   help="この run/要求の所属プロジェクト（kiro-projects の --project）。"
-                        "state_git のプロジェクト単位リポジトリ（state_git_projects）振り分けに使う。"
-                        "run meta.project に載り、載っていないプロジェクトは既定リポジトリへ")
     p.add_argument("--git", default=None,
                    help="共有 git リポジトリ URL/パス。指定で複数 PC 分散モードになる")
     p.add_argument("--git-branch", default=None, help="バスに使う git ブランチ（既定 main）")

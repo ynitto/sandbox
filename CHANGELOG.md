@@ -21,10 +21,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   同期し、未記載（`default` 含む）は既定の `state_git`（個人リポジトリ・未設定なら無効）へ落ちる。
   各プロジェクトは自分専用の管理クローン（`<container>/projects/<name>/.state-git`）を使い、多重
   コミッタの護りはそのまま。写像未設定なら従来どおりコンテナ丸ごと（**完全後方互換**）。
-- **kiro-flow**: 同じ写像 `state_git_projects` を追加。**共有バス 1 本・daemon 1 台のまま**、run/inbox を
-  `run meta.project`（kiro-projects が `--project` で伝搬）で振り分けて固有リポジトリへ鏡写しする。未タグ
-  ／未割当は既定リポジトリへ、`status.json` 等バス直下の共有ファイルは各プロジェクトのリポジトリへ配る。
-  クローンはプロジェクトごとに 1 本（`<bus>/.state-git-<project>`）。写像未設定なら従来どおり（後方互換）。
+- **kiro-flow（project 概念を持ち込まない）**: kiro-flow は「プロジェクト」を知らないまま、per-project
+  バスをプロジェクト固有リポジトリへ鏡写しできるようにした。**バスが自分の鏡写し先を宣言**する
+  `.kiro-flow-remote.json`（`{remote, branch, subdir, interval}`）をバス直下から読み、`state_git` より
+  優先して「このバスをここへ鏡写しする」とだけ解釈する（`--git` 時は無効）。どのバスがどのリポジトリへ
+  行くか（＝プロジェクトとの対応）は制御層 kiro-projects が握る。宣言が無ければ従来どおり `state_git`
+  1 本（完全後方互換）。
+- **kiro-projects（バスに宣言を書く側）**: per-project モード（`state_git_projects`）かつ per-project バス
+  （共有バスでない）のとき、各プロジェクトのバス直下に `.kiro-flow-remote.json` を自動生成し、そのプロジェクト
+  のリポジトリの `kiro-flow` 名前空間を指す。プロジェクト固有リポジトリは `kiro-projects/projects/<name>/`
+  （状態）と `kiro-flow/`（run）の 2 名前空間を持つ。共有バス構成では宣言しない（1 バスを 1 リポジトリに
+  縛れないため）。
 - **kiro-projects-viewer**: コンテナ（`roots`）は従来から複数登録できるため、プロジェクト固有リポジトリの
   clone `<clone>/kiro-projects` を 1 行ずつ足すだけで全プロジェクトを 1 画面に束ねられる。フローバスは
   設定 `flowBusByProject`（⚙「プロジェクト単位バス」・`プロジェクト名 = <clone>/kiro-flow`）を追加し、

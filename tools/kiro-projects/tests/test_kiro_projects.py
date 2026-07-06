@@ -4956,6 +4956,37 @@ class TestStateGitPerProject(unittest.TestCase):
         km.state_sync(cfg, force=True)
         self.assertIsNone(km.state_git_for(cfg))
 
+    def test_writes_flow_bus_remote_pointer(self):
+        # per-project バス（共有でない）に、kiro-flow の鏡写し先宣言を置く（ensure_dirs 経由）。
+        cfg = self._cfg("alpha")                       # ensure_dirs が宣言を書く
+        p = cfg.bus / km.FLOW_BUS_REMOTE_FILE
+        self.assertTrue(p.exists())
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        self.assertEqual(rec["remote"], str(self.team))   # プロジェクト固有リポジトリへ
+        self.assertEqual(rec["subdir"], km.FLOW_STATE_SUBDIR)
+
+    def test_flow_pointer_uses_personal_repo_for_unmapped(self):
+        cfg = self._cfg("default")                     # 未記載 → 個人リポジトリ
+        rec = km.flow_bus_remote_record(cfg)
+        self.assertEqual(rec["remote"], str(self.personal))
+
+    def test_no_flow_pointer_when_shared_bus(self):
+        # 共有バスは per-project に割れない → 宣言を書かない（誤って共有バスを1リポへ縛らない）。
+        shared = self.tmp / "shared-bus"
+        cfg = self._cfg("alpha", bus=shared, shared_bus=True)
+        self.assertIsNone(km.flow_bus_remote_record(cfg))
+        self.assertFalse((shared / km.FLOW_BUS_REMOTE_FILE).exists())
+
+    def test_no_flow_pointer_in_legacy_mode(self):
+        # state_git_projects 未使用（従来のコンテナ丸ごと）では宣言を書かない。
+        cfg = self._cfg("alpha", state_git_projects={})
+        self.assertIsNone(km.flow_bus_remote_record(cfg))
+        self.assertFalse((cfg.bus / km.FLOW_BUS_REMOTE_FILE).exists())
+
+    def test_flow_pointer_disabled_when_unmapped_and_no_personal(self):
+        cfg = self._cfg("beta", state_git=None)        # 落とし先が無い → 宣言なし
+        self.assertIsNone(km.flow_bus_remote_record(cfg))
+
 
 if __name__ == "__main__":
     unittest.main()

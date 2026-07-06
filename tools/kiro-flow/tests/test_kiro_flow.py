@@ -3551,96 +3551,85 @@ class StateGitSyncTests(unittest.TestCase):
         self.assertFalse((got / "kf" / "runs" / "run1").exists())
 
 
-class StateGitPerProjectTests(unittest.TestCase):
-    """プロジェクト単位で保存先リポジトリを分ける（state_git_projects）。共有バスの run/inbox を
-    meta.project で振り分け、載ったプロジェクトは固有リポジトリへ、未タグ/未割当は既定リポジトリへ。"""
+class BusDeclaredRemoteTests(unittest.TestCase):
+    """バスが自分の鏡写し先を宣言する（<bus>/.kiro-flow-remote.json）。kiro-flow は『このバスを
+    ここへ鏡写しする』とだけ解釈し、上位（プロジェクト等）の概念を一切持たない。バスの所有者
+    （kiro-projects の制御層など）が宣言を置くことで、per-project バスを各リポジトリへ振り分けられる。"""
 
     def setUp(self):
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-sgpp-"))
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-busdecl-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         kf._STATE_GITS.clear()
-        self.personal = self._bare("personal.git")   # 既定（未タグ/未割当）
-        self.team = self._bare("team-alpha.git")      # alpha 固有（共有）
+        self.remote = self.tmp / "declared.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
+        subprocess.run(["git", "-C", str(self.remote), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
         self.bus_root = self.tmp / "bus"
-
-    def _bare(self, name: str) -> pathlib.Path:
-        r = self.tmp / name
-        subprocess.run(["git", "init", "-q", "--bare", str(r)], check=True)
-        subprocess.run(["git", "-C", str(r), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
-        return r
 
     def _args(self, **kw):
         base = dict(bus=str(self.bus_root), git=None, run_id=None,
-                    state_git=str(self.personal), state_git_branch="main",
-                    state_git_subdir="kf", state_git_interval=0.0,
-                    state_git_projects={"alpha": str(self.team)})
+                    state_git=None, state_git_branch="main",
+                    state_git_subdir="kf", state_git_interval=0.0)
         base.update(kw)
         return types.SimpleNamespace(**base)
 
-    def _run(self, run_id, project=None):
+    def _declare(self, **rec):
+        os.makedirs(self.bus_root, exist_ok=True)
+        with open(self.bus_root / kf.BUS_REMOTE_FILE, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+
+    def _bus(self, run_id="run1"):
         bus = kf.Bus(str(self.bus_root), run_id)
-        bus.ensure_run("req", project=project)
+        bus.ensure_run("test request")
         return bus
 
-    def _check(self, remote: pathlib.Path, name: str) -> pathlib.Path:
-        d = self.tmp / f"chk-{name}-{remote.stem}"
-        subprocess.run(["git", "clone", "-q", str(remote), str(d)], check=True, capture_output=True)
+    def _other(self) -> pathlib.Path:
+        d = self.tmp / "check"
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(d)], check=True, capture_output=True)
         return d
 
-    def test_run_routed_to_project_repo(self):
-        self._run("run-a", project="alpha")
-        kf.state_sync(self._args(), force=True)
-        team = self._check(self.team, "a")
-        self.assertTrue((team / "kf" / "runs" / "run-a" / "meta.json").exists())
-        personal = self._check(self.personal, "a")
-        self.assertFalse((personal / "kf" / "runs" / "run-a").exists())
+    def test_declared_remote_used_without_config_state_git(self):
+        # 設定 state_git 未指定でも、バス宣言だけで鏡写しが有効になる。
+        self._declare(remote=str(self.remote), subdir="kf")
+        self._bus()
+        args = self._args(state_git=None)
+        self.assertIsNotNone(kf.state_git_for(args))
+        kf.state_sync(args, force=True)
+        self.assertTrue((self._other() / "kf" / "runs" / "run1" / "meta.json").exists())
 
-    def test_untagged_run_goes_to_fallback(self):
-        self._run("run-x", project=None)                          # 未タグ → 既定リポジトリ
-        kf.state_sync(self._args(), force=True)
-        personal = self._check(self.personal, "x")
-        self.assertTrue((personal / "kf" / "runs" / "run-x" / "meta.json").exists())
-        team = self._check(self.team, "x")
-        self.assertFalse((team / "kf" / "runs" / "run-x").exists())
+    def test_declared_remote_overrides_config(self):
+        # バス宣言は設定 state_git より優先（バスがどこへ行くかの一次ソース）。
+        other_remote = self.tmp / "cfg.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(other_remote)], check=True)
+        subprocess.run(["git", "-C", str(other_remote), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        self._declare(remote=str(self.remote), subdir="kf")
+        args = self._args(state_git=str(other_remote))
+        rs = kf._resolve_state_git(args)
+        self.assertEqual(rs[0], str(self.remote))
 
-    def test_mixed_runs_split_across_repos(self):
-        self._run("run-a", project="alpha")
-        self._run("run-b", project="beta")                       # 未割当プロジェクト → 既定へ
-        self._run("run-x", project=None)
+    def test_pointer_file_is_not_mirrored(self):
+        # 宣言ファイル（ドット始まり）はバス走査の対象外＝リポジトリへは同期されない。
+        self._declare(remote=str(self.remote))
+        self._bus()
         kf.state_sync(self._args(), force=True)
-        team = self._check(self.team, "mix")
-        self.assertTrue((team / "kf" / "runs" / "run-a").exists())
-        self.assertFalse((team / "kf" / "runs" / "run-b").exists())
-        self.assertFalse((team / "kf" / "runs" / "run-x").exists())
-        personal = self._check(self.personal, "mix")
-        self.assertFalse((personal / "kf" / "runs" / "run-a").exists())
-        self.assertTrue((personal / "kf" / "runs" / "run-b").exists())
-        self.assertTrue((personal / "kf" / "runs" / "run-x").exists())
+        self.assertFalse((self._other() / "kf" / kf.BUS_REMOTE_FILE).exists())
 
-    def test_shared_status_goes_to_all_repos(self):
-        # バス直下の共有ファイル（生存信号など）は全リポジトリに配る（各プロジェクトの viewer が
-        # daemon の生存を見られるように）。
-        self._run("run-a", project="alpha")
-        (self.bus_root / "status.json").write_text('{"alive": true}', encoding="utf-8")
-        kf.state_sync(self._args(), force=True)
-        self.assertTrue((self._check(self.team, "sa") / "kf" / "status.json").exists())
-        self.assertTrue((self._check(self.personal, "sp") / "kf" / "status.json").exists())
+    def test_no_declaration_falls_back_to_config(self):
+        args = self._args(state_git=str(self.remote))
+        rs = kf._resolve_state_git(args)
+        self.assertEqual(rs[0], str(self.remote))
+        self.assertIsNone(kf._resolve_state_git(self._args(state_git=None)))
 
-    def test_inbox_routed_by_project(self):
-        bus = kf.Bus(str(self.bus_root), "_")
-        bus.submit_request("req-a", "r", "submitter", project="alpha")
-        bus.submit_request("req-x", "r", "submitter", project=None)
-        kf.state_sync(self._args(), force=True)
-        team = self._check(self.team, "inbox")
-        self.assertTrue((team / "kf" / "inbox" / "req-a.json").exists())
-        self.assertFalse((team / "kf" / "inbox" / "req-x.json").exists())
-        personal = self._check(self.personal, "inbox")
-        self.assertTrue((personal / "kf" / "inbox" / "req-x.json").exists())
+    def test_git_bus_disables_state_git_even_with_declaration(self):
+        self._declare(remote=str(self.remote))
+        self.assertIsNone(kf.state_git_for(self._args(git="https://example/bus.git")))
 
-    def test_status_line_reports_per_project(self):
-        line = kf.state_git_status_line(self._args())
-        self.assertIn("プロジェクト単位", line)
-        self.assertIn("alpha", line)
+    def test_status_line_notes_declaration_source(self):
+        self._declare(remote=str(self.remote))
+        line = kf.state_git_status_line(self._args(state_git=None))
+        self.assertIn(kf.BUS_REMOTE_FILE, line)
+        self.assertIn("有効", line)
 
 
 class DaemonStatusHeartbeatTests(unittest.TestCase):

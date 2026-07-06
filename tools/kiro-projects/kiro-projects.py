@@ -2256,12 +2256,6 @@ def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
         base += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
         if cfg.git_subdir:
             base += ["--git-subdir", cfg.git_subdir]
-    # 所属プロジェクトを kiro-flow へ伝える（run/inbox meta.project に載り、kiro-flow 側の
-    # state_git_projects でプロジェクト固有リポジトリへ run を振り分けられる）。共有バス構成でも
-    # プロジェクト単位で kiro-flow の情報を分離・共有できるようにする。
-    name = getattr(cfg, "project_name", None)
-    if name and name != "all":
-        base += ["--project", str(name)]
     return base
 
 
@@ -2907,6 +2901,7 @@ def ensure_dirs(cfg: Config) -> None:
         cfg.inbox.mkdir(parents=True, exist_ok=True)
     commands_dir(cfg).mkdir(parents=True, exist_ok=True)  # 指示ドロップ口も同様に作っておく
     cfg.journal.parent.mkdir(parents=True, exist_ok=True)
+    write_flow_bus_remote(cfg)          # per-project バスに kiro-flow の鏡写し先を宣言（該当時のみ）
 
 
 def extract_delivery_ref(act_msg: str, cfg: Config,
@@ -3879,6 +3874,48 @@ def state_git_for(cfg: "Config") -> "StateGit | None":
         _STATE_GITS[key] = StateGit(container, cfg.state_git, cfg.state_git_branch,
                                     cfg.state_git_subdir, cfg.state_git_interval)
     return _STATE_GITS[key]
+
+
+# 実行層 kiro-flow のバス直下に置く「鏡写し先の宣言」ファイル（kiro-flow 側 BUS_REMOTE_FILE と一致）。
+# kiro-flow は project の概念を持たず「このバスをここへ鏡写しする」とだけ解釈する。プロジェクトと
+# リポジトリの対応（＝どのバスがどこへ行くか）は制御層 kiro-projects が握り、per-project バスに宣言を置く。
+FLOW_BUS_REMOTE_FILE = ".kiro-flow-remote.json"
+FLOW_STATE_SUBDIR = "kiro-flow"   # プロジェクト固有リポジトリ内の kiro-flow 名前空間（viewer は <clone>/kiro-flow）
+
+
+def flow_bus_remote_record(cfg: "Config") -> "dict | None":
+    """このプロジェクトの per-project バスが鏡写しすべき先（kiro-flow の宣言 rec）。無ければ None。
+    プロジェクト単位リポジトリ（state_git_projects）を使っていて、かつ per-project バス（共有バスでない）
+    のときだけ、そのプロジェクトのリポジトリの kiro-flow 名前空間へ向ける（kiro-projects 状態と同じ
+    リポジトリの別 subdir）。共有バスは per-project に割れないので対象外。"""
+    if not _uses_per_project_state_git(cfg):
+        return None
+    if getattr(cfg, "shared_bus", False):
+        return None
+    name = cfg.project_name or "default"
+    if name == "all":
+        return None
+    spec = project_state_spec(cfg, name)
+    if spec is None:
+        return None
+    remote, branch, _base_subdir, interval = spec
+    return {"remote": remote, "branch": branch, "subdir": FLOW_STATE_SUBDIR, "interval": interval}
+
+
+def write_flow_bus_remote(cfg: "Config") -> None:
+    """per-project バス直下に kiro-flow の鏡写し先宣言を書く（冪等）。kiro-flow はこれを読んで
+    バスをプロジェクト固有リポジトリへ鏡写しする（kiro-flow に project の概念は持ち込まない）。"""
+    rec = flow_bus_remote_record(cfg)
+    if rec is None or not cfg.bus:
+        return
+    try:
+        cfg.bus.mkdir(parents=True, exist_ok=True)
+        p = cfg.bus / FLOW_BUS_REMOTE_FILE
+        new = json.dumps(rec, ensure_ascii=False, sort_keys=True)
+        if not p.exists() or p.read_text(encoding="utf-8") != new:
+            p.write_text(new, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def status_path(cfg: "Config") -> Path:

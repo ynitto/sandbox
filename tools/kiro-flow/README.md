@@ -449,36 +449,27 @@ state_git_interval: 300                          # fetch/push の最短間隔（
 同期が走るのは `daemon` の poll ループ（間隔律速）・run 終端時（即時）・`run` の待機ループ。viewer 側の
 組み方（clone または git-file-sync の pair + フロータブのバス発見）は kiro-projects-viewer の README を参照。
 
-### プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
+### バスが鏡写し先を宣言する（`.kiro-flow-remote.json`）— per-bus の宛先指定
 
-kiro-projects と同じ写像（`state_git_projects`）を kiro-flow 側にも書くと、**共有バス 1 本・daemon 1 台の
-まま**、run/inbox を**プロジェクトごとに別リポジトリへ振り分けて**鏡写しできる。プロジェクト固有の
-リポジトリで run の進捗をメンバーと共有し、誰でも viewer のフロータブでドライブできるようにするための
-実行層側の対応。
+`state_git`（設定/CLI）は「この daemon が扱うバスをどこへ鏡写しするか」を1つ持つ。これに加えて、
+**バス自身がバス直下の `.kiro-flow-remote.json` で鏡写し先を宣言**できる。kiro-flow はこれを読んで
+「**このバスをここへ鏡写しする**」とだけ解釈する——**kiro-flow は上位（プロジェクト等）の概念を一切
+持たない**。バスの識別（＝どのバスか）だけで宛先が決まる。
 
-```yaml
-# .kiro/kiro-flow.yaml
-state_git: git@example.com:me/kiro-personal.git   # 既定（未タグ/未割当の run/inbox の落とし先）
-state_git_subdir: kiro-flow
-state_git_projects:                               # プロジェクト固有リポジトリ（kiro-projects 側と同じ写像）
-  alpha: git@example.com:team-alpha/kiro-state.git
-  beta:
-    remote: git@example.com:team-beta/kiro-state.git
-    interval: 120
+```json
+// <bus>/.kiro-flow-remote.json（バスの所有者が置く）
+{"remote": "git@example.com:team-alpha/kiro-state.git", "branch": "main",
+ "subdir": "kiro-flow", "interval": 300}
 ```
 
-- **振り分けの鍵は `run meta.project`**: kiro-projects が run を投入するとき、その所属プロジェクト
-  （`--project`）を kiro-flow へ伝え、run の `meta.json`（と inbox 要求 rec）に `project` として載る。
-  daemon の state_sync は、写像の各プロジェクトへ**そのプロジェクトの `runs/`・`inbox/` だけ**を、
-  既定リポジトリへ**未タグ／未割当プロジェクトの run** を同期する（`status.json` 等バス直下の
-  共有ファイルは各プロジェクトの viewer が生存を見られるよう全リポジトリへ配る）。
-- **クローンはプロジェクトごとに 1 本**（`<bus>/.state-git-<project>`）。多重コミッタの護り
-  （sparse・`add -A -- <subdir>`・`pull --rebase` 吸収・force 禁止）はそのまま効く。
-- **後方互換**: `state_git_projects` を書かなければ従来どおり `state_git` 1 本にバス全体を同期する
-  （振り分けは無効）。
-- **viewer 側**: プロジェクトごとの kiro-flow リポジトリの clone を、⚙ 設定「プロジェクト単位バス」
-  （`kiro.flowBusByProject`）で `プロジェクト名 = <clone>/kiro-flow` と割り当てる
-  （kiro-projects-viewer README 参照）。
+- **優先順位**: バス宣言（`.kiro-flow-remote.json`）> 設定/CLI の `state_git`。宣言があればそれが
+  「このバスの行き先」の一次ソースになる（設定 `state_git` は宣言が無いときの既定）。`--git`（GitBus）
+  時はどちらも無効（バス自体が共有 git）。
+- **project の分離は制御層が握る**: どのバスがどのリポジトリへ行くか（＝プロジェクトとリポジトリの
+  対応）は上位の [kiro-projects](../kiro-projects/) が決め、**per-project バスにこの宣言を書く**
+  （kiro-projects の `state_git_projects`）。これにより「共有バス 1 本を meta で振り分ける」ような
+  project 概念を kiro-flow に持ち込まずに、per-project バス＝per-project リポジトリの鏡写しが成立する。
+- 宣言ファイルはドット始まりなので**バスの同期対象からは除外**される（リポジトリへは載らない）。
 
 ### daemon の生存信号（status.json）— リモート viewer の稼働判定
 
