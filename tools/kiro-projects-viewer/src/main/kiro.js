@@ -17,7 +17,9 @@ const FIELD_RE = /^-\s+(\w+):\s*(.*)$/;
 const POLICY_RE = /^(deny|pin|defer|offload|gate|protect|route):\s*(.+)$/;
 const DR_HEAD_RE = /^##\s+(DR-\d+)\s+(\S+)\s+actor:\s*(.*)$/;
 
-const TASK_STATUSES = ['inbox', 'draft', 'ready', 'doing', 'done', 'blocked', 'review'];
+// offloaded: 非ブロッキング委譲（act_async）で kiro-flow daemon へ submit 済み・結果待ち。
+//   flow_run（run-id）を extra に持ち、フロータブの該当 run へ辿れる。
+const TASK_STATUSES = ['inbox', 'draft', 'ready', 'doing', 'done', 'blocked', 'review', 'offloaded'];
 
 function readText(file) {
   try {

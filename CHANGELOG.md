@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: 非ブロッキング委譲（`offloaded`）の表示対応
+
+- **バグ修正**: パーサの既知ステータス一覧に `offloaded` が無く、offloaded タスクが既定 `inbox` に
+  化けていた（`TASK_STATUSES` に追加）。
+- **表示整合**: 概要タブのステータスタイル（`STATUS_ORDER`）・バックログのフィルタ（`BACKLOG_FILTERS`）に
+  `offloaded` を追加。status-chip / tile に `.st-offloaded` 色（doing と同系＝機械稼働中）を追加。
+- **run 連携**: offloaded タスクは `flow_run`（委譲先 run-id）を持つので、バックログ行に「▶ run」バッジ、
+  タスク詳細の `flow_run` をクリックでフロータブの該当 run へ移動できるようにした。extras に
+  「委譲実行中: <loc>」を表示。revise ダイアログに offloaded 用の注記（反映は run 完了時）を追加。
+
 ### kiro-projects: 非ブロッキング委譲（`act_async`）— gitlab 長期委譲でループを塞がない
 
 - **背景**: `executor: gitlab` は MR 承認まで数日かかる。従来は act が結果を待つ（ブロック）ため、
