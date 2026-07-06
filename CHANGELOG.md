@@ -64,6 +64,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   に `runs/` があればそちらを優先）。
 - **テスト・ドキュメント**: kiro-projects の per-project 同期・裁定、kiro-flow daemon の起動コマンド注入・
   冪等・予算分配・doctor 点検、viewer のバス解決テストを追加。README と `*.yaml.example` に構成方法を追記。
+  既存の 1 リポジトリ複数プロジェクト構成からの**移行手順書**
+  [`docs/guides/migrate-per-project-repos.md`](docs/guides/migrate-per-project-repos.md) を追加。
 
 ### kiro-projects-viewer: バックログ操作の明確化（ボタン名・UI）と revise の柔軟化
 

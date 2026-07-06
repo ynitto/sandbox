@@ -513,6 +513,9 @@ kiro-projects run --watch --state-git git@example.com:team/kiro-state.git   # CL
 
 ### プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
 
+> 既存の 1 リポジトリ複数プロジェクト構成から移行する手順は
+> [移行手順書](../../docs/guides/migrate-per-project-repos.md) を参照。
+
 `state_git` だけだと**コンテナ丸ごと**（全プロジェクト）が 1 リポジトリの `state_git_subdir/` へ入る。
 プロジェクトごとに**別々のリポジトリ**へ分けたいとき（プロジェクト固有リポジトリで kiro-projects / kiro-flow の
 情報をメンバーと共有し、誰でも [kiro-projects-viewer](../kiro-projects-viewer/) でドライブできるようにする）は
