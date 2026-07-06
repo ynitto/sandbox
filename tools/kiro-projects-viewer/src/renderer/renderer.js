@@ -44,6 +44,17 @@ function toast(msg, ok = false) {
   toast._t = setTimeout(() => el.classList.add('hidden'), ok ? 3000 : 8000);
 }
 
+// レビュー引き継ぎ結果のトースト。exe-running は「起動」ではなく既に起動中の
+// gitlab-review-viewer への即時ハンドオフ（portable exe の再起動コストを回避した経路）。
+function reviewToast(via) {
+  toast(
+    via === 'exe-running'
+      ? '起動中の gitlab-review-viewer に引き継ぎました'
+      : `gitlab-review-viewer を起動しました（${via}）`,
+    true
+  );
+}
+
 async function guard(label, fn) {
   try {
     return await fn();
@@ -1789,7 +1800,7 @@ function bindFlowDetail(root) {
       e.stopPropagation();
       guard('レビュー起動', async () => {
         const res = await api.openReview({ url: g.dataset.issueOpen });
-        toast(`gitlab-review-viewer を起動しました（${res.via}）`, true);
+        reviewToast(res.via);
       });
     });
   }
@@ -1803,7 +1814,7 @@ function bindFlowDetail(root) {
     btn.addEventListener('click', () =>
       guard('レビュー起動', async () => {
         const res = await api.openReview({ url: btn.dataset.review });
-        toast(`gitlab-review-viewer を起動しました（${res.via}）`, true);
+        reviewToast(res.via);
       })
     );
   }
@@ -1926,7 +1937,7 @@ function renderGitLab() {
     btn.addEventListener('click', () =>
       guard('レビュー起動', async () => {
         const res = await api.openReview({ url: btn.dataset.review });
-        toast(`gitlab-review-viewer を起動しました（${res.via}）`, true);
+        reviewToast(res.via);
       })
     );
   }

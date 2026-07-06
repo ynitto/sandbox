@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer / gitlab-review-viewer: 起動済み portable exe への即時ハンドオフ（連携起動の高速化）
+
+- **症状**: kiro-projects-viewer（portable exe）の「レビューで開く」で `exe` モードを使うと、
+  gitlab-review-viewer（portable exe）が**既に起動していても**引き継ぎ表示までに数秒かかる
+- **原因**: portable exe を argv 付きで再起動すると、起動済みでも OS が毎回「自己展開（一時
+  ディレクトリ）→ Electron 起動 → single-instance で argv 転送 → 即終了」の 2 個目プロセス
+  立ち上げコストを必ず払う。argv 転送自体は機能するが、その前段の自己展開が遅い
+- **変更**: gitlab-review-viewer が起動時に**ローカル IPC エンドポイント**（Windows: 名前付き
+  パイプ／その他: Unix ドメインソケット。username から決定的に導出＝ユーザーごとに分離）を開き、
+  `gitlab-review-viewer://…` を 1 行受け取ると `second-instance` と同じく対象を開く
+  （`src/main/handoff.js`）。kiro-projects-viewer の `exe` モードは exe を spawn する前にこの
+  エンドポイントへ接続を試み、**届けば URL を送るだけで即ハンドオフ**（exe を再起動しない・
+  トーストは「起動中の gitlab-review-viewer に引き継ぎました」）。未起動＝接続失敗のときだけ
+  従来どおり exe を起動する（cold start のときにだけ自己展開コストを払う）
+- **後方互換 / 安全性**: 設定不要・自動。エンドポイント非対応の古い gitlab-review-viewer が
+  相手でも接続に失敗して従来の argv 起動へ素通りする。ローカルユーザー限定ソケットで、扱う URL は
+  `gitlab-review-viewer://` のみ（既存の argv / protocol 経路と同じ信頼境界）。アプリ終了時に閉じる
+- **実装**: gitlab-review-viewer に `src/main/handoff.js`（サーバ）を追加し main で起動/停止。
+  kiro-projects-viewer に electron 非依存の `src/main/reviewHandoff.js`（クライアント）を追加し
+  `review.js` の `exe` モードから利用。両側のエンドポイント導出一致と往復を検証する
+  `test/review-handoff.test.js`（クライアントとサーバを実ソケットでつなぐ）を追加
+
 ### kiro-projects-viewer: プロジェクトの新規作成・上位入力ファイルの編集・archive タスクの再投入
 
 - **背景**: これまでビュアーは既存プロジェクトの**閲覧**と、公式契約経由の人アクション

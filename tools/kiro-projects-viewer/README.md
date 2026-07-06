@@ -225,6 +225,16 @@ task の retries 上限 → blocked ＋ needs/<id>.md 生成 ＝ ここで初め
   にし、gitlab-review-viewer の実行ファイルパスを指定する。ディープリンク URL を実行ファイルへ
   argv として直接渡すため、プロトコル登録に依存せず連携起動できる（gitlab-review-viewer は
   `deepLinkFromArgv` / `second-instance` で受け取り、未起動でも起動済みでも同じ挙動になる）。
+  - **起動済みなら exe を再起動せず即ハンドオフ**（`exe` モードの高速経路）: portable exe を
+    argv 付きで再起動すると、既に起動済みでも OS が毎回「自己展開 → Electron 起動 →
+    single-instance で argv 転送 → 即終了」の 2 個目プロセス立ち上げコスト（数秒）を必ず払う。
+    これを避けるため、`exe` モードではまず gitlab-review-viewer が起動時に開く**ローカル IPC
+    エンドポイント**（Windows: 名前付きパイプ／その他: Unix ドメインソケット。ユーザーごとに
+    決定的な名前）へ接続を試み、**届けば URL を送るだけで即座に既存ウィンドウが対象を開く**
+    （exe は spawn しない・トーストは「起動中の gitlab-review-viewer に引き継ぎました」）。
+    接続に失敗した＝未起動のときだけ、従来どおり exe を argv 付きで起動する（＝cold start の
+    ときにだけ自己展開コストを払う）。設定不要・自動。古い gitlab-review-viewer（エンドポイント
+    非対応）が相手でも接続に失敗して従来の argv 起動へ素通りする（後方互換）。
 - それ以外の任意起動が必要なら **コマンド起動**（`command`）:
   `"C:\Apps\GitLab Review Viewer.exe" "{protocolUrl}"`
   （`{url}` `{projectPath}` `{type}` `{iid}` に加え、組み立て済みディープリンク `{protocolUrl}` を置換）

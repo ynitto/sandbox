@@ -3,6 +3,7 @@
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { registerIpcHandlers } = require('./ipc');
+const { startHandoffServer } = require('./handoff');
 
 // 環境変数のプロキシ設定を Chromium に引き継ぐ。webview の表示と
 // net.fetch 経由の GitLab API 呼び出しの両方がこの設定を経由する。
@@ -36,6 +37,7 @@ function applyProxyFromEnv() {
 applyProxyFromEnv();
 
 let mainWindow = null;
+let stopHandoff = null;
 
 // gitlab-review-viewer://open?url=<GitLab の web_url> のディープリンク。
 // kiro-projects-viewer などの外部ツールが「このイシュー / MR をレビューで
@@ -120,6 +122,10 @@ if (!gotLock) {
   app.whenReady().then(() => {
     registerIpcHandlers();
     createWindow();
+    // 起動済みインスタンスへの即時ハンドオフ用ローカル IPC を開く。kiro-projects-viewer は
+    // portable exe の再起動（自己展開の数秒コスト）を避けて、ここへ URL を送ってくる。
+    // second-instance（argv 経由の連携起動）と同じく handleDeepLink に流す。
+    stopHandoff = startHandoffServer((url) => handleDeepLink(url));
     const url = deepLinkFromArgv(process.argv);
     if (url) {
       mainWindow.webContents.once('did-finish-load', () => handleDeepLink(url));
@@ -127,6 +133,11 @@ if (!gotLock) {
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+  });
+
+  app.on('will-quit', () => {
+    if (stopHandoff) stopHandoff();
+    stopHandoff = null;
   });
 
   app.on('window-all-closed', () => {

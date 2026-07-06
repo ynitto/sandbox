@@ -19,6 +19,7 @@ const fs = require('fs');
 const { shell } = require('electron');
 const { spawn } = require('child_process');
 const { GitLabClient } = require('./gitlab');
+const { tryHandoff } = require('./reviewHandoff');
 
 function buildProtocolUrl(base, target) {
   const u = new URL(base);
@@ -52,6 +53,13 @@ async function openInReviewViewer(cfg, target) {
   // shell を介さず argv に protocolUrl を 1 要素として渡すので、パスの空白や
   // URL 内の特殊文字でクォートが壊れない。exePath 未設定なら protocol へフォールバック。
   if (rv.mode === 'exe' && rv.exePath) {
+    // 既に gitlab-review-viewer が起動していればローカル IPC で即ハンドオフする。
+    // portable exe を再び spawn すると、起動済みでも自己展開＋Electron 起動＋
+    // single-instance 転送の数秒コストを必ず払うため、それを回避する経路。
+    // 起動していなければ接続に失敗するので、下の exe 起動へフォールバックする。
+    if (await tryHandoff(protocolUrl)) {
+      return { via: 'exe-running', url: protocolUrl };
+    }
     if (!fs.existsSync(rv.exePath)) {
       throw new Error(
         `gitlab-review-viewer の実行ファイルが見つかりません（⚙ 設定 > 実行ファイルのパス）: ${rv.exePath}`
