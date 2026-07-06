@@ -109,17 +109,49 @@ function deepMerge(base, over) {
   return over === undefined || over === null ? base : over;
 }
 
+// 既定プリセットのうち、保存済み設定に無いラベルを追加する（純粋に不足分の注入）。
+// アプリを一度でも起動すると config.json に labelPresets 配列が丸ごと保存され、
+// deepMerge は配列を保存値で丸ごと置換するため、バージョンアップで増えた既定
+// ラベル（例: status:elaborated）が既存環境に一切反映されない。これを補う。
+// - ユーザーの既存項目・並び・カスタム項目・変更したショートカットは一切変更しない
+// - 挿入位置は既定の並びで直前にある既定ラベルの後ろ（無ければ末尾）
+// - 注入するショートカットが既存と衝突する場合は付けない（既存の割当を壊さない）
+function withMissingDefaultPresets(saved) {
+  if (!Array.isArray(saved)) return DEFAULT_LABEL_PRESETS.map((p) => ({ ...p }));
+  const result = saved.slice();
+  const hasLabel = (label) => result.some((p) => p && p.label === label);
+  const usedShortcut = (sc) => !!sc && result.some((p) => p && p.shortcut === sc);
+  DEFAULT_LABEL_PRESETS.forEach((def, i) => {
+    if (hasLabel(def.label)) return;
+    let insertAt = result.length;
+    for (let j = i - 1; j >= 0; j--) {
+      const idx = result.findIndex((p) => p && p.label === DEFAULT_LABEL_PRESETS[j].label);
+      if (idx >= 0) {
+        insertAt = idx + 1;
+        break;
+      }
+    }
+    const inject = { ...def };
+    if (usedShortcut(inject.shortcut)) delete inject.shortcut;
+    result.splice(insertAt, 0, inject);
+  });
+  return result;
+}
+
 function configPath() {
   return path.join(app.getPath('userData'), 'config.json');
 }
 
 function loadConfig() {
+  let cfg;
   try {
     const raw = fs.readFileSync(configPath(), 'utf8');
-    return deepMerge(DEFAULT_CONFIG, JSON.parse(raw));
+    cfg = deepMerge(DEFAULT_CONFIG, JSON.parse(raw));
   } catch {
-    return deepMerge(DEFAULT_CONFIG, {});
+    cfg = deepMerge(DEFAULT_CONFIG, {});
   }
+  cfg.labelPresets = withMissingDefaultPresets(cfg.labelPresets);
+  return cfg;
 }
 
 function saveConfig(cfg) {
