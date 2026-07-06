@@ -148,7 +148,10 @@ kiro-projects の人間ループはこのアプリ内で完結できる。いず
 | 保留（hold） | 要対応カード・タスク詳細 | 同上（`{"command":"hold"}` ドロップ → policy.deny 追加） |
 | 最優先へ / 後回し | タスク詳細 | 同上（`{"command":"pin"/"defer"}` ドロップ → policy 追記） |
 | ✎ 修正して指示（revise） | タスク詳細（backlog のみ） | 同上（`{"command":"revise"}` ドロップ）。タイトル・優先度・依存 after・verify・accept の**置換**とフィードバック注入。**実行中（doing）のタスクにも送れ**、本体は現在の試行の結果を確定せず（verify も done もせず）修正内容で積み直す＝気づいた時点の早い軌道修正。変更した項目だけが送られ、DR（`action: revise`）に記録される |
-| ＋ タスクを追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口。verify / accept / priority / note 付き） |
+| ＋ タスクを追加 | バックログタブ | `inbox/<name>.json` ドロップ（E4 push 型取り込み口。verify / accept / priority / note / id / after 付き） |
+| ＋ 新規プロジェクト | サイドバー ＋（コンテナが無い空状態にも導線） | `<root>/projects/<name>/charter.md`（goal / constraints / deliverables / acceptance / repos をフォームから）と、repos があれば `repos.json`（`_meta.generated_from` 付き＝正は charter）を作成。以後は kiro-projects の run が charter から backlog を生成する（専用の作成コマンドは無く、charter を置くだけが公式手順）。コンテナが未登録なら設定 roots に追加して発見対象にする |
+| ✎ プロジェクトファイル編集 | 概要タブ「プロジェクトファイル」 | 人が書く**上位入力だけ**をアプリ内で直接編集: `charter.md`（最上位入力）／`policy.md`（運用ルール）／`repos.json`（レジストリ）。保存すると次の run で後段データ（backlog 生成・ルーティング）に反映される。repos.json が charter からの自動生成物（`_meta`）のときは「run 時に charter で上書きされる」旨を警告する。JSON は保存前に構文検証。タスク状態ファイル（`backlog/*.md` の status 等）は編集対象にしない — done の不変条件を壊さないため |
+| ↻ revise して再投入 | タスク詳細（**archive のみ**） | archive（done）タスクの内容（title / verify / accept / priority / note / after / level / track）を prefill した投入フォームを開き、編集して `inbox/<name>.json` ドロップ。**新しいタスク**として triage→verify を通す（archive の記録はそのまま残る）。誤 done などの**エラー復帰用途**。元 ID を引き継ぐが衝突時は本体が採番し直す |
 | レビュー操作（承認/差し戻し/コメント） | レビュー待ちタブ／フロータブのノード詳細 →「レビューで開く」 | gitlab-review-viewer へ引き継ぎ |
 | 🗑 タスク削除 | タスク詳細（backlog のみ） | **例外的にファイル操作**（削除の公式契約が無いため）。確認のうえ `backlog/<id>.md` をゴミ箱へ移動。実行中（**doing かつクレーム中**）だけ拒否 — クレームロックは worker クラッシュや review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除でき、残骸ロックも一緒に掃除する。決定記録 DR は残らない — 記録を残したい場合は「保留（hold）」を使う |
 | 🗑 run 削除 | フロータブの run 詳細 | 同上のファイル操作。確認のうえ `<bus>/runs/<run-id>/` をゴミ箱へ移動。終端（done/failed）と応答なし（孤児）のみ — orchestrator が生存している実行中 run は拒否 |
@@ -272,6 +275,12 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
   inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer/revise。稼働していなければ
   CLI にフォールバック）の 3 契約のみを使う
+- `src/main/authoring.js` … オーサリング層（新規作成・上位入力ファイルの編集）。
+  charter.md の雛形生成（`buildCharter`）と repos.json 生成（`exportReposJson` は kiro-projects の
+  `export_repo_registry` と同じ `_meta.generated_from` 付き・キーソート）、`<root>/projects/<name>/` への
+  プロジェクト作成、charter/policy/repos のホワイトリスト読み書き（repos.json は JSON 構文検証）。
+  **タスク状態は書かない** — actions.js と同じく done の不変条件を壊さない。archive タスクの
+  「revise して再投入」は actions.js の inbox 契約をそのまま使う（新タスクとして verify を通す）
 - IPC は gitlab-review-viewer と同じ `{ok, data|error}` 形式・`window.api` 公開
 
 ## 制限事項
@@ -283,6 +292,14 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
   不変条件をアプリから壊さないため。revise も状態を書かず、本体側の同一ロジックが遷移を決める）。
   例外は 🗑 削除（タスク / run）のみ —
   削除の公式契約が無いため、確認ダイアログのうえゴミ箱への移動として行う
+- **編集できるのは「人が書く上位入力」だけ**（charter.md / policy.md / repos.*）。これらは
+  kiro-projects の入力ファイルなので、アプリから編集しても後段（backlog 生成・ルーティング）は
+  本体の run が決定的に作り直す＝done の不変条件は保たれる。**タスク状態ファイル
+  （`backlog/*.md`・`archive/*.md`・`project.json` 等）はアプリから書き換えない**。
+  archive（done）タスクをやり直したいときは「↻ revise して再投入」で**新しいタスク**として
+  inbox へ入れる（archive のファイルは消さず、verify を通して done を取り直す）
+- 新規プロジェクト作成は charter.md を置くだけ（＋任意で repos.json）。plan / backlog 生成・
+  acceptance 実行・収束判定は本体の run が行う（アプリは backlog を生成しない）
 - approve / hold / reprioritize / revise は既定でファイルドロップ（`commands/`）のため CLI 不要。
   本体が稼働していないときだけ CLI を試み、CLI も使えなければ指示ファイルを置いて
   次回の kiro-projects 起動時の取り込みに委ねる（即時には反映されない）

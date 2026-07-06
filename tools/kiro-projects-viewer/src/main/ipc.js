@@ -11,6 +11,7 @@ const { lookupScalar } = require('./toolconfig');
 const { GitLabClient } = require('./gitlab');
 const { openInReviewViewer } = require('./review');
 const actions = require('./actions');
+const authoring = require('./authoring');
 
 // すべてのハンドラを {ok, data|error} 形式に揃える（gitlab-review-viewer と同じ）
 function handle(channel, fn) {
@@ -166,6 +167,20 @@ function registerIpcHandlers() {
   handle('kiro:feedback', ({ file, feedback }) => actions.submitFeedback(file, feedback));
   handle('kiro:enqueue', ({ dir, spec }) => actions.enqueueToInbox(dir, spec || {}));
   handle('kiro:action', (args) => actions.runAction(loadConfig(), args));
+
+  // オーサリング（作成・編集）。人が書く上位入力ファイル（charter/policy/repos）だけを
+  // 対象にし、タスク状態は触らない（done は verify のみが根拠の不変条件を壊さない）。
+  //   createProject … <root>/projects/<name>/ に charter.md（＋ repos.json）を作る
+  //   readFile/writeFile … charter.md / policy.md / repos.* の直接編集
+  handle('kiro:createProject', ({ spec }) => authoring.createProject(spec || {}));
+  handle('kiro:readFile', ({ dir, name }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return authoring.readProjectFile(dir, name);
+  });
+  handle('kiro:writeFile', ({ dir, name, content }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return authoring.writeProjectFile(dir, name, content);
+  });
 
   // gitlab-review-viewer へレビューを引き継ぐ
   handle('review:open', ({ target }) => openInReviewViewer(loadConfig(), target || {}));

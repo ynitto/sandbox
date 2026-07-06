@@ -14,6 +14,7 @@
       <div class="sidebar-header">
         <h1>Kiro Projects</h1>
         <div class="row">
+          <button id="btn-new-project" title="新規プロジェクトを作成（charter.md / repos.json）">＋</button>
           <button id="btn-git-pull" title="選択中プロジェクトのリポジトリを git pull で最新化">⇣</button>
           <button id="btn-refresh" title="再読み込み">⟳</button>
           <button id="btn-settings" title="設定">⚙</button>
@@ -148,7 +149,8 @@
 
   <!-- ======== タスク追加ダイアログ（inbox へ投入） ======== -->
   <dialog id="dlg-enqueue">
-    <h2>タスクを追加（inbox へ投入）</h2>
+    <h2 id="enq-heading">タスクを追加（inbox へ投入）</h2>
+    <div id="enq-reinject-note" class="muted hidden" style="margin-bottom:8px"></div>
     <div class="field">
       <label>タイトル（必須）</label>
       <input id="enq-title" placeholder="例: README に使用例を追加する" />
@@ -169,6 +171,16 @@
       <div class="field">
         <label>メモ（note）</label>
         <input id="enq-note" />
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>ID（任意・省略で自動採番。再投入では元 ID を引き継ぎます）</label>
+        <input id="enq-id" class="mono" placeholder="例: T12" />
+      </div>
+      <div class="field">
+        <label>依存 after（任意・カンマ区切り）</label>
+        <input id="enq-after" class="mono" placeholder="例: T1, T2" />
       </div>
     </div>
     <div class="muted">verify / accept のどちらも無い場合、タスクは inbox 状態のまま人の triage 待ちになります。</div>
@@ -193,6 +205,73 @@
     <div id="dlg-task-body"></div>
     <div class="dialog-actions">
       <button id="btn-task-close">閉じる</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 新規プロジェクト作成ダイアログ ======== -->
+  <dialog id="dlg-new-project" class="wide">
+    <h2>新規プロジェクトを作成</h2>
+    <div class="muted" style="margin-bottom:8px">
+      <code class="mono">&lt;コンテナ&gt;/projects/&lt;名前&gt;/</code> に charter.md（＋ repos があれば repos.json）を作成します。
+      稼働中の kiro-projects が次の run で backlog を生成します。
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>コンテナ（--root のパス。既存を選ぶか新規パスを入力）</label>
+        <input id="np-root" class="mono" list="np-root-list" placeholder="例: C:\work\repo\.kiro-projects" />
+        <datalist id="np-root-list"></datalist>
+      </div>
+      <div class="field">
+        <label>プロジェクト名（ディレクトリ名。空白・区切り文字は不可）</label>
+        <input id="np-name" class="mono" placeholder="例: my-project" />
+      </div>
+    </div>
+    <div class="field">
+      <label>goal — 目標（このプロジェクトで達成したいこと）</label>
+      <textarea id="np-goal" rows="2" placeholder="例: ユーザーが CSV を投入すると要約レポートを生成する CLI を完成させる"></textarea>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>deliverables — 成果物（1 行 1 つ）</label>
+        <textarea id="np-deliverables" rows="3" placeholder="report.py（生成器）&#10;tests/（テスト）"></textarea>
+      </div>
+      <div class="field">
+        <label>constraints — 制約（1 行 1 つ）</label>
+        <textarea id="np-constraints" rows="3" placeholder="Python 3.9 / 標準ライブラリのみ"></textarea>
+      </div>
+    </div>
+    <div class="field">
+      <label>acceptance — プロジェクト done の根拠（1 行 1 つ。exit 0 を PASS とみなすシェルコマンド、または <code class="mono">accept: 自然文</code>）</label>
+      <textarea id="np-acceptance" rows="3" class="mono" placeholder="pytest -q tests/&#10;accept: README に使用例（## Usage）が載っている"></textarea>
+    </div>
+    <details id="np-repos-details">
+      <summary>リポジトリ（任意・repos.json を生成）</summary>
+      <div class="muted" style="margin:6px 0">
+        owns を書くと「書込先（ワークスペース）」、書かなければ「参照のみ」。charter の <code class="mono">## repos</code> と
+        整合する repos.json（<code class="mono">_meta.generated_from</code> 付き）を生成します。
+      </div>
+      <div id="np-repos"></div>
+      <button id="np-add-repo" type="button" class="chip">＋ リポジトリを追加</button>
+    </details>
+    <div class="dialog-actions">
+      <button id="btn-np-cancel">キャンセル</button>
+      <button id="btn-np-submit" class="primary-inline">作成</button>
+    </div>
+  </dialog>
+
+  <!-- ======== プロジェクトファイル編集ダイアログ（charter / policy / repos） ======== -->
+  <dialog id="dlg-edit-file" class="wide">
+    <h2 id="ef-title">ファイルを編集</h2>
+    <div id="ef-warning" class="muted hidden"></div>
+    <div class="field">
+      <textarea id="ef-content" rows="22" class="mono" spellcheck="false"></textarea>
+    </div>
+    <div class="muted" id="ef-hint"></div>
+    <div class="dialog-actions">
+      <button id="btn-ef-open" title="OS の既定エディタでこのファイルを開く">エディタで開く</button>
+      <span class="spacer"></span>
+      <button id="btn-ef-cancel">キャンセル</button>
+      <button id="btn-ef-save" class="primary-inline">保存</button>
     </div>
   </dialog>
 

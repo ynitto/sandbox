@@ -7,6 +7,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: プロジェクトの新規作成・上位入力ファイルの編集・archive タスクの再投入
+
+- **背景**: これまでビュアーは既存プロジェクトの**閲覧**と、公式契約経由の人アクション
+  （needs 記入・inbox 投入・commands 指示）に限られ、プロジェクトの**立ち上げ**や
+  charter の**編集**、誤 done の**復帰**はアプリ外（エディタ・CLI）で行う必要があった
+- **追加**: 3 つのオーサリング機能を、いずれも「人が書く入力だけを書き、タスク状態
+  （done の不変条件）は触らない」原則を守って実装した
+  - **＋ 新規プロジェクト**（サイドバー ＋・空状態にも導線）: フォーム（goal /
+    constraints / deliverables / acceptance / repos）から `<root>/projects/<name>/charter.md` を
+    生成し、repos があれば `repos.json`（kiro-projects の `export_repo_registry` と同一の
+    `_meta.generated_from` 付き・キーソート）も作る。作成後はコンテナを設定 roots へ登録して
+    発見対象にし、そのプロジェクトを選択する。backlog 生成は従来どおり本体の run が行う
+  - **✎ プロジェクトファイル編集**（概要タブ）: `charter.md` / `policy.md` / `repos.json` を
+    アプリ内で直接編集。保存すると次の run で後段（backlog 生成・ルーティング）に反映される。
+    自動生成 repos.json（`_meta`）は「run 時に charter で上書きされる」旨を警告し、JSON は
+    保存前に構文検証する。編集対象はホワイトリスト（人が書く上位入力）に限定
+  - **↻ revise して再投入**（タスク詳細・archive のみ）: archive（done）タスクの内容を
+    prefill した投入フォームを開き、編集して inbox へ**新しいタスク**として投入する
+    （triage→verify を通す＝done を取り直す。archive の記録は残す）。誤 done などの
+    エラー復帰用途。inbox 投入フォームには id / after 欄を追加した
+- **実装**: `src/main/authoring.js`（charter 雛形生成・repos.json 生成・作成・
+  ホワイトリスト読み書き）を追加し、IPC（`kiro:createProject` / `kiro:readFile` /
+  `kiro:writeFile`）と `window.api` に公開。archive 再投入は既存の inbox 契約
+  （`actions.enqueueToInbox`）を流用。`test/authoring.test.js` を追加
+
 ### kiro-flow: 孤児 run の resume で orchestrator が usage エラーで即死する不具合を修正
 
 - **症状**: daemon が孤児 run を「同じ run-id で再開」した直後に
