@@ -503,6 +503,43 @@ kiro-projects run --watch --state-git git@example.com:team/kiro-state.git   # CL
 ネットワーク断・リポジトリ不通でも**ループは殺さず** journal に残して続行する（done の確定・消化は state_git に
 一切依存しない）。
 
+### プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
+
+`state_git` だけだと**コンテナ丸ごと**（全プロジェクト）が 1 リポジトリの `state_git_subdir/` へ入る。
+プロジェクトごとに**別々のリポジトリ**へ分けたいとき（プロジェクト固有リポジトリで kiro-projects / kiro-flow の
+情報をメンバーと共有し、誰でも [kiro-projects-viewer](../kiro-projects-viewer/) でドライブできるようにする）は
+`state_git_projects` にプロジェクト名 → リポジトリの写像を書く。
+
+```yaml
+# .kiro/kiro-projects.yaml
+state_git: git@example.com:me/kiro-personal.git   # 既定（個人）＝未記載プロジェクトの落とし先。省略で無効
+state_git_subdir: kiro-projects
+state_git_interval: 300
+state_git_projects:                               # プロジェクト固有リポジトリ（共有・可視化）
+  alpha: git@example.com:team-alpha/kiro-state.git         # 値は URL/パスの短縮形、または
+  beta:                                                    # dict で個別上書き
+    remote: git@example.com:team-beta/kiro-state.git
+    branch: main
+    subdir: kiro-projects        # 既定は state_git_subdir
+    interval: 120                # 既定は state_git_interval
+```
+
+- **default はユーザー個人で管理**、他プロジェクトはプロジェクト固有リポジトリで共有 — の構成そのもの。
+  `default`（や写像に**無い**プロジェクト）は既定の `state_git`（個人リポジトリ・未設定なら同期無効）へ、
+  写像に**ある**プロジェクトは**そのプロジェクトの subtree だけ**をスコープして固有リポジトリへ同期する。
+- **使う人ごとにアサインされるプロジェクトが違う点は、各自の設定でこの写像を変えるだけ**で吸収できる
+  （＝リポジトリの設定で解決）。alpha を担当する人だけが `alpha:` を書けば、その人の daemon だけが
+  alpha をチームリポジトリへ同期する。
+- **リポジトリ内のレイアウトは分けても同じ**（`<subdir>/projects/<name>/…`）。固有リポジトリでも
+  `projects/<name>/` を保つので、viewer 側は `<clone>/<subdir>` を**コンテナ root として追加登録**する
+  だけで従来どおり辿れる（[viewer README](../kiro-projects-viewer/README.md) の「コンテナのパス」は複数行
+  登録できる。プロジェクトごとの clone を 1 行ずつ足す）。
+- 各プロジェクトは**自分専用の管理クローン**（`<container>/projects/<name>/.state-git`）を使い、
+  多重コミッタの護り（sparse-checkout・`add -A -- <subdir>`・`pull --rebase` 吸収・force 禁止）は
+  そのまま効く。写像に載ったプロジェクトは既定 `state_git`（コンテナ丸ごと）へは**二重同期しない**。
+- 実行層 [kiro-flow](../kiro-flow/) 側も同じ写像（`state_git_projects`）で run（バス）を
+  プロジェクト固有リポジトリへ振り分けられる（kiro-flow README「状態の git 保存・共有」）。
+
 **viewer 側（別マシン）の組み方**:
 
 1. 共有リポジトリを clone（または [git-file-sync](../git-file-sync/) の pair を

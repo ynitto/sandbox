@@ -3551,6 +3551,98 @@ class StateGitSyncTests(unittest.TestCase):
         self.assertFalse((got / "kf" / "runs" / "run1").exists())
 
 
+class StateGitPerProjectTests(unittest.TestCase):
+    """プロジェクト単位で保存先リポジトリを分ける（state_git_projects）。共有バスの run/inbox を
+    meta.project で振り分け、載ったプロジェクトは固有リポジトリへ、未タグ/未割当は既定リポジトリへ。"""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="kf-sgpp-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        kf._STATE_GITS.clear()
+        self.personal = self._bare("personal.git")   # 既定（未タグ/未割当）
+        self.team = self._bare("team-alpha.git")      # alpha 固有（共有）
+        self.bus_root = self.tmp / "bus"
+
+    def _bare(self, name: str) -> pathlib.Path:
+        r = self.tmp / name
+        subprocess.run(["git", "init", "-q", "--bare", str(r)], check=True)
+        subprocess.run(["git", "-C", str(r), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        return r
+
+    def _args(self, **kw):
+        base = dict(bus=str(self.bus_root), git=None, run_id=None,
+                    state_git=str(self.personal), state_git_branch="main",
+                    state_git_subdir="kf", state_git_interval=0.0,
+                    state_git_projects={"alpha": str(self.team)})
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def _run(self, run_id, project=None):
+        bus = kf.Bus(str(self.bus_root), run_id)
+        bus.ensure_run("req", project=project)
+        return bus
+
+    def _check(self, remote: pathlib.Path, name: str) -> pathlib.Path:
+        d = self.tmp / f"chk-{name}-{remote.stem}"
+        subprocess.run(["git", "clone", "-q", str(remote), str(d)], check=True, capture_output=True)
+        return d
+
+    def test_run_routed_to_project_repo(self):
+        self._run("run-a", project="alpha")
+        kf.state_sync(self._args(), force=True)
+        team = self._check(self.team, "a")
+        self.assertTrue((team / "kf" / "runs" / "run-a" / "meta.json").exists())
+        personal = self._check(self.personal, "a")
+        self.assertFalse((personal / "kf" / "runs" / "run-a").exists())
+
+    def test_untagged_run_goes_to_fallback(self):
+        self._run("run-x", project=None)                          # 未タグ → 既定リポジトリ
+        kf.state_sync(self._args(), force=True)
+        personal = self._check(self.personal, "x")
+        self.assertTrue((personal / "kf" / "runs" / "run-x" / "meta.json").exists())
+        team = self._check(self.team, "x")
+        self.assertFalse((team / "kf" / "runs" / "run-x").exists())
+
+    def test_mixed_runs_split_across_repos(self):
+        self._run("run-a", project="alpha")
+        self._run("run-b", project="beta")                       # 未割当プロジェクト → 既定へ
+        self._run("run-x", project=None)
+        kf.state_sync(self._args(), force=True)
+        team = self._check(self.team, "mix")
+        self.assertTrue((team / "kf" / "runs" / "run-a").exists())
+        self.assertFalse((team / "kf" / "runs" / "run-b").exists())
+        self.assertFalse((team / "kf" / "runs" / "run-x").exists())
+        personal = self._check(self.personal, "mix")
+        self.assertFalse((personal / "kf" / "runs" / "run-a").exists())
+        self.assertTrue((personal / "kf" / "runs" / "run-b").exists())
+        self.assertTrue((personal / "kf" / "runs" / "run-x").exists())
+
+    def test_shared_status_goes_to_all_repos(self):
+        # バス直下の共有ファイル（生存信号など）は全リポジトリに配る（各プロジェクトの viewer が
+        # daemon の生存を見られるように）。
+        self._run("run-a", project="alpha")
+        (self.bus_root / "status.json").write_text('{"alive": true}', encoding="utf-8")
+        kf.state_sync(self._args(), force=True)
+        self.assertTrue((self._check(self.team, "sa") / "kf" / "status.json").exists())
+        self.assertTrue((self._check(self.personal, "sp") / "kf" / "status.json").exists())
+
+    def test_inbox_routed_by_project(self):
+        bus = kf.Bus(str(self.bus_root), "_")
+        bus.submit_request("req-a", "r", "submitter", project="alpha")
+        bus.submit_request("req-x", "r", "submitter", project=None)
+        kf.state_sync(self._args(), force=True)
+        team = self._check(self.team, "inbox")
+        self.assertTrue((team / "kf" / "inbox" / "req-a.json").exists())
+        self.assertFalse((team / "kf" / "inbox" / "req-x.json").exists())
+        personal = self._check(self.personal, "inbox")
+        self.assertTrue((personal / "kf" / "inbox" / "req-x.json").exists())
+
+    def test_status_line_reports_per_project(self):
+        line = kf.state_git_status_line(self._args())
+        self.assertIn("プロジェクト単位", line)
+        self.assertIn("alpha", line)
+
+
 class DaemonStatusHeartbeatTests(unittest.TestCase):
     """daemon の生存信号（status.json）。kiro-projects の write_status/--status-interval と
     同じ考え方: 実イベント（run 終端・生存リース push）時は既存の state_sync/push に相乗り

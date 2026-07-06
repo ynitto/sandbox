@@ -449,6 +449,37 @@ state_git_interval: 300                          # fetch/push の最短間隔（
 同期が走るのは `daemon` の poll ループ（間隔律速）・run 終端時（即時）・`run` の待機ループ。viewer 側の
 組み方（clone または git-file-sync の pair + フロータブのバス発見）は kiro-projects-viewer の README を参照。
 
+### プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
+
+kiro-projects と同じ写像（`state_git_projects`）を kiro-flow 側にも書くと、**共有バス 1 本・daemon 1 台の
+まま**、run/inbox を**プロジェクトごとに別リポジトリへ振り分けて**鏡写しできる。プロジェクト固有の
+リポジトリで run の進捗をメンバーと共有し、誰でも viewer のフロータブでドライブできるようにするための
+実行層側の対応。
+
+```yaml
+# .kiro/kiro-flow.yaml
+state_git: git@example.com:me/kiro-personal.git   # 既定（未タグ/未割当の run/inbox の落とし先）
+state_git_subdir: kiro-flow
+state_git_projects:                               # プロジェクト固有リポジトリ（kiro-projects 側と同じ写像）
+  alpha: git@example.com:team-alpha/kiro-state.git
+  beta:
+    remote: git@example.com:team-beta/kiro-state.git
+    interval: 120
+```
+
+- **振り分けの鍵は `run meta.project`**: kiro-projects が run を投入するとき、その所属プロジェクト
+  （`--project`）を kiro-flow へ伝え、run の `meta.json`（と inbox 要求 rec）に `project` として載る。
+  daemon の state_sync は、写像の各プロジェクトへ**そのプロジェクトの `runs/`・`inbox/` だけ**を、
+  既定リポジトリへ**未タグ／未割当プロジェクトの run** を同期する（`status.json` 等バス直下の
+  共有ファイルは各プロジェクトの viewer が生存を見られるよう全リポジトリへ配る）。
+- **クローンはプロジェクトごとに 1 本**（`<bus>/.state-git-<project>`）。多重コミッタの護り
+  （sparse・`add -A -- <subdir>`・`pull --rebase` 吸収・force 禁止）はそのまま効く。
+- **後方互換**: `state_git_projects` を書かなければ従来どおり `state_git` 1 本にバス全体を同期する
+  （振り分けは無効）。
+- **viewer 側**: プロジェクトごとの kiro-flow リポジトリの clone を、⚙ 設定「プロジェクト単位バス」
+  （`kiro.flowBusByProject`）で `プロジェクト名 = <clone>/kiro-flow` と割り当てる
+  （kiro-projects-viewer README 参照）。
+
 ### daemon の生存信号（status.json）— リモート viewer の稼働判定
 
 daemon の稼働検知は本来ロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock`。

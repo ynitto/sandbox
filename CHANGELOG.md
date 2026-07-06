@@ -7,6 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects / kiro-flow / viewer: プロジェクト単位で保存先リポジトリを分ける（`state_git_projects`）
+
+- **背景・目的**: これまで状態の git 同期（`state_git`）は**コンテナ丸ごと**（全プロジェクト）を 1
+  リポジトリへ同期していた。プロジェクトごとに**別々のリポジトリ**へ分け、プロジェクト固有リポジトリで
+  kiro-projects / kiro-flow の情報をメンバーと共有し、誰でも kiro-projects-viewer でドライブできるように
+  する。`default` はユーザー個人リポジトリで管理し、他プロジェクトはプロジェクト固有リポジトリで共有・
+  可視化する構成。**使う人ごとにアサインされるプロジェクトが違う点は、各自の設定で写像を変えるだけ**で
+  吸収できる（リポジトリの設定で解決）。
+- **kiro-projects**: 設定 `state_git_projects`（`{プロジェクト名: URL/パス}` または
+  `{名前: {remote/branch/subdir/interval}}`）を追加。写像に載ったプロジェクトは**そのプロジェクトの
+  subtree だけ**をスコープして固有リポジトリ（`<subdir>/projects/<name>/…`。従来レイアウトを維持）へ
+  同期し、未記載（`default` 含む）は既定の `state_git`（個人リポジトリ・未設定なら無効）へ落ちる。
+  各プロジェクトは自分専用の管理クローン（`<container>/projects/<name>/.state-git`）を使い、多重
+  コミッタの護りはそのまま。写像未設定なら従来どおりコンテナ丸ごと（**完全後方互換**）。
+- **kiro-flow**: 同じ写像 `state_git_projects` を追加。**共有バス 1 本・daemon 1 台のまま**、run/inbox を
+  `run meta.project`（kiro-projects が `--project` で伝搬）で振り分けて固有リポジトリへ鏡写しする。未タグ
+  ／未割当は既定リポジトリへ、`status.json` 等バス直下の共有ファイルは各プロジェクトのリポジトリへ配る。
+  クローンはプロジェクトごとに 1 本（`<bus>/.state-git-<project>`）。写像未設定なら従来どおり（後方互換）。
+- **kiro-projects-viewer**: コンテナ（`roots`）は従来から複数登録できるため、プロジェクト固有リポジトリの
+  clone `<clone>/kiro-projects` を 1 行ずつ足すだけで全プロジェクトを 1 画面に束ねられる。フローバスは
+  設定 `flowBusByProject`（⚙「プロジェクト単位バス」・`プロジェクト名 = <clone>/kiro-flow`）を追加し、
+  pure-remote 監視でプロジェクトごとの kiro-flow clone を割り当てられるようにした（ローカル `<project>/bus`
+  に `runs/` があればそちらを優先）。
+- **テスト・ドキュメント**: kiro-projects/kiro-flow の per-project 同期・振り分け・裁定のテスト、viewer の
+  バス解決テストを追加。3 ツールの README と `*.yaml.example` に構成方法を追記。
+
 ### kiro-projects-viewer: バックログ操作の明確化（ボタン名・UI）と revise の柔軟化
 
 - **背景**: 「＋ タスクを追加」が**バックログを 1 件追加する**機能だと UI から分かりにくかった

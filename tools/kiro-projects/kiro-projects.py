@@ -2256,6 +2256,12 @@ def _kf_base(cfg: "Config", use_git: bool) -> "list[str]":
         base += ["--git", cfg.git_bus, "--git-branch", cfg.git_branch]
         if cfg.git_subdir:
             base += ["--git-subdir", cfg.git_subdir]
+    # 所属プロジェクトを kiro-flow へ伝える（run/inbox meta.project に載り、kiro-flow 側の
+    # state_git_projects でプロジェクト固有リポジトリへ run を振り分けられる）。共有バス構成でも
+    # プロジェクト単位で kiro-flow の情報を分離・共有できるようにする。
+    name = getattr(cfg, "project_name", None)
+    if name and name != "all":
+        base += ["--project", str(name)]
     return base
 
 
@@ -2788,6 +2794,13 @@ class Config:
     state_git_branch: str = "main"        # 同期先ブランチ
     state_git_subdir: str = "kiro-projects"  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの名前空間分離）
     state_git_interval: float = 300.0     # fetch/push の最短間隔（秒）。0 で毎同期（リモート負荷は増える）
+    # プロジェクト単位で保存先リポジトリを分ける（プロジェクト固有リポジトリでメンバーと共有・可視化）。
+    # {プロジェクト名: リポジトリ} の写像。値は文字列（URL/パス。他は state_git_* の既定を流用）か、
+    # dict（remote/branch/subdir/interval を個別指定）。この写像に載ったプロジェクトは【そのプロジェクト
+    # の subtree だけ】を自分のリポジトリへ同期し、載っていないプロジェクト（既定の default 含む）は
+    # 従来どおり state_git（個人リポジトリ・未設定なら無効）へ落ちる。使う人ごとにアサインされる
+    # プロジェクトが違う点は、各自の設定でこの写像を変えるだけで吸収できる（リポジトリの設定で解決）。
+    state_git_projects: dict = field(default_factory=dict)
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
@@ -3772,10 +3785,64 @@ class StateGit:
 _STATE_GITS: "dict[tuple, StateGit]" = {}
 
 
+def project_state_spec(cfg: "Config", name: str) -> "tuple[str, str, str, float] | None":
+    """プロジェクト `name` の状態保存先 (remote, branch, subdir, interval) を解決する。
+
+    state_git_projects に載っていればそのプロジェクト固有リポジトリ（値は URL 文字列か
+    remote/branch/subdir/interval の dict）。載っていなければ既定の state_git（個人リポジトリ）へ
+    落とす。どちらも無ければ None（同期無効）。subdir はリポジトリ内の名前空間ルート（この配下に
+    projects/<name>/ が入る）。"""
+    projmap = getattr(cfg, "state_git_projects", None) or {}
+    spec = projmap.get(name)
+    if spec is None:                      # 写像に無い（default 含む）→ 既定の個人リポジトリ
+        if not getattr(cfg, "state_git", None):
+            return None
+        remote, branch = cfg.state_git, cfg.state_git_branch
+        subdir, interval = cfg.state_git_subdir, cfg.state_git_interval
+    elif isinstance(spec, str):           # {名前: URL} の短縮形。他は state_git_* の既定を流用
+        remote = spec.strip()
+        if not remote:
+            return None
+        branch, subdir, interval = cfg.state_git_branch, cfg.state_git_subdir, cfg.state_git_interval
+    elif isinstance(spec, dict):          # {名前: {remote/branch/subdir/interval}}
+        remote = str(spec.get("remote") or spec.get("state_git") or spec.get("url") or "").strip()
+        if not remote:
+            return None
+        branch = str(spec.get("branch", cfg.state_git_branch) or "main")
+        subdir = str(spec.get("subdir", cfg.state_git_subdir) or "")
+        try:
+            interval = max(0.0, float(spec.get("interval", cfg.state_git_interval)))
+        except (TypeError, ValueError):
+            interval = cfg.state_git_interval
+    else:
+        return None
+    return remote, branch, (subdir or "").strip("/"), max(0.0, float(interval))
+
+
+def _uses_per_project_state_git(cfg: "Config") -> bool:
+    """プロジェクト単位リポジトリ（state_git_projects）が設定されているか。設定時は各プロジェクトを
+    自分の subtree だけスコープして固有リポジトリへ同期する（既定 state_git はコンテナ丸ごと）。"""
+    return bool(getattr(cfg, "state_git_projects", None))
+
+
 def state_git_status_line(cfg: "Config") -> str:
     """起動時に「state_git が有効か・何を鏡写しするか」を一行で示す（silent な設定ミスの切り分け用）。
     注意: これはコンテナ状態（backlog/needs/…）の鏡写し。kiro-flow のバス（フロータブの run 表示）は
     別途 kiro-flow 側の state_git が担う（本ツールはバスを同期しない）。"""
+    if _uses_per_project_state_git(cfg):
+        name = cfg.project_name or "default"
+        if name == "all":                 # コンテナ全体の起動行（各プロジェクトは自分の行で個別に出す）
+            n = len(getattr(cfg, "state_git_projects", None) or {})
+            base = f"（既定 → {cfg.state_git}）" if getattr(cfg, "state_git", None) else "（既定なし）"
+            return (f"state-git: プロジェクト単位 有効 → 固有リポジトリ {n} 件{base} "
+                    f"interval={cfg.state_git_interval}s（各プロジェクトを自分の subtree だけ鏡写し）")
+        spec = project_state_spec(cfg, name)
+        if spec is None:
+            return f"state-git: 無効（project={name} は未設定・既定 state_git も無し）"
+        remote, branch, subdir, interval = spec
+        return (f"state-git: 有効 → project={name} {remote} branch={branch} "
+                f"subdir={subdir}/projects/{_project_dirname(name)} interval={interval}s"
+                "（このプロジェクトの subtree だけを固有リポジトリへ鏡写し）")
     if not getattr(cfg, "state_git", None):
         return "state-git: 無効（未設定）"
     return (f"state-git: 有効 → {cfg.state_git} subdir={cfg.state_git_subdir} "
@@ -3784,6 +3851,26 @@ def state_git_status_line(cfg: "Config") -> str:
 
 
 def state_git_for(cfg: "Config") -> "StateGit | None":
+    # プロジェクト単位リポジトリ: そのプロジェクトの subtree（<container>/projects/<name>）だけを
+    # スコープし、固有リポジトリの <subdir>/projects/<name>/ へ鏡写しする（viewer は <clone>/<subdir>
+    # をコンテナ root として登録すれば従来どおり projects/<name> を辿れる）。
+    if _uses_per_project_state_git(cfg):
+        name = cfg.project_name or "default"
+        if name == "all":                 # コンテナ全体センチネル自体は同期対象にしない（各プロジェクトで同期）
+            return None
+        spec = project_state_spec(cfg, name)
+        if spec is None:
+            return None
+        remote, branch, base_subdir, interval = spec
+        proot = cfg.backlog.parent        # <container>/projects/<name>
+        dirname = _project_dirname(name)
+        subdir = "/".join(p for p in (base_subdir, "projects", dirname) if p)
+        key = (str(proot), remote, branch, subdir)
+        if key not in _STATE_GITS:
+            _STATE_GITS[key] = StateGit(proot, remote, branch, subdir, interval,
+                                        clone_dir=proot / ".state-git")
+        return _STATE_GITS[key]
+    # 従来（コンテナ丸ごと）: state_git だけ設定。全プロジェクトを 1 リポジトリの subdir へ鏡写し。
     if not getattr(cfg, "state_git", None):
         return None
     container = container_dir(cfg)
@@ -5296,7 +5383,13 @@ def cmd_run_all(cfg: Config) -> int:
                 time.sleep(cfg.poll)
                 for paths in registered.values():
                     refresh_instance(paths)
-                state_sync(cfg)                       # 状態 git: リモートの指示を取り込む（間隔律速）
+                # 状態 git: リモートの指示を取り込む（間隔律速）。プロジェクト単位リポジトリなら
+                # 各プロジェクトを自分の固有リポジトリへ、そうでなければコンテナ丸ごとを 1 回同期。
+                if _uses_per_project_state_git(cfg):
+                    for c in cfgs:
+                        state_sync(c)
+                else:
+                    state_sync(cfg)
                 if maybe_self_update(cfg):            # アイドル時のみ自己更新（取り込めたら再起動）
                     raise _RestartRequested()
     except KeyboardInterrupt:
@@ -6616,6 +6709,9 @@ CONFIG_DEFAULTS = {
     "state_git_branch": "main",
     "state_git_subdir": "kiro-projects",  # リポジトリ内の保存先サブディレクトリ（多重コミッタとの分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期
+    # プロジェクト単位の保存先リポジトリ写像（{名前: URL/パス} か {名前: {remote/branch/subdir/interval}}）。
+    # 載ったプロジェクトはそのプロジェクトの subtree だけを固有リポジトリへ同期。未記載は state_git へ。
+    "state_git_projects": {},
     "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
@@ -6733,6 +6829,7 @@ def build_config(args) -> Config:
         state_git_branch=str(getattr(args, "state_git_branch", "main") or "main"),
         state_git_subdir=str(getattr(args, "state_git_subdir", "kiro-projects") or "").strip("/"),
         state_git_interval=max(0.0, float(getattr(args, "state_git_interval", 300.0) or 0.0)),
+        state_git_projects=dict(getattr(args, "state_git_projects", None) or {}),
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,

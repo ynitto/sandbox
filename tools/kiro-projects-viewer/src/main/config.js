@@ -45,6 +45,14 @@ const DEFAULT_CONFIG = {
     // 場合）の明示パス。空なら <project>/bus → <container>/bus →
     // kiro-projects 設定ファイル（.kiro/）の bus: の順にファイルから自動発見する。
     flowBus: '',
+    // プロジェクト単位で kiro-flow の保存先リポジトリを分けている場合（本体の
+    // state_git_projects）の、プロジェクト名 → バスパスの写像。プロジェクト固有リポジトリを
+    // clone した先の <clone>/kiro-flow を各プロジェクトに割り当てる。例:
+    //   { "alpha": "C:\\clones\\alpha\\kiro-flow", "beta": "/home/me/clones/beta/kiro-flow" }
+    // 空 {} なら従来どおり flowBus（単一）とローカルの <project>/bus 等から自動発見する。
+    // <project>/bus 等が実在（runs/ あり）ならそちらが優先され、pure-remote（clone のみ）の
+    // ときにこの写像が効く。
+    flowBusByProject: {},
     // kiro-flow daemon ロック（daemon-<sha1>.lock）の置き場。空なら ~/.kiro の
     // 設定ファイル lock_dir → 両ツール既定の $TMPDIR/kiro-flow-locks を使う。
     flowLockDir: '',

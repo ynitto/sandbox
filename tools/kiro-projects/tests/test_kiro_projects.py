@@ -4857,5 +4857,105 @@ class TestStateGitSync(unittest.TestCase):
         self.assertTrue((got / "kp" / "projects" / "default" / "backlog" / "T2.md").exists())
 
 
+class TestStateGitPerProject(unittest.TestCase):
+    """プロジェクト単位で保存先リポジトリを分ける（state_git_projects）。default は個人リポジトリ、
+    他プロジェクトは固有リポジトリへ、各々そのプロジェクトの subtree だけをスコープして同期する。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        km._STATE_GITS.clear()
+        self.personal = self._bare("personal.git")   # default（個人）
+        self.team = self._bare("team-alpha.git")      # alpha（プロジェクト固有・共有）
+
+    def _bare(self, name: str) -> Path:
+        r = self.tmp / name
+        subprocess.run(["git", "init", "-q", "--bare", str(r)], check=True)
+        subprocess.run(["git", "-C", str(r), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        return r
+
+    def _cfg(self, project: str, **kw):
+        proot = self.tmp / "c" / "projects" / project
+        base = dict(project_name=project,
+                    backlog=proot / "backlog", policy=proot / "policy.md",
+                    decisions=proot / "decisions", journal=proot / "journal.md",
+                    needs=proot / "needs", workdir=self.tmp, bus=proot / "bus",
+                    inbox=proot / "inbox", charter=proot / "charter.md",
+                    planner="none", flow_planner="stub", executor="stub", dry_run=True,
+                    state_git=str(self.personal), state_git_subdir="kp", state_git_interval=0.0,
+                    state_git_projects={"alpha": str(self.team)})
+        base.update(kw)
+        cfg = km.Config(**base)
+        km.ensure_dirs(cfg)
+        return cfg
+
+    def _check(self, remote: Path, name: str) -> Path:
+        d = self.tmp / f"chk-{name}-{remote.stem}"
+        subprocess.run(["git", "clone", "-q", str(remote), str(d)], check=True, capture_output=True)
+        return d
+
+    def test_mapped_project_goes_to_its_own_repo(self):
+        cfg = self._cfg("alpha")
+        mkb(cfg.backlog.parent, "T1")
+        km.state_sync(cfg, force=True)
+        got = self._check(self.team, "alpha")
+        self.assertTrue((got / "kp" / "projects" / "alpha" / "backlog" / "T1.md").exists())
+        # 個人リポジトリには入らない（プロジェクト固有リポジトリへ分離されている）
+        personal = self._check(self.personal, "alpha")
+        self.assertFalse((personal / "kp" / "projects" / "alpha").exists())
+
+    def test_unmapped_default_falls_to_personal_repo(self):
+        cfg = self._cfg("default")
+        mkb(cfg.backlog.parent, "T1")
+        km.state_sync(cfg, force=True)
+        got = self._check(self.personal, "default")
+        self.assertTrue((got / "kp" / "projects" / "default" / "backlog" / "T1.md").exists())
+        # チームリポジトリには default は入らない
+        team = self._check(self.team, "default")
+        self.assertFalse((team / "kp" / "projects" / "default").exists())
+
+    def test_scoped_to_own_subtree_only(self):
+        # alpha の同期は alpha の subtree だけを見る（兄弟プロジェクト default のファイルを引かない）。
+        default_cfg = self._cfg("default")
+        mkb(default_cfg.backlog.parent, "D1")         # 兄弟プロジェクトの実体をディスク上に作る
+        cfg = self._cfg("alpha")
+        mkb(cfg.backlog.parent, "A1")
+        km.state_sync(cfg, force=True)
+        got = self._check(self.team, "scope")
+        self.assertTrue((got / "kp" / "projects" / "alpha" / "backlog" / "A1.md").exists())
+        self.assertFalse((got / "kp" / "projects" / "default").exists())
+
+    def test_dict_spec_overrides_branch_and_subdir(self):
+        cfg = self._cfg("alpha", state_git_projects={
+            "alpha": {"remote": str(self.team), "subdir": "shared"}})
+        mkb(cfg.backlog.parent, "T1")
+        km.state_sync(cfg, force=True)
+        got = self._check(self.team, "dict")
+        self.assertTrue((got / "shared" / "projects" / "alpha" / "backlog" / "T1.md").exists())
+
+    def test_member_drives_via_remote_input(self):
+        # プロジェクトメンバーが viewer 相当でチームリポジトリへ指示（commands）をドロップ →
+        # 本体（alpha を回す側）が取り込む。共有リポジトリ越しの「誰でもドライブ」を検証。
+        cfg = self._cfg("alpha")
+        km.state_sync(cfg, force=True)                # ブランチ作成
+        member = self._check(self.team, "member")
+        subprocess.run(["git", "-C", str(member), "config", "user.email", "m@t"], check=True)
+        subprocess.run(["git", "-C", str(member), "config", "user.name", "m"], check=True)
+        cmd = member / "kp" / "projects" / "alpha" / "commands" / "ok.json"
+        cmd.parent.mkdir(parents=True, exist_ok=True)
+        cmd.write_text('{"command": "approve", "id": "T1"}', encoding="utf-8")
+        subprocess.run(["git", "-C", str(member), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(member), "commit", "-qm", "member approve"], check=True)
+        subprocess.run(["git", "-C", str(member), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+        km.state_sync(cfg, force=True)
+        self.assertTrue((km.commands_dir(cfg) / "ok.json").exists())
+
+    def test_disabled_when_unmapped_and_no_personal(self):
+        cfg = self._cfg("beta", state_git=None)       # beta は未記載・個人リポジトリも無し
+        km.state_sync(cfg, force=True)
+        self.assertIsNone(km.state_git_for(cfg))
+
+
 if __name__ == "__main__":
     unittest.main()

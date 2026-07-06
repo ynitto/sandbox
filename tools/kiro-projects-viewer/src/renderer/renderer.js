@@ -2101,6 +2101,11 @@ function openSettings() {
   $('cfg-action-mode').value = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.kiro && cfg.kiro.flowBus) || '';
   $('cfg-flow-lockdir').value = (cfg.kiro && cfg.kiro.flowLockDir) || '';
+  $('cfg-flow-bus-by-project').value = Object.entries(
+    (cfg.kiro && cfg.kiro.flowBusByProject) || {}
+  )
+    .map(([name, bus]) => `${name} = ${bus}`)
+    .join('\n');
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
   $('cfg-gl-token').value = cfg.gitlab.token || '';
   $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
@@ -2124,6 +2129,18 @@ async function saveSettings() {
   cfg.kiro.actionMode = $('cfg-action-mode').value;
   cfg.kiro.flowBus = $('cfg-flow-bus').value.trim();
   cfg.kiro.flowLockDir = $('cfg-flow-lockdir').value.trim();
+  // 1 行 1 件「プロジェクト名 = バスパス」を写像へ。空行・不正行は無視する。
+  cfg.kiro.flowBusByProject = $('cfg-flow-bus-by-project')
+    .value.split('\n')
+    .map((line) => {
+      const i = line.indexOf('=');
+      if (i < 0) return null;
+      const name = line.slice(0, i).trim();
+      const bus = line.slice(i + 1).trim();
+      return name && bus ? [name, bus] : null;
+    })
+    .filter(Boolean)
+    .reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();
   cfg.gitlab.token = $('cfg-gl-token').value.trim();
   cfg.reviewViewer.mode = $('cfg-rv-mode').value;

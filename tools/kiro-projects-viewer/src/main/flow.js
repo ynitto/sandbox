@@ -304,6 +304,9 @@ function resubmitRun(busDir, runId) {
     submitter: 'kiro-projects-viewer',
     workspace: meta.workspace || null,
     references: Array.isArray(meta.references) ? meta.references : [],
+    // 所属プロジェクトを引き継ぐ。state_git_projects で kiro-flow を分けている場合、この
+    // 再投入 run が同じプロジェクト固有リポジトリへ振り分けられて戻る（round-trip 維持）。
+    project: meta.project || null,
     submitted_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
   };
   const file = path.join(inbox, `${newId}.json`);

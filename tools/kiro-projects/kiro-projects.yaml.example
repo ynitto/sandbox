@@ -162,6 +162,18 @@ git_branch: main            # バスに使う git ブランチ
 # state_git_branch: main                # 同期先ブランチ
 # state_git_subdir: kiro-projects       # リポジトリ内の保存先サブディレクトリ（名前空間分離）
 # state_git_interval: 300               # fetch/push の最短間隔（秒）。0 で毎同期（負荷は増える）
+#
+# プロジェクト単位で保存先リポジトリを分ける（default は個人・他はプロジェクト固有リポジトリで共有）。
+# 写像に載ったプロジェクトは【そのプロジェクトの subtree だけ】を固有リポジトリへ同期し、未記載
+# （default 含む）は上の state_git（個人）へ落ちる。使う人ごとに担当プロジェクトが違う点は各自の
+# 設定でこの写像を変えるだけで吸収できる。詳細は README「プロジェクト単位で保存先リポジトリを分ける」。
+# state_git_projects:
+#   alpha: git@example.com:team-alpha/kiro-state.git    # 短縮形（URL/パス。他は state_git_* の既定）
+#   beta:                                               # dict で個別上書き
+#     remote: git@example.com:team-beta/kiro-state.git
+#     branch: main
+#     subdir: kiro-projects
+#     interval: 120
 
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し
