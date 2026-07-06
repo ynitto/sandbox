@@ -516,6 +516,44 @@ function gotoRun(runId) {
   selectFlowRun(runId);
 }
 
+// run とノードを選んでフロータブへ遷移し、そのノードの詳細を開く。
+// レビュー待ち画面から「このイシューを起票した run/ノード」を一発で開くのに使う。
+async function gotoRunNode(runId, nodeId) {
+  switchTab('flow');
+  await selectFlowRun(runId); // 内部で flowNodeId を null にして再描画する
+  if (nodeId) {
+    state.flowNodeId = nodeId;
+    state.flowNodeIssue = null;
+    renderFlow();
+    const pane = $('flow-node');
+    if (pane) pane.scrollTop = 0;
+  }
+}
+
+// req-<hash>-<task>-r<n> の先頭ハッシュを畳んで読みやすい短い run 表記にする
+// （素の run-… やその他はそのまま）。関連 run チップの表示に使う。
+function shortRunId(runId) {
+  const m = /^req-[0-9a-f]{6,}-(.+)$/.exec(String(runId || ''));
+  return m ? m[1] : String(runId || '');
+}
+
+// レビュー待ちイシュー（本文の task-token）→ 起票した kiro-flow run/ノードの索引。
+// flowRuns は reloadProject で常にロード済みで、各ノードは決定的タスクトークン
+// （nodeTaskToken）を持つため、追加の API/走査コストなしで対応付けられる。
+// イシュー URL は承認/却下まで bus に現れないので、レビュー待ち中の対応付けは
+// この token 一致が唯一確実な手がかりになる。
+function flowNodeByToken() {
+  const map = {};
+  for (const r of state.flowRuns) {
+    for (const n of Object.values(r.nodes || {})) {
+      if (n.taskToken && !map[n.taskToken]) {
+        map[n.taskToken] = { runId: r.runId, nodeId: n.id, status: r.status, taskId: r.taskId };
+      }
+    }
+  }
+  return map;
+}
+
 // バックログタスク（run-id 内の taskId 断片でも可）を開いてバックログタブへ遷移。
 function gotoTask(taskId) {
   const p = state.project;
@@ -1148,12 +1186,15 @@ function renderFlow() {
     })
     .join('');
 
-  // 左右ペインとタスクグラフ（#graph-box）は再描画（ポーリング・ノード選択）で
-  // スクロール位置を失わないよう、描画前の位置を控えて復元する
+  // run 一覧と RUN 表示ペイン（概要 / タスクグラフ / ノード情報の 3 分割）は
+  // 再描画（ポーリング・ノード選択）でスクロール位置を失わないよう、描画前の
+  // 位置を控えて復元する。グラフは縦横どちらのスクロールも保つ。
   const prevGraph = $('graph-box');
   const prevScroll = {
     runs: ($('flow-runs') || {}).scrollTop || 0,
-    detail: ($('flow-detail') || {}).scrollTop || 0,
+    overview: ($('flow-overview') || {}).scrollTop || 0,
+    graphPane: ($('flow-graph') || {}).scrollTop || 0,
+    nodePane: ($('flow-node') || {}).scrollTop || 0,
     graphX: prevGraph ? prevGraph.scrollLeft : 0,
     graphY: prevGraph ? prevGraph.scrollTop : 0,
   };
@@ -1162,7 +1203,9 @@ function renderFlow() {
     <div id="flow-detail">${renderFlowDetail()}</div>
   </div>`;
   $('flow-runs').scrollTop = prevScroll.runs;
-  $('flow-detail').scrollTop = prevScroll.detail;
+  if ($('flow-overview')) $('flow-overview').scrollTop = prevScroll.overview;
+  if ($('flow-graph')) $('flow-graph').scrollTop = prevScroll.graphPane;
+  if ($('flow-node')) $('flow-node').scrollTop = prevScroll.nodePane;
   const graph = $('graph-box');
   if (graph) {
     graph.scrollLeft = prevScroll.graphX;
@@ -1226,24 +1269,36 @@ function renderFlowDetail() {
   const deleteBtn = deletable
     ? `<button class="chip danger" id="flow-delete" title="この run のディレクトリ（runs/${esc(run.runId)}）をゴミ箱へ移動します">🗑 削除</button>`
     : '';
+  // RUN 表示ペインを縦 3 分割する: 概要 / タスクグラフ / ノード情報。
+  // それぞれ独立して縦スクロールできる（.flow-pane が overflow-y を持つ）ので、
+  // グラフが縦に長くても概要やノード詳細を見失わない。
   return `
-    <div class="card full">
-      <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${resubmit} ${deleteBtn}</h3>
-      ${relationshipStrip({ run })}
-      <div>${esc(run.request || '')}</div>
-      ${run.inheritedFrom ? `<div class="muted" title="このリトライが引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(run.inheritedFrom)}</span></div>` : ''}
-      ${heartbeat}
-      ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(run.failureReason)}</div>` : ''}
-      <div class="row2" style="align-items:center;margin-top:6px">
-        <div class="progress" style="flex:1"><div style="width:${pct}%"></div></div>
-        <span class="muted">${run.counts.done + run.counts.failed}/${run.total} (${pct}%)</span>
+    <div id="flow-overview" class="flow-pane">
+      <div class="flow-pane-title">概要</div>
+      <div class="card full">
+        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${resubmit} ${deleteBtn}</h3>
+        ${relationshipStrip({ run })}
+        <div>${esc(run.request || '')}</div>
+        ${run.inheritedFrom ? `<div class="muted" title="このリトライが引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(run.inheritedFrom)}</span></div>` : ''}
+        ${heartbeat}
+        ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(run.failureReason)}</div>` : ''}
+        <div class="row2" style="align-items:center;margin-top:6px">
+          <div class="progress" style="flex:1"><div style="width:${pct}%"></div></div>
+          <span class="muted">${run.counts.done + run.counts.failed}/${run.total} (${pct}%)</span>
+        </div>
       </div>
+      <div class="section-title">アクティビティ</div>
+      <div class="events">${events || '<span class="muted">イベントなし</span>'}</div>
     </div>
-    <div id="graph-box">${renderGraphSvg(run)}</div>
-    <div class="legend">${legend}</div>
-    ${nodeDetail}
-    <div class="section-title">アクティビティ</div>
-    <div class="events">${events || '<span class="muted">イベントなし</span>'}</div>`;
+    <div id="flow-graph" class="flow-pane">
+      <div class="flow-pane-title">タスクグラフ</div>
+      <div id="graph-box">${renderGraphSvg(run)}</div>
+      <div class="legend">${legend}</div>
+    </div>
+    <div id="flow-node" class="flow-pane">
+      <div class="flow-pane-title">ノード情報</div>
+      ${nodeDetail || '<div class="empty">タスクグラフでノードを選択すると詳細を表示します</div>'}
+    </div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1586,6 +1641,23 @@ function renderGitLab() {
   }
   const repos = charterGitlabRepos();
   const gl = state.gitlab;
+  const tokenMap = flowNodeByToken(); // 追加コストなし（flowRuns は常にロード済み）
+
+  // 関連 run セル: イシュー本文の task-token を、ロード済み flowRuns の各ノードが持つ
+  // 決定的タスクトークンと突き合わせる。ヒットすれば run/ノードのチップを出し、
+  // クリックでフロー画面のその run・ノードを直接開く（レビュー待ち→フローの導線）。
+  const relatedRunCell = (it) => {
+    const rel = it.taskToken ? tokenMap[it.taskToken] : null;
+    if (rel) {
+      return `<button class="linklike mono rel-run-chip st-${esc(rel.status)}"
+        data-goto-run="${esc(rel.runId)}" data-goto-node="${esc(rel.nodeId)}"
+        title="フロー画面で run ${esc(rel.runId)} のノード ${esc(rel.nodeId)} を開く">⚙ ${esc(shortRunId(rel.runId))} ▸ ${esc(rel.nodeId)}</button>`;
+    }
+    if (it.taskToken) {
+      return `<span class="muted" title="task-token ${esc(it.taskToken)}｜対応する run はロード済みの一覧（最新 30 件）に無いか、bus 掃除済みです">—</span>`;
+    }
+    return '<span class="muted" title="kiro-flow 由来ではないイシュー（task-token なし）"></span>';
+  };
 
   const issueRow = (it) => {
     const enriched = gl.byUrl[it.url];
@@ -1600,6 +1672,7 @@ function renderGitLab() {
       <td>${mrs
         .map((mr) => `<span class="status-chip st-${esc(mr.state)}" title="${esc(mr.title)}">!${mr.iid} ${esc(mr.state)}</span>`)
         .join(' ')}</td>
+      <td>${relatedRunCell(it)}</td>
       <td class="row">
         <button data-review="${esc(it.url)}" title="gitlab-review-viewer でレビュー">レビューで開く</button>
         <button data-ext-btn="${esc(it.url)}" title="ブラウザで開く">↗</button>
@@ -1614,7 +1687,7 @@ function renderGitLab() {
   const hiddenCount = gl.repoIssues.length - shown.length;
 
   const repoIssuesSection = shown.length
-    ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th></th></tr>
+    ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th>関連 run</th><th></th></tr>
         ${shown.map((it) => issueRow(it)).join('')}</table>`
     : `<div class="muted">${
         gl.enabled === false
@@ -1628,7 +1701,7 @@ function renderGitLab() {
 
   el.innerHTML = `
     <div class="toolbar">
-      <span class="muted">repos のオープンイシュー（レビュー待ち・作業中）。委譲イシューの決着（承認/却下）はフロータブのノード詳細へ</span>
+      <span class="muted">repos のオープンイシュー（レビュー待ち・作業中）。「関連 run」列から起票元の run/ノードをフロー画面で開けます</span>
       <span class="spacer"></span>
       <button id="btn-gl-flowonly" class="chip ${flowOnly ? 'active' : ''}"
         title="kiro-flow の gitlab executor が起票したイシュー（本文の task-token マーカー）だけに絞る">kiro-flow 由来のみ</button>
@@ -1645,6 +1718,9 @@ function renderGitLab() {
     renderGitLab();
   });
   $('btn-gl-refresh').addEventListener('click', () => refreshGitLab(true));
+  for (const btn of el.querySelectorAll('button[data-goto-run]')) {
+    btn.addEventListener('click', () => gotoRunNode(btn.dataset.gotoRun, btn.dataset.gotoNode || null));
+  }
   for (const btn of el.querySelectorAll('button[data-review]')) {
     btn.addEventListener('click', () =>
       guard('レビュー起動', async () => {
@@ -1796,6 +1872,7 @@ function openSettings() {
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
   $('cfg-gl-token').value = cfg.gitlab.token || '';
   $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
+  $('cfg-rv-exepath').value = cfg.reviewViewer.exePath || '';
   $('cfg-rv-command').value = cfg.reviewViewer.command || '';
   $('dlg-settings').showModal();
 }
@@ -1818,6 +1895,7 @@ async function saveSettings() {
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();
   cfg.gitlab.token = $('cfg-gl-token').value.trim();
   cfg.reviewViewer.mode = $('cfg-rv-mode').value;
+  cfg.reviewViewer.exePath = $('cfg-rv-exepath').value.trim();
   cfg.reviewViewer.command = $('cfg-rv-command').value.trim();
   state.config = await api.saveConfig(cfg);
   setupPolling();

@@ -147,20 +147,28 @@ class GitLabClient {
         order_by: 'updated_at',
       },
     });
-    return (issues || []).map((it) => ({
-      projectPath,
-      projectId: it.project_id,
-      iid: it.iid,
-      title: it.title,
-      state: it.state,
-      labels: it.labels || [],
-      url: it.web_url,
-      updatedAt: it.updated_at,
-      author: it.author ? it.author.username : '',
-      // kiro-flow の gitlab executor が起票したイシューか（本文の隠しマーカー
-      // `<!-- kiro-flow:task-token:kf-... -->` で判定。「レビュー待ち」の絞り込みに使う）
-      kiroFlow: /kiro-flow:task-token:/.test(String(it.description || '')),
-    }));
+    return (issues || []).map((it) => {
+      // kiro-flow の gitlab executor が起票したイシューは本文に隠しマーカー
+      // `<!-- kiro-flow:task-token:kf-... -->` を持つ。トークンを取り出しておくと、
+      // フロー run の各ノードが持つ決定的タスクトークン（nodeTaskToken）と突き合わせて
+      // 「このレビュー待ちイシューはどの run のどのノードか」を追加コストなしで解決できる
+      // （イシュー URL は承認/却下で result が確定するまで bus に現れないため、
+      //  レビュー待ち中の対応付けはこのトークン一致が唯一確実な手がかりになる）。
+      const tokenMatch = String(it.description || '').match(/kiro-flow:task-token:(kf-[0-9a-f]+)/);
+      return {
+        projectPath,
+        projectId: it.project_id,
+        iid: it.iid,
+        title: it.title,
+        state: it.state,
+        labels: it.labels || [],
+        url: it.web_url,
+        updatedAt: it.updated_at,
+        author: it.author ? it.author.username : '',
+        kiroFlow: Boolean(tokenMatch),
+        taskToken: tokenMatch ? tokenMatch[1] : null,
+      };
+    });
   }
 }
 
