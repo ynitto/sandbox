@@ -121,14 +121,23 @@
         <div class="field">
           <label>起動方法</label>
           <select id="cfg-rv-mode">
-            <option value="protocol">プロトコル（gitlab-review-viewer://）</option>
+            <option value="protocol">プロトコル（gitlab-review-viewer://・要 OS 登録）</option>
+            <option value="exe">実行ファイル直接（portable exe 向け）</option>
             <option value="command">コマンド</option>
           </select>
         </div>
         <div class="field">
-          <label>コマンド（{url} {projectPath} {type} {iid} を置換）</label>
-          <input id="cfg-rv-command" placeholder='例: "C:\Apps\GitLab Review Viewer.exe" "{url}"' />
+          <label>実行ファイルのパス（exe モード。portable exe でも連携起動できます）</label>
+          <input id="cfg-rv-exepath" class="mono" placeholder='例: C:\Apps\GitLab Review Viewer.exe' />
         </div>
+      </div>
+      <div class="field">
+        <label>コマンド（command モード。{url} {projectPath} {type} {iid} {protocolUrl} を置換）</label>
+        <input id="cfg-rv-command" placeholder='例: "C:\Apps\GitLab Review Viewer.exe" "{protocolUrl}"' />
+      </div>
+      <div class="muted" style="font-size:11px">
+        portable exe はカスタム URL スキームを OS 登録できないため、protocol では連携起動できません。
+        「実行ファイル直接」を選び gitlab-review-viewer の exe パスを指定してください。
       </div>
       <div class="dialog-actions">
         <button value="cancel">キャンセル</button>

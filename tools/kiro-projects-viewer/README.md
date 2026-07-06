@@ -25,8 +25,8 @@ kiro-projects のプロジェクト状態をダッシュボードとして可視
 | 概要 | `charter.md`（goal / deliverables / acceptance）・`project.json`（acceptance PASS 履歴）・`backlog/` 集計・`policy.md`・`claims/`・`run-log.jsonl`・`DELIVERY.md`・`status.json`（daemon の生存信号。instances に無ければこちらへフォールバック） |
 | バックログ | `backlog/<id>.md`（1 ファイル = 1 タスク。status / priority / verify / after 等）・`archive/<id>.md`（done） |
 | 要対応 | `needs/<id>.md`（MADR 形式。blocked / review / milestone。「ファイルを開いて回答」でエディタへ） |
-| フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。バスは `<project>/bus` → `<container>/bus` → ⚙ 設定 → kiro-projects 設定ファイル（`.kiro/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock` の pid。同一ホストのみ）から、無ければ `<bus>/status.json`（生存信号。state_git 同期経由の推定）から判定 — **kiro-flow CLI には一切聞かない**。ノード詳細では進捗（開始・経過・worker heartbeat/lease・所要・作り直し回数・claimed/result のタイムライン）と、gitlab executor の**関連イシュー**（承認は `data`、却下は output の URL、実行中は決定的タスクトークンの GitLab 検索）を表示し「レビューで開く」で gitlab-review-viewer へ引き継ぐ |
-| レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー＋関連 MR（API 設定時）。プロジェクトが扱うリポジトリの「いまレビュー待ち・作業中」を横断一覧し gitlab-review-viewer へ引き継ぐ。既定では **kiro-flow 由来のイシュー**（gitlab executor が起票 = 本文の `task-token` マーカー）だけに絞る（「kiro-flow 由来のみ」チップで解除可）。run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当 |
+| フロー | `<bus>/runs/<run-id>/`（`graph.json` + `results/` + `claims/` からノード状態を導出し DAG を描画。`events/*.jsonl` のアクティビティ付き）。バスは `<project>/bus` → `<container>/bus` → ⚙ 設定 → kiro-projects 設定ファイル（`.kiro/`）の `bus:` の順に自動発見。run の生存（orchestrator 応答なし）は `meta.json` の生存リース（`orch_lease_until`）から、daemon の稼働はロックファイル（`$TMPDIR/kiro-flow-locks/daemon-<sha1>.lock` の pid。同一ホストのみ）から、無ければ `<bus>/status.json`（生存信号。state_git 同期経由の推定）から判定 — **kiro-flow CLI には一切聞かない**。ノード詳細では進捗（開始・経過・worker heartbeat/lease・所要・作り直し回数・claimed/result のタイムライン）と、gitlab executor の**関連イシュー**（承認は `data`、却下は output の URL、実行中は決定的タスクトークンの GitLab 検索）を表示し「レビューで開く」で gitlab-review-viewer へ引き継ぐ。run 表示ペインは**概要 / タスクグラフ / ノード情報**の縦 3 段に分かれ、各段が独立して縦スクロールする（グラフが縦に長くても概要・ノード詳細を見失わない） |
+| レビュー待ち | `repos.json` の GitLab リポジトリのオープンイシュー＋関連 MR（API 設定時）。プロジェクトが扱うリポジトリの「いまレビュー待ち・作業中」を横断一覧し gitlab-review-viewer へ引き継ぐ。既定では **kiro-flow 由来のイシュー**（gitlab executor が起票 = 本文の `task-token` マーカー）だけに絞る（「kiro-flow 由来のみ」チップで解除可）。各行の **「関連 run」列**は、イシュー本文の `task-token` をロード済み run 一覧の各ノードの決定的トークンと突き合わせて起票元の run/ノードを特定し、クリックでフロー画面のその run・ノードを直接開く（イシュー URL は承認/却下まで bus に現れないため、レビュー待ち中の対応付けはこのトークン一致で行う。追加の API/走査コストは無し）。run/ノード単位の委譲イシューの決着（承認/却下）はフロータブのノード詳細が担当 |
 | 履歴 | `run-log.jsonl`・`decisions/<id>.md`（DR）・`DELIVERY.md`・`journal.md` |
 
 ### 関係性のたどり（charter → backlog → run → issue）
@@ -212,12 +212,19 @@ task の retries 上限 → blocked ＋ needs/<id>.md 生成 ＝ ここで初め
 
 レビュー待ちタブ（またはフロータブのノード詳細）の「**レビューで開く**」を押すと、そのイシューを gitlab-review-viewer で開く。
 
-- 既定は **カスタム URL スキーム**: `gitlab-review-viewer://open?url=<イシューの web_url>` を
+- 既定は **カスタム URL スキーム**（`protocol`）: `gitlab-review-viewer://open?url=<イシューの web_url>` を
   OS 経由で開く。gitlab-review-viewer 側はディープリンク対応済み（シングルインスタンス化
   されており、起動済みならそのウィンドウで対象イシュー + 関連 MR を開く。未起動なら起動する）。
-  プロトコル登録はインストーラ（NSIS）または初回起動時に行われる。
-- プロトコルが使えない環境では ⚙ 設定で **コマンド起動** に切り替えられる:
-  `"C:\Apps\GitLab Review Viewer.exe" "{url}"`（`{url}` `{projectPath}` `{type}` `{iid}` を置換）
+  プロトコル登録はインストーラ（NSIS）版で行われる。
+- **portable exe 版の gitlab-review-viewer では `protocol` は使えない**。portable はインストーラを
+  通らず、起動ごとに一時ディレクトリへ展開されるため、カスタム URL スキームを OS に恒久登録できない
+  （登録先が毎回消える一時パスになる）。この場合は ⚙ 設定 → 起動方法を **「実行ファイル直接」（`exe`）**
+  にし、gitlab-review-viewer の実行ファイルパスを指定する。ディープリンク URL を実行ファイルへ
+  argv として直接渡すため、プロトコル登録に依存せず連携起動できる（gitlab-review-viewer は
+  `deepLinkFromArgv` / `second-instance` で受け取り、未起動でも起動済みでも同じ挙動になる）。
+- それ以外の任意起動が必要なら **コマンド起動**（`command`）:
+  `"C:\Apps\GitLab Review Viewer.exe" "{protocolUrl}"`
+  （`{url}` `{projectPath}` `{type}` `{iid}` に加え、組み立て済みディープリンク `{protocolUrl}` を置換）
 
 逆方向として、本アプリ自身も `kiro-projects-viewer://open?root=<container>&project=<name>` の
 ディープリンクを受け付ける（他ツールから特定プロジェクトのダッシュボードを直接開ける）。
@@ -260,7 +267,8 @@ npm run dist             # Windows 向けビルド（portable + NSIS → release
 - `src/main/gitlab.js` … GitLab REST v4 の読み取り専用クライアント（net.fetch・プロキシ対応）。
   実行中ノードの関連イシューは、gitlab executor と同一導出の決定的タスクトークン
   （`kf-<sha1(run_id/node_id)[:12]>`）でイシュー本文の隠しマーカーを検索して見つける
-- `src/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / command）
+- `src/main/review.js` … gitlab-review-viewer へのレビュー引き継ぎ（protocol / exe / command）。
+  exe は実行ファイルへディープリンクを argv 直渡し（portable exe 向け・プロトコル登録に依存しない）
 - `src/main/actions.js` … 人のアクション層。needs 記入（Decision Outcome + `[x]`）・
   inbox JSON ドロップ・commands JSON ドロップ（approve/hold/pin/defer/revise。稼働していなければ
   CLI にフォールバック）の 3 契約のみを使う

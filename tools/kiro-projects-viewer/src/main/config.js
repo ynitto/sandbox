@@ -59,10 +59,21 @@ const DEFAULT_CONFIG = {
   reviewViewer: {
     // gitlab-review-viewer へのレビュー引き継ぎ方法。
     //   protocol … カスタム URL スキームで起動（gitlab-review-viewer 側の
-    //              ディープリンク対応が必要。既定はこれ）
-    //   command  … 任意コマンドで起動。{url} {projectId} {type} {iid} を置換
+    //              ディープリンク対応が OS に登録されている必要がある。既定はこれ）
+    //   exe      … gitlab-review-viewer の実行ファイルを直接起動し、ディープリンク
+    //              URL（gitlab-review-viewer://open?url=...）を引数として渡す。
+    //              portable exe はカスタム URL スキームを OS に恒久登録できない
+    //              （インストーラ無し・起動ごとに一時ディレクトリへ展開される）ため、
+    //              protocol では連携起動できない。この exe モードなら exePath で
+    //              指定した実行ファイルへ直接ディープリンクを渡すので portable でも動く
+    //              （gitlab-review-viewer は argv / second-instance でこれを解釈する）。
+    //   command  … 任意コマンドで起動。{url} {projectPath} {type} {iid}
+    //              {protocolUrl}（組み立て済みディープリンク）を置換
     mode: 'protocol',
     protocol: 'gitlab-review-viewer://open',
+    // exe モードで直接起動する gitlab-review-viewer 実行ファイルのパス
+    // （例: C:\\Apps\\GitLab Review Viewer.exe や portable exe のパス）
+    exePath: '',
     command: '',
   },
 };
