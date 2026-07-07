@@ -1803,7 +1803,7 @@ async function resubmitFlowRun() {
       `再投入しました: ${res.runId}${d && d.running === false ? '（daemon 停止中 — 起動後に拾われます）' : ''}`,
       true
     );
-    gitPushAfterWrite(`kiro-projects-viewer: resubmit run ${run.runId}`, state.project.busDir);
+    await gitPushBusOp(`kiro-projects-viewer: resubmit run ${run.runId}`);
     await reloadProject();
   }
 }
@@ -1826,7 +1826,7 @@ async function deleteFlowRun() {
     return true;
   });
   if (ok) {
-    gitPushAfterWrite(`kiro-projects-viewer: delete run ${run.runId}`, state.project.busDir);
+    await gitPushBusOp(`kiro-projects-viewer: delete run ${run.runId}`);
     state.flowRunId = null;
     state.flowRun = null;
     state.flowNodeId = null;
@@ -2314,14 +2314,37 @@ async function maybeAutoGitPull() {
 // 設定 gitAutoPush が有効なら、操作したディレクトリの変更をコミットして push する
 // （状態共有 git への都度反映）。書き込み本体は成功済みなので待たずに走らせ、
 // 失敗（push 不可など）だけトーストで知らせる。
+// 戻り値は commitPush の結果 Promise（gitAutoPush 無効/対象なしのときは null）。
+// 通常は fire-and-forget で呼ぶ（戻り値は無視してよい）。反映の成否まで見たい呼び出し側
+// （バス操作＝下記 gitPushBusOp）は await して skipped/notRepo を確かめられるようにする。
 function gitPushAfterWrite(message, dir) {
   const cfg = state.config;
-  if (!cfg || !cfg.kiro || !cfg.kiro.gitAutoPush) return;
+  if (!cfg || !cfg.kiro || !cfg.kiro.gitAutoPush) return null;
   const target = dir || state.selectedDir;
-  if (!target) return;
-  api.gitCommitPush(target, message).catch((err) => {
+  if (!target) return null;
+  return api.gitCommitPush(target, message).catch((err) => {
     toast(`git 同期（プッシュ）: ${err.message || err}`);
+    return null;
   });
+}
+
+// バス操作（run の削除・再投入）の git 反映。バス（<project>/bus 等のローカル daemon バス）は
+// kiro-projects の state_git から除外され（_STATE_EXCLUDE_DIRS）、kiro-flow 側の state_git が
+// 別クローンへ同期する。そのため busDir が git 作業ツリーでないと commitPush は notRepo で
+// 「黙ってスキップ」し、削除/再投入が共有リポジトリへ反映されない（＝push できていない）。
+// git 追跡下のバス（設定 flowBusByProject の clone＝<clone>/kiro-flow）なら通常どおり反映される。
+// 沈黙の no-op を避けるため、スキップされたら理由と対処（daemon 同期 or flowBusByProject 登録）を知らせる。
+async function gitPushBusOp(message) {
+  const busDir = state.project && state.project.busDir;
+  const res = await gitPushAfterWrite(message, busDir);
+  if (res && res.skipped && res.notRepo) {
+    toast(
+      `バス（${busDir}）が git 作業ツリーではないため、共有リポジトリへ直接反映できませんでした。` +
+        `kiro-flow daemon の state_git 同期に反映が委ねられます（viewer から直接反映するには ⚙ 設定の flowBusByProject でバスの git クローンを登録してください）。`,
+      true
+    );
+  }
+  return res;
 }
 
 // 手動（⇣ ボタン）: スロットリングを無視して即 pull し、結果をトーストで知らせる

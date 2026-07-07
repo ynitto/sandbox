@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: run（バス）削除の git 反映が黙ってスキップされる問題を可視化
+
+- **バグ修正**: run 削除（および再投入）の状態共有 git 反映が、バスが git 作業ツリーでないと
+  `commitPush` の `notRepo` で**黙ってスキップ**され、削除が共有リポジトリへ反映されないのに
+  何も知らされなかった。バスは kiro-projects の state_git から除外され（`_STATE_EXCLUDE_DIRS =
+  {"bus","claims"}`）、kiro-flow 側の state_git が別クローンへ同期する構成のため、`<project>/bus`
+  のようなローカル daemon バスは viewer から直接 push できない（task 削除は state_git 追跡下の
+  `p.dir` へ push するので従来どおり反映される、という非対称があった）。
+- **対応**: バス操作の push を `gitPushBusOp` に集約し、`commitPush` の結果を await して
+  `skipped/notRepo` を検知。スキップ時は「共有リポジトリへ直接反映できなかった／kiro-flow
+  daemon の state_git 同期に委ねられる／viewer から直接反映するには設定 `flowBusByProject` で
+  バスの git クローンを登録する」ことをトーストで明示する（沈黙の no-op をなくす）。git 追跡下の
+  バス（`flowBusByProject` の `<clone>/kiro-flow`）では従来どおり削除がコミット・push される。
+- `gitPushAfterWrite` は commitPush の結果 Promise を返すようにした（従来の fire-and-forget
+  呼び出しは戻り値を無視するだけで挙動不変）。
+
 ### kiro-projects-viewer: gitlab executor のクローズ済みイシューをタスクグラフへ反映
 
 - **バグ修正**: gitlab executor の場合、関連イシューが GitLab で既にクローズ（承認/却下で決着）
