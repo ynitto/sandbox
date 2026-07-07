@@ -4973,10 +4973,16 @@ class TestStateGitPerProject(unittest.TestCase):
         self.assertIn(str(cfg.bus), cmd)
         self.assertIn("--state-git", cmd)
         self.assertIn(str(self.team), cmd)
-        self.assertEqual(cmd[cmd.index("--state-git-subdir") + 1], km.FLOW_STATE_SUBDIR)
+        self.assertEqual(cmd[cmd.index("--state-git-subdir") + 1], km.FLOW_STATE_SUBDIR)  # 既定
         self.assertIn("daemon", cmd)
         self.assertEqual(cmd[cmd.index("--max-workers") + 1], "3")
         self.assertEqual(cmd[cmd.index("--executor") + 1], "stub")
+
+    def test_flow_daemon_cmd_respects_flow_state_subdir(self):
+        # flow_state_subdir で注入する state_git サブディレクトリを変えられる（既定 kiro-flow 固定でない）。
+        cfg = self._cfg("alpha", executor="stub", flow_state_subdir="flow-runs")
+        cmd = km.flow_daemon_cmd(cfg, 1)
+        self.assertEqual(cmd[cmd.index("--state-git-subdir") + 1], "flow-runs")
 
     def test_ensure_flow_daemon_spawns_when_managed_and_absent(self):
         cfg = self._cfg("alpha", manage_flow_daemon=True)
