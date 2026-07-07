@@ -2357,41 +2357,58 @@ async function maybeAutoGitPull() {
   }
 }
 
-// 管理ファイルを書き換えた操作（指示ドロップ・inbox 投入・needs 記入・削除）の後に呼ぶ。
+// commitPush が notRepo（＝そのディレクトリが git 作業ツリーでない）で「黙ってスキップ」した
+// ことを、ディレクトリごとに一度だけ知らせる（操作のたびに出すと煩いのでセッション内で重複排除）。
+// バックログ修正・タスク操作・needs 記入・run 削除など、gitAutoPush 有効なのに反映されない全操作が
+// 対象。ローカル daemon バス（<project>/bus）や、本体の state_git が「作業ディレクトリ→別クローン」
+// 方式で同期する構成では作業ディレクトリ自体が git リポジトリでないため、viewer からは直接 push
+// できず daemon 側の state_git 同期に委ねられる。git クローン上で viewer を動かせば直接反映される。
+const _pushSkipWarned = new Set();
+function warnPushSkipped(dir, kind) {
+  if (!dir || _pushSkipWarned.has(dir)) return;
+  _pushSkipWarned.add(dir);
+  const hint =
+    kind === 'bus'
+      ? '（viewer から直接反映するには ⚙ 設定 flowBusByProject でバスの git クローンを登録してください）'
+      : '（viewer から直接反映するには、状態共有リポジトリの git クローン上でプロジェクトを開いてください）';
+  toast(
+    `「${dir}」は git 作業ツリーではないため、変更を共有リポジトリへ直接 push できませんでした。` +
+      `kiro-projects / kiro-flow daemon の state_git 同期に反映が委ねられます${hint}。` +
+      `（この通知はディレクトリごとに一度だけ出ます）`
+  );
+}
+
+// 管理ファイルを書き換えた操作（指示ドロップ・inbox 投入・needs 記入・削除など）の後に呼ぶ。
 // 設定 gitAutoPush が有効なら、操作したディレクトリの変更をコミットして push する
-// （状態共有 git への都度反映）。書き込み本体は成功済みなので待たずに走らせ、
-// 失敗（push 不可など）だけトーストで知らせる。
+// （状態共有 git への都度反映）。書き込み本体は成功済みなので待たずに走らせ、失敗（push 不可）や
+// notRepo による「黙ってスキップ」だけトーストで知らせる（後者はディレクトリごとに一度だけ）。
 // 戻り値は commitPush の結果 Promise（gitAutoPush 無効/対象なしのときは null）。
-// 通常は fire-and-forget で呼ぶ（戻り値は無視してよい）。反映の成否まで見たい呼び出し側
-// （バス操作＝下記 gitPushBusOp）は await して skipped/notRepo を確かめられるようにする。
-function gitPushAfterWrite(message, dir) {
+// opts.kind は notRepo 通知の対処ヒント切り替え用（'bus'（バス）／既定 'project'）。
+function gitPushAfterWrite(message, dir, opts) {
   const cfg = state.config;
   if (!cfg || !cfg.kiro || !cfg.kiro.gitAutoPush) return null;
   const target = dir || state.selectedDir;
   if (!target) return null;
-  return api.gitCommitPush(target, message).catch((err) => {
-    toast(`git 同期（プッシュ）: ${err.message || err}`);
-    return null;
-  });
+  const kind = (opts && opts.kind) || 'project';
+  return api
+    .gitCommitPush(target, message)
+    .then((res) => {
+      if (res && res.skipped && res.notRepo) warnPushSkipped(target, kind);
+      return res;
+    })
+    .catch((err) => {
+      toast(`git 同期（プッシュ）: ${err.message || err}`);
+      return null;
+    });
 }
 
-// バス操作（run の削除・再投入）の git 反映。バス（<project>/bus 等のローカル daemon バス）は
-// kiro-projects の state_git から除外され（_STATE_EXCLUDE_DIRS）、kiro-flow 側の state_git が
-// 別クローンへ同期する。そのため busDir が git 作業ツリーでないと commitPush は notRepo で
-// 「黙ってスキップ」し、削除/再投入が共有リポジトリへ反映されない（＝push できていない）。
-// git 追跡下のバス（設定 flowBusByProject の clone＝<clone>/kiro-flow）なら通常どおり反映される。
-// 沈黙の no-op を避けるため、スキップされたら理由と対処（daemon 同期 or flowBusByProject 登録）を知らせる。
-async function gitPushBusOp(message) {
+// バス操作（run の削除・再投入）の git 反映。バスは kiro-projects の state_git から除外され
+// （_STATE_EXCLUDE_DIRS）、kiro-flow 側の state_git が別クローンへ同期するため、busDir が git
+// 作業ツリーでないと notRepo で黙ってスキップされる。notRepo 通知は gitPushAfterWrite が
+// バス向けのヒント付きで出す（ここは busDir を対象にするだけ）。
+function gitPushBusOp(message) {
   const busDir = state.project && state.project.busDir;
-  const res = await gitPushAfterWrite(message, busDir);
-  if (res && res.skipped && res.notRepo) {
-    toast(
-      `バス（${busDir}）が git 作業ツリーではないため、共有リポジトリへ直接反映できませんでした。` +
-        `kiro-flow daemon の state_git 同期に反映が委ねられます（viewer から直接反映するには ⚙ 設定の flowBusByProject でバスの git クローンを登録してください）。`,
-      true
-    );
-  }
-  return res;
+  return gitPushAfterWrite(message, busDir, { kind: 'bus' });
 }
 
 // 手動（⇣ ボタン）: スロットリングを無視して即 pull し、結果をトーストで知らせる

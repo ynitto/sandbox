@@ -21,21 +21,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - 手動ボタンは「⟳ GitLab 最新化」に改称（自動取得の即時再取得用）。追加の API 呼び出しは
   非終端ノードのみ・最大 40 件・直列・60 秒律速で有界。
 
-### kiro-projects-viewer: run（バス）削除の git 反映が黙ってスキップされる問題を可視化
+### kiro-projects-viewer: 状態共有 git への push が黙ってスキップされる問題を可視化
 
-- **バグ修正**: run 削除（および再投入）の状態共有 git 反映が、バスが git 作業ツリーでないと
-  `commitPush` の `notRepo` で**黙ってスキップ**され、削除が共有リポジトリへ反映されないのに
-  何も知らされなかった。バスは kiro-projects の state_git から除外され（`_STATE_EXCLUDE_DIRS =
-  {"bus","claims"}`）、kiro-flow 側の state_git が別クローンへ同期する構成のため、`<project>/bus`
-  のようなローカル daemon バスは viewer から直接 push できない（task 削除は state_git 追跡下の
-  `p.dir` へ push するので従来どおり反映される、という非対称があった）。
-- **対応**: バス操作の push を `gitPushBusOp` に集約し、`commitPush` の結果を await して
-  `skipped/notRepo` を検知。スキップ時は「共有リポジトリへ直接反映できなかった／kiro-flow
-  daemon の state_git 同期に委ねられる／viewer から直接反映するには設定 `flowBusByProject` で
-  バスの git クローンを登録する」ことをトーストで明示する（沈黙の no-op をなくす）。git 追跡下の
-  バス（`flowBusByProject` の `<clone>/kiro-flow`）では従来どおり削除がコミット・push される。
+- **バグ修正**: ユーザー操作の状態共有 git 反映（`gitAutoPush`）が、操作したディレクトリが
+  **git 作業ツリーでない**と `commitPush` の `notRepo` で**黙ってスキップ**され、変更が共有
+  リポジトリへ反映されないのに何も知らされなかった。最初に run（バス）削除で表面化したが、
+  **バックログ修正・タスク操作・needs 記入など `p.dir` への操作も同じ**で、本体の state_git が
+  「作業ディレクトリ→別クローン」方式で同期する構成では作業ディレクトリ自体が git リポジトリでない
+  ため、viewer からは直接 push できず daemon 側の state_git 同期に委ねられる（バスは
+  `_STATE_EXCLUDE_DIRS = {"bus","claims"}` で本体 state_git から除外され、kiro-flow 側が別クローンへ
+  同期）。
+- **対応**: `notRepo` スキップの検知を `gitPushAfterWrite` に集約し、**全操作**で「共有リポジトリへ
+  直接反映できなかった／daemon の state_git 同期に委ねられる／viewer から直接反映するには git
+  クローン上でプロジェクト（バスは `flowBusByProject`）を開く」ことをトーストで明示する（**沈黙の
+  no-op をなくす**）。通知は**ディレクトリごとに一度だけ**（操作のたびには出さない）。git 追跡下の
+  作業ツリー（pure-remote 構成・`flowBusByProject` の `<clone>/kiro-flow`）では従来どおり
+  コミット・push される。
 - `gitPushAfterWrite` は commitPush の結果 Promise を返すようにした（従来の fire-and-forget
-  呼び出しは戻り値を無視するだけで挙動不変）。
+  呼び出しは戻り値を無視するだけで挙動不変）。バス操作は `gitPushBusOp`（`kind:'bus'` でヒント切替）。
 
 ### kiro-projects-viewer: gitlab executor のクローズ済みイシューをタスクグラフへ反映
 
