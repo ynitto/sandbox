@@ -420,6 +420,8 @@ svg.graph .node.reconciled rect { stroke-dasharray: 4 3; }
 svg.graph .node-issue { cursor: pointer; }
 svg.graph .node-issue circle { fill: var(--orange); stroke: var(--bg); stroke-width: 1.5; }
 svg.graph .node-issue.rejected circle { fill: var(--red); }
+/* レビュー中（オープン）の関連イシュー: 実行中ノードと同系の色で「決着前」を示す */
+svg.graph .node-issue.review circle { fill: var(--accent2); }
 svg.graph .node-issue .node-issue-glyph { fill: #fff; font-size: 12px; font-weight: 700; }
 svg.graph .node-issue:hover circle { stroke: var(--fg); }
 

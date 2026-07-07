@@ -155,11 +155,11 @@ function registerIpcHandlers() {
     return { enabled: true, issues };
   });
 
-  // run の非終端ノード（実行中など）を GitLab の「今」のイシュー状態と突き合わせ、クローズ済み
-  // イシューに紐づくノードを完了/失敗として先読みする（gitlab executor が result を書く前の反映）。
-  // 判定は flow.reconcileNodeState（executor と同一規則）に委ね、ここは取得の面倒だけを見る:
-  //   ノードの決定的タスクトークンで関連イシューを検索 → クローズ済みで、ラベル/MR だけでは
-  //   決着しないときだけ人コメントも取得して手掛かりにする（余計な API 呼び出しを避ける）。
+  // run の非終端ノード（実行中など）を GitLab の「今」のイシュー状態と突き合わせて返す。
+  //   ・クローズ済み → flow.reconcileNodeState（executor と同一規則）で完了/失敗を先読み反映。
+  //     ラベル/MR だけで決着しないときだけ人コメントも取得して手掛かりにする（余計な API を避ける）。
+  //   ・オープン中（レビュー待ち）→ reconciled=null でイシュー情報だけ返す（ノードに「レビュー中」表示）。
+  // ノードの決定的タスクトークンで関連イシューを検索する。見つからなければそのノードは返さない。
   handle('gitlab:reconcileRun', async ({ repoUrl, projectPath, nodes }) => {
     const gl = client();
     if (!gl.enabled) return { enabled: false, nodes: [] };
@@ -174,25 +174,28 @@ function registerIpcHandlers() {
       } catch {
         continue; // 起票先を解決できない/検索失敗のノードは黙って飛ばす（他ノードは続ける）
       }
-      if (!issue || issue.state !== 'closed') continue;
-      // ラベル / 関連 MR だけで決着するなら人コメントは取りに行かない。付かないときだけ補う。
-      const mrDecision = flow.gitlabMrDecision((issue.relatedMrs || []).map((m) => m.state));
-      const labelDecision = flow.gitlabClosedIssueDecision({ labels: issue.labels });
-      if (!mrDecision && !labelDecision && issue.projectPath && issue.iid) {
-        try {
-          issue.comments = await gl.getIssueComments(issue.projectPath, issue.iid);
-        } catch {
-          issue.comments = [];
+      if (!issue) continue; // トークンで関連イシューが見つからない（起票前・非 gitlab タスク）
+      let reconciled = null;
+      if (issue.state === 'closed') {
+        // ラベル / 関連 MR だけで決着するなら人コメントは取りに行かない。付かないときだけ補う。
+        const mrDecision = flow.gitlabMrDecision((issue.relatedMrs || []).map((m) => m.state));
+        const labelDecision = flow.gitlabClosedIssueDecision({ labels: issue.labels });
+        if (!mrDecision && !labelDecision && issue.projectPath && issue.iid) {
+          try {
+            issue.comments = await gl.getIssueComments(issue.projectPath, issue.iid);
+          } catch {
+            issue.comments = [];
+          }
         }
+        reconciled = flow.reconcileNodeState({ state: n.state }, issue);
       }
-      const reconciled = flow.reconcileNodeState({ state: n.state }, issue);
       out.push({
         id: n.id,
-        reconciled, // 'done' | 'failed' | null
+        reconciled, // 'done' | 'failed'（クローズ済み）| null（オープン中＝レビュー待ち）
         url: issue.url || '',
         iid: issue.iid || null,
         title: issue.title || '',
-        issueState: issue.state,
+        issueState: issue.state, // 'opened' | 'closed'
         labels: issue.labels || [],
         relatedMrs: issue.relatedMrs || [],
       });
