@@ -3767,7 +3767,7 @@ class ServiceWaitsTests(unittest.TestCase):
         args = _park_args()
         with mock.patch.object(kf, "executor_hook",
                                side_effect=lambda a, name: poll_fn if name == "poll" else None):
-            return kf.service_waits(self.bus, args, only_run="run1", daemon_id="t")
+            return kf.service_waits(self.bus, args, only_runs=["run1"], daemon_id="t")
 
     def test_approved_writes_done_result_and_clears_wait(self):
         self._park()
@@ -3817,15 +3817,36 @@ class ServiceWaitsTests(unittest.TestCase):
         with mock.patch.object(kf, "executor_hook",
                                side_effect=lambda a, name: (lambda st: {"decision": None})
                                if name == "poll" else None):
-            kf.service_waits(self.bus, args, only_run="run1", daemon_id="t")
+            kf.service_waits(self.bus, args, only_runs=["run1"], daemon_id="t")
         self.assertIsNone(self.bus.read_wait("n2"))             # 解除された
 
     def test_builtin_executor_noop(self):
         # poll フックが無い executor（kiro/stub）では何もしない
         self._park()
-        n = kf.service_waits(self.bus, _park_args(executor="stub"), only_run="run1")
+        n = kf.service_waits(self.bus, _park_args(executor="stub"), only_runs=["run1"])
         self.assertEqual(n, 0)
         self.assertIsNotNone(self.bus.read_wait("n1"))          # 触られない
+
+    def test_only_runs_partitions_watching(self):
+        # 分散: 担当外の run の park は触らない（監視を run オーナーに分担＝重複ポーリングを防ぐ）。
+        self.bus.run_view("run2")  # ビューだけ（別 run）
+        b2 = kf.Bus(self.tmp, "run2")
+        b2.ensure_run("req2")
+        b2.set_status("running")
+        self._park()                                             # run1 に park
+        b2.write_wait("m1", {"id": "m1", "who": "w", "kind": "work", "executor": "gitlab",
+                             "issue": {"host": "h", "project": "p", "iid": 9, "url": "u"},
+                             "throttled": False, "active_seen": False,
+                             "wait_lease_until": time.time() + 1000, "next_poll_at": 0,
+                             "started_at": time.time(), "timeout": 0, "approved_timeout": 0})
+        polled = []
+        with mock.patch.object(kf, "executor_hook",
+                               side_effect=lambda a, name:
+                               (lambda st: polled.append(st["issue"]["iid"]) or {"decision": None})
+                               if name == "poll" else None):
+            kf.service_waits(self.bus, _park_args(), only_runs=["run1"], daemon_id="ownerA")
+        self.assertEqual(polled, [5])                            # run1 の #5 だけ。run2 の #9 は触らない
+        self.assertIsNotNone(b2.read_wait("m1"))                # run2 の park は別オーナーが見る
 
 
 class CancelTests(unittest.TestCase):

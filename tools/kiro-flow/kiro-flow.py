@@ -3078,11 +3078,18 @@ def _service_throttled(v: Bus, rec: dict, cap: int, wait_lease: float, daemon_id
     v.write_wait(nid, rec)
 
 
-def service_waits(bus: Bus, args, only_run: "str | None" = None,
+def service_waits(bus: Bus, args, only_runs: "list | None" = None,
                   daemon_id: str = "service_waits") -> int:
     """監視主体（daemon/run）が park 済みノードをバッチ再確認する単一ポーラ。処理した run 数を返す。
     起動モード非依存（daemon でも cmd_run でも同じこれを回す）。executor が poll() を持たない
-    （kiro/stub）なら何もしない＝park & poll は deferring executor（gitlab）だけで働き、他は不変。"""
+    （kiro/stub）なら何もしない＝park & poll は deferring executor（gitlab）だけで働き、他は不変。
+
+    分散（git バス）で監視を**公平に分担**するため、`only_runs` に「この監視主体が担当する run」を
+    渡す（daemon は自分が orchestrator を駆動している run、cmd_run は自分の run 1 件）。渡すと
+    その run だけを監視する＝**1 run の park は駆動オーナー 1 台だけがポーリング**し、N 台が全 park を
+    重複ポーリングするのを防ぐ。run 自体は request-claim で各 PC に分散するため監視も自然に分散する。
+    オーナーが消えても孤児 reclaim が run（＝監視）を別 PC へ移すのでクラッシュ耐性はそのまま。
+    None（担当未指定）のときは全 active run を見る（単一 PC / 後方互換）。"""
     poll = executor_hook(args, "poll")
     if poll is None:
         return 0
@@ -3095,7 +3102,7 @@ def service_waits(bus: Bus, args, only_run: "str | None" = None,
     wait_lease = _wait_lease_window(watch_interval)
     cap = int(cfg.get("max_open_issues", 0) or 0)
     now = time.time()
-    run_ids = [only_run] if only_run else bus.active_runs()
+    run_ids = list(only_runs) if only_runs is not None else bus.active_runs()
     serviced = 0
     for rid in run_ids:
         v = bus.run_view(rid)
@@ -4001,7 +4008,7 @@ def cmd_run(args) -> int:
             state_sync(args)   # 状態 git: 進捗をリモートの viewer へ共有（間隔律速・ローカルバス時のみ）
             if time.time() >= next_wait_service:
                 try:
-                    service_waits(bus, args, only_run=run_id, daemon_id="run")
+                    service_waits(bus, args, only_runs=[run_id], daemon_id="run")
                 except Exception as e:  # noqa: BLE001 — 監視失敗は run を止めない
                     print(f">>> service_waits でエラー（無視して継続）: {e}", flush=True)
                 next_wait_service = time.time() + watch_interval
@@ -4210,9 +4217,12 @@ def cmd_daemon(args) -> int:
             if marked:
                 log(daemon_id, f"cancel 受理: {rid} を canceled に終端化（{reason}）")
         # park & poll: 承認待ち等で park されたノードをまとめて再確認し、決着なら終端 result を書く。
+        # 監視は**自分が駆動している run だけ**を対象にする（分散時に N 台が全 park を重複ポーリング
+        # しないよう、1 run の監視は駆動オーナー 1 台に分担する）。オーナー消失時は孤児 reclaim が
+        # run（＝監視）を別 PC へ移すので取りこぼさない。
         if time.time() >= next_wait_service:
             try:
-                n = service_waits(bus, args, daemon_id=daemon_id)
+                n = service_waits(bus, args, only_runs=list(orchestrators), daemon_id=daemon_id)
                 if n:
                     write_daemon_status(args, bus, daemon_id, orchestrators, workers)
             except Exception as e:  # noqa: BLE001 — 監視失敗は daemon を止めない

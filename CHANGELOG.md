@@ -22,6 +22,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   する必要がない（成果はマージ済み MR にある）ため、監視主体が worker/clone 無しで結果を材料化できる。
   → **ブロック worker N 台 ×(1/30s)** を **監視 1 本 ×(1/watch_interval) のバッチ**へ畳み、スロット占有と
   多重ポーリングの二重負荷を同時に解消。`max_workers` は小さいまま据え置ける。
+- **分散時の公平な分担**: git バス分散では、起票は既存の per-node claim で全 PC に公平分散し、監視は
+  各 run の **駆動オーナー daemon 1 台に分担**する（`service_waits` は「自分が orchestrator を回している run」
+  だけを見る）。これで N 台が全 park を **重複ポーリングしない**（run が各 PC に分散する分だけ監視も分散）。
+  オーナー消失時は孤児 reclaim が run（＝監視）を別 PC へ移すので取りこぼさない。
 - **耐性（維持・強化）**: park 記録はバス上で **git 同期し daemon 消失を跨いで生存**——次に起きた daemon が
   引き継いで再確認する（孤児 run reclaim と同じモデル）。`waits/` は claim と同じ **lease セマンティクス**に
   相乗りし、`wait_lease` 失効時は `node_state` が **`pending` へ縮退**して full worker が **冪等な再アタッチ**
