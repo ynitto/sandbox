@@ -1360,6 +1360,7 @@ const FLOW_STATE_LABEL = {
   done: '完了',
   failed: '失敗',
   claimed: '実行中',
+  parked: '承認待ち',
   pending: '待機（実行可能）',
   waiting: '依存待ち',
 };
@@ -1626,9 +1627,16 @@ function renderFlowDetail() {
       ? `<button class="chip" id="flow-resubmit" title="meta の要求・ワークスペースをそのまま新しい run として inbox へ投入します（daemon が拾う）">↻ 同じ要求で再投入</button>`
       : '';
   // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ
-  const deletable = run.status === 'done' || run.status === 'failed' || run.alive === false;
+  const deletable = run.status === 'done' || run.status === 'failed' || run.status === 'canceled' || run.alive === false;
   const deleteBtn = deletable
     ? `<button class="chip danger" id="flow-delete" title="この run のディレクトリ（runs/${esc(run.runId)}）をゴミ箱へ移動します">🗑 削除</button>`
+    : '';
+  // run のキャンセル（人の明示アクション＝唯一の hard-stop）。まだ終端していない run に出す。
+  // 承認待ちで park 中の run も暴走中の run も止められる。起票済みイシューは残す（追跡だけやめる）。
+  const cancelable = !['done', 'failed', 'canceled'].includes(run.status);
+  const parkedCount = Object.values(run.nodes || {}).filter((n) => n.parked).length;
+  const cancelBtn = cancelable
+    ? `<button class="chip danger" id="flow-cancel" title="この run を canceled に終端化します（新規起票・承認待ちの監視・自動再開をすべて停止）。起票済みの GitLab イシューは残ります（追跡だけやめます）">■ キャンセル${parkedCount ? `（承認待ち ${parkedCount}）` : ''}</button>`
     : '';
   // gitlab executor 連動: 非終端ノードがあれば「GitLab と突き合わせ」で関連イシューの今の状態
   // （クローズ済み＝完了/失敗を先読み反映／オープン＝レビュー中を表示）を取り込める。run を開いた
@@ -1650,7 +1658,7 @@ function renderFlowDetail() {
     <div id="flow-overview" class="flow-pane">
       <div class="flow-pane-title">概要</div>
       <div class="card full">
-        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${reconcileBtn} ${resubmit} ${deleteBtn}</h3>
+        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${reconcileBtn} ${resubmit} ${cancelBtn} ${deleteBtn}</h3>
         ${relationshipStrip({ run })}
         <div>${esc(run.request || '')}</div>
         ${run.inheritedFrom ? `<div class="muted" title="このリトライが引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(run.inheritedFrom)}</span></div>` : ''}
@@ -1682,6 +1690,19 @@ function renderFlowDetail() {
 // ノードのタイムライン（events の claimed / result。新しい順で届く）
 function nodeTimeline(nodeId) {
   return ((state.flowRun && state.flowRun.nodeEvents) || {})[nodeId] || [];
+}
+
+// park（承認待ち）ノードの説明行。承認待ちで保留中＝worker スロットを空けて監視主体が
+// 定期確認していること、throttle（起票見送り）や人の作業検知を人に伝える。
+function nodeParkLine(node) {
+  if (!node.parked) return '';
+  if (node.throttled) {
+    return `<div class="muted" style="margin-top:4px">⏸ 起票見送り中（同時イシュー上限に達したため一時停止。枠が空くと自動で起票されます）</div>`;
+  }
+  const active = node.parkActiveSeen
+    ? '人の作業（MR/ラベル）を検知済み — マージ待ち'
+    : 'レビュー/MR 作成待ち';
+  return `<div class="muted" style="margin-top:4px">⏳ 承認待ち（park）— worker スロットを解放し、監視主体が定期確認中。${active}</div>`;
 }
 
 // ノードの進捗行: 実行中は 開始/経過/heartbeat/lease、終端は 所要/完了時刻 を出す
@@ -1739,6 +1760,7 @@ function nodeIssueBlock(run, node) {
     else if (found && found.state === 'closed')
       chip = `<span class="status-chip st-closed">クローズ</span>`;
     else if (d.decision) chip = `<span class="status-chip st-done">${esc(d.decision)}</span>`;
+    else if (node.parked) chip = `<span class="status-chip st-parked">承認待ち</span>`;
     rows.push(`<div class="row2" style="align-items:center;gap:8px">
       <a href="#" data-ext="${esc(url)}" class="mono">${esc(url)}</a> ${chip}
       <button data-review="${esc(url)}" title="gitlab-review-viewer で開く">レビューで開く</button>
@@ -1812,6 +1834,7 @@ function renderFlowNode(run, node) {
       <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}</h3>
       <div>${esc(node.goal)}</div>
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
+      ${nodeParkLine(node)}
       ${nodeProgressLine(node)}
       ${nodeIssueBlock(run, node)}
       ${node.output ? `<div class="section-title">output</div><pre class="mono">${esc(node.output.slice(0, 3000))}</pre>` : ''}
@@ -1847,6 +1870,33 @@ async function resubmitFlowRun() {
       true
     );
     await gitPushBusOp(`kiro-projects-viewer: resubmit run ${run.runId}`);
+    await reloadProject();
+  }
+}
+
+// run をキャンセルする（人の明示アクション＝唯一の hard-stop）。承認待ちで park 中でも暴走中でも止まる。
+async function cancelFlowRun() {
+  const run = state.flowRun && state.flowRun.run;
+  if (!run) return;
+  const parked = Object.values(run.nodes || {}).filter((n) => n.parked).length;
+  const note = parked
+    ? `\n承認待ちで保留中のノードが ${parked} 件あります。監視を止めますが、起票済みの GitLab イシューは残します（追跡だけやめます。人がクローズできます）。`
+    : '\n起票済みの GitLab イシューがあれば残します（追跡だけやめます）。';
+  const yes = await confirmDialog(
+    `run ${run.runId} をキャンセルします。\n新規起票・承認待ちの監視・自動再開をすべて停止し、status を canceled に確定します。${note}\nよろしいですか？`
+  );
+  if (!yes) return;
+  const ok = await guard('run キャンセル', async () => {
+    const res = await api.flowCancel(state.project.busDir, run.runId, 'kiro-projects-viewer から手動キャンセル');
+    if (res && res.alreadyTerminal) {
+      toast(`run は既に終端（${res.status}）でした。キャンセルは不要です。`, true);
+    } else {
+      toast(`run をキャンセルしました（承認待ち ${res ? res.cleared : 0} 件の監視を停止）: ${run.runId}`, true);
+    }
+    return true;
+  });
+  if (ok) {
+    await gitPushBusOp(`kiro-projects-viewer: cancel run ${run.runId}`);
     await reloadProject();
   }
 }
@@ -1887,7 +1937,7 @@ function summarizeEvent(ev) {
 }
 
 function swColor(st) {
-  return { done: '#3fb950', failed: '#f85149', claimed: '#4cc2b0', pending: '#58a6ff', waiting: '#3a4048' }[st] || '#3a4048';
+  return { done: '#3fb950', failed: '#f85149', claimed: '#4cc2b0', parked: '#d29922', pending: '#58a6ff', waiting: '#3a4048' }[st] || '#3a4048';
 }
 
 // トポロジカル深さでノードを列に並べ、SVG で DAG を描く
@@ -1958,7 +2008,10 @@ function renderGraphSvg(run) {
     const recEntry = reconcileEntry(run.runId);
     const rec = recEntry && recEntry.byNode ? recEntry.byNode[n.id] : null;
     const issueUrl = n.issueUrl || (rec && rec.url) || '';
-    const issueOpen = rec && rec.issueState === 'opened' && !reconciled;
+    // park 中（承認待ち）のノードは定義上オープンなイシューをレビュー待ちにしている＝突き合わせ前でも
+    // レビュー中（青系）として表示する。throttled（起票見送り）はイシュー未作成なので対象外。
+    const issueOpen =
+      (rec && rec.issueState === 'opened' && !reconciled) || (n.parked && !n.throttled && !reconciled);
     const idMax = issueUrl ? 17 : 20; // アイコン分だけ id ラベルを詰める
     const idLabel = n.id.length > idMax ? `${n.id.slice(0, idMax - 1)}…` : n.id;
     const goal = n.goal.length > 24 ? `${n.goal.slice(0, 23)}…` : n.goal;
@@ -2006,6 +2059,8 @@ function bindFlowDetail(root) {
   }
   const rs = root.querySelector('#flow-resubmit');
   if (rs) rs.addEventListener('click', () => resubmitFlowRun());
+  const cn = root.querySelector('#flow-cancel');
+  if (cn) cn.addEventListener('click', () => cancelFlowRun());
   const fd = root.querySelector('#flow-delete');
   if (fd) fd.addEventListener('click', () => deleteFlowRun());
   const rc = root.querySelector('#flow-reconcile');

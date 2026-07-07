@@ -106,6 +106,15 @@ function registerIpcHandlers() {
     return { runDir, status, via };
   });
 
+  // run のキャンセル（人の明示アクション＝唯一の hard-stop）。cancel マーカーを inbox へ置き
+  // （git 同期で他 PC / daemon へ伝わる）、run の meta を canceled に確定し、park 済みノードの
+  // 再ポーリングを止める。承認待ちで park 中の run も暴走中の run も止められる。起票済みイシューは
+  // 残す（追跡だけやめる＝kiro-flow の既定）。イシュークローズは daemon の cancel --close-issues か
+  // gitlab-review-viewer に任せる（この viewer の GitLab クライアントは読み取り専用）。
+  handle('flow:cancel', ({ busDir, runId, reason }) =>
+    flow.cancelRun(busDir, runId, { reason: reason || '' })
+  );
+
   // 不要なバックログタスクの削除（人の明示アクション）。backlog/<id>.md だけを
   // 対象にし、実行中（doing かつクレームあり）のタスクは拒否する。
   // クレームロック（claims/<id>.lock）は worker のクラッシュや review/blocked

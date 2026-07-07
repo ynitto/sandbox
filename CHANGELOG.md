@@ -49,6 +49,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   `max_open_issues` を `gitlab:` ブロックに追加。README / `kiro-flow.yaml.example` を更新、テストを追加
   （waiting 状態・service_waits の決着/据え置き/締切/throttle・cancel・gitlab の DeferDecision/poll/on_cancel）。
 
+### kiro-projects-viewer: park & poll の可視化 ＋ run キャンセル操作 ＋ canceled 終端対応
+
+- 上記 kiro-flow の park & poll / cancel をビュアーから扱えるようにした。ビュアーは引き続き基本
+  読み取り専用だが、run ライフサイクル操作（既存の再投入・削除）と同じ流儀で cancel を追加した。
+- **park（承認待ち）の可視化**: `flow.js` が `runs/<run>/waits/<node>.json` を読み、生存 lease を持つ
+  ノードを「**承認待ち（parked）**」状態として導出（オレンジのノード色＋レビュー中アイコン）。同時
+  イシュー上限での「起票見送り（throttle）」も区別。lease 失効は pending へ縮退＝本体と同じ。ノード
+  詳細に park の説明行（レビュー/MR 作成待ち・人の作業検知・throttle）とチップを表示。
+- **run キャンセル**: run 詳細に「■ キャンセル」ボタン（非終端 run のみ）。`inbox/cancels/<run-id>.json`
+  にマーカーを置き（git 同期で他 PC / daemon へ伝わる）、`meta.json` を canceled に確定、`waits/` を
+  掃除して監視の再ポーリングを止める（kiro-flow の cmd_cancel と同形）。承認待ちで park 中でも暴走中でも
+  止められる。起票済みイシューは残す（この viewer の GitLab クライアントは読み取り専用のため、クローズは
+  daemon の `cancel --close-issues` か gitlab-review-viewer に委ねる）。
+- **canceled 終端対応**: `flow.js` の `TERMINAL` に `canceled` を追加（canceled run を「応答なし/実行中」に
+  誤分類しない）。run 削除の対象にも canceled を含め、status チップ／グラフ色を追加。テスト 7 件を追加。
+
 ### kiro-projects: 管理 daemon の state_git サブディレクトリを設定可能に（`flow_state_subdir`）
 
 - `manage_flow_daemon` で起動する kiro-flow daemon の `--state-git-subdir` は `kiro-flow` にハードコード
