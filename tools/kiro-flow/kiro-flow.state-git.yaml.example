@@ -27,9 +27,20 @@ gitlab:
   approved_timeout: 0   # 承認/決着待ちの猶予も無限。誤タイムアウト由来の retry ループを消す
                         #   （run の本当の失敗は終端ステータスで検知される＝待ち上限は安全網に不要）。
                         #   kiro-projects 側は act_timeout: 0 ＋ act_async: true と併用する。
+  # park & poll（承認待ちを worker スロットから切り離す。既定 有効）。承認待ちのイシューが
+  # max_workers を占有せず、監視は daemon が watch_interval 毎にまとめて再確認する。承認待ちが
+  # 溜まって発行が止まる問題と多重ポーリングを同時に抑える。従来モード（1 worker=1 イシューで
+  # ブロック待機）に戻すなら defer_waits: false。
+  # defer_waits: true
+  # max_open_issues: 0    # 同時に開ける未決着イシューの上限（0=無制限）。>0 で起票をペーシング
+  # watch_interval: 90    # park 済みイシューをまとめて再確認する間隔（秒）
 
 # --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
 # kiro-projects 側と同じリポジトリ・別 subdir。viewer は <clone>/kiro-flow をバスとして登録する。
+# ★この state_git_subdir が唯一の権威。kiro-projects に管理させる構成（manage_flow_daemon）でも、
+#   この値はこの kiro-flow.yaml のパスを flow_config で渡して反映される（kiro-projects が
+#   --state-git-subdir を個別 CLI 注入して上書きすることは無くなった）。変えるなら viewer の
+#   flowBusByProject（<clone>/<subdir>）も同じ値に合わせる。
 state_git: git@gitlab.example.com:team/kiro-state.git
 state_git_subdir: kiro-flow
 # state_git_interval: 300             # fetch/push の最短間隔（秒）。daemon の毎 poll から

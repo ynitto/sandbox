@@ -1529,6 +1529,54 @@ class GitlabRepoInstructionTests(unittest.TestCase):
         self.assertIn("ログイン画面を追加", purpose)
 
 
+class ConfigStateGitSubdirTests(unittest.TestCase):
+    """回帰: state_git_subdir が --config（kiro-projects が渡す flow_config）経由で反映されること。
+    kiro-projects が --state-git-subdir を個別 CLI 注入していた頃は config 値が上書きされて効かない
+    バグがあった。注入をやめた今、config の値が resolve_config → state_git_for まで通ることを固定する。"""
+
+    def _write_cfg(self, obj):
+        d = tempfile.mkdtemp(prefix="kf-cfgsub-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        p = os.path.join(d, "kiro-flow.json")   # JSON でも YAML と同一キー・同一 resolve
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+        return d, p
+
+    def _resolve(self, argv):
+        args = kf.build_parser().parse_args(argv)
+        kf.resolve_config(args)
+        return args
+
+    def test_subdir_comes_from_config_when_cli_absent(self):
+        # flow_daemon_cmd と同じ argv（--config あり・--state-git-subdir 無し）で config 値が効く
+        d, cfg = self._write_cfg({"state_git_subdir": "custom-flow-ns"})
+        args = self._resolve(["--bus", os.path.join(d, "bus"),
+                              "--state-git", "git@x:team/s.git", "--state-git-branch", "main",
+                              "--state-git-interval", "300", "--config", cfg,
+                              "daemon", "--executor", "stub"])
+        self.assertEqual(args.state_git_subdir, "custom-flow-ns")
+        sg = kf.state_git_for(args)                      # 実際に使われる StateGit が同じ subdir を持つ
+        self.assertIsNotNone(sg)
+        self.assertEqual(sg.subdir, "custom-flow-ns")
+
+    def test_default_subdir_when_unset(self):
+        # config にも CLI にも無ければ既定 "kiro-flow"（kiro-projects の FLOW_STATE_SUBDIR と一致）
+        d, cfg = self._write_cfg({})
+        args = self._resolve(["--bus", os.path.join(d, "bus"),
+                              "--state-git", "git@x:team/s.git", "--config", cfg,
+                              "daemon", "--executor", "stub"])
+        self.assertEqual(args.state_git_subdir, "kiro-flow")
+
+    def test_cli_still_overrides_config(self):
+        # 明示 CLI 指定は従来どおり config より優先（CLI > config > 既定）
+        d, cfg = self._write_cfg({"state_git_subdir": "from-config"})
+        args = self._resolve(["--bus", os.path.join(d, "bus"),
+                              "--state-git", "git@x:team/s.git",
+                              "--state-git-subdir", "from-cli", "--config", cfg,
+                              "daemon", "--executor", "stub"])
+        self.assertEqual(args.state_git_subdir, "from-cli")
+
+
 class ExecutorResolutionTests(unittest.TestCase):
     """executor のプラグイン解決（kiro-loop の event_hook 流のローダ）。"""
 
