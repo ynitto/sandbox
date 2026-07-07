@@ -105,6 +105,9 @@ verify_confirm: 1          # verify を N 回再実行し PASS/FAIL が跨いだ
 #                          # workdir に成果が出ないとき、対象 repo のクローン先を指す。未指定でも charter に
 #                          # 単一 repo があれば acceptance はその repo（target ブランチ）を一時 clone して検証する
 # require_progress: false  # verify=PASS でも変更ゼロなら done せず人へ（履歴一致 verify の偽 done 対策）
+# verify_validate: synth   # red-green 検証: 合成 verify が act 前ツリーでも PASS（=変更を弁別しない偽 done）を
+#                          # 実行で弾く。off/synth（自動生成のみ・既定）/all。per-task `- verify_validate: none` で除外
+# distill_learn: true      # 人コメント（gitlab 承認/却下）を一般化ルールへ蒸留してから learn 化（既定 on）
 max_spawn: 20              # 1 run で生成できる派生タスク（followup）数の上限（0 で無効）
 # regression_cmd: make -s smoke   # done 確定前のグローバル回帰検査（失敗で done にせず人へ）
 # 安全ゲート（gate / protect / deny …）は <root>/projects/<name>/policy.md に書く（人専管）

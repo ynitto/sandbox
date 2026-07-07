@@ -5211,6 +5211,71 @@ class FeedbackReductionTests(unittest.TestCase):
                 km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
             self.assertFalse((cfg.decisions / "T2.md").exists())
 
+    def test_approve_notes_captured_as_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T3", verify="true", title="ログイン e2e")
+            cfg = cfg_for(d, executor="gitlab")
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_result_notes",
+                                   return_value=[{"body": "実サーバで検証してOK", "note_id": 1}]), \
+                 mock.patch.object(km, "distill_learn",
+                                   return_value=("e2e 系", "実サーバ配備で実施")):
+                km.capture_approve_learn(cfg, task, "local")
+            dr = (cfg.decisions / "T3.md").read_text(encoding="utf-8")
+            self.assertIn("gitlab-approve", dr)
+            self.assertIn("- learn: e2e 系 :: 実サーバ配備で実施", dr)
+
+    # --- red-green（変更を弁別しない合成 verify を実行で弾く）---
+    def _git_repo(self, d: Path, fname="f", content="old"):
+        import subprocess as sp
+        sp.run(["git", "init", "-q", str(d)], check=True)
+        sp.run(["git", "-C", str(d), "config", "user.email", "t@t"], check=True)
+        sp.run(["git", "-C", str(d), "config", "user.name", "t"], check=True)
+        (d / fname).write_text(content)
+        sp.run(["git", "-C", str(d), "add", "-A"], check=True)
+        sp.run(["git", "-C", str(d), "commit", "-qm", "base"], check=True)
+        return km._git_out(d, "rev-parse", "HEAD").strip()
+
+    def test_redgreen_passes_for_discriminating_verify(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            base = self._git_repo(d, content="old")
+            (d / "f").write_text("new")                 # act 後の作業ツリー
+            cfg = cfg_for(d, workdir=d)
+            task = km.Task(id="T", title="x", verify="grep -q new f")
+            task.extra.append(("verify_source", "synth"))
+            # base では 'new' が無い＝fail、post では pass ⇒ 弁別している＝undiscriminating False
+            self.assertFalse(km.verify_undiscriminating(cfg, task, d, False,
+                                                        (base, frozenset()), None))
+
+    def test_redgreen_flags_stale_verify(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            base = self._git_repo(d, content="old")
+            (d / "f").write_text("old changed but still has old")
+            cfg = cfg_for(d, workdir=d)
+            task = km.Task(id="T", title="x", verify="grep -q old f")  # base でも PASS
+            task.extra.append(("verify_source", "synth"))
+            self.assertTrue(km.verify_undiscriminating(cfg, task, d, False,
+                                                       (base, frozenset()), None))
+
+    def test_redgreen_off_and_human_verify_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            base = self._git_repo(d, content="old")
+            cfg_off = cfg_for(d, workdir=d, verify_validate="off")
+            task = km.Task(id="T", title="x", verify="grep -q old f")
+            task.extra.append(("verify_source", "synth"))
+            self.assertFalse(km.verify_undiscriminating(cfg_off, task, d, False,
+                                                        (base, frozenset()), None))
+            # synth ポリシーは人が書いた verify（source!=synth/template）を検証しない
+            cfg = cfg_for(d, workdir=d)
+            human = km.Task(id="T2", title="x", verify="grep -q old f")
+            self.assertFalse(km.verify_undiscriminating(cfg, human, d, False,
+                                                        (base, frozenset()), None))
+
 
 if __name__ == "__main__":
     unittest.main()

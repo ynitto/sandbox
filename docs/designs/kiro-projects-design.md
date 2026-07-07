@@ -767,17 +767,20 @@ if guidance:
 | フェーズ | 内容 | 状況 |
 |---------|------|------|
 | **P0** | 人/エージェント判別の厳格化（kiro-flow §18.1。本ツールは emit を受けて最終判定）＝全フェーズの前提 | ✅ 実装 |
-| **P1** | §11.3 人コメントの learn 捕捉（`_settle_failure` 却下枝＋蒸留） | ✅ 実装（却下枝＋`distill_learn`） |
-| **P2** | §11.6 Red-Green 検証／恒真式スクリーン | ◐ 一部（`synth_verify` の恒真式棄却 `_verify_is_degenerate`。実行 red-green は未） |
+| **P1** | §11.3 人コメントの learn 捕捉（却下＋承認＋蒸留） | ✅ 実装（却下 `_settle_failure`＋承認 `capture_approve_learn`＋`distill_learn`） |
+| **P2** | §11.6 Red-Green 検証／恒真式スクリーン | ✅ 実装（実行 red-green `verify_undiscriminating`＋恒真式棄却 `_verify_is_degenerate`。`--verify-validate`） |
 | **P3** | §11.2 蒸留 ＋ §11.6 文脈つき合成・テンプレ拡充 | ◐ 一部（蒸留・テンプレ拡充は実装。文脈つき合成は未） |
 | **P4** | §11.4 plan/verify への recall ＋ §11.6 verify 学習再利用 | ✗ 未 |
 | **P5** | §11.5 昇格ラダー・cohort 還流 ＋ §11.6 多候補 | ✗ 未 |
 
-**実装済み**（P0/P1＋P2/P3 の一部）: gitlab 人コメントの learn 捕捉（`_settle_failure`）・蒸留（`distill_learn`・
-LLM＋verbatim フォールバック・`--distill-learn`）・承認/却下の著者付き `notes` emit（kiro-flow）・恒真式に退化した
-合成 verify の棄却（`_verify_is_degenerate`）・テンプレ拡充（`test-passes`/`builds`/`exit-zero`/`endpoint-returns`）。
-テスト: kiro-projects `FeedbackReductionTests`・kiro-flow `GitlabHumanAgentDiscriminationTests`。
-**未実装（フォローアップ）**: 実行 red-green 検証・文脈つき合成・多候補・plan/verify への recall・作業中コメントの逐次取り込み・
+**実装済み**（P0/P1/P2＋P3 の一部）: gitlab 人コメントの learn 捕捉（却下 `_settle_failure`・承認
+`capture_approve_learn`）・蒸留（`distill_learn`・LLM＋verbatim フォールバック・`--distill-learn`）・
+承認/却下の著者付き `notes` emit（kiro-flow）・**実行 red-green 検証**（`verify_undiscriminating` /
+`run_verify_at_rev`＝act 前ツリーで verify を回し変更を弁別しない偽 done を弾く・`--verify-validate off/synth/all`・
+per-task `- verify_validate: none`）・恒真式に退化した合成 verify の棄却（`_verify_is_degenerate`）・
+テンプレ拡充（`test-passes`/`builds`/`exit-zero`/`endpoint-returns`）。
+テスト: kiro-projects `FeedbackReductionTests`（12）・kiro-flow `GitlabHumanAgentDiscriminationTests`（7）。
+**未実装（フォローアップ）**: 文脈つき合成・多候補・verify 学習再利用・plan/verify への recall・作業中コメントの逐次取り込み・
 昇格ラダー・cohort 還流・flow-planner `--learnings`。
 
 後方互換（`learn_capture` off・`distill_learn` off・`trust_unmarked_comments` で従来挙動）。P0→P1→P2 を薄く入れて検証を推奨。

@@ -1904,6 +1904,48 @@ def run_verify_stable(cmd: str, workdir: Path, timeout: float,
     return (ok, False, msg)                    # 全回一致＝安定した結果
 
 
+def run_verify_at_rev(cmd: str, workdir: Path, rev: str, timeout: float,
+                      env: "dict | None" = None) -> "bool | None":
+    """verify を workdir の rev（act 前 HEAD）のツリーで実行し PASS したか（True/False）を返す。
+    detached worktree を temp に生やして実行し後始末する。git でない/worktree 作成失敗＝判定不能で None。
+    red-green の『red（変更前は fail のはず）』を取るのに使う——base で PASS するなら変更を弁別していない。
+    KIRO_BASE_REV は rev 自身に固定（差分基準 verify は base==HEAD で空差分＝正しく fail する）。"""
+    if not cmd.strip() or not rev or not (workdir / ".git").exists():
+        return None
+    wt = tempfile.mkdtemp(prefix="kiro-redgreen-")
+    try:
+        add = subprocess.run(["git", "-C", str(workdir), "worktree", "add", "--detach", wt, rev],
+                             capture_output=True, text=True, timeout=timeout)
+        if add.returncode != 0:
+            return None
+        base_env = {**(env or {}), "KIRO_BASE_REV": rev}
+        ok, _ = run_verify(cmd, Path(wt), timeout, base_env)
+        return ok
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        subprocess.run(["git", "-C", str(workdir), "worktree", "remove", "--force", wt],
+                       capture_output=True, timeout=30)
+        shutil.rmtree(wt, ignore_errors=True)
+
+
+def verify_undiscriminating(cfg: "Config", task: "Task", cwd: Path, is_temp_clone: bool,
+                            git_base, env: "dict | None") -> bool:
+    """合成 verify が『act 前でも PASS＝変更を弁別しない偽 done』か（red-green の red 側検査）。
+    対象は verify_validate ポリシー（off/synth/all）と per-task 上書きに従う。temp clone（workspace
+    タスク）は act 前ツリーが手元に無いので対象外（既存の no-progress ガードに委ねる）。判定不能は False。"""
+    vv = str(dict(task.extra).get("verify_validate", "") or cfg.verify_validate).lower()
+    if vv in ("off", "none", "false"):
+        return False
+    src = dict(task.extra).get("verify_source", "")
+    if vv == "synth" and src not in ("synth", "template"):
+        return False                                   # synth ポリシーは自動生成 verify のみ検証
+    if is_temp_clone or not (cwd / ".git").exists():
+        return False
+    base_rev = git_base[0] if isinstance(git_base, (tuple, list)) and git_base else ""
+    return run_verify_at_rev(task.verify, cwd, base_rev, cfg.verify_timeout, env) is True
+
+
 def resolve_verify_cwd(cfg: "Config") -> Path:
     """verify/acceptance を実行する作業ディレクトリ。明示の `verify_cwd`（CLI/設定）があればそれを、
     無ければ従来どおり `workdir`。git-bus 等で workdir に成果が出ないとき、対象 repo のクローン先を指す。"""
@@ -2859,6 +2901,24 @@ def read_result_notes(cfg: "Config", use_git: bool) -> "list[dict]":
     return out
 
 
+def capture_approve_learn(cfg: "Config", task: "Task", location: str) -> None:
+    """承認決着（done）時、gitlab result の人コメント notes（正例）を横断 learn 化する。
+    従来 done では人コメントを還元せず承認時の良い指摘を捨てていた。判別済みの人コメントだけが
+    notes に載る（判別は executor 側 _human_notes）。learn_capture off や委譲でない場合は何もしない。"""
+    if not (cfg.learn_capture and executor_delegates(cfg)):
+        return
+    bodies = [str(n.get("body") or "").strip()
+              for n in read_result_notes(cfg, location == "remote")]
+    guidance = "\n".join(b for b in bodies if b)[:1500]
+    if not guidance:
+        return
+    append_decision(cfg, task.id, "gitlab",
+                    context=f"{task.id}（{task.title}）が gitlab で承認",
+                    action="gitlab-approve", reason=guidance[:300],
+                    affects=f"{task.id} → done",
+                    learn=distill_learn(cfg, task.title, guidance))
+
+
 def _distill_prompt(title: str, guidance: str) -> str:
     return (
         "次は、あるタスクに対して**人間が残したフィードバック/指摘**です。これを、"
@@ -2995,6 +3055,8 @@ class Config:
     learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
     learn_capture: bool = True      # 人の判断（approve 理由・hold 理由・gitlab 却下コメント）から learn/avoid を蓄積
     distill_learn: bool = True      # 人コメントを一般化ルールへ蒸留してから learn 化（off で生の指摘をそのまま残す）
+    verify_validate: str = "synth"  # red-green 検証: 合成 verify が act 前でも PASS（=変更を弁別しない偽 done）を弾く。
+                                    # off=無効 / synth=自動生成(synth/template)のみ / all=常時。per-task `- verify_validate: none` で除外
     intake_recall: bool = True      # 投入/triage 時に過去の hold 判断（avoid）と照合し類似は inbox（人へ）へ寄せる
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
     auto_adjudicate: bool = True    # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on）
@@ -3558,6 +3620,11 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     require_prog = ((cfg.require_progress or _expect == "changes") and _expect != "none"
                     and (cfg.workdir / ".git").exists())
     no_progress = (ok and not flaky and not regressed and require_prog and not changed)
+    # red-green: 合成 verify が act 前ツリーでも PASS＝この変更を弁別していない（偽 done）。
+    # no-progress（変更ゼロ）の上位互換で、変更があっても verify がそれを追えていないケースを弾く。
+    undiscriminating = (ok and not flaky and not regressed and not no_progress
+                        and verify_undiscriminating(cfg, task, cfg.workdir,
+                                                     vtmp is not None, git_base, verify_env))
     # 実効自律レベル（明示 - level: > track 自動昇格 > グローバル）。report は選択時に除外済み
     assisted = resolve_level(task, cfg, autonomy_cache) == "assisted"
 
@@ -3576,10 +3643,19 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                reasons, evidence=ev)
         autonomy_record(cfg, task, clean=False, cache=autonomy_cache)       # 偽 done 疑い＝手戻り
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
+    elif undiscriminating:
+        # verify=PASS だが act 前のツリーでも PASS＝この変更を弁別していない（恒真式/既存状態/履歴一致）→ 人へ
+        task.set("undiscriminating", "1")
+        _block(cfg, task, "red-green: verify が act 前のツリーでも PASS＝この変更を弁別していない"
+               "（偽 done の疑い。verify を望む最終状態/差分の assert に見直す。除外は - verify_validate: none）",
+               reasons, evidence=ev)
+        autonomy_record(cfg, task, clean=False, cache=autonomy_cache)        # 偽 done 疑い＝手戻り
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（red-green・変更を弁別しない verify）")
     elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
         _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
                        policy, reasons, cycle)
     elif ok:
+        capture_approve_learn(cfg, task, location)   # 承認時の人コメント（正例）を横断 learn 化
         return _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
                             autonomy_cache)
     else:
@@ -7083,6 +7159,7 @@ CONFIG_DEFAULTS = {
     "actor": os.environ.get("USER", "user"),
     "learn_capture": True,      # approve/hold 理由・gitlab 却下コメントから learn/avoid を自動抽出（三値 --learn-capture/--no-...）
     "distill_learn": True,      # 人コメントを一般化ルールへ蒸留してから learn 化（三値 --distill-learn/--no-distill-learn）
+    "verify_validate": "synth", # red-green 検証（off/synth/all）。合成 verify が変更を弁別するか実行で確かめる
     "intake_recall": True,      # 投入/triage 時の予防リコール（過去 hold に類似→inbox）（三値フラグ）
     "learn_threshold": 0.5,
     "promote_threshold": 2,
@@ -7217,6 +7294,7 @@ def build_config(args) -> Config:
         learn=bool(getattr(args, "learn", True)),
         learn_capture=bool(getattr(args, "learn_capture", True)),
         distill_learn=bool(getattr(args, "distill_learn", True)),
+        verify_validate=str(getattr(args, "verify_validate", "synth") or "synth"),
         intake_recall=bool(getattr(args, "intake_recall", True)),
         learn_threshold=args.learn_threshold,
         auto_adjudicate=bool(getattr(args, "auto_adjudicate", True)),
@@ -7347,6 +7425,9 @@ def _add_common(sp):
     sp.add_argument("--distill-learn", action=argparse.BooleanOptionalAction, default=None,
                     help="人コメントを一般化ルールへ蒸留してから learn 化。--no-distill-learn で"
                          "生の指摘をそのまま残す（既定 on・蒸留失敗時も生でフォールバック）")
+    sp.add_argument("--verify-validate", choices=["off", "synth", "all"], default=None,
+                    help="red-green 検証: 合成 verify が act 前でも PASS（=変更を弁別しない偽 done）を弾く。"
+                         "off/synth（自動生成のみ・既定）/all。per-task `- verify_validate: none` で除外")
     sp.add_argument("--intake-recall", action=argparse.BooleanOptionalAction, default=None,
                     help="投入/triage 時に過去の hold（avoid）と照合し、類似は ready へ落とさず inbox（人へ）"
                          "寄せる予防リコール。--no-intake-recall で無効化（既定 on）")
