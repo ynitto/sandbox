@@ -682,3 +682,75 @@ python3 tools/kiro-flow/tests/test_kiro_flow.py
 
 - **影響**: ハングしても run は無限停止せず、bounded failure → retry で終端へ進む。固定 timeout が
   正当な長尺タスクに対して短すぎる場合は env で延長、または上記「進捗連動の心拍」へ移行する。
+
+---
+
+## 18. 設計提案: gitlab 人コメントの人/エージェント判別・emit と分解への還元（Draft・未実装）
+
+> ステータス: Draft（設計案・未実装）。対になる kiro-projects 側は
+> [`kiro-projects-design.md` §11](./kiro-projects-design.md)（統一学習バス・蒸留・recall・verify 品質）。
+> 責務境界は「**gitlab executor（本ツール）はコメントを運ぶだけ／蒸留・learn・recall・verify は kiro-projects**」。
+
+### 18.0 背景
+
+gitlab executor で委譲したイシューは **gitlab-idd スキルのエージェント（worker / reviewer）** が実行する。
+ユーザーがイシューに投稿したコメントは「そのイシュー内（同一タスクの次の試行）」にしか活きず、同様のタスクへ
+還元されない（＝kiro-projects §11 の問題A）。本ツール側の欠落は 2 つ:
+
+1. **人コメントの捕捉が却下時のみ**（`_rejected_payload:861-886` → `_human_comments:443-459`）。承認・作業中は拾わない。
+2. **人/エージェント判別が緩い**。`_human_comments` の除外は `system` note・`gitlab-idd:creator-node-id` マーカー・
+   `kiro-flow:` 接頭辞だけ。gitlab-idd の worker/reviewer は着手・scout・設計記録・clarification・approach 等の
+   自由文コメントを多数投稿し、**一部（設計記録等）はマーカー無し**。現状はこれらを「人コメント」として拾ってしまう
+   ＝**エージェントの独り言が横断学習を汚染する**。
+
+### 18.1 人コメントのみを確実に拾う（gitlab-idd 前提の判別）← 最優先
+
+マーカー頼みでは不十分（マーカー無し自由文がある）。**著者アカウントベースの正判定を主軸に多層で守る**。
+コメントは次の 3 層を **AND** で満たしたときだけ「人」とみなす（emit 側で著者情報を運び、最終判定は kiro-projects §11.2）。
+
+1. **著者アカウントで正判定（主軸）**: `author.bot == true`（プロジェクトアクセストークン等のボット）を除外。
+   設定 `gitlab.agent_authors`（worker/reviewer/requester が動くアカウント）に一致すれば除外。
+   `gitlab.human_reviewers`（allowlist）があればそれ以外を除外（最も厳密）。
+2. **プロトコルマーカーで除外（常時・全マーカー）**: `system` note、`kiro-flow:` 接頭辞、**いずれかの
+   `<!-- gitlab-idd:* -->` マーカー**（`creator-node-id` / `worker-node-id` / `scout-map` /
+   `clarification-requested` / `approach-proposed` / `non-requester-reviewed`）。現状 creator のみ→**全マーカーへ拡張**。
+3. **エージェント著者の自動学習（per-issue）**: 自分が起票したイシュー上の `worker-node-id` /
+   `non-requester-reviewed` マーカーコメントの**著者アカウントを抽出**し、そのアカウントの**マーカー無しコメントも
+   同イシューではエージェント扱い**にする（手設定なしでマーカー無し自由文を漏れなく除外）。
+
+**保守的既定（precision 優先）**: 「無暗にエージェントを拾わない」を最優先し、**人と正判定できないコメントは
+learn しない**。allowlist も agent_authors も無く bot 判定もマーカーも付かない曖昧なコメントは既定で取り込まない
+（`gitlab.trust_unmarked_comments: true` で従来寄りの緩い取り込みへ opt-in）。
+
+### 18.2 人コメントの統一 emit（却下・承認・作業中）
+
+判別（§18.1）に必要な生データを、決着以外も含めて**著者情報つきで運ぶ**（判定・蒸留・learn は kiro-projects）。
+
+- **決着時の対称化**: `_rejected_payload` に加え承認 payload でも人コメント候補を `data.notes` に載せる。
+  従来 done の result は人コメントを運ばず正例を捨てていた。
+- **作業中の逐次 emit**: park & poll の監視（`watch_interval` 既定 90 秒）に相乗りし、前回以降に増えた人コメントを
+  `data.notes` 増分として運ぶ（GitLab API は `get-comments` 1 本・既存バッチに畳む＝負荷増やさない）。
+- **emit する構造**: `data.notes = [{note_id, author:{id,username,bot}, system, body, ts}]`。生のまま運び、
+  `note_id` で決着時・作業中の重複排除。
+
+### 18.3 分解への還元 — flow-planner の `--learnings` 受け口
+
+kiro-projects が recall した learn/avoid を、要求本文とは別の **`--learnings`**（構造化・有界）channel で
+flow-planner（`.github/skills/flow-planner/`）へ渡す。要求本文に畳むと分解後の各ノードに薄まるため、
+**戦略選定段の判断材料として独立注入**し、分解グラフ自体を変える（例: 「この種は 1 段細かく割れ（granularity 上げ）」
+「集約前に verify gate を挟め」「この分割は避けよ」）。件数・文字数は有界化し planner を振り回さない。
+`patterns-catalog.yaml` に learnings を受けた戦略調整例を variants として追記する。
+
+### 18.4 スコープ外
+
+- **kiro-flow の `verify` ノード（LLM 判定・`execute_kiro(kind="verify")`）の CLI 化**は本案対象外。本案が対象にする
+  「不確実性をなくす verify」は kiro-projects 側の verify（終了コードゲート・§11.6）。将来課題。
+
+### 18.5 影響ファイル（本ツール側）
+
+| 箇所 | 変更 |
+|------|------|
+| `executors/gitlab.py` `_human_comments` 443-459 | §18.1 全 `gitlab-idd:*` マーカー除外・著者 bot/`agent_authors` 判定・per-issue エージェント著者学習 |
+| 〃 `_rejected_payload` 861-886 / 承認 payload / park&poll 監視 / `_get_comments` 407-411 | §18.2 承認・作業中コメントの著者付き emit・`note_id` 重複排除 |
+| `kiro-flow.yaml.example` `gitlab:` ブロック | §18.1 `agent_authors` / `human_reviewers` / `trust_unmarked_comments` 設定 |
+| `.github/skills/flow-planner/` 戦略選定段 / `patterns-catalog.yaml` | §18.3 `--learnings` 受け口・戦略調整 variants |
