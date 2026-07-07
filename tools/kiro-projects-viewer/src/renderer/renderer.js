@@ -1513,8 +1513,11 @@ async function reconcileFlowRun() {
     toast('この run には突き合わせ先リポジトリ（workspace）がありません');
     return;
   }
+  // waiting（依存未達＝gitlab executor がまだイシューを起票していないことが確定）は空振りに
+  // なるので突き合わせ対象から外し、無駄な GitLab 検索を投げない。claimed / pending（lease 切れで
+  // 戻ったもの＝worker 停止中に人がクローズした核心ケースを含む）だけを対象にする。
   const nodes = Object.values(run.nodes || {})
-    .filter((n) => !TERMINAL_NODE_STATES.has(n.state) && n.taskToken)
+    .filter((n) => n.state !== 'waiting' && !TERMINAL_NODE_STATES.has(n.state) && n.taskToken)
     .map((n) => ({ id: n.id, taskToken: n.taskToken, state: n.state }));
   state.flowReconcile = { runId: run.runId, loading: true, byNode: (state.flowReconcile || {}).byNode || {} };
   renderFlow();
@@ -1588,7 +1591,9 @@ function renderFlowDetail() {
     : '';
   // gitlab executor 連動: 非終端ノードがあれば「GitLab と突き合わせ」でクローズ済みイシューを
   // 完了/失敗として先読み反映できる（worker が result を書く前でもグラフに映す）。
-  const hasOpenNodes = Object.values(run.nodes || {}).some((n) => !TERMINAL_NODE_STATES.has(n.state));
+  const hasOpenNodes = Object.values(run.nodes || {}).some(
+    (n) => n.state !== 'waiting' && !TERMINAL_NODE_STATES.has(n.state)
+  );
   const rec = state.flowReconcile && state.flowReconcile.runId === run.runId ? state.flowReconcile : null;
   const recHits = rec ? Object.values(rec.byNode || {}).filter((r) => r.reconciled).length : 0;
   const reconcileBtn =
