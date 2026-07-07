@@ -275,6 +275,8 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .status-chip.st-opened { color: var(--green); border-color: var(--green); }
 .status-chip.st-closed { color: var(--muted); }
 .status-chip.st-merged { color: var(--accent); border-color: var(--accent); }
+/* GitLab クローズ反映（先読み。bus 反映待ちの暫定表示） */
+.status-chip.st-reconciled { color: var(--orange); border-color: var(--orange); }
 /* kiro-flow run（meta.status）と生存判定 */
 .status-chip.st-running { color: var(--accent2); border-color: var(--accent2); }
 .status-chip.st-planning { color: var(--blue); border-color: var(--blue); }
@@ -412,6 +414,8 @@ svg.graph .node.state-claimed rect { fill: #17313d; stroke: var(--accent2); }
 svg.graph .node.state-pending rect { fill: var(--bg3); stroke: var(--blue); }
 svg.graph .node.state-waiting rect { fill: var(--bg3); stroke: var(--border); }
 svg.graph .node.selected rect { stroke-width: 3; }
+/* GitLab クローズ反映で状態を先読みしたノード（bus の result 反映待ち）は破線枠で区別する */
+svg.graph .node.reconciled rect { stroke-dasharray: 4 3; }
 /* gitlab executor ノードの右上イシューアイコン（1 クリックでレビュー起動） */
 svg.graph .node-issue { cursor: pointer; }
 svg.graph .node-issue circle { fill: var(--orange); stroke: var(--bg); stroke-width: 1.5; }

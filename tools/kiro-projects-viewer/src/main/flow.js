@@ -84,6 +84,80 @@ function nodeTaskToken(runId, nodeId) {
   return 'kf-' + crypto.createHash('sha1').update(`${runId}/${nodeId}`).digest('hex').slice(0, 12);
 }
 
+// ---------------------------------------------------------------------------
+// gitlab executor の決着（承認/却下）をビュアー側で「先読み」する（クローズ済みイシューの反映）
+// ---------------------------------------------------------------------------
+// gitlab executor は「関連イシューがクローズされた」ことを result で bus に書くが、それは
+// worker が決着ループでクローズを検知したときだけ。非ブロッキング委譲（act_async）＋PC の
+// 日次停止などで worker が止まっている間に人がイシューを承認クローズすると、bus には result が
+// 無いままなので、ビュアーのタスクグラフはノードを「実行中」のまま表示してしまう（＝完了に
+// できない）。そこで、executor が result を書くのと同じ信号（関連 MR の状態 → status ラベル →
+// 人コメントの語）から executor と同じ決着を推定し、クローズ済みイシューに紐づくノードを
+// 完了/失敗として先に反映する。判定規則は executors/gitlab.py の _mr_decision /
+// _closed_issue_decision / _decision_from_comments と一致させる（乖離させない）。
+const GITLAB_APPROVED_LABELS = ['status:approved', 'status:done'];
+// 外部クローズ時の承認/却下推定の手掛かり語（executor と同一。却下語を承認語より優先）。
+const GITLAB_REJECT_HINTS = ['却下', 'リジェクト', '取り下げ', '取下げ', '不採用', 'やり直し',
+  '作り直し', '見送り', 'reject', 'wontfix', "won't fix", 'not merging', "won't merge"];
+const GITLAB_APPROVE_HINTS = ['承認', 'approve', 'approved', 'lgtm', '採用', '問題ありません',
+  '問題なし', 'マージしました', 'merged', '完了', 'close as done'];
+
+// 関連 MR の状態だけから決着を推定する（executor の _mr_decision と同一）。
+//   'approved': MR が 1 つ以上ありすべて merged／'rejected': 未マージの closed が 1 つでもある／
+//   '': 未決着（open な MR がある／MR 未作成）
+function gitlabMrDecision(states) {
+  const list = Array.isArray(states) ? states.map((s) => String(s || '')) : [];
+  const opened = list.filter((s) => s === 'opened' || s === 'locked');
+  const closedUnmerged = list.filter((s) => s === 'closed');
+  const merged = list.filter((s) => s === 'merged');
+  if (opened.length) return '';
+  if (closedUnmerged.length) return 'rejected';
+  if (merged.length && merged.length === list.length) return 'approved';
+  return '';
+}
+
+// 人コメントを新しい順に走査し承認/却下の手掛かりで判定する（executor の _decision_from_comments
+// と同一。system note / kiro-flow 自身の自動コメントは無視。却下語を承認語より優先）。
+function gitlabDecisionFromComments(comments) {
+  const list = Array.isArray(comments) ? comments : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const n = list[i];
+    if (!n || n.system) continue;
+    const body = String(n.body || '');
+    if (!body || body.includes('gitlab-idd:creator-node-id') || body.startsWith('kiro-flow:')) continue;
+    const low = body.toLowerCase();
+    if (GITLAB_REJECT_HINTS.some((h) => body.includes(h) || low.includes(h))) return 'rejected';
+    if (GITLAB_APPROVE_HINTS.some((h) => body.includes(h) || low.includes(h))) return 'approved';
+  }
+  return '';
+}
+
+// 外部クローズ時に承認/却下を推定する（executor の _closed_issue_decision と同一の優先順:
+// ラベル → 人コメント）。手掛かりが無ければ '' を返す（呼び出し側が「取り下げ＝却下」に落とす）。
+function gitlabClosedIssueDecision(issue) {
+  const labels = (issue && Array.isArray(issue.labels) && issue.labels) || [];
+  if (GITLAB_APPROVED_LABELS.some((l) => labels.includes(l))) return 'approved';
+  return gitlabDecisionFromComments(issue && issue.comments);
+}
+
+// ビュアーのノード（readRun 由来）と取得済み GitLab イシューから、executor が書くであろう終端
+// 状態を先読みする。戻り値: 'done' | 'failed' | null（変更なし）。
+//   - 既に終端（done/failed）のノードは bus が正なので触らない（null）。
+//   - イシューが閉じていなければ未決着（null）。executor は open のうちに result を書くため、
+//     「クローズ済みイシューがまだ bus に反映されていない」ケースだけを先読みする。
+//   - 閉じている: 関連 MR 状態 → ラベル/コメント の順で承認/却下を推定（executor と同じ優先度）。
+//     判断材料が無いクローズは executor と同じく「取り下げ＝却下」＝ failed。
+function reconcileNodeState(node, issue) {
+  if (!node || TERMINAL.has(String(node.state))) return null;
+  if (!issue || issue.state !== 'closed') return null;
+  const states = (Array.isArray(issue.relatedMrs) ? issue.relatedMrs : []).map((m) => (m && m.state) || '');
+  let decision = gitlabMrDecision(states);
+  if (!decision) decision = gitlabClosedIssueDecision(issue) || 'rejected'; // 取り下げ＝却下
+  if (decision === 'approved') return 'done';
+  if (decision === 'rejected') return 'failed';
+  return null;
+}
+
 // kiro-projects が付ける決定的 run-id `req-<backlogハッシュ>-<taskid>-r<retries>[-v<rev>]` を
 // 分解する。バックログのタスク（安定オブジェクト）と、そのリトライ/リバイズ系統を UI が
 // 突き合わせられるようにする。素の `run-<ts>-<rand>`（手動/単発）は taskId 無しで単独扱い。
@@ -434,4 +508,8 @@ module.exports = {
   resubmitRun,
   prepareRunDeletion,
   nodeTaskToken,
+  reconcileNodeState,
+  gitlabMrDecision,
+  gitlabClosedIssueDecision,
+  GITLAB_APPROVED_LABELS,
 };

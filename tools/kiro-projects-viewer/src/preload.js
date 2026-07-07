@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('api', {
 
   glEnrich: (urls) => invoke('gitlab:enrich', { urls }),
   glProjectIssues: (args) => invoke('gitlab:projectIssues', args),
+  glReconcileRun: (args) => invoke('gitlab:reconcileRun', args),
 
   openReview: (target) => invoke('review:open', { target }),
   openExternal: (url) => invoke('shell:openExternal', { url }),

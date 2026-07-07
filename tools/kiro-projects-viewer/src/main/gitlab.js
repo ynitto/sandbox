@@ -102,6 +102,15 @@ class GitLabClient {
     };
   }
 
+  // イシューの人コメント（notes）を古い順に取得する。gitlab executor の外部クローズ判定
+  // （_decision_from_comments）と同じく、承認/却下の手掛かり語をビュアー側で読むのに使う。
+  async getIssueComments(projectPath, iid) {
+    const enc = encodeURIComponent(projectPath);
+    return this.api(`/projects/${enc}/issues/${iid}/notes`, {
+      query: { per_page: 100, order_by: 'created_at', sort: 'asc' },
+    });
+  }
+
   // リポジトリ URL（https://host/group/proj(.git)）→ "group/proj" パス。
   // kiro-flow の run meta にはワークスペースのリポジトリ URL しか無いため、
   // イシュー検索はこれで起票先プロジェクトを解決する（gitlab executor と同じ考え方）。
