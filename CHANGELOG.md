@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects: 管理 daemon の state_git サブディレクトリを設定可能に（`flow_state_subdir`）
+
+- `manage_flow_daemon` で起動する kiro-flow daemon の `--state-git-subdir` は `kiro-flow` にハードコード
+  されており、`flow_config` 経由の kiro-flow.yaml で `state_git_subdir` を変えても CLI 注入に上書きされて
+  効かなかった。設定 `flow_state_subdir`（既定 `kiro-flow`）で変更できるようにした。
+- 補足: run の実行はバスから行われるため、サブディレクトリを変えても **run は止まらない**（変わるのは
+  鏡写し先のパスだけ。viewer が別サブディレクトリを見ていると run が「見えない」ことはある）。
+  README / `kiro-projects.yaml.example` / 移行手順書の FAQ に注記、テストを追加。
+
 ### kiro-projects-viewer: タスクグラフノードのイシュー状態を自動表示（クリック不要）
 
 - **背景**: 関連イシューの「今」の状態は GitLab API 由来のため、従来は「⟳ GitLab と突き合わせ」

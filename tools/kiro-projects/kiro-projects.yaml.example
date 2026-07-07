@@ -187,6 +187,10 @@ git_branch: main            # バスに使う git ブランチ
 # manage_flow_daemon: true               # 各プロジェクトの kiro-flow daemon を自動起動・監視
 # flow_config: ~/.kiro/kiro-flow.yaml    # 各 daemon に --config で渡す共有設定（executor/gitlab 等・任意）
 # flow_max_workers: 6                    # マシン全体の worker 予算（対象プロジェクト数で割り各 daemon の上限に）
+# flow_state_subdir: kiro-flow           # daemon へ注入する kiro-flow の state_git サブディレクトリ（既定 kiro-flow）。
+#                                        #   鏡写し先/サブディレクトリは CLI 注入するため kiro-flow.yaml の
+#                                        #   state_git_subdir は上書きされる。変えるなら viewer の
+#                                        #   flowBusByProject（<clone>/<subdir>）も合わせる。
 
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し
