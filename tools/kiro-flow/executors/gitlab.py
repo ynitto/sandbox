@@ -75,6 +75,16 @@ _DEFAULTS = {
     "max_open_issues": 0,
     # service_waits（監視主体）が park 済みイシューをまとめて再確認する間隔（秒）。
     "watch_interval": 90.0,
+    # --- 人/エージェント判別（gitlab-idd 実行前提。人コメントのみを還元へ運ぶ）---
+    # gitlab-idd の worker/reviewer/requester が動くアカウント（username か id）のカンマ区切り。
+    # ここに一致する著者のコメントはエージェント扱いで除外する。
+    "agent_authors": "",
+    # 人間レビュアーの allowlist（username か id・カンマ区切り）。指定するとそれ以外の著者を除外する
+    # （最も厳密。空なら allowlist は使わず、bot/agent/マーカーで除外した残りを人とみなす）。
+    "human_reviewers": "",
+    # 人と正判定できない曖昧なコメント（著者情報が欠落など）も拾うか。既定 False（precision 優先＝
+    # 無暗に拾わない）。True で従来寄りの緩い取り込みに opt-in。
+    "trust_unmarked_comments": False,
 }
 
 
@@ -120,6 +130,20 @@ def _as_float(v, default: float) -> float:
         return float(v) if v is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _as_bool(v, default: bool) -> bool:
+    """三値の真偽（環境変数/JSON いずれでも受ける）。文字列は真偽語を解釈。"""
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off", ""):
+        return False
+    return default
 
 
 # --- 依存成果のアクセサ（kiro-flow 本体と同じ result dict 形を読む） -----------
@@ -440,23 +464,135 @@ def _add_note(host: str, token: str, project: str, iid, body: str) -> dict:
                   data={"body": text})
 
 
-def _human_comments(host: str, token: str, project: str, iid) -> str:
-    """イシューの**人間のコメント**を新しい順に連結して返す（却下時のやり直し指示に活かす）。
-    GitLab の system note（ラベル変更等の自動記録）と、kiro-flow が付けた creator-node-id タグを含む
-    自動コメントは除外する。人のコメントが無ければ空文字（呼び出し側は『自動で判断』に倒す）。"""
+# イシュー上の gitlab-idd マーカー（エージェントコメントの機械的目印）。creator だけでなく
+# worker-node-id / scout-map / clarification-requested / approach-proposed / non-requester-reviewed
+# 等、あらゆる gitlab-idd: マーカーを機械コメントの印として扱う。
+_GITLAB_IDD_MARKER_RE = re.compile(r"<!--\s*gitlab-idd:[^>]*-->")
+# プロジェクト/グループアクセストークンが作るボットユーザー名（project_<n>_bot / group_<n>_bot…）。
+_BOT_USERNAME_RE = re.compile(r"^(?:project|group)_\d+_bot", re.IGNORECASE)
+
+
+def _parse_id_set(v) -> set:
+    """カンマ区切りの username/id 一覧を小文字化した集合にする（空要素は無視）。"""
+    if not v:
+        return set()
+    if isinstance(v, (list, tuple)):
+        items = v
+    else:
+        items = str(v).replace("\n", ",").split(",")
+    return {str(x).strip().lower() for x in items if str(x).strip()}
+
+
+def _author_keys(author) -> set:
+    """コメント著者の突き合わせキー（username / id を小文字化）。"""
+    if not isinstance(author, dict):
+        return set()
+    keys = set()
+    for k in ("username", "id"):
+        v = author.get(k)
+        if v is not None and str(v).strip():
+            keys.add(str(v).strip().lower())
+    return keys
+
+
+def _is_bot_author(author) -> bool:
+    """著者がボットアカウントか（GitLab の bot フラグ or アクセストークンのボット名）。"""
+    if not isinstance(author, dict):
+        return False
+    if author.get("bot") is True:
+        return True
+    uname = str(author.get("username") or "")
+    return bool(_BOT_USERNAME_RE.match(uname))
+
+
+def _is_machine_body(body: str) -> bool:
+    """本文がマーカー/接頭辞で機械コメントと分かるか（著者に依らず除外できる印）。"""
+    b = (body or "").strip()
+    if not b:
+        return True
+    if b.startswith("kiro-flow:"):
+        return True                                    # kiro-flow 自身の自動コメント
+    return bool(_GITLAB_IDD_MARKER_RE.search(b))       # gitlab-idd エージェントのマーカー
+
+
+def _agent_authors_from_markers(notes: list) -> set:
+    """このイシュー上で gitlab-idd マーカー付きコメントを投稿した著者を抽出する（per-issue 自動学習）。
+    その著者の**マーカー無しコメント（設計記録等）も同イシューではエージェント扱い**にするための材料。"""
+    learned: set = set()
+    for n in notes if isinstance(notes, list) else []:
+        if n.get("system"):
+            continue
+        if _GITLAB_IDD_MARKER_RE.search(str(n.get("body") or "")):
+            learned |= _author_keys(n.get("author"))
+    return learned
+
+
+def _human_notes(host: str, token: str, project: str, iid, cfg: "dict | None" = None) -> list:
+    """イシューの**人間のコメント**を古い順に返す（各要素は元の note dict）。gitlab-idd で
+    worker/reviewer エージェントがイシューを実行する前提で、以下を多層で除外する:
+      ① GitLab system note（ラベル変更等の自動記録）
+      ② 機械コメント本文（kiro-flow: 接頭辞・あらゆる <!-- gitlab-idd:* --> マーカー）
+      ③ エージェント著者（bot フラグ/トークンボット名・設定 agent_authors・per-issue 自動学習）
+      ④ human_reviewers allowlist があればそれ以外（著者不明も既定で落とす。trust_unmarked_comments で拾う）
+    エージェント除外は ①〜③ で担保し、allowlist 無しなら残り（人の通常コメント）は拾う（後方互換）。
+    """
+    cfg = cfg if cfg is not None else _config()
+    agent_authors = _parse_id_set(cfg.get("agent_authors"))
+    human_reviewers = _parse_id_set(cfg.get("human_reviewers"))
+    trust_unmarked = _as_bool(cfg.get("trust_unmarked_comments"), False)
     try:
         notes = _get_comments(host, token, project, iid)
     except RuntimeError:
-        return ""
+        return []
+    notes = notes if isinstance(notes, list) else []
+    learned_agents = _agent_authors_from_markers(notes)
     out = []
-    for n in reversed(notes if isinstance(notes, list) else []):
+    for n in notes:                                    # API 既定は古い順（時系列）
         if n.get("system"):
-            continue                                   # ラベル変更等の自動記録は除外
+            continue                                   # ①
         body = str(n.get("body") or "").strip()
-        if not body or "gitlab-idd:creator-node-id" in body or body.startswith("kiro-flow:"):
-            continue                                   # kiro-flow 自身の自動コメントは除外
-        out.append(body)
-    return "\n\n".join(out)[:2000]
+        if _is_machine_body(body):
+            continue                                   # ②
+        author = n.get("author") or {}
+        keys = _author_keys(author)
+        if _is_bot_author(author) or (keys & agent_authors) or (keys & learned_agents):
+            continue                                   # ③ エージェント著者（bot/設定/自動学習）
+        if human_reviewers:
+            # ④ allowlist 指定時は「許可された人」だけ。著者不明は allowlist と突き合わせ不能なので
+            #    既定で落とす（precision 優先。trust_unmarked_comments=true で拾う）。
+            allowed = bool(keys & human_reviewers) or (not keys and trust_unmarked)
+            if not allowed:
+                continue
+        # allowlist 無し: エージェント/bot/マーカーは上で除外済み＝残りは人とみなす（後方互換）。
+        out.append(n)
+    return out
+
+
+def _human_comments(host: str, token: str, project: str, iid,
+                    cfg: "dict | None" = None) -> str:
+    """イシューの人間コメントを**新しい順**に連結して返す（却下時のやり直し指示に活かす）。
+    人/エージェント判別は _human_notes に集約（gitlab-idd エージェントを除外）。人のコメントが
+    無ければ空文字（呼び出し側は『自動で判断』に倒す）。"""
+    notes = _human_notes(host, token, project, iid, cfg)
+    out = [str(n.get("body") or "").strip() for n in reversed(notes)]
+    return "\n\n".join(b for b in out if b)[:2000]
+
+
+def _human_notes_payload(host: str, token: str, project: str, iid,
+                         cfg: "dict | None" = None) -> list:
+    """result.data.notes に載せる構造化人コメント（新しい順）。判定・蒸留・learn は下流
+    （kiro-projects）が行うため、著者情報と note_id を運ぶ（重複排除・監査に使う）。"""
+    out = []
+    for n in reversed(_human_notes(host, token, project, iid, cfg)):
+        author = n.get("author") or {}
+        out.append({
+            "note_id": n.get("id"),
+            "author": {"id": author.get("id"), "username": author.get("username"),
+                       "bot": bool(author.get("bot"))},
+            "body": str(n.get("body") or "").strip()[:2000],
+            "ts": n.get("created_at") or n.get("updated_at") or "",
+        })
+    return out
 
 
 def _workspace_section(workspace: "dict | None") -> "list[str]":
@@ -784,16 +920,8 @@ def _decision_from_comments(host, token, project, iid) -> str:
     """イシューの**人間のコメント**を新しい順に走査し、承認/却下の手掛かりがある最初のコメントで
     判定する（却下語を承認語より優先）。system note / kiro-flow 自身の自動コメントは無視。
     手掛かりが無ければ ""。"""
-    try:
-        notes = _get_comments(host, token, project, iid)
-    except RuntimeError:
-        return ""
-    for n in reversed(notes if isinstance(notes, list) else []):
-        if n.get("system"):
-            continue
+    for n in reversed(_human_notes(host, token, project, iid)):
         body = str(n.get("body") or "")
-        if not body or "gitlab-idd:creator-node-id" in body or body.startswith("kiro-flow:"):
-            continue
         low = body.lower()
         if any(h in body or h in low for h in _REJECT_HINTS):
             return "rejected"
@@ -831,8 +959,13 @@ def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label
     merged_urls = [m.get("web_url", "") for m in mrs]
     text = (f"[gitlab] イシュー #{iid} 承認（{why}）。イシューをクローズ（{url}）\n"
             f"マージ済み MR: {', '.join(u for u in merged_urls if u) or '(URL なし)'}")
+    # 承認決着でも**人コメント（正例）**を notes に載せて下流（kiro-projects）の learn 材料にする。
+    # 従来 done の result は人コメントを運ばず、承認時の良い指摘を捨てていた。
+    notes = _human_notes_payload(host, token, project, iid)
     data = {"issue_iid": iid, "web_url": url, "decision": "approved", "reason": why,
             "merged_mrs": [m.get("iid") for m in mrs], "closed": True}
+    if notes:
+        data["notes"] = notes
     return text, data
 
 
@@ -867,7 +1000,8 @@ def _rejected_payload(host, token, project, iid, url, mrs, labels_now, done_labe
     却下を扱える。status は failed のまま（done の「後続が成果に依存してよい」契約を、成果の
     無い却下では満たせないため）。"""
     why = reason or "未マージクローズ"
-    guidance = _human_comments(host, token, project, iid)
+    notes = _human_notes_payload(host, token, project, iid)   # 新しい順
+    guidance = "\n\n".join(n["body"] for n in notes if n.get("body"))[:2000]
     try:
         _close_issue(host, token, project, iid, sorted(set(labels_now) | {done_label}))
     except RuntimeError as e:
@@ -876,6 +1010,8 @@ def _rejected_payload(host, token, project, iid, url, mrs, labels_now, done_labe
             "guidance": guidance or "",
             "merged_mrs": [m.get("iid") for m in mrs if str(m.get("state") or "") == "merged"],
             "closed": True}
+    if notes:
+        data["notes"] = notes
     if guidance:
         _log(f"イシュー #{iid}: 却下（{why}）。人コメントをやり直しに活かす。")
         text = f"[gitlab-reject] 却下されました（{why}）（{url}）。やり直し指示: {guidance}"

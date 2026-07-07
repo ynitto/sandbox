@@ -206,6 +206,12 @@ CONFIG_DEFAULTS = {
                                             # 上限到達で起票を一時停止＝バックプレッシャ（エラーにしない）。
                                             # defer_waits=false のときは無効（park しないため）。
         "watch_interval": 90.0,             # service_waits が park をまとめて再確認する間隔（秒）
+        # --- 人/エージェント判別（gitlab-idd 実行前提。人コメントのみを還元へ運ぶ）---
+        # gitlab-idd の worker/reviewer が動くアカウント（username/id・カンマ区切り）を
+        # エージェント扱いで除外。空でも bot 名・全 gitlab-idd マーカー・per-issue 自動学習で除外する。
+        "agent_authors": "",
+        "human_reviewers": "",              # 人間レビュアーの allowlist（指定するとそれ以外を除外・最も厳密）
+        "trust_unmarked_comments": False,   # 著者不明の曖昧コメントも拾うか（既定 False＝precision 優先）
     },
 }
 

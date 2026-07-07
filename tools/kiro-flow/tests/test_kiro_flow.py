@@ -4095,5 +4095,91 @@ class GitlabDeferPollTests(unittest.TestCase):
         self.assertTrue(posts and posts[0]["body"].startswith("kiro-flow:"))
 
 
+class GitlabHumanAgentDiscriminationTests(unittest.TestCase):
+    """gitlab-idd 実行を前提に、フィードバック還元へ運ぶのは**人のコメントだけ**にする判別。
+    worker/reviewer エージェントのコメント（全 gitlab-idd マーカー・bot 著者・agent_authors・
+    per-issue 自動学習）を除外し、人の通常コメントだけを残す。"""
+
+    def _notes_via(self, notes, cfg=None):
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            return gl_plugin._human_notes("h", "t", "p", 1, cfg or {})
+
+    def test_excludes_all_gitlab_idd_markers(self):
+        notes = [
+            {"body": "🚀 作業開始\n<!-- gitlab-idd:worker-node-id:abc -->", "system": False,
+             "author": {"username": "worker1", "id": 11}},
+            {"body": "scout\n<!-- gitlab-idd:scout-map -->", "system": False,
+             "author": {"username": "worker1", "id": 11}},
+            {"body": "承認します\n<!-- gitlab-idd:non-requester-reviewed:z -->", "system": False,
+             "author": {"username": "rev1", "id": 22}},
+            {"body": "命名を requirements.md に合わせて直して", "system": False,
+             "author": {"username": "alice", "id": 99}},
+        ]
+        got = self._notes_via(notes)
+        self.assertEqual([n["author"]["username"] for n in got], ["alice"])
+
+    def test_excludes_agent_author_unmarked_comment_via_per_issue_learning(self):
+        # worker1 はマーカー付き着手コメントを出す → その後のマーカー無し設計記録も同著者=エージェント扱い
+        notes = [
+            {"body": "🚀 着手 <!-- gitlab-idd:worker-node-id:abc -->", "system": False,
+             "author": {"username": "worker1", "id": 11}},
+            {"body": "📝 設計をイシューに記録しました（マーカー無し）", "system": False,
+             "author": {"username": "worker1", "id": 11}},
+            {"body": "実サーバで検証してください", "system": False,
+             "author": {"username": "bob", "id": 5}},
+        ]
+        got = self._notes_via(notes)
+        self.assertEqual([n["author"]["username"] for n in got], ["bob"])
+
+    def test_excludes_bot_and_kiroflow_and_system(self):
+        notes = [
+            {"body": "ラベル変更", "system": True, "author": {"username": "alice"}},
+            {"body": "kiro-flow: 取消通知", "system": False, "author": {"username": "alice"}},
+            {"body": "自動レビュー", "system": False, "author": {"username": "project_42_bot"}},
+            {"body": "botフラグ", "system": False, "author": {"username": "svc", "bot": True}},
+            {"body": "ここは実データに合わせて", "system": False, "author": {"username": "alice"}},
+        ]
+        got = self._notes_via(notes)
+        self.assertEqual([n["body"] for n in got], ["ここは実データに合わせて"])
+
+    def test_agent_authors_config_excludes(self):
+        notes = [
+            {"body": "自動コメント", "system": False, "author": {"username": "ci-agent", "id": 7}},
+            {"body": "人の指摘", "system": False, "author": {"username": "carol", "id": 8}},
+        ]
+        got = self._notes_via(notes, {"agent_authors": "ci-agent, 999"})
+        self.assertEqual([n["author"]["username"] for n in got], ["carol"])
+
+    def test_human_reviewers_allowlist_keeps_only_listed(self):
+        notes = [
+            {"body": "許可された人", "system": False, "author": {"username": "lead", "id": 3}},
+            {"body": "別の人", "system": False, "author": {"username": "random", "id": 4}},
+            {"body": "著者不明", "system": False},
+        ]
+        got = self._notes_via(notes, {"human_reviewers": "lead"})
+        self.assertEqual([n["body"] for n in got], ["許可された人"])
+        # trust_unmarked_comments=true なら著者不明も拾う
+        got2 = self._notes_via(notes, {"human_reviewers": "lead",
+                                       "trust_unmarked_comments": True})
+        self.assertEqual([n["body"] for n in got2], ["許可された人", "著者不明"])
+
+    def test_no_allowlist_keeps_plain_human_comments(self):
+        # 後方互換: allowlist 無し・著者情報が無くても、マーカー/bot でなければ人として拾う
+        notes = [{"body": "命名が要件と違う", "system": False}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            got = gl_plugin._human_comments("h", "t", "p", 1, {})
+        self.assertEqual(got, "命名が要件と違う")
+
+    def test_payload_carries_author_and_note_id(self):
+        notes = [{"id": 501, "body": "実サーバで検証", "system": False,
+                  "author": {"username": "dan", "id": 6}, "created_at": "2026-07-07T00:00:00Z"}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            payload = gl_plugin._human_notes_payload("h", "t", "p", 1, {})
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["note_id"], 501)
+        self.assertEqual(payload[0]["author"]["username"], "dan")
+        self.assertEqual(payload[0]["body"], "実サーバで検証")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

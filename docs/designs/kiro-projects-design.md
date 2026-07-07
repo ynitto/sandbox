@@ -764,16 +764,23 @@ if guidance:
 
 ### 11.7 段階導入・未決事項
 
-| フェーズ | 内容 |
-|---------|------|
-| **P0** | 人/エージェント判別の厳格化（kiro-flow §18.1。本ツールは emit を受けて最終判定）＝全フェーズの前提 |
-| **P1** | §11.3 人コメントの learn 捕捉（`_settle_failure`／notes 取り込み） |
-| **P2** | §11.6 Red-Green 検証（`ensure_verify`/`run_verify`・opt-out 付き） |
-| **P3** | §11.2 蒸留 ＋ §11.6 文脈つき合成・テンプレ拡充 |
-| **P4** | §11.4 plan/verify への recall ＋ §11.6 verify 学習再利用 |
-| **P5** | §11.5 昇格ラダー・cohort 還流 ＋ §11.6 多候補 |
+| フェーズ | 内容 | 状況 |
+|---------|------|------|
+| **P0** | 人/エージェント判別の厳格化（kiro-flow §18.1。本ツールは emit を受けて最終判定）＝全フェーズの前提 | ✅ 実装 |
+| **P1** | §11.3 人コメントの learn 捕捉（`_settle_failure` 却下枝＋蒸留） | ✅ 実装（却下枝＋`distill_learn`） |
+| **P2** | §11.6 Red-Green 検証／恒真式スクリーン | ◐ 一部（`synth_verify` の恒真式棄却 `_verify_is_degenerate`。実行 red-green は未） |
+| **P3** | §11.2 蒸留 ＋ §11.6 文脈つき合成・テンプレ拡充 | ◐ 一部（蒸留・テンプレ拡充は実装。文脈つき合成は未） |
+| **P4** | §11.4 plan/verify への recall ＋ §11.6 verify 学習再利用 | ✗ 未 |
+| **P5** | §11.5 昇格ラダー・cohort 還流 ＋ §11.6 多候補 | ✗ 未 |
 
-後方互換（`learn_capture` off・`verify_validate: none`・`trust_unmarked_comments` で従来挙動）。P0→P1→P2 を薄く入れて検証を推奨。
+**実装済み**（P0/P1＋P2/P3 の一部）: gitlab 人コメントの learn 捕捉（`_settle_failure`）・蒸留（`distill_learn`・
+LLM＋verbatim フォールバック・`--distill-learn`）・承認/却下の著者付き `notes` emit（kiro-flow）・恒真式に退化した
+合成 verify の棄却（`_verify_is_degenerate`）・テンプレ拡充（`test-passes`/`builds`/`exit-zero`/`endpoint-returns`）。
+テスト: kiro-projects `FeedbackReductionTests`・kiro-flow `GitlabHumanAgentDiscriminationTests`。
+**未実装（フォローアップ）**: 実行 red-green 検証・文脈つき合成・多候補・plan/verify への recall・作業中コメントの逐次取り込み・
+昇格ラダー・cohort 還流・flow-planner `--learnings`。
+
+後方互換（`learn_capture` off・`distill_learn` off・`trust_unmarked_comments` で従来挙動）。P0→P1→P2 を薄く入れて検証を推奨。
 **未決**: 蒸留の LLM 利用可否（推奨: LLM＋失敗時 verbatim）／作業中コメントの durable 判定既定／Red-Green のコスト・破壊性
 （推奨: opt-out＋読み取り/テスト系に既定適用）／plan への learn 注入の有界化／`--reject-recur`・Jaccard しきい値
 （既存 `--learn-threshold` 0.5 と揃えるか）／kiro-flow 内側 verify ノードの CLI 化（本案対象外・将来判断）。

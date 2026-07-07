@@ -1979,8 +1979,13 @@ def expand_verify_template(spec: str) -> "str | None":
         return f"grep -qE {_sh_q(pat)} {_sh_q(path)}"
     if name in ("diff-contains", "grep-diff") and args:               # act 後の差分に needle（履歴に騙されない）
         return f'git log "$KIRO_BASE_REV"..HEAD -p 2>/dev/null | grep -qF -- {_sh_q(args[0])}'
-    if name in ("cmd-succeeds", "tests-pass", "cmd", "run") and rest:  # 残り全体をコマンドとして実行
+    if name in ("cmd-succeeds", "tests-pass", "cmd", "run",            # 残り全体をコマンドとして実行
+                "test-passes", "builds", "exit-zero") and rest:       # test-passes/builds/exit-zero は意図を明示する別名
         return rest
+    if name in ("endpoint-returns", "http-status") and len(args) >= 2:  # <url> が <status> を返す
+        url, status = args[0], args[1]
+        return (f'test "$(curl -s -o /dev/null -w \'%{{http_code}}\' -- {_sh_q(url)})"'
+                f' = {_sh_q(status)}')
     return None
 
 
@@ -1998,6 +2003,24 @@ def _synth_verify_prompt(title: str, accept: str) -> str:
 
 # 全角の文/句読点。シェルコマンドにはまず現れず、自然言語（散文・拒否文）の強い指標。
 _PROSE_PUNCT = "。、！？；：「」『』（）"
+
+# 常に真＝何も検証しない恒真式。合成 verify がこれに退化すると done の唯一根拠が意味を失う。
+_TAUTOLOGY_RE = re.compile(
+    r"^(?:true|:|/bin/true"
+    r"|test\s+1\s*=\s*1|test\s+-n\s+.\S*|\[\s+1\s*=\s*1\s+\]"
+    r"|echo\b.*|printf\b.*|exit\s+0)$")
+
+
+def _verify_is_degenerate(cmd: str) -> bool:
+    """合成 verify が「常に PASS＝何も検証しない」恒真式に退化していないか（決定的スクリーン）。
+    red-green（変更前 fail・変更後 pass）を実行で確かめられない enqueue 時点でも、明白な恒真式は弾く。
+    複合（; && || | 含む）は個別判定が難しいので通し、単純トークンの恒真だけを弾く（false negative 寄り）。"""
+    s = (cmd or "").strip().strip(";").strip()
+    if not s:
+        return True
+    if any(op in s for op in ("&&", "||", "|", ";", "\n")):
+        return False                              # 複合は退化と断定しない（誤棄却を避ける）
+    return bool(_TAUTOLOGY_RE.match(s))
 
 
 def _looks_like_shell_command(line: str) -> bool:
@@ -2031,7 +2054,12 @@ def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None) -> str:
             # エージェントがコマンドではなく自然言語（説明・拒否文）を返すことがある。
             # それをそのまま run_verify の shell=True に流すと、文中の ; | && ` > rm 等が
             # 誤って実行されうるため、妥当なシェルコマンドでなければ合成失敗扱いにする。
-            return line if _looks_like_shell_command(line) else ""
+            if not _looks_like_shell_command(line):
+                return ""
+            # 恒真式（true / echo … 等）に退化した合成は done の根拠にならない＝合成失敗扱い（人へ）。
+            if _verify_is_degenerate(line):
+                return ""
+            return line
     return ""
 
 
@@ -2804,6 +2832,69 @@ def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
     return ""
 
 
+def read_result_notes(cfg: "Config", use_git: bool) -> "list[dict]":
+    """直近 run のノード結果 data.notes（gitlab executor が載せる**人コメント**の構造化列）を集める。
+    承認/却下いずれの決着でも、人/エージェント判別済みの人コメントだけが載っている（判別は executor 側）。
+    重複排除は note_id で行う。kiro-flow result --json を読むだけ（決定的）。"""
+    if not executor_delegates(cfg):
+        return []
+    cmd = _kf_base(cfg, use_git) + ["result", "--json"]
+    try:
+        proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
+                              capture_output=True, text=True)
+        data = json.loads(proc.stdout or "{}")
+    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
+        return []
+    seen, out = set(), []
+    for n in data.get("final_nodes", []):
+        for note in ((n or {}).get("data") or {}).get("notes", []) if isinstance((n or {}).get("data"), dict) else []:
+            if not isinstance(note, dict):
+                continue
+            nid = note.get("note_id")
+            key = nid if nid is not None else str(note.get("body", ""))[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(note)
+    return out
+
+
+def _distill_prompt(title: str, guidance: str) -> str:
+    return (
+        "次は、あるタスクに対して**人間が残したフィードバック/指摘**です。これを、"
+        "**類似タスクにも再利用できる一般化した学習ルール**に蒸留してください。\n"
+        "規則: ①タスク固有の固有名詞（イシュー番号・特定ファイル名等）は種別・パターンへ引き上げる "
+        "②『どういう種類のタスクで/何に気をつけるべきか』を一文で ③一過性の相談・雑談は蒸留対象外"
+        "（その場合は空行のみ返す）。\n"
+        f"タスク: {title}\nフィードバック: {guidance}\n\n"
+        "出力は `<一般化した条件> :: <再利用可能な指針>` の 1 行のみ（説明・コードフェンス不要）。")
+
+
+def distill_learn(cfg: "Config", title: str, guidance: str, kiro_run=None) -> "tuple[str, str]":
+    """人コメント（guidance）を `(条件, 指針)` の一般化ルールへ蒸留する（ltm-use の consolidate 相当）。
+    kiro-cli 委譲。失敗・不能・一過性判定は **生 verbatim フォールバック**（劣化しても現状より前進）。
+    返り値は append_decision(learn=) にそのまま渡せる (title, guide)。"""
+    verbatim = (title, guidance.replace("\n", " ⏎ ").strip()[:400])
+    if not cfg.distill_learn:                       # 蒸留 off＝従来どおり生の指摘を learn 化
+        return verbatim
+    run = kiro_run or _run_kiro_cli
+    try:
+        out = run(_distill_prompt(title, guidance), cfg.model)
+    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等
+        return verbatim
+    for line in (out or "").splitlines():
+        line = _strip_code(line.strip())
+        if not line or line.startswith("#"):
+            continue
+        if "::" in line:
+            cond, _, guide = line.partition("::")
+            cond, guide = cond.strip(), guide.strip()
+            if cond and guide:
+                return (cond, guide)
+        return verbatim                             # 蒸留形式でない最初の行＝失敗扱い
+    return verbatim                                 # 空出力（一過性判定含む）＝生で残す
+
+
 # ---------------------------------------------------------------------------
 # 設定
 # ---------------------------------------------------------------------------
@@ -2902,7 +2993,8 @@ class Config:
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）
     do_archive: bool = True         # done を archive/ へ退避（False なら削除）
     learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
-    learn_capture: bool = True      # 人の判断（approve 理由・hold 理由）から learn/avoid を自動抽出して蓄積
+    learn_capture: bool = True      # 人の判断（approve 理由・hold 理由・gitlab 却下コメント）から learn/avoid を蓄積
+    distill_learn: bool = True      # 人コメントを一般化ルールへ蒸留してから learn 化（off で生の指摘をそのまま残す）
     intake_recall: bool = True      # 投入/triage 時に過去の hold 判断（avoid）と照合し類似は inbox（人へ）へ寄せる
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
     auto_adjudicate: bool = True    # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on）
@@ -3386,6 +3478,15 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
                 task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
                 append_journal(cfg.journal,
                                f"cycle {cycle}: {task.id} 却下コメントを次 act に注入")
+                # 同一タスクの再試行に注入するだけでなく、**横断学習ストアにも蒸留して残す**。
+                # これで似たタスク（find_learned_resolution）・別プロジェクト（links）・ltm へ還元される。
+                # 対象は人と判別済みの gitlab 人コメント（判別は executor 側 _human_notes）。
+                if cfg.learn_capture:
+                    append_decision(cfg, task.id, "gitlab",
+                                    context=f"{task.id}（{task.title}）が gitlab で却下",
+                                    action="gitlab-reject", reason=guidance[:300],
+                                    affects=f"{task.id} → ready（次 act に反映）",
+                                    learn=distill_learn(cfg, task.title, guidance))
         persist_task(cfg, task)
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
                                     f"({task.retries}/{cfg.max_retries}) — {vmsg}")
@@ -6980,7 +7081,8 @@ CONFIG_DEFAULTS = {
     "kiro_flow": None,
     "notify_cmd": None,
     "actor": os.environ.get("USER", "user"),
-    "learn_capture": True,      # approve/hold 理由から learn/avoid を自動抽出（三値 --learn-capture/--no-...）
+    "learn_capture": True,      # approve/hold 理由・gitlab 却下コメントから learn/avoid を自動抽出（三値 --learn-capture/--no-...）
+    "distill_learn": True,      # 人コメントを一般化ルールへ蒸留してから learn 化（三値 --distill-learn/--no-distill-learn）
     "intake_recall": True,      # 投入/triage 時の予防リコール（過去 hold に類似→inbox）（三値フラグ）
     "learn_threshold": 0.5,
     "promote_threshold": 2,
@@ -7114,6 +7216,7 @@ def build_config(args) -> Config:
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
         learn=bool(getattr(args, "learn", True)),
         learn_capture=bool(getattr(args, "learn_capture", True)),
+        distill_learn=bool(getattr(args, "distill_learn", True)),
         intake_recall=bool(getattr(args, "intake_recall", True)),
         learn_threshold=args.learn_threshold,
         auto_adjudicate=bool(getattr(args, "auto_adjudicate", True)),
@@ -7239,8 +7342,11 @@ def _add_common(sp):
     sp.add_argument("--learn", action=argparse.BooleanOptionalAction, default=None,
                     help="DR 学習（過去の人の判断から類似案件を自動解決）。--no-learn で無効化（既定 on）")
     sp.add_argument("--learn-capture", action=argparse.BooleanOptionalAction, default=None,
-                    help="人の判断（approve 理由→learn / hold 理由→avoid）を自動抽出して蓄積。"
-                         "--no-learn-capture で無効化（既定 on）")
+                    help="人の判断（approve 理由→learn / hold 理由→avoid / gitlab 却下コメント→learn）を"
+                         "自動抽出して蓄積。--no-learn-capture で無効化（既定 on）")
+    sp.add_argument("--distill-learn", action=argparse.BooleanOptionalAction, default=None,
+                    help="人コメントを一般化ルールへ蒸留してから learn 化。--no-distill-learn で"
+                         "生の指摘をそのまま残す（既定 on・蒸留失敗時も生でフォールバック）")
     sp.add_argument("--intake-recall", action=argparse.BooleanOptionalAction, default=None,
                     help="投入/triage 時に過去の hold（avoid）と照合し、類似は ready へ落とさず inbox（人へ）"
                          "寄せる予防リコール。--no-intake-recall で無効化（既定 on）")

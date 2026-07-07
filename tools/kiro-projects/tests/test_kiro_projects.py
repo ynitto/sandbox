@@ -5133,5 +5133,84 @@ class TestAsyncOffload(unittest.TestCase):
             self.assertIsNone(km._load_task_file(cfg, "T1"))   # backlog から消えた（archive 済み）
 
 
+class FeedbackReductionTests(unittest.TestCase):
+    """ユーザーの決定・指摘を全体へ還元する仕組み（gitlab 却下コメントの learn 化・蒸留）と
+    verify 品質改善（恒真式スクリーン・テンプレ拡充）。"""
+
+    def test_distill_learn_generalizes(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            got = km.distill_learn(cfg, "ログイン画面の e2e",
+                                   "実サーバでなく localhost で検証していてダメ",
+                                   kiro_run=lambda p, m: "e2e/統合テスト系 :: 実サーバ配備で実施すること")
+            self.assertEqual(got, ("e2e/統合テスト系", "実サーバ配備で実施すること"))
+
+    def test_distill_learn_verbatim_fallback_on_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            def boom(p, m): raise RuntimeError("no kiro-cli")
+            title, guide = km.distill_learn(cfg, "T", "実サーバで検証", kiro_run=boom)
+            self.assertEqual(title, "T")
+            self.assertIn("実サーバで検証", guide)
+
+    def test_distill_learn_off_returns_verbatim(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), distill_learn=False)
+            got = km.distill_learn(cfg, "T", "生の指摘",
+                                   kiro_run=lambda p, m: self.fail("蒸留された"))
+            self.assertEqual(got, ("T", "生の指摘"))
+
+    def test_verify_degenerate_screen(self):
+        for bad in ("true", ":", "echo done", "test 1 = 1", "exit 0", ""):
+            self.assertTrue(km._verify_is_degenerate(bad), bad)
+        for good in ("grep -q 概要 README.md", "pytest -q", "test -f x && grep -q y z"):
+            self.assertFalse(km._verify_is_degenerate(good), good)
+
+    def test_synth_rejects_degenerate_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            self.assertEqual(km.synth_verify(cfg, "T", "何かする",
+                                             kiro_run=lambda p, m: "true"), "")
+            self.assertEqual(km.synth_verify(cfg, "T", "概要見出し",
+                             kiro_run=lambda p, m: "grep -q 概要 README.md"),
+                             "grep -q 概要 README.md")
+
+    def test_expand_verify_template_additions(self):
+        self.assertEqual(km.expand_verify_template("test-passes :: pytest -q"), "pytest -q")
+        self.assertEqual(km.expand_verify_template("builds :: make"), "make")
+        self.assertEqual(km.expand_verify_template("exit-zero :: ./run.sh"), "./run.sh")
+        cmd = km.expand_verify_template("endpoint-returns :: http://x/health :: 200")
+        self.assertIn("http_code", cmd)
+        self.assertIn("200", cmd)
+        self.assertIn("http://x/health", cmd)
+
+    def test_reject_guidance_captured_as_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="pytest -q", title="ログイン e2e")
+            cfg = cfg_for(d, executor="gitlab")
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_reject_guidance",
+                                   return_value="実サーバで検証すること"), \
+                 mock.patch.object(km, "distill_learn",
+                                   return_value=("e2e 系", "実サーバ配備で実施")):
+                km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
+            dr = (cfg.decisions / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("- learn: e2e 系 :: 実サーバ配備で実施", dr)
+            self.assertIn("gitlab-reject", dr)
+
+    def test_reject_learn_suppressed_when_capture_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T2", verify="pytest -q", title="x")
+            cfg = cfg_for(d, executor="gitlab", learn_capture=False)
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_reject_guidance", return_value="直して"):
+                km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
+            self.assertFalse((cfg.decisions / "T2.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

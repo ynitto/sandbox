@@ -178,6 +178,14 @@ cleanup_per_node: false
 #   # （バックプレッシャ＝エラーにはしない。人がレビューを捌いて枠が空けば自動で起票再開）。
 #   # 人のレビュー速度に発行をペーシングし、PC/GitLab サーバ負荷を抑えるための蛇口。
 #   max_open_issues: 0
+#   # --- 人/エージェント判別（gitlab-idd 実行前提）: 人コメントのみを還元へ運ぶ ---
+#   # gitlab-idd の worker/reviewer/requester はイシューに大量の自動コメント（着手・scout・設計記録・
+#   # clarification 等）を投稿する。フィードバック還元（kiro-projects の learn）に載せるのは**人のコメント
+#   # だけ**にする。判別は多層: 全 gitlab-idd マーカー除外・bot 名/フラグ除外・per-issue でマーカー著者を
+#   # 学習してその無署名コメントも除外。手で明示したいときだけ以下を指定する。
+#   agent_authors: ""                    # エージェント/ボットのアカウント（username か id・カンマ区切り）を除外
+#   human_reviewers: ""                  # 人間レビュアーの allowlist（指定するとそれ以外を除外・最も厳密）
+#   trust_unmarked_comments: false       # 著者不明の曖昧コメントも拾うか（既定 false＝precision 優先＝無暗に拾わない）
 
 # ---------------------------------------------------------------------------
 # 自動アップデート（既定 on・6 時間毎・起動直後にも実施）
