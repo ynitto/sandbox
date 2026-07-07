@@ -17,7 +17,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const TERMINAL = new Set(['done', 'failed']);
+// 終端 status（kiro-flow 本体と一致させる）。canceled は人の明示指示による恒久停止。
+// これに含めないと canceled run が「応答なし/実行中」に誤分類され、再投入/削除の可否もずれる。
+const TERMINAL = new Set(['done', 'failed', 'canceled']);
 
 // 生存リース未記録の run（heartbeat 前に owner が死んだ／古い kiro-flow の run）を
 // 停止扱いにするまでの猶予秒。kiro-flow の孤児回収リース（poll*10、最低 120s）より
@@ -193,6 +195,10 @@ function readRun(runDir) {
     let data = null;
     let heartbeatAt = null; // 実行中: 直近の心拍時刻（Heartbeat が claim を書き換える）
     let leaseUntil = null; // 実行中: claim の lease 期限（now < lease = worker 生存）
+    let parked = false; // park & poll: 承認待ち等で保留中（claim を解放してスロットを空けている）
+    let throttled = false; // 同時イシュー上限で起票を見送っている（イシュー未作成）
+    let parkIssue = null; // park 中の関連イシュー座標（{host,project,iid,url}）
+    let parkActiveSeen = false; // 人の作業（MR 出現/ラベル）を検知済みか
     if (result) {
       state = result.status === 'failed' ? 'failed' : 'done';
       who = result.who || null;
@@ -206,12 +212,25 @@ function readRun(runDir) {
         who = winner.who || null;
         heartbeatAt = winner.claimed_at || null;
         leaseUntil = Number(winner.lease_until || 0) || null;
+      } else {
+        // park 記録（承認待ち）。kiro-flow と同じく wait_lease_until が生存なら waiting 相当。
+        // 失効していれば pending へ縮退（full worker が再アタッチで拾い直す）＝ここでは park 扱いにしない。
+        const wrec = readJson(path.join(runDir, 'waits', `${id}.json`));
+        if (wrec && Number(wrec.wait_lease_until || 0) >= now) {
+          parked = true;
+          throttled = Boolean(wrec.throttled);
+          parkActiveSeen = Boolean(wrec.active_seen);
+          parkIssue = (wrec.issue && typeof wrec.issue === 'object') ? wrec.issue : null;
+          who = wrec.who || null;
+          state = 'parked';
+        }
       }
     }
-    // 関連 GitLab イシュー: 承認済みは data、却下（failed）は output の URL から拾う
+    // 関連 GitLab イシュー: 承認済みは data、却下（failed）は output の URL、park 中は wait 記録から拾う
     const issueUrl =
       (data && typeof data === 'object' && !Array.isArray(data) && data.web_url) ||
       (output && (output.match(ISSUE_URL_RE) || [])[0]) ||
+      (parkIssue && parkIssue.url) ||
       null;
     nodes[id] = {
       id,
@@ -227,6 +246,9 @@ function readRun(runDir) {
       output,
       data,
       issueUrl,
+      parked, // 承認待ちで park 中（claim を解放しスロットを空けている）
+      throttled, // 同時イシュー上限で起票を見送り中（イシュー未作成）
+      parkActiveSeen, // 人の作業（MR/ラベル）を検知済み
       rejected: Boolean(
         (data && typeof data === 'object' && data.decision === 'rejected') ||
           (output && output.includes('[gitlab-reject]'))
@@ -245,7 +267,7 @@ function readRun(runDir) {
     if (unmet.length) n.state = 'waiting';
   }
 
-  const counts = { done: 0, failed: 0, claimed: 0, pending: 0, waiting: 0 };
+  const counts = { done: 0, failed: 0, claimed: 0, pending: 0, waiting: 0, parked: 0 };
   for (const n of Object.values(nodes)) counts[n.state] = (counts[n.state] || 0) + 1;
   const total = Object.keys(nodes).length;
 
@@ -406,6 +428,64 @@ function prepareRunDeletion(busDir, runId) {
   return { runDir, status };
 }
 
+function writeJsonAtomic(file, obj) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(obj, null, 2), 'utf8');
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+// run を canceled に終端化する（人の明示指示による恒久停止）。kiro-flow の cmd_cancel と同じ 3 手を
+// ファイル操作で行う: (1) cancel マーカーを inbox/cancels/ に書く（git 同期で他 PC / daemon へ伝わる）、
+// (2) run が存在すれば meta を canceled に確定（daemon 不在でも即停止）、(3) park 記録を掃除して
+// 監視の再ポーリングを止める。起票済みイシューのクローズは呼び出し側（ipc）が gitlab API で行う（任意）。
+// 返り値の issues は掃除前の park 済みイシュー座標（--close-issues 相当の後始末に使う）。
+function cancelRun(busDir, runId, { reason } = {}) {
+  const id = String(runId || '');
+  if (!id || id !== path.basename(id)) throw new Error(`不正な run ID です: ${runId}`);
+  const runDir = path.join(busDir, 'runs', id);
+  const meta = readJson(path.join(runDir, 'meta.json'));
+  const curStatus = meta ? String(meta.status || 'unknown') : null;
+  // 掃除前に park 済みイシュー座標を集める（任意のクローズ後始末に渡す）
+  const waitsDir = path.join(runDir, 'waits');
+  const issues = [];
+  for (const f of safeList(waitsDir)) {
+    if (!f.endsWith('.json')) continue;
+    const w = readJson(path.join(waitsDir, f));
+    const iss = w && w.issue;
+    if (iss && iss.iid != null) issues.push(iss);
+  }
+  if (meta && TERMINAL.has(curStatus)) {
+    // 既に終端（done/failed/canceled）＝ cancel は不要（不可逆）。
+    return { status: curStatus, alreadyTerminal: true, marked: false, cleared: 0, issues };
+  }
+  // (1) cancel マーカー（close_issues は viewer 側で閉じるため false で置く＝daemon の二重クローズを避ける）
+  writeJsonAtomic(path.join(busDir, 'inbox', 'cancels', `${id}.json`), {
+    id, who: `viewer-${os.hostname()}`, reason: reason || '',
+    close_issues: false, requested_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+  });
+  // (2) run が存在すれば meta を canceled に確定（監視主体が居なくても止まる）
+  let marked = false;
+  if (meta && !TERMINAL.has(curStatus)) {
+    meta.status = 'canceled';
+    meta.updated_at = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+    if (reason) meta.cancel_reason = reason;
+    writeJsonAtomic(path.join(runDir, 'meta.json'), meta);
+    marked = true;
+  }
+  // (3) park 記録を掃除して再ポーリングを止める
+  let cleared = 0;
+  for (const f of safeList(waitsDir)) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      fs.unlinkSync(path.join(waitsDir, f));
+      cleared += 1;
+    } catch {
+      /* 消せなくても致命的でない */
+    }
+  }
+  return { status: marked ? 'canceled' : curStatus, marked, cleared, issues };
+}
+
 // バス配下の run を新しい順に一覧する（各 run はサマリのみ）
 function listRuns(busDir, limit = 30) {
   const runsDir = path.join(busDir, 'runs');
@@ -507,6 +587,7 @@ module.exports = {
   runAlive,
   resubmitRun,
   prepareRunDeletion,
+  cancelRun,
   nodeTaskToken,
   reconcileNodeState,
   gitlabMrDecision,

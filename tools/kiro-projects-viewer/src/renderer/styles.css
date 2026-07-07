@@ -281,6 +281,8 @@ table.list tr.clickable:hover { background: var(--bg2); }
 .status-chip.st-running { color: var(--accent2); border-color: var(--accent2); }
 .status-chip.st-planning { color: var(--blue); border-color: var(--blue); }
 .status-chip.st-failed { color: var(--red); border-color: var(--red); }
+.status-chip.st-canceled { color: var(--muted); border-color: var(--muted); }
+.status-chip.st-parked { color: var(--orange); border-color: var(--orange); }
 .status-chip.st-stalled { color: var(--yellow); border-color: var(--yellow); }
 
 .label-chip {
@@ -412,6 +414,7 @@ svg.graph .node.state-done rect { fill: #1d3325; stroke: var(--green); }
 svg.graph .node.state-failed rect { fill: #3a1d20; stroke: var(--red); }
 svg.graph .node.state-claimed rect { fill: #17313d; stroke: var(--accent2); }
 svg.graph .node.state-pending rect { fill: var(--bg3); stroke: var(--blue); }
+svg.graph .node.state-parked rect { fill: #3a2f13; stroke: var(--orange); }
 svg.graph .node.state-waiting rect { fill: var(--bg3); stroke: var(--border); }
 svg.graph .node.selected rect { stroke-width: 3; }
 /* GitLab クローズ反映で状態を先読みしたノード（bus の result 反映待ち）は破線枠で区別する */

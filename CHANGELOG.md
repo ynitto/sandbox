@@ -7,14 +7,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
-### kiro-projects: 管理 daemon の state_git サブディレクトリを設定可能に（`flow_state_subdir`）
+### kiro-flow: gitlab 委譲の承認待ちを worker スロットから切り離す（park & poll）＋ `cancel` ＋ 同時イシュー上限
 
-- `manage_flow_daemon` で起動する kiro-flow daemon の `--state-git-subdir` は `kiro-flow` にハードコード
-  されており、`flow_config` 経由の kiro-flow.yaml で `state_git_subdir` を変えても CLI 注入に上書きされて
-  効かなかった。設定 `flow_state_subdir`（既定 `kiro-flow`）で変更できるようにした。
-- 補足: run の実行はバスから行われるため、サブディレクトリを変えても **run は止まらない**（変わるのは
-  鏡写し先のパスだけ。viewer が別サブディレクトリを見ていると run が「見えない」ことはある）。
-  README / `kiro-projects.yaml.example` / 移行手順書の FAQ に注記、テストを追加。
+- **背景**: `--executor gitlab` は各タスクを GitLab イシューにして委譲し、決着（MR 全マージ＝承認／
+  未マージクローズ＝却下）まで **worker を同期ブロックしてポーリング**していた。イシューが人の承認待ちで
+  滞留すると、その worker が `max_workers` の 1 枠を数日占有し続け、**claim 可能タスクがあっても発行が
+  止まる**。かといって `max_workers` を上げると常駐プロセスと GitLab ポーリングの多重で PC/サーバ負荷が
+  増える。kiro-projects からの daemon 起動を主眼に、負荷を抑えつつ設計思想（ファイルのみのバス・
+  オンデマンド worker・分散・クラッシュ耐性）を保ったまま改善した。
+- **park & poll**: executor は決着していないとき `DeferDecision` を投げ、worker は終端 result を書かずに
+  ノードを **park**（`runs/<run>/waits/<node>.json` に退避）して claim を解放する（`node_state` は新状態
+  `waiting`）。承認待ちは監視主体（daemon / 単発 run）の `service_waits` が `watch_interval`（既定 90 秒）毎に
+  **まとめて再確認** し、決着したら終端 result を直接書く。gitlab は承認時にローカル workspace を finalize
+  する必要がない（成果はマージ済み MR にある）ため、監視主体が worker/clone 無しで結果を材料化できる。
+  → **ブロック worker N 台 ×(1/30s)** を **監視 1 本 ×(1/watch_interval) のバッチ**へ畳み、スロット占有と
+  多重ポーリングの二重負荷を同時に解消。`max_workers` は小さいまま据え置ける。
+- **分散時の公平な分担**: git バス分散では、起票は既存の per-node claim で全 PC に公平分散し、監視は
+  各 run の **駆動オーナー daemon 1 台に分担**する（`service_waits` は「自分が orchestrator を回している run」
+  だけを見る）。これで N 台が全 park を **重複ポーリングしない**（run が各 PC に分散する分だけ監視も分散）。
+  オーナー消失時は孤児 reclaim が run（＝監視）を別 PC へ移すので取りこぼさない。
+- **耐性（維持・強化）**: park 記録はバス上で **git 同期し daemon 消失を跨いで生存**——次に起きた daemon が
+  引き継いで再確認する（孤児 run reclaim と同じモデル）。`waits/` は claim と同じ **lease セマンティクス**に
+  相乗りし、`wait_lease` 失効時は `node_state` が **`pending` へ縮退**して full worker が **冪等な再アタッチ**
+  （同一トークンの既存 open イシューに再接続）で拾い直す——park を行き止まりにしない。イシュー削除（404）・
+  外部クローズ・却下 data はブロック版と同じ関数を共有し、確認する場所が worker か監視主体かの違いだけ。
+  監視主体の無い単発 `work` 実行は環境変数で deferral 無効となり **従来どおりブロック待機へフォールバック**
+  （後方互換）。deferral は起動モードに依らず「監視主体が居れば効く」汎用機構で、`poll()`/`on_cancel()` は
+  executor プラグイン契約の**任意拡張**（gitlab が最初の利用者。kiro/stub 等は従来どおりブロック）。
+- **`cancel`（run スコープの恒久停止）**: 終端 status に **`canceled`** を追加し、`kiro-flow cancel <run-id>` を
+  新設。cancel マーカーを inbox に置いて git 同期で全 PC / daemon へ伝え、run が存在すれば即 `canceled` に
+  終端化する。監視主体は **新規起票・park の再ポーリング・孤児 resume を同時停止**（`canceled` は終端なので
+  `active_runs` から外れ reclaim 対象にもならない）。orchestrator も要所で cancel を確認し、`running` への
+  上書きで復活しない。`--close-issues` で起票済みイシューに取消コメントを付けてクローズ（既定は残す）。
+  承認待ちで park 中の run も暴走中の run も止められる、人の明示指示による唯一の hard-stop。
+- **同時イシュー上限（バックプレッシャ）**: `gitlab.max_open_issues`（0=無制限）で「同時に開ける未決着
+  イシュー数」を絞れる。上限で **起票を一時停止**（**エラーにしない**。枠が空けば `service_waits` が自動で
+  起票再開）。既存の再タスク打ち切り（`--max-retries` は `return "done"`）と同じ「これ以上作らない」思想の
+  延長で、run を落とさず人のレビュー速度に発行をペーシングする。
+- **従来モードへ戻す設定**: `gitlab.defer_waits`（既定 true）を追加。`false` で park & poll を無効化し、
+  従来モード（worker がイシューを監視してブロック待機。1 worker=1 イシュー）に戻す。daemon/run が
+  この設定で worker への環境変数 `KIRO_FLOW_DEFER_WAITS` を出し分け、`service_waits` も出番が無くなる。
+- **設定整合**: gitlab executor プラグインの `_DEFAULTS` と本体 `CONFIG_DEFAULTS` の `timeout` 不一致
+  （後者だけ 86400）を是正し、`timeout: 604800` / `approved_timeout: 1209600` を揃えた。`watch_interval` /
+  `max_open_issues` / `defer_waits` を `gitlab:` ブロックに追加。README / `kiro-flow.yaml.example` を更新、
+  テストを追加（waiting 状態・service_waits の決着/据え置き/締切/throttle/defer 無効・cancel・
+  gitlab の DeferDecision/poll/on_cancel）。
+
+### kiro-projects-viewer: park & poll の可視化 ＋ run キャンセル操作 ＋ canceled 終端対応
+
+- 上記 kiro-flow の park & poll / cancel をビュアーから扱えるようにした。ビュアーは引き続き基本
+  読み取り専用だが、run ライフサイクル操作（既存の再投入・削除）と同じ流儀で cancel を追加した。
+- **park（承認待ち）の可視化**: `flow.js` が `runs/<run>/waits/<node>.json` を読み、生存 lease を持つ
+  ノードを「**承認待ち（parked）**」状態として導出（オレンジのノード色＋レビュー中アイコン）。同時
+  イシュー上限での「起票見送り（throttle）」も区別。lease 失効は pending へ縮退＝本体と同じ。ノード
+  詳細に park の説明行（レビュー/MR 作成待ち・人の作業検知・throttle）とチップを表示。
+- **run キャンセル**: run 詳細に「■ キャンセル」ボタン（非終端 run のみ）。`inbox/cancels/<run-id>.json`
+  にマーカーを置き（git 同期で他 PC / daemon へ伝わる）、`meta.json` を canceled に確定、`waits/` を
+  掃除して監視の再ポーリングを止める（kiro-flow の cmd_cancel と同形）。承認待ちで park 中でも暴走中でも
+  止められる。起票済みイシューは残す（この viewer の GitLab クライアントは読み取り専用のため、クローズは
+  daemon の `cancel --close-issues` か gitlab-review-viewer に委ねる）。
+- **canceled 終端対応**: `flow.js` の `TERMINAL` に `canceled` を追加（canceled run を「応答なし/実行中」に
+  誤分類しない）。run 削除の対象にも canceled を含め、status チップ／グラフ色を追加。テスト 7 件を追加。
+
+### kiro-projects: kiro-flow の設定は `flow_config`（--config）に集約（個別注入をやめる・`flow_state_subdir` 廃止）
+
+- 方針: kiro-projects 側に kiro-flow の設定値を1つずつ増やさない。kiro-flow の設定（`executor` /
+  `state_git_subdir` / `gitlab.*` / `defer_waits` 等）は **`flow_config` で渡す kiro-flow.yaml に集約**し、
+  daemon 起動時に `--config` で渡して kiro-flow に読ませる。kiro-projects が CLI 注入するのは、
+  「どのバスをどのリポジトリへ鏡写しするか」の **per-project routing**（`--state-git` の remote /
+  branch / interval）だけ——これは `state_git_projects` から導出する kiro-projects の役割。
+- そのため、先に追加した `flow_state_subdir`（`--state-git-subdir` を個別 CLI 注入する設定）を **廃止**した。
+  state_git サブディレクトリを変えたいときは kiro-flow.yaml の `state_git_subdir` を設定する（既定
+  `kiro-flow`。CLI 注入しなくなったので上書きされず、そのまま効く）。viewer の `flowBusByProject`
+  （`<clone>/<subdir>`）も合わせる。README / `kiro-projects.yaml.example` を更新、テストを更新。
 
 ### kiro-projects-viewer: タスクグラフノードのイシュー状態を自動表示（クリック不要）
 

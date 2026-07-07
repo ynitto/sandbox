@@ -67,7 +67,27 @@ _DEFAULTS = {
     "approved_timeout": 1209600.0,  # status:approved/status:done 検知後の猶予（既定 14 日・人のマージ待ち）
     "approved_label": "status:approved",
     "done_label": "status:done",
+    # park & poll を無効化して従来モード（worker がブロック待機）に戻すフラグ。既定 true（有効）。
+    # 実際の deferral は本体（daemon/run）が環境変数 KIRO_FLOW_DEFER_WAITS で worker に伝える。
+    "defer_waits": True,
+    # 同時に開いておける未決着イシューの上限（0=無制限）。cmd_work 側の throttle が参照する
+    # （executor は数えない）。人のレビュー速度に起票をペーシングし、PC/GitLab 負荷を抑える。
+    "max_open_issues": 0,
+    # service_waits（監視主体）が park 済みイシューをまとめて再確認する間隔（秒）。
+    "watch_interval": 90.0,
 }
+
+
+# park（保留）シグナル: execute() が承認待ちで worker をブロックする代わりにこれを投げる。
+# kiro-flow 本体は共有 import せず `getattr(e, "defer", None)` で受ける（既存の reject の
+# `.data` と同じダックタイピング規約＝プラグインは本体非依存のまま単体ロードできる）。
+class DeferDecision(Exception):
+    """承認待ち等で決着していない＝ノードを park（保留）するよう本体へ知らせる例外。
+    インスタンスの `.defer` 属性に再確認に必要な状態（issue 座標・token・猶予）を載せる。
+    秘密（GitLab トークン）は載せない——poll 時に connections から再解決する。"""
+    def __init__(self, msg: str, defer: dict):
+        super().__init__(msg)
+        self.defer = defer
 
 
 def _log(msg: str) -> None:
@@ -411,6 +431,15 @@ def _close_issue(host: str, token: str, project: str, iid,
     return gl_api(host, token, "PUT", f"/projects/{ep}/issues/{iid}", data=data)
 
 
+def _add_note(host: str, token: str, project: str, iid, body: str) -> dict:
+    """イシューにコメント（note）を1件付ける。cancel 後始末の取消通知などに使う。
+    本文は `kiro-flow:` で始める（_human_comments/_decision_from_comments が自動コメントとして除外する）。"""
+    ep = _encode_project(project)
+    text = body if body.startswith("kiro-flow:") else f"kiro-flow: {body}"
+    return gl_api(host, token, "POST", f"/projects/{ep}/issues/{iid}/notes",
+                  data={"body": text})
+
+
 def _human_comments(host: str, token: str, project: str, iid) -> str:
     """イシューの**人間のコメント**を新しい順に連結して返す（却下時のやり直し指示に活かす）。
     GitLab の system note（ラベル変更等の自動記録）と、kiro-flow が付けた creator-node-id タグを含む
@@ -580,14 +609,128 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
             raise RuntimeError(f"GitLab イシューの作成に失敗しました: {str(created)[:200]}")
         _log(f"イシュー #{iid} を起票し関連 MR の決着待ち（{url_base}）: {url}")
 
+    # deferral（park）: 環境変数 KIRO_FLOW_DEFER_WAITS=1 のとき（＝daemon/run が service_waits で
+    # 面倒を見るとき）は worker をブロックせず、1 回だけ決着を確認して未決着なら DeferDecision を
+    # 投げる。未設定（standalone `work` 等・監視主体なし）は従来どおりブロック待機へフォールバック。
+    if os.environ.get("KIRO_FLOW_DEFER_WAITS") == "1":
+        r = _check_decision(host, token, project, iid, url, cfg, False)
+        if r["decision"] == "approved":
+            return r["text"], r["data"]
+        if r["decision"] == "rejected":
+            _raise_from_payload(r["text"], r["data"])
+        _log(f"イシュー #{iid}: 未決着のため park（承認待ちを worker から切り離す）: {url}")
+        raise DeferDecision(f"gitlab: イシュー #{iid} は承認待ち（park）", {
+            "executor": "gitlab",
+            "issue": {"host": host, "project": project, "iid": iid, "url": url},
+            "task_token": _task_token(art_dir),
+            "active_seen": bool(r["active_seen"]),
+            "poll_interval": _as_float(cfg.get("poll_interval"), 30.0),
+            "timeout": _as_float(cfg.get("timeout"), 0.0),
+            "approved_timeout": _as_float(cfg.get("approved_timeout"), 0.0),
+            "throttled": False,
+            "reason": "human-approval-wait",
+        })
     return _wait_for_decision(host, token, project, iid, url, cfg)
+
+
+def _check_decision(host, token, project, iid, url, cfg, active_seen):
+    """イシュー #iid の決着を **1 回だけ** 確認して正規化した結果 dict を返す（副作用として
+    決着時はイシューをクローズする＝ブロック版と同じ）。ブロック待機 `_wait_for_decision` と
+    非ブロックの `poll`（service_waits 用）の両方がこの 1 関数を共有し、判定の二重実装を避ける。
+    返り値: {decision: "approved"|"rejected"|None, text, data, active_seen, mrs}。"""
+    approved = str(cfg.get("approved_label") or "status:approved")
+    done_label = str(cfg.get("done_label") or "status:done")
+    try:
+        issue = _get_issue(host, token, project, iid)
+    except RuntimeError as e:
+        # イシューが消えた（削除された）＝取り下げ。人が誤って削除しても一般エラーではなく
+        # 却下として決着させ、上位のやり直しループに乗せる。404 以外（ネットワーク断・権限等）は
+        # 従来どおり送出する（ブロック版は失敗として上位へ、poll 版は捕捉して次回再試行に倒す）。
+        if "HTTP 404" in str(e):
+            _log(f"イシュー #{iid} が見つかりません（削除された＝取り下げとみなす）: {url}")
+            text, data = _deleted_payload(iid, url)
+            return {"decision": "rejected", "text": text, "data": data,
+                    "active_seen": active_seen, "mrs": 0}
+        raise
+    labels_now = set(issue.get("labels") or [])
+    issue_closed = issue.get("state") == "closed"
+    mrs = _related_merge_requests(host, token, project, iid)
+    states = [str(m.get("state") or "") for m in mrs]
+    # まず関連 MR の状態だけで判定する（全マージ＝承認 / 未マージクローズ＝却下）。
+    decision = _mr_decision(states)
+    reason = ""
+    # MR で決着がつかないままイシューが**外部でクローズ**されたら、ラベル→コメントの順で
+    # 承認/却下を推定し、タスクグラフに反映する（done なら下流へ、却下なら上位がやり直す）。
+    if not decision and issue_closed:
+        decision, reason = _closed_issue_decision(
+            host, token, project, iid, labels_now, approved, done_label)
+    if decision == "approved":
+        text, data = _finish_approved(host, token, project, iid, url, mrs,
+                                      labels_now, done_label, reason)
+        return {"decision": "approved", "text": text, "data": data,
+                "active_seen": active_seen, "mrs": len(mrs)}
+    if decision == "rejected":
+        text, data = _rejected_payload(host, token, project, iid, url, mrs,
+                                       labels_now, done_label, reason)
+        return {"decision": "rejected", "text": text, "data": data,
+                "active_seen": active_seen, "mrs": len(mrs)}
+    # 未決着。人が動き出した兆候（MR 出現 or approved/done ラベル）を検知したら active_seen を上げる。
+    now_active = active_seen or bool(mrs) or approved in labels_now or done_label in labels_now
+    return {"decision": None, "text": None, "data": None,
+            "active_seen": now_active, "mrs": len(mrs)}
+
+
+def poll(state: dict) -> dict:
+    """service_waits（daemon/run の監視主体）が park 済みイシューを **1 回だけ** 再確認する入口。
+    ブロックしない。決着なら {"decision": "approved"|"rejected", "text", "data"} を返し、
+    未決着なら {"decision": None, "active_seen": bool}。トークンは connections から再解決する
+    （バス上の park 記録に秘密を残さないため）。一過性エラーは decision=None で握り（次回再試行）。"""
+    cfg = _config()
+    iss = state.get("issue") or {}
+    host, project, iid = iss.get("host"), iss.get("project"), iss.get("iid")
+    url = iss.get("url", "")
+    if not (host and project and iid is not None):
+        return {"decision": None, "active_seen": bool(state.get("active_seen"))}
+    token = _resolve_token(cfg)
+    if not token:
+        return {"decision": None, "active_seen": bool(state.get("active_seen"))}
+    try:
+        r = _check_decision(host, token, project, iid, url, cfg, bool(state.get("active_seen")))
+    except RuntimeError as e:
+        # 一過性障害（ネットワーク断・5xx・権限の一時失敗等）は決着させず次回に回す
+        # （run を殺さない）。404 は _check_decision 内で却下として扱われるためここには来ない。
+        _log(f"poll: イシュー #{iid} の確認に失敗（未決着として次回再試行）: {e}")
+        return {"decision": None, "active_seen": bool(state.get("active_seen"))}
+    return {"decision": r["decision"], "text": r["text"], "data": r["data"],
+            "active_seen": r["active_seen"]}
+
+
+def on_cancel(records: "list[dict]") -> None:
+    """run が cancel されたときに、その run で park 済みのイシューを後始末する（opt-in）。
+    kiro-flow 本体が --close-issues 指定時に呼ぶ。各イシューへ取消コメントを残してクローズする。
+    ベストエフォート（失敗は無視）——cancel 自体（run の終端化）はこの成否に依存しない。"""
+    cfg = _config()
+    token = _resolve_token(cfg)
+    if not token:
+        return
+    for rec in records or []:
+        iss = (rec or {}).get("issue") or {}
+        host, project, iid = iss.get("host"), iss.get("project"), iss.get("iid")
+        if not (host and project and iid is not None):
+            continue
+        try:
+            _add_note(host, token, project, iid,
+                      "kiro-flow: run がキャンセルされたため、この委譲を取り下げます。")
+            _close_issue(host, token, project, iid)
+            _log(f"イシュー #{iid} を cancel 後始末でクローズ: {iss.get('url', '')}")
+        except RuntimeError as e:
+            _log(f"イシュー #{iid} の cancel 後始末に失敗（無視）: {e}")
 
 
 def _wait_for_decision(host, token, project, iid, url, cfg):
     """イシュー #iid の関連 MR の状態をポーリングし、承認（全マージ）/却下（未マージクローズ）の
-    決着まで待つ。新規起票でも既存イシューへの再アタッチでも同じこのループで待機する。"""
-    approved = str(cfg.get("approved_label") or "status:approved")
-    done_label = str(cfg.get("done_label") or "status:done")
+    決着まで待つ（ブロック版・deferral 無効時のフォールバック）。判定は _check_decision に集約し、
+    ここはループ・猶予延長・全体タイムアウトだけを受け持つ。"""
     interval = _as_float(cfg.get("poll_interval"), 30.0)
     timeout = _as_float(cfg.get("timeout"), 0.0)
     approved_timeout = _as_float(cfg.get("approved_timeout"), 0.0)
@@ -595,41 +738,16 @@ def _wait_for_decision(host, token, project, iid, url, cfg):
     active_seen = False  # MR 出現 or approved/done ラベル＝人が能動的に作業中
 
     while True:
-        try:
-            issue = _get_issue(host, token, project, iid)
-        except RuntimeError as e:
-            # イシューが消えた（削除された）＝取り下げ。人が誤って削除しても
-            # 一般エラーではなく却下として決着させ、上位のやり直しループに乗せる
-            # （コメントはイシューごと消えているため guidance は空＝自動判断）。
-            # 404 以外（ネットワーク断・権限等）は従来どおり失敗として送出する。
-            if "HTTP 404" in str(e):
-                _log(f"イシュー #{iid} が見つかりません（削除された＝取り下げとみなす）: {url}")
-                _raise_deleted(iid, url)
-            raise
-        labels_now = set(issue.get("labels") or [])
-        issue_closed = issue.get("state") == "closed"
-        mrs = _related_merge_requests(host, token, project, iid)
-        states = [str(m.get("state") or "") for m in mrs]
-        # まず関連 MR の状態だけで判定する（全マージ＝承認 / 未マージクローズ＝却下）。
-        decision = _mr_decision(states)
-        reason = ""
-        # MR で決着がつかないままイシューが**外部でクローズ**されたら、ラベル→コメントの順で
-        # 承認/却下を推定し、タスクグラフに反映する（done なら下流へ、却下なら上位がやり直す）。
-        if not decision and issue_closed:
-            decision, reason = _closed_issue_decision(
-                host, token, project, iid, labels_now, approved, done_label)
-
-        if decision == "approved":
-            return _finish_approved(host, token, project, iid, url, mrs,
-                                    labels_now, done_label, reason)
-        if decision == "rejected":
-            _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label, reason)
-
+        r = _check_decision(host, token, project, iid, url, cfg, active_seen)
+        if r["decision"] == "approved":
+            return r["text"], r["data"]
+        if r["decision"] == "rejected":
+            _raise_from_payload(r["text"], r["data"])
         # まだ決着せず（MR が open / 未作成）。人が動き出したら長い猶予へ切り替える。
-        if not active_seen and (mrs or approved in labels_now or done_label in labels_now):
+        if not active_seen and r["active_seen"]:
             active_seen = True
             deadline = (time.time() + approved_timeout) if approved_timeout > 0 else None
-            _log(f"イシュー #{iid}: 人の作業を検知（MR {len(mrs)} 件 / ラベル）。"
+            _log(f"イシュー #{iid}: 人の作業を検知（MR {r['mrs']} 件 / ラベル）。"
                  f"決着待ちの猶予を延長（{approved_timeout:.0f}s, 0=無限）")
         if deadline is not None and time.time() >= deadline:
             phase = "MR の決着（全マージ/却下クローズ）" if active_seen else "レビュー/MR 作成"
@@ -718,28 +836,36 @@ def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label
     return text, data
 
 
-def _raise_deleted(iid, url):
-    """イシュー削除（決着待ち中の 404）＝取り下げとして却下扱いで送出する。
+def _raise_from_payload(text: str, data: "dict | None"):
+    """(text, data) の却下ペイロードを、`.data` を載せた RuntimeError にして送出する。
+    ブロック版 `_wait_for_decision` から使う（poll 版は raise せず dict を返す）。"""
+    err = RuntimeError(text)
+    if data is not None:
+        err.data = data
+    raise err
+
+
+def _deleted_payload(iid, url):
+    """イシュー削除（決着待ち中の 404）＝取り下げの却下ペイロード (text, data) を作る。
     コメントはイシューごと消えているため guidance は空（＝上位が自動で判断してやり直す）。
     正規の却下経路はイシューの「クローズ」（gitlab-review-viewer も削除でなくクローズで
     伝える）——これは誤って削除されたときにフィードバックループを壊さないための防御。"""
     data = {"issue_iid": iid, "web_url": url, "decision": "rejected",
             "reason": "イシューが削除された（取り下げ）", "guidance": "",
             "merged_mrs": [], "closed": True}
-    err = RuntimeError(f"[gitlab-reject] 却下されました（イシューが削除された＝取り下げ）（{url}）。"
-                       "人コメントは読めないため自動で原因を判断してやり直してください。")
-    err.data = data
-    raise err
+    text = (f"[gitlab-reject] 却下されました（イシューが削除された＝取り下げ）（{url}）。"
+            "人コメントは読めないため自動で原因を判断してやり直してください。")
+    return text, data
 
 
-def _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label, reason=""):
-    """却下: 人コメントを取り込み、元イシューをクローズして例外を送出する。reason は却下の根拠
-    （未マージクローズ / 外部クローズ＋コメント却下 / MR 無しの取り下げ のいずれか）。
-    例外メッセージ先頭の `[gitlab-reject]` を上位（kiro-projects）が検知し、やり直しに活かす。
-    承認（_finish_approved）の data と対称の機械可読な決着として、例外にも `data` 属性で
-    構造化データを載せる——worker がそれを failed result の data に書き、消費側（viewer /
-    kiro-projects）が文字列マッチに頼らず却下を扱える。status は failed のまま
-    （done の「後続が成果に依存してよい」契約を、成果の無い却下では満たせないため）。"""
+def _rejected_payload(host, token, project, iid, url, mrs, labels_now, done_label, reason=""):
+    """却下: 人コメントを取り込み、元イシューをクローズして却下ペイロード (text, data) を作る。
+    reason は却下の根拠（未マージクローズ / 外部クローズ＋コメント却下 / MR 無しの取り下げ）。
+    text 先頭の `[gitlab-reject]` を上位（kiro-projects）が検知し、やり直しに活かす。承認
+    （_finish_approved）の data と対称の機械可読な決着として data を返す——worker/service_waits が
+    それを failed result の data に書き、消費側（viewer / kiro-projects）が文字列マッチに頼らず
+    却下を扱える。status は failed のまま（done の「後続が成果に依存してよい」契約を、成果の
+    無い却下では満たせないため）。"""
     why = reason or "未マージクローズ"
     guidance = _human_comments(host, token, project, iid)
     try:
@@ -752,13 +878,12 @@ def _raise_rejected(host, token, project, iid, url, mrs, labels_now, done_label,
             "closed": True}
     if guidance:
         _log(f"イシュー #{iid}: 却下（{why}）。人コメントをやり直しに活かす。")
-        err = RuntimeError(f"[gitlab-reject] 却下されました（{why}）（{url}）。やり直し指示: {guidance}")
+        text = f"[gitlab-reject] 却下されました（{why}）（{url}）。やり直し指示: {guidance}"
     else:
         _log(f"イシュー #{iid}: 却下（{why}）。人コメント無し＝自動で判断してやり直す。")
-        err = RuntimeError(f"[gitlab-reject] 却下されました（{why}）（{url}）。"
-                           "人コメントが無いため自動で原因を判断してやり直してください。")
-    err.data = data
-    raise err
+        text = (f"[gitlab-reject] 却下されました（{why}）（{url}）。"
+                "人コメントが無いため自動で原因を判断してやり直してください。")
+    return text, data
 
 
 if __name__ == "__main__":

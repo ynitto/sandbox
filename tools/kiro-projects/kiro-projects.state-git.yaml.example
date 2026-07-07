@@ -16,9 +16,15 @@
 #     /mnt/c 配下（DrvFS）は遅く flock 系ロックも不安定なため、常駐の状態置き場にしない。
 #
 # ── 起動（WSL）──
-#   kiro-flow daemon &        # 実行層（同じ共有バスで常駐）
+#   kiro-flow daemon &        # 実行層（同じ共有バスで常駐。kiro-flow.state-git.yaml.example を読む）
 #   kiro-projects start       # 制御層（run --watch --project all を detached 起動）
 #   認証: WSL 側ユーザーの SSH 鍵で GitLab へ `git push` が通ること。
+#
+#   ※ kiro-flow daemon を kiro-projects に管理させる別構成（プロジェクト毎リポジトリ）もある。
+#     その場合は manage_flow_daemon: true と flow_config: <kiro-flow.yaml のパス> を設定する
+#     （下記）。kiro-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は
+#     kiro-projects 側に増やさず、その flow_config（kiro-flow.yaml）へ集約して kiro-flow に読ませる。
+#     kiro-projects が CLI 注入するのは per-project routing（--state-git の remote/branch/interval）だけ。
 
 # --- 置き場（すべて WSL 側の絶対パス）---
 root: /home/me/kiro/.kiro-projects   # コンテナ（状態の実体。GitLab へ同期される側のマスター）
@@ -43,10 +49,19 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 
 # --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
 state_git: git@gitlab.example.com:team/kiro-state.git
-# state_git_subdir: kiro-projects    # 既定のまま（kiro-flow 側は kiro-flow）。リポジトリは
-#                                    #   kiro-projects/ と kiro-flow/ の 2 名前空間になる。
-#                                    #   ドット始まり（.kiro-projects 等）も動作するが、隠し
-#                                    #   ディレクトリを見落とすツールがあるため非ドットを推奨
+# state_git_subdir: kiro-projects    # これは kiro-projects 自身の名前空間（既定 kiro-projects）。
+#                                    #   kiro-flow 側の subdir は kiro-flow.yaml の state_git_subdir
+#                                    #   （既定 kiro-flow）で別に決まる → リポジトリは kiro-projects/ と
+#                                    #   kiro-flow/ の 2 名前空間になる。ドット始まり（.kiro-projects 等）も
+#                                    #   動作するが、隠しディレクトリを見落とすツールがあるため非ドットを推奨
+
+# --- （別構成）kiro-flow daemon を kiro-projects に管理させる場合 ---
+# 上の「起動」で手動起動する代わりに、プロジェクト毎リポジトリ（state_git_projects）で
+# 自動起動・監視させるなら次を設定する。kiro-flow の設定はすべて flow_config に集約する。
+# manage_flow_daemon: true                 # 各プロジェクトの kiro-flow daemon を自動起動・監視
+# flow_config: ~/.kiro/kiro-flow.yaml      # kiro-flow の設定（executor/state_git_subdir/gitlab.*/defer_waits 等）
+#                                          #   はこのファイルに集約。subdir もここの state_git_subdir が効く
+#                                          #   （kiro-projects は --state-git-subdir を注入しない＝上書きしない）
 # state_git_interval: 300            # fetch/push の最短間隔（秒）。バックアップ粒度を細かく
 #                                    #   したければ短く（GitLab への負荷と引き換え）
 

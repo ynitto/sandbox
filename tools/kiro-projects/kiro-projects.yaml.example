@@ -180,17 +180,17 @@ git_branch: main            # バスに使う git ブランチ
 #     interval: 120
 #
 # 実行層 kiro-flow の run（バス）も同じプロジェクトのリポジトリで共有するには、kiro-projects に
-# per-project の kiro-flow daemon を起動・監視させる（opt-in）。daemon 起動時に「このバス→この
-# リポジトリの kiro-flow 名前空間」を CLI で注入するので、kiro-flow 側の設定ファイルは要らない。
+# per-project の kiro-flow daemon を起動・監視させる（opt-in）。daemon 起動時に CLI で注入するのは
+# 「このバス→このリポジトリへ鏡写し」という per-project routing（--state-git の remote/branch/interval）
+# だけ。kiro-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は個別に増やさず、
+# flow_config で渡す kiro-flow.yaml に集約して kiro-flow に読ませる。
 # kiro-projects を止めても daemon は残り、in-flight run（gitlab 長期委譲・夜間停止からの再開）を継続。
 # 詳細は README「プロジェクト単位で保存先リポジトリを分ける」。
 # manage_flow_daemon: true               # 各プロジェクトの kiro-flow daemon を自動起動・監視
-# flow_config: ~/.kiro/kiro-flow.yaml    # 各 daemon に --config で渡す共有設定（executor/gitlab 等・任意）
+# flow_config: ~/.kiro/kiro-flow.yaml    # 各 daemon に --config で渡す kiro-flow.yaml（kiro-flow の設定はここに集約）
 # flow_max_workers: 6                    # マシン全体の worker 予算（対象プロジェクト数で割り各 daemon の上限に）
-# flow_state_subdir: kiro-flow           # daemon へ注入する kiro-flow の state_git サブディレクトリ（既定 kiro-flow）。
-#                                        #   鏡写し先/サブディレクトリは CLI 注入するため kiro-flow.yaml の
-#                                        #   state_git_subdir は上書きされる。変えるなら viewer の
-#                                        #   flowBusByProject（<clone>/<subdir>）も合わせる。
+#   ※ state_git サブディレクトリを変えたいときは kiro-flow.yaml の state_git_subdir を設定する
+#     （既定 kiro-flow。CLI 注入しないので上書きされない）。viewer の flowBusByProject も合わせる。
 
 # ---------------------------------------------------------------------------
 # 学習・通知・棚卸し

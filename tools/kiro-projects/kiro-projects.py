@@ -2854,12 +2854,13 @@ class Config:
     # per-project バスをそのプロジェクトのリポジトリ（state_git_projects）へ鏡写しする設定を
     # 起動時 CLI で注入する（.kiro-flow-remote.json のようなファイルは使わない）。
     manage_flow_daemon: bool = False
-    flow_config: "str | None" = None   # 各 daemon に --config で渡す共有 kiro-flow.yaml（任意。未指定は既定発見）
+    # 各 daemon に --config で渡す共有 kiro-flow.yaml（任意。未指定は kiro-flow の既定発見に委ねる）。
+    # kiro-flow の設定値（executor / state_git_subdir / gitlab.* / defer_waits 等）は個別に CLI 注入
+    # せず、この設定ファイルに集約して kiro-flow に読ませる（kiro-projects 側に kiro-flow 設定を増やさない）。
+    # 例外は「どのバスをどのリポジトリへ鏡写しするか」の per-project routing（--state-git 等）のみで、
+    # これは kiro-projects の役割（state_git_projects からの導出）なので CLI 注入し続ける。
+    flow_config: "str | None" = None
     flow_max_workers: int = 4          # マシン全体の worker 予算。対象プロジェクト数で割り各 daemon の上限に
-    # daemon 起動時に注入する kiro-flow 側の state_git サブディレクトリ（リポジトリ内の kiro-flow 名前空間）。
-    # ここで CLI 注入するため kiro-flow.yaml の state_git_subdir は上書きされる。既定 "kiro-flow"（viewer が
-    # <clone>/kiro-flow を見る前提）。変えるなら viewer の flowBusByProject もそのサブディレクトリに合わせる。
-    flow_state_subdir: str = "kiro-flow"
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
@@ -3973,16 +3974,17 @@ def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
 
 
 def flow_daemon_cmd(cfg: "Config", budget: int) -> "list[str]":
-    """このプロジェクトの kiro-flow daemon 起動コマンド。per-project バスをそのプロジェクトの
-    リポジトリ（kiro-flow 名前空間）へ鏡写しする設定を CLI で注入する（設定ファイル不要）。
-    executor 等の共有設定は flow_config（--config）または各 daemon の既定発見に委ねる。"""
+    """このプロジェクトの kiro-flow daemon 起動コマンド。CLI で注入するのは kiro-projects の役割である
+    per-project routing（どのバスをどのリポジトリへ鏡写しするか＝`--state-git` remote/branch/interval）
+    と、バス・executor・予算・ロック置き場だけ。state_git サブディレクトリを含む kiro-flow の設定値は
+    個別注入せず flow_config（--config）に集約して kiro-flow に読ませる（未指定なら kiro-flow の既定
+    ＝subdir は "kiro-flow"）。これで kiro-projects 側に kiro-flow 設定を増やさずに済む。"""
     base = resolve_kiro_flow(cfg.kiro_flow) + ["--bus", str(cfg.bus)]
     rf = project_flow_remote(cfg)
     if rf is not None:
         remote, branch, interval = rf
-        subdir = str(getattr(cfg, "flow_state_subdir", None) or FLOW_STATE_SUBDIR).strip("/")
         base += ["--state-git", remote, "--state-git-branch", branch,
-                 "--state-git-subdir", subdir, "--state-git-interval", str(interval)]
+                 "--state-git-interval", str(interval)]
     fc = getattr(cfg, "flow_config", None)
     if fc:
         base += ["--config", os.path.abspath(os.path.expanduser(str(fc)))]
@@ -5017,8 +5019,8 @@ def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
             fix = ("manage_flow_daemon: true を設定（kiro-projects が自動起動）"
                    if not managed else
                    f"起動失敗の可能性。手動確認: kiro-flow --bus {pcfg.bus} "
-                   f"--state-git <repo> --state-git-subdir "
-                   f"{getattr(cfg, 'flow_state_subdir', None) or FLOW_STATE_SUBDIR} daemon")
+                   f"--state-git <repo> daemon（subdir は kiro-flow.yaml の state_git_subdir。既定 "
+                   f"{FLOW_STATE_SUBDIR}）")
             out.append({
                 "category": "config", "severity": "warn",
                 "title": f"kiro-flow daemon 不在: project={name}",
@@ -6971,9 +6973,8 @@ CONFIG_DEFAULTS = {
     "state_git_projects": {},
     # 実行層 kiro-flow daemon をプロジェクト単位で kiro-projects が起動・監視する（opt-in）。
     "manage_flow_daemon": False,
-    "flow_config": None,        # 各 daemon に --config で渡す共有 kiro-flow.yaml（任意）
+    "flow_config": None,        # 各 daemon に --config で渡す共有 kiro-flow.yaml（任意。kiro-flow の設定はここに集約）
     "flow_max_workers": 4,      # マシン全体の worker 予算（対象プロジェクト数で割り各 daemon の上限に）
-    "flow_state_subdir": "kiro-flow",   # daemon へ注入する kiro-flow の state_git サブディレクトリ
     "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
@@ -7095,7 +7096,6 @@ def build_config(args) -> Config:
         manage_flow_daemon=bool(getattr(args, "manage_flow_daemon", False)),
         flow_config=getattr(args, "flow_config", None) or None,
         flow_max_workers=max(1, int(getattr(args, "flow_max_workers", 4) or 4)),
-        flow_state_subdir=str(getattr(args, "flow_state_subdir", None) or "kiro-flow").strip("/") or "kiro-flow",
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,

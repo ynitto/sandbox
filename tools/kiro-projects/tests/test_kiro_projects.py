@@ -4973,16 +4973,23 @@ class TestStateGitPerProject(unittest.TestCase):
         self.assertIn(str(cfg.bus), cmd)
         self.assertIn("--state-git", cmd)
         self.assertIn(str(self.team), cmd)
-        self.assertEqual(cmd[cmd.index("--state-git-subdir") + 1], km.FLOW_STATE_SUBDIR)  # 既定
         self.assertIn("daemon", cmd)
         self.assertEqual(cmd[cmd.index("--max-workers") + 1], "3")
         self.assertEqual(cmd[cmd.index("--executor") + 1], "stub")
 
-    def test_flow_daemon_cmd_respects_flow_state_subdir(self):
-        # flow_state_subdir で注入する state_git サブディレクトリを変えられる（既定 kiro-flow 固定でない）。
-        cfg = self._cfg("alpha", executor="stub", flow_state_subdir="flow-runs")
+    def test_flow_daemon_cmd_does_not_inject_state_git_subdir(self):
+        # state_git サブディレクトリは kiro-flow の設定（flow_config / 既定 kiro-flow）に委ね、
+        # kiro-projects は CLI で個別注入しない（kiro-projects 側に kiro-flow 設定を増やさない方針）。
+        cfg = self._cfg("alpha", executor="stub")
         cmd = km.flow_daemon_cmd(cfg, 1)
-        self.assertEqual(cmd[cmd.index("--state-git-subdir") + 1], "flow-runs")
+        self.assertNotIn("--state-git-subdir", cmd)
+
+    def test_flow_daemon_cmd_passes_flow_config(self):
+        # kiro-flow の設定は flow_config を --config で渡して集約する（個別注入しない）。
+        cfg = self._cfg("alpha", executor="stub", flow_config="/etc/kiro-flow.yaml")
+        cmd = km.flow_daemon_cmd(cfg, 1)
+        self.assertIn("--config", cmd)
+        self.assertTrue(cmd[cmd.index("--config") + 1].endswith("kiro-flow.yaml"))
 
     def test_ensure_flow_daemon_spawns_when_managed_and_absent(self):
         cfg = self._cfg("alpha", manage_flow_daemon=True)
