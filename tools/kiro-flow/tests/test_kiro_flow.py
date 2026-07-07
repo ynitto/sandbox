@@ -3827,6 +3827,20 @@ class ServiceWaitsTests(unittest.TestCase):
         self.assertEqual(n, 0)
         self.assertIsNotNone(self.bus.read_wait("n1"))          # 触られない
 
+    def test_defer_disabled_makes_service_waits_noop(self):
+        # defer_waits=false（従来モード）では service_waits は何もしない（park が無いので監視も不要）
+        self._park()
+        args = _park_args(gitlab={"defer_waits": False, "watch_interval": 90.0})
+        called = {"n": 0}
+        with mock.patch.object(kf, "executor_hook",
+                               side_effect=lambda a, name:
+                               (lambda st: called.__setitem__("n", called["n"] + 1) or {"decision": None})
+                               if name == "poll" else None):
+            n = kf.service_waits(self.bus, args, only_runs=["run1"])
+        self.assertEqual(n, 0)
+        self.assertEqual(called["n"], 0)                        # poll すら呼ばれない
+        self.assertIsNotNone(self.bus.read_wait("n1"))          # 触られない
+
     def test_only_runs_partitions_watching(self):
         # 分散: 担当外の run の park は触らない（監視を run オーナーに分担＝重複ポーリングを防ぐ）。
         self.bus.run_view("run2")  # ビューだけ（別 run）

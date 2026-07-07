@@ -170,7 +170,10 @@ cleanup_per_node: false
 #   # run）が service_waits で watch_interval 毎に **まとめて** 再確認し、決着したら結果を書く。
 #   # これで「承認待ちが max_workers を食い潰して発行が止まる」問題と「N プロセスが各自 30 秒毎に
 #   # GitLab を叩く多重ポーリング」を同時に解消する。max_workers は小さいまま据え置ける。
-#   watch_interval: 90                   # park 済みイシューをまとめて再確認する間隔（秒）
+#   defer_waits: true                    # park & poll の ON/OFF。false で従来モード（worker が
+#                                        # イシューを監視してブロック待機。1 worker=1 イシュー）に戻す。
+#                                        # 承認待ちが max_workers を占有するが挙動が単純。既定 true。
+#   watch_interval: 90                   # park 済みイシューをまとめて再確認する間隔（秒。defer_waits=true のみ）
 #   # 同時に開ける未決着イシューの上限（0=無制限）。上限に達したら**起票を一時停止**する
 #   # （バックプレッシャ＝エラーにはしない。人がレビューを捌いて枠が空けば自動で起票再開）。
 #   # 人のレビュー速度に発行をペーシングし、PC/GitLab サーバ負荷を抑えるための蛇口。

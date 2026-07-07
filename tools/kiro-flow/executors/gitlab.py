@@ -67,6 +67,9 @@ _DEFAULTS = {
     "approved_timeout": 1209600.0,  # status:approved/status:done 検知後の猶予（既定 14 日・人のマージ待ち）
     "approved_label": "status:approved",
     "done_label": "status:done",
+    # park & poll を無効化して従来モード（worker がブロック待機）に戻すフラグ。既定 true（有効）。
+    # 実際の deferral は本体（daemon/run）が環境変数 KIRO_FLOW_DEFER_WAITS で worker に伝える。
+    "defer_waits": True,
     # 同時に開いておける未決着イシューの上限（0=無制限）。cmd_work 側の throttle が参照する
     # （executor は数えない）。人のレビュー速度に起票をペーシングし、PC/GitLab 負荷を抑える。
     "max_open_issues": 0,

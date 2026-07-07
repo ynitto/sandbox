@@ -44,10 +44,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
   イシュー数」を絞れる。上限で **起票を一時停止**（**エラーにしない**。枠が空けば `service_waits` が自動で
   起票再開）。既存の再タスク打ち切り（`--max-retries` は `return "done"`）と同じ「これ以上作らない」思想の
   延長で、run を落とさず人のレビュー速度に発行をペーシングする。
+- **従来モードへ戻す設定**: `gitlab.defer_waits`（既定 true）を追加。`false` で park & poll を無効化し、
+  従来モード（worker がイシューを監視してブロック待機。1 worker=1 イシュー）に戻す。daemon/run が
+  この設定で worker への環境変数 `KIRO_FLOW_DEFER_WAITS` を出し分け、`service_waits` も出番が無くなる。
 - **設定整合**: gitlab executor プラグインの `_DEFAULTS` と本体 `CONFIG_DEFAULTS` の `timeout` 不一致
   （後者だけ 86400）を是正し、`timeout: 604800` / `approved_timeout: 1209600` を揃えた。`watch_interval` /
-  `max_open_issues` を `gitlab:` ブロックに追加。README / `kiro-flow.yaml.example` を更新、テストを追加
-  （waiting 状態・service_waits の決着/据え置き/締切/throttle・cancel・gitlab の DeferDecision/poll/on_cancel）。
+  `max_open_issues` / `defer_waits` を `gitlab:` ブロックに追加。README / `kiro-flow.yaml.example` を更新、
+  テストを追加（waiting 状態・service_waits の決着/据え置き/締切/throttle/defer 無効・cancel・
+  gitlab の DeferDecision/poll/on_cancel）。
 
 ### kiro-projects-viewer: park & poll の可視化 ＋ run キャンセル操作 ＋ canceled 終端対応
 
@@ -65,14 +69,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 - **canceled 終端対応**: `flow.js` の `TERMINAL` に `canceled` を追加（canceled run を「応答なし/実行中」に
   誤分類しない）。run 削除の対象にも canceled を含め、status チップ／グラフ色を追加。テスト 7 件を追加。
 
-### kiro-projects: 管理 daemon の state_git サブディレクトリを設定可能に（`flow_state_subdir`）
+### kiro-projects: kiro-flow の設定は `flow_config`（--config）に集約（個別注入をやめる・`flow_state_subdir` 廃止）
 
-- `manage_flow_daemon` で起動する kiro-flow daemon の `--state-git-subdir` は `kiro-flow` にハードコード
-  されており、`flow_config` 経由の kiro-flow.yaml で `state_git_subdir` を変えても CLI 注入に上書きされて
-  効かなかった。設定 `flow_state_subdir`（既定 `kiro-flow`）で変更できるようにした。
-- 補足: run の実行はバスから行われるため、サブディレクトリを変えても **run は止まらない**（変わるのは
-  鏡写し先のパスだけ。viewer が別サブディレクトリを見ていると run が「見えない」ことはある）。
-  README / `kiro-projects.yaml.example` / 移行手順書の FAQ に注記、テストを追加。
+- 方針: kiro-projects 側に kiro-flow の設定値を1つずつ増やさない。kiro-flow の設定（`executor` /
+  `state_git_subdir` / `gitlab.*` / `defer_waits` 等）は **`flow_config` で渡す kiro-flow.yaml に集約**し、
+  daemon 起動時に `--config` で渡して kiro-flow に読ませる。kiro-projects が CLI 注入するのは、
+  「どのバスをどのリポジトリへ鏡写しするか」の **per-project routing**（`--state-git` の remote /
+  branch / interval）だけ——これは `state_git_projects` から導出する kiro-projects の役割。
+- そのため、先に追加した `flow_state_subdir`（`--state-git-subdir` を個別 CLI 注入する設定）を **廃止**した。
+  state_git サブディレクトリを変えたいときは kiro-flow.yaml の `state_git_subdir` を設定する（既定
+  `kiro-flow`。CLI 注入しなくなったので上書きされず、そのまま効く）。viewer の `flowBusByProject`
+  （`<clone>/<subdir>`）も合わせる。README / `kiro-projects.yaml.example` を更新、テストを更新。
 
 ### kiro-projects-viewer: タスクグラフノードのイシュー状態を自動表示（クリック不要）
 

@@ -198,8 +198,13 @@ CONFIG_DEFAULTS = {
         "approved_label": "status:approved",  # この状態に達したら完了とみなす（= 受け入れ承認）
         "done_label": "status:done",        # approved 以外に完了とみなすラベル
         # park & poll（承認待ちを worker スロットから切り離す）のパラメータ。
+        # defer_waits=false で park & poll を無効化し、従来モード（worker がイシューを監視して
+        # ブロック待機。1 worker=1 イシュー）に戻す。承認待ちが max_workers を占有するが、
+        # 挙動が単純で分散の監視分担も不要。既定 true（park & poll 有効）。
+        "defer_waits": True,
         "max_open_issues": 0,               # 同時に開ける未決着イシューの上限（0=無制限）。
                                             # 上限到達で起票を一時停止＝バックプレッシャ（エラーにしない）。
+                                            # defer_waits=false のときは無効（park しないため）。
         "watch_interval": 90.0,             # service_waits が park をまとめて再確認する間隔（秒）
     },
 }
@@ -2950,6 +2955,13 @@ def _executor_cfg_from_env() -> dict:
         return {}
 
 
+def _defer_enabled(args) -> bool:
+    """park & poll（deferral）を有効にするか。executor 設定 defer_waits（既定 true）で決まる。
+    false なら従来モード（worker がイシューを監視してブロック待機）へ戻す。daemon/run が
+    この判定で worker への環境変数 KIRO_FLOW_DEFER_WAITS を出し分け、service_waits も出番が無くなる。"""
+    return bool(_executor_cfg(args).get("defer_waits", True))
+
+
 def _watch_interval(cfg: dict) -> float:
     """service_waits が park をバッチ再確認する間隔（秒）。既定 90。"""
     try:
@@ -3090,6 +3102,8 @@ def service_waits(bus: Bus, args, only_runs: "list | None" = None,
     重複ポーリングするのを防ぐ。run 自体は request-claim で各 PC に分散するため監視も自然に分散する。
     オーナーが消えても孤児 reclaim が run（＝監視）を別 PC へ移すのでクラッシュ耐性はそのまま。
     None（担当未指定）のときは全 active run を見る（単一 PC / 後方互換）。"""
+    if not _defer_enabled(args):
+        return 0                       # 従来モード（deferral 無効）＝park は無いので監視も不要
     poll = executor_hook(args, "poll")
     if poll is None:
         return 0
@@ -3916,7 +3930,9 @@ def _spawn_worker(base: list, args, rid: str, wid: str):
         env["KIRO_FLOW_EXECUTOR_CONFIG"] = cfgjson
     # park & poll: daemon は service_waits で park を面倒見るので worker の deferral を有効化する
     # （承認待ちで worker スロットをブロックさせず、承認待ちは waits/ へ退避させる）。
-    env["KIRO_FLOW_DEFER_WAITS"] = "1"
+    # 設定 defer_waits=false のときは有効化せず、従来モード（worker がブロック待機）に戻す。
+    if _defer_enabled(args):
+        env["KIRO_FLOW_DEFER_WAITS"] = "1"
     return subprocess.Popen(base + [
         "--run-id", rid, "work", "--node-id", wid,
         "--executor", args.executor, "--model_opt", args.model or "",
@@ -3969,8 +3985,12 @@ def cmd_run(args) -> int:
     procs.append(("orchestrator", orch))
 
     # park & poll: cmd_run も監視ループで service_waits を回すので worker の deferral を有効化する。
+    # 設定 defer_waits=false のときは有効化せず従来モード（worker がブロック待機）に戻す。
     worker_env = os.environ.copy()
-    worker_env["KIRO_FLOW_DEFER_WAITS"] = "1"
+    if _defer_enabled(args):
+        worker_env["KIRO_FLOW_DEFER_WAITS"] = "1"
+    else:
+        worker_env.pop("KIRO_FLOW_DEFER_WAITS", None)
     for i in range(args.workers):
         wid = f"worker-{i+1}"
         w = subprocess.Popen(base + [
