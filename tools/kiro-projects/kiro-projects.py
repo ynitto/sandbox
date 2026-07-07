@@ -2115,8 +2115,11 @@ def detect_repo_context(workdir: "Path") -> str:
     return "\n".join(f"- {h}" for h in hints)[:800]
 
 
-def _synth_verify_prompt(title: str, accept: str, hint: str = "", repo_ctx: str = "") -> str:
+def _synth_verify_prompt(title: str, accept: str, hint: str = "", repo_ctx: str = "",
+                         retry_note: str = "") -> str:
     extra = ""
+    if retry_note:
+        extra += f"\n**前回の合成は不採用でした（{retry_note}）。今度は必ず改善すること。**\n"
     if repo_ctx:
         extra += ("\nこのリポジトリで検出したテスト/ビルド基盤（可能ならこれを使い、存在チェックの grep へ"
                   f"退化させない）:\n{repo_ctx}\n")
@@ -2174,28 +2177,39 @@ def _looks_like_shell_command(line: str) -> bool:
     return chk.returncode == 0
 
 
-def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
-                 hint: str = "", repo_ctx: str = "") -> str:
-    """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
-    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。
-    hint（過去の類似 learn）・repo_ctx（検出したテスト/ビルド基盤）で grep 退化を抑える。"""
-    run = kiro_run or _run_kiro_cli
-    try:
-        out = run(_synth_verify_prompt(title, accept, hint, repo_ctx), cfg.model)
-    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は合成せず人へ
-        return ""
-    for line in (out or "").splitlines():       # 先頭の意味ある行をコマンドとみなす
+def _first_command_line(out: str) -> str:
+    """合成出力の先頭の「意味あるコマンド行」を取り出す（コメント/コードフェンス/空行を飛ばす）。"""
+    for line in (out or "").splitlines():
         line = _strip_code(line.strip())
         if line and not line.startswith("#"):
-            # エージェントがコマンドではなく自然言語（説明・拒否文）を返すことがある。
-            # それをそのまま run_verify の shell=True に流すと、文中の ; | && ` > rm 等が
-            # 誤って実行されうるため、妥当なシェルコマンドでなければ合成失敗扱いにする。
-            if not _looks_like_shell_command(line):
-                return ""
-            # 恒真式（true / echo … 等）に退化した合成は done の根拠にならない＝合成失敗扱い（人へ）。
-            if _verify_is_degenerate(line):
-                return ""
             return line
+    return ""
+
+
+def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
+                 hint: str = "", repo_ctx: str = "", attempts: int = 2) -> str:
+    """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
+    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。
+    hint（過去の類似 learn）・repo_ctx（検出したテスト/ビルド基盤）で grep 退化を抑える。
+    **自己修復（多候補）**: 散文/シェル非妥当/恒真式に退化した候補は不採用とし、理由を添えて最大
+    attempts 回まで再合成させる（1 回で諦めず、より良い候補を引き出す）。"""
+    run = kiro_run or _run_kiro_cli
+    retry_note = ""
+    for _ in range(max(1, attempts)):
+        try:
+            out = run(_synth_verify_prompt(title, accept, hint, repo_ctx, retry_note), cfg.model)
+        except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は合成せず人へ
+            return ""
+        cand = _first_command_line(out)
+        if not cand:
+            retry_note = "空 or 散文だった"; continue
+        # 自然言語（説明・拒否文）を shell=True に流すと ; | && ` > rm 等が誤実行されうるため弾く。
+        if not _looks_like_shell_command(cand):
+            retry_note = "シェルコマンドでなかった"; continue
+        # 恒真式（true / echo … 等）は done の根拠にならない＝不採用。実挙動を確かめる候補を求める。
+        if _verify_is_degenerate(cand):
+            retry_note = "恒真式に退化していた。テスト/ビルド/差分/最終状態で実挙動を確かめよ"; continue
+        return cand
     return ""
 
 

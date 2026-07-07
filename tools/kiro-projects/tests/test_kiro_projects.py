@@ -5175,6 +5175,25 @@ class FeedbackReductionTests(unittest.TestCase):
                              kiro_run=lambda p, m: "grep -q 概要 README.md"),
                              "grep -q 概要 README.md")
 
+    def test_synth_self_repair_retries_on_degenerate(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            calls = {"n": 0, "prompts": []}
+            def flaky(prompt, model):
+                calls["n"] += 1
+                calls["prompts"].append(prompt)
+                return "true" if calls["n"] == 1 else "pytest -q tests/login"
+            got = km.synth_verify(cfg, "T", "ログインが通る", kiro_run=flaky)
+            self.assertEqual(got, "pytest -q tests/login")   # 1回目の恒真式を捨て 2回目を採用
+            self.assertEqual(calls["n"], 2)
+            self.assertIn("恒真式", calls["prompts"][1])       # 再合成プロンプトに不採用理由
+
+    def test_synth_self_repair_gives_up_after_attempts(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            got = km.synth_verify(cfg, "T", "x", kiro_run=lambda p, m: "true", attempts=3)
+            self.assertEqual(got, "")                         # 全て恒真式 → 合成失敗（人へ）
+
     def test_expand_verify_template_additions(self):
         self.assertEqual(km.expand_verify_template("test-passes :: pytest -q"), "pytest -q")
         self.assertEqual(km.expand_verify_template("builds :: make"), "make")

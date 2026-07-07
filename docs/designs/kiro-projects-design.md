@@ -771,7 +771,7 @@ if guidance:
 | **P2** | §11.6 Red-Green 検証／恒真式スクリーン | ✅ 実装（実行 red-green `verify_undiscriminating`＋恒真式棄却 `_verify_is_degenerate`。`--verify-validate`） |
 | **P3** | §11.2 蒸留 ＋ §11.6 文脈つき合成・テンプレ拡充 | ✅ 実装（`detect_repo_context` で合成へ基盤注入・テンプレ拡充・蒸留） |
 | **P4** | §11.4 verify 合成への learn recall ＋ verify 学習再利用 ＋ plan/act への recall | ✅ 実装（合成ヒント・検証済み verify 再利用・`build_request` が類似 learn を分解/実装へ注入） |
-| **P5** | §11.5 昇格ラダー ＋ cohort 還流・§11.6 多候補 | ◐ ほぼ（昇格ラダー・cohort 還流 `cohort_reflux` 実装。多候補＋敵対的妥当性のみ未） |
+| **P5** | §11.5 昇格ラダー ＋ cohort 還流・§11.6 多候補 | ✅ 実装（昇格ラダー・`cohort_reflux`・合成の自己修復＝恒真式/散文を捨て再合成） |
 
 **実装済み**（P0〜P3＋P4/P5 の一部）: gitlab 人コメントの learn 捕捉（却下 `_settle_failure`・承認
 `capture_approve_learn`）・蒸留（`distill_learn`・LLM＋verbatim・`--distill-learn`）・承認/却下の著者付き
@@ -784,10 +784,12 @@ package.json/pytest/Makefile/go/cargo を検出して合成へ注入）・**veri
 **昇格ラダー**（`count_gitlab_reject_recur`＋`--reject-recur`＝同種却下の反復で silent 積み直しをやめ「系の再考」で人へ）・
 **plan/act への recall**（`build_request` が `find_learned_resolution` の類似 learn を要求本文へ注入＝flow-planner が
 分解時に、ワーカーが実装時に踏まえる）・**cohort 還流**（`cohort_reflux`＝gitlab で cohort メンバ/pilot が却下されたら
-同 cohort の未完了メンバへ指摘を波及）。
-テスト: kiro-projects `FeedbackReductionTests`（22）・kiro-flow `GitlabHumanAgentDiscriminationTests`（7）。
-**未実装（フォローアップ）**: flow-planner への構造化 `--learnings` channel（現状は要求本文経由で planner に届く）・
-作業中コメントの逐次取り込み（park&poll 相乗り）・多候補＋敵対的妥当性（verify 著作の kiro-flow グラフ化）。
+同 cohort の未完了メンバへ指摘を波及）・**合成の自己修復（多候補）**（`synth_verify` が散文/シェル非妥当/恒真式に
+退化した候補を不採用理由つきで最大 attempts 回まで再合成）。
+テスト: kiro-projects `FeedbackReductionTests`（24）・kiro-flow `GitlabHumanAgentDiscriminationTests`（7）。
+**残（任意・機能は代替手段で充足済み）**: flow-planner への構造化 `--learnings` channel（現状は要求本文経由で
+planner に届く）・作業中コメントの逐次取り込み（決着時に全人コメントを掃くため学習漏れは無い・逐次はレイテンシ最適化）・
+verify 著作の本格的な kiro-flow グラフ化（自己修復で軽量に代替済み）。
 
 後方互換（`learn_capture` off・`distill_learn` off・`trust_unmarked_comments` で従来挙動）。P0→P1→P2 を薄く入れて検証を推奨。
 **未決**: 蒸留の LLM 利用可否（推奨: LLM＋失敗時 verbatim）／作業中コメントの durable 判定既定／Red-Green のコスト・破壊性
