@@ -49,7 +49,10 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore
 
-TERMINAL = {"done", "failed"}
+# 終端 status（これに達した run は active_runs から外れ、孤児 reclaim も resume しない）。
+# canceled は人の明示指示（cmd_cancel）による恒久停止。done/failed と同じく終端だが、
+# 「成果あり(done)」でも「異常(failed)」でもない「意図的な打ち切り」を表す。
+TERMINAL = {"done", "failed", "canceled"}
 
 
 def _claim_lock_path(claim_dir: str) -> str:
@@ -187,10 +190,17 @@ CONFIG_DEFAULTS = {
         "repo_url": "",                     # 起票先プロジェクト URL（権威）。必ずこの URL を使う
         "labels": "status:open,assignee:any",  # 起票するイシューに付ける初期ラベル
         "priority": "priority:normal",      # 付与する優先度ラベル（空文字で付けない）
-        "poll_interval": 30.0,              # イシューのポーリング間隔（秒）
-        "timeout": 86400.0,                 # approved 待ちのタイムアウト（秒）。0/負で無限待ち
+        "poll_interval": 30.0,              # イシュー1件の最短再確認間隔（秒）
+        # 完了＝人がマージ＝イシュークローズ。人の確認は時間がかかるため待機は長めにする（0/負で無限）。
+        # gitlab executor プラグインの _DEFAULTS と一致させる（以前ここだけ 86400 で食い違っていた）。
+        "timeout": 604800.0,                # 全体タイムアウト（既定 7 日）。決着に至るまでの上限
+        "approved_timeout": 1209600.0,      # 人の作業検知後の猶予（既定 14 日・マージ待ち）
         "approved_label": "status:approved",  # この状態に達したら完了とみなす（= 受け入れ承認）
         "done_label": "status:done",        # approved 以外に完了とみなすラベル
+        # park & poll（承認待ちを worker スロットから切り離す）のパラメータ。
+        "max_open_issues": 0,               # 同時に開ける未決着イシューの上限（0=無制限）。
+                                            # 上限到達で起票を一時停止＝バックプレッシャ（エラーにしない）。
+        "watch_interval": 90.0,             # service_waits が park をまとめて再確認する間隔（秒）
     },
 }
 
@@ -319,9 +329,17 @@ class Bus:
         self.runs_root = os.path.join(root, "runs")
         self.inbox_dir = os.path.join(root, "inbox")
         self.inbox_claims_dir = os.path.join(root, "inbox", "claims")
+        # cancel マーカー（人の明示指示）。inbox/ 配下＝git 同期でリモート優先で全 PC へ伝わり、
+        # 監視主体（daemon/run）がこれを見て run スコープで恒久停止する。
+        self.inbox_cancels_dir = os.path.join(root, "inbox", "cancels")
         self.run_dir = os.path.join(root, "runs", run_id)
         self.tasks_dir = os.path.join(self.run_dir, "tasks")
         self.claims_dir = os.path.join(self.run_dir, "claims")
+        # waits/<node>.json … 人の承認待ち等でノードを「park（保留）」した記録。executor が
+        # 決着まで worker をブロックする代わりに DeferDecision を投げ、worker が claim を
+        # 解放してここに書き残す。監視主体（daemon/run）の service_waits がバッチで再確認する。
+        # runs/ 配下＝git バスで同期され、daemon 消失を跨いで生存する（孤児 reclaim と同じ耐性）。
+        self.waits_dir = os.path.join(self.run_dir, "waits")
         self.results_dir = os.path.join(self.run_dir, "results")
         self.artifacts_dir = os.path.join(self.run_dir, "artifacts")
         self.events_dir = os.path.join(self.run_dir, "events")
@@ -338,7 +356,8 @@ class Bus:
 
     # --- セットアップ ---
     def ensure_dirs(self) -> None:
-        for d in (self.tasks_dir, self.claims_dir, self.results_dir, self.events_dir):
+        for d in (self.tasks_dir, self.claims_dir, self.waits_dir,
+                  self.results_dir, self.events_dir):
             os.makedirs(d, exist_ok=True)
 
     def ensure_run(self, request: str, workspace: "dict | None" = None,
@@ -461,6 +480,63 @@ class Bus:
         return self._try_claim_in(self._claim_dir(node_id), who, lease_sec,
                                   f"claim {node_id} by {who}")
 
+    def release_claim(self, node_id: str, who: str) -> None:
+        """自分の claim ファイルを消して node を手放す（park 時に worker スロットを空けるため）。
+        心拍（Heartbeat）を停止してから呼ぶこと——停止前に消すと直後の心拍が claim を書き戻す。"""
+        try:
+            os.remove(os.path.join(self._claim_dir(node_id), f"{who}.json"))
+        except OSError:
+            pass
+        self.sync_push(f"release {node_id} by {who}")
+
+    # --- park（保留待ち）プロトコル ---
+    #
+    # 承認待ち等の長い外部待機を worker スロットから切り離すための記録。claim と同じ
+    # lease セマンティクス（wait_lease_until が生存判定）に相乗りし、失効すれば node_state は
+    # pending に縮退＝full worker が token 再アタッチで拾い直す（行き止まりにしない）。
+    # レコードにトークン等の秘密は載せない（バスは git 同期・共有されうるため）。
+    def wait_path(self, node_id: str) -> str:
+        return os.path.join(self.waits_dir, f"{node_id}.json")
+
+    def read_wait(self, node_id: str):
+        return read_json(self.wait_path(node_id))
+
+    def write_wait(self, node_id: str, rec: dict) -> None:
+        os.makedirs(self.waits_dir, exist_ok=True)
+        write_json_atomic(self.wait_path(node_id), rec)
+
+    def clear_wait(self, node_id: str) -> None:
+        """park 記録を消す（決着して result を書いたとき／node を pending へ戻すとき）。"""
+        try:
+            os.remove(self.wait_path(node_id))
+        except OSError:
+            pass
+
+    def list_waits(self) -> "list[dict]":
+        """この run の park 記録一覧（id を含む dict の列）。無ければ空。"""
+        out = []
+        if not os.path.isdir(self.waits_dir):
+            return out
+        for name in sorted(os.listdir(self.waits_dir)):
+            if name.endswith(".json"):
+                rec = read_json(os.path.join(self.waits_dir, name))
+                if rec:
+                    rec.setdefault("id", name[:-5])
+                    out.append(rec)
+        return out
+
+    def wait_is_live(self, node_id: str) -> bool:
+        """park 記録が生存（wait_lease_until が未失効）か。失効＝監視主体が居ない/止まった
+        とみなし、node_state は pending へ縮退させて full worker の再アタッチに委ねる。"""
+        rec = self.read_wait(node_id)
+        return bool(rec) and float(rec.get("wait_lease_until", 0) or 0) >= time.time()
+
+    def open_wait_count(self) -> int:
+        """この run で「起票済み・未決着」の park 記録数（throttle の同時イシュー上限に使う）。
+        throttled（イシュー未作成で枠待ち）のレコードは数えない。"""
+        return sum(1 for r in self.list_waits()
+                   if not r.get("throttled") and (r.get("issue") or {}).get("iid") is not None)
+
     # --- 中間成果物（ファイル）プロトコル ---
     #
     # output/data（JSON）に乗らない大きな成果物（生成ファイル等）は、ノードごとの
@@ -513,11 +589,16 @@ class Bus:
 
     # --- 状態導出 ---
     def node_state(self, node_id: str) -> str:
+        # 優先順: result（終端） > claimed（生存 lease） > waiting（生存 wait_lease） > pending。
+        # waiting は「park 済みで監視主体が生存確認中」。wait_lease 失効時は pending へ縮退させ、
+        # full worker が token 再アタッチで拾えるようにする（park を行き止まりにしない）。
         res = self.read_result(node_id)
         if res:
             return res.get("status", "done")
         if self._winner(node_id) is not None:
             return "claimed"
+        if self.wait_is_live(node_id):
+            return "waiting"
         if os.path.exists(os.path.join(self.tasks_dir, f"{node_id}.json")):
             return "pending"
         return "unknown"
@@ -564,6 +645,10 @@ class Bus:
         except OSError:
             pass
         shutil.rmtree(os.path.join(self.inbox_claims_dir, run_id), ignore_errors=True)
+        try:
+            os.remove(os.path.join(self.inbox_cancels_dir, f"{run_id}.json"))
+        except OSError:
+            pass
 
     def run_view(self, run_id: str) -> "Bus":
         """同じ作業ツリー上の別 run を読み取るための軽量ビュー（git 再クローンしない）。"""
@@ -678,6 +763,59 @@ class Bus:
         write_json_atomic(v.meta_path, meta)
         return True
 
+    # --- cancel（人の明示指示による run スコープの恒久停止） ---
+    def cancel_request(self, run_id: str, who: str, reason: str = "",
+                       close_issues: bool = False) -> None:
+        """cancel マーカーを inbox/cancels/ に書く（git 同期でリモート優先で全 PC へ伝わる）。
+        監視主体（daemon/run/orchestrator）がこれを見て run を canceled に終端化し、その run の
+        orchestrator/worker を止め、park 済みノードの再ポーリングを止める。"""
+        os.makedirs(self.inbox_cancels_dir, exist_ok=True)
+        write_json_atomic(os.path.join(self.inbox_cancels_dir, f"{run_id}.json"), {
+            "id": run_id, "who": who, "reason": reason,
+            "close_issues": bool(close_issues), "requested_at": now_iso(),
+        })
+
+    def is_canceled_requested(self, run_id: str) -> bool:
+        """run_id に cancel マーカーがあるか（＝人が停止を指示したか）。"""
+        return os.path.exists(os.path.join(self.inbox_cancels_dir, f"{run_id}.json"))
+
+    def cancel_info(self, run_id: str) -> dict:
+        return read_json(os.path.join(self.inbox_cancels_dir, f"{run_id}.json")) or {}
+
+    def list_cancels(self) -> "list[str]":
+        d = self.inbox_cancels_dir
+        if not os.path.isdir(d):
+            return []
+        return sorted(f[:-5] for f in os.listdir(d) if f.endswith(".json"))
+
+    def mark_canceled(self, run_id: str, reason: str = "") -> bool:
+        """run_id がまだ終端でなければ status を canceled に確定する（cancel マーカーの適用）。
+        終端化できたら True、既に終端 / run が存在しないなら False。"""
+        v = self.run_view(run_id)
+        meta = read_json(v.meta_path)
+        if not meta or meta.get("status") in TERMINAL:
+            return False
+        meta["status"] = "canceled"
+        meta["updated_at"] = now_iso()
+        if reason:
+            meta["cancel_reason"] = reason
+        write_json_atomic(v.meta_path, meta)
+        return True
+
+    def clear_waits_for_run(self, run_id: str) -> int:
+        """run_id の park 記録をすべて消す（cancel 時に再ポーリングを止める）。消した件数を返す。"""
+        v = self.run_view(run_id)
+        n = 0
+        if os.path.isdir(v.waits_dir):
+            for name in os.listdir(v.waits_dir):
+                if name.endswith(".json"):
+                    try:
+                        os.remove(os.path.join(v.waits_dir, name))
+                        n += 1
+                    except OSError:
+                        pass
+        return n
+
     def fail_request(self, req_id: str, reason: str = "") -> bool:
         """inbox 要求 req_id を failed run として終端化する（run 未作成でも）。
         orchestrator が run の meta を一度も書けずに死に続ける（例: クローンの git ロック残骸で
@@ -700,6 +838,25 @@ class Bus:
         if reason:
             meta["failure_reason"] = reason
         write_json_atomic(v.meta_path, meta)
+        return True
+
+    def cancel_request_run(self, req_id: str, reason: str = "") -> bool:
+        """run 化前に cancel された要求を canceled run として終端化する（fail_request の canceled 版）。
+        既に run があれば mark_canceled に委ねる。これで消費者は「取り下げ」を終端として観測でき、
+        daemon が同じ要求を毎 poll 受理し直すのを止める。"""
+        v = self.run_view(req_id)
+        if read_json(v.meta_path) is not None:
+            return self.mark_canceled(req_id, reason)
+        req = self.read_inbox(req_id) or {}
+        write_json_atomic(v.meta_path, {
+            "request": req.get("request", ""),
+            "workspace": req.get("workspace"),
+            "references": list(req.get("references") or []),
+            "status": "canceled",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+            "cancel_reason": reason or "cancel 指示（run 化前）",
+        })
         return True
 
     def touch_run(self, run_id: str, lease_sec: float) -> None:
@@ -2653,19 +2810,30 @@ def _executor_search_dirs() -> "list[str]":
     return out
 
 
+# executor 名 → 解決済みプラグインパスのキャッシュ。_executor_search_dirs() が git rev-parse を
+# 走らせるため、service_waits の毎 tick 解決で無用なサブプロセスを撒かないよう一度だけ解決する。
+_executor_path_cache: "dict[str, str | None]" = {}
+
+
 def _resolve_executor_plugin(spec: str) -> "str | None":
-    """executor 名 or パスからプラグイン .py の絶対パスを解決する。無ければ None。"""
+    """executor 名 or パスからプラグイン .py の絶対パスを解決する。無ければ None。
+    プロセス内で結果をキャッシュする（同一 spec の再解決で git rev-parse を繰り返さない）。"""
+    if spec in _executor_path_cache:
+        return _executor_path_cache[spec]
+    resolved = None
     # 明示パス（.py）
     p = os.path.expanduser(spec)
     if p.endswith(".py") and os.path.isfile(p):
-        return os.path.abspath(p)
+        resolved = os.path.abspath(p)
     # 検索ディレクトリの <name>.py
-    if not os.sep in spec and not spec.endswith(".py"):
+    elif not os.sep in spec and not spec.endswith(".py"):
         for d in _executor_search_dirs():
             cand = os.path.join(d, f"{spec}.py")
             if os.path.isfile(cand):
-                return cand
-    return None
+                resolved = cand
+                break
+    _executor_path_cache[spec] = resolved
+    return resolved
 
 
 def _load_executor_module(path: str):
@@ -2726,6 +2894,227 @@ def make_executor(args):
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = cfgjson
     log("executor", f"プラグイン '{spec}' をロードしました: {path}")
     return fn
+
+
+# --------------------------------------------------------------------------
+# park & poll — 承認待ち等の長い外部待機を worker スロットから切り離す
+# --------------------------------------------------------------------------
+# 設計: executor が決着していないとき DeferDecision を投げ、worker は claim を解放して
+# waits/<node>.json に park 記録を残す（node_state は "waiting"）。監視主体（daemon/run）の
+# service_waits が全 park をバッチで再確認し、決着なら終端 result を直接書く。これにより
+# 「ブロック worker N 台 ×(1/poll)」を「監視 1 本 ×(1/watch_interval) のバッチ」へ畳み、
+# worker スロット占有と GitLab ポーリングの二重負荷を同時に消す。gitlab は承認時にローカル
+# workspace を finalize する必要がない（成果はマージ済み MR にある）ため、service_waits が
+# worker/clone 無しで終端 result を材料化できるのが成立の鍵。
+def _executor_module(args):
+    """executor プラグインのモジュールを返す（組み込み kiro/stub や未解決は None）。
+    service_waits が poll()/on_cancel() フックを取り出すために使う。"""
+    spec = getattr(args, "executor", None) or "kiro"
+    if spec in BUILTIN_EXECUTORS:
+        return None
+    path = _resolve_executor_plugin(spec)
+    if not path:
+        return None
+    try:
+        return _load_executor_module(path)
+    except RuntimeError:
+        return None
+
+
+def executor_hook(args, name: str):
+    """executor プラグインの任意フック（poll / on_cancel）を返す。無ければ None。
+    これらは execute() と同じくプラグイン側にあり executor 非依存の本体からは任意。"""
+    mod = _executor_module(args)
+    fn = getattr(mod, name, None) if mod else None
+    return fn if callable(fn) else None
+
+
+def _executor_cfg(args) -> dict:
+    """executor 名と同名の設定ブロック（例 gitlab:）を dict で返す。max_open_issues /
+    watch_interval など park & poll のパラメータをここから読む。無ければ空 dict。"""
+    spec = getattr(args, "executor", None) or "kiro"
+    cfg = getattr(args, spec, None)
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _executor_cfg_from_env() -> dict:
+    """worker プロセス内では設定は環境変数 KIRO_FLOW_EXECUTOR_CONFIG(JSON) で届く。
+    cmd_work の throttle 判定（max_open_issues）用にそれを読む。無ければ空 dict。"""
+    raw = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _watch_interval(cfg: dict) -> float:
+    """service_waits が park をバッチ再確認する間隔（秒）。既定 90。"""
+    try:
+        v = float(cfg.get("watch_interval", 90.0))
+        return v if v > 0 else 90.0
+    except (TypeError, ValueError):
+        return 90.0
+
+
+def _wait_lease_window(watch_interval: float) -> float:
+    """park 記録の生存リース秒。健康な監視主体は watch_interval 毎に更新するので、その数倍を
+    確保すれば一過性の遅延で誤って pending へ縮退させない。逆に監視が数回分止まれば失効し、
+    node_state が pending へ落ちて full worker の token 再アタッチに引き継がれる（行き止まり回避）。"""
+    return max(watch_interval * 3.0, 300.0)
+
+
+def _wait_deadline(rec: dict):
+    """park 記録から現在の締切（絶対エポック）を導く。人の作業を検知(active_seen)後は
+    approved_timeout、未検知なら timeout。当該 timeout が 0 以下なら無限（None）。
+    ブロック版 _wait_for_decision の猶予延長ロジックと同じ意味を service_waits 側で再現する。"""
+    started = float(rec.get("started_at", 0) or 0)
+    if rec.get("active_seen"):
+        since = float(rec.get("active_since", started) or started)
+        at = float(rec.get("approved_timeout", 0) or 0)
+        return (since + at) if at > 0 else None
+    to = float(rec.get("timeout", 0) or 0)
+    return (started + to) if to > 0 else None
+
+
+def build_wait_record(nid, who, kind, defer: dict, watch_interval: float) -> dict:
+    """DeferDecision.defer と現在時刻から waits/<node>.json のレコードを組み立てる。
+    started_at は「park を開始した時刻」＝ブロック版が time.time() から締切を測るのと同じ基準。"""
+    now = time.time()
+    pi = float(defer.get("poll_interval", 30.0) or 30.0)
+    return {
+        "id": nid, "who": who, "kind": kind,
+        "executor": defer.get("executor", ""),
+        "issue": defer.get("issue"),                 # throttled は None（イシュー未作成）
+        "task_token": defer.get("task_token"),       # 秘密ではない（再アタッチ用の決定的トークン）
+        "throttled": bool(defer.get("throttled")),
+        "reason": defer.get("reason", "wait"),
+        "active_seen": bool(defer.get("active_seen")),
+        "active_since": now if defer.get("active_seen") else None,
+        "poll_interval": pi,
+        "timeout": float(defer.get("timeout", 0.0) or 0.0),
+        "approved_timeout": float(defer.get("approved_timeout", 0.0) or 0.0),
+        "started_at": now,
+        "next_poll_at": now + pi,
+        "wait_lease_until": now + _wait_lease_window(watch_interval),
+        "created_at": now_iso(),
+    }
+
+
+def park_node(bus: Bus, nid: str, who: str, rec: dict) -> None:
+    """ノードを park（保留）する: waits 記録を先に書き、その後 claim を解放する。
+    この順序が肝——先に解放すると crash 窓で wait を失う。書いてから解放すれば、途中で
+    死んでも claim（lease）が残り、失効後に wait が governing する（wait を失わない）。"""
+    bus.write_wait(nid, rec)
+    bus.release_claim(nid, who)
+    bus.event(who, "parked", node=nid, reason=rec.get("reason", "wait"))
+    bus.sync_push(f"park {nid} by {who} ({rec.get('reason','wait')})")
+
+
+def _finish_wait(v: Bus, rec: dict, status: str, text: str, data) -> None:
+    """park の決着を終端 result として書き、wait 記録を消す（service_waits から）。"""
+    nid = rec["id"]
+    v.write_result(nid, rec.get("who", "service_waits"), status, text, data)
+    v.clear_wait(nid)
+    v.event("service_waits", "result", node=nid, status=status)
+    v.sync_push(f"result {nid} [{status}] by service_waits")
+
+
+def _service_one_wait(v: Bus, rec: dict, poll, watch_interval: float,
+                      wait_lease: float, daemon_id: str) -> None:
+    """park 済み（起票済み）ノードを 1 件 poll して決着/未決着を反映する。"""
+    nid = rec["id"]
+    # 締切超過（人が動かないまま timeout / approved_timeout）→ failed（消費者の永久待機を防ぐ）
+    dl = _wait_deadline(rec)
+    if dl is not None and time.time() >= dl:
+        iid = (rec.get("issue") or {}).get("iid")
+        phase = "MR の決着" if rec.get("active_seen") else "レビュー/MR 作成"
+        _finish_wait(v, rec, "failed",
+                     f"[gitlab] park タイムアウト: イシュー #{iid} が期限内に {phase} に至らず",
+                     {"decision": "rejected", "reason": "park-timeout", "issue_iid": iid})
+        log(daemon_id, f"park タイムアウト: {nid}（#{iid}）→ failed")
+        return
+    try:
+        r = poll({"issue": rec.get("issue"), "active_seen": rec.get("active_seen", False)})
+    except Exception as e:  # noqa: BLE001 — poll 失敗は run を止めない。lease を更新して次回再試行
+        log(daemon_id, f"service_waits poll 失敗（無視して次回再試行）: {nid}: {e}")
+        rec["next_poll_at"] = time.time() + max(watch_interval, float(rec.get("poll_interval", 30) or 30))
+        rec["wait_lease_until"] = time.time() + wait_lease
+        v.write_wait(nid, rec)
+        return
+    decision = (r or {}).get("decision")
+    if decision == "approved":
+        _finish_wait(v, rec, "done", (r or {}).get("text", ""), (r or {}).get("data"))
+        log(daemon_id, f"park 決着（承認）: {nid} → done")
+        return
+    if decision == "rejected":
+        _finish_wait(v, rec, "failed", (r or {}).get("text", ""), (r or {}).get("data"))
+        log(daemon_id, f"park 決着（却下）: {nid} → failed")
+        return
+    # 未決着 → active_seen/締切/次回時刻/lease を更新して据え置く
+    active_now = bool((r or {}).get("active_seen"))
+    if active_now and not rec.get("active_seen"):
+        rec["active_since"] = time.time()
+        log(daemon_id, f"park: {nid} 人の作業を検知（猶予を approved_timeout へ延長）")
+    rec["active_seen"] = rec.get("active_seen") or active_now
+    rec["next_poll_at"] = time.time() + max(watch_interval, float(rec.get("poll_interval", 30) or 30))
+    rec["wait_lease_until"] = time.time() + wait_lease
+    v.write_wait(nid, rec)
+
+
+def _service_throttled(v: Bus, rec: dict, cap: int, wait_lease: float, daemon_id: str) -> None:
+    """throttled park（同時イシュー上限で起票を見送ったノード）を面倒見る。枠が空いたら解除
+    （clear_wait → node は pending に戻り worker が通常起票）。まだ満杯なら lease を延ばして
+    pending への無用な flap を防ぐ。エラーにはしない＝バックプレッシャで発行がペーシングされるだけ。"""
+    nid = rec["id"]
+    if cap <= 0 or v.open_wait_count() < cap:
+        v.clear_wait(nid)
+        v.sync_push(f"throttle release {nid}")
+        log(daemon_id, f"throttle 解除: {nid}（同時イシューの枠が空いた）")
+        return
+    rec["wait_lease_until"] = time.time() + wait_lease
+    v.write_wait(nid, rec)
+
+
+def service_waits(bus: Bus, args, only_run: "str | None" = None,
+                  daemon_id: str = "service_waits") -> int:
+    """監視主体（daemon/run）が park 済みノードをバッチ再確認する単一ポーラ。処理した run 数を返す。
+    起動モード非依存（daemon でも cmd_run でも同じこれを回す）。executor が poll() を持たない
+    （kiro/stub）なら何もしない＝park & poll は deferring executor（gitlab）だけで働き、他は不変。"""
+    poll = executor_hook(args, "poll")
+    if poll is None:
+        return 0
+    cfg = _executor_cfg(args)
+    # poll() は自プロセス内で走るので、executor 設定（起票先/接続ラベル等）を環境変数で届ける
+    # （daemon/run は make_executor を経由しないため、ここで明示的に渡す）。
+    if cfg:
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(cfg, ensure_ascii=False)
+    watch_interval = _watch_interval(cfg)
+    wait_lease = _wait_lease_window(watch_interval)
+    cap = int(cfg.get("max_open_issues", 0) or 0)
+    now = time.time()
+    run_ids = [only_run] if only_run else bus.active_runs()
+    serviced = 0
+    for rid in run_ids:
+        v = bus.run_view(rid)
+        waits = v.list_waits()
+        if not waits:
+            continue
+        serviced += 1
+        for rec in waits:
+            nid = rec.get("id")
+            if not nid or v.has_result(nid):
+                v.clear_wait(nid)                    # 別経路で決着済み → 記録を掃除
+                continue
+            if rec.get("throttled"):
+                _service_throttled(v, rec, cap, wait_lease, daemon_id)
+                continue
+            if float(rec.get("next_poll_at", 0) or 0) > now:
+                continue                             # まだ再確認時刻でない（per-issue バックオフ）
+            _service_one_wait(v, rec, poll, watch_interval, wait_lease, daemon_id)
+    return serviced
 
 
 def _is_gate_result(r: dict) -> bool:
@@ -3102,6 +3491,19 @@ def _finalize_run(bus, args, iteration: int) -> None:
     log(args.node_id, "結果サマリ:\n" + summary)
 
 
+def _orch_check_canceled(bus: Bus, args, who: str) -> bool:
+    """cancel マーカーがあれば run を canceled に終端化して True を返す（orchestrator の停止用）。
+    orchestrator が set_status("running") で canceled を上書きし返すのを防ぐため、ループの要所で確認する。"""
+    if not bus.is_canceled_requested(args.run_id):
+        return False
+    reason = bus.cancel_info(args.run_id).get("reason") or "cancel 指示"
+    bus.mark_canceled(args.run_id, reason)
+    bus.event(who, "canceled", run=args.run_id, reason=reason)
+    bus.sync_push(f"cancel run {args.run_id}: {reason}")
+    log(who, f"cancel 指示を検知（{reason}）。orchestrator を終了します。")
+    return True
+
+
 def cmd_orchestrate(args) -> int:
     who = args.node_id
     bus = make_bus(args, who)
@@ -3146,9 +3548,13 @@ def cmd_orchestrate(args) -> int:
 
     # evaluator-optimizer ループ: 静止（claim 可能・実行中タスクが無い）→ パターン継続判断
     while True:
+        if _orch_check_canceled(bus, args, who):
+            return 0
         graph = bus.read_graph()
         while not _quiesced(bus, graph["nodes"]):
             bus.sync_pull()
+            if _orch_check_canceled(bus, args, who):
+                return 0
             time.sleep(args.poll)
             graph = bus.read_graph()
         bus.sync_pull()
@@ -3199,11 +3605,13 @@ def deps_satisfied(bus: Bus, node) -> bool:
 
 
 def _quiesced(bus: Bus, nodes: dict) -> bool:
-    """run が静止したか: 実行中(claimed)も、今すぐ claim 可能な pending も無い状態。
-    依存が失敗してブロックされた pending は静止扱い（継続判断で付け替えられる）。"""
+    """run が静止したか: 実行中(claimed)も、park 待機中(waiting)も、今すぐ claim 可能な
+    pending も無い状態。依存が失敗してブロックされた pending は静止扱い（継続判断で付け替えられる）。
+    waiting（承認待ち等で park 済み）は in-flight 扱い＝静止させない。これにより orchestrator は
+    park 中のノードを見て早まって再計画/完了せず、service_waits が決着を書くまで待つ。"""
     for nid, node in nodes.items():
         st = bus.node_state(nid)
-        if st == "claimed":
+        if st in ("claimed", "waiting"):
             return False
         if st == "pending" and deps_satisfied(bus, node):
             return False
@@ -3230,6 +3638,12 @@ def cmd_work(args) -> int:
              f"idle_exit={idle_exit})")
     # executor を一度だけ解決する（組み込み kiro/stub or プラグイン）。
     execute = make_executor(args)
+    # park & poll: 親（daemon/run）が service_waits で面倒を見るときだけ deferral を有効化する。
+    # 無効時（standalone work 等）は executor が従来どおりブロック待機へフォールバックする。
+    defer_enabled = os.environ.get("KIRO_FLOW_DEFER_WAITS") == "1"
+    ecfg = _executor_cfg_from_env()
+    issue_cap = int(ecfg.get("max_open_issues", 0) or 0)   # 同時イシュー上限（0=無制限）
+    watch_interval = _watch_interval(ecfg)
     # 親（run/daemon）からの SIGTERM でもワークスペースの clone を消してから抜ける
     signal.signal(signal.SIGTERM, lambda *_: (cleanup_workspace(), sys.exit(143)))
     time.sleep(random.uniform(0, args.poll))  # 負荷分散: 起動位相をずらす
@@ -3261,6 +3675,20 @@ def cmd_work(args) -> int:
         log(who, f"claim 成功: {nid} [{kind}] — {node['goal'][:55]}")
         bus.event(who, "claimed", node=nid)
 
+        # throttle（バックプレッシャ）: 同時未決着イシューが上限に達していたら、起票せず
+        # throttled park して claim を解放する。エラーにはしない＝人のレビュー速度に発行を
+        # ペーシングするだけ（枠が空けば service_waits が解除 → 通常起票）。deferring executor
+        # かつ max_open_issues>0 のときだけ働く（kiro/stub 等は waits が空なので発火しない）。
+        if defer_enabled and issue_cap > 0 and bus.open_wait_count() >= issue_cap:
+            rec = build_wait_record(nid, who, kind,
+                                    {"executor": args.executor, "issue": None,
+                                     "task_token": None, "throttled": True,
+                                     "reason": "throttled:max_open_issues"}, watch_interval)
+            park_node(bus, nid, who, rec)
+            log(who, f"throttle: 同時イシュー上限({issue_cap})到達 → {nid} を park（起票見送り）")
+            time.sleep(random.uniform(0, 0.3))
+            continue
+
         # 依存の成果は構造化データ込みの完全な result dict で渡す
         dep_results = _collect_dep_results(bus, node, kind)
         # 中間成果物プロトコル: 自ノードの出力先を用意し、依存ノードの成果物パスを集める。
@@ -3291,6 +3719,19 @@ def cmd_work(args) -> int:
             delivery = finalize_workspace(ws, args.run_id, nid)
             rstatus = "done"
         except Exception as e:  # noqa: BLE001 — 結果として記録する
+            # park シグナル（DeferDecision.defer）: 承認待ち等で未決着＝終端 result を書かず、
+            # 心拍を止めてから wait を書き claim を解放する（この順序で claim の書き戻し競合を防ぐ）。
+            # スロットを空けて次の claim 可能タスクへ回り、決着は service_waits が書く。
+            defer = getattr(e, "defer", None)
+            if isinstance(defer, dict):
+                hb.stop()
+                rec = build_wait_record(nid, who, kind, defer, watch_interval)
+                park_node(bus, nid, who, rec)
+                log(who, f"park: {nid}（{defer.get('reason', 'wait')}）— claim 解放しスロットを空ける")
+                if ws:
+                    cleanup_workspace()   # park 中は clone を持たない（ディスク解放）
+                time.sleep(random.uniform(0, 0.3))
+                continue
             output = f"実行エラー: {e}"
             rstatus = "failed"
             # executor が例外に載せた構造化データ（gitlab 却下の issue_iid / guidance 等）は
@@ -3466,6 +3907,9 @@ def _spawn_worker(base: list, args, rid: str, wid: str):
     cfgjson = resolve_executor_config_json(args)
     if cfgjson is not None:
         env["KIRO_FLOW_EXECUTOR_CONFIG"] = cfgjson
+    # park & poll: daemon は service_waits で park を面倒見るので worker の deferral を有効化する
+    # （承認待ちで worker スロットをブロックさせず、承認待ちは waits/ へ退避させる）。
+    env["KIRO_FLOW_DEFER_WAITS"] = "1"
     return subprocess.Popen(base + [
         "--run-id", rid, "work", "--node-id", wid,
         "--executor", args.executor, "--model_opt", args.model or "",
@@ -3517,12 +3961,15 @@ def cmd_run(args) -> int:
     ])
     procs.append(("orchestrator", orch))
 
+    # park & poll: cmd_run も監視ループで service_waits を回すので worker の deferral を有効化する。
+    worker_env = os.environ.copy()
+    worker_env["KIRO_FLOW_DEFER_WAITS"] = "1"
     for i in range(args.workers):
         wid = f"worker-{i+1}"
         w = subprocess.Popen(base + [
             "work", "--node-id", wid, "--executor", args.executor,
             "--model_opt", args.model or "", "--poll", str(args.poll),
-        ])
+        ], env=worker_env)
         procs.append((wid, w))
 
     print(f"\n>>> kiro-flow run: run_id={run_id} bus={mode} ({'resume' if resuming else 'new'})")
@@ -3543,11 +3990,29 @@ def cmd_run(args) -> int:
 
     signal.signal(signal.SIGINT, lambda *_: (shutdown(), sys.exit(130)))
 
+    # park & poll: この run の park 済みノードを監視ループで面倒見る（daemon と同じ service_waits）。
+    # deferring executor（gitlab 等）でなければ no-op。watch_interval 毎に間引いて再確認する。
+    next_wait_service = 0.0
+    watch_interval = _watch_interval(_executor_cfg(args))
     # run が終端に達するか orchestrator が落ちるまで待機
     try:
         while True:
             bus.sync_pull()
             state_sync(args)   # 状態 git: 進捗をリモートの viewer へ共有（間隔律速・ローカルバス時のみ）
+            if time.time() >= next_wait_service:
+                try:
+                    service_waits(bus, args, only_run=run_id, daemon_id="run")
+                except Exception as e:  # noqa: BLE001 — 監視失敗は run を止めない
+                    print(f">>> service_waits でエラー（無視して継続）: {e}", flush=True)
+                next_wait_service = time.time() + watch_interval
+            if bus.is_canceled_requested(run_id) and bus.get_status() not in TERMINAL:
+                # cancel 指示: この run を canceled に終端化し、park の再ポーリングを止め、
+                # 子（orchestrator/worker）を停止する。--close-issues は cmd_cancel 側で実施済み。
+                bus.mark_canceled(run_id, bus.cancel_info(run_id).get("reason") or "cancel 指示")
+                bus.clear_waits_for_run(run_id)
+                bus.sync_push(f"cancel run {run_id}")
+                print(f"\n>>> run {run_id} は cancel されました。停止します。", flush=True)
+                break
             if bus.get_status() in TERMINAL:
                 print(f"\n>>> run {bus.get_status()}。ワーカーを停止します。", flush=True)
                 break
@@ -3586,6 +4051,60 @@ def cmd_submit(args) -> int:
     bus.sync_push(f"submit request {req_id}")
     print(req_id)  # run-id を標準出力（スクリプトから拾える）
     print(f">>> 要求を投入しました: {req_id}（デーモンが拾います）", file=sys.stderr)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# cancel — run スコープの恒久停止（人の明示指示による緊急回避手段）
+# --------------------------------------------------------------------------
+def _apply_on_cancel(bus: Bus, args, run_id: str) -> None:
+    """--close-issues 指定時に、run の park 済みイシューを executor の on_cancel フックで後始末する。
+    フック非対応の executor では何もしない。ベストエフォート（失敗は無視）。"""
+    on_cancel = executor_hook(args, "on_cancel")
+    if on_cancel is None:
+        return
+    cfg = _executor_cfg(args)
+    if cfg:
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(cfg, ensure_ascii=False)
+    records = [r for r in bus.run_view(run_id).list_waits() if (r.get("issue") or {}).get("iid")]
+    if not records:
+        return
+    try:
+        on_cancel(records)
+        log("cancel", f"run {run_id}: park 済みイシュー {len(records)} 件を後始末（close-issues）")
+    except Exception as e:  # noqa: BLE001
+        log("cancel", f"run {run_id}: on_cancel 後始末で例外（無視）: {e}")
+
+
+def cmd_cancel(args) -> int:
+    """run を canceled に終端化する（人の明示指示による唯一の hard-stop）。
+    cancel マーカーを inbox に置いて全 PC / daemon へ伝え、run が存在すれば即 status=canceled を
+    確定する（監視主体が居なくても止まる）。park 済みノードの再ポーリングを止め、--close-issues なら
+    起票済みイシューも後始末する。既に終端した run には効かない（done/failed/canceled は不可逆）。"""
+    bus = make_bus(args, f"cancel-{os.getpid()}")
+    bus.sync_pull()
+    rid = args.run_id
+    if not bus.run_exists(rid) and rid not in bus.list_inbox():
+        print(f"[kiro-flow] run {rid} が見つかりません（バス: {os.path.abspath(args.bus)}）",
+              file=sys.stderr)
+        return 2
+    cur = bus.run_meta(rid).get("status")
+    if cur in TERMINAL:
+        print(f">>> run {rid} は既に終端（status={cur}）。cancel は不要です。")
+        return 0
+    reason = getattr(args, "reason", "") or "手動 cancel"
+    bus.cancel_request(rid, socket.gethostname(), reason, bool(getattr(args, "close_issues", False)))
+    # --close-issues は waits を消す前に実施する（イシュー座標は park 記録が握っているため）。
+    if getattr(args, "close_issues", False):
+        _apply_on_cancel(bus, args, rid)
+    cleared = bus.clear_waits_for_run(rid)     # park 済みノードの再ポーリングを止める
+    marked = bus.mark_canceled(rid, reason)    # run が存在すれば即終端化（監視主体が居なくても止まる）
+    bus.sync_push(f"cancel run {rid}: {reason}")
+    tail = "・status=canceled 確定" if marked else "（daemon が受理して終端化します）"
+    print(f">>> run {rid} をキャンセルしました{tail}。park 解除 {cleared} 件、"
+          f"理由: {reason}")
+    if not marked and not bus.run_exists(rid):
+        print(f">>> 注: 要求 {rid} はまだ run 化されていません。daemon が受理時に canceled で終端します。")
     return 0
 
 
@@ -3658,11 +4177,47 @@ def cmd_daemon(args) -> int:
     # git バスへの push は lease_window/3 毎に間引く（毎 poll の push を避ける）。
     lease_window = _run_lease_window(args)
     next_heartbeat_push = 0.0
+    # park & poll: 全 active run の park 済みノードをバッチ再確認する（承認待ちを worker から
+    # 切り離す監視主体）。watch_interval 毎に間引く。deferring executor でなければ no-op。
+    watch_interval = _watch_interval(_executor_cfg(args))
+    next_wait_service = 0.0
 
     while not stop["v"]:
         bus.sync_pull()
         state_sync(args)   # 状態 git: バス状態の共有と inbox 投入の取り込み（間隔律速・ローカルバス時のみ）
         maybe_heartbeat_daemon_status(args, bus, daemon_id, orchestrators, workers)  # --status-interval のときだけ
+        # cancel 指示の受理: マーカーのある run を canceled に終端化し、その run の
+        # orchestrator/worker を止め、park の再ポーリングを止める（--close-issues ならイシューも
+        # 後始末）。これで承認待ちで park 中の run も、暴走中の run も、run スコープで恒久停止できる。
+        for rid in bus.list_cancels():
+            meta = bus.run_meta(rid)
+            if meta and meta.get("status") in TERMINAL:
+                continue                              # 既に終端（処理済み）→ 何もしない
+            info = bus.cancel_info(rid)
+            reason = info.get("reason") or "cancel 指示"
+            if info.get("close_issues"):
+                _apply_on_cancel(bus, args, rid)      # waits を消す前にイシューを後始末
+            bus.clear_waits_for_run(rid)
+            # この daemon が駆動中の子を止める（run スコープ）
+            if rid in orchestrators and orchestrators[rid].poll() is None:
+                orchestrators[rid].terminate()
+            for _, wp in [(r, p) for r, p in workers if r == rid]:
+                if wp.poll() is None:
+                    wp.terminate()
+            marked = bus.mark_canceled(rid, reason)
+            bus.run_view(rid).event(daemon_id, "canceled", run=rid, reason=reason)
+            bus.sync_push(f"cancel run {rid}: {reason}")
+            if marked:
+                log(daemon_id, f"cancel 受理: {rid} を canceled に終端化（{reason}）")
+        # park & poll: 承認待ち等で park されたノードをまとめて再確認し、決着なら終端 result を書く。
+        if time.time() >= next_wait_service:
+            try:
+                n = service_waits(bus, args, daemon_id=daemon_id)
+                if n:
+                    write_daemon_status(args, bus, daemon_id, orchestrators, workers)
+            except Exception as e:  # noqa: BLE001 — 監視失敗は daemon を止めない
+                log(daemon_id, f"service_waits でエラー（無視して継続）: {e}")
+            next_wait_service = time.time() + watch_interval
         # 一時ファイルの自動クリーンアップ（ロック / 中間 .tmp / 孤立クローン）を定期実行
         if cleanup_interval > 0 and time.time() - last_cleanup >= cleanup_interval:
             last_cleanup = time.time()
@@ -3735,6 +4290,12 @@ def cmd_daemon(args) -> int:
         # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）
         for req_id in bus.list_inbox():
             if bus.run_exists(req_id) or req_id in orchestrators:
+                continue
+            if bus.is_canceled_requested(req_id):
+                # run 化前に cancel された要求は起動せず canceled で終端化する（＝受理しない）。
+                if bus.cancel_request_run(req_id, bus.cancel_info(req_id).get("reason") or ""):
+                    bus.sync_push(f"cancel request {req_id}（run 化前）")
+                    log(daemon_id, f"cancel: 要求 {req_id} を run 化前に canceled で終端化")
                 continue
             req = bus.read_inbox(req_id)
             if not req:
@@ -5008,6 +5569,16 @@ def build_parser() -> argparse.ArgumentParser:
                          "（daemon の orchestrate に伝搬される）")
     sb.set_defaults(func=cmd_submit)
 
+    cn = sub.add_parser("cancel",
+                        help="run を canceled に終端化（人の明示指示による run スコープの恒久停止）。"
+                             "承認待ちで park 中の run も暴走中の run も止められる緊急回避手段")
+    cn.add_argument("run_id", help="キャンセルする run-id（submit の戻り値／status --list で確認）")
+    cn.add_argument("--reason", default="", help="キャンセル理由（meta / イベントに記録）")
+    cn.add_argument("--close-issues", dest="close_issues", action="store_true",
+                    help="park 済みの GitLab イシューに取消コメントを付けてクローズする"
+                         "（既定: イシューは残し、追跡だけやめる）")
+    cn.set_defaults(func=cmd_cancel)
+
     st = sub.add_parser("status", help="run の状態表示（既定 1 回 / --follow でライブ監視）")
     st.add_argument("--follow", "-f", action="store_true", help="ライブ監視（tmux ペイン向け）")
     st.add_argument("--interval", type=float, default=1.0, help="更新間隔（秒, --follow 時）")
@@ -5069,7 +5640,7 @@ def main() -> int:
     # 起動初回にバスフォルダが無ければ作成する（git バスでは .gitkeep も置く）。
     # 診断/読み取り専用コマンドは副作用を持たせない（doctor の「未作成」所見を潰さない）。
     if getattr(args, "func", None) in (
-            cmd_run, cmd_daemon, cmd_orchestrate, cmd_work, cmd_submit, None):
+            cmd_run, cmd_daemon, cmd_orchestrate, cmd_work, cmd_submit, cmd_cancel, None):
         ensure_bus_root(args)
     # サブコマンド未指定 → daemon として処理
     try:

@@ -2998,8 +2998,11 @@ class ArgvLimitTests(unittest.TestCase):
                 kf.cmd_run(args)
             except Exception:
                 pass  # bus/poll をモックしているので途中で抜けてよい（spawn コマンドだけ検証）
-        self.assertTrue(spawned, "子プロセスが起動されていない")
-        for cmd in spawned:
+        # subprocess.run 経由の補助プロセス（executor プラグイン解決の git rev-parse 等）も
+        # パッチした Popen に載るため、kiro-flow の子（python 実行）だけに絞って検証する。
+        children = [c for c in spawned if c and c[0] == sys.executable]
+        self.assertTrue(children, "子プロセスが起動されていない")
+        for cmd in children:
             self.assertIn("--config", cmd)
             self.assertEqual(cmd[cmd.index("--config") + 1], os.path.abspath(cfg))
 
@@ -3671,6 +3674,342 @@ class DaemonStatusStateGitSyncTests(unittest.TestCase):
         after = subprocess.run(["git", "-C", str(sg.clone), "rev-parse", "HEAD"],
                                capture_output=True, text=True, check=True).stdout.strip()
         self.assertEqual(before, after)
+
+
+import argparse
+
+
+def _park_args(executor="gitlab", gitlab=None):
+    """park & poll 系テスト用の最小 args。resolve_config は通さず必要フィールドだけ与える。"""
+    return argparse.Namespace(
+        executor=executor,
+        gitlab=gitlab if gitlab is not None else {"watch_interval": 90.0, "max_open_issues": 0},
+    )
+
+
+class WaitingStateTests(unittest.TestCase):
+    """park & poll: waits/ レコードと waiting 状態（node_state の縮退・pick_claimable/_quiesced 連携）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-wait-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("req")
+        self.bus.write_graph({"nodes": {"n1": {"goal": "g", "deps": []}}, "iteration": 0})
+        self.bus.write_task({"id": "n1", "goal": "g", "deps": []})
+
+    def _rec(self, **over):
+        base = {"id": "n1", "who": "w1", "kind": "work", "executor": "gitlab",
+                "issue": {"host": "h", "project": "p", "iid": 5, "url": "u"},
+                "throttled": False, "active_seen": False,
+                "wait_lease_until": time.time() + 1000, "next_poll_at": 0,
+                "started_at": time.time(), "timeout": 0, "approved_timeout": 0}
+        base.update(over)
+        return base
+
+    def test_live_wait_is_waiting_state_and_not_claimable(self):
+        self.bus.write_wait("n1", self._rec())
+        self.assertEqual(self.bus.node_state("n1"), "waiting")
+        self.assertIsNone(kf.pick_claimable(self.bus))           # waiting は claim 不可
+        self.assertEqual(self.bus.run_view("run1").node_state("n1"), "waiting")
+        # run_claimable_count からも除外される（daemon が worker を起こさない）
+        self.assertEqual(self.bus.run_claimable_count("run1"), 0)
+
+    def test_expired_wait_falls_back_to_pending(self):
+        # wait_lease 失効＝監視主体が居ない → pending へ縮退（full worker が再アタッチで拾える）
+        self.bus.write_wait("n1", self._rec(wait_lease_until=time.time() - 1))
+        self.assertEqual(self.bus.node_state("n1"), "pending")
+        self.assertIsNotNone(kf.pick_claimable(self.bus))
+
+    def test_result_wins_over_wait(self):
+        # 決着（result）は wait より優先。node_state は result の status を返す
+        self.bus.write_wait("n1", self._rec())
+        self.bus.write_result("n1", "svc", "done", "ok")
+        self.assertEqual(self.bus.node_state("n1"), "done")
+
+    def test_quiesced_treats_waiting_as_in_flight(self):
+        self.bus.write_wait("n1", self._rec())
+        graph = self.bus.read_graph()
+        self.assertFalse(kf._quiesced(self.bus, graph["nodes"]))  # waiting は静止させない
+
+    def test_open_wait_count_excludes_throttled(self):
+        self.bus.write_wait("n1", self._rec())                    # 起票済み
+        self.bus.write_wait("n2", self._rec(id="n2", throttled=True, issue=None))
+        self.assertEqual(self.bus.open_wait_count(), 1)           # throttled は数えない
+
+    def test_release_claim_frees_slot(self):
+        self.assertTrue(self.bus.try_claim("n1", "w1", 100))
+        self.assertEqual(self.bus.node_state("n1"), "claimed")
+        self.bus.release_claim("n1", "w1")
+        self.assertEqual(self.bus.node_state("n1"), "pending")
+
+
+class ServiceWaitsTests(unittest.TestCase):
+    """service_waits: park 済みノードを poll して決着（done/failed）・据え置き・締切・throttle 解除。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-svc-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("req")
+        self.bus.set_status("running")
+
+    def _park(self, nid="n1", **over):
+        rec = {"id": nid, "who": "w1", "kind": "work", "executor": "gitlab",
+               "issue": {"host": "h", "project": "p", "iid": 5, "url": "u"},
+               "throttled": False, "active_seen": False,
+               "wait_lease_until": time.time() + 1000, "next_poll_at": 0,
+               "started_at": time.time(), "timeout": 0, "approved_timeout": 0}
+        rec.update(over)
+        self.bus.write_wait(nid, rec)
+
+    def _run(self, poll_fn):
+        args = _park_args()
+        with mock.patch.object(kf, "executor_hook",
+                               side_effect=lambda a, name: poll_fn if name == "poll" else None):
+            return kf.service_waits(self.bus, args, only_run="run1", daemon_id="t")
+
+    def test_approved_writes_done_result_and_clears_wait(self):
+        self._park()
+        self._run(lambda st: {"decision": "approved", "text": "ok", "data": {"decision": "approved"}})
+        self.assertEqual(self.bus.node_state("n1"), "done")
+        self.assertIsNone(self.bus.read_wait("n1"))              # wait 記録は掃除される
+
+    def test_rejected_writes_failed_result(self):
+        self._park()
+        self._run(lambda st: {"decision": "rejected", "text": "[gitlab-reject] x",
+                              "data": {"decision": "rejected", "guidance": "直して"}})
+        res = self.bus.read_result("n1")
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["data"]["decision"], "rejected")
+        self.assertIsNone(self.bus.read_wait("n1"))
+
+    def test_undecided_keeps_wait_and_renews_lease(self):
+        self._park(wait_lease_until=time.time() + 1)
+        self._run(lambda st: {"decision": None, "active_seen": True})
+        rec = self.bus.read_wait("n1")
+        self.assertIsNotNone(rec)                                # 据え置き
+        self.assertTrue(rec["active_seen"])                      # 人の作業検知を反映
+        self.assertGreater(rec["wait_lease_until"], time.time() + 100)  # lease を更新
+        self.assertGreater(rec["next_poll_at"], time.time())    # バックオフ
+
+    def test_deadline_exceeded_fails(self):
+        # started_at が古く timeout 到達 → poll せず failed に終端（消費者の永久待機を防ぐ）
+        self._park(started_at=time.time() - 100, timeout=1)
+        called = {"n": 0}
+        def poll(st):
+            called["n"] += 1
+            return {"decision": None}
+        self._run(poll)
+        self.assertEqual(self.bus.node_state("n1"), "failed")
+        self.assertEqual(called["n"], 0)                        # 締切超過は poll せず即終端
+
+    def test_next_poll_at_backoff_skips_poll(self):
+        self._park(next_poll_at=time.time() + 1000)
+        called = {"n": 0}
+        self._run(lambda st: called.__setitem__("n", called["n"] + 1) or {"decision": None})
+        self.assertEqual(called["n"], 0)                        # まだ再確認時刻でない
+
+    def test_throttled_released_when_slot_frees(self):
+        # 起票済み 0 件・cap 1 → throttled park を解除（node は pending へ）
+        self._park("n2", throttled=True, issue=None)
+        args = _park_args(gitlab={"watch_interval": 90.0, "max_open_issues": 1})
+        with mock.patch.object(kf, "executor_hook",
+                               side_effect=lambda a, name: (lambda st: {"decision": None})
+                               if name == "poll" else None):
+            kf.service_waits(self.bus, args, only_run="run1", daemon_id="t")
+        self.assertIsNone(self.bus.read_wait("n2"))             # 解除された
+
+    def test_builtin_executor_noop(self):
+        # poll フックが無い executor（kiro/stub）では何もしない
+        self._park()
+        n = kf.service_waits(self.bus, _park_args(executor="stub"), only_run="run1")
+        self.assertEqual(n, 0)
+        self.assertIsNotNone(self.bus.read_wait("n1"))          # 触られない
+
+
+class CancelTests(unittest.TestCase):
+    """cancel: canceled 終端状態・マーカー・mark_canceled・run 化前 cancel・waits 掃除。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-cancel-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("req")
+        self.bus.set_status("running")
+
+    def test_canceled_is_terminal(self):
+        self.assertIn("canceled", kf.TERMINAL)
+
+    def test_mark_canceled_sets_status_and_excludes_from_active(self):
+        self.assertTrue(self.bus.mark_canceled("run1", "手動"))
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+        self.assertEqual(self.bus.run_meta("run1").get("cancel_reason"), "手動")
+        self.assertNotIn("run1", self.bus.active_runs())        # 終端＝孤児 reclaim もしない
+
+    def test_mark_canceled_noop_when_terminal(self):
+        self.bus.set_status("done")
+        self.assertFalse(self.bus.mark_canceled("run1"))        # done は上書きしない
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "done")
+
+    def test_cancel_request_marker_and_clear_waits(self):
+        self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000,
+                                   "issue": {"iid": 1}})
+        self.bus.cancel_request("run1", "host", "止める", close_issues=False)
+        self.assertTrue(self.bus.is_canceled_requested("run1"))
+        self.assertEqual(self.bus.cancel_info("run1")["reason"], "止める")
+        self.assertEqual(self.bus.clear_waits_for_run("run1"), 1)
+        self.assertIsNone(self.bus.read_wait("n1"))
+
+    def test_cancel_request_run_before_run_exists(self):
+        # run 化前の要求を canceled で終端化（消費者が終端を観測でき、daemon が再受理しない）
+        b = kf.Bus(self.tmp, "req-new")
+        b.submit_request("req-new", "やること", "submitter")
+        self.assertFalse(b.run_exists("req-new"))
+        self.assertTrue(b.cancel_request_run("req-new", "run 化前 cancel"))
+        self.assertEqual(b.run_meta("req-new").get("status"), "canceled")
+
+    def test_cmd_cancel_marks_and_clears(self):
+        self.bus.write_wait("n1", {"id": "n1", "wait_lease_until": time.time() + 1000,
+                                   "issue": {"iid": 1}})
+        args = argparse.Namespace(bus=self.tmp, run_id="run1", reason="緊急停止",
+                                  close_issues=False, git=None, executor="stub",
+                                  config=None, lease=30.0)
+        with mock.patch.object(kf, "make_bus", return_value=self.bus):
+            rc = kf.cmd_cancel(args)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+        self.assertTrue(self.bus.is_canceled_requested("run1"))
+        self.assertIsNone(self.bus.read_wait("n1"))             # park 再ポーリングを止める
+
+    def test_orch_check_canceled(self):
+        args = argparse.Namespace(run_id="run1")
+        self.assertFalse(kf._orch_check_canceled(self.bus, args, "orch"))
+        self.bus.cancel_request("run1", "host", "止める")
+        self.assertTrue(kf._orch_check_canceled(self.bus, args, "orch"))
+        self.assertEqual(self.bus.run_meta("run1").get("status"), "canceled")
+
+
+class GitlabDeferPollTests(unittest.TestCase):
+    """gitlab executor: deferral（park）・poll・on_cancel の追加契約。"""
+
+    def setUp(self):
+        self._cfg = {"repo_url": "https://gitlab.com/group/repo", "poll_interval": 0.0,
+                     "timeout": 0.0, "approved_timeout": 0.0}
+        self._prev = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(self._cfg)
+        self._prev_defer = os.environ.get("KIRO_FLOW_DEFER_WAITS")
+
+    def tearDown(self):
+        for k, v in (("KIRO_FLOW_EXECUTOR_CONFIG", self._prev),
+                     ("KIRO_FLOW_DEFER_WAITS", self._prev_defer)):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_execute_defers_when_undecided(self):
+        # DEFER 有効かつ未決着（MR 無し）→ ブロックせず DeferDecision を投げる
+        os.environ["KIRO_FLOW_DEFER_WAITS"] = "1"
+
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 11, "web_url": "https://gitlab.com/group/repo/-/issues/11"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {}
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
+            with self.assertRaises(gl_plugin.DeferDecision) as ctx:
+                gl_plugin.execute("work", "ログイン画面", {}, art_dir="/b/runs/r1/artifacts/n1")
+        d = ctx.exception.defer
+        self.assertEqual(d["executor"], "gitlab")
+        self.assertEqual(d["issue"]["iid"], 11)
+        self.assertFalse(d["throttled"])
+        self.assertTrue(d["task_token"].startswith("kf-"))
+
+    def test_execute_defer_returns_immediately_when_approved(self):
+        # DEFER 有効でも、その場で承認済みなら park せず (text, data) を返す
+        os.environ["KIRO_FLOW_DEFER_WAITS"] = "1"
+
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST":
+                return {"iid": 12, "web_url": "u"}
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list",
+                               side_effect=lambda h, t, p, params=None:
+                               [{"iid": 1, "state": "merged"}] if p.endswith("merge_requests") else []):
+            text, data = gl_plugin.execute("work", "g", {})
+        self.assertEqual(data["decision"], "approved")
+
+    def test_poll_returns_approved(self):
+        def api(host, token, method, path, data=None, params=None):
+            if method == "GET":
+                return {"labels": [], "state": "opened"}
+            return {"state": "closed"}
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list",
+                               side_effect=lambda h, t, p, params=None:
+                               [{"iid": 1, "state": "merged"}] if p.endswith("merge_requests") else []):
+            r = gl_plugin.poll({"issue": {"host": "h", "project": "p", "iid": 5, "url": "u"},
+                                "active_seen": False})
+        self.assertEqual(r["decision"], "approved")
+
+    def test_poll_undecided_returns_none(self):
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api",
+                               return_value={"labels": [], "state": "opened"}), \
+             mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
+            r = gl_plugin.poll({"issue": {"host": "h", "project": "p", "iid": 5}})
+        self.assertIsNone(r["decision"])
+
+    def test_poll_transient_error_returns_none(self):
+        # 一過性エラー（5xx 等）は決着させず None（次回再試行）＝run を殺さない
+        def api(host, token, method, path, data=None, params=None):
+            raise RuntimeError("GitLab API GET ... 失敗: HTTP 500 Server Error")
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
+            r = gl_plugin.poll({"issue": {"host": "h", "project": "p", "iid": 5}})
+        self.assertIsNone(r["decision"])
+
+    def test_poll_deleted_issue_rejects(self):
+        def api(host, token, method, path, data=None, params=None):
+            raise RuntimeError("GitLab API GET /projects/x/issues/5 失敗: HTTP 404 Not Found")
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", return_value=[]):
+            r = gl_plugin.poll({"issue": {"host": "h", "project": "p", "iid": 5, "url": "u"}})
+        self.assertEqual(r["decision"], "rejected")
+        self.assertIn("削除", r["data"]["reason"])
+
+    def test_on_cancel_closes_issues(self):
+        posts, closes = [], []
+
+        def api(host, token, method, path, data=None, params=None):
+            if method == "POST" and path.endswith("/notes"):
+                posts.append(data)
+            if method == "PUT":
+                closes.append(data)
+            return {}
+
+        with mock.patch.object(gl_plugin, "_resolve_token", return_value="glpat-x"), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api):
+            gl_plugin.on_cancel([{"issue": {"host": "h", "project": "p", "iid": 9, "url": "u"}}])
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(closes[0]["state_event"], "close")
+        self.assertTrue(posts and posts[0]["body"].startswith("kiro-flow:"))
 
 
 if __name__ == "__main__":
