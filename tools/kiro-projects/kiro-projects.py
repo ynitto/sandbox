@@ -902,6 +902,34 @@ def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
     return best
 
 
+def count_gitlab_reject_recur(cfg: "Config", task: Task) -> int:
+    """他タスクの決定記録から、**gitlab 却下**でありタイトルが Jaccard 類似の件数を数える（決定的）。
+    同種の却下が反復しているか（＝分解/verify/policy を系として見直すべきか）の判断材料。自分の履歴は除く。"""
+    if not cfg.decisions.exists():
+        return 0
+    n = 0
+    for f in sorted(cfg.decisions.glob("*.md")):
+        if f.stem == task.id:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for block in re.split(r"(?=^## DR)", text, flags=re.M):
+            if "action  : gitlab-reject" not in block:
+                continue
+            # 却下された元タスクの**生タイトル**（context の （…） 内）で照合する。蒸留後の learn
+            # タイトルは一般化されていて raw タイトルとの Jaccard が効きにくいため context を優先。
+            m = re.search(r"（(?P<title>[^（）]+)）が gitlab で却下", block)
+            if not m:
+                m = re.search(r"^- learn:\s*(?P<title>.+?)\s*::", block, flags=re.M)
+            cand = m.group("title") if m else ""
+            if cand and _title_overlap(task.title, cand) >= cfg.learn_threshold:
+                n += 1
+                break                                  # 1 ファイル（=1 タスク）につき 1 回
+    return n
+
+
 def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | None":
     """過去の人の判断（learn）からタイトルが十分似た指示を探す。返り値 (出典, 指示文)。
 
@@ -2031,15 +2059,52 @@ def expand_verify_template(spec: str) -> "str | None":
     return None
 
 
-def _synth_verify_prompt(title: str, accept: str) -> str:
+def detect_repo_context(workdir: "Path") -> str:
+    """テスト/ビルド基盤を決定的に検出し、合成 verify のヒント文にする（grep 退化を防ぐ）。
+    package.json scripts・pytest/pyproject・Makefile ターゲット・go/cargo 等を軽く走査（有界）。"""
+    hints: list = []
+    try:
+        pj = workdir / "package.json"
+        if pj.exists():
+            data = json.loads(pj.read_text(encoding="utf-8"))
+            scripts = list((data.get("scripts") or {}).keys())[:8]
+            hints.append("package.json（npm/yarn）: scripts=" + (", ".join(scripts) or "なし"))
+    except (OSError, ValueError):
+        pass
+    if (workdir / "pytest.ini").exists() or (workdir / "pyproject.toml").exists() \
+            or (workdir / "tox.ini").exists() or (workdir / "tests").is_dir():
+        hints.append("Python（pytest 等）: `pytest -q` が使えることが多い")
+    mk = workdir / "Makefile"
+    if mk.exists():
+        try:
+            targets = re.findall(r"^([a-zA-Z0-9_.-]+):", mk.read_text(encoding="utf-8"), re.M)[:10]
+            hints.append("Makefile: targets=" + (", ".join(targets) or "なし"))
+        except OSError:
+            pass
+    if (workdir / "go.mod").exists():
+        hints.append("Go: `go test ./...` / `go build ./...`")
+    if (workdir / "Cargo.toml").exists():
+        hints.append("Rust: `cargo test` / `cargo build`")
+    return "\n".join(f"- {h}" for h in hints)[:800]
+
+
+def _synth_verify_prompt(title: str, accept: str, hint: str = "", repo_ctx: str = "") -> str:
+    extra = ""
+    if repo_ctx:
+        extra += ("\nこのリポジトリで検出したテスト/ビルド基盤（可能ならこれを使い、存在チェックの grep へ"
+                  f"退化させない）:\n{repo_ctx}\n")
+    if hint:
+        extra += ("\n過去の類似タスクで人が示した『done の見方』（参考にしてよいが、望む最終状態/差分を"
+                  f"検査する原則は保つ）:\n- {hint}\n")
     return (
         "次のタスクの『完了条件（自然言語）』を、**決定的なシェルコマンド**に変換してください。"
         "終了コード 0 を PASS とみなします。\n"
         "規則: ①「履歴」ではなく「望む最終状態 / 差分」を検査する"
         "（`git log|grep` で過去コミットに当てない）②差分を見るなら環境変数 `$KIRO_BASE_REV`"
         "（act 前の HEAD）を使い `git log \"$KIRO_BASE_REV\"..HEAD ...` の形にする"
-        "③外部状態に依存せず再現可能にする。\n"
-        f"タスク: {title}\n完了条件: {accept}\n\n"
+        "③外部状態に依存せず再現可能にする。④単なる存在 grep や恒真式に退化させず、"
+        "可能ならテスト/ビルドコマンドで実挙動を確かめる。\n"
+        f"タスク: {title}\n完了条件: {accept}\n{extra}\n"
         "出力はコマンド 1 行のみ（説明・コードフェンス不要）。検証コマンドを書けない場合は空行を返す。")
 
 
@@ -2082,12 +2147,14 @@ def _looks_like_shell_command(line: str) -> bool:
     return chk.returncode == 0
 
 
-def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None) -> str:
+def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
+                 hint: str = "", repo_ctx: str = "") -> str:
     """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
-    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。"""
+    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。
+    hint（過去の類似 learn）・repo_ctx（検出したテスト/ビルド基盤）で grep 退化を抑える。"""
     run = kiro_run or _run_kiro_cli
     try:
-        out = run(_synth_verify_prompt(title, accept), cfg.model)
+        out = run(_synth_verify_prompt(title, accept, hint, repo_ctx), cfg.model)
     except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は合成せず人へ
         return ""
     for line in (out or "").splitlines():       # 先頭の意味ある行をコマンドとみなす
@@ -2120,7 +2187,12 @@ def ensure_verify(cfg: "Config", task: "Task", kiro_run=None) -> bool:
             return True
     accept = ex.get("accept", "").strip()
     if accept:
-        cmd = synth_verify(cfg, task.title, accept, kiro_run)
+        # 過去の類似タスクで人が示した『done の見方』（learn）と、検出したテスト/ビルド基盤を
+        # 合成へ注入する（問題1→問題2 の接続。grep 退化を防ぐ）。どちらも決定的に集める。
+        matched = find_learned_resolution(cfg, task) if cfg.learn else None
+        hint = matched[1] if matched else ""
+        repo_ctx = detect_repo_context(resolve_verify_cwd(cfg))
+        cmd = synth_verify(cfg, task.title, accept, kiro_run, hint=hint, repo_ctx=repo_ctx)
         if cmd:
             task.verify = cmd
             task.extra.append(("verify_source", "synth"))
@@ -3057,6 +3129,7 @@ class Config:
     distill_learn: bool = True      # 人コメントを一般化ルールへ蒸留してから learn 化（off で生の指摘をそのまま残す）
     verify_validate: str = "synth"  # red-green 検証: 合成 verify が act 前でも PASS（=変更を弁別しない偽 done）を弾く。
                                     # off=無効 / synth=自動生成(synth/template)のみ / all=常時。per-task `- verify_validate: none` で除外
+    reject_recur: int = 2           # 同種の gitlab 却下がこの回数に達したら、silent 積み直しをやめ「系の再考」で人へ（0/負で無効）
     intake_recall: bool = True      # 投入/triage 時に過去の hold 判断（avoid）と照合し類似は inbox（人へ）へ寄せる
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
     auto_adjudicate: bool = True    # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on）
@@ -3549,6 +3622,17 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
                                     action="gitlab-reject", reason=guidance[:300],
                                     affects=f"{task.id} → ready（次 act に反映）",
                                     learn=distill_learn(cfg, task.title, guidance))
+                    # 系の反復検知（昇格ラダー）: 同種の gitlab 却下が閾値に達したら、silent 積み直しを
+                    # やめて「分解/verify/policy の見直し」を人へ提案する（＝系の再考へ格上げ）。
+                    if cfg.reject_recur > 0 and \
+                            count_gitlab_reject_recur(cfg, task) + 1 >= cfg.reject_recur:
+                        _escalate(cfg, task,
+                                  f"系の再考: 同種タスクの gitlab 却下が反復（≥{cfg.reject_recur} 件）。"
+                                  "個別のやり直しでなく、タスク分解・verify・policy の見直しを検討してください。"
+                                  f" 直近の指摘: {guidance[:200]}", reasons, cycle, evidence=ev)
+                        append_journal(cfg.journal,
+                                       f"cycle {cycle}: {task.id} → 人の判断（系の再考・却下反復）")
+                        return
         persist_task(cfg, task)
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
                                     f"({task.retries}/{cfg.max_retries}) — {vmsg}")
@@ -7160,6 +7244,7 @@ CONFIG_DEFAULTS = {
     "learn_capture": True,      # approve/hold 理由・gitlab 却下コメントから learn/avoid を自動抽出（三値 --learn-capture/--no-...）
     "distill_learn": True,      # 人コメントを一般化ルールへ蒸留してから learn 化（三値 --distill-learn/--no-distill-learn）
     "verify_validate": "synth", # red-green 検証（off/synth/all）。合成 verify が変更を弁別するか実行で確かめる
+    "reject_recur": 2,          # 同種 gitlab 却下がこの回数で「系の再考」へ格上げ（0/負で無効）
     "intake_recall": True,      # 投入/triage 時の予防リコール（過去 hold に類似→inbox）（三値フラグ）
     "learn_threshold": 0.5,
     "promote_threshold": 2,
@@ -7295,6 +7380,7 @@ def build_config(args) -> Config:
         learn_capture=bool(getattr(args, "learn_capture", True)),
         distill_learn=bool(getattr(args, "distill_learn", True)),
         verify_validate=str(getattr(args, "verify_validate", "synth") or "synth"),
+        reject_recur=int(getattr(args, "reject_recur", 2) or 0),
         intake_recall=bool(getattr(args, "intake_recall", True)),
         learn_threshold=args.learn_threshold,
         auto_adjudicate=bool(getattr(args, "auto_adjudicate", True)),
@@ -7428,6 +7514,9 @@ def _add_common(sp):
     sp.add_argument("--verify-validate", choices=["off", "synth", "all"], default=None,
                     help="red-green 検証: 合成 verify が act 前でも PASS（=変更を弁別しない偽 done）を弾く。"
                          "off/synth（自動生成のみ・既定）/all。per-task `- verify_validate: none` で除外")
+    sp.add_argument("--reject-recur", type=int, default=None,
+                    help="同種の gitlab 却下がこの回数に達したら silent 積み直しをやめ『系の再考』で人へ"
+                         "（分解/verify/policy の見直し。0/負で無効・既定 2）")
     sp.add_argument("--intake-recall", action=argparse.BooleanOptionalAction, default=None,
                     help="投入/triage 時に過去の hold（avoid）と照合し、類似は ready へ落とさず inbox（人へ）"
                          "寄せる予防リコール。--no-intake-recall で無効化（既定 on）")

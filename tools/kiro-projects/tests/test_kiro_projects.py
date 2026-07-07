@@ -5227,6 +5227,88 @@ class FeedbackReductionTests(unittest.TestCase):
             self.assertIn("gitlab-approve", dr)
             self.assertIn("- learn: e2e 系 :: 実サーバ配備で実施", dr)
 
+    def test_detect_repo_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "package.json").write_text('{"scripts": {"test": "jest", "build": "tsc"}}')
+            (d / "Makefile").write_text("smoke:\n\techo ok\nlint:\n\ttrue\n")
+            (d / "tests").mkdir()
+            ctx = km.detect_repo_context(d)
+            self.assertIn("package.json", ctx)
+            self.assertIn("test", ctx)
+            self.assertIn("Makefile", ctx)
+            self.assertIn("smoke", ctx)
+            self.assertIn("pytest", ctx)
+
+    def test_synth_injects_hint_and_repo_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "decisions").mkdir()
+            # 過去の類似タスクの learn（find_learned_resolution が拾う）
+            (d / "decisions" / "old.md").write_text(
+                "## DR1  2026-01-01  actor: u\n- learn: ログイン e2e :: 実サーバ配備で検証すること\n\n",
+                encoding="utf-8")
+            (d / "package.json").write_text('{"scripts": {"e2e": "playwright test"}}')
+            mkb(d, "T1", status="ready", verify="", title="ログイン e2e", source="human")
+            # accept を付けて合成経路に入れる
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: ログイン e2e\n- status: ready\n- source: human\n- verify: \n"
+                "- accept: ログインの e2e が通る\n", encoding="utf-8")
+            cfg = cfg_for(d, workdir=d)
+            task = km.load_tasks(d / "backlog")[0]
+            seen = {}
+            def fake_kiro(prompt, model):
+                seen["prompt"] = prompt
+                return "npx playwright test"
+            km.ensure_verify(cfg, task, kiro_run=fake_kiro)
+            self.assertIn("実サーバ配備で検証すること", seen["prompt"])   # learn ヒント注入
+            self.assertIn("package.json", seen["prompt"])                # リポジトリ文脈注入
+            self.assertEqual(task.verify, "npx playwright test")
+
+    def _seed_reject_decision(self, cfg, tid, title):
+        cfg.decisions.mkdir(parents=True, exist_ok=True)
+        (cfg.decisions / f"{tid}.md").write_text(
+            f"## DR-0001  2026-01-01  actor: gitlab\n"
+            f"- context : {tid}（{title}）が gitlab で却下\n- action  : gitlab-reject\n"
+            f"- reason  : x\n- affects : {tid}\n- learn: e2e 系 :: 実サーバで\n\n", encoding="utf-8")
+
+    def test_count_gitlab_reject_recur(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._seed_reject_decision(cfg, "A", "ログイン e2e A")
+            self._seed_reject_decision(cfg, "B", "無関係な掃除タスク")
+            task = km.Task(id="C", title="ログイン e2e C")
+            self.assertEqual(km.count_gitlab_reject_recur(cfg, task), 1)  # A のみ類似
+
+    def test_reject_recurrence_escalates_to_human(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "C", verify="pytest -q", title="ログイン e2e C")
+            cfg = cfg_for(d, executor="gitlab", reject_recur=2)
+            self._seed_reject_decision(cfg, "A", "ログイン e2e A")  # 既に 1 件の同種却下
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_reject_guidance", return_value="また命名が違う"), \
+                 mock.patch.object(km, "distill_learn", return_value=("e2e 系", "実サーバで")):
+                km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
+            self.assertEqual(task.norm_status(), "blocked")            # 系の再考で人へ
+            self.assertTrue((d / "needs" / "C.md").exists())
+
+    def test_reject_recurrence_disabled_requeues(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "C", verify="pytest -q", title="ログイン e2e C")
+            cfg = cfg_for(d, executor="gitlab", reject_recur=0)     # 無効
+            self._seed_reject_decision(cfg, "A", "ログイン e2e A")
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_reject_guidance", return_value="直して"), \
+                 mock.patch.object(km, "distill_learn", return_value=("t", "g")):
+                km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
+            self.assertEqual(task.status, "ready")                    # silent 積み直し
+
     # --- red-green（変更を弁別しない合成 verify を実行で弾く）---
     def _git_repo(self, d: Path, fname="f", content="old"):
         import subprocess as sp
