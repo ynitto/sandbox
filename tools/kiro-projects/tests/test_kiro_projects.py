@@ -5266,6 +5266,33 @@ class FeedbackReductionTests(unittest.TestCase):
             self.assertIn("package.json", seen["prompt"])                # リポジトリ文脈注入
             self.assertEqual(task.verify, "npx playwright test")
 
+    def test_verify_reuse_saved_and_recalled(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            done = km.Task(id="A", title="ログイン e2e A", verify="npx playwright test")
+            done.extra.append(("verify_source", "synth"))
+            km.save_validated_verify(cfg, done)
+            # 類似タイトルの新タスクは合成前に検証済み verify を再利用する
+            new = km.Task(id="B", title="ログイン e2e B")
+            new.extra.append(("accept", "e2e が通る"))
+            km.ensure_verify(cfg, new, kiro_run=lambda p, m: self.fail("再合成された"))
+            self.assertEqual(new.verify, "npx playwright test")
+            self.assertEqual(dict(new.extra).get("verify_source"), "reused")
+
+    def test_verify_reuse_skips_human_and_dedupes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            human = km.Task(id="H", title="t", verify="pytest -q")  # verify_source 無し=人が書いた
+            km.save_validated_verify(cfg, human)
+            self.assertFalse(km.verify_lib_path(cfg).exists())      # 人の verify は保存しない
+            auto = km.Task(id="A", title="t", verify="pytest -q")
+            auto.extra.append(("verify_source", "template"))
+            km.save_validated_verify(cfg, auto)
+            km.save_validated_verify(cfg, auto)                     # 二度目は重複保存しない
+            self.assertEqual(km.verify_lib_path(cfg).read_text().count("verifycmd"), 1)
+
     def _seed_reject_decision(self, cfg, tid, title):
         cfg.decisions.mkdir(parents=True, exist_ok=True)
         (cfg.decisions / f"{tid}.md").write_text(

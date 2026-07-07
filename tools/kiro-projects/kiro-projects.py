@@ -1966,7 +1966,7 @@ def verify_undiscriminating(cfg: "Config", task: "Task", cwd: Path, is_temp_clon
     if vv in ("off", "none", "false"):
         return False
     src = dict(task.extra).get("verify_source", "")
-    if vv == "synth" and src not in ("synth", "template"):
+    if vv == "synth" and src not in ("synth", "template", "reused"):
         return False                                   # synth ポリシーは自動生成 verify のみ検証
     if is_temp_clone or not (cwd / ".git").exists():
         return False
@@ -2187,8 +2187,13 @@ def ensure_verify(cfg: "Config", task: "Task", kiro_run=None) -> bool:
             return True
     accept = ex.get("accept", "").strip()
     if accept:
-        # 過去の類似タスクで人が示した『done の見方』（learn）と、検出したテスト/ビルド基盤を
-        # 合成へ注入する（問題1→問題2 の接続。grep 退化を防ぐ）。どちらも決定的に集める。
+        # ① まず実績のある検証済み verify を再利用（毎回ゼロ合成しない。red-green が別途弁別を確かめる）。
+        reused = find_learned_verify(cfg, task) if cfg.learn else None
+        if reused:
+            task.verify = reused
+            task.extra.append(("verify_source", "reused"))
+            return True
+        # ② 無ければ合成。過去の類似 learn（done の見方）と検出したテスト/ビルド基盤を注入し grep 退化を防ぐ。
         matched = find_learned_resolution(cfg, task) if cfg.learn else None
         hint = matched[1] if matched else ""
         repo_ctx = detect_repo_context(resolve_verify_cwd(cfg))
@@ -2973,6 +2978,42 @@ def read_result_notes(cfg: "Config", use_git: bool) -> "list[dict]":
     return out
 
 
+def verify_lib_path(cfg: "Config") -> Path:
+    """検証済み verify（procedural memory）の格納先。DR を汚さない専用ファイル。"""
+    return cfg.decisions / ".verifylib.md"
+
+
+def save_validated_verify(cfg: "Config", task: "Task") -> None:
+    """done 確定した**自動生成 verify**（synth/template/reused）を、タイトル付きで再利用ライブラリへ保存する。
+    人が書いた verify は元から良質＝ライブラリ経由を要さない。同一 (title, cmd) は重複保存しない。"""
+    if not cfg.learn_capture or not task.verify:
+        return
+    src = dict(task.extra).get("verify_source", "")
+    if src not in ("synth", "template", "reused"):
+        return
+    line = f"- verifycmd: {task.title.replace(chr(10), ' ')} :: {task.verify.replace(chr(10), ' ')}\n"
+    p = verify_lib_path(cfg)
+    if p.exists() and line in p.read_text(encoding="utf-8"):
+        return
+    cfg.decisions.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+
+_VERIFYCMD_RE = re.compile(r"^- verifycmd:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
+
+
+def find_learned_verify(cfg: "Config", task: "Task") -> "str | None":
+    """検証済み verify ライブラリから、タイトルが十分似た過去の verify コマンドを返す（決定的・Jaccard）。
+    毎回ゼロから合成せず、実績のある検査を再利用する（red-green が別途、変更を弁別するか実行で確かめる）。"""
+    p = verify_lib_path(cfg)
+    if not p.exists():
+        return None
+    m = _best_learn_match(task, cfg.learn_threshold, [p], label=lambda f: f.stem,
+                          pattern=_VERIFYCMD_RE)
+    return m[1] if m else None
+
+
 def capture_approve_learn(cfg: "Config", task: "Task", location: str) -> None:
     """承認決着（done）時、gitlab result の人コメント notes（正例）を横断 learn 化する。
     従来 done では人コメントを還元せず承認時の良い指摘を捨てていた。判別済みの人コメントだけが
@@ -3740,6 +3781,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                        policy, reasons, cycle)
     elif ok:
         capture_approve_learn(cfg, task, location)   # 承認時の人コメント（正例）を横断 learn 化
+        save_validated_verify(cfg, task)             # 通った自動生成 verify を再利用ライブラリへ
         return _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
                             autonomy_cache)
     else:
