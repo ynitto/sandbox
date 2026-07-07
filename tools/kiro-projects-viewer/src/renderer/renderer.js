@@ -15,7 +15,9 @@ const state = {
   flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）
-  flowReconcile: null, // {runId, loading, byNode:{[id]:{reconciled,url,issueState,...}}}（GitLab クローズ反映）
+  // GitLab 突き合わせ結果を run 単位でキャッシュする（run を切り替えても保持し、再取得を避ける）。
+  // { [runId]: { loading, at, byNode: {[id]:{reconciled,url,issueState,labels,relatedMrs,...}} } }
+  flowReconcile: {},
   backlogFilter: 'active',
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
   editFile: null, // {dir, name, file}（編集中のプロジェクトファイル）
@@ -272,6 +274,8 @@ async function reloadProject() {
   }
   renderHeader();
   renderAllTabs();
+  // 復元/更新された選択中 run も、開いたときと同様に一度だけ自動突き合わせる（律速でポーリング毎回は叩かない）
+  if (state.flowRun && state.flowRun.run) maybeAutoReconcile(state.flowRun.run);
 }
 
 function renderHeader() {
@@ -1490,59 +1494,96 @@ function renderFlow() {
 async function selectFlowRun(runId) {
   state.flowRunId = runId;
   state.flowNodeId = null;
-  state.flowReconcile = null; // 別 run のクローズ反映を持ち越さない
   state.flowRun = await guard('run 読込', () => api.flowRun(state.project.busDir, runId));
   renderFlow();
+  // run を開いたら関連イシューの「今」を一度だけ自動で突き合わせる（律速あり・GitLab 設定時のみ）。
+  // これで実行中/クローズ済みのイシュー状態がクリック無しでノードに出る（キャッシュに載る）。
+  if (state.flowRun && state.flowRun.run) maybeAutoReconcile(state.flowRun.run);
 }
 
-// この run で GitLab クローズ反映が有効なノードの状態（'done'|'failed'）を返す。無ければ null。
+// run 単位の突き合わせキャッシュ（無ければ undefined）。
+function reconcileEntry(runId) {
+  return state.flowReconcile[runId];
+}
+
+// この run で GitLab クローズ反映が有効なノードの終端状態（'done'|'failed'）を返す。無ければ null。
 function reconciledStateFor(run, nodeId) {
-  const r = state.flowReconcile;
-  if (!r || !run || r.runId !== run.runId) return null;
-  const rec = r.byNode && r.byNode[nodeId];
+  const e = run && reconcileEntry(run.runId);
+  const rec = e && e.byNode && e.byNode[nodeId];
   return rec && rec.reconciled ? rec.reconciled : null;
 }
 
-// 選択中 run の非終端ノードを GitLab の「今」と突き合わせ、クローズ済みイシューを完了/失敗へ反映。
-// gitlab executor が result を書く前でも（worker 停止中の人による承認クローズなど）グラフに映す。
-async function reconcileFlowRun() {
+// 突き合わせ対象ノード（waiting は起票前が確定なので除外、終端は bus が正なので除外）。
+function reconcilableNodes(run) {
+  return Object.values(run.nodes || {}).filter(
+    (n) => n.state !== 'waiting' && !TERMINAL_NODE_STATES.has(n.state) && n.taskToken
+  );
+}
+
+// GitLab の Base URL / トークンが設定済みか（未設定なら突き合わせは無駄なので走らせない）。
+function gitlabConfigured() {
+  const gl = state.config && state.config.gitlab;
+  return Boolean(gl && gl.baseUrl && gl.token);
+}
+
+// 同じ run を短時間に何度も自動突き合わせしない律速（手動ボタンは無視して即実行）。
+const AUTO_RECONCILE_THROTTLE_MS = 60000;
+
+// run を開いたときに一度だけ自動で突き合わせる（クリック無しでイシュー状態を出す）。
+// GitLab 未設定・対象ノード無し・律速内・取得中はスキップ。トーストは出さない（自動なので静か）。
+function maybeAutoReconcile(run) {
+  if (!run || !gitlabConfigured()) return;
+  if (!(run.workspace && run.workspace.url)) return;
+  if (!reconcilableNodes(run).length) return;
+  const e = reconcileEntry(run.runId);
+  if (e && e.loading) return; // 取得中
+  if (e && e.at && Date.now() - e.at < AUTO_RECONCILE_THROTTLE_MS) return; // 律速内＝キャッシュを使う
+  reconcileFlowRun({ auto: true });
+}
+
+// 選択中 run の非終端ノードを GitLab の「今」と突き合わせ、イシュー状態をノードに反映する。
+// クローズ済みは完了/失敗として先読み反映（gitlab executor が result を書く前でも映す）、
+// オープン中（レビュー待ち）はリンク＋状態を出す。auto=true は自動発火（トーストを出さない）。
+async function reconcileFlowRun(opts) {
+  const auto = !!(opts && opts.auto);
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
   const repoUrl = run.workspace && run.workspace.url;
   if (!repoUrl) {
-    toast('この run には突き合わせ先リポジトリ（workspace）がありません');
+    if (!auto) toast('この run には突き合わせ先リポジトリ（workspace）がありません');
     return;
   }
-  // waiting（依存未達＝gitlab executor がまだイシューを起票していないことが確定）は空振りに
-  // なるので突き合わせ対象から外し、無駄な GitLab 検索を投げない。claimed / pending（lease 切れで
-  // 戻ったもの＝worker 停止中に人がクローズした核心ケースを含む）だけを対象にする。
-  const nodes = Object.values(run.nodes || {})
-    .filter((n) => n.state !== 'waiting' && !TERMINAL_NODE_STATES.has(n.state) && n.taskToken)
-    .map((n) => ({ id: n.id, taskToken: n.taskToken, state: n.state }));
-  state.flowReconcile = { runId: run.runId, loading: true, byNode: (state.flowReconcile || {}).byNode || {} };
+  const nodes = reconcilableNodes(run).map((n) => ({ id: n.id, taskToken: n.taskToken, state: n.state }));
+  const prev = reconcileEntry(run.runId) || {};
+  state.flowReconcile[run.runId] = { loading: true, at: prev.at || 0, byNode: prev.byNode || {} };
   renderFlow();
   const res = await guard('GitLab 突き合わせ', () => api.glReconcileRun({ repoUrl, nodes }));
   if (res === undefined) {
-    state.flowReconcile = { runId: run.runId, loading: false, byNode: {} };
+    state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode: prev.byNode || {} };
     renderFlow();
     return;
   }
   if (!res.enabled) {
-    state.flowReconcile = { runId: run.runId, loading: false, byNode: {} };
-    toast('GitLab API が未設定です（⚙ 設定で Base URL とトークンを設定してください）');
+    state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode: {} };
+    if (!auto) toast('GitLab API が未設定です（⚙ 設定で Base URL とトークンを設定してください）');
     renderFlow();
     return;
   }
   const byNode = {};
   for (const rec of res.nodes || []) byNode[rec.id] = rec;
-  state.flowReconcile = { runId: run.runId, loading: false, byNode };
-  const hits = (res.nodes || []).filter((n) => n.reconciled).length;
-  toast(
-    hits
-      ? `クローズ済みイシューを ${hits} 件反映しました（完了/失敗）`
-      : 'クローズ済みで未反映のノードはありませんでした',
-    hits > 0
-  );
+  state.flowReconcile[run.runId] = { loading: false, at: Date.now(), byNode };
+  if (!auto) {
+    const hits = (res.nodes || []).filter((n) => n.reconciled).length;
+    const open = (res.nodes || []).filter((n) => !n.reconciled).length;
+    toast(
+      hits
+        ? `クローズ済みイシューを ${hits} 件反映しました（完了/失敗）${open ? `／レビュー中 ${open} 件` : ''}`
+        : open
+          ? `レビュー中のイシュー ${open} 件を表示しました（未決着）`
+          : '関連イシューは見つかりませんでした',
+      hits > 0
+    );
+  }
   renderFlow();
 }
 
@@ -1589,18 +1630,17 @@ function renderFlowDetail() {
   const deleteBtn = deletable
     ? `<button class="chip danger" id="flow-delete" title="この run のディレクトリ（runs/${esc(run.runId)}）をゴミ箱へ移動します">🗑 削除</button>`
     : '';
-  // gitlab executor 連動: 非終端ノードがあれば「GitLab と突き合わせ」でクローズ済みイシューを
-  // 完了/失敗として先読み反映できる（worker が result を書く前でもグラフに映す）。
-  const hasOpenNodes = Object.values(run.nodes || {}).some(
-    (n) => n.state !== 'waiting' && !TERMINAL_NODE_STATES.has(n.state)
-  );
-  const rec = state.flowReconcile && state.flowReconcile.runId === run.runId ? state.flowReconcile : null;
+  // gitlab executor 連動: 非終端ノードがあれば「GitLab と突き合わせ」で関連イシューの今の状態
+  // （クローズ済み＝完了/失敗を先読み反映／オープン＝レビュー中を表示）を取り込める。run を開いた
+  // ときに自動で一度走る（律速あり）ので、ボタンは手動の再取得（最新化）用。
+  const hasOpenNodes = reconcilableNodes(run).length > 0;
+  const rec = reconcileEntry(run.runId) || null;
   const recHits = rec ? Object.values(rec.byNode || {}).filter((r) => r.reconciled).length : 0;
   const reconcileBtn =
     hasOpenNodes && run.workspace && run.workspace.url
       ? `<button class="chip" id="flow-reconcile" ${rec && rec.loading ? 'disabled' : ''}
-          title="実行中ノードの関連イシューが GitLab で既にクローズ（承認/却下）済みか調べ、タスクグラフへ完了/失敗として反映します">${
-            rec && rec.loading ? '突き合わせ中…' : '⟳ GitLab と突き合わせ'
+          title="実行中ノードの関連イシューの今の状態を GitLab から取得して反映します（クローズ済み＝完了/失敗の先読み、オープン＝レビュー中）">${
+            rec && rec.loading ? '突き合わせ中…' : '⟳ GitLab 最新化'
           }${recHits ? `（反映 ${recHits}）` : ''}</button>`
       : '';
   // RUN 表示ペインを縦 3 分割する: 概要 / タスクグラフ / ノード情報。
@@ -1677,10 +1717,8 @@ function nodeIssueBlock(run, node) {
       ? state.flowNodeIssue
       : null;
   // 単発の「探す」で得た完全なイシュー、または run 一括の突き合わせ結果のどちらかを found とする
-  const rec =
-    state.flowReconcile && state.flowReconcile.runId === run.runId
-      ? (state.flowReconcile.byNode || {})[node.id]
-      : null;
+  const e = reconcileEntry(run.runId);
+  const rec = e && e.byNode ? e.byNode[node.id] : null;
   const found = cached ? cached.issue : rec ? recToIssue(rec) : undefined;
   const reconciled = rec && rec.reconciled ? rec.reconciled : null; // 'done' | 'failed' | null
   const repoUrl = run.workspace && run.workspace.url;
@@ -1690,12 +1728,17 @@ function nodeIssueBlock(run, node) {
   if (url) {
     const d = node.data && typeof node.data === 'object' ? node.data : {};
     const isRejected = node.rejected || reconciled === 'failed';
-    const decision = isRejected
-      ? 'rejected'
-      : d.decision || (reconciled === 'done' ? 'approved' : '') || (found && found.state) || '';
-    const chip = decision
-      ? `<span class="status-chip ${isRejected ? 'st-blocked' : 'st-done'}">${esc(isRejected ? '却下' : decision)}</span>`
-      : '';
+    const isApproved = !isRejected && (d.decision === 'approved' || reconciled === 'done');
+    // イシュー状態のチップ: 却下→st-blocked ／ 承認→st-done ／ オープン（レビュー中）→st-review ／
+    // それ以外の決着（bus の decision）→ st-done
+    let chip = '';
+    if (isRejected) chip = `<span class="status-chip st-blocked">却下</span>`;
+    else if (isApproved) chip = `<span class="status-chip st-done">承認</span>`;
+    else if (found && found.state === 'opened')
+      chip = `<span class="status-chip st-review">レビュー中</span>`;
+    else if (found && found.state === 'closed')
+      chip = `<span class="status-chip st-closed">クローズ</span>`;
+    else if (d.decision) chip = `<span class="status-chip st-done">${esc(d.decision)}</span>`;
     rows.push(`<div class="row2" style="align-items:center;gap:8px">
       <a href="#" data-ext="${esc(url)}" class="mono">${esc(url)}</a> ${chip}
       <button data-review="${esc(url)}" title="gitlab-review-viewer で開く">レビューで開く</button>
@@ -1803,7 +1846,7 @@ async function resubmitFlowRun() {
       `再投入しました: ${res.runId}${d && d.running === false ? '（daemon 停止中 — 起動後に拾われます）' : ''}`,
       true
     );
-    gitPushAfterWrite(`kiro-projects-viewer: resubmit run ${run.runId}`, state.project.busDir);
+    await gitPushBusOp(`kiro-projects-viewer: resubmit run ${run.runId}`);
     await reloadProject();
   }
 }
@@ -1826,7 +1869,7 @@ async function deleteFlowRun() {
     return true;
   });
   if (ok) {
-    gitPushAfterWrite(`kiro-projects-viewer: delete run ${run.runId}`, state.project.busDir);
+    await gitPushBusOp(`kiro-projects-viewer: delete run ${run.runId}`);
     state.flowRunId = null;
     state.flowRun = null;
     state.flowNodeId = null;
@@ -1909,20 +1952,24 @@ function renderGraphSvg(run) {
     const reconciled = reconciledStateFor(run, n.id);
     const effState = reconciled || n.state;
     const recClass = reconciled ? ' reconciled' : '';
-    // gitlab executor で関連イシュー URL が確定済みのノード、または反映で URL が判明したノードには、
-    // 1 クリックでレビュー（gitlab-review-viewer）を起動するイシューアイコンを右上に重ねる。
-    const rec =
-      state.flowReconcile && state.flowReconcile.runId === run.runId
-        ? (state.flowReconcile.byNode || {})[n.id]
-        : null;
+    // gitlab executor で関連イシュー URL が確定済みのノード、または突き合わせで URL が判明した
+    // ノード（クローズ済み/レビュー中どちらも）には、1 クリックでレビューを起動するイシュー
+    // アイコンを右上に重ねる。レビュー中（オープン）は青系、却下は赤で色分けする。
+    const recEntry = reconcileEntry(run.runId);
+    const rec = recEntry && recEntry.byNode ? recEntry.byNode[n.id] : null;
     const issueUrl = n.issueUrl || (rec && rec.url) || '';
+    const issueOpen = rec && rec.issueState === 'opened' && !reconciled;
     const idMax = issueUrl ? 17 : 20; // アイコン分だけ id ラベルを詰める
     const idLabel = n.id.length > idMax ? `${n.id.slice(0, idMax - 1)}…` : n.id;
     const goal = n.goal.length > 24 ? `${n.goal.slice(0, 23)}…` : n.goal;
     const issueRejected = n.rejected || reconciled === 'failed';
+    const issueCls = issueRejected ? ' rejected' : issueOpen ? ' review' : '';
+    const issueTitle = issueOpen
+      ? '関連 GitLab イシューはレビュー中（オープン）— クリックでレビューを開く'
+      : '関連 GitLab イシューをレビューで開く（gitlab-review-viewer 起動）';
     const issueIcon = issueUrl
-      ? `<g class="node-issue${issueRejected ? ' rejected' : ''}" data-issue-open="${esc(issueUrl)}" transform="translate(${NW - 22},4)">
-          <title>関連 GitLab イシューをレビューで開く（gitlab-review-viewer 起動）</title>
+      ? `<g class="node-issue${issueCls}" data-issue-open="${esc(issueUrl)}" transform="translate(${NW - 22},4)">
+          <title>${issueTitle}</title>
           <circle cx="9" cy="9" r="9"></circle>
           <text x="9" y="13" text-anchor="middle" class="node-issue-glyph">↗</text>
         </g>`
@@ -2310,18 +2357,58 @@ async function maybeAutoGitPull() {
   }
 }
 
-// 管理ファイルを書き換えた操作（指示ドロップ・inbox 投入・needs 記入・削除）の後に呼ぶ。
+// commitPush が notRepo（＝そのディレクトリが git 作業ツリーでない）で「黙ってスキップ」した
+// ことを、ディレクトリごとに一度だけ知らせる（操作のたびに出すと煩いのでセッション内で重複排除）。
+// バックログ修正・タスク操作・needs 記入・run 削除など、gitAutoPush 有効なのに反映されない全操作が
+// 対象。ローカル daemon バス（<project>/bus）や、本体の state_git が「作業ディレクトリ→別クローン」
+// 方式で同期する構成では作業ディレクトリ自体が git リポジトリでないため、viewer からは直接 push
+// できず daemon 側の state_git 同期に委ねられる。git クローン上で viewer を動かせば直接反映される。
+const _pushSkipWarned = new Set();
+function warnPushSkipped(dir, kind) {
+  if (!dir || _pushSkipWarned.has(dir)) return;
+  _pushSkipWarned.add(dir);
+  const hint =
+    kind === 'bus'
+      ? '（viewer から直接反映するには ⚙ 設定 flowBusByProject でバスの git クローンを登録してください）'
+      : '（viewer から直接反映するには、状態共有リポジトリの git クローン上でプロジェクトを開いてください）';
+  toast(
+    `「${dir}」は git 作業ツリーではないため、変更を共有リポジトリへ直接 push できませんでした。` +
+      `kiro-projects / kiro-flow daemon の state_git 同期に反映が委ねられます${hint}。` +
+      `（この通知はディレクトリごとに一度だけ出ます）`
+  );
+}
+
+// 管理ファイルを書き換えた操作（指示ドロップ・inbox 投入・needs 記入・削除など）の後に呼ぶ。
 // 設定 gitAutoPush が有効なら、操作したディレクトリの変更をコミットして push する
-// （状態共有 git への都度反映）。書き込み本体は成功済みなので待たずに走らせ、
-// 失敗（push 不可など）だけトーストで知らせる。
-function gitPushAfterWrite(message, dir) {
+// （状態共有 git への都度反映）。書き込み本体は成功済みなので待たずに走らせ、失敗（push 不可）や
+// notRepo による「黙ってスキップ」だけトーストで知らせる（後者はディレクトリごとに一度だけ）。
+// 戻り値は commitPush の結果 Promise（gitAutoPush 無効/対象なしのときは null）。
+// opts.kind は notRepo 通知の対処ヒント切り替え用（'bus'（バス）／既定 'project'）。
+function gitPushAfterWrite(message, dir, opts) {
   const cfg = state.config;
-  if (!cfg || !cfg.kiro || !cfg.kiro.gitAutoPush) return;
+  if (!cfg || !cfg.kiro || !cfg.kiro.gitAutoPush) return null;
   const target = dir || state.selectedDir;
-  if (!target) return;
-  api.gitCommitPush(target, message).catch((err) => {
-    toast(`git 同期（プッシュ）: ${err.message || err}`);
-  });
+  if (!target) return null;
+  const kind = (opts && opts.kind) || 'project';
+  return api
+    .gitCommitPush(target, message)
+    .then((res) => {
+      if (res && res.skipped && res.notRepo) warnPushSkipped(target, kind);
+      return res;
+    })
+    .catch((err) => {
+      toast(`git 同期（プッシュ）: ${err.message || err}`);
+      return null;
+    });
+}
+
+// バス操作（run の削除・再投入）の git 反映。バスは kiro-projects の state_git から除外され
+// （_STATE_EXCLUDE_DIRS）、kiro-flow 側の state_git が別クローンへ同期するため、busDir が git
+// 作業ツリーでないと notRepo で黙ってスキップされる。notRepo 通知は gitPushAfterWrite が
+// バス向けのヒント付きで出す（ここは busDir を対象にするだけ）。
+function gitPushBusOp(message) {
+  const busDir = state.project && state.project.busDir;
+  return gitPushAfterWrite(message, busDir, { kind: 'bus' });
 }
 
 // 手動（⇣ ボタン）: スロットリングを無視して即 pull し、結果をトーストで知らせる

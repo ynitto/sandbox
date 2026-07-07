@@ -7,6 +7,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: タスクグラフノードのイシュー状態を自動表示（クリック不要）
+
+- **背景**: 関連イシューの「今」の状態は GitLab API 由来のため、従来は「⟳ GitLab と突き合わせ」
+  ボタンを押さないとノードに出なかった（グラフ状態は bus のファイルだけから作るため）。
+- **自動突き合わせ**: run を開いたとき／ポーリング更新時に、GitLab 設定済みなら**一度だけ自動で
+  突き合わせ**る（同一 run は **60 秒の律速**でキャッシュを使い、ポーリング毎回は叩かない）。
+  結果は **run 単位でキャッシュ**し、run を切り替えても保持する（再取得を避ける）。
+- **オープン中イシューも表示**: 突き合わせ結果にクローズ済みだけでなく**オープン中（レビュー待ち）**の
+  イシューも含め、ノードに「レビュー中」チップとイシューアイコン（青系）を出す。クローズ済みは
+  従来どおり完了/失敗を先読み反映（承認/却下）。ノード詳細のチップも 却下／承認／レビュー中／
+  クローズ を明示的に色分けする。
+- 手動ボタンは「⟳ GitLab 最新化」に改称（自動取得の即時再取得用）。追加の API 呼び出しは
+  非終端ノードのみ・最大 40 件・直列・60 秒律速で有界。
+
+### kiro-projects-viewer: 状態共有 git への push が黙ってスキップされる問題を可視化
+
+- **バグ修正**: ユーザー操作の状態共有 git 反映（`gitAutoPush`）が、操作したディレクトリが
+  **git 作業ツリーでない**と `commitPush` の `notRepo` で**黙ってスキップ**され、変更が共有
+  リポジトリへ反映されないのに何も知らされなかった。最初に run（バス）削除で表面化したが、
+  **バックログ修正・タスク操作・needs 記入など `p.dir` への操作も同じ**で、本体の state_git が
+  「作業ディレクトリ→別クローン」方式で同期する構成では作業ディレクトリ自体が git リポジトリでない
+  ため、viewer からは直接 push できず daemon 側の state_git 同期に委ねられる（バスは
+  `_STATE_EXCLUDE_DIRS = {"bus","claims"}` で本体 state_git から除外され、kiro-flow 側が別クローンへ
+  同期）。
+- **対応**: `notRepo` スキップの検知を `gitPushAfterWrite` に集約し、**全操作**で「共有リポジトリへ
+  直接反映できなかった／daemon の state_git 同期に委ねられる／viewer から直接反映するには git
+  クローン上でプロジェクト（バスは `flowBusByProject`）を開く」ことをトーストで明示する（**沈黙の
+  no-op をなくす**）。通知は**ディレクトリごとに一度だけ**（操作のたびには出さない）。git 追跡下の
+  作業ツリー（pure-remote 構成・`flowBusByProject` の `<clone>/kiro-flow`）では従来どおり
+  コミット・push される。
+- `gitPushAfterWrite` は commitPush の結果 Promise を返すようにした（従来の fire-and-forget
+  呼び出しは戻り値を無視するだけで挙動不変）。バス操作は `gitPushBusOp`（`kind:'bus'` でヒント切替）。
+
 ### kiro-projects-viewer: gitlab executor のクローズ済みイシューをタスクグラフへ反映
 
 - **バグ修正**: gitlab executor の場合、関連イシューが GitLab で既にクローズ（承認/却下で決着）
