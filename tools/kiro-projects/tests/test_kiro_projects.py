@@ -5293,6 +5293,45 @@ class FeedbackReductionTests(unittest.TestCase):
             km.save_validated_verify(cfg, auto)                     # 二度目は重複保存しない
             self.assertEqual(km.verify_lib_path(cfg).read_text().count("verifycmd"), 1)
 
+    def test_build_request_injects_similar_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            cfg.decisions.mkdir(parents=True, exist_ok=True)
+            (cfg.decisions / "old.md").write_text(
+                "## DR1 2026-01-01 actor: gitlab\n- learn: ログイン e2e :: 実サーバ配備で検証すること\n\n",
+                encoding="utf-8")
+            task = km.Task(id="NEW", title="ログイン e2e を追加", verify="pytest -q")
+            req = km.build_request(task, cfg)
+            self.assertIn("類似タスクでの学び", req)
+            self.assertIn("実サーバ配備で検証すること", req)   # 分解・実装へ届く
+
+    def test_cohort_reflux_propagates_to_siblings(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            # 同 cohort の 3 メンバ（ready）に cohort タグを付与
+            for tid in ("M1", "M2", "M3"):
+                mkb(d, tid, status="ready", verify="true", title=f"{tid} 移行")
+            for tid in ("M1", "M2", "M3"):
+                t = [x for x in km.load_tasks(d / "backlog") if x.id == tid][0]
+                t.set("cohort", "C1")
+                km.persist_task(cfg, t)
+            m1 = [x for x in km.load_tasks(d / "backlog") if x.id == "M1"][0]
+            n = km.cohort_reflux(cfg, m1, "パスの命名は kebab-case に統一")
+            self.assertEqual(n, 2)                              # M2/M3 に波及（M1 自身は除く）
+            for tid in ("M2", "M3"):
+                t = [x for x in km.load_tasks(d / "backlog") if x.id == tid][0]
+                self.assertIn("kebab-case", t.feedback())
+
+    def test_cohort_reflux_noop_for_non_cohort(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "X", status="ready", title="単発")
+            x = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(km.cohort_reflux(cfg, x, "指摘"), 0)
+
     def _seed_reject_decision(self, cfg, tid, title):
         cfg.decisions.mkdir(parents=True, exist_ok=True)
         (cfg.decisions / f"{tid}.md").write_text(

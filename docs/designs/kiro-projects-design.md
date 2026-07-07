@@ -770,8 +770,8 @@ if guidance:
 | **P1** | §11.3 人コメントの learn 捕捉（却下＋承認＋蒸留） | ✅ 実装（却下 `_settle_failure`＋承認 `capture_approve_learn`＋`distill_learn`） |
 | **P2** | §11.6 Red-Green 検証／恒真式スクリーン | ✅ 実装（実行 red-green `verify_undiscriminating`＋恒真式棄却 `_verify_is_degenerate`。`--verify-validate`） |
 | **P3** | §11.2 蒸留 ＋ §11.6 文脈つき合成・テンプレ拡充 | ✅ 実装（`detect_repo_context` で合成へ基盤注入・テンプレ拡充・蒸留） |
-| **P4** | §11.4 verify 合成への learn recall ＋ verify 学習再利用 ＋ plan への recall | ◐ 一部（合成ヒント注入・検証済み verify の再利用ライブラリ実装。plan への注入は未） |
-| **P5** | §11.5 昇格ラダー ＋ cohort 還流・§11.6 多候補 | ◐ 一部（昇格ラダー `count_gitlab_reject_recur`＋`--reject-recur` 実装。cohort 還流・多候補は未） |
+| **P4** | §11.4 verify 合成への learn recall ＋ verify 学習再利用 ＋ plan/act への recall | ✅ 実装（合成ヒント・検証済み verify 再利用・`build_request` が類似 learn を分解/実装へ注入） |
+| **P5** | §11.5 昇格ラダー ＋ cohort 還流・§11.6 多候補 | ◐ ほぼ（昇格ラダー・cohort 還流 `cohort_reflux` 実装。多候補＋敵対的妥当性のみ未） |
 
 **実装済み**（P0〜P3＋P4/P5 の一部）: gitlab 人コメントの learn 捕捉（却下 `_settle_failure`・承認
 `capture_approve_learn`）・蒸留（`distill_learn`・LLM＋verbatim・`--distill-learn`）・承認/却下の著者付き
@@ -781,10 +781,13 @@ if guidance:
 package.json/pytest/Makefile/go/cargo を検出して合成へ注入）・**verify 合成への learn recall**（`ensure_verify` が
 `find_learned_resolution` の指針を合成ヒントに）・**verify 学習再利用**（`save_validated_verify`/
 `find_learned_verify`＝done した自動生成 verify を `.verifylib.md` に保存し、類似タスクで合成前に再利用）・
-**昇格ラダー**（`count_gitlab_reject_recur`＋`--reject-recur`＝同種却下の反復で silent 積み直しをやめ「系の再考」で人へ）。
-テスト: kiro-projects `FeedbackReductionTests`（19）・kiro-flow `GitlabHumanAgentDiscriminationTests`（7）。
-**未実装（フォローアップ）**: plan への learn 注入（flow-planner `--learnings`）・作業中コメントの逐次取り込み・
-多候補＋敵対的妥当性・cohort 還流。
+**昇格ラダー**（`count_gitlab_reject_recur`＋`--reject-recur`＝同種却下の反復で silent 積み直しをやめ「系の再考」で人へ）・
+**plan/act への recall**（`build_request` が `find_learned_resolution` の類似 learn を要求本文へ注入＝flow-planner が
+分解時に、ワーカーが実装時に踏まえる）・**cohort 還流**（`cohort_reflux`＝gitlab で cohort メンバ/pilot が却下されたら
+同 cohort の未完了メンバへ指摘を波及）。
+テスト: kiro-projects `FeedbackReductionTests`（22）・kiro-flow `GitlabHumanAgentDiscriminationTests`（7）。
+**未実装（フォローアップ）**: flow-planner への構造化 `--learnings` channel（現状は要求本文経由で planner に届く）・
+作業中コメントの逐次取り込み（park&poll 相乗り）・多候補＋敵対的妥当性（verify 著作の kiro-flow グラフ化）。
 
 後方互換（`learn_capture` off・`distill_learn` off・`trust_unmarked_comments` で従来挙動）。P0→P1→P2 を薄く入れて検証を推奨。
 **未決**: 蒸留の LLM 利用可否（推奨: LLM＋失敗時 verbatim）／作業中コメントの durable 判定既定／Red-Green のコスト・破壊性

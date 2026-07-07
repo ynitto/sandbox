@@ -403,6 +403,33 @@ def materialize_cohort_rest(cfg: "Config", pilot: Task, feedback: str = "") -> "
     return created
 
 
+def cohort_reflux(cfg: "Config", task: "Task", guidance: str) -> int:
+    """gitlab で cohort のメンバ/pilot が却下されたら、その指摘を**同 cohort の未完了の兄弟メンバ**へ波及させる。
+    materialize_cohort_rest（pilot 承認からの一方向）に対し、こちらは却下起点で兄弟へ横展開する（双方向化）。
+    波及した件数を返す。cohort でない/指摘が空なら 0。"""
+    cid = task.get("cohort")
+    if not cid or not guidance.strip():
+        return 0
+    n = 0
+    for sib in load_tasks(cfg.backlog):
+        if sib.id == task.id or sib.get("cohort") != cid:
+            continue
+        if sib.norm_status() == "done":
+            continue
+        sib.drop("feedback")
+        sib.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
+        persist_task(cfg, sib)
+        n += 1
+    state = _read_cohort(cfg, cid)
+    if state is not None:
+        merged = "\n".join(x for x in [state.get("feedback", ""), guidance] if x).strip()
+        state["feedback"] = merged[:2000]
+        _write_cohort(cfg, state)
+    if n:
+        append_journal(cfg.journal, f"cohort {cid}: {task.id} の却下指摘を未完了メンバ {n} 件へ波及")
+    return n
+
+
 def ingest_inbox(cfg: "Config") -> "list[Task]":
     """inbox/ に置かれたファイルを backlog タスクへ取り込む（.json=オブジェクト/配列 / .md=タスク形式）。
     取り込めたら元ファイルを消す。外部ソースの共通入口（watch がこの口を監視して起こす）。"""
@@ -2369,6 +2396,13 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
         lc = linked_learnings_context(cfg)
         if lc:
             base += ("\n\nリンク先プロジェクトの判断（横展開・参考にすること）:\n" + lc)
+        # 似た過去タスクの学び（gitlab 却下/承認・needs の learn）を **分解と実装の両方**に効かせる。
+        # 要求本文に載るため flow-planner が分解時に、ワーカーが実装時に踏まえる（＝分解の再考にも届く）。
+        if cfg.learn:
+            matched = find_learned_resolution(cfg, task)
+            if matched:
+                base += ("\n\n類似タスクでの学び（分解・verify・実装で踏まえ、同種の手戻りを繰り返さないこと）:\n"
+                         f"- {matched[1]}")
     return base
 
 
@@ -3654,6 +3688,8 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
                 task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
                 append_journal(cfg.journal,
                                f"cycle {cycle}: {task.id} 却下コメントを次 act に注入")
+                # cohort メンバ/pilot の却下なら、同 cohort の未完了メンバへ指摘を波及（兄弟に同じ轍を踏ませない）。
+                cohort_reflux(cfg, task, guidance)
                 # 同一タスクの再試行に注入するだけでなく、**横断学習ストアにも蒸留して残す**。
                 # これで似たタスク（find_learned_resolution）・別プロジェクト（links）・ltm へ還元される。
                 # 対象は人と判別済みの gitlab 人コメント（判別は executor 側 _human_notes）。
