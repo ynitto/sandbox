@@ -155,6 +155,51 @@ function registerIpcHandlers() {
     return { enabled: true, issues };
   });
 
+  // run の非終端ノード（実行中など）を GitLab の「今」のイシュー状態と突き合わせ、クローズ済み
+  // イシューに紐づくノードを完了/失敗として先読みする（gitlab executor が result を書く前の反映）。
+  // 判定は flow.reconcileNodeState（executor と同一規則）に委ね、ここは取得の面倒だけを見る:
+  //   ノードの決定的タスクトークンで関連イシューを検索 → クローズ済みで、ラベル/MR だけでは
+  //   決着しないときだけ人コメントも取得して手掛かりにする（余計な API 呼び出しを避ける）。
+  handle('gitlab:reconcileRun', async ({ repoUrl, projectPath, nodes }) => {
+    const gl = client();
+    if (!gl.enabled) return { enabled: false, nodes: [] };
+    const list = Array.isArray(nodes) ? nodes.slice(0, 40) : []; // run 単位で有界化
+    const out = [];
+    for (const n of list) {
+      const token = n && n.taskToken;
+      if (!token) continue;
+      let issue;
+      try {
+        issue = await gl.findIssueByToken({ repoUrl, projectPath, token });
+      } catch {
+        continue; // 起票先を解決できない/検索失敗のノードは黙って飛ばす（他ノードは続ける）
+      }
+      if (!issue || issue.state !== 'closed') continue;
+      // ラベル / 関連 MR だけで決着するなら人コメントは取りに行かない。付かないときだけ補う。
+      const mrDecision = flow.gitlabMrDecision((issue.relatedMrs || []).map((m) => m.state));
+      const labelDecision = flow.gitlabClosedIssueDecision({ labels: issue.labels });
+      if (!mrDecision && !labelDecision && issue.projectPath && issue.iid) {
+        try {
+          issue.comments = await gl.getIssueComments(issue.projectPath, issue.iid);
+        } catch {
+          issue.comments = [];
+        }
+      }
+      const reconciled = flow.reconcileNodeState({ state: n.state }, issue);
+      out.push({
+        id: n.id,
+        reconciled, // 'done' | 'failed' | null
+        url: issue.url || '',
+        iid: issue.iid || null,
+        title: issue.title || '',
+        issueState: issue.state,
+        labels: issue.labels || [],
+        relatedMrs: issue.relatedMrs || [],
+      });
+    }
+    return { enabled: true, nodes: out };
+  });
+
   handle('gitlab:projectIssues', ({ projectPath, state, labels }) => {
     const gl = client();
     if (!gl.enabled) return { enabled: false, issues: [] };

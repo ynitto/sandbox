@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: gitlab executor のクローズ済みイシューをタスクグラフへ反映
+
+- **バグ修正**: gitlab executor の場合、関連イシューが GitLab で既にクローズ（承認/却下で決着）
+  されていても、worker が決着ループでそれを検知して `result` を bus に書くまでは、タスクグラフの
+  ノードが「実行中」のまま完了表示にできなかった。非ブロッキング委譲（`act_async`）＋PC の日次停止
+  などで worker が止まっている間に人がイシューを承認クローズするケースで顕著。
+- **対応**: RUN 概要に **「⟳ GitLab と突き合わせ」** を追加。その run の非終端ノードの関連イシュー
+  （本文の決定的タスクトークンで検索）を GitLab の「今」の状態と突き合わせ、クローズ済みなら
+  **executor と同一規則**（関連 MR の状態 → `status:approved`/`status:done` ラベル → 人コメントの
+  承認/却下語。手掛かり無しのクローズは取り下げ＝却下）で承認/却下を判定し、ノードを
+  **完了/失敗として先読み反映**する。判定ロジックは `flow.js` の純関数
+  `reconcileNodeState`（executors/gitlab.py の `_mr_decision` / `_closed_issue_decision` /
+  `_decision_from_comments` と一致）に切り出し、単体テスト（`test/flow-reconcile.test.js`）で固定。
+- **表示**: 反映されたノードはタスクグラフで**破線枠**、ノード詳細で「GitLab 反映」チップと注記で
+  区別する（bus が常に正で、反映は暫定表示。bus に `result` が届けば通常表示へ確定）。反映で URL が
+  判明したノードには、グラフのイシューアイコン（1クリックでレビュー起動）も出るようにした。
+
 ### kiro-projects-viewer: 非ブロッキング委譲（`offloaded`）の表示対応
 
 - **バグ修正**: パーサの既知ステータス一覧に `offloaded` が無く、offloaded タスクが既定 `inbox` に

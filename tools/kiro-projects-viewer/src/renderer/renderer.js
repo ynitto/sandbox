@@ -15,6 +15,7 @@ const state = {
   flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）
+  flowReconcile: null, // {runId, loading, byNode:{[id]:{reconciled,url,issueState,...}}}（GitLab クローズ反映）
   backlogFilter: 'active',
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
   editFile: null, // {dir, name, file}（編集中のプロジェクトファイル）
@@ -1359,6 +1360,21 @@ const FLOW_STATE_LABEL = {
   waiting: '依存待ち',
 };
 
+const TERMINAL_NODE_STATES = new Set(['done', 'failed']);
+
+// run 一括の突き合わせ結果（glReconcileRun のノード要素）を、found と同じ形のイシュー情報にする
+function recToIssue(rec) {
+  if (!rec || !rec.url) return undefined;
+  return {
+    url: rec.url,
+    iid: rec.iid || null,
+    title: rec.title || '',
+    state: rec.issueState || '',
+    labels: rec.labels || [],
+    relatedMrs: rec.relatedMrs || [],
+  };
+}
+
 // kiro-flow daemon の稼働バッジ。
 //   via='lock'        … 同一ホストのロックファイル（pid 生存）で確定判定
 //   via='status-sync' … state_git（鏡）越しに同期された status.json による推定（同期遅延を許容）
@@ -1474,7 +1490,56 @@ function renderFlow() {
 async function selectFlowRun(runId) {
   state.flowRunId = runId;
   state.flowNodeId = null;
+  state.flowReconcile = null; // 別 run のクローズ反映を持ち越さない
   state.flowRun = await guard('run 読込', () => api.flowRun(state.project.busDir, runId));
+  renderFlow();
+}
+
+// この run で GitLab クローズ反映が有効なノードの状態（'done'|'failed'）を返す。無ければ null。
+function reconciledStateFor(run, nodeId) {
+  const r = state.flowReconcile;
+  if (!r || !run || r.runId !== run.runId) return null;
+  const rec = r.byNode && r.byNode[nodeId];
+  return rec && rec.reconciled ? rec.reconciled : null;
+}
+
+// 選択中 run の非終端ノードを GitLab の「今」と突き合わせ、クローズ済みイシューを完了/失敗へ反映。
+// gitlab executor が result を書く前でも（worker 停止中の人による承認クローズなど）グラフに映す。
+async function reconcileFlowRun() {
+  const run = state.flowRun && state.flowRun.run;
+  if (!run) return;
+  const repoUrl = run.workspace && run.workspace.url;
+  if (!repoUrl) {
+    toast('この run には突き合わせ先リポジトリ（workspace）がありません');
+    return;
+  }
+  const nodes = Object.values(run.nodes || {})
+    .filter((n) => !TERMINAL_NODE_STATES.has(n.state) && n.taskToken)
+    .map((n) => ({ id: n.id, taskToken: n.taskToken, state: n.state }));
+  state.flowReconcile = { runId: run.runId, loading: true, byNode: (state.flowReconcile || {}).byNode || {} };
+  renderFlow();
+  const res = await guard('GitLab 突き合わせ', () => api.glReconcileRun({ repoUrl, nodes }));
+  if (res === undefined) {
+    state.flowReconcile = { runId: run.runId, loading: false, byNode: {} };
+    renderFlow();
+    return;
+  }
+  if (!res.enabled) {
+    state.flowReconcile = { runId: run.runId, loading: false, byNode: {} };
+    toast('GitLab API が未設定です（⚙ 設定で Base URL とトークンを設定してください）');
+    renderFlow();
+    return;
+  }
+  const byNode = {};
+  for (const rec of res.nodes || []) byNode[rec.id] = rec;
+  state.flowReconcile = { runId: run.runId, loading: false, byNode };
+  const hits = (res.nodes || []).filter((n) => n.reconciled).length;
+  toast(
+    hits
+      ? `クローズ済みイシューを ${hits} 件反映しました（完了/失敗）`
+      : 'クローズ済みで未反映のノードはありませんでした',
+    hits > 0
+  );
   renderFlow();
 }
 
@@ -1521,6 +1586,18 @@ function renderFlowDetail() {
   const deleteBtn = deletable
     ? `<button class="chip danger" id="flow-delete" title="この run のディレクトリ（runs/${esc(run.runId)}）をゴミ箱へ移動します">🗑 削除</button>`
     : '';
+  // gitlab executor 連動: 非終端ノードがあれば「GitLab と突き合わせ」でクローズ済みイシューを
+  // 完了/失敗として先読み反映できる（worker が result を書く前でもグラフに映す）。
+  const hasOpenNodes = Object.values(run.nodes || {}).some((n) => !TERMINAL_NODE_STATES.has(n.state));
+  const rec = state.flowReconcile && state.flowReconcile.runId === run.runId ? state.flowReconcile : null;
+  const recHits = rec ? Object.values(rec.byNode || {}).filter((r) => r.reconciled).length : 0;
+  const reconcileBtn =
+    hasOpenNodes && run.workspace && run.workspace.url
+      ? `<button class="chip" id="flow-reconcile" ${rec && rec.loading ? 'disabled' : ''}
+          title="実行中ノードの関連イシューが GitLab で既にクローズ（承認/却下）済みか調べ、タスクグラフへ完了/失敗として反映します">${
+            rec && rec.loading ? '突き合わせ中…' : '⟳ GitLab と突き合わせ'
+          }${recHits ? `（反映 ${recHits}）` : ''}</button>`
+      : '';
   // RUN 表示ペインを縦 3 分割する: 概要 / タスクグラフ / ノード情報。
   // それぞれ独立して縦スクロールできる（.flow-pane が overflow-y を持つ）ので、
   // グラフが縦に長くても概要やノード詳細を見失わない。
@@ -1528,7 +1605,7 @@ function renderFlowDetail() {
     <div id="flow-overview" class="flow-pane">
       <div class="flow-pane-title">概要</div>
       <div class="card full">
-        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${resubmit} ${deleteBtn}</h3>
+        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${reconcileBtn} ${resubmit} ${deleteBtn}</h3>
         ${relationshipStrip({ run })}
         <div>${esc(run.request || '')}</div>
         ${run.inheritedFrom ? `<div class="muted" title="このリトライが引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(run.inheritedFrom)}</span></div>` : ''}
@@ -1587,28 +1664,44 @@ function nodeProgressLine(node) {
   return bits.length ? `<div class="muted" style="margin-top:4px">${bits.join(' ／ ')}</div>` : '';
 }
 
-// 関連 GitLab イシューのブロック。承認/却下は結果から、実行中は決定的タスクトークンで検索
+// 関連 GitLab イシューのブロック。承認/却下は結果から、実行中は決定的タスクトークンで検索。
+// GitLab と突き合わせ済み（クローズ反映）なら、その結果もイシュー情報の供給源にする。
 function nodeIssueBlock(run, node) {
   const cached =
     state.flowNodeIssue && state.flowNodeIssue.token === node.taskToken
       ? state.flowNodeIssue
       : null;
-  const found = cached ? cached.issue : undefined;
+  // 単発の「探す」で得た完全なイシュー、または run 一括の突き合わせ結果のどちらかを found とする
+  const rec =
+    state.flowReconcile && state.flowReconcile.runId === run.runId
+      ? (state.flowReconcile.byNode || {})[node.id]
+      : null;
+  const found = cached ? cached.issue : rec ? recToIssue(rec) : undefined;
+  const reconciled = rec && rec.reconciled ? rec.reconciled : null; // 'done' | 'failed' | null
   const repoUrl = run.workspace && run.workspace.url;
 
   const rows = [];
   const url = node.issueUrl || (found && found.url);
   if (url) {
     const d = node.data && typeof node.data === 'object' ? node.data : {};
-    const decision = node.rejected ? 'rejected' : d.decision || (found && found.state) || '';
+    const isRejected = node.rejected || reconciled === 'failed';
+    const decision = isRejected
+      ? 'rejected'
+      : d.decision || (reconciled === 'done' ? 'approved' : '') || (found && found.state) || '';
     const chip = decision
-      ? `<span class="status-chip ${node.rejected ? 'st-blocked' : 'st-done'}">${esc(node.rejected ? '却下' : decision)}</span>`
+      ? `<span class="status-chip ${isRejected ? 'st-blocked' : 'st-done'}">${esc(isRejected ? '却下' : decision)}</span>`
       : '';
     rows.push(`<div class="row2" style="align-items:center;gap:8px">
       <a href="#" data-ext="${esc(url)}" class="mono">${esc(url)}</a> ${chip}
       <button data-review="${esc(url)}" title="gitlab-review-viewer で開く">レビューで開く</button>
       <button data-ext-btn="${esc(url)}" title="ブラウザで開く">↗</button>
     </div>`);
+    // bus に result が来る前の先読み反映であることを明示する（bus が正・反映は暫定）
+    if (reconciled && !TERMINAL_NODE_STATES.has(node.state)) {
+      rows.push(
+        `<div class="muted">GitLab でクローズ済み（${reconciled === 'done' ? '承認' : '却下'}）を先読み反映しました。bus の result 反映後に確定します。</div>`
+      );
+    }
     if (found && found.title) {
       rows.push(
         `<div class="muted">#${found.iid} ${esc(found.title)}（${esc(found.state)}${found.labels && found.labels.length ? ` ／ ${found.labels.map(esc).join(', ')}` : ''}）</div>`
@@ -1662,8 +1755,13 @@ function renderFlowNode(run, node) {
         )
         .join('')}</div>`
     : '';
+  const reconciled = reconciledStateFor(run, node.id);
+  const effState = reconciled || node.state;
+  const stateLabel =
+    esc(FLOW_STATE_LABEL[effState] || effState) +
+    (reconciled ? ' <span class="status-chip st-reconciled" title="GitLab のクローズ済みイシューから先読み反映（bus 反映待ち）">GitLab 反映</span>' : '');
   return `<div class="card full">
-      <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${esc(FLOW_STATE_LABEL[node.state] || node.state)}${node.who ? ` @${esc(node.who)}` : ''}</h3>
+      <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}</h3>
       <div>${esc(node.goal)}</div>
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
       ${nodeProgressLine(node)}
@@ -1801,20 +1899,30 @@ function renderGraphSvg(run) {
   }
   const boxes = nodes.map((n) => {
     const { x, y } = pos[n.id];
-    // gitlab executor で関連イシュー URL が確定済みのノードには、1 クリックで
-    // レビュー（gitlab-review-viewer）を起動するイシューアイコンを右上に重ねる。
-    // 実行中で URL 未確定のノードは対象外（詳細パネルの「探す」導線が担う）。
-    const idMax = n.issueUrl ? 17 : 20; // アイコン分だけ id ラベルを詰める
+    // GitLab クローズ反映があれば表示上の状態はそちらを優先する（bus に result が届く前でも
+    // 完了/失敗を映す）。反映で状態が変わったノードは reconciled クラスで区別できるようにする。
+    const reconciled = reconciledStateFor(run, n.id);
+    const effState = reconciled || n.state;
+    const recClass = reconciled ? ' reconciled' : '';
+    // gitlab executor で関連イシュー URL が確定済みのノード、または反映で URL が判明したノードには、
+    // 1 クリックでレビュー（gitlab-review-viewer）を起動するイシューアイコンを右上に重ねる。
+    const rec =
+      state.flowReconcile && state.flowReconcile.runId === run.runId
+        ? (state.flowReconcile.byNode || {})[n.id]
+        : null;
+    const issueUrl = n.issueUrl || (rec && rec.url) || '';
+    const idMax = issueUrl ? 17 : 20; // アイコン分だけ id ラベルを詰める
     const idLabel = n.id.length > idMax ? `${n.id.slice(0, idMax - 1)}…` : n.id;
     const goal = n.goal.length > 24 ? `${n.goal.slice(0, 23)}…` : n.goal;
-    const issueIcon = n.issueUrl
-      ? `<g class="node-issue${n.rejected ? ' rejected' : ''}" data-issue-open="${esc(n.issueUrl)}" transform="translate(${NW - 22},4)">
+    const issueRejected = n.rejected || reconciled === 'failed';
+    const issueIcon = issueUrl
+      ? `<g class="node-issue${issueRejected ? ' rejected' : ''}" data-issue-open="${esc(issueUrl)}" transform="translate(${NW - 22},4)">
           <title>関連 GitLab イシューをレビューで開く（gitlab-review-viewer 起動）</title>
           <circle cx="9" cy="9" r="9"></circle>
           <text x="9" y="13" text-anchor="middle" class="node-issue-glyph">↗</text>
         </g>`
       : '';
-    return `<g class="node state-${n.state} ${state.flowNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}" transform="translate(${x},${y})">
+    return `<g class="node state-${effState}${recClass} ${state.flowNodeId === n.id ? 'selected' : ''}" data-node="${esc(n.id)}" transform="translate(${x},${y})">
       <rect width="${NW}" height="${NH}" rx="6"></rect>
       <text x="8" y="17" class="mono">${esc(idLabel)}${n.who ? ` @${esc(n.who).slice(0, 8)}` : ''}</text>
       <text x="8" y="31">${esc(goal)}</text>
@@ -1848,6 +1956,8 @@ function bindFlowDetail(root) {
   if (rs) rs.addEventListener('click', () => resubmitFlowRun());
   const fd = root.querySelector('#flow-delete');
   if (fd) fd.addEventListener('click', () => deleteFlowRun());
+  const rc = root.querySelector('#flow-reconcile');
+  if (rc) rc.addEventListener('click', () => reconcileFlowRun());
   const fi = root.querySelector('#btn-find-issue');
   if (fi) fi.addEventListener('click', () => findNodeIssue(fi));
   for (const btn of root.querySelectorAll('#flow-detail button[data-review]')) {
