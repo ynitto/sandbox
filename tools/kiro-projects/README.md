@@ -364,6 +364,8 @@ backlog の上に、人が書く**目標（charter）**から逆算する evalua
 ```
 charter.md（goal / constraints / assumptions / deliverables / acceptance=受入 verify ／ 任意 links）
    ① plan     charter をエージェントに分解させ enqueue（冪等。verify 必須）
+              ＊消化可能タスクが無いとき、または charter の分解内容が前回計画時から変わったときに起こす
+                （内容署名で検知。編集すれば消化可能タスクがあっても差分を再計画。既存/archive と冪等重複排除）
    ② execute  既存の正準ループ run を drained まで回す（検収/回帰/protect/予算は全て温存）
    ③ evaluate acceptance 全 PASS か判定（＋opt-in 敵対的レビュー --review-project）
         未達/指摘 → 改善タスクを生成して次サイクル（未達 acceptance はそれ自体を verify とする）

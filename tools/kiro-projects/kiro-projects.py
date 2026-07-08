@@ -2307,6 +2307,15 @@ def _charter_definition(ch: "Charter") -> str:
     return "\n".join(parts).strip()
 
 
+def _charter_plan_signature(ch: "Charter") -> str:
+    """charter の「backlog 分解に効く内容」の安定ハッシュ（目標/repos/リンク/制約/前提/成果物）。
+    mtime ではなく *内容* ベースなので、state_git 同期やファイルコピーで mtime だけ変わっても
+    誤検知せず、内容が実際に変わったときだけ変化する。これを project state に記録し、次回 run で
+    charter が変わっていれば（＝署名が違えば）消化可能タスクがあっても backlog を再計画する。
+    acceptance は done 判定に効くが分解入力ではないため署名には含めない（評価側で反映される）。"""
+    return hashlib.sha256(_charter_definition(ch).encode("utf-8")).hexdigest()
+
+
 def charter_context(cfg: "Config", max_chars: int = 1400) -> str:
     """charter.md（プロジェクト定義＝目標/制約/前提/成果物）を act ワーカーへ渡す文脈に要約する。
     **`project` でも通常 `run` でも、charter.md が存在すれば全 act に注入**＝kiro-flow のワーカーが
@@ -7146,6 +7155,13 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
             print(f"  - 未合成: {u}", file=sys.stderr)
         return project_exit_code("no-acceptance")
     charter.acceptance = resolved             # 以降の評価は合成済みの決定的コマンドで行う
+    # charter 変更の検知（内容署名）: backlog 分解に効く内容が前回計画時と変わっていれば、消化可能
+    # タスクが残っていても再計画して差分を投入する（viewer 等で charter を編集しても backlog が
+    # 変わらない問題への対処）。署名が未記録（初回/既存プロジェクト）はベースラインを張るだけで
+    # 再計画は誘発しない（次回以降の編集から検知できる）。
+    plan_sig = _charter_plan_signature(charter)
+    charter_changed = bool(state.get("planned_charter_sig")) and state["planned_charter_sig"] != plan_sig
+    state["planned_charter_sig"] = plan_sig
     state.update({"id": pid, "name": charter.name,
                   "acceptance_total": len(charter.acceptance), "status": "running"})
     save_project_state(cfg, state)
@@ -7165,16 +7181,20 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
             reason = REASON_PROJECT_BUDGET
             break
 
-        # ① plan — 消化可能タスクが無いときだけ目標から backlog を起こす（毎サイクルの再分解は避ける）
+        # ① plan — 消化可能タスクが無いとき、または charter が前回計画時から変わったときに目標から
+        #   backlog を起こす（変更が無ければ毎サイクルの再分解は避ける）。再計画は既存/archive タイトルで
+        #   冪等に重複排除されるため、既存タスクを二重投入せず「charter の差分が生む新規タスク」だけ入る。
         existing = _existing_titles(cfg)
         has_consumable = any(t.consumable() for t in load_tasks(cfg.backlog))
-        if not has_consumable:
+        if not has_consumable or charter_changed:
             specs = plan_fn(charter)
             planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold)
             if planned:
+                trig = "charter 変更検知" if charter_changed else f"plan cycle {cycle}"
                 append_journal(cfg.journal,
-                               f"project cycle {cycle}: plan で {len(planned)} 件投入 "
+                               f"project cycle {cycle}: {trig} で {len(planned)} 件投入 "
                                f"{[t.id for t in planned]}")
+            charter_changed = False   # 変更由来の再計画は 1 回だけ（以降のサイクルで再分解しない）
 
         # ② execute — 既存の正準ループを無改造で回す（drained まで）
         result = runner(cfg)

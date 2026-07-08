@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects: charter.md の変更を backlog に反映（消化可能タスクがあっても再計画）
+
+- **背景**: kiro-projects-viewer 等で charter.md を編集して保存しても、backlog（タスク）が変わらない
+  ことがあった。`cmd_project` の plan は「消化可能タスクが無いときだけ」目標から backlog を起こす設計
+  （毎サイクルの再分解を避けるため）だったので、**既にタスクがあるプロジェクトでは charter を編集しても
+  再計画されず**、charter の変更が後段（backlog）に反映されなかった。watch ループは charter の mtime 変化で
+  プロジェクトを駆動するものの、`cmd_project` 側の plan ゲートで止まっていた。
+- **修正**: charter の「分解に効く内容（目標/repos/リンク/制約/前提/成果物）」の**安定した内容署名**
+  （`_charter_plan_signature`）を project state に記録し、次回 run で署名が変わっていれば**消化可能タスクが
+  残っていても再計画**して差分を投入する。再計画は既存/archive タイトルで冪等に重複排除されるため、
+  既存タスクを二重投入せず「charter 差分が生む新規タスク」だけが入る。
+- **予防（誤検知しない）**: mtime ではなく内容ベースの署名なので、state_git 同期やファイルコピーで mtime
+  だけ変わっても再計画は誘発しない。acceptance だけの変更も分解入力ではないので再計画しない（done 判定は
+  評価側で反映される）。署名未記録（既存プロジェクト/初回）はベースラインを張るだけで、次回以降の編集から検知する。
+- **テスト**: 内容署名の安定性・charter 変更での再計画（消化可能タスクがあっても）・acceptance のみ編集では
+  再計画しないことを検証（`TestProjectLayer`）。
+
 ### kiro-flow: `gc` が孤児 inbox 要求を掃除（不要 run の再起動を止める）
 
 - **背景**: `gc` は古い run を消すとき対応する inbox 要求・claim も併せて消す（`remove_run`）が、
