@@ -14,6 +14,8 @@
 - 確定した方針（ヒアリング結果）:
   1. コードの書き込みは**双方向**（Gitea 側・GitLab 側の双方で独立に push が起こり得る）。
   2. Issue/MR は当面 **Gitea 一本化**でよいが、**将来 GitLab と同期できるよう概要設計だけは行う**。
+  3. **Gitea 側で作成したブランチは GitLab へ push しない**（Gitea 発の作業ブランチは同期対象外。§3.6）。
+  4. **同期ロボットは GitLab 側に極力負荷をかけない**こと（webhook 主導・無変化時は GitLab に触らない。§3.7）。
 
 ## 1. 結論（実現可能性）
 
@@ -63,7 +65,8 @@
 
 ### 3.2 採用方式: fast-forward 調停ロボット
 
-同期ロボットは**保護対象の各 ref（ブランチ/タグ）**について、両側の HEAD を比較して次の分類で動く。
+同期ロボットは**同期対象 ref（§3.6 の allowlist に一致するブランチ/タグ）**についてのみ、
+両側の HEAD を比較して次の分類で動く。**allowlist 外の ref は完全に無視**する。
 
 | 状態 | 判定 | アクション |
 |---|---|---|
@@ -71,32 +74,39 @@
 | Gitea だけ進行 | ff (Gitea→GitLab) | GitLab へ **fast-forward push** |
 | GitLab だけ進行 | ff (GitLab→Gitea) | Gitea へ **fast-forward push** |
 | 双方進行（分岐） | **diverged** | **自動同期しない**。片側に「統合用 MR」を自動起票し、担当者へ通知（§3.4） |
-| 片側に新規 ref | create | 反対側へ ref を作成 |
+| GitLab に新規 ref（allowlist 内） | create→Gitea | Gitea へ ref を作成 |
+| Gitea に新規 ref | **無視** | **Gitea 発ブランチは GitLab へ push しない**（§3.6） |
 | 片側で ref 削除 | delete | **既定では自動削除しない**（誤削除防止）。削除同期は許可ブランチのみ opt-in |
 
 - **絶対に `--force` で追従しない**のが安全設計の肝。分岐は必ず人手（MR）で解決する。
-- 起動契機は **(a) webhook（Gitea/GitLab の push イベント）で即時**、**(b) cron で定期（例: 2–5 分）** の二段構え。
-  webhook が落ちても cron が拾う。
+- 起動契機は **(a) webhook（Gitea/GitLab の push イベント）で即時**を主、**(b) cron を低頻度のバックストップ**とする二段構え。
+  webhook が落ちても cron が取りこぼしを回収する。GitLab への触り方は §3.7 で最小化する。
 
 ### 3.3 ロボットの1パス擬似コード
 
 ```
-for repo in repos:
-    git fetch gitea --prune
-    git fetch gitlab --prune
-    for ref in protected_refs(repo):
-        g  = rev(gitea/ref)      # 無ければ null
-        l  = rev(gitlab/ref)     # 無ければ null
-        if g == l: continue
-        if l is null:            create ref on gitlab from g; continue
-        if g is null:            create ref on gitea  from l; continue
-        base = merge_base(g, l)
-        if base == l:            push --ff gitea/ref -> gitlab   # Gitea だけ進行
-        elif base == g:          push --ff gitlab/ref -> gitea   # GitLab だけ進行
-        else:                    handle_diverged(repo, ref, g, l)  # §3.4
+# トリガ: webhook(repo, ref, after_sha) を受けて対象 repo/ref だけを処理する。
+# cron バックストップ時は allowlist ぶんの ref をまとめて対象にする。
+for (repo, ref) in targets:                       # ref は必ず allowlist 内（§3.6）
+    if from_gitlab_webhook and after_sha == rev(local_cache/ref):
+        continue                                  # 既に持つ SHA。GitLab に触らず早期リターン（§3.7）
+    fetch_only(gitea,  ref)                        # refspec を ref に限定して fetch（全 ref を引かない）
+    fetch_gitlab_if_needed(ref)                    # 変化検知済みのときだけ GitLab を fetch（§3.7）
+    g  = rev(gitea/ref)                            # 無ければ null
+    l  = rev(gitlab/ref)                           # 無ければ null
+    if g == l: continue
+    if g is null and l is not null:  create ref on gitea from l; continue   # GitLab 発は取り込む
+    if l is null:                                  # GitLab に無い ref
+        if is_gitea_originated(ref): continue      # Gitea 発ブランチは push しない（§3.6）
+        else: create ref on gitlab from g; continue
+    base = merge_base(g, l)
+    if base == l:   push --ff gitea/ref  -> gitlab   # Gitea だけ進行
+    elif base == g: push --ff gitlab/ref -> gitea    # GitLab だけ進行
+    else:           handle_diverged(repo, ref, g, l) # §3.4
 ```
 
-- 決定的（determinstic）・単発・有界。各 git 呼び出しに個別タイムアウト。ロックで多重起動を防止。
+- 決定的（deterministic）・単発・有界。各 git 呼び出しに個別タイムアウト。ロックで多重起動を防止。
+- **GitLab へのネットワーク I/O は「変化があった ref だけ・その ref だけ」に限定**する（§3.7）。
 - **LFS**: 対象なら `git lfs fetch --all` を同期に含める（別途検証が必要な既知の癖あり）。
 
 ### 3.4 分岐（diverged）時の扱い
@@ -113,6 +123,62 @@ for repo in repos:
   - 例: `main` は Gitea 側マージのみ。GitLab CI が push する対象は `ci/*` や tag に限定。
   - 外部チームが GitLab へ出す場合は専用ブランチ（`ext/*`）に隔離し、統合は Gitea 側 MR で行う。
 - 保護ブランチ（`main` 等）は両側で branch protection を有効化。
+
+### 3.6 同期対象スコープ（Gitea 発ブランチは GitLab へ push しない）
+
+**要求③**: Gitea 側で作成した作業ブランチは GitLab へ push しない。同期対象を明示的に絞る。
+
+- **同期対象は allowlist（ホワイトリスト）方式**。既定の対象:
+  - `main`（および `master`）＝共有ブランチ
+  - `release/*`, `hotfix/*` など**両側で共有すると決めたブランチ**
+  - タグ（`refs/tags/*`）※リリース識別に必要なら
+- **同期対象外（= Gitea だけに存在させる）**:
+  - 開発者が Gitea 上で作る作業ブランチ（`feature/*`, `fix/*`, 個人名ブランチ 等）
+  - ロボットが起票する統合ブランチ（`sync/*`）
+- 判定は**設定ファイルの glob パターン**で行う（例）:
+
+  ```yaml
+  sync:
+    include: ["refs/heads/main", "refs/heads/release/*", "refs/tags/*"]
+    exclude: ["refs/heads/feature/*", "refs/heads/sync/*"]  # include より優先
+    gitea_originated_are_pushed: false   # Gitea 発の新規ブランチは GitLab へ作らない
+  ```
+
+- 効果:
+  - **GitLab へ渡るのは共有ブランチのマージ結果だけ** → GitLab への push 回数・トラフィックが激減（要求①④にも寄与）。
+  - Gitea 発ブランチは LAN 内で完結し、GitLab のブランチ一覧を汚さない。
+- 補足: 「Gitea 発かどうか」は *どこで最初に作られたか* の履歴管理が難しいため、実運用では
+  **「allowlist に一致しないブランチは一切 GitLab へ push しない」** という**パターン基準の単純ルールに倒す**。
+  これで「Gitea で切った feature ブランチは push されない」を確実に満たせる（履歴追跡不要で決定的）。
+
+### 3.7 GitLab 負荷を抑える設計
+
+**要求④**: 同期ロボットが GitLab 側へかける負荷（接続数・fetch トラフィック・API 呼び出し）を最小化する。
+
+方針は **「変化があったときだけ・必要な ref だけ・まとめて」GitLab に触る**。
+
+1. **webhook 主導（ポーリングを主にしない）**
+   - GitLab の push webhook を主トリガーにし、**イベントが来たときだけ**該当 ref を同期する。
+   - 無変化のときは GitLab に一切接続しない（アイドル時のトラフィック = 実質ゼロ）。
+2. **cron は低頻度のバックストップのみ**
+   - webhook 取りこぼし回収用に**長間隔**（例: 15–30 分。営業時間帯のみ等）。短周期ポーリングはしない。
+   - 変化検知には**まず軽量な `git ls-remote <gitlab> <ref>`**（対象 ref のみ）で HEAD を確認し、
+     ローカルキャッシュと一致すれば fetch しない。※`ls-remote` は履歴を転送しないので安価。
+3. **fetch は refspec を限定**
+   - `git fetch gitlab main release/*` のように**対象 ref だけ**を引く。`--prune` は対象範囲に限定。
+   - 全 ref の総なめ fetch は禁止。
+4. **早期リターン（no-op を GitLab に投げない）**
+   - webhook ペイロードの `after` SHA が既知なら fetch も push も行わない。
+   - Gitea→GitLab の push は**差分が実在し、かつ ff 可能なときだけ**実行。空 push をしない。
+5. **デバウンス／バッチ**
+   - 連続 push（例: まとめて数コミット）を**数秒デバウンス**して 1 回の同期にまとめ、GitLab への接続回数を削減。
+6. **アダプティブ間隔**（`docs/designs/kiro-loop-adaptive-interval-design.md` の考え方を援用）
+   - 変化が続く時間帯は間隔を詰め、静穏時は間隔を延ばす。夜間・休日は cron をさらに疎に。
+7. **Gitea→GitLab 方向は §3.6 で対象を絞る**ため、そもそも GitLab への push 対象が共有ブランチだけになる。
+8. **バックオフ**
+   - GitLab が 429/5xx を返したら指数バックオフで再試行し、GitLab を叩き続けない。
+
+> 結果として GitLab への恒常的なトラフィックは「共有ブランチが実際に更新された瞬間の、その ref の差分だけ」に収束する。
 
 ## 4. インフラ構成
 
@@ -182,8 +248,9 @@ for repo in repos:
 ## 7. 段階的導入ステップ（提案）
 
 1. **フェーズ0**: Gitea を docker-compose で LAN に構築（TLS・バックアップ込み）。1 リポジトリで PoC。
-2. **フェーズ1**: reconcile daemon を導入し、`main` を **片方向（Gitea→GitLab, ff のみ）** で同期して安定確認。
-3. **フェーズ2**: GitLab 側 write を許容し**双方向 ff ＋ 分岐 MR 自動起票**を有効化。運用ルール（§3.5）を確定。
+2. **フェーズ1**: reconcile daemon を導入し、**allowlist=`main` のみ**を **片方向（Gitea→GitLab, ff のみ）** で同期して安定確認。
+   起動は **webhook 主導＋長間隔 cron バックストップ**（§3.7）で、GitLab への接続が変化時のみになることを実測で確認。
+3. **フェーズ2**: GitLab 側 write を許容し**双方向 ff ＋ 分岐 MR 自動起票**を有効化。allowlist（§3.6）と運用ルール（§3.5）を確定。
 4. **フェーズ3（任意・将来）**: Issue/MR コネクタ（§5）を片方向から実装。
 
 ---
