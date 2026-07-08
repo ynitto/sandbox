@@ -3384,6 +3384,55 @@ def human_feedback_from_results(results: dict, limit: int = 1200) -> str:
     return "\n".join(out)[:limit]
 
 
+_INFLIGHT_FB_MARK = "\n\n[人からの指摘・反映すること]"
+
+
+def _inflight_amend_pending(bus, graph, who, args, consumed_fb: set) -> int:
+    """静止を待たず、settled ノードに新しく載った人フィードバック（`data.guidance`/`notes`・差し戻し含む）を
+    **待機（pending）ノードの spec に即時反映**する。実行中(claimed)・監視中(waiting)・終端ノードは触らない
+    ＝作業中は不変（安全）。決定的（LLM 不要）・冪等（同一発生源の指摘は二度入れない）。反映した待機ノード数を返す。
+    executor 非依存: guidance/notes を汎用に読む（gitlab 固有の分岐は無い）。**ノード追加**は二重生成を避けるため
+    静止時の評価役（continue_*）に委ね、本関数は既存待機ノードの書き換えに限定する。"""
+    nodes = graph["nodes"]
+    new_pieces = []
+    for nid in list(nodes.keys()):
+        d = (bus.read_result(nid) or {}).get("data")
+        if not isinstance(d, dict):
+            continue
+        pieces = [str(d.get("guidance") or "").strip()] if str(d.get("guidance") or "").strip() else []
+        for note in d.get("notes") or []:
+            if isinstance(note, dict) and str(note.get("body") or "").strip():
+                pieces.append(str(note["body"]).strip())
+        if not pieces:
+            continue
+        text = " / ".join(pieces)
+        k = f"{nid}:{len(text)}"                        # 発生源ノード＋長さで冪等キー
+        if k in consumed_fb:
+            continue
+        consumed_fb.add(k)
+        new_pieces.append(text)
+    if not new_pieces:
+        return 0
+    inject = _INFLIGHT_FB_MARK + "\n" + "\n".join(f"- {p}" for p in new_pieces)
+    amended = 0
+    for nid, entry in list(nodes.items()):
+        if bus.node_state(nid) != "pending":           # 待機ノードのみ（実行中/監視中/終端は不変）
+            continue
+        entry["goal"] = str(entry.get("goal") or "") + inject
+        spec = {"id": nid, "goal": entry["goal"], "deps": entry.get("deps", []),
+                "kind": entry.get("kind", "work")}
+        if entry.get("retries"):
+            spec["retries"] = entry["retries"]
+        bus.write_task(spec)                           # 待機ノードの spec を書き換え（claim 前なので安全）
+        amended += 1
+    if amended:
+        bus.write_graph(graph)
+        bus.event(who, "inflight_amend", nodes=amended)
+        bus.sync_push(f"in-flight 反映 run {args.run_id}: 待機 {amended} ノードへ人指摘")
+        log(who, f"in-flight: 待機 {amended} ノードへ人の指摘を反映（実行中は不変）")
+    return amended
+
+
 def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
                   max_retries: int = 3):
@@ -3605,6 +3654,7 @@ def cmd_orchestrate(args) -> int:
         iteration = 0
 
     # evaluator-optimizer ループ: 静止（claim 可能・実行中タスクが無い）→ パターン継続判断
+    consumed_fb: set = set()   # in-flight 反映済みの人フィードバック発生源（同一 settlement を二度反映しない）
     while True:
         if _orch_check_canceled(bus, args, who):
             return 0
@@ -3613,6 +3663,10 @@ def cmd_orchestrate(args) -> int:
             bus.sync_pull()
             if _orch_check_canceled(bus, args, who):
                 return 0
+            graph = bus.read_graph()
+            # in-flight 差し戻し: 静止を待たず、人の指摘を待機ノードへ即時反映（実行中は不変）。
+            # ノード追加は静止時の評価役に委ねる（二重生成回避）。
+            _inflight_amend_pending(bus, graph, who, args, consumed_fb)
             time.sleep(args.poll)
             graph = bus.read_graph()
         bus.sync_pull()

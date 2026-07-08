@@ -815,6 +815,33 @@ class PlannerRobustnessTests(unittest.TestCase):
         self.assertIn("実サーバで検証すること", hf)
         self.assertIn("kebab-case", hf)
 
+    def test_inflight_amend_only_pending_nodes(self):
+        import types as _types
+        tmp = tempfile.mkdtemp(prefix="kf-inflight-")
+        bus = kf.Bus(tmp, "runX")
+        bus.ensure_run("req")
+        nodes = {"src": {"goal": "作業", "deps": [], "kind": "work"},
+                 "p1": {"goal": "待機タスク1", "deps": [], "kind": "work"},
+                 "c1": {"goal": "実行中タスク", "deps": [], "kind": "work"}}
+        for nid, e in nodes.items():
+            bus.write_task({"id": nid, **e})
+        bus.write_graph({"nodes": nodes, "iteration": 0})
+        # src は差し戻し guidance 付きで settled、c1 は claimed（実行中）、p1 は pending
+        bus.write_result("src", "w", "failed", "ng",
+                         data={"decision": "rejected", "guidance": "実サーバで検証すること"})
+        self.assertTrue(bus.try_claim("c1", "w", lease_sec=60))
+        args = _types.SimpleNamespace(run_id="runX")
+        consumed = set()
+        n = kf._inflight_amend_pending(bus, {"nodes": nodes, "iteration": 0}, "orch", args, consumed)
+        self.assertEqual(n, 1)                                  # p1 のみ反映
+        p1 = json.loads(open(os.path.join(bus.tasks_dir, "p1.json")).read())
+        c1 = json.loads(open(os.path.join(bus.tasks_dir, "c1.json")).read())
+        self.assertIn("実サーバで検証すること", p1["goal"])       # 待機ノードに人指摘が入った
+        self.assertNotIn("実サーバで検証すること", c1["goal"])    # 実行中ノードは不変
+        # 冪等: 同じ発生源では二度入れない
+        self.assertEqual(kf._inflight_amend_pending(bus, {"nodes": nodes, "iteration": 0},
+                                                    "orch", args, consumed), 0)
+
     def test_continue_kiro_prompt_includes_human_feedback(self):
         nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
         results = {"t1": {"status": "failed", "output": "ng",
