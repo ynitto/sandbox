@@ -186,6 +186,10 @@ cleanup_per_node: false
 #   agent_authors: ""                    # エージェント/ボットのアカウント（username か id・カンマ区切り）を除外
 #   human_reviewers: ""                  # 人間レビュアーの allowlist（指定するとそれ以外を除外・最も厳密）
 #   trust_unmarked_comments: false       # 著者不明の曖昧コメントも拾うか（既定 false＝precision 優先＝無暗に拾わない）
+#   # 途中の差し戻し: 人コメントの**見出し**にこの語があれば、承認/却下の決着を待たず「却下級シグナル」として
+#   # 拾い、guidance を流して run の再計画（待機ノード変更/ノード追加）を起こす。空文字で無効。
+#   # ※ executor 非依存のコントラクト（decision=rejected+guidance）へ変換するだけ＝本体に gitlab 固有分岐は無い。
+#   rework_heading: 差し戻し
 
 # ---------------------------------------------------------------------------
 # 自動アップデート（既定 on・6 時間毎・起動直後にも実施）

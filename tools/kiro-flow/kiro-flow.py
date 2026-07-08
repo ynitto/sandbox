@@ -212,6 +212,9 @@ CONFIG_DEFAULTS = {
         "agent_authors": "",
         "human_reviewers": "",              # 人間レビュアーの allowlist（指定するとそれ以外を除外・最も厳密）
         "trust_unmarked_comments": False,   # 著者不明の曖昧コメントも拾うか（既定 False＝precision 優先）
+        # 途中の差し戻し: 人コメントの見出しにこの語があれば approve/reject 決着を待たず却下級として拾う
+        # （汎用コントラクト decision=rejected+guidance へ変換。空で無効）。
+        "rework_heading": "差し戻し",
     },
 }
 
@@ -3360,6 +3363,27 @@ def _circuit_tripped(nodes: dict, results: dict, max_retries: int) -> list:
     return out
 
 
+def human_feedback_from_results(results: dict, limit: int = 1200) -> str:
+    """ノード結果の**構造化 data から人フィードバック**（`guidance` / `notes[].body`）を集める。
+    executor 非依存: gitlab に限らず、委譲系 executor が結果コントラクトに載せた人の指摘を汎用に読む
+    （`decision` の有無や executor 名で分岐しない）。評価役（replan）へ「人の指摘」として渡し、
+    待機ノードの付け替え・ノード追加を人フィードバック駆動で決めさせるための材料。"""
+    out: list[str] = []
+    for nid, r in (results or {}).items():
+        d = (r or {}).get("data")
+        if not isinstance(d, dict):
+            continue
+        g = str(d.get("guidance") or "").strip()
+        if g:
+            out.append(f"[{nid}] {g}")
+        for note in d.get("notes") or []:
+            if isinstance(note, dict):
+                b = str(note.get("body") or "").strip()
+                if b:
+                    out.append(f"[{nid}] {b}")
+    return "\n".join(out)[:limit]
+
+
 def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
                   max_fanout: int = 50, review: bool = False, exemplar_first: bool = False,
                   max_retries: int = 3):
@@ -3379,19 +3403,26 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
         f"[{r.get('status')}]: {str(r.get('output',''))[:160]}"
         for nid, r in results.items()
     )
+    # 人フィードバック（委譲 executor の guidance/notes・差し戻し含む）を評価役へ明示する。
+    # これにより replan を「人の指摘駆動」で決められる（待機ノードの付け替え／ノード追加）。
+    hf = human_feedback_from_results(results)
+    hf_block = (f"\n\n人からの指摘（最優先で反映すること。executor 非依存の結果コントラクト由来）:\n{hf}"
+                if hf else "")
     prompt = (
         "あなたは分散 Dynamic Workflow の評価役です。7 パターンを踏まえ、現在の結果が要求を満たすか判定し、"
         "必要なら次のタスクを追加してください（例: 分類結果に応じた専門タスク、検証 fail の作り直し、"
-        "統合や追加候補の生成）。\n"
+        "統合や追加候補の生成）。**人からの指摘があれば最優先で反映**し、必要なら新タスク追加や、"
+        "まだ着手されていない**待機ノードの差し替え（replaces で置換）**で対応してください"
+        "（実行中のノードは触らない＝評価は run が静止したときだけ行われます）。\n"
         f"ただし同じ完了条件のために作り直しを繰り返しても改善しない場合（達成不可能な条件など）は、"
         f"同一タスクの作り直しは最大 {max_retries} 回までとし、それを超えるなら無理に再タスクを足さず "
         '"done" を返してください。\n'
         f"パターン:\n{catalog}\n\n"
         "出力は JSON のみ: "
         '{"decision":"done"|"replan","reason":"...",'
-        '"new_tasks":[{"id":"...","goal":"...","deps":[],"kind":"work"}]}\n'
+        '"new_tasks":[{"id":"...","goal":"...","deps":[],"kind":"work","replaces":"<任意: 差し替える待機ノード id>"}]}\n'
         "既存 id と重複しない id を使うこと。done のとき new_tasks は空配列。\n\n"
-        f"元の要求: {request}\n\n現在の結果:\n{summary}"
+        f"元の要求: {request}{hf_block}\n\n現在の結果:\n{summary}"
     )
     try:
         data = extract_json(run_kiro(prompt, None))

@@ -802,6 +802,32 @@ class PlannerRobustnessTests(unittest.TestCase):
         self.assertEqual(decision, "done")
         self.assertEqual(new, [])
 
+    def test_human_feedback_from_results_is_executor_agnostic(self):
+        # gitlab に限らず、結果コントラクト data.guidance / notes[].body を汎用に読む
+        results = {
+            "n1": {"status": "failed", "output": "x",
+                   "data": {"decision": "rejected", "guidance": "実サーバで検証すること"}},
+            "n2": {"status": "done", "output": "y",
+                   "data": {"notes": [{"body": "命名は kebab-case で"}]}},
+            "n3": {"status": "done", "output": "z"},          # data 無しは無視
+        }
+        hf = kf.human_feedback_from_results(results)
+        self.assertIn("実サーバで検証すること", hf)
+        self.assertIn("kebab-case", hf)
+
+    def test_continue_kiro_prompt_includes_human_feedback(self):
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "failed", "output": "ng",
+                          "data": {"decision": "rejected", "guidance": "実サーバで検証して"}}}
+        seen = {}
+        def fake_run(prompt, model):
+            seen["p"] = prompt
+            return '{"decision":"done","new_tasks":[]}'
+        with mock.patch.object(kf, "run_kiro", side_effect=fake_run):
+            kf.continue_kiro("req", nodes, results, 0)
+        self.assertIn("人からの指摘", seen["p"])
+        self.assertIn("実サーバで検証して", seen["p"])       # 差し戻し guidance が replan に届く
+
     def test_plan_strategy_kiro_handles_bare_list(self):
         with mock.patch.object(
                 kf, "run_kiro",
@@ -4179,6 +4205,37 @@ class GitlabHumanAgentDiscriminationTests(unittest.TestCase):
         self.assertEqual(payload[0]["note_id"], 501)
         self.assertEqual(payload[0]["author"]["username"], "dan")
         self.assertEqual(payload[0]["body"], "実サーバで検証")
+
+    # --- 途中の差し戻し（人コメントの見出し検知）---
+    def test_rework_heading_detected(self):
+        cfg = {"rework_heading": "差し戻し"}
+        for body in ("# 差し戻し\n実サーバで検証してください",
+                     "**差し戻し**: localhost でなく実サーバで",
+                     "差し戻し"):
+            notes = [{"body": body, "system": False, "author": {"username": "alice"}}]
+            with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+                self.assertTrue(gl_plugin._rework_requested("h", "t", "p", 1, cfg), body)
+
+    def test_rework_ignores_body_mention_and_disabled(self):
+        # 見出しでない長い散文中のたまたまの言及では発火しない
+        notes = [{"body": "これは差し戻しではなく承認ですと私は考えています。よくできています。",
+                  "system": False, "author": {"username": "a"}}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
+                             {"rework_heading": "差し戻し"}), "")
+        # 空設定なら無効（機能を切れる）
+        notes2 = [{"body": "# 差し戻し\n直して", "system": False, "author": {"username": "a"}}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes2):
+            self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
+                             {"rework_heading": ""}), "")
+
+    def test_rework_ignores_agent_heading(self):
+        # エージェント（gitlab-idd マーカー）の差し戻し見出しは人でないので拾わない
+        notes = [{"body": "# 差し戻し\n<!-- gitlab-idd:non-requester-reviewed:z -->",
+                  "system": False, "author": {"username": "rev-bot"}}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
+                             {"rework_heading": "差し戻し"}), "")
 
 
 if __name__ == "__main__":
