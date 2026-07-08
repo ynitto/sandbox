@@ -802,6 +802,59 @@ class PlannerRobustnessTests(unittest.TestCase):
         self.assertEqual(decision, "done")
         self.assertEqual(new, [])
 
+    def test_human_feedback_from_results_is_executor_agnostic(self):
+        # gitlab に限らず、結果コントラクト data.guidance / notes[].body を汎用に読む
+        results = {
+            "n1": {"status": "failed", "output": "x",
+                   "data": {"decision": "rejected", "guidance": "実サーバで検証すること"}},
+            "n2": {"status": "done", "output": "y",
+                   "data": {"notes": [{"body": "命名は kebab-case で"}]}},
+            "n3": {"status": "done", "output": "z"},          # data 無しは無視
+        }
+        hf = kf.human_feedback_from_results(results)
+        self.assertIn("実サーバで検証すること", hf)
+        self.assertIn("kebab-case", hf)
+
+    def test_inflight_amend_only_pending_nodes(self):
+        import types as _types
+        tmp = tempfile.mkdtemp(prefix="kf-inflight-")
+        bus = kf.Bus(tmp, "runX")
+        bus.ensure_run("req")
+        nodes = {"src": {"goal": "作業", "deps": [], "kind": "work"},
+                 "p1": {"goal": "待機タスク1", "deps": [], "kind": "work"},
+                 "c1": {"goal": "実行中タスク", "deps": [], "kind": "work"}}
+        for nid, e in nodes.items():
+            bus.write_task({"id": nid, **e})
+        bus.write_graph({"nodes": nodes, "iteration": 0})
+        # src は差し戻し guidance 付きで settled、c1 は claimed（実行中）、p1 は pending
+        bus.write_result("src", "w", "failed", "ng",
+                         data={"decision": "rejected", "guidance": "実サーバで検証すること"})
+        self.assertTrue(bus.try_claim("c1", "w", lease_sec=60))
+        args = _types.SimpleNamespace(run_id="runX")
+        consumed = set()
+        n = kf._inflight_amend_pending(bus, {"nodes": nodes, "iteration": 0}, "orch", args, consumed)
+        self.assertEqual(n, 1)                                  # p1 のみ反映
+        p1 = json.loads(open(os.path.join(bus.tasks_dir, "p1.json")).read())
+        c1 = json.loads(open(os.path.join(bus.tasks_dir, "c1.json")).read())
+        self.assertIn("実サーバで検証すること", p1["goal"])       # 待機ノードに人指摘が入った
+        self.assertNotIn("実サーバで検証すること", c1["goal"])    # 実行中ノードは不変
+        # 冪等: 同じ発生源では二度入れない
+        self.assertEqual(kf._inflight_amend_pending(bus, {"nodes": nodes, "iteration": 0},
+                                                    "orch", args, consumed), 0)
+
+    def test_continue_kiro_prompt_includes_human_feedback(self):
+        nodes = {"t1": {"id": "t1", "goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "failed", "output": "ng",
+                          "data": {"decision": "rejected", "guidance": "実サーバで検証して"}}}
+        seen = {}
+        def fake_run(prompt, model):
+            seen["p"] = prompt
+            return '{"decision":"done","new_tasks":[]}'
+        with mock.patch.object(kf, "run_kiro", side_effect=fake_run):
+            kf.continue_kiro("req", nodes, results, 0)
+        self.assertIn("人からの指摘", seen["p"])
+        self.assertIn("実サーバで検証して", seen["p"])       # 差し戻し guidance が replan に届く
+
     def test_plan_strategy_kiro_handles_bare_list(self):
         with mock.patch.object(
                 kf, "run_kiro",
@@ -4093,6 +4146,123 @@ class GitlabDeferPollTests(unittest.TestCase):
         self.assertEqual(len(closes), 1)
         self.assertEqual(closes[0]["state_event"], "close")
         self.assertTrue(posts and posts[0]["body"].startswith("kiro-flow:"))
+
+
+class GitlabHumanAgentDiscriminationTests(unittest.TestCase):
+    """gitlab-idd 実行を前提に、フィードバック還元へ運ぶのは**人のコメントだけ**にする判別。
+    worker/reviewer エージェントのコメント（全 gitlab-idd マーカー・bot 著者・agent_authors・
+    per-issue 自動学習）を除外し、人の通常コメントだけを残す。"""
+
+    def _notes_via(self, notes, cfg=None):
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            return gl_plugin._human_notes("h", "t", "p", 1, cfg or {})
+
+    def test_excludes_all_gitlab_idd_markers(self):
+        notes = [
+            {"body": "🚀 作業開始\n<!-- gitlab-idd:worker-node-id:abc -->", "system": False,
+             "author": {"username": "worker1", "id": 11}},
+            {"body": "scout\n<!-- gitlab-idd:scout-map -->", "system": False,
+             "author": {"username": "worker1", "id": 11}},
+            {"body": "承認します\n<!-- gitlab-idd:non-requester-reviewed:z -->", "system": False,
+             "author": {"username": "rev1", "id": 22}},
+            {"body": "命名を requirements.md に合わせて直して", "system": False,
+             "author": {"username": "alice", "id": 99}},
+        ]
+        got = self._notes_via(notes)
+        self.assertEqual([n["author"]["username"] for n in got], ["alice"])
+
+    def test_excludes_agent_author_unmarked_comment_via_per_issue_learning(self):
+        # worker1 はマーカー付き着手コメントを出す → その後のマーカー無し設計記録も同著者=エージェント扱い
+        notes = [
+            {"body": "🚀 着手 <!-- gitlab-idd:worker-node-id:abc -->", "system": False,
+             "author": {"username": "worker1", "id": 11}},
+            {"body": "📝 設計をイシューに記録しました（マーカー無し）", "system": False,
+             "author": {"username": "worker1", "id": 11}},
+            {"body": "実サーバで検証してください", "system": False,
+             "author": {"username": "bob", "id": 5}},
+        ]
+        got = self._notes_via(notes)
+        self.assertEqual([n["author"]["username"] for n in got], ["bob"])
+
+    def test_excludes_bot_and_kiroflow_and_system(self):
+        notes = [
+            {"body": "ラベル変更", "system": True, "author": {"username": "alice"}},
+            {"body": "kiro-flow: 取消通知", "system": False, "author": {"username": "alice"}},
+            {"body": "自動レビュー", "system": False, "author": {"username": "project_42_bot"}},
+            {"body": "botフラグ", "system": False, "author": {"username": "svc", "bot": True}},
+            {"body": "ここは実データに合わせて", "system": False, "author": {"username": "alice"}},
+        ]
+        got = self._notes_via(notes)
+        self.assertEqual([n["body"] for n in got], ["ここは実データに合わせて"])
+
+    def test_agent_authors_config_excludes(self):
+        notes = [
+            {"body": "自動コメント", "system": False, "author": {"username": "ci-agent", "id": 7}},
+            {"body": "人の指摘", "system": False, "author": {"username": "carol", "id": 8}},
+        ]
+        got = self._notes_via(notes, {"agent_authors": "ci-agent, 999"})
+        self.assertEqual([n["author"]["username"] for n in got], ["carol"])
+
+    def test_human_reviewers_allowlist_keeps_only_listed(self):
+        notes = [
+            {"body": "許可された人", "system": False, "author": {"username": "lead", "id": 3}},
+            {"body": "別の人", "system": False, "author": {"username": "random", "id": 4}},
+            {"body": "著者不明", "system": False},
+        ]
+        got = self._notes_via(notes, {"human_reviewers": "lead"})
+        self.assertEqual([n["body"] for n in got], ["許可された人"])
+        # trust_unmarked_comments=true なら著者不明も拾う
+        got2 = self._notes_via(notes, {"human_reviewers": "lead",
+                                       "trust_unmarked_comments": True})
+        self.assertEqual([n["body"] for n in got2], ["許可された人", "著者不明"])
+
+    def test_no_allowlist_keeps_plain_human_comments(self):
+        # 後方互換: allowlist 無し・著者情報が無くても、マーカー/bot でなければ人として拾う
+        notes = [{"body": "命名が要件と違う", "system": False}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            got = gl_plugin._human_comments("h", "t", "p", 1, {})
+        self.assertEqual(got, "命名が要件と違う")
+
+    def test_payload_carries_author_and_note_id(self):
+        notes = [{"id": 501, "body": "実サーバで検証", "system": False,
+                  "author": {"username": "dan", "id": 6}, "created_at": "2026-07-07T00:00:00Z"}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            payload = gl_plugin._human_notes_payload("h", "t", "p", 1, {})
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["note_id"], 501)
+        self.assertEqual(payload[0]["author"]["username"], "dan")
+        self.assertEqual(payload[0]["body"], "実サーバで検証")
+
+    # --- 途中の差し戻し（人コメントの見出し検知）---
+    def test_rework_heading_detected(self):
+        cfg = {"rework_heading": "差し戻し"}
+        for body in ("# 差し戻し\n実サーバで検証してください",
+                     "**差し戻し**: localhost でなく実サーバで",
+                     "差し戻し"):
+            notes = [{"body": body, "system": False, "author": {"username": "alice"}}]
+            with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+                self.assertTrue(gl_plugin._rework_requested("h", "t", "p", 1, cfg), body)
+
+    def test_rework_ignores_body_mention_and_disabled(self):
+        # 見出しでない長い散文中のたまたまの言及では発火しない
+        notes = [{"body": "これは差し戻しではなく承認ですと私は考えています。よくできています。",
+                  "system": False, "author": {"username": "a"}}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
+                             {"rework_heading": "差し戻し"}), "")
+        # 空設定なら無効（機能を切れる）
+        notes2 = [{"body": "# 差し戻し\n直して", "system": False, "author": {"username": "a"}}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes2):
+            self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
+                             {"rework_heading": ""}), "")
+
+    def test_rework_ignores_agent_heading(self):
+        # エージェント（gitlab-idd マーカー）の差し戻し見出しは人でないので拾わない
+        notes = [{"body": "# 差し戻し\n<!-- gitlab-idd:non-requester-reviewed:z -->",
+                  "system": False, "author": {"username": "rev-bot"}}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
+                             {"rework_heading": "差し戻し"}), "")
 
 
 if __name__ == "__main__":

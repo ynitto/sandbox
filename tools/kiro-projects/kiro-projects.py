@@ -403,6 +403,33 @@ def materialize_cohort_rest(cfg: "Config", pilot: Task, feedback: str = "") -> "
     return created
 
 
+def cohort_reflux(cfg: "Config", task: "Task", guidance: str) -> int:
+    """gitlab で cohort のメンバ/pilot が却下されたら、その指摘を**同 cohort の未完了の兄弟メンバ**へ波及させる。
+    materialize_cohort_rest（pilot 承認からの一方向）に対し、こちらは却下起点で兄弟へ横展開する（双方向化）。
+    波及した件数を返す。cohort でない/指摘が空なら 0。"""
+    cid = task.get("cohort")
+    if not cid or not guidance.strip():
+        return 0
+    n = 0
+    for sib in load_tasks(cfg.backlog):
+        if sib.id == task.id or sib.get("cohort") != cid:
+            continue
+        if sib.norm_status() == "done":
+            continue
+        sib.drop("feedback")
+        sib.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
+        persist_task(cfg, sib)
+        n += 1
+    state = _read_cohort(cfg, cid)
+    if state is not None:
+        merged = "\n".join(x for x in [state.get("feedback", ""), guidance] if x).strip()
+        state["feedback"] = merged[:2000]
+        _write_cohort(cfg, state)
+    if n:
+        append_journal(cfg.journal, f"cohort {cid}: {task.id} の却下指摘を未完了メンバ {n} 件へ波及")
+    return n
+
+
 def ingest_inbox(cfg: "Config") -> "list[Task]":
     """inbox/ に置かれたファイルを backlog タスクへ取り込む（.json=オブジェクト/配列 / .md=タスク形式）。
     取り込めたら元ファイルを消す。外部ソースの共通入口（watch がこの口を監視して起こす）。"""
@@ -900,6 +927,34 @@ def _best_learn_match(task: Task, threshold: float, files: "list[Path]",
             if score >= threshold and score > best_score:
                 best, best_score = (label(f), m.group("guide").strip()), score
     return best
+
+
+def count_gitlab_reject_recur(cfg: "Config", task: Task) -> int:
+    """他タスクの決定記録から、**gitlab 却下**でありタイトルが Jaccard 類似の件数を数える（決定的）。
+    同種の却下が反復しているか（＝分解/verify/policy を系として見直すべきか）の判断材料。自分の履歴は除く。"""
+    if not cfg.decisions.exists():
+        return 0
+    n = 0
+    for f in sorted(cfg.decisions.glob("*.md")):
+        if f.stem == task.id:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for block in re.split(r"(?=^## DR)", text, flags=re.M):
+            if "action  : gitlab-reject" not in block:
+                continue
+            # 却下された元タスクの**生タイトル**（context の （…） 内）で照合する。蒸留後の learn
+            # タイトルは一般化されていて raw タイトルとの Jaccard が効きにくいため context を優先。
+            m = re.search(r"（(?P<title>[^（）]+)）が gitlab で却下", block)
+            if not m:
+                m = re.search(r"^- learn:\s*(?P<title>.+?)\s*::", block, flags=re.M)
+            cand = m.group("title") if m else ""
+            if cand and _title_overlap(task.title, cand) >= cfg.learn_threshold:
+                n += 1
+                break                                  # 1 ファイル（=1 タスク）につき 1 回
+    return n
 
 
 def find_learned_resolution(cfg: "Config", task: Task) -> "tuple[str, str] | None":
@@ -1904,6 +1959,48 @@ def run_verify_stable(cmd: str, workdir: Path, timeout: float,
     return (ok, False, msg)                    # 全回一致＝安定した結果
 
 
+def run_verify_at_rev(cmd: str, workdir: Path, rev: str, timeout: float,
+                      env: "dict | None" = None) -> "bool | None":
+    """verify を workdir の rev（act 前 HEAD）のツリーで実行し PASS したか（True/False）を返す。
+    detached worktree を temp に生やして実行し後始末する。git でない/worktree 作成失敗＝判定不能で None。
+    red-green の『red（変更前は fail のはず）』を取るのに使う——base で PASS するなら変更を弁別していない。
+    KIRO_BASE_REV は rev 自身に固定（差分基準 verify は base==HEAD で空差分＝正しく fail する）。"""
+    if not cmd.strip() or not rev or not (workdir / ".git").exists():
+        return None
+    wt = tempfile.mkdtemp(prefix="kiro-redgreen-")
+    try:
+        add = subprocess.run(["git", "-C", str(workdir), "worktree", "add", "--detach", wt, rev],
+                             capture_output=True, text=True, timeout=timeout)
+        if add.returncode != 0:
+            return None
+        base_env = {**(env or {}), "KIRO_BASE_REV": rev}
+        ok, _ = run_verify(cmd, Path(wt), timeout, base_env)
+        return ok
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        subprocess.run(["git", "-C", str(workdir), "worktree", "remove", "--force", wt],
+                       capture_output=True, timeout=30)
+        shutil.rmtree(wt, ignore_errors=True)
+
+
+def verify_undiscriminating(cfg: "Config", task: "Task", cwd: Path, is_temp_clone: bool,
+                            git_base, env: "dict | None") -> bool:
+    """合成 verify が『act 前でも PASS＝変更を弁別しない偽 done』か（red-green の red 側検査）。
+    対象は verify_validate ポリシー（off/synth/all）と per-task 上書きに従う。temp clone（workspace
+    タスク）は act 前ツリーが手元に無いので対象外（既存の no-progress ガードに委ねる）。判定不能は False。"""
+    vv = str(dict(task.extra).get("verify_validate", "") or cfg.verify_validate).lower()
+    if vv in ("off", "none", "false"):
+        return False
+    src = dict(task.extra).get("verify_source", "")
+    if vv == "synth" and src not in ("synth", "template", "reused"):
+        return False                                   # synth ポリシーは自動生成 verify のみ検証
+    if is_temp_clone or not (cwd / ".git").exists():
+        return False
+    base_rev = git_base[0] if isinstance(git_base, (tuple, list)) and git_base else ""
+    return run_verify_at_rev(task.verify, cwd, base_rev, cfg.verify_timeout, env) is True
+
+
 def resolve_verify_cwd(cfg: "Config") -> Path:
     """verify/acceptance を実行する作業ディレクトリ。明示の `verify_cwd`（CLI/設定）があればそれを、
     無ければ従来どおり `workdir`。git-bus 等で workdir に成果が出ないとき、対象 repo のクローン先を指す。"""
@@ -1979,25 +2076,88 @@ def expand_verify_template(spec: str) -> "str | None":
         return f"grep -qE {_sh_q(pat)} {_sh_q(path)}"
     if name in ("diff-contains", "grep-diff") and args:               # act 後の差分に needle（履歴に騙されない）
         return f'git log "$KIRO_BASE_REV"..HEAD -p 2>/dev/null | grep -qF -- {_sh_q(args[0])}'
-    if name in ("cmd-succeeds", "tests-pass", "cmd", "run") and rest:  # 残り全体をコマンドとして実行
+    if name in ("cmd-succeeds", "tests-pass", "cmd", "run",            # 残り全体をコマンドとして実行
+                "test-passes", "builds", "exit-zero") and rest:       # test-passes/builds/exit-zero は意図を明示する別名
         return rest
+    if name in ("endpoint-returns", "http-status") and len(args) >= 2:  # <url> が <status> を返す
+        url, status = args[0], args[1]
+        return (f'test "$(curl -s -o /dev/null -w \'%{{http_code}}\' -- {_sh_q(url)})"'
+                f' = {_sh_q(status)}')
     return None
 
 
-def _synth_verify_prompt(title: str, accept: str) -> str:
+def detect_repo_context(workdir: "Path") -> str:
+    """テスト/ビルド基盤を決定的に検出し、合成 verify のヒント文にする（grep 退化を防ぐ）。
+    package.json scripts・pytest/pyproject・Makefile ターゲット・go/cargo 等を軽く走査（有界）。"""
+    hints: list = []
+    try:
+        pj = workdir / "package.json"
+        if pj.exists():
+            data = json.loads(pj.read_text(encoding="utf-8"))
+            scripts = list((data.get("scripts") or {}).keys())[:8]
+            hints.append("package.json（npm/yarn）: scripts=" + (", ".join(scripts) or "なし"))
+    except (OSError, ValueError):
+        pass
+    if (workdir / "pytest.ini").exists() or (workdir / "pyproject.toml").exists() \
+            or (workdir / "tox.ini").exists() or (workdir / "tests").is_dir():
+        hints.append("Python（pytest 等）: `pytest -q` が使えることが多い")
+    mk = workdir / "Makefile"
+    if mk.exists():
+        try:
+            targets = re.findall(r"^([a-zA-Z0-9_.-]+):", mk.read_text(encoding="utf-8"), re.M)[:10]
+            hints.append("Makefile: targets=" + (", ".join(targets) or "なし"))
+        except OSError:
+            pass
+    if (workdir / "go.mod").exists():
+        hints.append("Go: `go test ./...` / `go build ./...`")
+    if (workdir / "Cargo.toml").exists():
+        hints.append("Rust: `cargo test` / `cargo build`")
+    return "\n".join(f"- {h}" for h in hints)[:800]
+
+
+def _synth_verify_prompt(title: str, accept: str, hint: str = "", repo_ctx: str = "",
+                         retry_note: str = "") -> str:
+    extra = ""
+    if retry_note:
+        extra += f"\n**前回の合成は不採用でした（{retry_note}）。今度は必ず改善すること。**\n"
+    if repo_ctx:
+        extra += ("\nこのリポジトリで検出したテスト/ビルド基盤（可能ならこれを使い、存在チェックの grep へ"
+                  f"退化させない）:\n{repo_ctx}\n")
+    if hint:
+        extra += ("\n過去の類似タスクで人が示した『done の見方』（参考にしてよいが、望む最終状態/差分を"
+                  f"検査する原則は保つ）:\n- {hint}\n")
     return (
         "次のタスクの『完了条件（自然言語）』を、**決定的なシェルコマンド**に変換してください。"
         "終了コード 0 を PASS とみなします。\n"
         "規則: ①「履歴」ではなく「望む最終状態 / 差分」を検査する"
         "（`git log|grep` で過去コミットに当てない）②差分を見るなら環境変数 `$KIRO_BASE_REV`"
         "（act 前の HEAD）を使い `git log \"$KIRO_BASE_REV\"..HEAD ...` の形にする"
-        "③外部状態に依存せず再現可能にする。\n"
-        f"タスク: {title}\n完了条件: {accept}\n\n"
+        "③外部状態に依存せず再現可能にする。④単なる存在 grep や恒真式に退化させず、"
+        "可能ならテスト/ビルドコマンドで実挙動を確かめる。\n"
+        f"タスク: {title}\n完了条件: {accept}\n{extra}\n"
         "出力はコマンド 1 行のみ（説明・コードフェンス不要）。検証コマンドを書けない場合は空行を返す。")
 
 
 # 全角の文/句読点。シェルコマンドにはまず現れず、自然言語（散文・拒否文）の強い指標。
 _PROSE_PUNCT = "。、！？；：「」『』（）"
+
+# 常に真＝何も検証しない恒真式。合成 verify がこれに退化すると done の唯一根拠が意味を失う。
+_TAUTOLOGY_RE = re.compile(
+    r"^(?:true|:|/bin/true"
+    r"|test\s+1\s*=\s*1|test\s+-n\s+.\S*|\[\s+1\s*=\s*1\s+\]"
+    r"|echo\b.*|printf\b.*|exit\s+0)$")
+
+
+def _verify_is_degenerate(cmd: str) -> bool:
+    """合成 verify が「常に PASS＝何も検証しない」恒真式に退化していないか（決定的スクリーン）。
+    red-green（変更前 fail・変更後 pass）を実行で確かめられない enqueue 時点でも、明白な恒真式は弾く。
+    複合（; && || | 含む）は個別判定が難しいので通し、単純トークンの恒真だけを弾く（false negative 寄り）。"""
+    s = (cmd or "").strip().strip(";").strip()
+    if not s:
+        return True
+    if any(op in s for op in ("&&", "||", "|", ";", "\n")):
+        return False                              # 複合は退化と断定しない（誤棄却を避ける）
+    return bool(_TAUTOLOGY_RE.match(s))
 
 
 def _looks_like_shell_command(line: str) -> bool:
@@ -2017,21 +2177,39 @@ def _looks_like_shell_command(line: str) -> bool:
     return chk.returncode == 0
 
 
-def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None) -> str:
-    """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
-    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。"""
-    run = kiro_run or _run_kiro_cli
-    try:
-        out = run(_synth_verify_prompt(title, accept), cfg.model)
-    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は合成せず人へ
-        return ""
-    for line in (out or "").splitlines():       # 先頭の意味ある行をコマンドとみなす
+def _first_command_line(out: str) -> str:
+    """合成出力の先頭の「意味あるコマンド行」を取り出す（コメント/コードフェンス/空行を飛ばす）。"""
+    for line in (out or "").splitlines():
         line = _strip_code(line.strip())
         if line and not line.startswith("#"):
-            # エージェントがコマンドではなく自然言語（説明・拒否文）を返すことがある。
-            # それをそのまま run_verify の shell=True に流すと、文中の ; | && ` > rm 等が
-            # 誤って実行されうるため、妥当なシェルコマンドでなければ合成失敗扱いにする。
-            return line if _looks_like_shell_command(line) else ""
+            return line
+    return ""
+
+
+def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
+                 hint: str = "", repo_ctx: str = "", attempts: int = 2) -> str:
+    """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
+    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。
+    hint（過去の類似 learn）・repo_ctx（検出したテスト/ビルド基盤）で grep 退化を抑える。
+    **自己修復（多候補）**: 散文/シェル非妥当/恒真式に退化した候補は不採用とし、理由を添えて最大
+    attempts 回まで再合成させる（1 回で諦めず、より良い候補を引き出す）。"""
+    run = kiro_run or _run_kiro_cli
+    retry_note = ""
+    for _ in range(max(1, attempts)):
+        try:
+            out = run(_synth_verify_prompt(title, accept, hint, repo_ctx, retry_note), cfg.model)
+        except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は合成せず人へ
+            return ""
+        cand = _first_command_line(out)
+        if not cand:
+            retry_note = "空 or 散文だった"; continue
+        # 自然言語（説明・拒否文）を shell=True に流すと ; | && ` > rm 等が誤実行されうるため弾く。
+        if not _looks_like_shell_command(cand):
+            retry_note = "シェルコマンドでなかった"; continue
+        # 恒真式（true / echo … 等）は done の根拠にならない＝不採用。実挙動を確かめる候補を求める。
+        if _verify_is_degenerate(cand):
+            retry_note = "恒真式に退化していた。テスト/ビルド/差分/最終状態で実挙動を確かめよ"; continue
+        return cand
     return ""
 
 
@@ -2050,7 +2228,17 @@ def ensure_verify(cfg: "Config", task: "Task", kiro_run=None) -> bool:
             return True
     accept = ex.get("accept", "").strip()
     if accept:
-        cmd = synth_verify(cfg, task.title, accept, kiro_run)
+        # ① まず実績のある検証済み verify を再利用（毎回ゼロ合成しない。red-green が別途弁別を確かめる）。
+        reused = find_learned_verify(cfg, task) if cfg.learn else None
+        if reused:
+            task.verify = reused
+            task.extra.append(("verify_source", "reused"))
+            return True
+        # ② 無ければ合成。過去の類似 learn（done の見方）と検出したテスト/ビルド基盤を注入し grep 退化を防ぐ。
+        matched = find_learned_resolution(cfg, task) if cfg.learn else None
+        hint = matched[1] if matched else ""
+        repo_ctx = detect_repo_context(resolve_verify_cwd(cfg))
+        cmd = synth_verify(cfg, task.title, accept, kiro_run, hint=hint, repo_ctx=repo_ctx)
         if cmd:
             task.verify = cmd
             task.extra.append(("verify_source", "synth"))
@@ -2222,6 +2410,13 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
         lc = linked_learnings_context(cfg)
         if lc:
             base += ("\n\nリンク先プロジェクトの判断（横展開・参考にすること）:\n" + lc)
+        # 似た過去タスクの学び（gitlab 却下/承認・needs の learn）を **分解と実装の両方**に効かせる。
+        # 要求本文に載るため flow-planner が分解時に、ワーカーが実装時に踏まえる（＝分解の再考にも届く）。
+        if cfg.learn:
+            matched = find_learned_resolution(cfg, task)
+            if matched:
+                base += ("\n\n類似タスクでの学び（分解・verify・実装で踏まえ、同種の手戻りを繰り返さないこと）:\n"
+                         f"- {matched[1]}")
     return base
 
 
@@ -2804,6 +2999,123 @@ def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
     return ""
 
 
+def read_result_notes(cfg: "Config", use_git: bool) -> "list[dict]":
+    """直近 run のノード結果 data.notes（gitlab executor が載せる**人コメント**の構造化列）を集める。
+    承認/却下いずれの決着でも、人/エージェント判別済みの人コメントだけが載っている（判別は executor 側）。
+    重複排除は note_id で行う。kiro-flow result --json を読むだけ（決定的）。"""
+    if not executor_delegates(cfg):
+        return []
+    cmd = _kf_base(cfg, use_git) + ["result", "--json"]
+    try:
+        proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
+                              capture_output=True, text=True)
+        data = json.loads(proc.stdout or "{}")
+    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
+        return []
+    seen, out = set(), []
+    for n in data.get("final_nodes", []):
+        for note in ((n or {}).get("data") or {}).get("notes", []) if isinstance((n or {}).get("data"), dict) else []:
+            if not isinstance(note, dict):
+                continue
+            nid = note.get("note_id")
+            key = nid if nid is not None else str(note.get("body", ""))[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(note)
+    return out
+
+
+def verify_lib_path(cfg: "Config") -> Path:
+    """検証済み verify（procedural memory）の格納先。DR を汚さない専用ファイル。"""
+    return cfg.decisions / ".verifylib.md"
+
+
+def save_validated_verify(cfg: "Config", task: "Task") -> None:
+    """done 確定した**自動生成 verify**（synth/template/reused）を、タイトル付きで再利用ライブラリへ保存する。
+    人が書いた verify は元から良質＝ライブラリ経由を要さない。同一 (title, cmd) は重複保存しない。"""
+    if not cfg.learn_capture or not task.verify:
+        return
+    src = dict(task.extra).get("verify_source", "")
+    if src not in ("synth", "template", "reused"):
+        return
+    line = f"- verifycmd: {task.title.replace(chr(10), ' ')} :: {task.verify.replace(chr(10), ' ')}\n"
+    p = verify_lib_path(cfg)
+    if p.exists() and line in p.read_text(encoding="utf-8"):
+        return
+    cfg.decisions.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+
+_VERIFYCMD_RE = re.compile(r"^- verifycmd:\s*(?P<title>.+?)\s*::\s*(?P<guide>.+)$")
+
+
+def find_learned_verify(cfg: "Config", task: "Task") -> "str | None":
+    """検証済み verify ライブラリから、タイトルが十分似た過去の verify コマンドを返す（決定的・Jaccard）。
+    毎回ゼロから合成せず、実績のある検査を再利用する（red-green が別途、変更を弁別するか実行で確かめる）。"""
+    p = verify_lib_path(cfg)
+    if not p.exists():
+        return None
+    m = _best_learn_match(task, cfg.learn_threshold, [p], label=lambda f: f.stem,
+                          pattern=_VERIFYCMD_RE)
+    return m[1] if m else None
+
+
+def capture_approve_learn(cfg: "Config", task: "Task", location: str) -> None:
+    """承認決着（done）時、gitlab result の人コメント notes（正例）を横断 learn 化する。
+    従来 done では人コメントを還元せず承認時の良い指摘を捨てていた。判別済みの人コメントだけが
+    notes に載る（判別は executor 側 _human_notes）。learn_capture off や委譲でない場合は何もしない。"""
+    if not (cfg.learn_capture and executor_delegates(cfg)):
+        return
+    bodies = [str(n.get("body") or "").strip()
+              for n in read_result_notes(cfg, location == "remote")]
+    guidance = "\n".join(b for b in bodies if b)[:1500]
+    if not guidance:
+        return
+    append_decision(cfg, task.id, "gitlab",
+                    context=f"{task.id}（{task.title}）が gitlab で承認",
+                    action="gitlab-approve", reason=guidance[:300],
+                    affects=f"{task.id} → done",
+                    learn=distill_learn(cfg, task.title, guidance))
+
+
+def _distill_prompt(title: str, guidance: str) -> str:
+    return (
+        "次は、あるタスクに対して**人間が残したフィードバック/指摘**です。これを、"
+        "**類似タスクにも再利用できる一般化した学習ルール**に蒸留してください。\n"
+        "規則: ①タスク固有の固有名詞（イシュー番号・特定ファイル名等）は種別・パターンへ引き上げる "
+        "②『どういう種類のタスクで/何に気をつけるべきか』を一文で ③一過性の相談・雑談は蒸留対象外"
+        "（その場合は空行のみ返す）。\n"
+        f"タスク: {title}\nフィードバック: {guidance}\n\n"
+        "出力は `<一般化した条件> :: <再利用可能な指針>` の 1 行のみ（説明・コードフェンス不要）。")
+
+
+def distill_learn(cfg: "Config", title: str, guidance: str, kiro_run=None) -> "tuple[str, str]":
+    """人コメント（guidance）を `(条件, 指針)` の一般化ルールへ蒸留する（ltm-use の consolidate 相当）。
+    kiro-cli 委譲。失敗・不能・一過性判定は **生 verbatim フォールバック**（劣化しても現状より前進）。
+    返り値は append_decision(learn=) にそのまま渡せる (title, guide)。"""
+    verbatim = (title, guidance.replace("\n", " ⏎ ").strip()[:400])
+    if not cfg.distill_learn:                       # 蒸留 off＝従来どおり生の指摘を learn 化
+        return verbatim
+    run = kiro_run or _run_kiro_cli
+    try:
+        out = run(_distill_prompt(title, guidance), cfg.model)
+    except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等
+        return verbatim
+    for line in (out or "").splitlines():
+        line = _strip_code(line.strip())
+        if not line or line.startswith("#"):
+            continue
+        if "::" in line:
+            cond, _, guide = line.partition("::")
+            cond, guide = cond.strip(), guide.strip()
+            if cond and guide:
+                return (cond, guide)
+        return verbatim                             # 蒸留形式でない最初の行＝失敗扱い
+    return verbatim                                 # 空出力（一過性判定含む）＝生で残す
+
+
 # ---------------------------------------------------------------------------
 # 設定
 # ---------------------------------------------------------------------------
@@ -2902,7 +3214,11 @@ class Config:
     archive: "Path | None" = None   # done の退避先ディレクトリ（既定 archive/）
     do_archive: bool = True         # done を archive/ へ退避（False なら削除）
     learn: bool = True              # DR 学習: 過去の人の判断から類似案件を自動解決
-    learn_capture: bool = True      # 人の判断（approve 理由・hold 理由）から learn/avoid を自動抽出して蓄積
+    learn_capture: bool = True      # 人の判断（approve 理由・hold 理由・gitlab 却下コメント）から learn/avoid を蓄積
+    distill_learn: bool = True      # 人コメントを一般化ルールへ蒸留してから learn 化（off で生の指摘をそのまま残す）
+    verify_validate: str = "synth"  # red-green 検証: 合成 verify が act 前でも PASS（=変更を弁別しない偽 done）を弾く。
+                                    # off=無効 / synth=自動生成(synth/template)のみ / all=常時。per-task `- verify_validate: none` で除外
+    reject_recur: int = 2           # 同種の gitlab 却下がこの回数に達したら、silent 積み直しをやめ「系の再考」で人へ（0/負で無効）
     intake_recall: bool = True      # 投入/triage 時に過去の hold 判断（avoid）と照合し類似は inbox（人へ）へ寄せる
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
     auto_adjudicate: bool = True    # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on）
@@ -3386,6 +3702,28 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
                 task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
                 append_journal(cfg.journal,
                                f"cycle {cycle}: {task.id} 却下コメントを次 act に注入")
+                # cohort メンバ/pilot の却下なら、同 cohort の未完了メンバへ指摘を波及（兄弟に同じ轍を踏ませない）。
+                cohort_reflux(cfg, task, guidance)
+                # 同一タスクの再試行に注入するだけでなく、**横断学習ストアにも蒸留して残す**。
+                # これで似たタスク（find_learned_resolution）・別プロジェクト（links）・ltm へ還元される。
+                # 対象は人と判別済みの gitlab 人コメント（判別は executor 側 _human_notes）。
+                if cfg.learn_capture:
+                    append_decision(cfg, task.id, "gitlab",
+                                    context=f"{task.id}（{task.title}）が gitlab で却下",
+                                    action="gitlab-reject", reason=guidance[:300],
+                                    affects=f"{task.id} → ready（次 act に反映）",
+                                    learn=distill_learn(cfg, task.title, guidance))
+                    # 系の反復検知（昇格ラダー）: 同種の gitlab 却下が閾値に達したら、silent 積み直しを
+                    # やめて「分解/verify/policy の見直し」を人へ提案する（＝系の再考へ格上げ）。
+                    if cfg.reject_recur > 0 and \
+                            count_gitlab_reject_recur(cfg, task) + 1 >= cfg.reject_recur:
+                        _escalate(cfg, task,
+                                  f"系の再考: 同種タスクの gitlab 却下が反復（≥{cfg.reject_recur} 件）。"
+                                  "個別のやり直しでなく、タスク分解・verify・policy の見直しを検討してください。"
+                                  f" 直近の指摘: {guidance[:200]}", reasons, cycle, evidence=ev)
+                        append_journal(cfg.journal,
+                                       f"cycle {cycle}: {task.id} → 人の判断（系の再考・却下反復）")
+                        return
         persist_task(cfg, task)
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} NG 積み直し "
                                     f"({task.retries}/{cfg.max_retries}) — {vmsg}")
@@ -3457,6 +3795,11 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     require_prog = ((cfg.require_progress or _expect == "changes") and _expect != "none"
                     and (cfg.workdir / ".git").exists())
     no_progress = (ok and not flaky and not regressed and require_prog and not changed)
+    # red-green: 合成 verify が act 前ツリーでも PASS＝この変更を弁別していない（偽 done）。
+    # no-progress（変更ゼロ）の上位互換で、変更があっても verify がそれを追えていないケースを弾く。
+    undiscriminating = (ok and not flaky and not regressed and not no_progress
+                        and verify_undiscriminating(cfg, task, cfg.workdir,
+                                                     vtmp is not None, git_base, verify_env))
     # 実効自律レベル（明示 - level: > track 自動昇格 > グローバル）。report は選択時に除外済み
     assisted = resolve_level(task, cfg, autonomy_cache) == "assisted"
 
@@ -3475,10 +3818,20 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                reasons, evidence=ev)
         autonomy_record(cfg, task, clean=False, cache=autonomy_cache)       # 偽 done 疑い＝手戻り
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（no-progress・偽 done 疑い）")
+    elif undiscriminating:
+        # verify=PASS だが act 前のツリーでも PASS＝この変更を弁別していない（恒真式/既存状態/履歴一致）→ 人へ
+        task.set("undiscriminating", "1")
+        _block(cfg, task, "red-green: verify が act 前のツリーでも PASS＝この変更を弁別していない"
+               "（偽 done の疑い。verify を望む最終状態/差分の assert に見直す。除外は - verify_validate: none）",
+               reasons, evidence=ev)
+        autonomy_record(cfg, task, clean=False, cache=autonomy_cache)        # 偽 done 疑い＝手戻り
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（red-green・変更を弁別しない verify）")
     elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
         _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
                        policy, reasons, cycle)
     elif ok:
+        capture_approve_learn(cfg, task, location)   # 承認時の人コメント（正例）を横断 learn 化
+        save_validated_verify(cfg, task)             # 通った自動生成 verify を再利用ライブラリへ
         return _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cycle,
                             autonomy_cache)
     else:
@@ -6980,7 +7333,10 @@ CONFIG_DEFAULTS = {
     "kiro_flow": None,
     "notify_cmd": None,
     "actor": os.environ.get("USER", "user"),
-    "learn_capture": True,      # approve/hold 理由から learn/avoid を自動抽出（三値 --learn-capture/--no-...）
+    "learn_capture": True,      # approve/hold 理由・gitlab 却下コメントから learn/avoid を自動抽出（三値 --learn-capture/--no-...）
+    "distill_learn": True,      # 人コメントを一般化ルールへ蒸留してから learn 化（三値 --distill-learn/--no-distill-learn）
+    "verify_validate": "synth", # red-green 検証（off/synth/all）。合成 verify が変更を弁別するか実行で確かめる
+    "reject_recur": 2,          # 同種 gitlab 却下がこの回数で「系の再考」へ格上げ（0/負で無効）
     "intake_recall": True,      # 投入/triage 時の予防リコール（過去 hold に類似→inbox）（三値フラグ）
     "learn_threshold": 0.5,
     "promote_threshold": 2,
@@ -7114,6 +7470,9 @@ def build_config(args) -> Config:
         archive=under("archive", "archive"), do_archive=bool(getattr(args, "do_archive", True)),
         learn=bool(getattr(args, "learn", True)),
         learn_capture=bool(getattr(args, "learn_capture", True)),
+        distill_learn=bool(getattr(args, "distill_learn", True)),
+        verify_validate=str(getattr(args, "verify_validate", "synth") or "synth"),
+        reject_recur=int(getattr(args, "reject_recur", 2) or 0),
         intake_recall=bool(getattr(args, "intake_recall", True)),
         learn_threshold=args.learn_threshold,
         auto_adjudicate=bool(getattr(args, "auto_adjudicate", True)),
@@ -7239,8 +7598,17 @@ def _add_common(sp):
     sp.add_argument("--learn", action=argparse.BooleanOptionalAction, default=None,
                     help="DR 学習（過去の人の判断から類似案件を自動解決）。--no-learn で無効化（既定 on）")
     sp.add_argument("--learn-capture", action=argparse.BooleanOptionalAction, default=None,
-                    help="人の判断（approve 理由→learn / hold 理由→avoid）を自動抽出して蓄積。"
-                         "--no-learn-capture で無効化（既定 on）")
+                    help="人の判断（approve 理由→learn / hold 理由→avoid / gitlab 却下コメント→learn）を"
+                         "自動抽出して蓄積。--no-learn-capture で無効化（既定 on）")
+    sp.add_argument("--distill-learn", action=argparse.BooleanOptionalAction, default=None,
+                    help="人コメントを一般化ルールへ蒸留してから learn 化。--no-distill-learn で"
+                         "生の指摘をそのまま残す（既定 on・蒸留失敗時も生でフォールバック）")
+    sp.add_argument("--verify-validate", choices=["off", "synth", "all"], default=None,
+                    help="red-green 検証: 合成 verify が act 前でも PASS（=変更を弁別しない偽 done）を弾く。"
+                         "off/synth（自動生成のみ・既定）/all。per-task `- verify_validate: none` で除外")
+    sp.add_argument("--reject-recur", type=int, default=None,
+                    help="同種の gitlab 却下がこの回数に達したら silent 積み直しをやめ『系の再考』で人へ"
+                         "（分解/verify/policy の見直し。0/負で無効・既定 2）")
     sp.add_argument("--intake-recall", action=argparse.BooleanOptionalAction, default=None,
                     help="投入/triage 時に過去の hold（avoid）と照合し、類似は ready へ落とさず inbox（人へ）"
                          "寄せる予防リコール。--no-intake-recall で無効化（既定 on）")

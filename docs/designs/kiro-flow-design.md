@@ -682,3 +682,120 @@ python3 tools/kiro-flow/tests/test_kiro_flow.py
 
 - **影響**: ハングしても run は無限停止せず、bounded failure → retry で終端へ進む。固定 timeout が
   正当な長尺タスクに対して短すぎる場合は env で延長、または上記「進捗連動の心拍」へ移行する。
+
+---
+
+## 18. 設計提案: gitlab 人コメントの人/エージェント判別・emit と分解への還元（Draft・未実装）
+
+> ステータス: Draft（設計案・未実装）。対になる kiro-projects 側は
+> [`kiro-projects-design.md` §11](./kiro-projects-design.md)（統一学習バス・蒸留・recall・verify 品質）。
+> 責務境界は「**gitlab executor（本ツール）はコメントを運ぶだけ／蒸留・learn・recall・verify は kiro-projects**」。
+
+### 18.0 背景
+
+gitlab executor で委譲したイシューは **gitlab-idd スキルのエージェント（worker / reviewer）** が実行する。
+ユーザーがイシューに投稿したコメントは「そのイシュー内（同一タスクの次の試行）」にしか活きず、同様のタスクへ
+還元されない（＝kiro-projects §11 の問題A）。本ツール側の欠落は 2 つ:
+
+1. **人コメントの捕捉が却下時のみ**（`_rejected_payload:861-886` → `_human_comments:443-459`）。承認・作業中は拾わない。
+2. **人/エージェント判別が緩い**。`_human_comments` の除外は `system` note・`gitlab-idd:creator-node-id` マーカー・
+   `kiro-flow:` 接頭辞だけ。gitlab-idd の worker/reviewer は着手・scout・設計記録・clarification・approach 等の
+   自由文コメントを多数投稿し、**一部（設計記録等）はマーカー無し**。現状はこれらを「人コメント」として拾ってしまう
+   ＝**エージェントの独り言が横断学習を汚染する**。
+
+### 18.1 人コメントのみを確実に拾う（gitlab-idd 前提の判別）← 最優先
+
+マーカー頼みでは不十分（マーカー無し自由文がある）。**著者アカウントベースの正判定を主軸に多層で守る**。
+コメントは次の 3 層を **AND** で満たしたときだけ「人」とみなす（emit 側で著者情報を運び、最終判定は kiro-projects §11.2）。
+
+1. **著者アカウントで正判定（主軸）**: `author.bot == true`（プロジェクトアクセストークン等のボット）を除外。
+   設定 `gitlab.agent_authors`（worker/reviewer/requester が動くアカウント）に一致すれば除外。
+   `gitlab.human_reviewers`（allowlist）があればそれ以外を除外（最も厳密）。
+2. **プロトコルマーカーで除外（常時・全マーカー）**: `system` note、`kiro-flow:` 接頭辞、**いずれかの
+   `<!-- gitlab-idd:* -->` マーカー**（`creator-node-id` / `worker-node-id` / `scout-map` /
+   `clarification-requested` / `approach-proposed` / `non-requester-reviewed`）。現状 creator のみ→**全マーカーへ拡張**。
+3. **エージェント著者の自動学習（per-issue）**: 自分が起票したイシュー上の `worker-node-id` /
+   `non-requester-reviewed` マーカーコメントの**著者アカウントを抽出**し、そのアカウントの**マーカー無しコメントも
+   同イシューではエージェント扱い**にする（手設定なしでマーカー無し自由文を漏れなく除外）。
+
+**既定の振る舞い（実装）**: エージェント除外は ①〜③（system / 全 gitlab-idd マーカー・`kiro-flow:` /
+bot・`agent_authors`・per-issue 自動学習）で担保する。**allowlist（`human_reviewers`）が無ければ、除外後に
+残った通常コメントは人として拾う**（後方互換）。`human_reviewers` を指定すると「許可された人だけ」に絞る
+厳密モードになり、著者情報の無いコメントは突き合わせ不能なので既定で落とす（`gitlab.trust_unmarked_comments:
+true` で拾う）。＝「無暗にエージェントを拾わない」は ①〜③ で満たしつつ、過度な取りこぼしはしない。
+
+> **実装状況**: §18.1（判別）と §18.2 の決着時 emit（却下＋承認の著者付き `notes`）は実装済み
+> （`gitlab.py`: `_human_notes` / `_human_notes_payload` / `_finish_approved` / `_rejected_payload`、
+> 設定 `agent_authors` / `human_reviewers` / `trust_unmarked_comments`、テスト
+> `GitlabHumanAgentDiscriminationTests`）。§18.2 の**作業中の逐次 emit**（park&poll 相乗り）と §18.3
+> （flow-planner `--learnings`）は未実装（フォローアップ）。
+
+### 18.2 人コメントの統一 emit（却下・承認・作業中）
+
+判別（§18.1）に必要な生データを、決着以外も含めて**著者情報つきで運ぶ**（判定・蒸留・learn は kiro-projects）。
+
+- **決着時の対称化**: `_rejected_payload` に加え承認 payload でも人コメント候補を `data.notes` に載せる。
+  従来 done の result は人コメントを運ばず正例を捨てていた。
+- **作業中の逐次 emit**: park & poll の監視（`watch_interval` 既定 90 秒）に相乗りし、前回以降に増えた人コメントを
+  `data.notes` 増分として運ぶ（GitLab API は `get-comments` 1 本・既存バッチに畳む＝負荷増やさない）。
+- **emit する構造**: `data.notes = [{note_id, author:{id,username,bot}, system, body, ts}]`。生のまま運び、
+  `note_id` で決着時・作業中の重複排除。
+
+### 18.3 分解への還元 — flow-planner の `--learnings` 受け口
+
+kiro-projects が recall した learn/avoid を、要求本文とは別の **`--learnings`**（構造化・有界）channel で
+flow-planner（`.github/skills/flow-planner/`）へ渡す。要求本文に畳むと分解後の各ノードに薄まるため、
+**戦略選定段の判断材料として独立注入**し、分解グラフ自体を変える（例: 「この種は 1 段細かく割れ（granularity 上げ）」
+「集約前に verify gate を挟め」「この分割は避けよ」）。件数・文字数は有界化し planner を振り回さない。
+`patterns-catalog.yaml` に learnings を受けた戦略調整例を variants として追記する。
+
+### 18.4 途中の差し戻し ＋ 人フィードバック駆動の再計画（待機ノード変更/ノード追加）
+
+**要件**: 作業中（claimed）ノードはリアルタイムに変えなくてよい。ただし人の指摘に応じて **run の待機ノードの
+差し替え・ノード追加**ができ、さらに終端の approve/reject だけでなく**途中の差し戻し**も拾いたい。
+
+**設計（executor 非依存のコントラクト ＋ プラグイン内の入力解釈、で分離）**:
+
+- **差し戻しの検知はプラグイン内**（gitlab.py `_rework_requested`）: 人コメントの**見出し**（markdown 見出し or
+  見出し的な先頭行）に差し戻し語（設定 `rework_heading`・既定「差し戻し」）があれば拾う。エージェントコメントは
+  §18.1 の判別で除外。これを**汎用の結果コントラクト `data.decision="rejected" + guidance` に変換**して返す
+  （`_check_decision` に組み込み。イシューを閉じない要修正でも approve/reject を待たず拾える）。
+  → **本体（orchestrator）に gitlab 固有の分岐は作らない**。別 executor が rework を実装したければ同じ
+  `data.decision/guidance` を埋めるだけで同じ経路に乗る。
+- **再計画は結果コントラクトを汎用に読む**（kiro-flow.py `human_feedback_from_results`）: 全ノード結果の
+  `data.guidance` / `data.notes[].body` を executor 名で分岐せず集め、評価役（`continue_kiro`）のプロンプトへ
+  **「人からの指摘（最優先）」**として注入する。評価役は new_tasks 追加や、**未着手の待機ノードの差し替え
+  （`replaces`）**で対応する。
+- **作業中ノードは構造的に不変**: 静止時の再計画は run が**静止（`_quiesced`＝claimed も waiting も無い）**したときだけ
+  走るため実行中ノードを触らない。加えて **in-flight 反映**（下記）も待機（pending）ノードのみ書き換え、claimed/waiting/
+  終端には及ばない（lease 保護と二重担保）。
+
+- **in-flight 反映（静止を待たない待機ノードの即時書き換え）**（`_inflight_amend_pending`・実装済み）: orchestrator の
+  待機ループが毎ポーリングで、settled ノードに新しく載った人フィードバック（`data.guidance`/`notes`）を**待機
+  （pending）ノードの spec（goal）へ決定的に注入**する。これで「差し戻し → 静止を待たず待機ノードへ即反映」が成立する。
+  **決定的・冪等**（発生源ノード＋長さで dedup。同一指摘は二度入れない）で LLM を使わないため二重生成の心配が無い。
+  **ノード*追加*は静止時の評価役（`continue_kiro`）に委ねる**（in-flight で LLM 追加すると静止時と二重生成しうるため）。
+  ＝ **待機ノードの変更は in-flight（即時・決定的）／ノード追加は静止時（評価役・人指摘駆動）** の役割分担。
+
+これで「人がイシューにコメント（差し戻し/却下/承認）→ 決着 or 差し戻し検知 → **待機ノードは即時反映・ノード追加は次の
+静止で人指摘駆動**、実行中は常に不変」が成立する。**gitlab 固有なのは入力解釈だけ**で、in-flight 反映・伝播・再計画は
+全 executor 共通（`data.guidance`/`notes` を汎用に読む）。
+
+### 18.5 スコープ外
+
+- **kiro-flow の `verify` ノード（LLM 判定・`execute_kiro(kind="verify")`）の CLI 化**は本案対象外。本案が対象にする
+  「不確実性をなくす verify」は kiro-projects 側の verify（終了コードゲート・§11.6）。将来課題。
+- **in-flight での *ノード追加***（静止を待たず新ノードを足す）は非対象。静止時と二重生成しうるため、追加は
+  `_quiesced` 後の評価役に一本化する（待機ノードの*書き換え*のみ in-flight）。
+
+### 18.5 影響ファイル（本ツール側）
+
+| 箇所 | 変更 |
+|------|------|
+| `executors/gitlab.py` `_human_comments` 443-459 | §18.1 全 `gitlab-idd:*` マーカー除外・著者 bot/`agent_authors` 判定・per-issue エージェント著者学習（実装済み） |
+| 〃 承認/却下 payload・`_human_notes_payload` | §18.2 承認・却下の著者付き `notes` emit・`note_id` 重複排除（実装済み。作業中の逐次 emit は未） |
+| 〃 `_rework_requested` / `_heading_has` / `_check_decision` | §18.4 差し戻し見出し検知→汎用コントラクト（rejected+guidance）変換（実装済み） |
+| `kiro-flow.py` `human_feedback_from_results` / `continue_kiro` | §18.4 結果コントラクトの人指摘を replan へ汎用注入（実装済み・executor 非依存） |
+| `kiro-flow.py` `_inflight_amend_pending` / orchestrate 待機ループ | §18.4 in-flight で待機ノードへ人指摘を即時反映（実装済み・決定的・冪等・実行中不変） |
+| `kiro-flow.yaml.example` / `CONFIG_DEFAULTS` `gitlab:` | `agent_authors` / `human_reviewers` / `trust_unmarked_comments` / `rework_heading`（実装済み） |
+| `.github/skills/flow-planner/` 戦略選定段 / `patterns-catalog.yaml` | §18.3 `--learnings` 受け口・戦略調整 variants（未実装。現状は要求本文経由で planner に届く） |

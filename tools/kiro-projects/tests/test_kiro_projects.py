@@ -5133,5 +5133,316 @@ class TestAsyncOffload(unittest.TestCase):
             self.assertIsNone(km._load_task_file(cfg, "T1"))   # backlog から消えた（archive 済み）
 
 
+class FeedbackReductionTests(unittest.TestCase):
+    """ユーザーの決定・指摘を全体へ還元する仕組み（gitlab 却下コメントの learn 化・蒸留）と
+    verify 品質改善（恒真式スクリーン・テンプレ拡充）。"""
+
+    def test_distill_learn_generalizes(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            got = km.distill_learn(cfg, "ログイン画面の e2e",
+                                   "実サーバでなく localhost で検証していてダメ",
+                                   kiro_run=lambda p, m: "e2e/統合テスト系 :: 実サーバ配備で実施すること")
+            self.assertEqual(got, ("e2e/統合テスト系", "実サーバ配備で実施すること"))
+
+    def test_distill_learn_verbatim_fallback_on_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            def boom(p, m): raise RuntimeError("no kiro-cli")
+            title, guide = km.distill_learn(cfg, "T", "実サーバで検証", kiro_run=boom)
+            self.assertEqual(title, "T")
+            self.assertIn("実サーバで検証", guide)
+
+    def test_distill_learn_off_returns_verbatim(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), distill_learn=False)
+            got = km.distill_learn(cfg, "T", "生の指摘",
+                                   kiro_run=lambda p, m: self.fail("蒸留された"))
+            self.assertEqual(got, ("T", "生の指摘"))
+
+    def test_verify_degenerate_screen(self):
+        for bad in ("true", ":", "echo done", "test 1 = 1", "exit 0", ""):
+            self.assertTrue(km._verify_is_degenerate(bad), bad)
+        for good in ("grep -q 概要 README.md", "pytest -q", "test -f x && grep -q y z"):
+            self.assertFalse(km._verify_is_degenerate(good), good)
+
+    def test_synth_rejects_degenerate_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            self.assertEqual(km.synth_verify(cfg, "T", "何かする",
+                                             kiro_run=lambda p, m: "true"), "")
+            self.assertEqual(km.synth_verify(cfg, "T", "概要見出し",
+                             kiro_run=lambda p, m: "grep -q 概要 README.md"),
+                             "grep -q 概要 README.md")
+
+    def test_synth_self_repair_retries_on_degenerate(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            calls = {"n": 0, "prompts": []}
+            def flaky(prompt, model):
+                calls["n"] += 1
+                calls["prompts"].append(prompt)
+                return "true" if calls["n"] == 1 else "pytest -q tests/login"
+            got = km.synth_verify(cfg, "T", "ログインが通る", kiro_run=flaky)
+            self.assertEqual(got, "pytest -q tests/login")   # 1回目の恒真式を捨て 2回目を採用
+            self.assertEqual(calls["n"], 2)
+            self.assertIn("恒真式", calls["prompts"][1])       # 再合成プロンプトに不採用理由
+
+    def test_synth_self_repair_gives_up_after_attempts(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            got = km.synth_verify(cfg, "T", "x", kiro_run=lambda p, m: "true", attempts=3)
+            self.assertEqual(got, "")                         # 全て恒真式 → 合成失敗（人へ）
+
+    def test_expand_verify_template_additions(self):
+        self.assertEqual(km.expand_verify_template("test-passes :: pytest -q"), "pytest -q")
+        self.assertEqual(km.expand_verify_template("builds :: make"), "make")
+        self.assertEqual(km.expand_verify_template("exit-zero :: ./run.sh"), "./run.sh")
+        cmd = km.expand_verify_template("endpoint-returns :: http://x/health :: 200")
+        self.assertIn("http_code", cmd)
+        self.assertIn("200", cmd)
+        self.assertIn("http://x/health", cmd)
+
+    def test_reject_guidance_captured_as_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="pytest -q", title="ログイン e2e")
+            cfg = cfg_for(d, executor="gitlab")
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_reject_guidance",
+                                   return_value="実サーバで検証すること"), \
+                 mock.patch.object(km, "distill_learn",
+                                   return_value=("e2e 系", "実サーバ配備で実施")):
+                km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
+            dr = (cfg.decisions / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("- learn: e2e 系 :: 実サーバ配備で実施", dr)
+            self.assertIn("gitlab-reject", dr)
+
+    def test_reject_learn_suppressed_when_capture_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T2", verify="pytest -q", title="x")
+            cfg = cfg_for(d, executor="gitlab", learn_capture=False)
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_reject_guidance", return_value="直して"):
+                km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
+            self.assertFalse((cfg.decisions / "T2.md").exists())
+
+    def test_approve_notes_captured_as_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T3", verify="true", title="ログイン e2e")
+            cfg = cfg_for(d, executor="gitlab")
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_result_notes",
+                                   return_value=[{"body": "実サーバで検証してOK", "note_id": 1}]), \
+                 mock.patch.object(km, "distill_learn",
+                                   return_value=("e2e 系", "実サーバ配備で実施")):
+                km.capture_approve_learn(cfg, task, "local")
+            dr = (cfg.decisions / "T3.md").read_text(encoding="utf-8")
+            self.assertIn("gitlab-approve", dr)
+            self.assertIn("- learn: e2e 系 :: 実サーバ配備で実施", dr)
+
+    def test_detect_repo_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "package.json").write_text('{"scripts": {"test": "jest", "build": "tsc"}}')
+            (d / "Makefile").write_text("smoke:\n\techo ok\nlint:\n\ttrue\n")
+            (d / "tests").mkdir()
+            ctx = km.detect_repo_context(d)
+            self.assertIn("package.json", ctx)
+            self.assertIn("test", ctx)
+            self.assertIn("Makefile", ctx)
+            self.assertIn("smoke", ctx)
+            self.assertIn("pytest", ctx)
+
+    def test_synth_injects_hint_and_repo_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "decisions").mkdir()
+            # 過去の類似タスクの learn（find_learned_resolution が拾う）
+            (d / "decisions" / "old.md").write_text(
+                "## DR1  2026-01-01  actor: u\n- learn: ログイン e2e :: 実サーバ配備で検証すること\n\n",
+                encoding="utf-8")
+            (d / "package.json").write_text('{"scripts": {"e2e": "playwright test"}}')
+            mkb(d, "T1", status="ready", verify="", title="ログイン e2e", source="human")
+            # accept を付けて合成経路に入れる
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: ログイン e2e\n- status: ready\n- source: human\n- verify: \n"
+                "- accept: ログインの e2e が通る\n", encoding="utf-8")
+            cfg = cfg_for(d, workdir=d)
+            task = km.load_tasks(d / "backlog")[0]
+            seen = {}
+            def fake_kiro(prompt, model):
+                seen["prompt"] = prompt
+                return "npx playwright test"
+            km.ensure_verify(cfg, task, kiro_run=fake_kiro)
+            self.assertIn("実サーバ配備で検証すること", seen["prompt"])   # learn ヒント注入
+            self.assertIn("package.json", seen["prompt"])                # リポジトリ文脈注入
+            self.assertEqual(task.verify, "npx playwright test")
+
+    def test_verify_reuse_saved_and_recalled(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            done = km.Task(id="A", title="ログイン e2e A", verify="npx playwright test")
+            done.extra.append(("verify_source", "synth"))
+            km.save_validated_verify(cfg, done)
+            # 類似タイトルの新タスクは合成前に検証済み verify を再利用する
+            new = km.Task(id="B", title="ログイン e2e B")
+            new.extra.append(("accept", "e2e が通る"))
+            km.ensure_verify(cfg, new, kiro_run=lambda p, m: self.fail("再合成された"))
+            self.assertEqual(new.verify, "npx playwright test")
+            self.assertEqual(dict(new.extra).get("verify_source"), "reused")
+
+    def test_verify_reuse_skips_human_and_dedupes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            human = km.Task(id="H", title="t", verify="pytest -q")  # verify_source 無し=人が書いた
+            km.save_validated_verify(cfg, human)
+            self.assertFalse(km.verify_lib_path(cfg).exists())      # 人の verify は保存しない
+            auto = km.Task(id="A", title="t", verify="pytest -q")
+            auto.extra.append(("verify_source", "template"))
+            km.save_validated_verify(cfg, auto)
+            km.save_validated_verify(cfg, auto)                     # 二度目は重複保存しない
+            self.assertEqual(km.verify_lib_path(cfg).read_text().count("verifycmd"), 1)
+
+    def test_build_request_injects_similar_learn(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            cfg.decisions.mkdir(parents=True, exist_ok=True)
+            (cfg.decisions / "old.md").write_text(
+                "## DR1 2026-01-01 actor: gitlab\n- learn: ログイン e2e :: 実サーバ配備で検証すること\n\n",
+                encoding="utf-8")
+            task = km.Task(id="NEW", title="ログイン e2e を追加", verify="pytest -q")
+            req = km.build_request(task, cfg)
+            self.assertIn("類似タスクでの学び", req)
+            self.assertIn("実サーバ配備で検証すること", req)   # 分解・実装へ届く
+
+    def test_cohort_reflux_propagates_to_siblings(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            # 同 cohort の 3 メンバ（ready）に cohort タグを付与
+            for tid in ("M1", "M2", "M3"):
+                mkb(d, tid, status="ready", verify="true", title=f"{tid} 移行")
+            for tid in ("M1", "M2", "M3"):
+                t = [x for x in km.load_tasks(d / "backlog") if x.id == tid][0]
+                t.set("cohort", "C1")
+                km.persist_task(cfg, t)
+            m1 = [x for x in km.load_tasks(d / "backlog") if x.id == "M1"][0]
+            n = km.cohort_reflux(cfg, m1, "パスの命名は kebab-case に統一")
+            self.assertEqual(n, 2)                              # M2/M3 に波及（M1 自身は除く）
+            for tid in ("M2", "M3"):
+                t = [x for x in km.load_tasks(d / "backlog") if x.id == tid][0]
+                self.assertIn("kebab-case", t.feedback())
+
+    def test_cohort_reflux_noop_for_non_cohort(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "X", status="ready", title="単発")
+            x = km.load_tasks(d / "backlog")[0]
+            self.assertEqual(km.cohort_reflux(cfg, x, "指摘"), 0)
+
+    def _seed_reject_decision(self, cfg, tid, title):
+        cfg.decisions.mkdir(parents=True, exist_ok=True)
+        (cfg.decisions / f"{tid}.md").write_text(
+            f"## DR-0001  2026-01-01  actor: gitlab\n"
+            f"- context : {tid}（{title}）が gitlab で却下\n- action  : gitlab-reject\n"
+            f"- reason  : x\n- affects : {tid}\n- learn: e2e 系 :: 実サーバで\n\n", encoding="utf-8")
+
+    def test_count_gitlab_reject_recur(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._seed_reject_decision(cfg, "A", "ログイン e2e A")
+            self._seed_reject_decision(cfg, "B", "無関係な掃除タスク")
+            task = km.Task(id="C", title="ログイン e2e C")
+            self.assertEqual(km.count_gitlab_reject_recur(cfg, task), 1)  # A のみ類似
+
+    def test_reject_recurrence_escalates_to_human(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "C", verify="pytest -q", title="ログイン e2e C")
+            cfg = cfg_for(d, executor="gitlab", reject_recur=2)
+            self._seed_reject_decision(cfg, "A", "ログイン e2e A")  # 既に 1 件の同種却下
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_reject_guidance", return_value="また命名が違う"), \
+                 mock.patch.object(km, "distill_learn", return_value=("e2e 系", "実サーバで")):
+                km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
+            self.assertEqual(task.norm_status(), "blocked")            # 系の再考で人へ
+            self.assertTrue((d / "needs" / "C.md").exists())
+
+    def test_reject_recurrence_disabled_requeues(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "C", verify="pytest -q", title="ログイン e2e C")
+            cfg = cfg_for(d, executor="gitlab", reject_recur=0)     # 無効
+            self._seed_reject_decision(cfg, "A", "ログイン e2e A")
+            task = km.load_tasks(d / "backlog")[0]
+            with mock.patch.object(km, "executor_delegates", return_value=True), \
+                 mock.patch.object(km, "read_reject_guidance", return_value="直して"), \
+                 mock.patch.object(km, "distill_learn", return_value=("t", "g")):
+                km._settle_failure(cfg, task, "NG", 1, "ev", {}, location="local")
+            self.assertEqual(task.status, "ready")                    # silent 積み直し
+
+    # --- red-green（変更を弁別しない合成 verify を実行で弾く）---
+    def _git_repo(self, d: Path, fname="f", content="old"):
+        import subprocess as sp
+        sp.run(["git", "init", "-q", str(d)], check=True)
+        sp.run(["git", "-C", str(d), "config", "user.email", "t@t"], check=True)
+        sp.run(["git", "-C", str(d), "config", "user.name", "t"], check=True)
+        (d / fname).write_text(content)
+        sp.run(["git", "-C", str(d), "add", "-A"], check=True)
+        sp.run(["git", "-C", str(d), "commit", "-qm", "base"], check=True)
+        return km._git_out(d, "rev-parse", "HEAD").strip()
+
+    def test_redgreen_passes_for_discriminating_verify(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            base = self._git_repo(d, content="old")
+            (d / "f").write_text("new")                 # act 後の作業ツリー
+            cfg = cfg_for(d, workdir=d)
+            task = km.Task(id="T", title="x", verify="grep -q new f")
+            task.extra.append(("verify_source", "synth"))
+            # base では 'new' が無い＝fail、post では pass ⇒ 弁別している＝undiscriminating False
+            self.assertFalse(km.verify_undiscriminating(cfg, task, d, False,
+                                                        (base, frozenset()), None))
+
+    def test_redgreen_flags_stale_verify(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            base = self._git_repo(d, content="old")
+            (d / "f").write_text("old changed but still has old")
+            cfg = cfg_for(d, workdir=d)
+            task = km.Task(id="T", title="x", verify="grep -q old f")  # base でも PASS
+            task.extra.append(("verify_source", "synth"))
+            self.assertTrue(km.verify_undiscriminating(cfg, task, d, False,
+                                                       (base, frozenset()), None))
+
+    def test_redgreen_off_and_human_verify_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            base = self._git_repo(d, content="old")
+            cfg_off = cfg_for(d, workdir=d, verify_validate="off")
+            task = km.Task(id="T", title="x", verify="grep -q old f")
+            task.extra.append(("verify_source", "synth"))
+            self.assertFalse(km.verify_undiscriminating(cfg_off, task, d, False,
+                                                        (base, frozenset()), None))
+            # synth ポリシーは人が書いた verify（source!=synth/template）を検証しない
+            cfg = cfg_for(d, workdir=d)
+            human = km.Task(id="T2", title="x", verify="grep -q old f")
+            self.assertFalse(km.verify_undiscriminating(cfg, human, d, False,
+                                                        (base, frozenset()), None))
+
+
 if __name__ == "__main__":
     unittest.main()

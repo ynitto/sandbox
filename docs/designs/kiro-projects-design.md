@@ -673,3 +673,137 @@ kiro-flow への act 依頼（`build_request`）に **charter（定義）と `de
 - **非目標・拡張余地**: plan 分解の kiro-flow バックエンド差し替え（現状は kiro-cli）／複数プロジェクト横断のポートフォリオ
   スケジューラ／charter リンクの循環・推移解決（MVP は 1 階層）／外部アダプタ同梱／回帰ゲートの本格ロールバック。いずれも
   §1 の不変条件を保ったまま「外周を足す」方針で段階追加できる。
+
+---
+
+## 11. 設計提案: フィードバックの全体還元と verify 品質改善（Draft・未実装）
+
+> ステータス: Draft（設計案・未実装）。対になる kiro-flow 側は
+> [`kiro-flow-design.md` §18](./kiro-flow-design.md)（gitlab 人コメントの人/エージェント判別・emit と分解への還元）。
+> 責務境界は「**gitlab executor はコメントを運ぶだけ／蒸留・learn・recall・verify は本ツール**」。
+
+### 11.0 背景（2 つの問題）
+
+- **問題A — フィードバックの局所性**: gitlab executor 運用で、個々のイシューに投稿した**ユーザーコメント**は
+  「同一タスクの次の試行」にしか活きず、**同様のタスクに還元されない**。指摘が **plan（分解）や verify の再考**にも及ばない。
+- **問題B — verify CLI の品質**: 「verify を CLI で不確実性をなくす」思想は正しいが、ユーザーが CLI を書くのは難しく、
+  **自動生成 verify の品質がイマイチ**（`synth_verify` は title+accept だけの単発 LLM・品質ゲートは構文チェックのみ）。
+
+### 11.1 診断
+
+- (A) 人ゲート/revise/needs は `append_decision(learn=)`（`1626/4425/4439/4629`）で learn 化され横断する
+  （`find_learned_resolution:905-922` / `linked_learnings_context:2184-2200` / `promote_learnings:1435-1488`）。
+  一方 **(B) gitlab 却下 guidance は `_settle_failure` 却下枝（`3378-3391`）で `task.feedback` に注入するだけ**で
+  `learn=` 捕捉が無く、かつ act を再実行するだけで plan/verify に戻らない。＝問題A の根本原因。
+- 問題B: `synth_verify:2020-2035` は文脈なし単発合成、`_looks_like_shell_command:2003-2017` は `sh -n` の構文チェックのみ。
+  「変更前 fail・変更後 pass」の検証も、学習再利用も無い。
+
+### 11.2 背骨 — 統一学習バス
+
+**人のあらゆる判断・指摘を 1 本の学習ストア（`decisions/`＋ltm）へ集約し、複数の消費者が読む**多対多構造にする。
+既存の learn 機構（Jaccard recall・ltm 昇格・links 横展開）を土台に流用する。
+
+```
+   人ゲート/revise/needs ─┐
+   gitlab の人コメント     ┤→ 蒸留(episodic→semantic/procedural) → decisions/*.md（learn/avoid/verify種別）＋ ltm home
+   (却下/承認/作業中)      ┘                                        │ recall（Jaccard / ltm）
+        ┌──────┬──────────┬──────────┬───────────┬──────────┐
+     次の act  plan(分解)  verify合成  triage/intake  cohort兄弟
+```
+
+**蒸留（`distill_learn` 新設）**: 生の人コメントを `<一般化した条件> :: <再利用可能な指針>` へ引き上げる
+（ltm-use v5 の consolidate に相当）。作業中コメントは「durable な恒久指示か」を判定し一過性を落とす。
+LLM 委譲（有界）＋失敗時は生 verbatim フォールバック。verify に効く指針は `verify` 種別 learn として分離（§11.6 が読む）。
+**入力の人コメントは、kiro-flow §18 が emit する著者情報付き notes を受けて「人と確定したもののみ」**（gitlab-idd の
+worker/reviewer エージェントコメントは除外。判別は kiro-flow §18.1・最終判定は本ツール）。
+
+### 11.3 捕捉の統一 — gitlab の人コメントを learn 化
+
+`_settle_failure` 却下枝（`3378-3391`）に、`task.feedback` 注入に加えて learn 捕捉を足す（最小変更・横断の起点）:
+
+```python
+if guidance:
+    task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
+    if cfg.learn_capture and is_human_comment(...):   # ← 追加（人判定は kiro-flow emit を受けて確定）
+        append_decision(cfg, task.id, "gitlab", action="gitlab-reject",
+                        reason=guidance, learn=(task.title, distill_learn(cfg, task, guidance)))
+```
+
+**却下以外も**: kiro-flow §18.2 が emit する `data.notes`（承認決着・作業中増分・著者付き）を
+`read_reject_guidance`（`2778-2804`）拡張で取り込み、却下＝`avoid` 寄り／承認・作業中＝`learn` 寄りに振り分け、
+`note_id` で重複排除して同じ蒸留→learn ストアへ流す。
+
+### 11.4 適用先の拡張 — act だけでなく plan / verify にも
+
+既存 recall は `build_request`（次の act）にしか注入していない。読み手を増やす:
+
+- **plan（分解の再考）**: charter モードの plan・再計画の分解に learn/avoid を注入し、flow-planner へ
+  **`--learnings`**（構造化・有界）で伝搬（受け口は kiro-flow §18.3）。分解グラフ自体を変える。
+- **verify 合成（verify の再考）**: `synth_verify`/`ensure_verify` に `verify` 種別 learn を注入（§11.6）。
+
+### 11.5 昇格ラダー ＋ cohort 還流
+
+- **昇格ラダー**: `①タスク feedback → ②横断 learn → ③横プロジェクト link/ltm → ④反復検知で人へ「系の再考」`。
+  同一 Jaccard クラスタの却下が `--reject-recur`（既定 2）回超過で `needs/<id>.md` を起こし「分解/verify/policy を見直すか」を人へ。
+- **cohort 還流**: gitlab で cohort メンバ/pilot が却下されたら `cohorts/<id>.json` を更新し、`materialize_cohort_rest`（`371-403`）
+  と同じ経路で未実行メンバの feedback を上書き（現状の一方向・人ゲート限定を双方向化）。
+
+### 11.6 verify を「検証された・文脈付き・学習される」パイプラインに（問題B）
+
+- **Red-Green 検証（核）**: 合成候補を done 根拠にする前に、baseline（`$KIRO_BASE_REV`/act 前ツリー）で **FAIL**・
+  post-act で **PASS** を実行確認し、**red かつ green のみ採用**。`true`・恒真式・既存状態マッチ・履歴一致の偽 done を
+  実行レベルで排除（`require_progress:3455-3473` の上位互換）。baseline worktree は worktree-cache（`KIRO_GIT_CACHE_DIR`）で生やす。
+  破壊的/高コストは `- verify_validate: none` で opt-out。
+- **文脈つき合成 ＋ テンプレ拡充**: `synth_verify` に検出したテスト/ビルド基盤・`paths`/差分・過去 verify 例を渡す。
+  `verify_template` を `test-passes` / `endpoint-returns` / `builds` / `exit-zero` 等へ拡充（決定的＝合成より優先）。
+- **多候補 ＋ 敵対的妥当性**: N 候補を出し red-green ＋敵対的批評（false-done を 1 つ挙げよ）で選別（kiro-flow の
+  generate-and-filter/adversarial を verify 著作に適用）。
+- **学習・再利用**: red-green を通った verify を種別キーで `decisions`/ltm に **procedural memory** 保存
+  （`verify_source: synth+validated`）。人が書いた verify をシードに最優先。新規 `accept:` はまず似た過去 verify を recall。
+- **劣化時**: 自動 done せず、**候補コマンド＋red-green 実行証跡を添えて** `needs/<id>.md` へ。人は白紙でなく草案を承認/微修正。
+
+### 11.7 段階導入・未決事項
+
+| フェーズ | 内容 | 状況 |
+|---------|------|------|
+| **P0** | 人/エージェント判別の厳格化（kiro-flow §18.1。本ツールは emit を受けて最終判定）＝全フェーズの前提 | ✅ 実装 |
+| **P1** | §11.3 人コメントの learn 捕捉（却下＋承認＋蒸留） | ✅ 実装（却下 `_settle_failure`＋承認 `capture_approve_learn`＋`distill_learn`） |
+| **P2** | §11.6 Red-Green 検証／恒真式スクリーン | ✅ 実装（実行 red-green `verify_undiscriminating`＋恒真式棄却 `_verify_is_degenerate`。`--verify-validate`） |
+| **P3** | §11.2 蒸留 ＋ §11.6 文脈つき合成・テンプレ拡充 | ✅ 実装（`detect_repo_context` で合成へ基盤注入・テンプレ拡充・蒸留） |
+| **P4** | §11.4 verify 合成への learn recall ＋ verify 学習再利用 ＋ plan/act への recall | ✅ 実装（合成ヒント・検証済み verify 再利用・`build_request` が類似 learn を分解/実装へ注入） |
+| **P5** | §11.5 昇格ラダー ＋ cohort 還流・§11.6 多候補 | ✅ 実装（昇格ラダー・`cohort_reflux`・合成の自己修復＝恒真式/散文を捨て再合成） |
+
+**実装済み**（P0〜P3＋P4/P5 の一部）: gitlab 人コメントの learn 捕捉（却下 `_settle_failure`・承認
+`capture_approve_learn`）・蒸留（`distill_learn`・LLM＋verbatim・`--distill-learn`）・承認/却下の著者付き
+`notes` emit（kiro-flow）・**実行 red-green 検証**（`verify_undiscriminating`/`run_verify_at_rev`・
+`--verify-validate off/synth/all`・per-task `- verify_validate: none`）・恒真式棄却（`_verify_is_degenerate`）・
+テンプレ拡充（`test-passes`/`builds`/`exit-zero`/`endpoint-returns`）・**文脈つき合成**（`detect_repo_context` が
+package.json/pytest/Makefile/go/cargo を検出して合成へ注入）・**verify 合成への learn recall**（`ensure_verify` が
+`find_learned_resolution` の指針を合成ヒントに）・**verify 学習再利用**（`save_validated_verify`/
+`find_learned_verify`＝done した自動生成 verify を `.verifylib.md` に保存し、類似タスクで合成前に再利用）・
+**昇格ラダー**（`count_gitlab_reject_recur`＋`--reject-recur`＝同種却下の反復で silent 積み直しをやめ「系の再考」で人へ）・
+**plan/act への recall**（`build_request` が `find_learned_resolution` の類似 learn を要求本文へ注入＝flow-planner が
+分解時に、ワーカーが実装時に踏まえる）・**cohort 還流**（`cohort_reflux`＝gitlab で cohort メンバ/pilot が却下されたら
+同 cohort の未完了メンバへ指摘を波及）・**合成の自己修復（多候補）**（`synth_verify` が散文/シェル非妥当/恒真式に
+退化した候補を不採用理由つきで最大 attempts 回まで再合成）。
+テスト: kiro-projects `FeedbackReductionTests`（24）・kiro-flow `GitlabHumanAgentDiscriminationTests`（7）。
+**残（任意・機能は代替手段で充足済み）**: flow-planner への構造化 `--learnings` channel（現状は要求本文経由で
+planner に届く）・作業中コメントの逐次取り込み（決着時に全人コメントを掃くため学習漏れは無い・逐次はレイテンシ最適化）・
+verify 著作の本格的な kiro-flow グラフ化（自己修復で軽量に代替済み）。
+
+後方互換（`learn_capture` off・`distill_learn` off・`trust_unmarked_comments` で従来挙動）。P0→P1→P2 を薄く入れて検証を推奨。
+**未決**: 蒸留の LLM 利用可否（推奨: LLM＋失敗時 verbatim）／作業中コメントの durable 判定既定／Red-Green のコスト・破壊性
+（推奨: opt-out＋読み取り/テスト系に既定適用）／plan への learn 注入の有界化／`--reject-recur`・Jaccard しきい値
+（既存 `--learn-threshold` 0.5 と揃えるか）／kiro-flow 内側 verify ノードの CLI 化（本案対象外・将来判断）。
+
+### 11.8 影響ファイル（本ツール側）
+
+| 箇所 | 変更 |
+|------|------|
+| `_settle_failure` 3378-3391 | §11.3 learn 捕捉・notes 取り込み・§11.5 反復検知 |
+| `read_reject_guidance` 2778-2804 | 承認/作業中 notes（著者付き）の読み取り・人判定の最終確定 |
+| `synth_verify` 2020-2035 / `_synth_verify_prompt` 1987-1996 | §11.6 文脈注入・多候補 |
+| `ensure_verify` 2038-2058 / `run_verify` 1878-1904 | §11.6 red-green・学習再利用 |
+| `expand_verify_template` 1965-1984 | §11.6 テンプレ拡充 |
+| `build_request` 2203-2225 / `find_learned_resolution` 905-922 | §11.4 plan/verify への recall |
+| cohort 371-403 / `append_decision` 849-872（新 `distill_learn`） | §11.5 cohort 還流・§11.2 蒸留 |
