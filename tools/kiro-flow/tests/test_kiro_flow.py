@@ -450,6 +450,81 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertFalse(self.bus.claim_request("run1", "d2", 120.0))   # 従来 API は run 存在で拒否
         self.assertTrue(self.bus.reclaim_request("run1", "d2", 120.0))  # 引き継ぎ用は claim できる
 
+    # --- 世代交代（superseded）: 新世代のリトライに引き継がれた旧 run を復活させない ---
+    def _make_orphan(self, run_id, inherit_from=None):
+        """run_id を「実行中だが生存リース切れ（孤児）」で作る（inherit_from 付きの inbox 要求も）。"""
+        self.bus.submit_request(run_id, "req", "submitter", inherit_from=inherit_from)
+        v = self.bus.run_view(run_id)
+        v.ensure_run("req")
+        v.set_status("running")
+        meta = kf.read_json(v.meta_path)
+        meta["orch_lease_until"] = time.time() - 1.0    # リース切れ = 孤児
+        kf.write_json_atomic(v.meta_path, meta)
+
+    def test_superseded_map_built_from_inherit_from(self):
+        # inbox の inherit_from から {先行 run: 新世代 req} の対応表を作る
+        self.bus.submit_request("run1", "req", "s")
+        self.bus.submit_request("run2", "req", "s", inherit_from="run1")
+        self.bus.submit_request("run3", "req", "s", inherit_from="run2")
+        self.assertEqual(kf._superseded_run_ids(self.bus), {"run1": "run2", "run2": "run3"})
+
+    def test_mark_run_superseded_records_and_is_terminal(self):
+        self.bus.set_status("running")
+        self.assertTrue(self.bus.mark_run_superseded("run1", "run2"))
+        m = self.bus.run_meta("run1")
+        self.assertEqual(m["status"], "failed")     # 終端（active_runs/孤児判定から外れる）
+        self.assertTrue(m["superseded"])
+        self.assertEqual(m["superseded_by"], "run2")
+        self.assertFalse(self.bus.run_is_orphaned("run1", 120.0))   # 終端化後は孤児でない
+
+    def test_mark_run_superseded_noop_when_terminal(self):
+        # 既に終端した run は上書きしない（done を failed で潰さない）
+        self.bus.set_status("done")
+        self.assertFalse(self.bus.mark_run_superseded("run1", "run2"))
+        self.assertEqual(self.bus.run_meta("run1")["status"], "done")
+
+    def test_superseded_run_drops_out_of_active_runs(self):
+        # superseded で終端化した run は active_runs から外れ、worker が湧かない（二重実行を止める）
+        self.bus.set_status("running")
+        self.assertIn("run1", self.bus.active_runs())
+        self.bus.mark_run_superseded("run1", "run2")
+        self.assertNotIn("run1", self.bus.active_runs())
+
+    def test_superseded_orphan_is_terminated_not_resumed(self):
+        # daemon 再起動: 新世代 run2 に inherit_from で引き継がれた孤児 run1 は、再開せず終端化する。
+        # 素朴に全孤児を再開すると世代交代で消えるべき旧リトライが復活して二重実行になるのを防ぐ。
+        self._make_orphan("run1")                       # 旧世代
+        self._make_orphan("run2", inherit_from="run1")  # 新世代（run1 を引き継ぐ）
+        adopted, failed, spawned = self._adopt()
+        self.assertNotIn("run1", adopted)               # 旧世代は復活させない
+        self.assertNotIn("run1", spawned)               # orchestrator も起動しない
+        self.assertIn("run1", failed)                   # 終端化した
+        m1 = self.bus.run_meta("run1")
+        self.assertEqual(m1["status"], "failed")
+        self.assertTrue(m1.get("superseded"))
+        self.assertEqual(m1.get("superseded_by"), "run2")
+        self.assertIn("run2", adopted)                  # 新世代は通常どおり再開
+        self.assertIn("run2", spawned)
+
+    def test_only_latest_generation_survives_restart(self):
+        # r0←r1←r2 の 3 世代が孤児として残っていても、再起動で再開するのは最新世代だけ。
+        self._make_orphan("r0")
+        self._make_orphan("r1", inherit_from="r0")
+        self._make_orphan("r2", inherit_from="r1")
+        adopted, failed, spawned = self._adopt()
+        self.assertEqual(list(adopted), ["r2"])         # 最新世代のみ再開
+        self.assertEqual(sorted(failed), ["r0", "r1"])  # 旧世代は終端化
+        self.assertEqual(self.bus.run_meta("r0")["status"], "failed")
+        self.assertEqual(self.bus.run_meta("r1")["status"], "failed")
+        self.assertEqual(self.bus.run_meta("r2")["status"], "running")
+
+    def test_latest_generation_still_resumed_when_predecessor_present(self):
+        # 引き継ぎ元（先行 run）が存在しない孤児（初回 run）は従来どおり再開する（誤終端しない）
+        self._make_orphan("solo")
+        adopted, failed, spawned = self._adopt()
+        self.assertEqual(list(adopted), ["solo"])
+        self.assertEqual(failed, [])
+
 
 class SpawnArgvTests(unittest.TestCase):
     """daemon がオンデマンド起動する子（orchestrator/worker）の argv が、実際の CLI パーサで

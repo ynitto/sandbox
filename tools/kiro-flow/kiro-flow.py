@@ -777,6 +777,31 @@ class Bus:
         write_json_atomic(v.meta_path, meta)
         return True
 
+    def mark_run_superseded(self, run_id: str, superseded_by: str = "") -> bool:
+        """run_id がまだ終端でなければ status を failed に確定する（世代交代による停止）。
+        kiro-projects はリトライ時に先行 run を明示 cancel せず、inherit_from 付きで次世代を
+        inbox へ投入する。inherit_from は実行中の先行 run を安全のため殺さないので、旧世代の run が
+        非終端のまま inbox に残る。owning daemon 消失後（PC シャットダウン等）に daemon を再起動
+        すると、これら旧世代の孤児が一斉に adopt（再開）され、世代交代で消えるべき旧リトライが
+        復活して二重実行になる。これを防ぐため、次世代に引き継がれた先行 run を再開せず終端化する。
+        failed（≒ 異常終了）や canceled（人の明示指示）と区別できるよう superseded=True を記録する。
+        終端化後は次世代の inherit_from が確定済みノードを引き継いでから掃除できる（作業は失わない）。
+        終端化できたら True、既に終端 / run が存在しないなら False。"""
+        v = self.run_view(run_id)
+        meta = read_json(v.meta_path)
+        if not meta or meta.get("status") in TERMINAL:
+            return False
+        meta["status"] = "failed"
+        meta["updated_at"] = now_iso()
+        meta["superseded"] = True
+        if superseded_by:
+            meta["superseded_by"] = superseded_by
+        meta["failure_reason"] = (
+            f"superseded: 新世代のリトライ {superseded_by} に引き継がれた旧 run（再開しない）"
+            if superseded_by else "superseded: 新世代のリトライに引き継がれた旧 run（再開しない）")
+        write_json_atomic(v.meta_path, meta)
+        return True
+
     # --- cancel（人の明示指示による run スコープの恒久停止） ---
     def cancel_request(self, run_id: str, who: str, reason: str = "",
                        close_issues: bool = False) -> None:
@@ -3950,6 +3975,21 @@ def _resume_run(bus: Bus, daemon_id: str, args, base: list, req_id: str, req: di
     return p
 
 
+def _superseded_run_ids(bus: Bus) -> dict:
+    """inbox 要求の inherit_from から「新世代のリトライに引き継がれた先行 run」の
+    {先行 run_id: 新世代 req_id} を作る。kiro-projects はリトライ時に先行 run を明示 cancel せず、
+    inherit_from 付きで次世代を投入する（inherit_from は実行中の先行 run を安全のため殺さない）。
+    そのため旧世代の run が非終端のまま inbox に残る。この集合の run は世代交代で役目を終えた旧
+    リトライ＝daemon 再起動時の一斉 adopt で復活させてはいけない。"""
+    superseded: dict = {}
+    for req_id in bus.list_inbox():
+        rec = bus.read_inbox(req_id)
+        prev = rec.get("inherit_from") if rec else None
+        if prev and prev != req_id:
+            superseded[prev] = req_id
+    return superseded
+
+
 def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
                        args, base: list, spawn=None) -> "tuple[dict, list]":
     """inbox 由来で owning daemon が消失した（生存リース切れ）非終端 run を引き継ぐ。
@@ -3960,14 +4000,32 @@ def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float
     無効（max_resumes<=0）・要求ファイル欠損・進捗なしの連続再開が上限超過——だけを
     従来どおり failed に確定し、result を待つ消費者（kiro-projects の submit 等）の
     永久待機を防ぐ。`owned` は自分が今回している run（誤引き継ぎしない）。
-    戻り値は（再開した run_id→Popen, failed に確定した run_id 一覧）。"""
+
+    ただし新世代のリトライに inherit_from で引き継がれた先行 run（世代交代で消えるべき旧
+    リトライ）は再開しない。素朴に全孤児を再開すると再起動時に旧世代が一斉に復活して二重実行
+    になるため、これらは終端化して next-gen の inherit_from が確定済みノードを引き継いでから
+    掃除できるようにする（作業は失わない）。
+    戻り値は（再開した run_id→Popen, 終端化した run_id 一覧）。"""
     adopted: dict = {}
     failed: "list[str]" = []
     max_r = int(getattr(args, "max_resumes", 3) or 0)
+    superseded = _superseded_run_ids(bus)
     for req_id in bus.list_inbox():
         if req_id in owned or not bus.run_exists(req_id):
             continue
         if not bus.run_is_orphaned(req_id, lease_window):
+            continue
+        if req_id in superseded:
+            # 新世代のリトライに引き継がれた旧 run。孤児化しているが再開すると世代交代で消える
+            # べき旧リトライが復活して二重実行になる。再開せず終端化する（next-gen の
+            # inherit_from が確定済みノードを引き継いでから掃除する＝作業は失わない）。
+            if bus.mark_run_superseded(req_id, superseded[req_id]):
+                bus.run_view(req_id).event(daemon_id, "run-superseded", run=req_id,
+                                           by=superseded[req_id])
+                bus.sync_push(f"run {req_id} superseded（新世代 {superseded[req_id]} に引き継ぎ）")
+                failed.append(req_id)
+                log(daemon_id, f"孤児 run を終端化: {req_id} → superseded"
+                               f"（新世代 {superseded[req_id]} に引き継ぎ・再開しない）")
             continue
         req = bus.read_inbox(req_id)
         why = "自動再開が無効（max_resumes<=0）" if max_r <= 0 else "要求ファイルを読めない"
@@ -4356,11 +4414,22 @@ def cmd_daemon(args) -> int:
         # まず同じ run-id で再起動（resume。確定済み results/ を活かして続きから）を試み、
         # 進捗なしの連続再開が max_resumes を超えたときだけ failed に確定する。
         finished_runs = False   # このラウンドで終端に達した run（state git へ間隔を待たず押し出す）
+        superseded_now = _superseded_run_ids(bus)
         for rid in [r for r, p in orchestrators.items() if p.poll() is not None]:
             rc = orchestrators[rid].poll()
             del orchestrators[rid]
             if bus.run_meta(rid).get("status") in TERMINAL:
                 log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）")
+                finished_runs = True
+                continue
+            if rid in superseded_now and bus.mark_run_superseded(rid, superseded_now[rid]):
+                # 実行中に新世代のリトライへ引き継がれた旧 run が異常終了した。ここで再開すると
+                # 世代交代で消えるべき旧リトライが復活して二重実行になるため、再開せず終端化する。
+                bus.run_view(rid).event(daemon_id, "run-superseded", run=rid,
+                                        by=superseded_now[rid])
+                bus.sync_push(f"run {rid} superseded（新世代 {superseded_now[rid]} に引き継ぎ）")
+                log(daemon_id, f"orchestrator 終了: {rid}（rc={rc}）→ superseded"
+                               f"（新世代 {superseded_now[rid]} に引き継ぎ・再開しない）")
                 finished_runs = True
                 continue
             req = bus.read_inbox(rid)
