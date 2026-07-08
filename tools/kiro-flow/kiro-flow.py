@@ -4888,7 +4888,8 @@ def run_cleanup(args, bus: Bus) -> dict:
 # gc — 古い run を掃除
 # --------------------------------------------------------------------------
 def _age_hours(meta) -> float:
-    ts = meta.get("updated_at") or meta.get("created_at")
+    # run メタは updated_at/created_at、inbox 要求レコードは submitted_at を持つ（両方に使える）。
+    ts = meta.get("updated_at") or meta.get("created_at") or meta.get("submitted_at")
     if not ts:
         return float("inf")  # タイムスタンプ無し＝十分古いとみなす
     try:
@@ -4921,9 +4922,37 @@ def cmd_gc(args) -> int:
         print(f"{tag}削除: {rid} (status={meta.get('status')}, age={_age_hours(meta):.1f}h)")
         if not args.dry_run:
             bus.remove_run(rid)
-    if to_delete and not args.dry_run:
-        bus.sync_push(f"gc: removed {len(to_delete)} run(s)")
-    print(f"削除 {len(to_delete)} / 全 {len(runs)} runs"
+
+    # 孤児 inbox 要求の掃除: run を伴わない inbox 要求は、daemon がこれを「新規要求」と誤認して
+    # 再び orchestrator を起動し **不要な run を走らせる**原因になる（受理ゲートは run_exists のみ）。
+    # remove_run は対応 inbox を消すので通常は run と一緒に片付くが、旧バージョンや外部ツールが
+    # run だけ消した／crash 等で取り残された要求は掃除されず残る。ここで run が無く十分古く、かつ
+    # 現在 claim されていない（lease 内で担当 daemon が処理中でない）要求を掃除する。フレッシュな
+    # 未受理要求（--older-than 未満）は正規の受理待ちとして保護し、--status 指定時は「run の status で
+    # 絞る」意図なので触らない。
+    reaped = []
+    if not args.status:
+        for req_id in bus.list_inbox():
+            if bus.run_exists(req_id):
+                continue                          # run があるものは上の run-gc が対応（inbox も一緒に消える）
+            rec = bus.read_inbox(req_id) or {}
+            if _age_hours(rec) < args.older_than * 24.0:
+                continue                          # まだ新しい＝受理待ちの正規要求かも → 保護
+            claim_dir = os.path.join(bus.inbox_claims_dir, req_id)
+            if bus._winner_in(claim_dir) is not None:
+                continue                          # lease 内で担当 daemon が処理中 → 触らない
+            reaped.append(req_id)
+    for req_id in reaped:
+        tag = "[dry-run] " if args.dry_run else ""
+        age = _age_hours(bus.read_inbox(req_id) or {})
+        print(f"{tag}孤児 inbox 掃除: {req_id}（run 無し・{age:.1f}h前）")
+        if not args.dry_run:
+            bus.remove_run(req_id)                # run 無しでも inbox 要求・claim・cancel を消す
+
+    if (to_delete or reaped) and not args.dry_run:
+        bus.sync_push(f"gc: removed {len(to_delete)} run(s), {len(reaped)} orphan inbox")
+    tail = f" ＋ 孤児 inbox {len(reaped)} 件" if reaped else ""
+    print(f"削除 {len(to_delete)} / 全 {len(runs)} runs{tail}"
           f"{'（dry-run）' if args.dry_run else ''}")
     if len(to_delete) == 0 and len(runs) > 0:
         oldest_h = max(_age_hours(m) for _, m in metas) if metas else 0
@@ -5973,8 +6002,10 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--json", action="store_true", help="機械可読な JSON で出力")
     rs.set_defaults(func=cmd_result)
 
-    gc = sub.add_parser("gc", help="古い run を掃除（対応する inbox 要求・claim も削除）")
-    gc.add_argument("--older-than", type=float, default=7.0, help="この日数より古い run が対象")
+    gc = sub.add_parser("gc", help="古い run を掃除（対応する inbox 要求・claim も削除）。"
+                                   "run を伴わない孤児 inbox 要求（不要 run の再起動元）も掃除する")
+    gc.add_argument("--older-than", type=float, default=7.0,
+                    help="この日数より古い run が対象（孤児 inbox 要求もこの閾値で掃除）")
     gc.add_argument("--keep", type=int, default=3, help="新しい順にこの件数は無条件で保護")
     gc.add_argument("--status", default=None, help="この status の run のみ対象（例: done）")
     gc.add_argument("--dry-run", action="store_true", help="削除せず対象だけ表示")
