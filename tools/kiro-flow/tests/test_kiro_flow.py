@@ -50,6 +50,25 @@ def _load_module():
 kf = _load_module()
 
 
+def _zero_loose_objects(clone) -> int:
+    """電源断で生じる『サイズ 0 の loose object』を模擬する（.git/objects/xx/yy を空に切り詰める）。
+    到達可能なオブジェクトが空になるので、以後の add/commit/checkout/pull/fsck が破損で失敗する。"""
+    objdir = os.path.join(str(clone), ".git", "objects")
+    zeroed = 0
+    for sub in os.listdir(objdir):
+        d = os.path.join(objdir, sub)
+        if len(sub) == 2 and os.path.isdir(d):          # objects/pack・objects/info は対象外
+            for name in os.listdir(d):
+                open(os.path.join(d, name), "wb").close()   # 0 バイトへ切り詰め
+                zeroed += 1
+    return zeroed
+
+
+def _git_config_get(repo, key) -> str:
+    return subprocess.run(["git", "-C", str(repo), "config", "--local", "--get", key],
+                          capture_output=True, text=True).stdout.strip()
+
+
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-test-")
@@ -2820,6 +2839,80 @@ class GitDistributedTests(unittest.TestCase):
         # 既存ファイルは無傷
         self.assertTrue(os.path.exists(os.path.join(foreign, "important.txt")))
 
+    def test_durable_write_config_on_clone_and_local_remote(self):
+        # 電源断でのサイズ 0 オブジェクトを予防する durable-write 設定（core.fsync/fsyncMethod）を
+        # 管理クローンと、ローカルパスの共有リポジトリ本体（受信側 receive-pack）の両方に効かせる。
+        clone = os.path.join(self.clones, "durable")
+        kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        self.assertEqual(_git_config_get(clone, "core.fsync"), "all")
+        self.assertEqual(_git_config_get(clone, "core.fsyncMethod"), "batch")
+        self.assertEqual(_git_config_get(self.bare, "core.fsync"), "all")
+        self.assertEqual(_git_config_get(self.bare, "core.fsyncMethod"), "batch")
+
+    def test_empty_objects_clone_is_rebuilt_on_reuse(self):
+        # 電源断でオブジェクトが空になった再利用クローンは、fsck 健全性プローブで検知して捨て、
+        # リモート（真実）から作り直す（ロック除去・rebase 中断とは別経路の自己回復）。
+        clone = os.path.join(self.clones, "empty-obj")
+        first = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        first.submit_request("req0", "seed", "submitter")
+        first.sync_push("seed main")                                      # main を実体化
+        self.assertGreater(_zero_loose_objects(clone), 0)                 # loose object を空に
+        self.assertFalse(first._probe_integrity())                       # 破損を検知できる
+        with mock.patch.object(kf.time, "sleep", lambda s: None):
+            bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")   # 再利用 → 作り直し
+        self.assertTrue(bus._probe_integrity())                          # 健全なクローンへ再生
+        self.assertEqual(_git_config_get(clone, "kiro-flow.busclone"), "1")
+        bus.submit_request("req1", "do it", "submitter")
+        bus.sync_push("submit req1")                                     # 作り直し後は普通に使える
+
+    def test_sync_push_self_heals_on_object_corruption(self):
+        # push 実行中にローカルオブジェクト破損が露見しても、恒久 push 失敗に陥らず作り直して回復する。
+        # （作り直しでクローンごと捨てるため in-flight の未 push 書き込みは失われ得るが、それは孤児
+        #  reclaim による再実行で回収される設計。ここでは「詰まらず、以後正常に使える」ことを確かめる。）
+        clone = os.path.join(self.clones, "push-heal")
+        bus = kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        bus.submit_request("req0", "seed", "submitter")
+        bus.sync_push("seed")
+        _zero_loose_objects(clone)                                        # 電源断でのサイズ 0 を模擬
+        bus.submit_request("req1", "after crash", "submitter")           # 破損クローンへ書き込み
+        with mock.patch.object(kf.time, "sleep", lambda s: None):
+            bus.sync_push("after crash")                                 # 破損を検知 → 作り直し（例外なし）
+        self.assertTrue(bus._probe_integrity())                          # クローンは健全化
+        # 健全化後の新規投入はリモートへ確実に届き、seed も無傷（共有リポジトリ側から確認）
+        bus.submit_request("req2", "recovered", "submitter")
+        bus.sync_push("recovered")
+        check = tempfile.mkdtemp(prefix="kf-check-")
+        subprocess.run(["git", "clone", "-q", self.bare, check], check=True, capture_output=True)
+        self.assertTrue(os.path.exists(os.path.join(check, "inbox", "req2.json")))
+        self.assertTrue(os.path.exists(os.path.join(check, "inbox", "req0.json")))
+
+    def test_corrupt_remote_gives_clear_diagnostic_not_reclone_loop(self):
+        # 共有リポジトリ本体（リモート）が壊れていると clone 自体が失敗する。作り直しでは直らないので、
+        # 「リモート破損」を明示した RuntimeError で中断し、無限の再クローンループに陥らない。
+        clone = os.path.join(self.clones, "corrupt-remote")
+        corrupt = subprocess.CompletedProcess(
+            ["git", "clone"], 128, "",
+            "error: object file .git/objects/ab/cd is empty\nfatal: loose object abcd is corrupt")
+        with mock.patch.object(kf.GitBus, "_clone_with_retry", return_value=corrupt):
+            with self.assertRaises(RuntimeError) as ctx:
+                kf.GitBus(clone, "run1", remote=self.bare, branch="main")
+        self.assertIn("共有リポジトリ", str(ctx.exception))
+        self.assertIn("破損", str(ctx.exception))
+
+    def test_is_corrupt_error_classifies_power_loss_signatures(self):
+        # 電源断由来の破損メッセージは破損と判定し、一過性のネットワーク/権限エラーは判定しない。
+        def proc(err):
+            return subprocess.CompletedProcess(["git"], 128, "", err)
+        for err in ("error: object file .git/objects/ab/cd is empty",
+                    "fatal: loose object abcd is corrupt",
+                    "error: sha1 mismatch abcd",
+                    "fatal: bad object HEAD"):
+            self.assertTrue(kf.GitBus._is_corrupt_error(proc(err)), err)
+        for err in ("fatal: unable to access 'https://x/': timeout",
+                    "fatal: Authentication failed",
+                    "error: failed to push some refs"):
+            self.assertFalse(kf.GitBus._is_corrupt_error(proc(err)), err)
+
     def test_make_bus_cleanup_removes_active_clones(self):
         # make_bus で作ったクローンは cleanup_active_clones でまとめて削除される。
         kf._active_clones.clear()
@@ -3728,6 +3821,59 @@ class StateGitSyncTests(unittest.TestCase):
         kf.state_sync(self._args(), force=True)
         got = self._other("check")
         self.assertFalse((got / "kf" / "runs" / "run1").exists())
+
+    def test_durable_write_config_on_state_clone_and_local_remote(self):
+        # state_git の管理クローンと、ローカルパスの共有リポジトリ本体にも durable-write を効かせる
+        # （電源断でのサイズ 0 オブジェクトを予防）。
+        args = self._args()
+        self._bus()
+        kf.state_sync(args, force=True)
+        sg = kf.state_git_for(args)
+        self.assertEqual(_git_config_get(sg.clone, "core.fsync"), "all")
+        self.assertEqual(_git_config_get(sg.clone, "core.fsyncMethod"), "batch")
+        self.assertEqual(_git_config_get(self.remote, "core.fsync"), "all")
+        self.assertEqual(_git_config_get(self.remote, "core.fsyncMethod"), "batch")
+
+    def test_empty_objects_state_clone_is_rebuilt_on_reuse(self):
+        # 電源断で state_git クローンのオブジェクトが空になったら、次プロセス（新インスタンス）の
+        # _ensure_clone が fsck で破損を検知して捨て、作り直す（manifest を失っても 3-way が再収束）。
+        args = self._args()
+        bus = self._bus()
+        bus.write_task({"id": "T1", "goal": "g", "deps": []})
+        kf.state_sync(args, force=True)                          # 管理クローン作成 + export
+        sg = kf.state_git_for(args)
+        clone = sg.clone
+        self.assertGreater(_zero_loose_objects(clone), 0)        # loose object を空に
+        self.assertFalse(sg._probe_integrity())                 # 破損を検知できる
+        kf._STATE_GITS.clear()                                   # 次プロセス相当（新インスタンス）
+        kf.state_sync(args, force=True)                          # 再利用 _ensure_clone → 作り直し
+        sg2 = kf.state_git_for(args)
+        self.assertTrue(sg2._probe_integrity())                 # 健全なクローンへ再生
+        self.assertEqual(_git_config_get(sg2.clone, "core.fsync"), "all")  # 予防設定も再適用
+        # 作り直し後も状態は共有リポジトリへ届く（export が回復）
+        got = self._other("check")
+        self.assertTrue((got / "kf" / "runs" / "run1" / "tasks" / "T1.json").exists())
+
+    def test_state_sync_self_heals_on_object_corruption_midflight(self):
+        # 稼働中（_ready 済み）に破損が露見しても state_sync は例外を漏らさず、クローンを捨てて
+        # 次回作り直す。呼び出し側（daemon ループ）は殺されない。
+        args = self._args()
+        self._bus()
+        kf.state_sync(args, force=True)                          # 初期化（_ready = True）
+        sg = kf.state_git_for(args)
+        # リモートを 1 コミット進めておき、次の pull --rebase が破損した HEAD を必ず読むようにする
+        other = self._other()
+        drop = other / "kf" / "inbox" / "req-x.json"
+        drop.parent.mkdir(parents=True, exist_ok=True)
+        drop.write_text('{"request":"x"}', encoding="utf-8")
+        self._commit_push(other, "advance remote")
+        _zero_loose_objects(sg.clone)                            # 電源断でのサイズ 0 を模擬
+        with mock.patch.object(kf.time, "sleep", lambda s: None):
+            kf.state_sync(args, force=True)                      # 例外を漏らさず作り直しを予約
+        self.assertFalse(sg._ready)                              # クローンは破棄され次回作り直し
+        self.assertFalse(os.path.isdir(os.path.join(sg.clone, ".git")))
+        kf.state_sync(args, force=True)                          # 次回同期で健全に作り直す
+        self.assertTrue(sg._probe_integrity())
 
 
 class DaemonStatusHeartbeatTests(unittest.TestCase):
