@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: `gc` が孤児 inbox 要求を掃除（不要 run の再起動を止める）
+
+- **背景**: `gc` は古い run を消すとき対応する inbox 要求・claim も併せて消す（`remove_run`）が、
+  **run を伴わない inbox 要求は掃除対象になっていなかった**。デーモンの受理ゲートは `run_exists` のみで
+  判定するため、run が消えて inbox だけ残った要求は「新規要求」に見え、**毎 poll で再 claim → orchestrator
+  起動 → 不要な run が走る**。旧バージョンや外部ツールが run だけ削除した／crash で `remove_run` が
+  途中終了した等で、こうした孤児 inbox が取り残されると再実行が止まらなかった。
+- **修正**: `gc` に「孤児 inbox 要求の掃除」を追加。`run_exists` が偽で、`--older-than` より古く、かつ
+  現在 claim されていない（lease 内で担当 daemon が居ない）inbox 要求を `remove_run` で掃除する
+  （claim/cancel マーカーも一緒に消える）。
+- **保護（誤削除しない）**: フレッシュな未受理要求（`--older-than` 未満）は正規の受理待ちとして残す。
+  lease 内で claim 中の要求（run 生成前でも処理中）は触らない。`--status` 指定時は「run の status で
+  絞る」意図なので孤児 inbox には手を出さない。`--dry-run` で対象を確認できる。
+- **テスト**: 孤児掃除・フレッシュ保護・claim 中保護・`--status` 非対象・`--dry-run` プレビュー・
+  run を持つ inbox の従来通りの掃除を検証（`GcOrphanInboxTests`）。
+
 ### kiro-flow: 電源断で空になった git オブジェクトへの耐性（durable write ＋ 自己修復）
 
 - **背景**: PC の定期シャットダウン/電源断が git の書き込み途中に起きると、loose object が
