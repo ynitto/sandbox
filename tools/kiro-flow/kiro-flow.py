@@ -621,6 +621,33 @@ class Bus:
         ids = self.task_ids()
         return bool(ids) and all(self.node_state(i) in TERMINAL for i in ids)
 
+    def retry_failed(self) -> "list[str]":
+        """failed 状態の run を「再実行できる状態」へ戻す。失敗ノード（results が failed）の結果と
+        claim を消して pending へ戻し（＝再 claim・再実行の対象にする）、確定済み done ノードは温存する。
+        併せて meta の終端・孤児簿記（failure_reason/superseded/orphaned/resume_count 等）を掃除し、
+        status を running に戻す。戻したノード id 一覧を返す（commit/push は呼び出し側）。
+
+        failed run はそのままでは再開しても全ノードが終端（node_state=failed）のまま静止し、
+        何も再実行されない。人/消費者の明示 retry でだけこの reset を行い、失敗した所だけをやり直す。"""
+        reset: "list[str]" = []
+        for nid in self.task_ids():
+            res = self.read_result(nid)
+            if res and res.get("status") == "failed":
+                try:
+                    os.remove(self.result_path(nid))
+                except OSError:
+                    pass
+                shutil.rmtree(self._claim_dir(nid), ignore_errors=True)   # 失効前の claim も掃除
+                reset.append(nid)
+        meta = read_json(self.meta_path) or {}
+        for k in ("failure_reason", "superseded", "superseded_by",
+                  "resume_count", "resume_progress"):
+            meta.pop(k, None)
+        meta["status"] = "running"
+        meta["updated_at"] = now_iso()
+        write_json_atomic(self.meta_path, meta)
+        return reset
+
     def event(self, who: str, kind: str, **extra) -> None:
         rec = {"ts": now_iso(), "who": who, "kind": kind, **extra}
         os.makedirs(self.events_dir, exist_ok=True)
@@ -4287,7 +4314,16 @@ def cmd_run(args) -> int:
     if resuming:
         meta = probe.run_meta(args.run_id)
         args.request = meta.get("request", "")
-        print(f">>> 既存 run {args.run_id} を再開します（status={meta.get('status')}）", flush=True)
+        status = meta.get("status")
+        if status == "failed":
+            # failed run の再実行（明示 retry）: 失敗ノードを pending へ戻し done は温存して続きから
+            # やり直す。これをしないと全ノードが終端のまま静止し、再開しても何も再実行されない。
+            reset = probe.retry_failed()
+            probe.sync_push(f"retry failed run {args.run_id}: reset {len(reset)} failed node(s)")
+            print(f">>> 失敗 run {args.run_id} を再実行します"
+                  f"（失敗ノード {len(reset)} 件を pending へ戻し、done は温存）", flush=True)
+        else:
+            print(f">>> 既存 run {args.run_id} を再開します（status={status}）", flush=True)
     else:
         if not args.request:
             print("エラー: 新規実行には <要求> が必要です（再開なら既存の --run-id を指定）",

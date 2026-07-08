@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: failed run を `run --run-id` で再実行できるようにする（失敗ノードを pending へ戻す）
+
+- **背景**: `failed` になった run を `kiro-flow run --run-id <failed>` で再開しても、実際には何も
+  再実行されなかった。resume は「既存グラフがあれば計画をやり直さず再開」する設計だが、失敗ノードの
+  `results/<id>.json`（status=failed）が残っているため `node_state` が terminal のままで、`all_terminal()` が
+  真＝全ノード終端で静止し、`set_status("running")` すら通らずそのまま再度 failed に落ちていた。daemon も
+  終端 run は孤児 reclaim しない（無限リトライ防止）ため、failed run は事実上どの経路でも再実行できなかった。
+- **修正**: `Bus.retry_failed()` を追加し、`cmd_run` が既存 run-id の status が `failed` のときに呼ぶ。
+  失敗ノードの result と claim を消して **pending へ戻し**（＝再 claim・再実行の対象化）、確定済み `done`
+  ノードは温存する（続きからやり直す）。併せて meta の終端/孤児簿記（`failure_reason` / `superseded` /
+  `resume_count` 等）を掃除して status を `running` に戻す。以降の resume ループが失敗ノードだけを再実行する。
+- **尊重**: `done`（正常完了）と `canceled`（人の明示停止）は終端として扱い再実行しない。retry は
+  `failed` に対する人/消費者の明示操作でのみ行う（daemon の自動リトライは従来どおり無し＝暴走防止）。
+  結果未書き込みのまま failed になった（orchestrator クラッシュ等の）pending ノードも再開対象に含まれる。
+- **テスト**: 失敗ノードの pending 復帰・done 温存・簿記掃除・結果未書き込みノードの再開を検証
+  （`RetryFailedRunTests`）。
+
 ### kiro-projects: charter.md の変更を backlog に反映（消化可能タスクがあっても再計画）
 
 - **背景**: kiro-projects-viewer 等で charter.md を編集して保存しても、backlog（タスク）が変わらない

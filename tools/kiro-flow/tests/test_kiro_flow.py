@@ -297,6 +297,63 @@ class RunFailureTests(unittest.TestCase):
         self.assertEqual(self.bus.run_meta("run1")["status"], "done")   # 正常完了を上書きしない
 
 
+class RetryFailedRunTests(unittest.TestCase):
+    """failed run の明示 retry（`run --run-id <failed>`）: 失敗ノードを pending へ戻して再実行でき
+    るようにし、確定済み done は温存する。これが無いと failed run は再開しても全ノードが終端のまま
+    静止し、何も再実行されない（＝failed run を再実行できない）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-retry-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("do it")
+
+    def _task(self, tid, deps=None):
+        self.bus.write_task({"id": tid, "goal": "g", "deps": deps or []})
+        graph = self.bus.read_graph() or {"strategy": {}, "nodes": {}, "iteration": 0}
+        graph["nodes"][tid] = {"goal": "g", "deps": deps or []}
+        self.bus.write_graph(graph)
+
+    def test_resets_failed_nodes_keeps_done(self):
+        self._task("t1")
+        self._task("t2")
+        self.bus.write_result("t1", "w", "done", "ok")
+        self.bus.write_result("t2", "w", "failed", "boom")
+        self.bus.try_claim("t2", "w-old", 9999)          # 失効前の claim が残っていても掃除する
+        self.bus.mark_run_failed("run1", "t2 failed")
+        self.assertTrue(self.bus.all_terminal())          # retry 前は全ノード終端で静止
+
+        reset = self.bus.retry_failed()
+        self.assertEqual(reset, ["t2"])
+        self.assertEqual(self.bus.node_state("t1"), "done")      # done は温存（続きから）
+        self.assertEqual(self.bus.node_state("t2"), "pending")   # failed → pending（再実行対象）
+        self.assertFalse(self.bus.all_terminal())                # もう静止しない＝再実行される
+        meta = self.bus.run_meta("run1")
+        self.assertEqual(meta["status"], "running")
+        self.assertNotIn("failure_reason", meta)
+
+    def test_reruns_incomplete_when_no_failed_results(self):
+        # orchestrator クラッシュ等で failed だが結果未書き込みの（pending の）ノードも再開対象にする
+        self._task("t1")
+        self.bus.mark_run_failed("run1", "orchestrator crash")
+        reset = self.bus.retry_failed()
+        self.assertEqual(reset, [])                       # 失敗結果は無い
+        self.assertEqual(self.bus.node_state("t1"), "pending")
+        self.assertEqual(self.bus.run_meta("run1")["status"], "running")
+
+    def test_clears_terminal_and_orphan_bookkeeping(self):
+        self._task("t1")
+        self.bus.write_result("t1", "w", "failed", "x")
+        self.bus.record_resume("run1")                    # resume_count/resume_progress を積む
+        self.bus.mark_run_superseded("run1", "run2")      # superseded 簿記＋failed 終端
+        self.bus.retry_failed()
+        meta = self.bus.run_meta("run1")
+        for k in ("failure_reason", "superseded", "superseded_by",
+                  "resume_count", "resume_progress"):
+            self.assertNotIn(k, meta)
+        self.assertEqual(meta["status"], "running")
+
+
 class OrphanRecoveryTests(unittest.TestCase):
     """owning daemon が消失した非終端 run（孤児）を生存リースで検知して回収する。
     これが無いと、再起動した新プロセスが前プロセスの status:running を見て何もせず、
