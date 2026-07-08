@@ -72,6 +72,58 @@ class TestRefScope(unittest.TestCase):
         self.assertFalse(bot.ref_in_scope("refs/heads/feature/x", inc, exc))
 
 
+class TestBuildPrRequest(unittest.TestCase):
+    def test_gitlab_mr(self):
+        url, headers, payload = bot.build_pr_request(
+            "gitlab", "http://gitlab.local/api/v4", "group/sub/name", "TOK",
+            "sync/x", "main", "title", "body")
+        self.assertEqual(url, "http://gitlab.local/api/v4/projects/group%2Fsub%2Fname/merge_requests")
+        self.assertEqual(headers["PRIVATE-TOKEN"], "TOK")
+        self.assertEqual(payload["source_branch"], "sync/x")
+        self.assertEqual(payload["target_branch"], "main")
+        self.assertEqual(payload["description"], "body")
+
+    def test_gitea_pr(self):
+        url, headers, payload = bot.build_pr_request(
+            "gitea", "http://gitea.local:3000/api/v1", "team/name", "TOK",
+            "sync/x", "main", "title", "body")
+        self.assertEqual(url, "http://gitea.local:3000/api/v1/repos/team/name/pulls")
+        self.assertEqual(headers["Authorization"], "token TOK")
+        self.assertEqual(payload["head"], "sync/x")
+        self.assertEqual(payload["base"], "main")
+
+    def test_unknown_forge(self):
+        with self.assertRaises(RuntimeError):
+            bot.build_pr_request("bitbucket", "http://x/api", "a/b", "T", "h", "m", "t", "b")
+
+    def test_project_path_from_url(self):
+        self.assertEqual(bot._project_path_from_url("https://oauth2:tok@gitlab.local/g/s/n.git"), "g/s/n")
+        self.assertEqual(bot._project_path_from_url("http://gitea.local:3000/team/repo.git"), "team/repo")
+
+
+class TestConfigAliases(unittest.TestCase):
+    def test_working_upstream_aliases(self):
+        import json as _json
+        import tempfile as _tf
+        cfgdata = {
+            "repos": [{
+                "name": "p", "workdir": "/tmp/x",
+                "working": {"url": "http://gitlab.local/team/p.git", "token": "W"},
+                "upstream": {"url": "https://up.example.com/team/p.git", "token": "U"},
+            }],
+            "integration": {"forge": "gitlab", "api_base": "http://gitlab.local/api/v4",
+                            "create_pr": True},
+        }
+        f = _tf.NamedTemporaryFile("w", suffix=".json", delete=False)
+        _json.dump(cfgdata, f)
+        f.close()
+        cfg = bot.load_config(f.name)
+        self.assertEqual(cfg.forge, "gitlab")
+        self.assertTrue(cfg.create_pr)
+        self.assertEqual(cfg.repos[0].gitea_url, "http://gitlab.local/team/p.git")   # working スロット
+        self.assertEqual(cfg.repos[0].gitlab_url, "https://up.example.com/team/p.git")  # upstream スロット
+
+
 # --------------------------------------------------------------------------- #
 # end-to-end（ローカル git で Gitea/GitLab を模す）
 # --------------------------------------------------------------------------- #

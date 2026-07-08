@@ -74,6 +74,24 @@ python3 -m unittest tests.test_gitea_sync_bot -v
 「双方向 ff」「分岐時に GitLab を動かさない」「feature ブランチを push しない」を end-to-end 検証する
 （git のみで完結・ネットワーク不要）。
 
+## GitLab ⇄ GitLab でも使える（案A）
+
+本ボットは remote URL しか見ないため、**両側を GitLab にしても動く**（例: ローカル GitLab ⇄ 上流 GitLab）。
+その場合の設定:
+
+- リポジトリの remote は `working:`（作業側）/ `upstream:`（マスター側）で書ける（`gitea:`/`gitlab:` の別名）。
+- 分岐時の統合 MR/PR 起票先の forge を選ぶ:
+  ```yaml
+  integration:
+    forge: "gitlab"                       # "gitea"(既定) | "gitlab"
+    api_base: "http://gitlab.local/api/v4"
+    create_pr: true                       # 旧 create_gitea_pr も後方互換で有効
+  ```
+- `forge: gitlab` なら `/api/v4/projects/{path}/merge_requests`、`forge: gitea` なら `/repos/{owner}/{name}/pulls` に起票する。
+
+具体的な構成は [`tools/local-gitlab-stack/`](../local-gitlab-stack/) と
+[`docs/designs/plan-a-local-gitlab-design.md`](../../docs/designs/plan-a-local-gitlab-design.md) を参照。
+
 ## 制約
 
 - 完全リアルタイムの双方向同期は保証しない（fast-forward のみ自動・分岐は人手）。

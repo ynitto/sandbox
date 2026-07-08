@@ -1,0 +1,38 @@
+# 案A: ローカル GitLab CE（WSL2+Docker）
+# 設計: docs/designs/plan-a-local-gitlab-design.md ／ 手順: ./README.md
+#
+# 起動: docker compose up -d
+# 初回 root パスワード: docker exec -it gitlab cat /etc/gitlab/initial_root_password
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:17.11.5-ce.0   # バージョンは固定し、段階的に更新する
+    container_name: gitlab
+    hostname: gitlab.local
+    restart: always
+    shm_size: "256m"
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://gitlab.local'
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+
+        # --- 個人PC / 10名想定の省メモリ調整（CI 不要前提）---
+        puma['worker_processes'] = 2
+        sidekiq['max_concurrency'] = 9
+        prometheus_monitoring['enable'] = false
+        # CI/CD は使わないので既定で無効化（負荷とUIを削減）
+        gitlab_rails['gitlab_default_projects_features_builds'] = false
+        # コンテナレジストリ・Pages も未使用なら無効のまま
+    ports:
+      - "80:80"      # HTTP（TLS 化するなら 443 とリバースプロキシを併用）
+      - "443:443"
+      - "2222:22"    # GitLab SSH（Windows/WSL の 22 と衝突回避のため 2222）
+    volumes:
+      - ./config:/etc/gitlab        # gitlab.rb / gitlab-secrets.json（要バックアップ）
+      - ./logs:/var/log/gitlab
+      - ./data:/var/opt/gitlab      # リポジトリ・DB・アップロード
+    healthcheck:
+      test: ["CMD", "/opt/gitlab/bin/gitlab-healthcheck", "--fail", "--max-time", "10"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 600s            # 初回初期化は数分かかる

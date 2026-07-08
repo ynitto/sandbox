@@ -130,8 +130,9 @@ class Config:
     state_dir: str = ""
     git_timeout: int = 120
     integration_branch_prefix: str = "sync/integrate"
-    create_gitea_pr: bool = False           # 分岐時に Gitea API で MR を自動起票するか
-    gitea_api_base: str = ""                 # 例: http://gitea.local:3000/api/v1
+    create_pr: bool = False                  # 分岐時に作業側 forge の API で MR を自動起票するか
+    forge: str = "gitea"                     # 作業側 forge の種別: "gitea" | "gitlab"
+    api_base: str = ""                       # 例: http://gitea.local:3000/api/v1 or http://gitlab.local/api/v4
     webhook_host: str = "0.0.0.0"
     webhook_port: int = 9000
     webhook_secret: str = ""
@@ -178,8 +179,10 @@ def load_config(path):
 
     integ = data.get("integration", {}) or {}
     cfg.integration_branch_prefix = integ.get("branch_prefix", cfg.integration_branch_prefix)
-    cfg.create_gitea_pr = bool(integ.get("create_gitea_pr", False))
-    cfg.gitea_api_base = _expand(integ.get("gitea_api_base", ""))
+    # create_pr / api_base（旧 create_gitea_pr / gitea_api_base を後方互換で受ける）
+    cfg.create_pr = bool(integ.get("create_pr", integ.get("create_gitea_pr", False)))
+    cfg.forge = integ.get("forge", "gitea")
+    cfg.api_base = _expand(integ.get("api_base", integ.get("gitea_api_base", "")))
 
     wh = data.get("webhook", {}) or {}
     cfg.webhook_host = wh.get("host", cfg.webhook_host)
@@ -187,8 +190,10 @@ def load_config(path):
     cfg.webhook_secret = _expand(wh.get("secret", ""))
 
     for r in data.get("repos", []) or []:
-        gitea = r.get("gitea", {}) or {}
-        gitlab = r.get("gitlab", {}) or {}
+        # 作業側 = gitea/working スロット、マスター側 = gitlab/upstream/master スロット。
+        # 案A（ローカル GitLab を作業インスタンス）では working=ローカル GitLab, upstream=上流 GitLab。
+        gitea = r.get("gitea") or r.get("working") or {}
+        gitlab = r.get("gitlab") or r.get("upstream") or r.get("master") or {}
         cfg.repos.append(RepoConfig(
             name=r["name"],
             workdir=_expand(r["workdir"]),
@@ -378,50 +383,75 @@ def reconcile_ref(mirror: LocalMirror, cfg: Config, state: State, ref: str,
 
 
 def handle_diverged(mirror: LocalMirror, cfg: Config, ref: str, gitea_sha, gitlab_sha, dry_run=False):
-    """分岐時: GitLab 側コミットを Gitea に統合ブランチとして取り込み、MR を起票する（§3.4）。
+    """分岐時: マスター(上流)側コミットを作業側に統合ブランチとして取り込み、MR を起票する（§3.4）。
 
-    どちらのコミットも消さない。GitLab へは push しない（人手のマージ結果を待つ）。
+    どちらのコミットも消さない。マスター側へは push しない（人手のマージ結果を待つ）。
+    作業側 forge が gitea なら PR、gitlab なら MR を起票する（案A ではローカル GitLab に MR）。
     """
     branch_name = ref.replace("refs/heads/", "")
-    integ = f"{cfg.integration_branch_prefix}-gitlab-{branch_name}-{short(gitlab_sha)}"
+    integ = f"{cfg.integration_branch_prefix}-upstream-{branch_name}-{short(gitlab_sha)}"
     integ_ref = f"refs/heads/{integ}"
-    log(f"  DIVERGED: 統合ブランチ {integ} を Gitea に作成（gitlab {short(gitlab_sha)} を取り込み）")
-    # GitLab のコミットを Gitea に統合用ブランチとして push（sync/* は allowlist 外なので GitLab へは伝播しない）
+    log(f"  DIVERGED: 統合ブランチ {integ} を作業側に作成（上流 {short(gitlab_sha)} を取り込み）")
+    # 上流のコミットを作業側に統合用ブランチとして push（sync/* は allowlist 外なのでマスターへは伝播しない）
     mirror.push("gitea", mirror.local_ref("gitlab", ref), integ_ref, dry_run=dry_run)
-    if cfg.create_gitea_pr and not dry_run:
+    if cfg.create_pr and not dry_run:
         try:
-            create_gitea_pull_request(mirror.repo, cfg, head=integ, base=branch_name,
-                                      title=f"[sync] {branch_name} の分岐を統合",
-                                      body=("GitLab 側の分岐コミット " + gitlab_sha +
-                                            " を取り込みました。競合を解決してマージしてください。"
-                                            "\n\n(gitea-sync-bot が自動起票)"))
-            log(f"  Gitea に統合 MR を起票しました（{integ} → {branch_name}）")
+            create_pull_request(mirror.repo, cfg, head=integ, base=branch_name,
+                                title=f"[sync] {branch_name} の分岐を統合",
+                                body=("上流の分岐コミット " + gitlab_sha +
+                                      " を取り込みました。競合を解決してマージしてください。"
+                                      "\n\n(gitea-sync-bot が自動起票)"))
+            log(f"  作業側 forge({cfg.forge})に統合 MR/PR を起票（{integ} → {branch_name}）")
         except Exception as e:  # noqa: BLE001  API 失敗で同期全体を止めない
-            log(f"  警告: Gitea MR 起票に失敗（手動で作成してください）: {e}")
+            log(f"  警告: MR/PR 起票に失敗（手動で作成してください）: {e}")
 
 
-def create_gitea_pull_request(repo: RepoConfig, cfg: Config, head, base, title, body):
-    """Gitea API で PR を起票する（owner/name は gitea_url から推定）。"""
-    if not cfg.gitea_api_base or not repo.gitea_token:
-        raise RuntimeError("gitea_api_base と gitea トークンが必要です")
-    owner, name = _owner_repo_from_url(repo.gitea_url)
-    url = f"{cfg.gitea_api_base.rstrip('/')}/repos/{owner}/{name}/pulls"
-    payload = json.dumps({"head": head, "base": base, "title": title, "body": body}).encode()
-    req = urllib.request.Request(url, data=payload, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"token {repo.gitea_token}")
+def _project_path_from_url(url):
+    """http://host/group/sub/name.git → 'group/sub/name'（host と .git を除いたパス）。"""
+    import urllib.parse
+    path = urllib.parse.urlsplit(url).path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    return path
+
+
+def build_pr_request(forge, api_base, project_path, token, head, base, title, body):
+    """作業側 forge に応じた MR/PR 作成リクエスト (url, headers, payload) を組み立てる純粋関数。
+
+    - gitea : POST {api_base}/repos/{owner}/{name}/pulls          （Authorization: token）
+    - gitlab: POST {api_base}/projects/{urlenc(path)}/merge_requests （PRIVATE-TOKEN）
+    """
+    import urllib.parse
+    api = api_base.rstrip("/")
+    if forge == "gitlab":
+        pid = urllib.parse.quote(project_path, safe="")
+        url = f"{api}/projects/{pid}/merge_requests"
+        headers = {"Content-Type": "application/json", "PRIVATE-TOKEN": token}
+        payload = {"source_branch": head, "target_branch": base,
+                   "title": title, "description": body}
+    elif forge == "gitea":
+        parts = project_path.split("/")
+        owner, name = parts[0], parts[-1]
+        url = f"{api}/repos/{owner}/{name}/pulls"
+        headers = {"Content-Type": "application/json", "Authorization": f"token {token}"}
+        payload = {"head": head, "base": base, "title": title, "body": body}
+    else:
+        raise RuntimeError(f"未対応の forge: {forge}")
+    return url, headers, payload
+
+
+def create_pull_request(repo: RepoConfig, cfg: Config, head, base, title, body):
+    """作業側 forge(gitea/gitlab) の API で MR/PR を起票する。"""
+    if not cfg.api_base or not repo.gitea_token:
+        raise RuntimeError("integration.api_base と作業側トークンが必要です")
+    project_path = _project_path_from_url(repo.gitea_url)
+    url, headers, payload = build_pr_request(
+        cfg.forge, cfg.api_base, project_path, repo.gitea_token, head, base, title, body)
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
+    for k, v in headers.items():
+        req.add_header(k, v)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode())
-
-
-def _owner_repo_from_url(url):
-    """http://host/owner/name.git → (owner, name)。"""
-    tail = url.rstrip("/").split("/")
-    name = tail[-1]
-    if name.endswith(".git"):
-        name = name[:-4]
-    owner = tail[-2] if len(tail) >= 2 else ""
-    return owner, name
 
 
 def resolve_refs(mirror: LocalMirror, cfg: Config):
