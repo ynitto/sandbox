@@ -1,0 +1,73 @@
+# gitea-sync-bot 設定ファイルサンプル
+# このファイルを config.yaml にコピーして編集してください。
+# 設計正典: docs/designs/gitea-gitlab-sync-design.md
+#
+# トークンは直書きせず環境変数展開（$VAR / ${VAR}）を使ってください。
+#   Windows(PowerShell): $env:GITLAB_TOKEN="glpat-xxxx"
+#   Windows(サービス)    : 環境変数として登録（後述の Windows ガイド参照）
+
+# ---------------------------------------------------------------------------
+# 同期対象 ref の allowlist（§3.6）
+#   include に一致し、exclude に一致しない ref だけを同期する。
+#   → Gitea 発の作業ブランチ(feature/* 等)は GitLab へ push されない。
+# ---------------------------------------------------------------------------
+sync:
+  include:
+    - "refs/heads/main"
+    - "refs/heads/master"
+    - "refs/heads/release/*"
+    - "refs/heads/hotfix/*"
+    - "refs/tags/*"
+  exclude:                      # include より優先
+    - "refs/heads/feature/*"
+    - "refs/heads/fix/*"
+    - "refs/heads/sync/*"       # ボットが起票する統合ブランチ
+
+# ---------------------------------------------------------------------------
+# GitLab 負荷を抑える設定（§3.7）
+# ---------------------------------------------------------------------------
+# webhook を主トリガーにするので、cron は長間隔のバックストップにする。
+poll_interval_minutes: 20       # webhook 取りこぼし回収用（短周期ポーリングにしない）
+debounce_seconds: 5             # 連続 push をまとめて 1 回の同期にする
+git_timeout: 120                # git 1 コマンドあたりのタイムアウト（秒）
+
+# ボット専用のローカル作業/状態ディレクトリ
+state_dir: "C:/gitea-sync/state"
+
+# ---------------------------------------------------------------------------
+# 分岐（diverged）時の統合 MR（§3.4）
+# ---------------------------------------------------------------------------
+integration:
+  branch_prefix: "sync/integrate"   # 統合ブランチ名の接頭辞（exclude に入れておくこと）
+  create_gitea_pr: true             # Gitea API で統合 MR を自動起票するか
+  gitea_api_base: "http://gitea.local:3000/api/v1"
+
+# ---------------------------------------------------------------------------
+# webhook 待受（--serve）
+# ---------------------------------------------------------------------------
+webhook:
+  host: "0.0.0.0"
+  port: 9000
+  secret: "${SYNC_WEBHOOK_SECRET}"  # Gitea/GitLab の webhook secret と一致させる
+
+# ---------------------------------------------------------------------------
+# 同期するリポジトリ（複数可）
+#   url は "認証情報を埋め込まない" ベース URL を推奨し、認証は資格情報ヘルパや
+#   トークン埋め込み URL（$GITLAB_TOKEN 展開）で渡す。
+# ---------------------------------------------------------------------------
+repos:
+  - name: myproject
+    workdir: "C:/gitea-sync/myproject"    # ボット専用のローカル git（自動 init）
+    gitea:
+      url: "http://gitea.local:3000/team/myproject.git"
+      token: "${GITEA_TOKEN}"             # 統合 MR 起票用（create_gitea_pr=true のとき）
+    gitlab:
+      # push/fetch に認証が必要なら oauth2:token を URL に埋める例:
+      #   url: "https://oauth2:${GITLAB_TOKEN}@gitlab.example.com/team/myproject.git"
+      url: "https://gitlab.example.com/team/myproject.git"
+      token: "${GITLAB_TOKEN}"
+
+  # - name: another
+  #   workdir: "C:/gitea-sync/another"
+  #   gitea:  { url: "http://gitea.local:3000/team/another.git" }
+  #   gitlab: { url: "https://gitlab.example.com/team/another.git" }
