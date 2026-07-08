@@ -3713,6 +3713,84 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(planned["n"], 1)   # 1 回だけ plan（消化可能タスクがある間は再分解しない）
             self.assertTrue((d / "needs" / "demo.md").exists())
 
+    def test_charter_plan_signature_is_content_based(self):
+        # 署名は「分解に効く内容」のハッシュ。同一内容は一致、goal 変更で変化、acceptance だけの
+        # 変更では変化しない（acceptance は done 判定に効くが分解入力ではないため）。
+        a = km.parse_charter("# Charter: x\n## goal\nやる\n## constraints\n- c1\n")
+        a2 = km.parse_charter("# Charter: x\n## goal\nやる\n## constraints\n- c1\n")
+        b = km.parse_charter("# Charter: x\n## goal\n別のことをやる\n## constraints\n- c1\n")
+        c = km.parse_charter("# Charter: x\n## goal\nやる\n## constraints\n- c1\n"
+                             "## acceptance\n- test -f z\n")
+        self.assertEqual(km._charter_plan_signature(a), km._charter_plan_signature(a2))
+        self.assertNotEqual(km._charter_plan_signature(a), km._charter_plan_signature(b))
+        self.assertEqual(km._charter_plan_signature(a), km._charter_plan_signature(c))
+
+    def test_charter_change_replans_even_with_consumable_tasks(self):
+        # viewer 等で charter を編集したら、消化可能タスクが残っていても次 run で再計画され
+        # backlog に差分が反映される（編集しても backlog が変わらない問題の修正）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            calls = {"n": 0}
+
+            def planner(ch):
+                calls["n"] += 1
+                return [{"title": f"タスク{calls['n']}", "verify": f"test -f {flag}"}]
+
+            def runner(c):                        # blocked で 1 サイクル抜ける（タスクは消化可能のまま残す）
+                r = _drained()
+                r["counts"]["blocked"] = 1
+                return r
+
+            # 1回目: 初回計画（消化可能タスク無し）→ planner 呼ばれ、charter 署名がベースライン記録
+            km.cmd_project(cfg, planner=planner, runner=runner)
+            self.assertEqual(calls["n"], 1)
+            base_sig = km.load_project_state(cfg)["planned_charter_sig"]
+            self.assertTrue(any(t.consumable() for t in km.load_tasks(cfg.backlog)))  # 消化可能タスクが残る
+
+            # 2回目: charter 未変更 → 消化可能タスクがあるので再分解しない
+            km.cmd_project(cfg, planner=planner, runner=runner)
+            self.assertEqual(calls["n"], 1)
+
+            # charter の goal を変更（分解に効く内容 → 署名が変わる）
+            write_charter(d, CHARTER.replace("{flag}", str(flag)).replace(
+                "CSV を要約する CLI を完成させる。", "JSON を要約する CLI を完成させる。"))
+
+            # 3回目: charter 変更検知 → 消化可能タスクがあっても再計画され、新タスクが入る
+            km.cmd_project(cfg, planner=planner, runner=runner)
+            self.assertEqual(calls["n"], 2)
+            self.assertNotEqual(km.load_project_state(cfg)["planned_charter_sig"], base_sig)
+            titles = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertIn("タスク2", titles)      # charter 差分が生む新規タスクが backlog に反映
+
+    def test_acceptance_only_edit_does_not_replan(self):
+        # acceptance だけの変更は分解入力でないので再計画を誘発しない（評価側で反映される）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            calls = {"n": 0}
+
+            def planner(ch):
+                calls["n"] += 1
+                return [{"title": f"タスク{calls['n']}", "verify": f"test -f {flag}"}]
+
+            def runner(c):
+                r = _drained()
+                r["counts"]["blocked"] = 1
+                return r
+
+            km.cmd_project(cfg, planner=planner, runner=runner)
+            self.assertEqual(calls["n"], 1)
+            # acceptance 行だけ変える（goal/制約/成果物は不変 → 署名は変わらない想定）
+            write_charter(d, CHARTER.replace("{flag}", str(flag)).replace(
+                f"- `test -f {flag}`", f"- `test -f {flag}`\n- `test -d {d}`"))
+            km.cmd_project(cfg, planner=planner, runner=runner)
+            self.assertEqual(calls["n"], 1)      # 再計画されない
+
     def test_unmet_acceptance_generates_improvement(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
