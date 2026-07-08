@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: 電源断で空になった git オブジェクトへの耐性（durable write ＋ 自己修復）
+
+- **背景**: PC の定期シャットダウン/電源断が git の書き込み途中に起きると、loose object が
+  **サイズ 0** で残る（git は既定で「一時ファイル→ rename」する際にオブジェクト *中身の fsync を
+  しない*ため、rename のメタデータだけがジャーナルで残り中身が未フラッシュになる）。症状は
+  `error: object file .git/objects/xx/yy… is empty` で、以後 add/commit/push/checkout/pull が全滅し、
+  git バス（`--git`）／状態鏡（`state_git`）が**同期できない**状態に陥っていた。既存の自己回復は
+  ロック残骸・中断 rebase だけを対象にしており、空オブジェクトは検知も修復もできなかった。
+- **予防（durable write）**: kiro-flow が管理するクローンと、リモートがローカルパスの共有リポジトリ
+  本体（push を受ける `receive-pack` 側）に `core.fsync=all` / `core.fsyncMethod=batch` を冪等に設定し、
+  rename 前にオブジェクト内容を fsync させる（`batch` により tiny JSON の書き込みでも安価）。古い git が
+  値を知らなくても無害（未知トークンは無視される）。URL 越しのサーバ本体は手動設定を README に明記。
+- **自己修復**: 壊れたクローンを `git fsck --connectivity-only` の軽量プローブで検知し、捨ててリモート
+  （真実）から作り直す。**クローン再利用時（起動時）** に加え、**`sync_push`/`sync_pull` 実行中**に破損が
+  露見した場合も同様に作り直して続行する。未 push の作業は孤児 reclaim が続きから再実行するため
+  情報は失われない。同じ耐性を `state_git`（`StateGit`）にも適用（manifest を失っても 3-way が再収束）。
+- **リモート本体破損の明示**: 共有リポジトリ本体自体が壊れて clone/fetch が失敗する場合（作り直しでは
+  直らない）は「リモート破損の可能性」を明示した `RuntimeError` で中断し、無限の再クローンループを避ける。
+  復旧手順（健全クローンからの補填・`push --mirror`・リモート側の `core.fsync` 設定）を README に追記。
+- **テスト**: サイズ 0 オブジェクトを注入する障害注入で、GitBus/StateGit の「予防設定の適用」「再利用時の
+  作り直し」「`sync_push`/`state_sync` 実行中の自己修復」「リモート破損時の明示中断」「破損メッセージの
+  分類（一過性エラーとの切り分け）」を検証（`GitDistributedTests` / `StateGitSyncTests`）。
+
 ### kiro-flow: gitlab 委譲の承認待ちを worker スロットから切り離す（park & poll）＋ `cancel` ＋ 同時イシュー上限
 
 - **背景**: `--executor gitlab` は各タスクを GitLab イシューにして委譲し、決着（MR 全マージ＝承認／
