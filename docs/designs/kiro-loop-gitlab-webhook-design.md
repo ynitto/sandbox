@@ -1,4 +1,4 @@
-# kiro-loop GitLab Webhook（inbound）設計案
+# kiro-loop 汎用 inbound Webhook 設計案（具体例: GitLab）
 
 > 作成日: 2026-07-09
 > 対象ファイル: `tools/kiro-loop/kiro-loop.py`, `tools/kiro-loop/kiro-loop.yaml.example`
@@ -46,29 +46,43 @@
 ## 1. 背景・目的
 
 既存の `event_hook` は kiro-loop 側からの **ポーリング型**（`check()` を定期呼び出し）。
-本拡張はその逆で、GitLab から kiro-loop への **プッシュ型 webhook** を受ける。
+本拡張はその逆で、外部システムから kiro-loop への **プッシュ型 webhook** を受ける。
+
+**設計の主眼は「provider 非依存の汎用 inbound webhook コア」**であり、GitLab は
+その上に載る **hook の一具体例**にすぎない。GitLab / GitHub / Slack / 自作システムなど
+どの送信元でも、コア（HTTP サーバ・ルーティング・キュー・テンプレート注入）は共通で、
+**送信元固有の知識（どのヘッダにイベント種別が入るか、どう署名検証するか、payload の
+どこに何があるか）は全て hook スクリプト側に閉じる**。
 
 - kiro-loop 起動中だけ HTTP サーバを常駐させる。
-- GitLab の Webhook を `POST /hooks/<name>` で受ける。**パスの `<name>`** で
-  どのセッションに流すかを決める。
-- 受信ペイロード（+ヘッダ+クエリ）を **hook スクリプトでパースして整形**し、
+- Webhook を `POST /hooks/<name>` で受ける。**パスの `<name>`** でどのセッションに
+  流すかを決める（provider 非依存）。
+- 受信リクエスト（ヘッダ・生ボディ・クエリ）を **hook スクリプトでパースして辞書化**し、
   「後段」= 所定のセッションへプロンプトとして送る。
+
+### 責務分界（provider 非依存にするための線引き）
+
+| レイヤ | 責務 | provider 依存 |
+|--------|------|:---:|
+| **コア**（WebhookServer） | HTTP 受信 / `<name>` ルーティング / 汎用共有シークレット検証 / ボディサイズ制限 / キュー投函 / テンプレート注入 | ✗ 非依存 |
+| **hook**（例: GitLab） | イベント種別の判定・フィルタ / 署名・トークンの独自検証 / payload パース → key-value 辞書 | ✓ 依存 |
+| **テンプレート**（`prompt`） | 文言（辞書キーを `{key}` で参照） | ✗ 非依存 |
 
 対比表:
 
 | | event_hook | webhook（本拡張） |
 |--|-----------|------------------|
-| 起点 | kiro-loop（スケジュール発火） | GitLab（HTTP リクエスト） |
+| 起点 | kiro-loop（スケジュール発火） | 外部システム（HTTP リクエスト） |
 | 方向 | pull | push |
 | フック関数 | `check() -> str \| None`（完成プロンプト） | `handle(ctx) -> dict \| None`（パラメータ辞書） |
 | プロンプト整形 | フック内で完結 | フックは**辞書**を返し、エントリの `prompt` テンプレートへ注入 |
 | ルーティング | プロンプトエントリ自身 | パスの `<name>` → エントリ |
 | 実行スレッド | scheduler スレッド | HTTP サーバスレッド |
 
-> **フックとテンプレートの分離**: パース（=GitLab ペイロードから何を取り出すか）は
-> hook スクリプトの責務、文言（=どう伝えるか）はエントリの `prompt` テンプレートの
-> 責務、と分ける。hook は key-value の辞書を組み立てて返すだけで、最終プロンプト文は
-> テンプレート側で管理する。
+> **フックとテンプレートの分離**: パース（=ペイロードから何を取り出すか）は hook
+> スクリプトの責務、文言（=どう伝えるか）はエントリの `prompt` テンプレートの責務、と
+> 分ける。hook は key-value の辞書を組み立てて返すだけで、最終プロンプト文はテンプレート
+> 側で管理する。
 
 ---
 
@@ -116,7 +130,7 @@ hook は **パース結果の辞書（key-value）** を返す。最終プロン
 
 ```python
 def handle(ctx) -> dict | None:
-    """GitLab webhook 受信時に HTTP サーバスレッドから呼ばれる。
+    """webhook 受信時に HTTP サーバスレッドから呼ばれる（provider 非依存の入口）。
 
     Returns:
         dict : プロンプトテンプレートへ注入する key-value パラメータ
@@ -125,25 +139,29 @@ def handle(ctx) -> dict | None:
     ...
 ```
 
-### 4.1 `ctx`（WebhookContext）
+### 4.1 `ctx`（WebhookContext）— provider 非依存
 
-hook に渡すパース済みコンテキスト。dict でも軽量 dataclass でもよい。
+hook に渡す **生に近い**コンテキスト。コアは送信元を解釈せず、素材だけ渡す。
+イベント種別・署名などの **provider 固有の読み取りは hook が `ctx.headers` から自分で行う**。
 
 | 属性 | 型 | 内容 |
 |------|-----|------|
 | `ctx.name` | str | ルート名（パスの `<name>`） |
-| `ctx.event` | str | `X-Gitlab-Event`（例: `"Merge Request Hook"`） |
-| `ctx.payload` | dict | パース済み JSON ボディ |
-| `ctx.headers` | dict | リクエストヘッダ（小文字キー） |
+| `ctx.method` | str | HTTP メソッド（通常 `POST`） |
+| `ctx.headers` | dict | 全リクエストヘッダ（小文字キー）。イベント種別・署名はここから hook が読む |
 | `ctx.query` | dict | クエリ文字列のパース結果 |
 | `ctx.raw` | bytes | 生ボディ（署名検証など向け） |
+| `ctx.payload` | dict | 生ボディの JSON パース結果（best-effort。非 JSON なら `{}`） |
 
+- **`ctx.event` は持たせない**。`X-Gitlab-Event` は GitLab 固有なので、GitLab hook が
+  `ctx.headers.get("x-gitlab-event")` として自分で参照する。GitHub なら `x-github-event`、
+  Slack なら body 内の `type` を見る、という差異を hook が吸収する。
 - 引数は 1 つ（`ctx`）。hook の module-level 変数で状態保持可（HTTP は
   ThreadingHTTPServer なので複数スレッドあり得る → 状態を持つなら hook 側で
   ロックする、あるいは状態を持たない設計にする）。
 - `handle` が無い / callable でない場合は WARNING を出して `500`（または `204`）。
 - 戻り値が `dict` でも `None` でもない場合は WARNING を出してスキップ。
-- 例外は握って `500`。ログに `exc_info` 付きで記録。
+- 例外は握って `500`。ログに `exc_info` 付きで記録（#11: リトライ嵐を避けるなら 200/204）。
 
 ### 4.2 辞書 → テンプレート注入
 
@@ -153,15 +171,17 @@ hook が返した辞書は、エントリの `prompt` テンプレートへ **`{
 
 ```python
 # scheduler 側（enqueue 時 or dispatch 前）の擬似コード
-params = {"event": ctx.event, "name": ctx.name, **hook_result}  # 基本キーを補完
+params = {"name": ctx.name, **hook_result}   # 汎用の基本キーのみ補完
 prompt_text = entry["prompt"].format_map(_SafeDict(params))
 ```
 
 - **注入は `str.format_map(_SafeDict(...))`**。`_SafeDict` は未定義キーを
   `{key}` のまま残す `dict` サブクラス（`__missing__` 実装）。テンプレートの
   誤記や hook の欠損キーで `KeyError` クラッシュさせない。
-- **基本キーを常に補完**: `event` / `name`（必要なら `payload_json`）は kiro-loop 側で
-  用意し、hook が返すキーとマージする。hook はドメイン固有キーの抽出に専念できる。
+- **補完する基本キーは provider 非依存のものだけ**: `name`（必要なら `payload_json`）。
+  `event` のような provider 固有キーはコアで補完しない。**必要なら hook が返り値辞書に
+  自分で `"event": ...` を含める**（テンプレートは `{event}` で参照できる）。これにより
+  コアは送信元を一切知らずに済む。
 - テンプレート本文が JSON 例など `{ }` を含む場合は `{{` `}}` でエスケープ（`str.format`
   の一般則）。多用するなら `string.Template`（`$key`）へ切替も可 —— 実装時に確定。
 
@@ -169,11 +189,16 @@ prompt_text = entry["prompt"].format_map(_SafeDict(params))
 
 event_hook の `_load_hook_module(hook_path)` をそのまま流用（mtime 監視、変更時のみ再ロード）。
 
-### 4.4 フック実装イメージ（MR レビュー）
+### 4.4 具体例: GitLab MR レビュー hook
+
+**GitLab 固有の知識はすべてこの hook 内**にある（イベントヘッダ名 `x-gitlab-event`、
+`object_attributes` 構造など）。コアはこれらを一切知らない。
 
 ```python
 def handle(ctx):
-    if "Merge Request" not in ctx.event:
+    # ── provider 固有: イベント種別は hook が自分でヘッダから読む ──
+    event = ctx.headers.get("x-gitlab-event", "")
+    if "Merge Request" not in event:
         return None
     a = ctx.payload.get("object_attributes", {})
     if a.get("action") not in ("open", "reopen", "update"):
@@ -181,6 +206,7 @@ def handle(ctx):
     proj = ctx.payload.get("project", {})
     # ── パースして key-value を組み立てて返すだけ（文言はテンプレート側）──
     return {
+        "event": event,                       # テンプレートで使いたいので辞書に含める
         "project": proj.get("path_with_namespace", "?"),
         "mr_iid": a.get("iid"),
         "title": a.get("title", ""),
@@ -197,14 +223,13 @@ def handle(ctx):
 prompts:
   - name: mr-reviewer
     prompt: |
-      [GitLab MR webhook] {project} !{mr_iid}（{action}）
+      [MR webhook] {project} !{mr_iid}（{action}）
       タイトル: {title}
       {source_branch} → {target_branch}
       URL: {url}
       この MR をレビューして、指摘があれば MR にコメントしてください。
     webhook:
       hook: ~/.kiro/hooks/gitlab-mr-webhook.py
-      events: ["Merge Request Hook"]
 ```
 
 ---
@@ -212,29 +237,30 @@ prompts:
 ## 5. 受信フロー（HTTP ハンドラ）
 
 ```
-GitLab ──POST /hooks/<name>──▶ WebhookServer (daemon thread)
+送信元 ──POST /hooks/<name>──▶ WebhookServer (daemon thread)   ※コアは provider 非依存
    │
    ├─ ① メソッド判定           POST 以外 → 405
    ├─ ② ルート解決             scheduler.resolve_webhook_route(name) → 無し → 404
-   ├─ ③ 認証                   X-Gitlab-Token ≠ secret → 401
-   ├─ ④ イベントフィルタ        X-Gitlab-Event ∉ route.events → 204（無視）
-   ├─ ⑤ ボディ読取/JSON パース   サイズ超過 → 413 / パース失敗 → 400
-   ├─ ⑥ hook.handle(ctx)→dict   None → 200（ignored）
-   ├─ ⑦ テンプレート注入         entry["prompt"].format_map(_SafeDict(params))
-   ├─ ⑧ scheduler へ enqueue    対象エントリのキューに完成プロンプトを積む
-   └─ ⑨ 202 Accepted を即返す
+   ├─ ③ 汎用シークレット検証    設定 secret_header の値 ≠ secret → 401（secret 未設定なら素通り）
+   ├─ ④ ボディ読取/JSON パース   サイズ超過 → 413 / JSON は best-effort（失敗でも {} で続行）
+   ├─ ⑤ hook.handle(ctx)→dict   None → 200（ignored）※イベント種別フィルタ・署名検証は hook 内
+   ├─ ⑥ テンプレート注入         entry["prompt"].format_map(_SafeDict(params))
+   ├─ ⑦ scheduler へ enqueue    対象エントリのキューに完成プロンプトを積む
+   └─ ⑧ 202 Accepted を即返す
 ```
 
 - ② **ルート表は持たない**。`scheduler.resolve_webhook_route(name)` で毎リクエスト
-  最新エントリから `{prompt_template, hook, events, secret}` を引く。これで
+  最新エントリから `{prompt_template, hook, secret, secret_header}` を引く。これで
   `set_entries` によるリロード後もルートが陳腐化しない（#5）。WebhookServer は
   scheduler 参照だけ保持する。
-- ③〜⑤ は hook を呼ぶ前のゲート（認証・フィルタ・パース）。hook には
-  **正当かつパース済み**のリクエストだけ渡す。
-- ⑥ hook は key-value 辞書を返す。⑦ で基本キー（`event`/`name`）を補完しつつ
-  エントリの `prompt` テンプレートへ注入して完成プロンプト文にする。
-- ⑧ の enqueue はノンブロッキング（キューへ積むだけ、tmux は触らない）。
-  テンプレート注入（⑦）を HTTP 側で行うか scheduler 側（dispatch 直前）で行うかは
+- ③ の認証は **provider 非依存の共有シークレット照合のみ**（照合するヘッダ名は
+  `secret_header` 設定で可変。GitLab なら `X-Gitlab-Token`）。**HMAC 署名方式（GitHub の
+  `X-Hub-Signature-256` 等）や、イベント種別によるフィルタは provider 固有なので hook が
+  `ctx` を見て行い、対象外は `None` を返す**（イベント種別フィルタをコアに置かない）。
+- ⑤ hook は key-value 辞書を返す。⑥ で基本キー（`name`）を補完しつつエントリの
+  `prompt` テンプレートへ注入して完成プロンプト文にする。
+- ⑦ の enqueue はノンブロッキング（キューへ積むだけ、tmux は触らない）。
+  テンプレート注入（⑥）を HTTP 側で行うか scheduler 側（dispatch 直前）で行うかは
   実装選択。**HTTP 側で完成文にしてから積む**方が scheduler 変更を辞書非依存に保てる。
 
 ---
@@ -317,9 +343,14 @@ webhook:
   host: 127.0.0.1          # 既定 localhost。外部公開はリバースプロキシ経由を推奨
   port: 8899
   path_prefix: /hooks      # 既定 /hooks
-  secret: ""               # X-Gitlab-Token 検証値。空なら検証せず起動時 WARNING
+  secret: ""               # 汎用共有シークレット。空なら検証せず起動時 WARNING
+  secret_header: X-Gitlab-Token  # secret を照合するヘッダ名（provider で可変）
   max_body_bytes: 1048576  # 1MB。超過は 413
 ```
+
+`secret_header` は provider 非依存にするための可変点。GitLab は `X-Gitlab-Token`、
+自作システムなら任意のヘッダ名を指定できる。HMAC 署名方式（GitHub 等）は単純照合では
+不十分なので hook 内で検証する（§9）。
 
 ### 7.2 エントリごと（`prompts[]`）
 
@@ -329,10 +360,14 @@ prompts:
     enabled: true
     # webhook 専用エントリはスケジュール不要にできる（下記緩和）
     webhook:
-      hook: ~/.kiro/hooks/gitlab-mr-webhook.py
-      events: ["Merge Request Hook", "Note Hook"]   # 省略時は全イベント許可
+      hook: ~/.kiro/hooks/gitlab-mr-webhook.py   # provider 固有の判定・パースは全てここ
       secret: ""             # ルート個別 secret（省略時グローバル）
+      secret_header: ""      # ルート個別ヘッダ名（省略時グローバル）
 ```
+
+> **イベント種別フィルタはコア設定に持たない**。「MR だけ」「push だけ」といった絞り込みは
+> provider 固有（GitLab は `X-Gitlab-Event`）なので、hook が `ctx.headers` を見て対象外を
+> `None` で弾く（§4.4）。コア設定を provider 中立に保つための意図的な線引き。
 
 **スケジュール要件の緩和 + 非スケジュール化（#2）**: 現状 `_set_entries` は cron/interval が
 無いエントリをスキップする（`kiro-loop.py:1503,1519-1526`）。`webhook` ブロックを持つ
@@ -358,10 +393,13 @@ event_hook との併用（webhook + interval）も可（その場合は通常ど
 ```
 class WebhookServer:
     def __init__(self, scheduler, host, port, path_prefix,
-                 secret, max_body_bytes, routes): ...
+                 secret, secret_header, max_body_bytes): ...
     def start(self): ...     # ThreadingHTTPServer を daemon thread で serve_forever
     def stop(self):  ...     # server.shutdown() + server_close()
 ```
+
+**コアは provider を一切知らない**: `__init__` の引数に GitLab 固有語は無い。イベント種別・
+署名方式・payload 構造はすべて hook が担う。
 
 - **ルート表は持たない**（#5 対策）。`__init__` は `scheduler` 参照のみ受け取り、
   `do_POST` 内で `scheduler.resolve_webhook_route(name)` を都度呼ぶ。リロードで
@@ -380,9 +418,14 @@ class WebhookServer:
 
 - **bind 既定は `127.0.0.1`**。LAN/公開時のみ `0.0.0.0`＋リバースプロキシ（TLS 終端）
   をユーザ責任で。設計上は平文 HTTP（TLS は前段に任せる）。
-- **`X-Gitlab-Token` 検証**を既定の関門にする。比較は `hmac.compare_digest`（timing-safe、
-  `==` は使わない, #8）。`secret` 未設定なら起動時に WARNING を出し、検証をスキップ（開発用）。
-- **到達性の前提（#9）**: localhost bind では GitLab SaaS（gitlab.com）からのインバウンドは
+- **汎用共有シークレット検証**をコアの既定関門にする（照合ヘッダ名は `secret_header`
+  設定で可変）。比較は `hmac.compare_digest`（timing-safe、`==` は使わない, #8）。`secret`
+  未設定なら起動時に WARNING を出し、検証をスキップ（開発用）。
+- **署名（HMAC）方式は hook で検証**: GitHub の `X-Hub-Signature-256` のように本文の HMAC を
+  検証する方式は単純照合では守れない。この場合コアの `secret` 検証は使わず（or 併用）、
+  hook が `ctx.raw` と共有鍵から署名を再計算し、不一致なら `None` を返す。provider ごとの
+  署名アルゴリズムをコアに持ち込まないための設計。
+- **到達性の前提（#9）**: localhost bind では SaaS（gitlab.com 等）からのインバウンドは
   届かない。自ホスト GitLab が同一 LAN なら `0.0.0.0`+FW、SaaS 連携ならトンネル
   （ngrok/cloudflared 等）かリバースプロキシ経由が必須。設計は「公開・TLS は前段」の割り切り。
 - **ボディサイズ上限**（既定 1MB）で簡易 DoS 緩和。
@@ -405,8 +448,13 @@ class WebhookServer:
 | `kiro-loop.py` | `_set_entries` に `webhook` 正規化 + 非スケジュール sentinel | +~8 | ~2 |
 | `kiro-loop.py` | `main()` に WebhookServer 起動、`_cleanup` に stop 配線 | +~18 | ~2 |
 | `kiro-loop.yaml.example` | `webhook:` セクション追記 | +~12 | 0 |
-| `hooks/gitlab-mr-webhook.py` | 新規フック例 | +~40 | — |
-| `hooks/gitlab-push-webhook.py` | 新規フック例（任意） | +~30 | — |
+| `hooks/gitlab-mr-webhook.py` | 具体例フック（GitLab MR） | +~40 | — |
+| `hooks/gitlab-push-webhook.py` | 具体例フック（GitLab push、任意） | +~30 | — |
+| `hooks/generic-webhook.py` | 汎用性を示す非 GitLab 例（payload をそのまま辞書化） | +~15 | — |
+
+**汎用性の検証**: コアが provider 非依存である証拠として、GitLab を一切参照しない最小 hook
+（`ctx.payload` をそのまま返すだけ）を同梱する。これが GitLab 例と同じコアで動くことが、
+コアに provider 固有が残っていないことの確認になる。
 
 既存メソッドへの変更は `_set_entries` のスケジュール緩和のみ（他は挿入・新規）。
 
@@ -419,8 +467,9 @@ class WebhookServer:
 | A | `<name>` の宛先 | **既存 prompts エントリ（固定セッション）へ scheduler 経由で送る** | 「所定のセッション」= エントリのペイン |
 | B | 後段の変換 | **hook は `dict` を返し、エントリの `prompt` テンプレートへ `{key}` 注入** | パース（hook）と文言（テンプレート）を分離 |
 | C | 起動条件 | `webhook.enabled` かつ port 指定時のみ | 常時起動はしない |
+| D | provider 依存の置き場所 | **コアは provider 非依存。GitLab 等の固有知識は hook に閉じる** | イベント判定・署名・payload 構造は hook / コアは汎用シークレット照合のみ |
 
-A・B はユーザー確認済み（2026-07-09）。本設計はこの確定を反映済み。
+A・B・D はユーザー確認済み（A・B: 2026-07-09、D: 2026-07-10）。本設計はこの確定を反映済み。
 
 ---
 
