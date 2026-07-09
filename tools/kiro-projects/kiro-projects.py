@@ -4461,6 +4461,17 @@ def state_sync(cfg: "Config", force: bool = False) -> None:
         append_journal(cfg.journal, f"state-git 同期失敗（続行）: {e}")
 
 
+def state_sync_container(cfg: "Config", cfgs: "list[Config] | None" = None) -> None:
+    """コンテナ配下の状態 git 同期を 1 回行う。プロジェクト単位リポジトリ（state_git_projects）なら
+    各プロジェクトを自分の固有リポジトリへ、そうでなければコンテナ丸ごとを 1 回同期する。
+    --project all の idle 取り込みと、（再）起動直後の初回取り込みで共有する（配線を 1 箇所に）。"""
+    if _uses_per_project_state_git(cfg):
+        for c in (cfgs if cfgs is not None else [cfg]):
+            state_sync(c)
+    else:
+        state_sync(cfg)
+
+
 def _mark_offloaded(cfg: "Config", task: "Task", location: str, run_id: str) -> None:
     """タスクを『非ブロッキング委譲・結果待ち』に退避する（run_loop が settle をスキップ）。"""
     task.status = "offloaded"
@@ -5978,6 +5989,11 @@ def cmd_run_all(cfg: Config) -> int:
         registered["all"] = register_instance(project_cfg(cfg, "all"), cfg.registry)
         # watch: ラウンドロビンで全プロジェクトを駆動し、誰も仕事が無ければ idle
         _install_sigterm()
+        # （再）起動直後は「駆動より先に」リモート状態を取り込む。自己更新の graceful 再起動を挟むと
+        # 停止中に viewer が push した charter 更新/コマンド/フィードバックが未取り込みのままになり、
+        # 初回パスが古いローカル状態で plan/act してしまう。cmd_project→run_loop の入口同期は plan の
+        # 後になるため、ここで先に import してから駆動へ入る（idle 取り込みと同一配線）。
+        state_sync_container(cfg, [project_cfg(cfg, n) for n in project_dir_names(cfg)])
         charter_mtime: dict[str, float] = {}
         while True:
             cfgs = [project_cfg(cfg, n) for n in project_dir_names(cfg)]   # 新規プロジェクトを再発見
@@ -6005,11 +6021,7 @@ def cmd_run_all(cfg: Config) -> int:
                     refresh_instance(paths)
                 # 状態 git: リモートの指示を取り込む（間隔律速）。プロジェクト単位リポジトリなら
                 # 各プロジェクトを自分の固有リポジトリへ、そうでなければコンテナ丸ごとを 1 回同期。
-                if _uses_per_project_state_git(cfg):
-                    for c in cfgs:
-                        state_sync(c)
-                else:
-                    state_sync(cfg)
+                state_sync_container(cfg, cfgs)
                 if maybe_self_update(cfg):            # アイドル時のみ自己更新（取り込めたら再起動）
                     raise _RestartRequested()
     except KeyboardInterrupt:
@@ -7241,6 +7253,10 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
     charter 更新/フィードバックを poll で拾って再開する（idle 中はエージェント非起動）。"""
     passes = 0
     code = 0
+    # （再）起動直後は plan より先にリモート状態を取り込む。自己更新の graceful 再起動を挟むと、
+    # 停止中に viewer が push した charter 更新/フィードバックが未取り込みのまま cmd_project の
+    # 初回 plan が走り、古い charter で計画してしまう（cmd_project→run_loop の入口同期は plan の後）。
+    state_sync(cfg)
     while True:
         code = cmd_project(cfg, planner, reviewer, runner, heartbeat=heartbeat)
         passes += 1

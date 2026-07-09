@@ -4934,6 +4934,37 @@ class TestStateGitSync(unittest.TestCase):
         got = self._other("check")
         self.assertTrue((got / "kp" / "projects" / "default" / "backlog" / "T2.md").exists())
 
+    def test_project_watch_imports_before_first_plan_on_restart(self):
+        # 自己更新の graceful 再起動を模擬（_STATE_GITS クリア）。停止中に viewer が push した
+        # charter 更新を、初回 plan より先に取り込むこと（古い charter で計画しない）。
+        cfg = self._cfg()
+        cfg.charter.write_text("# Charter\n## 目標\nGOAL-A\n## acceptance\n- true\n",
+                               encoding="utf-8")
+        km.state_sync(cfg, force=True)                       # 初期 export（GOAL-A をリモートへ）
+        other = self._other()
+        rc = other / "kp" / "projects" / "default" / "charter.md"
+        rc.write_text("# Charter\n## 目標\nGOAL-B\n## acceptance\n- true\n", encoding="utf-8")
+        self._commit_push(other, "viewer: charter 更新")     # 停止中に GOAL-B を push
+        km._STATE_GITS.clear()                               # 再起動を模擬
+        seen = []
+        km.project_watch(cfg, planner=lambda ch: seen.append(
+            "B" if "GOAL-B" in cfg.charter.read_text(encoding="utf-8") else "A") or [],
+            reviewer=lambda ch: (True, ""), runner=km.run_loop,
+            sleeper=lambda _s: None, max_passes=1)
+        self.assertEqual(seen, ["B"])                        # 初回 plan は取り込み後の charter を見る
+
+    def test_state_sync_container_syncs_each_project_repo(self):
+        # プロジェクト単位リポジトリでは、初回取り込みが各プロジェクトを自分のリポジトリへ同期する。
+        cfg = self._cfg()
+        called = []
+        with mock.patch.object(km, "_uses_per_project_state_git", return_value=True):
+            with mock.patch.object(km, "state_sync",
+                                   side_effect=lambda c, **k: called.append(c.project_name)):
+                a = km.replace(cfg, project_name="alpha")
+                b = km.replace(cfg, project_name="beta")
+                km.state_sync_container(cfg, [a, b])
+        self.assertEqual(called, ["alpha", "beta"])
+
 
 class TestStateGitPerProject(unittest.TestCase):
     """プロジェクト単位で保存先リポジトリを分ける（state_git_projects）。default は個人リポジトリ、
