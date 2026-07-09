@@ -3791,6 +3791,88 @@ class TestProjectLayer(unittest.TestCase):
             km.cmd_project(cfg, planner=planner, runner=runner)
             self.assertEqual(calls["n"], 1)      # 再計画されない
 
+    def test_replan_request_forces_redecompose_and_skips_done(self):
+        # エラー回復: 人が「charter から再分解」を要求すると、消化可能タスクが残り charter が
+        # 無変更でも 1 回だけ plan を強制する。再分解は既存/archive（done）タイトルで冪等に
+        # 重複排除されるため、done と類似は投入されず「取りこぼした差分」だけが入る。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            mkb(d, "SEED", status="ready", verify="true")      # 消化可能タスクを残す
+            adir = cfg.archive_dir()
+            adir.mkdir(parents=True, exist_ok=True)
+            (adir / "OLD.md").write_text(
+                "## OLD: 既存の done タスク\n- status: done\n- verify: `true`\n", encoding="utf-8")
+
+            calls = {"n": 0}
+
+            def planner(ch):
+                calls["n"] += 1
+                # done と同一タイトル（重複排除される）＋新規タイトル（取りこぼし＝入る）
+                return [{"title": "既存の done タスク", "verify": "true"},
+                        {"title": "取りこぼした新規タスク", "verify": f"test -f {flag}"}]
+
+            def runner(c):
+                r = _drained()
+                r["counts"]["blocked"] = 1
+                return r
+
+            # baseline: 消化可能タスクあり・charter 無変更 → 再分解しない（署名だけ記録）
+            km.cmd_project(cfg, planner=planner, runner=runner)
+            self.assertEqual(calls["n"], 0)
+
+            # viewer のボタン相当: commands に replan をドロップ → ingest でマーカー化
+            cd = km.commands_dir(cfg)
+            cd.mkdir(parents=True, exist_ok=True)
+            (cd / "replan.json").write_text(json.dumps(
+                {"command": "replan", "reason": "取りこぼし回復"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(cfg), ["replan:project"])
+            self.assertEqual(list(cd.glob("*.json")), [])          # 処理したら消す
+            self.assertTrue(km.replan_request_path(cfg).exists())  # 再分解要求マーカーが立つ
+            self.assertTrue(km.has_work(cfg))                      # idle watch を起こす
+            self.assertIn("DR-", (cfg.decisions / "demo.md").read_text())  # 決定記録も残る
+
+            # 次パス: 消化可能タスクがあり charter 無変更でも、要求により再分解が走る
+            km.cmd_project(cfg, planner=planner, runner=runner)
+            self.assertEqual(calls["n"], 1)
+            self.assertFalse(km.replan_request_path(cfg).exists())  # one-shot で消化
+            titles = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertIn("取りこぼした新規タスク", titles)          # 差分（取りこぼし）は入る
+            self.assertNotIn("既存の done タスク", titles)           # done と類似は投入しない
+
+            # さらに次パス: 要求は消化済みなので再分解しない（one-shot）
+            km.cmd_project(cfg, planner=planner, runner=runner)
+            self.assertEqual(calls["n"], 1)
+
+    def test_replan_request_consumed_on_no_acceptance_pass(self):
+        # acceptance 未定義で cmd_project が早期 return するパスでも、再分解要求マーカーは
+        # 入口で消費される（残すと has_work が永久に True になり idle watch が空振り起床し続ける）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: X\n## goal\nやる\n")   # acceptance 無し
+            cfg = cfg_for(d)
+            km.write_replan_request(cfg, "回復")
+            self.assertTrue(km.has_work(cfg))                   # 要求中は起きる
+            code = km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(code, km.project_exit_code("no-acceptance"))
+            self.assertFalse(km.replan_request_path(cfg).exists())  # 入口で消費済み＝空振り起床しない
+
+    def test_replan_command_without_charter_is_rejected(self):
+        # charter が無い（backlog ループ）プロジェクトでは再分解の対象が無いため、
+        # replan 指示は取り込まず .err に退避し、マーカーも立てない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            cd = km.commands_dir(cfg)
+            (cd / "r.json").write_text(json.dumps({"command": "replan"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(cfg), [])
+            self.assertEqual(len(list(cd.glob("*.json.err"))), 1)   # .err に退避
+            self.assertFalse(km.replan_request_path(cfg).exists())  # マーカーは立たない
+
     def test_unmet_acceptance_generates_improvement(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

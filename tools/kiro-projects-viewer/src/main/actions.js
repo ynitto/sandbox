@@ -107,18 +107,20 @@ function revisePayload({ fields, feedback }) {
 
 // commands/<name>.json のドロップ（kiro-projects の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
+// replan はプロジェクト単位（id 不要）なので id を載せない。
 function dropCommand(projectDir, { action, id, reason, fields, feedback }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
   const rec = {
     command: action,
-    id: String(id),
+    ...(action === 'replan' ? {} : { id: String(id) }),
     reason: String(reason || ''),
     actor: 'kiro-projects-viewer',
     ts: new Date().toISOString(),
     ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
   };
-  const file = path.join(dir, `viewer-${action}-${slugify(id)}-${Date.now()}.json`);
+  const slug = action === 'replan' ? 'project' : slugify(id);
+  const file = path.join(dir, `viewer-${action}-${slug}-${Date.now()}.json`);
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2), 'utf8');
   fs.renameSync(`${file}.tmp`, file);
   return { file, rec };
@@ -228,4 +230,48 @@ async function runAction(cfg, { dir, action, id, reason, fields, feedback }) {
   }
 }
 
-module.exports = { submitFeedback, enqueueToInbox, dropCommand, runAction, DECISION_MARKER };
+// charter からのバックログ再分解を要求する（エラー回復用の一発の口。プロジェクト単位＝id 無し）。
+// 本体は次パスで charter を分解し直し、既存/archive（done）と類似のタスクは冪等に重複排除して
+// 「取りこぼした差分」だけを backlog へ入れる（done と同種は投入しない）。
+// 経路は runAction と同じ auto/file/cli 契約。file は commands/replan ドロップ、cli は
+// `kiro-projects replan --reason ...`。稼働中はドロップ・停止中は CLI・CLI 不可はドロップ退避。
+async function requestReplan(cfg, { dir, reason }) {
+  const why = String(reason || '').trim() || 'kiro-projects-viewer から再分解を要求';
+  const mode = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
+
+  if (mode === 'file' || (mode !== 'cli' && kiro.isProjectRunning(dir))) {
+    const { file } = dropCommand(dir, { action: 'replan', reason: why });
+    return {
+      output: 'charter からの再分解を要求しました（稼働中の kiro-projects が次パスで取り込みます）',
+      file,
+      via: 'file',
+    };
+  }
+  try {
+    const command = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
+    const { root, project } = cliScope(dir);
+    const args = ['replan', '--reason', why, '--root', root, '--project', project];
+    const res = await runKiroCli(command, args);
+    return { ...res, via: 'cli' };
+  } catch (err) {
+    if (mode === 'cli') throw err;
+    const { file } = dropCommand(dir, { action: 'replan', reason: why });
+    return {
+      output:
+        'CLI を実行できないため再分解の要求ファイルを置きました' +
+        '（次回の kiro-projects 起動時に取り込まれます）',
+      file,
+      via: 'file-fallback',
+      cliError: err.message,
+    };
+  }
+}
+
+module.exports = {
+  submitFeedback,
+  enqueueToInbox,
+  dropCommand,
+  runAction,
+  requestReplan,
+  DECISION_MARKER,
+};

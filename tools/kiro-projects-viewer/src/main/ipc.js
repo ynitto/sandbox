@@ -225,6 +225,13 @@ function registerIpcHandlers() {
   handle('kiro:enqueue', ({ dir, spec }) => actions.enqueueToInbox(dir, spec || {}));
   handle('kiro:action', (args) => actions.runAction(loadConfig(), args));
 
+  // charter からのバックログ再分解を要求（エラー回復。done/既存と類似は投入しない）。
+  // プロジェクト単位（id 無し）。本体が次パスで charter を分解し直し差分だけ入れる。
+  handle('kiro:replan', ({ dir, reason }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.requestReplan(loadConfig(), { dir, reason });
+  });
+
   // オーサリング（作成・編集）。人が書く上位入力ファイル（charter/policy/repos）だけを
   // 対象にし、タスク状態は触らない（done は verify のみが根拠の不変条件を壊さない）。
   //   createProject … <root>/projects/<name>/ に charter.md（＋ repos.json）を作る

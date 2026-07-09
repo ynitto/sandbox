@@ -753,10 +753,13 @@ function renderBacklog() {
     })
     .join('');
 
+  const replanPending = !!p.replanPending;
   el.innerHTML = `
     <div class="filters">${chips}<span class="muted">${tasks.length} 件</span>
       ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="${esc(p.inboxFiles.join(', '))}">inbox 取り込み待ち ${p.inboxFiles.length}</span>` : ''}
+      ${replanPending ? '<span class="badge info" title="charter からの再分解を要求済み。本体が次パスで取り込みます">再分解 取り込み待ち</span>' : ''}
       <span class="spacer"></span>
+      <button id="btn-replan" class="primary-inline"${replanPending ? ' disabled' : ''} title="charter からバックログを再分解します（エラー回復用）。既に done / 既存と類似のタスクは投入しません">↻ charter から再分解</button>
       <button id="btn-enqueue" class="primary-inline" title="バックログにタスクを 1 件追加します（inbox 経由）">＋ バックログに追加</button>
     </div>
     <details class="backlog-help">
@@ -765,6 +768,7 @@ function renderBacklog() {
         <b>追加</b>: 「＋ バックログに追加」→ <code class="mono">inbox</code> に 1 件投入。本体が次サイクルで backlog タスク（<code class="mono">backlog/&lt;id&gt;.md</code>）にします。<br>
         <b>変更</b>: 行をクリック →「✎ 修正して指示（revise）」で title・優先度・verify・accept・依存 after・note・level・track を置換＋フィードバック注入。<br>
         <b>タスクグラフの再構築</b>: revise は本体が取り込むと <code class="mono">rev</code> を上げ、kiro-flow に新しいタスクグラフ（run の DAG）を作らせます（実行中タスクは現在の試行を破棄して積み直し）。依存 after を変えるとグラフの形が変わります。<br>
+        <b>再分解（エラー回復）</b>: 「↻ charter から再分解」→ 本体が <code class="mono">charter.md</code> を分解し直し、取りこぼした差分だけを backlog に入れます。<b>既に done / 既存と類似のタスクは投入しません</b>（重複排除）。plan 失敗・タスクの誤削除などからの復帰用です。<br>
         いずれも状態（done 等）は直接書き換えません（done は verify のみが根拠、の不変条件を保つため）。
       </div>
     </details>
@@ -775,6 +779,8 @@ function renderBacklog() {
     }`;
 
   $('btn-enqueue').addEventListener('click', () => openEnqueueDialog());
+  const replanBtn = $('btn-replan');
+  if (replanBtn && !replanPending) replanBtn.addEventListener('click', () => requestReplan());
 
   for (const chip of el.querySelectorAll('.chip')) {
     chip.addEventListener('click', () => {
@@ -1013,6 +1019,30 @@ function showTaskDialog(id, scope) {
     });
   }
   $('dlg-task').showModal();
+}
+
+// charter からのバックログ再分解を要求する（エラー回復用）。本体が次パスで charter を
+// 分解し直し、取りこぼした差分だけを backlog へ入れる（done / 既存と類似は投入しない）。
+// 状態（done 等）は書き換えず、公式契約（commands/replan・CLI replan）だけで届ける。
+async function requestReplan() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const yes = await confirmDialog(
+    `${p.name}: charter からバックログを再分解します（エラー回復）。\n` +
+      '本体が charter.md を分解し直し、取りこぼした差分だけを backlog に入れます。\n' +
+      '既に done / 既存と類似のタスクは投入しません（重複排除）。状態は書き換えません。\n' +
+      '反映は本体の次パス（即時ではありません）。よろしいですか？'
+  );
+  if (!yes) return;
+  const ok = await guard('再分解の要求', async () => {
+    const res = await api.requestReplan(p.dir, 'kiro-projects-viewer から再分解を要求');
+    toast(res.output || 'charter からの再分解を要求しました', true);
+    return true;
+  });
+  if (ok) {
+    gitPushAfterWrite('kiro-projects-viewer: replan request', p.dir);
+    await reloadProject();
+  }
 }
 
 // タスク追加ダイアログを開く。prefill.reinject が真のときは archive タスクの
