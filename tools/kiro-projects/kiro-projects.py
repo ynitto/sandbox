@@ -4697,6 +4697,8 @@ def has_work(cfg: Config) -> bool:
     cdir = commands_dir(cfg)
     if cdir.exists() and any(cdir.glob("*.json")):
         return True               # 人の指示ドロップ(commands/)が来たら起こす
+    if replan_request_path(cfg).exists():
+        return True               # バックログ再分解の要求が来たら起こす（次パスで plan を強制）
     if cfg.needs.exists():
         for nf in cfg.needs.glob("*.md"):
             if read_feedback(nf):
@@ -4838,6 +4840,25 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
                          action=f"reprioritize({kind})", reason=reason,
                          affects=f"policy.{kind} += {tid}")
     print(f"{dr}: {tid} を {kind}（policy.{kind} 追加）しました。")
+    return 0
+
+
+def cmd_replan(cfg: Config, reason: str) -> int:
+    """charter からのバックログ再分解を要求する（エラー回復用の一発の口）。
+    次の project パスで plan を強制し、charter を分解し直して backlog の差分を投入する。
+    既存/archive（done）と類似のタスクは冪等に重複排除されるため、done と同種は入らない。
+    charter が無い（backlog ループ）プロジェクトでは再分解の対象が無いためエラー。"""
+    charter = load_charter(cfg)
+    if charter is None:
+        print(f"エラー: charter がありません（再分解の対象なし）: {cfg.charter}", file=sys.stderr)
+        return 2
+    pid = _project_id(cfg, charter)
+    write_replan_request(cfg, reason)
+    dr = append_decision(cfg, pid, cfg.actor,
+                         context=f"{charter.name}: charter からのバックログ再分解を要求",
+                         action="replan", reason=reason,
+                         affects="次パスで charter を再分解（done/既存と類似は投入しない）")
+    print(f"{dr}: charter からのバックログ再分解を要求しました（次パスで反映）。")
     return 0
 
 
@@ -5035,9 +5056,10 @@ def _reject_command(cfg: "Config", f: Path, why: str) -> None:
 
 
 def ingest_commands(cfg: "Config") -> "list[str]":
-    """commands/*.json（{"command": "approve|hold|pin|defer|revise", "id": ..., "reason": ...}）を
-    読み、CLI と同一のロジック（cmd_approve / cmd_hold / cmd_reprioritize / cmd_revise）を実行する。
+    """commands/*.json（{"command": "approve|hold|pin|defer|revise|replan", "id": ..., "reason": ...}）を
+    読み、CLI と同一のロジック（cmd_approve / cmd_hold / cmd_reprioritize / cmd_revise / cmd_replan）を実行する。
     revise は加えて title/priority/verify/accept/after/note/level/track/feedback キーを受ける。
+    replan はプロジェクト単位（id 不要）で charter からのバックログ再分解を次パスに要求する。
     処理できたらファイルを消す。watch 中は書きかけ保護のため最終保存から debounce 秒待つ。
     実行した指示（"action:tid"）の一覧を返す。"""
     cdir = commands_dir(cfg)
@@ -5058,6 +5080,19 @@ def ingest_commands(cfg: "Config") -> "list[str]":
         action = str(rec.get("command", "")).strip()
         tid = str(rec.get("id", "")).strip()
         reason = str(rec.get("reason", "") or "").strip() or "commands/ からの指示"
+        if action == "replan":
+            # プロジェクト単位（id 不要）: charter からのバックログ再分解を要求する
+            rc = cmd_replan(cfg, reason)
+            if rc == 0:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                append_journal(cfg.journal, f"commands 取り込み: replan（{f.name}）")
+                done.append("replan:project")
+            else:
+                _reject_command(cfg, f, f"replan が失敗 (exit {rc})")
+            continue
         if action not in COMMAND_ACTIONS or not tid:
             _reject_command(cfg, f, f"未知の指示: command={action!r} id={tid!r}")
             continue
@@ -6474,6 +6509,44 @@ def save_project_state(cfg: "Config", state: dict) -> None:
                                        encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# バックログ再分解の要求（人が charter から backlog を作り直したいときの一発の口）。
+#   通常の再分解は「消化可能タスクが無い」か「charter が変わった」ときに自動で走るが、
+#   タスクの取りこぼし・誤削除・plan 失敗などのエラー回復では charter が無変更のまま
+#   backlog を作り直したい。project.json とは別のマーカーファイルにすることで、
+#   cmd_project の通常の state 保存に上書きされず一発分だけ確実に効く（冪等・one-shot）。
+#   再分解自体は既存/archive（done）タイトルで冪等に重複排除されるため、done と類似の
+#   タスクは投入されず「差分（取りこぼし）だけ」が入る。
+# ---------------------------------------------------------------------------
+def replan_request_path(cfg: "Config") -> Path:
+    return cfg.backlog.parent / ".replan.request"
+
+
+def write_replan_request(cfg: "Config", reason: str) -> None:
+    """次パスの再分解要求マーカーを置く（人の明示アクション。冪等＝上書き）。"""
+    p = replan_request_path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"reason": reason or "", "actor": getattr(cfg, "actor", "") or "",
+               "ts": datetime.now().isoformat(timespec="seconds")}
+    p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def consume_replan_request(cfg: "Config") -> "dict | None":
+    """再分解要求マーカーがあれば読み取り、消して payload を返す（無ければ None）。one-shot。"""
+    p = replan_request_path(cfg)
+    if not p.exists():
+        return None
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = {}
+    try:
+        p.unlink()
+    except OSError:
+        pass
+    return payload if isinstance(payload, dict) else {"reason": ""}
+
+
 def _project_id(cfg: "Config", charter: "Charter") -> str:
     """milestone/state の id。プロジェクト名（--project）を一次採用し、未設定なら charter 名から導出。
     Config を直接構築するテスト等（project_name 未設定）では従来どおり charter 名スラグになる（後方互換）。"""
@@ -7134,6 +7207,10 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         print("  ヒント: 目標/制約/前提/成果物/acceptance を charter.md に書いてください。",
               file=sys.stderr)
         return 2
+    # 人からの再分解要求（エラー回復）を入口で消費する（one-shot）。ここで消しておくことで、
+    # acceptance 未定義など早期 return するパスでもマーカーが残らず、has_work の空振り起床が
+    # 続かない（要求は消化済み＝下の plan ゲートで charter 無変更でも一発だけ plan を強制する）。
+    replan_req = consume_replan_request(cfg)
     problems = validate_charter(charter)
     if problems:
         print(f"エラー: charter の repos 定義が不正です（{cfg.charter}）:", file=sys.stderr)
@@ -7198,15 +7275,21 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         #   冪等に重複排除されるため、既存タスクを二重投入せず「charter の差分が生む新規タスク」だけ入る。
         existing = _existing_titles(cfg)
         has_consumable = any(t.consumable() for t in load_tasks(cfg.backlog))
-        if not has_consumable or charter_changed:
+        if not has_consumable or charter_changed or replan_req is not None:
             specs = plan_fn(charter)
             planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold)
+            trig = ("再分解要求（エラー回復）" if replan_req is not None
+                    else "charter 変更検知" if charter_changed else f"plan cycle {cycle}")
             if planned:
-                trig = "charter 変更検知" if charter_changed else f"plan cycle {cycle}"
                 append_journal(cfg.journal,
                                f"project cycle {cycle}: {trig} で {len(planned)} 件投入 "
                                f"{[t.id for t in planned]}")
+            elif replan_req is not None:
+                # 再分解しても差分ゼロ（すべて既存/done と重複）＝取りこぼしは無かった。要求は消化済み。
+                append_journal(cfg.journal,
+                               f"project cycle {cycle}: {trig} → 新規なし（既存/done と重複）")
             charter_changed = False   # 変更由来の再計画は 1 回だけ（以降のサイクルで再分解しない）
+            replan_req = None         # 再分解要求も 1 回だけ消化する（one-shot）
 
         # ② execute — 既存の正準ループを無改造で回す（drained まで）
         result = runner(cfg)
@@ -8105,6 +8188,11 @@ def main(argv=None) -> int:
                     help="次の act に必ず反映させる指示（例: e2e はローカルでなく実サーバに配備して実施）")
     rv.add_argument("--reason", default=None, help="決定記録に残す理由（省略時は feedback を流用）")
 
+    rpl = sub.add_parser("replan",
+                         help="charter からバックログを再分解（エラー回復。done/既存と類似は投入しない）")
+    _add_common(rpl)
+    rpl.add_argument("--reason", default=None, help="決定記録に残す理由")
+
     _reg_help = ("共有レジストリ（os.pathsep 区切り可）。NFS/同期フォルダ/git バスのチェックアウト等を"
                  "指すと別ホストを相互発見。環境変数 KIRO_PROJECTS_REGISTRY でも指定可")
     inst = sub.add_parser("instances",
@@ -8138,7 +8226,7 @@ def main(argv=None) -> int:
     # （`--project all` を前置きするだけ＝後続に明示 --project があればそちらが勝つ。明示 `run` は単一 default のまま）
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
-                    "revise", "instances", "start", "stop", "restart"}
+                    "revise", "replan", "instances", "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", "--project", "all", *argv]
 
@@ -8190,6 +8278,7 @@ def main(argv=None) -> int:
         "revise": lambda: cmd_revise(
             cfg, args.id, {k: getattr(args, f"rv_{k}") for k in REVISE_FIELDS},
             args.rv_feedback or "", args.reason or ""),
+        "replan": lambda: cmd_replan(cfg, args.reason or "charter からのバックログ再分解"),
     }[args.cmd]()
 
 

@@ -370,6 +370,20 @@ function isProjectRunning(dir) {
   return projectLiveness(dir).running;
 }
 
+// バックログ再分解の要求が未消化か（本体の replan_request_path / consume_replan_request と対）。
+// commands にドロップ済み（ingest 前）か、本体が立てた .replan.request マーカー
+// （ingest 後・再分解前）のどちらかが残っていれば true。本体が再分解まで進めると両方消える。
+function replanRequestPending(dir) {
+  if (fs.existsSync(path.join(dir, '.replan.request'))) return true;
+  const cdir = path.join(dir, 'commands');
+  for (const f of safeList(cdir)) {
+    if (!f.endsWith('.json')) continue;
+    const rec = readJson(path.join(cdir, f));
+    if (rec && String(rec.command || '').trim() === 'replan') return true;
+  }
+  return false;
+}
+
 function isProjectDir(dir) {
   return (
     fs.existsSync(path.join(dir, 'backlog')) ||
@@ -541,11 +555,18 @@ function readProject(dir, cfg) {
     /\.(json|md|markdown|txt)$/i.test(f)
   );
 
+  // バックログ再分解の要求が未消化か（ボタンを「要求済み（取り込み待ち）」に変えるため）。
+  // viewer がドロップした commands/*replan*.json（ingest 前）か、本体が立てた
+  // .replan.request マーカー（ingest 後・再分解前）のどちらかが残っていれば pending。
+  // 本体が再分解まで進めると両方消えてボタンが再び押せる状態に戻る。
+  const replanPending = replanRequestPending(dir);
+
   const bus = resolveBusDir(dir, cfg);
 
   return {
     dir,
     inboxFiles,
+    replanPending,
     name: path.basename(dir),
     charter: parseCharter(readText(path.join(dir, 'charter.md'))),
     policy: parsePolicy(readText(path.join(dir, 'policy.md'))),
@@ -577,6 +598,7 @@ module.exports = {
   parseDecisions,
   listInstances,
   isProjectRunning,
+  replanRequestPending,
   readStatus,
   projectLiveness,
   discover,

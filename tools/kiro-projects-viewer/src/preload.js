@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('api', {
   submitFeedback: (file, feedback) => invoke('kiro:feedback', { file, feedback }),
   enqueueTask: (dir, spec) => invoke('kiro:enqueue', { dir, spec }),
   runAction: (args) => invoke('kiro:action', args),
+  requestReplan: (dir, reason) => invoke('kiro:replan', { dir, reason }),
 
   createProject: (spec) => invoke('kiro:createProject', { spec }),
   readProjectFile: (dir, name) => invoke('kiro:readFile', { dir, name }),

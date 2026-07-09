@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects / viewer: charter からバックログを再分解するボタン（エラー回復・done は重複排除）
+
+- **背景**: plan フェーズの失敗・タスクの取りこぼし・誤削除などでバックログが崩れたとき、kiro-projects-viewer
+  からは復旧手段が乏しかった。通常の再分解は「消化可能タスクが無い」か「charter が変わった」ときに自動で
+  走るが、**charter 無変更のまま**バックログを作り直したいエラー回復ではどちらの条件も満たさず、charter を
+  無理に編集する以外に再分解を起こす手立てが無かった。
+- **本体（kiro-projects）**: プロジェクト単位（`id` 不要）の指示 `replan` を追加。`commands/<name>.json`
+  （`{"command":"replan"}`）ドロップ、または CLI `kiro-projects replan --reason ...` で、次パスに一発だけ
+  再分解を要求する（`.replan.request` マーカーを立て、DR を残す）。`cmd_project` の plan ゲートはこの要求が
+  あれば **消化可能タスクが残り charter が無変更でも再分解**し、要求は one-shot で消化する。`has_work` が
+  マーカーを検知して idle watch を起こす。再分解は既存＋`archive/`（done）タイトルで冪等に重複排除される
+  ため、**done と類似のタスクは投入されず「取りこぼした差分」だけ**が入る。charter が無い（backlog ループ）
+  プロジェクトでは対象が無いため拒否（`.err` 退避）。
+- **ビュアー（kiro-projects-viewer）**: バックログタブに「↻ charter から再分解」ボタンを追加。確認のうえ
+  `commands/replan`（稼働中）／CLI `replan`（停止中・失敗時はドロップ退避）で要求を届ける（`actions.requestReplan`）。
+  要求中は `readProject` の `replanPending`（`commands/*replan*.json` か `.replan.request` の残存）を見て
+  「再分解 取り込み待ち」バッジを出し、ボタンを二重送信防止で無効化する（本体が再分解まで進めると解除）。
+  状態（done 等）は書き換えない — done は verify のみが根拠、の不変条件を保つ。
+- **テスト**: 本体は再分解要求の強制 plan・done 重複排除・one-shot 消化・charter 無しの拒否を検証
+  （`TestProjectLayer`）。ビュアーは `requestReplan` の file/cli/退避経路と `replanRequestPending` の検知を検証
+  （`test/replan.test.js`）。
+
 ### kiro-flow: failed run を `run --run-id` で再実行できるようにする（失敗ノードを pending へ戻す）
 
 - **背景**: `failed` になった run を `kiro-flow run --run-id <failed>` で再開しても、実際には何も
