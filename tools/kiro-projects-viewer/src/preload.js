@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('api', {
   enqueueTask: (dir, spec) => invoke('kiro:enqueue', { dir, spec }),
   runAction: (args) => invoke('kiro:action', args),
   requestReplan: (dir, reason) => invoke('kiro:replan', { dir, reason }),
+  resetProject: (dir) => invoke('kiro:reset', { dir }),
 
   createProject: (spec) => invoke('kiro:createProject', { spec }),
   readProjectFile: (dir, name) => invoke('kiro:readFile', { dir, name }),

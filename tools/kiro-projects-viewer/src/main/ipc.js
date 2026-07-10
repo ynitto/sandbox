@@ -12,6 +12,7 @@ const { GitLabClient } = require('./gitlab');
 const { openInReviewViewer } = require('./review');
 const actions = require('./actions');
 const authoring = require('./authoring');
+const reset = require('./reset');
 
 // すべてのハンドラを {ok, data|error} 形式に揃える（gitlab-review-viewer と同じ）
 function handle(channel, fn) {
@@ -138,6 +139,22 @@ function registerIpcHandlers() {
       /* ロックの掃除失敗は削除自体の失敗にしない */
     }
     return { file, via };
+  });
+
+  // プロジェクトのリセット（人の明示アクション・危険操作）。charter.md 以外の全データを
+  // ゴミ箱へ移動し、バスの kiro-flow daemon を停止する。charter が残るので、稼働中の
+  // kiro-projects は次パスで charter から再分解して最初からやり直す。
+  // 順序は「daemon 停止 → 削除」: 先に止めないと worker が消したバスへ結果を書き戻す。
+  // ドット始まりの同期内部（.state-git 等）は温存する — 管理クローンの manifest が残る
+  // ことで、削除が次の同期で「ローカルの削除」としてリモートへ伝播する（データ復活を防ぐ）。
+  handle('kiro:reset', async ({ dir }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const cfg = loadConfig();
+    const plan = reset.planReset(dir);
+    const bus = kiro.resolveBusDir(dir, cfg);
+    const daemon = await flow.stopDaemon(bus.busDir, flowLockDir(cfg));
+    const res = await reset.executeReset(plan, removeToTrash);
+    return { ...res, daemon, busDir: bus.busDir, busSource: bus.source };
   });
 
   // 実行中ノードの関連イシューを決定的タスクトークンで検索（gitlab executor 連動）
