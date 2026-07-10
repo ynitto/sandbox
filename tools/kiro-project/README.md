@@ -369,6 +369,18 @@ echo '{"title":"X","verify":"make test","priority":5,"after":"T1"}' | kiro-proje
 cp task.md ./inbox/
 ```
 
+## 複数バージョンの並行開発（charters/）
+
+1 プロジェクトで複数バージョン（v1 保守と v2 開発など）を並行管理するには、`charter.md` の代わりに
+**`charters/<バージョン名>.md`** を並べる。`run --watch` が全 charter をラウンドロビンで
+plan→execute→evaluate し、それぞれが独立の acceptance / milestone（`needs/<プロジェクト>-<名前>.md`）/
+収束状態（project.json の `charters` マップ）を持つ。
+
+- plan が投入するタスクには `charter: <名前>` タグが付き、再分解の重複排除・消化判定・評価は
+  そのバージョンに閉じる（実行そのものは 1 つのバックログを共有）
+- 特定バージョンだけ再分解するには `kiro-project replan --charter <名前>`（viewer の replan も同様）
+- 単一 `charter.md` は従来どおり動く（charters/ が無いときのフォールバック）
+
 ## 目標駆動（charter）— `run` の charter モード（長期改善ループ）
 
 backlog の上に、人が書く**目標（charter）**から逆算する evaluator-optimizer のもう一段。backlog を消化して

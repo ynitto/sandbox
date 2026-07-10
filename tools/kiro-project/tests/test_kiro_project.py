@@ -5666,5 +5666,162 @@ class TestRejectAndImpact(unittest.TestCase):
             self.assertEqual(km.cmd_impact(cfg, "zzz"), 2)
 
 
+
+
+class TestMultiCharter(unittest.TestCase):
+    """複数 charter（charters/<name>.md）: 1 プロジェクトで複数バージョンを並行駆動する。
+    タスクは charter タグでスコープされ、plan の冪等照合・drained 判定・milestone/state は
+    charter 単位に閉じる（execute の backlog は共有）。"""
+
+    def _mk_charter(self, d, name, goal="やる"):
+        cdir = d / "charters"
+        cdir.mkdir(parents=True, exist_ok=True)
+        (cdir / f"{name}.md").write_text(
+            f"# Charter: {name}\n## goal\n{goal}\n## acceptance\n- `true`\n", encoding="utf-8")
+
+    def test_charter_names_and_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self.assertEqual(km.charter_names(cfg), [])                 # charter 無し
+            cfg.charter.write_text("# Charter: solo\n## goal\nx\n", encoding="utf-8")
+            self.assertEqual(km.charter_names(cfg), ["default"])        # 単一 charter.md
+            self._mk_charter(d, "v2")
+            self._mk_charter(d, "v1")
+            self.assertEqual(km.charter_names(cfg), ["v1", "v2"])       # charters/ が優先・名前順
+            chs = dict(km.load_charters(cfg))
+            self.assertIn("v1", chs)
+            self.assertEqual(chs["v2"].name, "v2")
+
+    def test_cmd_project_tags_tasks_and_scopes_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            planner = lambda ch: [{"title": f"{ch.name} のタスク", "verify": "true"}]
+            rc = km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [],
+                                charter_name="v1")
+            self.assertEqual(rc, 1)                                     # 収束候補 → 人待ち
+            # タスクに charter タグが付く（アーカイブ済みを含めて確認）
+            arch = list((d / "archive").glob("*.md"))
+            self.assertTrue(arch)
+            t = km.parse_task(arch[0].read_text(encoding="utf-8"), arch[0].stem)
+            self.assertEqual(t.get("charter"), "v1")
+            # state は project.json の charters マップに閉じる
+            data = km.load_project_state(cfg)
+            self.assertIn("v1", data.get("charters", {}))
+            pid = data["charters"]["v1"]["id"]
+            self.assertTrue(pid.endswith("-v1"))                        # milestone id は charter 別
+            self.assertTrue((cfg.needs / f"{pid}.md").exists())
+
+    def test_two_charters_plan_independently(self):
+        # v1 に消化可能タスクが残っていても v2 の plan は起こる（drained 判定のスコープ）。
+        # 同名タスクでも charter が違えば冪等排除しない（existing のスコープ）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1, dry_run=True)
+            self._mk_charter(d, "v1")
+            self._mk_charter(d, "v2")
+            planner = lambda ch: [{"title": "共通タイトルの作業", "verify": "true"}]
+            km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [], charter_name="v1")
+            # v1 のタスクを未消化のまま残す（doing 相当ではなく ready のタスクを積み直す）
+            km.enqueue_task(cfg, {"title": "v1 残作業", "verify": "true", "charter": "v1",
+                                  "status": "ready"})
+            km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [], charter_name="v2")
+            # v2 にも同名タスクが plan された（archive/backlog を charter タグで数える）
+            tagged = []
+            for f in list((d / "archive").glob("*.md")) + list((d / "backlog").glob("*.md")):
+                t = km.parse_task(f.read_text(encoding="utf-8"), f.stem)
+                if t.title == "共通タイトルの作業":
+                    tagged.append(t.get("charter"))
+            self.assertIn("v1", tagged)
+            self.assertIn("v2", tagged)
+
+    def test_replan_request_scoped_to_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._mk_charter(d, "v1")
+            self._mk_charter(d, "v2")
+            km.write_replan_request(cfg, "v2 を作り直す", charter="v2")
+            self.assertIsNone(km.consume_replan_request(cfg, "v1"))     # 別 charter 宛 → 残す
+            self.assertTrue(km.replan_request_path(cfg).exists())
+            got = km.consume_replan_request(cfg, "v2")                  # 対象 charter が消化
+            self.assertEqual(got.get("charter"), "v2")
+            self.assertFalse(km.replan_request_path(cfg).exists())
+            # charter 指定の無い要求はどの charter でも消化できる
+            km.write_replan_request(cfg, "全体")
+            self.assertIsNotNone(km.consume_replan_request(cfg, "v1"))
+
+    def test_run_single_drives_all_charters(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            self._mk_charter(d, "v2")
+            seen = []
+            orig = km.cmd_project
+
+            def spy(c, *a, **kw):
+                seen.append(kw.get("charter_name"))
+                return orig(c, planner=lambda ch: [], reviewer=lambda ch: [],
+                            charter_name=kw.get("charter_name"))
+
+            with mock.patch.object(km, "cmd_project", side_effect=spy):
+                km._run_single(cfg)
+            self.assertEqual(seen, ["v1", "v2"])                        # 全 charter を順に回す
+
+    def test_project_watch_round_robins_charters(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            self._mk_charter(d, "v2")
+            seen = []
+            planner = lambda ch: seen.append(ch.name) or []
+            km.project_watch(cfg, planner=planner, reviewer=lambda ch: [],
+                             runner=km.run_loop, sleeper=lambda _s: None, max_passes=2)
+            self.assertEqual(seen, ["v1", "v2"])                        # 両バージョンを 1 パスずつ
+
+    def test_milestone_approve_finalizes_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            km.cmd_project(cfg, planner=lambda ch: [], reviewer=lambda ch: [],
+                           charter_name="v1")
+            data = km.load_project_state(cfg)
+            pid = data["charters"]["v1"]["id"]
+            self.assertEqual(data["charters"]["v1"]["status"], km.REASON_PROJECT_CONVERGED)
+            rc = km.cmd_approve(cfg, pid, "受領")
+            self.assertEqual(rc, 0)
+            data = km.load_project_state(cfg)
+            self.assertEqual(data["charters"]["v1"]["status"], km.REASON_PROJECT_ACCEPTED)
+
+    def test_build_request_injects_task_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._mk_charter(d, "v1", goal="V1-GOAL 保守")
+            self._mk_charter(d, "v2", goal="V2-GOAL 新機能")
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true", "charter": "v2"})
+            req = km.build_request(t, cfg)
+            self.assertIn("V2-GOAL", req)                               # タグの charter を注入
+            self.assertNotIn("V1-GOAL", req)
+
+    def test_single_charter_md_backward_compatible(self):
+        # charter.md 単体は従来どおり（state はトップレベル・milestone id に接尾辞なし）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            cfg.charter.write_text("# Charter: solo\n## goal\nx\n## acceptance\n- `true`\n",
+                                   encoding="utf-8")
+            km.cmd_project(cfg, planner=lambda ch: [], reviewer=lambda ch: [],
+                           charter_name="default")
+            data = km.load_project_state(cfg)
+            self.assertNotIn("charters", data)                          # 従来のトップレベル形
+            self.assertFalse(str(data.get("id", "")).endswith("-default"))
+
+
 if __name__ == "__main__":
     unittest.main()
