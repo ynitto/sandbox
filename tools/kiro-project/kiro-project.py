@@ -1936,6 +1936,7 @@ def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
                              evidence=_task_definition_block(d), kind="plan-review")
         else:
             persist_task(cfg, d)
+    close_task_mr(cfg, t, reason)   # タスク MR があればクローズ＋ブランチ削除（best-effort）
     # 本体を rejected として archive へ退避（納品ではないので DELIVERY には載せない）
     t.status = "rejected"
     _archive_write(cfg, t.id, serialize_task(t) + _rejected_record(t, reason))
@@ -2898,10 +2899,15 @@ def resolve_and_persist_workspace(cfg: "Config", task: Task, policy: "Policy") -
     return spec
 
 
+def task_branch_name(cfg: "Config", task: "Task") -> str:
+    """タスク単位ターゲットブランチ名（kp/<task-id>）。全試行（リトライ含む）の成果を集約する。"""
+    return f"{getattr(cfg, 'task_branch_prefix', 'kp/') or 'kp/'}{task.id}"
+
+
 def _workspace_token(spec: dict) -> str:
-    """workspace spec を kiro-flow の `--workspace` 値（JSON）にする。url/path/base/target/desc を伝搬。
+    """workspace spec を kiro-flow の `--workspace` 値（JSON）にする。url/path/base/target/desc/branch を伝搬。
     worker（clone・作業ブランチ）と gitlab の起票先解決の双方で使われる。"""
-    meta = {k: spec[k] for k in ("path", "base", "target", "desc") if spec.get(k)}
+    meta = {k: spec[k] for k in ("path", "base", "target", "desc", "branch") if spec.get(k)}
     if meta.get("desc") and len(meta["desc"]) > 300:
         meta["desc"] = meta["desc"][:300]         # argv 肥大を防ぐ（説明は有界に）
     return json.dumps({"url": spec["url"], **meta}, ensure_ascii=False, separators=(",", ":"))
@@ -2917,7 +2923,12 @@ def _workspace_spec_for(cfg: "Config", task: Task) -> "dict | None":
         smap = repo_spec_map(registry_specs(cfg, charter_for_task(cfg, task)))
     except (OSError, ValueError):
         smap = {}
-    return smap.get(name) or _raw_url_spec(name)
+    spec = smap.get(name) or _raw_url_spec(name)
+    if spec and getattr(cfg, "task_branch", False):
+        # タスク単位ターゲットブランチ: kiro-flow は run 毎の kf/<run-id> の代わりにこのブランチへ
+        # push する（リトライも同一ブランチに積み増し、レビュー・MR の対象を 1 本に集約する）
+        spec = {**spec, "branch": task_branch_name(cfg, task)}
+    return spec
 
 
 def _workspace_cmd_args(cfg: "Config", task: Task) -> "list[str]":
@@ -3527,6 +3538,12 @@ class Config:
     level: str = "unattended"  # 自律度: report(実行せず計画報告) / assisted(実行するが done は人が承認) / unattended(現行)
     # 実行前レビュー（plan review・既定 on）: 新規タスクは proposed で入り、人の承認で ready になる。
     plan_review: bool = True
+    # タスク単位ターゲットブランチ（既定 on）: 成果を kp/<task-id> に集約する（リトライも同一ブランチ）。
+    task_branch: bool = True
+    task_branch_prefix: str = "kp/"
+    # 成果物レビュー（既定 on）: verify PASS 後、level に依らず常に review（検収待ち）へ。
+    # 人の承認で done 確定（GitLab 設定があれば MR を自動マージ規則で決着）。false で従来の自動 done。
+    delivery_review: bool = True
     throttle: float = 0.0   # ソフト予算比率(0=off)。max_tokens/max_cost のこの割合で run を打ち切り watch は report 降格
     runlog: "Path | None" = None    # 構造化 run-log（JSONL・run 毎に1行追記）。既定 <root>/run-log.jsonl
     registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
@@ -3912,6 +3929,195 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
     return results
 
 
+
+# ---------------------------------------------------------------------------
+# タスク MR（成果物レビュー）— kp/<task-id> → target の MR を作り、承認で自動決着する。
+#   GitLab REST v4 を stdlib で直叩きする最小クライアント（kiro-flow executors/gitlab.py の
+#   トークン解決・URL 解釈・承認規則の縮小版）。GitLab に到達できなければすべて無害にスキップし、
+#   従来どおり「記録のみ」で動く（done の確定は MR に依存させるが、未設定なら従来のまま）。
+# ---------------------------------------------------------------------------
+_GL_TOKEN_ENVS = ("GITLAB_TOKEN", "GL_TOKEN")
+_GL_RC_FILES = ("~/.bashrc", "~/.bash_profile", "~/.profile", "~/.zshrc")
+
+
+def _gl_token() -> str:
+    for k in _GL_TOKEN_ENVS:
+        v = os.environ.get(k, "").strip()
+        if v:
+            return v
+    pat = re.compile(r"^\s*(?:export\s+)?(?:GITLAB_TOKEN|GL_TOKEN)=[\"\']?([^\"\'\s]+)")
+    for rc in _GL_RC_FILES:
+        try:
+            for line in Path(rc).expanduser().read_text(encoding="utf-8",
+                                                        errors="ignore").splitlines():
+                m = pat.match(line)
+                if m:
+                    return m.group(1)
+        except OSError:
+            continue
+    return ""
+
+
+def _gl_parse_repo(url: str) -> "tuple[str, str] | None":
+    """リポジトリ URL → (host, project_path)。https 形と ssh 形（git@host:group/repo.git）を解釈。"""
+    u = (url or "").strip()
+    m = re.match(r"^https?://([^/]+)/(.+?)(?:\.git)?/?$", u)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r"^(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?/?$", u)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
+def _gl_api(host: str, token: str, method: str, path: str,
+            data: "dict | None" = None, params: "dict | None" = None):
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    url = f"https://{host}/api/v4{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(url, data=body, method=method,
+                                 headers={"PRIVATE-TOKEN": token,
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+            return json.loads(content) if content.strip() else {}
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"GitLab API {method} {path} 失敗: HTTP {e.code}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"GitLab API {method} {path} へ接続できません: {e.reason}")
+
+
+def _gl_quote(project: str) -> str:
+    import urllib.parse
+    return urllib.parse.quote(project, safe="")
+
+
+def _task_mr_coords(task: "Task") -> "tuple[str, str, str] | None":
+    """タスクに記録済みの MR 座標 (host, project, iid)。無ければ None。"""
+    iid = str(task.get("mr_iid") or "").strip()
+    pj = str(task.get("mr_project") or "")
+    if not iid or "|" not in pj:
+        return None
+    host, proj = pj.split("|", 1)
+    return host, proj, iid
+
+
+def ensure_task_mr(cfg: "Config", task: "Task") -> str:
+    """review 到達時に kp/<task-id> → target の MR を用意する（冪等）。
+    GitLab 未設定・非 GitLab リポジトリ・API 失敗は ""（記録のみで続行＝done の確定は従来どおり）。"""
+    if not getattr(cfg, "task_branch", False):
+        return ""
+    if task.get("mr_url"):
+        return str(task.get("mr_url"))
+    spec = _workspace_spec_for(cfg, task)
+    if not spec or not spec.get("url"):
+        return ""
+    parsed = _gl_parse_repo(spec["url"])
+    token = _gl_token()
+    if not parsed or not token:
+        return ""
+    host, proj = parsed
+    source = task_branch_name(cfg, task)
+    target = spec.get("target") or spec.get("base") or "main"
+    try:
+        ep = _gl_quote(proj)
+        found = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests",
+                        params={"source_branch": source, "state": "opened"})
+        mr = found[0] if isinstance(found, list) and found else None
+        if mr is None:
+            mr = _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests",
+                         data={"source_branch": source, "target_branch": target,
+                               "title": f"[kiro-project] {task.id}: {task.title[:80]}",
+                               "description": f"kiro-project タスク {task.id} の成果物"
+                                              f"（ブランチ {source}。承認でクリーンなら自動マージ）",
+                               "remove_source_branch": True})
+        task.drop("mr_url", "mr_iid", "mr_project")
+        task.extra += [("mr_url", str(mr.get("web_url") or "")),
+                       ("mr_iid", str(mr.get("iid") or "")),
+                       ("mr_project", f"{host}|{proj}")]
+        append_journal(cfg.journal, f"タスク MR 用意: {task.id} → {mr.get('web_url', '')}")
+        return str(mr.get("web_url") or "")
+    except RuntimeError as e:
+        append_journal(cfg.journal, f"タスク MR の用意に失敗（記録のみで続行）: {task.id}: {e}")
+        return ""
+
+
+def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
+    """approve（検収承認）時にタスク MR を Stage 2（gitlab executor）と同一規則で自動決着する:
+    クリーン（コンフリクト無し・未解決ディスカッション無し）→ マージ（ソースブランチ削除）、
+    差分なし → クローズ、未クリーン → 差し戻しコメントを付けて (False, 理由)（done にしない）。
+    MR 無し・GitLab 未設定は (True, "")＝従来どおり done 確定のみ。"""
+    coords = _task_mr_coords(task)
+    if coords is None:
+        return True, ""
+    token = _gl_token()
+    if not token:
+        return True, "GitLab トークン無し（MR は手動で決着してください）"
+    host, proj, iid = coords
+    ep = _gl_quote(proj)
+    try:
+        mr = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
+        state = str(mr.get("state") or "")
+        if state in ("merged", "closed"):
+            return True, f"MR は決着済み（{state}）"
+        problems = []
+        discussions = _gl_api(host, token, "GET",
+                              f"/projects/{ep}/merge_requests/{iid}/discussions",
+                              params={"per_page": 100})
+        unresolved = sum(1 for d in (discussions if isinstance(discussions, list) else [])
+                         if any(n.get("resolvable") and not n.get("resolved")
+                                for n in (d.get("notes") or [])))
+        changes = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/changes")
+        no_diff = isinstance(changes.get("changes"), list) and not changes["changes"]
+        conflicts = bool(mr.get("has_conflicts")) or \
+            str(mr.get("merge_status") or "") == "cannot_be_merged"
+        if unresolved:
+            problems.append(f"未解決のレビューコメントが {unresolved} 件")
+        if conflicts and not no_diff:
+            problems.append(f"コンフリクト（merge_status={mr.get('merge_status')}）")
+        if problems:
+            why = "; ".join(problems)
+            _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",
+                    data={"body": f"kiro-project: # 差し戻し（自動チェック）\n- {why}\n"
+                                  "解消後に再度 approve してください。"})
+            return False, why
+        if no_diff:                              # 差分なし＝マージするものが無い → クローズで決着
+            _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
+                    data={"state_event": "close"})
+            return True, "差分なし MR＝クローズで決着"
+        _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}/merge",
+                data={"should_remove_source_branch": True})
+        return True, "MR を自動マージ"
+    except RuntimeError as e:
+        return False, f"MR の決着に失敗（解消/再試行してください）: {e}"
+
+
+def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
+    """却下（reject）時: タスク MR をクローズしソースブランチを削除する（best-effort・
+    gitlab-review-viewer の却下と同じ規則）。GitLab 未設定なら何もしない。"""
+    coords = _task_mr_coords(task)
+    token = _gl_token()
+    if coords is None or not token:
+        return
+    host, proj, iid = coords
+    ep = _gl_quote(proj)
+    try:
+        _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",
+                data={"body": f"kiro-project: タスク {task.id} は却下されました（{reason}）。"})
+        _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
+                data={"state_event": "close"})
+        branch = task_branch_name(cfg, task)
+        _gl_api(host, token, "DELETE",
+                f"/projects/{ep}/repository/branches/{_gl_quote(branch)}")
+    except RuntimeError as e:
+        append_journal(cfg.journal, f"却下 MR の後始末に失敗（無視）: {task.id}: {e}")
+
+
 def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
                    policy, reasons, cycle):
     """verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ。
@@ -3938,6 +4144,13 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
             else "（assisted）" if assisted else "（承認ゲート）")
     reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
                         if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
+    # 成果物レビューの MR: タスクブランチ（kp/<id>）→ target の MR を用意し（冪等・GitLab 設定時のみ）、
+    # 承認（approve）時に Stage 2 と同じ規則（クリーンなら自動マージ）で決着させる
+    mr_url = ensure_task_mr(cfg, task)
+    if mr_url:
+        ev = (ev + "\n" if ev else "") + f"- MR: {mr_url}（承認時にクリーンなら自動マージ）"
+        if not ref:
+            task.set("gate_ref", mr_url)
     persist_task(cfg, task)
     write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True, evidence=ev)
     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
@@ -4125,7 +4338,9 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                reasons, evidence=ev)
         autonomy_record(cfg, task, clean=False, cache=autonomy_cache)        # 偽 done 疑い＝手戻り
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（red-green・変更を弁別しない verify）")
-    elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
+    elif ok and (getattr(cfg, "delivery_review", False)
+                 or needs_human_review(task, policy) or protect_hits or assisted):
+        # delivery_review（既定 on）: verify PASS 後は level に依らず常に人の検収（review）へ
         _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
                        policy, reasons, cycle)
     elif ok:
@@ -5137,6 +5352,17 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         print(f"plan-review: {tid} を承認しました（→ {t.status}）。")
         return 0
     if t.norm_status() == "review":
+        # 成果物レビューの承認: タスク MR があれば Stage 2 と同一規則で自動決着（クリーンなら
+        # マージ・未クリーンなら差し戻しコメントを付けて review のまま）。MR 無しは従来どおり
+        mr_ok, mr_msg = finalize_task_mr(cfg, t)
+        if not mr_ok:
+            write_needs_file(cfg, t, f"承認されたが MR が未クリーン: {mr_msg}", review=True,
+                             evidence=f"- MR: {t.get('mr_url', '')}")
+            print(f"{tid}: MR が未クリーンのため done にできません（{mr_msg}）。"
+                  f"解消後に再度 approve してください。", file=sys.stderr)
+            return 1
+        if mr_msg:
+            print(f"{tid}: {mr_msg}")
         # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
         ex = dict(t.extra)
         ref = ex.get("gate_ref", "")
@@ -7961,6 +8187,15 @@ CONFIG_DEFAULTS = {
     # 実行前レビュー（plan review）: 新規タスクは proposed で入り、人の承認（approve）で実行可能になる。
     # false で従来の自動投入（verify ありは即 ready）へ戻す。
     "plan_review": True,
+    # タスク単位ターゲットブランチ: 成果物を kp/<task-id> に集約（kiro-flow の workspace branch へ注入。
+    # リトライ（r0/r1…）も同一ブランチに積み増す）。false で従来の run 毎 kf/<run-id>。
+    "task_branch": True,
+    "task_branch_prefix": "kp/",
+    # 成果物レビュー: verify PASS 後、常に review（検収待ち）→ 人の承認で done 確定。
+    # review 到達時に GitLab 設定（GITLAB_TOKEN/GL_TOKEN）があれば kp/<task-id> → target の MR を
+    # 自動作成し、承認時にクリーン（コンフリクト無し・未解決ディスカッション無し）なら自動マージする。
+    # false で従来の unattended 自動 done。
+    "delivery_review": True,
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,
@@ -8076,6 +8311,9 @@ def build_config(args) -> Config:
         concurrency=max(1, int(getattr(args, "concurrency", 1) or 1)),
         level=getattr(args, "level", None) or "unattended",
         plan_review=bool(getattr(args, "plan_review", True)),
+        task_branch=bool(getattr(args, "task_branch", True)),
+        task_branch_prefix=str(getattr(args, "task_branch_prefix", "kp/") or "kp/"),
+        delivery_review=bool(getattr(args, "delivery_review", True)),
         registry=_split_registry(getattr(args, "registry", None)),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
         project_name=root.name,
@@ -8219,6 +8457,11 @@ def _add_common(sp):
     sp.add_argument("--plan-review", action=argparse.BooleanOptionalAction, default=None,
                     help="実行前レビュー: 新規タスクを proposed で入れ、人の承認で実行可能にする"
                          "（--no-plan-review で従来の自動投入。既定 on）")
+    sp.add_argument("--task-branch", action=argparse.BooleanOptionalAction, default=None,
+                    help="タスク単位ターゲットブランチ（kp/<task-id> に成果を集約。既定 on）")
+    sp.add_argument("--delivery-review", action=argparse.BooleanOptionalAction, default=None,
+                    help="成果物レビュー: verify PASS 後、常に検収待ち（review）にして人の承認で done"
+                         "（--no-delivery-review で従来の自動 done。既定 on）")
 
 
 # ---------------------------------------------------------------------------

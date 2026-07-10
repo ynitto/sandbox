@@ -52,12 +52,12 @@ def mkb(d: Path, tid: str, status="ready", verify="true", source="human", title=
 
 
 def cfg_for(d: Path, **kw):
-    # 既定 plan_review=False（従来の自動投入を検証する既存テスト用）。
+    # 既定 plan_review=False / delivery_review=False（従来動作を検証する既存テスト用）。
     # 実行前レビュー（proposed ゲート）の挙動は TestPlanReview が plan_review=True で検証する。
     base = dict(backlog=d / "backlog", policy=d / "policy.md", decisions=d / "decisions",
                 journal=d / "journal.md", needs=d / "needs", workdir=d, bus=d / "bus",
                 planner="none", flow_planner="stub", executor="stub", dry_run=True,
-                plan_review=False)
+                plan_review=False, delivery_review=False)
     base.update(kw)
     return km.Config(**base)
 
@@ -2300,7 +2300,7 @@ class TestLayout(unittest.TestCase):
             bl.mkdir(parents=True)
             (bl / "T1.md").write_text(
                 "## T1: x\n- status: ready\n- verify: `true`\n- retries: 0\n", encoding="utf-8")
-            rc = km.main(["run", "--workdir", str(d), "--planner", "none",
+            rc = km.main(["run", "--no-delivery-review", "--workdir", str(d), "--planner", "none",
                           "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
             self.assertEqual(rc, 0)
             self.assertTrue((proot / "journal.md").exists())
@@ -3552,7 +3552,7 @@ class TestProjectLayer(unittest.TestCase):
             (proot / "backlog").mkdir(parents=True, exist_ok=True)
             (proot / "backlog" / "T1.md").write_text(
                 "## T1: x\n- status: ready\n- verify: `true`\n", encoding="utf-8")
-            rc = km.main(["run", "--workdir", str(d), "--planner", "none",
+            rc = km.main(["run", "--no-delivery-review", "--workdir", str(d), "--planner", "none",
                           "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
             self.assertEqual(rc, 0)                       # charter 無し→従来の backlog ループで drained
             self.assertFalse((proot / "project.json").exists())
@@ -4275,7 +4275,7 @@ class TestCliEndToEnd(unittest.TestCase):
     パスは絶対（mkdtemp）で渡す: 相対パスは --workdir 基準で解決され picked up されないため。"""
 
     def _run(self, d: Path, *extra, timeout=60):
-        cmd = [sys.executable, str(_MOD), "run",
+        cmd = [sys.executable, str(_MOD), "run", "--no-delivery-review",
                "--workdir", str(d), "--backlog", str(d / "backlog"),
                "--policy", str(d / "policy.md"), "--decisions", str(d / "decisions"),
                "--journal", str(d / "journal.md"), "--needs", str(d / "needs"),
@@ -4349,7 +4349,7 @@ class TestCliKiroFlowDelegation(unittest.TestCase):
             marker = d / "marker"
             marker.write_text("done")   # act は best-effort。verify が真実の源なので事前に通る状態を作る
             _write_backlog_task(d / "backlog", "T1", f"test -f {marker}", title="何かを実装")
-            cmd = [sys.executable, str(_MOD), "run",
+            cmd = [sys.executable, str(_MOD), "run", "--no-delivery-review",
                    "--workdir", str(d), "--backlog", str(d / "backlog"),
                    "--policy", str(d / "policy.md"), "--decisions", str(d / "decisions"),
                    "--journal", str(d / "journal.md"), "--needs", str(d / "needs"),
@@ -5821,6 +5821,181 @@ class TestMultiCharter(unittest.TestCase):
             data = km.load_project_state(cfg)
             self.assertNotIn("charters", data)                          # 従来のトップレベル形
             self.assertFalse(str(data.get("id", "")).endswith("-default"))
+
+
+
+
+class TestTaskBranchAndDeliveryReview(unittest.TestCase):
+    """タスク単位ターゲットブランチ（kp/<task-id>）と成果物レビュー（delivery_review・本番既定 on）。
+    review 到達時に MR を用意し、承認で Stage 2 と同一規則の自動決着（クリーンならマージ）を行う。"""
+
+    def test_workspace_spec_injects_task_branch(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True, task_branch_prefix="kp/")
+            mkb(d, "T1")
+            t = km.load_tasks(cfg.backlog)[0]
+            t.extra.append(("workspace", "https://gitlab.example.com/g/app.git"))
+            spec = km._workspace_spec_for(cfg, t)
+            self.assertEqual(spec["branch"], "kp/T1")          # 全試行を集約するブランチ
+            token = km._workspace_token(spec)
+            self.assertIn('"branch":"kp/T1"', token)           # kiro-flow へ伝搬
+            cfg2 = cfg_for(d, task_branch=False)
+            spec2 = km._workspace_spec_for(cfg2, t)
+            self.assertNotIn("branch", spec2 or {})            # off なら従来（run 毎 kf/<run-id>）
+
+    def test_delivery_review_gates_done(self):
+        # delivery_review=True: verify PASS でも自動 done せず review（検収待ち）へ
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, delivery_review=True, learn=False, auto_adjudicate=False)
+            mkb(d, "T1", verify="true")
+            result = km.run_loop(cfg)
+            self.assertEqual(result["counts"]["review"], 1)    # done でなく検収待ち
+            self.assertEqual(result["counts"]["done"], 0)
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "review")
+            self.assertTrue((cfg.needs / "T1.md").exists())
+            self.assertEqual(km.exit_code_for(result), 1)      # 人の対応待ち
+
+    def test_gl_parse_repo_forms(self):
+        self.assertEqual(km._gl_parse_repo("https://gitlab.com/g/app.git"),
+                         ("gitlab.com", "g/app"))
+        self.assertEqual(km._gl_parse_repo("https://gl.example.com/team/sub/app"),
+                         ("gl.example.com", "team/sub/app"))
+        self.assertEqual(km._gl_parse_repo("git@gitlab.com:g/app.git"),
+                         ("gitlab.com", "g/app"))
+        self.assertIsNone(km._gl_parse_repo("/local/path/repo"))
+
+    def _mr_task(self, cfg, d):
+        mkb(d, "T1", verify="true")
+        t = km.load_tasks(cfg.backlog)[0]
+        t.extra.append(("workspace", "https://gitlab.example.com/g/app.git"))
+        return t
+
+    def test_ensure_task_mr_creates_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            calls = []
+
+            def api(host, token, method, path, data=None, params=None):
+                calls.append((method, path, data, params))
+                if method == "GET" and path.endswith("/merge_requests"):
+                    return []                                   # 既存 MR 無し
+                if method == "POST" and path.endswith("/merge_requests"):
+                    return {"iid": 7, "web_url": "https://gitlab.example.com/g/app/-/merge_requests/7"}
+                return {}
+
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=api):
+                url = km.ensure_task_mr(cfg, t)
+            self.assertIn("/merge_requests/7", url)
+            self.assertEqual(t.get("mr_iid"), "7")
+            post = next(c for c in calls if c[0] == "POST")
+            self.assertEqual(post[2]["source_branch"], "kp/T1")
+            self.assertTrue(post[2]["remove_source_branch"])
+            # 冪等: mr_url 記録済みなら API を呼ばない
+            with mock.patch.object(km, "_gl_api", side_effect=AssertionError("再作成しない")):
+                self.assertEqual(km.ensure_task_mr(cfg, t), url)
+
+    def test_ensure_task_mr_skips_without_gitlab(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            with mock.patch.object(km, "_gl_token", return_value=""):
+                self.assertEqual(km.ensure_task_mr(cfg, t), "")   # トークン無し＝記録のみで続行
+
+    def _review_task_with_mr(self, cfg, d):
+        t = self._mr_task(cfg, d)
+        t.status = "review"
+        t.extra += [("mr_url", "u7"), ("mr_iid", "7"), ("mr_project", "gitlab.example.com|g/app")]
+        km.persist_task(cfg, t)
+        return t
+
+    def test_approve_merges_clean_mr_and_finalizes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            calls = []
+
+            def api(host, token, method, path, data=None, params=None):
+                calls.append((method, path, data))
+                if method == "GET" and path.endswith("/merge_requests/7"):
+                    return {"state": "opened", "merge_status": "can_be_merged",
+                            "has_conflicts": False}
+                if path.endswith("/discussions"):
+                    return []
+                if path.endswith("/changes"):
+                    return {"changes": [{"new_path": "a.py"}]}
+                return {}
+
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=api):
+                rc = km.cmd_approve(cfg, t.id, "検収OK")
+            self.assertEqual(rc, 0)
+            self.assertTrue(any(m == "PUT" and p.endswith("/merge") for m, p, _ in calls))
+            self.assertTrue((d / "archive" / f"{t.id}.md").exists())   # done 確定
+
+    def test_approve_unclean_mr_keeps_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            calls = []
+
+            def api(host, token, method, path, data=None, params=None):
+                calls.append((method, path, data))
+                if method == "GET" and path.endswith("/merge_requests/7"):
+                    return {"state": "opened", "merge_status": "cannot_be_merged",
+                            "has_conflicts": True}
+                if path.endswith("/discussions"):
+                    return []
+                if path.endswith("/changes"):
+                    return {"changes": [{"new_path": "a.py"}]}
+                return {}
+
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=api):
+                rc = km.cmd_approve(cfg, t.id, "検収OK")
+            self.assertEqual(rc, 1)                              # done にしない
+            got = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(got.norm_status(), "review")        # review のまま
+            note = next(c for c in calls if c[0] == "POST" and c[1].endswith("/notes"))
+            self.assertIn("差し戻し", note[2]["body"])
+
+    def test_approve_without_mr_is_legacy(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", status="review", verify="true")
+            rc = km.cmd_approve(cfg, "T1", "OK")
+            self.assertEqual(rc, 0)                              # MR 無しは従来どおり done 確定のみ
+            self.assertTrue((d / "archive" / "T1.md").exists())
+
+    def test_reject_closes_mr_and_deletes_branch(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            calls = []
+
+            def api(host, token, method, path, data=None, params=None):
+                calls.append((method, path, data))
+                return {}
+
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=api):
+                rc = km.cmd_reject(cfg, t.id, "作り直す")
+            self.assertEqual(rc, 0)
+            self.assertTrue(any(m == "PUT" and p.endswith("/merge_requests/7")
+                                and (dd or {}).get("state_event") == "close"
+                                for m, p, dd in calls))          # MR クローズ
+            self.assertTrue(any(m == "DELETE" and "/repository/branches/" in p
+                                for m, p, _ in calls))           # ソースブランチ削除
 
 
 if __name__ == "__main__":
