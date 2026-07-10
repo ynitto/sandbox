@@ -86,7 +86,7 @@ function enqueueToInbox(projectDir, spec) {
 // 3. 人の指示（approve / hold / pin / defer / revise）
 // ---------------------------------------------------------------------------
 
-const COMMAND_ACTIONS = new Set(['approve', 'hold', 'pin', 'defer', 'revise']);
+const COMMAND_ACTIONS = new Set(['approve', 'hold', 'pin', 'defer', 'revise', 'reject']);
 // プロジェクト単位（id 不要）のライフサイクル指示。リモートの本体を git 越しに操作する口。
 const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
 
@@ -171,6 +171,7 @@ async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback 
   const base = ['--root', root];
   let args;
   if (action === 'approve') args = ['approve', id, '--reason', reason, ...base];
+  else if (action === 'reject') args = ['reject', id, '--reason', reason, ...base];
   else if (action === 'hold') args = ['hold', id, '--reason', reason, ...base];
   else if (action === 'pin') args = ['reprioritize', id, '--pin', '--reason', reason, ...base];
   else if (action === 'revise') {

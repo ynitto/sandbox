@@ -20,7 +20,8 @@ const DR_HEAD_RE = /^##\s+(DR-\d+)\s+(\S+)\s+actor:\s*(.*)$/;
 
 // offloaded: 非ブロッキング委譲（act_async）で kiro-flow daemon へ submit 済み・結果待ち。
 //   flow_run（run-id）を extra に持ち、フロータブの該当 run へ辿れる。
-const TASK_STATUSES = ['inbox', 'draft', 'ready', 'doing', 'done', 'blocked', 'review', 'offloaded'];
+// proposed: 実行前レビュー待ち（承認されるまで実行しない）／rejected: 却下済み（archive に退避）
+const TASK_STATUSES = ['inbox', 'draft', 'proposed', 'ready', 'doing', 'done', 'blocked', 'review', 'offloaded', 'rejected'];
 
 function readText(file) {
   try {
@@ -111,6 +112,30 @@ function parseTask(text, tid) {
     }
   }
   return task;
+}
+
+// tid に依存する（extra.after に tid を含む）タスクの推移閉包（影響範囲の一覧提示用）。
+function dependentsOf(tasks, tid) {
+  const deps = (t) =>
+    String((t.extra && t.extra.after) || '')
+      .split(/[\s,]+/)
+      .filter(Boolean);
+  const out = [];
+  const seen = new Set([tid]);
+  let frontier = new Set([tid]);
+  while (frontier.size) {
+    const next = new Set();
+    for (const t of tasks) {
+      if (seen.has(t.id)) continue;
+      if (deps(t).some((d) => frontier.has(d))) {
+        out.push(t);
+        seen.add(t.id);
+        next.add(t.id);
+      }
+    }
+    frontier = next;
+  }
+  return out;
 }
 
 function listTasks(dir) {
@@ -430,7 +455,9 @@ function discover(cfg) {
       source,
       exists: fs.existsSync(dir),
       isProject: isProjectDir(dir),
-      hasCharter: fs.existsSync(path.join(dir, 'charter.md')),
+      hasCharter:
+        fs.existsSync(path.join(dir, 'charter.md')) ||
+        safeList(path.join(dir, 'charters')).some((f) => f.endsWith('.md')),
       backlogCount: tasks.length,
       byStatus,
       needsCount: needs,
@@ -530,12 +557,21 @@ function readProject(dir, cfg) {
 
   const bus = resolveBusDir(dir, cfg);
 
+  // 複数 charter（charters/<name>.md = 1 バージョン）。無ければ単一 charter.md（従来）
+  const charters = [];
+  for (const f of safeList(path.join(dir, 'charters')).sort()) {
+    if (!f.endsWith('.md')) continue;
+    const ch = parseCharter(readText(path.join(dir, 'charters', f)));
+    if (ch) charters.push({ name: f.replace(/\.md$/, ''), file: path.join(dir, 'charters', f), ...ch });
+  }
+
   return {
     dir,
     inboxFiles,
     replanPending,
     name: path.basename(dir),
     charter: parseCharter(readText(path.join(dir, 'charter.md'))),
+    charters,
     policy: parsePolicy(readText(path.join(dir, 'policy.md'))),
     backlog,
     archive,
@@ -558,6 +594,7 @@ function readProject(dir, cfg) {
 }
 
 module.exports = {
+  dependentsOf,
   parseTask,
   parseCharter,
   parsePolicy,

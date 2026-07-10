@@ -7,7 +7,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/flow-relationship.test.js && node test/authoring.test.js && node test/review-handoff.test.js && node test/flow-bus-per-project.test.js && node test/task-status-offloaded.test.js && node test/flow-reconcile.test.js && node test/flow-park-cancel.test.js && node test/replan.test.js && node test/reset.test.js && node test/lifecycle.test.js",
+    "test": "node test/flow-relationship.test.js && node test/authoring.test.js && node test/review-handoff.test.js && node test/flow-bus-per-project.test.js && node test/task-status-offloaded.test.js && node test/flow-reconcile.test.js && node test/flow-park-cancel.test.js && node test/replan.test.js && node test/reset.test.js && node test/lifecycle.test.js && node test/hitl-review.test.js",
     "dist": "electron-builder --win",
     "dist:portable": "electron-builder --win portable"
   },
