@@ -609,3 +609,17 @@ body.simple .tab.tech {
 .dot.paused {
   background: #e6a23c;
 }
+
+
+/* 実行前レビュー（proposed）・却下（rejected） */
+.status-chip.st-proposed,
+.tile.st-proposed .num {
+  color: #b08bd8;
+}
+.status-chip.st-rejected {
+  color: #9a9a9a;
+  text-decoration: line-through;
+}
+.need-card.kind-plan-review {
+  border-left: 3px solid #b08bd8;
+}

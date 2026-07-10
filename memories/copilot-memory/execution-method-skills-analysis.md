@@ -24,7 +24,7 @@ summary: "# 実行手法スキル分析（2026-04-04）"
 # execution method skills analysis
 
 ## コンテキスト
-VSCode Copilot Memory からインポート（ソース: /Users/nitto/Library/Application Support/Code/User/workspaceStorage/40ca8287109c8a05fb703aa86bc590cf/github.copilot-chat/memory-tool/memories/OTcxZDljMDAtZjQ1YS00NWFkLWI2ZGItMjYwNGFmMzk5ZTk4/execution-method-skills-analysis.md）
+VSCode Copilot Memory からインポート
 
 ## 詳細
 # 実行手法スキル分析（2026-04-04）
