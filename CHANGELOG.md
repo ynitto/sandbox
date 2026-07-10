@@ -7,6 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### リセット後の再起動で残骸 run が復活・類似バックログが重複・kiro-flow プロセス増殖を修正
+
+リセット（charter 以外を全消去）→ kiro-projects 再起動で「似たようなバックログが複数できる」
+「kiro-flow のプロセスがバックログ数ぶん立ち上がる」報告への 3 点セットの修正。
+
+- **viewer: リセットで `bus/.state-git`（kiro-flow の同期クローン）を温存** — 従来はバスを
+  ディレクトリ丸ごと削除しており、kiro-flow の state_git manifest（`bus/.state-git` 内）が飛ぶと
+  次の同期が「リモートだけにある」と判定して**旧 run が全部復活**、daemon の孤児回収が残骸 run を
+  一斉再開していた（残骸の正体）。バスは直下の非ドットだけを削除し、クローンを残して run の削除を
+  「ローカルの削除」としてリモートへ伝播させる。
+- **kiro-projects: 類似バックログの二重投入を修正** — plan/review（バックログ分解）の冪等照合が
+  「エージェント委譲**前**のスナップショット」だけと比較していた。分解は数分かかるため、その間に
+  投入されたタスク（別インスタンス・前パスの残り・state_git 同期で届いた分・リセット後に書き戻された
+  残骸）が照合に無く、類似タスクを重複投入していた。`_enqueue_specs` が投入直前に backlog/archive を
+  読み直して照合する。
+- **kiro-flow: 同時実行 run（orchestrator プロセス）の上限 `max_runs` を追加（既定 8）** —
+  orchestrator は run ごとに 1 プロセスで従来**無制限**。バックログ一括投入（act_async）や再起動直後の
+  孤児一斉再開で「run 数ぶんの orchestrator ＋計画エージェント」が同時に立ち上がっていた。
+  inbox 受理と孤児再開を「実行中 run 数」で律速する（超過は inbox / 次 poll に残る＝取りこぼさない。
+  枠超過の孤児は failed にせず持ち越す）。**全ノードが park（承認待ち等）の run は枠に数えない**
+  （worker も計画エージェントも使わないため。gitlab 長期委譲が上限を占有して新規 run を詰まらせない。
+  park 孤児は枠と無関係に引き継ぐ＝service_waits の監視オーナーを絶やさない）。0 以下で無制限（従来動作）。
+- **テスト**: 全 park 判定（claim 可能/claim 中/lease 失効の縮退）・busy カウント・枠超過孤児の
+  持ち越し（failed にしない）・park 孤児の枠免除・無制限モード（kiro-flow）、投入直前読み直しの
+  重複検知（backlog/archive・kiro-projects）、バス直下削除と `bus/.state-git` 温存（viewer）。
+
 ### kiro-projects-viewer: プロジェクトのリセットボタン（charter 以外を全消去 + kiro-flow 停止）
 
 - **背景**: プロジェクトを「charter からゼロにやり直したい」とき（分解の迷走・実験のやり直し等）、

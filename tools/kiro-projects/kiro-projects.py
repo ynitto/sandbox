@@ -6809,16 +6809,23 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
 
 def _enqueue_specs(cfg: "Config", specs: "list[dict]", existing: "list[str]",
                    threshold: float) -> "list[Task]":
-    """spec 群を冪等に backlog へ投入（既存と類似は飛ばす）。verify 無しは enqueue_task が inbox にする。"""
+    """spec 群を冪等に backlog へ投入（既存と類似は飛ばす）。verify 無しは enqueue_task が inbox にする。
+
+    冪等照合は「呼び出し時点のスナップショット ∪ 投入直前に読み直した現物」で行う。plan/review は
+    エージェント委譲で数分かかるため、スナップショットだけだと、その間に投入されたタスク
+    （別インスタンス・前パスの残り・state_git 同期で届いた分・リセット後に書き戻された残骸）が
+    照合に無く、類似バックログを二重投入してしまう。"""
+    merged = list(existing) + _existing_titles(cfg)
     created: list[Task] = []
     for sp in specs:
         title = str(sp.get("title", "") or "").strip()
         verify = str(sp.get("verify", "") or "").strip()
-        if not title or _is_duplicate(title, verify, existing, threshold):
+        if not title or _is_duplicate(title, verify, merged, threshold):
             continue
         try:
             created.append(enqueue_task(cfg, sp))
-            existing.append(title)
+            merged.append(title)
+            existing.append(title)   # 呼び出し側スナップショットにも反映（同一パス内の連続呼び出し用）
         except ValueError:
             continue
     return created

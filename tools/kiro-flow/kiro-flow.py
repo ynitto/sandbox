@@ -137,6 +137,13 @@ CONFIG_DEFAULTS = {
     "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     "max_workers": 4,
+    # daemon が同時に実行する run（orchestrator プロセス）の上限。バックログ一括投入
+    # （kiro-projects の act_async 等）や再起動直後の孤児一斉再開で「run 数ぶんの orchestrator
+    # ＋計画エージェント」が同時に立ち上がるのを防ぐ。全ノードが park（承認待ち等）の run は
+    # worker も計画エージェントも使わないため枠に数えない（gitlab 長期委譲は上限で詰まらない）。
+    # 超過した要求は inbox に残り、枠が空いた poll で受理される（取りこぼさない）。
+    # 0 以下で無制限（従来動作）。
+    "max_runs": 8,
     "max_iterations": 3,
     "max_fanout": 50,
     # judge/評価役のサーキットブレーカー: 同一系統（verify/失敗）の作り直しをこの回数で打ち切る。
@@ -4208,8 +4215,32 @@ def _superseded_run_ids(bus: Bus) -> dict:
     return superseded
 
 
+def _run_fully_parked(bus: Bus, run_id: str) -> bool:
+    """run の in-flight が全て park（承認待ち等）か。claim 中のノードも今すぐ claim 可能な
+    pending も無く、生存 park が 1 つ以上ある run は worker も計画エージェントも使わない＝
+    実行枠（max_runs）に数えない（gitlab 長期委譲が枠を占有して新規 run が詰まらないように）。"""
+    v = bus.run_view(run_id)
+    graph = v.read_graph()
+    if not graph:
+        return False                     # グラフ未作成（計画中）は実行中扱い
+    parked = False
+    for nid, node in graph["nodes"].items():
+        st = v.node_state(nid)
+        if st == "claimed" or (st == "pending" and deps_satisfied(v, node)):
+            return False
+        if st == "waiting":
+            parked = True
+    return parked
+
+
+def _busy_run_count(bus: Bus, run_ids) -> int:
+    """実行枠（max_runs）を消費している run 数（駆動中のうち全 park の run を除く）。"""
+    return sum(1 for r in run_ids if not _run_fully_parked(bus, r))
+
+
 def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float,
-                       args, base: list, spawn=None) -> "tuple[dict, list]":
+                       args, base: list, spawn=None,
+                       slots: "int | None" = None) -> "tuple[dict, list]":
     """inbox 由来で owning daemon が消失した（生存リース切れ）非終端 run を引き継ぐ。
 
     PC の毎日シャットダウン等で daemon ごと消えても run を失敗にしない中核。孤児を
@@ -4226,6 +4257,7 @@ def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float
     戻り値は（再開した run_id→Popen, 終端化した run_id 一覧）。"""
     adopted: dict = {}
     failed: "list[str]" = []
+    used = 0                     # 実行枠（slots）を消費した引き継ぎ数（全 park の run は数えない）
     max_r = int(getattr(args, "max_resumes", 3) or 0)
     superseded = _superseded_run_ids(bus)
     for req_id in bus.list_inbox():
@@ -4248,11 +4280,19 @@ def _adopt_orphan_runs(bus: Bus, daemon_id: str, owned: set, lease_window: float
         req = bus.read_inbox(req_id)
         why = "自動再開が無効（max_resumes<=0）" if max_r <= 0 else "要求ファイルを読めない"
         if req and max_r > 0:
+            # 実行枠（max_runs 由来の slots）: 全 park の run は枠を要さないため無条件に引き継ぐ
+            # （service_waits の監視オーナーが必要）。それ以外は枠が無ければ今回は再開せず
+            # 次 poll へ持ち越す（failed にはしない＝再起動直後の一斉再開でプロセスが溢れない）。
+            parked = slots is not None and _run_fully_parked(bus, req_id)
+            if slots is not None and not parked and used >= slots:
+                continue
             if not bus.reclaim_request(req_id, daemon_id, args.lease):
                 continue      # 旧 owner の claim がまだ lease 内 → 失効後の poll で再試行
             p = _resume_run(bus, daemon_id, args, base, req_id, req, lease_window, spawn)
             if p is not None:
                 adopted[req_id] = p
+                if slots is not None and not parked:
+                    used += 1
                 continue
             why = f"進捗なしの連続再開が上限超過（max_resumes={max_r}）"
         if bus.mark_run_failed(req_id, f"orphaned: owning daemon が消失（生存リース切れ・{why}）"):
@@ -4564,7 +4604,9 @@ def cmd_daemon(args) -> int:
     signal.signal(signal.SIGINT, lambda *_: (shutdown(), sys.exit(130)))
     signal.signal(signal.SIGTERM, lambda *_: (shutdown(), sys.exit(143)))
 
-    log(daemon_id, f"daemon 起動 bus={mode} max_workers={args.max_workers} poll={args.poll}")
+    max_runs = int(getattr(args, "max_runs", 0) or 0)
+    log(daemon_id, f"daemon 起動 bus={mode} max_workers={args.max_workers} "
+                   f"max_runs={max_runs if max_runs > 0 else '無制限'} poll={args.poll}")
     log(daemon_id, state_git_status_line(args))   # バスがリモートへ鏡写しされるかを起動時に明示
     # 起動直後に一度だけ書いておく（ここでは push しない＝新規 push トリガーは増やさない）。
     # state_git 有効時は既存の毎 tick state_sync(args) が自分の interval で自然に拾って
@@ -4695,8 +4737,11 @@ def cmd_daemon(args) -> int:
         # を同じ run-id で再開する（続きから）。再開できないものだけ failed に確定する（再起動した
         # 新プロセスが status:running を放置せず、消費者が act_timeout まで待たずに復旧できるように）。
         if not stop["v"]:
+            slots = None
+            if max_runs > 0:   # 実行枠の残り（全 park の run は消費しない）。孤児の一斉再開を律速する
+                slots = max(0, max_runs - _busy_run_count(bus, set(orchestrators)))
             adopted, orphan_failed = _adopt_orphan_runs(
-                bus, daemon_id, set(orchestrators), lease_window, args, base)
+                bus, daemon_id, set(orchestrators), lease_window, args, base, slots=slots)
             for rid, p in adopted.items():
                 orchestrators[rid] = p
                 log(daemon_id, f"孤児 run を引き継ぎ: {rid} → 再開"
@@ -4704,7 +4749,11 @@ def cmd_daemon(args) -> int:
             for rid in orphan_failed:
                 log(daemon_id, f"孤児 run を回収: {rid} → failed（owning daemon 消失・再開不可）")
 
-        # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）
+        # 1) 新しい要求を受理 → orchestrator をオンデマンド起動（分散時は 1 台だけ担当）。
+        #    max_runs>0 なら「実行中（全 park を除く）の run 数」で受理を律速する。超過した要求は
+        #    inbox に残り、枠が空いた poll で受理される（バックログ一括投入で orchestrator と
+        #    計画エージェントがバックログ分同時に立ち上がるのを防ぐ）。cancel の受理は枠と無関係。
+        busy = _busy_run_count(bus, set(orchestrators)) if max_runs > 0 else None
         for req_id in bus.list_inbox():
             if bus.run_exists(req_id) or req_id in orchestrators:
                 continue
@@ -4714,12 +4763,16 @@ def cmd_daemon(args) -> int:
                     bus.sync_push(f"cancel request {req_id}（run 化前）")
                     log(daemon_id, f"cancel: 要求 {req_id} を run 化前に canceled で終端化")
                 continue
+            if busy is not None and busy >= max_runs:
+                continue   # 受理枠なし → inbox に残す（取りこぼさない。枠が空いた poll で受理）
             req = bus.read_inbox(req_id)
             if not req:
                 continue
             if bus.claim_request(req_id, daemon_id, args.lease):
                 orchestrators[req_id] = _spawn_orchestrator(base, args, req_id, req)
                 bus.touch_run(req_id, lease_window)   # 受理直後に生存リースを張る（孤児誤判定を防ぐ）
+                if busy is not None:
+                    busy += 1
                 log(daemon_id, f"要求 {req_id} を受理 → orchestrator 起動: {req['request'][:50]}")
 
         # 2) claim 可能タスク量に応じてワーカーをオンデマンド起動
@@ -5981,6 +6034,9 @@ def build_parser() -> argparse.ArgumentParser:
     dm.add_argument("--node-id", default=None, help="デーモン識別子（既定: host-pid）")
     dm.add_argument("--max-workers", type=int, default=None,
                     help="このデーモンが同時に走らせる worker 上限（既定 4）")
+    dm.add_argument("--max-runs", dest="max_runs", type=int, default=None,
+                    help="同時に実行する run（orchestrator）の上限（既定 8）。全 park（承認待ち）の "
+                         "run は数えない。超過要求は inbox に残り枠が空き次第受理。0 以下で無制限")
     dm.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
     dm.add_argument("--executor", default=None,
                     help="ワーカーバス（kiro/stub/プラグイン名/.py パス）")
