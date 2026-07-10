@@ -1,0 +1,6 @@
+{
+  "command": "stop",
+  "reason": "kiro-projects-viewer から操作",
+  "actor": "kiro-projects-viewer",
+  "ts": "2026-07-10T22:44:15.948Z"
+}

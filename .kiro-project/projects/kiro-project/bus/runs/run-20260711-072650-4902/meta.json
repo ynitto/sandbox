@@ -1,0 +1,8 @@
+{
+  "request": "kiro-flow の骨格を作成する（ディレクトリ・エントリーポイント・ヘルプ表示）\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  python tools/kiro-flow/main.py --help | grep -q 'usage\\|Usage\\|kiro-flow' && echo PASS\n\nタスクID: kiro-flow-072641\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: 自律的なプロジェクト開発が実行出来ること\n制約:\n- 標準ライブラリのみ\n成果物:\n- tools/kiro-flow - kiro-flow プログラム\n- tools/kiro-project - kiro-project プログラム\n- tools/kiro-projects-viewer - viewer プログラム",
+  "workspace": null,
+  "references": [],
+  "status": "running",
+  "created_at": "2026-07-10T22:26:50Z",
+  "updated_at": "2026-07-10T22:28:24Z"
+}

@@ -1,0 +1,5 @@
+# kiro-project 設定（このプロジェクト専用）。
+# 起動: kiro-project start --config <このファイルの絶対パス>
+# 1 プロジェクト = 1 ディレクトリ（root 直下に charter.md / backlog/ / needs/ / status.json …）。
+root: /Users/nitto/Workspace/sandbox/.kiro-project/projects/kiro-project   # 状態（charter/backlog/needs/decisions/status）の置き場
+workdir: /Users/nitto/Workspace/sandbox                                    # act / verify の作業ツリー（成果物 tools/* はこのリポジトリ内）
