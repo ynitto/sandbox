@@ -2,7 +2,7 @@
 
 > 作成日: 2026-06-29
 > 対象ブランチ: `claude/kiro-worktree-cost-reduction-8dlgf9`
-> 初出の適用先: `tools/kiro-flow/kiro-flow.py`, `tools/kiro-projects/kiro-projects.py`
+> 初出の適用先: `tools/kiro-flow/kiro-flow.py`, `tools/kiro-project/kiro-project.py`
 > 位置づけ: **特定ツールに依存しない汎用パターン**。git リモート（GitLab/GitHub 等）を
 > 「タスクのたびに clone して作業/検証する」あらゆるツール・スキルへ転用できる。
 
@@ -169,13 +169,13 @@ release_worktree(dest) -> None
 
 ---
 
-## 8. 適用先メモ（kiro-flow / kiro-projects）
+## 8. 適用先メモ（kiro-flow / kiro-project）
 
 初出の適用は以下。詳細は各ツールの設計書を参照。
 - **kiro-flow**: `ensure_workspace_clone`/`_clone_repo`/`_prepare_run_branch`/`finalize_workspace`/
   `cleanup_workspace` を本パターンへ置換。書込先 repo を detached worktree で作業し、
   `push HEAD:refs/heads/kf/<run_id>` で送る。`GitBus` の sparse バスクローンは別系統（既に再利用機構あり）。
-- **kiro-projects**: `_clone_repo_shallow`（verify/acceptance）を共有 cache + worktree へ置換。
+- **kiro-project**: `_clone_repo_shallow`（verify/acceptance）を共有 cache + worktree へ置換。
   検証は最新の target ブランチを毎回 fetch してから worktree を作る（INV-1）。
 - 両ツールは **同じ cache root を共有**（ホスト共有スコープ）。URL ロックで跨プロセス協調。
 

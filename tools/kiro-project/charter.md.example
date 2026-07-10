@@ -1,16 +1,16 @@
 <!--
-kiro-projects の charter.md 規約（プロジェクト憲章の正典）
+kiro-project の charter.md 規約（プロジェクト憲章の正典）
 ========================================================================
-このファイル（<project>/charter.md。既定 .kiro-projects/projects/<name>/charter.md）は
-**人が書く唯一の最上位入力**。これを置くと `kiro-projects run` が自動で backlog の上に
+このファイル（<root>/charter.md。プロジェクトルート直下）は
+**人が書く唯一の最上位入力**。これを置くと `kiro-project run` が自動で backlog の上に
 「目標 → 分解 → 消化 → 評価 → 改善」のループをもう一段載せ、charter が満たされるまで長期に回す
 （専用 project コマンドは無い。プロセスは run に一本化）。
 
   使い方:
-    cp tools/kiro-projects/charter.md.example .kiro-projects/projects/default/charter.md   # 編集して使う
-    kiro-projects run                      # charter があれば plan→execute→evaluate（収束で人へ）
-    kiro-projects run --watch              # 目標を満たすまで回り続ける常駐（charter 更新も待つ）
-    kiro-projects approve <project> --reason "受領"   # 収束候補を完了確定（最終納品書）
+    cp tools/kiro-project/charter.md.example ./charter.md   # プロジェクトルートに置いて編集して使う
+    kiro-project run                      # charter があれば plan→execute→evaluate（収束で人へ）
+    kiro-project run --watch              # 目標を満たすまで回り続ける常駐（charter 更新も待つ）
+    kiro-project approve <project> --reason "受領"   # 収束候補を完了確定（最終納品書）
 
 書式（`## <key>` セクション。key は goal/constraints/assumptions/deliverables/acceptance/repos/links）:
 
@@ -59,14 +59,14 @@ kiro-projects の charter.md 規約（プロジェクト憲章の正典）
 
 ## repos
 # リポジトリ定義は独立スキーマ（schemas/repos.schema.json）で管理される: 手書きの
-# <project>/repos.{yaml,yml,json} を置くと**そちらがレジストリの正**になり、この ## repos は互換入力。
-# 手書きが無ければ kiro-projects がこの ## repos から <project>/repos.json を**自動生成**して
+# <root>/repos.{yaml,yml,json} を置くと**そちらがレジストリの正**になり、この ## repos は互換入力。
+# 手書きが無ければ kiro-project がこの ## repos から <root>/repos.json を**自動生成**して
 # 外部ツール（codd-gate の --repos 等）へ渡す（_meta マーカー付き・正はこの charter のまま追従）。
 # 対象リポジトリ（任意・複数可）。見出しは `name = url` か素の `url`。各 repo に構造化サブ箇条で
 # メタ情報を付ける（インデントした `- key: value`。日本語キー desc=説明/base=ベース/target=ターゲット/
 # path=パス/owns=担当 も可）:
 #   - owns   … このリポジトリが担当するパス（グロブ、カンマ/空白区切り）【書込先にするなら必須】。
-#              kiro-projects のルーティングが「タスク → どの書込先（ワークスペース）か」を決める根拠。
+#              kiro-project のルーティングが「タスク → どの書込先（ワークスペース）か」を決める根拠。
 #              **owns を書かない repo は『参照リポジトリ（読むだけ）』** とみなし、書込先にはせず、タスク本文へ
 #              参照情報として伝搬する（clone もしない）。
 #   - desc   … 内容物・関与範囲（役割）の説明【推奨】。auto-route（LLM 推定）や gitlab イシューで使う。
@@ -126,7 +126,7 @@ kiro-projects の charter.md 規約（プロジェクト憲章の正典）
 
 ## links
 # 参考リンク（任意・複数可）。横展開先プロジェクト名/相対パス、または wiki/ドキュメント URL 等を置ける。
-# プロジェクト名/相対パス（<root>/projects/<name>・'/' や '..' を含む）はリンク先の charter 定義(目標/制約)と
+# パス（兄弟ディレクトリ名・相対・絶対）はリンク先の charter 定義(目標/制約)と
 # decisions の learn(人の判断) を act ワーカーの文脈に取り込む。URL 等はそのまま文脈/イシューへ伝搬する。
 # 各リンクにも `- desc:` を付けられる（内容の説明）。
 # - shared-conventions

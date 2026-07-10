@@ -5,7 +5,7 @@
 CoDD（Coherence-Driven Development, https://github.com/yohey-w/codd-dev）の設計
 （Trace=接続マップ / Impact=Green・Amber・Gray 分類 / Verify=偽グリーンを許さない検証）の翻案。
 依存は python3 と git のみ（pip 依存なし・LLM 不要）。単体で CI・git hook・手元の点検に使え、
-kiro-projects とは既存フック経由でオプション連携できる（依存は一方向・本体無改造）。
+kiro-project とは既存フック経由でオプション連携できる（依存は一方向・本体無改造）。
 
   scan    … 接続マップ（doc↔code↔test のエッジ）と既存負債（壊れた参照・未文書化・未テスト）の棚卸し
   impact  … 差分（--base..作業ツリー）を Green / Amber / Gray / Followup に分類（--json が所見の正）
@@ -14,24 +14,24 @@ kiro-projects とは既存フック経由でオプション連携できる（依
   check   … 修復タスクの verify 用の状態アサーション（エッジ存在・参照解決・鮮度）
 
 リポジトリレジストリは共通スキーマ schemas/repos.schema.json（--repos ファイル / 設定 repos:）。
-identity は (url, path, base)＝パス＋ブランチで一意。charter.md は読まない——kiro-projects と
-組む場合は kiro-projects 側が charter から <project>/repos.json を自動生成してこちらへ渡す
-（codd-gate は kiro-projects から完全に独立。共有するのは schemas/ のデータ契約だけ）。
+identity は (url, path, base)＝パス＋ブランチで一意。charter.md は読まない——kiro-project と
+組む場合は kiro-project 側が charter から <root>/repos.json を自動生成してこちらへ渡す
+（codd-gate は kiro-project から完全に独立。共有するのは schemas/ のデータ契約だけ）。
 
-kiro-projects と連携する場合も本体は無改造で、既存の決定的フックだけで結合する（＝プラグイン）:
+kiro-project と連携する場合も本体は無改造で、既存の決定的フックだけで結合する（＝プラグイン）:
   - タスク verify / regression_cmd に `codd-gate verify --base "$KIRO_BASE_REV"` を差し込む（差分ゲート）。
   - charter acceptance に `codd-gate verify --debt --max-broken N` を置く（負債ラチェット）。
-  - kiro-projects の `intake_cmd: 'codd-gate tasks --debt'` で watch の周期ごとに負債を自動で
-    汲み上げる（id が冪等キー。手動なら `codd-gate tasks | kiro-projects enqueue --json` / --inbox）。
+  - kiro-project の `intake_cmd: 'codd-gate tasks --debt'` で watch の周期ごとに負債を自動で
+    汲み上げる（id が冪等キー。手動なら `codd-gate tasks | kiro-project enqueue --json` / --inbox）。
 
-鉄則（kiro-projects と同じ流儀）:
+鉄則（kiro-project と同じ流儀）:
   1. verify は「履歴」ではなく「現在の状態と差分」だけを見る。マップのキャッシュを信用せず毎回スキャンする。
   2. 成果の無い場所で偽判定しない。チェック対象 repo のディレクトリが解決できなければ NG（黙って PASS しない）。
   3. ブラウンフィールドの既存負債では止めない。差分ゲートは「新しく壊した分」だけを NG にし、
      既存負債は棚卸し（--debt）→ タスク化（tasks --debt）→ ラチェット（--max-*）で漸進的に返す。
-  4. 修復の知能は kiro-projects → kiro-flow へ委譲する。本体は分類とタスク生成まで。
+  4. 修復の知能は kiro-project → kiro-flow へ委譲する。本体は分類とタスク生成まで。
   5. **どのサブコマンドも単発・有界**（watch/daemon を持たない。git 呼び出しも個別にタイムアウト）。
-     常駐・繰り返しは kiro-projects（intake_cmd / regression_cmd / acceptance）や cron・CI が持つ。
+     常駐・繰り返しは kiro-project（intake_cmd / regression_cmd / acceptance）や cron・CI が持つ。
 """
 
 import argparse
@@ -200,7 +200,7 @@ def load_repos(repos_path: "Path | None", conf: dict,
                repo_dirs: "dict[str, Path]") -> "list[Repo]":
     """リポジトリレジストリを解決する（上から優先）:
     1. --repos / 設定 repos_file … **共通スキーマのレジストリファイル**（schemas/repos.schema.json。
-       kiro-projects の <project>/repos.{yaml,json}＝charter からの自動生成物と同じファイルを共有できる）
+       kiro-project の <root>/repos.{yaml,json}＝charter からの自動生成物と同じファイルを共有できる）
     2. 設定ファイルの `repos:` … インラインレジストリ（形は 1 と同じ）
     3. --repo-dir の名前をそのまま repo にする（グロブは既定）
     4. どれも無ければカレントディレクトリを単一 repo `default` として扱う
@@ -227,7 +227,7 @@ def load_repos(repos_path: "Path | None", conf: dict,
 # --sync: 共有 git キャッシュ + worktree で url-only repo を最新の base で実体化する
 #   （docs/designs/git-worktree-cache-pattern.md 準拠。フル clone はしない——ミラーは初回のみ
 #     --mirror --filter=blob:none、以後は増分 fetch、worktree 生成はネットワークゼロ。
-#     ミラー root は kiro-flow / kiro-projects と共有: KIRO_GIT_CACHE_DIR / $TMPDIR/kiro-git-cache）
+#     ミラー root は kiro-flow / kiro-project と共有: KIRO_GIT_CACHE_DIR / $TMPDIR/kiro-git-cache）
 #   INV-1 鮮度: 毎回 fetch → fetch 後に解決した SHA で worktree を作る（古い cache を黙って使わない）
 #   INV-2 保全: URL ロックで直列化・gc.auto=0・破損検知で nuke & re-mirror
 #   INV-3 下限: 全滅時は従来の浅 clone（--depth 1）へフォールバック。それも失敗なら未解決のまま
@@ -726,7 +726,7 @@ def classify_impact(mapdata: dict, repos: "list[Repo]", target: Repo, base: str)
 # タスク生成: 所見（findings）→ 共通 task スキーマ（schemas/task.schema.json）
 #   tasks は「アダプタ」ではなく共通スキーマへの直接出力。所見（impact --json / verify --debt --json）
 #   が内部の正で、修復タスクはツール中立の task スキーマ（未知キー保持の前方互換）で吐く。
-#   消化先（kiro-projects の enqueue --json / inbox / intake_cmd、あるいは他のタスクランナー）は
+#   消化先（kiro-project の enqueue --json / inbox / intake_cmd、あるいは他のタスクランナー）は
 #   このスキーマを読める限り何でもよい。issue tracker 等スキーマ外の消化先へは所見 JSON から変換する。
 # ---------------------------------------------------------------------------
 
@@ -735,7 +735,7 @@ def _self_cmd() -> str:
 
 
 def _task_id(kind: str, *parts: str) -> str:
-    """kiro-projects の id 規約（[A-Za-z0-9_-]・48 字）に収まる決定的 id。同じ発見は常に同じ id
+    """kiro-project の id 規約（[A-Za-z0-9_-]・48 字）に収まる決定的 id。同じ発見は常に同じ id
     （＝intake_cmd の冪等キー）。末尾ハッシュで切り詰めによる別発見同士の衝突を防ぐ。"""
     raw = "-".join(p.split(":", 1)[-1] for p in parts)
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-")[:28].strip("-")
@@ -789,8 +789,8 @@ def tasks_from_impact(imp: dict, priority: int) -> "list[dict]":
 
 def tasks_from_debt(mapdata: dict, priority: int, limit: int, cohort: bool = False) -> "list[dict]":
     """負債をタスク化する。壊れた参照は案件毎（各々ユニークな修正）。未文書化・未テストは同種作業の
-    繰り返しなので、--cohort なら repo 単位の cohort（kiro-projects の pilot-then-batch: 1 件を
-    人の検収で固めてから残りへ展開）にまとめ、後段のタスク分解を kiro-projects に委ねる。"""
+    繰り返しなので、--cohort なら repo 単位の cohort（kiro-project の pilot-then-batch: 1 件を
+    人の検収で固めてから残りへ展開）にまとめ、後段のタスク分解を kiro-project に委ねる。"""
     out = []
     for b in mapdata["broken_refs"][:limit]:
         repo, path = b["node"].split(":", 1)
@@ -967,7 +967,7 @@ def main(argv: "list[str] | None" = None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repos", default=None, metavar="FILE",
                         help="repos レジストリファイル（共通スキーマ schemas/repos.schema.json。"
-                             "kiro-projects の <project>/repos.yaml と同じファイルを共有できる）")
+                             "kiro-project の <root>/repos.yaml と同じファイルを共有できる）")
     common.add_argument("--config", default=None,
                         help="設定ファイル（.kiro/codd-gate.{yaml,json}。repos_file:/repos:/repo_dirs:/map: を持てる）")
     common.add_argument("--repo-dir", action="append", default=[], metavar="NAME=DIR",
@@ -980,7 +980,7 @@ def main(argv: "list[str] | None" = None) -> int:
     common.add_argument("--json", action="store_true", help="JSON で出力")
 
     ap = argparse.ArgumentParser(prog="codd-gate",
-                                 description="doc/code/test の一貫性ゲート（CoDD 流用・kiro-projects プラグイン）")
+                                 description="doc/code/test の一貫性ゲート（CoDD 流用・kiro-project プラグイン）")
     ap.add_argument("--version", action="version", version=f"codd-gate {VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -1006,7 +1006,7 @@ def main(argv: "list[str] | None" = None) -> int:
     sp.add_argument("--priority", type=int, default=1)
     sp.add_argument("--max", type=int, default=20, help="--debt: 種別ごとの上限件数")
     sp.add_argument("--cohort", action="store_true",
-                    help="--debt: 未文書化/未テストを repo 単位の cohort（kiro-projects の "
+                    help="--debt: 未文書化/未テストを repo 単位の cohort（kiro-project の "
                          "pilot-then-batch）にまとめる（後段のタスク分解を委ねる）")
     sp.add_argument("--inbox", default=None, help="標準出力でなく inbox ディレクトリへ 1 タスク 1 JSON で書く")
     sp = sub.add_parser("check", parents=[common], help="状態アサーション（修復タスクの verify 用）")
