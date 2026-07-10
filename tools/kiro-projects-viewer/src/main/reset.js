@@ -18,6 +18,14 @@ const KEEP = new Set(['charter.md']);
 // リモートへ伝播する（消したデータがリモートから復活しない）。
 const DOT_TARGETS = new Set(['.replan.request']);
 
+function isDir(p) {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 // 削除対象を列挙して検証する（実削除はしない）。charter.md が無いプロジェクトは
 // 「残すものが無い」＝プロジェクト削除になってしまうため拒否する。
 function planReset(projectDir) {
@@ -30,7 +38,19 @@ function planReset(projectDir) {
   for (const name of fs.readdirSync(dir)) {
     if (KEEP.has(name)) continue;
     if (name.startsWith('.') && !DOT_TARGETS.has(name)) continue; // 同期クローン等の内部は温存
-    targets.push({ name, path: path.join(dir, name) });
+    const full = path.join(dir, name);
+    // バス（kiro-flow の run 置き場）はディレクトリ丸ごとではなく直下の非ドットだけを対象にする。
+    // bus/.state-git（kiro-flow 側の同期クローン）ごと消すと manifest が飛び、次の同期で旧 run が
+    // リモートから全部復活する（残骸 run の一斉再開＝orchestrator プロセス増殖の原因）。
+    // クローンを残せば run の削除が「ローカルの削除」としてリモートへ伝播する。
+    if (name === 'bus' && isDir(full)) {
+      for (const child of fs.readdirSync(full)) {
+        if (child.startsWith('.')) continue;
+        targets.push({ name: `bus/${child}`, path: path.join(full, child) });
+      }
+      continue;
+    }
+    targets.push({ name, path: full });
   }
   targets.sort((a, b) => a.name.localeCompare(b.name));
   return { dir, keep: [...KEEP], targets };

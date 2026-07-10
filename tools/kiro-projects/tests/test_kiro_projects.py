@@ -4167,6 +4167,35 @@ class TestProjectLayer(unittest.TestCase):
                 cfg, [{"title": "成果物を作る", "verify": "true"}], existing, 0.5)
             self.assertEqual(created, [])       # 既存と類似は投入しない
 
+    def test_enqueue_specs_rereads_existing_at_enqueue_time(self):
+        # plan/review はエージェント委譲で数分かかる。スナップショット取得後に投入された
+        # タスク（別インスタンス・前パス・state_git 同期・リセット後に書き戻された残骸）が
+        # 照合に無く、類似バックログを二重投入していた。投入直前に現物を読み直して照合する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            snapshot = km._existing_titles(cfg)          # 空バックログ時点のスナップショット
+            km.enqueue_task(cfg, {"title": "成果物を作る", "verify": "true"})   # plan 中に投入された体
+            created = km._enqueue_specs(
+                cfg, [{"title": "成果物を作る", "verify": "true"}], snapshot, 0.5)
+            self.assertEqual(created, [])       # 読み直しで重複を検知（二重投入しない）
+
+    def test_enqueue_specs_dedups_against_archive_reread(self):
+        # done（archive）も読み直しの対象。リセットを伴わない通常運用で、plan 中に done へ
+        # 移ったタスクと類似の spec を再投入しない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            snapshot = km._existing_titles(cfg)
+            adir = cfg.archive_dir()
+            adir.mkdir(parents=True, exist_ok=True)
+            (adir / "T9.md").write_text("## T9: 成果物を作る\n- status: done\n", encoding="utf-8")
+            created = km._enqueue_specs(
+                cfg, [{"title": "成果物を作る", "verify": "true"}], snapshot, 0.5)
+            self.assertEqual(created, [])
+
 
 def _drained():
     return {"reason": km.REASON_DRAINED, "cycles": 0,

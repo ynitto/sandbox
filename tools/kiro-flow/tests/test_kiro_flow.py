@@ -603,6 +603,121 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertEqual(failed, [])
 
 
+class RunSlotTests(unittest.TestCase):
+    """max_runs（同時実行 run の上限）: バックログ一括投入・再起動直後の孤児一斉再開で
+    orchestrator（＋計画エージェント）が run 数ぶん同時に立ち上がるのを防ぐ。
+    全ノードが park（承認待ち等）の run は worker も計画エージェントも使わないため
+    枠に数えない（gitlab 長期委譲が上限を占有して新規 run を詰まらせない）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-test-")
+        self.bus = kf.Bus(self.tmp, "run1")
+        self.bus.ensure_run("test request")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _graph(self, view, nodes):
+        """{id: deps} からグラフとタスクを作る。"""
+        view.write_graph({"strategy": {}, "iteration": 0,
+                          "nodes": {nid: {"goal": nid, "deps": deps, "kind": "work"}
+                                    for nid, deps in nodes.items()}})
+        for nid, deps in nodes.items():
+            view.write_task({"id": nid, "goal": nid, "deps": deps})
+
+    def _park(self, view, nid, live=True):
+        until = time.time() + (300 if live else -1)
+        view.write_wait(nid, {"id": nid, "who": "w", "wait_lease_until": until})
+
+    def test_fully_parked_detection(self):
+        v = self.bus.run_view("run1")
+        self._graph(v, {"a": [], "b": ["a"]})
+        # a が claim 可能な pending → 実行中扱い（枠を使う）
+        self.assertFalse(kf._run_fully_parked(self.bus, "run1"))
+        # a を park（生存 wait）→ b は依存未達 pending → 全 in-flight が park ＝枠を使わない
+        self._park(v, "a")
+        self.assertTrue(kf._run_fully_parked(self.bus, "run1"))
+        # a が claim される（実行中）→ 枠を使う（node_state は claimed が waiting より優先）
+        self.assertTrue(v.try_claim("a", "w1", 300))
+        self.assertFalse(kf._run_fully_parked(self.bus, "run1"))
+
+    def test_park_lease_expiry_returns_to_busy(self):
+        # wait_lease 失効は pending へ縮退（再アタッチ対象）＝また枠を使う実行中扱いに戻る
+        v = self.bus.run_view("run1")
+        self._graph(v, {"a": []})
+        self._park(v, "a", live=False)
+        self.assertFalse(kf._run_fully_parked(self.bus, "run1"))
+
+    def test_graphless_run_counts_as_busy(self):
+        # グラフ未作成（計画中）の run は実行中扱い（計画エージェントが走っている）
+        self.assertFalse(kf._run_fully_parked(self.bus, "run1"))
+        self.assertEqual(kf._busy_run_count(self.bus, {"run1"}), 1)
+
+    def test_busy_run_count_excludes_parked(self):
+        v1 = self.bus.run_view("run1")
+        self._graph(v1, {"a": []})
+        self._park(v1, "a")
+        v2 = self.bus.run_view("run2")
+        v2.ensure_run("another")
+        self._graph(v2, {"x": []})
+        self.assertEqual(kf._busy_run_count(self.bus, {"run1", "run2"}), 1)  # run1 は全 park
+
+    def _make_orphan(self, run_id, parked=False):
+        self.bus.submit_request(run_id, "req", "submitter")
+        v = self.bus.run_view(run_id)
+        v.ensure_run("req")
+        v.set_status("running")
+        if parked:
+            self._graph(v, {"a": []})
+            self._park(v, "a")
+        meta = kf.read_json(v.meta_path)
+        meta["orch_lease_until"] = time.time() - 1.0
+        kf.write_json_atomic(v.meta_path, meta)
+
+    def _adopt(self, slots):
+        spawned = []
+
+        def fake_spawn(base, args, req_id, req):
+            spawned.append(req_id)
+            return types.SimpleNamespace(poll=lambda: None)
+
+        adopted, failed = kf._adopt_orphan_runs(
+            self.bus, "d2", set(), 120.0,
+            types.SimpleNamespace(max_resumes=3, lease=1800.0), [],
+            spawn=fake_spawn, slots=slots)
+        return adopted, failed, spawned
+
+    def test_adopt_defers_orphans_beyond_slots_without_failing(self):
+        # 枠を超える孤児は failed にせず次 poll へ持ち越す（一斉再開でプロセスが溢れない）
+        self._make_orphan("run1")
+        self._make_orphan("run2")
+        adopted, failed, spawned = self._adopt(slots=1)
+        self.assertEqual(len(adopted), 1)
+        self.assertEqual(failed, [])                      # 持ち越し＝failed にしない
+        deferred = ({"run1", "run2"} - set(adopted)).pop()
+        self.assertEqual(self.bus.run_meta(deferred)["status"], "running")
+        # 枠が空いた次の poll で残りが再開される
+        adopted2, failed2, _ = self._adopt(slots=1)
+        self.assertEqual(list(adopted2), [deferred])
+        self.assertEqual(failed2, [])
+
+    def test_adopt_parked_orphan_exempt_from_slots(self):
+        # 全 park の孤児 run は枠を消費しない＝slots=0 でも引き継ぐ
+        # （park の監視（service_waits）は駆動オーナーが必要。承認待ちを取りこぼさない）
+        self._make_orphan("run1", parked=True)
+        adopted, failed, spawned = self._adopt(slots=0)
+        self.assertEqual(list(adopted), ["run1"])
+        self.assertEqual(failed, [])
+
+    def test_adopt_unlimited_when_slots_none(self):
+        # slots=None（max_runs<=0）は従来どおり無制限に引き継ぐ
+        for rid in ("run1", "run2", "run3"):
+            self._make_orphan(rid)
+        adopted, failed, _ = self._adopt(slots=None)
+        self.assertEqual(len(adopted), 3)
+        self.assertEqual(failed, [])
+
+
 class SpawnArgvTests(unittest.TestCase):
     """daemon がオンデマンド起動する子（orchestrator/worker）の argv が、実際の CLI パーサで
     そのまま parse できることを保証する。グローバル引数とサブコマンド引数の置き場を取り違えると
