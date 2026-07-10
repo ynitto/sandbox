@@ -1744,6 +1744,61 @@ class GitlabAutoMergeTests(unittest.TestCase):
                                           gl_plugin._config(), False)
         self.assertIsNone(r["decision"])                     # 未決着のまま（人の介入も可能）
 
+    # --- close_issues: manual（クローズは人。人のクローズを監視して決着） ---
+
+    def _check_manual(self, issue, mrs, notes=None):
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
+            dict(self._cfg, close_issues="manual"))
+        calls = []
+
+        def api(host, token, method, path, data=None, params=None):
+            calls.append((method, path, data))
+            if method == "GET" and "/issues/42" in path:
+                return issue
+            return {}
+
+        def list_side(host, token, path, params=None):
+            if path.endswith("/related_merge_requests"):
+                return mrs
+            if path.endswith("/notes"):
+                return notes or []
+            return []
+
+        with mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            r = gl_plugin._check_decision("gitlab.com", "tok", "group/repo", 42, "u42",
+                                          gl_plugin._config(), False)
+        return r, calls
+
+    def test_manual_close_waits_after_all_merged_and_posts_note_once(self):
+        # 全 MR マージ済みでも issue が open なら決着せず、案内ノートを投稿して人のクローズを待つ
+        issue = {"labels": [], "state": "opened"}
+        mrs = [{"iid": 1, "state": "merged"}]
+        r, calls = self._check_manual(issue, mrs)
+        self.assertIsNone(r["decision"])                     # クローズは人 → 未決着
+        note = next(c for c in calls if c[0] == "POST" and c[1].endswith("/notes"))
+        self.assertIn("クローズしてください", note[2]["body"])
+        self.assertIn("kiro-flow:close-request", note[2]["body"])
+        # イシューをクローズする PUT は出ない
+        self.assertFalse(any(c[0] == "PUT" and "/issues/42" in c[1] for c in calls))
+
+    def test_manual_close_note_is_idempotent(self):
+        # 既にマーカー付きノートがあれば再投稿しない
+        issue = {"labels": [], "state": "opened"}
+        mrs = [{"iid": 1, "state": "merged"}]
+        notes = [{"body": "kiro-flow: …クローズしてください <!-- kiro-flow:close-request -->",
+                  "system": False}]
+        r, calls = self._check_manual(issue, mrs, notes=notes)
+        self.assertIsNone(r["decision"])
+        self.assertFalse(any(c[0] == "POST" and c[1].endswith("/notes") for c in calls))
+
+    def test_manual_close_resolves_when_human_closes(self):
+        # 人がクローズ → 全マージ＝承認として決着（既存の issue_closed 経路）
+        issue = {"labels": [], "state": "closed"}
+        mrs = [{"iid": 1, "state": "merged"}]
+        r, _calls = self._check_manual(issue, mrs)
+        self.assertEqual(r["decision"], "approved")
+
 
 class GitlabNativeApiTests(unittest.TestCase):
     """native レイヤ（URL 解析・REST 組立・トークン解決）の単体検証。"""
@@ -2593,6 +2648,27 @@ class DaemonPrimitiveTests(unittest.TestCase):
                          ("apps/api", "main", "develop", "API"))
         self.assertIsNone(kf.parse_workspace(None))
         self.assertIsNone(kf.parse_workspace(""))
+
+    def test_parse_workspace_explicit_branch(self):
+        # 明示 branch（kiro-project のタスク単位ブランチ）は spec に載り、
+        # ensure_workspace_clone が run 毎の kf/<run-id> の代わりにそれを使う
+        j = kf.parse_workspace('{"url":"https://git/app.git","base":"main","branch":"kp/T12"}')
+        self.assertEqual(j["branch"], "kp/T12")
+        captured = {}
+
+        def fake_provision(url, refs, dest):
+            captured["refs"] = list(refs)
+            return ""                              # clone 失敗扱い（実 git を叩かない）
+
+        with mock.patch.object(kf, "provision_tree", side_effect=fake_provision):
+            ws = kf.ensure_workspace_clone(j, "req-x-t-r1")
+        self.assertEqual(ws["branch"], "kp/T12")   # kf/req-x-t-r1 ではなくタスクブランチ
+        self.assertEqual(captured["refs"][0], "kp/T12")   # 既存ブランチから再開（refs 先頭）
+        # branch 無しなら従来どおり run 毎ブランチ
+        plain = kf.parse_workspace('{"url":"https://git/app2.git","base":"main"}')
+        with mock.patch.object(kf, "provision_tree", side_effect=fake_provision):
+            ws2 = kf.ensure_workspace_clone(plain, "req-x-t-r1")
+        self.assertEqual(ws2["branch"], kf.run_branch_name("req-x-t-r1"))
 
     def test_workspace_id_includes_path_and_base(self):
         # 同 URL でも path（モノレポのフォルダ）や base（作業ブランチ）が違えば別ワークスペース

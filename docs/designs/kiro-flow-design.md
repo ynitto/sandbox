@@ -441,6 +441,11 @@ while True:
     元イシューをクローズして `RuntimeError([gitlab-reject] …)` を送出。上位（kiro-project）が通常
     リトライで再委譲し、コメントを次 act の指示に活かす。
   - どちらでもないうちは待機。MR が無いまま人が issue をクローズしたら取り下げ＝却下扱い。
+  - **クローズ主体（`close_issues`）**: `auto`（既定）は決着時に executor がイシューをクローズ。
+    `manual` は**クローズを人に委ね、人がクローズするのを監視**する — 承認条件（全 MR マージ）が
+    揃ったら案内ノートを一度だけ投稿（`<!-- kiro-flow:close-request -->` マーカーで冪等化）して
+    未決着のまま待ち、人のクローズ（`_closed_issue_decision`）で承認決着する。却下（未マージ
+    クローズ）と cancel の取消クローズは manual でも従来どおり executor が行う。
   レビューは遅延しうる前提で即応性は求めない: `poll_interval` 既定 300 秒、`timeout`（既定 7 日・
   全体上限）と `approved_timeout`（既定 14 日・MR 出現/approved ラベル検知後の猶予）。いずれも 0 で無限。
   自動マージには api スコープのトークンが必要（read 系のみだとマージ 403 → 人のマージ待ちに落ちる）。
@@ -461,7 +466,10 @@ while True:
 kiro-flow は **1 run = 1 ワークスペース（唯一の書込先）** に固定する。
 
 - **ワークスペース（`--workspace`・ちょうど 1 つ）**: その run の唯一の書込先。素の URL か JSON
-  `{url,path,base,target,desc}`。kiro-flow が作業ツリーを用意してワーカーへ渡す。**作業ツリーは URL 単位の
+  `{url,path,base,target,desc,branch}`。`branch` は任意の**明示作業ブランチ**（kiro-project の
+  タスク単位ブランチ kp/<task-id> 等）。指定があれば run 毎の `kf/<run-id>` の代わりにそこへ push する
+  ＝リトライ（別 run-id）でも同一ブランチへ成果を積み増せる（provision の refs 優先順
+  [branch, base] が既存ブランチから再開する）。kiro-flow が作業ツリーを用意してワーカーへ渡す。**作業ツリーは URL 単位の
   ホスト共有 bare ミラー（`--mirror --filter=blob:none`）から detached worktree を生やして用意**し、フル clone を
   「初回 1 回+増分 fetch」へ圧縮して GitLab の pack 生成負荷を抑える（詳細は
   [git-worktree-cache-pattern.md](git-worktree-cache-pattern.md)）。detached のまま編集し、**変更があれば

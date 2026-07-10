@@ -212,6 +212,9 @@ CONFIG_DEFAULTS = {
         "done_label": "status:done",        # approved 以外に完了とみなすラベル
         "auto_merge": True,                 # 自動承認: approved＋クリーンな MR を自動マージ・クローズ
                                             # （false で従来の「人が関連 MR を管理」モード）
+        "close_issues": "auto",             # イシューのクローズ主体。auto=決着時に executor がクローズ／
+                                            # manual=クローズは人（承認条件が揃ったら案内ノートを出して
+                                            # 人がクローズするのを監視。クローズで決着）
         "rework_label": "status:needs-rework",  # 差し戻し時に approved から付け替えるラベル
         # park & poll（承認待ちを worker スロットから切り離す）のパラメータ。
         # defer_waits=false で park & poll を無効化し、従来モード（worker がイシューを監視して
@@ -2157,7 +2160,10 @@ def _repo_name(url: str) -> str:
 
 def parse_workspace(token: "str | None") -> "dict | None":
     """`--workspace` トークンをワークスペース spec に正規化する。素の URL でも、kiro-project が
-    付ける JSON（{url,path,base,target,desc}）でも受ける。url が無ければ None（読み取り専用 run）。"""
+    付ける JSON（{url,path,base,target,desc,branch}）でも受ける。url が無ければ None（読み取り専用 run）。
+    `branch` は任意の**明示作業ブランチ**（kiro-project のタスク単位ブランチ kp/<task-id> 等）。
+    指定があれば run 毎の kf/<run-id> の代わりにそこへ push する＝リトライ（別 run-id）でも
+    同一ブランチへ成果を積み増せる。"""
     token = (token or "").strip()
     if not token:
         return None
@@ -2168,7 +2174,7 @@ def parse_workspace(token: "str | None") -> "dict | None":
         except (ValueError, TypeError):
             d = None
         if isinstance(d, dict) and d.get("url"):
-            for k in ("url", "path", "base", "target", "desc"):
+            for k in ("url", "path", "base", "target", "desc", "branch"):
                 if d.get(k):
                     spec[k] = str(d[k]).strip()
             return spec
@@ -2261,13 +2267,14 @@ def _prepare_run_branch(clone: str, branch: str, base: str) -> None:
 
 
 def ensure_workspace_clone(spec: "dict | None", run_id: str) -> "dict | None":
-    """run のワークスペースを worker 専用 temp へ clone し、作業ブランチ kf/<run_id> を用意する。
+    """run のワークスペースを worker 専用 temp へ clone し、作業ブランチを用意する。
+    ブランチは spec の明示 `branch`（kiro-project のタスク単位ブランチ等）＞ run 毎の kf/<run_id>。
     (url,path,base) 単位でプロセス内キャッシュ。spec が無ければ None（読み取り専用 run）。
     返り値は spec に clone 先パス（clone="" は失敗）と branch を足した dict。"""
     global _workspace_root
     if not spec or not spec.get("url"):
         return None
-    branch = run_branch_name(run_id)
+    branch = str(spec.get("branch") or "").strip() or run_branch_name(run_id)
     key = workspace_id(spec)
     if key in _workspace_clone:
         return {**spec, "clone": _workspace_clone[key], "branch": branch}

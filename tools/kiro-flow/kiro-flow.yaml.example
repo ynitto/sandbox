@@ -178,6 +178,9 @@ cleanup_per_node: false
 #   done_label: "status:done"            # approved 以外に完了とみなすラベル
 #   auto_merge: true                     # 自動承認: approved＋クリーンな MR を自動マージ・クローズ。
 #                                        # false で従来の「人が関連 MR を管理（マージ/クローズ）」モード
+#   close_issues: auto                   # イシューのクローズ主体。auto=決着時に executor がクローズ（既定）／
+#                                        # manual=クローズは人（承認条件が揃うと案内ノートを一度だけ投稿し、
+#                                        # 人がイシューをクローズするのを監視して決着。却下クローズは従来どおり）
 #   rework_label: "status:needs-rework"  # 差し戻し時に approved から付け替えるラベル
 #   # --- park & poll（承認待ちを worker スロットから切り離す）---
 #   # daemon/run が起票したイシューの決着を待つとき、worker をブロックし続ける代わりにノードを
