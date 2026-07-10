@@ -130,11 +130,14 @@ cwd が変わらない限り同じセッション名が生成される。
 
 **エントリ正規化** (`_set_entries`):
 - `enabled: false` のエントリは除外
-- `interval_minutes` が空/0 のエントリは除外
+- `interval_minutes` が空/0 のエントリは除外。ただし `webhook` ブロックを持つエントリは
+  スケジュール無し（push 駆動）を許容し、`next_run_at = math.inf`（sentinel）にして
+  自動発火パスから外す
 - `prompt` が空のエントリは除外。ただし `event_hook` を指定している場合は許容（フックが送信内容を決めるため）
 - `run_immediately_on_startup: true` なら起動後 30 秒で初回送信、それ以外は `interval_minutes` 後
 - UUID が未設定なら自動生成
 - `event_hook`（フックスクリプトのパス）・`event_hook_fallback`（bool）を正規化エントリに保持
+- `webhook`（`{hook, secret, secret_header}` に正規化、無ければ None）を正規化エントリに保持
 
 **event_hook**:
 - スケジュール発火のたびにフックの `check() -> str | None` を呼ぶ（`importlib` でインプロセス実行、`mtime` でキャッシュ）
@@ -142,9 +145,32 @@ cwd が変わらない限り同じセッション名が生成される。
 - `event_hook_fallback: true` のとき、フック呼び出し前に環境変数 `KIRO_LOOP_EVENT_HOOK_FALLBACK=1` を設定する（false なら `0`）。フック側はこれを見て「更新が無いときでもフィルター条件に合致する対象をランダム送信する」等のフォールバックを自己判断する。`KIRO_LOOP_PROMPT_NAME` にエントリ名も渡す。環境変数は呼び出し後に元へ戻す（scheduler は単一スレッドのため安全）
 - 同梱例: `hooks/gitlab-issue-hook.py` / `hooks/gitlab-mr-hook.py`
 
+**inbound webhook**（`event_hook` のプッシュ版・provider 非依存）:
+- kiro-loop 稼働中だけ `WebhookServer`（標準ライブラリ `http.server.ThreadingHTTPServer`）を
+  常駐させ、`POST <path_prefix>/<name>` を受ける。グローバル `webhook:` 設定（`enabled`/`host`/
+  `port`/`path_prefix`/`secret`/`secret_header`/`max_body_bytes`）で制御し、`enabled` かつ
+  `port>0` のときだけ起動。bind 失敗（ポート衝突等）は WARNING を出して本体は継続
+- `<name>` は毎リクエスト `scheduler.resolve_webhook_route(name)` で最新エントリへ解決
+  （ルート表を持たずリロード追従）。突き合わせは `_webhook_key`（URL-safe 化 + 小文字化）
+- コアは provider 非依存。認証は**汎用共有シークレット照合のみ**（照合ヘッダ名は `secret_header`
+  で可変、`hmac.compare_digest`）。イベント種別フィルタ・署名検証・payload 構造の解釈は
+  すべて hook 側（`handle(ctx) -> dict | None`）の責務
+- hook が返した dict は基本キー `name` を補完しつつエントリの `prompt` テンプレートへ
+  `str.format_map(_SafeDict(...))` で注入（未定義キーは `{key}` のまま残す）。HTTP スレッドは
+  完成プロンプトを `scheduler.enqueue_external(name, text)` で name 別の bounded deque
+  （`_external_queues`、上限 `_WEBHOOK_QUEUE_MAX`）へ積んで即 `202` を返す
+- 実 dispatch は `_run_loop` の `_drain_external_one()`（1 サイクル 1 件）が担当。session 準備・
+  セマフォ判定を通し、未準備/上限時は `appendleft` で積み直す（再起動でキューは消える＝at-most-once）
+- hook のロードは event_hook と共通の `_load_hook_module`（HTTP/scheduler の複数スレッドから
+  呼ばれるため `_hook_cache_lock` で保護）
+- 同梱例: `hooks/gitlab-mr-webhook.py`（GitLab MR）/ `hooks/generic-webhook.py`（非 GitLab 最小例）
+- 詳細設計: `docs/designs/kiro-loop-gitlab-webhook-design.md`
+
 **`_run_loop` の処理フロー**（1 秒ごと）:
 ```
 各エントリについて:
+  webhook あり かつ 外部キューに要素あり?
+    → _drain_external_one()（1 件送信 or 保留で積み直し）してこのエントリは終了
   now >= next_run_at? → No: スキップ
   fresh_context: should_clear を決定
   event_hook あり? → check() を呼ぶ
@@ -323,6 +349,12 @@ kiro-cli agent hook (stop)
 - フックは `check() -> str | None` を実装する。`check()` は scheduler スレッド内で同期実行されるため、ネットワーク呼び出しには短い timeout を設定しブロックを避けること。
 - フックのロードは `_load_hook_module()`（`mtime` キャッシュ付き）、呼び出しは `_call_hook_check()`。`importlib.util.exec_module` はトップレベルコードを実行するため、副作用は `check()` 内に閉じること。
 - フォールバック有無は YAML の `event_hook_fallback` で制御し、環境変数 `KIRO_LOOP_EVENT_HOOK_FALLBACK`（`1`/`0`）でフックへ渡す。新しいフックでもこの規約に従う。
+
+### webhook フックを追加・変更する
+- フックは `handle(ctx) -> dict | None` を実装する。`ctx`（`name`/`method`/`headers`/`query`/`raw`/`payload`）から **provider 固有の判定（イベント種別・署名検証）を自分で行い**、対象外は `None` を返す。返す dict は `prompt` テンプレートの `{key}` に注入される。
+- `handle()` は `WebhookServer` の複数スレッドから同時に呼ばれ得る。モジュール状態を持たせずステートレスに保つこと（持つ場合は自前でロック）。
+- コアに provider 固有を足さないこと。認証は汎用共有シークレット照合のみで、HMAC 署名方式や `X-Gitlab-Event` 等のヘッダ解釈はフック側に閉じる。
+- 送信先は既存の名前付きセッション（`prompts` エントリ）。webhook 専用エントリはスケジュール不要（`next_run_at = math.inf`）で、`_drain_external_one()` 経由でのみ送信される。
 
 ### 設定ファイルの読み込み先を変更する
 `load_config()` がグローバル設定（`~/.kiro/`）、`_load_prompt_file_data()` がワークスペース設定（`<project>/.kiro/`）を担当する。両者の役割を混在させないこと。
