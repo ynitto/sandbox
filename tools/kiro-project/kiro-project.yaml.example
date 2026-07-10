@@ -107,6 +107,10 @@ verify_confirm: 1          # verify を N 回再実行し PASS/FAIL が跨いだ
 # distill_learn: true      # 人コメント（gitlab 承認/却下）を一般化ルールへ蒸留してから learn 化（既定 on）
 # reject_recur: 2          # 同種の gitlab 却下がこの回数に達したら silent 積み直しをやめ「系の再考」で人へ（0/負で無効）
 max_spawn: 20              # 1 run で生成できる派生タスク（followup）数の上限（0 で無効）
+# plan_review: true          # 実行前レビュー（既定 on）: 新規タスクは proposed で入り、人の承認
+#                            # （approve／needs の [x]）で初めて実行される。差し戻し（修正指示つき [x]）は
+#                            # kiro-project がタスクを修正して再提案、却下（reject）は廃止＋依存先の再審査＋
+#                            # 再計画。false で従来の自動投入（verify ありは即 ready）に戻す
 # regression_cmd: make -s smoke   # done 確定前のグローバル回帰検査（失敗で done にせず人へ）
 # 安全ゲート（gate / protect / deny …）は <root>/policy.md に書く（人専管）
 

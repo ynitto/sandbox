@@ -52,9 +52,12 @@ def mkb(d: Path, tid: str, status="ready", verify="true", source="human", title=
 
 
 def cfg_for(d: Path, **kw):
+    # 既定 plan_review=False（従来の自動投入を検証する既存テスト用）。
+    # 実行前レビュー（proposed ゲート）の挙動は TestPlanReview が plan_review=True で検証する。
     base = dict(backlog=d / "backlog", policy=d / "policy.md", decisions=d / "decisions",
                 journal=d / "journal.md", needs=d / "needs", workdir=d, bus=d / "bus",
-                planner="none", flow_planner="stub", executor="stub", dry_run=True)
+                planner="none", flow_planner="stub", executor="stub", dry_run=True,
+                plan_review=False)
     base.update(kw)
     return km.Config(**base)
 
@@ -218,7 +221,7 @@ class TestEnqueue(unittest.TestCase):
     def test_cmd_enqueue_via_main(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            rc = km.main(["enqueue", "--title", "X", "--verify", "true",
+            rc = km.main(["enqueue", "--title", "X", "--verify", "true", "--no-plan-review",
                           "--workdir", str(d), "--root", str(d / ".ka")])
             self.assertEqual(rc, 0)
             # 新レイアウト: <root>/backlog（root = プロジェクトルート）
@@ -2210,7 +2213,7 @@ class TestIntakeRecall(unittest.TestCase):
             proj = d / ".ka"
             self._seed_avoid(proj, "OLD", "deploy to production", "本番は手動")
             rc = km.main(["enqueue", "--title", "deploy to production tonight", "--verify", "true",
-                          "--workdir", str(d), "--root", str(d / ".ka")])
+                          "--no-plan-review", "--workdir", str(d), "--root", str(d / ".ka")])
             self.assertEqual(rc, 0)
             t = km.load_tasks(proj / "backlog")[0]
             self.assertEqual(t.norm_status(), "blocked")    # ready にせず人の判断へ（verify 持ちでも実行させない）
@@ -5433,6 +5436,234 @@ class FeedbackReductionTests(unittest.TestCase):
             human = km.Task(id="T2", title="x", verify="grep -q old f")
             self.assertFalse(km.verify_undiscriminating(cfg, human, d, False,
                                                         (base, frozenset()), None))
+
+
+
+
+class TestPlanReview(unittest.TestCase):
+    """実行前レビュー（plan_review・本番既定 on）: 新規タスクは proposed で入り、
+    人の承認（approve）・差し戻し（feedback→kiro-project が修正）・却下（reject）を通る。"""
+
+    def _cfg(self, d, **kw):
+        return cfg_for(d, plan_review=True, **kw)
+
+    def test_enqueue_becomes_proposed_and_gets_needs(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            self.assertEqual(t.norm_status(), "proposed")     # verify があっても即 ready にしない
+            km.ensure_plan_review_needs(cfg, [t])
+            nf = cfg.needs / f"{t.id}.md"
+            self.assertTrue(nf.exists())
+            body = nf.read_text(encoding="utf-8")
+            self.assertIn("kind: plan-review", body)
+            self.assertIn("実行前レビュー", body)
+            self.assertIn("reject", body)                      # 却下の案内が載る
+
+    def test_explicit_status_bypasses_gate(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true", "status": "ready"})
+            self.assertEqual(t.norm_status(), "ready")         # 明示 status は尊重（後方互換の口）
+
+    def test_run_loop_does_not_execute_proposed(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d, learn=False, auto_adjudicate=False)
+            km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            result = km.run_loop(cfg)
+            self.assertEqual(result["counts"]["proposed"], 1)  # 実行されず proposed のまま
+            self.assertEqual(result["counts"]["done"], 0)
+            self.assertEqual(km.exit_code_for(result), 1)      # 人の対応待ち
+            # needs（実行前レビュー票）が run_loop 内で用意される
+            tasks = km.load_tasks(cfg.backlog)
+            self.assertTrue((cfg.needs / f"{tasks[0].id}.md").exists())
+
+    def test_inbox_md_drop_becomes_proposed(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d, inbox=d / "inbox")
+            cfg.inbox.mkdir(parents=True)
+            (cfg.inbox / "t.md").write_text(
+                "## T9: ドロップ\n- status: ready\n- verify: `true`\n", encoding="utf-8")
+            created = km.ingest_inbox(cfg)
+            self.assertEqual(created[0].norm_status(), "proposed")
+
+    def test_triage_promotes_inbox_to_proposed(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            mkb(d, "T1", status="inbox", verify="true")
+            tasks = km.load_tasks(cfg.backlog)
+            km.triage(tasks, km.load_policy(cfg.policy), plan_review=True)
+            self.assertEqual(tasks[0].norm_status(), "proposed")
+
+    def test_approve_moves_proposed_to_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            km.ensure_plan_review_needs(cfg, [t])
+            rc = km.cmd_approve(cfg, t.id, "内容OK")
+            self.assertEqual(rc, 0)
+            got = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(got.norm_status(), "ready")
+            self.assertFalse((cfg.needs / f"{t.id}.md").exists())
+            dec = (cfg.decisions / f"{t.id}.md").read_text(encoding="utf-8")
+            self.assertIn("plan-approve", dec)
+
+    def test_approve_without_verify_goes_inbox(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            t = km.enqueue_task(cfg, {"title": "x"})           # verify 無し
+            km.cmd_approve(cfg, t.id, "進めてよいが verify は要定義")
+            self.assertEqual(km.load_tasks(cfg.backlog)[0].norm_status(), "inbox")
+
+    def test_feedback_checkbox_only_approves(self):
+        # 空のまま [x] = 承認（実行を許可）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            km.ensure_plan_review_needs(cfg, [t])
+            nf = cfg.needs / f"{t.id}.md"
+            nf.write_text(nf.read_text(encoding="utf-8").replace("- [ ]", "- [x]"),
+                          encoding="utf-8")
+            tasks = km.load_tasks(cfg.backlog)
+            km.ingest_feedback(cfg, tasks)
+            self.assertEqual(tasks[0].norm_status(), "ready")
+
+    def test_feedback_with_text_reworks_via_agent(self):
+        # 差し戻し: kiro-cli がタスク定義を修正して再提案（proposed のまま・needs 再生成）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "旧タイトル", "verify": "true"})
+            km.ensure_plan_review_needs(cfg, [t])
+            nf = cfg.needs / f"{t.id}.md"
+            body = nf.read_text(encoding="utf-8").replace("- [ ]", "- [x]")
+            body = body.replace(km.DECISION_MARKER, km.DECISION_MARKER + "\n\n実サーバ基準の verify にして\n")
+            nf.write_text(body, encoding="utf-8")
+            fake = '{"title": "新タイトル", "verify": "curl -fsS https://x/health", "after": "", "note": ""}'
+            with mock.patch.object(km, "_run_kiro_cli", return_value=fake):
+                tasks = km.load_tasks(cfg.backlog)
+                km.ingest_feedback(cfg, tasks)
+            got = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(got.norm_status(), "proposed")    # 再提案（承認まで実行しない）
+            self.assertEqual(got.title, "新タイトル")
+            self.assertIn("curl", got.verify)
+            self.assertTrue(nf.exists())                        # needs 再生成
+            dec = (cfg.decisions / f"{t.id}.md").read_text(encoding="utf-8")
+            self.assertIn("plan-rework", dec)
+
+    def test_feedback_rework_agent_failure_keeps_note(self):
+        # kiro-cli 失敗時は指摘を note に残してそのまま再提案（指摘を失わない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            km.ensure_plan_review_needs(cfg, [t])
+            nf = cfg.needs / f"{t.id}.md"
+            body = nf.read_text(encoding="utf-8").replace("- [ ]", "- [x]")
+            body = body.replace(km.DECISION_MARKER, km.DECISION_MARKER + "\n\nもっと細かく分けて\n")
+            nf.write_text(body, encoding="utf-8")
+            with mock.patch.object(km, "_run_kiro_cli", side_effect=RuntimeError("kiro-cli 不在")):
+                tasks = km.load_tasks(cfg.backlog)
+                km.ingest_feedback(cfg, tasks)
+            got = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(got.norm_status(), "proposed")
+            self.assertIn("もっと細かく分けて", got.get("note", ""))
+
+    def test_plan_review_off_keeps_legacy_behavior(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))                             # plan_review=False（従来）
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            self.assertEqual(t.norm_status(), "ready")
+
+
+class TestRejectAndImpact(unittest.TestCase):
+    """却下（reject）: 廃止して archive へ退避＋依存先を再審査（proposed）へ＋charter があれば
+    再計画を要求。impact: after 逆辺の影響範囲を一覧提示する。"""
+
+    def test_reject_archives_and_reproposes_dependents(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, learn_capture=True)
+            mkb(d, "T1", verify="true")
+            mkb(d, "T2", verify="true")
+            # T2 は T1 に依存・T3 は T2 に依存（推移）
+            t2 = km.load_tasks(cfg.backlog)[1]
+            t2.extra.append(("after", "T1"))
+            km.persist_task(cfg, t2)
+            mkb(d, "T3", verify="true")
+            t3 = [t for t in km.load_tasks(cfg.backlog) if t.id == "T3"][0]
+            t3.extra.append(("after", "T2"))
+            km.persist_task(cfg, t3)
+            rc = km.cmd_reject(cfg, "T1", "方針転換で不要")
+            self.assertEqual(rc, 0)
+            # 本体は rejected として archive へ
+            self.assertFalse((cfg.backlog / "T1.md").exists())
+            arch = (d / "archive" / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("rejected", arch)
+            self.assertIn("却下記録", arch)
+            # 依存先（推移）は proposed に戻り、after から T1 が外れる
+            got = {t.id: t for t in km.load_tasks(cfg.backlog)}
+            self.assertEqual(got["T2"].norm_status(), "proposed")
+            self.assertEqual(got["T3"].norm_status(), "proposed")
+            self.assertNotIn("T1", km.task_deps(got["T2"]))
+            self.assertTrue((cfg.needs / "T2.md").exists())    # 再審査票
+            # avoid（回避知識）が残る
+            dec = (cfg.decisions / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("- avoid:", dec)
+            self.assertIn("reject", dec)
+
+    def test_reject_requests_replan_when_charter_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            cfg.charter.write_text("# Charter: demo\n## goal\nx\n## acceptance\n- `true`\n",
+                                   encoding="utf-8")
+            mkb(d, "T1", verify="true")
+            km.cmd_reject(cfg, "T1", "作り直す")
+            self.assertTrue(km.replan_request_path(cfg).exists())   # 再計画を要求
+
+    def test_reject_refuses_doing_with_fresh_claim(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", status="doing", verify="true")
+            rc = km.cmd_reject(cfg, "T1", "x")
+            self.assertEqual(rc, 2)
+
+    def test_rejected_title_not_replanned(self):
+        # rejected は archive に居るため _existing_titles に含まれ、同一タイトルの再提案を冪等排除できる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", title="決済APIを追加", verify="true")
+            km.cmd_reject(cfg, "T1", "スコープ外")
+            self.assertIn("決済APIを追加", km._existing_titles(cfg))
+
+    def test_impact_lists_upstream_and_downstream(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "A", verify="true")
+            mkb(d, "B", verify="true")
+            mkb(d, "C", verify="true")
+            tasks = {t.id: t for t in km.load_tasks(cfg.backlog)}
+            tasks["B"].extra.append(("after", "A"))
+            km.persist_task(cfg, tasks["B"])
+            tasks["C"].extra.append(("after", "B"))
+            km.persist_task(cfg, tasks["C"])
+            all_tasks = km.load_tasks(cfg.backlog)
+            downs = [t.id for t in km.dependents_of(all_tasks, "A")]
+            self.assertEqual(sorted(downs), ["B", "C"])        # 推移閉包
+            ups = km.prerequisites_of(all_tasks, "C")
+            self.assertEqual(sorted(ups), ["A", "B"])
+            self.assertEqual(km.cmd_impact(cfg, "A"), 0)
+            self.assertEqual(km.cmd_impact(cfg, "zzz"), 2)
 
 
 if __name__ == "__main__":

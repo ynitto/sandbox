@@ -44,8 +44,12 @@ try:
 except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
     fcntl = None
 
-VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review", "offloaded")
+VALID_STATUS = ("inbox", "draft", "proposed", "ready", "doing", "done", "blocked", "review",
+                "offloaded", "rejected")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
+# proposed: 実行前レビュー待ち（plan_review・既定 on）。人の承認（approve）で初めて ready になり、
+#   差し戻し（needs feedback）は kiro-project がタスクを修正して再提案、却下（reject）は廃止＋再計画。
+# rejected: 却下済み（archive へ退避される終端。DELIVERY には載せない）。
 # offloaded: 実行層 daemon へ非ブロッキングで submit 済み・結果待ち（act_async）。CONSUMABLE ではない
 #   （再 submit しない）が「機械が実行中」＝人待ちでもない。次パスでポーリングして終端したら settle する。
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
@@ -246,7 +250,13 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     tid = _gen_task_id(cfg, spec.get("id"), title)
     # verify が無くても accept / verify_template があれば「verify を用意できる」ので ready 扱い（後で展開/合成）
     has_plan = bool(verify or accept or tmpl)
-    status = str(spec.get("status", "") or "").strip() or ("ready" if has_plan else "inbox")
+    explicit = str(spec.get("status", "") or "").strip()
+    default_status = "ready" if has_plan else "inbox"
+    # 実行前レビュー（plan_review・既定 on）: status を明示しない新規投入はすべて proposed で入り、
+    # 人の承認（approve）で初めて実行可能（ready/inbox）になる（plan/enqueue/inbox/followup/intake 全経路）。
+    if not explicit and getattr(cfg, "plan_review", False):
+        default_status = "proposed"
+    status = explicit or default_status
     t = Task(id=tid, title=title, status=status, verify=verify,
              source=str(spec.get("source", "") or "enqueue"))
     try:
@@ -458,6 +468,8 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
                     t.source = "inbox"
                 if t.norm_status() == "ready" and not has_verify_plan(t):
                     t.status = "inbox"               # verify も用意材料(accept/template)も無ければ人の triage へ
+                if getattr(cfg, "plan_review", False) and t.norm_status() in ("ready", "inbox"):
+                    t.status = "proposed"            # 実行前レビュー: 承認まで実行しない
                 cfg.backlog.mkdir(parents=True, exist_ok=True)
                 persist_task(cfg, t)
                 created.append(t)
@@ -1585,8 +1597,28 @@ def _madr_frontmatter(rec_id: str, kind: str) -> str:
 
 
 def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False,
-                     evidence: str = "") -> None:
+                     evidence: str = "", kind: str = "") -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
+    if kind == "plan-review":   # 実行前レビュー（proposed。承認されるまで実行しない）
+        state = "proposed（実行前レビュー待ち・未実行）"
+        hint = (f"<!-- 承認して実行を許可するなら `kiro-project approve {task.id}`（または空のまま [x]）。\n"
+                f"     差し戻す（kiro-project にタスクを修正させる）なら下に修正指示を書いて [x]。\n"
+                f"     却下（廃止して関連バックログを再計画）なら `kiro-project reject {task.id} --reason ...`。 -->\n")
+        evidence_block = f"\n## タスク定義（レビュー対象）\n{evidence}\n" if evidence else ""
+        body = (
+            f"{_madr_frontmatter(task.id, kind)}"
+            f"# 実行前レビュー: {task.id} — {task.title}\n\n"
+            f"## Context and Problem Statement\n\n"
+            f"- なぜ: {reason}\n"
+            f"- 状態: {state}\n"
+            f"{evidence_block}\n"
+            f"{DECISION_MARKER}\n\n"
+            f"<!-- 人の決定の記入欄。承認は空のまま [x]、差し戻しは修正指示を書いて [x]。 -->\n"
+            f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
+            f"{hint}"
+        )
+        needs_path(cfg, task.id).write_text(body, encoding="utf-8")
+        return
     if review:    # verify=PASS の承認ゲート（検収待ち）
         state = "review（検収待ち・verify=PASS）"
         kind = "review"
@@ -1613,6 +1645,33 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
         f"{hint}"
     )
     needs_path(cfg, task.id).write_text(body, encoding="utf-8")
+
+
+def _task_definition_block(task: Task) -> str:
+    """実行前レビュー票に載せるタスク定義（人がレビューする対象そのもの）。"""
+    lines = [f"- title  : {task.title}",
+             f"- verify : `{task.verify}`" if task.verify else "- verify : （未定義）"]
+    for k in ("accept", "verify_template", "after", "note", "workspace", "charter"):
+        v = task.get(k)
+        if v:
+            lines.append(f"- {k}: {v}")
+    if task.priority:
+        lines.append(f"- priority: {task.priority}")
+    lines.append(f"- source : {task.source}")
+    return "\n".join(lines)
+
+
+def ensure_plan_review_needs(cfg: "Config", tasks: "list[Task]") -> None:
+    """proposed（実行前レビュー待ち）タスクに needs/<id>.md（レビュー票）を用意する。
+    生成経路（plan/enqueue/inbox/followup/intake/cohort）に依らずここで一元的に整合させる
+    （needs が既にあれば触らない＝人の記入を消さない）。"""
+    for t in tasks:
+        if t.norm_status() != "proposed":
+            continue
+        if needs_path(cfg, t.id).exists():
+            continue
+        write_needs_file(cfg, t, "新規タスクの実行前レビュー（承認されるまで実行しません）",
+                         evidence=_task_definition_block(t), kind="plan-review")
 
 
 def clear_needs_file(cfg: "Config", tid: str) -> None:
@@ -1658,6 +1717,13 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         if t is None:
             continue
         fb = read_feedback(nf)
+        if t.norm_status() == "proposed":            # 実行前レビューの決着（承認 or 差し戻し）
+            if fb:                                   # 差し戻し: kiro-project がタスクを修正して再提案
+                plan_rework(cfg, t, fb)              # （新しいレビュー票を needs に書き直す）
+            else:                                    # 空のまま [x] = 承認（実行を許可）
+                _plan_approve(cfg, t, "チェックで承認")   # （needs は消える）
+            ingested.append(t.id)
+            continue
         was_review = t.norm_status() == "review"     # 検収待ちからの復帰か（自律度の clean/手戻り判定用）
         t.status = "ready"
         t.drop("feedback")
@@ -1675,18 +1741,240 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     return ingested
 
 
-def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task], list[Task]]":
+
+def _extract_json_object_loose(text: str) -> "dict | None":
+    """エージェント出力から最初の JSON オブジェクトを寛容に取り出す（_extract_json_array の単体版）。"""
+    s = str(text or "")
+    i = s.find("{")
+    while i >= 0:
+        depth = 0
+        for j in range(i, len(s)):
+            if s[j] == "{":
+                depth += 1
+            elif s[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(s[i:j + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except ValueError:
+                        break
+                    break
+        i = s.find("{", i + 1)
+    return None
+
+
+def _plan_approve(cfg: "Config", t: Task, reason: str) -> None:
+    """実行前レビューの承認: proposed → ready（verify を用意できなければ inbox＝triage 行き）。"""
+    t.status = "ready" if has_verify_plan(t) else "inbox"
+    persist_task(cfg, t)
+    clear_needs_file(cfg, t.id)
+    append_decision(cfg, t.id, cfg.actor, context=f"{t.id}（{t.title}）の実行を承認",
+                    action="plan-approve", reason=reason, affects=f"{t.id} → {t.status}")
+    append_journal(cfg.journal, f"plan-review 承認: {t.id} → {t.status}")
+
+
+_PLAN_REWORK_FIELDS = ("title", "verify", "accept", "after", "priority", "note")
+
+
+def _plan_rework_prompt(t: Task, feedback: str) -> str:
+    return (
+        "あなたはバックログタスクの定義を人のレビュー指摘に沿って修正する編集者です。\n"
+        "以下のタスク定義を、指摘を反映した形に修正してください。\n\n"
+        f"## 現在のタスク定義\n{_task_definition_block(t)}\n\n"
+        f"## 人のレビュー指摘（必ず反映する）\n{feedback}\n\n"
+        "出力は JSON オブジェクトのみ: {\"title\": str, \"verify\": str（終了コード0=PASSのシェル。"
+        "書けなければ空）, \"accept\": str（自然言語の完了条件・任意）, \"after\": str（依存タスクID・"
+        "カンマ区切り・任意）, \"priority\": int（任意）, \"note\": str（任意）}。"
+        "変更不要のフィールドは現在の値をそのまま返すこと。")
+
+
+def plan_rework(cfg: "Config", t: Task, feedback: str) -> None:
+    """実行前レビューの差し戻し: kiro-cli にタスク定義を修正させて**再び proposed** で提案し直す。
+    kiro-cli 不在/失敗時は指摘を note に追記してそのまま再提案（人が approve/revise で確定できる）。"""
+    reworked = False
+    try:
+        out = _run_kiro_cli(_plan_rework_prompt(t, feedback), cfg.model)
+        obj = _extract_json_object_loose(out)
+        if isinstance(obj, dict) and str(obj.get("title", "")).strip():
+            t.title = str(obj["title"]).strip()
+            t.verify = _strip_code(str(obj.get("verify", "") or "").strip())
+            for k in ("accept", "after", "note"):
+                v = str(obj.get(k, "") or "").strip()
+                t.drop(k)
+                if v:
+                    t.extra.append((k, v))
+            try:
+                t.priority = int(obj.get("priority", t.priority) or 0)
+            except (TypeError, ValueError):
+                pass
+            reworked = True
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+        append_journal(cfg.journal, f"plan-review 差し戻しの修正に失敗（生のまま再提案）: {t.id}: {e}")
+    if not reworked:                       # 修正できなくても指摘は失わない（note に残して人が確定）
+        note = (t.get("note") or "").strip()
+        t.drop("note")
+        t.extra.append(("note", (note + " ⏎ " if note else "") + f"[差し戻し] {feedback}"))
+    t.status = "proposed"
+    persist_task(cfg, t)
+    write_needs_file(cfg, t, f"差し戻しを反映して再提案（指摘: {feedback[:200]}）",
+                     evidence=_task_definition_block(t), kind="plan-review")
+    append_decision(cfg, t.id, cfg.actor, context=f"{t.id}（{t.title}）を差し戻しで修正",
+                    action="plan-rework", reason=feedback[:200],
+                    affects=f"{t.id} → proposed（再提案）", learn=(t.title, feedback))
+    append_journal(cfg.journal, f"plan-review 差し戻し: {t.id} を修正して再提案")
+
+
+# ---------------------------------------------------------------------------
+# 依存の影響範囲（after 逆辺）と却下（reject）
+# ---------------------------------------------------------------------------
+def dependents_of(tasks: "list[Task]", tid: str, transitive: bool = True) -> "list[Task]":
+    """tid に依存する（after に tid を含む）タスク。transitive で推移閉包（影響範囲の一覧提示用）。"""
+    out: "list[Task]" = []
+    seen = {tid}
+    frontier = {tid}
+    while frontier:
+        nxt: set = set()
+        for t in tasks:
+            if t.id in seen:
+                continue
+            if any(d in frontier for d in task_deps(t)):
+                out.append(t)
+                seen.add(t.id)
+                nxt.add(t.id)
+        if not transitive:
+            break
+        frontier = nxt
+    return out
+
+
+def prerequisites_of(tasks: "list[Task]", tid: str, transitive: bool = True) -> "list[str]":
+    """tid の前提（after 上流）の ID 一覧。backlog に無い ID（done/外部）も含めて返す。"""
+    by_id = {t.id: t for t in tasks}
+    out: "list[str]" = []
+    seen = {tid}
+    frontier = [tid]
+    while frontier:
+        cur = frontier.pop(0)
+        t = by_id.get(cur)
+        if t is None:
+            continue
+        for d in task_deps(t):
+            if d not in seen:
+                seen.add(d)
+                out.append(d)
+                if transitive:
+                    frontier.append(d)
+    return out
+
+
+def cmd_impact(cfg: Config, tid: str, as_json: bool = False) -> int:
+    """タスクの依存関係（前提／依存先・推移）を一覧表示する。変更・却下の影響範囲を人が辿る用。"""
+    tasks = load_tasks(cfg.backlog)
+    if not any(t.id == tid for t in tasks):
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    ups = prerequisites_of(tasks, tid)
+    downs = dependents_of(tasks, tid)
+    if as_json:
+        print(json.dumps({"id": tid, "prerequisites": ups,
+                          "dependents": [{"id": t.id, "title": t.title,
+                                          "status": t.norm_status()} for t in downs]},
+                         ensure_ascii=False, indent=2))
+        return 0
+    print(f"=== impact: {tid} ===")
+    print(f"前提（after 上流・推移）: {', '.join(ups) or '（なし）'}")
+    if downs:
+        print("依存先（このタスクの変更が影響する・推移）:")
+        for t in downs:
+            print(f"  - {t.id} [{t.norm_status()}]: {t.title}")
+    else:
+        print("依存先: （なし）")
+    return 0
+
+
+def _rejected_record(t: Task, reason: str) -> str:
+    return (f"\n## 却下記録\n- 却下: {reason}\n- 却下時の状態: {t.norm_status()}\n"
+            f"- 却下時刻: {_now_ts()}\n")
+
+
+def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
+    """タスクの却下: 廃止（rejected として archive へ退避）し、依存先を proposed に戻して再審査に
+    かけ、charter があればバックログの再計画（replan）を要求する。実行前（proposed）にも
+    成果物レビュー段（review）にも使える。理由は avoid（回避知識）として蓄積し、同種の再提案を
+    予防リコールが弾く。"""
+    tasks = load_tasks(cfg.backlog)
+    t = next((x for x in tasks if x.id == tid), None)
+    if t is None:
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    if t.norm_status() == "doing":
+        print(f"エラー: {tid} は実行中（doing）です。先に revise で止めるか完了を待ってください。",
+              file=sys.stderr)
+        return 2
+    release_claim(cfg, t)
+    # 影響範囲（after 逆辺・推移）: 依存先は前提を失うため proposed に戻して人の再審査へ
+    downs = dependents_of(tasks, tid)
+    for d in downs:
+        deps = [x for x in task_deps(d) if x != tid]
+        d.drop("after")
+        if deps:
+            d.extra.append(("after", ", ".join(deps)))
+        if d.norm_status() not in ("done", "doing"):
+            d.status = "proposed"
+            clear_needs_file(cfg, d.id)
+            persist_task(cfg, d)
+            write_needs_file(cfg, d, f"前提タスク {tid} が却下されたため再審査",
+                             evidence=_task_definition_block(d), kind="plan-review")
+        else:
+            persist_task(cfg, d)
+    # 本体を rejected として archive へ退避（納品ではないので DELIVERY には載せない）
+    t.status = "rejected"
+    arch = cfg.archive_dir()
+    arch.mkdir(parents=True, exist_ok=True)
+    (arch / f"{t.id}.md").write_text(serialize_task(t) + _rejected_record(t, reason),
+                                     encoding="utf-8")
+    delete_task_file(cfg, t)
+    clear_needs_file(cfg, tid)
+    affected = ", ".join(d.id for d in downs) or "（なし）"
+    dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を却下（廃止）",
+                         action="reject", reason=reason,
+                         affects=f"{tid} → rejected ／ 依存先を再審査へ: {affected}",
+                         avoid=(t.title, reason) if cfg.learn_capture and reason else None)
+    # charter があれば再計画を要求（却下で空いた穴を plan が埋め直す。rejected タイトルは
+    # archive 経由で _existing_titles に含まれるため同一タスクは再提案されない）
+    replanned = ""
+    if load_charter(cfg) is not None:
+        write_replan_request(cfg, f"タスク {tid} の却下に伴う再計画")
+        replanned = "／charter からの再計画を要求しました"
+    append_journal(cfg.journal, f"reject: {tid} を却下（依存先 {len(downs)} 件を再審査へ）")
+    print(f"{dr}: {tid} を却下しました。影響（依存先→再審査）: {affected}{replanned}")
+    return 0
+
+
+def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task], list[Task], list[Task]]":
     blocked = [t for t in tasks if t.norm_status() == "blocked"]
     intake = [t for t in tasks if t.norm_status() == "inbox" and not t.verify.strip()]
     review = [t for t in tasks if t.norm_status() == "review"]   # verify=PASS の承認待ち
-    return blocked, intake, review
+    proposed = [t for t in tasks if t.norm_status() == "proposed"]   # 実行前レビュー待ち
+    return blocked, intake, review, proposed
 
 
-def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None) -> str:
+def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None,
+                  proposed=None) -> str:
     review = review or []
+    proposed = proposed or []
     lines = ["# 要対応（kiro-project）", ""]
     if budget_stop:
         lines += ["⚠ 予算切れで未消化のまま停止しました。", ""]
+    if proposed:
+        lines.append("## 実行前レビュー待ち（proposed・承認されるまで実行しません）")
+        for t in proposed:
+            lines.append(f"- {t.id}: {t.title}")
+            lines.append(f"    対応: `kiro-project approve {t.id}`（承認）／needs に修正指示を書いて差し戻し"
+                         f"／`kiro-project reject {t.id} --reason ...`（却下）")
+        lines.append("")
     if review:
         lines.append("## 検収待ち（verify=PASS・承認で done 確定）")
         for t in review:
@@ -1704,7 +1992,7 @@ def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None
         lines += ["", "## acceptance 未定義（need_intake）"]
         for t in intake:
             lines.append(f"- {t.id}: {t.title}\n    なぜ: verify 未定義 → verify を定義して ready 化")
-    if not blocked and not intake and not review:
+    if not blocked and not intake and not review and not proposed:
         lines.append("（対応待ちなし）")
     return "\n".join(lines) + "\n"
 
@@ -1713,8 +2001,8 @@ def notify(cfg: "Config", tasks, reasons: dict, newly_blocked: set, budget_stop:
     """状態遷移時だけ stdout / notify-cmd へ要約を出す（案件毎の needs/<id>.md は別途書込済）。"""
     if not newly_blocked and not budget_stop:
         return False
-    blocked, intake, review = human_worklist(tasks)
-    digest = render_digest(blocked, intake, reasons, budget_stop, review)
+    blocked, intake, review, proposed = human_worklist(tasks)
+    digest = render_digest(blocked, intake, reasons, budget_stop, review, proposed)
     print("\n--- 通知（要対応）---\n" + digest, flush=True)
     if cfg.notify_cmd:
         try:
@@ -1904,13 +2192,14 @@ def prioritize(tasks, policy, planner, model=None, ranker=None) -> "list[Task]":
 # ---------------------------------------------------------------------------
 # triage（inbox→ready 昇格・policy deny の適用）
 # ---------------------------------------------------------------------------
-def triage(tasks, policy) -> "list[tuple[Task, str]]":
+def triage(tasks, policy, plan_review: bool = False) -> "list[tuple[Task, str]]":
     transitions = []
     for t in tasks:
         st = t.norm_status()
         if st == "inbox" and has_verify_plan(t):   # verify か、用意できる材料(accept/verify_template)があれば昇格
-            t.status = "ready"
-            st = "ready"
+            # 実行前レビュー時は ready でなく proposed へ（人の承認で初めて実行可能になる）
+            t.status = "proposed" if plan_review else "ready"
+            st = t.status
         if st in CONSUMABLE and any(t.matches(p) for p in policy.deny):
             t.status = "blocked"
             transitions.append((t, "policy:deny（人の判断待ち）"))
@@ -3229,6 +3518,8 @@ class Config:
     poll: float = 5.0       # watch のポーリング間隔（秒）
     concurrency: int = 1    # 1サイクルで daemon/remote へ並行 submit する独立タスク数（1=逐次）
     level: str = "unattended"  # 自律度: report(実行せず計画報告) / assisted(実行するが done は人が承認) / unattended(現行)
+    # 実行前レビュー（plan review・既定 on）: 新規タスクは proposed で入り、人の承認で ready になる。
+    plan_review: bool = True
     throttle: float = 0.0   # ソフト予算比率(0=off)。max_tokens/max_cost のこの割合で run を打ち切り watch は report 降格
     runlog: "Path | None" = None    # 構造化 run-log（JSONL・run 毎に1行追記）。既定 <root>/run-log.jsonl
     registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
@@ -3838,8 +4129,8 @@ def _run_setup(cfg: "Config") -> tuple:
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
-    pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review")}
-    transitions = list(triage(tasks, policy))        # inbox→ready 昇格（verify か用意材料あり）・deny→blocked
+    pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review", "proposed")}
+    transitions = list(triage(tasks, policy, cfg.plan_review))   # inbox→ready/proposed 昇格・deny→blocked
     if cfg.rot:                                       # rot 検知（古い/重複/実行不能を掃除）
         transitions += [(t, f"rot: {why}") for t, why in detect_rot(cfg, tasks)]
     for t, why in transitions:
@@ -3852,6 +4143,7 @@ def _run_setup(cfg: "Config") -> tuple:
         if t.norm_status() in CONSUMABLE and not t.verify and ensure_verify(cfg, t):
             persist_task(cfg, t)
             append_journal(cfg.journal, f"verify 用意: {t.id} ← {t.get('verify_source')}")
+    ensure_plan_review_needs(cfg, tasks)              # proposed に needs（実行前レビュー票）を用意
     return tasks, policy, reasons, ingested, inboxed, pre_blocked
 
 
@@ -4709,7 +5001,8 @@ def _cleanup_bus(cfg: Config) -> None:
 
 def exit_code_for(result: dict) -> int:
     counts = result["counts"]
-    if counts["blocked"] > 0 or counts.get("review", 0) > 0:   # 人の対応待ち（判断 or 検収承認）
+    if counts["blocked"] > 0 or counts.get("review", 0) > 0 \
+            or counts.get("proposed", 0) > 0:   # 人の対応待ち（判断 / 検収承認 / 実行前レビュー）
         return 1
     if result["reason"] in (REASON_DRAINED, "report"):         # 正常停止（消化完了 or 計画報告）
         return 0
@@ -4813,6 +5106,11 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
     # review/blocked 滞留で残った古い claim ロック（claims/<id>.lock）を先に掃除しておく。
     # release_claim は冪等（無ければ no-op）なので、新鮮なロックが無い通常ケースでも無害。
     release_claim(cfg, t)
+    if t.norm_status() == "proposed":
+        # 実行前レビューの承認（実行を許可）。done 確定ではない
+        _plan_approve(cfg, t, reason)
+        print(f"plan-review: {tid} を承認しました（→ {t.status}）。")
+        return 0
     if t.norm_status() == "review":
         # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
         ex = dict(t.extra)
@@ -5012,6 +5310,14 @@ def recover_revised(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     return out
 
 
+def _print_impact_note(tasks: "list[Task]", tid: str) -> None:
+    """revise/reject 時に、影響を受ける依存先（after 逆辺・推移）を人へ提示する。"""
+    downs = dependents_of(tasks, tid)
+    if downs:
+        print(f"影響範囲（{tid} に依存するタスク・推移）: "
+              + ", ".join(f"{t.id}[{t.norm_status()}]" for t in downs))
+
+
 def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) -> int:
     """バックログのタスクを人が即時修正する（内容・依存・優先度＋feedback 注入。決定記録）。
 
@@ -5064,6 +5370,7 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
     append_journal(cfg.journal, f"revise: {tid} — {affects}"
                    + ("（実行中→積み直し予約）" if doing else ""))
     print(f"{dr}: {tid} を修正しました（{affects}）。" + (disp and f"{disp}。"))
+    _print_impact_note(tasks, tid)     # 依存先（after 逆辺・推移）を提示＝変更の影響範囲を人が辿れる
     return 0
 
 
@@ -5076,7 +5383,7 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
 # watch がこの口を監視して起こす。実行は CLI と同一の関数へ委譲する
 # （ロジックの二重実装はしない＝効果・決定記録 DR も CLI と同一）。
 
-COMMAND_ACTIONS = ("approve", "hold", "pin", "defer", "revise")
+COMMAND_ACTIONS = ("approve", "hold", "pin", "defer", "revise", "reject")
 
 
 def commands_dir(cfg: "Config") -> Path:
@@ -5167,6 +5474,8 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             continue
         if action == "approve":
             rc = cmd_approve(cfg, tid, reason)
+        elif action == "reject":
+            rc = cmd_reject(cfg, tid, reason)
         elif action == "hold":
             rc = cmd_hold(cfg, tid, reason)
         elif action == "revise":
@@ -5188,11 +5497,11 @@ def ingest_commands(cfg: "Config") -> "list[str]":
 
 def cmd_needs(cfg: Config) -> int:
     tasks = load_tasks(cfg.backlog)
-    blocked, intake, review = human_worklist(tasks)
-    print(render_digest(blocked, intake, {}, budget_stop=False, review=review))
-    if blocked or review:
+    blocked, intake, review, proposed = human_worklist(tasks)
+    print(render_digest(blocked, intake, {}, budget_stop=False, review=review, proposed=proposed))
+    if blocked or review or proposed:
         print(f"（各案件の詳細・フィードバック欄: {cfg.needs}/<id>.md）")
-    return 1 if (blocked or review) else 0
+    return 1 if (blocked or review or proposed) else 0
 
 
 def _decision_action_tally(decisions_dir: Path) -> "dict[str, int]":
@@ -5232,7 +5541,8 @@ def compute_stats(cfg: Config) -> dict:
              + actions.get("hold(deny)", 0) + actions.get("feedback-resume", 0))
     routed = auto + human
     done = len(archived)
-    pending_human = by_status.get("blocked", 0) + by_status.get("review", 0)
+    pending_human = (by_status.get("blocked", 0) + by_status.get("review", 0)
+                     + by_status.get("proposed", 0))
     tok_total, usd_total = 0, 0.0                         # 納品書の `- cost: tokens=.. usd=..` を集計
     for t in arch_tasks:
         dt, du = parse_cost("@cost " + t.get("cost", ""))
@@ -5940,11 +6250,12 @@ def cmd_triage(cfg: Config) -> int:
     policy = load_policy(cfg.policy)
     for t in tasks:                              # 予防リコール: 過去 hold に類似する ready は実行前に人へ
         apply_intake_recall(cfg, t)              # 一致すれば blocked＋needs（_block が persist 済み）
-    for t, why in triage(tasks, policy):
+    for t, why in triage(tasks, policy, cfg.plan_review):
         write_needs_file(cfg, t, why)
         persist_task(cfg, t)
     for t in tasks:
         persist_task(cfg, t)
+    ensure_plan_review_needs(cfg, tasks)         # proposed に needs（実行前レビュー票）を用意
     order = prioritize(tasks, policy, cfg.planner, cfg.model)
     print("優先順位（消化対象）:")
     for i, t in enumerate(order, 1):
@@ -7260,7 +7571,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         if result["reason"] in (REASON_BUDGET, REASON_COST, REASON_THROTTLE):
             reason = REASON_PROJECT_BUDGET if result["reason"] != REASON_COST else REASON_PROJECT_COST
             break
-        if counts.get("blocked", 0) > 0 or counts.get("review", 0) > 0:
+        if counts.get("blocked", 0) > 0 or counts.get("review", 0) > 0 \
+                or counts.get("proposed", 0) > 0:
             reason = REASON_PROJECT_BLOCKED      # 内側が人へ → プロジェクトも人待ちで止める
             break
 
@@ -7450,6 +7762,9 @@ CONFIG_DEFAULTS = {
     "update_branch": "main",             # 追従するブランチ
     "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
     "update_installer": "install.sh",    # サブディレクトリ内で実行するインストーラ
+    # 実行前レビュー（plan review）: 新規タスクは proposed で入り、人の承認（approve）で実行可能になる。
+    # false で従来の自動投入（verify ありは即 ready）へ戻す。
+    "plan_review": True,
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,
@@ -7564,6 +7879,7 @@ def build_config(args) -> Config:
         watch=bool(getattr(args, "watch", False)), poll=getattr(args, "poll", 5.0),
         concurrency=max(1, int(getattr(args, "concurrency", 1) or 1)),
         level=getattr(args, "level", None) or "unattended",
+        plan_review=bool(getattr(args, "plan_review", True)),
         registry=_split_registry(getattr(args, "registry", None)),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
         project_name=root.name,
@@ -7704,6 +8020,9 @@ def _add_common(sp):
                     help="learn ルールがこの回数以上効いたら昇格（既定 2）")
     sp.add_argument("--rot-age-days", type=float, default=None,
                     help="rot の stale 判定（経過日数。既定 14）")
+    sp.add_argument("--plan-review", action=argparse.BooleanOptionalAction, default=None,
+                    help="実行前レビュー: 新規タスクを proposed で入れ、人の承認で実行可能にする"
+                         "（--no-plan-review で従来の自動投入。既定 on）")
 
 
 # ---------------------------------------------------------------------------
@@ -8132,6 +8451,16 @@ def main(argv=None) -> int:
                     help="次の act に必ず反映させる指示（例: e2e はローカルでなく実サーバに配備して実施）")
     rv.add_argument("--reason", default=None, help="決定記録に残す理由（省略時は feedback を流用）")
 
+    rj = sub.add_parser("reject",
+                        help="タスクを却下（廃止して archive へ退避。依存先を再審査に戻し、"
+                             "charter があれば再計画を要求。決定記録・avoid 記録）")
+    _add_common(rj); rj.add_argument("id"); rj.add_argument("--reason", required=True)
+
+    imp = sub.add_parser("impact",
+                         help="タスクの依存関係（前提／依存先・推移）を一覧表示（変更・却下の影響範囲）")
+    _add_common(imp); imp.add_argument("id")
+    imp.add_argument("--json", action="store_true", help="JSON で出力")
+
     rpl = sub.add_parser("replan",
                          help="charter からバックログを再分解（エラー回復。done/既存と類似は投入しない）")
     _add_common(rpl)
@@ -8166,7 +8495,7 @@ def main(argv=None) -> int:
     # PC 起動時に立ち上げっぱなしにして cwd のプロジェクトを面倒見る daemon 用途を一級にするため。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
-                    "revise", "replan", "instances", "start", "stop", "restart"}
+                    "revise", "reject", "impact", "replan", "instances", "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
 
@@ -8210,6 +8539,8 @@ def main(argv=None) -> int:
         "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason),
+        "reject": lambda: cmd_reject(cfg, args.id, args.reason),
+        "impact": lambda: cmd_impact(cfg, args.id, getattr(args, "json", False)),
         "hold": lambda: cmd_hold(cfg, args.id, args.reason),
         "reprioritize": lambda: cmd_reprioritize(
             cfg, args.id, "pin" if args.pin else "defer", args.reason),
