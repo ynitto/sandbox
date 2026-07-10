@@ -4,7 +4,12 @@
 kiro-loop の event_hook と同じ流儀で、kiro-flow 本体から importlib で動的にロードされ、
 `execute()` が呼び出される。タスクを **GitLab イシュー** にして委譲し、リモートの
 （別マシン/別人の）ワーカーが拾って実装する。kiro-flow はイシューをポーリングし、
-レビュアーが `status:approved` を付ける（= 受け入れ承認）まで待って完了とみなす。
+レビュアーが `status:approved` を付けたら **クリーンな関連 MR（コンフリクト無し・未解決
+レビューコメント無し）を自動マージしてイシューをクローズ**する（gitlab-review-viewer の
+承認ボタンと同じ規則。approved なのに未クリーンなら `# 差し戻し` コメント＋
+`status:needs-rework` でワーカーの修正ループへ戻す）。GitLab は作業履歴（Merged MR ＋
+closed イシュー）を残す台帳として機能する。`auto_merge: false` で従来の
+「人が関連 MR を管理（マージ/クローズ）する」モードに戻せる。
 ローカルに kiro-cli が無くても、GitLab 越しに作業を委譲できる。
 
 プラグイン契約:
@@ -61,12 +66,20 @@ _DEFAULTS = {
     "repo_url": "",
     "labels": "status:open,assignee:any",
     "priority": "priority:normal",
-    "poll_interval": 30.0,
-    # 完了＝人がマージ＝イシュークローズ。人の確認は時間がかかるため待機は長めにする（0=無限）。
+    # レビューは遅延しうる前提で即応性は求めない（十分待つ）。ポーリングは緩く。
+    "poll_interval": 300.0,
+    # 完了＝status:approved のクリーンな MR を自動マージ＝イシュークローズ。
+    # レビューの往復は時間がかかるため待機は長めにする（0=無限）。
     "timeout": 604800.0,            # 全体タイムアウト（既定 7 日）。クローズに達するまでの上限
-    "approved_timeout": 1209600.0,  # status:approved/status:done 検知後の猶予（既定 14 日・人のマージ待ち）
+    "approved_timeout": 1209600.0,  # status:approved/status:done 検知後の猶予（既定 14 日・レビュー待ち）
     "approved_label": "status:approved",
     "done_label": "status:done",
+    # 自動承認（自動マージ・クローズ）。status:approved かつ MR がクリーン（コンフリクト無し・
+    # 未解決レビューコメント無し）なら executor がマージしてイシューをクローズする
+    # （gitlab-review-viewer の承認ボタンと同じ規則）。false で従来の「人が MR を管理」モード。
+    "auto_merge": True,
+    # 差し戻し時に付け替えるラベル（status:approved → これ）。
+    "rework_label": "status:needs-rework",
     # park & poll を無効化して従来モード（worker がブロック待機）に戻すフラグ。既定 true（有効）。
     # 実際の deferral は本体（daemon/run）が環境変数 KIRO_FLOW_DEFER_WAITS で worker に伝える。
     "defer_waits": True,
@@ -450,13 +463,150 @@ def _related_merge_requests(host: str, token: str, project: str, iid) -> list:
 def _close_issue(host: str, token: str, project: str, iid,
                  labels: "list | None" = None) -> dict:
     """イシューを明示的にクローズする（state_event=close）。labels 指定時は同時に更新。
-    kiro-flow は MR を**マージしない**（人が管理）。承認（全マージ）/却下（未マージクローズ）の
-    どちらの決着でも、後始末としてこのイシューをクローズするだけ。"""
+    承認（全マージ）/却下（未マージクローズ）のどちらの決着でも、後始末としてクローズする。"""
     ep = _encode_project(project)
     data: dict = {"state_event": "close"}
     if labels is not None:
         data["labels"] = ",".join(labels)
     return gl_api(host, token, "PUT", f"/projects/{ep}/issues/{iid}", data=data)
+
+
+def _set_issue_labels(host: str, token: str, project: str, iid, labels: list) -> dict:
+    """イシューのラベルを置換する（差し戻しの status:approved → status:needs-rework 遷移に使う）。"""
+    ep = _encode_project(project)
+    return gl_api(host, token, "PUT", f"/projects/{ep}/issues/{iid}",
+                  data={"labels": ",".join(labels)})
+
+
+# --- MR 操作（自動承認＝自動マージ用） ----------------------------------------
+def _mr_project_path(mr: dict, fallback: str) -> str:
+    """related MR はイシューと別プロジェクトに立つことがある。MR 自身の project_id（数値）を
+    優先して API パスに使い、無ければイシューのプロジェクトへフォールバックする。"""
+    pid = mr.get("project_id")
+    return str(pid) if pid is not None else fallback
+
+
+def _get_mr(host: str, token: str, project: str, mr_iid) -> dict:
+    """MR 1 件を取得する（merge_status / has_conflicts / source_branch を含む）。"""
+    ep = _encode_project(project)
+    return gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{mr_iid}")
+
+
+def _mr_unresolved_count(host: str, token: str, project: str, mr_iid) -> int:
+    """MR の未解決（未クローズ）レビューコメント数。resolvable な議論のうち未 resolved のもの
+    （gitlab-review-viewer の unresolvedCount と同じ導出）。"""
+    ep = _encode_project(project)
+    discussions = gl_api_list(host, token,
+                              f"/projects/{ep}/merge_requests/{mr_iid}/discussions")
+    count = 0
+    for d in discussions if isinstance(discussions, list) else []:
+        notes = d.get("notes") or []
+        if any(n.get("resolvable") and not n.get("resolved") for n in notes):
+            count += 1
+    return count
+
+
+def _mr_changes_empty(host: str, token: str, project: str, mr_iid) -> bool:
+    """差分なし MR か（作業が既に取り込み済み等。GitLab がコンフリクト扱いにすることがあるため
+    /changes で区別する — gitlab-review-viewer の noDiff と同じ導出）。"""
+    ep = _encode_project(project)
+    res = gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{mr_iid}/changes")
+    changes = res.get("changes") if isinstance(res, dict) else None
+    return isinstance(changes, list) and len(changes) == 0
+
+
+def _merge_mr(host: str, token: str, project: str, mr_iid) -> dict:
+    """MR をマージする（ソースブランチも削除。保護ブランチは GitLab が削除を拒否するだけで
+    マージは成功する — gitlab-review-viewer の承認と同じオプション）。"""
+    ep = _encode_project(project)
+    return gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{mr_iid}/merge",
+                  data={"should_remove_source_branch": True})
+
+
+def _close_mr(host: str, token: str, project: str, mr_iid) -> dict:
+    """MR をクローズする（差分なし MR の決着用。マージするものが無い）。"""
+    ep = _encode_project(project)
+    return gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{mr_iid}",
+                  data={"state_event": "close"})
+
+
+def _delete_branch(host: str, token: str, project: str, branch: str) -> None:
+    """ソースブランチを削除する（best-effort。保護ブランチ等の拒否は無視）。"""
+    ep = _encode_project(project)
+    try:
+        gl_api(host, token, "DELETE",
+               f"/projects/{ep}/repository/branches/{urllib.parse.quote(branch, safe='')}")
+    except RuntimeError:
+        pass
+
+
+def _try_auto_merge(host, token, project, iid, url, cfg, labels_now, mrs):
+    """status:approved のイシューを gitlab-review-viewer の承認ボタンと同じ規則で自動決着させる。
+
+    - 全 open MR がクリーン（コンフリクト無し・未解決レビューコメント無し）→ 自動マージ
+      （差分なし MR はクローズ＋ソースブランチ削除）
+    - MR 無し → マージ対象なし＝そのまま承認（呼び出し側がイシューをクローズ）
+    - approved なのに未クリーン → `# 差し戻し` コメント＋ approved → rework_label に付け替え
+      （ワーカーの修正 → 再レビューのループへ。ラベル遷移自体が再発火ガード）
+
+    戻り値: ("approved", reason) / ("rework", detail) / None（対象外・一過性エラー＝次のポーリングで再試行）。
+    API 失敗はこの中で握って None を返す（run を殺さない。決着は timeout が上限）。"""
+    approved = str(cfg.get("approved_label") or "status:approved")
+    if not _as_bool(cfg.get("auto_merge"), True) or approved in (None, "") \
+            or approved not in labels_now:
+        return None
+    opened = [m for m in mrs if str(m.get("state") or "") in ("opened", "locked")]
+    if not opened:
+        if mrs:      # merged/closed 混在の決着は _mr_decision / _closed_issue_decision の領分
+            return None
+        return ("approved", f"{approved}＋関連 MR 無し（自動承認）")
+    try:
+        checked = []                     # (mr, mr_project, iid, no_diff)
+        problems = []
+        for m in opened:
+            mp = _mr_project_path(m, project)
+            miid = m.get("iid")
+            full = _get_mr(host, token, mp, miid)
+            unresolved = _mr_unresolved_count(host, token, mp, miid)
+            no_diff = _mr_changes_empty(host, token, mp, miid)
+            conflicts = bool(full.get("has_conflicts")) or \
+                str(full.get("merge_status") or "") == "cannot_be_merged"
+            if unresolved:
+                problems.append(f"MR !{miid}: 未解決のレビューコメントが {unresolved} 件")
+            elif conflicts and not no_diff:
+                problems.append(f"MR !{miid}: コンフリクト（merge_status="
+                                f"{full.get('merge_status')}）")
+            else:
+                checked.append((m, mp, miid, no_diff))
+        if problems:
+            # 差し戻し: 先にラベルを戻す（成功＝再発火ガード）→ 検知内容の固定コメント
+            rework = str(cfg.get("rework_label") or "status:needs-rework")
+            new_labels = sorted((set(labels_now) - {approved}) | {rework})
+            _set_issue_labels(host, token, project, iid, new_labels)
+            _add_note(host, token, project, iid,
+                      "# 差し戻し（自動チェック）\n"
+                      + "\n".join(f"- {p}" for p in problems)
+                      + f"\n解消後に再度レビュー承認（{approved}）してください。")
+            _log(f"イシュー #{iid}: {approved} だが未クリーンのため差し戻し"
+                 f"（{'; '.join(problems)}）: {url}")
+            return ("rework", "; ".join(problems))
+        done = []
+        for m, mp, miid, no_diff in checked:
+            if no_diff:                  # 差分なし＝マージするものが無い → クローズで決着
+                _close_mr(host, token, mp, miid)
+                branch = str(m.get("source_branch") or "")
+                if branch:
+                    _delete_branch(host, token, mp, branch)
+                done.append(f"MR !{miid} は差分なし＝クローズ")
+            else:
+                _merge_mr(host, token, mp, miid)
+                done.append(f"MR !{miid} をマージ")
+        return ("approved", f"{approved}＋クリーン → 自動承認（{', '.join(done)}）")
+    except RuntimeError as e:
+        # マージ権限不足（403）・マージ不可への遷移（405/406）・一過性障害。決着させず
+        # 次のポーリングで再確認する（人が GitLab 上で解消/マージすれば従来経路で決着する）。
+        _log(f"イシュー #{iid}: 自動マージを完遂できませんでした（次回再試行）: {e}")
+        return None
 
 
 def _add_note(host: str, token: str, project: str, iid, body: str) -> dict:
@@ -667,13 +817,17 @@ def _issue_body(kind: str, goal: str, dep_results: dict,
         "## 受け入れ条件", "",
         f"- [ ] 次のタスクが完了している: {goal}",
         "- [ ] 変更を **MR** にして push し、レビュー可能にする（複数 MR 可）",
-        "- [ ] レビュー後、**人が関連 MR を管理**する: 採用するなら**マージ**、却下するなら**未マージのままクローズ**",
+        "- [ ] レビューを通し、このイシューに `status:approved` ラベルを付ける"
+        "（レビュー指摘は MR のディスカッションで解決しておく）",
         "",
         "---",
-        f"_kiro-flow ワーカーバス（kind=`{kind}`）により自動起票。完了判定は**関連 MR の状態**で行う:_"
-        "\n_・関連 MR が**すべてマージ**された → 承認とみなし、このイシューをクローズして完了。_"
+        f"_kiro-flow ワーカーバス（kind=`{kind}`）により自動起票。完了判定:_"
+        "\n_・このイシューが `status:approved` になり、関連 MR がクリーン（コンフリクト無し・"
+        "未解決レビューコメント無し）→ kiro-flow が**自動でマージしてイシューをクローズ**する。_"
+        "\n_・approved なのに未クリーンなら `# 差し戻し` コメントと `status:needs-rework` で戻す。_"
         "\n_・関連 MR が**一つでも未マージでクローズ**された → 却下とみなし、やり直す"
-        "（このイシューのコメントをやり直しの指示に使う）。kiro-flow は MR を自動マージしません。_"
+        "（このイシューのコメントをやり直しの指示に使う）。_"
+        "\n_・人が先にマージ/クローズした場合もその決着に従う（全マージ＝承認）。_"
         "\n_・MR で決着がつかないまま**このイシューが外部でクローズ**された場合は、"
         "`status:approved`/`status:done` ラベルやコメントの内容（承認/却下の語）から判断する。"
         "判断材料が無いクローズは取り下げ＝却下として扱う。_",
@@ -684,23 +838,29 @@ def _issue_body(kind: str, goal: str, dep_results: dict,
 def execute(kind: str, goal: str, dep_results: dict, model=None,
             art_dir=None, dep_arts=None, repo_instruction: str = "",
             workspace: "dict | None" = None, references: "list[dict] | None" = None):
-    """opt-in のワーカーバス: タスクを GitLab イシューにして委譲し、**人が関連 MR を管理**するのを待つ。
+    """opt-in のワーカーバス: タスクを GitLab イシューにして委譲し、レビュー決着を待って自動承認する。
 
     1. イシューを起票（status:open,assignee:any ＋ 優先度）。ただし**冪等**で、同じタスク
        （art_dir 由来の決定的トークン）の open イシューが既にあれば新規起票せず再アタッチする
        （worker が夜間停止などで殺され lease 失効後に再 claim されても二重起票しない）。
-    2. **関連 MR の状態**をポーリングして決着を待つ（executor 内で完結）:
-       - 関連 MR が**すべてマージ** → 承認。イシューをクローズ（status:done）して **成功** を返す。
-         （verify はこの後 kiro-projects が downstream で実施する。）
+    2. イシューの状態をポーリングして決着を待つ（executor 内で完結）:
+       - **自動承認（auto_merge・既定 on）**: イシューが `status:approved`（レビュー通過）かつ
+         関連 MR がクリーン（コンフリクト無し・未解決レビューコメント無し）→ **自動でマージ**
+         （差分なし MR はクローズ＋ブランチ削除）し、イシューをクローズ（status:done）して
+         **成功** を返す（gitlab-review-viewer の承認ボタンと同じ規則。
+         verify はこの後 kiro-project が downstream で実施する）。
+         approved なのに未クリーンなら `# 差し戻し` コメント＋ `status:needs-rework` で
+         ワーカーの修正ループへ戻し、未決着のまま待つ。
+       - 人が先に**全 MR をマージ** → 承認（従来どおり。auto_merge: false ならこの経路のみ）。
        - 関連 MR が**一つでも未マージでクローズ** → 却下。**人のコメント**を取り込み（無ければ空＝
          呼び出し側が自動判断）、元イシューをクローズして **RuntimeError（[gitlab-reject] …）** を送出。
-         上位（kiro-projects）の通常リトライがコメントを活かして再委譲する。
-       - MR がまだ open のうちは待機。
+         上位（kiro-project）の通常リトライがコメントを活かして再委譲する。
+       - どちらでもないうちは待機。
 
-    タイムアウト（人の確認は時間がかかるため長め・設定可能。0 で無限）:
+    タイムアウト（レビューは遅延しうるため長め・設定可能。0 で無限）:
       - `timeout`（既定 7 日）… 全体上限。
       - `approved_timeout`（既定 14 日）… MR 出現または `status:approved`/`status:done` 検知後の猶予
-        （人が能動的に作業中とみなして長く待つ）。
+        （レビュー往復中とみなして長く待つ）。
 
     起票先プロジェクトは **ワークスペース URL（その run の唯一の書込先）** を優先し、無ければ
     kiro-flow.yaml の `gitlab.repo_url` をフォールバックに解決する。トークンは gl.py と同じ場所
@@ -764,7 +924,7 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
             "issue": {"host": host, "project": project, "iid": iid, "url": url},
             "task_token": _task_token(art_dir),
             "active_seen": bool(r["active_seen"]),
-            "poll_interval": _as_float(cfg.get("poll_interval"), 30.0),
+            "poll_interval": _as_float(cfg.get("poll_interval"), 300.0),
             "timeout": _as_float(cfg.get("timeout"), 0.0),
             "approved_timeout": _as_float(cfg.get("approved_timeout"), 0.0),
             "throttled": False,
@@ -799,6 +959,14 @@ def _check_decision(host, token, project, iid, url, cfg, active_seen):
     # まず関連 MR の状態だけで判定する（全マージ＝承認 / 未マージクローズ＝却下）。
     decision = _mr_decision(states)
     reason = ""
+    # 自動承認（auto_merge・既定 on）: 未決着でイシューが open のうちに status:approved が
+    # 付いたら、クリーンな MR を自動マージして決着させる（gitlab-review-viewer の承認と同じ規則。
+    # 未クリーンなら差し戻して未決着のまま＝ワーカーの修正を待つ）。
+    if not decision and not issue_closed:
+        am = _try_auto_merge(host, token, project, iid, url, cfg, labels_now, mrs)
+        if am is not None and am[0] == "approved":
+            decision, reason = "approved", am[1]
+            mrs = _related_merge_requests(host, token, project, iid)  # マージ後の状態で payload を作る
     # MR で決着がつかないままイシューが**外部でクローズ**されたら、ラベル→コメントの順で
     # 承認/却下を推定し、タスクグラフに反映する（done なら下流へ、却下なら上位がやり直す）。
     if not decision and issue_closed:
@@ -875,7 +1043,7 @@ def _wait_for_decision(host, token, project, iid, url, cfg):
     """イシュー #iid の関連 MR の状態をポーリングし、承認（全マージ）/却下（未マージクローズ）の
     決着まで待つ（ブロック版・deferral 無効時のフォールバック）。判定は _check_decision に集約し、
     ここはループ・猶予延長・全体タイムアウトだけを受け持つ。"""
-    interval = _as_float(cfg.get("poll_interval"), 30.0)
+    interval = _as_float(cfg.get("poll_interval"), 300.0)
     timeout = _as_float(cfg.get("timeout"), 0.0)
     approved_timeout = _as_float(cfg.get("approved_timeout"), 0.0)
     deadline = (time.time() + timeout) if timeout > 0 else None

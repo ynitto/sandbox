@@ -423,16 +423,27 @@ while True:
 - **起票**: `gl.py create-issue` で `## 目的` ＋（依存成果）＋ `## 受け入れ条件` を本文に持つ
   イシューを `status:open,assignee:any`（＋優先度）で作る。本文は argv 長制限を避け
   `--body-file` 経由で渡す。リモートのワーカーが gitlab-idd の規約でこれを拾って実装する。
-- **完了判定（人が関連 MR を管理）**: kiro-flow は MR を**自動マージしない**。**関連 MR の状態**を
-  ポーリングして決着を判定する（`_mr_decision`・executor 内で完結）:
-  - **すべてマージ** → 承認。イシューをクローズ（status:done）して **成功** を返す。
-    verify はこの後 kiro-project が downstream で実施する（NG なら新規やり直し）。
+- **完了判定（自動承認・`auto_merge` 既定 on）**: イシューの状態をポーリングして決着を判定する
+  （`_check_decision`・executor 内で完結）:
+  - **自動マージ**（`_try_auto_merge`）: イシューが `status:approved`（レビュー通過）かつ関連 MR が
+    **クリーン**（コンフリクト無し＝`has_conflicts`/`merge_status != cannot_be_merged`・未解決の
+    レビューコメント（resolvable かつ未 resolved の議論）無し）→ executor が
+    `PUT /merge`（`should_remove_source_branch`）で**マージし、イシューをクローズ（status:done）**して
+    **成功** を返す（gitlab-review-viewer の承認ボタンと同じ規則）。特殊ケースも同じ:
+    **差分なし MR**（/changes が空）はクローズ＋ソースブランチ削除、**MR 無しで approved** は
+    イシュークローズのみで承認。verify はこの後 kiro-project が downstream で実施する。
+  - **差し戻し**: approved なのに未クリーンなら `# 差し戻し` 見出しの固定コメントを投稿し
+    `status:approved` → `rework_label`（既定 status:needs-rework）へ付け替えて未決着のまま待つ
+    （ワーカーの修正 → 再レビューのループへ。ラベル遷移自体が再発火ガード）。マージ API の失敗
+    （権限 403・405 等・一過性障害）は決着させず次のポーリングで再試行する（run を殺さない）。
+  - **人が先にすべてマージ** → 承認（従来経路・`_mr_decision`。`auto_merge: false` ならこの経路のみ）。
   - **一つでも未マージでクローズ** → 却下。イシューの**人コメント**を取り込み（無ければ空＝自動判断）、
     元イシューをクローズして `RuntimeError([gitlab-reject] …)` を送出。上位（kiro-project）が通常
     リトライで再委譲し、コメントを次 act の指示に活かす。
-  - MR がまだ open のうちは待機。MR が無いまま人が issue をクローズしたら取り下げ＝却下扱い。
-  人の確認は時間がかかるため待機は長め・設定可能: `timeout`（既定 7 日・全体上限）と
-  `approved_timeout`（既定 14 日・MR 出現/approved ラベル検知後の猶予）。いずれも 0 で無限。
+  - どちらでもないうちは待機。MR が無いまま人が issue をクローズしたら取り下げ＝却下扱い。
+  レビューは遅延しうる前提で即応性は求めない: `poll_interval` 既定 300 秒、`timeout`（既定 7 日・
+  全体上限）と `approved_timeout`（既定 14 日・MR 出現/approved ラベル検知後の猶予）。いずれも 0 で無限。
+  自動マージには api スコープのトークンが必要（read 系のみだとマージ 403 → 人のマージ待ちに落ちる）。
   ポーリングは kiro-flow（Python）であって LLM ではないため、gitlab-idd の「LLM ポーリング禁止」とは別物。
 - **成果**: 承認時は `data` に issue iid/web_url/`decision:"approved"`/`merged_mrs`/closed を残す
   （成果物の実体は GitLab 上のマージ済み MR にある）。
@@ -465,11 +476,13 @@ kiro-flow は **1 run = 1 ワークスペース（唯一の書込先）** に固
   渡す。`workspace_instruction` が全 executor へ渡る指示文（LLM 向け）。gitlab executor は **workspace URL から
   起票先 GitLab プロジェクトを解決**（無ければ `gitlab.repo_url` フォールバック）し、対象/参照リポジトリ節を
   構造化 spec から Markdown 整形する（ローカル clone パスは載せない）。
-- **gitlab の納品（自動マージはしない・人が関連 MR を管理）**: gitlab executor は MR を**自動マージしない**。
-  リモート worker が MR を用意し、人が関連 MR を管理する。**全 MR マージ＝承認**（イシューをクローズして
-  成功）、**一つでも未マージクローズ＝却下**（人コメントを取り込み元イシューをクローズして失敗を送出。
-  上位の通常リトライがコメントを活かして再委譲）。詳細は §9.1 完了判定。`approved_timeout`（長め・
-  設定可能）で MR の決着を待つ。kiro（ローカル push）と gitlab（人の MR 管理）で対称性は持たせない。
+- **gitlab の納品（自動承認・作業履歴を GitLab に残す）**: リモート worker が MR を用意し、レビューが
+  `status:approved` に達したら executor が**クリーンな MR を自動マージしてイシューをクローズ**する
+  （GitLab は Merged MR ＋ closed イシューの台帳として残る）。**人が先に全 MR をマージ＝承認**、
+  **一つでも未マージクローズ＝却下**（人コメントを取り込み元イシューをクローズして失敗を送出。
+  上位の通常リトライがコメントを活かして再委譲）も従来どおり効く。詳細は §9.1 完了判定。
+  `approved_timeout`（長め・設定可能）でレビュー決着を待つ。`auto_merge: false` で従来の
+  「人が関連 MR を管理」モードに戻せる。
 
 ---
 

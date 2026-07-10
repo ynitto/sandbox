@@ -188,22 +188,31 @@ CONFIG_DEFAULTS = {
     # gitlab executor プラグイン（opt-in のワーカーバス）の設定。executor: gitlab を選んだ
     # ときだけ使われ、この dict が JSON 化され環境変数経由でプラグインに渡される。
     # タスクを GitLab イシュー化し、リモートのワーカーが拾って実行する。status:approved
-    # ラベルが付く（レビュー承認）まで起票したイシューをポーリングし完了とみなす。
+    # ラベル（レビュー承認）が付いたら、クリーンな関連 MR（コンフリクト無し・未解決レビュー
+    # コメント無し）を**自動マージしてイシューをクローズ**する（auto_merge・既定 on。
+    # gitlab-review-viewer の承認ボタンと同じ規則。false で従来の人マージ待ちに戻す）。
     # イシュー API は GitLab REST を stdlib で直叩き（gl.py 不要・フォールバックもしない）。
     # 起票先 URL は repo_url が権威（git origin へ流れない）。トークンはここには置かず、
     # gl.py と同じ場所（connections.yaml / 環境変数 GITLAB_TOKEN・GL_TOKEN / シェル rc）から解決する。
+    # ※ 自動マージには api スコープのトークンが必要（read 系のみだとマージで 403 になり、
+    #   人が GitLab 上でマージするまで待ち続ける）。
     "gitlab": {
         "conn_label": "default",            # connections.yaml の接続ラベル（トークン解決に使用）
         "repo_url": "",                     # 起票先プロジェクト URL（権威）。必ずこの URL を使う
         "labels": "status:open,assignee:any",  # 起票するイシューに付ける初期ラベル
         "priority": "priority:normal",      # 付与する優先度ラベル（空文字で付けない）
-        "poll_interval": 30.0,              # イシュー1件の最短再確認間隔（秒）
-        # 完了＝人がマージ＝イシュークローズ。人の確認は時間がかかるため待機は長めにする（0/負で無限）。
+        "poll_interval": 300.0,             # イシュー1件の最短再確認間隔（秒）。レビューは遅延しうる
+                                            # 前提で即応性は求めない（十分待つ）
+        # 完了＝approved のクリーンな MR を自動マージ＝イシュークローズ。
+        # レビュー往復は時間がかかるため待機は長めにする（0/負で無限）。
         # gitlab executor プラグインの _DEFAULTS と一致させる（以前ここだけ 86400 で食い違っていた）。
         "timeout": 604800.0,                # 全体タイムアウト（既定 7 日）。決着に至るまでの上限
-        "approved_timeout": 1209600.0,      # 人の作業検知後の猶予（既定 14 日・マージ待ち）
-        "approved_label": "status:approved",  # この状態に達したら完了とみなす（= 受け入れ承認）
+        "approved_timeout": 1209600.0,      # レビュー活動検知後の猶予（既定 14 日）
+        "approved_label": "status:approved",  # この状態に達したら自動マージ判定に入る（= 受け入れ承認）
         "done_label": "status:done",        # approved 以外に完了とみなすラベル
+        "auto_merge": True,                 # 自動承認: approved＋クリーンな MR を自動マージ・クローズ
+                                            # （false で従来の「人が関連 MR を管理」モード）
+        "rework_label": "status:needs-rework",  # 差し戻し時に approved から付け替えるラベル
         # park & poll（承認待ちを worker スロットから切り離す）のパラメータ。
         # defer_waits=false で park & poll を無効化し、従来モード（worker がイシューを監視して
         # ブロック待機。1 worker=1 イシュー）に戻す。承認待ちが max_workers を占有するが、

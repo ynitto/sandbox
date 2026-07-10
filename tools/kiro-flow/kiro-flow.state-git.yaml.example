@@ -3,7 +3,7 @@
 #
 # 構成: 「daemon 1 台（WSL）＋ gitlab executor で作業を各 PC に分散 ＋ 別 PC の viewer で監視 ＋
 #        状態（バスのワーク内容）を GitLab にバックアップ ＋ 同じリポジトリへ他プロセスも push する」
-# 対になる kiro-projects 側の設定 → kiro-projects.state-git.yaml.example
+# 対になる kiro-project 側の設定 → kiro-project.state-git.yaml.example
 # （前提の配置・起動手順・他プロセスとの取り決め・閲覧側の組み方はそちらに集約。
 #   このファイルは kiro-flow 側で一致させるべき値だけを持つ）
 #
@@ -14,9 +14,9 @@
 #   WSL 側ファイルシステム（ext4）に置く（/mnt/c は遅く flock 系ロックも不安定）。
 #   起動（WSL）: kiro-flow daemon
 
-# --- バス（kiro-projects 側と同じ絶対パスで 1 本に共有。必須）---
+# --- バス（kiro-project 側と同じ絶対パスで 1 本に共有。必須）---
 # バスが複数あると、複数のバスが同じ state_git_subdir へ同期して互いの run を取り込み合う（混線）。
-# 1 本に共有すれば混線が消え、kiro-projects からの daemon 検知（location=auto/daemon）も効く。
+# 1 本に共有すれば混線が消え、kiro-project からの daemon 検知（location=auto/daemon）も効く。
 bus: /home/me/kiro/.kiro-flow-bus
 
 # --- 実行（作業は GitLab イシューで各 PC へ分散。従来どおり）---
@@ -26,7 +26,7 @@ gitlab:
   timeout: 0            # 全体タイムアウト無効（0=無限）。人のレビュー往復が数日でも run を失敗にしない。
   approved_timeout: 0   # 承認/決着待ちの猶予も無限。誤タイムアウト由来の retry ループを消す
                         #   （run の本当の失敗は終端ステータスで検知される＝待ち上限は安全網に不要）。
-                        #   kiro-projects 側は act_timeout: 0 ＋ act_async: true と併用する。
+                        #   kiro-project 側は act_timeout: 0 ＋ act_async: true と併用する。
   # park & poll（承認待ちを worker スロットから切り離す。既定 有効）。承認待ちのイシューが
   # max_workers を占有せず、監視は daemon が watch_interval 毎にまとめて再確認する。承認待ちが
   # 溜まって発行が止まる問題と多重ポーリングを同時に抑える。従来モード（1 worker=1 イシューで
@@ -36,9 +36,9 @@ gitlab:
   # watch_interval: 90    # park 済みイシューをまとめて再確認する間隔（秒）
 
 # --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
-# kiro-projects 側と同じリポジトリ・別 subdir。viewer は <clone>/kiro-flow をバスとして登録する。
-# ★この state_git_subdir が唯一の権威。kiro-projects に管理させる構成（manage_flow_daemon）でも、
-#   この値はこの kiro-flow.yaml のパスを flow_config で渡して反映される（kiro-projects が
+# kiro-project 側と同じリポジトリ・別 subdir。viewer は <clone>/kiro-flow をバスとして登録する。
+# ★この state_git_subdir が唯一の権威。kiro-project に管理させる構成（manage_flow_daemon）でも、
+#   この値はこの kiro-flow.yaml のパスを flow_config で渡して反映される（kiro-project が
 #   --state-git-subdir を個別 CLI 注入して上書きすることは無くなった）。変えるなら viewer の
 #   flowBusByProject（<clone>/<subdir>）も同じ値に合わせる。
 state_git: git@gitlab.example.com:team/kiro-state.git
@@ -48,7 +48,7 @@ state_git_subdir: kiro-flow
 #                                     #   （run の終端時だけは間隔を待たず即 push）
 
 # ── バスが同期されない/viewer で見えないときの切り分け ──
-# バスを鏡写しするのは【kiro-flow daemon の state_sync ループだけ】（kiro-projects 側の
+# バスを鏡写しするのは【kiro-flow daemon の state_sync ループだけ】（kiro-project 側の
 # state_git はコンテナ状態のみで、バスは同期しない）。上から順に確認する:
 #   1. daemon がこの設定を読めているか
 #      → daemon 起動ログの2行目に `state-git: 有効 → …（バス … をリモートへ鏡写し）` が出るか。
@@ -58,8 +58,8 @@ state_git_subdir: kiro-flow
 #      → <bus>/.state-git/ が生成され、そこで `git log` にコミットが増えるか。
 #        SSH 鍵など push 認証が WSL 側ユーザーで通ること（手動 `git -C <bus>/.state-git push` で確認）。
 #   3. そもそもバスに run があるか
-#      → <bus>/runs/ に run-* が出来ているか。無ければ kiro-projects が daemon を検知できず
-#        local 実行に落ちている可能性（kiro-projects 側で lock_dir / bus 絶対パスの一致を確認）。
+#      → <bus>/runs/ に run-* が出来ているか。無ければ kiro-project が daemon を検知できず
+#        local 実行に落ちている可能性（kiro-project 側で lock_dir / bus 絶対パスの一致を確認）。
 #        ※ この構成では local 実行でもバスは消さない（state_git 設定時は _cleanup_bus が保護）。
 #   4. viewer 側
 #      → 別 PC は <clone>/kiro-flow をバスとして登録（clone が git pull で更新され続けているか）。
