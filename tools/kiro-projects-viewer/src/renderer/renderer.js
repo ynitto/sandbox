@@ -6,7 +6,7 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   config: null,
-  discovery: { containers: [], instances: [] },
+  discovery: { projects: [], instances: [] },
   selectedDir: null, // 選択中プロジェクトのディレクトリ
   project: null, // readProject のスナップショット
   flowRuns: [],
@@ -202,46 +202,41 @@ async function refreshDiscovery() {
 
 function renderTree() {
   const tree = $('tree');
-  const { containers, instances } = state.discovery;
-  if (!containers.length) {
+  const { projects, instances } = state.discovery;
+  if (!projects.length) {
     tree.innerHTML =
-      '<div class="empty">コンテナが見つかりません。<br>⚙ 設定で .kiro-projects のパスを追加するか、<br>kiro-projects を稼働させてください。<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>';
+      '<div class="empty">プロジェクトが見つかりません。<br>⚙ 設定でプロジェクトルート（状態共有リポジトリの clone）を追加するか、<br>kiro-project を稼働させてください。<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>';
     const nb = $('btn-empty-new');
     if (nb) nb.addEventListener('click', openNewProject);
   } else {
-    tree.innerHTML = containers
-      .map((c) => {
-        const projects = c.projects
-          .map((p) => {
-            const badges = [];
-            if (p.needsCount) badges.push(`<span class="badge warn" title="要対応">${p.needsCount}</span>`);
-            if (p.backlogCount) badges.push(`<span class="badge" title="バックログ">${p.backlogCount}</span>`);
-            if (p.hasCharter) badges.push('<span class="badge info" title="charter あり">C</span>');
-            // via='status-sync' はリモート本体を state_git 越しに推定した稼働判定（同期遅延を許容）。
-            // ローカル確定（instances）と見分けられるよう dot に補助クラスと ~ 印を付ける
-            const live = p.liveness || { via: p.running ? 'instances' : 'none' };
-            const remoteGuess = live.via === 'status-sync';
-            const dotTitle = p.running
-              ? remoteGuess
-                ? `稼働中（同期経由の推定・約${Math.round((live.ageSec || 0) / 60)}分前に確認）`
-                : '稼働中'
-              : remoteGuess
-                ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前・同期経由）`
-                : '停止中';
-            return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}">
-              <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''}" title="${esc(dotTitle)}"></span>
-              <span class="name">${esc(p.name)}${remoteGuess && p.running ? '~' : ''}</span>${badges.join('')}
-            </div>`;
-          })
-          .join('');
-        return `<div class="container-item">
-          <div class="container-label" title="${esc(c.root)}">${esc(c.root)}${c.exists ? '' : '（見つかりません）'}</div>
-          ${projects || '<div class="project-item muted"><span class="name">プロジェクトなし</span></div>'}
+    tree.innerHTML = projects
+      .map((p) => {
+        const badges = [];
+        if (p.needsCount) badges.push(`<span class="badge warn" title="要対応">${p.needsCount}</span>`);
+        if (p.backlogCount) badges.push(`<span class="badge" title="バックログ">${p.backlogCount}</span>`);
+        if (p.hasCharter) badges.push('<span class="badge info" title="charter あり">C</span>');
+        // via='status-sync' はリモート本体を git 同期越しに推定した稼働判定（同期遅延を許容）。
+        // ローカル確定（instances）と見分けられるよう dot に補助クラスと ~ 印を付ける
+        const live = p.liveness || { via: p.running ? 'instances' : 'none' };
+        const remoteGuess = live.via === 'status-sync';
+        const dotTitle = p.paused
+          ? '一時停止中'
+          : p.running
+            ? remoteGuess
+              ? `稼働中（同期経由の推定・約${Math.round((live.ageSec || 0) / 60)}分前に確認）`
+              : '稼働中'
+            : remoteGuess
+              ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前・同期経由）`
+              : '停止中';
+        const missing = !p.exists ? '（見つかりません）' : '';
+        return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}" title="${esc(p.dir)}">
+          <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''} ${p.paused ? 'paused' : ''}" title="${esc(dotTitle)}"></span>
+          <span class="name">${esc(p.name)}${remoteGuess && p.running ? '~' : ''}${p.paused ? ' ⏸' : ''}${missing}</span>${badges.join('')}
         </div>`;
       })
       .join('');
   }
-  const live = instances.filter((i) => i.fresh && !i.sentinel).length;
+  const live = instances.filter((i) => i.fresh).length;
   $('sidebar-footer').textContent = `稼働インスタンス: ${live} ／ 最終更新 ${new Date().toLocaleTimeString('ja-JP')}`;
 
   for (const el of tree.querySelectorAll('.project-item[data-dir]')) {
@@ -287,6 +282,7 @@ function renderHeader() {
   const ps = p.projectState;
   const badges = [];
   if (ps && ps.status) badges.push(statusChip(ps.status));
+  if (p.liveness && p.liveness.paused) badges.push('<span class="status-chip st-review">⏸ 一時停止中</span>');
   $('project-badges').innerHTML = badges.join(' ');
   const lastLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
   const metaBits = [`${esc(p.dir)}`];
@@ -310,6 +306,10 @@ function renderOverview() {
   const el = $('tab-overview');
   if (!p) {
     el.innerHTML = '<div class="empty">左のツリーからプロジェクトを選択してください</div>';
+    return;
+  }
+  if (state.simpleMode) {
+    renderOverviewSimple(el, p);
     return;
   }
   const parts = [];
@@ -405,6 +405,8 @@ function renderOverview() {
       </div>
     </div>`);
 
+  parts.push(lifecycleCardHtml(p));
+
   // 実行中・run-log サマリ
   const doing = p.claims.length
     ? p.claims.map((id) => `<code class="mono">${esc(id)}</code>`).join(' ')
@@ -467,7 +469,7 @@ function renderOverview() {
         <button class="chip danger" id="btn-reset-project"
           title="charter.md 以外の全データ（backlog / archive / needs / decisions / journal / run-log / DELIVERY / inbox / commands / bus など）をゴミ箱へ移動し、kiro-flow daemon を停止します">
           ⚠ リセット（charter 以外を全消去 + kiro-flow 停止）</button>
-        <span class="muted">charter.md だけを残して最初からやり直します。本体（kiro-projects）が稼働中なら次パスで charter から再分解されます</span>
+        <span class="muted">charter.md だけを残して最初からやり直します。本体（kiro-project）が稼働中なら次パスで charter から再分解されます</span>
       </div>
     </div>`);
   }
@@ -479,10 +481,117 @@ function renderOverview() {
   }
   const resetBtn = $('btn-reset-project');
   if (resetBtn) resetBtn.addEventListener('click', () => resetProject());
+  bindLifecycleButtons(el);
+}
+
+// 稼働操作（pause / resume / stop）。commands/ ドロップ（＋git push）で届き、
+// リモート本体（WSL・別ホスト）の watch が同期間隔内に取り込む。
+function lifecycleCardHtml(p) {
+  const paused = !!(p.liveness && p.liveness.paused);
+  return `
+    <div class="card full">
+      <h3>稼働操作</h3>
+      <div class="row">
+        ${
+          paused
+            ? '<button class="chip" data-lifecycle="resume" title="一時停止を解除して消化を再開します">▶ 再開</button>'
+            : '<button class="chip" data-lifecycle="pause" title="watch の消化を一時停止します（監視・指示の取り込みは継続）">⏸ 一時停止</button>'
+        }
+        <button class="chip danger" data-lifecycle="stop"
+          title="プロセスを graceful 停止します。再開はプロジェクトのマシンで kiro-project start を実行してください">⏹ 停止</button>
+        <span class="muted">指示は commands/ ドロップ（＋git push）で届き、本体が同期間隔内に取り込みます</span>
+      </div>
+      ${paused ? '<div class="muted" style="margin-top:4px">⏸ 一時停止中（resume 待ち。needs 検収・指示の投入はそのまま可能です）</div>' : ''}
+    </div>`;
+}
+
+const LIFECYCLE_CONFIRMS = {
+  pause: (p) => `${p.name}: watch の消化を一時停止します（idle 監視・指示の取り込みは継続）。よろしいですか？`,
+  resume: (p) => `${p.name}: 一時停止を解除して消化を再開します。よろしいですか？`,
+  stop: (p) =>
+    `${p.name}: 本体プロセスを停止します。\n再開はプロジェクトのマシン（WSL 等）で kiro-project start を実行してください。よろしいですか？`,
+};
+
+function bindLifecycleButtons(root) {
+  for (const b of root.querySelectorAll('button[data-lifecycle]')) {
+    b.addEventListener('click', async () => {
+      const p = state.project;
+      if (!p) return;
+      const action = b.dataset.lifecycle;
+      const yes = await confirmDialog(LIFECYCLE_CONFIRMS[action](p));
+      if (!yes) return;
+      const ok = await guard('稼働操作', async () => {
+        const res = await api.requestLifecycle(p.dir, action, 'kiro-projects-viewer から操作');
+        toast(res.output, true);
+        return true;
+      });
+      if (ok) {
+        gitPushAfterWrite(`kiro-projects-viewer: ${action}`, p.dir);
+        await reloadProject();
+      }
+    });
+  }
+}
+
+// かんたんモードの概要: 非技術者向けに「いま何をしているか / あなたの番 / できあがったもの」
+// の 3 面へ絞る（技術情報はメンテナンスモードで見る）。
+function renderOverviewSimple(el, p) {
+  const parts = [];
+  const live = p.liveness || { running: false };
+  const undecided = p.needs.filter((n) => !n.decided);
+  const working = (p.byStatus.doing || 0) + (p.byStatus.offloaded || 0) + p.claims.length;
+  const waiting = (p.byStatus.ready || 0) + (p.byStatus.inbox || 0);
+  const doneCount = p.archive.length;
+
+  let now;
+  if (live.paused) now = '⏸ 一時停止中です（「▶ 再開」で続きから動き出します）。';
+  else if (!live.running) now = '停止中です（このプロジェクトのマシンで起動されるのを待っています）。';
+  else if (working) now = `いま ${working} 件の作業を進めています。`;
+  else if (undecided.length) now = 'あなたの確認・判断を待っています。';
+  else if (waiting) now = `次の作業（残り ${waiting} 件）に取りかかるところです。`;
+  else now = '新しい仕事を待っています（やることはすべて完了しています）。';
+
+  parts.push(`
+    <div class="card full">
+      <h3>いま何をしているか</h3>
+      <div class="big">${esc(now)}</div>
+      <div class="muted" style="margin-top:6px">
+        目標: ${esc((p.charter && (p.charter.goal || p.charter.name)) || '（charter 未設定）')}
+      </div>
+      <div class="muted">進み具合: 完了 ${doneCount} 件 ／ 作業中 ${working} 件 ／ これから ${waiting} 件</div>
+    </div>`);
+
+  parts.push(`
+    <div class="card full">
+      <h3>あなたの番です${undecided.length ? `（${undecided.length} 件）` : ''}</h3>
+      ${
+        undecided.length
+          ? `<div>確認・判断が必要な項目があります。</div>
+             <div class="row" style="margin-top:6px"><button class="chip" id="btn-simple-needs">要対応を開く（${undecided.length} 件）</button></div>`
+          : '<div class="muted">いま対応が必要なものはありません。</div>'
+      }
+    </div>`);
+
+  const rows = p.delivery
+    .slice(-5)
+    .reverse()
+    .map((cells) => `<tr>${cells.map((c) => `<td>${linkify(c)}</td>`).join('')}</tr>`)
+    .join('');
+  parts.push(`
+    <div class="card full">
+      <h3>できあがったもの（直近 5 件）</h3>
+      ${rows ? `<table class="list">${rows}</table>` : '<div class="muted">まだ納品はありません。</div>'}
+    </div>`);
+
+  parts.push(lifecycleCardHtml(p));
+  el.innerHTML = parts.join('\n');
+  const nb = $('btn-simple-needs');
+  if (nb) nb.addEventListener('click', () => switchTab('needs'));
+  bindLifecycleButtons(el);
 }
 
 // プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除し、バスの
-// kiro-flow daemon を停止する。charter が残るので、稼働中の kiro-projects は次パスで
+// kiro-flow daemon を停止する。charter が残るので、稼働中の kiro-project は次パスで
 // charter から再分解して最初からやり直す（done の記録・needs・決定記録もすべて消える）。
 async function resetProject() {
   const p = state.project;
@@ -496,7 +605,7 @@ async function resetProject() {
       `削除対象: backlog ${p.backlog.length} 件・archive（done）${p.archive.length} 件・needs ${p.needs.length} 件・` +
       `実行中クレーム ${p.claims.length} 件、および decisions / journal / run-log / DELIVERY / inbox / commands / bus 等の全ファイル。\n` +
       `ファイルはゴミ箱へ移動します（ゴミ箱の無い環境では完全削除）。${sharedBusNote}\n` +
-      `charter.md は残るため、本体（kiro-projects）が稼働中なら次パスで charter から再分解して最初からやり直します。よろしいですか？`
+      `charter.md は残るため、本体（kiro-project）が稼働中なら次パスで charter から再分解して最初からやり直します。よろしいですか？`
   );
   if (!yes) return;
   const ok = await guard('プロジェクトのリセット', async () => {
@@ -545,7 +654,7 @@ const BACKLOG_FILTERS = [
 //   その kiro-flow run（リトライ系統）を結ぶ。リトライは「意味的に同一」なので系統でまとめる。
 // ---------------------------------------------------------------------------
 
-// kiro-projects の run-id 生成（_submit_req_id）と同じ task.id 正規化。バックログの task.id を
+// kiro-project の run-id 生成（_submit_req_id）と同じ task.id 正規化。バックログの task.id を
 // run-id 内の taskId 断片へ合わせるために使う。
 function sanitizeTaskId(id) {
   return String(id == null ? '' : id)
@@ -591,7 +700,10 @@ function lineageGroups(runs) {
 }
 
 // タブを切り替える（initTabs のクリックと同じ DOM 操作をプログラムから行う）。
+const SIMPLE_TABS = new Set(['overview', 'needs']);
+
 function switchTab(name) {
+  if (state.simpleMode && !SIMPLE_TABS.has(name)) name = 'overview';
   document
     .querySelectorAll('.tab')
     .forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
@@ -1030,7 +1142,7 @@ function showTaskDialog(id, scope) {
       }
     });
   }
-  // 削除（人の明示アクション）。kiro-projects に削除の公式契約は無いため、
+  // 削除（人の明示アクション）。kiro-project に削除の公式契約は無いため、
   // backlog/<id>.md をゴミ箱へ移動する。実行中（クレーム中）は main 側でも拒否される
   const delBtn = $('btn-task-delete');
   if (delBtn) {
@@ -1165,12 +1277,16 @@ async function submitEnqueue() {
 // オーサリング: 新規プロジェクト作成・プロジェクトファイル編集
 // ---------------------------------------------------------------------------
 
-// 発見済みコンテナ ＋ 設定 roots の一覧（新規作成のコンテナ候補）
+// 既知プロジェクトの親フォルダ ＋ 設定 roots の親（新規作成先の候補）
 function knownRoots() {
   const roots = new Set();
-  for (const c of state.discovery.containers || []) if (c.root) roots.add(c.root);
-  for (const r of (state.config && state.config.kiro && state.config.kiro.roots) || []) if (r) roots.add(r);
-  return [...roots];
+  for (const p of state.discovery.projects || []) {
+    if (p.dir) roots.add(p.dir.replace(/[\\/][^\\/]+$/, ''));
+  }
+  for (const r of (state.config && state.config.kiro && state.config.kiro.roots) || []) {
+    if (r) roots.add(String(r).replace(/[\\/][^\\/]+$/, ''));
+  }
+  return [...roots].filter(Boolean);
 }
 
 // 新規プロジェクトの repos 行を 1 つ追加する（任意・複数可）
@@ -1192,9 +1308,7 @@ function openNewProject() {
   const roots = knownRoots();
   $('np-root-list').innerHTML = roots.map((r) => `<option value="${esc(r)}"></option>`).join('');
   $('np-root').value = state.selectedDir
-    ? (state.discovery.containers.find((c) => (c.projects || []).some((p) => p.dir === state.selectedDir)) || {}).root ||
-      roots[0] ||
-      ''
+    ? state.selectedDir.replace(/[\\/][^\\/]+$/, '') || roots[0] || ''
     : roots[0] || '';
   $('np-name').value = '';
   $('np-goal').value = '';
@@ -1230,15 +1344,15 @@ async function submitNewProject() {
     return r;
   });
   if (!res) return;
-  // 発見対象に入るよう、コンテナが未登録なら設定 roots に追加する
+  // 発見対象に入るよう、作成したプロジェクトルートを設定 roots に追加する
   // （discovery は config roots を resolve して並べるため、生パスの追加で表示される）
-  const known = (state.discovery.containers || []).some((c) => c.root === res.root);
+  const known = (state.discovery.projects || []).some((p) => p.dir === res.dir);
   if (!known) {
     const cfg = state.config;
     cfg.kiro = cfg.kiro || {};
     cfg.kiro.roots = cfg.kiro.roots || [];
-    if (!cfg.kiro.roots.includes(spec.root)) {
-      cfg.kiro.roots.push(spec.root);
+    if (!cfg.kiro.roots.includes(res.dir)) {
+      cfg.kiro.roots.push(res.dir);
       state.config = await api.saveConfig(cfg);
     }
   }
@@ -1249,7 +1363,7 @@ async function submitNewProject() {
 }
 
 // charter.md / policy.md / repos.json の直接編集ダイアログを開く。
-// これらは kiro-projects の「人が書く入力」— 編集して保存すると次の run で後段
+// これらは kiro-project の「人が書く入力」— 編集して保存すると次の run で後段
 // （backlog 生成・ルーティング）に反映される。タスク状態は編集対象にしない。
 async function openEditFile(name) {
   const p = state.project;
@@ -1270,7 +1384,7 @@ async function openEditFile(name) {
     warn.classList.add('hidden');
   }
   $('ef-hint').textContent = info.exists
-    ? `${info.file}｜保存すると次の kiro-projects run から後段データに反映されます`
+    ? `${info.file}｜保存すると次の kiro-project run から後段データに反映されます`
     : `${info.file}（未作成 — 保存すると新規作成します）`;
   $('dlg-edit-file').showModal();
 }
@@ -1390,7 +1504,7 @@ function renderNeeds() {
     .join('');
   el.innerHTML = `<div class="muted" style="margin-bottom:8px">
       回答はこの画面から送信できます（needs/&lt;id&gt;.md の「## Decision Outcome」記入 + <code>- [x]</code> 確定と同じ。
-      稼働中の kiro-projects が自動で取り込みます）。</div>${cards}`;
+      稼働中の kiro-project が自動で取り込みます）。</div>${cards}`;
 
   for (const btn of el.querySelectorAll('button[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
@@ -1881,7 +1995,7 @@ function nodeIssueBlock(run, node) {
         );
       }
       rows.push(
-        `<div class="muted">却下（未マージクローズ等）→ ノードは failed。kiro-projects 管理下なら
+        `<div class="muted">却下（未マージクローズ等）→ ノードは failed。kiro-project 管理下なら
         イシューの人コメントを feedback に注入して自動で再委譲されます（retries 上限で「要対応」へ）。</div>`
       );
     }
@@ -2419,7 +2533,7 @@ function openSettings() {
   $('cfg-refresh').value = cfg.kiro ? cfg.kiro.refreshSec : 5;
   $('cfg-git-pull').value = cfg.kiro && cfg.kiro.gitPullSec !== undefined ? cfg.kiro.gitPullSec : 300;
   $('cfg-git-autopush').checked = !!(cfg.kiro && cfg.kiro.gitAutoPush);
-  $('cfg-kiro-command').value = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
+  $('cfg-kiro-command').value = (cfg.kiro && cfg.kiro.command) || 'kiro-project';
   $('cfg-action-mode').value = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
   $('cfg-flow-bus').value = (cfg.kiro && cfg.kiro.flowBus) || '';
   $('cfg-flow-lockdir').value = (cfg.kiro && cfg.kiro.flowLockDir) || '';
@@ -2447,7 +2561,7 @@ async function saveSettings() {
   cfg.kiro.refreshSec = Math.max(0, parseInt($('cfg-refresh').value, 10) || 0);
   cfg.kiro.gitPullSec = Math.max(0, parseInt($('cfg-git-pull').value, 10) || 0);
   cfg.kiro.gitAutoPush = $('cfg-git-autopush').checked;
-  cfg.kiro.command = $('cfg-kiro-command').value.trim() || 'kiro-projects';
+  cfg.kiro.command = $('cfg-kiro-command').value.trim() || 'kiro-project';
   cfg.kiro.actionMode = $('cfg-action-mode').value;
   cfg.kiro.flowBus = $('cfg-flow-bus').value.trim();
   cfg.kiro.flowLockDir = $('cfg-flow-lockdir').value.trim();
@@ -2513,7 +2627,7 @@ function warnPushSkipped(dir, kind) {
       : '（viewer から直接反映するには、状態共有リポジトリの git クローン上でプロジェクトを開いてください）';
   toast(
     `「${dir}」は git 作業ツリーではないため、変更を共有リポジトリへ直接 push できませんでした。` +
-      `kiro-projects / kiro-flow daemon の state_git 同期に反映が委ねられます${hint}。` +
+      `kiro-project / kiro-flow daemon の state_git 同期に反映が委ねられます${hint}。` +
       `（この通知はディレクトリごとに一度だけ出ます）`
   );
 }
@@ -2542,7 +2656,7 @@ function gitPushAfterWrite(message, dir, opts) {
     });
 }
 
-// バス操作（run の削除・再投入）の git 反映。バスは kiro-projects の state_git から除外され
+// バス操作（run の削除・再投入）の git 反映。バスは kiro-project の state_git から除外され
 // （_STATE_EXCLUDE_DIRS）、kiro-flow 側の state_git が別クローンへ同期するため、busDir が git
 // 作業ツリーでないと notRepo で黙ってスキップされる。notRepo 通知は gitPushAfterWrite が
 // バス向けのヒント付きで出す（ここは busDir を対象にするだけ）。
@@ -2597,22 +2711,22 @@ function setupPolling() {
   }
 }
 
-// ディープリンク: kiro-projects-viewer://open?root=<container>&project=<name>
+// ディープリンク: kiro-projects-viewer://open?root=<プロジェクトルート>（旧 project= も名前一致で受ける）
 function handleOpenTarget({ url }) {
   guard('ディープリンク', async () => {
     const u = new URL(url);
     const root = u.searchParams.get('root');
     const name = u.searchParams.get('project');
     await refreshDiscovery();
-    for (const c of state.discovery.containers) {
-      if (root && c.root !== root) continue;
-      const p = c.projects.find((x) => x.name === name) || (!name && c.projects[0]);
-      if (p) {
-        await selectProject(p.dir);
-        return;
-      }
+    const p =
+      (root && state.discovery.projects.find((x) => x.dir === root)) ||
+      (name && state.discovery.projects.find((x) => x.name === name)) ||
+      null;
+    if (p) {
+      await selectProject(p.dir);
+      return;
     }
-    toast(`プロジェクトが見つかりません: ${name || ''}`);
+    toast(`プロジェクトが見つかりません: ${name || root || ''}`);
   });
 }
 
@@ -2620,9 +2734,36 @@ function handleOpenTarget({ url }) {
 // 起動
 // ---------------------------------------------------------------------------
 
+// かんたん/メンテナンス表示の切り替え。body.simple で技術タブ（バックログ/フロー/
+// レビュー待ち/履歴）を隠し、概要をかんたん表示に切り替える。設定に永続化する。
+function applyMode() {
+  document.body.classList.toggle('simple', !!state.simpleMode);
+  const btn = $('btn-mode');
+  if (btn) {
+    btn.textContent = state.simpleMode ? '🔧' : '👀';
+    btn.title = state.simpleMode
+      ? 'メンテナンス表示へ切り替え（全タブ・技術情報）'
+      : 'かんたん表示へ切り替え（概要と要対応だけに絞る）';
+  }
+  if (state.simpleMode && !SIMPLE_TABS.has(activeTab())) switchTab('overview');
+  renderAllTabs();
+}
+
+async function toggleMode() {
+  state.simpleMode = !state.simpleMode;
+  applyMode();
+  const cfg = state.config;
+  cfg.kiro = cfg.kiro || {};
+  cfg.kiro.simpleMode = state.simpleMode;
+  state.config = await api.saveConfig(cfg);
+}
+
 async function init() {
   state.config = await guard('設定読込', () => api.getConfig());
+  state.simpleMode = !!(state.config && state.config.kiro && state.config.kiro.simpleMode);
   initTabs();
+  applyMode();
+  $('btn-mode').addEventListener('click', toggleMode);
   $('btn-refresh').addEventListener('click', refreshAll);
   $('btn-git-pull').addEventListener('click', manualGitPull);
   $('btn-settings').addEventListener('click', openSettings);
@@ -2645,7 +2786,7 @@ async function init() {
 
   await refreshDiscovery();
   const last = localStorage.getItem('kpv:selected');
-  const all = state.discovery.containers.flatMap((c) => c.projects);
+  const all = state.discovery.projects;
   const target = all.find((p) => p.dir === last) || all[0];
   if (target) await selectProject(target.dir);
   else renderAllTabs();

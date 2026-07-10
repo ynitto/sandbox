@@ -1,6 +1,6 @@
 'use strict';
 
-// kiro-projects / kiro-flow の設定ファイル（.kiro/kiro-projects.{yaml,yml,json} 等）から
+// kiro-project / kiro-flow の設定ファイル（.kiro/kiro-project.{yaml,yml,json} 等）から
 // ビュアーが必要とする少数のトップレベルキー（bus / lock_dir）だけを読む簡易リーダー。
 // 両ツールの CONFIG_DEFAULTS はトップレベルの「key: value」スカラなので、YAML の
 // フルパースはせず平坦な行だけを拾う（ネストした値は無視する）。
@@ -64,9 +64,9 @@ function readToolConfig(baseName, baseDirs) {
   return null;
 }
 
-// kiro-projects → kiro-flow の順でキーを探す（daemon ロック等、両方が持ち得る値用）
+// kiro-project → kiro-flow の順でキーを探す（daemon ロック等、両方が持ち得る値用）
 function lookupScalar(key, baseDirs) {
-  for (const name of ['kiro-projects', 'kiro-flow']) {
+  for (const name of ['kiro-project', 'kiro-flow']) {
     const cfg = readToolConfig(name, baseDirs);
     if (cfg && cfg.values[key] !== undefined && cfg.values[key] !== null) {
       const v = String(cfg.values[key]).trim();

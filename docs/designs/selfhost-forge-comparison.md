@@ -33,7 +33,7 @@
 | `hermes-gitlab-gateway` | GitLab issues をチャネル化（ポーリング／NAT 裏で動作） | 中〜高 | 移植が必要 |
 | `gitlab-review-viewer` | GitLab の issues+MR を並べて表示（Electron） | 中（読み取り） | 移植が必要 |
 | `gitlab-obsidian-sync` | GitLab → Obsidian 同期 | 中 | 移植が必要 |
-| `issue-mailbox` / `kiro-projects` | issues 周辺で GitLab を参照 | 低〜中 | 一部改修 |
+| `issue-mailbox` / `kiro-project` | issues 周辺で GitLab を参照 | 低〜中 | 一部改修 |
 | `git-file-sync` / `gitea-sync-bot` | **git レベル（remote URL のみ）** | **無** | **影響なし**（どの forge でも動く） |
 
 **要点**: 縛りは **issues / MR / notes（＝ローカル管理したかった対象）** に集中している。

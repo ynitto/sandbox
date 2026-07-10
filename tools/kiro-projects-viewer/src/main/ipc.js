@@ -29,7 +29,7 @@ function client() {
   return new GitLabClient(loadConfig().gitlab);
 }
 
-// kiro-flow daemon ロックの置き場。⚙ 設定 > ~/.kiro の kiro-projects/kiro-flow 設定の
+// kiro-flow daemon ロックの置き場。⚙ 設定 > ~/.kiro の kiro-project/kiro-flow 設定の
 // lock_dir > 両ツール共通の既定（tempdir 配下。daemonStatus 側で導出）。
 function flowLockDir(cfg) {
   if (cfg.kiro && cfg.kiro.flowLockDir) return cfg.kiro.flowLockDir;
@@ -119,9 +119,9 @@ function registerIpcHandlers() {
   // 不要なバックログタスクの削除（人の明示アクション）。backlog/<id>.md だけを
   // 対象にし、実行中（doing かつクレームあり）のタスクは拒否する。
   // クレームロック（claims/<id>.lock）は worker のクラッシュや review/blocked
-  // 滞留で残骸が残るため（kiro-projects 本体も approve 時に掃除する）、
+  // 滞留で残骸が残るため（kiro-project 本体も approve 時に掃除する）、
   // ロックの存在だけでは拒否せず、削除時に残骸ロックも一緒に片付ける。
-  // kiro-projects に削除の公式契約は無いため、ファイルをゴミ箱へ移動する
+  // kiro-project に削除の公式契約は無いため、ファイルをゴミ箱へ移動する
   handle('kiro:deleteTask', async ({ dir, id }) => {
     const tid = String(id || '');
     if (!tid || tid !== path.basename(tid)) throw new Error(`不正なタスク ID です: ${id}`);
@@ -143,7 +143,7 @@ function registerIpcHandlers() {
 
   // プロジェクトのリセット（人の明示アクション・危険操作）。charter.md 以外の全データを
   // ゴミ箱へ移動し、バスの kiro-flow daemon を停止する。charter が残るので、稼働中の
-  // kiro-projects は次パスで charter から再分解して最初からやり直す。
+  // kiro-project は次パスで charter から再分解して最初からやり直す。
   // 順序は「daemon 停止 → 削除」: 先に止めないと worker が消したバスへ結果を書き戻す。
   // ドット始まりの同期内部（.state-git 等）は温存する — 管理クローンの manifest が残る
   // ことで、削除が次の同期で「ローカルの削除」としてリモートへ伝播する（データ復活を防ぐ）。
@@ -247,6 +247,13 @@ function registerIpcHandlers() {
   handle('kiro:replan', ({ dir, reason }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     return actions.requestReplan(loadConfig(), { dir, reason });
+  });
+
+  // プロジェクト単位のライフサイクル操作（pause / resume / stop）。commands/ ドロップ
+  // （＋都度 push）で届け、リモート本体（WSL・別ホスト）の watch が同期間隔内に取り込む。
+  handle('kiro:lifecycle', ({ dir, action, reason }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.requestLifecycle(loadConfig(), { dir, action, reason });
   });
 
   // オーサリング（作成・編集）。人が書く上位入力ファイル（charter/policy/repos）だけを

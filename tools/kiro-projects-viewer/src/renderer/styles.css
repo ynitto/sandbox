@@ -598,3 +598,14 @@ button.rel-seg:hover { border-color: var(--accent); }
 .rel-run-chip.st-failed { color: var(--red); border-color: var(--red); }
 .rel-run-chip.st-running { color: var(--accent2); border-color: var(--accent2); }
 .rel-run-chip.st-planning { color: var(--blue); border-color: var(--blue); }
+
+
+/* ---- かんたんモード（非技術者向け表示）: 技術タブを隠す ---- */
+body.simple .tab.tech {
+  display: none;
+}
+
+/* 一時停止中のプロジェクト（サイドバーの dot） */
+.dot.paused {
+  background: #e6a23c;
+}

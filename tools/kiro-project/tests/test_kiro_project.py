@@ -1,9 +1,9 @@
-"""kiro-projects の単体テスト（標準ライブラリ unittest）。
+"""kiro-project の単体テスト（標準ライブラリ unittest）。
 
 案件毎ファイル（backlog/<id>.md）・done でファイル削除・watch 常駐・フィードバック往復・
 案件毎の needs/decisions を、kiro-flow を呼ばずに検証する。kiro-flow stub 統合も含む。
 
-    python -m unittest discover -s tools/kiro-projects/tests
+    python -m unittest discover -s tools/kiro-project/tests
 """
 import importlib.util
 import json
@@ -35,10 +35,10 @@ os.environ["GIT_CONFIG_VALUE_0"] = "false"
 os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
     tempfile.gettempdir(), "ka-tests-no-such-registry", "skill-registry.json")
 
-_MOD = Path(__file__).resolve().parent.parent / "kiro-projects.py"
-_spec = importlib.util.spec_from_file_location("kiro_projects", _MOD)
+_MOD = Path(__file__).resolve().parent.parent / "kiro-project.py"
+_spec = importlib.util.spec_from_file_location("kiro_project", _MOD)
 km = importlib.util.module_from_spec(_spec)
-sys.modules["kiro_projects"] = km
+sys.modules["kiro_project"] = km
 _spec.loader.exec_module(km)
 
 
@@ -221,8 +221,8 @@ class TestEnqueue(unittest.TestCase):
             rc = km.main(["enqueue", "--title", "X", "--verify", "true",
                           "--workdir", str(d), "--root", str(d / ".ka")])
             self.assertEqual(rc, 0)
-            # 新レイアウト: <root>/projects/default/backlog（--project 未指定は default）
-            files = list((d / ".ka" / "projects" / "default" / "backlog").glob("*.md"))
+            # 新レイアウト: <root>/backlog（root = プロジェクトルート）
+            files = list((d / ".ka" / "backlog").glob("*.md"))
             self.assertEqual(len(files), 1)
             self.assertEqual(km.parse_task(files[0].read_text(), files[0].stem).norm_status(), "ready")
 
@@ -1711,7 +1711,7 @@ class TestPromotion(unittest.TestCase):
             cfg = cfg_for(d, ltm=True, ltm_home=home, promote_threshold=2)
             promoted = km.promote_learnings(cfg)
             self.assertEqual([s for s, _ in promoted], ["T1"])
-            mems = list((home / "memory" / "home" / "memories" / "kiro-projects").glob("*.md"))
+            mems = list((home / "memory" / "home" / "memories" / "kiro-project").glob("*.md"))
             self.assertEqual(len(mems), 1)
             txt = mems[0].read_text()
             self.assertIn("- learn: build を直す :: make を使え", txt)
@@ -1741,7 +1741,7 @@ class TestPromotion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             home = d / "ltmhome"
-            mem = home / "memory" / "home" / "memories" / "kiro-projects"
+            mem = home / "memory" / "home" / "memories" / "kiro-project"
             mem.mkdir(parents=True)
             (mem / "m.md").write_text(
                 "---\nid: mem-1\n---\n## 学び・結論\n- learn: build を直す :: make を使え\n",
@@ -2207,7 +2207,7 @@ class TestIntakeRecall(unittest.TestCase):
     def test_enqueue_similar_to_hold_routes_to_human(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            proj = d / ".ka" / "projects" / "default"
+            proj = d / ".ka"
             self._seed_avoid(proj, "OLD", "deploy to production", "本番は手動")
             rc = km.main(["enqueue", "--title", "deploy to production tonight", "--verify", "true",
                           "--workdir", str(d), "--root", str(d / ".ka")])
@@ -2291,8 +2291,8 @@ class TestLayout(unittest.TestCase):
     def test_files_consolidated_under_root(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            # 新レイアウト: per-project root は <root>/projects/default/
-            proot = d / ".kiro-projects" / "projects" / "default"
+            # 新レイアウト: プロジェクトルート = cwd（--root 既定 .）。全ファイルがこの直下
+            proot = d
             bl = proot / "backlog"
             bl.mkdir(parents=True)
             (bl / "T1.md").write_text(
@@ -2301,12 +2301,11 @@ class TestLayout(unittest.TestCase):
                           "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
             self.assertEqual(rc, 0)
             self.assertTrue((proot / "journal.md").exists())
-            self.assertTrue((proot / "archive" / "T1.md").exists())   # done → project/archive
+            self.assertTrue((proot / "archive" / "T1.md").exists())   # done → <root>/archive
             self.assertFalse((bl / "T1.md").exists())
-            # プロジェクト root 以外に散らばっていない
-            self.assertFalse((d / "backlog").exists())
-            self.assertFalse((d / ".kiro-projects" / "backlog").exists())
-            self.assertFalse((d / "journal.md").exists())
+            # 旧レイアウト（projects/ ネスト）を作らない
+            self.assertFalse((d / "projects").exists())
+            self.assertFalse((d / ".kiro-projects").exists())
 
     def test_cleanup_bus_removes_run_state(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2387,29 +2386,6 @@ class TestDaemonRouting(unittest.TestCase):
             p = km.daemon_lock_path(cfg_for(d, lock_dir=str(d / "locks")), False)
             self.assertEqual(p.parent, d / "locks")
 
-    def test_shared_bus_kept_across_projects(self):
-        # 共有バス（明示設定）なら --project all でも全プロジェクトが同じバス＝同じ daemon ロックを使う
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            shared = d / "shared-bus"
-            cfg = cfg_for(d, bus=shared, shared_bus=True)
-            a = km.project_cfg(cfg, "projectA")
-            b = km.project_cfg(cfg, "projectB")
-            self.assertEqual(a.bus, shared)
-            self.assertEqual(b.bus, shared)
-            # 同じバス → 同じ daemon ロックパス（単一 daemon を全プロジェクトから検知できる）
-            self.assertEqual(km.daemon_lock_path(a, False), km.daemon_lock_path(b, False))
-
-    def test_per_project_bus_when_not_shared(self):
-        # 共有バス未設定なら従来どおりプロジェクト毎の bus（分離）
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            cfg = cfg_for(d, shared_bus=False)
-            a = km.project_cfg(cfg, "projectA")
-            b = km.project_cfg(cfg, "projectB")
-            self.assertNotEqual(a.bus, b.bus)
-            self.assertEqual(a.bus.name, "bus")
-
     def test_pid_liveness_fallback_when_flock_unavailable(self):
         # fcntl 無し（Windows 等）でも、daemon が記録した pid の生存で発見できる
         with tempfile.TemporaryDirectory() as d:
@@ -2461,41 +2437,19 @@ class TestBareDefault(unittest.TestCase):
             rc = km.main(["needs", "--workdir", d, "--root", str(Path(d) / ".ka")])
             self.assertEqual(rc, 2)
 
-    def _route_project(self, argv):
-        captured = {}
-        orig = km.cmd_run
-        km.cmd_run = lambda cfg: (captured.update(project=cfg.project_name), 0)[1]
-        try:
-            km.main(argv)
-        finally:
-            km.cmd_run = orig
-        return captured.get("project")
-
-    def test_bare_defaults_to_all_project(self):
-        # サブコマンド省略は全プロジェクト（--project all）を既定にする
-        self.assertEqual(self._route_project([]), "all")
-        self.assertEqual(self._route_project(["--poll", "10"]), "all")
-
-    def test_explicit_run_stays_single_default(self):
-        # 明示 run は単一 default のまま（all にしない）
-        self.assertEqual(self._route_project(["run"]), "default")
-        # 省略でも明示 --project があればそちらが勝つ
-        self.assertEqual(self._route_project(["--project", "web"]), "web")
-
-
 class TestInstances(unittest.TestCase):
     """稼働インスタンスのレジストリ（外部操作者がフォルダを発見する口）。"""
 
     def setUp(self):
         self._home = tempfile.mkdtemp()
-        self._prev = os.environ.get("KIRO_PROJECTS_HOME")
-        os.environ["KIRO_PROJECTS_HOME"] = self._home
+        self._prev = os.environ.get("KIRO_PROJECT_HOME")
+        os.environ["KIRO_PROJECT_HOME"] = self._home
 
     def tearDown(self):
         if self._prev is None:
-            os.environ.pop("KIRO_PROJECTS_HOME", None)
+            os.environ.pop("KIRO_PROJECT_HOME", None)
         else:
-            os.environ["KIRO_PROJECTS_HOME"] = self._prev
+            os.environ["KIRO_PROJECT_HOME"] = self._prev
 
     def test_register_then_discover(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2553,32 +2507,20 @@ class TestInstances(unittest.TestCase):
                      "--executor", "stub", "--dry-run"])
         self.assertFalse(garbage.exists())             # 起動時に掃除済み
 
-    def test_all_sentinel_is_marked(self):
-        # all-daemon の「all」センチネルは実フォルダ監視と区別する目印（sentinel=True）を持つ
-        with tempfile.TemporaryDirectory() as d:
-            proot = Path(d) / ".ka" / "projects" / "all"
-            rec = km.instance_record(cfg_for(proot, project_name="all"))
-            self.assertTrue(rec["sentinel"])
-            # 実プロジェクトのレコードはセンチネルではない
-            rec2 = km.instance_record(cfg_for(Path(d) / ".ka" / "projects" / "projectA",
-                                              project_name="projectA"))
-            self.assertFalse(rec2["sentinel"])
-
-
 class TestRemoteDiscovery(unittest.TestCase):
     """共有レジストリ越しの別ホスト発見（§11-7）。core はファイル操作のみ・ネットワーク非依存を保つ。"""
 
     def setUp(self):
         self._home = tempfile.mkdtemp()
         self._shared = tempfile.mkdtemp()
-        self._prev = os.environ.get("KIRO_PROJECTS_HOME")
-        self._prev_reg = os.environ.get("KIRO_PROJECTS_REGISTRY")
-        os.environ["KIRO_PROJECTS_HOME"] = self._home
-        os.environ.pop("KIRO_PROJECTS_REGISTRY", None)
+        self._prev = os.environ.get("KIRO_PROJECT_HOME")
+        self._prev_reg = os.environ.get("KIRO_PROJECT_REGISTRY")
+        os.environ["KIRO_PROJECT_HOME"] = self._home
+        os.environ.pop("KIRO_PROJECT_REGISTRY", None)
 
     def tearDown(self):
-        for k, v in (("KIRO_PROJECTS_HOME", self._prev),
-                     ("KIRO_PROJECTS_REGISTRY", self._prev_reg)):
+        for k, v in (("KIRO_PROJECT_HOME", self._prev),
+                     ("KIRO_PROJECT_REGISTRY", self._prev_reg)):
             if v is None:
                 os.environ.pop(k, None)
             else:
@@ -2605,10 +2547,10 @@ class TestRemoteDiscovery(unittest.TestCase):
             cfg = cfg_for(Path(wd), watch=True, project_name="default")
             paths = km.register_instance(cfg, [self._shared])
             self.addCleanup(lambda: [p.unlink() for p in paths if p.exists()])
-            # ローカル home と共有先の両方へ「ホスト-PID-プロジェクト」修飾名で書かれる
+            # ローカル home と共有先の両方へ「ホスト-PID」修飾名で書かれる
             self.assertEqual(len(paths), 2)
             self.assertTrue(any(Path(self._shared) in p.parents for p in paths))
-            self.assertTrue(all(p.name == f"{socket.gethostname()}-{os.getpid()}-default.json"
+            self.assertTrue(all(p.name == f"{socket.gethostname()}-{os.getpid()}.json"
                                 for p in paths))
             before = __import__("json").loads(paths[0].read_text())["heartbeat"]
             time.sleep(0.01)
@@ -2650,7 +2592,7 @@ class TestRemoteDiscovery(unittest.TestCase):
 
     def test_env_registry_is_read(self):
         self._remote("hostB", 303, hb_age=3)
-        os.environ["KIRO_PROJECTS_REGISTRY"] = self._shared
+        os.environ["KIRO_PROJECT_REGISTRY"] = self._shared
         seen = {(r["host"], r["pid"]) for r in km.list_instances()}
         self.assertIn(("hostB", 303), seen)               # env でも共有先を読む
 
@@ -2666,15 +2608,15 @@ class TestLifecycle(unittest.TestCase):
 
     def setUp(self):
         self._home = tempfile.mkdtemp()
-        self._prev = os.environ.get("KIRO_PROJECTS_HOME")
-        os.environ["KIRO_PROJECTS_HOME"] = self._home
+        self._prev = os.environ.get("KIRO_PROJECT_HOME")
+        os.environ["KIRO_PROJECT_HOME"] = self._home
 
     def tearDown(self):
         km.cmd_stop(want_all=True)            # 取りこぼした daemon を確実に止める
         if self._prev is None:
-            os.environ.pop("KIRO_PROJECTS_HOME", None)
+            os.environ.pop("KIRO_PROJECT_HOME", None)
         else:
-            os.environ["KIRO_PROJECTS_HOME"] = self._prev
+            os.environ["KIRO_PROJECT_HOME"] = self._prev
 
     def _write_rec(self, pid, root):
         import socket
@@ -2688,19 +2630,19 @@ class TestLifecycle(unittest.TestCase):
 
     def test_select_by_pid_root_and_all(self):
         me = os.getpid()
-        root = "/tmp/wrk/.kiro-projects"
+        root = "/tmp/wrk/my-project"
         self._write_rec(me, root)
         self.assertEqual([r["pid"] for r in km.select_instances(pid=me)], [me])
         self.assertEqual([r["pid"] for r in km.select_instances(root=root)], [me])  # root 直指定
-        self.assertEqual([r["pid"] for r in km.select_instances(root="/tmp/wrk")], [me])  # 作業ルート
         self.assertEqual([r["pid"] for r in km.select_instances(want_all=True)], [me])
         self.assertEqual(km.select_instances(root="/no/such"), [])
+        self.assertEqual(km.select_instances(root="/tmp/wrk"), [])   # 親ディレクトリでは一致しない
 
     def test_stop_kills_process_and_cleans_registry(self):
         import subprocess as sp
         child = sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         self.addCleanup(lambda: child.poll() is None and child.kill())
-        self._write_rec(child.pid, "/tmp/x/.kiro-projects")
+        self._write_rec(child.pid, "/tmp/x/my-proj")
         rc = km.cmd_stop(pid=child.pid, timeout=5.0)
         self.assertEqual(rc, 0)
         self.assertFalse(km._pid_alive(child.pid))
@@ -2711,56 +2653,39 @@ class TestLifecycle(unittest.TestCase):
 
     def test_start_registers_then_stop(self):
         work = Path(tempfile.mkdtemp())
-        (work / "kiro-projects.json").write_text(
+        (work / "kiro-project.json").write_text(
             '{"executor":"stub","planner":"none","flow_planner":"stub","poll":0.3}', encoding="utf-8")
-        cfg = str(work / "kiro-projects.json")
+        cfg = str(work / "kiro-project.json")
         rc = km.cmd_start(root=str(work), config=cfg)
         self.assertEqual(rc, 0)
-        # 登録の出現を待つ（最大 ~5s）。記録 root は per-project（projects/default）
-        root = str((work / "projects" / "default").resolve())
+        # 登録の出現を待つ（最大 ~5s）。記録 root はプロジェクトルートそのもの
+        root = str(work.resolve())
         for _ in range(50):
             if km.select_instances(root=root):
                 break
             time.sleep(0.1)
         self.assertTrue(km.select_instances(root=root))         # 起動して登録された
         self.assertEqual(km.cmd_start(root=str(work), config=cfg), 1)  # 重複起動は拒否
-        self.assertEqual(km.cmd_stop(root=str(work), project="default"), 0)
+        self.assertEqual(km.cmd_stop(root=str(work)), 0)
         self.assertEqual(km.select_instances(root=root), [])    # 停止で消える
 
-    def test_start_defaults_to_all_daemon(self):
-        # daemon（start）は --project 未指定なら all で起動し、"all" センチネルを登録する
-        work = Path(tempfile.mkdtemp())
-        (work / "kiro-projects.json").write_text(
-            '{"executor":"stub","planner":"none","flow_planner":"stub","poll":0.3}', encoding="utf-8")
-        cfgp = str(work / "kiro-projects.json")
-        self.assertEqual(km.cmd_start(root=str(work), config=cfgp), 0)   # --project なし → all
-        all_root = str((work / "projects" / "all").resolve())
-        for _ in range(50):
-            if km.select_instances(root=all_root):
-                break
-            time.sleep(0.1)
-        self.assertTrue(km.select_instances(root=all_root))             # all センチネルが登録された
-        self.assertEqual(km.cmd_start(root=str(work), config=cfgp), 1)  # 重複起動は拒否
-        self.assertEqual(km.cmd_stop(root=str(work), project="all"), 0)  # all daemon を停止
-        self.assertEqual(km.select_instances(root=all_root), [])
-
-    def test_container_root_resolves_from_config(self):
+    def test_root_resolves_from_config(self):
         # start/stop/restart の照合 root は --root 未指定なら設定ファイルの root/workdir から
         # 解決する（daemon 子プロセスは resolve_config 経由で設定の root に付くため、ここが
         # cwd 固定だと重複検出が効かず stop も対象を見つけられない）。
         work = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, work, ignore_errors=True)
-        cfgp = work / "kiro-projects.json"
-        cfgp.write_text(json.dumps({"root": str(work / "state" / ".kp")}), encoding="utf-8")
-        self.assertEqual(km._container_project_root(None, "all", config=str(cfgp)),
-                         str((work / "state" / ".kp" / "projects" / "all").resolve()))
+        cfgp = work / "kiro-project.json"
+        cfgp.write_text(json.dumps({"root": str(work / "state" / "proj")}), encoding="utf-8")
+        self.assertEqual(km._resolved_root(None, config=str(cfgp)),
+                         str((work / "state" / "proj").resolve()))
         # 相対 root は設定の workdir 基準（build_config の計算と一致）
-        cfgp.write_text(json.dumps({"root": ".kp", "workdir": str(work)}), encoding="utf-8")
-        self.assertEqual(km._container_project_root(None, "default", config=str(cfgp)),
-                         str((work / ".kp" / "projects" / "default").resolve()))
+        cfgp.write_text(json.dumps({"root": "proj", "workdir": str(work)}), encoding="utf-8")
+        self.assertEqual(km._resolved_root(None, config=str(cfgp)),
+                         str((work / "proj").resolve()))
         # --root 明示は従来どおり cwd 基準で設定ファイルを読まない
-        self.assertEqual(km._container_project_root(str(work / "x"), "all", config=str(cfgp)),
-                         str((work / "x" / "projects" / "all").resolve()))
+        self.assertEqual(km._resolved_root(str(work / "x"), config=str(cfgp)),
+                         str((work / "x").resolve()))
 
     def test_watch_sigterm_graceful_exit(self):
         # SIGTERM 化された KeyboardInterrupt は graceful 停止: traceback を出さず 0 で終え、
@@ -2790,7 +2715,7 @@ class TestConfigFile(unittest.TestCase):
 
     def test_json_config_fills_values(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-projects.json"
+            p = Path(d) / "kiro-project.json"
             p.write_text('{"executor":"stub","planner":"none","poll":9,"max_cycles":3}',
                          encoding="utf-8")
             ns = self._resolve(str(p))
@@ -2799,32 +2724,30 @@ class TestConfigFile(unittest.TestCase):
 
     def test_cli_overrides_config(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-projects.json"
+            p = Path(d) / "kiro-project.json"
             p.write_text('{"executor":"stub","planner":"none"}', encoding="utf-8")
             ns = self._resolve(str(p), executor="kiro")   # CLI 明示は維持される
             self.assertEqual(ns.executor, "kiro")          # CLI 勝ち
             self.assertEqual(ns.planner, "none")           # config 採用
 
-    def test_bus_config_is_honored_and_shared(self):
-        # 設定ファイルの bus: が読まれ、共有バス（絶対パス 1 本）として使われること。
-        # これが読まれないと per-project バスに落ち、kiro-flow daemon 非検知・state_git で
-        # バスが鏡写しされない（status.json は上がるが runs が上がらない）原因になる。
+    def test_bus_config_is_honored(self):
+        # 設定ファイルの bus: が読まれ、明示バス（絶対パス）として使われること。
+        # これが読まれないと既定バスに落ち、外部 kiro-flow daemon が非検知になる。
         with tempfile.TemporaryDirectory() as d:
             shared = str(Path(d) / "shared-bus")
-            p = Path(d) / "kiro-projects.json"
+            p = Path(d) / "kiro-project.json"
             p.write_text(json.dumps({"bus": shared}), encoding="utf-8")
             ns = self._resolve(str(p))
             self.assertEqual(ns.bus, shared)               # config の bus が args に載る
             cfg = km.build_config(ns)
-            self.assertEqual(str(cfg.bus), shared)          # 実際に使うバス = 共有バス
-            self.assertTrue(cfg.shared_bus)                 # --project all でも per-project へ落とさない
+            self.assertEqual(str(cfg.bus), shared)          # 実際に使うバス = 明示バス
 
-    def test_bus_absent_stays_per_project(self):
-        # bus 未指定は従来どおり per-project（後方互換）。
+    def test_bus_absent_defaults_under_root(self):
+        # bus 未指定は <root>/bus。
         ns = self._resolve(None)
         self.assertIsNone(ns.bus)
         cfg = km.build_config(ns)
-        self.assertFalse(cfg.shared_bus)
+        self.assertEqual(cfg.bus.name, "bus")
 
     def test_builtin_defaults_when_no_config(self):
         ns = self._resolve(None)
@@ -2836,7 +2759,7 @@ class TestConfigFile(unittest.TestCase):
         if km.yaml is None:
             self.skipTest("PyYAML 未導入（JSON 経路は別テストで担保）")
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-projects.yaml"
+            p = Path(d) / "kiro-project.yaml"
             p.write_text("executor: stub\nmax_retries: 5\ngit_branch: develop\n", encoding="utf-8")
             ns = self._resolve(str(p))
             self.assertEqual((ns.executor, ns.max_retries, ns.git_branch),
@@ -2844,13 +2767,13 @@ class TestConfigFile(unittest.TestCase):
 
     def test_missing_explicit_config_exits(self):
         with self.assertRaises(SystemExit):
-            self._resolve("/no/such/kiro-projects.yaml")
+            self._resolve("/no/such/kiro-project.yaml")
 
     def test_boolean_flags_from_config(self):
         # 真偽フラグ（watch/do_archive/learn/rot/cleanup/once/dry_run/ltm/regression_revert）が
         # 設定ファイルで効く。resolve_config は CLI 未指定（None）のみ config→既定 で埋める。
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-projects.json"
+            p = Path(d) / "kiro-project.json"
             p.write_text('{"watch":true,"do_archive":false,"learn":false,"rot":true}',
                          encoding="utf-8")
             ns = self._resolve(str(p), watch=None, do_archive=None, learn=None, rot=None,
@@ -2863,7 +2786,7 @@ class TestConfigFile(unittest.TestCase):
     def test_cli_overrides_boolean_config(self):
         # CLI 明示（--no-watch / --learn 等で None でない値）が config に勝つ。
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "kiro-projects.json"
+            p = Path(d) / "kiro-project.json"
             p.write_text('{"watch":true,"learn":false}', encoding="utf-8")
             ns = self._resolve(str(p), watch=False, learn=True)
             self.assertEqual((ns.watch, ns.learn), (False, True))     # CLI 勝ち
@@ -3606,23 +3529,24 @@ class TestProjectLayer(unittest.TestCase):
         # run は charter.md があれば自動で目標駆動になる（project サブコマンドは廃止・1プロセス統合）
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            proot = d / ".kiro-projects" / "projects" / "default"
+            proot = d / "demo-proj"
             proot.mkdir(parents=True)
             (proot / "charter.md").write_text(
                 "# Charter: demo\n## goal\nやる\n## acceptance\n- `true`\n", encoding="utf-8")
-            rc = km.main(["run", "--workdir", str(d), "--planner", "none",
+            rc = km.main(["run", "--workdir", str(d), "--root", str(proot),
+                          "--planner", "none",
                           "--flow-planner", "stub", "--executor", "stub", "--dry-run",
                           "--max-project-cycles", "1"])
             self.assertEqual(rc, 1)                       # 収束候補→人待ち
             self.assertTrue((proot / "project.json").exists())
-            # milestone id は --project 名（default）が一次（charter 名でなく）
-            self.assertTrue((proot / "needs" / "default.md").exists())
+            # milestone id はプロジェクト名（ルートのディレクトリ名）が一次（charter 名でなく）
+            self.assertTrue((proot / "needs" / "demo-proj.md").exists())
 
     def test_run_without_charter_is_plain_loop(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            proot = d / ".kiro-projects" / "projects" / "default"
-            (proot / "backlog").mkdir(parents=True)
+            proot = d
+            (proot / "backlog").mkdir(parents=True, exist_ok=True)
             (proot / "backlog" / "T1.md").write_text(
                 "## T1: x\n- status: ready\n- verify: `true`\n", encoding="utf-8")
             rc = km.main(["run", "--workdir", str(d), "--planner", "none",
@@ -4316,119 +4240,6 @@ class TestVerifyAssist(unittest.TestCase):
             self.assertEqual(created[0].norm_status(), "ready")
 
 
-class TestMultiProject(unittest.TestCase):
-    def test_run_all_consumes_every_project(self):
-        # 1 プロセス（--project all）でコンテナ配下の全プロジェクトを回す
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            root = d / ".ka"
-            for name in ("alpha", "beta"):
-                km.main(["enqueue", "--project", name, "--title", f"T-{name}", "--verify", "true",
-                         "--workdir", str(d), "--root", str(root)])
-            rc = km.main(["run", "--project", "all", "--workdir", str(d), "--root", str(root),
-                          "--planner", "none", "--flow-planner", "stub", "--executor", "stub",
-                          "--dry-run", "--max-cycles", "3"])
-            self.assertEqual(rc, 0)
-            # 両プロジェクトとも消化され archive に入る
-            self.assertEqual(len(list((root / "projects" / "alpha" / "archive").glob("*.md"))), 1)
-            self.assertEqual(len(list((root / "projects" / "beta" / "archive").glob("*.md"))), 1)
-
-    def test_project_cfg_repoints_paths(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            base = cfg_for(d / ".ka" / "projects" / "default", project_name="default")
-            pc = km.project_cfg(base, "payments")
-            self.assertEqual(pc.project_name, "payments")
-            self.assertTrue(str(pc.backlog).endswith("projects/payments/backlog"))
-            self.assertEqual(km.container_dir(pc), d / ".ka")
-
-    def test_run_creates_default_project_folder(self):
-        # project 指定なしで起動すると default プロジェクトのフォルダが（無ければ）作られ、その下に集約される
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            root = d / ".ka"
-            km.main(["run", "--workdir", str(d), "--root", str(root),
-                     "--planner", "none", "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
-            dflt = root / "projects" / "default"
-            self.assertTrue((dflt / "backlog").is_dir())
-            self.assertTrue((dflt / "needs").is_dir())
-            self.assertTrue((dflt / "decisions").is_dir())
-            self.assertFalse((root / "inbox").exists())     # グローバル inbox は作らない
-
-    def test_enqueue_targets_project_dir(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            root = d / ".ka"
-            km.main(["enqueue", "--title", "A", "--verify", "true",
-                     "--workdir", str(d), "--root", str(root)])                      # default
-            km.main(["enqueue", "--project", "payments", "--title", "B", "--verify", "true",
-                     "--workdir", str(d), "--root", str(root)])                      # 別プロジェクト
-            self.assertEqual(len(list((root / "projects" / "default" / "backlog").glob("*.md"))), 1)
-            self.assertEqual(len(list((root / "projects" / "payments" / "backlog").glob("*.md"))), 1)
-
-    def test_needs_decisions_isolated_per_project(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            root = d / ".ka"
-            # P1 にだけ判断待ち（verify 無し→inbox ではなく blocked にするため triage 経由）
-            km.main(["enqueue", "--project", "p1", "--title", "X",
-                     "--workdir", str(d), "--root", str(root)])        # verify 無し → inbox
-            # p1 の操作は p1 配下だけを作り、p2 は存在しない（プロジェクト分離）
-            self.assertTrue((root / "projects" / "p1" / "backlog").exists())
-            self.assertFalse((root / "projects" / "p2").exists())
-
-    def test_instance_record_exposes_project_and_container(self):
-        # 外部操作者（スキル）が発見後に `--root <container> --project <name>` を組めること
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            proot = d / ".ka" / "projects" / "payments"
-            proot.mkdir(parents=True)
-            rec = km.instance_record(cfg_for(proot, project_name="payments"))
-            self.assertEqual(rec["project"], "payments")
-            self.assertEqual(rec["container"], str((d / ".ka").resolve()))
-            self.assertEqual(rec["root"], str(proot.resolve()))
-
-    def test_project_dirname_sanitizes(self):
-        self.assertEqual(km._project_dirname("a/b:c"), "a_b_c")
-        self.assertEqual(km._project_dirname("  "), "default")
-        self.assertEqual(km._project_dirname("案件A"), "案件A")     # unicode は保つ
-
-    def test_project_id_prefers_project_name(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            ch = km.parse_charter("# Charter: 表示名\n## goal\nやる\n")
-            self.assertEqual(km._project_id(cfg_for(d, project_name="payments"), ch), "payments")
-            # project_name 未設定（Config 直接構築）は charter 名スラグ→日本語のみは "project"
-            self.assertEqual(km._project_id(cfg_for(d), ch), "project")
-
-    def test_charter_links_resolve_and_inject(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            projects = d / ".ka" / "projects"
-            # リンク先プロジェクト shared に定義と learn を置く
-            shared = projects / "shared"
-            (shared / "decisions").mkdir(parents=True)
-            (shared).joinpath("charter.md").write_text(
-                "# Charter: shared\n## goal\n共通規約\n## constraints\n- 二段階認証必須\n", encoding="utf-8")
-            km.append_decision(cfg_for(shared), "T9", "user", context="c",
-                               action="approve", reason="r", affects="a",
-                               learn=("認証の作法", "MFA を必ず通す"))
-            # 本体プロジェクト main が shared をリンク
-            main_p = projects / "main"
-            (main_p / "backlog").mkdir(parents=True)
-            (main_p).joinpath("charter.md").write_text(
-                "# Charter: main\n## goal\n本体\n## acceptance\n- `true`\n## links\n- shared\n",
-                encoding="utf-8")
-            cfg = cfg_for(main_p)
-            ch = km.load_charter(cfg)
-            links = km.resolve_linked_projects(cfg, ch)
-            self.assertEqual([n for n, _ in links], ["shared"])
-            cc = km.charter_context(cfg)
-            self.assertIn("二段階認証必須", cc)              # リンク先の定義が取り込まれる
-            lc = km.linked_learnings_context(cfg)
-            self.assertIn("MFA を必ず通す", lc)              # リンク先の判断(learn)が取り込まれる
-
-
 class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
         kf = Path(__file__).resolve().parents[2] / "kiro-flow" / "kiro-flow.py"
@@ -4453,7 +4264,7 @@ def _write_backlog_task(backlog: Path, tid: str, verify: str, title: "str | None
 
 
 class TestCliEndToEnd(unittest.TestCase):
-    """kiro-projects.py を実プロセスとして argv 起動する黒箱 CLI e2e。
+    """kiro-project.py を実プロセスとして argv 起動する黒箱 CLI e2e。
 
     TestRunLoop が run_loop() を in-process で呼ぶのに対し、こちらは CLI 配線（argparse・パス解決・
     停止理由→exit code・成果物の書き出し）を実バイナリで検証する。act は --dry-run で省略し、
@@ -4512,7 +4323,7 @@ class TestCliEndToEnd(unittest.TestCase):
 
 
 class TestCliKiroFlowDelegation(unittest.TestCase):
-    """kiro-projects CLI が act を実際に kiro-flow.py へサブプロセス委譲し、完走することを検証する
+    """kiro-project CLI が act を実際に kiro-flow.py へサブプロセス委譲し、完走することを検証する
     クロスツール e2e。委譲の証跡（argv）と委譲先 kiro-flow の正常終了をラッパで捕捉して検証する。"""
 
     def test_cli_delegates_to_real_kiro_flow(self):
@@ -4556,7 +4367,7 @@ class TestCliKiroFlowDelegation(unittest.TestCase):
             self.assertIn("RC\t0", logtext)
 
 
-def _make_skill_repo(root: Path, tool_subdir: str = "tools/kiro-projects") -> Path:
+def _make_skill_repo(root: Path, tool_subdir: str = "tools/kiro-project") -> Path:
     """temp に「スキルリポジトリ」を作る: main に tool_subdir/install.sh を持つ git リポジトリ。
     install.sh は --prefix のディレクトリに marker を書くだけの最小実装。リポジトリ path を返す。"""
     repo = root / "skillrepo"
@@ -4569,7 +4380,7 @@ def _make_skill_repo(root: Path, tool_subdir: str = "tools/kiro-projects") -> Pa
         "#!/usr/bin/env bash\nset -e\nPREFIX=\"$HOME/.local/bin\"\n"
         "[ \"$1\" = --prefix ] && PREFIX=\"$2\"\nmkdir -p \"$PREFIX\"\n"
         "echo installed > \"$PREFIX/INSTALLED_MARKER\"\n")
-    (td / "kiro-projects.py").write_text("# tool body\n")
+    (td / "kiro-project.py").write_text("# tool body\n")
     env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
     for c in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
@@ -4609,7 +4420,7 @@ class SelfUpdateTests(unittest.TestCase):
 
     def _cfg(self, **kw):
         base = dict(update_repo=str(self.repo), update_branch="main",
-                    update_subdir="tools/kiro-projects", update_installer="install.sh",
+                    update_subdir="tools/kiro-project", update_installer="install.sh",
                     update_check_interval=60.0)
         base.update(kw)
         return cfg_for(self.tmp, **base)
@@ -4630,7 +4441,7 @@ class SelfUpdateTests(unittest.TestCase):
     def test_check_update_detects_new_commit(self):
         cfg = self._cfg()
         km.check_update(cfg)
-        _commit_change(self.repo, "tools/kiro-projects/NEW.txt")
+        _commit_change(self.repo, "tools/kiro-project/NEW.txt")
         self.assertTrue(km.check_update(cfg)["available"])
 
     def test_disabled_when_no_repo(self):
@@ -4641,14 +4452,14 @@ class SelfUpdateTests(unittest.TestCase):
     def test_sparse_checkout_only_subdir(self):
         dest = str(self.tmp / "co" / "repo")
         tool_dir = km.sparse_checkout_tool(str(self.repo), "main",
-                                           "tools/kiro-projects", dest)
+                                           "tools/kiro-project", dest)
         self.assertTrue(os.path.isfile(os.path.join(tool_dir, "install.sh")))
         self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-flow")))
 
     def test_apply_update_records_sha(self):
         cfg = self._cfg()
         km.check_update(cfg)                    # baseline
-        _commit_change(self.repo, "tools/kiro-projects/N2.txt")
+        _commit_change(self.repo, "tools/kiro-project/N2.txt")
         info = km.check_update(cfg)
         self.assertTrue(info["available"])
         prefix = str(self.tmp / "prefix")
@@ -4876,7 +4687,7 @@ class TestStateGitSync(unittest.TestCase):
                         "refs/heads/main"], check=True)
 
     def _cfg(self, **kw):
-        proot = self.tmp / "c" / "projects" / "default"
+        proot = self.tmp / "proj"
         base = dict(backlog=proot / "backlog", policy=proot / "policy.md",
                     decisions=proot / "decisions", journal=proot / "journal.md",
                     needs=proot / "needs", workdir=self.tmp, bus=proot / "bus",
@@ -4915,13 +4726,13 @@ class TestStateGitSync(unittest.TestCase):
         mkb(cfg.backlog.parent, "T1")
         km.state_sync(cfg, force=True)
         got = self._other("check")
-        self.assertTrue((got / "kp" / "projects" / "default" / "backlog" / "T1.md").exists())
+        self.assertTrue((got / "kp" / "backlog" / "T1.md").exists())
 
     def test_import_instruction_drop_and_consumption_propagates(self):
         cfg = self._cfg()
         km.state_sync(cfg, force=True)                       # 初期化（ブランチ作成）
         other = self._other()
-        cmd = other / "kp" / "projects" / "default" / "commands" / "ok.json"
+        cmd = other / "kp" / "commands" / "ok.json"
         cmd.parent.mkdir(parents=True, exist_ok=True)
         cmd.write_text('{"command": "approve", "id": "T1"}', encoding="utf-8")
         self._commit_push(other, "viewer: approve")
@@ -4939,7 +4750,7 @@ class TestStateGitSync(unittest.TestCase):
         nf.write_text("machine\n", encoding="utf-8")
         km.state_sync(cfg, force=True)
         other = self._other()
-        rn = other / "kp" / "projects" / "default" / "needs" / "T1.md"
+        rn = other / "kp" / "needs" / "T1.md"
         rn.write_text("human answer\n", encoding="utf-8")    # 人がリモートで記入
         self._commit_push(other, "human feedback")
         nf.write_text("machine rewrite\n", encoding="utf-8")  # 同時にローカルも変更
@@ -4954,7 +4765,7 @@ class TestStateGitSync(unittest.TestCase):
         rf.write_text('{"app": {"url": "git@h:t/a.git"}}\n', encoding="utf-8")
         km.state_sync(cfg, force=True)
         other = self._other()
-        rr = other / "kp" / "projects" / "default" / "repos.json"
+        rr = other / "kp" / "repos.json"
         rr.write_text('{"app": {"url": "git@h:t/a.git", "base": "main"}}\n', encoding="utf-8")
         self._commit_push(other, "viewer: edit repos")
         rf.write_text('{"app": {"url": "git@h:t/a.git", "base": "dev"}}\n', encoding="utf-8")
@@ -4966,7 +4777,7 @@ class TestStateGitSync(unittest.TestCase):
         mkb(cfg.backlog.parent, "T1")
         km.state_sync(cfg, force=True)
         other = self._other()
-        rb = other / "kp" / "projects" / "default" / "backlog" / "T1.md"
+        rb = other / "kp" / "backlog" / "T1.md"
         rb.write_text("remote edit\n", encoding="utf-8")
         self._commit_push(other, "remote edit")
         local = cfg.backlog / "T1.md"
@@ -4989,7 +4800,7 @@ class TestStateGitSync(unittest.TestCase):
         km.state_sync(cfg, force=True)   # interval 内 → pull せず push → 非 FF → rebase 再試行
         self._pull(other)
         self.assertTrue((other / "unrelated.txt").exists())
-        self.assertTrue((other / "kp" / "projects" / "default" / "backlog" / "T2.md").exists())
+        self.assertTrue((other / "kp" / "backlog" / "T2.md").exists())
 
     def test_transient_state_is_excluded(self):
         cfg = self._cfg()
@@ -5001,7 +4812,7 @@ class TestStateGitSync(unittest.TestCase):
         (claims / "T1.lock").write_text("pid", encoding="utf-8")
         km.state_sync(cfg, force=True)
         got = self._other("check")
-        proot = got / "kp" / "projects" / "default"
+        proot = got / "kp"
         self.assertTrue((proot / "backlog" / "T1.md").exists())
         self.assertFalse((proot / "bus").exists())
         self.assertFalse((proot / "claims").exists())
@@ -5010,7 +4821,7 @@ class TestStateGitSync(unittest.TestCase):
         cfg = self._cfg(state_git_interval=3600.0)
         km.state_sync(cfg, force=True)                       # 初回は必ず同期（ブランチ作成）
         other = self._other()
-        drop = other / "kp" / "projects" / "default" / "inbox" / "task.json"
+        drop = other / "kp" / "inbox" / "task.json"
         drop.parent.mkdir(parents=True, exist_ok=True)
         drop.write_text('{"title": "x", "verify": "true"}', encoding="utf-8")
         self._commit_push(other, "drop")
@@ -5027,12 +4838,12 @@ class TestStateGitSync(unittest.TestCase):
         result = km.run_loop(cfg)
         self.assertEqual(result["reason"], km.REASON_DRAINED)
         got = self._other("check")
-        self.assertTrue((got / "kp" / "projects" / "default" / "journal.md").exists())
+        self.assertTrue((got / "kp" / "journal.md").exists())
 
     def test_disabled_without_state_git(self):
         cfg = self._cfg(state_git=None)
         km.state_sync(cfg, force=True)                       # 何もしない（クローンも作らない）
-        self.assertFalse((self.tmp / "c" / ".state-git").exists())
+        self.assertFalse((self.tmp / "proj" / ".state-git").exists())
 
     def test_sync_failure_does_not_kill_loop(self):
         cfg = self._cfg(state_git=str(self.tmp / "no-such-remote.git"))
@@ -5040,20 +4851,20 @@ class TestStateGitSync(unittest.TestCase):
         self.assertIn("state-git 同期失敗", cfg.journal.read_text(encoding="utf-8"))
 
     def test_dot_prefixed_subdir_works(self):
-        # state_git_subdir はドット始まり（.kiro-projects 等）でも同期できる（推奨は非ドットだが、
+        # state_git_subdir はドット始まり（.kiro-project 等）でも同期できる（推奨は非ドットだが、
         # 他プロセスの成果物と同居するリポジトリで隠したい構成をサポートする）。
-        cfg = self._cfg(state_git_subdir=".kiro-projects")
+        cfg = self._cfg(state_git_subdir=".kiro-project")
         mkb(cfg.backlog.parent, "T1")
         km.state_sync(cfg, force=True)
         got = self._other("check")
         self.assertTrue(
-            (got / ".kiro-projects" / "projects" / "default" / "backlog" / "T1.md").exists())
+            (got / ".kiro-project" / "backlog" / "T1.md").exists())
 
     def test_clone_is_reused_across_syncs(self):
         cfg = self._cfg()
         mkb(cfg.backlog.parent, "T1")
         km.state_sync(cfg, force=True)
-        clone = self.tmp / "c" / ".state-git"
+        clone = self.tmp / "proj" / ".state-git"
         marker = subprocess.run(["git", "-C", str(clone), "config", "--get",
                                  km.STATE_GIT_MARKER], capture_output=True, text=True)
         self.assertEqual(marker.stdout.strip(), "1")
@@ -5061,7 +4872,7 @@ class TestStateGitSync(unittest.TestCase):
         (cfg.backlog / "T2.md").write_text("## T2: y\n- status: ready\n", encoding="utf-8")
         km.state_sync(cfg, force=True)
         got = self._other("check")
-        self.assertTrue((got / "kp" / "projects" / "default" / "backlog" / "T2.md").exists())
+        self.assertTrue((got / "kp" / "backlog" / "T2.md").exists())
 
     def test_project_watch_imports_before_first_plan_on_restart(self):
         # 自己更新の graceful 再起動を模擬（_STATE_GITS クリア）。停止中に viewer が push した
@@ -5071,7 +4882,7 @@ class TestStateGitSync(unittest.TestCase):
                                encoding="utf-8")
         km.state_sync(cfg, force=True)                       # 初期 export（GOAL-A をリモートへ）
         other = self._other()
-        rc = other / "kp" / "projects" / "default" / "charter.md"
+        rc = other / "kp" / "charter.md"
         rc.write_text("# Charter\n## 目標\nGOAL-B\n## acceptance\n- true\n", encoding="utf-8")
         self._commit_push(other, "viewer: charter 更新")     # 停止中に GOAL-B を push
         km._STATE_GITS.clear()                               # 再起動を模擬
@@ -5082,248 +4893,142 @@ class TestStateGitSync(unittest.TestCase):
             sleeper=lambda _s: None, max_passes=1)
         self.assertEqual(seen, ["B"])                        # 初回 plan は取り込み後の charter を見る
 
-    def test_state_sync_container_syncs_each_project_repo(self):
-        # プロジェクト単位リポジトリでは、初回取り込みが各プロジェクトを自分のリポジトリへ同期する。
-        cfg = self._cfg()
-        called = []
-        with mock.patch.object(km, "_uses_per_project_state_git", return_value=True):
-            with mock.patch.object(km, "state_sync",
-                                   side_effect=lambda c, **k: called.append(c.project_name)):
-                a = km.replace(cfg, project_name="alpha")
-                b = km.replace(cfg, project_name="beta")
-                km.state_sync_container(cfg, [a, b])
-        self.assertEqual(called, ["alpha", "beta"])
 
-
-class TestStateGitPerProject(unittest.TestCase):
-    """プロジェクト単位で保存先リポジトリを分ける（state_git_projects）。default は個人リポジトリ、
-    他プロジェクトは固有リポジトリへ、各々そのプロジェクトの subtree だけをスコープして同期する。"""
+class TestDirectStateGit(unittest.TestCase):
+    """direct モード: プロジェクトルート自体が git クローンなら、管理クローンを介さず
+    そのリポジトリへ直接コミット・push する（viewer が git 越しに編集・検収する前提を素直にする）。"""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         km._STATE_GITS.clear()
-        self.personal = self._bare("personal.git")   # default（個人）
-        self.team = self._bare("team-alpha.git")      # alpha（プロジェクト固有・共有）
+        self.remote = self.tmp / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
+        subprocess.run(["git", "-C", str(self.remote), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        # ルート = 共有リポジトリの clone（初期コミットを作って main を確立する）
+        self.root = self.tmp / "proj"
+        seed = self.tmp / "seed"
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(seed)],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(seed), "config", "user.email", "seed@test"], check=True)
+        subprocess.run(["git", "-C", str(seed), "config", "user.name", "seed"], check=True)
+        subprocess.run(["git", "-C", str(seed), "checkout", "-qb", "main"], check=True)
+        (seed / "charter.md").write_text("# Charter: demo\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(seed), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(seed), "commit", "-qm", "init"], check=True)
+        subprocess.run(["git", "-C", str(seed), "push", "-q", "-u", "origin", "main"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(self.root)],
+                       check=True, capture_output=True)
 
-    def _bare(self, name: str) -> Path:
-        r = self.tmp / name
-        subprocess.run(["git", "init", "-q", "--bare", str(r)], check=True)
-        subprocess.run(["git", "-C", str(r), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
-        return r
-
-    def _cfg(self, project: str, **kw):
-        proot = self.tmp / "c" / "projects" / project
-        base = dict(project_name=project,
-                    backlog=proot / "backlog", policy=proot / "policy.md",
-                    decisions=proot / "decisions", journal=proot / "journal.md",
-                    needs=proot / "needs", workdir=self.tmp, bus=proot / "bus",
-                    inbox=proot / "inbox", charter=proot / "charter.md",
+    def _cfg(self, **kw):
+        base = dict(backlog=self.root / "backlog", policy=self.root / "policy.md",
+                    decisions=self.root / "decisions", journal=self.root / "journal.md",
+                    needs=self.root / "needs", workdir=self.tmp, bus=self.root / "bus",
+                    inbox=self.root / "inbox",
                     planner="none", flow_planner="stub", executor="stub", dry_run=True,
-                    state_git=str(self.personal), state_git_subdir="kp", state_git_interval=0.0,
-                    state_git_projects={"alpha": str(self.team)})
+                    state_git_interval=0.0)
         base.update(kw)
         cfg = km.Config(**base)
         km.ensure_dirs(cfg)
         return cfg
 
-    def _check(self, remote: Path, name: str) -> Path:
-        d = self.tmp / f"chk-{name}-{remote.stem}"
-        subprocess.run(["git", "clone", "-q", str(remote), str(d)], check=True, capture_output=True)
+    def _other(self, name="other") -> Path:
+        d = self.tmp / name
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(d)],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(d), "config", "user.email", "other@test"], check=True)
+        subprocess.run(["git", "-C", str(d), "config", "user.name", "other"], check=True)
         return d
 
-    def test_mapped_project_goes_to_its_own_repo(self):
-        cfg = self._cfg("alpha")
-        mkb(cfg.backlog.parent, "T1")
-        km.state_sync(cfg, force=True)
-        got = self._check(self.team, "alpha")
-        self.assertTrue((got / "kp" / "projects" / "alpha" / "backlog" / "T1.md").exists())
-        # 個人リポジトリには入らない（プロジェクト固有リポジトリへ分離されている）
-        personal = self._check(self.personal, "alpha")
-        self.assertFalse((personal / "kp" / "projects" / "alpha").exists())
+    def test_root_clone_selects_direct_mode(self):
+        cfg = self._cfg()
+        self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)   # state_git 未設定でも有効
+        self.assertIn("direct モード", km.state_git_status_line(cfg))
 
-    def test_unmapped_default_falls_to_personal_repo(self):
-        cfg = self._cfg("default")
-        mkb(cfg.backlog.parent, "T1")
+    def test_direct_sync_pushes_state_and_excludes_transient(self):
+        cfg = self._cfg()
+        mkb(self.root, "T1")
+        (cfg.bus / "runs").mkdir(parents=True, exist_ok=True)
+        (cfg.bus / "runs" / "r1.json").write_text("{}", encoding="utf-8")
+        claims = self.root / "claims"
+        claims.mkdir(parents=True, exist_ok=True)
+        (claims / "T1.lock").write_text("pid", encoding="utf-8")
         km.state_sync(cfg, force=True)
-        got = self._check(self.personal, "default")
-        self.assertTrue((got / "kp" / "projects" / "default" / "backlog" / "T1.md").exists())
-        # チームリポジトリには default は入らない
-        team = self._check(self.team, "default")
-        self.assertFalse((team / "kp" / "projects" / "default").exists())
+        got = self._other("check")
+        self.assertTrue((got / "backlog" / "T1.md").exists())     # subdir 無し・ルート直下に鏡写し
+        self.assertFalse((got / "bus").exists())                  # 一時状態は同期しない
+        self.assertFalse((got / "claims").exists())
+        self.assertFalse((self.root / ".state-git").exists())     # 管理クローンは作らない
 
-    def test_scoped_to_own_subtree_only(self):
-        # alpha の同期は alpha の subtree だけを見る（兄弟プロジェクト default のファイルを引かない）。
-        default_cfg = self._cfg("default")
-        mkb(default_cfg.backlog.parent, "D1")         # 兄弟プロジェクトの実体をディスク上に作る
-        cfg = self._cfg("alpha")
-        mkb(cfg.backlog.parent, "A1")
-        km.state_sync(cfg, force=True)
-        got = self._check(self.team, "scope")
-        self.assertTrue((got / "kp" / "projects" / "alpha" / "backlog" / "A1.md").exists())
-        self.assertFalse((got / "kp" / "projects" / "default").exists())
-
-    def test_dict_spec_overrides_branch_and_subdir(self):
-        cfg = self._cfg("alpha", state_git_projects={
-            "alpha": {"remote": str(self.team), "subdir": "shared"}})
-        mkb(cfg.backlog.parent, "T1")
-        km.state_sync(cfg, force=True)
-        got = self._check(self.team, "dict")
-        self.assertTrue((got / "shared" / "projects" / "alpha" / "backlog" / "T1.md").exists())
-
-    def test_member_drives_via_remote_input(self):
-        # プロジェクトメンバーが viewer 相当でチームリポジトリへ指示（commands）をドロップ →
-        # 本体（alpha を回す側）が取り込む。共有リポジトリ越しの「誰でもドライブ」を検証。
-        cfg = self._cfg("alpha")
-        km.state_sync(cfg, force=True)                # ブランチ作成
-        member = self._check(self.team, "member")
-        subprocess.run(["git", "-C", str(member), "config", "user.email", "m@t"], check=True)
-        subprocess.run(["git", "-C", str(member), "config", "user.name", "m"], check=True)
-        cmd = member / "kp" / "projects" / "alpha" / "commands" / "ok.json"
+    def test_direct_sync_imports_remote_instruction(self):
+        cfg = self._cfg()
+        other = self._other()
+        cmd = other / "commands" / "ok.json"
         cmd.parent.mkdir(parents=True, exist_ok=True)
-        cmd.write_text('{"command": "approve", "id": "T1"}', encoding="utf-8")
-        subprocess.run(["git", "-C", str(member), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(member), "commit", "-qm", "member approve"], check=True)
-        subprocess.run(["git", "-C", str(member), "push", "-q", "origin", "main"],
+        cmd.write_text('{"command": "pause"}', encoding="utf-8")
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "viewer: pause"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
                        check=True, capture_output=True)
         km.state_sync(cfg, force=True)
         self.assertTrue((km.commands_dir(cfg) / "ok.json").exists())
 
-    def test_disabled_when_unmapped_and_no_personal(self):
-        cfg = self._cfg("beta", state_git=None)       # beta は未記載・個人リポジトリも無し
-        km.state_sync(cfg, force=True)
-        self.assertIsNone(km.state_git_for(cfg))
 
-    def test_project_flow_remote_resolves_repo(self):
-        # 各プロジェクトの kiro-flow バスの鏡写し先＝そのプロジェクトのリポジトリ。
-        self.assertEqual(km.project_flow_remote(self._cfg("alpha"))[0], str(self.team))
-        self.assertEqual(km.project_flow_remote(self._cfg("default"))[0], str(self.personal))
+class TestPauseResumeStop(unittest.TestCase):
+    """commands/ のプロジェクト単位ライフサイクル指示（pause/resume/stop）。
+    リモート viewer が git 越しに watch の消化を止め・再開し・プロセスを畳む口。"""
 
-    def test_project_flow_remote_none_for_shared_legacy_or_no_repo(self):
-        shared = self.tmp / "shared-bus"
-        self.assertIsNone(km.project_flow_remote(self._cfg("alpha", bus=shared, shared_bus=True)))
-        self.assertIsNone(km.project_flow_remote(self._cfg("alpha", state_git_projects={})))
-        self.assertIsNone(km.project_flow_remote(self._cfg("beta", state_git=None)))
+    def test_ingest_pause_then_resume(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            cdir = km.commands_dir(cfg)
+            cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / "p.json").write_text('{"command": "pause", "reason": "検収中"}',
+                                         encoding="utf-8")
+            done = km.ingest_commands(cfg)
+            self.assertIn("pause:project", done)
+            self.assertTrue(km.is_paused(cfg))
+            self.assertFalse((cdir / "p.json").exists())          # 消費済み
+            st = json.loads((d / "status.json").read_text(encoding="utf-8"))
+            self.assertTrue(st["paused"])                          # 生存信号に paused が載る
+            (cdir / "r.json").write_text('{"command": "resume"}', encoding="utf-8")
+            km.ingest_commands(cfg)
+            self.assertFalse(km.is_paused(cfg))
+            st = json.loads((d / "status.json").read_text(encoding="utf-8"))
+            self.assertFalse(st["paused"])
 
-    def test_flow_daemon_cmd_injects_bus_state_git_and_budget(self):
-        cfg = self._cfg("alpha", executor="stub")
-        cmd = km.flow_daemon_cmd(cfg, 3)
-        self.assertIn(str(cfg.bus), cmd)
-        self.assertIn("--state-git", cmd)
-        self.assertIn(str(self.team), cmd)
-        self.assertIn("daemon", cmd)
-        self.assertEqual(cmd[cmd.index("--max-workers") + 1], "3")
-        self.assertEqual(cmd[cmd.index("--executor") + 1], "stub")
+    def test_ingest_stop_raises_graceful(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            cdir = km.commands_dir(cfg)
+            cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / "s.json").write_text('{"command": "stop"}', encoding="utf-8")
+            with self.assertRaises(km._StopRequested):
+                km.ingest_commands(cfg)
+            self.assertFalse((cdir / "s.json").exists())          # 再起動時に再停止しない
 
-    def test_flow_daemon_cmd_does_not_inject_state_git_subdir(self):
-        # state_git サブディレクトリは kiro-flow の設定（flow_config / 既定 kiro-flow）に委ね、
-        # kiro-projects は CLI で個別注入しない（kiro-projects 側に kiro-flow 設定を増やさない方針）。
-        cfg = self._cfg("alpha", executor="stub")
-        cmd = km.flow_daemon_cmd(cfg, 1)
-        self.assertNotIn("--state-git-subdir", cmd)
+    def test_watch_skips_pass_while_paused(self):
+        # paused の間は run_loop を起こさず、resume されたら消化を再開する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, watch=True)
+            km.ensure_dirs(cfg)
+            mkb(d, "T1")
+            km.pause_path(cfg).write_text("{}", encoding="utf-8")
 
-    def test_flow_daemon_cmd_passes_flow_config(self):
-        # kiro-flow の設定は flow_config を --config で渡して集約する（個別注入しない）。
-        cfg = self._cfg("alpha", executor="stub", flow_config="/etc/kiro-flow.yaml")
-        cmd = km.flow_daemon_cmd(cfg, 1)
-        self.assertIn("--config", cmd)
-        self.assertTrue(cmd[cmd.index("--config") + 1].endswith("kiro-flow.yaml"))
+            def sleeper(_s):                                       # idle 1 回目で人が resume した体
+                km.pause_path(cfg).unlink(missing_ok=True)
 
-    def test_ensure_flow_daemon_spawns_when_managed_and_absent(self):
-        cfg = self._cfg("alpha", manage_flow_daemon=True)
-        with mock.patch.object(km, "daemon_running", return_value=False), \
-             mock.patch.object(km.subprocess, "Popen") as popen:
-            started = km.ensure_flow_daemon(cfg, 2)
-        self.assertTrue(started)
-        popen.assert_called_once()
-        spawned = popen.call_args[0][0]
-        self.assertIn("--state-git", spawned)
-        self.assertIn(str(self.team), spawned)
-
-    def test_ensure_flow_daemon_idempotent_when_running(self):
-        cfg = self._cfg("alpha", manage_flow_daemon=True)
-        with mock.patch.object(km, "daemon_running", return_value=True), \
-             mock.patch.object(km.subprocess, "Popen") as popen:
-            self.assertFalse(km.ensure_flow_daemon(cfg, 2))
-        popen.assert_not_called()
-
-    def test_ensure_flow_daemon_noop_when_unmanaged_or_shared(self):
-        with mock.patch.object(km.subprocess, "Popen") as popen:
-            self.assertFalse(km.ensure_flow_daemon(self._cfg("alpha", manage_flow_daemon=False), 2))
-            self.assertFalse(km.ensure_flow_daemon(
-                self._cfg("alpha", manage_flow_daemon=True,
-                          bus=self.tmp / "shared", shared_bus=True), 2))
-        popen.assert_not_called()
-
-    def test_ensure_flow_daemons_divides_budget_by_targets(self):
-        a = self._cfg("alpha", manage_flow_daemon=True, flow_max_workers=6)
-        cfgs = [km.project_cfg(a, n) for n in ("alpha", "default")]   # 両方が対象 → 6//2=3
-        seen = []
-        with mock.patch.object(km, "ensure_flow_daemon", side_effect=lambda c, b: seen.append(b)):
-            km.ensure_flow_daemons(a, cfgs)
-        self.assertEqual(seen, [3, 3])
-
-    def test_doctor_warns_when_daemon_absent(self):
-        cfg = self._cfg("alpha")
-        with mock.patch.object(km, "daemon_running", return_value=False):
-            fs = km.doctor_flow_bus_coverage_findings(cfg)
-        self.assertTrue(any("不在" in f["title"] and "alpha" in f["title"] for f in fs))
-        self.assertTrue(all(f["severity"] == "warn" for f in fs))
-
-    def test_doctor_coverage_skips_shared_bus_and_legacy(self):
-        shared = self.tmp / "shared-bus"
-        self.assertEqual(km.doctor_flow_bus_coverage_findings(
-            self._cfg("alpha", bus=shared, shared_bus=True)), [])
-        self.assertEqual(km.doctor_flow_bus_coverage_findings(
-            self._cfg("alpha", state_git_projects={})), [])
-
-    def test_declared_project_discovered_without_local_dir(self):
-        # 報告バグ: state_git_projects に書いただけ（ローカル未作成）のプロジェクトが
-        # オプションなし起動（run --watch --project all）で発見されず、取り込みも駆動も
-        # 始まらない。発見はディレクトリ走査＋宣言の和集合であること。
-        cfg = self._cfg("default")                       # 実体は default だけ
-        names = km.project_dir_names(cfg)
-        self.assertIn("alpha", names)                    # 宣言のみでも発見される
-        self.assertIn("default", names)
-
-    def test_declared_only_discovery_excludes_all_sentinel(self):
-        # コンテナが空でも宣言済みプロジェクトは発見される。"all" は多重化センチネルなので
-        # 誤って設定キーに書かれてもプロジェクト名として拾わない。
-        proot = self.tmp / "empty" / "projects" / "default"
-        cfg = cfg_for(proot, state_git_projects={"alpha": str(self.team), "all": "x"})
-        self.assertEqual(km.project_dir_names(cfg), ["alpha"])
-
-    def test_run_all_materializes_declared_project_from_remote(self):
-        # ローカルに alpha/ が無く、チームリポジトリに状態（backlog タスク）だけがある状態から
-        # `run --project all` 一発で: 宣言から発見 → 固有リポジトリを取り込み → 消化（archive）。
-        seed = self._check(self.team, "seed")
-        subprocess.run(["git", "-C", str(seed), "config", "user.email", "s@t"], check=True)
-        subprocess.run(["git", "-C", str(seed), "config", "user.name", "s"], check=True)
-        mkb(seed / "kp" / "projects" / "alpha", "T1")
-        subprocess.run(["git", "-C", str(seed), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(seed), "commit", "-qm", "seed"], check=True)
-        subprocess.run(["git", "-C", str(seed), "push", "-q", "-u", "origin", "main"],
-                       check=True, capture_output=True)
-        root = self.tmp / "cc"
-        cfgp = self.tmp / "kiro-projects.json"
-        cfgp.write_text(json.dumps({"state_git_projects": {"alpha": str(self.team)},
-                                    "state_git_subdir": "kp", "state_git_interval": 0}),
-                        encoding="utf-8")
-        rc = km.main(["run", "--project", "all", "--config", str(cfgp),
-                      "--workdir", str(self.tmp), "--root", str(root),
-                      "--planner", "none", "--flow-planner", "stub", "--executor", "stub",
-                      "--dry-run", "--max-cycles", "3"])
-        self.assertEqual(rc, 0)
-        # 取り込んだタスクが消化され、プロジェクトがローカルに実体化している
-        self.assertEqual(len(list((root / "projects" / "alpha" / "archive").glob("*.md"))), 1)
-
-    def test_spec_resolves_sanitized_config_key(self):
-        # 設定キーが生のプロジェクト名（例 "web/frontend"）でも、FS セーフ化されたディレクトリ名
-        # （web_frontend）で走るプロジェクトに解決される（黙って個人リポジトリへ落ちない）。
-        cfg = self._cfg("web_frontend", state_git_projects={"web/frontend": str(self.team)})
-        spec = km.project_state_spec(cfg, "web_frontend")
-        self.assertIsNotNone(spec)
-        self.assertEqual(spec[0], str(self.team))
+            last = km.run_watch(cfg, sleeper=sleeper, max_passes=1)
+            self.assertEqual(last["reason"], km.REASON_DRAINED)    # resume 後に 1 パス回って消化
+            self.assertEqual(last["counts"]["done"], 1)
+            self.assertIn("一時停止中", cfg.journal.read_text(encoding="utf-8"))
 
 
 class TestAsyncOffload(unittest.TestCase):

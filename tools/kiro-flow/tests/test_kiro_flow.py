@@ -237,7 +237,7 @@ class InheritTests(unittest.TestCase):
 class RunFailureTests(unittest.TestCase):
     """orchestrator が done を書く前に異常終了したケースの終端化（失敗終了の検知）。
     これが無いと run が非終端のまま放置され、result/status を待つ消費者
-    （kiro-projects の charter 駆動 watch）が execute フェーズで永久待機する。"""
+    （kiro-project の charter 駆動 watch）が execute フェーズで永久待機する。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-test-")
@@ -1590,6 +1590,161 @@ class GitlabExecutorPluginTests(unittest.TestCase):
         self.assertIn("kiro-flow", body)
 
 
+class GitlabAutoMergeTests(unittest.TestCase):
+    """自動承認（auto_merge・既定 on）: イシューが status:approved かつ MR がクリーン
+    （コンフリクト無し・未解決レビューコメント無し）なら executor がマージしてイシューを
+    クローズする（gitlab-review-viewer の承認ボタンと同じ規則）。未クリーンは差し戻す。"""
+
+    def setUp(self):
+        self._cfg = {"conn_label": "default", "repo_url": "https://gitlab.com/group/repo",
+                     "labels": "status:open,assignee:any", "priority": "priority:normal",
+                     "poll_interval": 0.0, "timeout": 0.0,
+                     "approved_label": "status:approved", "done_label": "status:done"}
+        self._prev_env = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(self._cfg)
+
+    def tearDown(self):
+        if self._prev_env is None:
+            os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
+        else:
+            os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = self._prev_env
+
+    def _check(self, issue, mrs_seq, mr_detail=None, changes=None, discussions=None):
+        """_check_decision を 1 回だけ回す（gl_api / gl_api_list をモック）。
+        mrs_seq は related_merge_requests の呼び出し毎のリスト列。calls に API 呼び出しを残す。"""
+        mrs_seq = list(mrs_seq)
+        calls = []
+
+        def api(host, token, method, path, data=None, params=None):
+            calls.append((method, path, data))
+            if method == "GET" and "/issues/42" in path:
+                return issue
+            if method == "GET" and path.endswith("/changes"):
+                return {"changes": changes if changes is not None else [{"new_path": "a.py"}]}
+            if method == "GET" and "/merge_requests/" in path:
+                return mr_detail if mr_detail is not None else \
+                    {"merge_status": "can_be_merged", "has_conflicts": False}
+            if method == "PUT" and path.endswith("/merge"):
+                return {"state": "merged"}
+            return {"state": "closed"}
+
+        def list_side(host, token, path, params=None):
+            if path.endswith("/related_merge_requests"):
+                return mrs_seq.pop(0) if len(mrs_seq) > 1 else mrs_seq[0]
+            if path.endswith("/discussions"):
+                return discussions or []
+            return []
+
+        with mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            r = gl_plugin._check_decision("gitlab.com", "tok", "group/repo", 42, "u42",
+                                          gl_plugin._config(), False)
+        return r, calls
+
+    def test_approved_clean_mr_is_merged_and_issue_closed(self):
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened", "project_id": 55}]
+        merged = [{"iid": 1, "state": "merged", "project_id": 55, "web_url": "mr1"}]
+        r, calls = self._check(issue, [opened, merged])
+        self.assertEqual(r["decision"], "approved")
+        # マージは should_remove_source_branch 付き・MR 自身のプロジェクト（project_id）へ
+        merge = next(c for c in calls if c[1].endswith("/merge"))
+        self.assertIn("/projects/55/merge_requests/1/merge", merge[1])
+        self.assertTrue(merge[2]["should_remove_source_branch"])
+        # イシューはクローズされ、成果テキストに自動承認の根拠が残る
+        close = next(c for c in calls if c[0] == "PUT" and "/issues/42" in c[1])
+        self.assertEqual(close[2]["state_event"], "close")
+        self.assertIn("自動承認", r["text"])
+
+    def test_approved_with_unresolved_discussion_sends_back(self):
+        issue = {"labels": ["status:approved", "assignee:any"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened"}]
+        discussions = [{"notes": [{"resolvable": True, "resolved": False}]}]
+        r, calls = self._check(issue, [opened], discussions=discussions)
+        self.assertIsNone(r["decision"])                     # 決着せず（修正待ち）
+        # ラベルが approved → needs-rework に付け替わる
+        relabel = next(c for c in calls if c[0] == "PUT" and "/issues/42" in c[1]
+                       and c[2] and "labels" in c[2])
+        self.assertIn("status:needs-rework", relabel[2]["labels"])
+        self.assertNotIn("status:approved", relabel[2]["labels"])
+        # `# 差し戻し` 見出しの固定コメントが付く
+        note = next(c for c in calls if c[0] == "POST" and c[1].endswith("/notes"))
+        self.assertIn("差し戻し", note[2]["body"])
+        self.assertNotIn("/merge", str([c[1] for c in calls if c[0] == "PUT"]))  # マージしない
+
+    def test_approved_with_conflicts_sends_back(self):
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened"}]
+        detail = {"merge_status": "cannot_be_merged", "has_conflicts": True}
+        r, calls = self._check(issue, [opened], mr_detail=detail)
+        self.assertIsNone(r["decision"])
+        note = next(c for c in calls if c[0] == "POST" and c[1].endswith("/notes"))
+        self.assertIn("コンフリクト", note[2]["body"])
+
+    def test_approved_no_diff_mr_is_closed_not_merged(self):
+        # 差分なし MR（取り込み済み等）はマージでなくクローズ＋ソースブランチ削除で決着
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened", "source_branch": "kf/run-1"}]
+        closed = [{"iid": 1, "state": "closed"}]   # クローズ後の再取得
+        r, calls = self._check(issue, [opened, closed], changes=[])
+        self.assertEqual(r["decision"], "approved")
+        self.assertIn("差分なし", r["text"])
+        self.assertFalse(any(c[1].endswith("/merge") for c in calls))       # マージしない
+        close_mr = next(c for c in calls if c[0] == "PUT" and "/merge_requests/1" in c[1])
+        self.assertEqual(close_mr[2]["state_event"], "close")
+        self.assertTrue(any(c[0] == "DELETE" and "/repository/branches/" in c[1]
+                            for c in calls))                                  # ブランチ削除
+        # 却下（未マージクローズ）ではなく承認として決着している
+        self.assertIn("自動承認", r["text"])
+
+    def test_approved_without_mr_closes_issue_as_approved(self):
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        r, calls = self._check(issue, [[]])
+        self.assertEqual(r["decision"], "approved")
+        self.assertIn("MR 無し", r["text"])
+
+    def test_auto_merge_off_keeps_waiting(self):
+        os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(
+            dict(self._cfg, auto_merge=False))
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened"}]
+        r, calls = self._check(issue, [opened])
+        self.assertIsNone(r["decision"])                     # 従来どおり人のマージ待ち
+        self.assertFalse(any(c[1].endswith("/merge") for c in calls))
+
+    def test_not_approved_keeps_waiting(self):
+        issue = {"labels": ["status:in-progress"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened"}]
+        r, calls = self._check(issue, [opened])
+        self.assertIsNone(r["decision"])
+        self.assertFalse(any(c[1].endswith("/merge") for c in calls))
+
+    def test_merge_api_failure_keeps_waiting_for_retry(self):
+        # マージ 403/405 等は決着させず次のポーリングで再試行（run を殺さない）
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened"}]
+
+        def api(host, token, method, path, data=None, params=None):
+            if method == "GET" and "/issues/42" in path:
+                return issue
+            if method == "GET" and path.endswith("/changes"):
+                return {"changes": [{"new_path": "a.py"}]}
+            if method == "GET" and "/merge_requests/" in path:
+                return {"merge_status": "can_be_merged", "has_conflicts": False}
+            if method == "PUT" and path.endswith("/merge"):
+                raise RuntimeError("GitLab API PUT .../merge 失敗: HTTP 403 Forbidden")
+            return {}
+
+        def list_side(host, token, path, params=None):
+            return [] if path.endswith("/discussions") else opened
+
+        with mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
+            r = gl_plugin._check_decision("gitlab.com", "tok", "group/repo", 42, "u42",
+                                          gl_plugin._config(), False)
+        self.assertIsNone(r["decision"])                     # 未決着のまま（人の介入も可能）
+
+
 class GitlabNativeApiTests(unittest.TestCase):
     """native レイヤ（URL 解析・REST 組立・トークン解決）の単体検証。"""
 
@@ -1850,8 +2005,8 @@ class GitlabRepoInstructionTests(unittest.TestCase):
 
 
 class ConfigStateGitSubdirTests(unittest.TestCase):
-    """回帰: state_git_subdir が --config（kiro-projects が渡す flow_config）経由で反映されること。
-    kiro-projects が --state-git-subdir を個別 CLI 注入していた頃は config 値が上書きされて効かない
+    """回帰: state_git_subdir が --config（kiro-project が渡す flow_config）経由で反映されること。
+    kiro-project が --state-git-subdir を個別 CLI 注入していた頃は config 値が上書きされて効かない
     バグがあった。注入をやめた今、config の値が resolve_config → state_git_for まで通ることを固定する。"""
 
     def _write_cfg(self, obj):
@@ -1880,7 +2035,7 @@ class ConfigStateGitSubdirTests(unittest.TestCase):
         self.assertEqual(sg.subdir, "custom-flow-ns")
 
     def test_default_subdir_when_unset(self):
-        # config にも CLI にも無ければ既定 "kiro-flow"（kiro-projects の FLOW_STATE_SUBDIR と一致）
+        # config にも CLI にも無ければ既定 "kiro-flow"（kiro-project の FLOW_STATE_SUBDIR と一致）
         d, cfg = self._write_cfg({})
         args = self._resolve(["--bus", os.path.join(d, "bus"),
                               "--state-git", "git@x:team/s.git", "--config", cfg,
@@ -3757,7 +3912,7 @@ def _make_skill_repo(root: str, tool_subdir: str = "tools/kiro-flow",
     repo = os.path.join(root, "skillrepo")
     td = os.path.join(repo, tool_subdir)
     os.makedirs(td, exist_ok=True)
-    other = os.path.join(repo, "tools", "kiro-projects")   # sparse 除外の確認用
+    other = os.path.join(repo, "tools", "kiro-project")   # sparse 除外の確認用
     os.makedirs(other, exist_ok=True)
     pathlib.Path(other, "FILE.txt").write_text("unrelated\n")
     body = installer_body or (
@@ -3839,8 +3994,8 @@ class SelfUpdateTests(unittest.TestCase):
         dest = os.path.join(self.tmp, "co", "repo")
         tool_dir = kf.sparse_checkout_tool(self.repo, "main", "tools/kiro-flow", dest)
         self.assertTrue(os.path.isfile(os.path.join(tool_dir, "install.sh")))
-        # sparse: 無関係な tools/kiro-projects は作業ツリーに展開されない
-        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-projects")))
+        # sparse: 無関係な tools/kiro-project は作業ツリーに展開されない
+        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-project")))
 
     def test_run_installer(self):
         dest = os.path.join(self.tmp, "co2", "repo")
@@ -4130,7 +4285,7 @@ class StateGitSyncTests(unittest.TestCase):
 
 
 class DaemonStatusHeartbeatTests(unittest.TestCase):
-    """daemon の生存信号（status.json）。kiro-projects の write_status/--status-interval と
+    """daemon の生存信号（status.json）。kiro-project の write_status/--status-interval と
     同じ考え方: 実イベント（run 終端・生存リース push）時は既存の state_sync/push に相乗り
     （追加 push 無し）、アイドル中の更新は --status-interval（既定 0=無効）が opt-in。
     GitBus（--git）モードでは書かない（sparse-checkout が対象外パスのため）。"""

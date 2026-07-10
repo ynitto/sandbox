@@ -15,6 +15,7 @@
         <h1>Kiro Projects</h1>
         <div class="row">
           <button id="btn-new-project" title="新規プロジェクトを作成（charter.md / repos.json）">＋</button>
+          <button id="btn-mode" title="かんたん/メンテナンス表示を切り替え">👀</button>
           <button id="btn-git-pull" title="選択中プロジェクトのリポジトリを git pull で最新化">⇣</button>
           <button id="btn-refresh" title="再読み込み">⟳</button>
           <button id="btn-settings" title="設定">⚙</button>
@@ -36,11 +37,11 @@
 
       <nav id="tabs">
         <button class="tab active" data-tab="overview">概要</button>
-        <button class="tab" data-tab="backlog">バックログ</button>
+        <button class="tab tech" data-tab="backlog">バックログ</button>
         <button class="tab" data-tab="needs">要対応 <span id="needs-badge" class="badge hidden"></span></button>
-        <button class="tab" data-tab="flow">フロー</button>
-        <button class="tab" data-tab="gitlab">レビュー待ち</button>
-        <button class="tab" data-tab="history">履歴</button>
+        <button class="tab tech" data-tab="flow">フロー</button>
+        <button class="tab tech" data-tab="gitlab">レビュー待ち</button>
+        <button class="tab tech" data-tab="history">履歴</button>
       </nav>
 
       <section id="content">
@@ -59,12 +60,12 @@
     <form method="dialog">
       <h2>設定</h2>
       <div class="field">
-        <label>kiro-projects コンテナ（--root のパス。1 行に 1 つ）</label>
-        <textarea id="cfg-roots" rows="4" placeholder="例: C:\work\repo\.kiro-projects&#10;/home/me/proj/.kiro-projects"></textarea>
+        <label>プロジェクトルート（1 行に 1 プロジェクト。通常は状態共有リポジトリの clone）</label>
+        <textarea id="cfg-roots" rows="4" placeholder="例: C:\clones\payments&#10;/home/me/clones/webapp"></textarea>
       </div>
       <div class="row2">
         <div class="field">
-          <label class="check"><input type="checkbox" id="cfg-autodiscover" /> 稼働中インスタンスを自動発見（~/.kiro-projects/instances）</label>
+          <label class="check"><input type="checkbox" id="cfg-autodiscover" /> 稼働中インスタンスを自動発見（~/.kiro-project/instances）</label>
         </div>
         <div class="field">
           <label>自動更新間隔（秒・0 で無効）</label>
@@ -91,8 +92,8 @@
           </select>
         </div>
         <div class="field">
-          <label>kiro-projects CLI（停止中の指示に使用。PATH に無ければ "python3 /path/kiro-projects.py"）</label>
-          <input id="cfg-kiro-command" class="mono" placeholder="kiro-projects" />
+          <label>kiro-project CLI（停止中の指示に使用。PATH に無ければ "python3 /path/kiro-project.py"）</label>
+          <input id="cfg-kiro-command" class="mono" placeholder="kiro-project" />
         </div>
       </div>
       <h3>kiro-flow（状態はファイルから判定・CLI 不要）</h3>
@@ -108,7 +109,7 @@
       </div>
       <div class="field">
         <label
-          >プロジェクト単位バス（本体 state_git_projects で kiro-flow を分けている場合。1 行 1 件
+          >プロジェクト単位バス（pure-remote で kiro-flow の鏡写し先 clone を割り当てる場合。1 行 1 件
           <code>プロジェクト名 = &lt;clone&gt;/kiro-flow</code>）</label
         >
         <textarea
@@ -224,13 +225,13 @@
   <dialog id="dlg-new-project" class="wide">
     <h2>新規プロジェクトを作成</h2>
     <div class="muted" style="margin-bottom:8px">
-      <code class="mono">&lt;コンテナ&gt;/projects/&lt;名前&gt;/</code> に charter.md（＋ repos があれば repos.json）を作成します。
-      稼働中の kiro-projects が次の run で backlog を生成します。
+      <code class="mono">&lt;親フォルダ&gt;/&lt;名前&gt;/</code> をプロジェクトルートとして charter.md
+      （＋ repos があれば repos.json）を作成します。稼働中の kiro-project が次の run で backlog を生成します。
     </div>
     <div class="row2">
       <div class="field">
-        <label>コンテナ（--root のパス。既存を選ぶか新規パスを入力）</label>
-        <input id="np-root" class="mono" list="np-root-list" placeholder="例: C:\work\repo\.kiro-projects" />
+        <label>作成先の親フォルダ（既存を選ぶか新規パスを入力）</label>
+        <input id="np-root" class="mono" list="np-root-list" placeholder="例: C:\clones" />
         <datalist id="np-root-list"></datalist>
       </div>
       <div class="field">

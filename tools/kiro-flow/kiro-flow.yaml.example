@@ -139,8 +139,13 @@ cleanup_per_node: false
 # executor: gitlab を選んだときだけ使われる委譲バス。この gitlab: ブロックは JSON 化され
 # 環境変数 KIRO_FLOW_EXECUTOR_CONFIG でプラグインへ渡される。各ワーカータスクを GitLab
 # イシュー化し、リモートの（別マシン/別人の）ワーカーが拾って実装する。kiro-flow は
-# イシューをポーリングし、レビュアーが status:approved を付与する（= 受け入れ承認）まで
-# 待って完了とみなす。ローカルに kiro-cli が無くても GitLab 越しに作業を委譲できる。
+# イシューをポーリングし、レビュアーが status:approved を付与したら**クリーンな関連 MR
+# （コンフリクト無し・未解決レビューコメント無し）を自動マージしてイシューをクローズ**する
+# （auto_merge・既定 on。gitlab-review-viewer の承認ボタンと同じ規則。approved なのに
+# 未クリーンなら `# 差し戻し` コメント＋status:needs-rework で修正ループへ戻す）。
+# GitLab は作業履歴（Merged MR ＋ closed イシュー）の台帳として残る。
+# ローカルに kiro-cli が無くても GitLab 越しに作業を委譲できる。
+# ★自動マージには api スコープのトークンが必要（read 系のみだとマージ 403 → 人のマージ待ちに落ちる）。
 #
 # イシュー API は GitLab REST API（v4）を stdlib だけで直叩きする（外部 gl.py 不要・
 # フォールバックもしない）。
@@ -160,16 +165,20 @@ cleanup_per_node: false
 #                                        # フォールバック。ワークスペース URL があればそちらを優先）
 #   labels: "status:open,assignee:any"   # 起票するイシューの初期ラベル
 #   priority: "priority:normal"          # 付与する優先度ラベル（空文字 "" で付けない）
-#   poll_interval: 30                    # イシュー1件の最短再確認間隔（秒）
-#   # 完了＝人が MR をマージ＝イシュークローズ（kiro-flow は自動マージしない）。
-#   # 人の確認は時間がかかるため待機は長め・設定可能（いずれも 0/負で無限）。
+#   poll_interval: 300                   # イシュー1件の最短再確認間隔（秒）。レビューは遅延しうる
+#                                        # 前提で即応性は求めない（十分待つ）
+#   # 完了＝approved のクリーンな MR を自動マージ＝イシュークローズ。
+#   # レビューの往復は時間がかかるため待機は長め・設定可能（いずれも 0/負で無限）。
 #   # ★誤タイムアウト由来の retry ループ／イシュー二重起票を完全に避けたいなら 0（無限）にする。
 #   #   run の本当の失敗（却下・orchestrator 異常）は終端ステータスで検知されるので、待ち上限を
-#   #   安全網にする必要はない（kiro-projects 側 act_timeout: 0 / act_async: true と併用推奨）。
+#   #   安全網にする必要はない（kiro-project 側 act_timeout: 0 / act_async: true と併用推奨）。
 #   timeout: 604800                      # クローズに達するまでの全体上限（秒・既定 7 日。0=無限）
-#   approved_timeout: 1209600            # approved/done 検知後のマージ待ち猶予（秒・既定 14 日。0=無限）
-#   approved_label: "status:approved"    # 進捗の目印（検知後はマージ＝クローズ待ちへ移行）
-#   done_label: "status:done"            # 同上（完了はクローズで確定）
+#   approved_timeout: 1209600            # approved/done 検知後のレビュー決着猶予（秒・既定 14 日。0=無限）
+#   approved_label: "status:approved"    # このラベルで自動マージ判定に入る（= 受け入れ承認）
+#   done_label: "status:done"            # approved 以外に完了とみなすラベル
+#   auto_merge: true                     # 自動承認: approved＋クリーンな MR を自動マージ・クローズ。
+#                                        # false で従来の「人が関連 MR を管理（マージ/クローズ）」モード
+#   rework_label: "status:needs-rework"  # 差し戻し時に approved から付け替えるラベル
 #   # --- park & poll（承認待ちを worker スロットから切り離す）---
 #   # daemon/run が起票したイシューの決着を待つとき、worker をブロックし続ける代わりにノードを
 #   # 「park（保留）」して claim を解放する（worker スロットが空く）。承認待ちは監視主体（daemon/

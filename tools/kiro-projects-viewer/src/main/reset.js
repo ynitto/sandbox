@@ -1,7 +1,7 @@
 'use strict';
 
 // プロジェクトのリセット（charter 以外の全データを削除して最初からやり直す）。
-// charter.md だけを残すので、稼働中の kiro-projects は次パスで「消化可能タスクなし」
+// charter.md だけを残すので、稼働中の kiro-project は次パスで「消化可能タスクなし」
 // を検知して charter から再分解し、プロジェクトはゼロから再出発する。
 // 削除対象の決定（plan）と実行（execute）を分け、実削除の手段（ゴミ箱 or rm）は
 // 呼び出し側（ipc = Electron shell）が注入する（このモジュールは electron に依存しない）。
