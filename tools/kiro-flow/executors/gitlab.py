@@ -250,9 +250,10 @@ def _resolve_token(cfg: dict) -> str:
 # --- native GitLab REST（gl.py 相当の必要処理を移植・stdlib のみ） -------------
 def _parse_project_url(url: str) -> "tuple[str | None, str | None]":
     """GitLab プロジェクト URL を (host, project_path) に分解する。http(s) と SSH 両形に対応。
-    解釈できなければ (None, None)。
-      https://gitlab.com/group/sub/repo.git → ('gitlab.com','group/sub/repo')
-      git@gitlab.com:group/repo.git         → ('gitlab.com','group/repo')"""
+    http(s) 形の host はポートを保つ（self-host の別ポート運用）。解釈できなければ (None, None)。
+      https://gitlab.com/group/sub/repo.git  → ('gitlab.com','group/sub/repo')
+      http://gitlab.local:8929/group/repo    → ('gitlab.local:8929','group/repo')
+      git@gitlab.com:group/repo.git          → ('gitlab.com','group/repo')"""
     url = (url or "").strip()
     # SSH 形: [user@]host:group/project(.git)
     m = re.match(r"^(?:[^@/]+@)?([^/:]+):(.+)$", url) if "://" not in url else None
@@ -261,6 +262,8 @@ def _parse_project_url(url: str) -> "tuple[str | None, str | None]":
     else:
         parsed = urllib.parse.urlparse(url)
         host = parsed.hostname
+        if host and parsed.port:
+            host = f"{host}:{parsed.port}"
         project = parsed.path.lstrip("/").rstrip("/")
     if project.endswith(".git"):
         project = project[:-4]
@@ -271,7 +274,9 @@ def _parse_project_url(url: str) -> "tuple[str | None, str | None]":
 
 def _resolve_project(cfg: dict, workspace_url: str = "") -> "tuple[str, str, str]":
     """起票先プロジェクトを解決する。優先順は **ワークスペース URL（その run の唯一の書込先）** →
-    kiro-flow.yaml の `gitlab.repo_url`（フォールバック）。返り値 (host, project, repo_url)。
+    kiro-flow.yaml の `gitlab.repo_url`（フォールバック）。返り値 (api_base, project, repo_url)。
+    api_base は API を叩くベース: cfg の `api_base` 明示 → http(s) 形 URL の scheme+host(:port)
+    （http の self-host・別ポートをそのまま保つ）→ SSH 形はホスト名のみ（gl_api が https を既定）。
     どちらも未設定/解釈不能なら RuntimeError。"""
     repo_url = str(workspace_url or "").strip() or str(cfg.get("repo_url") or "").strip()
     if not repo_url:
@@ -284,7 +289,11 @@ def _resolve_project(cfg: dict, workspace_url: str = "") -> "tuple[str, str, str
         raise RuntimeError(
             f"起票先 URL を GitLab プロジェクト URL として解釈できません: {repo_url}"
             "（例: https://gitlab.com/group/repo / git@gitlab.com:group/repo.git）")
-    return host, project, repo_url
+    api_base = str(cfg.get("api_base") or "").strip().rstrip("/")
+    if not api_base:
+        m = re.match(r"^(https?)://", repo_url)
+        api_base = f"{m.group(1)}://{host}" if m else host
+    return api_base, project, repo_url
 
 
 def _gl_headers(token: str) -> dict:
@@ -304,10 +313,18 @@ def _http_error_detail(e: "urllib.error.HTTPError") -> str:
         return "(詳細なし)"
 
 
+def _gl_base(host: str) -> str:
+    """API のベース URL。scheme 付き（http://gitlab.local:8929 等）はそのまま、素の host は
+    https を既定にする（従来互換）。パス中の %2F（namespace%2Frepo）は GitLab API の正規
+    エンコードであり、接続可否とは無関係。"""
+    h = str(host or "").rstrip("/")
+    return h if "://" in h else f"https://{h}"
+
+
 def gl_api(host: str, token: str, method: str, path: str,
            data: "dict | None" = None, params: "dict | None" = None):
     """GitLab REST API（v4）を 1 回叩いて JSON を返す。失敗は RuntimeError（→ failed 記録）。"""
-    url = f"https://{host}/api/v4{path}"
+    url = f"{_gl_base(host)}/api/v4{path}"
     if params:
         url = url + "?" + urllib.parse.urlencode(
             {k: v for k, v in params.items() if v is not None})
@@ -321,7 +338,9 @@ def gl_api(host: str, token: str, method: str, path: str,
         raise RuntimeError(
             f"GitLab API {method} {path} 失敗: HTTP {e.code} {e.reason} {_http_error_detail(e)}")
     except urllib.error.URLError as e:
-        raise RuntimeError(f"GitLab API {method} {path} へ接続できません: {e.reason}")
+        # 接続不能はエンコード（%2F）でなく到達性の問題。診断できるよう完全な URL を出す
+        # （scheme/ポートの取り違え・DNS・プロキシがそのまま見える）。
+        raise RuntimeError(f"GitLab API {method} {url} へ接続できません: {e.reason}")
 
 
 def gl_api_list(host: str, token: str, path: str, params: "dict | None" = None) -> list:
@@ -332,7 +351,7 @@ def gl_api_list(host: str, token: str, path: str, params: "dict | None" = None) 
     page = 1
     while True:
         params["page"] = page
-        url = f"https://{host}/api/v4{path}?" + urllib.parse.urlencode(
+        url = f"{_gl_base(host)}/api/v4{path}?" + urllib.parse.urlencode(
             {k: v for k, v in params.items() if v is not None})
         req = urllib.request.Request(url, headers=_gl_headers(token), method="GET")
         try:
@@ -350,7 +369,7 @@ def gl_api_list(host: str, token: str, path: str, params: "dict | None" = None) 
             raise RuntimeError(
                 f"GitLab API GET {path} 失敗: HTTP {e.code} {e.reason} {_http_error_detail(e)}")
         except urllib.error.URLError as e:
-            raise RuntimeError(f"GitLab API GET {path} へ接続できません: {e.reason}")
+            raise RuntimeError(f"GitLab API GET {url} へ接続できません: {e.reason}")
     return results
 
 

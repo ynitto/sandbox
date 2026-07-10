@@ -1608,6 +1608,9 @@ class GitlabNativeApiTests(unittest.TestCase):
                          ("gitlab.com", "g/r"))
         self.assertEqual(gl_plugin._parse_project_url("https://gl.example.com/a/b/c/"),
                          ("gl.example.com", "a/b/c"))
+        # self-host の別ポートはポートを保つ（落とすと API が到達できない）
+        self.assertEqual(gl_plugin._parse_project_url("http://gitlab.local:8929/g/r.git"),
+                         ("gitlab.local:8929", "g/r"))
         self.assertEqual(gl_plugin._parse_project_url("not-a-url"), (None, None))
 
     def test_resolve_project_requires_repo_url(self):
@@ -1616,23 +1619,42 @@ class GitlabNativeApiTests(unittest.TestCase):
         self.assertIn("repo_url", str(ctx.exception))
 
     def test_resolve_project_parses_ssh_url(self):
-        # SSH 形のワークスペース URL も起票先として解釈できる（パス・末尾 .git を剥がす）
-        host, project, _ = gl_plugin._resolve_project(
+        # SSH 形のワークスペース URL も起票先として解釈できる（パス・末尾 .git を剥がす）。
+        # scheme を持たないためベースはホスト名のみ（gl_api が https を既定にする）
+        base, project, _ = gl_plugin._resolve_project(
             {}, workspace_url="git@gitlab.com:group/repo.git")
-        self.assertEqual((host, project), ("gitlab.com", "group/repo"))
+        self.assertEqual((base, project), ("gitlab.com", "group/repo"))
 
     def test_resolve_project_parses_repo_url(self):
-        host, project, repo_url = gl_plugin._resolve_project(
+        base, project, repo_url = gl_plugin._resolve_project(
             {"repo_url": "https://gitlab.com/group/sub/repo"})
-        self.assertEqual((host, project), ("gitlab.com", "group/sub/repo"))
+        self.assertEqual((base, project), ("https://gitlab.com", "group/sub/repo"))
 
     def test_resolve_project_prefers_workspace_over_config(self):
         # ワークスペース URL が config の repo_url より優先される（その run の唯一の書込先へ起票）
-        host, project, used = gl_plugin._resolve_project(
+        base, project, used = gl_plugin._resolve_project(
             {"repo_url": "https://gitlab.com/fallback/repo"},
             workspace_url="https://gitlab.com/team/app")
-        self.assertEqual((host, project), ("gitlab.com", "team/app"))
+        self.assertEqual((base, project), ("https://gitlab.com", "team/app"))
         self.assertEqual(used, "https://gitlab.com/team/app")
+
+    def test_resolve_project_keeps_http_scheme_and_port(self):
+        # http の self-host（local-gitlab-stack 等）は scheme とポートを保つ。
+        # 従来は https://<hostのみ> に強制されて「接続できません」になっていた
+        # （エラーに出るパスの %2F は正規エンコードで無関係）。
+        base, project, _ = gl_plugin._resolve_project(
+            {"repo_url": "http://gitlab.local/group/repo.git"})
+        self.assertEqual((base, project), ("http://gitlab.local", "group/repo"))
+        base, project, _ = gl_plugin._resolve_project(
+            {}, workspace_url="http://gitlab.local:8929/team/app")
+        self.assertEqual((base, project), ("http://gitlab.local:8929", "team/app"))
+
+    def test_resolve_project_api_base_override(self):
+        # SSH 形しか無い + API は http/別ポート、の構成は api_base で明示できる（最優先）
+        base, project, _ = gl_plugin._resolve_project(
+            {"api_base": "http://gitlab.local:8929/"},
+            workspace_url="git@gitlab.local:group/repo.git")
+        self.assertEqual((base, project), ("http://gitlab.local:8929", "group/repo"))
 
     def test_gl_api_builds_v4_request(self):
         captured = {}
@@ -1661,6 +1683,23 @@ class GitlabNativeApiTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://gitlab.com/api/v4/projects/1/issues/2")
         self.assertEqual(captured["method"], "GET")
         self.assertEqual(captured["token"], "glpat-x")
+        # scheme 付きベース（http self-host・別ポート）はそのまま使う（https に強制しない）
+        with mock.patch.object(gl_plugin.urllib.request, "urlopen", side_effect=fake_urlopen):
+            gl_plugin.gl_api("http://gitlab.local:8929", "glpat-x", "GET", "/projects/1")
+        self.assertEqual(captured["url"], "http://gitlab.local:8929/api/v4/projects/1")
+
+    def test_gl_api_connection_error_shows_full_url(self):
+        # 接続不能のエラーは完全な URL を出す（scheme/ポートの取り違えを診断できる。
+        # パス中の %2F は GitLab API の正規エンコードで、接続可否とは無関係）
+        def fake_urlopen(req, timeout=None):
+            raise gl_plugin.urllib.error.URLError("connection refused")
+
+        with mock.patch.object(gl_plugin.urllib.request, "urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(RuntimeError) as ctx:
+                gl_plugin.gl_api("http://gitlab.local:8929", "t", "GET",
+                                 "/projects/team%2Fapp/issues")
+        self.assertIn("http://gitlab.local:8929/api/v4/projects/team%2Fapp/issues",
+                      str(ctx.exception))
 
     def test_gl_api_http_error_raises_runtimeerror(self):
         def fake_urlopen(req, timeout=None):

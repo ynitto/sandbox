@@ -228,6 +228,11 @@ worker タスク ──▶ gl.py create-issue（status:open,assignee:any ＋ pri
 - **委譲先リポジトリ**：`gitlab:` ブロックの `repo_url` で委譲先の GitLab プロジェクト URL を明示できる。
   空の場合は `conn_label` の接続（`connections.yaml`）か、無ければ作業ディレクトリの `git remote origin`
   から解決する。手元とは別のリポジトリへ委譲したいときに指定する。
+- **API のベース URL**：既定は repo_url / ワークスペース URL の scheme+host(:port) をそのまま使う
+  （http の self-host・別ポートも可）。SSH 形（`git@host:...`）は `https://<host>` に既定するため、
+  SSH 形しか無く API が http/別ポートの構成（local-gitlab-stack 等）は `gitlab.api_base` で明示する。
+  なおエラーメッセージ中の `/projects/group%2Frepo/...` の `%2F` は GitLab API の正規エンコードで、
+  接続可否とは無関係（接続不能の典型は scheme/ポートの取り違え・DNS・トークン）。
 
 ```bash
 # 例: タスクを GitLab に委譲して承認まで待つ（要 gitlab-idd 接続設定）

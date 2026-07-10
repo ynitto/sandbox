@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow gitlab executor: self-host（http/別ポート）で「GitLab API へ接続できません」になるバグを修正
+
+- **症状**: タスクノードが「GitLab API … へ接続できません」で failed になる。エラーに出るパスの
+  `/projects/group%2Frepo/...` から「スラッシュのエスケープが原因」に見えるが、`%2F` は GitLab API の
+  **正規エンコード**（namespace/repo は URL エンコードして渡す仕様）で無関係。
+- **原因**: API の URL を常に `https://<hostname>/api/v4` で組み立てており、起票先 URL（workspace /
+  `gitlab.repo_url`）の **scheme（http）とポートを捨てていた**。`http://gitlab.local`（local-gitlab-stack）
+  等の self-host では存在しない `https://gitlab.local` へ接続しに行き、接続エラーになっていた。
+- **修正**: 起票先 URL の scheme+host(:port) をそのまま API ベースに使う（`http://gitlab.local:8929/...`
+  も可）。SSH 形（`git@host:...`）は従来どおり `https://<host>` に既定し、SSH 形しか無く API が
+  http/別ポートの構成向けに `gitlab.api_base` の明示キーを追加（最優先）。接続エラーのメッセージは
+  パスでなく**完全な URL** を出すようにし、scheme/ポートの取り違えを一目で診断できるようにした。
+- **テスト**: ポート保持のパース・http scheme/ポートの保持・`api_base` 最優先・scheme 付きベースの
+  URL 組み立て・接続エラーの完全 URL 表示を追加（353 件全パス）。
+
 ### リセット後の再起動で残骸 run が復活・類似バックログが重複・kiro-flow プロセス増殖を修正
 
 リセット（charter 以外を全消去）→ kiro-projects 再起動で「似たようなバックログが複数できる」

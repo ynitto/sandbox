@@ -158,6 +158,11 @@ cleanup_per_node: false
 #   conn_label: default                  # connections.yaml の接続ラベル（トークン解決に使用）
 #   repo_url: "https://gitlab.com/group/repo"  # 起票先プロジェクト URL（--workspace 無しのときの
 #                                        # フォールバック。ワークスペース URL があればそちらを優先）
+#   # api_base: "http://gitlab.local"    # API のベース URL の明示（任意）。未指定なら repo_url /
+#                                        # ワークスペース URL の scheme+host(:port) を使い（http の
+#                                        # self-host・別ポートもそのまま）、SSH 形（git@host:...）は
+#                                        # https://<host> に既定。SSH 形しか無く API が http/別ポート
+#                                        # のとき（local-gitlab-stack 等）だけ設定する
 #   labels: "status:open,assignee:any"   # 起票するイシューの初期ラベル
 #   priority: "priority:normal"          # 付与する優先度ラベル（空文字 "" で付けない）
 #   poll_interval: 30                    # イシュー1件の最短再確認間隔（秒）
