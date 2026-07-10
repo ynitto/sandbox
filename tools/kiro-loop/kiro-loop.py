@@ -26,13 +26,17 @@ kiro-loop.py — tmux 分割ウィンドウで kiro-cli を起動し、
 
 import argparse
 import atexit
+import collections
 import datetime as _dt
 import fcntl
 import hashlib
+import hmac
+import http.server
 import importlib.util
 import json
 import logging
 from logging.handlers import TimedRotatingFileHandler
+import math
 import os
 import re
 import shlex
@@ -42,6 +46,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any
@@ -113,6 +118,16 @@ _SEND_STARTUP_TIMEOUT = 60
 _PROMPT_RE = re.compile(r"(^\s*[>?❯›]\s*$|!>)", re.MULTILINE)
 _ENV_LAST_ACTIVE = "KIRO_LAST_ACTIVE"
 _AGENTS_DIR = Path.home() / ".kiro" / "agents"
+
+# ---------------------------------------------------------------------------
+# inbound webhook 用定数
+# ---------------------------------------------------------------------------
+
+_WEBHOOK_QUEUE_MAX = 100           # name ごとの外部キュー上限（超過は古いものから破棄）
+_WEBHOOK_DEFAULT_HOST = "127.0.0.1"
+_WEBHOOK_DEFAULT_PATH_PREFIX = "/hooks"
+_WEBHOOK_DEFAULT_MAX_BODY = 1_048_576  # 1MB
+_WEBHOOK_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
 def _find_running_daemon(cwd: Path) -> int | None:
@@ -709,6 +724,11 @@ def _sanitize_session_label(name: str) -> str:
     """tmux セッション名に使用できる文字列に変換する。"""
     cleaned = re.sub(r"[^A-Za-z0-9_-]", "-", name).strip("-_")
     return (cleaned or "target")[:24]
+
+
+def _webhook_key(name: str) -> str:
+    """webhook のパス名とエントリ名を突き合わせるための URL-safe キー。"""
+    return _WEBHOOK_NAME_RE.sub("-", name).strip("-_").lower()
 
 
 def _tmux_session_name(base_path: Path, instance_id: str) -> str:
@@ -1472,8 +1492,13 @@ class PeriodicScheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
-        # event_hook モジュールのキャッシュ: {hook_path: (mtime, module)}
+        # event_hook / webhook モジュールのキャッシュ: {hook_path: (mtime, module)}
+        # webhook は HTTP スレッドから、event_hook は scheduler スレッドから読むためロックで保護する。
         self._hook_cache: dict[str, tuple[float, Any]] = {}
+        self._hook_cache_lock = threading.Lock()
+        # 外部（webhook 等）から積まれた完成プロンプトの name 別キュー。
+        # entries 全置換の影響を受けないよう scheduler 側で独立保有する。
+        self._external_queues: dict[str, collections.deque[str]] = {}
         self._set_entries(entries, allow_immediate_once=True)
 
     def _release_slot(self, pane_id: str | None) -> None:
@@ -1498,6 +1523,7 @@ class PeriodicScheduler:
             prompt = str(entry.get("prompt", "")).strip()
             event_hook = str(entry.get("event_hook", "")).strip() or None
             event_hook_fallback = bool(entry.get("event_hook_fallback", False))
+            webhook = self._normalize_webhook(entry.get("webhook"))
             # prompt は通常必須だが、event_hook がある場合は check() が
             # 送信テキストを返すため空でも許容する。
             if not prompt and not event_hook:
@@ -1505,10 +1531,12 @@ class PeriodicScheduler:
 
             name = str(entry.get("name", prompt[:40] or (event_hook or "")[:40]))
 
-            # スケジュール: cron 式 または interval_minutes のどちらかが必要
+            # スケジュール: cron 式 または interval_minutes のどちらかが必要。
+            # ただし webhook ブロックを持つエントリはスケジュール無し（push 駆動）を許容する。
             cron_str = str(entry.get("cron", "")).strip()
             cron_expr: CronExpression | None = None
             interval = 0
+            scheduled = True
 
             if cron_str:
                 try:
@@ -1521,16 +1549,22 @@ class PeriodicScheduler:
                 try:
                     interval = int(interval_minutes)  # type: ignore[arg-type]
                 except Exception:
-                    continue
+                    interval = 0
                 if interval < 1:
-                    continue
+                    if webhook is not None:
+                        scheduled = False   # webhook 専用: 自動発火せず受信時のみ送る
+                    else:
+                        continue
 
             prompt_id = str(entry.get("id") or uuid.uuid4())
             run_immediately = bool(
                 entry.get("run_immediately_on_startup", entry.get("run_immediately", False))
             )
 
-            if allow_immediate_once and run_immediately:
+            if not scheduled:
+                # sentinel: `now < inf` が常に真になりスケジュール発火パスに乗らない。
+                next_run_at = math.inf
+            elif allow_immediate_once and run_immediately:
                 # 起動直後は kiro-cli セットアップ時間を見込んで 30 秒待ってから初回送信する。
                 next_run_at = now + 30
             elif cron_expr is not None:
@@ -1565,6 +1599,7 @@ class PeriodicScheduler:
                 "exclude_from_concurrency": bool(entry.get("exclude_from_concurrency", False)),
                 "event_hook": event_hook,
                 "event_hook_fallback": event_hook_fallback,
+                "webhook": webhook,
             })
 
         self._session_mgr.sync_entries(normalized)
@@ -1647,31 +1682,142 @@ class PeriodicScheduler:
 
         return True
 
+    # ---- inbound webhook 連携 --------------------------------------------
+
+    @staticmethod
+    def _normalize_webhook(raw: Any) -> dict[str, Any] | None:
+        """エントリの webhook ブロックを正規化する。無ければ None。"""
+        if not isinstance(raw, dict):
+            return None
+        return {
+            "hook": str(raw.get("hook", "")).strip() or None,
+            "secret": str(raw.get("secret", "")),
+            "secret_header": str(raw.get("secret_header", "")).strip() or None,
+        }
+
+    def _find_entry_by_key_locked(self, key: str) -> dict[str, Any] | None:
+        """`_lock` 保持前提で、webhook キー一致のエントリを返す。"""
+        for e in self._entries:
+            if _webhook_key(str(e.get("name", ""))) == key:
+                return e
+        return None
+
+    def resolve_webhook_route(self, name: str) -> dict[str, Any] | None:
+        """webhook パス名 → ルート情報。毎リクエスト最新エントリから解決する（リロード追従）。"""
+        key = _webhook_key(name)
+        with self._lock:
+            entry = self._find_entry_by_key_locked(key)
+            if entry is None or not entry.get("webhook"):
+                return None
+            wh = entry["webhook"]
+            return {
+                "name": str(entry.get("name", "")),
+                "prompt_template": str(entry.get("prompt", "")),
+                "hook": wh.get("hook"),
+                "secret": wh.get("secret") or "",
+                "secret_header": wh.get("secret_header"),
+            }
+
+    def enqueue_external(self, name: str, prompt_text: str) -> bool:
+        """外部（webhook 等）から name 宛の完成プロンプトをキューに積む。
+
+        scheduler スレッドが次サイクルで session 準備 + セマフォ込みで dispatch する。
+        戻り値 False = 該当エントリ無し。
+        """
+        key = _webhook_key(name)
+        with self._lock:
+            entry = self._find_entry_by_key_locked(key)
+            if entry is None:
+                return False
+            q = self._external_queues.setdefault(
+                key, collections.deque(maxlen=_WEBHOOK_QUEUE_MAX))
+            if len(q) >= _WEBHOOK_QUEUE_MAX:
+                log.warning("[%s] webhook キューが上限 (%d) に達したため最古を破棄します。",
+                            entry.get("name", key), _WEBHOOK_QUEUE_MAX)
+            q.append(prompt_text)
+            return True
+
+    def _drain_external_one(self, entry: dict[str, Any]) -> bool:
+        """entry の外部キューを 1 件だけ処理する。
+
+        キューに要素があったサイクルでは True を返す（dispatch した／保留で積み直した
+        いずれも）。空なら False。session 未準備・スロット上限時はプロンプトを積み直す。
+        """
+        key = _webhook_key(str(entry.get("name", "")))
+        with self._lock:
+            q = self._external_queues.get(key)
+            if not q:
+                return False
+            prompt_text = q.popleft()
+
+        name = str(entry.get("name", ""))
+        prompt_id = str(entry.get("id", ""))
+        exclude = bool(entry.get("exclude_from_concurrency", False))
+
+        def requeue() -> None:
+            with self._lock:
+                self._external_queues.setdefault(
+                    key, collections.deque(maxlen=_WEBHOOK_QUEUE_MAX)).appendleft(prompt_text)
+
+        if not self._session_mgr.ensure_session(prompt_id, name):
+            requeue()
+            return True
+
+        pane_id: str | None = None
+        if self._semaphore is not None and not exclude:
+            pane_id = self._session_mgr.get_pane_id(prompt_id)
+            if pane_id:
+                elapsed = self._semaphore.slot_elapsed(pane_id)
+                if elapsed is not None:
+                    if elapsed < self._semaphore.slot_timeout:
+                        requeue()
+                        return True
+                    if self._slot_monitor is not None:
+                        self._slot_monitor.untrack(pane_id)
+                    self._semaphore.release(pane_id)
+                if self._semaphore.cooldown_remaining(pane_id) > 0:
+                    requeue()
+                    return True
+                if not self._semaphore.acquire(pane_id):
+                    requeue()
+                    return True
+
+        dispatch_entry = dict(entry)
+        dispatch_entry["prompt"] = prompt_text
+        dispatch_entry["_should_clear"] = False
+        self._dispatch_prompt(dispatch_entry, pane_id)
+        return True
+
     def _load_hook_module(self, hook_path: Path) -> Any | None:
-        """event_hook スクリプトを importlib でロードする（mtime キャッシュ付き）。"""
+        """hook スクリプト（event_hook / webhook 共通）を importlib でロードする。
+
+        mtime キャッシュ付き。event_hook は scheduler スレッド、webhook は HTTP
+        スレッドから呼ばれるため、キャッシュ操作は `_hook_cache_lock` で保護する。
+        """
         key = str(hook_path)
         try:
             mtime = hook_path.stat().st_mtime
         except OSError:
-            log.warning("event_hook が見つかりません: %s", hook_path)
+            log.warning("hook が見つかりません: %s", hook_path)
             return None
 
-        cached = self._hook_cache.get(key)
-        if cached and cached[0] == mtime:
-            return cached[1]
+        with self._hook_cache_lock:
+            cached = self._hook_cache.get(key)
+            if cached and cached[0] == mtime:
+                return cached[1]
 
-        try:
-            spec = importlib.util.spec_from_file_location("kiro_loop_hook", hook_path)
-            if spec is None or spec.loader is None:
-                log.error("event_hook の spec 生成に失敗しました: %s", hook_path)
+            try:
+                spec = importlib.util.spec_from_file_location("kiro_loop_hook", hook_path)
+                if spec is None or spec.loader is None:
+                    log.error("hook の spec 生成に失敗しました: %s", hook_path)
+                    return None
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                self._hook_cache[key] = (mtime, module)
+                return module
+            except Exception as exc:
+                log.error("hook のロードに失敗しました (%s): %s", hook_path, exc, exc_info=True)
                 return None
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            self._hook_cache[key] = (mtime, module)
-            return module
-        except Exception as exc:
-            log.error("event_hook のロードに失敗しました (%s): %s", hook_path, exc, exc_info=True)
-            return None
 
     def _call_hook_check(self, entry: dict[str, Any]) -> str | None:
         """event_hook の check() を呼び出して送信プロンプトを得る。
@@ -1774,6 +1920,12 @@ class PeriodicScheduler:
             for entry in entries:
                 if not entry.get("enabled", True):
                     continue
+
+                # webhook 等で積まれた外部キューを優先処理する（1 サイクル 1 件）。
+                # 積まれていたサイクルはスケジュール発火より外部キューを優先する。
+                if entry.get("webhook") and self._drain_external_one(entry):
+                    continue
+
                 if now < float(entry.get("next_run_at", now)):
                     continue
 
@@ -1821,6 +1973,212 @@ class PeriodicScheduler:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# inbound webhook サーバ（provider 非依存）
+# ---------------------------------------------------------------------------
+
+class _SafeDict(dict):
+    """str.format_map 用。未定義キーは `{key}` のまま残し KeyError を出さない。"""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+class _WebhookContext:
+    """hook に渡す provider 非依存のリクエストコンテキスト。"""
+
+    __slots__ = ("name", "method", "headers", "query", "raw", "payload")
+
+    def __init__(self, name: str, method: str, headers: dict[str, str],
+                 query: dict[str, Any], raw: bytes, payload: dict[str, Any]) -> None:
+        self.name = name
+        self.method = method
+        self.headers = headers
+        self.query = query
+        self.raw = raw
+        self.payload = payload
+
+
+class WebhookServer:
+    """kiro-loop 稼働中だけ常駐する inbound webhook 受信サーバ。
+
+    `POST <path_prefix>/<name>` を受け、<name> を PeriodicScheduler のエントリに
+    解決し、hook（provider 固有）で payload を辞書化、エントリの prompt テンプレートへ
+    注入して外部キューへ積む。GitLab 等の送信元固有知識はコアに持たない。
+    """
+
+    def __init__(self, scheduler: PeriodicScheduler, host: str, port: int,
+                 path_prefix: str, secret: str, secret_header: str | None,
+                 max_body_bytes: int) -> None:
+        self._scheduler = scheduler
+        self._host = host
+        self._port = port
+        self._path_prefix = "/" + path_prefix.strip("/")
+        self._secret = secret or ""
+        self._secret_header = (secret_header or "").lower()
+        self._max_body = max_body_bytes
+        self._httpd: http.server.ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        handler_cls = self._make_handler()
+        try:
+            self._httpd = http.server.ThreadingHTTPServer((self._host, self._port), handler_cls)
+        except OSError as exc:
+            log.warning("[WebhookServer] 起動に失敗しました (%s:%s): %s。webhook を無効化して継続します。",
+                        self._host, self._port, exc)
+            self._httpd = None
+            return
+        self._httpd.daemon_threads = True
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, name="webhook-server", daemon=True)
+        self._thread.start()
+        log.info("[WebhookServer] 起動しました: http://%s:%s%s/<name>",
+                 self._host, self._port, self._path_prefix)
+        if not self._secret:
+            log.warning("[WebhookServer] secret 未設定です。共有シークレット検証をスキップします（開発用）。")
+
+    def stop(self) -> None:
+        if self._httpd is not None:
+            try:
+                self._httpd.shutdown()
+                self._httpd.server_close()
+            except Exception as exc:
+                log.debug("[WebhookServer] 停止時エラー: %s", exc)
+            self._httpd = None
+
+    # -- 受信処理（provider 非依存） -----------------------------------------
+
+    def _process(self, name: str, method: str, headers: dict[str, str],
+                 query: dict[str, Any], raw: bytes) -> tuple[int, str]:
+        """ルート解決→認証→hook→テンプレート注入→enqueue。(status, message) を返す。"""
+        route = self._scheduler.resolve_webhook_route(name)
+        if route is None:
+            return 404, "unknown webhook route"
+
+        # 汎用共有シークレット検証（照合ヘッダ名は可変）。
+        if self._secret or route.get("secret"):
+            expected = route.get("secret") or self._secret
+            header_name = (route.get("secret_header") or self._secret_header or "").lower()
+            got = headers.get(header_name, "") if header_name else ""
+            if not header_name or not hmac.compare_digest(got, expected):
+                return 401, "unauthorized"
+
+        payload = self._parse_json(raw)
+        ctx = _WebhookContext(name=route["name"], method=method,
+                              headers=headers, query=query, raw=raw, payload=payload)
+
+        # hook 実行（provider 固有の判定・パース）。例外は握って 200（#11: リトライ嵐回避）。
+        try:
+            params = self._invoke_hook(route, ctx)
+        except Exception as exc:
+            log.error("[WebhookServer] hook 実行エラー (%s): %s", name, exc, exc_info=True)
+            return 200, "ignored (hook error)"
+        if params is None:
+            return 200, "ignored"
+
+        inject = _SafeDict({"name": route["name"], **params})
+        try:
+            prompt_text = route["prompt_template"].format_map(inject)
+        except Exception as exc:
+            log.error("[WebhookServer] テンプレート注入エラー (%s): %s", name, exc, exc_info=True)
+            return 500, "template error"
+
+        if not self._scheduler.enqueue_external(route["name"], prompt_text):
+            return 404, "route vanished"
+        return 202, "accepted"
+
+    def _invoke_hook(self, route: dict[str, Any], ctx: _WebhookContext) -> dict[str, Any] | None:
+        hook = route.get("hook")
+        if not hook:
+            # hook 未指定: payload をそのままパラメータとする汎用パススルー。
+            return dict(ctx.payload)
+        module = self._scheduler._load_hook_module(Path(os.path.expanduser(hook)).resolve())
+        if module is None:
+            return None
+        fn = getattr(module, "handle", None)
+        if not callable(fn):
+            log.warning("[WebhookServer] hook に handle() がありません: %s", hook)
+            return None
+        result = fn(ctx)
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            log.warning("[WebhookServer] handle() が dict/None 以外を返しました: %r", result)
+            return None
+        return result
+
+    @staticmethod
+    def _parse_json(raw: bytes) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {"_root": data}
+
+    def _make_handler(self) -> type:
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args: Any) -> None:  # noqa: D401 - stderr ノイズ抑制
+                pass
+
+            def _reply(self, code: int, msg: str) -> None:
+                body = msg.encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except Exception:
+                    pass
+
+            def _route_name(self) -> str | None:
+                parsed = urllib.parse.urlparse(self.path)
+                path = parsed.path.rstrip("/")
+                prefix = server._path_prefix
+                if not path.startswith(prefix + "/"):
+                    return None
+                name = path[len(prefix) + 1:]
+                if not name or "/" in name:
+                    return None
+                return name
+
+            def do_GET(self) -> None:
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path.rstrip("/") == server._path_prefix + "/_health":
+                    self._reply(200, "ok")
+                else:
+                    self._reply(405, "method not allowed")
+
+            def do_POST(self) -> None:
+                name = self._route_name()
+                if name is None:
+                    self._reply(404, "not found")
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = 0
+                if length > server._max_body:
+                    self._reply(413, "payload too large")
+                    return
+                raw = self.rfile.read(length) if length > 0 else b""
+                parsed = urllib.parse.urlparse(self.path)
+                query = {k: (v[0] if len(v) == 1 else v)
+                         for k, v in urllib.parse.parse_qs(parsed.query).items()}
+                headers = {k.lower(): v for k, v in self.headers.items()}
+                status, msg = server._process(name, "POST", headers, query, raw)
+                self._reply(status, msg)
+
+        return Handler
 
 
 # ---------------------------------------------------------------------------
@@ -2106,9 +2464,15 @@ _session_mgr_ref: SessionManager | None = None
 _scheduler_ref: PeriodicScheduler | None = None
 _slot_monitor_ref: SlotMonitor | None = None
 _stop_event_ref: threading.Event | None = None
+_webhook_server_ref: "WebhookServer | None" = None
+_inbox_watcher_ref: InboxWatcher | None = None
 
 
 def _cleanup() -> None:
+    if _webhook_server_ref is not None:
+        _webhook_server_ref.stop()
+    if _inbox_watcher_ref is not None:
+        _inbox_watcher_ref.stop()
     if _scheduler_ref is not None:
         _scheduler_ref.stop()
     if _slot_monitor_ref is not None:
@@ -2970,6 +3334,7 @@ def main() -> None:
 
     # グローバル参照（cleanup / シグナルハンドラ用）
     global _session_mgr_ref, _scheduler_ref, _slot_monitor_ref, _stop_event_ref
+    global _webhook_server_ref, _inbox_watcher_ref
 
     stop_event = threading.Event()
     _stop_event_ref = stop_event
@@ -3023,7 +3388,30 @@ def main() -> None:
             poll_interval=inbox_poll_seconds,
         )
         inbox_watcher.start()
+        _inbox_watcher_ref = inbox_watcher
         log.info("InboxWatcher を起動しました: agent_name=%s", agent_name)
+
+    # WebhookServer: webhook.enabled かつ port 指定時に inbound webhook を受ける
+    webhook_cfg = config.get("webhook")
+    if isinstance(webhook_cfg, dict) and webhook_cfg.get("enabled"):
+        try:
+            webhook_port = int(webhook_cfg.get("port"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            webhook_port = 0
+        if webhook_port > 0:
+            webhook_server = WebhookServer(
+                scheduler=scheduler,
+                host=str(webhook_cfg.get("host", _WEBHOOK_DEFAULT_HOST)),
+                port=webhook_port,
+                path_prefix=str(webhook_cfg.get("path_prefix", _WEBHOOK_DEFAULT_PATH_PREFIX)),
+                secret=str(webhook_cfg.get("secret", "")),
+                secret_header=webhook_cfg.get("secret_header"),
+                max_body_bytes=int(webhook_cfg.get("max_body_bytes", _WEBHOOK_DEFAULT_MAX_BODY)),
+            )
+            webhook_server.start()
+            _webhook_server_ref = webhook_server
+        else:
+            log.warning("webhook.enabled ですが port が未指定/不正のため webhook を起動しません。")
 
     # スロット監視スレッド起動（同時実行数制御が有効な場合のみ）
     if slot_monitor is not None:

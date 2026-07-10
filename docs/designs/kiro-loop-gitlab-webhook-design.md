@@ -7,6 +7,28 @@
 
 ---
 
+## 実装メモ（2026-07-10）
+
+本設計を参照フォークに実装済み。確定事項:
+
+- `WebhookServer`（`http.server.ThreadingHTTPServer`）/ `_SafeDict` / `_WebhookContext` を新規追加。
+  `PeriodicScheduler` に `resolve_webhook_route` / `enqueue_external` / `_drain_external_one` /
+  `_normalize_webhook` を追加し、`_external_queues`（name 別 bounded deque）を保有。
+- `_set_entries` は `webhook` ブロックを正規化し、スケジュール無しエントリを
+  `next_run_at=math.inf` で非発火化。`_run_loop` 先頭で `_drain_external_one` を優先処理。
+- `_load_hook_module` を event_hook と共用し、複数スレッド対応のため `_hook_cache_lock` を追加。
+- `main()` で `webhook.enabled` かつ `port>0` のとき起動、`_cleanup`/`_signal_handler` で stop
+  （ついでに InboxWatcher の stop 漏れも解消）。bind 失敗は WARNING で本体継続。
+- #11 は「hook 例外は 200 で握る（リトライ嵐回避）」で確定。認証は `secret`/`secret_header` の
+  汎用照合（`hmac.compare_digest`）。
+- 同梱例: `hooks/gitlab-mr-webhook.py`（GitLab MR）/ `hooks/generic-webhook.py`（非 GitLab 最小例）。
+- E2E テスト（実 HTTP・SessionManager スタブ）で 22 ケース通過: ルート解決/認証/フィルタ/
+  テンプレート注入/キュー投函/ドレイン/保留積み直し/汎用パススルー/health。
+
+以降は当初の設計案の記録。
+
+---
+
 ## 0. 移植ガイド（他フォークへの適用）— 先に読む
 
 本設計は **フォーク非依存**を目標にする。kiro-loop は複数フォークで内部が分岐しており、

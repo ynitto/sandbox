@@ -21,6 +21,23 @@
 
 
 # ---------------------------------------------------------------------------
+# inbound webhook（provider 非依存）
+# ---------------------------------------------------------------------------
+# kiro-loop 稼働中だけ HTTP サーバを常駐させ、外部システム（GitLab 等）の webhook を
+# `POST <path_prefix>/<name>` で受ける。<name> は下の prompts エントリ名に対応し、
+# 受信 payload は hook でパースしてエントリの prompt テンプレートへ注入される。
+# コアは送信元を知らない（イベント判定・署名検証・payload 構造は hook 側の責務）。
+# webhook:
+#   enabled: true
+#   host: 127.0.0.1              # 既定 localhost。公開時はリバースプロキシ/トンネル経由を推奨
+#   port: 8899                   # 必須。複数 kiro-loop を動かす場合はインスタンスごとに変える
+#   path_prefix: /hooks          # 既定 /hooks
+#   secret: ""                   # 汎用共有シークレット。空なら検証せず起動時 WARNING
+#   secret_header: X-Gitlab-Token  # secret を照合するヘッダ名（provider で可変）
+#   max_body_bytes: 1048576      # ボディ上限（既定 1MB）。超過は 413
+
+
+# ---------------------------------------------------------------------------
 # kiro-cli の起動オプション（全ワークスペース共通）
 # ---------------------------------------------------------------------------
 kiro_options:
@@ -98,6 +115,23 @@ prompts:
     event_hook_fallback: true   # 更新が無くてもランダムに 1 件送る
     interval_minutes: 5
     cwd: /path/to/workspace
+    enabled: false
+
+  # ---- webhook: GitLab の MR webhook を受けてこのセッションに送る ----
+  # 上部の webhook: セクションを有効化した上で、GitLab のプロジェクト設定で
+  #   URL      = http://<host>:<port>/hooks/mr-reviewer
+  #   Secret   = webhook.secret と同じ値（X-Gitlab-Token として送られる）
+  # を登録する。interval/cron を書かなければ push 駆動のみ（自動発火しない）。
+  # 送信元固有の判定・パースは hook 側（hooks/gitlab-mr-webhook.py）が行う。
+  - name: mr-reviewer
+    prompt: |
+      [MR webhook] {project} !{mr_iid}（{action}）
+      タイトル: {title}
+      {source_branch} → {target_branch}
+      URL: {url}
+      この MR をレビューして、指摘があれば MR にコメントしてください。
+    webhook:
+      hook: ~/sandbox/tools/kiro-loop/hooks/gitlab-mr-webhook.py
     enabled: false
 
   # ---- Kanban 更新: GitLab → Obsidian kanban.md を再生成 ----
