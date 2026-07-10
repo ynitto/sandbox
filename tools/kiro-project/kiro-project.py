@@ -44,8 +44,12 @@ try:
 except ImportError:  # 非 POSIX では daemon 検知不可（常に run にフォールバック）
     fcntl = None
 
-VALID_STATUS = ("inbox", "draft", "ready", "doing", "done", "blocked", "review", "offloaded")
+VALID_STATUS = ("inbox", "draft", "proposed", "ready", "doing", "done", "blocked", "review",
+                "offloaded", "rejected")
 CONSUMABLE = ("ready", "todo")  # 実行待ち。todo は ready の後方互換エイリアス。draft は消化対象外
+# proposed: 実行前レビュー待ち（plan_review・既定 on）。人の承認（approve）で初めて ready になり、
+#   差し戻し（needs feedback）は kiro-project がタスクを修正して再提案、却下（reject）は廃止＋再計画。
+# rejected: 却下済み（archive へ退避される終端。DELIVERY には載せない）。
 # offloaded: 実行層 daemon へ非ブロッキングで submit 済み・結果待ち（act_async）。CONSUMABLE ではない
 #   （再 submit しない）が「機械が実行中」＝人待ちでもない。次パスでポーリングして終端したら settle する。
 TASK_HEADER_RE = re.compile(r"^##\s+(?P<id>\S+?):\s*(?P<title>.*)$")
@@ -214,8 +218,14 @@ def _slug_id(text: str) -> str:
     return s[:48]
 
 
-def _unique_task_id(cfg: "Config", base: str) -> str:
+def _unique_task_id(cfg: "Config", base: str, include_archive: bool = False) -> str:
     existing = {p.stem for p in cfg.backlog.glob("*.md")} if cfg.backlog.exists() else set()
+    if include_archive:
+        # 自動採番では archive も避ける: 退避済みと同じ id を採番すると、後で archive へ移す際に
+        # 過去の記録を上書きしてしまう（複数 charter で同名タスクが並ぶと同秒衝突が現実に起きる）。
+        adir = cfg.archive_dir()
+        if adir.exists():
+            existing |= {p.stem for p in adir.glob("*.md")}
     base = base or "task"
     if base not in existing:
         return base
@@ -227,12 +237,13 @@ def _unique_task_id(cfg: "Config", base: str) -> str:
 
 def _gen_task_id(cfg: "Config", explicit: "str | None", title: str) -> str:
     if explicit:
-        base = _slug_id(explicit) or "task"
-    else:
-        slug = _slug_id(title)
-        base = (f"{slug[:24]}-{datetime.now().strftime('%H%M%S')}" if slug
-                else "enq-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
-    return _unique_task_id(cfg, base)
+        # 明示 id は**冪等キー**（intake の重複判定・再投入の追跡に使う）なので改名しない
+        # （backlog 内の衝突だけ回避）。archive 側の上書きは退避時にファイル名で避ける。
+        return _unique_task_id(cfg, _slug_id(explicit) or "task")
+    slug = _slug_id(title)
+    base = (f"{slug[:24]}-{datetime.now().strftime('%H%M%S')}" if slug
+            else "enq-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+    return _unique_task_id(cfg, base, include_archive=True)
 
 
 def task_from_spec(cfg: "Config", spec: dict) -> Task:
@@ -246,7 +257,13 @@ def task_from_spec(cfg: "Config", spec: dict) -> Task:
     tid = _gen_task_id(cfg, spec.get("id"), title)
     # verify が無くても accept / verify_template があれば「verify を用意できる」ので ready 扱い（後で展開/合成）
     has_plan = bool(verify or accept or tmpl)
-    status = str(spec.get("status", "") or "").strip() or ("ready" if has_plan else "inbox")
+    explicit = str(spec.get("status", "") or "").strip()
+    default_status = "ready" if has_plan else "inbox"
+    # 実行前レビュー（plan_review・既定 on）: status を明示しない新規投入はすべて proposed で入り、
+    # 人の承認（approve）で初めて実行可能（ready/inbox）になる（plan/enqueue/inbox/followup/intake 全経路）。
+    if not explicit and getattr(cfg, "plan_review", False):
+        default_status = "proposed"
+    status = explicit or default_status
     t = Task(id=tid, title=title, status=status, verify=verify,
              source=str(spec.get("source", "") or "enqueue"))
     try:
@@ -458,6 +475,8 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
                     t.source = "inbox"
                 if t.norm_status() == "ready" and not has_verify_plan(t):
                     t.status = "inbox"               # verify も用意材料(accept/template)も無ければ人の triage へ
+                if getattr(cfg, "plan_review", False) and t.norm_status() in ("ready", "inbox"):
+                    t.status = "proposed"            # 実行前レビュー: 承認まで実行しない
                 cfg.backlog.mkdir(parents=True, exist_ok=True)
                 persist_task(cfg, t)
                 created.append(t)
@@ -1585,8 +1604,28 @@ def _madr_frontmatter(rec_id: str, kind: str) -> str:
 
 
 def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False,
-                     evidence: str = "") -> None:
+                     evidence: str = "", kind: str = "") -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
+    if kind == "plan-review":   # 実行前レビュー（proposed。承認されるまで実行しない）
+        state = "proposed（実行前レビュー待ち・未実行）"
+        hint = (f"<!-- 承認して実行を許可するなら `kiro-project approve {task.id}`（または空のまま [x]）。\n"
+                f"     差し戻す（kiro-project にタスクを修正させる）なら下に修正指示を書いて [x]。\n"
+                f"     却下（廃止して関連バックログを再計画）なら `kiro-project reject {task.id} --reason ...`。 -->\n")
+        evidence_block = f"\n## タスク定義（レビュー対象）\n{evidence}\n" if evidence else ""
+        body = (
+            f"{_madr_frontmatter(task.id, kind)}"
+            f"# 実行前レビュー: {task.id} — {task.title}\n\n"
+            f"## Context and Problem Statement\n\n"
+            f"- なぜ: {reason}\n"
+            f"- 状態: {state}\n"
+            f"{evidence_block}\n"
+            f"{DECISION_MARKER}\n\n"
+            f"<!-- 人の決定の記入欄。承認は空のまま [x]、差し戻しは修正指示を書いて [x]。 -->\n"
+            f"- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n\n"
+            f"{hint}"
+        )
+        needs_path(cfg, task.id).write_text(body, encoding="utf-8")
+        return
     if review:    # verify=PASS の承認ゲート（検収待ち）
         state = "review（検収待ち・verify=PASS）"
         kind = "review"
@@ -1613,6 +1652,33 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
         f"{hint}"
     )
     needs_path(cfg, task.id).write_text(body, encoding="utf-8")
+
+
+def _task_definition_block(task: Task) -> str:
+    """実行前レビュー票に載せるタスク定義（人がレビューする対象そのもの）。"""
+    lines = [f"- title  : {task.title}",
+             f"- verify : `{task.verify}`" if task.verify else "- verify : （未定義）"]
+    for k in ("accept", "verify_template", "after", "note", "workspace", "charter"):
+        v = task.get(k)
+        if v:
+            lines.append(f"- {k}: {v}")
+    if task.priority:
+        lines.append(f"- priority: {task.priority}")
+    lines.append(f"- source : {task.source}")
+    return "\n".join(lines)
+
+
+def ensure_plan_review_needs(cfg: "Config", tasks: "list[Task]") -> None:
+    """proposed（実行前レビュー待ち）タスクに needs/<id>.md（レビュー票）を用意する。
+    生成経路（plan/enqueue/inbox/followup/intake/cohort）に依らずここで一元的に整合させる
+    （needs が既にあれば触らない＝人の記入を消さない）。"""
+    for t in tasks:
+        if t.norm_status() != "proposed":
+            continue
+        if needs_path(cfg, t.id).exists():
+            continue
+        write_needs_file(cfg, t, "新規タスクの実行前レビュー（承認されるまで実行しません）",
+                         evidence=_task_definition_block(t), kind="plan-review")
 
 
 def clear_needs_file(cfg: "Config", tid: str) -> None:
@@ -1658,6 +1724,13 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
         if t is None:
             continue
         fb = read_feedback(nf)
+        if t.norm_status() == "proposed":            # 実行前レビューの決着（承認 or 差し戻し）
+            if fb:                                   # 差し戻し: kiro-project がタスクを修正して再提案
+                plan_rework(cfg, t, fb)              # （新しいレビュー票を needs に書き直す）
+            else:                                    # 空のまま [x] = 承認（実行を許可）
+                _plan_approve(cfg, t, "チェックで承認")   # （needs は消える）
+            ingested.append(t.id)
+            continue
         was_review = t.norm_status() == "review"     # 検収待ちからの復帰か（自律度の clean/手戻り判定用）
         t.status = "ready"
         t.drop("feedback")
@@ -1675,18 +1748,239 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     return ingested
 
 
-def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task], list[Task]]":
+
+def _extract_json_object_loose(text: str) -> "dict | None":
+    """エージェント出力から最初の JSON オブジェクトを寛容に取り出す（_extract_json_array の単体版）。"""
+    s = str(text or "")
+    i = s.find("{")
+    while i >= 0:
+        depth = 0
+        for j in range(i, len(s)):
+            if s[j] == "{":
+                depth += 1
+            elif s[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(s[i:j + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except ValueError:
+                        break
+                    break
+        i = s.find("{", i + 1)
+    return None
+
+
+def _plan_approve(cfg: "Config", t: Task, reason: str) -> None:
+    """実行前レビューの承認: proposed → ready（verify を用意できなければ inbox＝triage 行き）。"""
+    t.status = "ready" if has_verify_plan(t) else "inbox"
+    persist_task(cfg, t)
+    clear_needs_file(cfg, t.id)
+    append_decision(cfg, t.id, cfg.actor, context=f"{t.id}（{t.title}）の実行を承認",
+                    action="plan-approve", reason=reason, affects=f"{t.id} → {t.status}")
+    append_journal(cfg.journal, f"plan-review 承認: {t.id} → {t.status}")
+
+
+_PLAN_REWORK_FIELDS = ("title", "verify", "accept", "after", "priority", "note")
+
+
+def _plan_rework_prompt(t: Task, feedback: str) -> str:
+    return (
+        "あなたはバックログタスクの定義を人のレビュー指摘に沿って修正する編集者です。\n"
+        "以下のタスク定義を、指摘を反映した形に修正してください。\n\n"
+        f"## 現在のタスク定義\n{_task_definition_block(t)}\n\n"
+        f"## 人のレビュー指摘（必ず反映する）\n{feedback}\n\n"
+        "出力は JSON オブジェクトのみ: {\"title\": str, \"verify\": str（終了コード0=PASSのシェル。"
+        "書けなければ空）, \"accept\": str（自然言語の完了条件・任意）, \"after\": str（依存タスクID・"
+        "カンマ区切り・任意）, \"priority\": int（任意）, \"note\": str（任意）}。"
+        "変更不要のフィールドは現在の値をそのまま返すこと。")
+
+
+def plan_rework(cfg: "Config", t: Task, feedback: str) -> None:
+    """実行前レビューの差し戻し: kiro-cli にタスク定義を修正させて**再び proposed** で提案し直す。
+    kiro-cli 不在/失敗時は指摘を note に追記してそのまま再提案（人が approve/revise で確定できる）。"""
+    reworked = False
+    try:
+        out = _run_kiro_cli(_plan_rework_prompt(t, feedback), cfg.model)
+        obj = _extract_json_object_loose(out)
+        if isinstance(obj, dict) and str(obj.get("title", "")).strip():
+            t.title = str(obj["title"]).strip()
+            t.verify = _strip_code(str(obj.get("verify", "") or "").strip())
+            for k in ("accept", "after", "note"):
+                v = str(obj.get(k, "") or "").strip()
+                t.drop(k)
+                if v:
+                    t.extra.append((k, v))
+            try:
+                t.priority = int(obj.get("priority", t.priority) or 0)
+            except (TypeError, ValueError):
+                pass
+            reworked = True
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+        append_journal(cfg.journal, f"plan-review 差し戻しの修正に失敗（生のまま再提案）: {t.id}: {e}")
+    if not reworked:                       # 修正できなくても指摘は失わない（note に残して人が確定）
+        note = (t.get("note") or "").strip()
+        t.drop("note")
+        t.extra.append(("note", (note + " ⏎ " if note else "") + f"[差し戻し] {feedback}"))
+    t.status = "proposed"
+    persist_task(cfg, t)
+    write_needs_file(cfg, t, f"差し戻しを反映して再提案（指摘: {feedback[:200]}）",
+                     evidence=_task_definition_block(t), kind="plan-review")
+    append_decision(cfg, t.id, cfg.actor, context=f"{t.id}（{t.title}）を差し戻しで修正",
+                    action="plan-rework", reason=feedback[:200],
+                    affects=f"{t.id} → proposed（再提案）", learn=(t.title, feedback))
+    append_journal(cfg.journal, f"plan-review 差し戻し: {t.id} を修正して再提案")
+
+
+# ---------------------------------------------------------------------------
+# 依存の影響範囲（after 逆辺）と却下（reject）
+# ---------------------------------------------------------------------------
+def dependents_of(tasks: "list[Task]", tid: str, transitive: bool = True) -> "list[Task]":
+    """tid に依存する（after に tid を含む）タスク。transitive で推移閉包（影響範囲の一覧提示用）。"""
+    out: "list[Task]" = []
+    seen = {tid}
+    frontier = {tid}
+    while frontier:
+        nxt: set = set()
+        for t in tasks:
+            if t.id in seen:
+                continue
+            if any(d in frontier for d in task_deps(t)):
+                out.append(t)
+                seen.add(t.id)
+                nxt.add(t.id)
+        if not transitive:
+            break
+        frontier = nxt
+    return out
+
+
+def prerequisites_of(tasks: "list[Task]", tid: str, transitive: bool = True) -> "list[str]":
+    """tid の前提（after 上流）の ID 一覧。backlog に無い ID（done/外部）も含めて返す。"""
+    by_id = {t.id: t for t in tasks}
+    out: "list[str]" = []
+    seen = {tid}
+    frontier = [tid]
+    while frontier:
+        cur = frontier.pop(0)
+        t = by_id.get(cur)
+        if t is None:
+            continue
+        for d in task_deps(t):
+            if d not in seen:
+                seen.add(d)
+                out.append(d)
+                if transitive:
+                    frontier.append(d)
+    return out
+
+
+def cmd_impact(cfg: Config, tid: str, as_json: bool = False) -> int:
+    """タスクの依存関係（前提／依存先・推移）を一覧表示する。変更・却下の影響範囲を人が辿る用。"""
+    tasks = load_tasks(cfg.backlog)
+    if not any(t.id == tid for t in tasks):
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    ups = prerequisites_of(tasks, tid)
+    downs = dependents_of(tasks, tid)
+    if as_json:
+        print(json.dumps({"id": tid, "prerequisites": ups,
+                          "dependents": [{"id": t.id, "title": t.title,
+                                          "status": t.norm_status()} for t in downs]},
+                         ensure_ascii=False, indent=2))
+        return 0
+    print(f"=== impact: {tid} ===")
+    print(f"前提（after 上流・推移）: {', '.join(ups) or '（なし）'}")
+    if downs:
+        print("依存先（このタスクの変更が影響する・推移）:")
+        for t in downs:
+            print(f"  - {t.id} [{t.norm_status()}]: {t.title}")
+    else:
+        print("依存先: （なし）")
+    return 0
+
+
+def _rejected_record(t: Task, reason: str) -> str:
+    return (f"\n## 却下記録\n- 却下: {reason}\n- 却下時の状態: {t.norm_status()}\n"
+            f"- 却下時刻: {_now_ts()}\n")
+
+
+def cmd_reject(cfg: Config, tid: str, reason: str) -> int:
+    """タスクの却下: 廃止（rejected として archive へ退避）し、依存先を proposed に戻して再審査に
+    かけ、charter があればバックログの再計画（replan）を要求する。実行前（proposed）にも
+    成果物レビュー段（review）にも使える。理由は avoid（回避知識）として蓄積し、同種の再提案を
+    予防リコールが弾く。"""
+    tasks = load_tasks(cfg.backlog)
+    t = next((x for x in tasks if x.id == tid), None)
+    if t is None:
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    if t.norm_status() == "doing":
+        print(f"エラー: {tid} は実行中（doing）です。先に revise で止めるか完了を待ってください。",
+              file=sys.stderr)
+        return 2
+    release_claim(cfg, t)
+    # 影響範囲（after 逆辺・推移）: 依存先は前提を失うため proposed に戻して人の再審査へ
+    downs = dependents_of(tasks, tid)
+    for d in downs:
+        deps = [x for x in task_deps(d) if x != tid]
+        d.drop("after")
+        if deps:
+            d.extra.append(("after", ", ".join(deps)))
+        if d.norm_status() not in ("done", "doing"):
+            d.status = "proposed"
+            clear_needs_file(cfg, d.id)
+            persist_task(cfg, d)
+            write_needs_file(cfg, d, f"前提タスク {tid} が却下されたため再審査",
+                             evidence=_task_definition_block(d), kind="plan-review")
+        else:
+            persist_task(cfg, d)
+    close_task_mr(cfg, t, reason)   # タスク MR があればクローズ＋ブランチ削除（best-effort）
+    # 本体を rejected として archive へ退避（納品ではないので DELIVERY には載せない）
+    t.status = "rejected"
+    _archive_write(cfg, t.id, serialize_task(t) + _rejected_record(t, reason))
+    delete_task_file(cfg, t)
+    clear_needs_file(cfg, tid)
+    affected = ", ".join(d.id for d in downs) or "（なし）"
+    dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を却下（廃止）",
+                         action="reject", reason=reason,
+                         affects=f"{tid} → rejected ／ 依存先を再審査へ: {affected}",
+                         avoid=(t.title, reason) if cfg.learn_capture and reason else None)
+    # charter があれば再計画を要求（却下で空いた穴を plan が埋め直す。rejected タイトルは
+    # archive 経由で _existing_titles に含まれるため同一タスクは再提案されない）
+    replanned = ""
+    if charter_names(cfg):
+        write_replan_request(cfg, f"タスク {tid} の却下に伴う再計画",
+                             charter=(t.get("charter") or "").strip())
+        replanned = "／charter からの再計画を要求しました"
+    append_journal(cfg.journal, f"reject: {tid} を却下（依存先 {len(downs)} 件を再審査へ）")
+    print(f"{dr}: {tid} を却下しました。影響（依存先→再審査）: {affected}{replanned}")
+    return 0
+
+
+def human_worklist(tasks: "list[Task]") -> "tuple[list[Task], list[Task], list[Task], list[Task]]":
     blocked = [t for t in tasks if t.norm_status() == "blocked"]
     intake = [t for t in tasks if t.norm_status() == "inbox" and not t.verify.strip()]
     review = [t for t in tasks if t.norm_status() == "review"]   # verify=PASS の承認待ち
-    return blocked, intake, review
+    proposed = [t for t in tasks if t.norm_status() == "proposed"]   # 実行前レビュー待ち
+    return blocked, intake, review, proposed
 
 
-def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None) -> str:
+def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None,
+                  proposed=None) -> str:
     review = review or []
+    proposed = proposed or []
     lines = ["# 要対応（kiro-project）", ""]
     if budget_stop:
         lines += ["⚠ 予算切れで未消化のまま停止しました。", ""]
+    if proposed:
+        lines.append("## 実行前レビュー待ち（proposed・承認されるまで実行しません）")
+        for t in proposed:
+            lines.append(f"- {t.id}: {t.title}")
+            lines.append(f"    対応: `kiro-project approve {t.id}`（承認）／needs に修正指示を書いて差し戻し"
+                         f"／`kiro-project reject {t.id} --reason ...`（却下）")
+        lines.append("")
     if review:
         lines.append("## 検収待ち（verify=PASS・承認で done 確定）")
         for t in review:
@@ -1704,7 +1998,7 @@ def render_digest(blocked, intake, reasons: dict, budget_stop: bool, review=None
         lines += ["", "## acceptance 未定義（need_intake）"]
         for t in intake:
             lines.append(f"- {t.id}: {t.title}\n    なぜ: verify 未定義 → verify を定義して ready 化")
-    if not blocked and not intake and not review:
+    if not blocked and not intake and not review and not proposed:
         lines.append("（対応待ちなし）")
     return "\n".join(lines) + "\n"
 
@@ -1713,8 +2007,8 @@ def notify(cfg: "Config", tasks, reasons: dict, newly_blocked: set, budget_stop:
     """状態遷移時だけ stdout / notify-cmd へ要約を出す（案件毎の needs/<id>.md は別途書込済）。"""
     if not newly_blocked and not budget_stop:
         return False
-    blocked, intake, review = human_worklist(tasks)
-    digest = render_digest(blocked, intake, reasons, budget_stop, review)
+    blocked, intake, review, proposed = human_worklist(tasks)
+    digest = render_digest(blocked, intake, reasons, budget_stop, review, proposed)
     print("\n--- 通知（要対応）---\n" + digest, flush=True)
     if cfg.notify_cmd:
         try:
@@ -1904,13 +2198,14 @@ def prioritize(tasks, policy, planner, model=None, ranker=None) -> "list[Task]":
 # ---------------------------------------------------------------------------
 # triage（inbox→ready 昇格・policy deny の適用）
 # ---------------------------------------------------------------------------
-def triage(tasks, policy) -> "list[tuple[Task, str]]":
+def triage(tasks, policy, plan_review: bool = False) -> "list[tuple[Task, str]]":
     transitions = []
     for t in tasks:
         st = t.norm_status()
         if st == "inbox" and has_verify_plan(t):   # verify か、用意できる材料(accept/verify_template)があれば昇格
-            t.status = "ready"
-            st = "ready"
+            # 実行前レビュー時は ready でなく proposed へ（人の承認で初めて実行可能になる）
+            t.status = "proposed" if plan_review else "ready"
+            st = t.status
         if st in CONSUMABLE and any(t.matches(p) for p in policy.deny):
             t.status = "blocked"
             transitions.append((t, "policy:deny（人の判断待ち）"))
@@ -2306,13 +2601,14 @@ def _charter_plan_signature(ch: "Charter") -> str:
     return hashlib.sha256(_charter_definition(ch).encode("utf-8")).hexdigest()
 
 
-def charter_context(cfg: "Config", max_chars: int = 1400) -> str:
+def charter_context(cfg: "Config", max_chars: int = 1400, task: "Task | None" = None) -> str:
     """charter.md（プロジェクト定義＝目標/制約/前提/成果物）を act ワーカーへ渡す文脈に要約する。
     **`project` でも通常 `run` でも、charter.md が存在すれば全 act に注入**＝kiro-flow のワーカーが
     プロジェクトの北極星（目標・制約）を踏まえて働く。`## links` があればリンク先プロジェクトの定義も
-    続けて取り込む（横展開）。charter 無し（通常運用）では空＝従来どおり。"""
+    続けて取り込む（横展開）。charter 無し（通常運用）では空＝従来どおり。
+    task を渡すと `charter:` タグの charter（複数 charter 運用）を選ぶ。"""
     try:
-        ch = load_charter(cfg)
+        ch = charter_for_task(cfg, task)
     except (OSError, ValueError):
         return ""
     if ch is None:
@@ -2368,11 +2664,12 @@ def _scan_learn_lines(decisions_dir: Path, limit: int = 12) -> "list[str]":
     return out[-limit:]
 
 
-def linked_learnings_context(cfg: "Config", max_chars: int = 800) -> str:
+def linked_learnings_context(cfg: "Config", max_chars: int = 800,
+                             task: "Task | None" = None) -> str:
     """charter `## links` 先プロジェクトの判断（decisions の learn）を act ワーカーへ取り込む（横展開）。
     リンク先で人が下した再利用可能な判断を、別プロジェクトの作業にも効かせる（明示 opt-in・有界）。"""
     try:
-        ch = load_charter(cfg)
+        ch = charter_for_task(cfg, task)
     except (OSError, ValueError):
         return ""
     if ch is None or not ch.links:
@@ -2399,14 +2696,14 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
         # 参照リポジトリは要求本文に畳まず、kiro-flow へ `--reference` で構造化伝搬する
         # （分解後の各ノード／gitlab イシューにも確実に届くように）。
         # 定義（charter）と判断結果（decisions）を、project でも通常 run でもワーカーへ渡す。
-        cc = charter_context(cfg)
+        cc = charter_context(cfg, task=task)
         if cc:
             base += ("\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n"
                      + cc)
         dc = decision_context(cfg, task)
         if dc:
             base += ("\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n" + dc)
-        lc = linked_learnings_context(cfg)
+        lc = linked_learnings_context(cfg, task=task)
         if lc:
             base += ("\n\nリンク先プロジェクトの判断（横展開・参考にすること）:\n" + lc)
         # 似た過去タスクの学び（gitlab 却下/承認・needs の learn）を **分解と実装の両方**に効かせる。
@@ -2562,7 +2859,7 @@ def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dic
       4. auto-route エージェント（route_planner=kiro）  5. 既定（default_workspace / 候補が1つ）
     返り値 (spec or None, routed_by)。None は書込先なし＝読み取り専用 run（調査タスク等）。"""
     try:
-        ch = load_charter(cfg)
+        ch = charter_for_task(cfg, task)
     except (OSError, ValueError):
         ch = None
     specs = registry_specs(cfg, ch)               # repos ファイル単独（charter 無し）でも解決できる
@@ -2602,10 +2899,15 @@ def resolve_and_persist_workspace(cfg: "Config", task: Task, policy: "Policy") -
     return spec
 
 
+def task_branch_name(cfg: "Config", task: "Task") -> str:
+    """タスク単位ターゲットブランチ名（kp/<task-id>）。全試行（リトライ含む）の成果を集約する。"""
+    return f"{getattr(cfg, 'task_branch_prefix', 'kp/') or 'kp/'}{task.id}"
+
+
 def _workspace_token(spec: dict) -> str:
-    """workspace spec を kiro-flow の `--workspace` 値（JSON）にする。url/path/base/target/desc を伝搬。
+    """workspace spec を kiro-flow の `--workspace` 値（JSON）にする。url/path/base/target/desc/branch を伝搬。
     worker（clone・作業ブランチ）と gitlab の起票先解決の双方で使われる。"""
-    meta = {k: spec[k] for k in ("path", "base", "target", "desc") if spec.get(k)}
+    meta = {k: spec[k] for k in ("path", "base", "target", "desc", "branch") if spec.get(k)}
     if meta.get("desc") and len(meta["desc"]) > 300:
         meta["desc"] = meta["desc"][:300]         # argv 肥大を防ぐ（説明は有界に）
     return json.dumps({"url": spec["url"], **meta}, ensure_ascii=False, separators=(",", ":"))
@@ -2618,10 +2920,15 @@ def _workspace_spec_for(cfg: "Config", task: Task) -> "dict | None":
     if not name:
         return None
     try:
-        smap = repo_spec_map(registry_specs(cfg, load_charter(cfg)))
+        smap = repo_spec_map(registry_specs(cfg, charter_for_task(cfg, task)))
     except (OSError, ValueError):
         smap = {}
-    return smap.get(name) or _raw_url_spec(name)
+    spec = smap.get(name) or _raw_url_spec(name)
+    if spec and getattr(cfg, "task_branch", False):
+        # タスク単位ターゲットブランチ: kiro-flow は run 毎の kf/<run-id> の代わりにこのブランチへ
+        # push する（リトライも同一ブランチに積み増し、レビュー・MR の対象を 1 本に集約する）
+        spec = {**spec, "branch": task_branch_name(cfg, task)}
+    return spec
 
 
 def _workspace_cmd_args(cfg: "Config", task: Task) -> "list[str]":
@@ -2651,7 +2958,7 @@ def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
     タスクの `- refs:`（および `- repos:` に挙げた参照先）で明示したものを足す。書込先 `- workspace:`
     に解決された url は除く（書込先は参照に含めない）。要求本文へ記述として埋め込む（clone はしない）。"""
     try:
-        ch = load_charter(cfg)
+        ch = charter_for_task(cfg, task)
     except (OSError, ValueError):
         ch = None
     specs = registry_specs(cfg, ch)
@@ -3229,6 +3536,14 @@ class Config:
     poll: float = 5.0       # watch のポーリング間隔（秒）
     concurrency: int = 1    # 1サイクルで daemon/remote へ並行 submit する独立タスク数（1=逐次）
     level: str = "unattended"  # 自律度: report(実行せず計画報告) / assisted(実行するが done は人が承認) / unattended(現行)
+    # 実行前レビュー（plan review・既定 on）: 新規タスクは proposed で入り、人の承認で ready になる。
+    plan_review: bool = True
+    # タスク単位ターゲットブランチ（既定 on）: 成果を kp/<task-id> に集約する（リトライも同一ブランチ）。
+    task_branch: bool = True
+    task_branch_prefix: str = "kp/"
+    # 成果物レビュー（既定 on）: verify PASS 後、level に依らず常に review（検収待ち）へ。
+    # 人の承認で done 確定（GitLab 設定があれば MR を自動マージ規則で決着）。false で従来の自動 done。
+    delivery_review: bool = True
     throttle: float = 0.0   # ソフト予算比率(0=off)。max_tokens/max_cost のこの割合で run を打ち切り watch は report 降格
     runlog: "Path | None" = None    # 構造化 run-log（JSONL・run 毎に1行追記）。既定 <root>/run-log.jsonl
     registry: "list" = field(default_factory=list)  # 共有レジストリ（別ホスト発見用。NFS/同期/git バス）
@@ -3391,8 +3706,21 @@ def archive_task(cfg: Config, task: Task, vmsg: str, ref: str, ts: str, evidence
     )
     if evidence:
         body += f"\n## 判断材料（成果物の所在・差分・検証）\n{evidence}\n"
-    (cfg.archive_dir() / f"{task.id}.md").write_text(body, encoding="utf-8")
+    _archive_write(cfg, task.id, body)
     delete_task_file(cfg, task)
+
+
+def _archive_write(cfg: "Config", tid: str, body: str) -> None:
+    """archive/<id>.md へ書く。既存（過去の同 id の退避）があれば上書きせず -2, -3… で退避する
+    （明示 id の再投入や複数 charter の同名タスクで過去の記録を失わない）。"""
+    adir = cfg.archive_dir()
+    adir.mkdir(parents=True, exist_ok=True)
+    dest = adir / f"{tid}.md"
+    n = 2
+    while dest.exists():
+        dest = adir / f"{tid}-{n}.md"
+        n += 1
+    dest.write_text(body, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -3601,6 +3929,195 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
     return results
 
 
+
+# ---------------------------------------------------------------------------
+# タスク MR（成果物レビュー）— kp/<task-id> → target の MR を作り、承認で自動決着する。
+#   GitLab REST v4 を stdlib で直叩きする最小クライアント（kiro-flow executors/gitlab.py の
+#   トークン解決・URL 解釈・承認規則の縮小版）。GitLab に到達できなければすべて無害にスキップし、
+#   従来どおり「記録のみ」で動く（done の確定は MR に依存させるが、未設定なら従来のまま）。
+# ---------------------------------------------------------------------------
+_GL_TOKEN_ENVS = ("GITLAB_TOKEN", "GL_TOKEN")
+_GL_RC_FILES = ("~/.bashrc", "~/.bash_profile", "~/.profile", "~/.zshrc")
+
+
+def _gl_token() -> str:
+    for k in _GL_TOKEN_ENVS:
+        v = os.environ.get(k, "").strip()
+        if v:
+            return v
+    pat = re.compile(r"^\s*(?:export\s+)?(?:GITLAB_TOKEN|GL_TOKEN)=[\"\']?([^\"\'\s]+)")
+    for rc in _GL_RC_FILES:
+        try:
+            for line in Path(rc).expanduser().read_text(encoding="utf-8",
+                                                        errors="ignore").splitlines():
+                m = pat.match(line)
+                if m:
+                    return m.group(1)
+        except OSError:
+            continue
+    return ""
+
+
+def _gl_parse_repo(url: str) -> "tuple[str, str] | None":
+    """リポジトリ URL → (host, project_path)。https 形と ssh 形（git@host:group/repo.git）を解釈。"""
+    u = (url or "").strip()
+    m = re.match(r"^https?://([^/]+)/(.+?)(?:\.git)?/?$", u)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.match(r"^(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?/?$", u)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
+def _gl_api(host: str, token: str, method: str, path: str,
+            data: "dict | None" = None, params: "dict | None" = None):
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    url = f"https://{host}/api/v4{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(url, data=body, method=method,
+                                 headers={"PRIVATE-TOKEN": token,
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+            return json.loads(content) if content.strip() else {}
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"GitLab API {method} {path} 失敗: HTTP {e.code}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"GitLab API {method} {path} へ接続できません: {e.reason}")
+
+
+def _gl_quote(project: str) -> str:
+    import urllib.parse
+    return urllib.parse.quote(project, safe="")
+
+
+def _task_mr_coords(task: "Task") -> "tuple[str, str, str] | None":
+    """タスクに記録済みの MR 座標 (host, project, iid)。無ければ None。"""
+    iid = str(task.get("mr_iid") or "").strip()
+    pj = str(task.get("mr_project") or "")
+    if not iid or "|" not in pj:
+        return None
+    host, proj = pj.split("|", 1)
+    return host, proj, iid
+
+
+def ensure_task_mr(cfg: "Config", task: "Task") -> str:
+    """review 到達時に kp/<task-id> → target の MR を用意する（冪等）。
+    GitLab 未設定・非 GitLab リポジトリ・API 失敗は ""（記録のみで続行＝done の確定は従来どおり）。"""
+    if not getattr(cfg, "task_branch", False):
+        return ""
+    if task.get("mr_url"):
+        return str(task.get("mr_url"))
+    spec = _workspace_spec_for(cfg, task)
+    if not spec or not spec.get("url"):
+        return ""
+    parsed = _gl_parse_repo(spec["url"])
+    token = _gl_token()
+    if not parsed or not token:
+        return ""
+    host, proj = parsed
+    source = task_branch_name(cfg, task)
+    target = spec.get("target") or spec.get("base") or "main"
+    try:
+        ep = _gl_quote(proj)
+        found = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests",
+                        params={"source_branch": source, "state": "opened"})
+        mr = found[0] if isinstance(found, list) and found else None
+        if mr is None:
+            mr = _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests",
+                         data={"source_branch": source, "target_branch": target,
+                               "title": f"[kiro-project] {task.id}: {task.title[:80]}",
+                               "description": f"kiro-project タスク {task.id} の成果物"
+                                              f"（ブランチ {source}。承認でクリーンなら自動マージ）",
+                               "remove_source_branch": True})
+        task.drop("mr_url", "mr_iid", "mr_project")
+        task.extra += [("mr_url", str(mr.get("web_url") or "")),
+                       ("mr_iid", str(mr.get("iid") or "")),
+                       ("mr_project", f"{host}|{proj}")]
+        append_journal(cfg.journal, f"タスク MR 用意: {task.id} → {mr.get('web_url', '')}")
+        return str(mr.get("web_url") or "")
+    except RuntimeError as e:
+        append_journal(cfg.journal, f"タスク MR の用意に失敗（記録のみで続行）: {task.id}: {e}")
+        return ""
+
+
+def finalize_task_mr(cfg: "Config", task: "Task") -> "tuple[bool, str]":
+    """approve（検収承認）時にタスク MR を Stage 2（gitlab executor）と同一規則で自動決着する:
+    クリーン（コンフリクト無し・未解決ディスカッション無し）→ マージ（ソースブランチ削除）、
+    差分なし → クローズ、未クリーン → 差し戻しコメントを付けて (False, 理由)（done にしない）。
+    MR 無し・GitLab 未設定は (True, "")＝従来どおり done 確定のみ。"""
+    coords = _task_mr_coords(task)
+    if coords is None:
+        return True, ""
+    token = _gl_token()
+    if not token:
+        return True, "GitLab トークン無し（MR は手動で決着してください）"
+    host, proj, iid = coords
+    ep = _gl_quote(proj)
+    try:
+        mr = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}")
+        state = str(mr.get("state") or "")
+        if state in ("merged", "closed"):
+            return True, f"MR は決着済み（{state}）"
+        problems = []
+        discussions = _gl_api(host, token, "GET",
+                              f"/projects/{ep}/merge_requests/{iid}/discussions",
+                              params={"per_page": 100})
+        unresolved = sum(1 for d in (discussions if isinstance(discussions, list) else [])
+                         if any(n.get("resolvable") and not n.get("resolved")
+                                for n in (d.get("notes") or [])))
+        changes = _gl_api(host, token, "GET", f"/projects/{ep}/merge_requests/{iid}/changes")
+        no_diff = isinstance(changes.get("changes"), list) and not changes["changes"]
+        conflicts = bool(mr.get("has_conflicts")) or \
+            str(mr.get("merge_status") or "") == "cannot_be_merged"
+        if unresolved:
+            problems.append(f"未解決のレビューコメントが {unresolved} 件")
+        if conflicts and not no_diff:
+            problems.append(f"コンフリクト（merge_status={mr.get('merge_status')}）")
+        if problems:
+            why = "; ".join(problems)
+            _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",
+                    data={"body": f"kiro-project: # 差し戻し（自動チェック）\n- {why}\n"
+                                  "解消後に再度 approve してください。"})
+            return False, why
+        if no_diff:                              # 差分なし＝マージするものが無い → クローズで決着
+            _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
+                    data={"state_event": "close"})
+            return True, "差分なし MR＝クローズで決着"
+        _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}/merge",
+                data={"should_remove_source_branch": True})
+        return True, "MR を自動マージ"
+    except RuntimeError as e:
+        return False, f"MR の決着に失敗（解消/再試行してください）: {e}"
+
+
+def close_task_mr(cfg: "Config", task: "Task", reason: str) -> None:
+    """却下（reject）時: タスク MR をクローズしソースブランチを削除する（best-effort・
+    gitlab-review-viewer の却下と同じ規則）。GitLab 未設定なら何もしない。"""
+    coords = _task_mr_coords(task)
+    token = _gl_token()
+    if coords is None or not token:
+        return
+    host, proj, iid = coords
+    ep = _gl_quote(proj)
+    try:
+        _gl_api(host, token, "POST", f"/projects/{ep}/merge_requests/{iid}/notes",
+                data={"body": f"kiro-project: タスク {task.id} は却下されました（{reason}）。"})
+        _gl_api(host, token, "PUT", f"/projects/{ep}/merge_requests/{iid}",
+                data={"state_event": "close"})
+        branch = task_branch_name(cfg, task)
+        _gl_api(host, token, "DELETE",
+                f"/projects/{ep}/repository/branches/{_gl_quote(branch)}")
+    except RuntimeError as e:
+        append_journal(cfg.journal, f"却下 MR の後始末に失敗（無視）: {task.id}: {e}")
+
+
 def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
                    policy, reasons, cycle):
     """verify は通ったが承認ゲート対象（review/gate/protect/assisted）→ done せず人の承認(review)へ。
@@ -3627,6 +4144,13 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
             else "（assisted）" if assisted else "（承認ゲート）")
     reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
                         if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
+    # 成果物レビューの MR: タスクブランチ（kp/<id>）→ target の MR を用意し（冪等・GitLab 設定時のみ）、
+    # 承認（approve）時に Stage 2 と同じ規則（クリーンなら自動マージ）で決着させる
+    mr_url = ensure_task_mr(cfg, task)
+    if mr_url:
+        ev = (ev + "\n" if ev else "") + f"- MR: {mr_url}（承認時にクリーンなら自動マージ）"
+        if not ref:
+            task.set("gate_ref", mr_url)
     persist_task(cfg, task)
     write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True, evidence=ev)
     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
@@ -3814,7 +4338,9 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
                reasons, evidence=ev)
         autonomy_record(cfg, task, clean=False, cache=autonomy_cache)        # 偽 done 疑い＝手戻り
         append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（red-green・変更を弁別しない verify）")
-    elif ok and (needs_human_review(task, policy) or protect_hits or assisted):
+    elif ok and (getattr(cfg, "delivery_review", False)
+                 or needs_human_review(task, policy) or protect_hits or assisted):
+        # delivery_review（既定 on）: verify PASS 後は level に依らず常に人の検収（review）へ
         _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits, assisted,
                        policy, reasons, cycle)
     elif ok:
@@ -3838,8 +4364,8 @@ def _run_setup(cfg: "Config") -> tuple:
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
-    pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review")}
-    transitions = list(triage(tasks, policy))        # inbox→ready 昇格（verify か用意材料あり）・deny→blocked
+    pre_blocked = {t.id for t in tasks if t.norm_status() in ("blocked", "review", "proposed")}
+    transitions = list(triage(tasks, policy, cfg.plan_review))   # inbox→ready/proposed 昇格・deny→blocked
     if cfg.rot:                                       # rot 検知（古い/重複/実行不能を掃除）
         transitions += [(t, f"rot: {why}") for t, why in detect_rot(cfg, tasks)]
     for t, why in transitions:
@@ -3852,6 +4378,7 @@ def _run_setup(cfg: "Config") -> tuple:
         if t.norm_status() in CONSUMABLE and not t.verify and ensure_verify(cfg, t):
             persist_task(cfg, t)
             append_journal(cfg.journal, f"verify 用意: {t.id} ← {t.get('verify_source')}")
+    ensure_plan_review_needs(cfg, tasks)              # proposed に needs（実行前レビュー票）を用意
     return tasks, policy, reasons, ingested, inboxed, pre_blocked
 
 
@@ -4709,7 +5236,8 @@ def _cleanup_bus(cfg: Config) -> None:
 
 def exit_code_for(result: dict) -> int:
     counts = result["counts"]
-    if counts["blocked"] > 0 or counts.get("review", 0) > 0:   # 人の対応待ち（判断 or 検収承認）
+    if counts["blocked"] > 0 or counts.get("review", 0) > 0 \
+            or counts.get("proposed", 0) > 0:   # 人の対応待ち（判断 / 検収承認 / 実行前レビュー）
         return 1
     if result["reason"] in (REASON_DRAINED, "report"):         # 正常停止（消化完了 or 計画報告）
         return 0
@@ -4802,18 +5330,39 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
     t = next((x for x in tasks if x.id == tid), None)
     if t is None:
         # プロジェクト milestone の承認（収束候補 → done 確定）。backlog タスクではない。
-        pstate = load_project_state(cfg)
-        if pstate.get("id") == tid and pstate.get("status") == REASON_PROJECT_CONVERGED:
-            finalize_project(cfg, pstate, reason)
-            print(f"プロジェクト done（承認・最終納品書）: {tid}")
-            return 0
+        # 複数 charter 運用では project.json の charters マップから該当 charter を探す。
+        data = load_project_state(cfg)
+        candidates = [(None, data)] if data.get("id") else []
+        for cname, st in (data.get("charters") or {}).items():
+            candidates.append((cname, st))
+        for cname, st in candidates:
+            if st.get("id") == tid and st.get("status") == REASON_PROJECT_CONVERGED:
+                finalize_project(cfg, st, reason, charter_name=cname)
+                print(f"プロジェクト done（承認・最終納品書）: {tid}")
+                return 0
         print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
         return 2
     # 人手の承認はタスクを consumable/doing から確定遷移させる。worker のクラッシュや
     # review/blocked 滞留で残った古い claim ロック（claims/<id>.lock）を先に掃除しておく。
     # release_claim は冪等（無ければ no-op）なので、新鮮なロックが無い通常ケースでも無害。
     release_claim(cfg, t)
+    if t.norm_status() == "proposed":
+        # 実行前レビューの承認（実行を許可）。done 確定ではない
+        _plan_approve(cfg, t, reason)
+        print(f"plan-review: {tid} を承認しました（→ {t.status}）。")
+        return 0
     if t.norm_status() == "review":
+        # 成果物レビューの承認: タスク MR があれば Stage 2 と同一規則で自動決着（クリーンなら
+        # マージ・未クリーンなら差し戻しコメントを付けて review のまま）。MR 無しは従来どおり
+        mr_ok, mr_msg = finalize_task_mr(cfg, t)
+        if not mr_ok:
+            write_needs_file(cfg, t, f"承認されたが MR が未クリーン: {mr_msg}", review=True,
+                             evidence=f"- MR: {t.get('mr_url', '')}")
+            print(f"{tid}: MR が未クリーンのため done にできません（{mr_msg}）。"
+                  f"解消後に再度 approve してください。", file=sys.stderr)
+            return 1
+        if mr_msg:
+            print(f"{tid}: {mr_msg}")
         # 検収ゲートの承認 = done 確定（verify は実行済み。保持した成果参照で納品書を書く）
         ex = dict(t.extra)
         ref = ex.get("gate_ref", "")
@@ -4883,17 +5432,18 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
     return 0
 
 
-def cmd_replan(cfg: Config, reason: str) -> int:
+def cmd_replan(cfg: Config, reason: str, charter_name: str = "") -> int:
     """charter からのバックログ再分解を要求する（エラー回復用の一発の口）。
     次の project パスで plan を強制し、charter を分解し直して backlog の差分を投入する。
     既存/archive（done）と類似のタスクは冪等に重複排除されるため、done と同種は入らない。
+    複数 charter 運用では charter_name でその charter だけを対象にできる（未指定はどの charter でも消化）。
     charter が無い（backlog ループ）プロジェクトでは再分解の対象が無いためエラー。"""
-    charter = load_charter(cfg)
+    charter = _load_named_charter(cfg, charter_name or None)
     if charter is None:
         print(f"エラー: charter がありません（再分解の対象なし）: {cfg.charter}", file=sys.stderr)
         return 2
-    pid = _project_id(cfg, charter)
-    write_replan_request(cfg, reason)
+    pid = _project_id(cfg, charter) + (f"-{charter_name}" if _is_multi_charter(cfg, charter_name) else "")
+    write_replan_request(cfg, reason, charter=charter_name)
     dr = append_decision(cfg, pid, cfg.actor,
                          context=f"{charter.name}: charter からのバックログ再分解を要求",
                          action="replan", reason=reason,
@@ -5012,6 +5562,14 @@ def recover_revised(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     return out
 
 
+def _print_impact_note(tasks: "list[Task]", tid: str) -> None:
+    """revise/reject 時に、影響を受ける依存先（after 逆辺・推移）を人へ提示する。"""
+    downs = dependents_of(tasks, tid)
+    if downs:
+        print(f"影響範囲（{tid} に依存するタスク・推移）: "
+              + ", ".join(f"{t.id}[{t.norm_status()}]" for t in downs))
+
+
 def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) -> int:
     """バックログのタスクを人が即時修正する（内容・依存・優先度＋feedback 注入。決定記録）。
 
@@ -5064,6 +5622,7 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
     append_journal(cfg.journal, f"revise: {tid} — {affects}"
                    + ("（実行中→積み直し予約）" if doing else ""))
     print(f"{dr}: {tid} を修正しました（{affects}）。" + (disp and f"{disp}。"))
+    _print_impact_note(tasks, tid)     # 依存先（after 逆辺・推移）を提示＝変更の影響範囲を人が辿れる
     return 0
 
 
@@ -5076,7 +5635,7 @@ def cmd_revise(cfg: Config, tid: str, fields: dict, feedback: str, reason: str) 
 # watch がこの口を監視して起こす。実行は CLI と同一の関数へ委譲する
 # （ロジックの二重実装はしない＝効果・決定記録 DR も CLI と同一）。
 
-COMMAND_ACTIONS = ("approve", "hold", "pin", "defer", "revise")
+COMMAND_ACTIONS = ("approve", "hold", "pin", "defer", "revise", "reject")
 
 
 def commands_dir(cfg: "Config") -> Path:
@@ -5125,7 +5684,8 @@ def ingest_commands(cfg: "Config") -> "list[str]":
         reason = str(rec.get("reason", "") or "").strip() or "commands/ からの指示"
         if action == "replan":
             # プロジェクト単位（id 不要）: charter からのバックログ再分解を要求する
-            rc = cmd_replan(cfg, reason)
+            # （複数 charter 運用は "charter" キーで対象を絞れる）
+            rc = cmd_replan(cfg, reason, str(rec.get("charter", "") or "").strip())
             if rc == 0:
                 try:
                     f.unlink()
@@ -5167,6 +5727,8 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             continue
         if action == "approve":
             rc = cmd_approve(cfg, tid, reason)
+        elif action == "reject":
+            rc = cmd_reject(cfg, tid, reason)
         elif action == "hold":
             rc = cmd_hold(cfg, tid, reason)
         elif action == "revise":
@@ -5188,11 +5750,11 @@ def ingest_commands(cfg: "Config") -> "list[str]":
 
 def cmd_needs(cfg: Config) -> int:
     tasks = load_tasks(cfg.backlog)
-    blocked, intake, review = human_worklist(tasks)
-    print(render_digest(blocked, intake, {}, budget_stop=False, review=review))
-    if blocked or review:
+    blocked, intake, review, proposed = human_worklist(tasks)
+    print(render_digest(blocked, intake, {}, budget_stop=False, review=review, proposed=proposed))
+    if blocked or review or proposed:
         print(f"（各案件の詳細・フィードバック欄: {cfg.needs}/<id>.md）")
-    return 1 if (blocked or review) else 0
+    return 1 if (blocked or review or proposed) else 0
 
 
 def _decision_action_tally(decisions_dir: Path) -> "dict[str, int]":
@@ -5232,7 +5794,8 @@ def compute_stats(cfg: Config) -> dict:
              + actions.get("hold(deny)", 0) + actions.get("feedback-resume", 0))
     routed = auto + human
     done = len(archived)
-    pending_human = by_status.get("blocked", 0) + by_status.get("review", 0)
+    pending_human = (by_status.get("blocked", 0) + by_status.get("review", 0)
+                     + by_status.get("proposed", 0))
     tok_total, usd_total = 0, 0.0                         # 納品書の `- cost: tokens=.. usd=..` を集計
     for t in arch_tasks:
         dt, du = parse_cost("@cost " + t.get("cost", ""))
@@ -5940,11 +6503,12 @@ def cmd_triage(cfg: Config) -> int:
     policy = load_policy(cfg.policy)
     for t in tasks:                              # 予防リコール: 過去 hold に類似する ready は実行前に人へ
         apply_intake_recall(cfg, t)              # 一致すれば blocked＋needs（_block が persist 済み）
-    for t, why in triage(tasks, policy):
+    for t, why in triage(tasks, policy, cfg.plan_review):
         write_needs_file(cfg, t, why)
         persist_task(cfg, t)
     for t in tasks:
         persist_task(cfg, t)
+    ensure_plan_review_needs(cfg, tasks)         # proposed に needs（実行前レビュー票）を用意
     order = prioritize(tasks, policy, cfg.planner, cfg.model)
     print("優先順位（消化対象）:")
     for i, t in enumerate(order, 1):
@@ -5953,9 +6517,14 @@ def cmd_triage(cfg: Config) -> int:
 
 
 def _run_single(cfg: Config) -> int:
-    """1 プロジェクトの単発実行（charter があれば目標駆動・無ければ backlog ループ）。要約を表示する。"""
-    if load_charter(cfg) is not None:
-        return cmd_project(cfg)                      # charter 駆動（plan→execute→evaluate）
+    """1 プロジェクトの単発実行（charter があれば目標駆動・無ければ backlog ループ）。要約を表示する。
+    複数 charter（charters/）は全バージョンを順に 1 パスずつ回す。"""
+    names = charter_names(cfg)
+    if names:                                        # charter 駆動（plan→execute→evaluate）
+        worst = 0
+        for name in names:
+            worst = max(worst, cmd_project(cfg, charter_name=name))
+        return worst
     result = run_loop(cfg)
     counts = result["counts"]
     if result.get("level") == "report":              # report: 消化せず計画だけ提示
@@ -5991,8 +6560,8 @@ def cmd_run(cfg: Config) -> int:
         ensure_flow_daemon(cfg, cfg.flow_max_workers)   # 実行層 daemon の確保（opt-in・冪等）
         if cfg.watch:
             _install_sigterm()                   # stop の SIGTERM を KeyboardInterrupt 化（graceful 停止）
-            if load_charter(cfg) is not None:
-                project_watch(cfg, heartbeat=hb)  # 目標を満たすまで回り続ける常駐
+            if charter_names(cfg):
+                project_watch(cfg, heartbeat=hb)  # 目標を満たすまで回り続ける常駐（全 charter）
             else:
                 run_watch(cfg, heartbeat=hb)      # backlog 監視の常駐
             return 0
@@ -6412,11 +6981,10 @@ def registry_specs(cfg: "Config", ch: "Charter | None") -> "list[dict]":
     return load_repo_registry(cfg) or []
 
 
-def load_charter(cfg: "Config") -> "Charter | None":
-    p = cfg.charter
-    if not p or not p.exists():
-        return None
-    ch = parse_charter(p.read_text(encoding="utf-8"))
+def _apply_repo_registry(cfg: "Config", ch: "Charter", allow_export: bool = True) -> "Charter":
+    """repos レジストリ（手書きが正・自動生成物は charter に追従）を charter へ適用する。
+    allow_export=False は charters/ 複数運用時: 各 charter の ## repos はその charter のルーティングに
+    のみ効かせ、repos.json の自動生成（単一 charter が正の前提）は行わない。"""
     rp = repo_registry_path(cfg)
     if rp is not None:
         try:
@@ -6425,10 +6993,11 @@ def load_charter(cfg: "Config") -> "Charter | None":
             print(f"[kiro-project] repos レジストリを解釈できません: {rp}: {e}", file=sys.stderr)
             return ch                                # 壊れた手書きは上書きせず charter のまま
         if _registry_generated(data):                # 自動生成物 → 正は charter・毎回同期
-            if ch.repo_specs:
-                export_repo_registry(cfg, ch.repo_specs, rp)
-            else:
-                rp.unlink(missing_ok=True)           # charter から repos が消えたら生成物も消す
+            if allow_export:
+                if ch.repo_specs:
+                    export_repo_registry(cfg, ch.repo_specs, rp)
+                else:
+                    rp.unlink(missing_ok=True)       # charter から repos が消えたら生成物も消す
             return ch
         specs = _specs_from_registry(data)
         if specs:                                    # 手書きレジストリが正・## repos は互換入力
@@ -6436,9 +7005,84 @@ def load_charter(cfg: "Config") -> "Charter | None":
             ch.repos = [f"{s['name']} = {s['url']}" if s.get("name") else s["url"]
                         for s in specs if s.get("url")]
         return ch
-    if ch.repo_specs:                                # レジストリ無し → charter から生成して外部ツールへ渡す
+    if allow_export and ch.repo_specs:               # レジストリ無し → charter から生成して外部ツールへ渡す
         export_repo_registry(cfg, ch.repo_specs)
     return ch
+
+
+def load_charter(cfg: "Config") -> "Charter | None":
+    p = cfg.charter
+    if not p or not p.exists():
+        return None
+    ch = parse_charter(p.read_text(encoding="utf-8"))
+    return _apply_repo_registry(cfg, ch)
+
+
+# ---------------------------------------------------------------------------
+# 複数 charter（charters/<name>.md）— 1 プロジェクトで複数バージョンの開発を並行管理する。
+#   charters/ があれば各ファイルが 1 バージョン（stem が charter 名）で、全 charter を
+#   ラウンドロビンで plan→execute→evaluate する。無ければ従来の charter.md（"default"）。
+#   タスクには `charter: <name>` タグが付き、plan の冪等照合・drained 判定・acceptance
+#   評価・milestone/state は charter 単位に閉じる（execute の run_loop は backlog 共有）。
+# ---------------------------------------------------------------------------
+def charters_dir(cfg: "Config") -> Path:
+    return cfg.backlog.parent / "charters"
+
+
+def charter_names(cfg: "Config") -> "list[str]":
+    """駆動対象の charter 名一覧。charters/*.md（名前順）＞ 単一 charter.md（"default"）＞ 空。"""
+    d = charters_dir(cfg)
+    if d.is_dir():
+        names = sorted(f.stem for f in d.glob("*.md") if f.is_file())
+        if names:
+            return names
+    return ["default"] if (cfg.charter and cfg.charter.exists()) else []
+
+
+def _load_named_charter(cfg: "Config", name: "str | None") -> "Charter | None":
+    """charter 名 → Charter。charters/<name>.md があればそれ（複数運用・repos 自動生成なし）、
+    無ければ従来の charter.md へフォールバック（"default" や未指定）。"""
+    if name:
+        f = charters_dir(cfg) / f"{name}.md"
+        if f.is_file():
+            try:
+                return _apply_repo_registry(cfg, parse_charter(f.read_text(encoding="utf-8")),
+                                            allow_export=False)
+            except (OSError, ValueError):
+                return None
+    return load_charter(cfg)
+
+
+def load_charters(cfg: "Config") -> "list[tuple[str, Charter]]":
+    """全 charter を (name, Charter) で返す（charters/ 無しは [("default", charter.md)]）。"""
+    out: "list[tuple[str, Charter]]" = []
+    for name in charter_names(cfg):
+        ch = _load_named_charter(cfg, name)
+        if ch is not None:
+            out.append((name, ch))
+    return out
+
+
+def _is_multi_charter(cfg: "Config", name: "str | None") -> bool:
+    """この charter 名が charters/ 複数運用のものか（milestone id の接尾辞・state のキー化に使う）。"""
+    return bool(name) and (charters_dir(cfg) / f"{name}.md").is_file()
+
+
+def task_charter_name(task: "Task") -> str:
+    """タスクが属する charter 名（`- charter:` タグ。無ければ "default" 扱い）。"""
+    return (task.get("charter") or "").strip() or "default"
+
+
+def charter_for_task(cfg: "Config", task: "Task | None" = None) -> "Charter | None":
+    """タスクの `charter:` タグから該当 charter を選ぶ（無ければ先頭/従来の charter.md）。
+    ルーティング・文脈注入など「タスク単位で charter を引く」箇所の共通入口。"""
+    name = (task.get("charter") or "").strip() if task is not None else ""
+    if name:
+        ch = _load_named_charter(cfg, name)
+        if ch is not None:
+            return ch
+    chs = load_charters(cfg)
+    return chs[0][1] if chs else None
 
 
 def project_state_path(cfg: "Config") -> Path:
@@ -6462,6 +7106,24 @@ def save_project_state(cfg: "Config", state: dict) -> None:
                                        encoding="utf-8")
 
 
+def load_charter_state(cfg: "Config", name: "str | None" = None) -> dict:
+    """charter 単位の収束状態。複数運用（name あり）は project.json の {"charters": {name: …}}、
+    単一運用（name 無し）は従来どおりトップレベル（後方互換）。"""
+    data = load_project_state(cfg)
+    if name:
+        return dict((data.get("charters") or {}).get(name) or {})
+    return data
+
+
+def save_charter_state(cfg: "Config", state: dict, name: "str | None" = None) -> None:
+    if not name:
+        save_project_state(cfg, state)
+        return
+    data = load_project_state(cfg)
+    data.setdefault("charters", {})[name] = state
+    save_project_state(cfg, data)
+
+
 # ---------------------------------------------------------------------------
 # バックログ再分解の要求（人が charter から backlog を作り直したいときの一発の口）。
 #   通常の再分解は「消化可能タスクが無い」か「charter が変わった」ときに自動で走るが、
@@ -6475,17 +7137,22 @@ def replan_request_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / ".replan.request"
 
 
-def write_replan_request(cfg: "Config", reason: str) -> None:
-    """次パスの再分解要求マーカーを置く（人の明示アクション。冪等＝上書き）。"""
+def write_replan_request(cfg: "Config", reason: str, charter: str = "") -> None:
+    """次パスの再分解要求マーカーを置く（人の明示アクション。冪等＝上書き）。
+    charter を渡すとその charter だけを再計画対象にする（複数 charter 運用）。"""
     p = replan_request_path(cfg)
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = {"reason": reason or "", "actor": getattr(cfg, "actor", "") or "",
                "ts": datetime.now().isoformat(timespec="seconds")}
+    if charter:
+        payload["charter"] = charter
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def consume_replan_request(cfg: "Config") -> "dict | None":
-    """再分解要求マーカーがあれば読み取り、消して payload を返す（無ければ None）。one-shot。"""
+def consume_replan_request(cfg: "Config", charter_name: "str | None" = None) -> "dict | None":
+    """再分解要求マーカーがあれば読み取り、消して payload を返す（無ければ None）。one-shot。
+    charter_name を渡したとき、要求が**別の charter 宛**ならマーカーを残して None を返す
+    （その charter のパスで消化される）。charter 指定の無い要求はどの charter でも消化する。"""
     p = replan_request_path(cfg)
     if not p.exists():
         return None
@@ -6493,11 +7160,16 @@ def consume_replan_request(cfg: "Config") -> "dict | None":
         payload = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {"reason": ""}
+    target = str(payload.get("charter") or "").strip()
+    if charter_name is not None and target and target != charter_name:
+        return None                              # 別 charter 宛 → 残す
     try:
         p.unlink()
     except OSError:
         pass
-    return payload if isinstance(payload, dict) else {"reason": ""}
+    return payload
 
 
 def _project_id(cfg: "Config", charter: "Charter") -> str:
@@ -6529,16 +7201,26 @@ def resolve_linked_projects(cfg: "Config", charter: "Charter") -> "list[tuple[st
     return out
 
 
-def _existing_titles(cfg: "Config") -> "list[str]":
-    """重複投入の冪等照合に使う既存タイトル（backlog＋archive）。"""
-    titles = [t.title for t in load_tasks(cfg.backlog)]
+def _existing_titles(cfg: "Config", charter: "str | None" = None) -> "list[str]":
+    """重複投入の冪等照合に使う既存タイトル（backlog＋archive）。charter を渡すと
+    その charter のタスク（タグ一致・タグ無しも含む）に照合を閉じる（複数 charter 運用で
+    別バージョンの同名タスクを誤って弾かない）。"""
+    def _match(t: "Task") -> bool:
+        if not charter:
+            return True
+        tag = (t.get("charter") or "").strip()
+        return tag in ("", charter)
+
+    titles = [t.title for t in load_tasks(cfg.backlog) if _match(t)]
     adir = cfg.archive_dir()
     if adir.exists():
         for p in adir.glob("*.md"):
             try:
-                titles.append(parse_task(p.read_text(encoding="utf-8"), p.stem).title)
+                t = parse_task(p.read_text(encoding="utf-8"), p.stem)
             except (OSError, ValueError):
                 continue
+            if _match(t):
+                titles.append(t.title)
     return [t for t in titles if t]
 
 
@@ -6736,14 +7418,14 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
 
 
 def _enqueue_specs(cfg: "Config", specs: "list[dict]", existing: "list[str]",
-                   threshold: float) -> "list[Task]":
+                   threshold: float, charter: "str | None" = None) -> "list[Task]":
     """spec 群を冪等に backlog へ投入（既存と類似は飛ばす）。verify 無しは enqueue_task が inbox にする。
 
     冪等照合は「呼び出し時点のスナップショット ∪ 投入直前に読み直した現物」で行う。plan/review は
     エージェント委譲で数分かかるため、スナップショットだけだと、その間に投入されたタスク
     （別インスタンス・前パスの残り・state_git 同期で届いた分・リセット後に書き戻された残骸）が
     照合に無く、類似バックログを二重投入してしまう。"""
-    merged = list(existing) + _existing_titles(cfg)
+    merged = list(existing) + _existing_titles(cfg, charter)
     created: list[Task] = []
     for sp in specs:
         title = str(sp.get("title", "") or "").strip()
@@ -7065,9 +7747,11 @@ def _failing_acceptance_specs(results: "list") -> "list[dict]":
     return specs
 
 
-def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str) -> None:
-    """収束候補/要対応を milestone として needs/<project>.md に出す（検収ゲートのプロジェクト版）。"""
-    pid = _project_id(cfg, charter)
+def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str,
+                    pid: "str | None" = None) -> None:
+    """収束候補/要対応を milestone として needs/<pid>.md に出す（検収ゲートのプロジェクト版）。
+    複数 charter 運用では pid が `<project>-<charter名>` になり charter 別に分かれる。"""
+    pid = pid or _project_id(cfg, charter)
     cfg.needs.mkdir(parents=True, exist_ok=True)
     labels = {
         REASON_PROJECT_CONVERGED: "収束候補（acceptance 全 PASS・改善ゼロ）",
@@ -7096,8 +7780,9 @@ def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str
     (cfg.needs / f"{pid}.md").write_text(body, encoding="utf-8")
 
 
-def finalize_project(cfg: "Config", state: dict, reason: str) -> None:
-    """プロジェクトを done 確定する（人の承認 or テスト用）。最終納品書を残し state を accepted に。"""
+def finalize_project(cfg: "Config", state: dict, reason: str,
+                     charter_name: "str | None" = None) -> None:
+    """プロジェクト（charter）を done 確定する。最終納品書を残し state を accepted に。"""
     pid = state.get("id", "project")
     name = state.get("name", pid)
     total = int(state.get("acceptance_total", 0))
@@ -7110,7 +7795,7 @@ def finalize_project(cfg: "Config", state: dict, reason: str) -> None:
                     action="project-accept", reason=reason, affects=summary)
     clear_needs_file(cfg, pid)
     state["status"] = REASON_PROJECT_ACCEPTED
-    save_project_state(cfg, state)
+    save_charter_state(cfg, state, charter_name)
 
 
 def project_exit_code(reason: str) -> int:
@@ -7122,20 +7807,30 @@ def project_exit_code(reason: str) -> int:
 
 
 def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
-                      cycle: int, cost_used: float, review_fn) -> "tuple[str | None, str]":
+                      cycle: int, cost_used: float, review_fn,
+                      charter_tag: str = "") -> "tuple[str | None, str]":
     """③ evaluate: acceptance 評価 → 未達/レビュー所見を改善タスク化 → 収束/コスト/停滞を判定する。
-    停止すべきなら停止理由を、続行なら None を返す（last_summary も返す）。state(history/best/stall) を更新。"""
+    停止すべきなら停止理由を、続行なら None を返す（last_summary も返す）。state(history/best/stall) を更新。
+    charter_tag（複数 charter 運用）を渡すと改善タスクにタグを付け、冪等照合もその charter に閉じる。"""
     passed, total, results = evaluate_acceptance(cfg, charter)
     state["history"] = list(state.get("history", [])) + [passed]
-    existing = _existing_titles(cfg)
+    existing = _existing_titles(cfg, charter_tag or None)
+
+    def _tag(specs: "list[dict]") -> "list[dict]":
+        if charter_tag:
+            for sp in specs:
+                sp.setdefault("charter", charter_tag)
+        return specs
+
     improved: list[Task] = []
     if passed < total:                        # 未達 acceptance を、それ自体を verify とする改善タスクへ
-        improved += _enqueue_specs(cfg, _failing_acceptance_specs(results),
-                                   existing, cfg.learn_threshold)
+        improved += _enqueue_specs(cfg, _tag(_failing_acceptance_specs(results)),
+                                   existing, cfg.learn_threshold, charter=charter_tag or None)
     findings: list[dict] = []
     if cfg.review_project and passed == total:  # 短絡的達成を疑い敵対的レビュー（opt-in）
-        findings = review_fn(charter)
-        improved += _enqueue_specs(cfg, findings, existing, cfg.learn_threshold)
+        findings = _tag(review_fn(charter))
+        improved += _enqueue_specs(cfg, findings, existing, cfg.learn_threshold,
+                                   charter=charter_tag or None)
     last_summary = (f"cycle {cycle}: acceptance {passed}/{total} PASS, "
                     f"改善 {len(improved)} 件, cost={cost_used:.4f}")
     append_decision(cfg, pid, "auto",
@@ -7159,11 +7854,13 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
 
 
 def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None,
-                kiro_run=None) -> int:
-    """charter 駆動の plan→execute→evaluate ループ（1 プロジェクトパス。`run` が charter 検出時に呼ぶ）。
+                kiro_run=None, charter_name: "str | None" = None) -> int:
+    """charter 駆動の plan→execute→evaluate ループ（1 charter の 1 パス。`run` が charter 検出時に呼ぶ）。
+    charter_name（charters/<name>.md）を渡すとその charter だけを回す（複数 charter 運用）。
     planner/reviewer/runner/kiro_run は テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
     ensure_dirs(cfg)
-    charter = load_charter(cfg)
+    charter = _load_named_charter(cfg, charter_name)
+    multi = _is_multi_charter(cfg, charter_name)
     if charter is None:
         print(f"エラー: charter が見つかりません: {cfg.charter}", file=sys.stderr)
         print("  ヒント: 目標/制約/前提/成果物/acceptance を charter.md に書いてください。",
@@ -7172,7 +7869,7 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     # 人からの再分解要求（エラー回復）を入口で消費する（one-shot）。ここで消しておくことで、
     # acceptance 未定義など早期 return するパスでもマーカーが残らず、has_work の空振り起床が
     # 続かない（要求は消化済み＝下の plan ゲートで charter 無変更でも一発だけ plan を強制する）。
-    replan_req = consume_replan_request(cfg)
+    replan_req = consume_replan_request(cfg, charter_name if multi else None)
     problems = validate_charter(charter)
     if problems:
         print(f"エラー: charter の repos 定義が不正です（{cfg.charter}）:", file=sys.stderr)
@@ -7181,26 +7878,26 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         print("  ヒント: 各 repo に `- desc:`（説明・必須）と `- base:`（ベースブランチ・必須）を、"
               "必要なら `- target:`（既定 base）を付けてください。", file=sys.stderr)
         return 2
-    pid = _project_id(cfg, charter)
+    pid = _project_id(cfg, charter) + (f"-{charter_name}" if multi else "")
     if not charter.acceptance:
         # acceptance（受入 verify）が無いと done を判定できない＝必ず人へ（鉄則の保全）
-        write_milestone(cfg, charter, "no-acceptance", "acceptance 未定義のため done 判定不能")
+        write_milestone(cfg, charter, "no-acceptance", "acceptance 未定義のため done 判定不能", pid=pid)
         print(f"[project] {charter.name}: acceptance 未定義 → 人へ（needs/{pid}.md）")
         return project_exit_code("no-acceptance")
 
     plan_fn = planner or (lambda ch: plan_via_agent(cfg, ch))
     review_fn = reviewer or (lambda ch: review_via_agent(cfg, ch))
-    state = load_project_state(cfg)
+    state = load_charter_state(cfg, charter_name if multi else None)
     if state.get("id") != pid:
         state = {"id": pid, "name": charter.name, "history": [], "best": 0, "stall": 0}
     # acceptance を実行可能なコマンドへ解決（自然言語は決定的 verify へ合成し、結果を state にキャッシュ）。
     # 合成できない自然言語が残れば done 判定不能＝人へ（acceptance を書けないプロジェクトは人へ回す鉄則）。
     resolved, unresolved = resolve_charter_acceptance(cfg, charter, state, kiro_run)
     if unresolved:
-        save_project_state(cfg, state)        # 合成済みキャッシュは残す（次回は再合成不要）
+        save_charter_state(cfg, state, charter_name if multi else None)   # 合成済みキャッシュは残す
         summary = ("自然言語の acceptance を決定的 verify に合成できません（done 判定不能）: "
                    + " / ".join(unresolved))
-        write_milestone(cfg, charter, "no-acceptance", summary)
+        write_milestone(cfg, charter, "no-acceptance", summary, pid=pid)
         print(f"[project] {charter.name}: acceptance を合成できず → 人へ（needs/{pid}.md）")
         for u in unresolved:
             print(f"  - 未合成: {u}", file=sys.stderr)
@@ -7215,7 +7912,7 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     state["planned_charter_sig"] = plan_sig
     state.update({"id": pid, "name": charter.name,
                   "acceptance_total": len(charter.acceptance), "status": "running"})
-    save_project_state(cfg, state)
+    save_charter_state(cfg, state, charter_name if multi else None)
 
     append_journal(cfg.journal, f"=== project 開始 {charter.name} "
                                 f"acceptance={len(charter.acceptance)} ===")
@@ -7235,11 +7932,18 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         # ① plan — 消化可能タスクが無いとき、または charter が前回計画時から変わったときに目標から
         #   backlog を起こす（変更が無ければ毎サイクルの再分解は避ける）。再計画は既存/archive タイトルで
         #   冪等に重複排除されるため、既存タスクを二重投入せず「charter の差分が生む新規タスク」だけ入る。
-        existing = _existing_titles(cfg)
-        has_consumable = any(t.consumable() for t in load_tasks(cfg.backlog))
+        existing = _existing_titles(cfg, charter_name if multi else None)
+        has_consumable = any(
+            t.consumable() and (not multi or task_charter_name(t) == charter_name)
+            for t in load_tasks(cfg.backlog))
         if not has_consumable or charter_changed or replan_req is not None:
             specs = plan_fn(charter)
-            planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold)
+            if multi:
+                for sp in specs:                 # この charter のタスクとしてタグ付け（スコープの正）
+                    if isinstance(sp, dict):
+                        sp.setdefault("charter", charter_name)
+            planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold,
+                                     charter=charter_name if multi else None)
             trig = ("再分解要求（エラー回復）" if replan_req is not None
                     else "charter 変更検知" if charter_changed else f"plan cycle {cycle}")
             if planned:
@@ -7260,13 +7964,15 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         if result["reason"] in (REASON_BUDGET, REASON_COST, REASON_THROTTLE):
             reason = REASON_PROJECT_BUDGET if result["reason"] != REASON_COST else REASON_PROJECT_COST
             break
-        if counts.get("blocked", 0) > 0 or counts.get("review", 0) > 0:
+        if counts.get("blocked", 0) > 0 or counts.get("review", 0) > 0 \
+                or counts.get("proposed", 0) > 0:
             reason = REASON_PROJECT_BLOCKED      # 内側が人へ → プロジェクトも人待ちで止める
             break
 
         # ③ evaluate — acceptance 評価・改善起票・収束/コスト/停滞判定（停止理由 or None）
         stop_reason, last_summary = _project_evaluate(cfg, charter, pid, state, cycle,
-                                                      cost_used, review_fn)
+                                                      cost_used, review_fn,
+                                                      charter_tag=charter_name if multi else "")
         if stop_reason:
             reason = stop_reason
             break
@@ -7274,11 +7980,11 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     state["cost"] = round(cost_used, 4)
     state["cycles"] = int(state.get("cycles", 0)) + cycle
     state["status"] = reason
-    save_project_state(cfg, state)
+    save_charter_state(cfg, state, charter_name if multi else None)
 
     if reason in (REASON_PROJECT_CONVERGED, REASON_PROJECT_STALL,
                   REASON_PROJECT_BUDGET, REASON_PROJECT_COST, REASON_PROJECT_BLOCKED):
-        write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）")
+        write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）", pid=pid)
     append_journal(cfg.journal, f"=== project 停止 reason={reason} cycles={cycle} "
                                 f"cost={cost_used:.4f} ===")
     print(f"\n=== kiro-project run（charter 駆動: {charter.name}）===")
@@ -7290,6 +7996,24 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     elif reason != REASON_PROJECT_ACCEPTED:
         print(f"→ 人の対応待ち: needs/{pid}.md を確認")
     return project_exit_code(reason)
+
+
+def _charter_mtimes(cfg: "Config") -> "dict[str, float]":
+    """charter ファイル群（charters/*.md と charter.md）の mtime（更新検知用）。"""
+    out: "dict[str, float]" = {}
+    d = charters_dir(cfg)
+    if d.is_dir():
+        for f in d.glob("*.md"):
+            try:
+                out[f.name] = f.stat().st_mtime
+            except OSError:
+                pass
+    if cfg.charter and cfg.charter.exists():
+        try:
+            out["charter.md"] = cfg.charter.stat().st_mtime
+        except OSError:
+            pass
+    return out
 
 
 def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
@@ -7308,17 +8032,27 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
             write_status(cfg)
             code = 0
         else:
-            code = cmd_project(cfg, planner, reviewer, runner, heartbeat=heartbeat)
-            passes += 1
-            if heartbeat:
-                heartbeat()
-            if max_passes is not None and passes >= max_passes:
+            names = charter_names(cfg)
+            if not names:
                 return code
-        charter = load_charter(cfg)
-        if charter is None:
+            for name in names:       # 全 charter（バージョン）をラウンドロビンで 1 パスずつ
+                code = cmd_project(cfg, planner, reviewer, runner, heartbeat=heartbeat,
+                                   charter_name=name)
+                passes += 1
+                if heartbeat:
+                    heartbeat()
+                if max_passes is not None and passes >= max_passes:
+                    return code
+        names = charter_names(cfg)
+        if not names:
             return code
-        pid = _project_id(cfg, charter)
-        mtime0 = cfg.charter.stat().st_mtime if cfg.charter.exists() else 0
+        pids = {}
+        for name in names:           # charter 別の milestone id（フィードバック検知に使う）
+            ch = _load_named_charter(cfg, name)
+            if ch is not None:
+                pids[name] = _project_id(cfg, ch) + (
+                    f"-{name}" if _is_multi_charter(cfg, name) else "")
+        mtimes0 = _charter_mtimes(cfg)
         append_journal(cfg.journal, "=== project watch: 監視中（charter 更新/フィードバック待ち）===")
         while True:                  # idle: charter が変わるか、人のフィードバックが来たら再開
             sleeper(cfg.poll)
@@ -7330,13 +8064,13 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 if maybe_self_update(cfg):
                     raise _RestartRequested()
                 continue             # pause 中は再開条件を評価しない
-            nf = needs_path(cfg, pid)
-            if nf.exists() and read_feedback(nf):
-                clear_needs_file(cfg, pid)
-                break
-            if cfg.charter.exists() and cfg.charter.stat().st_mtime > mtime0:
-                break
-            if has_work(cfg):
+            resumed = False
+            for pid in pids.values():
+                nf = needs_path(cfg, pid)
+                if nf.exists() and read_feedback(nf):
+                    clear_needs_file(cfg, pid)
+                    resumed = True
+            if resumed or _charter_mtimes(cfg) != mtimes0 or has_work(cfg):
                 break
             if maybe_self_update(cfg):   # アイドル時のみ自己更新（取り込めたら再起動）
                 raise _RestartRequested()
@@ -7450,6 +8184,18 @@ CONFIG_DEFAULTS = {
     "update_branch": "main",             # 追従するブランチ
     "update_subdir": TOOL_SUBDIR,        # リポジトリ内のこのツールのサブディレクトリ
     "update_installer": "install.sh",    # サブディレクトリ内で実行するインストーラ
+    # 実行前レビュー（plan review）: 新規タスクは proposed で入り、人の承認（approve）で実行可能になる。
+    # false で従来の自動投入（verify ありは即 ready）へ戻す。
+    "plan_review": True,
+    # タスク単位ターゲットブランチ: 成果物を kp/<task-id> に集約（kiro-flow の workspace branch へ注入。
+    # リトライ（r0/r1…）も同一ブランチに積み増す）。false で従来の run 毎 kf/<run-id>。
+    "task_branch": True,
+    "task_branch_prefix": "kp/",
+    # 成果物レビュー: verify PASS 後、常に review（検収待ち）→ 人の承認で done 確定。
+    # review 到達時に GitLab 設定（GITLAB_TOKEN/GL_TOKEN）があれば kp/<task-id> → target の MR を
+    # 自動作成し、承認時にクリーン（コンフリクト無し・未解決ディスカッション無し）なら自動マージする。
+    # false で従来の unattended 自動 done。
+    "delivery_review": True,
     # 真偽フラグ（CLI > 設定ファイル > 既定）。CLI 未指定（None）なら設定ファイル→この既定で確定
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,
@@ -7564,6 +8310,10 @@ def build_config(args) -> Config:
         watch=bool(getattr(args, "watch", False)), poll=getattr(args, "poll", 5.0),
         concurrency=max(1, int(getattr(args, "concurrency", 1) or 1)),
         level=getattr(args, "level", None) or "unattended",
+        plan_review=bool(getattr(args, "plan_review", True)),
+        task_branch=bool(getattr(args, "task_branch", True)),
+        task_branch_prefix=str(getattr(args, "task_branch_prefix", "kp/") or "kp/"),
+        delivery_review=bool(getattr(args, "delivery_review", True)),
         registry=_split_registry(getattr(args, "registry", None)),
         dry_run=bool(getattr(args, "dry_run", False)), once=bool(getattr(args, "once", False)),
         project_name=root.name,
@@ -7704,6 +8454,14 @@ def _add_common(sp):
                     help="learn ルールがこの回数以上効いたら昇格（既定 2）")
     sp.add_argument("--rot-age-days", type=float, default=None,
                     help="rot の stale 判定（経過日数。既定 14）")
+    sp.add_argument("--plan-review", action=argparse.BooleanOptionalAction, default=None,
+                    help="実行前レビュー: 新規タスクを proposed で入れ、人の承認で実行可能にする"
+                         "（--no-plan-review で従来の自動投入。既定 on）")
+    sp.add_argument("--task-branch", action=argparse.BooleanOptionalAction, default=None,
+                    help="タスク単位ターゲットブランチ（kp/<task-id> に成果を集約。既定 on）")
+    sp.add_argument("--delivery-review", action=argparse.BooleanOptionalAction, default=None,
+                    help="成果物レビュー: verify PASS 後、常に検収待ち（review）にして人の承認で done"
+                         "（--no-delivery-review で従来の自動 done。既定 on）")
 
 
 # ---------------------------------------------------------------------------
@@ -8132,10 +8890,22 @@ def main(argv=None) -> int:
                     help="次の act に必ず反映させる指示（例: e2e はローカルでなく実サーバに配備して実施）")
     rv.add_argument("--reason", default=None, help="決定記録に残す理由（省略時は feedback を流用）")
 
+    rj = sub.add_parser("reject",
+                        help="タスクを却下（廃止して archive へ退避。依存先を再審査に戻し、"
+                             "charter があれば再計画を要求。決定記録・avoid 記録）")
+    _add_common(rj); rj.add_argument("id"); rj.add_argument("--reason", required=True)
+
+    imp = sub.add_parser("impact",
+                         help="タスクの依存関係（前提／依存先・推移）を一覧表示（変更・却下の影響範囲）")
+    _add_common(imp); imp.add_argument("id")
+    imp.add_argument("--json", action="store_true", help="JSON で出力")
+
     rpl = sub.add_parser("replan",
                          help="charter からバックログを再分解（エラー回復。done/既存と類似は投入しない）")
     _add_common(rpl)
     rpl.add_argument("--reason", default=None, help="決定記録に残す理由")
+    rpl.add_argument("--charter", default=None,
+                     help="対象 charter 名（charters/ 複数運用時。未指定は全 charter で消化可能）")
 
     _reg_help = ("共有レジストリ（os.pathsep 区切り可）。NFS/同期フォルダ/git バスのチェックアウト等を"
                  "指すと別ホストを相互発見。環境変数 KIRO_PROJECT_REGISTRY でも指定可")
@@ -8166,7 +8936,7 @@ def main(argv=None) -> int:
     # PC 起動時に立ち上げっぱなしにして cwd のプロジェクトを面倒見る daemon 用途を一級にするため。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
-                    "revise", "replan", "instances", "start", "stop", "restart"}
+                    "revise", "reject", "impact", "replan", "instances", "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
 
@@ -8210,13 +8980,16 @@ def main(argv=None) -> int:
         "promote": lambda: cmd_promote(cfg),
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason),
+        "reject": lambda: cmd_reject(cfg, args.id, args.reason),
+        "impact": lambda: cmd_impact(cfg, args.id, getattr(args, "json", False)),
         "hold": lambda: cmd_hold(cfg, args.id, args.reason),
         "reprioritize": lambda: cmd_reprioritize(
             cfg, args.id, "pin" if args.pin else "defer", args.reason),
         "revise": lambda: cmd_revise(
             cfg, args.id, {k: getattr(args, f"rv_{k}") for k in REVISE_FIELDS},
             args.rv_feedback or "", args.reason or ""),
-        "replan": lambda: cmd_replan(cfg, args.reason or "charter からのバックログ再分解"),
+        "replan": lambda: cmd_replan(cfg, args.reason or "charter からのバックログ再分解",
+                                     getattr(args, "charter", None) or ""),
     }[args.cmd]()
 
 

@@ -299,7 +299,7 @@ function renderHeader() {
 // タブ: 概要
 // ---------------------------------------------------------------------------
 
-const STATUS_ORDER = ['ready', 'doing', 'offloaded', 'review', 'blocked', 'inbox', 'draft'];
+const STATUS_ORDER = ['proposed', 'ready', 'doing', 'offloaded', 'review', 'blocked', 'inbox', 'draft'];
 
 function renderOverview() {
   const p = state.project;
@@ -334,6 +334,29 @@ function renderOverview() {
     `<div class="tile st-done"><div class="num">${p.archive.length}</div><div class="label">done（累計）</div></div>`
   );
   parts.push(`<div class="card full"><h3>バックログ</h3><div class="tiles">${tiles.join('')}</div></div>`);
+
+  // 複数 charter（charters/<name>.md = バージョン）の一覧
+  if (p.charters && p.charters.length) {
+    const chStates = (p.projectState && p.projectState.charters) || {};
+    const rows = p.charters
+      .map((ch) => {
+        const st = chStates[ch.name] || {};
+        const total = Number(st.acceptance_total || (ch.acceptanceItems || []).length || 0);
+        const best = Number(st.best || 0);
+        return `<tr>
+          <td class="mono">${esc(ch.name)}</td>
+          <td>${esc(ch.goal || ch.name || '')}</td>
+          <td>${total ? `${best} / ${total} PASS` : '—'}</td>
+          <td>${st.status ? statusChip(st.status) : '<span class="muted">未実行</span>'}</td>
+          <td><button class="chip" data-edit="charters/${esc(ch.name)}.md">✎ 編集</button></td>
+        </tr>`;
+      })
+      .join('');
+    parts.push(`<div class="card full">
+      <h3>バージョン（charters/ — 全バージョンを並行駆動）</h3>
+      <table class="list"><tr><th>charter</th><th>goal</th><th>acceptance</th><th>状態</th><th></th></tr>${rows}</table>
+    </div>`);
+  }
 
   // charter
   if (p.charter) {
@@ -656,6 +679,44 @@ const BACKLOG_FILTERS = [
 
 // kiro-project の run-id 生成（_submit_req_id）と同じ task.id 正規化。バックログの task.id を
 // run-id 内の taskId 断片へ合わせるために使う。
+// tid に依存するタスク（after 逆辺・推移）。却下・修正の影響一覧に使う
+function dependentsOf(tasks, tid) {
+  const deps = (t) =>
+    String((t.extra && t.extra.after) || '')
+      .split(/[\s,]+/)
+      .filter(Boolean);
+  const out = [];
+  const seen = new Set([tid]);
+  let frontier = new Set([tid]);
+  while (frontier.size) {
+    const next = new Set();
+    for (const t of tasks) {
+      if (seen.has(t.id)) continue;
+      if (deps(t).some((d) => frontier.has(d))) {
+        out.push(t);
+        seen.add(t.id);
+        next.add(t.id);
+      }
+    }
+    frontier = next;
+  }
+  return out;
+}
+
+function rejectConfirmMessage(p, id, what) {
+  const downs = dependentsOf(p.backlog, id);
+  const impact = downs.length
+    ? `\n影響範囲（このタスクに依存・推移）: ${downs.map((t) => `${t.id}[${t.status}]`).join(', ')}\n` +
+      '依存タスクは実行前レビュー（proposed）に戻して再審査にかけます。'
+    : '\n依存しているタスクはありません。';
+  return (
+    `${id} を却下（${what}）します。\n` +
+    'タスクは廃止（archive へ退避・avoid 記録）され、charter があれば再計画が要求されます。' +
+    impact +
+    '\nよろしいですか？'
+  );
+}
+
 function sanitizeTaskId(id) {
   return String(id == null ? '' : id)
     .replace(/[^\w.-]+/g, '_')
@@ -884,12 +945,28 @@ function renderBacklog() {
   else if (state.backlogFilter === 'active') tasks = p.backlog;
   else tasks = p.backlog.filter((t) => t.status === state.backlogFilter);
 
+  // 複数 charter 運用: charter（バージョン）でさらに絞り込む
+  const charterNames = (p.charters || []).map((c) => c.name);
+  if (charterNames.length && state.backlogCharter) {
+    tasks = tasks.filter((t) => (t.extra.charter || '') === state.backlogCharter);
+  }
+  const charterChips = charterNames.length
+    ? `<span class="muted" style="margin-left:8px">charter:</span>` +
+      ['', ...charterNames]
+        .map(
+          (n) =>
+            `<button class="chip ${((state.backlogCharter || '') === n) ? 'active' : ''}" data-charter-filter="${esc(n)}">${n ? esc(n) : '全部'}</button>`
+        )
+        .join('')
+    : '';
+
   // priority 降順 → 古い順（planner none と同じ感覚）
   tasks = [...tasks].sort((a, b) => b.priority - a.priority || a.mtime - b.mtime);
 
   const rows = tasks
     .map((t) => {
       const extras = [];
+      if (t.extra.charter) extras.push(`charter: ${t.extra.charter}`);
       if (t.extra.after) extras.push(`after: ${t.extra.after}`);
       if (t.extra.level) extras.push(`level: ${t.extra.level}`);
       if (t.extra.track) extras.push(`track: ${t.extra.track}`);
@@ -922,7 +999,7 @@ function renderBacklog() {
 
   const replanPending = !!p.replanPending;
   el.innerHTML = `
-    <div class="filters">${chips}<span class="muted">${tasks.length} 件</span>
+    <div class="filters">${chips}${charterChips}<span class="muted">${tasks.length} 件</span>
       ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="${esc(p.inboxFiles.join(', '))}">inbox 取り込み待ち ${p.inboxFiles.length}</span>` : ''}
       ${replanPending ? '<span class="badge info" title="charter からの再分解を要求済み。本体が次パスで取り込みます">再分解 取り込み待ち</span>' : ''}
       <span class="spacer"></span>
@@ -949,9 +1026,15 @@ function renderBacklog() {
   const replanBtn = $('btn-replan');
   if (replanBtn && !replanPending) replanBtn.addEventListener('click', () => requestReplan());
 
-  for (const chip of el.querySelectorAll('.chip')) {
+  for (const chip of el.querySelectorAll('.chip[data-filter]')) {
     chip.addEventListener('click', () => {
       state.backlogFilter = chip.dataset.filter;
+      renderBacklog();
+    });
+  }
+  for (const chip of el.querySelectorAll('.chip[data-charter-filter]')) {
+    chip.addEventListener('click', () => {
+      state.backlogCharter = chip.dataset.charterFilter;
       renderBacklog();
     });
   }
@@ -1044,7 +1127,12 @@ function showTaskDialog(id, scope) {
     })
     .join('');
   // 決定記録を残す人の操作（backlog のタスクのみ。archive は閲覧のみ）
-  const canApprove = ['blocked', 'review'].includes(t.status);
+  const canApprove = ['blocked', 'review', 'proposed'].includes(t.status);
+  const deps = String(t.extra.after || '').trim();
+  const downs = dependentsOf(p.backlog, t.id);
+  const depRow = `<tr><th>依存関係</th><td class="muted">前提（after）: ${deps ? esc(deps) : '（なし）'} ／ 依存先（このタスクの変更が影響・推移）: ${
+    downs.length ? downs.map((x) => `${esc(x.id)}[${esc(x.status)}]`).join(', ') : '（なし）'
+  }</td></tr>`;
   // 削除を拒むのは「実行中」だけ。クレームロックは worker クラッシュや
   // review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除できる
   const claimed = p.claims.includes(t.id) && t.status === 'doing';
@@ -1061,6 +1149,7 @@ function showTaskDialog(id, scope) {
           <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録 decisions/ に残ります）"></textarea>
           <div class="row need-buttons">
             ${canApprove ? `<button class="primary-inline" data-taskact="approve">✓ 承認</button>` : ''}
+            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="廃止して archive へ退避。依存タスクは再審査に戻り、charter があれば再計画を要求します">✕ 却下</button>`}
             <button data-taskact="pin">▲ 最優先へ（pin）</button>
             <button data-taskact="defer">▽ 後回し（defer）</button>
             <button data-taskact="hold">⏸ 保留（hold）</button>
@@ -1078,6 +1167,7 @@ function showTaskDialog(id, scope) {
       <tr><th>優先度</th><td>${t.priority}</td></tr>
       <tr><th>retries</th><td>${t.retries}</td></tr>
       <tr><th>verify</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
+      ${depRow}
       ${extraRows}
       <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>
     </table>
@@ -1093,6 +1183,11 @@ function showTaskDialog(id, scope) {
   for (const btn of document.querySelectorAll('#dlg-task-body button[data-taskact]')) {
     btn.addEventListener('click', async () => {
       const reason = $('task-reason') ? $('task-reason').value.trim() : '';
+      if (btn.dataset.confirmReject) {
+        if (!reason) return toast('却下には理由の記入が必要です（決定記録・avoid 学習に残ります）');
+        const yes = await confirmDialog(rejectConfirmMessage(p, t.id, '廃止して関連バックログを再計画'));
+        if (!yes) return;
+      }
       const ok = await guard('操作', async () => {
         const res = await api.runAction({ dir: p.dir, action: btn.dataset.taskact, id: t.id, reason });
         toast(res.output || '操作しました', true);
@@ -1311,6 +1406,7 @@ function openNewProject() {
     ? state.selectedDir.replace(/[\\/][^\\/]+$/, '') || roots[0] || ''
     : roots[0] || '';
   $('np-name').value = '';
+  if ($('np-charter')) $('np-charter').value = '';
   $('np-goal').value = '';
   $('np-deliverables').value = '';
   $('np-constraints').value = '';
@@ -1332,6 +1428,7 @@ async function submitNewProject() {
   const spec = {
     root: $('np-root').value.trim(),
     name: $('np-name').value.trim(),
+    charterName: $('np-charter') ? $('np-charter').value.trim() : '',
     goal: $('np-goal').value,
     deliverables: $('np-deliverables').value,
     constraints: $('np-constraints').value,
@@ -1440,15 +1537,21 @@ function isNeedSent(need) {
 }
 
 // needs の種類ごとに出すアクション。
+//   plan-review … 実行前レビュー: 承認して実行を許可 / 差し戻し（kiro-project が修正・記入必須）/ 却下
 //   blocked   … フィードバック再開（[x] 記入）/ そのまま再実行 / 保留（hold）
-//   review    … 承認して done 確定（approve CLI）/ 差し戻し（フィードバック必須）
+//   review    … 成果物レビュー: 承認して done 確定 / 差し戻し（記入必須）/ 却下
 //   milestone … プロジェクト承認（approve <project>）
 function needActionsHtml(n) {
   const kind = n.kind || 'blocked';
   const buttons = [];
-  if (kind === 'review') {
+  if (kind === 'plan-review') {
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認（実行を許可）</button>`);
+    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1">↩ 差し戻す（kiro-project が修正・記入必須）</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1">✕ 却下（廃止して再計画）</button>`);
+  } else if (kind === 'review') {
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認して done 確定</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1">↩ 差し戻す（記入必須）</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1">✕ 却下（廃止して再計画）</button>`);
   } else if (kind === 'milestone') {
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ プロジェクトを承認（完了確定）</button>`);
     buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ フィードバックを送る</button>`);
@@ -1458,9 +1561,11 @@ function needActionsHtml(n) {
     buttons.push(`<button data-act="hold" data-id="${esc(n.id)}">⏸ 保留（hold）</button>`);
   }
   const ph =
-    kind === 'review'
-      ? '差し戻す場合の修正方針（承認だけなら空欄で OK。approve の理由にも使われます）'
-      : '修正方針・指示（空のまま再実行も可）';
+    kind === 'plan-review'
+      ? '差し戻しの修正指示・却下の理由（承認だけなら空欄で OK）'
+      : kind === 'review'
+        ? '差し戻す場合の修正方針・却下の理由（承認だけなら空欄で OK。approve の理由にも使われます）'
+        : '修正方針・指示（空のまま再実行も可）';
   return `<div class="need-actions" data-need="${esc(n.id)}">
     <textarea rows="2" class="need-input" placeholder="${esc(ph)}"></textarea>
     <div class="row need-buttons">${buttons.join('')}
@@ -1542,6 +1647,12 @@ async function handleNeedAction(btn) {
       const res = await api.runAction({ dir: p.dir, action: 'hold', id, reason: text });
       markNeedSent(need);
       toast(res.output || '保留（policy.deny）にしました', true);
+    } else if (act === 'reject') {
+      const yes = await confirmDialog(rejectConfirmMessage(p, id, '廃止して関連バックログを再計画'));
+      if (!yes) return false;
+      const res = await api.runAction({ dir: p.dir, action: 'reject', id, reason: text });
+      markNeedSent(need);
+      toast(res.output || '却下しました（依存タスクは再審査へ・再計画を要求）', true);
     }
     return true;
   });

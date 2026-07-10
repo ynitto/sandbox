@@ -52,9 +52,12 @@ def mkb(d: Path, tid: str, status="ready", verify="true", source="human", title=
 
 
 def cfg_for(d: Path, **kw):
+    # 既定 plan_review=False / delivery_review=False（従来動作を検証する既存テスト用）。
+    # 実行前レビュー（proposed ゲート）の挙動は TestPlanReview が plan_review=True で検証する。
     base = dict(backlog=d / "backlog", policy=d / "policy.md", decisions=d / "decisions",
                 journal=d / "journal.md", needs=d / "needs", workdir=d, bus=d / "bus",
-                planner="none", flow_planner="stub", executor="stub", dry_run=True)
+                planner="none", flow_planner="stub", executor="stub", dry_run=True,
+                plan_review=False, delivery_review=False)
     base.update(kw)
     return km.Config(**base)
 
@@ -218,7 +221,7 @@ class TestEnqueue(unittest.TestCase):
     def test_cmd_enqueue_via_main(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            rc = km.main(["enqueue", "--title", "X", "--verify", "true",
+            rc = km.main(["enqueue", "--title", "X", "--verify", "true", "--no-plan-review",
                           "--workdir", str(d), "--root", str(d / ".ka")])
             self.assertEqual(rc, 0)
             # 新レイアウト: <root>/backlog（root = プロジェクトルート）
@@ -2210,7 +2213,7 @@ class TestIntakeRecall(unittest.TestCase):
             proj = d / ".ka"
             self._seed_avoid(proj, "OLD", "deploy to production", "本番は手動")
             rc = km.main(["enqueue", "--title", "deploy to production tonight", "--verify", "true",
-                          "--workdir", str(d), "--root", str(d / ".ka")])
+                          "--no-plan-review", "--workdir", str(d), "--root", str(d / ".ka")])
             self.assertEqual(rc, 0)
             t = km.load_tasks(proj / "backlog")[0]
             self.assertEqual(t.norm_status(), "blocked")    # ready にせず人の判断へ（verify 持ちでも実行させない）
@@ -2297,7 +2300,7 @@ class TestLayout(unittest.TestCase):
             bl.mkdir(parents=True)
             (bl / "T1.md").write_text(
                 "## T1: x\n- status: ready\n- verify: `true`\n- retries: 0\n", encoding="utf-8")
-            rc = km.main(["run", "--workdir", str(d), "--planner", "none",
+            rc = km.main(["run", "--no-delivery-review", "--workdir", str(d), "--planner", "none",
                           "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
             self.assertEqual(rc, 0)
             self.assertTrue((proot / "journal.md").exists())
@@ -3549,7 +3552,7 @@ class TestProjectLayer(unittest.TestCase):
             (proot / "backlog").mkdir(parents=True, exist_ok=True)
             (proot / "backlog" / "T1.md").write_text(
                 "## T1: x\n- status: ready\n- verify: `true`\n", encoding="utf-8")
-            rc = km.main(["run", "--workdir", str(d), "--planner", "none",
+            rc = km.main(["run", "--no-delivery-review", "--workdir", str(d), "--planner", "none",
                           "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
             self.assertEqual(rc, 0)                       # charter 無し→従来の backlog ループで drained
             self.assertFalse((proot / "project.json").exists())
@@ -4272,7 +4275,7 @@ class TestCliEndToEnd(unittest.TestCase):
     パスは絶対（mkdtemp）で渡す: 相対パスは --workdir 基準で解決され picked up されないため。"""
 
     def _run(self, d: Path, *extra, timeout=60):
-        cmd = [sys.executable, str(_MOD), "run",
+        cmd = [sys.executable, str(_MOD), "run", "--no-delivery-review",
                "--workdir", str(d), "--backlog", str(d / "backlog"),
                "--policy", str(d / "policy.md"), "--decisions", str(d / "decisions"),
                "--journal", str(d / "journal.md"), "--needs", str(d / "needs"),
@@ -4346,7 +4349,7 @@ class TestCliKiroFlowDelegation(unittest.TestCase):
             marker = d / "marker"
             marker.write_text("done")   # act は best-effort。verify が真実の源なので事前に通る状態を作る
             _write_backlog_task(d / "backlog", "T1", f"test -f {marker}", title="何かを実装")
-            cmd = [sys.executable, str(_MOD), "run",
+            cmd = [sys.executable, str(_MOD), "run", "--no-delivery-review",
                    "--workdir", str(d), "--backlog", str(d / "backlog"),
                    "--policy", str(d / "policy.md"), "--decisions", str(d / "decisions"),
                    "--journal", str(d / "journal.md"), "--needs", str(d / "needs"),
@@ -5433,6 +5436,566 @@ class FeedbackReductionTests(unittest.TestCase):
             human = km.Task(id="T2", title="x", verify="grep -q old f")
             self.assertFalse(km.verify_undiscriminating(cfg, human, d, False,
                                                         (base, frozenset()), None))
+
+
+
+
+class TestPlanReview(unittest.TestCase):
+    """実行前レビュー（plan_review・本番既定 on）: 新規タスクは proposed で入り、
+    人の承認（approve）・差し戻し（feedback→kiro-project が修正）・却下（reject）を通る。"""
+
+    def _cfg(self, d, **kw):
+        return cfg_for(d, plan_review=True, **kw)
+
+    def test_enqueue_becomes_proposed_and_gets_needs(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            self.assertEqual(t.norm_status(), "proposed")     # verify があっても即 ready にしない
+            km.ensure_plan_review_needs(cfg, [t])
+            nf = cfg.needs / f"{t.id}.md"
+            self.assertTrue(nf.exists())
+            body = nf.read_text(encoding="utf-8")
+            self.assertIn("kind: plan-review", body)
+            self.assertIn("実行前レビュー", body)
+            self.assertIn("reject", body)                      # 却下の案内が載る
+
+    def test_explicit_status_bypasses_gate(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true", "status": "ready"})
+            self.assertEqual(t.norm_status(), "ready")         # 明示 status は尊重（後方互換の口）
+
+    def test_run_loop_does_not_execute_proposed(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d, learn=False, auto_adjudicate=False)
+            km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            result = km.run_loop(cfg)
+            self.assertEqual(result["counts"]["proposed"], 1)  # 実行されず proposed のまま
+            self.assertEqual(result["counts"]["done"], 0)
+            self.assertEqual(km.exit_code_for(result), 1)      # 人の対応待ち
+            # needs（実行前レビュー票）が run_loop 内で用意される
+            tasks = km.load_tasks(cfg.backlog)
+            self.assertTrue((cfg.needs / f"{tasks[0].id}.md").exists())
+
+    def test_inbox_md_drop_becomes_proposed(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d, inbox=d / "inbox")
+            cfg.inbox.mkdir(parents=True)
+            (cfg.inbox / "t.md").write_text(
+                "## T9: ドロップ\n- status: ready\n- verify: `true`\n", encoding="utf-8")
+            created = km.ingest_inbox(cfg)
+            self.assertEqual(created[0].norm_status(), "proposed")
+
+    def test_triage_promotes_inbox_to_proposed(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            mkb(d, "T1", status="inbox", verify="true")
+            tasks = km.load_tasks(cfg.backlog)
+            km.triage(tasks, km.load_policy(cfg.policy), plan_review=True)
+            self.assertEqual(tasks[0].norm_status(), "proposed")
+
+    def test_approve_moves_proposed_to_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            km.ensure_plan_review_needs(cfg, [t])
+            rc = km.cmd_approve(cfg, t.id, "内容OK")
+            self.assertEqual(rc, 0)
+            got = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(got.norm_status(), "ready")
+            self.assertFalse((cfg.needs / f"{t.id}.md").exists())
+            dec = (cfg.decisions / f"{t.id}.md").read_text(encoding="utf-8")
+            self.assertIn("plan-approve", dec)
+
+    def test_approve_without_verify_goes_inbox(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            t = km.enqueue_task(cfg, {"title": "x"})           # verify 無し
+            km.cmd_approve(cfg, t.id, "進めてよいが verify は要定義")
+            self.assertEqual(km.load_tasks(cfg.backlog)[0].norm_status(), "inbox")
+
+    def test_feedback_checkbox_only_approves(self):
+        # 空のまま [x] = 承認（実行を許可）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            km.ensure_plan_review_needs(cfg, [t])
+            nf = cfg.needs / f"{t.id}.md"
+            nf.write_text(nf.read_text(encoding="utf-8").replace("- [ ]", "- [x]"),
+                          encoding="utf-8")
+            tasks = km.load_tasks(cfg.backlog)
+            km.ingest_feedback(cfg, tasks)
+            self.assertEqual(tasks[0].norm_status(), "ready")
+
+    def test_feedback_with_text_reworks_via_agent(self):
+        # 差し戻し: kiro-cli がタスク定義を修正して再提案（proposed のまま・needs 再生成）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "旧タイトル", "verify": "true"})
+            km.ensure_plan_review_needs(cfg, [t])
+            nf = cfg.needs / f"{t.id}.md"
+            body = nf.read_text(encoding="utf-8").replace("- [ ]", "- [x]")
+            body = body.replace(km.DECISION_MARKER, km.DECISION_MARKER + "\n\n実サーバ基準の verify にして\n")
+            nf.write_text(body, encoding="utf-8")
+            fake = '{"title": "新タイトル", "verify": "curl -fsS https://x/health", "after": "", "note": ""}'
+            with mock.patch.object(km, "_run_kiro_cli", return_value=fake):
+                tasks = km.load_tasks(cfg.backlog)
+                km.ingest_feedback(cfg, tasks)
+            got = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(got.norm_status(), "proposed")    # 再提案（承認まで実行しない）
+            self.assertEqual(got.title, "新タイトル")
+            self.assertIn("curl", got.verify)
+            self.assertTrue(nf.exists())                        # needs 再生成
+            dec = (cfg.decisions / f"{t.id}.md").read_text(encoding="utf-8")
+            self.assertIn("plan-rework", dec)
+
+    def test_feedback_rework_agent_failure_keeps_note(self):
+        # kiro-cli 失敗時は指摘を note に残してそのまま再提案（指摘を失わない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._cfg(d)
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            km.ensure_plan_review_needs(cfg, [t])
+            nf = cfg.needs / f"{t.id}.md"
+            body = nf.read_text(encoding="utf-8").replace("- [ ]", "- [x]")
+            body = body.replace(km.DECISION_MARKER, km.DECISION_MARKER + "\n\nもっと細かく分けて\n")
+            nf.write_text(body, encoding="utf-8")
+            with mock.patch.object(km, "_run_kiro_cli", side_effect=RuntimeError("kiro-cli 不在")):
+                tasks = km.load_tasks(cfg.backlog)
+                km.ingest_feedback(cfg, tasks)
+            got = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(got.norm_status(), "proposed")
+            self.assertIn("もっと細かく分けて", got.get("note", ""))
+
+    def test_plan_review_off_keeps_legacy_behavior(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))                             # plan_review=False（従来）
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true"})
+            self.assertEqual(t.norm_status(), "ready")
+
+
+class TestRejectAndImpact(unittest.TestCase):
+    """却下（reject）: 廃止して archive へ退避＋依存先を再審査（proposed）へ＋charter があれば
+    再計画を要求。impact: after 逆辺の影響範囲を一覧提示する。"""
+
+    def test_reject_archives_and_reproposes_dependents(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, learn_capture=True)
+            mkb(d, "T1", verify="true")
+            mkb(d, "T2", verify="true")
+            # T2 は T1 に依存・T3 は T2 に依存（推移）
+            t2 = km.load_tasks(cfg.backlog)[1]
+            t2.extra.append(("after", "T1"))
+            km.persist_task(cfg, t2)
+            mkb(d, "T3", verify="true")
+            t3 = [t for t in km.load_tasks(cfg.backlog) if t.id == "T3"][0]
+            t3.extra.append(("after", "T2"))
+            km.persist_task(cfg, t3)
+            rc = km.cmd_reject(cfg, "T1", "方針転換で不要")
+            self.assertEqual(rc, 0)
+            # 本体は rejected として archive へ
+            self.assertFalse((cfg.backlog / "T1.md").exists())
+            arch = (d / "archive" / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("rejected", arch)
+            self.assertIn("却下記録", arch)
+            # 依存先（推移）は proposed に戻り、after から T1 が外れる
+            got = {t.id: t for t in km.load_tasks(cfg.backlog)}
+            self.assertEqual(got["T2"].norm_status(), "proposed")
+            self.assertEqual(got["T3"].norm_status(), "proposed")
+            self.assertNotIn("T1", km.task_deps(got["T2"]))
+            self.assertTrue((cfg.needs / "T2.md").exists())    # 再審査票
+            # avoid（回避知識）が残る
+            dec = (cfg.decisions / "T1.md").read_text(encoding="utf-8")
+            self.assertIn("- avoid:", dec)
+            self.assertIn("reject", dec)
+
+    def test_reject_requests_replan_when_charter_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            cfg.charter.write_text("# Charter: demo\n## goal\nx\n## acceptance\n- `true`\n",
+                                   encoding="utf-8")
+            mkb(d, "T1", verify="true")
+            km.cmd_reject(cfg, "T1", "作り直す")
+            self.assertTrue(km.replan_request_path(cfg).exists())   # 再計画を要求
+
+    def test_reject_refuses_doing_with_fresh_claim(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", status="doing", verify="true")
+            rc = km.cmd_reject(cfg, "T1", "x")
+            self.assertEqual(rc, 2)
+
+    def test_rejected_title_not_replanned(self):
+        # rejected は archive に居るため _existing_titles に含まれ、同一タイトルの再提案を冪等排除できる
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", title="決済APIを追加", verify="true")
+            km.cmd_reject(cfg, "T1", "スコープ外")
+            self.assertIn("決済APIを追加", km._existing_titles(cfg))
+
+    def test_impact_lists_upstream_and_downstream(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "A", verify="true")
+            mkb(d, "B", verify="true")
+            mkb(d, "C", verify="true")
+            tasks = {t.id: t for t in km.load_tasks(cfg.backlog)}
+            tasks["B"].extra.append(("after", "A"))
+            km.persist_task(cfg, tasks["B"])
+            tasks["C"].extra.append(("after", "B"))
+            km.persist_task(cfg, tasks["C"])
+            all_tasks = km.load_tasks(cfg.backlog)
+            downs = [t.id for t in km.dependents_of(all_tasks, "A")]
+            self.assertEqual(sorted(downs), ["B", "C"])        # 推移閉包
+            ups = km.prerequisites_of(all_tasks, "C")
+            self.assertEqual(sorted(ups), ["A", "B"])
+            self.assertEqual(km.cmd_impact(cfg, "A"), 0)
+            self.assertEqual(km.cmd_impact(cfg, "zzz"), 2)
+
+
+
+
+class TestMultiCharter(unittest.TestCase):
+    """複数 charter（charters/<name>.md）: 1 プロジェクトで複数バージョンを並行駆動する。
+    タスクは charter タグでスコープされ、plan の冪等照合・drained 判定・milestone/state は
+    charter 単位に閉じる（execute の backlog は共有）。"""
+
+    def _mk_charter(self, d, name, goal="やる"):
+        cdir = d / "charters"
+        cdir.mkdir(parents=True, exist_ok=True)
+        (cdir / f"{name}.md").write_text(
+            f"# Charter: {name}\n## goal\n{goal}\n## acceptance\n- `true`\n", encoding="utf-8")
+
+    def test_charter_names_and_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self.assertEqual(km.charter_names(cfg), [])                 # charter 無し
+            cfg.charter.write_text("# Charter: solo\n## goal\nx\n", encoding="utf-8")
+            self.assertEqual(km.charter_names(cfg), ["default"])        # 単一 charter.md
+            self._mk_charter(d, "v2")
+            self._mk_charter(d, "v1")
+            self.assertEqual(km.charter_names(cfg), ["v1", "v2"])       # charters/ が優先・名前順
+            chs = dict(km.load_charters(cfg))
+            self.assertIn("v1", chs)
+            self.assertEqual(chs["v2"].name, "v2")
+
+    def test_cmd_project_tags_tasks_and_scopes_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            planner = lambda ch: [{"title": f"{ch.name} のタスク", "verify": "true"}]
+            rc = km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [],
+                                charter_name="v1")
+            self.assertEqual(rc, 1)                                     # 収束候補 → 人待ち
+            # タスクに charter タグが付く（アーカイブ済みを含めて確認）
+            arch = list((d / "archive").glob("*.md"))
+            self.assertTrue(arch)
+            t = km.parse_task(arch[0].read_text(encoding="utf-8"), arch[0].stem)
+            self.assertEqual(t.get("charter"), "v1")
+            # state は project.json の charters マップに閉じる
+            data = km.load_project_state(cfg)
+            self.assertIn("v1", data.get("charters", {}))
+            pid = data["charters"]["v1"]["id"]
+            self.assertTrue(pid.endswith("-v1"))                        # milestone id は charter 別
+            self.assertTrue((cfg.needs / f"{pid}.md").exists())
+
+    def test_two_charters_plan_independently(self):
+        # v1 に消化可能タスクが残っていても v2 の plan は起こる（drained 判定のスコープ）。
+        # 同名タスクでも charter が違えば冪等排除しない（existing のスコープ）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1, dry_run=True)
+            self._mk_charter(d, "v1")
+            self._mk_charter(d, "v2")
+            planner = lambda ch: [{"title": "共通タイトルの作業", "verify": "true"}]
+            km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [], charter_name="v1")
+            # v1 のタスクを未消化のまま残す（doing 相当ではなく ready のタスクを積み直す）
+            km.enqueue_task(cfg, {"title": "v1 残作業", "verify": "true", "charter": "v1",
+                                  "status": "ready"})
+            km.cmd_project(cfg, planner=planner, reviewer=lambda ch: [], charter_name="v2")
+            # v2 にも同名タスクが plan された（archive/backlog を charter タグで数える）
+            tagged = []
+            for f in list((d / "archive").glob("*.md")) + list((d / "backlog").glob("*.md")):
+                t = km.parse_task(f.read_text(encoding="utf-8"), f.stem)
+                if t.title == "共通タイトルの作業":
+                    tagged.append(t.get("charter"))
+            self.assertIn("v1", tagged)
+            self.assertIn("v2", tagged)
+
+    def test_replan_request_scoped_to_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._mk_charter(d, "v1")
+            self._mk_charter(d, "v2")
+            km.write_replan_request(cfg, "v2 を作り直す", charter="v2")
+            self.assertIsNone(km.consume_replan_request(cfg, "v1"))     # 別 charter 宛 → 残す
+            self.assertTrue(km.replan_request_path(cfg).exists())
+            got = km.consume_replan_request(cfg, "v2")                  # 対象 charter が消化
+            self.assertEqual(got.get("charter"), "v2")
+            self.assertFalse(km.replan_request_path(cfg).exists())
+            # charter 指定の無い要求はどの charter でも消化できる
+            km.write_replan_request(cfg, "全体")
+            self.assertIsNotNone(km.consume_replan_request(cfg, "v1"))
+
+    def test_run_single_drives_all_charters(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            self._mk_charter(d, "v2")
+            seen = []
+            orig = km.cmd_project
+
+            def spy(c, *a, **kw):
+                seen.append(kw.get("charter_name"))
+                return orig(c, planner=lambda ch: [], reviewer=lambda ch: [],
+                            charter_name=kw.get("charter_name"))
+
+            with mock.patch.object(km, "cmd_project", side_effect=spy):
+                km._run_single(cfg)
+            self.assertEqual(seen, ["v1", "v2"])                        # 全 charter を順に回す
+
+    def test_project_watch_round_robins_charters(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            self._mk_charter(d, "v2")
+            seen = []
+            planner = lambda ch: seen.append(ch.name) or []
+            km.project_watch(cfg, planner=planner, reviewer=lambda ch: [],
+                             runner=km.run_loop, sleeper=lambda _s: None, max_passes=2)
+            self.assertEqual(seen, ["v1", "v2"])                        # 両バージョンを 1 パスずつ
+
+    def test_milestone_approve_finalizes_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            self._mk_charter(d, "v1")
+            km.cmd_project(cfg, planner=lambda ch: [], reviewer=lambda ch: [],
+                           charter_name="v1")
+            data = km.load_project_state(cfg)
+            pid = data["charters"]["v1"]["id"]
+            self.assertEqual(data["charters"]["v1"]["status"], km.REASON_PROJECT_CONVERGED)
+            rc = km.cmd_approve(cfg, pid, "受領")
+            self.assertEqual(rc, 0)
+            data = km.load_project_state(cfg)
+            self.assertEqual(data["charters"]["v1"]["status"], km.REASON_PROJECT_ACCEPTED)
+
+    def test_build_request_injects_task_charter(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self._mk_charter(d, "v1", goal="V1-GOAL 保守")
+            self._mk_charter(d, "v2", goal="V2-GOAL 新機能")
+            t = km.enqueue_task(cfg, {"title": "x", "verify": "true", "charter": "v2"})
+            req = km.build_request(t, cfg)
+            self.assertIn("V2-GOAL", req)                               # タグの charter を注入
+            self.assertNotIn("V1-GOAL", req)
+
+    def test_single_charter_md_backward_compatible(self):
+        # charter.md 単体は従来どおり（state はトップレベル・milestone id に接尾辞なし）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            cfg.charter.write_text("# Charter: solo\n## goal\nx\n## acceptance\n- `true`\n",
+                                   encoding="utf-8")
+            km.cmd_project(cfg, planner=lambda ch: [], reviewer=lambda ch: [],
+                           charter_name="default")
+            data = km.load_project_state(cfg)
+            self.assertNotIn("charters", data)                          # 従来のトップレベル形
+            self.assertFalse(str(data.get("id", "")).endswith("-default"))
+
+
+
+
+class TestTaskBranchAndDeliveryReview(unittest.TestCase):
+    """タスク単位ターゲットブランチ（kp/<task-id>）と成果物レビュー（delivery_review・本番既定 on）。
+    review 到達時に MR を用意し、承認で Stage 2 と同一規則の自動決着（クリーンならマージ）を行う。"""
+
+    def test_workspace_spec_injects_task_branch(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True, task_branch_prefix="kp/")
+            mkb(d, "T1")
+            t = km.load_tasks(cfg.backlog)[0]
+            t.extra.append(("workspace", "https://gitlab.example.com/g/app.git"))
+            spec = km._workspace_spec_for(cfg, t)
+            self.assertEqual(spec["branch"], "kp/T1")          # 全試行を集約するブランチ
+            token = km._workspace_token(spec)
+            self.assertIn('"branch":"kp/T1"', token)           # kiro-flow へ伝搬
+            cfg2 = cfg_for(d, task_branch=False)
+            spec2 = km._workspace_spec_for(cfg2, t)
+            self.assertNotIn("branch", spec2 or {})            # off なら従来（run 毎 kf/<run-id>）
+
+    def test_delivery_review_gates_done(self):
+        # delivery_review=True: verify PASS でも自動 done せず review（検収待ち）へ
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, delivery_review=True, learn=False, auto_adjudicate=False)
+            mkb(d, "T1", verify="true")
+            result = km.run_loop(cfg)
+            self.assertEqual(result["counts"]["review"], 1)    # done でなく検収待ち
+            self.assertEqual(result["counts"]["done"], 0)
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "review")
+            self.assertTrue((cfg.needs / "T1.md").exists())
+            self.assertEqual(km.exit_code_for(result), 1)      # 人の対応待ち
+
+    def test_gl_parse_repo_forms(self):
+        self.assertEqual(km._gl_parse_repo("https://gitlab.com/g/app.git"),
+                         ("gitlab.com", "g/app"))
+        self.assertEqual(km._gl_parse_repo("https://gl.example.com/team/sub/app"),
+                         ("gl.example.com", "team/sub/app"))
+        self.assertEqual(km._gl_parse_repo("git@gitlab.com:g/app.git"),
+                         ("gitlab.com", "g/app"))
+        self.assertIsNone(km._gl_parse_repo("/local/path/repo"))
+
+    def _mr_task(self, cfg, d):
+        mkb(d, "T1", verify="true")
+        t = km.load_tasks(cfg.backlog)[0]
+        t.extra.append(("workspace", "https://gitlab.example.com/g/app.git"))
+        return t
+
+    def test_ensure_task_mr_creates_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            calls = []
+
+            def api(host, token, method, path, data=None, params=None):
+                calls.append((method, path, data, params))
+                if method == "GET" and path.endswith("/merge_requests"):
+                    return []                                   # 既存 MR 無し
+                if method == "POST" and path.endswith("/merge_requests"):
+                    return {"iid": 7, "web_url": "https://gitlab.example.com/g/app/-/merge_requests/7"}
+                return {}
+
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=api):
+                url = km.ensure_task_mr(cfg, t)
+            self.assertIn("/merge_requests/7", url)
+            self.assertEqual(t.get("mr_iid"), "7")
+            post = next(c for c in calls if c[0] == "POST")
+            self.assertEqual(post[2]["source_branch"], "kp/T1")
+            self.assertTrue(post[2]["remove_source_branch"])
+            # 冪等: mr_url 記録済みなら API を呼ばない
+            with mock.patch.object(km, "_gl_api", side_effect=AssertionError("再作成しない")):
+                self.assertEqual(km.ensure_task_mr(cfg, t), url)
+
+    def test_ensure_task_mr_skips_without_gitlab(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, task_branch=True)
+            t = self._mr_task(cfg, d)
+            with mock.patch.object(km, "_gl_token", return_value=""):
+                self.assertEqual(km.ensure_task_mr(cfg, t), "")   # トークン無し＝記録のみで続行
+
+    def _review_task_with_mr(self, cfg, d):
+        t = self._mr_task(cfg, d)
+        t.status = "review"
+        t.extra += [("mr_url", "u7"), ("mr_iid", "7"), ("mr_project", "gitlab.example.com|g/app")]
+        km.persist_task(cfg, t)
+        return t
+
+    def test_approve_merges_clean_mr_and_finalizes(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            calls = []
+
+            def api(host, token, method, path, data=None, params=None):
+                calls.append((method, path, data))
+                if method == "GET" and path.endswith("/merge_requests/7"):
+                    return {"state": "opened", "merge_status": "can_be_merged",
+                            "has_conflicts": False}
+                if path.endswith("/discussions"):
+                    return []
+                if path.endswith("/changes"):
+                    return {"changes": [{"new_path": "a.py"}]}
+                return {}
+
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=api):
+                rc = km.cmd_approve(cfg, t.id, "検収OK")
+            self.assertEqual(rc, 0)
+            self.assertTrue(any(m == "PUT" and p.endswith("/merge") for m, p, _ in calls))
+            self.assertTrue((d / "archive" / f"{t.id}.md").exists())   # done 確定
+
+    def test_approve_unclean_mr_keeps_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            calls = []
+
+            def api(host, token, method, path, data=None, params=None):
+                calls.append((method, path, data))
+                if method == "GET" and path.endswith("/merge_requests/7"):
+                    return {"state": "opened", "merge_status": "cannot_be_merged",
+                            "has_conflicts": True}
+                if path.endswith("/discussions"):
+                    return []
+                if path.endswith("/changes"):
+                    return {"changes": [{"new_path": "a.py"}]}
+                return {}
+
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=api):
+                rc = km.cmd_approve(cfg, t.id, "検収OK")
+            self.assertEqual(rc, 1)                              # done にしない
+            got = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(got.norm_status(), "review")        # review のまま
+            note = next(c for c in calls if c[0] == "POST" and c[1].endswith("/notes"))
+            self.assertIn("差し戻し", note[2]["body"])
+
+    def test_approve_without_mr_is_legacy(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            mkb(d, "T1", status="review", verify="true")
+            rc = km.cmd_approve(cfg, "T1", "OK")
+            self.assertEqual(rc, 0)                              # MR 無しは従来どおり done 確定のみ
+            self.assertTrue((d / "archive" / "T1.md").exists())
+
+    def test_reject_closes_mr_and_deletes_branch(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._review_task_with_mr(cfg, d)
+            calls = []
+
+            def api(host, token, method, path, data=None, params=None):
+                calls.append((method, path, data))
+                return {}
+
+            with mock.patch.object(km, "_gl_token", return_value="tok"), \
+                 mock.patch.object(km, "_gl_api", side_effect=api):
+                rc = km.cmd_reject(cfg, t.id, "作り直す")
+            self.assertEqual(rc, 0)
+            self.assertTrue(any(m == "PUT" and p.endswith("/merge_requests/7")
+                                and (dd or {}).get("state_event") == "close"
+                                for m, p, dd in calls))          # MR クローズ
+            self.assertTrue(any(m == "DELETE" and "/repository/branches/" in p
+                                for m, p, _ in calls))           # ソースブランチ削除
 
 
 if __name__ == "__main__":

@@ -78,6 +78,11 @@ _DEFAULTS = {
     # 未解決レビューコメント無し）なら executor がマージしてイシューをクローズする
     # （gitlab-review-viewer の承認ボタンと同じ規則）。false で従来の「人が MR を管理」モード。
     "auto_merge": True,
+    # イシューのクローズ主体。auto=決着時に executor がクローズ（既定）／manual=クローズは人。
+    # manual では承認条件（全 MR マージ）が揃っても executor はクローズせず、案内ノートを一度だけ
+    # 投稿して**人がイシューをクローズするのを監視**する（クローズで決着）。却下（未マージクローズ）
+    # と cancel の取消クローズは manual でも従来どおり。
+    "close_issues": "auto",
     # 差し戻し時に付け替えるラベル（status:approved → これ）。
     "rework_label": "status:needs-rework",
     # park & poll を無効化して従来モード（worker がブロック待機）に戻すフラグ。既定 true（有効）。
@@ -760,7 +765,17 @@ def _workspace_section(workspace: "dict | None") -> "list[str]":
     lines = ["## 対象リポジトリ", "", f"- **リポジトリ**: {workspace['url']}"]
     if workspace.get("path"):
         lines.append(f"- **変更対象フォルダ**: `{workspace['path']}` 配下のみ")
-    if base:
+    branch = workspace.get("branch") or ""
+    if branch:
+        # kiro-project のタスク単位ブランチ（kp/<task-id>）。リトライも同じブランチへ積む
+        br = f"- **作業ブランチ**: `{branch}`"
+        if base:
+            br += f"（`{base}` から分岐"
+            if target and target != base:
+                br += f"・`{target}` へ MR"
+            br += "）"
+        lines.append(br)
+    elif base:
         br = f"- **作業ブランチ**: `{base}` から分岐"
         if target and target != base:
             br += f"し、`{target}` へ MR"
@@ -933,6 +948,25 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     return _wait_for_decision(host, token, project, iid, url, cfg)
 
 
+_CLOSE_REQUEST_MARKER = "<!-- kiro-flow:close-request -->"
+
+
+def _ensure_close_request_note(host, token, project, iid, url, reason="") -> None:
+    """close_issues=manual で承認条件が揃ったときの案内ノートを**一度だけ**投稿する
+    （マーカー付きノートの有無で冪等化。API 失敗は無視＝次のポーリングで再試行）。"""
+    try:
+        for n in _get_comments(host, token, project, iid):
+            if _CLOSE_REQUEST_MARKER in str(n.get("body") or ""):
+                return
+        why = reason or "関連 MR がすべてマージ済み"
+        _add_note(host, token, project, iid,
+                  f"{why}です。内容を確認して、このイシューをクローズしてください"
+                  f"（クローズで完了として決着します）。\n{_CLOSE_REQUEST_MARKER}")
+        _log(f"イシュー #{iid}: 承認条件は成立（{why}）。クローズは人に委ねて監視を継続: {url}")
+    except RuntimeError as e:
+        _log(f"イシュー #{iid}: クローズ案内ノートの投稿に失敗（次回再試行）: {e}")
+
+
 def _check_decision(host, token, project, iid, url, cfg, active_seen):
     """イシュー #iid の決着を **1 回だけ** 確認して正規化した結果 dict を返す（副作用として
     決着時はイシューをクローズする＝ブロック版と同じ）。ブロック待機 `_wait_for_decision` と
@@ -976,6 +1010,14 @@ def _check_decision(host, token, project, iid, url, cfg, active_seen):
     # 汎用コントラクト（decision=rejected + guidance）へ変換＝上位（本体）に gitlab 固有分岐を作らない。
     if not decision and _rework_requested(host, token, project, iid, cfg):
         decision, reason = "rejected", "差し戻し（人コメントの見出し）"
+    if decision == "approved" and not issue_closed and \
+            str(cfg.get("close_issues") or "auto").strip().lower() == "manual":
+        # クローズは人（manual）: 承認条件（全 MR マージ）は揃ったがクローズしない。
+        # 案内ノートを一度だけ投稿し、人がイシューをクローズするまで未決着のまま監視を続ける
+        # （クローズされれば issue_closed 経由で承認決着する）。
+        _ensure_close_request_note(host, token, project, iid, url, reason)
+        return {"decision": None, "text": None, "data": None,
+                "active_seen": True, "mrs": len(mrs)}
     if decision == "approved":
         text, data = _finish_approved(host, token, project, iid, url, mrs,
                                       labels_now, done_label, reason)
