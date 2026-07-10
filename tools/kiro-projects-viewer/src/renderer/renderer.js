@@ -457,10 +457,65 @@ function renderOverview() {
     );
   }
 
+  // 危険な操作: プロジェクトのリセット（charter 以外を全消去して kiro-flow を停止）。
+  // charter.md が無い（バックログ消化モード）と「残すものが無い」ためリセットは出せない。
+  if (p.charter) {
+    parts.push(`
+    <div class="card full">
+      <h3>危険な操作</h3>
+      <div class="row">
+        <button class="chip danger" id="btn-reset-project"
+          title="charter.md 以外の全データ（backlog / archive / needs / decisions / journal / run-log / DELIVERY / inbox / commands / bus など）をゴミ箱へ移動し、kiro-flow daemon を停止します">
+          ⚠ リセット（charter 以外を全消去 + kiro-flow 停止）</button>
+        <span class="muted">charter.md だけを残して最初からやり直します。本体（kiro-projects）が稼働中なら次パスで charter から再分解されます</span>
+      </div>
+    </div>`);
+  }
+
   el.innerHTML = parts.join('\n');
 
   for (const b of el.querySelectorAll('button[data-edit]')) {
     b.addEventListener('click', () => openEditFile(b.dataset.edit));
+  }
+  const resetBtn = $('btn-reset-project');
+  if (resetBtn) resetBtn.addEventListener('click', () => resetProject());
+}
+
+// プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除し、バスの
+// kiro-flow daemon を停止する。charter が残るので、稼働中の kiro-projects は次パスで
+// charter から再分解して最初からやり直す（done の記録・needs・決定記録もすべて消える）。
+async function resetProject() {
+  const p = state.project;
+  if (!p || !p.charter) return;
+  const sharedBusNote =
+    p.busSource && p.busSource !== 'project'
+      ? '\n⚠ 共有バス構成です: kiro-flow daemon の停止は他プロジェクトの実行にも影響します。'
+      : '';
+  const yes = await confirmDialog(
+    `${p.name}: charter.md 以外の全データを削除し、kiro-flow daemon を停止します。\n` +
+      `削除対象: backlog ${p.backlog.length} 件・archive（done）${p.archive.length} 件・needs ${p.needs.length} 件・` +
+      `実行中クレーム ${p.claims.length} 件、および decisions / journal / run-log / DELIVERY / inbox / commands / bus 等の全ファイル。\n` +
+      `ファイルはゴミ箱へ移動します（ゴミ箱の無い環境では完全削除）。${sharedBusNote}\n` +
+      `charter.md は残るため、本体（kiro-projects）が稼働中なら次パスで charter から再分解して最初からやり直します。よろしいですか？`
+  );
+  if (!yes) return;
+  const ok = await guard('プロジェクトのリセット', async () => {
+    const res = await api.resetProject(p.dir);
+    const d = res.daemon || {};
+    const daemonMsg = !d.running
+      ? 'kiro-flow daemon は稼働していませんでした'
+      : d.stopped
+        ? `kiro-flow daemon を停止しました（pid=${d.pid}）`
+        : d.remote
+          ? 'kiro-flow daemon は別ホストで稼働中のためここからは停止できません（本体側で停止してください）'
+          : `kiro-flow daemon を停止できませんでした（pid=${d.pid}）`;
+    const errMsg = res.errors && res.errors.length ? `／削除失敗 ${res.errors.length} 件（${res.errors.map((e) => e.name).join(', ')}）` : '';
+    toast(`${p.name}: ${res.removed.length} 件を削除（charter.md は残しました）${errMsg}。${daemonMsg}`, !errMsg);
+    return true;
+  });
+  if (ok) {
+    gitPushAfterWrite('kiro-projects-viewer: project reset (keep charter)', p.dir);
+    await reloadProject();
   }
 }
 

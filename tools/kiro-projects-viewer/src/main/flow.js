@@ -576,6 +576,33 @@ function daemonStatus(busDir, lockDir) {
   return { running: pidAlive(pid), pid, lockPath, via: 'lock' };
 }
 
+// 対象バスの kiro-flow daemon を停止する（人の明示アクション。プロジェクトのリセットで使う）。
+// kiro-flow に stop コマンドは無く、daemon は SIGTERM で graceful に終了する
+// （子 orchestrator/worker を terminate してから抜ける）設計なので、同一ホストの
+// ロックファイルから pid を取り SIGTERM を送って終了を待つ。
+//   ・稼働していない → {running:false, stopped:true}（何もしない・冪等）
+//   ・同一ホスト（via=lock）→ SIGTERM 送信 → timeoutMs まで生存確認 → {stopped}
+//   ・別ホスト（via=status-sync）→ このプロセスからは止められない → {remote:true, stopped:false}
+async function stopDaemon(busDir, lockDir, { timeoutMs = 5000 } = {}) {
+  const st = daemonStatus(busDir, lockDir);
+  if (!st.running) return { running: false, stopped: true, via: st.via, pid: st.pid || 0 };
+  if (st.via !== 'lock' || !st.pid) {
+    return { running: true, stopped: false, remote: true, via: st.via, pid: st.pid || 0 };
+  }
+  try {
+    process.kill(st.pid, 'SIGTERM');
+  } catch (err) {
+    if (err.code === 'ESRCH') return { running: false, stopped: true, via: 'lock', pid: st.pid };
+    throw new Error(`kiro-flow daemon（pid=${st.pid}）へ SIGTERM を送れません: ${err.message}`);
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!pidAlive(st.pid)) return { running: true, stopped: true, via: 'lock', pid: st.pid };
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return { running: true, stopped: !pidAlive(st.pid), via: 'lock', pid: st.pid };
+}
+
 module.exports = {
   readRun,
   parseRunId,
@@ -583,6 +610,7 @@ module.exports = {
   readNodeEvents,
   listRuns,
   daemonStatus,
+  stopDaemon,
   readDaemonStatus,
   runAlive,
   resubmitRun,

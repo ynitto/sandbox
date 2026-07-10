@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects-viewer: プロジェクトのリセットボタン（charter 以外を全消去 + kiro-flow 停止）
+
+- **背景**: プロジェクトを「charter からゼロにやり直したい」とき（分解の迷走・実験のやり直し等）、
+  backlog / archive / needs / decisions / journal / bus … を手で消して kiro-flow daemon も手で
+  止める必要があり、消し漏れ（残った run が結果を書き戻す・古い needs が残る）が起きやすかった。
+- **機能**: 概要タブに「危険な操作」カードと「⚠ リセット（charter 以外を全消去 + kiro-flow 停止）」
+  ボタンを追加。確認のうえ ①バスの kiro-flow daemon を停止（同一ホストのロック pid へ SIGTERM →
+  終了待ち。kiro-flow に stop コマンドは無く SIGTERM が graceful 停止の公式経路。別ホスト稼働は
+  停止できない旨を報告）→ ②`charter.md` 以外の全データをゴミ箱へ移動（ゴミ箱の無い環境は完全削除）。
+  順序は「停止 → 削除」（先に止めないと worker が消したバスへ結果を書き戻す）。charter が残るため、
+  本体（kiro-projects）が稼働中なら次パスで charter から再分解して最初からやり直す。
+- **同期との整合**: ドット始まりの同期内部（`.state-git` 等）は温存する。管理クローンの manifest が
+  残ることで、削除が state_git の 3-way 同期で「ローカルの削除」としてリモートへ伝播する
+  （クローンごと消すと manifest が飛び、次の同期でリモートから全データが復活してしまう）。
+  gitAutoPush 有効時は削除を commit/push して即時反映する。
+- **ガード**: charter.md が無いプロジェクトでは拒否（残すものが無く、プロジェクト削除になるため
+  ボタン自体も出さない）。共有バス構成（バスがプロジェクト外）では daemon 停止が他プロジェクトの
+  実行にも影響する旨を確認ダイアログで警告する。削除は 1 件の失敗で止めず、失敗一覧を通知する。
+- **テスト**: 削除計画（charter 温存・`.state-git` 温存・`.replan.request` は対象・charter 無しは拒否）、
+  実行（全削除・失敗収集）、daemon 停止（冪等・ロック pid への SIGTERM → 終了待ち）を検証
+  （`test/reset.test.js`）。
+
 ### kiro-projects: `state_git_projects` 宣言プロジェクトが起動時に発見されないバグ等を修正
 
 - **報告バグ（起動漏れ）**: `state_git_projects:` に書いたプロジェクトが、オプションなし起動
