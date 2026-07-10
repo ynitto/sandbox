@@ -1,4 +1,0 @@
-- 2026-07-11 06:56:37 === kiro-project 開始 tasks=0 ingested=0 planner=kiro executor=kiro dry_run=False ===
-- 2026-07-11 06:56:37 state-git: 無効（未設定・ルートも git リポジトリでない）
-- 2026-07-11 06:56:37 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
-- 2026-07-11 06:56:37 === watch: 監視中（新規タスク/フィードバック待ち。エージェントは待機しない）===
