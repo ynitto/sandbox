@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-projects: `state_git_projects` 宣言プロジェクトが起動時に発見されないバグ等を修正
+
+- **報告バグ（起動漏れ）**: `state_git_projects:` に書いたプロジェクトが、オプションなし起動
+  （`kiro-projects` ＝ `run --watch --project all`）や `start` で起動しなかった。プロジェクトの発見が
+  `<root>/projects/` の**ディレクトリ走査だけ**で、ローカルにフォルダが無い（＝状態が固有リポジトリ側に
+  しかない）宣言済みプロジェクトを拾えず、フォルダは初回同期後にしかできない——という鶏卵で、取り込みも
+  駆動も永遠に始まらなかった。`project_dir_names` を「ディレクトリ走査 ∪ `state_git_projects` の宣言」に
+  変更し、起動時に宣言プロジェクトを実体化 → 固有リポジトリから取り込み → 駆動まで到達するようにした
+  （doctor の kiro-flow daemon 不在チェック・`manage_flow_daemon` の自動起動も宣言プロジェクトに届く）。
+- **単発 `run --project all` の取り込み順**: 非 watch でも駆動前にコンテナ同期を 1 回行うようにした
+  （watch と同じ配線）。従来は run_loop 内の同期が plan の後になり、リモートにしか無い charter や
+  タスクの取り込みが 1 周遅れていた。
+- **start/stop/restart が設定ファイルの `root:` を見ない**: `--root` 未指定時の照合 root が常に
+  `<cwd>/.kiro-projects` 固定で、設定ファイルで `root:` を変えている構成（state-git サンプル構成）では
+  重複起動の検出が効かず（daemon の二重起動を許す）、`kiro-projects stop` も対象を見つけられなかった。
+  照合 root を設定ファイルの `root`/`workdir` から解決するようにし、`stop --config` も追加した。
+- **設定キーの FS セーフ化不一致**: `state_git_projects` のキーが生のプロジェクト名（例 `web/frontend`）
+  のとき、実行時のディレクトリ名（`web_frontend`）と一致せず**黙って**既定 `state_git`（個人リポジトリ）
+  へ落ちていた。FS セーフ化したキーでも解決するようにした。
+- **テスト**: 宣言のみプロジェクトの発見・`all` センチネル除外・「リモートに状態だけがある状態から
+  `run --project all` 一発で実体化 → 消化」・生キー解決・設定ファイル由来の root 照合を追加
+  （`TestStateGitPerProject` / `TestLifecycle`）。
+
 ### kiro-projects / viewer: charter からバックログを再分解するボタン（エラー回復・done は重複排除）
 
 - **背景**: plan フェーズの失敗・タスクの取りこぼし・誤削除などでバックログが崩れたとき、kiro-projects-viewer
