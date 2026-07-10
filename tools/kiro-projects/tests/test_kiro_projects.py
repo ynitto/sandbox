@@ -2744,6 +2744,24 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(km.cmd_stop(root=str(work), project="all"), 0)  # all daemon を停止
         self.assertEqual(km.select_instances(root=all_root), [])
 
+    def test_container_root_resolves_from_config(self):
+        # start/stop/restart の照合 root は --root 未指定なら設定ファイルの root/workdir から
+        # 解決する（daemon 子プロセスは resolve_config 経由で設定の root に付くため、ここが
+        # cwd 固定だと重複検出が効かず stop も対象を見つけられない）。
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        cfgp = work / "kiro-projects.json"
+        cfgp.write_text(json.dumps({"root": str(work / "state" / ".kp")}), encoding="utf-8")
+        self.assertEqual(km._container_project_root(None, "all", config=str(cfgp)),
+                         str((work / "state" / ".kp" / "projects" / "all").resolve()))
+        # 相対 root は設定の workdir 基準（build_config の計算と一致）
+        cfgp.write_text(json.dumps({"root": ".kp", "workdir": str(work)}), encoding="utf-8")
+        self.assertEqual(km._container_project_root(None, "default", config=str(cfgp)),
+                         str((work / ".kp" / "projects" / "default").resolve()))
+        # --root 明示は従来どおり cwd 基準で設定ファイルを読まない
+        self.assertEqual(km._container_project_root(str(work / "x"), "all", config=str(cfgp)),
+                         str((work / "x" / "projects" / "all").resolve()))
+
     def test_watch_sigterm_graceful_exit(self):
         # SIGTERM 化された KeyboardInterrupt は graceful 停止: traceback を出さず 0 で終え、
         # finally で登録を掃除する（README の「stop は graceful…終了」を担保）。
@@ -5229,6 +5247,54 @@ class TestStateGitPerProject(unittest.TestCase):
             self._cfg("alpha", bus=shared, shared_bus=True)), [])
         self.assertEqual(km.doctor_flow_bus_coverage_findings(
             self._cfg("alpha", state_git_projects={})), [])
+
+    def test_declared_project_discovered_without_local_dir(self):
+        # 報告バグ: state_git_projects に書いただけ（ローカル未作成）のプロジェクトが
+        # オプションなし起動（run --watch --project all）で発見されず、取り込みも駆動も
+        # 始まらない。発見はディレクトリ走査＋宣言の和集合であること。
+        cfg = self._cfg("default")                       # 実体は default だけ
+        names = km.project_dir_names(cfg)
+        self.assertIn("alpha", names)                    # 宣言のみでも発見される
+        self.assertIn("default", names)
+
+    def test_declared_only_discovery_excludes_all_sentinel(self):
+        # コンテナが空でも宣言済みプロジェクトは発見される。"all" は多重化センチネルなので
+        # 誤って設定キーに書かれてもプロジェクト名として拾わない。
+        proot = self.tmp / "empty" / "projects" / "default"
+        cfg = cfg_for(proot, state_git_projects={"alpha": str(self.team), "all": "x"})
+        self.assertEqual(km.project_dir_names(cfg), ["alpha"])
+
+    def test_run_all_materializes_declared_project_from_remote(self):
+        # ローカルに alpha/ が無く、チームリポジトリに状態（backlog タスク）だけがある状態から
+        # `run --project all` 一発で: 宣言から発見 → 固有リポジトリを取り込み → 消化（archive）。
+        seed = self._check(self.team, "seed")
+        subprocess.run(["git", "-C", str(seed), "config", "user.email", "s@t"], check=True)
+        subprocess.run(["git", "-C", str(seed), "config", "user.name", "s"], check=True)
+        mkb(seed / "kp" / "projects" / "alpha", "T1")
+        subprocess.run(["git", "-C", str(seed), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(seed), "commit", "-qm", "seed"], check=True)
+        subprocess.run(["git", "-C", str(seed), "push", "-q", "-u", "origin", "main"],
+                       check=True, capture_output=True)
+        root = self.tmp / "cc"
+        cfgp = self.tmp / "kiro-projects.json"
+        cfgp.write_text(json.dumps({"state_git_projects": {"alpha": str(self.team)},
+                                    "state_git_subdir": "kp", "state_git_interval": 0}),
+                        encoding="utf-8")
+        rc = km.main(["run", "--project", "all", "--config", str(cfgp),
+                      "--workdir", str(self.tmp), "--root", str(root),
+                      "--planner", "none", "--flow-planner", "stub", "--executor", "stub",
+                      "--dry-run", "--max-cycles", "3"])
+        self.assertEqual(rc, 0)
+        # 取り込んだタスクが消化され、プロジェクトがローカルに実体化している
+        self.assertEqual(len(list((root / "projects" / "alpha" / "archive").glob("*.md"))), 1)
+
+    def test_spec_resolves_sanitized_config_key(self):
+        # 設定キーが生のプロジェクト名（例 "web/frontend"）でも、FS セーフ化されたディレクトリ名
+        # （web_frontend）で走るプロジェクトに解決される（黙って個人リポジトリへ落ちない）。
+        cfg = self._cfg("web_frontend", state_git_projects={"web/frontend": str(self.team)})
+        spec = km.project_state_spec(cfg, "web_frontend")
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec[0], str(self.team))
 
 
 class TestAsyncOffload(unittest.TestCase):

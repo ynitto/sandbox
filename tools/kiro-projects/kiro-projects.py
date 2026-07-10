@@ -1332,12 +1332,13 @@ def select_instances(root: "str | None" = None, pid: "int | None" = None,
 
 def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
              want_all: bool = False, timeout: float = 5.0,
-             extra: "list | str | None" = None, project: "str | None" = None) -> int:
+             extra: "list | str | None" = None, project: "str | None" = None,
+             config: "str | None" = None) -> int:
     """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する（自ホストのみ）。"""
     if not project and not pid and not want_all and not root:
         project = "all"                           # daemon の既定（start と対称）。all センチネルを止める
     if project and not pid and not want_all:      # --project 指定はその per-project root に解決して照合
-        root = _container_project_root(root, project)
+        root = _container_project_root(root, project, config)
     targets = select_instances(root, pid, want_all, extra=extra)
     if not targets:
         print("停止対象の稼働インスタンスが見つかりません（instances で確認できます）。", file=sys.stderr)
@@ -1371,11 +1372,21 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
     return 0 if all_ok else 1
 
 
-def _container_project_root(root: "str | None", project: "str | None") -> str:
+def _container_project_root(root: "str | None", project: "str | None",
+                            config: "str | None" = None) -> str:
     """start/stop/restart 用に per-project root（<container>/projects/<name>）を絶対パス文字列で返す。
-    build_config の root 計算と一致させ、稼働インスタンスの記録 root（=project root）と突き合わせる。"""
-    container = Path(root) if root else (Path.cwd() / ".kiro-projects")
-    container = container if container.is_absolute() else (Path.cwd() / container)
+    build_config の root 計算と一致させ、稼働インスタンスの記録 root（=project root）と突き合わせる。
+    --root 未指定なら設定ファイルの root/workdir を読む（daemon 子プロセスは resolve_config 経由で
+    設定の root に付くため、ここが cwd 固定だと重複検出・stop の照合が常に外れる）。"""
+    base = Path.cwd()
+    if not root:
+        path = _find_config(config)
+        filecfg = _load_config_file(path) if path else {}
+        root = str(filecfg.get("root") or ".kiro-projects")
+        wd = Path(str(filecfg.get("workdir") or ".")).expanduser()
+        base = wd if wd.is_absolute() else (base / wd)
+    container = Path(root).expanduser()
+    container = container if container.is_absolute() else (base / container)
     name = _project_dirname(project or "default")
     return str((container / "projects" / name).resolve())
 
@@ -1386,7 +1397,7 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
     """`run --watch` を切り離して常駐起動する（detached）。重複監視は既定で拒否（--force で許可）。
     daemon は既定で **--project all**（1 プロセスで全プロジェクトを回す）。明示 --project でその 1 つだけにできる。"""
     project = project or "all"
-    expected = _container_project_root(root, project)
+    expected = _container_project_root(root, project, config)
     me = socket.gethostname()
     dup = [r for r in list_instances(prune=True, extra=extra)
            if str(r.get("root", "")) == expected and str(r.get("host", "")) == me]
@@ -1441,7 +1452,7 @@ def cmd_restart(root: "str | None" = None, config: "str | None" = None,
                 extra: "list | str | None" = None, project: "str | None" = None) -> int:
     """同じプロジェクト root の監視を停止してから起動し直す（daemon は既定で --project all）。"""
     project = project or "all"
-    proot = _container_project_root(root, project)
+    proot = _container_project_root(root, project, config)
     if select_instances(root=proot, extra=extra):
         cmd_stop(root=proot, extra=extra)
     return cmd_start(root=root, config=config, force=True, extra=extra, project=project)
@@ -4223,6 +4234,13 @@ def project_state_spec(cfg: "Config", name: str) -> "tuple[str, str, str, float]
     projects/<name>/ が入る）。"""
     projmap = getattr(cfg, "state_git_projects", None) or {}
     spec = projmap.get(name)
+    if spec is None:
+        # 実行時の name はディレクトリ名（_project_dirname 済み）。設定キーが生のプロジェクト名
+        # （例 "web/frontend"）でも一致するよう、FS セーフ化したキーでも引く。
+        for k, v in projmap.items():
+            if _project_dirname(str(k)) == name:
+                spec = v
+                break
     if spec is None:                      # 写像に無い（default 含む）→ 既定の個人リポジトリ
         if not getattr(cfg, "state_git", None):
             return None
@@ -5960,10 +5978,15 @@ def _install_sigterm() -> None:
 
 
 def project_dir_names(cfg: "Config") -> "list[str]":
-    """コンテナ配下 <root>/projects/ の各プロジェクト名を返す（無ければ ['default']）。"""
+    """コンテナ配下 <root>/projects/ の各プロジェクト名を返す（無ければ ['default']）。
+    state_git_projects に宣言されたプロジェクトはローカル未作成でも含める（フォルダが
+    できるのは初回同期後なので、ディレクトリ走査だけだと宣言済みプロジェクトが
+    起動時に発見されず、固有リポジトリからの取り込みも駆動も始まらない）。"""
     pdir = container_dir(cfg) / "projects"
-    names = sorted(p.name for p in pdir.iterdir() if p.is_dir()) if pdir.exists() else []
-    return names or ["default"]
+    names = {p.name for p in pdir.iterdir() if p.is_dir()} if pdir.exists() else set()
+    declared = {_project_dirname(str(k)) for k in (getattr(cfg, "state_git_projects", None) or {})}
+    names |= {n for n in declared if n != "all"}   # "all" は多重化センチネル（プロジェクト名にしない）
+    return sorted(names) or ["default"]
 
 
 def project_cfg(cfg: "Config", name: str) -> "Config":
@@ -6015,6 +6038,10 @@ def cmd_run_all(cfg: Config) -> int:
         for c in cfgs:
             _ensure_registered(c)
         if not cfg.watch:
+            # 駆動より先にリモート状態を取り込む（watch と同じ配線）。宣言だけでローカル未作成の
+            # プロジェクト（state_git_projects）はここで実体化し、charter も入口で見えるようにする
+            # （run_loop 内の同期は plan の後になり、初回単発だと取り込みが 1 周遅れる）。
+            state_sync_container(cfg, cfgs)
             worst = 0
             for c in cfgs:
                 worst = max(worst, _run_single(c))    # 各プロジェクトを順に単発実行
@@ -8210,6 +8237,8 @@ def main(argv=None) -> int:
     sta.add_argument("--registry", action="append", default=None, help=_reg_help)
     sto = sub.add_parser("stop", help="稼働インスタンスを停止（SIGTERM→必要なら SIGKILL・登録掃除）")
     sto.add_argument("--root", default=None, help="停止対象のコンテナ/プロジェクト root")
+    sto.add_argument("--config", default=None,
+                     help="root の解決に使う設定ファイル（--root 未指定時。start と同じ探索既定）")
     sto.add_argument("--project", default=None,
                      help="停止対象のプロジェクト（既定: 他指定が無ければ all daemon を停止）")
     sto.add_argument("--pid", type=int, default=None, help="停止対象の PID（instances で確認）")
@@ -8242,7 +8271,8 @@ def main(argv=None) -> int:
     if args.cmd == "stop":
         return cmd_stop(args.root, args.pid, args.all,
                         extra=_split_registry(getattr(args, "registry", None)),
-                        project=getattr(args, "project", None))
+                        project=getattr(args, "project", None),
+                        config=getattr(args, "config", None))
     if args.cmd == "restart":
         return cmd_restart(args.root, args.config,
                            extra=_split_registry(getattr(args, "registry", None)),
