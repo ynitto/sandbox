@@ -11,11 +11,12 @@ const { app } = require('electron');
 
 const DEFAULT_CONFIG = {
   kiro: {
-    // 監視する kiro-projects コンテナ（--root に渡す値）の一覧。
-    // 例: ["C:\\work\\repo\\.kiro-projects", "/home/me/proj/.kiro-projects"]
+    // 監視する kiro-project プロジェクトルートの一覧（1 行 1 プロジェクト。
+    // 通常は状態共有リポジトリの clone）。
+    // 例: ["C:\\clones\\payments", "/home/me/clones/webapp"]
     roots: [],
-    // ~/.kiro-projects/instances/*.json（稼働発見レコード）から
-    // 稼働中コンテナを自動発見して roots に加える。
+    // ~/.kiro-project/instances/*.json（稼働発見レコード）から
+    // 稼働中プロジェクトを自動発見して roots に加える。
     autoDiscover: true,
     // 自動リロードの間隔（秒）。0 で無効（手動リロードのみ）。
     refreshSec: 5,
@@ -26,14 +27,14 @@ const DEFAULT_CONFIG = {
     gitPullSec: 300,
     // 状態共有 git 同期の push 側: ユーザー操作（指示ドロップ・inbox 投入・
     // needs 記入・削除）のたびに、操作したディレクトリだけをコミットして push する。
-    // コンテナが独立した状態共有リポジトリ（state_git の clone 等）であることが
-    // 前提のため既定は無効（ソースリポジトリ内の .kiro-projects へ意図しない
-    // コミットを作らない）。有効時は pull も --rebase で取り込む。
-    gitAutoPush: false,
+    // 「プロジェクトルート = 状態共有リポジトリの clone」を一次経路とするため既定 on。
+    // 非 git のパスでは commitPush が notRepo で無害にスキップされる。
+    // 有効時は pull も --rebase で取り込む。
+    gitAutoPush: true,
     // approve / hold / reprioritize（決定記録を残す人の操作）に使う
-    // kiro-projects CLI。PATH に無い場合はフルパスや
-    // "python3 /path/to/kiro-projects.py" 形式でも指定できる。
-    command: 'kiro-projects',
+    // kiro-project CLI。PATH に無い場合はフルパスや
+    // "python3 /path/to/kiro-project.py" 形式でも指定できる。
+    command: 'kiro-project',
     // 人の指示（approve / hold / pin / defer）の届け方。
     //   auto … 本体が稼働中なら commands/<name>.json のファイルドロップ
     //          （WSL 内の本体にも届く）、稼働していなければ CLI、
@@ -41,17 +42,16 @@ const DEFAULT_CONFIG = {
     //   file … 常にファイルドロップ（次回の watch/起動が取り込む）
     //   cli  … 常に CLI（従来の挙動）
     actionMode: 'auto',
-    // kiro-flow の共有バス（kiro-projects を --bus / 設定 bus: 付きで運用している
-    // 場合）の明示パス。空なら <project>/bus → <container>/bus →
-    // kiro-projects 設定ファイル（.kiro/）の bus: の順にファイルから自動発見する。
+    // かんたんモード（非技術者向けの絞った画面）で起動するか。ヘッダのトグルで切替・保存される。
+    simpleMode: false,
+    // kiro-flow の明示バス（kiro-project を --bus / 設定 bus: 付きで運用している
+    // 場合）のパス。空なら <root>/bus → kiro-project 設定ファイル（.kiro/）の bus: の
+    // 順にファイルから自動発見する。
     flowBus: '',
-    // プロジェクト単位で kiro-flow の保存先リポジトリを分けている場合（本体の
-    // state_git_projects）の、プロジェクト名 → バスパスの写像。プロジェクト固有リポジトリを
-    // clone した先の <clone>/kiro-flow を各プロジェクトに割り当てる。例:
+    // プロジェクト名 → kiro-flow バスパスの写像。pure-remote（clone のみ・ローカル daemon
+    // 無し）で kiro-flow の鏡写し先 clone を各プロジェクトに割り当てる。例:
     //   { "alpha": "C:\\clones\\alpha\\kiro-flow", "beta": "/home/me/clones/beta/kiro-flow" }
-    // 空 {} なら従来どおり flowBus（単一）とローカルの <project>/bus 等から自動発見する。
-    // <project>/bus 等が実在（runs/ あり）ならそちらが優先され、pure-remote（clone のみ）の
-    // ときにこの写像が効く。
+    // <root>/bus が実在（runs/ あり）ならそちらが優先される。
     flowBusByProject: {},
     // kiro-flow daemon ロック（daemon-<sha1>.lock）の置き場。空なら ~/.kiro の
     // 設定ファイル lock_dir → 両ツール既定の $TMPDIR/kiro-flow-locks を使う。

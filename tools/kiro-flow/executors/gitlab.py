@@ -735,7 +735,7 @@ def _human_comments(host: str, token: str, project: str, iid,
 def _human_notes_payload(host: str, token: str, project: str, iid,
                          cfg: "dict | None" = None) -> list:
     """result.data.notes に載せる構造化人コメント（新しい順）。判定・蒸留・learn は下流
-    （kiro-projects）が行うため、著者情報と note_id を運ぶ（重複排除・監査に使う）。"""
+    （kiro-project）が行うため、著者情報と note_id を運ぶ（重複排除・監査に使う）。"""
     out = []
     for n in reversed(_human_notes(host, token, project, iid, cfg)):
         author = n.get("author") or {}
@@ -1165,7 +1165,7 @@ def _finish_approved(host, token, project, iid, url, mrs, labels_now, done_label
     merged_urls = [m.get("web_url", "") for m in mrs]
     text = (f"[gitlab] イシュー #{iid} 承認（{why}）。イシューをクローズ（{url}）\n"
             f"マージ済み MR: {', '.join(u for u in merged_urls if u) or '(URL なし)'}")
-    # 承認決着でも**人コメント（正例）**を notes に載せて下流（kiro-projects）の learn 材料にする。
+    # 承認決着でも**人コメント（正例）**を notes に載せて下流（kiro-project）の learn 材料にする。
     # 従来 done の result は人コメントを運ばず、承認時の良い指摘を捨てていた。
     notes = _human_notes_payload(host, token, project, iid)
     data = {"issue_iid": iid, "web_url": url, "decision": "approved", "reason": why,
@@ -1200,9 +1200,9 @@ def _deleted_payload(iid, url):
 def _rejected_payload(host, token, project, iid, url, mrs, labels_now, done_label, reason=""):
     """却下: 人コメントを取り込み、元イシューをクローズして却下ペイロード (text, data) を作る。
     reason は却下の根拠（未マージクローズ / 外部クローズ＋コメント却下 / MR 無しの取り下げ）。
-    text 先頭の `[gitlab-reject]` を上位（kiro-projects）が検知し、やり直しに活かす。承認
+    text 先頭の `[gitlab-reject]` を上位（kiro-project）が検知し、やり直しに活かす。承認
     （_finish_approved）の data と対称の機械可読な決着として data を返す——worker/service_waits が
-    それを failed result の data に書き、消費側（viewer / kiro-projects）が文字列マッチに頼らず
+    それを failed result の data に書き、消費側（viewer / kiro-project）が文字列マッチに頼らず
     却下を扱える。status は failed のまま（done の「後続が成果に依存してよい」契約を、成果の
     無い却下では満たせないため）。"""
     why = reason or "未マージクローズ"

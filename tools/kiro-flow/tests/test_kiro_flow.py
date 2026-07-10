@@ -237,7 +237,7 @@ class InheritTests(unittest.TestCase):
 class RunFailureTests(unittest.TestCase):
     """orchestrator が done を書く前に異常終了したケースの終端化（失敗終了の検知）。
     これが無いと run が非終端のまま放置され、result/status を待つ消費者
-    （kiro-projects の charter 駆動 watch）が execute フェーズで永久待機する。"""
+    （kiro-project の charter 駆動 watch）が execute フェーズで永久待機する。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="kf-test-")
@@ -2005,8 +2005,8 @@ class GitlabRepoInstructionTests(unittest.TestCase):
 
 
 class ConfigStateGitSubdirTests(unittest.TestCase):
-    """回帰: state_git_subdir が --config（kiro-projects が渡す flow_config）経由で反映されること。
-    kiro-projects が --state-git-subdir を個別 CLI 注入していた頃は config 値が上書きされて効かない
+    """回帰: state_git_subdir が --config（kiro-project が渡す flow_config）経由で反映されること。
+    kiro-project が --state-git-subdir を個別 CLI 注入していた頃は config 値が上書きされて効かない
     バグがあった。注入をやめた今、config の値が resolve_config → state_git_for まで通ることを固定する。"""
 
     def _write_cfg(self, obj):
@@ -2035,7 +2035,7 @@ class ConfigStateGitSubdirTests(unittest.TestCase):
         self.assertEqual(sg.subdir, "custom-flow-ns")
 
     def test_default_subdir_when_unset(self):
-        # config にも CLI にも無ければ既定 "kiro-flow"（kiro-projects の FLOW_STATE_SUBDIR と一致）
+        # config にも CLI にも無ければ既定 "kiro-flow"（kiro-project の FLOW_STATE_SUBDIR と一致）
         d, cfg = self._write_cfg({})
         args = self._resolve(["--bus", os.path.join(d, "bus"),
                               "--state-git", "git@x:team/s.git", "--config", cfg,
@@ -3912,7 +3912,7 @@ def _make_skill_repo(root: str, tool_subdir: str = "tools/kiro-flow",
     repo = os.path.join(root, "skillrepo")
     td = os.path.join(repo, tool_subdir)
     os.makedirs(td, exist_ok=True)
-    other = os.path.join(repo, "tools", "kiro-projects")   # sparse 除外の確認用
+    other = os.path.join(repo, "tools", "kiro-project")   # sparse 除外の確認用
     os.makedirs(other, exist_ok=True)
     pathlib.Path(other, "FILE.txt").write_text("unrelated\n")
     body = installer_body or (
@@ -3994,8 +3994,8 @@ class SelfUpdateTests(unittest.TestCase):
         dest = os.path.join(self.tmp, "co", "repo")
         tool_dir = kf.sparse_checkout_tool(self.repo, "main", "tools/kiro-flow", dest)
         self.assertTrue(os.path.isfile(os.path.join(tool_dir, "install.sh")))
-        # sparse: 無関係な tools/kiro-projects は作業ツリーに展開されない
-        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-projects")))
+        # sparse: 無関係な tools/kiro-project は作業ツリーに展開されない
+        self.assertFalse(os.path.isdir(os.path.join(dest, "tools", "kiro-project")))
 
     def test_run_installer(self):
         dest = os.path.join(self.tmp, "co2", "repo")
@@ -4285,7 +4285,7 @@ class StateGitSyncTests(unittest.TestCase):
 
 
 class DaemonStatusHeartbeatTests(unittest.TestCase):
-    """daemon の生存信号（status.json）。kiro-projects の write_status/--status-interval と
+    """daemon の生存信号（status.json）。kiro-project の write_status/--status-interval と
     同じ考え方: 実イベント（run 終端・生存リース push）時は既存の state_sync/push に相乗り
     （追加 push 無し）、アイドル中の更新は --status-interval（既定 0=無効）が opt-in。
     GitBus（--git）モードでは書かない（sparse-checkout が対象外パスのため）。"""

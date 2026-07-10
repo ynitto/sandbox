@@ -1,6 +1,6 @@
 'use strict';
 
-// 人のアクション層。kiro-projects の公式な入力契約だけを使う:
+// 人のアクション層。kiro-project の公式な入力契約だけを使う:
 //   1. needs/<id>.md の「## Decision Outcome」への記入 + `- [x]`
 //      → ingest_feedback が取り込む（フィードバック往復の正規ルート）
 //   2. inbox/<name>.json のドロップ（E4 push 型の取り込み口）
@@ -10,7 +10,7 @@
 //      revise は人の即時フィードバック: タスクの内容・依存（after）・優先度の修正と
 //      feedback（次の act に必ず届く指示）を、ループがブロックする前に能動的に届ける。
 //      ファイルだけで届くため、本体が WSL 内で稼働していても操作できる。
-//      本体が稼働していないときは kiro-projects CLI に委譲し、CLI も使えなければ
+//      本体が稼働していないときは kiro-project CLI に委譲し、CLI も使えなければ
 //      指示ファイルを置いて次回起動時の取り込みに委ねる（ロジックの二重実装はしない）。
 // done の確定・状態遷移そのものをこのアプリが直接書き換えることはしない
 // （「done は verify のみが根拠」の不変条件を壊さない）。
@@ -87,8 +87,10 @@ function enqueueToInbox(projectDir, spec) {
 // ---------------------------------------------------------------------------
 
 const COMMAND_ACTIONS = new Set(['approve', 'hold', 'pin', 'defer', 'revise']);
+// プロジェクト単位（id 不要）のライフサイクル指示。リモートの本体を git 越しに操作する口。
+const LIFECYCLE_ACTIONS = new Set(['pause', 'resume', 'stop']);
 
-// revise が受けるフィールド編集キー（kiro-projects の REVISE_FIELDS と同じ）。
+// revise が受けるフィールド編集キー（kiro-project の REVISE_FIELDS と同じ）。
 // 値は「置換」規約: '' / '-' / 'none' はフィールド削除、未指定（undefined/null）は触らない。
 const REVISE_KEYS = ['title', 'priority', 'verify', 'accept', 'after', 'note', 'level', 'track'];
 
@@ -105,38 +107,31 @@ function revisePayload({ fields, feedback }) {
   return out;
 }
 
-// commands/<name>.json のドロップ（kiro-projects の ingest_commands が拾う）。
+// commands/<name>.json のドロップ（kiro-project の ingest_commands が拾う）。
 // 書きかけを watch に読ませないよう .tmp に書いてから rename する。
-// replan はプロジェクト単位（id 不要）なので id を載せない。
+// replan / pause / resume / stop はプロジェクト単位（id 不要）なので id を載せない。
 function dropCommand(projectDir, { action, id, reason, fields, feedback }) {
   const dir = path.join(projectDir, 'commands');
   fs.mkdirSync(dir, { recursive: true });
+  const projectScoped = action === 'replan' || LIFECYCLE_ACTIONS.has(action);
   const rec = {
     command: action,
-    ...(action === 'replan' ? {} : { id: String(id) }),
+    ...(projectScoped ? {} : { id: String(id) }),
     reason: String(reason || ''),
     actor: 'kiro-projects-viewer',
     ts: new Date().toISOString(),
     ...(action === 'revise' ? revisePayload({ fields, feedback }) : {}),
   };
-  const slug = action === 'replan' ? 'project' : slugify(id);
+  const slug = projectScoped ? 'project' : slugify(id);
   const file = path.join(dir, `viewer-${action}-${slug}-${Date.now()}.json`);
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2), 'utf8');
   fs.renameSync(`${file}.tmp`, file);
   return { file, rec };
 }
 
-// プロジェクトディレクトリ <root>/projects/<name> から --root / --project を導く
+// プロジェクトルートから --root を導く（1 プロジェクト = 1 ディレクトリ）
 function cliScope(projectDir) {
-  const dir = path.resolve(projectDir);
-  const parent = path.dirname(dir);
-  if (path.basename(parent) !== 'projects') {
-    throw new Error(
-      '旧フラット構成のプロジェクトでは CLI 操作を組み立てられません。' +
-        'kiro-projects CLI を直接実行してください'
-    );
-  }
-  return { root: path.dirname(parent), project: path.basename(dir) };
+  return { root: path.resolve(projectDir) };
 }
 
 function quote(arg) {
@@ -153,27 +148,27 @@ function runKiroCli(command, args, timeoutMs = 60000) {
     let err = '';
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error(`kiro-projects がタイムアウトしました: ${cmdline}`));
+      reject(new Error(`kiro-project がタイムアウトしました: ${cmdline}`));
     }, timeoutMs);
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
     child.on('error', (e) => {
       clearTimeout(timer);
-      reject(new Error(`kiro-projects を起動できません（⚙ 設定の CLI コマンドを確認）: ${e.message}`));
+      reject(new Error(`kiro-project を起動できません（⚙ 設定の CLI コマンドを確認）: ${e.message}`));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0) resolve({ output: out.trim(), command: cmdline });
-      else reject(new Error(`kiro-projects が失敗しました (exit ${code}): ${(err || out).trim().slice(-400)}`));
+      else reject(new Error(`kiro-project が失敗しました (exit ${code}): ${(err || out).trim().slice(-400)}`));
     });
   });
 }
 
 // CLI 実行（approve / hold / reprioritize / revise）。本体が稼働していないときの経路
 async function runActionViaCli(cfg, { dir, action, id, reason, fields, feedback }) {
-  const command = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
-  const { root, project } = cliScope(dir);
-  const base = ['--root', root, '--project', project];
+  const command = (cfg.kiro && cfg.kiro.command) || 'kiro-project';
+  const { root } = cliScope(dir);
+  const base = ['--root', root];
   let args;
   if (action === 'approve') args = ['approve', id, '--reason', reason, ...base];
   else if (action === 'hold') args = ['hold', id, '--reason', reason, ...base];
@@ -207,7 +202,7 @@ async function runAction(cfg, { dir, action, id, reason, fields, feedback }) {
   if (mode === 'file' || (mode !== 'cli' && kiro.isProjectRunning(dir))) {
     const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback });
     return {
-      output: `${action} ${id}: 指示ファイルを投入しました（稼働中の kiro-projects が取り込みます）`,
+      output: `${action} ${id}: 指示ファイルを投入しました（稼働中の kiro-project が取り込みます）`,
       file,
       via: 'file',
     };
@@ -217,12 +212,12 @@ async function runAction(cfg, { dir, action, id, reason, fields, feedback }) {
     return { ...res, via: 'cli' };
   } catch (err) {
     if (mode === 'cli') throw err;
-    // CLI が無い/失敗 → ファイルドロップに退避（次回の kiro-projects 起動時に取り込まれる）
+    // CLI が無い/失敗 → ファイルドロップに退避（次回の kiro-project 起動時に取り込まれる）
     const { file } = dropCommand(dir, { action, id, reason: why, fields, feedback });
     return {
       output:
         `${action} ${id}: CLI を実行できないため指示ファイルを置きました` +
-        `（次回の kiro-projects 起動時に取り込まれます）`,
+        `（次回の kiro-project 起動時に取り込まれます）`,
       file,
       via: 'file-fallback',
       cliError: err.message,
@@ -234,7 +229,7 @@ async function runAction(cfg, { dir, action, id, reason, fields, feedback }) {
 // 本体は次パスで charter を分解し直し、既存/archive（done）と類似のタスクは冪等に重複排除して
 // 「取りこぼした差分」だけを backlog へ入れる（done と同種は投入しない）。
 // 経路は runAction と同じ auto/file/cli 契約。file は commands/replan ドロップ、cli は
-// `kiro-projects replan --reason ...`。稼働中はドロップ・停止中は CLI・CLI 不可はドロップ退避。
+// `kiro-project replan --reason ...`。稼働中はドロップ・停止中は CLI・CLI 不可はドロップ退避。
 async function requestReplan(cfg, { dir, reason }) {
   const why = String(reason || '').trim() || 'kiro-projects-viewer から再分解を要求';
   const mode = (cfg.kiro && cfg.kiro.actionMode) || 'auto';
@@ -242,15 +237,15 @@ async function requestReplan(cfg, { dir, reason }) {
   if (mode === 'file' || (mode !== 'cli' && kiro.isProjectRunning(dir))) {
     const { file } = dropCommand(dir, { action: 'replan', reason: why });
     return {
-      output: 'charter からの再分解を要求しました（稼働中の kiro-projects が次パスで取り込みます）',
+      output: 'charter からの再分解を要求しました（稼働中の kiro-project が次パスで取り込みます）',
       file,
       via: 'file',
     };
   }
   try {
-    const command = (cfg.kiro && cfg.kiro.command) || 'kiro-projects';
-    const { root, project } = cliScope(dir);
-    const args = ['replan', '--reason', why, '--root', root, '--project', project];
+    const command = (cfg.kiro && cfg.kiro.command) || 'kiro-project';
+    const { root } = cliScope(dir);
+    const args = ['replan', '--reason', why, '--root', root];
     const res = await runKiroCli(command, args);
     return { ...res, via: 'cli' };
   } catch (err) {
@@ -259,12 +254,31 @@ async function requestReplan(cfg, { dir, reason }) {
     return {
       output:
         'CLI を実行できないため再分解の要求ファイルを置きました' +
-        '（次回の kiro-projects 起動時に取り込まれます）',
+        '（次回の kiro-project 起動時に取り込まれます）',
       file,
       via: 'file-fallback',
       cliError: err.message,
     };
   }
+}
+
+// プロジェクト単位のライフサイクル操作（pause / resume / stop）。
+// 常に commands/ ドロップ（＋git push）で届ける — リモート本体（WSL・別ホスト）の watch が
+// 同期間隔内に取り込む契約（kiro-project の ingest_commands）。CLI は使わない
+// （stop の CLI は同一ホスト限定で、この口の主用途はリモート操作のため）。
+const LIFECYCLE_LABELS = { pause: '一時停止', resume: '再開', stop: '停止' };
+
+function requestLifecycle(cfg, { dir, action, reason }) {
+  if (!LIFECYCLE_ACTIONS.has(action)) throw new Error(`不明なライフサイクル操作: ${action}`);
+  const why = String(reason || '').trim() || 'kiro-projects-viewer から操作';
+  const { file } = dropCommand(dir, { action, reason: why });
+  return {
+    output:
+      `${LIFECYCLE_LABELS[action]}を要求しました` +
+      '（稼働中の kiro-project が同期間隔内に取り込みます）',
+    file,
+    via: 'file',
+  };
 }
 
 module.exports = {
@@ -273,5 +287,6 @@ module.exports = {
   dropCommand,
   runAction,
   requestReplan,
+  requestLifecycle,
   DECISION_MARKER,
 };

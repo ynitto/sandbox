@@ -160,7 +160,7 @@ function reconcileNodeState(node, issue) {
   return null;
 }
 
-// kiro-projects が付ける決定的 run-id `req-<backlogハッシュ>-<taskid>-r<retries>[-v<rev>]` を
+// kiro-project が付ける決定的 run-id `req-<backlogハッシュ>-<taskid>-r<retries>[-v<rev>]` を
 // 分解する。バックログのタスク（安定オブジェクト）と、そのリトライ/リバイズ系統を UI が
 // 突き合わせられるようにする。素の `run-<ts>-<rand>`（手動/単発）は taskId 無しで単独扱い。
 const REQ_ID_RE = /^req-([0-9a-f]{6,})-(.+)-r(\d+)(?:-v(.+))?$/;
@@ -508,7 +508,7 @@ function listRuns(busDir, limit = 30) {
 // kiro-flow daemon の稼働検知（CLI 不要・ロックファイルだけで判定）
 // ---------------------------------------------------------------------------
 
-// kiro-flow / kiro-projects と完全に同じ導出でロックパスを組む:
+// kiro-flow / kiro-project と完全に同じ導出でロックパスを組む:
 //   sha1("local::" + realpath(bus)) → <lock_dir>/daemon-<hash>.lock
 // lock_dir 未指定時の既定も両ツールと同じ tempdir 配下。
 function daemonLockPath(busDir, lockDir) {
@@ -536,7 +536,7 @@ function pidAlive(pid) {
 // <busDir>/status.json — kiro-flow の生存信号（write_daemon_status が書く）。本体が state_git
 // （鏡）越しにバス状態を同期する別ホスト構成のとき、ロックファイルは本体側の一時領域にあって
 // ここには絶対に無い（sha1 の元になる bus パス自体が別ホストの --bus 値で、このクローンの
-// busDir とは無関係）。その場合の唯一の生存根拠がこれ。kiro-projects の readStatus と同じ考え方。
+// busDir とは無関係）。その場合の唯一の生存根拠がこれ。kiro-project の readStatus と同じ考え方。
 function readDaemonStatus(busDir) {
   const rec = readJson(path.join(busDir, 'status.json'));
   if (!rec || typeof rec !== 'object') return null;
@@ -548,7 +548,7 @@ function readDaemonStatus(busDir) {
 }
 
 // 対象バスの kiro-flow daemon が稼働中か。
-//  1. 同一ホストのロックファイル（pid 生存）で確定判定（従来どおり。kiro-projects の
+//  1. 同一ホストのロックファイル（pid 生存）で確定判定（従来どおり。kiro-project の
 //     daemon_running と同じく pid のみ判定＝fcntl 不在時フォールバックと同じ根拠）
 //  2. ロックが無ければ status.json（state_git 越しの同期・同期遅延を許容した推定）へ
 //     フォールバック（GitBus 分散実行のバスは対象外＝write_daemon_status が書かないため

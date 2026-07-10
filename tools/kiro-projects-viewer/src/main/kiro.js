@@ -1,17 +1,18 @@
 'use strict';
 
-// kiro-projects のプロジェクトデータ（<root>/projects/<name>/ 配下）を
+// kiro-project のプロジェクトデータ（プロジェクトルート直下）を
 // 読み取り専用で解析するデータ層。書式の正典は
-// tools/kiro-projects/backlog.md.example / charter.md.example と
-// docs/designs/kiro-projects-design.md §3。パース規則は kiro-projects.py の
+// tools/kiro-project/backlog.md.example / charter.md.example と
+// docs/designs/kiro-project-design.md §3。パース規則は kiro-project.py の
 // HEAD_RE / FIELD_RE / parse_charter / parse_policy に合わせている。
+// 登録パス 1 件 = 1 プロジェクトルート（1 プロジェクト = 1 ディレクトリ = 1 プロセス）。
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { readToolConfig } = require('./toolconfig');
 
-// kiro-projects.py と同じ正規表現
+// kiro-project.py と同じ正規表現
 const HEAD_RE = /^##\s+(\S+?):\s*(.*)$/;
 const FIELD_RE = /^-\s+(\w+):\s*(.*)$/;
 const POLICY_RE = /^(deny|pin|defer|offload|gate|protect|route):\s*(.+)$/;
@@ -290,10 +291,10 @@ function readDelivery(file, limit = 100) {
 // ---------------------------------------------------------------------------
 
 function globalDir() {
-  return path.join(os.homedir(), '.kiro-projects');
+  return path.join(os.homedir(), '.kiro-project');
 }
 
-// ~/.kiro-projects/instances/*.json — 稼働発見レコード
+// ~/.kiro-project/instances/*.json — 稼働発見レコード（root = プロジェクトルート）
 function listInstances() {
   const dir = path.join(globalDir(), 'instances');
   const out = [];
@@ -310,11 +311,12 @@ function listInstances() {
   return out;
 }
 
-// <project>/status.json — 生存信号（kiro-projects.py の write_status が書く）。本体が別ホストで
-// 稼働し state_git 経由でしか届かない場合、instances（同一ホストのローカルレジストリ）は空になる。
-// この場合の唯一の生存根拠が、同期されてきた status.json の updated_iso の新しさ。
-// fresh_after_sec は書き手（本体）が自分の同期間隔（state_git_interval / --status-interval）から
-// 計算した値なので、ビュアー側は単純比較するだけでよい。存在しない/壊れていれば null。
+// <root>/status.json — 生存信号（kiro-project.py の write_status が書く。paused も載る）。
+// 本体が別ホストで稼働し git 同期経由でしか届かない場合、instances（同一ホストのローカル
+// レジストリ）は空になる。この場合の唯一の生存根拠が、同期されてきた status.json の
+// updated_iso の新しさ。fresh_after_sec は書き手（本体）が自分の同期間隔
+// （state_git_interval / --status-interval）から計算した値なので、ビュアー側は単純比較
+// するだけでよい。存在しない/壊れていれば null。
 function readStatus(dir) {
   const rec = readJson(path.join(dir, 'status.json'));
   if (!rec || typeof rec !== 'object') return null;
@@ -342,15 +344,16 @@ const _norm = (p) => {
 // （Windows のビュアーから WSL 内の稼働を発見するため）。
 function projectLiveness(dir) {
   const target = _norm(dir);
+  const status = readStatus(dir);
+  const paused = !!(status && status.paused);
   if (target) {
     for (const inst of listInstances()) {
-      if (!inst.fresh || inst.sentinel) continue;
+      if (!inst.fresh) continue;
       if (_norm(inst.root) === target || (inst.root_windows && _norm(inst.root_windows) === target)) {
-        return { running: true, via: 'instances', ageSec: 0 };
+        return { running: true, via: 'instances', ageSec: 0, paused };
       }
     }
   }
-  const status = readStatus(dir);
   if (status) {
     return {
       running: status.fresh,
@@ -358,9 +361,10 @@ function projectLiveness(dir) {
       ageSec: Math.round(status.ageSec),
       level: status.level,
       watch: status.watch,
+      paused,
     };
   }
-  return { running: false, via: 'none', ageSec: null };
+  return { running: false, via: 'none', ageSec: null, paused: false };
 }
 
 // actions.js の指示ルーティング（commands/ ドロップ vs CLI）が使う真偽値。
@@ -394,29 +398,8 @@ function isProjectDir(dir) {
   );
 }
 
-// コンテナ（--root 相当のディレクトリ）からプロジェクト一覧を得る。
-// 標準は <root>/projects/<name>/、projects/ が無い旧フラット構成は
-// root 自体を 1 プロジェクトとして扱う。
-function listProjectsIn(root) {
-  const projectsDir = path.join(root, 'projects');
-  const out = [];
-  if (fs.existsSync(projectsDir)) {
-    for (const name of safeList(projectsDir)) {
-      const dir = path.join(projectsDir, name);
-      try {
-        if (!fs.statSync(dir).isDirectory()) continue;
-      } catch {
-        continue;
-      }
-      out.push({ name, dir });
-    }
-  } else if (isProjectDir(root)) {
-    out.push({ name: path.basename(root), dir: root, flat: true });
-  }
-  return out;
-}
-
-// 設定 roots ＋ instances 自動発見からコンテナ→プロジェクトのツリーを作る
+// 設定 roots ＋ instances 自動発見からプロジェクト一覧を作る。
+// 登録パス 1 件 = 1 プロジェクトルート（通常は状態共有リポジトリの clone）。
 function discover(cfg) {
   const roots = new Map(); // resolved root -> {root, source}
   for (const r of (cfg.kiro && cfg.kiro.roots) || []) {
@@ -426,61 +409,51 @@ function discover(cfg) {
   }
   const instances = cfg.kiro && cfg.kiro.autoDiscover === false ? [] : listInstances();
   for (const inst of instances) {
-    const c = inst.container || inst.root;
-    if (!c || inst.sentinel) continue;
-    const resolved = path.resolve(String(c));
+    if (!inst.root) continue;
+    const resolved = path.resolve(String(inst.root));
     if (!roots.has(resolved)) roots.set(resolved, { root: resolved, source: 'instance' });
   }
 
-  const runningKeys = new Set(
-    instances
-      .filter((i) => i.fresh && !i.sentinel)
-      .map((i) => `${path.resolve(String(i.container || i.root || ''))}::${i.project || ''}`)
-  );
-
-  const containers = [];
+  const projects = [];
   for (const { root, source } of roots.values()) {
-    const projects = listProjectsIn(root).map(({ name, dir, flat }) => {
-      const tasks = listTasks(path.join(dir, 'backlog'));
-      const byStatus = {};
-      for (const t of tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
-      const needs = safeList(path.join(dir, 'needs')).filter((f) => f.endsWith('.md')).length;
-      // instances（同一ホスト・確定）を先に見て、無ければ status.json（リモート・同期経由の推定）
-      // にフォールバックする。サイドバーの ● はどちらの根拠でも「稼働中」として表示するが、
-      // 経過時間・根拠はプロジェクト選択後の概要タブで詳しく出す（liveness）。
-      const liveness = runningKeys.has(`${root}::${name}`)
-        ? { running: true, via: 'instances', ageSec: 0 }
-        : projectLiveness(dir);
-      return {
-        name,
-        dir,
-        flat: !!flat,
-        hasCharter: fs.existsSync(path.join(dir, 'charter.md')),
-        backlogCount: tasks.length,
-        byStatus,
-        needsCount: needs,
-        running: liveness.running,
-        liveness,
-      };
+    const dir = root;
+    const tasks = listTasks(path.join(dir, 'backlog'));
+    const byStatus = {};
+    for (const t of tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
+    const needs = safeList(path.join(dir, 'needs')).filter((f) => f.endsWith('.md')).length;
+    // instances（同一ホスト・確定）を先に見て、無ければ status.json（リモート・同期経由の推定）
+    // にフォールバックする（projectLiveness が両方を見る）。
+    const liveness = projectLiveness(dir);
+    projects.push({
+      name: path.basename(dir),
+      dir,
+      source,
+      exists: fs.existsSync(dir),
+      isProject: isProjectDir(dir),
+      hasCharter: fs.existsSync(path.join(dir, 'charter.md')),
+      backlogCount: tasks.length,
+      byStatus,
+      needsCount: needs,
+      running: liveness.running,
+      paused: liveness.paused,
+      liveness,
     });
-    containers.push({ root, source, exists: fs.existsSync(root), projects });
   }
-  return { containers, instances };
+  return { projects, instances };
 }
 
 // ---------------------------------------------------------------------------
 // kiro-flow バスの発見
 // ---------------------------------------------------------------------------
 
-// kiro-projects の既定は per-project の <project>/bus だが、--bus / 設定 `bus:` の
-// 共有バス構成では別の場所になる。CLI に聞かず、ファイルの存在だけで候補を順に当たる:
-//   1. <project>/bus（既定の per-project バス）
-//   2. <container>/bus（共有バスをコンテナ直下に置く運用）
-//   3. ⚙ 設定 kiro.flowBusByProject[<name>]（プロジェクト単位リポジトリの clone。本体の
-//      state_git_projects で kiro-flow を分けている場合）
-//   4. ⚙ 設定 kiro.flowBus（単一の明示指定）
-//   5. kiro-projects 設定ファイル（<workdir>/.kiro → ~/.kiro）の bus:
-//      （相対パスは kiro-projects の workdir 相当＝コンテナの親で解決する）
+// kiro-project の既定は <root>/bus だが、--bus / 設定 `bus:` の明示バス構成では別の場所になる。
+// CLI に聞かず、ファイルの存在だけで候補を順に当たる:
+//   1. <root>/bus（既定のバス）
+//   2. ⚙ 設定 kiro.flowBusByProject[<name>]（プロジェクト単位のバス写像。pure-remote で
+//      kiro-flow の鏡写し先 clone を割り当てる場合）
+//   3. ⚙ 設定 kiro.flowBus（単一の明示指定）
+//   4. kiro-project 設定ファイル（<root>/.kiro → ~/.kiro）の bus:
+//      （相対パスはプロジェクトルート基準で解決する）
 // runs/ を持つ最初の候補を採用。どれにも無ければ既定の 1 を返す（hasBus=false）。
 function resolveBusDir(projectDir, cfg) {
   const candidates = [];
@@ -491,11 +464,7 @@ function resolveBusDir(projectDir, cfg) {
   };
 
   push(path.join(projectDir, 'bus'), 'project');
-  const parent = path.dirname(path.resolve(projectDir));
-  const container = path.basename(parent) === 'projects' ? path.dirname(parent) : null;
-  if (container) push(path.join(container, 'bus'), 'container');
-  // プロジェクト単位で kiro-flow の保存先リポジトリを分けている場合の per-project バス写像。
-  // pure-remote（clone だけ・ローカル daemon 無し）では <project>/bus に runs/ が無いため、
+  // pure-remote（clone だけ・ローカル daemon 無し）では <root>/bus に runs/ が無いため、
   // ここで割り当てた <clone>/kiro-flow が採用される。
   const projName = path.basename(path.resolve(projectDir));
   const byProject = cfg && cfg.kiro && cfg.kiro.flowBusByProject;
@@ -504,13 +473,11 @@ function resolveBusDir(projectDir, cfg) {
   }
   if (cfg && cfg.kiro && cfg.kiro.flowBus) push(cfg.kiro.flowBus, 'config');
 
-  // kiro-projects 設定ファイルの bus:（コンテナの親 = workdir 相当の .kiro を優先）
-  const kiroDirs = container ? [path.join(path.dirname(container), '.kiro')] : [];
-  const toolCfg = readToolConfig('kiro-projects', kiroDirs);
+  // kiro-project 設定ファイルの bus:（プロジェクトルートの .kiro を優先）
+  const toolCfg = readToolConfig('kiro-project', [path.join(projectDir, '.kiro')]);
   if (toolCfg && toolCfg.values.bus) {
     const raw = String(toolCfg.values.bus);
-    const base = container ? path.dirname(container) : path.dirname(projectDir);
-    push(path.isAbsolute(raw) ? raw : path.join(base, raw), 'kiro-projects.yaml');
+    push(path.isAbsolute(raw) ? raw : path.join(projectDir, raw), 'kiro-project.yaml');
   }
 
   for (const c of candidates) {

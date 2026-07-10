@@ -1,9 +1,9 @@
 'use strict';
 
-// kiro-projects / kiro-flow の状態を共有する git リポジトリとの同期層。
+// kiro-project / kiro-flow の状態を共有する git リポジトリとの同期層。
 //   pull      … 設定間隔（既定 300 秒・下限 60 秒）で律速した取り込み。
 //   commitPush … ユーザー操作（指示・投入・記入・削除）の都度反映。
-// kiro-projects 本体の StateGit / kiro-flow の GitBus と同じ護りで、
+// kiro-project 本体の StateGit / kiro-flow の GitBus と同じ護りで、
 // 同一クローンへコミットする他プロセス（本体の state_git・git-file-sync 等）と
 // 共存できるようにする:
 //   ・ステージは操作したディレクトリの pathspec だけ（add -A -- <dir>）。
@@ -139,7 +139,7 @@ async function upstreamOf(toplevel) {
 // pull 本体。rebase=true はローカルコミット（都度プッシュの書き込み）と共存する取り込み。
 // rebase が進められない（コンフリクト）ときは abort して作業ツリーを壊さずエラーで返す。
 // --autostash: commitPush は操作した pathspec だけをコミットするため、同一クローンへ
-// 書き込む他プロセス（kiro-projects 本体等）の未コミット変更で作業ツリーが汚れている
+// 書き込む他プロセス（kiro-project 本体等）の未コミット変更で作業ツリーが汚れている
 // のが常態。そのままでは rebase が「unstaged changes」で走れないので、退避→取り込み→
 // 復帰を git に任せる（他プロセスの変更は巻き込まずそのまま作業ツリーへ戻る）
 async function doPull(toplevel, rebase) {
