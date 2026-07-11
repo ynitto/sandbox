@@ -572,6 +572,13 @@ charter.md（goal / constraints / assumptions / deliverables / acceptance=受入
 acceptance 実行・収束計算は本体が決定的に行う。**敵対的レビュー（`--review-project`）**は acceptance 全 PASS でも「短絡的
 達成（弱い verify を通しただけ）」を疑い、成果物群 vs goal/deliverables を批判させて改善タスク化する。
 
+**`--executor stub`（エージェント不使用）時は plan/review もローカル完結に切り替わる**: ① は
+`plan_via_stub`（未達 acceptance をそのまま初期タスクにする＝③ の「未達 acceptance はそれ自体を
+verify とする」規則の使い回し）、③ の敵対的レビューは `review_via_stub`（常に所見なし）になり、
+どちらも `_run_kiro_cli` を呼ばない。`--planner none` は §2 の**タスク優先順位付け**だけに効く別の設定で、
+charter 駆動の plan/review には効かないため、「エージェント無しで charter 駆動を回す」には
+`--executor stub` を使うこと。
+
 ### 6.2 charter.md（人が書く唯一の最上位入力）
 
 ```markdown

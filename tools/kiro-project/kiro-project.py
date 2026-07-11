@@ -7464,6 +7464,24 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     return specs
 
 
+def plan_via_stub(cfg: "Config", charter: "Charter") -> "list[dict]":
+    """plan_via_agent の決定的代替（executor: stub 時のデフォルト planner）。エージェントを
+    一切呼ばず、charter.acceptance（呼び出し時点で解決済み前提）をそのまま実行し、未達の項目を
+    そっくり初期タスクにする（_failing_acceptance_specs と同じ規則＝的が外れない）。
+    acceptance が無ければ空（呼び出し元の no-acceptance ゲートで人へ回る）。"""
+    if not charter.acceptance:
+        return []
+    _passed, _total, results = evaluate_acceptance(cfg, charter)
+    return _failing_acceptance_specs(results)
+
+
+def review_via_stub(cfg: "Config", charter: "Charter") -> "list[dict]":
+    """review_via_agent の決定的代替（executor: stub 時のデフォルト reviewer）。敵対的レビューは
+    判断を要する性質上、決定的な代用を作らず常に所見なしを返す（--review-project は既定 opt-in
+    off のため、stub 環境では何もしない＝acceptance PASS をそのまま信頼する）。"""
+    return []
+
+
 def _review_prompt(charter: "Charter", granularity: "str | None" = None) -> str:
     return (
         "あなたは成果物を批判的にレビューする敵対的レビュアです。以下の憲章の目標・成果物に対し、"
@@ -7966,8 +7984,14 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         print(f"[project] {charter.name}: acceptance 未定義 → 人へ（needs/{pid}.md）")
         return project_exit_code("no-acceptance")
 
-    plan_fn = planner or (lambda ch: plan_via_agent(cfg, ch))
-    review_fn = reviewer or (lambda ch: review_via_agent(cfg, ch))
+    # executor: stub はローカル完結（エージェント不使用）が既定の意味＝charter 駆動の
+    # 分解・レビューもここで揃える（さもないと --planner none / --executor stub を設定しても
+    # plan_via_agent/review_via_agent が黙ってエージェントを呼んでしまう）。
+    stub_mode = cfg.executor == "stub"
+    plan_fn = planner or ((lambda ch: plan_via_stub(cfg, ch)) if stub_mode
+                          else (lambda ch: plan_via_agent(cfg, ch)))
+    review_fn = reviewer or ((lambda ch: review_via_stub(cfg, ch)) if stub_mode
+                             else (lambda ch: review_via_agent(cfg, ch)))
     state = load_charter_state(cfg, charter_name if multi else None)
     if state.get("id") != pid:
         state = {"id": pid, "name": charter.name, "history": [], "best": 0, "stall": 0}

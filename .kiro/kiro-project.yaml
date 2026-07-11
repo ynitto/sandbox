@@ -1,7 +1,7 @@
 # kiro-project の設定（1 root = 1 プロジェクト。相対パスはすべて root 基準）。
 # root = cwd。charter.md / backlog/ / bus/ 等はすべて root 直下に集約される。
 # workdir / bus は既定（root / <root>/bus）に任せるため指定しない。
-root: .
+root: .kiro-project
 
 planner: none #flow-planner
 executor: stub #kiro

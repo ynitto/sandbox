@@ -3628,6 +3628,89 @@ class TestProjectLayer(unittest.TestCase):
                 km._run_kiro_cli = orig
             self.assertEqual(specs[0]["workspace"], "lib")  # verify=packages/** → lib（必ず明示される）
 
+    def test_plan_via_stub_derives_tasks_from_failing_acceptance(self):
+        # executor: stub の既定 planner（plan_via_stub）は _run_kiro_cli を一切呼ばず、未達
+        # acceptance をそのまま初期タスクにする（_failing_acceptance_specs と同じ規則）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"                      # 存在しない → acceptance 未達
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)                       # executor="stub"（cfg_for の既定）
+            ch = km.load_charter(cfg)
+            specs = km.plan_via_stub(cfg, ch)
+            self.assertEqual(len(specs), 1)
+            self.assertEqual(specs[0]["verify"], f"test -f {flag}")
+            self.assertIn("受入条件を満たす", specs[0]["title"])
+            flag.write_text("x")                   # 条件を満たすと空を返す
+            self.assertEqual(km.plan_via_stub(cfg, ch), [])
+
+    def test_cmd_project_stub_executor_never_calls_agent_for_planning(self):
+        # 実運用インシデントの再発防止: .kiro/kiro-project.yaml で --planner none / --executor stub
+        # を設定しても、charter があると run/watch は自動で cmd_project（charter 駆動）に入り、
+        # 従来はその既定 plan_fn が黙って plan_via_agent（実エージェント呼び出し）を使っていた。
+        # executor: stub では plan_via_stub に切り替わり、エージェントを一切呼ばないことを保証する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"                      # 存在しない → acceptance 未達のまま
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d, max_project_cycles=1)  # executor="stub"（既定）。planner は注入しない
+            orig = km._run_kiro_cli
+
+            def _boom(prompt, model):
+                raise AssertionError("stub モードなのにエージェント（_run_kiro_cli）が呼ばれた")
+
+            km._run_kiro_cli = _boom
+            try:
+                km.cmd_project(cfg, runner=lambda c: _drained())
+            finally:
+                km._run_kiro_cli = orig
+            titles = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertTrue(any("受入条件を満たす" in t for t in titles))  # 決定的 stub planner の出力
+
+    def test_cmd_project_agent_executor_still_uses_plan_via_agent(self):
+        # 対の回帰テスト: executor が stub 以外（既定 agent 等）なら従来どおりエージェント委譲のまま。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d, executor="agent", max_project_cycles=1)
+            calls = {"n": 0}
+            orig = km._run_kiro_cli
+
+            def fake(prompt, model):
+                calls["n"] += 1
+                return '[{"title":"エージェント生成タスク","verify":"true"}]'
+
+            km._run_kiro_cli = fake
+            try:
+                km.cmd_project(cfg, runner=lambda c: _drained())
+            finally:
+                km._run_kiro_cli = orig
+            self.assertGreaterEqual(calls["n"], 1)
+            titles = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertIn("エージェント生成タスク", titles)
+
+    def test_cmd_project_stub_executor_review_via_stub_skips_agent(self):
+        # review_project=True（敵対的レビュー opt-in）でも executor: stub では review_via_stub
+        # （常に所見なし）に切り替わり、エージェントを呼ばずに収束する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")   # acceptance 全 PASS（敵対的レビューの発火条件）
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d, review_project=True, max_project_cycles=1)  # executor="stub"（既定）
+            orig = km._run_kiro_cli
+
+            def _boom(prompt, model):
+                raise AssertionError("stub モードなのにエージェント（_run_kiro_cli）が呼ばれた")
+
+            km._run_kiro_cli = _boom
+            try:
+                km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            finally:
+                km._run_kiro_cli = orig
+            self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertEqual(km.load_tasks(cfg.backlog), [])
+
     def test_plugin_executor_forwarded_to_kiro_flow(self):
         # executor に kiro-flow プラグイン名/パスを指定すると、そのまま kiro-flow run へ委譲される
         with tempfile.TemporaryDirectory() as d:

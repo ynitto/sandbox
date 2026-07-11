@@ -39,9 +39,11 @@ root: .                     # プロジェクトルート（cwd 相対、既定 
 # 実行バックエンド（環境に kiro-cli があるか等で切替）
 # ---------------------------------------------------------------------------
 executor: agent             # 実行・評価役: agent（エージェント CLI に委譲。agent_cli で kiro/claude/
-                            # copilot を切替）/ stub（オフライン検証）。または kiro-flow の executor
-                            # プラグイン名 / .py パスも指定可（そのまま `kiro-flow run --executor <値>`
-                            # に委譲される）。
+                            # copilot を切替）/ stub（オフライン検証・エージェント不使用。charter があるとき
+                            # 自動で入る plan→execute→evaluate の plan/敵対的レビューも stub 版に切替わり、
+                            # _run_kiro_cli を一切呼ばない。「エージェント無しで動かす」なら本命はここ）。
+                            # または kiro-flow の executor プラグイン名 / .py パスも指定可（そのまま
+                            # `kiro-flow run --executor <値>` に委譲される）。
 # executor: gitlab          #   例: 同梱の gitlab プラグイン（タスクを GitLab イシュー化し、レビュー承認
                             #   （status:approved）後にクリーンな MR を自動マージして完了する）。
                             #   プラグイン固有設定は kiro-flow 側の設定（例 gitlab: ブロック）で行う。
