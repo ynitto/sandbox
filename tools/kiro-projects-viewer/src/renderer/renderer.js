@@ -827,8 +827,8 @@ async function resetProject() {
       `削除対象: 計画バージョン・タスク ${p.backlog.length} 件・完了記録 ${p.archive.length} 件・要対応 ${p.needs.length} 件・` +
       `実行中 ${p.claims.length} 件、および履歴・納品記録などの全ファイル。\n` +
       `ファイルはゴミ箱へ移動します（ゴミ箱の無い環境では完全削除）。${sharedBusNote}\n` +
-      `憲章（プロジェクト全体の前提）は残ります。リセット後は待機状態になり、` +
-      `計画バージョンを追加すると作業が再開します。よろしいですか？`
+      `憲章はプロジェクト全体の前提（マスター）として残ります。マスターは分解されないので、` +
+      `リセット後は待機状態になり、計画バージョンを追加すると作業が再開します。よろしいですか？`
   );
   if (!yes) return;
   const ok = await guard('プロジェクトのリセット', async () => {
@@ -843,7 +843,8 @@ async function resetProject() {
           ? '実行エンジンは別のマシンで稼働中のため、そちらで停止してください'
           : '実行エンジンを停止できませんでした';
     const errMsg = res.errors && res.errors.length ? `／削除できなかったもの ${res.errors.length} 件` : '';
-    toast(`${p.name}: ${res.removed.length} 件を削除（憲章は残しました）${errMsg}。${daemonMsg}`, !errMsg);
+    const masterMsg = res.masterized ? '／憲章をマスターに整えました' : '';
+    toast(`${p.name}: ${res.removed.length} 件を削除（憲章は残しました）${masterMsg}${errMsg}。${daemonMsg}`, !errMsg);
     return true;
   });
   if (ok) {
@@ -1838,6 +1839,15 @@ async function saveCharterForm() {
   if (cf.isVersion && !$('ec-goal').value.trim()) {
     return toast('やること（このバージョンで達成すること）を記入してください');
   }
+  // 完了条件が無いバージョンは done を判定できず、要対応に「完了条件を追加」が出続ける。
+  // 保存前に確認して、うっかり空のまま作るのを防ぐ（意図的なら続行できる）。
+  if (cf.isVersion && !readSimpleList($('ec-acceptance')).length) {
+    const yes = await confirmDialog(
+      '完了条件が未設定です。\nこのままだと完了を判定できず、要対応に「完了条件を追加」が出続けます。\n' +
+        'このまま保存しますか？（後から追加もできます）'
+    );
+    if (!yes) return;
+  }
   // フォームの値をフィールドへ反映（保持セクション _reposRaw/_linksRaw/_masterRaw はそのまま残す）
   const f = { ...cf.fields };
   f.master = cf.isMaster;
@@ -2216,6 +2226,16 @@ function milestoneStatusFor(p, id) {
   return null; // 状態が見つからない（判定材料なし）＝従来どおりボタンを出す
 }
 
+// milestone id（<project>-<version>）に対応する計画バージョン名を project.json から引く。
+// no-acceptance の milestone から「そのバージョンに完了条件を追加」フォームを開くのに使う。
+function milestoneVersionName(p, id) {
+  const ps = (p && p.projectState) || {};
+  for (const [name, st] of Object.entries(ps.charters || {})) {
+    if (st && st.id === id) return name;
+  }
+  return null;
+}
+
 // needs（要対応）の種別ラベル。内部の kind 名は UI に出さない
 const NEED_KIND_LABELS = {
   'plan-review': '計画レビュー',
@@ -2247,13 +2267,27 @@ function needActionsHtml(n) {
   } else if (kind === 'milestone') {
     const status = milestoneStatusFor(state.project, n.id);
     if (status === null || status === 'converged') {
+      // 完了確認待ち（converged）: 承認して完了にできる
       buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ プロジェクトを完了として承認</button>`);
-    } else {
+      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
+    } else if (status === 'no-acceptance') {
+      // 完了条件が無い＝承認できない。承認ではなく「完了条件を追加」へ誘導する
+      // （承認を押しても失敗し、マイルストーンが消えず何度も出るのを防ぐ）。
+      const ver = milestoneVersionName(state.project, n.id);
       buttons.push(
-        `<span class="muted">まだ完了確認の段階ではありません（現在: ${esc(statusLabel(status) || '未実行')}）。「完了確認待ち」になると承認できます。</span>`
+        `<span class="muted">このバージョンには完了条件がありません。完了を判定できないため、完了条件を追加してください。</span>`
       );
+      if (ver) {
+        buttons.push(`<button class="primary-inline" data-open-version="${esc(ver)}">✎ 完了条件を追加</button>`);
+      }
+      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
+    } else {
+      // blocked / 停滞 / 予算到達など: 承認前の段階。内容を確認して対応する
+      buttons.push(
+        `<span class="muted">まだ完了確認の段階ではありません（現在: ${esc(statusLabel(status) || '未実行')}）。内容を確認して、必要なら計画バージョンを編集してください。</span>`
+      );
+      buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
     }
-    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
   } else {
     buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">➤ 指示を送って再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">↻ そのまま再実行</button>`);
@@ -2345,6 +2379,10 @@ function renderNeeds() {
   }
   for (const btn of el.querySelectorAll('button[data-act]')) {
     btn.addEventListener('click', () => handleNeedAction(btn));
+  }
+  // no-acceptance の milestone から、そのバージョンの編集フォームを開いて完了条件を足す
+  for (const btn of el.querySelectorAll('button[data-open-version]')) {
+    btn.addEventListener('click', () => openCharterForm(`charters/${btn.dataset.openVersion}.md`));
   }
 }
 

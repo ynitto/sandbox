@@ -200,9 +200,13 @@ function registerIpcHandlers() {
   });
 
   // プロジェクトのリセット（人の明示アクション・危険操作）。charter.md 以外の全データを
-  // ゴミ箱へ移動し、バスの kiro-flow daemon を停止する。charter が残るので、稼働中の
-  // kiro-project は次パスで charter から再分解して最初からやり直す。
-  // 順序は「daemon 停止 → 削除」: 先に止めないと worker が消したバスへ結果を書き戻す。
+  // ゴミ箱へ移動し、バスの kiro-flow daemon を停止する。charter は「プロジェクト全体の前提
+  // （マスター）」として残す＝分解されないので、リセット後は待機状態になり作業は計画バージョンの
+  // 追加で再開する（初版 charter からマイルストーンが出てこない）。
+  // 順序は「daemon 停止 → charter をマスター化 → 削除」:
+  //   - 先に daemon を止めないと worker が消したバスへ結果を書き戻す。
+  //   - 削除の前に charter をマスター化しておくと、削除中に本体が非マスター charter を分解して
+  //     マイルストーンを作る取りこぼしを防げる（削除がその残骸も一緒に片付ける）。
   // ドット始まりの同期内部（.state-git 等）は温存する — 管理クローンの manifest が残る
   // ことで、削除が次の同期で「ローカルの削除」としてリモートへ伝播する（データ復活を防ぐ）。
   handle('kiro:reset', async ({ dir }) => {
@@ -211,8 +215,22 @@ function registerIpcHandlers() {
     const plan = reset.planReset(dir);
     const bus = kiro.resolveBusDir(dir, cfg);
     const daemon = await flow.stopDaemon(bus.busDir, flowLockDir(cfg));
+    let masterized = false;
+    try {
+      const info = authoring.readProjectFile(dir, 'charter.md');
+      if (info.exists) {
+        const fields = authoring.charterToFields(info.content);
+        if (!fields.master) {
+          fields.master = true; // マスター化（fieldsToCharter は master のとき acceptance を書かない）
+          authoring.writeProjectFile(dir, 'charter.md', authoring.fieldsToCharter(fields));
+          masterized = true;
+        }
+      }
+    } catch {
+      /* マスター化に失敗してもリセット自体は続行する */
+    }
     const res = await reset.executeReset(plan, removeToTrash);
-    return { ...res, daemon, busDir: bus.busDir, busSource: bus.source };
+    return { ...res, daemon, masterized, busDir: bus.busDir, busSource: bus.source };
   });
 
   // 実行中ノードの関連イシューを決定的タスクトークンで検索（gitlab executor 連動）

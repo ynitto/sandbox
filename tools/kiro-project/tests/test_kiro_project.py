@@ -6356,6 +6356,48 @@ class TestMultiCharter(unittest.TestCase):
             self.assertIn("v1", chs)
             self.assertEqual(chs["v2"].name, "v2")
 
+    def test_reconcile_milestones_is_pure_projection_of_status(self):
+        # 根本対策:「要対応マイルストーンが何度も復活する」。milestone ファイルは project.json の
+        # status の純粋な投影であり、reconcile_milestones が唯一の調整点。承認済み・削除済み
+        # バージョン・旧トップレベルの milestone は毎回消え、no-acceptance/converged は残る。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            cfg = cfg_for(d, project_name="proj")
+            cdir = d / "charters"; cdir.mkdir(parents=True, exist_ok=True)
+            (cdir / "v1.md").write_text(
+                f"# Charter: v1\n## goal\nv1\n## acceptance\n- `test -f {flag}`\n", encoding="utf-8")
+            (cdir / "v2.md").write_text(          # 完了条件なし → no-acceptance
+                "# Charter: v2\n## goal\nv2\n## acceptance\n", encoding="utf-8")
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained(), charter_name="v1")
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained(), charter_name="v2")
+            data = km.load_project_state(cfg)
+            self.assertEqual(data["charters"]["v1"]["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertEqual(data["charters"]["v2"]["status"], km.REASON_PROJECT_NO_ACCEPTANCE)
+
+            # (1) 承認済みの milestone が復活しても GC が毎回消す
+            km.finalize_project(cfg, data["charters"]["v1"], "OK",
+                                charter=km._load_named_charter(cfg, "v1"), charter_name="v1")
+            (cfg.needs / "proj-v1.md").write_text("# マイルストーン: v1\nkind: milestone\n", encoding="utf-8")
+            # frontmatter kind を正しく（reconcile は kind=milestone だけ対象）
+            (cfg.needs / "proj-v1.md").write_text(
+                "---\nkind: milestone\n---\n# マイルストーン: v1\n", encoding="utf-8")
+            km.reconcile_milestones(cfg)
+            self.assertFalse((cfg.needs / "proj-v1.md").exists())   # accepted → 消える
+            self.assertTrue((cfg.needs / "proj-v2.md").exists())    # no-acceptance → 残る
+
+            # (2) 存在しないバージョンの milestone（orphan）も消す
+            (cfg.needs / "proj-vX.md").write_text(
+                "---\nkind: milestone\n---\n# マイルストーン: vX\n", encoding="utf-8")
+            km.reconcile_milestones(cfg)
+            self.assertFalse((cfg.needs / "proj-vX.md").exists())
+
+            # (3) タスク級の needs（kind != milestone）は触らない
+            (cfg.needs / "T1.md").write_text(
+                "---\nkind: review\n---\n# 要対応: T1\n", encoding="utf-8")
+            km.reconcile_milestones(cfg)
+            self.assertTrue((cfg.needs / "T1.md").exists())
+
     def test_version_run_clears_stale_toplevel_milestone(self):
         # 実運用インシデントの再発防止:「要対応のマイルストーンが二度出る」。
         # 単一 charter.md で一度 run（トップレベル milestone needs/<project>.md を作る）した後に

@@ -3,3 +3,7 @@
 - 2026-07-11 21:42:15 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-11 21:42:20 commands 取り込み失敗: viewer-approve-kiro-project-v-1783773733981.json: approve .kiro-project-v１ が失敗 (exit 2)
 - 2026-07-11 21:42:20 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 21:42:25 commands 取り込み失敗: viewer-approve-kiro-project-v-1783773739180.json: approve .kiro-project-v１ が失敗 (exit 2)
+- 2026-07-11 21:42:25 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 21:42:30 commands 取り込み失敗: viewer-approve-kiro-project-v-1783773743629.json: approve .kiro-project-v１ が失敗 (exit 2)
+- 2026-07-11 21:42:30 === project watch: 監視中（charter 更新/フィードバック待ち）===
