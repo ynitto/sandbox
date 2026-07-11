@@ -1,0 +1,12 @@
+- 2026-07-11 10:10:01 === kiro-project 開始 tasks=0 ingested=0 planner=none executor=stub dry_run=True ===
+- 2026-07-11 10:10:01 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 10:10:01 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 10:10:29 === kiro-project 開始 tasks=0 ingested=0 planner=none executor=stub dry_run=True ===
+- 2026-07-11 10:10:29 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 10:10:29 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 10:18:56 === kiro-project 開始 tasks=0 ingested=0 planner=none executor=stub dry_run=True ===
+- 2026-07-11 10:18:56 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 10:18:56 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 10:19:25 === kiro-project 開始 tasks=0 ingested=0 planner=none executor=stub dry_run=True ===
+- 2026-07-11 10:19:25 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 10:19:25 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
