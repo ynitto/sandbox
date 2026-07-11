@@ -40,6 +40,11 @@ os.environ["GIT_CONFIG_VALUE_0"] = "false"
 os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
     tempfile.gettempdir(), "kf-tests-no-such-registry", "skill-registry.json")
 
+# 開発者の cwd の設定ファイル（./kiro-flow.yaml / ./.kiro/kiro-flow.yaml）がテストへ漏れて
+# 実環境のバス・state_git を拾うのを防ぐため、中立な一時 cwd で走らせる（kiro-project の
+# テストと同じ護り。テストは絶対パスだけを使うので cwd に依存しない）。
+os.chdir(tempfile.mkdtemp(prefix="kf-tests-cwd-"))
+
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("kiroflow", SCRIPT)
@@ -1175,6 +1180,70 @@ class KiroTimeoutTests(unittest.TestCase):
             kf._configure_thresholds(args)
             self.assertEqual(kf._KIRO_TIMEOUT, 45.0)
             self.assertEqual(kf._STUB_SLEEP_MAX, 0.0)
+
+
+class AgentCliTests(unittest.TestCase):
+    """agent_cli 設定による LLM 実行 CLI の切替（kiro-cli / Claude Code）。"""
+
+    @staticmethod
+    def _capture_run():
+        calls = {}
+        def fake_run(cmd, **kw):
+            calls["cmd"] = list(cmd)
+            calls["input"] = kw.get("input")
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        return calls, fake_run
+
+    def test_default_is_kiro_cli_with_argv_prompt(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            out = kf.run_kiro("プロンプト", "m1")
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][:4],
+                         ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"])
+        self.assertIn("--model", calls["cmd"])
+        self.assertEqual(calls["cmd"][-1], "プロンプト")   # 従来どおり argv 渡し
+        self.assertIsNone(calls["input"])
+
+    def test_claude_uses_headless_stdin(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(kf, "_AGENT_CLI", "claude"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            out = kf.run_kiro("プロンプト", "claude-sonnet")
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][0], "claude")
+        self.assertIn("-p", calls["cmd"])
+        self.assertIn("--output-format", calls["cmd"])
+        self.assertIn("--model", calls["cmd"])
+        self.assertEqual(calls["input"], "プロンプト")     # stdin 渡し
+        self.assertNotIn("プロンプト", calls["cmd"])       # argv には載せない
+
+    def test_claude_large_prompt_skips_spill(self):
+        # stdin 渡しは ARG_MAX に当たらないため、argv_limit 超過でも一時ファイルへ退避しない
+        calls, fake = self._capture_run()
+        big = "x" * (kf._kiro_argv_limit() + 10)
+        with mock.patch.object(kf, "_AGENT_CLI", "claude"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            kf.run_kiro(big, None)
+        self.assertEqual(calls["input"], big)
+        self.assertTrue(all("ファイル" not in str(a) for a in calls["cmd"]))
+
+    def test_configure_thresholds_sets_agent_cli(self):
+        orig = kf._AGENT_CLI
+        try:
+            kf._configure_thresholds(types.SimpleNamespace(agent_cli="claude"))
+            self.assertEqual(kf._AGENT_CLI, "claude")
+        finally:
+            kf._AGENT_CLI = orig
+
+    def test_child_base_forwards_agent_cli_and_parses(self):
+        ns = types.SimpleNamespace(lease=1800.0, git=None, agent_cli="claude")
+        base = kf._child_base(ns, "/tmp/bus")
+        i = base.index("--agent-cli")
+        self.assertEqual(base[i + 1], "claude")
+        # 子プロセスの argv として parser が受理する（usage エラーで即死しない）
+        args = kf.build_parser().parse_args(base[2:] + ["status"])
+        self.assertEqual(args.agent_cli, "claude")
 
 
 class StructuredExtractionTests(unittest.TestCase):

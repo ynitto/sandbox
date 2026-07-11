@@ -559,14 +559,16 @@ backlog の上に、人が書く**目標（charter）**から逆算する evalua
 
 ```
 charter.md（goal / constraints / assumptions / deliverables / acceptance=受入 verify ／ 任意 links）
- ① plan     charter をエージェントに分解させ [{title, verify}] を enqueue（冪等＝既存と類似は投入しない）
+ ① plan     charter をエージェントに分解させ [{title, verify}] を enqueue（冪等＝既存と類似は投入しない）。
+             分解の粒度は設定 `granularity`（coarse=ストーリー相当・INVEST・既定 / fine=単機能 / finest=1ファイル/1関数）
  ② execute  §2 の正準ループ run を drained まで回す（S0–S7 のゲートは全て温存・無改造で内側呼び出し）
  ③ evaluate acceptance を実行 → 全 PASS か判定（＋opt-in 敵対的レビュー --review-project）
               未達/指摘 → 改善タスクを生成して次サイクル（未達 acceptance はそれ自体を verify とする）
               全 PASS かつ改善ゼロ → milestone gate（needs/<project>.md）で人へ
 ```
 
-**plan/評価の知能は委譲**（kiro-cli。`kiro-flow run --planner flow-planner` への差し替えは注入点の交換で可能）。enqueue・
+**plan/評価の知能は委譲**（エージェント CLI。既定 kiro-cli・設定 `agent_cli: claude` で Claude Code ヘッドレスへ切替。
+`kiro-flow run --planner flow-planner` への差し替えは注入点の交換で可能）。enqueue・
 acceptance 実行・収束計算は本体が決定的に行う。**敵対的レビュー（`--review-project`）**は acceptance 全 PASS でも「短絡的
 達成（弱い verify を通しただけ）」を疑い、成果物群 vs goal/deliverables を批判させて改善タスク化する。
 
@@ -699,8 +701,8 @@ kiro-flow への act 依頼（`build_request`）に **charter（定義）と `de
 `--git-bus/-branch/-subdir` `--state-git[-branch/-subdir/-interval]` `--charter` `--review-project`
 `--max-project-cycles/-cost` `--project-stall` `--dry-run` `--once`。
 
-**設定ファイル（`CLI > 設定ファイル > 既定`）**: `.kiro/kiro-project.{yaml,yml,json}` に書ける（探索: `--config` 明示 →
-`./.kiro/` → `~/.kiro/`）。YAML は PyYAML 任意・無ければ JSON。CLI default を None にし `resolve_config` が「CLI 未指定キーだけ
+**設定ファイル（`CLI > 設定ファイル > 既定`）**: `kiro-project.{yaml,yml,json}` に書ける（探索: `--config` 明示 →
+`./`（ルート直下＝プロジェクトのマニフェスト。viewer の自動発見マーカーを兼ねる）→ `./.kiro/` → `~/.kiro/`）。YAML は PyYAML 任意・無ければ JSON。CLI default を None にし `resolve_config` が「CLI 未指定キーだけ
 設定ファイル→既定 で埋める」。スカラ＋真偽フラグ（三値 `--flag`/`--no-flag`）が対象、個別パス上書き・実行限定フラグは
 CLI 専用。サンプルは `kiro-project.yaml.example`。
 

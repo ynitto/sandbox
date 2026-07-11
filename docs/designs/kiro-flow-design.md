@@ -19,7 +19,7 @@ kiro-flow は、kiro-cli を頭脳にして **Claude 風の Dynamic Workflow**
 - orchestrator は [Claude Dynamic Workflows の 6 パターン](https://zenn.dev/aria3/articles/claude-code-dynamic-workflows-6-patterns)
   をカタログとして持ち、**要求からパターンの組み合わせと並列数を選んで**タスクグラフを形作る。
 - **常駐デーモン**が要求に応じて orchestrator / worker を**オンデマンド起動**する。
-- LLM 実行は kiro-cli が既定。kiro-cli 無しでも動く **stub** モードでプロトコルを検証できる。
+- LLM 実行は kiro-cli が既定（設定 `agent_cli: claude` で Claude Code ヘッドレス `claude -p` へ切替可。planner / executor / verify 等すべての LLM 呼び出しに効く）。kiro-cli 無しでも動く **stub** モードでプロトコルを検証できる。
 
 ```
                        ┌──────── 共有バス（ローカル dir または git repo）────────┐

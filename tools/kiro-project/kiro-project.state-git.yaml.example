@@ -32,11 +32,11 @@
 #     kiro-project が CLI 注入するのは routing（--state-git の remote/branch/interval）だけで、
 #     direct モードならルートの origin が自動で使われる。
 
-# --- 置き場 ---
+# --- 置き場（相対パスはすべて root 基準）---
 root: .                              # プロジェクトルート = cwd（状態リポジトリの clone）
-workdir: /home/me/kiro/work          # act / verify の作業ディレクトリ（作業対象リポジトリの置き場）
-# bus: /home/me/kiro/proj/bus        # 既定は <root>/bus。外部常駐の kiro-flow daemon を使うときは
-#                                    #   kiro-flow 側と同じ絶対パスに揃える（daemon 検知に必須）
+workdir: work                        # act / verify の作業ディレクトリ（root 相対 = <root>/work）
+# bus: bus                           # 既定は <root>/bus。kiro-flow daemon をプロジェクトルートで
+#                                    #   起動すれば既定同士（./bus）で一致する（明示は共有バス時のみ）
 
 # --- 実行（作業そのものは GitLab イシューで各 PC へ分散）---
 executor: gitlab

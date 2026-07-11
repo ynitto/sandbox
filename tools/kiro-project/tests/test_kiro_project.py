@@ -35,6 +35,13 @@ os.environ["GIT_CONFIG_VALUE_0"] = "false"
 os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
     tempfile.gettempdir(), "ka-tests-no-such-registry", "skill-registry.json")
 
+# 開発者の cwd の設定ファイル（./kiro-project.yaml / ./.kiro/kiro-project.yaml）がテストへ
+# 漏れるのを防ぐため、中立な一時 cwd で走らせる。リポジトリ直下で実行すると root=. の設定を
+# 拾い、リポジトリ自体が状態リポジトリ（direct state-git）とみなされて **テストが実リポジトリへ
+# コミット/push する**事故になる（2026-07-11 に実際に発生）。テストは絶対パスだけを使うので
+# cwd に依存しない。
+os.chdir(tempfile.mkdtemp(prefix="kp-tests-cwd-"))
+
 _MOD = Path(__file__).resolve().parent.parent / "kiro-project.py"
 _spec = importlib.util.spec_from_file_location("kiro_project", _MOD)
 km = importlib.util.module_from_spec(_spec)
@@ -2290,17 +2297,109 @@ class TestRot(unittest.TestCase):
             self.assertTrue((d / "needs" / "T1.md").exists())
 
 
+class TestAgentCliAndGranularity(unittest.TestCase):
+    """agent_cli 切替（kiro-cli / Claude Code）・root 基準のパス解決・バックログ分解粒度。"""
+
+    @staticmethod
+    def _resolve(cfg_path=None, **cli):
+        ns = types.SimpleNamespace(config=cfg_path, **cli)
+        km.resolve_config(ns)
+        return ns
+
+    @staticmethod
+    def _capture_run():
+        calls = {}
+        def fake_run(cmd, **kw):
+            calls["cmd"] = list(cmd)
+            calls["input"] = kw.get("input")
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        return calls, fake_run
+
+    def test_run_kiro_cli_default_kiro_argv(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(km, "_AGENT_CLI", "kiro"), \
+             mock.patch.object(km.subprocess, "run", side_effect=fake):
+            out = km._run_kiro_cli("プロンプト", None)
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][:4],
+                         ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"])
+        self.assertEqual(calls["cmd"][-1], "プロンプト")   # 従来どおり argv 渡し
+        self.assertIsNone(calls["input"])
+
+    def test_run_kiro_cli_claude_uses_stdin(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(km, "_AGENT_CLI", "claude"), \
+             mock.patch.object(km.subprocess, "run", side_effect=fake):
+            out = km._run_kiro_cli("プロンプト", "claude-sonnet")
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][0], "claude")
+        self.assertIn("-p", calls["cmd"])
+        self.assertIn("--model", calls["cmd"])
+        self.assertEqual(calls["input"], "プロンプト")     # stdin 渡し
+        self.assertNotIn("プロンプト", calls["cmd"])       # argv には載せない
+
+    def test_build_config_sets_agent_globals_and_fields(self):
+        orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
+        try:
+            ns = self._resolve(None, agent_cli="claude", agent_timeout=42.0)
+            cfg = km.build_config(ns)
+            self.assertEqual((cfg.agent_cli, cfg.agent_timeout), ("claude", 42.0))
+            self.assertEqual((km._AGENT_CLI, km._AGENT_TIMEOUT), ("claude", 42.0))
+        finally:
+            km._AGENT_CLI, km._AGENT_TIMEOUT = orig
+
+    def test_relative_overrides_resolve_under_root(self):
+        # 相対パスの上書きは（cwd や workdir ではなく）root 基準で解決される
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
+            try:
+                ns = self._resolve(None, root=str(d), workdir="wd", backlog="bl", bus="b")
+                cfg = km.build_config(ns)
+            finally:
+                km._AGENT_CLI, km._AGENT_TIMEOUT = orig
+            self.assertEqual(cfg.workdir, (d / "wd").resolve())
+            self.assertEqual(cfg.backlog, d.resolve() / "bl")
+            self.assertEqual(cfg.bus, d.resolve() / "b")
+
+    def test_granularity_default_coarse_and_directives(self):
+        ns = self._resolve(None)
+        self.assertEqual(ns.granularity, "coarse")
+        self.assertIn("ストーリー", km.plan_granularity_directive(None))
+        self.assertIn("3〜10", km.plan_granularity_directive("coarse"))
+        self.assertIn("最小単位", km.plan_granularity_directive("finest"))
+        # 未知値は coarse（既定）に倒す
+        self.assertEqual(km.plan_granularity_directive("xxl"),
+                         km.plan_granularity_directive("coarse"))
+
+    def test_find_config_prefers_root_level_manifest(self):
+        # ルート直下の kiro-project.yaml（マニフェスト）が .kiro/ より優先される
+        with tempfile.TemporaryDirectory() as d:
+            old = os.getcwd()
+            try:
+                os.chdir(d)
+                (Path(d) / ".kiro").mkdir()
+                (Path(d) / ".kiro" / "kiro-project.yaml").write_text("root: .\n", encoding="utf-8")
+                (Path(d) / "kiro-project.yaml").write_text("root: .\n", encoding="utf-8")
+                found = km._find_config(None)
+                self.assertEqual(Path(found).resolve(),
+                                 (Path(d) / "kiro-project.yaml").resolve())
+            finally:
+                os.chdir(old)
+
+
 class TestLayout(unittest.TestCase):
     def test_files_consolidated_under_root(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            # 新レイアウト: プロジェクトルート = cwd（--root 既定 .）。全ファイルがこの直下
+            # 新レイアウト: プロジェクトルート = --root（既定 . = cwd）が唯一のアンカー。
+            # 全ファイルがこの直下（workdir はアンカーではないので root を明示する）
             proot = d
             bl = proot / "backlog"
             bl.mkdir(parents=True)
             (bl / "T1.md").write_text(
                 "## T1: x\n- status: ready\n- verify: `true`\n- retries: 0\n", encoding="utf-8")
-            rc = km.main(["run", "--no-delivery-review", "--workdir", str(d), "--planner", "none",
+            rc = km.main(["run", "--no-delivery-review", "--root", str(d), "--planner", "none",
                           "--flow-planner", "stub", "--executor", "stub", "--dry-run"])
             self.assertEqual(rc, 0)
             self.assertTrue((proot / "journal.md").exists())

@@ -1,3 +1,4 @@
-root: .                              # プロジェクトルート = cwd（状態リポジトリの clone）
-workdir: .kiro/work                  # act / verify の作業ディレクトリ（作業対象リポジトリの置き場）
-bus: .kiro-flow/bus                  # 既定は <root>/bus。外部常駐の kiro-flow daemon を使うときは）
+# kiro-project の設定（1 root = 1 プロジェクト。相対パスはすべて root 基準）。
+# root = cwd。charter.md / backlog/ / bus/ 等はすべて root 直下に集約される。
+# workdir / bus は既定（root / <root>/bus）に任せるため指定しない。
+root: .

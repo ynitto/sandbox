@@ -36,7 +36,7 @@ metadata:
 
 ## 構成（プロジェクト > バックログ）と CLI 解決
 
-- `python3`（標準ライブラリのみ）。`kiro-flow` / `kiro-cli` はループ実行時のみ必要（投入・判断・検収だけなら不要）。
+- `python3`（標準ライブラリのみ）。`kiro-flow` / `kiro-cli` はループ実行時のみ必要（投入・判断・検収だけなら不要。設定 `agent_cli: claude` なら kiro-cli の代わりに Claude Code CLI を使う）。
 - **プロジェクトルート（cwd または `--root`）直下**に `backlog/`・`needs/`・`decisions/`・`archive/`・
   `charter.md`・`repos.json`・`policy.md`・`DELIVERY.md` などが集約される（1 プロジェクト = 1 ディレクトリ =
   1 プロセス）。複数プロジェクトはディレクトリを並べてそれぞれのプロセスで回す。

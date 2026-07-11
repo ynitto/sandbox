@@ -17,7 +17,8 @@ metadata:
 # kiro-flow — 分散 Dynamic Workflow CLI スキル
 
 `kiro-flow` CLI（`tools/kiro-flow/kiro-flow.py`）を呼び出して、要求を動的にタスク分解 →
-複数ワーカーで分散実行 → 結果を評価して再計画 → 統合する。LLM 実行は kiro-cli が既定。
+複数ワーカーで分散実行 → 結果を評価して再計画 → 統合する。LLM 実行は kiro-cli が既定
+（設定 `agent_cli: claude` で Claude Code ヘッドレスへ切替可）。
 kiro-cli が無い環境では `--planner stub --executor stub` で挙動を確認できる。
 
 ## 前提
@@ -83,7 +84,7 @@ if BUS_REMOTE=$(git remote get-url origin 2>/dev/null); then
   # クローンはリポジトリ外（~/.kiro/flow-clones/<repo>）に置き、作業中のリポジトリを汚さない。
   BUS="--git $BUS_REMOTE --git-branch kiro-flow-bus --bus $HOME/.kiro/flow-clones/$REPO"
 else
-  BUS="--bus ./.kiro-flow"                      # git 外: ローカルバス
+  BUS="--bus ./bus"                             # git 外: ローカルバス（既定。kiro-project の <root>/bus と同じ）
 fi
 
 # 2) daemon を確保（冪等 — 既に稼働していれば自動スキップ。そのまま実行してよい）

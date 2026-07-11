@@ -1,1 +1,2 @@
-bus: .kiro-flow/bus
+# kiro-flow の設定。bus の既定は ./bus（kiro-project の <root>/bus と同じ場所を指す）。
+bus: ./bus
