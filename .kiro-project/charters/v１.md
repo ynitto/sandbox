@@ -14,3 +14,4 @@
 - 設計書・ドキュメント
 
 ## acceptance
+- accept: テストOK

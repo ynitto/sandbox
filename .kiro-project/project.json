@@ -1,0 +1,13 @@
+{
+  "charters": {
+    "v１": {
+      "id": ".kiro-project-v１",
+      "name": "v１",
+      "history": [],
+      "best": 0,
+      "stall": 0,
+      "status": "no-acceptance"
+    }
+  },
+  "updated": "2026-07-11T22:03:06"
+}
