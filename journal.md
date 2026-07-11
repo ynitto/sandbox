@@ -887,3 +887,5 @@
 - 2026-07-11 13:38:52 === kiro-project 開始 tasks=8 ingested=0 planner=none executor=stub dry_run=False ===
 - 2026-07-11 13:38:52 state-git: direct モード → /Users/nitto/Workspace/sandbox 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-11 13:38:52 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 13:38:54 === project 停止 reason=blocked cycles=2 cost=0.0000 ===
+- 2026-07-11 13:38:54 === project watch: 監視中（charter 更新/フィードバック待ち）===
