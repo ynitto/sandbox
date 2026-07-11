@@ -9,9 +9,26 @@
   "acceptance_synth": {},
   "planned_charter_sig": "4bf8ce765979dba3b536b89901713b8bcb4324ae7eef05806a043a365e058fea",
   "acceptance_total": 2,
-  "updated": "2026-07-11T20:10:17",
+  "updated": "2026-07-11T20:24:09",
   "cost": 0.0,
   "cycles": 1,
   "status": "accepted",
-  "accepted_charter_sig": "d7ed9fc48c9c43a42eaeb92f98da82e89115a30222bad7ed354372a04c851311"
+  "accepted_charter_sig": "d7ed9fc48c9c43a42eaeb92f98da82e89115a30222bad7ed354372a04c851311",
+  "charters": {
+    "v1": {
+      "id": ".kiro-project-v1",
+      "name": "sandbox",
+      "history": [
+        2
+      ],
+      "best": 0,
+      "stall": 0,
+      "acceptance_synth": {},
+      "planned_charter_sig": "2834fbb4682e9ff2861a4990462391fc1e72ea7b84850c2c6b6469cd0c97da5d",
+      "acceptance_total": 2,
+      "cost": 0.0,
+      "cycles": 1,
+      "status": "converged"
+    }
+  }
 }
