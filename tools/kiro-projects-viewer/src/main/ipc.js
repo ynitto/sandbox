@@ -207,11 +207,13 @@ function registerIpcHandlers() {
   //     マイルストーンを作る取りこぼしを防げる（削除がその残骸も一緒に片付ける）。
   // ドット始まりの同期内部（.state-git 等）は温存する — 管理クローンの manifest が残る
   // ことで、削除が次の同期で「ローカルの削除」としてリモートへ伝播する（データ復活を防ぐ）。
-  handle('kiro:reset', async ({ dir }) => {
+  // dir はプロジェクトルート（状態の置き場）、workspace は登録フォルダ（設定 .kiro/ の在り処。
+  // バスを設定 bus: から引くのに要る）。workspace 省略時はプロジェクトルートで代用する。
+  handle('kiro:reset', async ({ dir, workspace }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     const cfg = loadConfig();
     const plan = reset.planReset(dir);
-    const bus = kiro.resolveBusDir(dir, cfg);
+    const bus = kiro.resolveBusDir(dir, workspace || dir, cfg);
     const daemon = await flow.stopDaemon(bus.busDir, flowLockDir(cfg));
     let masterized = false;
     try {

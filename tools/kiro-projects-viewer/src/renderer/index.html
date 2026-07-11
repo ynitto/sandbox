@@ -58,9 +58,11 @@
     <form method="dialog">
       <h2>設定</h2>
       <div class="field">
-        <label>プロジェクトルート（1 行に 1 プロジェクト。通常は状態共有リポジトリの clone。
-          親フォルダを登録すると配下の kiro-project.yaml を自動発見して一括追加）</label>
-        <textarea id="cfg-roots" rows="4" placeholder="例: C:\clones\payments&#10;/home/me/clones/webapp&#10;/home/me/clones　← 親フォルダごと登録も可"></textarea>
+        <label>ワークスペース（1 行に 1 つ。<code>.kiro/kiro-project.yaml</code> のある開発フォルダ。
+          その <code>root:</code> が指す先をプロジェクトルート＝状態の置き場として読みます。
+          設定が無ければ登録したフォルダ自体がプロジェクトルート。
+          親フォルダを登録すると配下を自動発見して一括追加）</label>
+        <textarea id="cfg-roots" rows="4" placeholder="例: C:\src\payments&#10;/home/me/src/webapp&#10;/home/me/src　← 親フォルダごと登録も可"></textarea>
       </div>
       <div class="row2">
         <div class="field">

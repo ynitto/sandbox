@@ -502,6 +502,32 @@ function hasProjectManifest(dir) {
   );
 }
 
+// ワークスペース（このビュアーに登録するフォルダ）から、kiro-project が状態を書く
+// **プロジェクトルート**を解決する。
+//
+//   ワークスペース  … .kiro/kiro-project.yaml を持つ開発フォルダ。kiro-project CLI を起動する場所
+//                    （CLI から見た cwd）。人が普段開いているフォルダ＝登録するのはこれ。
+//   プロジェクトルート … 設定の `root:` が指す状態の置き場（例 <ws>/.kiro-project）。backlog /
+//                    needs / charter / bus はすべてこの直下。CLI の --root・instances の root と同じ。
+//
+// 設定の探索順は本体の _find_config と同じ（<ws>/ → <ws>/.kiro/）。`root:` が無ければワークスペース
+// 自身がプロジェクトルート＝状態フォルダを直接登録する従来の使い方（instances 由来の自動発見も
+// root を直接指すのでこの経路に乗る）。
+// ~/.kiro のグローバル設定にある `root:` は使わない: それを採るとすべてのワークスペースが同じ
+// 状態フォルダを指してしまう（本体は 1 プロセス 1 プロジェクトなので困らないが、ビュアーは
+// 複数プロジェクトを同時に扱う）。
+function resolveProjectRoot(workspaceDir) {
+  const ws = path.resolve(String(workspaceDir || ''));
+  if (!ws) return ws;
+  const cfg = readToolConfig('kiro-project', [ws, path.join(ws, '.kiro')]);
+  const fromWorkspace =
+    cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep);
+  const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
+  if (!raw) return ws;
+  const r = String(raw).replace(/^~(?=$|\/|\\)/, os.homedir());
+  return path.isAbsolute(r) ? path.resolve(r) : path.resolve(ws, r);
+}
+
 function isProjectDir(dir) {
   return (
     hasProjectManifest(dir) ||
@@ -548,10 +574,12 @@ function scanForProjects(rootDir, maxDepth) {
 }
 
 // 設定 roots ＋ instances 自動発見からプロジェクト一覧を作る。
-// 登録パス 1 件 = 1 プロジェクトルート（通常は状態共有リポジトリの clone）。
-// 登録パスがプロジェクトでない場合は「プロジェクトを束ねる親フォルダ」とみなし、
+// 登録パス 1 件 = 1 ワークスペース（.kiro/kiro-project.yaml を持つ開発フォルダ。状態フォルダを
+// 直接登録する従来の使い方や、instances 由来の自動発見＝プロジェクトルート直指定も
+// resolveProjectRoot が「設定が無ければ自分自身」に倒すのでそのまま乗る）。
+// 登録パスがワークスペースでもプロジェクトでもない場合は「束ねる親フォルダ」とみなし、
 // 配下（既定 2 階層・設定 kiro.scanDepth）から kiro-project.yaml 等を自動発見して
-// 見つかったプロジェクトをそれぞれ 1 件として追加する。
+// 見つかったものをそれぞれ 1 件として追加する。
 function discover(cfg) {
   const roots = new Map(); // resolved root -> {root, source}
   const scanDepth = Math.max(1, Number((cfg.kiro && cfg.kiro.scanDepth) || 2));
@@ -578,30 +606,32 @@ function discover(cfg) {
 
   const projects = [];
   for (const { root, source } of roots.values()) {
-    const dir = root;
+    const workspace = root;                       // 登録パス（＝選択の識別子。config.roots と一致）
+    const dir = resolveProjectRoot(workspace);    // 状態の置き場（backlog/needs/charter はこの下）
     const tasks = listTasks(path.join(dir, 'backlog'));
     const byStatus = {};
     for (const t of tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
     const needs = safeList(path.join(dir, 'needs')).filter((f) => f.endsWith('.md')).length;
     // instances（同一ホスト・確定）を先に見て、無ければ status.json（リモート・同期経由の推定）
-    // にフォールバックする（projectLiveness が両方を見る）。
+    // にフォールバックする（projectLiveness が両方を見る）。突き合わせは本体が記録する
+    // root＝プロジェクトルートで行う。
     const liveness = projectLiveness(dir);
-    // 表示名: charter.md の `# Charter: <name>` があればそれを一覧にも出す（既定はディレクトリ名の
-    // ままだが、`.kiro-project` のような技術的なフォルダ名でも charter を編集するだけで
-    // サイドバーに任意の名前を出せる。charter.md はサイドバーからも既存の「✎ charter.md」で
-    // 編集できるため、ここでは discover 側の表示だけ揃える＝新しい設定項目は増やさない）。
+    // 表示名: charter.md の `# Charter: <name>` があればそれを一覧にも出す（既定はワークスペース名。
+    // charter を編集するだけでサイドバーに任意の名前を出せる。charter.md はサイドバーからも既存の
+    // 「✎ charter.md」で編集できるため、ここでは discover 側の表示だけ揃える）。
     const charterFile = path.join(dir, 'charter.md');
     const hasCharterFile = fs.existsSync(charterFile);
     const hasCharter =
       hasCharterFile || safeList(path.join(dir, 'charters')).some((f) => f.endsWith('.md'));
     const charterName = hasCharterFile ? (parseCharter(readText(charterFile)) || {}).name || '' : '';
     projects.push({
-      name: path.basename(dir),
+      name: path.basename(workspace),
       charterName,
-      dir,
+      dir: workspace,        // 選択・登録解除はワークスペース基準（readProject の入力もこれ）
+      root: dir,             // プロジェクトルート（状態の置き場。ワークスペースと同じこともある）
       source,
-      exists: fs.existsSync(dir),
-      isProject: isProjectDir(dir),
+      exists: fs.existsSync(workspace),
+      isProject: isProjectDir(workspace),
       hasCharter,
       backlogCount: tasks.length,
       byStatus,
@@ -624,10 +654,11 @@ function discover(cfg) {
 //   2. ⚙ 設定 kiro.flowBusByProject[<name>]（プロジェクト単位のバス写像。pure-remote で
 //      kiro-flow の鏡写し先 clone を割り当てる場合）
 //   3. ⚙ 設定 kiro.flowBus（単一の明示指定）
-//   4. kiro-project 設定ファイル（<root>/.kiro → ~/.kiro）の bus:
-//      （相対パスはプロジェクトルート基準で解決する）
+//   4. kiro-project 設定ファイル（ワークスペースの .kiro → ~/.kiro）の bus:
+//      （相対パスはプロジェクトルート基準で解決する＝本体の `--bus` と同じ規則）
 // runs/ を持つ最初の候補を採用。どれにも無ければ既定の 1 を返す（hasBus=false）。
-function resolveBusDir(projectDir, cfg) {
+function resolveBusDir(projectDir, workspaceDir, cfg) {
+  const workspace = path.resolve(String(workspaceDir || projectDir || ''));
   const candidates = [];
   const push = (dir, source) => {
     if (!dir) return;
@@ -638,15 +669,18 @@ function resolveBusDir(projectDir, cfg) {
   push(path.join(projectDir, 'bus'), 'project');
   // pure-remote（clone だけ・ローカル daemon 無し）では <root>/bus に runs/ が無いため、
   // ここで割り当てた <clone>/kiro-flow が採用される。
-  const projName = path.basename(path.resolve(projectDir));
+  // 写像のキーは従来どおりプロジェクトルート名。ワークスペース名でも引ける（登録が
+  // ワークスペースになったので、人はそちらの名前で書くほうが自然）。
+  const names = [path.basename(path.resolve(projectDir)), path.basename(workspace)];
   const byProject = cfg && cfg.kiro && cfg.kiro.flowBusByProject;
-  if (byProject && typeof byProject === 'object' && byProject[projName]) {
-    push(byProject[projName], 'config-per-project');
+  if (byProject && typeof byProject === 'object') {
+    const hit = names.find((n) => byProject[n]);
+    if (hit) push(byProject[hit], 'config-per-project');
   }
   if (cfg && cfg.kiro && cfg.kiro.flowBus) push(cfg.kiro.flowBus, 'config');
 
-  // kiro-project 設定ファイルの bus:（プロジェクトルートの .kiro を優先）
-  const toolCfg = readToolConfig('kiro-project', [path.join(projectDir, '.kiro')]);
+  // kiro-project 設定ファイルの bus:（設定は本体と同じくワークスペースから探す）
+  const toolCfg = readToolConfig('kiro-project', [workspace, path.join(workspace, '.kiro')]);
   if (toolCfg && toolCfg.values.bus) {
     const raw = String(toolCfg.values.bus);
     push(path.isAbsolute(raw) ? raw : path.join(projectDir, raw), 'kiro-project.yaml');
@@ -660,8 +694,13 @@ function resolveBusDir(projectDir, cfg) {
   return { busDir: candidates[0].dir, hasBus: false, source: 'project', candidates };
 }
 
-// 1 プロジェクトの完全なスナップショット
-function readProject(dir, cfg) {
+// 1 プロジェクトの完全なスナップショット。
+// 入力は**ワークスペース**（登録するフォルダ）。状態は resolveProjectRoot が導く
+// **プロジェクトルート**（dir）の直下から読む。返り値の `dir` はプロジェクトルートで、
+// 以降の操作（approve/enqueue/reset/authoring/flow-archive）はすべてこれを基準にする。
+function readProject(workspaceDir, cfg) {
+  const workspace = path.resolve(String(workspaceDir || ''));
+  const dir = resolveProjectRoot(workspace);
   const backlog = listTasks(path.join(dir, 'backlog'));
   const archive = listTasks(path.join(dir, 'archive'));
   const needs = listMdDir(path.join(dir, 'needs'), parseNeeds);
@@ -718,7 +757,7 @@ function readProject(dir, cfg) {
     if (files.length) specs.push({ id: sub, files });
   }
 
-  const bus = resolveBusDir(dir, cfg);
+  const bus = resolveBusDir(dir, workspace, cfg);
 
   // 複数 charter（charters/<name>.md = 1 バージョン）。無ければ単一 charter.md（従来）。
   // バージョンの identity は **ファイル名**（v2 など）。kiro-project 側の `charter:` タグ・
@@ -735,10 +774,12 @@ function readProject(dir, cfg) {
   }
 
   return {
-    dir,
+    dir,                                  // プロジェクトルート（状態の置き場。操作の基準）
+    workspace,                            // ワークスペース（登録フォルダ。設定 .kiro/ の在り処）
+    // 表示名はワークスペース名。状態フォルダ（.kiro-project 等）の技術的な名前を出さない。
+    name: path.basename(workspace),
     inboxFiles,
     replanPending,
-    name: path.basename(dir),
     charter: parseCharter(readText(path.join(dir, 'charter.md'))),
     charters,
     policy: parsePolicy(readText(path.join(dir, 'policy.md'))),
@@ -779,5 +820,6 @@ module.exports = {
   discover,
   scanForProjects,
   readProject,
+  resolveProjectRoot,
   resolveBusDir,
 };

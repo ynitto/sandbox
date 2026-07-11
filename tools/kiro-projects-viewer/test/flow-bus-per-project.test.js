@@ -32,7 +32,7 @@ fs.mkdirSync(alphaDir, { recursive: true });
 test('flowBusByProject[<name>] が pure-remote で採用される（ローカル bus なし）', () => {
   const busClone = mkbus(path.join(tmp, 'clone-alpha', 'kiro-flow'));
   const cfg = { kiro: { flowBusByProject: { alpha: busClone } } };
-  const r = kiro.resolveBusDir(alphaDir, cfg);
+  const r = kiro.resolveBusDir(alphaDir, alphaDir, cfg);
   assert.strictEqual(r.hasBus, true);
   assert.strictEqual(r.busDir, path.resolve(busClone));
   assert.strictEqual(r.source, 'config-per-project');
@@ -42,7 +42,7 @@ test('ローカル <project>/bus に runs があればそちらが優先され�
   const busClone = mkbus(path.join(tmp, 'clone-alpha2', 'kiro-flow'));
   mkbus(path.join(alphaDir, 'bus'));
   const cfg = { kiro: { flowBusByProject: { alpha: busClone } } };
-  const r = kiro.resolveBusDir(alphaDir, cfg);
+  const r = kiro.resolveBusDir(alphaDir, alphaDir, cfg);
   assert.strictEqual(r.hasBus, true);
   assert.strictEqual(r.busDir, path.resolve(path.join(alphaDir, 'bus')));
   assert.strictEqual(r.source, 'project');
@@ -53,7 +53,7 @@ test('写像に無いプロジェクトは従来どおり flowBus / 自動発見
   fs.mkdirSync(betaDir, { recursive: true });
   const shared = mkbus(path.join(tmp, 'shared', 'bus'));
   const cfg = { kiro: { flowBusByProject: { alpha: '/nope' }, flowBus: shared } };
-  const r = kiro.resolveBusDir(betaDir, cfg);
+  const r = kiro.resolveBusDir(betaDir, betaDir, cfg);
   assert.strictEqual(r.hasBus, true);
   assert.strictEqual(r.busDir, path.resolve(shared));
   assert.strictEqual(r.source, 'config');

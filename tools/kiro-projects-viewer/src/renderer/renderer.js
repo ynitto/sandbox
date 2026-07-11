@@ -318,7 +318,7 @@ function renderTree() {
   const projects = (state.discovery.projects || []).filter((p) => p.exists);
   if (!projects.length) {
     tree.innerHTML =
-      '<div class="empty">プロジェクトが見つかりません。<br>⚙ 設定でプロジェクトルート（状態共有リポジトリの clone）を追加するか、<br>kiro-project を稼働させてください。<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>';
+      '<div class="empty">プロジェクトが見つかりません。<br>⚙ 設定でワークスペース（.kiro/kiro-project.yaml のある開発フォルダ）を追加するか、<br>kiro-project を稼働させてください。<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>';
     const nb = $('btn-empty-new');
     if (nb) nb.addEventListener('click', openNewProject);
   } else {
@@ -421,7 +421,12 @@ function renderHeader() {
   if (p.liveness && p.liveness.paused) badges.push('<span class="status-chip st-review">⏸ 一時停止中</span>');
   $('project-badges').innerHTML = badges.join(' ');
   const lastLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
-  const metaBits = [`${esc(p.dir)}`];
+  // ワークスペース（登録したフォルダ）を主に出し、状態の置き場が別ならプロジェクトルートも添える。
+  // 同じなら 1 つだけ（状態フォルダを直接登録している従来構成では冗長になるため）。
+  const metaBits = [`${esc(p.workspace || p.dir)}`];
+  if (p.workspace && p.dir !== p.workspace) {
+    metaBits.push(`プロジェクトルート: ${esc(p.dir)}`);
+  }
   if (lastLog) metaBits.push(`最終実行: ${esc(statusLabel(lastLog.reason))} (${fmtAgo(lastLog.ts)})`);
   $('project-meta').innerHTML = metaBits.join(' ｜ ');
   const needsBadge = $('needs-badge');
@@ -846,7 +851,7 @@ async function resetProject() {
   );
   if (!yes) return;
   const ok = await guard('プロジェクトのリセット', async () => {
-    const res = await api.resetProject(p.dir);
+    const res = await api.resetProject(p.dir, p.workspace);
     uiLog('reset', res);
     const d = res.daemon || {};
     const daemonMsg = !d.running
