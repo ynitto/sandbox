@@ -1,3 +1,4 @@
 {"ts": "2026-07-12T06:29:38", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 0, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
 {"ts": "2026-07-12T06:29:54", "reason": "drained", "level": "unattended", "cycles": 1, "done": 0, "blocked": 0, "review": 1, "archived": 0, "escalations": 1, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 10.33}
 {"ts": "2026-07-12T06:30:04", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 0, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
+{"ts": "2026-07-12T07:36:05", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 0, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
