@@ -9,10 +9,10 @@
   "acceptance_synth": {},
   "planned_charter_sig": "4bf8ce765979dba3b536b89901713b8bcb4324ae7eef05806a043a365e058fea",
   "acceptance_total": 2,
-  "updated": "2026-07-11T21:19:53",
+  "updated": "2026-07-11T21:20:13",
   "cost": 0.0,
   "cycles": 1,
-  "status": "converged",
+  "status": "accepted",
   "charters": {
     "v1": {
       "id": ".kiro-project-v1",
@@ -27,7 +27,9 @@
       "acceptance_total": 2,
       "cost": 0.0,
       "cycles": 1,
-      "status": "converged"
+      "status": "accepted",
+      "accepted_charter_sig": "a6c1f20da9314dac34f03bf1b271e11f530b46b045a3850d8903be19df5e3b91"
     }
-  }
+  },
+  "accepted_charter_sig": "d7ed9fc48c9c43a42eaeb92f98da82e89115a30222bad7ed354372a04c851311"
 }
