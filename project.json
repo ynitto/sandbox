@@ -1,0 +1,15 @@
+{
+  "id": "sandbox",
+  "name": "sandbox",
+  "history": [],
+  "best": 0,
+  "stall": 0,
+  "acceptance_synth": {
+    "このワークスペースで kiro-project/kiro-flow が動作する": "> python -m pytest .kiro/hooks/ -q 2>/dev/null || (kiro-project --help > /dev/null 2>&1 && kiro-flow --help > /dev/null 2>&1)",
+    "このワークスペースのプロジェクトを kiro-projects-viewer で監視できる": "> test -f \"$(pwd)/.kiro/project.yaml\" || test -f \"$(pwd)/.kiro/project.yml\""
+  },
+  "planned_charter_sig": "e577388c94e22da543bc0172bc12fd64fc15dce2a9e96c908cedc0a2d18aeb9c",
+  "acceptance_total": 2,
+  "status": "running",
+  "updated": "2026-07-11T13:38:19"
+}
