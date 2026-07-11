@@ -4261,6 +4261,53 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_CONVERGED)
             self.assertNotEqual(code, 0)                       # 収束候補として再び人待ちに戻る
 
+    def test_project_status_not_clobbered_before_execute_stage(self):
+        # 実運用インシデントの再発防止: cmd_project は冒頭で state["status"] を無条件に "running" へ
+        # 上書き保存していた。② execute（runner=run_loop）は内部で ingest_commands を呼び、その場で
+        # 人の approve/hold 指示（commands/ ファイルドロップ）を処理するが、この時点で読む
+        # project.json はすでに "running" に潰されており、直前サイクルの "converged" が見えない。
+        # watch 中は次サイクルが数秒おきに回るため、承認がほぼ常にこのタイミングとぶつかり、
+        # cmd_approve が「converged の milestone が見つからない」として exit 2 で失敗し続け、
+        # プロジェクトは承認しても再収束して milestone（needs/<pid>.md）が復活し続けていた。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_CONVERGED)
+
+            seen = {}
+
+            def runner(c):
+                # execute 段に入った時点（ingest_commands が呼ばれるのと同じタイミング）の status
+                seen["mid_cycle_status"] = km.load_project_state(c).get("status")
+                return _drained()
+
+            km.cmd_project(cfg, planner=lambda ch: [], runner=runner)
+            self.assertEqual(seen["mid_cycle_status"], km.REASON_PROJECT_CONVERGED)
+
+    def test_approve_succeeds_when_ingested_mid_next_cycle(self):
+        # 上のバグの実害を、実際の ingest_commands 呼び出しタイミングを模して直接検証する:
+        # execute 段（runner の中）で approve を試みても、旧実装のように "running" に潰されておらず
+        # 成功すること。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+
+            rc = {}
+
+            def runner(c):
+                rc["approve"] = km.cmd_approve(c, "demo", "OK")
+                return _drained()
+
+            km.cmd_project(cfg, planner=lambda ch: [], runner=runner)
+            self.assertEqual(rc["approve"], 0)
+            self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_ACCEPTED)
+
     def test_review_project_generates_findings(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

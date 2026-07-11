@@ -8038,8 +8038,14 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     plan_sig = _charter_plan_signature(charter)
     charter_changed = bool(state.get("planned_charter_sig")) and state["planned_charter_sig"] != plan_sig
     state["planned_charter_sig"] = plan_sig
-    state.update({"id": pid, "name": charter.name,
-                  "acceptance_total": len(charter.acceptance), "status": "running"})
+    # "status" はここでは触らない（旧実装は "running" に即上書きしていた）。② execute
+    # （runner=run_loop）が内部で ingest_commands を呼び、その場で approve/hold 等の人の指示を
+    # 処理する。ここで status を "running" にしてしまうと、直前サイクルの "converged" を
+    # ingest_commands が読めなくなり、watch 中は「承認してもプロジェクト milestone の approve が
+    # 常に exit 2 で失敗し、次サイクルでまた収束候補として復活し続ける」実害があった
+    # （cmd_approve は status == converged の milestone しか受け付けないため）。
+    # 最終的な状態は下の evaluate ループの結果で必ず上書きされるので、ここで省いても状態は失われない。
+    state.update({"id": pid, "name": charter.name, "acceptance_total": len(charter.acceptance)})
     save_charter_state(cfg, state, charter_name if multi else None)
 
     append_journal(cfg.journal, f"=== project 開始 {charter.name} "
@@ -8095,6 +8101,18 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         if counts.get("blocked", 0) > 0 or counts.get("review", 0) > 0 \
                 or counts.get("proposed", 0) > 0:
             reason = REASON_PROJECT_BLOCKED      # 内側が人へ → プロジェクトも人待ちで止める
+            break
+        # execute 中（runner=run_loop 内の ingest_commands）に人がこの milestone を承認して
+        # いるかもしれない。承認済みなら evaluate で acceptance を再収束させて上書きしない
+        # （accepted を尊重する。さもないと承認直後の同一サイクルで milestone が復活する）。
+        # accepted_charter_sig を「今評価している charter」と突き合わせるのは、charter.md が
+        # 変わった直後の run（冒頭ガードは通過済み）で、まだ古い accepted が残っているだけの
+        # ケースと区別するため（そのケースは新規承認ではないので短絡しない＝通常どおり再評価する）。
+        mid_state = load_charter_state(cfg, charter_name if multi else None)
+        if (mid_state.get("status") == REASON_PROJECT_ACCEPTED
+                and mid_state.get("accepted_charter_sig") == _charter_full_signature(charter)):
+            state.update(mid_state)
+            reason = REASON_PROJECT_ACCEPTED
             break
 
         # ③ evaluate — acceptance 評価・改善起票・収束/コスト/停滞判定（停止理由 or None）
