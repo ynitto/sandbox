@@ -4,3 +4,4 @@
 - 2026-07-11 10:23:09 state-git: direct モード → /Users/nitto/Workspace/sandbox 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-11 10:23:09 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
 - 2026-07-11 10:23:10 state-git 同期: import=0 export=3
+- 2026-07-11 10:23:18 state-git 同期: import=0 export=1
