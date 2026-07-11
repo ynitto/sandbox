@@ -329,7 +329,10 @@ kiro-project audit --strict                     # 無人運用に値するかの
   （`{"command": "approve|hold|pin|defer|revise", "id": "<task-id>", "reason": "..."}`。revise は加えて
   `title/priority/verify/accept/after/note/level/track/feedback` キーを受ける）のドロップでも渡せる。
   run/watch が拾って **CLI と同一のロジック・同一の DR** で実行し、処理したファイルは消す
-  （壊れた JSON・未知の指示は `.err` に退避して journal に記録）。watch 中は `--debounce` の静穏化が効く。
+  （壊れた JSON・未知の指示は `.err` に退避して journal に記録）。**読める指示は watch 中でも即座に
+  取り込む**。`--debounce` は読めなかったファイル（書きかけ）だけの再試行猶予で、猶予後もダメなら
+  `.err` へ退避する。読める指示を先送りすると、承認を処理しないまま再評価するパスが生まれ、
+  承認直後にマイルストーンが復活する。
 - **バックログ再分解の要求（`replan`・エラー回復）**: `{"command": "replan", "reason": "..."}`
   （**プロジェクト単位＝`id` 不要**）のドロップ、または CLI `kiro-project replan --reason ...` で、
   charter からのバックログ再分解を **次パスに一発だけ**要求できる（`.replan.request` マーカーを立て、

@@ -1712,6 +1712,21 @@ def feedback_submitted(path: Path) -> bool:
     return any(CHECKED_RE.match(ln) for ln in path.read_text(encoding="utf-8").splitlines())
 
 
+def settled(cfg: "Config", f: Path) -> bool:
+    """watch 中の静穏化ガード: 最終保存から debounce 秒経つまでは触らない（書きかけ保護）。
+
+    人の入力（needs/ の記入・commands/ のドロップ）を「まだ触ってよいか」で判定する唯一の場所。
+    has_work（起床するか）と各 ingest（処理するか）がこの述語を共有していないと、起床したのに
+    何も処理しないパスが生まれ、そのパスが charter を再評価して承認済みマイルストーンを
+    書き直してしまう（要対応が復活する原因）。"""
+    if not (cfg.watch and cfg.debounce > 0):
+        return True
+    try:
+        return (time.time() - f.stat().st_mtime) >= cfg.debounce
+    except OSError:
+        return False
+
+
 def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     """needs/<id>.md の確定（[x]）を検知したら、対象をブロック解除し内容を次の act に渡す。
 
@@ -1724,8 +1739,8 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
     for nf in sorted(cfg.needs.glob("*.md")):
         if not feedback_submitted(nf):                 # [x] が無ければ確定していない
             continue
-        if cfg.watch and cfg.debounce > 0 and (time.time() - nf.stat().st_mtime) < cfg.debounce:
-            continue                                    # 直近に編集 → 静穏化を待つ
+        if not settled(cfg, nf):                        # 直近に編集 → 静穏化を待つ
+            continue
         t = by_id.get(nf.stem)
         if t is None:
             continue
@@ -5643,7 +5658,11 @@ def exit_code_for(result: dict) -> int:
 # watch（終了条件後もプロセス常駐。エージェントは待機しない＝idle 中は起動しない）
 # ---------------------------------------------------------------------------
 def has_work(cfg: Config) -> bool:
-    """次パスを起こすべき仕事があるか（新規/実行待ちタスク or フィードバック）。安価な FS 走査のみ。"""
+    """次パスを起こすべき仕事があるか（新規/実行待ちタスク or フィードバック）。安価な FS 走査のみ。
+
+    起床の条件は「そのパスで実際に処理できる仕事があるか」でなければならない。commands/ を
+    ingest_commands と同じ述語（_read_command）で見るのはそのため: 取り込めない指示で起こすと、
+    何も処理しないまま charter を再評価するパスが生まれ、承認済みマイルストーンが復活する。"""
     for t in load_tasks(cfg.backlog):
         # offloaded は「機械が委譲実行中・結果待ち」＝次パスでポーリングして回収するため起こす
         if t.norm_status() in CONSUMABLE or t.norm_status() in ("inbox", "offloaded"):
@@ -5651,13 +5670,17 @@ def has_work(cfg: Config) -> bool:
     if cfg.inbox and cfg.inbox.exists() and any(cfg.inbox.glob("*")):
         return True               # 外部ドロップ(inbox/)が来たら起こす
     cdir = commands_dir(cfg)
-    if cdir.exists() and any(cdir.glob("*.json")):
+    # ingest_commands と同じ条件（読めること）。読めない書きかけでは起こさない＝起きたパスは
+    # 必ずその指示を処理できる（起床と取り込みの食い違いを作らない）。
+    if cdir.exists() and any(_read_command(f)[0] is not None for f in cdir.glob("*.json")):
         return True               # 人の指示ドロップ(commands/)が来たら起こす
     if replan_request_path(cfg).exists():
         return True               # バックログ再分解の要求が来たら起こす（次パスで plan を強制）
     if cfg.needs.exists():
         for nf in cfg.needs.glob("*.md"):
-            if read_feedback(nf):
+            # ingest_feedback と同じ条件（確定 [x]・静穏化済み）。本文の有無だけで起こすと、
+            # 書きかけのまま毎パス起床して何も取り込まない空振りを繰り返す。
+            if feedback_submitted(nf) and settled(cfg, nf):
                 return True
     return False
 
@@ -6065,6 +6088,21 @@ def _reject_command(cfg: "Config", f: Path, why: str) -> None:
             pass
 
 
+def _read_command(f: Path) -> "tuple[dict | None, str]":
+    """指示ファイルを読む。(rec, why) を返す。rec が None なら why が理由（未完・不正）。
+
+    「取り込めるか」の唯一の判定点。has_work（起床するか）と ingest_commands（処理するか）が
+    同じ述語を共有するために切り出してある。両者が食い違うと、起床したのに取り込めないパスが
+    生まれ、そのパスが charter を再評価して承認済みマイルストーンを書き直してしまう。"""
+    try:
+        rec = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"JSON 解析失敗: {e}"
+    if not isinstance(rec, dict):
+        return None, "オブジェクトではない"
+    return rec, ""
+
+
 def ingest_commands(cfg: "Config") -> "list[str]":
     """commands/*.json（{"command": "approve|hold|pin|defer|revise|replan|pause|resume|stop",
     "id": ..., "reason": ...}）を読み、CLI と同一のロジック（cmd_approve / cmd_hold /
@@ -6073,22 +6111,24 @@ def ingest_commands(cfg: "Config") -> "list[str]":
     replan / pause / resume / stop はプロジェクト単位（id 不要）: replan は charter からの
     バックログ再分解を次パスに要求、pause/resume は watch の消化を一時停止/再開（監視は継続）、
     stop はプロセスの graceful 停止（リモート viewer が git 越しに操作する口）。
-    処理できたらファイルを消す。watch 中は書きかけ保護のため最終保存から debounce 秒待つ。
-    実行した指示（"action:tid"）の一覧を返す。"""
+    処理できたらファイルを消す。実行した指示（"action:tid"）の一覧を返す。
+
+    読める指示は watch 中でも即座に取り込む。debounce は「読めなかったファイル」だけの再試行
+    猶予として使う（書きかけを .err へ飛ばして指示を失わないため）。読める指示まで debounce で
+    先送りすると、has_work が起こしたパスで承認が取り込まれず、そのパスが charter を再評価して
+    マイルストーンを書き直す＝承認したのに要対応が復活する。"""
     cdir = commands_dir(cfg)
     done: "list[str]" = []
     if not cdir.exists():
         return done
     for f in sorted(cdir.glob("*.json")):
-        if cfg.watch and cfg.debounce > 0 and (time.time() - f.stat().st_mtime) < cfg.debounce:
-            continue                                    # 直近に編集 → 静穏化を待つ
-        try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
-            _reject_command(cfg, f, f"JSON 解析失敗: {e}")
-            continue
-        if not isinstance(rec, dict):
-            _reject_command(cfg, f, "オブジェクトではない")
+        rec, why = _read_command(f)
+        if rec is None:
+            # 書きかけ（アトミックに置かれなかった指示）かもしれない。watch 中は debounce 秒だけ
+            # 猶予を与えて次パスで読み直す。猶予後もダメなら .err へ退避する（再試行ループにしない）。
+            if cfg.watch and cfg.debounce > 0 and (time.time() - f.stat().st_mtime) < cfg.debounce:
+                continue
+            _reject_command(cfg, f, why)
             continue
         action = str(rec.get("command", "")).strip()
         tid = str(rec.get("id", "")).strip()
@@ -8022,13 +8062,19 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
 
 def plan_via_stub(cfg: "Config", charter: "Charter") -> "list[dict]":
     """plan_via_agent の決定的代替（executor: stub 時のデフォルト planner）。エージェントを
-    一切呼ばず、charter.acceptance（呼び出し時点で解決済み前提）をそのまま実行し、未達の項目を
-    そっくり初期タスクにする（_failing_acceptance_specs と同じ規則＝的が外れない）。
-    acceptance が無ければ空（呼び出し元の no-acceptance ゲートで人へ回る）。"""
+    一切呼ばず、charter.acceptance（呼び出し時点で解決済み前提）をそっくり初期タスクにする。
+    verify は人が charter に書いた受入条件そのもの。acceptance が無ければ空（呼び出し元の
+    no-acceptance ゲートで人へ回る）。
+
+    stub は goal の文章を読めないため、起票源は acceptance しかない。かつては acceptance を
+    その場で実行して未達の項目だけを起票していたが、それだと初回から PASS する acceptance
+    （`echo ok` 等）では起票がゼロになり、backlog が空のまま converged して「バージョンを足しても
+    バックログが現れない」ことになっていた。plan は未達判定の場ではない（それは evaluate の役目）
+    ので、ここでは初回未達とみなして全項目を起票する。二周目以降は _enqueue_specs が backlog と
+    archive のタイトルで冪等に弾くため、同じ受入条件が積み直されることはない。"""
     if not charter.acceptance:
         return []
-    _passed, _total, results = evaluate_acceptance(cfg, charter)
-    return _failing_acceptance_specs(results)
+    return _acceptance_specs(list(charter.acceptance))
 
 
 def review_via_stub(cfg: "Config", charter: "Charter") -> "list[dict]":
@@ -8432,13 +8478,16 @@ def resolve_charter_acceptance(cfg: "Config", charter: "Charter", state: "dict |
     return resolved, unresolved
 
 
+def _acceptance_specs(cmds: "list[str]") -> "list[dict]":
+    """acceptance コマンドを、それ自体を verify とするタスク spec にする（決定的・的が外れない）。
+    verify は charter に書かれた受入条件そのもの＝人が入力した条件で done を判定する。"""
+    return [{"title": f"受入条件を満たす: {cmd}"[:120], "verify": cmd, "source": "acceptance"}
+            for cmd in cmds]
+
+
 def _failing_acceptance_specs(results: "list") -> "list[dict]":
     """未達 acceptance を、それ自体を verify とする改善タスク spec にする（決定的・的が外れない）。"""
-    specs = []
-    for cmd, ok, _ in results:
-        if not ok:
-            specs.append({"title": f"受入条件を満たす: {cmd}"[:120], "verify": cmd, "source": "acceptance"})
-    return specs
+    return _acceptance_specs([cmd for cmd, ok, _ in results if not ok])
 
 
 def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str,
@@ -8933,8 +8982,11 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 continue             # pause 中は再開条件を評価しない
             resumed = False
             for pid in pids.values():
+                # milestone のフィードバックは [x] を待たず本文だけで再開する（方針を書けば動く）。
+                # ただし書きかけを消さないよう静穏化は待つ: settled を挟まないと、人が needs を
+                # 編集して保存した瞬間にファイルごと消えてしまう。
                 nf = needs_path(cfg, pid)
-                if nf.exists() and read_feedback(nf):
+                if nf.exists() and settled(cfg, nf) and read_feedback(nf):
                     clear_needs_file(cfg, pid)
                     resumed = True
             if resumed or _charter_mtimes(cfg) != mtimes0 or has_work(cfg):

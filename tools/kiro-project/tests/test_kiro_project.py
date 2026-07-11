@@ -1871,7 +1871,10 @@ class TestCommandsIngest(unittest.TestCase):
                 {"command": "approve", "id": "T1"}), encoding="utf-8")
             self.assertTrue(km.has_work(c))                          # 指示ドロップで起きる
 
-    def test_watch_debounce_defers_fresh_command(self):
+    def test_watch_ingests_readable_command_immediately(self):
+        # 読める指示は watch 中でも即座に取り込む。debounce で先送りすると、has_work が起こした
+        # パスで承認が処理されず、そのパスが charter を再評価してマイルストーンを書き直す
+        # （承認したのに要対応が復活する）。viewer は .tmp → rename で置くので書きかけは読めない。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             mkb(d, "T1", status="blocked", verify="true")
@@ -1879,8 +1882,46 @@ class TestCommandsIngest(unittest.TestCase):
             km.ensure_dirs(c)
             f = km.commands_dir(c) / "a.json"
             f.write_text(json.dumps({"command": "approve", "id": "T1"}), encoding="utf-8")
-            self.assertEqual(km.ingest_commands(c), [])              # 静穏化待ちで保留
-            self.assertTrue(f.exists())
+            self.assertEqual(km.ingest_commands(c), ["approve:T1"])
+            self.assertFalse(f.exists())                             # 処理したら消える
+
+    def test_watch_debounce_defers_unreadable_command(self):
+        # 書きかけ（アトミックに置かれなかった指示）は .err へ飛ばさず静穏化を待つ。
+        # 猶予中は has_work も起こさない＝起きたパスは必ずその指示を処理できる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked", verify="true")
+            c = cfg_for(d, watch=True, debounce=999.0)
+            km.ensure_dirs(c)
+            f = km.commands_dir(c) / "a.json"
+            f.write_text('{"command": "appr', encoding="utf-8")      # 書きかけ
+            self.assertEqual(km.ingest_commands(c), [])
+            self.assertTrue(f.exists())                              # .err にしない（指示を失わない）
+            self.assertFalse(km.has_work(c))                         # 読めない指示では起こさない
+
+    def test_approve_drop_does_not_resurrect_milestone(self):
+        # 実運用インシデントの再発防止: viewer の「プロジェクトを承認」を押すと commands/ に
+        # 指示が落ち、has_work がその場で watch を起こす。かつては ingest_commands が debounce
+        # 未経過のその指示を読み飛ばしたため、承認を知らないまま cmd_project が再評価して
+        # converged → write_milestone となり、承認直後に「要対応: マイルストーン」が復活していた。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, CHARTER.replace("test -f {flag}", 'echo "hellO"'))
+            c = cfg_for(d, watch=True, debounce=999.0, max_project_cycles=1)
+            km.cmd_project(c, runner=lambda c2: _drained())          # 収束 → milestone が出る
+            st = km.load_project_state(c)
+            pid = st["id"]
+            self.assertEqual(st["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertTrue(km.needs_path(c, pid).exists())
+
+            km.commands_dir(c).mkdir(parents=True, exist_ok=True)    # viewer の承認ドロップ
+            (km.commands_dir(c) / "viewer-approve.json").write_text(json.dumps(
+                {"command": "approve", "id": pid, "reason": "viewer から"}), encoding="utf-8")
+            self.assertTrue(km.has_work(c))                          # 置いた直後に watch が起きる
+
+            km.cmd_project(c, runner=lambda c2: _drained())          # その起床パス
+            self.assertEqual(km.load_project_state(c)["status"], km.REASON_PROJECT_ACCEPTED)
+            self.assertFalse(km.needs_path(c, pid).exists())         # マイルストーンは復活しない
 
 
 class TestStatusHeartbeat(unittest.TestCase):
@@ -3628,9 +3669,9 @@ class TestProjectLayer(unittest.TestCase):
                 km._run_kiro_cli = orig
             self.assertEqual(specs[0]["workspace"], "lib")  # verify=packages/** → lib（必ず明示される）
 
-    def test_plan_via_stub_derives_tasks_from_failing_acceptance(self):
-        # executor: stub の既定 planner（plan_via_stub）は _run_kiro_cli を一切呼ばず、未達
-        # acceptance をそのまま初期タスクにする（_failing_acceptance_specs と同じ規則）。
+    def test_plan_via_stub_enqueues_charter_acceptance(self):
+        # executor: stub の既定 planner（plan_via_stub）は _run_kiro_cli を一切呼ばず、charter の
+        # acceptance をそのまま初期タスクにする。verify は人が書いた受入条件そのもの。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             flag = d / "flag"                      # 存在しない → acceptance 未達
@@ -3641,8 +3682,32 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(len(specs), 1)
             self.assertEqual(specs[0]["verify"], f"test -f {flag}")
             self.assertIn("受入条件を満たす", specs[0]["title"])
-            flag.write_text("x")                   # 条件を満たすと空を返す
-            self.assertEqual(km.plan_via_stub(cfg, ch), [])
+
+    def test_plan_via_stub_enqueues_even_when_acceptance_already_passes(self):
+        # 回帰: 初回から PASS する acceptance（`echo ok` 等）でも起票する。plan は未達判定の場では
+        # ない（それは evaluate の役目）。かつては acceptance をその場で実行して未達だけを起票して
+        # いたため、こういう charter ではバックログが空のまま converged し、viewer で「バージョンを
+        # 足してもバックログが現れない」ように見えていた。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, CHARTER.replace("test -f {flag}", 'echo "hellO"'))
+            cfg = cfg_for(d)
+            ch = km.load_charter(cfg)
+            specs = km.plan_via_stub(cfg, ch)      # PASS する条件でも初回は起票する
+            self.assertEqual([s["verify"] for s in specs], ['echo "hellO"'])
+
+    def test_stub_plan_is_idempotent_across_cycles(self):
+        # 常に起票する planner でも、同じ受入条件が積み直されないこと（_enqueue_specs が backlog と
+        # archive のタイトルで冪等に弾く）。これが「初回だけ起票」の担保。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, CHARTER.replace("test -f {flag}", 'echo "hellO"'))
+            cfg = cfg_for(d, max_project_cycles=1)
+            km.cmd_project(cfg, runner=lambda c: _drained())
+            first = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertEqual(len(first), 1)
+            km.cmd_project(cfg, runner=lambda c: _drained())   # 2 パス目は積み増さない
+            self.assertEqual([t.title for t in km.load_tasks(cfg.backlog)], first)
 
     def test_cmd_project_stub_executor_never_calls_agent_for_planning(self):
         # 実運用インシデントの再発防止: .kiro/kiro-project.yaml で --planner none / --executor stub
