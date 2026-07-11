@@ -1,4 +1,0 @@
-{"ts": "2026-07-11T21:29:44Z", "who": "worker-1", "kind": "claimed", "node": "work1"}
-{"ts": "2026-07-11T21:29:46Z", "who": "worker-1", "kind": "result", "node": "work1", "status": "done"}
-{"ts": "2026-07-11T21:29:46Z", "who": "worker-1", "kind": "claimed", "node": "check1"}
-{"ts": "2026-07-11T21:29:50Z", "who": "worker-1", "kind": "result", "node": "check1", "status": "done"}
