@@ -1,7 +1,7 @@
 {
-  "command": "approve",
+  "command": "hold",
   "id": "pytest--x--q-220342",
   "reason": "kiro-projects-viewer から操作",
   "actor": "kiro-projects-viewer",
-  "ts": "2026-07-11T13:04:05.596Z"
+  "ts": "2026-07-11T13:05:45.596Z"
 }

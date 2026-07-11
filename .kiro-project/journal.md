@@ -15,3 +15,20 @@
 - 2026-07-11 22:03:42 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
 - 2026-07-11 22:03:42 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-11 22:03:42 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 22:04:07 === project 開始 v１ acceptance=1 ===
+- 2026-07-11 22:04:07 === kiro-project 開始 tasks=1 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 22:04:07 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 22:04:07 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 22:04:07 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-11 22:04:07 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 22:04:12 plan-review 承認: pytest--x--q-220342 → ready
+- 2026-07-11 22:04:12 commands 取り込み: approve pytest--x--q-220342（viewer-approve-pytest--x--q-220342-1783775045599.json）
+- 2026-07-11 22:04:12 === project 開始 v１ acceptance=1 ===
+- 2026-07-11 22:04:12 === kiro-project 開始 tasks=1 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 22:04:12 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 22:04:20 cycle 1: pytest--x--q-220342 NG 積み直し (1/2) — exit=127 /bin/sh: -x: command not found
+- 2026-07-11 22:04:31 cycle 2: pytest--x--q-220342 NG 積み直し (2/2) — exit=127 /bin/sh: -x: command not found
+- 2026-07-11 22:04:48 cycle 3: pytest--x--q-220342 → 人の判断（繰り返し NG）
+- 2026-07-11 22:04:48 === kiro-project 停止 reason=drained cycles=3 done=0 blocked=1 notified=True promoted=0 ===
+- 2026-07-11 22:04:48 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-11 22:04:48 === project watch: 監視中（charter 更新/フィードバック待ち）===
