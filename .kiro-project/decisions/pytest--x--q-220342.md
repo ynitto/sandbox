@@ -4,3 +4,10 @@
 - reason  : kiro-projects-viewer から操作
 - affects : pytest--x--q-220342 → ready
 
+## DR-0002  2026-07-11  actor: nitto
+- context : pytest--x--q-220342 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : pytest--x--q-220342 → blocked, policy.deny += pytest--x--q-220342
+- avoid: 受入条件を満たす: > pytest -x -q :: kiro-projects-viewer から操作
+
