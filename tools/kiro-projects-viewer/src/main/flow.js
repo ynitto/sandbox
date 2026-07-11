@@ -487,25 +487,23 @@ function cancelRun(busDir, runId, { reason } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// run のアーカイブ（ビュアー側の保管庫）
+// run のアーカイブ（プロジェクト配下の保管庫）
 // ---------------------------------------------------------------------------
-// kiro-flow は run 完了後に bus/runs/<id>/ を掃除するため、完了した run の情報は
-// ビュアーから消えてしまう。ポーリングのたびに run のスナップショット（サマリ＋イベント）を
-// ビュアー専用のアーカイブディレクトリ（Electron userData 配下。バスや状態 git は汚さない）へ
-// 書いておき、bus から消えた run も「アーカイブ」として一覧・閲覧できるようにする。
+// kiro-flow の run 状態（bus/runs/<id>/）は古いものから掃除されるため、完了した run の情報は
+// いずれビュアーから消えてしまう。ポーリングのたびに run のスナップショット（サマリ＋イベント）を
+// プロジェクトフォルダ配下（<projectDir>/flow-archive/<run-id>.json）へ書いておき、bus から
+// 消えた run も「アーカイブ」として一覧・閲覧できるようにする。
 // 読み取り専用の写しであり、アーカイブからの再実行・キャンセル等の操作はできない。
+//
+// 置き場をプロジェクト配下にしているのは、アーカイブがそのプロジェクトのデータだから:
+// プロジェクトを移動・コピーすれば付いてくるし、リセット（charter.md 以外を消す）で一緒に消える。
+// バス単位ではなくプロジェクト単位で持つため、バスのパスをハッシュ化して振り分ける必要もない。
 
-const ARCHIVE_KEEP = 100; // バスごとに保持する最大スナップショット数（古い順に削除）
+const ARCHIVE_DIRNAME = 'flow-archive';
+const ARCHIVE_KEEP = 100; // プロジェクトごとに保持する最大スナップショット数（古い順に削除）
 
-function archiveBusDir(archiveRoot, busDir) {
-  let real;
-  try {
-    real = fs.realpathSync(busDir);
-  } catch {
-    real = path.resolve(busDir);
-  }
-  const h = crypto.createHash('sha1').update(real).digest('hex').slice(0, 12);
-  return path.join(archiveRoot, h);
+function flowArchiveDir(projectDir) {
+  return path.join(String(projectDir || ''), ARCHIVE_DIRNAME);
 }
 
 // 直近に保存した内容の署名（プロセス内キャッシュ）。ポーリング毎の無駄な read/write を避ける
@@ -515,9 +513,10 @@ function _runSig(run) {
   return [run.status, run.updatedAt, run.progress, JSON.stringify(run.counts)].join('|');
 }
 
-// 1 run のスナップショットを保存する（内容が前回保存から変わったときだけ書く）
-function archiveRunSnapshot(archiveRoot, busDir, run) {
-  const dir = archiveBusDir(archiveRoot, busDir);
+// 1 run のスナップショットを保存する（内容が前回保存から変わったときだけ書く）。
+// busDir は run の生イベント（bus/runs/<id>/events/）を読むために要る。
+function archiveRunSnapshot(projectDir, busDir, run) {
+  const dir = flowArchiveDir(projectDir);
   const file = path.join(dir, `${run.runId}.json`);
   const sig = _runSig(run);
   if (_archiveSig.get(file) === sig && fs.existsSync(file)) return false;
@@ -548,16 +547,16 @@ function pruneArchive(dir, keep = ARCHIVE_KEEP) {
   }
 }
 
-function readArchivedRun(archiveRoot, busDir, runId) {
+function readArchivedRun(projectDir, runId) {
   const id = String(runId || '');
   if (!id || id !== path.basename(id)) return null;
-  return readJson(path.join(archiveBusDir(archiveRoot, busDir), `${id}.json`));
+  return readJson(path.join(flowArchiveDir(projectDir), `${id}.json`));
 }
 
 // アーカイブ済み run のサマリ一覧（archived: true 付き）。alive は判定対象外にする
 // （orchestrator はもう居ない。孤児と誤表示しない）。
-function listArchivedRuns(archiveRoot, busDir) {
-  const dir = archiveBusDir(archiveRoot, busDir);
+function listArchivedRuns(projectDir) {
+  const dir = flowArchiveDir(projectDir);
   const out = [];
   for (const f of safeList(dir)) {
     if (!f.endsWith('.json')) continue;
@@ -694,7 +693,8 @@ module.exports = {
   archiveRunSnapshot,
   listArchivedRuns,
   readArchivedRun,
-  archiveBusDir,
+  flowArchiveDir,
+  ARCHIVE_DIRNAME,
   daemonStatus,
   stopDaemon,
   readDaemonStatus,

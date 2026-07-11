@@ -21,8 +21,9 @@ contextBridge.exposeInMainWorld('api', {
   gitCommitPush: (dir, message) => invoke('git:commitPush', { dir, message }),
   deleteTask: (dir, id) => invoke('kiro:deleteTask', { dir, id }),
 
-  flowRuns: (busDir, limit) => invoke('flow:runs', { busDir, limit }),
-  flowRun: (busDir, runId) => invoke('flow:run', { busDir, runId }),
+  // dir（プロジェクトフォルダ）は run アーカイブの置き場（<dir>/flow-archive/）に使う
+  flowRuns: (dir, busDir, limit) => invoke('flow:runs', { dir, busDir, limit }),
+  flowRun: (dir, busDir, runId) => invoke('flow:run', { dir, busDir, runId }),
   flowResubmit: (busDir, runId) => invoke('flow:resubmit', { busDir, runId }),
   flowDeleteRun: (busDir, runId) => invoke('flow:deleteRun', { busDir, runId }),
   flowCancel: (busDir, runId, reason) => invoke('flow:cancel', { busDir, runId, reason }),

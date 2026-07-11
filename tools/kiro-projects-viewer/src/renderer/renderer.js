@@ -389,8 +389,9 @@ async function reloadProject() {
   const project = await guard('プロジェクト読込', () => api.readProject(state.selectedDir));
   if (!project) return;
   state.project = project;
-  // バスが未作成でも daemon の稼働はロックファイルから判定できるため常に読む
-  const fr = (await guard('フロー読込', () => api.flowRuns(project.busDir))) || {};
+  // バスが未作成でも daemon の稼働はロックファイルから判定できるため常に読む。
+  // project.dir は run アーカイブ（<dir>/flow-archive/）の置き場として渡す。
+  const fr = (await guard('フロー読込', () => api.flowRuns(project.dir, project.busDir))) || {};
   state.flowRuns = fr.runs || [];
   state.flowDaemon = fr.daemon || null;
   if (state.flowRunId && !state.flowRuns.some((r) => r.runId === state.flowRunId)) {
@@ -398,7 +399,7 @@ async function reloadProject() {
     state.flowRun = null;
   }
   if (state.flowRunId) {
-    state.flowRun = await guard('run 読込', () => api.flowRun(project.busDir, state.flowRunId));
+    state.flowRun = await guard('run 読込', () => api.flowRun(project.dir, project.busDir, state.flowRunId));
   }
   renderHeader();
   renderAllTabs();
@@ -2689,7 +2690,7 @@ function renderFlow() {
 async function selectFlowRun(runId) {
   state.flowRunId = runId;
   state.flowNodeId = null;
-  state.flowRun = await guard('run 読込', () => api.flowRun(state.project.busDir, runId));
+  state.flowRun = await guard('run 読込', () => api.flowRun(state.project.dir, state.project.busDir, runId));
   renderFlow();
   // run を開いたら関連イシューの「今」を一度だけ自動で突き合わせる（律速あり・GitLab 設定時のみ）。
   // これで実行中/クローズ済みのイシュー状態がクリック無しでノードに出る（キャッシュに載る）。

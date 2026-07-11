@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { app, ipcMain, shell } = require('electron');
+const { ipcMain, shell } = require('electron');
 const { loadConfig, saveConfig } = require('./config');
 const kiro = require('./kiro');
 const flow = require('./flow');
@@ -105,27 +105,25 @@ function registerIpcHandlers() {
     return kiro.readProject(dir, loadConfig());
   });
 
-  // ビュアー専用の run アーカイブ置き場（userData 配下。バスや状態 git は汚さない）
-  const flowArchiveRoot = () => path.join(app.getPath('userData'), 'flow-archive');
-
   // kiro-flow バス（per-project bus/ または共有バス）。run 一覧に加えて daemon の
   // 稼働もロックファイルから判定して返す（kiro-flow CLI には一切聞かない）。
-  // bus の run はポーリングのたびにアーカイブへスナップショットし、kiro-flow の掃除で
-  // bus から消えた run も archived: true 付きで一覧に残す（完了直後に表示が消える問題の対策）。
-  handle('flow:runs', ({ busDir, limit }) => {
-    const archRoot = flowArchiveRoot();
+  // bus の run はポーリングのたびにプロジェクト配下（<dir>/flow-archive/）へスナップショットし、
+  // 掃除で bus から消えた run も archived: true 付きで一覧に残す（完了直後に表示が消える問題の対策）。
+  handle('flow:runs', ({ dir, busDir, limit }) => {
     const runs = flow.listRuns(busDir, limit || 30);
-    for (const r of runs) {
-      try {
-        flow.archiveRunSnapshot(archRoot, busDir, r);
-      } catch {
-        /* アーカイブ失敗は一覧表示の失敗にしない */
+    if (dir) {
+      for (const r of runs) {
+        try {
+          flow.archiveRunSnapshot(dir, busDir, r);
+        } catch {
+          /* アーカイブ失敗は一覧表示の失敗にしない */
+        }
       }
     }
     const live = new Set(runs.map((r) => r.runId));
-    const archived = flow
-      .listArchivedRuns(archRoot, busDir)
-      .filter((a) => !live.has(a.runId));
+    const archived = dir
+      ? flow.listArchivedRuns(dir).filter((a) => !live.has(a.runId))
+      : [];
     const merged = [...runs, ...archived].sort((a, b) =>
       String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
     );
@@ -134,11 +132,11 @@ function registerIpcHandlers() {
       daemon: flow.daemonStatus(busDir, flowLockDir(loadConfig())),
     };
   });
-  handle('flow:run', ({ busDir, runId }) => {
+  handle('flow:run', ({ dir, busDir, runId }) => {
     const runDir = path.join(busDir, 'runs', runId);
     if (!fs.existsSync(runDir)) {
       // bus からは掃除済み → アーカイブのスナップショットで応える（読み取り専用の写し）
-      const snap = flow.readArchivedRun(flowArchiveRoot(), busDir, runId);
+      const snap = dir ? flow.readArchivedRun(dir, runId) : null;
       if (!snap) throw new Error(`run が見つかりません（bus にもアーカイブにも無し）: ${runId}`);
       return {
         run: { ...snap.run, alive: null, archived: true, archivedAt: snap.savedAt || null },

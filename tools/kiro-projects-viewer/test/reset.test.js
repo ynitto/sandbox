@@ -33,6 +33,8 @@ function mkProject() {
   fs.writeFileSync(path.join(dir, 'bus', '.state-git', 'manifest'), '{}', 'utf8');
   fs.writeFileSync(path.join(dir, 'bus', 'status.json'), '{}', 'utf8');
   fs.mkdirSync(path.join(dir, '.state-git'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'flow-archive'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'flow-archive', 'run-1.json'), '{"run":{}}', 'utf8');
   fs.writeFileSync(path.join(dir, 'charter.md'), '# Charter: demo\n## goal\nx\n', 'utf8');
   fs.writeFileSync(path.join(dir, 'backlog', 'T1.md'), '## T1: t\n- status: ready\n', 'utf8');
   fs.writeFileSync(path.join(dir, 'journal.md'), 'log\n', 'utf8');
@@ -52,7 +54,7 @@ function mkProject() {
       assert.ok(!names.includes('charter.md'), 'charter.md は削除対象にしない');
       assert.ok(!names.includes('.state-git'), '同期クローンは温存（削除の伝播に必要）');
       assert.ok(names.includes('.replan.request'), '再分解マーカーはデータなので対象');
-      for (const n of ['backlog', 'needs', 'journal.md', 'run-log.jsonl']) {
+      for (const n of ['backlog', 'needs', 'journal.md', 'run-log.jsonl', 'flow-archive']) {
         assert.ok(names.includes(n), `${n} は削除対象`);
       }
       // バスは丸ごとではなく直下の非ドットだけ（bus/.state-git の manifest を残し、
@@ -86,6 +88,7 @@ function mkProject() {
       });
       assert.strictEqual(res.errors.length, 0);
       assert.strictEqual(res.removed.length, plan.targets.length);
+      // run アーカイブ（flow-archive/）もプロジェクトのデータなので一緒に消える
       assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['.state-git', 'bus', 'charter.md']);
       // bus には kiro-flow の同期クローンだけが残る（run の削除がリモートへ伝播する）
       assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'bus')), ['.state-git']);

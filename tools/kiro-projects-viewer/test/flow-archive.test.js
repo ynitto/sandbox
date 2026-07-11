@@ -1,9 +1,10 @@
 'use strict';
 
-// フロー run のアーカイブ（ビュアー側保管庫）のテスト。追加依存なしで
+// フロー run のアーカイブ（プロジェクト配下の保管庫）のテスト。追加依存なしで
 // `node test/flow-archive.test.js` で走る。
 //   - archiveRunSnapshot: run のスナップショット保存（同一内容の再保存はスキップ）
 //   - listArchivedRuns / readArchivedRun: bus から掃除された run をアーカイブから読める
+//   - 置き場は <projectDir>/flow-archive/（プロジェクトのデータ＝リセットで一緒に消える）
 //   - 保持上限（prune）はここでは対象外（ARCHIVE_KEEP 件の頭打ちのみの単純規則）
 
 const assert = require('assert');
@@ -19,7 +20,7 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-// bus に 1 run（2 ノード・両方 done・meta.status=done）を作る
+// プロジェクト（root）と、その配下の bus に 1 run（2 ノード・両方 done・meta.status=done）を作る
 function mkBus(runId) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-arch-'));
   const busDir = path.join(root, 'bus');
@@ -59,18 +60,17 @@ function mkBus(runId) {
 test('archiveRunSnapshot → bus 掃除後も listArchivedRuns / readArchivedRun で読める', () => {
   const runId = 'req-abc123-T1-r0';
   const { root, busDir, runDir } = mkBus(runId);
-  const archRoot = path.join(root, 'archive');
   try {
     const [run] = flow.listRuns(busDir);
     assert.strictEqual(run.runId, runId);
-    assert.strictEqual(flow.archiveRunSnapshot(archRoot, busDir, run), true, '初回は保存する');
-    assert.strictEqual(flow.archiveRunSnapshot(archRoot, busDir, run), false, '同一内容はスキップ');
+    assert.strictEqual(flow.archiveRunSnapshot(root, busDir, run), true, '初回は保存する');
+    assert.strictEqual(flow.archiveRunSnapshot(root, busDir, run), false, '同一内容はスキップ');
 
     // kiro-flow の掃除を模して bus から run を消す
     fs.rmSync(runDir, { recursive: true, force: true });
     assert.strictEqual(flow.listRuns(busDir).length, 0);
 
-    const archived = flow.listArchivedRuns(archRoot, busDir);
+    const archived = flow.listArchivedRuns(root);
     assert.strictEqual(archived.length, 1);
     assert.strictEqual(archived[0].runId, runId);
     assert.strictEqual(archived[0].archived, true);
@@ -78,7 +78,7 @@ test('archiveRunSnapshot → bus 掃除後も listArchivedRuns / readArchivedRun
     assert.strictEqual(archived[0].alive, null, '孤児と誤表示しない');
     assert.strictEqual(archived[0].taskId, 'T1', 'req- 形式の系統情報も保たれる');
 
-    const snap = flow.readArchivedRun(archRoot, busDir, runId);
+    const snap = flow.readArchivedRun(root, runId);
     assert.ok(snap && snap.run && snap.run.runId === runId);
     assert.strictEqual(snap.run.counts.done, 2, 'ノード状態のスナップショットを保持');
     assert.ok(Array.isArray(snap.events) && snap.events.length === 1, 'イベントも保存される');
@@ -88,12 +88,28 @@ test('archiveRunSnapshot → bus 掃除後も listArchivedRuns / readArchivedRun
   }
 });
 
-test('readArchivedRun は不正な runId / 未知の runId に null を返す', () => {
-  const { root, busDir } = mkBus('run-1');
-  const archRoot = path.join(root, 'archive');
+test('アーカイブはプロジェクトフォルダ配下（<dir>/flow-archive/）に置かれる', () => {
+  // 置き場がプロジェクトの中にあることが、リセットで一緒に消える根拠（reset は非ドットの
+  // 直下エントリを対象にする）。バスのパスでハッシュ分けした外部ディレクトリには置かない。
+  const runId = 'run-xyz';
+  const { root, busDir } = mkBus(runId);
   try {
-    assert.strictEqual(flow.readArchivedRun(archRoot, busDir, '../etc'), null);
-    assert.strictEqual(flow.readArchivedRun(archRoot, busDir, 'unknown'), null);
+    const [run] = flow.listRuns(busDir);
+    flow.archiveRunSnapshot(root, busDir, run);
+    const dir = path.join(root, 'flow-archive');
+    assert.strictEqual(flow.flowArchiveDir(root), dir);
+    assert.ok(fs.existsSync(path.join(dir, `${runId}.json`)), 'run ごとの JSON が置かれる');
+    assert.ok(fs.readdirSync(root).includes('flow-archive'), 'プロジェクト直下の非ドット名');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('readArchivedRun は不正な runId / 未知の runId に null を返す', () => {
+  const { root } = mkBus('run-1');
+  try {
+    assert.strictEqual(flow.readArchivedRun(root, '../etc'), null);
+    assert.strictEqual(flow.readArchivedRun(root, 'unknown'), null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

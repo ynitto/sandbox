@@ -4806,10 +4806,11 @@ _STATE_LOCK_STALE_SEC = 30.0                    # これ以上古い .git ロッ
 _STATE_GIT_RETRIES = 4                          # ロック起因の git 失敗の再試行回数
 _STATE_PUSH_RETRIES = 5                         # push 競合の再試行回数（2,4,8,16s バックオフ）
 # コンテナ相対パスの同期除外。一時/ホスト局所の状態は共有しない:
-#   bus/    … kiro-flow の一時バス（run 後に掃除される・肥大しうる）
-#   claims/ … 原子的クレーム（ホスト内の実行権。同期遅延越しでは排他の意味を持たない）
+#   bus/          … kiro-flow の一時バス（run 後に掃除される・肥大しうる）
+#   flow-archive/ … viewer が bus から写し取る run のスナップショット（bus の派生・肥大しうる）
+#   claims/       … 原子的クレーム（ホスト内の実行権。同期遅延越しでは排他の意味を持たない）
 #   "." 始まりのセグメント … .state-git（クローン自身）や .git などの管理領域
-_STATE_EXCLUDE_DIRS = {"bus", "claims"}
+_STATE_EXCLUDE_DIRS = {"bus", "flow-archive", "claims"}
 # 同時変更（ローカル・リモートの両方が base から変えた）の裁定。人の入力はリモート優先で
 # 取りこぼさず、機械状態（backlog/journal/decisions/…）は実行側＝ローカルを正とする。
 # repos.{json,yaml,yml} も人が書くレジストリ（charter ## repos の互換入力・手書きが正）なので

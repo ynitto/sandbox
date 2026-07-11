@@ -23,3 +23,5 @@
 - 2026-07-12 06:12:05 project cycle 1: acceptance 1/1 PASS, 改善 0 件, cost=0.0000
 - 2026-07-12 06:12:05 === project 停止 reason=converged cycles=1 cost=0.0000 ===
 - 2026-07-12 06:12:05 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 06:12:20 commands 取り込み: approve .kiro-project-v1（viewer-approve-kiro-project-v1-1783804336122.json）
+- 2026-07-12 06:12:20 === project watch: 監視中（charter 更新/フィードバック待ち）===

@@ -5594,12 +5594,17 @@ class TestStateGitSync(unittest.TestCase):
         claims = cfg.backlog.parent / "claims"
         claims.mkdir(parents=True, exist_ok=True)
         (claims / "T1.lock").write_text("pid", encoding="utf-8")
+        # viewer が bus から写し取る run アーカイブ（プロジェクト配下）も bus の派生＝同期しない
+        arch = cfg.backlog.parent / "flow-archive"
+        arch.mkdir(parents=True, exist_ok=True)
+        (arch / "run-1.json").write_text('{"run": {}}', encoding="utf-8")
         km.state_sync(cfg, force=True)
         got = self._other("check")
         proot = got / "kp"
         self.assertTrue((proot / "backlog" / "T1.md").exists())
         self.assertFalse((proot / "bus").exists())
         self.assertFalse((proot / "claims").exists())
+        self.assertFalse((proot / "flow-archive").exists())
 
     def test_interval_rate_limits_remote_fetch(self):
         cfg = self._cfg(state_git_interval=3600.0)

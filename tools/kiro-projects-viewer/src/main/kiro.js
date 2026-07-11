@@ -519,7 +519,7 @@ function isProjectDir(dir) {
 // ディレクトリの配下はそれ以上掘らない。プロジェクト内部の既知ディレクトリと
 // 隠しディレクトリはスキップして走査を軽く保つ。
 const SCAN_SKIP = new Set([
-  'node_modules', 'bus', 'work', 'archive', 'backlog', 'needs', 'decisions',
+  'node_modules', 'bus', 'work', 'archive', 'flow-archive', 'backlog', 'needs', 'decisions',
   'commands', 'inbox', 'claims', 'autonomy', 'charters', 'runs', 'dist', 'release',
 ]);
 
