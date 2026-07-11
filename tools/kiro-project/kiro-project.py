@@ -7948,10 +7948,19 @@ def _failing_acceptance_specs(results: "list") -> "list[dict]":
 
 
 def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str,
-                    pid: "str | None" = None) -> None:
+                    pid: "str | None" = None, version: str = "") -> None:
     """収束候補/要対応を milestone として needs/<pid>.md に出す（検収ゲートのプロジェクト版）。
-    複数 charter 運用では pid が `<project>-<charter名>` になり charter 別に分かれる。"""
+    複数 charter 運用では pid が `<project>-<charter名>` になり charter 別に分かれる。
+    version（バージョン名）を渡すと見出しに使う: charter の `# Charter:` 宣言名は前バージョンの
+    コピー等でプロジェクト名のまま食い違うことがあるため、バージョンの識別はファイル名（version）を
+    正とする（viewer の表示も同じ規則）。"""
     pid = pid or _project_id(cfg, charter)
+    # 見出し: 複数バージョン運用はバージョン名、単一運用は charter の宣言名。
+    # 宣言名がバージョン名と別に意味を持つ場合だけ併記する（「v2」ではなく「v2（保守）」等）。
+    heading = charter.name
+    if version:
+        heading = version if charter.name in ("", "project", version, cfg.project_name) \
+            else f"{version}（{charter.name}）"
     cfg.needs.mkdir(parents=True, exist_ok=True)
     labels = {
         REASON_PROJECT_CONVERGED: "収束候補（acceptance 全 PASS・改善ゼロ）",
@@ -7967,7 +7976,7 @@ def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str
         f"     方向修正なら下に方針を書いて [x]（または policy.md を編集）。 -->\n")
     body = (
         f"{_madr_frontmatter(pid, 'milestone')}"
-        f"# マイルストーン: {charter.name}\n\n"
+        f"# マイルストーン: {heading}\n\n"
         f"## Context and Problem Statement\n\n"
         f"- なぜ: {labels.get(reason, reason)}\n"
         f"- 状態: {reason}\n"
@@ -8092,7 +8101,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     pid = _project_id(cfg, charter) + (f"-{charter_name}" if multi else "")
     if not charter.acceptance:
         # acceptance（受入 verify）が無いと done を判定できない＝必ず人へ（鉄則の保全）
-        write_milestone(cfg, charter, "no-acceptance", "acceptance 未定義のため done 判定不能", pid=pid)
+        write_milestone(cfg, charter, "no-acceptance", "acceptance 未定義のため done 判定不能", pid=pid,
+                        version=charter_name if multi else "")
         print(f"[project] {charter.name}: acceptance 未定義 → 人へ（needs/{pid}.md）")
         return project_exit_code("no-acceptance")
 
@@ -8130,7 +8140,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         save_charter_state(cfg, state, charter_name if multi else None)   # 合成済みキャッシュは残す
         summary = ("自然言語の acceptance を決定的 verify に合成できません（done 判定不能）: "
                    + " / ".join(unresolved))
-        write_milestone(cfg, charter, "no-acceptance", summary, pid=pid)
+        write_milestone(cfg, charter, "no-acceptance", summary, pid=pid,
+                        version=charter_name if multi else "")
         print(f"[project] {charter.name}: acceptance を合成できず → 人へ（needs/{pid}.md）")
         for u in unresolved:
             print(f"  - 未合成: {u}", file=sys.stderr)
@@ -8260,7 +8271,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
 
     if reason in (REASON_PROJECT_CONVERGED, REASON_PROJECT_STALL,
                   REASON_PROJECT_BUDGET, REASON_PROJECT_COST, REASON_PROJECT_BLOCKED):
-        write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）", pid=pid)
+        write_milestone(cfg, charter, reason, last_summary or "（評価前に停止）", pid=pid,
+                        version=charter_name if multi else "")
     append_journal(cfg.journal, f"=== project 停止 reason={reason} cycles={cycle} "
                                 f"cost={cost_used:.4f} ===")
     print(f"\n=== kiro-project run（charter 駆動: {charter.name}）===")
@@ -8312,9 +8324,12 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
             if not names:
                 if not _has_master_charter(cfg):
                     return code
-                # マスター憲章のみ（バージョン未作成）: 分解はせず backlog 消化と指示の
-                # 取り込み（runner=run_loop）だけ回し、バージョンが置かれるのを待つ。
-                runner(cfg)
+                # マスター憲章のみ（バージョン未作成）: 分解はしない。実 backlog タスクや人の指示が
+                # あるときだけ消化し、無ければ何もしない＝アイドルのまま（リセット直後など、やる
+                # ことが無いのに run_loop が回って run-log/journal を無駄に増やさない）。バージョン
+                # （charters/<名前>.md）が置かれれば次パスで charter 駆動へ入る。
+                if has_work(cfg):
+                    runner(cfg)
                 passes += 1
                 if heartbeat:
                     heartbeat()

@@ -40,6 +40,13 @@ contextBridge.exposeInMainWorld('api', {
   readProjectFile: (dir, name) => invoke('kiro:readFile', { dir, name }),
   writeProjectFile: (dir, name, content) => invoke('kiro:writeFile', { dir, name, content }),
   charterTemplate: (name) => invoke('kiro:charterTemplate', { name }),
+  // フォーム編集（charter / policy / repos を構造化データで読み書き）
+  readCharterFields: (dir, name) => invoke('kiro:readCharterFields', { dir, name }),
+  writeCharterFields: (dir, name, fields) => invoke('kiro:writeCharterFields', { dir, name, fields }),
+  readPolicy: (dir) => invoke('kiro:readPolicy', { dir }),
+  writePolicy: (dir, rules) => invoke('kiro:writePolicy', { dir, rules }),
+  readRepos: (dir) => invoke('kiro:readRepos', { dir }),
+  writeRepos: (dir, rows) => invoke('kiro:writeRepos', { dir, rows }),
   agentCharter: (args) => invoke('agent:charter', args),
   agentResolve: (dir) => invoke('agent:resolve', { dir }),
 

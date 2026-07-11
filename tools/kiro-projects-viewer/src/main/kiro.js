@@ -700,12 +700,18 @@ function readProject(dir, cfg) {
 
   const bus = resolveBusDir(dir, cfg);
 
-  // 複数 charter（charters/<name>.md = 1 バージョン）。無ければ単一 charter.md（従来）
+  // 複数 charter（charters/<name>.md = 1 バージョン）。無ければ単一 charter.md（従来）。
+  // バージョンの identity は **ファイル名**（v2 など）。kiro-project 側の `charter:` タグ・
+  // milestone id・状態キーもファイル名基準なので、`# Charter: <title>` の宣言名がファイル名と
+  // 食い違っても（前バージョンをコピーしてタイトルを直し忘れた等）ファイル名を優先する。
+  // `...ch` を先に展開してから name を確定し、宣言名は title として保持する（上書き防止）。
   const charters = [];
   for (const f of safeList(path.join(dir, 'charters')).sort()) {
     if (!f.endsWith('.md')) continue;
     const ch = parseCharter(readText(path.join(dir, 'charters', f)));
-    if (ch) charters.push({ name: f.replace(/\.md$/, ''), file: path.join(dir, 'charters', f), ...ch });
+    if (ch) {
+      charters.push({ ...ch, name: f.replace(/\.md$/, ''), title: ch.name, file: path.join(dir, 'charters', f) });
+    }
   }
 
   return {

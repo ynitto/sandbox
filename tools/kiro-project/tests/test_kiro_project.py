@@ -4446,12 +4446,13 @@ class TestProjectLayer(unittest.TestCase):
 
     def test_master_charter_alone_is_not_decomposed(self):
         # マスター憲章（`## master` 付き charter.md）はプロジェクト全体の普遍的な前提であり、
-        # それ自体はバックログへ分解されない。バージョン（charters/<name>.md）が無い間は
-        # 駆動対象なし＝backlog 消化と指示の取り込みだけが回る。
+        # それ自体はバックログへ分解されない。バージョン（charters/<name>.md）が無く、やることも
+        # 無ければアイドル（リセット直後などに run_loop を回して無駄なログを増やさない）。
+        # acceptance はマスターに書かなくてよい（バージョン側が持つ）。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             write_charter(d, "# Charter: 全体\n\n## master\n- 分解しないマスター\n\n"
-                             "## goal\n普遍的な目標\n\n## acceptance\n- `true`\n")
+                             "## goal\n普遍的な目標\n")
             cfg = cfg_for(d)
             self.assertEqual(km.charter_names(cfg), [])       # 分解対象なし
             self.assertTrue(km._has_master_charter(cfg))
@@ -4467,10 +4468,17 @@ class TestProjectLayer(unittest.TestCase):
                 planned["n"] += 1
                 return []
 
+            # やることが無ければアイドル（run_loop も走らない）
             km.project_watch(cfg, planner=planner, runner=runner, max_passes=1)
-            self.assertEqual(ran["n"], 1)                     # backlog 消化は回る
+            self.assertEqual(ran["n"], 0)                     # 空なら消化も走らない
             self.assertEqual(planned["n"], 0)                 # 分解（plan）は走らない
             self.assertEqual(list(cfg.needs.glob("*.md")), [])  # milestone も立たない
+
+            # 実 backlog タスクがあるときだけ消化する
+            mkb(d, "T1", status="ready", verify="true")
+            km.project_watch(cfg, planner=planner, runner=runner, max_passes=1)
+            self.assertEqual(ran["n"], 1)                     # backlog があれば消化は回る
+            self.assertEqual(planned["n"], 0)                 # それでも分解はしない
 
     def test_version_inherits_master_charter(self):
         # 計画バージョン（charters/<name>.md）はマスター憲章を継承する:
@@ -6368,6 +6376,22 @@ class TestMultiCharter(unittest.TestCase):
             pid = data["charters"]["v1"]["id"]
             self.assertTrue(pid.endswith("-v1"))                        # milestone id は charter 別
             self.assertTrue((cfg.needs / f"{pid}.md").exists())
+
+    def test_milestone_heading_uses_version_name(self):
+        # milestone 票の見出しはバージョン名（ファイル名）を正とする。charter の宣言名が
+        # 前バージョンのコピー等でプロジェクト名のまま食い違っても、バージョンで識別できる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, max_project_cycles=1)
+            cdir = d / "charters"; cdir.mkdir(parents=True, exist_ok=True)
+            # 宣言名は「sandbox」だがファイル名（バージョン）は「v2」
+            (cdir / "v2.md").write_text(
+                "# Charter: sandbox\n## goal\nやる\n## acceptance\n- `true`\n", encoding="utf-8")
+            km.cmd_project(cfg, planner=lambda ch: [], reviewer=lambda ch: [], charter_name="v2")
+            pid = km.load_project_state(cfg)["charters"]["v2"]["id"]
+            body = (cfg.needs / f"{pid}.md").read_text(encoding="utf-8")
+            self.assertIn("# マイルストーン: v2（sandbox）", body)     # バージョン名で識別＋宣言名併記
+            self.assertNotIn("# マイルストーン: sandbox\n", body)
 
     def test_two_charters_plan_independently(self):
         # v1 に消化可能タスクが残っていても v2 の plan は起こる（drained 判定のスコープ）。

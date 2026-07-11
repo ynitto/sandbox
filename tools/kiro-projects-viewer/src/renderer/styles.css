@@ -526,7 +526,22 @@ button.danger { border-color: var(--red); color: var(--red); }
 .np-repo-row .np-r-base { flex: 0 0 90px; }
 .np-repo-row .np-r-owns { flex: 1.4; }
 .np-repo-row .np-r-desc { flex: 1.6; }
+.np-repo-row .np-r-name { flex: 0 0 90px; }
 .np-repo-row .np-r-del { flex: none; border-color: var(--red); color: var(--red); }
+/* repos フォーム編集の行（新規プロジェクトの repos 行と同じレイアウト） */
+.np-repo-row .er-name { flex: 0 0 90px; }
+.np-repo-row .er-url { flex: 2; }
+.np-repo-row .er-base { flex: 0 0 90px; }
+.np-repo-row .er-owns { flex: 1.4; }
+.np-repo-row .er-desc { flex: 1.6; }
+
+/* フォーム編集の行リスト（憲章の各項目・運用ルール） */
+.list-editor { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.list-row { display: flex; gap: 6px; align-items: center; }
+.list-row .list-input { flex: 1; }
+.list-row .pol-kind { flex: 0 0 200px; }
+.list-row .pol-value { flex: 1; }
+.list-row .list-del { flex: none; border-color: var(--red); color: var(--red); }
 
 /* バックログの変え方ヘルプ（公式契約の説明） */
 .backlog-help { margin: 6px 0 10px; font-size: 12px; }

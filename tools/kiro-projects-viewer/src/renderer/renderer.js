@@ -433,20 +433,14 @@ function renderOverview() {
 
   // プロジェクトファイルの編集（人が書く上位入力: charter / policy / repos）
   const isMaster = !!(p.charter && p.charter.master);
-  const masterizeBtn =
-    p.charter && !isMaster
-      ? `<button class="chip" id="btn-masterize-charter"
-          title="憲章をマスター（全バージョン共通の前提。タスクへは分解されない）に切り替えます。以後は「＋ バージョン追加」で書いたやるべきことが計画されます">☆ マスター運用に切り替え</button>`
-      : '';
   parts.push(`<div class="card full edit-toolbar">
     <h3>プロジェクト定義の編集</h3>
     <div class="row">
-      <button class="chip" data-edit="charter.md" title="charter.md を編集">✎ ${isMaster ? 'マスター憲章' : '憲章（目標・完了条件）'}</button>
-      <button class="chip" data-edit="policy.md" title="policy.md を編集">✎ 運用ルール</button>
-      <button class="chip" data-edit="repos.json" title="repos.json を編集">✎ リポジトリ一覧</button>
+      <button class="chip" data-edit="charter.md" title="プロジェクト憲章（全体の前提）を編集">✎ ${isMaster ? 'マスター憲章' : '憲章'}</button>
+      <button class="chip" data-edit="policy.md" title="運用ルールを編集">✎ 運用ルール</button>
+      <button class="chip" data-edit="repos.json" title="対象リポジトリ一覧を編集">✎ リポジトリ一覧</button>
       <button class="chip" id="btn-add-charter-version"
         title="${isMaster ? 'やるべきことを記入して計画バージョンを追加します（マスター憲章の前提を引き継ぎます）' : '計画の新しいバージョン（charters/&lt;名前&gt;.md）を追加します'}">＋ バージョン追加</button>
-      ${masterizeBtn}
       <span class="muted">編集した内容は次回の自動実行から計画に反映されます</span>
     </div>
   </div>`);
@@ -513,8 +507,8 @@ function renderOverview() {
 
   // charter
   if (p.charter && isMaster) {
-    // マスター憲章: 全バージョン共通の前提・制約。分解されないため達成状況カードは出さない
-    // （進捗は上の計画バージョン一覧で見る）。
+    // マスター憲章: 全バージョン共通の前提・制約。分解されず完了条件も持たないため、達成状況・
+    // 完了条件のカードは出さない（進捗と完了条件は上の計画バージョン一覧で見る）。
     parts.push(`
       <div class="card full">
         <h3>プロジェクト憲章（マスター）: ${esc(p.charter.name || '')}</h3>
@@ -523,11 +517,6 @@ function renderOverview() {
         ${p.charter.constraints ? `<div class="section-title">制約（全バージョン共通）</div>${mdToHtml(p.charter.constraints)}` : ''}
         ${p.charter.assumptions ? `<div class="section-title">前提（全バージョン共通）</div>${mdToHtml(p.charter.assumptions)}` : ''}
         ${p.charter.deliverables ? `<div class="section-title">成果物</div>${mdToHtml(p.charter.deliverables)}` : ''}
-        ${(p.charter.acceptanceItems || []).length
-          ? `<div class="section-title">共通の完了条件（バージョン側に無いとき適用）</div>${(p.charter.acceptanceItems || [])
-              .map((a) => `<div class="acceptance-item">・<code class="mono">${esc(a)}</code></div>`)
-              .join('')}`
-          : ''}
       </div>`);
   } else if (p.charter) {
     const ps = p.projectState || {};
@@ -668,9 +657,9 @@ function renderOverview() {
       <h3>危険な操作</h3>
       <div class="row">
         <button class="chip danger" id="btn-reset-project"
-          title="タスク・履歴・実行データをすべてゴミ箱へ移動し、自動実行を停止します。プロジェクト憲章（charter.md）だけが残ります">
+          title="計画バージョン・タスク・履歴・実行データをすべてゴミ箱へ移動し、自動実行を停止します。プロジェクト憲章（charter.md）だけが残ります">
           ⚠ リセット（憲章だけ残して初期化）</button>
-        <span class="muted">最初からやり直すための操作です。稼働中なら次回の自動実行で計画が作り直されます</span>
+        <span class="muted">最初からやり直すための操作です。リセット後は待機状態になり、計画バージョンを追加すると作業が再開します</span>
       </div>
     </div>`);
   }
@@ -678,7 +667,7 @@ function renderOverview() {
   el.innerHTML = parts.join('\n');
 
   for (const b of el.querySelectorAll('button[data-edit]')) {
-    b.addEventListener('click', () => openEditFile(b.dataset.edit));
+    b.addEventListener('click', () => openProjectFile(b.dataset.edit));
   }
   const resetBtn = $('btn-reset-project');
   if (resetBtn) resetBtn.addEventListener('click', () => resetProject());
@@ -686,37 +675,7 @@ function renderOverview() {
   if (addCharterBtn) addCharterBtn.addEventListener('click', () => openAddCharterVersion());
   const promoteBtn = $('btn-promote-charter');
   if (promoteBtn) promoteBtn.addEventListener('click', () => openPromoteCharter());
-  const masterizeBtnEl = $('btn-masterize-charter');
-  if (masterizeBtnEl) masterizeBtnEl.addEventListener('click', () => masterizeCharter());
   bindLifecycleButtons(el);
-}
-
-// 憲章（charter.md）をマスター運用へ切り替える: `## master` セクションを追記するだけの
-// 冪等な操作。以後この憲章はタスクへ分解されず、計画バージョン（やるべきこと）へ継承される。
-async function masterizeCharter() {
-  const p = state.project;
-  if (!p || !p.charter) return toast('憲章（charter.md）がありません');
-  const yes = await confirmDialog(
-    '憲章をマスター運用に切り替えます。\n' +
-      'マスターは全バージョン共通の前提となり、それ自体からタスクは作られなくなります。\n' +
-      '以後は「＋ バージョン追加」で記入したやるべきことが計画されます。\n' +
-      '（既に進行中のタスクはそのまま消化されます）よろしいですか？'
-  );
-  if (!yes) return;
-  const ok = await guard('マスター運用への切り替え', async () => {
-    const info = await api.readProjectFile(p.dir, 'charter.md');
-    if (/^##\s+master\b/m.test(info.content || '')) return true; // 冪等
-    const text = `${String(info.content || '').replace(/\n*$/, '\n')}\n## master\n` +
-      '<!-- このセクションがある憲章はマスター（全バージョン共通の前提）として扱われ、\n' +
-      '     タスクへは分解されません。やるべきことは charters/<名前>.md に書きます。 -->\n';
-    await api.writeProjectFile(p.dir, 'charter.md', text);
-    return true;
-  });
-  if (ok) {
-    toast('マスター運用に切り替えました。「＋ バージョン追加」でやるべきことを記入してください', true);
-    gitPushAfterWrite('kiro-projects-viewer: charter.md をマスター化', p.dir);
-    await reloadProject();
-  }
 }
 
 // 初版（charter.md）に後からバージョン名を付けて charters/<名前>.md へ移す（昇格）。
@@ -729,7 +688,6 @@ async function openPromoteCharter() {
     '初版の憲章に名前を付けて、計画バージョンの一覧に加えます（内容は変わりません）。' +
     '初版のタスクや承認状態も引き継がれ、他のバージョンと並行して進むようになります。';
   $('nc-name').value = '';
-  $('nc-master-fields').classList.add('hidden'); // 昇格は名前だけ（内容は charter.md のまま移す）
   $('dlg-new-charter').dataset.mode = 'promote';
   $('dlg-new-charter').showModal();
   $('nc-name').focus();
@@ -866,10 +824,11 @@ async function resetProject() {
       : '';
   const yes = await confirmDialog(
     `${p.name}: プロジェクト憲章（charter.md）以外の全データを削除し、実行エンジンを停止します。\n` +
-      `削除対象: タスク ${p.backlog.length} 件・完了記録 ${p.archive.length} 件・要対応 ${p.needs.length} 件・` +
+      `削除対象: 計画バージョン・タスク ${p.backlog.length} 件・完了記録 ${p.archive.length} 件・要対応 ${p.needs.length} 件・` +
       `実行中 ${p.claims.length} 件、および履歴・納品記録などの全ファイル。\n` +
       `ファイルはゴミ箱へ移動します（ゴミ箱の無い環境では完全削除）。${sharedBusNote}\n` +
-      `憲章は残るため、稼働中なら次回の自動実行で計画を作り直して最初からやり直します。よろしいですか？`
+      `憲章（プロジェクト全体の前提）は残ります。リセット後は待機状態になり、` +
+      `計画バージョンを追加すると作業が再開します。よろしいですか？`
   );
   if (!yes) return;
   const ok = await guard('プロジェクトのリセット', async () => {
@@ -1772,6 +1731,265 @@ function isCharterFile(name) {
   return name === 'charter.md' || /^charters\/[^/\\]+\.md$/.test(name);
 }
 
+// ---------------------------------------------------------------------------
+// フォーム編集（マークダウン/JSON を直接書かせず、入力欄で編集する）
+//   charter → 目標・制約・前提・成果物・完了条件のフォーム（マスター/バージョンで項目を切替）
+//   policy  → 運用ルールの行リスト（種類 + 対象）
+//   repos   → リポジトリの行リスト（名前/URL/ベース/担当範囲/説明）
+//   各フォームには「テキストで編集」があり、必要なら従来の生テキスト編集へ切り替えられる。
+// ---------------------------------------------------------------------------
+
+// 編集ボタン（data-edit）のルーティング: 種類ごとにフォームを開く。
+function openProjectFile(name, opts) {
+  if (name === 'policy.md') return openPolicyForm();
+  if (name === 'repos.json') return openReposForm();
+  if (isCharterFile(name)) return openCharterForm(name, opts);
+  return openEditFile(name, opts); // その他は生テキスト編集
+}
+
+// 単一入力の行リスト。値の配列を描画し、各行に入力＋削除。追加は container._add('') で。
+function renderSimpleList(container, items, placeholder) {
+  container.innerHTML = '';
+  const add = (val) => {
+    const row = document.createElement('div');
+    row.className = 'list-row';
+    row.innerHTML =
+      `<input class="list-input mono" value="${esc(val || '')}" placeholder="${esc(placeholder || '')}" />` +
+      `<button type="button" class="list-del" title="削除">✕</button>`;
+    row.querySelector('.list-del').addEventListener('click', () => row.remove());
+    container.appendChild(row);
+  };
+  (Array.isArray(items) ? items : []).forEach(add);
+  container._add = add;
+}
+
+function readSimpleList(container) {
+  return [...container.querySelectorAll('.list-input')].map((i) => i.value.trim()).filter(Boolean);
+}
+
+// -------- charter フォーム --------
+
+// 現在編集中の charter フォーム状態（保持セクション・master・version 名を持ち回る）
+let charterForm = null;
+
+async function openCharterForm(name, opts) {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const res = await guard('憲章の読込', () => api.readCharterFields(p.dir, name));
+  if (!res) return;
+  const fields = res.fields;
+  const isVersion = /^charters\//.test(name);
+  const isMaster = !isVersion && !!fields.master;
+  // 新規バージョン追加時は、前バージョン（または憲章）から引き継いだ やること/完了条件/成果物 を
+  // 初期値にする（既存ファイルの編集では上書きしない＝res.exists のときは seed を使わない）。
+  if (!res.exists && opts) {
+    if (opts.seedGoal) fields.goal = opts.seedGoal;
+    if (Array.isArray(opts.seedAcceptance)) fields.acceptance = opts.seedAcceptance;
+    if (Array.isArray(opts.seedDeliverables)) fields.deliverables = opts.seedDeliverables;
+  }
+  charterForm = { dir: p.dir, name, fields, isVersion, isMaster, exists: res.exists };
+
+  // 見出し・説明
+  const verName = isVersion ? name.replace(/^charters\//, '').replace(/\.md$/, '') : '';
+  $('ec-title').textContent = isVersion
+    ? `計画バージョンを編集: ${verName}`
+    : isMaster
+      ? 'マスター憲章を編集'
+      : '憲章を編集';
+  $('ec-desc').textContent = isVersion
+    ? 'このバージョンで達成すること（やること）と完了条件を書きます。制約・前提・対象リポジトリはマスター憲章から引き継がれます。'
+    : isMaster
+      ? '全バージョン共通の前提です。ここからタスクは作られません（完了条件は各バージョンが持ちます）。'
+      : '目標と完了条件、制約・前提・成果物を記入します。';
+
+  // 名前（バージョンはファイル名が識別子なので隠す。マスター/単一はプロジェクト名として編集可）
+  $('ec-name-field').classList.toggle('hidden', isVersion);
+  $('ec-name').value = fields.name || (isVersion ? verName : p.name || '');
+
+  // 目標/やること
+  $('ec-goal-label').textContent = isVersion ? 'やること（このバージョンで達成すること）' : '目標';
+  $('ec-goal').value = fields.goal || '';
+
+  // 完了条件（acceptance）はバージョン、または「マスターでない単一 charter」に出す。マスターは非表示。
+  const showAcceptance = !isMaster;
+  $('ec-acceptance-field').classList.toggle('hidden', !showAcceptance);
+  renderSimpleList($('ec-acceptance'), fields.acceptance, '例: pytest -q tests/ または accept: 使用例が載っている');
+
+  // 成果物は常に出す
+  renderSimpleList($('ec-deliverables'), fields.deliverables, '例: report.py');
+
+  // 制約・前提はマスター/単一のみ（バージョンは継承）
+  const showConstraints = !isVersion;
+  $('ec-constraints-field').classList.toggle('hidden', !showConstraints);
+  $('ec-assumptions-field').classList.toggle('hidden', !showConstraints);
+  renderSimpleList($('ec-constraints'), fields.constraints, '例: 標準ライブラリのみ');
+  renderSimpleList($('ec-assumptions'), fields.assumptions, '例: 入力は UTF-8');
+
+  $('ec-inherit-note').classList.toggle('hidden', !isVersion);
+  $('ec-hint').textContent = res.exists
+    ? '保存した内容は次回の自動実行から反映されます'
+    : '未作成 — 保存すると新規作成します';
+  $('dlg-edit-charter').showModal();
+}
+
+async function saveCharterForm() {
+  const cf = charterForm;
+  if (!cf) return;
+  if (cf.isVersion && !$('ec-goal').value.trim()) {
+    return toast('やること（このバージョンで達成すること）を記入してください');
+  }
+  // フォームの値をフィールドへ反映（保持セクション _reposRaw/_linksRaw/_masterRaw はそのまま残す）
+  const f = { ...cf.fields };
+  f.master = cf.isMaster;
+  if (!cf.isVersion) f.name = $('ec-name').value.trim() || f.name;
+  else f.name = cf.name.replace(/^charters\//, '').replace(/\.md$/, ''); // バージョンはファイル名を名前に
+  f.goal = $('ec-goal').value.trim();
+  f.deliverables = readSimpleList($('ec-deliverables'));
+  if (!cf.isMaster) f.acceptance = readSimpleList($('ec-acceptance'));
+  if (!cf.isVersion) {
+    f.constraints = readSimpleList($('ec-constraints'));
+    f.assumptions = readSimpleList($('ec-assumptions'));
+  }
+  const ok = await guard('保存', async () => {
+    await api.writeCharterFields(cf.dir, cf.name, f);
+    return true;
+  });
+  if (ok) {
+    toast(`${cf.isVersion ? '計画バージョン' : '憲章'}を保存しました`, true);
+    gitPushAfterWrite(`kiro-projects-viewer: edit ${cf.name}`, cf.dir);
+    $('dlg-edit-charter').close();
+    await reloadProject();
+  }
+}
+
+// フォームから生テキスト編集へ切り替える（込み入った編集や、フォームが扱わない項目の調整用）。
+function charterFormToRaw() {
+  const cf = charterForm;
+  if (!cf) return;
+  $('dlg-edit-charter').close();
+  openEditFile(cf.name);
+}
+
+// -------- policy フォーム --------
+
+const POLICY_KIND_OPTIONS = [
+  ['deny', '自動実行しない（deny）'],
+  ['pin', '最優先にする（pin）'],
+  ['defer', '後回しにする（defer）'],
+  ['offload', '委任で実行（offload）'],
+  ['gate', '承認を必須にする（gate）'],
+  ['protect', '保護する（protect）'],
+  ['route', '振り分け先を指定（route）'],
+];
+
+let policyForm = null;
+
+function renderPolicyRules(container, rules) {
+  container.innerHTML = '';
+  const opts = (sel) =>
+    POLICY_KIND_OPTIONS.map(([k, label]) => `<option value="${k}"${sel === k ? ' selected' : ''}>${esc(label)}</option>`).join('');
+  const add = (r) => {
+    const row = document.createElement('div');
+    row.className = 'list-row';
+    row.innerHTML =
+      `<select class="pol-kind">${opts(r && r.kind)}</select>` +
+      `<input class="pol-value mono" value="${esc((r && r.value) || '')}" placeholder="対象（タスクのタイトルや ID にマッチする語）" />` +
+      `<button type="button" class="list-del" title="削除">✕</button>`;
+    row.querySelector('.list-del').addEventListener('click', () => row.remove());
+    container.appendChild(row);
+  };
+  (Array.isArray(rules) ? rules : []).forEach(add);
+  container._add = add;
+}
+
+async function openPolicyForm() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const res = await guard('運用ルールの読込', () => api.readPolicy(p.dir));
+  if (!res) return;
+  policyForm = { dir: p.dir };
+  renderPolicyRules($('ep-rules'), res.rules);
+  $('dlg-edit-policy').showModal();
+}
+
+async function savePolicyForm() {
+  const pf = policyForm;
+  if (!pf) return;
+  const rules = [...$('ep-rules').querySelectorAll('.list-row')]
+    .map((row) => ({
+      kind: row.querySelector('.pol-kind').value,
+      value: row.querySelector('.pol-value').value.trim(),
+    }))
+    .filter((r) => r.value);
+  const ok = await guard('保存', async () => {
+    await api.writePolicy(pf.dir, rules);
+    return true;
+  });
+  if (ok) {
+    toast('運用ルールを保存しました', true);
+    gitPushAfterWrite('kiro-projects-viewer: edit policy.md', pf.dir);
+    $('dlg-edit-policy').close();
+    await reloadProject();
+  }
+}
+
+// -------- repos フォーム --------
+
+let reposForm = null;
+
+function renderRepoRows(container, rows) {
+  container.innerHTML = '';
+  const add = (r) => {
+    const row = document.createElement('div');
+    row.className = 'np-repo-row';
+    row.innerHTML =
+      `<input class="er-name mono" placeholder="名前" value="${esc((r && r.name) || '')}" />` +
+      `<input class="er-url mono" placeholder="git URL（必須）" value="${esc((r && r.url) || '')}" />` +
+      `<input class="er-base mono" placeholder="ベースブランチ 例 main" value="${esc((r && r.base) || '')}" />` +
+      `<input class="er-owns mono" placeholder="担当範囲（省略=参照のみ）" value="${esc((r && r.owns) || '')}" />` +
+      `<input class="er-desc" placeholder="説明" value="${esc((r && r.desc) || '')}" />` +
+      `<button type="button" class="np-r-del" title="削除">✕</button>`;
+    row.querySelector('.np-r-del').addEventListener('click', () => row.remove());
+    container.appendChild(row);
+  };
+  (Array.isArray(rows) ? rows : []).forEach(add);
+  container._add = add;
+}
+
+async function openReposForm() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  const res = await guard('リポジトリ一覧の読込', () => api.readRepos(p.dir));
+  if (!res) return;
+  reposForm = { dir: p.dir };
+  renderRepoRows($('er-rows'), res.rows);
+  $('dlg-edit-repos').showModal();
+}
+
+async function saveReposForm() {
+  const rf = reposForm;
+  if (!rf) return;
+  const rows = [...$('er-rows').querySelectorAll('.np-repo-row')]
+    .map((row) => ({
+      name: row.querySelector('.er-name').value.trim(),
+      url: row.querySelector('.er-url').value.trim(),
+      base: row.querySelector('.er-base').value.trim(),
+      owns: row.querySelector('.er-owns').value.trim(),
+      desc: row.querySelector('.er-desc').value.trim(),
+    }))
+    .filter((r) => r.url);
+  const ok = await guard('保存', async () => {
+    await api.writeRepos(rf.dir, rows);
+    return true;
+  });
+  if (ok) {
+    toast('リポジトリ一覧を保存しました', true);
+    gitPushAfterWrite('kiro-projects-viewer: edit repos.json', rf.dir);
+    $('dlg-edit-repos').close();
+    await reloadProject();
+  }
+}
+
 const CHARTER_SECTION_GUIDE =
   '書式（セクション）: ## goal（目標）/ ## constraints（制約）/ ## assumptions（前提）/ ' +
   '## deliverables（成果物）/ ## acceptance（完了条件 — 成功で終わるコマンド、または accept: 文章）/ ' +
@@ -1832,46 +2050,24 @@ async function openAddCharterVersion() {
   const p = state.project;
   if (!p) return toast('プロジェクトを選択してください');
   const master = !!(p.charter && p.charter.master);
+  const src = p.charters && p.charters.length ? '直近のバージョン' : 'マスター憲章';
   $('nc-title').textContent = '計画バージョンを追加';
   $('nc-desc').textContent = master
-    ? 'このバージョンでやるべきことを記入します。保存すると、マスター憲章の前提と合わせて次回の自動実行でタスクに分解されます。'
+    ? `バージョン名を決めると、続けて内容を入力する画面が開きます（${src}の やること・完了条件・成果物 を引き継いだ状態で開くので、そこから編集できます。制約・前提・対象リポジトリはマスター憲章から自動継承されます）。`
     : p.charter && !(p.charters && p.charters.length)
       ? '新しい計画バージョンを作成します。作成後はバージョン一覧の計画だけが実行され、' +
         '初版は実行の対象から外れます（概要タブの「⤴ バージョン名を付ける」で初版も並行して進められます）。'
-      : '新しい計画バージョンを作成します（既存のバージョンはそのまま並行して進みます）。';
+      : `新しい計画バージョンを作成します（${src}の内容を引き継いだ状態でフォームが開きます。既存のバージョンはそのまま並行して進みます）。`;
   $('nc-name').value = '';
-  $('nc-goal').value = '';
-  $('nc-acceptance').value = '';
-  $('nc-master-fields').classList.toggle('hidden', !master);
   $('dlg-new-charter').dataset.mode = 'add';
   $('dlg-new-charter').showModal();
   $('nc-name').focus();
-}
-
-// マスター運用の計画バージョン雛形: やるべきこと（goal）と完了条件だけを書く。
-// 制約・前提・repos・共通の完了条件は kiro-project がマスター憲章から継承合成する。
-function buildVersionSeed(name, goal, acceptance) {
-  const acc = String(acceptance || '')
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => (l.startsWith('-') ? l : `- ${l}`))
-    .join('\n');
-  return (
-    `# Charter: ${name}\n\n` +
-    `## goal\n${String(goal || '').trim()}\n\n` +
-    `## deliverables\n\n` +
-    `## acceptance\n${acc ? `${acc}\n` : '<!-- 空ならマスター憲章の共通の完了条件を使います -->\n'}\n` +
-    `<!-- 制約・前提・対象リポジトリはマスター憲章（charter.md）から自動で継承されます。\n` +
-    `     必要なときだけこのファイルで追記・上書きしてください。 -->\n`
-  );
 }
 
 async function submitNewCharterVersion() {
   const p = state.project;
   if (!p) return $('dlg-new-charter').close();
   const mode = $('dlg-new-charter').dataset.mode || 'add';
-  const master = !!(p.charter && p.charter.master);
   const name = $('nc-name').value.trim();
   if (!isValidCharterVersionName(name)) {
     toast('バージョン名が不正です（空白・スラッシュ・ハイフン等は使えません）');
@@ -1882,26 +2078,27 @@ async function submitNewCharterVersion() {
     toast(`バージョン「${name}」はすでに存在します`);
     return;
   }
-  if (mode === 'add' && master && !$('nc-goal').value.trim()) {
-    toast('やるべきことを記入してください（このバージョンで達成すること）');
-    return;
-  }
   $('dlg-new-charter').close();
   if (mode === 'promote') {
     await submitPromoteCharter(name);
     return;
   }
-  if (master) {
-    // マスター運用: やるべきこと＋完了条件だけの最小バージョンを雛形にする（前提は継承）
-    const seedContent = buildVersionSeed(name, $('nc-goal').value, $('nc-acceptance').value);
-    await openEditFile(`charters/${name}.md`, { seedContent });
-    return;
+  // 初期値の引き継ぎ元: 直近の計画バージョン（あれば）、無ければマスター/初版の憲章。
+  // その やること/完了条件/成果物 をフォームの初期状態に入れて、前バージョンから編集して作れる
+  // ようにする（制約・前提・対象リポジトリはマスターから自動継承なのでフォームには出さない）。
+  const srcName =
+    p.charters && p.charters.length ? `charters/${p.charters[p.charters.length - 1].name}.md` : 'charter.md';
+  let seed = {};
+  const src = await guard('引き継ぎ元の読込', () => api.readCharterFields(p.dir, srcName));
+  if (src && src.fields) {
+    seed = {
+      seedGoal: src.fields.goal || '',
+      seedAcceptance: Array.isArray(src.fields.acceptance) ? src.fields.acceptance : [],
+      seedDeliverables: Array.isArray(src.fields.deliverables) ? src.fields.deliverables : [],
+    };
   }
-  // 従来運用: 前バージョンの内容を書きかけとして引き継ぐ。charters/ 運用中なら並びの最後
-  // （一覧の最新）、まだ charter.md 単体運用なら charter.md 自体を前バージョン扱いにする。
-  const prev = p.charters && p.charters.length ? p.charters[p.charters.length - 1] : p.charter;
-  const seedContent = (prev && prev.raw) || '';
-  await openEditFile(`charters/${name}.md`, { seedContent });
+  // 名前を決めたら、続けて内容（やること・完了条件）を入力するバージョンのフォームを開く（保存で新規作成）
+  await openCharterForm(`charters/${name}.md`, seed);
 }
 
 // charter.md の雛形を挿入する（空のときだけ即挿入。書きかけがあるときは確認してから置換）
@@ -3446,7 +3643,11 @@ function setupPolling() {
         $('dlg-enqueue').open ||
         $('dlg-confirm').open ||
         $('dlg-new-project').open ||
-        $('dlg-edit-file').open
+        $('dlg-edit-file').open ||
+        $('dlg-new-charter').open ||
+        $('dlg-edit-charter').open ||
+        $('dlg-edit-policy').open ||
+        $('dlg-edit-repos').open
       )
         return;
       const ae = document.activeElement;
@@ -3536,6 +3737,31 @@ async function init() {
   $('btn-ef-open').addEventListener('click', () => {
     if (state.editFile) guard('ファイルを開く', () => api.openPath(state.editFile.file));
   });
+  // フォーム編集（憲章 / 運用ルール / リポジトリ一覧）
+  $('btn-ec-cancel').addEventListener('click', () => $('dlg-edit-charter').close());
+  $('btn-ec-save').addEventListener('click', saveCharterForm);
+  $('btn-ec-raw').addEventListener('click', charterFormToRaw);
+  $('btn-ep-cancel').addEventListener('click', () => $('dlg-edit-policy').close());
+  $('btn-ep-save').addEventListener('click', savePolicyForm);
+  $('btn-ep-add').addEventListener('click', () => $('ep-rules')._add && $('ep-rules')._add());
+  $('btn-ep-raw').addEventListener('click', () => {
+    $('dlg-edit-policy').close();
+    openEditFile('policy.md');
+  });
+  $('btn-er-cancel').addEventListener('click', () => $('dlg-edit-repos').close());
+  $('btn-er-save').addEventListener('click', saveReposForm);
+  $('btn-er-add').addEventListener('click', () => $('er-rows')._add && $('er-rows')._add());
+  $('btn-er-raw').addEventListener('click', () => {
+    $('dlg-edit-repos').close();
+    openEditFile('repos.json');
+  });
+  // list-editor の「＋ 追加」ボタン（憲章フォームの各リスト）
+  for (const btn of document.querySelectorAll('button[data-add-list]')) {
+    btn.addEventListener('click', () => {
+      const c = $(btn.dataset.addList);
+      if (c && c._add) c._add('');
+    });
+  }
   api.onOpenTarget(handleOpenTarget);
 
   await refreshDiscovery();

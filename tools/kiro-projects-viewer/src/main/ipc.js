@@ -340,6 +340,37 @@ function registerIpcHandlers() {
     content: authoring.buildCharter({ name: String(name || '').trim() || 'project' }),
   }));
 
+  // フォーム編集: charter / policy / repos を構造化データで読み書きする（マークダウン/JSON を
+  // ユーザーに直接書かせず、入力欄で編集するための橋渡し。パース・シリアライズは authoring が持つ）。
+  handle('kiro:readCharterFields', ({ dir, name }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const info = authoring.readProjectFile(dir, name);
+    return { fields: authoring.charterToFields(info.content || ''), exists: info.exists, file: info.file };
+  });
+  handle('kiro:writeCharterFields', ({ dir, name, fields }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return authoring.writeProjectFile(dir, name, authoring.fieldsToCharter(fields || {}));
+  });
+  handle('kiro:readPolicy', ({ dir }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const info = authoring.readProjectFile(dir, 'policy.md');
+    return { rules: authoring.policyToRules(info.content || ''), exists: info.exists, file: info.file };
+  });
+  handle('kiro:writePolicy', ({ dir, rules }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return authoring.writeProjectFile(dir, 'policy.md', authoring.rulesToPolicy(rules || []));
+  });
+  handle('kiro:readRepos', ({ dir }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const info = authoring.readProjectFile(dir, 'repos.json');
+    return { rows: authoring.reposJsonToRows(info.content || ''), exists: info.exists, file: info.file };
+  });
+  handle('kiro:writeRepos', ({ dir, rows }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    // フォーム編集は _meta 無し（手管理）で書く＝ repos.json が正になり本体が上書きしない
+    return authoring.writeProjectFile(dir, 'repos.json', authoring.exportReposJson(rows || [], false));
+  });
+
   // エージェント CLI（kiro / claude / copilot）による charter の下書き・補完。
   // 応答テキストを返すだけで、ファイルへの書き込みは既存の kiro:writeFile /
   // kiro:createProject（人の保存操作）に任せる。dir はエージェント解決

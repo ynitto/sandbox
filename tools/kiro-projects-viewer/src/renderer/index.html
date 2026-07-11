@@ -356,20 +356,79 @@
       <label>バージョン名（空白・スラッシュ・ハイフン等は不可）</label>
       <input id="nc-name" class="mono" placeholder="例: v2" />
     </div>
-    <div id="nc-master-fields" class="hidden">
-      <div class="field">
-        <label>やるべきこと（このバージョンで達成すること）</label>
-        <textarea id="nc-goal" rows="3" placeholder="例: CSV 取り込みのエラー処理を改善し、失敗行のレポートを出す"></textarea>
-      </div>
-      <div class="field">
-        <label>完了条件（1 行 1 つ。成功で終わるコマンド、または accept: 文章。空ならマスターの共通条件を使います）</label>
-        <textarea id="nc-acceptance" rows="2" class="mono" placeholder="pytest -q tests/&#10;accept: 失敗行レポートが出力される"></textarea>
-      </div>
-      <div class="muted">制約・前提・対象リポジトリはマスター憲章から自動で引き継がれます。</div>
-    </div>
     <div class="dialog-actions">
       <button id="btn-nc-cancel">キャンセル</button>
-      <button id="btn-nc-ok" class="primary-inline">作成</button>
+      <button id="btn-nc-ok" class="primary-inline">次へ</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 憲章／計画バージョン フォーム編集ダイアログ ======== -->
+  <dialog id="dlg-edit-charter" class="wide">
+    <h2 id="ec-title">憲章を編集</h2>
+    <p class="muted" id="ec-desc"></p>
+    <div class="field" id="ec-name-field">
+      <label>名前</label>
+      <input id="ec-name" class="mono" />
+    </div>
+    <div class="field">
+      <label id="ec-goal-label">目標</label>
+      <textarea id="ec-goal" rows="3" placeholder="例: CSV 取り込みのエラー処理を改善し、失敗行のレポートを出す"></textarea>
+    </div>
+    <div class="field" id="ec-acceptance-field">
+      <label>完了条件（成功で終わるコマンド、または「accept: 文章」。プロジェクト/バージョン完了の判定基準）</label>
+      <div id="ec-acceptance" class="list-editor"></div>
+      <button type="button" class="chip" data-add-list="ec-acceptance">＋ 追加</button>
+    </div>
+    <div class="field" id="ec-deliverables-field">
+      <label>成果物</label>
+      <div id="ec-deliverables" class="list-editor"></div>
+      <button type="button" class="chip" data-add-list="ec-deliverables">＋ 追加</button>
+    </div>
+    <div class="field" id="ec-constraints-field">
+      <label>制約</label>
+      <div id="ec-constraints" class="list-editor"></div>
+      <button type="button" class="chip" data-add-list="ec-constraints">＋ 追加</button>
+    </div>
+    <div class="field" id="ec-assumptions-field">
+      <label>前提</label>
+      <div id="ec-assumptions" class="list-editor"></div>
+      <button type="button" class="chip" data-add-list="ec-assumptions">＋ 追加</button>
+    </div>
+    <div class="muted hidden" id="ec-inherit-note">制約・前提・対象リポジトリはマスター憲章から引き継がれます。</div>
+    <div class="muted" id="ec-hint"></div>
+    <div class="dialog-actions">
+      <button id="btn-ec-raw" title="マークダウンを直接編集する画面に切り替えます">テキストで編集</button>
+      <span class="spacer"></span>
+      <button id="btn-ec-cancel">キャンセル</button>
+      <button id="btn-ec-save" class="primary-inline">保存</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 運用ルール（policy）フォーム編集ダイアログ ======== -->
+  <dialog id="dlg-edit-policy" class="wide">
+    <h2>運用ルールを編集</h2>
+    <p class="muted">タスクの扱いを制御するルールです。各ルールは、対象に書いた語がタスクのタイトルや ID に一致するものへ適用されます。</p>
+    <div id="ep-rules" class="list-editor"></div>
+    <button type="button" id="btn-ep-add" class="chip">＋ ルールを追加</button>
+    <div class="dialog-actions">
+      <button id="btn-ep-raw" title="テキストで直接編集する画面に切り替えます">テキストで編集</button>
+      <span class="spacer"></span>
+      <button id="btn-ep-cancel">キャンセル</button>
+      <button id="btn-ep-save" class="primary-inline">保存</button>
+    </div>
+  </dialog>
+
+  <!-- ======== リポジトリ一覧（repos）フォーム編集ダイアログ ======== -->
+  <dialog id="dlg-edit-repos" class="wide">
+    <h2>リポジトリ一覧を編集</h2>
+    <p class="muted">作業対象のリポジトリです。担当範囲（owns）を書くと成果物の書き込み先、書かなければ参照のみになります。</p>
+    <div id="er-rows"></div>
+    <button type="button" id="btn-er-add" class="chip">＋ リポジトリを追加</button>
+    <div class="dialog-actions">
+      <button id="btn-er-raw" title="JSON を直接編集する画面に切り替えます">テキストで編集</button>
+      <span class="spacer"></span>
+      <button id="btn-er-cancel">キャンセル</button>
+      <button id="btn-er-save" class="primary-inline">保存</button>
     </div>
   </dialog>
 

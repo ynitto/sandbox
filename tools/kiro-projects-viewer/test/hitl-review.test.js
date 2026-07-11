@@ -69,6 +69,21 @@ function mkProject() {
     assert.strictEqual(p.charters[1].goal, '新機能');
   });
 
+  await test('charters の name はファイル名を優先する（# Charter タイトルが違っても化けない）', async () => {
+    // 前バージョンをコピーしてタイトルを直し忘れると `# Charter:` が同じ名前になりがち。
+    // それでもバージョンの identity（表示名・編集先・charter タグ）はファイル名でなければならない。
+    const dir = mkProject();
+    fs.mkdirSync(path.join(dir, 'charters'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'charters', 'v2.md'),
+      '# Charter: sandbox\n## goal\nA\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'charters', 'v3.md'),
+      '# Charter: sandbox\n## goal\nB\n', 'utf8');
+    const p = kiro.readProject(dir, { kiro: {} });
+    assert.deepStrictEqual(p.charters.map((c) => c.name), ['v2', 'v3']);
+    assert.deepStrictEqual(p.charters.map((c) => c.title), ['sandbox', 'sandbox']);
+    assert.deepStrictEqual(p.charters.map((c) => c.goal), ['A', 'B']); // 中身は各ファイルのまま
+  });
+
   await test('authoring は charters/<name>.md の編集を許可し、パス外は拒否する', async () => {
     const dir = mkProject();
     fs.mkdirSync(path.join(dir, 'charters'), { recursive: true });
