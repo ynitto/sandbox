@@ -1,0 +1,7 @@
+{
+  "id": "work1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "[stub] 完了: 受入条件を満たす: echo \"hello\"",
+  "finished_at": "2026-07-11T21:01:22Z"
+}
