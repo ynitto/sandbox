@@ -1,6 +1,0 @@
-{
-  "id": "work1",
-  "goal": "受入条件を満たす: echo \"hello\"",
-  "deps": [],
-  "kind": "work"
-}

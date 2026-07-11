@@ -1,8 +1,0 @@
-{
-  "request": "受入条件を満たす: echo \"hello\"\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  echo \"hello\"\n\nタスクID: echo-hello-060104\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: - バックログベースの開発が出来ること\n- agentによる自律開発が出来ること\n制約:\n- kiro-project/kiro-flowをエンジンとして使用する\n- kiro-projects-viewerをフロントエンドとして使用する\n前提:\n- 人による操作や確認を最小限にする\n- 繰り返し・再実行によって試行錯誤できる\n成果物:\n- kiro-project/kiro-flow ソースコード\n- kiro-projects-viewer ソースコード\n- 設計書・ドキュメント\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n## DR-0001  2026-07-12  actor: nitto\n- context : echo-hello-060104（受入条件を満たす: echo \"hello\"）の実行を承認\n- action  : plan-approve\n- reason  : kiro-projects-viewer から操作\n- affects : echo-hello-060104 → ready",
-  "workspace": null,
-  "references": [],
-  "status": "done",
-  "created_at": "2026-07-11T21:01:20Z",
-  "updated_at": "2026-07-11T21:01:28Z"
-}
