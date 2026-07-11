@@ -4335,6 +4335,35 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(st["status"], km.REASON_PROJECT_ACCEPTED)
             self.assertIn("project", (d / "DELIVERY.md").read_text(encoding="utf-8"))
 
+    def test_converged_project_records_best_pass_count(self):
+        # 回帰: 一発で全 PASS して収束したプロジェクトの best（過去最高 PASS 数）が 0 のまま
+        # 保存され、viewer の概要タブが完了しているのに「0 / 1 達成」と表示していた。
+        # best の更新が収束の early return より後ろにあったのが原因。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")     # acceptance は最初から PASS
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            st = km.load_project_state(cfg)
+            self.assertEqual(st["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertEqual(st["acceptance_total"], 1)
+            self.assertEqual(st["history"], [1])
+            self.assertEqual(st["best"], 1)             # 1/1 達成として記録される
+
+    def test_stall_still_counts_when_best_not_improved(self):
+        # best を評価の先頭で更新するようにしても、停滞判定（PASS 数が過去最高を更新しないと
+        # stall を積む）の意味は変わらない。更新前の値と比べていることの確認。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"                            # 存在しない → acceptance は常に FAIL
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d, project_stall=2, max_project_cycles=5)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            st = km.load_project_state(cfg)
+            self.assertEqual(st["status"], km.REASON_PROJECT_STALL)   # 0 PASS のまま → 停滞で人へ
+            self.assertEqual(st["best"], 0)
+
     def test_approved_project_does_not_resurrect_milestone_on_rerun(self):
         # 実運用インシデントの再発防止: approve 後に charter.md が無変更のまま run/watch が
         # 再度 cmd_project を呼んでも、毎回 acceptance を再収束させて milestone（needs/<pid>.md）を

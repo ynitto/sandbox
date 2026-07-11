@@ -8638,6 +8638,12 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
     charter_tag（複数 charter 運用）を渡すと改善タスクにタグを付け、冪等照合もその charter に閉じる。"""
     passed, total, results = evaluate_acceptance(cfg, charter)
     state["history"] = list(state.get("history", [])) + [passed]
+    # best（過去最高 PASS 数）は停滞判定の基準であると同時に、viewer の「n / m 達成」の表示元。
+    # 停滞判定より先にここで更新する: 下の収束 return より後ろで更新していたため、一発で全 PASS
+    # して収束したプロジェクトは best が 0 のまま残り、完了しているのに「0 / 1 達成」と出ていた。
+    # 停滞判定は更新前の値（prev_best）と比べる＝従来の意味を変えない。
+    prev_best = int(state.get("best", 0))
+    state["best"] = max(prev_best, passed)
     existing = _existing_titles(cfg, charter_tag or None)
 
     def _tag(specs: "list[dict]") -> "list[dict]":
@@ -8667,9 +8673,8 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
         return REASON_PROJECT_CONVERGED, last_summary
     if cfg.max_project_cost and cost_used >= cfg.max_project_cost:
         return REASON_PROJECT_COST, last_summary
-    best = int(state.get("best", 0))          # 停滞: PASS 数が過去最高を更新しないなら人へ（自動チャーン止め）
-    if passed > best:
-        state["best"], state["stall"] = passed, 0
+    if passed > prev_best:                    # 停滞: PASS 数が過去最高を更新しないなら人へ（自動チャーン止め）
+        state["stall"] = 0
     else:
         state["stall"] = int(state.get("stall", 0)) + 1
     if state["stall"] >= cfg.project_stall:

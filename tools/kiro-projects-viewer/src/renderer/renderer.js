@@ -94,6 +94,24 @@ function statusLabel(status) {
   return STATUS_LABELS[s] || s;
 }
 
+// project.json の charter state から acceptance の PASS 履歴（数値列）を取り出す。
+function passHistory(st) {
+  if (!st || !Array.isArray(st.history)) return [];
+  return st.history
+    .map((h) =>
+      typeof h === 'number' ? h : h && typeof h === 'object' ? Number(h.pass ?? h.passed ?? h.ok ?? NaN) : NaN
+    )
+    .filter((n) => !isNaN(n));
+}
+
+// 「n / m 達成」の n（過去最高 PASS 数）。本体の best が正だが、収束したサイクルで best を
+// 更新しないまま保存された state（全 PASS で完了しているのに best: 0）が残っているため、
+// PASS 履歴の最大でも補う。完了しているのに「0 / 1 達成」と出るのを防ぐ。
+function achieved(st) {
+  const hist = passHistory(st);
+  return Math.max(Number((st && st.best) || 0), hist.length ? Math.max(...hist) : 0);
+}
+
 function toast(msg, ok = false) {
   const el = $('toast');
   el.textContent = msg;
@@ -464,7 +482,7 @@ function renderOverview() {
       .map((ch) => {
         const st = chStates[ch.name] || {};
         const total = Number(st.acceptance_total || (ch.acceptanceItems || []).length || 0);
-        const best = Number(st.best || 0);
+        const best = achieved(st);
         return `<tr>
           <td class="mono">${esc(ch.name)}</td>
           <td>${esc(ch.goal || ch.name || '')}</td>
@@ -478,7 +496,7 @@ function renderOverview() {
     if (p.charter && !isMaster) {
       const st = p.projectState || {};
       const total = Number(st.acceptance_total || (p.charter.acceptanceItems || []).length || 0);
-      const best = Number(st.best || 0);
+      const best = achieved(st);
       initialRow = `<tr>
         <td class="mono">初版 <span class="muted">(charter.md)</span></td>
         <td>${esc(p.charter.goal || p.charter.name || '')}</td>
@@ -521,14 +539,8 @@ function renderOverview() {
   } else if (p.charter) {
     const ps = p.projectState || {};
     const total = Number(ps.acceptance_total || (p.charter.acceptanceItems || []).length || 0);
-    const hist = Array.isArray(ps.history)
-      ? ps.history
-          .map((h) =>
-            typeof h === 'number' ? h : h && typeof h === 'object' ? Number(h.pass ?? h.passed ?? h.ok ?? NaN) : NaN
-          )
-          .filter((n) => !isNaN(n))
-      : [];
-    const best = Number(ps.best ?? (hist.length ? Math.max(...hist) : 0));
+    const hist = passHistory(ps);
+    const best = achieved(ps);
     const pct = total ? Math.round((best / total) * 100) : 0;
     const spark = hist.length
       ? `<div class="sparkline">${hist
