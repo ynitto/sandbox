@@ -351,6 +351,20 @@
     </div>
   </dialog>
 
+  <!-- ======== charter バージョン追加ダイアログ ======== -->
+  <dialog id="dlg-new-charter">
+    <h2>charter バージョンを追加</h2>
+    <p class="muted">charters/&lt;名前&gt;.md を新規作成します（既存の charter.md や他バージョンはそのまま残り、並行駆動します）。</p>
+    <div class="field">
+      <label>バージョン名（空白・スラッシュ・ハイフン等は不可）</label>
+      <input id="nc-name" class="mono" placeholder="例: v2" />
+    </div>
+    <div class="dialog-actions">
+      <button id="btn-nc-cancel">キャンセル</button>
+      <button id="btn-nc-ok" class="primary-inline">作成</button>
+    </div>
+  </dialog>
+
   <div id="toast" class="hidden"></div>
 
   <script src="renderer.js"></script>

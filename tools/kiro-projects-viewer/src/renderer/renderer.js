@@ -321,6 +321,8 @@ function renderOverview() {
       <button class="chip" data-edit="charter.md">✎ charter.md</button>
       <button class="chip" data-edit="policy.md">✎ policy.md</button>
       <button class="chip" data-edit="repos.json">✎ repos.json</button>
+      <button class="chip" id="btn-add-charter-version"
+        title="charters/&lt;名前&gt;.md を新規作成し、既存の charter.md と並行駆動するバージョンとして追加します">＋ バージョン追加</button>
       <span class="muted">charter を編集すると次の run で backlog（後段データ）に反映されます</span>
     </div>
   </div>`);
@@ -504,6 +506,8 @@ function renderOverview() {
   }
   const resetBtn = $('btn-reset-project');
   if (resetBtn) resetBtn.addEventListener('click', () => resetProject());
+  const addCharterBtn = $('btn-add-charter-version');
+  if (addCharterBtn) addCharterBtn.addEventListener('click', () => openAddCharterVersion());
   bindLifecycleButtons(el);
 }
 
@@ -1545,6 +1549,42 @@ async function openEditFile(name) {
     ? `${info.file}｜保存すると次の kiro-project run から後段データに反映されます`
     : `${info.file}（未作成 — 保存すると新規作成します）`;
   $('dlg-edit-file').showModal();
+}
+
+// charters/<name>.md のバージョン名として使える文字か（authoring.js の BAD_NAME_RE と揃える。
+// スラッシュ等の path traversal はサーバ側 editablePath でも弾かれるが、ここで先に弾いて
+// わかりやすいエラーにする）
+const BAD_CHARTER_NAME_RE = /[\s/\\<>:"|?*-]/;
+function isValidCharterVersionName(name) {
+  return !!name && name !== '.' && name !== '..' && !BAD_CHARTER_NAME_RE.test(name);
+}
+
+// 既存プロジェクトに新しい charter バージョン（charters/<名前>.md）を追加する。
+// 「新規プロジェクト作成」時にしか charter 名を指定できなかったギャップを埋める入口。
+// 実体の作成は openEditFile → 保存（saveEditFile）が行う＝ここでは名前を確定するだけ。
+async function openAddCharterVersion() {
+  const p = state.project;
+  if (!p) return toast('プロジェクトを選択してください');
+  $('nc-name').value = '';
+  $('dlg-new-charter').showModal();
+  $('nc-name').focus();
+}
+
+async function submitNewCharterVersion() {
+  const p = state.project;
+  if (!p) return $('dlg-new-charter').close();
+  const name = $('nc-name').value.trim();
+  if (!isValidCharterVersionName(name)) {
+    toast('バージョン名が不正です（空白・スラッシュ・ハイフン等は使えません）');
+    return;
+  }
+  const existing = new Set((p.charters || []).map((c) => c.name));
+  if (existing.has(name)) {
+    toast(`charters/${name}.md はすでに存在します`);
+    return;
+  }
+  $('dlg-new-charter').close();
+  await openEditFile(`charters/${name}.md`);
 }
 
 // charter.md の雛形を挿入する（空のときだけ即挿入。書きかけがあるときは確認してから置換）
@@ -3008,6 +3048,9 @@ async function init() {
   $('btn-np-submit').addEventListener('click', submitNewProject);
   $('np-add-repo').addEventListener('click', () => addRepoRow());
   $('btn-np-ai').addEventListener('click', aiDraftCharter);
+  // charter バージョン追加（既存プロジェクトに charters/<名前>.md を後から追加する）
+  $('btn-nc-cancel').addEventListener('click', () => $('dlg-new-charter').close());
+  $('btn-nc-ok').addEventListener('click', submitNewCharterVersion);
   // プロジェクトファイル編集
   $('btn-ef-cancel').addEventListener('click', () => $('dlg-edit-file').close());
   $('btn-ef-save').addEventListener('click', saveEditFile);
