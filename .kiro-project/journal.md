@@ -29,3 +29,10 @@
 - 2026-07-12 05:06:58 commands 取り込み: approve .kiro-project-v2（viewer-approve-kiro-project-v2-1783800412920.json）
 - 2026-07-12 05:06:58 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-12 05:43:13 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 05:43:33 === project 開始 v3 acceptance=1 ===
+- 2026-07-12 05:43:33 project cycle 1: plan cycle 1 で 1 件投入 ['echo-hellO-054333']
+- 2026-07-12 05:43:33 === kiro-project 開始 tasks=1 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-12 05:43:33 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 05:43:33 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-12 05:43:33 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-12 05:43:33 === project watch: 監視中（charter 更新/フィードバック待ち）===
