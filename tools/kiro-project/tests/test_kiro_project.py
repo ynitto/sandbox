@@ -4503,6 +4503,93 @@ def _commit_change(repo: Path, relpath: str, content: str = "x\n") -> None:
                    check=True, capture_output=True)
 
 
+class TestStateSyncBatching(unittest.TestCase):
+    """state sync コミットの集約: 未 push の連続 sync は --amend で 1 つに束ね、同期のたびの
+    1 行差分コミットが履歴を埋め尽くさないようにする。push 済み・人のコミットは書き換えない。"""
+
+    @staticmethod
+    def _init_repo(d: Path) -> None:
+        subprocess.run(["git", "init", "-q", str(d)], check=True)
+        subprocess.run(["git", "-C", str(d), "symbolic-ref", "HEAD", "refs/heads/main"],
+                       check=True)
+        subprocess.run(["git", "-C", str(d), "config", "user.email", "t@test"], check=True)
+        subprocess.run(["git", "-C", str(d), "config", "user.name", "t"], check=True)
+
+    @staticmethod
+    def _log(d: Path) -> "list[str]":
+        r = subprocess.run(["git", "-C", str(d), "log", "--format=%s"],
+                           capture_output=True, text=True)
+        return [ln for ln in r.stdout.splitlines() if ln.strip()]
+
+    def test_direct_consecutive_syncs_amend_into_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._init_repo(d)
+            sg = km.DirectStateGit(d, interval=0.0)
+            (d / "journal.md").write_text("a\n", encoding="utf-8")
+            sg.sync()
+            (d / "journal.md").write_text("a\nb\n", encoding="utf-8")
+            sg.sync()
+            msgs = self._log(d)
+            self.assertEqual(len(msgs), 1)                     # 2 回目は amend で束ねる
+            self.assertTrue(msgs[0].startswith("kiro-project: state sync"))
+
+    def test_direct_does_not_amend_manual_commit(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._init_repo(d)
+            sg = km.DirectStateGit(d, interval=0.0)
+            (d / "journal.md").write_text("a\n", encoding="utf-8")
+            sg.sync()
+            (d / "note.md").write_text("human edit\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(d), "commit", "-qm", "manual edit"], check=True)
+            (d / "journal.md").write_text("a\nb\n", encoding="utf-8")
+            sg.sync()
+            msgs = self._log(d)
+            self.assertEqual(len(msgs), 3)                     # 人のコミットは書き換えない
+            self.assertEqual(msgs[1], "manual edit")
+
+    def test_direct_does_not_amend_pushed_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            remote = tmp / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
+                            "refs/heads/main"], check=True)
+            d = tmp / "root"
+            d.mkdir()
+            self._init_repo(d)
+            subprocess.run(["git", "-C", str(d), "remote", "add", "origin", str(remote)],
+                           check=True)
+            sg = km.DirectStateGit(d, interval=0.0)            # interval 0 → 毎 sync で push
+            (d / "journal.md").write_text("a\n", encoding="utf-8")
+            sg.sync()                                          # commit + push
+            (d / "journal.md").write_text("a\nb\n", encoding="utf-8")
+            sg.sync()                                          # push 済み HEAD は amend しない
+            self.assertEqual(len(self._log(d)), 2)
+
+    def test_state_sync_journals_imports_only(self):
+        # journal へ残すのは import（リモート指示の取り込み）のみ。export を記録すると
+        # その行自体が次の同期の差分になり「export=1」の空コミットが恒久に続くため。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+
+            class _SG:
+                def __init__(self, ret):
+                    self.ret = ret
+
+                def sync(self, force=False):
+                    return self.ret
+            with mock.patch.object(km, "state_git_for", return_value=_SG((0, 1))):
+                km.state_sync(cfg)
+            self.assertFalse(cfg.journal.exists())             # export のみ → 記録しない
+            with mock.patch.object(km, "state_git_for", return_value=_SG((2, 0))):
+                km.state_sync(cfg)
+            self.assertIn("import=2", cfg.journal.read_text(encoding="utf-8"))
+
+
 class SelfUpdateTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="ka-update-"))
@@ -4582,6 +4669,47 @@ class SelfUpdateTests(unittest.TestCase):
     def test_update_enabled_false_disables(self):
         cfg = self._cfg(update_enabled=False, update_check_interval=3600.0)
         self.assertFalse(km.maybe_self_update(cfg))
+
+    def test_apply_update_skips_when_tool_unchanged(self):
+        # リポジトリの HEAD は進んだが update_subdir の内容は前回適用と同一 → installer を
+        # 実行せずベースラインだけ進める。direct state-git 構成では自分の state sync push が
+        # update_repo の新コミットになるため、SHA 比較だけだと「push → 更新検出 → 再起動 →
+        # また push」の自己増殖ループになる（2026-07-11 に実発生）。
+        cfg = self._cfg()
+        km.check_update(cfg)                                   # baseline
+        _commit_change(self.repo, "tools/kiro-project/N3.txt")
+        prefix = str(self.tmp / "prefix3")
+
+        def runner(c, **k):
+            cmd = c + ["--prefix", prefix] if c[:1] == ["bash"] else c
+            return subprocess.run(cmd, capture_output=True, text=True, **k)
+        self.assertTrue(km.apply_update(cfg, km.check_update(cfg), runner=runner))  # 実変更 → 適用
+        _commit_change(self.repo, "journal.md")                # subdir 外だけが進む
+        info = km.check_update(cfg)
+        self.assertTrue(info["available"])                     # SHA 上は更新に見える
+        calls = []
+
+        def counting(c, **k):
+            calls.append(list(c))
+            return runner(c, **k)
+        self.assertFalse(km.apply_update(cfg, info, runner=counting))    # 適用スキップ
+        self.assertFalse(any(c[:1] == ["bash"] for c in calls))          # installer 不実行
+        self.assertEqual(km.read_update_state()["applied_sha"], info["remote_sha"])
+        self.assertFalse(km.check_update(cfg)["available"])    # ベースライン前進 → 最新扱い
+
+    def test_update_check_interval_survives_restart(self):
+        # チェック間隔は state ファイルへ持続化され、自己更新の再起動（新プロセス＝メモリの
+        # 時刻リセット）を跨いで尊重される（再起動直後の即時再チェックを防ぐ）。
+        cfg = self._cfg(update_check_interval=3600.0)
+        calls = []
+        with mock.patch.object(km, "check_update",
+                               side_effect=lambda *a, **k: (calls.append(1),
+                                                            {"available": False})[1]):
+            self.assertFalse(km.maybe_self_update(cfg))
+            self.assertEqual(len(calls), 1)                    # 初回はチェックする
+            km._UPDATE_LAST_CHECK["t"] = 0.0                   # プロセス再起動を模擬
+            self.assertFalse(km.maybe_self_update(cfg))
+            self.assertEqual(len(calls), 1)                    # 間隔内 → 再チェックしない
 
     def test_registry_auto_resolution(self):
         # update_repo 未指定でも skill-registry.json から repo/branch を解決して検出できる

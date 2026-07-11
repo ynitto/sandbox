@@ -4730,7 +4730,11 @@ class StateGit:
             self._git("add", "-A", "--", pathspec)               # 自分の名前空間だけをステージ
             # 空コミットを試みない: unborn ブランチでの失敗 commit は index を汚し以後の pull を壊す
             if self._git("status", "--porcelain", "--", pathspec).stdout.strip():
-                self._git("commit", "-q", "-m",
+                # 未 push の連続 state sync は --amend で 1 コミットに束ねる（DirectStateGit と同じ）
+                amend = ["--amend"] if (self._ahead() > 0 and self._git(
+                    "log", "-1", "--format=%s").stdout.strip().startswith(
+                        "kiro-project: state sync")) else []
+                self._git("commit", "-q", *amend, "-m",
                           f"kiro-project: state sync {datetime.now().isoformat(timespec='seconds')}")
             if (due or force) and self._ahead() > 0:
                 self._push()
@@ -4794,6 +4798,22 @@ class DirectStateGit:
             out.append(str(rel))
         return out
 
+    def _amendable(self, remote: bool) -> bool:
+        """HEAD が「未 push の state sync コミット」なら True（--amend で 1 つに束ねる）。
+        push 済み履歴は書き換えず、人・他コミッタのコミットが HEAD のときは通常コミットで積む。"""
+        head = self._git("log", "-1", "--format=%s").stdout.strip()
+        if not head.startswith("kiro-project: state sync"):
+            return False
+        if not remote:
+            return True
+        r = self._git("rev-list", "--count", f"origin/{self._branch()}..HEAD")
+        if r.returncode != 0:
+            return True                       # リモートに追跡ブランチが無い＝未 push
+        try:
+            return int(r.stdout.strip() or 0) > 0
+        except ValueError:
+            return False
+
     def _pull(self) -> int:
         """pull --rebase --autostash。取り込んだファイル数を返す（コンフリクトは abort して 0）。"""
         before = self._git("rev-parse", "HEAD").stdout.strip()
@@ -4826,7 +4846,10 @@ class DirectStateGit:
                 self._git("add", "-A", "--", *targets)
             exported = 0
             if self._git("diff", "--cached", "--quiet").returncode != 0:
-                self._git("commit", "-q", "-m",
+                # 連続する state sync は未 push の間 --amend で 1 コミットに束ねる
+                # （同期のたびに 1 行差分のコミットが積もり、履歴を埋め尽くすのを防ぐ）
+                amend = ["--amend"] if self._amendable(remote) else []
+                self._git("commit", "-q", *amend, "-m",
                           f"kiro-project: state sync {datetime.now().isoformat(timespec='seconds')}")
                 exported = len(targets)
             if remote and (due or force):
@@ -5046,7 +5069,10 @@ def state_sync(cfg: "Config", force: bool = False) -> None:
         return
     try:
         imported, exported = sg.sync(force=force)
-        if imported or exported:
+        # journal へ残すのは取り込み（リモートの指示の反映）だけ。export を記録すると
+        # その行自体が同期対象（journal.md）の新しい差分になり、「export=1」の空同期と
+        # コミットが恒久に続くフィードバックループになる（export の履歴は git 側が持つ）。
+        if imported:
             append_journal(cfg.journal, f"state-git 同期: import={imported} export={exported}")
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"state-git 同期失敗（続行）: {e}")
@@ -8716,15 +8742,46 @@ def run_installer(tool_dir: str, installer: str = "install.sh", runner=None) -> 
     return getattr(r, "returncode", 1) == 0, out[-2000:]
 
 
+def _tree_digest(root: str) -> str:
+    """ツールディレクトリの内容ダイジェスト（.git を除く、相対パス＋内容の sha256）。
+    「リポジトリの HEAD は進んだが本体（update_subdir）は変わっていない」を判定する
+    （コミット SHA の比較では判別できない）。"""
+    h = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d != ".git")
+        for name in sorted(filenames):
+            p = os.path.join(dirpath, name)
+            h.update(os.path.relpath(p, root).encode("utf-8"))
+            try:
+                with open(p, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        h.update(chunk)
+            except OSError:
+                continue
+    return h.hexdigest()
+
+
 def apply_update(cfg: "Config", info: dict, runner=None) -> bool:
     """temp 領域へ sparse-checkout → install.sh → 適用済み SHA を記録。成功で True。
-    temp は必ず後始末する。失敗時は state を変えない（次回再試行）。"""
+    temp は必ず後始末する。失敗時は state を変えない（次回再試行）。
+    subdir の内容が前回適用時と同一なら installer を実行せずベースラインだけ進めて False:
+    direct state-git 構成では自分の state sync push が update_repo の新コミットになるため、
+    SHA 比較だけだと「自分の push → 更新検出 → 再起動 → また push」の自己増殖ループになる。"""
     subdir = cfg.update_subdir or TOOL_SUBDIR
     installer = cfg.update_installer or "install.sh"
     tmp = tempfile.mkdtemp(prefix="kiro-project-update-")
     dest = os.path.join(tmp, "repo")
     try:
         tool_dir = sparse_checkout_tool(info["repo"], info["branch"], subdir, dest, runner=runner)
+        digest = _tree_digest(tool_dir)
+        state = read_update_state()
+        if digest == state.get("applied_digest"):
+            state["applied_sha"] = info["remote_sha"]
+            state["skipped_at"] = _now_ts()
+            write_update_state(state)
+            print(f"[update] 本体（{subdir}）に変更なし——適用をスキップし "
+                  f"ベースラインを {info['remote_sha'][:8]} へ進めました。", flush=True)
+            return False
         ok, out = run_installer(tool_dir, installer, runner=runner)
         if not ok:
             print(f"[update] install.sh 失敗（更新を見送り）: {out[-300:]}", flush=True)
@@ -8732,6 +8789,7 @@ def apply_update(cfg: "Config", info: dict, runner=None) -> bool:
             return False
         state = read_update_state()
         state["applied_sha"] = info["remote_sha"]
+        state["applied_digest"] = digest
         state["applied_at"] = _now_ts()
         write_update_state(state)
         print(f"[update] 更新を適用しました（{info['remote_sha'][:8]}）。", flush=True)
@@ -8766,9 +8824,19 @@ def maybe_self_update(cfg: "Config", runner=None) -> bool:
     if interval <= 0:
         return False
     now = time.time()
-    if now - _UPDATE_LAST_CHECK["t"] < interval:
+    # 前回チェック時刻は state ファイルにも持続化して参照する。自己更新は restart_self の
+    # 新プロセスになりメモリの時刻がリセットされるため、メモリだけだと再起動直後に即時
+    # 再チェック→再適用→再起動…の自己増殖ループになる。
+    try:
+        persisted = float(read_update_state().get("last_check_at") or 0.0)
+    except (TypeError, ValueError):
+        persisted = 0.0
+    if now - max(_UPDATE_LAST_CHECK["t"], persisted) < interval:
         return False
     _UPDATE_LAST_CHECK["t"] = now
+    state = read_update_state()
+    state["last_check_at"] = now
+    write_update_state(state)
     info = check_update(cfg, runner=runner)
     if not info.get("available"):
         return False
@@ -8804,6 +8872,9 @@ def cmd_update(cfg: "Config", now: bool = False, check: bool = False) -> int:
     if apply_update(cfg, info):
         print("  install.sh を実行して更新しました。再起動します。")
         restart_self(_START_CWD or os.getcwd())   # 戻らない
+    if read_update_state().get("applied_sha") == info.get("remote_sha"):
+        print("  本体（update_subdir）に変更が無かったため適用をスキップし、ベースラインだけ進めました。")
+        return 0
     print("  更新の取り込みに失敗しました（ログを確認してください）。", file=sys.stderr)
     return 1
 

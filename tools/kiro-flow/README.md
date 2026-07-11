@@ -574,15 +574,18 @@ viewer からは、daemon 自身の一時領域にあるこのファイルへ絶
 ## 自動アップデート（既定 on）
 
 スキルリポジトリ（このツールの配布元）の **main ブランチに更新が入ったら、daemon のアイドル時に自動で取り込む**。
-**既定で有効**（6 時間ごと・**起動直後の最初のアイドルでも 1 回**実施し、停止中に入った更新を取りこぼさない）。
+**既定で有効**（6 時間ごと。前回チェック時刻は `~/.kiro/kiro-flow.update.json` に持続化され、
+**再起動を跨いで間隔が尊重される**——前回から間隔ぶん経っていれば起動後の最初のアイドルで実施する）。
 止めたいときは `update_enabled: false` か `update_check_interval: 0`。手順は doctor と同じ流儀で**決定的**——
 知能は使わず、ファイル操作だけで完結する。
 
 1. `git ls-remote` でスキルリポジトリ main の先頭コミットを確認する
-2. 適用済み SHA（`~/.kiro/kiro-flow.update.json`）と違えば「更新あり」
+2. 適用済み SHA（`~/.kiro/kiro-flow.update.json`）と違えば「更新候補」
 3. **アイドル時（要求も子プロセスも無いとき）だけ**、temp 領域へ `tools/kiro-flow/` だけを **sparse-checkout**（無関係ファイルは取得しない）
-4. その中の `install.sh` を実行して `~/.local/bin` の本体を更新する
-5. **動いていたカレントディレクトリのまま** `os.execv` で新しい本体へ **graceful 再起動**する
+4. **取得した本体の内容ダイジェストが前回適用時と同一なら適用せず、ベースライン SHA だけ進める**
+   （state_git 等で自分の push が更新元リポジトリの新コミットになる構成での自己増殖ループ防止）
+5. その中の `install.sh` を実行して `~/.local/bin` の本体を更新する
+6. **動いていたカレントディレクトリのまま** `os.execv` で新しい本体へ **graceful 再起動**する
 
 **更新元 URL は通常は設定不要**。`install.py` がインストール時に生成する `skill-registry.json`
 （`~/.kiro` / `~/.claude` / `~/.copilot` / `~/.codex` のいずれか）の `repositories.origin.url`

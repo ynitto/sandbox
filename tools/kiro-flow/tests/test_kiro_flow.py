@@ -4179,6 +4179,46 @@ class SelfUpdateTests(unittest.TestCase):
         a = self._args(update_enabled=False, update_check_interval=3600.0)
         self.assertFalse(kf.maybe_self_update(a, idle=True, state={"last": 0.0}))
 
+    def test_apply_update_skips_when_tool_unchanged(self):
+        # リポジトリの HEAD は進んだが update_subdir の内容は前回適用と同一 → installer を
+        # 実行せずベースラインだけ進める（自分の push が update_repo の新コミットになる構成
+        # での自己増殖ループ防止。kiro-project と同じ護り）。
+        a = self._args()
+        kf.check_update(a)                                     # baseline
+        _commit_change(self.repo, "tools/kiro-flow/N3.txt")
+        prefix = os.path.join(self.tmp, "prefix3")
+
+        def runner(c, **k):
+            cmd = c + ["--prefix", prefix] if c[:1] == ["bash"] else c
+            return subprocess.run(cmd, capture_output=True, text=True, **k)
+        self.assertTrue(kf.apply_update(a, kf.check_update(a), runner=runner))   # 実変更 → 適用
+        _commit_change(self.repo, "journal.md")                # subdir 外だけが進む
+        info = kf.check_update(a)
+        self.assertTrue(info["available"])                     # SHA 上は更新に見える
+        calls = []
+
+        def counting(c, **k):
+            calls.append(list(c))
+            return runner(c, **k)
+        self.assertFalse(kf.apply_update(a, info, runner=counting))     # 適用スキップ
+        self.assertFalse(any(c[:1] == ["bash"] for c in calls))         # installer 不実行
+        self.assertEqual(kf.read_update_state()["applied_sha"], info["remote_sha"])
+        self.assertFalse(kf.check_update(a)["available"])      # ベースライン前進 → 最新扱い
+
+    def test_update_check_interval_survives_restart(self):
+        # チェック間隔は state ファイルへ持続化され、自己更新の再起動（新プロセス＝呼び出し側
+        # state dict のリセット）を跨いで尊重される（再起動直後の即時再チェックを防ぐ）。
+        a = self._args(update_check_interval=3600.0, update_enabled=True)
+        calls = []
+        with mock.patch.object(kf, "check_update",
+                               side_effect=lambda *ar, **k: (calls.append(1),
+                                                             {"available": False})[1]):
+            self.assertFalse(kf.maybe_self_update(a, idle=True, state={"last": 0.0}))
+            self.assertEqual(len(calls), 1)                    # 初回はチェックする
+            # プロセス再起動を模擬（呼び出し側の state dict が新品になる）
+            self.assertFalse(kf.maybe_self_update(a, idle=True, state={"last": 0.0}))
+            self.assertEqual(len(calls), 1)                    # 間隔内 → 再チェックしない
+
     def test_registry_auto_resolution(self):
         # update_repo 未指定でも skill-registry.json から repo/branch を解決して検出できる
         regdir = os.path.join(self.tmp, "agenthome")
@@ -4254,6 +4294,22 @@ class StateGitSyncTests(unittest.TestCase):
     def _pull(d: pathlib.Path):
         subprocess.run(["git", "-C", str(d), "pull", "-q", "--rebase", "origin", "main"],
                        check=True, capture_output=True)
+
+    def test_unpushed_consecutive_syncs_amend_into_one_commit(self):
+        # push できない間に同期が続いても、未 push の state sync コミットは --amend で
+        # 1 つに束ねられる（1 行差分のコミットが履歴を埋め尽くさない）。
+        bus = self._bus()
+        args = self._args()
+        with mock.patch.object(kf.StateGit, "_push", lambda self: None):
+            kf.state_sync(args, force=True)
+            bus.write_task({"id": "T9", "goal": "g", "deps": []})
+            kf.state_sync(args, force=True)
+        sg = kf.state_git_for(args)
+        r = subprocess.run(["git", "-C", str(sg.clone), "log", "--format=%s"],
+                           capture_output=True, text=True)
+        msgs = [ln for ln in r.stdout.splitlines() if ln.strip()]
+        self.assertEqual(len(msgs), 1)
+        self.assertTrue(msgs[0].startswith("kiro-flow: state sync"))
 
     def test_export_pushes_run_state_under_subdir(self):
         bus = self._bus()
