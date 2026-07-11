@@ -1,8 +1,12 @@
 ## echo-hello-062938: 受入条件を満たす: echo "hello"
-- status: proposed
+- status: review
 - source: acceptance
 - priority: 0
 - verify: `echo "hello"`
 - retries: 0
 - charter: v1
 - assess: c=1 r=1 a=1
+- gate_ref: git: 未コミットの変更あり
+- gate_ts: 2026-07-12 06:29:54
+- gate_branch: 
+- gate_vmsg: exit=0 hello
