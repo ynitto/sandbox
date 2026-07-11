@@ -8099,6 +8099,15 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
               "必要なら `- target:`（既定 base）を付けてください。", file=sys.stderr)
         return 2
     pid = _project_id(cfg, charter) + (f"-{charter_name}" if multi else "")
+    # バージョン運用（multi）では、旧・単一 charter 時代のトップレベル milestone
+    # （needs/<project>.md、バージョン接尾辞なし）は不要。単一 charter で一度 run した後に
+    # charters/ を足す（バージョン運用へ移行する）と、この古い milestone が残って「マイルストーン」が
+    # 二重に見える（<project>.md と <project>-<version>.md）。バージョン運用のパスに入ったら常に
+    # 掃除する（accepted ガードや no-acceptance で早期 return するパスより前で行う＝取り残さない）。
+    if multi:
+        base_pid = _project_id(cfg, charter)
+        if base_pid != pid:
+            clear_needs_file(cfg, base_pid)
     if not charter.acceptance:
         # acceptance（受入 verify）が無いと done を判定できない＝必ず人へ（鉄則の保全）
         write_milestone(cfg, charter, "no-acceptance", "acceptance 未定義のため done 判定不能", pid=pid,

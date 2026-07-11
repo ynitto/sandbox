@@ -6356,6 +6356,37 @@ class TestMultiCharter(unittest.TestCase):
             self.assertIn("v1", chs)
             self.assertEqual(chs["v2"].name, "v2")
 
+    def test_version_run_clears_stale_toplevel_milestone(self):
+        # 実運用インシデントの再発防止:「要対応のマイルストーンが二度出る」。
+        # 単一 charter.md で一度 run（トップレベル milestone needs/<project>.md を作る）した後に
+        # charters/ を足してバージョン運用へ移行すると、旧トップレベル milestone が残り、
+        # <project>.md と <project>-<version>.md の 2 枚が要対応に並んでしまう。
+        # バージョン運用の run に入ったら旧トップレベル milestone を掃除する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))       # 単一 charter.md
+            cfg = cfg_for(d, project_name="proj")
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertTrue((cfg.needs / "proj.md").exists())            # トップレベル milestone
+
+            self._mk_charter(d, "v1", goal="v1")                        # バージョンへ移行
+            (d / "charters" / "v1.md").write_text(
+                f"# Charter: v1\n## goal\nv1\n## acceptance\n- `test -f {flag}`\n", encoding="utf-8")
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained(),
+                           charter_name="v1")
+            self.assertTrue((cfg.needs / "proj-v1.md").exists())         # バージョンの milestone
+            self.assertFalse((cfg.needs / "proj.md").exists())          # 旧トップレベルは掃除される
+            self.assertEqual(len(list(cfg.needs.glob("*.md"))), 1)      # 要対応は 1 枚だけ
+
+            # v1 を承認（accepted）した後でも、再び現れた旧トップレベル milestone は掃除される
+            # （掃除は accepted の早期 return より前で行うため取り残さない）。
+            self.assertEqual(km.cmd_approve(cfg, "proj-v1", "OK"), 0)
+            (cfg.needs / "proj.md").write_text("# マイルストーン: proj\n", encoding="utf-8")  # 再発を模す
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained(),
+                           charter_name="v1")                            # accepted → 早期 return
+            self.assertFalse((cfg.needs / "proj.md").exists())          # それでも掃除される
+
     def test_cmd_project_tags_tasks_and_scopes_state(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
