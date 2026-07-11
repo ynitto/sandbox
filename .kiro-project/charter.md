@@ -10,7 +10,7 @@
 
 ## assumptions
 - 人による操作や確認を最小限にする
-- 繰り返しややり直しによって試行錯誤できる
+- 繰り返し・再実行によって試行錯誤できる
 
 ## deliverables
 - kiro-project/kiro-flow ソースコード
