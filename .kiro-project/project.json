@@ -19,6 +19,7 @@
     2,
     2,
     2,
+    2,
     2
   ],
   "best": 0,
@@ -27,8 +28,8 @@
   "planned_charter_sig": "4bf8ce765979dba3b536b89901713b8bcb4324ae7eef05806a043a365e058fea",
   "acceptance_total": 2,
   "status": "converged",
-  "updated": "2026-07-11T16:00:51",
+  "updated": "2026-07-11T16:25:59",
   "cost": 0.0,
-  "cycles": 24,
+  "cycles": 25,
   "accepted_charter_sig": "0b1ffa8dcb48332edbbbde80838f18ca81b93b1cd28f69005b6e362704d09a05"
 }
