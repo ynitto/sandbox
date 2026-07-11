@@ -23,3 +23,11 @@
 - 2026-07-11 21:20:28 === project 停止 reason=converged cycles=1 cost=0.0000 ===
 - 2026-07-11 21:20:28 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-11 21:21:23 === project 開始 v2 acceptance=2 ===
+- 2026-07-11 21:21:23 === kiro-project 開始 tasks=0 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 21:21:23 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 21:21:23 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 21:21:23 project cycle 1: acceptance 2/2 PASS, 改善 0 件, cost=0.0000
+- 2026-07-11 21:21:23 === project 停止 reason=converged cycles=1 cost=0.0000 ===
+- 2026-07-11 21:21:23 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 21:21:28 commands 取り込み: approve .kiro-project-v2（viewer-approve-kiro-project-v2-1783772483503.json）
+- 2026-07-11 21:21:28 === project watch: 監視中（charter 更新/フィードバック待ち）===

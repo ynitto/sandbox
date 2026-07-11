@@ -4,3 +4,4 @@
 |---|---|---|---|---|
 | .kiro-project | [project] sandbox | PASS | acceptance 2/2 PASS | 2026-07-11 21:20:13 |
 | .kiro-project-v1 | [project] v1 | PASS | acceptance 2/2 PASS | 2026-07-11 21:20:13 |
+| .kiro-project-v2 | [project] v2 | PASS | acceptance 2/2 PASS | 2026-07-11 21:21:28 |
