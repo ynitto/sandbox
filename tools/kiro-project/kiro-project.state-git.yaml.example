@@ -63,6 +63,16 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 #                             #   Stage 2 と同じ規則で自動マージする。
 #                             #   ＝ gitlab のイシュー承認（作業が終わったか）と、この review
 #                             #   （成果を受け入れるか）は別ゲート。両方が揃って done になる。
+# assess: true               # 投入時アセスメント（既定 on）: 新規タスクを c/r/a（各1-3）で採点し
+#                             #   `- assess:` に記録。plan-review 票と検収票のリスクダイジェストに載る
+# spec_track: false          # spec ルーティング（既定 off）: 採点が spec_threshold 以上のタスクに
+#                             #   spec 前段（specs/<id>/ の spec/design/tasks・review: human）を前置し、
+#                             #   spec 承認後に tasks.md を実装タスク群へ展開する。
+#                             #   spec タスク自体は委譲されない（location は local 固定・gitlab 等の
+#                             #   委譲 executor は agent へ自動差し替え。実装タスクは従来どおり委譲）
+# spec_threshold: 3          # spec ルートの採点しきい値（1-3）
+# repo_map: false            # リポジトリ理解の成果物化（既定 off）: plan 前に context/<repo名>.md を
+#                             #   生成（HEAD sha キャッシュ）。読み出しは常時（手書き context/*.md も注入）
 
 # --- 状態の git 保存・共有 ---
 # direct モード（ルートが clone）なら設定不要。ルートが git でない場合のみ管理クローン方式:

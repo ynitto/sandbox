@@ -245,6 +245,7 @@ function parseNeeds(text, id) {
     stateNote: '',
     summary: '',
     detail: '',
+    risk: '', // 検収票のリスクダイジェスト総合値（low/med/high）。バッジ表示用
   };
   const s = String(text || '');
   const fm = s.match(/^---\n([\s\S]*?)\n---\n?/);
@@ -260,6 +261,7 @@ function parseNeeds(text, id) {
       else if (key === 'date') need.date = val;
       else if (key === 'status') need.status = val;
       else if (key === 'task-id') need.taskId = val;
+      else if (key === 'risk') need.risk = val;
     }
   }
   const title = body.match(/^#\s+(.+)$/m);
@@ -698,6 +700,24 @@ function readProject(dir, cfg) {
   // 本体が再分解まで進めると両方消えてボタンが再び押せる状態に戻る。
   const replanPending = replanRequestPending(dir);
 
+  // specs/<task-id>/ — spec 前段タスクの成果物（spec.md/design.md/tasks.md）。
+  // needs カード（spec-review・総合検証）からワンクリックで開けるよう一覧しておく。
+  const specs = [];
+  for (const sub of safeList(path.join(dir, 'specs'))) {
+    const sdir = path.join(dir, 'specs', sub);
+    let isDir = false;
+    try {
+      isDir = fs.statSync(sdir).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) continue;
+    const files = ['spec.md', 'design.md', 'tasks.md']
+      .filter((f) => fs.existsSync(path.join(sdir, f)))
+      .map((f) => ({ name: f, path: path.join(sdir, f) }));
+    if (files.length) specs.push({ id: sub, files });
+  }
+
   const bus = resolveBusDir(dir, cfg);
 
   // 複数 charter（charters/<name>.md = 1 バージョン）。無ければ単一 charter.md（従来）。
@@ -727,6 +747,7 @@ function readProject(dir, cfg) {
     byStatus,
     claims,
     needs,
+    specs,
     decisions: decisionsAll.slice(0, 100),
     journal: tailLines(path.join(dir, 'journal.md'), 200),
     runLog: readRunLog(path.join(dir, 'run-log.jsonl')),

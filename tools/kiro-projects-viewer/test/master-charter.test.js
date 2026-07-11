@@ -118,4 +118,30 @@ test('parseNeeds は要点の無い needs でも壊れない（後方互換）',
   assert.match(n.detail, /本文だけ/);
 });
 
+test('parseNeeds は frontmatter risk（リスクダイジェスト総合値）を拾う', () => {
+  const md = `---
+kind: review
+date: 2026-07-12
+status: proposed
+task-id: T1
+risk: high
+---
+# 要対応: T1 — 危ない変更
+
+## Context and Problem Statement
+
+- なぜ: verify=PASS だが保護パス変更
+
+## リスク
+- 総合: 高（protect/avoid=高、リトライ・大差分・合成 verify=中）
+- 保護パス接触: auth/x.py
+`;
+  const n = kiro.parseNeeds(md, 'T1');
+  assert.strictEqual(n.risk, 'high');
+  assert.match(n.detail, /## リスク/, 'リスク節は判断材料（detail）に残る');
+  // risk が無い needs（旧形式）は空のまま
+  const old = kiro.parseNeeds(NEEDS_MD, 'demo');
+  assert.strictEqual(old.risk, '');
+});
+
 console.log(`\n${passed} passed`);

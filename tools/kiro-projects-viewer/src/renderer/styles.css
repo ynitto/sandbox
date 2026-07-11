@@ -132,6 +132,50 @@ button:disabled { opacity: 0.4; cursor: default; }
 .badge.warn { background: #4d3800; border-color: var(--yellow); color: #ffd66b; }
 .badge.info { border-color: var(--accent2); color: var(--accent2); }
 
+/* パイプラインリボン（計画 → Spec → 実装 → 承認 → 完了。既存 status の写像） */
+.pipeline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 10px;
+  font-size: 12px;
+}
+.pipe-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg3);
+}
+.pipe-stage.on { color: var(--fg); border-color: var(--accent2); }
+.pipe-stage.on.pipe-approve { border-color: var(--yellow); }
+.pipe-stage.on.pipe-done { border-color: var(--green); }
+.pipe-count {
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--bg2);
+  text-align: center;
+  font-size: 11px;
+}
+.pipe-arrow { color: var(--muted); }
+
+/* 検収票のリスクダイジェスト（frontmatter risk: low/med/high）バッジ */
+.risk-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+.risk-badge.risk-low { color: var(--green); border-color: var(--green); }
+.risk-badge.risk-med { color: var(--yellow); border-color: var(--yellow); }
+.risk-badge.risk-high { color: var(--red); border-color: var(--red); }
+
 #sidebar-footer {
   padding: 6px 10px;
   border-top: 1px solid var(--border);

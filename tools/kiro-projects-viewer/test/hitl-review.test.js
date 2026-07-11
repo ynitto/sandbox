@@ -57,6 +57,25 @@ function mkProject() {
     assert.deepStrictEqual(kiro.dependentsOf(tasks, 'D'), []);
   });
 
+  await test('readProject は specs/<task-id>/ の spec 成果物を一覧する', async () => {
+    const dir = mkProject();
+    fs.mkdirSync(path.join(dir, 'specs', 'T1'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'specs', 'T1', 'spec.md'), '# 要求仕様\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'specs', 'T1', 'design.md'), '# 設計\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'specs', 'T1', 'tasks.md'), '[{"title":"x"}]\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'specs', 'stray.md'), 'ディレクトリ以外は無視\n', 'utf8');
+    const p = kiro.readProject(dir, { kiro: {} });
+    assert.strictEqual(p.specs.length, 1);
+    assert.strictEqual(p.specs[0].id, 'T1');
+    assert.deepStrictEqual(
+      p.specs[0].files.map((f) => f.name),
+      ['spec.md', 'design.md', 'tasks.md']
+    );
+    // specs/ の無いプロジェクトでは空配列（後方互換）
+    const p2 = kiro.readProject(mkProject(), { kiro: {} });
+    assert.deepStrictEqual(p2.specs, []);
+  });
+
   await test('readProject は charters/*.md を一覧する（複数バージョン運用）', async () => {
     const dir = mkProject();
     fs.mkdirSync(path.join(dir, 'charters'), { recursive: true });

@@ -781,6 +781,7 @@ function renderOverviewSimple(el, p) {
         目標: ${esc((p.charter && (p.charter.goal || p.charter.name)) || '（目標は未設定です）')}
       </div>
       <div class="muted">進み具合: 完了 ${doneCount} 件 ／ 作業中 ${working} 件 ／ これから ${waiting} 件</div>
+      ${pipelineRibbonHtml(p)}
     </div>`);
 
   parts.push(`
@@ -1130,6 +1131,39 @@ function bindRelationship(root) {
   }
 }
 
+// パイプラインリボン: 概念フロー（計画 → Spec → 実装 → 承認 → 完了）上のタスクの現在地。
+// 既存 status＋タグからの純粋な写像で、新しい状態は導入しない。
+// Spec 段は spec ルーティング運用時（該当タスクか specs/ 成果物があるとき）だけ現れる。
+function taskPipelineStage(t) {
+  const ex = t.extra || {};
+  if (ex.spec_for) return 'spec'; // spec 作成タスク
+  if (ex.route === 'spec' && !ex.spec_expanded) return 'spec'; // spec の決着待ちの元タスク
+  if (['inbox', 'draft', 'proposed'].includes(t.status)) return 'plan';
+  if (['review', 'blocked'].includes(t.status)) return 'approve';
+  return 'implement'; // ready / doing / offloaded
+}
+
+const PIPELINE_STAGES = [
+  ['plan', '計画', '取り込み・実行前レビュー待ち（inbox / proposed）'],
+  ['spec', 'Spec', 'spec 前段の作成・承認待ち（specs/<id>/ の spec / design / tasks）'],
+  ['implement', '実装', '実行待ち・実行中（ready / doing / 委任先で実行中）'],
+  ['approve', '承認', 'あなたの確認待ち（検収・判断待ち）'],
+  ['done', '完了', '納品済み（アーカイブ）'],
+];
+
+function pipelineRibbonHtml(p) {
+  const counts = { plan: 0, spec: 0, implement: 0, approve: 0, done: p.archive.length };
+  for (const t of p.backlog) counts[taskPipelineStage(t)]++;
+  const hasSpec = counts.spec > 0 || (p.specs || []).length > 0;
+  const cells = PIPELINE_STAGES.filter(([k]) => k !== 'spec' || hasSpec)
+    .map(
+      ([k, label, tip]) =>
+        `<span class="pipe-stage ${counts[k] ? 'on' : ''} pipe-${k}" title="${esc(tip)}">${esc(label)}<span class="pipe-count">${counts[k]}</span></span>`
+    )
+    .join('<span class="pipe-arrow">→</span>');
+  return `<div class="pipeline">${cells}</div>`;
+}
+
 function renderBacklog() {
   const p = state.project;
   const el = $('tab-backlog');
@@ -1209,6 +1243,7 @@ function renderBacklog() {
 
   const replanPending = !!p.replanPending;
   el.innerHTML = `
+    ${pipelineRibbonHtml(p)}
     <div class="filters">${chips}${charterChips}<span class="muted">${tasks.length} 件</span>
       ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="追加したタスクは次の実行サイクルで一覧に載ります">追加待ち ${p.inboxFiles.length}</span>` : ''}
       ${replanPending ? '<span class="badge info" title="計画の作り直しを依頼済みです。次の実行で反映されます">再計画 反映待ち</span>' : ''}
@@ -2321,6 +2356,34 @@ function needDisplayTitle(n) {
   return String(n.title || n.id).replace(/^(要対応|実行前レビュー|マイルストーン)\s*[:：]\s*/, '');
 }
 
+// リスクダイジェスト総合値（frontmatter risk: low/med/high）のバッジ。
+// 詳細（## リスク の材料）は「判断材料を見る」の折りたたみに含まれる
+const RISK_LABELS = { low: 'リスク低', med: 'リスク中', high: 'リスク高' };
+function riskBadgeHtml(n) {
+  const risk = String(n.risk || '');
+  if (!RISK_LABELS[risk]) return '';
+  return `<span class="risk-badge risk-${esc(risk)}" title="リスクダイジェスト（詳細は判断材料内の「リスク」）">${RISK_LABELS[risk]}</span>`;
+}
+
+// needs カードに対応する spec 成果物（specs/<task-id>/）。spec 作成タスク（<id>-spec）の
+// 検収カードと、展開後の総合検証カードの両方から同じ specs/<元タスク id>/ を引けるよう、
+// -spec（採番付き -spec-2 等も）を剥がした id でも照合する
+function specForNeed(p, n) {
+  const tid = String(n.taskId || n.id || '');
+  const base = tid.replace(/-spec(-\d+)?$/, '');
+  const specs = p.specs || [];
+  return specs.find((s) => s.id === tid) || specs.find((s) => s.id === base) || null;
+}
+
+function specFilesHtml(p, n) {
+  const spec = specForNeed(p, n);
+  if (!spec) return '';
+  const buttons = spec.files
+    .map((f) => `<button data-open="${esc(f.path)}" title="${esc(f.path)}">📄 ${esc(f.name)}</button>`)
+    .join('');
+  return `<div class="row" style="gap:6px;margin-top:4px"><span class="label-chip">Spec</span>${buttons}</div>`;
+}
+
 function renderNeeds() {
   const p = state.project;
   const el = $('tab-needs');
@@ -2352,12 +2415,14 @@ function renderNeeds() {
       return `<div class="need-card kind-${esc(n.kind || 'blocked')}">
         <div class="need-head">
           <span class="badge ${settled(n) ? '' : 'warn'}" title="${esc(n.kind || 'blocked')}">${esc(needKindLabel(n.kind))}</span>
+          ${riskBadgeHtml(n)}
           <span class="title">${esc(needDisplayTitle(n))}</span>
           <span class="muted">${esc(n.date || '')}</span>
           ${chip}
         </div>
         <div class="need-ask">${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</div>
         ${facts.join('')}
+        ${specFilesHtml(p, n)}
         ${detailBlock}
         ${settled(n) ? '' : needActionsHtml(n)}
       </div>`;
