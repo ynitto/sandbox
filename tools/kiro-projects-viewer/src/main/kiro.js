@@ -413,8 +413,19 @@ function replanRequestPending(dir) {
   return false;
 }
 
+// プロジェクトのマニフェスト = kiro-project 設定ファイル。本体の _find_config と同じく
+// ルート直下 → .kiro/ の順で見る（1 root = 1 プロジェクトの発見マーカーを兼ねる）。
+const TOOL_CONFIG_NAMES = ['kiro-project.yaml', 'kiro-project.yml', 'kiro-project.json'];
+
+function hasProjectManifest(dir) {
+  return TOOL_CONFIG_NAMES.some(
+    (n) => fs.existsSync(path.join(dir, n)) || fs.existsSync(path.join(dir, '.kiro', n))
+  );
+}
+
 function isProjectDir(dir) {
   return (
+    hasProjectManifest(dir) ||
     fs.existsSync(path.join(dir, 'backlog')) ||
     fs.existsSync(path.join(dir, 'charter.md')) ||
     fs.existsSync(path.join(dir, 'journal.md')) ||
@@ -423,13 +434,60 @@ function isProjectDir(dir) {
   );
 }
 
+// 登録ルートがプロジェクトそのものでないとき、配下からプロジェクト
+// （kiro-project.yaml マニフェスト、または charter.md / backlog/ 等のマーカーを持つ
+// ディレクトリ）を探す。1 root = 1 プロジェクトなので、プロジェクトと判定した
+// ディレクトリの配下はそれ以上掘らない。プロジェクト内部の既知ディレクトリと
+// 隠しディレクトリはスキップして走査を軽く保つ。
+const SCAN_SKIP = new Set([
+  'node_modules', 'bus', 'work', 'archive', 'backlog', 'needs', 'decisions',
+  'commands', 'inbox', 'claims', 'autonomy', 'charters', 'runs', 'dist', 'release',
+]);
+
+function scanForProjects(rootDir, maxDepth) {
+  const found = [];
+  const walk = (dir, depth) => {
+    for (const name of safeList(dir)) {
+      if (name.startsWith('.') || SCAN_SKIP.has(name)) continue;
+      const child = path.join(dir, name);
+      let st;
+      try {
+        st = fs.statSync(child);
+      } catch {
+        continue;
+      }
+      if (!st.isDirectory()) continue;
+      if (isProjectDir(child)) {
+        found.push(child);
+        continue;
+      }
+      if (depth < maxDepth) walk(child, depth + 1);
+    }
+  };
+  walk(rootDir, 1);
+  return found.sort();
+}
+
 // 設定 roots ＋ instances 自動発見からプロジェクト一覧を作る。
 // 登録パス 1 件 = 1 プロジェクトルート（通常は状態共有リポジトリの clone）。
+// 登録パスがプロジェクトでない場合は「プロジェクトを束ねる親フォルダ」とみなし、
+// 配下（既定 2 階層・設定 kiro.scanDepth）から kiro-project.yaml 等を自動発見して
+// 見つかったプロジェクトをそれぞれ 1 件として追加する。
 function discover(cfg) {
   const roots = new Map(); // resolved root -> {root, source}
+  const scanDepth = Math.max(1, Number((cfg.kiro && cfg.kiro.scanDepth) || 2));
   for (const r of (cfg.kiro && cfg.kiro.roots) || []) {
     if (!r) continue;
     const resolved = path.resolve(String(r).replace(/^~(?=$|\/|\\)/, os.homedir()));
+    if (fs.existsSync(resolved) && !isProjectDir(resolved)) {
+      const children = scanForProjects(resolved, scanDepth);
+      if (children.length) {
+        for (const d of children) {
+          if (!roots.has(d)) roots.set(d, { root: d, source: 'scan' });
+        }
+        continue;
+      }
+    }
     roots.set(resolved, { root: resolved, source: 'config' });
   }
   const instances = cfg.kiro && cfg.kiro.autoDiscover === false ? [] : listInstances();
@@ -606,6 +664,7 @@ module.exports = {
   readStatus,
   projectLiveness,
   discover,
+  scanForProjects,
   readProject,
   resolveBusDir,
 };

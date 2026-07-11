@@ -14,7 +14,12 @@ const DEFAULT_CONFIG = {
     // 監視する kiro-project プロジェクトルートの一覧（1 行 1 プロジェクト。
     // 通常は状態共有リポジトリの clone）。
     // 例: ["C:\\clones\\payments", "/home/me/clones/webapp"]
+    // プロジェクトでないフォルダを登録すると「プロジェクトを束ねる親フォルダ」と
+    // みなし、配下から kiro-project.yaml（または charter.md / backlog/ 等）を持つ
+    // ディレクトリを自動発見して、それぞれ 1 プロジェクトとして追加する。
     roots: [],
+    // 親フォルダ登録時に配下を探索する深さ（既定 2 階層）。
+    scanDepth: 2,
     // ~/.kiro-project/instances/*.json（稼働発見レコード）から
     // 稼働中プロジェクトを自動発見して roots に加える。
     autoDiscover: true,

@@ -116,7 +116,9 @@ _AGENT_HOME_DIRS = (".kiro", ".claude", ".copilot", ".codex")
 
 # 環境ごとに変わる値の組み込み既定。設定ファイルのキーもこの名前（snake_case）。
 CONFIG_DEFAULTS = {
-    "bus": "./.kiro-flow",
+    # バスはカレントディレクトリ（=プロジェクトルート）直下の bus/。kiro-project の既定
+    # <root>/bus と同じ場所を指す（1 root = 1 プロジェクト・root 相対で両ツールが一致する）。
+    "bus": "./bus",
     "git": None,
     "git_branch": "main",
     "git_subdir": "",
@@ -132,6 +134,9 @@ CONFIG_DEFAULTS = {
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
+    # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）。
+    # planner・executor・verify 等、このツールが行う LLM 呼び出しすべてに効く。
+    "agent_cli": "kiro",
     "planner": "flow-planner",
     "executor": "kiro",
     "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
@@ -255,15 +260,19 @@ def _review_decision(review_setting, patterns) -> bool:
 def _find_config(explicit):
     """設定ファイルの探索（フォールバック順）:
        1. --config で明示指定
-       2. カレントディレクトリの .kiro/kiro-flow.{yaml,yml,json}
-       3. ~/.kiro/kiro-flow.{yaml,yml,json}"""
+       2. カレントディレクトリ（=プロジェクトルート）直下の kiro-flow.{yaml,yml,json}
+       3. カレントディレクトリの .kiro/kiro-flow.{yaml,yml,json}
+       4. ~/.kiro/kiro-flow.{yaml,yml,json}
+    ルート直下を最優先にするのは 1 root = 1 プロジェクト構成でこのファイルが
+    プロジェクトのマニフェスト（発見マーカー）を兼ねるため（kiro-project と同じ規則）。"""
     if explicit:
         p = os.path.expanduser(explicit)
         if not os.path.isfile(p):
             print(f"[kiro-flow] 設定ファイルが見つかりません: {explicit}", file=sys.stderr)
             sys.exit(1)
         return p
-    for base in (os.path.join(os.getcwd(), ".kiro"),
+    for base in (os.getcwd(),
+                 os.path.join(os.getcwd(), ".kiro"),
                  os.path.join(os.path.expanduser("~"), ".kiro")):
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(base, name)
@@ -2797,12 +2806,17 @@ _EXECUTOR_DIR: "str | None" = None
 # None のままなら _kiro_timeout / _stub_sleep が環境変数→組み込み既定にフォールバックする。
 _KIRO_TIMEOUT: "float | None" = None
 _STUB_SLEEP_MAX: "float | None" = None
+# LLM 実行に使うエージェント CLI（設定 agent_cli: kiro/claude）。
+_AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
 
 
 def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
     run_kiro / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
-    global _ARGV_LIMIT, _EXECUTOR_DIR, _KIRO_TIMEOUT, _STUB_SLEEP_MAX
+    global _ARGV_LIMIT, _EXECUTOR_DIR, _KIRO_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI
+    ac = getattr(args, "agent_cli", None)
+    if ac:
+        _AGENT_CLI = str(ac).lower()
     v = getattr(args, "argv_limit", None)
     if v:
         try:
@@ -2835,31 +2849,42 @@ def _kiro_argv_limit() -> int:
 
 
 def run_kiro(prompt: str, model: str | None) -> str:
-    cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
-    if model:
-        cmd += ["--model", model]
-    # プロンプトが大きすぎて argv 長制限に達する恐れがあれば、一時ファイルへ退避して
-    # 「そのファイルを読んで実行」する短い指示に置き換える（成果物の受け渡しを参照渡しに）。
+    """エージェント CLI（設定 agent_cli: kiro/claude）を 1 回呼び出してテキスト応答を返す。
+    このツールの LLM 呼び出しはすべてここを通る（planner / executor / verify / 裁定）。"""
+    stdin_text = None
     spill = None
-    if len(prompt.encode("utf-8")) > _kiro_argv_limit():
-        fd, spill = tempfile.mkstemp(prefix="kiro-flow-prompt-", suffix=".txt")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(prompt)
-        cmd.append("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
-                   f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
+    if _AGENT_CLI == "claude":
+        # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらないためスピル不要）。
+        cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
+        if model:
+            cmd += ["--model", model]
+        stdin_text = prompt
     else:
-        cmd.append(prompt)
+        cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
+        if model:
+            cmd += ["--model", model]
+        # プロンプトが大きすぎて argv 長制限に達する恐れがあれば、一時ファイルへ退避して
+        # 「そのファイルを読んで実行」する短い指示に置き換える（成果物の受け渡しを参照渡しに）。
+        if len(prompt.encode("utf-8")) > _kiro_argv_limit():
+            fd, spill = tempfile.mkstemp(prefix="kiro-flow-prompt-", suffix=".txt")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(prompt)
+            cmd.append("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
+                       f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
+        else:
+            cmd.append(prompt)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_kiro_timeout())
+        proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
+                              timeout=_kiro_timeout())
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。タスクは failed 記録 → 再計画で retry に回り、run は前進する
-        raise RuntimeError(f"kiro-cli タイムアウト（{_kiro_timeout():.0f}s 超過）")
+        raise RuntimeError(f"{cmd[0]} タイムアウト（{_kiro_timeout():.0f}s 超過）")
     finally:
         if spill:
             with contextlib.suppress(OSError):
                 os.remove(spill)
     if proc.returncode != 0:
-        raise RuntimeError(f"kiro-cli 失敗 (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
+        raise RuntimeError(f"{cmd[0]} 失敗 (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
     return strip_ansi(proc.stdout).strip()
 
 
@@ -4155,6 +4180,9 @@ def _child_base(args, bus_abs: str) -> list:
         base += ["--keep-clone"]  # 親の指定を子（orchestrator/worker）へ引き継ぐ
     if getattr(args, "cleanup_per_node", False):
         base += ["--cleanup-per-node"]  # ノード単位の即時削除も子へ引き継ぐ
+    ac = getattr(args, "agent_cli", None)
+    if ac:
+        base += ["--agent-cli", str(ac)]  # LLM 実行 CLI（kiro/claude）を子へ引き継ぐ
     return base
 
 
@@ -5932,7 +5960,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 設定値の優先順位: CLI > 設定ファイル(kiro-flow.yaml) > 組み込み既定。
     # 設定ファイル対象のオプションは既定 None にし、parse 後 resolve_config で確定する。
     p.add_argument("--config", default=None,
-                   help="設定ファイルのパス（未指定なら CWD → ~/.kiro の kiro-flow.{yaml,yml,json}）")
+                   help="設定ファイルのパス（未指定なら ./ → ./.kiro → ~/.kiro の kiro-flow.{yaml,yml,json}）")
     p.add_argument("--bus", default=None,
                    help="ローカルバスのルート / git モードでは各ノードのクローン親ディレクトリ")
     p.add_argument("--run-id", default=None, help="run 識別子")
@@ -5968,6 +5996,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="参照リポジトリ（読むだけ・書き込まない／複数可）。素の URL でも JSON "
                         "（{url,path,base,desc}）でも可。エージェントのプロンプトと gitlab イシュー本文に"
                         "参照節として載る（clone はしない）")
+    p.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude"],
+                   help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。kiro=kiro-cli chat（既定）/ "
+                        "claude=Claude Code ヘッドレス（claude -p）")
     p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                    help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
                         "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")

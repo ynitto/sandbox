@@ -2673,7 +2673,7 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(km.select_instances(root=root), [])    # 停止で消える
 
     def test_root_resolves_from_config(self):
-        # start/stop/restart の照合 root は --root 未指定なら設定ファイルの root/workdir から
+        # start/stop/restart の照合 root は --root 未指定なら設定ファイルの root から
         # 解決する（daemon 子プロセスは resolve_config 経由で設定の root に付くため、ここが
         # cwd 固定だと重複検出が効かず stop も対象を見つけられない）。
         work = Path(tempfile.mkdtemp())
@@ -2682,10 +2682,11 @@ class TestLifecycle(unittest.TestCase):
         cfgp.write_text(json.dumps({"root": str(work / "state" / "proj")}), encoding="utf-8")
         self.assertEqual(km._resolved_root(None, config=str(cfgp)),
                          str((work / "state" / "proj").resolve()))
-        # 相対 root は設定の workdir 基準（build_config の計算と一致）
+        # 相対 root は cwd 基準（build_config の計算と一致。workdir はアンカーではなく
+        # root 配下の作業場所なので、root の解決には影響しない）
         cfgp.write_text(json.dumps({"root": "proj", "workdir": str(work)}), encoding="utf-8")
         self.assertEqual(km._resolved_root(None, config=str(cfgp)),
-                         str((work / "proj").resolve()))
+                         str((Path.cwd() / "proj").resolve()))
         # --root 明示は従来どおり cwd 基準で設定ファイルを読まない
         self.assertEqual(km._resolved_root(str(work / "x"), config=str(cfgp)),
                          str((work / "x").resolve()))

@@ -1380,17 +1380,15 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
 def _resolved_root(root: "str | None", config: "str | None" = None) -> str:
     """start/stop/restart 用にプロジェクトルートを絶対パス文字列で返す。
     build_config の root 計算と一致させ、稼働インスタンスの記録 root と突き合わせる。
-    --root 未指定なら設定ファイルの root/workdir を読む（daemon 子プロセスは resolve_config 経由で
-    設定の root に付くため、ここが cwd 固定だと重複検出・stop の照合が外れうる）。"""
-    base = Path.cwd()
+    --root 未指定なら設定ファイルの root を読む（daemon 子プロセスは resolve_config 経由で
+    設定の root に付くため、ここが cwd 固定だと重複検出・stop の照合が外れうる）。
+    root は cwd 相対で解決する（workdir は root 配下の作業場所であってアンカーではない）。"""
     if not root:
         path = _find_config(config)
         filecfg = _load_config_file(path) if path else {}
         root = str(filecfg.get("root") or ".")
-        wd = Path(str(filecfg.get("workdir") or ".")).expanduser()
-        base = wd if wd.is_absolute() else (base / wd)
     p = Path(root).expanduser()
-    p = p if p.is_absolute() else (base / p)
+    p = p if p.is_absolute() else (Path.cwd() / p)
     return str(p.resolve())
 
 
@@ -2066,16 +2064,34 @@ def _extract_json_obj(text: str) -> "dict | None":
     return obj if isinstance(obj, dict) else None
 
 
+# LLM 実行に使うエージェント CLI とタイムアウト（設定 agent_cli / agent_timeout）。
+# rank_agent 等の free 関数は args を持たないため、build_config が設定値をここへ確定する
+# （kiro-flow の _configure_thresholds と同じ流儀）。
+_AGENT_CLI: str = "kiro"
+_AGENT_TIMEOUT: float = 300.0
+
+
 def _run_kiro_cli(prompt: str, model: "str | None") -> str:
-    cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
-    if model:
-        cmd += ["--model", model]
-    cmd.append(prompt)
+    """エージェント CLI（設定 agent_cli: kiro/claude）を 1 回呼び出してテキスト応答を返す。
+    このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。"""
+    stdin_text = None
+    if _AGENT_CLI == "claude":
+        # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらない）。
+        cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
+        if model:
+            cmd += ["--model", model]
+        stdin_text = prompt
+    else:
+        cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
+        if model:
+            cmd += ["--model", model]
+        cmd.append(prompt)
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
     env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+    proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
+                          timeout=(_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None), env=env)
     if proc.returncode != 0:
-        raise RuntimeError(f"kiro-cli rc={proc.returncode}: {proc.stderr.strip()[:300]}")
+        raise RuntimeError(f"{cmd[0]} rc={proc.returncode}: {proc.stderr.strip()[:300]}")
     return strip_ansi(proc.stdout).strip()
 
 
@@ -3482,6 +3498,10 @@ class Config:
     location: str = "auto"         # act の実行モード: auto / local / daemon / remote
     executor: str = "kiro"
     model: "str | None" = None
+    agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro（kiro-cli）/ claude（Claude Code）
+    agent_timeout: float = 300.0   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+    # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）
+    granularity: str = "coarse"
     max_iterations: int = 3
     max_cycles: int = 20
     max_seconds: float = 0.0
@@ -7308,10 +7328,33 @@ def _charter_owns_note(charter: "Charter") -> str:
     return "\n".join(lines)
 
 
-def _plan_decompose_prompt(charter: "Charter") -> str:
+# バックログ分解の粒度指示（設定 granularity: coarse/fine/finest・既定 coarse）。
+# 一般的なプロダクトバックログの書き方に合わせ、既定はユーザーストーリー相当
+# （INVEST: 独立・価値・見積り可能・小さすぎない・検証可能）。kiro-flow の同名設定と
+# 語彙を揃えている（あちらは実行時 DAG の分解、こちらは backlog の分解に効く）。
+PLAN_GRANULARITY_DIRECTIVES = {
+    "coarse": "各タスクはユーザーストーリー相当の**意味のある成果のかたまり**にすること"
+              "（独立に着手でき、単体で価値ある成果になり、独立に検証できる = INVEST）。"
+              "1 ファイル・1 関数・単一の実装手順のレベルまでは刻まない。目安はプロジェクト"
+              "全体で 3〜10 件。関連する小さな変更は 1 タスクにまとめ、verify はそのタスクの"
+              "受入を代表する検証に絞ること。",
+    "fine": "各タスクは単機能・単モジュール程度の変更セットにすること（目安 8〜20 件）。",
+    "finest": "各タスクは機械的に検証できる最小単位（1 ファイル/1 関数/1 観点）まで"
+              "原子的に分解すること。",
+}
+
+
+def plan_granularity_directive(level: "str | None") -> str:
+    """プランナーへ渡す分解粒度の指示文。未知値は既定（coarse）に倒す。"""
+    return PLAN_GRANULARITY_DIRECTIVES.get(
+        (level or "coarse").lower(), PLAN_GRANULARITY_DIRECTIVES["coarse"])
+
+
+def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None) -> str:
     return (
         "あなたはプロジェクトを実行可能なタスクに分解するプランナーです。以下の憲章を、"
-        "それぞれ機械的に検証できる小さなタスクへ分解してください。\n\n"
+        "それぞれ独立に検証できるタスクへ分解してください。"
+        + plan_granularity_directive(granularity) + "\n\n"
         + build_charter_request(charter)
         + "\n\n" + _charter_owns_note(charter)
         + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str} で、verify は"
@@ -7366,7 +7409,7 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     知能は委譲し、取り込み（enqueue）は本体が決定的に行う。失敗時は空（plan を諦め人へ）。
     各タスクには書込先 workspace を必ず明示する（verify が操作するパスの owns を持つ repo）。"""
     try:
-        out = _run_kiro_cli(_plan_decompose_prompt(charter), cfg.model)
+        out = _run_kiro_cli(_plan_decompose_prompt(charter, cfg.granularity), cfg.model)
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project plan: 分解に失敗（{e}）")
         return []
@@ -7384,10 +7427,11 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     return specs
 
 
-def _review_prompt(charter: "Charter") -> str:
+def _review_prompt(charter: "Charter", granularity: "str | None" = None) -> str:
     return (
         "あなたは成果物を批判的にレビューする敵対的レビュアです。以下の憲章の目標・成果物に対し、"
-        "現状の成果物がまだ満たせていない点（短絡的達成・抜け漏れ・品質不足）を洗い出してください。\n\n"
+        "現状の成果物がまだ満たせていない点（短絡的達成・抜け漏れ・品質不足）を洗い出してください。"
+        "改善タスクの粒度: " + plan_granularity_directive(granularity) + "\n\n"
         + build_charter_request(charter)
         + "\n\n" + _charter_owns_note(charter)
         + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str,"
@@ -7400,7 +7444,7 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, verify}] として返す。
     plan と同様、各タスクに書込先 workspace を必ず明示する。"""
     try:
-        out = _run_kiro_cli(_review_prompt(charter), cfg.model)
+        out = _run_kiro_cli(_review_prompt(charter, cfg.granularity), cfg.model)
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project review: レビューに失敗（{e}）")
         return []
@@ -8117,6 +8161,14 @@ CONFIG_DEFAULTS = {
     "default_workspace": "",
     "location": "auto",
     "model": None,
+    # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）。
+    # kiro-project 自身の LLM 呼び出し（分解・優先順位・裁定・ルーティング）に効く。実行層
+    # kiro-flow の CLI は kiro-flow 側の設定（flow_config / kiro-flow.yaml の agent_cli）で揃える。
+    "agent_cli": "kiro",
+    "agent_timeout": 300.0,   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
+    # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）。
+    # kiro-flow の同名設定と語彙を揃えている（あちらは実行時 DAG、こちらは backlog の分解に効く）。
+    "granularity": "coarse",
     "poll": 5.0,
     "concurrency": 1,
     "level": "unattended",
@@ -8205,14 +8257,17 @@ CONFIG_DEFAULTS = {
 
 
 def _find_config(explicit):
-    """設定ファイルの探索: 1) --config 明示 2) ./.kiro/ 3) ~/.kiro/（kiro-flow と同じ .kiro）。"""
+    """設定ファイルの探索: 1) --config 明示 2) ./（ルート直下）3) ./.kiro/ 4) ~/.kiro/。
+    ルート直下を最優先にするのは 1 root = 1 プロジェクト構成で kiro-project.yaml が
+    プロジェクトのマニフェスト（viewer の自動発見マーカー）を兼ねるため。"""
     if explicit:
         p = os.path.expanduser(explicit)
         if not os.path.isfile(p):
             print(f"[kiro-project] 設定ファイルが見つかりません: {explicit}", file=sys.stderr)
             sys.exit(1)
         return p
-    for base in (os.path.join(os.getcwd(), ".kiro"),
+    for base in (os.getcwd(),
+                 os.path.join(os.getcwd(), ".kiro"),
                  os.path.join(os.path.expanduser("~"), ".kiro")):
         for name in DEFAULT_CONFIG_NAMES:
             cand = os.path.join(base, name)
@@ -8233,19 +8288,27 @@ def resolve_config(args):
 
 
 def build_config(args) -> Config:
-    workdir = Path(args.workdir).resolve()
-    # プロジェクトルート = --root（既定 . = cwd）。charter.md / repos.json / backlog/ 等は
-    # すべてこの直下（1 プロジェクト = 1 ディレクトリ = 1 プロセス）。
-    root = Path(args.root)
-    root = (root if root.is_absolute() else (workdir / root)).resolve()
+    # プロジェクトルート = --root（cwd 相対、既定 . = cwd）が唯一のアンカー。charter.md /
+    # repos.json / backlog/ 等はすべてこの直下（1 プロジェクト = 1 ディレクトリ = 1 プロセス）で、
+    # 相対パスの上書きもすべて root 基準で解決する（viewer の bus 解決とも一致する）。
+    root = Path(str(args.root or ".")).expanduser()
+    root = (root if root.is_absolute() else (Path.cwd() / root)).resolve()
+    # act / verify の作業ディレクトリ。相対値は root 基準（既定 . = root）。
+    wd = Path(str(getattr(args, "workdir", None) or ".")).expanduser()
+    workdir = (wd if wd.is_absolute() else (root / wd)).resolve()
 
     def under(name, sub):
-        """個別指定があればそれを、無ければプロジェクトルート（既定 cwd）配下に集約。"""
+        """個別指定があればそれ（相対は root 基準）を、無ければプロジェクトルート配下に集約。"""
         v = getattr(args, name, None)
         if v:
             p = Path(v)
-            return p if p.is_absolute() else (workdir / p)
+            return p if p.is_absolute() else (root / p)
         return root / sub
+
+    # エージェント CLI（分解・優先順位・裁定等の free 関数が参照）をここで確定する。
+    global _AGENT_CLI, _AGENT_TIMEOUT
+    _AGENT_CLI = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
+    _AGENT_TIMEOUT = float(getattr(args, "agent_timeout", 300.0) or 0.0)
 
     return Config(
         backlog=under("backlog", "backlog"),
@@ -8269,7 +8332,10 @@ def build_config(args) -> Config:
         route_planner=str(getattr(args, "route_planner", "kiro") or "kiro"),
         default_workspace=str(getattr(args, "default_workspace", "") or ""),
         location=args.location, executor=args.executor,
-        model=args.model, max_iterations=args.max_iterations,
+        model=args.model,
+        agent_cli=_AGENT_CLI, agent_timeout=_AGENT_TIMEOUT,
+        granularity=str(getattr(args, "granularity", "coarse") or "coarse").lower(),
+        max_iterations=args.max_iterations,
         max_cycles=args.max_cycles, max_seconds=args.max_seconds,
         max_tokens=getattr(args, "max_tokens", 0) or 0,
         max_cost=getattr(args, "max_cost", 0.0) or 0.0,
@@ -8336,9 +8402,10 @@ def _add_common(sp):
     # 設定ファイルで上書き可能なキー（CONFIG_DEFAULTS）は default=None にし、resolve_config で確定する
     # （CLI > 設定ファイル > 組み込み既定）。個別パス上書きと真偽フラグは CLI 専用。
     sp.add_argument("--config", default=None,
-                    help="設定ファイル（未指定なら ./.kiro → ~/.kiro の kiro-project.{yaml,yml,json}）")
+                    help="設定ファイル（未指定なら ./ → ./.kiro → ~/.kiro の kiro-project.{yaml,yml,json}）")
     sp.add_argument("--root", default=None,
-                    help="プロジェクトルート（cwd 相対、既定 . = cwd）。charter.md / backlog/ 等はこの直下")
+                    help="プロジェクトルート（cwd 相対、既定 . = cwd）。charter.md / backlog/ 等はこの直下。"
+                         "相対パスの上書きはすべてこの root 基準で解決される")
     sp.add_argument("--backlog", default=None, help="バックログディレクトリ（既定 <root>/backlog）")
     sp.add_argument("--policy", default=None, help="（既定 <root>/policy.md）")
     sp.add_argument("--decisions", default=None, help="決定記録ディレクトリ（既定 <root>/decisions）")
@@ -8349,8 +8416,15 @@ def _add_common(sp):
     sp.add_argument("--inbox", default=None, help="取り込み待ちのドロップ口（既定 <project>/inbox）")
     sp.add_argument("--debounce", type=float, default=None,
                     help="watch 中、最終保存からこの秒数は feedback 取込を待つ（誤発火防止。既定 3）")
-    sp.add_argument("--workdir", default=None)
-    sp.add_argument("--bus", default=None, help="kiro-flow バス（既定 <root>/bus）")
+    sp.add_argument("--workdir", default=None,
+                    help="act / verify の作業ディレクトリ（root 相対、既定 . = root）")
+    sp.add_argument("--bus", default=None, help="kiro-flow バス（root 相対、既定 <root>/bus）")
+    sp.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude"],
+                    help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。kiro=kiro-cli chat（既定）/ "
+                         "claude=Claude Code ヘッドレス（claude -p）")
+    sp.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
+                    help="バックログ分解の粒度（設定 granularity と同義）。coarse=ストーリー相当（既定）/ "
+                         "fine=単機能 / finest=1ファイル/1関数の最小単位")
     sp.add_argument("--git-bus", default=None, help="分散移譲先の共有 git リポジトリ")
     sp.add_argument("--git-branch", default=None)
     sp.add_argument("--git-subdir", default=None)
