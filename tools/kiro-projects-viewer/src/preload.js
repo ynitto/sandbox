@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   saveConfig: (config) => invoke('config:save', { config }),
 
   discover: () => invoke('kiro:discover'),
+  removeProject: (dir) => invoke('kiro:removeProject', { dir }),
   readProject: (dir) => invoke('kiro:project', { dir }),
   gitPull: (dir, force) => invoke('git:pull', { dir, force }),
   gitCommitPush: (dir, message) => invoke('git:commitPush', { dir, message }),

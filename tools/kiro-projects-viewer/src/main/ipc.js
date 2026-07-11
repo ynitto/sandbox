@@ -76,6 +76,29 @@ function registerIpcHandlers() {
   // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー
   handle('kiro:discover', () => kiro.discover(loadConfig()));
 
+  // プロジェクトの登録を実体に即して直接消す（config.roots のエントリ削除、または
+  // ~/.kiro-project/instances/*.json の該当レコード削除）。ファイル・ディレクトリ本体は
+  // 一切触らない。親フォルダのスキャンで見つかった子は個別の登録が無いためエラーにする
+  // （親フォルダの登録自体を ⚙ 設定のプロジェクトルートから編集してもらう）。
+  handle('kiro:removeProject', ({ dir }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    const cfg = loadConfig();
+    const result = kiro.removeProjectRegistration(cfg, dir);
+    if (result.removedFrom === 'roots') {
+      cfg.kiro = cfg.kiro || {};
+      cfg.kiro.roots = result.roots;
+      saveConfig(cfg);
+      return { removedFrom: 'roots' };
+    }
+    if (result.removedFrom === 'instance') {
+      return { removedFrom: 'instance', file: result.file };
+    }
+    throw new Error(
+      '登録元が見つかりません（親フォルダ登録の配下で自動発見されたプロジェクトは個別に削除できません。' +
+        '⚙ 設定のプロジェクトルートから親フォルダの登録を編集してください）'
+    );
+  });
+
   // 1 プロジェクトの完全スナップショット（バスの発見に設定 kiro.flowBus も使う）
   handle('kiro:project', ({ dir }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');

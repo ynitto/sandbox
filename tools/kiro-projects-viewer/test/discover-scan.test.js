@@ -118,6 +118,42 @@ function mkdirp(...parts) {
     assert.strictEqual(projects[0].charterName, '');
   });
 
+  await test('removeProjectRegistration は config.roots のエントリを直接取り除く', async () => {
+    const root = mkRoot();
+    const a = mkdirp(root, 'alpha');
+    const cfg = { kiro: { roots: [a, '/other/path'] } };
+    const result = kiro.removeProjectRegistration(cfg, a);
+    assert.strictEqual(result.removedFrom, 'roots');
+    assert.deepStrictEqual(result.roots, ['/other/path']);
+  });
+
+  await test('removeProjectRegistration は ~/.kiro-project/instances/*.json の該当レコードを削除する', async () => {
+    const root = mkRoot();
+    const a = mkdirp(root, 'alpha');
+    const home = mkRoot();
+    const idir = mkdirp(home, '.kiro-project', 'instances');
+    const rec = path.join(idir, 'host-123.json');
+    fs.writeFileSync(rec, JSON.stringify({ pid: 123, root: a, host: 'host' }), 'utf8');
+    const origHome = os.homedir;
+    os.homedir = () => home;
+    try {
+      const cfg = { kiro: { roots: [] } };
+      const result = kiro.removeProjectRegistration(cfg, a);
+      assert.strictEqual(result.removedFrom, 'instance');
+      assert.strictEqual(fs.existsSync(rec), false);
+    } finally {
+      os.homedir = origHome;
+    }
+  });
+
+  await test('removeProjectRegistration は登録元が見つからなければ removedFrom: null を返す', async () => {
+    const root = mkRoot();
+    const a = mkdirp(root, 'alpha');
+    const cfg = { kiro: { roots: [] } };
+    const result = kiro.removeProjectRegistration(cfg, a);
+    assert.strictEqual(result.removedFrom, null);
+  });
+
   console.log(`\n${passed} tests passed`);
 })().catch((e) => {
   console.error(e);

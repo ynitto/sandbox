@@ -98,6 +98,20 @@ button:disabled { opacity: 0.4; cursor: default; }
 .project-item:hover { background: var(--bg3); }
 .project-item.selected { background: var(--bg3); border-left-color: var(--accent); }
 .project-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-item-remove {
+  flex: none;
+  visibility: hidden;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.project-item:hover .project-item-remove { visibility: visible; }
+.project-item-remove:hover { background: var(--bg4, var(--border)); color: var(--red, #d33); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex: none; }
 .dot.running { background: var(--green); box-shadow: 0 0 4px var(--green); }
 /* synced = リモート本体を status.json（state_git 同期）経由で推定した稼働判定。

@@ -336,6 +336,40 @@ function listInstances() {
   return out;
 }
 
+// プロジェクトの「登録」を実体に即して直接消す（discover が発見する経路をそのまま辿るだけで、
+// 除外リストのような別レイヤーは作らない。ファイル・ディレクトリ本体には一切触れない）:
+//   - config.kiro.roots に直接登録（source: 'config'）→ その要素を roots から取り除く
+//   - ~/.kiro-project/instances/*.json 経由の自動発見（source: 'instance'）→ 該当レコードの
+//     ファイルを削除する（稼働中プロセスが生きていれば次のハートビートで自然に書き直されるが、
+//     それはそのプロセス自身が再登録するのであって、ビュアー側の設定ではない）
+//   - 親フォルダ登録（scan）配下で見つかった子は、個別の登録が無い（親フォルダの登録そのものが
+//     「設定」）ため対象外＝呼び出し側でエラーにする
+// 戻り値: { removedFrom: 'roots', roots: string[] } | { removedFrom: 'instance', file: string }
+//        | { removedFrom: null }
+function removeProjectRegistration(cfg, dir) {
+  const resolved = path.resolve(dir);
+  const rootsList = (cfg.kiro && cfg.kiro.roots) || [];
+  const idx = rootsList.findIndex(
+    (r) => path.resolve(String(r).replace(/^~(?=$|\/|\\)/, os.homedir())) === resolved
+  );
+  if (idx !== -1) {
+    const nextRoots = rootsList.slice();
+    nextRoots.splice(idx, 1);
+    return { removedFrom: 'roots', roots: nextRoots };
+  }
+  const idir = path.join(globalDir(), 'instances');
+  for (const f of safeList(idir)) {
+    if (!f.endsWith('.json')) continue;
+    const file = path.join(idir, f);
+    const rec = readJson(file);
+    if (rec && rec.root && path.resolve(String(rec.root)) === resolved) {
+      fs.unlinkSync(file);
+      return { removedFrom: 'instance', file };
+    }
+  }
+  return { removedFrom: null };
+}
+
 // <root>/status.json — 生存信号（kiro-project.py の write_status が書く。paused も載る）。
 // 本体が別ホストで稼働し git 同期経由でしか届かない場合、instances（同一ホストのローカル
 // レジストリ）は空になる。この場合の唯一の生存根拠が、同期されてきた status.json の
@@ -667,6 +701,7 @@ module.exports = {
   parseNeeds,
   parseDecisions,
   listInstances,
+  removeProjectRegistration,
   isProjectRunning,
   replanRequestPending,
   readStatus,

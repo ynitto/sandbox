@@ -200,9 +200,46 @@ async function refreshDiscovery() {
   renderTree();
 }
 
+// プロジェクトの登録を実体に即して直接消す（config.roots のエントリ削除、または
+// ~/.kiro-project/instances/*.json の該当レコード削除。main/kiro.js の
+// removeProjectRegistration 参照）。ファイル・ディレクトリ本体は一切削除しない。
+// 親フォルダのスキャンで見つかった子は個別の登録が無いため、guard がエラーを表示する。
+async function removeProject(dir) {
+  const p = (state.discovery.projects || []).find((x) => x.dir === dir);
+  const label = (p && (p.charterName || p.name)) || dir;
+  const yes = await confirmDialog(
+    `${label} の登録をこのビュアーから削除します。\n` +
+      'プロジェクトのファイル・ディレクトリは一切削除しません。\n' +
+      'よろしいですか？'
+  );
+  if (!yes) return;
+  const res = await guard('プロジェクトの削除', () => api.removeProject(dir));
+  if (!res) return;
+  // config.roots が変わった可能性があるので設定キャッシュも同期しておく
+  // （そのままだと後で設定ダイアログを保存したときに古い roots で上書きしてしまう）。
+  state.config = await guard('設定読込', () => api.getConfig());
+  toast(`${label} の登録を削除しました`, true);
+  await refreshDiscovery();
+  if (state.selectedDir === dir) {
+    const next = (state.discovery.projects || []).find((x) => x.exists);
+    if (next) {
+      await selectProject(next.dir);
+    } else {
+      state.selectedDir = null;
+      state.project = null;
+      localStorage.removeItem('kpv:selected');
+      renderAllTabs();
+    }
+  }
+}
+
 function renderTree() {
   const tree = $('tree');
-  const { projects, instances } = state.discovery;
+  const { instances } = state.discovery;
+  // 実体が無い登録（exists:false）はここで弾く。過去に登録した config.roots のゴーストパスや、
+  // 稼働していない/実在しないホストの instances/*.json（自動発見）が典型で、直せる見込みが無い
+  // ままサイドバーに残り続けるだけなので、手動で消させるより最初から出さない方が親切。
+  const projects = (state.discovery.projects || []).filter((p) => p.exists);
   if (!projects.length) {
     tree.innerHTML =
       '<div class="empty">プロジェクトが見つかりません。<br>⚙ 設定でプロジェクトルート（状態共有リポジトリの clone）を追加するか、<br>kiro-project を稼働させてください。<br><br><button id="btn-empty-new" class="primary-inline">＋ 新規プロジェクトを作成</button></div>';
@@ -228,15 +265,23 @@ function renderTree() {
             : remoteGuess
               ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前・同期経由）`
               : '停止中';
-        const missing = !p.exists ? '（見つかりません）' : '';
         // 表示名は charter.md の `# Charter: <name>` を優先する（無ければフォルダ名）。
         // `.kiro-project` のような技術的なフォルダ名でも、charter.md を編集するだけで
-        // サイドバーに任意の名前を出せる（✎ charter.md から編集）。
+        // サイドバーに任意の名前を出せる（✎ charter.md から編集）。フォルダ名は行の
+        // title 属性（フルパス）で見られるので、括弧併記はしない。
         const displayName = p.charterName || p.name;
-        const dirHint = p.charterName && p.charterName !== p.name ? ` (${p.name})` : '';
+        // 削除ボタンは config.roots に直接登録されたプロジェクト（source: 'config'）だけに出す。
+        // scan（親フォルダ配下の自動発見）はそのプロジェクト個別の登録が無く、instance
+        // （~/.kiro-project/instances/ 自動発見）は稼働中プロセスが自分で書き直す一時的な
+        // レコードなので、どちらも「消す」という操作の対象として筋が悪い（scan は親フォルダの
+        // 登録ごと削除することになり、instance は生きていれば次のハートビートで復活する）。
+        const removeBtn = p.source === 'config'
+          ? `<button class="project-item-remove" data-remove-dir="${esc(p.dir)}" title="プロジェクトの登録をこのビュアーから削除する（ファイルは削除しません）">×</button>`
+          : '';
         return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}" title="${esc(p.dir)}">
           <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''} ${p.paused ? 'paused' : ''}" title="${esc(dotTitle)}"></span>
-          <span class="name">${esc(displayName)}${esc(dirHint)}${remoteGuess && p.running ? '~' : ''}${p.paused ? ' ⏸' : ''}${missing}</span>${badges.join('')}
+          <span class="name">${esc(displayName)}${remoteGuess && p.running ? '~' : ''}${p.paused ? ' ⏸' : ''}</span>${badges.join('')}
+          ${removeBtn}
         </div>`;
       })
       .join('');
@@ -246,6 +291,12 @@ function renderTree() {
 
   for (const el of tree.querySelectorAll('.project-item[data-dir]')) {
     el.addEventListener('click', () => selectProject(el.dataset.dir));
+  }
+  for (const btn of tree.querySelectorAll('button[data-remove-dir]')) {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();   // 親の project-item クリック（選択）を発火させない
+      removeProject(btn.dataset.removeDir);
+    });
   }
 }
 
@@ -1526,14 +1577,18 @@ const CHARTER_SECTION_GUIDE =
   '## deliverables（成果物）/ ## acceptance（done の根拠 — exit 0 で PASS のコマンド、書けなければ accept: 自然文）/ ' +
   '## repos（対象リポジトリ・owns で書込先）/ ## links（参考）';
 
-async function openEditFile(name) {
+async function openEditFile(name, opts) {
   const p = state.project;
   if (!p) return toast('プロジェクトを選択してください');
   const info = await guard('ファイル読込', () => api.readProjectFile(p.dir, name));
   if (!info) return;
+  // seedContent: 新規 charter バージョン追加時に、前バージョンの内容を書きかけとして
+  // 差し込む（openAddCharterVersion 参照）。まだファイルが無いときだけ使う＝既存ファイルの
+  // 編集では絶対に上書きしない。
+  const seeded = !info.exists && opts && opts.seedContent;
   state.editFile = { dir: p.dir, name, file: info.file, aiBackup: null };
   $('ef-title').textContent = `編集: ${info.label}`;
-  $('ef-content').value = info.content || '';
+  $('ef-content').value = seeded ? opts.seedContent : info.content || '';
   const warn = $('ef-warning');
   if (info.generated) {
     warn.textContent =
@@ -1554,7 +1609,9 @@ async function openEditFile(name) {
   $('btn-ef-ai').disabled = false;
   $('ef-hint').textContent = info.exists
     ? `${info.file}｜保存すると次の kiro-project run から後段データに反映されます`
-    : `${info.file}（未作成 — 保存すると新規作成します）`;
+    : seeded
+      ? `${info.file}（未作成 — 前バージョンの内容をコピーしています。保存すると新規作成します）`
+      : `${info.file}（未作成 — 保存すると新規作成します）`;
   $('dlg-edit-file').showModal();
 }
 
@@ -1591,7 +1648,11 @@ async function submitNewCharterVersion() {
     return;
   }
   $('dlg-new-charter').close();
-  await openEditFile(`charters/${name}.md`);
+  // 前バージョンの内容を書きかけとして引き継ぐ。charters/ 運用中なら並びの最後（一覧の最新）、
+  // まだ charter.md 単体運用なら charter.md 自体を前バージョン扱いにする。
+  const prev = p.charters && p.charters.length ? p.charters[p.charters.length - 1] : p.charter;
+  const seedContent = (prev && prev.raw) || '';
+  await openEditFile(`charters/${name}.md`, { seedContent });
 }
 
 // charter.md の雛形を挿入する（空のときだけ即挿入。書きかけがあるときは確認してから置換）
