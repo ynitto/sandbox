@@ -39,3 +39,25 @@
                               ^^^^^^
 SyntaxError: invalid syntax
 - 2026-07-11 14:22:29 feedback 取り込み: test--f-kiro-project-jso-142029 を再開
+- 2026-07-11 14:22:46 cycle 5: test--f-kiro-project-jso-142029 → 人の判断（繰り返し NG）
+- 2026-07-11 14:22:46 commands 取り込み失敗: viewer-approve-kiro-project-1783747362667.json: approve .kiro-project が失敗 (exit 2)
+- 2026-07-11 14:22:55 cycle 6: python--m-pytest-Users-n-142029 NG 積み直し (2/2) — exit=1 File "<string>", line 1
+    import sys; sys.exit(0 if import('os').path.isdir('.kiro') or import('os').path.isfile('kiro-project.yaml') or import('os').path.isfile('.github/skills/kiro-project/SKILL.md') or import('glob').glob('**/*.kiro*', recursive=True) else 1)
+                              ^^^^^^
+SyntaxError: invalid syntax
+- 2026-07-11 14:23:10 cycle 7: python--m-pytest-Users-n-142029 → 人の判断（繰り返し NG）
+- 2026-07-11 14:23:10 === kiro-project 停止 reason=drained cycles=7 done=0 blocked=2 notified=True promoted=0 ===
+- 2026-07-11 14:23:10 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-11 14:23:10 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 14:30:10 === project 開始 sandbox acceptance=2 ===
+- 2026-07-11 14:30:11 === kiro-project 開始 tasks=2 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 14:30:11 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 14:30:11 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=2 notified=False promoted=0 ===
+- 2026-07-11 14:30:11 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-11 14:30:11 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 14:31:31 === project 開始 sandbox acceptance=2 ===
+- 2026-07-11 14:31:49 project cycle 1: plan cycle 1 で 7 件投入 ['kiro-project-CLI-init-ba-143149', 'kiro-flow-CLI-run-status-143149', 'agent-journal-143149', 'kiro-project-kiro-flow-143149', 'needs-agent-needs-143149', 'kiro-projects-viewer-bac-143149', 'CLI-143149']
+- 2026-07-11 14:31:49 === kiro-project 開始 tasks=7 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-11 14:31:49 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 14:31:49 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 14:31:49 === project 停止 reason=blocked cycles=1 cost=0.0000 ===

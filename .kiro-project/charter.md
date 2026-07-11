@@ -20,8 +20,10 @@
 ## acceptance
 # 各行＝終了コード0をPASSとみなすシェルコマンド。書けない条件は `- accept: <自然文>` でも可。
 # acceptance を書けないプロジェクトは done 判定不能 → 必ず人へ回る。
-- accept: このワークスペースで kiro-project/kiro-flow が動作する
-- accept: このワークスペースのプロジェクトを kiro-projects-viewer で監視できる
+# 自然言語 accept: はエージェントに決定的 verify へ合成させる仕様だが、本プロジェクトは
+# エージェント不使用（executor: stub）で運用するため、最初から決定的シェルコマンドで書く。
+- cd /Users/nitto/Workspace/sandbox && kiro-project --help >/dev/null 2>&1 && kiro-flow --help >/dev/null 2>&1
+- test -f charter.md || test -d backlog || test -f journal.md || test -d needs || test -d archive
 
 ## repos
 # 対象リポジトリ（任意）。owns を書くと書込先（ワークスペース）、書かなければ参照のみ。

@@ -1,6 +1,0 @@
-{
-  "id": "work1",
-  "goal": "受入条件を満たす: > test -f .kiro/project.json && python",
-  "deps": [],
-  "kind": "work"
-}
