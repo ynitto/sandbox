@@ -1408,11 +1408,52 @@ function openNewProject() {
   $('np-name').value = '';
   if ($('np-charter')) $('np-charter').value = '';
   $('np-goal').value = '';
+  $('np-memo').value = '';
   $('np-deliverables').value = '';
   $('np-constraints').value = '';
+  $('np-assumptions').value = '';
   $('np-acceptance').value = '';
   $('np-repos').innerHTML = '';
+  $('np-ai-status').textContent = '';
+  $('btn-np-ai').disabled = false;
   $('dlg-new-project').showModal();
+}
+
+// フォームの書きかけ（goal・自由メモ・各欄）からエージェントに各セクションを
+// 下書きさせ、返ってきたフィールドだけを流し込む（応答はテキストのみ・保存はしない）。
+// 新規作成時はまだプロジェクトが無いので、CLI の解決は ⚙ 設定 → 既定 kiro。
+async function aiDraftCharter() {
+  const btn = $('btn-np-ai');
+  const status = $('np-ai-status');
+  const spec = {
+    name: $('np-name').value.trim() || ($('np-charter') ? $('np-charter').value.trim() : ''),
+    goal: $('np-goal').value,
+    memo: $('np-memo').value,
+    deliverables: $('np-deliverables').value,
+    constraints: $('np-constraints').value,
+    assumptions: $('np-assumptions').value,
+    acceptance: $('np-acceptance').value,
+  };
+  if (!spec.goal.trim() && !spec.memo.trim()) {
+    return toast('goal か自由メモに、やりたいことを一言書いてから実行してください');
+  }
+  btn.disabled = true;
+  status.textContent = 'エージェントに問い合わせ中…（モデル応答まで数十秒かかることがあります）';
+  try {
+    const res = await api.agentCharter({ mode: 'draft', spec });
+    const f = res.fields || {};
+    if (f.goal) $('np-goal').value = f.goal;
+    if (f.deliverables) $('np-deliverables').value = f.deliverables;
+    if (f.constraints) $('np-constraints').value = f.constraints;
+    if (f.assumptions) $('np-assumptions').value = f.assumptions;
+    if (f.acceptance) $('np-acceptance').value = f.acceptance;
+    status.textContent = `下書きしました（${res.cli}${res.model ? ` / ${res.model}` : ''}）— 内容を確認・修正してから作成してください`;
+  } catch (err) {
+    status.textContent = '';
+    toast(`AI 下書きに失敗しました: ${err.message || err}`);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function submitNewProject() {
@@ -1432,6 +1473,7 @@ async function submitNewProject() {
     goal: $('np-goal').value,
     deliverables: $('np-deliverables').value,
     constraints: $('np-constraints').value,
+    assumptions: $('np-assumptions').value,
     acceptance: $('np-acceptance').value,
     repos,
   };
@@ -1462,12 +1504,23 @@ async function submitNewProject() {
 // charter.md / policy.md / repos.json の直接編集ダイアログを開く。
 // これらは kiro-project の「人が書く入力」— 編集して保存すると次の run で後段
 // （backlog 生成・ルーティング）に反映される。タスク状態は編集対象にしない。
+// charter ファイル（charter.md / charters/<name>.md）か。編集ダイアログの
+// 入力補助（雛形挿入・AI 補完・セクションガイド）を出すかどうかの判定に使う
+function isCharterFile(name) {
+  return name === 'charter.md' || /^charters\/[^/\\]+\.md$/.test(name);
+}
+
+const CHARTER_SECTION_GUIDE =
+  'セクション: ## goal（目標・判定可能に）/ ## constraints（制約）/ ## assumptions（前提）/ ' +
+  '## deliverables（成果物）/ ## acceptance（done の根拠 — exit 0 で PASS のコマンド、書けなければ accept: 自然文）/ ' +
+  '## repos（対象リポジトリ・owns で書込先）/ ## links（参考）';
+
 async function openEditFile(name) {
   const p = state.project;
   if (!p) return toast('プロジェクトを選択してください');
   const info = await guard('ファイル読込', () => api.readProjectFile(p.dir, name));
   if (!info) return;
-  state.editFile = { dir: p.dir, name, file: info.file };
+  state.editFile = { dir: p.dir, name, file: info.file, aiBackup: null };
   $('ef-title').textContent = `編集: ${info.label}`;
   $('ef-content').value = info.content || '';
   const warn = $('ef-warning');
@@ -1477,13 +1530,73 @@ async function openEditFile(name) {
       '直接編集しても run 時に charter から上書きされます。恒久的に手で管理するなら _meta を消すか、' +
       'charter の ## repos を編集してください。';
     warn.classList.remove('hidden');
+  } else if (isCharterFile(name)) {
+    warn.textContent = CHARTER_SECTION_GUIDE;
+    warn.classList.remove('hidden');
   } else {
     warn.classList.add('hidden');
   }
+  // charter だけに入力補助（雛形挿入・AI 補完）を出す
+  $('ef-ai-row').classList.toggle('hidden', !isCharterFile(name));
+  $('btn-ef-ai-undo').classList.add('hidden');
+  $('ef-ai-status').textContent = '';
+  $('btn-ef-ai').disabled = false;
   $('ef-hint').textContent = info.exists
     ? `${info.file}｜保存すると次の kiro-project run から後段データに反映されます`
     : `${info.file}（未作成 — 保存すると新規作成します）`;
   $('dlg-edit-file').showModal();
+}
+
+// charter.md の雛形を挿入する（空のときだけ即挿入。書きかけがあるときは確認してから置換）
+async function insertCharterTemplate() {
+  const ef = state.editFile;
+  if (!ef) return;
+  const current = $('ef-content').value;
+  if (current.trim()) {
+    const ok = await confirmDialog('編集中の内容を破棄して charter の雛形に置き換えます。よろしいですか？');
+    if (!ok) return;
+  }
+  const m = /^charters\/([^/\\]+)\.md$/.exec(ef.name);
+  const fallback = (state.project && state.project.name) || 'project';
+  const res = await guard('雛形の取得', () => api.charterTemplate(m ? m[1] : fallback));
+  if (!res) return;
+  $('ef-content').value = res.content;
+  $('ef-ai-status').textContent = '雛形を挿入しました — 各セクションを埋めるか、✨ AI 補完で下書きできます';
+}
+
+// エディタの charter 全文をエージェントに渡し、書式を保った完成版へ補完する。
+// 置換のみでファイルには書かない（保存は人の「保存」ボタン）。補完前の内容は
+// aiBackup に取り置き、「↩ 補完前に戻す」で戻せる。
+async function aiRefineCharter() {
+  const ef = state.editFile;
+  if (!ef) return;
+  const btn = $('btn-ef-ai');
+  const status = $('ef-ai-status');
+  const before = $('ef-content').value;
+  btn.disabled = true;
+  status.textContent = 'エージェントに問い合わせ中…（モデル応答まで数十秒かかることがあります）';
+  try {
+    const res = await api.agentCharter({ dir: ef.dir, mode: 'refine', content: before });
+    ef.aiBackup = before;
+    $('ef-content').value = res.content;
+    $('btn-ef-ai-undo').classList.remove('hidden');
+    status.textContent =
+      `補完しました（${res.cli}${res.model ? ` / ${res.model}` : ''}）— 内容を確認して保存してください`;
+  } catch (err) {
+    status.textContent = '';
+    toast(`AI 補完に失敗しました: ${err.message || err}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function undoAiRefine() {
+  const ef = state.editFile;
+  if (!ef || ef.aiBackup == null) return;
+  $('ef-content').value = ef.aiBackup;
+  ef.aiBackup = null;
+  $('btn-ef-ai-undo').classList.add('hidden');
+  $('ef-ai-status').textContent = '補完前の内容に戻しました';
 }
 
 async function saveEditFile() {
@@ -2653,6 +2766,9 @@ function openSettings() {
   )
     .map(([name, bus]) => `${name} = ${bus}`)
     .join('\n');
+  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || '';
+  $('cfg-agent-model').value = (cfg.agent && cfg.agent.model) || '';
+  $('cfg-agent-timeout').value = (cfg.agent && cfg.agent.timeoutSec) || 180;
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
   $('cfg-gl-token').value = cfg.gitlab.token || '';
   $('cfg-rv-mode').value = cfg.reviewViewer.mode || 'protocol';
@@ -2688,6 +2804,10 @@ async function saveSettings() {
     })
     .filter(Boolean)
     .reduce((acc, [name, bus]) => ((acc[name] = bus), acc), {});
+  cfg.agent = cfg.agent || {};
+  cfg.agent.cli = $('cfg-agent-cli').value;
+  cfg.agent.model = $('cfg-agent-model').value.trim();
+  cfg.agent.timeoutSec = Math.max(30, parseInt($('cfg-agent-timeout').value, 10) || 180);
   cfg.gitlab.baseUrl = $('cfg-gl-url').value.trim();
   cfg.gitlab.token = $('cfg-gl-token').value.trim();
   cfg.reviewViewer.mode = $('cfg-rv-mode').value;
@@ -2887,9 +3007,13 @@ async function init() {
   $('btn-np-cancel').addEventListener('click', () => $('dlg-new-project').close());
   $('btn-np-submit').addEventListener('click', submitNewProject);
   $('np-add-repo').addEventListener('click', () => addRepoRow());
+  $('btn-np-ai').addEventListener('click', aiDraftCharter);
   // プロジェクトファイル編集
   $('btn-ef-cancel').addEventListener('click', () => $('dlg-edit-file').close());
   $('btn-ef-save').addEventListener('click', saveEditFile);
+  $('btn-ef-template').addEventListener('click', insertCharterTemplate);
+  $('btn-ef-ai').addEventListener('click', aiRefineCharter);
+  $('btn-ef-ai-undo').addEventListener('click', undoAiRefine);
   $('btn-ef-open').addEventListener('click', () => {
     if (state.editFile) guard('ファイルを開く', () => api.openPath(state.editFile.file));
   });

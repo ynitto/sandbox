@@ -50,6 +50,20 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
                            #   併せて kiro-flow 側 gitlab: の timeout/approved_timeout を 0（無限）にすると
                            #   誤タイムアウト由来の retry ループが完全に消える（kiro-flow.state-git.yaml 参照）。
 
+# --- 二段階レビュー（既定すべて on。この構成では明示不要だが、意味は把握しておく）---
+# plan_review: true          # 実行前レビュー: 新規タスクは proposed で入り、viewer/needs の承認を
+#                             #   通るまで GitLab イシューは起票されない（着手前ゲート）。
+# task_branch: true          # 各タスクの成果を kp/<task-id> に集約し、workspace の branch として
+#                             #   gitlab executor へ注入する（イシュー本文の「作業ブランチ」に反映され、
+#                             #   人/エージェントのワーカーはこのブランチで MR を作る）。
+# delivery_review: true      # 成果物レビュー: verify PASS 後に kiro-project 自身が review へ進める
+#                             #   （viewer/needs での最終 approve が done の条件）。task_branch の同じ
+#                             #   ブランチで MR を探し（無ければ作り＝冪等）、gitlab executor が既に
+#                             #   イシュー決着済みなら二重に MR は作らない。approve でクリーンなら
+#                             #   Stage 2 と同じ規則で自動マージする。
+#                             #   ＝ gitlab のイシュー承認（作業が終わったか）と、この review
+#                             #   （成果を受け入れるか）は別ゲート。両方が揃って done になる。
+
 # --- 状態の git 保存・共有 ---
 # direct モード（ルートが clone）なら設定不要。ルートが git でない場合のみ管理クローン方式:
 # state_git: git@gitlab.example.com:team/kiro-state.git

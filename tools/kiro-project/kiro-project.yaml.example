@@ -38,28 +38,32 @@ root: .                     # プロジェクトルート（cwd 相対、既定 
 # ---------------------------------------------------------------------------
 # 実行バックエンド（環境に kiro-cli があるか等で切替）
 # ---------------------------------------------------------------------------
-executor: kiro              # 実行・評価役: kiro（kiro-cli）/ stub（オフライン検証）
-                            # または kiro-flow の executor プラグイン名 / .py パスも指定可（そのまま
-                            # `kiro-flow run --executor <値>` に委譲される）。
+executor: agent             # 実行・評価役: agent（エージェント CLI に委譲。agent_cli で kiro/claude/
+                            # copilot を切替）/ stub（オフライン検証）。または kiro-flow の executor
+                            # プラグイン名 / .py パスも指定可（そのまま `kiro-flow run --executor <値>`
+                            # に委譲される）。
 # executor: gitlab          #   例: 同梱の gitlab プラグイン（タスクを GitLab イシュー化し、レビュー承認
                             #   （status:approved）後にクリーンな MR を自動マージして完了する）。
                             #   プラグイン固有設定は kiro-flow 側の設定（例 gitlab: ブロック）で行う。
                             #   委譲は人のレビュー往復で長時間かかるため act_timeout: 0（無制限待ち）推奨。
 # executor: /path/to/my_executor.py   # 例: 任意の executor プラグイン（.py パス指定）
-planner: kiro               # 優先順位付け: kiro=エージェントが priority も加味 / none=priority 降順→最古
-flow_planner: flow-planner  # kiro-flow run に渡す planner: flow-planner / kiro / stub
+planner: agent               # 優先順位付け: agent=エージェント委譲が priority も加味 / none=priority 降順→最古
+flow_planner: flow-planner  # kiro-flow run に渡す planner: flow-planner / agent / stub
 # ルーティング（タスク → ちょうど1つの書込先ワークスペース）。決定論（明示 - workspace: > policy route: >
 # charter owns: 推定）で決まらないときの扱い:
-route_planner: kiro         # kiro=LLM が charter の desc/owns から1つ推定 / none=決定論のみ（推定しない）
+route_planner: agent        # agent=エージェント委譲が charter の desc/owns から1つ推定 / none=決定論のみ（推定しない）
 # default_workspace: app    # それでも決まらないタスクの既定書込先（charter の name/url）。空=無効
 location: auto              # act の実行先: auto / local / daemon / remote
 concurrency: 1             # daemon/remote へ並行 submit する独立タスク数（1=逐次。local 単発 run は常に逐次）
 # agent_cli: kiro           # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat・既定）/
-                            #   claude（Claude Code ヘッドレス `claude -p`）。kiro-project 自身の
+                            #   claude（Claude Code ヘッドレス `claude -p`）/
+                            #   copilot（GitHub Copilot CLI `copilot -p`）。kiro-project 自身の
                             #   LLM 呼び出し（分解・優先順位・裁定・ルーティング）に効く。実行層
                             #   kiro-flow 側は kiro-flow.yaml（flow_config）の agent_cli で揃える。
 # agent_timeout: 300        # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
-# model: claude-sonnet      # エージェント CLI に渡すモデル（省略可）
+# model: claude-sonnet      # エージェント CLI に渡すモデル（省略可）。
+                            #   kiro: kiro-cli のモデル名 / claude: sonnet・opus 等 /
+                            #   copilot: claude-sonnet-4.5・gpt-5 等（copilot /model の一覧に従う）
 # granularity: coarse       # バックログ分解の粒度: coarse（ストーリー相当・INVEST。既定）/
                             #   fine（単機能・単モジュール）/ finest（1ファイル/1関数の最小単位）
 # kiro_flow: /path/to/kiro-flow.py   # kiro-flow の明示パス（省略時は PATH→リポジトリ内を自動解決）

@@ -120,6 +120,34 @@
           placeholder="例:&#10;alpha = /home/me/clones/alpha/kiro-flow&#10;beta = C:\clones\beta\kiro-flow"
         ></textarea>
       </div>
+      <h3>エージェント補完（charter の AI 下書き・任意）</h3>
+      <div class="row2">
+        <div class="field">
+          <label>エージェント CLI（自動 = プロジェクトの kiro-project.yaml の agent_cli に従う）</label>
+          <select id="cfg-agent-cli">
+            <option value="">自動（プロジェクト設定 → kiro）</option>
+            <option value="kiro">kiro（kiro-cli chat）</option>
+            <option value="claude">claude（Claude Code）</option>
+            <option value="copilot">copilot（GitHub Copilot CLI）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>モデル（空 = CLI / プロジェクト設定の既定）</label>
+          <input id="cfg-agent-model" class="mono" placeholder="例: sonnet / claude-sonnet-4.5 / gpt-5" />
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>補完タイムアウト（秒・下限 30）</label>
+          <input id="cfg-agent-timeout" type="number" min="30" step="10" />
+        </div>
+        <div class="field"></div>
+      </div>
+      <div class="muted" style="font-size:11px">
+        本体（kiro-project / kiro-flow）が使う CLI・モデルは各プロジェクトの
+        kiro-project.yaml / kiro-flow.yaml の <code class="mono">agent_cli</code> / <code class="mono">model</code> で設定します
+        （kiro / claude / copilot）。ここは、このビュアーの charter 下書き・補完だけに効きます。
+      </div>
       <h3>GitLab（イシュー状態の補完・任意）</h3>
       <div class="row2">
         <div class="field">
@@ -251,6 +279,18 @@
       <label>goal — 目標（このプロジェクトで達成したいこと）</label>
       <textarea id="np-goal" rows="2" placeholder="例: ユーザーが CSV を投入すると要約レポートを生成する CLI を完成させる"></textarea>
     </div>
+    <div class="ai-assist">
+      <div class="field">
+        <label>自由メモ（背景・要望。AI 下書きの材料 — charter には直接載りません）</label>
+        <textarea id="np-memo" rows="2" placeholder="例: 社内の営業チームが月次で使う。既存の集計 Excel を置き換えたい。Python が得意な人しかいない"></textarea>
+      </div>
+      <div class="row" style="align-items:center; gap:8px">
+        <button id="btn-np-ai" type="button" class="primary-inline"
+          title="goal・自由メモ・書きかけの各欄からエージェントが constraints / assumptions / deliverables / acceptance を下書きします（既存の記入は尊重されます）">
+          ✨ AI で下書き（不足セクションを補完）</button>
+        <span id="np-ai-status" class="muted"></span>
+      </div>
+    </div>
     <div class="row2">
       <div class="field">
         <label>deliverables — 成果物（1 行 1 つ）</label>
@@ -260,6 +300,13 @@
         <label>constraints — 制約（1 行 1 つ）</label>
         <textarea id="np-constraints" rows="3" placeholder="Python 3.9 / 標準ライブラリのみ"></textarea>
       </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>assumptions — 前提（1 行 1 つ・任意）</label>
+        <textarea id="np-assumptions" rows="2" placeholder="入力 CSV は UTF-8 / 週次で 1 万行程度"></textarea>
+      </div>
+      <div class="field"></div>
     </div>
     <div class="field">
       <label>acceptance — プロジェクト done の根拠（1 行 1 つ。exit 0 を PASS とみなすシェルコマンド、または <code class="mono">accept: 自然文</code>）</label>
@@ -288,6 +335,14 @@
       <textarea id="ef-content" rows="22" class="mono" spellcheck="false"></textarea>
     </div>
     <div class="muted" id="ef-hint"></div>
+    <div id="ef-ai-row" class="row hidden" style="align-items:center; gap:8px; margin-top:6px">
+      <button id="btn-ef-template" type="button" class="chip"
+        title="charter.md の雛形（## goal / constraints / assumptions / deliverables / acceptance / repos / links）を挿入します">📋 雛形を挿入</button>
+      <button id="btn-ef-ai" type="button" class="chip"
+        title="エージェントが書式を保ったまま不足セクションの補完・acceptance のコマンド化・曖昧な記述の明確化をします（保存するまでファイルには書き込みません）">✨ AI 補完</button>
+      <button id="btn-ef-ai-undo" type="button" class="chip hidden" title="AI 補完前の内容に戻します">↩ 補完前に戻す</button>
+      <span id="ef-ai-status" class="muted"></span>
+    </div>
     <div class="dialog-actions">
       <button id="btn-ef-open" title="OS の既定エディタでこのファイルを開く">エディタで開く</button>
       <span class="spacer"></span>

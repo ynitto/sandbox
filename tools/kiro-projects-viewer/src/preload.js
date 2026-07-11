@@ -37,6 +37,9 @@ contextBridge.exposeInMainWorld('api', {
   createProject: (spec) => invoke('kiro:createProject', { spec }),
   readProjectFile: (dir, name) => invoke('kiro:readFile', { dir, name }),
   writeProjectFile: (dir, name, content) => invoke('kiro:writeFile', { dir, name, content }),
+  charterTemplate: (name) => invoke('kiro:charterTemplate', { name }),
+  agentCharter: (args) => invoke('agent:charter', args),
+  agentResolve: (dir) => invoke('agent:resolve', { dir }),
 
   glEnrich: (urls) => invoke('gitlab:enrich', { urls }),
   glProjectIssues: (args) => invoke('gitlab:projectIssues', args),

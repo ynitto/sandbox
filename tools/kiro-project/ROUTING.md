@@ -32,7 +32,7 @@
 1. タスクの **`- workspace: <name>`**（人/過去ルーティングの明示）
 2. `policy.md` の **`route: <パターン> -> <name>`**（決定論ルール。パターンは id/タイトルの部分一致）
 3. charter `## repos` の **`owns:`**（担当パスのグロブ）× タスクの `- paths:` ヒントの一致（決定論推定）
-4. **auto-route エージェント**（`route_planner: kiro` のとき、charter の desc/owns から LLM が1つ推定）
+4. **auto-route エージェント**（`route_planner: agent` のとき、charter の desc/owns から LLM が1つ推定）
 5. **`default_workspace`** 設定 / 書込先候補が1つだけならそれ
 
 決まらなければ書込先なし＝**読み取り専用 run**。

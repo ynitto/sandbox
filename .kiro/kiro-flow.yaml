@@ -1,2 +1,8 @@
 # kiro-flow の設定。bus の既定は ./bus（kiro-project の <root>/bus と同じ場所を指す）。
 bus: ./bus
+
+planner: stub #flow-planner
+executor: stub #kiro
+# agent_cli: copilot #kiro
+# model: claude-sonnet
+# granularity: finest

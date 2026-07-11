@@ -623,3 +623,27 @@ body.simple .tab.tech {
 .need-card.kind-plan-review {
   border-left: 3px solid #b08bd8;
 }
+
+/* ---------- charter 入力補助（AI 下書き・補完） ---------- */
+
+/* 新規作成ダイアログの AI 補助ブロック（自由メモ + 下書きボタン） */
+.ai-assist {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 4px 0 10px;
+  background: var(--bg2);
+}
+.ai-assist .field { margin-bottom: 6px; }
+
+/* 編集ダイアログの補助ボタン行（雛形挿入 / AI 補完 / 戻す）。
+   .filters/.toolbar 外でも chip の見た目になるよう dialog スコープにも効かせる */
+dialog .chip {
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  cursor: pointer;
+  font-size: 12px;
+}
+dialog .chip:disabled { opacity: 0.5; cursor: default; }

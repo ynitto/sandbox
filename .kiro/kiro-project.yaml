@@ -2,3 +2,10 @@
 # root = cwd。charter.md / backlog/ / bus/ 等はすべて root 直下に集約される。
 # workdir / bus は既定（root / <root>/bus）に任せるため指定しない。
 root: .
+
+planner: none #flow-planner
+executor: stub #kiro
+flow_planner: stub #flow-planner
+
+# agent_cli: copilot #kiro
+# model: claude-sonnet

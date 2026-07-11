@@ -730,7 +730,7 @@ class SpawnArgvTests(unittest.TestCase):
 
     def _args(self, **kw):
         base = dict(granularity="finest", exemplar_first=False, planner="stub",
-                    executor="kiro", max_iterations=1, max_fanout=4, max_retries=3,
+                    executor="agent", max_iterations=1, max_fanout=4, max_retries=3,
                     model=None, poll=1.0)
         base.update(kw)
         return types.SimpleNamespace(**base)
@@ -1227,6 +1227,32 @@ class AgentCliTests(unittest.TestCase):
             kf.run_kiro(big, None)
         self.assertEqual(calls["input"], big)
         self.assertTrue(all("ファイル" not in str(a) for a in calls["cmd"]))
+
+    def test_copilot_uses_prompt_flag(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(kf, "_AGENT_CLI", "copilot"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            out = kf.run_kiro("プロンプト", "gpt-5")
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][0], "copilot")
+        self.assertIn("-s", calls["cmd"])                  # 応答本文のみ
+        self.assertIn("--allow-all-tools", calls["cmd"])   # 非対話モードの必須フラグ
+        i = calls["cmd"].index("-p")
+        self.assertEqual(calls["cmd"][i + 1], "プロンプト")  # -p の引数で渡す
+        self.assertIn("--model", calls["cmd"])
+        self.assertIsNone(calls["input"])
+
+    def test_copilot_large_prompt_spills_to_file(self):
+        # copilot は argv（-p）渡しのため、kiro と同じスピル退避が効く
+        calls, fake = self._capture_run()
+        big = "x" * (kf._kiro_argv_limit() + 10)
+        with mock.patch.object(kf, "_AGENT_CLI", "copilot"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            kf.run_kiro(big, None)
+        i = calls["cmd"].index("-p")
+        self.assertNotEqual(calls["cmd"][i + 1], big)       # 全文は argv に載せない
+        self.assertIn("ファイル", calls["cmd"][i + 1])       # 参照渡しの短い指示に置換
+        self.assertIsNone(calls["input"])
 
     def test_configure_thresholds_sets_agent_cli(self):
         orig = kf._AGENT_CLI
@@ -2183,11 +2209,11 @@ class ExecutorResolutionTests(unittest.TestCase):
         import types
         return types.SimpleNamespace(**kw)
 
-    def test_builtin_kiro_and_stub(self):
-        self.assertIs(kf.make_executor(self._args(executor="kiro")), kf.execute_kiro)
+    def test_builtin_agent_and_stub(self):
+        self.assertIs(kf.make_executor(self._args(executor="agent")), kf.execute_kiro)
         self.assertIs(kf.make_executor(self._args(executor="stub")), kf.execute_stub)
 
-    def test_default_is_kiro(self):
+    def test_default_is_agent(self):
         self.assertIs(kf.make_executor(self._args(executor=None)), kf.execute_kiro)
 
     def test_resolves_bundled_gitlab_plugin(self):
@@ -2204,7 +2230,7 @@ class ExecutorResolutionTests(unittest.TestCase):
 
     def test_resolve_executor_config_json(self):
         # 組み込み executor は設定ブロック無し → None
-        self.assertIsNone(kf.resolve_executor_config_json(self._args(executor="kiro")))
+        self.assertIsNone(kf.resolve_executor_config_json(self._args(executor="agent")))
         self.assertIsNone(kf.resolve_executor_config_json(self._args(executor=None)))
         # プラグイン executor は同名ブロックを JSON 化
         js = kf.resolve_executor_config_json(
@@ -2233,7 +2259,7 @@ class ExecutorResolutionTests(unittest.TestCase):
 
     def test_spawn_worker_builtin_executor_no_config_env(self):
         # 組み込み executor では設定 env を上書きしない（既存 env をそのまま継承）
-        args = self._args(executor="kiro", model=None, poll=1.0)
+        args = self._args(executor="agent", model=None, poll=1.0)
         captured = {}
 
         def fake_popen(cmd, *a, **kw):
@@ -3957,11 +3983,11 @@ class DoctorTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_env_findings_kiro_cli_and_finite_stop(self):
-        args = _Args(os.path.join(self.tmp, "bus"), executor="kiro",
+        args = _Args(os.path.join(self.tmp, "bus"), executor="agent",
                      max_iterations=0, lease=0)
         fs = kf.doctor_env_findings(args, which=lambda _n: None)
         ids = {f["title"]: f for f in fs}
-        self.assertTrue(any("kiro-cli" in t for t in ids))          # executor=kiro → env critical
+        self.assertTrue(any("kiro-cli" in t for t in ids))          # executor=agent・agent_cli既定kiro → env critical
         self.assertTrue(any("max_iterations" in t for t in ids))    # ≤0 → config critical
         self.assertTrue(any("リース" in t for t in ids))             # lease≤0 → config warn
         # バス未作成は ensure-bus アクション付き
@@ -3974,6 +4000,15 @@ class DoctorTests(unittest.TestCase):
         args = _Args(bus)                                            # executor=stub・正の閾値
         fs = kf.doctor_env_findings(args, which=lambda n: "/usr/bin/" + n)
         self.assertEqual(fs, [])                                     # 所見なし
+
+    def test_env_findings_check_binary_matching_agent_cli(self):
+        # agent_cli=claude のときは kiro-cli ではなく claude の PATH 不在を報告する
+        # （executor/planner=agent は agent_cli に委譲するため、必須バイナリも agent_cli 依存）。
+        args = _Args(os.path.join(self.tmp, "bus"), executor="agent", agent_cli="claude")
+        fs = kf.doctor_env_findings(args, which=lambda n: None if n == "claude" else "/usr/bin/" + n)
+        titles = [f["title"] for f in fs]
+        self.assertTrue(any("claude" in t for t in titles))
+        self.assertFalse(any("kiro-cli" in t for t in titles))
 
     def test_apply_fix_ensure_bus(self):
         bus = os.path.join(self.tmp, "bus")

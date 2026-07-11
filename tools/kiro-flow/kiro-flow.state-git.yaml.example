@@ -36,6 +36,10 @@ gitlab:
   # defer_waits: true
   # max_open_issues: 0    # 同時に開ける未決着イシューの上限（0=無制限）。>0 で起票をペーシング
   # watch_interval: 90    # park 済みイシューをまとめて再確認する間隔（秒）
+  # close_issues: auto    # イシューのクローズ主体。auto=決着時に executor がクローズ（既定）／
+                          #   manual=クローズは人（承認条件が揃うと案内ノートを一度だけ投稿し、
+                          #   人がクローズするのを監視して決着。却下クローズは従来どおり executor が行う）。
+                          #   別 PC の viewer で最終確認してからクローズしたい運用なら manual。
 
 # --- 状態の git 保存・共有（GitLab バックアップ 兼 別 PC からの監視）---
 # kiro-project 側と同じリポジトリ・別 subdir。viewer は <clone>/kiro-flow をバスとして登録する。

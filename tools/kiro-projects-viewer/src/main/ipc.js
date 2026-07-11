@@ -12,6 +12,7 @@ const { GitLabClient } = require('./gitlab');
 const { openInReviewViewer } = require('./review');
 const actions = require('./actions');
 const authoring = require('./authoring');
+const agent = require('./agent');
 const reset = require('./reset');
 
 // すべてのハンドラを {ok, data|error} 形式に揃える（gitlab-review-viewer と同じ）
@@ -269,6 +270,22 @@ function registerIpcHandlers() {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     return authoring.writeProjectFile(dir, name, content);
   });
+
+  // charter.md の雛形（新規・空ファイル編集時の挿入用。authoring.buildCharter と同一の書式）
+  handle('kiro:charterTemplate', ({ name }) => ({
+    content: authoring.buildCharter({ name: String(name || '').trim() || 'project' }),
+  }));
+
+  // エージェント CLI（kiro / claude / copilot）による charter の下書き・補完。
+  // 応答テキストを返すだけで、ファイルへの書き込みは既存の kiro:writeFile /
+  // kiro:createProject（人の保存操作）に任せる。dir はエージェント解決
+  // （プロジェクトの kiro-project.yaml の agent_cli / model に従う）にだけ使う。
+  handle('agent:charter', ({ dir, mode, spec, content }) =>
+    agent.completeCharter(loadConfig(), { dir, mode, spec, content })
+  );
+
+  // ⚙ 設定画面の表示用: 今どの CLI / モデルで補完するかの解決結果（実行はしない）
+  handle('agent:resolve', ({ dir }) => agent.resolveAgent(loadConfig(), dir));
 
   // gitlab-review-viewer へレビューを引き継ぐ
   handle('review:open', ({ target }) => openInReviewViewer(loadConfig(), target || {}));

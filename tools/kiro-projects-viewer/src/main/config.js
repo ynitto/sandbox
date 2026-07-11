@@ -62,6 +62,17 @@ const DEFAULT_CONFIG = {
     // 設定ファイル lock_dir → 両ツール既定の $TMPDIR/kiro-flow-locks を使う。
     flowLockDir: '',
   },
+  agent: {
+    // charter の AI 下書き・補完に使うエージェント CLI。
+    //   '' … 自動（プロジェクトの kiro-project.yaml の agent_cli → 既定 kiro）
+    //   kiro / claude / copilot … 明示指定（プロジェクト設定より優先）
+    cli: '',
+    // エージェント CLI に渡すモデル（空 = CLI / プロジェクト設定の既定）。
+    // 例: claude は sonnet・opus、copilot は claude-sonnet-4.5・gpt-5 等。
+    model: '',
+    // 1 回の補完呼び出しのタイムアウト秒（下限 30 秒）
+    timeoutSec: 180,
+  },
   gitlab: {
     // gitlab-review-viewer と同じ形。タスクに紐づく GitLab イシューの
     // 最新状態（ラベル・state）を API で補完するのに使う。空なら

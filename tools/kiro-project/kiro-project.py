@@ -2069,10 +2069,12 @@ def _extract_json_obj(text: str) -> "dict | None":
 # （kiro-flow の _configure_thresholds と同じ流儀）。
 _AGENT_CLI: str = "kiro"
 _AGENT_TIMEOUT: float = 300.0
+# agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
+_AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot"}
 
 
 def _run_kiro_cli(prompt: str, model: "str | None") -> str:
-    """エージェント CLI（設定 agent_cli: kiro/claude）を 1 回呼び出してテキスト応答を返す。
+    """エージェント CLI（設定 agent_cli: kiro/claude/copilot）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。"""
     stdin_text = None
     if _AGENT_CLI == "claude":
@@ -2081,6 +2083,13 @@ def _run_kiro_cli(prompt: str, model: "str | None") -> str:
         if model:
             cmd += ["--model", model]
         stdin_text = prompt
+    elif _AGENT_CLI == "copilot":
+        # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
+        # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
+        cmd = ["copilot", "-s", "--allow-all-tools", "--allow-all-paths", "--no-color"]
+        if model:
+            cmd += ["--model", model]
+        cmd += ["-p", prompt]
     else:
         cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
         if model:
@@ -2199,13 +2208,13 @@ def by_priority_then_age(ready: "list[Task]") -> "list[Task]":
 
 
 def prioritize(tasks, policy, planner, model=None, ranker=None) -> "list[Task]":
-    """planner=none: priority＋古さ。planner=kiro: エージェント（priority も加味）。policy が最終上書き。"""
+    """planner=none: priority＋古さ。planner=agent: エージェント委譲（priority も加味）。policy が最終上書き。"""
     ready = ready_after_deps(tasks)  # mtime 昇順（最古優先）。依存(after)未達は除外
     # 0/1 件は並べ替えの余地が無く順序が自明＝planner を問わず LLM 優先順位付けを呼ばない
-    # （kiro-cli 起動のコスト・レイテンシを丸ごと省く）。policy（pin/defer）は後段で必ず効く。
+    # （エージェント CLI 起動のコスト・レイテンシを丸ごと省く）。policy（pin/defer）は後段で必ず効く。
     if planner == "none" or len(ready) <= 1:
         base = by_priority_then_age(ready)
-    else:  # kiro（エージェント順位付け。失敗時は priority＋古さにフォールバック）
+    else:  # agent（エージェント委譲の順位付け。失敗時は priority＋古さにフォールバック）
         rank = (ranker or rank_agent)(ready, model)
         base = rank if rank is not None else by_priority_then_age(ready)
     return apply_policy_order(base, policy)
@@ -2893,7 +2902,7 @@ def resolve_workspace(cfg: "Config", task: Task, policy: "Policy") -> "tuple[dic
     sp = _owns_infer(task, workspaces)            # 3. charter owns: パス推定（決定論）
     if sp:
         return sp, "owns"
-    if cfg.route_planner == "kiro" and workspaces:  # 4. auto-route エージェント（曖昧時のみ）
+    if cfg.route_planner == "agent" and workspaces:  # 4. auto-route エージェント（曖昧時のみ）
         nm = route_agent(cfg, task, workspaces)
         if nm and smap.get(nm) and not _is_reference_repo(smap[nm]):
             return smap[nm], "agent"
@@ -3288,8 +3297,8 @@ _REJECT_MARK = "[gitlab-reject]"
 
 def executor_delegates(cfg: "Config") -> bool:
     """この executor が外部（人）へ委譲し、却下→やり直しのコメント連携を要するか。
-    組み込み kiro/stub はローカル完結＝対象外。"""
-    return cfg.executor not in ("kiro", "stub")
+    組み込み agent/stub はローカル完結＝対象外。"""
+    return cfg.executor not in ("agent", "stub")
 
 
 def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
@@ -3489,16 +3498,16 @@ class Config:
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
     lock_dir: "str | None" = None   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     kiro_flow: "str | None" = None
-    planner: str = "kiro"          # 優先順位付け戦略: kiro（エージェント）/ none（priority＋古さ）
+    planner: str = "agent"         # 優先順位付け戦略: agent（エージェント委譲）/ none（priority＋古さ）
     flow_planner: str = "flow-planner"  # kiro-flow run に渡す planner
-    # ルーティング: タスク → ちょうど1つの書込先ワークスペースを決める自動判断。kiro=曖昧時に
-    # LLM で推定（charter owns: と route: の決定論を先に適用）/ none=決定論のみ（LLM 推定しない）。
-    route_planner: str = "kiro"
+    # ルーティング: タスク → ちょうど1つの書込先ワークスペースを決める自動判断。agent=曖昧時に
+    # エージェント委譲で推定（charter owns: と route: の決定論を先に適用）/ none=決定論のみ（推定しない）。
+    route_planner: str = "agent"
     default_workspace: str = ""    # route で決まらないタスクの既定ワークスペース（charter の name/url）。空で無効
     location: str = "auto"         # act の実行モード: auto / local / daemon / remote
-    executor: str = "kiro"
+    executor: str = "agent"
     model: "str | None" = None
-    agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro（kiro-cli）/ claude（Claude Code）
+    agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro / claude / copilot
     agent_timeout: float = 300.0   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）
     granularity: str = "coarse"
@@ -6026,14 +6035,16 @@ def _tail_text(path: "Path | None", n_lines: int = 40, n_chars: int = 2000) -> s
 def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
     """環境/設定の決定的チェック（LLM 不要）。fix_action を持つものは --fix で修正できる。"""
     findings: list[dict] = []
-    needs_cli = cfg.planner == "kiro" or cfg.executor == "kiro" or cfg.auto_adjudicate
-    if needs_cli and not which("kiro-cli"):
+    needs_cli = cfg.planner == "agent" or cfg.executor == "agent" or cfg.auto_adjudicate
+    agent_bin = _AGENT_CLI_BINARIES.get(cfg.agent_cli, cfg.agent_cli)
+    if needs_cli and not which(agent_bin):
         findings.append({
             "category": "env", "severity": "critical",
-            "title": "kiro-cli が PATH に見つからない",
+            "title": f"{agent_bin} が PATH に見つからない",
             "evidence": (f"planner={cfg.planner} executor={cfg.executor} "
-                         f"auto_adjudicate={cfg.auto_adjudicate} は kiro-cli を要求する"),
-            "fix": "kiro-cli をインストールして PATH を通す（暫定回避は --planner none / --executor stub）"})
+                         f"auto_adjudicate={cfg.auto_adjudicate} agent_cli={cfg.agent_cli} は "
+                         f"{agent_bin} を要求する"),
+            "fix": f"{agent_bin} をインストールして PATH を通す（暫定回避は --planner none / --executor stub）"})
     if cfg.executor != "stub" and not (cfg.kiro_flow or which("kiro-flow")):
         findings.append({
             "category": "env", "severity": "warn",
@@ -8180,16 +8191,17 @@ DEFAULT_CONFIG_NAMES = ["kiro-project.yaml", "kiro-project.yml", "kiro-project.j
 CONFIG_DEFAULTS = {
     "root": ".",
     "workdir": ".",
-    "executor": "kiro",
-    "planner": "kiro",
+    "executor": "agent",
+    "planner": "agent",
     "flow_planner": "flow-planner",
-    "route_planner": "kiro",
+    "route_planner": "agent",
     "default_workspace": "",
     "location": "auto",
     "model": None,
-    # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）。
-    # kiro-project 自身の LLM 呼び出し（分解・優先順位・裁定・ルーティング）に効く。実行層
-    # kiro-flow の CLI は kiro-flow 側の設定（flow_config / kiro-flow.yaml の agent_cli）で揃える。
+    # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）/
+    # copilot（GitHub Copilot CLI `copilot -p`）。kiro-project 自身の LLM 呼び出し
+    # （分解・優先順位・裁定・ルーティング）に効く。実行層 kiro-flow の CLI は
+    # kiro-flow 側の設定（flow_config / kiro-flow.yaml の agent_cli）で揃える。
     "agent_cli": "kiro",
     "agent_timeout": 300.0,   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）。
@@ -8355,7 +8367,7 @@ def build_config(args) -> Config:
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
-        route_planner=str(getattr(args, "route_planner", "kiro") or "kiro"),
+        route_planner=str(getattr(args, "route_planner", "agent") or "agent"),
         default_workspace=str(getattr(args, "default_workspace", "") or ""),
         location=args.location, executor=args.executor,
         model=args.model,
@@ -8445,9 +8457,9 @@ def _add_common(sp):
     sp.add_argument("--workdir", default=None,
                     help="act / verify の作業ディレクトリ（root 相対、既定 . = root）")
     sp.add_argument("--bus", default=None, help="kiro-flow バス（root 相対、既定 <root>/bus）")
-    sp.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude"],
+    sp.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude", "copilot"],
                     help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。kiro=kiro-cli chat（既定）/ "
-                         "claude=Claude Code ヘッドレス（claude -p）")
+                         "claude=Claude Code ヘッドレス（claude -p）/ copilot=GitHub Copilot CLI（copilot -p）")
     sp.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                     help="バックログ分解の粒度（設定 granularity と同義）。coarse=ストーリー相当（既定）/ "
                          "fine=単機能 / finest=1ファイル/1関数の最小単位")
@@ -8475,15 +8487,15 @@ def _add_common(sp):
                     help="kiro-flow daemon ロックの置き場（設定ファイル lock_dir と同義）。"
                          "外部起動の daemon を発見するため kiro-flow 側と一致させる")
     sp.add_argument("--kiro-flow", default=None)
-    sp.add_argument("--planner", default=None, choices=["kiro", "none"],
-                    help="優先順位付け: kiro=エージェント（priority 加味）/ none=priority＋古さ（既定 kiro）")
+    sp.add_argument("--planner", default=None, choices=["agent", "none"],
+                    help="優先順位付け: agent=エージェント委譲（priority 加味）/ none=priority＋古さ（既定 agent）")
     sp.add_argument("--flow-planner", default=None,
-                    choices=["flow-planner", "kiro", "stub"], help="kiro-flow run に渡す planner（既定 flow-planner）")
+                    choices=["flow-planner", "agent", "stub"], help="kiro-flow run に渡す planner（既定 flow-planner）")
     sp.add_argument("--location", default=None,
                     choices=["auto", "local", "daemon", "remote"], help="act の実行モード（既定 auto）")
     sp.add_argument("--executor", default=None,
-                    help="act の実体（kiro-flow run へ委譲）。組み込み kiro / stub、または kiro-flow の "
-                         "executor プラグイン名（例 gitlab）/ .py パスを指定できる（既定 kiro）")
+                    help="act の実体（kiro-flow run へ委譲）。組み込み agent / stub、または kiro-flow の "
+                         "executor プラグイン名（例 gitlab）/ .py パスを指定できる（既定 agent）")
     sp.add_argument("--model", default=None)
     sp.add_argument("--max-iterations", type=int, default=None)
     sp.add_argument("--max-cycles", type=int, default=None, help="予算: サイクル数（既定 20）")

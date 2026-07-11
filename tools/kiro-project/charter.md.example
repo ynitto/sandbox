@@ -78,7 +78,7 @@ kiro-project の charter.md 規約（プロジェクト憲章の正典）
 #   1. タスクの `- workspace: <name>`（明示。enqueue --workspace でも可）
 #   2. policy.md の `route: <パターン> -> <name>`（決定論ルール）
 #   3. この owns: のパスグロブと、タスクの `- paths:` ヒントの一致（決定論推定）
-#   4. auto-route（route_planner: kiro のとき LLM が desc/owns から1つ選ぶ）
+#   4. auto-route（route_planner: agent のとき LLM が desc/owns から1つ選ぶ）
 #   5. default_workspace 設定 / 書込先候補が1つだけならそれ
 #   決定はタスク md（`- workspace:` / `- routed_by:`）へ書き戻され、安定・監査可能になる。
 #   1 つの kiro-flow run（=バックログ単位）が書き込むのはちょうど1リポジトリ。複数 repo へまたがる変更は

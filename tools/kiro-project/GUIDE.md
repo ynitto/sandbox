@@ -64,7 +64,7 @@ kiro-project audit               # 無人運用に値するか L0–L3 で採点
 **設定**:
 ```yaml
 level: assisted        # 実行はするが done は全件 review（approve 待ち）
-executor: kiro         # 実エージェント（本番の act）
+executor: agent         # 実エージェント（本番の act）
 max_cycles: 5          # 1 run の処理数を絞って様子を見る
 do_archive: true       # done は archive/ へ退避（誤りを後から追える）
 ```
@@ -447,8 +447,8 @@ kiro-project needs           # 人の判断待ち（承認は GitLab の status:
 |------|------|---------|------|
 | `level` | `unattended` | L0–L1 | 最初は `report`→`assisted` で信頼を積む。タスク毎は `- level:` で上書き |
 | `auto_level` / `auto_level_max` | `false` / `assisted` | L2+ | `- track:` 群を実績連動で自動昇格。無人化到達は max を `unattended` に |
-| `planner` | `kiro` | L0 | 様子見は `none`（決定的・エージェント不要） |
-| `executor` | `kiro` | L0 | 下見は `stub`（無料・無害） |
+| `planner` | `agent` | L0 | 様子見は `none`（決定的・エージェント不要） |
+| `executor` | `agent` | L0 | 下見は `stub`（無料・無害） |
 | `watch` / `poll` | `false` / `5.0` | L2+ | 常駐監視。idle 中はエージェント非起動 |
 | `max_cycles` | `20` | L1 | 試運転は `5` 程度に絞る |
 | `verify_confirm` | `1` | L2+ | flake が疑わしければ `2`（コストは回数分） |

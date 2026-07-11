@@ -134,11 +134,12 @@ CONFIG_DEFAULTS = {
     "lease": 1800.0,
     "poll": 2.0,
     "model": None,
-    # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）。
-    # planner・executor・verify 等、このツールが行う LLM 呼び出しすべてに効く。
+    # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）/
+    # copilot（GitHub Copilot CLI `copilot -p`）。planner・executor・verify 等、
+    # このツールが行う LLM 呼び出しすべてに効く。
     "agent_cli": "kiro",
     "planner": "flow-planner",
-    "executor": "kiro",
+    "executor": "agent",
     "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     "max_workers": 4,
@@ -2811,8 +2812,10 @@ _EXECUTOR_DIR: "str | None" = None
 # None のままなら _kiro_timeout / _stub_sleep が環境変数→組み込み既定にフォールバックする。
 _KIRO_TIMEOUT: "float | None" = None
 _STUB_SLEEP_MAX: "float | None" = None
-# LLM 実行に使うエージェント CLI（設定 agent_cli: kiro/claude）。
+# LLM 実行に使うエージェント CLI（設定 agent_cli: kiro/claude/copilot）。
 _AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
+# agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
+_AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot"}
 
 
 def _configure_thresholds(args) -> None:
@@ -2854,7 +2857,7 @@ def _kiro_argv_limit() -> int:
 
 
 def run_kiro(prompt: str, model: str | None) -> str:
-    """エージェント CLI（設定 agent_cli: kiro/claude）を 1 回呼び出してテキスト応答を返す。
+    """エージェント CLI（設定 agent_cli: kiro/claude/copilot）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出しはすべてここを通る（planner / executor / verify / 裁定）。"""
     stdin_text = None
     spill = None
@@ -2865,7 +2868,13 @@ def run_kiro(prompt: str, model: str | None) -> str:
             cmd += ["--model", model]
         stdin_text = prompt
     else:
-        cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
+        if _AGENT_CLI == "copilot":
+            # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
+            # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
+            # プロンプトは -p の引数（argv）なので kiro と同じスピル退避を適用する。
+            cmd = ["copilot", "-s", "--allow-all-tools", "--allow-all-paths", "--no-color"]
+        else:
+            cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
         if model:
             cmd += ["--model", model]
         # プロンプトが大きすぎて argv 長制限に達する恐れがあれば、一時ファイルへ退避して
@@ -2874,10 +2883,9 @@ def run_kiro(prompt: str, model: str | None) -> str:
             fd, spill = tempfile.mkstemp(prefix="kiro-flow-prompt-", suffix=".txt")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(prompt)
-            cmd.append("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
-                       f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
-        else:
-            cmd.append(prompt)
+            prompt = ("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
+                      f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
+        cmd += (["-p", prompt] if _AGENT_CLI == "copilot" else [prompt])
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
                               timeout=_kiro_timeout())
@@ -3031,11 +3039,12 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
 
 
 # --------------------------------------------------------------------------
-# executor プラグイン — kiro/stub は組み込み、それ以外はプラグインを動的ロードする
+# executor プラグイン — agent/stub は組み込み、それ以外はプラグインを動的ロードする
 #
 #   kiro-loop の event_hook と同じ流儀で、executor をプラグイン化する。`--executor`
 #   （設定 executor）には次のいずれかを指定できる:
-#     - "kiro" / "stub"  : 組み込み executor
+#     - "agent" / "stub"  : 組み込み executor（agent はエージェント CLI に委譲。設定 agent_cli
+#       で kiro/claude/copilot を切替）
 #     - プラグイン名（例 "gitlab"）: 検索ディレクトリの executors/<name>.py を解決
 #     - .py への明示パス : そのファイルをプラグインとしてロード
 #   プラグインは `execute(kind, goal, dep_results, model, art_dir, dep_arts)` を公開し、
@@ -3048,7 +3057,7 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
 # --------------------------------------------------------------------------
 # 組み込み executor の名前 → 実体は呼び出し時に globals() から解決する
 # （テストの monkeypatch やホットリロードが効くよう、import 時の参照を握らない）。
-BUILTIN_EXECUTORS = {"kiro": "execute_kiro", "stub": "execute_stub"}
+BUILTIN_EXECUTORS = {"agent": "execute_kiro", "stub": "execute_stub"}
 
 
 def _executor_accepts(execute, name: str) -> bool:
@@ -3172,7 +3181,7 @@ def resolve_executor_config_json(args) -> "str | None":
     worker 起動時に環境変数 `KIRO_FLOW_EXECUTOR_CONFIG` として明示的に渡し、worker が `--config` を
     再解決できない/別の設定を拾う場合でも、親が解決した設定（例 gitlab の repo_url/conn_label）を
     確実に届けるために使う。"""
-    spec = getattr(args, "executor", None) or "kiro"
+    spec = getattr(args, "executor", None) or "agent"
     if spec in BUILTIN_EXECUTORS:
         return None
     cfg = getattr(args, spec, None)
@@ -3184,7 +3193,7 @@ def resolve_executor_config_json(args) -> "str | None":
 def make_executor(args):
     """args.executor を解決し、execute(kind, goal, dep_results, model, art_dir, dep_arts)
     形の呼び出し可能オブジェクトを返す。プラグインのときは設定ブロックを環境変数で渡す。"""
-    spec = getattr(args, "executor", None) or "kiro"
+    spec = getattr(args, "executor", None) or "agent"
     if spec in BUILTIN_EXECUTORS:
         return globals()[BUILTIN_EXECUTORS[spec]]
     path = _resolve_executor_plugin(spec)
@@ -3217,9 +3226,9 @@ def make_executor(args):
 # workspace を finalize する必要がない（成果はマージ済み MR にある）ため、service_waits が
 # worker/clone 無しで終端 result を材料化できるのが成立の鍵。
 def _executor_module(args):
-    """executor プラグインのモジュールを返す（組み込み kiro/stub や未解決は None）。
+    """executor プラグインのモジュールを返す（組み込み agent/stub や未解決は None）。
     service_waits が poll()/on_cancel() フックを取り出すために使う。"""
-    spec = getattr(args, "executor", None) or "kiro"
+    spec = getattr(args, "executor", None) or "agent"
     if spec in BUILTIN_EXECUTORS:
         return None
     path = _resolve_executor_plugin(spec)
@@ -3242,7 +3251,7 @@ def executor_hook(args, name: str):
 def _executor_cfg(args) -> dict:
     """executor 名と同名の設定ブロック（例 gitlab:）を dict で返す。max_open_issues /
     watch_interval など park & poll のパラメータをここから読む。無ければ空 dict。"""
-    spec = getattr(args, "executor", None) or "kiro"
+    spec = getattr(args, "executor", None) or "agent"
     cfg = getattr(args, spec, None)
     return cfg if isinstance(cfg, dict) else {}
 
@@ -3792,7 +3801,7 @@ def _plan_strategy(args):
     gran = getattr(args, "granularity", "finest")
     if args.planner == "flow-planner":
         return plan_strategy_flow_planner(args.request, args.model, review, gran)
-    if args.planner == "kiro":
+    if args.planner == "agent":
         return plan_strategy_kiro(args.request, args.model, review, gran)
     return plan_strategy_stub(args.request, review, gran)
 
@@ -4044,7 +4053,7 @@ def cmd_work(args) -> int:
     idle_exit = getattr(args, "idle_exit", False)
     log(who, f"ワーカー起動 (executor={args.executor}, keep_alive={args.keep_alive}, "
              f"idle_exit={idle_exit})")
-    # executor を一度だけ解決する（組み込み kiro/stub or プラグイン）。
+    # executor を一度だけ解決する（組み込み agent/stub or プラグイン）。
     execute = make_executor(args)
     # park & poll: 親（daemon/run）が service_waits で面倒を見るときだけ deferral を有効化する。
     # 無効時（standalone work 等）は executor が従来どおりブロック待機へフォールバックする。
@@ -5386,15 +5395,18 @@ def _doctor_norm(title: str) -> str:
 def doctor_env_findings(args, which=shutil.which) -> "list[dict]":
     """環境/設定の決定的チェック（LLM 不要）。fix_action を持つものは --fix で修正できる。"""
     findings: list[dict] = []
-    needs_cli = (getattr(args, "executor", "kiro") == "kiro"
-                 or getattr(args, "planner", "") == "kiro")
-    if needs_cli and not which("kiro-cli"):
+    needs_cli = (getattr(args, "executor", "agent") == "agent"
+                 or getattr(args, "planner", "") == "agent")
+    agent_cli = str(getattr(args, "agent_cli", "kiro") or "kiro")
+    agent_bin = _AGENT_CLI_BINARIES.get(agent_cli, agent_cli)
+    if needs_cli and not which(agent_bin):
         findings.append({
             "category": "env", "severity": "critical",
-            "title": "kiro-cli が PATH に見つからない",
+            "title": f"{agent_bin} が PATH に見つからない",
             "evidence": (f"executor={getattr(args, 'executor', '?')} "
-                         f"planner={getattr(args, 'planner', '?')} は kiro-cli を要求する"),
-            "fix": "kiro-cli をインストールして PATH を通す（暫定回避は --executor stub / --planner stub）"})
+                         f"planner={getattr(args, 'planner', '?')} agent_cli={agent_cli} は "
+                         f"{agent_bin} を要求する"),
+            "fix": f"{agent_bin} をインストールして PATH を通す（暫定回避は --executor stub / --planner stub）"})
     if getattr(args, "git", None) and not which("git"):
         findings.append({
             "category": "env", "severity": "critical",
@@ -6045,9 +6057,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="参照リポジトリ（読むだけ・書き込まない／複数可）。素の URL でも JSON "
                         "（{url,path,base,desc}）でも可。エージェントのプロンプトと gitlab イシュー本文に"
                         "参照節として載る（clone はしない）")
-    p.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude"],
+    p.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude", "copilot"],
                    help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。kiro=kiro-cli chat（既定）/ "
-                        "claude=Claude Code ヘッドレス（claude -p）")
+                        "claude=Claude Code ヘッドレス（claude -p）/ copilot=GitHub Copilot CLI（copilot -p）")
     p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                    help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
                         "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")
@@ -6074,9 +6086,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("request", nargs="?", default=None,
                      help="ワークフローへの要求（再開時は省略可）")
     run.add_argument("--workers", type=int, default=None)
-    run.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
+    run.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)
     run.add_argument("--executor", default=None,
-                     help="ワーカーバス: 組み込み kiro / stub、または executor プラグイン名"
+                     help="ワーカーバス: 組み込み agent / stub、または executor プラグイン名"
                           "（例 gitlab）/ .py パス（opt-in。gitlab はタスクを GitLab イシューに"
                           "して委譲し approved まで待つ）")
     run.add_argument("--max-iterations", type=int, default=None,
@@ -6099,10 +6111,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     orch = sub.add_parser("orchestrate", help="計画役")
     orch.add_argument("--request", required=True)
-    orch.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
+    orch.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)
     orch.add_argument("--executor", default=None,
-                      help="ワーカーバス（kiro/stub/プラグイン名/.py パス）。"
-                           "評価役（evaluator）は stub 以外ならローカル kiro で判断")
+                      help="ワーカーバス（agent/stub/プラグイン名/.py パス）。"
+                           "評価役（evaluator）は stub 以外ならローカルのエージェント CLI で判断")
     orch.add_argument("--max-iterations", type=int, default=None)
     orch.add_argument("--max-fanout", type=int, default=None)
     orch.add_argument("--max-retries", type=int, default=None)
@@ -6118,7 +6130,7 @@ def build_parser() -> argparse.ArgumentParser:
     work = sub.add_parser("work", help="ワーカー役")
     work.add_argument("--node-id", default=f"{socket.gethostname()}-{os.getpid()}")
     work.add_argument("--executor", default=None,
-                      help="ワーカーバス（kiro/stub/プラグイン名/.py パス）")
+                      help="ワーカーバス（agent/stub/プラグイン名/.py パス）")
     work.add_argument("--model_opt", dest="model", default=None)
     work.add_argument("--poll", type=float, default=None)
     work.add_argument("--keep-alive", action="store_true", help="run 完了後も待機し続ける")
@@ -6133,9 +6145,9 @@ def build_parser() -> argparse.ArgumentParser:
     dm.add_argument("--max-runs", dest="max_runs", type=int, default=None,
                     help="同時に実行する run（orchestrator）の上限（既定 8）。全 park（承認待ち）の "
                          "run は数えない。超過要求は inbox に残り枠が空き次第受理。0 以下で無制限")
-    dm.add_argument("--planner", choices=["kiro", "stub", "flow-planner"], default=None)
+    dm.add_argument("--planner", choices=["agent", "stub", "flow-planner"], default=None)
     dm.add_argument("--executor", default=None,
-                    help="ワーカーバス（kiro/stub/プラグイン名/.py パス）")
+                    help="ワーカーバス（agent/stub/プラグイン名/.py パス）")
     dm.add_argument("--max-iterations", type=int, default=None)
     dm.add_argument("--max-fanout", type=int, default=None)
     dm.add_argument("--max-retries", type=int, default=None)

@@ -137,13 +137,13 @@ class TestPrioritize(unittest.TestCase):
             return list(reversed(ready))
 
         one = [km.Task(id="solo", title="x")]
-        order = km.prioritize(one, km.Policy(), planner="kiro", ranker=ranker)
+        order = km.prioritize(one, km.Policy(), planner="agent", ranker=ranker)
         self.assertEqual([t.id for t in order], ["solo"])
         self.assertEqual(called["n"], 0, "1 件では ranker（LLM）を呼ばない")
 
         # 2 件になると従来どおり ranker が呼ばれる（回帰防止）
         two = [km.Task(id="a", title="a"), km.Task(id="b", title="b")]
-        order2 = km.prioritize(two, km.Policy(), planner="kiro", ranker=ranker)
+        order2 = km.prioritize(two, km.Policy(), planner="agent", ranker=ranker)
         self.assertEqual(called["n"], 1)
         self.assertEqual([t.id for t in order2], ["b", "a"])
 
@@ -811,7 +811,7 @@ class TestDoctor(unittest.TestCase):
 
     def test_env_findings_detect_missing_kiro_cli(self):
         with tempfile.TemporaryDirectory() as d:
-            cfg = self._cfg(d, planner="kiro")            # planner=kiro は kiro-cli を要求
+            cfg = self._cfg(d, planner="agent")            # planner=agent はエージェント CLI を要求
             fs = km.doctor_env_findings(cfg, which=lambda _n: None)   # 何も PATH に無い
             titles = [f["title"] for f in fs]
             self.assertTrue(any("kiro-cli" in t for t in titles))
@@ -830,6 +830,23 @@ class TestDoctor(unittest.TestCase):
             # kiro-flow/git あり・ディレクトリ作成済み → env/config の致命所見は出ない
             self.assertFalse(any(f["severity"] == "critical" for f in fs))
             self.assertFalse(any(f.get("fix_action") == "create-dirs" for f in fs))
+
+    def test_env_findings_check_binary_matching_agent_cli(self):
+        # agent_cli=claude のときは kiro-cli ではなく claude の PATH 不在を報告する
+        # （executor/planner=agent は agent_cli に委譲するため、必須バイナリも agent_cli 依存）。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, planner="agent", agent_cli="claude")
+            fs = km.doctor_env_findings(cfg, which=lambda n: None if n == "claude" else "/usr/bin/" + n)
+            titles = [f["title"] for f in fs]
+            self.assertTrue(any("claude" in t for t in titles))
+            self.assertFalse(any("kiro-cli" in t for t in titles))
+
+    def test_env_findings_check_binary_matching_agent_cli_copilot(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d, executor="agent", agent_cli="copilot")
+            fs = km.doctor_env_findings(cfg, which=lambda n: None if n == "copilot" else "/usr/bin/" + n)
+            titles = [f["title"] for f in fs]
+            self.assertTrue(any("copilot" in t for t in titles))
 
     def test_parse_findings_filters_unknown_categories(self):
         out = ('説明文… [{"category":"program","severity":"critical","title":"NPE",'
@@ -2338,6 +2355,20 @@ class TestAgentCliAndGranularity(unittest.TestCase):
         self.assertEqual(calls["input"], "プロンプト")     # stdin 渡し
         self.assertNotIn("プロンプト", calls["cmd"])       # argv には載せない
 
+    def test_run_kiro_cli_copilot_uses_prompt_flag(self):
+        calls, fake = self._capture_run()
+        with mock.patch.object(km, "_AGENT_CLI", "copilot"), \
+             mock.patch.object(km.subprocess, "run", side_effect=fake):
+            out = km._run_kiro_cli("プロンプト", "gpt-5")
+        self.assertEqual(out, "ok")
+        self.assertEqual(calls["cmd"][0], "copilot")
+        self.assertIn("-s", calls["cmd"])                  # 応答本文のみ
+        self.assertIn("--allow-all-tools", calls["cmd"])   # 非対話モードの必須フラグ
+        i = calls["cmd"].index("-p")
+        self.assertEqual(calls["cmd"][i + 1], "プロンプト")  # -p の引数で渡す
+        self.assertIn("--model", calls["cmd"])
+        self.assertIsNone(calls["input"])
+
     def test_build_config_sets_agent_globals_and_fields(self):
         orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
         try:
@@ -2829,8 +2860,8 @@ class TestConfigFile(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "kiro-project.json"
             p.write_text('{"executor":"stub","planner":"none"}', encoding="utf-8")
-            ns = self._resolve(str(p), executor="kiro")   # CLI 明示は維持される
-            self.assertEqual(ns.executor, "kiro")          # CLI 勝ち
+            ns = self._resolve(str(p), executor="agent")   # CLI 明示は維持される
+            self.assertEqual(ns.executor, "agent")         # CLI 勝ち
             self.assertEqual(ns.planner, "none")           # config 採用
 
     def test_bus_config_is_honored(self):
@@ -2855,7 +2886,7 @@ class TestConfigFile(unittest.TestCase):
     def test_builtin_defaults_when_no_config(self):
         ns = self._resolve(None)
         self.assertEqual((ns.executor, ns.planner, ns.poll, ns.max_cycles, ns.location),
-                         ("kiro", "kiro", 5.0, 20, "auto"))
+                         ("agent", "agent", 5.0, 20, "auto"))
         self.assertEqual((ns.auto_adjudicate, ns.adjudicate_max), (True, 1))  # 既定 on
 
     def test_yaml_config_when_pyyaml_available(self):
@@ -4758,7 +4789,7 @@ class TestGitlabRejectRetry(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_executor_delegates(self):
-        self.assertFalse(km.executor_delegates(cfg_for(self.tmp, executor="kiro")))
+        self.assertFalse(km.executor_delegates(cfg_for(self.tmp, executor="agent")))
         self.assertTrue(km.executor_delegates(cfg_for(self.tmp, executor="gitlab")))
 
     def test_build_cmd_sets_max_retries_zero_for_gitlab(self):
@@ -4768,7 +4799,7 @@ class TestGitlabRejectRetry(unittest.TestCase):
         self.assertIn("--max-retries", cmd)
         self.assertEqual(cmd[cmd.index("--max-retries") + 1], "0")
         # kiro executor では付けない
-        cmd2 = km.build_kiro_flow_cmd(t, cfg_for(self.tmp, executor="kiro"))
+        cmd2 = km.build_kiro_flow_cmd(t, cfg_for(self.tmp, executor="agent"))
         self.assertNotIn("--max-retries", cmd2)
 
     def test_read_reject_guidance_extracts_marker(self):
