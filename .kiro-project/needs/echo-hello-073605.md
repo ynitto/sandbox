@@ -3,28 +3,46 @@ status: proposed
 date: 2026-07-12
 decision-makers: [human]
 task-id: echo-hello-073605
-kind: plan-review
+kind: review
+risk: med
 ---
 
-# 実行前レビュー: echo-hello-073605 — 受入条件を満たす: echo "hello"
+# 要対応: echo-hello-073605 — 受入条件を満たす: echo "hello"
 
 ## Context and Problem Statement
 
-- なぜ: 新規タスクの実行前レビュー（承認されるまで実行しません）
-- 状態: proposed（実行前レビュー待ち・未実行）
+- なぜ: verify=PASS だが 承認ゲート対象（review/policy.gate）。approve で done 確定、フィードバック記入で差し戻し（再実行）
+- 状態: review（検収待ち・verify=PASS）
 
-## タスク定義（レビュー対象）
-- title  : 受入条件を満たす: echo "hello"
-- verify : `echo "hello"`
-- charter: v2
-- assess: c=1 r=1 a=1
-- source : acceptance
+## 判断材料（成果物の所在・差分・検証）
+- 成果物: git: 未コミットの変更あり
+- 所在: /Users/nitto/Workspace/sandbox/.kiro-project
+- 実行先: local
+- 差分: 13 ファイル
+    - .kiro-project/bus/runs/run-20260712-073955-5074/claims/gen1/worker-1.json
+    - .kiro-project/bus/runs/run-20260712-073955-5074/claims/verify1/worker-1.json
+    - .kiro-project/bus/runs/run-20260712-073955-5074/events/orchestrator.jsonl
+    - .kiro-project/bus/runs/run-20260712-073955-5074/events/worker-1.jsonl
+    - .kiro-project/bus/runs/run-20260712-073955-5074/final.json
+    - .kiro-project/bus/runs/run-20260712-073955-5074/graph.json
+    - .kiro-project/bus/runs/run-20260712-073955-5074/meta.json
+    - .kiro-project/bus/runs/run-20260712-073955-5074/results/gen1.json
+    - .kiro-project/bus/runs/run-20260712-073955-5074/results/verify1.json
+    - .kiro-project/bus/runs/run-20260712-073955-5074/tasks/gen1.json
+    - .kiro-project/bus/runs/run-20260712-073955-5074/tasks/verify1.json
+    - .kiro-project/claims/echo-hello-073605.lock
+    - …他 1 件
+- 検証: `echo "hello"` → PASS（exit=0 hello）
+
+## リスク
+- 総合: 中（protect/avoid=高、リトライ・大差分・合成 verify=中）
+- 変更ファイル: 13 件（.kiro-project/bus/runs/run-20260712-073955-5074/claims/gen1/worker-1.json, .kiro-project/bus/runs/run-20260712-073955-5074/claims/verify1/worker-1.json, .kiro-project/bus/runs/run-20260712-073955-5074/events/orchestrator.jsonl, .kiro-project/bus/runs/run-20260712-073955-5074/events/worker-1.jsonl, .kiro-project/bus/runs/run-20260712-073955-5074/final.json 他 8 件）
+- 投入時採点: c=1 r=1 a=1（c=複雑さ r=リスク a=曖昧さ・各1-3）
 
 ## Decision Outcome
 
-<!-- 人の決定の記入欄。承認は空のまま [x]、差し戻しは修正指示を書いて [x]。 -->
+<!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->
 - [ ] 確定（このボックスを [x] にして保存すると取り込みます）
 
-<!-- 承認して実行を許可するなら `kiro-project approve echo-hello-073605`（または空のまま [x]）。
-     差し戻す（kiro-project にタスクを修正させる）なら下に修正指示を書いて [x]。
-     却下（廃止して関連バックログを再計画）なら `kiro-project reject echo-hello-073605 --reason ...`。 -->
+<!-- 承認して done 確定するなら `kiro-project approve echo-hello-073605`。
+     差し戻すなら下に修正方針を書いて [x] にする（再実行されます）。 -->

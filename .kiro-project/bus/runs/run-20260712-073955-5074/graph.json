@@ -1,0 +1,25 @@
+{
+  "strategy": {
+    "patterns": [
+      "adversarial-verification"
+    ],
+    "parallelism": 9,
+    "review": false,
+    "reason": "stub heuristic → adversarial-verification（粒度 finest）"
+  },
+  "nodes": {
+    "gen1": {
+      "goal": "受入条件を満たす: echo \"hello\"",
+      "deps": [],
+      "kind": "generate"
+    },
+    "verify1": {
+      "goal": "成果を批判的に検証",
+      "deps": [
+        "gen1"
+      ],
+      "kind": "verify"
+    }
+  },
+  "iteration": 0
+}
