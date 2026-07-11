@@ -12,3 +12,4 @@
 | T1 | 何かを実装 | PASS | (変更なし) | 2026-07-11 10:18:31 |
 | .kiro-project | [project] sandbox | PASS | acceptance 2/2 PASS | 2026-07-11 14:59:53 |
 | .kiro-project | [project] sandbox | PASS | acceptance 2/2 PASS | 2026-07-11 16:26:04 |
+| .kiro-project-v2 | [project] sandbox | PASS | acceptance 2/2 PASS | 2026-07-11 16:41:12 |
