@@ -18,7 +18,8 @@
 # ── 前提の配置（サーバ PC = Windows + WSL）──
 #   ★状態の実体（プロジェクトルート / bus）は WSL 側ファイルシステム（ext4）に置く。
 #     /mnt/c 配下（DrvFS）は遅く flock 系ロックも不安定なため、常駐の状態置き場にしない。
-#   設定ファイルは <root>/.kiro/kiro-project.yaml（プロジェクトに同梱）か ~/.kiro/ に置く。
+#   設定ファイルは <root>/kiro-project.yaml（ルート直下＝プロジェクトのマニフェスト。推奨）
+#   か <root>/.kiro/kiro-project.yaml か ~/.kiro/ に置く。
 #
 # ── 起動（WSL・プロジェクトルートで）──
 #   kiro-flow daemon &        # 実行層（同じバスで常駐。kiro-flow.state-git.yaml.example を読む）

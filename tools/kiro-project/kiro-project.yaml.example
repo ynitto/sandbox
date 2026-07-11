@@ -2,12 +2,14 @@
 # ファイル名: kiro-project.yaml
 #
 # このファイルをどこかに置いて --config で指定するか、
-# ./.kiro/ か ~/.kiro/ に置くと自動検出されます（kiro-flow と同じ .kiro ディレクトリ）。
+# カレントディレクトリ（=プロジェクトルート）直下・./.kiro/・~/.kiro/ に置くと自動検出されます。
 #
 # 検索順序（フォールバック）:
 #   1. --config オプションで明示指定したパス
-#   2. カレントディレクトリの .kiro/kiro-project.yaml / .yml / .json
-#   3. ~/.kiro/kiro-project.yaml / .yml / .json
+#   2. カレントディレクトリの kiro-project.yaml / .yml / .json（1 root = 1 プロジェクトの
+#      マニフェスト。kiro-projects-viewer の自動発見マーカーも兼ねる）
+#   3. カレントディレクトリの .kiro/kiro-project.yaml / .yml / .json（kiro-flow と同じ .kiro ディレクトリ）
+#   4. ~/.kiro/kiro-project.yaml / .yml / .json
 #
 # 値の優先順位: コマンドライン引数 > この設定ファイル > 組み込み既定。
 # つまり「環境ごと・常駐ごとに決まる値」をここに書き、その場限りの上書きだけ CLI で渡せます。
