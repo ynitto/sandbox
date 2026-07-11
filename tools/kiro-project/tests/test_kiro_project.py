@@ -4308,6 +4308,29 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(rc["approve"], 0)
             self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_ACCEPTED)
 
+    def test_replan_request_bypasses_accepted_guard(self):
+        # 実運用インシデントの再発防止:「charter から再分解」を押しても何も起きないバグ。
+        # replan_req は cmd_project 冒頭で consume_replan_request により一発で消費されるため、
+        # その直後の accepted ガードが素通りせず早期 return すると、要求は消えたのに一度も
+        # plan_fn に反映されない（人の指示の握り潰し）になっていた。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.cmd_approve(cfg, "demo", "OK"), 0)
+
+            self.assertEqual(km.cmd_replan(cfg, "エラー回復"), 0)
+            calls = {"n": 0}
+
+            def planner(ch):
+                calls["n"] += 1
+                return []
+
+            km.cmd_project(cfg, planner=planner, runner=lambda c: _drained())
+            self.assertEqual(calls["n"], 1)   # accepted でも明示の再分解要求は必ず一度処理される
+
     def test_review_project_generates_findings(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

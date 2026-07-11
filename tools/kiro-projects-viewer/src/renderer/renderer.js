@@ -229,9 +229,14 @@ function renderTree() {
               ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前・同期経由）`
               : '停止中';
         const missing = !p.exists ? '（見つかりません）' : '';
+        // 表示名は charter.md の `# Charter: <name>` を優先する（無ければフォルダ名）。
+        // `.kiro-project` のような技術的なフォルダ名でも、charter.md を編集するだけで
+        // サイドバーに任意の名前を出せる（✎ charter.md から編集）。
+        const displayName = p.charterName || p.name;
+        const dirHint = p.charterName && p.charterName !== p.name ? ` (${p.name})` : '';
         return `<div class="project-item ${state.selectedDir === p.dir ? 'selected' : ''}" data-dir="${esc(p.dir)}" title="${esc(p.dir)}">
           <span class="dot ${p.running ? 'running' : ''} ${remoteGuess ? 'synced' : ''} ${p.paused ? 'paused' : ''}" title="${esc(dotTitle)}"></span>
-          <span class="name">${esc(p.name)}${remoteGuess && p.running ? '~' : ''}${p.paused ? ' ⏸' : ''}${missing}</span>${badges.join('')}
+          <span class="name">${esc(displayName)}${esc(dirHint)}${remoteGuess && p.running ? '~' : ''}${p.paused ? ' ⏸' : ''}${missing}</span>${badges.join('')}
         </div>`;
       })
       .join('');
@@ -276,8 +281,10 @@ async function reloadProject() {
 function renderHeader() {
   const p = state.project;
   if (!p) return;
-  const charterName = p.charter && p.charter.name ? ` — ${p.charter.name}` : '';
-  $('project-name').textContent = `${p.name}${charterName}`;
+  const charterName = p.charter && p.charter.name ? p.charter.name : '';
+  $('project-name').textContent = charterName && charterName !== p.name
+    ? `${charterName} (${p.name})`
+    : p.name;
   $('project-name').classList.remove('muted');
   const ps = p.projectState;
   const badges = [];

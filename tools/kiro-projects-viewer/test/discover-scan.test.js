@@ -94,6 +94,30 @@ function mkdirp(...parts) {
     assert.strictEqual(projects[0].isProject, false);
   });
 
+  await test('discover は charter.md の `# Charter: <name>` を charterName として返す（サイドバーの任意名表示に使う）', async () => {
+    const root = mkRoot();
+    fs.writeFileSync(path.join(root, 'charter.md'), '# Charter: 見やすい名前\n\n## goal\nx\n', 'utf8');
+    const cfg = { kiro: { roots: [root], autoDiscover: false } };
+    const { projects } = kiro.discover(cfg);
+    assert.strictEqual(projects[0].charterName, '見やすい名前');
+  });
+
+  await test('discover は空の charter.md でもクラッシュせず charterName を空文字にする', async () => {
+    const root = mkRoot();
+    fs.writeFileSync(path.join(root, 'charter.md'), '', 'utf8');
+    const cfg = { kiro: { roots: [root], autoDiscover: false } };
+    const { projects } = kiro.discover(cfg);
+    assert.strictEqual(projects[0].charterName, '');
+  });
+
+  await test('discover は charter.md が無ければ charterName を空文字にする', async () => {
+    const root = mkRoot();
+    mkdirp(root, 'backlog');
+    const cfg = { kiro: { roots: [root], autoDiscover: false } };
+    const { projects } = kiro.discover(cfg);
+    assert.strictEqual(projects[0].charterName, '');
+  });
+
   console.log(`\n${passed} tests passed`);
 })().catch((e) => {
   console.error(e);

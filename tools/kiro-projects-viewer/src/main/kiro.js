@@ -507,15 +507,23 @@ function discover(cfg) {
     // instances（同一ホスト・確定）を先に見て、無ければ status.json（リモート・同期経由の推定）
     // にフォールバックする（projectLiveness が両方を見る）。
     const liveness = projectLiveness(dir);
+    // 表示名: charter.md の `# Charter: <name>` があればそれを一覧にも出す（既定はディレクトリ名の
+    // ままだが、`.kiro-project` のような技術的なフォルダ名でも charter を編集するだけで
+    // サイドバーに任意の名前を出せる。charter.md はサイドバーからも既存の「✎ charter.md」で
+    // 編集できるため、ここでは discover 側の表示だけ揃える＝新しい設定項目は増やさない）。
+    const charterFile = path.join(dir, 'charter.md');
+    const hasCharterFile = fs.existsSync(charterFile);
+    const hasCharter =
+      hasCharterFile || safeList(path.join(dir, 'charters')).some((f) => f.endsWith('.md'));
+    const charterName = hasCharterFile ? (parseCharter(readText(charterFile)) || {}).name || '' : '';
     projects.push({
       name: path.basename(dir),
+      charterName,
       dir,
       source,
       exists: fs.existsSync(dir),
       isProject: isProjectDir(dir),
-      hasCharter:
-        fs.existsSync(path.join(dir, 'charter.md')) ||
-        safeList(path.join(dir, 'charters')).some((f) => f.endsWith('.md')),
+      hasCharter,
       backlogCount: tasks.length,
       byStatus,
       needsCount: needs,

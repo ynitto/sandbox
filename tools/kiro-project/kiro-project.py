@@ -8012,8 +8012,11 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     # 承認済み（accepted）かつ charter.md が承認時から無変更なら何もしない（毎 run 再収束して
     # 承認済みプロジェクトの milestone が復活する不具合の防止）。charter.md を編集すると
     # 署名が変わり、ここを抜けて通常どおり再評価される（「続行: charter.md を更新して再実行」の
-    # 案内どおりの挙動になる）。
-    if (state.get("status") == REASON_PROJECT_ACCEPTED
+    # 案内どおりの挙動になる）。replan_req（人が明示的に要求したエラー回復の再分解）がある場合は
+    # 素通りしない＝ここで早期 return すると直前で consume 済みの要求が握り潰され、
+    # 「再分解を押しても何も起きない」になるため、accepted でも明示要求は必ず一度は処理する。
+    if (replan_req is None
+            and state.get("status") == REASON_PROJECT_ACCEPTED
             and state.get("accepted_charter_sig") == _charter_full_signature(charter)):
         print(f"[project] {charter.name}: 承認済み（charter.md に変更なし）→ 何もしません。"
               f"続けるなら charter.md を編集してください。")
