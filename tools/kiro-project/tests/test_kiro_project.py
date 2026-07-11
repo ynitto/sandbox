@@ -4220,6 +4220,47 @@ class TestProjectLayer(unittest.TestCase):
             self.assertEqual(st["status"], km.REASON_PROJECT_ACCEPTED)
             self.assertIn("project", (d / "DELIVERY.md").read_text(encoding="utf-8"))
 
+    def test_approved_project_does_not_resurrect_milestone_on_rerun(self):
+        # 実運用インシデントの再発防止: approve 後に charter.md が無変更のまま run/watch が
+        # 再度 cmd_project を呼んでも、毎回 acceptance を再収束させて milestone（needs/<pid>.md）を
+        # 復活させてはいけない（「承認しても復活してくる」バグ）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.cmd_approve(cfg, "demo", "OK"), 0)
+            self.assertFalse((cfg.needs / "demo.md").exists())  # 承認で milestone は消える
+
+            calls = {"n": 0}
+
+            def planner(ch):
+                calls["n"] += 1
+                return []
+
+            code = km.cmd_project(cfg, planner=planner, runner=lambda c: _drained())
+            self.assertEqual(code, 0)                         # accepted のまま＝正常終了
+            self.assertEqual(calls["n"], 0)                    # plan すら呼ばれない＝ループ自体が動かない
+            self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_ACCEPTED)
+            self.assertFalse((cfg.needs / "demo.md").exists())  # milestone は復活しない
+
+    def test_approved_project_reopens_when_charter_changes(self):
+        # 対の回帰テスト: charter.md を編集すれば accepted のガードを抜けて通常どおり再評価される
+        # （「続行: charter.md を更新して run を再実行」という既存の案内どおりの挙動）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.cmd_approve(cfg, "demo", "OK"), 0)
+
+            write_charter(d, CHARTER.replace("{flag}", str(flag)) + "\n<!-- bump -->\n")
+            code = km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_CONVERGED)
+            self.assertNotEqual(code, 0)                       # 収束候補として再び人待ちに戻る
+
     def test_review_project_generates_findings(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)

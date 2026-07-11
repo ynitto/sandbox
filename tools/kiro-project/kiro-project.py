@@ -2626,6 +2626,14 @@ def _charter_plan_signature(ch: "Charter") -> str:
     return hashlib.sha256(_charter_definition(ch).encode("utf-8")).hexdigest()
 
 
+def _charter_full_signature(ch: "Charter") -> str:
+    """charter.md 全文（raw）の安定ハッシュ。acceptance も含めて「何か変わったか」を見る。
+    承認済み（accepted）プロジェクトを再開すべきか（人が charter.md を更新したか）の判定専用。
+    _charter_plan_signature は分解入力だけで acceptance を除くため、acceptance だけの更新では
+    変わらず、この判定には使えない（accepted のまま何度も再収束してしまう）。"""
+    return hashlib.sha256(ch.raw.encode("utf-8")).hexdigest()
+
+
 def charter_context(cfg: "Config", max_chars: int = 1400, task: "Task | None" = None) -> str:
     """charter.md（プロジェクト定義＝目標/制約/前提/成果物）を act ワーカーへ渡す文脈に要約する。
     **`project` でも通常 `run` でも、charter.md が存在すれば全 act に注入**＝kiro-flow のワーカーが
@@ -5392,7 +5400,8 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
             candidates.append((cname, st))
         for cname, st in candidates:
             if st.get("id") == tid and st.get("status") == REASON_PROJECT_CONVERGED:
-                finalize_project(cfg, st, reason, charter_name=cname)
+                ch = _load_named_charter(cfg, cname)
+                finalize_project(cfg, st, reason, charter=ch, charter_name=cname)
                 print(f"プロジェクト done（承認・最終納品書）: {tid}")
                 return 0
         print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
@@ -7880,8 +7889,11 @@ def write_milestone(cfg: "Config", charter: "Charter", reason: str, summary: str
 
 
 def finalize_project(cfg: "Config", state: dict, reason: str,
+                     charter: "Charter | None" = None,
                      charter_name: "str | None" = None) -> None:
-    """プロジェクト（charter）を done 確定する。最終納品書を残し state を accepted に。"""
+    """プロジェクト（charter）を done 確定する。最終納品書を残し state を accepted に。
+    charter を渡すと accepted_charter_sig を記録し、次回 run は cmd_project 冒頭のガードで
+    charter.md が変わるまで再実行しない（accepted 直後に再収束して milestone が復活するのを防ぐ）。"""
     pid = state.get("id", "project")
     name = state.get("name", pid)
     total = int(state.get("acceptance_total", 0))
@@ -7894,6 +7906,8 @@ def finalize_project(cfg: "Config", state: dict, reason: str,
                     action="project-accept", reason=reason, affects=summary)
     clear_needs_file(cfg, pid)
     state["status"] = REASON_PROJECT_ACCEPTED
+    if charter is not None:
+        state["accepted_charter_sig"] = _charter_full_signature(charter)
     save_charter_state(cfg, state, charter_name)
 
 
@@ -7995,6 +8009,15 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     state = load_charter_state(cfg, charter_name if multi else None)
     if state.get("id") != pid:
         state = {"id": pid, "name": charter.name, "history": [], "best": 0, "stall": 0}
+    # 承認済み（accepted）かつ charter.md が承認時から無変更なら何もしない（毎 run 再収束して
+    # 承認済みプロジェクトの milestone が復活する不具合の防止）。charter.md を編集すると
+    # 署名が変わり、ここを抜けて通常どおり再評価される（「続行: charter.md を更新して再実行」の
+    # 案内どおりの挙動になる）。
+    if (state.get("status") == REASON_PROJECT_ACCEPTED
+            and state.get("accepted_charter_sig") == _charter_full_signature(charter)):
+        print(f"[project] {charter.name}: 承認済み（charter.md に変更なし）→ 何もしません。"
+              f"続けるなら charter.md を編集してください。")
+        return project_exit_code(REASON_PROJECT_ACCEPTED)
     # acceptance を実行可能なコマンドへ解決（自然言語は決定的 verify へ合成し、結果を state にキャッシュ）。
     # 合成できない自然言語が残れば done 判定不能＝人へ（acceptance を書けないプロジェクトは人へ回す鉄則）。
     resolved, unresolved = resolve_charter_acceptance(cfg, charter, state, kiro_run)
