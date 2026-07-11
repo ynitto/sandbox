@@ -5,3 +5,4 @@
 - verify: `> pytest -x -q`
 - retries: 3
 - charter: v１
+- feedback: 検証コマンドを echo "test" にする

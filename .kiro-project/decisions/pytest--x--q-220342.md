@@ -18,3 +18,10 @@
 - affects : pytest--x--q-220342 → ready
 - learn: 受入条件を満たす: > pytest -x -q :: 検証コマンドを「echo "test"」にする
 
+## DR-0004  2026-07-11  actor: nitto
+- context : pytest--x--q-220342（受入条件を満たす: > pytest -x -q）に人のフィードバック
+- action  : feedback-resume
+- reason  : 検証コマンドを echo "test" にする
+- affects : pytest--x--q-220342 → ready
+- learn: 受入条件を満たす: > pytest -x -q :: 検証コマンドを echo "test" にする
+

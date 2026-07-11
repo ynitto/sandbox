@@ -15,9 +15,6 @@ kind: blocked
 
 ## Decision Outcome
 
-検証コマンドを echo "test" にする
-
-
 <!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->
 - [x] 確定（このボックスを [x] にして保存すると取り込みます）
 
