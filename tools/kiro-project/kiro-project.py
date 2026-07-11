@@ -3846,6 +3846,7 @@ class Config:
     rot: bool = False               # rot 検知（古い/重複/実行不能を triage で掃除）
     rot_age_days: float = 14.0      # stale とみなす経過日数
     cleanup: bool = True            # run 後に kiro-flow バスの一時状態を掃除
+    bus_keep_runs: int = 20         # 掃除しても残す直近 run 数（viewer のフロータブが読む一次ソース）
     delivery: "Path | None" = None  # 納品一覧（受領書）DELIVERY.md
     inbox: "Path | None" = None     # 取り込み待ちのドロップ口（外部ソースがここへファイルを置く）
     debounce: float = 3.0           # watch 中、最終保存からこの秒数は feedback 取込を待つ
@@ -5632,16 +5633,32 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
 
 
 def _cleanup_bus(cfg: Config) -> None:
-    """local run 後に不要となる kiro-flow バスの一時状態（runs/inbox）を削除する。
+    """local run 後に不要となる kiro-flow バスの一時状態を掃除する。
     daemon 稼働中や git バス（remote）は作業中のため触らない。また state_git でバスを
     リモート viewer へ鏡写ししている構成では、ここで runs/ を消すと『フロータブに見せたい
     run 状態』を破壊し、削除が次の同期でリモートへ伝播してしまうため触らない
-    （kiro-flow 側の state_git がバスの寿命を管理する＝gc に委ねる）。"""
+    （kiro-flow 側の state_git がバスの寿命を管理する＝gc に委ねる）。
+
+    runs/<id>/ は viewer のフロータブが読む一次ソースなので、直近 bus_keep_runs 件は残す。
+    かつては act のたびに runs/ を丸ごと消していたため、run は完了しているのに viewer が
+    その最終状態（全ノード done）を観測する前にディレクトリごと消え、最後に撮れた
+    スナップショット（最終ノードが実行中）のままフローが固まって見えていた。掃除は
+    「古い run を捨てる」ためのものであって「いま終わった run を人の目から隠す」ためのものではない。"""
     if (not cfg.cleanup or cfg.git_bus or cfg.state_git
             or daemon_running(cfg, use_git=False)):
         return
-    for sub in ("runs", "inbox"):
-        shutil.rmtree(cfg.bus / sub, ignore_errors=True)
+    shutil.rmtree(cfg.bus / "inbox", ignore_errors=True)   # local run では使わない submit キュー
+    runs = cfg.bus / "runs"
+    if not runs.is_dir():
+        return
+    keep = max(0, int(cfg.bus_keep_runs))
+    try:
+        dirs = sorted((d for d in runs.iterdir() if d.is_dir()),
+                      key=lambda d: d.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for d in dirs[keep:]:                                  # 新しい順に keep 件を残して捨てる
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def exit_code_for(result: dict) -> int:
@@ -9137,6 +9154,7 @@ CONFIG_DEFAULTS = {
     "watch": False, "once": False, "dry_run": False, "rot": False, "ltm": False,
     "require_progress": False, "auto_level": False, "review_project": False,
     "do_archive": True, "learn": True, "cleanup": True,   # do_archive: --archive はパス用なので別名
+    "bus_keep_runs": 20,  # 掃除しても残す直近 run 数（viewer のフロータブが読む一次ソース）
     "with_flow": True,   # doctor: 実行層 kiro-flow doctor も連携実行（CLI 既定 on・直接 Config は off）
 }
 
@@ -9254,6 +9272,7 @@ def build_config(args) -> Config:
         promote_threshold=getattr(args, "promote_threshold", 2),
         rot=bool(getattr(args, "rot", False)), rot_age_days=args.rot_age_days,
         cleanup=bool(getattr(args, "cleanup", True)),
+        bus_keep_runs=max(0, int(getattr(args, "bus_keep_runs", 20) or 0)),
         delivery=under("delivery", "DELIVERY.md"), inbox=under("inbox", "inbox"),
         runlog=under("runlog", "run-log.jsonl"),
         throttle=max(0.0, float(getattr(args, "throttle", 0.0) or 0.0)),
@@ -9797,6 +9816,8 @@ def main(argv=None) -> int:
                           "（履歴一致 verify の偽 done 対策。タスク毎に - expect: changes / none で上書き）")
     run.add_argument("--cleanup", action=argparse.BooleanOptionalAction, default=None,
                      help="run 後に kiro-flow バスの一時状態を掃除（--no-cleanup で残す。既定 on）")
+    run.add_argument("--bus-keep-runs", type=int, default=None,
+                     help="掃除しても残す直近 run 数（viewer のフローが読む。既定 20・0 で全消し）")
     run.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None,
                      help="act を飛ばし verify のみ")
     run.add_argument("--once", action=argparse.BooleanOptionalAction, default=None,

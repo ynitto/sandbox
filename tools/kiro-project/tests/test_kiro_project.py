@@ -2481,15 +2481,39 @@ class TestLayout(unittest.TestCase):
             self.assertFalse((d / "projects").exists())
             self.assertFalse((d / ".kiro-projects").exists())
 
-    def test_cleanup_bus_removes_run_state(self):
+    def test_cleanup_bus_keeps_recent_runs(self):
+        # 回帰: 直近の run は残す。act のたびに runs/ を丸ごと消していたため、run は完了して
+        # いるのに viewer がその最終状態（全ノード done）を観測する前にディレクトリごと消え、
+        # フロータブでは最終ノードが実行中のまま固まって見えていた。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            cfg = cfg_for(d)
+            cfg = cfg_for(d)                          # bus_keep_runs=20（既定）
             (cfg.bus / "runs" / "r1").mkdir(parents=True)
             (cfg.bus / "inbox").mkdir(parents=True)
             km._cleanup_bus(cfg)
-            self.assertFalse((cfg.bus / "runs").exists())
-            self.assertFalse((cfg.bus / "inbox").exists())
+            self.assertTrue((cfg.bus / "runs" / "r1").exists())   # 直近 run は viewer のために残す
+            self.assertFalse((cfg.bus / "inbox").exists())        # submit キューは掃除する
+
+    def test_cleanup_bus_drops_old_runs_beyond_keep(self):
+        # 掃除は「古い run を捨てる」ためのもの。新しい順に keep 件だけ残す。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, bus_keep_runs=2)
+            for i, age in enumerate([300, 200, 100, 0]):          # r0 が最古・r3 が最新
+                p = cfg.bus / "runs" / f"r{i}"
+                p.mkdir(parents=True)
+                os.utime(p, (time.time() - age, time.time() - age))
+            km._cleanup_bus(cfg)
+            left = sorted(p.name for p in (cfg.bus / "runs").iterdir())
+            self.assertEqual(left, ["r2", "r3"])                  # 新しい 2 件だけ残る
+
+    def test_cleanup_bus_keep_zero_removes_all_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, bus_keep_runs=0)
+            (cfg.bus / "runs" / "r1").mkdir(parents=True)
+            km._cleanup_bus(cfg)
+            self.assertEqual(list((cfg.bus / "runs").iterdir()), [])
 
     def test_no_cleanup_keeps_bus(self):
         with tempfile.TemporaryDirectory() as d:

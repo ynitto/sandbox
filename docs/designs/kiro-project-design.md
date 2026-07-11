@@ -125,7 +125,8 @@ repos.json を入力に成果物を出力する。人がプロンプトを毎サ
         │                                                         │   act 出力 @followup
         └──────────────── 次サイクルへ（→ S7） ──────────────────
  ── ループ脱出後 ──────────────────────────────────────────────
-    notify（人の対応待ち遷移時のみ）→ --notify-cmd ／ ltm 昇格(--ltm) ／ bus 掃除(--cleanup) ／ run-log 追記
+    notify（人の対応待ち遷移時のみ）→ --notify-cmd ／ ltm 昇格(--ltm) ／ bus 掃除(--cleanup。直近
+    --bus-keep-runs 件の run は viewer のフローのために残す) ／ run-log 追記
  ── --watch のとき ────────────────────────────────────────────
     パス終了後もプロセス常駐。idle は FS ポーリングのみ（エージェント非起動）。
     「消化可能 or 新規 inbox or 指示(commands) or フィードバック」を検知したら次パスを起こす（予算は 1 パス毎に与え直す）。
@@ -166,7 +167,8 @@ repos.json を入力に成果物を出力する。人がプロンプトを毎サ
                                │ --status-interval で idle 中の任意更新も可）。§5.8 で git 同期越しに
                                │ 同期され、リモートの viewer が instances 不在時の稼働判定に使う
   paused.json         系       │ 一時停止マーカー（commands の pause で生成・resume で削除）
-  bus/                系（一時）│ kiro-flow の run 状態。S2 で使い、local run 後に掃除（--no-cleanup で保持）
+  bus/                系         │ kiro-flow の run 状態（viewer のフロータブの一次ソース）。local run 後に
+                               │ 古い run を掃除するが直近 --bus-keep-runs 件（既定 20）は残す（--no-cleanup で全保持）
   .state-git/         系（任意）│ 管理クローン（ルートが git でなく state_git 設定時のフォールバックのみ・§5.8）
 ~/.kiro-project/                  ← グローバル（プロジェクト横断）
   instances/<host>-<pid>.json 系 │ 稼働発見レコード（root/各パス/WSL 情報）。run 中だけ存在

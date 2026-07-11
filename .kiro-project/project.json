@@ -46,8 +46,9 @@
       "acceptance_total": 1,
       "cost": 0.0,
       "cycles": 3,
-      "status": "converged"
+      "status": "accepted",
+      "accepted_charter_sig": "eb88bee415496da6f70522f49f971f6c1eccaa36df7e351fb3e5c4fa9d959553"
     }
   },
-  "updated": "2026-07-12T05:45:11"
+  "updated": "2026-07-12T05:46:36"
 }
