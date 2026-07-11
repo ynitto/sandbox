@@ -1,7 +1,0 @@
-{
-  "command": "approve",
-  "id": ".kiro-project",
-  "reason": "kiro-projects-viewer から操作",
-  "actor": "kiro-projects-viewer",
-  "ts": "2026-07-11T05:22:42.667Z"
-}
