@@ -25,3 +25,8 @@
 - 2026-07-12 06:30:04 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-12 06:30:09 commands 取り込み: approve .kiro-project-v1（viewer-approve-kiro-project-v1-1783805406065.json）
 - 2026-07-12 06:30:09 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 07:02:15 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 07:10:12 === update: 更新を適用（bc2708c7）===
+- 2026-07-12 07:10:12 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 07:35:10 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 07:35:30 === project watch: 監視中（charter 更新/フィードバック待ち）===
