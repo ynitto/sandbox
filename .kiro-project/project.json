@@ -19,16 +19,18 @@
     "v2": {
       "id": ".kiro-project-v2",
       "name": "v2",
-      "history": [],
-      "best": 0,
+      "history": [
+        1
+      ],
+      "best": 1,
       "stall": 0,
       "acceptance_synth": {},
       "planned_charter_sig": "4bf8ce765979dba3b536b89901713b8bcb4324ae7eef05806a043a365e058fea",
       "acceptance_total": 1,
       "cost": 0.0,
-      "cycles": 2,
-      "status": "blocked"
+      "cycles": 3,
+      "status": "converged"
     }
   },
-  "updated": "2026-07-12T07:40:05"
+  "updated": "2026-07-12T07:41:15"
 }

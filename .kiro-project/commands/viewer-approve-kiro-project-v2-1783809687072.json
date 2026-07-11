@@ -1,7 +1,7 @@
 {
   "command": "approve",
-  "id": "echo-hello-073605",
+  "id": ".kiro-project-v2",
   "reason": "kiro-projects-viewer から操作",
   "actor": "kiro-projects-viewer",
-  "ts": "2026-07-11T22:41:11.672Z"
+  "ts": "2026-07-11T22:41:27.072Z"
 }
