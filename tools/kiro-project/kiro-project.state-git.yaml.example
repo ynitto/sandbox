@@ -73,6 +73,9 @@ act_async: true            # 非ブロッキング委譲: submit して待たず
 # spec_threshold: 3          # spec ルートの採点しきい値（1-3）
 # repo_map: false            # リポジトリ理解の成果物化（既定 off）: plan 前に context/<repo名>.md を
 #                             #   生成（HEAD sha キャッシュ）。読み出しは常時（手書き context/*.md も注入）
+# rules_capture: true        # 効いた learn を rules.md（プロジェクトルール・全タスク常時注入）へ
+#                             #   自動昇格（既定 on）。rules.md は人が書くのが正・viewer 側の編集も
+#                             #   git 同期でそのまま届く（人の入力パス＝同時変更はリモート優先）
 
 # --- 状態の git 保存・共有 ---
 # direct モード（ルートが clone）なら設定不要。ルートが git でない場合のみ管理クローン方式:

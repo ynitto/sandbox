@@ -138,6 +138,10 @@ CONFIG_DEFAULTS = {
     # copilot（GitHub Copilot CLI `copilot -p`）。planner・executor・verify 等、
     # このツールが行う LLM 呼び出しすべてに効く。
     "agent_cli": "kiro",
+    # 役割毎のエージェント上書き（yaml 専用）。キーは planner / evaluator / worker（全 kind の
+    # 既定）/ 個別 kind（work/generate/classify/synthesize/verify/filter/judge/reduce/split/map）、
+    # 値は {agent_cli, model}。未指定はグローバル agent_cli / model。
+    "agents": {},
     "planner": "flow-planner",
     "executor": "agent",
     "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
@@ -2690,7 +2694,7 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto", granulari
         f"要求: {request}"
     )
     try:
-        data = extract_json(run_kiro(prompt, model))
+        data = extract_json(run_kiro(prompt, model, purpose="planner"))
         # planner がオブジェクトでなくベア配列を返すことがある → tasks とみなす
         if isinstance(data, list):
             data = {"tasks": data}
@@ -2814,17 +2818,54 @@ _KIRO_TIMEOUT: "float | None" = None
 _STUB_SLEEP_MAX: "float | None" = None
 # LLM 実行に使うエージェント CLI（設定 agent_cli: kiro/claude/copilot）。
 _AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
+# 役割（purpose）毎の上書き（設定 agents: の正規化済みマップ）。キーは planner / evaluator /
+# worker（全 kind の既定）/ 個別 kind（work/generate/classify/synthesize/verify/filter/judge/
+# reduce/split/map）。値は {agent_cli, model}。子プロセスへは --config 伝搬で同じ設定が届く。
+_AGENT_OVERRIDES: "dict[str, dict]" = {}
+AGENT_ROLES = ("planner", "evaluator", "worker")
 # agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
 _AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot"}
+
+
+def _normalize_agent_overrides(raw) -> "dict[str, dict]":
+    """設定 agents:（役割毎の agent_cli/model 上書き）を正規化する。有効キーは AGENT_ROLES
+    と各ノード kind（VALID_KINDS）。不正な値は黙って落とす（設定ミスで run を殺さない）。"""
+    out: "dict[str, dict]" = {}
+    if not isinstance(raw, dict):
+        return out
+    valid = set(AGENT_ROLES) | set(VALID_KINDS)
+    for k, v in raw.items():
+        key = str(k).strip().lower()
+        if key not in valid or not isinstance(v, dict):
+            continue
+        ov: dict = {}
+        if v.get("agent_cli"):
+            ov["agent_cli"] = str(v["agent_cli"]).strip().lower()
+        if v.get("model"):
+            ov["model"] = str(v["model"]).strip()
+        if ov:
+            out[key] = ov
+    return out
+
+
+def _agent_for(purpose: str) -> "tuple[str, str | None]":
+    """役割（purpose）の実効エージェント (agent_cli, model 上書き)。解決順:
+    agents[purpose] ＞（purpose がノード kind なら）agents["worker"] ＞ グローバル agent_cli。"""
+    ov = _AGENT_OVERRIDES.get(purpose)
+    if ov is None and purpose in VALID_KINDS:
+        ov = _AGENT_OVERRIDES.get("worker")
+    ov = ov or {}
+    return (str(ov.get("agent_cli") or _AGENT_CLI).lower(), ov.get("model") or None)
 
 
 def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
     run_kiro / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
-    global _ARGV_LIMIT, _EXECUTOR_DIR, _KIRO_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI
+    global _ARGV_LIMIT, _EXECUTOR_DIR, _KIRO_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI, _AGENT_OVERRIDES
     ac = getattr(args, "agent_cli", None)
     if ac:
         _AGENT_CLI = str(ac).lower()
+    _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
     v = getattr(args, "argv_limit", None)
     if v:
         try:
@@ -2856,19 +2897,23 @@ def _kiro_argv_limit() -> int:
     return _ARGV_LIMIT if _ARGV_LIMIT > 0 else CONFIG_DEFAULTS["argv_limit"]
 
 
-def run_kiro(prompt: str, model: str | None) -> str:
+def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot）を 1 回呼び出してテキスト応答を返す。
-    このツールの LLM 呼び出しはすべてここを通る（planner / executor / verify / 裁定）。"""
+    このツールの LLM 呼び出しはすべてここを通る（planner / executor / verify / 裁定）。
+    purpose（planner / evaluator / ノード kind）を渡すと設定 agents: の役割毎上書きが効く
+    （kind は agents["worker"] へフォールバック）。model は 上書き ＞ 呼び出し値。"""
+    cli, model_ov = _agent_for(purpose)
+    model = model_ov or model
     stdin_text = None
     spill = None
-    if _AGENT_CLI == "claude":
+    if cli == "claude":
         # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらないためスピル不要）。
         cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
         if model:
             cmd += ["--model", model]
         stdin_text = prompt
     else:
-        if _AGENT_CLI == "copilot":
+        if cli == "copilot":
             # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
             # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
             # プロンプトは -p の引数（argv）なので kiro と同じスピル退避を適用する。
@@ -2885,7 +2930,7 @@ def run_kiro(prompt: str, model: str | None) -> str:
                 f.write(prompt)
             prompt = ("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
                       f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
-        cmd += (["-p", prompt] if _AGENT_CLI == "copilot" else [prompt])
+        cmd += (["-p", prompt] if cli == "copilot" else [prompt])
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
                               timeout=_kiro_timeout())
@@ -3022,7 +3067,7 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
             lines.append(line)
         prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
     prompt += "\n成果物を簡潔に直接出力してください。"
-    text = run_kiro(prompt, model)
+    text = run_kiro(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
     # data に誤昇格させない）。
     data = None
@@ -3779,7 +3824,7 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
         f"元の要求: {request}{hf_block}\n\n現在の結果:\n{summary}"
     )
     try:
-        data = extract_json(run_kiro(prompt, None))
+        data = extract_json(run_kiro(prompt, None, purpose="evaluator"))
     except Exception:  # noqa: BLE001
         return "done", [], "評価出力を解釈できず done 扱い"
     # planner がオブジェクトでなくベア配列を返すことがある → new_tasks とみなす

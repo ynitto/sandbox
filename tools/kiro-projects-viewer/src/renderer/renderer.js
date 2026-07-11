@@ -462,6 +462,7 @@ function renderOverview() {
     <div class="row">
       <button class="chip" data-edit="charter.md" title="プロジェクト憲章（全体の前提）を編集">✎ ${isMaster ? 'マスター憲章' : '憲章'}</button>
       <button class="chip" data-edit="policy.md" title="運用ルールを編集">✎ 運用ルール</button>
+      <button class="chip" data-edit="rules.md" title="プロジェクトルール（暗黙知の明文化先。全タスクの実行・計画・検証に常時反映される）を編集">✎ プロジェクトルール</button>
       <button class="chip" data-edit="repos.json" title="対象リポジトリ一覧を編集">✎ リポジトリ一覧</button>
       <button class="chip" id="btn-add-charter-version"
         title="${isMaster ? 'やるべきことを記入して計画バージョンを追加します（マスター憲章の前提を引き継ぎます）' : '計画の新しいバージョン（charters/&lt;名前&gt;.md）を追加します'}">＋ バージョン追加</button>
@@ -588,6 +589,24 @@ function renderOverview() {
     parts.push(
       `<div class="card full"><h3>プロジェクト憲章</h3><div class="muted">憲章（charter.md）はまだありません。タスクを直接追加して進める運用です。</div></div>`
     );
+  }
+
+  // プロジェクトルール（rules.md）: フローを回して判明した恒常ルール（暗黙知の明文化先）。
+  // 出典コメント（自動昇格の <!-- learn:... -->）は表示から落とす（本体の注入と同じ扱い）。
+  if (p.rules && p.rules.trim()) {
+    const rulesBody = p.rules
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/^#\s+.*$/m, '') // 見出しはカードの h3 と重複するため落とす
+      .trim();
+    parts.push(`
+      <div class="card full">
+        <h3>プロジェクトルール（rules.md）</h3>
+        <div class="muted" style="margin-bottom:6px">
+          全タスクの実行・計画・検証に常時反映される恒常ルールです。効果が再現した学習は自動でここに追記されます（編集・削除は自由）。
+        </div>
+        ${mdToHtml(rulesBody)}
+        <div class="row" style="margin-top:6px"><button class="chip" data-edit="rules.md">✎ 編集</button></div>
+      </div>`);
   }
 
   // daemon 生存（liveness）。同一ホストなら instances で確定、リモートは status.json

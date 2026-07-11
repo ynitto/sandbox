@@ -3008,7 +3008,7 @@ class TestAutoAdjudicate(unittest.TestCase):
         km._run_kiro_cli = self._orig
 
     def _stub(self, payload):
-        def run(prompt, model):
+        def run(prompt, model, purpose=""):
             self.calls.append(prompt)
             return payload
         km._run_kiro_cli = run
@@ -3685,7 +3685,7 @@ class TestProjectLayer(unittest.TestCase):
             cfg = cfg_for(d)
             ch = km.load_charter(cfg)
             orig = km._run_kiro_cli
-            km._run_kiro_cli = lambda prompt, model: (
+            km._run_kiro_cli = lambda prompt, model, purpose="": (
                 '[{"title":"lib に型追加","verify":"test -f packages/t.ts"}]')
             try:
                 specs = km.plan_via_agent(cfg, ch)
@@ -3766,7 +3766,7 @@ class TestProjectLayer(unittest.TestCase):
             calls = {"n": 0}
             orig = km._run_kiro_cli
 
-            def fake(prompt, model):
+            def fake(prompt, model, purpose=""):
                 calls["n"] += 1
                 return '[{"title":"エージェント生成タスク","verify":"true"}]'
 
@@ -4812,7 +4812,7 @@ class TestVerifyAssist(unittest.TestCase):
             self.assertEqual(t.verify, "")
             # run_loop の S0 で synth_verify（kiro_run を差し替え）により verify が用意される
             orig = km._run_kiro_cli
-            km._run_kiro_cli = lambda prompt, model: "grep -q '## 概要' README.md"
+            km._run_kiro_cli = lambda prompt, model, purpose="": "grep -q '## 概要' README.md"
             try:
                 km.run_loop(cfg_for(d, dry_run=True, max_cycles=1))
             finally:
@@ -7357,6 +7357,177 @@ class RepoMapTests(unittest.TestCase):
         self.assertIn("リポジトリ理解", p)
         self.assertIn("src/ 配下が本体", p)
         self.assertNotIn("リポジトリ理解", km._plan_decompose_prompt(charter))
+
+
+class ProjectRulesTests(unittest.TestCase):
+    """プロジェクトルール（rules.md）: 人が書く恒常ルール＋効いた learn の自動昇格。
+    learn の recall（類似タスク限定）と違い全タスクへ常時注入されることを検証する。"""
+
+    def test_rules_context_reads_bounded_and_strips_comments(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            self.assertEqual(km.project_rules_context(cfg), "")     # 無ければ空（後方互換）
+            km.rules_path(cfg).write_text(
+                "# プロジェクトルール\n\n- テストは pytest -q で回す\n"
+                "<!-- learn:T1 hits=2 -->\n- コミットメッセージは日本語\n", encoding="utf-8")
+            ctx = km.project_rules_context(cfg)
+            self.assertIn("pytest -q", ctx)
+            self.assertIn("日本語", ctx)
+            self.assertNotIn("<!--", ctx)                           # 出典コメントは注入しない
+            self.assertLessEqual(len(km.project_rules_context(cfg, limit=10)), 10)
+
+    def test_build_request_injects_rules_for_every_task(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.rules_path(cfg).write_text("- テストは pytest -q で回す\n", encoding="utf-8")
+            # タイトルが全く似ていないタスクにも届く（learn の Jaccard recall との違い）
+            t = km.Task(id="T1", title="全然関係ない別の作業", verify="true")
+            req = km.build_request(t, cfg)
+            self.assertIn("プロジェクトルール", req)
+            self.assertIn("pytest -q", req)
+
+    def _learn_setup(self, d, hits=2):
+        cfg = cfg_for(d)
+        cfg.decisions.mkdir(parents=True, exist_ok=True)
+        (cfg.decisions / "OLD.md").write_text(
+            "## DR-0001  2026-07-01  actor: human\n"
+            "- context : OLD の判断\n- action  : feedback-resume\n"
+            "- reason  : x\n- affects : OLD\n"
+            "- learn: テストの回し方 :: テストは必ず pytest -q で実行する\n", encoding="utf-8")
+        body = ""
+        for i in range(hits):
+            body += (f"## DR-{i+1:04d}  2026-07-0{i+2}  actor: auto\n"
+                     f"- context : T{i+2} を学習で自動解決\n- action  : auto-resolve\n"
+                     f"- reason  : learned from OLD: テストは必ず pytest -q で実行する\n"
+                     f"- affects : T{i+2} → ready\n")
+        (cfg.decisions / "T2.md").write_text(body, encoding="utf-8")
+        return cfg
+
+    def test_promote_rules_appends_once_with_provenance(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._learn_setup(d, hits=2)                      # promote_threshold 既定 2
+            promoted = km.promote_rules(cfg)
+            self.assertEqual(promoted, ["OLD"])
+            text = km.rules_path(cfg).read_text(encoding="utf-8")
+            self.assertIn("pytest -q で実行する", text)
+            self.assertIn("<!-- learn:OLD hits=2", text)            # 出典つき（人が消してよい）
+            self.assertIn("- rules-promoted: rules.md",
+                          (cfg.decisions / "OLD.md").read_text(encoding="utf-8"))
+            # 冪等: 2 回目は追記しない
+            self.assertEqual(km.promote_rules(cfg), [])
+            self.assertEqual(text, km.rules_path(cfg).read_text(encoding="utf-8"))
+
+    def test_promote_rules_respects_threshold_and_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._learn_setup(d, hits=1)                      # しきい値未満
+            self.assertEqual(km.promote_rules(cfg), [])
+            self.assertFalse(km.rules_path(cfg).exists())
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._learn_setup(d, hits=2)
+            cfg.rules_capture = False                               # opt-out
+            self.assertEqual(km.promote_rules(cfg), [])
+            self.assertFalse(km.rules_path(cfg).exists())
+
+    def test_promote_rules_keeps_human_text(self):
+        # 人が書いた本文は温存し、自動昇格節にだけ追記する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = self._learn_setup(d, hits=2)
+            km.rules_path(cfg).write_text(
+                "# プロジェクトルール\n\n- コミットメッセージは日本語\n", encoding="utf-8")
+            km.promote_rules(cfg)
+            text = km.rules_path(cfg).read_text(encoding="utf-8")
+            self.assertIn("コミットメッセージは日本語", text)
+            self.assertIn(km.RULES_AUTO_SECTION, text)
+            self.assertIn("pytest -q で実行する", text)
+
+    def test_state_git_remote_wins_includes_rules(self):
+        # rules.md は人の入力パス（同時変更はリモート＝人の編集を優先）
+        self.assertIn("rules.md", km._STATE_REMOTE_WINS_FILES)
+
+
+class AgentOverrideTests(unittest.TestCase):
+    """処理（purpose）毎のエージェント上書き（設定 agents:・yaml 専用）。
+    plan/review/prioritize/route/adjudicate/verify/distill/assess/repo_map/doctor の
+    各処理でエージェント CLI とモデルを個別に選べることを検証する。"""
+
+    def setUp(self):
+        self._cli, self._ov = km._AGENT_CLI, dict(km._AGENT_OVERRIDES)
+
+    def tearDown(self):
+        km._AGENT_CLI, km._AGENT_OVERRIDES = self._cli, self._ov
+
+    def test_normalize_accepts_known_purposes_only(self):
+        raw = {"plan": {"agent_cli": "Claude", "model": "opus"},
+               "assess": {"model": "haiku"},
+               "unknown": {"agent_cli": "x"},       # 未知キーは落とす
+               "verify": "not-a-dict",              # 不正な値も落とす
+               "doctor": {}}                         # 空も落とす
+        out = km._normalize_agent_overrides(raw)
+        self.assertEqual(set(out), {"plan", "assess"})
+        self.assertEqual(out["plan"], {"agent_cli": "claude", "model": "opus"})
+        self.assertEqual(km._normalize_agent_overrides(None), {})
+
+    def test_agent_for_falls_back_to_global(self):
+        km._AGENT_CLI = "kiro"
+        km._AGENT_OVERRIDES = {"plan": {"agent_cli": "claude", "model": "opus"},
+                               "assess": {"model": "haiku"}}
+        self.assertEqual(km._agent_for("plan"), ("claude", "opus"))
+        self.assertEqual(km._agent_for("assess"), ("kiro", "haiku"))  # model だけ上書き
+        self.assertEqual(km._agent_for("verify"), ("kiro", None))     # 未指定 → グローバル
+        self.assertEqual(km._agent_for(""), ("kiro", None))
+
+    def test_agent_cmd_builds_per_cli(self):
+        cmd, stdin = km._agent_cmd("claude", "opus", "P")
+        self.assertEqual(cmd[0], "claude")
+        self.assertIn("opus", cmd)
+        self.assertEqual(stdin, "P")                              # claude は stdin 渡し
+        cmd, stdin = km._agent_cmd("copilot", None, "P")
+        self.assertEqual(cmd[0], "copilot")
+        self.assertEqual(cmd[-2:], ["-p", "P"])
+        self.assertIsNone(stdin)
+        cmd, stdin = km._agent_cmd("kiro", "m", "P")
+        self.assertEqual(cmd[0], "kiro-cli")
+        self.assertEqual(cmd[-1], "P")
+
+    def test_run_kiro_cli_uses_purpose_override(self):
+        km._AGENT_CLI = "kiro"
+        km._AGENT_OVERRIDES = {"plan": {"agent_cli": "claude", "model": "opus"}}
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            km._run_kiro_cli("x", "global-model", purpose="plan")
+            km._run_kiro_cli("x", "global-model", purpose="assess")
+        self.assertEqual(calls[0][0], "claude")
+        self.assertIn("opus", calls[0])                           # 上書き model が勝つ
+        self.assertEqual(calls[1][0], "kiro-cli")
+        self.assertIn("global-model", calls[1])                   # 未指定はグローバル
+
+    def test_resolve_config_reads_agents_map(self):
+        # yaml（json 互換）から agents: が読まれ、build_config がモジュールへ確定する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "kiro-project.json").write_text(json.dumps({
+                "agents": {"plan": {"agent_cli": "claude", "model": "opus"},
+                           "bogus": {"agent_cli": "x"}}}), encoding="utf-8")
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(d)
+                args = types.SimpleNamespace(config=None)
+                km.resolve_config(args)
+            finally:
+                os.chdir(old_cwd)
+            self.assertEqual(km._normalize_agent_overrides(args.agents),
+                             {"plan": {"agent_cli": "claude", "model": "opus"}})
 
 
 if __name__ == "__main__":

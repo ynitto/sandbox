@@ -789,6 +789,9 @@ function readProject(workspaceDir, cfg) {
     claims,
     needs,
     specs,
+    // プロジェクトルール（rules.md）: 人が書く恒常ルール＋効いた learn の自動昇格。
+    // 全タスクの act / plan / verify 合成へ常時注入される（本体 §6.6）。無ければ null。
+    rules: readText(path.join(dir, 'rules.md')),
     decisions: decisionsAll.slice(0, 100),
     journal: tailLines(path.join(dir, 'journal.md'), 200),
     runLog: readRunLog(path.join(dir, 'run-log.jsonl')),

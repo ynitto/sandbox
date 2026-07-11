@@ -118,6 +118,11 @@ test('read/writeProjectFile はホワイトリスト外を拒否する', () => {
     authoring.writeProjectFile(tmp, 'charter.md', '# Charter: t\n');
     const info = authoring.readProjectFile(tmp, 'charter.md');
     assert.ok(info.exists && info.content.includes('# Charter: t'));
+    // rules.md（プロジェクトルール）も人が書く入力として許可
+    authoring.writeProjectFile(tmp, 'rules.md', '- テストは pytest -q で回す\n');
+    const rules = authoring.readProjectFile(tmp, 'rules.md');
+    assert.ok(rules.exists && rules.content.includes('pytest -q'));
+    assert.match(rules.label, /プロジェクトルール/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

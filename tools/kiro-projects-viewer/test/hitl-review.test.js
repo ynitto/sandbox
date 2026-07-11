@@ -57,6 +57,15 @@ function mkProject() {
     assert.deepStrictEqual(kiro.dependentsOf(tasks, 'D'), []);
   });
 
+  await test('readProject は rules.md（プロジェクトルール）を返す', async () => {
+    const dir = mkProject();
+    fs.writeFileSync(path.join(dir, 'rules.md'), '- テストは pytest -q で回す\n', 'utf8');
+    const p = kiro.readProject(dir, { kiro: {} });
+    assert.match(p.rules, /pytest -q/);
+    // 無いプロジェクトでは null（後方互換）
+    assert.strictEqual(kiro.readProject(mkProject(), { kiro: {} }).rules, null);
+  });
+
   await test('readProject は specs/<task-id>/ の spec 成果物を一覧する', async () => {
     const dir = mkProject();
     fs.mkdirSync(path.join(dir, 'specs', 'T1'), { recursive: true });

@@ -1119,7 +1119,7 @@ class PlannerRobustnessTests(unittest.TestCase):
         results = {"t1": {"status": "failed", "output": "ng",
                           "data": {"decision": "rejected", "guidance": "実サーバで検証して"}}}
         seen = {}
-        def fake_run(prompt, model):
+        def fake_run(prompt, model, purpose=""):
             seen["p"] = prompt
             return '{"decision":"done","new_tasks":[]}'
         with mock.patch.object(kf, "run_kiro", side_effect=fake_run):
@@ -2064,7 +2064,7 @@ class CallExecutorDispatchTests(unittest.TestCase):
     def test_execute_kiro_puts_instruction_in_prompt_not_polluting_goal(self):
         captured = {}
 
-        def fake_run_kiro(prompt, model):
+        def fake_run_kiro(prompt, model, purpose=""):
             captured["prompt"] = prompt
             return "成果"
 
@@ -3701,7 +3701,7 @@ class ArtifactProtocolTests(unittest.TestCase):
             f.write("X" * 100)
         captured = {}
 
-        def fake(prompt, model):
+        def fake(prompt, model, purpose=""):
             captured["prompt"] = prompt
             return "ok"
 
@@ -5128,6 +5128,58 @@ class GitlabHumanAgentDiscriminationTests(unittest.TestCase):
         with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
             self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
                              {"rework_heading": "差し戻し"}), "")
+
+
+class AgentOverrideTests(unittest.TestCase):
+    """役割（planner/evaluator/worker/kind）毎のエージェント上書き（設定 agents:）。"""
+
+    def setUp(self):
+        self._cli, self._ov = kf._AGENT_CLI, dict(kf._AGENT_OVERRIDES)
+
+    def tearDown(self):
+        kf._AGENT_CLI, kf._AGENT_OVERRIDES = self._cli, self._ov
+
+    def test_normalize_accepts_roles_and_kinds_only(self):
+        raw = {"planner": {"agent_cli": "Claude", "model": "opus"},
+               "verify": {"model": "haiku"},
+               "worker": {"agent_cli": "copilot"},
+               "unknown": {"agent_cli": "x"},       # 未知キーは落とす
+               "evaluator": "not-a-dict",           # 不正な値も落とす
+               "judge": {}}                          # 空も落とす
+        out = kf._normalize_agent_overrides(raw)
+        self.assertEqual(set(out), {"planner", "verify", "worker"})
+        self.assertEqual(out["planner"], {"agent_cli": "claude", "model": "opus"})
+        self.assertEqual(kf._normalize_agent_overrides(None), {})
+        self.assertEqual(kf._normalize_agent_overrides("x"), {})
+
+    def test_agent_for_resolution_order(self):
+        kf._AGENT_CLI = "kiro"
+        kf._AGENT_OVERRIDES = {"planner": {"agent_cli": "claude", "model": "opus"},
+                               "worker": {"agent_cli": "copilot"}}
+        self.assertEqual(kf._agent_for("planner"), ("claude", "opus"))
+        self.assertEqual(kf._agent_for("verify"), ("copilot", None))   # kind → worker へ
+        self.assertEqual(kf._agent_for("evaluator"), ("kiro", None))   # 未指定 → グローバル
+        self.assertEqual(kf._agent_for(""), ("kiro", None))
+
+    def test_run_kiro_uses_purpose_override(self):
+        kf._AGENT_CLI = "kiro"
+        kf._AGENT_OVERRIDES = {"planner": {"agent_cli": "claude", "model": "opus"}}
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append((cmd, kw.get("input")))
+            return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.run_kiro("プロンプト", "global-model", purpose="planner")
+            kf.run_kiro("プロンプト", "global-model", purpose="work")
+        cmd1, stdin1 = calls[0]
+        self.assertEqual(cmd1[0], "claude")                      # 上書き CLI
+        self.assertIn("opus", cmd1)                              # 上書き model が勝つ
+        self.assertEqual(stdin1, "プロンプト")                   # claude は stdin 渡し
+        cmd2, _ = calls[1]
+        self.assertEqual(cmd2[0], "kiro-cli")                    # 未指定はグローバル
+        self.assertIn("global-model", cmd2)
 
 
 if __name__ == "__main__":

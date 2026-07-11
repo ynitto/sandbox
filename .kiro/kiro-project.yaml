@@ -3,9 +3,21 @@
 # workdir / bus は既定（root / <root>/bus）に任せるため指定しない。
 root: .kiro-project
 
-planner: none #flow-planner
-executor: stub #kiro
-flow_planner: stub #flow-planner
+planner: none
+flow_planner: stub
+executor: stub
+route_planner: none    # 書込先の auto-route（曖昧時の LLM 推定）を無効化。
 
-# agent_cli: copilot #kiro
-# model: claude-sonnet
+auto_adjudicate: false # 人へ回す前の裁定ゲートを呼ばない（常にそのまま人へ）
+distill_learn: false   # 人コメントの蒸留をせず生のまま learn 化
+
+spec_track: true       # spec ルーティング（採点/policy で spec 前段を前置）。kiro-project の設定
+                       # （kiro-flow.yaml に書いても効かない）
+
+# グローバル既定
+# agent_cli: kiro
+# model: claude-opus
+# agents:
+#   plan:     {model: claude-opus}      # 分解・再計画・差し戻し修正
+#   assess:   {model: claude-haiku}     # 大量に走る採点は安いモデルに
+#   verify:   {model: claude-sonnet}      # verify 合成

@@ -1551,6 +1551,82 @@ def promote_learnings(cfg: "Config") -> "list[tuple[str, str]]":
     return promoted
 
 
+# ---------------------------------------------------------------------------
+# プロジェクトルール（rules.md）— フローを回して判明した恒常ルール（暗黙知）の明文化先。
+#   learn/avoid（decisions/）が「タイトル類似のタスクにだけ recall される」のに対し、
+#   rules.md は **全タスクの act / plan / verify 合成へ常時注入**される（charter と同列・有界）。
+#   人が直接書くのが正で、システムは「効果が再現した learn」を決定的に昇格・追記するだけ
+#   （出典コメント付き・人がいつでも編集/削除できる）。注入はプロンプト文脈を足すだけで、
+#   done 条件・予算・policy には触れない（不変条件 1–3 を保つ）。
+# ---------------------------------------------------------------------------
+RULES_AUTO_SECTION = "## 自動昇格（システムが追記・人が編集/削除してよい）"
+
+
+def rules_path(cfg: "Config") -> Path:
+    return cfg.backlog.parent / "rules.md"
+
+
+def project_rules_context(cfg: "Config", limit: int = 1200) -> str:
+    """rules.md を有界に読み出す（出典の HTML コメントは注入しない）。無ければ空（後方互換）。
+    charter の constraints が「目標の制約」なのに対し、rules.md は「運用で判明したやり方の規則」。"""
+    p = rules_path(cfg)
+    if not p.exists():
+        return ""
+    try:
+        txt = p.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    txt = re.sub(r"<!--.*?-->", "", txt, flags=re.S)
+    txt = re.sub(r"\n{3,}", "\n\n", txt).strip()
+    return txt[:limit]
+
+
+def _rules_marker(cfg: "Config", src: str) -> bool:
+    dp = decision_path(cfg, src)
+    return dp.exists() and "- rules-promoted:" in dp.read_text(encoding="utf-8")
+
+
+def promote_rules(cfg: "Config") -> "list[str]":
+    """効果が再現した learn ルール（auto-resolve hits ≥ promote_threshold）を rules.md へ昇格する。
+    ltm 昇格（プロジェクト横断・opt-in --ltm）とは独立の**プロジェクト内・常時注入層**で既定 on。
+    決定的・冪等: 同一 guide は再追記せず、昇格済みは DR の `- rules-promoted:` マーカーで跳ぶ。"""
+    if not getattr(cfg, "rules_capture", True):
+        return []
+    hits = count_learn_hits(cfg)
+    if not hits:
+        return []
+    p = rules_path(cfg)
+    text = ""
+    if p.exists():
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            return []
+    promoted: "list[str]" = []
+    seen: "set[str]" = set()
+    for src, _title, guide in collect_learnings(cfg):
+        if src in seen or hits.get(src, 0) < cfg.promote_threshold:
+            continue
+        seen.add(src)
+        if guide in text or _rules_marker(cfg, src):
+            continue
+        if not text:
+            text = ("# プロジェクトルール\n\n"
+                    "<!-- フローを回して判明した恒常ルール（暗黙知）の明文化先。人が書くのが正。\n"
+                    "     全タスクの act / plan / verify 合成に常時注入される（有界）。 -->\n")
+        if RULES_AUTO_SECTION not in text:
+            text = text.rstrip() + f"\n\n{RULES_AUTO_SECTION}\n"
+        date = datetime.now().strftime("%Y-%m-%d")
+        text = text.rstrip() + f"\n- {guide}  <!-- learn:{src} hits={hits[src]} {date} -->\n"
+        with decision_path(cfg, src).open("a", encoding="utf-8") as f:
+            f.write("- rules-promoted: rules.md\n")
+        append_journal(cfg.journal, f"ルール昇格: {src} → rules.md（hits={hits[src]}）")
+        promoted.append(src)
+    if promoted:
+        p.write_text(text, encoding="utf-8")
+    return promoted
+
+
 def normalize_title(t: Task) -> str:
     return re.sub(r"\s+", " ", t.title.strip().lower())
 
@@ -1823,7 +1899,7 @@ def plan_rework(cfg: "Config", t: Task, feedback: str) -> None:
     kiro-cli 不在/失敗時は指摘を note に追記してそのまま再提案（人が approve/revise で確定できる）。"""
     reworked = False
     try:
-        out = _run_kiro_cli(_plan_rework_prompt(t, feedback), cfg.model)
+        out = _run_kiro_cli(_plan_rework_prompt(t, feedback), cfg.model, purpose="plan")
         obj = _extract_json_object_loose(out)
         if isinstance(obj, dict) and str(obj.get("title", "")).strip():
             t.title = str(obj["title"]).strip()
@@ -2092,32 +2168,71 @@ def _extract_json_obj(text: str) -> "dict | None":
 # （kiro-flow の _configure_thresholds と同じ流儀）。
 _AGENT_CLI: str = "kiro"
 _AGENT_TIMEOUT: float = 300.0
+# 処理（purpose）毎の上書き（設定 agents: の正規化済みマップ。build_config が確定する）。
+# 例: {"plan": {"agent_cli": "claude", "model": "opus"}, "assess": {"model": "haiku"}}
+_AGENT_OVERRIDES: "dict[str, dict]" = {}
+# エージェントを使用する処理の一覧（設定 agents: のキー）。ここに無いキーは無視される。
+AGENT_PURPOSES = ("plan", "review", "prioritize", "route", "adjudicate", "verify",
+                  "distill", "assess", "repo_map", "doctor")
 # agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
 _AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot"}
 
 
-def _run_kiro_cli(prompt: str, model: "str | None") -> str:
-    """エージェント CLI（設定 agent_cli: kiro/claude/copilot）を 1 回呼び出してテキスト応答を返す。
-    このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。"""
-    stdin_text = None
-    if _AGENT_CLI == "claude":
+def _normalize_agent_overrides(raw) -> "dict[str, dict]":
+    """設定 agents:（処理毎の agent_cli/model 上書き）を正規化する。未知の処理キー・
+    不正な値は黙って落とす（設定ミスでループを殺さない。有効キーは AGENT_PURPOSES）。"""
+    out: "dict[str, dict]" = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        key = str(k).strip().lower()
+        if key not in AGENT_PURPOSES or not isinstance(v, dict):
+            continue
+        ov: dict = {}
+        if v.get("agent_cli"):
+            ov["agent_cli"] = str(v["agent_cli"]).strip().lower()
+        if v.get("model"):
+            ov["model"] = str(v["model"]).strip()
+        if ov:
+            out[key] = ov
+    return out
+
+
+def _agent_for(purpose: str) -> "tuple[str, str | None]":
+    """処理（purpose）の実効エージェント。(agent_cli, model 上書き) を返す。
+    設定 agents: の該当キー ＞ グローバル agent_cli（model 上書きは無ければ None＝呼び出し値）。"""
+    ov = _AGENT_OVERRIDES.get(purpose) or {}
+    return (str(ov.get("agent_cli") or _AGENT_CLI).lower(), ov.get("model") or None)
+
+
+def _agent_cmd(cli: str, model: "str | None", prompt: str) -> "tuple[list[str], str | None]":
+    """エージェント CLI 1 回分の (argv, stdin テキスト) を組み立てる（実行はしない・決定的）。"""
+    if cli == "claude":
         # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらない）。
         cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
         if model:
             cmd += ["--model", model]
-        stdin_text = prompt
-    elif _AGENT_CLI == "copilot":
+        return cmd, prompt
+    if cli == "copilot":
         # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
         # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
         cmd = ["copilot", "-s", "--allow-all-tools", "--allow-all-paths", "--no-color"]
         if model:
             cmd += ["--model", model]
-        cmd += ["-p", prompt]
-    else:
-        cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
-        if model:
-            cmd += ["--model", model]
-        cmd.append(prompt)
+        return cmd + ["-p", prompt], None
+    cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
+    if model:
+        cmd += ["--model", model]
+    return cmd + [prompt], None
+
+
+def _run_kiro_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
+    """エージェント CLI（設定 agent_cli: kiro/claude/copilot）を 1 回呼び出してテキスト応答を返す。
+    このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。
+    purpose（AGENT_PURPOSES のいずれか）を渡すと、設定 agents: の処理毎上書き
+    （agent_cli / model）が効く。model は 上書き ＞ 呼び出し値（通常グローバル model）。"""
+    cli, model_ov = _agent_for(purpose)
+    cmd, stdin_text = _agent_cmd(cli, model_ov or model, prompt)
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
     env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
     proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
@@ -2127,7 +2242,8 @@ def _run_kiro_cli(prompt: str, model: "str | None") -> str:
     return strip_ansi(proc.stdout).strip()
 
 
-def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=_run_kiro_cli) -> "list[Task] | None":
+def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=None) -> "list[Task] | None":
+    kiro_run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="prioritize"))
     if len(ready) <= 1:
         return list(ready)     # 0/1 件は並べ替えの余地が無い＝LLM を呼ばない（コスト・レイテンシ削減）
     listing = "\n".join(
@@ -2192,7 +2308,7 @@ def adjudicate_escalation(cfg: "Config", task: Task, reason: str,
     『ループ内で自律的に積み直して解けるか／人の判断が要るか』を判断させる。
     返り値: ("requeue", guidance) なら自律的に積み直す、("escalate", "") なら従来どおり人へ。
     判断不能・エラー・曖昧は **必ず escalate にフォールバック**（安全側＝人を飛ばさない）。"""
-    run = kiro_run or _run_kiro_cli
+    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="adjudicate"))
     ctx = adjudication_context(cfg, task)        # journal/decisions/feedback の文脈を渡す
     prompt = (
         "あなたは自律バックログ・ループの『人の判断を呼ぶ前の門番』です。次のタスクが検証(verify)に"
@@ -2250,7 +2366,7 @@ def assess_task(cfg: "Config", task: Task, kiro_run=None) -> "str | None":
         return task.get("assess")
     scores = None
     if cfg.executor != "stub":
-        run = kiro_run or _run_kiro_cli
+        run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="assess"))
         try:
             obj = _extract_json_obj(run(_assess_prompt(task), cfg.model)) or {}
             got = {k: int(obj[k]) for k in ("c", "r", "a") if k in obj}
@@ -2755,7 +2871,7 @@ def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
     hint（過去の類似 learn）・repo_ctx（検出したテスト/ビルド基盤）で grep 退化を抑える。
     **自己修復（多候補）**: 散文/シェル非妥当/恒真式に退化した候補は不採用とし、理由を添えて最大
     attempts 回まで再合成させる（1 回で諦めず、より良い候補を引き出す）。"""
-    run = kiro_run or _run_kiro_cli
+    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="verify"))
     retry_note = ""
     for _ in range(max(1, attempts)):
         try:
@@ -2804,6 +2920,9 @@ def ensure_verify(cfg: "Config", task: "Task", kiro_run=None) -> bool:
                               limit=600, max_files=1)   # 理解の要約も合成の材料に（有界）
         if rm:
             repo_ctx = (repo_ctx + "\n" if repo_ctx else "") + rm
+        pr = project_rules_context(cfg, limit=400)      # 恒常ルール（テスト実行方法等）も合成に効かせる
+        if pr:
+            repo_ctx = (repo_ctx + "\n" if repo_ctx else "") + pr
         cmd = synth_verify(cfg, task.title, accept, kiro_run, hint=hint, repo_ctx=repo_ctx)
         if cmd:
             task.verify = cmd
@@ -2996,6 +3115,11 @@ def build_request(task: Task, cfg: "Config | None" = None) -> str:
         if cc:
             base += ("\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n"
                      + cc)
+        # プロジェクトルール（rules.md・人が書く＋効いた learn の自動昇格）。learn の recall が
+        # 類似タスク限定なのに対し、これは全タスクへ常時注入される恒常ルール層。
+        pr = project_rules_context(cfg)
+        if pr:
+            base += "\n\nプロジェクトルール（rules.md・全タスク共通。必ず従うこと）:\n" + pr
         # リポジトリ理解（context/*.md・生成は opt-in repo_map / 人の手書きも可）。workspace 指定
         # タスクはその repo 分だけ、無指定はプロジェクトの全ファイル（有界）を注入する。
         rm = repo_map_context(cfg, [task.get("workspace")] if task.get("workspace") else None)
@@ -3150,8 +3274,9 @@ def _route_agent_prompt(task: Task, workspaces: "list[dict]") -> str:
 
 
 def route_agent(cfg: "Config", task: Task, workspaces: "list[dict]",
-                kiro_run=_run_kiro_cli) -> str:
+                kiro_run=None) -> str:
     """曖昧なタスクの書込先を LLM に1つ選ばせる（決定論で決まらなかったときのみ）。失敗時は ""。"""
+    kiro_run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="route"))
     try:
         out = kiro_run(_route_agent_prompt(task, workspaces), cfg.model)
         data = _extract_json_obj(out)
@@ -3717,7 +3842,7 @@ def distill_learn(cfg: "Config", title: str, guidance: str, kiro_run=None) -> "t
     verbatim = (title, guidance.replace("\n", " ⏎ ").strip()[:400])
     if not cfg.distill_learn:                       # 蒸留 off＝従来どおり生の指摘を learn 化
         return verbatim
-    run = kiro_run or _run_kiro_cli
+    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="distill"))
     try:
         out = run(_distill_prompt(title, guidance), cfg.model)
     except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等
@@ -3868,6 +3993,14 @@ class Config:
     # context/<repo名>.md を生成（HEAD sha キャッシュ・変化時のみ再生成）。読み出しは常時
     # （人が手書きした context/*.md も plan / act / verify 合成へ有界注入される）。
     repo_map: bool = False
+    # プロジェクトルールの自動昇格（既定 on）: 効果が再現した learn（auto-resolve が
+    # promote_threshold 回以上）を rules.md（全タスク常時注入層）へ決定的に追記する。
+    # rules.md の読み出し・注入自体は設定に依らず常時（人が書けば必ず効く）。
+    rules_capture: bool = True
+    # 処理毎のエージェント上書き（設定ファイル専用・CLI フラグ無し）。キーは AGENT_PURPOSES
+    # （plan/review/prioritize/route/adjudicate/verify/distill/assess/repo_map/doctor）、
+    # 値は {agent_cli, model}。未指定の処理はグローバル agent_cli / model を使う。
+    agents: dict = field(default_factory=dict)
     # タスク単位ターゲットブランチ（既定 on）: 成果を kp/<task-id> に集約する（リトライも同一ブランチ）。
     task_branch: bool = True
     task_branch_prefix: str = "kp/"
@@ -4818,7 +4951,11 @@ _STATE_EXCLUDE_DIRS = {"bus", "flow-archive", "claims"}
 # 自動生成 repos.json は、リモート優先で取り込んでも次の run の export_repo_registry が
 # charter から再生成するため charter が正のまま保たれる（手書き＝_meta 無しだけが残る）。
 _STATE_REMOTE_WINS_DIRS = {"commands", "inbox", "needs"}
-_STATE_REMOTE_WINS_FILES = {"policy.md", "charter.md", "repos.json", "repos.yaml", "repos.yml"}
+# rules.md（プロジェクトルール）も人が書くのが正なのでリモート優先。システムの昇格追記
+# （promote_rules）は実行側ローカルで起きるが、同時変更時は人の編集を取りこぼさない側に倒す
+# （昇格は冪等なので次パスで再追記される）。
+_STATE_REMOTE_WINS_FILES = {"policy.md", "charter.md", "rules.md",
+                            "repos.json", "repos.yaml", "repos.yml"}
 
 
 class StateGit:
@@ -5611,7 +5748,8 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
                      if t.norm_status() in ("blocked", "review")} - pre_blocked
     budget_stop = reason in (REASON_BUDGET, REASON_COST)
     notified = notify(cfg, tasks, reasons, newly_blocked, budget_stop)
-    promoted = promote_learnings(cfg) if cfg.ltm else []   # 効いた学習を ltm-use へ昇格
+    promote_rules(cfg)                                     # 効いた学習を rules.md（常時注入層）へ昇格
+    promoted = promote_learnings(cfg) if cfg.ltm else []   # 効いた学習を ltm-use へ昇格（横断・opt-in）
     _cleanup_bus(cfg)             # 不要な一時ファイル（kiro-flow バスの run 状態）を掃除
     append_journal(cfg.journal, f"=== kiro-project 停止 reason={reason} cycles={cycle} "
                                 f"done={counts['done']} blocked={counts['blocked']} "
@@ -6621,7 +6759,7 @@ def diagnose_with_agent(cfg: "Config", signals: dict, deterministic: "list[dict]
                         kiro_run=None) -> "list[dict] | None":
     """kiro-cli に稼働を診断させ、分類済み finding の配列を得る。
     kiro-cli 不在・エラー・解析不能は None（＝決定的所見のみで続行）。"""
-    run = kiro_run or _run_kiro_cli
+    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="doctor"))
     try:
         out = run(_doctor_prompt(signals, deterministic), cfg.model)
     except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等
@@ -6690,7 +6828,7 @@ def file_issues_via_gitlab_idd(cfg: "Config", program: "list[dict]", skill_dir: 
                                kiro_run=None) -> bool:
     """program カテゴリの不具合を gitlab-idd スキルのリクエスター役でイシュー起票させる
     （kiro-cli へ委譲）。成功で True、kiro-cli 不在・失敗で False。"""
-    run = kiro_run or _run_kiro_cli
+    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="doctor"))
     items = "\n".join(
         f"{i}. {f['title']}\n   - 根拠: {f.get('evidence', '')}\n   - 詳細: {f.get('fix', '')}"
         for i, f in enumerate(program, 1))
@@ -6908,8 +7046,12 @@ def cmd_rot(cfg: Config, fix: bool) -> int:
 
 
 def cmd_promote(cfg: Config) -> int:
-    """効いた学習（decisions/ の learn）を ltm-use 長期記憶へ昇格（エージェント不要）。"""
+    """効いた学習（decisions/ の learn）を ltm-use 長期記憶へ昇格（エージェント不要）。
+    プロジェクト内の常時注入層（rules.md）への昇格も同時に行う。"""
     cfg.ltm = True   # promote は明示操作なので ltm を有効化
+    rules = promote_rules(cfg)
+    if rules:
+        print(f"rules.md へ昇格: {', '.join(rules)}")
     mem_dir = ltm_memories_dir(cfg)
     promoted = promote_learnings(cfg)
     print(f"昇格先: {mem_dir}")
@@ -7933,7 +8075,7 @@ def _repo_map_generate(cfg: "Config", spec: dict) -> str:
             "- 構造（主要ディレクトリと役割）\n- 主要モジュールと責務\n"
             "- ビルド・テスト・リンタの実行コマンド\n- 命名・実装の規約（読み取れる範囲で）\n"
             "出力は要約本文のみ（前置き・後書きなし）。")
-        return _run_kiro_cli(prompt, cfg.model).strip()[:4000]
+        return _run_kiro_cli(prompt, cfg.model, purpose="repo_map").strip()[:4000]
     except Exception:  # noqa: BLE001  clone 失敗・エージェント不在・タイムアウトは生成なし
         return ""
     finally:
@@ -8001,7 +8143,7 @@ def _plan_decompose_prompt(charter: "Charter", granularity: "str | None" = None,
         + plan_granularity_directive(granularity) + "\n\n"
         + build_charter_request(charter)
         + "\n\n" + _charter_owns_note(charter)
-        + (f"\n\nリポジトリ理解（構造・規約・コマンド。分解の粒度と verify の精度に使う）:\n{context}"
+        + (f"\n\n参考文脈（プロジェクトルール・リポジトリ理解。分解の粒度と verify の精度に使う）:\n{context}"
            if context else "")
         + "\n\n出力は JSON 配列のみ。各要素は {\"title\": str, \"verify\": str} で、verify は"
         " 終了コード0をPASSとみなすシェルコマンド（『履歴』でなく『望む最終状態/差分』を見ること）。"
@@ -8056,9 +8198,10 @@ def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     """charter をエージェント（kiro-flow/kiro-cli）に分解させ、[{title, verify}, ...] を得る。
     知能は委譲し、取り込み（enqueue）は本体が決定的に行う。失敗時は空（plan を諦め人へ）。
     各タスクには書込先 workspace を必ず明示する（verify が操作するパスの owns を持つ repo）。"""
+    ctx = "\n\n".join(x for x in (project_rules_context(cfg), repo_map_context(cfg)) if x)
     try:
         out = _run_kiro_cli(_plan_decompose_prompt(charter, cfg.granularity,
-                                                   context=repo_map_context(cfg)), cfg.model)
+                                                   context=ctx), cfg.model, purpose="plan")
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project plan: 分解に失敗（{e}）")
         return []
@@ -8119,7 +8262,7 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, verify}] として返す。
     plan と同様、各タスクに書込先 workspace を必ず明示する。"""
     try:
-        out = _run_kiro_cli(_review_prompt(charter, cfg.granularity), cfg.model)
+        out = _run_kiro_cli(_review_prompt(charter, cfg.granularity), cfg.model, purpose="review")
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project review: レビューに失敗（{e}）")
         return []
@@ -9147,6 +9290,11 @@ CONFIG_DEFAULTS = {
     "spec_threshold": 3,
     # リポジトリ理解の成果物化: plan 前に context/<repo名>.md を生成（sha キャッシュ）。読み出しは常時。
     "repo_map": False,
+    # 効いた learn を rules.md（全タスク常時注入のプロジェクトルール）へ自動昇格。読み出しは常時。
+    "rules_capture": True,
+    # 処理毎のエージェント上書き（yaml 専用）。キーは plan/review/prioritize/route/adjudicate/
+    # verify/distill/assess/repo_map/doctor、値は {agent_cli, model}。
+    "agents": {},
     # タスク単位ターゲットブランチ: 成果物を kp/<task-id> に集約（kiro-flow の workspace branch へ注入。
     # リトライ（r0/r1…）も同一ブランチに積み増す）。false で従来の run 毎 kf/<run-id>。
     "task_branch": True,
@@ -9215,9 +9363,10 @@ def build_config(args) -> Config:
         return root / sub
 
     # エージェント CLI（分解・優先順位・裁定等の free 関数が参照）をここで確定する。
-    global _AGENT_CLI, _AGENT_TIMEOUT
+    global _AGENT_CLI, _AGENT_TIMEOUT, _AGENT_OVERRIDES
     _AGENT_CLI = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
     _AGENT_TIMEOUT = float(getattr(args, "agent_timeout", 300.0) or 0.0)
+    _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
 
     return Config(
         backlog=under("backlog", "backlog"),
@@ -9291,6 +9440,8 @@ def build_config(args) -> Config:
         spec_track=bool(getattr(args, "spec_track", False)),
         spec_threshold=min(3, max(1, int(getattr(args, "spec_threshold", 3) or 3))),
         repo_map=bool(getattr(args, "repo_map", False)),
+        rules_capture=bool(getattr(args, "rules_capture", True)),
+        agents=_AGENT_OVERRIDES,
         task_branch=bool(getattr(args, "task_branch", True)),
         task_branch_prefix=str(getattr(args, "task_branch_prefix", "kp/") or "kp/"),
         delivery_review=bool(getattr(args, "delivery_review", True)),
@@ -9456,6 +9607,9 @@ def _add_common(sp):
     sp.add_argument("--repo-map", action=argparse.BooleanOptionalAction, default=None,
                     help="リポジトリ理解の成果物化: plan 前に書込先 repo ごとに context/<repo名>.md を"
                          "生成（HEAD sha キャッシュ・変化時のみ再生成）。読み出しは常時（既定 off）")
+    sp.add_argument("--rules-capture", action=argparse.BooleanOptionalAction, default=None,
+                    help="効いた学習（learn の auto-resolve が閾値回数以上）を rules.md（プロジェクト"
+                         "ルール・全タスク常時注入）へ自動昇格（既定 on。rules.md の注入自体は常時）")
     sp.add_argument("--task-branch", action=argparse.BooleanOptionalAction, default=None,
                     help="タスク単位ターゲットブランチ（kp/<task-id> に成果を集約。既定 on）")
     sp.add_argument("--delivery-review", action=argparse.BooleanOptionalAction, default=None,

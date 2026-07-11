@@ -470,6 +470,96 @@ kiro-project needs           # 人の判断待ち（承認は GitLab の status:
 
 ---
 
+## stub で新機能を一巡する（エージェント不要の動作確認）
+
+採点（assess）・リスクダイジェスト・spec 連鎖・rules/context 注入を、**エージェント CLI 無しで**
+決定的に確認する手順。空ディレクトリで以下を上から流すだけでよい（実行済みの検証記録。
+⚠ リポジトリ直下では叩かない——cwd の設定を拾う。必ず専用の空ディレクトリで）。
+
+```bash
+mkdir stub-demo && cd stub-demo
+cat > kiro-project.yaml <<'EOF'
+planner: none        # 決定的順位（エージェント不要）
+flow_planner: stub
+executor: stub       # act は無害スタブ
+spec_track: true     # spec ルーティングを試す
+EOF
+```
+
+**1) 採点と実行前レビュー票**（assess は stub では決定的ヒューリスティック）:
+```bash
+kiro-project enqueue --title "挨拶メッセージ機能を追加する" --verify "true"
+kiro-project run --once
+grep assess backlog/*.md        # → - assess: c=1 r=1 a=1（verify 有＝曖昧さ 1）
+grep assess needs/*.md          # 実行前レビュー票（plan-review）にも載る
+```
+
+**2) リスクダイジェスト付きの検収**:
+```bash
+kiro-project approve <id> --reason "実行許可"    # plan-review を承認
+kiro-project run --once                          # stub act → verify PASS → 検収待ち
+head -8 needs/<id>.md                            # frontmatter に risk: low
+grep -A3 "## リスク" needs/<id>.md               # 決定的な判断材料
+kiro-project approve <id> --reason "成果OK"      # done 確定（archive/ と DELIVERY.md に納品）
+```
+
+**3) spec 連鎖**（policy で強制。採点しきい値でも同じ経路）:
+````bash
+echo "spec: 認証" > policy.md
+kiro-project enqueue --title "認証つきAPIを追加する" --verify "true"
+kiro-project approve <id> --reason "実行許可"
+kiro-project run --once          # <id>-spec が前置され、<id> は after: <id>-spec で待つ
+kiro-project approve <id>-spec --reason "spec 作成を許可"
+# stub は spec を書けないので、エージェントの代役として人が specs/<id>/ に 3 ファイルを書く:
+mkdir -p specs/<id>
+echo "# 要求仕様" > specs/<id>/spec.md
+echo "# 設計"     > specs/<id>/design.md
+cat > specs/<id>/tasks.md <<'EOF'
+```json
+[{"title": "JWT ミドルウェアを作る", "verify": "true"},
+ {"title": "hello エンドポイントを作る", "verify": "true", "after": ["JWT ミドルウェアを作る"]}]
+```
+EOF
+kiro-project run --once                          # verify PASS → spec の検収待ち
+kiro-project approve <id>-spec --reason "spec OK"
+kiro-project run --once --dry-run                # tasks.md が実装タスクへ展開される
+grep "after\|spec:" backlog/*.md   # after が title→id 解決・元タスクは総合検証（after: 実装群）
+````
+
+**4) rules.md / context の常時注入**（暗黙知の伝達を bus 上で観測）:
+```bash
+printf -- "- テストは必ず pytest -q で実行する\n" > rules.md
+mkdir -p context && printf "src/ 配下が本体\n" > context/app.md
+kiro-project approve <実装タスクid> --reason "実行許可"
+kiro-project run --once --no-cleanup             # bus を掃除せず残す
+grep -o "pytest -q で実行する\|src/ 配下が本体\|仕様（spec 前段の成果" bus/runs/*/meta.json
+# → act 要求文にプロジェクトルール・リポジトリ理解・spec 本文が注入されている
+```
+
+stub で確認**できない**もの: assess の LLM 採点（ヒューリスティックのみ）・accept からの
+verify 合成・repo-map の自動生成（stub では生成しない。手書き context/*.md の注入は上記で確認可）・
+rules.md への learn 自動昇格（auto-resolve 実績が要る。単体テスト `ProjectRulesTests` が担保）。
+
+---
+
+## プロジェクト固有ルール（暗黙知）の記録と伝達
+
+フローを回して判明した「このプロジェクトのやり方」は、届く範囲の違う 4 層で記録できる:
+
+| 層 | 書き方 | 届く範囲 |
+|----|--------|---------|
+| `feedback` | needs 票に記入 / `revise --feedback` | そのタスクの次の試行のみ |
+| `learn/avoid` | 差し戻し・承認理由から自動抽出（decisions/） | **タイトルが類似する**タスクのみ（Jaccard recall） |
+| **`rules.md`** | **人が直接書く**（正）＋効いた learn の自動昇格（既定 on） | **全タスク常時**（act / plan / verify 合成） |
+| ltm | `promote` / `--ltm`（opt-in） | プロジェクト横断 |
+
+「同じ指摘を何度もしている」と感じたら rules.md に一行書くのが最短。システム側も、learn が
+auto-resolve で `promote_threshold`（既定 2）回効いたら rules.md の `## 自動昇格` 節へ出典コメント
+付きで追記する（人がいつでも編集・削除できる。追記はプロンプト文脈が増えるだけで、done の条件や
+policy には影響しない）。
+
+---
+
 ## 困ったとき
 
 | 症状 | 原因の典型 | 対処 |
