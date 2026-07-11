@@ -3,26 +3,40 @@ status: proposed
 date: 2026-07-11
 decision-makers: [human]
 task-id: test--f-kiro-project-jso-142029
-kind: plan-review
+kind: blocked
 ---
 
-# 実行前レビュー: test--f-kiro-project-jso-142029 — 受入条件を満たす: > test -f .kiro/project.json && python -c "import json,sys; d=json.load(open('.kiro/project.json')); sys.exit(
+# 要対応: test--f-kiro-project-jso-142029 — 受入条件を満たす: > test -f .kiro/project.json && python -c "import json,sys; d=json.load(open('.kiro/project.json')); sys.exit(
 
 ## Context and Problem Statement
 
-- なぜ: 新規タスクの実行前レビュー（承認されるまで実行しません）
-- 状態: proposed（実行前レビュー待ち・未実行）
+- なぜ: 繰り返し NG（retries=3）: exit=127 /bin/sh: -f: command not found
+- 状態: blocked（kiro-project の判断待ち）
 
-## タスク定義（レビュー対象）
-- title  : 受入条件を満たす: > test -f .kiro/project.json && python -c "import json,sys; d=json.load(open('.kiro/project.json')); sys.exit(
-- verify : `> test -f .kiro/project.json && python -c "import json,sys; d=json.load(open('.kiro/project.json')); sys.exit(0 if d.get('name') else 1)"`
-- source : acceptance
+## 判断材料（成果物の所在・差分・検証）
+- 成果物: git: 未コミットの変更あり
+- 所在: /Users/nitto/Workspace/sandbox/.kiro-project
+- 実行先: local
+- 差分: 12 ファイル
+    - .kiro-project/bus/runs/run-20260711-142157-6778/claims/check1/worker-1.json
+    - .kiro-project/bus/runs/run-20260711-142157-6778/claims/work1/worker-1.json
+    - .kiro-project/bus/runs/run-20260711-142157-6778/events/orchestrator.jsonl
+    - .kiro-project/bus/runs/run-20260711-142157-6778/events/worker-1.jsonl
+    - .kiro-project/bus/runs/run-20260711-142157-6778/final.json
+    - .kiro-project/bus/runs/run-20260711-142157-6778/graph.json
+    - .kiro-project/bus/runs/run-20260711-142157-6778/meta.json
+    - .kiro-project/bus/runs/run-20260711-142157-6778/results/check1.json
+    - .kiro-project/bus/runs/run-20260711-142157-6778/results/work1.json
+    - .kiro-project/bus/runs/run-20260711-142157-6778/tasks/check1.json
+    - .kiro-project/bus/runs/run-20260711-142157-6778/tasks/work1.json
+    - .kiro-project/claims/test--f-kiro-project-jso-142029.lock
+- 検証: `> test -f .kiro/project.json && python -c "import json,sys; d=json.load(open('.kiro/project.json')); sys.exit(0 if d.get('name') else 1)"` → FAIL（exit=127 /bin/sh: -f: command not found）
 
 ## Decision Outcome
 
-<!-- 人の決定の記入欄。承認は空のまま [x]、差し戻しは修正指示を書いて [x]。 -->
-- [ ] 確定（このボックスを [x] にして保存すると取り込みます）
+<!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->
+- [x] 確定（このボックスを [x] にして保存すると取り込みます）
 
-<!-- 承認して実行を許可するなら `kiro-project approve test--f-kiro-project-jso-142029`（または空のまま [x]）。
-     差し戻す（kiro-project にタスクを修正させる）なら下に修正指示を書いて [x]。
-     却下（廃止して関連バックログを再計画）なら `kiro-project reject test--f-kiro-project-jso-142029 --reason ...`。 -->
+<!-- 上の [ ] を [x] にした時だけ反映されます（書きかけでの誤発火を防ぐため）。
+     下に修正方針・指示を書いてください。空のままでも [x] なら『そのまま再実行』。
+     コマンドなら `kiro-project approve test--f-kiro-project-jso-142029`。 -->

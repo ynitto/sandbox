@@ -1,0 +1,7 @@
+{
+  "id": "work1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "[stub] 完了: 受入条件を満たす: > test -f .kiro/project.json && python",
+  "finished_at": "2026-07-11T05:21:51Z"
+}
