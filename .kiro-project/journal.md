@@ -10,3 +10,17 @@
 - 2026-07-11 10:19:25 === kiro-project 開始 tasks=0 ingested=0 planner=none executor=stub dry_run=True ===
 - 2026-07-11 10:19:25 state-git: 無効（未設定・ルートも git リポジトリでない）
 - 2026-07-11 10:19:25 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 14:14:12 === project 開始 sandbox acceptance=2 ===
+- 2026-07-11 14:14:29 project cycle 1: plan cycle 1 で 7 件投入 ['kiro-project-kiro-flow-141429', 'enq-20260711-141429', 'enq-20260711-141429-2', 'kiro-flow-141429', 'kiro-projects-viewer-UI-141429', 'needs-141429', 'API-141429']
+- 2026-07-11 14:14:29 === kiro-project 開始 tasks=7 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 14:14:29 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 14:14:29 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 14:14:29 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-11 14:14:29 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 14:20:29 === project 開始 sandbox acceptance=2 ===
+- 2026-07-11 14:20:29 project cycle 1: plan cycle 1 で 2 件投入 ['python--m-pytest-Users-n-142029', 'test--f-kiro-project-jso-142029']
+- 2026-07-11 14:20:29 === kiro-project 開始 tasks=2 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 14:20:29 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 14:20:29 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 14:20:29 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-11 14:20:29 === project watch: 監視中（charter 更新/フィードバック待ち）===
