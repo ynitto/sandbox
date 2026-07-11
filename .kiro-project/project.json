@@ -21,8 +21,9 @@
   "acceptance_synth": {},
   "planned_charter_sig": "e577388c94e22da543bc0172bc12fd64fc15dce2a9e96c908cedc0a2d18aeb9c",
   "acceptance_total": 2,
-  "status": "converged",
-  "updated": "2026-07-11T14:59:38",
+  "status": "accepted",
+  "updated": "2026-07-11T14:59:53",
   "cost": 0.0,
-  "cycles": 18
+  "cycles": 19,
+  "accepted_charter_sig": "0b1ffa8dcb48332edbbbde80838f18ca81b93b1cd28f69005b6e362704d09a05"
 }
