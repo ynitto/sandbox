@@ -1,0 +1,10 @@
+{
+  "id": "check1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "verify=pass",
+  "finished_at": "2026-07-11T21:11:52Z",
+  "data": {
+    "ok": true
+  }
+}
