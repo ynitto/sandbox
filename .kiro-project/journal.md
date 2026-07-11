@@ -8,3 +8,10 @@
 - 2026-07-11 21:42:30 commands 取り込み失敗: viewer-approve-kiro-project-v-1783773743629.json: approve .kiro-project-v１ が失敗 (exit 2)
 - 2026-07-11 21:42:30 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-11 22:03:06 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 22:03:42 === project 開始 v１ acceptance=1 ===
+- 2026-07-11 22:03:42 project cycle 1: plan cycle 1 で 1 件投入 ['pytest--x--q-220342']
+- 2026-07-11 22:03:42 === kiro-project 開始 tasks=1 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 22:03:42 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 22:03:42 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 22:03:42 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-11 22:03:42 === project watch: 監視中（charter 更新/フィードバック待ち）===
