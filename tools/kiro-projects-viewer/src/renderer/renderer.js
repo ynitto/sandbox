@@ -19,6 +19,7 @@ const state = {
   // { [runId]: { loading, at, byNode: {[id]:{reconciled,url,issueState,labels,relatedMrs,...}} } }
   flowReconcile: {},
   backlogFilter: 'active',
+  flowFilter: 'active', // フロータブの run フィルタ（active＝非終端のみ／done＝完了・アーカイブ／all）
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
   editFile: null, // {dir, name, file}（編集中のプロジェクトファイル）
   enqueueExtra: null, // {level, track}（再投入で引き継ぐが UI に出さない値）
@@ -36,6 +37,61 @@ function esc(s) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
+}
+
+// 内部動作の詳細（配送経路・ファイルパス・判定根拠など）はユーザー向け UI に出さず、
+// 開発者コンソールへ記録する。UI に見せる文言はプロジェクト管理の言葉に揃える。
+function uiLog(...args) {
+  console.info('[kpv]', ...args);
+}
+
+// 同じ内部詳細をポーリングのたびに記録しない（変化したときだけ uiLog する）
+const _loggedOnce = new Map();
+function uiLogOnChange(key, detail) {
+  const s = JSON.stringify(detail);
+  if (_loggedOnce.get(key) === s) return;
+  _loggedOnce.set(key, s);
+  uiLog(key, detail);
+}
+
+// 状態の表示ラベル（UI はプロジェクト管理の言葉、内部の状態名は chip の title で参照できる）。
+// タスク（backlog）・プロジェクト（project.json の status / run-log の停止理由）・
+// 実行（kiro-flow run）・GitLab（issue/MR）の各状態をまとめて引く。
+const STATUS_LABELS = {
+  // タスクの状態
+  inbox: '受付待ち',
+  draft: '下書き',
+  proposed: '計画承認待ち',
+  ready: '実行待ち',
+  doing: '実行中',
+  offloaded: '実行中（委任）',
+  review: '検収待ち',
+  blocked: '要対応',
+  done: '完了',
+  rejected: '却下',
+  // プロジェクトの状態・自動実行の停止理由
+  converged: '完了確認待ち',
+  accepted: '承認済み',
+  stall: '停滞',
+  budget: '回数上限',
+  cost: 'コスト上限',
+  'no-acceptance': '完了条件が未定義',
+  drained: '消化完了',
+  throttle: '予算超過（縮退）',
+  // 実行（run）の状態
+  failed: '失敗',
+  canceled: '中止',
+  running: '実行中',
+  unknown: '不明',
+  // GitLab issue / MR
+  opened: 'オープン',
+  merged: 'マージ済み',
+  closed: 'クローズ',
+};
+
+function statusLabel(status) {
+  const s = String(status || '');
+  return STATUS_LABELS[s] || s;
 }
 
 function toast(msg, ok = false) {
@@ -142,7 +198,8 @@ function mdToHtml(src) {
 }
 
 function statusChip(status) {
-  return `<span class="status-chip st-${esc(status)}">${esc(status)}</span>`;
+  // 表示はプロジェクト管理の言葉、内部の状態名は title（ホバー）で確認できる
+  return `<span class="status-chip st-${esc(status)}" title="${esc(status)}">${esc(statusLabel(status))}</span>`;
 }
 
 // git URL ("git@host:group/proj.git" / "https://host/group/proj.git") →
@@ -235,6 +292,7 @@ async function removeProject(dir) {
 
 function renderTree() {
   const tree = $('tree');
+  const prevScroll = tree.scrollTop; // 再描画（ポーリング）でサイドバーのスクロールを失わない
   const { instances } = state.discovery;
   // 実体が無い登録（exists:false）はここで弾く。過去に登録した config.roots のゴーストパスや、
   // 稼働していない/実在しないホストの instances/*.json（自動発見）が典型で、直せる見込みが無い
@@ -249,9 +307,9 @@ function renderTree() {
     tree.innerHTML = projects
       .map((p) => {
         const badges = [];
-        if (p.needsCount) badges.push(`<span class="badge warn" title="要対応">${p.needsCount}</span>`);
-        if (p.backlogCount) badges.push(`<span class="badge" title="バックログ">${p.backlogCount}</span>`);
-        if (p.hasCharter) badges.push('<span class="badge info" title="charter あり">C</span>');
+        if (p.needsCount) badges.push(`<span class="badge warn" title="要対応 ${p.needsCount} 件">${p.needsCount}</span>`);
+        if (p.backlogCount) badges.push(`<span class="badge" title="タスク ${p.backlogCount} 件">${p.backlogCount}</span>`);
+        if (p.hasCharter) badges.push('<span class="badge info" title="プロジェクト憲章あり">C</span>');
         // via='status-sync' はリモート本体を git 同期越しに推定した稼働判定（同期遅延を許容）。
         // ローカル確定（instances）と見分けられるよう dot に補助クラスと ~ 印を付ける
         const live = p.liveness || { via: p.running ? 'instances' : 'none' };
@@ -260,10 +318,10 @@ function renderTree() {
           ? '一時停止中'
           : p.running
             ? remoteGuess
-              ? `稼働中（同期経由の推定・約${Math.round((live.ageSec || 0) / 60)}分前に確認）`
+              ? `稼働中（別マシン・約${Math.round((live.ageSec || 0) / 60)}分前に確認）`
               : '稼働中'
             : remoteGuess
-              ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前・同期経由）`
+              ? `不明（最終確認 約${Math.round((live.ageSec || 0) / 60)}分前）`
               : '停止中';
         // 表示名は charter.md の `# Charter: <name>` を優先する（無ければフォルダ名）。
         // `.kiro-project` のような技術的なフォルダ名でも、charter.md を編集するだけで
@@ -286,6 +344,7 @@ function renderTree() {
       })
       .join('');
   }
+  tree.scrollTop = prevScroll;
   const live = instances.filter((i) => i.fresh).length;
   $('sidebar-footer').textContent = `稼働インスタンス: ${live} ／ 最終更新 ${new Date().toLocaleTimeString('ja-JP')}`;
 
@@ -344,7 +403,7 @@ function renderHeader() {
   $('project-badges').innerHTML = badges.join(' ');
   const lastLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
   const metaBits = [`${esc(p.dir)}`];
-  if (lastLog) metaBits.push(`最終 run: ${esc(lastLog.reason || '')} (${fmtAgo(lastLog.ts)})`);
+  if (lastLog) metaBits.push(`最終実行: ${esc(statusLabel(lastLog.reason))} (${fmtAgo(lastLog.ts)})`);
   $('project-meta').innerHTML = metaBits.join(' ｜ ');
   const needsBadge = $('needs-badge');
   const undecided = p.needs.filter((n) => !n.decided).length;
@@ -373,32 +432,41 @@ function renderOverview() {
   const parts = [];
 
   // プロジェクトファイルの編集（人が書く上位入力: charter / policy / repos）
+  const isMaster = !!(p.charter && p.charter.master);
+  const masterizeBtn =
+    p.charter && !isMaster
+      ? `<button class="chip" id="btn-masterize-charter"
+          title="憲章をマスター（全バージョン共通の前提。タスクへは分解されない）に切り替えます。以後は「＋ バージョン追加」で書いたやるべきことが計画されます">☆ マスター運用に切り替え</button>`
+      : '';
   parts.push(`<div class="card full edit-toolbar">
-    <h3>プロジェクトファイル</h3>
+    <h3>プロジェクト定義の編集</h3>
     <div class="row">
-      <button class="chip" data-edit="charter.md">✎ charter.md</button>
-      <button class="chip" data-edit="policy.md">✎ policy.md</button>
-      <button class="chip" data-edit="repos.json">✎ repos.json</button>
+      <button class="chip" data-edit="charter.md" title="charter.md を編集">✎ ${isMaster ? 'マスター憲章' : '憲章（目標・完了条件）'}</button>
+      <button class="chip" data-edit="policy.md" title="policy.md を編集">✎ 運用ルール</button>
+      <button class="chip" data-edit="repos.json" title="repos.json を編集">✎ リポジトリ一覧</button>
       <button class="chip" id="btn-add-charter-version"
-        title="charters/&lt;名前&gt;.md を新規作成し、既存の charter.md と並行駆動するバージョンとして追加します">＋ バージョン追加</button>
-      <span class="muted">charter を編集すると次の run で backlog（後段データ）に反映されます</span>
+        title="${isMaster ? 'やるべきことを記入して計画バージョンを追加します（マスター憲章の前提を引き継ぎます）' : '計画の新しいバージョン（charters/&lt;名前&gt;.md）を追加します'}">＋ バージョン追加</button>
+      ${masterizeBtn}
+      <span class="muted">編集した内容は次回の自動実行から計画に反映されます</span>
     </div>
   </div>`);
 
   // ステータスタイル
   const tiles = STATUS_ORDER.map(
     (st) =>
-      `<div class="tile st-${st}"><div class="num">${p.byStatus[st] || 0}</div><div class="label">${st}</div></div>`
+      `<div class="tile st-${st}" title="${esc(st)}"><div class="num">${p.byStatus[st] || 0}</div><div class="label">${esc(statusLabel(st))}</div></div>`
   );
   tiles.push(
-    `<div class="tile st-done"><div class="num">${p.archive.length}</div><div class="label">done（累計）</div></div>`
+    `<div class="tile st-done"><div class="num">${p.archive.length}</div><div class="label">完了（累計）</div></div>`
   );
-  parts.push(`<div class="card full"><h3>バックログ</h3><div class="tiles">${tiles.join('')}</div></div>`);
+  parts.push(`<div class="card full"><h3>タスクの内訳</h3><div class="tiles">${tiles.join('')}</div></div>`);
 
-  // 複数 charter（charters/<name>.md = バージョン）の一覧
-  if (p.charters && p.charters.length) {
+  // 計画バージョン（charters/<name>.md）の一覧。
+  // マスター運用ではバージョン＝「やるべきこと」の単位。未作成なら始め方を案内する。
+  // 従来運用（マスターでない charter.md ＋バージョン）は、初版がどうなったかを 1 行で明示する。
+  if ((p.charters && p.charters.length) || isMaster) {
     const chStates = (p.projectState && p.projectState.charters) || {};
-    const rows = p.charters
+    const rows = (p.charters || [])
       .map((ch) => {
         const st = chStates[ch.name] || {};
         const total = Number(st.acceptance_total || (ch.acceptanceItems || []).length || 0);
@@ -406,20 +474,62 @@ function renderOverview() {
         return `<tr>
           <td class="mono">${esc(ch.name)}</td>
           <td>${esc(ch.goal || ch.name || '')}</td>
-          <td>${total ? `${best} / ${total} PASS` : '—'}</td>
+          <td>${total ? `${best} / ${total} 達成` : '—'}</td>
           <td>${st.status ? statusChip(st.status) : '<span class="muted">未実行</span>'}</td>
           <td><button class="chip" data-edit="charters/${esc(ch.name)}.md">✎ 編集</button></td>
         </tr>`;
       })
       .join('');
+    let initialRow = '';
+    if (p.charter && !isMaster) {
+      const st = p.projectState || {};
+      const total = Number(st.acceptance_total || (p.charter.acceptanceItems || []).length || 0);
+      const best = Number(st.best || 0);
+      initialRow = `<tr>
+        <td class="mono">初版 <span class="muted">(charter.md)</span></td>
+        <td>${esc(p.charter.goal || p.charter.name || '')}</td>
+        <td>${total ? `${best} / ${total} 達成` : '—'}</td>
+        <td>${st.status ? statusChip(st.status) : '<span class="muted">未実行</span>'}
+            <span class="badge" title="バージョン運用中は初版は自動実行の対象になりません">実行対象外</span></td>
+        <td><button class="chip" data-edit="charter.md">✎ 編集</button>
+            <button class="chip" id="btn-promote-charter"
+              title="初版にバージョン名を付けてバージョン一覧に加えます（タスクや承認状態も引き継がれ、他バージョンと並行して進みます）">⤴ バージョン名を付ける</button></td>
+      </tr>`;
+    }
+    const emptyNote =
+      isMaster && !(p.charters && p.charters.length)
+        ? '<div class="muted" style="margin-top:4px">計画バージョンがまだありません。「＋ バージョン追加」でやるべきことを記入すると、マスター憲章の前提と合わせてタスクに分解されます。</div>'
+        : '';
+    const legacyNote =
+      p.charter && !isMaster && p.charters && p.charters.length
+        ? '<div class="muted" style="margin-top:4px">バージョン運用中は初版は実行されません。「⤴ バージョン名を付ける」でバージョン一覧に加えると再び並行して進みます。</div>'
+        : '';
     parts.push(`<div class="card full">
-      <h3>バージョン（charters/ — 全バージョンを並行駆動）</h3>
-      <table class="list"><tr><th>charter</th><th>goal</th><th>acceptance</th><th>状態</th><th></th></tr>${rows}</table>
+      <h3>計画バージョン（やるべきこと — 並行して進行）</h3>
+      ${rows || initialRow ? `<table class="list"><tr><th>バージョン</th><th>やるべきこと</th><th>完了条件</th><th>状態</th><th></th></tr>${initialRow}${rows}</table>` : ''}
+      ${emptyNote}${legacyNote}
     </div>`);
   }
 
   // charter
-  if (p.charter) {
+  if (p.charter && isMaster) {
+    // マスター憲章: 全バージョン共通の前提・制約。分解されないため達成状況カードは出さない
+    // （進捗は上の計画バージョン一覧で見る）。
+    parts.push(`
+      <div class="card full">
+        <h3>プロジェクト憲章（マスター）: ${esc(p.charter.name || '')}</h3>
+        <div class="muted" style="margin-bottom:6px">全バージョン共通の前提です。ここからタスクは作られず、各計画バージョンに自動で引き継がれます。</div>
+        <div class="charter-goal">${esc(p.charter.goal || '（目標が未記入です）')}</div>
+        ${p.charter.constraints ? `<div class="section-title">制約（全バージョン共通）</div>${mdToHtml(p.charter.constraints)}` : ''}
+        ${p.charter.assumptions ? `<div class="section-title">前提（全バージョン共通）</div>${mdToHtml(p.charter.assumptions)}` : ''}
+        ${p.charter.deliverables ? `<div class="section-title">成果物</div>${mdToHtml(p.charter.deliverables)}` : ''}
+        ${(p.charter.acceptanceItems || []).length
+          ? `<div class="section-title">共通の完了条件（バージョン側に無いとき適用）</div>${(p.charter.acceptanceItems || [])
+              .map((a) => `<div class="acceptance-item">・<code class="mono">${esc(a)}</code></div>`)
+              .join('')}`
+          : ''}
+      </div>`);
+  } else if (p.charter) {
     const ps = p.projectState || {};
     const total = Number(ps.acceptance_total || (p.charter.acceptanceItems || []).length || 0);
     const hist = Array.isArray(ps.history)
@@ -437,30 +547,39 @@ function renderOverview() {
           .map((n) => `<div style="height:${total ? Math.max(6, (n / total) * 100) : 6}%" title="${n}/${total}"></div>`)
           .join('')}</div>`
       : '';
+    // 複数バージョン運用ではこのカードが「初版（charter.md）の説明」であることを明示する
+    // （どのバージョンの説明か分からない、という混乱を避ける）
+    const versionLabel = p.charters && p.charters.length
+      ? ' <span class="badge" title="このカードは初版（charter.md）の内容と状態です">初版</span>'
+      : '';
     parts.push(`
       <div class="cards">
         <div class="card" style="flex:2">
-          <h3>CHARTER: ${esc(p.charter.name || '')}</h3>
-          <div class="charter-goal">${esc(p.charter.goal || '(goal なし)')}</div>
-          ${p.charter.deliverables ? `<div class="section-title">deliverables</div>${mdToHtml(p.charter.deliverables)}` : ''}
-          ${p.charter.constraints ? `<div class="section-title">constraints</div>${mdToHtml(p.charter.constraints)}` : ''}
+          <h3>プロジェクト憲章: ${esc(p.charter.name || '')}${versionLabel}</h3>
+          <div class="charter-goal">${esc(p.charter.goal || '（目標が未記入です）')}</div>
+          ${p.charter.deliverables ? `<div class="section-title">成果物</div>${mdToHtml(p.charter.deliverables)}` : ''}
+          ${p.charter.constraints ? `<div class="section-title">制約</div>${mdToHtml(p.charter.constraints)}` : ''}
         </div>
         <div class="card">
-          <h3>ACCEPTANCE（プロジェクト done の根拠）</h3>
-          <div class="big">${best} / ${total} PASS</div>
+          <h3>完了条件の達成状況${versionLabel}</h3>
+          <div class="big">${best} / ${total} 達成</div>
           <div class="progress ${total && best >= total ? 'ok' : ''}" title="${pct}%"><div style="width:${pct}%"></div></div>
           ${spark}
           <div class="muted" style="margin-top:6px">
-            状態: ${esc(ps.status || '-')} ／ サイクル: ${esc(String(ps.cycles ?? '-'))} ／ 累計コスト: ${esc(String(ps.cost ?? '-'))}
+            状態: ${esc(statusLabel(ps.status) || '-')} ／ 実行サイクル: ${esc(String(ps.cycles ?? '-'))} ／ 累計コスト: ${esc(String(ps.cost ?? '-'))}
           </div>
           <div style="margin-top:8px">${(p.charter.acceptanceItems || [])
             .map((a) => `<div class="acceptance-item">・<code class="mono">${esc(a)}</code></div>`)
             .join('')}</div>
         </div>
       </div>`);
+  } else if (p.charters && p.charters.length) {
+    parts.push(
+      `<div class="card full"><h3>プロジェクト憲章</h3><div class="muted">初版（charter.md）は無く、上の計画バージョンで進行しています。</div></div>`
+    );
   } else {
     parts.push(
-      `<div class="card full"><h3>CHARTER</h3><div class="muted">charter.md はありません（バックログ消化モード）</div></div>`
+      `<div class="card full"><h3>プロジェクト憲章</h3><div class="muted">憲章（charter.md）はまだありません。タスクを直接追加して進める運用です。</div></div>`
     );
   }
 
@@ -469,22 +588,21 @@ function renderOverview() {
   // （既に同期済み）から補う — idle 中は status.json だけが唯一の「生きている」根拠になる
   const live = p.liveness || { running: false, via: 'none', ageSec: null };
   const lastRunLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
+  // 判定根拠（同一ホストのレジストリか、同期されてきた生存信号か）は内部情報なのでログへ
+  uiLogOnChange(`liveness:${p.dir}`, live);
   const liveDesc =
     live.via === 'instances'
-      ? '<span class="status-chip st-done">● 稼働中</span><span class="muted">（同一ホスト・instances で確定）</span>'
+      ? '<span class="status-chip st-done">● 稼働中</span>'
       : live.via === 'status-sync'
-        ? `<span class="status-chip ${live.running ? 'st-done' : 'st-blocked'}">${live.running ? '● 稼働中（推定）' : '○ 不明'}</span>` +
-          `<span class="muted">（status.json 同期経由・最終確認 ${fmtAgoSec(live.ageSec)}` +
-          (live.watch !== undefined ? `・watch=${live.watch ? 'on' : 'off'}` : '') +
-          (live.level ? `・level=${esc(live.level)}` : '') +
-          '）</span>'
-        : '<span class="status-chip st-blocked">○ 判定不能</span><span class="muted">（instances も status.json も無し。ローカルで稼働させるか state_git 同期を設定してください）</span>';
+        ? `<span class="status-chip ${live.running ? 'st-done' : 'st-blocked'}">${live.running ? '● 稼働中（別マシン）' : '○ 不明'}</span>` +
+          `<span class="muted">（最終確認 ${fmtAgoSec(live.ageSec)}）</span>`
+        : '<span class="status-chip st-blocked">○ 停止中か確認できません</span><span class="muted">（このマシンでは稼働が確認できません）</span>';
   parts.push(`
     <div class="card full">
-      <h3>daemon の生存</h3>
+      <h3>自動実行の稼働状況</h3>
       <div>${liveDesc}</div>
       <div class="muted" style="margin-top:4px">
-        最終サイクル: ${lastRunLog ? `${fmtTime(lastRunLog.ts)}（${esc(lastRunLog.reason || '')}・${fmtAgo(lastRunLog.ts)}）` : 'run 履歴なし'}
+        最後の実行: ${lastRunLog ? `${fmtTime(lastRunLog.ts)}（${esc(statusLabel(lastRunLog.reason))}・${fmtAgo(lastRunLog.ts)}）` : 'まだ実行されていません'}
       </div>
     </div>`);
 
@@ -498,7 +616,7 @@ function renderOverview() {
   const runRows = last
     .map(
       (r) => `<tr>
-        <td>${fmtTime(r.ts)}</td><td>${esc(r.reason || '')}</td><td>${r.done ?? 0}</td>
+        <td>${fmtTime(r.ts)}</td><td title="${esc(r.reason || '')}">${esc(statusLabel(r.reason))}</td><td>${r.done ?? 0}</td>
         <td>${r.blocked ?? 0}</td><td>${r.review ?? 0}</td>
         <td>${r.tokens ?? 0}</td><td>${r.cost ?? 0}</td><td>${Math.round(r.duration_s ?? 0)}s</td>
       </tr>`
@@ -507,22 +625,22 @@ function renderOverview() {
   parts.push(`
     <div class="cards">
       <div class="card">
-        <h3>実行中クレーム</h3>${doing}
-        <h3 style="margin-top:12px">ポリシー</h3>
+        <h3>実行中のタスク</h3>${doing}
+        <h3 style="margin-top:12px">運用ルール</h3>
         ${
           p.policy.length
             ? p.policy
                 .map((r) => `<div><span class="label-chip">${esc(r.kind)}</span> <code class="mono">${esc(r.value)}</code></div>`)
                 .join('')
-            : '<span class="muted">policy.md なし</span>'
+            : '<span class="muted">未設定</span>'
         }
       </div>
       <div class="card" style="flex:2">
-        <h3>直近の run（run-log.jsonl）</h3>
+        <h3>最近の自動実行</h3>
         ${
           runRows
-            ? `<table class="list"><tr><th>時刻</th><th>停止理由</th><th>done</th><th>blocked</th><th>review</th><th>tokens</th><th>cost</th><th>時間</th></tr>${runRows}</table>`
-            : '<span class="muted">run 履歴なし</span>'
+            ? `<table class="list"><tr><th>時刻</th><th>結果</th><th>完了</th><th>要対応</th><th>検収待ち</th><th>トークン</th><th>コスト</th><th>時間</th></tr>${runRows}</table>`
+            : '<span class="muted">まだ実行されていません</span>'
         }
       </div>
     </div>`);
@@ -538,7 +656,7 @@ function renderOverview() {
       )
       .join('');
     parts.push(
-      `<div class="card full"><h3>納品（DELIVERY.md 直近 10 件）</h3><table class="list">${rows}</table></div>`
+      `<div class="card full"><h3>納品物（直近 10 件）</h3><table class="list">${rows}</table></div>`
     );
   }
 
@@ -550,9 +668,9 @@ function renderOverview() {
       <h3>危険な操作</h3>
       <div class="row">
         <button class="chip danger" id="btn-reset-project"
-          title="charter.md 以外の全データ（backlog / archive / needs / decisions / journal / run-log / DELIVERY / inbox / commands / bus など）をゴミ箱へ移動し、kiro-flow daemon を停止します">
-          ⚠ リセット（charter 以外を全消去 + kiro-flow 停止）</button>
-        <span class="muted">charter.md だけを残して最初からやり直します。本体（kiro-project）が稼働中なら次パスで charter から再分解されます</span>
+          title="タスク・履歴・実行データをすべてゴミ箱へ移動し、自動実行を停止します。プロジェクト憲章（charter.md）だけが残ります">
+          ⚠ リセット（憲章だけ残して初期化）</button>
+        <span class="muted">最初からやり直すための操作です。稼働中なら次回の自動実行で計画が作り直されます</span>
       </div>
     </div>`);
   }
@@ -566,7 +684,66 @@ function renderOverview() {
   if (resetBtn) resetBtn.addEventListener('click', () => resetProject());
   const addCharterBtn = $('btn-add-charter-version');
   if (addCharterBtn) addCharterBtn.addEventListener('click', () => openAddCharterVersion());
+  const promoteBtn = $('btn-promote-charter');
+  if (promoteBtn) promoteBtn.addEventListener('click', () => openPromoteCharter());
+  const masterizeBtnEl = $('btn-masterize-charter');
+  if (masterizeBtnEl) masterizeBtnEl.addEventListener('click', () => masterizeCharter());
   bindLifecycleButtons(el);
+}
+
+// 憲章（charter.md）をマスター運用へ切り替える: `## master` セクションを追記するだけの
+// 冪等な操作。以後この憲章はタスクへ分解されず、計画バージョン（やるべきこと）へ継承される。
+async function masterizeCharter() {
+  const p = state.project;
+  if (!p || !p.charter) return toast('憲章（charter.md）がありません');
+  const yes = await confirmDialog(
+    '憲章をマスター運用に切り替えます。\n' +
+      'マスターは全バージョン共通の前提となり、それ自体からタスクは作られなくなります。\n' +
+      '以後は「＋ バージョン追加」で記入したやるべきことが計画されます。\n' +
+      '（既に進行中のタスクはそのまま消化されます）よろしいですか？'
+  );
+  if (!yes) return;
+  const ok = await guard('マスター運用への切り替え', async () => {
+    const info = await api.readProjectFile(p.dir, 'charter.md');
+    if (/^##\s+master\b/m.test(info.content || '')) return true; // 冪等
+    const text = `${String(info.content || '').replace(/\n*$/, '\n')}\n## master\n` +
+      '<!-- このセクションがある憲章はマスター（全バージョン共通の前提）として扱われ、\n' +
+      '     タスクへは分解されません。やるべきことは charters/<名前>.md に書きます。 -->\n';
+    await api.writeProjectFile(p.dir, 'charter.md', text);
+    return true;
+  });
+  if (ok) {
+    toast('マスター運用に切り替えました。「＋ バージョン追加」でやるべきことを記入してください', true);
+    gitPushAfterWrite('kiro-projects-viewer: charter.md をマスター化', p.dir);
+    await reloadProject();
+  }
+}
+
+// 初版（charter.md）に後からバージョン名を付けて charters/<名前>.md へ移す（昇格）。
+// 既存タスクの帰属タグ・project.json の収束状態（承認済み等）・milestone カードも引き継ぐ。
+async function openPromoteCharter() {
+  const p = state.project;
+  if (!p || !p.charter) return toast('初版の憲章（charter.md）がありません');
+  $('nc-title').textContent = '初版にバージョン名を付ける';
+  $('nc-desc').textContent =
+    '初版の憲章に名前を付けて、計画バージョンの一覧に加えます（内容は変わりません）。' +
+    '初版のタスクや承認状態も引き継がれ、他のバージョンと並行して進むようになります。';
+  $('nc-name').value = '';
+  $('nc-master-fields').classList.add('hidden'); // 昇格は名前だけ（内容は charter.md のまま移す）
+  $('dlg-new-charter').dataset.mode = 'promote';
+  $('dlg-new-charter').showModal();
+  $('nc-name').focus();
+}
+
+async function submitPromoteCharter(name) {
+  const p = state.project;
+  if (!p) return;
+  const res = await guard('バージョン名を付ける', () => api.promoteCharter(p.dir, name));
+  if (!res) return;
+  uiLog('promoteCharter', res);
+  toast(`初版をバージョン「${res.name}」にしました（タスク ${res.tagged} 件を引き継ぎ）`, true);
+  gitPushAfterWrite(`kiro-projects-viewer: promote charter.md to charters/${res.name}.md`, p.dir);
+  await reloadProject();
 }
 
 // 稼働操作（pause / resume / stop）。commands/ ドロップ（＋git push）で届き、
@@ -579,14 +756,14 @@ function lifecycleCardHtml(p) {
       <div class="row">
         ${
           paused
-            ? '<button class="chip" data-lifecycle="resume" title="一時停止を解除して消化を再開します">▶ 再開</button>'
-            : '<button class="chip" data-lifecycle="pause" title="watch の消化を一時停止します（監視・指示の取り込みは継続）">⏸ 一時停止</button>'
+            ? '<button class="chip" data-lifecycle="resume" title="一時停止を解除して作業を再開します">▶ 再開</button>'
+            : '<button class="chip" data-lifecycle="pause" title="タスクの実行を一時停止します（指示や回答の受け付けは続きます）">⏸ 一時停止</button>'
         }
         <button class="chip danger" data-lifecycle="stop"
-          title="プロセスを graceful 停止します。再開はプロジェクトのマシンで kiro-project start を実行してください">⏹ 停止</button>
-        <span class="muted">指示は commands/ ドロップ（＋git push）で届き、本体が同期間隔内に取り込みます</span>
+          title="自動実行を停止します。再開はプロジェクトのマシンでの起動操作が必要です">⏹ 停止</button>
+        <span class="muted">操作は自動で本体に届きます（反映まで少し時間がかかることがあります）</span>
       </div>
-      ${paused ? '<div class="muted" style="margin-top:4px">⏸ 一時停止中（resume 待ち。needs 検収・指示の投入はそのまま可能です）</div>' : ''}
+      ${paused ? '<div class="muted" style="margin-top:4px">⏸ 一時停止中です（再開まで作業は進みません。回答・指示の送信はできます）</div>' : ''}
     </div>`;
 }
 
@@ -605,9 +782,11 @@ function bindLifecycleButtons(root) {
       const action = b.dataset.lifecycle;
       const yes = await confirmDialog(LIFECYCLE_CONFIRMS[action](p));
       if (!yes) return;
+      const labels = { pause: '一時停止を依頼しました', resume: '再開を依頼しました', stop: '停止を依頼しました' };
       const ok = await guard('稼働操作', async () => {
         const res = await api.requestLifecycle(p.dir, action, 'kiro-projects-viewer から操作');
-        toast(res.output, true);
+        uiLog('lifecycle', action, res);
+        toast(`${labels[action] || '操作を送信しました'}（反映まで少し時間がかかることがあります）`, true);
         return true;
       });
       if (ok) {
@@ -641,7 +820,7 @@ function renderOverviewSimple(el, p) {
       <h3>いま何をしているか</h3>
       <div class="big">${esc(now)}</div>
       <div class="muted" style="margin-top:6px">
-        目標: ${esc((p.charter && (p.charter.goal || p.charter.name)) || '（charter 未設定）')}
+        目標: ${esc((p.charter && (p.charter.goal || p.charter.name)) || '（目標は未設定です）')}
       </div>
       <div class="muted">進み具合: 完了 ${doneCount} 件 ／ 作業中 ${working} 件 ／ これから ${waiting} 件</div>
     </div>`);
@@ -683,28 +862,29 @@ async function resetProject() {
   if (!p || !p.charter) return;
   const sharedBusNote =
     p.busSource && p.busSource !== 'project'
-      ? '\n⚠ 共有バス構成です: kiro-flow daemon の停止は他プロジェクトの実行にも影響します。'
+      ? '\n⚠ 実行基盤を他プロジェクトと共有しています: 停止は他プロジェクトの実行にも影響します。'
       : '';
   const yes = await confirmDialog(
-    `${p.name}: charter.md 以外の全データを削除し、kiro-flow daemon を停止します。\n` +
-      `削除対象: backlog ${p.backlog.length} 件・archive（done）${p.archive.length} 件・needs ${p.needs.length} 件・` +
-      `実行中クレーム ${p.claims.length} 件、および decisions / journal / run-log / DELIVERY / inbox / commands / bus 等の全ファイル。\n` +
+    `${p.name}: プロジェクト憲章（charter.md）以外の全データを削除し、実行エンジンを停止します。\n` +
+      `削除対象: タスク ${p.backlog.length} 件・完了記録 ${p.archive.length} 件・要対応 ${p.needs.length} 件・` +
+      `実行中 ${p.claims.length} 件、および履歴・納品記録などの全ファイル。\n` +
       `ファイルはゴミ箱へ移動します（ゴミ箱の無い環境では完全削除）。${sharedBusNote}\n` +
-      `charter.md は残るため、本体（kiro-project）が稼働中なら次パスで charter から再分解して最初からやり直します。よろしいですか？`
+      `憲章は残るため、稼働中なら次回の自動実行で計画を作り直して最初からやり直します。よろしいですか？`
   );
   if (!yes) return;
   const ok = await guard('プロジェクトのリセット', async () => {
     const res = await api.resetProject(p.dir);
+    uiLog('reset', res);
     const d = res.daemon || {};
     const daemonMsg = !d.running
-      ? 'kiro-flow daemon は稼働していませんでした'
+      ? '実行エンジンは稼働していませんでした'
       : d.stopped
-        ? `kiro-flow daemon を停止しました（pid=${d.pid}）`
+        ? '実行エンジンを停止しました'
         : d.remote
-          ? 'kiro-flow daemon は別ホストで稼働中のためここからは停止できません（本体側で停止してください）'
-          : `kiro-flow daemon を停止できませんでした（pid=${d.pid}）`;
-    const errMsg = res.errors && res.errors.length ? `／削除失敗 ${res.errors.length} 件（${res.errors.map((e) => e.name).join(', ')}）` : '';
-    toast(`${p.name}: ${res.removed.length} 件を削除（charter.md は残しました）${errMsg}。${daemonMsg}`, !errMsg);
+          ? '実行エンジンは別のマシンで稼働中のため、そちらで停止してください'
+          : '実行エンジンを停止できませんでした';
+    const errMsg = res.errors && res.errors.length ? `／削除できなかったもの ${res.errors.length} 件` : '';
+    toast(`${p.name}: ${res.removed.length} 件を削除（憲章は残しました）${errMsg}。${daemonMsg}`, !errMsg);
     return true;
   });
   if (ok) {
@@ -722,15 +902,15 @@ function linkify(text) {
 // ---------------------------------------------------------------------------
 
 const BACKLOG_FILTERS = [
-  ['active', '進行中'],
-  ['ready', 'ready'],
-  ['doing', 'doing'],
-  ['offloaded', 'offloaded'],
-  ['review', 'review'],
-  ['blocked', 'blocked'],
-  ['inbox', 'inbox'],
-  ['draft', 'draft'],
-  ['archive', 'done（archive）'],
+  ['active', '未完了'],
+  ['ready', '実行待ち'],
+  ['doing', '実行中'],
+  ['offloaded', '実行中（委任）'],
+  ['review', '検収待ち'],
+  ['blocked', '要対応'],
+  ['inbox', '受付待ち'],
+  ['draft', '下書き'],
+  ['archive', '完了（履歴）'],
 ];
 
 // ---------------------------------------------------------------------------
@@ -768,12 +948,12 @@ function dependentsOf(tasks, tid) {
 function rejectConfirmMessage(p, id, what) {
   const downs = dependentsOf(p.backlog, id);
   const impact = downs.length
-    ? `\n影響範囲（このタスクに依存・推移）: ${downs.map((t) => `${t.id}[${t.status}]`).join(', ')}\n` +
-      '依存タスクは実行前レビュー（proposed）に戻して再審査にかけます。'
-    : '\n依存しているタスクはありません。';
+    ? `\n影響を受けるタスク（このタスクに依存）: ${downs.map((t) => `${t.id}[${statusLabel(t.status)}]`).join(', ')}\n` +
+      'これらのタスクは計画の再確認（承認待ち）に戻します。'
+    : '\nこのタスクに依存するタスクはありません。';
   return (
-    `${id} を却下（${what}）します。\n` +
-    'タスクは廃止（archive へ退避・avoid 記録）され、charter があれば再計画が要求されます。' +
+    `${id} を却下します（${what}）。\n` +
+    'タスクは廃止されて履歴に残り、同種のタスクを避ける学習も記録されます。憲章があれば計画の作り直しを依頼します。' +
     impact +
     '\nよろしいですか？'
   );
@@ -833,7 +1013,7 @@ function switchTab(name) {
   document.querySelectorAll('.tabpane').forEach((pane) => pane.classList.remove('active'));
   const pane = $(`tab-${name}`);
   if (pane) pane.classList.add('active');
-  if (name === 'gitlab') refreshGitLab(false);
+  if (name === 'needs') refreshGitLab(false); // 要対応タブに GitLab レビュー待ちを併載しているため
 }
 
 // run を選んでフロータブへ遷移。
@@ -897,7 +1077,7 @@ function gotoTask(taskId) {
     renderBacklog();
   }
   if (t) showTaskDialog(t.id, scope);
-  else toast(`タスク ${taskId} は現在のバックログに見つかりません（gc/archive 済みかも）`);
+  else toast(`タスク ${taskId} は現在の一覧に見つかりません（完了済みか削除済みの可能性があります）`);
 }
 
 // run 1 件を表す小さなクリップ（リトライ世代＋状態色）。クリックで run へ遷移。
@@ -905,7 +1085,7 @@ function runPill(r, current = false) {
   const gen = r.retries != null ? `r${r.retries}` : 'run';
   const rev = r.rev ? `·v${r.rev}` : '';
   return `<button class="rel-pill st-${esc(r.status)}${current ? ' current' : ''}"
-    data-goto-run="${esc(r.runId)}" title="${esc(r.runId)} — ${esc(r.status)}">${gen}${rev}</button>`;
+    data-goto-run="${esc(r.runId)}" title="${esc(r.runId)} — ${esc(statusLabel(r.status))}">${gen}${rev}</button>`;
 }
 
 // 関係性のパンくず: charter ▸ task ▸ run(系統) ▸ issue。各セグメントはクリックで該当画面へ。
@@ -913,12 +1093,12 @@ function relationshipStrip({ taskId, run } = {}) {
   const p = state.project;
   const segs = [];
   if (p && p.charter && p.charter.name) {
-    segs.push(`<span class="rel-seg charter" title="プロジェクト定義">🎯 ${esc(p.charter.name)}</span>`);
+    segs.push(`<span class="rel-seg charter" title="プロジェクト憲章">🎯 ${esc(p.charter.name)}</span>`);
   }
   const tid = taskId || (run && run.taskId);
   if (tid) {
     segs.push(
-      `<button class="rel-seg task" data-goto-task="${esc(tid)}" title="バックログのタスクへ">🗒 ${esc(tid)}</button>`
+      `<button class="rel-seg task" data-goto-task="${esc(tid)}" title="元のタスクを開く">🗒 ${esc(tid)}</button>`
     );
   }
   const attempts = tid ? runsForTask(tid) : run ? [run] : [];
@@ -952,12 +1132,12 @@ function relatedRunsBlock(taskId) {
       (r) => `<div class="rel-run-row">
         <button class="linklike mono" data-goto-run="${esc(r.runId)}">${esc(r.runId)}</button>
         ${statusChip(r.status)}
-        <span class="muted">${r.counts.done}✓ ${r.counts.failed}✗ ／ ${r.total} ノード</span>
-        ${r.inheritedFrom ? `<span class="muted" title="このリトライが引き継いだ先行 run">↩ ${esc(r.inheritedFrom)}</span>` : ''}
+        <span class="muted">${r.total} 工程中 完了 ${r.counts.done}・失敗 ${r.counts.failed}</span>
+        ${r.inheritedFrom ? `<span class="muted" title="引き継ぎ元の実行">↩ ${esc(r.inheritedFrom)}</span>` : ''}
       </div>`
     )
     .join('');
-  return `<div class="section-title">関連する kiro-flow run（リトライ系統）</div>
+  return `<div class="section-title">関連する実行（やり直し履歴）</div>
     <div class="rel-runs">${items}</div>`;
 }
 
@@ -1007,17 +1187,24 @@ function renderBacklog() {
   else if (state.backlogFilter === 'active') tasks = p.backlog;
   else tasks = p.backlog.filter((t) => t.status === state.backlogFilter);
 
-  // 複数 charter 運用: charter（バージョン）でさらに絞り込む
+  // 複数 charter 運用: charter（バージョン）でさらに絞り込む。
+  // 「初版」チップはタグ無し（charter.md 由来）のタスクに絞る（'__initial__' は表示専用の番兵値）。
   const charterNames = (p.charters || []).map((c) => c.name);
   if (charterNames.length && state.backlogCharter) {
-    tasks = tasks.filter((t) => (t.extra.charter || '') === state.backlogCharter);
+    tasks =
+      state.backlogCharter === '__initial__'
+        ? tasks.filter((t) => !(t.extra.charter || '').trim())
+        : tasks.filter((t) => (t.extra.charter || '') === state.backlogCharter);
   }
-  const charterChips = charterNames.length
-    ? `<span class="muted" style="margin-left:8px">charter:</span>` +
-      ['', ...charterNames]
+  const charterChipDefs = charterNames.length
+    ? [['', '全部'], ...(p.charter ? [['__initial__', '初版']] : []), ...charterNames.map((n) => [n, n])]
+    : [];
+  const charterChips = charterChipDefs.length
+    ? `<span class="muted" style="margin-left:8px">バージョン:</span>` +
+      charterChipDefs
         .map(
-          (n) =>
-            `<button class="chip ${((state.backlogCharter || '') === n) ? 'active' : ''}" data-charter-filter="${esc(n)}">${n ? esc(n) : '全部'}</button>`
+          ([v, label]) =>
+            `<button class="chip ${((state.backlogCharter || '') === v) ? 'active' : ''}" data-charter-filter="${esc(v)}">${esc(label)}</button>`
         )
         .join('')
     : '';
@@ -1028,29 +1215,30 @@ function renderBacklog() {
   const rows = tasks
     .map((t) => {
       const extras = [];
-      if (t.extra.charter) extras.push(`charter: ${t.extra.charter}`);
-      if (t.extra.after) extras.push(`after: ${t.extra.after}`);
-      if (t.extra.level) extras.push(`level: ${t.extra.level}`);
-      if (t.extra.track) extras.push(`track: ${t.extra.track}`);
-      if (t.extra.review) extras.push(`review: ${t.extra.review}`);
+      if (t.extra.charter) extras.push(`バージョン: ${t.extra.charter}`);
+      else if (charterNames.length) extras.push('バージョン: 初版'); // 複数バージョン運用でのタグ無し＝charter.md 由来
+      if (t.extra.after) extras.push(`依存: ${t.extra.after}`);
+      if (t.extra.level) extras.push(`自動化レベル: ${t.extra.level}`);
+      if (t.extra.track) extras.push(`系列: ${t.extra.track}`);
+      if (t.extra.review) extras.push(`検収: ${t.extra.review}`);
       if (t.status === 'offloaded' && t.extra.flow_loc) {
-        extras.push(`委譲実行中: ${t.extra.flow_loc}`); // act_async: kiro-flow daemon で結果待ち
+        extras.push('委任先で実行中'); // act_async: kiro-flow daemon で結果待ち（所在はタスク詳細で見る）
       }
       const rr = runsForTask(t.id); // 紐づく kiro-flow run（リトライ系統）
       const runBadge = rr.length
-        ? ` <button class="badge run-link" data-goto-run="${esc(rr[0].runId)}" title="関連 run ${rr.length} 件（最新 ${esc(rr[0].runId)} — ${esc(rr[0].status)}）へ移動">⚙${rr.length}</button>`
+        ? ` <button class="badge run-link" data-goto-run="${esc(rr[0].runId)}" title="関連する実行 ${rr.length} 件（最新: ${esc(statusLabel(rr[0].status))}）を開く">⚙${rr.length}</button>`
         : '';
       // 非ブロッキング委譲（offloaded）は flow_run（実行中の run-id）へ直接リンクする
       // （runsForTask が拾えない＝フローバス未登録でも辿れるように明示リンクを出す）。
       const offloadRun = t.status === 'offloaded' ? String(t.extra.flow_run || '').trim() : '';
       const offloadBadge =
         offloadRun && !(rr.length && rr[0].runId === offloadRun)
-          ? ` <button class="badge run-link" data-goto-run="${esc(offloadRun)}" title="委譲実行中の run ${esc(offloadRun)} へ移動">▶ run</button>`
+          ? ` <button class="badge run-link" data-goto-run="${esc(offloadRun)}" title="実行中の作業を開く">▶ 実行</button>`
           : '';
       return `<tr class="clickable" data-task="${esc(t.id)}" data-scope="${state.backlogFilter === 'archive' ? 'archive' : 'backlog'}">
         <td class="mono">${esc(t.id)}</td>
         <td>${esc(t.title)}</td>
-        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示送信済み（取り込み待ち）">✎</span>' : ''}${runBadge}${offloadBadge}</td>
+        <td>${statusChip(t.status)}${p.claims.includes(t.id) ? ' <span class="badge info" title="実行中">▶</span>' : ''}${isReviseSent(t) ? ' <span class="badge" title="修正指示を送信済み（反映待ち）">✎</span>' : ''}${runBadge}${offloadBadge}</td>
         <td>${t.priority}</td>
         <td>${t.retries}</td>
         <td>${t.verify ? '✓' : t.extra.accept || t.extra.verify_template ? '△' : '—'}</td>
@@ -1062,25 +1250,24 @@ function renderBacklog() {
   const replanPending = !!p.replanPending;
   el.innerHTML = `
     <div class="filters">${chips}${charterChips}<span class="muted">${tasks.length} 件</span>
-      ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="${esc(p.inboxFiles.join(', '))}">inbox 取り込み待ち ${p.inboxFiles.length}</span>` : ''}
-      ${replanPending ? '<span class="badge info" title="charter からの再分解を要求済み。本体が次パスで取り込みます">再分解 取り込み待ち</span>' : ''}
+      ${p.inboxFiles && p.inboxFiles.length ? `<span class="badge info" title="追加したタスクは次の実行サイクルで一覧に載ります">追加待ち ${p.inboxFiles.length}</span>` : ''}
+      ${replanPending ? '<span class="badge info" title="計画の作り直しを依頼済みです。次の実行で反映されます">再計画 反映待ち</span>' : ''}
       <span class="spacer"></span>
-      <button id="btn-replan" class="primary-inline"${replanPending ? ' disabled' : ''} title="charter からバックログを再分解します（エラー回復用）。既に done / 既存と類似のタスクは投入しません">↻ charter から再分解</button>
-      <button id="btn-enqueue" class="primary-inline" title="バックログにタスクを 1 件追加します（inbox 経由）">＋ バックログに追加</button>
+      <button id="btn-replan" class="primary-inline"${replanPending ? ' disabled' : ''} title="プロジェクト憲章からタスクを作り直します（やり直し・復旧用）。進行中・却下済みと重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）">↻ 計画を作り直す</button>
+      <button id="btn-enqueue" class="primary-inline" title="タスクを 1 件追加します（次の実行サイクルで一覧に載ります）">＋ タスクを追加</button>
     </div>
-    <details class="backlog-help">
-      <summary>バックログの変え方（すべて公式契約・即時ではありません）</summary>
+    <details class="backlog-help" data-ui-key="backlog-help">
+      <summary>タスク一覧の変え方（反映は次の実行サイクル・即時ではありません）</summary>
       <div class="muted">
-        <b>追加</b>: 「＋ バックログに追加」→ <code class="mono">inbox</code> に 1 件投入。本体が次サイクルで backlog タスク（<code class="mono">backlog/&lt;id&gt;.md</code>）にします。<br>
-        <b>変更</b>: 行をクリック →「✎ 修正して指示（revise）」で title・優先度・verify・accept・依存 after・note・level・track を置換＋フィードバック注入。<br>
-        <b>タスクグラフの再構築</b>: revise は本体が取り込むと <code class="mono">rev</code> を上げ、kiro-flow に新しいタスクグラフ（run の DAG）を作らせます（実行中タスクは現在の試行を破棄して積み直し）。依存 after を変えるとグラフの形が変わります。<br>
-        <b>再分解（エラー回復）</b>: 「↻ charter から再分解」→ 本体が <code class="mono">charter.md</code> を分解し直し、取りこぼした差分だけを backlog に入れます。<b>既に done / 既存と類似のタスクは投入しません</b>（重複排除）。plan 失敗・タスクの誤削除などからの復帰用です。<br>
-        いずれも状態（done 等）は直接書き換えません（done は verify のみが根拠、の不変条件を保つため）。
+        <b>追加</b>: 「＋ タスクを追加」→ 次の実行サイクルで一覧に載ります。<br>
+        <b>変更</b>: 行をクリック →「✎ 修正を指示」でタイトル・優先度・完了条件・依存関係の変更と、作業への指示ができます。実行中のタスクに送ると、現在の作業を打ち切って修正内容でやり直します。<br>
+        <b>計画の作り直し</b>: 「↻ 計画を作り直す」→ プロジェクト憲章からタスクを分解し直します。進行中・却下済みと重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）。計画の失敗やタスクの誤削除、完了後のやり直しからの復旧に使います。<br>
+        タスクの完了は検証結果だけで決まるため、この画面から状態（完了など）を直接書き換えることはできません。
       </div>
     </details>
     ${
       rows
-        ? `<table class="list"><tr><th>ID</th><th>タイトル</th><th>状態</th><th>優先度</th><th>retry</th><th>verify</th><th>属性</th></tr>${rows}</table>`
+        ? `<table class="list"><tr><th>ID</th><th>タイトル</th><th>状態</th><th>優先度</th><th>再試行</th><th>検証</th><th>属性</th></tr>${rows}</table>`
         : '<div class="empty">タスクなし</div>'
     }`;
 
@@ -1138,35 +1325,35 @@ function isReviseSent(t) {
 // 実行中（doing）のタスクにも送れる: 本体は現在の試行を確定せず修正内容で積み直す。
 function reviseAreaHtml(t) {
   if (isReviseSent(t)) {
-    return `<div class="muted" style="margin-top:8px">✎ 修正指示を送信済みです（本体の取り込み待ち。取り込まれると再度操作できます）</div>`;
+    return `<div class="muted" style="margin-top:8px">✎ 修正指示を送信済みです（反映されると再度編集できます）</div>`;
   }
   const doingNote =
     t.status === 'doing'
-      ? '<div class="muted">実行中のタスクです: 送信すると現在の試行の結果は確定されず、修正内容とフィードバックでタスクグラフ（kiro-flow run）を積み直します（早い軌道修正）。</div>'
+      ? '<div class="muted">実行中のタスクです。送信すると現在の作業を打ち切り、修正内容と指示でやり直します（早い軌道修正に使えます）。</div>'
       : t.status === 'offloaded'
-        ? '<div class="muted">委譲実行中（kiro-flow daemon で結果待ち・act_async）です: 送信するとこの run の結果は確定されず、修正を反映した新しいタスクグラフが作られます（反映は run 完了時に行われます）。</div>'
-        : '<div class="muted">本体が取り込むと <code class="mono">rev</code> を上げ、次の実行で新しいタスクグラフ（kiro-flow run）が作られます。依存 after を変えるとグラフの形が変わります。</div>';
-  return `<details class="revise-area"><summary>✎ 修正して指示（revise）</summary>
+        ? '<div class="muted">委任先で実行中のタスクです。送信すると今回の結果は採用されず、修正を反映してやり直します（切り替えは今回の作業が終わり次第）。</div>'
+        : '<div class="muted">修正は次の実行から反映されます。依存関係を変えると作業の順序も変わります。</div>';
+  return `<details class="revise-area"><summary>✎ 修正を指示</summary>
     ${doingNote}
-    <div class="field"><label>フィードバック（次の実行に必ず反映される指示）</label>
+    <div class="field"><label>作業への指示（次の実行に必ず伝わります）</label>
       <textarea rows="2" id="rv-feedback" placeholder="例: e2e はローカルサーバでなく実サーバに配備して実施すること"></textarea></div>
     <div class="field"><label>タイトル</label><input id="rv-title" value="${esc(t.title)}" /></div>
     <div class="row2">
-      <div class="field"><label>優先度（整数・大ほど高）</label><input id="rv-priority" type="number" step="1" value="${t.priority}" /></div>
-      <div class="field"><label>依存 after（タスクグラフの形。カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
+      <div class="field"><label>優先度（数字が大きいほど先に着手）</label><input id="rv-priority" type="number" step="1" value="${t.priority}" /></div>
+      <div class="field"><label>先行タスク（このタスクより先に終えるべき ID。カンマ区切り。空にすると解除）</label><input id="rv-after" class="mono" value="${esc(t.extra.after || '')}" /></div>
     </div>
-    <div class="field"><label>verify（空にすると削除）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" /></div>
-    <div class="field"><label>accept（空にすると削除）</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" /></div>
+    <div class="field"><label>検証コマンド（完了判定に使うコマンド。空にすると削除）</label><input id="rv-verify" class="mono" value="${esc(t.verify || '')}" /></div>
+    <div class="field"><label>完了条件（文章で。検証コマンドが書けないとき。空にすると削除）</label><input id="rv-accept" value="${esc(t.extra.accept || '')}" /></div>
     <div class="row2">
-      <div class="field"><label>level（report/assisted/unattended。空にすると削除）</label>
+      <div class="field"><label>自動化レベル（report=報告のみ / assisted=確認しながら / unattended=全自動。空にすると削除）</label>
         <input id="rv-level" list="rv-level-list" value="${esc(t.extra.level || '')}" />
         <datalist id="rv-level-list"><option value="report"></option><option value="assisted"></option><option value="unattended"></option></datalist>
       </div>
-      <div class="field"><label>track（同種タスクの群名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
+      <div class="field"><label>系列（同種タスクのグループ名。空にすると削除）</label><input id="rv-track" value="${esc(t.extra.track || '')}" /></div>
     </div>
-    <div class="field"><label>note（メモ。空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
+    <div class="field"><label>メモ（空にすると削除）</label><input id="rv-note" value="${esc(t.extra.note || '')}" /></div>
     <div class="row need-buttons">
-      <span class="muted">変更した項目とフィードバックだけが送られ、決定記録（DR）に残ります</span>
+      <span class="muted">変更した項目と指示だけが送られ、決定記録に残ります</span>
       <span class="spacer"></span>
       <button class="primary-inline" id="btn-revise-send">➤ 修正を送信</button>
     </div>
@@ -1183,7 +1370,7 @@ function showTaskDialog(id, scope) {
       // flow_run（offloaded の委譲先 run-id）はフロータブの該当 run へのリンクにする
       const cell =
         k === 'flow_run' && String(v).trim()
-          ? `<button class="linklike mono" data-goto-run="${esc(String(v).trim())}" title="委譲実行中の run へ移動">${esc(v)}</button>`
+          ? `<button class="linklike mono" data-goto-run="${esc(String(v).trim())}" title="実行中の作業を開く">${esc(v)}</button>`
           : `<pre class="mono">${esc(v)}</pre>`;
       return `<tr><th>${esc(k)}</th><td>${cell}</td></tr>`;
     })
@@ -1192,8 +1379,8 @@ function showTaskDialog(id, scope) {
   const canApprove = ['blocked', 'review', 'proposed'].includes(t.status);
   const deps = String(t.extra.after || '').trim();
   const downs = dependentsOf(p.backlog, t.id);
-  const depRow = `<tr><th>依存関係</th><td class="muted">前提（after）: ${deps ? esc(deps) : '（なし）'} ／ 依存先（このタスクの変更が影響・推移）: ${
-    downs.length ? downs.map((x) => `${esc(x.id)}[${esc(x.status)}]`).join(', ') : '（なし）'
+  const depRow = `<tr><th>依存関係</th><td class="muted">先行タスク: ${deps ? esc(deps) : '（なし）'} ／ 後続タスク（このタスクの変更が影響）: ${
+    downs.length ? downs.map((x) => `${esc(x.id)}[${esc(statusLabel(x.status))}]`).join(', ') : '（なし）'
   }</td></tr>`;
   // 削除を拒むのは「実行中」だけ。クレームロックは worker クラッシュや
   // review/blocked 滞留で残骸が残るため、doing 以外ではロックがあっても削除できる
@@ -1202,22 +1389,22 @@ function showTaskDialog(id, scope) {
     scope === 'archive'
       ? `<div class="need-actions">
           <div class="row need-buttons">
-            <span class="muted">done として archive 済み。誤 done などの復帰に、内容を編集して inbox へ再投入できます。</span>
+            <span class="muted">完了（履歴）のタスクです。内容を編集して新しいタスクとしてやり直せます（履歴は残ります）。</span>
             <span class="spacer"></span>
-            <button class="primary-inline" id="btn-task-reinject" title="この archive タスクの内容を編集して inbox へ再投入します（新しいタスクとして triage→verify を通ります）">↻ revise して再投入</button>
+            <button class="primary-inline" id="btn-task-reinject" title="このタスクの内容を編集して、新しいタスクとして追加し直します">↻ 編集してやり直す</button>
           </div>
         </div>`
       : `<div class="need-actions">
-          <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録 decisions/ に残ります）"></textarea>
+          <textarea rows="2" id="task-reason" class="need-input" placeholder="操作の理由（決定記録に残ります）"></textarea>
           <div class="row need-buttons">
             ${canApprove ? `<button class="primary-inline" data-taskact="approve">✓ 承認</button>` : ''}
-            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="廃止して archive へ退避。依存タスクは再審査に戻り、charter があれば再計画を要求します">✕ 却下</button>`}
-            <button data-taskact="pin">▲ 最優先へ（pin）</button>
-            <button data-taskact="defer">▽ 後回し（defer）</button>
-            <button data-taskact="hold">⏸ 保留（hold）</button>
+            ${t.status === 'doing' ? '' : `<button class="danger" data-taskact="reject" data-confirm-reject="1" title="タスクを廃止します。依存するタスクは計画の再確認に戻り、憲章があれば計画の作り直しを依頼します">✕ 却下</button>`}
+            <button data-taskact="pin" title="他より先に着手させます">▲ 最優先にする</button>
+            <button data-taskact="defer" title="優先度を下げて後に回します">▽ 後回しにする</button>
+            <button data-taskact="hold" title="実行を止めて保留にします（再開には承認が必要）">⏸ 保留にする</button>
             <span class="spacer"></span>
             <button class="danger" id="btn-task-delete" ${claimed ? 'disabled' : ''}
-              title="${claimed ? '実行中（doing・クレーム中）のタスクは削除できません' : 'backlog のタスクファイルをゴミ箱へ移動します（決定記録は残りません）'}">🗑 削除</button>
+              title="${claimed ? '実行中のタスクは削除できません' : 'タスクをゴミ箱へ移動します（決定記録は残りません）'}">🗑 削除</button>
           </div>
         </div>`;
   $('dlg-task-body').innerHTML = `
@@ -1227,8 +1414,8 @@ function showTaskDialog(id, scope) {
       <tr><th>状態</th><td>${statusChip(t.status)}</td></tr>
       <tr><th>出自</th><td>${esc(t.source)}</td></tr>
       <tr><th>優先度</th><td>${t.priority}</td></tr>
-      <tr><th>retries</th><td>${t.retries}</td></tr>
-      <tr><th>verify</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
+      <tr><th>再試行</th><td>${t.retries}</td></tr>
+      <tr><th>検証コマンド</th><td>${t.verify ? `<pre class="mono">${esc(t.verify)}</pre>` : '<span class="muted">（未定義）</span>'}</td></tr>
       ${depRow}
       ${extraRows}
       <tr><th>ファイル</th><td><a href="#" id="task-open-file" class="mono">${esc(t.file)}</a></td></tr>
@@ -1242,17 +1429,25 @@ function showTaskDialog(id, scope) {
     e.preventDefault();
     guard('ファイルを開く', () => api.openPath(t.file));
   });
+  const TASK_ACT_DONE = {
+    approve: '承認を送信しました',
+    reject: '却下を送信しました',
+    pin: '最優先に設定しました',
+    defer: '後回しに設定しました',
+    hold: '保留にしました',
+  };
   for (const btn of document.querySelectorAll('#dlg-task-body button[data-taskact]')) {
     btn.addEventListener('click', async () => {
       const reason = $('task-reason') ? $('task-reason').value.trim() : '';
       if (btn.dataset.confirmReject) {
-        if (!reason) return toast('却下には理由の記入が必要です（決定記録・avoid 学習に残ります）');
-        const yes = await confirmDialog(rejectConfirmMessage(p, t.id, '廃止して関連バックログを再計画'));
+        if (!reason) return toast('却下には理由の記入が必要です（決定記録に残ります）');
+        const yes = await confirmDialog(rejectConfirmMessage(p, t.id, '廃止して計画を作り直す'));
         if (!yes) return;
       }
       const ok = await guard('操作', async () => {
         const res = await api.runAction({ dir: p.dir, action: btn.dataset.taskact, id: t.id, reason });
-        toast(res.output || '操作しました', true);
+        uiLog('taskAction', btn.dataset.taskact, t.id, res);
+        toast(`${TASK_ACT_DONE[btn.dataset.taskact] || '操作しました'}（反映まで少し時間がかかることがあります）`, true);
         return true;
       });
       if (ok) {
@@ -1286,10 +1481,11 @@ function showTaskDialog(id, scope) {
         return toast('変更する項目かフィードバックを入力してください');
       }
       const reason = $('task-reason') ? $('task-reason').value.trim() : '';
-      const ok = await guard('修正（revise）', async () => {
+      const ok = await guard('修正の指示', async () => {
         const res = await api.runAction({ dir: p.dir, action: 'revise', id: t.id, reason, fields, feedback });
         markReviseSent(t);
-        toast(res.output || `${t.id} の修正を送信しました`, true);
+        uiLog('revise', t.id, res);
+        toast(`${t.id} の修正指示を送信しました（次の実行で反映されます）`, true);
         return true;
       });
       if (ok) {
@@ -1306,8 +1502,8 @@ function showTaskDialog(id, scope) {
     delBtn.addEventListener('click', async () => {
       const yes = await confirmDialog(
         `タスク ${t.id}「${t.title}」を削除します。\n` +
-          'backlog のタスクファイルをゴミ箱へ移動します（決定記録 DR は残りません）。\n' +
-          '一時的に止めたいだけなら「⏸ 保留（hold）」を使ってください。よろしいですか？'
+          'タスクはゴミ箱へ移動します（決定記録は残りません）。\n' +
+          '一時的に止めたいだけなら「⏸ 保留にする」を使ってください。よろしいですか？'
       );
       if (!yes) return;
       const ok = await guard('タスク削除', async () => {
@@ -1352,15 +1548,15 @@ async function requestReplan() {
   const p = state.project;
   if (!p) return toast('プロジェクトを選択してください');
   const yes = await confirmDialog(
-    `${p.name}: charter からバックログを再分解します（エラー回復）。\n` +
-      '本体が charter.md を分解し直し、取りこぼした差分だけを backlog に入れます。\n' +
-      '既に done / 既存と類似のタスクは投入しません（重複排除）。状態は書き換えません。\n' +
-      '反映は本体の次パス（即時ではありません）。よろしいですか？'
+    `${p.name}: プロジェクト憲章からタスクを作り直します。\n` +
+      '進行中・却下済みと重複するタスクは追加されません（完了済みと同種のやり直しは作り直されます）。\n' +
+      'タスクの状態は書き換えません。反映は次の実行サイクルです（即時ではありません）。よろしいですか？'
   );
   if (!yes) return;
-  const ok = await guard('再分解の要求', async () => {
+  const ok = await guard('計画の作り直し', async () => {
     const res = await api.requestReplan(p.dir, 'kiro-projects-viewer から再分解を要求');
-    toast(res.output || 'charter からの再分解を要求しました', true);
+    uiLog('replan', res);
+    toast('計画の作り直しを依頼しました（次の実行で反映されます）', true);
     return true;
   });
   if (ok) {
@@ -1374,13 +1570,13 @@ async function requestReplan() {
 function openEnqueueDialog(prefill = {}) {
   const reinject = !!prefill.reinject;
   $('enq-heading').textContent = reinject
-    ? 'archive タスクを revise して再投入'
-    : 'バックログにタスクを 1 件追加（inbox 経由）';
+    ? '完了タスクを編集してやり直す'
+    : 'タスクを追加';
   const note = $('enq-reinject-note');
   if (reinject) {
     note.textContent =
-      `archive/${prefill.id || ''}.md を編集して inbox へ再投入します。新しいタスクとして triage→verify を通り、` +
-      'アーカイブの記録はそのまま残ります（誤 done などのエラー復帰用途）。';
+      `完了タスク ${prefill.id || ''} の内容を引き継いで、新しいタスクとして追加します。` +
+      '完了の記録はそのまま残ります（誤って完了になった場合のやり直しに使えます）。';
     note.classList.remove('hidden');
   } else {
     note.classList.add('hidden');
@@ -1414,11 +1610,12 @@ async function submitEnqueue() {
   };
   const ok = await guard('タスク追加', async () => {
     const res = await api.enqueueTask(p.dir, spec);
+    uiLog('enqueue', res);
     toast(
-      `inbox に投入しました: ${res.spec.title}\n` +
+      `タスクを追加しました: ${res.spec.title}\n` +
         (res.spec.verify || res.spec.accept
-          ? '（次のサイクルで backlog 化されます）'
-          : '（verify / accept が無いので取り込み後は人の triage 行きです）'),
+          ? '（次の実行サイクルで一覧に載ります）'
+          : '（完了条件が無いため、取り込み後に内容の確認が必要になります）'),
       true
     );
     return true;
@@ -1451,11 +1648,11 @@ function addRepoRow(prefill = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'np-repo-row';
   wrap.innerHTML = `
-    <input class="np-r-name mono" placeholder="name" value="${esc(prefill.name || '')}" />
+    <input class="np-r-name mono" placeholder="名前" value="${esc(prefill.name || '')}" />
     <input class="np-r-url mono" placeholder="git URL（必須）" value="${esc(prefill.url || '')}" />
-    <input class="np-r-base mono" placeholder="base 例 main" value="${esc(prefill.base || '')}" />
-    <input class="np-r-owns mono" placeholder="owns グロブ（省略=参照のみ）" value="${esc(prefill.owns || '')}" />
-    <input class="np-r-desc" placeholder="説明（desc）" value="${esc(prefill.desc || '')}" />
+    <input class="np-r-base mono" placeholder="ベースブランチ 例 main" value="${esc(prefill.base || '')}" />
+    <input class="np-r-owns mono" placeholder="担当範囲（省略=参照のみ）" value="${esc(prefill.owns || '')}" />
+    <input class="np-r-desc" placeholder="説明" value="${esc(prefill.desc || '')}" />
     <button type="button" class="np-r-del" title="この行を削除">✕</button>`;
   wrap.querySelector('.np-r-del').addEventListener('click', () => wrap.remove());
   $('np-repos').appendChild(wrap);
@@ -1497,7 +1694,7 @@ async function aiDraftCharter() {
     acceptance: $('np-acceptance').value,
   };
   if (!spec.goal.trim() && !spec.memo.trim()) {
-    return toast('goal か自由メモに、やりたいことを一言書いてから実行してください');
+    return toast('目標か自由メモに、やりたいことを一言書いてから実行してください');
   }
   btn.disabled = true;
   status.textContent = 'エージェントに問い合わせ中…（モデル応答まで数十秒かかることがあります）';
@@ -1538,6 +1735,9 @@ async function submitNewProject() {
     assumptions: $('np-assumptions').value,
     acceptance: $('np-acceptance').value,
     repos,
+    // 新規プロジェクトはマスター運用で作る: charter.md は全バージョン共通の憲章（分解されない）、
+    // やるべきことは計画バージョン（charters/<名前>.md）に書く。
+    master: true,
   };
   const res = await guard('プロジェクト作成', async () => {
     const r = await api.createProject(spec);
@@ -1573,9 +1773,9 @@ function isCharterFile(name) {
 }
 
 const CHARTER_SECTION_GUIDE =
-  'セクション: ## goal（目標・判定可能に）/ ## constraints（制約）/ ## assumptions（前提）/ ' +
-  '## deliverables（成果物）/ ## acceptance（done の根拠 — exit 0 で PASS のコマンド、書けなければ accept: 自然文）/ ' +
-  '## repos（対象リポジトリ・owns で書込先）/ ## links（参考）';
+  '書式（セクション）: ## goal（目標）/ ## constraints（制約）/ ## assumptions（前提）/ ' +
+  '## deliverables（成果物）/ ## acceptance（完了条件 — 成功で終わるコマンド、または accept: 文章）/ ' +
+  '## repos（対象リポジトリ）/ ## links（参考リンク）';
 
 async function openEditFile(name, opts) {
   const p = state.project;
@@ -1608,7 +1808,7 @@ async function openEditFile(name, opts) {
   $('ef-ai-status').textContent = '';
   $('btn-ef-ai').disabled = false;
   $('ef-hint').textContent = info.exists
-    ? `${info.file}｜保存すると次の kiro-project run から後段データに反映されます`
+    ? `${info.file}｜保存した内容は次回の自動実行から反映されます`
     : seeded
       ? `${info.file}（未作成 — 前バージョンの内容をコピーしています。保存すると新規作成します）`
       : `${info.file}（未作成 — 保存すると新規作成します）`;
@@ -1626,17 +1826,52 @@ function isValidCharterVersionName(name) {
 // 既存プロジェクトに新しい charter バージョン（charters/<名前>.md）を追加する。
 // 「新規プロジェクト作成」時にしか charter 名を指定できなかったギャップを埋める入口。
 // 実体の作成は openEditFile → 保存（saveEditFile）が行う＝ここでは名前を確定するだけ。
+// 注意: charters/*.md ができると kiro-project は charter.md（初版）を駆動対象から外す。
+// 初版がまだ charter.md 単体のときは、その旨と「⤴ バージョン化」の案内を説明文に出す。
 async function openAddCharterVersion() {
   const p = state.project;
   if (!p) return toast('プロジェクトを選択してください');
+  const master = !!(p.charter && p.charter.master);
+  $('nc-title').textContent = '計画バージョンを追加';
+  $('nc-desc').textContent = master
+    ? 'このバージョンでやるべきことを記入します。保存すると、マスター憲章の前提と合わせて次回の自動実行でタスクに分解されます。'
+    : p.charter && !(p.charters && p.charters.length)
+      ? '新しい計画バージョンを作成します。作成後はバージョン一覧の計画だけが実行され、' +
+        '初版は実行の対象から外れます（概要タブの「⤴ バージョン名を付ける」で初版も並行して進められます）。'
+      : '新しい計画バージョンを作成します（既存のバージョンはそのまま並行して進みます）。';
   $('nc-name').value = '';
+  $('nc-goal').value = '';
+  $('nc-acceptance').value = '';
+  $('nc-master-fields').classList.toggle('hidden', !master);
+  $('dlg-new-charter').dataset.mode = 'add';
   $('dlg-new-charter').showModal();
   $('nc-name').focus();
+}
+
+// マスター運用の計画バージョン雛形: やるべきこと（goal）と完了条件だけを書く。
+// 制約・前提・repos・共通の完了条件は kiro-project がマスター憲章から継承合成する。
+function buildVersionSeed(name, goal, acceptance) {
+  const acc = String(acceptance || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => (l.startsWith('-') ? l : `- ${l}`))
+    .join('\n');
+  return (
+    `# Charter: ${name}\n\n` +
+    `## goal\n${String(goal || '').trim()}\n\n` +
+    `## deliverables\n\n` +
+    `## acceptance\n${acc ? `${acc}\n` : '<!-- 空ならマスター憲章の共通の完了条件を使います -->\n'}\n` +
+    `<!-- 制約・前提・対象リポジトリはマスター憲章（charter.md）から自動で継承されます。\n` +
+    `     必要なときだけこのファイルで追記・上書きしてください。 -->\n`
+  );
 }
 
 async function submitNewCharterVersion() {
   const p = state.project;
   if (!p) return $('dlg-new-charter').close();
+  const mode = $('dlg-new-charter').dataset.mode || 'add';
+  const master = !!(p.charter && p.charter.master);
   const name = $('nc-name').value.trim();
   if (!isValidCharterVersionName(name)) {
     toast('バージョン名が不正です（空白・スラッシュ・ハイフン等は使えません）');
@@ -1644,12 +1879,26 @@ async function submitNewCharterVersion() {
   }
   const existing = new Set((p.charters || []).map((c) => c.name));
   if (existing.has(name)) {
-    toast(`charters/${name}.md はすでに存在します`);
+    toast(`バージョン「${name}」はすでに存在します`);
+    return;
+  }
+  if (mode === 'add' && master && !$('nc-goal').value.trim()) {
+    toast('やるべきことを記入してください（このバージョンで達成すること）');
     return;
   }
   $('dlg-new-charter').close();
-  // 前バージョンの内容を書きかけとして引き継ぐ。charters/ 運用中なら並びの最後（一覧の最新）、
-  // まだ charter.md 単体運用なら charter.md 自体を前バージョン扱いにする。
+  if (mode === 'promote') {
+    await submitPromoteCharter(name);
+    return;
+  }
+  if (master) {
+    // マスター運用: やるべきこと＋完了条件だけの最小バージョンを雛形にする（前提は継承）
+    const seedContent = buildVersionSeed(name, $('nc-goal').value, $('nc-acceptance').value);
+    await openEditFile(`charters/${name}.md`, { seedContent });
+    return;
+  }
+  // 従来運用: 前バージョンの内容を書きかけとして引き継ぐ。charters/ 運用中なら並びの最後
+  // （一覧の最新）、まだ charter.md 単体運用なら charter.md 自体を前バージョン扱いにする。
   const prev = p.charters && p.charters.length ? p.charters[p.charters.length - 1] : p.charter;
   const seedContent = (prev && prev.raw) || '';
   await openEditFile(`charters/${name}.md`, { seedContent });
@@ -1757,36 +2006,68 @@ function isNeedSent(need) {
   return false;
 }
 
+// milestone カード（needs/<pid>.md）の対象プロジェクト/バージョンの「今」の状態。
+// カードはファイルとして残るため、run が進んだ後も前回評価時の内容で表示され続ける。
+// cmd_approve は収束候補（converged）しか受け付けないので、それ以外の状態で承認ボタンを
+// 出すと必ず exit 2 で失敗する（「押しても何も起きない」）。ボタンの表示判定に使う。
+function milestoneStatusFor(p, id) {
+  const ps = (p && p.projectState) || {};
+  if (ps.id === id) return ps.status || '';
+  for (const st of Object.values(ps.charters || {})) {
+    if (st && st.id === id) return st.status || '';
+  }
+  return null; // 状態が見つからない（判定材料なし）＝従来どおりボタンを出す
+}
+
+// needs（要対応）の種別ラベル。内部の kind 名は UI に出さない
+const NEED_KIND_LABELS = {
+  'plan-review': '計画レビュー',
+  review: '検収',
+  milestone: 'マイルストーン',
+  blocked: '対応依頼',
+};
+
+function needKindLabel(kind) {
+  return NEED_KIND_LABELS[String(kind || 'blocked')] || String(kind);
+}
+
 // needs の種類ごとに出すアクション。
-//   plan-review … 実行前レビュー: 承認して実行を許可 / 差し戻し（kiro-project が修正・記入必須）/ 却下
-//   blocked   … フィードバック再開（[x] 記入）/ そのまま再実行 / 保留（hold）
-//   review    … 成果物レビュー: 承認して done 確定 / 差し戻し（記入必須）/ 却下
-//   milestone … プロジェクト承認（approve <project>）
+//   plan-review … 実行前レビュー: 承認して実行を許可 / 差し戻し（修正指示の記入必須）/ 却下
+//   blocked   … 指示して再開 / そのまま再実行 / 保留
+//   review    … 成果物レビュー: 承認して完了 / 差し戻し（記入必須）/ 却下
+//   milestone … プロジェクト承認 — 完了確認待ち（converged）のときだけ
 function needActionsHtml(n) {
   const kind = n.kind || 'blocked';
   const buttons = [];
   if (kind === 'plan-review') {
     buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認（実行を許可）</button>`);
-    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1">↩ 差し戻す（kiro-project が修正・記入必須）</button>`);
-    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1">✕ 却下（廃止して再計画）</button>`);
+    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正指示を記入して計画を練り直させます">↩ 差し戻す（修正指示を記入）</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="このタスクを廃止し、計画を作り直させます">✕ 却下</button>`);
   } else if (kind === 'review') {
-    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認して done 確定</button>`);
-    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1">↩ 差し戻す（記入必須）</button>`);
-    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1">✕ 却下（廃止して再計画）</button>`);
+    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ 承認して完了にする</button>`);
+    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}" data-require="1" title="修正方針を記入してやり直させます">↩ 差し戻す（修正方針を記入）</button>`);
+    buttons.push(`<button class="danger" data-act="reject" data-id="${esc(n.id)}" data-require="1" title="この成果を採用せず廃止し、計画を作り直させます">✕ 却下</button>`);
   } else if (kind === 'milestone') {
-    buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ プロジェクトを承認（完了確定）</button>`);
-    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ フィードバックを送る</button>`);
+    const status = milestoneStatusFor(state.project, n.id);
+    if (status === null || status === 'converged') {
+      buttons.push(`<button class="primary-inline" data-act="approve" data-id="${esc(n.id)}">✓ プロジェクトを完了として承認</button>`);
+    } else {
+      buttons.push(
+        `<span class="muted">まだ完了確認の段階ではありません（現在: ${esc(statusLabel(status) || '未実行')}）。「完了確認待ち」になると承認できます。</span>`
+      );
+    }
+    buttons.push(`<button data-act="feedback" data-id="${esc(n.id)}">↩ 指示を送る</button>`);
   } else {
-    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">➤ フィードバックして再開</button>`);
+    buttons.push(`<button class="primary-inline" data-act="feedback" data-id="${esc(n.id)}">➤ 指示を送って再開</button>`);
     buttons.push(`<button data-act="rerun" data-id="${esc(n.id)}">↻ そのまま再実行</button>`);
-    buttons.push(`<button data-act="hold" data-id="${esc(n.id)}">⏸ 保留（hold）</button>`);
+    buttons.push(`<button data-act="hold" data-id="${esc(n.id)}" title="このタスクを止めて保留にします">⏸ 保留にする</button>`);
   }
   const ph =
     kind === 'plan-review'
-      ? '差し戻しの修正指示・却下の理由（承認だけなら空欄で OK）'
+      ? '差し戻しの修正指示・却下の理由（承認だけなら空欄のままで構いません）'
       : kind === 'review'
-        ? '差し戻す場合の修正方針・却下の理由（承認だけなら空欄で OK。approve の理由にも使われます）'
-        : '修正方針・指示（空のまま再実行も可）';
+        ? '差し戻しの修正方針・却下の理由（承認だけなら空欄のままで構いません）'
+        : '修正方針・指示（空のまま再実行もできます）';
   return `<div class="need-actions" data-need="${esc(n.id)}">
     <textarea rows="2" class="need-input" placeholder="${esc(ph)}"></textarea>
     <div class="row need-buttons">${buttons.join('')}
@@ -1796,6 +2077,19 @@ function needActionsHtml(n) {
   </div>`;
 }
 
+// 種別ごとの「何を確認するか」。カードの先頭で確認の目的を一文で示す
+const NEED_ASK = {
+  'plan-review': 'このタスクを実行してよいか確認してください。',
+  review: '成果物を確認し、完了にしてよいか判断してください。',
+  milestone: 'プロジェクトを完了にしてよいか確認してください。',
+  blocked: '作業が止まっています。対応方法を指示してください。',
+};
+
+// カード見出し用にタイトルの定型接頭辞（種別バッジと重複する）を落とす
+function needDisplayTitle(n) {
+  return String(n.title || n.id).replace(/^(要対応|実行前レビュー|マイルストーン)\s*[:：]\s*/, '');
+}
+
 function renderNeeds() {
   const p = state.project;
   const el = $('tab-needs');
@@ -1803,34 +2097,51 @@ function renderNeeds() {
     el.innerHTML = '';
     return;
   }
-  if (!p.needs.length) {
-    el.innerHTML = '<div class="empty">人の判断待ちはありません 🎉</div>';
-    return;
-  }
   const settled = (n) => n.decided || isNeedSent(n); // 対応済み（本体の取り込み待ち）
   const cards = [...p.needs]
     .sort((a, b) => Number(settled(a)) - Number(settled(b)) || b.mtime - a.mtime)
     .map((n) => {
       const chip = n.decided
-        ? '<span class="status-chip st-done">記入済み（取り込み待ち）</span>'
+        ? '<span class="status-chip st-done">回答済み（反映待ち）</span>'
         : isNeedSent(n)
-          ? '<span class="status-chip st-review">指示送信済み（取り込み待ち）</span>'
+          ? '<span class="status-chip st-review">送信済み（反映待ち）</span>'
           : '<span class="status-chip st-blocked">未対応</span>';
+      // 要点（何を確認するか・理由・概況）を先頭に出し、判断材料は折りたたみに収める
+      // （needs ファイルのマークダウンをそのまま流し込まない）
+      const facts = [];
+      if (n.why) facts.push(`<div><span class="label-chip">理由</span> ${esc(n.why)}</div>`);
+      if (n.summary) facts.push(`<div><span class="label-chip">概況</span> ${esc(n.summary)}</div>`);
+      const detail = (n.detail || '').trim();
+      const detailBlock = detail
+        ? `<details class="need-detail" data-ui-key="need-detail:${esc(n.id)}">
+            <summary>判断材料を見る（タスク定義・成果物の所在など）</summary>
+            <div class="body">${mdToHtml(detail)}</div>
+          </details>`
+        : '';
       return `<div class="need-card kind-${esc(n.kind || 'blocked')}">
         <div class="need-head">
-          <span class="badge ${settled(n) ? '' : 'warn'}">${esc(n.kind || 'blocked')}</span>
-          <span class="title">${esc(n.title || n.id)}</span>
+          <span class="badge ${settled(n) ? '' : 'warn'}" title="${esc(n.kind || 'blocked')}">${esc(needKindLabel(n.kind))}</span>
+          <span class="title">${esc(needDisplayTitle(n))}</span>
           <span class="muted">${esc(n.date || '')}</span>
           ${chip}
         </div>
-        <div class="body">${mdToHtml(n.body)}</div>
+        <div class="need-ask">${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</div>
+        ${facts.join('')}
+        ${detailBlock}
         ${settled(n) ? '' : needActionsHtml(n)}
       </div>`;
     })
     .join('');
-  el.innerHTML = `<div class="muted" style="margin-bottom:8px">
-      回答はこの画面から送信できます（needs/&lt;id&gt;.md の「## Decision Outcome」記入 + <code>- [x]</code> 確定と同じ。
-      稼働中の kiro-project が自動で取り込みます）。</div>${cards}`;
+  const needsSection = p.needs.length
+    ? `<div class="muted" style="margin-bottom:8px">
+        回答はこの画面から送信できます。稼働中であれば自動で反映されます（少し時間がかかることがあります）。</div>${cards}`
+    : '<div class="empty">プロジェクトからの確認依頼はありません 🎉</div>';
+
+  // GitLab のレビュー待ちも同じタブに併載する（人が見るべき確認事項の一元化）。
+  // 中身は renderGitLab がこのコンテナへ描く（GitLab API 未設定なら案内だけ出る）。
+  el.innerHTML = `${needsSection}
+    <div class="section-title" style="margin-top:16px">GitLab レビュー待ち</div>
+    <div id="needs-gitlab"></div>`;
 
   for (const btn of el.querySelectorAll('button[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
@@ -1854,26 +2165,29 @@ async function handleNeedAction(btn) {
   const ok = await guard('操作', async () => {
     if (act === 'feedback') {
       await api.submitFeedback(need.file, text);
-      toast(text ? 'フィードバックを確定しました（次のサイクルで再開）' : '確定しました', true);
+      toast(text ? '回答を送信しました（次の実行で反映されます）' : '回答を確定しました', true);
     } else if (act === 'rerun') {
       await api.submitFeedback(need.file, '');
-      toast('そのまま再実行として確定しました', true);
+      toast('そのまま再実行するよう回答しました', true);
     } else if (act === 'approve') {
       const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason: text });
       // 指示は commands/CLI 経由で needs ファイル自体は変わらない。取り込みまで
       // カードが未対応のまま残らないよう送信済みマーカーを付ける
       markNeedSent(need);
-      toast(res.output || '承認しました', true);
+      uiLog('needAction approve', id, res);
+      toast('承認を送信しました（反映まで少し時間がかかることがあります）', true);
     } else if (act === 'hold') {
       const res = await api.runAction({ dir: p.dir, action: 'hold', id, reason: text });
       markNeedSent(need);
-      toast(res.output || '保留（policy.deny）にしました', true);
+      uiLog('needAction hold', id, res);
+      toast('保留にしました', true);
     } else if (act === 'reject') {
-      const yes = await confirmDialog(rejectConfirmMessage(p, id, '廃止して関連バックログを再計画'));
+      const yes = await confirmDialog(rejectConfirmMessage(p, id, '廃止して計画を作り直す'));
       if (!yes) return false;
       const res = await api.runAction({ dir: p.dir, action: 'reject', id, reason: text });
       markNeedSent(need);
-      toast(res.output || '却下しました（依存タスクは再審査へ・再計画を要求）', true);
+      uiLog('needAction reject', id, res);
+      toast('却下しました（依存するタスクは計画の再確認に戻ります）', true);
     }
     return true;
   });
@@ -1898,6 +2212,17 @@ const FLOW_STATE_LABEL = {
 
 const TERMINAL_NODE_STATES = new Set(['done', 'failed']);
 
+// run の終端 status（flow.js の TERMINAL と同一）。フロータブのフィルタ判定に使う
+const TERMINAL_RUN_STATES = new Set(['done', 'failed', 'canceled']);
+
+// フロータブの run フィルタ。完了 run は kiro-flow の掃除後もアーカイブ（ビュアー保管庫）から
+// 表示できるため、既定は「進行中（非終端）」に絞って一覧のノイズを抑える。
+const FLOW_FILTERS = [
+  ['active', '進行中'],
+  ['done', '完了・記録'],
+  ['all', 'すべて'],
+];
+
 // run 一括の突き合わせ結果（glReconcileRun のノード要素）を、found と同じ形のイシュー情報にする
 function recToIssue(rec) {
   if (!rec || !rec.url) return undefined;
@@ -1918,23 +2243,22 @@ function recToIssue(rec) {
 function daemonBadge() {
   const d = state.flowDaemon;
   if (!d) return '';
+  // 判定根拠（ロックファイル・pid・同期経由の生存信号）は内部情報なのでログへ
+  uiLogOnChange('flowDaemon', d);
   const synced = d.via === 'status-sync';
   if (d.running === true) {
-    const detail = synced
-      ? `同期経由の推定・最終確認 ${fmtAgoSec(d.ageSec)}${d.orchestrators !== undefined ? `・run ${d.orchestrators}/worker ${d.workers}` : ''}`
-      : `pid ${d.pid}（${esc(d.lockPath)}）`;
-    return `<span class="status-chip st-running" title="${esc(detail)}">daemon 稼働中${synced ? '（推定）' : ''}</span>`;
+    return `<span class="status-chip st-running" title="${synced ? `別マシンで稼働（最終確認 ${fmtAgoSec(d.ageSec)}）` : 'このマシンで稼働中'}">実行エンジン: 稼働中${synced ? '（別マシン）' : ''}</span>`;
   }
   if (d.running === false) {
     if (synced) {
-      return `<span class="status-chip" title="status.json 同期経由・最終確認 ${fmtAgoSec(d.ageSec)}が鮮度窓を超過">daemon 不明（同期経由）</span>`;
+      return `<span class="status-chip" title="最終確認 ${fmtAgoSec(d.ageSec)}・最近の稼働を確認できません">実行エンジン: 不明</span>`;
     }
     if (d.via === 'none') {
-      return `<span class="status-chip" title="ロックも status.json も無し">daemon 停止/判定不能</span>`;
+      return `<span class="status-chip" title="このマシンでは稼働を確認できません">実行エンジン: 停止中か不明</span>`;
     }
-    return `<span class="status-chip st-closed" title="${esc(d.lockPath)}">daemon 停止</span>`;
+    return `<span class="status-chip st-closed">実行エンジン: 停止</span>`;
   }
-  return `<span class="status-chip" title="ロックはあるが pid を読めない: ${esc(d.lockPath)}">daemon 不明</span>`;
+  return `<span class="status-chip" title="稼働状態を読み取れませんでした">実行エンジン: 不明</span>`;
 }
 
 function renderFlow() {
@@ -1944,47 +2268,67 @@ function renderFlow() {
     el.innerHTML = '';
     return;
   }
+  // 実行データの発見経緯（探索した候補パス）は内部情報なのでログへ
+  uiLogOnChange(`flowBus:${p.dir}`, { busDir: p.busDir, source: p.busSource, candidates: p.busCandidates });
   const busLine = `<div class="muted" style="margin-bottom:8px">
-    バス: <code class="mono">${esc(p.busDir)}</code>${p.busSource && p.busSource !== 'project' ? `（${esc(p.busSource)} から発見）` : ''}
+    実行データ: <code class="mono">${esc(p.busDir)}</code>
     ${daemonBadge()}
   </div>`;
   if (!state.flowRuns.length) {
-    const checked = (p.busCandidates || [])
-      .map((c) => `<code class="mono">${esc(c.dir)}</code>`)
-      .join('<br>');
-    el.innerHTML = `${busLine}<div class="empty">kiro-flow の run がありません。<br>
-      （bus/ は run 完了後に掃除されるため、稼働中または --no-cleanup 時に表示されます）<br>
-      ${checked ? `<span class="muted">探索したバス候補:<br>${checked}</span>` : ''}</div>`;
+    el.innerHTML = `${busLine}<div class="empty">実行はまだありません。<br>
+      （完了した実行はこのビュアーに記録として残ります）</div>`;
     return;
   }
   // 同一タスクのリトライ（req-…-r0/r1/…）は「意味的に同一」なので系統でまとめ、
   // 最新試行を見出しにして過去の試行はリトライ・ピルで畳む。素の run は単独系統。
-  const runList = lineageGroups(state.flowRuns)
+  // フィルタ（既定: アクティブ）は系統の最新試行の status で判定する。
+  const groups = lineageGroups(state.flowRuns);
+  const matchesFilter = (g) => {
+    const st = String(g.latest.status);
+    if (state.flowFilter === 'all') return true;
+    if (state.flowFilter === 'done') return TERMINAL_RUN_STATES.has(st);
+    return !TERMINAL_RUN_STATES.has(st);
+  };
+  const shownGroups = groups.filter(matchesFilter);
+  const filterCount = (key) =>
+    groups.filter((g) =>
+      key === 'all' ? true
+        : key === 'done' ? TERMINAL_RUN_STATES.has(String(g.latest.status))
+          : !TERMINAL_RUN_STATES.has(String(g.latest.status))
+    ).length;
+  const filterChips = FLOW_FILTERS.map(
+    ([key, label]) =>
+      `<button class="chip ${state.flowFilter === key ? 'active' : ''}" data-flow-filter="${key}">${label} (${filterCount(key)})</button>`
+  ).join('');
+  const runList = shownGroups
     .map((g) => {
       const r = g.latest;
       const pct = Math.round(r.progress * 100);
       const stalled =
         r.alive === false
-          ? ` <span class="status-chip st-stalled" title="orchestrator の生存リースが切れています（heartbeat: ${esc(fmtAgo(r.heartbeatAt) || 'なし')}）">応答なし</span>`
+          ? ` <span class="status-chip st-stalled" title="実行が止まっている可能性があります（最終応答: ${esc(fmtAgo(r.heartbeatAt) || 'なし')}）">応答なし</span>`
           : '';
       const taskLink = r.taskId
-        ? ` <button class="badge task-link" data-goto-task="${esc(r.taskId)}" title="バックログのタスクへ移動">🗒 ${esc(r.taskId)}</button>`
+        ? ` <button class="badge task-link" data-goto-task="${esc(r.taskId)}" title="元のタスクを開く">🗒 ${esc(r.taskId)}</button>`
         : '';
       const retryStrip =
         g.attempts.length > 1
-          ? `<div class="run-retries" title="このタスクのリトライ系統">試行 ${g.attempts.length}: ${g.attempts
+          ? `<div class="run-retries" title="この作業のやり直し履歴">試行 ${g.attempts.length}: ${g.attempts
               .slice()
               .reverse()
               .map((a) => runPill(a, a.runId === state.flowRunId))
               .join('')}</div>`
           : r.inheritedFrom
-            ? `<div class="muted" title="引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(r.inheritedFrom)}</span></div>`
+            ? `<div class="muted" title="引き継ぎ元の実行">↩ 引き継ぎ元 <span class="mono">${esc(r.inheritedFrom)}</span></div>`
             : '';
+      const archivedBadge = r.archived
+        ? ' <span class="badge" title="完了後に保存された記録です（閲覧のみ）">📦</span>'
+        : '';
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}">
-        <div class="row2"><span class="mono">${esc(r.runId)}</span><span>${statusChip(r.status)}${stalled}</span></div>
+        <div class="row2"><span class="mono">${esc(r.runId)}</span><span>${statusChip(r.status)}${archivedBadge}${stalled}</span></div>
         <div class="req">${esc((r.request || '').slice(0, 120))}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
-        <div class="muted">${r.counts.done}✓ ${r.counts.failed}✗ ${r.counts.claimed}▶ ／ ${r.total} ノード ｜ ${fmtAgo(r.updatedAt || r.createdAt)}${taskLink}</div>
+        <div class="muted">${r.total} 工程中 完了 ${r.counts.done}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed} ｜ ${fmtAgo(r.updatedAt || r.createdAt)}${taskLink}</div>
         ${retryStrip}
       </div>`;
     })
@@ -2002,8 +2346,9 @@ function renderFlow() {
     graphX: prevGraph ? prevGraph.scrollLeft : 0,
     graphY: prevGraph ? prevGraph.scrollTop : 0,
   };
-  el.innerHTML = `${busLine}<div id="flow-layout">
-    <div id="flow-runs">${runList || '<div class="empty">run なし</div>'}</div>
+  el.innerHTML = `${busLine}<div class="filters" style="margin-bottom:6px">${filterChips}</div>
+  <div id="flow-layout">
+    <div id="flow-runs">${runList || `<div class="empty">該当する run がありません（フィルタ: ${esc((FLOW_FILTERS.find(([k]) => k === state.flowFilter) || ['', state.flowFilter])[1])}）</div>`}</div>
     <div id="flow-detail">${renderFlowDetail()}</div>
   </div>`;
   $('flow-runs').scrollTop = prevScroll.runs;
@@ -2016,6 +2361,12 @@ function renderFlow() {
     graph.scrollTop = prevScroll.graphY;
   }
 
+  for (const chip of el.querySelectorAll('.chip[data-flow-filter]')) {
+    chip.addEventListener('click', () => {
+      state.flowFilter = chip.dataset.flowFilter;
+      renderFlow();
+    });
+  }
   for (const item of el.querySelectorAll('.run-item[data-run]')) {
     item.addEventListener('click', () => selectFlowRun(item.dataset.run));
   }
@@ -2064,7 +2415,7 @@ const AUTO_RECONCILE_THROTTLE_MS = 60000;
 // run を開いたときに一度だけ自動で突き合わせる（クリック無しでイシュー状態を出す）。
 // GitLab 未設定・対象ノード無し・律速内・取得中はスキップ。トーストは出さない（自動なので静か）。
 function maybeAutoReconcile(run) {
-  if (!run || !gitlabConfigured()) return;
+  if (!run || run.archived || !gitlabConfigured()) return; // アーカイブは読み取り専用の写し＝突き合わせ対象外
   if (!(run.workspace && run.workspace.url)) return;
   if (!reconcilableNodes(run).length) return;
   const e = reconcileEntry(run.runId);
@@ -2082,7 +2433,7 @@ async function reconcileFlowRun(opts) {
   if (!run) return;
   const repoUrl = run.workspace && run.workspace.url;
   if (!repoUrl) {
-    if (!auto) toast('この run には突き合わせ先リポジトリ（workspace）がありません');
+    if (!auto) toast('この実行には対応する GitLab リポジトリがありません');
     return;
   }
   const nodes = reconcilableNodes(run).map((n) => ({ id: n.id, taskToken: n.taskToken, state: n.state }));
@@ -2121,7 +2472,7 @@ async function reconcileFlowRun(opts) {
 
 function renderFlowDetail() {
   const fr = state.flowRun;
-  if (!fr || !fr.run) return '<div class="empty">run を選択するとタスクグラフを表示します</div>';
+  if (!fr || !fr.run) return '<div class="empty">左の一覧から実行を選択するとタスクグラフを表示します</div>';
   const run = fr.run;
   const strat = run.strategy
     ? `${(run.strategy.patterns || []).join(' + ')} ／ 並列 ${run.strategy.parallelism ?? '-'} ／ iteration ${run.iteration}`
@@ -2147,39 +2498,47 @@ function renderFlowDetail() {
     run.alive === false
       ? ` <span class="status-chip st-stalled">応答なし</span>`
       : '';
-  const resumed = run.resumeCount > 0 ? `（自動再開 #${run.resumeCount}）` : '';
+  const resumed = run.resumeCount > 0 ? `（自動再開 ${run.resumeCount} 回）` : '';
   const heartbeat =
     run.alive !== null && run.heartbeatAt
-      ? `<div class="muted">orchestrator heartbeat: ${esc(fmtAgo(run.heartbeatAt))}${resumed}${run.alive === false ? '（生存リース切れ — daemon が再起動すれば続きから自動再開されます）' : ''}</div>`
+      ? `<div class="muted">最終応答: ${esc(fmtAgo(run.heartbeatAt))}${resumed}${run.alive === false ? '（応答が途絶えています。実行エンジンが再起動すると続きから自動で再開されます）' : ''}</div>`
       : '';
+  // アーカイブ表示（bus からは掃除済み）: 読み取り専用の写しなので run への操作
+  // （再投入・キャンセル・削除・GitLab 突き合わせ）は出さない。
+  const archived = !!run.archived;
+  const archivedBadge = archived
+    ? ' <span class="badge" title="完了後に保存された記録です（閲覧のみ）">📦 記録</span>'
+    : '';
   // 失敗した run は人が「同じ要求で再投入」できる（新しい run として inbox へ。公式契約のみ）
   const resubmit =
-    run.status === 'failed'
-      ? `<button class="chip" id="flow-resubmit" title="meta の要求・ワークスペースをそのまま新しい run として inbox へ投入します（daemon が拾う）">↻ 同じ要求で再投入</button>`
+    !archived && run.status === 'failed'
+      ? `<button class="chip" id="flow-resubmit" title="同じ内容で新しい実行を最初から開始します">↻ 同じ内容でやり直す</button>`
       : '';
   // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ
-  const deletable = run.status === 'done' || run.status === 'failed' || run.status === 'canceled' || run.alive === false;
+  const deletable =
+    !archived &&
+    (run.status === 'done' || run.status === 'failed' || run.status === 'canceled' || run.alive === false);
   const deleteBtn = deletable
-    ? `<button class="chip danger" id="flow-delete" title="この run のディレクトリ（runs/${esc(run.runId)}）をゴミ箱へ移動します">🗑 削除</button>`
+    ? `<button class="chip danger" id="flow-delete" title="この実行のデータをゴミ箱へ移動します">🗑 削除</button>`
     : '';
   // run のキャンセル（人の明示アクション＝唯一の hard-stop）。まだ終端していない run に出す。
   // 承認待ちで park 中の run も暴走中の run も止められる。起票済みイシューは残す（追跡だけやめる）。
-  const cancelable = !['done', 'failed', 'canceled'].includes(run.status);
+  const cancelable = !archived && !['done', 'failed', 'canceled'].includes(run.status);
   const parkedCount = Object.values(run.nodes || {}).filter((n) => n.parked).length;
   const cancelBtn = cancelable
-    ? `<button class="chip danger" id="flow-cancel" title="この run を canceled に終端化します（新規起票・承認待ちの監視・自動再開をすべて停止）。起票済みの GitLab イシューは残ります（追跡だけやめます）">■ キャンセル${parkedCount ? `（承認待ち ${parkedCount}）` : ''}</button>`
+    ? `<button class="chip danger" id="flow-cancel" title="この実行を中止します（レビュー待ちの監視や自動再開も止まります。作成済みの GitLab イシューは残ります）">■ 中止${parkedCount ? `（レビュー待ち ${parkedCount}）` : ''}</button>`
     : '';
   // gitlab executor 連動: 非終端ノードがあれば「GitLab と突き合わせ」で関連イシューの今の状態
   // （クローズ済み＝完了/失敗を先読み反映／オープン＝レビュー中を表示）を取り込める。run を開いた
   // ときに自動で一度走る（律速あり）ので、ボタンは手動の再取得（最新化）用。
-  const hasOpenNodes = reconcilableNodes(run).length > 0;
+  const hasOpenNodes = !archived && reconcilableNodes(run).length > 0;
   const rec = reconcileEntry(run.runId) || null;
   const recHits = rec ? Object.values(rec.byNode || {}).filter((r) => r.reconciled).length : 0;
   const reconcileBtn =
     hasOpenNodes && run.workspace && run.workspace.url
       ? `<button class="chip" id="flow-reconcile" ${rec && rec.loading ? 'disabled' : ''}
-          title="実行中ノードの関連イシューの今の状態を GitLab から取得して反映します（クローズ済み＝完了/失敗の先読み、オープン＝レビュー中）">${
-            rec && rec.loading ? '突き合わせ中…' : '⟳ GitLab 最新化'
+          title="関連する GitLab イシューの最新状態を取得して表示に反映します">${
+            rec && rec.loading ? '取得中…' : '⟳ GitLab 最新化'
           }${recHits ? `（反映 ${recHits}）` : ''}</button>`
       : '';
   // RUN 表示ペインを縦 3 分割する: 概要 / タスクグラフ / ノード情報。
@@ -2189,9 +2548,10 @@ function renderFlowDetail() {
     <div id="flow-overview" class="flow-pane">
       <div class="flow-pane-title">概要</div>
       <div class="card full">
-        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${stalled} ${esc(strat)} ${reconcileBtn} ${resubmit} ${cancelBtn} ${deleteBtn}</h3>
+        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${archivedBadge}${stalled} ${esc(strat)} ${reconcileBtn} ${resubmit} ${cancelBtn} ${deleteBtn}</h3>
         ${relationshipStrip({ run })}
         <div>${esc(run.request || '')}</div>
+        ${archived ? `<div class="muted">📦 完了後に保存された記録を表示しています（最終更新: ${esc(fmtTime(run.archivedAt) || '不明')}）。この画面からの操作はできません。</div>` : ''}
         ${run.inheritedFrom ? `<div class="muted" title="このリトライが引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(run.inheritedFrom)}</span></div>` : ''}
         ${heartbeat}
         ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(run.failureReason)}</div>` : ''}
@@ -2209,8 +2569,8 @@ function renderFlowDetail() {
       <div class="legend">${legend}</div>
     </div>
     <div id="flow-node" class="flow-pane">
-      <div class="flow-pane-title">ノード情報</div>
-      ${nodeDetail || '<div class="empty">タスクグラフでノードを選択すると詳細を表示します</div>'}
+      <div class="flow-pane-title">工程の詳細</div>
+      ${nodeDetail || '<div class="empty">タスクグラフで工程を選択すると詳細を表示します</div>'}
     </div>`;
 }
 
@@ -2228,12 +2588,12 @@ function nodeTimeline(nodeId) {
 function nodeParkLine(node) {
   if (!node.parked) return '';
   if (node.throttled) {
-    return `<div class="muted" style="margin-top:4px">⏸ 起票見送り中（同時イシュー上限に達したため一時停止。枠が空くと自動で起票されます）</div>`;
+    return `<div class="muted" style="margin-top:4px">⏸ 開始待ち（同時に進められる件数の上限に達しています。空き次第、自動で始まります）</div>`;
   }
   const active = node.parkActiveSeen
-    ? '人の作業（MR/ラベル）を検知済み — マージ待ち'
-    : 'レビュー/MR 作成待ち';
-  return `<div class="muted" style="margin-top:4px">⏳ 承認待ち（park）— worker スロットを解放し、監視主体が定期確認中。${active}</div>`;
+    ? 'レビューでの作業（MR など）を確認済み — マージ待ちです'
+    : 'レビューまたは MR の作成を待っています';
+  return `<div class="muted" style="margin-top:4px">⏳ レビュー待ち — 状況は定期的に自動確認しています。${active}</div>`;
 }
 
 // ノードの進捗行: 実行中は 開始/経過/heartbeat/lease、終端は 所要/完了時刻 を出す
@@ -2248,7 +2608,7 @@ function nodeProgressLine(node) {
     if (node.heartbeatAt) {
       const aliveLease = node.leaseUntil && node.leaseUntil * 1000 > Date.now();
       bits.push(
-        `heartbeat ${fmtAgo(node.heartbeatAt)} ${aliveLease ? '<span class="status-chip st-running">生存</span>' : '<span class="status-chip st-stalled">lease 切れ（再クレーム待ち）</span>'}`
+        `最終応答 ${fmtAgo(node.heartbeatAt)} ${aliveLease ? '<span class="status-chip st-running">応答あり</span>' : '<span class="status-chip st-stalled">応答なし（自動で引き継がれます）</span>'}`
       );
     }
   } else if (node.finishedAt) {
@@ -2300,7 +2660,7 @@ function nodeIssueBlock(run, node) {
     // bus に result が来る前の先読み反映であることを明示する（bus が正・反映は暫定）
     if (reconciled && !TERMINAL_NODE_STATES.has(node.state)) {
       rows.push(
-        `<div class="muted">GitLab でクローズ済み（${reconciled === 'done' ? '承認' : '却下'}）を先読み反映しました。bus の result 反映後に確定します。</div>`
+        `<div class="muted">GitLab 側の決着（${reconciled === 'done' ? '承認' : '却下'}）を先に表示しています。正式な反映は実行エンジン側で確定します。</div>`
       );
     }
     if (found && found.title) {
@@ -2327,23 +2687,22 @@ function nodeIssueBlock(run, node) {
         );
       }
       rows.push(
-        `<div class="muted">却下（未マージクローズ等）→ ノードは failed。kiro-project 管理下なら
-        イシューの人コメントを feedback に注入して自動で再委譲されます（retries 上限で「要対応」へ）。</div>`
+        `<div class="muted">却下されたため、この工程は失敗扱いです。レビューコメントを引き継いで自動でやり直します（やり直し回数の上限に達すると「要対応」になります）。</div>`
       );
     }
   } else if (repoUrl && node.state === 'claimed') {
     // 実行中（result 未確定）: イシュー URL はまだ bus に無い。タスクトークンで検索できる
     if (cached && found === null) {
-      rows.push(`<div class="muted">関連イシューは見つかりませんでした（起票前か、gitlab executor 以外のタスク）</div>`);
+      rows.push(`<div class="muted">関連イシューは見つかりませんでした（イシュー作成前か、GitLab 連携外の作業です）</div>`);
     } else {
       rows.push(
         `<button id="btn-find-issue" data-token="${esc(node.taskToken)}" data-repo="${esc(repoUrl)}"
-          title="イシュー本文の隠しマーカー（task-token）で検索します">関連イシューを探す（GitLab API）</button>`
+          title="この工程に対応する GitLab イシューを検索します">関連イシューを探す</button>`
       );
     }
   }
   if (!rows.length) return '';
-  return `<div class="section-title">関連イシュー（gitlab executor）</div>${rows.join('\n')}`;
+  return `<div class="section-title">関連する GitLab イシュー</div>${rows.join('\n')}`;
 }
 
 function renderFlowNode(run, node) {
@@ -2360,7 +2719,7 @@ function renderFlowNode(run, node) {
   const effState = reconciled || node.state;
   const stateLabel =
     esc(FLOW_STATE_LABEL[effState] || effState) +
-    (reconciled ? ' <span class="status-chip st-reconciled" title="GitLab のクローズ済みイシューから先読み反映（bus 反映待ち）">GitLab 反映</span>' : '');
+    (reconciled ? ' <span class="status-chip st-reconciled" title="GitLab 側の決着を先に表示しています（正式な反映待ち）">GitLab 反映</span>' : '');
   return `<div class="card full">
       <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}</h3>
       <div>${esc(node.goal)}</div>
@@ -2393,11 +2752,12 @@ async function findNodeIssue(btn) {
 async function resubmitFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
-  const res = await guard('再投入', () => api.flowResubmit(state.project.busDir, run.runId));
+  const res = await guard('やり直し', () => api.flowResubmit(state.project.busDir, run.runId));
   if (res) {
     const d = state.flowDaemon;
+    uiLog('resubmit', res);
     toast(
-      `再投入しました: ${res.runId}${d && d.running === false ? '（daemon 停止中 — 起動後に拾われます）' : ''}`,
+      `新しい実行として開始を依頼しました${d && d.running === false ? '（実行エンジンが停止中のため、起動後に始まります）' : ''}`,
       true
     );
     await gitPushBusOp(`kiro-projects-viewer: resubmit run ${run.runId}`);
@@ -2411,18 +2771,19 @@ async function cancelFlowRun() {
   if (!run) return;
   const parked = Object.values(run.nodes || {}).filter((n) => n.parked).length;
   const note = parked
-    ? `\n承認待ちで保留中のノードが ${parked} 件あります。監視を止めますが、起票済みの GitLab イシューは残します（追跡だけやめます。人がクローズできます）。`
-    : '\n起票済みの GitLab イシューがあれば残します（追跡だけやめます）。';
+    ? `\nレビュー待ちの工程が ${parked} 件あります。監視は止めますが、作成済みの GitLab イシューは残ります（人がクローズできます）。`
+    : '\n作成済みの GitLab イシューがあれば残ります。';
   const yes = await confirmDialog(
-    `run ${run.runId} をキャンセルします。\n新規起票・承認待ちの監視・自動再開をすべて停止し、status を canceled に確定します。${note}\nよろしいですか？`
+    `この実行（${run.runId}）を中止します。\n以後の作業・レビュー待ちの監視・自動再開をすべて止めます。${note}\nよろしいですか？`
   );
   if (!yes) return;
-  const ok = await guard('run キャンセル', async () => {
+  const ok = await guard('実行の中止', async () => {
     const res = await api.flowCancel(state.project.busDir, run.runId, 'kiro-projects-viewer から手動キャンセル');
+    uiLog('cancel', run.runId, res);
     if (res && res.alreadyTerminal) {
-      toast(`run は既に終端（${res.status}）でした。キャンセルは不要です。`, true);
+      toast(`この実行は既に終了していました（${statusLabel(res.status)}）。中止は不要です。`, true);
     } else {
-      toast(`run をキャンセルしました（承認待ち ${res ? res.cleared : 0} 件の監視を停止）: ${run.runId}`, true);
+      toast(`実行を中止しました${res && res.cleared ? `（レビュー待ち ${res.cleared} 件の監視を停止）` : ''}`, true);
     }
     return true;
   });
@@ -2438,15 +2799,16 @@ async function deleteFlowRun() {
   if (!run) return;
   const warn =
     run.status !== 'done' && run.status !== 'failed'
-      ? '\nこの run は終端していません（応答なし）。削除すると daemon 再起動時の自動再開もできなくなります。'
+      ? '\nこの実行はまだ終了していません（応答なし）。削除すると自動での再開もできなくなります。'
       : '';
   const yes = await confirmDialog(
-    `run ${run.runId} を削除します。\nバスの runs/ ディレクトリごとゴミ箱へ移動します。${warn}\nよろしいですか？`
+    `この実行（${run.runId}）を削除します。\n実行データをゴミ箱へ移動します。${warn}\nよろしいですか？`
   );
   if (!yes) return;
-  const ok = await guard('run 削除', async () => {
+  const ok = await guard('実行の削除', async () => {
     const res = await api.flowDeleteRun(state.project.busDir, run.runId);
-    toast(`run を削除しました（${res.via === 'trash' ? 'ゴミ箱へ移動' : '完全削除'}）: ${run.runId}`, true);
+    uiLog('deleteRun', run.runId, res);
+    toast(`実行を削除しました（${res.via === 'trash' ? 'ゴミ箱へ移動' : '完全削除'}）`, true);
     return true;
   });
   if (ok) {
@@ -2474,7 +2836,7 @@ function swColor(st) {
 // トポロジカル深さでノードを列に並べ、SVG で DAG を描く
 function renderGraphSvg(run) {
   const nodes = Object.values(run.nodes);
-  if (!nodes.length) return '<div class="empty">ノードなし</div>';
+  if (!nodes.length) return '<div class="empty">工程がありません</div>';
   const depthMemo = {};
   const visiting = new Set();
   const depth = (id) => {
@@ -2512,6 +2874,12 @@ function renderGraphSvg(run) {
   const width = PAD * 2 + sortedCols.length * NW + (sortedCols.length - 1) * GX;
   const height = PAD * 2 + maxRows * NH + (maxRows - 1) * GY;
 
+  // 完了したノード同士を繋ぐエッジは「消化済みの経路」として強調する（done クラス）。
+  // GitLab 突き合わせの先読み反映（reconciled）があれば表示上の状態はそちらを優先する。
+  const effStateOf = (id) => {
+    const nd = run.nodes[id];
+    return (nd && (reconciledStateFor(run, id) || nd.state)) || '';
+  };
   const edges = [];
   for (const n of nodes) {
     for (const d of n.deps) {
@@ -2523,7 +2891,8 @@ function renderGraphSvg(run) {
       const x2 = to.x;
       const y2 = to.y + NH / 2;
       const mx = (x1 + x2) / 2;
-      edges.push(`<path class="edge" d="M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}" />`);
+      const doneEdge = effStateOf(d) === 'done' && effStateOf(n.id) === 'done';
+      edges.push(`<path class="edge${doneEdge ? ' done' : ''}" d="M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}" />`);
     }
   }
   const boxes = nodes.map((n) => {
@@ -2634,7 +3003,10 @@ function charterGitlabRepos() {
 
 function renderGitLab() {
   const p = state.project;
-  const el = $('tab-gitlab');
+  // 要対応タブ内の併載コンテナへ描く（renderNeeds が先に描画してから呼ばれる前提。
+  // レビュー待ちの独立タブは要対応へ統合した）。
+  const el = $('needs-gitlab');
+  if (!el) return;
   if (!p) {
     el.innerHTML = '';
     return;
@@ -2651,12 +3023,12 @@ function renderGitLab() {
     if (rel) {
       return `<button class="linklike mono rel-run-chip st-${esc(rel.status)}"
         data-goto-run="${esc(rel.runId)}" data-goto-node="${esc(rel.nodeId)}"
-        title="フロー画面で run ${esc(rel.runId)} のノード ${esc(rel.nodeId)} を開く">⚙ ${esc(shortRunId(rel.runId))} ▸ ${esc(rel.nodeId)}</button>`;
+        title="この工程をフロー画面で開く">⚙ ${esc(shortRunId(rel.runId))} ▸ ${esc(rel.nodeId)}</button>`;
     }
     if (it.taskToken) {
-      return `<span class="muted" title="task-token ${esc(it.taskToken)}｜対応する run はロード済みの一覧（最新 30 件）に無いか、bus 掃除済みです">—</span>`;
+      return `<span class="muted" title="対応する実行が見つかりません（一覧の範囲外か、削除済みの可能性があります）">—</span>`;
     }
-    return '<span class="muted" title="kiro-flow 由来ではないイシュー（task-token なし）"></span>';
+    return '<span class="muted" title="自動実行が作成したイシューではありません"></span>';
   };
 
   const issueRow = (it) => {
@@ -2687,30 +3059,30 @@ function renderGitLab() {
   const hiddenCount = gl.repoIssues.length - shown.length;
 
   const repoIssuesSection = shown.length
-    ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th>関連 run</th><th></th></tr>
+    ? `<table class="list"><tr><th>IID</th><th>イシュー</th><th>状態</th><th>ラベル</th><th>関連 MR</th><th>関連する実行</th><th></th></tr>
         ${shown.map((it) => issueRow(it)).join('')}</table>`
     : `<div class="muted">${
         gl.enabled === false
-          ? '⚙ 設定で GitLab の URL とトークンを設定すると、repos のオープンイシューを一覧できます'
+          ? '⚙ 設定で GitLab の URL とトークンを設定すると、対象リポジトリのオープンイシューを一覧できます'
           : !repos.length
-            ? 'repos が未定義です（charter の ## repos か <project>/repos.{yaml,json} で定義）'
+            ? '対象リポジトリが未定義です（プロジェクト憲章の「対象リポジトリ」で定義します）'
             : flowOnly && hiddenCount
-              ? `kiro-flow 由来のレビュー待ちはありません（フィルタを解除すると ${hiddenCount} 件表示されます）`
+              ? `自動実行が作成したレビュー待ちはありません（フィルタを解除すると ${hiddenCount} 件表示されます）`
               : 'レビュー待ちのイシューはありません'
       }</div>`;
 
   el.innerHTML = `
     <div class="toolbar">
-      <span class="muted">repos のオープンイシュー（レビュー待ち・作業中）。「関連 run」列から起票元の run/ノードをフロー画面で開けます</span>
+      <span class="muted">対象リポジトリのオープンイシュー。「関連する実行」列から作業の元をフロー画面で開けます</span>
       <span class="spacer"></span>
       <button id="btn-gl-flowonly" class="chip ${flowOnly ? 'active' : ''}"
-        title="kiro-flow の gitlab executor が起票したイシュー（本文の task-token マーカー）だけに絞る">kiro-flow 由来のみ</button>
+        title="自動実行が作成したイシューだけに絞ります（人が直接立てたものを隠します）">自動実行によるもののみ</button>
       <button id="btn-gl-refresh" ${gl.loading ? 'disabled' : ''}>${gl.loading ? '取得中…' : 'GitLab から最新化'}</button>
     </div>
-    <div class="section-title">レビュー待ち ${[...new Set(repos.map((r) => r.projectPath))]
+    <div class="muted" style="margin-bottom:4px">${[...new Set(repos.map((r) => r.projectPath))]
       .map((path) => `<span class="label-chip">${esc(path)}</span>`)
       .join('')}
-      ${flowOnly && hiddenCount ? `<span class="muted">（kiro-flow 由来以外 ${hiddenCount} 件を非表示）</span>` : ''}</div>
+      ${flowOnly && hiddenCount ? `<span class="muted">（自動実行によるもの以外 ${hiddenCount} 件を非表示）</span>` : ''}</div>
     ${repoIssuesSection}`;
 
   $('btn-gl-flowonly').addEventListener('click', () => {
@@ -2784,7 +3156,7 @@ function renderHistory() {
     .reverse()
     .map(
       (r) => `<tr>
-      <td>${fmtTime(r.ts)}</td><td>${esc(r.reason || '')}</td><td>${esc(r.level || '')}</td>
+      <td>${fmtTime(r.ts)}</td><td title="${esc(r.reason || '')}">${esc(statusLabel(r.reason))}</td><td>${esc(r.level || '')}</td>
       <td>${r.cycles ?? ''}</td><td>${r.done ?? ''}</td><td>${r.blocked ?? ''}</td><td>${r.review ?? ''}</td>
       <td>${r.escalations ?? ''}</td><td>${r.tokens ?? ''}</td><td>${r.cost ?? ''}</td><td>${Math.round(r.duration_s ?? 0)}s</td>
     </tr>`
@@ -2810,21 +3182,21 @@ function renderHistory() {
     .join('');
 
   el.innerHTML = `
-    <div class="section-title">run-log.jsonl</div>
+    <div class="section-title">自動実行の履歴</div>
     ${
       runRows
-        ? `<table class="list"><tr><th>時刻</th><th>停止理由</th><th>level</th><th>cycles</th><th>done</th><th>blocked</th><th>review</th><th>escalation</th><th>tokens</th><th>cost</th><th>時間</th></tr>${runRows}</table>`
+        ? `<table class="list"><tr><th>時刻</th><th>結果</th><th>自動化レベル</th><th>サイクル</th><th>完了</th><th>要対応</th><th>検収待ち</th><th>エスカレーション</th><th>トークン</th><th>コスト</th><th>時間</th></tr>${runRows}</table>`
         : '<div class="muted">なし</div>'
     }
-    <div class="section-title">決定記録（decisions/）</div>
+    <div class="section-title">決定記録</div>
     ${
       drRows
-        ? `<table class="list"><tr><th>DR</th><th>日付</th><th>タスク</th><th>action</th><th>理由</th><th>learn</th></tr>${drRows}</table>`
+        ? `<table class="list"><tr><th>記録番号</th><th>日付</th><th>タスク</th><th>操作</th><th>理由</th><th>学習</th></tr>${drRows}</table>`
         : '<div class="muted">なし</div>'
     }
-    <div class="section-title">納品（DELIVERY.md）</div>
+    <div class="section-title">納品物</div>
     ${deliveryRows ? `<table class="list">${deliveryRows}</table>` : '<div class="muted">なし</div>'}
-    <div class="section-title">ジャーナル（journal.md 直近 80 行）</div>
+    <div class="section-title">動作ログ（直近 80 行）</div>
     <div class="events">${journal || '<span class="muted">なし</span>'}</div>`;
 }
 
@@ -2832,13 +3204,44 @@ function renderHistory() {
 // タブ制御・設定・ポーリング
 // ---------------------------------------------------------------------------
 
+// 再描画（ポーリング・操作後のリロード）は各タブの innerHTML を作り直すため、素のままでは
+// スクロール位置と <details> の開閉が毎回初期化されてしまう。描画前に id 付きスクロール要素の
+// 位置と data-ui-key 付き <details> の開閉を控え、描画後に復元する（存在しなくなった要素は無視）。
+function captureUiState() {
+  const scroll = {};
+  for (const el of document.querySelectorAll('.tabpane, #tree, #flow-runs, .flow-pane, #graph-box')) {
+    if (el.id) scroll[el.id] = { top: el.scrollTop, left: el.scrollLeft };
+  }
+  const open = [];
+  for (const d of document.querySelectorAll('details[data-ui-key]')) {
+    if (d.open) open.push(d.dataset.uiKey);
+  }
+  return { scroll, open: new Set(open) };
+}
+
+function restoreUiState(ui) {
+  if (!ui) return;
+  for (const [id, pos] of Object.entries(ui.scroll)) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollTop = pos.top;
+      el.scrollLeft = pos.left;
+    }
+  }
+  for (const d of document.querySelectorAll('details[data-ui-key]')) {
+    if (ui.open.has(d.dataset.uiKey)) d.open = true;
+  }
+}
+
 function renderAllTabs() {
+  const ui = captureUiState();
   renderOverview();
   renderBacklog();
   renderNeeds();
   renderFlow();
   renderGitLab();
   renderHistory();
+  restoreUiState(ui);
 }
 
 function activeTab() {
@@ -2853,7 +3256,7 @@ function initTabs() {
       document.querySelectorAll('.tabpane').forEach((p) => p.classList.remove('active'));
       tab.classList.add('active');
       $(`tab-${tab.dataset.tab}`).classList.add('active');
-      if (tab.dataset.tab === 'gitlab') refreshGitLab(false);
+      if (tab.dataset.tab === 'needs') refreshGitLab(false);
     });
   }
 }
@@ -2960,14 +3363,19 @@ const _pushSkipWarned = new Set();
 function warnPushSkipped(dir, kind) {
   if (!dir || _pushSkipWarned.has(dir)) return;
   _pushSkipWarned.add(dir);
-  const hint =
-    kind === 'bus'
-      ? '（viewer から直接反映するには ⚙ 設定 flowBusByProject でバスの git クローンを登録してください）'
-      : '（viewer から直接反映するには、状態共有リポジトリの git クローン上でプロジェクトを開いてください）';
+  // 仕組みの詳細（git 作業ツリーでない・state_git 同期・設定の対処法）はログへ
+  uiLog('pushSkipped', {
+    dir,
+    kind,
+    reason: 'git 作業ツリーでないため viewer から直接 push できない（本体の state_git 同期に委ねる）',
+    hint:
+      kind === 'bus'
+        ? '⚙ 設定 flowBusByProject でバスの git クローンを登録すると直接反映できます'
+        : '状態共有リポジトリの git クローン上でプロジェクトを開くと直接反映できます',
+  });
   toast(
-    `「${dir}」は git 作業ツリーではないため、変更を共有リポジトリへ直接 push できませんでした。` +
-      `kiro-project / kiro-flow daemon の state_git 同期に反映が委ねられます${hint}。` +
-      `（この通知はディレクトリごとに一度だけ出ます）`
+    '変更は保存しましたが、この画面から共有先へは直接反映できないため、本体の同期に任せます。' +
+      '（詳細は開発者ログを参照。この通知はプロジェクトごとに一度だけ出ます）'
   );
 }
 

@@ -5399,11 +5399,24 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
         for cname, st in (data.get("charters") or {}).items():
             candidates.append((cname, st))
         for cname, st in candidates:
-            if st.get("id") == tid and st.get("status") == REASON_PROJECT_CONVERGED:
+            if st.get("id") != tid:
+                continue
+            status = str(st.get("status") or "")
+            if status == REASON_PROJECT_CONVERGED:
                 ch = _load_named_charter(cfg, cname)
                 finalize_project(cfg, st, reason, charter=ch, charter_name=cname)
                 print(f"プロジェクト done（承認・最終納品書）: {tid}")
                 return 0
+            if status == REASON_PROJECT_ACCEPTED:
+                # 二度押し・取り込み遅延による再送は冪等に成功扱いする（.err に退避させない）
+                print(f"プロジェクト {tid} は承認済み（accepted）です（何もしません）。")
+                return 0
+            # milestone の id には一致したが収束候補ではない＝実行中/ブロック等の古いカードからの
+            # 承認。従来の「タスクが見つかりません」では原因が分からなかったため状態を明示する。
+            print(f"エラー: プロジェクト {tid} は収束候補（converged）ではありません"
+                  f"（現在: {status or '未実行'}）。実行中の再評価か needs のタスク対応を待って"
+                  f"から承認してください。", file=sys.stderr)
+            return 2
         print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
         return 2
     # 人手の承認はタスクを consumable/doing から確定遷移させる。worker のクラッシュや
@@ -5499,7 +5512,8 @@ def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
 def cmd_replan(cfg: Config, reason: str, charter_name: str = "") -> int:
     """charter からのバックログ再分解を要求する（エラー回復用の一発の口）。
     次の project パスで plan を強制し、charter を分解し直して backlog の差分を投入する。
-    既存/archive（done）と類似のタスクは冪等に重複排除されるため、done と同種は入らない。
+    冪等照合は「done 以外」（現行処理中のバックログ＋却下済み）と行う＝処理中タスクとの二重投入や
+    却下済みの復活はさせず、done と類似のタスクだけやり直しとして再作成を許可する（エラー回復の口）。
     複数 charter 運用では charter_name でその charter だけを対象にできる（未指定はどの charter でも消化）。
     charter が無い（backlog ループ）プロジェクトでは再分解の対象が無いためエラー。"""
     charter = _load_named_charter(cfg, charter_name or None)
@@ -5511,7 +5525,8 @@ def cmd_replan(cfg: Config, reason: str, charter_name: str = "") -> int:
     dr = append_decision(cfg, pid, cfg.actor,
                          context=f"{charter.name}: charter からのバックログ再分解を要求",
                          action="replan", reason=reason,
-                         affects="次パスで charter を再分解（done/既存と類似は投入しない）")
+                         affects="次パスで charter を再分解（現行処理中のバックログと重複するものは"
+                                 "投入しない。done と同種のやり直しは再作成する）")
     print(f"{dr}: charter からのバックログ再分解を要求しました（次パスで反映）。")
     return 0
 
@@ -6584,13 +6599,17 @@ def cmd_triage(cfg: Config) -> int:
 
 def _run_single(cfg: Config) -> int:
     """1 プロジェクトの単発実行（charter があれば目標駆動・無ければ backlog ループ）。要約を表示する。
-    複数 charter（charters/）は全バージョンを順に 1 パスずつ回す。"""
+    複数 charter（charters/）は全バージョンを順に 1 パスずつ回す。
+    マスター憲章のみ（バージョン未作成）は分解せず backlog ループ＝タスク消化と指示の取り込みだけ行う。"""
     names = charter_names(cfg)
     if names:                                        # charter 駆動（plan→execute→evaluate）
         worst = 0
         for name in names:
             worst = max(worst, cmd_project(cfg, charter_name=name))
         return worst
+    if _has_master_charter(cfg):
+        print("[project] マスター憲章のみ（計画バージョン未作成）— 分解は行わず backlog を消化します。"
+              "charters/<名前>.md にやるべきことを書くと計画が始まります。")
     result = run_loop(cfg)
     counts = result["counts"]
     if result.get("level") == "report":              # report: 消化せず計画だけ提示
@@ -6626,7 +6645,10 @@ def cmd_run(cfg: Config) -> int:
         ensure_flow_daemon(cfg, cfg.flow_max_workers)   # 実行層 daemon の確保（opt-in・冪等）
         if cfg.watch:
             _install_sigterm()                   # stop の SIGTERM を KeyboardInterrupt 化（graceful 停止）
-            if charter_names(cfg):
+            # マスター憲章のみ（バージョン未作成）も project_watch へ: バージョン
+            # （charters/<name>.md）が置かれた瞬間に charter 駆動へ入れる（run_watch は
+            # charter の追加を監視しないため、ここで振り分けを間違えると気づけない）。
+            if charter_names(cfg) or _has_master_charter(cfg):
                 project_watch(cfg, heartbeat=hb)  # 目標を満たすまで回り続ける常駐（全 charter）
             else:
                 run_watch(cfg, heartbeat=hb)      # backlog 監視の常駐
@@ -6687,6 +6709,9 @@ class Charter:
     repos: "list[str]" = field(default_factory=list)        # 対象リポジトリ見出し（`name = url`。後方互換）
     repo_specs: "list[dict]" = field(default_factory=list)  # 構造化 repos: {name,url,desc,base,target}
     link_specs: "list[dict]" = field(default_factory=list)  # 構造化 links: {text,desc}（wiki/doc 等も可）
+    # マスター憲章（`## master` セクション付き charter.md）: プロジェクト全体の普遍的な前提・制約。
+    # それ自体はバックログへ分解されず、計画バージョン（charters/<name>.md）へ継承される。
+    master: bool = False
     raw: str = ""
 
 
@@ -6876,6 +6901,8 @@ def parse_charter(text: str) -> Charter:
                     or _charter_entries(sections.get("repositories", [])))
     ch.repos = [e["head"] for e in repo_entries]
     ch.repo_specs = [_repo_spec_from_entry(e) for e in repo_entries]
+    # `## master` セクションの存在＝マスター宣言（中身は説明コメントで良い・パースしない）
+    ch.master = "master" in sections
     return ch
 
 
@@ -7095,27 +7122,79 @@ def charters_dir(cfg: "Config") -> Path:
     return cfg.backlog.parent / "charters"
 
 
+# マスター宣言の軽量検知（`## master` セクション行）。charter_names は watch ループで高頻度に
+# 呼ばれるため、フルパース（repos レジストリ適用・書き出し）を避けてテキストだけ見る。
+_CHARTER_MASTER_RE = re.compile(r"(?m)^##\s+master\b", re.I)
+
+
+def _has_master_charter(cfg: "Config") -> bool:
+    """ルート charter.md がマスター憲章（`## master` 付き＝分解しない普遍の前提）か。"""
+    if not (cfg.charter and cfg.charter.exists()):
+        return False
+    try:
+        return bool(_CHARTER_MASTER_RE.search(cfg.charter.read_text(encoding="utf-8")))
+    except OSError:
+        return False
+
+
 def charter_names(cfg: "Config") -> "list[str]":
-    """駆動対象の charter 名一覧。charters/*.md（名前順）＞ 単一 charter.md（"default"）＞ 空。"""
+    """駆動対象の charter 名一覧。charters/*.md（名前順）＞ 単一 charter.md（"default"）＞ 空。
+    マスター憲章（`## master` 付き charter.md）は分解対象にしない: バージョンが無ければ空を返し、
+    バージョン（charters/<name>.md）が置かれるとそれだけが駆動される（マスターは継承元）。"""
     d = charters_dir(cfg)
     if d.is_dir():
         names = sorted(f.stem for f in d.glob("*.md") if f.is_file())
         if names:
             return names
-    return ["default"] if (cfg.charter and cfg.charter.exists()) else []
+    if not (cfg.charter and cfg.charter.exists()):
+        return []
+    return [] if _has_master_charter(cfg) else ["default"]
+
+
+def _merge_master_charter(cfg: "Config", ch: "Charter") -> "Charter":
+    """マスター憲章（ルート charter.md・`## master` 付き）を計画バージョンへ継承する。
+    バージョン側が空のフィールド（goal/deliverables/acceptance）はマスターで補い、
+    制約・前提・links・repos はマスター∪バージョンで合成する。raw は両方を連結し、
+    マスターの編集も再計画判定（plan signature）と accepted 再開判定（full signature）に効かせる。"""
+    if not _has_master_charter(cfg):
+        return ch
+    base = load_charter(cfg)
+    if base is None or not base.master:
+        return ch
+    if not ch.name or ch.name == "project":
+        ch.name = base.name
+    ch.goal = ch.goal or base.goal
+    ch.deliverables = ch.deliverables or list(base.deliverables)
+    ch.acceptance = ch.acceptance or list(base.acceptance)
+    ch.constraints = base.constraints + [c for c in ch.constraints if c not in base.constraints]
+    ch.assumptions = base.assumptions + [a for a in ch.assumptions if a not in base.assumptions]
+    seen_links = {s.get("text") for s in ch.link_specs}
+    for s in base.link_specs:
+        if s.get("text") not in seen_links:
+            ch.link_specs.append(dict(s))
+            ch.links.append(s.get("text") or "")
+    seen_repos = {(s.get("name"), s.get("url")) for s in ch.repo_specs}
+    for i, s in enumerate(base.repo_specs):
+        if (s.get("name"), s.get("url")) not in seen_repos:
+            ch.repo_specs.append(dict(s))
+            if i < len(base.repos):
+                ch.repos.append(base.repos[i])
+    ch.raw = base.raw + "\n\n" + ch.raw
+    return ch
 
 
 def _load_named_charter(cfg: "Config", name: "str | None") -> "Charter | None":
-    """charter 名 → Charter。charters/<name>.md があればそれ（複数運用・repos 自動生成なし）、
-    無ければ従来の charter.md へフォールバック（"default" や未指定）。"""
+    """charter 名 → Charter。charters/<name>.md があればそれ（複数運用・repos 自動生成なし。
+    マスター憲章があれば継承合成する）、無ければ従来の charter.md へフォールバック（"default" や未指定）。"""
     if name:
         f = charters_dir(cfg) / f"{name}.md"
         if f.is_file():
             try:
-                return _apply_repo_registry(cfg, parse_charter(f.read_text(encoding="utf-8")),
-                                            allow_export=False)
+                ch = _apply_repo_registry(cfg, parse_charter(f.read_text(encoding="utf-8")),
+                                          allow_export=False)
             except (OSError, ValueError):
                 return None
+            return _merge_master_charter(cfg, ch)
     return load_charter(cfg)
 
 
@@ -7196,8 +7275,9 @@ def save_charter_state(cfg: "Config", state: dict, name: "str | None" = None) ->
 #   タスクの取りこぼし・誤削除・plan 失敗などのエラー回復では charter が無変更のまま
 #   backlog を作り直したい。project.json とは別のマーカーファイルにすることで、
 #   cmd_project の通常の state 保存に上書きされず一発分だけ確実に効く（冪等・one-shot）。
-#   再分解自体は既存/archive（done）タイトルで冪等に重複排除されるため、done と類似の
-#   タスクは投入されず「差分（取りこぼし）だけ」が入る。
+#   再分解の冪等照合は「done 以外」（現行処理中のバックログ＋却下済み）と行う: 処理中タスクの
+#   二重投入や却下済み（人の明示判断）の復活はさせず、done と類似のタスクだけやり直しとして
+#   再作成を許す（通常 plan と違い、過去の完了実績が回復のための再分解を弾かないようにする）。
 # ---------------------------------------------------------------------------
 def replan_request_path(cfg: "Config") -> Path:
     return cfg.backlog.parent / ".replan.request"
@@ -7267,17 +7347,26 @@ def resolve_linked_projects(cfg: "Config", charter: "Charter") -> "list[tuple[st
     return out
 
 
-def _existing_titles(cfg: "Config", charter: "str | None" = None) -> "list[str]":
+def _existing_titles(cfg: "Config", charter: "str | None" = None,
+                     active_only: bool = False) -> "list[str]":
     """重複投入の冪等照合に使う既存タイトル（backlog＋archive）。charter を渡すと
     その charter のタスク（タグ一致・タグ無しも含む）に照合を閉じる（複数 charter 運用で
-    別バージョンの同名タスクを誤って弾かない）。"""
+    別バージョンの同名タスクを誤って弾かない）。
+    active_only は照合を「done 以外」に絞る: 現行処理中の backlog に加え、archive の rejected
+    （人の明示的な却下）だけは残す。再分解（replan）のエラー回復で、過去に done した同種タスクの
+    再作成（やり直し）は許しつつ、却下済みタスクの復活は防ぐための口。"""
     def _match(t: "Task") -> bool:
         if not charter:
             return True
         tag = (t.get("charter") or "").strip()
         return tag in ("", charter)
 
-    titles = [t.title for t in load_tasks(cfg.backlog) if _match(t)]
+    tasks = load_tasks(cfg.backlog)
+    if active_only:
+        titles = [t.title for t in tasks
+                  if _match(t) and t.norm_status() != "done"]
+    else:
+        titles = [t.title for t in tasks if _match(t)]
     adir = cfg.archive_dir()
     if adir.exists():
         for p in adir.glob("*.md"):
@@ -7285,7 +7374,7 @@ def _existing_titles(cfg: "Config", charter: "str | None" = None) -> "list[str]"
                 t = parse_task(p.read_text(encoding="utf-8"), p.stem)
             except (OSError, ValueError):
                 continue
-            if _match(t):
+            if _match(t) and (not active_only or t.norm_status() == "rejected"):
                 titles.append(t.title)
     return [t for t in titles if t]
 
@@ -7526,14 +7615,17 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
 
 
 def _enqueue_specs(cfg: "Config", specs: "list[dict]", existing: "list[str]",
-                   threshold: float, charter: "str | None" = None) -> "list[Task]":
+                   threshold: float, charter: "str | None" = None,
+                   active_only: bool = False) -> "list[Task]":
     """spec 群を冪等に backlog へ投入（既存と類似は飛ばす）。verify 無しは enqueue_task が inbox にする。
 
     冪等照合は「呼び出し時点のスナップショット ∪ 投入直前に読み直した現物」で行う。plan/review は
     エージェント委譲で数分かかるため、スナップショットだけだと、その間に投入されたタスク
     （別インスタンス・前パスの残り・state_git 同期で届いた分・リセット後に書き戻された残骸）が
-    照合に無く、類似バックログを二重投入してしまう。"""
-    merged = list(existing) + _existing_titles(cfg, charter)
+    照合に無く、類似バックログを二重投入してしまう。
+    active_only は読み直しも「done 以外」に絞る（replan のやり直し経路。スナップショット側の
+    絞り込みと揃えないと、ここで done の archive タイトルが混ざり再作成が弾かれてしまう）。"""
+    merged = list(existing) + _existing_titles(cfg, charter, active_only=active_only)
     created: list[Task] = []
     for sp in specs:
         title = str(sp.get("title", "") or "").strip()
@@ -7979,9 +8071,15 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         print("  ヒント: 目標/制約/前提/成果物/acceptance を charter.md に書いてください。",
               file=sys.stderr)
         return 2
+    # 人の指示（commands/ ドロップ）を入口で消化する。従来は execute（run_loop）内でしか
+    # 取り込まれず、下の accepted ガードで早期 return するパスでは承認/却下/replan の指示ファイルが
+    # 何パスも放置され、watch が空振り起床を繰り返した末に、状態が変わってから取り込まれて
+    # exit 2（.err 退避）になる実害があった（viewer の承認ボタンが「押しても何も起きない」の一因）。
+    ingest_commands(cfg)
     # 人からの再分解要求（エラー回復）を入口で消費する（one-shot）。ここで消しておくことで、
     # acceptance 未定義など早期 return するパスでもマーカーが残らず、has_work の空振り起床が
     # 続かない（要求は消化済み＝下の plan ゲートで charter 無変更でも一発だけ plan を強制する）。
+    # 直前の ingest_commands が replan 指示をマーカー化した場合も、この場で拾って同一パスで反映する。
     replan_req = consume_replan_request(cfg, charter_name if multi else None)
     problems = validate_charter(charter)
     if problems:
@@ -8009,15 +8107,19 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     state = load_charter_state(cfg, charter_name if multi else None)
     if state.get("id") != pid:
         state = {"id": pid, "name": charter.name, "history": [], "best": 0, "stall": 0}
+    # このパス開始時点で「人が承認済み・charter も承認時から無変更」だったか。
+    # 下のガードの早期 return に加え、replan（差分ゼロ）等でガードを抜けて再評価した場合にも、
+    # 新しい仕事が何も無ければ末尾で accepted を維持する（converged へ降格して承認済み
+    # マイルストーンを復活させない）ための基準値。
+    was_accepted = (state.get("status") == REASON_PROJECT_ACCEPTED
+                    and state.get("accepted_charter_sig") == _charter_full_signature(charter))
     # 承認済み（accepted）かつ charter.md が承認時から無変更なら何もしない（毎 run 再収束して
     # 承認済みプロジェクトの milestone が復活する不具合の防止）。charter.md を編集すると
     # 署名が変わり、ここを抜けて通常どおり再評価される（「続行: charter.md を更新して再実行」の
     # 案内どおりの挙動になる）。replan_req（人が明示的に要求したエラー回復の再分解）がある場合は
     # 素通りしない＝ここで早期 return すると直前で consume 済みの要求が握り潰され、
     # 「再分解を押しても何も起きない」になるため、accepted でも明示要求は必ず一度は処理する。
-    if (replan_req is None
-            and state.get("status") == REASON_PROJECT_ACCEPTED
-            and state.get("accepted_charter_sig") == _charter_full_signature(charter)):
+    if replan_req is None and was_accepted:
         print(f"[project] {charter.name}: 承認済み（charter.md に変更なし）→ 何もしません。"
               f"続けるなら charter.md を編集してください。")
         return project_exit_code(REASON_PROJECT_ACCEPTED)
@@ -8051,12 +8153,19 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
     state.update({"id": pid, "name": charter.name, "acceptance_total": len(charter.acceptance)})
     save_charter_state(cfg, state, charter_name if multi else None)
 
+    # 前パスが残した milestone（needs/<pid>.md）はこのパスで再評価するため先に掃除する。
+    # 残したままだと execute（run 実行）中も「要対応: マイルストーン」カードが出続け、
+    # 収束前の承認（cmd_approve は converged しか受けない＝exit 2）を人に押させてしまう。
+    # まだ必要なら末尾の write_milestone が最新内容で書き直す。
+    clear_needs_file(cfg, pid)
+
     append_journal(cfg.journal, f"=== project 開始 {charter.name} "
                                 f"acceptance={len(charter.acceptance)} ===")
     cost_used = float(state.get("cost", 0.0))
     cycle = 0
     reason = REASON_PROJECT_CONVERGED
     last_summary = ""
+    did_work = False              # このパスで新規タスク投入 or 消化があったか（accepted 維持の判定）
 
     while True:
         cycle += 1
@@ -8069,28 +8178,36 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         # ① plan — 消化可能タスクが無いとき、または charter が前回計画時から変わったときに目標から
         #   backlog を起こす（変更が無ければ毎サイクルの再分解は避ける）。再計画は既存/archive タイトルで
         #   冪等に重複排除されるため、既存タスクを二重投入せず「charter の差分が生む新規タスク」だけ入る。
-        existing = _existing_titles(cfg, charter_name if multi else None)
+        #   再分解要求（replan＝エラー回復のやり直し）だけは照合を「done 以外」に絞る:
+        #   done と類似でも再作成を許可する（過去に完了した同種タスクが再分解を丸ごと弾き、
+        #   「再分解を押しても何も起きない」になるのを防ぐ）。処理中タスクとの二重投入と
+        #   却下済み（人の明示判断）の復活はさせない。
+        replan_retry = replan_req is not None
+        existing = _existing_titles(cfg, charter_name if multi else None,
+                                    active_only=replan_retry)
         has_consumable = any(
             t.consumable() and (not multi or task_charter_name(t) == charter_name)
             for t in load_tasks(cfg.backlog))
-        if not has_consumable or charter_changed or replan_req is not None:
+        if not has_consumable or charter_changed or replan_retry:
             specs = plan_fn(charter)
             if multi:
                 for sp in specs:                 # この charter のタスクとしてタグ付け（スコープの正）
                     if isinstance(sp, dict):
                         sp.setdefault("charter", charter_name)
             planned = _enqueue_specs(cfg, specs, existing, cfg.learn_threshold,
-                                     charter=charter_name if multi else None)
-            trig = ("再分解要求（エラー回復）" if replan_req is not None
+                                     charter=charter_name if multi else None,
+                                     active_only=replan_retry)
+            trig = ("再分解要求（エラー回復）" if replan_retry
                     else "charter 変更検知" if charter_changed else f"plan cycle {cycle}")
             if planned:
+                did_work = True
                 append_journal(cfg.journal,
                                f"project cycle {cycle}: {trig} で {len(planned)} 件投入 "
                                f"{[t.id for t in planned]}")
-            elif replan_req is not None:
-                # 再分解しても差分ゼロ（すべて既存/done と重複）＝取りこぼしは無かった。要求は消化済み。
+            elif replan_retry:
+                # 再分解しても差分ゼロ（すべて現行処理中の backlog と重複）＝やり直し対象なし。要求は消化済み。
                 append_journal(cfg.journal,
-                               f"project cycle {cycle}: {trig} → 新規なし（既存/done と重複）")
+                               f"project cycle {cycle}: {trig} → 新規なし（現行バックログと重複）")
             charter_changed = False   # 変更由来の再計画は 1 回だけ（以降のサイクルで再分解しない）
             replan_req = None         # 再分解要求も 1 回だけ消化する（one-shot）
 
@@ -8098,6 +8215,8 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         result = runner(cfg)
         cost_used += float(result.get("cost", 0.0))
         counts = result["counts"]
+        if counts.get("done", 0) > 0:
+            did_work = True
         if result["reason"] in (REASON_BUDGET, REASON_COST, REASON_THROTTLE):
             reason = REASON_PROJECT_BUDGET if result["reason"] != REASON_COST else REASON_PROJECT_COST
             break
@@ -8126,6 +8245,14 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
             reason = stop_reason
             break
 
+    if reason == REASON_PROJECT_CONVERGED and was_accepted and not did_work:
+        # 承認済み（accepted・charter 無変更）のプロジェクトを再評価しただけ（新規タスクなし・
+        # 消化なし）で再収束した場合は accepted を維持する。降格を許すと、差分ゼロの再分解や
+        # 再評価のたびに accepted → converged へ戻り、承認済みのマイルストーンが復活して
+        # 人に同じ承認を何度も求めてしまう。新しい仕事が実際にあった場合（did_work）は
+        # 新規成果の検収ゲートとして通常どおり converged（milestone）へ進む。
+        reason = REASON_PROJECT_ACCEPTED
+        append_journal(cfg.journal, "project: 承認済み（差分ゼロの再評価）→ accepted を維持")
     state["cost"] = round(cost_used, 4)
     state["cycles"] = int(state.get("cycles", 0)) + cycle
     state["status"] = reason
@@ -8183,7 +8310,16 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
         else:
             names = charter_names(cfg)
             if not names:
-                return code
+                if not _has_master_charter(cfg):
+                    return code
+                # マスター憲章のみ（バージョン未作成）: 分解はせず backlog 消化と指示の
+                # 取り込み（runner=run_loop）だけ回し、バージョンが置かれるのを待つ。
+                runner(cfg)
+                passes += 1
+                if heartbeat:
+                    heartbeat()
+                if max_passes is not None and passes >= max_passes:
+                    return code
             for name in names:       # 全 charter（バージョン）をラウンドロビンで 1 パスずつ
                 code = cmd_project(cfg, planner, reviewer, runner, heartbeat=heartbeat,
                                    charter_name=name)
@@ -8193,7 +8329,7 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 if max_passes is not None and passes >= max_passes:
                     return code
         names = charter_names(cfg)
-        if not names:
+        if not names and not _has_master_charter(cfg):
             return code
         pids = {}
         for name in names:           # charter 別の milestone id（フィードバック検知に使う）

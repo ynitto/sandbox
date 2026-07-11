@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { ipcMain, shell } = require('electron');
+const { app, ipcMain, shell } = require('electron');
 const { loadConfig, saveConfig } = require('./config');
 const kiro = require('./kiro');
 const flow = require('./flow');
@@ -105,14 +105,48 @@ function registerIpcHandlers() {
     return kiro.readProject(dir, loadConfig());
   });
 
+  // ビュアー専用の run アーカイブ置き場（userData 配下。バスや状態 git は汚さない）
+  const flowArchiveRoot = () => path.join(app.getPath('userData'), 'flow-archive');
+
   // kiro-flow バス（per-project bus/ または共有バス）。run 一覧に加えて daemon の
-  // 稼働もロックファイルから判定して返す（kiro-flow CLI には一切聞かない）
-  handle('flow:runs', ({ busDir, limit }) => ({
-    runs: flow.listRuns(busDir, limit || 30),
-    daemon: flow.daemonStatus(busDir, flowLockDir(loadConfig())),
-  }));
+  // 稼働もロックファイルから判定して返す（kiro-flow CLI には一切聞かない）。
+  // bus の run はポーリングのたびにアーカイブへスナップショットし、kiro-flow の掃除で
+  // bus から消えた run も archived: true 付きで一覧に残す（完了直後に表示が消える問題の対策）。
+  handle('flow:runs', ({ busDir, limit }) => {
+    const archRoot = flowArchiveRoot();
+    const runs = flow.listRuns(busDir, limit || 30);
+    for (const r of runs) {
+      try {
+        flow.archiveRunSnapshot(archRoot, busDir, r);
+      } catch {
+        /* アーカイブ失敗は一覧表示の失敗にしない */
+      }
+    }
+    const live = new Set(runs.map((r) => r.runId));
+    const archived = flow
+      .listArchivedRuns(archRoot, busDir)
+      .filter((a) => !live.has(a.runId));
+    const merged = [...runs, ...archived].sort((a, b) =>
+      String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+    );
+    return {
+      runs: merged,
+      daemon: flow.daemonStatus(busDir, flowLockDir(loadConfig())),
+    };
+  });
   handle('flow:run', ({ busDir, runId }) => {
     const runDir = path.join(busDir, 'runs', runId);
+    if (!fs.existsSync(runDir)) {
+      // bus からは掃除済み → アーカイブのスナップショットで応える（読み取り専用の写し）
+      const snap = flow.readArchivedRun(flowArchiveRoot(), busDir, runId);
+      if (!snap) throw new Error(`run が見つかりません（bus にもアーカイブにも無し）: ${runId}`);
+      return {
+        run: { ...snap.run, alive: null, archived: true, archivedAt: snap.savedAt || null },
+        events: snap.events || [],
+        nodeEvents: snap.nodeEvents || {},
+        archived: true,
+      };
+    }
     return {
       run: flow.readRun(runDir),
       events: flow.readRunEvents(runDir, 50),
@@ -266,8 +300,9 @@ function registerIpcHandlers() {
   handle('kiro:enqueue', ({ dir, spec }) => actions.enqueueToInbox(dir, spec || {}));
   handle('kiro:action', (args) => actions.runAction(loadConfig(), args));
 
-  // charter からのバックログ再分解を要求（エラー回復。done/既存と類似は投入しない）。
-  // プロジェクト単位（id 無し）。本体が次パスで charter を分解し直し差分だけ入れる。
+  // charter からのバックログ再分解を要求（エラー回復・やり直し）。プロジェクト単位（id 無し）。
+  // 本体が次パスで charter を分解し直す。冪等照合は「done 以外」（処理中＋却下済み）と行い、
+  // done と類似のタスクだけ再作成を許可する（過去の完了実績がやり直しを弾かない）。
   handle('kiro:replan', ({ dir, reason }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     return actions.requestReplan(loadConfig(), { dir, reason });
@@ -285,6 +320,12 @@ function registerIpcHandlers() {
   //   createProject … <root>/projects/<name>/ に charter.md（＋ repos.json）を作る
   //   readFile/writeFile … charter.md / policy.md / repos.* の直接編集
   handle('kiro:createProject', ({ spec }) => authoring.createProject(spec || {}));
+  // 初版 charter.md へ後からバージョン名を付ける（charters/<name>.md へ昇格）。
+  // charters/ 運用では charter.md が駆動対象から外れるため、初版を並行駆動に含める正規の口。
+  handle('kiro:promoteCharter', ({ dir, name }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return authoring.promoteCharterVersion(dir, name);
+  });
   handle('kiro:readFile', ({ dir, name }) => {
     if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
     return authoring.readProjectFile(dir, name);

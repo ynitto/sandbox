@@ -181,6 +181,10 @@ function parseCharter(text) {
     const body = lines.filter((l) => !l.trim().startsWith('#')).join('\n').trim();
     out[key] = body;
   }
+  // マスター憲章（`## master` セクション付き）: プロジェクト全体の普遍的な前提。
+  // kiro-project はこれを分解せず、計画バージョン（charters/<name>.md）へ継承する。
+  // セクション本文（コメントのみ＝空）に上書きされないよう、セクション展開の後で立てる。
+  out.master = Object.prototype.hasOwnProperty.call(charter.sections, 'master');
   // acceptance は行ごとの一覧にもする（達成状況の表示用）
   if (out.acceptance) {
     out.acceptanceItems = out.acceptance
@@ -224,9 +228,24 @@ function parseDecisions(text, id) {
   return records;
 }
 
-// needs/<id>.md — MADR frontmatter 付き Markdown
+// needs/<id>.md — MADR frontmatter 付き Markdown。
+// 表示用に「なぜ / 状態 / 概況」の要点と、判断材料（残りのセクション）を構造化して返す。
+// ファイル編集用の足場（## Decision Outcome・チェックボックス・HTML コメントのヒント）は
+// ビュアーの操作ボタンが代替するため detail からは除く（原文は body に保持）。
 function parseNeeds(text, id) {
-  const need = { id, kind: '', date: '', status: '', title: '', body: '', decided: false };
+  const need = {
+    id,
+    kind: '',
+    date: '',
+    status: '',
+    title: '',
+    body: '',
+    decided: false,
+    why: '',
+    stateNote: '',
+    summary: '',
+    detail: '',
+  };
   const s = String(text || '');
   const fm = s.match(/^---\n([\s\S]*?)\n---\n?/);
   let body = s;
@@ -247,6 +266,30 @@ function parseNeeds(text, id) {
   if (title) need.title = title[1].trim();
   need.decided = /-\s*\[x\]/i.test(body);
   need.body = body.trim();
+
+  // 記入用の足場より前（本文）だけを対象に要点を抽出する
+  const main = body.split(/^##\s+Decision Outcome\s*$/m)[0].replace(/<!--[\s\S]*?-->/g, '');
+  const pick = (label) => {
+    const m = main.match(new RegExp(`^-\\s*${label}\\s*[:：]\\s*(.*)$`, 'm'));
+    return m ? m[1].trim() : '';
+  };
+  need.why = pick('なぜ');
+  need.stateNote = pick('状態');
+  need.summary = pick('概況');
+  // 要点（なぜ/状態/概況）とタイトル・Context 見出しを除いた残り＝判断材料（タスク定義・
+  // 成果物の所在・goal など）。折りたたみの「詳細」に出す。
+  need.detail = main
+    .split('\n')
+    .filter((l) => {
+      const t = l.trim();
+      if (/^#\s+/.test(t)) return false; // タイトル行
+      if (/^##\s+Context and Problem Statement/i.test(t)) return false;
+      if (/^-\s*(なぜ|状態|概況)\s*[:：]/.test(t)) return false;
+      return true;
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   return need;
 }
 

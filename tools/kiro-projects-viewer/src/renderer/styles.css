@@ -420,6 +420,8 @@ table.list tr.clickable:hover { background: var(--bg2); }
 }
 svg.graph { display: block; }
 svg.graph .edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+/* 完了したノード同士を繋ぐエッジ: 消化済みの経路を一目で追えるよう強調する */
+svg.graph .edge.done { stroke: var(--green); stroke-width: 2.5; opacity: 0.85; }
 svg.graph .node rect { rx: 6; stroke-width: 1.5; }
 svg.graph .node text { fill: var(--fg); font-size: 11px; }
 svg.graph .node .kind { fill: var(--muted); font-size: 9px; }

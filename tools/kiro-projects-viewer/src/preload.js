@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('api', {
   resetProject: (dir) => invoke('kiro:reset', { dir }),
 
   createProject: (spec) => invoke('kiro:createProject', { spec }),
+  promoteCharter: (dir, name) => invoke('kiro:promoteCharter', { dir, name }),
   readProjectFile: (dir, name) => invoke('kiro:readFile', { dir, name }),
   writeProjectFile: (dir, name, content) => invoke('kiro:writeFile', { dir, name, content }),
   charterTemplate: (name) => invoke('kiro:charterTemplate', { name }),

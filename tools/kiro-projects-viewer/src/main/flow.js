@@ -486,6 +486,88 @@ function cancelRun(busDir, runId, { reason } = {}) {
   return { status: marked ? 'canceled' : curStatus, marked, cleared, issues };
 }
 
+// ---------------------------------------------------------------------------
+// run のアーカイブ（ビュアー側の保管庫）
+// ---------------------------------------------------------------------------
+// kiro-flow は run 完了後に bus/runs/<id>/ を掃除するため、完了した run の情報は
+// ビュアーから消えてしまう。ポーリングのたびに run のスナップショット（サマリ＋イベント）を
+// ビュアー専用のアーカイブディレクトリ（Electron userData 配下。バスや状態 git は汚さない）へ
+// 書いておき、bus から消えた run も「アーカイブ」として一覧・閲覧できるようにする。
+// 読み取り専用の写しであり、アーカイブからの再実行・キャンセル等の操作はできない。
+
+const ARCHIVE_KEEP = 100; // バスごとに保持する最大スナップショット数（古い順に削除）
+
+function archiveBusDir(archiveRoot, busDir) {
+  let real;
+  try {
+    real = fs.realpathSync(busDir);
+  } catch {
+    real = path.resolve(busDir);
+  }
+  const h = crypto.createHash('sha1').update(real).digest('hex').slice(0, 12);
+  return path.join(archiveRoot, h);
+}
+
+// 直近に保存した内容の署名（プロセス内キャッシュ）。ポーリング毎の無駄な read/write を避ける
+const _archiveSig = new Map();
+
+function _runSig(run) {
+  return [run.status, run.updatedAt, run.progress, JSON.stringify(run.counts)].join('|');
+}
+
+// 1 run のスナップショットを保存する（内容が前回保存から変わったときだけ書く）
+function archiveRunSnapshot(archiveRoot, busDir, run) {
+  const dir = archiveBusDir(archiveRoot, busDir);
+  const file = path.join(dir, `${run.runId}.json`);
+  const sig = _runSig(run);
+  if (_archiveSig.get(file) === sig && fs.existsSync(file)) return false;
+  const runDir = path.join(busDir, 'runs', run.runId);
+  const snapshot = {
+    savedAt: new Date().toISOString(),
+    run,
+    events: readRunEvents(runDir, 50),
+    nodeEvents: readNodeEvents(runDir),
+  };
+  writeJsonAtomic(file, snapshot);
+  _archiveSig.set(file, sig);
+  pruneArchive(dir);
+  return true;
+}
+
+function pruneArchive(dir, keep = ARCHIVE_KEEP) {
+  const files = safeList(dir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => ({ f, mtime: (() => { try { return fs.statSync(path.join(dir, f)).mtimeMs; } catch { return 0; } })() }))
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const { f } of files.slice(keep)) {
+    try {
+      fs.unlinkSync(path.join(dir, f));
+    } catch {
+      /* 掃除失敗は致命的でない */
+    }
+  }
+}
+
+function readArchivedRun(archiveRoot, busDir, runId) {
+  const id = String(runId || '');
+  if (!id || id !== path.basename(id)) return null;
+  return readJson(path.join(archiveBusDir(archiveRoot, busDir), `${id}.json`));
+}
+
+// アーカイブ済み run のサマリ一覧（archived: true 付き）。alive は判定対象外にする
+// （orchestrator はもう居ない。孤児と誤表示しない）。
+function listArchivedRuns(archiveRoot, busDir) {
+  const dir = archiveBusDir(archiveRoot, busDir);
+  const out = [];
+  for (const f of safeList(dir)) {
+    if (!f.endsWith('.json')) continue;
+    const snap = readJson(path.join(dir, f));
+    if (!snap || !snap.run || !snap.run.runId) continue;
+    out.push({ ...snap.run, alive: null, archived: true, archivedAt: snap.savedAt || null });
+  }
+  return out;
+}
+
 // バス配下の run を新しい順に一覧する（各 run はサマリのみ）
 function listRuns(busDir, limit = 30) {
   const runsDir = path.join(busDir, 'runs');
@@ -609,6 +691,10 @@ module.exports = {
   readRunEvents,
   readNodeEvents,
   listRuns,
+  archiveRunSnapshot,
+  listArchivedRuns,
+  readArchivedRun,
+  archiveBusDir,
   daemonStatus,
   stopDaemon,
   readDaemonStatus,

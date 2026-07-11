@@ -14,9 +14,9 @@
       <div class="sidebar-header">
         <h1>Kiro Projects</h1>
         <div class="row">
-          <button id="btn-new-project" title="新規プロジェクトを作成（charter.md / repos.json）">＋</button>
+          <button id="btn-new-project" title="新規プロジェクトを作成">＋</button>
           <button id="btn-mode" title="かんたん/メンテナンス表示を切り替え">👀</button>
-          <button id="btn-git-pull" title="選択中プロジェクトのリポジトリを git pull で最新化">⇣</button>
+          <button id="btn-git-pull" title="最新の状態を取得（git pull）">⇣</button>
           <button id="btn-refresh" title="再読み込み">⟳</button>
           <button id="btn-settings" title="設定">⚙</button>
         </div>
@@ -40,7 +40,6 @@
         <button class="tab tech" data-tab="backlog">バックログ</button>
         <button class="tab" data-tab="needs">要対応 <span id="needs-badge" class="badge hidden"></span></button>
         <button class="tab tech" data-tab="flow">フロー</button>
-        <button class="tab tech" data-tab="gitlab">レビュー待ち</button>
         <button class="tab tech" data-tab="history">履歴</button>
       </nav>
 
@@ -49,7 +48,6 @@
         <div id="tab-backlog" class="tabpane"></div>
         <div id="tab-needs" class="tabpane"></div>
         <div id="tab-flow" class="tabpane"></div>
-        <div id="tab-gitlab" class="tabpane"></div>
         <div id="tab-history" class="tabpane"></div>
       </section>
     </main>
@@ -189,46 +187,46 @@
     </form>
   </dialog>
 
-  <!-- ======== タスク追加ダイアログ（inbox へ投入） ======== -->
+  <!-- ======== タスク追加ダイアログ ======== -->
   <dialog id="dlg-enqueue">
-    <h2 id="enq-heading">バックログにタスクを 1 件追加（inbox 経由）</h2>
+    <h2 id="enq-heading">タスクを追加</h2>
     <div id="enq-reinject-note" class="muted hidden" style="margin-bottom:8px"></div>
     <div class="field">
       <label>タイトル（必須）</label>
       <input id="enq-title" placeholder="例: README に使用例を追加する" />
     </div>
     <div class="field">
-      <label>verify — done 確定のシェルコマンド（exit 0 = PASS。書ければこれが最良）</label>
+      <label>検証コマンド — 完了判定に使うコマンド（成功すれば完了。書ければ最も確実です）</label>
       <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
     </div>
     <div class="field">
-      <label>accept — 自然言語の完了条件（verify が書けないとき。実行時にエージェントが verify を合成）</label>
+      <label>完了条件 — 文章で（検証コマンドが書けないとき。実行時に自動でコマンド化されます）</label>
       <input id="enq-accept" placeholder="例: README に使用例が載っている" />
     </div>
     <div class="row2">
       <div class="field">
-        <label>優先度（整数・大ほど高）</label>
+        <label>優先度（数字が大きいほど先に着手）</label>
         <input id="enq-priority" type="number" step="1" value="0" />
       </div>
       <div class="field">
-        <label>メモ（note）</label>
+        <label>メモ</label>
         <input id="enq-note" />
       </div>
     </div>
     <div class="row2">
       <div class="field">
-        <label>ID（任意・省略で自動採番。再投入では元 ID を引き継ぎます）</label>
+        <label>ID（任意・省略で自動採番。やり直しでは元の ID を引き継ぎます）</label>
         <input id="enq-id" class="mono" placeholder="例: T12" />
       </div>
       <div class="field">
-        <label>依存 after（任意・カンマ区切り）</label>
+        <label>先行タスク（先に終えるべきタスクの ID。任意・カンマ区切り）</label>
         <input id="enq-after" class="mono" placeholder="例: T1, T2" />
       </div>
     </div>
-    <div class="muted">verify / accept のどちらも無い場合、タスクは inbox 状態のまま人の triage 待ちになります。</div>
+    <div class="muted">検証コマンド・完了条件のどちらも無い場合、取り込み後に内容の確認（人の判断）が必要になります。</div>
     <div class="dialog-actions">
       <button id="btn-enq-cancel">キャンセル</button>
-      <button id="btn-enq-submit" class="primary-inline">投入</button>
+      <button id="btn-enq-submit" class="primary-inline">追加</button>
     </div>
   </dialog>
 
@@ -254,8 +252,8 @@
   <dialog id="dlg-new-project" class="wide">
     <h2>新規プロジェクトを作成</h2>
     <div class="muted" style="margin-bottom:8px">
-      <code class="mono">&lt;親フォルダ&gt;/&lt;名前&gt;/</code> をプロジェクトルートとして charter.md
-      （＋ repos があれば repos.json）を作成します。稼働中の kiro-project が次の run で backlog を生成します。
+      <code class="mono">&lt;親フォルダ&gt;/&lt;名前&gt;/</code> にプロジェクト憲章（マスター）を作成します。
+      憲章は全バージョン共通の前提となり、タスクは「計画バージョン」に書いたやるべきことから作られます。
     </div>
     <div class="row2">
       <div class="field">
@@ -270,13 +268,13 @@
     </div>
     <div class="row2">
       <div class="field">
-        <label>charter 名（バージョン・任意。指定すると charters/&lt;名前&gt;.md に作成＝複数バージョン運用）</label>
-        <input id="np-charter" class="mono" placeholder="例: v1（空なら charter.md）" />
+        <label>最初の計画バージョン名（任意。指定すると目標・完了条件をやるべきことにした最初のバージョンも作成します）</label>
+        <input id="np-charter" class="mono" placeholder="例: v1（空なら憲章のみ作成し、後からバージョンを追加）" />
       </div>
       <div class="field"></div>
     </div>
     <div class="field">
-      <label>goal — 目標（このプロジェクトで達成したいこと）</label>
+      <label>目標（このプロジェクトで達成したいこと）</label>
       <textarea id="np-goal" rows="2" placeholder="例: ユーザーが CSV を投入すると要約レポートを生成する CLI を完成させる"></textarea>
     </div>
     <div class="ai-assist">
@@ -293,30 +291,29 @@
     </div>
     <div class="row2">
       <div class="field">
-        <label>deliverables — 成果物（1 行 1 つ）</label>
+        <label>成果物（1 行 1 つ）</label>
         <textarea id="np-deliverables" rows="3" placeholder="report.py（生成器）&#10;tests/（テスト）"></textarea>
       </div>
       <div class="field">
-        <label>constraints — 制約（1 行 1 つ）</label>
+        <label>制約（1 行 1 つ）</label>
         <textarea id="np-constraints" rows="3" placeholder="Python 3.9 / 標準ライブラリのみ"></textarea>
       </div>
     </div>
     <div class="row2">
       <div class="field">
-        <label>assumptions — 前提（1 行 1 つ・任意）</label>
+        <label>前提（1 行 1 つ・任意）</label>
         <textarea id="np-assumptions" rows="2" placeholder="入力 CSV は UTF-8 / 週次で 1 万行程度"></textarea>
       </div>
       <div class="field"></div>
     </div>
     <div class="field">
-      <label>acceptance — プロジェクト done の根拠（1 行 1 つ。exit 0 を PASS とみなすシェルコマンド、または <code class="mono">accept: 自然文</code>）</label>
+      <label>完了条件（1 行 1 つ。成功で終わるコマンド、または <code class="mono">accept: 文章</code>。プロジェクト完了の判定基準になります）</label>
       <textarea id="np-acceptance" rows="3" class="mono" placeholder="pytest -q tests/&#10;accept: README に使用例（## Usage）が載っている"></textarea>
     </div>
     <details id="np-repos-details">
-      <summary>リポジトリ（任意・repos.json を生成）</summary>
+      <summary>対象リポジトリ（任意）</summary>
       <div class="muted" style="margin:6px 0">
-        owns を書くと「書込先（ワークスペース）」、書かなければ「参照のみ」。charter の <code class="mono">## repos</code> と
-        整合する repos.json（<code class="mono">_meta.generated_from</code> 付き）を生成します。
+        owns（担当範囲）を書くと成果物の書き込み先になり、書かなければ参照のみになります。
       </div>
       <div id="np-repos"></div>
       <button id="np-add-repo" type="button" class="chip">＋ リポジトリを追加</button>
@@ -351,13 +348,24 @@
     </div>
   </dialog>
 
-  <!-- ======== charter バージョン追加ダイアログ ======== -->
+  <!-- ======== 計画バージョン追加／初版のバージョン化ダイアログ ======== -->
   <dialog id="dlg-new-charter">
-    <h2>charter バージョンを追加</h2>
-    <p class="muted">charters/&lt;名前&gt;.md を新規作成します（既存の charter.md や他バージョンはそのまま残り、並行駆動します）。</p>
+    <h2 id="nc-title">計画バージョンを追加</h2>
+    <p class="muted" id="nc-desc">新しい計画バージョンを作成します。</p>
     <div class="field">
       <label>バージョン名（空白・スラッシュ・ハイフン等は不可）</label>
       <input id="nc-name" class="mono" placeholder="例: v2" />
+    </div>
+    <div id="nc-master-fields" class="hidden">
+      <div class="field">
+        <label>やるべきこと（このバージョンで達成すること）</label>
+        <textarea id="nc-goal" rows="3" placeholder="例: CSV 取り込みのエラー処理を改善し、失敗行のレポートを出す"></textarea>
+      </div>
+      <div class="field">
+        <label>完了条件（1 行 1 つ。成功で終わるコマンド、または accept: 文章。空ならマスターの共通条件を使います）</label>
+        <textarea id="nc-acceptance" rows="2" class="mono" placeholder="pytest -q tests/&#10;accept: 失敗行レポートが出力される"></textarea>
+      </div>
+      <div class="muted">制約・前提・対象リポジトリはマスター憲章から自動で引き継がれます。</div>
     </div>
     <div class="dialog-actions">
       <button id="btn-nc-cancel">キャンセル</button>

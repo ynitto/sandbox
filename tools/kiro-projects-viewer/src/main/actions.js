@@ -227,8 +227,8 @@ async function runAction(cfg, { dir, action, id, reason, fields, feedback }) {
 }
 
 // charter からのバックログ再分解を要求する（エラー回復用の一発の口。プロジェクト単位＝id 無し）。
-// 本体は次パスで charter を分解し直し、既存/archive（done）と類似のタスクは冪等に重複排除して
-// 「取りこぼした差分」だけを backlog へ入れる（done と同種は投入しない）。
+// 本体は次パスで charter を分解し直す。冪等照合は「done 以外」（処理中＋却下済み）と行う＝
+// 処理中タスクの二重投入や却下済みの復活はせず、done と類似のタスクだけやり直しとして再作成される。
 // 経路は runAction と同じ auto/file/cli 契約。file は commands/replan ドロップ、cli は
 // `kiro-project replan --reason ...`。稼働中はドロップ・停止中は CLI・CLI 不可はドロップ退避。
 async function requestReplan(cfg, { dir, reason }) {

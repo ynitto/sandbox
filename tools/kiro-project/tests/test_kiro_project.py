@@ -3950,16 +3950,18 @@ class TestProjectLayer(unittest.TestCase):
             km.cmd_project(cfg, planner=planner, runner=runner)
             self.assertEqual(calls["n"], 1)      # 再計画されない
 
-    def test_replan_request_forces_redecompose_and_skips_done(self):
+    def test_replan_request_forces_redecompose_and_recreates_done(self):
         # エラー回復: 人が「charter から再分解」を要求すると、消化可能タスクが残り charter が
-        # 無変更でも 1 回だけ plan を強制する。再分解は既存/archive（done）タイトルで冪等に
-        # 重複排除されるため、done と類似は投入されず「取りこぼした差分」だけが入る。
+        # 無変更でも 1 回だけ plan を強制する。冪等照合は「現行処理中のバックログ」だけと行う:
+        # 処理中タスクと類似は二重投入しないが、done/archive と類似はやり直しとして再作成を許す
+        # （過去の完了実績が回復のための再分解を丸ごと弾き「押しても何も起きない」のを防ぐ）。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             flag = d / "flag"
             write_charter(d, CHARTER.replace("{flag}", str(flag)))
             cfg = cfg_for(d)
-            mkb(d, "SEED", status="ready", verify="true")      # 消化可能タスクを残す
+            mkb(d, "SEED", status="ready", verify="true",
+                title="処理中の既存タスク")                        # 消化可能タスクを残す
             adir = cfg.archive_dir()
             adir.mkdir(parents=True, exist_ok=True)
             (adir / "OLD.md").write_text(
@@ -3969,8 +3971,10 @@ class TestProjectLayer(unittest.TestCase):
 
             def planner(ch):
                 calls["n"] += 1
-                # done と同一タイトル（重複排除される）＋新規タイトル（取りこぼし＝入る）
+                # done と同一タイトル（やり直し＝再作成される）＋処理中と同一タイトル（弾かれる）
+                # ＋新規タイトル（取りこぼし＝入る）
                 return [{"title": "既存の done タスク", "verify": "true"},
+                        {"title": "処理中の既存タスク", "verify": "true"},
                         {"title": "取りこぼした新規タスク", "verify": f"test -f {flag}"}]
 
             def runner(c):
@@ -3999,11 +4003,33 @@ class TestProjectLayer(unittest.TestCase):
             self.assertFalse(km.replan_request_path(cfg).exists())  # one-shot で消化
             titles = [t.title for t in km.load_tasks(cfg.backlog)]
             self.assertIn("取りこぼした新規タスク", titles)          # 差分（取りこぼし）は入る
-            self.assertNotIn("既存の done タスク", titles)           # done と類似は投入しない
+            self.assertIn("既存の done タスク", titles)              # done と同種のやり直しは再作成
+            self.assertEqual(titles.count("処理中の既存タスク"), 1)   # 処理中とは二重投入しない
 
             # さらに次パス: 要求は消化済みなので再分解しない（one-shot）
             km.cmd_project(cfg, planner=planner, runner=runner)
             self.assertEqual(calls["n"], 1)
+
+    def test_replan_does_not_resurrect_rejected_tasks(self):
+        # replan のやり直しは done の再作成を許すが、却下済み（rejected・人の明示判断）は
+        # archive にあっても照合に残し、復活させない（reject → 自動 replan の直後が典型）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            mkb(d, "T1", title="決済APIを追加", verify="true")
+            km.cmd_reject(cfg, "T1", "スコープ外")            # archive に rejected として退避
+            km.consume_replan_request(cfg)                    # reject が立てた要求は別途消しておく
+
+            km.write_replan_request(cfg, "やり直し")
+
+            def planner(ch):
+                return [{"title": "決済APIを追加", "verify": "true"}]
+
+            km.cmd_project(cfg, planner=planner, runner=lambda c: _drained())
+            titles = [t.title for t in km.load_tasks(cfg.backlog)]
+            self.assertNotIn("決済APIを追加", titles)          # 却下済みは復活しない
 
     def test_replan_request_consumed_on_no_acceptance_pass(self):
         # acceptance 未定義で cmd_project が早期 return するパスでも、再分解要求マーカーは
@@ -4330,6 +4356,182 @@ class TestProjectLayer(unittest.TestCase):
 
             km.cmd_project(cfg, planner=planner, runner=lambda c: _drained())
             self.assertEqual(calls["n"], 1)   # accepted でも明示の再分解要求は必ず一度処理される
+
+    def test_replan_zero_diff_keeps_accepted_and_no_milestone(self):
+        # 実運用インシデントの再発防止: 承認済み（accepted）のプロジェクトに差分ゼロの再分解を
+        # かけると、再評価が accepted → converged に降格させて承認済みマイルストーン
+        # （needs/<pid>.md）が復活していた（「承認ボタンを押しても再び表示される」の直接原因）。
+        # 新しい仕事が何も無い再収束は accepted を維持し、milestone も書かない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.cmd_approve(cfg, "demo", "OK"), 0)
+
+            self.assertEqual(km.cmd_replan(cfg, "エラー回復"), 0)
+            code = km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(code, 0)                                           # accepted のまま
+            self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_ACCEPTED)
+            self.assertFalse((cfg.needs / "demo.md").exists())   # milestone は復活しない
+
+    def test_stale_milestone_cleared_while_pass_runs(self):
+        # 前パスの milestone（needs/<pid>.md）は次パスの再評価開始時に掃除される。残したままだと
+        # run 実行中も「要対応: マイルストーン」カードが出続け、収束前の承認（exit 2）を誘発する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))    # 未達 → converged しない
+            cfg = cfg_for(d)
+
+            def runner_fail(c):
+                r = _drained()
+                r["counts"]["blocked"] = 1
+                return r
+
+            km.cmd_project(cfg, planner=lambda ch: [], runner=runner_fail)
+            self.assertTrue((cfg.needs / "demo.md").exists())         # blocked milestone が立つ
+
+            seen = {}
+
+            def runner_check(c):
+                # execute 段（run 実行中に相当）では前パスの milestone は消えている
+                seen["mid_run_needs"] = (cfg.needs / "demo.md").exists()
+                r = _drained()
+                r["counts"]["blocked"] = 1
+                return r
+
+            km.cmd_project(cfg, planner=lambda ch: [], runner=runner_check)
+            self.assertFalse(seen["mid_run_needs"])
+            self.assertTrue((cfg.needs / "demo.md").exists())         # 停止時に書き直される
+
+    def test_pending_commands_ingested_even_on_accepted_early_return(self):
+        # 実運用インシデントの再発防止: accepted ガードの早期 return は execute（run_loop）まで
+        # 到達しないため、commands/ に落ちた指示ファイルが何パスも放置され、watch が空振り
+        # 起床を繰り返していた。cmd_project は入口で指示を消化する。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.cmd_approve(cfg, "demo", "OK"), 0)    # accepted にする
+
+            cd = km.commands_dir(cfg)
+            cd.mkdir(parents=True, exist_ok=True)
+            (cd / "approve2.json").write_text(json.dumps(
+                {"command": "approve", "id": "demo", "reason": "二度押し"}), encoding="utf-8")
+            code = km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(code, 0)
+            self.assertEqual(list(cd.glob("*.json")), [])             # 入口で消化される
+            self.assertEqual(list(cd.glob("*.json.err")), [])         # 二度押しは .err にしない
+
+    def test_approve_milestone_idempotent_and_clear_error(self):
+        # 承認済み milestone への approve は冪等に成功（二度押し・取り込み遅延の再送を .err に
+        # しない）。収束前（blocked 等）の approve は原因が分かるエラーで exit 2。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, CHARTER.replace("{flag}", str(flag)))
+            cfg = cfg_for(d)
+            km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
+            self.assertEqual(km.cmd_approve(cfg, "demo", "1回目"), 0)
+            self.assertEqual(km.cmd_approve(cfg, "demo", "2回目"), 0)   # 冪等
+
+            st = km.load_project_state(cfg)
+            st["status"] = km.REASON_PROJECT_BLOCKED                    # 収束前の状態を模す
+            km.save_project_state(cfg, st)
+            self.assertEqual(km.cmd_approve(cfg, "demo", "早すぎる承認"), 2)
+
+    def test_master_charter_alone_is_not_decomposed(self):
+        # マスター憲章（`## master` 付き charter.md）はプロジェクト全体の普遍的な前提であり、
+        # それ自体はバックログへ分解されない。バージョン（charters/<name>.md）が無い間は
+        # 駆動対象なし＝backlog 消化と指示の取り込みだけが回る。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: 全体\n\n## master\n- 分解しないマスター\n\n"
+                             "## goal\n普遍的な目標\n\n## acceptance\n- `true`\n")
+            cfg = cfg_for(d)
+            self.assertEqual(km.charter_names(cfg), [])       # 分解対象なし
+            self.assertTrue(km._has_master_charter(cfg))
+
+            ran = {"n": 0}
+            planned = {"n": 0}
+
+            def runner(c):
+                ran["n"] += 1
+                return _drained()
+
+            def planner(ch):
+                planned["n"] += 1
+                return []
+
+            km.project_watch(cfg, planner=planner, runner=runner, max_passes=1)
+            self.assertEqual(ran["n"], 1)                     # backlog 消化は回る
+            self.assertEqual(planned["n"], 0)                 # 分解（plan）は走らない
+            self.assertEqual(list(cfg.needs.glob("*.md")), [])  # milestone も立たない
+
+    def test_version_inherits_master_charter(self):
+        # 計画バージョン（charters/<name>.md）はマスター憲章を継承する:
+        # goal はバージョン側が優先、acceptance・制約・前提はバージョンに無ければマスターから補う。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            flag = d / "flag"; flag.write_text("x")
+            write_charter(d, "# Charter: 全体\n\n## master\n- マスター\n\n"
+                             "## goal\n普遍的な目標\n\n## constraints\n- 標準ライブラリのみ\n\n"
+                             "## assumptions\n- 入力は UTF-8\n\n"
+                             f"## acceptance\n- `test -f {flag}`\n")
+            cd = d / "charters"
+            cd.mkdir()
+            (cd / "v1.md").write_text(
+                "# Charter: v1\n\n## goal\nCSV 要約機能を作る\n\n"
+                "## constraints\n- 追加の制約\n", encoding="utf-8")
+            cfg = cfg_for(d)
+            self.assertEqual(km.charter_names(cfg), ["v1"])   # バージョンだけが駆動される
+
+            ch = km._load_named_charter(cfg, "v1")
+            self.assertEqual(ch.goal, "CSV 要約機能を作る")     # goal はバージョン優先
+            self.assertEqual(ch.acceptance, [f"test -f {flag}"])  # acceptance はマスター継承
+            self.assertIn("標準ライブラリのみ", ch.constraints)   # 制約は和集合
+            self.assertIn("追加の制約", ch.constraints)
+            self.assertIn("入力は UTF-8", ch.assumptions)
+
+            # 継承済み acceptance で v1 が通常どおり収束する（マスター側は動かない）
+            code = km.cmd_project(cfg, planner=lambda c: [], runner=lambda c: _drained(),
+                                  charter_name="v1")
+            self.assertNotEqual(code, 0)                       # converged（人待ち）
+            st = km.load_charter_state(cfg, "v1")
+            self.assertEqual(st["status"], km.REASON_PROJECT_CONVERGED)
+
+    def test_master_edit_affects_version_signatures(self):
+        # マスターを編集すると、継承合成後の署名（plan/full）が変わる＝バージョン側の
+        # 再計画・accepted 再開の判定にマスター編集が効く。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: 全体\n\n## master\n- マスター\n\n"
+                             "## constraints\n- 制約A\n\n## acceptance\n- `true`\n")
+            cd = d / "charters"
+            cd.mkdir()
+            (cd / "v1.md").write_text("# Charter: v1\n\n## goal\nやること\n", encoding="utf-8")
+            cfg = cfg_for(d)
+            ch1 = km._load_named_charter(cfg, "v1")
+            plan1, full1 = km._charter_plan_signature(ch1), km._charter_full_signature(ch1)
+
+            write_charter(d, "# Charter: 全体\n\n## master\n- マスター\n\n"
+                             "## constraints\n- 制約A\n- 制約B（追加）\n\n## acceptance\n- `true`\n")
+            ch2 = km._load_named_charter(cfg, "v1")
+            self.assertNotEqual(plan1, km._charter_plan_signature(ch2))
+            self.assertNotEqual(full1, km._charter_full_signature(ch2))
+
+    def test_non_master_charter_keeps_legacy_behavior(self):
+        # `## master` の無い従来の charter.md は今までどおり単一 charter として駆動される。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, CHARTER.replace("{flag}", "x"))
+            cfg = cfg_for(d)
+            self.assertEqual(km.charter_names(cfg), ["default"])
+            self.assertFalse(km._has_master_charter(cfg))
 
     def test_review_project_generates_findings(self):
         with tempfile.TemporaryDirectory() as d:
