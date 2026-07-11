@@ -32,6 +32,9 @@
         "nsis"
       ]
     },
+    "portable": {
+      "artifactName": "${name}.${ext}"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
