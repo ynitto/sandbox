@@ -1,7 +1,0 @@
-{
-  "command": "approve",
-  "id": "pytest--x--q-220342",
-  "reason": "検証コマンドを「echo \"test\"」にする",
-  "actor": "kiro-projects-viewer",
-  "ts": "2026-07-11T13:07:09.846Z"
-}

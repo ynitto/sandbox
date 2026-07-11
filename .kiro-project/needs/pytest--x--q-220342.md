@@ -10,10 +10,13 @@ kind: blocked
 
 ## Context and Problem Statement
 
-- なぜ: hold（人が保留）: kiro-projects-viewer から操作
+- なぜ: policy:deny（人の判断待ち）
 - 状態: blocked（kiro-project の判断待ち）
 
 ## Decision Outcome
+
+検証コマンドを echo "test" にする
+
 
 <!-- 人の決定の記入欄（MADR の Decision Outcome）。方針・指示をここに書く。 -->
 - [x] 確定（このボックスを [x] にして保存すると取り込みます）
