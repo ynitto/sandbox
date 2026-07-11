@@ -1,0 +1,20 @@
+{
+  "charters": {
+    "v1": {
+      "id": ".kiro-project-v1",
+      "name": "v1",
+      "history": [
+        1
+      ],
+      "best": 0,
+      "stall": 0,
+      "acceptance_synth": {},
+      "planned_charter_sig": "4bf8ce765979dba3b536b89901713b8bcb4324ae7eef05806a043a365e058fea",
+      "acceptance_total": 1,
+      "cost": 0.0,
+      "cycles": 1,
+      "status": "converged"
+    }
+  },
+  "updated": "2026-07-11T22:10:59"
+}
