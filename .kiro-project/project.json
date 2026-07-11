@@ -1,14 +1,17 @@
 {
   "id": ".kiro-project",
   "name": "sandbox",
-  "history": [],
+  "history": [
+    2,
+    2
+  ],
   "best": 0,
   "stall": 0,
   "acceptance_synth": {},
   "planned_charter_sig": "e577388c94e22da543bc0172bc12fd64fc15dce2a9e96c908cedc0a2d18aeb9c",
   "acceptance_total": 2,
-  "status": "blocked",
-  "updated": "2026-07-11T14:31:49",
+  "status": "converged",
+  "updated": "2026-07-11T14:33:27",
   "cost": 0.0,
-  "cycles": 5
+  "cycles": 7
 }

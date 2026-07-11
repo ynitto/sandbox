@@ -61,3 +61,19 @@ SyntaxError: invalid syntax
 - 2026-07-11 14:31:49 state-git: 無効（未設定・ルートも git リポジトリでない）
 - 2026-07-11 14:31:49 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
 - 2026-07-11 14:31:49 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-11 14:33:21 === project 開始 sandbox acceptance=2 ===
+- 2026-07-11 14:33:21 commands 取り込み: replan（viewer-replan-project-1783747997780.json）
+- 2026-07-11 14:33:21 === kiro-project 開始 tasks=0 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 14:33:21 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 14:33:21 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 14:33:21 project cycle 1: acceptance 2/2 PASS, 改善 0 件, cost=0.0000
+- 2026-07-11 14:33:21 === project 停止 reason=converged cycles=1 cost=0.0000 ===
+- 2026-07-11 14:33:21 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-11 14:33:26 === project 開始 sandbox acceptance=2 ===
+- 2026-07-11 14:33:26 project cycle 1: 再分解要求（エラー回復） → 新規なし（既存/done と重複）
+- 2026-07-11 14:33:26 === kiro-project 開始 tasks=0 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-11 14:33:26 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-11 14:33:26 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-11 14:33:27 project cycle 1: acceptance 2/2 PASS, 改善 0 件, cost=0.0000
+- 2026-07-11 14:33:27 === project 停止 reason=converged cycles=1 cost=0.0000 ===
+- 2026-07-11 14:33:27 === project watch: 監視中（charter 更新/フィードバック待ち）===
