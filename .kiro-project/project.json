@@ -1,0 +1,16 @@
+{
+  "charters": {
+    "v0.1": {
+      "id": ".kiro-project-v0.1",
+      "name": "v0.1",
+      "history": [],
+      "best": 0,
+      "stall": 0,
+      "acceptance_synth": {
+        "設計書に書かれていること": "codd-gate verify --strict"
+      },
+      "status": "no-acceptance"
+    }
+  },
+  "updated": "2026-07-12T16:43:59"
+}
