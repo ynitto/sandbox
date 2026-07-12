@@ -44,3 +44,10 @@
 - affects : macOS-kiro-flow-git-4-gr-171537 → blocked, policy.deny += macOS-kiro-flow-git-4-gr-171537
 - avoid: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: kiro-projects-viewer から操作
 
+## DR-0008  2026-07-13  actor: nitto
+- context : macOS-kiro-flow-git-4-gr-171537（macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 完了条件は main で充足済み（kiro-project/kiro-flow 両スイート green）。kp ブランチの成果をマージ済み
+- affects : macOS-kiro-flow-git-4-gr-171537 → ready
+- learn: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: 完了条件は main で充足済み（kiro-project/kiro-flow 両スイート green）。kp ブランチの成果をマージ済み
+

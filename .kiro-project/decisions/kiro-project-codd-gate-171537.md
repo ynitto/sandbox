@@ -43,3 +43,10 @@
 - affects : kiro-project-codd-gate-171537 → blocked, policy.deny += kiro-project-codd-gate-171537
 - avoid: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: kiro-projects-viewer から操作
 
+## DR-0008  2026-07-13  actor: nitto
+- context : kiro-project-codd-gate-171537（kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : run-20260712-213419-5922 の続きから再開（9/31 ノード完了済み・done は温存）。全滅の原因だった codex の利用上限は worker=claude への切替で解消済み
+- affects : kiro-project-codd-gate-171537 → ready
+- learn: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: run-20260712-213419-5922 の続きから再開（9/31 ノード完了済み・done は温存）。全滅の原因だった codex の利用上限は worker=claude への切替で解消済み
+

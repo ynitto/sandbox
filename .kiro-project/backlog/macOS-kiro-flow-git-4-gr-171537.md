@@ -1,9 +1,10 @@
 ## macOS-kiro-flow-git-4-gr-171537: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする
-- status: blocked
+- status: ready
 - source: charter
 - priority: 0
 - verify: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q`
 - retries: 5
+- last_run: run-20260712-225228-6591
 - workspace: sandbox
 - refs: sandbox
 - charter: v0.1

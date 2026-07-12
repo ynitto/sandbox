@@ -1,5 +1,5 @@
 {
-  "savedAt": "2026-07-12T14:23:03.365Z",
+  "savedAt": "2026-07-12T14:49:31.604Z",
   "run": {
     "runId": "run-20260712-225228-6591",
     "status": "running",
@@ -222,11 +222,11 @@
         ],
         "kind": "verify",
         "retries": 0,
-        "state": "claimed",
-        "who": "worker-1",
+        "state": "pending",
+        "who": null,
         "finishedAt": null,
-        "heartbeatAt": "2026-07-12T14:19:28Z",
-        "leaseUntil": 1783867768.2617338,
+        "heartbeatAt": null,
+        "leaseUntil": null,
         "output": null,
         "data": null,
         "issueUrl": null,
@@ -553,8 +553,8 @@
     "counts": {
       "done": 8,
       "failed": 0,
-      "claimed": 1,
-      "pending": 0,
+      "claimed": 0,
+      "pending": 1,
       "waiting": 14,
       "parked": 0
     },
