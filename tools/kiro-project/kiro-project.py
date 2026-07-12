@@ -7973,6 +7973,41 @@ def _merge_master_charter(cfg: "Config", ch: "Charter") -> "Charter":
     return ch
 
 
+def _version_target_overrides(parsed: "Charter") -> "list[tuple[str, str, str, str]]":
+    """バージョン charter の ## repos が明示する『base と異なる target』を抽出する。
+    バージョン毎のターゲットブランチ（例 v1→release/1.x, v2→release/2.x）を、共有レジストリ
+    （repos.json）を使っていても効かせるための材料。返り値は (name, url, path, target) の列。
+    target が未指定、または target==base（＝作業ブランチと同じで既定）のエントリは含めない
+    ＝共有レジストリの target を尊重する（後方互換。明示的にリリース先を分けた版だけ拾う）。"""
+    out: "list[tuple[str, str, str, str]]" = []
+    for s in parsed.repo_specs:
+        t = str(s.get("target") or "").strip()
+        b = str(s.get("base") or "").strip()
+        if t and t != b:
+            out.append((str(s.get("name") or ""), str(s.get("url") or ""),
+                        str(s.get("path") or ""), t))
+    return out
+
+
+def _apply_version_target_overrides(
+        ch: "Charter", overrides: "list[tuple[str, str, str, str]]") -> None:
+    """共有レジストリ適用でバージョン charter の target が失われても、バージョンが明示した
+    『base と異なる target』を実効 spec に復元する（バージョン毎のリリース先ブランチ）。
+    マッチは name 一致、または (url, path) 一致（モノレポの役割別を取り違えないよう path も見る）。
+    レジストリの url/path/owns/base 等（＝リポジトリ同一性・ルーティング根拠）は一切触らず、
+    MR の宛先である target だけを差し替える＝ルーティングやクローン先には影響しない。"""
+    if not overrides:
+        return
+    for spec in ch.repo_specs:
+        sn = str(spec.get("name") or "")
+        su = str(spec.get("url") or "")
+        sp = str(spec.get("path") or "")
+        for on, ou, op, t in overrides:
+            if (on and on == sn) or (ou and ou == su and op == sp):
+                spec["target"] = t
+                break
+
+
 def _load_named_charter(cfg: "Config", name: "str | None") -> "Charter | None":
     """charter 名 → Charter。charters/<name>.md があればそれ（複数運用・repos 自動生成なし。
     マスター憲章があれば継承合成する）、無ければ従来の charter.md へフォールバック（"default" や未指定）。"""
@@ -7980,10 +8015,13 @@ def _load_named_charter(cfg: "Config", name: "str | None") -> "Charter | None":
         f = charters_dir(cfg) / f"{name}.md"
         if f.is_file():
             try:
-                ch = _apply_repo_registry(cfg, parse_charter(f.read_text(encoding="utf-8")),
-                                          allow_export=False)
+                parsed = parse_charter(f.read_text(encoding="utf-8"))
+                # 共有レジストリが ## repos を上書きする前に、バージョン毎 target を控えておく。
+                overrides = _version_target_overrides(parsed)
+                ch = _apply_repo_registry(cfg, parsed, allow_export=False)
             except (OSError, ValueError):
                 return None
+            _apply_version_target_overrides(ch, overrides)
             return _merge_master_charter(cfg, ch)
     return load_charter(cfg)
 

@@ -545,14 +545,21 @@ def _delete_branch(host: str, token: str, project: str, branch: str) -> None:
         pass
 
 
-def _try_auto_merge(host, token, project, iid, url, cfg, labels_now, mrs):
+def _try_auto_merge(host, token, project, iid, url, cfg, labels_now, mrs,
+                    expected_target: str = ""):
     """status:approved のイシューを gitlab-review-viewer の承認ボタンと同じ規則で自動決着させる。
 
-    - 全 open MR がクリーン（コンフリクト無し・未解決レビューコメント無し）→ 自動マージ
-      （差分なし MR はクローズ＋ソースブランチ削除）
+    - 全 open MR がクリーン（コンフリクト無し・未解決レビューコメント無し・**ターゲットブランチが
+      ワークスペースの target と一致**）→ 自動マージ（差分なし MR はクローズ＋ソースブランチ削除）
     - MR 無し → マージ対象なし＝そのまま承認（呼び出し側がイシューをクローズ）
     - approved なのに未クリーン → `# 差し戻し` コメント＋ approved → rework_label に付け替え
       （ワーカーの修正 → 再レビューのループへ。ラベル遷移自体が再発火ガード）
+
+    `expected_target`（ワークスペースの `target`／無ければ `base`）を渡すと、MR の `target_branch` が
+    それと一致するかを検証し、**別ブランチ向けの MR を自動マージ対象から除外**する（不一致は差し戻し扱い＝
+    ワーカーに retarget を促す）。イシュー本文は「`target` へ MR」と指示するだけで target を強制しないため、
+    ワーカーが誤って別ブランチ（例 main）を狙った MR を紐付けても、この検証が無いと承認時にそのまま
+    マージされてしまう。`expected_target=""`（ワークスペース未指定＝target 不明）のときは検証しない（後方互換）。
 
     戻り値: ("approved", reason) / ("rework", detail) / None（対象外・一過性エラー＝次のポーリングで再試行）。
     API 失敗はこの中で握って None を返す（run を殺さない。決着は timeout が上限）。"""
@@ -572,11 +579,17 @@ def _try_auto_merge(host, token, project, iid, url, cfg, labels_now, mrs):
             mp = _mr_project_path(m, project)
             miid = m.get("iid")
             full = _get_mr(host, token, mp, miid)
+            mr_target = str(full.get("target_branch") or m.get("target_branch") or "").strip()
             unresolved = _mr_unresolved_count(host, token, mp, miid)
             no_diff = _mr_changes_empty(host, token, mp, miid)
             conflicts = bool(full.get("has_conflicts")) or \
                 str(full.get("merge_status") or "") == "cannot_be_merged"
-            if unresolved:
+            if expected_target and mr_target and mr_target != expected_target:
+                # 別ブランチ向けの MR は自動マージしない（ワークスペースの target を守る）。
+                problems.append(
+                    f"MR !{miid}: ターゲットブランチが `{mr_target}`（期待は `{expected_target}`）"
+                    "＝別ブランチ向けのため自動マージ対象外。target を修正して再度承認してください")
+            elif unresolved:
                 problems.append(f"MR !{miid}: 未解決のレビューコメントが {unresolved} 件")
             elif conflicts and not no_diff:
                 problems.append(f"MR !{miid}: コンフリクト（merge_status="
@@ -754,6 +767,15 @@ def _human_notes_payload(host: str, token: str, project: str, iid,
     return out
 
 
+def _workspace_target(workspace: "dict | None") -> str:
+    """ワークスペースが定める MR ターゲットブランチ（`target` 優先・無ければ `base`）。
+    workspace 未指定（repo_url フォールバック）や target/base いずれも不明なら ""＝
+    「期待ターゲット不明」＝ target 検証は行わない（後方互換）。_workspace_section の本文表記と
+    自動マージ時の検証（_try_auto_merge）が同じ算出を共有し、指示と検証を食い違わせない。"""
+    ws = workspace or {}
+    return str(ws.get("target") or ws.get("base") or "").strip()
+
+
 def _workspace_section(workspace: "dict | None") -> "list[str]":
     """対象リポジトリ節（GitLab Markdown）を構造化 workspace から組み立てる。
     リモートの人間ワーカー向けなので、ローカルの clone パス（作業ディレクトリ）は載せない。
@@ -761,7 +783,7 @@ def _workspace_section(workspace: "dict | None") -> "list[str]":
     if not workspace or not workspace.get("url"):
         return []
     base = workspace.get("base") or ""
-    target = workspace.get("target") or base
+    target = _workspace_target(workspace)
     lines = ["## 対象リポジトリ", "", f"- **リポジトリ**: {workspace['url']}"]
     if workspace.get("path"):
         lines.append(f"- **変更対象フォルダ**: `{workspace['path']}` 配下のみ")
@@ -887,6 +909,7 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     cfg = _config()
     # opt-in 前提チェック（誤って選んだときに無限待ちにしない）: 起票先 URL とトークンを起票前に解決。
     workspace_url = str((workspace or {}).get("url") or "")
+    expected_target = _workspace_target(workspace)  # 自動マージ時の MR ターゲット検証（不明なら ""）
     host, project, url_base = _resolve_project(cfg, workspace_url)
     token = _resolve_token(cfg)
     if not token:
@@ -928,7 +951,7 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
     # 面倒を見るとき）は worker をブロックせず、1 回だけ決着を確認して未決着なら DeferDecision を
     # 投げる。未設定（standalone `work` 等・監視主体なし）は従来どおりブロック待機へフォールバック。
     if os.environ.get("KIRO_FLOW_DEFER_WAITS") == "1":
-        r = _check_decision(host, token, project, iid, url, cfg, False)
+        r = _check_decision(host, token, project, iid, url, cfg, False, expected_target)
         if r["decision"] == "approved":
             return r["text"], r["data"]
         if r["decision"] == "rejected":
@@ -938,6 +961,7 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
             "executor": "gitlab",
             "issue": {"host": host, "project": project, "iid": iid, "url": url},
             "task_token": _task_token(art_dir),
+            "expected_target": expected_target,  # park を跨いで MR ターゲット検証を保つ
             "active_seen": bool(r["active_seen"]),
             "poll_interval": _as_float(cfg.get("poll_interval"), 300.0),
             "timeout": _as_float(cfg.get("timeout"), 0.0),
@@ -945,7 +969,7 @@ def execute(kind: str, goal: str, dep_results: dict, model=None,
             "throttled": False,
             "reason": "human-approval-wait",
         })
-    return _wait_for_decision(host, token, project, iid, url, cfg)
+    return _wait_for_decision(host, token, project, iid, url, cfg, expected_target)
 
 
 _CLOSE_REQUEST_MARKER = "<!-- kiro-flow:close-request -->"
@@ -967,10 +991,12 @@ def _ensure_close_request_note(host, token, project, iid, url, reason="") -> Non
         _log(f"イシュー #{iid}: クローズ案内ノートの投稿に失敗（次回再試行）: {e}")
 
 
-def _check_decision(host, token, project, iid, url, cfg, active_seen):
+def _check_decision(host, token, project, iid, url, cfg, active_seen,
+                    expected_target: str = ""):
     """イシュー #iid の決着を **1 回だけ** 確認して正規化した結果 dict を返す（副作用として
     決着時はイシューをクローズする＝ブロック版と同じ）。ブロック待機 `_wait_for_decision` と
     非ブロックの `poll`（service_waits 用）の両方がこの 1 関数を共有し、判定の二重実装を避ける。
+    `expected_target` は自動マージ時の MR ターゲット検証に使う（`_try_auto_merge` へ透過）。
     返り値: {decision: "approved"|"rejected"|None, text, data, active_seen, mrs}。"""
     approved = str(cfg.get("approved_label") or "status:approved")
     done_label = str(cfg.get("done_label") or "status:done")
@@ -997,7 +1023,8 @@ def _check_decision(host, token, project, iid, url, cfg, active_seen):
     # 付いたら、クリーンな MR を自動マージして決着させる（gitlab-review-viewer の承認と同じ規則。
     # 未クリーンなら差し戻して未決着のまま＝ワーカーの修正を待つ）。
     if not decision and not issue_closed:
-        am = _try_auto_merge(host, token, project, iid, url, cfg, labels_now, mrs)
+        am = _try_auto_merge(host, token, project, iid, url, cfg, labels_now, mrs,
+                             expected_target)
         if am is not None and am[0] == "approved":
             decision, reason = "approved", am[1]
             mrs = _related_merge_requests(host, token, project, iid)  # マージ後の状態で payload を作る
@@ -1049,7 +1076,8 @@ def poll(state: dict) -> dict:
     if not token:
         return {"decision": None, "active_seen": bool(state.get("active_seen"))}
     try:
-        r = _check_decision(host, token, project, iid, url, cfg, bool(state.get("active_seen")))
+        r = _check_decision(host, token, project, iid, url, cfg, bool(state.get("active_seen")),
+                            str(state.get("expected_target") or ""))
     except RuntimeError as e:
         # 一過性障害（ネットワーク断・5xx・権限の一時失敗等）は決着させず次回に回す
         # （run を殺さない）。404 は _check_decision 内で却下として扱われるためここには来ない。
@@ -1081,10 +1109,10 @@ def on_cancel(records: "list[dict]") -> None:
             _log(f"イシュー #{iid} の cancel 後始末に失敗（無視）: {e}")
 
 
-def _wait_for_decision(host, token, project, iid, url, cfg):
+def _wait_for_decision(host, token, project, iid, url, cfg, expected_target: str = ""):
     """イシュー #iid の関連 MR の状態をポーリングし、承認（全マージ）/却下（未マージクローズ）の
     決着まで待つ（ブロック版・deferral 無効時のフォールバック）。判定は _check_decision に集約し、
-    ここはループ・猶予延長・全体タイムアウトだけを受け持つ。"""
+    ここはループ・猶予延長・全体タイムアウトだけを受け持つ。`expected_target` は MR ターゲット検証用。"""
     interval = _as_float(cfg.get("poll_interval"), 300.0)
     timeout = _as_float(cfg.get("timeout"), 0.0)
     approved_timeout = _as_float(cfg.get("approved_timeout"), 0.0)
@@ -1092,7 +1120,7 @@ def _wait_for_decision(host, token, project, iid, url, cfg):
     active_seen = False  # MR 出現 or approved/done ラベル＝人が能動的に作業中
 
     while True:
-        r = _check_decision(host, token, project, iid, url, cfg, active_seen)
+        r = _check_decision(host, token, project, iid, url, cfg, active_seen, expected_target)
         if r["decision"] == "approved":
             return r["text"], r["data"]
         if r["decision"] == "rejected":

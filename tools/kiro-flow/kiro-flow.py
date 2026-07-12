@@ -3446,6 +3446,7 @@ def build_wait_record(nid, who, kind, defer: dict, watch_interval: float) -> dic
         "executor": defer.get("executor", ""),
         "issue": defer.get("issue"),                 # throttled は None（イシュー未作成）
         "task_token": defer.get("task_token"),       # 秘密ではない（再アタッチ用の決定的トークン）
+        "expected_target": defer.get("expected_target", ""),  # MR ターゲット検証（park を跨いで保つ）
         "throttled": bool(defer.get("throttled")),
         "reason": defer.get("reason", "wait"),
         "active_seen": bool(defer.get("active_seen")),
@@ -3494,7 +3495,8 @@ def _service_one_wait(v: Bus, rec: dict, poll, watch_interval: float,
         log(daemon_id, f"park タイムアウト: {nid}（#{iid}）→ failed")
         return
     try:
-        r = poll({"issue": rec.get("issue"), "active_seen": rec.get("active_seen", False)})
+        r = poll({"issue": rec.get("issue"), "active_seen": rec.get("active_seen", False),
+                  "expected_target": rec.get("expected_target", "")})
     except Exception as e:  # noqa: BLE001 — poll 失敗は run を止めない。lease を更新して次回再試行
         log(daemon_id, f"service_waits poll 失敗（無視して次回再試行）: {nid}: {e}")
         rec["next_poll_at"] = time.time() + max(watch_interval, float(rec.get("poll_interval", 30) or 30))

@@ -4660,6 +4660,53 @@ class TestProjectLayer(unittest.TestCase):
             st = km.load_charter_state(cfg, "v1")
             self.assertEqual(st["status"], km.REASON_PROJECT_CONVERGED)
 
+    def test_version_target_overrides_shared_registry(self):
+        # 共有レジストリ（repos.json）を使っていても、各バージョン charter の ## repos が
+        # 明示した『base と異なる target』（バージョン毎のリリース先ブランチ）が効く。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: 全体\n\n## master\n- マスター\n\n"
+                             "## acceptance\n- `true`\n")
+            (d / "repos.json").write_text(__import__("json").dumps(
+                {"app": {"url": "git@x:app.git", "desc": "本体", "base": "main",
+                         "owns": ["src/**"]}}), encoding="utf-8")   # 手書き＝レジストリが正・全版共有
+            cd = d / "charters"; cd.mkdir()
+            (cd / "v1.md").write_text(
+                "# Charter: v1\n\n## goal\nv1\n\n## repos\n- app = git@x:app.git\n"
+                "  - owns: src/**\n  - base: main\n  - target: release/1.x\n", encoding="utf-8")
+            (cd / "v2.md").write_text(
+                "# Charter: v2\n\n## goal\nv2\n\n## repos\n- app = git@x:app.git\n"
+                "  - owns: src/**\n  - base: main\n  - target: release/2.x\n", encoding="utf-8")
+            cfg = cfg_for(d)
+
+            ch1 = km._load_named_charter(cfg, "v1")
+            ch2 = km._load_named_charter(cfg, "v2")
+            s1 = next(s for s in ch1.repo_specs if s["name"] == "app")
+            s2 = next(s for s in ch2.repo_specs if s["name"] == "app")
+            # url/owns/base はレジストリ由来のまま（同一性・ルーティングは不変）、target だけ版毎に差し替わる
+            self.assertEqual(s1["url"], "git@x:app.git")
+            self.assertEqual(s1["base"], "main")
+            self.assertFalse(s1["readonly"])
+            self.assertEqual(s1["target"], "release/1.x")     # v1 → release/1.x
+            self.assertEqual(s2["target"], "release/2.x")     # v2 → release/2.x
+
+    def test_version_without_target_keeps_registry_target(self):
+        # バージョンが target を明示しない（or ## repos 自体が無い）なら、共有レジストリの
+        # target をそのまま尊重する（後方互換＝上書きしない）。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_charter(d, "# Charter: 全体\n\n## master\n- マスター\n\n"
+                             "## acceptance\n- `true`\n")
+            (d / "repos.json").write_text(__import__("json").dumps(
+                {"app": {"url": "git@x:app.git", "base": "main", "target": "develop",
+                         "owns": ["src/**"]}}), encoding="utf-8")
+            cd = d / "charters"; cd.mkdir()
+            (cd / "v1.md").write_text("# Charter: v1\n\n## goal\nv1\n", encoding="utf-8")
+            cfg = cfg_for(d)
+            ch = km._load_named_charter(cfg, "v1")
+            s = next(s for s in ch.repo_specs if s["name"] == "app")
+            self.assertEqual(s["target"], "develop")          # レジストリの target を尊重
+
     def test_master_edit_affects_version_signatures(self):
         # マスターを編集すると、継承合成後の署名（plan/full）が変わる＝バージョン側の
         # 再計画・accepted 再開の判定にマスター編集が効く。
