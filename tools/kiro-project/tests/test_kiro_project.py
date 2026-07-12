@@ -2738,6 +2738,31 @@ class TestInstances(unittest.TestCase):
         self.assertEqual(km.list_instances(), [])      # 死んだ PID は出ない
         self.assertFalse(dead.exists())                # かつ掃除される
 
+    def test_stop_takes_the_kiro_flow_children_with_it(self):
+        """停止は kiro-flow の子孫まで届くこと（本人だけ殺すと残骸が走り続ける）。
+
+        kiro-flow が生き残ると、その orchestrator が run の生存リースを更新し続ける。次に起動した
+        kiro-project はそれを「まだ実行中」と読み、続きから再開せず **新しい run を作り直す**
+        （実際 17/23 まで進んだ run を捨てて 1/20 からやり直し、同じタスクを二重実行して同じ
+        作業ブランチへ両方が push しあった）。"""
+        # detached 起動（自分がプロセスグループのリーダー）→ グループごと送る
+        with mock.patch.object(km.os, "getpgid", return_value=4242) as _g, \
+             mock.patch.object(km.os, "killpg") as killpg, \
+             mock.patch.object(km.os, "kill") as kill:
+            km._signal_tree(4242, signal.SIGTERM)
+            killpg.assert_called_once_with(4242, signal.SIGTERM)
+            kill.assert_not_called()
+
+    def test_stop_does_not_kill_the_whole_terminal_group(self):
+        # 端末から run --watch を直叩きした場合、プロセスグループには人のシェルや他のジョブが
+        # 混ざる。グループへ送ると無関係のプロセスまで殺すので、本人にだけ送る。
+        with mock.patch.object(km.os, "getpgid", return_value=999) as _g, \
+             mock.patch.object(km.os, "killpg") as killpg, \
+             mock.patch.object(km.os, "kill") as kill:
+            km._signal_tree(4242, signal.SIGTERM)     # pgid(999) != pid(4242) ＝ リーダーでない
+            killpg.assert_not_called()
+            kill.assert_called_once_with(4242, signal.SIGTERM)
+
     def test_watch_refuses_a_duplicate_of_the_same_project(self):
         """同じプロジェクトを 2 つのループに監視させない。
 

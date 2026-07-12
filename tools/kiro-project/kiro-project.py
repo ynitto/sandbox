@@ -1399,11 +1399,32 @@ def select_instances(root: "str | None" = None, pid: "int | None" = None,
     return out
 
 
+def _signal_tree(pid: int, sig) -> None:
+    """インスタンスとその子孫（kiro-flow の orchestrator / worker）へシグナルを送る。
+
+    本人にだけ送ると kiro-flow が生き残る。すると残った orchestrator が run の生存リースを
+    更新し続け、次に起動した kiro-project はそれを「まだ実行中」と読んで **続きから再開せず
+    新しい run を作り直す**（実際 17/23 まで進んだ run を捨てて 1/20 からやり直した）。さらに
+    同じタスクを二重に実行し、同じ作業ブランチへ両方が push しあう。
+
+    start（detached）で起動したインスタンスは自分がプロセスグループのリーダーなので、グループへ
+    送れば子孫まで届く。そうでない（端末から run --watch を直叩きした）場合はグループに無関係の
+    プロセス（人のシェルや他のジョブ）が混ざるため、本人にだけ送る。"""
+    try:
+        if os.getpgid(pid) == pid:            # detached 起動＝自分がグループリーダー
+            os.killpg(pid, sig)
+            return
+    except OSError:
+        pass
+    os.kill(pid, sig)
+
+
 def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
              want_all: bool = False, timeout: float = 5.0,
              extra: "list | str | None" = None,
              config: "str | None" = None) -> int:
-    """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する（自ホストのみ）。"""
+    """稼働インスタンスへ SIGTERM（必要なら SIGKILL）を送り、レジストリも掃除する（自ホストのみ）。
+    kiro-flow の子プロセスも道連れにする（_signal_tree 参照）。"""
     if not pid and not want_all:                  # 既定は cwd（または --root/設定）のプロジェクトを止める
         root = _resolved_root(root, config)
     targets = select_instances(root, pid, want_all, extra=extra)
@@ -1416,7 +1437,8 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
         if p == os.getpid():                  # 自分自身は決して止めない（安全ガード）
             continue
         try:
-            os.kill(p, signal.SIGTERM)        # graceful: 子側の SIGTERM ハンドラが finally で後始末
+            # graceful: 子側の SIGTERM ハンドラが finally で後始末。kiro-flow の子孫まで届かせる
+            _signal_tree(p, signal.SIGTERM)
         except OSError as e:
             print(f"pid={p}: SIGTERM 失敗（{e}）", file=sys.stderr)
             all_ok = False
@@ -1427,7 +1449,7 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
             time.sleep(0.1)
         if _pid_alive(p) and hasattr(signal, "SIGKILL"):  # 居残りは強制終了（POSIX のみ）
             try:
-                os.kill(p, signal.SIGKILL)
+                _signal_tree(p, signal.SIGKILL)
             except OSError:
                 pass
             time.sleep(0.2)
