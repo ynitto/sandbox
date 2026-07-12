@@ -2965,7 +2965,7 @@ def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
             return ""
         cand = _first_command_line(out)
         if not cand:
-            retry_note = "空 or 散文だった"; continue
+            retry_note = "応答に実行可能なコマンド行がなかった"; continue
         # 自然言語（説明・拒否文）を shell=True に流すと ; | && ` > rm 等が誤実行されうるため弾く。
         if not _looks_like_shell_command(cand):
             retry_note = "シェルコマンドでなかった"; continue
@@ -2973,6 +2973,7 @@ def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
         if _verify_is_degenerate(cand):
             retry_note = "恒真式に退化していた。テスト/ビルド/差分/最終状態で実挙動を確かめよ"; continue
         return cand
+    print(f"[kiro-project] verify 合成失敗: {retry_note}（task: {title}）", file=sys.stderr)
     return ""
 
 

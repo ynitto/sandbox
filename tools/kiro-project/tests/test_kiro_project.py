@@ -5,7 +5,9 @@
 
     python -m unittest discover -s tools/kiro-project/tests
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -4996,11 +4998,16 @@ echo this-later-command-must-not-be-selected
             calls.append((prompt, model))
             return next(responses)
 
-        self.assertEqual(
-            km.synth_verify(cfg, "x", "曖昧", kiro_run=prose_only, attempts=2),
-            "",
-        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(
+                km.synth_verify(cfg, "x", "曖昧", kiro_run=prose_only, attempts=2),
+                "",
+            )
         self.assertEqual(len(calls), 2)
+        self.assertIn("verify 合成失敗", stderr.getvalue())
+        self.assertIn("実行可能なコマンド行がなかった", stderr.getvalue())
+        self.assertIn("task: x", stderr.getvalue())
 
     def test_synth_verify_rejects_japanese_prose(self):
         # バグ修正: エージェントが自然言語（説明/拒否文）を返しても shell へ流さない
