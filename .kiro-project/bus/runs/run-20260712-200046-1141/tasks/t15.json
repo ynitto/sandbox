@@ -1,9 +1,0 @@
-{
-  "id": "t15",
-  "goal": "テスト: detect_codd_gate の単体テストを追加する。(a) PATH に存在する場合に available=True、(b) 存在しない場合に available=False かつ例外を投げない、の2ケース。which をモックする。テスト名に codd を含める。",
-  "deps": [
-    "t5",
-    "t7"
-  ],
-  "kind": "work"
-}

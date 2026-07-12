@@ -1,8 +1,0 @@
-{
-  "id": "t11",
-  "goal": "リポジトリルート /Users/nitto/Workspace/sandbox で完了条件のコマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、終了コードが 0（全 906 件相当が pass、failed 0）であることを実測で確認する。終了コードと pytest の最終行（`N passed in ...`）を成果物にそのまま転記すること。もし失敗が残る場合は、テストID・アサーション行・traceback を省略せず報告する。あわせて `git status --short -- tools/kiro-flow tools/kiro-project` を実行し、変更が t10 のテスト fixture 修正の範囲に収まっていること（要求範囲外の成果物が混ざっていないこと）を確認する。",
-  "deps": [
-    "t10"
-  ],
-  "kind": "work"
-}

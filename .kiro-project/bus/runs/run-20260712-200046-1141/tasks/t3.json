@@ -1,6 +1,0 @@
-{
-  "id": "t3",
-  "goal": "調査: kiro-project の受入判定（acceptance / verify 判定）の実装箇所を特定する。受入判定の入力・出力（pass/fail/reason）とゲート結果を受入判定に反映する経路を特定し、codd-gate の結果を合流させる差し込み点を提案する。",
-  "deps": [],
-  "kind": "work"
-}

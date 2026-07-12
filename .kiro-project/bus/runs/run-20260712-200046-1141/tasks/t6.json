@@ -1,6 +1,0 @@
-{
-  "id": "t6",
-  "goal": "調査: 完了条件コマンドで使う `./.kiro-project/repos.json` の現状スキーマと `--repo-dir sandbox=.` `--base ${KIRO_BASE_REV:-HEAD~1}` `--strict` の意味を確認する。repos.json が codd-gate verify の期待する形と一致しているか、不足キーがあるかを判定して報告する。",
-  "deps": [],
-  "kind": "work"
-}

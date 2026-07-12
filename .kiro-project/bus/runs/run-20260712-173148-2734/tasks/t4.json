@@ -1,9 +1,0 @@
-{
-  "id": "t4",
-  "goal": "t1 のエラーログから macOS 固有の git コマンド差異（git -C / --no-pager / porcelain 等）に起因する失敗を特定し、該当テスト・該当行を明記する",
-  "deps": [
-    "t1",
-    "t2"
-  ],
-  "kind": "classify"
-}

@@ -1,6 +1,0 @@
-{
-  "id": "t5",
-  "goal": "git 設定依存を実測で棚卸しする観点タスク: git version、init.defaultBranch(master/main)、user.name/user.email の設定有無、core.ignorecase、safe.directory。テスト用の一時リポジトリで実際の値を確認する",
-  "deps": [],
-  "kind": "work"
-}

@@ -1,6 +1,0 @@
-{
-  "id": "t5",
-  "goal": "charter 制約の確認: 変更範囲を sandbox リポジトリの tools/kiro-project 配下に限定できることを確認し、codd-gate がインストール済みなら本変更で活用できる形（verify への結線）を1点だけ具体化する。",
-  "deps": [],
-  "kind": "work"
-}

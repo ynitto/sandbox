@@ -1,8 +1,0 @@
-{
-  "id": "t24",
-  "goal": "python3 -m pytest tools/kiro-project/tests -q -k first_command_line を実行し、出力と終了コードを記録する。失敗した場合はスタックトレースから原因（実装側かテスト側か）を切り分けて修正する。",
-  "deps": [
-    "t23"
-  ],
-  "kind": "work"
-}

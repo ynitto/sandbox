@@ -1,6 +1,0 @@
-{
-  "id": "t10",
-  "goal": "tools/kiro-flow/tests/test_kiro_flow.py の共有ヘルパー _zero_loose_objects()（59-70 行）を macOS で動くよう修正する。現状は `open(os.path.join(d, name), \"wb\").close()`（68 行）で loose object を 0 バイトに切り詰めているが、Apple Git は loose object をモード 0444（読み取り専用）で作成するため macOS では `PermissionError: [Errno 13] Permission denied: .../objects/xx/yyyy...` になる。修正方針: 切り詰める前に対象ファイルへ書き込み権限を付与する（例: `path = os.path.join(d, name); os.chmod(path, 0o644); open(path, \"wb\").close()`)。テスト fixture 側のみの修正であり、kiro-flow のプロダクトコード（git 自己修復ロジック）は変更しないこと。修正後、失敗していた 4 件 GitDistributedTests::test_empty_objects_clone_is_rebuilt_on_reuse / GitDistributedTests::test_sync_push_self_heals_on_object_corruption / StateGitSyncTests::test_empty_objects_state_clone_is_rebuilt_on_reuse / StateGitSyncTests::test_state_sync_self_heals_on_object_corruption_midflight を個別に実行して pass することを確認し、実行ログを成果物に添付すること。",
-  "deps": [],
-  "kind": "work"
-}

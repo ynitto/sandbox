@@ -1,6 +1,0 @@
-{
-  "id": "t6",
-  "goal": "BSD/GNU のコマンド差（readlink -f、mktemp、sed、date）と、実装がサブプロセス経由でそれらに依存していないかを洗い出す",
-  "deps": [],
-  "kind": "work"
-}

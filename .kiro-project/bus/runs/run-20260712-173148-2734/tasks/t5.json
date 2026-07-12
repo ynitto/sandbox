@@ -1,9 +1,0 @@
-{
-  "id": "t5",
-  "goal": "t1 のエラーログから macOS の tempfile / tmpdir 動作差異（/var/folders 等）に起因する失敗を特定し、該当テスト・該当行を明記する",
-  "deps": [
-    "t1",
-    "t2"
-  ],
-  "kind": "classify"
-}

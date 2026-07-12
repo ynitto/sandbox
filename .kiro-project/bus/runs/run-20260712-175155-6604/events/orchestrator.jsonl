@@ -1,1 +1,0 @@
-{"ts": "2026-07-12T08:52:06Z", "who": "orchestrator", "kind": "planned", "patterns": ["adversarial-verification"], "parallelism": 6, "tasks": ["gen1", "verify1"]}

@@ -1,8 +1,0 @@
-{
-  "id": "t19",
-  "goal": "変更内容と macOS 固有の落とし穴（realpath/TMPDIR/git 既定設定）を設計書・ドキュメントへ追記する",
-  "deps": [
-    "t17"
-  ],
-  "kind": "work"
-}

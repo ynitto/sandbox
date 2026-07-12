@@ -1,6 +1,0 @@
-{
-  "id": "t3",
-  "goal": "失敗している4テストのテストコードと fixture（tmp_path / monkeypatch / 環境変数 / chdir）を読み、各テストが暗黙に前提としている git リポジトリ状態とパスの扱いを1テスト1行で整理する",
-  "deps": [],
-  "kind": "work"
-}

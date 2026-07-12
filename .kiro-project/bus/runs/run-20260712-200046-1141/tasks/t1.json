@@ -1,6 +1,0 @@
-{
-  "id": "t1",
-  "goal": "調査: codd-gate CLI 本体の仕様を確定する。`codd-gate --help` / `codd-gate verify --help` / `codd-gate tasks --help` を実行し、サブコマンド・引数（--repos/--repo-dir/--base/--strict/--debt/--json 等）・終了コード・標準出力フォーマット（JSON かテキストか）を記録する。未インストール環境での挙動（PATH に無い場合）も確認し、結果を Markdown で報告する。",
-  "deps": [],
-  "kind": "work"
-}

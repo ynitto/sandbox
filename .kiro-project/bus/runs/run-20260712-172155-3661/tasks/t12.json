@@ -1,8 +1,0 @@
-{
-  "id": "t12",
-  "goal": "judge1で追加修正が必要と判定された場合のみ実行：残余失敗テストの原因をファイル・行単位で特定し、macOS互換性の観点で修正を実装する。修正後に python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q を再実行し、終了コード0を確認するまで繰り返す",
-  "deps": [
-    "judge1"
-  ],
-  "kind": "work"
-}
