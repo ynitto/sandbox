@@ -4947,6 +4947,24 @@ class TestVerifyAssist(unittest.TestCase):
         output = "before\n```\nfirst\n```\nbetween\n```sh\nsecond\n```\nafter"
         self.assertEqual(km._code_fence_lines(output), ["first", "second"])
 
+    def test_first_command_line_returns_first_fence_command_ignoring_later_fence(self):
+        # 後続フェンスに補足説明用のコマンド例があっても、最初のフェンス内の最初の
+        # コマンドを優先して採用する（説明用の別コマンドを誤って拾わない）。
+        output = (
+            "検証手順:\n"
+            "```bash\n"
+            "python3 -m pytest tools/kiro-project/tests -q -k first_command_line\n"
+            "```\n"
+            "参考: 個別のテストだけ動かしたい場合は次のようにします。\n"
+            "```bash\n"
+            "pytest -k some_other_test\n"
+            "```"
+        )
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q -k first_command_line",
+        )
+
     def test_extract_fenced_blocks_collects_bare_and_tagged_fences_in_order(self):
         output = "before\n```\nfirst\n```\nbetween\n```bash\nsecond\nsecond-2\n```\nafter"
         self.assertEqual(km._extract_fenced_blocks(output), ["first", "second\nsecond-2"])
