@@ -5006,6 +5006,13 @@ class TestVerifyAssist(unittest.TestCase):
         self.assertEqual(km._code_fence_lines(output), ["# note", "pytest -q"])
         self.assertEqual(km._first_command_line(output), "pytest -q")
 
+    def test_first_command_line_extracts_single_command_from_bash_fence(self):
+        output = "```bash\npython3 -m pytest tools/kiro-project/tests -q\n```"
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
     def test_first_command_line_returns_command_from_bash_fence_after_prose(self):
         output = "確認コマンドはこちらです。\n```bash\npython3 -m pytest tools/kiro-project/tests -q\n```"
         self.assertEqual(
