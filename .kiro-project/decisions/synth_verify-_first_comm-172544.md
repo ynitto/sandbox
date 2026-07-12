@@ -63,3 +63,17 @@
 - affects : synth_verify-_first_comm-172544 → ready
 - learn: synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する :: 完了条件は main で充足済み（pytest -k first_command_line が 15 件 green）。kp ブランチの成果をマージ済み
 
+## DR-0011  2026-07-13  actor: nitto
+- context : synth_verify-_first_comm-172544（synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : hold の deny を解除して続きから再開（成功済みノードは温存）
+- affects : synth_verify-_first_comm-172544 → ready
+- learn: synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する :: hold の deny を解除して続きから再開（成功済みノードは温存）
+
+## DR-0012  2026-07-13  actor: nitto
+- context : synth_verify-_first_comm-172544（synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する）を検収承認
+- action  : approve-done
+- reason  : kiro-projects-viewer から操作
+- affects : synth_verify-_first_comm-172544 → done
+- learn: synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する :: kiro-projects-viewer から操作
+

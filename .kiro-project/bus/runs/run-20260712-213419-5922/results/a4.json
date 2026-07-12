@@ -1,0 +1,16 @@
+{
+  "id": "a4",
+  "who": "worker-1",
+  "status": "done",
+  "output": "新規ファイル1つのみ、`kiro-project.py`等の既存ファイルは無変更であることを確認した。成果を報告する。\n\n## 成果\n\n**成果物**: `tools/kiro-project/codd_gate_status.py`（新規モジュール、約120行、標準ライブラリと a1 の `codd_gate_detect` のみに依存）\n\nd2（`CoddGateStatus`データ構造・アクセサ設計）と d1（3節のフォールバック方針表）をそのままコード化した。a1のドキュメントで a4 に割り当てられていた「finding化・no-op縮退を含む `CoddGateStatus` 相当の値オブジェクト」を実装している。\n\n- **`CoddGateStatus`**（frozen dataclass）: `binary` / `version` / `findings` の3フィールド、`usable`（`binary is not None and not findings`）・`command(*args)`（usable でなければ `None`）・`reason` アクセサ。findings が1件でもあれば理由を問わず `usable=False` に落ちる、というのが no-op 縮退の核。\n- **`build_status(binary, version, version_known, schema_ok, schema_detail)`**: d1 3節の短絡順（実在→バージョン→schema）で raw な判定結果を finding 化し `CoddGateStatus` を組み立てる純粋関数。例外を投げない。4つの失敗経路（未インストール／バージョン不明／バージョン下限未満／schema不適合）いずれも同じ no-op 経路（`usable=False`, `command()=None`）に合流する。\n- **`detect_status(explicit, which)`**: a1の `resolve_codd_gate` を呼び、現時点で確認可能な「実在」のみを根拠に状態を返すエントリポイント。`resolve_codd_gate` 呼び出し自体を try/except で包み、想定外の例外（`shutil.which`/`Path.exists` の環境依存 I/O 異常）が起きても外へ伝播させず「未検出」へ縮退させる。\n\n意図的に含めなかったもの（同一runの別タスクの責務、モジュール冒頭のdocstringに明記済み）: バージョン取得・schemas互換の実測（a2）、プロセス内キャッシュ（a3）、`cfg.codd_gate`フィールド新設と3フックへの結線（b1-b3/c1-c2/e1-e2）、ユニットテスト追加（t1）。`kiro-project.py`は無改造。\n\n## 検証\n\n- `python3 -m py_compile tools/kiro-project/codd_gate_status.py` → OK\n- 手動スモークテストで10分岐すべてを確認（新規ファイルにテストは追加せず、責務はt1に委ねた）:\n  1. `build_status(None)` → 未検出finding、`usable=False`、`command()=None`\n  2. バージョン不明 → `usable=False`\n  3. バージョン下限未満 → `usable=False`\n  4. schema不適合 → `usable=False`\n  5. 正常系 → `usable=True`、`command(\"verify\",\"--strict\")` が argv を正しく連結\n  6. `detect_status`: PATH不在でも同梱パス（`tools/codd-gate/codd-gate.py`、本sandboxは同梱構成）へフォールバックし `usable=True`（既存挙動どおり）\n  7. `detect_status`: PATH・同梱パスとも不在を模擬 → `usable=False`（未インストール no-op）\n  8. `detect_status`: 検出処理が例外を投げても外へ伝播せず `usable=False`（非互換／異常時 no-op の核）\n  9. `detect_status`: PATH実在 → `usable=True`\n  10. frozen dataclass の不変性確認 → `AttributeError`\n- 完了条件コマンドを実行:\n  - `pytest -k codd` → 0件該当・`exit=5`（t1がテストを追加するまで変化しない。想定通り）\n  - `codd-gate verify --strict` → `exit=1`。今回は`codd_gate_detect.py`に加え新規の`codd_gate_status.py`も `[GRAY] ドキュメント・テストのどちらにも接続が無い（新規）` として検出された（ドリフト検知自体は正常動作。doc/test接続はdoc・t1タスクの責務）\n- `git status --short` → 新規ファイル1つのみ\n\n## 前提・未解決事項・範囲外\n\n- **前提**: `detect_status`は「実在のみ確認できた状態」では`version_known=True`・`schema_ok=True`の既定で`usable=True`を返す設計にした。a2が実測したバージョン・schema適合結果は、この関数を経由せず`build_status(binary, version=..., version_known=..., schema_ok=...)`を直接呼ぶことで同じno-op縮退へ合流できる（`build_status`を「唯一の入口」ではなく「合流点」として設計）。\n- **未解決事項**: `resolve_codd_gate_status(cfg, which=..., run=...)`という最終オーケストレータ名はd2 4節がb系の結線責務として言及しているため、本タスクではその名前・シグネチャ（`cfg`依存）を占有していない。a2/a3/b系がこのモジュールの`build_status`/`detect_status`をどう合成するかは未確定。\n- **範囲外で見つけた問題**: なし。完了条件コマンドが依然failするのは、pytest未実装（t1）・3フック未結線（b/c/e）・新規2ファイルのドキュメント/テスト未接続（doc/t1）が原因で、いずれも本タスクの範囲外かつ既知（a1/d1/d2が同一原因を報告済み）。",
+  "finished_at": "2026-07-12T21:24:12Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/kiro-project-codd-gate-171537",
+      "commit": "f696fcd6131de27490d7855ea8a5cd1c133b5a15",
+      "target": "main",
+      "path": ""
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "t13",
+  "who": "worker-1",
+  "status": "done",
+  "output": "差分は7行追加のみ、テスト1件の最小変更です。commit/pushはkiro-flowが行うため実施していません。\n\n## 成果物\n\n`tools/kiro-project/tests/test_kiro_project.py` に `test_first_command_line_extracts_single_command_from_bash_fence` を1件追加（`TestVerifyAssist`クラス内、既存の`bash`フェンス関連テスト群の直前）。\n\n```python\ndef test_first_command_line_extracts_single_command_from_bash_fence(self):\n    output = \"```bash\\npython3 -m pytest tools/kiro-project/tests -q\\n```\"\n    self.assertEqual(\n        km._first_command_line(output),\n        \"python3 -m pytest tools/kiro-project/tests -q\",\n    )\n```\n\n## 検証内容と結果\n\n`python3 -m pytest tools/kiro-project/tests -q -k first_command_line` → **17 passed, 523 deselected**（終了コード0）。完了条件を満たす。\n\n## 採用した前提・未解決事項・範囲外で見つけた問題\n\n- **前提**: t7の仕様書・依存タスクの直近コミット（`c44f651` t8, `f5102be` t14 等）で `_first_command_line` は既にフェンス優先パース（フェンス内は`sh -n`なしで無条件採用）を実装済みと確認した。既存17件（追加前は16件）のテストは、`bash`フェンス＋前置き散文（`test_first_command_line_returns_command_from_bash_fence_after_prose`）、コロン終端の前置き＋フェンス、フェンス内の空行/コメントスキップ、未タグ・`sh`・`console`フェンス等はカバー済みだったが、「前置き散文なし・```bashフェンスのみ・単一コマンド」という最も基本的なケースを直接検証するテストが欠けていた。これが本タスクの「```bashフェンスで囲まれた単一コマンドを正しく抽出する」に該当すると判断し、そのテストを追加した。\n- **範囲**: 実装コード（`kiro-project.py`）は無変更。テストのみの追加で、範囲外の修正は行っていない。\n- **未解決事項**: なし（本タスクの完了条件は満たした）。t7が申し送ったカテゴリ5・6（`$`プロンプト記号／箇条書き番号）の回帰テスト追加は本タスクの対象外（別タスクの依頼内容）。",
+  "finished_at": "2026-07-12T20:50:04Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "79867524c7eaa7c761ed973728aa450ad5fdfb78",
+      "target": "main",
+      "path": ""
+    }
+  }
+}
