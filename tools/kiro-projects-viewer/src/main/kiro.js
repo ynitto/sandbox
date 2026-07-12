@@ -625,9 +625,47 @@ function resolveProjectRoot(workspaceDir) {
   const fromWorkspace =
     cfg && cfg.file && path.resolve(cfg.file).startsWith(ws + path.sep);
   const raw = fromWorkspace && cfg.values ? cfg.values.root : null;
-  if (!raw) return ws;
+  const branch =
+    (fromWorkspace && cfg.values && cfg.values.state_branch) || DEFAULT_STATE_BRANCH;
+  if (!raw) return toStateWorktree(ws, branch);
   const r = String(raw).replace(/^~(?=$|\/|\\)/, os.homedir());
-  return path.isAbsolute(r) ? path.resolve(r) : path.resolve(ws, r);
+  const root = path.isAbsolute(r) ? path.resolve(r) : path.resolve(ws, r);
+  return toStateWorktree(root, branch);
+}
+
+const DEFAULT_STATE_BRANCH = 'kiro-state';
+
+// 状態の実体は「状態 worktree」にある。kiro-project は root（例 <repo>/.kiro-project）の読み書きを
+// <repo>-<state_branch>/.kiro-project へ逃がすので、本体側に残る .kiro-project は **main に載る
+// バックアップ**であって実体ではない（significant だけが載り、bus＝run の進捗は載らない）。
+//
+// 本体側を開くと 3 つ壊れる:
+//   ・読み  … 古いバックアップを見る。実行中の run が一切見えない（bus が無い）
+//   ・書き  … 指示・タスク編集が本体へ落ち、人の作業ツリーを汚す
+//   ・git   … gitAutoPush が main へ commit/push してしまう（main はバックアップ専用にしたい）
+// 実体へ正規化してから開く。worktree が無ければ（kiro-project 未起動・非 git）そのまま返す。
+function toStateWorktree(root, branch) {
+  const repo = gitToplevelOf(root);
+  if (!repo) return root;                                    // git 管理外 → 本体がそのまま実体
+  if (path.basename(repo).endsWith(`-${branch}`)) return root;  // 既に状態 worktree の中にいる
+  const wt = path.join(path.dirname(repo), `${path.basename(repo)}-${branch}`);
+  const candidate = path.join(wt, path.relative(repo, root));
+  return isProjectDir(candidate) ? candidate : root;         // 未作成なら本体のまま（従来動作）
+}
+
+// root を含む git 作業ツリーのトップ（git 管理外なら null）。worktree の .git は *ファイル* なので
+// ディレクトリ存在チェックでは判定できない。git に聞く。
+function gitToplevelOf(dir) {
+  try {
+    const r = require('child_process').spawnSync(
+      'git', ['-C', dir, 'rev-parse', '--show-toplevel'],
+      { encoding: 'utf8', timeout: 10000 }
+    );
+    const out = String(r.stdout || '').trim();
+    return r.status === 0 && out ? out : null;
+  } catch {
+    return null;
+  }
 }
 
 function isProjectDir(dir) {
@@ -707,9 +745,16 @@ function discover(cfg) {
   }
 
   const projects = [];
+  const seenDirs = new Set();                     // 実体（状態の置き場）で重複排除する
   for (const { root, source } of roots.values()) {
     const workspace = root;                       // 登録パス（＝選択の識別子。config.roots と一致）
     const dir = resolveProjectRoot(workspace);    // 状態の置き場（backlog/needs/charter はこの下）
+    // 本体（<repo>/.kiro-project）と状態 worktree（<repo>-kiro-state/.kiro-project）は
+    // どちらも登録・スキャンで挙がるが、正規化すると同じ実体を指す。両方を並べると同じ run が
+    // 二重に見え、どちらを操作したのか分からなくなる。実体で畳む。
+    const key = path.resolve(dir);
+    if (seenDirs.has(key)) continue;
+    seenDirs.add(key);
     const tasks = listTasks(path.join(dir, 'backlog'));
     const byStatus = {};
     for (const t of tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
@@ -730,7 +775,7 @@ function discover(cfg) {
       name: path.basename(workspace),
       charterName,
       dir: workspace,        // 選択・登録解除はワークスペース基準（readProject の入力もこれ）
-      root: dir,             // プロジェクトルート（状態の置き場。ワークスペースと同じこともある）
+      root: dir,             // プロジェクトルート（状態の置き場。readProject が操作の基準にする）
       source,
       exists: fs.existsSync(workspace),
       isProject: isProjectDir(workspace),

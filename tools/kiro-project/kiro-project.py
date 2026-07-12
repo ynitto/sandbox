@@ -5676,11 +5676,16 @@ _STATE_LOCK_STALE_SEC = 30.0                    # これ以上古い .git ロッ
 _STATE_GIT_RETRIES = 4                          # ロック起因の git 失敗の再試行回数
 _STATE_PUSH_RETRIES = 5                         # push 競合の再試行回数（2,4,8,16s バックオフ）
 # コンテナ相対パスの同期除外。一時/ホスト局所の状態は共有しない:
-#   bus/          … kiro-flow の一時バス（run 後に掃除される・肥大しうる）
 #   flow-archive/ … viewer が bus から写し取る run のスナップショット（bus の派生・肥大しうる）
 #   claims/       … 原子的クレーム（ホスト内の実行権。同期遅延越しでは排他の意味を持たない）
 #   "." 始まりのセグメント … .state-git（クローン自身）や .git などの管理領域
-_STATE_EXCLUDE_DIRS = {"bus", "flow-archive", "claims"}
+#
+# bus/ は **除外しない**。別 PC の viewer（Windows）が run の進捗を見る経路はこれしかないため
+# （kiro-project は WSL 側で動き、ファイルシステムを共有しない）。除外すると viewer には
+# バックログしか見えず、実行中の run が一切見えない。肥大は kiro-flow の gc で古い run を
+# 掃除して抑える。なお claims/ は bus/runs/<id>/claims/ の形でも segment 判定に掛かるので、
+# bus を対象にしても同期されない（遅延越しの排他は意味を持たないため、これは維持する）。
+_STATE_EXCLUDE_DIRS = {"flow-archive", "claims"}
 # 同時変更（ローカル・リモートの両方が base から変えた）の裁定。人の入力はリモート優先で
 # 取りこぼさず、機械状態（backlog/journal/decisions/…）は実行側＝ローカルを正とする。
 # repos.{json,yaml,yml} も人が書くレジストリ（charter ## repos の互換入力・手書きが正）なので
@@ -6294,12 +6299,27 @@ def _git_toplevel(root: Path) -> bool:
     return r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(str(root))
 
 
+def _direct_state_git_ok(cfg: "Config") -> bool:
+    """direct モード（root のリポジトリへ直接同期）を使ってよいか。
+
+    root 自体が git のトップレベルか、状態 worktree へ逃がしている場合。後者では root は
+    worktree 内のサブディレクトリ（<repo>-kiro-state/.kiro-project）になるため _git_toplevel は
+    False を返す。それだけを条件にすると **状態 worktree を使った瞬間に分散同期が丸ごと無効化
+    される**: state_git_for も project_flow_remote も None になり、origin へ何も push されず、
+    別 PC の viewer が状態と run を読む唯一の経路が消える（実際そうなっていた。journal に
+    「state-git: 無効（未設定・ルートも git リポジトリでない）」と出続ける）。
+
+    この worktree は kiro-project 専用なので、そこへ自動コミット・push しても
+    「無関係なリポジトリを勝手に触らない」という _git_toplevel の防御意図には反しない。"""
+    return cfg.state_top is not None or _git_toplevel(cfg.backlog.parent)
+
+
 def state_git_status_line(cfg: "Config") -> str:
     """起動時に「state_git が有効か・何を鏡写しするか」を一行で示す（silent な設定ミスの切り分け用）。
     注意: これはプロジェクト状態（backlog/needs/…）の鏡写し。kiro-flow のバス（フロータブの run 表示）
     は別途 kiro-flow 側の state_git が担う（本ツールはバスを同期しない）。"""
     root = cfg.backlog.parent
-    if _git_toplevel(root):
+    if _direct_state_git_ok(cfg):
         return (f"state-git: direct モード → {root} 自体の git リポジトリへ直接コミット/push "
                 f"interval={cfg.state_git_interval}s")
     if not getattr(cfg, "state_git", None):
@@ -6311,8 +6331,9 @@ def state_git_status_line(cfg: "Config") -> str:
 
 def state_git_for(cfg: "Config") -> "StateGit | DirectStateGit | None":
     root = cfg.backlog.parent
-    # direct モード（既定）: ルート自体が git クローンなら、そのリポジトリへ直接コミット・push する。
-    if _git_toplevel(root):
+    # direct モード（既定）: ルート自体が git クローン、または状態 worktree の中なら、そのリポジトリへ
+    # 直接コミット・push する（_direct_state_git_ok 参照）。
+    if _direct_state_git_ok(cfg):
         key = ("direct", str(root))
         if key not in _STATE_GITS:
             _STATE_GITS[key] = DirectStateGit(root, cfg.state_git_interval)
@@ -6342,7 +6363,7 @@ def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
     プロジェクト状態と同じ共有リポジトリの kiro-flow 名前空間へ向ける: direct モードなら
     ルートの origin（現在ブランチ）、state_git 設定ならそのリポジトリ。"""
     root = cfg.backlog.parent
-    if _git_toplevel(root):
+    if _direct_state_git_ok(cfg):
         r = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
                            capture_output=True, text=True)
         remote = r.stdout.strip() if r.returncode == 0 else ""

@@ -5920,15 +5920,23 @@ class TestStateGitSync(unittest.TestCase):
         self.assertTrue((other / "unrelated.txt").exists())
         self.assertTrue((other / "kp" / "backlog" / "T2.md").exists())
 
-    def test_transient_state_is_excluded(self):
+    def test_bus_is_synced_but_transient_state_is_excluded(self):
+        """bus は同期する（別 PC の viewer が run を見る唯一の経路）。claims / flow-archive は除外。
+
+        kiro-project は WSL、viewer は Windows と別 PC で動くため、ファイルシステムを共有しない。
+        bus を除外すると viewer にはバックログしか見えず、実行中の run が一切見えない。
+        一方 claims は「同期遅延越しでは排他の意味を持たない」ので載せない（bus/runs/<id>/claims/
+        の形でも segment 判定で除外される）。flow-archive は bus の派生で肥大するので載せない。"""
         cfg = self._cfg()
         mkb(cfg.backlog.parent, "T1")
         (cfg.bus / "runs").mkdir(parents=True, exist_ok=True)
         (cfg.bus / "runs" / "r1.json").write_text("{}", encoding="utf-8")
+        nested = cfg.bus / "runs" / "r1" / "claims" / "t1"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "worker-1.json").write_text("{}", encoding="utf-8")
         claims = cfg.backlog.parent / "claims"
         claims.mkdir(parents=True, exist_ok=True)
         (claims / "T1.lock").write_text("pid", encoding="utf-8")
-        # viewer が bus から写し取る run アーカイブ（プロジェクト配下）も bus の派生＝同期しない
         arch = cfg.backlog.parent / "flow-archive"
         arch.mkdir(parents=True, exist_ok=True)
         (arch / "run-1.json").write_text('{"run": {}}', encoding="utf-8")
@@ -5936,7 +5944,9 @@ class TestStateGitSync(unittest.TestCase):
         got = self._other("check")
         proot = got / "kp"
         self.assertTrue((proot / "backlog" / "T1.md").exists())
-        self.assertFalse((proot / "bus").exists())
+        self.assertTrue((proot / "bus" / "runs" / "r1.json").exists(), "run は viewer へ届く")
+        self.assertFalse((proot / "bus" / "runs" / "r1" / "claims").exists(),
+                         "bus 配下の claims は載せない（遅延越しの排他は意味を持たない）")
         self.assertFalse((proot / "claims").exists())
         self.assertFalse((proot / "flow-archive").exists())
 
@@ -6070,7 +6080,7 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)   # state_git 未設定でも有効
         self.assertIn("direct モード", km.state_git_status_line(cfg))
 
-    def test_direct_sync_pushes_state_and_excludes_transient(self):
+    def test_direct_sync_pushes_state_and_bus_but_excludes_claims(self):
         cfg = self._cfg()
         mkb(self.root, "T1")
         (cfg.bus / "runs").mkdir(parents=True, exist_ok=True)
@@ -6081,9 +6091,33 @@ class TestDirectStateGit(unittest.TestCase):
         km.state_sync(cfg, force=True)
         got = self._other("check")
         self.assertTrue((got / "backlog" / "T1.md").exists())     # subdir 無し・ルート直下に鏡写し
-        self.assertFalse((got / "bus").exists())                  # 一時状態は同期しない
-        self.assertFalse((got / "claims").exists())
+        self.assertTrue((got / "bus" / "runs" / "r1.json").exists(),
+                        "bus は同期する（別 PC の viewer が run を見る唯一の経路）")
+        self.assertFalse((got / "claims").exists())               # 遅延越しの排他は意味を持たない
         self.assertFalse((self.root / ".state-git").exists())     # 管理クローンは作らない
+
+    def test_state_worktree_does_not_disable_distributed_sync(self):
+        """状態 worktree に逃がしていても direct 同期は有効。
+
+        _git_toplevel は「root がリポジトリのトップレベルか」を見る。状態 worktree では root は
+        <repo>-kiro-state/.kiro-project というサブディレクトリになるので False を返し、それだけを
+        条件にすると state_git_for も project_flow_remote も None になって **分散同期が丸ごと
+        無効化される**（origin に何も push されず、別 PC の viewer が状態と run を読む唯一の経路が
+        消える。journal に「state-git: 無効」と出続けていた）。"""
+        cfg = self._cfg()
+        sub = self.root / "nested" / ".kiro-project"       # トップレベルではない root
+        sub.mkdir(parents=True, exist_ok=True)
+        cfg.backlog = sub / "backlog"
+        cfg.backlog.mkdir(parents=True, exist_ok=True)
+        self.assertFalse(km._git_toplevel(sub), "前提: サブディレクトリはトップレベルではない")
+
+        cfg.state_top = None
+        self.assertFalse(km._direct_state_git_ok(cfg), "worktree でなければ従来どおり発動しない")
+
+        cfg.state_top = self.root                          # 状態 worktree へ逃がしている
+        self.assertTrue(km._direct_state_git_ok(cfg), "worktree なら direct 同期を使う")
+        km._STATE_GITS.clear()
+        self.assertIsNotNone(km.state_git_for(cfg), "同期オブジェクトが得られる（None にならない）")
 
     def test_direct_sync_commits_even_while_user_index_locked(self):
         # 人の git 操作中（index.lock 保持）でも export は止まらない: コミットは detached
