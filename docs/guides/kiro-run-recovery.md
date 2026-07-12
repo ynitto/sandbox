@@ -94,6 +94,24 @@ python3 tools/kiro-project/kiro-project.py approve <task-id> --reason "..."
 
 `.kiro-project/kiro-flow.yaml` の `agents:` で生きている CLI に切り替える。
 
+### 分散構成（kiro-project=WSL / viewer=Windows）
+
+別 PC で動かす場合、両者はファイルシステムを共有しない。**共有チャネルは `kiro-state` ブランチだけ**。
+
+```
+PC-A (WSL) kiro-project                origin                 PC-B (Win) viewer
+  worktree/.kiro-project  ──push──▶  kiro-state  ──pull──▶  clone (kiro-state)
+   (状態 + bus)           ◀──pull──              ◀──push──   指示 (commands/)
+
+  backup_state ───────────push──────▶  main   ← バックアップ専用。viewer は触らない
+```
+
+- **viewer は `kiro-state` を見る**（`main` ではない）。main には significant だけを載せ、**bus を流していない**ので、main を見ても run が一切見えない
+- **viewer 側の用意**: Windows で clone し、`kiro-state` を checkout して、その `.kiro-project` を viewer の `roots` に登録する。以降は viewer の git 同期（`gitPullSec` / `gitAutoPush`）が `kiro-state` を往復する
+- **main に書くのは kiro-project の `backup_state` だけ**。viewer は main を触らない
+
+同期には `origin` が要る。`git remote -v` で origin があること、`kiro-state` が push されていること（`git ls-remote --heads origin kiro-state`）を確認する。
+
 ### 状態はどこにあるか
 
 kiro-project は状態を `<repo>-kiro-state` worktree（`kiro-state` ブランチ）へ逃がす。本体を dirty にせず、人の git 操作（stash / rebase / pull --autostash）が書き込み中の状態ファイルを壊さないための設計。git 管理外や worktree を作れない環境では自動で本体にフォールバックする（設定は要らない）。
