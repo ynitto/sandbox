@@ -1254,6 +1254,36 @@ class AgentCliTests(unittest.TestCase):
         self.assertIn("ファイル", calls["cmd"][i + 1])       # 参照渡しの短い指示に置換
         self.assertIsNone(calls["input"])
 
+    def test_codex_uses_exec_stdin_and_last_message_file(self):
+        calls = {}
+        def fake_run(cmd, **kw):
+            calls["cmd"] = list(cmd)
+            calls["input"] = kw.get("input")
+            # codex は最終応答を --output-last-message のファイルへ書く
+            i = cmd.index("--output-last-message")
+            with open(cmd[i + 1], "w", encoding="utf-8") as f:
+                f.write("最終応答")
+            return types.SimpleNamespace(returncode=0, stdout="イベントログ...", stderr="")
+        with mock.patch.object(kf, "_AGENT_CLI", "codex"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            out = kf.run_kiro("プロンプト", "gpt-5-codex")
+        self.assertEqual(out, "最終応答")                   # stdout のログではなくファイルの中身
+        self.assertEqual(calls["cmd"][:2], ["codex", "exec"])
+        self.assertIn("--skip-git-repo-check", calls["cmd"])
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", calls["cmd"])
+        self.assertIn("--model", calls["cmd"])
+        self.assertEqual(calls["cmd"][-1], "-")             # プロンプトは stdin（"-"）
+        self.assertEqual(calls["input"], "プロンプト")
+        i = calls["cmd"].index("--output-last-message")
+        self.assertFalse(os.path.exists(calls["cmd"][i + 1]))   # 一時ファイルは掃除される
+
+    def test_codex_falls_back_to_stdout_when_last_message_empty(self):
+        calls, fake = self._capture_run()                   # ファイルへ何も書かない
+        with mock.patch.object(kf, "_AGENT_CLI", "codex"), \
+             mock.patch.object(kf.subprocess, "run", side_effect=fake):
+            out = kf.run_kiro("プロンプト", None)
+        self.assertEqual(out, "ok")                         # stdout へフォールバック
+
     def test_configure_thresholds_sets_agent_cli(self):
         orig = kf._AGENT_CLI
         try:
@@ -1336,7 +1366,7 @@ class FlowWorkerSkillTests(unittest.TestCase):
         prompt = self._capture_prompt(
             kf.execute_kiro, "work", "ログイン画面を追加", {"t0": {"output": "依存成果"}}, None,
             repo_instruction="【ワークスペース】/tmp/ws", request="EC サイトを作る")
-        self.assertIn("実行規律", prompt)          # スキル由来の規律ブロック
+        self.assertIn("三つの約束", prompt)        # スキル由来の規律ブロック
         self.assertIn("ログイン画面を追加", prompt)  # goal 維持
         self.assertIn("【ワークスペース】/tmp/ws", prompt)  # インターフェース情報の伝搬
         self.assertIn("EC サイトを作る", prompt)     # run の元要求（全体文脈）
@@ -1344,14 +1374,14 @@ class FlowWorkerSkillTests(unittest.TestCase):
 
     def test_execute_kiro_verify_skill_prompt_keeps_contract(self):
         prompt = self._capture_prompt(kf.execute_kiro, "verify", "検証する", {}, None)
-        self.assertIn("独立検算", prompt)
+        self.assertIn("再導出", prompt)
         self.assertIn("verify=pass", prompt)
         self.assertIn('{"ok": true|false, "issues": ["..."]}', prompt)
 
     def test_execute_kiro_falls_back_when_skill_disabled(self):
         with mock.patch.object(kf, "_WORKER_SKILL", "none"):
             prompt = self._capture_prompt(kf.execute_kiro, "work", "g", {}, None)
-        self.assertNotIn("実行規律", prompt)
+        self.assertNotIn("三つの約束", prompt)
         self.assertIn("成果物を簡潔に直接出力してください", prompt)
 
     def test_execute_kiro_falls_back_when_script_broken(self):

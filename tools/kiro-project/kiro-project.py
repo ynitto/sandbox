@@ -2175,7 +2175,8 @@ _AGENT_OVERRIDES: "dict[str, dict]" = {}
 AGENT_PURPOSES = ("plan", "review", "prioritize", "route", "adjudicate", "verify",
                   "distill", "assess", "repo_map", "doctor")
 # agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
-_AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot"}
+_AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot",
+                       "codex": "codex"}
 
 
 def _normalize_agent_overrides(raw) -> "dict[str, dict]":
@@ -2205,41 +2206,65 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
     return (str(ov.get("agent_cli") or _AGENT_CLI).lower(), ov.get("model") or None)
 
 
-def _agent_cmd(cli: str, model: "str | None", prompt: str) -> "tuple[list[str], str | None]":
-    """エージェント CLI 1 回分の (argv, stdin テキスト) を組み立てる（実行はしない・決定的）。"""
+def _agent_cmd(cli: str, model: "str | None",
+               prompt: str) -> "tuple[list[str], str | None, str | None]":
+    """エージェント CLI 1 回分の (argv, stdin テキスト, 最終応答ファイル) を組み立てる
+    （実行はしない・決定的）。最終応答ファイルは codex のみ使う（stdout がイベントログのため）。"""
     if cli == "claude":
         # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらない）。
         cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
         if model:
             cmd += ["--model", model]
-        return cmd, prompt
+        return cmd, prompt, None
     if cli == "copilot":
         # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
         # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
         cmd = ["copilot", "-s", "--allow-all-tools", "--allow-all-paths", "--no-color"]
         if model:
             cmd += ["--model", model]
-        return cmd + ["-p", prompt], None
+        return cmd + ["-p", prompt], None, None
+    if cli == "codex":
+        # OpenAI Codex CLI ヘッドレス（codex exec）。プロンプトは stdin 渡し（"-"）。
+        # stdout には実行イベントログが混ざるため、最終応答は --output-last-message の
+        # ファイルから読む。--skip-git-repo-check は git リポジトリ外でも動かすため。
+        fd, out_file = tempfile.mkstemp(prefix="kiro-project-codex-", suffix=".txt")
+        os.close(fd)
+        cmd = ["codex", "exec", "--skip-git-repo-check",
+               "--dangerously-bypass-approvals-and-sandbox", "--color", "never",
+               "--output-last-message", out_file]
+        if model:
+            cmd += ["--model", model]
+        return cmd + ["-"], prompt, out_file
     cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if model:
         cmd += ["--model", model]
-    return cmd + [prompt], None
+    return cmd + [prompt], None, None
 
 
 def _run_kiro_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
-    """エージェント CLI（設定 agent_cli: kiro/claude/copilot）を 1 回呼び出してテキスト応答を返す。
+    """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。
     purpose（AGENT_PURPOSES のいずれか）を渡すと、設定 agents: の処理毎上書き
     （agent_cli / model）が効く。model は 上書き ＞ 呼び出し値（通常グローバル model）。"""
     cli, model_ov = _agent_for(purpose)
-    cmd, stdin_text = _agent_cmd(cli, model_ov or model, prompt)
+    cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
     env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
-    proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
-                          timeout=(_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None), env=env)
-    if proc.returncode != 0:
-        raise RuntimeError(f"{cmd[0]} rc={proc.returncode}: {proc.stderr.strip()[:300]}")
-    return strip_ansi(proc.stdout).strip()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
+                              timeout=(_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None), env=env)
+        if proc.returncode != 0:
+            raise RuntimeError(f"{cmd[0]} rc={proc.returncode}: {proc.stderr.strip()[:300]}")
+        text = strip_ansi(proc.stdout).strip()
+        if out_file:   # codex: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
+            with contextlib.suppress(OSError):
+                with open(out_file, encoding="utf-8") as f:
+                    text = f.read().strip() or text
+        return text
+    finally:
+        if out_file:
+            with contextlib.suppress(OSError):
+                os.remove(out_file)
 
 
 def rank_agent(ready: "list[Task]", model: "str | None", kiro_run=None) -> "list[Task] | None":
@@ -3920,7 +3945,7 @@ class Config:
     location: str = "auto"         # act の実行モード: auto / local / daemon / remote
     executor: str = "agent"
     model: "str | None" = None
-    agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro / claude / copilot
+    agent_cli: str = "kiro"        # LLM 実行に使うエージェント CLI: kiro / claude / copilot / codex
     agent_timeout: float = 300.0   # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
     # バックログ分解の粒度: coarse（ストーリー相当・既定）/ fine（単機能）/ finest（1ファイル/1関数）
     granularity: str = "coarse"
@@ -5247,10 +5272,19 @@ class StateGit:
 class DirectStateGit:
     """プロジェクトルート自体が git 作業ツリー（トップレベル）のときの直接同期（direct モード）。
 
-    管理クローン（StateGit）を介さず、ルートのリポジトリでそのまま
-    pull --rebase --autostash → 同期対象を add/commit → push する。viewer 等の多重コミッタとは
-    pull --rebase の再試行で共存する（force push しない）。同期対象・除外規則は StateGit と同一
-    （bus/ claims/ とドット始まりは同期しない）。リモート（origin）が無ければコミットのみ行う。"""
+    管理クローン（StateGit）を介さず、ルートのリポジトリのブランチへ state コミットを積む。
+    ただし **ルートのチェックアウト（index・作業ツリー・stash）には触れない**:
+
+    - export: コミットは detached worktree（専用 index）で組み立て、ルートのブランチは
+      update-ref の CAS（compare-and-swap）で進める。人が同時にコミットしていたら
+      今回の export は見送る（次パスで再試行）＝ index.lock 競合・人のステージの
+      巻き込み・コミットの衝突が起きない。
+    - import: fetch → ff-only を優先し、分岐時のみ rebase する。--autostash は使わない
+      （未コミット変更と衝突するなら取り込みを見送る＝人の作業を stash で壊さない）。
+    - push: HEAD:branch。reject は fetch + 上記 integrate の再試行で合流（force push しない）。
+
+    同期対象・除外規則は StateGit と同一（bus/ claims/ とドット始まりは同期しない）。
+    リモート（origin）が無ければコミットのみ行う。"""
 
     def __init__(self, root: Path, interval: float = 300.0):
         self.root = Path(root)
@@ -5317,15 +5351,149 @@ class DirectStateGit:
         except ValueError:
             return False
 
-    def _pull(self) -> int:
-        """pull --rebase --autostash。取り込んだファイル数を返す（コンフリクトは abort して 0）。"""
+    def _commit_msg(self) -> str:
+        return f"kiro-project: state sync {datetime.now().isoformat(timespec='seconds')}"
+
+    def _cas_branch(self, branch: str, new: str, old: str) -> bool:
+        """ルートのブランチを CAS（update-ref <new> <old>）で進める。old 不一致
+        （人の並行コミット）なら失敗＝今回の export は見送り。作業ツリーには触れない。"""
+        zero = "0" * 40
+        r = self._git("update-ref", f"refs/heads/{branch}", new, old or zero)
+        return r.returncode == 0
+
+    def _refresh_index(self, targets: "list[str]") -> None:
+        """CAS で進めた新 HEAD に、対象パスの index エントリだけを追随させる
+        （作業ツリー内容＝コミット内容なので status が clean に戻る）。他パスのステージは触らない。
+        未追跡ディレクトリは porcelain が 1 行（`dir/`）で返すため、ここでファイルへ展開する。"""
+        existing: list[str] = []
+        gone: list[str] = []
+        for t in targets:
+            p = self.root / t
+            if p.is_dir():
+                for base, _dirs, files in os.walk(p):
+                    for name in files:
+                        existing.append(str((Path(base) / name).relative_to(self.root)))
+            elif p.exists():
+                existing.append(t)
+            else:
+                gone.append(t)
+        if existing:
+            self._git("update-index", "--add", "--", *existing)
+        if gone:
+            self._git("update-index", "--remove", "--", *gone)
+
+    def _initial_commit(self, targets: "list[str]", branch: str) -> "str | None":
+        """unborn ブランチ（コミット 0 件）への最初の state コミット。worktree は作れないため
+        一時 index（GIT_INDEX_FILE）で組み立てる。ルートの index には触れない。"""
+        fd, tmpidx = tempfile.mkstemp(prefix="kiro-project-state-idx-")
+        os.close(fd)
+        os.remove(tmpidx)                    # git が新規作成する
+        env = {**self._env(), "GIT_INDEX_FILE": tmpidx}
+        try:
+            existing = [t for t in targets if (self.root / t).exists()]
+            if not existing:
+                return None
+            r = subprocess.run(["git", "-C", str(self.root), "add", "--", *existing],
+                               capture_output=True, text=True, env=env)
+            if r.returncode != 0:
+                return None
+            tree = subprocess.run(["git", "-C", str(self.root), "write-tree"],
+                                  capture_output=True, text=True, env=env).stdout.strip()
+            if not tree:
+                return None
+            r = subprocess.run(["git", "-C", str(self.root), "commit-tree", tree,
+                                "-m", self._commit_msg()],
+                               capture_output=True, text=True, env=env)
+            new = r.stdout.strip()
+            if r.returncode != 0 or not new:
+                return None
+            if not self._cas_branch(branch, new, ""):
+                return None
+            self._refresh_index(targets)
+            return new
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmpidx)
+
+    def _worktree_commit(self, targets: "list[str]", branch: str,
+                         amend: bool) -> "str | None":
+        """state コミットを detached worktree（専用 index）で組み立てる。
+        ルートの index・作業ツリーに触れず、ブランチ更新は CAS（_cas_branch）のみ。
+        amend=True なら HEAD（未 push の state sync コミット）へ束ねる（--amend）。
+        返り値は新コミット SHA（差分なし・競合検知・失敗は None）。"""
+        old = self._git("rev-parse", "HEAD").stdout.strip()
+        if not old:
+            return None
+        wt = tempfile.mkdtemp(prefix="kiro-project-state-wt-")
+        os.rmdir(wt)                         # worktree add は空でも既存ディレクトリを嫌う
+        try:
+            if self._git("worktree", "add", "--detach", "--force", wt, old).returncode != 0:
+                return None
+
+            def _wgit(*args: str):
+                return subprocess.run(["git", "-C", wt, *args],
+                                      capture_output=True, text=True, env=self._env())
+
+            for rel in targets:              # 現在のルートの内容を worktree へ写す（削除も反映）
+                src = self.root / rel
+                dst = Path(wt) / rel
+                if src.is_dir():             # 未追跡ディレクトリ（porcelain は dir/ 1 行で返す）
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                elif src.is_file():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                elif dst.exists():
+                    _wgit("rm", "-rq", "--ignore-unmatch", "--", rel)
+            _wgit("add", "-A", "--", *targets)
+            if _wgit("diff", "--cached", "--quiet").returncode == 0:
+                return None                  # 差分なし
+            # 連続する state sync は未 push の間 --amend で 1 コミットに束ねる
+            # （同期のたびに 1 行差分のコミットが積もり、履歴を埋め尽くすのを防ぐ）
+            args = (["commit", "-q", "--amend"] if amend else ["commit", "-q"])
+            if _wgit(*args, "-m", self._commit_msg()).returncode != 0:
+                return None
+            new = _wgit("rev-parse", "HEAD").stdout.strip()
+            if not new or not self._cas_branch(branch, new, old):
+                return None                  # 人の並行コミットに競り負け → 次パスで再試行
+            self._refresh_index(targets)
+            return new
+        finally:
+            self._git("worktree", "remove", "--force", wt)
+            shutil.rmtree(wt, ignore_errors=True)
+            self._git("worktree", "prune")
+
+    def _integrate(self, branch: str) -> int:
+        """origin/<branch> をローカルへ取り込む。ff-only を優先し、分岐時のみ rebase。
+        --autostash は使わない: 未コミット変更と衝突するときは取り込みを見送る（壊さない）。
+        取り込んだファイル数を返す（見送り・コンフリクト abort は 0）。"""
+        if self._git("rev-parse", "-q", "--verify",
+                     f"refs/remotes/origin/{branch}").returncode != 0:
+            return 0
         before = self._git("rev-parse", "HEAD").stdout.strip()
-        r = self._git("pull", "--rebase", "--autostash", "origin", self._branch())
-        if r.returncode != 0:
-            self._git("rebase", "--abort")
+        if not before:
+            return 0
+        r = self._git("rev-list", "--count", f"HEAD..origin/{branch}")
+        try:
+            behind = int(r.stdout.strip() or 0) if r.returncode == 0 else 0
+        except ValueError:
+            behind = 0
+        if behind == 0:
+            return 0
+        r = self._git("rev-list", "--count", f"origin/{branch}..HEAD")
+        try:
+            local_only = int(r.stdout.strip() or 0) if r.returncode == 0 else 0
+        except ValueError:
+            local_only = 0
+        if local_only == 0:
+            ok = self._git("merge", "--ff-only", f"origin/{branch}").returncode == 0
+        else:
+            ok = self._git("rebase", f"origin/{branch}").returncode == 0
+            if not ok:
+                self._git("rebase", "--abort")
+        if not ok:
             return 0
         after = self._git("rev-parse", "HEAD").stdout.strip()
-        if not before or before == after:
+        if before == after:
             return 0
         diff = self._git("diff", "--name-only", before, after, "--", ".").stdout
         return len([ln for ln in diff.splitlines() if ln.strip()])
@@ -5339,24 +5507,24 @@ class DirectStateGit:
         with _file_lock(lock):            # 同一ホストの多重プロセスを直列化
             self._ensure_identity()
             remote = self._has_remote()
+            branch = self._branch()
             due = self.interval <= 0 or (now - self._last_remote) >= self.interval
             imported = 0
             if remote and due:
-                imported = self._pull()
+                self._git("fetch", "-q", "origin", branch)   # 取り込みは _integrate が行う
                 self._last_remote = now
             targets = self._changed_targets()
-            if targets:
-                self._git("add", "-A", "--", *targets)
             exported = 0
-            if self._git("diff", "--cached", "--quiet").returncode != 0:
-                # 連続する state sync は未 push の間 --amend で 1 コミットに束ねる
-                # （同期のたびに 1 行差分のコミットが積もり、履歴を埋め尽くすのを防ぐ）
-                amend = ["--amend"] if self._amendable(remote) else []
-                self._git("commit", "-q", *amend, "-m",
-                          f"kiro-project: state sync {datetime.now().isoformat(timespec='seconds')}")
-                exported = len(targets)
+            if targets:
+                if self._git("rev-parse", "-q", "--verify", "HEAD").returncode != 0:
+                    new = self._initial_commit(targets, branch)
+                else:
+                    new = self._worktree_commit(targets, branch,
+                                                amend=self._amendable(remote))
+                if new:
+                    exported = len(targets)
             if remote and (due or force):
-                branch = self._branch()
+                imported += self._integrate(branch)
                 r = self._git("rev-list", "--count", f"origin/{branch}..HEAD")
                 if r.returncode == 0:
                     ahead = (r.stdout.strip() or "0") != "0"
@@ -5367,7 +5535,8 @@ class DirectStateGit:
                         if self._git("push", "-u", "origin", f"HEAD:{branch}").returncode == 0:
                             self._last_remote = time.time()
                             break
-                        imported += self._pull()
+                        self._git("fetch", "-q", "origin", branch)
+                        imported += self._integrate(branch)
                         if i < _STATE_PUSH_RETRIES - 1:
                             time.sleep(2 ** i if i < 4 else 16)
                     else:
@@ -9203,7 +9372,8 @@ CONFIG_DEFAULTS = {
     "location": "auto",
     "model": None,
     # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）/
-    # copilot（GitHub Copilot CLI `copilot -p`）。kiro-project 自身の LLM 呼び出し
+    # copilot（GitHub Copilot CLI `copilot -p`）/ codex（OpenAI Codex CLI `codex exec`）。
+    # kiro-project 自身の LLM 呼び出し
     # （分解・優先順位・裁定・ルーティング）に効く。実行層 kiro-flow の CLI は
     # kiro-flow 側の設定（flow_config / kiro-flow.yaml の agent_cli）で揃える。
     "agent_cli": "kiro",
@@ -9484,9 +9654,10 @@ def _add_common(sp):
     sp.add_argument("--workdir", default=None,
                     help="act / verify の作業ディレクトリ（root 相対、既定 . = root）")
     sp.add_argument("--bus", default=None, help="kiro-flow バス（root 相対、既定 <root>/bus）")
-    sp.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude", "copilot"],
+    sp.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude", "copilot", "codex"],
                     help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。kiro=kiro-cli chat（既定）/ "
-                         "claude=Claude Code ヘッドレス（claude -p）/ copilot=GitHub Copilot CLI（copilot -p）")
+                         "claude=Claude Code ヘッドレス（claude -p）/ copilot=GitHub Copilot CLI（copilot -p）/ "
+                         "codex=OpenAI Codex CLI（codex exec）")
     sp.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                     help="バックログ分解の粒度（設定 granularity と同義）。coarse=ストーリー相当（既定）/ "
                          "fine=単機能 / finest=1ファイル/1関数の最小単位")

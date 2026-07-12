@@ -39,7 +39,7 @@ root: .                     # プロジェクトルート（cwd 相対、既定 
 # 実行バックエンド（環境に kiro-cli があるか等で切替）
 # ---------------------------------------------------------------------------
 executor: agent             # 実行・評価役: agent（エージェント CLI に委譲。agent_cli で kiro/claude/
-                            # copilot を切替）/ stub（オフライン検証・エージェント不使用。charter があるとき
+                            # copilot/codex を切替）/ stub（オフライン検証・エージェント不使用。charter があるとき
                             # 自動で入る plan→execute→evaluate の plan/敵対的レビューも stub 版に切替わり、
                             # _run_kiro_cli を一切呼ばない。「エージェント無しで動かす」なら本命はここ）。
                             # または kiro-flow の executor プラグイン名 / .py パスも指定可（そのまま
@@ -59,7 +59,8 @@ location: auto              # act の実行先: auto / local / daemon / remote
 concurrency: 1             # daemon/remote へ並行 submit する独立タスク数（1=逐次。local 単発 run は常に逐次）
 # agent_cli: kiro           # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat・既定）/
                             #   claude（Claude Code ヘッドレス `claude -p`）/
-                            #   copilot（GitHub Copilot CLI `copilot -p`）。kiro-project 自身の
+                            #   copilot（GitHub Copilot CLI `copilot -p`）/
+                            #   codex（OpenAI Codex CLI `codex exec`）。kiro-project 自身の
                             #   LLM 呼び出し（分解・優先順位・裁定・ルーティング）に効く。実行層
                             #   kiro-flow 側は kiro-flow.yaml（flow_config）の agent_cli で揃える。
 # agent_timeout: 300        # エージェント CLI 1 呼び出しのタイムアウト秒（0 以下で無効）
@@ -214,8 +215,11 @@ git_branch: main            # バスに使う git ブランチ
 # needs の記入・policy/charter の編集）は中へ。
 #
 # ★ direct モード（推奨・設定不要）: プロジェクトルート自体を共有リポジトリの clone にして
-#   おけば、state_git を設定しなくてもそのリポジトリへ直接コミット・push する（管理クローン
-#   .state-git を作らない）。viewer 側は同じリポジトリを clone して編集・検収するだけでよい。
+#   おけば、state_git を設定しなくてもそのリポジトリのブランチへ state コミットを積んで push
+#   する（管理クローン .state-git を作らない）。コミットは detached worktree（専用 index）で
+#   組み立て、ブランチは update-ref の CAS で進めるため、人の並行 git 操作（add/commit）と
+#   衝突しない。取り込みは ff-only 優先・--autostash 不使用（未コミット変更と衝突するなら
+#   見送る）。viewer 側は同じリポジトリを clone して編集・検収するだけでよい。
 #
 # ルートが git でない場合のフォールバック: state_git を設定すると管理クローン方式で鏡写しする。
 # fetch/push は state_git_interval で律速され、push は共有すべきローカルコミットがあるときだけ

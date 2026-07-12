@@ -177,7 +177,15 @@ release_worktree(dest) -> None
   `push HEAD:refs/heads/kf/<run_id>` で送る。`GitBus` の sparse バスクローンは別系統（既に再利用機構あり）。
 - **kiro-project**: `_clone_repo_shallow`（verify/acceptance）を共有 cache + worktree へ置換。
   検証は最新の target ブランチを毎回 fetch してから worktree を作る（INV-1）。
-- 両ツールは **同じ cache root を共有**（ホスト共有スコープ）。URL ロックで跨プロセス協調。
+  さらに `DirectStateGit`（direct モードの状態同期）も、state コミットの組み立てを
+  detached worktree（専用 index）で行い、ルートのブランチは update-ref の CAS で進める
+  （ルートのチェックアウト・index・stash に触れない＝人の並行 git 操作と衝突しない）。
+- **flow-worker スキル**（`.github/skills/flow-worker/scripts/git_worktree.py`）: 本パターンの
+  §6 API を stdlib のみの CLI（provision/release/push）として同梱し、エージェント（LLM ワーカー）の
+  git アクセスの唯一の入口にする。push は detached のまま `HEAD:refs/heads/<branch>`＋
+  fetch/rebase リトライ（§6 書込ワークフロー）。cache root は両ツールと共有。
+- 上記はすべて **同じ cache root を共有**（ホスト共有スコープ。`KIRO_GIT_CACHE_DIR` /
+  既定 `$TMPDIR/kiro-git-cache`）。URL ロックで跨プロセス協調。
 
 ---
 

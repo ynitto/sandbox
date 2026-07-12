@@ -23,8 +23,8 @@ def test_worker_prompt_contains_goal_and_discipline():
     p = fw.build({"role": "worker", "kind": "work", "goal": "READMEに節を追加"})
     assert "READMEに節を追加" in p
     assert "タスク(work)" in p
-    assert "実行規律" in p
-    assert "スコープ厳守" in p
+    assert "三つの約束" in p
+    assert "範囲を守る" in p
     assert "報告契約" in p
 
 
@@ -49,7 +49,7 @@ def test_verify_prompt_keeps_output_contract():
     assert "verify=pass" in p
     assert "verify=fail" in p
     assert '{"ok": true|false, "issues": ["..."]}' in p
-    assert "独立検算" in p
+    assert "再導出" in p
     assert "(minor)" in p
 
 
@@ -83,6 +83,20 @@ def test_unknown_kind_falls_back_to_work():
     assert "ワーカー" in p
 
 
+def test_git_rules_injected_for_exec_and_verify():
+    for kind in ("work", "generate", "map", "verify"):
+        p = fw.build({"role": "worker", "kind": kind, "goal": "g"})
+        assert "git 利用規約" in p, kind
+        assert "git_worktree.py" in p, kind        # スクリプトの絶対パスが注入される
+        assert "provision" in p and "release" in p, kind
+
+
+def test_git_rules_not_injected_for_aggregation_kinds():
+    for kind in ("classify", "synthesize", "filter", "judge", "reduce", "split"):
+        p = fw.build({"role": "worker", "kind": kind, "goal": "g"})
+        assert "git 利用規約" not in p, kind
+
+
 def test_evaluator_prompt_keeps_decision_contract():
     p = fw.build({"role": "evaluator", "request": "req", "results_summary": "- t1: done",
                   "max_retries": 5, "patterns_catalog": "- fan-out: ..."})
@@ -92,7 +106,7 @@ def test_evaluator_prompt_keeps_decision_contract():
     assert "最大 5 回" in p
     assert "- fan-out: ..." in p
     assert "- t1: done" in p
-    assert "受け入れ評価" in p
+    assert "受け入れ" in p
     assert "膨張禁止" in p
 
 

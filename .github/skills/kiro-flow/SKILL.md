@@ -18,7 +18,7 @@ metadata:
 
 `kiro-flow` CLI（`tools/kiro-flow/kiro-flow.py`）を呼び出して、要求を動的にタスク分解 →
 複数ワーカーで分散実行 → 結果を評価して再計画 → 統合する。LLM 実行は kiro-cli が既定
-（設定 `agent_cli: claude` で Claude Code ヘッドレスへ切替可）。
+（設定 `agent_cli` で claude / copilot / codex ヘッドレスへ切替可）。
 kiro-cli が無い環境では `--planner stub --executor stub` で挙動を確認できる。
 
 ## 前提

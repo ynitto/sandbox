@@ -2410,6 +2410,36 @@ class TestAgentCliAndGranularity(unittest.TestCase):
         self.assertIn("--model", calls["cmd"])
         self.assertIsNone(calls["input"])
 
+    def test_run_kiro_cli_codex_uses_exec_and_last_message_file(self):
+        calls = {}
+        def fake_run(cmd, **kw):
+            calls["cmd"] = list(cmd)
+            calls["input"] = kw.get("input")
+            # codex は最終応答を --output-last-message のファイルへ書く
+            i = cmd.index("--output-last-message")
+            with open(cmd[i + 1], "w", encoding="utf-8") as f:
+                f.write("最終応答")
+            return types.SimpleNamespace(returncode=0, stdout="イベントログ...", stderr="")
+        with mock.patch.object(km, "_AGENT_CLI", "codex"), \
+             mock.patch.object(km.subprocess, "run", side_effect=fake_run):
+            out = km._run_kiro_cli("プロンプト", "gpt-5-codex")
+        self.assertEqual(out, "最終応答")                  # stdout のログではなくファイルの中身
+        self.assertEqual(calls["cmd"][:2], ["codex", "exec"])
+        self.assertIn("--skip-git-repo-check", calls["cmd"])
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", calls["cmd"])
+        self.assertIn("--model", calls["cmd"])
+        self.assertEqual(calls["cmd"][-1], "-")            # プロンプトは stdin（"-"）
+        self.assertEqual(calls["input"], "プロンプト")
+        i = calls["cmd"].index("--output-last-message")
+        self.assertFalse(os.path.exists(calls["cmd"][i + 1]))  # 一時ファイルは掃除される
+
+    def test_run_kiro_cli_codex_falls_back_to_stdout(self):
+        calls, fake = self._capture_run()                  # ファイルへ何も書かない
+        with mock.patch.object(km, "_AGENT_CLI", "codex"), \
+             mock.patch.object(km.subprocess, "run", side_effect=fake):
+            out = km._run_kiro_cli("プロンプト", None)
+        self.assertEqual(out, "ok")                        # stdout へフォールバック
+
     def test_build_config_sets_agent_globals_and_fields(self):
         orig = (km._AGENT_CLI, km._AGENT_TIMEOUT)
         try:
@@ -5751,6 +5781,42 @@ class TestDirectStateGit(unittest.TestCase):
         self.assertFalse((got / "claims").exists())
         self.assertFalse((self.root / ".state-git").exists())     # 管理クローンは作らない
 
+    def test_direct_sync_commits_even_while_user_index_locked(self):
+        # 人の git 操作中（index.lock 保持）でも export は止まらない: コミットは detached
+        # worktree（専用 index）で組み立て、ブランチは update-ref で進めるため index を使わない。
+        cfg = self._cfg()
+        mkb(self.root, "T1")
+        lock = self.root / ".git" / "index.lock"
+        lock.write_text("", encoding="utf-8")
+        try:
+            km.state_sync(cfg, force=True)
+        finally:
+            lock.unlink()
+        r = subprocess.run(["git", "-C", str(self.root), "log", "-1", "--format=%s"],
+                           capture_output=True, text=True)
+        self.assertTrue(r.stdout.strip().startswith("kiro-project: state sync"))
+        got = self._other("locked-check")
+        self.assertTrue((got / "backlog" / "T1.md").exists())   # push まで完走する
+
+    def test_direct_sync_records_deletions(self):
+        cfg = self._cfg()
+        mkb(self.root, "T1")
+        km.state_sync(cfg, force=True)
+        (self.root / "backlog" / "T1.md").unlink()
+        km.state_sync(cfg, force=True)
+        got = self._other("del-check")
+        self.assertFalse((got / "backlog" / "T1.md").exists())  # 削除も worktree 経由で反映
+
+    def test_direct_sync_keeps_working_tree_clean_after_export(self):
+        # CAS でブランチを進めた後、対象パスの index を新 HEAD に追随させる
+        # （作業ツリー内容＝コミット内容なので status が clean に戻る）。
+        cfg = self._cfg()
+        mkb(self.root, "T1")
+        km.state_sync(cfg, force=True)
+        r = subprocess.run(["git", "-C", str(self.root), "status", "--porcelain",
+                            "--", "backlog"], capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "")
+
     def test_direct_sync_imports_remote_instruction(self):
         cfg = self._cfg()
         other = self._other()
@@ -7483,17 +7549,30 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertEqual(km._agent_for(""), ("kiro", None))
 
     def test_agent_cmd_builds_per_cli(self):
-        cmd, stdin = km._agent_cmd("claude", "opus", "P")
+        cmd, stdin, out_file = km._agent_cmd("claude", "opus", "P")
         self.assertEqual(cmd[0], "claude")
         self.assertIn("opus", cmd)
         self.assertEqual(stdin, "P")                              # claude は stdin 渡し
-        cmd, stdin = km._agent_cmd("copilot", None, "P")
+        self.assertIsNone(out_file)
+        cmd, stdin, out_file = km._agent_cmd("copilot", None, "P")
         self.assertEqual(cmd[0], "copilot")
         self.assertEqual(cmd[-2:], ["-p", "P"])
         self.assertIsNone(stdin)
-        cmd, stdin = km._agent_cmd("kiro", "m", "P")
+        self.assertIsNone(out_file)
+        cmd, stdin, out_file = km._agent_cmd("kiro", "m", "P")
         self.assertEqual(cmd[0], "kiro-cli")
         self.assertEqual(cmd[-1], "P")
+        self.assertIsNone(out_file)
+        cmd, stdin, out_file = km._agent_cmd("codex", "m", "P")
+        try:
+            self.assertEqual(cmd[:2], ["codex", "exec"])
+            self.assertEqual(cmd[-1], "-")                        # プロンプトは stdin（"-"）
+            self.assertEqual(stdin, "P")
+            self.assertIn("--output-last-message", cmd)           # 最終応答はファイル経由
+            self.assertTrue(out_file and os.path.exists(out_file))
+        finally:
+            if out_file:
+                os.remove(out_file)
 
     def test_run_kiro_cli_uses_purpose_override(self):
         km._AGENT_CLI = "kiro"

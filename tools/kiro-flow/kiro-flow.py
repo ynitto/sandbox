@@ -135,8 +135,8 @@ CONFIG_DEFAULTS = {
     "poll": 2.0,
     "model": None,
     # LLM 実行に使うエージェント CLI: kiro（kiro-cli chat）/ claude（Claude Code `claude -p`）/
-    # copilot（GitHub Copilot CLI `copilot -p`）。planner・executor・verify 等、
-    # このツールが行う LLM 呼び出しすべてに効く。
+    # copilot（GitHub Copilot CLI `copilot -p`）/ codex（OpenAI Codex CLI `codex exec`）。
+    # planner・executor・verify 等、このツールが行う LLM 呼び出しすべてに効く。
     "agent_cli": "kiro",
     # 役割毎のエージェント上書き（yaml 専用）。キーは planner / evaluator / worker（全 kind の
     # 既定）/ 個別 kind（work/generate/classify/synthesize/verify/filter/judge/reduce/split/map）、
@@ -2825,7 +2825,7 @@ _EXECUTOR_DIR: "str | None" = None
 # None のままなら _kiro_timeout / _stub_sleep が環境変数→組み込み既定にフォールバックする。
 _KIRO_TIMEOUT: "float | None" = None
 _STUB_SLEEP_MAX: "float | None" = None
-# LLM 実行に使うエージェント CLI（設定 agent_cli: kiro/claude/copilot）。
+# LLM 実行に使うエージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）。
 _AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
 # 役割（purpose）毎の上書き（設定 agents: の正規化済みマップ）。キーは planner / evaluator /
 # worker（全 kind の既定）/ 個別 kind（work/generate/classify/synthesize/verify/filter/judge/
@@ -2836,7 +2836,8 @@ AGENT_ROLES = ("planner", "evaluator", "worker")
 # none/builtin/空 で無効＝常に組み込みプロンプト。
 _WORKER_SKILL: str = str(CONFIG_DEFAULTS["worker_skill"])
 # agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
-_AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot"}
+_AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot",
+                       "codex": "codex"}
 
 
 def _normalize_agent_overrides(raw) -> "dict[str, dict]":
@@ -2914,7 +2915,7 @@ def _kiro_argv_limit() -> int:
 
 
 def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
-    """エージェント CLI（設定 agent_cli: kiro/claude/copilot）を 1 回呼び出してテキスト応答を返す。
+    """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出しはすべてここを通る（planner / executor / verify / 裁定）。
     purpose（planner / evaluator / ノード kind）を渡すと設定 agents: の役割毎上書きが効く
     （kind は agents["worker"] へフォールバック）。model は 上書き ＞ 呼び出し値。"""
@@ -2922,11 +2923,25 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
     model = model_ov or model
     stdin_text = None
     spill = None
+    out_file = None
     if cli == "claude":
         # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらないためスピル不要）。
         cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
         if model:
             cmd += ["--model", model]
+        stdin_text = prompt
+    elif cli == "codex":
+        # OpenAI Codex CLI ヘッドレス（codex exec）。プロンプトは stdin 渡し（"-"）。
+        # stdout には実行イベントログが混ざるため、最終応答は --output-last-message の
+        # ファイルから読む。--skip-git-repo-check は git リポジトリ外でも動かすため。
+        fd, out_file = tempfile.mkstemp(prefix="kiro-flow-codex-", suffix=".txt")
+        os.close(fd)
+        cmd = ["codex", "exec", "--skip-git-repo-check",
+               "--dangerously-bypass-approvals-and-sandbox", "--color", "never",
+               "--output-last-message", out_file]
+        if model:
+            cmd += ["--model", model]
+        cmd.append("-")
         stdin_text = prompt
     else:
         if cli == "copilot":
@@ -2952,14 +2967,27 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
                               timeout=_kiro_timeout())
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。タスクは failed 記録 → 再計画で retry に回り、run は前進する
+        if out_file:
+            with contextlib.suppress(OSError):
+                os.remove(out_file)
         raise RuntimeError(f"{cmd[0]} タイムアウト（{_kiro_timeout():.0f}s 超過）")
     finally:
         if spill:
             with contextlib.suppress(OSError):
                 os.remove(spill)
-    if proc.returncode != 0:
-        raise RuntimeError(f"{cmd[0]} 失敗 (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
-    return strip_ansi(proc.stdout).strip()
+    try:
+        if proc.returncode != 0:
+            raise RuntimeError(f"{cmd[0]} 失敗 (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
+        text = strip_ansi(proc.stdout).strip()
+        if out_file:   # codex: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
+            with contextlib.suppress(OSError):
+                with open(out_file, encoding="utf-8") as f:
+                    text = f.read().strip() or text
+        return text
+    finally:
+        if out_file:
+            with contextlib.suppress(OSError):
+                os.remove(out_file)
 
 
 # dep_results は {dep_id: result_dict}（result_dict は output テキストと任意の data を持つ）。
@@ -6170,9 +6198,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="参照リポジトリ（読むだけ・書き込まない／複数可）。素の URL でも JSON "
                         "（{url,path,base,desc}）でも可。エージェントのプロンプトと gitlab イシュー本文に"
                         "参照節として載る（clone はしない）")
-    p.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude", "copilot"],
+    p.add_argument("--agent-cli", dest="agent_cli", default=None, choices=["kiro", "claude", "copilot", "codex"],
                    help="LLM 実行に使うエージェント CLI（設定 agent_cli と同義）。kiro=kiro-cli chat（既定）/ "
-                        "claude=Claude Code ヘッドレス（claude -p）/ copilot=GitHub Copilot CLI（copilot -p）")
+                        "claude=Claude Code ヘッドレス（claude -p）/ copilot=GitHub Copilot CLI（copilot -p）/ "
+                        "codex=OpenAI Codex CLI（codex exec）")
     p.add_argument("--granularity", default=None, choices=["coarse", "fine", "finest"],
                    help="タスク分解の細かさ（設定 granularity と同義）。coarse=現状 / fine=1段細かい / "
                         "finest=2段細かい（既定）。細かいほど小さなタスクに多く分解する")

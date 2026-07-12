@@ -46,6 +46,7 @@
   - `kiro`（既定）… `kiro-cli chat`。`--planner none` なら不要
   - `claude` … Claude Code ヘッドレス（`claude -p`・プロンプトは stdin 渡し）
   - `copilot` … GitHub Copilot CLI（`copilot -p`・standalone 版）
+  - `codex` … OpenAI Codex CLI（`codex exec`・最終応答は `--output-last-message` 経由で取得）
   - モデルは設定 `model:` で指定（省略時は各 CLI の既定。実行層 kiro-flow 側は kiro-flow.yaml の `agent_cli` / `model` で揃える）
 
 ```bash
@@ -533,15 +534,18 @@ kiro-project instances                          # 稼働中の全プロジェク
 
 ### direct モード（推奨・設定不要）
 
-**プロジェクトルート自体を共有リポジトリの clone にする**と、kiro-project はそのリポジトリへ直接
-コミット・push し、viewer 側の commit（指示・検収）を pull で取り込む。管理クローンは作らない。
+**プロジェクトルート自体を共有リポジトリの clone にする**と、kiro-project はそのリポジトリの
+ブランチへ state コミットを積んで push し、viewer 側の commit（指示・検収）を取り込む。管理クローンは
+作らない。ルートのチェックアウトには触れない: コミットは detached worktree（専用 index）で組み立てて
+update-ref の CAS でブランチを進めるため、人の `git add`/`git commit` と衝突しない。
 
 ```bash
 git clone git@example.com:team/proj-state.git ~/kiro/proj
 cd ~/kiro/proj && vi charter.md && kiro-project start
 ```
 
-- push 競合は `pull --rebase --autostash` → 再 push の指数バックオフで吸収し、**force push はしない**。
+- リモートの取り込みは fetch → ff-only 優先・分岐時のみ rebase（--autostash 不使用＝未コミット変更と
+  衝突するなら見送る）。push 競合は fetch + rebase → 再 push の指数バックオフで吸収し、**force push はしない**。
 - 同期対象はルート直下の状態のみ。一時状態（`bus/`・`claims/`）とドット始まりは同期しない。
 - fetch/push は `state_git_interval`（既定 300 秒）で律速。push は共有すべきコミットがあるときだけ
   （run のパス直後は間隔を待たずに押し出す）。

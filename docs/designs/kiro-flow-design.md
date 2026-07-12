@@ -393,10 +393,17 @@ planner を flow-planner スキルへ外出ししたのと同じ作戦で、`exe
   workspace・references の構造化 spec / run の元要求（request。worker が全体文脈として使う）、
   evaluator には要求・結果サマリー・人フィードバック・パターンカタログ・max_retries。
   kiro-project には依存しない。
-- **中身**: gitlab-idd スキル（worker-role / requester-review / non-requester-review /
-  project-dod）から GitLab イシュー・MR 操作を除いて蒸留した実行規律
-  （解釈確定→影響範囲→スコープ厳守→自己検証→報告契約、verify の独立検算と
-  minor/重大の判定規律、evaluator の受け入れ評価・差し戻し goal 具体化・膨張禁止）。
+- **中身**: flow-worker 固有の実行規律。worker（work/generate/map）は「三つの約束」
+  —— 前提を書く（曖昧さは推測解釈を明記）・範囲を守る（影響確認と最小変更・範囲外は報告のみ）・
+  検証してから渡す（完了条件との突き合わせと報告契約）。verify は再導出検証
+  （結論をなぞらず導き直す・minor/重大の判定規律・再作業者が着手できる粒度の issues）。
+  evaluator は受け入れ・具体化・打ち切り（差し戻し goal への issues 転記・new_tasks の膨張禁止）。
+- **git 利用規約（worktree 必須）**: 実装系・検証役のプロンプトには、git 操作をスキル同梱の
+  `scripts/git_worktree.py`（共有キャッシュ + worktree の provision/release/push CLI。
+  cache root は本ツールと同じ `KIRO_GIT_CACHE_DIR` / `$TMPDIR/kiro-git-cache`）に限定する
+  規約を常に注入する。エージェントの自発的な clone / checkout / 共有チェックアウトへの
+  commit を封じ、並行タスク・人の作業とのコミット衝突を防ぐ
+  （パターン正典は docs/designs/git-worktree-cache-pattern.md）。
 - **互換**: 出力契約（verify の `verify=pass|fail`＋`{"ok","issues"}`、split の JSON 配列、
   reduce の count 整合、evaluator の decision JSON）はスキル側でも同一に保つ
   （kiro-flow のパーサ `_normalize_verify` / `_reconcile_count` / `_coerce_tasks` が前提）。
