@@ -5064,16 +5064,33 @@ echo this-later-command-must-not-be-selected
             "Here is how to verify the change\nReview the behavior carefully"
         ))
 
-    def test_first_command_line_bare_line_and_backslash_continuation_stay_backward_compatible(self):
+    def test_first_command_line_bare_line_stays_backward_compatible(self):
         self.assertEqual(
             km._first_command_line("python3 -m pytest tools/kiro-project/tests -q -k first_command_line"),
             "python3 -m pytest tools/kiro-project/tests -q -k first_command_line",
         )
-        # _join_continuations は _first_command_line に結線されていない（別関数として単体テスト済み）ため、
-        # 継続入力でも最初の物理行（末尾 `\` 付き）が従来どおり返る。
+
+    def test_first_command_line_joins_backslash_continuation_across_lines(self):
+        # _join_continuations がパイプラインに結線されたため、フェンス外の継続行も
+        # 1つの論理コマンドへ結合されて返る。
         self.assertEqual(
             km._first_command_line("pytest -q \\\n  -k first_command_line"),
-            "pytest -q \\",
+            "pytest -q -k first_command_line",
+        )
+
+    def test_first_command_line_composes_fence_prompt_continuation_and_command_check(self):
+        # フェンス優先 → プロンプト記号除去 → 継続結合 → コマンドらしさ判定、が
+        # 一つの合成パイプラインとして機能することを確認する。
+        output = (
+            "実行してください:\n"
+            "```bash\n"
+            "$ pytest -q \\\n"
+            "  -k first_command_line\n"
+            "```"
+        )
+        self.assertEqual(
+            km._first_command_line(output),
+            "pytest -q -k first_command_line",
         )
 
     def test_looks_like_command_accepts_known_command_word(self):

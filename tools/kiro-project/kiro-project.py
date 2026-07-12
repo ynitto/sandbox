@@ -3037,41 +3037,28 @@ def _join_continuations(lines: list[str]) -> list[str]:
     return joined
 
 
-def _first_executable_line(lines: list[str], *, require_shell_syntax: bool = True) -> Optional[str]:
-    """候補行から最初のコマンドを返す。見つからなければ None。
-
-    require_shell_syntax=False の場合は `_looks_like_shell_command` の sh -n 構文チェックを
-    課さない。コードフェンスで明示的に区切られた行は LLM の意図（これがコマンドである）が
-    明確なため、素通しで信頼する（フェンス外の地の文はこの限りでなく従来どおり厳格に見る）。
-    """
-    for raw_line in lines:
-        line = _strip_leading_shell_prompt(_strip_code(raw_line.strip()))
-        if (
-            line
-            and not line.startswith("#")
-            and line.casefold() not in _SHELL_FENCE_LANGUAGE_TAGS
-            and (not require_shell_syntax or _looks_like_shell_command(line))
-        ):
-            return line
-    return None
-
-
 def _first_command_line(out: str) -> Optional[str]:
     """合成出力の先頭のコマンド行を返す。どの規則にも合わなければ None。
 
-    コードフェンスを最優先でスキャンする: フェンスが見つかれば、フェンス内の最初の
-    非空・非コメント行を無条件でコマンドとして採用する。フェンスが一つも無ければ、
-    フェンス外の行を対象にした従来ロジック（既知コマンド語などの先頭トークン判定 +
-    sh -n 構文チェック）へフォールバックする。行頭のシェルプロンプト記号 `$ ` は
-    判定前に剥がす（LLM がプロンプト付きでコマンド例を返す出力に対応するため）。
+    フェンス優先で走査する: `_extract_fenced_blocks`（t8）で取り出したブロックを出現順に、
+    「正規化（ANSI・バッククォート除去 `_strip_code` とプロンプト記号除去
+    `_strip_leading_shell_prompt`）→ 継続結合（`_join_continuations`, t11）→
+    コマンドらしさ判定（`_looks_like_command`, t10）」のパイプラインへ通し、最初に
+    条件を満たした1件を返す。フェンス内に候補が無ければ、フェンスの外も含めた全行を
+    同じパイプラインへ通してフォールバックする。
     """
-    fenced = _first_executable_line(_code_fence_lines(out), require_shell_syntax=False)
-    if fenced:
-        return fenced
-    lines = (out or "").splitlines()
-    return _first_executable_line(
-        [line for line in lines if _has_command_like_leading_token(_strip_leading_shell_prompt(line.strip()))]
-    )
+    def first_via_pipeline(lines: list[str]) -> Optional[str]:
+        normalized = [_strip_leading_shell_prompt(_strip_code(line.strip())) for line in lines]
+        for cand in _join_continuations(normalized):
+            if _looks_like_command(cand):
+                return cand
+        return None
+
+    for block in _extract_fenced_blocks(out):
+        cand = first_via_pipeline(block.splitlines())
+        if cand:
+            return cand
+    return first_via_pipeline((out or "").splitlines())
 
 
 def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
