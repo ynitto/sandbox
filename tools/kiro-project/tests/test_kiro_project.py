@@ -4947,6 +4947,17 @@ class TestVerifyAssist(unittest.TestCase):
         output = "before\n```\nfirst\n```\nbetween\n```sh\nsecond\n```\nafter"
         self.assertEqual(km._code_fence_lines(output), ["first", "second"])
 
+    def test_first_command_line_extracts_from_untagged_sh_and_console_fences(self):
+        self.assertEqual(km._first_command_line("```\npytest -q\n```"), "pytest -q")
+        self.assertEqual(
+            km._first_command_line("```sh\npython3 -m pytest tools/kiro-project/tests -q\n```"),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+        self.assertEqual(
+            km._first_command_line("```console\n$ pytest -q\n```"),
+            "pytest -q",
+        )
+
     def test_first_command_line_treats_unclosed_fence_as_running_to_end(self):
         output = "before\n```zsh\n# note\npytest -q"
         self.assertEqual(km._code_fence_lines(output), ["# note", "pytest -q"])
