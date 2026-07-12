@@ -1,1 +1,0 @@
-{"ts": "2026-07-12T11:34:20Z", "who": "orchestrator", "kind": "planned", "patterns": ["map-reduce", "adversarial-verification", "loop-until-done"], "parallelism": 12, "tasks": ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "split", "gate", "reduce", "t8", "t9", "t10", "t11"]}

@@ -1,6 +1,0 @@
-{
-  "id": "t2",
-  "goal": "tools/kiro-project/tests 配下を調査し、`-k first_command_line` で収集される既存テストの有無・テストファイル名・関数命名規約・pytest の収集設定（conftest.py, pytest.ini/pyproject）を確認する",
-  "deps": [],
-  "kind": "work"
-}

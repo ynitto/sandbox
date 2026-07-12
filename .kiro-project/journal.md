@@ -351,3 +351,6 @@
 - 2026-07-12 20:32:02 cycle 1: synth_verify-_first_comm-172544 → 人の判断（繰り返し NG）
 - 2026-07-12 20:32:02 feedback 取り込み: kiro-project-codd-gate-171537 を再開
 - 2026-07-12 20:32:02 feedback 取り込み: macOS-kiro-flow-git-4-gr-171537 を再開
+- 2026-07-12 20:41:59 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-12 20:41:59 === kiro-project 開始 tasks=7 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-12 20:41:59 state-git: 無効（未設定・ルートも git リポジトリでない）
