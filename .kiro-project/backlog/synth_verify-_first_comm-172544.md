@@ -1,5 +1,5 @@
 ## synth_verify-_first_comm-172544: synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する
-- status: ready
+- status: blocked
 - source: human
 - priority: 7
 - verify: `python3 -m pytest tools/kiro-project/tests -q -k first_command_line`
