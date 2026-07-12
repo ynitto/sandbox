@@ -2706,6 +2706,49 @@ class TestInstances(unittest.TestCase):
         self.assertEqual(km.list_instances(), [])      # 死んだ PID は出ない
         self.assertFalse(dead.exists())                # かつ掃除される
 
+    def test_watch_refuses_a_duplicate_of_the_same_project(self):
+        """同じプロジェクトを 2 つのループに監視させない。
+
+        start は弾いていたが `run --watch` の直叩きは素通りだった。2 つ走ると同じ backlog を
+        奪い合い、同じタスクを二重実行して状態ファイルと決定記録を互いに上書きする。"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve()
+            cfg = cfg_for(root, watch=True)
+            cfg.source_root = root
+            paths = km.register_instance(cfg)          # 先客（生きている pid で登録）
+            self.addCleanup(lambda: [x.unlink() for x in paths if x.exists()])
+            self.assertEqual(km.cmd_run(cfg), 1, "重複起動は拒否する")
+
+    def test_watch_duplicate_is_allowed_with_force(self):
+        # 人が明示的に許可したなら通す（start --force から伝搬してくる）
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve()
+            cfg = cfg_for(root, watch=True)
+            cfg.source_root = root
+            paths = km.register_instance(cfg)
+            self.addCleanup(lambda: [x.unlink() for x in paths if x.exists()])
+            cfg.force = True
+            with mock.patch.object(km, "ensure_dirs", side_effect=RuntimeError("進んだ")):
+                with self.assertRaises(RuntimeError):   # 重複チェックを抜けて先へ進む
+                    km.cmd_run(cfg)
+
+    def test_registered_root_is_the_source_root_not_the_worktree(self):
+        """登録する root は「素の root」。実書き込み先（state worktree）ではない。
+
+        worktree 側を root として記録すると 2 つ壊れる: start/stop が照合に使う _resolved_root は
+        リダイレクトしないので一致せず、重複検出と停止が永久に空振りする（実際そうなっていた）。
+        さらにこの root を --root に渡した外部操作者は、worktree をさらに worktree へ逃がす
+        二重リダイレクトに落ちる。"""
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d).resolve() / ".kiro-project"
+            wt = Path(d).resolve() / "elsewhere-kiro-state" / ".kiro-project"
+            wt.mkdir(parents=True)
+            cfg = cfg_for(wt, watch=True)             # 実書き込み先は worktree
+            cfg.source_root = src                     # 設定・CLI で指定された素の root
+            rec = km.instance_record(cfg)
+            self.assertEqual(rec["root"], str(src), "素の root を登録する（--root に渡せる値）")
+            self.assertTrue(rec["backlog"].startswith(str(wt)), "各パスは実体（worktree）のまま")
+
     def test_run_registers_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -7000,6 +7043,28 @@ class StateBackupTests(unittest.TestCase):
         cfg, _root, _top = self._cfg()
         cfg.state_commit_interval = 0.0
         self.assertFalse(km.commit_state(cfg))
+
+    def test_sibling_project_state_is_not_swallowed(self):
+        """同じリポジトリの別プロジェクトの状態を、自分のコミットに巻き込まない。
+
+        <repo>/.kiro-project と <repo>/sub/.kiro-project は state worktree を共有する。
+        commit を root 配下に限定しないと index 全体をコミットしてしまい、隣が add した直後に
+        自分が commit すると相手の状態を取り込む。取り込まれた側は「ステージに何も乗らない」と
+        判断して自分のコミットを作れず、結果として **相手の状態が正本へバックアップされない**。"""
+        cfg, root, top = self._cfg(backup="")
+        sub = km._redirect_root_to_state_worktree(top / "sub" / ".kiro-project", "", "kiro-state")[0]
+        (sub / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "A1.md").write_text("## A1\n")
+        (sub / "backlog" / "B1.md").write_text("## B1\n")
+        # 隣（sub）が自分の commit より先にステージへ載せる
+        subprocess.run(["git", "-C", str(sub), "add", "-A", "--", "."], capture_output=True)
+        self.assertTrue(km.commit_state(cfg))
+        wt = km._git_toplevel_of(root)
+        files = subprocess.run(["git", "-C", str(wt), "show", "--name-only", "--format=", "HEAD"],
+                               capture_output=True, text=True).stdout
+        self.assertIn(".kiro-project/backlog/A1.md", files, "自分の状態はコミットする")
+        self.assertNotIn("sub/", files, "隣の状態は巻き込まない")
 
 
 class EnsureNeedsTests(unittest.TestCase):

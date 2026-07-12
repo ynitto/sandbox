@@ -1163,8 +1163,14 @@ def to_windows_path(p: "str | Path") -> "str | None":
 
 def instance_record(cfg: "Config") -> dict:
     """このプロセスの監視対象（プロジェクトルートと主要パス・OS/WSL 情報）を表す発見用レコード。
-    外部操作者が CLI を組むときは `root` を `--root` に渡す（1 プロジェクト = 1 ルート）。"""
-    root = cfg.backlog.parent.resolve()
+    外部操作者が CLI を組むときは `root` を `--root` に渡す（1 プロジェクト = 1 ルート）。
+
+    root は **リダイレクト前の素の root**（source_root）。実書き込み先（backlog.parent）は状態
+    worktree 側を指すので、それを root として記録すると 2 つ壊れる: start/stop が照合に使う
+    _resolved_root（リダイレクトしない）と一致せず重複検出・停止が空振りし、この root を
+    --root に渡した外部操作者は worktree をさらに worktree へ逃がす二重リダイレクトに落ちる。
+    各パス（backlog / needs / commands …）は実体を指したままなので、読み書きには影響しない。"""
+    root = (cfg.source_root or cfg.backlog.parent).resolve()
     rt = detect_runtime()
     rec = {
         "pid": os.getpid(),
@@ -1622,15 +1628,20 @@ def commit_state(cfg: "Config", force: bool = False) -> bool:
             return False                   # そもそも変化なし
     msg = ("kiro-project: 状態を更新" if significant
            else "kiro-project: 実行ログを更新（自動）")
+    # add / diff / commit はすべて自分の root 配下に限定する。同じリポジトリに複数のプロジェクト
+    # （<repo>/.kiro-project と <repo>/sub/.kiro-project）があると state worktree は共有されるため、
+    # パスを限定しないと index 全体をコミットしてしまう: 隣のプロジェクトが add した直後に自分が
+    # commit すると、相手の状態を自分のコミットに巻き込み、相手は「ステージに何も乗らない」と
+    # 判断して自分のコミットを作れなくなる（＝相手の状態がバックアップされない）。
     try:
         add = subprocess.run(["git", "-C", str(root), "add", "-A", "--", "."],
                              capture_output=True, text=True, timeout=120)
         if add.returncode != 0:
             return False
-        if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet"],
+        if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet", "--", "."],
                           capture_output=True, timeout=60).returncode == 0:
             return False                   # ステージに何も乗らなかった
-        c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg],
+        c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg, "--", "."],
                            capture_output=True, text=True, timeout=120)
         if c.returncode != 0:
             return False
@@ -1676,6 +1687,8 @@ def cmd_start(root: "str | None" = None, config: "str | None" = None,
               f"再起動は restart を使ってください。", file=sys.stderr)
         return 1
     child = [sys.executable, _self_script(), "run", "--watch"]
+    if force:
+        child += ["--force"]     # 子（run --watch）も重複を弾くので、人の許可を伝える
     if root:
         child += ["--root", root]
     if config:
@@ -4505,6 +4518,12 @@ class Config:
     state_push: bool = False
     state_backup_branch: str = "main"  # 状態のバックアップ先（正本ブランチ）。空で無効
     state_top: "Path | None" = None    # 本体リポジトリのトップ（状態を worktree へ逃がしたときだけ入る）
+    # 設定・CLI で指定された素の root（worktree へリダイレクトする前）。プロジェクトの同一性は
+    # これで判定する: 実書き込み先（backlog.parent）は worktree 側を指すので、start/stop が照合に
+    # 使う root（_resolved_root＝リダイレクトしない）と食い違い、重複検出が空振りする。
+    # 外部操作者が --root に渡すのもこの値（worktree 側を渡すと二重リダイレクトになる）。
+    source_root: "Path | None" = None
+    force: bool = False                # 同じプロジェクトを監視中でも起動する（watch の重複を許す）
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
@@ -8033,7 +8052,21 @@ def cmd_run(cfg: Config) -> int:
     # 起動時に死んだインスタンスのゴミレコードを掃除する。前回の異常終了（kill -9 / クラッシュ /
     # マシン再起動）では finally が走らず *.json が残るため、自分を register する前に一掃して
     # instances の発見ノイズと start の偽の重複検出を防ぐ（prune は自ホストの死レコードを即削除）。
-    list_instances(prune=True, extra=cfg.registry)
+    live = list_instances(prune=True, extra=cfg.registry)
+    # 同じプロジェクトを二重に監視させない。start は弾いていたが `run --watch` の直叩きは
+    # 素通りで、同じ backlog を 2 つのループが奪い合う（同じタスクを二重実行し、状態ファイルと
+    # 決定記録を互いに上書きする）。start は自分を register する前にここを通るので自分自身を
+    # 重複とは見ない。--force は start から伝搬する。
+    if cfg.watch and not cfg.force:
+        me = socket.gethostname()
+        mine = str((cfg.source_root or cfg.backlog.parent).resolve())
+        dup = [r for r in live
+               if str(r.get("root", "")) == mine and str(r.get("host", "")) == me
+               and r.get("watch")]
+        if dup:
+            print(f"既に root={mine} を監視中です（pid={dup[0].get('pid')}）。"
+                  f"重複起動は --force、再起動は restart を使ってください。", file=sys.stderr)
+            return 1
     ensure_dirs(cfg)
     reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
     hb = lambda: refresh_instance(reg)
@@ -10282,6 +10315,7 @@ def build_config(args) -> Config:
     # 状態の読み書きは、本体の作業ツリーから切り離した専用 worktree へ逃がす（設定の root は
     # 本体を指したままでよい）。以降のパスはすべてこの実効 root を基準に組まれる。
     state_top: "Path | None" = None
+    source_root = root                    # リダイレクト前＝人・外部操作者が --root に渡す値
     root, state_top = _redirect_root_to_state_worktree(
         root,
         str(getattr(args, "state_worktree_dir", "") or ""),
@@ -10338,6 +10372,8 @@ def build_config(args) -> Config:
         state_push=bool(getattr(args, "state_push", False)),
         state_backup_branch=str(getattr(args, "state_backup_branch", "main") or ""),
         state_top=state_top,
+        source_root=source_root,
+        force=bool(getattr(args, "force", False)),
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
         route_planner=str(getattr(args, "route_planner", "agent") or "agent"),
@@ -10902,6 +10938,8 @@ def main(argv=None) -> int:
     _add_common(run)
     run.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
                      help="終了条件後もプロセスを残し backlog を監視（エージェントは待機しない）")
+    run.add_argument("--force", action="store_true",
+                     help="同じプロジェクトを既に監視中でも起動する（watch の重複を許す）")
     run.add_argument("--poll", type=float, default=None, help="watch のポーリング間隔（秒。既定 5）")
     run.add_argument("--level", default=None, choices=["report", "assisted", "unattended"],
                      help="自律度の段階導入（既定 unattended）。report=実行せず計画報告のみ／"
