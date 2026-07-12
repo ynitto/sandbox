@@ -1,5 +1,5 @@
 ## kiro-projects-viewer-cod-171537: kiro-projects-viewer に codd-gate のゲート結果と負債状況を可視化する
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `cd tools/kiro-projects-viewer && node test/codd-gate.test.js && npm test`

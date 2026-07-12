@@ -1,5 +1,5 @@
 ## kiro-flow-verify-codd-ga-171537: kiro-flow の verify 段で codd-gate を活用し、未インストール環境では従来どおり動作させる
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `python3 -m pytest tools/kiro-flow/tests -q -k codd`
