@@ -1,0 +1,39 @@
+{
+  "_comment": "wsl-launcher の設定例。PC 起動（ログオン）時に、所定 cwd（プロジェクトルート）で kiro-project を常駐起動する運用の turnkey 配線。使い方: この内容を config.json にコピーし、wslPath を自分のプロジェクトルート（WSL パス）に、distro を自分のディストロ名に書き換える。詳細は README.md 参照。",
+  "settings": {
+    "terminalApp": "wt",
+    "delayBetweenLaunchesMs": 500,
+    "defaultDistro": "Ubuntu",
+    "wslWaitEnabled": true,
+    "wslWaitTimeoutSeconds": 60
+  },
+  "terminals": [
+    {
+      "name": "kiro-project (demo)",
+      "wslPath": "/home/user/projects/demo",
+      "command": "kiro-project start",
+      "distro": "Ubuntu",
+      "keepOpen": true,
+      "enabled": true
+    }
+  ],
+  "_terminals_alt": [
+    {
+      "_comment": "manage_flow_daemon を使わず kiro-flow daemon を別ターミナルで明示常駐する構成。上の terminals をこの2件に差し替える。daemon は flock 冪等・kiro-project start は同一 root+host の重複監視を拒否するため、毎起動でランチャが叩いても二重起動しない。",
+      "name": "kiro-flow daemon (demo)",
+      "wslPath": "/home/user/projects/demo",
+      "command": "kiro-flow daemon",
+      "distro": "Ubuntu",
+      "keepOpen": true,
+      "enabled": true
+    },
+    {
+      "name": "kiro-project (demo)",
+      "wslPath": "/home/user/projects/demo",
+      "command": "kiro-project start",
+      "distro": "Ubuntu",
+      "keepOpen": true,
+      "enabled": true
+    }
+  ]
+}

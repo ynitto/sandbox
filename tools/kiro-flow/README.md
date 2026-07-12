@@ -179,9 +179,11 @@ def execute(kind, goal, dep_results, model=None, art_dir=None, dep_arts=None):
 `gl.py` で **GitLab イシュー** にして起票する。リモートの（別マシン・別人の）ワーカーがイシューを拾って
 実装し、レビュアーが受け入れ条件を満たすと `status:approved` を付与する。kiro-flow はイシューを
 **ポーリング**し、`status:approved` に達したら**クリーンな関連 MR（コンフリクト無し・未解決レビュー
-コメント無し）を自動マージしてイシューをクローズ**する（自動承認・`auto_merge` 既定 on。
-gitlab-review-viewer の承認ボタンと同じ規則で、差分なし MR はクローズ＋ブランチ削除、approved なのに
-未クリーンなら `# 差し戻し` コメント＋`status:needs-rework` でワーカーの修正ループへ戻す）。
+コメント無し・**ターゲットブランチがワークスペースの `target` と一致**）を自動マージしてイシューを
+クローズ**する（自動承認・`auto_merge` 既定 on。gitlab-review-viewer の承認ボタンと同じ規則で、差分なし MR は
+クローズ＋ブランチ削除、approved なのに未クリーン（または別ブランチ向け）なら `# 差し戻し` コメント＋
+`status:needs-rework` でワーカーの修正ループへ戻す）。MR の宛先検証はワークスペースの `target`（無ければ
+`base`）を基準にし、`--workspace` が無く target 不明のとき（`repo_url` フォールバック）はスキップする。
 GitLab は作業履歴（Merged MR ＋ closed イシュー）の台帳として残る。人が先に全 MR をマージした場合も
 従来どおり承認として決着する（`auto_merge: false` でその経路のみに戻せる）。
 ローカルに kiro-cli が無くても、GitLab 越しに作業を委譲できる。

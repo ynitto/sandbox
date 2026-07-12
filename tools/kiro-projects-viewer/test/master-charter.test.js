@@ -144,4 +144,78 @@ risk: high
   assert.strictEqual(old.risk, '');
 });
 
+// --- evidenceThin（stub 実行・無変更の痩せた判断材料の検出と整理） ---
+
+const THIN_NEEDS_MD = `---
+kind: review
+date: 2026-07-12
+status: review
+task-id: T1
+---
+# 要対応: T1 — 何かを直す
+
+## Context and Problem Statement
+
+- なぜ: verify=PASS だが 承認ゲート
+
+## 判断材料（成果物の所在・差分・検証）
+- 成果物: (参照なし)
+- 所在: /home/user/projects/demo / ブランチ kp/T1
+- 実行先: local
+- 差分: baseline 以降の変更なし
+- 検証: \`true\` → PASS
+
+## Decision Outcome
+- [ ] 確定
+`;
+
+test('parseNeeds は痩せた evidence（stub・無変更）を検出し内部パス行を落とす', () => {
+  const n = kiro.parseNeeds(THIN_NEEDS_MD, 'T1');
+  assert.strictEqual(n.evidenceThin, true, '成果物プレースホルダ＋差分なし＝thin');
+  assert.match(n.why, /承認ゲート/, '理由は残る');
+  assert.ok(!/成果物: \(参照なし\)/.test(n.detail), '成果物プレースホルダ行は落とす');
+  assert.ok(!/- 所在:/.test(n.detail), '所在（内部パス）行は落とす');
+  assert.ok(!/- 実行先:/.test(n.detail), '実行先行は落とす');
+  assert.ok(!/変更なし/.test(n.detail), '差分なし行は落とす');
+  assert.match(n.detail, /検証:.*PASS/, '検証（意味のある行）は残す');
+});
+
+const REAL_NEEDS_MD = `---
+kind: review
+date: 2026-07-12
+status: review
+task-id: T2
+---
+# 要対応: T2 — 機能追加
+
+## Context and Problem Statement
+
+- なぜ: verify=PASS だが 承認ゲート
+
+## 判断材料（成果物の所在・差分・検証）
+- 成果物: https://gitlab.example.com/team/app/-/merge_requests/42
+- 所在: /home/user/projects/demo / ブランチ kp/T2
+- 差分: 3 ファイル
+    - src/a.py
+- 検証: \`pytest\` → PASS
+
+## Decision Outcome
+- [ ] 確定
+`;
+
+test('parseNeeds は実 evidence（MR リンク・差分あり）を thin と誤判定しない', () => {
+  const n = kiro.parseNeeds(REAL_NEEDS_MD, 'T2');
+  assert.strictEqual(n.evidenceThin, false, 'MR リンク＋差分あり＝not thin');
+  assert.match(n.detail, /merge_requests\/42/, '成果物リンクは残る');
+  assert.match(n.detail, /- 所在:/, '実運用では所在も残す');
+  assert.match(n.detail, /3 ファイル/, '差分は残る');
+});
+
+test('parseNeeds は成果物行の無い判断材料（タスク定義等）を thin にしない', () => {
+  const md = '# 実行前レビュー: T3 — x\n\n## タスク定義（レビュー対象）\n- title  : x\n- verify : `true`\n';
+  const n = kiro.parseNeeds(md, 'T3');
+  assert.strictEqual(n.evidenceThin, false, '成果物行が無い＝対象外');
+  assert.match(n.detail, /タスク定義/, 'タスク定義は残す');
+});
+
 console.log(`\n${passed} passed`);

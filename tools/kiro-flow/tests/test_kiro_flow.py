@@ -1818,7 +1818,8 @@ class GitlabAutoMergeTests(unittest.TestCase):
         else:
             os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = self._prev_env
 
-    def _check(self, issue, mrs_seq, mr_detail=None, changes=None, discussions=None):
+    def _check(self, issue, mrs_seq, mr_detail=None, changes=None, discussions=None,
+               expected_target=""):
         """_check_decision を 1 回だけ回す（gl_api / gl_api_list をモック）。
         mrs_seq は related_merge_requests の呼び出し毎のリスト列。calls に API 呼び出しを残す。"""
         mrs_seq = list(mrs_seq)
@@ -1847,7 +1848,7 @@ class GitlabAutoMergeTests(unittest.TestCase):
         with mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
              mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side):
             r = gl_plugin._check_decision("gitlab.com", "tok", "group/repo", 42, "u42",
-                                          gl_plugin._config(), False)
+                                          gl_plugin._config(), False, expected_target)
         return r, calls
 
     def test_approved_clean_mr_is_merged_and_issue_closed(self):
@@ -1889,6 +1890,49 @@ class GitlabAutoMergeTests(unittest.TestCase):
         self.assertIsNone(r["decision"])
         note = next(c for c in calls if c[0] == "POST" and c[1].endswith("/notes"))
         self.assertIn("コンフリクト", note[2]["body"])
+
+    def test_approved_mr_wrong_target_branch_sends_back(self):
+        # ワークスペースの target は develop なのに MR が main を狙っている → 自動マージしない
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened"}]
+        detail = {"merge_status": "can_be_merged", "has_conflicts": False,
+                  "target_branch": "main"}
+        r, calls = self._check(issue, [opened], mr_detail=detail, expected_target="develop")
+        self.assertIsNone(r["decision"])                     # 別ブランチ向け＝決着させない
+        # マージは呼ばれない
+        self.assertNotIn("/merge", str([c[1] for c in calls if c[0] == "PUT"]))
+        # 差し戻しコメントに期待ターゲットと実ターゲットが出る
+        note = next(c for c in calls if c[0] == "POST" and c[1].endswith("/notes"))
+        self.assertIn("develop", note[2]["body"])
+        self.assertIn("main", note[2]["body"])
+        # approved → needs-rework に付け替わる
+        relabel = next(c for c in calls if c[0] == "PUT" and "/issues/42" in c[1]
+                       and c[2] and "labels" in c[2])
+        self.assertIn("status:needs-rework", relabel[2]["labels"])
+
+    def test_approved_mr_matching_target_branch_is_merged(self):
+        # MR の target がワークスペースの target と一致 → 従来どおり自動マージ
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened", "project_id": 55}]
+        merged = [{"iid": 1, "state": "merged", "project_id": 55, "web_url": "mr1"}]
+        detail = {"merge_status": "can_be_merged", "has_conflicts": False,
+                  "target_branch": "develop"}
+        r, calls = self._check(issue, [opened, merged], mr_detail=detail,
+                               expected_target="develop")
+        self.assertEqual(r["decision"], "approved")
+        merge = next(c for c in calls if c[1].endswith("/merge"))
+        self.assertIn("/projects/55/merge_requests/1/merge", merge[1])
+
+    def test_approved_mr_target_not_validated_when_target_unknown(self):
+        # ワークスペース未指定（expected_target="")なら target 検証はスキップ＝従来挙動（後方互換）
+        issue = {"labels": ["status:approved"], "state": "opened"}
+        opened = [{"iid": 1, "state": "opened", "project_id": 55}]
+        merged = [{"iid": 1, "state": "merged", "project_id": 55}]
+        detail = {"merge_status": "can_be_merged", "has_conflicts": False,
+                  "target_branch": "main"}
+        r, calls = self._check(issue, [opened, merged], mr_detail=detail, expected_target="")
+        self.assertEqual(r["decision"], "approved")          # 検証しないのでマージされる
+        self.assertTrue(any(c[1].endswith("/merge") for c in calls))
 
     def test_approved_no_diff_mr_is_closed_not_merged(self):
         # 差分なし MR（取り込み済み等）はマージでなくクローズ＋ソースブランチ削除で決着
