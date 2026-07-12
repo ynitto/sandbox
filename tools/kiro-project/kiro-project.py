@@ -2918,6 +2918,15 @@ _KNOWN_COMMAND_WORDS = frozenset({
 })
 
 
+_LEADING_SHELL_PROMPT_RE = re.compile(r"^\$\s+")
+
+
+def _strip_leading_shell_prompt(line: str) -> str:
+    """行頭のシェルプロンプト記号 `$ ` を1回だけ剥がす。
+    `$(...)` や `$VAR` は `$` 直後が空白でないため対象外（誤剥離しない）。"""
+    return _LEADING_SHELL_PROMPT_RE.sub("", line, count=1)
+
+
 def _has_command_like_leading_token(line: str) -> bool:
     """フェンス外の行が既知コマンド語または実行可能らしいトークンで始まるか判定する。"""
     if not line:
@@ -2939,7 +2948,7 @@ def _first_executable_line(lines: list[str], *, require_shell_syntax: bool = Tru
     明確なため、素通しで信頼する（フェンス外の地の文はこの限りでなく従来どおり厳格に見る）。
     """
     for raw_line in lines:
-        line = _strip_code(raw_line.strip())
+        line = _strip_leading_shell_prompt(_strip_code(raw_line.strip()))
         if (
             line
             and not line.startswith("#")
@@ -2956,13 +2965,16 @@ def _first_command_line(out: str) -> Optional[str]:
     コードフェンスを最優先でスキャンする: フェンスが見つかれば、フェンス内の最初の
     非空・非コメント行を無条件でコマンドとして採用する。フェンスが一つも無ければ、
     フェンス外の行を対象にした従来ロジック（既知コマンド語などの先頭トークン判定 +
-    sh -n 構文チェック）へフォールバックする。
+    sh -n 構文チェック）へフォールバックする。行頭のシェルプロンプト記号 `$ ` は
+    判定前に剥がす（LLM がプロンプト付きでコマンド例を返す出力に対応するため）。
     """
     fenced = _first_executable_line(_code_fence_lines(out), require_shell_syntax=False)
     if fenced:
         return fenced
     lines = (out or "").splitlines()
-    return _first_executable_line([line for line in lines if _has_command_like_leading_token(line.strip())])
+    return _first_executable_line(
+        [line for line in lines if _has_command_like_leading_token(_strip_leading_shell_prompt(line.strip()))]
+    )
 
 
 def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,

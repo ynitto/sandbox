@@ -4989,6 +4989,12 @@ echo this-later-command-must-not-be-selected
         output = "```\nbash\n# verification notes\npython3 -m pytest -q\n```"
         self.assertEqual(km._first_command_line(output), "python3 -m pytest -q")
 
+    def test_first_command_line_strips_leading_shell_prompt_symbol(self):
+        self.assertEqual(
+            km._first_command_line("$ python3 -m pytest tools/kiro-project/tests -q"),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
     def test_first_command_line_returns_none_without_candidate(self):
         self.assertIsNone(km._first_command_line("\n# comment only\n"))
 
