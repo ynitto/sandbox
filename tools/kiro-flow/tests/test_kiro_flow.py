@@ -1135,6 +1135,125 @@ class PlannerRobustnessTests(unittest.TestCase):
         self.assertEqual([t["id"] for t in tasks], ["t1"])
 
 
+class AgentFailureTests(unittest.TestCase):
+    """エージェント CLI の失敗を、人が原因に辿り着ける形で表に出すこと。
+
+    CLI は起動バナー（workdir / model / プロンプト全文）を stderr に流す。以前は stderr の
+    「先頭」だけを切り取っていたため、肝心のエラーがバナーに埋もれて消えた。実際 codex の
+    「利用上限に達した」を取り逃し、全ノードが理由不明の failed になった。"""
+
+    # 実物に近い形：バナーが先頭を埋め、本当のエラーは末尾に出る
+    BANNER = ("OpenAI Codex v0.144.1\n--------\nworkdir: /x\nmodel: gpt-5.6-sol\n"
+              + "プロンプト全文 " * 80)
+
+    def test_usage_limit_is_surfaced(self):
+        err = self.BANNER + "\nERROR: You've hit your usage limit. Upgrade to Pro ... try again at 9:44 PM."
+        msg = kf._agent_failure("codex", 1, "", err)
+        self.assertIn("利用上限", msg.split("\n")[0])   # 見出しで分かる
+        self.assertIn("usage limit", msg)               # 原文も残る（末尾を拾う）
+
+    def test_auth_failure_is_surfaced(self):
+        msg = kf._agent_failure("kiro-cli", 0, "", "SendMessageError: AccessDeniedException")
+        self.assertIn("認証", msg.split("\n")[0])
+
+    def test_bad_model_is_surfaced(self):
+        msg = kf._agent_failure("claude", 1, "", "There's an issue with the selected model (claude-opus).")
+        self.assertIn("モデル", msg.split("\n")[0])
+
+    def test_unknown_failure_keeps_the_tail(self):
+        # 既知パターンに当たらなくても、末尾（＝エラーが出る場所）は必ず残す
+        err = self.BANNER + "\nsomething exploded at line 42"
+        msg = kf._agent_failure("codex", 1, "", err)
+        self.assertIn("something exploded", msg)
+
+    def test_empty_response_with_rc0_is_a_failure(self):
+        # kiro-cli は認証が切れるとバナーだけ出して rc=0 で終わる。空を成功として扱うと
+        # worker は「空の成果物で done」、planner は stub へ黙って落ちる（沈黙した失敗）。
+        proc = types.SimpleNamespace(returncode=0, stdout="  \n", stderr="AccessDeniedException")
+        with mock.patch.object(kf.subprocess, "run", return_value=proc):
+            with self.assertRaises(RuntimeError) as cm:
+                kf.run_kiro("p", None)
+        self.assertIn("空の応答", str(cm.exception))
+        self.assertIn("認証", str(cm.exception))
+
+
+class LocalWorktreeTests(unittest.TestCase):
+    """手元に同じリポジトリのクローンがあれば、そこから worktree を切ること。
+
+    目の前に同じリポジトリがあるのに、毎回ネットワーク越しに bare ミラーを取り直すのは無駄で、
+    オフラインでは動かない。ローカルの作業ツリー・index には触らない（別 worktree なので）。"""
+
+    def _repo(self):
+        root = tempfile.mkdtemp(prefix="kf-local-")
+        self.addCleanup(shutil.rmtree, root, True)
+        origin = os.path.join(root, "origin.git")
+        local = os.path.join(root, "local")
+        env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        run = lambda *a, **k: subprocess.run(a, capture_output=True, env=env, **k)
+        run("git", "init", "--bare", "-b", "main", origin)
+        run("git", "clone", origin, local)
+        run("git", "-C", local, "config", "user.email", "t@e.com")
+        run("git", "-C", local, "config", "user.name", "t")
+        pathlib.Path(local, "app.py").write_text("print(1)\n")
+        run("git", "-C", local, "add", "-A")
+        run("git", "-C", local, "commit", "-m", "init")
+        run("git", "-C", local, "push", "-u", "origin", "main")
+        return root, origin, local
+
+    def test_worktree_is_cut_from_the_local_clone(self):
+        root, origin, local = self._repo()
+        dest = os.path.join(root, "ws")
+        wt = kf.provision_from_local(local, origin, ["main"], dest)
+        self.addCleanup(kf.cleanup_local_worktrees)
+        self.assertTrue(wt, "ローカルから worktree を切れる")
+        self.assertTrue(os.path.isfile(os.path.join(wt, "app.py")), "中身が入っている")
+
+    def test_local_working_tree_and_index_are_untouched(self):
+        root, origin, local = self._repo()
+        # 人がローカルで作業中（未コミット変更 + staged）
+        pathlib.Path(local, "wip.txt").write_text("編集中\n")
+        subprocess.run(["git", "-C", local, "add", "wip.txt"], capture_output=True)
+        before = subprocess.run(["git", "-C", local, "status", "--porcelain"],
+                                capture_output=True, text=True).stdout
+
+        wt = kf.provision_from_local(local, origin, ["main"], os.path.join(root, "ws"))
+        self.addCleanup(kf.cleanup_local_worktrees)
+        self.assertTrue(wt)
+
+        after = subprocess.run(["git", "-C", local, "status", "--porcelain"],
+                               capture_output=True, text=True).stdout
+        self.assertEqual(before, after, "人の作業ツリー・index を巻き込まない")
+        self.assertEqual(pathlib.Path(local, "wip.txt").read_text(), "編集中\n")
+
+    def test_different_repo_is_refused(self):
+        # origin URL が違うクローンは使わない（取り違え防止）
+        root, origin, local = self._repo()
+        wt = kf.provision_from_local(local, "https://example.com/other/repo.git",
+                                     ["main"], os.path.join(root, "ws"))
+        self.assertIsNone(wt)
+
+    def test_cleanup_removes_the_worktree_registration(self):
+        root, origin, local = self._repo()
+        kf.provision_from_local(local, origin, ["main"], os.path.join(root, "ws"))
+        listed = subprocess.run(["git", "-C", local, "worktree", "list"],
+                                capture_output=True, text=True).stdout
+        self.assertIn("ws", listed)
+        kf.cleanup_local_worktrees()
+        listed = subprocess.run(["git", "-C", local, "worktree", "list"],
+                                capture_output=True, text=True).stdout
+        self.assertNotIn("/ws", listed, "登録を残さない")
+
+    def test_provision_tree_prefers_local_over_network(self):
+        # local が使えるなら、共有ミラー（ネットワーク）には触れない
+        root, origin, local = self._repo()
+        with mock.patch.object(kf, "provision_worktree",
+                               side_effect=AssertionError("ネットワークを見に行った")):
+            wt = kf.provision_tree(origin, ["main"], os.path.join(root, "ws"), local=local)
+        self.addCleanup(kf.cleanup_local_worktrees)
+        self.assertTrue(wt)
+
+
 class FlowPlannerAgentCliTests(unittest.TestCase):
     """flow-planner スキルを、planner に設定したエージェント CLI で動かすこと。
 
@@ -2964,8 +3083,9 @@ class DaemonPrimitiveTests(unittest.TestCase):
         self.assertEqual(j["branch"], "kp/T12")
         captured = {}
 
-        def fake_provision(url, refs, dest):
+        def fake_provision(url, refs, dest, local=""):
             captured["refs"] = list(refs)
+            captured["local"] = local              # repos の local（手元クローン）も伝搬する
             return ""                              # clone 失敗扱い（実 git を叩かない）
 
         with mock.patch.object(kf, "provision_tree", side_effect=fake_provision):

@@ -4,12 +4,19 @@
   "title": "repos registry",
   "description": "リポジトリレジストリの共通スキーマ（kiro-projects / kiro-flow / codd-gate 共用）。トップレベルは「repo 名 → エントリ」のマッピング。リポジトリの identity は (url, path, base)＝モノレポは path 別・ブランチ別は base 別のエントリで区別し、name はエントリ一意。charter.md の `## repos` は互換入力（アダプタ）で、各ツールは内部的にこの形へ正規化して引き回す。ファイル形式は YAML（PyYAML 任意）または JSON。運用の正典は schemas/README.md。",
   "type": "object",
-  "additionalProperties": { "$ref": "#/definitions/repo" },
+  "additionalProperties": {
+    "$ref": "#/definitions/repo"
+  },
   "definitions": {
     "globs": {
       "description": "グロブの列（配列、またはカンマ/空白区切りの文字列）",
-      "type": ["array", "string"],
-      "items": { "type": "string" }
+      "type": [
+        "array",
+        "string"
+      ],
+      "items": {
+        "type": "string"
+      }
     },
     "repo": {
       "type": "object",
@@ -57,6 +64,10 @@
         "dir": {
           "type": "string",
           "description": "ローカル checkout のパス（ローカル運用ヒント。codd-gate が読む。CLI --repo-dir が常に優先）"
+        },
+        "local": {
+          "type": "string",
+          "description": "手元にある同じリポジトリのクローンの絶対パス（任意）。あれば worker はここから detached worktree を切り出す（ネットワーク越しのミラー取得が不要＝速い・オフラインでも動く）。origin URL が url と一致するときだけ使う。ローカルの作業ツリー・index には触らない。"
         }
       },
       "additionalProperties": true

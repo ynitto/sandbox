@@ -1973,6 +1973,8 @@ def state_sync(args, force: bool = False) -> None:
 _CACHE_CORRUPT = ("not a git repository", "bad object", "corrupt", "broken link",
                   "unable to read", "object directory", "fatal: bad")
 _provisioned_urls: "set[str]" = set()   # cleanup で worktree prune する対象 URL
+# provision_from_local が手元のクローンに登録した worktree（cleanup で外す）: [(local, dest), …]
+_local_worktrees: "list[tuple[str, str]]" = []
 
 
 def cache_root() -> str:
@@ -2108,10 +2110,94 @@ def provision_worktree(url: str, refs: "list[str]", dest: str) -> "str | None":
     return None
 
 
-def provision_tree(url: str, refs: "list[str] | str", dest: str) -> "str | None":
-    """共有 cache から detached worktree を用意。失敗時は従来の direct clone へフォールバック（INV-3）。
+def _local_remote_url(local: str) -> str:
+    """ローカルクローンの origin URL（取れなければ ""）。"""
+    try:
+        r = subprocess.run(["git", "-C", local, "remote", "get-url", "origin"],
+                           capture_output=True, text=True, timeout=30)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _same_repo(a: str, b: str) -> bool:
+    """git URL が同じリポジトリを指すか（末尾の .git / スラッシュ / 大小文字の揺れを吸収）。"""
+    def norm(u: str) -> str:
+        u = str(u or "").strip().rstrip("/")
+        if u.endswith(".git"):
+            u = u[:-4]
+        return u.lower()
+    return bool(norm(a)) and norm(a) == norm(b)
+
+
+def provision_from_local(local: str, url: str, refs: "list[str]", dest: str) -> "str | None":
+    """手元にある同じリポジトリのクローンから detached worktree を切り出す（失敗時 None）。
+
+    ネットワーク越しに bare ミラーを取り直す必要がなくなる（速い・オフラインでも動く）。
+    worktree は別ディレクトリ・別 index なので、**ローカルの作業ツリーと index には触らない**
+    （人がそこで作業していても巻き込まない）。origin URL が一致するクローンだけを使う。"""
+    if not local or not os.path.isdir(local):
+        return None
+    if not _same_repo(_local_remote_url(local), url):
+        return None                       # 別のリポジトリ → 使わない（取り違え防止）
+    # 手元が古いと worker が古い base で作業するので、まず取り込む（失敗しても手元の範囲で続行）
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(["git", "-C", local, "fetch", "--quiet", "origin"],
+                       capture_output=True, timeout=180)
+    # 作業起点の優先順: run ブランチ → base → 既定。ローカル/リモート追跡の両方を見る。
+    sha = ""
+    for ref in [*refs, ""]:
+        for cand in ([f"refs/heads/{ref}", f"refs/remotes/origin/{ref}"] if ref else ["HEAD"]):
+            try:
+                r = subprocess.run(["git", "-C", local, "rev-parse", "--verify", "--quiet",
+                                    f"{cand}^{{commit}}"], capture_output=True, text=True, timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if r.returncode == 0 and r.stdout.strip():
+                sha = r.stdout.strip()
+                break
+        if sha:
+            break
+    if not sha:
+        return None
+    dest = os.path.abspath(dest)
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    try:
+        r = subprocess.run(["git", "-C", local, "worktree", "add", "--detach", dest, sha],
+                           capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    _local_worktrees.append((local, dest))    # 後始末（worktree remove）のため覚えておく
+    return dest
+
+
+def cleanup_local_worktrees() -> None:
+    """provision_from_local が作った worktree の登録をローカルクローンから外す。
+    （dest 自体は _workspace_root ごと rmtree される。登録だけが残ると git worktree list が汚れる）"""
+    for local, dest in list(_local_worktrees):
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["git", "-C", local, "worktree", "remove", "--force", dest],
+                           capture_output=True, timeout=60)
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["git", "-C", local, "worktree", "prune"],
+                           capture_output=True, timeout=60)
+    _local_worktrees.clear()
+
+
+def provision_tree(url: str, refs: "list[str] | str", dest: str,
+                   local: str = "") -> "str | None":
+    """作業ツリーを用意する。順に:
+       1. local（手元の同じリポジトリのクローン）から detached worktree を切る — 取得ゼロで最速
+       2. 共有 bare ミラーから detached worktree（INV-1/2）
+       3. direct clone（INV-3 フォールバック）
     返り値: 作業ツリーのパス、または None（最終的に失敗）。"""
     ref_list = [refs] if isinstance(refs, str) else list(refs)
+    if local:
+        wt = provision_from_local(local, url, ref_list, dest)
+        if wt:
+            return wt
     try:
         with _cache_lock(url):
             wt = provision_worktree(url, ref_list, dest)
@@ -2312,7 +2398,11 @@ def ensure_workspace_clone(spec: "dict | None", run_id: str) -> "dict | None":
         n += 1
     base = spec.get("base") or ""
     # 作業起点の優先順: 既存の run ブランチ → base → 既定（detached worktree で作り、push 時に作業ブランチ化）。
-    path = provision_tree(spec["url"], [branch, base], dest) or ""
+    # repos に local（手元の同じリポジトリのクローン）があれば、そこから worktree を切る。
+    # 目の前に同じリポジトリがあるのに毎回ネットワーク越しにミラーを取り直すのは無駄で、
+    # オフラインでも動かない。local の作業ツリー・index には触らない（別 worktree なので）。
+    path = provision_tree(spec["url"], [branch, base], dest,
+                          local=str(spec.get("local") or "")) or ""
     if path:
         _prepare_run_branch(path, branch, base)
     _workspace_clone[key] = path
@@ -2350,6 +2440,7 @@ def cleanup_workspace() -> None:
     """worker の作業ツリー（temp の worktree／フォールバック clone）を丸ごと削除する（作業後クリーンは必須）。
     共有 cache 本体は残し、worktree 登録だけ prune して回収する。"""
     global _workspace_root
+    cleanup_local_worktrees()   # 手元のクローンに残した worktree 登録を先に外す（消す前に）
     if _workspace_root and os.path.isdir(_workspace_root):
         shutil.rmtree(_workspace_root, ignore_errors=True)
     _workspace_root = None
@@ -3013,12 +3104,18 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
                 os.remove(spill)
     try:
         if proc.returncode != 0:
-            raise RuntimeError(f"{cmd[0]} 失敗 (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
+            raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))
         text = strip_ansi(proc.stdout).strip()
         if out_file:   # codex: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
             with contextlib.suppress(OSError):
                 with open(out_file, encoding="utf-8") as f:
                     text = f.read().strip() or text
+        if not text:
+            # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して
+            # rc=0 で終わる）。空を成功として扱うと、worker は「空の成果物で done」、planner は
+            # stub 戦略へ黙って落ちる＝LLM を呼べていないのに動いているように見える。失敗にする。
+            raise RuntimeError(_agent_failure(cmd[0], 0, proc.stdout, proc.stderr)
+                               .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
         return text
     finally:
         if out_file:

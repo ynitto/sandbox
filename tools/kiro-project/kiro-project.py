@@ -1408,6 +1408,152 @@ def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
     return 0 if all_ok else 1
 
 
+# ---------------------------------------------------------------------------
+# 状態 worktree — 状態の読み書きを、本体の作業ツリーから切り離す
+#
+# kiro-project は watch 中 5 秒ごとに journal.md / status.json / run-log.jsonl / project.json を
+# 書き換える。root を本体リポジトリの中（例 <repo>/.kiro-project）に置くと:
+#   ・人の git status が永久に dirty になり、人の作業と混ざる
+#   ・人やツールの git 操作（stash / rebase / pull --autostash）が、書き込みの最中の状態ファイルを
+#     巻き込んで壊す（実際に project.json がコンフリクトマーカーで JSON として読めなくなった）
+#   ・viewer の git 同期が本体を toplevel と解釈し、bus/ の実行記録まで本体の index へ流れ込む
+# そこで、同じリポジトリの専用ブランチ（state_branch）の worktree を **切りっぱなし** で用意し、
+# 状態の読み書きをそこへ逃がす。設定の root は本体を指したままでよい（人が書く自然な形）。
+# 本体の作業ツリー・index は一切汚れず、状態の履歴は同じリポジトリに残って共有もできる。
+# root が git 管理外（普通のディレクトリ）なら何もしない。
+# ---------------------------------------------------------------------------
+def _git_toplevel_of(p: Path) -> "Path | None":
+    """p を含む git 作業ツリーのトップ（git 管理外なら None）。"""
+    try:
+        r = subprocess.run(["git", "-C", str(p), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _ensure_state_worktree(top: Path, wt: Path, branch: str) -> bool:
+    """状態用 worktree を切りっぱなしで用意する（既にあれば再利用）。用意できたら True。"""
+    if (wt / ".git").exists():
+        return True                                   # 既に切ってある＝そのまま使う
+    try:
+        has_branch = subprocess.run(
+            ["git", "-C", str(top), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            capture_output=True, timeout=30).returncode == 0
+        add = ["git", "-C", str(top), "worktree", "add"]
+        add += ([str(wt), branch] if has_branch else ["-b", branch, str(wt)])
+        r = subprocess.run(add, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if r.returncode != 0:
+        print(f"[kiro-project] 状態 worktree を用意できません（本体に書きます）: "
+              f"{r.stderr.strip()[:200]}", file=sys.stderr)
+        return False
+    return True
+
+
+def _migrate_state_into_worktree(src: Path, dst: Path) -> bool:
+    """本体側に残っている既存の状態を worktree へ引っ越す（初回だけ）。移したら True。
+
+    dst に既に中身があれば触らない（worktree 側が正）。src が空/不在なら何もしない。"""
+    if not src.is_dir() or any(src.iterdir()) is False:
+        return False
+    if dst.is_dir() and any(dst.iterdir()):
+        return False                                  # 既に worktree 側で運用中
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+        shutil.rmtree(src, ignore_errors=True)        # 本体側は空にする（二重管理を作らない）
+    except OSError as e:
+        print(f"[kiro-project] 状態の引っ越しに失敗（本体に書きます）: {e}", file=sys.stderr)
+        return False
+    return True
+
+
+def _redirect_root_to_state_worktree(root: Path, enabled: bool, wt_dir: str,
+                                     branch: str) -> "tuple[Path, Path | None]":
+    """状態の実書き込み先を決める。(実効 root, 本体リポジトリのトップ or None) を返す。
+
+    git 管理外・無効化・worktree を作れない、のいずれでも本体の root をそのまま返す（従来動作）。"""
+    if not enabled:
+        return root, None
+    top = _git_toplevel_of(root if root.is_dir() else root.parent)
+    if top is None:
+        return root, None                             # git 管理外 → そのまま
+    try:
+        rel = root.resolve().relative_to(top.resolve())
+    except ValueError:
+        return root, None                             # 既にリポジトリ外を指している
+    wt = (Path(wt_dir).expanduser().resolve() if wt_dir
+          else (top.parent / f"{top.name}-{branch}"))
+    if not _ensure_state_worktree(top, wt, branch):
+        return root, None
+    dst = wt / rel
+    _migrate_state_into_worktree(root, dst)
+    return dst, top
+
+
+# 状態のうち「人の判断・計画が動いた」もの。これが変わったら即コミットする（履歴として意味がある）。
+_STATE_SIGNIFICANT = ("charter.md", "charters", "backlog", "needs", "decisions", "repos.json",
+                      "policy.md", "rules.md", "archive", "DELIVERY.md", "specs")
+# 実行の副産物。watch が回る限り数秒ごとに変わるので、まとめてコミットする（履歴を秒で埋めない）。
+_STATE_NOISE = ("journal.md", "status.json", "run-log.jsonl", "project.json",
+                "bus", "claims", "flow-archive", "commands", "inbox", "journal-archive")
+_last_state_commit: float = 0.0
+
+
+def _state_changed(root: Path, names) -> bool:
+    """worktree の未コミット変更に names 由来のものが含まれるか。"""
+    try:
+        r = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", *names],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def commit_state(cfg: "Config", force: bool = False) -> bool:
+    """状態 worktree の変更をコミットする（軽微な変化はまとめる）。コミットしたら True。
+
+    watch は 5 秒ごとに journal.md / status.json / run-log.jsonl / project.json を書き換える。
+    そのたびにコミットすると履歴が秒単位で埋まって読めない。人の判断や計画が動いたとき
+    （charter / backlog / needs / decisions …）は即コミットし、実行の副産物だけの変化は
+    state_commit_interval（既定 300 秒）でまとめる。
+
+    コミットは worktree の中だけで完結する（本体の作業ツリー・index には触らない）。"""
+    global _last_state_commit
+    if not cfg.state_commit or cfg.state_top is None:
+        return False                       # 状態を worktree へ逃がしていない＝git 管理しない
+    root = cfg.backlog.parent
+    significant = _state_changed(root, _STATE_SIGNIFICANT)
+    if not significant:
+        if not force and (time.time() - _last_state_commit) < cfg.state_commit_interval:
+            return False                   # 副産物だけの変化 → まとめる（まだ間隔内）
+        if not _state_changed(root, _STATE_NOISE):
+            return False                   # そもそも変化なし
+    msg = ("kiro-project: 状態を更新" if significant
+           else "kiro-project: 実行ログを更新（自動）")
+    try:
+        add = subprocess.run(["git", "-C", str(root), "add", "-A", "--", "."],
+                             capture_output=True, text=True, timeout=120)
+        if add.returncode != 0:
+            return False
+        if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet"],
+                          capture_output=True, timeout=60).returncode == 0:
+            return False                   # ステージに何も乗らなかった
+        c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg],
+                           capture_output=True, text=True, timeout=120)
+        if c.returncode != 0:
+            return False
+        _last_state_commit = time.time()
+        if cfg.state_push:
+            subprocess.run(["git", "-C", str(root), "push", "-q", "origin",
+                            f"HEAD:{cfg.state_branch}"], capture_output=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def _resolved_root(root: "str | None", config: "str | None" = None) -> str:
     """start/stop/restart 用にプロジェクトルートを絶対パス文字列で返す。
     build_config の root 計算と一致させ、稼働インスタンスの記録 root と突き合わせる。
@@ -1780,17 +1926,55 @@ def _task_definition_block(task: Task) -> str:
     return "\n".join(lines)
 
 
-def ensure_plan_review_needs(cfg: "Config", tasks: "list[Task]") -> None:
-    """proposed（実行前レビュー待ち）タスクに needs/<id>.md（レビュー票）を用意する。
-    生成経路（plan/enqueue/inbox/followup/intake/cohort）に依らずここで一元的に整合させる
-    （needs が既にあれば触らない＝人の記入を消さない）。"""
+# 人の判断を待っている状態（needs/<id>.md が対応する）。ここに入ったタスクは必ず票を持つ。
+NEEDS_STATUSES = ("proposed", "blocked", "review")
+
+
+def _remember_needs_reason(task: "Task", reason: str) -> None:
+    """needs の再生成に要る理由をタスク自身へ残す（md の `- needs_reason:`）。
+
+    従来 理由はメモリ（run_loop の reasons dict）にしか無かった。needs ファイルが失われると
+    理由ごと消え、二度と票を作り直せない。タスクを正にするため、状態と一緒に理由も持たせる。"""
+    task.drop("needs_reason")
+    if reason:
+        task.extra.append(("needs_reason", str(reason).replace("\n", " ⏎ ")[:300]))
+
+
+def ensure_needs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """人の判断待ち（proposed / blocked / review）のタスクに needs/<id>.md が無ければ、タスクの
+    status から作り直す。既にあれば触らない（人の記入を消さない）。再生成した ID を返す。
+
+    **needs は status の投影であって、独立した真実ではない。** 従来は「状態が変わった瞬間」に
+    しか票を書いていなかった（_block / triage の遷移／proposed だけの ensure）。そのため票が
+    失われると（feedback 取り込みの unlink、状態の同期・コピー事故、enqueue 直後のラグ）二度と
+    作られず、backlog は blocked のままなのに viewer の要対応画面には出てこない — 人はその
+    タスクを承認も再実行も差し戻しもできない袋小路に入った（viewer の操作ボタンは全て needs
+    カードに紐づくため）。毎パス status を正として整合させ、票を失っても自己修復させる。"""
+    made: "list[str]" = []
     for t in tasks:
-        if t.norm_status() != "proposed":
+        st = t.norm_status()
+        if st not in NEEDS_STATUSES or needs_path(cfg, t.id).exists():
             continue
-        if needs_path(cfg, t.id).exists():
-            continue
-        write_needs_file(cfg, t, "新規タスクの実行前レビュー（承認されるまで実行しません）",
-                         evidence=_task_definition_block(t), kind="plan-review")
+        why = str(t.get("needs_reason") or "").strip()
+        ev = _task_definition_block(t)
+        if st == "proposed":
+            write_needs_file(cfg, t, why or "新規タスクの実行前レビュー（承認されるまで実行しません）",
+                             evidence=ev, kind="plan-review")
+        elif st == "review":
+            write_needs_file(cfg, t, why or "成果物の検収待ち（承認すると完了になります）",
+                             review=True, evidence=ev)
+        else:  # blocked
+            write_needs_file(cfg, t, why or f"実行が止まっています（retries={t.retries}）。"
+                                            "指示を送るか、そのまま再実行してください。",
+                             evidence=ev)
+        append_journal(cfg.journal, f"needs 再生成: {t.id}（{st}）")
+        made.append(t.id)
+    return made
+
+
+def ensure_plan_review_needs(cfg: "Config", tasks: "list[Task]") -> None:
+    """後方互換の薄い別名（proposed だけでなく判断待ち全体を面倒見る ensure_needs へ委譲）。"""
+    ensure_needs(cfg, tasks)
 
 
 def clear_needs_file(cfg: "Config", tid: str) -> None:
@@ -2271,6 +2455,36 @@ def _agent_cmd(cli: str, model: "str | None",
     return cmd + [prompt], None, None
 
 
+# エージェント CLI が返す失敗のうち、人が対処しないと全処理が落ち続ける既知の原因。
+# 本文から拾って明示しないと「なぜか全部失敗する」にしか見えない。
+_AGENT_FATAL_PATTERNS = (
+    (re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
+     "利用上限に達しています（時間をおくか、プラン・クレジットを見直してください）"),
+    (re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
+                r"|SendMessageError|please (re)?login", re.I),
+     "認証に失敗しています（再ログインが必要です）"),
+    (re.compile(r"issue with the selected model|invalid model|model .{0,40}(not found|does not exist)"
+                r"|may not have access to it", re.I),
+     "指定したモデルを使えません（モデル名・利用権限を確認してください）"),
+)
+
+
+def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
+    """エージェント CLI の失敗を、人が原因に辿り着ける文言にする。
+
+    CLI は起動バナー（workdir / model / プロンプト全文）を stderr へ流す。先頭だけを切り取ると
+    肝心のエラーがバナーに埋もれて消える — 実際 codex の「利用上限に達した」を丸ごと取り逃し、
+    全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、既知の致命的原因は
+    見出しに添える。"""
+    blob = f"{out or ''}\n{err or ''}"
+    hints = [msg for pat, msg in _AGENT_FATAL_PATTERNS if pat.search(blob)]
+    head = f"{cli} 失敗 (rc={rc})"
+    if hints:
+        head += ": " + " / ".join(dict.fromkeys(hints))   # 重複を畳む
+    tail = (err or out or "").strip()
+    return f"{head}\n{tail[-500:]}" if tail else head
+
+
 def _run_kiro_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出し（分解・優先順位・裁定・ルーティング等）はすべてここを通る。
@@ -2284,12 +2498,18 @@ def _run_kiro_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
         proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
                               timeout=(_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None), env=env)
         if proc.returncode != 0:
-            raise RuntimeError(f"{cmd[0]} rc={proc.returncode}: {proc.stderr.strip()[:300]}")
+            raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))
         text = strip_ansi(proc.stdout).strip()
         if out_file:   # codex: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
             with contextlib.suppress(OSError):
                 with open(out_file, encoding="utf-8") as f:
                     text = f.read().strip() or text
+        if not text:
+            # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して
+            # rc=0 で終わる）。空を成功として扱うと、verify 合成も分解も「静かに失敗」して
+            # 決定的フォールバックへ落ちる＝LLM を呼べていないのに動いて見える。失敗にする。
+            raise RuntimeError(_agent_failure(cmd[0], 0, proc.stdout, proc.stderr)
+                               .replace("失敗 (rc=0)", "が空の応答を返しました (rc=0)"))
         return text
     finally:
         if out_file:
@@ -3392,9 +3612,15 @@ def task_branch_name(cfg: "Config", task: "Task") -> str:
 
 
 def _workspace_token(spec: dict) -> str:
-    """workspace spec を kiro-flow の `--workspace` 値（JSON）にする。url/path/base/target/desc/branch を伝搬。
-    worker（clone・作業ブランチ）と gitlab の起票先解決の双方で使われる。"""
-    meta = {k: spec[k] for k in ("path", "base", "target", "desc", "branch") if spec.get(k)}
+    """workspace spec を kiro-flow の `--workspace` 値（JSON）にする。
+    url/path/base/target/desc/branch/local を伝搬。worker（作業ツリーの用意・作業ブランチ）と
+    gitlab の起票先解決の双方で使われる。
+
+    local（手元にある同じリポジトリのクローン）を落とすと、worker は目の前に同じリポジトリが
+    あってもネットワーク越しにミラーを取り直す。ここで伝搬させることで worker はローカルから
+    worktree を切れる（速い・オフラインでも動く）。"""
+    meta = {k: spec[k] for k in ("path", "base", "target", "desc", "branch", "local")
+            if spec.get(k)}
     if meta.get("desc") and len(meta["desc"]) > 300:
         meta["desc"] = meta["desc"][:300]         # argv 肥大を防ぐ（説明は有界に）
     return json.dumps({"url": spec["url"], **meta}, ensure_ascii=False, separators=(",", ":"))
@@ -3961,6 +4187,14 @@ class Config:
     # kiro-project の役割なので CLI 注入し続ける。
     flow_config: "str | None" = None
     flow_max_workers: int = 4          # kiro-flow daemon の worker 上限
+    # 状態 worktree（build_config が root を差し替える。下の _redirect_root_to_state_worktree 参照）
+    state_worktree: bool = True
+    state_worktree_dir: str = ""
+    state_branch: str = "kiro-state"
+    state_commit: bool = True
+    state_commit_interval: float = 300.0
+    state_push: bool = False
+    state_top: "Path | None" = None    # 本体リポジトリのトップ（状態を worktree へ逃がしたときだけ入る）
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
                                            # ごとに 1 回だけ書き直し、state_git の commit-if-diff に乗る
@@ -4328,6 +4562,7 @@ def append_runlog(path: "Path | None", record: dict) -> None:
 def _block(cfg, task, reason, reasons, evidence: str = ""):
     task.status = "blocked"
     reasons[task.id] = reason
+    _remember_needs_reason(task, reason)  # 票を失っても ensure_needs が同じ理由で作り直せるように
     persist_task(cfg, task)
     write_needs_file(cfg, task, reason, evidence=evidence)
     release_claim(cfg, task)              # blocked は doing でなくなる＝実行権（claim）を解放（人手 hold 含む）
@@ -4468,6 +4703,43 @@ def release_claim(cfg: "Config", task: "Task") -> None:
         (_claims_dir(cfg) / f"{task.id}.lock").unlink()
     except OSError:
         pass
+
+
+def _claim_alive(cfg: "Config", tid: str) -> bool:
+    """その task を今も実行している者がいるか。
+
+    同一ホストのクレームは pid の生死で即断する（TTL を待たずに済む＝再起動直後の取り残しを
+    すぐ救える）。別ホストは生死を確かめられないので TTL に従う。"""
+    p = _claims_dir(cfg) / f"{tid}.lock"
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False                                    # 票が無い/壊れている＝実行者はいない
+    if str(rec.get("host", "")) == socket.gethostname():
+        return _pid_alive(int(rec.get("pid", -1) or -1))
+    return time.time() - float(rec.get("ts", 0) or 0) <= _claim_ttl(cfg)
+
+
+def recover_stale_doing(cfg: "Config", tasks: "list[Task]") -> "list[str]":
+    """実行者が失踪した doing を ready へ戻す（自己回復）。戻した ID を返す。
+
+    kiro-project が再起動・クラッシュ（あるいは stop）すると、実行中だったタスクは doing のまま
+    残る。**doing は消化対象（CONSUMABLE = ready/todo）ではない**ので次のパスでも拾われず、
+    claim ロックだけが残骸として残って永久に止まる — viewer には「実行中」と見えるのに何も
+    進まない。実行していたプロセスがもういないなら、その試行は二度と結果を返さない。実行権を
+    解放して ready へ戻し、次のパスで新しい試行として拾い直させる（retries は据え置き＝この
+    取り残しは worker の失敗ではないので、人へ回すまでの猶予を削らない）。"""
+    revived: "list[str]" = []
+    for t in tasks:
+        if t.norm_status() != "doing" or _claim_alive(cfg, t.id):
+            continue
+        release_claim(cfg, t)
+        t.status = "ready"
+        persist_task(cfg, t)
+        append_journal(cfg.journal,
+                       f"doing 回復: {t.id} を ready へ戻す（実行者が失踪＝結果は返らない）")
+        revived.append(t.id)
+    return revived
 
 
 def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tuple[str, str]]":
@@ -4982,6 +5254,7 @@ def _run_setup(cfg: "Config") -> tuple:
     inboxed = run_intake(cfg) + ingest_inbox(cfg)     # 取り込みコマンド＋外部ドロップ(inbox/)を backlog へ
     tasks = load_tasks(cfg.backlog)
     recover_revised(cfg, tasks)   # 実行側が settle できなかった revise 予約の回収（クラッシュ自己回復）
+    recover_stale_doing(cfg, tasks)   # 実行者が失踪した doing を ready へ戻す（再起動/クラッシュ自己回復）
     policy = load_policy(cfg.policy)
     reasons: dict[str, str] = {}
     ingested = ingest_feedback(cfg, tasks)           # 人のフィードバックでブロック解除
@@ -5006,7 +5279,7 @@ def _run_setup(cfg: "Config") -> tuple:
                 persist_task(cfg, t)
     tasks += route_spec_tasks(cfg, tasks, policy)     # spec ルーティング（opt-in・spec 前段を前置）
     tasks += expand_spec_tasks(cfg, tasks)            # 承認済み spec の tasks.md を実装タスクへ展開
-    ensure_plan_review_needs(cfg, tasks)              # proposed に needs（実行前レビュー票）を用意
+    ensure_needs(cfg, tasks)                          # 判断待ち（proposed/blocked/review）の票を status から整合
     return tasks, policy, reasons, ingested, inboxed, pre_blocked
 
 
@@ -6167,6 +6440,7 @@ def run_watch(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.slee
             if not is_paused(cfg):
                 run_intake(cfg)      # 外部ゲートからの汲み上げ（間隔律速。積まれれば has_work が起こす）
             maybe_heartbeat_status(cfg)  # --status-interval のときだけ idle 中も生存信号を更新（既定は無効＝無干渉）
+            commit_state(cfg)        # 状態 worktree: 溜まった変更をまとめてコミット（間隔律速）
             state_sync(cfg)          # 状態 git: リモートの指示を取り込む（間隔律速。届けば has_work が起こす）
             if is_paused(cfg):
                 ingest_commands(cfg)  # pause 中も resume/stop（と他の指示）は受け付ける
@@ -7385,6 +7659,9 @@ def cmd_enqueue(cfg: Config, args) -> int:
         else:
             warn = "  ⚠ verify 未定義 → inbox（人の triage へ）"
         print(f"enqueued {t.id} [{t.norm_status()}] {t.title}{warn}")
+    # 投入したその場でレビュー票を用意する。従来はループのパス頭でしか作られず、実行中タスクが
+    # 長いとその間ずっと「backlog は承認待ち・要対応画面には無い」状態になり、人は承認できなかった。
+    ensure_needs(cfg, created)
     return 0
 
 
@@ -7399,7 +7676,8 @@ def cmd_triage(cfg: Config) -> int:
         persist_task(cfg, t)
     for t in tasks:
         persist_task(cfg, t)
-    ensure_plan_review_needs(cfg, tasks)         # proposed に needs（実行前レビュー票）を用意
+    recover_stale_doing(cfg, tasks)             # 実行者が失踪した doing を ready へ戻す
+    ensure_needs(cfg, tasks)                    # 判断待ち（proposed/blocked/review）の票を status から整合
     order = prioritize(tasks, policy, cfg.planner, cfg.model)
     print("優先順位（消化対象）:")
     for i, t in enumerate(order, 1):
@@ -7807,6 +8085,9 @@ def _registry_entry(name: str, e: dict) -> dict:
             "desc": str(e.get("desc", "") or ""), "base": base,
             "target": str(e.get("target", "") or "") or base,
             "path": str(e.get("path", "") or "").strip("/"),
+            # local: 手元にある同じリポジトリのクローン。worker はここから worktree を切れる
+            # （ネットワーク越しのミラー取得が要らない）。kiro-flow へは _workspace_token で伝搬。
+            "local": str(e.get("local", "") or "").strip(),
             "readonly": bool(e.get("readonly")) or not owns,
             "owns": [str(g) for g in owns]}
     for k in ("docs", "tests", "code"):   # 分類グロブ（repos スキーマの拡張キー）も引き回す
@@ -9457,6 +9738,7 @@ def project_watch(cfg: "Config", planner=None, reviewer=None, runner=run_loop,
                 pids[name] = _project_id(cfg, ch) + (
                     f"-{name}" if _is_multi_charter(cfg, name) else "")
         mtimes0 = _charter_mtimes(cfg)
+        commit_state(cfg)   # パスの区切りで状態をコミット（人の判断が動いたら即・副産物はまとめて）
         append_journal(cfg.journal, "=== project watch: 監視中（charter 更新/フィードバック待ち）===")
         while True:                  # idle: charter が変わるか、人のフィードバックが来たら再開
             sleeper(cfg.poll)
@@ -9570,6 +9852,15 @@ CONFIG_DEFAULTS = {
     "manage_flow_daemon": False,
     "flow_config": None,        # daemon に --config で渡す共有 kiro-flow.yaml（任意。kiro-flow の設定はここに集約）
     "flow_max_workers": 4,      # kiro-flow daemon の worker 上限
+    # 状態 worktree: root が git の作業ツリー内にあるとき、状態の読み書きを専用ブランチの
+    # worktree（切りっぱなし）へ逃がす。設定の root は本体のまま書ける（人が書く自然な形）。
+    # 本体の作業ツリー・index を一切汚さず、状態の履歴は同じリポジトリの別ブランチに残る。
+    "state_worktree": True,
+    "state_worktree_dir": "",           # 既定: <repo>-kiro-state（リポジトリの隣）
+    "state_branch": "kiro-state",       # 状態を載せるブランチ（無ければ作る）
+    "state_commit": True,               # 状態 worktree の変更を git にコミットする
+    "state_commit_interval": 300.0,     # 実行の副産物だけの変化をまとめる間隔（秒）。0 で毎回コミット
+    "state_push": False,                # コミットを origin へ push する（共有運用）
     "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
@@ -9677,6 +9968,14 @@ def build_config(args) -> Config:
     # 相対パスの上書きもすべて root 基準で解決する（viewer の bus 解決とも一致する）。
     root = Path(str(args.root or ".")).expanduser()
     root = (root if root.is_absolute() else (Path.cwd() / root)).resolve()
+    # 状態の読み書きは、本体の作業ツリーから切り離した専用 worktree へ逃がす（設定の root は
+    # 本体を指したままでよい）。以降のパスはすべてこの実効 root を基準に組まれる。
+    state_top: "Path | None" = None
+    root, state_top = _redirect_root_to_state_worktree(
+        root,
+        bool(getattr(args, "state_worktree", True)),
+        str(getattr(args, "state_worktree_dir", "") or ""),
+        str(getattr(args, "state_branch", "kiro-state") or "kiro-state"))
     # act / verify の作業ディレクトリ。相対値は root 基準（既定 . = root）。
     wd = Path(str(getattr(args, "workdir", None) or ".")).expanduser()
     workdir = (wd if wd.is_absolute() else (root / wd)).resolve()
@@ -9722,6 +10021,13 @@ def build_config(args) -> Config:
         flow_config=getattr(args, "flow_config", None) or None,
         flow_max_workers=max(1, int(getattr(args, "flow_max_workers", 4) or 4)),
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
+        state_worktree=bool(getattr(args, "state_worktree", True)),
+        state_worktree_dir=str(getattr(args, "state_worktree_dir", "") or ""),
+        state_branch=str(getattr(args, "state_branch", "kiro-state") or "kiro-state"),
+        state_commit=bool(getattr(args, "state_commit", True)),
+        state_commit_interval=max(0.0, float(getattr(args, "state_commit_interval", 300.0) or 0.0)),
+        state_push=bool(getattr(args, "state_push", False)),
+        state_top=state_top,
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,
         route_planner=str(getattr(args, "route_planner", "agent") or "agent"),

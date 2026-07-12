@@ -19,7 +19,7 @@ root: .kiro-project
 
 # グローバル既定
 agent_cli: claude
-model: opus
+model: auto
 agents:
   plan:     {model: opus}      # 分解・再計画・差し戻し修正
   assess:   {model: haiku}     # 大量に走る採点は安いモデルに

@@ -152,8 +152,30 @@ function registerIpcHandlers() {
     };
   });
 
-  // 失敗/完了した run を同じ要求で inbox へ再投入（人の明示アクション。新しい run になる）
-  handle('flow:resubmit', ({ busDir, runId }) => flow.resubmitRun(busDir, runId));
+  // 失敗した run の「やり直し」。
+  //
+  // kiro-project 配下の run なら、bus へ投げ直すのではなく **タスクを積み直す**。
+  // bus/inbox は kiro-flow の daemon が拾う契約だが、kiro-project は daemon を使わず run を
+  // 都度起動する（manage_flow_daemon の既定は false）。そこへ投入しても誰も拾わない＝押しても
+  // 何も起きないボタンになる。しかも inbox 投入は kiro-project のタスク状態に触らないため、
+  // 仮に走っても結果が settle されず、タスクは doing のまま取り残される。
+  // タスクを ready へ戻せば kiro-project が新しい run を起こし、結果も正しく回収する。
+  // （run-id にはタスク ID が埋まっている: req-<hash>-<task-id>-r<n>）
+  //
+  // kiro-flow を単体で使っている run（タスクに紐づかない・daemon 運用）は従来どおり inbox へ。
+  handle('flow:resubmit', async ({ dir, busDir, runId }) => {
+    const taskId = flow.parseRunId(runId).taskId;
+    if (dir && taskId && fs.existsSync(path.join(dir, 'backlog', `${taskId}.md`))) {
+      const res = await actions.runAction(loadConfig(), {
+        dir,
+        action: 'approve',            // 判断待ちを積み直す（＝ready に戻して再実行させる）
+        id: taskId,
+        reason: `実行画面から再実行（元の run: ${runId}）`,
+      });
+      return { ...res, viaTask: true, taskId };
+    }
+    return flow.resubmitRun(busDir, runId);
+  });
 
   // 不要な run の削除（人の明示アクション）。実行中（orchestrator 生存）は拒否し、
   // 終端（done/failed）と応答なし（孤児）だけを runs/<id> ごとゴミ箱へ移動する

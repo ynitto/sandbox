@@ -24,7 +24,8 @@ contextBridge.exposeInMainWorld('api', {
   // dir（プロジェクトフォルダ）は run アーカイブの置き場（<dir>/flow-archive/）に使う
   flowRuns: (dir, busDir, limit) => invoke('flow:runs', { dir, busDir, limit }),
   flowRun: (dir, busDir, runId) => invoke('flow:run', { dir, busDir, runId }),
-  flowResubmit: (busDir, runId) => invoke('flow:resubmit', { busDir, runId }),
+  // dir（プロジェクトルート）も渡す: kiro-project 配下の run は「タスクの積み直し」で再実行する
+  flowResubmit: (dir, busDir, runId) => invoke('flow:resubmit', { dir, busDir, runId }),
   flowDeleteRun: (busDir, runId) => invoke('flow:deleteRun', { busDir, runId }),
   flowCancel: (busDir, runId, reason) => invoke('flow:cancel', { busDir, runId, reason }),
   glFindIssueByToken: (args) => invoke('gitlab:findIssueByToken', args),

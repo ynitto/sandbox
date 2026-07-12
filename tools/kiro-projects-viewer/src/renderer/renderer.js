@@ -2891,10 +2891,11 @@ function renderFlowDetail() {
   const archivedBadge = archived
     ? ' <span class="badge" title="完了後に保存された記録です（閲覧のみ）">📦 記録</span>'
     : '';
-  // 失敗した run は人が「同じ要求で再投入」できる（新しい run として inbox へ。公式契約のみ）
+  // 失敗した run と、中止した run（＝停滞していたので人が止めたもの）はやり直せる。
+  // 停滞した run は「■ 中止」で終端させてから、このボタンでやり直す導線になる。
   const resubmit =
-    !archived && run.status === 'failed'
-      ? `<button class="chip" id="flow-resubmit" title="同じ内容で新しい実行を最初から開始します">↻ 同じ内容でやり直す</button>`
+    !archived && (run.status === 'failed' || run.status === 'canceled')
+      ? `<button class="chip" id="flow-resubmit" title="同じ内容で最初からやり直します（タスクを積み直して本体に実行させます）">↻ 同じ内容でやり直す</button>`
       : '';
   // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ
   const deletable =
@@ -3130,18 +3131,27 @@ async function findNodeIssue(btn) {
   renderFlow();
 }
 
-// 失敗 run を同じ要求で inbox へ再投入（新しい run として最初から実行される）
+// 失敗/中止した run のやり直し。
+// kiro-project 配下の run は、bus へ投げ直すのではなくタスクを積み直す（本体が新しい run を
+// 起こし、結果も回収する）。bus/inbox は daemon が拾う契約で、daemon を使わない構成では
+// 誰も拾わない＝押しても何も起きないため（res.viaTask がその判別）。
 async function resubmitFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
-  const res = await guard('やり直し', () => api.flowResubmit(state.project.busDir, run.runId));
+  const res = await guard('やり直し', () =>
+    api.flowResubmit(state.selectedDir, state.project.busDir, run.runId)
+  );
   if (res) {
     const d = state.flowDaemon;
     uiLog('resubmit', res);
-    toast(
-      `新しい実行として開始を依頼しました${d && d.running === false ? '（実行エンジンが停止中のため、起動後に始まります）' : ''}`,
-      true
-    );
+    if (res.viaTask) {
+      toast(`タスク ${res.taskId} を積み直しました（本体が新しい実行を始めます）`, true);
+    } else {
+      toast(
+        `新しい実行として開始を依頼しました${d && d.running === false ? '（実行エンジンが停止中のため、起動後に始まります）' : ''}`,
+        true
+      );
+    }
     await gitPushBusOp(`kiro-projects-viewer: resubmit run ${run.runId}`);
     await reloadProject();
   }

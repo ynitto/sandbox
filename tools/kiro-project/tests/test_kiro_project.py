@@ -6457,6 +6457,287 @@ class FeedbackReductionTests(unittest.TestCase):
 
 
 
+class StateWorktreeTests(unittest.TestCase):
+    """状態の読み書きを、本体の作業ツリーから切り離した専用 worktree へ逃がす。
+
+    kiro-project は watch 中 5 秒ごとに journal / status.json / run-log / project.json を書き換える。
+    本体の中に置くと人の git status が永久に dirty になり、人やツールの git 操作
+    （stash / rebase / pull --autostash）が書き込み中の状態ファイルを巻き込んで壊す
+    （実際に project.json がコンフリクトマーカーで JSON として読めなくなった）。"""
+
+    def _repo(self):
+        # git は toplevel を realpath で返す（macOS の /var → /private/var）。揃えておく。
+        top = Path(tempfile.mkdtemp(prefix="kp-state-")).resolve()
+        self.addCleanup(shutil.rmtree, top, True)
+        env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        run = lambda *a: subprocess.run(a, cwd=top, capture_output=True, env=env)
+        run("git", "init", "-b", "main", ".")
+        run("git", "config", "user.email", "t@e.com")
+        run("git", "config", "user.name", "t")
+        (top / "README.md").write_text("x\n")
+        run("git", "add", "-A")
+        run("git", "commit", "-m", "init")
+        self.addCleanup(lambda: shutil.rmtree(top.parent / f"{top.name}-kiro-state", True))
+        return top
+
+    def test_root_is_redirected_into_a_worktree(self):
+        top = self._repo()
+        root, state_top = km._redirect_root_to_state_worktree(
+            top / ".kiro-project", True, "", "kiro-state")
+        self.assertEqual(state_top, top)
+        self.assertNotIn(str(top / ".kiro-project"), str(root))     # 本体の中ではない
+        self.assertTrue((root.parent / ".git").exists(), "worktree の中を指す")
+        # ブランチが切られている
+        r = subprocess.run(["git", "-C", str(root.parent), "rev-parse", "--abbrev-ref", "HEAD"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "kiro-state")
+
+    def test_writing_state_does_not_dirty_the_main_worktree(self):
+        top = self._repo()
+        root, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", True, "", "kiro-state")
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "journal.md").write_text("- 稼働中\n")          # 本体が 5 秒ごとに書くもの
+        (root / "status.json").write_text('{"watch": true}\n')
+        dirty = subprocess.run(["git", "-C", str(top), "status", "--porcelain"],
+                               capture_output=True, text=True).stdout
+        self.assertEqual(dirty.strip(), "", "本体の作業ツリーは汚れない")
+
+    def test_existing_state_is_migrated_once(self):
+        top = self._repo()
+        src = top / ".kiro-project"
+        (src / "backlog").mkdir(parents=True)
+        (src / "backlog" / "T1.md").write_text("## T1\n- status: ready\n")
+        root, _ = km._redirect_root_to_state_worktree(src, True, "", "kiro-state")
+        self.assertTrue((root / "backlog" / "T1.md").is_file(), "既存の状態が引っ越す")
+        self.assertFalse(src.exists(), "本体側は残さない（二重管理を作らない）")
+
+    def test_reuses_the_worktree_on_restart(self):
+        top = self._repo()
+        a, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", True, "", "kiro-state")
+        a.mkdir(parents=True, exist_ok=True)
+        (a / "mark.txt").write_text("keep\n")
+        b, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", True, "", "kiro-state")
+        self.assertEqual(a, b, "切りっぱなしの worktree を再利用する")
+        self.assertTrue((b / "mark.txt").is_file(), "中身を消さない")
+
+    def test_non_git_root_is_left_alone(self):
+        d = Path(tempfile.mkdtemp(prefix="kp-nogit-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        root, state_top = km._redirect_root_to_state_worktree(d / "p", True, "", "kiro-state")
+        self.assertEqual(root, d / "p")
+        self.assertIsNone(state_top)
+
+    def test_disabled_keeps_the_root(self):
+        top = self._repo()
+        root, state_top = km._redirect_root_to_state_worktree(
+            top / ".kiro-project", False, "", "kiro-state")
+        self.assertEqual(root, top / ".kiro-project")
+        self.assertIsNone(state_top)
+
+
+class StateCommitTests(unittest.TestCase):
+    """状態のコミット: 人の判断が動いたら即、実行の副産物だけならまとめる。
+
+    watch は 5 秒ごとに journal / status.json を書き換えるので、毎回コミットすると履歴が秒単位で
+    埋まって読めない。意味のある変化（backlog / needs / decisions …）と、実行の副産物を分ける。"""
+
+    def _cfg(self):
+        top = Path(tempfile.mkdtemp(prefix="kp-sc-")).resolve()
+        self.addCleanup(shutil.rmtree, top, True)
+        env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        run = lambda *a: subprocess.run(a, cwd=top, capture_output=True, env=env)
+        run("git", "init", "-b", "main", ".")
+        run("git", "config", "user.email", "t@e.com")
+        run("git", "config", "user.name", "t")
+        (top / "README.md").write_text("x\n")
+        run("git", "add", "-A")
+        run("git", "commit", "-m", "init")
+        self.addCleanup(lambda: shutil.rmtree(top.parent / f"{top.name}-kiro-state", True))
+        root, state_top = km._redirect_root_to_state_worktree(
+            top / ".kiro-project", True, "", "kiro-state")
+        root.mkdir(parents=True, exist_ok=True)
+        cfg = cfg_for(root)
+        cfg.state_top = state_top
+        cfg.state_commit = True
+        cfg.state_commit_interval = 3600.0        # 副産物はまとめる（テスト中は跨がない）
+        km._last_state_commit = 0.0
+        return cfg, root
+
+    def _log(self, root):
+        return subprocess.run(["git", "-C", str(root), "log", "--oneline"],
+                              capture_output=True, text=True).stdout.strip().split("\n")
+
+    def test_meaningful_change_commits_immediately(self):
+        cfg, root = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: ready\n")
+        self.assertTrue(km.commit_state(cfg))
+        self.assertIn("状態を更新", self._log(root)[0])
+
+    def test_noise_only_change_is_batched(self):
+        cfg, root = self._cfg()
+        km._last_state_commit = time.time()             # 直前にコミット済み＝間隔内
+        (root / "journal.md").write_text("- 監視中\n")   # 5 秒ごとの副産物
+        (root / "status.json").write_text('{"watch": true}\n')
+        self.assertFalse(km.commit_state(cfg), "間隔内はまとめる（コミットしない）")
+
+    def test_noise_commits_once_the_interval_passes(self):
+        cfg, root = self._cfg()
+        cfg.state_commit_interval = 0.0                 # 間隔ゼロ＝毎回
+        (root / "journal.md").write_text("- 監視中\n")
+        self.assertTrue(km.commit_state(cfg))
+        self.assertIn("実行ログを更新", self._log(root)[0])
+
+    def test_main_worktree_is_never_touched(self):
+        cfg, root = self._cfg()
+        top = cfg.state_top
+        (top / "wip.txt").write_text("人の編集中\n")      # 人が本体で作業している
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n")
+        km.commit_state(cfg)
+        dirty = subprocess.run(["git", "-C", str(top), "status", "--porcelain"],
+                               capture_output=True, text=True).stdout
+        self.assertIn("wip.txt", dirty, "人の変更はそのまま（コミットも stash もされない）")
+        staged = subprocess.run(["git", "-C", str(top), "diff", "--cached", "--name-only"],
+                                capture_output=True, text=True).stdout
+        self.assertEqual(staged.strip(), "", "本体の index に触らない")
+
+    def test_no_change_no_commit(self):
+        cfg, root = self._cfg()
+        cfg.state_commit_interval = 0.0
+        self.assertFalse(km.commit_state(cfg))
+
+
+class EnsureNeedsTests(unittest.TestCase):
+    """needs は status の投影＝失われたら status から作り直す（自己修復）。
+
+    従来は「状態が変わった瞬間」にしか票を書かず、proposed だけが ensure で守られていた。
+    そのため blocked/review の票が失われると二度と作られず、backlog は blocked のままなのに
+    viewer の要対応画面には出てこない（viewer の操作ボタンは全て needs カードに紐づくため、
+    人は承認も再実行も差し戻しもできない袋小路に入った）。"""
+
+    def _cfg(self, d):
+        return cfg_for(Path(d), plan_review=True)
+
+    def test_lost_blocked_card_is_rebuilt_with_its_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", status="blocked", verify="true")
+            km._remember_needs_reason(t, "繰り返し NG（retries=3）: exit=1")
+            km.persist_task(cfg, t)
+            self.assertFalse(km.needs_path(cfg, "T1").exists())   # 票が失われた状態
+
+            made = km.ensure_needs(cfg, [t])
+            self.assertEqual(made, ["T1"])
+            body = km.needs_path(cfg, "T1").read_text(encoding="utf-8")
+            self.assertIn("繰り返し NG（retries=3）", body)        # 理由も復元される
+            self.assertIn("kind: blocked", body)
+
+    def test_lost_review_card_is_rebuilt(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T2", title="x", status="review", verify="true")
+            km.persist_task(cfg, t)
+            km.ensure_needs(cfg, [t])
+            self.assertIn("kind: review", km.needs_path(cfg, "T2").read_text(encoding="utf-8"))
+
+    def test_existing_card_is_never_overwritten(self):
+        # 人が記入中の票を消さない
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T3", title="x", status="blocked", verify="true")
+            km.persist_task(cfg, t)
+            km.ensure_needs(cfg, [t])
+            p = km.needs_path(cfg, "T3")
+            p.write_text(p.read_text(encoding="utf-8") + "\n人の記入\n", encoding="utf-8")
+            self.assertEqual(km.ensure_needs(cfg, [t]), [])       # 再生成しない
+            self.assertIn("人の記入", p.read_text(encoding="utf-8"))
+
+    def test_running_states_get_no_card(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = [km.Task(id=f"T{i}", title="x", status=s, verify="true")
+                     for i, s in enumerate(("ready", "doing", "done"))]
+            self.assertEqual(km.ensure_needs(cfg, tasks), [])
+
+    def test_enqueue_creates_the_review_card_immediately(self):
+        # 従来はループのパス頭まで票が作られず、その間「backlog は承認待ち・要対応画面には無い」
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            args = types.SimpleNamespace(
+                json=False, file=None, id="T9", title="新規", verify="true", priority=0,
+                source="human", status=None, after=None, review=None, note=None, accept=None,
+                verify_template=None, repos=None, cohort_items=None)
+            self.assertEqual(km.cmd_enqueue(cfg, args), 0)
+            self.assertTrue(km.needs_path(cfg, "T9").exists(), "投入したその場で票ができる")
+
+
+class RecoverStaleDoingTests(unittest.TestCase):
+    """実行者が失踪した doing を ready へ戻す（再起動・クラッシュの自己回復）。
+
+    doing は CONSUMABLE（ready/todo）ではないので次のパスでも拾われない。実行していた
+    プロセスがいなくなると、claim ロックだけを残して永久に doing のまま止まる
+    （viewer には「実行中」と見えるのに何も進まない）。"""
+
+    def _doing(self, cfg, tid="T1"):
+        t = km.Task(id=tid, title="x", status="doing", verify="true")
+        km.persist_task(cfg, t)
+        return t
+
+    def _claim(self, cfg, tid, pid, host=None, ts=None):
+        d = km._claims_dir(cfg)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{tid}.lock").write_text(json.dumps({
+            "host": host or socket.gethostname(), "pid": pid,
+            "ts": ts if ts is not None else time.time(), "id": tid}), encoding="utf-8")
+
+    def test_dead_owner_is_recovered(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            km.ensure_dirs(cfg)
+            t = self._doing(cfg)
+            self._claim(cfg, "T1", pid=999999)          # 存在しない pid＝失踪
+            self.assertEqual(km.recover_stale_doing(cfg, [t]), ["T1"])
+            self.assertEqual(t.norm_status(), "ready")
+            self.assertFalse((km._claims_dir(cfg) / "T1.lock").exists(), "claim を解放する")
+            self.assertEqual(t.retries, 0, "retries は据え置き（worker の失敗ではない）")
+
+    def test_live_owner_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            km.ensure_dirs(cfg)
+            t = self._doing(cfg)
+            self._claim(cfg, "T1", pid=os.getpid())     # 自分＝生きている
+            self.assertEqual(km.recover_stale_doing(cfg, [t]), [])
+            self.assertEqual(t.norm_status(), "doing")
+
+    def test_missing_claim_is_recovered(self):
+        # claim ごと失われた doing（同期事故など）も救う
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            km.ensure_dirs(cfg)
+            t = self._doing(cfg)
+            self.assertEqual(km.recover_stale_doing(cfg, [t]), ["T1"])
+
+    def test_remote_host_follows_ttl(self):
+        # 別ホストは pid の生死を確かめられない → TTL に従う（新鮮なら触らない）
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            km.ensure_dirs(cfg)
+            t = self._doing(cfg)
+            self._claim(cfg, "T1", pid=1, host="other-host", ts=time.time())
+            self.assertEqual(km.recover_stale_doing(cfg, [t]), [])
+            self._claim(cfg, "T1", pid=1, host="other-host", ts=0)   # TTL 超過
+            self.assertEqual(km.recover_stale_doing(cfg, [t]), ["T1"])
+
+
 class TestPlanReview(unittest.TestCase):
     """実行前レビュー（plan_review・本番既定 on）: 新規タスクは proposed で入り、
     人の承認（approve）・差し戻し（feedback→kiro-project が修正）・却下（reject）を通る。"""
