@@ -142,19 +142,30 @@ async function upstreamOf(toplevel) {
   return m ? { remote: m[1], branch: m[2] } : null;
 }
 
-// pull 本体。rebase=true はローカルコミット（都度プッシュの書き込み）と共存する取り込み。
-// rebase が進められない（コンフリクト）ときは abort して作業ツリーを壊さずエラーで返す。
-// --autostash: commitPush は操作した pathspec だけをコミットするため、同一クローンへ
-// 書き込む他プロセス（kiro-project 本体等）の未コミット変更で作業ツリーが汚れている
-// のが常態。そのままでは rebase が「unstaged changes」で走れないので、退避→取り込み→
-// 復帰を git に任せる（他プロセスの変更は巻き込まずそのまま作業ツリーへ戻る）
-async function doPull(toplevel, rebase) {
+// pull 本体。取り込みは fast-forward のみで行い、作業ツリーが汚れているときは見送る。
+// （rebase 引数はもう見ない — 呼び出し側の設定は残しているが、rebase/autostash は下記の理由で
+//  この作業ツリーには使えない。）
+async function doPull(toplevel, _rebase) {
   lastRemoteAt.set(toplevel, Date.now()); // 失敗しても間隔は空ける（リモートへの連打を防ぐ）
-  const args = rebase ? ['pull', '--rebase', '--autostash'] : ['pull', '--ff-only'];
-  const res = await git(toplevel, args, 120000);
+
+  // 作業ツリーが汚れているなら pull を見送る。
+  //
+  // 以前は --rebase --autostash で「汚れていても進める」ようにしていた。しかしこの作業ツリー
+  // では kiro-project 本体が watch 中 5 秒ごとに状態ファイル（project.json / journal.md /
+  // run-log.jsonl / status.json）を書き換え続けている。autostash がそれを退避している最中にも
+  // 本体は書き込むため、復帰時にコンフリクトし、`<<<<<<< Updated upstream` が状態ファイルへ
+  // 書き込まれて壊れた（project.json が JSON として読めなくなり、本体が状態を失った）。
+  // 人が編集中の変更も同じ理由で巻き込まれる。
+  //
+  // pull は作業ツリーを書き換える操作なので、他者が書き込んでいる最中に無理に走らせない。
+  // 静かになってから取り込む（次のポーリングで再挑戦する）。
+  const dirty = await git(toplevel, ['status', '--porcelain'], 30000);
+  if (dirty.code === 0 && dirty.out.trim()) {
+    return { skipped: true, toplevel, dirty: true };
+  }
+  const res = await git(toplevel, ['pull', '--ff-only'], 120000);
   if (res.code !== 0) {
-    if (rebase) await git(toplevel, ['rebase', '--abort'], 30000);
-    throw fail(res, `git ${args.join(' ')}`);
+    throw fail(res, 'git pull --ff-only');
   }
   return { skipped: false, toplevel, output: res.out.slice(-400) };
 }

@@ -129,6 +129,41 @@ function writeBusRecords(proj, n) {
     assert.strictEqual(list.length, 1, '本体の worktree だけが残る');
   });
 
+  // --- pull は作業ツリーを壊さない ---
+  // 以前は --rebase --autostash で「汚れていても進める」ようにしていた。だが kiro-project は
+  // watch 中 5 秒ごとに状態ファイルを書き換え続けるため、autostash の退避→復帰がコンフリクト
+  // し、`<<<<<<< Updated upstream` が project.json / journal.md に書き込まれて壊れた
+  // （project.json が JSON として読めなくなった）。汚れているときは取り込まない。
+
+  await test('作業ツリーが汚れているときは pull を見送る（書き込み中のファイルを壊さない）', async () => {
+    const { work, proj } = scaffold();
+    // 本体が状態ファイルを書き込み中の状態を作る
+    fs.writeFileSync(path.join(proj, 'project.json'), '{"updated": "now"}\n');
+    const res = await git.pull(proj, { force: true });
+    assert.strictEqual(res.skipped, true);
+    assert.strictEqual(res.dirty, true);
+    // 書き込み中のファイルは手つかずのまま（stash に退避されて壊れたりしない）
+    assert.strictEqual(fs.readFileSync(path.join(proj, 'project.json'), 'utf8'), '{"updated": "now"}\n');
+    assert.strictEqual(G(work, 'stash', 'list'), '', 'stash を作らない');
+  });
+
+  await test('作業ツリーが綺麗なら fast-forward で取り込む', async () => {
+    const { work, proj, bare, root } = scaffold();
+    // 別のクローンからリモートを進める
+    const other = path.join(root, 'other');
+    G(root, 'clone', bare, other);
+    G(other, 'config', 'user.email', 't@e.com');
+    G(other, 'config', 'user.name', 't');
+    fs.writeFileSync(path.join(other, '.kiro-project', 'backlog', 'T-9.md'), '## T-9\n');
+    G(other, 'add', '-A');
+    G(other, 'commit', '-m', 'remote: T-9');
+    G(other, 'push', 'origin', 'main');
+
+    const res = await git.pull(proj, { force: true });
+    assert.strictEqual(res.skipped, false);
+    assert.ok(fs.existsSync(path.join(proj, 'backlog', 'T-9.md')), 'リモートの変更が入る');
+  });
+
   console.log(`\n${passed} passed`);
 })().catch((e) => {
   console.error('FAILED:', e.message);
