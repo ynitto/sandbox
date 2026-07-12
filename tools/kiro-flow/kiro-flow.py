@@ -2920,6 +2920,36 @@ def _kiro_argv_limit() -> int:
     return _ARGV_LIMIT if _ARGV_LIMIT > 0 else CONFIG_DEFAULTS["argv_limit"]
 
 
+# エージェント CLI が返す失敗のうち、人が対処しないと全タスクが落ち続ける既知の原因。
+# これを本文から拾って明示しないと「なぜか全部 failed」にしか見えない。
+_AGENT_FATAL_PATTERNS = (
+    (re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
+     "利用上限に達しています（時間をおくか、プラン・クレジットを見直してください）"),
+    (re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
+                r"|SendMessageError|please (re)?login", re.I),
+     "認証に失敗しています（再ログインが必要です）"),
+    (re.compile(r"issue with the selected model|invalid model|model .{0,40}(not found|does not exist)"
+                r"|may not have access to it", re.I),
+     "指定したモデルを使えません（モデル名・利用権限を確認してください）"),
+)
+
+
+def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
+    """エージェント CLI の失敗を、人が原因に辿り着ける文言にする。
+
+    CLI は起動バナー（workdir / model / プロンプト全文）を stderr へ流す。先頭だけを切り取ると
+    肝心のエラーがバナーに埋もれて消える — 実際 codex の「利用上限に達した」を丸ごと取り逃し、
+    全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、既知の致命的原因は
+    見出しに添える。"""
+    blob = f"{out or ''}\n{err or ''}"
+    hints = [msg for pat, msg in _AGENT_FATAL_PATTERNS if pat.search(blob)]
+    head = f"{cli} 失敗 (rc={rc})"
+    if hints:
+        head += ": " + " / ".join(dict.fromkeys(hints))   # 重複を畳む
+    tail = (err or out or "").strip()
+    return f"{head}\n{tail[-500:]}" if tail else head
+
+
 def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出しはすべてここを通る（planner / executor / verify / 裁定）。
