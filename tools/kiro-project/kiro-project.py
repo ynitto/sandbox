@@ -5453,16 +5453,18 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
     task.set("gate_ts", ts)
     task.set("gate_branch", branch)             # approve 時の受領書に所在（ブランチ）を引き継ぐ
     task.set("gate_vmsg", vmsg.replace("\n", " ")[:200])
+    # 「なぜ人の番なのか」を、失敗の理由と読み違えられない書き方にする。ここは verify が通った
+    # 成果を人が検収する場面であって、何かが失敗したわけではない（「verify=PASS だが 承認ゲート
+    # 対象（review/policy.gate）」とだけ書かれていると、成功したのに失敗理由が並んでいるように
+    # 読める、という指摘を受けた）。
     if protect_hits:
         paths = ", ".join(p for p, _ in protect_hits)
         task.set("gate_protect", paths[:200])
-        gate_why = f"保護パス変更（protect）: {paths[:160]} — approve で done 確定"
+        gate_why = f"保護パス（protect）に触れているため人の確認が要る: {paths[:160]}"
     elif assisted and not needs_human_review(task, policy):
-        gate_why = "assisted レベル（done は人が承認）。approve で done 確定、" \
-                   "フィードバック記入で差し戻し（再実行）"
+        gate_why = "自律レベルが assisted（done の確定は人が行う設定）"
     else:
-        gate_why = "承認ゲート対象（review/policy.gate）。approve で done 確定、" \
-                   "フィードバック記入で差し戻し（再実行）"
+        gate_why = "このタスクが承認ゲートの対象（review / policy.gate）"
     disp = (f"（保護パス: {paths[:80]}）" if protect_hits
             else "（assisted）" if assisted else "（承認ゲート）")
     reasons[task.id] = ("検収待ち（verify=PASS・保護パス変更。approve で done 確定）"
@@ -5475,8 +5477,10 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
         if not ref:
             task.set("gate_ref", mr_url)
     persist_task(cfg, task)
-    write_needs_file(cfg, task, f"verify=PASS だが {gate_why}", review=True, evidence=ev,
-                     risk=risk)
+    write_needs_file(cfg, task,
+                     f"検証は通っている（verify=PASS）。人の検収を待っている理由: {gate_why}。"
+                     f"内容が良ければ approve で done 確定、直したいことがあれば下に書いて差し戻す",
+                     review=True, evidence=ev, risk=risk)
     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
 
 
