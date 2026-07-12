@@ -3325,6 +3325,10 @@ class GitDistributedTests(unittest.TestCase):
         if r.returncode != 0:  # 古い git 向けフォールバック
             subprocess.run(["git", "init", "--bare", self.bare], check=True,
                            capture_output=True)
+        # 既定ブランチ名に依存しない: git バージョンや init.defaultBranch 設定に関わらず
+        # HEAD を main へ向け、_final_from_bare() の `git clone` が main を追従するようにする。
+        subprocess.run(["git", "-C", self.bare, "symbolic-ref", "HEAD", "refs/heads/main"],
+                       check=True, capture_output=True)
         self.clones = os.path.join(self.root, "clones")
 
     def _final_from_bare(self):
