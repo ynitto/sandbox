@@ -1,6 +1,0 @@
-{
-  "id": "t1",
-  "goal": "tools/kiro-project 配下で _first_command_line の定義箇所（ファイル・行）と全呼び出し元を特定し、現行の抽出ロジック（行走査・条件・戻り値型）を要約する",
-  "deps": [],
-  "kind": "work"
-}

@@ -1,0 +1,19 @@
+{
+  "id": "t20",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果物\n\n`bus/runs/run-20260712-222225-2732/artifacts/t20/report.md`\n\n## サマリー\n\n`tools/kiro-project/tests/test_kiro_project.py` に後方互換回帰テストを1件追加した。「フェンスも前置きも無い素のコマンド1行」と「行末バックスラッシュ継続コマンド」の2ケースを1テストメソッド内で検証し、`_first_command_line` 本体は無変更（テスト追加のみ）。\n\n**検証**: 完了条件コマンド `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` → 16 passed, 終了コード0。\n\n**採用した前提**: `_join_continuations` は現状 `_first_command_line` に結線されておらず（t7仕様で契約外と明示済み）、これはバグ修正の対象ではなく修正前コミット(`9fcf0e9`)から不変の挙動と確認したため、バックスラッシュ継続入力は「最初の物理行（末尾`\\`付き）がそのまま返る」という現状挙動をそのまま固定した。\n\n**範囲外で発見**: フルスイート実行で `test_synth_verify_strips_ansi_from_kiro_output` が失敗していたが、本タスクの変更とは無関係の既存不具合と確認（報告書に詳細記載、修正は未実施）。",
+  "finished_at": "2026-07-12T20:48:39Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "84d7ec1b09e7f0f912fdbd99b171c2fa235b09aa",
+      "target": "main",
+      "path": ""
+    }
+  },
+  "artifacts": [
+    "artifacts/t20/report.md"
+  ]
+}

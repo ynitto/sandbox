@@ -1,0 +1,7 @@
+{
+  "id": "e1",
+  "who": "worker-2",
+  "status": "failed",
+  "output": "実行エラー: workspace push が kp/kiro-project-codd-gate-171537 へ反映できませんでした",
+  "finished_at": "2026-07-12T21:40:27Z"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "t10",
+  "who": "worker-2",
+  "status": "done",
+  "output": "**差別化の切り口**: サブプロセスを起動しない字面のみの軽量ヒューリスティック（`sh -n` を呼ぶ既存 `_looks_like_shell_command` とは独立に、装飾プレフィックス除去＋既存 `_has_command_like_leading_token` の合成という最小差分の設計）。\n\n## 成果物\n\n`tools/kiro-project/kiro-project.py` に `_looks_like_command(line) -> bool` を追加（`_has_command_like_leading_token` の直後、L2982-3003 相当）。\n\n```python\n_LEADING_LIST_MARKER_RE = re.compile(r\"^(?:[-*+]|\\d+[.)])\\s+\")\n\ndef _looks_like_command(line: str) -> bool:\n    s = _LEADING_LIST_MARKER_RE.sub(\"\", _strip_leading_shell_prompt(line.strip()), count=1)\n    if not s or s.startswith(\"#\"):\n        return False\n    if s.casefold() in _SHELL_FENCE_LANGUAGE_TAGS:\n        return False\n    if any(ch in s for ch in _PROSE_PUNCT):\n        return False\n    return _has_command_like_leading_token(s)\n```\n\n判定前に `$ ` プロンプト記号と `1. `/`- ` 等の箇条書き装飾を1回だけ剥がし（t7仕様§5準拠、既存 `_strip_leading_shell_prompt` を再利用）、剥がした残りが空／`#`見出し・コメント／フェンス言語タグ残骸／全角句読点を含む文なら散文として`False`。それ以外は既存 `_has_command_like_leading_token`（既知コマンド語・パス表記・ハイフンCLI名）で判定する。新規ロジックは装飾除去の1回だけで、既存関数を呼び出す合成のみ。\n\n`tools/kiro-project/tests/test_kiro_project.py` に `test_looks_like_command_*` を8件追加（true系4件: 既知コマンド語／パス・ハイフンCLI／プロンプト記号除去／箇条書き除去、false系4件: `$(...)`誤剥離しないこと・日本語前置き文・箇条書き散文・見出しコメント/言語タグ/空文字）。\n\n## 検証\n\n- 完了条件コマンド: `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` → **17 passed, exit 0**\n- 新規テスト単体: `-k looks_like_command` → 8 passed\n- `py_compile` で構文確認OK\n- フル回帰: `pytest tools/kiro-project/tests` → 547 passed, **1 failed**（`test_synth_verify_strips_ansi_from_kiro_output`）。この失敗は本タスクの変更と無関係であることを、pristine な HEAD チェックアウト（`/tmp` への一時コピー、worktreeへは触れず）で単体再現し確認済み（`sh -n` の環境依存挙動と推測、`_looks_like_command` は本番コードから未呼出のため影響しえない）。\n\n## 採用した前提・範囲・申し送り\n\n- **前提**: t7仕様は `_looks_like_command` という関数名を定義していないため、本タスクの依頼文（散文除外＋コマンドらしさ判定の単一エントリポイント）を、t7 §4/§5 の除外規則・装飾プレフィックス除去ルールを1関数に凝縮したものとして解釈した。\n- **範囲**: `_first_command_line` への配線（本関数を実際の判定フローに使うか）は行っていない。本タスクは「ヘルパー関数の実装」に限定されており、他の並列候補（t13/t18/t20）との統合判断はreduce/統合工程の役割と判断した。\n- **範囲外で見つけた問題**: `test_synth_verify_strips_ansi_from_kiro_output` がこの環境で HEAD 時点から失敗（環境依存と推測）。本タスクとは無関係だが、統合前に確認推奨。",
+  "finished_at": "2026-07-12T20:56:35Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "78e83bde4ff277b2071683bf5984eaa94b957339",
+      "target": "main",
+      "path": ""
+    }
+  }
+}
