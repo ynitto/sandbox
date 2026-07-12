@@ -1818,6 +1818,37 @@ class TestDecisionRecords(unittest.TestCase):
             self.assertIn("pin: T1", (d / "policy.md").read_text())
             self.assertIn("DR-0002", (d / "decisions" / "T1.md").read_text())
 
+    def test_approve_releases_the_hold(self):
+        """hold（deny）したタスクを approve したら、policy の deny も解ける。
+
+        解けないと承認が一方通行で無効になる: status は ready に戻るが policy の deny が残り、
+        次の triage が policy:deny を見て即 blocked へ引き戻す。人が何度承認しても実行されない
+        （実際そうなっていた: 承認した 3 タスクが起動直後に全部 blocked へ戻った）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d)
+            km.cmd_hold(c, "T1", "いったん止める")
+            self.assertIn("deny: T1", (d / "policy.md").read_text())
+            self.assertEqual(km.cmd_approve(c, "T1", "やっぱり進める"), 0)
+            self.assertEqual(km.load_tasks(d / "backlog")[0].status, "ready")
+            self.assertNotIn("deny: T1", (d / "policy.md").read_text(), "deny が解ける")
+            # triage を通しても blocked へ引き戻されない（＝承認が実際に効く）
+            tasks = km.load_tasks(d / "backlog")
+            moved = km.triage(tasks, km.load_policy(d / "policy.md"))
+            self.assertNotIn("policy:deny", " ".join(why for _t, why in moved))
+            self.assertNotEqual(tasks[0].norm_status(), "blocked")
+
+    def test_policy_is_not_appended_twice(self):
+        # policy は「人の上書き指示」の集合であって履歴ではない。同じ hold を繰り返しても増えない
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", verify="true")
+            c = cfg_for(d)
+            km.cmd_hold(c, "T1", "止める")
+            km.cmd_hold(c, "T1", "もう一度止める")
+            self.assertEqual((d / "policy.md").read_text().count("deny: T1"), 1)
+
 
 class TestCommandsIngest(unittest.TestCase):
     """指示のファイル取り込み（commands/*.json）。CLI と同一ロジックへの委譲・

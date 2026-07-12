@@ -877,9 +877,34 @@ def meaningful_changes(cfg: "Config", baseline: "tuple[str, frozenset] | None") 
 
 
 def append_policy(path: Path, key: str, value: str) -> None:
+    """policy に `key: value` を足す（既に同じ指示があれば何もしない）。
+
+    冪等にしないと、同じタスクを hold / pin するたびに同じ行が積み上がる（実際 deny が 3 重に
+    積まれていた）。policy は「人の上書き指示」の集合であって履歴ではない。"""
+    line = f"{key}: {value}"
+    if path.exists() and any(x.strip() == line for x in
+                             path.read_text(encoding="utf-8").splitlines()):
+        return
     header = "" if path.exists() else "# kiro-project policy（人間による上書き）\n\n"
     with path.open("a", encoding="utf-8") as f:
-        f.write(f"{header}{key}: {value}\n")
+        f.write(f"{header}{line}\n")
+
+
+def remove_policy(path: Path, key: str, value: str) -> int:
+    """policy から `key: value` の行を消す（消した行数）。
+
+    これが無いと hold（deny 追加）が一方通行になる: approve でタスクを ready に戻しても policy の
+    deny が残り続け、次の triage が policy:deny を見て即 blocked へ引き戻す。承認したはずのタスクが
+    二度と実行されない（＝人の承認が構造的に効かない）。"""
+    if not path.exists():
+        return 0
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    target = f"{key}: {value}"
+    kept = [x for x in lines if x.strip() != target]
+    n = len(lines) - len(kept)
+    if n:
+        path.write_text("".join(kept), encoding="utf-8")
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -6865,12 +6890,17 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
                       f"（{', '.join(m.id for m in members[:6])}{' …' if len(members) > 6 else ''}）。")
         return 0
     t.status = "ready"
+    # hold が積んだ deny を解除する。これをしないと承認が一方通行で無効になる: status を ready に
+    # 戻しても policy の deny が残り続け、次の triage が policy:deny を見て即 blocked へ引き戻す。
+    # 承認したはずのタスクが永久に実行されない（実際そうなっていた）。
+    unheld = remove_policy(cfg.policy, "deny", tid)
     persist_task(cfg, t)
     clear_needs_file(cfg, tid)
     dr = append_decision(cfg, tid, cfg.actor, context=f"{tid}（{t.title}）を人の判断から復帰",
                          action="approve-and-fix", reason=reason, affects=f"{tid} → ready",
                          learn=(t.title, reason))
-    print(f"{dr}: {tid} を ready に積み直しました。")
+    print(f"{dr}: {tid} を ready に積み直しました。"
+          + (f"（policy の deny を解除）" if unheld else ""))
     return 0
 
 
