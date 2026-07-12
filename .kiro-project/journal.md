@@ -6,3 +6,12 @@
 - 2026-07-12 08:59:39 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
 - 2026-07-12 08:59:39 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-12 08:59:39 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 09:00:04 plan-review 承認: echo-hello-085939 → ready
+- 2026-07-12 09:00:04 commands 取り込み: approve echo-hello-085939（viewer-approve-echo-hello-085939-1783814400679.json）
+- 2026-07-12 09:00:04 === project 開始 v1 acceptance=1 ===
+- 2026-07-12 09:00:04 === kiro-project 開始 tasks=1 ingested=0 planner=none executor=stub dry_run=False ===
+- 2026-07-12 09:00:04 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 09:00:16 cycle 1: echo-hello-085939 → 検収待ち（承認ゲート） — git: 未コミットの変更あり
+- 2026-07-12 09:00:16 === kiro-project 停止 reason=drained cycles=1 done=0 blocked=0 notified=True promoted=0 ===
+- 2026-07-12 09:00:16 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-12 09:00:16 === project watch: 監視中（charter 更新/フィードバック待ち）===

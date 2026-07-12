@@ -1,0 +1,1 @@
+{"ts": "2026-07-12T00:00:04Z", "who": "orchestrator", "kind": "planned", "patterns": ["loop-until-done"], "parallelism": 15, "tasks": ["work1", "check1"]}
