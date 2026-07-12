@@ -4975,8 +4975,13 @@ echo this-later-command-must-not-be-selected
         output = "```\nbash\n# verification notes\npython3 -m pytest -q\n```"
         self.assertEqual(km._first_command_line(output), "python3 -m pytest -q")
 
-    def test_first_command_line_returns_empty_without_candidate(self):
-        self.assertEqual(km._first_command_line("\n# comment only\n"), "")
+    def test_first_command_line_returns_none_without_candidate(self):
+        self.assertIsNone(km._first_command_line("\n# comment only\n"))
+
+    def test_first_command_line_returns_none_for_prose_only(self):
+        self.assertIsNone(km._first_command_line(
+            "Here is how to verify the change\nReview the behavior carefully"
+        ))
 
     def test_first_command_line_prose_only_never_becomes_synth_verify_command(self):
         # コマンドを含まない散文が再試行で返り続けても、verify として誤採用しない。

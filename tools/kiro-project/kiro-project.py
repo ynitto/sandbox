@@ -2926,8 +2926,8 @@ def _has_command_like_leading_token(line: str) -> bool:
     )
 
 
-def _first_executable_line(lines: list[str]) -> str:
-    """候補行から空行・コメント・言語タグ残骸を除いた最初のコマンドを返す。"""
+def _first_executable_line(lines: list[str]) -> Optional[str]:
+    """候補行から最初のコマンドを返す。見つからなければ None。"""
     for raw_line in lines:
         line = _strip_code(raw_line.strip())
         if (
@@ -2937,11 +2937,11 @@ def _first_executable_line(lines: list[str]) -> str:
             and _looks_like_shell_command(line)
         ):
             return line
-    return ""
+    return None
 
 
-def _first_command_line(out: str) -> str:
-    """合成出力の先頭の「意味あるコマンド行」を取り出す（コメント/コードフェンス/空行を飛ばす）。"""
+def _first_command_line(out: str) -> Optional[str]:
+    """合成出力の先頭のコマンド行を返す。どの規則にも合わなければ None。"""
     lines = (out or "").splitlines()
     fenced = _first_executable_line(_code_fence_lines(out))
     if fenced:
