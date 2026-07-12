@@ -65,7 +65,9 @@ def _zero_loose_objects(clone) -> int:
         d = os.path.join(objdir, sub)
         if len(sub) == 2 and os.path.isdir(d):          # objects/pack・objects/info は対象外
             for name in os.listdir(d):
-                open(os.path.join(d, name), "wb").close()   # 0 バイトへ切り詰め
+                p = os.path.join(d, name)
+                os.chmod(p, 0o644)  # macOS: git が 0444 で作る loose object に書き込み権限を付与
+                open(p, "wb").close()   # 0 バイトへ切り詰め
                 zeroed += 1
     return zeroed
 
@@ -1657,12 +1659,18 @@ class GitlabExecutorPluginTests(unittest.TestCase):
                      "approved_label": "status:approved", "done_label": "status:done"}
         self._prev_env = os.environ.get("KIRO_FLOW_EXECUTOR_CONFIG")
         os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = json.dumps(self._cfg)
+        # deferral モードが残存していると execute が DeferDecision を投げてテストが壊れる
+        self._prev_defer = os.environ.pop("KIRO_FLOW_DEFER_WAITS", None)
 
     def tearDown(self):
         if self._prev_env is None:
             os.environ.pop("KIRO_FLOW_EXECUTOR_CONFIG", None)
         else:
             os.environ["KIRO_FLOW_EXECUTOR_CONFIG"] = self._prev_env
+        if self._prev_defer is None:
+            os.environ.pop("KIRO_FLOW_DEFER_WAITS", None)
+        else:
+            os.environ["KIRO_FLOW_DEFER_WAITS"] = self._prev_defer
 
     def _run_with(self, api_side, mrs_seq=None, notes=None, token="glpat-x"):
         """gl_api（issue GET/POST/PUT）と gl_api_list（related_merge_requests / notes）を
