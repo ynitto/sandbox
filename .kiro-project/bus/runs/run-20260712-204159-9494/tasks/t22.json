@@ -1,0 +1,8 @@
+{
+  "id": "t22",
+  "goal": "pytest -k codd で拾えるテストを追加する: acceptance 反映（strict fail で done に進まない／未検出時は従来どおり done 可）を検証する",
+  "deps": [
+    "t15"
+  ],
+  "kind": "work"
+}

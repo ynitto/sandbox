@@ -1,0 +1,11 @@
+{
+  "id": "v3",
+  "goal": "批判的検証: 疎結合が守られているか（kiro-project が codd-gate を直接 import せず、CLI 実行と schemas の共通データ契約のみに依存しているか）を import 文と依存定義の静的確認で反証する",
+  "deps": [
+    "t13",
+    "t15",
+    "t18",
+    "t26"
+  ],
+  "kind": "verify"
+}

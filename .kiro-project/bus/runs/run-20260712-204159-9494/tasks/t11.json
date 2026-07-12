@@ -1,0 +1,8 @@
+{
+  "id": "t11",
+  "goal": "run_codd_debt_tasks() を実装する: codd-gate tasks / --debt の出力を schemas 準拠の修復タスク dict 列へ正規化し、パース失敗時は空リストとして安全に返す",
+  "deps": [
+    "t9"
+  ],
+  "kind": "work"
+}

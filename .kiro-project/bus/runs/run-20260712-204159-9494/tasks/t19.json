@@ -1,0 +1,8 @@
+{
+  "id": "t19",
+  "goal": "pytest -k codd で拾えるテストを追加する: detect_codd_gate の検出あり/なし（CLI あり・なし × repos.json あり・なし）の分岐を網羅する",
+  "deps": [
+    "t9"
+  ],
+  "kind": "work"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/kiro-project の regression（差分ゲート）実行経路を特定し、呼び出し元ファイル・関数名・引数・戻り値（ゲート結果）のデータ形状を列挙する",
+  "deps": [],
+  "kind": "work"
+}

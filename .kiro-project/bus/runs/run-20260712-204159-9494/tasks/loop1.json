@@ -1,0 +1,8 @@
+{
+  "id": "loop1",
+  "goal": "`python3 -m pytest tools/kiro-project/tests -q -k codd` を実行し、非0の間は失敗テストの原因を切り分けて実装・テストを修正する反復を続け、終了コード0にする",
+  "deps": [
+    "gate"
+  ],
+  "kind": "work"
+}
