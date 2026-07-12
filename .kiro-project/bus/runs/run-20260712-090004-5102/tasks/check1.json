@@ -1,8 +1,0 @@
-{
-  "id": "check1",
-  "goal": "完了条件を確認",
-  "deps": [
-    "work1"
-  ],
-  "kind": "verify"
-}
