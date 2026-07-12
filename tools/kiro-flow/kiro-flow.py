@@ -144,6 +144,10 @@ CONFIG_DEFAULTS = {
     "agents": {},
     "planner": "flow-planner",
     "executor": "agent",
+    # executor=agent の実行系プロンプトを供給するスキル（worker/verify/evaluator）。
+    # flow-planner と同じ検索順で自動発見し、見つからなければ組み込みプロンプトに
+    # フォールバックする。none/builtin/空 で常に組み込みを使う（yaml 専用）。
+    "worker_skill": "flow-worker",
     "granularity": "finest",   # 分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細・既定)
     "exemplar_first": False,   # map-reduce で「1件先行→検証ゲート→残り展開」の見本先行分解にする
     "max_workers": 4,
@@ -2713,13 +2717,13 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto", granulari
         return plan_strategy_stub(request, review, granularity)
 
 
-def _find_flow_planner_script():
-    """flow-planner スキルの plan.py を探す。
-    検索順: .github/skills/flow-planner/ → git root/.github/skills/ → ~/.kiro/skills/ → {skill_home}/"""
+def _find_skill_script(skill: str, script: str):
+    """スキルの scripts/{script} を探す（flow-planner / flow-worker 共通）。
+    検索順: .github/skills/{skill}/ → git root/.github/skills/ → ~/.kiro/skills/ → {skill_home}/"""
     candidates = []
     # ワークスペース内
     cwd = os.getcwd()
-    candidates.append(os.path.join(cwd, ".github", "skills", "flow-planner", "scripts", "plan.py"))
+    candidates.append(os.path.join(cwd, ".github", "skills", skill, "scripts", script))
     # リポジトリルート（git rev-parse で探す）
     try:
         root = subprocess.run(
@@ -2727,12 +2731,12 @@ def _find_flow_planner_script():
             capture_output=True, text=True
         ).stdout.strip()
         if root:
-            candidates.append(os.path.join(root, ".github", "skills", "flow-planner", "scripts", "plan.py"))
+            candidates.append(os.path.join(root, ".github", "skills", skill, "scripts", script))
     except Exception:  # noqa: BLE001
         pass
     # ~/.kiro/skills 直下を直接確認
     kiro_skills = os.path.expanduser("~/.kiro/skills")
-    candidates.append(os.path.join(kiro_skills, "flow-planner", "scripts", "plan.py"))
+    candidates.append(os.path.join(kiro_skills, skill, "scripts", script))
     # skill-registry.json から skill_home を読む
     for agent_dir in [os.path.expanduser("~/.kiro"), os.path.expanduser("~/.copilot"),
                       os.path.expanduser("~/.claude"), os.path.expanduser("~/.codex")]:
@@ -2743,13 +2747,18 @@ def _find_flow_planner_script():
                     data = json.load(f)
                 home = data.get("skill_home", "")
                 if home:
-                    candidates.append(os.path.join(home, "flow-planner", "scripts", "plan.py"))
+                    candidates.append(os.path.join(home, skill, "scripts", script))
             except Exception:  # noqa: BLE001
                 pass
     for c in candidates:
         if os.path.isfile(c):
             return c
     return None
+
+
+def _find_flow_planner_script():
+    """flow-planner スキルの plan.py を探す。"""
+    return _find_skill_script("flow-planner", "plan.py")
 
 
 def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="finest"):
@@ -2823,6 +2832,9 @@ _AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
 # reduce/split/map）。値は {agent_cli, model}。子プロセスへは --config 伝搬で同じ設定が届く。
 _AGENT_OVERRIDES: "dict[str, dict]" = {}
 AGENT_ROLES = ("planner", "evaluator", "worker")
+# executor=agent の実行系プロンプトを供給するスキル名（設定 worker_skill）。
+# none/builtin/空 で無効＝常に組み込みプロンプト。
+_WORKER_SKILL: str = str(CONFIG_DEFAULTS["worker_skill"])
 # agent_cli の設定値 → doctor が PATH 確認すべき実行ファイル名（未知の agent_cli はそのまま使う）。
 _AGENT_CLI_BINARIES = {"kiro": "kiro-cli", "claude": "claude", "copilot": "copilot"}
 
@@ -2862,10 +2874,14 @@ def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
     run_kiro / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
     global _ARGV_LIMIT, _EXECUTOR_DIR, _KIRO_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI, _AGENT_OVERRIDES
+    global _WORKER_SKILL
     ac = getattr(args, "agent_cli", None)
     if ac:
         _AGENT_CLI = str(ac).lower()
     _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
+    wsk = getattr(args, "worker_skill", None)
+    if wsk is not None:
+        _WORKER_SKILL = str(wsk).strip()
     v = getattr(args, "argv_limit", None)
     if v:
         try:
@@ -3024,9 +3040,40 @@ def execute_stub(kind: str, goal: str, dep_results: dict, model: str | None,
     return f"[stub] 完了: {goal}", None
 
 
+# flow-worker スキルの prompt.py の解決結果メモ（プロセス内。未発見 = None も記憶する）。
+_worker_skill_script: "dict[str, str | None]" = {}
+
+
+def _flow_worker_prompt(payload: dict) -> "str | None":
+    """flow-worker スキルのプロンプトビルダーを呼び、実行規律入りプロンプトを得る。
+
+    flow-planner と同じ作戦: スキル未インストール・生成失敗なら None を返し、
+    呼び出し側は組み込みプロンプトへフォールバックする（run を止めない）。
+    ビルダーは決定的（LLM 無し）で、LLM 呼び出し・役割別ルーティングは従来どおり
+    run_kiro が担う。payload は stdin JSON 渡し（依存成果が大きくても ARG_MAX に当たらない）。"""
+    skill = (_WORKER_SKILL or "").strip().lower()
+    if not skill or skill in ("none", "builtin", "off"):
+        return None
+    if skill not in _worker_skill_script:
+        _worker_skill_script[skill] = _find_skill_script(skill, "prompt.py")
+    script = _worker_skill_script[skill]
+    if not script:
+        return None
+    try:
+        proc = subprocess.run([sys.executable, script],
+                              input=json.dumps(payload, ensure_ascii=False, default=str),
+                              capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr[:300])
+        return proc.stdout.strip() or None
+    except Exception:  # noqa: BLE001 — スキル失敗は組み込みプロンプトで続行
+        return None
+
+
 def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
                  art_dir: "str | None" = None, dep_arts: "dict | None" = None,
-                 repo_instruction: str = ""):
+                 repo_instruction: str = "", workspace: "dict | None" = None,
+                 references: "list[dict] | None" = None, request: str = ""):
     role = {
         "classify": "分類役。入力を適切なカテゴリへ分類し『class=<ラベル>』形式で出力。",
         "synthesize": "統合役。依存タスクの成果を統合して 1 つの成果物にまとめる。",
@@ -3051,22 +3098,31 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
     deps = dep_results
     if kind in ("reduce", "synthesize", "filter", "judge"):
         deps = {d: r for d, r in dep_results.items() if not _is_gate_result(r)}
-    prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
-    if repo_instruction:  # 成果物リポジトリの clone 指示（ローカル実行のエージェントへ伝える）
-        prompt += repo_instruction + "\n"
     art_note = artifact_instruction(art_dir, dep_arts)
-    if art_note:  # 中間成果物のファイル参照プロトコル（出力先・依存成果物のパス）
-        prompt += art_note + "\n"
-    if deps:
-        lines = []
-        for d, r in deps.items():
-            line = f"[{d}] {_dep_text(r)}"
-            dv = _dep_data(r)
-            if dv is not None:
-                line += f"\n  data: {json.dumps(dv, ensure_ascii=False)[:400]}"
-            lines.append(line)
-        prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
-    prompt += "\n成果物を簡潔に直接出力してください。"
+    # flow-worker スキルがあれば実行規律入りプロンプトを使う（無ければ従来の組み込み）。
+    # 出力契約（verify の JSON・split の配列等）はスキル側でも同一に保たれている。
+    prompt = _flow_worker_prompt({
+        "role": "worker", "kind": kind, "goal": goal, "request": request,
+        "deps": {d: {"output": _dep_text(r), "data": _dep_data(r)} for d, r in deps.items()},
+        "repo_instruction": repo_instruction, "artifact_note": art_note,
+        "workspace": workspace, "references": references or [],
+    })
+    if not prompt:
+        prompt = f"あなたは分散 Dynamic Workflow の{role}\nタスク({kind}): {goal}\n"
+        if repo_instruction:  # 成果物リポジトリの clone 指示（ローカル実行のエージェントへ伝える）
+            prompt += repo_instruction + "\n"
+        if art_note:  # 中間成果物のファイル参照プロトコル（出力先・依存成果物のパス）
+            prompt += art_note + "\n"
+        if deps:
+            lines = []
+            for d, r in deps.items():
+                line = f"[{d}] {_dep_text(r)}"
+                dv = _dep_data(r)
+                if dv is not None:
+                    line += f"\n  data: {json.dumps(dv, ensure_ascii=False)[:400]}"
+                lines.append(line)
+            prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
+        prompt += "\n成果物を簡潔に直接出力してください。"
     text = run_kiro(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
     # data に誤昇格させない）。
@@ -3119,7 +3175,7 @@ def _executor_accepts(execute, name: str) -> bool:
 
 def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str | None",
                   art_dir, dep_arts, repo_instruction: str = "", workspace: "dict | None" = None,
-                  references: "list[dict] | None" = None):
+                  references: "list[dict] | None" = None, request: str = ""):
     """executor を呼ぶ単一の入口。
     - `repo_instruction`（ワークスペース＋参照の作業指示テキスト）は、受け取れる executor には**別引数**で
       渡して goal を汚さない（gitlab のイシュータイトル/目的が指示で埋まらないようにする）。
@@ -3135,6 +3191,8 @@ def call_executor(execute, kind: str, goal: str, dep_results: dict, model: "str 
         kwargs["workspace"] = workspace
     if references and _executor_accepts(execute, "references"):
         kwargs["references"] = references
+    if request and _executor_accepts(execute, "request"):
+        kwargs["request"] = request  # run の元要求（worker が全体文脈として使う）
     if kwargs or not repo_instruction:
         return execute(kind, goal, dep_results, model, art_dir, dep_arts, **kwargs)
     g = (repo_instruction + "\n\n" + goal) if repo_instruction else goal
@@ -3807,7 +3865,15 @@ def continue_kiro(request: str, nodes: dict, results: dict, iteration: int,
     hf = human_feedback_from_results(results)
     hf_block = (f"\n\n人からの指摘（最優先で反映すること。executor 非依存の結果コントラクト由来）:\n{hf}"
                 if hf else "")
-    prompt = (
+    # flow-worker スキルがあれば評価規律入りプロンプトを使う（無ければ従来の組み込み）。
+    # decision JSON の出力契約はスキル側でも同一に保たれている。
+    prompt = _flow_worker_prompt({
+        "role": "evaluator", "request": request, "results_summary": summary,
+        "human_feedback": hf, "patterns_catalog": catalog,
+        "max_retries": max_retries, "iteration": iteration,
+    })
+    if not prompt:
+        prompt = (
         "あなたは分散 Dynamic Workflow の評価役です。7 パターンを踏まえ、現在の結果が要求を満たすか判定し、"
         "必要なら次のタスクを追加してください（例: 分類結果に応じた専門タスク、検証 fail の作り直し、"
         "統合や追加候補の生成）。**人からの指摘があれば最優先で反映**し、必要なら新タスク追加や、"
@@ -4153,6 +4219,8 @@ def cmd_work(args) -> int:
 
         # 依存の成果は構造化データ込みの完全な result dict で渡す
         dep_results = _collect_dep_results(bus, node, kind)
+        # run の元要求（全体文脈）。対応 executor（agent の flow-worker プロンプト等）へ渡す。
+        run_request = str((read_json(bus.meta_path) or {}).get("request", ""))
         # 中間成果物プロトコル: 自ノードの出力先を用意し、依存ノードの成果物パスを集める。
         # これにより大きな成果物は output/data に貼らずファイル参照で受け渡せる。
         art_dir = bus.ensure_artifact_dir(nid)
@@ -4175,7 +4243,7 @@ def cmd_work(args) -> int:
         try:
             output, rdata = call_executor(execute, kind, goal, dep_results, args.model,
                                           art_dir, dep_arts, instruction, workspace=ws,
-                                          references=references)
+                                          references=references, request=run_request)
             # エージェントが編集したらワークスペースの作業ブランチへ commit して push する
             # （変更が無ければ何もしない＝調査タスク等ではブランチを作らない）。
             delivery = finalize_workspace(ws, args.run_id, nid)

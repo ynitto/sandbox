@@ -1299,6 +1299,90 @@ class StructuredExtractionTests(unittest.TestCase):
         self.assertEqual(data["count"], 3)  # 実リスト長へ補正
 
 
+class FlowWorkerSkillTests(unittest.TestCase):
+    """flow-worker スキル連携: 実行規律入りプロンプトの利用と組み込みフォールバック。"""
+
+    REPO_ROOT = HERE.parents[2]
+
+    def setUp(self):
+        # スキル検索はワークスペース（cwd）起点なのでリポジトリルートへ移動する
+        self._cwd = os.getcwd()
+        os.chdir(self.REPO_ROOT)
+        # 解決メモをテスト毎にリセット（他テストの cwd の影響を受けない）
+        kf._worker_skill_script.clear()
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+        kf._worker_skill_script.clear()
+
+    def _capture_prompt(self, fn, *args, **kwargs):
+        reply = kwargs.pop("_reply", "ok")
+        seen = {}
+
+        def fake_run(prompt, model, purpose=""):
+            seen["prompt"] = prompt
+            return reply
+
+        with mock.patch.object(kf, "run_kiro", side_effect=fake_run):
+            fn(*args, **kwargs)
+        return seen["prompt"]
+
+    def test_find_skill_script_locates_flow_worker(self):
+        path = kf._find_skill_script("flow-worker", "prompt.py")
+        self.assertIsNotNone(path)
+        self.assertTrue(path.endswith(os.path.join("flow-worker", "scripts", "prompt.py")))
+
+    def test_execute_kiro_uses_skill_discipline_prompt(self):
+        prompt = self._capture_prompt(
+            kf.execute_kiro, "work", "ログイン画面を追加", {"t0": {"output": "依存成果"}}, None,
+            repo_instruction="【ワークスペース】/tmp/ws", request="EC サイトを作る")
+        self.assertIn("実行規律", prompt)          # スキル由来の規律ブロック
+        self.assertIn("ログイン画面を追加", prompt)  # goal 維持
+        self.assertIn("【ワークスペース】/tmp/ws", prompt)  # インターフェース情報の伝搬
+        self.assertIn("EC サイトを作る", prompt)     # run の元要求（全体文脈）
+        self.assertIn("[t0] 依存成果", prompt)
+
+    def test_execute_kiro_verify_skill_prompt_keeps_contract(self):
+        prompt = self._capture_prompt(kf.execute_kiro, "verify", "検証する", {}, None)
+        self.assertIn("独立検算", prompt)
+        self.assertIn("verify=pass", prompt)
+        self.assertIn('{"ok": true|false, "issues": ["..."]}', prompt)
+
+    def test_execute_kiro_falls_back_when_skill_disabled(self):
+        with mock.patch.object(kf, "_WORKER_SKILL", "none"):
+            prompt = self._capture_prompt(kf.execute_kiro, "work", "g", {}, None)
+        self.assertNotIn("実行規律", prompt)
+        self.assertIn("成果物を簡潔に直接出力してください", prompt)
+
+    def test_execute_kiro_falls_back_when_script_broken(self):
+        # 解決メモに壊れたパスを注入 → subprocess 失敗 → 組み込みプロンプトで続行
+        with mock.patch.dict(kf._worker_skill_script,
+                             {"flow-worker": "/nonexistent/prompt.py"}, clear=True):
+            prompt = self._capture_prompt(kf.execute_kiro, "work", "g", {}, None)
+        self.assertIn("成果物を簡潔に直接出力してください", prompt)
+
+    def test_continue_kiro_uses_skill_evaluator_prompt(self):
+        nodes = {"t1": {"goal": "g", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "済",
+                          "data": {"guidance": "APIはv2で"}}}
+        prompt = self._capture_prompt(
+            kf.continue_kiro, "req", nodes, results, 0,
+            _reply='{"decision":"done","reason":"ok","new_tasks":[]}')
+        self.assertIn("評価規律", prompt)
+        self.assertIn('"decision":"done"|"replan"', prompt)  # 出力契約は従来と同一
+        self.assertIn("APIはv2で", prompt)                    # 人フィードバックの伝搬
+
+    def test_worker_skill_config_normalization(self):
+        args = types.SimpleNamespace(worker_skill="  None ")
+        kf._configure_thresholds(args)
+        try:
+            self.assertIsNone(kf._flow_worker_prompt({"role": "worker", "kind": "work",
+                                                      "goal": "g"}))
+        finally:
+            kf._configure_thresholds(types.SimpleNamespace(
+                worker_skill=kf.CONFIG_DEFAULTS["worker_skill"]))
+
+
 def _load_executor_plugin(name):
     """executors/<name>.py をテスト用にロードする。"""
     path = HERE.parent / "executors" / f"{name}.py"
@@ -3721,7 +3805,7 @@ class ArtifactProtocolTests(unittest.TestCase):
         bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
         bus.set_status("running")
 
-        def fake_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None):
+        def fake_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None, **kw):
             with open(os.path.join(art_dir, "result.bin"), "w") as f:
                 f.write("done")
             return "ok", None
@@ -3745,7 +3829,7 @@ class ArtifactProtocolTests(unittest.TestCase):
         bus.write_task({"id": "t1", "goal": "g", "deps": [], "kind": "work"})
         bus.set_status("running")
 
-        def fake_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None):
+        def fake_exec(kind, goal, dep_results, model, art_dir=None, dep_arts=None, **kw):
             err = RuntimeError("[gitlab-reject] 却下されました（未マージクローズ）（u）。やり直し指示: 命名を直す")
             err.data = {"issue_iid": 9, "web_url": "u", "decision": "rejected",
                         "reason": "未マージクローズ", "guidance": "命名を直す", "closed": True}

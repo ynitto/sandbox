@@ -379,6 +379,32 @@ while True:
   （設定 `argv_limit` / `--argv-limit`、既定 100000 bytes）を超えるプロンプトを一時ファイルへ退避し、
   「そのファイルを読んで実行」する短い指示に置き換える（実行後に一時ファイルは掃除）。
 
+### 9.0 実行系プロンプトのスキル外出し（flow-worker）
+
+planner を flow-planner スキルへ外出ししたのと同じ作戦で、`executor: agent` の
+実行系プロンプト（worker の全 kind・verify・evaluator の継続判断）を
+`flow-worker` スキル（`.github/skills/flow-worker/`）から供給する。
+
+- **分担**: スキルの `scripts/prompt.py` は**決定的なプロンプトビルダー**（LLM を呼ばない。
+  stdin JSON → stdout プロンプト）。LLM 呼び出し・役割別エージェント解決（設定 `agents:`）・
+  argv スピル・タイムアウトは従来どおり `run_kiro` に残る。
+- **入力**: kiro-flow がインターフェースで持つ情報をそのまま渡す — kind / goal /
+  依存成果（output+data）/ ワークスペース指示（repo_instruction）/ 中間成果物プロトコル /
+  workspace・references の構造化 spec / run の元要求（request。worker が全体文脈として使う）、
+  evaluator には要求・結果サマリー・人フィードバック・パターンカタログ・max_retries。
+  kiro-project には依存しない。
+- **中身**: gitlab-idd スキル（worker-role / requester-review / non-requester-review /
+  project-dod）から GitLab イシュー・MR 操作を除いて蒸留した実行規律
+  （解釈確定→影響範囲→スコープ厳守→自己検証→報告契約、verify の独立検算と
+  minor/重大の判定規律、evaluator の受け入れ評価・差し戻し goal 具体化・膨張禁止）。
+- **互換**: 出力契約（verify の `verify=pass|fail`＋`{"ok","issues"}`、split の JSON 配列、
+  reduce の count 整合、evaluator の decision JSON）はスキル側でも同一に保つ
+  （kiro-flow のパーサ `_normalize_verify` / `_reconcile_count` / `_coerce_tasks` が前提）。
+- **フォールバック**: 検索順は flow-planner と同一（cwd → git root → `~/.kiro/skills` →
+  skill-registry.json の skill_home）。未インストール・生成失敗時は組み込みプロンプトで
+  続行する（分散ワーカーにスキルが無いノードが混在しても run は成立する）。
+  設定 `worker_skill: none` で常に組み込み（既定 `flow-worker`）。
+
 ### 9.1 ワーカーバス（executor）— プラグイン方式
 
 ワーカーがタスクを実際に実行するバックエンド。`--executor` / 設定 `executor` で選ぶ。
