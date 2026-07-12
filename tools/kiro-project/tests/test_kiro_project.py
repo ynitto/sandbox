@@ -4931,6 +4931,20 @@ class TestVerifyAssist(unittest.TestCase):
             "python3 -m pytest tools/kiro-project/tests -q",
         )
 
+    def test_first_command_line_skips_blank_and_comment_lines_inside_fence(self):
+        output = """```bash
+
+# verification notes
+   # an indented comment
+
+python3 -m pytest tools/kiro-project/tests -q
+echo this-later-command-must-not-be-selected
+```"""
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
     def test_first_command_line_returns_empty_without_candidate(self):
         self.assertEqual(km._first_command_line("\n# comment only\n"), "")
 
