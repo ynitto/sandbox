@@ -65,7 +65,9 @@ def _zero_loose_objects(clone) -> int:
         d = os.path.join(objdir, sub)
         if len(sub) == 2 and os.path.isdir(d):          # objects/pack・objects/info は対象外
             for name in os.listdir(d):
-                open(os.path.join(d, name), "wb").close()   # 0 バイトへ切り詰め
+                p = os.path.join(d, name)
+                os.chmod(p, 0o644)  # macOS: git が 0444 で作る loose object に書き込み権限を付与
+                open(p, "wb").close()   # 0 バイトへ切り詰め
                 zeroed += 1
     return zeroed
 
