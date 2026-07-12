@@ -1470,13 +1470,14 @@ def _migrate_state_into_worktree(src: Path, dst: Path) -> bool:
     return True
 
 
-def _redirect_root_to_state_worktree(root: Path, enabled: bool, wt_dir: str,
+def _redirect_root_to_state_worktree(root: Path, wt_dir: str,
                                      branch: str) -> "tuple[Path, Path | None]":
     """状態の実書き込み先を決める。(実効 root, 本体リポジトリのトップ or None) を返す。
 
-    git 管理外・無効化・worktree を作れない、のいずれでも本体の root をそのまま返す（従来動作）。"""
-    if not enabled:
-        return root, None
+    git 管理外・worktree を作れない、のいずれでも本体の root をそのまま返す（従来動作）。
+    「worktree へ逃がすか」の設定は持たない: 逃がさない選択は本体を dirty にし、状態を git 管理
+    できなくするだけで（commit_state は state_top なしでは動かない）、バックアップも取れない。
+    自動フォールバックがこの 2 ケースを拾うので、人が選ぶ余地は要らない。"""
     top = _git_toplevel_of(root if root.is_dir() else root.parent)
     if top is None:
         return root, None                             # git 管理外 → そのまま
@@ -1510,6 +1511,94 @@ def _state_changed(root: Path, names) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _git_line(cwd: Path, *args: str, env=None) -> "str | None":
+    """git を実行して stdout を返す（失敗は None）。バックアップ経路はここで失敗を吸収する。"""
+    try:
+        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True,
+                           timeout=120, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def backup_state(cfg: "Config") -> bool:
+    """状態 worktree の最新を、正本ブランチ（既定 main）へバックアップする。バックアップしたら True。
+
+    これは共有ではなくバックアップ。だから次の性質を守る:
+
+    ・**本体の作業ツリー・index には一切触らない。** 人がどのブランチで何をしていても壊さないよう、
+      plumbing（read-tree/commit-tree/update-ref）で正本ブランチの ref だけを進める。本体が
+      その正本ブランチを開いていた場合だけ、最後に .kiro-project を checkout して作業ツリーの
+      表示を揃える（人の他ファイルの変更には触れないパス限定 checkout）。
+    ・**1 同期 = 1 コミット（squash）。** worktree 側には 5 秒おきの細かい履歴が積まれるが、それは
+      持ち込まない。正本ブランチには「その時点の状態」だけを載せる。
+    ・**失敗しても実行は止めない。** バックアップの失敗で本業（バックログ消化）を落とさない。
+      ロック競合・並行 push・権限のどれで転んでも False を返して黙って続ける。
+    ・**他リポジトリの kiro-project と干渉しない。** 触るのは自分のリポジトリの ref だけで、
+      update-ref は取得時の値を expect して撃つので、割り込みがあれば撃ち負けて次回に回す。
+    """
+    top, branch = cfg.state_top, (cfg.state_backup_branch or "").strip()
+    if top is None or not branch:
+        return False                       # worktree に逃がしていない or バックアップ無効
+    root = cfg.backlog.parent              # 状態 worktree 側の実効 root（= .kiro-project）
+    wt_top = _git_toplevel_of(root)
+    if wt_top is None:
+        return False
+    try:
+        rel = root.resolve().relative_to(wt_top.resolve()).as_posix()
+    except ValueError:
+        return False
+    # worktree の HEAD に載っている状態ツリー（commit_state が直前にコミットしている）
+    state_tree = _git_line(wt_top, "rev-parse", f"HEAD:{rel}")
+    if not state_tree:
+        return False
+    old = _git_line(top, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    if not old:
+        return False                       # 正本ブランチが無い（別運用）→ 触らない
+    if _git_line(top, "rev-parse", "--verify", "--quiet", f"{branch}:{rel}") == state_tree:
+        return False                       # 中身が同じ＝バックアップ済み（空コミットを作らない）
+
+    # 本体の作業ツリーを揃えてよいかは ref を進める **前** に決める。進めた後に見ると、ref が
+    # 進んだこと自体が「作業ツリーとの差分」として現れ、それを人の編集と読み違えてしまう。
+    adopt = (_git_line(top, "symbolic-ref", "--quiet", "--short", "HEAD") == branch
+             and not _state_changed(top, [rel]))
+
+    # 正本ブランチのツリーの <rel> だけを差し替えた新ツリーを、一時 index の上で組む。
+    # 本体の index（人のステージ）を汚さないため GIT_INDEX_FILE を切り替える。
+    tmp_index = None
+    try:
+        fd, tmp_index = tempfile.mkstemp(prefix="kiro-backup-idx-")
+        os.close(fd)
+        os.unlink(tmp_index)               # git に作らせる（空ファイルだと read-tree が拒む）
+        env = {**os.environ, "GIT_INDEX_FILE": tmp_index}
+        if _git_line(top, "read-tree", branch, env=env) is None:
+            return False
+        _git_line(top, "rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", rel, env=env)
+        if _git_line(top, "read-tree", f"--prefix={rel}", state_tree, env=env) is None:
+            return False
+        new_tree = _git_line(top, "write-tree", env=env)
+        if not new_tree:
+            return False
+        commit = _git_line(top, "commit-tree", new_tree, "-p", old,
+                          "-m", "kiro-project: 状態をバックアップ（自動）", env=env)
+        if not commit:
+            return False
+        # 取得時の値を expect する。割り込みで branch が進んでいたら撃ち負けて次回に回す。
+        if _git_line(top, "update-ref", f"refs/heads/{branch}", commit, old) is None:
+            return False
+    finally:
+        if tmp_index and os.path.exists(tmp_index):
+            os.unlink(tmp_index)
+
+    # 本体がその正本ブランチを開いていたなら、作業ツリーの表示も揃える（人が差分を見ずに済む）。
+    # 人が .kiro-project を手で編集していたなら触らない（その変更を消さない）。
+    if adopt:
+        _git_line(top, "checkout", "-q", branch, "--", rel)
+    if cfg.state_push:
+        _git_line(top, "push", "-q", "origin", f"refs/heads/{branch}:{branch}")
+    return True
 
 
 def commit_state(cfg: "Config", force: bool = False) -> bool:
@@ -1551,6 +1640,11 @@ def commit_state(cfg: "Config", force: bool = False) -> bool:
                             f"HEAD:{cfg.state_branch}"], capture_output=True, timeout=180)
     except (OSError, subprocess.SubprocessError):
         return False
+    # 人の判断・計画が動いたときだけ正本ブランチへバックアップする。実行の副産物（journal /
+    # status.json / bus）は 5 秒ごとに変わるので、正本へ流すとコミットが埋まり、本体で作業して
+    # いる人の git status も落ち着かない。それらは worktree 側の履歴に留める。
+    if significant:
+        backup_state(cfg)                  # 失敗しても実行は止めない（中で吸収する）
     return True
 
 
@@ -4404,12 +4498,12 @@ class Config:
     flow_config: "str | None" = None
     flow_max_workers: int = 4          # kiro-flow daemon の worker 上限
     # 状態 worktree（build_config が root を差し替える。下の _redirect_root_to_state_worktree 参照）
-    state_worktree: bool = True
     state_worktree_dir: str = ""
     state_branch: str = "kiro-state"
     state_commit: bool = True
     state_commit_interval: float = 300.0
     state_push: bool = False
+    state_backup_branch: str = "main"  # 状態のバックアップ先（正本ブランチ）。空で無効
     state_top: "Path | None" = None    # 本体リポジトリのトップ（状態を worktree へ逃がしたときだけ入る）
     status_interval: float = 0.0          # watch アイドル中に status.json の生存信号を更新する間隔（秒）。
                                            # 既定 0=無効（idle 中は追加コミットを一切生まない）。>0 でこの間隔
@@ -10071,12 +10165,13 @@ CONFIG_DEFAULTS = {
     # 状態 worktree: root が git の作業ツリー内にあるとき、状態の読み書きを専用ブランチの
     # worktree（切りっぱなし）へ逃がす。設定の root は本体のまま書ける（人が書く自然な形）。
     # 本体の作業ツリー・index を一切汚さず、状態の履歴は同じリポジトリの別ブランチに残る。
-    "state_worktree": True,
+    # git 管理外・worktree を作れない場合は自動で本体へフォールバックする（設定は要らない）。
     "state_worktree_dir": "",           # 既定: <repo>-kiro-state（リポジトリの隣）
     "state_branch": "kiro-state",       # 状態を載せるブランチ（無ければ作る）
     "state_commit": True,               # 状態 worktree の変更を git にコミットする
     "state_commit_interval": 300.0,     # 実行の副産物だけの変化をまとめる間隔（秒）。0 で毎回コミット
     "state_push": False,                # コミットを origin へ push する（共有運用）
+    "state_backup_branch": "main",      # 状態のバックアップ先（正本ブランチ）。空で無効
     "status_interval": 0.0,             # watch アイドル中の status.json 生存信号更新間隔（秒）。既定 0=無効
     "lock_dir": None,   # kiro-flow daemon ロックの置き場（外部 daemon 発見のため kiro-flow と一致させる）
     "kiro_flow": None,
@@ -10189,7 +10284,6 @@ def build_config(args) -> Config:
     state_top: "Path | None" = None
     root, state_top = _redirect_root_to_state_worktree(
         root,
-        bool(getattr(args, "state_worktree", True)),
         str(getattr(args, "state_worktree_dir", "") or ""),
         str(getattr(args, "state_branch", "kiro-state") or "kiro-state"))
     # act / verify の作業ディレクトリ。相対値は root 基準（既定 . = root）。
@@ -10237,12 +10331,12 @@ def build_config(args) -> Config:
         flow_config=getattr(args, "flow_config", None) or None,
         flow_max_workers=max(1, int(getattr(args, "flow_max_workers", 4) or 4)),
         status_interval=max(0.0, float(getattr(args, "status_interval", 0.0) or 0.0)),
-        state_worktree=bool(getattr(args, "state_worktree", True)),
         state_worktree_dir=str(getattr(args, "state_worktree_dir", "") or ""),
         state_branch=str(getattr(args, "state_branch", "kiro-state") or "kiro-state"),
         state_commit=bool(getattr(args, "state_commit", True)),
         state_commit_interval=max(0.0, float(getattr(args, "state_commit_interval", 300.0) or 0.0)),
         state_push=bool(getattr(args, "state_push", False)),
+        state_backup_branch=str(getattr(args, "state_backup_branch", "main") or ""),
         state_top=state_top,
         lock_dir=getattr(args, "lock_dir", None),
         kiro_flow=args.kiro_flow, planner=args.planner, flow_planner=args.flow_planner,

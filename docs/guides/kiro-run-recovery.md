@@ -94,10 +94,14 @@ python3 tools/kiro-project/kiro-project.py approve <task-id> --reason "..."
 
 `.kiro-project/kiro-flow.yaml` の `agents:` で生きている CLI に切り替える。
 
-### 状態が二重に見える
+### 状態はどこにあるか
 
-kiro-project は状態を `<repo>-kiro-state` worktree（`kiro-state` ブランチ）へ逃がす（`state_worktree: true` が既定）。本体を dirty にせず、git 操作で状態ファイルを壊さないための設計。
+kiro-project は状態を `<repo>-kiro-state` worktree（`kiro-state` ブランチ）へ逃がす。本体を dirty にせず、人の git 操作（stash / rebase / pull --autostash）が書き込み中の状態ファイルを壊さないための設計。git 管理外や worktree を作れない環境では自動で本体にフォールバックする（設定は要らない）。
 
-このため **`<repo>/.kiro-project` と `<repo>-kiro-state/.kiro-project` の 2 つが存在し得る**。viewer は `autoDiscover` で両方を拾うので、同じ run が二重に並んで見える。
+**読み書きの実体は worktree 側**。`_migrate_state_into_worktree` は「worktree に中身があれば触らない」ので、本体側だけ直しても無視される。**復旧するときは worktree 側を直すこと。**
 
-**実行時に使われるのは worktree 側**。`_migrate_state_into_worktree` は「worktree に中身があれば触らない」ので、本体側だけ直しても無視される。復旧するときは worktree 側を直すこと。
+正本ブランチ（既定 `main`）には**バックアップ**が載る（`state_backup_branch`）。人の判断・計画が動いたとき（backlog / needs / decisions / charter）だけ、その時点の状態を 1 コミットで同期する。実行の副産物（journal / status.json / bus）は 5 秒ごとに変わるので worktree 側の履歴に留める。
+
+バックアップは本体の作業ツリー・index に触らない（plumbing で ref だけ進める）ので、人が別ブランチで作業していても壊れない。失敗しても実行は止まらない。
+
+**両方に `.kiro-project` が見えるのは正常**（worktree = 実体、main = バックアップ）。ただし viewer は `autoDiscover` で両方を拾うことがあるので、同じ run が二重に並んで見えたら `excludeDirs` で本体側を除外する。

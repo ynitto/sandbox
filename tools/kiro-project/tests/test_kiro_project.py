@@ -6770,7 +6770,7 @@ class StateWorktreeTests(unittest.TestCase):
     def test_root_is_redirected_into_a_worktree(self):
         top = self._repo()
         root, state_top = km._redirect_root_to_state_worktree(
-            top / ".kiro-project", True, "", "kiro-state")
+            top / ".kiro-project", "", "kiro-state")
         self.assertEqual(state_top, top)
         self.assertNotIn(str(top / ".kiro-project"), str(root))     # 本体の中ではない
         self.assertTrue((root.parent / ".git").exists(), "worktree の中を指す")
@@ -6781,7 +6781,7 @@ class StateWorktreeTests(unittest.TestCase):
 
     def test_writing_state_does_not_dirty_the_main_worktree(self):
         top = self._repo()
-        root, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", True, "", "kiro-state")
+        root, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", "", "kiro-state")
         root.mkdir(parents=True, exist_ok=True)
         (root / "journal.md").write_text("- 稼働中\n")          # 本体が 5 秒ごとに書くもの
         (root / "status.json").write_text('{"watch": true}\n')
@@ -6794,31 +6794,24 @@ class StateWorktreeTests(unittest.TestCase):
         src = top / ".kiro-project"
         (src / "backlog").mkdir(parents=True)
         (src / "backlog" / "T1.md").write_text("## T1\n- status: ready\n")
-        root, _ = km._redirect_root_to_state_worktree(src, True, "", "kiro-state")
+        root, _ = km._redirect_root_to_state_worktree(src, "", "kiro-state")
         self.assertTrue((root / "backlog" / "T1.md").is_file(), "既存の状態が引っ越す")
         self.assertFalse(src.exists(), "本体側は残さない（二重管理を作らない）")
 
     def test_reuses_the_worktree_on_restart(self):
         top = self._repo()
-        a, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", True, "", "kiro-state")
+        a, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", "", "kiro-state")
         a.mkdir(parents=True, exist_ok=True)
         (a / "mark.txt").write_text("keep\n")
-        b, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", True, "", "kiro-state")
+        b, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", "", "kiro-state")
         self.assertEqual(a, b, "切りっぱなしの worktree を再利用する")
         self.assertTrue((b / "mark.txt").is_file(), "中身を消さない")
 
     def test_non_git_root_is_left_alone(self):
         d = Path(tempfile.mkdtemp(prefix="kp-nogit-"))
         self.addCleanup(shutil.rmtree, d, True)
-        root, state_top = km._redirect_root_to_state_worktree(d / "p", True, "", "kiro-state")
+        root, state_top = km._redirect_root_to_state_worktree(d / "p", "", "kiro-state")
         self.assertEqual(root, d / "p")
-        self.assertIsNone(state_top)
-
-    def test_disabled_keeps_the_root(self):
-        top = self._repo()
-        root, state_top = km._redirect_root_to_state_worktree(
-            top / ".kiro-project", False, "", "kiro-state")
-        self.assertEqual(root, top / ".kiro-project")
         self.assertIsNone(state_top)
 
 
@@ -6842,7 +6835,7 @@ class StateCommitTests(unittest.TestCase):
         run("git", "commit", "-m", "init")
         self.addCleanup(lambda: shutil.rmtree(top.parent / f"{top.name}-kiro-state", True))
         root, state_top = km._redirect_root_to_state_worktree(
-            top / ".kiro-project", True, "", "kiro-state")
+            top / ".kiro-project", "", "kiro-state")
         root.mkdir(parents=True, exist_ok=True)
         cfg = cfg_for(root)
         cfg.state_top = state_top
@@ -6890,8 +6883,121 @@ class StateCommitTests(unittest.TestCase):
                                 capture_output=True, text=True).stdout
         self.assertEqual(staged.strip(), "", "本体の index に触らない")
 
+
+class StateBackupTests(unittest.TestCase):
+    """状態を正本ブランチ（既定 main）へバックアップする。
+
+    状態の実体は worktree（kiro-state）にあり、そこが読み書きの正。正本ブランチへ載せるのは
+    バックアップであって共有ではない。だから「人の判断が動いたときだけ」「1 同期 1 コミット」
+    「本体の作業ツリーには触らない」「失敗しても本業を止めない」を守る。"""
+
+    def _cfg(self, backup="main"):
+        top = Path(tempfile.mkdtemp(prefix="kp-bk-")).resolve()
+        self.addCleanup(shutil.rmtree, top, True)
+        env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        run = lambda *a: subprocess.run(a, cwd=top, capture_output=True, env=env)
+        run("git", "init", "-b", "main", ".")
+        run("git", "config", "user.email", "t@e.com")
+        run("git", "config", "user.name", "t")
+        (top / "README.md").write_text("x\n")
+        run("git", "add", "-A")
+        run("git", "commit", "-m", "init")
+        self.addCleanup(lambda: shutil.rmtree(top.parent / f"{top.name}-kiro-state", True))
+        root, state_top = km._redirect_root_to_state_worktree(top / ".kiro-project", "", "kiro-state")
+        root.mkdir(parents=True, exist_ok=True)
+        cfg = cfg_for(root)
+        cfg.state_top = state_top
+        cfg.state_commit = True
+        cfg.state_commit_interval = 3600.0
+        cfg.state_backup_branch = backup
+        km._last_state_commit = 0.0
+        return cfg, root, top
+
+    def _show(self, top, ref):
+        r = subprocess.run(["git", "-C", str(top), "show", ref], capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else None
+
+    def _count(self, top, branch):
+        r = subprocess.run(["git", "-C", str(top), "rev-list", "--count", branch],
+                           capture_output=True, text=True)
+        return int(r.stdout.strip() or 0)
+
+    def test_meaningful_change_is_backed_up_to_main(self):
+        cfg, root, top = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: ready\n")
+        self.assertTrue(km.commit_state(cfg))
+        self.assertIn("status: ready", self._show(top, "main:.kiro-project/backlog/T1.md") or "",
+                      "人の判断が動いたら正本へバックアップされる")
+
+    def test_noise_is_not_pushed_to_main(self):
+        # journal / status.json は 5 秒ごとに変わる。正本へ流すとコミットが埋まり、本体で
+        # 作業している人の git status も落ち着かない。worktree 側の履歴に留める。
+        cfg, root, top = self._cfg()
+        cfg.state_commit_interval = 0.0
+        before = self._count(top, "main")
+        (root / "journal.md").write_text("- 監視中\n")
+        self.assertTrue(km.commit_state(cfg), "worktree にはコミットされる")
+        self.assertEqual(self._count(top, "main"), before, "正本は動かさない")
+
+    def test_backup_is_squashed_to_one_commit_per_sync(self):
+        # worktree 側に何コミット積まれても、正本には「その時点の状態」が 1 コミットだけ載る
+        cfg, root, top = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        before = self._count(top, "main")
+        for i in range(3):
+            (root / "backlog" / f"T{i}.md").write_text(f"## T{i}\n")
+            km.commit_state(cfg)
+        self.assertEqual(self._count(top, "main"), before + 3, "1 同期 = 1 コミット")
+        self.assertGreaterEqual(self._count(top, "kiro-state"), 3)
+
+    def test_human_on_another_branch_is_not_disturbed(self):
+        # 人が別ブランチで作業していても、正本の ref を進めるだけ（作業ツリーに触らない）
+        cfg, root, top = self._cfg()
+        subprocess.run(["git", "-C", str(top), "checkout", "-q", "-b", "feature"],
+                       capture_output=True)
+        (top / "wip.txt").write_text("作業中\n")
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n")
+        km.commit_state(cfg)
+        head = subprocess.run(["git", "-C", str(top), "symbolic-ref", "--short", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        self.assertEqual(head, "feature", "人のブランチを動かさない")
+        self.assertFalse((top / ".kiro-project").exists(), "人の作業ツリーに書き戻さない")
+        self.assertIsNotNone(self._show(top, "main:.kiro-project/backlog/T1.md"),
+                             "それでも正本にはバックアップされる")
+        dirty = subprocess.run(["git", "-C", str(top), "status", "--porcelain"],
+                               capture_output=True, text=True).stdout
+        self.assertIn("wip.txt", dirty, "人の変更はそのまま")
+
+    def test_identical_state_makes_no_empty_commit(self):
+        cfg, root, top = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n")
+        km.commit_state(cfg)
+        n = self._count(top, "main")
+        self.assertFalse(km.backup_state(cfg), "同じ内容なら何もしない")
+        self.assertEqual(self._count(top, "main"), n, "空コミットを作らない")
+
+    def test_missing_backup_branch_is_ignored(self):
+        # 正本ブランチが無い運用（別ブランチ名・浅いクローン）でも実行を止めない
+        cfg, root, top = self._cfg(backup="nonexistent")
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n")
+        self.assertTrue(km.commit_state(cfg), "本業（worktree へのコミット）は成功する")
+        self.assertFalse(km.backup_state(cfg), "バックアップは黙って諦める")
+
+    def test_backup_can_be_disabled(self):
+        cfg, root, top = self._cfg(backup="")
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n")
+        before = self._count(top, "main")
+        km.commit_state(cfg)
+        self.assertEqual(self._count(top, "main"), before, "空設定でバックアップ無効")
+
     def test_no_change_no_commit(self):
-        cfg, root = self._cfg()
+        cfg, _root, _top = self._cfg()
         cfg.state_commit_interval = 0.0
         self.assertFalse(km.commit_state(cfg))
 
