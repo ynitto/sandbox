@@ -2893,9 +2893,23 @@ function renderFlowDetail() {
     : '';
   // 失敗した run と、中止した run（＝停滞していたので人が止めたもの）はやり直せる。
   // 停滞した run は「■ 中止」で終端させてから、このボタンでやり直す導線になる。
+  //
+  // 失敗 run のやり直しは **失敗した工程だけ** を対象にする（成功した工程は温存して続きから）。
+  // タスクを積み直すと本体が同じ run を再開し、kiro-flow が失敗ノードだけ pending へ戻すため。
+  // ボタンの文言は実際に起きることに合わせる（「最初からやり直す」と読めると、成功した工程まで
+  // 捨てられると誤解する — 実際 25 ノード中 1 つの失敗で 14 ノード分の成果を捨てていた）。
+  const doneCount = (run.counts && run.counts.done) || 0;
+  const failedCount = (run.counts && run.counts.failed) || 0;
+  const partial = run.status === 'failed' && doneCount > 0;
+  const resubmitLabel = partial
+    ? `↻ 失敗した工程だけやり直す（${failedCount} 件）`
+    : '↻ 同じ内容でやり直す';
+  const resubmitTitle = partial
+    ? `失敗した ${failedCount} 件だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
+    : '同じ内容でやり直します（タスクを積み直して本体に実行させます）';
   const resubmit =
     !archived && (run.status === 'failed' || run.status === 'canceled')
-      ? `<button class="chip" id="flow-resubmit" title="同じ内容で最初からやり直します（タスクを積み直して本体に実行させます）">↻ 同じ内容でやり直す</button>`
+      ? `<button class="chip" id="flow-resubmit" title="${esc(resubmitTitle)}">${esc(resubmitLabel)}</button>`
       : '';
   // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ
   const deletable =
@@ -3145,7 +3159,14 @@ async function resubmitFlowRun() {
     const d = state.flowDaemon;
     uiLog('resubmit', res);
     if (res.viaTask) {
-      toast(`タスク ${res.taskId} を積み直しました（本体が新しい実行を始めます）`, true);
+      const doneN = (run.counts && run.counts.done) || 0;
+      const failedN = (run.counts && run.counts.failed) || 0;
+      toast(
+        run.status === 'failed' && doneN > 0
+          ? `失敗した ${failedN} 件をやり直します（成功した ${doneN} 件はそのまま使います）`
+          : `タスク ${res.taskId} を積み直しました（本体が実行を始めます）`,
+        true
+      );
     } else {
       toast(
         `新しい実行として開始を依頼しました${d && d.running === false ? '（実行エンジンが停止中のため、起動後に始まります）' : ''}`,
