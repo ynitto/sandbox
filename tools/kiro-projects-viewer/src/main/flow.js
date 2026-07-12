@@ -176,6 +176,38 @@ function parseRunId(runId) {
   };
 }
 
+function readRunMeta(busDir, runId) {
+  return readJson(path.join(busDir, 'runs', runId, 'meta.json'));
+}
+
+// run ↔ バックログタスクの突き合わせ。決定的 run-id（req-<hash>-<task-id>-r<n>）なら
+// run-id から直接引ける。kiro-flow が自動採番した run-<ts>-<rand> にはタスクが埋まって
+// いないので、kiro-project が付ける作業ブランチ kp/<task-id> から逆引きする。これが無いと
+// 旧形式の run は「どのタスクのものか」を viewer が言えず、再実行が inbox 投入（＝誰も
+// 拾わない無反応ボタン）へ落ちる。
+function taskIdOfRun(runId, meta) {
+  const fromId = parseRunId(runId).taskId;
+  if (fromId) return fromId;
+  const branch = String((meta && meta.workspace && meta.workspace.branch) || '');
+  const m = /^kp\/(.+)$/.exec(branch);
+  return m ? m[1] : null;
+}
+
+// 「この run の続きから」を kiro-project へ伝える。kiro-project は task の last_run を見て
+// 再開先を決める（run_id_for）ので、人が viewer で選んだ run をそこへ書き込む。これをせずに
+// ready へ戻すだけだと、成功済みノードごと新しい run を作り直してしまう。
+function pinResumeRun(projectDir, taskId, runId) {
+  const file = path.join(projectDir, 'backlog', `${taskId}.md`);
+  const src = fs.readFileSync(file, 'utf8');
+  const line = `- last_run: ${runId}`;
+  const next = /^- last_run:.*$/m.test(src)
+    ? src.replace(/^- last_run:.*$/m, line)
+    : src.replace(/^(##[^\n]*\n)/, `$1${line}\n`);
+  if (next === src) throw new Error(`last_run を書けませんでした: ${file}`);
+  fs.writeFileSync(file, next, 'utf8');
+  return file;
+}
+
 // 1 つの run ディレクトリを読み、グラフ＋状態＋進捗のスナップショットにする
 function readRun(runDir) {
   const runId = path.basename(runDir);
@@ -408,8 +440,12 @@ function resubmitRun(busDir, runId) {
   const runDir = path.join(busDir, 'runs', runId);
   const meta = readJson(path.join(runDir, 'meta.json'));
   if (!meta) throw new Error(`run が見つかりません: ${runId}`);
-  if (!TERMINAL.has(String(meta.status))) {
-    throw new Error(`run はまだ終端していません（status=${meta.status}）。再投入は失敗/完了後に使えます`);
+  // status だけで弾くと、いちばん救いたい run が救えない。orchestrator が消えた run は
+  // status=running のまま固まるので「終端していない」を理由に再投入を拒否され、人は
+  // 手も足も出なくなる。実際に駆動中（リースが生きている）run だけを拒否する
+  // ＝ prepareRunDeletion と同じ規則で「実行中」と「応答なし」を区別する。
+  if (!TERMINAL.has(String(meta.status)) && runAlive(meta, Date.now() / 1000) === true) {
+    throw new Error(`run は実行中です（status=${meta.status}）。再実行は完了・失敗・応答なしの run に使えます`);
   }
   const request = String(meta.request || '').trim();
   if (!request) throw new Error('meta.json に request がありません（再投入できません）');
@@ -735,6 +771,9 @@ module.exports = {
   readDaemonStatus,
   runAlive,
   resubmitRun,
+  readRunMeta,
+  taskIdOfRun,
+  pinResumeRun,
   prepareRunDeletion,
   cancelRun,
   nodeTaskToken,

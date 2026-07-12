@@ -1,0 +1,6 @@
+{
+  "id": "t2",
+  "goal": "_first_command_line の呼び出し側（synth_verify から verify コマンドが合成される経路）を辿り、戻り値がどう消費されるか・失敗時に何が起きるか（例外／空文字／verify スキップ）を入出力契約として記述する",
+  "deps": [],
+  "kind": "work"
+}

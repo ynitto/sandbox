@@ -3,6 +3,9 @@
     "base": "main",
     "desc": "ソースコード・設計書",
     "url": "https://github.com/ynitto/sandbox/",
-    "owns": ["**"]
+    "owns": [
+      "**"
+    ],
+    "local": "/Users/nitto/Workspace/sandbox"
   }
 }

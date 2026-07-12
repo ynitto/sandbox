@@ -164,15 +164,22 @@ function registerIpcHandlers() {
   //
   // kiro-flow を単体で使っている run（タスクに紐づかない・daemon 運用）は従来どおり inbox へ。
   handle('flow:resubmit', async ({ dir, busDir, runId }) => {
-    const taskId = flow.parseRunId(runId).taskId;
+    const meta = flow.readRunMeta(busDir, runId);
+    // run-id にタスクが埋まっていない旧形式（run-<ts>-<rand>）でも、作業ブランチ kp/<task-id>
+    // からタスクを引く。ここで諦めると inbox 投入へ落ちて無反応ボタンになる。
+    const taskId = flow.taskIdOfRun(runId, meta);
     if (dir && taskId && fs.existsSync(path.join(dir, 'backlog', `${taskId}.md`))) {
+      // 「続きから」やり直す: 人が選んだ run を再開先として固定してから ready へ戻す。
+      // これが無いと kiro-project は last_run を見つけられず、成功済みノードを捨てて
+      // まっさらな run を作り直す（26 ノード中 1 つの失敗で 25 ノード分を焼き直す）。
+      flow.pinResumeRun(dir, taskId, runId);
       const res = await actions.runAction(loadConfig(), {
         dir,
         action: 'approve',            // 判断待ちを積み直す（＝ready に戻して再実行させる）
         id: taskId,
-        reason: `実行画面から再実行（元の run: ${runId}）`,
+        reason: `実行画面から再実行（${runId} の続きから・失敗ノードのみやり直し）`,
       });
-      return { ...res, viaTask: true, taskId };
+      return { ...res, viaTask: true, taskId, resumedFrom: runId };
     }
     return flow.resubmitRun(busDir, runId);
   });

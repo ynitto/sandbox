@@ -29,3 +29,30 @@
 - reason  : kiro-projects-viewer から操作
 - affects : policy.pin += synth_verify-_first_comm-172544
 
+## DR-0006  2026-07-12  actor: nitto
+- context : synth_verify-_first_comm-172544（synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する）を人が修正（revise）
+- action  : revise
+- reason  : kiro-projects-viewer から操作
+- affects : priority: 5 → 7; synth_verify-_first_comm-172544 → ready
+
+## DR-0007  2026-07-12  actor: nitto
+- context : synth_verify-_first_comm-172544 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : synth_verify-_first_comm-172544 → blocked, policy.deny += synth_verify-_first_comm-172544
+- avoid: synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する :: kiro-projects-viewer から操作
+
+## DR-0008  2026-07-12  actor: nitto
+- context : synth_verify-_first_comm-172544 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : synth_verify-_first_comm-172544 → blocked, policy.deny += synth_verify-_first_comm-172544
+- avoid: synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する :: kiro-projects-viewer から操作
+
+## DR-0009  2026-07-12  actor: nitto
+- context : synth_verify-_first_comm-172544 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : synth_verify-_first_comm-172544 → blocked, policy.deny += synth_verify-_first_comm-172544
+- avoid: synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する :: kiro-projects-viewer から操作
+

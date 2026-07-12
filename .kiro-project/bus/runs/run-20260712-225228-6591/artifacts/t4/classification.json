@@ -1,0 +1,56 @@
+{
+  "categories": {
+    "a": "パス解決/シンボリックリンク（/tmp→/private/tmp）",
+    "b": "gitデフォルトブランチ名（master/main）",
+    "c": "BSD系コマンドのオプション差異",
+    "d": "ファイルモード/権限",
+    "e": "その他"
+  },
+  "failures": [
+    {
+      "id": 1,
+      "test": "GitDistributedTests.test_empty_objects_clone_is_rebuilt_on_reuse",
+      "file": "tools/kiro-flow/tests/test_kiro_flow.py",
+      "primary_class": "d",
+      "secondary_classes": [],
+      "root_cause": "共通ヘルパー _zero_loose_objects() が open(path, \"wb\").close() で loose object を0バイト切り詰めする際、macOSではgitがloose objectを0444（読み取り専用）で作成するためPermissionErrorになる",
+      "fix_commit": "0cf9c599671d89bdb1f967d766dc5c5002bb0bd9",
+      "fix": "切り詰め前に os.chmod(p, 0o644) を追加"
+    },
+    {
+      "id": 2,
+      "test": "GitDistributedTests.test_sync_push_self_heals_on_object_corruption",
+      "file": "tools/kiro-flow/tests/test_kiro_flow.py",
+      "primary_class": "d",
+      "secondary_classes": [],
+      "root_cause": "同上（_zero_loose_objects() 経由でのloose object破損模擬がPermissionErrorで失敗）",
+      "fix_commit": "0cf9c599671d89bdb1f967d766dc5c5002bb0bd9",
+      "fix": "同上"
+    },
+    {
+      "id": 3,
+      "test": "StateGitSyncTests.test_empty_objects_state_clone_is_rebuilt_on_reuse",
+      "file": "tools/kiro-flow/tests/test_kiro_flow.py",
+      "primary_class": "d",
+      "secondary_classes": [],
+      "root_cause": "同上",
+      "fix_commit": "0cf9c599671d89bdb1f967d766dc5c5002bb0bd9",
+      "fix": "同上",
+      "note": "t1のSUMMARY.mdはこの4件目を test_corrupt_index_clone_is_rebuilt と記載していたが誤り。実際にコード中で _zero_loose_objects() を呼ぶのは本テストであり、test_corrupt_index_clone_is_rebuilt は .git/index への直接バイト書き込みで破損を模擬しており本ヘルパーと無関係（別原因・別カテゴリ候補の失敗であり、macOS特有の失敗4件には含まれない）"
+    },
+    {
+      "id": 4,
+      "test": "StateGitSyncTests.test_state_sync_self_heals_on_object_corruption_midflight",
+      "file": "tools/kiro-flow/tests/test_kiro_flow.py",
+      "primary_class": "d",
+      "secondary_classes": [],
+      "root_cause": "同上",
+      "fix_commit": "0cf9c599671d89bdb1f967d766dc5c5002bb0bd9",
+      "fix": "同上"
+    }
+  ],
+  "excluded": {
+    "commit": "5681a20969299436029b2c7abe00788de9a1724c",
+    "reason": "KIRO_FLOW_DEFER_WAITS環境変数残存によるGitlabExecutorPluginTestsのテスト汚染修正。同ブランチ・同ファイルへの先行修正だがgit自己修復テストではなく対象4件に含まれないため分類対象外"
+  }
+}

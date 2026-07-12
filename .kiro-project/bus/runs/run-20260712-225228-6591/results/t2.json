@@ -1,0 +1,10 @@
+{
+  "id": "t2",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果\n\nmacOS 固有事実を採取し、`bus/runs/run-20260712-225228-6591/artifacts/t2/macos-environment-facts.md` に成果物として保存した。\n\n**採取結果サマリー**:\n\n1. **`/tmp` → `/private/tmp`**: シンボリックリンク（`readlink /tmp` = `private/tmp`、`os.path.realpath('/tmp')` = `/private/tmp`）。パス文字列の素の比較では同一ディレクトリが不一致判定されうる。\n2. **git バージョン**: `git version 2.50.1 (Apple Git-155)`。`init.defaultBranch` はこの環境では `main` だが、`--show-origin` で確認すると出所は**ユーザー設定ではなく Xcode Command Line Tools 同梱のシステム gitconfig**（`/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig`）。全設定を遮断した状態での git 本来の既定値は **`master`**。\n3. **sed/readlink/stat は BSD 系**: いずれも `/usr/bin` 配下、`--version` 不可、`stat -c` 不可（`-f` 形式のみ）。`sed -i` は拡張子引数省略でエラー。Homebrew coreutils は存在するが `g` プレフィックス版は PATH 未登録で、実際の解決先には影響なし。\n4. **umask / ファイルモード既定値**: umask `022` → 通常ファイル `644` / ディレクトリ `755`。**git の loose object は umask に関係なく `0444`（読み取り専用）で作成される**（t1 が特定した実際の障害原因と直結）。`mktemp`/`mktemp -d` は umask を無視し常に `600`/`700`。\n\n## 検証内容と結果\n\n全項目を採取対象と同一マシン上で実コマンド実行し記録（推測なし）。加えて run の完了条件コマンドを対象ワークスペースで実行し確認: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` → **900 passed, exit code 0**。t1 の成果物が報告する「対象4件は同一ブランチの先行コミット（`0cf9c59`, `5681a20`）で既に修正済み」という結果と一致。\n\n## 採用した前提・未解決事項・範囲外の所見\n\n- **前提**: 本タスクの範囲は事実採取のみとし、コード修正・追加検証は行っていない（t4以降の役割と判断）。\n- **未解決事項**: `init.defaultBranch=main` は CLT 由来のシステム設定であり、CLT 未導入環境では `master` に戻りうる。他マシンでの一般化は未実施（範囲外）。\n- **範囲外の所見**: 完了条件のテストスイートは現時点で既に green（900 passed）。追加の根本原因分析・修正（t5〜t14）が本当に必要かの判断は評価役・後続タスクに委ねる。\n\n作業ツリー（sandbox）への変更は行っていない。",
+  "finished_at": "2026-07-12T14:05:49Z",
+  "artifacts": [
+    "artifacts/t2/macos-environment-facts.md"
+  ]
+}

@@ -1,6 +1,0 @@
-{
-  "id": "t5",
-  "goal": "macOS 環境事実の採取: tempfile.gettempdir() と os.path.realpath の差（/var → /private/var）、`git --version`、`git config --get init.defaultBranch`、FS の大文字小文字非区別判定、BSD 版 sed/readlink/mktemp の挙動差、`env | grep ^GIT_` を実行し、環境事実表を作る",
-  "deps": [],
-  "kind": "work"
-}

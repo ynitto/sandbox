@@ -1,0 +1,6 @@
+{
+  "id": "t3",
+  "goal": "tools/kiro-project/tests のディレクトリ構成・命名規約・conftest/フィクスチャを調査し、`pytest -k first_command_line` でどのファイル・関数名が選択されるかを確定させる（新規テストの置き場所と命名を決める）",
+  "deps": [],
+  "kind": "work"
+}

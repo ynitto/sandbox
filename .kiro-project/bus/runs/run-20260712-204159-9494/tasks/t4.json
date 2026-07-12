@@ -1,6 +1,0 @@
-{
-  "id": "t4",
-  "goal": "codd-gate CLI の I/F を実測で確認する: verify --repos/--repo-dir/--base/--strict、tasks、--debt の終了コード規約と出力フォーマット、および schemas/ の共通データ契約を記録する",
-  "deps": [],
-  "kind": "work"
-}

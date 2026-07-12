@@ -23,3 +23,24 @@
 - reason  : チェックで承認
 - affects : macOS-kiro-flow-git-4-gr-171537 → ready
 
+## DR-0005  2026-07-12  actor: nitto
+- context : macOS-kiro-flow-git-4-gr-171537 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : macOS-kiro-flow-git-4-gr-171537 → blocked, policy.deny += macOS-kiro-flow-git-4-gr-171537
+- avoid: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: kiro-projects-viewer から操作
+
+## DR-0006  2026-07-12  actor: nitto
+- context : macOS-kiro-flow-git-4-gr-171537 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : macOS-kiro-flow-git-4-gr-171537 → blocked, policy.deny += macOS-kiro-flow-git-4-gr-171537
+- avoid: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: kiro-projects-viewer から操作
+
+## DR-0007  2026-07-12  actor: nitto
+- context : macOS-kiro-flow-git-4-gr-171537 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : macOS-kiro-flow-git-4-gr-171537 → blocked, policy.deny += macOS-kiro-flow-git-4-gr-171537
+- avoid: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: kiro-projects-viewer から操作
+

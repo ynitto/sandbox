@@ -1,0 +1,8 @@
+{
+  "id": "t14",
+  "goal": "git 自己修復ロジック本体の欠陥（index.lock の残存除去、detached HEAD からの復旧、worktree の不整合検出と再作成など、t10 の計画で実装欠陥と確定した箇所）を最小差分で修正する",
+  "deps": [
+    "t10"
+  ],
+  "kind": "work"
+}

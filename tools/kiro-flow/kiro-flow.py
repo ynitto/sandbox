@@ -4204,6 +4204,29 @@ def cmd_orchestrate(args) -> int:
         bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
                    parse_references(getattr(args, "references", None)))
+    # 生存リース（heartbeat）は orchestrator 自身が張る。daemon 経由の run だけが lease を持つと、
+    # kiro-flow run で都度起動される run（kiro-project の主経路）には lease が永久に書かれず、
+    # 消費者側の「停滞 run か？」判定（run_is_orphaned / _run_resumable）が lease の不在を
+    # 「生きている」とも「死んでいる」とも決められない。orchestrator が消えた run は永久に
+    # status=running のまま残り、失敗ノードも pending ノードも二度と実行されなくなる。
+    lease_window = _run_lease_window(args)
+    _last_touch = [0.0]
+
+    def heartbeat(force: bool = False) -> None:
+        """「この run は駆動中」を meta に刻む。
+
+        git バスでは meta の書き換えを未コミットのまま残せない: sync_pull は pull --rebase なので
+        dirty な作業ツリーでは失敗し続け、他ノードの結果を永久に取り込めなくなる（静止判定に
+        到達せず run が止まる）。更新したぶんは必ず sync_push で確定させる。push は転送を伴う
+        ので、毎 poll ではなくリースの 1/3 ごとに間引く（ローカルバスでは sync_push は no-op）。"""
+        now = time.time()
+        if not force and now - _last_touch[0] < lease_window / 3.0:
+            return
+        _last_touch[0] = now
+        bus.touch_run(args.run_id, lease_window)
+        bus.sync_push(f"heartbeat run {args.run_id}")
+
+    heartbeat(force=True)      # 計画（LLM）は数十秒かかる。その前に張る。
     graph = bus.read_graph()
 
     # 既存グラフがあれば計画をやり直さず再開（resume）
@@ -4237,9 +4260,11 @@ def cmd_orchestrate(args) -> int:
     while True:
         if _orch_check_canceled(bus, args, who):
             return 0
+        heartbeat()               # 評価・再計画は長い（LLM）ので周回ごとに更新
         graph = bus.read_graph()
         while not _quiesced(bus, graph["nodes"]):
             bus.sync_pull()
+            heartbeat()          # 走っている限りリースを延ばす
             if _orch_check_canceled(bus, args, who):
                 return 0
             graph = bus.read_graph()

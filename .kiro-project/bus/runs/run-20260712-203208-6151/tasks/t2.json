@@ -1,6 +1,0 @@
-{
-  "id": "t2",
-  "goal": "tools/kiro-flow/tests 配下から git 自己修復に関するテストを特定し、テストファイル・テスト関数名・使用フィクスチャ（tmp_path / monkeypatch / subprocess 呼び出し / chdir）を一覧化する",
-  "deps": [],
-  "kind": "work"
-}

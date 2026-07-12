@@ -1,9 +1,0 @@
-{
-  "id": "t9",
-  "goal": "detect_codd_gate() を実装する: CLI 探索と設定探索を統合し available/reason/bin/repos を持つ状態オブジェクトを返す。いずれか欠落時は available=False として既存挙動を一切変えないフォールバックを返す",
-  "deps": [
-    "t7",
-    "t8"
-  ],
-  "kind": "work"
-}

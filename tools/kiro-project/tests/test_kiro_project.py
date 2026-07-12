@@ -21,6 +21,7 @@ import time
 import types
 import unittest
 import unittest.mock as mock
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # テストの git コミットを環境のコミット署名設定（commit.gpgsign）から切り離す。
@@ -6648,6 +6649,37 @@ class RunResumeTests(unittest.TestCase):
             (p / "meta.json").write_text(json.dumps({
                 "status": "running", "orch_lease_until": time.time() + 600}), encoding="utf-8")
             self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
+
+    def _lease_less_run(self, cfg, rid, age_sec):
+        """生存リースを持たない非終端 run（heartbeat を張る前に死んだ／旧版が残したもの）。"""
+        p = cfg.bus / "runs" / rid
+        p.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc) - timedelta(seconds=age_sec)
+        (p / "meta.json").write_text(json.dumps({
+            "status": "running", "request": "x",
+            "updated_at": ts.strftime("%Y-%m-%dT%H:%M:%SZ")}), encoding="utf-8")
+
+    def test_lease_less_stalled_run_is_resumed(self):
+        # リース不在を「生きている」と読むと、進捗を抱えた run が永久に宙吊りになる。
+        # 実際 kiro-flow run（kiro-project の主経路）は heartbeat を張っておらず、9/31 ノード
+        # まで進んだ run が status=running のまま固まり、やり直す手段が無かった。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "run-20260712-213419-5922"))
+            self._lease_less_run(cfg, "run-20260712-213419-5922", 2 * 3600)
+            self.assertEqual(km.run_id_for(cfg, t), "run-20260712-213419-5922",
+                             "リース未記録でも古ければ停滞＝続きから")
+
+    def test_lease_less_fresh_run_is_not_resumed(self):
+        # 起動直後（heartbeat を張る前）の run を停滞と誤読して奪わない
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "run-20260712-213419-5922"))
+            self._lease_less_run(cfg, "run-20260712-213419-5922", 5)
+            self.assertNotEqual(km.run_id_for(cfg, t), "run-20260712-213419-5922",
+                                "走り出したばかりの run は触らない")
 
     def test_canceled_run_is_not_resumed(self):
         # 人が中止した＝その計画を続ける意図がない → 作り直す

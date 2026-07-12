@@ -1,0 +1,6 @@
+{
+  "id": "s2",
+  "goal": "tools/kiro-project の acceptance（受入判定）実装を読み、done/差し戻しの判定根拠がどのデータ構造で表現されているかを特定する",
+  "deps": [],
+  "kind": "work"
+}

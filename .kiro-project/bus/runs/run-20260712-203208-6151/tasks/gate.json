@@ -1,8 +1,0 @@
-{
-  "id": "gate",
-  "goal": "各 map が生成した修正差分を敵対的にレビューする。(a) macOS 専用ハック（'/private' ハードコード、sys.platform 分岐での逃げ、skipif での回避）になっておらず Linux/CI でも通るか、(b) 既存 green テストを退行させる変更が含まれていないか、(c) git 操作が worktree 内に閉じており リポジトリ外・グローバル git config を汚していないか を検証し、違反は差し戻し理由付きで却下する",
-  "deps": [
-    "split"
-  ],
-  "kind": "verify"
-}

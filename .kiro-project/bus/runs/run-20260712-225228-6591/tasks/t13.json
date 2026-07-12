@@ -1,0 +1,8 @@
+{
+  "id": "t13",
+  "goal": "BSD/GNU のコマンド差異への依存を除去する: 自己修復ロジック内の外部コマンド呼び出し（sed/readlink/stat 等）を Python 標準ライブラリまたは移植性のある git 標準オプションへ置き換え、macOS と Linux の双方で同一挙動にする",
+  "deps": [
+    "t10"
+  ],
+  "kind": "work"
+}

@@ -23,3 +23,23 @@
 - reason  : チェックで承認
 - affects : kiro-project-codd-gate-171537 → ready
 
+## DR-0005  2026-07-12  actor: nitto
+- context : kiro-project-codd-gate-171537（kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する）に人のフィードバック
+- action  : feedback-resume
+- reason  : チェックで承認
+- affects : kiro-project-codd-gate-171537 → ready
+
+## DR-0006  2026-07-12  actor: nitto
+- context : kiro-project-codd-gate-171537 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : kiro-project-codd-gate-171537 → blocked, policy.deny += kiro-project-codd-gate-171537
+- avoid: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: kiro-projects-viewer から操作
+
+## DR-0007  2026-07-12  actor: nitto
+- context : kiro-project-codd-gate-171537 を保留（denylist 化）
+- action  : hold(deny)
+- reason  : kiro-projects-viewer から操作
+- affects : kiro-project-codd-gate-171537 → blocked, policy.deny += kiro-project-codd-gate-171537
+- avoid: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: kiro-projects-viewer から操作
+

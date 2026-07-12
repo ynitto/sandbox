@@ -37,7 +37,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -3830,6 +3830,24 @@ def _new_run_id(task: "Task") -> str:
 
 _FLOW_TERMINAL = ("done", "failed", "canceled")
 
+# リース未記録の非終端 run を「停滞」とみなすまでの猶予。kiro-flow の worker は 1 ノードに
+# 数分かかるので、生きている run を誤って停滞と読まない程度に長く取る。
+_STALE_RUN_SEC = 600.0
+
+
+def _run_age_sec(meta: dict) -> float:
+    """run メタの最終更新からの経過秒（時刻が読めなければ inf ＝ 古いものとして扱う）。"""
+    ts = str(meta.get("updated_at") or meta.get("created_at") or "").strip()
+    if not ts:
+        return float("inf")
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return float("inf")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds()
+
 
 def _run_resumable(cfg: "Config", rid: str) -> bool:
     """その run は「続きから」やり直せるか。
@@ -3849,7 +3867,13 @@ def _run_resumable(cfg: "Config", rid: str) -> bool:
     if st in _FLOW_TERMINAL:
         return False                      # done / canceled は作り直す
     lease = meta.get("orch_lease_until")  # 非終端: 生存リースで実態を見る
-    return isinstance(lease, (int, float)) and float(lease) < time.time()
+    if isinstance(lease, (int, float)):
+        return float(lease) < time.time()
+    # リース未記録の run は kiro-flow の run_is_orphaned と同じく age に落とす。ここで False を
+    # 返すと（＝リース不在を「生きている」と読む）、heartbeat を張る前に死んだ run も、旧版が
+    # 残した run も永久に再開できず、進捗を抱えたまま非終端で固まる。実際 9/31 ノードまで
+    # 進んだ run がこれで宙吊りになり、やり直す手段が無かった。
+    return _run_age_sec(meta) > _STALE_RUN_SEC
 
 
 def run_id_for(cfg: "Config", task: "Task") -> str:

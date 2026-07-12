@@ -1,8 +1,0 @@
-{
-  "id": "t20",
-  "goal": "pytest -k codd で拾えるテストを追加する: run_codd_verify の終了コード 0 / 非0 / 例外 / タイムアウトを subprocess モックで再現し、結果正規化を検証する",
-  "deps": [
-    "t10"
-  ],
-  "kind": "work"
-}

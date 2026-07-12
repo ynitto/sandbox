@@ -1,0 +1,10 @@
+{
+  "id": "s1",
+  "who": "worker-2",
+  "status": "done",
+  "output": "worktree に変更なし（調査のみのため未編集）。成果物を作業ディレクトリに出力済み。\n\n## 成果\n\n**成果物**: `bus/runs/run-20260712-213419-5922/artifacts/s1/regression-gate-hook-analysis.md`\n\n`Config.regression_cmd` が kiro-project の回帰ゲート（差分ゲート相当）の唯一の実装であることを特定した。要点:\n\n- **コア関数**: `run_verify(cmd, workdir, timeout, env=None) -> (bool, str)`（kiro-project.py:2702）。regression_cmd 専用ラッパーは無く、呼び出しは `_settle_task()` 内にインラインで書かれている（4940-4950行）。\n- **呼び出し元**: `_settle_task()` を経由する2箇所のみ（`run_loop()` の通常サイクル 6045行、offload 完了ポーリング 5938行）。task 自身の `verify` が `ok and not flaky` のときだけ評価される。\n- **戻り値の扱い**: `(rok, rmsg)` の `rok=False` のときだけ `regressed=True` を立てて `_block()`。task 本体の verify とは異なり `run_verify_stable()` の flaky 再確認を経由せず**1回勝負**。\n- **失敗時の挙動**: `_block()`（status=blocked・needs ファイル生成・claim 解放）→ 任意で `_revert_workdir()`（未コミット変更のみ・best-effort）→ `autonomy_record(clean=False)`（track 降格/ピン）→ journal 追記。**リトライ経路は無く**、一発で人の判断に落ちる。\n\n## 検証\n\n- `python3 -m pytest tools/kiro-project/tests -q -k codd` → exit 5（codd 該当テスト0件）\n- `codd-gate verify --repos ./.kiro-project/repos.json ... --strict` → `repos.json` 未生成でエラー\n- いずれも完了条件のシェルコマンドは失敗するが、`.kiro-project/repos.json` の自動生成・`regression_cmd`/`intake_cmd` の自動設定コードは本 worktree にまだ存在せず、これは別タスク（auto-detection 実装）が満たすべき条件と判断。本タスクは調査のみでコード変更は行っていない（報告書内「7.」に明記）。\n\n## 範囲外で見つけた問題\n\n`regression_cmd` は `vcwd`（workspace タスクでは一時 clone）で実行されるが、`_revert_workdir()` は常に `cfg.workdir`（git-bus ルート）を対象にするため、workspace 型タスクでの `regression_revert=True` は実質 no-op になる。修正はせず報告のみ。",
+  "finished_at": "2026-07-12T12:49:13Z",
+  "artifacts": [
+    "artifacts/s1/regression-gate-hook-analysis.md"
+  ]
+}

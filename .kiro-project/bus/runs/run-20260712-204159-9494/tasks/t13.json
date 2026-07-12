@@ -1,8 +1,0 @@
-{
-  "id": "t13",
-  "goal": "差分ゲートを結線する: regression/verify 経路から run_codd_verify を呼び、終了コード 0→pass / 非0→fail（出力を詳細メッセージへ）を kiro-project のゲート結果へマッピングする。未検出時は呼ばずに従来結果をそのまま返す",
-  "deps": [
-    "t12"
-  ],
-  "kind": "work"
-}

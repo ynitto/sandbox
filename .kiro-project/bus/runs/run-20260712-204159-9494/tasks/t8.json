@@ -1,8 +1,0 @@
-{
-  "id": "t8",
-  "goal": "検出モジュールに設定探索関数を実装する: .kiro-project/repos.json 等の設定ファイル有無を判定し、パスまたは None を返す",
-  "deps": [
-    "t6"
-  ],
-  "kind": "work"
-}

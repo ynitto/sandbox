@@ -1,0 +1,10 @@
+{
+  "id": "t4",
+  "who": "worker-1",
+  "status": "done",
+  "output": "完了条件（`pytest -k first_command_line` の終了コード0）を満たしている。以下、報告。\n\n## (a) 成果物\n\n`_first_command_line` の失敗サンプル集を8カテゴリで収集・分類し、各サンプルに「期待される抽出結果」1行を併記して出力した:\n`bus/runs/run-20260712-222225-2732/artifacts/t4/verify-synth-failure-samples.md`\n\n要旨:\n| カテゴリ | 結果 |\n|---|---|\n| ```` ```bash ```` フェンス | PASS |\n| 言語タグなしフェンス | PASS |\n| 前置き散文＋フェンス | PASS |\n| 前置き散文のみ | PASS |\n| `$ ` プロンプト記号 | **FAIL**（3サンプル中3件） |\n| 番号付きリスト | **FAIL**（4サンプル中4件） |\n| 複数フェンス | PASS（仕様上の曖昧さは残存） |\n| 末尾の説明文 | PASS |\n\n## (b) 検証内容と結果\n\n- worktree（`.../kiro-flow-ws-81997-.../sandbox`、HEAD `9fcf0e9`）で `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` を実行し `12 passed, 512 deselected`（終了コード0）を確認。\n- 12サンプル全件を `importlib` 経由で実際の `_first_command_line` に通し、戻り値を実測して分類（推測ではなく実行結果ベース）。\n\n## (c) 採用した前提・未解決事項・範囲外で見つけた問題\n\n- **前提**: 本タスクはサンプル収集・分類のみが範囲。ソースコードは変更していない（`git status --porcelain` で無変更を確認済み）。フェンス＋前置き散文の当初バグは既に別 run（run-20260712-220433-4358 の t5）で main に修正済みだった。\n- **範囲外で見つけた問題（未修正）**: `$ ` プロンプト記号と番号付きリストのプレフィックス（`1. ` `1) ` 等）が現行実装で剥がされず、フェンス外では抽出が `None`（verify未定義止まり）、フェンス内では飾り記号付きの不正コマンドがそのまま `sh -n` 構文チェックを素通りして verify に採用されうる。修正要否は評価役の判断に委ねる。",
+  "finished_at": "2026-07-12T13:28:48Z",
+  "artifacts": [
+    "artifacts/t4/verify-synth-failure-samples.md"
+  ]
+}

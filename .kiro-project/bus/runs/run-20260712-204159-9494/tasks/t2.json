@@ -1,6 +1,0 @@
-{
-  "id": "t2",
-  "goal": "tools/kiro-project の acceptance（受入判定）経路を特定し、done へ遷移させる条件と判定材料の集約点（関数・戻り値）を列挙する",
-  "deps": [],
-  "kind": "work"
-}

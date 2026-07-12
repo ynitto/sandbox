@@ -1,8 +1,0 @@
-{
-  "id": "t7",
-  "goal": "検出モジュールに CLI 探索関数を実装する: 環境変数 CODD_GATE_BIN を優先し、無ければ PATH 上の codd-gate 実行ファイルを探して絶対パスまたは None を返す",
-  "deps": [
-    "t6"
-  ],
-  "kind": "work"
-}

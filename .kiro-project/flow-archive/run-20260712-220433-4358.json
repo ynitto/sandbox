@@ -1,0 +1,710 @@
+{
+  "savedAt": "2026-07-12T14:23:03.369Z",
+  "run": {
+    "runId": "run-20260712-220433-4358",
+    "status": "running",
+    "taskId": null,
+    "retries": null,
+    "rev": null,
+    "lineageId": null,
+    "inheritedFrom": null,
+    "alive": false,
+    "heartbeatAt": null,
+    "resumeCount": 0,
+    "workspace": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "path": "",
+      "base": "main",
+      "target": "main",
+      "desc": "ソースコード・設計書",
+      "branch": "kp/synth_verify-_first_comm-172544"
+    },
+    "references": [],
+    "request": "synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  python3 -m pytest tools/kiro-project/tests -q -k first_command_line\n\nタスクID: synth_verify-_first_comm-172544\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: - codd-gate がインストールされている場合に活用できること\n- ユニットテストを拡充すること\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- sandbox = https://github.com/ynitto/sandbox/（base=main, target=main, 書込先候補（owns: **））\n    説明: ソースコード・設計書\n制約:\n- kiro-project/kiro-flowをエンジンとして使用する\n- kiro-projects-viewerをフロントエンドとして使用する\n前提:\n- 人による操作や確認を最小限にする\n- 繰り返し・再実行によって試行錯誤できる\n成果物:\n- kiro-project ソースコード\n- kiro-flow ソースコード\n- kiro-projects-viewer ソースコード\n- 設計書・ドキュメント\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n…\nctor: nitto\n- context : synth_verify-_first_comm-172544（synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する）に人のフィードバック\n- action  : feedback-resume\n- reason  : チェックで承認\n- affects : synth_verify-_first_comm-172544 → ready\n\n## DR-0004  2026-07-12  actor: nitto\n- context : synth_verify-_first_comm-172544 の優先度を変更\n- action  : reprioritize(pin)\n- reason  : kiro-projects-viewer から操作\n- affects : policy.pin += synth_verify-_first_comm-172544\n\n## DR-0005  2026-07-12  actor: nitto\n- context : synth_verify-_first_comm-172544 の優先度を変更\n- action  : reprioritize(pin)\n- reason  : kiro-projects-viewer から操作\n- affects : policy.pin += synth_verify-_first_comm-172544\n\n## DR-0006  2026-07-12  actor: nitto\n- context : synth_verify-_first_comm-172544（synth_verify の _first_command_line がコードフェンス内のコマンドを拾えず、LLM が前置きを付けると verify 合成が失敗する問題を修正する）を人が修正（revise）\n- action  : revise\n- reason  : kiro-projects-viewer から操作\n- affects : priority: 5 → 7; synth_verify-_first_comm-172544 → ready",
+    "createdAt": "2026-07-12T13:04:33Z",
+    "updatedAt": "2026-07-12T13:07:19Z",
+    "failureReason": null,
+    "strategy": {
+      "patterns": [
+        "fan-out-and-synthesize",
+        "tournament",
+        "adversarial-verification",
+        "loop-until-done"
+      ],
+      "parallelism": 15,
+      "review": true,
+      "reason": "バグの実体は synth_verify 内の単一ヘルパー _first_command_line の抽出ロジックにあるため、まず調査を4観点（現行実装・既存テスト規約・呼び出し元契約・失敗入力パターン）に fan-out して並列に事実を固める。抽出方式には複数の設計解（フェンス優先スキャン / 行スコアリング / 正規化前処理の最小差分）があり互いに非互換なので、tournament で3案を並列生成し judge が選定する。実装後は観点ごとに1テストへ原子分解した回帰・新規テストを並列追加し、集約前に verify ノードで pytest 実行と敵対的レビュー（呼び出し元契約の破壊・他テストへの巻き込み）を行う。完了条件が pytest -k first_command_line の終了コード0であるため、verify が緑になるまで実装とテストを loop-until-done で反復する。"
+    },
+    "iteration": 0,
+    "nodes": {
+      "t1": {
+        "id": "t1",
+        "goal": "tools/kiro-project 配下で synth_verify と _first_command_line の定義箇所を特定し、現行の抽出ロジック（対象行の選び方・除外条件・戻り値型）を逐語で書き出す",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-2",
+        "finishedAt": "2026-07-12T13:09:34Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "コード変更なし、完了条件（`pytest -k first_command_line`）は 12 passed で成功を確認した。\n\n## 成果サマリー\n\n`tools/kiro-project/kiro-project.py` 内の `synth_verify`（L2952-2977）と `_first_command_line`（L2943-2949）、およびその補助関数（`_code_fence_lines` L2883-2901、`_has_command_like_leading_token` L2916-2926、`_first_executable_line` L2929-2940、`_looks_like_shell_command` L2866-2880、`_verify_is_degenerate` L2854-2863 等）を特定し、逐語コードと抽出ロジック（対象行の選び方・除外条件・戻り値型）を artifacts に書き出した。\n\n出力先: `bus/runs/run-20260712-220433-4358/artifacts/t1/synth_verify_first_command_line_investigation.md`\n\n**検証**: `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` を worktree 上で実行し `12 passed`（終了コード0）を確認。本タスクは調査のみでコード変更は行っていない。\n\n**範囲外で見つけた問題（報告のみ）**: `_first_command_line` はコードフェンス優先→フォールバックでフェンス外の行頭トークン判定、という二段構えだが、「同一行に前置き文とコマンドが同居する」（例: `実行: pytest -q` や `` 実行してください: ```bash ``）ケースは両経路とも取りこぼす可能性がある。これが元要求（前置き付き応答での verify 合成失敗）の原因候補になり得るが、根本原因特定・修正は本タスクの範囲外。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-20aab0219fc3"
+      },
+      "t2": {
+        "id": "t2",
+        "goal": "tools/kiro-project/tests 配下の既存テストのうち `-k first_command_line` で選択されるテスト名・ファイル・現在の合否を洗い出し、テスト命名規約とフィクスチャの流儀を確定する",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-2",
+        "finishedAt": "2026-07-12T13:13:54Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果\n\n`tools/kiro-project/tests/test_kiro_project.py` の `TestVerifyAssist` クラス（L4864〜）配下、`_first_command_line` 群に属する12テストを洗い出し、命名規約とフィクスチャの流儀を確定した。詳細レポートを成果物として書き出し済み:\n\n`/Users/nitto/Workspace/sandbox-state/.kiro-project/bus/runs/run-20260712-220433-4358/artifacts/t2/test_inventory.md`\n\n- **テスト一覧**: 12件全て `TestVerifyAssist`（同一ファイル・同一クラス）に属し、現時点で **全件 PASS**。\n- **命名規約**: `test_<検証対象関数>_<期待される振る舞い>`（snake_case・英語）。プレフィックスは検証対象の内部関数名（`_first_command_line`）に揃え、「ユーザー視点の挙動単位」でグルーピング。日本語のインラインコメントで意図・回帰理由を添える。\n- **フィクスチャの流儀**: pytest fixture / conftest.py は不使用（`unittest.TestCase` + `tempfile.TemporaryDirectory()` によるテスト内完結の分離）。モジュールは `importlib` で動的ロードし `km.<関数>` として直呼び。共通ヘルパーは module-level 関数 `cfg_for()` / `mkb()`。外部依存（LLM呼び出し）は `kiro_run=<callable>` の DI が第一選択、モジュール関数の直接差し替えは退避・`try/finally` 復元が作法。\n\n## 検証内容と結果\n\n`python3 -m pytest tools/kiro-project/tests -q -k first_command_line` を worktree で実行 → `12 passed, 512 deselected in 0.08s`（終了コード0）。完了条件は変更なしで既に満たされている。\n\n## 前提・範囲外で見つけた問題\n\n- 前提: タスクは調査・報告のみと解釈し、コードは一切変更していない（worktreeは無変更）。\n- 本ブランチでは `_code_fence_lines`/`_first_command_line` の柵抽出ロジック自体が既に実装済み（別 run 由来のコミットが base に含まれている）。同じ run の t1・t4 の成果物とも整合。\n- 範囲外の既知未解決（t1/t4 が指摘、本タスクの完了条件には無関係）: `$ ` プロンプト表記の除去、フェンス内に複数の「コマンドらしい行」が並ぶ場合の選択基準。追加テスト化する際は本レポート§2/§3の規約に従えばよい旨を記載した。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-d3eb60335297"
+      },
+      "t3": {
+        "id": "t3",
+        "goal": "_first_command_line の全呼び出し元を列挙し、戻り値の契約（コマンドが見つからない場合に None を返すか空文字か例外か、呼び出し側がどう分岐するか）を確定する。これが破壊禁止の不変条件になる",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-1",
+        "finishedAt": "2026-07-12T13:13:15Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果報告\n\n**(a) 成果**: `_first_command_line`（`tools/kiro-project/kiro-project.py:2943`）の全呼び出し元と戻り値契約を確定し、`bus/runs/run-20260712-220433-4358/artifacts/t3/first_command_line_contract.md` に出力した。\n\n要点:\n- 戻り値は `str | None` のみ（空文字は返らない）。例外は投げない不変条件（`_looks_like_shell_command` のサブプロセス例外まで握りつぶす設計）。\n- 本番コードの唯一の呼び出し元は `synth_verify()`（`kiro-project.py:2966`）。分岐は `if not cand:`（truthiness、`is None` ではない）でリトライへ。`_first_command_line` の外側にあるため、ここで例外が漏れると `synth_verify`／`ensure_verify` まで無捕捉で伝播する。\n- テストコードでは `_first_command_line` を12箇所直接呼び出しており、うち2箇所（4981行・4984行）は `assertIsNone` で **None を厳密要求**している — 戻り値の型を変える修正をする場合はここも合わせて直す必要がある。\n\n**(b) 検証**: `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` を実行し、`12 passed`（終了コード0）を確認。ワークツリーは無編集（`git status --short` で差分なし）。\n\n**(c) 前提・範囲外の発見**: 本タスクは調査専用と判断しコード変更はしていない。全体要求が指す「前置きでフェンス内コマンドを拾えない」不具合は、現状のコード（`_code_fence_lines` が前置き有無に関わらずフェンス内容を拾う実装）では再現せず、関連テストも既に green だった。実際に修正が必要かどうかの判断・担当割り当ては本タスクの範囲外として、run 全体側の判断に委ねる。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-0ef9c9632590"
+      },
+      "t4": {
+        "id": "t4",
+        "goal": "verify 合成が失敗する入力パターンを具体例つきで列挙する（```bash / ```sh / 素の ``` フェンス、LLM の前置き文＋フェンス、`$ ` プレフィックス、インデント付きコマンド、フェンス内複数行、コマンド不在）。各例は後続テストの入力としてそのまま使える形にする",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-1",
+        "finishedAt": "2026-07-12T13:11:18Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "worktree は無変更（`git status --short` 出力なし）、完了条件のコマンドは 12 passed で成功。\n\n## 成果物\n\n`bus/runs/run-20260712-220433-4358/artifacts/t4/patterns.md` に、8パターン全件を「そのままテスト入力に貼れる `out = \"...\"` リテラル＋実測した現状の戻り値」として列挙した。要旨:\n\n| # | パターン | 現状 |\n|---|---|---|\n| ```bash フェンス | PASS |\n| ```sh フェンス | PASS |\n| 素の ``` フェンス | PASS |\n| 前置き文＋フェンス | PASS |\n| **`$ ` プレフィックス（フェンスなし／フェンス内）** | **FAIL** |\n| インデント付きコマンド | PASS |\n| フェンス内複数行（コメント混在） | PASS |\n| **フェンス内複数行（セットアップ行が先行）** | **FAIL** |\n| コマンド不在 | PASS |\n\n## 検証内容と結果\n- `_first_command_line` / `_code_fence_lines` / `_has_command_like_leading_token` / `_looks_like_shell_command` の実装を読み、各パターンの入力例を実際にこの worktree のコードへ通して戻り値を実測（推測でなく実行確認）。\n- 完了条件コマンドは実行前後とも 12 passed。\n\n## 採用した前提・未解決事項\n- **前提**: この worktree（main 由来）には別 run で既に部分的な修正が入っており、8パターンのうち6つは既に解消済みだった。「まだ壊れているのはどれか」を実測で切り分けて報告する方が、これから設計候補を出す t5/t6/t7 と、テストを追加する t10〜t15 にとって有用と判断した。\n- **未解決（範囲外、設計判断が必要）として引き渡した論点**:\n  - `$ ` の除去は「`$` の後に空白が続く場合のみプロンプト表記とみなす」等の基準がないと `$(cmd)` や `$FOO` との混同が起きうる。\n  - フェンス内に複数の「コマンドらしい行」（`cd` / `git status` などのセットアップ行 → 本命コマンド）がある場合、先頭行を機械的に選ぶ今のロジックは誤検知する。どの行を本命とみなすかは t5/t6/t7 の設計候補側の論点とした。\n- 本タスクではコード・テストへの変更は行っていない（調査・列挙のみが範囲のため）。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-767d35f901ae"
+      },
+      "t5": {
+        "id": "t5",
+        "goal": "候補実装A: コードフェンスを最優先でスキャンし、フェンス内の最初の非空・非コメント行をコマンドとして採用、フェンスが無ければ従来ロジックへフォールバックする案を提示（差分と想定挙動つき）",
+        "deps": [
+          "t1",
+          "t3",
+          "t4"
+        ],
+        "kind": "generate",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-1",
+        "finishedAt": "2026-07-12T13:21:52Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "候補実装Aを実装・検証し、完了条件を満たしました。\n\n**差別化の切り口**: フェンス内は sh -n 構文チェックを課さず先頭の非空・非コメント行を無条件採用し、フェンスが無い場合のみ従来の厳格ロジックへフォールバックする二層構成。加えてフェンス開始判定を「行頭一致」から「行末一致」に緩め、`実行してください: \\`\\`\\`bash` のような前置き同居ケースを解消。\n\n**成果**: `tools/kiro-project/kiro-project.py` の `_code_fence_lines` / `_first_executable_line` / `_first_command_line` を変更（diffは artifacts に記載）。`$`プレフィックス除去・複数コマンド行選択は他候補との比較材料として意図的に対象外。\n\n**検証**: 完了条件コマンド `12 passed`。全体スイート523件も変更前後で比較し、新規リグレッションなし（既存の別バグ1件のみ、フェンス無関係と特定済み）。\n\n成果物: `bus/runs/run-20260712-220433-4358/artifacts/t5/candidate_a.md`",
+        "data": {
+          "delivery": {
+            "url": "https://github.com/ynitto/sandbox/",
+            "branch": "kp/synth_verify-_first_comm-172544",
+            "commit": "9fcf0e91aeb79f8bbd38ad0893e5a03e2300cfe9",
+            "target": "main",
+            "path": ""
+          }
+        },
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-f6b61a89e433"
+      },
+      "t6": {
+        "id": "t6",
+        "goal": "候補実装B: 各行に「コマンドらしさ」スコア（先頭トークンが既知コマンド/実行可能形か、日本語散文でないか、末尾が句読点でないか等）を付け最高スコア行を採用する案を提示（差分と想定挙動つき）",
+        "deps": [
+          "t1",
+          "t3",
+          "t4"
+        ],
+        "kind": "generate",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-2",
+        "finishedAt": "2026-07-12T13:22:04Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果サマリー\n\n**差別化の切り口**: 他候補が前処理（`$`ストリップ等）で対処するのに対し、本候補は「出現順で最初に見つかった行を機械的採用」という選択ロジック自体を「各行にコマンドらしさスコアを付け最高得点行を採用」する方式へ置き換えた。候補が1行しかないケースは従来と完全に同じ結果を返す非破壊的な拡張。\n\n`tools/kiro-project/kiro-project.py` の `_first_executable_line` を書き換え、スコア軸（先頭トークンの既知コマンド度、うち「本命」検証コマンドか、非ASCII文字の有無、文末句読点の有無）を実装した。差分・想定挙動は `bus/runs/run-20260712-220433-4358/artifacts/t6/candidate_b_scoring.md` に出力済み。\n\n**検証結果**: 完了条件コマンド `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` は **14 passed（終了コード0）**。既存12件は無変更で green、新規追加した2件（フェンス内の準備コマンド優先誤選択の修正、フェンス内の英語前置き文誤選択の修正）も green。全体スイートでも新規の退行は無し。\n\n**採用した効果**: t4が報告した既知の未解決パターン7b（フェンス内で `cd`/`git status` が本命の `pytest` より先に採用される問題）を解消。加えて本タスクで新規に発見した「フェンス内の句読点なし英語文が `sh -n` の構文チェックを素通りして誤って verify として採用される」バグも副次的に修正した。\n\n**範囲外**: `$ `プレフィックス（パターン5a/5b）はスコープ外として未対応（前処理で別途対処すべき別種の変更と判断）。全体スイートで1件の既存失敗（`test_synth_verify_strips_ansi_from_kiro_output`）を検出したが、`git stash`で変更前コードに戻して確認した結果、本候補と無関係の既存バグ（ANSIエスケープが先頭トークン判定を汚染する）と判明したため報告のみに留めた。",
+        "data": {
+          "delivery": {
+            "url": "https://github.com/ynitto/sandbox/",
+            "branch": "kp/synth_verify-_first_comm-172544",
+            "commit": "9fcf0e91aeb79f8bbd38ad0893e5a03e2300cfe9",
+            "target": "main",
+            "path": ""
+          }
+        },
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-7a0ce7a2e346"
+      },
+      "t7": {
+        "id": "t7",
+        "goal": "候補実装C: 入力を正規化する前処理（フェンス除去・前置き行除去・`$ ` とインデント除去）を追加し既存の選択ロジックは温存する最小差分案を提示（差分と想定挙動つき）",
+        "deps": [
+          "t1",
+          "t3",
+          "t4"
+        ],
+        "kind": "generate",
+        "retries": 0,
+        "state": "pending",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-be459226bafa"
+      },
+      "t8": {
+        "id": "t8",
+        "goal": "候補A/B/C を t4 の入力パターン全件と t3 の契約に照らして比較し、正確さ・誤検知耐性・差分の小ささ・保守性で最良案を1つ選定する（選定理由と、他案から取り込むべき要素を明記）",
+        "deps": [
+          "t5",
+          "t6",
+          "t7"
+        ],
+        "kind": "judge",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-e563903a9b8a"
+      },
+      "t9": {
+        "id": "t9",
+        "goal": "選定案に沿って _first_command_line 本体のみを修正する（呼び出し元の契約は変えない）。他の関数・ファイルには触れない",
+        "deps": [
+          "t8"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-c44f255b7226"
+      },
+      "t10": {
+        "id": "t10",
+        "goal": "テスト追加: ```bash フェンス内のコマンドを抽出できること（1ケース）",
+        "deps": [
+          "t2",
+          "t3",
+          "t4"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "pending",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-ca196db4699c"
+      },
+      "t11": {
+        "id": "t11",
+        "goal": "テスト追加: 言語指定なし ``` フェンスおよび ```sh フェンスからコマンドを抽出できること（1ケース）",
+        "deps": [
+          "t2",
+          "t3",
+          "t4"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "pending",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-91d491654a52"
+      },
+      "t12": {
+        "id": "t12",
+        "goal": "テスト追加: LLM の前置き文（例「以下のコマンドで検証できます:」）が先行してもコマンド行を抽出できること（1ケース）",
+        "deps": [
+          "t2",
+          "t3",
+          "t4"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "pending",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-dbfda3030900"
+      },
+      "t13": {
+        "id": "t13",
+        "goal": "テスト追加: `$ ` プレフィックスと先頭インデントが除去されたコマンド文字列が返ること（1ケース）",
+        "deps": [
+          "t2",
+          "t3",
+          "t4"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "pending",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-8d5454994eec"
+      },
+      "t14": {
+        "id": "t14",
+        "goal": "テスト追加: コマンドが存在しない入力で t3 が確定した契約どおりの値（None 等）を返すこと（1ケース）",
+        "deps": [
+          "t2",
+          "t3",
+          "t4"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "pending",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-d8b3e5fb655e"
+      },
+      "t15": {
+        "id": "t15",
+        "goal": "回帰テスト追加: フェンスも前置きも無い素のコマンド1行という従来入力で、修正前と同じ結果を返すこと（1ケース）",
+        "deps": [
+          "t2",
+          "t3",
+          "t4"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "pending",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-f04884bed11a"
+      },
+      "t16": {
+        "id": "t16",
+        "goal": "`python3 -m pytest tools/kiro-project/tests -q -k first_command_line` を実行して終了コード0を確認する。失敗した場合は失敗テスト名と実際の出力を根拠に原因を特定し、実装（t9）またはテストの誤りを修正して緑になるまで反復する",
+        "deps": [
+          "t9",
+          "t10",
+          "t11",
+          "t12",
+          "t13",
+          "t14",
+          "t15"
+        ],
+        "kind": "verify",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-c21eed2a9c9d"
+      },
+      "t17": {
+        "id": "t17",
+        "goal": "敵対的レビュー: 修正が _first_command_line の呼び出し元契約を壊していないか、コマンド以外の散文を誤ってコマンドと判定していないか、`tools/kiro-project/tests` 全体（-k なし）が緑のままかを批判的に検証し、問題があれば t16 の反復へ差し戻す",
+        "deps": [
+          "t16"
+        ],
+        "kind": "verify",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-6f4ca12fc958"
+      },
+      "t18": {
+        "id": "t18",
+        "goal": "採用した抽出方式・変更差分・追加テスト一覧・完了条件コマンドの実行結果（終了コード0）を統合し、成果物として要約する",
+        "deps": [
+          "t17"
+        ],
+        "kind": "synthesize",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-107559468224"
+      }
+    },
+    "counts": {
+      "done": 6,
+      "failed": 0,
+      "claimed": 0,
+      "pending": 7,
+      "waiting": 5,
+      "parked": 0
+    },
+    "total": 18,
+    "progress": 0.3333333333333333,
+    "gitlabIssues": [],
+    "final": null
+  },
+  "events": [
+    {
+      "ts": "2026-07-12T13:22:04Z",
+      "who": "worker-2",
+      "kind": "result",
+      "node": "t6",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-12T13:22:04Z",
+      "who": "worker-2",
+      "kind": "claimed",
+      "node": "t14"
+    },
+    {
+      "ts": "2026-07-12T13:21:52Z",
+      "who": "worker-1",
+      "kind": "result",
+      "node": "t5",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-12T13:21:52Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t11"
+    },
+    {
+      "ts": "2026-07-12T13:13:54Z",
+      "who": "worker-2",
+      "kind": "result",
+      "node": "t2",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-12T13:13:54Z",
+      "who": "worker-2",
+      "kind": "claimed",
+      "node": "t6"
+    },
+    {
+      "ts": "2026-07-12T13:13:15Z",
+      "who": "worker-1",
+      "kind": "result",
+      "node": "t3",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-12T13:13:15Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t5"
+    },
+    {
+      "ts": "2026-07-12T13:11:18Z",
+      "who": "worker-1",
+      "kind": "result",
+      "node": "t4",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-12T13:11:18Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t3"
+    },
+    {
+      "ts": "2026-07-12T13:09:34Z",
+      "who": "worker-2",
+      "kind": "result",
+      "node": "t1",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-12T13:09:34Z",
+      "who": "worker-2",
+      "kind": "claimed",
+      "node": "t2"
+    },
+    {
+      "ts": "2026-07-12T13:07:20Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t4"
+    },
+    {
+      "ts": "2026-07-12T13:07:20Z",
+      "who": "worker-2",
+      "kind": "claimed",
+      "node": "t1"
+    },
+    {
+      "ts": "2026-07-12T13:07:19Z",
+      "who": "orchestrator",
+      "kind": "planned",
+      "patterns": [
+        "fan-out-and-synthesize",
+        "tournament",
+        "adversarial-verification",
+        "loop-until-done"
+      ],
+      "parallelism": 15,
+      "tasks": [
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+        "t7",
+        "t8",
+        "t9",
+        "t10",
+        "t11",
+        "t12",
+        "t13",
+        "t14",
+        "t15",
+        "t16",
+        "t17",
+        "t18"
+      ]
+    }
+  ],
+  "nodeEvents": {
+    "t6": [
+      {
+        "ts": "2026-07-12T13:22:04Z",
+        "kind": "result",
+        "who": "worker-2",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-12T13:13:54Z",
+        "kind": "claimed",
+        "who": "worker-2",
+        "status": null
+      }
+    ],
+    "t14": [
+      {
+        "ts": "2026-07-12T13:22:04Z",
+        "kind": "claimed",
+        "who": "worker-2",
+        "status": null
+      }
+    ],
+    "t5": [
+      {
+        "ts": "2026-07-12T13:21:52Z",
+        "kind": "result",
+        "who": "worker-1",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-12T13:13:15Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t11": [
+      {
+        "ts": "2026-07-12T13:21:52Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t2": [
+      {
+        "ts": "2026-07-12T13:13:54Z",
+        "kind": "result",
+        "who": "worker-2",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-12T13:09:34Z",
+        "kind": "claimed",
+        "who": "worker-2",
+        "status": null
+      }
+    ],
+    "t3": [
+      {
+        "ts": "2026-07-12T13:13:15Z",
+        "kind": "result",
+        "who": "worker-1",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-12T13:11:18Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t4": [
+      {
+        "ts": "2026-07-12T13:11:18Z",
+        "kind": "result",
+        "who": "worker-1",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-12T13:07:20Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t1": [
+      {
+        "ts": "2026-07-12T13:09:34Z",
+        "kind": "result",
+        "who": "worker-2",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-12T13:07:20Z",
+        "kind": "claimed",
+        "who": "worker-2",
+        "status": null
+      }
+    ]
+  }
+}

@@ -1,8 +1,0 @@
-{
-  "id": "t16",
-  "goal": "debt → backlog タスク変換関数を実装する: codd-gate の debt/tasks 出力を kiro-project の backlog タスク（id/title/body/priority）へ写像する",
-  "deps": [
-    "t11"
-  ],
-  "kind": "work"
-}

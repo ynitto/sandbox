@@ -1,6 +1,0 @@
-{
-  "id": "t3",
-  "goal": "ベースライン取得: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、終了コード・pass/fail 件数・失敗テストの完全修飾名・現在 green なテスト名の全一覧を記録する（後の退行チェックの基準にする）",
-  "deps": [],
-  "kind": "work"
-}

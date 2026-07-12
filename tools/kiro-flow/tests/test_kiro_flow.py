@@ -1182,6 +1182,50 @@ class StalledRunRetryTests(unittest.TestCase):
         meta = json.loads((rd / "meta.json").read_text())
         self.assertEqual(meta["status"], "running")
 
+    def test_lease_less_old_run_is_orphaned(self):
+        # リース未記録（heartbeat 前に死んだ／旧版の run）は age で停滞と判定する
+        root = tempfile.mkdtemp(prefix="kf-nolease-")
+        self.addCleanup(shutil.rmtree, root, True)
+        rid = "run-20260712-213419-5922"
+        rd = pathlib.Path(root, "runs", rid)
+        rd.mkdir(parents=True)
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 2 * 3600))
+        (rd / "meta.json").write_text(json.dumps({"status": "running", "updated_at": old}),
+                                      encoding="utf-8")
+        self.assertTrue(kf.Bus(root, rid).run_is_orphaned(rid, 600.0))
+
+
+class OrchestratorLeaseTests(unittest.TestCase):
+    """orchestrator は自分が駆動している run に生存リース（heartbeat）を張る。
+
+    張らないと、daemon を介さず `kiro-flow run` で都度起動される run（kiro-project の主経路）は
+    orch_lease_until を永久に持たない。消費者側は「lease が無い run は生きているのか死んで
+    いるのか」を決められず、orchestrator が消えた run は status=running のまま固まって、
+    失敗ノードも未実行ノードも二度と動かない（9/31 ノードまで進んだ run が宙吊りになった）。
+    計画は LLM 呼び出しで数十秒かかるので、その前に張る必要がある。"""
+
+    def test_orchestrate_takes_lease_before_planning(self):
+        root = tempfile.mkdtemp(prefix="kf-lease-")
+        self.addCleanup(shutil.rmtree, root, True)
+        rid = "run-x"
+        args = argparse.Namespace(
+            config=None, bus=root, git=None, git_branch="main", git_subdir=None,
+            lease=30.0, run_id=rid, request="x", planner="stub", executor=None, model=None,
+            poll=0.01, max_iterations=1, max_fanout=4, max_retries=1, review=None,
+            granularity="finest", exemplar_first=False, cleanup_clone=True, repos=None,
+            keep_clone=False, node_id="orchestrator", workspace=None, references=None,
+            inherit_from=None, orphan_grace=0.0)
+        kf.resolve_config(args)
+        # 計画（LLM）に入る手前で止める。ここまでに lease が張られていなければならない。
+        with mock.patch.object(kf, "_plan_strategy", side_effect=RuntimeError("stop-here")):
+            with self.assertRaises(RuntimeError):
+                kf.cmd_orchestrate(args)
+        meta = json.loads((pathlib.Path(root, "runs", rid, "meta.json")).read_text())
+        self.assertIsInstance(meta.get("orch_lease_until"), (int, float),
+                              "計画前に生存リースを張ること")
+        self.assertGreater(meta["orch_lease_until"], time.time(),
+                           "張ったリースは未来を指すこと")
+
 
 class AgentFailureTests(unittest.TestCase):
     """エージェント CLI の失敗を、人が原因に辿り着ける形で表に出すこと。

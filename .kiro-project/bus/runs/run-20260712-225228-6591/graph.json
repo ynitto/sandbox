@@ -1,0 +1,183 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 12,
+    "review": true,
+    "reason": "[flow-planner] 失敗テストは4件と件数が確定しており、各失敗の根本原因分析（macOS固有のパス解決/シンボリックリンク・デフォルトブランチ名・BSDコマンド差異など）は互いに独立して並列実行できるため、fan-out-and-synthesize で4並列に分割し統合する。ただし quality_focus=accuracy で「アサーション緩和や skip/xfail による見せかけの green は禁止」という制約があり、修正がプロダクトコード側の真の欠陥修正であること・クロスプラットフォーム互換を壊さないこと・既存テストにリグレッションを出さないことを、統合前に adversarial-verification の検証gateで批判的にチェックする必要がある。さらに完了条件が `pytest tools/kiro-project/tests tools/kiro-flow/tests -q` の終了コード0という機械判定可能な明確な条件であり、1回の修正で全テストが通る保証がない（修正が別のテストを壊す可能性がある）ため、loop-until-done で green になるまで修正と全体検証を反復する。この3パターンの組み合わせは複合テンプレート migration-pipeline と一致する。並列数は失敗テスト4件に合わせて4とし、fan-out-and-synthesize の目安[3,6]の範囲内に収める。（粒度 finest）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "リポジトリ直下で `python3 -m pytest tools/kiro-flow/tests -q -rA` を実行し、失敗している git 自己修復テスト 4 件の完全な test id（file::class::func）・アサーション文言・スタックトレース・実際値/期待値を raw ログとして採取する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "実行環境の macOS 固有事実を採取する: `/tmp` が `/private/tmp` へのシンボリックリンクであること、`git --version` と `git config --get init.defaultBranch` の値（未設定時の既定ブランチ名）、`sed`/`readlink`/`stat` が BSD 系であること、umask とファイルモードの既定値",
+      "deps": [],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "kiro-flow の git 自己修復ロジックの実装箇所を特定する: 対象の Python モジュール・クラス・関数名（例: worktree 復旧、index.lock 除去、detached HEAD 復旧、ブランチ作成/切替）をファイルパスと行番号付きで一覧化する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "採取した 4 件の失敗を要因カテゴリに分類する: (a) パス解決/シンボリックリンク（/tmp→/private/tmp）、(b) git デフォルトブランチ名（master/main）、(c) BSD 系コマンドのオプション差異、(d) ファイルモード/権限、(e) その他。各失敗に主因カテゴリを 1 つ、副因を 0..n 個割り当てる",
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "kind": "classify"
+    },
+    "t5": {
+      "goal": "失敗 1 件目（分類結果の先頭 test id）について根本原因を特定し、実装側の欠陥かテスト側の前提誤りかを判定して、最小差分の修正方針（変更ファイル・関数・具体的な変更内容）を根拠付きで提示する",
+      "deps": [
+        "t3",
+        "t4"
+      ],
+      "kind": "work"
+    },
+    "t6": {
+      "goal": "失敗 2 件目について根本原因を特定し、実装側の欠陥かテスト側の前提誤りかを判定して、最小差分の修正方針（変更ファイル・関数・具体的な変更内容）を根拠付きで提示する",
+      "deps": [
+        "t3",
+        "t4"
+      ],
+      "kind": "work"
+    },
+    "t7": {
+      "goal": "失敗 3 件目について根本原因を特定し、実装側の欠陥かテスト側の前提誤りかを判定して、最小差分の修正方針（変更ファイル・関数・具体的な変更内容）を根拠付きで提示する",
+      "deps": [
+        "t3",
+        "t4"
+      ],
+      "kind": "work"
+    },
+    "t8": {
+      "goal": "失敗 4 件目について根本原因を特定し、実装側の欠陥かテスト側の前提誤りかを判定して、最小差分の修正方針（変更ファイル・関数・具体的な変更内容）を根拠付きで提示する",
+      "deps": [
+        "t3",
+        "t4"
+      ],
+      "kind": "work"
+    },
+    "t9": {
+      "goal": "4 件の根本原因分析を敵対的に検証する: 各修正方針が (1) アサーション緩和・skip/xfail・環境分岐による見せかけの green になっていないか、(2) 症状ではなく真の根本原因を突いているか、(3) Linux/Windows のクロスプラットフォーム互換を壊さないかを批判的にチェックし、不合格の方針を差し戻す",
+      "deps": [
+        "t5",
+        "t6",
+        "t7",
+        "t8"
+      ],
+      "kind": "verify"
+    },
+    "t10": {
+      "goal": "検証を通過した 4 件の修正方針を 1 本の実装計画に統合する: 共通根本原因を束ねて重複修正を排除し、変更対象ファイル・関数ごとに最小差分の変更内容と適用順序を確定する",
+      "deps": [
+        "t9"
+      ],
+      "kind": "synthesize"
+    },
+    "t11": {
+      "goal": "パス解決の欠陥を修正する: kiro-flow の git 自己修復ロジックが扱うリポジトリ/worktree パスを `Path.resolve()`（realpath 相当）で正規化し、/tmp と /private/tmp のようなシンボリックリンク経由のパスと git が返す実パスが一致するようにする",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t12": {
+      "goal": "git のデフォルトブランチ名への依存を除去する: master/main をハードコードせず、`git symbolic-ref --short HEAD` 等で現在ブランチを動的に取得するか、リポジトリ初期化時に `-b <branch>` / init.defaultBranch を明示指定して決定的にする",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t13": {
+      "goal": "BSD/GNU のコマンド差異への依存を除去する: 自己修復ロジック内の外部コマンド呼び出し（sed/readlink/stat 等）を Python 標準ライブラリまたは移植性のある git 標準オプションへ置き換え、macOS と Linux の双方で同一挙動にする",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t14": {
+      "goal": "git 自己修復ロジック本体の欠陥（index.lock の残存除去、detached HEAD からの復旧、worktree の不整合検出と再作成など、t10 の計画で実装欠陥と確定した箇所）を最小差分で修正する",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t15": {
+      "goal": "テスト側の前提誤りと確定した箇所に限り、テストのセットアップ/フィクスチャを修正する（tmp パスの正規化、git init 時のブランチ明示など）。アサーションの緩和・skip・xfail・os 分岐による回避は一切行わない",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t16": {
+      "goal": "適用済みの全差分をレビューし、アサーション緩和・skip/xfail・プラットフォーム分岐による見せかけの green が混入していないこと、公開インターフェースを壊していないこと、Linux/Windows 互換を損なっていないことを敵対的に検証する",
+      "deps": [
+        "t11",
+        "t12",
+        "t13",
+        "t14",
+        "t15"
+      ],
+      "kind": "verify"
+    },
+    "t17": {
+      "goal": "対象の 4 件の失敗テストを test id 指定で個別実行し、全件が green（exit 0）になることを確認する。失敗が残る場合は該当箇所の差分を修正して再実行する",
+      "deps": [
+        "t16"
+      ],
+      "kind": "work"
+    },
+    "t18": {
+      "goal": "`python3 -m pytest tools/kiro-flow/tests -q` を実行し、kiro-flow の全テストにリグレッションが無いことを確認して結果を報告する",
+      "deps": [
+        "t17"
+      ],
+      "kind": "work"
+    },
+    "t19": {
+      "goal": "`python3 -m pytest tools/kiro-project/tests -q` を実行し、kiro-project の全テストにリグレッションが無いことを確認して結果を報告する",
+      "deps": [
+        "t17"
+      ],
+      "kind": "work"
+    },
+    "t20": {
+      "goal": "kiro-flow・kiro-project の実行結果を突き合わせ、今回の修正が原因で新たに失敗したテスト（リグレッション）があるかを判定し、あれば原因箇所と修正方針を特定する",
+      "deps": [
+        "t18",
+        "t19"
+      ],
+      "kind": "judge"
+    },
+    "t21": {
+      "goal": "リグレッションが検出された場合、その原因を修正して再度全テストを実行する。これを、修正が不要になるまで（新規失敗ゼロになるまで）反復する",
+      "deps": [
+        "t20"
+      ],
+      "kind": "work"
+    },
+    "t22": {
+      "goal": "完了条件コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、終了コードが 0 であることを確認する。0 でなければ t21 の修正へ戻り、0 になるまで反復する（loop-until-done の終了判定）",
+      "deps": [
+        "t21"
+      ],
+      "kind": "verify"
+    },
+    "t23": {
+      "goal": "4 件の失敗の根本原因（macOS 固有要因の内訳）と実施した修正内容・変更ファイル一覧を要約し、必要に応じて kiro-flow の設計書・ドキュメントへクロスプラットフォーム前提（パス正規化・デフォルトブランチ明示）を反映する",
+      "deps": [
+        "t22"
+      ],
+      "kind": "reduce"
+    }
+  },
+  "iteration": 0
+}

@@ -1,0 +1,16 @@
+{
+  "id": "t17",
+  "who": "worker-1",
+  "status": "done",
+  "output": "完了条件を満たした。報告をまとめる。\n\n## 成果物\n\n`tools/kiro-project/tests/test_kiro_project.py` に新規テスト1件、`tools/kiro-project/kiro-project.py` に最小の対応実装を追加。\n\n**新規テスト**（`test_first_command_line_strips_leading_shell_prompt_symbol`）:\n```python\ndef test_first_command_line_strips_leading_shell_prompt_symbol(self):\n    self.assertEqual(\n        km._first_command_line(\"$ python3 -m pytest tools/kiro-project/tests -q\"),\n        \"python3 -m pytest tools/kiro-project/tests -q\",\n    )\n```\n\n**実装**: `_strip_leading_shell_prompt(line)` を追加し、`^\\$\\s+`（`$` + 空白1つ以上）を先頭から1回だけ除去する。`_first_executable_line` の判定直前と、フェンス外候補の先頭トークン判定（`_has_command_like_leading_token`）の直前に適用した。`$(...)` や `$VAR` は `$` 直後が空白でないため対象外（誤剥離しない）。\n\n## 検証\n\n- 完了条件のコマンド: `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` → **13 passed**（既存12件＋新規1件）、終了コード0。\n- 回帰確認のためテストスイート全体（`tools/kiro-project/tests -q`）も実行: 524 passed, 1 failed。失敗は `test_synth_verify_strips_ansi_from_kiro_output` で、変更前（HEAD `9fcf0e9`）でも同一内容で失敗することを `git stash` で確認済み — 本タスクの変更とは無関係の既存不具合。\n\n## 採用した前提・範囲外事項\n\n- **前提**: 依存タスク t7 の仕様（`_strip_leading_shell_prompt` 相当の「装飾プレフィックス除去」）のうち、本タスクが要求する `$ ` シェルプロンプト記号の除去のみを実装した。t7 仕様が同時に定めている箇条書き記号（`^(?:[-*+]|\\d+[.)])\\s+`）の除去は、別タスク（t9: `_strip_shell_prompt` ヘルパー実装、t12: `_first_command_line` 本体の書き直し）が担当する範囲と判断し、本タスクでは実装しなかった（「テスト1件」の範囲を守り、他タスクと衝突しうる広範な書き換えを避けるため）。\n- **範囲外で見つけた問題**: `test_synth_verify_strips_ansi_from_kiro_output`（ANSI エスケープ混じりの1行から `grep -q '## 概要' README.md` を抽出できない）が変更前から失敗している。本タスクのスコープ外のため未修正のまま報告する。",
+  "finished_at": "2026-07-12T13:44:27Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "2e99f238890e6c544758a7f3a82a5900828f7661",
+      "target": "main",
+      "path": ""
+    }
+  }
+}

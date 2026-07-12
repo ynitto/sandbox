@@ -1,0 +1,14 @@
+{
+  "id": "t1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "worktree に変更なし（調査のみ）を確認した。\n\n## 成果報告\n\n**(a) 成果サマリー**: タスク前提の「失敗している git 自己修復テスト4件」は、現在の worktree（ブランチ `kp/macOS-kiro-flow-git-4-gr-171537`）では**再現しなかった**。`python3 -m pytest tools/kiro-flow/tests -q -rA` は 388 passed / 0 failed（exit 0）。原因は、同ブランチで先行 worker が既に修正済みだったこと。直近コミット `0cf9c59`（macOS の loose object が `0444` 権限で作成されるため 0 バイト切り詰め時に `PermissionError` が出ていた問題を `os.chmod(0o644)` で修正）と `5681a20`（`KIRO_FLOW_DEFER_WAITS` 環境変数の残存によるテスト汚染修正）が、git 自己修復テスト群（`GitDistributedTests`/`StateGitSyncTests` 配下）の共通ヘルパー `_zero_loose_objects` を直していた。\n\n**(b) 検証結果**:\n- `tools/kiro-flow/tests` 単体: 388 passed, 0 failed, exit 0\n- 完了条件コマンド `tools/kiro-project/tests tools/kiro-flow/tests`: 900 passed, 0 failed, exit 0（この run 開始時点で既に満たされていた）\n\nraw ログ・先行修正の diff・サマリーを `bus/runs/run-20260712-225228-6591/artifacts/t1/` に保存した（`kiroflow_pytest_-rA_raw.log`, `full_suite_completion_condition_raw.log`, `prior_fix_commit_0cf9c59.diff`, `prior_fix_commit_5681a20.diff`, `SUMMARY.md`）。\n\n**(c) 前提・未解決事項**: 失敗が存在しないため失敗ログを捏造せず「なぜ再現しないか」の根拠を代わりに報告した。worktree は無変更（調査のみ）。範囲外の懸念事項は見つからなかった。",
+  "finished_at": "2026-07-12T13:59:24Z",
+  "artifacts": [
+    "artifacts/t1/SUMMARY.md",
+    "artifacts/t1/full_suite_completion_condition_raw.log",
+    "artifacts/t1/kiroflow_pytest_-rA_raw.log",
+    "artifacts/t1/prior_fix_commit_0cf9c59.diff",
+    "artifacts/t1/prior_fix_commit_5681a20.diff"
+  ]
+}

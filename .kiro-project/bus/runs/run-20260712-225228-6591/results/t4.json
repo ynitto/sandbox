@@ -1,0 +1,11 @@
+{
+  "id": "t4",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果報告\n\n**分類結果**（対象4件はすべて主因が同一カテゴリに一意分類できた）:\n\n| # | テスト | 主因 | 副因 |\n|---|---|---|---|\n| 1 | `test_empty_objects_clone_is_rebuilt_on_reuse` | class=d | なし |\n| 2 | `test_sync_push_self_heals_on_object_corruption` | class=d | なし |\n| 3 | `test_empty_objects_state_clone_is_rebuilt_on_reuse` | class=d | なし |\n| 4 | `test_state_sync_self_heals_on_object_corruption_midflight` | class=d | なし |\n\n**根拠**: `_zero_loose_objects()` の呼び出し箇所を実コードで grep したところ4箇所（L3604, L3621, L4656, L4680）に一致し、これが対象4件と一対一対応する。macOS では git が loose object を `0444`（読み取り専用）で作成するため、共通ヘルパーの `open(path, \"wb\").close()` が `PermissionError` になっていた（t2 の実機確認結果と整合）。修正はコミット `0cf9c59` の `os.chmod(p, 0o644)` 1箇所で4件すべてに効く。パス解決・デフォルトブランチ名・BSD系コマンド差異が関与する証拠はコード上になく、副因は0件。\n\n**t1入力との不一致（訂正）**: t1 の SUMMARY.md は4件目を `test_corrupt_index_clone_is_rebuilt` と記載していたが、このテストは `.git/index` への直接バイト書き込みで破損を模擬しており `_zero_loose_objects()` を呼んでいない（別の障害モード）。実際の4件目は `test_empty_objects_state_clone_is_rebuilt_on_reuse` であり、本分類ではこちらを採用した。また、t1 が言及したコミット `5681a20`（`KIRO_FLOW_DEFER_WAITS` 環境変数残存修正）は別テストクラス（`GitlabExecutorPluginTests`）向けであり、対象4件には含めていない。\n\n成果物は `bus/runs/run-20260712-225228-6591/artifacts/t4/`（`classification.json`, `SUMMARY.md`）に保存した。worktree（sandbox）への変更は行っていない。",
+  "finished_at": "2026-07-12T14:09:27Z",
+  "artifacts": [
+    "artifacts/t4/SUMMARY.md",
+    "artifacts/t4/classification.json"
+  ]
+}

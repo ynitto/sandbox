@@ -10,28 +10,8 @@ kind: blocked
 
 ## Context and Problem Statement
 
-- なぜ: 繰り返し NG（retries=5）: exit=5 515 deselected in 0.19s
+- なぜ: hold（人が保留）: kiro-projects-viewer から操作
 - 状態: blocked（kiro-project の判断待ち）
-
-## 判断材料（成果物の所在・差分・検証）
-- 成果物: git: 未コミットの変更あり
-- 所在: /Users/nitto/Workspace/sandbox/.kiro-project
-- 実行先: local
-- 差分: 67 ファイル
-    - .kiro-project/backlog/kiro-project-codd-gate-171537.md
-    - .kiro-project/bus/runs/run-20260712-204159-9494/claims/t1/worker-2.json
-    - .kiro-project/bus/runs/run-20260712-204159-9494/claims/t2/worker-1.json
-    - .kiro-project/bus/runs/run-20260712-204159-9494/claims/t3/worker-2.json
-    - .kiro-project/bus/runs/run-20260712-204159-9494/claims/t4/worker-2.json
-    - .kiro-project/bus/runs/run-20260712-204159-9494/claims/t5/worker-1.json
-    - .kiro-project/bus/runs/run-20260712-204159-9494/events/orchestrator.jsonl
-    - .kiro-project/bus/runs/run-20260712-204159-9494/events/worker-1.jsonl
-    - .kiro-project/bus/runs/run-20260712-204159-9494/events/worker-2.jsonl
-    - .kiro-project/bus/runs/run-20260712-204159-9494/final.json
-    - .kiro-project/bus/runs/run-20260712-204159-9494/graph.json
-    - .kiro-project/bus/runs/run-20260712-204159-9494/meta.json
-    - …他 55 件
-- 検証: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict` → FAIL（exit=5 515 deselected in 0.19s）
 
 ## Decision Outcome
 
