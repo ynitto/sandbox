@@ -1,0 +1,8 @@
+{
+  "id": "t19",
+  "goal": "テスト追加: synth_verify 経由の統合テスト — 前置き付きフェンス応答を与えたときに verify コマンドの合成が成功すること（関数名に first_command_line を含める）",
+  "deps": [
+    "t5"
+  ],
+  "kind": "work"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "f2",
+  "goal": "リポジトリルートで次のコマンドを実行し、終了コード 0 で成功することを確認する: python3 -m pytest tools/kiro-project/tests -q -k first_command_line 。1件以上のテストが収集され、かつ全て pass すること（収集0件は fail 扱い）。失敗した場合は、失敗したテスト名・アサーション内容・実際の出力を issues にそのまま転記して報告する。",
+  "deps": [
+    "f1"
+  ],
+  "kind": "verify"
+}

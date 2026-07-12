@@ -1,0 +1,8 @@
+{
+  "id": "t8",
+  "goal": "完了条件の機械判定: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、終了コードが 0 であることを確認する。0 以外なら失敗テスト名・差分・トレースを添えて次の反復へ差し戻す",
+  "deps": [
+    "reduce"
+  ],
+  "kind": "verify"
+}

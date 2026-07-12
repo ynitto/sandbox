@@ -1,0 +1,8 @@
+{
+  "id": "t12",
+  "goal": "テスト追加: ```bash フェンス内のコマンドを拾えること（テスト関数名に first_command_line を含め `-k first_command_line` で収集されるようにする）",
+  "deps": [
+    "t5"
+  ],
+  "kind": "work"
+}
