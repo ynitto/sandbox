@@ -6457,6 +6457,84 @@ class FeedbackReductionTests(unittest.TestCase):
 
 
 
+class RunResumeTests(unittest.TestCase):
+    """失敗した run は作り直さず再開する（失敗ノードだけやり直し、done は温存）。
+
+    kiro-flow は failed run を --run-id で受けると retry_failed を実行し、失敗ノードだけを
+    pending へ戻して done のノードは温存する。ところが kiro-project は --run-id を一切渡して
+    いなかったため、リトライのたびにまっさらな run を作っていた。26 ノードのうち 1 つ失敗した
+    だけで、成功していた 25 ノード分の LLM 呼び出しを丸ごと捨てて全部やり直していた。"""
+
+    def _cfg(self, d):
+        return cfg_for(Path(d))
+
+    def _run(self, cfg, rid, status):
+        p = cfg.bus / "runs" / rid
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "meta.json").write_text(json.dumps({"status": status, "request": "x"}),
+                                     encoding="utf-8")
+
+    def test_failed_run_is_resumed(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "req-deadbeef-T1-r0"))
+            self._run(cfg, "req-deadbeef-T1-r0", "failed")
+            self.assertEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0", "同じ run を続きから")
+
+    def test_done_run_is_not_resumed(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "req-deadbeef-T1-r0"))
+            self._run(cfg, "req-deadbeef-T1-r0", "done")
+            self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
+
+    def test_human_feedback_forces_a_fresh_run(self):
+        # 人が差し戻した＝計画そのものが変わる → 続きからではなく作り直す
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "req-deadbeef-T1-r0"))
+            t.extra.append(("feedback", "方針を変えて"))
+            self._run(cfg, "req-deadbeef-T1-r0", "failed")
+            self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
+
+    def test_revise_forces_a_fresh_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "req-deadbeef-T1-r0"))
+            t.extra.append(("revised", "1"))
+            self._run(cfg, "req-deadbeef-T1-r0", "failed")
+            self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
+
+    def test_missing_run_falls_back_to_new(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true")
+            t.extra.append(("last_run", "req-deadbeef-T1-r0"))   # bus に実体が無い
+            self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
+
+    def test_new_run_id_carries_the_task_and_retry(self):
+        # viewer が run ↔ タスクを突き合わせられる形（req-<hash>-<task-id>-r<n>）
+        t = km.Task(id="TASK-9", title="x", status="ready", verify="true", retries=2)
+        rid = km._new_run_id(t)
+        self.assertTrue(rid.startswith("req-"))
+        self.assertIn("TASK-9", rid)
+        self.assertTrue(rid.endswith("-r2"))
+
+    def test_cmd_passes_run_id_before_the_subcommand(self):
+        # --run-id は kiro-flow のグローバル引数（run サブコマンドより前）
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true")
+            cmd = km.build_kiro_flow_cmd(t, cfg, run_id="req-x-T1-r0")
+            self.assertIn("--run-id", cmd)
+            self.assertLess(cmd.index("--run-id"), cmd.index("run"), "run より前に置く")
+            self.assertEqual(cmd[cmd.index("--run-id") + 1], "req-x-T1-r0")
+
+
 class StateWorktreeTests(unittest.TestCase):
     """状態の読み書きを、本体の作業ツリーから切り離した専用 worktree へ逃がす。
 

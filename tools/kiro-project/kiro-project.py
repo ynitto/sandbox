@@ -3693,16 +3693,50 @@ def task_reference_specs(cfg: "Config", task: Task) -> "list[dict]":
     return out
 
 
-def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False) -> "list[str]":
+def _new_run_id(task: "Task") -> str:
+    """この試行の run-id。viewer が run ↔ タスクを突き合わせられる形にする
+    （req-<hash>-<task-id>-r<retries>。kiro-flow の parseRunId / lineage もこの形を前提にしている）。"""
+    h = hashlib.sha1(task.id.encode("utf-8")).hexdigest()[:8]
+    return f"req-{h}-{task.id}-r{task.retries}"
+
+
+def run_id_for(cfg: "Config", task: "Task") -> str:
+    """この試行で kiro-flow に渡す run-id。**失敗した直前の run は作り直さず再開する。**
+
+    kiro-flow は failed run を `--run-id` で受けると retry_failed を実行し、**失敗ノードだけを
+    pending へ戻して done のノードは温存**して続きから走る。ところが kiro-project は これまで
+    --run-id を一切渡していなかったため、リトライのたびにまっさらな run を作っていた。26 ノードの
+    うち 1 つが失敗しただけで、成功していた 25 ノード分の LLM 呼び出しを丸ごと捨てて全部やり直す
+    ことになる（コストも時間も N 倍）。直前の run が failed なら、その run-id をそのまま渡す。
+
+    ただし人がタスクを触ったとき（revise / 差し戻しの feedback）は計画そのものが変わるので、
+    続きからではなく新しい run を作る。"""
+    rid = str(task.get("last_run") or "").strip()
+    if rid and not task.get("feedback") and not task.get("revised"):
+        try:
+            meta = json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        if meta.get("status") == "failed":
+            return rid                    # 失敗した所だけやり直す（done は温存）
+    return _new_run_id(task)
+
+
+def build_kiro_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
+                        run_id: str = "") -> "list[str]":
     """kiro-flow run（都度起動）のコマンド。planner/executor を制御できる（submit では不可）。
-    書込先は _act_batch で確定・永続化済みの `- workspace:` を読む（再ルーティングしない）。"""
+    書込先は _act_batch で確定・永続化済みの `- workspace:` を読む（再ルーティングしない）。
+    run_id を渡すと、その run を再開する（failed なら kiro-flow が失敗ノードだけ戻して続行）。"""
     executor = cfg.executor
     if task.get("spec_for") and executor_delegates(cfg):
         # spec 作成タスクは委譲しない（§5.10）: gitlab 等の委譲先では specs/<id>/ がローカルに
         # 生成されず verify が成立しない。組み込み agent でローカル完結させる
         # （decide_location が spec タスクを local 固定しているため、この差し替えが必ず効く）。
         executor = "agent"
-    cmd = (_kf_base(cfg, use_git) + _workspace_cmd_args(cfg, task)
+    base = _kf_base(cfg, use_git)
+    if run_id:
+        base += ["--run-id", run_id]      # グローバル引数（サブコマンドより前）
+    cmd = (base + _workspace_cmd_args(cfg, task)
            + _reference_cmd_args(cfg, task) + [
         "run", build_request(task, cfg), "--planner", cfg.flow_planner,
         "--executor", executor, "--max-iterations", str(cfg.max_iterations)])
@@ -3789,8 +3823,19 @@ def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
 
 
 def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, str]":
-    """kiro-flow run で都度起動（同期実行）。daemon 不要。"""
-    cmd = build_kiro_flow_cmd(task, cfg, use_git)
+    """kiro-flow run で都度起動（同期実行）。daemon 不要。
+
+    run-id は run_id_for が決める（直前の run が failed なら再開＝失敗ノードだけやり直す）。
+    使った run-id はタスクへ残し、次の試行の再開判断と viewer の突き合わせに使う。"""
+    rid = run_id_for(cfg, task)
+    resuming = rid == str(task.get("last_run") or "").strip()
+    cmd = build_kiro_flow_cmd(task, cfg, use_git, run_id=rid)
+    task.drop("last_run")
+    task.extra.append(("last_run", rid))
+    persist_task(cfg, task)
+    if resuming:
+        append_journal(cfg.journal,
+                       f"run 再開: {task.id} は {rid} の失敗ノードだけをやり直します（done は温存）")
     try:
         # act_timeout=0（以下）はタイムアウト無効＝完了まで待つ（gitlab 等の長時間委譲向け）。
         proc = subprocess.run(cmd, cwd=str(cfg.workdir),
