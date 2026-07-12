@@ -2906,11 +2906,11 @@ def _first_command_line(out: str) -> str:
     lines = (out or "").splitlines()
     for fenced_line in _code_fence_lines(out):
         line = _strip_code(fenced_line.strip())
-        if line and not line.startswith("#"):
+        if line and not line.startswith("#") and _looks_like_shell_command(line):
             return line
     for line in lines:
         line = _strip_code(line.strip())
-        if line and not line.startswith("#"):
+        if line and not line.startswith("#") and _looks_like_shell_command(line):
             return line
     return ""
 

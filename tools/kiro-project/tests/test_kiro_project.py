@@ -4924,6 +4924,13 @@ class TestVerifyAssist(unittest.TestCase):
     def test_first_command_line_returns_direct_command(self):
         self.assertEqual(km._first_command_line("\n# comment\npytest -q\n"), "pytest -q")
 
+    def test_first_command_line_skips_unfenced_prose_before_command(self):
+        output = "検証コマンドは次のとおりです。\npython3 -m pytest tools/kiro-project/tests -q"
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
     def test_first_command_line_extracts_all_fence_lines_in_order(self):
         output = "before\n```\nfirst\n```\nbetween\n```sh\nsecond\n```\nafter"
         self.assertEqual(km._code_fence_lines(output), ["first", "second"])
