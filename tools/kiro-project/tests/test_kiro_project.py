@@ -4921,6 +4921,12 @@ class TestVerifyAssist(unittest.TestCase):
         self.assertEqual(cmd, "grep -q '## 概要' README.md")
         self.assertNotIn("\x1b", cmd)
 
+    def test_first_command_line_returns_direct_command(self):
+        self.assertEqual(km._first_command_line("\n# comment\npytest -q\n"), "pytest -q")
+
+    def test_first_command_line_returns_empty_without_candidate(self):
+        self.assertEqual(km._first_command_line("\n# comment only\n"), "")
+
     def test_synth_verify_rejects_japanese_prose(self):
         # バグ修正: エージェントが自然言語（説明/拒否文）を返しても shell へ流さない
         cfg = cfg_for(Path("."))
