@@ -246,6 +246,57 @@ function _evidenceThin(detail) {
   return placeholder && !hasFileDiff;
 }
 
+// 「差分」に並ぶファイルのうち、kiro-project / kiro-flow が実行のたびに書く内部記録
+// （bus/ の run ログ・claims・needs・journal・project.json 等）は人の判断材料にならない。
+// これらだけが並んだカードは「変更あり」に見えて中身が無く、実際に何が変わったのか読み取れない。
+const _INTERNAL_DIFF_RE = new RegExp(
+  '(^|/)(bus|claims|needs|decisions|commands|inbox|archive|flow-archive)/'
+    + '|(^|/)(journal\\.md|project\\.json|repos\\.json|run-log\\.jsonl|status\\.json|DELIVERY\\.md)$'
+);
+
+// 判断材料の「差分:」に続くインデント付きリストを、成果物と内部記録に分ける。
+function _splitDiff(detail) {
+  const s = String(detail || '');
+  const head = s.match(/^-\s*差分\s*[:：].*$/m);
+  const out = { artifacts: [], internal: [], truncated: 0, hasDiff: Boolean(head) };
+  if (!head) return out;
+  const rest = s.slice(s.indexOf(head[0]) + head[0].length).split('\n');
+  for (const raw of rest) {
+    if (!raw.trim()) continue;               // 見出し行の残り・空行は読み飛ばす
+    if (!/^\s+-\s/.test(raw)) break;         // インデントが切れたら差分リストの終わり
+    const item = raw.trim().replace(/^-\s*/, '').trim();
+    const more = item.match(/^…\s*他\s*(\d+)\s*件/);
+    if (more) {
+      out.truncated = Number(more[1]);
+      continue;
+    }
+    (_INTERNAL_DIFF_RE.test(item) ? out.internal : out.artifacts).push(item);
+  }
+  return out;
+}
+
+// 失敗理由（verify の生出力）を人が読める一文にする。よくある形だけを解釈し、当てはまらな
+// ければ空を返す（生のテキストは常に残すので、要約できないときも情報は失われない）。
+function _summarizeFailure(why, detail) {
+  const verify = (String(detail || '').match(/^-\s*検証\s*[:：]\s*(.*)$/m) || [])[1] || '';
+  const raw = `${why || ''} ${verify}`;
+  if (!raw.trim()) return '';
+  const notFound = (raw.match(/(?:file or directory not found|No such file or directory)[:\s]+([^\s)）]+)/) || [])[1];
+  const failed = (raw.match(/(\d+)\s+failed/) || [])[1];
+  const cmdMissing = (raw.match(/([\w./-]+):\s*command not found/) || [])[1];
+  const exit = (raw.match(/exit=(\d+)/) || [])[1];
+
+  if (cmdMissing) return `検証コマンド「${cmdMissing}」がこの環境に見つかりません。`;
+  if (notFound) {
+    return `検証コマンドが「${notFound}」を見つけられませんでした。`
+      + '実行ディレクトリ（下の「所在」）から見て、そのパスが存在しない可能性があります。';
+  }
+  if (failed) return `テストが ${failed} 件失敗しました。`;
+  if (/no tests ran/i.test(raw)) return 'テストが 1 件も実行されませんでした（対象が見つからないか、条件に一致しません）。';
+  if (exit) return `検証コマンドが失敗しました（終了コード ${exit}）。`;
+  return '';
+}
+
 // 痩せた evidence から実質情報の無い行（成果物プレースホルダ・所在・実行先・差分なし）を落とす。
 // 検証（verify → PASS/FAIL）やタスク定義・goal 等の意味のある行は残す。
 function _stripThinEvidence(detail) {
@@ -277,6 +328,8 @@ function parseNeeds(text, id) {
     summary: '',
     detail: '',
     evidenceThin: false, // 判断材料が実質空（stub 実行・無変更）＝内部パスだけのとき true
+    failureSummary: '', // 失敗理由の要約（生の verify 出力を解釈した一文。解釈できなければ空）
+    diff: null, // { artifacts, internal, truncated, hasDiff } — 成果物と内部記録に分けた差分
     risk: '', // 検収票のリスクダイジェスト総合値（low/med/high）。バッジ表示用
   };
   const s = String(text || '');
@@ -328,6 +381,13 @@ function parseNeeds(text, id) {
   // 落として（実質情報を残しつつ）viewer 側で「成果情報なし」と一言添えられるよう印を付ける。
   need.evidenceThin = _evidenceThin(need.detail);
   if (need.evidenceThin) need.detail = _stripThinEvidence(need.detail);
+  // 差分を「成果物」と「内部記録（bus/ の run ログ等）」に分ける。実行のたびに書かれる内部
+  // ファイルだけが並ぶと「14 ファイル変更」に見えて中身が無い。成果物が 0 なら痩せた扱いにする。
+  need.diff = _splitDiff(need.detail);
+  if (need.diff.hasDiff && need.diff.artifacts.length === 0 && need.diff.internal.length > 0) {
+    need.evidenceThin = true;
+  }
+  need.failureSummary = _summarizeFailure(need.why, need.detail);
   return need;
 }
 
@@ -495,9 +555,15 @@ function projectLiveness(dir) {
     }
   }
   if (status) {
+    // 同一ホストが書いた status.json なら「別マシン」ではない。instances の生存窓（ttl×3＝
+    // 既定 270 秒）は本体が長いタスク（LLM 実行）に入ると心拍が飛ばずに切れるが、status.json
+    // の窓（既定 600 秒）はまだ生きている、という時間帯がある。そこで status-sync に落とすと
+    // ローカル稼働を「別マシンで稼働中」と誤表示していた（サイドバーの `~`、概要の「稼働中
+    // （別マシン）」）。host が取れないときは判定材料が無いので従来どおり同期扱いにする。
+    const sameHost = String(status.host || '') === os.hostname();
     return {
       running: status.fresh,
-      via: 'status-sync',
+      via: sameHost ? 'status-local' : 'status-sync',
       ageSec: Math.round(status.ageSec),
       level: status.level,
       watch: status.watch,

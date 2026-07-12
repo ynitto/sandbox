@@ -33,6 +33,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -1222,6 +1223,35 @@ def refresh_instance(paths: "list[Path]") -> None:
             p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
         except (OSError, ValueError):
             continue
+
+
+def _start_heartbeat_thread(cfg: "Config", paths: "list[Path]",
+                            interval: "float | None" = None) -> "threading.Event":
+    """watch 中、本体が長い処理でブロックしている間も心拍を打ち続けるデーモンスレッドを起動し、
+    停止用の Event を返す（set() で次のティックに終わる。プロセス終了は待たせない＝daemon）。
+
+    従来 heartbeat は watch の各パスと idle でしか打てなかった。1 タスクの実行（エージェント
+    CLI の呼び出しや kiro-flow run）は数分〜数十分ブロックするため、その間に INSTANCE_TTL
+    （90 秒）を大きく超えて心拍が途切れる。外から見ると死んだように見え、kiro-projects-viewer
+    では稼働中のプロジェクトが「停止中」や「別マシンで稼働中」と誤表示されていた
+    （viewer は鮮度切れの instances レコードを捨て、status.json の鮮度判定へ落ちるため）。
+
+    status.json は state_git のコミット対象なので、ここでは既存のポリシー
+    （maybe_heartbeat_status＝設定 status_interval。既定 0＝無効）にそのまま従う。
+    無効なら触らない＝idle の git 負荷は従来と変わらない。"""
+    stop = threading.Event()
+    if interval is None:
+        interval = max(5.0, INSTANCE_TTL / 3.0)   # ttl の 1/3。切れる前に必ず 1 回は打つ
+
+    def _beat() -> None:
+        while not stop.wait(interval):
+            with contextlib.suppress(Exception):   # 心拍の失敗で run を巻き込まない
+                refresh_instance(paths)
+            with contextlib.suppress(Exception):
+                maybe_heartbeat_status(cfg)
+
+    threading.Thread(target=_beat, name="kiro-project-heartbeat", daemon=True).start()
+    return stop
 
 
 def _maybe_prune(rec: dict, f: Path) -> None:
@@ -7419,6 +7449,10 @@ def cmd_run(cfg: Config) -> int:
     ensure_dirs(cfg)
     reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
     hb = lambda: refresh_instance(reg)
+    # watch はタスク実行中（エージェント CLI・kiro-flow run）に数分〜数十分ブロックする。
+    # パス境界の hb だけでは心拍が TTL 切れし、外からは停止したように見えるため、実行中も
+    # 打ち続ける別スレッドを立てる（単発 run は即終わるので不要）。
+    hb_stop = _start_heartbeat_thread(cfg, reg) if cfg.watch else None
     try:
         # （再）起動直後は駆動より先にリモート状態を取り込む（停止中に viewer が push した
         # charter 更新/指示/フィードバックを、初回パスが古いローカル状態で読まないように）。
@@ -7444,6 +7478,8 @@ def cmd_run(cfg: Config) -> int:
         # 自己更新を適用済み。finally でレジストリを掃除してから新しい本体へ exec する。
         print("\n=== kiro-project 自己更新を適用。graceful 再起動します ===")
     finally:
+        if hb_stop is not None:
+            hb_stop.set()          # レジストリを消す前に心拍を止める（無駄打ちを避ける）
         for p in reg:
             try:
                 p.unlink()

@@ -2769,7 +2769,13 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
     if not script:
         # flow-planner スキル未インストール → kiro planner にフォールバック
         return plan_strategy_kiro(request, model, review, granularity)
-    cmd = [sys.executable, script, request, "--granularity", str(granularity)]
+    # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
+    # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
+    # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
+    cli, model_ov = _agent_for("planner")
+    cmd = [sys.executable, script, request, "--granularity", str(granularity),
+           "--agent-cli", cli]
+    model = model_ov or model
     if model:
         cmd += ["--model", model]
     if isinstance(review, bool):

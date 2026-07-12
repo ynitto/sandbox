@@ -11,11 +11,11 @@
         "設計書に変更点が書かれていること": "codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"$KIRO_BASE_REV\" --strict"
       },
       "status": "blocked",
-      "planned_charter_sig": "96f8ace69ac2a97057e84ff86caad277748eefbbe893bb278567a9f5a70cdf0c",
+      "planned_charter_sig": "538d5fbd20ae625b50e9cae5611ed3b2cc78b9a958c25fd219b50eea84a7bd17",
       "acceptance_total": 2,
       "cost": 0.0,
-      "cycles": 3
+      "cycles": 884
     }
   },
-  "updated": "2026-07-12T17:21:48"
+  "updated": "2026-07-12T20:16:07"
 }

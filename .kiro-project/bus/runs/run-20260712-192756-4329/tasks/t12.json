@@ -1,9 +1,6 @@
 {
   "id": "t12",
-  "goal": "検証を通過した修正を1つの整合したパッチ集合へ統合し、重複・衝突・命名やスタイルの不整合を解消する",
-  "deps": [
-    "t10",
-    "t11"
-  ],
-  "kind": "synthesize"
+  "goal": "sandbox リポジトリの現在のワークツリー（t9-m1・t9-m2 の変更適用後の状態）で、完了条件コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` をリポジトリルートから実行し、終了コードと pass/fail 件数を報告する。手順: (1) `git status --short` と `git diff --stat` で t9-m1・t9-m2 が実際に変更したファイル（helper の macOS 0444 loose object 対策 chmod 0644 の追加など）を列挙する。(2) 上記 pytest コマンドを実行し、終了コード・サマリー行（例 `900 passed`）をそのまま転記する。(3) 終了コードが 0 でない場合のみ、失敗したテストID・失敗アサーション行・traceback を特定し、原因が macOS の環境依存前提（/var が realpath で /private/var になり TMPDIR・tempfile の文字列と不一致になる／Apple Git が生成する loose object が 0444 で書き込み不可のため fixture が直接切り詰められない／ファイルシステムが大文字小文字を区別しない）のいずれかに該当するかを判定し、テスト側の前提を実環境に合わせて修正（パス比較は realpath 正規化または os.path.samefile、loose object 操作前に chmod 0644）したうえで再実行し、終了コード 0 になるまで繰り返す。(4) 終了コード 0 かつソース変更が不要だった場合は、その旨（4件の失敗は現ワークツリーでは再現しない）を明示して完了とする。既存の verify・調査レポートを作り直さないこと。",
+  "deps": [],
+  "kind": "work"
 }

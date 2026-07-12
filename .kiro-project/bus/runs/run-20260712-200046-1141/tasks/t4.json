@@ -1,0 +1,6 @@
+{
+  "id": "t4",
+  "goal": "調査: kiro-project の負債取り込み（backlog enqueue / debt）の実装箇所を特定する。backlog へタスクを積む関数・タスクファイルのスキーマ（front matter 項目）・重複抑止の仕組みを記録し、codd-gate 由来の負債タスクを積む差し込み点を提案する。",
+  "deps": [],
+  "kind": "work"
+}

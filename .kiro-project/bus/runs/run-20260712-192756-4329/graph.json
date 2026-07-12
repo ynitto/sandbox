@@ -107,7 +107,24 @@
         "t9-gate"
       ],
       "kind": "reduce"
+    },
+    "t10": {
+      "goal": "tools/kiro-flow/tests/test_kiro_flow.py の共有ヘルパー _zero_loose_objects()（59-70 行）を macOS で動くよう修正する。現状は `open(os.path.join(d, name), \"wb\").close()`（68 行）で loose object を 0 バイトに切り詰めているが、Apple Git は loose object をモード 0444（読み取り専用）で作成するため macOS では `PermissionError: [Errno 13] Permission denied: .../objects/xx/yyyy...` になる。修正方針: 切り詰める前に対象ファイルへ書き込み権限を付与する（例: `path = os.path.join(d, name); os.chmod(path, 0o644); open(path, \"wb\").close()`)。テスト fixture 側のみの修正であり、kiro-flow のプロダクトコード（git 自己修復ロジック）は変更しないこと。修正後、失敗していた 4 件 GitDistributedTests::test_empty_objects_clone_is_rebuilt_on_reuse / GitDistributedTests::test_sync_push_self_heals_on_object_corruption / StateGitSyncTests::test_empty_objects_state_clone_is_rebuilt_on_reuse / StateGitSyncTests::test_state_sync_self_heals_on_object_corruption_midflight を個別に実行して pass することを確認し、実行ログを成果物に添付すること。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t11": {
+      "goal": "リポジトリルート /Users/nitto/Workspace/sandbox で完了条件のコマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、終了コードが 0（全 906 件相当が pass、failed 0）であることを実測で確認する。終了コードと pytest の最終行（`N passed in ...`）を成果物にそのまま転記すること。もし失敗が残る場合は、テストID・アサーション行・traceback を省略せず報告する。あわせて `git status --short -- tools/kiro-flow tools/kiro-project` を実行し、変更が t10 のテスト fixture 修正の範囲に収まっていること（要求範囲外の成果物が混ざっていないこと）を確認する。",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t12": {
+      "goal": "sandbox リポジトリの現在のワークツリー（t9-m1・t9-m2 の変更適用後の状態）で、完了条件コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` をリポジトリルートから実行し、終了コードと pass/fail 件数を報告する。手順: (1) `git status --short` と `git diff --stat` で t9-m1・t9-m2 が実際に変更したファイル（helper の macOS 0444 loose object 対策 chmod 0644 の追加など）を列挙する。(2) 上記 pytest コマンドを実行し、終了コード・サマリー行（例 `900 passed`）をそのまま転記する。(3) 終了コードが 0 でない場合のみ、失敗したテストID・失敗アサーション行・traceback を特定し、原因が macOS の環境依存前提（/var が realpath で /private/var になり TMPDIR・tempfile の文字列と不一致になる／Apple Git が生成する loose object が 0444 で書き込み不可のため fixture が直接切り詰められない／ファイルシステムが大文字小文字を区別しない）のいずれかに該当するかを判定し、テスト側の前提を実環境に合わせて修正（パス比較は realpath 正規化または os.path.samefile、loose object 操作前に chmod 0644）したうえで再実行し、終了コード 0 になるまで繰り返す。(4) 終了コード 0 かつソース変更が不要だった場合は、その旨（4件の失敗は現ワークツリーでは再現しない）を明示して完了とする。既存の verify・調査レポートを作り直さないこと。",
+      "deps": [],
+      "kind": "work"
     }
   },
-  "iteration": 1
+  "iteration": 3
 }

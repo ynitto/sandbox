@@ -186,6 +186,9 @@ function readRun(runDir) {
   const now = Date.now() / 1000;
 
   const nodes = {};
+  // output のテキストから拾ったイシュー URL の候補（nodeId → url）。executor の証跡が
+  // run 全体にあるときだけ採用する（下の gitlabUsed 判定を参照）。
+  const outputIssueCandidates = {};
   for (const [id, spec] of Object.entries(nodesIn)) {
     const result = readJson(path.join(runDir, 'results', `${id}.json`));
     let state = 'pending';
@@ -226,12 +229,20 @@ function readRun(runDir) {
         }
       }
     }
-    // 関連 GitLab イシュー: 承認済みは data、却下（failed）は output の URL、park 中は wait 記録から拾う
+    // 関連 GitLab イシュー: 承認済みは data、park 中は wait 記録から拾う（どちらも executor が
+    // 書いた確実な座標）。却下（failed）は data が無いため output のテキストに頼るしかないが、
+    // 出力全文を正規表現で漁ると executor と無関係な URL まで拾う（gitlab.py のテストを流した
+    // ノードの pytest ログにサンプル URL が出ており、gitlab executor を使っていない run に
+    // Issue ボタンが出て、押すと実在しないリポジトリへ飛んでいた）。候補として控えるだけにし、
+    // run 全体に executor の証跡があるときだけ採用する。
     const issueUrl =
       (data && typeof data === 'object' && !Array.isArray(data) && data.web_url) ||
-      (output && (output.match(ISSUE_URL_RE) || [])[0]) ||
       (parkIssue && parkIssue.url) ||
       null;
+    if (!issueUrl && state === 'failed' && output) {
+      const cand = (output.match(ISSUE_URL_RE) || [])[0];
+      if (cand) outputIssueCandidates[id] = cand;
+    }
     nodes[id] = {
       id,
       goal: String(spec.goal || ''),
@@ -255,6 +266,17 @@ function readRun(runDir) {
       ),
       taskToken: nodeTaskToken(runId, id),
     };
+  }
+
+  // gitlab executor を使った run か: data（承認済み）か wait 記録（park 中）に確実な座標が
+  // 一つでもあるか。証跡があるときだけ、却下ノードの output から拾った候補を採用する。
+  // 証跡がゼロなら、その run に GitLab のイシューは存在しない＝出力中の URL はテストログ等の
+  // ただの文字列なので無視する。
+  const gitlabUsed = Object.values(nodes).some((n) => n.issueUrl);
+  if (gitlabUsed) {
+    for (const [id, url] of Object.entries(outputIssueCandidates)) {
+      if (nodes[id]) nodes[id].issueUrl = url;
+    }
   }
 
   // 依存未達の pending は waiting に落とす（可視化用の区別。claim 不能）

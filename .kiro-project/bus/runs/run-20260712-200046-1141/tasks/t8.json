@@ -1,0 +1,9 @@
+{
+  "id": "t8",
+  "goal": "実装: 同モジュールに `run_codd_verify(repos, repo_dirs, base, strict)` を新規実装する。codd-gate verify をサブプロセス実行し、終了コード・stdout/stderr を構造化結果（ok / violations / raw）へ正規化する。codd-gate 未検出時は実行せず skipped を返す。",
+  "deps": [
+    "t1",
+    "t7"
+  ],
+  "kind": "generate"
+}

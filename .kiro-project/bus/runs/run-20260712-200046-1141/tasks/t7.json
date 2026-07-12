@@ -1,0 +1,8 @@
+{
+  "id": "t7",
+  "goal": "実装: codd-gate 自動検出モジュール（例 tools/kiro-project/codd_gate.py）に `detect_codd_gate()` を新規実装する。PATH 探索（shutil.which）＋バージョン確認で「利用可能/不可」を返し、未インストール時は例外を投げず無効として扱えるようにする。検出結果は (available, path, version) 相当の構造で返す。",
+  "deps": [
+    "t1"
+  ],
+  "kind": "generate"
+}

@@ -619,10 +619,15 @@ function renderOverview() {
   const liveDesc =
     live.via === 'instances'
       ? '<span class="status-chip st-done">● 稼働中</span>'
-      : live.via === 'status-sync'
-        ? `<span class="status-chip ${live.running ? 'st-done' : 'st-blocked'}">${live.running ? '● 稼働中（別マシン）' : '○ 不明'}</span>` +
+      : live.via === 'status-local'
+        ? // 同一ホストだが心拍が途切れている（長いタスクの実行中に起きる）。status.json の
+          // 新しさで判断する。別マシンではないので「別マシン」表記は出さない。
+          `<span class="status-chip ${live.running ? 'st-done' : 'st-blocked'}">${live.running ? '● 稼働中' : '○ 停止中か確認できません'}</span>` +
           `<span class="muted">（最終確認 ${fmtAgoSec(live.ageSec)}）</span>`
-        : '<span class="status-chip st-blocked">○ 停止中か確認できません</span><span class="muted">（このマシンでは稼働が確認できません）</span>';
+        : live.via === 'status-sync'
+          ? `<span class="status-chip ${live.running ? 'st-done' : 'st-blocked'}">${live.running ? '● 稼働中（別マシン）' : '○ 不明'}</span>` +
+            `<span class="muted">（最終確認 ${fmtAgoSec(live.ageSec)}）</span>`
+          : '<span class="status-chip st-blocked">○ 停止中か確認できません</span><span class="muted">（このマシンでは稼働が確認できません）</span>';
   parts.push(`
     <div class="card full">
       <h3>自動実行の稼働状況</h3>
@@ -2440,12 +2445,39 @@ function renderNeeds() {
       // 要点（何を確認するか・理由・概況）を先頭に出し、判断材料は折りたたみに収める
       // （needs ファイルのマークダウンをそのまま流し込まない）
       const facts = [];
+      // 失敗理由は生の verify 出力が貼られるだけで意味を読み取りにくい。解釈できた場合は
+      // 人が読める一文を先に出し、生のテキストはその下に添える（情報は隠さない）。
+      if (n.failureSummary) {
+        facts.push(`<div class="need-diag"><span class="label-chip">失敗の要因</span> ${esc(n.failureSummary)}</div>`);
+      }
       if (n.why) facts.push(`<div><span class="label-chip">理由</span> ${esc(n.why)}</div>`);
       if (n.summary) facts.push(`<div><span class="label-chip">概況</span> ${esc(n.summary)}</div>`);
-      // 成果物リンクも差分も無い（stub 実行・無変更）カードは、判断材料が内部パスだけになり
-      // 分かりにくい。理由を一言添えて「パスの羅列」への戸惑いを防ぐ（実 executor では出ない）。
+      // 差分の内訳。実行のたびに書かれる内部記録（bus/ の run ログ等）と成果物を分けて示す。
+      // 「14 ファイル変更」の中身が全部内部記録、というカードが人を最も惑わせる。
+      const d = n.diff;
+      if (d && d.hasDiff && (d.artifacts.length || d.internal.length)) {
+        const parts = [];
+        parts.push(d.artifacts.length
+          ? `成果物 ${d.artifacts.length} 件`
+          : '<b>成果物の変更なし</b>');
+        if (d.internal.length) parts.push(`実行記録 ${d.internal.length} 件（bus/ 等の内部ファイル）`);
+        if (d.truncated) parts.push(`ほか ${d.truncated} 件`);
+        facts.push(`<div><span class="label-chip">変更</span> ${parts.join(' / ')}</div>`);
+        if (d.artifacts.length) {
+          const files = d.artifacts
+            .slice(0, 8)
+            .map((f) => `<button data-open="${esc(f)}" title="${esc(f)}">📄 ${esc(f.split('/').pop())}</button>`)
+            .join('');
+          facts.push(`<div class="row" style="gap:6px;flex-wrap:wrap">${files}</div>`);
+        }
+      }
+      // 成果物リンクも差分も無い（stub 実行・無変更）、あるいは差分が内部記録だけのカードは、
+      // 判断材料が内部パスの羅列になって読み取れない。何が起きたのかを一言添える。
       if (n.evidenceThin) {
-        facts.push('<div class="muted ev-thin-note">ℹ️ この実行には成果物リンクや差分がありません（stub 実行や無変更のとき）。下の判断材料は所在などの内部情報のみです。</div>');
+        const onlyInternal = d && d.hasDiff && !d.artifacts.length && d.internal.length;
+        facts.push(onlyInternal
+          ? '<div class="muted ev-thin-note">ℹ️ 変更されたのは実行記録（bus/ の run ログなど）だけで、コードやドキュメントは書き換わっていません。エージェントが成果物を出せずに終わった可能性があります。</div>'
+          : '<div class="muted ev-thin-note">ℹ️ この実行には成果物リンクや差分がありません（stub 実行や無変更のとき）。下の判断材料は所在などの内部情報のみです。</div>');
       }
       const detail = (n.detail || '').trim();
       const detailBlock = detail

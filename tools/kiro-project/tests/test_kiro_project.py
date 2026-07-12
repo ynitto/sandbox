@@ -2812,6 +2812,46 @@ class TestRemoteDiscovery(unittest.TestCase):
         self.assertEqual(len(recs), 1)
         self.assertGreater(recs[0]["heartbeat"], time.time() - 10)
 
+    def test_heartbeat_thread_beats_while_main_thread_is_busy(self):
+        # 本体がタスク実行でブロックしている間も心拍が途切れないこと。従来はパス境界でしか
+        # 打てず、1 タスクが INSTANCE_TTL（90秒）を超えると停止扱いになり、viewer から
+        # 稼働中のプロジェクトが「停止中」「別マシン」に見えていた。
+        with tempfile.TemporaryDirectory() as wd:
+            cfg = cfg_for(Path(wd), watch=True, project_name="default")
+            paths = km.register_instance(cfg)
+            self.addCleanup(lambda: [p.unlink() for p in paths if p.exists()])
+            before = json.loads(paths[0].read_text())["heartbeat"]
+            stop = km._start_heartbeat_thread(cfg, paths, interval=0.02)
+            self.addCleanup(stop.set)
+            time.sleep(0.2)                       # メインスレッドは「実行中」でブロックしている想定
+            after = json.loads(paths[0].read_text())["heartbeat"]
+            self.assertGreater(after, before)     # 何もしなくても心拍が進んでいる
+
+    def test_heartbeat_thread_stops_on_event(self):
+        with tempfile.TemporaryDirectory() as wd:
+            cfg = cfg_for(Path(wd), watch=True, project_name="default")
+            paths = km.register_instance(cfg)
+            self.addCleanup(lambda: [p.unlink() for p in paths if p.exists()])
+            stop = km._start_heartbeat_thread(cfg, paths, interval=0.02)
+            time.sleep(0.1)
+            stop.set()
+            time.sleep(0.1)
+            frozen = json.loads(paths[0].read_text())["heartbeat"]
+            time.sleep(0.15)
+            self.assertEqual(json.loads(paths[0].read_text())["heartbeat"], frozen)  # 以降は打たない
+
+    def test_heartbeat_thread_does_not_touch_status_when_interval_disabled(self):
+        # status.json は state_git のコミット対象。既定（status_interval=0）では触らない
+        # ＝ idle の git 負荷を増やさない。
+        with tempfile.TemporaryDirectory() as wd:
+            cfg = cfg_for(Path(wd), watch=True, project_name="default", status_interval=0.0)
+            paths = km.register_instance(cfg)
+            self.addCleanup(lambda: [p.unlink() for p in paths if p.exists()])
+            stop = km._start_heartbeat_thread(cfg, paths, interval=0.02)
+            self.addCleanup(stop.set)
+            time.sleep(0.15)
+            self.assertFalse(km.status_path(cfg).exists())
+
     def test_split_registry_parses_pathsep_and_list(self):
         joined = os.pathsep.join(["/a", "/b"])
         self.assertEqual(km._split_registry(joined), ["/a", "/b"])

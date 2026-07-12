@@ -1,0 +1,9 @@
+{
+  "id": "t10",
+  "goal": "実装: codd-gate の有効/無効・repos.json パス・strict 可否を制御する設定読み取りを1関数で追加する（環境変数または kiro-project の既存 config 機構に合わせる）。既定値は「インストールされていれば自動で有効、無ければ静かにスキップ」。",
+  "deps": [
+    "t1",
+    "t2"
+  ],
+  "kind": "generate"
+}

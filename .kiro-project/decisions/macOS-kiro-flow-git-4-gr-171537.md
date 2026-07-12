@@ -4,3 +4,10 @@
 - reason  : kiro-projects-viewer から操作
 - affects : macOS-kiro-flow-git-4-gr-171537 → ready
 
+## DR-0002  2026-07-12  actor: nitto
+- context : macOS-kiro-flow-git-4-gr-171537（macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 空実行の原因（kiro-cli の認証切れで worker が空応答）を解消: worker=codex / planner=claude に切替、repos.json に owns を追加して書込先ワークスペースを確定（verify がクローン内で走るようになった）。タスク内容は変更なし、そのまま再実行する。
+- affects : macOS-kiro-flow-git-4-gr-171537 → ready
+- learn: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: 空実行の原因（kiro-cli の認証切れで worker が空応答）を解消: worker=codex / planner=claude に切替、repos.json に owns を追加して書込先ワークスペースを確定（verify がクローン内で走るようになった）。タスク内容は変更なし、そのまま再実行する。
+

@@ -1135,6 +1135,61 @@ class PlannerRobustnessTests(unittest.TestCase):
         self.assertEqual([t["id"] for t in tasks], ["t1"])
 
 
+class FlowPlannerAgentCliTests(unittest.TestCase):
+    """flow-planner スキルを、planner に設定したエージェント CLI で動かすこと。
+
+    スキル（scripts/plan.py）の既定は kiro-cli。それを黙って使うと、agent_cli を claude/codex に
+    していても計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub 戦略へ
+    落ちる（LLM を呼べていないのに計画できたように見える）。planner の設定を渡して揃える。"""
+
+    def setUp(self):
+        self._saved = (kf._AGENT_CLI, dict(kf._AGENT_OVERRIDES))
+        self.addCleanup(lambda: setattr(kf, "_AGENT_CLI", self._saved[0]))
+        self.addCleanup(lambda: setattr(kf, "_AGENT_OVERRIDES", self._saved[1]))
+
+    def _capture_cmd(self, request="req", model=None):
+        """plan_strategy_flow_planner が組み立てる argv を捕まえる（スクリプトは実行しない）。"""
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "strategy": {"patterns": ["fan-out-and-synthesize"], "parallelism": 2},
+                    "tasks": [{"id": "t1", "goal": "g", "deps": [], "kind": "work"}],
+                }),
+                stderr="")
+
+        with mock.patch.object(kf, "_find_flow_planner_script", return_value="/tmp/plan.py"), \
+                mock.patch.object(kf.subprocess, "run", side_effect=fake_run):
+            kf.plan_strategy_flow_planner(request, model)
+        return seen["cmd"]
+
+    def test_passes_planner_agent_cli_and_model(self):
+        kf._AGENT_CLI = "kiro"
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides(
+            {"planner": {"agent_cli": "claude", "model": "opus"}})
+        cmd = self._capture_cmd()
+        self.assertIn("--agent-cli", cmd)
+        self.assertEqual(cmd[cmd.index("--agent-cli") + 1], "claude")
+        self.assertEqual(cmd[cmd.index("--model") + 1], "opus")   # planner の model 上書きが勝つ
+
+    def test_falls_back_to_global_agent_cli(self):
+        # planner 個別の指定が無ければグローバル agent_cli に従う
+        kf._AGENT_CLI = "codex"
+        kf._AGENT_OVERRIDES = {}
+        cmd = self._capture_cmd()
+        self.assertEqual(cmd[cmd.index("--agent-cli") + 1], "codex")
+
+    def test_planner_model_overrides_call_model(self):
+        # 呼び出し値（グローバル model）より planner の model 上書きが優先される
+        kf._AGENT_CLI = "claude"
+        kf._AGENT_OVERRIDES = kf._normalize_agent_overrides({"planner": {"model": "sonnet"}})
+        cmd = self._capture_cmd(model="opus")
+        self.assertEqual(cmd[cmd.index("--model") + 1], "sonnet")
+
+
 class KiroTimeoutTests(unittest.TestCase):
     """kiro-cli のハングがタイムアウトで失敗化され、run が無限停止しないこと。"""
 

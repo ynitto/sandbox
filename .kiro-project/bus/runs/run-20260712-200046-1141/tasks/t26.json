@@ -1,0 +1,8 @@
+{
+  "id": "t26",
+  "goal": "完了条件の充足まで反復する。`python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を実行し、終了コードが 0 になるまで失敗原因を解析して実装・テスト・repos.json を修正し再実行する。最終的に成功したコマンド出力（終了コード0）を証跡として提示する。",
+  "deps": [
+    "t25"
+  ],
+  "kind": "verify"
+}

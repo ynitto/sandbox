@@ -1,0 +1,9 @@
+{
+  "id": "t14",
+  "goal": "修正: `./.kiro-project/repos.json` を完了条件コマンド（--repo-dir sandbox=. / --base / --strict）で codd-gate verify が通る形に整える。t6 の調査結果に基づき不足キーのみ追記し、既存の owns 等の設定は壊さない。",
+  "deps": [
+    "t6",
+    "t1"
+  ],
+  "kind": "work"
+}

@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 # スキルのルート（このスクリプトの2階層上）
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -197,16 +198,72 @@ import re
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def run_kiro(prompt: str, model: str | None) -> str:
-    """kiro-cli を呼び出す。"""
+# 呼び出すエージェント CLI（kiro / claude / copilot / codex）。--agent-cli で切り替える。
+# 既定は kiro（従来動作）。呼び出し側（kiro-flow）は planner に設定された agent_cli を渡す。
+AGENT_CLI = "kiro"
+
+
+def _agent_cmd(cli: str, model: str | None, prompt: str):
+    """エージェント CLI 1 回分の (argv, stdin テキスト, 最終応答ファイル) を組み立てる。
+    kiro-flow / kiro-project の _agent_cmd と同じ規約に揃える（ヘッドレス・応答本文のみ）。
+    最終応答ファイルは codex のみ（stdout がイベントログのため）。"""
+    if cli == "claude":
+        # Claude Code ヘッドレス。プロンプトは stdin 渡し（ARG_MAX に当たらない）。
+        cmd = ["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]
+        if model:
+            cmd += ["--model", model]
+        return cmd, prompt, None
+    if cli == "copilot":
+        cmd = ["copilot", "-s", "--allow-all-tools", "--allow-all-paths", "--no-color"]
+        if model:
+            cmd += ["--model", model]
+        return cmd + ["-p", prompt], None, None
+    if cli == "codex":
+        # codex exec は stdout にイベントログを混ぜるため、最終応答は別ファイルから読む。
+        fd, out_file = tempfile.mkstemp(prefix="flow-planner-codex-", suffix=".txt")
+        os.close(fd)
+        cmd = ["codex", "exec", "--skip-git-repo-check",
+               "--dangerously-bypass-approvals-and-sandbox", "--color", "never",
+               "--output-last-message", out_file]
+        if model:
+            cmd += ["--model", model]
+        return cmd + ["-"], prompt, out_file
     cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if model:
         cmd += ["--model", model]
-    cmd.append(prompt)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"kiro-cli failed (rc={proc.returncode}): {proc.stderr[:500]}")
-    return _ANSI_RE.sub("", proc.stdout).strip()
+    return cmd + [prompt], None, None
+
+
+def run_kiro(prompt: str, model: str | None) -> str:
+    """設定されたエージェント CLI（AGENT_CLI）を 1 回呼び出して応答本文を返す。
+
+    rc=0 でも本文が空で返る CLI がある（例: kiro-cli は AWS 認証が切れるとバナーだけ出して
+    rc=0 で終わる）。空応答を成功として扱うと、この後の JSON 解析が黙って失敗し、呼び出し元は
+    stub 戦略へフォールバックする＝「LLM を呼べていないのに計画できたように見える」。
+    空はここでエラーにして、呼び出し元が失敗と分かるようにする。"""
+    cmd, stdin_text, out_file = _agent_cmd(AGENT_CLI, model, prompt)
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text, env=env)
+        if proc.returncode != 0:
+            raise RuntimeError(f"{cmd[0]} failed (rc={proc.returncode}): {proc.stderr[:500]}")
+        text = _ANSI_RE.sub("", proc.stdout).strip()
+        if out_file:                     # codex: 最終応答ファイルが取れればそれを正とする
+            try:
+                with open(out_file, encoding="utf-8") as f:
+                    text = f.read().strip() or text
+            except OSError:
+                pass
+        if not text:
+            raise RuntimeError(f"{cmd[0]} returned an empty response"
+                               f" (rc=0). 認証切れ・モデル指定の誤りを疑ってください。")
+        return text
+    finally:
+        if out_file:
+            try:
+                os.remove(out_file)
+            except OSError:
+                pass
 
 
 def extract_json(text: str):
@@ -451,13 +508,20 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="flow-planner: 3段パイプラインでタスクグラフを生成")
     parser.add_argument("request", help="要求テキスト")
-    parser.add_argument("--model", default=None, help="kiro-cli に渡すモデル")
+    parser.add_argument("--agent-cli", dest="agent_cli", default="kiro",
+                        choices=["kiro", "claude", "copilot", "codex"],
+                        help="計画に使うエージェント CLI（既定 kiro）。"
+                             "kiro-flow から呼ばれるときは planner に設定された CLI が渡る")
+    parser.add_argument("--model", default=None, help="エージェント CLI に渡すモデル")
     parser.add_argument("--review", default="auto",
                         help="検証gate: auto/true/false")
     parser.add_argument("--granularity", default="coarse",
                         choices=["coarse", "fine", "finest"],
                         help="分解の細かさ: coarse(現状)/fine(1段細)/finest(2段細)")
     args = parser.parse_args()
+
+    global AGENT_CLI
+    AGENT_CLI = args.agent_cli
 
     review = args.review
     if review == "true":
