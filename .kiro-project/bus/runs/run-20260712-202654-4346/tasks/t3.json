@@ -1,0 +1,6 @@
+{
+  "id": "t3",
+  "goal": "synth_verify が LLM 応答から verify コマンドを合成する経路を特定し、_first_command_line への入力文字列の形（生の LLM テキストか整形済みか）・期待戻り値・戻り値が None/空のときの上位の挙動（合成失敗の分岐）を明文化する",
+  "deps": [],
+  "kind": "work"
+}

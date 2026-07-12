@@ -1,0 +1,8 @@
+{
+  "id": "t21",
+  "goal": "完了条件の実行と反復: `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` を実行し、失敗したら原因を特定して実装（t10/t11）またはテストを修正し、終了コード 0 になるまで繰り返す",
+  "deps": [
+    "t20"
+  ],
+  "kind": "verify"
+}

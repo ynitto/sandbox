@@ -1,0 +1,8 @@
+{
+  "id": "t22",
+  "goal": "統合まとめ: 変更差分の要約、抽出仕様との整合確認、回帰確認（`python3 -m pytest tools/kiro-project/tests -q` 全体実行）の結果を1つの成果物に集約する",
+  "deps": [
+    "t21"
+  ],
+  "kind": "synthesize"
+}

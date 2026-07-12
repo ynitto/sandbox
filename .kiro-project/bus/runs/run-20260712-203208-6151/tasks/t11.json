@@ -1,0 +1,8 @@
+{
+  "id": "t11",
+  "goal": "macOS 固有の原因（/private シンボリックリンクによる tmp パス差異、init.defaultBranch、大文字小文字非区別 FS、BSD 系コマンド差、GIT_* 環境変数）と、それを Linux/CI でも壊さない形で解消した方針を、Conventional Commits 準拠のコミットメッセージと該当ドキュメント/コメントへ簡潔に反映する",
+  "deps": [
+    "t10"
+  ],
+  "kind": "synthesize"
+}

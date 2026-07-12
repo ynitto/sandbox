@@ -341,3 +341,13 @@
 - 2026-07-12 20:26:36 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=3 notified=False promoted=0 ===
 - 2026-07-12 20:26:36 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-12 20:26:36 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 20:26:41 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-12 20:26:41 feedback 取り込み: kiro-project-codd-gate-171537 を再開
+- 2026-07-12 20:26:41 feedback 取り込み: macOS-kiro-flow-git-4-gr-171537 を再開
+- 2026-07-12 20:26:41 feedback 取り込み: synth_verify-_first_comm-172544 を再開
+- 2026-07-12 20:26:41 === kiro-project 開始 tasks=7 ingested=3 planner=agent executor=agent dry_run=False ===
+- 2026-07-12 20:26:41 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 20:31:22 verify: synth_verify-_first_comm-172544 を https://github.com/ynitto/sandbox/@main のクローン内で検証
+- 2026-07-12 20:32:02 cycle 1: synth_verify-_first_comm-172544 → 人の判断（繰り返し NG）
+- 2026-07-12 20:32:02 feedback 取り込み: kiro-project-codd-gate-171537 を再開
+- 2026-07-12 20:32:02 feedback 取り込み: macOS-kiro-flow-git-4-gr-171537 を再開
