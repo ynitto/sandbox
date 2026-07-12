@@ -1110,3 +1110,21 @@
 - 2026-07-12 20:56:48 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=2 notified=False promoted=0 ===
 - 2026-07-12 20:56:48 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-12 20:56:48 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 20:56:53 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-12 20:56:53 === kiro-project 開始 tasks=7 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-12 20:56:53 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 20:56:53 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=2 notified=False promoted=0 ===
+- 2026-07-12 20:56:53 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-12 20:56:53 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 20:56:58 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-12 20:56:58 === kiro-project 開始 tasks=7 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-12 20:56:58 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 20:56:58 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=2 notified=False promoted=0 ===
+- 2026-07-12 20:56:58 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-12 20:56:58 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 20:57:03 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-12 20:57:03 === kiro-project 開始 tasks=7 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-12 20:57:03 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 20:57:03 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=2 notified=False promoted=0 ===
+- 2026-07-12 20:57:03 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-12 20:57:03 === project watch: 監視中（charter 更新/フィードバック待ち）===
