@@ -2901,18 +2901,27 @@ def _code_fence_lines(out: str) -> list[str]:
     return fenced_lines
 
 
+_SHELL_FENCE_LANGUAGE_TAGS = frozenset({"bash", "console", "sh", "shell", "zsh"})
+
+
+def _first_executable_line(lines: list[str]) -> str:
+    """候補行から空行・コメント・言語タグ残骸を除いた最初のコマンドを返す。"""
+    for raw_line in lines:
+        line = _strip_code(raw_line.strip())
+        if (
+            line
+            and not line.startswith("#")
+            and line.casefold() not in _SHELL_FENCE_LANGUAGE_TAGS
+            and _looks_like_shell_command(line)
+        ):
+            return line
+    return ""
+
+
 def _first_command_line(out: str) -> str:
     """合成出力の先頭の「意味あるコマンド行」を取り出す（コメント/コードフェンス/空行を飛ばす）。"""
     lines = (out or "").splitlines()
-    for fenced_line in _code_fence_lines(out):
-        line = _strip_code(fenced_line.strip())
-        if line and not line.startswith("#") and _looks_like_shell_command(line):
-            return line
-    for line in lines:
-        line = _strip_code(line.strip())
-        if line and not line.startswith("#") and _looks_like_shell_command(line):
-            return line
-    return ""
+    return _first_executable_line(_code_fence_lines(out)) or _first_executable_line(lines)
 
 
 def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
