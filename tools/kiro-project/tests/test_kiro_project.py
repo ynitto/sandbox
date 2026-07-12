@@ -5,7 +5,9 @@
 
     python -m unittest discover -s tools/kiro-project/tests
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -4960,6 +4962,146 @@ class TestVerifyAssist(unittest.TestCase):
         cmd = km.synth_verify(cfg, "概要を書く", "README に概要", kiro_run=lambda p, m: ansi_out)
         self.assertEqual(cmd, "grep -q '## 概要' README.md")
         self.assertNotIn("\x1b", cmd)
+
+    def test_first_command_line_returns_direct_command(self):
+        self.assertEqual(km._first_command_line("\n# comment\npytest -q\n"), "pytest -q")
+
+    def test_first_command_line_skips_unfenced_prose_before_command(self):
+        output = "検証コマンドは次のとおりです。\npython3 -m pytest tools/kiro-project/tests -q"
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
+    def test_first_command_line_skips_unpunctuated_english_prose(self):
+        output = "Here is the verification command\npytest -q"
+        self.assertEqual(km._first_command_line(output), "pytest -q")
+
+    def test_first_command_line_accepts_path_and_hyphenated_cli(self):
+        self.assertEqual(km._first_command_line("Run this next\n./scripts/check.sh --quick"),
+                         "./scripts/check.sh --quick")
+        self.assertEqual(km._first_command_line("Use the gate\ncustom-check --all"),
+                         "custom-check --all")
+
+    def test_first_command_line_extracts_all_fence_lines_in_order(self):
+        output = "before\n```\nfirst\n```\nbetween\n```sh\nsecond\n```\nafter"
+        self.assertEqual(km._code_fence_lines(output), ["first", "second"])
+
+    def test_first_command_line_extracts_from_untagged_sh_and_console_fences(self):
+        self.assertEqual(km._first_command_line("```\npytest -q\n```"), "pytest -q")
+        self.assertEqual(
+            km._first_command_line("```sh\npython3 -m pytest tools/kiro-project/tests -q\n```"),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+        self.assertEqual(
+            km._first_command_line("```console\n$ pytest -q\n```"),
+            "pytest -q",
+        )
+
+    def test_first_command_line_treats_unclosed_fence_as_running_to_end(self):
+        output = "before\n```zsh\n# note\npytest -q"
+        self.assertEqual(km._code_fence_lines(output), ["# note", "pytest -q"])
+        self.assertEqual(km._first_command_line(output), "pytest -q")
+
+    def test_first_command_line_returns_command_from_bash_fence_after_prose(self):
+        output = "確認コマンドはこちらです。\n```bash\npython3 -m pytest tools/kiro-project/tests -q\n```"
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
+    def test_first_command_line_ignores_colon_terminated_preamble_before_fence(self):
+        output = (
+            "以下のコマンドで検証できます:\n"
+            "```bash\n"
+            "python3 -m pytest tools/kiro-project/tests -q -k first_command_line\n"
+            "```"
+        )
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q -k first_command_line",
+        )
+
+    def test_first_command_line_skips_blank_and_comment_lines_inside_fence(self):
+        output = """```bash
+
+# verification notes
+   # an indented comment
+
+python3 -m pytest tools/kiro-project/tests -q
+echo this-later-command-must-not-be-selected
+```"""
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
+    def test_first_command_line_skips_language_tag_remnant_inside_fence(self):
+        output = "```\nbash\n# verification notes\npython3 -m pytest -q\n```"
+        self.assertEqual(km._first_command_line(output), "python3 -m pytest -q")
+
+    def test_first_command_line_strips_leading_shell_prompt_symbol(self):
+        self.assertEqual(
+            km._first_command_line("$ python3 -m pytest tools/kiro-project/tests -q"),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
+    def test_first_command_line_returns_none_without_candidate(self):
+        self.assertIsNone(km._first_command_line("\n# comment only\n"))
+
+    def test_first_command_line_returns_none_for_prose_only(self):
+        self.assertIsNone(km._first_command_line(
+            "Here is how to verify the change\nReview the behavior carefully"
+        ))
+
+    def test_join_continuations_merges_backslash_continued_lines(self):
+        self.assertEqual(
+            km._join_continuations(["pytest -q \\", "  -k first_command_line"]),
+            ["pytest -q -k first_command_line"],
+        )
+
+    def test_join_continuations_chains_multiple_continuations(self):
+        self.assertEqual(
+            km._join_continuations(["cmd1 \\", "cmd2 \\", "cmd3"]),
+            ["cmd1 cmd2 cmd3"],
+        )
+
+    def test_join_continuations_drops_blank_and_comment_lines(self):
+        self.assertEqual(
+            km._join_continuations(["", "echo hi", "# comment", "echo bye"]),
+            ["echo hi", "echo bye"],
+        )
+
+    def test_join_continuations_keeps_trailing_unterminated_continuation(self):
+        self.assertEqual(km._join_continuations(["cmd1 \\"]), ["cmd1"])
+
+    def test_join_continuations_returns_empty_list_for_no_input(self):
+        self.assertEqual(km._join_continuations([]), [])
+        self.assertEqual(km._join_continuations(["", "# only comments"]), [])
+
+    def test_first_command_line_prose_only_never_becomes_synth_verify_command(self):
+        # コマンドを含まない散文が再試行で返り続けても、verify として誤採用しない。
+        cfg = cfg_for(Path("."))
+        responses = iter([
+            "検証方法を説明します。まず対象の動作を確認してください。",
+            "決定的な検証コマンドは提示できません。",
+        ])
+        calls = []
+
+        def prose_only(prompt, model):
+            calls.append((prompt, model))
+            return next(responses)
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(
+                km.synth_verify(cfg, "x", "曖昧", kiro_run=prose_only, attempts=2),
+                "",
+            )
+        self.assertEqual(len(calls), 2)
+        self.assertIn("verify 合成失敗", stderr.getvalue())
+        self.assertIn("実行可能なコマンド行がなかった", stderr.getvalue())
+        self.assertIn("task: x", stderr.getvalue())
 
     def test_synth_verify_rejects_japanese_prose(self):
         # バグ修正: エージェントが自然言語（説明/拒否文）を返しても shell へ流さない

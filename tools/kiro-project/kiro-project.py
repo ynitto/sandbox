@@ -3130,13 +3130,140 @@ def _looks_like_shell_command(line: str) -> bool:
     return chk.returncode == 0
 
 
-def _first_command_line(out: str) -> str:
-    """合成出力の先頭の「意味あるコマンド行」を取り出す（コメント/コードフェンス/空行を飛ばす）。"""
+_FENCE_OPEN_RE = re.compile(r"```(\w*)\s*$")
+
+
+def _code_fence_lines(out: str) -> list[str]:
+    """Markdown コードフェンス内の行を、ブロックの出現順に返す。
+
+    開始フェンスは言語タグの有無を問わない。「実行してください: ```bash」のように
+    同一行にフェンスの前置き文が同居していても、行末が ``` (+言語タグ) であれば開始と
+    認識する（行頭一致 startswith だけだと前置き同居ケースを取りこぼすため）。
+    閉じフェンスがなければ、入力末尾までをそのブロックの内容として扱う。
+    """
+    fenced_lines: list[str] = []
+    in_fence = False
     for line in (out or "").splitlines():
-        line = _strip_code(line.strip())
-        if line and not line.startswith("#"):
+        marker = line.strip()
+        if in_fence and marker == "```":
+            in_fence = False
+            continue
+        if not in_fence and _FENCE_OPEN_RE.search(marker):
+            in_fence = True
+            continue
+        if in_fence:
+            fenced_lines.append(line)
+    return fenced_lines
+
+
+_SHELL_FENCE_LANGUAGE_TAGS = frozenset({"bash", "console", "sh", "shell", "zsh"})
+
+# フェンス外では `sh -n` が英語の散文も単純コマンドとして受理するため、頻出する
+# 実行語から始まる行だけを候補にする。ハイフンを含む CLI 名とパス指定も許可する。
+_KNOWN_COMMAND_WORDS = frozenset({
+    "awk", "bash", "cargo", "cd", "codd-gate", "diff", "docker", "find", "git", "go",
+    "grep", "java", "make", "mvn", "node", "npm", "npx", "perl", "php", "pip", "pip3",
+    "pnpm", "poetry", "pytest", "python", "python3", "rg", "ruby", "sed", "sh", "test", "tox",
+    "uv", "yarn", "zsh",
+})
+
+
+_LEADING_SHELL_PROMPT_RE = re.compile(r"^\$\s+")
+
+
+def _strip_leading_shell_prompt(line: str) -> str:
+    """行頭のシェルプロンプト記号 `$ ` を1回だけ剥がす。
+    `$(...)` や `$VAR` は `$` 直後が空白でないため対象外（誤剥離しない）。"""
+    return _LEADING_SHELL_PROMPT_RE.sub("", line, count=1)
+
+
+def _has_command_like_leading_token(line: str) -> bool:
+    """フェンス外の行が既知コマンド語または実行可能らしいトークンで始まるか判定する。"""
+    if not line:
+        return False
+    token = line.split(maxsplit=1)[0]
+    bare = token.rsplit("/", 1)[-1]
+    return (
+        bare in _KNOWN_COMMAND_WORDS
+        or token.startswith(("./", "../", "/"))
+        or bool(re.fullmatch(r"[A-Za-z0-9_.]+-[A-Za-z0-9_.-]+", bare))
+    )
+
+
+_TRAILING_BACKSLASH_RE = re.compile(r"\\\s*$")
+
+
+def _join_continuations(lines: list[str]) -> list[str]:
+    """行末バックスラッシュ `\\` による継続行を1つの論理コマンド文字列へ結合する。
+
+    継続中でない行のうち、空行・`#` 始まりの純コメント行は結合対象にせず落とす
+    （継続の起点にしない）。いったん継続に入った行（直前行が `\\` 終端）は、
+    たとえ空行やコメント然とした内容でも連結対象として保持する — バックスラッシュ
+    直後の行を無条件で落とすと結合済みコマンドが途中で壊れるため。戻り値は論理行
+    ごとに1件のリストで、各行の末尾 `\\` は除去し、継続元と継続先はシェルの行
+    継続と同じく半角スペース1つで連結する。
+    """
+    joined: list[str] = []
+    parts: list[str] = []
+    continuing = False
+    for raw in lines:
+        stripped = raw.strip()
+        if not continuing and (not stripped or stripped.startswith("#")):
+            continue
+        m = _TRAILING_BACKSLASH_RE.search(stripped)
+        if m:
+            parts.append(stripped[: m.start()].rstrip())
+            continuing = True
+            continue
+        parts.append(stripped)
+        joined.append(" ".join(p for p in parts if p))
+        parts = []
+        continuing = False
+    if parts:
+        joined.append(" ".join(p for p in parts if p))
+    return joined
+
+
+def _first_executable_line(lines: list[str], *, require_shell_syntax: bool = True) -> Optional[str]:
+    """候補行から最初のコマンドを返す。見つからなければ None。
+
+    require_shell_syntax=False の場合は `_looks_like_shell_command` の sh -n 構文チェックを
+    課さない。コードフェンスで明示的に区切られた行は LLM の意図（これがコマンドである）が
+    明確なため、素通しで信頼する（フェンス外の地の文はこの限りでなく従来どおり厳格に見る）。
+    """
+    for raw_line in lines:
+        line = _strip_leading_shell_prompt(_strip_code(raw_line.strip()))
+        if (
+            line
+            and not line.startswith("#")
+            and line.casefold() not in _SHELL_FENCE_LANGUAGE_TAGS
+            and (not require_shell_syntax or _looks_like_shell_command(line))
+        ):
             return line
-    return ""
+    return None
+
+
+def _first_command_line(out: str) -> Optional[str]:
+    """合成出力の先頭のコマンド行を返す。どの規則にも合わなければ None。
+
+    コードフェンスを最優先でスキャンする: フェンスが見つかれば、フェンス内の最初の
+    非空・非コメント行を無条件でコマンドとして採用する。フェンスが一つも無ければ、
+    フェンス外の行を対象にした従来ロジック（既知コマンド語などの先頭トークン判定 +
+    sh -n 構文チェック）へフォールバックする。行頭のシェルプロンプト記号 `$ ` は
+    判定前に剥がす（LLM がプロンプト付きでコマンド例を返す出力に対応するため）。
+
+    ANSI エスケープは入口で落とす。kiro-cli はカラーコード付きで返すことがあり、
+    残したままだとフェンス開始の ``` も先頭トークン（`\x1b[36mgrep` → 既知コマンド語に
+    一致しない）も認識できず、候補が 1 つも残らない。
+    """
+    out = strip_ansi(out)
+    fenced = _first_executable_line(_code_fence_lines(out), require_shell_syntax=False)
+    if fenced:
+        return fenced
+    lines = (out or "").splitlines()
+    return _first_executable_line(
+        [line for line in lines if _has_command_like_leading_token(_strip_leading_shell_prompt(line.strip()))]
+    )
 
 
 def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
@@ -3155,7 +3282,7 @@ def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
             return ""
         cand = _first_command_line(out)
         if not cand:
-            retry_note = "空 or 散文だった"; continue
+            retry_note = "応答に実行可能なコマンド行がなかった"; continue
         # 自然言語（説明・拒否文）を shell=True に流すと ; | && ` > rm 等が誤実行されうるため弾く。
         if not _looks_like_shell_command(cand):
             retry_note = "シェルコマンドでなかった"; continue
@@ -3163,6 +3290,7 @@ def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
         if _verify_is_degenerate(cand):
             retry_note = "恒真式に退化していた。テスト/ビルド/差分/最終状態で実挙動を確かめよ"; continue
         return cand
+    print(f"[kiro-project] verify 合成失敗: {retry_note}（task: {title}）", file=sys.stderr)
     return ""
 
 
