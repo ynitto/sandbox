@@ -958,3 +958,4 @@
 {"ts": "2026-07-12T20:26:21", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 3, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
 {"ts": "2026-07-12T20:26:26", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 3, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
 {"ts": "2026-07-12T20:26:31", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 3, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
+{"ts": "2026-07-12T20:26:36", "reason": "drained", "level": "unattended", "cycles": 0, "done": 0, "blocked": 3, "review": 0, "archived": 0, "escalations": 0, "spawned": 0, "inboxed": 0, "tokens": 0, "cost": 0.0, "duration_s": 0.0}
