@@ -2940,6 +2940,40 @@ def _has_command_like_leading_token(line: str) -> bool:
     )
 
 
+_TRAILING_BACKSLASH_RE = re.compile(r"\\\s*$")
+
+
+def _join_continuations(lines: list[str]) -> list[str]:
+    """行末バックスラッシュ `\\` による継続行を1つの論理コマンド文字列へ結合する。
+
+    継続中でない行のうち、空行・`#` 始まりの純コメント行は結合対象にせず落とす
+    （継続の起点にしない）。いったん継続に入った行（直前行が `\\` 終端）は、
+    たとえ空行やコメント然とした内容でも連結対象として保持する — バックスラッシュ
+    直後の行を無条件で落とすと結合済みコマンドが途中で壊れるため。戻り値は論理行
+    ごとに1件のリストで、各行の末尾 `\\` は除去し、継続元と継続先はシェルの行
+    継続と同じく半角スペース1つで連結する。
+    """
+    joined: list[str] = []
+    parts: list[str] = []
+    continuing = False
+    for raw in lines:
+        stripped = raw.strip()
+        if not continuing and (not stripped or stripped.startswith("#")):
+            continue
+        m = _TRAILING_BACKSLASH_RE.search(stripped)
+        if m:
+            parts.append(stripped[: m.start()].rstrip())
+            continuing = True
+            continue
+        parts.append(stripped)
+        joined.append(" ".join(p for p in parts if p))
+        parts = []
+        continuing = False
+    if parts:
+        joined.append(" ".join(p for p in parts if p))
+    return joined
+
+
 def _first_executable_line(lines: list[str], *, require_shell_syntax: bool = True) -> Optional[str]:
     """候補行から最初のコマンドを返す。見つからなければ None。
 

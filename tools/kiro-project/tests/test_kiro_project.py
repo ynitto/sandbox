@@ -5003,6 +5003,31 @@ echo this-later-command-must-not-be-selected
             "Here is how to verify the change\nReview the behavior carefully"
         ))
 
+    def test_join_continuations_merges_backslash_continued_lines(self):
+        self.assertEqual(
+            km._join_continuations(["pytest -q \\", "  -k first_command_line"]),
+            ["pytest -q -k first_command_line"],
+        )
+
+    def test_join_continuations_chains_multiple_continuations(self):
+        self.assertEqual(
+            km._join_continuations(["cmd1 \\", "cmd2 \\", "cmd3"]),
+            ["cmd1 cmd2 cmd3"],
+        )
+
+    def test_join_continuations_drops_blank_and_comment_lines(self):
+        self.assertEqual(
+            km._join_continuations(["", "echo hi", "# comment", "echo bye"]),
+            ["echo hi", "echo bye"],
+        )
+
+    def test_join_continuations_keeps_trailing_unterminated_continuation(self):
+        self.assertEqual(km._join_continuations(["cmd1 \\"]), ["cmd1"])
+
+    def test_join_continuations_returns_empty_list_for_no_input(self):
+        self.assertEqual(km._join_continuations([]), [])
+        self.assertEqual(km._join_continuations(["", "# only comments"]), [])
+
     def test_first_command_line_prose_only_never_becomes_synth_verify_command(self):
         # コマンドを含まない散文が再試行で返り続けても、verify として誤採用しない。
         cfg = cfg_for(Path("."))
