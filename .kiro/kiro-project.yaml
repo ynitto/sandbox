@@ -24,7 +24,3 @@ agents:
   plan:     {model: opus}      # 分解・再計画・差し戻し修正
   assess:   {model: haiku}     # 大量に走る採点は安いモデルに
   verify:   {model: sonnet}    # verify 合成
-# 検証の制限時間（秒）。既定 120 秒では足りない: テストスイート全体を回す verify
-# （`pytest tools/kiro-project/tests tools/kiro-flow/tests`）は現状 130 秒かかり、
-# 完了条件を満たしているのに時間切れで NG 扱いされていた（macOS タスクが retries=6 で blocked）。
-verify_timeout: 600

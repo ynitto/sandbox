@@ -6,6 +6,7 @@
     python -m unittest discover -s tools/kiro-project/tests
 """
 import contextlib
+import dataclasses
 import importlib.util
 import io
 import json
@@ -3058,6 +3059,21 @@ class TestConfigFile(unittest.TestCase):
         ns = types.SimpleNamespace(config=cfg_path, **cli)
         km.resolve_config(ns)
         return ns
+
+    def test_verify_timeout_default_survives_a_full_test_suite(self):
+        """verify の既定タイムアウトは、テストスイート全体を回す完了条件に耐えること。
+
+        「テストスイート全体を green にする」類の verify は数分かかる（このリポジトリは 990 件で
+        130 秒）。既定 120 秒では **完了しているのに時間切れで NG** と判定され、リトライを積み
+        上げた末に人へエスカレーションしていた（retries=6 まで無駄に積み直して blocked）。
+        act_timeout より十分短く保ち、ハングの保護は残す。"""
+        defaults = {f.name: f.default for f in dataclasses.fields(km.Config)}
+        self.assertGreaterEqual(defaults["verify_timeout"], 600.0,
+                                "フルスイートを回せる長さがあること")
+        self.assertGreaterEqual(km.CONFIG_DEFAULTS["verify_timeout"], 600.0,
+                                "設定ファイルの既定も揃っていること")
+        self.assertLess(defaults["verify_timeout"], defaults["act_timeout"],
+                        "act より短く（ハングの保護を残す）")
 
     def test_json_config_fills_values(self):
         with tempfile.TemporaryDirectory() as d:

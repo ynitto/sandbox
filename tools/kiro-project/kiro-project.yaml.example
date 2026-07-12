@@ -112,7 +112,8 @@ max_tokens: 0              # 消費トークンの上限（0=無制限。act 出
 max_cost: 0.0              # 金額(USD)の上限（0=無制限。act 出力の @cost usd= を計上し超過で停止）
 max_retries: 2             # verify NG の再挑戦上限。超えたら人の判断（blocked）へ
 max_iterations: 3          # kiro-flow 内の再計画の最大反復
-verify_timeout: 120.0      # verify コマンドのタイムアウト（秒）
+verify_timeout: 600.0      # verify コマンドのタイムアウト（秒）。テストスイート全体を回す完了条件は
+                           # 数分かかる。短すぎると「完了しているのに時間切れ NG」になる
 act_timeout: 1800.0        # act（kiro-flow 実行）の結果待ちタイムアウト（秒）。0=無制限（完了まで待つ）。
                            #   executor: gitlab など人のレビュー往復で数日かかる長時間委譲では、
                            #   短いタイムアウトだと待ち切れずに retry を空増やし＆イシュー二重起票を

@@ -4608,7 +4608,11 @@ class Config:
     max_cost: float = 0.0          # 予算: 金額(USD)上限（0=無制限）
     max_retries: int = 2
     pace: float = 0.0
-    verify_timeout: float = 120.0
+    # verify の打ち切り時間（秒）。既定 120 秒では足りない: 「テストスイート全体を green にする」
+    # 類の完了条件は数分かかる（実際 990 件で 130 秒）。短すぎると **完了しているのに時間切れで
+    # NG** と判定し、リトライを積み上げた末に人へエスカレーションする（retries=6 まで無駄に
+    # 積み直して blocked になった）。act_timeout（既定 1800 秒）より十分短く、ハングの保護は保つ。
+    verify_timeout: float = 600.0
     verify_confirm: int = 1         # verify を最大この回数まで再実行し PASS/FAIL が跨いだら flake として人へ隔離（1=従来）
     verify_cwd: "str | None" = None  # verify/acceptance を実行する作業ディレクトリ（既定 workdir）。git-bus 等で
                                      # workdir に成果が無いとき、対象 repo のクローン先を指す。未指定かつ charter に
@@ -10346,7 +10350,7 @@ CONFIG_DEFAULTS = {
     "max_cost": 0.0,
     "max_retries": 2,
     "max_iterations": 3,
-    "verify_timeout": 120.0,
+    "verify_timeout": 600.0,   # テストスイート全体を回す verify は数分かかる（120 秒だと完了しても時間切れ NG）
     "verify_confirm": 1,
     "verify_cwd": None,
     "act_timeout": 1800.0,
