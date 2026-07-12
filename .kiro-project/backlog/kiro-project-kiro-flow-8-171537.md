@@ -1,5 +1,5 @@
 ## kiro-project-kiro-flow-8-171537: kiro-project / kiro-flow のユニットテストを拡充し、実装コードのカバレッジを 85% 以上へ引き上げる
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project/kiro-project.py --cov=tools/kiro-flow/kiro-flow.py --cov-fail-under=85`

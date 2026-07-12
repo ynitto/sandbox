@@ -1,5 +1,5 @@
 ## kiro-project-design-md-c-171537: 設計書 kiro-project-design.md に codd-gate 連携とテスト方針の変更点を反映する
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `grep -q 'codd-gate' docs/designs/kiro-project-design.md && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict`

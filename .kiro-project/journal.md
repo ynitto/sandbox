@@ -13,3 +13,13 @@
 - 2026-07-12 17:16:58 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
 - 2026-07-12 17:16:58 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-12 17:16:58 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 17:21:38 plan-review 承認: kiro-project-design-md-c-171537 → ready
+- 2026-07-12 17:21:38 commands 取り込み: approve kiro-project-design-md-c-171537（viewer-approve-kiro-project-design-md-c-171537-1783844495206.json）
+- 2026-07-12 17:21:38 plan-review 承認: kiro-project-kiro-flow-8-171537 → ready
+- 2026-07-12 17:21:38 commands 取り込み: approve kiro-project-kiro-flow-8-171537（viewer-approve-kiro-project-kiro-flow-8-171537-1783844498066.json）
+- 2026-07-12 17:21:38 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-12 17:21:38 === kiro-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-12 17:21:38 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 17:21:38 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-12 17:21:38 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-12 17:21:38 === project watch: 監視中（charter 更新/フィードバック待ち）===
