@@ -7907,6 +7907,80 @@ class TestTaskBranchAndDeliveryReview(unittest.TestCase):
                                 for m, p, _ in calls))           # ソースブランチ削除
 
 
+class DeliveryEvidenceTests(unittest.TestCase):
+    """検収の判断材料は「レビューすべき実体のコード」を示すこと。
+
+    成果物は worker が作業ブランチ kp/<task-id> へコミットする。ところが判断材料は cfg.workdir を
+    見ていて、状態 worktree（<repo>-kiro-state/.kiro-project）を指すため、出てくるのは bus/ の
+    claims や events の JSON ばかりだった。人は「何をどうレビューすればいいのか分からない」まま
+    承認を迫られる（実際そうなっていた: 変更ファイル 23 件がすべて bus の内部ファイル）。"""
+
+    def _repo(self):
+        top = Path(tempfile.mkdtemp(prefix="kp-ev-")).resolve()
+        self.addCleanup(shutil.rmtree, top, True)
+        env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        run = lambda *a: subprocess.run(a, cwd=top, capture_output=True, env=env)
+        run("git", "init", "-b", "main", ".")
+        run("git", "config", "user.email", "t@e.com")
+        run("git", "config", "user.name", "t")
+        (top / "src.py").write_text("x = 1\n")
+        run("git", "add", "-A")
+        run("git", "commit", "-m", "init")
+        # worker の作業ブランチ（実体のコード変更）
+        run("git", "checkout", "-q", "-b", "kp/T1")
+        (top / "src.py").write_text("x = 2\n")
+        (top / "test_src.py").write_text("assert True\n")
+        run("git", "add", "-A")
+        run("git", "commit", "-m", "[kiro-flow] t1")
+        run("git", "checkout", "-q", "main")
+        return top
+
+    def _cfg_with_run(self, top, d):
+        """状態 worktree 側に root を置き（＝本番と同じ形）、run メタに作業ブランチを記録する。"""
+        cfg = cfg_for(d)
+        cfg.state_top = top                      # 成果物のあるリポジトリは本体側
+        t = km.Task(id="T1", title="直す", status="doing", verify="true")
+        t.extra.append(("last_run", "req-abc-T1-r0"))
+        p = cfg.bus / "runs" / "req-abc-T1-r0"
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "meta.json").write_text(json.dumps({
+            "status": "done",
+            "workspace": {"base": "main", "branch": "kp/T1"}}), encoding="utf-8")
+        return cfg, t
+
+    def test_evidence_lists_the_real_code_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = self._repo()
+            cfg, t = self._cfg_with_run(top, Path(d))
+            ev = km.delivery_evidence(cfg, "", None, "local",
+                                      verify="true", vmsg="ok", ok=True, task=t)
+            self.assertIn("kp/T1", ev, "成果物は作業ブランチ")
+            self.assertIn("src.py", ev, "レビューすべき実体ファイルが出る")
+            self.assertIn("test_src.py", ev)
+            self.assertIn("diff main...", ev, "差分を開くコマンドを添える")
+            self.assertNotIn("bus/", ev, "bus の内部ファイルは判断材料ではない")
+            self.assertNotIn("claims", ev)
+
+    def test_risk_counts_real_files_not_bus_internals(self):
+        # 大差分（>=10）判定も実体ファイルで行う。bus の JSON を数えると無関係に med へ跳ねる。
+        with tempfile.TemporaryDirectory() as d:
+            top = self._repo()
+            cfg, t = self._cfg_with_run(top, Path(d))
+            wb = km._task_work_branch(cfg, t)
+            self.assertEqual(wb, ("main", "kp/T1"))
+            _ref, files = km.work_branch_changes(cfg, *wb)
+            self.assertEqual(sorted(files), ["src.py", "test_src.py"])
+
+    def test_falls_back_when_no_work_branch(self):
+        # 単発実行（作業ブランチが無い）では従来どおり workdir を見る
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            t = km.Task(id="T9", title="単発", verify="true")
+            ev = km.delivery_evidence(cfg, "", None, "local", task=t)
+            self.assertIn("- 成果物:", ev)
+
+
 class RiskDigestTests(unittest.TestCase):
     """検収（review）前のリスクダイジェスト（決定的な材料のみ・needs の ## リスク節と
     frontmatter risk: low/med/high）。承認フローは変えず情報だけが増えることを検証する。"""

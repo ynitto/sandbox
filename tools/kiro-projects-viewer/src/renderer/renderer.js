@@ -3228,7 +3228,9 @@ async function deleteFlowRun() {
   );
   if (!yes) return;
   const ok = await guard('実行の削除', async () => {
-    const res = await api.flowDeleteRun(state.project.busDir, run.runId);
+    // dir も渡す: アーカイブのスナップショット（flow-archive/<id>.json）を消さないと、
+    // bus から消えても run 一覧が「アーカイブ」として拾い直し、削除が効かないように見える
+    const res = await api.flowDeleteRun(state.project.dir, state.project.busDir, run.runId);
     uiLog('deleteRun', run.runId, res);
     toast(`実行を削除しました（${res.via === 'trash' ? 'ゴミ箱へ移動' : '完全削除'}）`, true);
     return true;

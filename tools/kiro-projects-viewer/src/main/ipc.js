@@ -185,11 +185,16 @@ function registerIpcHandlers() {
   });
 
   // 不要な run の削除（人の明示アクション）。実行中（orchestrator 生存）は拒否し、
-  // 終端（done/failed）と応答なし（孤児）だけを runs/<id> ごとゴミ箱へ移動する
-  handle('flow:deleteRun', async ({ busDir, runId }) => {
+  // 終端（done/failed）と応答なし（孤児）だけを runs/<id> ごとゴミ箱へ移動する。
+  //
+  // アーカイブのスナップショット（flow-archive/<run-id>.json）も一緒に消す。bus から消えても
+  // これが残っていると、run 一覧は「live に無いアーカイブ」として拾い直して表示し続ける
+  // ＝ 削除したのに消えない。人から見れば削除が効いていないのと同じ。
+  handle('flow:deleteRun', async ({ dir, busDir, runId }) => {
     const { runDir, status } = flow.prepareRunDeletion(busDir, runId);
     const via = await removeToTrash(runDir);
-    return { runDir, status, via };
+    const archived = dir ? flow.removeArchivedRun(dir, runId) : null;
+    return { runDir, status, via, archived };
   });
 
   // run のキャンセル（人の明示アクション＝唯一の hard-stop）。cancel マーカーを inbox へ置き

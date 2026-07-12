@@ -613,6 +613,22 @@ function readArchivedRun(projectDir, runId) {
 
 // アーカイブ済み run のサマリ一覧（archived: true 付き）。alive は判定対象外にする
 // （orchestrator はもう居ない。孤児と誤表示しない）。
+// アーカイブのスナップショットを消す（run 本体の削除と対で使う）。消せたらパスを返す。
+// bus から run を消してもこれが残ると、一覧が「live に無いアーカイブ」として拾い直して
+// 表示し続ける＝人から見れば削除が効いていない。
+function removeArchivedRun(projectDir, runId) {
+  const id = String(runId || '');
+  if (!id || id !== path.basename(id)) return null;
+  const file = path.join(flowArchiveDir(projectDir), `${id}.json`);
+  try {
+    fs.unlinkSync(file);
+    _archiveSig.delete(file);       // 署名キャッシュも落とす（次のポーリングで書き戻さない）
+    return file;
+  } catch {
+    return null;                    // 元から無い（アーカイブされていない run）
+  }
+}
+
 function listArchivedRuns(projectDir) {
   const dir = flowArchiveDir(projectDir);
   const out = [];
@@ -763,6 +779,7 @@ module.exports = {
   listRuns,
   archiveRunSnapshot,
   listArchivedRuns,
+  removeArchivedRun,
   readArchivedRun,
   flowArchiveDir,
   ARCHIVE_DIRNAME,

@@ -4735,11 +4735,89 @@ def _current_branch(cfg: "Config") -> str:
     return _git_out(cfg.workdir, "rev-parse", "--abbrev-ref", "HEAD").strip()
 
 
+def _source_repo(cfg: "Config") -> Path:
+    """成果物（worker が書いたコード）が置かれるリポジトリ。
+
+    cfg.workdir は状態 worktree（<repo>-kiro-state/.kiro-project）を指すので、そこの git を見ても
+    出てくるのは bus/ の claims や events ばかりで、レビューしたいコードは 1 行も出てこない。
+    コードは本体リポジトリの作業ブランチ kp/<task-id> にある。"""
+    return cfg.state_top or cfg.workdir
+
+
+def _task_work_branch(cfg: "Config", task: "Task") -> "tuple[str, str] | None":
+    """タスクの作業ブランチ (base, branch)。kiro-flow が run メタへ記録した workspace から取る。"""
+    rid = str(task.get("last_run") or "").strip()
+    if not rid:
+        return None
+    try:
+        meta = json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    ws = meta.get("workspace") or {}
+    branch = str(ws.get("branch") or "").strip()
+    if not branch:
+        return None
+    return (str(ws.get("base") or "main").strip() or "main"), branch
+
+
+def work_branch_changes(cfg: "Config", base: str, branch: str) -> "tuple[str, list[str]]":
+    """作業ブランチの成果 (ref, 変更ファイル一覧)。無ければ ("", [])。
+
+    worker は成果を origin へ push するので、ローカルに無ければ取り込んでから差分を取る。"""
+    repo = _source_repo(cfg)
+
+    def _has(ref: str) -> bool:
+        return bool(_git_out(repo, "rev-parse", "--verify", "--quiet", ref).strip())
+
+    ref = branch if _has(branch) else f"origin/{branch}"
+    if not _has(ref):
+        try:
+            subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", branch],
+                           capture_output=True, timeout=180)
+        except (OSError, subprocess.SubprocessError):
+            return "", []
+    if not _has(ref):
+        return "", []
+    files = [ln.strip() for ln in
+             _git_out(repo, "diff", "--name-only", f"{base}...{ref}").splitlines() if ln.strip()]
+    return ref, files
+
+
 def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "local",
                       verify: "str | None" = None, vmsg: str = "", ok: "bool | None" = None,
-                      max_files: int = 12) -> str:
+                      max_files: int = 12, task: "Task | None" = None) -> str:
     """人が「成果物がどこにあり・何が差分で・検証はどうだったか」を判断できる材料を作る。
-    needs（判断待ち）と DELIVERY/archive（受領）双方の説明欄に使う。git でなければ ref/差分は空。"""
+    needs（判断待ち）と DELIVERY/archive（受領）双方の説明欄に使う。git でなければ ref/差分は空。
+
+    成果物は **タスクの作業ブランチ（kp/<task-id>）** にある。cfg.workdir を見ると状態 worktree の
+    bus/ 内部ファイル（claims/events の JSON）が「差分」として並び、人は何をレビューすればいいか
+    分からない。作業ブランチが分かるならそちらの実体差分を出し、差分を開くコマンドも添える。"""
+    lines: "list[str]" = []
+    wb = _task_work_branch(cfg, task) if task is not None else None
+    if wb:
+        base, brname = wb
+        ref, files = work_branch_changes(cfg, base, brname)
+        if ref:
+            repo = _source_repo(cfg)
+            lines = [f"- 成果物: ブランチ `{brname}`（{len(files)} ファイル変更・base `{base}`）",
+                     f"- 所在: {repo}",
+                     f"- 差分を見る: `git -C {repo} diff {base}...{ref}`"]
+            if files:
+                shown = files[:max_files]
+                lines.append(f"- 変更ファイル（{len(files)} 件）:")
+                lines += [f"    - {p}" for p in shown]
+                if len(files) > len(shown):
+                    lines.append(f"    - …他 {len(files) - len(shown)} 件")
+            else:
+                lines.append(f"- 変更ファイル: なし（`{base}` と差が無い＝成果物が空）")
+            lines.append(f"- 実行先: {location}")
+            if verify is not None:
+                res = "PASS" if ok else ("FAIL" if ok is not None else "?")
+                vm = (vmsg or "").replace("\n", " ").strip()[:200]
+                lines.append(f"- 検証: `{verify}` → {res}" + (f"（{vm}）" if vm else ""))
+            return "\n".join(lines)
+
+    # 作業ブランチが特定できないとき（単発実行・git 以外）は従来どおり workdir を見る
     ref = extract_delivery_ref(act_msg, cfg, git_base)
     branch = _current_branch(cfg)
     changed = sorted(meaningful_changes(cfg, git_base)) if git_base is not None else []
@@ -5520,7 +5598,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
         ok, flaky, vmsg = run_verify_stable(task.verify, vcwd, cfg.verify_timeout,
                                             cfg.verify_confirm, venv)
         ev = delivery_evidence(cfg, act_msg, git_base, location,
-                               verify=task.verify, vmsg=vmsg, ok=ok)
+                               verify=task.verify, vmsg=vmsg, ok=ok, task=task)
         if ok and not flaky and cfg.regression_cmd:    # done 確定前のグローバル回帰ゲート（巻き込み事故）
             rok, rmsg = run_verify(cfg.regression_cmd, vcwd, cfg.verify_timeout, venv)
             if not rok:
@@ -5535,7 +5613,7 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     except RuntimeError as e:      # workspace clone 失敗等は黙って workdir に倒さず NG（成果の無い場所で誤判定しない）
         ok, flaky, vmsg = False, False, str(e)[:500]
         ev = delivery_evidence(cfg, act_msg, git_base, location,
-                               verify=task.verify, vmsg=vmsg, ok=ok)
+                               verify=task.verify, vmsg=vmsg, ok=ok, task=task)
     finally:
         if vtmp:
             shutil.rmtree(vtmp, ignore_errors=True)
@@ -5544,7 +5622,15 @@ def _settle_task(cfg: "Config", task: "Task", location: str, act_msg: str, cycle
     changed: set = set()
     protect_hits: list = []
     if ok and not flaky and not regressed:
-        changed = meaningful_changes(cfg, git_base)    # act が生んだ成果差分（kiro 状態ファイルは除外）
+        # 成果差分は **作業ブランチ（kp/<task-id>）** から取る。cfg.workdir は状態 worktree を指す
+        # ので、そこを見ると bus/ の claims/events が「変更ファイル」として並び、保護パス判定も
+        # リスク判定（大差分＝med）も実体と無関係な数字で動いてしまう。
+        wb = _task_work_branch(cfg, task)
+        if wb:
+            _ref, _files = work_branch_changes(cfg, wb[0], wb[1])
+            changed = set(_files)
+        if not changed:                               # 作業ブランチが無い（単発実行等）は従来どおり
+            changed = meaningful_changes(cfg, git_base)
         if policy.protect:                             # act が保護パスを触ったか（safety denylist）
             protect_hits = sorted({(p, m) for p in changed
                                    if (m := path_protected(p, policy.protect))})

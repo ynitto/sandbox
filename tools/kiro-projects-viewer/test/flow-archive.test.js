@@ -115,4 +115,22 @@ test('readArchivedRun は不正な runId / 未知の runId に null を返す', 
   }
 });
 
+
+// run を削除したらアーカイブのスナップショットも消す。残すと一覧が「live に無いアーカイブ」
+// として拾い直し、削除したのに表示から消えない（人から見れば削除が効いていない）。
+test('run の削除でアーカイブのスナップショットも消える', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-del-'));
+  const runId = 'run-20260101-000000-1111';
+  const archDir = flow.flowArchiveDir(dir);
+  fs.mkdirSync(archDir, { recursive: true });
+  const snap = path.join(archDir, `${runId}.json`);
+  fs.writeFileSync(snap, JSON.stringify({ savedAt: 'x', run: { runId, status: 'done' } }));
+
+  assert.strictEqual(flow.listArchivedRuns(dir).length, 1, '前提: アーカイブに 1 件ある');
+  const removed = flow.removeArchivedRun(dir, runId);
+  assert.ok(removed, 'スナップショットを消す');
+  assert.strictEqual(flow.listArchivedRuns(dir).length, 0, '一覧から消える');
+  assert.strictEqual(flow.removeArchivedRun(dir, runId), null, '無い run は null（冪等）');
+});
+
 console.log(`\n${passed} passed`);
