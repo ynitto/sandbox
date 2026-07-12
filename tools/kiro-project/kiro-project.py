@@ -2979,6 +2979,30 @@ def _has_command_like_leading_token(line: str) -> bool:
     )
 
 
+_LEADING_LIST_MARKER_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+
+
+def _looks_like_command(line: str) -> bool:
+    """1行が「実行可能なコマンド行」か「散文」かを、サブプロセスを起動せず字面だけで判定する。
+
+    判定前に `$ ` シェルプロンプトと `1. ` `- ` のような箇条書き装飾を1回だけ剥がす
+    （`$(...)` `$VAR` や `2to3` は対象の正規表現に一致しないため誤って剥がされない）。
+    剥がした残りが空・`#` 見出しやコメント・フェンス言語タグの残骸・全角句読点を含む文
+    のいずれかであれば散文とみなして False。それ以外は `_has_command_like_leading_token`
+    と同じ基準（既知コマンド語／パス表記／ハイフン付きCLI名で始まるか）で判定する。
+    `sh -n` を呼ぶ `_looks_like_shell_command` より軽量なため、大量の候補行を構文解析
+    なしで一括にふるいにかける事前フィルタ用途に使える。
+    """
+    s = _LEADING_LIST_MARKER_RE.sub("", _strip_leading_shell_prompt(line.strip()), count=1)
+    if not s or s.startswith("#"):
+        return False
+    if s.casefold() in _SHELL_FENCE_LANGUAGE_TAGS:
+        return False
+    if any(ch in s for ch in _PROSE_PUNCT):
+        return False
+    return _has_command_like_leading_token(s)
+
+
 _TRAILING_BACKSLASH_RE = re.compile(r"\\\s*$")
 
 

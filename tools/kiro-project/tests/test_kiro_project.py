@@ -5076,6 +5076,39 @@ echo this-later-command-must-not-be-selected
             "pytest -q \\",
         )
 
+    def test_looks_like_command_accepts_known_command_word(self):
+        self.assertTrue(km._looks_like_command("python3 -m pytest tools/kiro-project/tests -q"))
+        self.assertTrue(km._looks_like_command("pytest -q"))
+
+    def test_looks_like_command_accepts_path_and_hyphenated_cli(self):
+        self.assertTrue(km._looks_like_command("./scripts/check.sh --quick"))
+        self.assertTrue(km._looks_like_command("custom-check --all"))
+
+    def test_looks_like_command_strips_shell_prompt_symbol(self):
+        self.assertTrue(km._looks_like_command("$ python3 -m pytest -q"))
+
+    def test_looks_like_command_strips_bullet_and_numbered_markers(self):
+        self.assertTrue(km._looks_like_command("- ./scripts/check.sh --quick"))
+        self.assertTrue(km._looks_like_command("1. pytest -q"))
+        self.assertTrue(km._looks_like_command("12) rg -n foo"))
+
+    def test_looks_like_command_does_not_misparse_dollar_expansion_or_version_token(self):
+        # `$(...)` `$VAR` はプロンプト記号でないため剥がさない。`2to3` は箇条書き番号ではない。
+        self.assertFalse(km._looks_like_command("$(date) --iso"))
+        self.assertFalse(km._looks_like_command("2to3 --version"))
+
+    def test_looks_like_command_rejects_japanese_prose_preamble(self):
+        self.assertFalse(km._looks_like_command("以下のコマンドを実行してください"))
+        self.assertFalse(km._looks_like_command("検証コマンドは次のとおりです。"))
+
+    def test_looks_like_command_rejects_numbered_prose_line(self):
+        self.assertFalse(km._looks_like_command("2. 結果がグリーンになることを確認"))
+
+    def test_looks_like_command_rejects_heading_comment_and_fence_language_tag(self):
+        self.assertFalse(km._looks_like_command("# comment"))
+        self.assertFalse(km._looks_like_command("bash"))
+        self.assertFalse(km._looks_like_command(""))
+
     def test_join_continuations_merges_backslash_continued_lines(self):
         self.assertEqual(
             km._join_continuations(["pytest -q \\", "  -k first_command_line"]),
