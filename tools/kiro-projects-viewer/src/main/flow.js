@@ -654,7 +654,20 @@ function daemonStatus(busDir, lockDir) {
   }
   const pid = parseInt(raw.trim().split('\n')[0], 10) || 0;
   if (!pid) return { running: null, pid: 0, lockPath, via: 'lock' };
-  return { running: pidAlive(pid), pid, lockPath, via: 'lock' };
+  const alive = pidAlive(pid);
+  const out = { running: alive, pid, lockPath, via: 'lock' };
+  // 生存判定はロック（pid）が正。加えて daemon がローカルにも書く status.json が新しければ、
+  // orchestrator/worker 数をベストエフォートで添える（同一ホストでも「何基動いているか」を可視化する）。
+  // status.json が無い/古い場合は数を付けない＝生存判定・従来挙動には一切影響しない。
+  if (alive) {
+    const status = readDaemonStatus(busDir);
+    if (status && status.fresh) {
+      if (Number.isFinite(status.orchestrators)) out.orchestrators = status.orchestrators;
+      if (Number.isFinite(status.workers)) out.workers = status.workers;
+      if (status.node_id) out.nodeId = status.node_id;
+    }
+  }
+  return out;
 }
 
 // 対象バスの kiro-flow daemon を停止する（人の明示アクション。プロジェクトのリセットで使う）。

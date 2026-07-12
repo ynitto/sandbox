@@ -150,6 +150,53 @@ function mkProject() {
     }
   });
 
+  await test('daemonStatus は status.json から orchestrator/worker 数を添える（lock 経路）', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-reset-cnt-'));
+    const busDir = path.join(tmp, 'bus');
+    const lockDir = path.join(tmp, 'locks');
+    fs.mkdirSync(busDir, { recursive: true });
+    fs.mkdirSync(lockDir, { recursive: true });
+    try {
+      // 生存 pid（このプロセス自身）をロックに書く＝lock 経路で running:true になる
+      const lockPath = flow.daemonStatus(busDir, lockDir).lockPath;
+      fs.writeFileSync(lockPath, `${process.pid}\n`, 'utf8');
+      // daemon が書く生存信号（新しい updated_iso ＋ 稼働数）
+      fs.writeFileSync(path.join(busDir, 'status.json'), JSON.stringify({
+        host: 'h', pid: process.pid, node_id: 'h-1', orchestrators: 1, workers: 2,
+        updated_iso: new Date().toISOString(), fresh_after_sec: 600,
+      }), 'utf8');
+      const st = flow.daemonStatus(busDir, lockDir);
+      assert.strictEqual(st.running, true, '生存 pid ＝ 稼働中');
+      assert.strictEqual(st.via, 'lock', 'ロックが正');
+      assert.strictEqual(st.orchestrators, 1, 'orchestrator 数が添う');
+      assert.strictEqual(st.workers, 2, 'worker 数が添う');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await test('daemonStatus は古い status.json の数は添えない（生存判定は lock が正）', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-reset-cnt2-'));
+    const busDir = path.join(tmp, 'bus');
+    const lockDir = path.join(tmp, 'locks');
+    fs.mkdirSync(busDir, { recursive: true });
+    fs.mkdirSync(lockDir, { recursive: true });
+    try {
+      const lockPath = flow.daemonStatus(busDir, lockDir).lockPath;
+      fs.writeFileSync(lockPath, `${process.pid}\n`, 'utf8');
+      fs.writeFileSync(path.join(busDir, 'status.json'), JSON.stringify({
+        orchestrators: 5, workers: 9,
+        updated_iso: new Date(Date.now() - 3600 * 1000).toISOString(), fresh_after_sec: 120,
+      }), 'utf8');
+      const st = flow.daemonStatus(busDir, lockDir);
+      assert.strictEqual(st.running, true, '生存判定は lock 由来で維持');
+      assert.strictEqual(st.orchestrators, undefined, '古い数は添えない');
+      assert.strictEqual(st.workers, undefined, '古い数は添えない');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   console.log(`\n${passed} passed`);
 })().catch((err) => {
   console.error(err);

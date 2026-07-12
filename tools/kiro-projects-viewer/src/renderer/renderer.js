@@ -2584,7 +2584,15 @@ function daemonBadge() {
   uiLogOnChange('flowDaemon', d);
   const synced = d.via === 'status-sync';
   if (d.running === true) {
-    return `<span class="status-chip st-running" title="${synced ? `別マシンで稼働（最終確認 ${fmtAgoSec(d.ageSec)}）` : 'このマシンで稼働中'}">実行エンジン: 稼働中${synced ? '（別マシン）' : ''}</span>`;
+    // 稼働中は「別マシンか」「orchestrator/worker が何基か」を1つの括弧にまとめて添える
+    // （数は status.json 由来のベストエフォート。取れないときは従来どおり別マシン表記のみ）。
+    const bits = [];
+    if (synced) bits.push('別マシン');
+    if (Number.isFinite(d.orchestrators)) bits.push(`orchestrator ${d.orchestrators}`);
+    if (Number.isFinite(d.workers)) bits.push(`worker ${d.workers}`);
+    const suffix = bits.length ? `（${bits.join('・')}）` : '';
+    const title = synced ? `別マシンで稼働（最終確認 ${fmtAgoSec(d.ageSec)}）` : 'このマシンで稼働中';
+    return `<span class="status-chip st-running" title="${title}">実行エンジン: 稼働中${suffix}</span>`;
   }
   if (d.running === false) {
     if (synced) {
