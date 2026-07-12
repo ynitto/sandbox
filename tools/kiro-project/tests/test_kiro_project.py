@@ -4927,6 +4927,25 @@ class TestVerifyAssist(unittest.TestCase):
     def test_first_command_line_returns_empty_without_candidate(self):
         self.assertEqual(km._first_command_line("\n# comment only\n"), "")
 
+    def test_first_command_line_prose_only_never_becomes_synth_verify_command(self):
+        # コマンドを含まない散文が再試行で返り続けても、verify として誤採用しない。
+        cfg = cfg_for(Path("."))
+        responses = iter([
+            "検証方法を説明します。まず対象の動作を確認してください。",
+            "決定的な検証コマンドは提示できません。",
+        ])
+        calls = []
+
+        def prose_only(prompt, model):
+            calls.append((prompt, model))
+            return next(responses)
+
+        self.assertEqual(
+            km.synth_verify(cfg, "x", "曖昧", kiro_run=prose_only, attempts=2),
+            "",
+        )
+        self.assertEqual(len(calls), 2)
+
     def test_synth_verify_rejects_japanese_prose(self):
         # バグ修正: エージェントが自然言語（説明/拒否文）を返しても shell へ流さない
         cfg = cfg_for(Path("."))
