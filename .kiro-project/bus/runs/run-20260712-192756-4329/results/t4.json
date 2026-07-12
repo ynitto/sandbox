@@ -1,0 +1,10 @@
+{
+  "id": "t4",
+  "who": "worker-1",
+  "status": "done",
+  "output": "(a) 成果／サマリー\n\n- macOS 固有のパス差分を実測・棚卸しした。\n- `/var` は `realpath` で `/private/var` となり、`TMPDIR`・`tempfile` の文字列と不一致になる。\n- 使用中のファイルシステムは大文字小文字を区別せず、異なるケースでも `samefile=True`。\n- 既存実装は green のため、ソース変更なし。\n- 成果物: [macos-path-audit.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-192756-4329/artifacts/t4/macos-path-audit.md)\n\n(b) 検証\n\n```text\npython3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q\n900 passed in 120.25s\nexit code: 0\n```\n\n(c) 前提・未解決事項\n\n- 既存テストが成功する場合、不要なコード変更は行わないと判断した。\n- 初回は pytest 未導入だったため pytest 8.4.2 をユーザー環境へインストールした。\n- 大文字小文字を区別する別形式のmacOSボリュームでの検証は範囲外。",
+  "finished_at": "2026-07-12T10:36:14Z",
+  "artifacts": [
+    "artifacts/t4/macos-path-audit.md"
+  ]
+}

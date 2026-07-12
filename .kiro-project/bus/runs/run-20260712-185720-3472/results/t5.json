@@ -1,0 +1,10 @@
+{
+  "id": "t5",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果\n\n- 変更範囲は `tools/kiro-project/kiro-project.py` と同配下のテストに限定可能。\n- `codd-gate` はインストール済み。具体的な verify 結線案は次の1点。\n\n```yaml\nregression_cmd: 'codd-gate verify --base \"$KIRO_BASE_REV\"'\n```\n\n## 検証\n\n- 指定 pytest: 未達\n  - `/usr/bin/python3`: pytest 未導入で終了コード 1\n  - 既存 `.venv`: `512 deselected` で終了コード 5\n- 原因: 現ブランチに `first_command_line` に一致するテストがまだ存在しない。\n- 指定 worktreeへの変更なし。範囲外の実装・環境変更は未実施。\n\n自己完結した報告は[成果物](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-185720-3472/artifacts/t5/charter-scope-and-codd-gate.md)に出力済みです。",
+  "finished_at": "2026-07-12T10:00:11Z",
+  "artifacts": [
+    "artifacts/t5/charter-scope-and-codd-gate.md"
+  ]
+}

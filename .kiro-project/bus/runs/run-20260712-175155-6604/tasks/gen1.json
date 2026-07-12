@@ -1,0 +1,6 @@
+{
+  "id": "gen1",
+  "goal": "kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取",
+  "deps": [],
+  "kind": "generate"
+}

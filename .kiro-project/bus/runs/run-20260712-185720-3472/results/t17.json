@@ -1,0 +1,10 @@
+{
+  "id": "t17",
+  "who": "worker-2",
+  "status": "failed",
+  "output": "実行エラー: workspace push が kp/synth_verify-_first_comm-172544 へ反映できませんでした",
+  "finished_at": "2026-07-12T10:09:45Z",
+  "artifacts": [
+    "artifacts/t17/prompt-prefix-test-report.md"
+  ]
+}

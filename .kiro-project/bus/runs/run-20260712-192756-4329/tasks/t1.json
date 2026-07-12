@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "macOS 上で `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、失敗している git 自己修復テスト4件のテストID・失敗アサーション行・トレースバックを生ログとして記録する（推測を混ぜず実測のみ）",
+  "deps": [],
+  "kind": "work"
+}

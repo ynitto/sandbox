@@ -1,0 +1,11 @@
+{
+  "id": "t9-gate",
+  "goal": "t9 の map 結果を集約前に検証",
+  "deps": [
+    "t9-m1",
+    "t9-m2",
+    "t9-m3",
+    "t9-m4"
+  ],
+  "kind": "verify"
+}

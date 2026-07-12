@@ -1,0 +1,6 @@
+{
+  "id": "t2",
+  "goal": "tools/kiro-flow の git 自己修復（self-heal）実装を読み、対象関数・呼び出し経路・実行している git サブコマンドと外部プロセス起動箇所を一覧化する",
+  "deps": [],
+  "kind": "work"
+}

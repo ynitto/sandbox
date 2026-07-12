@@ -1,0 +1,6 @@
+{
+  "id": "t3",
+  "goal": "tools/kiro-project/tests 配下を棚卸しし、first_command_line / synth_verify に関する既存テストの有無・テストファイル名・命名規約・pytest -k first_command_line で選択される関数名条件を確定する。",
+  "deps": [],
+  "kind": "work"
+}

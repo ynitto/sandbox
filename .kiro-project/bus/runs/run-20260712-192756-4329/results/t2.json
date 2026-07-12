@@ -1,0 +1,10 @@
+{
+  "id": "t2",
+  "who": "worker-2",
+  "status": "done",
+  "output": "成果物: [git-self-heal-inventory.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-192756-4329/artifacts/t2/git-self-heal-inventory.md)\n\n- `GitBus`、`StateGit`、共有bare cache/worktreeの対象関数・呼び出し経路・gitサブコマンド・外部プロセス起動箇所を一覧化\n- ソース変更なし\n- 検証結果: `900 passed in 117.04s`\n- 指定テストコマンド: 終了コード `0`\n- 対象worktree: 変更なし",
+  "finished_at": "2026-07-12T10:41:05Z",
+  "artifacts": [
+    "artifacts/t2/git-self-heal-inventory.md"
+  ]
+}

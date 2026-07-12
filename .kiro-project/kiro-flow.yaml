@@ -1,0 +1,16 @@
+# kiro-flow の設定（kiro-project 経由の実行で読まれるのはこのファイル）。
+#
+# kiro-project は kiro-flow を cwd=<root>（= この .kiro-project ディレクトリ）で起動する。
+# kiro-flow の設定探索は cwd 直下 → cwd/.kiro → ~/.kiro の順なので、ワークスペース側の
+# <repo>/.kiro/kiro-flow.yaml は探索対象に入らない（あちらは kiro-flow を repo 直下から
+# 直接叩くとき用）。ここに置かないと組み込み既定（agent_cli: kiro）で worker が動く。
+#
+# bus は kiro-project が --bus で明示的に渡すため、ここでは指定しない。
+
+agent_cli: claude      # agents で指定しない役割（doctor 等）の既定
+
+agents:
+  planner:   {agent_cli: claude, model: opus}        # 戦略選定・分解
+  evaluator: {agent_cli: claude, model: opus}        # 継続判断・再計画
+  worker:    {agent_cli: codex, model: gpt-5.6-sol}  # 全 kind の既定
+  verify:    {agent_cli: copilot}                    # 個別 kind は worker より優先

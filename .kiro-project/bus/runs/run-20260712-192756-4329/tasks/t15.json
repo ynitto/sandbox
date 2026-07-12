@@ -1,0 +1,9 @@
+{
+  "id": "t15",
+  "goal": "完了条件コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、終了コードと残存失敗テスト一覧を記録する",
+  "deps": [
+    "t13",
+    "t14"
+  ],
+  "kind": "work"
+}

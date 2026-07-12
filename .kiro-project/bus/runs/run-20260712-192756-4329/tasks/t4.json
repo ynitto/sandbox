@@ -1,0 +1,6 @@
+{
+  "id": "t4",
+  "goal": "macOS 固有のパス差分を棚卸しする観点タスク: /var→/private/var の symlink による realpath 不一致、TMPDIR の実体パス、大文字小文字を区別しないファイルシステム。実際に Python で tempfile と os.path.realpath の値を出力して確認する",
+  "deps": [],
+  "kind": "work"
+}

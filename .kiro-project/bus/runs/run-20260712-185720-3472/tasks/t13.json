@@ -1,0 +1,8 @@
+{
+  "id": "t13",
+  "goal": "synth_verify 側で _first_command_line が None を返したときの扱いを整える。合成を黙って壊さず、原因が分かるログ/エラーメッセージを出す（既存の失敗経路と整合させる）。",
+  "deps": [
+    "t12"
+  ],
+  "kind": "generate"
+}

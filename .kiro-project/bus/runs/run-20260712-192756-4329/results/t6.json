@@ -1,0 +1,10 @@
+{
+  "id": "t6",
+  "who": "worker-1",
+  "status": "done",
+  "output": "(a) 成果／サマリー\n\nBSD/GNU 差を調査しました。git 自己修復処理は `readlink -f`、外部 `mktemp`、外部 `date`、`sed` に依存していません。`sed -i` はインストーラのみで、macOS向け分岐済みです。コード変更は不要でした。\n\n詳細: [bsd-gnu-command-audit.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-192756-4329/artifacts/t6/bsd-gnu-command-audit.md)\n\n(b) 検証\n\n- 既存venvで指定スイートを実行\n- 結果: `900 passed in 122.70s`\n- 終了コード: `0`\n- `git status --short`: 変更なし\n\n(c) 前提・未解決事項\n\nシステム `python3` には pytest がなく、指定コマンドそのものは `No module named pytest` になりました。環境変更を避け、既存venvのPythonで同一スイートを検証しています。BSD/GNU差による自己修復テスト失敗は現在のworktreeでは再現しませんでした。",
+  "finished_at": "2026-07-12T10:32:58Z",
+  "artifacts": [
+    "artifacts/t6/bsd-gnu-command-audit.md"
+  ]
+}

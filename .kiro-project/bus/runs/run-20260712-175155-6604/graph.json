@@ -1,0 +1,25 @@
+{
+  "strategy": {
+    "patterns": [
+      "adversarial-verification"
+    ],
+    "parallelism": 6,
+    "review": false,
+    "reason": "stub heuristic → adversarial-verification（粒度 finest）"
+  },
+  "nodes": {
+    "gen1": {
+      "goal": "kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取",
+      "deps": [],
+      "kind": "generate"
+    },
+    "verify1": {
+      "goal": "成果を批判的に検証",
+      "deps": [
+        "gen1"
+      ],
+      "kind": "verify"
+    }
+  },
+  "iteration": 0
+}

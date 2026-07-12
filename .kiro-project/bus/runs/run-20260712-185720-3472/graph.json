@@ -1,0 +1,211 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 16,
+    "review": true,
+    "reason": "原因が「_first_command_line のパース仕様」という単一関数に集中しているため、まず調査を観点ごと（現行実装・synth_verify 呼び出し経路・既存テスト・壊れる LLM 出力形状・制約確認）に fan-out し、verify ノードで矛盾・欠落を敵対的に潰してから仕様へ synthesize する。実装は同一関数を触るため小さな責務ごとに直列チェーン化し、逆にテストは観点ごとに独立生成できるので並列 fan-out して 1 ノードで統合する。実装とテストが揃ったら adversarial-verification でテストの緩みや見落とし（フェンス内コメント・複数フェンス・前置き散文）を突き、最後に完了条件コマンド（pytest -k first_command_line）が終了コード 0 になるまで loop-until-done で反復し、成果を reduce でまとめる。"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/kiro-project/kiro-project.py 内の _first_command_line の現行実装を特定し、関数本体（行番号付き）と現在の行選択ロジック・正規表現・除外条件をそのまま書き出す。改変はしない。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "synth_verify の実装と呼び出し経路を追い、_first_command_line に渡る入力（LLM 応答文字列）と戻り値の使われ方、コマンドが取れなかったときに verify 合成がどう失敗するか（例外・空文字・スキップ）を1経路として記述する。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "tools/kiro-project/tests 配下を棚卸しし、first_command_line / synth_verify に関する既存テストの有無・テストファイル名・命名規約・pytest -k first_command_line で選択される関数名条件を確定する。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "現行実装が取りこぼす LLM 出力の形状を列挙する（```bash フェンス、言語タグなしフェンス、フェンス前の前置き散文、$ / % / > プロンプト接頭辞、番号付きリスト、複数フェンス、フェンス内の空行・# コメント、コマンドを含まない応答）。各形状について「現行が何を返すか」を実際に手で追って記録する。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t5": {
+      "goal": "charter 制約の確認: 変更範囲を sandbox リポジトリの tools/kiro-project 配下に限定できることを確認し、codd-gate がインストール済みなら本変更で活用できる形（verify への結線）を1点だけ具体化する。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t6": {
+      "goal": "t1〜t5 の調査結果を敵対的にレビューし、矛盾・未確認の思い込み・欠落した入力形状がないかを指摘する。特に『現行がどこで落ちるか』が実コード上の根拠付きで示されているかを検証し、不足があれば具体的に差し戻し内容を書く。",
+      "deps": [
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "kind": "verify"
+    },
+    "t7": {
+      "goal": "_first_command_line のパース仕様を確定する。入力形状ごとの受理/拒否ルールを表形式で定義し、優先順位（フェンス優先 → フェンス外フォールバック → None）と、コマンド行とみなす判定基準を明文化する。",
+      "deps": [
+        "t6"
+      ],
+      "kind": "synthesize"
+    },
+    "t8": {
+      "goal": "コードフェンス抽出ヘルパを実装する。``` または ```lang で始まるブロックを検出し、開始/終了行を除いた中身の行リストを順序どおり返す（未閉じフェンスは末尾までとして扱う）。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t9": {
+      "goal": "フェンス内の行リストから最初の実行可能コマンド行を選ぶロジックを実装する。空行・# で始まるコメント行・言語タグ残骸を除外する。",
+      "deps": [
+        "t8"
+      ],
+      "kind": "generate"
+    },
+    "t10": {
+      "goal": "シェルプロンプト接頭辞（'$ ', '% ', '> ', '❯ '）の除去処理を実装し、除去後の文字列をコマンドとして返す。接頭辞のみで本体が空の行は不採用とする。",
+      "deps": [
+        "t9"
+      ],
+      "kind": "generate"
+    },
+    "t11": {
+      "goal": "フェンスが存在しない場合のフォールバックを実装する。前置き散文行をスキップし、コマンドらしい行（既知のコマンド語で始まる、あるいは実行可能トークン列である）を先頭から探して返す。",
+      "deps": [
+        "t9"
+      ],
+      "kind": "generate"
+    },
+    "t12": {
+      "goal": "どの規則でもコマンドが取れない入力に対して _first_command_line が None（既存の型契約に合わせる）を返すことを保証し、散文だけの応答でコマンドを誤検出しないことをコード上で担保する。",
+      "deps": [
+        "t11"
+      ],
+      "kind": "generate"
+    },
+    "t13": {
+      "goal": "synth_verify 側で _first_command_line が None を返したときの扱いを整える。合成を黙って壊さず、原因が分かるログ/エラーメッセージを出す（既存の失敗経路と整合させる）。",
+      "deps": [
+        "t12"
+      ],
+      "kind": "generate"
+    },
+    "t14": {
+      "goal": "テスト観点『```bash フェンス内のコマンドを拾える』のテストケース（入力文字列と期待コマンド）を設計する。関数名は first_command_line を含める。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t15": {
+      "goal": "テスト観点『言語タグなし ``` フェンス内のコマンドを拾える』のテストケースを設計する。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t16": {
+      "goal": "テスト観点『LLM が前置き散文を付けてもフェンス内のコマンドを拾える』のテストケースを設計する（例: 「以下のコマンドで検証できます:」＋フェンス）。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t17": {
+      "goal": "テスト観点『$ / % などのプロンプト接頭辞が除去される』のテストケースを設計する。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t18": {
+      "goal": "テスト観点『フェンスなし・前置き散文＋コマンド行の応答から、コマンド行だけを拾える』のテストケースを設計する。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t19": {
+      "goal": "テスト観点『フェンスが複数ある場合、最初のコマンドを返す』のテストケースを設計する。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t20": {
+      "goal": "テスト観点『フェンス内の空行と # コメント行をスキップして実コマンド行を返す』のテストケースを設計する。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t21": {
+      "goal": "テスト観点『コマンドを含まない散文のみの応答では None を返し、synth_verify が誤ったコマンドを合成しない』のテストケースを設計する。",
+      "deps": [
+        "t7"
+      ],
+      "kind": "generate"
+    },
+    "t22": {
+      "goal": "t14〜t21 のテストケースを tools/kiro-project/tests の既存テストファイル（t3 の命名規約に従う）へ追加する。pytest -k first_command_line で全件が選択される関数名にする。",
+      "deps": [
+        "t14",
+        "t15",
+        "t16",
+        "t17",
+        "t18",
+        "t19",
+        "t20",
+        "t21"
+      ],
+      "kind": "work"
+    },
+    "t23": {
+      "goal": "実装（t8-t13）とテスト（t22）を敵対的にレビューする。テストが実装に合わせて緩められていないか、t4 で列挙した形状のうち未カバーのものがないか、既存の他テストを壊していないかを検証し、問題があれば具体的な修正指示を返す。",
+      "deps": [
+        "t13",
+        "t22"
+      ],
+      "kind": "verify"
+    },
+    "t24": {
+      "goal": "python3 -m pytest tools/kiro-project/tests -q -k first_command_line を実行し、出力と終了コードを記録する。失敗した場合はスタックトレースから原因（実装側かテスト側か）を切り分けて修正する。",
+      "deps": [
+        "t23"
+      ],
+      "kind": "work"
+    },
+    "t25": {
+      "goal": "完了条件の検証: python3 -m pytest tools/kiro-project/tests -q -k first_command_line が終了コード 0 になることを確認し、併せて -k なしの全体テストが回帰していないことも確認する。失敗が残る間は t24 へ差し戻して反復する（loop-until-done）。",
+      "deps": [
+        "t24"
+      ],
+      "kind": "verify"
+    },
+    "t26": {
+      "goal": "変更ファイル一覧・確定したパース仕様・追加したテスト観点・完了条件コマンドの実行結果を集約し、成果物としてまとめる。",
+      "deps": [
+        "t25"
+      ],
+      "kind": "reduce"
+    },
+    "t27": {
+      "goal": "tools/kiro-project/kiro-project.py の _first_command_line で、フェンス外フォールバックの候補フィルタが ANSI エスケープを含む生の行に適用されているために起きている回帰を直す。現状: _first_command_line は `_first_executable_line([line for line in lines if _has_command_like_leading_token(line.strip())])` と書かれており、_has_command_like_leading_token が正規化前の行を受け取る。そのため kiro-cli の色付き出力 \"\\x1b[2K\\x1b[36mgrep -q '## 概要' README.md\\x1b[0m\" では先頭トークンが \\x1b[2K\\x1b[36mgrep となり、_KNOWN_COMMAND_WORDS 一致・実行パス判定・ハイフン付き CLI 判定のすべてを外れて候補が空になり、_first_command_line が None、synth_verify が空文字を返す。修正方針: 各行を先に _strip_code（ANSI/制御コード除去）で正規化してから _has_command_like_leading_token と _first_executable_line にかける（正規化→判定の順にする）。フェンス内経路の挙動は変えないこと。完了条件は 2 つとも満たすこと: (1) `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` が終了コード 0、(2) `python3 -m pytest tools/kiro-project/tests -q` が全件 pass（既存の TestVerifyAssist::test_synth_verify_strips_ansi_from_kiro_output を含め 1 件も failed が無いこと）。既存テストを書き換えて通すのではなく実装側を直すこと。作業ブランチ kp/synth_verify-_first_comm-172544 に push し、push 失敗時は報告すること。",
+      "deps": [],
+      "kind": "work"
+    },
+    "t28": {
+      "goal": "作業ブランチ kp/synth_verify-_first_comm-172544 を最新化し、リポジトリルートで 2 つのコマンドを実行して結果を終了コードごと報告する: (1) `python3 -m pytest tools/kiro-project/tests -q -k first_command_line`、(2) `python3 -m pytest tools/kiro-project/tests -q`。(1) が終了コード 0 かつ 1 件以上のテストが選択されている（deselected のみで 0 件選択になっていない）こと、(2) が failed 0 件で全件 pass することの両方を満たせば pass、いずれか欠ければ fail とし、失敗したテスト名とアサーション内容をそのまま issues に転記すること。",
+      "deps": [
+        "t27"
+      ],
+      "kind": "verify"
+    }
+  },
+  "iteration": 1
+}

@@ -1,0 +1,19 @@
+{
+  "id": "t4",
+  "who": "worker-2",
+  "status": "done",
+  "output": "(a) 成果\n\n- 9形状と派生ケースについて、現行の戻り値と `synth_verify` への影響を記録しました。\n- 成果物: [first-command-line-current-behavior.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-185720-3472/artifacts/t4/first-command-line-current-behavior.md)\n- 基準ユニットテストを1件追加しました。\n\n(b) 検証\n\n```text\n1 passed, 512 deselected in 0.10s\n```\n\n`git diff --check` も成功しています。\n\n(c) 前提・未解決事項\n\n- 「現行が返す値」は `_first_command_line` の直接の戻り値と解釈しました。\n- 実装修正や複数フェンスの選択方針は後続タスクの範囲として未変更です。\n- 範囲外の発見事項として、英語散文が `sh -n` を通り verify に誤採用される問題を記録しました。",
+  "finished_at": "2026-07-12T10:02:37Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "967f7e73afd3e1953300c9fd4bea61a1db1af79f",
+      "target": "main",
+      "path": ""
+    }
+  },
+  "artifacts": [
+    "artifacts/t4/first-command-line-current-behavior.md"
+  ]
+}

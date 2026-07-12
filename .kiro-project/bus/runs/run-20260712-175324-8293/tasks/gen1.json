@@ -1,0 +1,6 @@
+{
+  "id": "gen1",
+  "goal": "synth_verify の _first_command_line がコードフェンス内のコマン",
+  "deps": [],
+  "kind": "generate"
+}

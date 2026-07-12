@@ -1,0 +1,19 @@
+{
+  "id": "t14",
+  "who": "worker-1",
+  "status": "done",
+  "output": "切り口: LLMの日本語前置き後にある `bash` フェンスを優先する、実障害直結の回帰ケース。\n\n- 入力: `確認コマンドはこちらです。\\n```bash\\npython3 -m pytest tools/kiro-project/tests -q\\n````\n- 期待: `python3 -m pytest tools/kiro-project/tests -q`\n- 最小実装とテスト1件を追加\n- 検証: `4 passed, 512 deselected`、終了コード 0\n- 成果物: [result.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-185720-3472/artifacts/t14/result.md)\n\n前提として、追加テストを指定コマンドで成功させる最小実装までを担当範囲としました。タグなし・他のshellタグ・複数フェンス等は範囲外です。",
+  "finished_at": "2026-07-12T10:10:24Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "510df851bdaf96be552b7a06f9a83e1840778143",
+      "target": "main",
+      "path": ""
+    }
+  },
+  "artifacts": [
+    "artifacts/t14/result.md"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "t10",
+  "who": "worker-2",
+  "status": "failed",
+  "output": "実行エラー: workspace push が kp/synth_verify-_first_comm-172544 へ反映できませんでした",
+  "finished_at": "2026-07-12T10:18:58Z",
+  "artifacts": [
+    "artifacts/t10/result.md"
+  ]
+}

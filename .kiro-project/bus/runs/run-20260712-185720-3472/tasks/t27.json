@@ -1,0 +1,6 @@
+{
+  "id": "t27",
+  "goal": "tools/kiro-project/kiro-project.py の _first_command_line で、フェンス外フォールバックの候補フィルタが ANSI エスケープを含む生の行に適用されているために起きている回帰を直す。現状: _first_command_line は `_first_executable_line([line for line in lines if _has_command_like_leading_token(line.strip())])` と書かれており、_has_command_like_leading_token が正規化前の行を受け取る。そのため kiro-cli の色付き出力 \"\\x1b[2K\\x1b[36mgrep -q '## 概要' README.md\\x1b[0m\" では先頭トークンが \\x1b[2K\\x1b[36mgrep となり、_KNOWN_COMMAND_WORDS 一致・実行パス判定・ハイフン付き CLI 判定のすべてを外れて候補が空になり、_first_command_line が None、synth_verify が空文字を返す。修正方針: 各行を先に _strip_code（ANSI/制御コード除去）で正規化してから _has_command_like_leading_token と _first_executable_line にかける（正規化→判定の順にする）。フェンス内経路の挙動は変えないこと。完了条件は 2 つとも満たすこと: (1) `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` が終了コード 0、(2) `python3 -m pytest tools/kiro-project/tests -q` が全件 pass（既存の TestVerifyAssist::test_synth_verify_strips_ansi_from_kiro_output を含め 1 件も failed が無いこと）。既存テストを書き換えて通すのではなく実装側を直すこと。作業ブランチ kp/synth_verify-_first_comm-172544 に push し、push 失敗時は報告すること。",
+  "deps": [],
+  "kind": "work"
+}

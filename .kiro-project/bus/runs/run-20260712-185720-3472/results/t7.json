@@ -1,0 +1,10 @@
+{
+  "id": "t7",
+  "who": "worker-1",
+  "status": "done",
+  "output": "成果物: [first-command-line-parse-spec.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-185720-3472/artifacts/t7/first-command-line-parse-spec.md)\n\n検証結果: `2 passed, 512 deselected`、終了コード 0。標準 Python に pytest がないため、既存 `.venv` を PATH に指定して実行しました。",
+  "finished_at": "2026-07-12T10:07:35Z",
+  "artifacts": [
+    "artifacts/t7/first-command-line-parse-spec.md"
+  ]
+}

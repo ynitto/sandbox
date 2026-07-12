@@ -1,0 +1,10 @@
+{
+  "id": "t27",
+  "who": "worker-2",
+  "status": "done",
+  "output": "成果: 実装変更なし。指定 worktree が対象ブランチ先端より古く、修正対象の候補フィルタが存在しないため安全に適用できませんでした。\n\n検証結果:\n\n- 部分テスト: 8 passed\n- 全テスト: 520 passed\n- commit/push: 規約に従い未実施\n\n詳細報告: [report.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-185720-3472/artifacts/t27/report.md)\n\n未解決: 対象ブランチ先端 `380b452` を基点とする専用 worktree の再払い出しが必要です。",
+  "finished_at": "2026-07-12T10:29:14Z",
+  "artifacts": [
+    "artifacts/t27/report.md"
+  ]
+}

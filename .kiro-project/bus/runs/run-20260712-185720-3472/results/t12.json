@@ -1,0 +1,19 @@
+{
+  "id": "t12",
+  "who": "worker-1",
+  "status": "done",
+  "output": "切り口: 欠如値を `None` に統一し、散文のみの入力を型契約と回帰テストの両面で排除した。\n\n- `_first_command_line` と内部ヘルパーを `Optional[str]` 契約へ変更。\n- コメントのみ・英語散文のみの場合に `None` を返すテストを追加。\n- 指定テスト: `12 passed, 512 deselected`、終了コード 0。\n- `git diff --check`: 成功。\n- codd-gate: 既存文書・サンプルパスに関する AMBER のみ。\n\n報告書: [result.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-185720-3472/artifacts/t12/result.md)",
+  "finished_at": "2026-07-12T10:19:46Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "7589d79769dc8275a25cc879e9285a1036fbf7ad",
+      "target": "main",
+      "path": ""
+    }
+  },
+  "artifacts": [
+    "artifacts/t12/result.md"
+  ]
+}

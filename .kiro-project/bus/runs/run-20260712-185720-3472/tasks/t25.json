@@ -1,0 +1,8 @@
+{
+  "id": "t25",
+  "goal": "完了条件の検証: python3 -m pytest tools/kiro-project/tests -q -k first_command_line が終了コード 0 になることを確認し、併せて -k なしの全体テストが回帰していないことも確認する。失敗が残る間は t24 へ差し戻して反復する（loop-until-done）。",
+  "deps": [
+    "t24"
+  ],
+  "kind": "verify"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "verify1",
+  "goal": "成果を批判的に検証",
+  "deps": [
+    "gen1"
+  ],
+  "kind": "verify"
+}

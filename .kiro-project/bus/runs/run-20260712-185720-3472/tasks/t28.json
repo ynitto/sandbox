@@ -1,0 +1,8 @@
+{
+  "id": "t28",
+  "goal": "作業ブランチ kp/synth_verify-_first_comm-172544 を最新化し、リポジトリルートで 2 つのコマンドを実行して結果を終了コードごと報告する: (1) `python3 -m pytest tools/kiro-project/tests -q -k first_command_line`、(2) `python3 -m pytest tools/kiro-project/tests -q`。(1) が終了コード 0 かつ 1 件以上のテストが選択されている（deselected のみで 0 件選択になっていない）こと、(2) が failed 0 件で全件 pass することの両方を満たせば pass、いずれか欠ければ fail とし、失敗したテスト名とアサーション内容をそのまま issues に転記すること。",
+  "deps": [
+    "t27"
+  ],
+  "kind": "verify"
+}

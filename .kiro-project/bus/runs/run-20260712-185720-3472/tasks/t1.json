@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/kiro-project/kiro-project.py 内の _first_command_line の現行実装を特定し、関数本体（行番号付き）と現在の行選択ロジック・正規表現・除外条件をそのまま書き出す。改変はしない。",
+  "deps": [],
+  "kind": "work"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "t16",
+  "who": "worker-2",
+  "status": "done",
+  "output": "切り口: 障害を起こした LLM 応答形状を、原因が明瞭な最小回帰テストとして固定する。\n\n成果物: [first-command-line-fenced-preamble-test.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-185720-3472/artifacts/t16/first-command-line-fenced-preamble-test.md)\n\n前置き散文＋`bash` フェンスのテストコード、期待値、前提、範囲外事項を記載しました。実装リポジトリは変更していません。\n\n検証結果: `5 passed, 512 deselected, 5 subtests passed`（終了コード 0）。標準 Python に pytest がないため、既存 `.venv` を `PATH` に指定しました。",
+  "finished_at": "2026-07-12T10:11:53Z",
+  "artifacts": [
+    "artifacts/t16/first-command-line-fenced-preamble-test.md"
+  ]
+}

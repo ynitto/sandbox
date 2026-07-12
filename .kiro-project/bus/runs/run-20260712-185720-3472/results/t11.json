@@ -1,0 +1,19 @@
+{
+  "id": "t11",
+  "who": "worker-1",
+  "status": "done",
+  "output": "切り口: フェンスなしの全文走査に先頭トークン判定を加え、句読点のない英語散文の誤採用を防いだ。\n\n- 既知コマンド語、実行パス、ハイフン付きCLIを認識するフォールバックを実装。\n- 回帰テストを3件追加。\n- 指定テスト: `11 passed, 512 deselected`、終了コード0。\n- `git diff --check`: 成功。\n- codd-gate: 既存文書・サンプルパスのAMBERのみ。\n\n報告書: [result.md](/Users/nitto/Workspace/sandbox/.kiro-project/bus/runs/run-20260712-185720-3472/artifacts/t11/result.md)",
+  "finished_at": "2026-07-12T10:18:25Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "4780b4598ca203f745acb2f1281bdb699f49dcec",
+      "target": "main",
+      "path": ""
+    }
+  },
+  "artifacts": [
+    "artifacts/t11/result.md"
+  ]
+}
