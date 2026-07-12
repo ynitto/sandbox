@@ -2880,17 +2880,34 @@ def _looks_like_shell_command(line: str) -> bool:
     return chk.returncode == 0
 
 
+def _code_fence_lines(out: str) -> list[str]:
+    """Markdown コードフェンス内の行を、ブロックの出現順に返す。
+
+    開始フェンスは言語タグの有無を問わない。閉じフェンスがなければ、入力末尾までを
+    そのブロックの内容として扱う。
+    """
+    fenced_lines: list[str] = []
+    in_fence = False
+    for line in (out or "").splitlines():
+        marker = line.strip()
+        if in_fence and marker == "```":
+            in_fence = False
+            continue
+        if not in_fence and marker.startswith("```"):
+            in_fence = True
+            continue
+        if in_fence:
+            fenced_lines.append(line)
+    return fenced_lines
+
+
 def _first_command_line(out: str) -> str:
     """合成出力の先頭の「意味あるコマンド行」を取り出す（コメント/コードフェンス/空行を飛ばす）。"""
     lines = (out or "").splitlines()
-    for index, raw_line in enumerate(lines):
-        if raw_line.strip().lower() == "```bash":
-            for fenced_line in lines[index + 1:]:
-                if fenced_line.strip() == "```":
-                    break
-                line = _strip_code(fenced_line.strip())
-                if line and not line.startswith("#"):
-                    return line
+    for fenced_line in _code_fence_lines(out):
+        line = _strip_code(fenced_line.strip())
+        if line and not line.startswith("#"):
+            return line
     for line in lines:
         line = _strip_code(line.strip())
         if line and not line.startswith("#"):
