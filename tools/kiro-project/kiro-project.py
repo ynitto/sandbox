@@ -2903,6 +2903,28 @@ def _code_fence_lines(out: str) -> list[str]:
 
 _SHELL_FENCE_LANGUAGE_TAGS = frozenset({"bash", "console", "sh", "shell", "zsh"})
 
+# フェンス外では `sh -n` が英語の散文も単純コマンドとして受理するため、頻出する
+# 実行語から始まる行だけを候補にする。ハイフンを含む CLI 名とパス指定も許可する。
+_KNOWN_COMMAND_WORDS = frozenset({
+    "awk", "bash", "cargo", "cd", "codd-gate", "diff", "docker", "find", "git", "go",
+    "grep", "java", "make", "mvn", "node", "npm", "npx", "perl", "php", "pip", "pip3",
+    "pnpm", "poetry", "pytest", "python", "python3", "rg", "ruby", "sed", "sh", "test", "tox",
+    "uv", "yarn", "zsh",
+})
+
+
+def _has_command_like_leading_token(line: str) -> bool:
+    """フェンス外の行が既知コマンド語または実行可能らしいトークンで始まるか判定する。"""
+    if not line:
+        return False
+    token = line.split(maxsplit=1)[0]
+    bare = token.rsplit("/", 1)[-1]
+    return (
+        bare in _KNOWN_COMMAND_WORDS
+        or token.startswith(("./", "../", "/"))
+        or bool(re.fullmatch(r"[A-Za-z0-9_.]+-[A-Za-z0-9_.-]+", bare))
+    )
+
 
 def _first_executable_line(lines: list[str]) -> str:
     """候補行から空行・コメント・言語タグ残骸を除いた最初のコマンドを返す。"""
@@ -2921,7 +2943,10 @@ def _first_executable_line(lines: list[str]) -> str:
 def _first_command_line(out: str) -> str:
     """合成出力の先頭の「意味あるコマンド行」を取り出す（コメント/コードフェンス/空行を飛ばす）。"""
     lines = (out or "").splitlines()
-    return _first_executable_line(_code_fence_lines(out)) or _first_executable_line(lines)
+    fenced = _first_executable_line(_code_fence_lines(out))
+    if fenced:
+        return fenced
+    return _first_executable_line([line for line in lines if _has_command_like_leading_token(line.strip())])
 
 
 def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,

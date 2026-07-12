@@ -4931,6 +4931,16 @@ class TestVerifyAssist(unittest.TestCase):
             "python3 -m pytest tools/kiro-project/tests -q",
         )
 
+    def test_first_command_line_skips_unpunctuated_english_prose(self):
+        output = "Here is the verification command\npytest -q"
+        self.assertEqual(km._first_command_line(output), "pytest -q")
+
+    def test_first_command_line_accepts_path_and_hyphenated_cli(self):
+        self.assertEqual(km._first_command_line("Run this next\n./scripts/check.sh --quick"),
+                         "./scripts/check.sh --quick")
+        self.assertEqual(km._first_command_line("Use the gate\ncustom-check --all"),
+                         "custom-check --all")
+
     def test_first_command_line_extracts_all_fence_lines_in_order(self):
         output = "before\n```\nfirst\n```\nbetween\n```sh\nsecond\n```\nafter"
         self.assertEqual(km._code_fence_lines(output), ["first", "second"])
