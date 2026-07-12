@@ -232,6 +232,37 @@ function parseDecisions(text, id) {
 // 表示用に「なぜ / 状態 / 概況」の要点と、判断材料（残りのセクション）を構造化して返す。
 // ファイル編集用の足場（## Decision Outcome・チェックボックス・HTML コメントのヒント）は
 // ビュアーの操作ボタンが代替するため detail からは除く（原文は body に保持）。
+// 判断材料（evidence）が実質的に空か。stub 実行や無変更のとき、evidence は「成果物: (参照なし)」
+// 「所在: <内部パス>」「差分: 変更なし」だけになり、人には内部パスの羅列に見えて分かりにくい。
+// 成果物の参照がプレースホルダ（参照なし/変更なし）で、かつファイル差分（差分: N ファイル）も
+// 無ければ「痩せた evidence」と判定する。実 executor（PR/MR リンク・コミット・差分あり）は false。
+function _evidenceThin(detail) {
+  const s = String(detail || '');
+  const deliverable = s.match(/^-\s*成果物\s*[:：]\s*(.+)$/m);
+  if (!deliverable) return false; // 成果物行が無い＝別種の判断材料（タスク定義等）は対象外
+  const v = deliverable[1].trim();
+  const placeholder = v === '(参照なし)' || v === '(変更なし)';
+  const hasFileDiff = /^-\s*差分\s*[:：]\s*\d+\s*ファイル/m.test(s);
+  return placeholder && !hasFileDiff;
+}
+
+// 痩せた evidence から実質情報の無い行（成果物プレースホルダ・所在・実行先・差分なし）を落とす。
+// 検証（verify → PASS/FAIL）やタスク定義・goal 等の意味のある行は残す。
+function _stripThinEvidence(detail) {
+  const drop = [
+    /^-\s*成果物\s*[:：]\s*\(?(参照なし|変更なし)\)?\s*$/,
+    /^-\s*所在\s*[:：]/,
+    /^-\s*実行先\s*[:：]/,
+    /^-\s*差分\s*[:：]\s*baseline 以降の変更なし\s*$/,
+  ];
+  return String(detail || '')
+    .split('\n')
+    .filter((l) => !drop.some((re) => re.test(l.trim())))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function parseNeeds(text, id) {
   const need = {
     id,
@@ -245,6 +276,7 @@ function parseNeeds(text, id) {
     stateNote: '',
     summary: '',
     detail: '',
+    evidenceThin: false, // 判断材料が実質空（stub 実行・無変更）＝内部パスだけのとき true
     risk: '', // 検収票のリスクダイジェスト総合値（low/med/high）。バッジ表示用
   };
   const s = String(text || '');
@@ -292,6 +324,10 @@ function parseNeeds(text, id) {
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  // stub 実行・無変更で痩せた判断材料は、内部パスだけの羅列に見えて分かりにくい。退化行を
+  // 落として（実質情報を残しつつ）viewer 側で「成果情報なし」と一言添えられるよう印を付ける。
+  need.evidenceThin = _evidenceThin(need.detail);
+  if (need.evidenceThin) need.detail = _stripThinEvidence(need.detail);
   return need;
 }
 

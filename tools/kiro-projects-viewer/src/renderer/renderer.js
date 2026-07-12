@@ -2442,6 +2442,11 @@ function renderNeeds() {
       const facts = [];
       if (n.why) facts.push(`<div><span class="label-chip">理由</span> ${esc(n.why)}</div>`);
       if (n.summary) facts.push(`<div><span class="label-chip">概況</span> ${esc(n.summary)}</div>`);
+      // 成果物リンクも差分も無い（stub 実行・無変更）カードは、判断材料が内部パスだけになり
+      // 分かりにくい。理由を一言添えて「パスの羅列」への戸惑いを防ぐ（実 executor では出ない）。
+      if (n.evidenceThin) {
+        facts.push('<div class="muted ev-thin-note">ℹ️ この実行には成果物リンクや差分がありません（stub 実行や無変更のとき）。下の判断材料は所在などの内部情報のみです。</div>');
+      }
       const detail = (n.detail || '').trim();
       const detailBlock = detail
         ? `<details class="need-detail" data-ui-key="need-detail:${esc(n.id)}">
