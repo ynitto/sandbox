@@ -5093,6 +5093,22 @@ echo this-later-command-must-not-be-selected
             "pytest -q -k first_command_line",
         )
 
+    def test_first_command_line_pipeline_lets_synth_verify_compose_fenced_preamble_output(self):
+        # kiro-cli がフェンス＋前置き（説明文）付きで応答しても、verify 合成は
+        # 失敗せずフェンス内の実コマンドを decisive な verify として採用する。
+        cfg = cfg_for(Path("."))
+        kiro_out = (
+            "以下のコマンドで検証してください:\n"
+            "```bash\n"
+            "python3 -m pytest tools/kiro-project/tests -q -k first_command_line\n"
+            "```"
+        )
+        cmd = km.synth_verify(cfg, "T", "テストが通ること", kiro_run=lambda p, m: kiro_out)
+        self.assertEqual(
+            cmd,
+            "python3 -m pytest tools/kiro-project/tests -q -k first_command_line",
+        )
+
     def test_looks_like_command_accepts_known_command_word(self):
         self.assertTrue(km._looks_like_command("python3 -m pytest tools/kiro-project/tests -q"))
         self.assertTrue(km._looks_like_command("pytest -q"))
