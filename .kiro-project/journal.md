@@ -33,3 +33,13 @@
 - 2026-07-12 17:21:43 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
 - 2026-07-12 17:21:43 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
 - 2026-07-12 17:21:43 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 17:21:48 plan-review 承認: kiro-project-codd-gate-171537 → ready
+- 2026-07-12 17:21:48 commands 取り込み: approve kiro-project-codd-gate-171537（viewer-approve-kiro-project-codd-gate-171537-1783844504998.json）
+- 2026-07-12 17:21:48 plan-review 承認: macOS-kiro-flow-git-4-gr-171537 → ready
+- 2026-07-12 17:21:48 commands 取り込み: approve macOS-kiro-flow-git-4-gr-171537（viewer-approve-macos-kiro-flow-git-4-gr-171537-1783844504199.json）
+- 2026-07-12 17:21:48 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-12 17:21:48 === kiro-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-12 17:21:48 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 17:29:41 verify: macOS-kiro-flow-git-4-gr-171537 を https://github.com/ynitto/sandbox/@main のクローン内で検証
+- 2026-07-12 17:31:41 cycle 1: macOS-kiro-flow-git-4-gr-171537 NG 積み直し (1/2) — verify タイムアウト（120.0s）
+- 2026-07-12 17:35:10 plan-review 承認: synth_verify-_first_comm-172544 → ready

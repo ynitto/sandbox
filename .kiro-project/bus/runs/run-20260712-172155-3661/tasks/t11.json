@@ -1,0 +1,8 @@
+{
+  "id": "t11",
+  "goal": "t10完了後に python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q を実行し、終了コードと全テスト結果（pass/fail/error の件数と失敗テスト名一覧）を記録する",
+  "deps": [
+    "t10"
+  ],
+  "kind": "verify"
+}

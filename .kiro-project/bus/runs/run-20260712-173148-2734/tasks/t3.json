@@ -1,0 +1,9 @@
+{
+  "id": "t3",
+  "goal": "t1 のエラーログから macOS 固有のパス区切り問題（os.sep / posixpath / PurePosixPath 等）に起因する失敗を特定し、該当テスト・該当行を明記する",
+  "deps": [
+    "t1",
+    "t2"
+  ],
+  "kind": "classify"
+}

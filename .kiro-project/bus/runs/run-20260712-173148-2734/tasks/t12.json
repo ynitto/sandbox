@@ -1,0 +1,8 @@
+{
+  "id": "t12",
+  "goal": "python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q を再実行し、全テストの pass/fail 結果と終了コードを記録する",
+  "deps": [
+    "t11"
+  ],
+  "kind": "work"
+}

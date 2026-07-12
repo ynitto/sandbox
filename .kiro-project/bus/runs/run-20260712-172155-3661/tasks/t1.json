@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q を実行し、失敗している4件のテストケースのテスト名・ファイルパス・エラーメッセージ・スタックトレースを完全に収集する",
+  "deps": [],
+  "kind": "work"
+}
