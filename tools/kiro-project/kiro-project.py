@@ -2882,7 +2882,16 @@ def _looks_like_shell_command(line: str) -> bool:
 
 def _first_command_line(out: str) -> str:
     """合成出力の先頭の「意味あるコマンド行」を取り出す（コメント/コードフェンス/空行を飛ばす）。"""
-    for line in (out or "").splitlines():
+    lines = (out or "").splitlines()
+    for index, raw_line in enumerate(lines):
+        if raw_line.strip().lower() == "```bash":
+            for fenced_line in lines[index + 1:]:
+                if fenced_line.strip() == "```":
+                    break
+                line = _strip_code(fenced_line.strip())
+                if line and not line.startswith("#"):
+                    return line
+    for line in lines:
         line = _strip_code(line.strip())
         if line and not line.startswith("#"):
             return line

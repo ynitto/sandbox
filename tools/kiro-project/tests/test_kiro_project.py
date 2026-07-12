@@ -4924,6 +4924,13 @@ class TestVerifyAssist(unittest.TestCase):
     def test_first_command_line_returns_direct_command(self):
         self.assertEqual(km._first_command_line("\n# comment\npytest -q\n"), "pytest -q")
 
+    def test_first_command_line_returns_command_from_bash_fence_after_prose(self):
+        output = "確認コマンドはこちらです。\n```bash\npython3 -m pytest tools/kiro-project/tests -q\n```"
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q",
+        )
+
     def test_first_command_line_returns_empty_without_candidate(self):
         self.assertEqual(km._first_command_line("\n# comment only\n"), "")
 
