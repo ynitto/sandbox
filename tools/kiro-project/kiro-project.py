@@ -2906,6 +2906,45 @@ def _code_fence_lines(out: str) -> list[str]:
     return fenced_lines
 
 
+_FENCE_BLOCK_OPEN_TAGS = frozenset({"bash", "sh", "shell", "console"})
+
+
+def _extract_fenced_blocks(text: str) -> list[str]:
+    """```/```bash/```sh/```shell/```console の開始フェンスに一致するブロックだけを、
+    本文（フェンス行そのものを含まない中身）を出現順の文字列リストとして返す。
+
+    それ以外の言語タグ（例: ```python）のフェンスは対象外だが、中身を地の文として
+    拾わないよう、対応する閉じフェンスまでは読み飛ばす（閉じ ``` を新規の裸フェンス
+    開始と誤認しないための状態追跡）。閉じフェンスが見つからないまま入力が尽きた
+    場合は、末尾までをそのブロックの本文として扱う。
+    """
+    blocks: list[str] = []
+    body: list[str] = []
+    in_fence = False
+    collecting = False
+    for line in (text or "").splitlines():
+        marker = line.strip()
+        if in_fence:
+            if marker == "```":
+                in_fence = False
+                if collecting:
+                    blocks.append("\n".join(body))
+                    body = []
+                    collecting = False
+                continue
+            if collecting:
+                body.append(line)
+            continue
+        m = _FENCE_OPEN_RE.search(marker)
+        if m:
+            in_fence = True
+            collecting = m.group(1) == "" or m.group(1).casefold() in _FENCE_BLOCK_OPEN_TAGS
+            body = []
+    if collecting:
+        blocks.append("\n".join(body))
+    return blocks
+
+
 _SHELL_FENCE_LANGUAGE_TAGS = frozenset({"bash", "console", "sh", "shell", "zsh"})
 
 # フェンス外では `sh -n` が英語の散文も単純コマンドとして受理するため、頻出する

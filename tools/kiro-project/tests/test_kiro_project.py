@@ -4947,6 +4947,31 @@ class TestVerifyAssist(unittest.TestCase):
         output = "before\n```\nfirst\n```\nbetween\n```sh\nsecond\n```\nafter"
         self.assertEqual(km._code_fence_lines(output), ["first", "second"])
 
+    def test_extract_fenced_blocks_collects_bare_and_tagged_fences_in_order(self):
+        output = "before\n```\nfirst\n```\nbetween\n```bash\nsecond\nsecond-2\n```\nafter"
+        self.assertEqual(km._extract_fenced_blocks(output), ["first", "second\nsecond-2"])
+
+    def test_extract_fenced_blocks_recognizes_sh_shell_and_console_tags(self):
+        for tag in ("sh", "shell", "console"):
+            output = f"```{tag}\npytest -q\n```"
+            self.assertEqual(km._extract_fenced_blocks(output), ["pytest -q"], msg=tag)
+
+    def test_extract_fenced_blocks_skips_unrecognized_language_fence_without_leaking(self):
+        output = "```python\nimport os\n```\n```bash\npytest -q\n```"
+        self.assertEqual(km._extract_fenced_blocks(output), ["pytest -q"])
+
+    def test_extract_fenced_blocks_treats_unclosed_fence_as_running_to_end(self):
+        output = "before\n```bash\n# note\npytest -q"
+        self.assertEqual(km._extract_fenced_blocks(output), ["# note\npytest -q"])
+
+    def test_extract_fenced_blocks_accepts_same_line_preamble_before_fence(self):
+        output = "実行してください: ```bash\npytest -q\n```"
+        self.assertEqual(km._extract_fenced_blocks(output), ["pytest -q"])
+
+    def test_extract_fenced_blocks_returns_empty_list_without_fence(self):
+        self.assertEqual(km._extract_fenced_blocks("plain text only"), [])
+        self.assertEqual(km._extract_fenced_blocks(""), [])
+
     def test_first_command_line_extracts_from_untagged_sh_and_console_fences(self):
         self.assertEqual(km._first_command_line("```\npytest -q\n```"), "pytest -q")
         self.assertEqual(
