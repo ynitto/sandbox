@@ -1463,15 +1463,42 @@ def _git_toplevel_of(p: Path) -> "Path | None":
     return Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
 
 
-def _ensure_state_worktree(top: Path, wt: Path, branch: str) -> bool:
-    """状態用 worktree を切りっぱなしで用意する（既にあれば再利用）。用意できたら True。"""
+def _sparse_state_worktree(wt: Path, rel: str) -> bool:
+    """状態 worktree を rel（= 状態ディレクトリ）だけの sparse checkout にする。冪等。
+
+    この worktree で使うのは状態ディレクトリだけなのに、既定では **リポジトリ全体** が
+    チェックアウトされる（tools/ や docs/ の丸ごとコピーが隣に生える）。ディスクの無駄という
+    より、人が worktree 側の tools/ を本物と思って編集してしまう事故が怖い（そこでの変更は
+    kiro-state ブランチに乗るだけで、main には決して届かない）。
+
+    sparse は **作業ツリーの見え方** を変えるだけで、ブランチの中身（HEAD のツリー）は完全な
+    ままなので、状態のコミット・push・バックアップはどれも影響を受けない。失敗しても致命では
+    ないので（全部チェックアウトされるだけ）、黙って False を返す。"""
+    try:
+        i = subprocess.run(["git", "-C", str(wt), "sparse-checkout", "init", "--cone"],
+                           capture_output=True, text=True, timeout=120)
+        if i.returncode != 0:
+            return False                              # 古い git 等 → 従来どおり全チェックアウト
+        s = subprocess.run(["git", "-C", str(wt), "sparse-checkout", "set", rel],
+                           capture_output=True, text=True, timeout=180)
+        return s.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _ensure_state_worktree(top: Path, wt: Path, branch: str, rel: str = "") -> bool:
+    """状態用 worktree を切りっぱなしで用意する（既にあれば再利用）。用意できたら True。
+    rel を渡すと、その配下だけの sparse checkout にする（リポジトリ全体を複製しない）。"""
     if (wt / ".git").exists():
+        if rel:
+            _sparse_state_worktree(wt, rel)           # 既存 worktree にも後追いで効かせる（冪等）
         return True                                   # 既に切ってある＝そのまま使う
     try:
         has_branch = subprocess.run(
             ["git", "-C", str(top), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
             capture_output=True, timeout=30).returncode == 0
-        add = ["git", "-C", str(top), "worktree", "add"]
+        # --no-checkout で骨だけ作り、sparse を効かせてから中身を出す（一度も全展開しない）
+        add = ["git", "-C", str(top), "worktree", "add", "--no-checkout"]
         add += ([str(wt), branch] if has_branch else ["-b", branch, str(wt)])
         r = subprocess.run(add, capture_output=True, text=True, timeout=180)
     except (OSError, subprocess.SubprocessError):
@@ -1479,6 +1506,12 @@ def _ensure_state_worktree(top: Path, wt: Path, branch: str) -> bool:
     if r.returncode != 0:
         print(f"[kiro-project] 状態 worktree を用意できません（本体に書きます）: "
               f"{r.stderr.strip()[:200]}", file=sys.stderr)
+        return False
+    if rel:
+        _sparse_state_worktree(wt, rel)
+    try:
+        subprocess.run(["git", "-C", str(wt), "checkout"], capture_output=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
         return False
     return True
 
@@ -1518,7 +1551,8 @@ def _redirect_root_to_state_worktree(root: Path, wt_dir: str,
         return root, None                             # 既にリポジトリ外を指している
     wt = (Path(wt_dir).expanduser().resolve() if wt_dir
           else (top.parent / f"{top.name}-{branch}"))
-    if not _ensure_state_worktree(top, wt, branch):
+    # 使うのは状態ディレクトリ（rel）だけ。リポジトリ全体を複製しない（sparse checkout）。
+    if not _ensure_state_worktree(top, wt, branch, rel.as_posix()):
         return root, None
     dst = wt / rel
     _migrate_state_into_worktree(root, dst)

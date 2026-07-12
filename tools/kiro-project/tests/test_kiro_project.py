@@ -6906,6 +6906,48 @@ class StateWorktreeTests(unittest.TestCase):
         self.assertTrue((root / "backlog" / "T1.md").is_file(), "既存の状態が引っ越す")
         self.assertFalse(src.exists(), "本体側は残さない（二重管理を作らない）")
 
+    def test_worktree_checks_out_only_the_state_dir(self):
+        """状態 worktree は状態ディレクトリだけを sparse checkout する。
+
+        既定ではリポジトリ全体が展開され、tools/ や docs/ の丸ごとコピーが隣に生える。
+        ディスクの無駄というより、人が worktree 側の tools/ を本物と思って編集する事故が怖い
+        （そこでの変更は kiro-state ブランチに乗るだけで main には決して届かない）。"""
+        top = self._repo()
+        (top / "tools").mkdir()
+        (top / "tools" / "app.py").write_text("x = 1\n")
+        env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        subprocess.run(["git", "-C", str(top), "add", "-A"], capture_output=True, env=env)
+        subprocess.run(["git", "-C", str(top), "commit", "-m", "tools"],
+                       capture_output=True, env=env)
+        # 本体側に既存の状態がある（初回起動＝worktree へ引っ越す形）
+        src = top / ".kiro-project"
+        (src / "backlog").mkdir(parents=True)
+        (src / "backlog" / "T0.md").write_text("## T0\n")
+
+        root, _ = km._redirect_root_to_state_worktree(src, "", "kiro-state")
+        wt = root.parent
+        self.assertTrue(root.is_dir(), "状態ディレクトリは出ている")
+        self.assertTrue((root / "backlog" / "T0.md").is_file(), "既存の状態は引っ越す")
+        # ソースのディレクトリは展開しない（人がここの tools/ を本物と思って編集する事故を防ぐ）。
+        # cone モードはルート直下の *ファイル* だけは常に置く（README.md 等）。嵩むのはディレクトリ
+        # なので、これで目的は足りる。
+        self.assertFalse((wt / "tools").exists(), "他のソースのディレクトリは展開しない")
+
+        # sparse は作業ツリーの見え方だけ。ブランチの中身は完全なので状態のコミットは通る
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: ready\n")
+        r = subprocess.run(["git", "-C", str(root), "add", "-A", "--", "."],
+                           capture_output=True, env=env)
+        self.assertEqual(r.returncode, 0)
+        c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "state", "--", "."],
+                           capture_output=True, env=env)
+        self.assertEqual(c.returncode, 0, "状態はコミットできる")
+        # 展開していない tools/ が「削除された」と誤認されない（skip-worktree）
+        tree = subprocess.run(["git", "-C", str(wt), "ls-tree", "-r", "--name-only", "HEAD"],
+                              capture_output=True, text=True, env=env).stdout
+        self.assertIn("tools/app.py", tree, "ブランチの中身は完全なまま")
+
     def test_reuses_the_worktree_on_restart(self):
         top = self._repo()
         a, _ = km._redirect_root_to_state_worktree(top / ".kiro-project", "", "kiro-state")

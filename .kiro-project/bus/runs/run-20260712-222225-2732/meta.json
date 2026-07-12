@@ -11,7 +11,5 @@
   "references": [],
   "status": "running",
   "created_at": "2026-07-12T13:22:25Z",
-  "updated_at": "2026-07-12T20:42:49Z",
-  "orch_lease_until": 1783894592.1296341,
-  "heartbeat_at": "2026-07-12T22:14:32Z"
+  "updated_at": "2026-07-12T13:24:15Z"
 }

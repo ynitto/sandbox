@@ -3,10 +3,10 @@
 - source: charter
 - priority: 0
 - verify: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q`
-- retries: 6
+- retries: 5
+- last_run: run-20260712-225228-6591
 - workspace: sandbox
 - refs: sandbox
 - charter: v0.1
 - assess: c=2 r=1 a=1
-- last_run: run-20260712-225228-6591
-- needs_reason: 繰り返し NG（retries=6）: verify タイムアウト（120.0s）
+- needs_reason: hold（人が保留）: kiro-projects-viewer から操作

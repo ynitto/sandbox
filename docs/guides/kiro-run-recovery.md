@@ -108,6 +108,15 @@ PC-A (WSL) kiro-project                origin                 PC-B (Win) viewer
 
 - **viewer は `kiro-state` を見る**（`main` ではない）。main には significant だけを載せ、**bus を流していない**ので、main を見ても run が一切見えない
 - **viewer 側の用意**: Windows で clone し、`kiro-state` を checkout して、その `.kiro-project` を viewer の `roots` に登録する。以降は viewer の git 同期（`gitPullSec` / `gitAutoPush`）が `kiro-state` を往復する
+
+  viewer が要るのは状態だけなので、ソースを丸ごと落とさない（sparse clone）:
+
+  ```bash
+  git clone --filter=blob:none --sparse <url> sandbox-kiro-state
+  cd sandbox-kiro-state
+  git sparse-checkout set .kiro-project
+  git checkout kiro-state
+  ```
 - **main に書くのは kiro-project の `backup_state` だけ**。viewer は main を触らない
 
 同期には `origin` が要る。`git remote -v` で origin があること、`kiro-state` が push されていること（`git ls-remote --heads origin kiro-state`）を確認する。
@@ -115,6 +124,8 @@ PC-A (WSL) kiro-project                origin                 PC-B (Win) viewer
 ### 状態はどこにあるか
 
 kiro-project は状態を `<repo>-kiro-state` worktree（`kiro-state` ブランチ）へ逃がす。本体を dirty にせず、人の git 操作（stash / rebase / pull --autostash）が書き込み中の状態ファイルを壊さないための設計。git 管理外や worktree を作れない環境では自動で本体にフォールバックする（設定は要らない）。
+
+この worktree は **`.kiro-project` だけの sparse checkout**（`tools/` や `docs/` は展開しない）。ディスク以上に、**人が worktree 側の `tools/` を本物と思って編集する事故**を防ぐのが目的。そこでの変更は `kiro-state` ブランチに乗るだけで、main には決して届かない。sparse は作業ツリーの見え方を変えるだけで、ブランチの中身は完全なので、状態のコミット・push・バックアップは影響を受けない。
 
 **読み書きの実体は worktree 側**。`_migrate_state_into_worktree` は「worktree に中身があれば触らない」ので、本体側だけ直しても無視される。**復旧するときは worktree 側を直すこと。**
 

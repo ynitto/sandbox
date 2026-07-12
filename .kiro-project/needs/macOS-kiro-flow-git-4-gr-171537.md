@@ -10,28 +10,8 @@ kind: blocked
 
 ## Context and Problem Statement
 
-- なぜ: 繰り返し NG（retries=6）: verify タイムアウト（120.0s）
+- なぜ: policy:deny（人の判断待ち）
 - 状態: blocked（kiro-project の判断待ち）
-
-## 判断材料（成果物の所在・差分・検証）
-- 成果物: git: 未コミットの変更あり
-- 所在: /Users/nitto/Workspace/sandbox-kiro-state/.kiro-project
-- 実行先: local
-- 差分: 30 ファイル
-    - .kiro-project/bus/runs/run-20260712-213419-5922/results/c1.json
-    - .kiro-project/bus/runs/run-20260712-225228-6591/artifacts/t10/implementation-plan.md
-    - .kiro-project/bus/runs/run-20260712-225228-6591/artifacts/t11/report.md
-    - .kiro-project/bus/runs/run-20260712-225228-6591/artifacts/t13/report.md
-    - .kiro-project/bus/runs/run-20260712-225228-6591/artifacts/t14/report.md
-    - .kiro-project/bus/runs/run-20260712-225228-6591/artifacts/t16/report.md
-    - .kiro-project/bus/runs/run-20260712-225228-6591/artifacts/t9/verify-report.md
-    - .kiro-project/bus/runs/run-20260712-225228-6591/claims/t10/worker-2.json
-    - .kiro-project/bus/runs/run-20260712-225228-6591/claims/t11/worker-1.json
-    - .kiro-project/bus/runs/run-20260712-225228-6591/claims/t12/worker-2.json
-    - .kiro-project/bus/runs/run-20260712-225228-6591/claims/t13/worker-1.json
-    - .kiro-project/bus/runs/run-20260712-225228-6591/claims/t14/worker-1.json
-    - …他 18 件
-- 検証: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` → FAIL（verify タイムアウト（120.0s））
 
 ## Decision Outcome
 
