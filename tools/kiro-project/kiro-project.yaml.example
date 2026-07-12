@@ -234,6 +234,12 @@ git_branch: main            # バスに使う git ブランチ
 # state_git_subdir: kiro-project        # リポジトリ内の保存先サブディレクトリ（名前空間分離）
 # state_git_interval: 300               # fetch/push の最短間隔（秒）。0 で毎同期（負荷は増える）
 #
+# journal のローテーション: journal.md が閾値を超えたら journal-archive/ へ退避して新しい
+# journal を始める（退避名はタイムスタンプ+ホスト名で一意・以後不変＝マージ衝突源にならない。
+# アーカイブも state 同期の対象）。追記専用ログの肥大と direct 同期での EOF 追記衝突を抑える。
+# journal_max_bytes: 262144             # ローテーション閾値バイト（既定 256KB）。0 以下で無効
+# journal_keep: 20                      # journal-archive/ の保持世代数。0 以下で無制限
+#
 # 実行層 kiro-flow の run（バス）も同じリポジトリで共有するには、kiro-project に kiro-flow daemon を
 # 起動・監視させる（opt-in）。daemon 起動時に CLI で注入するのは「このバス→このリポジトリへ鏡写し」
 # という routing（--state-git の remote/branch/interval。direct モードならルートの origin）だけ。

@@ -95,7 +95,9 @@ kiro-project run --planner none --flow-planner stub --executor stub
   decisions/<id>.md    人の判断・承認・フィードバックの決定記録（learn＝学習材料。append-only）
   archive/<id>.md      完了タスクの保全先（検収用「納品書」付き。backlog と 1:1）
   DELIVERY.md          納品一覧（受領書）。done を1行ずつ追記
-  journal.md           機械のサイクルログ（人間可読）／ run-log.jsonl  構造化 run-log（JSON）
+  journal.md           機械のサイクルログ（人間可読・閾値超過で journal-archive/ へ自動ローテーション。
+                       設定 journal_max_bytes（既定 256KB・0 で無効）/ journal_keep（保持世代・既定 20））
+                       ／ run-log.jsonl  構造化 run-log（JSON）
   status.json          daemon の生存信号（watch/level/paused/updated_iso）。git 同期経由でリモート
                        viewer の稼働判定に使う（[daemon の生存信号](#daemon-の生存信号statusjson--リモート-viewer-の稼働判定)）
   paused.json          一時停止マーカー（commands の pause で生成・resume で削除）
@@ -546,6 +548,8 @@ cd ~/kiro/proj && vi charter.md && kiro-project start
 
 - リモートの取り込みは fetch → ff-only 優先・分岐時のみ rebase（--autostash 不使用＝未コミット変更と
   衝突するなら見送る）。push 競合は fetch + rebase → 再 push の指数バックオフで吸収し、**force push はしない**。
+- `journal.md` は `.git/info/attributes` に `merge=union` を自動宣言（冪等・リポジトリローカル）。
+  複数ホスト/viewer が同時に追記しても rebase で EOF 衝突せず、両方の行が残る。
 - 同期対象はルート直下の状態のみ。一時状態（`bus/`・`claims/`）とドット始まりは同期しない。
 - fetch/push は `state_git_interval`（既定 300 秒）で律速。push は共有すべきコミットがあるときだけ
   （run のパス直後は間隔を待たずに押し出す）。

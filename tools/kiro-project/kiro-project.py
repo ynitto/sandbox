@@ -4221,11 +4221,66 @@ def summarize(tasks: "list[Task]") -> "dict[str, int]":
     return c
 
 
+# journal のローテーション閾値（バイト。0 以下で無効）とアーカイブ保持世代数（0 以下で無制限）。
+# build_config が設定 journal_max_bytes / journal_keep をここへ確定する（_AGENT_CLI と同じ流儀）。
+_JOURNAL_MAX_BYTES: int = 262144
+_JOURNAL_KEEP: int = 20
+
+
+def _journal_lock_path(path: Path) -> str:
+    h = hashlib.sha1(str(path).encode()).hexdigest()[:12]
+    return os.path.join(tempfile.gettempdir(), f"kiro-project-journal-{h}.lock")
+
+
+def rotate_journal(path: Path, max_bytes: "int | None" = None,
+                   keep: "int | None" = None) -> "Path | None":
+    """journal が閾値を超えていたら journal-archive/ へ退避し、新しい journal を始める。
+    退避名はタイムスタンプ＋ホスト名で一意（複数ホストの direct 同期でも rename が衝突しない・
+    退避ファイルは以後不変＝マージ衝突源にならない）。保持世代を超えた古いアーカイブは削除する。
+    ローテーションしたら退避先を返す（しなければ None）。呼び出し側でロックを取ること。"""
+    mx = _JOURNAL_MAX_BYTES if max_bytes is None else max_bytes
+    if mx <= 0:
+        return None
+    try:
+        if not path.is_file() or path.stat().st_size < mx:
+            return None
+    except OSError:
+        return None
+    arch_dir = path.parent / "journal-archive"
+    try:
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        host = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname())[:24] or "host"
+        dest = arch_dir / f"{path.stem}-{ts}-{host}{path.suffix}"
+        n = 1
+        while dest.exists():
+            dest = arch_dir / f"{path.stem}-{ts}-{host}.{n}{path.suffix}"
+            n += 1
+        path.replace(dest)                 # 同一ファイルシステム内の原子的 rename
+    except OSError:
+        return None
+    keep_n = _JOURNAL_KEEP if keep is None else keep
+    if keep_n > 0:
+        try:
+            arch = sorted(p for p in arch_dir.iterdir()
+                          if p.is_file() and p.name.startswith(path.stem + "-"))
+            for old in arch[:-keep_n]:
+                old.unlink()
+        except OSError:
+            pass
+    return dest
+
+
 def append_journal(path: Path, line: str) -> None:
     ts = _now_ts()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(f"- {ts} {line}\n")
+    # 多重プロセス（daemon・外部 CLI・別 watch）の追記とローテーションをホスト内で直列化する
+    with _file_lock(_journal_lock_path(path)):
+        rotated = rotate_journal(path)
+        with path.open("a", encoding="utf-8") as f:
+            if rotated is not None:
+                f.write(f"- {ts} journal をローテーション（→ journal-archive/{rotated.name}）\n")
+            f.write(f"- {ts} {line}\n")
 
 
 def append_runlog(path: "Path | None", record: dict) -> None:
@@ -5314,6 +5369,29 @@ class DirectStateGit:
             self._git("config", "user.email", "kiro-project@local")
             self._git("config", "user.name", "kiro-project")
 
+    _MERGE_ATTRS = ("journal.md merge=union",)
+
+    def _ensure_merge_attrs(self) -> None:
+        """journal.md（追記専用ログ）の EOF 追記同士が _integrate の rebase/merge で
+        衝突しないよう、リポジトリローカルの .git/info/attributes に union マージを
+        宣言する（冪等）。versioned な .gitattributes はユーザーの領分なので触れない。"""
+        gp = self._git("rev-parse", "--git-path", "info/attributes").stdout.strip()
+        if not gp:
+            return
+        attrs = Path(gp) if os.path.isabs(gp) else (self.root / gp)
+        try:
+            cur = attrs.read_text(encoding="utf-8") if attrs.is_file() else ""
+            missing = [ln for ln in self._MERGE_ATTRS if ln not in cur.splitlines()]
+            if not missing:
+                return
+            attrs.parent.mkdir(parents=True, exist_ok=True)
+            with attrs.open("a", encoding="utf-8") as f:
+                if cur and not cur.endswith("\n"):
+                    f.write("\n")
+                f.write("\n".join(missing) + "\n")
+        except OSError:
+            pass
+
     def _changed_targets(self) -> "list[str]":
         """ルート配下の未コミット変更のうち同期対象（StateGit と同じ除外規則）の相対パス。"""
         top = self._git("rev-parse", "--show-toplevel").stdout.strip()
@@ -5506,6 +5584,7 @@ class DirectStateGit:
                             f"kiro-project-sync-{hashlib.sha1(str(self.root).encode()).hexdigest()[:12]}.lock")
         with _file_lock(lock):            # 同一ホストの多重プロセスを直列化
             self._ensure_identity()
+            self._ensure_merge_attrs()    # journal の追記同士を union で無衝突マージ
             remote = self._has_remote()
             branch = self._branch()
             due = self.interval <= 0 or (now - self._last_remote) >= self.interval
@@ -9409,6 +9488,10 @@ CONFIG_DEFAULTS = {
     "state_git_branch": "main",
     "state_git_subdir": "kiro-project",   # リポジトリ内の保存先サブディレクトリ（多重コミッタとの分離）
     "state_git_interval": 300.0,        # fetch/push の最短間隔（秒）。0 で毎同期
+    # journal のローテーション: 閾値を超えたら journal-archive/ へ退避して新しい journal を始める。
+    # 追記専用ファイルの肥大と、direct 同期での EOF 追記マージ衝突の温床を抑える。
+    "journal_max_bytes": 262144,        # 閾値バイト（既定 256KB）。0 以下でローテーション無効
+    "journal_keep": 20,                 # journal-archive/ の保持世代数。0 以下で無制限
     # 実行層 kiro-flow daemon をこのプロジェクト用に kiro-project が起動・監視する（opt-in）。
     "manage_flow_daemon": False,
     "flow_config": None,        # daemon に --config で渡す共有 kiro-flow.yaml（任意。kiro-flow の設定はここに集約）
@@ -9537,6 +9620,16 @@ def build_config(args) -> Config:
     _AGENT_CLI = str(getattr(args, "agent_cli", "kiro") or "kiro").lower()
     _AGENT_TIMEOUT = float(getattr(args, "agent_timeout", 300.0) or 0.0)
     _AGENT_OVERRIDES = _normalize_agent_overrides(getattr(args, "agents", None))
+    # journal ローテーション（append_journal が参照する free 関数向け設定）も同時に確定する。
+    global _JOURNAL_MAX_BYTES, _JOURNAL_KEEP
+    try:
+        _JOURNAL_MAX_BYTES = int(getattr(args, "journal_max_bytes", 262144) or 0)
+    except (TypeError, ValueError):
+        _JOURNAL_MAX_BYTES = 262144
+    try:
+        _JOURNAL_KEEP = int(getattr(args, "journal_keep", 20) or 0)
+    except (TypeError, ValueError):
+        _JOURNAL_KEEP = 20
 
     return Config(
         backlog=under("backlog", "backlog"),

@@ -5817,6 +5817,32 @@ class TestDirectStateGit(unittest.TestCase):
                             "--", "backlog"], capture_output=True, text=True)
         self.assertEqual(r.stdout.strip(), "")
 
+    def test_direct_sync_declares_union_merge_for_journal(self):
+        cfg = self._cfg()
+        km.state_sync(cfg, force=True)
+        attrs = self.root / ".git" / "info" / "attributes"
+        self.assertTrue(attrs.is_file())
+        self.assertIn("journal.md merge=union", attrs.read_text(encoding="utf-8"))
+
+    def test_direct_sync_merges_concurrent_journal_appends_without_conflict(self):
+        # 追記専用の journal.md は union マージで、両ホストの追記行が両方残る（EOF 衝突しない）。
+        cfg = self._cfg()
+        km.append_journal(self.root / "journal.md", "base line")
+        km.state_sync(cfg, force=True)                      # base を共有
+        other = self._other("journal-writer")
+        with (other / "journal.md").open("a", encoding="utf-8") as f:
+            f.write("- 2026-07-12 00:00:00 remote line\n")
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-qm", "remote journal"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                       check=True, capture_output=True)
+        km.append_journal(self.root / "journal.md", "local line")
+        km.state_sync(cfg, force=True)                      # 衝突 → rebase + union で合流
+        got = self._other("journal-check")
+        text = (got / "journal.md").read_text(encoding="utf-8")
+        self.assertIn("remote line", text)
+        self.assertIn("local line", text)
+
     def test_direct_sync_imports_remote_instruction(self):
         cfg = self._cfg()
         other = self._other()
@@ -5829,6 +5855,58 @@ class TestDirectStateGit(unittest.TestCase):
                        check=True, capture_output=True)
         km.state_sync(cfg, force=True)
         self.assertTrue((km.commands_dir(cfg) / "ok.json").exists())
+
+
+class TestJournalRotation(unittest.TestCase):
+    """journal.md のローテーション: 閾値超過で journal-archive/ へ退避し、保持世代を刈り込む。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.journal = self.tmp / "journal.md"
+
+    def test_no_rotation_below_threshold(self):
+        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 10_000):
+            km.append_journal(self.journal, "small")
+        self.assertFalse((self.tmp / "journal-archive").exists())
+
+    def test_rotation_archives_and_starts_fresh(self):
+        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 200):
+            for i in range(30):
+                km.append_journal(self.journal, f"line {i} " + "x" * 40)
+        arch = sorted((self.tmp / "journal-archive").iterdir())
+        self.assertTrue(arch)                                   # 退避が発生している
+        self.assertLess(self.journal.stat().st_size, 400)       # アクティブは小さいまま
+        text = self.journal.read_text(encoding="utf-8")
+        self.assertIn("journal をローテーション", text)          # 継続の目印を残す
+        joined = "".join(p.read_text(encoding="utf-8") for p in arch) + text
+        for i in range(30):
+            self.assertIn(f"line {i} ", joined)                 # 行は失われない
+
+    def test_rotation_prunes_old_archives(self):
+        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 120), \
+             mock.patch.object(km, "_JOURNAL_KEEP", 2):
+            for i in range(60):
+                km.append_journal(self.journal, f"line {i} " + "y" * 40)
+        arch = [p for p in (self.tmp / "journal-archive").iterdir() if p.is_file()]
+        self.assertLessEqual(len(arch), 2)                      # 保持世代で刈り込む
+
+    def test_rotation_disabled_with_zero(self):
+        with mock.patch.object(km, "_JOURNAL_MAX_BYTES", 0):
+            for i in range(50):
+                km.append_journal(self.journal, "z" * 80)
+        self.assertFalse((self.tmp / "journal-archive").exists())
+
+    def test_build_config_sets_journal_globals(self):
+        orig = (km._JOURNAL_MAX_BYTES, km._JOURNAL_KEEP)
+        try:
+            ns = types.SimpleNamespace(root=str(self.tmp), journal_max_bytes=99,
+                                       journal_keep=3)
+            km.resolve_config(ns)
+            km.build_config(ns)
+            self.assertEqual((km._JOURNAL_MAX_BYTES, km._JOURNAL_KEEP), (99, 3))
+        finally:
+            km._JOURNAL_MAX_BYTES, km._JOURNAL_KEEP = orig
 
 
 class TestPauseResumeStop(unittest.TestCase):
