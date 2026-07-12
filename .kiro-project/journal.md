@@ -4,3 +4,12 @@
 - 2026-07-12 15:23:41 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-12 16:31:14 === project watch: 監視中（charter 更新/フィードバック待ち）===
 - 2026-07-12 16:43:59 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 16:56:57 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-12 17:11:43 === project 開始 v0.1 acceptance=2 ===
+- 2026-07-12 17:15:37 cohort item-codd-gate: pilot kiro-project-design-md-c-171537 を作成（残り 2 件は承認後に生成）
+- 2026-07-12 17:15:37 project cycle 1: plan cycle 1 で 6 件投入 ['kiro-project-codd-gate-171537', 'kiro-flow-verify-codd-ga-171537', 'kiro-projects-viewer-cod-171537', 'macOS-kiro-flow-git-4-gr-171537', 'kiro-project-kiro-flow-8-171537', 'kiro-project-design-md-c-171537']
+- 2026-07-12 17:16:58 === kiro-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-12 17:16:58 state-git: 無効（未設定・ルートも git リポジトリでない）
+- 2026-07-12 17:16:58 === kiro-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-12 17:16:58 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-12 17:16:58 === project watch: 監視中（charter 更新/フィードバック待ち）===

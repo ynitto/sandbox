@@ -1,0 +1,11 @@
+## kiro-project-kiro-flow-8-171537: kiro-project / kiro-flow のユニットテストを拡充し、実装コードのカバレッジを 85% 以上へ引き上げる
+- status: proposed
+- source: charter
+- priority: 0
+- verify: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project/kiro-project.py --cov=tools/kiro-flow/kiro-flow.py --cov-fail-under=85`
+- retries: 0
+- workspace: sandbox
+- refs: sandbox
+- charter: v0.1
+- after: macOS-kiro-flow-git-4-gr-171537, kiro-project-codd-gate-171537, kiro-flow-verify-codd-ga-171537
+- assess: c=2 r=1 a=1

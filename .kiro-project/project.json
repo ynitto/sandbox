@@ -7,10 +7,15 @@
       "best": 0,
       "stall": 0,
       "acceptance_synth": {
-        "設計書に書かれていること": "codd-gate verify --strict"
+        "設計書に書かれていること": "codd-gate verify --strict",
+        "設計書に変更点が書かれていること": "codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"$KIRO_BASE_REV\" --strict"
       },
-      "status": "no-acceptance"
+      "status": "blocked",
+      "planned_charter_sig": "96f8ace69ac2a97057e84ff86caad277748eefbbe893bb278567a9f5a70cdf0c",
+      "acceptance_total": 2,
+      "cost": 0.0,
+      "cycles": 1
     }
   },
-  "updated": "2026-07-12T16:43:59"
+  "updated": "2026-07-12T17:16:58"
 }

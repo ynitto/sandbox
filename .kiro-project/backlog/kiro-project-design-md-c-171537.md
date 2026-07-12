@@ -1,0 +1,11 @@
+## kiro-project-design-md-c-171537: 設計書 kiro-project-design.md に codd-gate 連携とテスト方針の変更点を反映する
+- status: proposed
+- source: charter
+- priority: 0
+- verify: `grep -q 'codd-gate' docs/designs/kiro-project-design.md && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict`
+- retries: 0
+- review: human
+- cohort: item-codd-gate
+- cohort_role: pilot
+- after: kiro-project-codd-gate-171537, kiro-flow-verify-codd-ga-171537, kiro-projects-viewer-cod-171537
+- assess: c=1 r=1 a=1
