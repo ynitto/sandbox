@@ -2900,15 +2900,25 @@ function renderFlowDetail() {
   // 捨てられると誤解する — 実際 25 ノード中 1 つの失敗で 14 ノード分の成果を捨てていた）。
   const doneCount = (run.counts && run.counts.done) || 0;
   const failedCount = (run.counts && run.counts.failed) || 0;
-  const partial = run.status === 'failed' && doneCount > 0;
+  // 停滞（orchestrator が消えて非終端のまま止まった run）も、失敗と同じくやり直せる。
+  // status だけを見ると救えない: orchestrator が落ちると run は status=running のまま残り、
+  // 失敗ノードも pending ノードも誰も進めない（実際 25 ノード中 14 done / 1 failed のまま
+  // 「実行中」に見え続け、やり直しボタンが出なかった）。生存リース（alive）で実態を見る。
+  // 上の `stalled` は「応答なし」バッジ用の HTML 断片。ここでは判定そのものを使う。
+  const isStalled = run.alive === false && run.status !== 'done';
+  const canRetry = run.status === 'failed' || run.status === 'canceled' || isStalled;
+  const remainCount =
+    failedCount + ((run.counts && run.counts.pending) || 0) + ((run.counts && run.counts.waiting) || 0);
+  const partial = canRetry && doneCount > 0;
   const resubmitLabel = partial
-    ? `↻ 失敗した工程だけやり直す（${failedCount} 件）`
+    ? `↻ 失敗した工程だけやり直す（残り ${remainCount} 件）`
     : '↻ 同じ内容でやり直す';
   const resubmitTitle = partial
-    ? `失敗した ${failedCount} 件だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
+    ? `失敗・未実行の工程だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
+      + (isStalled ? '\nこの実行は停滞しています（実行エンジンが消えたまま止まっています）' : '')
     : '同じ内容でやり直します（タスクを積み直して本体に実行させます）';
   const resubmit =
-    !archived && (run.status === 'failed' || run.status === 'canceled')
+    !archived && canRetry
       ? `<button class="chip" id="flow-resubmit" title="${esc(resubmitTitle)}">${esc(resubmitLabel)}</button>`
       : '';
   // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ
@@ -3160,10 +3170,9 @@ async function resubmitFlowRun() {
     uiLog('resubmit', res);
     if (res.viaTask) {
       const doneN = (run.counts && run.counts.done) || 0;
-      const failedN = (run.counts && run.counts.failed) || 0;
       toast(
-        run.status === 'failed' && doneN > 0
-          ? `失敗した ${failedN} 件をやり直します（成功した ${doneN} 件はそのまま使います）`
+        doneN > 0
+          ? `失敗・未実行の工程だけやり直します（成功した ${doneN} 件はそのまま使います）`
           : `タスク ${res.taskId} を積み直しました（本体が実行を始めます）`,
         true
       );

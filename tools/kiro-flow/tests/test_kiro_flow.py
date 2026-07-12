@@ -1135,6 +1135,52 @@ class PlannerRobustnessTests(unittest.TestCase):
         self.assertEqual([t["id"] for t in tasks], ["t1"])
 
 
+class StalledRunRetryTests(unittest.TestCase):
+    """停滞した run（orchestrator が消えて非終端のまま止まったもの）も、失敗ノードを戻して再開する。
+
+    status だけを見ると救えない: orchestrator が落ちると run は status=running のままリースだけが
+    切れて残り、失敗ノードも pending ノードも誰も進めない。再開しても failed の results が終端
+    として残るため、その工程は永久に再実行されなかった（25 ノード中 14 done / 1 failed のまま
+    「実行中」に見え続け、やり直す手段が無かった）。"""
+
+    def _bus(self, status, lease_delta):
+        root = tempfile.mkdtemp(prefix="kf-stall-")
+        self.addCleanup(shutil.rmtree, root, True)
+        rid = "req-x-T1-r0"
+        rd = pathlib.Path(root, "runs", rid)
+        (rd / "results").mkdir(parents=True)
+        (rd / "tasks").mkdir(parents=True)
+        meta = {"status": status, "request": "x", "created_at": kf.now_iso(),
+                "orch_lease_until": time.time() + lease_delta}
+        (rd / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        (rd / "graph.json").write_text(json.dumps(
+            {"nodes": {"t1": {"goal": "a", "deps": []}, "t2": {"goal": "b", "deps": []}}}),
+            encoding="utf-8")
+        (rd / "results" / "t1.json").write_text(json.dumps({"id": "t1", "status": "done"}),
+                                                encoding="utf-8")
+        (rd / "results" / "t2.json").write_text(json.dumps({"id": "t2", "status": "failed"}),
+                                                encoding="utf-8")
+        return root, rid, rd
+
+    def test_stalled_run_is_detected_as_orphaned(self):
+        root, rid, _ = self._bus("running", -60)          # リース切れ＝orchestrator 消失
+        self.assertTrue(kf.Bus(root, rid).run_is_orphaned(rid, 0.0))
+
+    def test_live_run_is_not_orphaned(self):
+        root, rid, _ = self._bus("running", +600)         # まだ走っている
+        self.assertFalse(kf.Bus(root, rid).run_is_orphaned(rid, 0.0))
+
+    def test_retry_failed_resets_only_the_failed_node(self):
+        # 成功した工程は温存し、失敗した工程だけを pending へ戻す
+        root, rid, rd = self._bus("running", -60)
+        reset = kf.Bus(root, rid).retry_failed()
+        self.assertEqual(reset, ["t2"])
+        self.assertTrue((rd / "results" / "t1.json").exists(), "done は温存")
+        self.assertFalse((rd / "results" / "t2.json").exists(), "failed は戻す")
+        meta = json.loads((rd / "meta.json").read_text())
+        self.assertEqual(meta["status"], "running")
+
+
 class AgentFailureTests(unittest.TestCase):
     """エージェント CLI の失敗を、人が原因に辿り着ける形で表に出すこと。
 
@@ -4173,8 +4219,13 @@ class ArgvLimitTests(unittest.TestCase):
                          cleanup_clone=True, repos=None, keep_clone=False)
         args = argparse.Namespace(**base_args)
         kf.resolve_config(args)   # executor=gitlab / gitlab block / _config_path を確定
+        # cmd_run は「停滞 run なら失敗ノードを戻して再開する」判定をする。素の Mock だと
+        # run_is_orphaned が truthy を返して停滞扱いになるので、通常の再開として振る舞わせる。
+        fake_bus = mock.Mock()
+        fake_bus.run_is_orphaned.return_value = False
+        fake_bus.retry_failed.return_value = []
         with mock.patch.object(kf.subprocess, "Popen", _FakePopen), \
-             mock.patch.object(kf, "make_bus", lambda *a, **k: mock.Mock()):
+             mock.patch.object(kf, "make_bus", lambda *a, **k: fake_bus):
             try:
                 kf.cmd_run(args)
             except Exception:

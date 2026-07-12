@@ -4689,12 +4689,20 @@ def cmd_run(args) -> int:
         meta = probe.run_meta(args.run_id)
         args.request = meta.get("request", "")
         status = meta.get("status")
-        if status == "failed":
-            # failed run の再実行（明示 retry）: 失敗ノードを pending へ戻し done は温存して続きから
-            # やり直す。これをしないと全ノードが終端のまま静止し、再開しても何も再実行されない。
+        # 停滞した run（orchestrator が消えて非終端のまま止まったもの）も、失敗 run と同じく
+        # 「失敗ノードを戻して続きから」やり直す。
+        # status だけを見ると救えない: orchestrator が落ちる（停止・クラッシュ・マシン再起動）と
+        # run は status=running のままリースだけが切れて残り、失敗ノードも pending ノードも誰も
+        # 進めない。再開しても failed の results が終端として残るので、その工程は永久に再実行
+        # されない。生存リースで実態を見て、止まっているなら失敗ノードを pending へ戻す。
+        stalled = probe.run_is_orphaned(args.run_id,
+                                        float(getattr(args, "orphan_grace", 0.0) or 0.0))
+        if status == "failed" or stalled:
             reset = probe.retry_failed()
-            probe.sync_push(f"retry failed run {args.run_id}: reset {len(reset)} failed node(s)")
-            print(f">>> 失敗 run {args.run_id} を再実行します"
+            why = "失敗" if status == "failed" else "停滞（orchestrator 消失）"
+            probe.sync_push(f"retry {'failed' if status == 'failed' else 'stalled'} run "
+                            f"{args.run_id}: reset {len(reset)} failed node(s)")
+            print(f">>> {why} run {args.run_id} を再実行します"
                   f"（失敗ノード {len(reset)} 件を pending へ戻し、done は温存）", flush=True)
         else:
             print(f">>> 既存 run {args.run_id} を再開します（status={status}）", flush=True)

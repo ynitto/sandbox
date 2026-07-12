@@ -3700,25 +3700,44 @@ def _new_run_id(task: "Task") -> str:
     return f"req-{h}-{task.id}-r{task.retries}"
 
 
-def run_id_for(cfg: "Config", task: "Task") -> str:
-    """この試行で kiro-flow に渡す run-id。**失敗した直前の run は作り直さず再開する。**
+_FLOW_TERMINAL = ("done", "failed", "canceled")
 
-    kiro-flow は failed run を `--run-id` で受けると retry_failed を実行し、**失敗ノードだけを
-    pending へ戻して done のノードは温存**して続きから走る。ところが kiro-project は これまで
-    --run-id を一切渡していなかったため、リトライのたびにまっさらな run を作っていた。26 ノードの
-    うち 1 つが失敗しただけで、成功していた 25 ノード分の LLM 呼び出しを丸ごと捨てて全部やり直す
-    ことになる（コストも時間も N 倍）。直前の run が failed なら、その run-id をそのまま渡す。
+
+def _run_resumable(cfg: "Config", rid: str) -> bool:
+    """その run は「続きから」やり直せるか。
+
+    やり直せる = 失敗して終わった（failed）か、停滞している（非終端なのに orchestrator の生存
+    リースが切れている＝誰も進めていない）。後者を見落とすと、orchestrator が落ちた run は
+    status=running のまま永久に残り、失敗ノードも pending ノードも二度と実行されない
+    （実際 kiro-project を止めるたびにこの孤児 run が量産され、成功していた 14 ノードごと
+    作り直していた）。"""
+    try:
+        meta = json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    st = str(meta.get("status") or "")
+    if st == "failed":
+        return True
+    if st in _FLOW_TERMINAL:
+        return False                      # done / canceled は作り直す
+    lease = meta.get("orch_lease_until")  # 非終端: 生存リースで実態を見る
+    return isinstance(lease, (int, float)) and float(lease) < time.time()
+
+
+def run_id_for(cfg: "Config", task: "Task") -> str:
+    """この試行で kiro-flow に渡す run-id。**失敗・停滞した直前の run は作り直さず再開する。**
+
+    kiro-flow は failed / 停滞 run を `--run-id` で受けると retry_failed を実行し、**失敗ノード
+    だけを pending へ戻して done のノードは温存**して続きから走る。ところが kiro-project は
+    これまで --run-id を一切渡していなかったため、リトライのたびにまっさらな run を作っていた。
+    25 ノードのうち 1 つが失敗しただけで、成功していた 14 ノード分の LLM 呼び出しを丸ごと捨てて
+    全部やり直すことになる（コストも時間も N 倍）。
 
     ただし人がタスクを触ったとき（revise / 差し戻しの feedback）は計画そのものが変わるので、
     続きからではなく新しい run を作る。"""
     rid = str(task.get("last_run") or "").strip()
-    if rid and not task.get("feedback") and not task.get("revised"):
-        try:
-            meta = json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            meta = {}
-        if meta.get("status") == "failed":
-            return rid                    # 失敗した所だけやり直す（done は温存）
+    if rid and not task.get("feedback") and not task.get("revised") and _run_resumable(cfg, rid):
+        return rid                        # 失敗・停滞した所だけやり直す（done は温存）
     return _new_run_id(task)
 
 

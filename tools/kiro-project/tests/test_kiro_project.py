@@ -6482,6 +6482,40 @@ class RunResumeTests(unittest.TestCase):
             self._run(cfg, "req-deadbeef-T1-r0", "failed")
             self.assertEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0", "同じ run を続きから")
 
+    def test_stalled_run_is_resumed(self):
+        # orchestrator が消えて status=running のまま止まった run（生存リース切れ）。
+        # status だけを見ると救えず、失敗ノードも未実行ノードも永久に放置される。
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "req-deadbeef-T1-r0"))
+            p = cfg.bus / "runs" / "req-deadbeef-T1-r0"
+            p.mkdir(parents=True, exist_ok=True)
+            (p / "meta.json").write_text(json.dumps({
+                "status": "running", "orch_lease_until": time.time() - 60}), encoding="utf-8")
+            self.assertEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0", "停滞 run は続きから")
+
+    def test_live_run_is_not_resumed(self):
+        # まだ実行中（リース有効）の run には触らない（走っているものを壊さない）
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "req-deadbeef-T1-r0"))
+            p = cfg.bus / "runs" / "req-deadbeef-T1-r0"
+            p.mkdir(parents=True, exist_ok=True)
+            (p / "meta.json").write_text(json.dumps({
+                "status": "running", "orch_lease_until": time.time() + 600}), encoding="utf-8")
+            self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
+
+    def test_canceled_run_is_not_resumed(self):
+        # 人が中止した＝その計画を続ける意図がない → 作り直す
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "req-deadbeef-T1-r0"))
+            self._run(cfg, "req-deadbeef-T1-r0", "canceled")
+            self.assertNotEqual(km.run_id_for(cfg, t), "req-deadbeef-T1-r0")
+
     def test_done_run_is_not_resumed(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(d)
