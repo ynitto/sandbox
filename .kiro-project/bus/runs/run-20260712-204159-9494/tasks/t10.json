@@ -1,0 +1,8 @@
+{
+  "id": "t10",
+  "goal": "run_codd_verify(base, strict) を実装する: subprocess で codd-gate verify を実行し、終了コード・stdout・stderr を正規化した結果オブジェクトに変換する。実行例外・タイムアウトは「無効（スキップ）」に落として上位を落とさない",
+  "deps": [
+    "t9"
+  ],
+  "kind": "work"
+}

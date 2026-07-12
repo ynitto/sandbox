@@ -1,0 +1,8 @@
+{
+  "id": "t14",
+  "goal": "受入判定を結線する: acceptance に codd-gate verify --strict の結果を判定材料として組み込み、fail のとき done へ遷移させない条件を実装する",
+  "deps": [
+    "t10"
+  ],
+  "kind": "work"
+}

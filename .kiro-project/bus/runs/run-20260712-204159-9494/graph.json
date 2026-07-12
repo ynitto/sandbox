@@ -1,0 +1,256 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 12,
+    "review": true,
+    "reason": "[flow-planner] 完了条件が『pytest -k codd と codd-gate verify --strict の両方が終了コード0』という機械判定であり、1回の生成で通る見込みが低いため loop-until-done が必須。実装対象は codd-gate 検出モジュールを前提に『差分ゲート結線 / 受入判定結線 / 負債取り込み結線 / テスト拡充+ドキュメント整備』の4本へ独立に分解でき、最後に kiro-project 側の呼び出し点として統合が要るため fan-out-and-synthesize が適合（並列数4は推奨レンジ[3,6]内）。quality_focus=accuracy かつ codd-gate verify --strict が自己言及的にドキュメント・コード・テストの一貫性を見る自己ゲートであるため、統合前に adversarial-verification で『検出なし環境でのフォールバック維持』『strict 失敗時の負債化』『疎結合（直接 import 回避）』を批判的に検証する。この3パターンの組み合わせは複合テンプレート migration-pipeline そのもの。map-reduce は処理対象が実行時に決まるリストではなく結線先が4点に確定しているため採らない。（粒度 finest）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/kiro-project の regression（差分ゲート）実行経路を特定し、呼び出し元ファイル・関数名・引数・戻り値（ゲート結果）のデータ形状を列挙する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "tools/kiro-project の acceptance（受入判定）経路を特定し、done へ遷移させる条件と判定材料の集約点（関数・戻り値）を列挙する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "tools/kiro-project の backlog enqueue 経路を特定し、タスク投入 API のシグネチャ・必須フィールド（id/title/body/priority）・重複判定の既存挙動を列挙する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "codd-gate CLI の I/F を実測で確認する: verify --repos/--repo-dir/--base/--strict、tasks、--debt の終了コード規約と出力フォーマット、および schemas/ の共通データ契約を記録する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t5": {
+      "goal": "既存の codd 関連コードと `pytest -k codd` で拾われる既存テストを棚卸しし、再利用できる資産と壊してはならない既存挙動を一覧化する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t6": {
+      "goal": "調査結果を突き合わせ、検出モジュールの公開 I/F（CoddGateStatus / CoddVerifyResult / debt タスク dict）を確定する。kiro-project からは codd-gate を直接 import せず CLI + schemas 契約のみに依存する疎結合方針を明文化する",
+      "deps": [
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "kind": "generate"
+    },
+    "t7": {
+      "goal": "検出モジュールに CLI 探索関数を実装する: 環境変数 CODD_GATE_BIN を優先し、無ければ PATH 上の codd-gate 実行ファイルを探して絶対パスまたは None を返す",
+      "deps": [
+        "t6"
+      ],
+      "kind": "work"
+    },
+    "t8": {
+      "goal": "検出モジュールに設定探索関数を実装する: .kiro-project/repos.json 等の設定ファイル有無を判定し、パスまたは None を返す",
+      "deps": [
+        "t6"
+      ],
+      "kind": "work"
+    },
+    "t9": {
+      "goal": "detect_codd_gate() を実装する: CLI 探索と設定探索を統合し available/reason/bin/repos を持つ状態オブジェクトを返す。いずれか欠落時は available=False として既存挙動を一切変えないフォールバックを返す",
+      "deps": [
+        "t7",
+        "t8"
+      ],
+      "kind": "work"
+    },
+    "t10": {
+      "goal": "run_codd_verify(base, strict) を実装する: subprocess で codd-gate verify を実行し、終了コード・stdout・stderr を正規化した結果オブジェクトに変換する。実行例外・タイムアウトは「無効（スキップ）」に落として上位を落とさない",
+      "deps": [
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t11": {
+      "goal": "run_codd_debt_tasks() を実装する: codd-gate tasks / --debt の出力を schemas 準拠の修復タスク dict 列へ正規化し、パース失敗時は空リストとして安全に返す",
+      "deps": [
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t12": {
+      "goal": "base リビジョン解決ヘルパを実装する: KIRO_BASE_REV を読み、未設定なら HEAD~1 を既定とし、リビジョンが存在しない場合の縮退（ゲートスキップ）も決める",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t13": {
+      "goal": "差分ゲートを結線する: regression/verify 経路から run_codd_verify を呼び、終了コード 0→pass / 非0→fail（出力を詳細メッセージへ）を kiro-project のゲート結果へマッピングする。未検出時は呼ばずに従来結果をそのまま返す",
+      "deps": [
+        "t12"
+      ],
+      "kind": "work"
+    },
+    "t14": {
+      "goal": "受入判定を結線する: acceptance に codd-gate verify --strict の結果を判定材料として組み込み、fail のとき done へ遷移させない条件を実装する",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t15": {
+      "goal": "strict 失敗時の負債化分岐を実装する: done をブロックしつつ検出内容を debt として記録し、修復されないまま無限ブロックにならない扱い（負債登録して差し戻し）を定義する",
+      "deps": [
+        "t14",
+        "t11"
+      ],
+      "kind": "work"
+    },
+    "t16": {
+      "goal": "debt → backlog タスク変換関数を実装する: codd-gate の debt/tasks 出力を kiro-project の backlog タスク（id/title/body/priority）へ写像する",
+      "deps": [
+        "t11"
+      ],
+      "kind": "work"
+    },
+    "t17": {
+      "goal": "重複登録の抑止を実装する: debt 内容から安定タスク id を生成し、既存 backlog と突合して同一負債を二重に積まないようにする",
+      "deps": [
+        "t16"
+      ],
+      "kind": "work"
+    },
+    "t18": {
+      "goal": "負債取り込みを enqueue 呼び出し点へ結線する: 検出時のみ変換済みタスクを backlog へ投入し、未検出時は完全な no-op とする",
+      "deps": [
+        "t17"
+      ],
+      "kind": "work"
+    },
+    "t19": {
+      "goal": "pytest -k codd で拾えるテストを追加する: detect_codd_gate の検出あり/なし（CLI あり・なし × repos.json あり・なし）の分岐を網羅する",
+      "deps": [
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t20": {
+      "goal": "pytest -k codd で拾えるテストを追加する: run_codd_verify の終了コード 0 / 非0 / 例外 / タイムアウトを subprocess モックで再現し、結果正規化を検証する",
+      "deps": [
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t21": {
+      "goal": "pytest -k codd で拾えるテストを追加する: 差分ゲート結線（verify 成功→ゲート pass、失敗→ゲート fail、未検出→スキップして既存挙動）を検証する",
+      "deps": [
+        "t13"
+      ],
+      "kind": "work"
+    },
+    "t22": {
+      "goal": "pytest -k codd で拾えるテストを追加する: acceptance 反映（strict fail で done に進まない／未検出時は従来どおり done 可）を検証する",
+      "deps": [
+        "t15"
+      ],
+      "kind": "work"
+    },
+    "t23": {
+      "goal": "pytest -k codd で拾えるテストを追加する: debt → backlog タスク変換と、同一負債の再検出時に重複登録されないことを検証する",
+      "deps": [
+        "t18"
+      ],
+      "kind": "work"
+    },
+    "t24": {
+      "goal": "pytest -k codd で拾えるテストを追加する: codd-gate 未インストール環境で regression/acceptance/enqueue の全結線がスキップされ、既存の振る舞いが一切変わらない回帰テストを置く",
+      "deps": [
+        "t13",
+        "t15",
+        "t18"
+      ],
+      "kind": "work"
+    },
+    "t25": {
+      "goal": "設計書に codd-gate 連携の前提と設定方法を追記する: 必要な CLI・repos.json・環境変数（KIRO_BASE_REV / CODD_GATE_BIN）・差分ゲート/受入判定/負債取り込みの各結線点を記述する",
+      "deps": [
+        "t13",
+        "t15",
+        "t18"
+      ],
+      "kind": "work"
+    },
+    "t26": {
+      "goal": "設計書に無効時（未インストール）の挙動とフォールバック方針を明記し、記載中の関数名・オプション名・ファイルパスを実装と一致させて codd-gate 自身の verify --strict が通る状態にする",
+      "deps": [
+        "t25"
+      ],
+      "kind": "work"
+    },
+    "v1": {
+      "goal": "批判的検証: codd-gate が存在しない環境でフォールバックが本当に維持されているか（結線が完全 no-op か、既存テストが緑か、例外やログノイズが漏れていないか）を反証的に確認する",
+      "deps": [
+        "t21",
+        "t22",
+        "t23",
+        "t24"
+      ],
+      "kind": "verify"
+    },
+    "v2": {
+      "goal": "批判的検証: strict 失敗時に done がブロックされ、かつ同じ検出内容が backlog へ負債として確実に積まれるか（取りこぼし・無限ブロック・重複登録が起きないか）を反証的に確認する",
+      "deps": [
+        "t22",
+        "t23"
+      ],
+      "kind": "verify"
+    },
+    "v3": {
+      "goal": "批判的検証: 疎結合が守られているか（kiro-project が codd-gate を直接 import せず、CLI 実行と schemas の共通データ契約のみに依存しているか）を import 文と依存定義の静的確認で反証する",
+      "deps": [
+        "t13",
+        "t15",
+        "t18",
+        "t26"
+      ],
+      "kind": "verify"
+    },
+    "gate": {
+      "goal": "3件の批判的検証結果を突き合わせ、修正必須の指摘のみを確定させて修正指示に落とす（指摘ゼロなら通過とする）",
+      "deps": [
+        "v1",
+        "v2",
+        "v3"
+      ],
+      "kind": "judge"
+    },
+    "loop1": {
+      "goal": "`python3 -m pytest tools/kiro-project/tests -q -k codd` を実行し、非0の間は失敗テストの原因を切り分けて実装・テストを修正する反復を続け、終了コード0にする",
+      "deps": [
+        "gate"
+      ],
+      "kind": "work"
+    },
+    "loop2": {
+      "goal": "`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を実行し、指摘されたドリフトをドキュメント・コード・テストへ反映する反復を続け、終了コード0にする",
+      "deps": [
+        "loop1"
+      ],
+      "kind": "work"
+    },
+    "synth": {
+      "goal": "完了条件の連結コマンド（pytest -k codd && codd-gate verify --strict）を通しで実行して終了コード0を確認し、変更点・前提・codd-gate 無効時の挙動を最終成果としてまとめる",
+      "deps": [
+        "loop1",
+        "loop2"
+      ],
+      "kind": "synthesize"
+    }
+  },
+  "iteration": 0
+}

@@ -1,0 +1,6 @@
+{
+  "id": "t3",
+  "goal": "tools/kiro-project の backlog enqueue 経路を特定し、タスク投入 API のシグネチャ・必須フィールド（id/title/body/priority）・重複判定の既存挙動を列挙する",
+  "deps": [],
+  "kind": "work"
+}

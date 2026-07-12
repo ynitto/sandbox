@@ -17,3 +17,9 @@
 - reason  : チェックで承認
 - affects : synth_verify-_first_comm-172544 → ready
 
+## DR-0004  2026-07-12  actor: nitto
+- context : synth_verify-_first_comm-172544 の優先度を変更
+- action  : reprioritize(pin)
+- reason  : kiro-projects-viewer から操作
+- affects : policy.pin += synth_verify-_first_comm-172544
+

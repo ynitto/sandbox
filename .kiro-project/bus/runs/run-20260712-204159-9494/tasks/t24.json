@@ -1,0 +1,10 @@
+{
+  "id": "t24",
+  "goal": "pytest -k codd で拾えるテストを追加する: codd-gate 未インストール環境で regression/acceptance/enqueue の全結線がスキップされ、既存の振る舞いが一切変わらない回帰テストを置く",
+  "deps": [
+    "t13",
+    "t15",
+    "t18"
+  ],
+  "kind": "work"
+}

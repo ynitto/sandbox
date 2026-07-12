@@ -1,0 +1,9 @@
+{
+  "id": "synth",
+  "goal": "完了条件の連結コマンド（pytest -k codd && codd-gate verify --strict）を通しで実行して終了コード0を確認し、変更点・前提・codd-gate 無効時の挙動を最終成果としてまとめる",
+  "deps": [
+    "loop1",
+    "loop2"
+  ],
+  "kind": "synthesize"
+}

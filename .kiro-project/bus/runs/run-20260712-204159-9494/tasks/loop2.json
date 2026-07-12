@@ -1,0 +1,8 @@
+{
+  "id": "loop2",
+  "goal": "`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を実行し、指摘されたドリフトをドキュメント・コード・テストへ反映する反復を続け、終了コード0にする",
+  "deps": [
+    "loop1"
+  ],
+  "kind": "work"
+}

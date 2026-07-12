@@ -1,0 +1,10 @@
+{
+  "id": "t25",
+  "goal": "設計書に codd-gate 連携の前提と設定方法を追記する: 必要な CLI・repos.json・環境変数（KIRO_BASE_REV / CODD_GATE_BIN）・差分ゲート/受入判定/負債取り込みの各結線点を記述する",
+  "deps": [
+    "t13",
+    "t15",
+    "t18"
+  ],
+  "kind": "work"
+}
