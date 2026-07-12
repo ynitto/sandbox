@@ -1,0 +1,10 @@
+{
+  "id": "t9",
+  "who": "worker-1",
+  "status": "done",
+  "output": "完了条件（exit 0, 900 passed / 0 failed, 122.20s）を自分の worktree でも独立に確認しました。ファイル変更なし（読み取り専用調査）。\n\n## 成果報告\n\n**(a) 成果 / サマリー**\n\n依頼された対応付け（プラットフォーム依存の前提4種 × 4件の失敗）を実施した結果、**対応付けるべき「4件の失敗」自体が実在しない**（900 passed / 0 failed, exit 0）ため、いずれの前提も失敗とは対応付けられない。ただし前提4種の列挙・検証自体は完了した。\n\n- t3の抽出成果物は`artifacts/t3/`が空ディレクトリで存在せず、t2が特定した対象クラス（`GitBus`/`StateGit`の自己修復ロジック、`tools/kiro-flow/kiro-flow.py` L1062-1670）を自分で読み取り確認した。\n- **前提1（生パス文字列比較）・前提2（realpath未適用）・前提3（ブランチ名ハードコード）**: いずれもコード上「該当なし」。実装は全経路でrealpath正規化比較を行い、ブランチも呼び出し元指定に従う。t6・t8が同一結論に実測で独立到達済み。\n- **前提4（環境変数非隔離）**: 唯一実装上の裏付けがあった。`_git_env()`/`_env()`は`os.environ`をコピーするだけで危険な`GIT_DIR`等を消去せず、さらに`_clone_once()`と`StateGit`初回cloneはこの防御自体を経由しない（`env=`未指定）。ただしこれが実際の失敗を招いた証拠はない。\n\n成果物: `bus/runs/req-cbef0434-.../artifacts/t9/platform_assumptions_mapping.md`\n\n**(b) 検証内容と結果**\n\n- t1/t4/t5/t6/t8の全成果物を読み、事実関係を突き合わせた（900 passed/0 failed, exit 0が一貫）。\n- `tools/kiro-flow/kiro-flow.py`の該当実装をReadで直接確認（コミット`c91b626`、t1/t4と同一）。\n- 完了条件コマンドを自分のworktreeで実行: **exit 0, 900 passed / 0 failed, 122.20s**。\n\n**(c) 採用した前提・未解決事項・範囲外の問題**\n\n- 前提: t3成果物なしのため「t2が特定した対象実装コード」で代替した。\n- 未解決: 「4件失敗」の実体はどの成果物にも記録がなく、t5の「verifyタイムアウト120sの誤判定」説が最有力のまま未確定。\n- 範囲外で発見: `_clone_once()`/StateGit初回cloneが`_git_env()`/`_env()`の防御を経由しない設計上の抜け（実害の証拠なし、修正はスコープ外につき未実施）。",
+  "finished_at": "2026-07-12T23:18:24Z",
+  "artifacts": [
+    "artifacts/t9/platform_assumptions_mapping.md"
+  ]
+}

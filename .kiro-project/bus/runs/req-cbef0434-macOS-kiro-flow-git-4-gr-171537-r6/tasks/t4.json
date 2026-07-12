@@ -1,0 +1,8 @@
+{
+  "id": "t4",
+  "goal": "t1 で失敗した各テストを `python3 -m pytest <nodeid> -q --tb=long -p no:randomly` で個別再実行し、4 件分のスタックトレース・アサーション期待値と実測値・実行時の一時ディレクトリパスを全文収集する。t1 が exit 0（green）だった場合はその事実のみを報告して終了する",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

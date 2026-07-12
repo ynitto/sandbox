@@ -10,28 +10,23 @@ kind: blocked
 
 ## Context and Problem Statement
 
-- なぜ: 繰り返し NG（retries=7）: exit=5 580 deselected in 0.20s
+- なぜ: 繰り返し NG（retries=8）: exit=5 585 deselected in 0.20s
 - 状態: blocked（kiro-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
-- 成果物: git: 未コミットの変更あり
-- 所在: /Users/nitto/Workspace/sandbox-kiro-state/.kiro-project
+- 成果物: ブランチ `kp/kiro-project-codd-gate-171537`（7 ファイル変更・base `main`）
+- 所在: /Users/nitto/Workspace/sandbox
+- 差分を見る: `git -C /Users/nitto/Workspace/sandbox diff main...origin/kp/kiro-project-codd-gate-171537`
+- 変更ファイル（7 件）:
+    - tools/kiro-project/codd_gate_base.py
+    - tools/kiro-project/codd_gate_debt.py
+    - tools/kiro-project/codd_gate_detect.py
+    - tools/kiro-project/codd_gate_routing.py
+    - tools/kiro-project/codd_gate_status.py
+    - tools/kiro-project/tests/test_codd_gate_detect.py
+    - tools/kiro-project/tests/test_codd_gate_routing.py
 - 実行先: local
-- 差分: 69 ファイル
-    - .kiro-project/bus/runs/run-20260712-202654-4346/claims/f1/worker-2.json
-    - .kiro-project/bus/runs/run-20260712-202654-4346/claims/t1/worker-2.json
-    - .kiro-project/bus/runs/run-20260712-202654-4346/claims/t2/worker-1.json
-    - .kiro-project/bus/runs/run-20260712-202654-4346/claims/t3/worker-1.json
-    - .kiro-project/bus/runs/run-20260712-202654-4346/claims/t4/worker-2.json
-    - .kiro-project/bus/runs/run-20260712-202654-4346/events/orchestrator.jsonl
-    - .kiro-project/bus/runs/run-20260712-202654-4346/events/worker-1.jsonl
-    - .kiro-project/bus/runs/run-20260712-202654-4346/events/worker-2.jsonl
-    - .kiro-project/bus/runs/run-20260712-202654-4346/final.json
-    - .kiro-project/bus/runs/run-20260712-202654-4346/graph.json
-    - .kiro-project/bus/runs/run-20260712-202654-4346/meta.json
-    - .kiro-project/bus/runs/run-20260712-202654-4346/results/f1.json
-    - …他 57 件
-- 検証: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict` → FAIL（exit=5 580 deselected in 0.20s）
+- 検証: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict` → FAIL（exit=5 585 deselected in 0.20s）
 
 ## Decision Outcome
 

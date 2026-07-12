@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "リポジトリルートで `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、終了コード・passed/failed 件数・失敗テストの nodeid 一覧を記録する。過去の判断記録では main で green とされているため、現時点で本当に失敗するのか（既に green なら以降の修正は不要と判定できるのか）を事実として確定させる",
+  "deps": [],
+  "kind": "work"
+}

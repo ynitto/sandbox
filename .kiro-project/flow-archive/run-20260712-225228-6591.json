@@ -1,5 +1,5 @@
 {
-  "savedAt": "2026-07-12T22:35:53.746Z",
+  "savedAt": "2026-07-12T22:56:54.599Z",
   "run": {
     "runId": "run-20260712-225228-6591",
     "status": "running",
@@ -9,7 +9,7 @@
     "lineageId": null,
     "inheritedFrom": null,
     "alive": true,
-    "heartbeatAt": "2026-07-12T22:35:50Z",
+    "heartbeatAt": "2026-07-12T22:56:35Z",
     "resumeCount": 0,
     "workspace": {
       "url": "https://github.com/ynitto/sandbox/",
@@ -458,11 +458,11 @@
         ],
         "kind": "work",
         "retries": 0,
-        "state": "claimed",
-        "who": "worker-2",
+        "state": "pending",
+        "who": null,
         "finishedAt": null,
-        "heartbeatAt": "2026-07-12T22:13:57Z",
-        "leaseUntil": 1783896237.5143921,
+        "heartbeatAt": null,
+        "leaseUntil": null,
         "output": null,
         "data": null,
         "issueUrl": null,
@@ -565,8 +565,8 @@
     "counts": {
       "done": 17,
       "failed": 0,
-      "claimed": 1,
-      "pending": 1,
+      "claimed": 0,
+      "pending": 2,
       "waiting": 4,
       "parked": 0
     },

@@ -58,3 +58,10 @@
 - affects : macOS-kiro-flow-git-4-gr-171537 → ready
 - learn: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: hold の deny を解除して続きから再開（成功済みノードは温存）
 
+## DR-0010  2026-07-13  actor: nitto
+- context : macOS-kiro-flow-git-4-gr-171537（macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 完了条件は満たしている（両スイート 990 passed）。120 秒の verify タイムアウトで NG 扱いされていたため、verify_timeout=600 に引き上げて再検証する
+- affects : macOS-kiro-flow-git-4-gr-171537 → ready
+- learn: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: 完了条件は満たしている（両スイート 990 passed）。120 秒の verify タイムアウトで NG 扱いされていたため、verify_timeout=600 に引き上げて再検証する
+

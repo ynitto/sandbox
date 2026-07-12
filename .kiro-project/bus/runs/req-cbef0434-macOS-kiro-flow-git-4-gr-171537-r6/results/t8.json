@@ -1,0 +1,10 @@
+{
+  "id": "t8",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果報告\n\n**(a) 成果 / サマリー**\n\n`git config --list --show-origin`（local/global/system 個別）を割当ワークスペースで採取し、macOS 固有の差分は **system scope の `init.defaultBranch=main`**（Xcode Command Line Tools 同梱の `/Library/Developer/CommandLineTools/usr/share/git-core/gitconfig`、`credential.helper=osxkeychain` も同居）のみと特定した。`commit.gpgsign` と `core.hooksPath` はどの scope にも未設定。詳細は `artifacts/t8/macos_git_config_diff.md` に出力（ファイル編集はしていない）。\n\n**(b) 検証内容と結果**\n\n- `git config --local/--global/--system --list --show-origin` で採取・突合。\n- 対象テスト（`test_kiro_flow.py`, `test_kiro_project.py`）を grep し、`git init` を `-b` 省略で呼ぶ全箇所を確認 → いずれもブランチ名を後段でアサートしないか、`symbolic-ref HEAD refs/heads/main` で明示固定しており `init.defaultBranch` に依存しない設計（コード自身のコメントに「既定ブランチ名に依存しない」と明記あり）。\n- `commit.gpgsign` は両テストファイル冒頭で `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0` により全体で明示的に無効化済み。\n- `user.name`/`user.email` はコミット箇所全てで `-c` またはローカル `git config` / `GIT_AUTHOR_*` 環境変数により明示注入されており、グローバル値（`ynitto7`）に依存しない。\n- 完了条件コマンドを実行: `900 passed in 123.19s`、exit 0。この 123.19s は t5 が指摘した旧 verify タイムアウト 120s を超えており、DR-0010 の結論（テストは green・タイムアウト設定が原因）と整合。\n\n**(c) 採用した前提・未解決事項・範囲外の問題**\n\n- 前提: 照合対象は完了条件コマンドが直接参照する上記2テストファイルとした。\n- 結論: 今回採取した macOS 固有の git 設定差分（`init.defaultBranch=main`）が現行テスト失敗の原因になっている証拠は見つからなかった。テストコード側が既に耐性を持つ設計になっているため。\n- 未解決事項: 「macOSで失敗する自己修復テスト4件」の具体名・トレースバックは本 run 系列のどの成果物にも記録がなく、本タスクでも発見できなかった。\n- 範囲外の問題: なし。ファイル編集は行っていない。",
+  "finished_at": "2026-07-12T23:12:38Z",
+  "artifacts": [
+    "artifacts/t8/macos_git_config_diff.md"
+  ]
+}

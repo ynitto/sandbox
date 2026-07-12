@@ -236,7 +236,56 @@
         "loop"
       ],
       "kind": "judge"
+    },
+    "w1": {
+      "goal": "完了条件コマンドの前提ファイルを作る。sandbox リポジトリ直下に `.kiro-project/repos.json` が存在せず（d2 が報告済み）、`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` は入力ファイル不在で即失敗する。s5 が調べた `schemas/repos.schema.json` に準拠して `.kiro-project/repos.json` を新規作成すること。最低限 repo id=`sandbox`、s6 が調べた `owns` フィールド、および codd-gate が --strict で要求するドキュメント/コード/テストの接続マップ（s4 の CLI I/F 文書 `artifacts/s4/codd-gate-cli-interface.md` を参照）を記述する。作成後、実際に `codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` を実行し終了コード 0 を確認する。--strict で未文書化/未テストとして落ちる場合は、リポジトリの実態に合うようマップ（対象 glob・除外）を調整して 0 になるまで直すこと。実行ログ（コマンドと終了コード）を報告に含める。",
+      "deps": [
+        "s4",
+        "s5",
+        "s6"
+      ],
+      "kind": "work"
+    },
+    "b3r": {
+      "goal": "差分ゲートへの結線（b3 のタイムアウト失敗を細分化して再実行）。`tools/kiro-project/kiro-project.py` の regression 実行経路（s1 の `artifacts/s1/regression-gate-hook-analysis.md` が特定した `Config.regression_cmd` のフック点）に codd-gate verify を結線する。実装は既存部品を import するだけに留め、新規ロジックを書かない: `codd_gate_detect.resolve_codd_gate`（a1/a2）で CLI 実在を判定し、未インストールなら何もせずスキップ（ログのみ、regression は従来どおり）。インストール済みなら `codd_gate_base.resolve_base_rev`（b1）で base rev を、`codd_gate_routing`（b2）で `--repos`/`--repo-dir` の実引数を生成し、`codd-gate verify ... --strict` を regression_cmd と同じゲートとして実行、非 0 終了なら regression を fail 扱いにする。あわせて `tools/kiro-project/tests/test_codd_gate_regression.py` を新規追加し、(1) codd-gate 未検出時はスキップして従来の regression 結果が保たれる (2) 検出時に verify が組み立てた引数どおり呼ばれる (3) verify 非 0 で regression が fail になる、の 3 ケースを subprocess をモックして検証する。`python3 -m pytest tools/kiro-project/tests -q -k codd` が 0 で通ることを自分で実行確認すること。範囲は kiro-project.py の regression 経路と当該テストファイルのみ。acceptance/enqueue には触らない。",
+      "deps": [
+        "s1",
+        "a1",
+        "a2",
+        "a4",
+        "b1",
+        "b2"
+      ],
+      "kind": "work"
+    },
+    "c1r": {
+      "goal": "受入判定への結線（c1 のタイムアウト失敗を細分化して再実行）。s2 が特定した `tools/kiro-project/kiro-project.py` の done/差し戻し判定 3 層データ構造（タスク単体の verify 結果を集約する層）に、codd-gate のゲート結果を受入判定の一項目として組み込む。`codd_gate_status`（a3/a4）が返すステータス（未インストール=skip / pass / fail）を判定材料として読み、fail のときはタスクを done にせず差し戻す。未インストール時は判定に一切影響させない（従来と同じ done 条件）。あわせて `tools/kiro-project/tests/test_codd_gate_acceptance.py` を新規追加し、(1) skip 時は従来どおり done になる (2) pass 時も done になる (3) fail 時は done にならず差し戻し理由に codd-gate の issues が載る、の 3 ケースを検証する。`python3 -m pytest tools/kiro-project/tests -q -k codd` が 0 で通ることを自分で実行確認すること。範囲は kiro-project.py の acceptance 経路と当該テストファイルのみ。regression/enqueue には触らない。",
+      "deps": [
+        "s2",
+        "a3",
+        "a4"
+      ],
+      "kind": "work"
+    },
+    "e2r": {
+      "goal": "負債取り込みへの結線（e2 のタイムアウト失敗を細分化して再実行）。s3 が精読した `tools/kiro-project/kiro-project.py` の enqueue/backlog 実装（`artifacts/s3/kiro-project-enqueue*.md` 参照）に、e1 の `codd_gate_debt` を結線する。`codd-gate tasks --debt` の出力を `codd_gate_debt` でパースして `schemas/task.schema.json` 準拠のタスクへ変換し、既存の enqueue 経路で backlog へ積む。codd-gate 未インストール時は何もしない。同一ドリフトの重複投入を避けるため、既存 backlog に同一 id/キーのタスクがあればスキップする（s3 の既存重複判定に合わせる）。あわせて `tools/kiro-project/tests/test_codd_gate_debt_enqueue.py` を新規追加し、(1) 未インストール時は enqueue されない (2) --debt 出力が task.schema.json 準拠のタスクとして backlog に積まれる (3) 既存の同一タスクがあれば重複して積まない、の 3 ケースを検証する。`python3 -m pytest tools/kiro-project/tests -q -k codd` が 0 で通ることを自分で実行確認すること。範囲は kiro-project.py の enqueue 経路と当該テストファイルのみ。regression/acceptance には触らない。",
+      "deps": [
+        "s3",
+        "a4",
+        "e1"
+      ],
+      "kind": "work"
+    },
+    "gate2": {
+      "goal": "完了条件そのものを実行して検証する。リポジトリルートで次を実行し、終了コード 0 を確認する: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict`。失敗した場合は、コマンド出力の該当箇所（失敗テスト名・codd-gate の issues 行）をそのまま引用し、どのファイル・どの結線が原因かを特定して報告する（推測でなく実行結果に基づくこと）。合格した場合はコマンド全文と終了コード 0 の出力を報告に含める。",
+      "deps": [
+        "w1",
+        "b3r",
+        "c1r",
+        "e2r"
+      ],
+      "kind": "verify"
     }
   },
-  "iteration": 0
+  "iteration": 1
 }

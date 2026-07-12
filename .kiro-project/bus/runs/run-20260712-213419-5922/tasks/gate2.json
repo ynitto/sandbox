@@ -1,0 +1,11 @@
+{
+  "id": "gate2",
+  "goal": "完了条件そのものを実行して検証する。リポジトリルートで次を実行し、終了コード 0 を確認する: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict`。失敗した場合は、コマンド出力の該当箇所（失敗テスト名・codd-gate の issues 行）をそのまま引用し、どのファイル・どの結線が原因かを特定して報告する（推測でなく実行結果に基づくこと）。合格した場合はコマンド全文と終了コード 0 の出力を報告に含める。",
+  "deps": [
+    "w1",
+    "b3r",
+    "c1r",
+    "e2r"
+  ],
+  "kind": "verify"
+}

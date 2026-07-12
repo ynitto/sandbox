@@ -14,3 +14,10 @@
 {"ts": "2026-07-12T21:33:29Z", "who": "worker-1", "kind": "result", "node": "b1", "status": "done"}
 {"ts": "2026-07-12T21:33:29Z", "who": "worker-1", "kind": "claimed", "node": "t1"}
 {"ts": "2026-07-12T21:40:27Z", "who": "worker-1", "kind": "result", "node": "t1", "status": "done"}
+{"ts": "2026-07-12T23:29:03Z", "who": "worker-1", "kind": "claimed", "node": "e1"}
+{"ts": "2026-07-12T23:34:57Z", "who": "worker-1", "kind": "result", "node": "e1", "status": "done"}
+{"ts": "2026-07-12T23:34:57Z", "who": "worker-1", "kind": "claimed", "node": "b2"}
+{"ts": "2026-07-12T23:40:30Z", "who": "worker-1", "kind": "result", "node": "b2", "status": "done"}
+{"ts": "2026-07-12T23:40:30Z", "who": "worker-1", "kind": "claimed", "node": "b3"}
+{"ts": "2026-07-12T23:50:30Z", "who": "worker-1", "kind": "result", "node": "b3", "status": "failed"}
+{"ts": "2026-07-12T23:51:53Z", "who": "worker-1", "kind": "claimed", "node": "c1r"}

@@ -57,3 +57,10 @@
 - affects : kiro-project-codd-gate-171537 → ready
 - learn: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: hold の deny を解除して続きから再開（成功済みノードは温存）
 
+## DR-0010  2026-07-13  actor: nitto
+- context : kiro-project-codd-gate-171537（kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 実装が未完（pytest -k codd がテストを 1 件も収集できず exit=5）。run-20260712-213419-5922 の続きから再開し、残りのノードで codd テストを実装させる
+- affects : kiro-project-codd-gate-171537 → ready
+- learn: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: 実装が未完（pytest -k codd がテストを 1 件も収集できず exit=5）。run-20260712-213419-5922 の続きから再開し、残りのノードで codd テストを実装させる
+

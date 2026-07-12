@@ -1,5 +1,5 @@
 ## macOS-kiro-flow-git-4-gr-171537: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする
-- status: blocked
+- status: review
 - source: charter
 - priority: 0
 - verify: `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q`
@@ -8,5 +8,9 @@
 - refs: sandbox
 - charter: v0.1
 - assess: c=2 r=1 a=1
-- last_run: run-20260712-225228-6591
 - needs_reason: 繰り返し NG（retries=6）: verify タイムアウト（120.0s）
+- last_run: req-cbef0434-macOS-kiro-flow-git-4-gr-171537-r6
+- gate_ref: git: 未コミットの変更あり
+- gate_ts: 2026-07-13 08:29:02
+- gate_branch: 
+- gate_vmsg: exit=0 ........................................ [ 72%] ........................................................................ [ 79%] .................................................................
