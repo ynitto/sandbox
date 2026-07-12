@@ -4959,6 +4959,18 @@ class TestVerifyAssist(unittest.TestCase):
             "python3 -m pytest tools/kiro-project/tests -q",
         )
 
+    def test_first_command_line_ignores_colon_terminated_preamble_before_fence(self):
+        output = (
+            "以下のコマンドで検証できます:\n"
+            "```bash\n"
+            "python3 -m pytest tools/kiro-project/tests -q -k first_command_line\n"
+            "```"
+        )
+        self.assertEqual(
+            km._first_command_line(output),
+            "python3 -m pytest tools/kiro-project/tests -q -k first_command_line",
+        )
+
     def test_first_command_line_skips_blank_and_comment_lines_inside_fence(self):
         output = """```bash
 
