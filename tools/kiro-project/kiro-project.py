@@ -2880,11 +2880,16 @@ def _looks_like_shell_command(line: str) -> bool:
     return chk.returncode == 0
 
 
+_FENCE_OPEN_RE = re.compile(r"```(\w*)\s*$")
+
+
 def _code_fence_lines(out: str) -> list[str]:
     """Markdown コードフェンス内の行を、ブロックの出現順に返す。
 
-    開始フェンスは言語タグの有無を問わない。閉じフェンスがなければ、入力末尾までを
-    そのブロックの内容として扱う。
+    開始フェンスは言語タグの有無を問わない。「実行してください: ```bash」のように
+    同一行にフェンスの前置き文が同居していても、行末が ``` (+言語タグ) であれば開始と
+    認識する（行頭一致 startswith だけだと前置き同居ケースを取りこぼすため）。
+    閉じフェンスがなければ、入力末尾までをそのブロックの内容として扱う。
     """
     fenced_lines: list[str] = []
     in_fence = False
@@ -2893,7 +2898,7 @@ def _code_fence_lines(out: str) -> list[str]:
         if in_fence and marker == "```":
             in_fence = False
             continue
-        if not in_fence and marker.startswith("```"):
+        if not in_fence and _FENCE_OPEN_RE.search(marker):
             in_fence = True
             continue
         if in_fence:
@@ -2926,26 +2931,37 @@ def _has_command_like_leading_token(line: str) -> bool:
     )
 
 
-def _first_executable_line(lines: list[str]) -> Optional[str]:
-    """候補行から最初のコマンドを返す。見つからなければ None。"""
+def _first_executable_line(lines: list[str], *, require_shell_syntax: bool = True) -> Optional[str]:
+    """候補行から最初のコマンドを返す。見つからなければ None。
+
+    require_shell_syntax=False の場合は `_looks_like_shell_command` の sh -n 構文チェックを
+    課さない。コードフェンスで明示的に区切られた行は LLM の意図（これがコマンドである）が
+    明確なため、素通しで信頼する（フェンス外の地の文はこの限りでなく従来どおり厳格に見る）。
+    """
     for raw_line in lines:
         line = _strip_code(raw_line.strip())
         if (
             line
             and not line.startswith("#")
             and line.casefold() not in _SHELL_FENCE_LANGUAGE_TAGS
-            and _looks_like_shell_command(line)
+            and (not require_shell_syntax or _looks_like_shell_command(line))
         ):
             return line
     return None
 
 
 def _first_command_line(out: str) -> Optional[str]:
-    """合成出力の先頭のコマンド行を返す。どの規則にも合わなければ None。"""
-    lines = (out or "").splitlines()
-    fenced = _first_executable_line(_code_fence_lines(out))
+    """合成出力の先頭のコマンド行を返す。どの規則にも合わなければ None。
+
+    コードフェンスを最優先でスキャンする: フェンスが見つかれば、フェンス内の最初の
+    非空・非コメント行を無条件でコマンドとして採用する。フェンスが一つも無ければ、
+    フェンス外の行を対象にした従来ロジック（既知コマンド語などの先頭トークン判定 +
+    sh -n 構文チェック）へフォールバックする。
+    """
+    fenced = _first_executable_line(_code_fence_lines(out), require_shell_syntax=False)
     if fenced:
         return fenced
+    lines = (out or "").splitlines()
     return _first_executable_line([line for line in lines if _has_command_like_leading_token(line.strip())])
 
 
