@@ -1,0 +1,9 @@
+{
+  "id": "t12",
+  "goal": "前提の健全性を機械検証する：kiro_project の断片合成が例外なく成功すること、合成後の共有名前空間に codd_gate_verify / codd_gate_detect_drift / codd_gate_debt_status が実在すること、grep -rq \"codd_gate\" tools/kiro-project/kiro_project/ が終了コード0になることを確認する。失敗した場合は t5〜t11 のどこが原因かを具体的に指摘して差し戻す",
+  "deps": [
+    "t10",
+    "t11"
+  ],
+  "kind": "verify"
+}

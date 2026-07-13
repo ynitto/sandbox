@@ -1,0 +1,8 @@
+{
+  "id": "t3",
+  "goal": "pytest の collection フェーズで発生している import エラー（ModuleNotFoundError / sys.path 未解決 / 相対 import 崩れ）を洗い出し、pyproject.toml の [tool.pytest.ini_options] pythonpath もしくは tests/conftest.py での path 追加で解消する。テスト収集が 0 error になることを `--collect-only` で確認する",
+  "deps": [
+    "t2"
+  ],
+  "kind": "work"
+}

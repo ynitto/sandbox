@@ -1,0 +1,103 @@
+{
+  "strategy": {
+    "patterns": [
+      "map-reduce",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 16,
+    "review": true,
+    "reason": "[flow-planner] 受入コマンド（pytest --cov-fail-under=70）の終了コード0が明確な完了条件であり、1回で到達する可能性が低いため loop-until-done が中核になる。fan-out の対象は「カバレッジレポートから抽出した未カバー・低カバレッジのモジュール一覧」であり、件数も内訳も実行時（ベースライン計測と既存テスト修正の後）まで確定しない。よって固定件数の fan-out-and-synthesize ではなく、split（ベースライン計測＋ギャップ集計でモジュール一覧を生成）→ map（モジュールごとにユニットテスト追加）→ reduce（受入コマンド再実行とカバレッジ検証）というデータ駆動の map-reduce が適合する。さらに quality_focus=coverage の下では「カバレッジを稼ぐだけの無意味なテスト」「プロダクションコードの挙動改変」「tmp_path/monkeypatch を欠いた環境依存テスト」が混入しやすいため、reduce 前に adversarial-verification の検証gateを置き、assertion の意味性・決定性・プロダクションコード非改変を批判的にチェックして不合格なら map をやり直す。並列数はカバレッジ未達モジュールの現実的な規模（tools/kiro-project + tools/kiro-flow の主要モジュール）を見込んで 6 とし、実行時のモジュール数に応じて map が動的展開される。migration-pipeline は構成が近いが fan-out が静的なため採用せず、同等の構造を map-reduce で組み直した。（粒度 finest）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "pytest-cov / coverage の導入確認: `python3 -m pytest --cov=tools/kiro-project --version` 相当で cov プラグインが有効か確認し、無ければ pytest-cov を導入して requirements-dev.txt もしくは pyproject.toml の dev 依存へ追記する（受入コマンドの --cov / --cov-fail-under オプションが認識されることまで確認）",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "受入コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-flow --cov-fail-under=70` をそのまま実行し、終了コード・pass/fail/error の件数内訳・全体行カバレッジ% をベースラインとして記録する（失敗しても止めず、出力全文を保存する）",
+      "deps": [
+        "t1"
+      ],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "pytest の collection フェーズで発生している import エラー（ModuleNotFoundError / sys.path 未解決 / 相対 import 崩れ）を洗い出し、pyproject.toml の [tool.pytest.ini_options] pythonpath もしくは tests/conftest.py での path 追加で解消する。テスト収集が 0 error になることを `--collect-only` で確認する",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "既存テストのうち fixture 未定義・fixture シグネチャ不整合・古い API 呼び出しが原因で失敗しているケースを特定し、テスト側を現行実装に合わせて修正する（プロダクションコードの挙動は変えない。実装バグが疑われる場合は修正せず失敗理由を記録して報告する）",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "t5": {
+      "goal": "既存テストのうち CWD・HOME・実ファイルシステム・実 git リポジトリに依存して落ちる／順序依存で落ちるものを特定し、tmp_path と monkeypatch で隔離して決定的に green にする",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "t6": {
+      "goal": "既存テストのうち subprocess 経由で外部コマンド（git / gh / 外部 CLI）を実際に実行して失敗・不安定になっているものを特定し、subprocess.run を monkeypatch でスタブ化してネットワーク・外部依存を排除する",
+      "deps": [
+        "t2"
+      ],
+      "kind": "work"
+    },
+    "t7": {
+      "goal": "`python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q`（--cov なし）が終了コード 0 で全件 green になることを確認する。残存 failure があれば t3〜t6 の分類のどれに該当するかを添えて報告する",
+      "deps": [
+        "t3",
+        "t4",
+        "t5",
+        "t6"
+      ],
+      "kind": "verify"
+    },
+    "t8": {
+      "goal": "tools/kiro-project/tests/conftest.py を整備し、一時プロジェクトディレクトリ（backlog/ claims/ journal.md を持つ最小構成）と一時 git リポジトリを作る共通 fixture を定義する。各テストに散在する同種のセットアップをこの fixture へ寄せる",
+      "deps": [
+        "t7"
+      ],
+      "kind": "work"
+    },
+    "t9": {
+      "goal": "tools/kiro-flow/tests/conftest.py を整備し、一時ファイルバス（bus/runs, claims, flow-archive）を持つ最小 flow 環境を作る共通 fixture を定義する。各テストに散在する同種のセットアップをこの fixture へ寄せる",
+      "deps": [
+        "t7"
+      ],
+      "kind": "work"
+    },
+    "t10": {
+      "goal": "環境変数・HOME・CWD をテストごとに隔離する autouse fixture を定義し、tools/kiro-project と tools/kiro-flow の両 conftest.py から同一実装を共有する（重複定義を作らず、共通ヘルパーモジュールに一本化する）",
+      "deps": [
+        "t8",
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t11": {
+      "goal": "subprocess.run / git コマンド呼び出しをモックする共通ヘルパー（呼び出し履歴の記録・戻り値と終了コードの差し替え・失敗ケースの注入ができるもの）をテスト用ヘルパーモジュールとして実装し、両テストスイートから import できるようにする",
+      "deps": [
+        "t7"
+      ],
+      "kind": "work"
+    },
+    "t12": {
+      "goal": "SPLIT（動的 fan-out の入力生成）: `--cov-report=term-missing --cov-report=xml` でカバレッジを再計測し、tools/kiro-project と tools/kiro-flow のモジュール別に (総ステートメント数, 未カバー行数, 未カバー率, 未カバー行番号) を集計する。未カバー行数の多い順に優先度付けし、全体 70% 到達に必要な最小集合＋余裕分を含む対象モジュール一覧を map の入力として出力する（各エントリに対象ファイルパスと狙うべき未カバー関数名を含める）",
+      "deps": [
+        "t7",
+        "t10",
+        "t11"
+      ],
+      "kind": "split"
+    }
+  },
+  "iteration": 0
+}

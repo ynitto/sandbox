@@ -1,8 +1,0 @@
-{
-  "id": "t12",
-  "goal": "verify.py の結線を codd-gate 未インストール時に no-op（skipped 扱い）へ縮退させ、既存の回帰ゲート合否が変化しないことをコード上で保証する",
-  "deps": [
-    "t11"
-  ],
-  "kind": "work"
-}

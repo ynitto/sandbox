@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "pytest-cov / coverage の導入確認: `python3 -m pytest --cov=tools/kiro-project --version` 相当で cov プラグインが有効か確認し、無ければ pytest-cov を導入して requirements-dev.txt もしくは pyproject.toml の dev 依存へ追記する（受入コマンドの --cov / --cov-fail-under オプションが認識されることまで確認）",
+  "deps": [],
+  "kind": "work"
+}

@@ -1,8 +1,0 @@
-{
-  "id": "t20",
-  "goal": "tools/kiro-project/tests に mr.py フックの統合テストを追加する（検収判定が codd-gate 結果を実際に読み、FAIL 時の差し戻し理由にドリフト内容が含まれることを検証）",
-  "deps": [
-    "t15"
-  ],
-  "kind": "work"
-}

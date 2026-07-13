@@ -1,0 +1,8 @@
+{
+  "id": "t8",
+  "goal": "tools/kiro-project/tests/conftest.py を整備し、一時プロジェクトディレクトリ（backlog/ claims/ journal.md を持つ最小構成）と一時 git リポジトリを作る共通 fixture を定義する。各テストに散在する同種のセットアップをこの fixture へ寄せる",
+  "deps": [
+    "t7"
+  ],
+  "kind": "work"
+}

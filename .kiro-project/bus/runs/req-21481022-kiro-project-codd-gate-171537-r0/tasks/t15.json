@@ -1,0 +1,9 @@
+{
+  "id": "t15",
+  "goal": "model.py の enqueue に codd_gate_detect_drift() のドリフト項目を backlog タスクとして投入する処理を追加する。安定キーを用いて既存 backlog との重複を防止し、同じドリフトが再実行のたびに増殖しないようにする",
+  "deps": [
+    "t12",
+    "t4"
+  ],
+  "kind": "generate"
+}

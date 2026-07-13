@@ -1,0 +1,8 @@
+{
+  "id": "t2",
+  "goal": "受入コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-flow --cov-fail-under=70` をそのまま実行し、終了コード・pass/fail/error の件数内訳・全体行カバレッジ% をベースラインとして記録する（失敗しても止めず、出力全文を保存する）",
+  "deps": [
+    "t1"
+  ],
+  "kind": "work"
+}

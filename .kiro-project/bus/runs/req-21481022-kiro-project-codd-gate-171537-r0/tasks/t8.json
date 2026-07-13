@@ -1,0 +1,10 @@
+{
+  "id": "t8",
+  "goal": "coddgate.py に codd_gate_detect_drift() を実装する。codd-gate の検出結果からドリフト項目を抽出し、項目ごとに安定キー（kind|path|symbol の sha1 等、実行のたびに変わらない値）を付与した正規化リストを返す",
+  "deps": [
+    "t5",
+    "t6",
+    "t3"
+  ],
+  "kind": "generate"
+}
