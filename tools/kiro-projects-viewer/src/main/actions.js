@@ -26,9 +26,42 @@ const DECISION_MARKER = '## Decision Outcome';
 // 1. needs へのフィードバック（Decision Outcome 記入 + [x] 確定）
 // ---------------------------------------------------------------------------
 
-function submitFeedback(needsFile, feedback) {
+// 合成票（needs ファイル欠落）向けの最小 MADR。本体 write_needs_file / ensure_needs と同系統。
+function buildNeedsStub(stub) {
+  const id = String((stub && stub.id) || '').trim();
+  if (!id) throw new Error('needs スタブには id が必要です');
+  const kind = String((stub && stub.kind) || 'blocked');
+  const title = String((stub && stub.title) || id);
+  const why = String((stub && stub.why) || '要対応');
+  const date = new Date().toISOString().slice(0, 10);
+  const heading =
+    kind === 'plan-review' ? `実行前レビュー: ${title}` : `要対応: ${title}`;
+  return (
+    '---\n' +
+    'status: proposed\n' +
+    `date: ${date}\n` +
+    'decision-makers: [human]\n' +
+    `task-id: ${id}\n` +
+    `kind: ${kind}\n` +
+    '---\n\n' +
+    `# ${heading}\n\n` +
+    '## Context and Problem Statement\n\n' +
+    `- なぜ: ${why}\n\n` +
+    `${DECISION_MARKER}\n\n` +
+    '<!-- 人の決定の記入欄。方針・指示をここに書く。 -->\n' +
+    '- [ ] 確定（このボックスを [x] にして保存すると取り込みます）\n'
+  );
+}
+
+function submitFeedback(needsFile, feedback, stub) {
   if (!fs.existsSync(needsFile)) {
-    throw new Error(`needs ファイルがありません（取り込み済みの可能性）: ${needsFile}`);
+    // 合成票（status 投影）でファイルが無いときは、差し戻し／再実行の正規ルート用にスタブを起こす。
+    // 承認（approve）は commands/ 経由なのでファイル不要だが、feedback は needs への [x] が契約。
+    if (!stub || !stub.id) {
+      throw new Error(`needs ファイルがありません（取り込み済みの可能性）: ${needsFile}`);
+    }
+    fs.mkdirSync(path.dirname(needsFile), { recursive: true });
+    fs.writeFileSync(needsFile, buildNeedsStub(stub), 'utf8');
   }
   let text = fs.readFileSync(needsFile, 'utf8');
   if (!text.includes(DECISION_MARKER)) {
@@ -307,6 +340,7 @@ async function startProject(cfg, { dir }) {
 
 module.exports = {
   submitFeedback,
+  buildNeedsStub,
   enqueueToInbox,
   dropCommand,
   runAction,
