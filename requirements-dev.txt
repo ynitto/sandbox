@@ -1,0 +1,5 @@
+# リポジトリ全体のテスト実行に使う開発用依存
+#
+# tools/kiro-project, tools/kiro-flow などのテストスイートをカバレッジ計測付きで
+# 実行するために使う（例: python3 -m pytest ... --cov=tools/kiro-project --cov-fail-under=70）。
+pytest-cov>=7.1.0
