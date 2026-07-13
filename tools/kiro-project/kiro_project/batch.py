@@ -191,12 +191,12 @@ def claim_task(cfg: "Config", task: "Task") -> bool:
         d.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
-        try:
-            old = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            old = {}
-        if time.time() - float(old.get("ts", 0) or 0) <= _claim_ttl(cfg):
-            return False                      # 新鮮なクレーム＝他者が実行中
+        # 生死は _claim_alive に委ねる: 同一ホストなら pid の生死で即断する。TTL だけで見ると
+        # kill / クラッシュで死んだ owner のロックが act_timeout+verify_timeout+60 秒（既定 41 分）
+        # 居座り、その間そのタスクは「他者が実行中」と誤認されて誰にも拾われない。さらに
+        # act_timeout<=0（無制限）では TTL が inf になり **永久に** 奪取できなくなる。
+        if _claim_alive(cfg, task.id):
+            return False                      # 実行者が生きている
         try:                                  # stale（owner 失踪）＝奪取を試みる
             p.unlink()
             fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)

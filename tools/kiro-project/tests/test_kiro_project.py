@@ -536,6 +536,51 @@ class TestAtomicClaim(unittest.TestCase):
             lock.write_text('{"host":"old","pid":1,"ts":0,"id":"T1"}', encoding="utf-8")  # 大昔
             self.assertTrue(km.claim_task(cfg, t))         # owner 失踪とみなし奪取
 
+    def _dead_pid(self) -> int:
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        return p.pid                                   # 確実に死んでいる pid
+
+    def test_dead_same_host_owner_is_stolen_without_waiting_ttl(self):
+        # kill/クラッシュで死んだ owner のロックは、TTL（既定 41 分）を待たず pid の生死で奪取する。
+        # 待たされると、その間そのタスクは誰にも拾われず drained になる。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._task(d)
+            lock = d / "claims" / "T1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text(json.dumps({"host": socket.gethostname(), "pid": self._dead_pid(),
+                                        "ts": time.time(), "id": "T1"}), encoding="utf-8")  # ts は新鮮
+            self.assertTrue(km.claim_task(cfg, t))
+
+    def test_dead_owner_is_stolen_even_when_ttl_is_infinite(self):
+        # act_timeout<=0（無制限待ち）は _claim_ttl を inf にする。TTL だけで判定していると
+        # 死んだ owner のロックが **永久に** 失効せず、そのタスクは二度と実行されない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            cfg.act_timeout = 0
+            self.assertEqual(km._claim_ttl(cfg), float("inf"))
+            t = self._task(d)
+            lock = d / "claims" / "T1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text(json.dumps({"host": socket.gethostname(), "pid": self._dead_pid(),
+                                        "ts": time.time(), "id": "T1"}), encoding="utf-8")
+            self.assertTrue(km.claim_task(cfg, t))
+
+    def test_live_owner_is_not_stolen(self):
+        # 生きている owner のロックは（ts がいくら古くても）奪わない＝二重実行しない。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            t = self._task(d)
+            lock = d / "claims" / "T1.lock"
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text(json.dumps({"host": socket.gethostname(), "pid": os.getpid(),
+                                        "ts": 0, "id": "T1"}), encoding="utf-8")   # ts は大昔
+            self.assertFalse(km.claim_task(cfg, t))
+
     def test_claim_revalidates_against_disk(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -980,6 +1025,19 @@ class TestDoctor(unittest.TestCase):
                           "--root", str(d / ".ka"), "--planner", "none", "--executor", "stub",
                           "--no-auto-adjudicate"])
             self.assertIn(rc, (0, 1, 2))
+
+    def test_every_emitted_category_is_registered_and_labelled(self):
+        # doctor は所見を _DOCTOR_CATEGORIES の順で並べ、label[cat] で見出しを出す。
+        # 片方だけに category を足すと、その所見が出た瞬間 doctor 全体が
+        # ValueError（.index）/ KeyError（label）で落ちる（実際 "git" 追加時に落ちた）。
+        src = (Path(km.__file__).parent / "doctor.py").read_text(encoding="utf-8")
+        labelled = set(km.re.findall(r'"(\w+)":\s*"[^"]+"',
+                                     km.re.search(r'label = \{([^}]*)\}', src).group(1)))
+        self.assertEqual(set(km._DOCTOR_CATEGORIES), labelled)
+        # 実際に全カテゴリの所見を持たせても描画が落ちないこと
+        findings = [{"category": c, "severity": "warn", "title": f"t-{c}",
+                     "evidence": "e", "fix": "f"} for c in km._DOCTOR_CATEGORIES]
+        self.assertEqual(len(km._dedupe_findings(findings)), len(km._DOCTOR_CATEGORIES))
 
     def test_flow_coordination_merges_and_does_not_refile(self):
         with tempfile.TemporaryDirectory() as d:
@@ -5622,6 +5680,104 @@ class TestStateSyncBatching(unittest.TestCase):
             (d / "journal.md").write_text("a\nb\n", encoding="utf-8")
             sg.sync()                                          # push 済み HEAD は amend しない
             self.assertEqual(len(self._log(d)), 2)
+
+    @staticmethod
+    def _commit_all(d: Path) -> None:
+        subprocess.run(["git", "-C", str(d), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(d), "commit", "-qm", "c"], check=True,
+                       capture_output=True)
+
+    def test_direct_push_recovers_from_foreign_dirt_in_state_worktree(self):
+        """状態 worktree で「同期名前空間の外」が汚れていても push は通り続ける。
+
+        root=<top>/.kiro-project、外（<top>/journal.md）に未コミット変更が残っていると、
+        _integrate の rebase が「作業ツリーが汚れている」で必ず失敗 → push は永久に
+        non-fast-forward → 分散同期が完全停止する（実際に起きた: 415 件未 push）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            remote = tmp / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
+                            "refs/heads/main"], check=True)
+            top = tmp / "wt"
+            top.mkdir()
+            self._init_repo(top)
+            subprocess.run(["git", "-C", str(top), "remote", "add", "origin", str(remote)],
+                           check=True)
+            (top / "journal.md").write_text("legacy\n", encoding="utf-8")   # 名前空間の外
+            root = top / ".kiro-project"
+            root.mkdir()
+            (root / "journal.md").write_text("a\n", encoding="utf-8")
+            self._commit_all(top)
+            subprocess.run(["git", "-C", str(top), "push", "-q", "-u", "origin", "main"],
+                           check=True)
+
+            # 別ホストが origin を 1 コミット進める（= こちらは behind 1 → push は non-FF）
+            other = tmp / "other"
+            subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+            subprocess.run(["git", "-C", str(other), "config", "user.email", "o@test"], check=True)
+            subprocess.run(["git", "-C", str(other), "config", "user.name", "o"], check=True)
+            (other / "other.md").write_text("from another host\n", encoding="utf-8")
+            self._commit_all(other)
+            subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"], check=True)
+
+            # 名前空間の外に未コミット変更を残す（中断した rebase / 旧レイアウトの残骸を再現）
+            (top / "journal.md").write_text("clobbered\n", encoding="utf-8")
+
+            sg = km.DirectStateGit(root, interval=0.0)
+            (root / "journal.md").write_text("a\nb\n", encoding="utf-8")     # 自分の名前空間の更新
+            sg.sync(force=True)                                              # 例外を投げず push が通る
+
+            r = subprocess.run(["git", "-C", str(top), "rev-list", "--count",
+                                "origin/main..HEAD"], capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip(), "0")                          # 未 push が残らない
+            self.assertTrue((top / "other.md").exists())                     # 相手の更新も取り込めた
+
+    def test_direct_integrate_adjudicates_conflict_instead_of_giving_up(self):
+        """rebase が競合しても裁定で決着させて push を通す。
+
+        abort して諦めると push は永久に non-fast-forward のまま＝分散同期が二度と回復しない。
+        裁定規則は StateGit と同じ: 人の入力（charter.md）はリモート優先、機械状態はローカル優先。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            remote = tmp / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
+                            "refs/heads/main"], check=True)
+            top = tmp / "wt"
+            top.mkdir()
+            self._init_repo(top)
+            subprocess.run(["git", "-C", str(top), "remote", "add", "origin", str(remote)],
+                           check=True)
+            root = top / ".kiro-project"
+            root.mkdir()
+            (root / "charter.md").write_text("base\n", encoding="utf-8")     # 人の入力
+            (root / "status.json").write_text("{}\n", encoding="utf-8")      # 機械状態
+            self._commit_all(top)
+            subprocess.run(["git", "-C", str(top), "push", "-q", "-u", "origin", "main"],
+                           check=True)
+
+            other = tmp / "other"             # 別ホストが同じ 2 ファイルを両方書き換えて push
+            subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+            subprocess.run(["git", "-C", str(other), "config", "user.email", "o@t"], check=True)
+            subprocess.run(["git", "-C", str(other), "config", "user.name", "o"], check=True)
+            (other / ".kiro-project" / "charter.md").write_text("人の更新\n", encoding="utf-8")
+            (other / ".kiro-project" / "status.json").write_text('{"remote":1}\n',
+                                                                 encoding="utf-8")
+            self._commit_all(other)
+            subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"], check=True)
+
+            sg = km.DirectStateGit(root, interval=0.0)
+            (root / "charter.md").write_text("こちらの更新\n", encoding="utf-8")
+            (root / "status.json").write_text('{"local":1}\n', encoding="utf-8")
+            sg.sync(force=True)               # 競合するが例外を投げず push が通る
+
+            r = subprocess.run(["git", "-C", str(top), "rev-list", "--count",
+                                "origin/main..HEAD"], capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip(), "0")                       # 未 push が残らない
+            self.assertFalse(sg._rebasing())                              # rebase を残さない
+            self.assertEqual((root / "charter.md").read_text(), "人の更新\n")    # 人＝リモート優先
+            self.assertEqual((root / "status.json").read_text(), '{"local":1}\n')  # 機械＝ローカル
 
     def test_state_sync_journals_imports_only(self):
         # journal へ残すのは import（リモート指示の取り込み）のみ。export を記録すると

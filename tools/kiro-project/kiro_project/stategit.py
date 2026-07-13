@@ -500,6 +500,20 @@ class DirectStateGit:
             with contextlib.suppress(OSError):
                 os.remove(tmpidx)
 
+    def _subdir(self) -> str:
+        """リポジトリトップから見た root の相対パス（root がトップ自身なら ""）。
+
+        状態 worktree では root=<top>/.kiro-project というサブディレクトリになる。これを噛ませないと
+        detached worktree 側で <wt>/journal.md（**トップ直下**）を書いてしまい、状態ファイルを
+        丸ごと別のパスへコミットし続ける: 本来の .kiro-project/* は一度もコミットされず永久に
+        dirty のまま残り（→ rebase が必ず失敗 → push が永久に non-fast-forward）、代わりに
+        トップ直下の journal.md / status.json が毎パス上書きされてコミットが積み上がる。"""
+        top = self._git("rev-parse", "--show-toplevel").stdout.strip()
+        if not top:
+            return ""
+        rel = os.path.relpath(os.path.realpath(str(self.root)), os.path.realpath(top))
+        return "" if rel == "." else rel
+
     def _worktree_commit(self, targets: "list[str]", branch: str,
                          amend: bool) -> "str | None":
         """state コミットを detached worktree（専用 index）で組み立てる。
@@ -509,19 +523,22 @@ class DirectStateGit:
         old = self._git("rev-parse", "HEAD").stdout.strip()
         if not old:
             return None
+        sub = self._subdir()
         wt = tempfile.mkdtemp(prefix="kiro-project-state-wt-")
         os.rmdir(wt)                         # worktree add は空でも既存ディレクトリを嫌う
         try:
             if self._git("worktree", "add", "--detach", "--force", wt, old).returncode != 0:
                 return None
+            base = Path(wt) / sub if sub else Path(wt)   # worktree 内の「自分の名前空間」
+            base.mkdir(parents=True, exist_ok=True)
 
-            def _wgit(*args: str):
-                return subprocess.run(["git", "-C", wt, *args],
+            def _wgit(*args: str):           # pathspec が root 相対で解決されるよう base を cwd にする
+                return subprocess.run(["git", "-C", str(base), *args],
                                       capture_output=True, text=True, env=self._env())
 
             for rel in targets:              # 現在のルートの内容を worktree へ写す（削除も反映）
                 src = self.root / rel
-                dst = Path(wt) / rel
+                dst = base / rel
                 if src.is_dir():             # 未追跡ディレクトリ（porcelain は dir/ 1 行で返す）
                     shutil.copytree(src, dst, dirs_exist_ok=True)
                 elif src.is_file():
@@ -547,6 +564,70 @@ class DirectStateGit:
             shutil.rmtree(wt, ignore_errors=True)
             self._git("worktree", "prune")
 
+    def _foreign_dirty(self, top: str) -> "list[str]":
+        """同期名前空間（self.root 配下）の**外**に残った未コミット変更（top 相対パス）。
+        root == top（プロジェクトルート自体がリポジトリ）のときは「外」が存在しないので空。"""
+        root = os.path.realpath(str(self.root))
+        if os.path.realpath(top) == root:
+            return []
+        rel = os.path.relpath(root, top)
+        r = subprocess.run(["git", "-C", top, "status", "--porcelain", "--untracked-files=no"],
+                           capture_output=True, text=True, env=self._env())
+        out: list[str] = []
+        for line in r.stdout.splitlines():
+            path = line[3:].split(" -> ")[-1].strip().strip('"')
+            if path and path != rel and not path.startswith(rel + "/"):
+                out.append(path)
+        return out
+
+    def _reset_foreign(self, top: str) -> None:
+        """状態 worktree の「自分の名前空間の外」に残った未コミット変更を HEAD へ戻す。
+
+        この worktree は kiro-project 専用で、root（<worktree>/.kiro-project）の外を書くのは
+        自分だけ（旧レイアウトの残骸・中断した rebase の残留）。人の作業は存在しない。
+        放置すると _integrate の rebase/merge が「作業ツリーが汚れている」で必ず失敗し、
+        push は non-fast-forward のまま二度と通らない＝**同期が永久に停止する**（実際そうなった）。
+        root == top（人のリポジトリ直下で動かす direct モード）では何もしない。"""
+        paths = self._foreign_dirty(top)
+        if not paths:
+            return
+        for args in (("reset", "-q", "HEAD", "--"), ("checkout", "-q", "--")):
+            subprocess.run(["git", "-C", top, *args, *paths],
+                           capture_output=True, text=True, env=self._env())
+
+    def _rebasing(self) -> bool:
+        """rebase が進行中か。worktree では .git が **ファイル** なので <root>/.git/rebase-merge を
+        直に見ても永遠に一致しない（一度これで誤判定した）。必ず rev-parse --git-path で解決する。"""
+        for d in ("rebase-merge", "rebase-apply"):
+            p = self._git("rev-parse", "--git-path", d).stdout.strip()
+            if p and (Path(p) if os.path.isabs(p) else (self.root / p)).is_dir():
+                return True
+        return False
+
+    def _resolve_rebase(self, sub: str) -> bool:
+        """rebase 中のコンフリクトをパス種別の裁定で決着させて続行する（StateGit と同じ規則:
+        人の入力＝リモート優先 / 機械状態＝ローカル優先）。決着できたら True。
+
+        これが無いと 1 ファイル競合した瞬間に abort し、以後 push は永久に non-fast-forward の
+        まま＝分散同期が二度と回復しない。rebase 中は --ours=リモート / --theirs=ローカル。
+        パスは `:/<path>` （リポジトリルート相対）で渡す: root はサブディレクトリなので
+        cwd 相対で渡すと解決に失敗する。"""
+        for _ in range(200):                   # 有限（1 コミットずつしか進まない）
+            if not self._rebasing():
+                return True
+            for path in [ln for ln in self._git(
+                    "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if ln.strip()]:
+                rel = path[len(sub) + 1:] if sub and path.startswith(sub + "/") else path
+                side = "--ours" if StateGit._remote_wins(rel) else "--theirs"
+                if self._git("checkout", side, "--", f":/{path}").returncode != 0:
+                    self._git("rm", "-q", "--", f":/{path}")   # add/delete 衝突: 消えた側に合わせる
+                self._git("add", "--", f":/{path}")
+            if self._git("rebase", "--continue").returncode != 0 and \
+                    self._git("rebase", "--skip").returncode != 0:
+                break
+        self._git("rebase", "--abort")          # 進められない → 中途半端な rebase を残さない
+        return False
+
     def _integrate(self, branch: str) -> int:
         """origin/<branch> をローカルへ取り込む。ff-only を優先し、分岐時のみ rebase。
         --autostash は使わない: 未コミット変更と衝突するときは取り込みを見送る（壊さない）。
@@ -554,6 +635,9 @@ class DirectStateGit:
         if self._git("rev-parse", "-q", "--verify",
                      f"refs/remotes/origin/{branch}").returncode != 0:
             return 0
+        top = self._git("rev-parse", "--show-toplevel").stdout.strip()
+        if top:
+            self._reset_foreign(top)      # 名前空間外の残骸で rebase が詰むのを防ぐ
         before = self._git("rev-parse", "HEAD").stdout.strip()
         if not before:
             return 0
@@ -573,8 +657,8 @@ class DirectStateGit:
             ok = self._git("merge", "--ff-only", f"origin/{branch}").returncode == 0
         else:
             ok = self._git("rebase", f"origin/{branch}").returncode == 0
-            if not ok:
-                self._git("rebase", "--abort")
+            if not ok:                        # 競合 → 裁定で決着させて続行（abort して諦めない）
+                ok = self._resolve_rebase(self._subdir())
         if not ok:
             return 0
         after = self._git("rev-parse", "HEAD").stdout.strip()
@@ -582,6 +666,21 @@ class DirectStateGit:
             return 0
         diff = self._git("diff", "--name-only", before, after, "--", ".").stdout
         return len([ln for ln in diff.splitlines() if ln.strip()])
+
+    def _wedge_reason(self, branch: str) -> str:
+        """push が通らない理由を一行で述べる（ahead/behind と、rebase を阻む未コミット変更）。"""
+        def _n(*rev: str) -> str:
+            r = self._git("rev-list", "--count", *rev)
+            return (r.stdout.strip() or "?") if r.returncode == 0 else "?"
+        parts = [f"origin/{branch} より {_n(f'origin/{branch}..HEAD')} 件先行・"
+                 f"{_n(f'HEAD..origin/{branch}')} 件遅れ"]
+        top = self._git("rev-parse", "--show-toplevel").stdout.strip()
+        if top:
+            dirty = self._foreign_dirty(top)
+            if dirty:
+                parts.append("同期対象外の未コミット変更が rebase を阻んでいる: "
+                             + ", ".join(dirty[:5]))
+        return "; ".join(parts)
 
     def sync(self, force: bool = False) -> "tuple[int, int]":
         """双方向同期を 1 回行い (imported, exported) を返す。リモート操作は interval で律速し、
@@ -618,7 +717,8 @@ class DirectStateGit:
                     ahead = self._git("rev-parse", "-q", "--verify", "HEAD").returncode == 0
                 if ahead:
                     for i in range(_STATE_PUSH_RETRIES):
-                        if self._git("push", "-u", "origin", f"HEAD:{branch}").returncode == 0:
+                        r = self._git("push", "-u", "origin", f"HEAD:{branch}")
+                        if r.returncode == 0:
                             self._last_remote = time.time()
                             break
                         self._git("fetch", "-q", "origin", branch)
@@ -626,7 +726,12 @@ class DirectStateGit:
                         if i < _STATE_PUSH_RETRIES - 1:
                             time.sleep(2 ** i if i < 4 else 16)
                     else:
-                        raise RuntimeError(f"state_git push が {branch} へ反映できませんでした")
+                        # 「反映できませんでした」だけでは何が詰まっているのか分からず、毎パス
+                        # 同じ一行が journal に出続ける。詰まりの正体（取り込めていない／作業ツリーが
+                        # 汚れている）を出して、人が最初の一手を打てるようにする。
+                        raise RuntimeError(
+                            f"state_git push が {branch} へ反映できませんでした: "
+                            f"{self._wedge_reason(branch)}")
         return imported, exported
 
 

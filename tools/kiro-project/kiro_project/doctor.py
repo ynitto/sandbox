@@ -141,7 +141,7 @@ def cmd_audit(cfg: Config, as_json: bool = False, strict: bool = False) -> int:
 #   （スキルが無ければ起票文面を出力するだけ）。知能（診断・分類・起票文面）は kiro-cli へ委譲し、
 #   収集・修正・起票の駆動は本体が決定的に行う（§1 不変条件: 知能は委譲・操作は決定的）。
 # ---------------------------------------------------------------------------
-_DOCTOR_CATEGORIES = ("env", "config", "program")
+_DOCTOR_CATEGORIES = ("env", "config", "program", "git")
 _DOCTOR_SEVERITIES = ("critical", "warn", "info")
 _DOCTOR_DEFAULT_PROTECT = ["**/.env", "**/secrets/**", "auth/**", "payments/**", "**/migrations/**"]
 
@@ -556,7 +556,7 @@ def cmd_doctor(cfg: "Config", fix: bool = False, as_json: bool = False,
     if not findings:
         print("問題は見つかりませんでした（healthy）。")
         return 0
-    label = {"env": "環境", "config": "設定", "program": "プログラム"}
+    label = {"env": "環境", "config": "設定", "program": "プログラム", "git": "git"}
     mark = {"critical": "✗", "warn": "−", "info": "·"}
     for cat in _DOCTOR_CATEGORIES:
         group = [f for f in findings if f["category"] == cat]
