@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kiro/agent-cli.schema.json",
+  "title": "エージェント CLI プラグイン定義",
+  "description": "kiro-project / kiro-flow / kiro-projects-viewer が共有する、エージェント CLI の宣言的な差し込み口。組み込み（kiro/claude/copilot/codex）以外の CLI（cursor / ollama / hermes …）は、この契約に従う agents/<name>.json を置くだけで agent_cli: <name> として使える。結合はこのデータ契約のみで、各ツールが自前の小さなローダで解釈する（ツール間のコード依存は作らない）。探索順: $KIRO_AGENTS_DIR → <プロジェクトルート>/agents/ → ~/.kiro/agents/。",
+  "type": "object",
+  "required": ["command"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "表示名（省略時はファイル名）。agent_cli の値はファイル名 <name>.json で決まる。"
+    },
+    "command": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "実行 argv。プレースホルダ {model}（モデル名。未指定ならそのトークンごと省く）と {output_file}（output=file のとき最終応答を書かせる一時ファイル）を使える。例: [\"ollama\", \"run\", \"{model}\"]"
+    },
+    "prompt_via": {
+      "enum": ["stdin", "argv"],
+      "default": "stdin",
+      "description": "プロンプトの渡し方。stdin 推奨（ARG_MAX に当たらない）。argv は末尾引数（prompt_flag 指定時はフラグの値）として渡し、argv 長制限を超えるプロンプトは一時ファイル退避（参照渡し）に自動で切り替わる。"
+    },
+    "prompt_flag": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "prompt_via=argv のときのフラグ名（例 \"-p\"）。null なら素の末尾引数。"
+    },
+    "model_flag": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "モデル指定のフラグ名（例 \"--model\"）。command に {model} が無く、モデルが指定されたときだけ argv 末尾に付く。"
+    },
+    "default_model": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "モデル未指定時の既定（{model} が command に必須の CLI で使う。例 ollama）。"
+    },
+    "output": {
+      "enum": ["stdout", "file"],
+      "default": "stdout",
+      "description": "最終応答の取り出し方。stdout=標準出力全文。file=command 中の {output_file} に CLI 自身が書く（stdout がイベントログで汚れる CLI 向け。codex の --output-last-message と同型）。"
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "追加の環境変数（os.environ に上書きマージ）。"
+    },
+    "timeout": {
+      "type": ["number", "null"],
+      "default": null,
+      "description": "この CLI 専用のタイムアウト秒（null ならツール側の設定値）。"
+    },
+    "empty_output_is_error": {
+      "type": "boolean",
+      "default": true,
+      "description": "rc=0 でも本文が空なら失敗として扱う（認証切れで空応答を返す CLI の静かな失敗を防ぐ）。"
+    },
+    "errors": {
+      "type": "array",
+      "description": "エラー本文（stdout+stderr）の分類規則。失敗トリアージ（どの層が直すか）の CLI 固有知識をここへ書く。組み込みの汎用パターン（quota/auth/env/transient）より先に評価される。",
+      "items": {
+        "type": "object",
+        "required": ["match", "class"],
+        "additionalProperties": false,
+        "properties": {
+          "match": { "type": "string", "description": "正規表現（大文字小文字無視）" },
+          "class": {
+            "enum": ["quota", "auth", "env", "transient"],
+            "description": "quota=利用上限（時間をおけば回復・リトライを焼かない） / auth=認証切れ（人が環境を直す） / env=実行環境の問題（CLI不在・モデル不正など。人が環境を直す） / transient=一時的（通常リトライで解ける）"
+          },
+          "hint": { "type": "string", "description": "人向けの対処ヒント（1 文）" }
+        }
+      }
+    }
+  }
+}

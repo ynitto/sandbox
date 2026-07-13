@@ -368,6 +368,11 @@ function readRun(runDir) {
     resumeCount: Number(meta.resume_count || 0), // daemon が孤児を自動再開した回数（進捗でリセット）
     workspace: meta.workspace || null, // 唯一の書込先（gitlab executor の起票先解決に使う）
     references: Array.isArray(meta.references) ? meta.references : [],
+    executor: meta.executor || null, // この run を駆動した executor（orchestrator が記録）
+    // GitLab 連携の UI（突き合わせ・イシュー検索・レビュー導線）を出すか。
+    // gitlab executor を使っていない run に出しても意味がない（実在しないイシューを
+    // 探すボタンが並ぶだけ）。meta.executor が正、旧 run（記録なし）は証跡から推定。
+    gitlabish: meta.executor ? meta.executor === 'gitlab' : gitlabUsed,
     request: String(meta.request || ''),
     createdAt: meta.created_at || null,
     updatedAt: meta.updated_at || null,

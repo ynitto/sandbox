@@ -5989,6 +5989,122 @@ class TestResumeRun(unittest.TestCase):
             self.assertEqual(t.norm_status(), "ready")
 
 
+class TestAgentPlugin(unittest.TestCase):
+    """エージェント CLI プラグイン（データ契約: schemas/agent-cli.schema.json）。
+    組み込み以外の CLI を agents/<name>.json だけで差し込み、未知の agent_cli は
+    黙って kiro-cli に落とさず明示エラーにする。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ka-agents-"))
+        self._old = os.environ.get("KIRO_AGENTS_DIR")
+        os.environ["KIRO_AGENTS_DIR"] = str(self.tmp)
+        km._AGENT_PLUGIN_CACHE.clear()
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("KIRO_AGENTS_DIR", None)
+        else:
+            os.environ["KIRO_AGENTS_DIR"] = self._old
+        km._AGENT_PLUGIN_CACHE.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, spec):
+        (self.tmp / f"{name}.json").write_text(json.dumps(spec), encoding="utf-8")
+
+    def test_plugin_builds_command_with_model_placeholder(self):
+        self._write("myllm", {"command": ["my-cli", "run", "{model}"],
+                              "default_model": "base-7b"})
+        cmd, stdin_text, out_file = km._agent_cmd("myllm", None, "こんにちは")
+        self.assertEqual(cmd, ["my-cli", "run", "base-7b"])   # default_model が {model} に入る
+        self.assertEqual(stdin_text, "こんにちは")               # 既定は stdin 渡し
+        self.assertIsNone(out_file)
+        cmd, _, _ = km._agent_cmd("myllm", "big-70b", "x")
+        self.assertEqual(cmd, ["my-cli", "run", "big-70b"])   # 明示モデルが勝つ
+
+    def test_plugin_argv_prompt_and_model_flag(self):
+        self._write("argvcli", {"command": ["a-cli"], "prompt_via": "argv",
+                                "prompt_flag": "-p", "model_flag": "--model"})
+        cmd, stdin_text, _ = km._agent_cmd("argvcli", "m1", "prompt text")
+        self.assertEqual(cmd, ["a-cli", "--model", "m1", "-p", "prompt text"])
+        self.assertIsNone(stdin_text)
+
+    def test_plugin_output_file_placeholder(self):
+        self._write("filecli", {"command": ["f-cli", "--out", "{output_file}"],
+                                "output": "file"})
+        cmd, _, out_file = km._agent_cmd("filecli", None, "x")
+        self.assertIsNotNone(out_file)
+        self.assertIn(out_file, cmd)
+        os.remove(out_file)
+
+    def test_unknown_agent_cli_is_explicit_error(self):
+        # 以前は未知の agent_cli が黙って kiro-cli に落ちていた（設定ミスに気づけない罠）
+        with self.assertRaises(RuntimeError) as cm:
+            km._agent_cmd("nosuchcli", None, "x")
+        self.assertIn("agents/nosuchcli.json", str(cm.exception))
+
+    def test_builtins_do_not_consult_plugins(self):
+        self._write("claude", {"command": ["evil"]})   # 組み込み名は上書きできない
+        cmd, _, _ = km._agent_cmd("claude", None, "x")
+        self.assertEqual(cmd[0], "claude")
+
+    def test_broken_plugin_is_loud(self):
+        (self.tmp / "broken.json").write_text("{not json", encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            km.load_agent_plugin("broken")
+
+    def test_plugin_error_patterns_feed_triage(self):
+        self._write("myllm", {"command": ["my-cli"], "errors": [
+            {"match": "GPU memory exhausted", "class": "env", "hint": "モデルが大きすぎます"}]})
+        km.load_agent_plugin("myllm")
+        cls, hint = km.classify_agent_failure("boom: GPU memory exhausted")
+        self.assertEqual(cls, "env")
+        self.assertIn("モデルが大きすぎます", hint)
+
+
+class TestFailureTriage(unittest.TestCase):
+    """失敗トリアージ: 環境要因（quota/auth/env）はタスクの内容と無関係 —
+    リトライを焼かず・裁定も呼ばず、原因と直し方を明記して人へ回す。"""
+
+    def test_classify_and_tag(self):
+        cls, _ = km.classify_agent_failure("codex error: usage limit reached")
+        self.assertEqual(cls, "quota")
+        msg = km._agent_failure("codex", 1, "", "usage limit reached")
+        self.assertTrue(msg.startswith("[agent-error:quota]"), msg)
+        # 既にタグ付き（kiro-flow 経由）ならタグが正
+        cls, _ = km.classify_agent_failure("[agent-error:auth] なにか")
+        self.assertEqual(cls, "auth")
+        # 内容の問題（該当なし）は None
+        self.assertIsNone(km.classify_agent_failure("テストが 3 件落ちました"))
+
+    def test_settle_failure_env_class_blocks_without_burning_retries(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d)
+            task = km.load_tasks(cfg.backlog)[0]
+            km._settle_failure(cfg, task, "[agent-error:auth] kiro-cli 失敗 (rc=0): 認証切れ",
+                               1, "", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "blocked")       # 人へ（環境を直すまで回さない）
+            self.assertEqual(t.retries, 0)                     # リトライを焼かない
+            needs = list((d / "needs").glob("T1.md"))
+            self.assertEqual(len(needs), 1)
+            body = needs[0].read_text(encoding="utf-8")
+            self.assertIn("認証", body)                         # 何を直すかが書いてある
+            self.assertIn("続き", body)                         # 直せば続きから、と言い切る
+
+    def test_settle_failure_content_class_retries_as_before(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="doing")
+            cfg = cfg_for(d)
+            task = km.load_tasks(cfg.backlog)[0]
+            km._settle_failure(cfg, task, "verify NG: テストが落ちた", 1, "", {})
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "ready")         # 内容の問題 → 従来どおり積み直し
+            self.assertEqual(t.retries, 1)
+
+
 class SelfUpdateTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="ka-update-"))

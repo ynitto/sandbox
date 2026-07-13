@@ -144,4 +144,27 @@ test('park 中の wait 記録にイシュー座標があれば拾う', () => {
   }
 });
 
+test('gitlabish: meta.executor が正（agent なら証跡があっても GitLab UI を出させない）', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-flow-'));
+  try {
+    const runDir = buildRun(tmp, {
+      t1: { state: 'done', data: { web_url: 'https://gitlab.example.com/g/p/-/issues/9' } },
+    });
+    // executor 記録なし（旧 run）→ 証跡（data の issue 座標）から推定 = gitlabish
+    assert.strictEqual(flow.readRun(runDir).gitlabish, true);
+    // executor=agent と明記 → 証跡らしきものがあっても gitlab UI は不要
+    fs.writeFileSync(path.join(runDir, 'meta.json'),
+      JSON.stringify({ status: 'done', request: 'x', executor: 'agent' }));
+    const r2 = flow.readRun(runDir);
+    assert.strictEqual(r2.gitlabish, false);
+    assert.strictEqual(r2.executor, 'agent');
+    // executor=gitlab と明記 → gitlabish
+    fs.writeFileSync(path.join(runDir, 'meta.json'),
+      JSON.stringify({ status: 'done', request: 'x', executor: 'gitlab' }));
+    assert.strictEqual(flow.readRun(runDir).gitlabish, true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 console.log(`\n${passed} passed`);

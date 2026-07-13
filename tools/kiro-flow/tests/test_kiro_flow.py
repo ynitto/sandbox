@@ -5618,5 +5618,81 @@ class AgentOverrideTests(unittest.TestCase):
         self.assertIn("global-model", cmd2)
 
 
+class TestAgentPluginAndTriage(unittest.TestCase):
+    """エージェント CLI プラグイン（agents/<name>.json）と失敗トリアージ。
+    環境要因（quota/auth/env）の失敗はどのノードをリトライしても同じ理由で落ちるため、
+    run を即座に打ち切って人に環境を直させる（完了済みノードは温存＝再開で続きから）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kf-agents-")
+        self._old = os.environ.get("KIRO_AGENTS_DIR")
+        os.environ["KIRO_AGENTS_DIR"] = self.tmp
+        kf._AGENT_PLUGIN_CACHE.clear()
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("KIRO_AGENTS_DIR", None)
+        else:
+            os.environ["KIRO_AGENTS_DIR"] = self._old
+        kf._AGENT_PLUGIN_CACHE.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, spec):
+        with open(os.path.join(self.tmp, f"{name}.json"), "w", encoding="utf-8") as f:
+            json.dump(spec, f)
+
+    def test_plugin_command_built_and_invoked(self):
+        self._write("myllm", {"command": ["my-cli", "run", "{model}"],
+                              "default_model": "base-7b"})
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append((cmd, kw.get("input")))
+            return types.SimpleNamespace(returncode=0, stdout="応答です", stderr="")
+        with mock.patch.object(kf.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(kf, "_AGENT_CLI", "myllm"):
+            out = kf.run_kiro("こんにちは", None)
+        self.assertEqual(out, "応答です")
+        cmd, stdin_text = calls[0]
+        self.assertEqual(cmd, ["my-cli", "run", "base-7b"])
+        self.assertEqual(stdin_text, "こんにちは")
+
+    def test_unknown_agent_cli_is_explicit_error(self):
+        with mock.patch.object(kf, "_AGENT_CLI", "nosuchcli"):
+            with self.assertRaises(RuntimeError) as cm:
+                kf.run_kiro("x", None)
+        self.assertIn("agents/nosuchcli.json", str(cm.exception))
+
+    def test_agent_failure_carries_triage_tag(self):
+        msg = kf._agent_failure("codex", 1, "", "usage limit reached")
+        self.assertTrue(msg.startswith("[agent-error:quota]"), msg)
+        self.assertIsNone(kf.classify_agent_failure("テストが 3 件落ちた"))
+
+    def test_env_failure_fails_run_fast_instead_of_replanning(self):
+        # 認証切れタグ付きの失敗ノードが 1 つでもあれば、再計画（リトライ生成）せず打ち切る
+        nodes = {"t1": {"goal": "a", "deps": [], "kind": "work"},
+                 "t2": {"goal": "b", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "done", "output": "ok"},
+                   "t2": {"status": "failed",
+                          "output": "実行エラー: [agent-error:auth] kiro-cli 失敗 (rc=0): 認証切れ"}}
+        args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
+                                     exemplar_first=False, max_retries=3)
+        decision, new_tasks, reason = kf._continue(args, "req", nodes, results, 0)
+        self.assertEqual(decision, "failed")
+        self.assertEqual(new_tasks, [])
+        self.assertIn("[agent-error:auth]", reason)
+        self.assertIn("温存", reason)                  # 完了済みは捨てない、と言い切る
+
+    def test_content_failure_still_replans(self):
+        # タグ無し（内容の問題）は従来どおり retry タスクを生成する
+        nodes = {"t1": {"goal": "a", "deps": [], "kind": "work"}}
+        results = {"t1": {"status": "failed", "output": "実行エラー: テストが落ちた"}}
+        args = types.SimpleNamespace(executor="stub", max_fanout=50, review=False,
+                                     exemplar_first=False, max_retries=3)
+        decision, new_tasks, _ = kf._continue(args, "req", nodes, results, 0)
+        self.assertEqual(decision, "replan")
+        self.assertEqual(len(new_tasks), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -151,4 +151,30 @@ test('done / 記録（archived）→ 操作なしを明言', () => {
   assert.strictEqual(advise(baseRun({ archived: true }), null).kind, 'none');
 });
 
+test('失敗トリアージ: 認証切れタグ → タスク状態より先に「何を直すか」を言い切る', () => {
+  // 本体が稼働中 + タスク ready なら普段は「自動でやり直される」だが、認証が切れている限り
+  // 自動やり直しも同じ理由で落ちる。環境の修復が先、と言い切る。
+  const advise = makeAdvisor(project({ running: true }));
+  const r = baseRun({
+    status: 'failed', alive: false,
+    failureReason: '[agent-error:auth] 環境要因の失敗（t2）: 認証に失敗しています',
+  });
+  const a = advise(r, group(r));
+  assert.strictEqual(a.kind, 'human');
+  assert.match(a.chip, /認証切れ/);
+  assert.match(a.text, /再ログイン/);
+  assert.match(a.text, /温存/);
+});
+
+test('失敗トリアージ: 利用上限タグ → 時間をおけば回復と言う', () => {
+  const advise = makeAdvisor(project());
+  const r = baseRun({
+    status: 'failed', alive: false,
+    failureReason: '[agent-error:quota] 環境要因の失敗（t1）: 利用上限',
+  });
+  const a = advise(r, group(r));
+  assert.match(a.chip, /利用上限/);
+  assert.match(a.text, /時間をおく/);
+});
+
 console.log(`\n${passed} passed`);

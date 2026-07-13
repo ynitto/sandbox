@@ -119,24 +119,173 @@ def _agent_cmd(cli: str, model: "str | None",
         if model:
             cmd += ["--model", model]
         return cmd + ["-"], prompt, out_file
-    cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
-    if model:
-        cmd += ["--model", model]
-    return cmd + [prompt], None, None
+    if cli in ("kiro", ""):
+        cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
+        if model:
+            cmd += ["--model", model]
+        return cmd + [prompt], None, None
+    # 組み込み以外 → プラグイン定義（agents/<name>.json・契約は schemas/agent-cli.schema.json）。
+    # 以前は未知の agent_cli が黙って kiro-cli に落ちていた（設定ミスに気づけない罠）。
+    # 定義が無ければ明示エラーにする。
+    plug = load_agent_plugin(cli)
+    if plug is None:
+        raise RuntimeError(
+            f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
+            f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
+            f"探索順: $KIRO_AGENTS_DIR → <root>/agents → ~/.kiro/agents）")
+    return _plugin_agent_cmd(plug, model, prompt)
 
 
-# エージェント CLI が返す失敗のうち、人が対処しないと全処理が落ち続ける既知の原因。
-# 本文から拾って明示しないと「なぜか全部失敗する」にしか見えない。
-_AGENT_FATAL_PATTERNS = (
-    (re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
+# --- エージェント CLI プラグイン（データ契約: schemas/agent-cli.schema.json） -----------------
+# 組み込み（kiro/claude/copilot/codex）以外の CLI（cursor / ollama / hermes …）を、
+# 定義ファイルだけで差し込む公式の口。kiro-flow も同じ契約を読む（結合はデータ契約のみ・
+# ローダは各ツールが自前で持つ = ツール間のコード依存を作らない）。
+_AGENT_PLUGIN_CACHE: "dict[str, dict | None]" = {}
+
+
+def _agent_plugin_dirs() -> "list[Path]":
+    dirs: "list[Path]" = []
+    envd = os.environ.get("KIRO_AGENTS_DIR")
+    if envd:
+        dirs.append(Path(envd).expanduser())
+    dirs.append(Path.cwd() / "agents")            # プロジェクトルート（run は cwd=root で動く）
+    dirs.append(Path.home() / ".kiro" / "agents")
+    return dirs
+
+
+def _normalize_agent_plugin(name: str, raw: dict, path: Path) -> dict:
+    cmd = raw.get("command")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(c, str) for c in cmd):
+        raise RuntimeError(f"エージェント定義 {path}: command は文字列配列が必須です")
+    output = str(raw.get("output", "stdout"))
+    if output == "file" and not any("{output_file}" in c for c in cmd):
+        raise RuntimeError(f"エージェント定義 {path}: output=file には command 中の "
+                           "{output_file} プレースホルダが必要です")
+    errors = []
+    for e in (raw.get("errors") or []):
+        try:
+            errors.append((str(e.get("class", "env")),
+                           re.compile(str(e.get("match", "")), re.I),
+                           str(e.get("hint", ""))))
+        except re.error as ex:
+            raise RuntimeError(f"エージェント定義 {path}: errors.match が正規表現として不正です: {ex}")
+    return {"name": name, "command": list(cmd),
+            "prompt_via": str(raw.get("prompt_via", "stdin")),
+            "prompt_flag": raw.get("prompt_flag"),
+            "model_flag": raw.get("model_flag"),
+            "default_model": raw.get("default_model"),
+            "output": output, "env": dict(raw.get("env") or {}),
+            "timeout": raw.get("timeout"),
+            "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
+            "errors": errors, "path": str(path)}
+
+
+def load_agent_plugin(name: str) -> "dict | None":
+    """agents/<name>.json を探索順に読み、正規化して返す（無ければ None・プロセス内キャッシュ）。
+    壊れた定義は黙って無視せず RuntimeError（設定ミスの静かな握り潰しを作らない）。"""
+    key = str(name or "").strip().lower()
+    if not key:
+        return None
+    if key in _AGENT_PLUGIN_CACHE:
+        return _AGENT_PLUGIN_CACHE[key]
+    spec = None
+    for d in _agent_plugin_dirs():
+        p = d / f"{key}.json"
+        try:
+            if not p.is_file():
+                continue
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError as e:
+            raise RuntimeError(f"エージェント定義 {p} を JSON として読めません: {e}")
+        except OSError:
+            continue
+        spec = _normalize_agent_plugin(key, raw, p)
+        break
+    _AGENT_PLUGIN_CACHE[key] = spec
+    return spec
+
+
+def _plugin_agent_cmd(plug: dict, model: "str | None",
+                      prompt: str) -> "tuple[list[str], str | None, str | None]":
+    """プラグイン定義から (argv, stdin テキスト, 最終応答ファイル) を組み立てる
+    （_agent_cmd と同じ契約・決定的）。"""
+    model = model or plug.get("default_model") or None
+    out_file = None
+    cmd: "list[str]" = []
+    used_model = False
+    for part in plug["command"]:
+        if "{output_file}" in part:
+            if out_file is None:
+                fd, out_file = tempfile.mkstemp(prefix=f"kiro-agent-{plug['name']}-", suffix=".txt")
+                os.close(fd)
+            part = part.replace("{output_file}", out_file)
+        if "{model}" in part:
+            if not model:
+                continue                          # モデル未指定 → トークンごと省く
+            part = part.replace("{model}", model)
+            used_model = True
+        cmd.append(part)
+    if model and not used_model and plug.get("model_flag"):
+        cmd += [str(plug["model_flag"]), model]
+    if plug["prompt_via"] == "argv":
+        if plug.get("prompt_flag"):
+            cmd += [str(plug["prompt_flag"]), prompt]
+        else:
+            cmd.append(prompt)
+        return cmd, None, out_file
+    return cmd, prompt, out_file
+
+
+def _plugin_error_patterns() -> "tuple":
+    """読み込み済みプラグインの errors 規則（CLI 固有のトリアージ知識）をまとめて返す。"""
+    out = []
+    for spec in _AGENT_PLUGIN_CACHE.values():
+        if spec:
+            out.extend(spec.get("errors") or [])
+    return tuple(out)
+
+
+# --- 失敗トリアージ（決定的） -------------------------------------------------------------
+# エラー本文から「誰が直すか」を分類する。分類はメッセージ先頭の機械可読タグ
+# [agent-error:<class>] として運び、kiro-flow の run 打ち切り・kiro-project のリトライ節約・
+# viewer の行動提示が同じ判定を共有する（CLI 固有規則はプラグイン定義の errors）。
+#   quota    : 利用上限 — 時間をおけば回復する（タスクのリトライを焼かない）
+#   auth     : 認証切れ — 人が環境を直すまで全タスク共倒れ（即座に人へ）
+#   env      : 実行環境の問題（CLI 不在・モデル不正 等）— 人が環境を直す
+#   transient: 一時的（タイムアウト・接続断）— 通常リトライで解ける
+#   （どれにも当たらなければ「内容の問題」= 従来どおりタスク単位の retry / 裁定）
+AGENT_ERROR_ENV_CLASSES = ("quota", "auth", "env")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(quota|auth|env|transient)\]")
+_AGENT_ERROR_PATTERNS = (
+    ("quota", re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
      "利用上限に達しています（時間をおくか、プラン・クレジットを見直してください）"),
-    (re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
-                r"|SendMessageError|please (re)?login", re.I),
+    ("auth", re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
+                        r"|SendMessageError|please (re)?login", re.I),
      "認証に失敗しています（再ログインが必要です）"),
-    (re.compile(r"issue with the selected model|invalid model|model .{0,40}(not found|does not exist)"
-                r"|may not have access to it", re.I),
-     "指定したモデルを使えません（モデル名・利用権限を確認してください）"),
+    ("env", re.compile(r"issue with the selected model|invalid model"
+                       r"|model .{0,40}(not found|does not exist)|may not have access to it"
+                       r"|command not found|No such file or directory", re.I),
+     "実行環境の問題です（モデル名・CLI の導入・PATH を確認してください）"),
+    ("transient", re.compile(r"timed? ?out|connection (reset|refused|closed)|ECONNRESET"
+                             r"|ETIMEDOUT|temporarily unavailable|service unavailable|overloaded",
+                             re.I),
+     "一時的なエラーです（自動でやり直します）"),
 )
+
+
+def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
+    """エラー本文を (class, hint) に分類する（該当なしは None＝内容の問題）。
+    既に [agent-error:] タグ付き（kiro-flow 経由）ならそれが正。プラグイン定義の
+    errors（CLI 固有知識）を汎用パターンより先に評価する。"""
+    text = str(blob or "")
+    m = _AGENT_ERROR_TAG_RE.search(text)
+    if m:
+        hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == m.group(1)), "")
+        return m.group(1), hint
+    for cls, pat, hint in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
+        if pat.search(text):
+            return cls, hint
+    return None
 
 
 def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
@@ -144,13 +293,14 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
 
     CLI は起動バナー（workdir / model / プロンプト全文）を stderr へ流す。先頭だけを切り取ると
     肝心のエラーがバナーに埋もれて消える — 実際 codex の「利用上限に達した」を丸ごと取り逃し、
-    全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、既知の致命的原因は
-    見出しに添える。"""
+    全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、分類（トリアージ）は
+    機械可読タグとして先頭に載せる。"""
     blob = f"{out or ''}\n{err or ''}"
-    hints = [msg for pat, msg in _AGENT_FATAL_PATTERNS if pat.search(blob)]
+    triage = classify_agent_failure(blob)
     head = f"{cli} 失敗 (rc={rc})"
-    if hints:
-        head += ": " + " / ".join(dict.fromkeys(hints))   # 重複を畳む
+    if triage:
+        cls, hint = triage
+        head = f"[agent-error:{cls}] {head}" + (f": {hint}" if hint else "")
     tail = (err or out or "").strip()
     return f"{head}\n{tail[-500:]}" if tail else head
 
@@ -162,18 +312,22 @@ def _run_kiro_cli(prompt: str, model: "str | None", purpose: str = "") -> str:
     （agent_cli / model）が効く。model は 上書き ＞ 呼び出し値（通常グローバル model）。"""
     cli, model_ov = _agent_for(purpose)
     cmd, stdin_text, out_file = _agent_cmd(cli, model_ov or model, prompt)
+    plug = _AGENT_PLUGIN_CACHE.get(cli)   # _agent_cmd がロード済み（組み込み CLI は None）
     # 発生源で色を抑止（NO_COLOR/TERM=dumb）。残った ANSI は strip_ansi で除去する二段構え。
-    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **((plug or {}).get("env") or {})}
+    timeout = (plug or {}).get("timeout") or (_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
-                              timeout=(_AGENT_TIMEOUT if _AGENT_TIMEOUT > 0 else None), env=env)
+                              timeout=timeout, env=env)
         if proc.returncode != 0:
             raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))
         text = strip_ansi(proc.stdout).strip()
-        if out_file:   # codex: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
+        if out_file:   # codex 等: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
             with contextlib.suppress(OSError):
                 with open(out_file, encoding="utf-8") as f:
                     text = f.read().strip() or text
+        if not text and plug is not None and not plug.get("empty_output_is_error", True):
+            return ""
         if not text:
             # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して
             # rc=0 で終わる）。空を成功として扱うと、verify 合成も分解も「静かに失敗」して

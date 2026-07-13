@@ -445,6 +445,17 @@ class Bus:
         meta["updated_at"] = now_iso()
         write_json_atomic(self.meta_path, meta)
 
+    def note_executor(self, executor: str) -> None:
+        """この run を駆動する executor 名を meta に記録する（冪等）。
+        viewer が「GitLab 連携の UI を出すか」を executor で切り替えるための表示用メタデータ
+        （gitlab executor を使っていない run にイシュー突き合わせ等を出しても意味がない）。"""
+        ex = str(executor or "").strip()
+        meta = read_json(self.meta_path) or {}
+        if not ex or meta.get("executor") == ex:
+            return
+        meta["executor"] = ex
+        write_json_atomic(self.meta_path, meta)
+
     def get_status(self):
         meta = read_json(self.meta_path)
         return meta.get("status") if meta else None
@@ -3011,18 +3022,150 @@ def _kiro_argv_limit() -> int:
     return _ARGV_LIMIT if _ARGV_LIMIT > 0 else CONFIG_DEFAULTS["argv_limit"]
 
 
-# エージェント CLI が返す失敗のうち、人が対処しないと全タスクが落ち続ける既知の原因。
-# これを本文から拾って明示しないと「なぜか全部 failed」にしか見えない。
-_AGENT_FATAL_PATTERNS = (
-    (re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
+# --- エージェント CLI プラグイン（データ契約: schemas/agent-cli.schema.json） -----------------
+# 組み込み（kiro/claude/copilot/codex）以外の CLI（cursor / ollama / hermes …）を、
+# 定義ファイル agents/<name>.json だけで差し込む公式の口。kiro-project も同じ契約を読む
+# （結合はデータ契約のみ・ローダは各ツールが自前で持つ = ツール間のコード依存を作らない）。
+_AGENT_PLUGIN_CACHE: "dict[str, dict | None]" = {}
+
+
+def _agent_plugin_dirs() -> list:
+    dirs = []
+    envd = os.environ.get("KIRO_AGENTS_DIR")
+    if envd:
+        dirs.append(os.path.expanduser(envd))
+    dirs.append(os.path.join(os.getcwd(), "agents"))
+    dirs.append(os.path.expanduser("~/.kiro/agents"))
+    return dirs
+
+
+def _normalize_agent_plugin(name: str, raw: dict, path: str) -> dict:
+    cmd = raw.get("command")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(c, str) for c in cmd):
+        raise RuntimeError(f"エージェント定義 {path}: command は文字列配列が必須です")
+    output = str(raw.get("output", "stdout"))
+    if output == "file" and not any("{output_file}" in c for c in cmd):
+        raise RuntimeError(f"エージェント定義 {path}: output=file には command 中の "
+                           "{output_file} プレースホルダが必要です")
+    errors = []
+    for e in (raw.get("errors") or []):
+        try:
+            errors.append((str(e.get("class", "env")),
+                           re.compile(str(e.get("match", "")), re.I),
+                           str(e.get("hint", ""))))
+        except re.error as ex:
+            raise RuntimeError(f"エージェント定義 {path}: errors.match が正規表現として不正です: {ex}")
+    return {"name": name, "command": list(cmd),
+            "prompt_via": str(raw.get("prompt_via", "stdin")),
+            "prompt_flag": raw.get("prompt_flag"),
+            "model_flag": raw.get("model_flag"),
+            "default_model": raw.get("default_model"),
+            "output": output, "env": dict(raw.get("env") or {}),
+            "timeout": raw.get("timeout"),
+            "empty_output_is_error": bool(raw.get("empty_output_is_error", True)),
+            "errors": errors, "path": str(path)}
+
+
+def load_agent_plugin(name: str) -> "dict | None":
+    """agents/<name>.json を探索順（$KIRO_AGENTS_DIR → <cwd>/agents → ~/.kiro/agents）に読む。
+    無ければ None（プロセス内キャッシュ）。壊れた定義は黙って無視せず RuntimeError。"""
+    key = str(name or "").strip().lower()
+    if not key:
+        return None
+    if key in _AGENT_PLUGIN_CACHE:
+        return _AGENT_PLUGIN_CACHE[key]
+    spec = None
+    for d in _agent_plugin_dirs():
+        p = os.path.join(d, f"{key}.json")
+        try:
+            if not os.path.isfile(p):
+                continue
+            with open(p, encoding="utf-8") as f:
+                raw = json.load(f)
+        except ValueError as e:
+            raise RuntimeError(f"エージェント定義 {p} を JSON として読めません: {e}")
+        except OSError:
+            continue
+        spec = _normalize_agent_plugin(key, raw, p)
+        break
+    _AGENT_PLUGIN_CACHE[key] = spec
+    return spec
+
+
+def _plugin_agent_cmd(plug: dict, model: "str | None", prompt: str):
+    """プラグイン定義から (argv, stdin テキスト, 最終応答ファイル) を組み立てる（決定的）。"""
+    model = model or plug.get("default_model") or None
+    out_file = None
+    cmd = []
+    used_model = False
+    for part in plug["command"]:
+        if "{output_file}" in part:
+            if out_file is None:
+                fd, out_file = tempfile.mkstemp(prefix=f"kiro-agent-{plug['name']}-", suffix=".txt")
+                os.close(fd)
+            part = part.replace("{output_file}", out_file)
+        if "{model}" in part:
+            if not model:
+                continue                          # モデル未指定 → トークンごと省く
+            part = part.replace("{model}", model)
+            used_model = True
+        cmd.append(part)
+    if model and not used_model and plug.get("model_flag"):
+        cmd += [str(plug["model_flag"]), model]
+    if plug["prompt_via"] == "argv":
+        if plug.get("prompt_flag"):
+            cmd += [str(plug["prompt_flag"]), prompt]
+        else:
+            cmd.append(prompt)
+        return cmd, None, out_file
+    return cmd, prompt, out_file
+
+
+def _plugin_error_patterns() -> tuple:
+    out = []
+    for spec in _AGENT_PLUGIN_CACHE.values():
+        if spec:
+            out.extend(spec.get("errors") or [])
+    return tuple(out)
+
+
+# --- 失敗トリアージ（決定的） -------------------------------------------------------------
+# エラー本文から「誰が直すか」を分類し、メッセージ先頭の機械可読タグ [agent-error:<class>] で運ぶ。
+# kiro-flow は run の打ち切り（環境要因なら全ノードでリトライを焼かない）、kiro-project は
+# リトライ節約と人への説明、viewer は行動提示に同じ判定を使う。
+#   quota=利用上限（時間をおけば回復）/ auth=認証切れ（人が直す）/ env=実行環境の問題（人が直す）
+#   / transient=一時的（通常リトライで解ける）。該当なし＝内容の問題（タスク単位の retry / 再計画）。
+AGENT_ERROR_ENV_CLASSES = ("quota", "auth", "env")
+_AGENT_ERROR_TAG_RE = re.compile(r"\[agent-error:(quota|auth|env|transient)\]")
+_AGENT_ERROR_PATTERNS = (
+    ("quota", re.compile(r"usage limit|quota exceeded|rate.?limit|too many requests", re.I),
      "利用上限に達しています（時間をおくか、プラン・クレジットを見直してください）"),
-    (re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
-                r"|SendMessageError|please (re)?login", re.I),
+    ("auth", re.compile(r"AccessDenied|Unauthorized|authentication failed|not authenticated"
+                        r"|SendMessageError|please (re)?login", re.I),
      "認証に失敗しています（再ログインが必要です）"),
-    (re.compile(r"issue with the selected model|invalid model|model .{0,40}(not found|does not exist)"
-                r"|may not have access to it", re.I),
-     "指定したモデルを使えません（モデル名・利用権限を確認してください）"),
+    ("env", re.compile(r"issue with the selected model|invalid model"
+                       r"|model .{0,40}(not found|does not exist)|may not have access to it"
+                       r"|command not found|No such file or directory", re.I),
+     "実行環境の問題です（モデル名・CLI の導入・PATH を確認してください）"),
+    ("transient", re.compile(r"timed? ?out|connection (reset|refused|closed)|ECONNRESET"
+                             r"|ETIMEDOUT|temporarily unavailable|service unavailable|overloaded",
+                             re.I),
+     "一時的なエラーです（自動でやり直します）"),
 )
+
+
+def classify_agent_failure(blob: str) -> "tuple[str, str] | None":
+    """エラー本文を (class, hint) に分類する（該当なしは None＝内容の問題）。
+    既にタグ付きならそれが正。プラグイン定義の errors を汎用パターンより先に評価する。"""
+    text = str(blob or "")
+    m = _AGENT_ERROR_TAG_RE.search(text)
+    if m:
+        hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == m.group(1)), "")
+        return m.group(1), hint
+    for cls, pat, hint in _plugin_error_patterns() + _AGENT_ERROR_PATTERNS:
+        if pat.search(text):
+            return cls, hint
+    return None
 
 
 def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
@@ -3030,13 +3173,14 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
 
     CLI は起動バナー（workdir / model / プロンプト全文）を stderr へ流す。先頭だけを切り取ると
     肝心のエラーがバナーに埋もれて消える — 実際 codex の「利用上限に達した」を丸ごと取り逃し、
-    全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、既知の致命的原因は
-    見出しに添える。"""
+    全ノードが理由不明の failed になった。エラーは末尾に出るので末尾を拾い、分類（トリアージ）は
+    機械可読タグとして先頭に載せる。"""
     blob = f"{out or ''}\n{err or ''}"
-    hints = [msg for pat, msg in _AGENT_FATAL_PATTERNS if pat.search(blob)]
+    triage = classify_agent_failure(blob)
     head = f"{cli} 失敗 (rc={rc})"
-    if hints:
-        head += ": " + " / ".join(dict.fromkeys(hints))   # 重複を畳む
+    if triage:
+        cls, hint = triage
+        head = f"[agent-error:{cls}] {head}" + (f": {hint}" if hint else "")
     tail = (err or out or "").strip()
     return f"{head}\n{tail[-500:]}" if tail else head
 
@@ -3070,7 +3214,7 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
             cmd += ["--model", model]
         cmd.append("-")
         stdin_text = prompt
-    else:
+    elif cli in ("copilot", "kiro", ""):
         if cli == "copilot":
             # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
             # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
@@ -3089,9 +3233,27 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
             prompt = ("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
                       f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
         cmd += (["-p", prompt] if cli == "copilot" else [prompt])
+    else:
+        # 組み込み以外 → プラグイン定義（agents/<name>.json・契約は schemas/agent-cli.schema.json）。
+        # 以前は未知の agent_cli が黙って kiro-cli に落ちていた（設定ミスに気づけない罠）。
+        plug = load_agent_plugin(cli)
+        if plug is None:
+            raise RuntimeError(
+                f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
+                f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
+                f"探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.kiro/agents）")
+        if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > _kiro_argv_limit():
+            fd, spill = tempfile.mkstemp(prefix="kiro-flow-prompt-", suffix=".txt")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(prompt)
+            prompt = ("以下のファイルにこのタスクの全文（依存タスクの成果物を含む）があります。"
+                      f"必ずファイルの内容を読み込み、その指示に従ってタスクを実行してください: {spill}")
+        cmd, stdin_text, out_file = _plugin_agent_cmd(plug, model, prompt)
+    plug = _AGENT_PLUGIN_CACHE.get(cli)   # プラグインなら env/timeout の上書きが効く
+    env = {**os.environ, **((plug or {}).get("env") or {})}
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
-                              timeout=_kiro_timeout())
+                              timeout=(plug or {}).get("timeout") or _kiro_timeout(), env=env)
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。タスクは failed 記録 → 再計画で retry に回り、run は前進する
         if out_file:
@@ -3106,10 +3268,12 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
         if proc.returncode != 0:
             raise RuntimeError(_agent_failure(cmd[0], proc.returncode, proc.stdout, proc.stderr))
         text = strip_ansi(proc.stdout).strip()
-        if out_file:   # codex: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
+        if out_file:   # codex 等: 最終応答ファイルが取れればそれを正とする（stdout はイベントログ）
             with contextlib.suppress(OSError):
                 with open(out_file, encoding="utf-8") as f:
                     text = f.read().strip() or text
+        if not text and plug is not None and not plug.get("empty_output_is_error", True):
+            return ""
         if not text:
             # rc=0 でも本文が空で返る CLI がある（kiro-cli は AWS 認証が切れるとバナーだけ出して
             # rc=0 で終わる）。空を成功として扱うと、worker は「空の成果物で done」、planner は
@@ -4080,7 +4244,32 @@ def _plan_strategy(args):
     return plan_strategy_stub(args.request, review, gran)
 
 
+def _env_failure_reason(results: dict) -> "str | None":
+    """失敗結果に環境要因（quota/auth/env）のトリアージタグがあれば、その説明を返す。
+
+    環境が壊れているとき（認証切れ・利用上限・CLI 不在）は、どのノードをリトライしても
+    同じ理由で落ちる。実際 codex の利用上限で全ノードが 1 つずつリトライを焼き尽くし、
+    26 ノード × max_retries 回の無駄な LLM 起動と「理由不明の全滅」が起きた。
+    タスクの内容の問題（タグ無し）とは区別し、run を即座に失敗で終端して人に環境を直させる
+    （直後の resume-run / kiro-project の自動再開で done は温存されたまま続きから走る）。"""
+    for nid, r in results.items():
+        if r.get("status") != "failed":
+            continue
+        m = _AGENT_ERROR_TAG_RE.search(str(r.get("output", "")))
+        if m and m.group(1) in AGENT_ERROR_ENV_CLASSES:
+            hint = next((h for c, _, h in _AGENT_ERROR_PATTERNS if c == m.group(1)), "")
+            return (f"[agent-error:{m.group(1)}] 環境要因の失敗（{nid}）: {hint} "
+                    "リトライを打ち切りました。環境を直してから再開してください"
+                    "（完了済みの工程は温存されます）。")
+    return None
+
+
 def _continue(args, request, nodes, results, iteration, strategy=None):
+    # 失敗トリアージ: 環境要因（quota/auth/env）の失敗が 1 つでもあれば再計画せず打ち切る。
+    # planner（stub/kiro）に依らず先に判定する（LLM 評価も同じ環境で失敗するため）。
+    env_fail = _env_failure_reason(results)
+    if env_fail:
+        return "failed", [], env_fail
     mf = int(getattr(args, "max_fanout", 50) or 50)
     # 計画時に確定した review 判断を再利用（resume・継続でも一貫させる）。
     # CLI で明示指定（True/False）があればそれを優先。
@@ -4157,8 +4346,10 @@ def _sanitize_graph(nodes: dict) -> dict:
     return nodes
 
 
-def _finalize_run(bus, args, iteration: int) -> None:
-    """全ノードの結果を集約して final.json を書き出し、run を done にして push・ログ出力する。"""
+def _finalize_run(bus, args, iteration: int, failure: "str | None" = None) -> None:
+    """全ノードの結果を集約して final.json を書き出し、run を終端して push・ログ出力する。
+    failure（環境要因の打ち切り等）が渡されたら done でなく failed で終端し、理由を
+    meta.failure_reason に残す（トリアージタグ付き → kiro-project / viewer が同じ判定を読む）。"""
     results = {nid: (bus.read_result(nid) or {}) for nid in bus.task_ids()}
     summary = "\n".join(
         f"- {nid} [{r.get('status')}]: {str(r.get('output',''))[:200]}"
@@ -4170,10 +4361,15 @@ def _finalize_run(bus, args, iteration: int) -> None:
         "strategy": (bus.read_graph() or {}).get("strategy", {}),
         "summary": summary,
         "results": results,
+        **({"failure_reason": failure} if failure else {}),
     })
-    bus.set_status("done")
+    if failure:
+        bus.mark_run_failed(args.run_id, failure)
+        log(args.node_id, f"打ち切り（iteration={iteration}）: {failure}")
+    else:
+        bus.set_status("done")
+        log(args.node_id, f"完了（iteration={iteration}）。final.json を書き出しました。")
     bus.sync_push(f"finalize run {args.run_id}")
-    log(args.node_id, f"完了（iteration={iteration}）。final.json を書き出しました。")
     log(args.node_id, "結果サマリ:\n" + summary)
 
 
@@ -4204,6 +4400,7 @@ def cmd_orchestrate(args) -> int:
         bus.sync_push(f"inherit {inh} -> {args.run_id}: {info['reason']}")
     bus.ensure_run(args.request, parse_workspace(getattr(args, "workspace", None)),
                    parse_references(getattr(args, "references", None)))
+    bus.note_executor(getattr(args, "executor", None) or "agent")   # viewer の表示切替用
     # 生存リース（heartbeat）は orchestrator 自身が張る。daemon 経由の run だけが lease を持つと、
     # kiro-flow run で都度起動される run（kiro-project の主経路）には lease が永久に書かれず、
     # 消費者側の「停滞 run か？」判定（run_is_orphaned / _run_resumable）が lease の不在を
@@ -4306,7 +4503,9 @@ def cmd_orchestrate(args) -> int:
             continue
         break
 
-    _finalize_run(bus, args, iteration)   # 全ノード結果を集約 → final.json 書き出し → done/push
+    # 全ノード結果を集約 → final.json 書き出し → 終端（done / 環境要因なら failed）・push
+    _finalize_run(bus, args, iteration,
+                  failure=(reason if decision == "failed" else None))
     return 0
 
 

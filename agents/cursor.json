@@ -1,0 +1,14 @@
+{
+  "name": "cursor",
+  "command": ["cursor-agent", "-p", "--output-format", "text", "--force"],
+  "prompt_via": "stdin",
+  "model_flag": "--model",
+  "output": "stdout",
+  "empty_output_is_error": true,
+  "errors": [
+    { "match": "not logged in|please log ?in|unauthorized",
+      "class": "auth", "hint": "cursor-agent にログインしていません（cursor-agent login）" },
+    { "match": "usage limit|rate limit",
+      "class": "quota", "hint": "Cursor の利用上限に達しています" }
+  ]
+}

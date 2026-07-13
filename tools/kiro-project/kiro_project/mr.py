@@ -297,9 +297,41 @@ def _settle_done(cfg, task, act_msg, git_base, branch, ev, vmsg, dtok, dusd, cyc
     return {"archived": 1 if cfg.do_archive else 0, "followups": parse_followups(task, act_msg)}
 
 
+def _flow_failure_blob(cfg, task) -> str:
+    """このタスクの直近 run（last_run）の失敗情報（meta.failure_reason + final summary）。
+    act の stdout 末尾（vmsg）はトリアージタグが切れていることがあるため、bus 側も見る。"""
+    rid = str(task.get("last_run") or "").strip()
+    if not rid or rid != os.path.basename(rid):
+        return ""
+    parts = []
+    for name, key in (("meta.json", "failure_reason"), ("final.json", "summary")):
+        try:
+            data = json.loads((cfg.bus / "runs" / rid / name).read_text(encoding="utf-8"))
+            parts.append(str(data.get(key) or ""))
+        except (OSError, ValueError):
+            continue
+    return "\n".join(p for p in parts if p)
+
+
 def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
     """verify=NG → 上限内なら積み直し / 学習で自動解決 / 上限超で人へエスカレーション。
-    委譲 executor（gitlab）の却下なら、人コメント（やり直し指示）を次 act の feedback に注入する。"""
+    委譲 executor（gitlab）の却下なら、人コメント（やり直し指示）を次 act の feedback に注入する。
+
+    その前に**失敗トリアージ**: 失敗が環境要因（quota=利用上限 / auth=認証切れ / env=CLI・
+    モデルの問題）なら、これはタスクの内容と無関係で、リトライしても同じ理由で全タスクが
+    落ち続ける。リトライを焼かず・裁定（これも LLM 呼び出し＝同じ理由で失敗する）も呼ばず、
+    原因と直し方を明記して人へ回す。環境を直して approve すれば同じ run の続きから再開する。"""
+    triage = classify_agent_failure(f"{vmsg}\n{_flow_failure_blob(cfg, task)}")
+    if triage and triage[0] in AGENT_ERROR_ENV_CLASSES:
+        cls, hint = triage
+        label = {"quota": "利用上限", "auth": "認証切れ", "env": "実行環境の問題"}[cls]
+        _block(cfg, task, f"[agent-error:{cls}] 環境の問題（{label}）: {hint} "
+                          "タスクの内容の問題ではないため、リトライ回数は消費していません。"
+                          "環境を直してから approve すると、同じ run の続き（失敗した工程だけ）"
+                          "から再開します。", reasons, evidence=ev)
+        append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 人の判断（環境の問題: {label}。"
+                                    f"リトライ・裁定は消費しない）")
+        return
     task.retries += 1
     if not task.verify:
         _escalate(cfg, task, "verify 未定義", reasons, cycle, evidence=ev)

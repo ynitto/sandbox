@@ -1,0 +1,14 @@
+{
+  "name": "ollama",
+  "command": ["ollama", "run", "{model}"],
+  "prompt_via": "stdin",
+  "default_model": "qwen3",
+  "output": "stdout",
+  "empty_output_is_error": true,
+  "errors": [
+    { "match": "could not connect|connection refused",
+      "class": "env", "hint": "ollama サーバが起動していません（ollama serve を起動してください）" },
+    { "match": "pull the model|model .{0,60}not found",
+      "class": "env", "hint": "モデルが未取得です（ollama pull <model> を実行してください）" }
+  ]
+}

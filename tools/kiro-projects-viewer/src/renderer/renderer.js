@@ -2696,6 +2696,25 @@ function runAdvice(run, group) {
     return { kind: 'old', cls: 'muted', chip: '🗂 古い試行', latestId: latest.runId,
       text: `新しい試行（${shortRunId(latest.runId)}）に引き継ぎ済みです。この画面は記録 — 操作は不要で、削除しても安全です。` };
   }
+  // 失敗トリアージ（kiro-flow が meta.failure_reason に載せる決定的タグ [agent-error:<class>]）:
+  // 環境要因（利用上限・認証切れ・CLI/モデルの問題）なら、どのタスクの内容の問題でもない。
+  // 「何を直せば全部動くか」をタスク状態より先に言い切る（リトライ・裁定は本体側も焼いていない）。
+  const tri = /\[agent-error:(quota|auth|env)\]/.exec(String(run.failureReason || ''));
+  if (tri) {
+    const found2 = taskOfRun(run);
+    const map = {
+      quota: ['⏲ 利用上限', 'AI の利用上限に達したため止まりました。時間をおく（またはプランを' +
+        '見直す）と回復します。回復後、要対応タブで該当タスクを承認すると続きから再開します' +
+        '（完了済みの工程は温存されています）。'],
+      auth: ['🔑 認証切れ', 'エージェント CLI の認証が切れたため止まりました。再ログインしてから、' +
+        '要対応タブで該当タスクを承認すると続きから再開します（完了済みの工程は温存されています）。'],
+      env: ['⚙ 実行環境の問題', 'エージェント CLI の実行環境（CLI の導入・モデル名・PATH）に問題が' +
+        'あり止まりました。環境を直してから、要対応タブで該当タスクを承認すると続きから再開します。'],
+    };
+    const [chip, text] = map[tri[1]];
+    return { kind: 'human', cls: 'act', chip, text,
+      taskId: found2 && found2.task ? found2.task.id : null };
+  }
   const found = taskOfRun(run);
   if (found && found.scope === 'archive') {
     return { kind: 'none', cls: 'ok', chip: '✔ タスクは完了済み',
@@ -2904,6 +2923,7 @@ const AUTO_RECONCILE_THROTTLE_MS = 60000;
 // GitLab 未設定・対象ノード無し・律速内・取得中はスキップ。トーストは出さない（自動なので静か）。
 function maybeAutoReconcile(run) {
   if (!run || run.archived || !gitlabConfigured()) return; // アーカイブは読み取り専用の写し＝突き合わせ対象外
+  if (!run.gitlabish) return; // gitlab executor の run 以外にイシューは存在しない＝API を叩かない
   if (!(run.workspace && run.workspace.url)) return;
   if (!reconcilableNodes(run).length) return;
   const e = reconcileEntry(run.runId);
@@ -3069,7 +3089,10 @@ function renderFlowDetail() {
   // gitlab executor 連動: 非終端ノードがあれば「GitLab と突き合わせ」で関連イシューの今の状態
   // （クローズ済み＝完了/失敗を先読み反映／オープン＝レビュー中を表示）を取り込める。run を開いた
   // ときに自動で一度走る（律速あり）ので、ボタンは手動の再取得（最新化）用。
-  const hasOpenNodes = !archived && reconcilableNodes(run).length > 0;
+  // GitLab 連携 UI は gitlab executor の run にだけ出す（run.gitlabish が正）。
+  // agent/stub executor の run に「GitLab 最新化」や「イシューを探す」が並んでも、
+  // 探す対象のイシューが存在しない＝押しても無意味なボタンでしかない。
+  const hasOpenNodes = !archived && run.gitlabish && reconcilableNodes(run).length > 0;
   const rec = reconcileEntry(run.runId) || null;
   const recHits = rec ? Object.values(rec.byNode || {}).filter((r) => r.reconciled).length : 0;
   const reconcileBtn =
@@ -3093,7 +3116,7 @@ function renderFlowDetail() {
         ${archived ? `<div class="muted">📦 完了後に保存された記録を表示しています（最終更新: ${esc(fmtTime(run.archivedAt) || '不明')}）。この画面からの操作はできません。</div>` : ''}
         ${run.inheritedFrom ? `<div class="muted" title="このリトライが引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(run.inheritedFrom)}</span></div>` : ''}
         ${heartbeat}
-        ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(run.failureReason)}</div>` : ''}
+        ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(String(run.failureReason).replace(/\[agent-error:[a-z]+\]\s*/g, ''))}</div>` : ''}
         <div class="row2" style="align-items:center;margin-top:6px">
           <div class="progress" style="flex:1"><div style="width:${pct}%"></div></div>
           <span class="muted">${run.counts.done + run.counts.failed}/${run.total} (${pct}%)</span>
@@ -3184,6 +3207,7 @@ function nodeProgressLine(node) {
 // 関連 GitLab イシューのブロック。承認/却下は結果から、実行中は決定的タスクトークンで検索。
 // GitLab と突き合わせ済み（クローズ反映）なら、その結果もイシュー情報の供給源にする。
 function nodeIssueBlock(run, node) {
+  if (!run.gitlabish) return ''; // gitlab executor の run 以外にイシュー UI は出さない
   const cached =
     state.flowNodeIssue && state.flowNodeIssue.token === node.taskToken
       ? state.flowNodeIssue
