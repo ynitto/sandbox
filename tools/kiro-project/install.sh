@@ -25,16 +25,34 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="${SCRIPT_DIR}/kiro-project.py"
-[[ -f "${SRC}" ]] || die "kiro-project.py が見つかりません: ${SRC}"
+PKG="${SCRIPT_DIR}/kiro_project"
+[[ -d "${PKG}" ]] || die "kiro_project パッケージが見つかりません: ${PKG}"
 
 command -v python3 >/dev/null 2>&1 || die "python3 が必要です"
 
 mkdir -p "${INSTALL_PREFIX}"
 DEST="${INSTALL_PREFIX}/kiro-project"
-cp "${SRC}" "${DEST}"
+
+# 単一ファイル配布は維持しつつ、実体はパッケージ（LLM が編集できる大きさの断片へ分割済み）。
+# zipapp で「kiro_project/ パッケージ + ルート __main__.py」を1実行ファイルへまとめる。
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kiro-project-build.XXXXXX")"
+trap 'rm -rf "${BUILD_DIR}"' EXIT
+mkdir -p "${BUILD_DIR}/kiro_project"
+# __pycache__ を除いてパッケージをコピー（zipapp に .pyc を含めない）。
+( cd "${PKG}" && find . -name '*.py' -print0 | while IFS= read -r -d '' f; do
+    mkdir -p "${BUILD_DIR}/kiro_project/$(dirname "$f")"
+    cp "$f" "${BUILD_DIR}/kiro_project/$f"
+  done )
+cat > "${BUILD_DIR}/__main__.py" <<'EOF'
+from kiro_project import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+EOF
+
+python3 -m zipapp "${BUILD_DIR}" -o "${DEST}" -p "/usr/bin/env python3"
 chmod +x "${DEST}"
-ok "インストールしました: ${DEST}"
+ok "インストールしました: ${DEST}（zipapp）"
 
 # 同リポジトリの独立ツール codd-gate（doc/code/test 一貫性ゲート）も隣にあれば同じ prefix へ入れる。
 # 有効化は設定だけ（intake_cmd / regression_cmd / charter acceptance。本体は無改造・任意連携）。

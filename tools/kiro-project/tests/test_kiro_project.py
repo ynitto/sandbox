@@ -46,11 +46,15 @@ os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
 # cwd に依存しない。
 os.chdir(tempfile.mkdtemp(prefix="kp-tests-cwd-"))
 
-_MOD = Path(__file__).resolve().parent.parent / "kiro-project.py"
-_spec = importlib.util.spec_from_file_location("kiro_project", _MOD)
+_PKG = Path(__file__).resolve().parent.parent / "kiro_project"
+_spec = importlib.util.spec_from_file_location(
+    "kiro_project", _PKG / "__init__.py", submodule_search_locations=[str(_PKG)])
 km = importlib.util.module_from_spec(_spec)
 sys.modules["kiro_project"] = km
 _spec.loader.exec_module(km)
+
+# 黒箱 CLI e2e が実プロセス起動する薄いエントリポイント（kiro_project/ を起動する shim）。
+_MOD = Path(__file__).resolve().parent.parent / "kiro-project.py"
 
 
 def mkb(d: Path, tid: str, status="ready", verify="true", source="human", title=None, retries=0):
