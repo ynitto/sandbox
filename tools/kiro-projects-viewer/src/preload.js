@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('api', {
   runAction: (args) => invoke('kiro:action', args),
   requestReplan: (dir, reason) => invoke('kiro:replan', { dir, reason }),
   requestLifecycle: (dir, action, reason) => invoke('kiro:lifecycle', { dir, action, reason }),
+  startProject: (dir) => invoke('kiro:start', { dir }),
   // dir = プロジェクトルート（消す対象）、workspace = 登録フォルダ（バスの解決に使う）
   resetProject: (dir, workspace) => invoke('kiro:reset', { dir, workspace }),
 

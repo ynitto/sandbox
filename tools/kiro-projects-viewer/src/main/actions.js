@@ -287,6 +287,24 @@ function requestLifecycle(cfg, { dir, action, reason }) {
   };
 }
 
+// 本体（kiro-project）の起動。stop/pause と違い、停止中の本体は commands/ を読めないため
+// ファイルドロップでは届かない — この PC の CLI で `kiro-project start --root <dir>` を実行する
+// （start は常駐を detach して即座に戻る）。本体が別マシンの構成では、この PC で起動すると
+// 「この PC が実行役」になる（クレームにより同一タスクの二重実行は起きないが、エージェント
+// CLI の有無等は環境依存）。その判断は呼び出し側（renderer の確認ダイアログ）が人に委ねる。
+async function startProject(cfg, { dir }) {
+  const command = (cfg.kiro && cfg.kiro.command) || 'kiro-project';
+  const { root } = cliScope(dir);
+  try {
+    const res = await runKiroCli(command, ['start', '--root', root], 120000);
+    return { ...res, via: 'cli' };
+  } catch (err) {
+    // CLI が無い/失敗 → 人が本体マシンで打つべきコマンドをそのまま返す（コピーして実行できる）
+    err.manualCommand = `${command} start --root ${root}`;
+    throw err;
+  }
+}
+
 module.exports = {
   submitFeedback,
   enqueueToInbox,
@@ -294,5 +312,6 @@ module.exports = {
   runAction,
   requestReplan,
   requestLifecycle,
+  startProject,
   DECISION_MARKER,
 };

@@ -389,6 +389,13 @@ function registerIpcHandlers() {
     return actions.requestLifecycle(loadConfig(), { dir, action, reason });
   });
 
+  // 本体（kiro-project）の起動。停止中の本体は commands/ を読めないため、ファイルドロップ
+  // でなくこの PC の CLI で `kiro-project start` を実行する（detach され即座に戻る）。
+  handle('kiro:start', ({ dir }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    return actions.startProject(loadConfig(), { dir });
+  });
+
   // オーサリング（作成・編集）。人が書く上位入力ファイル（charter/policy/repos）だけを
   // 対象にし、タスク状態は触らない（done は verify のみが根拠の不変条件を壊さない）。
   //   createProject … <root>/projects/<name>/ に charter.md（＋ repos.json）を作る

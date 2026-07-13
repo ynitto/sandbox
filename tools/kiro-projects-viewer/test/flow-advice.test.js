@@ -92,19 +92,21 @@ test('応答なし + タスク ready + 本体稼働中 → 自動でやり直さ
   assert.match(a.text, /操作は不要/);
 });
 
-test('応答なし + タスク ready + 本体停止中 → 本体を起動すれば自動（restart）', () => {
+test('応答なし + タスク ready + 本体停止中 → 起動ボタンでその場で解決できる（restart）', () => {
   const advise = makeAdvisor(project({ running: false }));
   const r = baseRun({ alive: false });
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'restart');
-  assert.match(a.text, /起動すれば自動/);
+  assert.strictEqual(a.stopped, true);           // バナーに「▶ 本体を起動」が出る
+  assert.match(a.text, /本体を起動/);
 });
 
-test('一時停止中 → 再開の導線を言う', () => {
+test('一時停止中 → 再開ボタンでその場で解決できる', () => {
   const advise = makeAdvisor(project({ running: true, paused: true }));
   const r = baseRun({ status: 'failed', alive: false });
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'restart');
+  assert.strictEqual(a.stopped, false);          // バナーに「▶ 再開」が出る
   assert.match(a.text, /一時停止中/);
 });
 

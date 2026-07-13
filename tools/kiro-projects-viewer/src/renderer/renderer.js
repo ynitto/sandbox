@@ -756,10 +756,25 @@ async function submitPromoteCharter(name) {
   await reloadProject();
 }
 
-// 稼働操作（pause / resume / stop）。commands/ ドロップ（＋git push）で届き、
-// リモート本体（WSL・別ホスト）の watch が同期間隔内に取り込む。
+// 稼働操作（起動 / pause / resume / stop）。pause/resume/stop は commands/ ドロップ
+// （＋git push）で届き、リモート本体（WSL・別ホスト）の watch が同期間隔内に取り込む。
+// 起動だけはドロップでは届かない（停止中の本体は commands/ を読めない）ため、
+// この PC の CLI で `kiro-project start` を実行する（startKiroProject）。
 function lifecycleCardHtml(p) {
-  const paused = !!(p.liveness && p.liveness.paused);
+  const live = p.liveness || {};
+  const paused = !!live.paused;
+  if (!live.running) {
+    // 本体が停止中: pause/stop を出しても届かない（誰も読まない）。起動だけを出す
+    return `
+    <div class="card full">
+      <h3>稼働操作</h3>
+      <div class="row">
+        <button class="chip primary-inline" data-start-kiro
+          title="この PC で kiro-project の常駐（watch）を起動します">▶ 本体を起動</button>
+        <span class="muted">⏻ 本体（kiro-project）は停止中です — 起動するまでタスクは進みません</span>
+      </div>
+    </div>`;
+  }
   return `
     <div class="card full">
       <h3>稼働操作</h3>
@@ -770,11 +785,42 @@ function lifecycleCardHtml(p) {
             : '<button class="chip" data-lifecycle="pause" title="タスクの実行を一時停止します（指示や回答の受け付けは続きます）">⏸ 一時停止</button>'
         }
         <button class="chip danger" data-lifecycle="stop"
-          title="自動実行を停止します。再開はプロジェクトのマシンでの起動操作が必要です">⏹ 停止</button>
+          title="自動実行を停止します。再開はこの画面の「▶ 本体を起動」か、プロジェクトのマシンでの起動操作">⏹ 停止</button>
         <span class="muted">操作は自動で本体に届きます（反映まで少し時間がかかることがあります）</span>
       </div>
       ${paused ? '<div class="muted" style="margin-top:4px">⏸ 一時停止中です（再開まで作業は進みません。回答・指示の送信はできます）</div>' : ''}
     </div>`;
+}
+
+// 本体（kiro-project）の起動。確認 → CLI 実行 → 結果を平易に伝える。
+// 本体が別マシンの構成では「この PC が実行役になる」ことを事前に言い、
+// CLI が無ければ人が本体マシンで打つコマンドをそのまま見せる。
+async function startKiroProject() {
+  const p = state.project;
+  if (!p) return;
+  const yes = await confirmDialog(
+    `${p.name}: この PC で本体（kiro-project の常駐）を起動します。\n` +
+      '以後この PC がタスクを実行します。\n' +
+      'プロジェクトの本体が別のマシン（WSL・別 PC）にある場合は、そちらで\n' +
+      '  kiro-project start\nを実行するほうが適切です。\nこの PC で起動しますか？'
+  );
+  if (!yes) return;
+  try {
+    const res = await api.startProject(p.dir);
+    uiLog('start', res);
+    toast('本体を起動しました（タスクの消化が始まります。表示への反映まで少し時間がかかります）', true);
+  } catch (err) {
+    uiLog('start failed', String(err.message || err));
+    await confirmDialog(
+      'この PC からは起動できませんでした（kiro-project CLI が見つからないか失敗）。\n' +
+        `理由: ${String(err.message || err).slice(0, 200)}\n\n` +
+        '本体のマシンで次のコマンドを実行してください（このプロジェクトのフォルダで）:\n' +
+        '  kiro-project start\n\n' +
+        'CLI の場所は ⚙ 設定の「kiro-project CLI」でも指定できます。'
+    );
+    return;
+  }
+  await refreshAll();
 }
 
 const LIFECYCLE_CONFIRMS = {
@@ -785,6 +831,9 @@ const LIFECYCLE_CONFIRMS = {
 };
 
 function bindLifecycleButtons(root) {
+  for (const b of root.querySelectorAll('button[data-start-kiro]')) {
+    b.addEventListener('click', () => startKiroProject());
+  }
   for (const b of root.querySelectorAll('button[data-lifecycle]')) {
     b.addEventListener('click', async () => {
       const p = state.project;
@@ -2735,15 +2784,15 @@ function runAdvice(run, group) {
         ? `失敗・未実行の工程だけをやり直します（完了済み ${doneCount} 件は温存）`
         : '新しい実行としてやり直します';
       if (live.paused) {
-        return { kind: 'restart', cls: 'warn', chip: '⏸ 一時停止中',
-          text: `プロジェクトが一時停止中のため、まだ再実行されません。概要の「再開」で本体が${how}。` };
+        return { kind: 'restart', cls: 'warn', chip: '⏸ 一時停止中', stopped: false,
+          text: `プロジェクトが一時停止中のため、まだ再実行されません。「▶ 再開」を押すと本体が${how}。` };
       }
       if (live.running) {
         return { kind: 'auto', cls: 'ok', chip: '⏳ まもなく自動でやり直されます',
           text: `操作は不要です。本体（kiro-project）が${how}。数分待っても動かないときだけ下の ↻ を押してください。` };
       }
-      return { kind: 'restart', cls: 'warn', chip: '⏻ 本体が停止中',
-        text: `kiro-project が動いていないため、このままでは再開されません。本体を起動すれば自動で${how}（↻ を押しても、本体が動くまで実行は始まりません）。` };
+      return { kind: 'restart', cls: 'warn', chip: '⏻ 本体が停止中', stopped: true,
+        text: `本体（kiro-project）が動いていないため、このままでは再開されません。「▶ 本体を起動」を押すと自動で${how}（↻ を押しても、本体が動くまで実行は始まりません）。` };
     }
     if (task.status === 'rejected') {
       return { kind: 'none', cls: 'muted', chip: '✋ 却下済み',
@@ -3013,6 +3062,13 @@ function renderFlowDetail() {
       : '',
     advice.kind === 'old' && advice.latestId
       ? `<button class="chip" data-goto-run="${esc(advice.latestId)}">最新の試行を開く</button>`
+      : '',
+    // 「本体が停止中/一時停止中」は、その場で解決する操作を出す（概要タブへ探しに行かせない）
+    advice.kind === 'restart' && advice.stopped
+      ? '<button class="chip primary-inline" data-start-kiro>▶ 本体を起動</button>'
+      : '',
+    advice.kind === 'restart' && advice.stopped === false
+      ? '<button class="chip primary-inline" data-resume-kiro>▶ 再開</button>'
       : '',
   ].join(' ');
   const adviceBanner = `<div class="advice-banner advice-${advice.cls}">
@@ -3589,7 +3645,8 @@ function bindFlowDetail(root) {
   }
   const rs = root.querySelector('#flow-resubmit');
   if (rs) rs.addEventListener('click', () => resubmitFlowRun());
-  // advice バナーの誘導ボタン: 判断待ち → 要対応タブ ／ 古い試行 → 最新の試行へ
+  // advice バナーの誘導ボタン: 判断待ち → 要対応タブ ／ 古い試行 → 最新の試行へ ／
+  // 本体停止・一時停止 → その場で起動・再開
   for (const btn of root.querySelectorAll('button[data-goto-needs]')) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -3600,6 +3657,29 @@ function bindFlowDetail(root) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       gotoRun(btn.dataset.gotoRun);
+    });
+  }
+  for (const btn of root.querySelectorAll('button[data-start-kiro]')) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      startKiroProject();
+    });
+  }
+  for (const btn of root.querySelectorAll('button[data-resume-kiro]')) {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const p = state.project;
+      if (!p) return;
+      const ok = await guard('再開', async () => {
+        const res = await api.requestLifecycle(p.dir, 'resume', 'フロー画面から再開');
+        uiLog('lifecycle', 'resume', res);
+        toast('再開を依頼しました（反映まで少し時間がかかることがあります）', true);
+        return true;
+      });
+      if (ok) {
+        gitPushAfterWrite('kiro-projects-viewer: resume', p.dir);
+        await reloadProject();
+      }
     });
   }
   const cn = root.querySelector('#flow-cancel');
