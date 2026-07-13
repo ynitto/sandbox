@@ -133,4 +133,21 @@ test('run の削除でアーカイブのスナップショットも消える', (
   assert.strictEqual(flow.removeArchivedRun(dir, runId), null, '無い run は null（冪等）');
 });
 
+// 中身の無いスナップショットを残さない。run が bus から消えた後に呼ばれると readRun は
+// status='unknown' / total=0 の空を返す。それを保存すると、実体も記録も持たない「不明」な run が
+// 一覧に永久に居座る（実際 11 件溜まり、viewer に「不明」が大量に並んだ）。
+test('中身の無い run（status=unknown / total=0）はアーカイブしない', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-empty-'));
+  const busDir = path.join(dir, 'bus');
+  const empty = { runId: 'run-gone', status: 'unknown', total: 0, counts: {}, nodes: {} };
+  assert.strictEqual(flow.archiveRunSnapshot(dir, busDir, empty), false, '保存しない');
+  assert.strictEqual(flow.listArchivedRuns(dir).length, 0, '一覧に出ない');
+
+  // 中身のある run は従来どおり保存する
+  const real = { runId: 'run-real', status: 'done', total: 3, counts: { done: 3 }, nodes: {} };
+  assert.strictEqual(flow.archiveRunSnapshot(dir, busDir, real), true);
+  assert.strictEqual(flow.listArchivedRuns(dir).length, 1);
+});
+
+
 console.log(`\n${passed} passed`);

@@ -2921,12 +2921,17 @@ function renderFlowDetail() {
     !archived && canRetry
       ? `<button class="chip" id="flow-resubmit" title="${esc(resubmitTitle)}">${esc(resubmitLabel)}</button>`
       : '';
-  // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ
+  // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ。
+  // アーカイブ（bus に実体が無く記録だけ残ったもの）も消せる: 消せないと一覧に永久に居座る。
   const deletable =
-    !archived &&
-    (run.status === 'done' || run.status === 'failed' || run.status === 'canceled' || run.alive === false);
+    archived ||
+    run.status === 'done' || run.status === 'failed' || run.status === 'canceled' || run.alive === false;
   const deleteBtn = deletable
-    ? `<button class="chip danger" id="flow-delete" title="この実行のデータをゴミ箱へ移動します">🗑 削除</button>`
+    ? `<button class="chip danger" id="flow-delete" title="${
+        archived
+          ? 'この実行の記録（アーカイブ）を削除します'
+          : 'この実行のデータをゴミ箱へ移動します'
+      }">🗑 削除</button>`
     : '';
   // run のキャンセル（人の明示アクション＝唯一の hard-stop）。まだ終端していない run に出す。
   // 承認待ちで park 中の run も暴走中の run も止められる。起票済みイシューは残す（追跡だけやめる）。

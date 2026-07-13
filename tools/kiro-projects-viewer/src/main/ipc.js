@@ -191,9 +191,20 @@ function registerIpcHandlers() {
   // これが残っていると、run 一覧は「live に無いアーカイブ」として拾い直して表示し続ける
   // ＝ 削除したのに消えない。人から見れば削除が効いていないのと同じ。
   handle('flow:deleteRun', async ({ dir, busDir, runId }) => {
-    const { runDir, status } = flow.prepareRunDeletion(busDir, runId);
-    const via = await removeToTrash(runDir);
+    // bus に実体がある run と、アーカイブだけが残った run の両方を消せるようにする。
+    // 実体を必須にすると、bus から消えた run のスナップショットが永久に消せず、一覧に居座る。
+    let runDir = null;
+    let status = 'archived';
+    let via = null;
+    const hasRun = fs.existsSync(path.join(busDir, 'runs', runId, 'meta.json'));
+    if (hasRun) {
+      const prep = flow.prepareRunDeletion(busDir, runId);   // 実行中ならここで拒否される
+      runDir = prep.runDir;
+      status = prep.status;
+      via = await removeToTrash(runDir);
+    }
     const archived = dir ? flow.removeArchivedRun(dir, runId) : null;
+    if (!via && !archived) throw new Error(`run が見つかりません: ${runId}`);
     return { runDir, status, via, archived };
   });
 

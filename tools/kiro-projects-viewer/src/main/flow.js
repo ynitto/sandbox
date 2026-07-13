@@ -576,6 +576,12 @@ function _runSig(run) {
 function archiveRunSnapshot(projectDir, busDir, run) {
   const dir = flowArchiveDir(projectDir);
   const file = path.join(dir, `${run.runId}.json`);
+  // 中身の無いスナップショットを残さない。run が bus から消えた後に呼ばれると readRun は
+  // status='unknown' / total=0 の空オブジェクトを返す。それを保存すると、実体も記録も持たない
+  // 「不明」な run が一覧に永久に居座る（実際 11 件溜まっていた）。記録する価値があるのは
+  // ノードを持つ run だけ。
+  if (!run || !run.runId) return false;
+  if (!run.total && String(run.status || 'unknown') === 'unknown') return false;
   const sig = _runSig(run);
   if (_archiveSig.get(file) === sig && fs.existsSync(file)) return false;
   const runDir = path.join(busDir, 'runs', run.runId);
