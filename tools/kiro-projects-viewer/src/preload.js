@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('api', {
   readRepos: (dir) => invoke('kiro:readRepos', { dir }),
   writeRepos: (dir, rows) => invoke('kiro:writeRepos', { dir, rows }),
   agentCharter: (args) => invoke('agent:charter', args),
+  agentDoctor: (args) => invoke('agent:doctor', args),
   agentResolve: (dir) => invoke('agent:resolve', { dir }),
 
   glEnrich: (urls) => invoke('gitlab:enrich', { urls }),

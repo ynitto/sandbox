@@ -460,6 +460,13 @@ function registerIpcHandlers() {
     agent.completeCharter(loadConfig(), { dir, mode, spec, content })
   );
 
+  // 現在画面のスナップショットを読み取り専用CLIへ渡し、助言本文だけを返す。
+  handle('agent:doctor', ({ dir, context }) => {
+    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+    if (!context || typeof context !== 'object') throw new Error('画面の状態が指定されていません');
+    return agent.completeDoctor(loadConfig(), { dir, context });
+  });
+
   // ⚙ 設定画面の表示用: 今どの CLI / モデルで補完するかの解決結果（実行はしない）
   handle('agent:resolve', ({ dir }) => agent.resolveAgent(loadConfig(), dir));
 

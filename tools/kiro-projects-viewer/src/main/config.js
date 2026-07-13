@@ -47,8 +47,6 @@ const DEFAULT_CONFIG = {
     //   file … 常にファイルドロップ（次回の watch/起動が取り込む）
     //   cli  … 常に CLI（従来の挙動）
     actionMode: 'auto',
-    // かんたんモード（非技術者向けの絞った画面）で起動するか。ヘッダのトグルで切替・保存される。
-    simpleMode: false,
     // kiro-flow の明示バス（kiro-project を --bus / 設定 bus: 付きで運用している
     // 場合）のパス。空なら <root>/bus → kiro-project 設定ファイル（.kiro/）の bus: の
     // 順にファイルから自動発見する。
@@ -63,10 +61,9 @@ const DEFAULT_CONFIG = {
     flowLockDir: '',
   },
   agent: {
-    // charter の AI 下書き・補完に使うエージェント CLI。
-    //   '' … 自動（プロジェクトの kiro-project.yaml の agent_cli → 既定 kiro）
-    //   kiro / claude / copilot … 明示指定（プロジェクト設定より優先）
-    cli: '',
+    // charter の AI 下書き・補完と読み取り専用 Doctor に共通で使うエージェント CLI。
+    //   kiro / claude / copilot / codex / cursor / ollama
+    cli: 'kiro',
     // エージェント CLI に渡すモデル（空 = CLI / プロジェクト設定の既定）。
     // 例: claude は sonnet・opus、copilot は claude-sonnet-4.5・gpt-5 等。
     model: '',

@@ -13,14 +13,17 @@
     <aside id="sidebar">
       <div class="sidebar-header">
         <h1>Kiro Projects</h1>
-        <div class="row">
-          <button id="btn-new-project" title="新規プロジェクトを作成">＋</button>
-          <button id="btn-mode" title="かんたん/メンテナンス表示を切り替え">👀</button>
-          <button id="btn-git-pull" title="最新の状態を取得（git pull）">⇣</button>
-          <button id="btn-git-heal" title="同期を修復（詰まり・履歴の食い違い・未送信をまとめて自動で直します）">🩺</button>
-          <button id="btn-refresh" title="再読み込み">⟳</button>
-          <button id="btn-settings" title="設定">⚙</button>
+        <div class="row sidebar-actions">
+          <button id="btn-new-project" aria-label="プロジェクトを作成" title="プロジェクトを作成">＋</button>
+          <button id="btn-git-pull" aria-label="最新の状態を取得" title="最新の状態を取得">⇣</button>
+          <button id="btn-refresh" aria-label="表示を更新" title="表示を更新">⟳</button>
+          <button id="btn-settings" aria-label="アプリ設定" title="アプリ設定">⚙</button>
         </div>
+      </div>
+      <div class="doctor-tools" aria-label="Doctor">
+        <span>Doctor</span>
+        <button id="btn-git-heal" aria-label="同期を修復">同期を修復</button>
+        <button id="btn-doctor" aria-label="現在の画面をAIに相談" disabled>AIに相談</button>
       </div>
       <div id="tree"></div>
       <div id="sidebar-footer" class="muted"></div>
@@ -29,19 +32,22 @@
     <!-- ======== メイン ======== -->
     <main id="main">
       <header id="project-header">
-        <div id="project-title">
-          <span id="project-name" class="muted">プロジェクトを選択してください</span>
-          <span id="project-badges"></span>
+        <div class="project-header-main">
+          <div id="project-title">
+            <span id="project-name" class="muted">プロジェクトを選択してください</span>
+            <span id="project-badges"></span>
+          </div>
+          <button id="btn-project-settings" class="hidden">プロジェクト設定</button>
         </div>
         <div id="project-meta" class="muted"></div>
       </header>
 
       <nav id="tabs">
         <button class="tab active" data-tab="overview">概要</button>
-        <button class="tab tech" data-tab="backlog">バックログ</button>
+        <button class="tab" data-tab="backlog">タスク</button>
         <button class="tab" data-tab="needs">要対応 <span id="needs-badge" class="badge hidden"></span></button>
-        <button class="tab tech" data-tab="flow">フロー</button>
-        <button class="tab tech" data-tab="history">履歴</button>
+        <button class="tab" data-tab="flow">実行</button>
+        <button class="tab" data-tab="history">成果・履歴</button>
       </nav>
 
       <section id="content">
@@ -53,6 +59,14 @@
       </section>
     </main>
   </div>
+
+  <!-- ======== プロジェクト設定ダイアログ ======== -->
+  <dialog id="dlg-project-settings" class="wide">
+    <div id="project-settings-body"></div>
+    <div class="dialog-actions">
+      <button id="btn-project-settings-close">閉じる</button>
+    </div>
+  </dialog>
 
   <!-- ======== 設定ダイアログ ======== -->
   <dialog id="dlg-settings">
@@ -121,15 +135,17 @@
           placeholder="例:&#10;alpha = /home/me/clones/alpha/kiro-flow&#10;beta = C:\clones\beta\kiro-flow"
         ></textarea>
       </div>
-      <h3>エージェント補完（charter の AI 下書き・任意）</h3>
+      <h3>Viewer アシスタント</h3>
       <div class="row2">
         <div class="field">
-          <label>エージェント CLI（自動 = プロジェクトの kiro-project.yaml の agent_cli に従う）</label>
+          <label>エージェント CLI（charter 補完と Doctor で共通）</label>
           <select id="cfg-agent-cli">
-            <option value="">自動（プロジェクト設定 → kiro）</option>
-            <option value="kiro">kiro（kiro-cli chat）</option>
+            <option value="kiro">kiro（既定・kiro-cli chat）</option>
             <option value="claude">claude（Claude Code）</option>
             <option value="copilot">copilot（GitHub Copilot CLI）</option>
+            <option value="codex">codex（Codex CLI）</option>
+            <option value="cursor">cursor（Cursor Agent）</option>
+            <option value="ollama">ollama（ローカルモデル）</option>
           </select>
         </div>
         <div class="field">
@@ -147,7 +163,7 @@
       <div class="muted" style="font-size:11px">
         本体（kiro-project / kiro-flow）が使う CLI・モデルは各プロジェクトの
         kiro-project.yaml / kiro-flow.yaml の <code class="mono">agent_cli</code> / <code class="mono">model</code> で設定します
-        （kiro / claude / copilot）。ここは、このビュアーの charter 下書き・補完だけに効きます。
+        本設定は、このビュアーの charter 下書き・補完と読み取り専用 Doctor に共通で使います。
       </div>
       <h3>GitLab（イシュー状態の補完・任意）</h3>
       <div class="row2">
@@ -188,6 +204,23 @@
         <button id="btn-save-settings" value="default" class="primary-inline">保存</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="dlg-need-output" class="wide output-dialog">
+    <div class="dialog-heading">
+      <div><span class="summary-kicker">詳細</span><h2 id="need-output-title">出力全体</h2></div>
+      <button id="btn-need-output-close" aria-label="出力全体を閉じる">閉じる</button>
+    </div>
+    <pre id="need-output-body" class="mono full-output" tabindex="0"></pre>
+  </dialog>
+
+  <dialog id="dlg-doctor" class="wide doctor-dialog" aria-labelledby="doctor-title">
+    <div class="dialog-heading">
+      <div><span class="summary-kicker">Doctor</span><h2 id="doctor-title">現在の画面を相談</h2></div>
+      <button id="btn-doctor-close" aria-label="Doctorを閉じる">閉じる</button>
+    </div>
+    <div id="doctor-status" class="doctor-status" aria-live="polite"></div>
+    <div id="doctor-response" class="doctor-response"></div>
   </dialog>
 
   <!-- ======== タスク追加ダイアログ ======== -->

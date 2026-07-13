@@ -14,11 +14,19 @@ const state = {
   flowRunId: null,
   flowRun: null, // {run, events, nodeEvents}
   flowNodeId: null,
+  flowDetailView: 'overview', // 選択中 run の内部ビュー（overview / graph / history）
+  flowMobileDetail: false,
   flowNodeIssue: null, // {token, issue|null}（実行中ノードのイシュー検索結果キャッシュ）
   // GitLab 突き合わせ結果を run 単位でキャッシュする（run を切り替えても保持し、再取得を避ける）。
   // { [runId]: { loading, at, byNode: {[id]:{reconciled,url,issueState,labels,relatedMrs,...}} } }
   flowReconcile: {},
   backlogFilter: 'active',
+  needsFilter: 'open', // open / sent / done / gitlab
+  needsSelectedId: null,
+  needsMobileDetail: false,
+  needsDrafts: {}, // フィルターや選択を切り替えても回答の下書きを保持する
+  needOutputCache: {}, // needs file+mtime → 関連runを含む全出力（明示操作時だけロード）
+  doctorBusy: false,
   flowFilter: 'active', // フロータブの run フィルタ（active＝非終端のみ／done＝完了・アーカイブ／all）
   gitlab: { enabled: false, byUrl: {}, repoIssues: [], loading: false, flowOnly: true },
   editFile: null, // {dir, name, file}（編集中のプロジェクトファイル）
@@ -388,6 +396,7 @@ async function reloadProject() {
   if (!state.selectedDir) return;
   const project = await guard('プロジェクト読込', () => api.readProject(state.selectedDir));
   if (!project) return;
+  project.needs = stabilizeMilestoneNeeds(state.project, project);
   state.project = project;
   // 同期の健康状態（ローカル参照のみ・リモートへは触らない）。失敗しても表示を欠くだけ。
   state.gitHealth = await api.gitHealth(project.dir).catch(() => null);
@@ -402,6 +411,13 @@ async function reloadProject() {
   }
   if (state.flowRunId) {
     state.flowRun = await guard('run 読込', () => api.flowRun(project.dir, project.busDir, state.flowRunId));
+  } else if (state.flowRuns.length) {
+    const groups = lineageGroups(state.flowRuns);
+    const first = groups.find((g) => flowGroupBucket(g) === state.flowFilter) || groups[0];
+    if (first) {
+      state.flowRunId = first.latest.runId;
+      state.flowRun = await guard('run 読込', () => api.flowRun(project.dir, project.busDir, state.flowRunId));
+    }
   }
   renderHeader();
   renderAllTabs();
@@ -412,6 +428,8 @@ async function reloadProject() {
 function renderHeader() {
   const p = state.project;
   if (!p) return;
+  $('btn-project-settings').classList.remove('hidden');
+  $('btn-doctor').disabled = false;
   const charterName = p.charter && p.charter.name ? p.charter.name : '';
   $('project-name').textContent = charterName && charterName !== p.name
     ? `${charterName} (${p.name})`
@@ -451,284 +469,6 @@ function renderHeader() {
 // ---------------------------------------------------------------------------
 
 const STATUS_ORDER = ['proposed', 'ready', 'doing', 'offloaded', 'review', 'blocked', 'inbox', 'draft'];
-
-function renderOverview() {
-  const p = state.project;
-  const el = $('tab-overview');
-  if (!p) {
-    el.innerHTML = '<div class="empty">左のツリーからプロジェクトを選択してください</div>';
-    return;
-  }
-  if (state.simpleMode) {
-    renderOverviewSimple(el, p);
-    return;
-  }
-  const parts = [];
-
-  // プロジェクトファイルの編集（人が書く上位入力: charter / policy / repos）
-  const isMaster = !!(p.charter && p.charter.master);
-  parts.push(`<div class="card full edit-toolbar">
-    <h3>プロジェクト定義の編集</h3>
-    <div class="row">
-      <button class="chip" data-edit="charter.md" title="プロジェクト憲章（全体の前提）を編集">✎ ${isMaster ? 'マスター憲章' : '憲章'}</button>
-      <button class="chip" data-edit="policy.md" title="運用ルールを編集">✎ 運用ルール</button>
-      <button class="chip" data-edit="rules.md" title="プロジェクトルール（暗黙知の明文化先。全タスクの実行・計画・検証に常時反映される）を編集">✎ プロジェクトルール</button>
-      <button class="chip" data-edit="repos.json" title="対象リポジトリ一覧を編集">✎ リポジトリ一覧</button>
-      <button class="chip" id="btn-add-charter-version"
-        title="${isMaster ? 'やるべきことを記入して計画バージョンを追加します（マスター憲章の前提を引き継ぎます）' : '計画の新しいバージョン（charters/&lt;名前&gt;.md）を追加します'}">＋ バージョン追加</button>
-      <span class="muted">編集した内容は次回の自動実行から計画に反映されます</span>
-    </div>
-  </div>`);
-
-  // ステータスタイル
-  const tiles = STATUS_ORDER.map(
-    (st) =>
-      `<div class="tile st-${st}" title="${esc(st)}"><div class="num">${p.byStatus[st] || 0}</div><div class="label">${esc(statusLabel(st))}</div></div>`
-  );
-  tiles.push(
-    `<div class="tile st-done"><div class="num">${p.archive.length}</div><div class="label">完了（累計）</div></div>`
-  );
-  parts.push(`<div class="card full"><h3>タスクの内訳</h3><div class="tiles">${tiles.join('')}</div></div>`);
-
-  // 計画バージョン（charters/<name>.md）の一覧。
-  // マスター運用ではバージョン＝「やるべきこと」の単位。未作成なら始め方を案内する。
-  // 従来運用（マスターでない charter.md ＋バージョン）は、初版がどうなったかを 1 行で明示する。
-  if ((p.charters && p.charters.length) || isMaster) {
-    const chStates = (p.projectState && p.projectState.charters) || {};
-    const rows = (p.charters || [])
-      .map((ch) => {
-        const st = chStates[ch.name] || {};
-        const total = Number(st.acceptance_total || (ch.acceptanceItems || []).length || 0);
-        const best = achieved(st);
-        return `<tr>
-          <td class="mono">${esc(ch.name)}</td>
-          <td>${esc(ch.goal || ch.name || '')}</td>
-          <td>${total ? `${best} / ${total} 達成` : '—'}</td>
-          <td>${st.status ? statusChip(st.status) : '<span class="muted">未実行</span>'}</td>
-          <td><button class="chip" data-edit="charters/${esc(ch.name)}.md">✎ 編集</button></td>
-        </tr>`;
-      })
-      .join('');
-    let initialRow = '';
-    if (p.charter && !isMaster) {
-      const st = p.projectState || {};
-      const total = Number(st.acceptance_total || (p.charter.acceptanceItems || []).length || 0);
-      const best = achieved(st);
-      initialRow = `<tr>
-        <td class="mono">初版 <span class="muted">(charter.md)</span></td>
-        <td>${esc(p.charter.goal || p.charter.name || '')}</td>
-        <td>${total ? `${best} / ${total} 達成` : '—'}</td>
-        <td>${st.status ? statusChip(st.status) : '<span class="muted">未実行</span>'}
-            <span class="badge" title="バージョン運用中は初版は自動実行の対象になりません">実行対象外</span></td>
-        <td><button class="chip" data-edit="charter.md">✎ 編集</button>
-            <button class="chip" id="btn-promote-charter"
-              title="初版にバージョン名を付けてバージョン一覧に加えます（タスクや承認状態も引き継がれ、他バージョンと並行して進みます）">⤴ バージョン名を付ける</button></td>
-      </tr>`;
-    }
-    const emptyNote =
-      isMaster && !(p.charters && p.charters.length)
-        ? '<div class="muted" style="margin-top:4px">計画バージョンがまだありません。「＋ バージョン追加」でやるべきことを記入すると、マスター憲章の前提と合わせてタスクに分解されます。</div>'
-        : '';
-    const legacyNote =
-      p.charter && !isMaster && p.charters && p.charters.length
-        ? '<div class="muted" style="margin-top:4px">バージョン運用中は初版は実行されません。「⤴ バージョン名を付ける」でバージョン一覧に加えると再び並行して進みます。</div>'
-        : '';
-    parts.push(`<div class="card full">
-      <h3>計画バージョン（やるべきこと — 並行して進行）</h3>
-      ${rows || initialRow ? `<table class="list"><tr><th>バージョン</th><th>やるべきこと</th><th>完了条件</th><th>状態</th><th></th></tr>${initialRow}${rows}</table>` : ''}
-      ${emptyNote}${legacyNote}
-    </div>`);
-  }
-
-  // charter
-  if (p.charter && isMaster) {
-    // マスター憲章: 全バージョン共通の前提・制約。分解されず完了条件も持たないため、達成状況・
-    // 完了条件のカードは出さない（進捗と完了条件は上の計画バージョン一覧で見る）。
-    parts.push(`
-      <div class="card full">
-        <h3>プロジェクト憲章（マスター）: ${esc(p.charter.name || '')}</h3>
-        <div class="muted" style="margin-bottom:6px">全バージョン共通の前提です。ここからタスクは作られず、各計画バージョンに自動で引き継がれます。</div>
-        <div class="charter-goal">${esc(p.charter.goal || '（目標が未記入です）')}</div>
-        ${p.charter.constraints ? `<div class="section-title">制約（全バージョン共通）</div>${mdToHtml(p.charter.constraints)}` : ''}
-        ${p.charter.assumptions ? `<div class="section-title">前提（全バージョン共通）</div>${mdToHtml(p.charter.assumptions)}` : ''}
-        ${p.charter.deliverables ? `<div class="section-title">成果物</div>${mdToHtml(p.charter.deliverables)}` : ''}
-      </div>`);
-  } else if (p.charter) {
-    const ps = p.projectState || {};
-    const total = Number(ps.acceptance_total || (p.charter.acceptanceItems || []).length || 0);
-    const hist = passHistory(ps);
-    const best = achieved(ps);
-    const pct = total ? Math.round((best / total) * 100) : 0;
-    const spark = hist.length
-      ? `<div class="sparkline">${hist
-          .slice(-24)
-          .map((n) => `<div style="height:${total ? Math.max(6, (n / total) * 100) : 6}%" title="${n}/${total}"></div>`)
-          .join('')}</div>`
-      : '';
-    // 複数バージョン運用ではこのカードが「初版（charter.md）の説明」であることを明示する
-    // （どのバージョンの説明か分からない、という混乱を避ける）
-    const versionLabel = p.charters && p.charters.length
-      ? ' <span class="badge" title="このカードは初版（charter.md）の内容と状態です">初版</span>'
-      : '';
-    parts.push(`
-      <div class="cards">
-        <div class="card" style="flex:2">
-          <h3>プロジェクト憲章: ${esc(p.charter.name || '')}${versionLabel}</h3>
-          <div class="charter-goal">${esc(p.charter.goal || '（目標が未記入です）')}</div>
-          ${p.charter.deliverables ? `<div class="section-title">成果物</div>${mdToHtml(p.charter.deliverables)}` : ''}
-          ${p.charter.constraints ? `<div class="section-title">制約</div>${mdToHtml(p.charter.constraints)}` : ''}
-        </div>
-        <div class="card">
-          <h3>完了条件の達成状況${versionLabel}</h3>
-          <div class="big">${best} / ${total} 達成</div>
-          <div class="progress ${total && best >= total ? 'ok' : ''}" title="${pct}%"><div style="width:${pct}%"></div></div>
-          ${spark}
-          <div class="muted" style="margin-top:6px">
-            状態: ${esc(statusLabel(ps.status) || '-')} ／ 実行サイクル: ${esc(String(ps.cycles ?? '-'))} ／ 累計コスト: ${esc(String(ps.cost ?? '-'))}
-          </div>
-          <div style="margin-top:8px">${(p.charter.acceptanceItems || [])
-            .map((a) => `<div class="acceptance-item">・<code class="mono">${esc(a)}</code></div>`)
-            .join('')}</div>
-        </div>
-      </div>`);
-  } else if (p.charters && p.charters.length) {
-    parts.push(
-      `<div class="card full"><h3>プロジェクト憲章</h3><div class="muted">初版（charter.md）は無く、上の計画バージョンで進行しています。</div></div>`
-    );
-  } else {
-    parts.push(
-      `<div class="card full"><h3>プロジェクト憲章</h3><div class="muted">憲章（charter.md）はまだありません。タスクを直接追加して進める運用です。</div></div>`
-    );
-  }
-
-  // プロジェクトルール（rules.md）: フローを回して判明した恒常ルール（暗黙知の明文化先）。
-  // 出典コメント（自動昇格の <!-- learn:... -->）は表示から落とす（本体の注入と同じ扱い）。
-  if (p.rules && p.rules.trim()) {
-    const rulesBody = p.rules
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/^#\s+.*$/m, '') // 見出しはカードの h3 と重複するため落とす
-      .trim();
-    parts.push(`
-      <div class="card full">
-        <h3>プロジェクトルール（rules.md）</h3>
-        <div class="muted" style="margin-bottom:6px">
-          全タスクの実行・計画・検証に常時反映される恒常ルールです。効果が再現した学習は自動でここに追記されます（編集・削除は自由）。
-        </div>
-        ${mdToHtml(rulesBody)}
-        <div class="row" style="margin-top:6px"><button class="chip" data-edit="rules.md">✎ 編集</button></div>
-      </div>`);
-  }
-
-  // daemon 生存（liveness）。同一ホストなら instances で確定、リモートは status.json
-  // （state_git 経由の同期・遅延許容の推定）でしか分からない。最終サイクルは run-log.jsonl
-  // （既に同期済み）から補う — idle 中は status.json だけが唯一の「生きている」根拠になる
-  const live = p.liveness || { running: false, via: 'none', ageSec: null };
-  const lastRunLog = p.runLog.length ? p.runLog[p.runLog.length - 1] : null;
-  // 判定根拠（同一ホストのレジストリか、同期されてきた生存信号か）は内部情報なのでログへ
-  uiLogOnChange(`liveness:${p.dir}`, live);
-  const liveDesc =
-    live.via === 'instances'
-      ? '<span class="status-chip st-done">● 稼働中</span>'
-      : live.via === 'status-local'
-        ? // 同一ホストだが心拍が途切れている（長いタスクの実行中に起きる）。status.json の
-          // 新しさで判断する。別マシンではないので「別マシン」表記は出さない。
-          `<span class="status-chip ${live.running ? 'st-done' : 'st-blocked'}">${live.running ? '● 稼働中' : '○ 停止中か確認できません'}</span>` +
-          `<span class="muted">（最終確認 ${fmtAgoSec(live.ageSec)}）</span>`
-        : live.via === 'status-sync'
-          ? `<span class="status-chip ${live.running ? 'st-done' : 'st-blocked'}">${live.running ? '● 稼働中（別マシン）' : '○ 不明'}</span>` +
-            `<span class="muted">（最終確認 ${fmtAgoSec(live.ageSec)}）</span>`
-          : '<span class="status-chip st-blocked">○ 停止中か確認できません</span><span class="muted">（このマシンでは稼働が確認できません）</span>';
-  parts.push(`
-    <div class="card full">
-      <h3>自動実行の稼働状況</h3>
-      <div>${liveDesc}</div>
-      <div class="muted" style="margin-top:4px">
-        最後の実行: ${lastRunLog ? `${fmtTime(lastRunLog.ts)}（${esc(statusLabel(lastRunLog.reason))}・${fmtAgo(lastRunLog.ts)}）` : 'まだ実行されていません'}
-      </div>
-    </div>`);
-
-  parts.push(lifecycleCardHtml(p));
-
-  // 実行中・run-log サマリ
-  const doing = p.claims.length
-    ? p.claims.map((id) => `<code class="mono">${esc(id)}</code>`).join(' ')
-    : '<span class="muted">なし</span>';
-  const last = p.runLog.slice(-5).reverse();
-  const runRows = last
-    .map(
-      (r) => `<tr>
-        <td>${fmtTime(r.ts)}</td><td title="${esc(r.reason || '')}">${esc(statusLabel(r.reason))}</td><td>${r.done ?? 0}</td>
-        <td>${r.blocked ?? 0}</td><td>${r.review ?? 0}</td>
-        <td>${r.tokens ?? 0}</td><td>${r.cost ?? 0}</td><td>${Math.round(r.duration_s ?? 0)}s</td>
-      </tr>`
-    )
-    .join('');
-  parts.push(`
-    <div class="cards">
-      <div class="card">
-        <h3>実行中のタスク</h3>${doing}
-        <h3 style="margin-top:12px">運用ルール</h3>
-        ${
-          p.policy.length
-            ? p.policy
-                .map((r) => `<div><span class="label-chip">${esc(r.kind)}</span> <code class="mono">${esc(r.value)}</code></div>`)
-                .join('')
-            : '<span class="muted">未設定</span>'
-        }
-      </div>
-      <div class="card" style="flex:2">
-        <h3>最近の自動実行</h3>
-        ${
-          runRows
-            ? `<table class="list"><tr><th>時刻</th><th>結果</th><th>完了</th><th>要対応</th><th>検収待ち</th><th>トークン</th><th>コスト</th><th>時間</th></tr>${runRows}</table>`
-            : '<span class="muted">まだ実行されていません</span>'
-        }
-      </div>
-    </div>`);
-
-  // 納品（DELIVERY.md）
-  if (p.delivery.length) {
-    const rows = p.delivery
-      .slice(-10)
-      .reverse()
-      .map(
-        (cells) =>
-          `<tr>${cells.map((c) => `<td>${linkify(c)}</td>`).join('')}</tr>`
-      )
-      .join('');
-    parts.push(
-      `<div class="card full"><h3>納品物（直近 10 件）</h3><table class="list">${rows}</table></div>`
-    );
-  }
-
-  // 危険な操作: プロジェクトのリセット（charter 以外を全消去して kiro-flow を停止）。
-  // charter.md が無い（バックログ消化モード）と「残すものが無い」ためリセットは出せない。
-  if (p.charter) {
-    parts.push(`
-    <div class="card full">
-      <h3>危険な操作</h3>
-      <div class="row">
-        <button class="chip danger" id="btn-reset-project"
-          title="計画バージョン・タスク・履歴・実行データをすべてゴミ箱へ移動し、自動実行を停止します。プロジェクト憲章（charter.md）だけが残ります">
-          ⚠ リセット（憲章だけ残して初期化）</button>
-        <span class="muted">最初からやり直すための操作です。リセット後は待機状態になり、計画バージョンを追加すると作業が再開します</span>
-      </div>
-    </div>`);
-  }
-
-  el.innerHTML = parts.join('\n');
-
-  for (const b of el.querySelectorAll('button[data-edit]')) {
-    b.addEventListener('click', () => openProjectFile(b.dataset.edit));
-  }
-  const resetBtn = $('btn-reset-project');
-  if (resetBtn) resetBtn.addEventListener('click', () => resetProject());
-  const addCharterBtn = $('btn-add-charter-version');
-  if (addCharterBtn) addCharterBtn.addEventListener('click', () => openAddCharterVersion());
-  const promoteBtn = $('btn-promote-charter');
-  if (promoteBtn) promoteBtn.addEventListener('click', () => openPromoteCharter());
-  bindLifecycleButtons(el);
-}
 
 // 初版（charter.md）に後からバージョン名を付けて charters/<名前>.md へ移す（昇格）。
 // 既存タスクの帰属タグ・project.json の収束状態（承認済み等）・milestone カードも引き継ぐ。
@@ -856,62 +596,190 @@ function bindLifecycleButtons(root) {
   }
 }
 
-// かんたんモードの概要: 非技術者向けに「いま何をしているか / あなたの番 / できあがったもの」
-// の 3 面へ絞る（技術情報はメンテナンスモードで見る）。
-function renderOverviewSimple(el, p) {
-  const parts = [];
+// 概要は「現在 → 人の対応 → 進捗 → 成果」の順に読むためのハブとする。
+// 機械状態の細目は詳細タブへ送り、ここでは全体像と次の一手だけを返す。
+function overviewSummary(p, flowRuns) {
   const live = p.liveness || { running: false };
-  const undecided = p.needs.filter((n) => !n.decided);
-  const working = (p.byStatus.doing || 0) + (p.byStatus.offloaded || 0) + p.claims.length;
-  const waiting = (p.byStatus.ready || 0) + (p.byStatus.inbox || 0);
-  const doneCount = p.archive.length;
+  const undecided = (p.needs || []).filter((n) => !n.decided);
+  const byStatus = p.byStatus || {};
+  const working = Math.max((byStatus.doing || 0) + (byStatus.offloaded || 0), (p.claims || []).length);
+  const waiting = (byStatus.ready || 0) + (byStatus.inbox || 0) + (byStatus.draft || 0) + (byStatus.proposed || 0);
+  const done = (p.archive || []).length;
+  const total = done + (p.backlog || []).filter((t) => t.status !== 'rejected').length;
+  const progress = total ? Math.round((done / total) * 100) : 0;
+  const activeRuns = (flowRuns || []).filter((r) => !['done', 'failed', 'canceled'].includes(String(r.status))).length;
 
-  let now;
-  if (live.paused) now = '⏸ 一時停止中です（「▶ 再開」で続きから動き出します）。';
-  else if (!live.running) now = '停止中です（このプロジェクトのマシンで起動されるのを待っています）。';
-  else if (working) now = `いま ${working} 件の作業を進めています。`;
-  else if (undecided.length) now = 'あなたの確認・判断を待っています。';
-  else if (waiting) now = `次の作業（残り ${waiting} 件）に取りかかるところです。`;
-  else now = '新しい仕事を待っています（やることはすべて完了しています）。';
+  let headline;
+  let tone;
+  if (live.paused) {
+    headline = '作業を一時停止しています';
+    tone = 'warn';
+  } else if (undecided.length) {
+    headline = `${undecided.length} 件の確認を待っています`;
+    tone = 'action';
+  } else if (!live.running) {
+    headline = '自動実行は停止しています';
+    tone = 'warn';
+  } else if (working) {
+    headline = `${working} 件のタスクを進めています`;
+    tone = 'running';
+  } else if (waiting) {
+    headline = `次の ${waiting} 件を順番に進めます`;
+    tone = 'running';
+  } else {
+    headline = '現在の作業は完了しています';
+    tone = 'ok';
+  }
 
-  parts.push(`
-    <div class="card full">
-      <h3>いま何をしているか</h3>
-      <div class="big">${esc(now)}</div>
-      <div class="muted" style="margin-top:6px">
-        目標: ${esc((p.charter && (p.charter.goal || p.charter.name)) || '（目標は未設定です）')}
-      </div>
-      <div class="muted">進み具合: 完了 ${doneCount} 件 ／ 作業中 ${working} 件 ／ これから ${waiting} 件</div>
-      ${pipelineRibbonHtml(p)}
-    </div>`);
+  return { live, undecided, working, waiting, done, total, progress, activeRuns, headline, tone };
+}
 
-  parts.push(`
-    <div class="card full">
-      <h3>あなたの番です${undecided.length ? `（${undecided.length} 件）` : ''}</h3>
-      ${
-        undecided.length
-          ? `<div>確認・判断が必要な項目があります。</div>
-             <div class="row" style="margin-top:6px"><button class="chip" id="btn-simple-needs">要対応を開く（${undecided.length} 件）</button></div>`
-          : '<div class="muted">いま対応が必要なものはありません。</div>'
-      }
-    </div>`);
+function overviewGoal(p) {
+  if (p.charter && (p.charter.goal || p.charter.name)) return p.charter.goal || p.charter.name;
+  const current = (p.charters || []).find((c) => c.goal) || (p.charters || [])[0];
+  return current ? current.goal || current.name : '目標はまだ設定されていません';
+}
 
-  const rows = p.delivery
-    .slice(-5)
+function renderOverview() {
+  const p = state.project;
+  const el = $('tab-overview');
+  if (!p) {
+    el.innerHTML = '<div class="empty">左の一覧からプロジェクトを選択してください</div>';
+    return;
+  }
+
+  const s = overviewSummary(p, state.flowRuns);
+  const deliveryRows = (p.delivery || [])
+    .slice(-3)
     .reverse()
     .map((cells) => `<tr>${cells.map((c) => `<td>${linkify(c)}</td>`).join('')}</tr>`)
     .join('');
-  parts.push(`
-    <div class="card full">
-      <h3>できあがったもの（直近 5 件）</h3>
-      ${rows ? `<table class="list">${rows}</table>` : '<div class="muted">まだ納品はありません。</div>'}
-    </div>`);
+  const lifecycle = s.live.running
+    ? s.live.paused
+      ? '<button class="summary-link" data-lifecycle="resume">再開</button>'
+      : '<button class="summary-link secondary" data-lifecycle="pause">一時停止</button>'
+    : '<button class="summary-link" data-start-kiro>本体を起動</button>';
 
-  parts.push(lifecycleCardHtml(p));
-  el.innerHTML = parts.join('\n');
-  const nb = $('btn-simple-needs');
-  if (nb) nb.addEventListener('click', () => switchTab('needs'));
+  el.innerHTML = `
+    <div class="overview-shell">
+      <section class="summary-hero tone-${esc(s.tone)}" aria-labelledby="summary-now-title">
+        <h2 class="summary-kicker" id="summary-now-title">現在の状態</h2>
+        <div class="summary-hero-main">
+          <div>
+            <div class="summary-headline">${esc(s.headline)}</div>
+            <p class="summary-goal">${esc(overviewGoal(p))}</p>
+          </div>
+          <div class="summary-actions">${lifecycle}</div>
+        </div>
+        <div class="summary-progress" aria-label="全体進捗 ${s.progress}%">
+          <div style="width:${s.progress}%"></div>
+        </div>
+        <div class="summary-progress-label">${s.total ? `${s.done} / ${s.total} 件完了（${s.progress}%）` : 'タスクはまだありません'}</div>
+      </section>
+
+      <div class="overview-grid">
+        <section class="summary-card action-card ${s.undecided.length ? 'has-action' : ''}" aria-labelledby="summary-action-title">
+          <h2 class="summary-kicker" id="summary-action-title">あなたの対応</h2>
+          ${s.undecided.length
+            ? `<div class="summary-number">${s.undecided.length}<span>件</span></div>
+               <p>確認または判断が必要です。</p>
+               <button class="summary-link" data-summary-tab="needs">対応する</button>`
+            : `<div class="summary-status-ok">対応はありません</div>
+               <p class="muted">このまま進行を見守れます。</p>`}
+        </section>
+
+        <section class="summary-card progress-card" aria-labelledby="summary-progress-title">
+          <h2 class="summary-kicker" id="summary-progress-title">進捗</h2>
+          <div class="summary-stats">
+            <div><strong>${s.done}</strong><span>完了</span></div>
+            <div><strong>${s.working}</strong><span>作業中</span></div>
+            <div><strong>${s.waiting}</strong><span>これから</span></div>
+          </div>
+          <div class="summary-actions">
+            <button class="summary-link" data-summary-tab="backlog">タスクを見る</button>
+            <button class="summary-link secondary" data-summary-tab="flow">実行を見る${s.activeRuns ? `（${s.activeRuns}）` : ''}</button>
+          </div>
+        </section>
+
+        <section class="summary-card deliveries-card" aria-labelledby="summary-deliveries-title">
+          <h2 class="summary-kicker" id="summary-deliveries-title">成果</h2>
+          ${deliveryRows
+            ? `<div class="summary-deliveries"><table class="list">${deliveryRows}</table></div>`
+            : '<p class="muted">まだ成果は記録されていません。</p>'}
+          <button class="summary-link secondary" data-summary-tab="history">成果を見る</button>
+        </section>
+      </div>
+    </div>`;
+
+  for (const btn of el.querySelectorAll('button[data-summary-tab]')) {
+    btn.addEventListener('click', () => switchTab(btn.dataset.summaryTab));
+  }
   bindLifecycleButtons(el);
+}
+
+function openProjectSettings() {
+  const p = state.project;
+  if (!p) return;
+  const isMaster = !!(p.charter && p.charter.master);
+  const versions = (p.charters || [])
+    .map((ch) => `<li><span><strong>${esc(ch.name)}</strong>${ch.goal ? ` — ${esc(ch.goal)}` : ''}</span>
+      <button data-edit="charters/${esc(ch.name)}.md">編集</button></li>`)
+    .join('');
+  const promote = p.charter && !isMaster && p.charters && p.charters.length
+    ? '<button id="btn-settings-promote-charter">初版に名前を付ける</button>'
+    : '';
+  const danger = p.charter
+    ? `<section class="project-settings-section danger-zone">
+        <h3>リセット</h3>
+        <p class="muted">計画、タスク、履歴を消して最初からやり直します。憲章は残ります。</p>
+        <button class="danger" id="btn-settings-reset">プロジェクトをリセット</button>
+      </section>`
+    : '';
+
+  $('project-settings-body').innerHTML = `
+    <h2>プロジェクト設定</h2>
+    <p class="muted">${esc(p.name)}</p>
+    <section class="project-settings-section">
+      <h3>プロジェクト定義</h3>
+      <div class="settings-action-grid">
+        <button data-edit="charter.md">${isMaster ? 'マスター憲章' : '憲章'}</button>
+        <button data-edit="policy.md">運用ルール</button>
+        <button data-edit="rules.md">プロジェクトルール</button>
+        <button data-edit="repos.json">リポジトリ</button>
+      </div>
+    </section>
+    <section class="project-settings-section">
+      <div class="settings-section-heading">
+        <h3>計画バージョン</h3>
+        <button id="btn-settings-add-version">追加</button>
+      </div>
+      ${versions ? `<ul class="settings-version-list">${versions}</ul>` : '<p class="muted">計画バージョンはまだありません。</p>'}
+      ${promote}
+    </section>
+    ${danger}`;
+
+  for (const btn of $('project-settings-body').querySelectorAll('button[data-edit]')) {
+    btn.addEventListener('click', () => {
+      $('dlg-project-settings').close();
+      openProjectFile(btn.dataset.edit);
+    });
+  }
+  const add = $('btn-settings-add-version');
+  if (add) add.addEventListener('click', () => {
+    $('dlg-project-settings').close();
+    openAddCharterVersion();
+  });
+  const promoteBtn = $('btn-settings-promote-charter');
+  if (promoteBtn) promoteBtn.addEventListener('click', () => {
+    $('dlg-project-settings').close();
+    openPromoteCharter();
+  });
+  const reset = $('btn-settings-reset');
+  if (reset) reset.addEventListener('click', () => {
+    $('dlg-project-settings').close();
+    resetProject();
+  });
+  $('dlg-project-settings').showModal();
 }
 
 // プロジェクトのリセット（危険操作）。charter.md 以外の全データを削除し、バスの
@@ -1065,10 +933,7 @@ function lineageGroups(runs) {
 }
 
 // タブを切り替える（initTabs のクリックと同じ DOM 操作をプログラムから行う）。
-const SIMPLE_TABS = new Set(['overview', 'needs']);
-
 function switchTab(name) {
-  if (state.simpleMode && !SIMPLE_TABS.has(name)) name = 'overview';
   document
     .querySelectorAll('.tab')
     .forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
@@ -1092,6 +957,8 @@ async function gotoRunNode(runId, nodeId) {
   if (nodeId) {
     state.flowNodeId = nodeId;
     state.flowNodeIssue = null;
+    state.flowDetailView = 'graph';
+    state.flowMobileDetail = true;
     renderFlow();
     const pane = $('flow-node');
     if (pane) pane.scrollTop = 0;
@@ -2362,6 +2229,44 @@ function milestoneStatusFor(p, id) {
   return null; // 状態が見つからない（判定材料なし）＝従来どおりボタンを出す
 }
 
+// kiro-project は各パスの再評価中、前回の milestone をいったん削除し、判断が必要なら
+// パス末尾で同じファイルを作り直す。Viewer のポーリングがその間を読むとカードが点滅する。
+// project.json の status は再評価中も判断待ちのまま維持されるため、そちらを正として、同じ
+// プロジェクトの直前スナップショットにあった milestone だけを一時的に補う。
+// accepted への遷移やバージョン削除では有効 ID から外れるので、古いカードは保持しない。
+function stabilizeMilestoneNeeds(previousProject, nextProject) {
+  const current = [...((nextProject && nextProject.needs) || [])];
+  if (!previousProject || !nextProject || previousProject.dir !== nextProject.dir) return current;
+
+  const waitingStatuses = new Set([
+    'converged',
+    'no-acceptance',
+    'blocked',
+    'no-progress',
+    'project-budget',
+    'project-cost',
+  ]);
+  const ps = nextProject.projectState || {};
+  const validIds = new Set();
+  const versions = nextProject.charters || [];
+  if (versions.length) {
+    for (const version of versions) {
+      const st = (ps.charters || {})[version.name] || {};
+      if (st.id && waitingStatuses.has(String(st.status || ''))) validIds.add(String(st.id));
+    }
+  } else if (!(nextProject.charter && nextProject.charter.master)) {
+    if (ps.id && waitingStatuses.has(String(ps.status || ''))) validIds.add(String(ps.id));
+  }
+
+  const present = new Set(current.map((need) => need.id));
+  for (const need of previousProject.needs || []) {
+    if (need.kind === 'milestone' && validIds.has(String(need.id)) && !present.has(need.id)) {
+      current.push(need);
+    }
+  }
+  return current;
+}
+
 // milestone id（<project>-<version>）に対応する計画バージョン名を project.json から引く。
 // no-acceptance の milestone から「そのバージョンに完了条件を追加」フォームを開くのに使う。
 function milestoneVersionName(p, id) {
@@ -2476,6 +2381,116 @@ function specForNeed(p, n) {
   return specs.find((s) => s.id === tid) || specs.find((s) => s.id === base) || null;
 }
 
+function relatedRunIdForNeed(project, need, flowRuns) {
+  const taskId = String((need && (need.taskId || need.id)) || '');
+  const tasks = [...((project && project.backlog) || []), ...((project && project.archive) || [])];
+  const task = tasks.find((item) => String(item.id) === taskId);
+  const lastRun = task && task.extra ? String(task.extra.last_run || '') : '';
+  if (lastRun) return lastRun;
+  const match = [...(flowRuns || [])].find((run) => String(run.taskId || '') === taskId);
+  return match ? String(match.runId || '') : '';
+}
+
+function taskForNeed(project, need) {
+  const taskId = String((need && (need.taskId || need.id)) || '');
+  return ((project && project.backlog) || []).find((task) => String(task.id) === taskId) || null;
+}
+
+function buildNeedVerifyRevision(project, need, nextVerify, feedback) {
+  const task = taskForNeed(project, need);
+  const verify = String(nextVerify || '').trim();
+  const note = String(feedback || '').trim();
+  if (verify === String(task.verify || '').trim() && !note) return null;
+  return {
+    action: 'revise',
+    id: task.id,
+    fields: verify === String(task.verify || '').trim() ? {} : { verify },
+    feedback: note,
+    reason: '要対応画面で検証コマンドを変更',
+  };
+}
+
+function verifyRevisionConfirmMessage(task, revision) {
+  const before = String(task.verify || '').trim() || '（未設定）';
+  const after = Object.prototype.hasOwnProperty.call(revision.fields || {}, 'verify')
+    ? String(revision.fields.verify || '').trim() || '（削除）'
+    : before;
+  return (
+    `タスク ${task.id} の検証コマンドを変更して再実行します。\n\n` +
+    `変更前:\n${before}\n\n変更後:\n${after}\n\n` +
+    'タスク分解はやり直しません。完了済み成果物と依存関係を維持します。\n' +
+    '古い実行は履歴に残り、新しい試行を開始します。よろしいですか？'
+  );
+}
+
+function needVerifyRevisionHtml(project, need) {
+  const task = taskForNeed(project, need);
+  if (!task || need.kind !== 'blocked') return '';
+  return `<details class="need-verify-revision" data-ui-key="need-verify:${esc(need.id)}">
+    <summary>検証コマンドを変更</summary>
+    <p class="muted">タスク分解と完了済み成果物は維持し、新しい検証コマンドで次の試行を開始します。</p>
+    <div class="field"><label>検証コマンド</label>
+      <textarea rows="2" class="mono need-verify-input">${esc(task.verify || '')}</textarea></div>
+    <div class="field"><label>補足指示（任意）</label>
+      <textarea rows="2" class="need-verify-feedback" placeholder="例: CI環境では直列実行する"></textarea></div>
+    <div class="row need-buttons">
+      <span class="muted">古い実行は履歴に残ります</span><span class="spacer"></span>
+      <button class="primary-inline" data-verify-revise="${esc(need.id)}">変更して再実行</button>
+    </div>
+  </details>`;
+}
+
+function formatNeedFullOutput(need, flowResponse) {
+  const sections = [`# 要対応の原文\n\n${String((need && need.body) || '原文はありません')}`];
+  const run = flowResponse && flowResponse.run;
+  if (!run) {
+    sections.push('# 関連する実行ログ\n\n関連するrunは見つかりませんでした。');
+    return sections.join('\n\n');
+  }
+  const runFacts = [`run: ${run.runId || '-'}`, `状態: ${run.status || '-'}`];
+  if (run.failureReason) runFacts.push(`失敗理由: ${run.failureReason}`);
+  sections.push(`# 関連する実行\n\n${runFacts.join('\n')}`);
+  for (const node of Object.values(run.nodes || {})) {
+    const output = node.output == null ? '' : String(node.output);
+    const error = node.error == null ? '' : String(node.error);
+    if (!output && !error) continue;
+    const text = [output, error ? `stderr / error:\n${error}` : ''].filter(Boolean).join('\n\n');
+    sections.push(`# 工程 ${node.id || '-'} — ${node.goal || node.title || ''}\n\n${text}`);
+  }
+  if (run.final && Object.keys(run.final).length) {
+    sections.push(`# final\n\n${JSON.stringify(run.final, null, 2)}`);
+  }
+  return sections.join('\n\n');
+}
+
+async function loadNeedFullOutput(need) {
+  const key = `${need.file || need.id}:${need.mtime || 0}`;
+  if (state.needOutputCache[key]) return state.needOutputCache[key];
+  const runId = relatedRunIdForNeed(state.project, need, state.flowRuns);
+  let flowResponse = null;
+  if (runId && state.flowRun && state.flowRun.run && state.flowRun.run.runId === runId) {
+    flowResponse = state.flowRun;
+  } else if (runId) {
+    flowResponse = await guard('関連runの読込', () =>
+      api.flowRun(state.project.dir, state.project.busDir, runId)
+    );
+  }
+  const result = { runId, flowResponse, text: formatNeedFullOutput(need, flowResponse) };
+  state.needOutputCache[key] = result;
+  return result;
+}
+
+async function openNeedFullOutput(needId) {
+  const need = state.project && state.project.needs.find((item) => item.id === needId);
+  if (!need) return toast('要対応項目が見つかりません');
+  $('need-output-title').textContent = `${needDisplayTitle(need)} — 出力全体`;
+  $('need-output-body').textContent = '関連する実行ログを読み込んでいます…';
+  $('dlg-need-output').showModal();
+  const result = await loadNeedFullOutput(need);
+  $('need-output-body').textContent = result.text;
+  $('need-output-body').scrollTop = 0;
+}
+
 function specFilesHtml(p, n) {
   const spec = specForNeed(p, n);
   if (!spec) return '';
@@ -2485,6 +2500,158 @@ function specFilesHtml(p, n) {
   return `<div class="row" style="gap:6px;margin-top:4px"><span class="label-chip">Spec</span>${buttons}</div>`;
 }
 
+function needBucket(n, sentFn) {
+  if (n.decided) return 'done';
+  return sentFn(n) ? 'sent' : 'open';
+}
+
+function needsViewModel(needs, filter, selectedId, sentFn) {
+  const sorted = [...(needs || [])].sort(
+    (a, b) =>
+      String(b.date || '').localeCompare(String(a.date || '')) ||
+      String(a.id).localeCompare(String(b.id))
+  );
+  const counts = { open: 0, sent: 0, done: 0 };
+  for (const n of sorted) counts[needBucket(n, sentFn)] += 1;
+  const items = filter === 'gitlab' ? [] : sorted.filter((n) => needBucket(n, sentFn) === filter);
+  const selected = items.find((n) => n.id === selectedId) || items[0] || null;
+  return { counts, items, selected, selectedId: selected ? selected.id : null };
+}
+
+function renderNeedFacts(n) {
+  const facts = [];
+  if (n.failureSummary) {
+    facts.push(`<div class="need-diag"><span class="label-chip">失敗の要因</span> ${esc(n.failureSummary)}</div>`);
+  }
+  if (n.why) facts.push(`<div><span class="label-chip">理由</span> ${esc(n.why)}</div>`);
+  if (n.summary) facts.push(`<div><span class="label-chip">概況</span> ${esc(n.summary)}</div>`);
+  const d = n.diff;
+  if (d && d.hasDiff && (d.artifacts.length || d.internal.length)) {
+    const parts = [
+      d.artifacts.length ? `成果物 ${d.artifacts.length} 件` : '<b>成果物の変更なし</b>',
+    ];
+    if (d.internal.length) parts.push(`実行記録 ${d.internal.length} 件`);
+    if (d.truncated) parts.push(`ほか ${d.truncated} 件`);
+    facts.push(`<div><span class="label-chip">変更</span> ${parts.join(' / ')}</div>`);
+    if (d.artifacts.length) {
+      const files = d.artifacts
+        .slice(0, 8)
+        .map((f) => `<button data-open="${esc(f)}" title="${esc(f)}">${esc(f.split('/').pop())}</button>`)
+        .join('');
+      facts.push(`<div class="row need-files">${files}</div>`);
+    }
+  }
+  if (n.evidenceThin) {
+    const onlyInternal = d && d.hasDiff && !d.artifacts.length && d.internal.length;
+    facts.push(
+      onlyInternal
+        ? '<div class="muted ev-thin-note">変更されたのは実行記録だけで、コードやドキュメントは書き換わっていません。</div>'
+        : '<div class="muted ev-thin-note">この実行には成果物リンクや差分がありません。</div>'
+    );
+  }
+  return facts.join('');
+}
+
+function renderNeedDetail(p, n) {
+  if (!n) return '<div class="empty need-detail-empty">この状態の項目はありません</div>';
+  const settled = n.decided || isNeedSent(n);
+  const chip = n.decided
+    ? '<span class="status-chip st-done">回答済み</span>'
+    : isNeedSent(n)
+      ? '<span class="status-chip st-review">送信済み</span>'
+      : '<span class="status-chip st-blocked">未対応</span>';
+  const detail = (n.detail || '').trim();
+  const detailBlock = detail
+    ? `<details class="need-detail" data-ui-key="need-detail:${esc(n.id)}">
+        <summary>判断材料を見る</summary>
+        <div class="body">${mdToHtml(detail)}</div>
+      </details>`
+    : '';
+  return `<article class="need-detail-card kind-${esc(n.kind || 'blocked')}">
+    <button class="mobile-master-back" data-needs-back>一覧へ戻る</button>
+    <header class="need-detail-head">
+      <div>
+        <div class="need-detail-badges">
+          <span class="badge" title="${esc(n.kind || 'blocked')}">${esc(needKindLabel(n.kind))}</span>
+          ${riskBadgeHtml(n)} ${chip}
+        </div>
+        <h2>${esc(needDisplayTitle(n))}</h2>
+      </div>
+      <span class="muted">${esc(n.date || '')}</span>
+    </header>
+    <section class="need-decision">
+      <h3>判断すること</h3>
+      <p>${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</p>
+    </section>
+    <section class="need-facts">
+      <h3>状況</h3>
+      ${renderNeedFacts(n) || '<p class="muted">追加の状況説明はありません。</p>'}
+    </section>
+    ${settled ? '' : `<section class="need-response"><h3>回答</h3>${needActionsHtml(n)}${needVerifyRevisionHtml(p, n)}</section>`}
+    <section class="need-evidence">
+      <h3>成果物</h3>
+      ${specFilesHtml(p, n) || '<p class="muted">関連するSpecはありません。</p>'}
+      ${detailBlock}
+      <button class="need-output-button" data-need-output="${esc(n.id)}">出力全体を見る</button>
+    </section>
+  </article>`;
+}
+
+function bindNeedDetail(root) {
+  for (const btn of root.querySelectorAll('button[data-open]')) {
+    btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
+  }
+  for (const btn of root.querySelectorAll('button[data-act]')) {
+    btn.addEventListener('click', () => handleNeedAction(btn));
+  }
+  for (const btn of root.querySelectorAll('button[data-open-version]')) {
+    btn.addEventListener('click', () => openCharterForm(`charters/${btn.dataset.openVersion}.md`));
+  }
+  for (const btn of root.querySelectorAll('button[data-need-output]')) {
+    btn.addEventListener('click', () => openNeedFullOutput(btn.dataset.needOutput));
+  }
+  for (const btn of root.querySelectorAll('button[data-verify-revise]')) {
+    btn.addEventListener('click', async () => {
+      const p = state.project;
+      const need = p && p.needs.find((item) => item.id === btn.dataset.verifyRevise);
+      const task = taskForNeed(p, need);
+      if (!need || !task) return toast('関連するタスクが見つかりません');
+      const panel = btn.closest('.need-verify-revision');
+      const revision = buildNeedVerifyRevision(
+        p,
+        need,
+        panel.querySelector('.need-verify-input').value,
+        panel.querySelector('.need-verify-feedback').value
+      );
+      if (!revision) return toast('検証コマンドを変更するか、補足指示を入力してください');
+      const yes = await confirmDialog(verifyRevisionConfirmMessage(task, revision));
+      if (!yes) return;
+      btn.disabled = true;
+      const ok = await guard('検証コマンドの変更', async () => {
+        const res = await api.runAction({ dir: p.dir, ...revision });
+        markNeedSent(need);
+        markReviseSent(task);
+        uiLog('needVerifyRevision', task.id, res);
+        toast(`${task.id} の検証コマンドを変更し、再実行を依頼しました`, true);
+        return true;
+      });
+      if (ok) {
+        gitPushAfterWrite(`kiro-projects-viewer: revise verify ${task.id}`, p.dir);
+        await reloadProject();
+      } else {
+        btn.disabled = false;
+      }
+    });
+  }
+  const back = root.querySelector('[data-needs-back]');
+  if (back) {
+    back.addEventListener('click', () => {
+      state.needsMobileDetail = false;
+      renderNeeds();
+    });
+  }
+}
+
 function renderNeeds() {
   const p = state.project;
   const el = $('tab-needs');
@@ -2492,128 +2659,88 @@ function renderNeeds() {
     el.innerHTML = '';
     return;
   }
-  // 記入中は再描画しない。ポーリング（既定 5 秒）ごとの innerHTML 作り直しは、
-  // 打ちかけの回答とカーソルを消し、スクロールも揺らす — 人が触っている間はデータ表示より
-  // 入力の継続が優先（次のポーリングで追いつく）。
+
   const ae = document.activeElement;
   if (ae && el.contains(ae) && /^(TEXTAREA|INPUT)$/.test(ae.tagName)) return;
-  const settled = (n) => n.decided || isNeedSent(n); // 対応済み（本体の取り込み待ち）
-  // 表示内容の署名。変わっていなければ再描画しない（DOM を触らない＝スクロールも
-  // details の開閉も入力も何も揺れない）。needs ファイルは本体が毎パス再生成して
-  // mtime が変わるため、mtime を署名に入れると「内容は同じなのに毎回作り直し」になる。
-  const sig = JSON.stringify(p.needs.map((n) => [
-    n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk,
-    n.failureSummary || '', (n.detail || '').length,
-  ]));
-  if (el.dataset.sig === sig && el.childElementCount) return;
-  el.dataset.sig = sig;
-  // 打ちかけの回答を控える（署名が変わって作り直すときも失わない）
-  const drafts = {};
   for (const box of el.querySelectorAll('.need-actions')) {
     const input = box.querySelector('.need-input');
-    if (input && input.value) drafts[box.dataset.need] = input.value;
+    if (input) state.needsDrafts[box.dataset.need] = input.value;
   }
-  // 並び順は安定させる（未対応が先 → 日付の新しい順 → id）。mtime は本体の再生成で
-  // 数分ごとに変わり、読んでいる最中にカードの順番がシャッフルされていた。
-  const cards = [...p.needs]
-    .sort((a, b) => Number(settled(a)) - Number(settled(b))
-      || String(b.date || '').localeCompare(String(a.date || ''))
-      || String(a.id).localeCompare(String(b.id)))
+
+  const model = needsViewModel(p.needs, state.needsFilter, state.needsSelectedId, isNeedSent);
+  state.needsSelectedId = model.selectedId;
+  const gitlabCount = (state.gitlab.repoIssues || []).length;
+  const filters = [
+    ['open', '未対応', model.counts.open],
+    ['sent', '送信済み', model.counts.sent],
+    ['done', '回答済み', model.counts.done],
+    ['gitlab', 'GitLab', gitlabCount],
+  ];
+  const sig = JSON.stringify([
+    state.needsFilter,
+    state.needsSelectedId,
+    state.needsMobileDetail,
+    filters.map((x) => x[2]),
+    p.needs.map((n) => [n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk, n.failureSummary || '', (n.detail || '').length]),
+  ]);
+  if (el.dataset.sig === sig && el.childElementCount) return;
+  el.dataset.sig = sig;
+
+  const filterButtons = filters
+    .map(([key, label, count]) =>
+      `<button class="queue-filter ${state.needsFilter === key ? 'active' : ''}"
+        data-needs-filter="${key}" aria-pressed="${state.needsFilter === key}">
+        <span>${label}</span><strong>${count}</strong>
+      </button>`)
+    .join('');
+  const list = model.items
     .map((n) => {
-      const chip = n.decided
-        ? '<span class="status-chip st-done">回答済み（反映待ち）</span>'
-        : isNeedSent(n)
-          ? '<span class="status-chip st-review">送信済み（反映待ち）</span>'
-          : '<span class="status-chip st-blocked">未対応</span>';
-      // 要点（何を確認するか・理由・概況）を先頭に出し、判断材料は折りたたみに収める
-      // （needs ファイルのマークダウンをそのまま流し込まない）
-      const facts = [];
-      // 失敗理由は生の verify 出力が貼られるだけで意味を読み取りにくい。解釈できた場合は
-      // 人が読める一文を先に出し、生のテキストはその下に添える（情報は隠さない）。
-      if (n.failureSummary) {
-        facts.push(`<div class="need-diag"><span class="label-chip">失敗の要因</span> ${esc(n.failureSummary)}</div>`);
-      }
-      if (n.why) facts.push(`<div><span class="label-chip">理由</span> ${esc(n.why)}</div>`);
-      if (n.summary) facts.push(`<div><span class="label-chip">概況</span> ${esc(n.summary)}</div>`);
-      // 差分の内訳。実行のたびに書かれる内部記録（bus/ の run ログ等）と成果物を分けて示す。
-      // 「14 ファイル変更」の中身が全部内部記録、というカードが人を最も惑わせる。
-      const d = n.diff;
-      if (d && d.hasDiff && (d.artifacts.length || d.internal.length)) {
-        const parts = [];
-        parts.push(d.artifacts.length
-          ? `成果物 ${d.artifacts.length} 件`
-          : '<b>成果物の変更なし</b>');
-        if (d.internal.length) parts.push(`実行記録 ${d.internal.length} 件（bus/ 等の内部ファイル）`);
-        if (d.truncated) parts.push(`ほか ${d.truncated} 件`);
-        facts.push(`<div><span class="label-chip">変更</span> ${parts.join(' / ')}</div>`);
-        if (d.artifacts.length) {
-          const files = d.artifacts
-            .slice(0, 8)
-            .map((f) => `<button data-open="${esc(f)}" title="${esc(f)}">📄 ${esc(f.split('/').pop())}</button>`)
-            .join('');
-          facts.push(`<div class="row" style="gap:6px;flex-wrap:wrap">${files}</div>`);
-        }
-      }
-      // 成果物リンクも差分も無い（stub 実行・無変更）、あるいは差分が内部記録だけのカードは、
-      // 判断材料が内部パスの羅列になって読み取れない。何が起きたのかを一言添える。
-      if (n.evidenceThin) {
-        const onlyInternal = d && d.hasDiff && !d.artifacts.length && d.internal.length;
-        facts.push(onlyInternal
-          ? '<div class="muted ev-thin-note">ℹ️ 変更されたのは実行記録（bus/ の run ログなど）だけで、コードやドキュメントは書き換わっていません。エージェントが成果物を出せずに終わった可能性があります。</div>'
-          : '<div class="muted ev-thin-note">ℹ️ この実行には成果物リンクや差分がありません（stub 実行や無変更のとき）。下の判断材料は所在などの内部情報のみです。</div>');
-      }
-      const detail = (n.detail || '').trim();
-      const detailBlock = detail
-        ? `<details class="need-detail" data-ui-key="need-detail:${esc(n.id)}">
-            <summary>判断材料を見る（タスク定義・成果物の所在など）</summary>
-            <div class="body">${mdToHtml(detail)}</div>
-          </details>`
-        : '';
-      return `<div class="need-card kind-${esc(n.kind || 'blocked')}">
-        <div class="need-head">
-          <span class="badge ${settled(n) ? '' : 'warn'}" title="${esc(n.kind || 'blocked')}">${esc(needKindLabel(n.kind))}</span>
+      const selected = n.id === state.needsSelectedId;
+      return `<button class="need-list-item ${selected ? 'selected' : ''}" data-need-select="${esc(n.id)}"
+        aria-pressed="${selected}">
+        <span class="need-list-meta">
+          <span class="badge">${esc(needKindLabel(n.kind))}</span>
           ${riskBadgeHtml(n)}
-          <span class="title">${esc(needDisplayTitle(n))}</span>
-          <span class="muted">${esc(n.date || '')}</span>
-          ${chip}
-        </div>
-        <div class="need-ask">${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</div>
-        ${facts.join('')}
-        ${specFilesHtml(p, n)}
-        ${detailBlock}
-        ${settled(n) ? '' : needActionsHtml(n)}
-      </div>`;
+        </span>
+        <strong>${esc(needDisplayTitle(n))}</strong>
+        <span>${esc(NEED_ASK[n.kind] || NEED_ASK.blocked)}</span>
+      </button>`;
     })
     .join('');
-  const needsSection = p.needs.length
-    ? `<div class="muted" style="margin-bottom:8px">
-        回答はこの画面から送信できます。稼働中であれば自動で反映されます（少し時間がかかることがあります）。</div>${cards}`
-    : '<div class="empty">プロジェクトからの確認依頼はありません 🎉</div>';
 
-  // GitLab のレビュー待ちも同じタブに併載する（人が見るべき確認事項の一元化）。
-  // 中身は renderGitLab がこのコンテナへ描く（GitLab API 未設定なら案内だけ出る）。
-  el.innerHTML = `${needsSection}
-    <div class="section-title" style="margin-top:16px">GitLab レビュー待ち</div>
-    <div id="needs-gitlab"></div>`;
+  const gitlab = state.needsFilter === 'gitlab'
+    ? '<div class="queue-single"><div id="needs-gitlab"></div></div>'
+    : `<div class="master-detail ${state.needsMobileDetail ? 'show-detail' : ''}">
+        <aside class="master-list" aria-label="要対応一覧">
+          ${list || '<div class="empty">この状態の項目はありません</div>'}
+        </aside>
+        <main class="detail-panel">${renderNeedDetail(p, model.selected)}</main>
+      </div>`;
 
-  // 打ちかけの回答を書き戻す
-  for (const box of el.querySelectorAll('.need-actions')) {
-    if (drafts[box.dataset.need]) {
-      const input = box.querySelector('.need-input');
-      if (input) input.value = drafts[box.dataset.need];
-    }
-  }
+  el.innerHTML = `<div class="queue-summary" aria-label="要対応の状態">${filterButtons}</div>${gitlab}`;
 
-  for (const btn of el.querySelectorAll('button[data-open]')) {
-    btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
+  for (const btn of el.querySelectorAll('[data-needs-filter]')) {
+    btn.addEventListener('click', () => {
+      state.needsFilter = btn.dataset.needsFilter;
+      state.needsSelectedId = null;
+      state.needsMobileDetail = false;
+      el.dataset.sig = '';
+      renderNeeds();
+      if (state.needsFilter === 'gitlab') renderGitLab();
+    });
   }
-  for (const btn of el.querySelectorAll('button[data-act]')) {
-    btn.addEventListener('click', () => handleNeedAction(btn));
+  for (const btn of el.querySelectorAll('[data-need-select]')) {
+    btn.addEventListener('click', () => {
+      state.needsSelectedId = btn.dataset.needSelect;
+      state.needsMobileDetail = true;
+      el.dataset.sig = '';
+      renderNeeds();
+    });
   }
-  // no-acceptance の milestone から、そのバージョンの編集フォームを開いて完了条件を足す
-  for (const btn of el.querySelectorAll('button[data-open-version]')) {
-    btn.addEventListener('click', () => openCharterForm(`charters/${btn.dataset.openVersion}.md`));
-  }
+  const input = el.querySelector('.need-actions .need-input');
+  if (input && state.needsDrafts[state.needsSelectedId]) input.value = state.needsDrafts[state.needsSelectedId];
+  bindNeedDetail(el);
+  if (state.needsFilter === 'gitlab') renderGitLab();
 }
 
 async function handleNeedAction(btn) {
@@ -2683,10 +2810,16 @@ const TERMINAL_RUN_STATES = new Set(['done', 'failed', 'canceled']);
 // フロータブの run フィルタ。完了 run は kiro-flow の掃除後もアーカイブ（ビュアー保管庫）から
 // 表示できるため、既定は「進行中（非終端）」に絞って一覧のノイズを抑える。
 const FLOW_FILTERS = [
-  ['active', '進行中'],
-  ['done', '完了・記録'],
-  ['all', 'すべて'],
+  ['active', '実行中'],
+  ['action', '操作待ち'],
+  ['done', '完了'],
 ];
+
+function flowGroupBucket(group) {
+  const advice = runAdvice(group.latest, group);
+  if (['human', 'manual', 'restart'].includes(advice.kind)) return 'action';
+  return TERMINAL_RUN_STATES.has(String(group.latest.status)) ? 'done' : 'active';
+}
 
 // run 一括の突き合わせ結果（glReconcileRun のノード要素）を、found と同じ形のイシュー情報にする
 function recToIssue(rec) {
@@ -2868,10 +3001,9 @@ function renderFlow() {
   }
   // 実行データの発見経緯（探索した候補パス）は内部情報なのでログへ
   uiLogOnChange(`flowBus:${p.dir}`, { busDir: p.busDir, source: p.busSource, candidates: p.busCandidates });
-  const busLine = `<div class="muted" style="margin-bottom:8px">
-    実行データ: <code class="mono">${esc(p.busDir)}</code>
-    ${daemonBadge()}
-  </div>`;
+  const busLine = `<details class="flow-source"><summary>実行環境</summary>
+    <div class="muted">実行データ: <code class="mono">${esc(p.busDir)}</code> ${daemonBadge()}</div>
+  </details>`;
   if (!state.flowRuns.length) {
     el.innerHTML = `${busLine}<div class="empty">実行はまだありません。<br>
       （完了した実行はこのビュアーに記録として残ります）</div>`;
@@ -2881,22 +3013,13 @@ function renderFlow() {
   // 最新試行を見出しにして過去の試行はリトライ・ピルで畳む。素の run は単独系統。
   // フィルタ（既定: アクティブ）は系統の最新試行の status で判定する。
   const groups = lineageGroups(state.flowRuns);
-  const matchesFilter = (g) => {
-    const st = String(g.latest.status);
-    if (state.flowFilter === 'all') return true;
-    if (state.flowFilter === 'done') return TERMINAL_RUN_STATES.has(st);
-    return !TERMINAL_RUN_STATES.has(st);
-  };
+  const matchesFilter = (g) => flowGroupBucket(g) === state.flowFilter;
   const shownGroups = groups.filter(matchesFilter);
-  const filterCount = (key) =>
-    groups.filter((g) =>
-      key === 'all' ? true
-        : key === 'done' ? TERMINAL_RUN_STATES.has(String(g.latest.status))
-          : !TERMINAL_RUN_STATES.has(String(g.latest.status))
-    ).length;
+  const filterCount = (key) => groups.filter((g) => flowGroupBucket(g) === key).length;
   const filterChips = FLOW_FILTERS.map(
     ([key, label]) =>
-      `<button class="chip ${state.flowFilter === key ? 'active' : ''}" data-flow-filter="${key}">${label} (${filterCount(key)})</button>`
+      `<button class="queue-filter ${state.flowFilter === key ? 'active' : ''}" data-flow-filter="${key}"
+        aria-pressed="${state.flowFilter === key}"><span>${label}</span><strong>${filterCount(key)}</strong></button>`
   ).join('');
   const runList = shownGroups
     .map((g) => {
@@ -2926,11 +3049,12 @@ function renderFlow() {
       const archivedBadge = r.archived
         ? ' <span class="badge" title="完了後に保存された記録です（閲覧のみ）">📦</span>'
         : '';
-      return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}">
-        <div class="row2"><span class="mono">${esc(r.runId)}</span><span>${statusChip(r.status)}${archivedBadge}${adviceBit}</span></div>
+      return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}"
+        role="button" tabindex="0" aria-pressed="${state.flowRunId === r.runId}">
+        <div class="run-item-head"><span>${statusChip(r.status)}${archivedBadge}${adviceBit}</span><span class="mono muted">${esc(shortRunId(r.runId))}</span></div>
         <div class="req">${esc((r.request || '').slice(0, 120))}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
-        <div class="muted">${r.total} 工程中 完了 ${r.counts.done}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed} ｜ ${fmtAgo(r.updatedAt || r.createdAt)}${taskLink}</div>
+        <div class="muted">完了 ${r.counts.done}/${r.total}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed} ｜ ${fmtAgo(r.updatedAt || r.createdAt)}${taskLink}</div>
         ${adviceLine}
         ${retryStrip}
       </div>`;
@@ -2943,35 +3067,50 @@ function renderFlow() {
   const prevGraph = $('graph-box');
   const prevScroll = {
     runs: ($('flow-runs') || {}).scrollTop || 0,
-    overview: ($('flow-overview') || {}).scrollTop || 0,
-    graphPane: ($('flow-graph') || {}).scrollTop || 0,
-    nodePane: ($('flow-node') || {}).scrollTop || 0,
+    detail: ($('flow-view-body') || {}).scrollTop || 0,
     graphX: prevGraph ? prevGraph.scrollLeft : 0,
     graphY: prevGraph ? prevGraph.scrollTop : 0,
   };
-  el.innerHTML = `${busLine}<div class="filters" style="margin-bottom:6px">${filterChips}</div>
-  <div id="flow-layout">
+  el.innerHTML = `<div class="queue-summary flow-summary">${filterChips}</div>${busLine}
+  <div id="flow-layout" class="${state.flowMobileDetail ? 'show-detail' : ''}">
     <div id="flow-runs">${runList || `<div class="empty">該当する run がありません（フィルタ: ${esc((FLOW_FILTERS.find(([k]) => k === state.flowFilter) || ['', state.flowFilter])[1])}）</div>`}</div>
     <div id="flow-detail">${renderFlowDetail()}</div>
   </div>`;
   $('flow-runs').scrollTop = prevScroll.runs;
-  if ($('flow-overview')) $('flow-overview').scrollTop = prevScroll.overview;
-  if ($('flow-graph')) $('flow-graph').scrollTop = prevScroll.graphPane;
-  if ($('flow-node')) $('flow-node').scrollTop = prevScroll.nodePane;
+  if ($('flow-view-body')) $('flow-view-body').scrollTop = prevScroll.detail;
   const graph = $('graph-box');
   if (graph) {
     graph.scrollLeft = prevScroll.graphX;
     graph.scrollTop = prevScroll.graphY;
   }
 
-  for (const chip of el.querySelectorAll('.chip[data-flow-filter]')) {
-    chip.addEventListener('click', () => {
+  for (const chip of el.querySelectorAll('[data-flow-filter]')) {
+    chip.addEventListener('click', async () => {
       state.flowFilter = chip.dataset.flowFilter;
-      renderFlow();
+      const first = groups.find((g) => flowGroupBucket(g) === state.flowFilter);
+      const currentVisible = groups.some(
+        (g) => g.latest.runId === state.flowRunId && flowGroupBucket(g) === state.flowFilter
+      );
+      if (!currentVisible) {
+        if (first) await selectFlowRun(first.latest.runId);
+        else {
+          state.flowRunId = null;
+          state.flowRun = null;
+          renderFlow();
+        }
+      } else {
+        renderFlow();
+      }
     });
   }
   for (const item of el.querySelectorAll('.run-item[data-run]')) {
     item.addEventListener('click', () => selectFlowRun(item.dataset.run));
+    item.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        selectFlowRun(item.dataset.run);
+      }
+    });
   }
   bindFlowDetail(el);
   bindRelationship(el); // リトライ・ピル／タスクリンク／パンくずのクリック配線（行クリックより優先）
@@ -2980,6 +3119,8 @@ function renderFlow() {
 async function selectFlowRun(runId) {
   state.flowRunId = runId;
   state.flowNodeId = null;
+  state.flowDetailView = 'overview';
+  state.flowMobileDetail = true;
   state.flowRun = await guard('run 読込', () => api.flowRun(state.project.dir, state.project.busDir, runId));
   renderFlow();
   // run を開いたら関連イシューの「今」を一度だけ自動で突き合わせる（律速あり・GitLab 設定時のみ）。
@@ -3205,38 +3346,89 @@ function renderFlowDetail() {
             rec && rec.loading ? '取得中…' : '⟳ GitLab 最新化'
           }${recHits ? `（反映 ${recHits}）` : ''}</button>`
       : '';
-  // RUN 表示ペインを縦 3 分割する: 概要 / タスクグラフ / ノード情報。
-  // それぞれ独立して縦スクロールできる（.flow-pane が overflow-y を持つ）ので、
-  // グラフが縦に長くても概要やノード詳細を見失わない。
-  return `
-    <div id="flow-overview" class="flow-pane">
-      <div class="flow-pane-title">概要</div>
-      <div class="card full">
-        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${archivedBadge} ${esc(strat)} ${reconcileBtn} ${resubmit} ${cancelBtn} ${deleteBtn}</h3>
-        ${adviceBanner}
-        ${relationshipStrip({ run })}
-        <div>${esc(run.request || '')}</div>
-        ${archived ? `<div class="muted">📦 完了後に保存された記録を表示しています（最終更新: ${esc(fmtTime(run.archivedAt) || '不明')}）。この画面からの操作はできません。</div>` : ''}
-        ${run.inheritedFrom ? `<div class="muted" title="このリトライが引き継いだ先行 run">↩ 引き継ぎ元 <span class="mono">${esc(run.inheritedFrom)}</span></div>` : ''}
-        ${heartbeat}
-        ${run.failureReason ? `<div style="color:var(--red)">失敗理由: ${esc(String(run.failureReason).replace(/\[agent-error:[a-z]+\]\s*/g, ''))}</div>` : ''}
-        <div class="row2" style="align-items:center;margin-top:6px">
-          <div class="progress" style="flex:1"><div style="width:${pct}%"></div></div>
-          <span class="muted">${run.counts.done + run.counts.failed}/${run.total} (${pct}%)</span>
-        </div>
+const viewTabs = [
+    ['overview', '概要'],
+    ['graph', '工程'],
+    ['history', '履歴'],
+  ]
+    .map(
+      ([key, label]) =>
+        `<button role="tab" class="flow-view-tab ${state.flowDetailView === key ? 'active' : ''}"
+          data-flow-view="${key}" aria-selected="${state.flowDetailView === key}">${label}</button>`
+    )
+    .join('');
+
+  const overviewView = `<section class="flow-overview-view">
+    <div class="flow-run-heading">
+      <div>
+        <span class="summary-kicker">選択中の実行</span>
+        <h2>${esc(run.request || '内容のない実行')}</h2>
       </div>
-      <div class="section-title">アクティビティ</div>
-      <div class="events">${events || '<span class="muted">イベントなし</span>'}</div>
+      <span>${statusChip(run.status)}${archivedBadge}</span>
     </div>
-    <div id="flow-graph" class="flow-pane">
-      <div class="flow-pane-title">タスクグラフ</div>
+    ${adviceBanner}
+    ${relationshipStrip({ run })}
+    ${archived ? '<p class="muted">完了後に保存された記録です。この画面からの操作はできません。</p>' : ''}
+    ${run.failureReason ? `<div class="flow-failure">失敗理由: ${esc(String(run.failureReason).replace(/\[agent-error:[a-z]+\]\s*/g, ''))}</div>` : ''}
+    <div class="flow-progress-block">
+      <div class="progress"><div style="width:${pct}%"></div></div>
+      <strong>${run.counts.done + run.counts.failed}/${run.total}（${pct}%）</strong>
+    </div>
+    <div class="flow-counts">
+      <div><strong>${run.counts.done || 0}</strong><span>完了</span></div>
+      <div><strong>${run.counts.claimed || 0}</strong><span>実行中</span></div>
+      <div><strong>${run.counts.failed || 0}</strong><span>失敗</span></div>
+      <div><strong>${(run.counts.pending || 0) + (run.counts.waiting || 0)}</strong><span>これから</span></div>
+    </div>
+    <div class="flow-primary-actions">${resubmit} ${reconcileBtn} ${cancelBtn} ${deleteBtn}</div>
+  </section>`;
+
+  const graphView = `<div class="flow-graph-workspace">
+    <section class="flow-graph-surface">
+      <div class="flow-section-heading">
+        <div><span class="summary-kicker">工程</span><h2>タスクグラフ</h2></div>
+        <span class="muted">工程を選ぶと詳細を表示します</span>
+      </div>
       <div id="graph-box">${renderGraphSvg(run)}</div>
       <div class="legend">${legend}</div>
+    </section>
+    <aside id="flow-node" class="flow-node-detail">
+      <span class="summary-kicker">選択した工程</span>
+      ${nodeDetail || '<div class="empty">グラフから工程を選択してください</div>'}
+    </aside>
+  </div>`;
+
+  const historyView = `<section class="flow-history-view">
+    <div class="flow-section-heading">
+      <div><span class="summary-kicker">履歴</span><h2>アクティビティ</h2></div>
+      <span>${daemonBadge()}</span>
     </div>
-    <div id="flow-node" class="flow-pane">
-      <div class="flow-pane-title">工程の詳細</div>
-      ${nodeDetail || '<div class="empty">タスクグラフで工程を選択すると詳細を表示します</div>'}
-    </div>`;
+    <div class="events flow-events">${events || '<span class="muted">イベントはありません</span>'}</div>
+    <details class="flow-technical" data-ui-key="flow-technical:${esc(run.runId)}">
+      <summary>技術情報を見る</summary>
+      <dl>
+        <div><dt>run ID</dt><dd class="mono">${esc(run.runId)}</dd></div>
+        <div><dt>戦略</dt><dd>${esc(strat || '未設定')}</dd></div>
+        <div><dt>状態</dt><dd>${statusChip(run.status)}</dd></div>
+        ${run.inheritedFrom ? `<div><dt>引き継ぎ元</dt><dd class="mono">${esc(run.inheritedFrom)}</dd></div>` : ''}
+      </dl>
+      ${heartbeat}
+    </details>
+  </section>`;
+
+  const body =
+    state.flowDetailView === 'graph'
+      ? graphView
+      : state.flowDetailView === 'history'
+        ? historyView
+        : overviewView;
+
+  return `<div class="flow-detail-shell">
+    <button class="mobile-master-back" data-flow-back>一覧へ戻る</button>
+    <div class="flow-view-tabs" role="tablist" aria-label="実行の詳細">${viewTabs}</div>
+    <div id="flow-view-body">${body}</div>
+  </div>`;
+
 }
 
 // ---------------------------------------------------------------------------
@@ -3672,9 +3864,23 @@ function renderGraphSvg(run) {
 }
 
 function bindFlowDetail(root) {
+  for (const tab of root.querySelectorAll('[data-flow-view]')) {
+    tab.addEventListener('click', () => {
+      state.flowDetailView = tab.dataset.flowView;
+      renderFlow();
+    });
+  }
+  const back = root.querySelector('[data-flow-back]');
+  if (back) {
+    back.addEventListener('click', () => {
+      state.flowMobileDetail = false;
+      renderFlow();
+    });
+  }
   for (const g of root.querySelectorAll('g.node[data-node]')) {
     g.addEventListener('click', () => {
       state.flowNodeId = g.dataset.node;
+      state.flowDetailView = 'graph';
       state.flowNodeIssue = null; // ノードを切り替えたら検索結果を破棄
       renderFlow();
     });
@@ -3907,6 +4113,9 @@ async function refreshGitLab(force) {
     toast(`GitLab 取得: ${err.message}`);
   } finally {
     gl.loading = false;
+    const needs = $('tab-needs');
+    if (needs) needs.dataset.sig = '';
+    renderNeeds();
     renderGitLab();
   }
 }
@@ -3979,7 +4188,7 @@ function renderHistory() {
 // 位置と data-ui-key 付き <details> の開閉を控え、描画後に復元する（存在しなくなった要素は無視）。
 function captureUiState() {
   const scroll = {};
-  for (const el of document.querySelectorAll('.tabpane, #tree, #flow-runs, .flow-pane, #graph-box')) {
+  for (const el of document.querySelectorAll('.tabpane, #tree, #flow-runs, #flow-view-body, #graph-box')) {
     if (el.id) scroll[el.id] = { top: el.scrollTop, left: el.scrollLeft };
   }
   const open = [];
@@ -4047,7 +4256,7 @@ function openSettings() {
   )
     .map(([name, bus]) => `${name} = ${bus}`)
     .join('\n');
-  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || '';
+  $('cfg-agent-cli').value = (cfg.agent && cfg.agent.cli) || 'kiro';
   $('cfg-agent-model').value = (cfg.agent && cfg.agent.model) || '';
   $('cfg-agent-timeout').value = (cfg.agent && cfg.agent.timeoutSec) || 180;
   $('cfg-gl-url').value = cfg.gitlab.baseUrl || '';
@@ -4209,6 +4418,105 @@ async function manualGitHeal() {
   await refreshAll();
 }
 
+function activeTabName() {
+  const tab = document.querySelector('.tab.active');
+  return tab ? tab.dataset.tab : 'overview';
+}
+
+async function buildDoctorContext() {
+  const p = state.project;
+  const tab = activeTabName();
+  const context = {
+    capturedAt: new Date().toISOString(),
+    tab,
+    project: {
+      name: p.name,
+      status: p.projectState && p.projectState.status,
+      liveness: p.liveness,
+      taskCounts: p.byStatus,
+      completed: (p.archive || []).length,
+      needs: (p.needs || []).filter((need) => !need.decided).length,
+    },
+  };
+  if (tab === 'needs') {
+    const need = p.needs.find((item) => item.id === state.needsSelectedId) || null;
+    if (need) {
+      const output = await loadNeedFullOutput(need);
+      context.selected = {
+        type: 'need',
+        id: need.id,
+        kind: need.kind,
+        title: needDisplayTitle(need),
+        why: need.why,
+        summary: need.summary,
+        failureSummary: need.failureSummary,
+        state: need.stateNote,
+        fullOutput: output.text,
+      };
+    }
+  } else if (tab === 'flow') {
+    const run = state.flowRun && state.flowRun.run;
+    const node = run && state.flowNodeId ? run.nodes[state.flowNodeId] : null;
+    context.selected = run
+      ? {
+          type: 'run',
+          view: state.flowDetailView,
+          runId: run.runId,
+          request: run.request,
+          status: run.status,
+          failureReason: run.failureReason,
+          counts: run.counts,
+          selectedNode: node
+            ? { id: node.id, goal: node.goal, state: node.state, output: node.output, error: node.error }
+            : null,
+        }
+      : null;
+  } else if (tab === 'backlog') {
+    context.selected = {
+      type: 'task-list',
+      filter: state.backlogFilter,
+      tasks: (p.backlog || []).slice(0, 40).map((task) => ({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        retries: task.retries,
+      })),
+    };
+  } else if (tab === 'history') {
+    context.selected = {
+      type: 'history',
+      recentRuns: (p.runLog || []).slice(-10),
+      recentDeliveries: (p.delivery || []).slice(-10),
+    };
+  } else {
+    context.selected = { type: 'overview', summary: overviewSummary(p, state.flowRuns) };
+  }
+  return context;
+}
+
+async function askDoctor() {
+  if (state.doctorBusy) return;
+  if (!state.project) return toast('プロジェクトを選択してください');
+  state.doctorBusy = true;
+  $('btn-doctor').disabled = true;
+  $('doctor-status').textContent = '現在の画面を読み取り、助言を作成しています…';
+  $('doctor-response').innerHTML = '';
+  $('dlg-doctor').showModal();
+  try {
+    const context = await buildDoctorContext();
+    const res = await api.agentDoctor({ dir: state.project.dir, context });
+    const model = res.model ? ` / ${res.model}` : '';
+    $('doctor-status').textContent = `${res.cli}${model} の助言 — ${context.tab} 画面を分析`;
+    $('doctor-response').innerHTML = mdToHtml(res.content || '助言はありませんでした。');
+  } catch (err) {
+    $('doctor-status').textContent = 'Doctorを実行できませんでした';
+    $('doctor-response').innerHTML = `<div class="doctor-error" role="alert">${esc(err.message)}</div>`;
+  } finally {
+    state.doctorBusy = false;
+    $('btn-doctor').disabled = false;
+  }
+}
+
 async function refreshAll() {
   if (state.busy) return;
   state.busy = true;
@@ -4238,6 +4546,8 @@ function setupPolling() {
         $('dlg-edit-charter').open ||
         $('dlg-edit-policy').open ||
         $('dlg-edit-repos').open
+        || $('dlg-need-output').open
+        || $('dlg-doctor').open
       )
         return;
       const ae = document.activeElement;
@@ -4272,40 +4582,18 @@ function handleOpenTarget({ url }) {
 // 起動
 // ---------------------------------------------------------------------------
 
-// かんたん/メンテナンス表示の切り替え。body.simple で技術タブ（バックログ/フロー/
-// レビュー待ち/履歴）を隠し、概要をかんたん表示に切り替える。設定に永続化する。
-function applyMode() {
-  document.body.classList.toggle('simple', !!state.simpleMode);
-  const btn = $('btn-mode');
-  if (btn) {
-    btn.textContent = state.simpleMode ? '🔧' : '👀';
-    btn.title = state.simpleMode
-      ? 'メンテナンス表示へ切り替え（全タブ・技術情報）'
-      : 'かんたん表示へ切り替え（概要と要対応だけに絞る）';
-  }
-  if (state.simpleMode && !SIMPLE_TABS.has(activeTab())) switchTab('overview');
-  renderAllTabs();
-}
-
-async function toggleMode() {
-  state.simpleMode = !state.simpleMode;
-  applyMode();
-  const cfg = state.config;
-  cfg.kiro = cfg.kiro || {};
-  cfg.kiro.simpleMode = state.simpleMode;
-  state.config = await api.saveConfig(cfg);
-}
-
 async function init() {
   state.config = await guard('設定読込', () => api.getConfig());
-  state.simpleMode = !!(state.config && state.config.kiro && state.config.kiro.simpleMode);
   initTabs();
-  applyMode();
-  $('btn-mode').addEventListener('click', toggleMode);
   $('btn-refresh').addEventListener('click', refreshAll);
   $('btn-git-pull').addEventListener('click', manualGitPull);
   $('btn-git-heal').addEventListener('click', manualGitHeal);
+  $('btn-doctor').addEventListener('click', askDoctor);
+  $('btn-doctor-close').addEventListener('click', () => $('dlg-doctor').close());
+  $('btn-need-output-close').addEventListener('click', () => $('dlg-need-output').close());
   $('btn-settings').addEventListener('click', openSettings);
+  $('btn-project-settings').addEventListener('click', openProjectSettings);
+  $('btn-project-settings-close').addEventListener('click', () => $('dlg-project-settings').close());
   $('btn-save-settings').addEventListener('click', () => saveSettings());
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());
   $('btn-enq-cancel').addEventListener('click', () => $('dlg-enqueue').close());
