@@ -2811,7 +2811,7 @@ const TERMINAL_RUN_STATES = new Set(['done', 'failed', 'canceled']);
 // 表示できるため、既定は「進行中（非終端）」に絞って一覧のノイズを抑える。
 const FLOW_FILTERS = [
   ['active', '実行中'],
-  ['action', '操作待ち'],
+  ['action', '要確認'],
   ['done', '完了'],
 ];
 
@@ -2878,6 +2878,43 @@ function taskOfRun(run) {
   return a ? { task: a, scope: 'archive' } : null;
 }
 
+// タスクが人の判断待ち（検収・実行前レビュー・要対応）のときの advice。
+// delivery_review で verify=PASS したあとは run 自体が done になるが、タスクは review のまま
+// 残る。run.status=done を先に見ると「完了」扱いになり操作待ちから消えるため、タスク状態を優先する。
+function humanWaitingAdvice(task) {
+  if (task.status === 'review') {
+    return {
+      kind: 'human',
+      cls: 'act',
+      chip: '🖐 検収待ち',
+      taskId: task.id,
+      text:
+        `実行の成果は揃っています。元のタスク ${task.id} が検収待ちのため、ここで待っていても完了しません。` +
+        '「要対応」タブで成果を確認して承認すると完了になります。',
+    };
+  }
+  if (task.status === 'proposed') {
+    return {
+      kind: 'human',
+      cls: 'act',
+      chip: '🖐 計画承認待ち',
+      taskId: task.id,
+      text:
+        `元のタスク ${task.id} が実行前レビュー待ちのため、ここで待っていても動きません。` +
+        '「要対応」タブで計画を承認すると実行が始まります。',
+    };
+  }
+  return {
+    kind: 'human',
+    cls: 'act',
+    chip: '🖐 あなたの判断待ち',
+    taskId: task.id,
+    text:
+      `元のタスク ${task.id} が人の判断待ち（${statusLabel(task.status)}）のため、ここで待っていても再実行されません。` +
+      '「要対応」タブで回答すると動き出します。',
+  };
+}
+
 // この run について「次に何が起きるか・あなたの出番はあるか」を決定的に言い切る。
 // フロー画面の第一言語。状態チップ（実行中/失敗/応答なし）は機械の状態でしかなく、
 // 「放置すれば自動で直るのか・自分が押すべきなのか」を人が推測させられていた
@@ -2891,6 +2928,20 @@ function runAdvice(run, group) {
   const p = state.project || {};
   const live = p.liveness || {};
   const st = String(run.status);
+  const latest = group ? group.latest : run;
+  if (latest.runId !== run.runId) {
+    return { kind: 'old', cls: 'muted', chip: '🗂 古い試行', latestId: latest.runId,
+      text: `新しい試行（${shortRunId(latest.runId)}）に引き継ぎ済みです。この画面は記録 — 操作は不要で、削除しても安全です。` };
+  }
+  const found = taskOfRun(run);
+  if (found && found.scope === 'archive') {
+    return { kind: 'none', cls: 'ok', chip: '✔ タスクは完了済み',
+      text: `元のタスク ${found.task.id} は既に完了しています。この run は途中の記録 — 操作は不要です。` };
+  }
+  // 人の判断待ちは run の done / 実行中 / 記録 より優先する（検収待ちが操作待ちから消えないように）
+  if (found && ['review', 'blocked', 'proposed'].includes(found.task.status)) {
+    return humanWaitingAdvice(found.task);
+  }
   if (run.archived) {
     return { kind: 'none', cls: 'ok', chip: '📦 記録',
       text: '完了後に保存された記録です。見るだけで、操作はありません。' };
@@ -2901,21 +2952,26 @@ function runAdvice(run, group) {
   }
   const stalled = run.alive === false;
   if (!stalled && !TERMINAL_RUN_STATES.has(st)) {
+    // park & poll: 承認待ちで保留中（lease 生存）＝実行エンジンは動いているが人の番
+    if ((run.counts && run.counts.parked) > 0) {
+      return {
+        kind: 'human',
+        cls: 'act',
+        chip: '🖐 承認待ち',
+        taskId: found && found.task ? found.task.id : null,
+        text:
+          '工程が承認待ちで保留中です。GitLab のレビューを進めるか、要対応タブ／工程詳細から対応してください。',
+      };
+    }
     return { kind: 'watch', cls: 'ok', chip: '▶ 実行中',
       text: '実行エンジンが応答しています。操作は不要 — このまま見守れます。' };
   }
   // ここから「止まっている」（failed / canceled / 非終端なのに応答なし）
-  const latest = group ? group.latest : run;
-  if (latest.runId !== run.runId) {
-    return { kind: 'old', cls: 'muted', chip: '🗂 古い試行', latestId: latest.runId,
-      text: `新しい試行（${shortRunId(latest.runId)}）に引き継ぎ済みです。この画面は記録 — 操作は不要で、削除しても安全です。` };
-  }
   // 失敗トリアージ（kiro-flow が meta.failure_reason に載せる決定的タグ [agent-error:<class>]）:
   // 環境要因（利用上限・認証切れ・CLI/モデルの問題）なら、どのタスクの内容の問題でもない。
   // 「何を直せば全部動くか」をタスク状態より先に言い切る（リトライ・裁定は本体側も焼いていない）。
   const tri = /\[agent-error:(quota|auth|env)\]/.exec(String(run.failureReason || ''));
   if (tri) {
-    const found2 = taskOfRun(run);
     const map = {
       quota: ['⏲ 利用上限', 'AI の利用上限に達したため止まりました。時間をおく（またはプランを' +
         '見直す）と回復します。回復後、要対応タブで該当タスクを承認すると続きから再開します' +
@@ -2927,22 +2983,12 @@ function runAdvice(run, group) {
     };
     const [chip, text] = map[tri[1]];
     return { kind: 'human', cls: 'act', chip, text,
-      taskId: found2 && found2.task ? found2.task.id : null };
-  }
-  const found = taskOfRun(run);
-  if (found && found.scope === 'archive') {
-    return { kind: 'none', cls: 'ok', chip: '✔ タスクは完了済み',
-      text: `元のタスク ${found.task.id} は既に完了しています。この run は途中の記録 — 操作は不要です。` };
+      taskId: found && found.task ? found.task.id : null };
   }
   if (found) {
     const task = found.task;
     const lastRun = String((task.extra && task.extra.last_run) || '');
     const doneCount = (run.counts && run.counts.done) || 0;
-    if (['review', 'blocked', 'proposed'].includes(task.status)) {
-      return { kind: 'human', cls: 'act', chip: '🖐 あなたの判断待ち', taskId: task.id,
-        text: `元のタスク ${task.id} が人の判断待ち（${statusLabel(task.status)}）のため、ここで待っていても再実行されません。` +
-          '「要対応」タブで回答すると動き出します。' };
-    }
     if (['ready', 'doing', 'offloaded', 'inbox'].includes(task.status)) {
       const resume = !lastRun || lastRun === run.runId;
       const how = resume
@@ -3246,7 +3292,11 @@ function renderFlowDetail() {
   const advice = runAdvice(run, group);
   const adviceActions = [
     advice.kind === 'human'
-      ? `<button class="chip primary-inline" data-goto-needs="${esc(advice.taskId || '')}">要対応タブで回答する</button>`
+      ? `<button class="chip primary-inline" data-goto-needs="${esc(advice.taskId || '')}">${
+          advice.chip && advice.chip.includes('検収')
+            ? '要対応タブで検収する'
+            : '要対応タブで回答する'
+        }</button>`
       : '',
     advice.kind === 'old' && advice.latestId
       ? `<button class="chip" data-goto-run="${esc(advice.latestId)}">最新の試行を開く</button>`
@@ -3903,6 +3953,16 @@ function bindFlowDetail(root) {
   for (const btn of root.querySelectorAll('button[data-goto-needs]')) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
+      const tid = btn.dataset.gotoNeeds || '';
+      if (tid) {
+        // needs の id は通常タスク id。task-id 照合でフォールバックする
+        const match = (state.project && state.project.needs || []).find(
+          (n) => n.id === tid || n.taskId === tid
+        );
+        state.needsSelectedId = match ? match.id : tid;
+        state.needsFilter = 'open';
+        state.needsMobileDetail = true;
+      }
       switchTab('needs');
     });
   }

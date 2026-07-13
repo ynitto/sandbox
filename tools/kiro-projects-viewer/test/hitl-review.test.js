@@ -97,6 +97,41 @@ function mkProject() {
     assert.strictEqual(p.charters[1].goal, '新機能');
   });
 
+  await test('review の backlog に needs が無くても合成して要対応に出す（検収導線）', async () => {
+    const dir = mkProject();
+    fs.writeFileSync(
+      path.join(dir, 'backlog', 'T-review.md'),
+      '## T-review: 成果を検収する\n- status: review\n- source: human\n- verify: `true`\n',
+      'utf8'
+    );
+    const p = kiro.readProject(dir, { kiro: {} });
+    const n = p.needs.find((x) => x.id === 'T-review');
+    assert.ok(n, 'needs ファイルが無くても票が出る');
+    assert.strictEqual(n.kind, 'review');
+    assert.strictEqual(n.synthesized, true);
+    assert.match(n.why, /検収/);
+    assert.ok(!fs.existsSync(path.join(dir, 'needs', 'T-review.md')), '読み取り時にファイルは作らない');
+  });
+
+  await test('既に needs がある review は二重合成しない', async () => {
+    const dir = mkProject();
+    fs.mkdirSync(path.join(dir, 'needs'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'backlog', 'T1.md'),
+      '## T1: x\n- status: review\n- source: human\n',
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'needs', 'T1.md'),
+      '---\nkind: review\ntask-id: T1\n---\n# 要対応: T1 — x\n\n- なぜ: 実ファイル\n',
+      'utf8'
+    );
+    const p = kiro.readProject(dir, { kiro: {} });
+    assert.strictEqual(p.needs.filter((x) => x.id === 'T1').length, 1);
+    assert.ok(!p.needs.find((x) => x.id === 'T1').synthesized);
+    assert.match(p.needs.find((x) => x.id === 'T1').why, /実ファイル/);
+  });
+
   await test('charters の name はファイル名を優先する（# Charter タイトルが違っても化けない）', async () => {
     // 前バージョンをコピーしてタイトルを直し忘れると `# Charter:` が同じ名前になりがち。
     // それでもバージョンの identity（表示名・編集先・charter タグ）はファイル名でなければならない。

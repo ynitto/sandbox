@@ -234,7 +234,7 @@ assert.strictEqual(flowGroupBucket({ advice: { kind: 'restart' }, latest: { stat
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'none' }, latest: { status: 'done' } }), 'done');
 assert.strictEqual(flowGroupBucket({ advice: { kind: 'auto' }, latest: { status: 'running' } }), 'active');
 
-for (const label of ['未対応', '送信済み', '回答済み', 'GitLab', '実行中', '操作待ち', '完了']) {
+for (const label of ['未対応', '送信済み', '回答済み', 'GitLab', '実行中', '要確認', '完了']) {
   assert.ok(renderer.includes(label), `絞り込みに「${label}」が必要です`);
 }
 for (const label of ['概要', '工程', '履歴']) {
