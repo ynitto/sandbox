@@ -2535,6 +2535,8 @@ function renderDeliveryRepo(entry, idx) {
     ${
       entry.role === 'reference'
         ? '<p class="muted">参照リポジトリです。成果差分は書込先を確認してください。</p>'
+        : unresolved
+          ? '<p class="muted">作業ブランチの ref をローカルで解決できていません。MR があればそちらで差分を確認してください。</p>'
         : files.length || total
           ? `<ul class="delivery-files">${fileBtns}${more}</ul>`
           : '<p class="muted">変更ファイルはありません。</p>'
@@ -2588,8 +2590,9 @@ function wireDeliveryReview(root, need) {
       const idx = Number(btn.getAttribute('data-delivery-diff'));
       const entry = (need.delivery || [])[idx];
       if (!entry || !entry.path) return toast('ローカル path が無いため差分を取得できません');
+      if (!entry.ref) return toast('作業ブランチの ref が未解決のため差分を取得できません');
       const file = btn.getAttribute('data-file') || '';
-      const tip = entry.ref || entry.branch;
+      const tip = entry.ref;
       const view = $('delivery-diff-view');
       view.classList.remove('hidden');
       view.textContent = '差分を取得しています…';
