@@ -285,7 +285,13 @@ function _summarizeFailure(why, detail) {
   const failed = (raw.match(/(\d+)\s+failed/) || [])[1];
   const cmdMissing = (raw.match(/([\w./-]+):\s*command not found/) || [])[1];
   const exit = (raw.match(/exit=(\d+)/) || [])[1];
+  // run_verify が特定した「失敗した工程」（&& 連鎖の途中で沈黙して落ちた工程のトレース）
+  const step = (raw.match(/失敗した工程:\s*`([^`]+)`/) || [])[1];
+  const passed = (raw.match(/(\d+)\s+passed/) || [])[1];
 
+  if (step) {
+    return `検証コマンドの工程「${step}」で失敗しました（それより前の工程は成功しています）。`;
+  }
   if (cmdMissing) return `検証コマンド「${cmdMissing}」がこの環境に見つかりません。`;
   if (notFound) {
     return `検証コマンドが「${notFound}」を見つけられませんでした。`
@@ -293,6 +299,12 @@ function _summarizeFailure(why, detail) {
   }
   if (failed) return `テストが ${failed} 件失敗しました。`;
   if (/no tests ran/i.test(raw)) return 'テストが 1 件も実行されませんでした（対象が見つからないか、条件に一致しません）。';
+  if (exit && passed && Number(exit) !== 0) {
+    // 「テストは通っているのに exit≠0」: && 連鎖の後段（grep・外部チェック等）が沈黙して
+    // 失敗した古い形式の記録。どこが落ちたかは記録に無いが、少なくとも「テストの失敗では
+    // ない」ことを言う（テスト成功の出力だけを見せられて混乱するのが一番まずい）。
+    return `テストは ${passed} 件成功していますが、検証コマンドの後段の工程（grep や外部チェックなど）が失敗しています（終了コード ${exit}）。`;
+  }
   if (exit) return `検証コマンドが失敗しました（終了コード ${exit}）。`;
   return '';
 }

@@ -6,14 +6,31 @@ from __future__ import annotations
 def run_verify(cmd: str, workdir: Path, timeout: float, env: "dict | None" = None) -> "tuple[bool, str]":
     if not cmd.strip():
         return (False, "verify 未定義（自己申告では done にできない → 人の判断へ）")
+    # `A && B && C` 連鎖の途中で沈黙する工程（grep -q / codd-gate 等）が落ちると、出力には
+    # 成功した前段のものしか残らず「exit=1 なのにテストは全部通っている」という読めない失敗に
+    # なる（実際にこの読めなさで 9 回のリトライが焼かれ、人も原因に辿り着けなかった）。
+    # set -x のトレース（stderr の "+ <cmd>" 行）から最後に実行されたコマンド＝失敗した工程を
+    # 特定してメッセージ先頭に載せる。トレース行は出力 tail から除く（本文を汚さない）。
     try:
-        proc = subprocess.run(cmd, shell=True, cwd=str(workdir), timeout=timeout,
+        proc = subprocess.run(f"set -x\n{cmd}", shell=True, cwd=str(workdir), timeout=timeout,
                               capture_output=True, text=True,
                               env={**os.environ, **env} if env else None)
     except subprocess.TimeoutExpired:
         return (False, f"verify タイムアウト（{timeout}s）")
-    tail = (proc.stdout or "")[-400:] + (proc.stderr or "")[-400:]
-    return (proc.returncode == 0, f"exit={proc.returncode} {tail.strip()}"[:500])
+    err_lines = (proc.stderr or "").splitlines()
+    trace = [ln for ln in err_lines if ln.startswith("+")]
+    clean_err = "\n".join(ln for ln in err_lines if not ln.startswith("+"))
+    tail = ((proc.stdout or "")[-400:] + clean_err[-400:]).strip()
+    if proc.returncode == 0:
+        return (True, f"exit=0 {tail}"[:500])
+    head = f"exit={proc.returncode}"
+    if trace:
+        step = trace[-1].lstrip("+ ").strip()
+        if step:
+            head += f" 失敗した工程: `{step[:200]}`"
+            if len(trace) > 1:
+                head += "（それより前の工程は成功）"
+    return (False, f"{head} {tail}"[:600])
 
 
 def run_verify_stable(cmd: str, workdir: Path, timeout: float,

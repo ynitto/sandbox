@@ -6061,6 +6061,35 @@ class TestAgentPlugin(unittest.TestCase):
         self.assertIn("モデルが大きすぎます", hint)
 
 
+class TestVerifyFailingStep(unittest.TestCase):
+    """run_verify の失敗工程の特定: `A && B && C` の途中で沈黙する工程（grep -q 等）が落ちると
+    出力は成功した前段のものしか残らず、「exit=1 なのにテストは全部通っている」という読めない
+    失敗になる（実際にこの読めなさでリトライが 9 回焼かれた）。set -x のトレースから
+    失敗した工程を名指しする。"""
+
+    def test_silent_middle_failure_is_named(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok, msg = km.run_verify(
+                'echo "29 passed" && grep -q nosuchtoken /dev/null && echo done', Path(d), 30)
+        self.assertFalse(ok)
+        self.assertIn("失敗した工程: `grep -q nosuchtoken /dev/null`", msg)
+        self.assertIn("それより前の工程は成功", msg)
+        self.assertIn("29 passed", msg)          # 生の出力も残す（情報を隠さない）
+
+    def test_success_message_keeps_shape_and_hides_trace(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok, msg = km.run_verify("echo hello && true", Path(d), 30)
+        self.assertTrue(ok)
+        self.assertTrue(msg.startswith("exit=0"))
+        self.assertNotIn("+ ", msg)              # set -x のトレースで本文を汚さない
+
+    def test_single_command_failure_still_named(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok, msg = km.run_verify("false", Path(d), 30)
+        self.assertFalse(ok)
+        self.assertIn("失敗した工程: `false`", msg)
+
+
 class TestFailureTriage(unittest.TestCase):
     """失敗トリアージ: 環境要因（quota/auth/env）はタスクの内容と無関係 —
     リトライを焼かず・裁定も呼ばず、原因と直し方を明記して人へ回す。"""

@@ -46,6 +46,31 @@ test('検証コマンドが対象を見つけられない失敗を要約する',
   assert.match(n.failureSummary, /見つけられませんでした/);
 });
 
+test('連鎖の途中で沈黙した工程は「失敗した工程」として名指しされる', () => {
+  // run_verify（kiro-project）が set -x トレースで特定した工程を、そのまま人に見せる。
+  // 「exit=1 なのにテストは全部通っている」という読めない失敗の答えがこれ。
+  const n = kiro.parseNeeds(
+    card(
+      '繰り返し NG（retries=3）: exit=1 失敗した工程: `grep -rq codd_gate tools/kiro-project/kiro_project/`（それより前の工程は成功） 29 passed',
+      '- 検証: `pytest -k codd && grep -rq codd_gate tools/` → FAIL'
+    ),
+    'T-1'
+  );
+  assert.match(n.failureSummary, /grep -rq codd_gate/);
+  assert.match(n.failureSummary, /それより前の工程は成功/);
+});
+
+test('旧形式（工程の記録なし）でも「テストの失敗ではない」ことは言う', () => {
+  // exit≠0 なのに N passed だけが見える古い記録。どこが落ちたかは分からないが、
+  // テスト成功の出力だけを見せられて混乱させない。
+  const n = kiro.parseNeeds(
+    card('繰り返し NG（retries=3）: exit=1 29 passed, 623 deselected in 0.20s', ''),
+    'T-1'
+  );
+  assert.match(n.failureSummary, /テストは 29 件成功/);
+  assert.match(n.failureSummary, /後段の工程/);
+});
+
 test('テストの失敗件数を要約する', () => {
   const n = kiro.parseNeeds(
     card('繰り返し NG（retries=3）: exit=1', '- 検証: `pytest` → FAIL（exit=1 4 failed, 896 passed）'),

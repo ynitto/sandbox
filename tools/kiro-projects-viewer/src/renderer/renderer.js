@@ -2492,9 +2492,33 @@ function renderNeeds() {
     el.innerHTML = '';
     return;
   }
+  // 記入中は再描画しない。ポーリング（既定 5 秒）ごとの innerHTML 作り直しは、
+  // 打ちかけの回答とカーソルを消し、スクロールも揺らす — 人が触っている間はデータ表示より
+  // 入力の継続が優先（次のポーリングで追いつく）。
+  const ae = document.activeElement;
+  if (ae && el.contains(ae) && /^(TEXTAREA|INPUT)$/.test(ae.tagName)) return;
   const settled = (n) => n.decided || isNeedSent(n); // 対応済み（本体の取り込み待ち）
+  // 表示内容の署名。変わっていなければ再描画しない（DOM を触らない＝スクロールも
+  // details の開閉も入力も何も揺れない）。needs ファイルは本体が毎パス再生成して
+  // mtime が変わるため、mtime を署名に入れると「内容は同じなのに毎回作り直し」になる。
+  const sig = JSON.stringify(p.needs.map((n) => [
+    n.id, n.kind, n.decided, isNeedSent(n), n.why, n.summary, n.risk,
+    n.failureSummary || '', (n.detail || '').length,
+  ]));
+  if (el.dataset.sig === sig && el.childElementCount) return;
+  el.dataset.sig = sig;
+  // 打ちかけの回答を控える（署名が変わって作り直すときも失わない）
+  const drafts = {};
+  for (const box of el.querySelectorAll('.need-actions')) {
+    const input = box.querySelector('.need-input');
+    if (input && input.value) drafts[box.dataset.need] = input.value;
+  }
+  // 並び順は安定させる（未対応が先 → 日付の新しい順 → id）。mtime は本体の再生成で
+  // 数分ごとに変わり、読んでいる最中にカードの順番がシャッフルされていた。
   const cards = [...p.needs]
-    .sort((a, b) => Number(settled(a)) - Number(settled(b)) || b.mtime - a.mtime)
+    .sort((a, b) => Number(settled(a)) - Number(settled(b))
+      || String(b.date || '').localeCompare(String(a.date || ''))
+      || String(a.id).localeCompare(String(b.id)))
     .map((n) => {
       const chip = n.decided
         ? '<span class="status-chip st-done">回答済み（反映待ち）</span>'
@@ -2571,6 +2595,14 @@ function renderNeeds() {
   el.innerHTML = `${needsSection}
     <div class="section-title" style="margin-top:16px">GitLab レビュー待ち</div>
     <div id="needs-gitlab"></div>`;
+
+  // 打ちかけの回答を書き戻す
+  for (const box of el.querySelectorAll('.need-actions')) {
+    if (drafts[box.dataset.need]) {
+      const input = box.querySelector('.need-input');
+      if (input) input.value = drafts[box.dataset.need];
+    }
+  }
 
   for (const btn of el.querySelectorAll('button[data-open]')) {
     btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
