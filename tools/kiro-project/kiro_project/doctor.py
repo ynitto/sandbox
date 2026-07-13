@@ -157,9 +157,45 @@ def _tail_text(path: "Path | None", n_lines: int = 40, n_chars: int = 2000) -> s
     return "\n".join(lines[-n_lines:])[-n_chars:]
 
 
+def unpushed_commits(repo: "Path | None") -> "tuple[int, str]":
+    """(origin へ未 push のコミット数, ブランチ名)。git でない・upstream 未設定なら (0, "")。
+
+    worker と verify は **origin から clone** して実行する（verify.py の _task_verify_cwd →
+    gitcache の provision_worktree）。したがって **ローカルにだけあるコミットは、彼らからは
+    存在しないのと同じ**。人が手元で直してコミットしただけの成果は verify に届かず、
+    「ローカルでは通るのに verify は落ち続ける」という、原因に辿り着きにくい詰まり方をする
+    （実際に起きた: 手元では pytest -k codd が 29 件 PASS するのに、クローンでは 0 件収集で
+    exit=5 → 繰り返し NG → blocked）。"""
+    if repo is None:
+        return 0, ""
+    try:
+        br = subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                            capture_output=True, text=True, timeout=30)
+        if br.returncode != 0:
+            return 0, ""
+        branch = br.stdout.strip()
+        r = subprocess.run(["git", "-C", str(repo), "rev-list", "--count", "@{u}..HEAD"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:            # upstream 未設定（追跡ブランチが無い）
+            return 0, branch
+        return int(r.stdout.strip() or 0), branch
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 0, ""
+
+
 def doctor_env_findings(cfg: "Config", which=shutil.which) -> "list[dict]":
     """環境/設定の決定的チェック（LLM 不要）。fix_action を持つものは --fix で修正できる。"""
     findings: list[dict] = []
+    # 未 push のローカルコミット（unpushed_commits の docstring 参照）
+    n, branch = unpushed_commits(cfg.state_top)
+    if n:
+        findings.append({
+            "category": "git", "severity": "warn",
+            "title": f"origin へ未 push のコミットが {n} 件ある（{branch}）",
+            "evidence": ("worker と verify は origin から clone して実行するため、ローカルにだけある "
+                         "コミットは彼らからは見えない。手元で直した成果は verify に届かず、"
+                         "「ローカルでは通るのに verify は落ち続ける」状態になる"),
+            "fix": f"git -C {cfg.state_top} push origin {branch}"})
     needs_cli = cfg.planner == "agent" or cfg.executor == "agent" or cfg.auto_adjudicate
     agent_bin = _AGENT_CLI_BINARIES.get(cfg.agent_cli, cfg.agent_cli)
     if needs_cli and not which(agent_bin):

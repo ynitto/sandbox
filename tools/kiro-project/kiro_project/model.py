@@ -379,10 +379,29 @@ def cohort_reflux(cfg: "Config", task: "Task", guidance: str) -> int:
     return n
 
 
+def already_completed(cfg: "Config", tid: str) -> bool:
+    """その id は既に done して archive にあるか。
+
+    明示 id は **冪等キー**（同じ id = 同じタスク）。done 済みの id が再投入されたら、それは
+    「同じ作業をもう一度やれ」ではなく重複投入である。弾かないと完了済みの作業がまるごと
+    再実行され、LLM のコストを無駄に払う（実際 done → archive 済みのタスクが inbox 経由で
+    復活し、新しい run が回り始めた）。再発した別件なら新しい id で投入されるべき。"""
+    if not tid:
+        return False
+    try:
+        return (cfg.archive_dir() / f"{tid}.md").exists()
+    except OSError:
+        return False
+
+
 def ingest_inbox(cfg: "Config") -> "list[Task]":
     """inbox/ に置かれたファイルを backlog タスクへ取り込む（.json=オブジェクト/配列 / .md=タスク形式）。
-    取り込めたら元ファイルを消す。外部ソースの共通入口（watch がこの口を監視して起こす）。"""
+    取り込めたら元ファイルを消す。外部ソースの共通入口（watch がこの口を監視して起こす）。
+
+    done 済み（archive にある）id の再投入は取り込まない。冪等キーとしての id の意味を守り、
+    完了済みの作業が再実行されるのを防ぐ（already_completed 参照）。"""
     created: list[Task] = []
+    skipped: list[str] = []
     inbox = cfg.inbox
     if not inbox or not inbox.exists():
         return created
@@ -393,10 +412,22 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
             if f.suffix.lower() == ".json":
                 data = json.loads(f.read_text(encoding="utf-8"))
                 for sp in (data if isinstance(data, list) else [data]):
-                    if isinstance(sp, dict):
-                        created.append(enqueue_task(cfg, sp))
+                    if not isinstance(sp, dict):
+                        continue
+                    sid = _slug_id(str(sp.get("id") or "").strip())
+                    if already_completed(cfg, sid):
+                        skipped.append(sid)
+                        continue
+                    created.append(enqueue_task(cfg, sp))
             elif f.suffix.lower() in (".md", ".markdown", ".txt"):
                 t = parse_task(f.read_text(encoding="utf-8"), f.stem)
+                if already_completed(cfg, _slug_id(t.id)):
+                    skipped.append(_slug_id(t.id))
+                    try:
+                        f.unlink()          # 消さないと毎周同じ警告を出し続ける
+                    except OSError:
+                        pass
+                    continue
                 t.id = _unique_task_id(cfg, _slug_id(t.id) or "task")
                 if t.source == "human":
                     t.source = "inbox"
@@ -418,6 +449,10 @@ def ingest_inbox(cfg: "Config") -> "list[Task]":
             pass
     if created:
         append_journal(cfg.journal, f"inbox 取り込み {[t.id for t in created]}")
+    if skipped:
+        append_journal(cfg.journal,
+                       f"inbox 取り込みを見送り（既に done・archive にある）: {skipped}。"
+                       f"同じ id は冪等キーなので再実行しない。やり直すなら新しい id で投入すること")
     return created
 
 

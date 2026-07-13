@@ -817,6 +817,48 @@ class TestDoctor(unittest.TestCase):
         kw.setdefault("auto_adjudicate", False)
         return cfg_for(Path(d), **kw)
 
+    def test_unpushed_commits_are_reported(self):
+        """origin へ未 push のコミットを検出する。
+
+        worker と verify は **origin から clone** して実行するので、ローカルにだけあるコミットは
+        彼らからは存在しないのと同じ。手元で直した成果は verify に届かず「ローカルでは通るのに
+        verify は落ち続ける」という、原因に辿り着きにくい詰まり方をする（実際に起きた: 手元では
+        pytest -k codd が 29 件 PASS するのに、クローンでは 0 件収集 → exit=5 → 繰り返し NG）。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d).resolve()
+            env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+                   "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+            remote, repo = d / "remote.git", d / "repo"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "clone", "-q", str(remote), str(repo)], check=True, env=env)
+            g = lambda *a: subprocess.run(["git", "-C", str(repo), *a], capture_output=True, env=env)
+            g("config", "user.email", "t@e.com")
+            g("config", "user.name", "t")
+            (repo / "a.txt").write_text("x\n")
+            g("add", "-A"); g("commit", "-m", "init"); g("push", "-q", "-u", "origin", "HEAD")
+
+            self.assertEqual(km.unpushed_commits(repo)[0], 0, "push 済みなら 0")
+
+            (repo / "b.txt").write_text("y\n")             # 手元で直してコミットしただけ
+            g("add", "-A"); g("commit", "-m", "local only")
+            n, branch = km.unpushed_commits(repo)
+            self.assertEqual(n, 1, "未 push を数える")
+            self.assertTrue(branch)
+
+            cfg = self._cfg(d)
+            cfg.state_top = repo
+            fs = km.doctor_env_findings(cfg)
+            hit = next((f for f in fs if f["category"] == "git"), None)
+            self.assertIsNotNone(hit, "doctor が未 push を報告する")
+            self.assertIn("未 push", hit["title"])
+            self.assertIn("origin から clone", hit["evidence"], "なぜ困るのかを述べる")
+
+    def test_unpushed_commits_on_non_git_is_silent(self):
+        # git でない・upstream 無しでは黙る（誤検知しない）
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(km.unpushed_commits(Path(d)), (0, ""))
+            self.assertEqual(km.unpushed_commits(None), (0, ""))
+
     def test_env_findings_detect_missing_kiro_cli(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(d, planner="agent")            # planner=agent はエージェント CLI を要求
@@ -5318,6 +5360,42 @@ echo this-later-command-must-not-be-selected
             created = km.ingest_inbox(cfg)
             self.assertEqual(created[0].norm_status(), "ready")
 
+    def test_inbox_does_not_revive_a_completed_task(self):
+        """done 済み（archive にある）id の再投入は取り込まない。
+
+        明示 id は冪等キー（同じ id = 同じタスク）。done 済みの id が来たら重複投入であって
+        「もう一度やれ」ではない。弾かないと完了済みの作業がまるごと再実行され、LLM のコストを
+        無駄に払う（実際 archive 済みのタスクが inbox 経由で復活し、新しい run が回り始めた）。"""
+        for suffix, body in ((".md", "## T1: やる\n- status: ready\n- verify: `true`\n"),
+                             (".json", json.dumps({"id": "T1", "title": "やる", "verify": "true"}))):
+            with self.subTest(suffix=suffix):
+                with tempfile.TemporaryDirectory() as d:
+                    d = Path(d)
+                    cfg = cfg_for(d, inbox=d / "inbox")
+                    cfg.archive_dir().mkdir(parents=True, exist_ok=True)
+                    (cfg.archive_dir() / "T1.md").write_text(
+                        "## T1: やる\n- status: done\n", encoding="utf-8")   # 完了済み
+                    cfg.inbox.mkdir(parents=True, exist_ok=True)
+                    (cfg.inbox / f"T1{suffix}").write_text(body, encoding="utf-8")
+
+                    created = km.ingest_inbox(cfg)
+                    self.assertEqual(created, [], "done 済みの id は取り込まない")
+                    self.assertFalse((cfg.backlog / "T1.md").exists(), "backlog へ復活させない")
+                    self.assertIn("見送り", cfg.journal.read_text(encoding="utf-8"))
+
+    def test_inbox_still_accepts_a_new_id(self):
+        # 再発した別件は新しい id で投入されるべき。それは従来どおり取り込む
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d, inbox=d / "inbox")
+            cfg.archive_dir().mkdir(parents=True, exist_ok=True)
+            (cfg.archive_dir() / "T1.md").write_text("## T1: 済\n- status: done\n", encoding="utf-8")
+            cfg.inbox.mkdir(parents=True, exist_ok=True)
+            (cfg.inbox / "T2.md").write_text(
+                "## T2: 別件\n- status: ready\n- verify: `true`\n", encoding="utf-8")
+            created = km.ingest_inbox(cfg)
+            self.assertEqual([t.id for t in created], ["T2"])
+
 
 class TestKiroFlowIntegration(unittest.TestCase):
     def test_stub_end_to_end(self):
@@ -6168,6 +6246,47 @@ class TestDirectStateGit(unittest.TestCase):
         cfg = self._cfg()
         self.assertIsInstance(km.state_git_for(cfg), km.DirectStateGit)   # state_git 未設定でも有効
         self.assertIn("direct モード", km.state_git_status_line(cfg))
+
+    def test_sync_survives_divergence_with_a_dirty_worktree(self):
+        """リモートが進んでいて、かつ作業ツリーが汚れていても同期できること。
+
+        DirectStateGit は「人の作業を壊さない」ため作業ツリーに触らない（コミットは detached
+        worktree で組み、ブランチは CAS で進める）。その結果、未コミット変更が残ったまま
+        pull --rebase へ進み `cannot pull with rebase: You have unstaged changes` で必ず失敗する。
+        取り込めないと push も non-fast-forward で永久に通らず、リモートとの乖離が広がり続ける
+        （実際 viewer が同じブランチへ push した途端に詰まり、分散構成で状態が共有されなくなった）。
+        同期の直前に commit_state でコミットしておけば rebase は素直に通る。"""
+        cfg = self._cfg()
+        cfg.state_top = self.root          # 状態 worktree 相当（commit_state を効かせる）
+        cfg.state_commit = True
+        cfg.state_backup_branch = ""       # main へのバックアップはこのテストの関心外
+        km._last_state_commit = 0.0
+
+        # 他者（viewer 相当）がリモートを先に進める
+        other = self._other("viewer")
+        (other / "commands").mkdir(parents=True, exist_ok=True)
+        (other / "commands" / "approve-x.json").write_text('{"command": "approve"}', encoding="utf-8")
+        env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        for a in (["add", "-A"], ["commit", "-qm", "viewer: approve"], ["push", "-q", "origin", "HEAD:main"]):
+            subprocess.run(["git", "-C", str(other), *a], check=True, capture_output=True, env=env)
+
+        # こちらは作業ツリーが汚れている（backlog を書き換えたが未コミット）
+        mkb(self.root, "T1")
+        self.assertTrue(subprocess.run(["git", "-C", str(self.root), "status", "--porcelain"],
+                                       capture_output=True, text=True).stdout.strip(),
+                        "前提: 作業ツリーが汚れている")
+
+        # 修正の要: 同期の前にコミットしてクリーンにする（run_loop がこれを行う）
+        km.commit_state(cfg, force=True)
+        km.state_sync(cfg, force=True)
+
+        # リモートの変更を取り込めている（rebase が通った）
+        self.assertTrue((self.root / "commands" / "approve-x.json").exists(),
+                        "他者の指示を取り込める")
+        # こちらの変更も push できている（non-fast-forward で詰まらない）
+        got = self._other("check")
+        self.assertTrue((got / "backlog" / "T1.md").exists(), "自分の状態を push できる")
 
     def test_direct_sync_pushes_state_and_bus_but_excludes_claims(self):
         cfg = self._cfg()

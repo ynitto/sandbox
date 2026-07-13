@@ -197,12 +197,32 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
 
 
 def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep) -> dict:
+    # 同期の前に作業ツリーをコミットしてクリーンにする。
+    #
+    # DirectStateGit は「人の作業を壊さない」ため **作業ツリーに触らない**（コミットは detached
+    # worktree で組み立て、ブランチは update-ref の CAS で進める）。その配慮は正しいが、結果として
+    # 作業ツリーの未コミット変更が残ったまま import（pull --rebase）へ進むため、
+    # `cannot pull with rebase: You have unstaged changes` で **必ず失敗する**。
+    # 取り込めなければ push も non-fast-forward で永久に通らず、リモートとの乖離が広がり続ける
+    # （実際 viewer が同じ kiro-state ブランチへ push した途端に詰まり、分散構成で状態が共有
+    # されなくなった）。同期の直前にコミットしておけば rebase は素直に通る。
+    commit_state(cfg, force=True)
     state_sync(cfg)                    # 状態 git: リモートの指示（commands/inbox/needs 記入）を先に取り込む
     tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg)
     append_journal(cfg.journal, f"=== kiro-project 開始 tasks={len(tasks)} "
                                 f"ingested={len(ingested)} planner={cfg.planner} "
                                 f"executor={cfg.executor} dry_run={cfg.dry_run} ===")
     append_journal(cfg.journal, state_git_status_line(cfg))
+    # 未 push のローカルコミットを起動時に必ず警告する。doctor は人が叩かないと動かないが、
+    # これは黙って詰まる（worker と verify は origin から clone するので、ローカルにだけある
+    # コミットは彼らからは存在しない）。原因に辿り着くのが難しい詰まり方なので、先に言う。
+    _unpushed, _branch = unpushed_commits(cfg.state_top)
+    if _unpushed:
+        append_journal(cfg.journal,
+                       f"警告: origin へ未 push のコミットが {_unpushed} 件ある（{_branch}）。"
+                       f"worker と verify は origin から clone するため、これらの成果は彼らから "
+                       f"見えない（ローカルでは通るのに verify が落ち続ける）。"
+                       f"`git -C {cfg.state_top} push origin {_branch}` を検討すること")
     start = time.time()
     cycle = 0
     archived = 0
