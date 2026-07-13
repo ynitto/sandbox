@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('api', {
   flowCancel: (busDir, runId, reason) => invoke('flow:cancel', { busDir, runId, reason }),
   glFindIssueByToken: (args) => invoke('gitlab:findIssueByToken', args),
 
-  submitFeedback: (file, feedback) => invoke('kiro:feedback', { file, feedback }),
+  submitFeedback: (file, feedback, stub) => invoke('kiro:feedback', { file, feedback, stub }),
   enqueueTask: (dir, spec) => invoke('kiro:enqueue', { dir, spec }),
   runAction: (args) => invoke('kiro:action', args),
   requestReplan: (dir, reason) => invoke('kiro:replan', { dir, reason }),

@@ -132,6 +132,28 @@ function mkProject() {
     assert.match(p.needs.find((x) => x.id === 'T1').why, /実ファイル/);
   });
 
+  await test('合成票への差し戻しは needs スタブを起こしてから feedback する', async () => {
+    const dir = mkProject();
+    fs.writeFileSync(
+      path.join(dir, 'backlog', 'T-fb.md'),
+      '## T-fb: 差し戻し対象\n- status: review\n- source: human\n',
+      'utf8'
+    );
+    const p = kiro.readProject(dir, { kiro: {} });
+    const n = p.needs.find((x) => x.id === 'T-fb');
+    assert.ok(n && n.synthesized);
+    assert.ok(!fs.existsSync(n.file));
+    const res = actions.submitFeedback(n.file, 'ここを直して', {
+      id: n.id, kind: n.kind, title: n.title, why: n.why,
+    });
+    assert.strictEqual(res.feedback, 'ここを直して');
+    assert.ok(fs.existsSync(n.file), 'スタブファイルが作られる');
+    const body = fs.readFileSync(n.file, 'utf8');
+    assert.match(body, /kind: review/);
+    assert.match(body, /ここを直して/);
+    assert.match(body, /- \[x\]/);
+  });
+
   await test('charters の name はファイル名を優先する（# Charter タイトルが違っても化けない）', async () => {
     // 前バージョンをコピーしてタイトルを直し忘れると `# Charter:` が同じ名前になりがち。
     // それでもバージョンの identity（表示名・編集先・charter タグ）はファイル名でなければならない。

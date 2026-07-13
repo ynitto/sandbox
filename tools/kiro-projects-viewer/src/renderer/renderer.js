@@ -2755,11 +2755,14 @@ async function handleNeedAction(btn) {
     return toast('差し戻しには修正方針の記入が必要です');
   }
   const ok = await guard('操作', async () => {
+    const feedbackStub = need.synthesized
+      ? { id: need.id, kind: need.kind, title: need.title, why: need.why }
+      : undefined;
     if (act === 'feedback') {
-      await api.submitFeedback(need.file, text);
+      await api.submitFeedback(need.file, text, feedbackStub);
       toast(text ? '回答を送信しました（次の実行で反映されます）' : '回答を確定しました', true);
     } else if (act === 'rerun') {
-      await api.submitFeedback(need.file, '');
+      await api.submitFeedback(need.file, '', feedbackStub);
       toast('そのまま再実行するよう回答しました', true);
     } else if (act === 'approve') {
       const res = await api.runAction({ dir: p.dir, action: 'approve', id, reason: text });
@@ -2915,6 +2918,30 @@ function humanWaitingAdvice(task) {
   };
 }
 
+// 失敗トリアージ（kiro-flow が meta.failure_reason に載せる決定的タグ [agent-error:<class>]）。
+// 環境要因ならタスク状態（blocked 等）より先に「何を直すか」を言い切る。
+function agentErrorAdvice(run, found) {
+  const tri = /\[agent-error:(quota|auth|env)\]/.exec(String(run.failureReason || ''));
+  if (!tri) return null;
+  const map = {
+    quota: ['⏲ 利用上限', 'AI の利用上限に達したため止まりました。時間をおく（またはプランを' +
+      '見直す）と回復します。回復後、要対応タブで該当タスクを承認すると続きから再開します' +
+      '（完了済みの工程は温存されています）。'],
+    auth: ['🔑 認証切れ', 'エージェント CLI の認証が切れたため止まりました。再ログインしてから、' +
+      '要対応タブで該当タスクを承認すると続きから再開します（完了済みの工程は温存されています）。'],
+    env: ['⚙ 実行環境の問題', 'エージェント CLI の実行環境（CLI の導入・モデル名・PATH）に問題が' +
+      'あり止まりました。環境を直してから、要対応タブで該当タスクを承認すると続きから再開します。'],
+  };
+  const [chip, text] = map[tri[1]];
+  return {
+    kind: 'human',
+    cls: 'act',
+    chip,
+    text,
+    taskId: found && found.task ? found.task.id : null,
+  };
+}
+
 // この run について「次に何が起きるか・あなたの出番はあるか」を決定的に言い切る。
 // フロー画面の第一言語。状態チップ（実行中/失敗/応答なし）は機械の状態でしかなく、
 // 「放置すれば自動で直るのか・自分が押すべきなのか」を人が推測させられていた
@@ -2938,7 +2965,12 @@ function runAdvice(run, group) {
     return { kind: 'none', cls: 'ok', chip: '✔ タスクは完了済み',
       text: `元のタスク ${found.task.id} は既に完了しています。この run は途中の記録 — 操作は不要です。` };
   }
-  // 人の判断待ちは run の done / 実行中 / 記録 より優先する（検収待ちが操作待ちから消えないように）
+  // 環境要因の失敗は blocked/review より先（認証切れ等を「判断待ち」で誤誘導しない）。
+  // done（検収待ち）には付けない — delivery_review の完了 run を環境障害扱いにしない。
+  const stalled = run.alive === false;
+  const envAdvice = agentErrorAdvice(run, found);
+  if (envAdvice && (stalled || st === 'failed')) return envAdvice;
+  // 人の判断待ちは run の done / 実行中 / 記録 より優先する（検収待ちが要確認から消えないように）
   if (found && ['review', 'blocked', 'proposed'].includes(found.task.status)) {
     return humanWaitingAdvice(found.task);
   }
@@ -2950,7 +2982,6 @@ function runAdvice(run, group) {
     return { kind: 'none', cls: 'ok', chip: '✔ 完了',
       text: '成果は確定済みです。操作は要りません。' };
   }
-  const stalled = run.alive === false;
   if (!stalled && !TERMINAL_RUN_STATES.has(st)) {
     // park & poll: 承認待ちで保留中（lease 生存）＝実行エンジンは動いているが人の番
     if ((run.counts && run.counts.parked) > 0) {
@@ -2967,24 +2998,6 @@ function runAdvice(run, group) {
       text: '実行エンジンが応答しています。操作は不要 — このまま見守れます。' };
   }
   // ここから「止まっている」（failed / canceled / 非終端なのに応答なし）
-  // 失敗トリアージ（kiro-flow が meta.failure_reason に載せる決定的タグ [agent-error:<class>]）:
-  // 環境要因（利用上限・認証切れ・CLI/モデルの問題）なら、どのタスクの内容の問題でもない。
-  // 「何を直せば全部動くか」をタスク状態より先に言い切る（リトライ・裁定は本体側も焼いていない）。
-  const tri = /\[agent-error:(quota|auth|env)\]/.exec(String(run.failureReason || ''));
-  if (tri) {
-    const map = {
-      quota: ['⏲ 利用上限', 'AI の利用上限に達したため止まりました。時間をおく（またはプランを' +
-        '見直す）と回復します。回復後、要対応タブで該当タスクを承認すると続きから再開します' +
-        '（完了済みの工程は温存されています）。'],
-      auth: ['🔑 認証切れ', 'エージェント CLI の認証が切れたため止まりました。再ログインしてから、' +
-        '要対応タブで該当タスクを承認すると続きから再開します（完了済みの工程は温存されています）。'],
-      env: ['⚙ 実行環境の問題', 'エージェント CLI の実行環境（CLI の導入・モデル名・PATH）に問題が' +
-        'あり止まりました。環境を直してから、要対応タブで該当タスクを承認すると続きから再開します。'],
-    };
-    const [chip, text] = map[tri[1]];
-    return { kind: 'human', cls: 'act', chip, text,
-      taskId: found && found.task ? found.task.id : null };
-  }
   if (found) {
     const task = found.task;
     const lastRun = String((task.extra && task.extra.last_run) || '');
