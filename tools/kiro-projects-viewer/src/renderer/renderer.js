@@ -171,11 +171,13 @@ function fmtAgoSec(sec) {
   return `${Math.floor(sec / 86400)}日前`;
 }
 
-// 説明文の正規化: 本体が1行に畳むときに使う "⏎" / 実改行 / エスケープ \\n を本物の改行に戻す。
+// 説明文の正規化: 本体が1行に畳むときに使う "⏎" / 実改行 / 空白隣接の "\n" を本物の改行に戻す。
+// "\n" の無差別置換はしない（C:\newfolder や path\name を壊すため）。
 function normalizeProse(src) {
   return String(src ?? '')
     .replace(/\r\n/g, '\n')
-    .replace(/\\n/g, '\n')
+    // 畳み込みで残った "\n" トークン。直後/直前がパス断片に見えるときは触らない。
+    .replace(/(?<![A-Za-z0-9_.-])(?<![A-Za-z]:)\\n/g, '\n')
     .replace(/\u21B5|\u23CE|⏎/g, '\n');
 }
 
@@ -3482,7 +3484,7 @@ const viewTabs = [
     <div class="flow-run-heading">
       <div>
         <span class="summary-kicker">選択中の実行</span>
-        <h2>${esc(req.title || '内容のない実行')}</h2>
+        <h2>${req.title ? `<span class="prose-inline">${inlineMd(req.title)}</span>` : '内容のない実行'}</h2>
       </div>
       <span>${statusChip(run.status)}${archivedBadge}</span>
     </div>
