@@ -1,0 +1,19 @@
+{
+  "id": "t9",
+  "who": "worker-1",
+  "status": "done",
+  "output": "`coddgate.py` に `codd_gate_debt_status()` と `codd_gate_summary_text()` を追加し、成果物レポートを `artifacts/t9/report.md` に出力した。py_compile・grep・pytest（63 passed、無回帰）に加え、模擬名前空間での実行時検証で両関数の挙動を確認済み。`__init__.py`／`_FRAGMENTS` 結線は前タスク群から引き継いだ既知のブロッカー（main のパッケージ化 refactor 未マージ）により本タスク範囲外のまま。",
+  "finished_at": "2026-07-13T08:45:09Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/kiro-project-codd-gate-171537",
+      "commit": "13470b1a2972746af0934a87b52fac49b93297ca",
+      "target": "main",
+      "path": ""
+    }
+  },
+  "artifacts": [
+    "artifacts/t9/report.md"
+  ]
+}

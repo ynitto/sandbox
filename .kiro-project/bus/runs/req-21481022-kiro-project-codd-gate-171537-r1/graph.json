@@ -1,0 +1,166 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 9,
+    "review": true,
+    "reason": "[flow-planner] コード変更タスクであり、完了条件がシェルコマンド（pytest -k codd / grep -rq codd_gate / codd-gate verify --strict の3節すべて exit 0）として機械判定可能なため、loop-until-done による反復収束が必須（制約にも明記）。また過去9回の失敗要因が『_FRAGMENTS 未登録でパッケージに読み込まれない』という結線の未達であり、成果物の正しさ（実際に呼ばれているか / 未インストール時に no-op へ縮退するか）を生成ノード自身の自己申告に委ねると再発するため、統合前に adversarial-verification の検証gateを置く。fan-out は、依存順の直列部（coddgate.py への統合 → _FRAGMENTS 登録）を先行させたうえで、結線先が verify.py / mr.py / model.py の3モジュールに独立して分かれるため parallelism=3 とする。generate-and-filter や tournament は候補探索型で、実装先も判定基準も既に確定している本要求には不適合。map-reduce は処理対象件数が実行時に決まる data_flow=dynamic 向けだが、本件は結線点3つが静的に確定しているため採らない。（粒度 finest）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/kiro-project/codd_gate_base.py と codd_gate_detect.py を読み、公開関数・データ構造・codd-gate CLI の呼び出し形（引数・戻り値・終了コードの扱い）を一覧化する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "tools/kiro-project/codd_gate_debt.py / codd_gate_routing.py / codd_gate_status.py を読み、負債ラチェット・ルーティング・ステータス出力の公開 API と依存関係を一覧化する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "tools/kiro-project/kiro_project/__init__.py の _FRAGMENTS 合成機構（共有名前空間への順次 exec、断片コーディング規約、先頭の from __future__ import annotations）を読み解き、\"coddgate\" の挿入位置が \"verify\" より前であることと断片の書き方の制約を確定する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "kiro_project/verify.py の回帰ゲート関数、mr.py の検収判定関数、model.py の enqueue 関数を特定し、それぞれの結線ポイント（関数名・シグネチャ・戻り値の合否表現）を書き出す",
+      "deps": [
+        "t3"
+      ],
+      "kind": "work"
+    },
+    "t5": {
+      "goal": "kiro_project/coddgate.py を新規作成し、t1/t2 で棚卸しした codd_gate_* 5ファイルの責務を1断片へ統合する。先頭に from __future__ import annotations を置き、モジュール import ではなく共有名前空間 exec 前提（他断片の名前を直接参照）で書く",
+      "deps": [
+        "t1",
+        "t2",
+        "t3"
+      ],
+      "kind": "synthesize"
+    },
+    "t6": {
+      "goal": "coddgate 断片に shutil.which(\"codd-gate\") による実行可否検出関数 codd_gate_available() を実装し、結果をプロセス内でキャッシュする",
+      "deps": [
+        "t5"
+      ],
+      "kind": "work"
+    },
+    "t7": {
+      "goal": "coddgate 断片の全公開 API に、codd-gate 未インストール時は no-op（既存挙動を一切変えない安全な既定値：合格扱い・ドリフト0件）へ縮退するガードを実装する",
+      "deps": [
+        "t6"
+      ],
+      "kind": "work"
+    },
+    "t8": {
+      "goal": "coddgate 断片に codd_gate_verify_strict() を実装する。subprocess で `codd-gate verify --repos <repos.json> --repo-dir sandbox=. --base <base> --strict` を実行し、終了コード・標準出力・要約を構造化して返す",
+      "deps": [
+        "t7"
+      ],
+      "kind": "work"
+    },
+    "t9": {
+      "goal": "coddgate 断片に codd_gate_drift_items() を実装する。codd-gate の出力からドリフト項目（未文書化・未テスト等）を抽出し、各項目へ再実行しても変わらない安定キー（種別＋対象パスのハッシュ）を付与して返す",
+      "deps": [
+        "t7"
+      ],
+      "kind": "work"
+    },
+    "t10": {
+      "goal": "kiro_project/__init__.py の _FRAGMENTS タプルに \"coddgate\" を \"verify\" より前の位置に追加し、パッケージ import 時に coddgate 断片が実際に exec されることを Python 実行で確認する",
+      "deps": [
+        "t5"
+      ],
+      "kind": "work"
+    },
+    "t11": {
+      "goal": "旧 tools/kiro-project/codd_gate_{base,debt,detect,routing,status}.py を削除し、リポジトリ全体にこれら旧ファイルへの参照が残っていないことを grep で確認する",
+      "deps": [
+        "t5",
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t12": {
+      "goal": "kiro_project/verify.py の回帰ゲートから codd_gate_verify_strict() を呼び、終了コード非0 を回帰ゲートの不合格として反映する（失敗理由に codd-gate の出力要約を含める）",
+      "deps": [
+        "t8",
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t13": {
+      "goal": "kiro_project/mr.py の検収判定で codd_gate_verify_strict() の結果を読み、不合格なら done にせず差し戻しとし、差し戻し理由の本文へ codd-gate の指摘内容を含める",
+      "deps": [
+        "t8",
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t14": {
+      "goal": "kiro_project/model.py の enqueue へ codd_gate_drift_items() のドリフト項目を backlog タスクとして投入する。安定キーで既存タスクと突き合わせ、再実行時に重複タスクが積まれないようにする",
+      "deps": [
+        "t9",
+        "t10"
+      ],
+      "kind": "work"
+    },
+    "t15": {
+      "goal": "tools/kiro-project/tests に統合テストを追加し、verify 経路（回帰ゲート実行）で coddgate の verify_strict が実際に呼ばれ、終了コード非0 が回帰ゲートの不合格へ伝播することをスパイ/フェイクで検証する",
+      "deps": [
+        "t12"
+      ],
+      "kind": "work"
+    },
+    "t16": {
+      "goal": "tools/kiro-project/tests に統合テストを追加し、mr 経路（検収判定）で coddgate の結果が読まれ、不合格時に done にならず差し戻し理由本文へ codd-gate の指摘が含まれることを検証する",
+      "deps": [
+        "t13"
+      ],
+      "kind": "work"
+    },
+    "t17": {
+      "goal": "tools/kiro-project/tests に統合テストを追加し、model.enqueue 経路でドリフト項目が backlog タスクとして投入されること、および同じドリフトで2回実行しても安定キーにより重複投入されないことを検証する",
+      "deps": [
+        "t14"
+      ],
+      "kind": "work"
+    },
+    "t18": {
+      "goal": "tools/kiro-project/tests に統合テストを追加し、shutil.which が codd-gate を見つけない状況で verify/mr/model の3経路すべてが no-op へ縮退し、codd-gate 導入前と同じ挙動（回帰ゲート合格・done 可能・backlog 追加なし）になることを検証する",
+      "deps": [
+        "t12",
+        "t13",
+        "t14"
+      ],
+      "kind": "work"
+    },
+    "t19": {
+      "goal": "敵対的検証ゲート：成果物の自己申告を信用せず実コマンドで確認する。(a) grep -rq \"codd_gate\" tools/kiro-project/kiro_project/ が exit 0、(b) kiro_project を import して coddgate 由来の名前が共有名前空間に存在し _FRAGMENTS 上で \"verify\" より前に並ぶ、(c) 追加テストが結線をわざと外すと落ちる（「呼ばれていない」を検出できる）、(d) 旧 codd_gate_*.py が残っていない、を全て確認し、1つでも欠ければ不合格として差し戻す",
+      "deps": [
+        "t11",
+        "t15",
+        "t16",
+        "t17",
+        "t18"
+      ],
+      "kind": "verify"
+    },
+    "t20": {
+      "goal": "完了条件コマンド `python3 -m pytest tools/kiro-project/tests -q -k codd && grep -rq \"codd_gate\" tools/kiro-project/kiro_project/ && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を実行し、3節すべてが exit 0 になるまで失敗箇所を修正して反復する（.kiro-project/ 配下は状態ファイルのため変更しない）",
+      "deps": [
+        "t19"
+      ],
+      "kind": "synthesize"
+    },
+    "coddgate-package-wiring-fix-r10": {
+      "goal": "tools/kiro-project で codd-gate 統合を実装する。パッケージ外の codd_gate_base.py、codd_gate_debt.py、codd_gate_detect.py、codd_gate_routing.py、codd_gate_status.py を tools/kiro-project/kiro_project/coddgate.py に統合して元ファイルを削除し、先頭に `from __future__ import annotations` を置く。kiro_project/__init__.py の _FRAGMENTS に `coddgate` を `verify` より前で追加する。verify.py の回帰ゲートから `codd-gate verify --strict` を実行して終了コードを合否に反映し、mr.py の検収判定では結果を done・差し戻し理由へ含め、model.py の enqueue ではドリフト項目を安定キーで重複防止した backlog タスクとして投入する。`shutil.which` で codd-gate 未インストールを検出した場合は既存挙動を維持する no-op とする。断片が実際に共有名前空間へロードされ、verify・mr・model の各経路から呼ばれることを検出できる統合テストを tools/kiro-project/tests に追加する。.kiro-project 配下の repos.json など状態ファイルは変更しない。最後に `python3 -m pytest tools/kiro-project/tests -q -k codd`、`grep -rq \"codd_gate\" tools/kiro-project/kiro_project/`、`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を順に実行し、各終了コードと失敗時の具体的出力を報告する。",
+      "deps": [],
+      "kind": "work"
+    }
+  },
+  "iteration": 1
+}

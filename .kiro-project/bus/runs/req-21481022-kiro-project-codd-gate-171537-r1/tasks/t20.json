@@ -1,0 +1,8 @@
+{
+  "id": "t20",
+  "goal": "完了条件コマンド `python3 -m pytest tools/kiro-project/tests -q -k codd && grep -rq \"codd_gate\" tools/kiro-project/kiro_project/ && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を実行し、3節すべてが exit 0 になるまで失敗箇所を修正して反復する（.kiro-project/ 配下は状態ファイルのため変更しない）",
+  "deps": [
+    "t19"
+  ],
+  "kind": "synthesize"
+}

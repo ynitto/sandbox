@@ -1,0 +1,8 @@
+{
+  "id": "t16",
+  "goal": "tools/kiro-project/tests に統合テストを追加し、mr 経路（検収判定）で coddgate の結果が読まれ、不合格時に done にならず差し戻し理由本文へ codd-gate の指摘が含まれることを検証する",
+  "deps": [
+    "t13"
+  ],
+  "kind": "work"
+}

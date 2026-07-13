@@ -1,0 +1,8 @@
+{
+  "id": "t15",
+  "goal": "tools/kiro-project/tests に統合テストを追加し、verify 経路（回帰ゲート実行）で coddgate の verify_strict が実際に呼ばれ、終了コード非0 が回帰ゲートの不合格へ伝播することをスパイ/フェイクで検証する",
+  "deps": [
+    "t12"
+  ],
+  "kind": "work"
+}

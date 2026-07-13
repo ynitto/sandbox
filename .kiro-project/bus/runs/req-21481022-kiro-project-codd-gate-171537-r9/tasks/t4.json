@@ -1,6 +1,0 @@
-{
-  "id": "t4",
-  "goal": "kiro_project/verify.py の回帰ゲートを読み、既存の合否判定フロー（各チェックの実行と結果集約）を特定し、codd-gate verify --strict の終了コードを合否へ反映できる挿入位置を1点に確定する",
-  "deps": [],
-  "kind": "work"
-}

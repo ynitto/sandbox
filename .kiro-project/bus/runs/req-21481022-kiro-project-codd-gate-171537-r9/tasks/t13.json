@@ -1,8 +1,0 @@
-{
-  "id": "t13",
-  "goal": "mr.py の検収判定から t9 のヘルパ経由で codd-gate の verify 結果（status・ドリフト件数・項目）を読み取る結線を実装する",
-  "deps": [
-    "t9"
-  ],
-  "kind": "work"
-}

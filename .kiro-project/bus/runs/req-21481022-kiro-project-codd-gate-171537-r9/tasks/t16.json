@@ -1,8 +1,0 @@
-{
-  "id": "t16",
-  "goal": "model.py の enqueue へ codd-gate のドリフト項目を backlog タスクとして投入する結線を実装する（タイトル・本文・完了条件をドリフト項目から生成）",
-  "deps": [
-    "t9"
-  ],
-  "kind": "work"
-}

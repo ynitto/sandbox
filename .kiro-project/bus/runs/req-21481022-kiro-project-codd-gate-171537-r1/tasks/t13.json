@@ -1,0 +1,9 @@
+{
+  "id": "t13",
+  "goal": "kiro_project/mr.py の検収判定で codd_gate_verify_strict() の結果を読み、不合格なら done にせず差し戻しとし、差し戻し理由の本文へ codd-gate の指摘内容を含める",
+  "deps": [
+    "t8",
+    "t10"
+  ],
+  "kind": "work"
+}

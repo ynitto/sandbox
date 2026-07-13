@@ -1,0 +1,10 @@
+{
+  "id": "t1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果物\n\n`codd_gate_base.py` / `codd_gate_detect.py` の公開関数・データ構造・codd-gate CLI 呼び出し形の一覧を artifact に出力した:\n`/Users/nitto/Workspace/sandbox-kiro-state/.kiro-project/bus/runs/req-21481022-kiro-project-codd-gate-171537-r1/artifacts/t1/codd_gate_base_detect_catalog.md`\n\n**要約**\n- `codd_gate_base.py`: 純粋関数 `resolve_base_rev(task_base_branch=None, env=None) -> str` を1つ提供。優先順位は `KIRO_BASE_REV` 環境変数 → charter の base ブランチ → `\"HEAD~1\"`。例外は投げない。\n- `codd_gate_detect.py`: `resolve_codd_gate`（起動 argv 解決、explicit→PATH→同梱パス）、`resolve_codd_gate_bin`（実行ファイル解決、env→config→PATH、全例外を `None` に縮退）、`get_version`（`<binary> --version` をプローブし `(major,minor,patch)` or `None`）、`check_repos_schema_compat`（CLI を呼ばず repos.json の構造検証）、`detect_capabilities`（`--help` / `<sub> --help` をプローブし `{\"verify\",\"tasks\",\"debt\"}` の bool マップ）を提供。プローブは全て `capture_output=True, text=True, timeout=5`、`returncode != 0` や `OSError`/`SubprocessError` は例外を漏らさず「不明・不可」側へ縮退。\n\n**検証結果**\n- `pytest tools/kiro-project/tests -q -k codd`: 成功（63 passed）\n- `grep -rl \"codd_gate\" tools/kiro-project/kiro_project/`: 成功（`coddgate.py` ヒット）\n- `codd-gate verify --strict`: **exit 1**（`kiro_project/coddgate.py` が GRAY = 未接続として検出）。この断片は docstring 通り現時点で未結線（`__init__.py` の `_FRAGMENTS` 結線・doc/test 接続は別タスクの責務）であり、本タスク（調査のみ・コード変更なし）の範囲外として報告に記載した。\n\nコードの変更は行っていない（調査タスクのため）。全体ゲートの exit 1 は既存の未結線状態によるもので、評価役への申し送り事項として artifact に明記済み。",
+  "finished_at": "2026-07-13T08:56:38Z",
+  "artifacts": [
+    "artifacts/t1/codd_gate_base_detect_catalog.md"
+  ]
+}

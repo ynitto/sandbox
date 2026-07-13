@@ -1,6 +1,0 @@
-{
-  "id": "t6",
-  "goal": "kiro_project/model.py の enqueue と backlog タスクのスキーマ（id 採番・既存タスクとの重複判定ロジック）を読み、ドリフト項目を投入できる挿入位置と既存の重複防止機構を特定する",
-  "deps": [],
-  "kind": "work"
-}

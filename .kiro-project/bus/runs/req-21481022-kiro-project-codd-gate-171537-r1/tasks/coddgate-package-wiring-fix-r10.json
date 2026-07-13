@@ -1,0 +1,6 @@
+{
+  "id": "coddgate-package-wiring-fix-r10",
+  "goal": "tools/kiro-project で codd-gate 統合を実装する。パッケージ外の codd_gate_base.py、codd_gate_debt.py、codd_gate_detect.py、codd_gate_routing.py、codd_gate_status.py を tools/kiro-project/kiro_project/coddgate.py に統合して元ファイルを削除し、先頭に `from __future__ import annotations` を置く。kiro_project/__init__.py の _FRAGMENTS に `coddgate` を `verify` より前で追加する。verify.py の回帰ゲートから `codd-gate verify --strict` を実行して終了コードを合否に反映し、mr.py の検収判定では結果を done・差し戻し理由へ含め、model.py の enqueue ではドリフト項目を安定キーで重複防止した backlog タスクとして投入する。`shutil.which` で codd-gate 未インストールを検出した場合は既存挙動を維持する no-op とする。断片が実際に共有名前空間へロードされ、verify・mr・model の各経路から呼ばれることを検出できる統合テストを tools/kiro-project/tests に追加する。.kiro-project 配下の repos.json など状態ファイルは変更しない。最後に `python3 -m pytest tools/kiro-project/tests -q -k codd`、`grep -rq \"codd_gate\" tools/kiro-project/kiro_project/`、`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を順に実行し、各終了コードと失敗時の具体的出力を報告する。",
+  "deps": [],
+  "kind": "work"
+}
