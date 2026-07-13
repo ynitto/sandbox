@@ -2500,7 +2500,9 @@ function renderDeliveryRepo(entry, idx) {
   const total = entry.files_total || (entry.files || []).length;
   const files = entry.files || [];
   const mr = entry.mr_url || '';
-  const canDiff = entry.path && entry.base && (entry.ref || entry.branch) && entry.role !== 'reference';
+  // ローカル差分は解決済み ref があるときだけ（branch 名だけでは fetch 失敗時に誤誘導する）
+  const canDiff = Boolean(entry.path && entry.base && entry.ref && entry.role !== 'reference');
+  const unresolved = entry.role !== 'reference' && entry.branch && !entry.ref;
   const fileBtns = files
     .slice(0, 40)
     .map((f) => {

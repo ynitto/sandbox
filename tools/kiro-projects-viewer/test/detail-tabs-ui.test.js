@@ -256,6 +256,8 @@ for (const cli of ['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']) {
 assert.ok(renderer.includes('出力全体を見る'));
 assert.ok(renderer.includes('検収物を確認'));
 assert.ok(renderer.includes('openDeliveryReview'));
+assert.match(renderer, /entry\.path && entry\.base && entry\.ref/);
+assert.ok(!/entry\.ref \|\| entry\.branch/.test(renderer), '未解決 ref で差分ボタンを出さない');
 assert.match(css, /\.doctor-tools/);
 assert.match(css, /\.delivery-dialog/);
 
