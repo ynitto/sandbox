@@ -378,7 +378,9 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
     分からない。作業ブランチが分かるならそちらの実体差分を出し、差分を開くコマンドも添える。
     複数リポジトリ案件では書込先を先頭に、参照リポジトリを続けて明示する。"""
     entries = delivery_entries(cfg, task, mr_url=mr_url, max_files=max_files) if task is not None else []
-    write_entries = [e for e in entries if e.get("role") == "write" and e.get("ref")]
+    # 書込先ブランチが meta にあれば structured 経路を使う。ref 未解決でも workdir（bus）へ
+    # フォールバックしない（frontmatter delivery と判断材料の食い違いを防ぐ）。
+    write_entries = [e for e in entries if e.get("role") == "write"]
     if write_entries:
         lines: "list[str]" = []
         multi = len(entries) > 1
@@ -391,6 +393,16 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
                 if e.get("branch"):
                     lines.append(f"- ブランチ指定: `{e['branch']}`")
                 lines.append("- 注: 参照リポジトリ。本タスクの成果差分は書込先を見る")
+                continue
+            if not e.get("ref"):
+                lines += [
+                    f"- 成果物: ブランチ `{e['branch']}`（ローカルで ref 未解決・差分取得不可）",
+                    f"- 所在: {e.get('path') or '(ローカル path 未解決)'}",
+                ]
+                if e.get("mr_url"):
+                    lines.append(f"- MR: {e['mr_url']}（承認時にクリーンなら自動マージ）")
+                lines.append("- 注: 作業ブランチの ref を解決できなかったためローカル差分は省略"
+                             "（MR があればそちらを確認）")
                 continue
             files = e.get("files") or []
             total = int(e.get("files_total") or len(files))

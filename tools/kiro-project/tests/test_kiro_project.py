@@ -8883,6 +8883,36 @@ class DeliveryEvidenceTests(unittest.TestCase):
             self.assertIn('"role":"write"', text)
 
 
+
+    def test_unresolved_work_branch_ref_does_not_fall_back_to_workdir(self):
+        # meta にブランチ名はあるがローカルで ref が取れないとき、bus 差分へ落とさない。
+        with tempfile.TemporaryDirectory() as d:
+            top = self._repo()
+            cfg, t = self._cfg_with_run(top, Path(d))
+            meta_path = cfg.bus / "runs" / "req-abc-T1-r0" / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["workspace"]["branch"] = "kp/DOES-NOT-EXIST"
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+            # 状態 worktree 側に bus ファイルを書いて、フォールバックするとそれに引っかかるようにする
+            (cfg.workdir / "bus").mkdir(parents=True, exist_ok=True)
+            (cfg.workdir / "bus" / "junk.json").write_text("{}", encoding="utf-8")
+            mr = "https://gitlab.example.com/g/app/-/merge_requests/99"
+            entries = km.delivery_entries(cfg, t, mr_url=mr)
+            self.assertEqual(entries[0]["role"], "write")
+            self.assertEqual(entries[0]["branch"], "kp/DOES-NOT-EXIST")
+            self.assertEqual(entries[0]["ref"], "")
+            self.assertEqual(entries[0]["mr_url"], mr)
+            ev = km.delivery_evidence(cfg, "", "HEAD", "local",
+                                      verify="true", vmsg="ok", ok=True, task=t, mr_url=mr)
+            self.assertIn("ref 未解決", ev)
+            self.assertIn("kp/DOES-NOT-EXIST", ev)
+            self.assertIn(mr, ev)
+            self.assertNotIn("bus/", ev)
+            self.assertNotIn("junk.json", ev)
+            self.assertNotIn("- 差分:", ev, "workdir の差分リストへ落とさない")
+
+
+
 class RiskDigestTests(unittest.TestCase):
     """検収（review）前のリスクダイジェスト（決定的な材料のみ・needs の ## リスク節と
     frontmatter risk: low/med/high）。承認フローは変えず情報だけが増えることを検証する。"""
