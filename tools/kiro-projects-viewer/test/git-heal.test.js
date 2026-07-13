@@ -49,6 +49,8 @@ function scaffold() {
   return { root, bare, work, other };
 }
 
+const git_health_of = (dir) => git.health(dir);
+
 (async () => {
   await test('health: 正常なら ok と平易な一文', async () => {
     const { work } = scaffold();
@@ -139,6 +141,34 @@ function scaffold() {
     assert.match(res.summary, /見送り/);
     // 人の未コミット変更は無傷
     assert.strictEqual(fs.readFileSync(path.join(work, 'journal.md'), 'utf8'), 'writing...\n');
+  });
+
+  await test('worktree の中断 rebase も検知して巻き戻せる（.git がファイルの地雷）', async () => {
+    // kiro-project の状態 worktree では .git がファイルなので、<top>/.git/rebase-merge を
+    // 直接見る実装は永遠に検知できない（🩺 が「解決しない」ボタンになっていた実障害）。
+    const { root, work, other } = scaffold();
+    const wt = path.join(root, 'wt');
+    G(work, 'worktree', 'add', '-b', 'kiro-state', wt);
+    // worktree 側と origin/main を同じファイルの両側編集で分岐させ、rebase を確実に止める
+    fs.writeFileSync(path.join(other, 'journal.md'), 'remote line\n');
+    G(other, 'add', '-A');
+    G(other, 'commit', '-m', 'remote');
+    G(other, 'push', 'origin', 'main');
+    fs.writeFileSync(path.join(wt, 'journal.md'), 'wt line\n');
+    G(wt, 'add', '-A');
+    G(wt, 'commit', '-m', 'wt local');
+    G(wt, 'fetch', 'origin', 'main');
+    try {
+      G(wt, 'rebase', 'origin/main');       // 必ずコンフリクトで止まる
+    } catch {
+      /* 中断状態のまま放置 */
+    }
+    const before = await git_health_of(wt);
+    assert.strictEqual(before.midRebase, true, 'worktree でも中断 rebase を検知する');
+    const res = await git.heal(wt);
+    assert.ok(res.steps.some((s) => /巻き戻し/.test(s)), JSON.stringify(res));
+    const after = await git_health_of(wt);
+    assert.ok(!after.midRebase, '巻き戻し後に残骸が残らない');
   });
 
   console.log(`\n${passed} passed`);
