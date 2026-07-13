@@ -149,6 +149,23 @@ def _git_line(cwd: Path, *args: str, env=None) -> "str | None":
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+_BACKUP_MSG = "kiro-project: 状態をバックアップ（自動）"
+
+
+def _is_pushed(top: Path, branch: str, rev: str) -> bool:
+    """rev が origin/<branch> の先祖か（＝ push 済みで書き換えてはいけないか）。
+
+    判定できないとき（リモート未取得・git の失敗）は True＝「push 済み」と読み、書き換えない。
+    安全側に倒す: 誤って push 済みの履歴を潰すより、バックアップコミットが 1 つ余分に積まれる
+    ほうがましなので。"""
+    try:
+        r = subprocess.run(["git", "-C", str(top), "merge-base", "--is-ancestor",
+                            rev, f"origin/{branch}"], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return r.returncode == 0
+
+
 def backup_state(cfg: "Config") -> bool:
     """状態 worktree の最新を、正本ブランチ（既定 main）へバックアップする。バックアップしたら True。
 
@@ -207,8 +224,16 @@ def backup_state(cfg: "Config") -> bool:
         new_tree = _git_line(top, "write-tree", env=env)
         if not new_tree:
             return False
-        commit = _git_line(top, "commit-tree", new_tree, "-p", old,
-                          "-m", "kiro-project: 状態をバックアップ（自動）", env=env)
+        # 直前が自分の未 push なバックアップコミットなら、その親に付け替えて **置き換える**
+        # （amend 相当）。毎回 old を親にして積むと、同期のたびに 1 コミット増え、正本ブランチが
+        # 「状態をバックアップ（自動）」で埋まる（実際 18 件積み上がった）。バックアップは履歴では
+        # なく「その時点の状態」なので、まとめてよい。**push 済みの履歴は書き換えない**。
+        parent = old
+        if (_git_line(top, "log", "-1", "--format=%s", old) or "") == _BACKUP_MSG \
+                and not _is_pushed(top, branch, old):
+            parent = _git_line(top, "rev-parse", f"{old}^") or old
+        commit = _git_line(top, "commit-tree", new_tree, "-p", parent,
+                          "-m", _BACKUP_MSG, env=env)
         if not commit:
             return False
         # 取得時の値を expect する。割り込みで branch が進んでいたら撃ち負けて次回に回す。

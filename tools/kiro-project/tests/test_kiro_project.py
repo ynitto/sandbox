@@ -7299,16 +7299,45 @@ class StateBackupTests(unittest.TestCase):
         self.assertTrue(km.commit_state(cfg), "worktree にはコミットされる")
         self.assertEqual(self._count(top, "main"), before, "正本は動かさない")
 
-    def test_backup_is_squashed_to_one_commit_per_sync(self):
-        # worktree 側に何コミット積まれても、正本には「その時点の状態」が 1 コミットだけ載る
+    def test_backup_does_not_pile_up_commits(self):
+        """何度同期しても、正本ブランチに積まれるバックアップは 1 コミットに保たれる。
+
+        毎回 old を親にして積むと、同期のたびに 1 コミット増え、正本ブランチが
+        「状態をバックアップ（自動）」で埋まる（実際 main に 18 件積み上がり、「main を極力
+        汚染しない」という前提が崩れた）。バックアップは履歴ではなく「その時点の状態」なので、
+        未 push の間は置き換えてよい。worktree 側には従来どおり全履歴が残る。"""
         cfg, root, top = self._cfg()
         (root / "backlog").mkdir(parents=True, exist_ok=True)
         before = self._count(top, "main")
         for i in range(3):
             (root / "backlog" / f"T{i}.md").write_text(f"## T{i}\n")
             km.commit_state(cfg)
-        self.assertEqual(self._count(top, "main"), before + 3, "1 同期 = 1 コミット")
-        self.assertGreaterEqual(self._count(top, "kiro-state"), 3)
+        self.assertEqual(self._count(top, "main"), before + 1,
+                         "何度同期しても正本には 1 コミットだけ")
+        self.assertGreaterEqual(self._count(top, "kiro-state"), 3, "worktree 側には履歴が残る")
+        # 最新の状態がちゃんと載っている（置き換えても内容を落とさない）
+        self.assertIsNotNone(self._show(top, "main:.kiro-project/backlog/T2.md"))
+        self.assertIsNotNone(self._show(top, "main:.kiro-project/backlog/T0.md"))
+
+    def test_backup_never_rewrites_pushed_history(self):
+        # push 済みのバックアップコミットは書き換えない（新しいコミットとして積む）
+        cfg, root, top = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n")
+        km.commit_state(cfg)
+        n = self._count(top, "main")
+
+        # 「push 済み」に見せる（origin/main が現在のバックアップコミットを含む）
+        env = {**os.environ, "GIT_CONFIG_COUNT": "1",
+               "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "false"}
+        subprocess.run(["git", "-C", str(top), "update-ref", "refs/remotes/origin/main", "main"],
+                       capture_output=True, env=env, check=True)
+        self.assertTrue(km._is_pushed(top, "main", "main"), "前提: push 済みと判定される")
+
+        (root / "backlog" / "T2.md").write_text("## T2\n")
+        km._last_state_commit = 0.0
+        km.commit_state(cfg)
+        self.assertEqual(self._count(top, "main"), n + 1, "push 済みなら積む（履歴を壊さない）")
 
     def test_human_on_another_branch_is_not_disturbed(self):
         # 人が別ブランチで作業していても、正本の ref を進めるだけ（作業ツリーに触らない）
