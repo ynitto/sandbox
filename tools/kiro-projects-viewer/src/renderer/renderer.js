@@ -318,14 +318,19 @@ function confirmDialog(message) {
   });
 }
 
-// クリック委譲: data-ext 属性のリンクは既定ブラウザで開く
-document.addEventListener('click', (ev) => {
-  const a = ev.target.closest('a[data-ext]');
-  if (a) {
+// クリック委譲: data-ext 属性のリンクは既定ブラウザで開く。
+// capture で止めて、親の .run-item 選択クリック等へ伝播させない。
+document.addEventListener(
+  'click',
+  (ev) => {
+    const a = ev.target.closest('a[data-ext]');
+    if (!a) return;
     ev.preventDefault();
+    ev.stopPropagation();
     guard('外部リンク', () => api.openExternal(a.dataset.ext));
-  }
-});
+  },
+  true
+);
 
 // ---------------------------------------------------------------------------
 // 発見・プロジェクト選択
@@ -3221,7 +3226,11 @@ function renderFlow() {
     });
   }
   for (const item of el.querySelectorAll('.run-item[data-run]')) {
-    item.addEventListener('click', () => selectFlowRun(item.dataset.run));
+    item.addEventListener('click', (ev) => {
+      // プレビュー内リンク等の操作は run 選択にしない
+      if (ev.target.closest('a, button')) return;
+      selectFlowRun(item.dataset.run);
+    });
     item.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault();
