@@ -7481,6 +7481,28 @@ class StateBackupTests(unittest.TestCase):
                             ".kiro-project"], capture_output=True, text=True)
         self.assertEqual(r.stdout.strip(), "", "staged の古いスナップショットが残らない")
 
+    def test_backup_resyncs_mirror_even_when_nothing_to_commit(self):
+        """バックアップ済み（＝新しいコミットは不要）でも、鏡がずれていれば揃え直す。
+
+        ここで早期 return すると、詰んだ状態がまさにそこで止まり続ける: 状態が落ち着いている
+        限りバックアップは不要と判断され、古いスナップショットは index に staged のまま
+        永久に残る。コミットが要らないときこそ揃え直す必要がある。"""
+        cfg, root, top = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: ready\n")
+        self.assertTrue(km.commit_state(cfg))
+
+        stale = top / ".kiro-project" / "backlog" / "T1.md"      # 鏡だけを汚す（状態そのものは不変）
+        stale.write_text("## T1\n- status: review\n- retries: 9\n")
+        subprocess.run(["git", "-C", str(top), "add", "--", ".kiro-project"],
+                       check=True, capture_output=True)
+
+        km.backup_state(cfg)                                     # 積むものは無いが鏡は揃うはず
+        self.assertEqual(stale.read_text(), "## T1\n- status: ready\n")
+        r = subprocess.run(["git", "-C", str(top), "status", "--porcelain", "--",
+                            ".kiro-project"], capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "", "staged の古いスナップショットが残らない")
+
     def test_backup_does_not_pile_up_commits(self):
         """何度同期しても、正本ブランチに積まれるバックアップは 1 コミットに保たれる。
 

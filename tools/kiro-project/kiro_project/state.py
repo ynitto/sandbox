@@ -166,6 +166,17 @@ def _is_pushed(top: Path, branch: str, rev: str) -> bool:
     return r.returncode == 0
 
 
+def _sync_backup_mirror(top: "Path", branch: str, rel: str) -> None:
+    """本体が正本ブランチを開いているなら、その <rel> の index・作業ツリーを branch へ揃える。
+
+    「新しいコミットは不要（＝バックアップ済み）」の経路でも必ず呼ぶこと。鏡がずれたまま
+    詰む状態はまさにそこで止まり続けるからで、コミットが要らないときこそ揃え直す必要がある。
+    パス限定 checkout なので、人が本体で触っている他のファイルには影響しない。"""
+    if _git_line(top, "symbolic-ref", "--quiet", "--short", "HEAD") != branch:
+        return
+    _git_line(top, "checkout", "-q", branch, "--", rel)
+
+
 def backup_state(cfg: "Config") -> bool:
     """状態 worktree の最新を、正本ブランチ（既定 main）へバックアップする。バックアップしたら True。
 
@@ -201,6 +212,7 @@ def backup_state(cfg: "Config") -> bool:
     if not old:
         return False                       # 正本ブランチが無い（別運用）→ 触らない
     if _git_line(top, "rev-parse", "--verify", "--quiet", f"{branch}:{rel}") == state_tree:
+        _sync_backup_mirror(top, branch, rel)   # 中身は同じでも鏡がずれていることがある → 揃える
         return False                       # 中身が同じ＝バックアップ済み（空コミットを作らない）
 
     # 本体の作業ツリーを揃えてよいかは ref を進める **前** に決める。進めた後に見ると、ref が
@@ -252,7 +264,7 @@ def backup_state(cfg: "Config") -> bool:
     # 本体がその正本ブランチを開いていたなら、作業ツリーの表示も揃える（人が差分を見ずに済む）。
     # 人が .kiro-project を手で編集していたなら触らない（その変更を消さない）。
     if adopt:
-        _git_line(top, "checkout", "-q", branch, "--", rel)
+        _sync_backup_mirror(top, branch, rel)
     if cfg.state_push:
         _git_line(top, "push", "-q", "origin", f"refs/heads/{branch}:{branch}")
     return True
