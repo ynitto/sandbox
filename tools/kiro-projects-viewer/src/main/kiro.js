@@ -418,6 +418,53 @@ function listMdDir(dir, parser) {
   return out;
 }
 
+// needs/<id>.md が無い判断待ちタスク（review / blocked / proposed）を backlog status から補う。
+// 本体の ensure_needs と同じ契約: needs は status の投影で、票が失われても検収・承認導線を残す。
+// ここではファイルを書かず表示用だけを合成する（承認は commands/ 経由で needs ファイルが無くても届く）。
+function synthesizeNeedsFromBacklog(needs, backlog, needsDir) {
+  const have = new Set();
+  for (const n of needs || []) {
+    if (n.id) have.add(String(n.id));
+    if (n.taskId) have.add(String(n.taskId));
+  }
+  const out = [...(needs || [])];
+  for (const t of backlog || []) {
+    const st = String(t.status || '');
+    if (!['review', 'blocked', 'proposed'].includes(st)) continue;
+    if (have.has(String(t.id))) continue;
+    const kind = st === 'review' ? 'review' : st === 'proposed' ? 'plan-review' : 'blocked';
+    const why =
+      st === 'review'
+        ? '成果物の検収待ち（承認すると完了になります）'
+        : st === 'proposed'
+          ? '新規タスクの実行前レビュー（承認されるまで実行しません）'
+          : `実行が止まっています（retries=${t.retries || 0}）。指示を送るか、そのまま再実行してください。`;
+    out.push({
+      id: t.id,
+      taskId: t.id,
+      kind,
+      date: '',
+      status: st,
+      title: `${t.id} — ${t.title || ''}`.trim(),
+      body: '',
+      decided: false,
+      why,
+      stateNote: '',
+      summary: '',
+      detail: '',
+      evidenceThin: false,
+      failureSummary: '',
+      diff: null,
+      risk: '',
+      file: path.join(needsDir, `${t.id}.md`),
+      mtime: t.mtime || 0,
+      synthesized: true,
+    });
+    have.add(String(t.id));
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // journal / run-log / DELIVERY
 // ---------------------------------------------------------------------------
@@ -872,7 +919,8 @@ function readProject(workspaceDir, cfg) {
   const dir = resolveProjectRoot(workspace);
   const backlog = listTasks(path.join(dir, 'backlog'));
   const archive = listTasks(path.join(dir, 'archive'));
-  const needs = listMdDir(path.join(dir, 'needs'), parseNeeds);
+  const needsDir = path.join(dir, 'needs');
+  const needs = synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir);
   const decisionsAll = [];
   for (const f of safeList(path.join(dir, 'decisions'))) {
     if (!f.endsWith('.md')) continue;
@@ -982,6 +1030,7 @@ module.exports = {
   parseCharter,
   parsePolicy,
   parseNeeds,
+  synthesizeNeedsFromBacklog,
   parseDecisions,
   listInstances,
   removeProjectRegistration,

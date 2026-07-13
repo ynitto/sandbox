@@ -45,10 +45,11 @@ function grab(name) {
 function makeAdvisor(project) {
   const code = [
     'const TERMINAL_RUN_STATES = new Set(["done", "failed", "canceled"]);',
-    'const statusLabel = (s) => s;',
+    'const statusLabel = (s) => ({ review: "検収待ち", blocked: "要対応", proposed: "計画承認待ち" }[s] || s);',
     grab('sanitizeTaskId'),
     grab('shortRunId'),
     grab('taskOfRun'),
+    grab('humanWaitingAdvice'),
     grab('runAdvice'),
     'return runAdvice;',
   ].join('\n');
@@ -117,7 +118,39 @@ test('失敗 + タスクが review（判断待ち）→ 要対応タブへ誘導
   const a = advise(r, group(r));
   assert.strictEqual(a.kind, 'human');
   assert.match(a.text, /要対応/);
+  assert.match(a.chip, /検収待ち/);
   assert.strictEqual(a.taskId, 'T-9');
+});
+
+test('done + タスクが review（検収待ち）→ 完了扱いにせず要確認へ（delivery_review）', () => {
+  // verify=PASS 後に delivery_review でタスクが review に残ると、run 自体は done になる。
+  // run.status=done を先に見ると「完了」扱いで操作待ちから消えるバグの回帰防止。
+  const advise = makeAdvisor(project({ taskStatus: 'review' }));
+  const r = baseRun({ status: 'done', alive: false, counts: { done: 5, failed: 0, claimed: 0, pending: 0, waiting: 0 } });
+  const a = advise(r, group(r));
+  assert.strictEqual(a.kind, 'human');
+  assert.match(a.chip, /検収待ち/);
+  assert.match(a.text, /検収|承認/);
+  assert.strictEqual(a.taskId, 'T-9');
+});
+
+test('archived + タスクが review → 記録扱いにせず検収待ちを示す', () => {
+  const advise = makeAdvisor(project({ taskStatus: 'review' }));
+  const r = baseRun({ status: 'done', archived: true, alive: false });
+  const a = advise(r, group(r));
+  assert.strictEqual(a.kind, 'human');
+  assert.match(a.chip, /検収待ち/);
+});
+
+test('実行中だが parked（承認待ち）→ 見守るだけでなく人の番として示す', () => {
+  const advise = makeAdvisor(project({ taskStatus: 'offloaded' }));
+  const r = baseRun({
+    status: 'running', alive: true,
+    counts: { done: 2, failed: 0, claimed: 0, pending: 0, waiting: 0, parked: 1 },
+  });
+  const a = advise(r, group(r));
+  assert.strictEqual(a.kind, 'human');
+  assert.match(a.chip, /承認待ち/);
 });
 
 test('古い試行（最新が別 run）→ 見るだけ・削除可、最新への誘導', () => {
