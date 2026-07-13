@@ -1,7 +1,0 @@
-{
-  "id": "t16",
-  "who": "worker-1",
-  "status": "done",
-  "output": "完了条件のテストは既に緑（14 passed, exit 0）。作業ツリーは無変更（調査のみ）。\n\n## 成果物\n\n変更なし（調査のみ）。対象テストは既存実装で満たされていた。\n\n## 検証内容と結果\n\n- 完了条件コマンド `python3 -m pytest tools/kiro-project/tests -q -k first_command_line` を実行 → **14 passed, 512 deselected, 終了コード0**。\n- タスクが求める「フェンスなし・前置き散文の後に素のコマンド行が続く出力から、散文をスキップしてコマンド行を返す」検証は、`tools/kiro-project/tests/test_kiro_project.py:4929` の `test_first_command_line_skips_unfenced_prose_before_command`（日本語散文＋改行＋素コマンド行）と、同 `:4936` の `test_first_command_line_skips_unpunctuated_english_prose`（英語散文パターン）で既にカバーされている。\n- `git blame` で確認したところ、この2件は今回の run（`run-20260712-222225-2732`）ではなく、先行する別 run（`run-20260712-185720-3472`）の t18/t9 で追加されたコミット（`5b1dd15f`, `4780b459`、いずれも同一 kiro-flow コミット群）。対象コードの `_first_command_line` 実装（`tools/kiro-project/kiro-project.py:2962`）自体も、依存成果物 t7 が前提とした通り HEAD で既に「フェンス内コマンドを拾えない」旧不具合が解消済みの状態。\n\n## 採用した前提・未解決事項・範囲外で見つけた問題\n\n- **前提**: タスク文言の「素のコマンド行」は「コードフェンスを伴わない裸のコマンド行」の意と解釈した。既存2テストはこの解釈と完全に一致する内容であり、要求されたシナリオと重複するテストを新規追加することは「範囲を守る」「ついで修正を混ぜない」の方針に反すると判断し、追加を見送った。\n- **未解決事項**: なし。完了条件は達成済み。\n- **範囲外で見つけた問題**: t7 の申し送りにあったカテゴリ5（`$ ` プロンプト記号）・カテゴリ6（箇条書き番号）の回帰テスト追加は、本タスクの対象（前置き散文＋裸コマンド行のケース）とは別カテゴリのため、本タスクでは着手していない（既存で `test_first_command_line_strips_leading_shell_prompt_symbol` が実装済みなのは確認したが、これも本タスクのスコープ外）。",
-  "finished_at": "2026-07-12T13:45:45Z"
-}

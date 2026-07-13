@@ -1,0 +1,9 @@
+{
+  "id": "t10",
+  "goal": "`codd-gate verify --repos <repos.json> --repo-dir sandbox=. --base <rev> --strict` を実行するラッパ関数を実装する。終了コード 0=ok、非 0=failed、実行不能=skipped に正規化し、stdout/stderr を結果へ格納する。base リビジョンは KIRO_BASE_REV 環境変数を既定 HEAD~1 で解決する",
+  "deps": [
+    "t8",
+    "t9"
+  ],
+  "kind": "generate"
+}

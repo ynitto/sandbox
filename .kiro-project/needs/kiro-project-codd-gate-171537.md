@@ -10,23 +10,21 @@ kind: blocked
 
 ## Context and Problem Statement
 
-- なぜ: 繰り返し NG（retries=8）: exit=5 585 deselected in 0.20s
+- なぜ: 繰り返し NG（retries=9）: exit=5 589 deselected in 0.16s
 - 状態: blocked（kiro-project の判断待ち）
 
 ## 判断材料（成果物の所在・差分・検証）
-- 成果物: ブランチ `kp/kiro-project-codd-gate-171537`（7 ファイル変更・base `main`）
+- 成果物: ブランチ `kp/kiro-project-codd-gate-171537`（5 ファイル変更・base `main`）
 - 所在: /Users/nitto/Workspace/sandbox
 - 差分を見る: `git -C /Users/nitto/Workspace/sandbox diff main...origin/kp/kiro-project-codd-gate-171537`
-- 変更ファイル（7 件）:
-    - tools/kiro-project/codd_gate_base.py
-    - tools/kiro-project/codd_gate_debt.py
+- 変更ファイル（5 件）:
+    - .kiro-project/repos.json
     - tools/kiro-project/codd_gate_detect.py
-    - tools/kiro-project/codd_gate_routing.py
-    - tools/kiro-project/codd_gate_status.py
+    - tools/kiro-project/codd_gate_invoke.py
     - tools/kiro-project/tests/test_codd_gate_detect.py
-    - tools/kiro-project/tests/test_codd_gate_routing.py
+    - tools/kiro-project/tests/test_codd_gate_invoke.py
 - 実行先: local
-- 検証: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict` → FAIL（exit=5 585 deselected in 0.20s）
+- 検証: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict` → FAIL（exit=5 589 deselected in 0.16s）
 
 ## Decision Outcome
 

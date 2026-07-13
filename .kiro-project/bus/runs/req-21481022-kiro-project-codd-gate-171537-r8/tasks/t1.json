@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/kiro-project/kiro_project/ パッケージの分割後構造を棚卸しし、モジュール一覧・各モジュールの責務・エントリポイント（CLI・ループ本体）・既存の設定読み込み経路を1枚のマップにまとめる。regression/acceptance/enqueue が定義されているファイルと関数シグネチャを file:line で特定する",
+  "deps": [],
+  "kind": "work"
+}

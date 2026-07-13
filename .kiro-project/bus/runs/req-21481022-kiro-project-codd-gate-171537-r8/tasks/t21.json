@@ -1,0 +1,9 @@
+{
+  "id": "t21",
+  "goal": "tests/test_codd_gate_fallback.py を追加し、codd-gate 未インストール環境で status=skipped が返り、例外が送出されないことを検証するユニットテストを書く（PATH を空にしたケースを含む）",
+  "deps": [
+    "t9",
+    "t6"
+  ],
+  "kind": "generate"
+}

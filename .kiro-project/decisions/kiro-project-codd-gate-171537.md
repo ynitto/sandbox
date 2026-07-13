@@ -64,3 +64,10 @@
 - affects : kiro-project-codd-gate-171537 → ready
 - learn: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: 実装が未完（pytest -k codd がテストを 1 件も収集できず exit=5）。run-20260712-213419-5922 の続きから再開し、残りのノードで codd テストを実装させる
 
+## DR-0011  2026-07-13  actor: nitto
+- context : kiro-project-codd-gate-171537（kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する）を人の判断から復帰
+- action  : approve-and-fix
+- reason  : 検出モジュール（codd_gate_*.py・29テスト）は 38f99cac でマージ済み。残るのは regression/acceptance/enqueue への結線。kiro-project.py が kiro_project/ パッケージへ分割されたため、旧 run（kiro-project.py への結線を前提）は破棄して作り直す。分割で各モジュールは 1000 行以下になり、worker のタイムアウト（600s）は解消される見込み
+- affects : kiro-project-codd-gate-171537 → ready
+- learn: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: 検出モジュール（codd_gate_*.py・29テスト）は 38f99cac でマージ済み。残るのは regression/acceptance/enqueue への結線。kiro-project.py が kiro_project/ パッケージへ分割されたため、旧 run（kiro-project.py への結線を前提）は破棄して作り直す。分割で各モジュールは 1000 行以下になり、worker のタイムアウト（600s）は解消される見込み
+

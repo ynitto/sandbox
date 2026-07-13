@@ -1,6 +1,0 @@
-{
-  "id": "s7",
-  "goal": "tools/kiro-project/tests の既存テスト構成（fixture・モック方針・pytest マーカー）と、既存 codd 関連テストの有無を調査する",
-  "deps": [],
-  "kind": "work"
-}

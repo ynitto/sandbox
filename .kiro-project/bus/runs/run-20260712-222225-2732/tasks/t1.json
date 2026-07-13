@@ -1,6 +1,0 @@
-{
-  "id": "t1",
-  "goal": "tools/kiro-project 配下で synth_verify と _first_command_line の実装箇所を特定し、現在のパース処理（正規表現・行分割・戻り値の型と None 時の扱い）を逐語で書き出す",
-  "deps": [],
-  "kind": "work"
-}

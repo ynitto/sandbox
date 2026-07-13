@@ -1,6 +1,0 @@
-{
-  "id": "s1",
-  "goal": "tools/kiro-project の regression（差分ゲート相当）実装を読み、フック関数のシグネチャ・呼び出し元・戻り値の扱い・失敗時の挙動を特定する",
-  "deps": [],
-  "kind": "work"
-}

@@ -1,8 +1,0 @@
-{
-  "id": "a1",
-  "goal": "検出モジュール本体（tools/kiro-project 配下の新規モジュール）を作成し、shutil.which 等による codd-gate CLI 実在検出を実装する",
-  "deps": [
-    "d2"
-  ],
-  "kind": "work"
-}

@@ -1,8 +1,0 @@
-{
-  "id": "b2",
-  "goal": "差分ゲート結線: repos.json のパスと repo-dir マッピング（例 sandbox=.）を kiro-project の作業ディレクトリ情報から組み立てる引数ビルダを実装する",
-  "deps": [
-    "d2"
-  ],
-  "kind": "work"
-}

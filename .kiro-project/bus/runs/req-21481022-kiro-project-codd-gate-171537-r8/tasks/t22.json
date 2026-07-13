@@ -1,0 +1,9 @@
+{
+  "id": "t22",
+  "goal": "tests/test_codd_gate_verify.py を追加し、verify ラッパの終了コード解釈をユニットテストする: exit 0 → ok、exit 1 → failed、FileNotFoundError → skipped、タイムアウト → skipped。base リビジョンが KIRO_BASE_REV から解決されることも検証する",
+  "deps": [
+    "t10",
+    "t6"
+  ],
+  "kind": "generate"
+}

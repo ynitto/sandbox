@@ -1,6 +1,0 @@
-{
-  "id": "t2",
-  "goal": "実行環境の macOS 固有事実を採取する: `/tmp` が `/private/tmp` へのシンボリックリンクであること、`git --version` と `git config --get init.defaultBranch` の値（未設定時の既定ブランチ名）、`sed`/`readlink`/`stat` が BSD 系であること、umask とファイルモードの既定値",
-  "deps": [],
-  "kind": "work"
-}

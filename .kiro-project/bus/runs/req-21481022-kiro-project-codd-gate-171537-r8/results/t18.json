@@ -1,0 +1,16 @@
+{
+  "id": "t18",
+  "who": "worker-2",
+  "status": "done",
+  "output": "All 608 tests pass, no regressions.\n\n## 成果サマリー\n\n**差別化の切り口**: 他候補が「CLI の `--repo-dir sandbox=.` が常にレジストリを上書きするので repos.json 側は無変更でよい」と結論しがちな中、本候補は **レジストリファイル自体を自己記述的（self-hosted）にする** ことを選んだ — `--repo-dir` を渡さない呼び出し（CI hook や `codd-gate scan` 単体実行など）でも解決できるよう、schema が定義する `dir` フィールドを明示的に追加した。\n\n`.kiro-project/repos.json` の `sandbox` エントリに `\"dir\": \".\"` を1行追加した（`schemas/repos.schema.json` の `dir`＝「codd-gate が読むローカル checkout ヒント」を採用。`local`＝「kiro-project の worker clone ヒント」とは別フィールドとして両立する設計なので、既存の `local` はそのまま維持）。\n\n```diff\n     \"owns\": [\"**\"],\n-    \"local\": \"/Users/nitto/Workspace/sandbox\"\n+    \"local\": \"/Users/nitto/Workspace/sandbox\",\n+    \"dir\": \".\"\n```\n\n## 検証内容と結果\n\n1. 完了条件コマンドをそのまま実行 → 両方とも exit 0（変更前後とも通っていたが、変更後も回帰なし）:\n   - `pytest tools/kiro-project/tests -q -k codd` → 29 passed\n   - `codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` → `OK: 一貫性ゲート通過`\n2. `--repo-dir` を**渡さずに** `dir: \".\"` だけで解決できることを確認（この変更が意味を持つことの直接証拠）:\n   - `codd-gate verify --repos ./.kiro-project/repos.json --base HEAD~1 --strict` → `OK`（`--repo-dir` 未指定でも registry の `dir` から解決）\n3. kiro-project 側の読み込み処理と矛盾しないことを確認:\n   - `load_repo_registry()` で読み込み → `dir` キーは `_registry_entry()` が既知キーの allowlist で無視するだけで、`local`/`owns`/`base` 等の既存フィールドは従来どおり正しく読める\n   - `_registry_generated(data)` は `False`（`_meta.generated_from` 無し）→ この repos.json は「手書きが正」として扱われ、charter 駆動の `export_repo_registry()` による自動上書き対象にならない。したがって追加した `dir` フィールドは今後も消されない\n   - `codd_gate_detect.check_repos_schema_compat(\".kiro-project/repos.json\")` → `True`\n4. 全体回帰: `pytest tools/kiro-project/tests -q` → 608 passed, 0 failed\n\n## 採用した前提・未解決事項・範囲外で見つけた問題\n\n- **前提**: `--repo-dir` CLI 引数は常にレジストリの `dir` に優先する（`codd-gate.py:186` `repo_dirs.get(name) or ...`）。よって完了条件コマンドは変更前から exit 0 だったが、タスク文面が「repos.json を…解決できる形式にする」と成果物そのものを求めているため、`--repo-dir` に依存しない自己記述的な形へ更新することを本タスクのゴールと解釈した。\n- **範囲外（触っていない）**: `local` フィールドの URL 末尾スラッシュ不一致（repos.json の `url` は `.../sandbox/`、実際の origin は `.../sandbox.git`）。schema の「origin URL が url と一致するときだけ使う」という条件を厳密に満たすか未検証だが、これは worker 側の別ロジックの話であり本タスクの対象外のため報告のみに留めた。\n- **未解決**: charter.md（`.kiro-project/charter.md`）の `## repos` セクションは空。今後 charter 側に `sandbox` を書き足すと `_apply_repo_registry` の分岐次第で挙動が変わりうる点は、結線タスク側で要考慮。",
+  "finished_at": "2026-07-13T04:18:03Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/kiro-project-codd-gate-171537",
+      "commit": "fe1e06074f95b9861cf184715d7fef495cca73fe",
+      "target": "main",
+      "path": ""
+    }
+  }
+}

@@ -1,6 +1,0 @@
-{
-  "id": "s4",
-  "goal": "codd-gate CLI の I/F を調査する: verify / tasks / --debt の引数（--repos, --repo-dir, --base, --strict）、標準出力フォーマット、終了コード規約を列挙する",
-  "deps": [],
-  "kind": "work"
-}

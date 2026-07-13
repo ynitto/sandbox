@@ -3,10 +3,10 @@
 - source: charter
 - priority: 0
 - verify: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict`
-- retries: 8
+- retries: 9
 - workspace: sandbox
 - refs: sandbox
 - charter: v0.1
 - assess: c=2 r=2 a=2
-- last_run: run-20260712-213419-5922
-- needs_reason: 繰り返し NG（retries=8）: exit=5 585 deselected in 0.20s
+- last_run: req-21481022-kiro-project-codd-gate-171537-r8
+- needs_reason: 繰り返し NG（retries=9）: exit=5 589 deselected in 0.16s

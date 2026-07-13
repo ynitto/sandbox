@@ -1,9 +1,0 @@
-{
-  "id": "loop",
-  "goal": "v1/v2 で判明した失敗を修正し、完了条件のシェルコマンド（pytest -k codd && codd-gate verify --strict）が終了コード0になるまで修正と再実行を反復する（loop-until-done）",
-  "deps": [
-    "v1",
-    "v2"
-  ],
-  "kind": "work"
-}

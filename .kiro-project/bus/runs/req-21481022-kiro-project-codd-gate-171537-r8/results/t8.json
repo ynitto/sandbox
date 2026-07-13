@@ -1,0 +1,19 @@
+{
+  "id": "t8",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果報告\n\n**差別化の切り口**: 可用性判定を `get_version` の生の判定を bool に丸めるだけの薄いラッパーに留め、キャッシュを `(tuple(binary), timeout)` キー付き辞書にした（単一グローバルフラグにせず、設定変更や複数テストでの binary 切り替えを誤って汚染しない設計）。\n\n`tools/kiro-project/codd_gate_detect.py` に `check_availability(binary, run=subprocess.run, timeout=PROBE_TIMEOUT) -> (bool, version|None)` と `clear_availability_cache()` を追加。プロセス起動失敗・timeout・非ゼロ終了・パース不能はすべて `available=False` に丸め、`binary=None`（未検出）も `resolve_codd_gate(...)` からそのまま連結できるよう吸収した。対応テスト8ケースを追加。\n\n**検証**: `pytest -k codd` で45件パス、完了条件のシェルコマンド一式（pytest && `codd-gate verify --strict`）を実行し exit 0 を確認。\n\n**範囲外の所見**: 依存タスクt7の成果（`resolve_codd_gate_bin`）が渡されたworktreeのHEAD（detached、別系列のt18コミット）に含まれていなかったため、報告済みの内容のまま再適用してから本実装を追加した。詳細は artifacts/t8/check_availability_report.md に記載。",
+  "finished_at": "2026-07-13T04:24:30Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/kiro-project-codd-gate-171537",
+      "commit": "6224bd197536fb63d8c99fb7ae383ee459e4d57c",
+      "target": "main",
+      "path": ""
+    }
+  },
+  "artifacts": [
+    "artifacts/t8/check_availability_report.md"
+  ]
+}

@@ -1,8 +1,0 @@
-{
-  "id": "t8",
-  "goal": "macOS 固有要因の調査③：実行環境の git 設定（init.defaultBranch、user.name/user.email、commit.gpgsign、core.hooksPath、グローバル gitconfig）を `git config --list --show-origin` で採取し、失敗テストが暗黙に前提としている値（例: master/main）との差分を特定する。ファイル編集はしない",
-  "deps": [
-    "t5"
-  ],
-  "kind": "work"
-}

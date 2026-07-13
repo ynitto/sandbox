@@ -1,0 +1,10 @@
+{
+  "id": "t19",
+  "goal": "codd-gate 連携の設計書と運用手順ドキュメントを更新する。自動検出の優先順・未インストール時の挙動（skipped で本体は落ちない）・regression/acceptance/enqueue それぞれへの反映ルール・完了条件コマンドの実行方法を記載する",
+  "deps": [
+    "t13",
+    "t15",
+    "t17"
+  ],
+  "kind": "generate"
+}

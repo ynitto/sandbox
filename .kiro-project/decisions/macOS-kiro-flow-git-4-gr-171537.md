@@ -65,3 +65,10 @@
 - affects : macOS-kiro-flow-git-4-gr-171537 → ready
 - learn: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: 完了条件は満たしている（両スイート 990 passed）。120 秒の verify タイムアウトで NG 扱いされていたため、verify_timeout=600 に引き上げて再検証する
 
+## DR-0011  2026-07-13  actor: nitto
+- context : macOS-kiro-flow-git-4-gr-171537（macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする）を検収承認
+- action  : approve-done
+- reason  : 完了条件（両スイート green）を分割後の main で確認: 1024 passed。成果（kiro-flow の git 自己修復テスト修正）は 8e511d65 でマージ済み
+- affects : macOS-kiro-flow-git-4-gr-171537 → done
+- learn: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: 完了条件（両スイート green）を分割後の main で確認: 1024 passed。成果（kiro-flow の git 自己修復テスト修正）は 8e511d65 でマージ済み
+

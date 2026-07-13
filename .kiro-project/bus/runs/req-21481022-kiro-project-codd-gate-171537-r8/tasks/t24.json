@@ -1,0 +1,9 @@
+{
+  "id": "t24",
+  "goal": "tests/test_codd_gate_regression_wiring.py を追加し、regression 結線をユニットテストする: codd-gate failed で差分ゲートが不合格になること、skipped で既存判定が変わらないこと、ok で既存判定を汚染しないこと",
+  "deps": [
+    "t13",
+    "t6"
+  ],
+  "kind": "generate"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "t7",
+  "goal": "codd-gate 実行ファイルの検出関数を実装する: 環境変数（CODD_GATE_BIN）→ 設定ファイル → PATH（shutil.which）の優先順で探索し、見つからなければ None を返す。例外は投げない",
+  "deps": [
+    "t1",
+    "t2"
+  ],
+  "kind": "generate"
+}

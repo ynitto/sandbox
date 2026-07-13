@@ -1,8 +1,0 @@
-{
-  "id": "t19",
-  "goal": "`python3 -m pytest tools/kiro-project/tests -q` を実行し、kiro-project の全テストにリグレッションが無いことを確認して結果を報告する",
-  "deps": [
-    "t17"
-  ],
-  "kind": "work"
-}

@@ -1,8 +1,0 @@
-{
-  "id": "t12",
-  "goal": "git のデフォルトブランチ名への依存を除去する: master/main をハードコードせず、`git symbolic-ref --short HEAD` 等で現在ブランチを動的に取得するか、リポジトリ初期化時に `-b <branch>` / init.defaultBranch を明示指定して決定的にする",
-  "deps": [
-    "t10"
-  ],
-  "kind": "work"
-}

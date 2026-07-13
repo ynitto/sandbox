@@ -1,6 +1,0 @@
-{
-  "id": "s5",
-  "goal": "schemas/ の共通データ契約（codd-gate と kiro-project が共有する JSON スキーマ）を読み、バージョン識別子と互換判定に使えるフィールドを特定する",
-  "deps": [],
-  "kind": "work"
-}

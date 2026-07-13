@@ -1,6 +1,0 @@
-{
-  "id": "t3",
-  "goal": "kiro-flow の git 自己修復ロジックの実装箇所を特定する: 対象の Python モジュール・クラス・関数名（例: worktree 復旧、index.lock 除去、detached HEAD 復旧、ブランチ作成/切替）をファイルパスと行番号付きで一覧化する",
-  "deps": [],
-  "kind": "work"
-}

@@ -1,6 +1,0 @@
-{
-  "id": "t1",
-  "goal": "リポジトリ直下で `python3 -m pytest tools/kiro-flow/tests -q -rA` を実行し、失敗している git 自己修復テスト 4 件の完全な test id（file::class::func）・アサーション文言・スタックトレース・実際値/期待値を raw ログとして採取する",
-  "deps": [],
-  "kind": "work"
-}

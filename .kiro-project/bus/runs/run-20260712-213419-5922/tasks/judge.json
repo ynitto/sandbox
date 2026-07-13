@@ -1,8 +1,0 @@
-{
-  "id": "judge",
-  "goal": "完了条件コマンドが exit 0 で成功したことと、charter の制約（codd-gate 未インストール時の縮退・schemas 経由の疎結合・ユニットテスト拡充）を満たしていることを最終判定する",
-  "deps": [
-    "loop"
-  ],
-  "kind": "judge"
-}

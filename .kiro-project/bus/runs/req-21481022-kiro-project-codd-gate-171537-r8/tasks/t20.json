@@ -1,0 +1,9 @@
+{
+  "id": "t20",
+  "goal": "tests/test_codd_gate_detect.py を追加し、検出関数のユニットテストを書く: 環境変数優先・PATH 検出・未検出時 None・バージョン確認の成功/タイムアウト/非ゼロ終了。subprocess をモックして外部 CLI に依存させない",
+  "deps": [
+    "t8",
+    "t6"
+  ],
+  "kind": "generate"
+}

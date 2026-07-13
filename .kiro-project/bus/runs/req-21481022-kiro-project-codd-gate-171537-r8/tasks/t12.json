@@ -1,0 +1,9 @@
+{
+  "id": "t12",
+  "goal": "regression（差分ゲート）から codd-gate verify --strict 呼び出しを結線する。t3 で特定した関数に t10 のラッパ呼び出しを追加し、base リビジョンと repos.json のパスを既存の設定経路から渡す",
+  "deps": [
+    "t3",
+    "t10"
+  ],
+  "kind": "generate"
+}

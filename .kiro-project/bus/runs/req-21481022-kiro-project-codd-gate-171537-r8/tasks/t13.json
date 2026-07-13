@@ -1,0 +1,8 @@
+{
+  "id": "t13",
+  "goal": "regression の判定結果へ codd-gate の結果を反映する。failed の場合は差分ゲートを不合格にして理由（codd-gate の stdout 抜粋）を結果へ載せ、skipped の場合は既存判定を変えない（不合格にしない）ことを実装で保証する",
+  "deps": [
+    "t12"
+  ],
+  "kind": "generate"
+}
