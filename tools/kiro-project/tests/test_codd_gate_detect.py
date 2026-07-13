@@ -164,9 +164,10 @@ class TestCoddGateStatusNoOpDegradation(unittest.TestCase):
             ["/usr/local/bin/codd-gate", "verify", "--strict"],
         )
 
-        integrated = status.detect_status(which=which)
+        integrated = status.detect_status(which=which, run=run)
         self.assertTrue(integrated.usable)
         self.assertEqual(integrated.binary, binary)
+        self.assertEqual(integrated.version, (1, 0, 0))
 
     def test_cli_absent_degrades_to_noop(self):
         which = lambda _name: None
@@ -190,6 +191,30 @@ class TestCoddGateStatusNoOpDegradation(unittest.TestCase):
         # detect_status は resolve_codd_gate が想定外の例外を出しても「未検出」へ縮退させる
         which = mock.Mock(side_effect=OSError("environment I/O failure"))
         result = status.detect_status(which=which)
+        self.assertFalse(result.usable)
+        self.assertIsNone(result.command("verify"))
+
+    def test_detect_status_degrades_to_noop_on_incompatible_version(self):
+        # PATH には見つかるが対応下限未満 — detect_status のバージョン確認込みで検出される
+        which = lambda name: "/usr/local/bin/codd-gate" if name == detect.BINARY_NAME else None
+        run = _fake_run(0, stdout="codd-gate 0.9.0\n")
+        result = status.detect_status(which=which, run=run)
+        self.assertFalse(result.usable)
+        self.assertIsNone(result.command("verify", "--strict"))
+        self.assertIn("下限未満", result.reason)
+
+    def test_detect_status_degrades_to_noop_on_unparsable_version(self):
+        which = lambda name: "/usr/local/bin/codd-gate" if name == detect.BINARY_NAME else None
+        run = _fake_run(0, stdout="garbage output\n")
+        result = status.detect_status(which=which, run=run)
+        self.assertFalse(result.usable)
+        self.assertIn("バージョンを取得できない", result.reason)
+
+    def test_detect_status_survives_get_version_raising_unexpected_exception(self):
+        # get_version 自体は例外を投げない設計だが、detect_status 側でも想定外の例外に備える
+        which = lambda name: "/usr/local/bin/codd-gate" if name == detect.BINARY_NAME else None
+        run = mock.Mock(side_effect=RuntimeError("unexpected probe failure"))
+        result = status.detect_status(which=which, run=run)
         self.assertFalse(result.usable)
         self.assertIsNone(result.command("verify"))
 

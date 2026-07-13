@@ -22,9 +22,10 @@ CoddGateStatus を返す（no-op 縮退）」の1点に絞る。usable が False
 from __future__ import annotations
 
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 
-from codd_gate_detect import resolve_codd_gate
+from codd_gate_detect import get_version, resolve_codd_gate
 
 MIN_SUPPORTED_VERSION = (1, 0, 0)
 
@@ -116,23 +117,34 @@ def build_status(
     return CoddGateStatus(binary=binary, version=version, findings=[])
 
 
-def detect_status(explicit: "str | None" = None, which=shutil.which) -> CoddGateStatus:
-    """codd-gate の実在（a1 の resolve_codd_gate）のみを根拠に CoddGateStatus を返す。
+def detect_status(
+    explicit: "str | None" = None, which=shutil.which, run=subprocess.run
+) -> CoddGateStatus:
+    """codd-gate の実在＋バージョン（resolve_codd_gate・get_version）をまとめて確認し、
+    任意依存として安全に検出した結果を CoddGateStatus で返す（PATH 探索＋バージョン確認を
+    1回で完結させる合流点）。
 
-    バージョン取得・schemas 互換判定（a2）はまだ合流していないため、実在さえ確認できれば
-    version_known=True・schema_ok=True の既定で build_status に渡す（usable=True になる）。
-    a2/b 系が実測したバージョン・schema 適合を得たら、この関数を経由せず
+    schemas 互換判定は repos_path（呼び出し側の文脈）が要るためここでは行わない。
+    schema 適合まで確定したい呼び出し側は、この関数を経由せず
     build_status(binary, version=..., version_known=..., schema_ok=...) を直接呼べば
     同じ no-op 縮退へ合流できる——このモジュールが提供するのは「合流点」であって
     「唯一の入口」ではない。
 
-    resolve_codd_gate 自体は例外を投げない設計（a1）だが、環境依存の I/O
-    （shutil.which / Path.exists）が予期しない例外を出す可能性に備えてここでも捕捉し、
-    検出のどの段階で失敗しても「未検出」へ縮退させる。これにより kiro-project 本体は
-    codd-gate 連携の失敗を一切意識せず、既存挙動のまま動き続けられる。
+    resolve_codd_gate・get_version はいずれも例外を投げない設計だが、環境依存の I/O
+    （shutil.which / Path.exists / subprocess）が予期しない例外を出す可能性に備えてここでも
+    捕捉し、検出のどの段階で失敗しても「未検出」（binary=None）または「バージョン不明」
+    （version_known=False）へ縮退させる——未インストール環境で例外を外へ漏らさない。
+    これにより kiro-project 本体は codd-gate 連携の失敗を一切意識せず、既存挙動のまま
+    動き続けられる。
     """
     try:
         binary = resolve_codd_gate(explicit, which=which)
     except Exception:
         binary = None
-    return build_status(binary)
+    if binary is None:
+        return build_status(None)
+    try:
+        version = get_version(binary, run=run)
+    except Exception:
+        version = None
+    return build_status(binary, version=version, version_known=version is not None)
