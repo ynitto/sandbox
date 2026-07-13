@@ -7455,6 +7455,32 @@ class StateBackupTests(unittest.TestCase):
         self.assertTrue(km.commit_state(cfg), "worktree にはコミットされる")
         self.assertEqual(self._count(top, "main"), before, "正本は動かさない")
 
+    def test_backup_resyncs_a_stale_checkout_instead_of_wedging(self):
+        """本体側の .kiro-project が古くても、バックアップのたびに HEAD へ揃え直す。
+
+        ここを「差分＝人の編集かもしれない」と見て避けると自己永続的に詰む: 一度ずれた瞬間に
+        永久に同期されなくなり、古いスナップショットが index に staged のまま居座る。その状態で
+        main に git commit（パス指定なし）を打つと、バックアップが古い状態へ巻き戻る。"""
+        cfg, root, top = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: ready\n")
+        self.assertTrue(km.commit_state(cfg))                      # main へバックアップ
+
+        stale = top / ".kiro-project" / "backlog" / "T1.md"        # 本体側の鏡を古い内容へ汚す
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("## T1\n- status: review\n- retries: 9\n")
+        subprocess.run(["git", "-C", str(top), "add", "--", ".kiro-project"],
+                       check=True, capture_output=True)            # index に staged のまま残る状況
+
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: done\n")   # 次の意味ある変化
+        self.assertTrue(km.commit_state(cfg))
+
+        self.assertIn("status: done", self._show(top, "main:.kiro-project/backlog/T1.md") or "")
+        self.assertEqual(stale.read_text(), "## T1\n- status: done\n", "鏡が HEAD へ揃う")
+        r = subprocess.run(["git", "-C", str(top), "status", "--porcelain", "--",
+                            ".kiro-project"], capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "", "staged の古いスナップショットが残らない")
+
     def test_backup_does_not_pile_up_commits(self):
         """何度同期しても、正本ブランチに積まれるバックアップは 1 コミットに保たれる。
 

@@ -205,8 +205,14 @@ def backup_state(cfg: "Config") -> bool:
 
     # 本体の作業ツリーを揃えてよいかは ref を進める **前** に決める。進めた後に見ると、ref が
     # 進んだこと自体が「作業ツリーとの差分」として現れ、それを人の編集と読み違えてしまう。
-    adopt = (_git_line(top, "symbolic-ref", "--quiet", "--short", "HEAD") == branch
-             and not _state_changed(top, [rel]))
+    #
+    # 「<rel> に差分があるなら人の編集かもしれないので触らない」とはしない。状態を worktree へ
+    # 逃がしている以上（backup_state はその時しか動かない）、本体側の <rel> は**編集面ではなく
+    # バックアップの鏡**で、人も kiro-project もそこを読み書きしない。差分を人の編集と見て避けると
+    # 自己永続的に詰む: 一度ずれた瞬間 adopt が永久に False になり、二度と同期されず、
+    # **古いスナップショットが index に staged のまま居座る**。その状態で誰かが main で
+    # git commit（パス指定なし）を打つと、バックアップが古い状態へ巻き戻る（実際そうなった）。
+    adopt = _git_line(top, "symbolic-ref", "--quiet", "--short", "HEAD") == branch
 
     # 正本ブランチのツリーの <rel> だけを差し替えた新ツリーを、一時 index の上で組む。
     # 本体の index（人のステージ）を汚さないため GIT_INDEX_FILE を切り替える。
