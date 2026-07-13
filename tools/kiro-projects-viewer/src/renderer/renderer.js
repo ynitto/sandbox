@@ -2653,6 +2653,97 @@ function daemonBadge() {
   return `<span class="status-chip" title="稼働状態を読み取れませんでした">実行エンジン: 不明</span>`;
 }
 
+// run に対応するバックログ／アーカイブのタスク（{ task, scope } か null）。
+function taskOfRun(run) {
+  const p = state.project;
+  if (!p || !run || !run.taskId) return null;
+  const key = sanitizeTaskId(run.taskId);
+  const t = (p.backlog || []).find((x) => sanitizeTaskId(x.id) === key);
+  if (t) return { task: t, scope: 'backlog' };
+  const a = (p.archive || []).find((x) => sanitizeTaskId(x.id) === key);
+  return a ? { task: a, scope: 'archive' } : null;
+}
+
+// この run について「次に何が起きるか・あなたの出番はあるか」を決定的に言い切る。
+// フロー画面の第一言語。状態チップ（実行中/失敗/応答なし）は機械の状態でしかなく、
+// 「放置すれば自動で直るのか・自分が押すべきなのか」を人が推測させられていた
+// （同じ「応答なし」でも、本体が動いていれば自動再開・needs 待ちなら人の番、と正解が違う）。
+// 判定材料は run（status/alive/counts）・系統（最新試行か）・タスク（status/last_run）・
+// 本体の稼働（liveness）で、すべて手元のデータから決定的に出す。
+// kind: watch=見守る / none=何もしなくてよい / auto=自動でやり直される（操作不要）
+//       restart=本体を動かせば自動 / human=要対応タブで判断 / manual=あなたの操作待ち
+//       old=古い試行（見るだけ）
+function runAdvice(run, group) {
+  const p = state.project || {};
+  const live = p.liveness || {};
+  const st = String(run.status);
+  if (run.archived) {
+    return { kind: 'none', cls: 'ok', chip: '📦 記録',
+      text: '完了後に保存された記録です。見るだけで、操作はありません。' };
+  }
+  if (st === 'done') {
+    return { kind: 'none', cls: 'ok', chip: '✔ 完了',
+      text: '成果は確定済みです。操作は要りません。' };
+  }
+  const stalled = run.alive === false;
+  if (!stalled && !TERMINAL_RUN_STATES.has(st)) {
+    return { kind: 'watch', cls: 'ok', chip: '▶ 実行中',
+      text: '実行エンジンが応答しています。操作は不要 — このまま見守れます。' };
+  }
+  // ここから「止まっている」（failed / canceled / 非終端なのに応答なし）
+  const latest = group ? group.latest : run;
+  if (latest.runId !== run.runId) {
+    return { kind: 'old', cls: 'muted', chip: '🗂 古い試行', latestId: latest.runId,
+      text: `新しい試行（${shortRunId(latest.runId)}）に引き継ぎ済みです。この画面は記録 — 操作は不要で、削除しても安全です。` };
+  }
+  const found = taskOfRun(run);
+  if (found && found.scope === 'archive') {
+    return { kind: 'none', cls: 'ok', chip: '✔ タスクは完了済み',
+      text: `元のタスク ${found.task.id} は既に完了しています。この run は途中の記録 — 操作は不要です。` };
+  }
+  if (found) {
+    const task = found.task;
+    const lastRun = String((task.extra && task.extra.last_run) || '');
+    const doneCount = (run.counts && run.counts.done) || 0;
+    if (['review', 'blocked', 'proposed'].includes(task.status)) {
+      return { kind: 'human', cls: 'act', chip: '🖐 あなたの判断待ち', taskId: task.id,
+        text: `元のタスク ${task.id} が人の判断待ち（${statusLabel(task.status)}）のため、ここで待っていても再実行されません。` +
+          '「要対応」タブで回答すると動き出します。' };
+    }
+    if (['ready', 'doing', 'offloaded', 'inbox'].includes(task.status)) {
+      const resume = !lastRun || lastRun === run.runId;
+      const how = resume
+        ? `失敗・未実行の工程だけをやり直します（完了済み ${doneCount} 件は温存）`
+        : '新しい実行としてやり直します';
+      if (live.paused) {
+        return { kind: 'restart', cls: 'warn', chip: '⏸ 一時停止中',
+          text: `プロジェクトが一時停止中のため、まだ再実行されません。概要の「再開」で本体が${how}。` };
+      }
+      if (live.running) {
+        return { kind: 'auto', cls: 'ok', chip: '⏳ まもなく自動でやり直されます',
+          text: `操作は不要です。本体（kiro-project）が${how}。数分待っても動かないときだけ下の ↻ を押してください。` };
+      }
+      return { kind: 'restart', cls: 'warn', chip: '⏻ 本体が停止中',
+        text: `kiro-project が動いていないため、このままでは再開されません。本体を起動すれば自動で${how}（↻ を押しても、本体が動くまで実行は始まりません）。` };
+    }
+    if (task.status === 'rejected') {
+      return { kind: 'none', cls: 'muted', chip: '✋ 却下済み',
+        text: `元のタスク ${task.id} は却下されています。この run はその記録です。` };
+    }
+  }
+  if (st === 'canceled') {
+    return { kind: 'manual', cls: 'muted', chip: '■ 中止済み',
+      text: '人が止めた実行です。やり直したいときだけ ↻ を押してください（自動では動きません）。' };
+  }
+  return { kind: 'manual', cls: 'act', chip: '🖱 あなたの操作待ち',
+    text: 'この実行は自動では再開されません。「↻ 失敗した工程だけやり直す」を押すと、失敗・未実行の工程だけが再実行されます（完了済みは温存）。' };
+}
+
+// 一覧の行・詳細バナー共通の advice チップ HTML（見守り系は一覧では出さない＝騒がない）
+function adviceChip(a) {
+  return `<span class="advice-chip advice-${a.cls}" title="${esc(a.text)}">${esc(a.chip)}</span>`;
+}
+
 function renderFlow() {
   const p = state.project;
   const el = $('tab-flow');
@@ -2696,10 +2787,14 @@ function renderFlow() {
     .map((g) => {
       const r = g.latest;
       const pct = Math.round(r.progress * 100);
-      const stalled =
-        r.alive === false
-          ? ` <span class="status-chip st-stalled" title="実行が止まっている可能性があります（最終応答: ${esc(fmtAgo(r.heartbeatAt) || 'なし')}）">応答なし</span>`
-          : '';
+      // 「応答なし」だけでは放置してよいのか押すべきなのか分からない。
+      // 一覧では advice（次に起きること）を状態チップの代わりに言い切る。
+      // 見守り系（実行中/完了/記録）は statusChip が既に言っているので重ねない。
+      const advice = runAdvice(r, g);
+      const adviceBit = ['watch', 'none'].includes(advice.kind) ? '' : ` ${adviceChip(advice)}`;
+      const adviceLine = ['human', 'manual', 'restart'].includes(advice.kind)
+        ? `<div class="advice-line advice-${advice.cls}">${esc(advice.text)}</div>`
+        : '';
       const taskLink = r.taskId
         ? ` <button class="badge task-link" data-goto-task="${esc(r.taskId)}" title="元のタスクを開く">🗒 ${esc(r.taskId)}</button>`
         : '';
@@ -2717,10 +2812,11 @@ function renderFlow() {
         ? ' <span class="badge" title="完了後に保存された記録です（閲覧のみ）">📦</span>'
         : '';
       return `<div class="run-item ${state.flowRunId === r.runId ? 'selected' : ''}" data-run="${esc(r.runId)}">
-        <div class="row2"><span class="mono">${esc(r.runId)}</span><span>${statusChip(r.status)}${archivedBadge}${stalled}</span></div>
+        <div class="row2"><span class="mono">${esc(r.runId)}</span><span>${statusChip(r.status)}${archivedBadge}${adviceBit}</span></div>
         <div class="req">${esc((r.request || '').slice(0, 120))}</div>
         <div class="progress"><div style="width:${pct}%"></div></div>
         <div class="muted">${r.total} 工程中 完了 ${r.counts.done}・失敗 ${r.counts.failed}・実行中 ${r.counts.claimed} ｜ ${fmtAgo(r.updatedAt || r.createdAt)}${taskLink}</div>
+        ${adviceLine}
         ${retryStrip}
       </div>`;
     })
@@ -2886,14 +2982,28 @@ function renderFlowDetail() {
         )}</div>`
     )
     .join('');
-  const stalled =
-    run.alive === false
-      ? ` <span class="status-chip st-stalled">応答なし</span>`
-      : '';
+  // 「次に何が起きるか・あなたの出番はあるか」を最上部で言い切る（runAdvice）。
+  // 状態チップ・応答なしバッジの読み解きを人に要求しない。
+  const group = lineageGroups(state.flowRuns).find((g) =>
+    g.attempts.some((a) => a.runId === run.runId));
+  const advice = runAdvice(run, group);
+  const adviceActions = [
+    advice.kind === 'human'
+      ? `<button class="chip primary-inline" data-goto-needs="${esc(advice.taskId || '')}">要対応タブで回答する</button>`
+      : '',
+    advice.kind === 'old' && advice.latestId
+      ? `<button class="chip" data-goto-run="${esc(advice.latestId)}">最新の試行を開く</button>`
+      : '',
+  ].join(' ');
+  const adviceBanner = `<div class="advice-banner advice-${advice.cls}">
+    ${adviceChip(advice)} <span>${esc(advice.text)}</span> ${adviceActions}
+  </div>`;
   const resumed = run.resumeCount > 0 ? `（自動再開 ${run.resumeCount} 回）` : '';
+  // 「この後どうなるか」は adviceBanner が言い切る。ここは事実（最終応答時刻）だけを出す
+  //（以前ここにあった「再起動すると自動で再開されます」は、needs 待ち等では嘘になっていた）。
   const heartbeat =
     run.alive !== null && run.heartbeatAt
-      ? `<div class="muted">最終応答: ${esc(fmtAgo(run.heartbeatAt))}${resumed}${run.alive === false ? '（応答が途絶えています。実行エンジンが再起動すると続きから自動で再開されます）' : ''}</div>`
+      ? `<div class="muted">最終応答: ${esc(fmtAgo(run.heartbeatAt))}${resumed}</div>`
       : '';
   // アーカイブ表示（bus からは掃除済み）: 読み取り専用の写しなので run への操作
   // （再投入・キャンセル・削除・GitLab 突き合わせ）は出さない。
@@ -2925,12 +3035,18 @@ function renderFlowDetail() {
     : '↻ 同じ内容でやり直す';
   const resubmitTitle = partial
     ? `失敗・未実行の工程だけを実行し直します。成功した ${doneCount} 件はそのまま使います（作り直しません）`
-      + (isStalled ? '\nこの実行は停滞しています（実行エンジンが消えたまま止まっています）' : '')
+      + (advice.kind === 'auto' ? '\n※ 放置しても本体が自動で同じことをします（このボタンは前倒し指示）' : '')
     : '同じ内容でやり直します（タスクを積み直して本体に実行させます）';
-  const resubmit =
-    !archived && canRetry
-      ? `<button class="chip" id="flow-resubmit" title="${esc(resubmitTitle)}">${esc(resubmitLabel)}</button>`
-      : '';
+  // ボタンの出し分けも advice に従う:
+  //  - human（判断待ち）: 出さない。ここで積み直すと人の判断ゲートを素通りしてしまう
+  //    （正しい導線は要対応タブ — バナーのボタンが誘導する）
+  //  - old（古い試行）: 出さない。最新の試行側で操作する
+  //  - manual/restart: 主要操作として強調 ／ auto: 通常表示（押さなくてもよい）
+  const showResubmit = !archived && canRetry && !['human', 'old'].includes(advice.kind);
+  const resubmit = showResubmit
+    ? `<button class="chip ${['manual', 'restart'].includes(advice.kind) ? 'primary-inline' : ''}"
+        id="flow-resubmit" title="${esc(resubmitTitle)}">${esc(resubmitLabel)}</button>`
+    : '';
   // 不要な run の削除。実行中（orchestrator 生存）は不可 — 終端と応答なし（孤児）のみ。
   // アーカイブ（bus に実体が無く記録だけ残ったもの）も消せる: 消せないと一覧に永久に居座る。
   const deletable =
@@ -2970,7 +3086,8 @@ function renderFlowDetail() {
     <div id="flow-overview" class="flow-pane">
       <div class="flow-pane-title">概要</div>
       <div class="card full">
-        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${archivedBadge}${stalled} ${esc(strat)} ${reconcileBtn} ${resubmit} ${cancelBtn} ${deleteBtn}</h3>
+        <h3>RUN <span class="mono">${esc(run.runId)}</span> — ${statusChip(run.status)}${archivedBadge} ${esc(strat)} ${reconcileBtn} ${resubmit} ${cancelBtn} ${deleteBtn}</h3>
+        ${adviceBanner}
         ${relationshipStrip({ run })}
         <div>${esc(run.request || '')}</div>
         ${archived ? `<div class="muted">📦 完了後に保存された記録を表示しています（最終更新: ${esc(fmtTime(run.archivedAt) || '不明')}）。この画面からの操作はできません。</div>` : ''}
@@ -3003,6 +3120,27 @@ function renderFlowDetail() {
 // ノードのタイムライン（events の claimed / result。新しい順で届く）
 function nodeTimeline(nodeId) {
   return ((state.flowRun && state.flowRun.nodeEvents) || {})[nodeId] || [];
+}
+
+// この工程が「やり直し」でどう扱われるかを言い切る行。
+// グラフで赤いノードを見た人は「この工程だけ再実行したい」と考えるが、単体再実行は
+// 存在しない — やり直しの単位は run で、kiro-flow が失敗・未実行の工程だけを pending へ
+// 戻して done を温存する。その規則をノード詳細でその場で伝える（run が止まっているときだけ。
+// 実行中の run では紛らわしいので出さない）。
+function nodeFateLine(run, effState) {
+  const runStopped =
+    TERMINAL_RUN_STATES.has(String(run.status)) || (run.alive === false && run.status !== 'done');
+  if (!runStopped || run.archived) return '';
+  const msg =
+    effState === 'failed'
+      ? '⟳ この工程は「↻ 失敗した工程だけやり直す」で<b>必ず再実行されます</b>' +
+        '（この工程だけの単体再実行はありません。完了済みの工程は作り直されません）'
+      : effState === 'done'
+        ? '✓ この工程は完了済みです。やり直しても<b>作り直されません</b>（成果はそのまま使われます）'
+        : ['pending', 'waiting', 'claimed'].includes(effState)
+          ? '… この工程は未完了のまま止まっています。やり直し（または自動再開）で<b>再実行されます</b>'
+          : '';
+  return msg ? `<div class="muted" style="margin-top:4px">${msg}</div>` : '';
 }
 
 // park（承認待ち）ノードの説明行。承認待ちで保留中＝worker スロットを空けて監視主体が
@@ -3146,6 +3284,7 @@ function renderFlowNode(run, node) {
       <h3><span class="mono">${esc(node.id)}</span> [${esc(node.kind)}] — ${stateLabel}${node.who ? ` @${esc(node.who)}` : ''}</h3>
       <div>${esc(node.goal)}</div>
       ${node.deps.length ? `<div class="muted" style="margin-top:4px">依存: ${node.deps.map(esc).join(', ')}</div>` : ''}
+      ${nodeFateLine(run, effState)}
       ${nodeParkLine(node)}
       ${nodeProgressLine(node)}
       ${nodeIssueBlock(run, node)}
@@ -3177,6 +3316,22 @@ async function findNodeIssue(btn) {
 async function resubmitFlowRun() {
   const run = state.flowRun && state.flowRun.run;
   if (!run) return;
+  // 押す前に「正確に何が起きるか」を工程名で見せる。グラフの赤いノードが確実に
+  // 再実行されるのか・完了分が捨てられないか、を推測させない。
+  const nodes = Object.values(run.nodes || {});
+  const rerun = nodes.filter((n) => !TERMINAL_NODE_STATES.has(n.state) || n.state === 'failed');
+  const keep = nodes.filter((n) => n.state === 'done');
+  const nameList = (list) =>
+    list.slice(0, 8).map((n) => n.id).join(', ') + (list.length > 8 ? ` …（計 ${list.length} 件）` : '');
+  const failedNames = rerun.filter((n) => n.state === 'failed');
+  const plan = keep.length
+    ? `やり直す工程（${rerun.length} 件）: ${nameList(rerun)}` +
+      (failedNames.length ? `\n（うち失敗していた工程 ${nameList(failedNames)} は必ず再実行されます）` : '') +
+      `\nそのまま使う完了済み（${keep.length} 件）: ${nameList(keep)}` +
+      `\n\n新しい run は作らず、この run（${run.runId}）の中で再開します。`
+    : `全 ${nodes.length || '?'} 工程をやり直します（完了済みの工程はありません）。`;
+  const yes = await confirmDialog(`この実行をやり直します。\n\n${plan}\nよろしいですか？`);
+  if (!yes) return;
   const res = await guard('やり直し', () =>
     api.flowResubmit(state.selectedDir, state.project.busDir, run.runId)
   );
@@ -3184,11 +3339,14 @@ async function resubmitFlowRun() {
     const d = state.flowDaemon;
     uiLog('resubmit', res);
     if (res.viaTask) {
-      const doneN = (run.counts && run.counts.done) || 0;
+      const live = (state.project && state.project.liveness) || {};
+      const when = live.running
+        ? '本体がまもなく実行します'
+        : '本体（kiro-project）が次に動いたときに実行されます（今は停止中）';
       toast(
-        doneN > 0
-          ? `失敗・未実行の工程だけやり直します（成功した ${doneN} 件はそのまま使います）`
-          : `タスク ${res.taskId} を積み直しました（本体が実行を始めます）`,
+        keep.length > 0
+          ? `この run の中で失敗・未実行の ${rerun.length} 工程だけをやり直します（完了済み ${keep.length} 件は温存・新しい run は増えません）。${when}`
+          : `タスク ${res.taskId} を積み直しました。${when}`,
         true
       );
     } else {
@@ -3407,6 +3565,19 @@ function bindFlowDetail(root) {
   }
   const rs = root.querySelector('#flow-resubmit');
   if (rs) rs.addEventListener('click', () => resubmitFlowRun());
+  // advice バナーの誘導ボタン: 判断待ち → 要対応タブ ／ 古い試行 → 最新の試行へ
+  for (const btn of root.querySelectorAll('button[data-goto-needs]')) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      switchTab('needs');
+    });
+  }
+  for (const btn of root.querySelectorAll('button[data-goto-run]')) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      gotoRun(btn.dataset.gotoRun);
+    });
+  }
   const cn = root.querySelector('#flow-cancel');
   if (cn) cn.addEventListener('click', () => cancelFlowRun());
   const fd = root.querySelector('#flow-delete');

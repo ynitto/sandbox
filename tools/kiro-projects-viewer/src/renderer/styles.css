@@ -34,6 +34,35 @@ html, body {
 .sync-warn { color: #b58900; }
 .sync-error { color: #dc322f; font-weight: 600; }
 
+/* フロー画面の advice（次に何が起きるか・あなたの出番はあるか）。
+   ok=操作不要 / warn=環境側の対処が要る / act=あなたの操作・判断待ち / muted=記録 */
+.advice-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.advice-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 12px;
+}
+.advice-line { font-size: 11px; margin-top: 2px; }
+.advice-ok.advice-chip, .advice-banner.advice-ok { background: rgba(64, 160, 96, 0.12); border-color: rgba(64, 160, 96, 0.5); }
+.advice-warn.advice-chip, .advice-banner.advice-warn { background: rgba(181, 137, 0, 0.12); border-color: rgba(181, 137, 0, 0.6); }
+.advice-act.advice-chip, .advice-banner.advice-act { background: rgba(220, 50, 47, 0.10); border-color: rgba(220, 50, 47, 0.6); }
+.advice-muted.advice-chip, .advice-banner.advice-muted { background: rgba(128, 128, 128, 0.10); border-color: rgba(128, 128, 128, 0.4); color: var(--muted); }
+.advice-line.advice-act { color: #dc322f; }
+.advice-line.advice-warn { color: #b58900; }
+
 input, select, textarea, button {
   font: inherit;
   color: var(--fg);
