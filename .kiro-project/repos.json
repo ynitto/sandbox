@@ -6,6 +6,7 @@
     "owns": [
       "**"
     ],
-    "local": "/Users/nitto/Workspace/sandbox"
+    "local": "/Users/nitto/Workspace/sandbox",
+    "dir": "."
   }
 }
