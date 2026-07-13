@@ -561,7 +561,17 @@ function projectLiveness(dir) {
   if (target) {
     for (const inst of listInstances()) {
       if (!inst.fresh) continue;
-      if (_norm(inst.root) === target || (inst.root_windows && _norm(inst.root_windows) === target)) {
+      // レコードの root は「リダイレクト前の素の root」（本体の設計）。状態を worktree へ
+      // 逃がしている構成では、viewer の登録パスは実体（<repo>-kiro-state/.kiro-project）へ
+      // 正規化されるため root とは一致しない。実効パス（backlog の親 = 実書き込み先）でも
+      // 照合しないと、稼働中なのに instances を取りこぼして status.json の鮮度判定へ落ち、
+      // 長い作業（LLM 実行）中に「本体が停止中」と誤表示する（実際に起きた）。
+      const candidates = [
+        inst.root,
+        inst.root_windows,
+        inst.backlog ? path.dirname(String(inst.backlog)) : '',
+      ];
+      if (candidates.some((r) => r && _norm(r) === target)) {
         return { running: true, via: 'instances', ageSec: 0, paused };
       }
     }

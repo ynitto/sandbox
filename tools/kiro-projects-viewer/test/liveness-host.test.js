@@ -96,4 +96,30 @@ test('status.json が無ければ none（判定材料なし）', () => {
   }
 });
 
+test('状態 worktree 構成でも instances を実効パス（backlog の親）で照合する', () => {
+  // レコードの root は「リダイレクト前の素の root」で、viewer の登録パス（状態 worktree の
+  // 実体）とは一致しない。実効パス（backlog の親）で照合しないと、稼働中でも instances を
+  // 取りこぼし、長い作業中に「本体が停止中」と誤表示する（実際に起きた）。
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-live-wt-'));
+  const idir = path.join(os.homedir(), '.kiro-project', 'instances');
+  fs.mkdirSync(idir, { recursive: true });
+  const file = path.join(idir, `kpv-test-${process.pid}.json`);
+  fs.writeFileSync(file, JSON.stringify({
+    pid: process.pid,
+    root: '/somewhere/else/.kiro-project',          // リダイレクト前の root（一致しない）
+    backlog: path.join(tmp, 'backlog'),             // 実効パス（実書き込み先）は一致する
+    heartbeat: Date.now() / 1000,
+    ttl: 90,
+    host: os.hostname(),
+  }));
+  try {
+    const live = kiro.projectLiveness(tmp);
+    assert.strictEqual(live.running, true, JSON.stringify(live));
+    assert.strictEqual(live.via, 'instances');
+  } finally {
+    fs.unlinkSync(file);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 console.log(`\n${passed} passed`);

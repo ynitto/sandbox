@@ -68,8 +68,9 @@ const baseRun = (over = {}) => ({
   ...over,
 });
 const group = (latest, attempts = [latest]) => ({ latest, attempts });
-const project = ({ taskStatus = 'ready', lastRun = RID, running = true, paused = false } = {}) => ({
-  liveness: { running, paused },
+const project = ({ taskStatus = 'ready', lastRun = RID, running = true, paused = false,
+  via = undefined, ageSec = undefined } = {}) => ({
+  liveness: { running, paused, via, ageSec },
   needs: [],
   archive: [],
   backlog: taskStatus === null ? [] : [
@@ -151,6 +152,26 @@ test('done / 記録（archived）→ 操作なしを明言', () => {
   const advise = makeAdvisor(project());
   assert.strictEqual(advise(baseRun({ status: 'done' }), null).kind, 'none');
   assert.strictEqual(advise(baseRun({ archived: true }), null).kind, 'none');
+});
+
+test('本体稼働中の advice は「別の作業中なら順番に実行」と言う（まもなく、と言い切らない）', () => {
+  const advise = makeAdvisor(project({ running: true }));
+  const r = baseRun({ status: 'failed', alive: false });
+  const a = advise(r, group(r));
+  assert.strictEqual(a.kind, 'auto');
+  assert.match(a.text, /順番に/);
+});
+
+test('別マシンの応答途絶は「停止」と言い切らず、↻ が予約になることを言う', () => {
+  // 別マシンの本体は長い作業中 status.json を更新できない＝停止と断定できない
+  const advise = makeAdvisor(project({ running: false, via: 'status-sync', ageSec: 720 }));
+  const r = baseRun({ status: 'failed', alive: false });
+  const a = advise(r, group(r));
+  assert.strictEqual(a.kind, 'restart');
+  assert.match(a.chip, /別マシン/);
+  assert.match(a.text, /12 分前/);
+  assert.match(a.text, /予約/);
+  assert.ok(!/停止中です/.test(a.text), '停止と言い切らない');
 });
 
 test('失敗トリアージ: 認証切れタグ → タスク状態より先に「何を直すか」を言い切る', () => {

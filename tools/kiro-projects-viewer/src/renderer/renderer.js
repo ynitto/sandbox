@@ -2821,10 +2821,25 @@ function runAdvice(run, group) {
       }
       if (live.running) {
         return { kind: 'auto', cls: 'ok', chip: '⏳ まもなく自動でやり直されます',
-          text: `操作は不要です。本体（kiro-project）が${how}。数分待っても動かないときだけ下の ↻ を押してください。` };
+          text: `操作は不要です。本体（kiro-project）が${how}。` +
+            '本体が別の作業を実行中のときは、その完了後に順番に実行されます' +
+            '（急ぐ場合の ↻ も同じ予約として扱われます）。' };
+      }
+      const ago = live.ageSec != null && live.ageSec > 0
+        ? `最終確認は ${Math.max(1, Math.round(live.ageSec / 60))} 分前です。` : '';
+      if (live.via === 'status-sync') {
+        // 別マシンの本体は、長い作業（LLM 実行）中は status.json を更新できない＝
+        // 「停止」と言い切れない。予約（↻）は本体が生きていれば拾われる。
+        return { kind: 'restart', cls: 'warn', chip: '📡 本体（別マシン）の応答が途絶えています',
+          stopped: true,
+          text: `${ago}長い作業の途中か、停止しています。↻ を押すと予約として受け付けられ、` +
+            `本体が動いていれば順番に${how}。動いていなければ本体のマシンで kiro-project start を` +
+            '実行してください（「▶ 本体を起動」はこの PC で起動します）。' };
       }
       return { kind: 'restart', cls: 'warn', chip: '⏻ 本体が停止中', stopped: true,
-        text: `本体（kiro-project）が動いていないため、このままでは再開されません。「▶ 本体を起動」を押すと自動で${how}（↻ を押しても、本体が動くまで実行は始まりません）。` };
+        text: `${ago}本体（kiro-project）が動いていないため、このままでは再開されません。` +
+          `「▶ 本体を起動」を押すと自動で${how}` +
+          '（↻ は予約として残り、本体が動き出すと実行されます）。' };
     }
     if (task.status === 'rejected') {
       return { kind: 'none', cls: 'muted', chip: '✋ 却下済み',
