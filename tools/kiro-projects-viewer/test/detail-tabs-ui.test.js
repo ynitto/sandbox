@@ -247,13 +247,16 @@ assert.match(renderer, /data-flow-back/);
 assert.match(css, /\.master-detail/);
 assert.match(css, /\.flow-view-tabs/);
 assert.match(css, /\.mobile-master-back/);
-for (const id of ['btn-git-heal', 'btn-doctor', 'dlg-doctor', 'dlg-need-output']) {
+for (const id of ['btn-git-heal', 'btn-doctor', 'dlg-doctor', 'dlg-need-output', 'dlg-delivery-review']) {
   assert.ok(html.includes(`id="${id}"`), `${id} が画面に必要です`);
 }
 for (const cli of ['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']) {
   assert.ok(html.includes(`<option value="${cli}"`), `${cli} を設定で選択できる必要があります`);
 }
 assert.ok(renderer.includes('出力全体を見る'));
+assert.ok(renderer.includes('検収物を確認'));
+assert.ok(renderer.includes('openDeliveryReview'));
 assert.match(css, /\.doctor-tools/);
+assert.match(css, /\.delivery-dialog/);
 
 console.log('detail-tabs-ui: all tests passed');

@@ -259,27 +259,32 @@ def _source_repo(cfg: "Config") -> Path:
     return cfg.state_top or cfg.workdir
 
 
+def _task_run_meta(cfg: "Config", task: "Task") -> dict:
+    """タスクの直近 run（last_run）の meta.json。無ければ {}。"""
+    rid = str(task.get("last_run") or "").strip()
+    if not rid or rid != os.path.basename(rid):
+        return {}
+    try:
+        return json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def _task_work_branch(cfg: "Config", task: "Task") -> "tuple[str, str] | None":
     """タスクの作業ブランチ (base, branch)。kiro-flow が run メタへ記録した workspace から取る。"""
-    rid = str(task.get("last_run") or "").strip()
-    if not rid:
-        return None
-    try:
-        meta = json.loads((cfg.bus / "runs" / rid / "meta.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    ws = meta.get("workspace") or {}
+    ws = (_task_run_meta(cfg, task).get("workspace") or {})
     branch = str(ws.get("branch") or "").strip()
     if not branch:
         return None
     return (str(ws.get("base") or "main").strip() or "main"), branch
 
 
-def work_branch_changes(cfg: "Config", base: str, branch: str) -> "tuple[str, list[str]]":
+def work_branch_changes(cfg: "Config", base: str, branch: str,
+                        repo: "Path | None" = None) -> "tuple[str, list[str]]":
     """作業ブランチの成果 (ref, 変更ファイル一覧)。無ければ ("", [])。
 
     worker は成果を origin へ push するので、ローカルに無ければ取り込んでから差分を取る。"""
-    repo = _source_repo(cfg)
+    repo = Path(repo) if repo is not None else _source_repo(cfg)
 
     def _has(ref: str) -> bool:
         return bool(_git_out(repo, "rev-parse", "--verify", "--quiet", ref).strip())
@@ -298,39 +303,118 @@ def work_branch_changes(cfg: "Config", base: str, branch: str) -> "tuple[str, li
     return ref, files
 
 
+def _repo_label(url: str, fallback: str = "") -> str:
+    """git URL から表示用の短い名前（path basename）を取る。"""
+    s = str(url or "").rstrip("/").removesuffix(".git")
+    if "/" in s:
+        return s.rsplit("/", 1)[-1] or fallback or "repo"
+    return fallback or s or "repo"
+
+
+def delivery_entries(cfg: "Config", task: "Task | None" = None,
+                     mr_url: str = "", max_files: int = 40) -> "list[dict]":
+    """検収用のリポジトリ単位エントリ一覧（viewer の構造化ペイロード）。
+
+    書込先 workspace を必ず先頭に置き、references（読取専用）もブランチ情報があれば並べる。
+    実体差分を取れるのはローカルで解決できるリポジトリだけ（通常は state_top）。"""
+    if task is None:
+        return []
+    meta = _task_run_meta(cfg, task)
+    ws = meta.get("workspace") or {}
+    branch = str(ws.get("branch") or "").strip()
+    base = str(ws.get("base") or "main").strip() or "main"
+    entries: "list[dict]" = []
+    if branch:
+        repo = _source_repo(cfg)
+        ref, files = work_branch_changes(cfg, base, branch, repo=repo)
+        url = str(ws.get("url") or "")
+        name = _repo_label(url, fallback=repo.name)
+        entry = {
+            "name": name,
+            "role": "write",
+            "url": url,
+            "path": str(repo),
+            "base": base,
+            "branch": branch,
+            "ref": ref,
+            "files": files[:max_files],
+            "files_total": len(files),
+            "diff_cmd": f"git -C {repo} diff {base}...{ref}" if ref else "",
+            "mr_url": str(mr_url or task.get("mr_url") or "").strip(),
+        }
+        entries.append(entry)
+    # 参照リポジトリ（読取）: 差分は通常無いが、複数 repo 案件で「どの repo を見るか」を明示する
+    for ref_spec in (meta.get("references") or []):
+        if not isinstance(ref_spec, dict):
+            continue
+        rurl = str(ref_spec.get("url") or "").strip()
+        if not rurl:
+            continue
+        entries.append({
+            "name": _repo_label(rurl),
+            "role": "reference",
+            "url": rurl,
+            "path": "",
+            "base": str(ref_spec.get("base") or base),
+            "branch": str(ref_spec.get("branch") or ""),
+            "ref": "",
+            "files": [],
+            "files_total": 0,
+            "diff_cmd": "",
+            "mr_url": "",
+        })
+    return entries
+
+
 def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "local",
                       verify: "str | None" = None, vmsg: str = "", ok: "bool | None" = None,
-                      max_files: int = 12, task: "Task | None" = None) -> str:
+                      max_files: int = 12, task: "Task | None" = None,
+                      mr_url: str = "") -> str:
     """人が「成果物がどこにあり・何が差分で・検証はどうだったか」を判断できる材料を作る。
     needs（判断待ち）と DELIVERY/archive（受領）双方の説明欄に使う。git でなければ ref/差分は空。
 
     成果物は **タスクの作業ブランチ（kp/<task-id>）** にある。cfg.workdir を見ると状態 worktree の
     bus/ 内部ファイル（claims/events の JSON）が「差分」として並び、人は何をレビューすればいいか
-    分からない。作業ブランチが分かるならそちらの実体差分を出し、差分を開くコマンドも添える。"""
-    lines: "list[str]" = []
-    wb = _task_work_branch(cfg, task) if task is not None else None
-    if wb:
-        base, brname = wb
-        ref, files = work_branch_changes(cfg, base, brname)
-        if ref:
-            repo = _source_repo(cfg)
-            lines = [f"- 成果物: ブランチ `{brname}`（{len(files)} ファイル変更・base `{base}`）",
-                     f"- 所在: {repo}",
-                     f"- 差分を見る: `git -C {repo} diff {base}...{ref}`"]
+    分からない。作業ブランチが分かるならそちらの実体差分を出し、差分を開くコマンドも添える。
+    複数リポジトリ案件では書込先を先頭に、参照リポジトリを続けて明示する。"""
+    entries = delivery_entries(cfg, task, mr_url=mr_url, max_files=max_files) if task is not None else []
+    write_entries = [e for e in entries if e.get("role") == "write" and e.get("ref")]
+    if write_entries:
+        lines: "list[str]" = []
+        multi = len(entries) > 1
+        for e in entries:
+            if multi or e.get("role") == "reference":
+                role = "書込先" if e.get("role") == "write" else "参照（読取）"
+                lines.append(f"### リポジトリ: {e['name']}（{role}）")
+            if e.get("role") == "reference":
+                lines.append(f"- 参照: {e.get('url') or e['name']}")
+                if e.get("branch"):
+                    lines.append(f"- ブランチ指定: `{e['branch']}`")
+                lines.append("- 注: 参照リポジトリ。本タスクの成果差分は書込先を見る")
+                continue
+            files = e.get("files") or []
+            total = int(e.get("files_total") or len(files))
+            lines += [
+                f"- 成果物: ブランチ `{e['branch']}`（{total} ファイル変更・base `{e['base']}`）",
+                f"- 所在: {e.get('path') or '(ローカル path 未解決)'}",
+            ]
+            if e.get("diff_cmd"):
+                lines.append(f"- 差分を見る: `{e['diff_cmd']}`")
+            if e.get("mr_url"):
+                lines.append(f"- MR: {e['mr_url']}（承認時にクリーンなら自動マージ）")
             if files:
-                shown = files[:max_files]
-                lines.append(f"- 変更ファイル（{len(files)} 件）:")
-                lines += [f"    - {p}" for p in shown]
-                if len(files) > len(shown):
-                    lines.append(f"    - …他 {len(files) - len(shown)} 件")
+                lines.append(f"- 変更ファイル（{total} 件）:")
+                lines += [f"    - {p}" for p in files]
+                if total > len(files):
+                    lines.append(f"    - …他 {total - len(files)} 件")
             else:
-                lines.append(f"- 変更ファイル: なし（`{base}` と差が無い＝成果物が空）")
-            lines.append(f"- 実行先: {location}")
-            if verify is not None:
-                res = "PASS" if ok else ("FAIL" if ok is not None else "?")
-                vm = (vmsg or "").replace("\n", " ").strip()[:200]
-                lines.append(f"- 検証: `{verify}` → {res}" + (f"（{vm}）" if vm else ""))
-            return "\n".join(lines)
+                lines.append(f"- 変更ファイル: なし（`{e['base']}` と差が無い＝成果物が空）")
+        lines.append(f"- 実行先: {location}")
+        if verify is not None:
+            res = "PASS" if ok else ("FAIL" if ok is not None else "?")
+            vm = (vmsg or "").replace("\n", " ").strip()[:200]
+            lines.append(f"- 検証: `{verify}` → {res}" + (f"（{vm}）" if vm else ""))
+        return "\n".join(lines)
 
     # 作業ブランチが特定できないとき（単発実行・git 以外）は従来どおり workdir を見る
     ref = extract_delivery_ref(act_msg, cfg, git_base)
@@ -342,6 +426,8 @@ def delivery_evidence(cfg: "Config", act_msg: str, git_base, location: str = "lo
     lines = [f"- 成果物: {ref}",
              f"- 所在: {where}" + (f" / ブランチ {branch}" if branch else ""),
              f"- 実行先: {location}"]
+    if mr_url:
+        lines.append(f"- MR: {mr_url}（承認時にクリーンなら自動マージ）")
     if changed:
         shown = changed[:max_files]
         lines.append(f"- 差分: {len(changed)} ファイル")

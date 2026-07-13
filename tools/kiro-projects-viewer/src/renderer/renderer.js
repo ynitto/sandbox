@@ -2491,6 +2491,122 @@ async function openNeedFullOutput(needId) {
   $('need-output-body').scrollTop = 0;
 }
 
+function deliveryRoleLabel(role) {
+  return role === 'reference' ? '参照（読取）' : '書込先';
+}
+
+function renderDeliveryRepo(entry, idx) {
+  const role = deliveryRoleLabel(entry.role);
+  const total = entry.files_total || (entry.files || []).length;
+  const files = entry.files || [];
+  const mr = entry.mr_url || '';
+  const canDiff = entry.path && entry.base && (entry.ref || entry.branch) && entry.role !== 'reference';
+  const fileBtns = files
+    .slice(0, 40)
+    .map((f) => {
+      const abs = entry.path ? `${String(entry.path).replace(/[/\\]$/, '')}/${f}` : '';
+      const openBtn = abs
+        ? `<button data-open="${esc(abs)}" title="${esc(abs)}">開く</button>`
+        : '';
+      const diffBtn = canDiff
+        ? `<button data-delivery-diff="${esc(idx)}" data-file="${esc(f)}">差分</button>`
+        : '';
+      return `<li><code>${esc(f)}</code> ${openBtn}${diffBtn}</li>`;
+    })
+    .join('');
+  const more =
+    total > files.length ? `<li class="muted">…他 ${total - files.length} 件</li>` : '';
+  return `<section class="delivery-repo" data-delivery-idx="${esc(idx)}">
+    <header class="delivery-repo-head">
+      <h3>${esc(entry.name || 'repo')} <span class="muted">（${esc(role)}）</span></h3>
+      <div class="row">
+        ${mr ? `<button class="primary-inline" data-delivery-mr="${esc(mr)}">GitLab MR を開く</button>` : ''}
+        ${canDiff ? `<button data-delivery-diff="${esc(idx)}" data-file="">ブランチ差分</button>` : ''}
+      </div>
+    </header>
+    <div class="muted delivery-repo-meta">
+      ${entry.branch ? `ブランチ <code>${esc(entry.branch)}</code>` : ''}
+      ${entry.base ? ` · base <code>${esc(entry.base)}</code>` : ''}
+      ${entry.path ? ` · <code>${esc(entry.path)}</code>` : ''}
+      ${entry.url && entry.role === 'reference' ? ` · ${esc(entry.url)}` : ''}
+    </div>
+    ${
+      entry.role === 'reference'
+        ? '<p class="muted">参照リポジトリです。成果差分は書込先を確認してください。</p>'
+        : files.length || total
+          ? `<ul class="delivery-files">${fileBtns}${more}</ul>`
+          : '<p class="muted">変更ファイルはありません。</p>'
+    }
+    ${entry.diff_cmd ? `<pre class="mono delivery-cmd">${esc(entry.diff_cmd)}</pre>` : ''}
+  </section>`;
+}
+
+function openDeliveryReview(needId) {
+  const need = state.project && state.project.needs.find((item) => item.id === needId);
+  if (!need) return toast('要対応項目が見つかりません');
+  const entries = need.delivery && need.delivery.length ? need.delivery : [];
+  const mrs = need.mrUrls && need.mrUrls.length ? need.mrUrls : need.mrUrl ? [need.mrUrl] : [];
+  $('delivery-review-title').textContent = `検収物を確認 — ${needDisplayTitle(need)}`;
+  const mrBlock = mrs.length
+    ? `<section class="delivery-mr-banner">
+        <p>GitLab 上で差分を確認できます（gitlab executor / タスク MR）。</p>
+        <div class="row">${mrs
+          .map(
+            (u, i) =>
+              `<button class="primary-inline" data-delivery-mr="${esc(u)}">GitLab MR を開く${
+                mrs.length > 1 ? ` #${i + 1}` : ''
+              }</button>`
+          )
+          .join('')}</div>
+      </section>`
+    : '';
+  const repos =
+    entries.length > 0
+      ? entries.map((e, i) => renderDeliveryRepo(e, i)).join('')
+      : '<p class="muted">構造化された検収物情報がありません。判断材料の本文を確認してください。</p>';
+  $('delivery-review-body').innerHTML = `${mrBlock}
+    <div class="delivery-repos">${repos}</div>
+    <pre id="delivery-diff-view" class="mono delivery-diff-view hidden" tabindex="0"></pre>`;
+  wireDeliveryReview($('dlg-delivery-review'), need);
+  $('dlg-delivery-review').showModal();
+}
+
+function wireDeliveryReview(root, need) {
+  for (const btn of root.querySelectorAll('[data-delivery-mr]')) {
+    btn.addEventListener('click', () => {
+      const url = btn.getAttribute('data-delivery-mr');
+      guard('GitLab MR を開く', () => api.openExternal(url));
+    });
+  }
+  for (const btn of root.querySelectorAll('[data-open]')) {
+    btn.addEventListener('click', () => guard('ファイルを開く', () => api.openPath(btn.dataset.open)));
+  }
+  for (const btn of root.querySelectorAll('[data-delivery-diff]')) {
+    btn.addEventListener('click', async () => {
+      const idx = Number(btn.getAttribute('data-delivery-diff'));
+      const entry = (need.delivery || [])[idx];
+      if (!entry || !entry.path) return toast('ローカル path が無いため差分を取得できません');
+      const file = btn.getAttribute('data-file') || '';
+      const tip = entry.ref || entry.branch;
+      const view = $('delivery-diff-view');
+      view.classList.remove('hidden');
+      view.textContent = '差分を取得しています…';
+      try {
+        const res = await api.gitDiff({
+          repo: entry.path,
+          base: entry.base || 'main',
+          ref: tip,
+          file: file || undefined,
+        });
+        view.textContent = res.text || '(差分なし)';
+        view.scrollTop = 0;
+      } catch (err) {
+        view.textContent = `差分の取得に失敗しました: ${err && err.message ? err.message : err}`;
+      }
+    });
+  }
+}
+
 function specFilesHtml(p, n) {
   const spec = specForNeed(p, n);
   if (!spec) return '';
@@ -2540,6 +2656,20 @@ function renderNeedFacts(n) {
         .join('');
       facts.push(`<div class="row need-files">${files}</div>`);
     }
+  }
+  if (n.mrUrl || (n.delivery && n.delivery.length)) {
+    const repos = (n.delivery || []).length;
+    const label = n.mrUrl
+      ? 'GitLab MR あり'
+      : repos > 1
+        ? `検収物 ${repos} リポジトリ`
+        : '検収物あり';
+    facts.push(
+      `<div class="row need-delivery-cta">` +
+        `<span class="label-chip">検収物</span> ${esc(label)}` +
+        `<button class="primary-inline" data-delivery-review="${esc(n.id)}">検収物を確認</button>` +
+        `</div>`
+    );
   }
   if (n.evidenceThin) {
     const onlyInternal = d && d.hasDiff && !d.artifacts.length && d.internal.length;
@@ -2609,6 +2739,9 @@ function bindNeedDetail(root) {
   }
   for (const btn of root.querySelectorAll('button[data-need-output]')) {
     btn.addEventListener('click', () => openNeedFullOutput(btn.dataset.needOutput));
+  }
+  for (const btn of root.querySelectorAll('button[data-delivery-review]')) {
+    btn.addEventListener('click', () => openDeliveryReview(btn.dataset.deliveryReview));
   }
   for (const btn of root.querySelectorAll('button[data-verify-revise]')) {
     btn.addEventListener('click', async () => {
@@ -4620,6 +4753,7 @@ function setupPolling() {
         $('dlg-edit-policy').open ||
         $('dlg-edit-repos').open
         || $('dlg-need-output').open
+        || $('dlg-delivery-review').open
         || $('dlg-doctor').open
       )
         return;
@@ -4664,6 +4798,7 @@ async function init() {
   $('btn-doctor').addEventListener('click', askDoctor);
   $('btn-doctor-close').addEventListener('click', () => $('dlg-doctor').close());
   $('btn-need-output-close').addEventListener('click', () => $('dlg-need-output').close());
+  $('btn-delivery-review-close').addEventListener('click', () => $('dlg-delivery-review').close());
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-project-settings').addEventListener('click', openProjectSettings);
   $('btn-project-settings-close').addEventListener('click', () => $('dlg-project-settings').close());

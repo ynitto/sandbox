@@ -8844,6 +8844,44 @@ class DeliveryEvidenceTests(unittest.TestCase):
             ev = km.delivery_evidence(cfg, "", None, "local", task=t)
             self.assertIn("- 成果物:", ev)
 
+    def test_delivery_entries_include_references_and_mr(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = self._repo()
+            cfg, t = self._cfg_with_run(top, Path(d))
+            # 参照リポジトリを run メタへ追記（kiro-flow が書く形）
+            meta_path = cfg.bus / "runs" / "req-abc-T1-r0" / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["workspace"]["url"] = "https://gitlab.example.com/g/app.git"
+            meta["references"] = [{"url": "https://gitlab.example.com/g/spec.git", "branch": "main"}]
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+            mr = "https://gitlab.example.com/g/app/-/merge_requests/42"
+            entries = km.delivery_entries(cfg, t, mr_url=mr)
+            self.assertGreaterEqual(len(entries), 2)
+            self.assertEqual(entries[0]["role"], "write")
+            self.assertEqual(entries[0]["mr_url"], mr)
+            self.assertIn("src.py", entries[0]["files"])
+            self.assertEqual(entries[1]["role"], "reference")
+            self.assertIn("spec", entries[1]["name"])
+            ev = km.delivery_evidence(cfg, "", None, "local",
+                                      verify="true", vmsg="ok", ok=True, task=t, mr_url=mr)
+            self.assertIn("リポジトリ:", ev)
+            self.assertIn("参照（読取）", ev)
+            self.assertIn(mr, ev)
+
+    def test_write_needs_embeds_delivery_frontmatter(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = self._repo()
+            cfg, t = self._cfg_with_run(top, Path(d))
+            mr = "https://gitlab.example.com/g/app/-/merge_requests/7"
+            delivery = km.delivery_entries(cfg, t, mr_url=mr)
+            km.write_needs_file(cfg, t, "検収待ち", review=True,
+                                evidence="- 変更ファイル（1 件）:\n    - src.py\n",
+                                mr_url=mr, delivery=delivery)
+            text = (cfg.needs / "T1.md").read_text(encoding="utf-8")
+            self.assertIn(f"mr-url: {mr}", text)
+            self.assertIn("delivery: [", text)
+            self.assertIn('"role":"write"', text)
+
 
 class RiskDigestTests(unittest.TestCase):
     """検収（review）前のリスクダイジェスト（決定的な材料のみ・needs の ## リスク節と

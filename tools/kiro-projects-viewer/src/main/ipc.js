@@ -83,6 +83,11 @@ function registerIpcHandlers() {
     return git.heal(dir);
   });
 
+  // 検収サブ画面: 作業ブランチの git 差分（複数リポジトリ対応）
+  handle('git:diff', ({ repo, base, ref, file, maxBytes }) =>
+    git.diffRange(repo, { base, ref, file, maxBytes })
+  );
+
   // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー
   handle('kiro:discover', () => kiro.discover(loadConfig()));
 

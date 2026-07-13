@@ -264,16 +264,19 @@ def _settle_review(cfg, task, act_msg, git_base, branch, ev, vmsg, protect_hits,
                         if protect_hits else "検収待ち（verify=PASS。approve で done 確定）")
     # 成果物レビューの MR: タスクブランチ（kp/<id>）→ target の MR を用意し（冪等・GitLab 設定時のみ）、
     # 承認（approve）時に Stage 2 と同じ規則（クリーンなら自動マージ）で決着させる
-    mr_url = ensure_task_mr(cfg, task)
+    mr_url = ensure_task_mr(cfg, task) or str(task.get("mr_url") or "").strip()
     if mr_url:
-        ev = (ev + "\n" if ev else "") + f"- MR: {mr_url}（承認時にクリーンなら自動マージ）"
+        if "- MR:" not in (ev or ""):
+            ev = (ev + "\n" if ev else "") + f"- MR: {mr_url}（承認時にクリーンなら自動マージ）"
         if not ref:
             task.set("gate_ref", mr_url)
+    # viewer の検収サブ画面向け: 複数リポジトリの構造化ペイロード（書込先＋参照）
+    delivery = delivery_entries(cfg, task, mr_url=mr_url)
     persist_task(cfg, task)
     write_needs_file(cfg, task,
                      f"検証は通っている（verify=PASS）。人の検収を待っている理由: {gate_why}。"
                      f"内容が良ければ approve で done 確定、直したいことがあれば下に書いて差し戻す",
-                     review=True, evidence=ev, risk=risk)
+                     review=True, evidence=ev, risk=risk, mr_url=mr_url, delivery=delivery)
     append_journal(cfg.journal, f"cycle {cycle}: {task.id} → 検収待ち{disp} — {ref}")
 
 

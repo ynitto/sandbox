@@ -254,25 +254,159 @@ const _INTERNAL_DIFF_RE = new RegExp(
     + '|(^|/)(journal\\.md|project\\.json|repos\\.json|run-log\\.jsonl|status\\.json|DELIVERY\\.md)$'
 );
 
-// 判断材料の「差分:」に続くインデント付きリストを、成果物と内部記録に分ける。
+// 判断材料の差分リスト（レガシー「差分: N ファイル」と現行「変更ファイル（N 件）:」）を
+// 成果物と内部記録に分ける。複数リポジトリ節があっても全リストを集める。
 function _splitDiff(detail) {
   const s = String(detail || '');
-  const head = s.match(/^-\s*差分\s*[:：].*$/m);
-  const out = { artifacts: [], internal: [], truncated: 0, hasDiff: Boolean(head) };
-  if (!head) return out;
-  const rest = s.slice(s.indexOf(head[0]) + head[0].length).split('\n');
-  for (const raw of rest) {
-    if (!raw.trim()) continue;               // 見出し行の残り・空行は読み飛ばす
-    if (!/^\s+-\s/.test(raw)) break;         // インデントが切れたら差分リストの終わり
-    const item = raw.trim().replace(/^-\s*/, '').trim();
-    const more = item.match(/^…\s*他\s*(\d+)\s*件/);
-    if (more) {
-      out.truncated = Number(more[1]);
-      continue;
+  const out = { artifacts: [], internal: [], truncated: 0, hasDiff: false };
+  const headRe = /^-\s*(?:変更ファイル(?:（\d+\s*件）)?|差分)\s*[:：].*$/gm;
+  let m;
+  while ((m = headRe.exec(s)) !== null) {
+    out.hasDiff = true;
+    const rest = s.slice(m.index + m[0].length).split('\n');
+    for (const raw of rest) {
+      if (!raw.trim()) continue;
+      if (!/^\s+-\s/.test(raw)) break;
+      const item = raw.trim().replace(/^-\s*/, '').trim();
+      const more = item.match(/^…\s*他\s*(\d+)\s*件/);
+      if (more) {
+        out.truncated += Number(more[1]);
+        continue;
+      }
+      (_INTERNAL_DIFF_RE.test(item) ? out.internal : out.artifacts).push(item);
     }
-    (_INTERNAL_DIFF_RE.test(item) ? out.internal : out.artifacts).push(item);
   }
   return out;
+}
+
+// frontmatter / 判断材料から GitLab MR URL を拾う（複数可）。
+function _extractMrUrls(...sources) {
+  const seen = new Set();
+  const out = [];
+  const re = /https?:\/\/[^\s)）\]>"']+\/-\/merge_requests\/\d+/g;
+  for (const src of sources) {
+    const text = typeof src === 'string' ? src : JSON.stringify(src || '');
+    for (const u of text.match(re) || []) {
+      if (!seen.has(u)) {
+        seen.add(u);
+        out.push(u);
+      }
+    }
+  }
+  return out;
+}
+
+function _parseDeliveryJson(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? v.filter((e) => e && typeof e === 'object') : [];
+  } catch {
+    return [];
+  }
+}
+
+// 判断材料 markdown から delivery エントリを復元（旧票・frontmatter 無し向けフォールバック）。
+function _deliveryFromDetail(detail) {
+  const s = String(detail || '');
+  const entries = [];
+  const sections = s.split(/^###\s+リポジトリ:\s*/m).slice(1);
+  const pushFiles = (text, entry) => {
+    // 行末まで（\s は改行も含むので使わない）: 「変更ファイル（N 件）:」の次行からリストを取る
+    const head = text.match(/^-\s*変更ファイル(?:（(\d+)\s*件）)?[^\S\n]*[:：][^\S\n]*.*$/m);
+    if (!head) return;
+    const totalHint = head[1] ? Number(head[1]) : 0;
+    const rest = text.slice(text.indexOf(head[0]) + head[0].length).split('\n');
+    const files = [];
+    let truncated = 0;
+    for (const raw of rest) {
+      if (!raw.trim()) continue;
+      if (!/^\s+-\s/.test(raw)) break;
+      const item = raw.trim().replace(/^-\s*/, '').trim();
+      const more = item.match(/^…\s*他\s*(\d+)\s*件/);
+      if (more) {
+        truncated = Number(more[1]);
+        continue;
+      }
+      files.push(item);
+    }
+    entry.files = files;
+    entry.files_total = totalHint || files.length + truncated;
+  };
+  if (sections.length) {
+    for (const chunk of sections) {
+      const title = (chunk.match(/^([^\n（]+)(?:（([^）]+)）)?/) || [])[1] || 'repo';
+      const roleHint = (chunk.match(/^([^\n（]+)(?:（([^）]+)）)?/) || [])[2] || '';
+      const role = /参照/.test(roleHint) ? 'reference' : 'write';
+      const entry = {
+        name: title.trim(),
+        role,
+        url: ((chunk.match(/^-\s*参照\s*[:：]\s*(.*)$/m) || [])[1] || '').trim(),
+        path: ((chunk.match(/^-\s*所在\s*[:：]\s*(.*)$/m) || [])[1] || '').trim(),
+        base: ((chunk.match(/base\s+`([^`]+)`/) || [])[1] || '').trim(),
+        branch: ((chunk.match(/ブランチ\s+`([^`]+)`|ブランチ指定\s*[:：]\s*`([^`]+)`/) || []).slice(1).find(Boolean) || '').trim(),
+        ref: '',
+        files: [],
+        files_total: 0,
+        diff_cmd: ((chunk.match(/^-\s*差分を見る\s*[:：]\s*`([^`]+)`/m) || [])[1] || '').trim(),
+        mr_url: ((chunk.match(/^-\s*MR\s*[:：]\s*(\S+)/m) || [])[1] || '')
+          .replace(/（.*$/, '')
+          .trim(),
+      };
+      pushFiles(chunk, entry);
+      entries.push(entry);
+    }
+    return entries;
+  }
+  // 単一リポジトリ形式（見出し無し）
+  const branch = ((s.match(/ブランチ\s+`([^`]+)`/) || [])[1] || '').trim();
+  const base = ((s.match(/base\s+`([^`]+)`/) || [])[1] || '').trim();
+  const pathLoc = ((s.match(/^-\s*所在\s*[:：]\s*(.*)$/m) || [])[1] || '').trim();
+  const diffCmd = ((s.match(/^-\s*差分を見る\s*[:：]\s*`([^`]+)`/m) || [])[1] || '').trim();
+  const mr = ((s.match(/^-\s*MR\s*[:：]\s*(\S+)/m) || [])[1] || '').trim();
+  const entry = {
+    name: 'write',
+    role: 'write',
+    url: '',
+    path: pathLoc.replace(/\s*\/\s*ブランチ.*$/, '').trim(),
+    base,
+    branch,
+    ref: '',
+    files: [],
+    files_total: 0,
+    diff_cmd: diffCmd,
+    mr_url: mr,
+  };
+  pushFiles(s, entry);
+  // レガシー「差分:」リストも拾う
+  if (!entry.files.length) {
+    const legacy = _splitDiff(s);
+    entry.files = legacy.artifacts;
+    entry.files_total = legacy.artifacts.length + legacy.truncated;
+  }
+  if (entry.files.length || entry.mr_url || entry.branch || entry.diff_cmd) {
+    entries.push(entry);
+  }
+  return entries;
+}
+
+function _normalizeDelivery(entries) {
+  return (entries || [])
+    .filter((e) => e && typeof e === 'object')
+    .map((e) => ({
+      name: String(e.name || 'repo'),
+      role: e.role === 'reference' ? 'reference' : 'write',
+      url: String(e.url || ''),
+      path: String(e.path || ''),
+      base: String(e.base || ''),
+      branch: String(e.branch || ''),
+      ref: String(e.ref || ''),
+      files: Array.isArray(e.files) ? e.files.map(String) : [],
+      files_total: Number(e.files_total || (Array.isArray(e.files) ? e.files.length : 0)) || 0,
+      diff_cmd: String(e.diff_cmd || ''),
+      mr_url: String(e.mr_url || ''),
+    }));
 }
 
 // 失敗理由（verify の生出力）を人が読める一文にする。よくある形だけを解釈し、当てはまらな
@@ -343,10 +477,14 @@ function parseNeeds(text, id) {
     failureSummary: '', // 失敗理由の要約（生の verify 出力を解釈した一文。解釈できなければ空）
     diff: null, // { artifacts, internal, truncated, hasDiff } — 成果物と内部記録に分けた差分
     risk: '', // 検収票のリスクダイジェスト総合値（low/med/high）。バッジ表示用
+    mrUrl: '', // 代表 MR URL（frontmatter mr-url / 判断材料）。GitLab ならこれを開く
+    mrUrls: [], // 複数リポジトリ分の MR URL
+    delivery: [], // 検収サブ画面用のリポジトリ単位エントリ
   };
   const s = String(text || '');
   const fm = s.match(/^---\n([\s\S]*?)\n---\n?/);
   let body = s;
+  let deliveryRaw = '';
   if (fm) {
     body = s.slice(fm[0].length);
     for (const line of fm[1].split('\n')) {
@@ -359,6 +497,8 @@ function parseNeeds(text, id) {
       else if (key === 'status') need.status = val;
       else if (key === 'task-id') need.taskId = val;
       else if (key === 'risk') need.risk = val;
+      else if (key === 'mr-url') need.mrUrl = val;
+      else if (key === 'delivery') deliveryRaw = val;
     }
   }
   const title = body.match(/^#\s+(.+)$/m);
@@ -400,6 +540,11 @@ function parseNeeds(text, id) {
     need.evidenceThin = true;
   }
   need.failureSummary = _summarizeFailure(need.why, need.detail);
+  // 検収サブ画面: frontmatter delivery を優先し、無ければ判断材料から復元する
+  need.delivery = _normalizeDelivery(_parseDeliveryJson(deliveryRaw));
+  if (!need.delivery.length) need.delivery = _normalizeDelivery(_deliveryFromDetail(need.detail));
+  need.mrUrls = _extractMrUrls(need.mrUrl, need.delivery.map((e) => e.mr_url).join(' '), need.detail);
+  if (!need.mrUrl && need.mrUrls.length) need.mrUrl = need.mrUrls[0];
   return need;
 }
 
@@ -456,6 +601,9 @@ function synthesizeNeedsFromBacklog(needs, backlog, needsDir) {
       failureSummary: '',
       diff: null,
       risk: '',
+      mrUrl: '',
+      mrUrls: [],
+      delivery: [],
       file: path.join(needsDir, `${t.id}.md`),
       mtime: t.mtime || 0,
       synthesized: true,
@@ -463,6 +611,36 @@ function synthesizeNeedsFromBacklog(needs, backlog, needsDir) {
     have.add(String(t.id));
   }
   return out;
+}
+
+// backlog の mr_url / gate_ref を needs に補う（合成票・旧票で frontmatter が薄いとき）。
+function attachDeliveryHintsFromBacklog(needs, backlog) {
+  const byId = new Map();
+  for (const t of backlog || []) byId.set(String(t.id), t);
+  for (const n of needs || []) {
+    const tid = String(n.taskId || n.id || '');
+    const t = byId.get(tid);
+    if (!t || !t.extra) continue;
+    const candidates = [t.extra.mr_url, t.extra.gate_ref].map((x) => String(x || '').trim()).filter(Boolean);
+    const mrs = _extractMrUrls(n.mrUrl, ...(n.mrUrls || []), ...candidates, n.detail || '');
+    if (mrs.length) {
+      n.mrUrls = mrs;
+      if (!n.mrUrl) n.mrUrl = mrs[0];
+    }
+    if ((!n.delivery || !n.delivery.length) && n.mrUrl) {
+      n.delivery = _normalizeDelivery([
+        {
+          name: 'MR',
+          role: 'write',
+          mr_url: n.mrUrl,
+          branch: String(t.extra.gate_branch || ''),
+          files: [],
+          files_total: 0,
+        },
+      ]);
+    }
+  }
+  return needs;
 }
 
 // ---------------------------------------------------------------------------
@@ -920,7 +1098,10 @@ function readProject(workspaceDir, cfg) {
   const backlog = listTasks(path.join(dir, 'backlog'));
   const archive = listTasks(path.join(dir, 'archive'));
   const needsDir = path.join(dir, 'needs');
-  const needs = synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir);
+  const needs = attachDeliveryHintsFromBacklog(
+    synthesizeNeedsFromBacklog(listMdDir(needsDir, parseNeeds), backlog, needsDir),
+    backlog
+  );
   const decisionsAll = [];
   for (const f of safeList(path.join(dir, 'decisions'))) {
     if (!f.endsWith('.md')) continue;
@@ -1031,6 +1212,10 @@ module.exports = {
   parsePolicy,
   parseNeeds,
   synthesizeNeedsFromBacklog,
+  attachDeliveryHintsFromBacklog,
+  _splitDiff,
+  _deliveryFromDetail,
+  _extractMrUrls,
   parseDecisions,
   listInstances,
   removeProjectRegistration,
