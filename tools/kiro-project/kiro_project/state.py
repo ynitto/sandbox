@@ -122,7 +122,10 @@ def _redirect_root_to_state_worktree(root: Path, wt_dir: str,
 
 # 状態のうち「人の判断・計画が動いた」もの。これが変わったら即コミットする（履歴として意味がある）。
 _STATE_SIGNIFICANT = ("charter.md", "charters", "backlog", "needs", "decisions", "repos.json",
-                      "policy.md", "rules.md", "archive", "DELIVERY.md", "specs")
+                      "policy.md", "rules.md", "archive", "DELIVERY.md", "specs",
+                      # 設定も人の判断。ここに無いと、どちらのリストにも属さない設定変更は
+                      # 「変化なし」と読まれてコミットされず、鏡との差分が延々残る。
+                      "kiro-flow.yaml", "kiro-project.yaml")
 # 実行の副産物。watch が回る限り数秒ごとに変わるので、まとめてコミットする（履歴を秒で埋めない）。
 _STATE_NOISE = ("journal.md", "status.json", "run-log.jsonl", "project.json",
                 "bus", "claims", "flow-archive", "commands", "inbox", "journal-archive")
@@ -166,15 +169,85 @@ def _is_pushed(top: Path, branch: str, rev: str) -> bool:
     return r.returncode == 0
 
 
-def _sync_backup_mirror(top: "Path", branch: str, rel: str) -> None:
+# 本体側 <repo>/.kiro-project にあっても、**機械が絶対に書かない**ファイル＝人だけが所有する。
+# ここに載せてよいのは「kiro-project 自身が一度も書き換えないもの」に限る。charter.md / policy.md /
+# repos.json は人が書くものに見えるが、機械も書く（approve が policy に deny を積む、repos.json は
+# charter から再生成される）。それらを取り込み対象にすると、鏡が遅れているときに古い内容で
+# live な状態を巻き戻してしまう。設定ファイルだけが安全。
+_HUMAN_OWNED_STATE_FILES = ("kiro-flow.yaml", "kiro-project.yaml")
+
+
+def adopt_mirror_edits(top: "Path", wt_top: "Path", branch: str, rel: str) -> "list[str]":
+    """本体側 <repo>/.kiro-project の **設定ファイルへの人の編集** を状態 worktree へ取り込む。
+
+    人にとって正本は <repo>/.kiro-project（リポジトリを開けばそこにある）だが、状態の読み書きは
+    worktree へ逃がしてあるので、本体側を編集しても **何も起きない**。実際 kiro-flow.yaml の
+    agent 切替（evaluator を codex へ）が丸ごと無視されていた。
+
+    ただし「正本ブランチとの差分＝人の編集」とは読めない。鏡は正本ブランチから遅れうる
+    （バックアップは意味のある変化のときしか走らない）ため、機械が書くファイルの差分は
+    **古い鏡** であることのほうが多く、取り込めば live な状態を巻き戻す（実際 doing のタスクが
+    proposed へ戻り、削除済みの cancel が復活した）。だから _HUMAN_OWNED_STATE_FILES に限る。"""
+    if _git_line(top, "symbolic-ref", "--quiet", "--short", "HEAD") != branch:
+        return []                          # 別ブランチ作業中 → その差分は状態の編集ではない
+    names = _git_line(top, "diff", "--name-only", branch, "--", rel) or ""
+    adopted: list[str] = []
+    for p in names.splitlines():
+        p = p.strip()
+        if not p or p.rsplit("/", 1)[-1] not in _HUMAN_OWNED_STATE_FILES:
+            continue
+        src, dst = top / p, wt_top / p
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            adopted.append(p)
+        except OSError:
+            continue                       # 取り込めなくても本業は止めない（鏡は次回また差分に出る）
+    return adopted
+
+
+def _sync_backup_mirror(top: "Path", wt_top: "Path", branch: str, rel: str) -> "list[str]":
     """本体が正本ブランチを開いているなら、その <rel> の index・作業ツリーを branch へ揃える。
+    揃える **前に** 人の編集を状態 worktree へ取り込む（でないと checkout で消える）。
 
     「新しいコミットは不要（＝バックアップ済み）」の経路でも必ず呼ぶこと。鏡がずれたまま
     詰む状態はまさにそこで止まり続けるからで、コミットが要らないときこそ揃え直す必要がある。
-    パス限定 checkout なので、人が本体で触っている他のファイルには影響しない。"""
+    パス限定 checkout なので、人が本体で触っている <rel> の外には影響しない。"""
     if _git_line(top, "symbolic-ref", "--quiet", "--short", "HEAD") != branch:
-        return
+        return []
+    adopted = adopt_mirror_edits(top, wt_top, branch, rel)
     _git_line(top, "checkout", "-q", branch, "--", rel)
+    return adopted
+
+
+def sync_mirror_edits(cfg: "Config") -> "list[str]":
+    """本体側 <repo>/.kiro-project への人の編集を状態へ取り込む（パス開始時に呼ぶ）。
+
+    backup_state に任せると「意味のある状態変化があったとき」にしか走らない。設定だけを
+    書き換えて再起動した人は、それが効くまで延々待たされる（＝効かないと誤解する。実際
+    kiro-flow.yaml の evaluator 切替が無視され続けた）。だから毎パスの頭で取り込む。"""
+    top, branch = cfg.state_top, (cfg.state_backup_branch or "").strip()
+    if top is None or not branch:
+        return []
+    root = cfg.backlog.parent
+    wt_top = _git_toplevel_of(root)
+    if wt_top is None:
+        return []
+    try:
+        rel = root.resolve().relative_to(wt_top.resolve()).as_posix()
+    except ValueError:
+        return []
+    adopted = adopt_mirror_edits(top, wt_top, branch, rel)
+    _journal_adopted(cfg, adopted)
+    return adopted
+
+
+def _journal_adopted(cfg: "Config", adopted: "list[str]") -> None:
+    """人の編集を取り込んだことを journal に残す。黙って取り込むと、本体側を編集した人は
+    それが効いたのか無視されたのか分からない（実際 kiro-flow.yaml の切替が無視されていた）。"""
+    if adopted:
+        append_journal(cfg.journal, "本体側 .kiro-project への編集を状態へ取り込みました: "
+                       + ", ".join(sorted(adopted)[:5]))
 
 
 def backup_state(cfg: "Config") -> bool:
@@ -212,7 +285,7 @@ def backup_state(cfg: "Config") -> bool:
     if not old:
         return False                       # 正本ブランチが無い（別運用）→ 触らない
     if _git_line(top, "rev-parse", "--verify", "--quiet", f"{branch}:{rel}") == state_tree:
-        _sync_backup_mirror(top, branch, rel)   # 中身は同じでも鏡がずれていることがある → 揃える
+        _journal_adopted(cfg, _sync_backup_mirror(top, wt_top, branch, rel))
         return False                       # 中身が同じ＝バックアップ済み（空コミットを作らない）
 
     # 本体の作業ツリーを揃えてよいかは ref を進める **前** に決める。進めた後に見ると、ref が
@@ -264,7 +337,7 @@ def backup_state(cfg: "Config") -> bool:
     # 本体がその正本ブランチを開いていたなら、作業ツリーの表示も揃える（人が差分を見ずに済む）。
     # 人が .kiro-project を手で編集していたなら触らない（その変更を消さない）。
     if adopt:
-        _sync_backup_mirror(top, branch, rel)
+        _journal_adopted(cfg, _sync_backup_mirror(top, wt_top, branch, rel))
     if cfg.state_push:
         _git_line(top, "push", "-q", "origin", f"refs/heads/{branch}:{branch}")
     return True

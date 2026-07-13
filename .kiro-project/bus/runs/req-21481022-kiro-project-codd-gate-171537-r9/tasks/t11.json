@@ -1,0 +1,8 @@
+{
+  "id": "t11",
+  "goal": "verify.py で codd-gate の終了コード（0=PASS / 非0=FAIL）を回帰ゲートの合否へ反映し、FAIL 時に失敗理由として codd-gate のドリフト内容を出力する",
+  "deps": [
+    "t10"
+  ],
+  "kind": "work"
+}

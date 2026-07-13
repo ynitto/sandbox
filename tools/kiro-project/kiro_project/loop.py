@@ -206,6 +206,10 @@ def run_loop(cfg: Config, act=act_via_kiro_flow, ranker=None, sleeper=time.sleep
     # 取り込めなければ push も non-fast-forward で永久に通らず、リモートとの乖離が広がり続ける
     # （実際 viewer が同じ kiro-state ブランチへ push した途端に詰まり、分散構成で状態が共有
     # されなくなった）。同期の直前にコミットしておけば rebase は素直に通る。
+    # 人が本体側 <repo>/.kiro-project を編集していたら、コミットする前に取り込む。人にとっての
+    # 正本はそこ（リポジトリを開けばある）だが、実書き込み先は状態 worktree なので、取り込まないと
+    # 編集は効かないまま鏡の同期で消える（実際 kiro-flow.yaml の evaluator 切替が無視され続けた）。
+    sync_mirror_edits(cfg)
     commit_state(cfg, force=True)
     state_sync(cfg)                    # 状態 git: リモートの指示（commands/inbox/needs 記入）を先に取り込む
     tasks, policy, reasons, ingested, inboxed, pre_blocked = _run_setup(cfg)

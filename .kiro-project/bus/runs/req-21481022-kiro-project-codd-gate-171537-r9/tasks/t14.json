@@ -1,0 +1,8 @@
+{
+  "id": "t14",
+  "goal": "mr.py で codd-gate の verify 結果を done / 差し戻しの理由テキストへ含める（FAIL なら差し戻し理由に具体的なドリフト項目を列挙する）",
+  "deps": [
+    "t13"
+  ],
+  "kind": "work"
+}

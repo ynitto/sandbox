@@ -1,0 +1,10 @@
+{
+  "id": "t22",
+  "goal": "tools/kiro-project/tests に no-op 縮退の統合テストを追加する（codd-gate 不在をシミュレートし、verify / mr / model の 3 フックすべてが例外を出さず既存挙動を変えないことを検証）",
+  "deps": [
+    "t12",
+    "t15",
+    "t18"
+  ],
+  "kind": "work"
+}

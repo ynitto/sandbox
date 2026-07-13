@@ -1,0 +1,8 @@
+{
+  "id": "t9",
+  "goal": "確定仕様に従い kiro_project 内に codd_gate 呼び出しヘルパを実装する（検出→verify --strict 実行→結果パース→未インストール時は skipped を返す）。既存 codd_gate_detect/invoke/status を import して再実装しない",
+  "deps": [
+    "t8"
+  ],
+  "kind": "work"
+}

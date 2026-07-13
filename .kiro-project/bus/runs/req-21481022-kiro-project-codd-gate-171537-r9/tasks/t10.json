@@ -1,0 +1,8 @@
+{
+  "id": "t10",
+  "goal": "verify.py の回帰ゲートから t9 のヘルパを呼び出す結線を実装する（--repos ./.kiro-project/repos.json --repo-dir sandbox=. --base ${KIRO_BASE_REV:-HEAD~1} --strict を渡す）",
+  "deps": [
+    "t9"
+  ],
+  "kind": "work"
+}

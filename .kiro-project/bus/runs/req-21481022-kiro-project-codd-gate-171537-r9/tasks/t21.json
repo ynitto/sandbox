@@ -1,0 +1,8 @@
+{
+  "id": "t21",
+  "goal": "tools/kiro-project/tests に model.py フックの統合テストを追加する（ドリフト項目が backlog タスクとして enqueue され、同じ入力での 2 回目実行では安定キーにより重複しないことを検証）",
+  "deps": [
+    "t18"
+  ],
+  "kind": "work"
+}

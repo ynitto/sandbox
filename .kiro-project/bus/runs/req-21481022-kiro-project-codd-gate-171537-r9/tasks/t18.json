@@ -1,0 +1,8 @@
+{
+  "id": "t18",
+  "goal": "model.py の結線を codd-gate 未インストール時に no-op へ縮退させ、既存の enqueue 挙動（通常タスクの投入）が変化しないことをコード上で保証する",
+  "deps": [
+    "t17"
+  ],
+  "kind": "work"
+}

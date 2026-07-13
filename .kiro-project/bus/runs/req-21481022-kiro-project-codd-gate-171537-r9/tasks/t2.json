@@ -1,0 +1,6 @@
+{
+  "id": "t2",
+  "goal": "codd_gate_invoke.py を読み、codd-gate verify --strict / tasks 実行 API の関数シグネチャ・終了コードの返し方・タイムアウトと例外の扱いを呼び出し側契約として列挙する",
+  "deps": [],
+  "kind": "work"
+}

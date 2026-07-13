@@ -7481,6 +7481,53 @@ class StateBackupTests(unittest.TestCase):
                             ".kiro-project"], capture_output=True, text=True)
         self.assertEqual(r.stdout.strip(), "", "staged の古いスナップショットが残らない")
 
+    def test_human_edit_in_mirror_is_adopted_not_destroyed(self):
+        """本体側 <repo>/.kiro-project への人の編集は、状態へ取り込んでから鏡を揃える。
+
+        人にとって正本は <repo>/.kiro-project なのに、状態の読み書きは worktree へ逃げている。
+        取り込まないと編集は **効かないまま黙って消える**（実際 kiro-flow.yaml の
+        evaluator を codex へ切り替えた編集が丸ごと無視されていた）。"""
+        cfg, root, top = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: ready\n")
+        (root / "kiro-flow.yaml").write_text("agents:\n  evaluator: claude\n")
+        self.assertTrue(km.commit_state(cfg))                    # main へバックアップ（鏡も揃う）
+
+        mirror = top / ".kiro-project" / "kiro-flow.yaml"
+        self.assertEqual(mirror.read_text(), "agents:\n  evaluator: claude\n")
+        mirror.write_text("agents:\n  evaluator: codex\n")       # 人が本体側を編集
+
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: done\n")   # 次の意味ある変化
+        self.assertTrue(km.commit_state(cfg))
+
+        self.assertEqual((root / "kiro-flow.yaml").read_text(),
+                         "agents:\n  evaluator: codex\n", "人の編集が状態へ取り込まれる")
+        self.assertTrue(km.commit_state(cfg, force=True))        # 取り込んだ内容が正本へ戻る
+        self.assertIn("codex", self._show(top, "main:.kiro-project/kiro-flow.yaml") or "")
+
+    def test_stale_mirror_never_rolls_back_machine_state(self):
+        """鏡が古くても、機械が書く状態（backlog 等）は絶対に取り込まない。
+
+        鏡は正本ブランチから遅れうる（バックアップは意味のある変化のときしか走らない）ので、
+        「差分＝人の編集」と読むと古い内容で live な状態を巻き戻す。実際それをやって doing の
+        タスクが proposed へ戻り、削除済みの cancel ファイルが復活した。"""
+        cfg, root, top = self._cfg()
+        (root / "backlog").mkdir(parents=True, exist_ok=True)
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: proposed\n")
+        (root / "kiro-flow.yaml").write_text("agents:\n  evaluator: claude\n")
+        self.assertTrue(km.commit_state(cfg))                      # 鏡＝この時点の内容
+
+        # 状態だけが先へ進む（鏡は古いまま＝バックアップ前）
+        (root / "backlog" / "T1.md").write_text("## T1\n- status: doing\n")
+        mirror_cfg = top / ".kiro-project" / "kiro-flow.yaml"
+        mirror_cfg.write_text("agents:\n  evaluator: codex\n")     # 人は設定だけを触った
+
+        km.sync_mirror_edits(cfg)
+        self.assertEqual((root / "backlog" / "T1.md").read_text(),
+                         "## T1\n- status: doing\n", "古い鏡で状態を巻き戻さない")
+        self.assertEqual((root / "kiro-flow.yaml").read_text(),
+                         "agents:\n  evaluator: codex\n", "設定への人の編集だけ取り込む")
+
     def test_backup_resyncs_mirror_even_when_nothing_to_commit(self):
         """バックアップ済み（＝新しいコミットは不要）でも、鏡がずれていれば揃え直す。
 

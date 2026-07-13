@@ -1,0 +1,6 @@
+{
+  "id": "t3",
+  "goal": "codd_gate_status.py を読み、verify 結果（PASS/FAIL・ドリフト項目リスト・件数）の構造化スキーマと、そこから理由テキスト・backlog タスクへ変換できるフィールドを列挙する",
+  "deps": [],
+  "kind": "work"
+}
