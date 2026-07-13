@@ -14,6 +14,7 @@
 `from __future__ import annotations` を置くこと（注釈を文字列化し、後方定義シンボルへの
 前方参照が def 時に評価されないようにするため）。
 """
+import os as _os
 import pkgutil as _pkgutil
 
 # exec する断片を依存順（＝元ファイルの記述順）に並べる。この順序を保つ限り、元ファイルが
@@ -48,11 +49,16 @@ _FRAGMENTS = (
 )
 
 _g = globals()
+# コンパイル時の filename は断片の実ファイル絶対パスにする（__file__ 由来。zipapp 内では実在
+# しない疑似パス文字列になるが compile() は traceback ラベルとして使うだけなので問題ない）。
+# 相対名 "charter.py" のままだと coverage.py が実ソースへ実行行を対応付けられず、実際は
+# 実行されているのに 0% 表示になる（トレースバックのファイル名解決も同様に不正確になる）。
+_PKG_DIR = _os.path.dirname(_os.path.abspath(__file__))
 for _name in _FRAGMENTS:
     # pkgutil.get_data はファイルシステム配置でも zipapp（zip 内）でも断片ソースを読める。
     # open(__file__) は zipapp 内で機能しないため使わない。
     _src = _pkgutil.get_data(__name__, _name + ".py")
-    _code = compile(_src, _name + ".py", "exec")
+    _code = compile(_src, _os.path.join(_PKG_DIR, _name + ".py"), "exec")
     exec(_code, _g)
 
-del _pkgutil, _g, _name, _src, _code
+del _pkgutil, _os, _g, _name, _src, _code, _PKG_DIR
