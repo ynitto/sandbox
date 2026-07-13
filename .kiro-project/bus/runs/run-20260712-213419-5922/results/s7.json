@@ -1,0 +1,10 @@
+{
+  "id": "s7",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 完了報告\n\n### (a) 成果\n`tools/kiro-project/tests` のテスト構成を調査し、`/Users/nitto/Workspace/sandbox-state/.kiro-project/bus/runs/run-20260712-213419-5922/artifacts/s7/report.md` に報告書を出力した。作業ツリーへの変更は行っていない（調査専任タスクのため）。\n\n要点:\n- テストは標準ライブラリ `unittest.TestCase`（pytest は収集のみ）。`pytest.fixture`／`@pytest.mark.*`／`pytest.ini`／`conftest.py` は一切存在しない。\n- fixture は手製ヘルパー `mkb()`（backlogタスク生成）・`cfg_for()`（`km.Config`組み立て）＋各テストの `tempfile.TemporaryDirectory()`。\n- モックは `unittest.mock`。外部プロセスは `mock.patch.object(km.subprocess, \"run\", ...)`、CLI実在検出は `which=` 依存性注入パターン（`km.doctor_env_findings(cfg, which=shutil.which)` が先例）。\n- **codd-gate を名指しするテストは0件**。`TestIntake`（5件）と `TestRepoRegistry`（4件）が codd-gate 用の汎用フック機構（`intake_cmd`／`repos.json`生成）を検証しているのみ。別ディレクトリの `tools/codd-gate/tests`（30テスト）は独立して健全。\n\n### (b) 検証\n- `pytest tools/kiro-project/tests -q -k codd` → **exit 5**（0件選択、515 deselected）\n- `pytest tools/kiro-project/tests -q`（フル）→ **515 passed**\n- `pytest tools/codd-gate/tests -q` → **30 passed**\n- `pytest.ini`等の設定ファイル探索 → 該当なし\n\n### (c) 前提・未解決事項\nこのタスクに付与された完了条件（`pytest -k codd && codd-gate verify --strict`）は run 全体の最終ゲートであり、`graph.json` を確認したところ s7 は調査専任で `t1`〜`t4`（実テスト追加）や `a1`〜`e2`（検出モジュール・結線実装）の依存元に過ぎない。範囲逸脱を避けるため、s7 単体でこの完了条件を満たす実装（codd命名テストの追加・codd-gate呼び出し実装）は行っていない。後続タスク向けに、既存の `which=` DI パターンや `mock.patch.object(km.subprocess, \"run\", ...)` 流儀への追従、クラス/メソッド名に `codd` を含める必要がある点を報告書に明記した。",
+  "finished_at": "2026-07-12T12:44:31Z",
+  "artifacts": [
+    "artifacts/s7/report.md"
+  ]
+}

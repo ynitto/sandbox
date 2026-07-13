@@ -1,0 +1,9 @@
+{
+  "id": "t23",
+  "goal": "完了条件のループ：`python3 -m pytest tools/kiro-project/tests -q -k first_command_line` を実行し、失敗があれば t22 の指摘も含めて実装・テストを修正して再実行する。終了コード 0 になるまで反復する",
+  "deps": [
+    "t21",
+    "t22"
+  ],
+  "kind": "verify"
+}

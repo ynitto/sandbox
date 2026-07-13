@@ -1,0 +1,7 @@
+{
+  "id": "c1",
+  "who": "worker-2",
+  "status": "failed",
+  "output": "実行エラー: claude タイムアウト（600s 超過）",
+  "finished_at": "2026-07-12T23:39:05Z"
+}

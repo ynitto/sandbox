@@ -1,0 +1,17 @@
+{
+  "request": "macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q\n\nタスクID: macOS-kiro-flow-git-4-gr-171537\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: - codd-gate がインストールされている場合に活用できること\n- ユニットテストを拡充すること\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- sandbox = https://github.com/ynitto/sandbox/（base=main, target=main, 書込先候補（owns: **））\n    説明: ソースコード・設計書\n制約:\n- kiro-project/kiro-flowをエンジンとして使用する\n- kiro-projects-viewerをフロントエンドとして使用する\n前提:\n- 人による操作や確認を最小限にする\n- 繰り返し・再実行によって試行錯誤できる\n成果物:\n- kiro-project ソースコード\n- kiro-flow ソースコード\n- kiro-projects-viewer ソースコード\n- 設計書・ドキュメント\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n…\nを green にする :: 完了条件は main で充足済み（kiro-project/kiro-flow 両スイート green）。kp ブランチの成果をマージ済み\n\n## DR-0009  2026-07-13  actor: nitto\n- context : macOS-kiro-flow-git-4-gr-171537（macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする）を人の判断から復帰\n- action  : approve-and-fix\n- reason  : hold の deny を解除して続きから再開（成功済みノードは温存）\n- affects : macOS-kiro-flow-git-4-gr-171537 → ready\n- learn: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: hold の deny を解除して続きから再開（成功済みノードは温存）\n\n## DR-0010  2026-07-13  actor: nitto\n- context : macOS-kiro-flow-git-4-gr-171537（macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする）を人の判断から復帰\n- action  : approve-and-fix\n- reason  : 完了条件は満たしている（両スイート 990 passed）。120 秒の verify タイムアウトで NG 扱いされていたため、verify_timeout=600 に引き上げて再検証する\n- affects : macOS-kiro-flow-git-4-gr-171537 → ready\n- learn: macOS で失敗する kiro-flow の git 自己修復テスト 4 件を修正し、テストスイート全体を green にする :: 完了条件は満たしている（両スイート 990 passed）。120 秒の verify タイムアウトで NG 扱いされていたため、verify_timeout=600 に引き上げて再検証する",
+  "workspace": {
+    "url": "https://github.com/ynitto/sandbox/",
+    "path": "",
+    "base": "main",
+    "target": "main",
+    "desc": "ソースコード・設計書",
+    "branch": "kp/macOS-kiro-flow-git-4-gr-171537"
+  },
+  "references": [],
+  "status": "running",
+  "created_at": "2026-07-12T22:56:55Z",
+  "orch_lease_until": 1783900837.830938,
+  "heartbeat_at": "2026-07-12T23:58:37Z",
+  "updated_at": "2026-07-12T22:59:01Z"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "t5",
+  "goal": "リポジトリに codd-gate がインストール・設定されているか確認し（設定ファイル・CI 結線・schemas/ の契約）、本修正で codd-gate の verify/tasks をどう活用できるかを1段落で判定する",
+  "deps": [],
+  "kind": "work"
+}

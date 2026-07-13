@@ -1,0 +1,21 @@
+commit 0cf9c599671d89bdb1f967d766dc5c5002bb0bd9
+Author: kiro-flow <kiro-flow@local>
+Date:   Sun Jul 12 17:28:44 2026 +0900
+
+    [kiro-flow] t8 (run-20260712-172155-3661)
+
+diff --git a/tools/kiro-flow/tests/test_kiro_flow.py b/tools/kiro-flow/tests/test_kiro_flow.py
+index 4bf588d..6b018c7 100644
+--- a/tools/kiro-flow/tests/test_kiro_flow.py
++++ b/tools/kiro-flow/tests/test_kiro_flow.py
+@@ -65,7 +65,9 @@ def _zero_loose_objects(clone) -> int:
+         d = os.path.join(objdir, sub)
+         if len(sub) == 2 and os.path.isdir(d):          # objects/pack・objects/info は対象外
+             for name in os.listdir(d):
+-                open(os.path.join(d, name), "wb").close()   # 0 バイトへ切り詰め
++                p = os.path.join(d, name)
++                os.chmod(p, 0o644)  # macOS: git が 0444 で作る loose object に書き込み権限を付与
++                open(p, "wb").close()   # 0 バイトへ切り詰め
+                 zeroed += 1
+     return zeroed
+ 

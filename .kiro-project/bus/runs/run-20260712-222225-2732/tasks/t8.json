@@ -1,0 +1,8 @@
+{
+  "id": "t8",
+  "goal": "仕様に沿ってヘルパー関数 `_extract_fenced_blocks(text) -> list[str]` を実装する。``` / ```bash / ```sh / ```shell / ```console の開始フェンスを認識し、フェンス本文のみを順序どおり返す。閉じフェンス欠落時は末尾までを1ブロックとして扱う",
+  "deps": [
+    "t7"
+  ],
+  "kind": "generate"
+}

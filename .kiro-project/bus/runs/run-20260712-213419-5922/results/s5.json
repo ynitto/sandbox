@@ -1,0 +1,10 @@
+{
+  "id": "s5",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果\n\n`schemas/` の共通データ契約（`repos.schema.json` / `task.schema.json` / `README.md`）を精読し、バージョン識別子と互換判定フィールドを特定した。詳細は成果物ファイル参照:\n`bus/runs/run-20260712-213419-5922/artifacts/s5/schemas-version-and-compat-fields.md`\n\n**要点**:\n- schemas/ の**データ契約自体にバージョン番号フィールドは存在しない**（`$schema`/`$id` はメタスキーマ／契約識別子であり実データには出ない）。\n- 互換性は「追加のみ可・未知キー無害化（`additionalProperties: true`）」という構造規約で担保されている（バージョン一致判定ではない）。\n- 実務上の最小互換判定基準: task は `required: [\"title\"]`、repos の repo エントリは必須フィールドなし（型チェックのみ可能）。\n- 唯一実体のあるバージョン識別子は schemas/ の**外**、`tools/codd-gate/codd-gate.py:56` の `VERSION = \"1.0.0\"`（`--version` フラグで取得可）。d1 の「バージョン取得」と「schemas 互換判定」は別軸として設計すべき、という示唆を記載した。\n- `_meta.generated_from`（repos.json の自動生成マーカー）も由来判定の補助フィールドとして記載。\n\n## 検証内容と結果\n\n- 対象ファイル3点（repos.schema.json / task.schema.json / README.md）を全文精読、`tools/codd-gate/codd-gate.py` を `grep -i version` で突き合わせて裏取り。\n- 本タスクは調査のみのため worktree のファイルは変更していない（規約通り）。\n- 完了条件として与えられたシェルコマンドを実行して現状を確認:\n  `python3 -m pytest tools/kiro-project/tests -q -k codd` → **exit 5（no tests collected）**。`.kiro-project/repos.json` も worktree に未作成。\n  これは s5 が依存なしの調査タスクであり、実装（a1-a4/b1-b3/c1-c2/e1-e2/t1-t4/doc/gate）が別タスクとして後続フェーズに存在するグラフ構成（fan-out-and-synthesize）のためで、s5 単体では満たせない。範囲外の実装を代わりに行うと他タスクの担当領域を侵すため実施しなかった。\n\n## 採用した前提・未解決事項・範囲外で見つけた問題\n\n- 前提: 完了条件のシェルコマンドは run 全体（gate タスク到達後）の受け入れ基準であり、依存なしの s5 個別タスクの完了は「調査結果の成果物出力」で判断されるべきと解釈した。\n- 未解決: schemas/ に将来 non-additive な変更が入った場合の検知手段が現状ない（README の運用規約に依存）。d1 で明示的に対象外とするか判断が必要。\n- 範囲外で見つけた問題: なし（schemas/ 自体に矛盾や不備は見当たらなかった）。",
+  "finished_at": "2026-07-12T12:39:43Z",
+  "artifacts": [
+    "artifacts/s5/schemas-version-and-compat-fields.md"
+  ]
+}

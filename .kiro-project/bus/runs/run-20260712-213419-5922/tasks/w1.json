@@ -1,0 +1,10 @@
+{
+  "id": "w1",
+  "goal": "完了条件コマンドの前提ファイルを作る。sandbox リポジトリ直下に `.kiro-project/repos.json` が存在せず（d2 が報告済み）、`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` は入力ファイル不在で即失敗する。s5 が調べた `schemas/repos.schema.json` に準拠して `.kiro-project/repos.json` を新規作成すること。最低限 repo id=`sandbox`、s6 が調べた `owns` フィールド、および codd-gate が --strict で要求するドキュメント/コード/テストの接続マップ（s4 の CLI I/F 文書 `artifacts/s4/codd-gate-cli-interface.md` を参照）を記述する。作成後、実際に `codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` を実行し終了コード 0 を確認する。--strict で未文書化/未テストとして落ちる場合は、リポジトリの実態に合うようマップ（対象 glob・除外）を調整して 0 になるまで直すこと。実行ログ（コマンドと終了コード）を報告に含める。",
+  "deps": [
+    "s4",
+    "s5",
+    "s6"
+  ],
+  "kind": "work"
+}

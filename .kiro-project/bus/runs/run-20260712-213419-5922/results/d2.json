@@ -1,0 +1,10 @@
+{
+  "id": "d2",
+  "who": "worker-2",
+  "status": "done",
+  "output": "Confirmed: worktree clean, and the completion-condition command still fails for the same reasons the sibling tasks reported (no `codd`-tagged tests, no `.kiro-project/repos.json`) — expected, since this task is design-only.\n\n## 成果\n\n**成果物**: `bus/runs/run-20260712-213419-5922/artifacts/d2/codd-gate-status-interface-design.md`\n\n**差別化の切り口**: `CoddGateStatus` を schemas/ の3つ目の契約にせず、プロセス内一過性の値オブジェクトとして設計。3フックへの受け渡しは新フォーマットの発明ではなく、既存の自動配線ポイント（`load_charter`／`evaluate_acceptance`／`intake_cmd`）へ同じ値を素通しするだけに留めた。\n\n要点:\n- **データ構造**: `CoddGateStatus{binary, version, findings}` の3フィールドのみ。repos.json パスや `--repo-dir` はルーティング情報として持たせず、b2（実引数生成）の管轄に残した。\n- **アクセサ**: `usable`（`binary is not None and not findings`）、`command(*args)`（`resolve_kiro_flow` と同型の argv 連結パターンをメソッド化）、`reason`（journal 向けの一文）。\n- **3フックの結線**: regression＝`load_charter` 時に `cfg.regression_cmd` 未設定なら自動配線。enqueue＝同タイミングで `cfg.intake_cmd`。acceptance＝charter.md を書き換えず `_apply_repo_registry` と同じ「パース後インメモリ加工」で `Charter.acceptance` に1行追記——これにより `_failing_acceptance_specs`（s2 既発見）が既存のまま効き、acceptance 失敗が自動的にバックログ再投入される副産物を得た。\n- **依存方向**: codd-gate.py は `CoddGateStatus` を一切知らない一方向。schemas/README.md の2契約（repos/task）は変更しない。d1 の動的判定（`tasks` 出力の per-record `title` チェック）はセッション粒度の `CoddGateStatus` に含めず、`run_intake` の消費コード側に残す境界を明記した。\n\n## 検証\n\n- `git status --short` 差分ゼロ（設計文書のみ、コード変更なし）。\n- 完了条件を再実行して確認: `pytest -k codd` → 515件中該当0件・exit 5。`codd-gate verify --repos ./.kiro-project/repos.json ...` → `.kiro-project/repos.json` 不在でエラー。いずれも s1〜s3・d1 と同一原因で、実装系タスク（`resolve_codd_gate_status` 実装・3フック結線・repos.json 復元・codd テスト追加）の責務であり本タスクの範囲外と判断した。\n\n## 前提・未解決事項・範囲外\n\n- 前提: 「acceptance」フックを `Charter.acceptance`＋`evaluate_acceptance`（s2）と解釈。\n- 未解決: charter.md 非破壊のインメモリ追記案は「何が受入条件か」を人が charter.md だけからは把握できなくなるトレードオフを持つ（対抗案＝実書き込みとの選択はb系判断）。`resolve_codd_gate_status` のキャッシュ方式も2案提示のみで未確定。\n- 範囲外の新規発見なし。",
+  "finished_at": "2026-07-12T13:09:25Z",
+  "artifacts": [
+    "artifacts/d2/codd-gate-status-interface-design.md"
+  ]
+}

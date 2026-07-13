@@ -1,0 +1,2 @@
+{"ts": "2026-07-12T12:36:20Z", "who": "orchestrator", "kind": "planned", "patterns": ["fan-out-and-synthesize", "adversarial-verification", "loop-until-done"], "parallelism": 12, "tasks": ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "d1", "d2", "a1", "a2", "a3", "a4", "b1", "b2", "b3", "c1", "c2", "e1", "e2", "t1", "t2", "t3", "t4", "doc", "gate", "synth", "v1", "v2", "loop", "judge"]}
+{"ts": "2026-07-12T23:51:53Z", "who": "orchestrator", "kind": "replan", "iteration": 1, "added": ["w1", "b3r", "c1r", "e2r", "gate2"]}

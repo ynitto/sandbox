@@ -1,0 +1,13 @@
+{
+  "id": "t6",
+  "who": "worker-1",
+  "status": "done",
+  "output": "まず独立検算の前提を揃えるため、セッション初期手順（更新・記憶同期/想起）を実行し、その後に依存成果物と実コードを突き合わせます。\n\n次に、依存成果物・実装・テスト定義を同時に読み、主張の整合性を独立に再導出します。\n\nここからは実行で再導出します。`pytest -k` の実選択と、t4サンプルの落ち方を同じ実装に直接通して確認します。\n\nverify=fail\n\n1. **戻り値契約と呼び出し側期待の不一致**  \n`tools/kiro-project/kiro-project.py` の `synth_verify` docstring（失敗時「人へ」）と、実際の `ensure_verify`（`cmd==\"\"` でも `False` 返却で次サイクル持ち越し）の挙動が一致していません。  \n**修正指針**: 「持ち越し運用」が正なら docstring/設計記述を修正、「即時人手回付」が正なら `ensure_verify` 側に needs 化などの明示処理を追加。\n\n2. **t4失敗ケースの検証ギャップ（`-k first_command_line` 対象に未収載）**  \n独立再導出で、t4の主張どおり現行ロジックは以下で落ちます。  \n- フェンス外 `$ pytest -q` → `None`  \n- フェンス内 ```` ```bash\\n$ python3 -m pytest ...\\n``` ```` → `'$ python3 -m pytest ...'`  \n- フェンス外 `1. python3 -m pytest ...` → `None`  \n- フェンス内 ```` ```bash\\n1. pytest -q\\n``` ```` → `'1. pytest -q'`  \n一方、`pytest -k first_command_line --collect-only` の12件（t3想定どおり）にはこの系統の回帰テストがありません。  \n**修正指針**: `TestVerifyAssist` に `test_first_command_line_*` 命名で `$`/番号プレフィックス（フェンス内外）を追加し、修正実装とセットで回帰化。\n\n独立検算結果として、完了条件コマンド自体（`python3 -m pytest tools/kiro-project/tests -q -k first_command_line`）は exit 0 で成功、`-k` の選択12件も t3報告と一致しました。クロスチェック詳細は `artifacts/t6/verify-crosscheck-report.md` に出力済みです。\n\n{\"ok\": false, \"issues\": [\"synth_verifyの失敗時契約（'人へ'）とensure_verify実装（静かに持ち越し）が不一致\", \"t4で再現する$プレフィックス/番号付きリストの失敗ケースがpytest -k first_command_line対象テストに未収載\"]}",
+  "finished_at": "2026-07-12T13:33:28Z",
+  "data": {
+    "ok": false
+  },
+  "artifacts": [
+    "artifacts/t6/verify-crosscheck-report.md"
+  ]
+}

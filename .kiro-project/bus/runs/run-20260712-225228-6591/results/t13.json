@@ -1,0 +1,10 @@
+{
+  "id": "t13",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果報告\n\n**(a) 成果・サマリー**: コード変更なし。自己修復ロジック（`GitBus`/`StateGit`/`DirectStateGit`）を精査したが、sed/readlink/stat 等の外部コマンド呼び出しは元々存在しなかった——git 操作は全て `subprocess.run([\"git\", ...])` の list 形式、ファイル属性・パス解決は Python 標準ライブラリのみで完結しており、BSD/GNU 差異は発生しない。repo内で該当コマンドを実際に使うのは install.sh 系（無関係、既にBSD/GNU差異を自前で吸収済み）のみ。\n\n**(b) 検証**: worktree差分なしを確認のうえ、完了条件コマンドを実行し **900 passed, exit code 0**。\n\n**(c) 前提・範囲外**: タスク記述の前提（該当コマンド依存の存在）は実装と合致しないと判断し、存在しないコードの置き換えや無関係な install.sh への変更は行わなかった（範囲外への過剰修正を回避）。未解決事項なし。\n\n成果物: `bus/runs/run-20260712-225228-6591/artifacts/t13/report.md`",
+  "finished_at": "2026-07-12T21:58:57Z",
+  "artifacts": [
+    "artifacts/t13/report.md"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "t18",
+  "who": "worker-2",
+  "status": "done",
+  "output": "16件全て pass、変更ファイルはテストファイル1件のみ。想定通り。\n\n## 成果物\n\n`tools/kiro-project/tests/test_kiro_project.py` に新規テスト1件を追加（`TestVerifyAssist.test_first_command_line_returns_first_fence_command_ignoring_later_fence`、`test_first_command_line_extracts_all_fence_lines_in_order` の直後に配置）。\n\n内容: 最初のフェンス（`pytest ... -k first_command_line`）と、後続フェンス（補足説明の別コマンド `pytest -k some_other_test`）を含む出力を与え、`km._first_command_line(output)` が最初のフェンス内の最初のコマンドを返し、後続フェンスの説明用コマンドを拾わないことを検証する。\n\n## 検証\n\n`python3 -m pytest tools/kiro-project/tests -q -k first_command_line` → **16 passed, 523 deselected**（終了コード0）。完了条件を満たした。\n\n## 採用した前提・範囲外事項\n\n- 依存タスクt7の仕様（フェンス内は無条件採用、複数フェンスは常に最初を優先）に基づき、実装（`_first_command_line`/`_code_fence_lines`）はHEAD時点で既に多重フェンスの先頭優先ロジックを満たしていたため、実装変更は不要と判断し、テスト追加のみ行った。\n- 他の並行タスクが同じ `-k first_command_line` にマッチするテストを既に追加済み（実行前時点で12件、本タスク追加後16件）。重複や競合は確認しておらず、全件passを確認済み。\n- 範囲外の問題は新規に発見していない。実装（`kiro-project.py`）は無変更（`git status` で `test_kiro_project.py` のみ変更を確認）。",
+  "finished_at": "2026-07-12T20:49:20Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/synth_verify-_first_comm-172544",
+      "commit": "4ed0d4cb28ddbe9f607aa31a78626e19af445050",
+      "target": "main",
+      "path": ""
+    }
+  }
+}

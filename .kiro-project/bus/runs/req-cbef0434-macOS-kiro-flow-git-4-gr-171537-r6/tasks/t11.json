@@ -1,0 +1,8 @@
+{
+  "id": "t11",
+  "goal": "synth の方針に従い、git 環境の明示指定を実装する：テストが作る一時リポジトリで init.defaultBranch・user.name・user.email を明示設定し、グローバル gitconfig の影響を受けないよう環境変数（GIT_CONFIG_GLOBAL / HOME）を隔離する。t10 と同一ファイルを触る可能性があるため直列に実施する",
+  "deps": [
+    "t10"
+  ],
+  "kind": "work"
+}

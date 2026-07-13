@@ -1,0 +1,8 @@
+{
+  "id": "judge",
+  "goal": "完了条件 `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実際に実行して終了コードを取得し、0 なら達成と判定して終了する。0 でない場合は失敗ログ・nodeid・スタックトレースを添えて原因特定（失敗の分類）からのやり直しを指示し、green になるまで反復させる（loop-until-done）",
+  "deps": [
+    "gate2"
+  ],
+  "kind": "judge"
+}

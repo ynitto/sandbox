@@ -1,0 +1,8 @@
+{
+  "id": "a2",
+  "goal": "検出モジュールに能力検出を追加する: codd-gate のバージョン取得と schemas 互換チェックを行い、利用可能サブコマンド（verify / tasks / --debt）を能力フラグとして返す",
+  "deps": [
+    "a1"
+  ],
+  "kind": "work"
+}

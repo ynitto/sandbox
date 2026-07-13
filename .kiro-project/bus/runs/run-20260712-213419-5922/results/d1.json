@@ -1,0 +1,10 @@
+{
+  "id": "d1",
+  "who": "worker-2",
+  "status": "done",
+  "output": "worktree はクリーン（無変更）。設計文書を artifacts/d1 に出力した。\n\n## 成果\n\n`bus/runs/run-20260712-213419-5922/artifacts/d1/codd-gate-autodetect-judgment-design.md` に、codd-gate 自動検出の判定条件を設計・文書化した。\n\n**差別化の切り口**: 実在・バージョン・schemas互換を単一のbool判定にせず、既存の `doctor_env_findings`（`kiro-project.py:6907`）と同型の finding（category/severity/title/evidence/fix）を返す4項目の短絡パイプラインとして設計し、新しい判定機構を発明せず既存2パターン（`resolve_kiro_flow` の解決連鎖／doctor findingsの劣化報告）にそのまま接続した。\n\n**要点**:\n- **CLI実在**: `cfg.codd_gate`（明示）→`shutil.which(\"codd-gate\")`→同梱 `tools/codd-gate/codd-gate.py` の順（`resolve_kiro_flow` と対称）。無ければ以降を評価せず短絡。\n- **バージョン取得**: `--version`（argparse `action=\"version\"`、exit 0 即終了）を timeout=5s で取得し正規表現でパース。timeout/exit≠0/パース不能は「不明」とし「大丈夫」側に丸めない。\n- **schemas互換判定**: s5 の結論（実データにバージョンフィールドが無い）に基づき、semver比較ではなく構造チェック2種に分解——(a) kiro-project自身が書く repos.json の出力契約チェック（起動時・静的）、(b) codd-gate `tasks` 出力の `title` 必須チェック（実行時・都度、e系の責務）。\n- **フォールバック方針**: 静的判定（実在/バージョン/出力契約）の失敗・不明は全て「連携しない」に倒す（古いCLIに新フラグを渡してexit 2とexit 1の意味を混同させるリスクの回避）。動的判定（title欠如）だけは1件単位で棄却し、intakeループ全体は止めない。明示設定があれば自動判定自体をスキップ。\n\n## 検証内容と結果\n\n既存パターン（`doctor_env_findings`/`resolve_kiro_flow`/`run_intake`）と `codd-gate.py` の `VERSION`/`--version` 定義、`install.sh` の既定インストール先を実地確認し、依存タスク s4/s5/s6 の実測結果と矛盾しないことを確認した。本タスクはコード変更を伴わない設計文書のため、`git status` はクリーン（無変更）。完了条件のシェルコマンド自体は s4/s5/s6 と同じ理由（`.kiro-project/` 削除・`codd` テスト未実装）で本タスクの範囲外。\n\n## 前提・未解決事項・範囲外\n\n- 「schemas互換判定」をsemver比較でなく構造チェックに分解する前提を採用（s5準拠）。もしsynth/gate側がバージョン番号比較を必須と期待しているなら実装不可能である旨を明記した。\n- `MIN_SUPPORTED_VERSION`は「置き場所を用意した」段階で、実質的な運用はcodd-gate側の破壊的変更が起きるまで意味を持たない。\n- 範囲外の新規発見なし（`.kiro-project/`削除は既に s6 が追跡委譲済み）。",
+  "finished_at": "2026-07-12T13:01:09Z",
+  "artifacts": [
+    "artifacts/d1/codd-gate-autodetect-judgment-design.md"
+  ]
+}

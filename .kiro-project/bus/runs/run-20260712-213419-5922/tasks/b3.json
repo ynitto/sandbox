@@ -1,0 +1,10 @@
+{
+  "id": "b3",
+  "goal": "差分ゲート結線: regression フックから codd-gate verify --strict を呼び出し、終了コードと出力を検出結果インターフェース経由で regression の合否へ反映する。未検出時はスキップ扱いにする",
+  "deps": [
+    "a4",
+    "b1",
+    "b2"
+  ],
+  "kind": "work"
+}

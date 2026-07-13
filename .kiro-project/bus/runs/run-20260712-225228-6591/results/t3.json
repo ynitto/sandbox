@@ -1,0 +1,10 @@
+{
+  "id": "t3",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果報告\n\n**(a) 成果物**: `tools/kiro-flow/kiro-flow.py` 内の git 自己修復ロジックをファイルパス・行番号付きで一覧化し、成果物ファイルとして出力した。\n出力先: `/Users/nitto/Workspace/sandbox-kiro-state/.kiro-project/bus/runs/run-20260712-225228-6591/artifacts/t3/git-self-repair-inventory.md`\n\n主な実装箇所（詳細は成果物参照）:\n- **`GitBus` クラス**（L1092–1425）: バス用管理クローンの自己修復一式。`_remove_stale_git_locks`（L1140, index.lock等除去）、`_is_corrupt_error`/`_rebuild_clone`（L1162/L1211, 破損検知→作り直し）、`_recover_reused_clone`（L1292, 中断rebase自己回復）、`_setup_worktree`（L1303, `checkout` 失敗時 `checkout -B` でブランチ作成）\n- **`StateGit` クラス**（L1497–1858）: ワークスペース状態同期用クローンに対する同型ロジック。`_remove_stale_locks`（L1530）、`_recover`（L1616, rebase自己回復）、`_setup_worktree`（L1625, ブランチ作成/切替）、`_rebuild`/`sync`（L1813/L1820, 破損検知→作り直し）\n- **共有 git キャッシュ + detached worktree 供給**（L1966–2358）: `provision_worktree`（L2082, detached worktree払い出し・prune再試行）、`ensure_cache`/`_mirror_clone`（L2036/L2014, 破損キャッシュ再作成）、`finalize_workspace`（L2322, detached HEADから作業ブランチをpush作成、reject時fetch+rebase）\n- **gc（janitor）経由の孤立残骸回収**（L5036–5192）: `sweep_lock_files`/`sweep_work_repo_dirs`/`sweep_clone_dirs`/`cmd_gc`\n\n**(b) 検証**: 完了条件コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、**900 passed, exit code 0**（本 worktree・Darwin/Python 3.14.2 環境では失敗ゼロ）。調査タスクのため作業ツリーは無変更（`git status --short` で差分なし確認済み）。\n\n**(c) 前提・範囲外所見**:\n- 調査対象は `tools/kiro-flow/` 配下のみ（`executors/gitlab.py` はgrep済みでヒットなし）。\n- `GitBus` と `StateGit` はほぼ同型の自己修復ロジックを重複実装している（統合余地あり、範囲外のため未変更）。\n- 依頼元の「macOS失敗4件」は本worktreeでは再現せず、原因切り分け・修正は別タスク担当と判断し着手していない。",
+  "finished_at": "2026-07-12T13:59:52Z",
+  "artifacts": [
+    "artifacts/t3/git-self-repair-inventory.md"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "t8",
+  "who": "worker-1",
+  "status": "done",
+  "output": "バックグラウンドで実行中のフルテストスイート（完了条件コマンド）の終了を待ちます。完了次第、結果を成果物に反映して報告します。",
+  "finished_at": "2026-07-12T14:19:28Z",
+  "artifacts": [
+    "artifacts/t8/root-cause-and-fix-plan.md"
+  ]
+}

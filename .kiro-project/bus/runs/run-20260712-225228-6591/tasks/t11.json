@@ -1,0 +1,8 @@
+{
+  "id": "t11",
+  "goal": "パス解決の欠陥を修正する: kiro-flow の git 自己修復ロジックが扱うリポジトリ/worktree パスを `Path.resolve()`（realpath 相当）で正規化し、/tmp と /private/tmp のようなシンボリックリンク経由のパスと git が返す実パスが一致するようにする",
+  "deps": [
+    "t10"
+  ],
+  "kind": "work"
+}

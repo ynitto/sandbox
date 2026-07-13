@@ -1,0 +1,9 @@
+{
+  "id": "e2",
+  "goal": "負債取り込み結線: 正規化したドリフト項目を kiro-project の backlog タスクとして enqueue し、同一ドリフトの重複投入を安定キーで防ぐ",
+  "deps": [
+    "e1",
+    "s3"
+  ],
+  "kind": "work"
+}
