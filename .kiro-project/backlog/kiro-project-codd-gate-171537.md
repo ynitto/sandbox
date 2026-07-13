@@ -1,5 +1,5 @@
 ## kiro-project-codd-gate-171537: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する
-- status: blocked
+- status: review
 - source: charter
 - priority: 0
 - verify: `python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base "${KIRO_BASE_REV:-HEAD~1}" --strict`
@@ -8,5 +8,9 @@
 - refs: sandbox
 - charter: v0.1
 - assess: c=2 r=2 a=2
-- last_run: req-21481022-kiro-project-codd-gate-171537-r8
 - needs_reason: 繰り返し NG（retries=9）: exit=5 589 deselected in 0.16s
+- last_run: req-21481022-kiro-project-codd-gate-171537-r9
+- gate_ref: git: 未コミットの変更あり
+- gate_ts: 2026-07-13 14:20:03
+- gate_branch: 
+- gate_vmsg: exit=0 .............................                                            [100%] 29 passed, 594 deselected in 0.17s 差分: sandbox 16b0b7c09bb41cf78b1997517157115e652099b0..作業ツリー（0 ファイル） OK: 一貫性ゲート

@@ -1,0 +1,6 @@
+{
+  "id": "t5",
+  "goal": "kiro_project/ の enqueue（backlog 投入）のタスク生成関数と backlog タスク schema（id/title/priority/deps/重複判定キー）を特定する",
+  "deps": [],
+  "kind": "work"
+}

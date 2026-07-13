@@ -1,0 +1,19 @@
+{
+  "id": "t8",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果\n\n`tools/kiro-project/codd_gate_status.py` の `detect_status` を拡張し、PATH 探索（`resolve_codd_gate`）とバージョン確認（`get_version`）をまとめて安全に行う唯一の合流点にした。既存の `detect_status` は実は PATH 探索のみで、バージョン確認は自身の docstring 上でも「まだ合流していない」と明記された未完成状態だった（`codd_gate_detect.py` 自体の各プリミティブは commit 38f99cac で既にマージ済み・完成済み）。\n\n**変更内容**: `run=subprocess.run` を DI パラメータとして追加し、PATH で見つかった場合のみ `get_version` を実行、成功すればバージョンを、失敗（timeout・非0終了・パース不能・想定外の例外）すれば「バージョン不明」へ縮退。未検出時は従来どおり即座に `build_status(None)`。すべての失敗経路で例外を外に投げない。\n\n## 検証\n\n- `python3 -m pytest tools/kiro-project/tests -q -k codd` → 50 passed（既存47 + 新規3）\n- `codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` → OK\n- 完了条件コマンド全体で exit 0 を確認\n\n## 前提・範囲\n\nt7 の結線仕様が `detect_status` を3フック共通の唯一の検出入口として使う設計であることを踏まえ、その関数自体がタスク要求（PATH＋バージョン確認・None縮退・無例外）を満たしていない欠落を最小差分で修正した。`kiro-project.py` 本体への結線（t9/t11/t16/t19の責務）は範囲外のため触れていない。範囲外の問題は見つからなかった。\n\n成果物: `bus/runs/req-21481022-kiro-project-codd-gate-171537-r9/artifacts/t8/report.md`",
+  "finished_at": "2026-07-13T05:17:56Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/kiro-project-codd-gate-171537",
+      "commit": "678c2f84bb88e5f7e2139b5ccef27105b831b6fe",
+      "target": "main",
+      "path": ""
+    }
+  },
+  "artifacts": [
+    "artifacts/t8/report.md"
+  ]
+}

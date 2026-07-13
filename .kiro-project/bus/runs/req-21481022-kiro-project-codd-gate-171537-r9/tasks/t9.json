@@ -1,0 +1,8 @@
+{
+  "id": "t9",
+  "goal": "repos.json の codd_gate 設定（enabled / strict / base rev / repo-dir マッピング）の読み込みとデフォルト値決定を実装する",
+  "deps": [
+    "t7"
+  ],
+  "kind": "work"
+}

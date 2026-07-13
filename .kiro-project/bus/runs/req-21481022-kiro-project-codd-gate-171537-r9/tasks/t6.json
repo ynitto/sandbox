@@ -1,0 +1,6 @@
+{
+  "id": "t6",
+  "goal": "tools/kiro-project/tests の pytest 構成を確認し、`-k codd` で収集されるテスト命名規約と既存 fixture・モック方針を洗い出す",
+  "deps": [],
+  "kind": "work"
+}

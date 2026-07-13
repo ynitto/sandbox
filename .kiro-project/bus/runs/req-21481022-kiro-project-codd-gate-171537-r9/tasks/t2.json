@@ -1,0 +1,6 @@
+{
+  "id": "t2",
+  "goal": "codd-gate CLI の verify / --debt / tasks サブコマンドについて、引数・終了コード・標準出力フォーマット（JSON か否か）を実測して記録する",
+  "deps": [],
+  "kind": "work"
+}

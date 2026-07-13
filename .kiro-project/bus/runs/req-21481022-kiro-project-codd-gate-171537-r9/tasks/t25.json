@@ -1,0 +1,8 @@
+{
+  "id": "t25",
+  "goal": "`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を実行し、必要なら repos.json を整備したうえで終了コード0を実測で確認する",
+  "deps": [
+    "t23"
+  ],
+  "kind": "verify"
+}

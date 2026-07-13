@@ -1,0 +1,6 @@
+{
+  "id": "t4",
+  "goal": "kiro_project/ の acceptance（受入判定）の判定関数・判定結果の構造と、受入基準を追加できる拡張点を特定する",
+  "deps": [],
+  "kind": "work"
+}

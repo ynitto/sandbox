@@ -1,0 +1,10 @@
+{
+  "id": "t7",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果\n\nt1〜t6の成果と実コード（`docs/designs/codd-gate-design.md` §4・`kiro-project-design.md` §4.1・`codd_gate_{base,detect,status,routing,invoke,debt}.py` 全6モジュール、`kiro-project.py` の `_settle_task`/`evaluate_acceptance`/`run_intake`）を突き合わせ、regression/acceptance/enqueue 3経路の結線点・設定キー・フォールバック挙動を1枚の結線仕様として確定し、artifacts/t7 に出力した:\n\n`/Users/nitto/Workspace/sandbox-kiro-state/.kiro-project/bus/runs/req-21481022-kiro-project-codd-gate-171537-r9/artifacts/t7/codd-gate-wiring-spec.md`\n\n**確定した主な内容**\n- 設定キー8個（`codd_gate_auto`〈マスタースイッチ、既定True〉/`codd_gate_bin`/`codd_gate_strict`/`codd_gate_max_broken`他2/`codd_gate_debt_max`/`codd_gate_debt_cohort`）とCLIフラグ名\n- hook1（regression, `_settle_task`）: 既存`regression_cmd`に**上乗せ**する追加チェック。base rev は `venv[\"KIRO_BASE_REV\"]` 再利用→`codd_gate_base.resolve_base_rev`フォールバック\n- hook2（acceptance, `evaluate_acceptance`）: `results`ループ末尾に`--debt`モードの疑似項目を追加、`status!=\"skipped\"`のみtotalに計上\n- hook3（enqueue）: `run_intake`に並置する新関数`run_codd_gate_intake`。id dedupは`run_intake`方式を踏襲、`codd_gate_debt.parse_debt_output`で構造化消費（シェル文字列経由にしない）\n- 未インストール時フォールバックを1文で統一: `status.usable=False`または`codd_gate_auto=False`なら3フックとも導入前と完全同一挙動\n\n**矛盾・欠落の解消（明記）**: t3の「2つの不合格表現の並存」は境界での吸収として解決／t4の`state[\"acceptance_total\"]`ズレはhook2の結線と不可分の修正として確定／t4提案の acceptance側base rev注入は`--debt`が`--base`を無視するため実装しないと判断／t5のdedup不整合はhook3では継承しない設計にした。\n\n**検証**: 完了条件コマンド（pytest -k codd 47 passed、codd-gate verify --strict OK）を実行しexit 0を確認。本タスクはコード変更なし（`git status --short`クリーン）。",
+  "finished_at": "2026-07-13T05:13:20Z",
+  "artifacts": [
+    "artifacts/t7/codd-gate-wiring-spec.md"
+  ]
+}

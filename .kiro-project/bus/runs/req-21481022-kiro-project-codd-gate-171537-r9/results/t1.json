@@ -1,0 +1,10 @@
+{
+  "id": "t1",
+  "who": "worker-1",
+  "status": "done",
+  "output": "## 成果\n\n`tools/kiro-project/codd_gate_{base,detect,status,routing,debt}.py`（38f99cac マージ分の5ファイル）の公開関数・シグネチャ・戻り値型・例外を一覧化し、artifacts/t1 に出力した:\n\n`/Users/nitto/Workspace/sandbox-kiro-state/.kiro-project/bus/runs/req-21481022-kiro-project-codd-gate-171537-r9/artifacts/t1/codd_gate_public_api.md`\n\n**内容の要約**\n- `codd_gate_base.py`: `resolve_base_rev` 1関数（差分ゲートの base rev 解決）\n- `codd_gate_detect.py`: `resolve_codd_gate` / `resolve_codd_gate_bin` / `get_version` / `check_repos_schema_compat` / `detect_capabilities`（＋非公開ヘルパ2つ）\n- `codd_gate_status.py`: `CoddGateStatus` データクラス（usable/command/reason）＋ `build_status` / `detect_status`（＋非公開 finding ビルダ4つ）\n- `codd_gate_routing.py`: `resolve_repos_arg` / `resolve_repo_dir_arg` / `build_routing_args`\n- `codd_gate_debt.py`: `DriftItem` / `DebtParseResult` データクラス＋ `parse_debt_output`\n\n全モジュール共通で「例外を外へ投げない・不明/不足は no-op 側へ倒す」設計方針を確認した。\n\n**検証**: 完了条件のコマンド（`pytest -k codd` → 47 passed、`codd-gate verify --strict` → OK）を実際に実行し、両方とも exit 0 で成功することを確認済み。コード変更は行っていない（調査のみ）。\n\n**採用した前提**: 同ディレクトリにある `codd_gate_invoke.py` は `git log --follow` で確認したところ 38f99cac とは別コミット（結線タスク側）由来のため、一覧の対象外とした。",
+  "finished_at": "2026-07-13T05:00:05Z",
+  "artifacts": [
+    "artifacts/t1/codd_gate_public_api.md"
+  ]
+}

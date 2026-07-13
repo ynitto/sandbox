@@ -1,0 +1,10 @@
+{
+  "id": "t4",
+  "who": "worker-2",
+  "status": "done",
+  "output": "Working tree is clean, confirming this was investigation-only. Final report:\n\n## 成果サマリー\n\n`tools/kiro-project/kiro-project.py` の acceptance（charter レベルの受入判定）を精査し、成果物を `bus/runs/.../artifacts/t4/acceptance-judgment-and-extension-points.md` に出力した。要点:\n\n**判定関数の呼び出しチェーン**: `cmd_project` → `resolve_charter_acceptance`（自然言語→決定的コマンド合成）→ `run_loop`（backlog消化）→ `_project_evaluate` → `evaluate_acceptance`（中核、`_acceptance_cwd` で実行先解決 → `run_verify_stable`）。\n\n**判定結果の構造**: `evaluate_acceptance` は `(passed:int, total:int, results:list[(cmd,ok,msg)])` を返す。永続化は3系統（`project.json`/`state`の`history`/`best`/`stall`/`status`、`needs/<pid>.md` milestone、journal/decisions ログ）。`passed==total` が done の唯一の根拠。\n\n**拡張点は2段階あり、要求次第で使い分けが要る**:\n1. **データレベル（コード変更ゼロ）**: `charter.md` の `## acceptance` にシェル行を1つ足すだけ。`docs/designs/codd-gate-design.md` の E1 が正典。ただし PASS/FAIL の2値しか表現できず、「未インストール時は無害スキップ」（t17要求）は実現不可。\n2. **コードレベル**: `evaluate_acceptance` 本体に `CoddGateResult.status`（ok/failed/skipped）を条件付きで `results` へ追加する形が、スキップを合否に影響させない唯一の経路。既存の `codd_gate_status`/`codd_gate_invoke`/`codd_gate_routing` モジュール（別タスクで実装済み）がそのまま使える。\n\n副次的に、`state[\"acceptance_total\"]` の更新タイミングのズレと、非git cwdでの `KIRO_BASE_REV` 未注入（`codd_gate_base.resolve_base_rev` で解決可能）という2点の実装上の落とし穴を発見し、t16実装への申し送り事項として記録した。\n\n## 検証\n\n完了条件の2コマンドは現worktreeで実行し、いずれも exit 0（既に他タスクの成果でマージ済み）。本タスクはソース変更を行っていないため `git status --short` はクリーンなことを確認済み。",
+  "finished_at": "2026-07-13T04:59:42Z",
+  "artifacts": [
+    "artifacts/t4/acceptance-judgment-and-extension-points.md"
+  ]
+}

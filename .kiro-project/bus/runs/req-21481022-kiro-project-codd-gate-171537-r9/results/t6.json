@@ -1,0 +1,10 @@
+{
+  "id": "t6",
+  "who": "worker-1",
+  "status": "done",
+  "output": "worktree は無変更（`git status --short` 空）、完了条件コマンドは exit 0 を維持している。\n\n## 成果サマリー\n\n`tools/kiro-project/tests` の pytest 構成・`-k codd` 命名規約・fixture/モック方針を調査し、報告書を artifacts/t6 に出力した。\n\n**(a) pytest 構成**: `pytest.ini`/`pyproject.toml`/`setup.cfg`/`tox.ini`/`conftest.py` は存在せず、完全にデフォルト設定で動作。各テストは `python -m unittest discover` でも実行可能なよう `unittest.TestCase` で書かれ、pytest は互換ランナーとして流用されているだけ。\n\n**(b) `-k codd` の命名規約**: 実測（`--collect-only`）で47/626件収集を確認。核心の発見は、`-k codd` は**ファイル名レベルでもマッチする**こと — `test_codd_gate_routing.py` 内の3クラス8メソッドはクラス/メソッド名に \"codd\" を一切含まないが、ファイル名だけで全件ヒットしている。今後追加するテストは `test_codd_gate_<トピック>.py` と命名すれば十分。\n\n**(c) fixture・モック方針**: `@pytest.fixture`・`import pytest` は0件。新設3ファイル（detect/invoke/routing）は `setUp` を使わず、`mock.patch` より `run=`/`which=` キーワード引数での依存性注入を優先（本体側 `doctor_env_findings` と同じパターン）。`mock.patch.object` は DI が届かない1箇所のみ、`tempfile.TemporaryDirectory()` は実ファイル操作が検証対象の場合に使用。共有 `conftest.py` は無く、フェイクヘルパーは2ファイルに重複定義。\n\n**検証**: 完了条件コマンド（pytest -k codd && codd-gate verify --strict）をそのまま実行し exit 0 を確認済み（先行タスクの実装成果により既に満たされていた）。コード変更は行っていない。\n\n**範囲外で見つけた問題**: `codd_gate_status.py`/`codd_gate_base.py`/`codd_gate_debt.py` に対応する単体テストが未整備（t3 の指摘と重複、別タスク判断）。",
+  "finished_at": "2026-07-13T05:04:11Z",
+  "artifacts": [
+    "artifacts/t6/codd-gate-tests-pytest-conventions.md"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "t7",
+  "goal": "t1〜t6 の結果を統合し、regression/acceptance/enqueue 3経路それぞれの結線点・設定キー・codd-gate 未インストール時のフォールバック挙動を1枚の結線仕様として確定する",
+  "deps": [
+    "t1",
+    "t2",
+    "t3",
+    "t4",
+    "t5",
+    "t6"
+  ],
+  "kind": "synthesize"
+}

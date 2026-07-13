@@ -1,0 +1,9 @@
+{
+  "id": "t11",
+  "goal": "regression（差分ゲート）に codd-gate verify --strict の実行を結線する（detect 成功時のみ実行し、未検出ならスキップ）",
+  "deps": [
+    "t8",
+    "t9"
+  ],
+  "kind": "work"
+}

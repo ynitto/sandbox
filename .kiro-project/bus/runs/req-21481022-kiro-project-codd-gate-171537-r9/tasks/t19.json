@@ -1,0 +1,9 @@
+{
+  "id": "t19",
+  "goal": "codd-gate --debt および tasks の出力をパースし、backlog タスク候補（title/priority/deps/由来メタ）へ変換する関数を実装する",
+  "deps": [
+    "t8",
+    "t9"
+  ],
+  "kind": "work"
+}

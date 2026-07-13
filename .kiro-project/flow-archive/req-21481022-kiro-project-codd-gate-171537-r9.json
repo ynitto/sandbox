@@ -1,0 +1,956 @@
+{
+  "savedAt": "2026-07-13T05:18:55.472Z",
+  "run": {
+    "runId": "req-21481022-kiro-project-codd-gate-171537-r9",
+    "status": "running",
+    "taskId": "kiro-project-codd-gate-171537",
+    "retries": 9,
+    "rev": null,
+    "lineageId": "req-21481022-kiro-project-codd-gate-171537",
+    "inheritedFrom": null,
+    "alive": true,
+    "heartbeatAt": "2026-07-13T05:18:51Z",
+    "resumeCount": 0,
+    "workspace": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "path": "",
+      "base": "main",
+      "target": "main",
+      "desc": "ソースコード・設計書",
+      "branch": "kp/kiro-project-codd-gate-171537"
+    },
+    "references": [],
+    "request": "kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する\n\nこのタスクは完了条件を満たすまで反復し、満たしたら終了すること（loop-until-done）。\n完了条件: 次のシェルコマンドが終了コード 0 で成功すること:\n  python3 -m pytest tools/kiro-project/tests -q -k codd && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict\n\nタスクID: kiro-project-codd-gate-171537\n\nプロジェクト定義（charter・常に踏まえること。成果物が目標/制約に反しないこと）:\n目標: - codd-gate がインストールされている場合に活用できること\n- ユニットテストを拡充すること\n対象リポジトリ（タスクは説明を見て関係するものを選び、その base/target ブランチで作業。path 指定があればそのフォルダ配下のみ変更）:\n- sandbox = https://github.com/ynitto/sandbox/（base=main, target=main, 書込先候補（owns: **））\n    説明: ソースコード・設計書\n制約:\n- kiro-project/kiro-flowをエンジンとして使用する\n- kiro-projects-viewerをフロントエンドとして使用する\n前提:\n- 人による操作や確認を最小限にする\n- 繰り返し・再実行によって試行錯誤できる\n成果物:\n- kiro-project ソースコード\n- kiro-flow ソースコード\n- kiro-projects-viewer ソースコード\n- 設計書・ドキュメント\n\nこのタスクに関する過去の判断記録（needs の判断結果・必ず踏まえること）:\n…\nqueue への結線。kiro-project.py が kiro_project/ パッケージへ分割されたため、旧 run（kiro-project.py への結線を前提）は破棄して作り直す。分割で各モジュールは 1000 行以下になり、worker のタイムアウト（600s）は解消される見込み\n- affects : kiro-project-codd-gate-171537 → ready\n- learn: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: 検出モジュール（codd_gate_*.py・29テスト）は 38f99cac でマージ済み。残るのは regression/acceptance/enqueue への結線。kiro-project.py が kiro_project/ パッケージへ分割されたため、旧 run（kiro-project.py への結線を前提）は破棄して作り直す。分割で各モジュールは 1000 行以下になり、worker のタイムアウト（600s）は解消される見込み\n\n## DR-0012  2026-07-13  actor: nitto\n- context : kiro-project-codd-gate-171537（kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する）を人の判断から復帰\n- action  : approve-and-fix\n- reason  : rebase で巻き戻った blocked を戻す。成果は origin/main に push 済みで、クローンでの verify（pytest -k codd）は 29 passed を実測済み\n- affects : kiro-project-codd-gate-171537 → ready\n- learn: kiro-project に codd-gate 自動検出を実装し、差分ゲート・受入判定・負債取り込みへ結線する :: rebase で巻き戻った blocked を戻す。成果は origin/main に push 済みで、クローンでの verify（pytest -k codd）は 29 passed を実測済み",
+    "createdAt": "2026-07-13T04:47:45Z",
+    "updatedAt": "2026-07-13T04:52:04Z",
+    "failureReason": null,
+    "strategy": {
+      "patterns": [
+        "fan-out-and-synthesize",
+        "adversarial-verification",
+        "loop-until-done"
+      ],
+      "parallelism": 9,
+      "review": true,
+      "reason": "[flow-planner] 結線先が regression / acceptance / enqueue の3経路に自然に分かれ、相互独立で並列化できるため fan-out-and-synthesize を採用（並列数=3。各ノードが実装＋pytest -k codd 用テスト拡充まで担当する）。quality_focus=accuracy かつ codd-gate 未インストール環境でも壊れないこと（任意依存としての検出）が要件なので、統合前に adversarial-verification の検証gateを挟み、検出あり/なし・verify 成功/失敗・debt 取り込みの分岐が実際に covering されているかを批判的にチェックする。完了条件が `pytest -k codd` と `codd-gate verify --strict` の終了コード 0 という実測コマンドで与えられており、1回で通る見込みが低いため loop-until-done で統合後に反復修正する（constraints に loop-until-done が明示されている）。この3パターンの組み合わせは複合テンプレート migration-pipeline と一致する。旧 kiro-project.py 前提の実装破棄・パッケージ分割後の API 特定は fan-out 前の共通調査として先行させ、結線ポイント確定後に並列展開する。（粒度 finest）"
+    },
+    "iteration": 0,
+    "nodes": {
+      "t1": {
+        "id": "t1",
+        "goal": "tools/kiro-project 配下の既存 codd_gate_*.py（38f99cac でマージ済みの検出モジュール）を読み、公開関数・シグネチャ・戻り値型・例外を一覧化する",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-1",
+        "finishedAt": "2026-07-13T05:00:05Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果\n\n`tools/kiro-project/codd_gate_{base,detect,status,routing,debt}.py`（38f99cac マージ分の5ファイル）の公開関数・シグネチャ・戻り値型・例外を一覧化し、artifacts/t1 に出力した:\n\n`/Users/nitto/Workspace/sandbox-kiro-state/.kiro-project/bus/runs/req-21481022-kiro-project-codd-gate-171537-r9/artifacts/t1/codd_gate_public_api.md`\n\n**内容の要約**\n- `codd_gate_base.py`: `resolve_base_rev` 1関数（差分ゲートの base rev 解決）\n- `codd_gate_detect.py`: `resolve_codd_gate` / `resolve_codd_gate_bin` / `get_version` / `check_repos_schema_compat` / `detect_capabilities`（＋非公開ヘルパ2つ）\n- `codd_gate_status.py`: `CoddGateStatus` データクラス（usable/command/reason）＋ `build_status` / `detect_status`（＋非公開 finding ビルダ4つ）\n- `codd_gate_routing.py`: `resolve_repos_arg` / `resolve_repo_dir_arg` / `build_routing_args`\n- `codd_gate_debt.py`: `DriftItem` / `DebtParseResult` データクラス＋ `parse_debt_output`\n\n全モジュール共通で「例外を外へ投げない・不明/不足は no-op 側へ倒す」設計方針を確認した。\n\n**検証**: 完了条件のコマンド（`pytest -k codd` → 47 passed、`codd-gate verify --strict` → OK）を実際に実行し、両方とも exit 0 で成功することを確認済み。コード変更は行っていない（調査のみ）。\n\n**採用した前提**: 同ディレクトリにある `codd_gate_invoke.py` は `git log --follow` で確認したところ 38f99cac とは別コミット（結線タスク側）由来のため、一覧の対象外とした。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-5326ac5404ae"
+      },
+      "t2": {
+        "id": "t2",
+        "goal": "codd-gate CLI の verify / --debt / tasks サブコマンドについて、引数・終了コード・標準出力フォーマット（JSON か否か）を実測して記録する",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-1",
+        "finishedAt": "2026-07-13T04:58:21Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果\n\n`codd-gate verify` / `verify --debt` / `tasks`（`--debt` 込み）の引数・終了コード・stdout フォーマットを実機で実測し、artifacts/t2/codd-gate-cli-interface.md に記録した。作業ツリーへの変更なし（調査のみ、`git status` クリーン）。\n\n**要点**:\n- 終了コードは3値: `0`=PASS/正常, `1`=`verify`のNG(差分amberまたはdebtしきい値超過), `2`=環境・設定・argparseエラー。`tasks`は所見有無に関わらず常に`0`。\n- 出力は既定でテキスト、`--json`でJSON（`verify`は1行JSON。`tasks`は`--inbox`未指定なら単一JSON配列を標準出力、指定時はサマリ1行＋`<dir>/<id>.json`を1タスク1ファイルで書き出し）。\n- `verify`の`--json`出力にはゲート判定(`ng`)フィールドが無く、判定はexit codeのみに一本化されている（実測で確認、範囲外の留意点として記録）。\n- `--debt`は`--base`/`--repo`を渡しても無視される（差分モード分岐より先にreturnするため）。\n\n**検証**: 完了条件のシェルコマンド一式（`pytest -k codd` 47件パス、`codd-gate verify --strict`）を実行し exit 0 を確認済み。この worktree（HEAD `6224bd1`）では `.kiro-project/repos.json` と `codd` テスト群が既に整備済みだった。\n\n**未解決事項**: なし。範囲外の所見（`--json`にng不在、`--debt`時の無視される引数）はレポート内に記録のみで対応はしていない。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-321d8f80b08d"
+      },
+      "t3": {
+        "id": "t3",
+        "goal": "kiro_project/ パッケージ分割後のモジュール一覧を出し、regression（差分ゲート）の実行関数と「不合格」を表現するデータ構造・返し方を特定する",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-1",
+        "finishedAt": "2026-07-13T04:55:20Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果報告\n\n**(a) 成果・サマリー**\n\n`tools/kiro-project/` はパッケージ分割後、以下7モジュール構成（`__init__.py` なしのフラット構成。「kiro_project パッケージ」はこれを指すと解釈）:\n\n| モジュール | 行数 | 役割 | テスト |\n|---|---|---|---|\n| `kiro-project.py` | 11219 | 本体モノリス（Config/Task、`_settle_task`、CLI） | あり |\n| `codd_gate_detect.py` | 181 | codd-gate 実在・能力の生判定 | あり |\n| `codd_gate_status.py` | 138 | `CoddGateStatus` 値オブジェクト（no-op縮退） | **なし** |\n| `codd_gate_invoke.py` | 85 | `CoddGateResult` 値オブジェクト＋実行 | あり |\n| `codd_gate_routing.py` | 82 | `--repos`/`--repo-dir` 引数ビルダ | あり |\n| `codd_gate_base.py` | 54 | 差分基準 rev 解決 | **なし** |\n| `codd_gate_debt.py` | 100 | `--debt` 出力パース | **なし** |\n\n**regression（差分ゲート）実行関数**: `_settle_task`（kiro-project.py:5490）内、5524-5525行目で `run_verify(cfg.regression_cmd, vcwd, cfg.verify_timeout, venv)` を呼ぶ。実体の `run_verify`（kiro-project.py:3018）は `subprocess.run(cmd, shell=True, ...)` を1回実行するだけの薄い関数。\n\n**「不合格」の表現・返し方**: 本体側は専用データ構造を持たず、`run_verify` が `tuple[bool, str]`（ok, msg）を返し、`False` がローカル変数 `regressed=True` に転写され、`_block()`（4916行目）が `task.status=\"blocked\"` ＋ `reasons` dict ＋ needs ファイル ＋ journal という副作用連鎖で永続化する。一方、新設 `codd_gate_invoke.CoddGateResult` は `status: \"ok\"|\"failed\"|\"skipped\"` を持つ frozen dataclass として同種の合否を値オブジェクト化しているが、**まだ regression_cmd 経路には未結線**（二つの不合格表現が並存）。\n\n**(b) 検証**: `pytest tools/kiro-project/tests -q -k codd` → 47 passed。`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` → exit 0。完了条件コマンドをそのまま実行し exit 0 を確認済み（コード変更なし、調査のみ）。\n\n**(c) 前提・範囲外の発見**: 「kiro_project パッケージ」＝分割後のフラットモジュール群と解釈。範囲外で見つけた問題として、`codd_gate_status/base/debt` に単体テストが無いこと、本体からどの `codd_gate_*` も import されておらず結線（b3等）が未着手であること、および2種類の不合格表現の並存を報告のみ行い修正はしていない。\n\n詳細は `artifacts/t3/module-inventory-and-regression-fail-shape.md` に出力済み。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-be1551990fe5"
+      },
+      "t4": {
+        "id": "t4",
+        "goal": "kiro_project/ の acceptance（受入判定）の判定関数・判定結果の構造と、受入基準を追加できる拡張点を特定する",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-2",
+        "finishedAt": "2026-07-13T04:59:42Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "Working tree is clean, confirming this was investigation-only. Final report:\n\n## 成果サマリー\n\n`tools/kiro-project/kiro-project.py` の acceptance（charter レベルの受入判定）を精査し、成果物を `bus/runs/.../artifacts/t4/acceptance-judgment-and-extension-points.md` に出力した。要点:\n\n**判定関数の呼び出しチェーン**: `cmd_project` → `resolve_charter_acceptance`（自然言語→決定的コマンド合成）→ `run_loop`（backlog消化）→ `_project_evaluate` → `evaluate_acceptance`（中核、`_acceptance_cwd` で実行先解決 → `run_verify_stable`）。\n\n**判定結果の構造**: `evaluate_acceptance` は `(passed:int, total:int, results:list[(cmd,ok,msg)])` を返す。永続化は3系統（`project.json`/`state`の`history`/`best`/`stall`/`status`、`needs/<pid>.md` milestone、journal/decisions ログ）。`passed==total` が done の唯一の根拠。\n\n**拡張点は2段階あり、要求次第で使い分けが要る**:\n1. **データレベル（コード変更ゼロ）**: `charter.md` の `## acceptance` にシェル行を1つ足すだけ。`docs/designs/codd-gate-design.md` の E1 が正典。ただし PASS/FAIL の2値しか表現できず、「未インストール時は無害スキップ」（t17要求）は実現不可。\n2. **コードレベル**: `evaluate_acceptance` 本体に `CoddGateResult.status`（ok/failed/skipped）を条件付きで `results` へ追加する形が、スキップを合否に影響させない唯一の経路。既存の `codd_gate_status`/`codd_gate_invoke`/`codd_gate_routing` モジュール（別タスクで実装済み）がそのまま使える。\n\n副次的に、`state[\"acceptance_total\"]` の更新タイミングのズレと、非git cwdでの `KIRO_BASE_REV` 未注入（`codd_gate_base.resolve_base_rev` で解決可能）という2点の実装上の落とし穴を発見し、t16実装への申し送り事項として記録した。\n\n## 検証\n\n完了条件の2コマンドは現worktreeで実行し、いずれも exit 0（既に他タスクの成果でマージ済み）。本タスクはソース変更を行っていないため `git status --short` はクリーンなことを確認済み。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-cc7852f2bfef"
+      },
+      "t5": {
+        "id": "t5",
+        "goal": "kiro_project/ の enqueue（backlog 投入）のタスク生成関数と backlog タスク schema（id/title/priority/deps/重複判定キー）を特定する",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-2",
+        "finishedAt": "2026-07-13T05:02:47Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果報告\n\n**(a) 成果**: enqueue のタスク生成関数と backlog タスク schema を特定した。詳細は artifacts/t5/enqueue-backlog-schema.md に記載。要点:\n\n- **生成関数**: `enqueue_task(cfg, spec)`（kiro-project.py:290）が全経路（CLI `enqueue`／`ingest_inbox`／`run_intake`）の集約点。実体は `task_from_spec`（L250）＋ `persist_task`。\n- **schema**: 正典は `schemas/task.schema.json`（`enqueue --json`/inbox/`intake_cmd`/`codd-gate tasks` 共通契約）。実行時は `Task` dataclass（L84-92: id/title/status/source/priority/verify/retries/extra）＋backlog/1タスク=1md。`priority` は第一級フィールド、`after`（deps相当）は `extra` 格納で `task_deps()`（L2472）が読む。\n- **重複判定キー**: `id`（`_slug_id` 正規化後）。ただし真の skip 判定は `run_intake`（L502-554）経路のみ。CLI/inbox は id 衝突時に改名するだけで排除しない。\n- codd-gate 側の `codd_gate_debt.DriftItem.to_spec()` は既にこの spec 形式・id dedup 前提で設計済み（本 run の別タスク成果）。\n\n**(b) 検証**: 完了条件の両コマンドを実行し、いずれも exit 0 を確認（pytest: 47 passed / codd-gate verify: OK 一貫性ゲート通過）。本タスクは調査のみのためファイル変更なし。\n\n**(c) 前提・申し送り**: 完了条件は run 全体の共通ゲートであり本調査単体の責務ではないと解釈（実際に無変更で green だった）。`cfg.intake_cmd` への実結線自体は別タスク（e2系）の範囲。範囲外の既知問題として、L241-242 のコメント「明示 id は改名しない」と実装（`_unique_task_id` による改名）の不一致を記録した。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-fde6ba2cd8dc"
+      },
+      "t6": {
+        "id": "t6",
+        "goal": "tools/kiro-project/tests の pytest 構成を確認し、`-k codd` で収集されるテスト命名規約と既存 fixture・モック方針を洗い出す",
+        "deps": [],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-1",
+        "finishedAt": "2026-07-13T05:04:11Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "worktree は無変更（`git status --short` 空）、完了条件コマンドは exit 0 を維持している。\n\n## 成果サマリー\n\n`tools/kiro-project/tests` の pytest 構成・`-k codd` 命名規約・fixture/モック方針を調査し、報告書を artifacts/t6 に出力した。\n\n**(a) pytest 構成**: `pytest.ini`/`pyproject.toml`/`setup.cfg`/`tox.ini`/`conftest.py` は存在せず、完全にデフォルト設定で動作。各テストは `python -m unittest discover` でも実行可能なよう `unittest.TestCase` で書かれ、pytest は互換ランナーとして流用されているだけ。\n\n**(b) `-k codd` の命名規約**: 実測（`--collect-only`）で47/626件収集を確認。核心の発見は、`-k codd` は**ファイル名レベルでもマッチする**こと — `test_codd_gate_routing.py` 内の3クラス8メソッドはクラス/メソッド名に \"codd\" を一切含まないが、ファイル名だけで全件ヒットしている。今後追加するテストは `test_codd_gate_<トピック>.py` と命名すれば十分。\n\n**(c) fixture・モック方針**: `@pytest.fixture`・`import pytest` は0件。新設3ファイル（detect/invoke/routing）は `setUp` を使わず、`mock.patch` より `run=`/`which=` キーワード引数での依存性注入を優先（本体側 `doctor_env_findings` と同じパターン）。`mock.patch.object` は DI が届かない1箇所のみ、`tempfile.TemporaryDirectory()` は実ファイル操作が検証対象の場合に使用。共有 `conftest.py` は無く、フェイクヘルパーは2ファイルに重複定義。\n\n**検証**: 完了条件コマンド（pytest -k codd && codd-gate verify --strict）をそのまま実行し exit 0 を確認済み（先行タスクの実装成果により既に満たされていた）。コード変更は行っていない。\n\n**範囲外で見つけた問題**: `codd_gate_status.py`/`codd_gate_base.py`/`codd_gate_debt.py` に対応する単体テストが未整備（t3 の指摘と重複、別タスク判断）。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-7a20ef2b09b9"
+      },
+      "t7": {
+        "id": "t7",
+        "goal": "t1〜t6 の結果を統合し、regression/acceptance/enqueue 3経路それぞれの結線点・設定キー・codd-gate 未インストール時のフォールバック挙動を1枚の結線仕様として確定する",
+        "deps": [
+          "t1",
+          "t2",
+          "t3",
+          "t4",
+          "t5",
+          "t6"
+        ],
+        "kind": "synthesize",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-1",
+        "finishedAt": "2026-07-13T05:13:20Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果\n\nt1〜t6の成果と実コード（`docs/designs/codd-gate-design.md` §4・`kiro-project-design.md` §4.1・`codd_gate_{base,detect,status,routing,invoke,debt}.py` 全6モジュール、`kiro-project.py` の `_settle_task`/`evaluate_acceptance`/`run_intake`）を突き合わせ、regression/acceptance/enqueue 3経路の結線点・設定キー・フォールバック挙動を1枚の結線仕様として確定し、artifacts/t7 に出力した:\n\n`/Users/nitto/Workspace/sandbox-kiro-state/.kiro-project/bus/runs/req-21481022-kiro-project-codd-gate-171537-r9/artifacts/t7/codd-gate-wiring-spec.md`\n\n**確定した主な内容**\n- 設定キー8個（`codd_gate_auto`〈マスタースイッチ、既定True〉/`codd_gate_bin`/`codd_gate_strict`/`codd_gate_max_broken`他2/`codd_gate_debt_max`/`codd_gate_debt_cohort`）とCLIフラグ名\n- hook1（regression, `_settle_task`）: 既存`regression_cmd`に**上乗せ**する追加チェック。base rev は `venv[\"KIRO_BASE_REV\"]` 再利用→`codd_gate_base.resolve_base_rev`フォールバック\n- hook2（acceptance, `evaluate_acceptance`）: `results`ループ末尾に`--debt`モードの疑似項目を追加、`status!=\"skipped\"`のみtotalに計上\n- hook3（enqueue）: `run_intake`に並置する新関数`run_codd_gate_intake`。id dedupは`run_intake`方式を踏襲、`codd_gate_debt.parse_debt_output`で構造化消費（シェル文字列経由にしない）\n- 未インストール時フォールバックを1文で統一: `status.usable=False`または`codd_gate_auto=False`なら3フックとも導入前と完全同一挙動\n\n**矛盾・欠落の解消（明記）**: t3の「2つの不合格表現の並存」は境界での吸収として解決／t4の`state[\"acceptance_total\"]`ズレはhook2の結線と不可分の修正として確定／t4提案の acceptance側base rev注入は`--debt`が`--base`を無視するため実装しないと判断／t5のdedup不整合はhook3では継承しない設計にした。\n\n**検証**: 完了条件コマンド（pytest -k codd 47 passed、codd-gate verify --strict OK）を実行しexit 0を確認。本タスクはコード変更なし（`git status --short`クリーン）。",
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-cef75bf3950b"
+      },
+      "t8": {
+        "id": "t8",
+        "goal": "codd-gate を任意依存として安全に検出する detect 関数（PATH 探索＋バージョン確認、未インストール時は None を返し例外を投げない）を kiro_project に実装する",
+        "deps": [
+          "t7"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "done",
+        "who": "worker-2",
+        "finishedAt": "2026-07-13T05:17:56Z",
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": "## 成果\n\n`tools/kiro-project/codd_gate_status.py` の `detect_status` を拡張し、PATH 探索（`resolve_codd_gate`）とバージョン確認（`get_version`）をまとめて安全に行う唯一の合流点にした。既存の `detect_status` は実は PATH 探索のみで、バージョン確認は自身の docstring 上でも「まだ合流していない」と明記された未完成状態だった（`codd_gate_detect.py` 自体の各プリミティブは commit 38f99cac で既にマージ済み・完成済み）。\n\n**変更内容**: `run=subprocess.run` を DI パラメータとして追加し、PATH で見つかった場合のみ `get_version` を実行、成功すればバージョンを、失敗（timeout・非0終了・パース不能・想定外の例外）すれば「バージョン不明」へ縮退。未検出時は従来どおり即座に `build_status(None)`。すべての失敗経路で例外を外に投げない。\n\n## 検証\n\n- `python3 -m pytest tools/kiro-project/tests -q -k codd` → 50 passed（既存47 + 新規3）\n- `codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` → OK\n- 完了条件コマンド全体で exit 0 を確認\n\n## 前提・範囲\n\nt7 の結線仕様が `detect_status` を3フック共通の唯一の検出入口として使う設計であることを踏まえ、その関数自体がタスク要求（PATH＋バージョン確認・None縮退・無例外）を満たしていない欠落を最小差分で修正した。`kiro-project.py` 本体への結線（t9/t11/t16/t19の責務）は範囲外のため触れていない。範囲外の問題は見つからなかった。\n\n成果物: `bus/runs/req-21481022-kiro-project-codd-gate-171537-r9/artifacts/t8/report.md`",
+        "data": {
+          "delivery": {
+            "url": "https://github.com/ynitto/sandbox/",
+            "branch": "kp/kiro-project-codd-gate-171537",
+            "commit": "678c2f84bb88e5f7e2139b5ccef27105b831b6fe",
+            "target": "main",
+            "path": ""
+          }
+        },
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-5d974bd17744"
+      },
+      "t9": {
+        "id": "t9",
+        "goal": "repos.json の codd_gate 設定（enabled / strict / base rev / repo-dir マッピング）の読み込みとデフォルト値決定を実装する",
+        "deps": [
+          "t7"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "claimed",
+        "who": "worker-1",
+        "finishedAt": null,
+        "heartbeatAt": "2026-07-13T05:13:20Z",
+        "leaseUntil": 1783921400.556211,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-ec16635555bb"
+      },
+      "t10": {
+        "id": "t10",
+        "goal": "detect 関数と設定読み込みのユニットテストを追加する（PATH あり／なし、設定あり／なし、壊れた repos.json の各分岐）",
+        "deps": [
+          "t8",
+          "t9"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-943de1f40f73"
+      },
+      "t11": {
+        "id": "t11",
+        "goal": "regression（差分ゲート）に codd-gate verify --strict の実行を結線する（detect 成功時のみ実行し、未検出ならスキップ）",
+        "deps": [
+          "t8",
+          "t9"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-a1d659fc4f67"
+      },
+      "t12": {
+        "id": "t12",
+        "goal": "codd-gate verify の非0終了を差分ゲートの不合格（理由・違反一覧つき）へ変換する処理を実装する",
+        "deps": [
+          "t11"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-acc168d442f5"
+      },
+      "t13": {
+        "id": "t13",
+        "goal": "regression 結線テスト: codd-gate 未検出のとき verify を呼ばず、差分ゲートの合否に一切影響しないことを検証する",
+        "deps": [
+          "t12"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-3b4bd382c7d5"
+      },
+      "t14": {
+        "id": "t14",
+        "goal": "regression 結線テスト: 検出あり かつ verify 終了コード0 のとき差分ゲートが合格になることを検証する",
+        "deps": [
+          "t12"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-ac5553b74435"
+      },
+      "t15": {
+        "id": "t15",
+        "goal": "regression 結線テスト: 検出あり かつ verify 非0終了のとき差分ゲートが不合格になり、失敗理由が呼び出し元へ伝播することを検証する",
+        "deps": [
+          "t12"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-5672497b02cb"
+      },
+      "t16": {
+        "id": "t16",
+        "goal": "acceptance（受入判定）に codd-gate の判定結果を受入基準の1項目として反映する処理を実装する",
+        "deps": [
+          "t8",
+          "t9"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-29226ab870da"
+      },
+      "t17": {
+        "id": "t17",
+        "goal": "codd-gate 未インストール時に acceptance の当該基準を無害スキップ（合否・スコアに影響させない）する分岐を実装する",
+        "deps": [
+          "t16"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-4a4903944fac"
+      },
+      "t18": {
+        "id": "t18",
+        "goal": "acceptance 結線テスト: 検出あり成功／検出あり失敗／未検出スキップ の3分岐で受入判定の結果が期待どおりになることを検証する",
+        "deps": [
+          "t17"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-26d04b68f626"
+      },
+      "t19": {
+        "id": "t19",
+        "goal": "codd-gate --debt および tasks の出力をパースし、backlog タスク候補（title/priority/deps/由来メタ）へ変換する関数を実装する",
+        "deps": [
+          "t8",
+          "t9"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-2ff11c161fc2"
+      },
+      "t20": {
+        "id": "t20",
+        "goal": "変換した負債タスクを enqueue へ結線する（既存 backlog との重複排除キーを定め、再実行しても重複投入しない）",
+        "deps": [
+          "t19"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-88d6f25bda84"
+      },
+      "t21": {
+        "id": "t21",
+        "goal": "enqueue 結線テスト: debt 0件／複数件／既存 backlog に同一タスクが存在する場合 の3分岐で投入結果を検証する",
+        "deps": [
+          "t20"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-e8dd7a33a86f"
+      },
+      "t22": {
+        "id": "t22",
+        "goal": "検証gate: 3経路のテストを批判的に点検し、検出あり／なし・verify 成功／失敗・debt 取り込みの各分岐が実際に covering されているか、モックが実装を素通りさせていないか、codd-gate 未インストール環境で既存テストが壊れないかを検証して不足を指摘する",
+        "deps": [
+          "t10",
+          "t13",
+          "t14",
+          "t15",
+          "t18",
+          "t21"
+        ],
+        "kind": "verify",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-85640312e8be"
+      },
+      "t23": {
+        "id": "t23",
+        "goal": "t22 の指摘を反映しつつ3経路の変更を統合し、例外処理・ログ・設定キー・テスト命名を揃えて `pytest -k codd` が全結線テストを収集する状態にする",
+        "deps": [
+          "t22"
+        ],
+        "kind": "synthesize",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-aba4b3897a2f"
+      },
+      "t24": {
+        "id": "t24",
+        "goal": "`python3 -m pytest tools/kiro-project/tests -q -k codd` を実行し、終了コード0（全 pass）を実測で確認する",
+        "deps": [
+          "t23"
+        ],
+        "kind": "verify",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-ff9fcb5b52eb"
+      },
+      "t25": {
+        "id": "t25",
+        "goal": "`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を実行し、必要なら repos.json を整備したうえで終了コード0を実測で確認する",
+        "deps": [
+          "t23"
+        ],
+        "kind": "verify",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-e7f7893e7ad3"
+      },
+      "t26": {
+        "id": "t26",
+        "goal": "t24/t25 が失敗した場合、失敗内容に応じて実装・テスト・repos.json を修正し、両コマンドが終了コード0になるまで反復する（loop-until-done）",
+        "deps": [
+          "t24",
+          "t25"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-62e5046ad8f4"
+      },
+      "t27": {
+        "id": "t27",
+        "goal": "設計書に codd-gate 結線仕様（regression/acceptance/enqueue の各結線点・設定キー）と未インストール時のフォールバック挙動を記載する",
+        "deps": [
+          "t26"
+        ],
+        "kind": "work",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-774709e0a2a2"
+      },
+      "t28": {
+        "id": "t28",
+        "goal": "完了条件（pytest -k codd と codd-gate verify --strict の終了コード0）の実測結果とドキュメント更新を突き合わせ、charter の目標（codd-gate 活用・ユニットテスト拡充）を満たしたか最終判定する",
+        "deps": [
+          "t26",
+          "t27"
+        ],
+        "kind": "judge",
+        "retries": 0,
+        "state": "waiting",
+        "who": null,
+        "finishedAt": null,
+        "heartbeatAt": null,
+        "leaseUntil": null,
+        "output": null,
+        "data": null,
+        "issueUrl": null,
+        "parked": false,
+        "throttled": false,
+        "parkActiveSeen": false,
+        "rejected": false,
+        "taskToken": "kf-e7b426d84606"
+      }
+    },
+    "counts": {
+      "done": 8,
+      "failed": 0,
+      "claimed": 1,
+      "pending": 0,
+      "waiting": 19,
+      "parked": 0
+    },
+    "total": 28,
+    "progress": 0.2857142857142857,
+    "gitlabIssues": [],
+    "final": null
+  },
+  "events": [
+    {
+      "ts": "2026-07-13T05:17:56Z",
+      "who": "worker-2",
+      "kind": "result",
+      "node": "t8",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-13T05:13:22Z",
+      "who": "worker-2",
+      "kind": "claimed",
+      "node": "t8"
+    },
+    {
+      "ts": "2026-07-13T05:13:20Z",
+      "who": "worker-1",
+      "kind": "result",
+      "node": "t7",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-13T05:13:20Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t9"
+    },
+    {
+      "ts": "2026-07-13T05:04:11Z",
+      "who": "worker-1",
+      "kind": "result",
+      "node": "t6",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-13T05:04:11Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t7"
+    },
+    {
+      "ts": "2026-07-13T05:02:47Z",
+      "who": "worker-2",
+      "kind": "result",
+      "node": "t5",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-13T05:00:06Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t6"
+    },
+    {
+      "ts": "2026-07-13T05:00:05Z",
+      "who": "worker-1",
+      "kind": "result",
+      "node": "t1",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-13T04:59:42Z",
+      "who": "worker-2",
+      "kind": "result",
+      "node": "t4",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-13T04:59:42Z",
+      "who": "worker-2",
+      "kind": "claimed",
+      "node": "t5"
+    },
+    {
+      "ts": "2026-07-13T04:58:21Z",
+      "who": "worker-1",
+      "kind": "result",
+      "node": "t2",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-13T04:58:21Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t1"
+    },
+    {
+      "ts": "2026-07-13T04:55:21Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t2"
+    },
+    {
+      "ts": "2026-07-13T04:55:20Z",
+      "who": "worker-1",
+      "kind": "result",
+      "node": "t3",
+      "status": "done"
+    },
+    {
+      "ts": "2026-07-13T04:52:06Z",
+      "who": "worker-1",
+      "kind": "claimed",
+      "node": "t3"
+    },
+    {
+      "ts": "2026-07-13T04:52:06Z",
+      "who": "worker-2",
+      "kind": "claimed",
+      "node": "t4"
+    },
+    {
+      "ts": "2026-07-13T04:52:04Z",
+      "who": "orchestrator",
+      "kind": "planned",
+      "patterns": [
+        "fan-out-and-synthesize",
+        "adversarial-verification",
+        "loop-until-done"
+      ],
+      "parallelism": 9,
+      "tasks": [
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+        "t7",
+        "t8",
+        "t9",
+        "t10",
+        "t11",
+        "t12",
+        "t13",
+        "t14",
+        "t15",
+        "t16",
+        "t17",
+        "t18",
+        "t19",
+        "t20",
+        "t21",
+        "t22",
+        "t23",
+        "t24",
+        "t25",
+        "t26",
+        "t27",
+        "t28"
+      ]
+    }
+  ],
+  "nodeEvents": {
+    "t8": [
+      {
+        "ts": "2026-07-13T05:17:56Z",
+        "kind": "result",
+        "who": "worker-2",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-13T05:13:22Z",
+        "kind": "claimed",
+        "who": "worker-2",
+        "status": null
+      }
+    ],
+    "t7": [
+      {
+        "ts": "2026-07-13T05:13:20Z",
+        "kind": "result",
+        "who": "worker-1",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-13T05:04:11Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t9": [
+      {
+        "ts": "2026-07-13T05:13:20Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t6": [
+      {
+        "ts": "2026-07-13T05:04:11Z",
+        "kind": "result",
+        "who": "worker-1",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-13T05:00:06Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t5": [
+      {
+        "ts": "2026-07-13T05:02:47Z",
+        "kind": "result",
+        "who": "worker-2",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-13T04:59:42Z",
+        "kind": "claimed",
+        "who": "worker-2",
+        "status": null
+      }
+    ],
+    "t1": [
+      {
+        "ts": "2026-07-13T05:00:05Z",
+        "kind": "result",
+        "who": "worker-1",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-13T04:58:21Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t4": [
+      {
+        "ts": "2026-07-13T04:59:42Z",
+        "kind": "result",
+        "who": "worker-2",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-13T04:52:06Z",
+        "kind": "claimed",
+        "who": "worker-2",
+        "status": null
+      }
+    ],
+    "t2": [
+      {
+        "ts": "2026-07-13T04:58:21Z",
+        "kind": "result",
+        "who": "worker-1",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-13T04:55:21Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ],
+    "t3": [
+      {
+        "ts": "2026-07-13T04:55:20Z",
+        "kind": "result",
+        "who": "worker-1",
+        "status": "done"
+      },
+      {
+        "ts": "2026-07-13T04:52:06Z",
+        "kind": "claimed",
+        "who": "worker-1",
+        "status": null
+      }
+    ]
+  }
+}

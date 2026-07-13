@@ -1,0 +1,8 @@
+{
+  "id": "t13",
+  "goal": "regression 結線テスト: codd-gate 未検出のとき verify を呼ばず、差分ゲートの合否に一切影響しないことを検証する",
+  "deps": [
+    "t12"
+  ],
+  "kind": "work"
+}

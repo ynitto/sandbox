@@ -1,0 +1,6 @@
+{
+  "id": "t1",
+  "goal": "tools/kiro-project 配下の既存 codd_gate_*.py（38f99cac でマージ済みの検出モジュール）を読み、公開関数・シグネチャ・戻り値型・例外を一覧化する",
+  "deps": [],
+  "kind": "work"
+}

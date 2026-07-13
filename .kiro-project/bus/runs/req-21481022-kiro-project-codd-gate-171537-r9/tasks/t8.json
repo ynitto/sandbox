@@ -1,0 +1,8 @@
+{
+  "id": "t8",
+  "goal": "codd-gate を任意依存として安全に検出する detect 関数（PATH 探索＋バージョン確認、未インストール時は None を返し例外を投げない）を kiro_project に実装する",
+  "deps": [
+    "t7"
+  ],
+  "kind": "work"
+}

@@ -1,0 +1,215 @@
+{
+  "strategy": {
+    "patterns": [
+      "fan-out-and-synthesize",
+      "adversarial-verification",
+      "loop-until-done"
+    ],
+    "parallelism": 9,
+    "review": true,
+    "reason": "[flow-planner] 結線先が regression / acceptance / enqueue の3経路に自然に分かれ、相互独立で並列化できるため fan-out-and-synthesize を採用（並列数=3。各ノードが実装＋pytest -k codd 用テスト拡充まで担当する）。quality_focus=accuracy かつ codd-gate 未インストール環境でも壊れないこと（任意依存としての検出）が要件なので、統合前に adversarial-verification の検証gateを挟み、検出あり/なし・verify 成功/失敗・debt 取り込みの分岐が実際に covering されているかを批判的にチェックする。完了条件が `pytest -k codd` と `codd-gate verify --strict` の終了コード 0 という実測コマンドで与えられており、1回で通る見込みが低いため loop-until-done で統合後に反復修正する（constraints に loop-until-done が明示されている）。この3パターンの組み合わせは複合テンプレート migration-pipeline と一致する。旧 kiro-project.py 前提の実装破棄・パッケージ分割後の API 特定は fan-out 前の共通調査として先行させ、結線ポイント確定後に並列展開する。（粒度 finest）"
+  },
+  "nodes": {
+    "t1": {
+      "goal": "tools/kiro-project 配下の既存 codd_gate_*.py（38f99cac でマージ済みの検出モジュール）を読み、公開関数・シグネチャ・戻り値型・例外を一覧化する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t2": {
+      "goal": "codd-gate CLI の verify / --debt / tasks サブコマンドについて、引数・終了コード・標準出力フォーマット（JSON か否か）を実測して記録する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t3": {
+      "goal": "kiro_project/ パッケージ分割後のモジュール一覧を出し、regression（差分ゲート）の実行関数と「不合格」を表現するデータ構造・返し方を特定する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t4": {
+      "goal": "kiro_project/ の acceptance（受入判定）の判定関数・判定結果の構造と、受入基準を追加できる拡張点を特定する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t5": {
+      "goal": "kiro_project/ の enqueue（backlog 投入）のタスク生成関数と backlog タスク schema（id/title/priority/deps/重複判定キー）を特定する",
+      "deps": [],
+      "kind": "work"
+    },
+    "t6": {
+      "goal": "tools/kiro-project/tests の pytest 構成を確認し、`-k codd` で収集されるテスト命名規約と既存 fixture・モック方針を洗い出す",
+      "deps": [],
+      "kind": "work"
+    },
+    "t7": {
+      "goal": "t1〜t6 の結果を統合し、regression/acceptance/enqueue 3経路それぞれの結線点・設定キー・codd-gate 未インストール時のフォールバック挙動を1枚の結線仕様として確定する",
+      "deps": [
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6"
+      ],
+      "kind": "synthesize"
+    },
+    "t8": {
+      "goal": "codd-gate を任意依存として安全に検出する detect 関数（PATH 探索＋バージョン確認、未インストール時は None を返し例外を投げない）を kiro_project に実装する",
+      "deps": [
+        "t7"
+      ],
+      "kind": "work"
+    },
+    "t9": {
+      "goal": "repos.json の codd_gate 設定（enabled / strict / base rev / repo-dir マッピング）の読み込みとデフォルト値決定を実装する",
+      "deps": [
+        "t7"
+      ],
+      "kind": "work"
+    },
+    "t10": {
+      "goal": "detect 関数と設定読み込みのユニットテストを追加する（PATH あり／なし、設定あり／なし、壊れた repos.json の各分岐）",
+      "deps": [
+        "t8",
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t11": {
+      "goal": "regression（差分ゲート）に codd-gate verify --strict の実行を結線する（detect 成功時のみ実行し、未検出ならスキップ）",
+      "deps": [
+        "t8",
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t12": {
+      "goal": "codd-gate verify の非0終了を差分ゲートの不合格（理由・違反一覧つき）へ変換する処理を実装する",
+      "deps": [
+        "t11"
+      ],
+      "kind": "work"
+    },
+    "t13": {
+      "goal": "regression 結線テスト: codd-gate 未検出のとき verify を呼ばず、差分ゲートの合否に一切影響しないことを検証する",
+      "deps": [
+        "t12"
+      ],
+      "kind": "work"
+    },
+    "t14": {
+      "goal": "regression 結線テスト: 検出あり かつ verify 終了コード0 のとき差分ゲートが合格になることを検証する",
+      "deps": [
+        "t12"
+      ],
+      "kind": "work"
+    },
+    "t15": {
+      "goal": "regression 結線テスト: 検出あり かつ verify 非0終了のとき差分ゲートが不合格になり、失敗理由が呼び出し元へ伝播することを検証する",
+      "deps": [
+        "t12"
+      ],
+      "kind": "work"
+    },
+    "t16": {
+      "goal": "acceptance（受入判定）に codd-gate の判定結果を受入基準の1項目として反映する処理を実装する",
+      "deps": [
+        "t8",
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t17": {
+      "goal": "codd-gate 未インストール時に acceptance の当該基準を無害スキップ（合否・スコアに影響させない）する分岐を実装する",
+      "deps": [
+        "t16"
+      ],
+      "kind": "work"
+    },
+    "t18": {
+      "goal": "acceptance 結線テスト: 検出あり成功／検出あり失敗／未検出スキップ の3分岐で受入判定の結果が期待どおりになることを検証する",
+      "deps": [
+        "t17"
+      ],
+      "kind": "work"
+    },
+    "t19": {
+      "goal": "codd-gate --debt および tasks の出力をパースし、backlog タスク候補（title/priority/deps/由来メタ）へ変換する関数を実装する",
+      "deps": [
+        "t8",
+        "t9"
+      ],
+      "kind": "work"
+    },
+    "t20": {
+      "goal": "変換した負債タスクを enqueue へ結線する（既存 backlog との重複排除キーを定め、再実行しても重複投入しない）",
+      "deps": [
+        "t19"
+      ],
+      "kind": "work"
+    },
+    "t21": {
+      "goal": "enqueue 結線テスト: debt 0件／複数件／既存 backlog に同一タスクが存在する場合 の3分岐で投入結果を検証する",
+      "deps": [
+        "t20"
+      ],
+      "kind": "work"
+    },
+    "t22": {
+      "goal": "検証gate: 3経路のテストを批判的に点検し、検出あり／なし・verify 成功／失敗・debt 取り込みの各分岐が実際に covering されているか、モックが実装を素通りさせていないか、codd-gate 未インストール環境で既存テストが壊れないかを検証して不足を指摘する",
+      "deps": [
+        "t10",
+        "t13",
+        "t14",
+        "t15",
+        "t18",
+        "t21"
+      ],
+      "kind": "verify"
+    },
+    "t23": {
+      "goal": "t22 の指摘を反映しつつ3経路の変更を統合し、例外処理・ログ・設定キー・テスト命名を揃えて `pytest -k codd` が全結線テストを収集する状態にする",
+      "deps": [
+        "t22"
+      ],
+      "kind": "synthesize"
+    },
+    "t24": {
+      "goal": "`python3 -m pytest tools/kiro-project/tests -q -k codd` を実行し、終了コード0（全 pass）を実測で確認する",
+      "deps": [
+        "t23"
+      ],
+      "kind": "verify"
+    },
+    "t25": {
+      "goal": "`codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict` を実行し、必要なら repos.json を整備したうえで終了コード0を実測で確認する",
+      "deps": [
+        "t23"
+      ],
+      "kind": "verify"
+    },
+    "t26": {
+      "goal": "t24/t25 が失敗した場合、失敗内容に応じて実装・テスト・repos.json を修正し、両コマンドが終了コード0になるまで反復する（loop-until-done）",
+      "deps": [
+        "t24",
+        "t25"
+      ],
+      "kind": "work"
+    },
+    "t27": {
+      "goal": "設計書に codd-gate 結線仕様（regression/acceptance/enqueue の各結線点・設定キー）と未インストール時のフォールバック挙動を記載する",
+      "deps": [
+        "t26"
+      ],
+      "kind": "work"
+    },
+    "t28": {
+      "goal": "完了条件（pytest -k codd と codd-gate verify --strict の終了コード0）の実測結果とドキュメント更新を突き合わせ、charter の目標（codd-gate 活用・ユニットテスト拡充）を満たしたか最終判定する",
+      "deps": [
+        "t26",
+        "t27"
+      ],
+      "kind": "judge"
+    }
+  },
+  "iteration": 0
+}

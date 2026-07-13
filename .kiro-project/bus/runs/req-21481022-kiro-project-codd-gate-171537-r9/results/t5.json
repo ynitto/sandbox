@@ -1,0 +1,10 @@
+{
+  "id": "t5",
+  "who": "worker-2",
+  "status": "done",
+  "output": "## 成果報告\n\n**(a) 成果**: enqueue のタスク生成関数と backlog タスク schema を特定した。詳細は artifacts/t5/enqueue-backlog-schema.md に記載。要点:\n\n- **生成関数**: `enqueue_task(cfg, spec)`（kiro-project.py:290）が全経路（CLI `enqueue`／`ingest_inbox`／`run_intake`）の集約点。実体は `task_from_spec`（L250）＋ `persist_task`。\n- **schema**: 正典は `schemas/task.schema.json`（`enqueue --json`/inbox/`intake_cmd`/`codd-gate tasks` 共通契約）。実行時は `Task` dataclass（L84-92: id/title/status/source/priority/verify/retries/extra）＋backlog/1タスク=1md。`priority` は第一級フィールド、`after`（deps相当）は `extra` 格納で `task_deps()`（L2472）が読む。\n- **重複判定キー**: `id`（`_slug_id` 正規化後）。ただし真の skip 判定は `run_intake`（L502-554）経路のみ。CLI/inbox は id 衝突時に改名するだけで排除しない。\n- codd-gate 側の `codd_gate_debt.DriftItem.to_spec()` は既にこの spec 形式・id dedup 前提で設計済み（本 run の別タスク成果）。\n\n**(b) 検証**: 完了条件の両コマンドを実行し、いずれも exit 0 を確認（pytest: 47 passed / codd-gate verify: OK 一貫性ゲート通過）。本タスクは調査のみのためファイル変更なし。\n\n**(c) 前提・申し送り**: 完了条件は run 全体の共通ゲートであり本調査単体の責務ではないと解釈（実際に無変更で green だった）。`cfg.intake_cmd` への実結線自体は別タスク（e2系）の範囲。範囲外の既知問題として、L241-242 のコメント「明示 id は改名しない」と実装（`_unique_task_id` による改名）の不一致を記録した。",
+  "finished_at": "2026-07-13T05:02:47Z",
+  "artifacts": [
+    "artifacts/t5/enqueue-backlog-schema.md"
+  ]
+}
