@@ -1,0 +1,16 @@
+{
+  "id": "t9",
+  "who": "worker-2",
+  "status": "done",
+  "output": "全テスト642件通過、既存コードへの影響なし。commit/pushは行わない（kiro-flowが実施）。\n\n## 成果報告\n\n**(a) 成果**: `tools/kiro-project/codd_gate_hooks.py` を新設。t8仕様通り、既存4モジュール（`codd_gate_status.detect_status`／`codd_gate_base.resolve_base_rev`／`codd_gate_routing.build_routing_args`／`codd_gate_invoke.invoke_codd_gate`／`codd_gate_debt.parse_debt_output`）を import して合成するのみで、検出・実行・パースのロジックは一切再実装していない。\n\n- `run_diff_gate(repos_path, name, vcwd, task_base_branch=None, *, status=None, ...) -> (bool, str)`: `codd-gate verify --strict` を1回実行。regression/acceptance 共通。\n- `collect_debt_specs(repos_path, name, vcwd, *, status=None, ...) -> (list, str)`: `codd-gate tasks --debt` を1回実行し spec dict のリストへ正規化。enqueue専用。\n- no-op方針: usable=False（未検出）は無音 `(True, \"\")` / `([], \"\")`、実行時skippedのみ理由付きで可視化、failedのみ`run_diff_gate`をFalseにする。\n- ファイルI/Oは一切行わない（`cfg`非依存のため`export_repo_registry`を呼びようがない構造）。\n\nテストファイル `tools/kiro-project/tests/test_codd_gate_hooks.py` を新設し、no-op分岐・ok/failed/skipped縮退・argv組み立て（verify/--strict、tasks/--debt、--base省略時のHEAD~1フォールバック）・パース結果のspec変換を、実プロセス起動なし（`run=`/`which=`注入）で検証した。\n\n**(b) 検証内容と結果**:\n- `python3 -m pytest tools/kiro-project/tests -q -k codd` → **63 passed**（新規13件含む、exit 0）\n- `python3 -m pytest tools/kiro-project/tests -q`（全体）→ **642 passed**、既存への影響なし\n- `codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` → **OK、exit 0**\n- `grep -rq \"codd_gate\" tools/kiro-project/kiro_project/` → **exit 2**（後述）\n\n**(c) 採用した前提・範囲外で見つけた問題**:\n- 前提: t8仕様の関数シグネチャ・戻り値表・argv組み立て順序を一字一句そのまま実装した。t10〜t12が担う regression/acceptance/enqueue への実結線は本タスクの範囲外のため行っていない。\n- **完了条件コマンドの `grep -rq \"codd_gate\" tools/kiro-project/kiro_project/` は恒久的に失敗する**（`tools/kiro-project/kiro_project/` ディレクトリ自体が存在せず、実装は t3/t4/t5/t6/t8 が一貫して確認した通りフラット配置 `tools/kiro-project/*.py` が正しい設計）。t8が既に指摘・報告済みの run設定側の問題であり、コード側では解消不可能（空パッケージでの偽装対応はt8が非推奨と明記、本タスクもそれに従い行っていない）。this以外の完了条件（pytest・codd-gate verify）は満たしている。",
+  "finished_at": "2026-07-13T06:04:21Z",
+  "data": {
+    "delivery": {
+      "url": "https://github.com/ynitto/sandbox/",
+      "branch": "kp/kiro-project-codd-gate-171537",
+      "commit": "99d71b2e5abcc8cda9596c55c78d4983e3036b18",
+      "target": "main",
+      "path": ""
+    }
+  }
+}

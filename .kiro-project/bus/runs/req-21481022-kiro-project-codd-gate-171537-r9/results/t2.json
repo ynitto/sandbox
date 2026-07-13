@@ -2,9 +2,9 @@
   "id": "t2",
   "who": "worker-1",
   "status": "done",
-  "output": "## 成果\n\n`codd-gate verify` / `verify --debt` / `tasks`（`--debt` 込み）の引数・終了コード・stdout フォーマットを実機で実測し、artifacts/t2/codd-gate-cli-interface.md に記録した。作業ツリーへの変更なし（調査のみ、`git status` クリーン）。\n\n**要点**:\n- 終了コードは3値: `0`=PASS/正常, `1`=`verify`のNG(差分amberまたはdebtしきい値超過), `2`=環境・設定・argparseエラー。`tasks`は所見有無に関わらず常に`0`。\n- 出力は既定でテキスト、`--json`でJSON（`verify`は1行JSON。`tasks`は`--inbox`未指定なら単一JSON配列を標準出力、指定時はサマリ1行＋`<dir>/<id>.json`を1タスク1ファイルで書き出し）。\n- `verify`の`--json`出力にはゲート判定(`ng`)フィールドが無く、判定はexit codeのみに一本化されている（実測で確認、範囲外の留意点として記録）。\n- `--debt`は`--base`/`--repo`を渡しても無視される（差分モード分岐より先にreturnするため）。\n\n**検証**: 完了条件のシェルコマンド一式（`pytest -k codd` 47件パス、`codd-gate verify --strict`）を実行し exit 0 を確認済み。この worktree（HEAD `6224bd1`）では `.kiro-project/repos.json` と `codd` テスト群が既に整備済みだった。\n\n**未解決事項**: なし。範囲外の所見（`--json`にng不在、`--debt`時の無視される引数）はレポート内に記録のみで対応はしていない。",
-  "finished_at": "2026-07-13T04:58:21Z",
+  "output": "## 成果報告\n\n**成果物**: `bus/runs/req-21481022-kiro-project-codd-gate-171537-r9/artifacts/t2/codd-gate-invoke-caller-contract.md` に呼び出し側契約を出力済み。\n\n**要約**:\n- `invoke_codd_gate(status, *args, run=subprocess.run, timeout=120.0) -> CoddGateResult`。`status`（`CoddGateStatus`）は必須位置引数、追加argvは可変長文字列。\n- 戻り値 `CoddGateResult` は `status: \"ok\"|\"failed\"|\"skipped\"`, `exit_code: int|None`, `stdout: str`, `reason: str` の4フィールド。呼び出し側は`status`の3値分岐のみで判断すればよく、`exit_code`は診断用途に留まる。\n- 終了コード契約: returncode==0→ok、非0→failed（reasonにexit=Nと出力末尾500文字）、`status.usable==False`（未検出/非互換）→プロセス起動せず即skipped。\n- タイムアウト: 既定120.0秒（kiro-project.py の verify_timeout 既定と揃え）。`subprocess.TimeoutExpired`を内部捕捉しskippedへ縮退。\n- 例外: `OSError`/`subprocess.SubprocessError`（TimeoutExpired含む）はすべて内部捕捉されskippedへ縮退し、外へ一切伝播しない（呼び出し側にtry/exceptは不要）。テスト`test_never_raises_for_any_injected_run_failure`で保証。\n\n**検証**: ソース全文精読（`codd_gate_invoke.py`, `codd_gate_status.py`）と既存テスト6ケースの突き合わせで契約を確認。調査のみのタスクのためコード変更なし、テスト実行は対象外。\n\n**前提・範囲外事項**: タスク文中の「tasks 実行 API」に対応する専用関数は存在せず、`invoke_codd_gate`の`*args`に`\"tasks\"`等を渡す汎用呼び出しとして扱う前提で記述した。`kiro-project.py`本体への3フック結線状況は本タスクの範囲外（モジュールのコメントにも明記されており、別タスクの責務）。未解決事項なし。",
+  "finished_at": "2026-07-13T05:49:01Z",
   "artifacts": [
-    "artifacts/t2/codd-gate-cli-interface.md"
+    "artifacts/t2/codd-gate-invoke-caller-contract.md"
   ]
 }

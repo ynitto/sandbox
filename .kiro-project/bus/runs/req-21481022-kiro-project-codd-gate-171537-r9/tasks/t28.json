@@ -1,9 +1,0 @@
-{
-  "id": "t28",
-  "goal": "完了条件（pytest -k codd と codd-gate verify --strict の終了コード0）の実測結果とドキュメント更新を突き合わせ、charter の目標（codd-gate 活用・ユニットテスト拡充）を満たしたか最終判定する",
-  "deps": [
-    "t26",
-    "t27"
-  ],
-  "kind": "judge"
-}

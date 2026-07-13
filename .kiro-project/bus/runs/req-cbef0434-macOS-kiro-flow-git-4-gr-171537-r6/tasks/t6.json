@@ -1,8 +1,0 @@
-{
-  "id": "t6",
-  "goal": "macOS 固有要因の調査①：tempfile/tmp_path が返す /var/folders/... と realpath 解決後の /private/var/folders/... の差が、失敗テストのパス比較を壊しているかを検証する。実際に該当コード相当の最小再現スニペットを実行して、symlink 解決差が起きるかを確認する。ファイル編集はしない",
-  "deps": [
-    "t5"
-  ],
-  "kind": "work"
-}

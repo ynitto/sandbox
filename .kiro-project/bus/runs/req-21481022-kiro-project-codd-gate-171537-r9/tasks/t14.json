@@ -1,8 +1,8 @@
 {
   "id": "t14",
-  "goal": "regression 結線テスト: 検出あり かつ verify 終了コード0 のとき差分ゲートが合格になることを検証する",
+  "goal": "mr.py で codd-gate の verify 結果を done / 差し戻しの理由テキストへ含める（FAIL なら差し戻し理由に具体的なドリフト項目を列挙する）",
   "deps": [
-    "t12"
+    "t13"
   ],
   "kind": "work"
 }

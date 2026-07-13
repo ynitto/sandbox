@@ -1,9 +1,0 @@
-{
-  "id": "t23",
-  "goal": "tests/test_codd_gate_debt_parser.py を追加し、--debt / tasks 出力パーサをユニットテストする: 正常 JSON・空出力・壊れた JSON・想定外スキーマのいずれでも例外を出さず、正規化データ構造または空リストを返すことを検証する",
-  "deps": [
-    "t11",
-    "t6"
-  ],
-  "kind": "generate"
-}

@@ -1,9 +1,0 @@
-{
-  "id": "t9",
-  "goal": "codd-gate 未インストール時のフォールバック契約を実装する: 呼び出し結果を表す型（status = ok / failed / skipped、exit_code、stdout、reason）を定義し、未検出時は skipped を返して本体処理を一切止めないことを保証する。任意依存として「壊れない」ことをこの型で担保する",
-  "deps": [
-    "t2",
-    "t7"
-  ],
-  "kind": "generate"
-}

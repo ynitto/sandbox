@@ -1,6 +1,6 @@
 {
   "id": "t1",
-  "goal": "tools/kiro-project 配下の既存 codd_gate_*.py（38f99cac でマージ済みの検出モジュール）を読み、公開関数・シグネチャ・戻り値型・例外を一覧化する",
+  "goal": "tools/kiro-project の codd_gate_detect.py を読み、codd-gate の存在検出 API（関数名・引数・戻り値型・未インストール時の戻り値/例外）を呼び出し側契約として列挙する",
   "deps": [],
   "kind": "work"
 }

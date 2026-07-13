@@ -1,9 +1,0 @@
-{
-  "id": "t16",
-  "goal": "enqueue（負債取り込み）で t11 のパース結果を backlog タスク（markdown + フロントマター）へ変換する関数を実装する。負債1件を1タスクに写像し、title・description・priority・tags（codd-gate 由来であることを示す）を埋める",
-  "deps": [
-    "t5",
-    "t11"
-  ],
-  "kind": "generate"
-}

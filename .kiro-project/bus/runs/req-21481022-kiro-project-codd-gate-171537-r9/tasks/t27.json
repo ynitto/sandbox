@@ -1,8 +1,0 @@
-{
-  "id": "t27",
-  "goal": "設計書に codd-gate 結線仕様（regression/acceptance/enqueue の各結線点・設定キー）と未インストール時のフォールバック挙動を記載する",
-  "deps": [
-    "t26"
-  ],
-  "kind": "work"
-}

@@ -1,8 +1,8 @@
 {
   "id": "t20",
-  "goal": "変換した負債タスクを enqueue へ結線する（既存 backlog との重複排除キーを定め、再実行しても重複投入しない）",
+  "goal": "tools/kiro-project/tests に mr.py フックの統合テストを追加する（検収判定が codd-gate 結果を実際に読み、FAIL 時の差し戻し理由にドリフト内容が含まれることを検証）",
   "deps": [
-    "t19"
+    "t15"
   ],
   "kind": "work"
 }

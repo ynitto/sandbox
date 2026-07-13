@@ -1,8 +1,7 @@
 {
   "id": "t16",
-  "goal": "acceptance（受入判定）に codd-gate の判定結果を受入基準の1項目として反映する処理を実装する",
+  "goal": "model.py の enqueue へ codd-gate のドリフト項目を backlog タスクとして投入する結線を実装する（タイトル・本文・完了条件をドリフト項目から生成）",
   "deps": [
-    "t8",
     "t9"
   ],
   "kind": "work"

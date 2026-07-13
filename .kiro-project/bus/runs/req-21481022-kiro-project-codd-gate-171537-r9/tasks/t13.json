@@ -1,8 +1,8 @@
 {
   "id": "t13",
-  "goal": "regression 結線テスト: codd-gate 未検出のとき verify を呼ばず、差分ゲートの合否に一切影響しないことを検証する",
+  "goal": "mr.py の検収判定から t9 のヘルパ経由で codd-gate の verify 結果（status・ドリフト件数・項目）を読み取る結線を実装する",
   "deps": [
-    "t12"
+    "t9"
   ],
   "kind": "work"
 }

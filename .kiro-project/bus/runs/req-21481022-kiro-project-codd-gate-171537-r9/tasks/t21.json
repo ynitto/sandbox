@@ -1,8 +1,8 @@
 {
   "id": "t21",
-  "goal": "enqueue 結線テスト: debt 0件／複数件／既存 backlog に同一タスクが存在する場合 の3分岐で投入結果を検証する",
+  "goal": "tools/kiro-project/tests に model.py フックの統合テストを追加する（ドリフト項目が backlog タスクとして enqueue され、同じ入力での 2 回目実行では安定キーにより重複しないことを検証）",
   "deps": [
-    "t20"
+    "t18"
   ],
   "kind": "work"
 }

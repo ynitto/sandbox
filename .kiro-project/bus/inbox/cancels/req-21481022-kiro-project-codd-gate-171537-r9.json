@@ -1,0 +1,7 @@
+{
+  "id": "req-21481022-kiro-project-codd-gate-171537-r9",
+  "who": "Mac",
+  "reason": "パッケージ外配置が原因と特定。修正指示を入れて仕切り直すため破棄（9/18ノードで停止していた孤児 run）",
+  "close_issues": false,
+  "requested_at": "2026-07-13T07:09:16Z"
+}

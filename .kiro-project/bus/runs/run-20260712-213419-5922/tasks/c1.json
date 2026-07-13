@@ -1,9 +1,0 @@
-{
-  "id": "c1",
-  "goal": "受入判定結線: acceptance フックが codd-gate の verify 結果（違反一覧・strict 失敗）を読み取り、done / 差し戻しの判定根拠として理由文字列に含める処理を実装する",
-  "deps": [
-    "a4",
-    "d2"
-  ],
-  "kind": "work"
-}

@@ -1,8 +1,0 @@
-{
-  "id": "t22",
-  "goal": "完了条件コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q` を実行し、終了コードが 0 であることを確認する。0 でなければ t21 の修正へ戻り、0 になるまで反復する（loop-until-done の終了判定）",
-  "deps": [
-    "t21"
-  ],
-  "kind": "verify"
-}

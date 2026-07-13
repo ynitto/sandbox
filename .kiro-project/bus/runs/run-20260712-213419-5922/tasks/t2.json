@@ -1,9 +1,0 @@
-{
-  "id": "t2",
-  "goal": "差分ゲートのユニットテストを追加する: codd-gate verify --strict が非0終了したとき regression が失敗し、未検出時はスキップして成功することを検証する（引数組み立ての内容も assert）",
-  "deps": [
-    "b3",
-    "s7"
-  ],
-  "kind": "work"
-}

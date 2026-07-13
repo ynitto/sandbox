@@ -1,6 +1,6 @@
 {
   "id": "t5",
-  "goal": "kiro_project/ の enqueue（backlog 投入）のタスク生成関数と backlog タスク schema（id/title/priority/deps/重複判定キー）を特定する",
+  "goal": "kiro_project/mr.py の検収判定を読み、done / 差し戻しの理由テキストを組み立てている箇所を特定し、codd-gate verify 結果を理由へ差し込める挿入位置を1点に確定する",
   "deps": [],
   "kind": "work"
 }

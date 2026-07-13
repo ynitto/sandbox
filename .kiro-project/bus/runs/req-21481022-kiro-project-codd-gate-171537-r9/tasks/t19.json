@@ -1,9 +1,8 @@
 {
   "id": "t19",
-  "goal": "codd-gate --debt および tasks の出力をパースし、backlog タスク候補（title/priority/deps/由来メタ）へ変換する関数を実装する",
+  "goal": "tools/kiro-project/tests に verify.py フックの統合テストを追加する（回帰ゲート実行時に codd-gate verify が実際に呼ばれることをスパイで検出し、非0終了で回帰ゲートが FAIL になることを検証）",
   "deps": [
-    "t8",
-    "t9"
+    "t12"
   ],
   "kind": "work"
 }

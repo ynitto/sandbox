@@ -2,18 +2,9 @@
   "id": "t8",
   "who": "worker-2",
   "status": "done",
-  "output": "## 成果\n\n`tools/kiro-project/codd_gate_status.py` の `detect_status` を拡張し、PATH 探索（`resolve_codd_gate`）とバージョン確認（`get_version`）をまとめて安全に行う唯一の合流点にした。既存の `detect_status` は実は PATH 探索のみで、バージョン確認は自身の docstring 上でも「まだ合流していない」と明記された未完成状態だった（`codd_gate_detect.py` 自体の各プリミティブは commit 38f99cac で既にマージ済み・完成済み）。\n\n**変更内容**: `run=subprocess.run` を DI パラメータとして追加し、PATH で見つかった場合のみ `get_version` を実行、成功すればバージョンを、失敗（timeout・非0終了・パース不能・想定外の例外）すれば「バージョン不明」へ縮退。未検出時は従来どおり即座に `build_status(None)`。すべての失敗経路で例外を外に投げない。\n\n## 検証\n\n- `python3 -m pytest tools/kiro-project/tests -q -k codd` → 50 passed（既存47 + 新規3）\n- `codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base HEAD~1 --strict` → OK\n- 完了条件コマンド全体で exit 0 を確認\n\n## 前提・範囲\n\nt7 の結線仕様が `detect_status` を3フック共通の唯一の検出入口として使う設計であることを踏まえ、その関数自体がタスク要求（PATH＋バージョン確認・None縮退・無例外）を満たしていない欠落を最小差分で修正した。`kiro-project.py` 本体への結線（t9/t11/t16/t19の責務）は範囲外のため触れていない。範囲外の問題は見つからなかった。\n\n成果物: `bus/runs/req-21481022-kiro-project-codd-gate-171537-r9/artifacts/t8/report.md`",
-  "finished_at": "2026-07-13T05:17:56Z",
-  "data": {
-    "delivery": {
-      "url": "https://github.com/ynitto/sandbox/",
-      "branch": "kp/kiro-project-codd-gate-171537",
-      "commit": "678c2f84bb88e5f7e2139b5ccef27105b831b6fe",
-      "target": "main",
-      "path": ""
-    }
-  },
+  "output": "作業ツリーへの変更なし（調査・統合のみ）。完了条件コマンド自体は本タスクの担当外（loop-until-doneの完了判定は上位のt9〜t12実装後に意味を持つ）。\n\n## 成果報告\n\n**(a) 成果サマリー**: t1〜t7を統合し、`.kiro-project/bus/runs/.../artifacts/t8/codd-gate-hook-interface-spec.md` に3フック共通の結線インターフェース仕様を確定した。\n\n- **ヘルパの配置ファイル**: 新設 `tools/kiro-project/codd_gate_hooks.py`（t9が実装）。既存4モジュール（status/base/routing/invoke）を合成する合流点で、`cfg`/`Task`型に依存しないプリミティブ引数設計。\n- **公開関数**: `run_diff_gate(...)  -> (ok: bool, msg: str)`（regression/acceptance共通、1関数を2箇所から呼ぶ）、`collect_debt_specs(...) -> (specs: list[dict], msg: str)`（enqueue専用、`--base`不要）。\n- **no-op時の戻り値**: usable=False（未検出）は無音 `(True, \"\")`/`([], \"\")`、usable=Trueだが実行時skippedは理由付きで可視化——ログノイズと診断性のトレードオフを明示的に設計。\n- **repos.json不可侵**: `codd_gate_hooks.py`はファイル書き込みを一切行わない設計（`cfg`非依存のため`export_repo_registry`を呼びようがない、という構造的保証）を確認・明記。\n\n**(b) 検証内容**: 既存実装5モジュール全文・`kiro-project.py`の関連関数（`repo_registry_path`/`_task_verify_cwd`/`Config`）・`tools/codd-gate/codd-gate.py`の`_task_id`/`_emit_tasks`を実読了し、t1〜t7の記述と突き合わせた。\n\n**(c) 矛盾・欠落の解消**:\n- t6が未解決とした「id空欄時の重複判定すり抜け」は、codd-gate側`_task_id()`が全レコードに決定的idを必ず付与するため実害なしと確認・解消した。\n- t5がt14へ持ち越した「codd-gate由来とMR由来の差し戻し理由の区別」に、`\"codd-gate: \"`接頭辞規約という最小限の答えを用意した。\n- **範囲外で見つけた重大な問題**: 完了条件コマンドの`grep -rq codd_gate tools/kiro-project/kiro_project/`は、t3/t4/t5/t6が独立に指摘した通り対象ディレクトリが実在せず、t9〜t12の実装が完了してもこの一文だけは恒久的に失敗し続ける。コード側では解消不可能で、run設定側（grepパス）の是正が必要な問題として報告に留めた（本タスクの担当範囲外）。",
+  "finished_at": "2026-07-13T06:00:27Z",
   "artifacts": [
-    "artifacts/t8/report.md"
+    "artifacts/t8/codd-gate-hook-interface-spec.md"
   ]
 }

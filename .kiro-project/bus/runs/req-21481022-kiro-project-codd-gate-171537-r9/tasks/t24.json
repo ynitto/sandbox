@@ -1,8 +1,0 @@
-{
-  "id": "t24",
-  "goal": "`python3 -m pytest tools/kiro-project/tests -q -k codd` を実行し、終了コード0（全 pass）を実測で確認する",
-  "deps": [
-    "t23"
-  ],
-  "kind": "verify"
-}

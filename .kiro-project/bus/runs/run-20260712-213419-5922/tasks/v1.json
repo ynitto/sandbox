@@ -1,8 +1,0 @@
-{
-  "id": "v1",
-  "goal": "python3 -m pytest tools/kiro-project/tests -q -k codd を実行し、終了コードと失敗テストの原因を特定する",
-  "deps": [
-    "synth"
-  ],
-  "kind": "verify"
-}

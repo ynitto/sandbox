@@ -1,0 +1,8 @@
+{
+  "id": "loop",
+  "goal": "完了条件コマンド（python3 -m pytest tools/kiro-project/tests -q -k codd && grep -rq \"codd_gate\" tools/kiro-project/kiro_project/ && codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"${KIRO_BASE_REV:-HEAD~1}\" --strict）を実行し、終了コード 0 になるまで失敗箇所を修正して反復する。0 になったら終了する",
+  "deps": [
+    "synth"
+  ],
+  "kind": "verify"
+}

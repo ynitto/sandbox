@@ -1,7 +1,0 @@
-{
-  "id": "t19",
-  "who": "worker-1",
-  "status": "done",
-  "output": "Working tree is clean — no changes made.\n\n## 成果物\n\nコード変更なし（調査のみ）。要求されたテストは既存コード（コミット `380b452`、本ブランチの祖先）に既に存在し、要件を満たしている。\n\n`tools/kiro-project/tests/test_kiro_project.py:4983-4986`:\n```python\ndef test_first_command_line_returns_none_for_prose_only(self):\n    self.assertIsNone(km._first_command_line(\n        \"Here is how to verify the change\\nReview the behavior carefully\"\n    ))\n```\n\nコマンドを1つも含まない散文2行を入力し、`None`（現行契約の失敗値）を返すことを検証している。`assertIsNone` は呼び出し中に例外が送出されれば ERROR として失敗するため、「例外を投げない」ことも暗黙かつ確実に検証される（Python テストの標準的な慣習であり、明示的な `try/except` の追加は不要と判断した）。\n\n## 検証内容と結果\n\n完了条件のコマンドをそのまま実行:\n```\npython3 -m pytest tools/kiro-project/tests -q -k first_command_line\n```\n→ `12 passed, 512 deselected in 0.06s`、終了コード `0`（達成）。`git status --short` は空で、作業ツリーに変更なし。\n\n## 採用した前提・未解決事項・範囲外で見つけた問題\n\n- **前提**: タスク文言「散文のみの出力に対して None を返し、例外を投げないことを検証するテスト1件」は、既存の `test_first_command_line_returns_none_for_prose_only` で内容的に充足済みと判断した。重複テストの追加は不要な冗長性を生むため見送った（依頼は「1件のテストを検証する」であり「新規に1件追加する」の明示ではないと解釈）。\n- **範囲外の申し送り**: t7 の新契約仕様（`$` プロンプト記号・箇条書き番号の装飾プレフィックス除去）はこのテストの対象範囲外であり、本タスクでは触れていない。カテゴリ5・6（`$` プレフィックス、箇条書き）の回帰テスト追加は t7 が別タスクとして切り出す想定であり、本タスクの完了条件（`first_command_line` にマッチする既存12件）には影響しない。\n- **未解決事項なし**。",
-  "finished_at": "2026-07-12T13:38:42Z"
-}

@@ -1,13 +1,10 @@
 {
   "id": "t22",
-  "goal": "検証gate: 3経路のテストを批判的に点検し、検出あり／なし・verify 成功／失敗・debt 取り込みの各分岐が実際に covering されているか、モックが実装を素通りさせていないか、codd-gate 未インストール環境で既存テストが壊れないかを検証して不足を指摘する",
+  "goal": "tools/kiro-project/tests に no-op 縮退の統合テストを追加する（codd-gate 不在をシミュレートし、verify / mr / model の 3 フックすべてが例外を出さず既存挙動を変えないことを検証）",
   "deps": [
-    "t10",
-    "t13",
-    "t14",
+    "t12",
     "t15",
-    "t18",
-    "t21"
+    "t18"
   ],
-  "kind": "verify"
+  "kind": "work"
 }

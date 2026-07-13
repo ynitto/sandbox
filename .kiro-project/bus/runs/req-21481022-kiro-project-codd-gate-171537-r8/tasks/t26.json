@@ -1,9 +1,0 @@
-{
-  "id": "t26",
-  "goal": "tests/test_codd_gate_enqueue_wiring.py を追加し、enqueue 結線をユニットテストする: 負債 N 件 → backlog タスク N 件、同一負債の再投入が抑止されること、skipped で 0 件投入であること",
-  "deps": [
-    "t17",
-    "t6"
-  ],
-  "kind": "generate"
-}

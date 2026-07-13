@@ -1,6 +1,0 @@
-{
-  "id": "t6",
-  "goal": "tools/kiro-project/tests の既存テスト構成と pytest 設定（conftest.py・import 経路・rootdir）を調査し、`pytest -q -k codd` がテストを収集できる命名規約（ファイル名・クラス名・関数名のどこに codd を含めるか）を確定する。過去に exit=5（収集ゼロ）になった原因を特定して記録する",
-  "deps": [],
-  "kind": "work"
-}

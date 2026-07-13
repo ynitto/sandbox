@@ -1,9 +1,0 @@
-{
-  "id": "t25",
-  "goal": "tests/test_codd_gate_acceptance_wiring.py を追加し、acceptance 結線をユニットテストする: failed で受入不可、skipped で受入判定不変かつスキップ理由がレポートに載ること",
-  "deps": [
-    "t15",
-    "t6"
-  ],
-  "kind": "generate"
-}

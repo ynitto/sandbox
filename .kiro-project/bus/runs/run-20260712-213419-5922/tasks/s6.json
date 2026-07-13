@@ -1,6 +1,0 @@
-{
-  "id": "s6",
-  "goal": "repos.json の owns / repo-dir の扱いを調査し、kiro-project 側から codd-gate へ渡す --repos パスと --repo-dir マッピングの生成方法を特定する",
-  "deps": [],
-  "kind": "work"
-}

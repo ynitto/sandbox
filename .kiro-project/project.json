@@ -3,9 +3,12 @@
     "v0.1": {
       "id": ".kiro-project-v0.1",
       "name": "v0.1",
-      "history": [],
-      "best": 0,
-      "stall": 0,
+      "history": [
+        1,
+        1
+      ],
+      "best": 1,
+      "stall": 1,
       "acceptance_synth": {
         "設計書に書かれていること": "codd-gate verify --strict",
         "設計書に変更点が書かれていること": "codd-gate verify --repos ./.kiro-project/repos.json --repo-dir sandbox=. --base \"$KIRO_BASE_REV\" --strict"
@@ -14,8 +17,8 @@
       "planned_charter_sig": "538d5fbd20ae625b50e9cae5611ed3b2cc78b9a958c25fd219b50eea84a7bd17",
       "acceptance_total": 2,
       "cost": 0.0,
-      "cycles": 2546
+      "cycles": 2663
     }
   },
-  "updated": "2026-07-13T14:20:48"
+  "updated": "2026-07-13T16:09:44"
 }

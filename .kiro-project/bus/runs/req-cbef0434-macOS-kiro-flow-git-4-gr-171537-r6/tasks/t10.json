@@ -1,8 +1,0 @@
-{
-  "id": "t10",
-  "goal": "synth の方針に従い、パス正規化の修正を1点だけ実装する：git 自己修復ロジック（またはテストのフィクスチャ）で扱うパスを os.path.realpath / Path.resolve() で正規化して比較するようにし、/private/var と /var の symlink 差を吸収する",
-  "deps": [
-    "synth"
-  ],
-  "kind": "work"
-}

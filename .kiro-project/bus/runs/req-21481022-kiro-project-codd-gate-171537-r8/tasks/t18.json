@@ -1,8 +1,0 @@
-{
-  "id": "t18",
-  "goal": ".kiro-project/repos.json を更新し、sandbox エントリのローカルパス指定（sandbox=.）で codd-gate verify が解決できる形式にする。既存の kiro-project 側の読み込み処理と矛盾しないことを確認する",
-  "deps": [
-    "t1"
-  ],
-  "kind": "generate"
-}

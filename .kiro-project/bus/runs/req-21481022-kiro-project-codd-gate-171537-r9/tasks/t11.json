@@ -1,9 +1,8 @@
 {
   "id": "t11",
-  "goal": "regression（差分ゲート）に codd-gate verify --strict の実行を結線する（detect 成功時のみ実行し、未検出ならスキップ）",
+  "goal": "verify.py で codd-gate の終了コード（0=PASS / 非0=FAIL）を回帰ゲートの合否へ反映し、FAIL 時に失敗理由として codd-gate のドリフト内容を出力する",
   "deps": [
-    "t8",
-    "t9"
+    "t10"
   ],
   "kind": "work"
 }

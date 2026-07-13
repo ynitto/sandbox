@@ -1,6 +1,0 @@
-{
-  "id": "s3",
-  "goal": "tools/kiro-project の enqueue/backlog 実装を読み、タスク追加 API・タスクスキーマ・重複排除の有無を特定する",
-  "deps": [],
-  "kind": "work"
-}
