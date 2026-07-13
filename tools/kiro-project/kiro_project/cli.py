@@ -161,6 +161,13 @@ def main(argv=None) -> int:
                     help="次の act に必ず反映させる指示（例: e2e はローカルでなく実サーバに配備して実施）")
     rv.add_argument("--reason", default=None, help="決定記録に残す理由（省略時は feedback を流用）")
 
+    rr = sub.add_parser("resume-run",
+                        help="停滞・失敗した run を『続きから』再開（last_run を固定して ready へ。"
+                             "失敗ノードだけやり直し・done は温存。決定記録）")
+    _add_common(rr); rr.add_argument("id")
+    rr.add_argument("--run", required=True, help="再開する run-id（bus/runs/<id>）")
+    rr.add_argument("--reason", default=None, help="決定記録に残す理由")
+
     rj = sub.add_parser("reject",
                         help="タスクを却下（廃止して archive へ退避。依存先を再審査に戻し、"
                              "charter があれば再計画を要求。決定記録・avoid 記録）")
@@ -207,7 +214,8 @@ def main(argv=None) -> int:
     # PC 起動時に立ち上げっぱなしにして cwd のプロジェクトを面倒見る daemon 用途を一級にするため。
     _subcommands = {"run", "triage", "needs", "promote", "rot", "stats", "audit",
                     "runlog", "doctor", "update", "enqueue", "approve", "hold", "reprioritize",
-                    "revise", "reject", "impact", "replan", "instances", "start", "stop", "restart"}
+                    "revise", "reject", "resume-run", "impact", "replan", "instances",
+                    "start", "stop", "restart"}
     if not argv or (argv[0] not in _subcommands and argv[0] not in ("-h", "--help")):
         argv = ["run", "--watch", *argv]
 
@@ -252,6 +260,8 @@ def main(argv=None) -> int:
         "rot": lambda: cmd_rot(cfg, getattr(args, "fix", False)),
         "approve": lambda: cmd_approve(cfg, args.id, args.reason),
         "reject": lambda: cmd_reject(cfg, args.id, args.reason),
+        "resume-run": lambda: cmd_resume_run(cfg, args.id, args.run,
+                                             args.reason or "run の続きから再開"),
         "impact": lambda: cmd_impact(cfg, args.id, getattr(args, "json", False)),
         "hold": lambda: cmd_hold(cfg, args.id, args.reason),
         "reprioritize": lambda: cmd_reprioritize(

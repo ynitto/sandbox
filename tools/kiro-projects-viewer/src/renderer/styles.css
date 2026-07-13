@@ -29,6 +29,10 @@ html, body {
 
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
+/* 同期の健康状態（project-meta 内の一文）。error は要対応として色で目立たせる */
+.sync-ok { color: var(--muted); }
+.sync-warn { color: #b58900; }
+.sync-error { color: #dc322f; font-weight: 600; }
 
 input, select, textarea, button {
   font: inherit;

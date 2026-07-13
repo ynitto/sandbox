@@ -264,16 +264,17 @@ def doctor_flow_bus_coverage_findings(cfg: "Config") -> "list[dict]":
     （未担当だと run が local 実行に落ち、夜間停止からの自動再開・gitlab 長期委譲の継続が効かない）。
     manage_flow_daemon が on なら kiro-project が自動起動するので通常は満たされ、
     起動失敗や off での起動忘れのときに気づける。鏡写しの落とし先があるバスだけ確認する。"""
-    if project_flow_remote(cfg) is None:        # 鏡写しする対象のバスだけ見る
+    # 対象は「root 配下のバス（kiro-project の state 同期が鏡写しする）」か
+    # 「root 外でも鏡写しの落とし先があるバス」。どちらでもなければ確認しない。
+    if not _bus_inside_state(cfg) and project_flow_remote(cfg) is None:
         return []
     managed = bool(getattr(cfg, "manage_flow_daemon", False))
     if daemon_running(cfg, use_git=False):
         return []
     fix = ("manage_flow_daemon: true を設定（kiro-project が自動起動）"
            if not managed else
-           f"起動失敗の可能性。手動確認: kiro-flow --bus {cfg.bus} "
-           f"--state-git <repo> daemon（subdir は kiro-flow.yaml の state_git_subdir。既定 "
-           f"{FLOW_STATE_SUBDIR}）")
+           f"起動失敗の可能性。手動確認: kiro-flow --bus {cfg.bus} daemon"
+           "（バスが root 配下なら state-git は不要＝kiro-project が鏡写しする）")
     return [{
         "category": "config", "severity": "warn",
         "title": "kiro-flow daemon 不在",

@@ -24,15 +24,16 @@ async function test(name, fn) {
 }
 
 // ipc の flow:resubmit と同じ判断をするヘルパ（ipc は electron 依存で単体では読めないため、
-// 分岐条件そのものをここで検証する）
+// 分岐条件そのものをここで検証する）。「続きから」は resume-run 指示 1 枚に畳む
+// （last_run の固定＋ready への積み直しは本体側で原子的に行う。viewer が backlog を直接
+//  書き換えると状態リポジトリへの第二の書き手＝コミット競合の源になるため）。
 async function resubmit({ dir, busDir, runId }) {
   const meta = flow.readRunMeta(busDir, runId);
   const taskId = flow.taskIdOfRun(runId, meta);
   if (dir && taskId && fs.existsSync(path.join(dir, 'backlog', `${taskId}.md`))) {
-    flow.pinResumeRun(dir, taskId, runId);   // 「この run の続きから」を本体へ伝える
     const res = await actions.runAction(
       { kiro: { actionMode: 'file' } },      // commands/ ドロップに固定（CLI を呼ばない）
-      { dir, action: 'approve', id: taskId,
+      { dir, action: 'resume-run', id: taskId, run: runId,
         reason: `実行画面から再実行（${runId} の続きから・失敗ノードのみやり直し）` }
     );
     return { ...res, viaTask: true, taskId, resumedFrom: runId };
@@ -67,12 +68,13 @@ const hoursAgo = (h) => new Date(Date.now() - h * 3600_000).toISOString().replac
     assert.strictEqual(res.viaTask, true);
     assert.strictEqual(res.taskId, 'TASK-9');
 
-    // commands/ に approve が落ちている（本体の ingest_commands が拾う）
+    // commands/ に resume-run が落ちている（本体の ingest_commands が拾う）
     const cmds = fs.readdirSync(path.join(root, 'commands'));
     assert.strictEqual(cmds.length, 1);
     const rec = JSON.parse(fs.readFileSync(path.join(root, 'commands', cmds[0]), 'utf8'));
-    assert.strictEqual(rec.command, 'approve');
+    assert.strictEqual(rec.command, 'resume-run');
     assert.strictEqual(rec.id, 'TASK-9');
+    assert.strictEqual(rec.run, runId);
     assert.match(rec.reason, /実行画面から再実行/);
 
     // bus/inbox には何も入れない（誰も拾わないため）
@@ -132,9 +134,13 @@ const hoursAgo = (h) => new Date(Date.now() - h * 3600_000).toISOString().replac
     assert.strictEqual(res.taskId, 'TASK-9');
     assert.ok(!fs.existsSync(path.join(busDir, 'inbox')), '無反応な inbox 投入をしない');
 
-    // 「続きから」の要: last_run が書かれていないと、本体は成功済みノードを捨てて作り直す
+    // 「続きから」の要: 指示が run-id を運ぶ（本体が last_run を固定して積み直す）。
+    // backlog ファイルは viewer からは書き換えない（第二の書き手を作らない）
+    const cmds = fs.readdirSync(path.join(root, 'commands'));
+    const rec = JSON.parse(fs.readFileSync(path.join(root, 'commands', cmds[0]), 'utf8'));
+    assert.strictEqual(rec.run, 'run-20260712-213419-5922', '再開先が指示に載る');
     const md = fs.readFileSync(path.join(root, 'backlog', 'TASK-9.md'), 'utf8');
-    assert.match(md, /^- last_run: run-20260712-213419-5922$/m, '再開先が固定される');
+    assert.ok(!/last_run/.test(md), 'viewer は backlog を直接書き換えない');
   });
 
   await test('実行中（リース生存）の run は拒否する', async () => {

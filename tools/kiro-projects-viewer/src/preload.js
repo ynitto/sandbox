@@ -18,7 +18,9 @@ contextBridge.exposeInMainWorld('api', {
   removeProject: (dir) => invoke('kiro:removeProject', { dir }),
   readProject: (dir) => invoke('kiro:project', { dir }),
   gitPull: (dir, force) => invoke('git:pull', { dir, force }),
-  gitCommitPush: (dir, message) => invoke('git:commitPush', { dir, message }),
+  gitCommitPush: (dir, message, paths) => invoke('git:commitPush', { dir, message, paths }),
+  gitHealth: (dir) => invoke('git:health', { dir }),
+  gitHeal: (dir) => invoke('git:heal', { dir }),
   deleteTask: (dir, id) => invoke('kiro:deleteTask', { dir, id }),
 
   // dir（プロジェクトフォルダ）は run アーカイブの置き場（<dir>/flow-archive/）に使う

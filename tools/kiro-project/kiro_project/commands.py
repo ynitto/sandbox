@@ -120,6 +120,50 @@ def cmd_hold(cfg: Config, tid: str, reason: str) -> int:
     return 0
 
 
+def cmd_resume_run(cfg: Config, tid: str, run_id: str, reason: str) -> int:
+    """停滞・失敗した run を「続きから」やり直す（人の明示指示）。
+
+    last_run を run_id に固定して ready へ積み直す。次の act は run_id_for がこの run を再開し、
+    kiro-flow が失敗ノードだけを pending へ戻して done のノードは温存する。viewer の
+    「失敗した工程だけやり直す」ボタンの正規の口——従来は viewer が backlog ファイルを直接
+    書き換えており、分散構成では状態リポジトリへの第二の書き手＝コミット競合の源だった。"""
+    rid = str(run_id or "").strip()
+    if not rid or rid != os.path.basename(rid):
+        print(f"エラー: run-id が不正です: {run_id!r}", file=sys.stderr)
+        return 2
+    tasks = load_tasks(cfg.backlog)
+    t = next((x for x in tasks if x.id == tid), None)
+    if t is None:
+        print(f"エラー: タスクが見つかりません: {tid}", file=sys.stderr)
+        return 2
+    # 実行中（orchestrator の生存リースが有効）の run への再開指示だけは拒否する。
+    # run が bus に無い場合は拒否しない: bus 掃除後でも kiro-flow は作業ブランチ
+    # kp/<task-id> から続きを解決できる。
+    meta_path = cfg.bus / "runs" / rid / "meta.json"
+    if meta_path.exists() and not _run_resumable(cfg, rid):
+        try:
+            st = str(json.loads(meta_path.read_text(encoding="utf-8")).get("status") or "?")
+        except (OSError, ValueError):
+            st = "?"
+        if st not in _FLOW_TERMINAL:
+            print(f"エラー: run {rid} は実行中です（status={st}）。停止・失敗・応答なしの run "
+                  f"だけ再開できます。", file=sys.stderr)
+            return 2
+    release_claim(cfg, t)
+    t.set("last_run", rid)
+    # feedback / revised は「計画が変わった＝新しい run を作る」シグナルなので外す
+    # （人が『この run の続きから』と明示した以上、続きからが正）。
+    t.drop("feedback", "revised")
+    t.status = "ready"
+    persist_task(cfg, t)
+    clear_needs_file(cfg, tid)
+    dr = append_decision(cfg, tid, cfg.actor, context=f"{tid} を run {rid} の続きから再開",
+                         action="resume-run", reason=reason,
+                         affects=f"{tid} → ready (last_run={rid})")
+    print(f"{dr}: {tid} を ready に積み直しました（{rid} の失敗ノードだけをやり直します）。")
+    return 0
+
+
 def cmd_reprioritize(cfg: Config, tid: str, kind: str, reason: str) -> int:
     append_policy(cfg.policy, kind, tid)
     dr = append_decision(cfg, tid, cfg.actor, context=f"{tid} の優先度を変更",
@@ -437,6 +481,19 @@ def ingest_commands(cfg: "Config") -> "list[str]":
             else:                        # stop: graceful 停止（レジストリ後始末は cmd_run の finally）
                 state_sync(cfg, force=True)   # 停止前に journal/status の変更を押し出す（best-effort）
                 raise _StopRequested()
+            continue
+        if action == "resume-run":
+            # run の「続きから」再開（id + run）。viewer の再実行ボタンの正規の口。
+            rc = cmd_resume_run(cfg, tid, str(rec.get("run", "") or ""), reason) if tid else 2
+            if rc == 0:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                append_journal(cfg.journal, f"commands 取り込み: resume-run {tid}（{f.name}）")
+                done.append(f"resume-run:{tid}")
+            else:
+                _reject_command(cfg, f, f"resume-run {tid} が失敗 (exit {rc})")
             continue
         if action not in COMMAND_ACTIONS or not tid:
             _reject_command(cfg, f, f"未知の指示: command={action!r} id={tid!r}")

@@ -66,11 +66,21 @@ function registerIpcHandlers() {
 
   // ユーザー操作（指示・投入・記入・削除）の書き込みをコミットして push する
   // （状態共有 git への都度反映）。設定 gitAutoPush が無効なら何もしない
-  handle('git:commitPush', ({ dir, message }) => {
+  handle('git:commitPush', ({ dir, message, paths }) => {
     if (!dir) throw new Error('対象ディレクトリが指定されていません');
     const cfg = loadConfig();
     if (!(cfg.kiro && cfg.kiro.gitAutoPush)) return { skipped: true, disabled: true };
-    return git.commitPush(dir, { message });
+    return git.commitPush(dir, { message, paths });
+  });
+
+  // 同期の健康状態（ローカル参照のみ）と、一発修復（🩺 ボタン）
+  handle('git:health', ({ dir }) => {
+    if (!dir) throw new Error('対象ディレクトリが指定されていません');
+    return git.health(dir);
+  });
+  handle('git:heal', ({ dir }) => {
+    if (!dir) throw new Error('対象ディレクトリが指定されていません');
+    return git.heal(dir);
   });
 
   // 発見: 設定 roots + instances 自動発見 → コンテナ→プロジェクトのツリー
@@ -169,14 +179,15 @@ function registerIpcHandlers() {
     // からタスクを引く。ここで諦めると inbox 投入へ落ちて無反応ボタンになる。
     const taskId = flow.taskIdOfRun(runId, meta);
     if (dir && taskId && fs.existsSync(path.join(dir, 'backlog', `${taskId}.md`))) {
-      // 「続きから」やり直す: 人が選んだ run を再開先として固定してから ready へ戻す。
-      // これが無いと kiro-project は last_run を見つけられず、成功済みノードを捨てて
-      // まっさらな run を作り直す（26 ノード中 1 つの失敗で 25 ノード分を焼き直す）。
-      flow.pinResumeRun(dir, taskId, runId);
+      // 「続きから」やり直す: resume-run（last_run の固定 + ready への積み直しを本体側で
+      // 原子的に行う正規の口）。以前は viewer が backlog ファイルを直接書き換えていたが、
+      // それは状態リポジトリへの第二の書き手＝コミット競合の源だった。指示ファイル 1 枚に
+      // 畳むことで、分散構成でも「追加ファイルのコミット」しか発生しない。
       const res = await actions.runAction(loadConfig(), {
         dir,
-        action: 'approve',            // 判断待ちを積み直す（＝ready に戻して再実行させる）
+        action: 'resume-run',
         id: taskId,
+        run: runId,
         reason: `実行画面から再実行（${runId} の続きから・失敗ノードのみやり直し）`,
       });
       return { ...res, viaTask: true, taskId, resumedFrom: runId };

@@ -389,6 +389,8 @@ async function reloadProject() {
   const project = await guard('プロジェクト読込', () => api.readProject(state.selectedDir));
   if (!project) return;
   state.project = project;
+  // 同期の健康状態（ローカル参照のみ・リモートへは触らない）。失敗しても表示を欠くだけ。
+  state.gitHealth = await api.gitHealth(project.dir).catch(() => null);
   // バスが未作成でも daemon の稼働はロックファイルから判定できるため常に読む。
   // project.dir は run アーカイブ（<dir>/flow-archive/）の置き場として渡す。
   const fr = (await guard('フロー読込', () => api.flowRuns(project.dir, project.busDir))) || {};
@@ -428,6 +430,14 @@ function renderHeader() {
     metaBits.push(`プロジェクトルート: ${esc(p.dir)}`);
   }
   if (lastLog) metaBits.push(`最終実行: ${esc(statusLabel(lastLog.reason))} (${fmtAgo(lastLog.ts)})`);
+  // 同期の健康状態を平易な一文で常時表示する。異常（error）は要対応として目立たせ、
+  // 「なぜ画面が最新でないのか」「次に何を押せばよいのか」を人が推測しなくて済むようにする。
+  const gh = state.gitHealth;
+  if (gh && !gh.notRepo) {
+    const icon = gh.level === 'error' ? '🔴' : gh.level === 'warn' ? '🟡' : '🟢';
+    const cls = gh.level === 'error' ? 'sync-error' : gh.level === 'warn' ? 'sync-warn' : 'sync-ok';
+    metaBits.push(`<span class="${cls}" title="${esc(gh.summary)}">${icon} 同期: ${esc(gh.summary)}</span>`);
+  }
   $('project-meta').innerHTML = metaBits.join(' ｜ ');
   const needsBadge = $('needs-badge');
   const undecided = p.needs.filter((n) => !n.decided).length;
@@ -3187,7 +3197,13 @@ async function resubmitFlowRun() {
         true
       );
     }
-    await gitPushBusOp(`kiro-projects-viewer: resubmit run ${run.runId}`);
+    if (res.viaTask) {
+      // resume-run の指示ファイルはプロジェクト側（commands/）に落ちる。bus は触っていない
+      await gitPushAfterWrite(`kiro-projects-viewer: resume run ${run.runId}`, state.selectedDir);
+    } else {
+      // bus/inbox への再投入ファイルだけを反映（bus 全体のスナップショットは撮らない）
+      await gitPushBusOp(`kiro-projects-viewer: resubmit run ${run.runId}`, ['inbox']);
+    }
     await reloadProject();
   }
 }
@@ -3215,7 +3231,9 @@ async function cancelFlowRun() {
     return true;
   });
   if (ok) {
-    await gitPushBusOp(`kiro-projects-viewer: cancel run ${run.runId}`);
+    // cancel マーカー（inbox/cancels/）と当該 run の meta だけを反映
+    await gitPushBusOp(`kiro-projects-viewer: cancel run ${run.runId}`,
+      ['inbox/cancels', `runs/${run.runId}/meta.json`]);
     await reloadProject();
   }
 }
@@ -3241,7 +3259,8 @@ async function deleteFlowRun() {
     return true;
   });
   if (ok) {
-    await gitPushBusOp(`kiro-projects-viewer: delete run ${run.runId}`);
+    // 消した run のディレクトリだけを反映（他 run の揮発ファイルを巻き込まない）
+    await gitPushBusOp(`kiro-projects-viewer: delete run ${run.runId}`, [`runs/${run.runId}`]);
     state.flowRunId = null;
     state.flowRun = null;
     state.flowNodeId = null;
@@ -3814,6 +3833,8 @@ function warnPushSkipped(dir, kind) {
 // notRepo による「黙ってスキップ」だけトーストで知らせる（後者はディレクトリごとに一度だけ）。
 // 戻り値は commitPush の結果 Promise（gitAutoPush 無効/対象なしのときは null）。
 // opts.kind は notRepo 通知の対処ヒント切り替え用（'bus'（バス）／既定 'project'）。
+// opts.paths は「操作が触ったパス（dir 相対）」の限定コミット（bus 操作で必須 —
+// 全体スナップショットを commit すると本体の state 同期と同じファイルを取り合う）。
 function gitPushAfterWrite(message, dir, opts) {
   const cfg = state.config;
   if (!cfg || !cfg.kiro || !cfg.kiro.gitAutoPush) return null;
@@ -3821,7 +3842,7 @@ function gitPushAfterWrite(message, dir, opts) {
   if (!target) return null;
   const kind = (opts && opts.kind) || 'project';
   return api
-    .gitCommitPush(target, message)
+    .gitCommitPush(target, message, (opts && opts.paths) || null)
     .then((res) => {
       if (res && res.skipped && res.notRepo) warnPushSkipped(target, kind);
       return res;
@@ -3832,13 +3853,16 @@ function gitPushAfterWrite(message, dir, opts) {
     });
 }
 
-// バス操作（run の削除・再投入）の git 反映。バスは kiro-project の state_git から除外され
-// （_STATE_EXCLUDE_DIRS）、kiro-flow 側の state_git が別クローンへ同期するため、busDir が git
-// 作業ツリーでないと notRepo で黙ってスキップされる。notRepo 通知は gitPushAfterWrite が
+// バス操作（run の削除・再投入・中止）の git 反映。バスは kiro-project の state 同期が
+// 鏡写しする（bus は同期対象・claims だけ除外）ため、busDir が git 作業ツリーでなければ
+// notRepo で黙ってスキップして本体の同期に委ねる。notRepo 通知は gitPushAfterWrite が
 // バス向けのヒント付きで出す（ここは busDir を対象にするだけ）。
-function gitPushBusOp(message) {
+// paths（busDir 相対）で「操作が触った場所」だけを反映する。省略すると bus 全体の
+// スナップショットがコミットされ、本体が鏡写しする run の揮発ファイル（meta / claims /
+// events）を取り合って履歴の食い違いを量産する（実運用で発生した）。
+function gitPushBusOp(message, paths) {
   const busDir = state.project && state.project.busDir;
-  return gitPushAfterWrite(message, busDir, { kind: 'bus' });
+  return gitPushAfterWrite(message, busDir, { kind: 'bus', paths });
 }
 
 // 手動（⇣ ボタン）: スロットリングを無視して即 pull し、結果をトーストで知らせる
@@ -3848,6 +3872,18 @@ async function manualGitPull() {
   if (!res) return;
   lastGitPullError = null;
   toast(`git pull: ${res.output || '完了'}`, true);
+  await refreshAll();
+}
+
+// 手動（🩺 ボタン）: 同期の詰まり（中断 rebase・ロック残骸・履歴の食い違い・未送信）を
+// まとめて自動修復し、やったことを平易な文で知らせる。force push はせず人の作業は壊さない
+async function manualGitHeal() {
+  if (!state.selectedDir) return toast('プロジェクトを選択してください');
+  const res = await guard('同期の修復', () => api.gitHeal(state.selectedDir));
+  if (!res) return;
+  uiLog('gitHeal', res);
+  const steps = (res.steps || []).join(' → ');
+  toast(`同期の修復: ${res.summary}${steps ? `（${steps}）` : ''}`, res.level !== 'error');
   await refreshAll();
 }
 
@@ -3946,6 +3982,7 @@ async function init() {
   $('btn-mode').addEventListener('click', toggleMode);
   $('btn-refresh').addEventListener('click', refreshAll);
   $('btn-git-pull').addEventListener('click', manualGitPull);
+  $('btn-git-heal').addEventListener('click', manualGitHeal);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-save-settings').addEventListener('click', () => saveSettings());
   $('btn-task-close').addEventListener('click', () => $('dlg-task').close());

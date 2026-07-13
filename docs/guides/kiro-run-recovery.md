@@ -2,6 +2,14 @@
 
 kiro-project を止めた／落ちたあと、viewer に**実行中と応答なしの run が並んで、どれもやり直せない**状態になったときの手順。
 
+> **まず知っておくこと（2026-07 の MVP 硬化後）**: 強制終了からの復旧は基本 **自動** になった。
+> ① kiro-project を再起動すると、実行者が失踪した doing タスクは ready へ戻り（stale claim 回収）、
+> 次の act が `last_run` から**同じ run を再開**する（失敗ノードだけやり直し・done は温存）。
+> ② 状態 git の詰まり（中断 rebase・除外パスの追跡混入・履歴の食い違い）は同期のたびに自己修復
+> され、分岐は plumbing マージで必ず合流する。③ viewer 側の詰まりは **🩺（同期を修復）ボタン**
+> 1 つで直る（ヘッダの ⇣ の隣。何をしたかは平易な文で通知される）。
+> 以下の手動手順は、それでも直らない場合の調査用。
+
 ## 何が起きているか
 
 orchestrator が消えると、run は `status=running` のまま固まる。誰も進めないが、終端もしていない。この状態を「停滞（stalled）」と呼ぶ。放っておくと、成功済みのノードごと作り直すしかなくなる。
@@ -56,26 +64,17 @@ git diff --stat origin/main...origin/kp/<task-id>   # 中身があるか
 
 ### 4. viewer から「続きから」やり直す
 
-停滞 run には **`↻ 失敗した工程だけやり直す（残り N 件）`** ボタンが出る。押すと:
-
-1. run からタスクを引く（`req-<hash>-<task-id>-r<n>` から、または作業ブランチ `kp/<task-id>` から逆引き）
-2. タスクの `last_run` にその run-id を固定する
-3. タスクを `ready` に戻す
-
+停滞 run には **`↻ 失敗した工程だけやり直す（残り N 件）`** ボタンが出る。押すと `resume-run` 指示
+（`commands/` ドロップ）が本体へ届き、本体が **last_run の固定 → ready への積み直し** を原子的に行う。
 kiro-project はこの `last_run` を見て**同じ run を再開**し、kiro-flow が**失敗ノードだけを pending へ戻して done は温存**する。
 
-CLI でやるなら:
+CLI でやるなら 1 コマンド:
 
 ```bash
-# 1. 再開先を固定（この run の続きから、という指示）
-node -e "require('./tools/kiro-projects-viewer/src/main/flow')
-  .pinResumeRun('.kiro-project', '<task-id>', '<run-id>')"
-
-# 2. ready へ戻す
-python3 tools/kiro-project/kiro-project.py approve <task-id> --reason "..."
+python3 tools/kiro-project/kiro-project.py resume-run <task-id> --run <run-id> --reason "続きから"
 ```
 
-`last_run` を書かずに `approve` だけすると、**成功済みノードを捨てて新しい run を作り直す**（26 ノード中 1 つの失敗で 25 ノード分を焼き直す）。ここが要。
+`resume-run` を使わず `approve` だけすると、**成功済みノードを捨てて新しい run を作り直す**（26 ノード中 1 つの失敗で 25 ノード分を焼き直す）。ここが要。
 
 なお `revise` と、feedback を伴う差し戻しは計画そのものを変えるので、意図的に新しい run になる。
 

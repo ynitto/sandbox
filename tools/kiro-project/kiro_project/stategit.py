@@ -341,11 +341,18 @@ class DirectStateGit:
       update-ref の CAS（compare-and-swap）で進める。人が同時にコミットしていたら
       今回の export は見送る（次パスで再試行）＝ index.lock 競合・人のステージの
       巻き込み・コミットの衝突が起きない。
-    - import: fetch → ff-only を優先し、分岐時のみ rebase する。--autostash は使わない
-      （未コミット変更と衝突するなら取り込みを見送る＝人の作業を stash で壊さない）。
+    - import: fetch → 分岐していなければ fast-forward、分岐していれば **一時 index 上の
+      plumbing 3-way マージ**で決定的に合流する（rebase は使わない）。コンフリクトは
+      パス所有権（人の入力=リモート優先 / 機械状態=ローカル優先）で必ず決着するため
+      **統合は失敗しない**。作業ツリーの汚れにも依存しない（rebase 前提の旧実装は
+      「tracked だが同期除外」のファイルが 1 つ残るだけで永久に統合できなくなり、
+      push が non-fast-forward のまま状態共有が復旧不能になった）。取り込んだ変更は
+      ローカルの未コミット変更を上書きしない形で作業ツリー・index に反映する。
     - push: HEAD:branch。reject は fetch + 上記 integrate の再試行で合流（force push しない）。
+    - 自己修復: sync のたびに中断 rebase の残骸・古い index.lock・「追跡されてしまった
+      同期除外パス」を除去する（前プロセスの強制終了・旧実装・他コミッタの後始末）。
 
-    同期対象・除外規則は StateGit と同一（bus/ claims/ とドット始まりは同期しない）。
+    同期対象・除外規則は StateGit と同一（claims/ とドット始まりは同期しない。bus/ は同期する）。
     リモート（origin）が無ければコミットのみ行う。"""
 
     def __init__(self, root: Path, interval: float = 300.0):
@@ -604,42 +611,214 @@ class DirectStateGit:
                 return True
         return False
 
-    def _resolve_rebase(self, sub: str) -> bool:
-        """rebase 中のコンフリクトをパス種別の裁定で決着させて続行する（StateGit と同じ規則:
-        人の入力＝リモート優先 / 機械状態＝ローカル優先）。決着できたら True。
+    def _top(self) -> str:
+        """リポジトリのトップレベル（root がサブディレクトリでも index 操作の基準はここ）。
+        ls-files は cwd 相対・update-index --cacheinfo はトップ相対、と git のパス規約が
+        コマンドごとに違うため、index を触る操作は必ずトップを cwd にしてパスを
+        トップ相対に統一する（cwd=root のまま混ぜたのが「状態がトップ直下へ化けて
+        コミットされ続ける」バグの温床だった。_subdir の教訓と同根）。"""
+        return self._git("rev-parse", "--show-toplevel").stdout.strip() or str(self.root)
 
-        これが無いと 1 ファイル競合した瞬間に abort し、以後 push は永久に non-fast-forward の
-        まま＝分散同期が二度と回復しない。rebase 中は --ours=リモート / --theirs=ローカル。
-        パスは `:/<path>` （リポジトリルート相対）で渡す: root はサブディレクトリなので
-        cwd 相対で渡すと解決に失敗する。"""
-        for _ in range(200):                   # 有限（1 コミットずつしか進まない）
-            if not self._rebasing():
-                return True
-            for path in [ln for ln in self._git(
-                    "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if ln.strip()]:
+    def _top_git(self, *args: str, env: "dict | None" = None):
+        return subprocess.run(["git", "-C", self._top(), *args],
+                              capture_output=True, text=True, env=env or self._env())
+
+    def _merge_union(self, path: str,
+                     stages: "dict[int, tuple[str, str]]") -> "str | None":
+        """merge=union 宣言のあるパス（journal.md）の追記同士を無衝突で合流させる。
+        3 stage が揃っているときだけ。成功したらマージ後 blob の SHA を返す。"""
+        if set(stages) != {1, 2, 3}:
+            return None
+        attr = self._top_git("check-attr", "merge", "--", path).stdout
+        if not attr.strip().endswith("union"):
+            return None
+        try:
+            tmpdir = tempfile.mkdtemp(prefix="kiro-project-union-")
+        except OSError:
+            return None
+        try:
+            names = {}
+            for stage in (1, 2, 3):
+                blob = self._cat_blob(stages[stage][1])
+                if blob is None:
+                    return None
+                p = os.path.join(tmpdir, str(stage))
+                with open(p, "wb") as f:
+                    f.write(blob)
+                names[stage] = p
+            # merge-file は ours（第1引数）へ結果を書き込む
+            r = self._top_git("merge-file", "--union", names[2], names[1], names[3])
+            if r.returncode < 0:
+                return None
+            h = self._top_git("hash-object", "-w", "--", names[2]).stdout.strip()
+            return h or None
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _merge_commit(self, old: str, remote_sha: str) -> "str | None":
+        """old（ローカル HEAD）と remote_sha を一時 index 上の 3-way で決定的にマージした
+        コミット（親 = old, remote_sha）を作る。作業ツリー・実 index には一切触れない。
+
+        両側が同じパスを変えていたら、まず追記ログ（merge=union 宣言）を union で合流させ、
+        それ以外はパス所有権（人の入力=リモート優先 / 機械状態=ローカル優先）で必ず決着する
+        ＝コンフリクトで止まらない。rebase と違い履歴を書き換えないので、未 push コミットの
+        amend 判定や push 済み履歴と干渉しない。返り値はマージコミット SHA
+        （git 自体の障害時のみ None）。"""
+        base = self._git("merge-base", old, remote_sha).stdout.strip()
+        if not base:                          # 無関係な履歴（正本の付け替え等）→ 空ツリー基準
+            base = self._git("hash-object", "-t", "tree", os.devnull).stdout.strip()
+            if not base:
+                return None
+        sub = self._subdir()
+        fd, tmpidx = tempfile.mkstemp(prefix="kiro-project-merge-idx-")
+        os.close(fd)
+        os.remove(tmpidx)                     # git に新規作成させる
+        env = {**self._env(), "GIT_INDEX_FILE": tmpidx}
+
+        def _igit(*args: str):
+            return self._top_git(*args, env=env)
+
+        try:
+            if _igit("read-tree", "-m", base, old, remote_sha).returncode != 0:
+                return None
+            # 未解決（両側が同じパスを変えた）を決着する。
+            # ls-files -u: "<mode> <sha> <stage>\t<path>"（cwd=トップ → トップ相対）。
+            # stage 1=base / 2=ローカル / 3=リモート。
+            unmerged: "dict[str, dict[int, tuple[str, str]]]" = {}
+            for line in _igit("ls-files", "-u").stdout.splitlines():
+                try:
+                    meta, path = line.split("\t", 1)
+                    mode, sha, stage = meta.split()
+                    unmerged.setdefault(path, {})[int(stage)] = (mode, sha)
+                except ValueError:
+                    continue
+            for path, stages in unmerged.items():
                 rel = path[len(sub) + 1:] if sub and path.startswith(sub + "/") else path
-                side = "--ours" if StateGit._remote_wins(rel) else "--theirs"
-                if self._git("checkout", side, "--", f":/{path}").returncode != 0:
-                    self._git("rm", "-q", "--", f":/{path}")   # add/delete 衝突: 消えた側に合わせる
-                self._git("add", "--", f":/{path}")
-            if self._git("rebase", "--continue").returncode != 0 and \
-                    self._git("rebase", "--skip").returncode != 0:
-                break
-        self._git("rebase", "--abort")          # 進められない → 中途半端な rebase を残さない
-        return False
+                union_sha = self._merge_union(path, stages)
+                if _igit("update-index", "--force-remove", "--", path).returncode != 0:
+                    return None
+                if union_sha:
+                    mode = stages[2][0]
+                    if _igit("update-index", "--add", "--cacheinfo",
+                             f"{mode},{union_sha},{path}").returncode != 0:
+                        return None
+                    continue
+                want = 3 if StateGit._remote_wins(rel) else 2
+                if want in stages:            # 選んだ側が「削除」なら消えたままにする
+                    mode, sha = stages[want]
+                    if _igit("update-index", "--add", "--cacheinfo",
+                             f"{mode},{sha},{path}").returncode != 0:
+                        return None
+            tree = _igit("write-tree").stdout.strip()
+            if not tree:
+                return None
+            r = _igit("commit-tree", tree, "-p", old, "-p", remote_sha,
+                      "-m", "kiro-project: state merge（決定的裁定）")
+            return r.stdout.strip() or None
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmpidx)
+
+    def _cat_blob(self, sha: str) -> "bytes | None":
+        try:
+            r = subprocess.run(["git", "-C", str(self.root), "cat-file", "blob", sha],
+                               capture_output=True, env=self._env())
+        except OSError:
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+    def _skip_worktree_paths(self) -> "set[str]":
+        """sparse checkout が作業ツリーへ出していない（skip-worktree な）パス（トップ相対）。
+        そこへはファイルを書かず index だけ更新する（sparse の見え方を壊さない）。"""
+        out: "set[str]" = set()
+        for line in self._top_git("ls-files", "-t").stdout.splitlines():
+            if line.startswith("S "):
+                out.add(line[2:])
+        return out
+
+    def _materialize(self, old: str, new: str, top: str) -> int:
+        """ブランチが old→new へ進んだ後、変わったパスを作業ツリーと index に反映する。
+
+        ローカルの未コミット変更（内容が old と異なるファイル）は上書きしない——人の入力パス
+        （commands/needs/charter 等）を除く。上書きしない場合も index は new のエントリへ進める
+        （そのファイルは「ローカルで編集中」として次のコミットで拾われる）。取り込んだ
+        （＝実際にファイルを書き換えた/消した）数を返す。"""
+        raw = self._top_git("diff-tree", "-r", "--raw", "--no-renames", "-z", old, new).stdout
+        # -z 形式: ":oldmode newmode oldsha newsha status\0path\0" の繰り返し
+        fields = raw.split("\0")
+        entries: "list[tuple[str, str, str, str, str]]" = []
+        i = 0
+        while i + 1 < len(fields):
+            head, path = fields[i], fields[i + 1]
+            i += 2
+            if not head.startswith(":"):
+                continue
+            parts = head[1:].split()
+            if len(parts) >= 5 and path:
+                entries.append((parts[1], parts[2], parts[3], parts[4], path))
+        if not entries:
+            return 0
+        sub = self._subdir()
+        skip = self._skip_worktree_paths()
+        zero = set("0")
+        imported = 0
+        for newmode, oldsha, newsha, status, path in entries:
+            rel = path[len(sub) + 1:] if sub and path.startswith(sub + "/") else path
+            f = Path(top) / path
+            # ローカル未コミット変更の検出: 実ファイルの内容が old 版と異なるか
+            if set(oldsha) == zero:            # old に無い（リモートの新規追加）
+                dirty = f.exists()
+                if dirty:
+                    h = self._top_git("hash-object", "--", str(f)).stdout.strip()
+                    dirty = h != newsha        # 同一内容ならそのまま採用（dirty ではない）
+            elif not f.exists():
+                # sparse で出していないだけなら未編集。実在すべきものが無いなら「手元で削除中」
+                dirty = path not in skip
+            else:
+                h = self._top_git("hash-object", "--", str(f)).stdout.strip()
+                dirty = h != oldsha
+            overwrite = StateGit._remote_wins(rel) or not dirty
+            if status == "D":
+                if overwrite and path not in skip:
+                    with contextlib.suppress(OSError):
+                        f.unlink()
+                    imported += 1
+                self._top_git("update-index", "--force-remove", "--", path)
+                continue
+            if overwrite and path not in skip:
+                blob = self._cat_blob(newsha)
+                if blob is None:
+                    continue
+                try:
+                    f.parent.mkdir(parents=True, exist_ok=True)
+                    f.write_bytes(blob)
+                    if newmode == "100755":
+                        os.chmod(f, os.stat(f).st_mode | 0o111)
+                except OSError:
+                    continue
+                self._top_git("update-index", "--add", "--", path)
+                imported += 1
+            else:                              # ローカルの編集を残し、index だけ new へ進める
+                self._top_git("update-index", "--add", "--cacheinfo",
+                              f"{newmode},{newsha},{path}")
+        return imported
 
     def _integrate(self, branch: str) -> int:
-        """origin/<branch> をローカルへ取り込む。ff-only を優先し、分岐時のみ rebase。
-        --autostash は使わない: 未コミット変更と衝突するときは取り込みを見送る（壊さない）。
-        取り込んだファイル数を返す（見送り・コンフリクト abort は 0）。"""
+        """origin/<branch> をローカルへ取り込む。分岐していなければ fast-forward、分岐して
+        いれば plumbing 3-way マージ（_merge_commit）。どちらも CAS でブランチを進めてから
+        作業ツリーへ反映する＝作業ツリーの汚れで統合が止まることはない。
+        取り込んだファイル数を返す（リモート未到達・CAS 競り負けは 0）。"""
         if self._git("rev-parse", "-q", "--verify",
                      f"refs/remotes/origin/{branch}").returncode != 0:
             return 0
         top = self._git("rev-parse", "--show-toplevel").stdout.strip()
         if top:
-            self._reset_foreign(top)      # 名前空間外の残骸で rebase が詰むのを防ぐ
-        before = self._git("rev-parse", "HEAD").stdout.strip()
-        if not before:
+            self._reset_foreign(top)      # 専用 worktree の名前空間外の残骸を掃除（本体 root では no-op）
+        old = self._git("rev-parse", "HEAD").stdout.strip()
+        if not old:
+            return 0
+        remote_sha = self._git("rev-parse", f"refs/remotes/origin/{branch}").stdout.strip()
+        if not remote_sha or remote_sha == old:
             return 0
         r = self._git("rev-list", "--count", f"HEAD..origin/{branch}")
         try:
@@ -653,19 +832,109 @@ class DirectStateGit:
             local_only = int(r.stdout.strip() or 0) if r.returncode == 0 else 0
         except ValueError:
             local_only = 0
-        if local_only == 0:
-            ok = self._git("merge", "--ff-only", f"origin/{branch}").returncode == 0
-        else:
-            ok = self._git("rebase", f"origin/{branch}").returncode == 0
-            if not ok:                        # 競合 → 裁定で決着させて続行（abort して諦めない）
-                ok = self._resolve_rebase(self._subdir())
-        if not ok:
+        new = remote_sha if local_only == 0 else self._merge_commit(old, remote_sha)
+        if not new:
             return 0
-        after = self._git("rev-parse", "HEAD").stdout.strip()
-        if before == after:
+        if not self._cas_branch(branch, new, old):
+            return 0                      # 並行更新に競り負け → 次パスで再試行
+        return self._materialize(old, new, top or str(self.root))
+
+    _EXCLUDE_PATTERNS = ("claims/", ".state-git*")
+
+    def _ensure_exclude_patterns(self) -> None:
+        """同期除外パスをリポジトリローカルの .git/info/exclude に宣言する（冪等）。
+        `add -A` 系の他コミッタ（旧 commit_state・viewer）が除外パスを再追跡しないための防壁。
+        versioned な .gitignore はユーザーの領分なので触れない。"""
+        gp = self._git("rev-parse", "--git-path", "info/exclude").stdout.strip()
+        if not gp:
+            return
+        excl = Path(gp) if os.path.isabs(gp) else (self.root / gp)
+        try:
+            cur = excl.read_text(encoding="utf-8") if excl.is_file() else ""
+            missing = [p for p in self._EXCLUDE_PATTERNS if p not in cur.splitlines()]
+            if not missing:
+                return
+            excl.parent.mkdir(parents=True, exist_ok=True)
+            with excl.open("a", encoding="utf-8") as f:
+                if cur and not cur.endswith("\n"):
+                    f.write("\n")
+                f.write("\n".join(missing) + "\n")
+        except OSError:
+            pass
+
+    def _untrack_excluded(self, branch: str) -> int:
+        """「追跡されてしまった同期除外パス」（claims/・ドット始まり）を追跡から外す（自己修復）。
+
+        旧実装・他コミッタ（viewer / kiro-flow の管理クローン残骸）がこれらを一度コミットすると、
+        以後こちらは絶対にコミットしないため **「tracked だが commit されない変更」が永久に残り**、
+        作業ツリー依存の統合（旧 rebase 実装）を二度と通らなくした。plumbing 統合は影響を
+        受けないが、status を汚し人の診断を誤らせるので追跡から外す。ブランチへの反映は
+        plumbing（一時 index → commit-tree → CAS）で行い、作業ツリーのファイル自体は消さない。
+        外した数を返す。"""
+        sub = self._subdir()
+        scope = sub if sub else "."
+        tracked: "list[str]" = []
+        for path in self._top_git("ls-files", "-z", "--", scope).stdout.split("\0"):
+            if not path:
+                continue
+            rel = path[len(sub) + 1:] if sub and path.startswith(sub + "/") else path
+            parts = Path(rel).parts
+            # claims/（ホスト局所の実行権）とドット始まり（.state-git 残骸等）だけを外す。
+            # flow-archive/ は viewer が所有・コミットする名前空間なので追跡のまま残す。
+            if any(s.startswith(".") for s in parts) or any(
+                    s == "claims" for s in parts[:-1]):
+                tracked.append(path)
+        self._ensure_exclude_patterns()
+        if not tracked:
             return 0
-        diff = self._git("diff", "--name-only", before, after, "--", ".").stdout
-        return len([ln for ln in diff.splitlines() if ln.strip()])
+        old = self._git("rev-parse", "HEAD").stdout.strip()
+        if not old:
+            return 0
+        fd, tmpidx = tempfile.mkstemp(prefix="kiro-project-untrack-idx-")
+        os.close(fd)
+        os.remove(tmpidx)
+        env = {**self._env(), "GIT_INDEX_FILE": tmpidx}
+
+        def _igit(*args: str):
+            return self._top_git(*args, env=env)
+
+        try:
+            if _igit("read-tree", old).returncode != 0:
+                return 0
+            for i in range(0, len(tracked), 100):
+                if _igit("update-index", "--force-remove", "--",
+                         *tracked[i:i + 100]).returncode != 0:
+                    return 0
+            tree = _igit("write-tree").stdout.strip()
+            if not tree or tree == self._git("rev-parse", f"{old}^{{tree}}").stdout.strip():
+                return 0
+            new = _igit("commit-tree", tree, "-p", old, "-m",
+                        "kiro-project: 同期除外パスを追跡から外す（自己修復）").stdout.strip()
+            if not new or not self._cas_branch(branch, new, old):
+                return 0
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmpidx)
+        # 実 index も追随させる（ファイルは残す＝untracked へ。exclude 宣言済みなので再追跡されない）
+        for i in range(0, len(tracked), 100):
+            self._top_git("update-index", "--force-remove", "--", *tracked[i:i + 100])
+        return len(tracked)
+
+    def _self_heal(self, branch: str) -> None:
+        """前プロセス・旧実装が残した詰まりの残骸を除去する（冪等・失敗しても本業を止めない）。
+        中断 rebase / 古い index.lock / 追跡されてしまった同期除外パス。"""
+        if self._rebasing():
+            self._git("rebase", "--abort")
+        p = self._git("rev-parse", "--git-path", "index.lock").stdout.strip()
+        if p:
+            lock = Path(p) if os.path.isabs(p) else (self.root / p)
+            with contextlib.suppress(OSError):
+                if lock.is_file() and time.time() - lock.stat().st_mtime > _STATE_LOCK_STALE_SEC:
+                    lock.unlink()
+        try:
+            self._untrack_excluded(branch)
+        except OSError:
+            pass
 
     def _wedge_reason(self, branch: str) -> str:
         """push が通らない理由を一行で述べる（ahead/behind と、rebase を阻む未コミット変更）。"""
@@ -693,6 +962,7 @@ class DirectStateGit:
             self._ensure_merge_attrs()    # journal の追記同士を union で無衝突マージ
             remote = self._has_remote()
             branch = self._branch()
+            self._self_heal(branch)       # 強制終了・旧実装・他コミッタの残骸を先に除去
             due = self.interval <= 0 or (now - self._last_remote) >= self.interval
             imported = 0
             if remote and due:

@@ -5779,6 +5779,117 @@ class TestStateSyncBatching(unittest.TestCase):
             self.assertEqual((root / "charter.md").read_text(), "人の更新\n")    # 人＝リモート優先
             self.assertEqual((root / "status.json").read_text(), '{"local":1}\n')  # 機械＝ローカル
 
+    def test_direct_integrate_survives_tracked_excluded_dirt(self):
+        """「追跡されてしまった同期除外パス」が dirty でも統合・push が通り続ける（自己修復）。
+
+        旧実装（rebase 統合）の致命傷の再現: 他コミッタ（viewer / 旧 commit_state / kiro-flow の
+        管理クローン）が claims/ や bus/.state-git を一度コミットすると、こちらは絶対に commit
+        しないため「tracked だが commit されない変更」が永久に残り、rebase が二度と通らず
+        push は non-fast-forward のまま状態共有が復旧不能になった（実運用で発生）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            remote = tmp / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
+                            "refs/heads/main"], check=True)
+            top = tmp / "wt"
+            top.mkdir()
+            self._init_repo(top)
+            subprocess.run(["git", "-C", str(top), "remote", "add", "origin", str(remote)],
+                           check=True)
+            root = top / ".kiro-project"
+            (root / "claims").mkdir(parents=True)
+            (root / "bus").mkdir()
+            (root / "journal.md").write_text("a\n", encoding="utf-8")
+            (root / "claims" / "T1.lock").write_text("owner\n", encoding="utf-8")
+            (root / "bus" / ".state-git").write_text("legacy clone marker\n", encoding="utf-8")
+            self._commit_all(top)              # 他コミッタが除外パスまで追跡した状態を再現
+            subprocess.run(["git", "-C", str(top), "push", "-q", "-u", "origin", "main"],
+                           check=True)
+
+            other = tmp / "other"              # リモートの viewer が指示を積む
+            subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+            subprocess.run(["git", "-C", str(other), "config", "user.email", "o@t"], check=True)
+            subprocess.run(["git", "-C", str(other), "config", "user.name", "o"], check=True)
+            cdir = other / ".kiro-project" / "commands"
+            cdir.mkdir(parents=True)
+            (cdir / "viewer-approve-T1.json").write_text('{"command":"approve","id":"T1"}',
+                                                         encoding="utf-8")
+            self._commit_all(other)
+            subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"], check=True)
+
+            # 除外パスを dirty にしたまま（旧実装ならここで統合が永久に詰まる）ローカルも進める
+            (root / "claims" / "T1.lock").write_text("stolen\n", encoding="utf-8")
+            (root / "journal.md").write_text("a\nb\n", encoding="utf-8")
+            sg = km.DirectStateGit(root, interval=0.0)
+            sg.sync(force=True)                                    # 例外を投げない
+
+            r = subprocess.run(["git", "-C", str(top), "rev-list", "--count",
+                                "origin/main..HEAD"], capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip(), "0")                # 未 push が残らない
+            self.assertTrue((root / "commands" / "viewer-approve-T1.json").exists())  # 指示を取得
+            ls = subprocess.run(["git", "-C", str(top), "ls-files", "--",
+                                 ".kiro-project/claims", ".kiro-project/bus/.state-git"],
+                                capture_output=True, text=True)
+            self.assertEqual(ls.stdout.strip(), "")                # 除外パスは追跡から外れた
+            self.assertTrue((root / "claims" / "T1.lock").exists())  # 実ファイルは消さない
+
+    def test_direct_integrate_preserves_both_sides_of_diverged_history(self):
+        """多重書き手で分岐した履歴を 1 回の sync で決定的に合流させる（マージ・両方残す）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            remote = tmp / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD",
+                            "refs/heads/main"], check=True)
+            top = tmp / "wt"
+            top.mkdir()
+            self._init_repo(top)
+            subprocess.run(["git", "-C", str(top), "remote", "add", "origin", str(remote)],
+                           check=True)
+            root = top / ".kiro-project"
+            run_dir = root / "bus" / "runs" / "r1"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text('{"status":"running"}', encoding="utf-8")
+            (root / "journal.md").write_text("base\n", encoding="utf-8")
+            self._commit_all(top)
+            subprocess.run(["git", "-C", str(top), "push", "-q", "-u", "origin", "main"],
+                           check=True)
+
+            other = tmp / "other"              # 別書き手（viewer）が run の進捗と成果を積む
+            subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+            subprocess.run(["git", "-C", str(other), "config", "user.email", "o@t"], check=True)
+            subprocess.run(["git", "-C", str(other), "config", "user.name", "o"], check=True)
+            orun = other / ".kiro-project" / "bus" / "runs" / "r1"
+            (orun / "results").mkdir(parents=True)
+            (orun / "results" / "t1.json").write_text('{"ok":true}', encoding="utf-8")
+            self._commit_all(other)
+            subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"], check=True)
+
+            sg = km.DirectStateGit(root, interval=0.0)
+            (run_dir / "meta.json").write_text('{"status":"done"}', encoding="utf-8")  # 機械状態
+            sg.sync(force=True)                # ローカルコミット＋リモート分岐 → マージで合流
+
+            for c in ("origin/main..HEAD", "HEAD..origin/main"):
+                r = subprocess.run(["git", "-C", str(top), "rev-list", "--count", c],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.stdout.strip(), "0", c)         # 双方向とも乖離ゼロ
+            self.assertEqual((run_dir / "meta.json").read_text(), '{"status":"done"}')  # 機械=ローカル
+            self.assertTrue((run_dir / "results" / "t1.json").exists())   # リモートの成果も取得
+
+    def test_flow_remote_none_when_bus_inside_root(self):
+        """バスが root 配下（既定）なら kiro-flow へ state-git を注入しない＝第二の書き手を作らない。
+        kiro-project 自身の state 同期が bus ごと鏡写しする。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._init_repo(d)
+            subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
+                            "https://example.invalid/r.git"], check=True)
+            cfg = cfg_for(d, bus=d / "bus")                      # 既定の <root>/bus 相当
+            self.assertIsNone(km.project_flow_remote(cfg))
+            cmd = km.flow_daemon_cmd(cfg, budget=2)
+            self.assertNotIn("--state-git", cmd)
+
     def test_state_sync_journals_imports_only(self):
         # journal へ残すのは import（リモート指示の取り込み）のみ。export を記録すると
         # その行自体が次の同期の差分になり「export=1」の空コミットが恒久に続くため。
@@ -5798,6 +5909,84 @@ class TestStateSyncBatching(unittest.TestCase):
             with mock.patch.object(km, "state_git_for", return_value=_SG((2, 0))):
                 km.state_sync(cfg)
             self.assertIn("import=2", cfg.journal.read_text(encoding="utf-8"))
+
+
+class TestResumeRun(unittest.TestCase):
+    """resume-run: 停滞・失敗した run を『続きから』やり直す正規の口（viewer の再実行ボタン）。
+    従来は viewer が backlog ファイルを直接書き換えており、分散構成では状態リポジトリへの
+    第二の書き手＝コミット競合の源だった。"""
+
+    @staticmethod
+    def _write_meta(cfg, rid: str, status: str, lease: "float | None" = None) -> None:
+        rd = cfg.bus / "runs" / rid
+        rd.mkdir(parents=True, exist_ok=True)
+        meta = {"status": status, "updated_at": "2026-01-01T00:00:00Z"}
+        if lease is not None:
+            meta["orch_lease_until"] = lease
+        (rd / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def test_resume_run_pins_last_run_and_requeues(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked")
+            cfg = cfg_for(d)
+            self._write_meta(cfg, "req-x-T1-r0", "failed")
+            rc = km.cmd_resume_run(cfg, "T1", "req-x-T1-r0", "続きから")
+            self.assertEqual(rc, 0)
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.norm_status(), "ready")
+            self.assertEqual(t.get("last_run"), "req-x-T1-r0")
+            # 次の act はこの run を再開する（run_id_for が last_run を採用する）
+            self.assertEqual(km.run_id_for(cfg, t), "req-x-T1-r0")
+
+    def test_resume_run_clears_feedback_so_resume_wins(self):
+        # feedback / revised は「新しい run を作る」シグナル。人が『続きから』と明示したら外す。
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            bd = d / "backlog"
+            bd.mkdir(parents=True)
+            (bd / "T1.md").write_text(
+                "## T1: T1\n- status: blocked\n- verify: `true`\n- retries: 0\n"
+                "- feedback: 前回の指示\n", encoding="utf-8")
+            cfg = cfg_for(d)
+            self._write_meta(cfg, "req-x-T1-r0", "failed")
+            self.assertEqual(km.cmd_resume_run(cfg, "T1", "req-x-T1-r0", ""), 0)
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertIsNone(t.get("feedback"))
+            self.assertEqual(km.run_id_for(cfg, t), "req-x-T1-r0")
+
+    def test_resume_run_rejects_live_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked")
+            cfg = cfg_for(d)
+            self._write_meta(cfg, "req-x-T1-r0", "running", lease=time.time() + 600)
+            self.assertEqual(km.cmd_resume_run(cfg, "T1", "req-x-T1-r0", ""), 2)
+
+    def test_resume_run_allows_missing_run(self):
+        # bus 掃除後でも kp/<task-id> ブランチから再開できるため、run 不在は拒否しない
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked")
+            cfg = cfg_for(d)
+            self.assertEqual(km.cmd_resume_run(cfg, "T1", "req-x-T1-r9", ""), 0)
+
+    def test_ingest_commands_resume_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mkb(d, "T1", status="blocked")
+            cfg = cfg_for(d)
+            self._write_meta(cfg, "req-x-T1-r0", "failed")
+            cdir = d / "commands"
+            cdir.mkdir()
+            (cdir / "viewer-resume.json").write_text(json.dumps(
+                {"command": "resume-run", "id": "T1", "run": "req-x-T1-r0",
+                 "reason": "実行画面から再実行"}), encoding="utf-8")
+            self.assertEqual(km.ingest_commands(cfg), ["resume-run:T1"])
+            self.assertFalse((cdir / "viewer-resume.json").exists())
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(t.get("last_run"), "req-x-T1-r0")
+            self.assertEqual(t.norm_status(), "ready")
 
 
 class SelfUpdateTests(unittest.TestCase):

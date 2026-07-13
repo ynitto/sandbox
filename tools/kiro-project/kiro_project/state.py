@@ -369,15 +369,22 @@ def commit_state(cfg: "Config", force: bool = False) -> bool:
     # パスを限定しないと index 全体をコミットしてしまう: 隣のプロジェクトが add した直後に自分が
     # commit すると、相手の状態を自分のコミットに巻き込み、相手は「ステージに何も乗らない」と
     # 判断して自分のコミットを作れなくなる（＝相手の状態がバックアップされない）。
+    #
+    # 除外契約は DirectStateGit と同一に保つ: claims/（ホスト局所の実行権）と .state-git*
+    # （管理クローンの残骸）はコミットしない。ここが `add -A .` で全部拾っていたのが
+    # 「複数の書き手の除外規則の食い違い → tracked だが commit されないファイル → 統合が
+    # 永久に詰まる」の起点だった。
+    pathspec = [".", ":(exclude,glob)**/claims/**", ":(exclude,glob)claims/**",
+                ":(exclude,glob)**/.state-git*", ":(exclude,glob).state-git*"]
     try:
-        add = subprocess.run(["git", "-C", str(root), "add", "-A", "--", "."],
+        add = subprocess.run(["git", "-C", str(root), "add", "-A", "--", *pathspec],
                              capture_output=True, text=True, timeout=120)
         if add.returncode != 0:
             return False
-        if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet", "--", "."],
-                          capture_output=True, timeout=60).returncode == 0:
+        if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet", "--",
+                           *pathspec], capture_output=True, timeout=60).returncode == 0:
             return False                   # ステージに何も乗らなかった
-        c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg, "--", "."],
+        c = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", msg, "--", *pathspec],
                            capture_output=True, text=True, timeout=120)
         if c.returncode != 0:
             return False

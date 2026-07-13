@@ -1,10 +1,29 @@
 from __future__ import annotations
 # loop.py — 元 kiro-project.py の 6603-7068 行目（機械分割・内容無改変）。
 # 単体 import しない。kiro_project/__init__.py が共有名前空間へ順に exec 合成する。
+def _bus_inside_state(cfg: "Config") -> bool:
+    """バスがプロジェクト状態と同じ同期領域（root 配下）にあるか（既定 <root>/bus は True）。"""
+    try:
+        cfg.bus.resolve().relative_to(cfg.backlog.parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def project_flow_remote(cfg: "Config") -> "tuple[str, str, float] | None":
-    """このプロジェクトの kiro-flow バスを鏡写しすべき (remote, branch, interval)。無ければ None。
-    プロジェクト状態と同じ共有リポジトリの kiro-flow 名前空間へ向ける: direct モードなら
-    ルートの origin（現在ブランチ）、state_git 設定ならそのリポジトリ。"""
+    """このプロジェクトの kiro-flow に注入すべき state-git の (remote, branch, interval)。無ければ None。
+
+    **バスが root 配下（既定 <root>/bus）にあるなら常に None。** そこは kiro-project 自身の
+    state 同期が bus ごと鏡写しする領域で、kiro-flow に独自の state_git を持たせると同一ブランチ
+    への第二の書き手になる。書き手が増えると除外規則の食い違いが「tracked だが commit されない
+    ファイル」を生み、状態同期が復旧不能に詰まる（実際に起きた: kiro-flow の管理クローンが
+    bus/.state-git としてコミットされ、双方の rebase が永久に失敗した）。状態リポジトリへの
+    書き手はプロジェクトにつき kiro-project の 1 プロセスに限る。
+
+    バスを root の外（同期されない場所）に置いた構成でだけ、従来どおり kiro-flow 自身の
+    state_git で鏡写しさせる。"""
+    if _bus_inside_state(cfg):
+        return None
     root = cfg.backlog.parent
     if _direct_state_git_ok(cfg):
         r = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
@@ -48,7 +67,9 @@ def ensure_flow_daemon(cfg: "Config", budget: int) -> bool:
     kiro-project 停止後も残す（start_new_session）＝in-flight run を跨いで維持する。"""
     if not getattr(cfg, "manage_flow_daemon", False):
         return False
-    if project_flow_remote(cfg) is None:        # 鏡写しの落とし先なし → 対象外
+    # バスが root 配下なら kiro-project の state 同期が鏡写しするので、daemon に state_git は
+    # 要らない（注入しない）。root の外のバスは従来どおり注入先が無ければ対象外。
+    if not _bus_inside_state(cfg) and project_flow_remote(cfg) is None:
         return False
     if daemon_running(cfg, use_git=False):      # 既にこのバスの daemon が稼働（ロック保持）→ 冪等スキップ
         return False
