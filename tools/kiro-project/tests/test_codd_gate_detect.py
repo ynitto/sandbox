@@ -64,6 +64,54 @@ class TestCoddGateDetectResolution(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestCoddGateResolveBin(unittest.TestCase):
+    """resolve_codd_gate_bin — 環境変数 CODD_GATE_BIN → 設定ファイル値 → PATH の優先順。"""
+
+    def test_env_var_takes_priority_over_config_and_path(self):
+        which = mock.Mock(side_effect=AssertionError("env var 命中時は which を呼んではいけない"))
+        result = detect.resolve_codd_gate_bin(
+            config_bin="/opt/config/codd-gate",
+            env={"CODD_GATE_BIN": "/opt/env/codd-gate"},
+            which=which,
+        )
+        self.assertEqual(result, "/opt/env/codd-gate")
+
+    def test_config_used_when_env_var_absent(self):
+        which = mock.Mock(side_effect=AssertionError("config 命中時は which を呼んではいけない"))
+        result = detect.resolve_codd_gate_bin(config_bin="/opt/config/codd-gate", env={}, which=which)
+        self.assertEqual(result, "/opt/config/codd-gate")
+
+    def test_falls_back_to_path_when_env_and_config_absent(self):
+        which = lambda name: "/usr/local/bin/codd-gate" if name == detect.BINARY_NAME else None
+        result = detect.resolve_codd_gate_bin(env={}, which=which)
+        self.assertEqual(result, "/usr/local/bin/codd-gate")
+
+    def test_none_when_nothing_found(self):
+        result = detect.resolve_codd_gate_bin(env={}, which=lambda _n: None)
+        self.assertIsNone(result)
+
+    def test_blank_env_var_falls_through_to_config(self):
+        result = detect.resolve_codd_gate_bin(
+            config_bin="/opt/config/codd-gate", env={"CODD_GATE_BIN": "   "}, which=lambda _n: None
+        )
+        self.assertEqual(result, "/opt/config/codd-gate")
+
+    def test_blank_config_falls_through_to_path(self):
+        which = lambda name: "/usr/local/bin/codd-gate" if name == detect.BINARY_NAME else None
+        result = detect.resolve_codd_gate_bin(config_bin="   ", env={}, which=which)
+        self.assertEqual(result, "/usr/local/bin/codd-gate")
+
+    def test_defaults_to_real_os_environ_when_env_not_injected(self):
+        with mock.patch.dict("os.environ", {"CODD_GATE_BIN": "/from/real/environ"}, clear=False):
+            result = detect.resolve_codd_gate_bin(which=lambda _n: None)
+        self.assertEqual(result, "/from/real/environ")
+
+    def test_survives_which_raising_unexpected_exception(self):
+        which = mock.Mock(side_effect=OSError("environment I/O failure"))
+        result = detect.resolve_codd_gate_bin(env={}, which=which)
+        self.assertIsNone(result)
+
+
 class TestCoddGateDetectVersion(unittest.TestCase):
     """get_version — バージョン取得は失敗をすべて「不明」（None）に倒す。"""
 
