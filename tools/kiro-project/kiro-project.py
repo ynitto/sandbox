@@ -1419,6 +1419,94 @@ def _signal_tree(pid: int, sig) -> None:
     os.kill(pid, sig)
 
 
+def _flow_pids_for_bus(bus: Path) -> "list[int]":
+    """自分の bus を回している kiro-flow プロセスの pid（POSIX のみ。取れなければ空）。
+
+    kiro-project は kiro-flow を `--bus <root>/bus` で起動するので、コマンドラインの bus パスで
+    「自分のもの」を特定できる。ps が無い環境（Windows 素の cmd 等）では空を返し、従来動作に倒す。"""
+    try:
+        r = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    me, target, out = os.getpid(), str(Path(bus).resolve()), []
+    for line in r.stdout.splitlines():
+        pid_s, _, args = line.strip().partition(" ")
+        if "kiro-flow" not in args or target not in args:
+            continue
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid != me:
+            out.append(pid)
+    return out
+
+
+def _expire_run_leases(cfg: "Config") -> int:
+    """非終端 run の生存リースを失効させる（失効させた数）。
+
+    残骸を止めた直後、meta のリースはまだ未来を指している（最後の heartbeat + 猶予）。そのままだと
+    消費者は「まだ実行中」と読み続け、続きから再開せず新しい run を作ってしまう。駆動していた
+    プロセスを止めた以上どのリースも当てにならないので、明示的に失効させて「停滞」と読ませる。"""
+    n = 0
+    try:
+        runs = sorted((cfg.bus / "runs").iterdir())
+    except OSError:
+        return 0
+    for d in runs:
+        f = d / "meta.json"
+        try:
+            meta = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if str(meta.get("status") or "") in _FLOW_TERMINAL:
+            continue
+        if meta.get("orch_lease_until") is None:
+            continue
+        meta["orch_lease_until"] = 0.0        # 失効＝以後は age ではなくリースで「停滞」と判定される
+        try:
+            f.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            n += 1
+        except OSError:
+            continue
+    return n
+
+
+def reap_orphan_flow(cfg: "Config") -> int:
+    """自分の bus に居残った kiro-flow（前世代の残骸）を止める。止めたプロセス数を返す。
+
+    kiro-project がクラッシュ（kill -9 / 電源断 / OOM）すると、stop を通らないので kiro-flow の
+    orchestrator と worker が生き残る。残った orchestrator は run の生存リースを更新し続けるため、
+    次に起動した kiro-project はその run を「実行中」と読み、**続きから再開せず新しい run を作り
+    直す**。結果、同じタスクを二重に実行し、同じ作業ブランチへ両方が push しあう（実際に起きた:
+    17/23 まで進んだ run を捨てて 1/20 からやり直した）。
+
+    同じ bus を使う kiro-project は 1 つだけ（cmd_run が重複起動を弾く）。したがって **自分の起動
+    時点でその bus を回している kiro-flow は、例外なく前世代の残骸** である。止めたうえでリースを
+    失効させ、run を「停滞」として続きから再開できる状態に戻す。"""
+    pids = _flow_pids_for_bus(cfg.bus)
+    if not pids:
+        return 0
+    for p in pids:
+        try:
+            os.kill(p, signal.SIGTERM)        # グループには自分（kiro-project）が混ざりうるので個別に
+        except OSError:
+            pass
+    deadline = time.time() + 5.0
+    while time.time() < deadline and any(_pid_alive(p) for p in pids):
+        time.sleep(0.1)
+    for p in pids:
+        if _pid_alive(p) and hasattr(signal, "SIGKILL"):
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+    _expire_run_leases(cfg)
+    return len(pids)
+
+
 def cmd_stop(root: "str | None" = None, pid: "int | None" = None,
              want_all: bool = False, timeout: float = 5.0,
              extra: "list | str | None" = None,
@@ -4201,6 +4289,10 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                               timeout=(cfg.act_timeout if cfg.act_timeout > 0 else None),
                               capture_output=True, text=True)
     except subprocess.TimeoutExpired:
+        # subprocess が kill するのは kiro-flow 本体だけで、その子（orchestrator / worker）は残る。
+        # 残すとリースを更新し続け、次の試行が「まだ実行中」と読んで新しい run を作り、同じタスクを
+        # 二重実行する。ここで刈っておく（同時に走る run は 1 つなので bus 単位で止めてよい）。
+        reap_orphan_flow(cfg)
         return (False, f"kiro-flow run タイムアウト（{cfg.act_timeout}s）")
     except FileNotFoundError as e:
         return (False, f"kiro-flow を起動できません: {e}")
@@ -8269,6 +8361,16 @@ def cmd_run(cfg: Config) -> int:
                   f"重複起動は --force、再起動は restart を使ってください。", file=sys.stderr)
             return 1
     ensure_dirs(cfg)
+    # 前世代の kiro-flow（クラッシュ・電源断で stop を通らず居残ったもの）を刈る。ここを通らないと
+    # 残った orchestrator がリースを更新し続け、この後の run_id_for が「まだ実行中」と読んで
+    # **続きから再開せず新しい run を作り**、同じタスクを二重実行する（reap_orphan_flow 参照）。
+    # 重複起動は上で弾いているので、いま自分の bus を回している kiro-flow は残骸だけである。
+    if cfg.watch:
+        reaped = reap_orphan_flow(cfg)
+        if reaped:
+            append_journal(cfg.journal,
+                           f"前世代の kiro-flow を {reaped} プロセス停止（クラッシュの残骸）。"
+                           f"run のリースを失効させ、続きから再開できる状態に戻した")
     reg = register_instance(cfg, cfg.registry)   # ローカル＋共有レジストリへ登録（リモート発見）
     hb = lambda: refresh_instance(reg)
     # watch はタスク実行中（エージェント CLI・kiro-flow run）に数分〜数十分ブロックする。

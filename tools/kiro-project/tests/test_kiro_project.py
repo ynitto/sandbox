@@ -2738,6 +2738,50 @@ class TestInstances(unittest.TestCase):
         self.assertEqual(km.list_instances(), [])      # 死んだ PID は出ない
         self.assertFalse(dead.exists())                # かつ掃除される
 
+    def test_startup_reaps_the_previous_generation_of_kiro_flow(self):
+        """起動時に、自分の bus を回している kiro-flow（前世代の残骸）を刈る。
+
+        kiro-project がクラッシュ（kill -9 / 電源断）すると stop を通らないので kiro-flow が残る。
+        残った orchestrator はリースを更新し続けるので、次の kiro-project はその run を「実行中」と
+        読み、続きから再開せず **新しい run を作り直す** → 同じタスクを二重実行し、同じ作業ブランチへ
+        両方が push しあう（17/23 の run を捨てて 1/20 からやり直した）。
+        重複起動は別途弾いているので、自分の bus を回している kiro-flow は残骸だけと断定できる。"""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            # 残骸 run: リースが未来を指したまま（＝そのままなら「実行中」と読まれる）
+            p = cfg.bus / "runs" / "run-old"
+            p.mkdir(parents=True)
+            (p / "meta.json").write_text(json.dumps({
+                "status": "running", "orch_lease_until": time.time() + 600}), encoding="utf-8")
+
+            killed = []
+            with mock.patch.object(km, "_flow_pids_for_bus", return_value=[4242, 4243]), \
+                 mock.patch.object(km.os, "kill", side_effect=lambda pid, sig: killed.append(pid)), \
+                 mock.patch.object(km, "_pid_alive", return_value=False):
+                n = km.reap_orphan_flow(cfg)
+
+            self.assertEqual(n, 2, "残骸プロセスを止める")
+            self.assertEqual(sorted(set(killed)), [4242, 4243])
+            meta = json.loads((p / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["orch_lease_until"], 0.0, "リースを失効させる")
+
+            # 失効した run は「停滞」＝続きから再開できる（成果が捨てられない）
+            t = km.Task(id="T1", title="x", status="ready", verify="true", retries=1)
+            t.extra.append(("last_run", "run-old"))
+            self.assertEqual(km.run_id_for(cfg, t), "run-old", "続きから再開する")
+
+    def test_reap_leaves_other_projects_alone(self):
+        # 別プロジェクトの bus を回している kiro-flow は自分の残骸ではない（触らない）
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d))
+            ps_out = (f"111 python /x/kiro-flow --bus /other/project/bus work\n"
+                      f"222 python /x/kiro-flow --bus {cfg.bus.resolve()} work\n"
+                      f"333 python /x/unrelated --bus {cfg.bus.resolve()}\n")
+            fake = types.SimpleNamespace(returncode=0, stdout=ps_out)
+            with mock.patch.object(km.subprocess, "run", return_value=fake):
+                pids = km._flow_pids_for_bus(cfg.bus)
+            self.assertEqual(pids, [222], "自分の bus の kiro-flow だけを対象にする")
+
     def test_stop_takes_the_kiro_flow_children_with_it(self):
         """停止は kiro-flow の子孫まで届くこと（本人だけ殺すと残骸が走り続ける）。
 
