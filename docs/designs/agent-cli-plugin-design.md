@@ -1,9 +1,11 @@
 # エージェント CLI プラグインと失敗トリアージ — 設計書
 
-> 最終更新: 2026-07-13 ／ 関連: `schemas/agent-cli.schema.json`（契約の正典）, `agents/`（同梱定義）,
-> `tools/kiro-project/kiro_project/prioritize.py`, `tools/kiro-flow/kiro-flow.py`
+> **対象系統**: `agent-project` / `agent-flow`（`kiro-*` 旧系統は残置。改称方針は [`agent-tools-rename-design.md`](agent-tools-rename-design.md)）。
 
-kiro-project / kiro-flow の LLM 呼び出し（エージェント CLI）を、**リポジトリ内で共通化した
+> 最終更新: 2026-07-13 ／ 関連: `schemas/agent-cli.schema.json`（契約の正典）, `agents/`（同梱定義）,
+> `tools/agent-project/agent_project/prioritize.py`, `tools/agent-flow/agent-flow.py`
+
+agent-project / agent-flow の LLM 呼び出し（エージェント CLI）を、**リポジトリ内で共通化した
 データ契約**で差し替え可能にし、あわせて失敗を**決定的にトリアージ**（誰が直すか分類）する仕組み。
 
 ## 1. 動機
@@ -24,7 +26,7 @@ kiro-project / kiro-flow の LLM 呼び出し（エージェント CLI）を、*
 - **探索順**: `$KIRO_AGENTS_DIR` → `<プロジェクトルート>/agents/`（= 実行時 cwd）→
   `~/.kiro/agents/`。同名は先勝ち。組み込み名は上書き不可。
 - **各ツールが自前の小さなローダを持つ**（`load_agent_plugin` / `_plugin_agent_cmd`）。
-  kiro-project と kiro-flow の結合は task.schema / repos.schema と同じく**データ契約のみ**。
+  agent-project と agent-flow の結合は task.schema / repos.schema と同じく**データ契約のみ**。
 - 定義できること: argv（`{model}` / `{output_file}` プレースホルダ）・プロンプトの渡し方
   （stdin / argv ＋自動スピル）・モデルフラグと既定モデル・応答の取り出し（stdout / ファイル）・
   追加環境変数・タイムアウト・空応答の扱い・**エラー分類規則（errors）**。
@@ -47,10 +49,10 @@ kiro-project / kiro-flow の LLM 呼び出し（エージェント CLI）を、*
 
 **環境要因（quota/auth/env）の扱い** — 3 層が同じタグを読む:
 
-1. **kiro-flow**（`_continue` → `_env_failure_reason`）: 環境要因の失敗ノードが 1 つでもあれば
+1. **agent-flow**（`_continue` → `_env_failure_reason`）: 環境要因の失敗ノードが 1 つでもあれば
    **再計画せず run を即 failed で終端**（`meta.failure_reason` にタグ付き理由）。全ノードで
    リトライを焼き尽くす無駄を止める。done ノードは温存＝再開で続きから。
-2. **kiro-project**（`_settle_failure`）: vmsg と `last_run` の meta/final からタグを読み、
+2. **agent-project**（`_settle_failure`）: vmsg と `last_run` の meta/final からタグを読み、
    **リトライを消費せず・裁定（これも LLM＝同じ理由で失敗する）も呼ばず**、原因と直し方を
    明記して needs へ。環境を直して approve すれば同じ run の続きから再開する。
 3. **viewer**（`runAdvice`）: `failureReason` のタグを読み、タスク状態より先に
@@ -61,7 +63,7 @@ kiro-project / kiro-flow の LLM 呼び出し（エージェント CLI）を、*
 - 分類は**決定的**（正規表現のみ・LLM 不使用）。判定に迷うものはタグ無し＝「内容の問題」
   に倒し、従来のタスク単位フロー（retry → 裁定 → 人）に委ねる。
 - トリアージは「止める・人へ知らせる」方向にのみ働く。done を作らない・予算を破らない
-  （kiro-project 設計書 §1 の不変条件に従属）。
+  （agent-project 設計書 §1 の不変条件に従属）。
 - プラグインは stdlib（json/re）だけで読める。PyYAML 等の依存を増やさない。
 
 ## 5. viewer の executor 連動（付随）

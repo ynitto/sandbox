@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:" />
+  <title>Agent Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ======== サイドバー: コンテナ → プロジェクト ======== -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1>Agent Dashboard</h1>
+        <div class="row sidebar-actions">
+          <button id="btn-new-project" aria-label="プロジェクトを作成" title="プロジェクトを作成">＋</button>
+          <button id="btn-git-pull" aria-label="最新の状態を取得" title="最新の状態を取得">⇣</button>
+          <button id="btn-refresh" aria-label="表示を更新" title="表示を更新">⟳</button>
+          <button id="btn-settings" aria-label="アプリ設定" title="アプリ設定">⚙</button>
+        </div>
+      </div>
+      <div class="doctor-tools" aria-label="Doctor">
+        <span>Doctor</span>
+        <button id="btn-git-heal" aria-label="同期を修復">同期を修復</button>
+        <button id="btn-doctor" aria-label="現在の画面をAIに相談" disabled>AIに相談</button>
+      </div>
+      <div id="tree"></div>
+      <div id="sidebar-footer" class="muted"></div>
+    </aside>
+
+    <!-- ======== メイン ======== -->
+    <main id="main">
+      <header id="project-header">
+        <div class="project-header-main">
+          <div id="project-title">
+            <span id="project-name" class="muted">プロジェクトを選択してください</span>
+            <span id="project-badges"></span>
+          </div>
+          <button id="btn-project-settings" class="hidden">プロジェクト設定</button>
+        </div>
+        <div id="project-meta" class="muted"></div>
+      </header>
+
+      <nav id="tabs">
+        <button class="tab active" data-tab="overview">概要</button>
+        <button class="tab" data-tab="backlog">タスク</button>
+        <button class="tab" data-tab="needs">要対応 <span id="needs-badge" class="badge hidden"></span></button>
+        <button class="tab" data-tab="flow">実行</button>
+        <button class="tab" data-tab="history">成果・履歴</button>
+      </nav>
+
+      <section id="content">
+        <div id="tab-overview" class="tabpane active"></div>
+        <div id="tab-backlog" class="tabpane"></div>
+        <div id="tab-needs" class="tabpane"></div>
+        <div id="tab-flow" class="tabpane"></div>
+        <div id="tab-history" class="tabpane"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ======== プロジェクト設定ダイアログ ======== -->
+  <dialog id="dlg-project-settings" class="wide">
+    <div id="project-settings-body"></div>
+    <div class="dialog-actions">
+      <button id="btn-project-settings-close">閉じる</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 設定ダイアログ ======== -->
+  <dialog id="dlg-settings">
+    <form method="dialog">
+      <h2>設定</h2>
+      <div class="field">
+        <label>ワークスペース（1 行に 1 つ。<code>.agent/agent-project.yaml</code> のある開発フォルダ。
+          その <code>root:</code> が指す先をプロジェクトルート＝状態の置き場として読みます。
+          設定が無ければ登録したフォルダ自体がプロジェクトルート。
+          親フォルダを登録すると配下を自動発見して一括追加）</label>
+        <textarea id="cfg-roots" rows="4" placeholder="例: C:\src\payments&#10;/home/me/src/webapp&#10;/home/me/src　← 親フォルダごと登録も可"></textarea>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label class="check"><input type="checkbox" id="cfg-autodiscover" /> 稼働中インスタンスを自動発見（~/.agent-project/instances）</label>
+        </div>
+        <div class="field">
+          <label>自動更新間隔（秒・0 で無効）</label>
+          <input id="cfg-refresh" type="number" min="0" step="1" />
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>git pull 間隔（秒・0 で自動なし。下限 60 秒）</label>
+          <input id="cfg-git-pull" type="number" min="0" step="1" />
+        </div>
+        <div class="field">
+          <label class="check" title="指示ドロップ・inbox 投入・needs 記入・削除のたびに、操作したディレクトリだけをコミットして push します（状態共有 git 前提。push 競合は pull --rebase で自動吸収）">
+            <input type="checkbox" id="cfg-git-autopush" /> 操作を都度コミットしてプッシュ（状態共有 git）</label>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>指示（承認 / 保留 / 優先度変更）の届け方</label>
+          <select id="cfg-action-mode">
+            <option value="auto">自動（稼働中はファイル、停止中は CLI）</option>
+            <option value="file">常にファイル（commands/ ドロップ。WSL 向け）</option>
+            <option value="cli">常に CLI（従来）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>agent-project CLI（停止中の指示に使用。PATH に無ければ "python3 /path/agent-project.py"）</label>
+          <input id="cfg-project-command" class="mono" placeholder="agent-project" />
+        </div>
+      </div>
+      <h3>agent-flow（状態はファイルから判定・CLI 不要）</h3>
+      <div class="row2">
+        <div class="field">
+          <label>共有バス（--bus 運用時のみ。空なら bus/ を自動発見）</label>
+          <input id="cfg-flow-bus" class="mono" placeholder="例: /home/me/work/.agent-flow" />
+        </div>
+        <div class="field">
+          <label>daemon ロック置き場（lock_dir。空なら既定を導出）</label>
+          <input id="cfg-flow-lockdir" class="mono" placeholder="例: /tmp/agent-flow-locks" />
+        </div>
+      </div>
+      <div class="field">
+        <label
+          >プロジェクト単位バス（pure-remote で agent-flow の鏡写し先 clone を割り当てる場合。1 行 1 件
+          <code>プロジェクト名 = &lt;clone&gt;/agent-flow</code>）</label
+        >
+        <textarea
+          id="cfg-flow-bus-by-project"
+          class="mono"
+          rows="3"
+          placeholder="例:&#10;alpha = /home/me/clones/alpha/agent-flow&#10;beta = C:\clones\beta\agent-flow"
+        ></textarea>
+      </div>
+      <h3>Viewer アシスタント</h3>
+      <div class="row2">
+        <div class="field">
+          <label>エージェント CLI（charter 補完と Doctor で共通）</label>
+          <select id="cfg-agent-cli">
+            <option value="kiro">kiro（既定・kiro-cli chat）</option>
+            <option value="claude">claude（Claude Code）</option>
+            <option value="copilot">copilot（GitHub Copilot CLI）</option>
+            <option value="codex">codex（Codex CLI）</option>
+            <option value="cursor">cursor（Cursor Agent）</option>
+            <option value="ollama">ollama（ローカルモデル）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>モデル（空 = CLI / プロジェクト設定の既定）</label>
+          <input id="cfg-agent-model" class="mono" placeholder="例: sonnet / claude-sonnet-4.5 / gpt-5" />
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>補完タイムアウト（秒・下限 30）</label>
+          <input id="cfg-agent-timeout" type="number" min="30" step="10" />
+        </div>
+        <div class="field"></div>
+      </div>
+      <div class="muted" style="font-size:11px">
+        本体（agent-project / agent-flow）が使う CLI・モデルは各プロジェクトの
+        agent-project.yaml / agent-flow.yaml の <code class="mono">agent_cli</code> / <code class="mono">model</code> で設定します
+        本設定は、このビュアーの charter 下書き・補完と読み取り専用 Doctor に共通で使います。
+      </div>
+      <h3>GitLab（イシュー状態の補完・任意）</h3>
+      <div class="row2">
+        <div class="field">
+          <label>Base URL</label>
+          <input id="cfg-gl-url" placeholder="https://gitlab.example.com" />
+        </div>
+        <div class="field">
+          <label>アクセストークン（read_api）</label>
+          <input id="cfg-gl-token" type="password" placeholder="glpat-..." />
+        </div>
+      </div>
+      <h3>gitlab-review-viewer 連携</h3>
+      <div class="row2">
+        <div class="field">
+          <label>起動方法</label>
+          <select id="cfg-rv-mode">
+            <option value="protocol">プロトコル（gitlab-review-viewer://・要 OS 登録）</option>
+            <option value="exe">実行ファイル直接（portable exe 向け）</option>
+            <option value="command">コマンド</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>実行ファイルのパス（exe モード。portable exe でも連携起動できます）</label>
+          <input id="cfg-rv-exepath" class="mono" placeholder='例: C:\Apps\GitLab Review Viewer.exe' />
+        </div>
+      </div>
+      <div class="field">
+        <label>コマンド（command モード。{url} {projectPath} {type} {iid} {protocolUrl} を置換）</label>
+        <input id="cfg-rv-command" placeholder='例: "C:\Apps\GitLab Review Viewer.exe" "{protocolUrl}"' />
+      </div>
+      <div class="muted" style="font-size:11px">
+        portable exe はカスタム URL スキームを OS 登録できないため、protocol では連携起動できません。
+        「実行ファイル直接」を選び gitlab-review-viewer の exe パスを指定してください。
+      </div>
+      <div class="dialog-actions">
+        <button value="cancel">キャンセル</button>
+        <button id="btn-save-settings" value="default" class="primary-inline">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-need-output" class="wide output-dialog">
+    <div class="dialog-heading">
+      <div><span class="summary-kicker">詳細</span><h2 id="need-output-title">出力全体</h2></div>
+      <button id="btn-need-output-close" aria-label="出力全体を閉じる">閉じる</button>
+    </div>
+    <pre id="need-output-body" class="mono full-output" tabindex="0"></pre>
+  </dialog>
+
+  <dialog id="dlg-delivery-review" class="wide delivery-dialog" aria-labelledby="delivery-review-title">
+    <div class="dialog-heading">
+      <div><span class="summary-kicker">検収</span><h2 id="delivery-review-title">検収物を確認</h2></div>
+      <button id="btn-delivery-review-close" aria-label="検収物を閉じる">閉じる</button>
+    </div>
+    <div id="delivery-review-body" class="delivery-review-body"></div>
+  </dialog>
+
+  <dialog id="dlg-doctor" class="wide doctor-dialog" aria-labelledby="doctor-title">
+    <div class="dialog-heading">
+      <div><span class="summary-kicker">Doctor</span><h2 id="doctor-title">現在の画面を相談</h2></div>
+      <button id="btn-doctor-close" aria-label="Doctorを閉じる">閉じる</button>
+    </div>
+    <div id="doctor-status" class="doctor-status" aria-live="polite"></div>
+    <div id="doctor-response" class="doctor-response"></div>
+  </dialog>
+
+  <!-- ======== タスク追加ダイアログ ======== -->
+  <dialog id="dlg-enqueue">
+    <h2 id="enq-heading">タスクを追加</h2>
+    <div id="enq-reinject-note" class="muted hidden" style="margin-bottom:8px"></div>
+    <div class="field">
+      <label>タイトル（必須）</label>
+      <input id="enq-title" placeholder="例: README に使用例を追加する" />
+    </div>
+    <div class="field">
+      <label>検証コマンド — 完了判定に使うコマンド（成功すれば完了。書ければ最も確実です）</label>
+      <input id="enq-verify" class="mono" placeholder='例: grep -q "## Usage" README.md' />
+    </div>
+    <div class="field">
+      <label>完了条件 — 文章で（検証コマンドが書けないとき。実行時に自動でコマンド化されます）</label>
+      <input id="enq-accept" placeholder="例: README に使用例が載っている" />
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>優先度（数字が大きいほど先に着手）</label>
+        <input id="enq-priority" type="number" step="1" value="0" />
+      </div>
+      <div class="field">
+        <label>メモ</label>
+        <input id="enq-note" />
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>ID（任意・省略で自動採番。やり直しでは元の ID を引き継ぎます）</label>
+        <input id="enq-id" class="mono" placeholder="例: T12" />
+      </div>
+      <div class="field">
+        <label>先行タスク（先に終えるべきタスクの ID。任意・カンマ区切り）</label>
+        <input id="enq-after" class="mono" placeholder="例: T1, T2" />
+      </div>
+    </div>
+    <div class="muted">検証コマンド・完了条件のどちらも無い場合、取り込み後に内容の確認（人の判断）が必要になります。</div>
+    <div class="dialog-actions">
+      <button id="btn-enq-cancel">キャンセル</button>
+      <button id="btn-enq-submit" class="primary-inline">追加</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 確認ダイアログ（削除など破壊的操作の前に出す） ======== -->
+  <dialog id="dlg-confirm">
+    <h2>確認</h2>
+    <p id="confirm-desc" style="white-space:pre-wrap"></p>
+    <div class="dialog-actions">
+      <button id="btn-confirm-cancel">キャンセル</button>
+      <button id="btn-confirm-ok" class="danger">実行</button>
+    </div>
+  </dialog>
+
+  <!-- ======== タスク詳細ダイアログ ======== -->
+  <dialog id="dlg-task">
+    <div id="dlg-task-body"></div>
+    <div class="dialog-actions">
+      <button id="btn-task-close">閉じる</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 新規プロジェクト作成ダイアログ ======== -->
+  <dialog id="dlg-new-project" class="wide">
+    <h2>新規プロジェクトを作成</h2>
+    <div class="muted" style="margin-bottom:8px">
+      <code class="mono">&lt;親フォルダ&gt;/&lt;名前&gt;/</code> にプロジェクト憲章（マスター）を作成します。
+      憲章は全バージョン共通の前提となり、タスクは「計画バージョン」に書いたやるべきことから作られます。
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>作成先の親フォルダ（既存を選ぶか新規パスを入力）</label>
+        <input id="np-root" class="mono" list="np-root-list" placeholder="例: C:\clones" />
+        <datalist id="np-root-list"></datalist>
+      </div>
+      <div class="field">
+        <label>プロジェクト名（ディレクトリ名。空白・区切り文字は不可）</label>
+        <input id="np-name" class="mono" placeholder="例: my-project" />
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>最初の計画バージョン名（任意。指定すると目標・完了条件をやるべきことにした最初のバージョンも作成します）</label>
+        <input id="np-charter" class="mono" placeholder="例: v1（空なら憲章のみ作成し、後からバージョンを追加）" />
+      </div>
+      <div class="field"></div>
+    </div>
+    <div class="field">
+      <label>目標（このプロジェクトで達成したいこと）</label>
+      <textarea id="np-goal" rows="2" placeholder="例: ユーザーが CSV を投入すると要約レポートを生成する CLI を完成させる"></textarea>
+    </div>
+    <div class="ai-assist">
+      <div class="field">
+        <label>自由メモ（背景・要望。AI 下書きの材料 — charter には直接載りません）</label>
+        <textarea id="np-memo" rows="2" placeholder="例: 社内の営業チームが月次で使う。既存の集計 Excel を置き換えたい。Python が得意な人しかいない"></textarea>
+      </div>
+      <div class="row" style="align-items:center; gap:8px">
+        <button id="btn-np-ai" type="button" class="primary-inline"
+          title="goal・自由メモ・書きかけの各欄からエージェントが constraints / assumptions / deliverables / acceptance を下書きします（既存の記入は尊重されます）">
+          ✨ AI で下書き（不足セクションを補完）</button>
+        <span id="np-ai-status" class="muted"></span>
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>成果物（1 行 1 つ）</label>
+        <textarea id="np-deliverables" rows="3" placeholder="report.py（生成器）&#10;tests/（テスト）"></textarea>
+      </div>
+      <div class="field">
+        <label>制約（1 行 1 つ）</label>
+        <textarea id="np-constraints" rows="3" placeholder="Python 3.9 / 標準ライブラリのみ"></textarea>
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>前提（1 行 1 つ・任意）</label>
+        <textarea id="np-assumptions" rows="2" placeholder="入力 CSV は UTF-8 / 週次で 1 万行程度"></textarea>
+      </div>
+      <div class="field"></div>
+    </div>
+    <div class="field">
+      <label>完了条件（1 行 1 つ。成功で終わるコマンド、または <code class="mono">accept: 文章</code>。プロジェクト完了の判定基準になります）</label>
+      <textarea id="np-acceptance" rows="3" class="mono" placeholder="pytest -q tests/&#10;accept: README に使用例（## Usage）が載っている"></textarea>
+    </div>
+    <details id="np-repos-details">
+      <summary>対象リポジトリ（任意）</summary>
+      <div class="muted" style="margin:6px 0">
+        owns（担当範囲）を書くと成果物の書き込み先になり、書かなければ参照のみになります。
+      </div>
+      <div id="np-repos"></div>
+      <button id="np-add-repo" type="button" class="chip">＋ リポジトリを追加</button>
+    </details>
+    <div class="dialog-actions">
+      <button id="btn-np-cancel">キャンセル</button>
+      <button id="btn-np-submit" class="primary-inline">作成</button>
+    </div>
+  </dialog>
+
+  <!-- ======== プロジェクトファイル編集ダイアログ（charter / policy / repos） ======== -->
+  <dialog id="dlg-edit-file" class="wide">
+    <h2 id="ef-title">ファイルを編集</h2>
+    <div id="ef-warning" class="muted hidden"></div>
+    <div class="field">
+      <textarea id="ef-content" rows="22" class="mono" spellcheck="false"></textarea>
+    </div>
+    <div class="muted" id="ef-hint"></div>
+    <div id="ef-ai-row" class="row hidden" style="align-items:center; gap:8px; margin-top:6px">
+      <button id="btn-ef-template" type="button" class="chip"
+        title="charter.md の雛形（## goal / constraints / assumptions / deliverables / acceptance / repos / links）を挿入します">📋 雛形を挿入</button>
+      <button id="btn-ef-ai" type="button" class="chip"
+        title="エージェントが書式を保ったまま不足セクションの補完・acceptance のコマンド化・曖昧な記述の明確化をします（保存するまでファイルには書き込みません）">✨ AI 補完</button>
+      <button id="btn-ef-ai-undo" type="button" class="chip hidden" title="AI 補完前の内容に戻します">↩ 補完前に戻す</button>
+      <span id="ef-ai-status" class="muted"></span>
+    </div>
+    <div class="dialog-actions">
+      <button id="btn-ef-open" title="OS の既定エディタでこのファイルを開く">エディタで開く</button>
+      <span class="spacer"></span>
+      <button id="btn-ef-cancel">キャンセル</button>
+      <button id="btn-ef-save" class="primary-inline">保存</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 計画バージョン追加／初版のバージョン化ダイアログ ======== -->
+  <dialog id="dlg-new-charter">
+    <h2 id="nc-title">計画バージョンを追加</h2>
+    <p class="muted" id="nc-desc">新しい計画バージョンを作成します。</p>
+    <div class="field">
+      <label>バージョン名（空白・スラッシュ・ハイフン等は不可）</label>
+      <input id="nc-name" class="mono" placeholder="例: v2" />
+    </div>
+    <div class="dialog-actions">
+      <button id="btn-nc-cancel">キャンセル</button>
+      <button id="btn-nc-ok" class="primary-inline">次へ</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 憲章／計画バージョン フォーム編集ダイアログ ======== -->
+  <dialog id="dlg-edit-charter" class="wide">
+    <h2 id="ec-title">憲章を編集</h2>
+    <p class="muted" id="ec-desc"></p>
+    <div class="field" id="ec-name-field">
+      <label>名前</label>
+      <input id="ec-name" class="mono" />
+    </div>
+    <div class="field">
+      <label id="ec-goal-label">目標</label>
+      <textarea id="ec-goal" rows="3" placeholder="例: CSV 取り込みのエラー処理を改善し、失敗行のレポートを出す"></textarea>
+    </div>
+    <div class="field" id="ec-acceptance-field">
+      <label>完了条件（成功で終わるコマンド、または「accept: 文章」。プロジェクト/バージョン完了の判定基準）</label>
+      <div id="ec-acceptance" class="list-editor"></div>
+      <button type="button" class="chip" data-add-list="ec-acceptance">＋ 追加</button>
+    </div>
+    <div class="field" id="ec-deliverables-field">
+      <label>成果物</label>
+      <div id="ec-deliverables" class="list-editor"></div>
+      <button type="button" class="chip" data-add-list="ec-deliverables">＋ 追加</button>
+    </div>
+    <div class="field" id="ec-constraints-field">
+      <label>制約</label>
+      <div id="ec-constraints" class="list-editor"></div>
+      <button type="button" class="chip" data-add-list="ec-constraints">＋ 追加</button>
+    </div>
+    <div class="field" id="ec-assumptions-field">
+      <label>前提</label>
+      <div id="ec-assumptions" class="list-editor"></div>
+      <button type="button" class="chip" data-add-list="ec-assumptions">＋ 追加</button>
+    </div>
+    <div class="muted hidden" id="ec-inherit-note">制約・前提・対象リポジトリはマスター憲章から引き継がれます。</div>
+    <div class="muted" id="ec-hint"></div>
+    <div class="dialog-actions">
+      <button id="btn-ec-raw" title="マークダウンを直接編集する画面に切り替えます">テキストで編集</button>
+      <span class="spacer"></span>
+      <button id="btn-ec-cancel">キャンセル</button>
+      <button id="btn-ec-save" class="primary-inline">保存</button>
+    </div>
+  </dialog>
+
+  <!-- ======== 運用ルール（policy）フォーム編集ダイアログ ======== -->
+  <dialog id="dlg-edit-policy" class="wide">
+    <h2>運用ルールを編集</h2>
+    <p class="muted">タスクの扱いを制御するルールです。各ルールは、対象に書いた語がタスクのタイトルや ID に一致するものへ適用されます。</p>
+    <div id="ep-rules" class="list-editor"></div>
+    <button type="button" id="btn-ep-add" class="chip">＋ ルールを追加</button>
+    <div class="dialog-actions">
+      <button id="btn-ep-raw" title="テキストで直接編集する画面に切り替えます">テキストで編集</button>
+      <span class="spacer"></span>
+      <button id="btn-ep-cancel">キャンセル</button>
+      <button id="btn-ep-save" class="primary-inline">保存</button>
+    </div>
+  </dialog>
+
+  <!-- ======== リポジトリ一覧（repos）フォーム編集ダイアログ ======== -->
+  <dialog id="dlg-edit-repos" class="wide">
+    <h2>リポジトリ一覧を編集</h2>
+    <p class="muted">作業対象のリポジトリです。担当範囲（owns）を書くと成果物の書き込み先、書かなければ参照のみになります。</p>
+    <div id="er-rows"></div>
+    <button type="button" id="btn-er-add" class="chip">＋ リポジトリを追加</button>
+    <div class="dialog-actions">
+      <button id="btn-er-raw" title="JSON を直接編集する画面に切り替えます">テキストで編集</button>
+      <span class="spacer"></span>
+      <button id="btn-er-cancel">キャンセル</button>
+      <button id="btn-er-save" class="primary-inline">保存</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# install.sh — agent-project インストーラー
+# 使い方: bash install.sh [--prefix <dir>]
+#
+# デフォルトのインストール先: ~/.local/bin/agent-project
+# agent-project は標準ライブラリのみ（pip 依存なし）。
+# act の委譲先として agent-flow を PATH に置いておくと連携できる（無くても --dry-run で動く）。
+
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
+info()  { echo -e "${CYAN}[INFO]${RESET}  $*"; }
+ok()    { echo -e "${GREEN}[OK]${RESET}    $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
+error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
+die()   { error "$*"; exit 1; }
+
+INSTALL_PREFIX="${HOME}/.local/bin"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prefix) INSTALL_PREFIX="$2"; shift 2 ;;
+    -h|--help) echo "使い方: bash install.sh [--prefix <dir>]"; exit 0 ;;
+    *) die "不明な引数: $1" ;;
+  esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG="${SCRIPT_DIR}/agent_project"
+[[ -d "${PKG}" ]] || die "agent_project パッケージが見つかりません: ${PKG}"
+
+command -v python3 >/dev/null 2>&1 || die "python3 が必要です"
+
+mkdir -p "${INSTALL_PREFIX}"
+DEST="${INSTALL_PREFIX}/agent-project"
+
+# 単一ファイル配布は維持しつつ、実体はパッケージ（LLM が編集できる大きさの断片へ分割済み）。
+# zipapp で「agent_project/ パッケージ + ルート __main__.py」を1実行ファイルへまとめる。
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-project-build.XXXXXX")"
+trap 'rm -rf "${BUILD_DIR}"' EXIT
+mkdir -p "${BUILD_DIR}/agent_project"
+# __pycache__ を除いてパッケージをコピー（zipapp に .pyc を含めない）。
+( cd "${PKG}" && find . -name '*.py' -print0 | while IFS= read -r -d '' f; do
+    mkdir -p "${BUILD_DIR}/agent_project/$(dirname "$f")"
+    cp "$f" "${BUILD_DIR}/agent_project/$f"
+  done )
+cat > "${BUILD_DIR}/__main__.py" <<'EOF'
+from agent_project import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+EOF
+
+python3 -m zipapp "${BUILD_DIR}" -o "${DEST}" -p "/usr/bin/env python3"
+chmod +x "${DEST}"
+ok "インストールしました: ${DEST}（zipapp）"
+
+# 同リポジトリの独立ツール codd-gate（doc/code/test 一貫性ゲート）も隣にあれば同じ prefix へ入れる。
+# 有効化は設定だけ（intake_cmd / regression_cmd / charter acceptance。本体は無改造・任意連携）。
+# sparse-checkout（自動アップデート）等で隣に無ければ何もしない（codd-gate は独立に更新する）。
+CODD_INSTALLER="${SCRIPT_DIR}/../codd-gate/install.sh"
+if [[ -f "${CODD_INSTALLER}" ]]; then
+  if bash "${CODD_INSTALLER}" --prefix "${INSTALL_PREFIX}" >/dev/null; then
+    ok "codd-gate も同梱インストールしました（有効化は設定で: intake_cmd / regression_cmd / acceptance）"
+  else
+    warn "codd-gate のインストールに失敗しました（agent-project 本体には影響ありません）"
+  fi
+fi
+
+if command -v agent-flow >/dev/null 2>&1; then
+  ok "agent-flow を検出（act の委譲先として連携できます）"
+else
+  warn "agent-flow が PATH にありません。--dry-run なら不要、実行委譲には tools/agent-flow/install.sh を実行してください"
+fi
+
+case ":${PATH}:" in
+  *":${INSTALL_PREFIX}:"*) : ;;
+  *) warn "${INSTALL_PREFIX} が PATH にありません。シェル設定に追加してください" ;;
+esac
