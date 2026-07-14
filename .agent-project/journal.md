@@ -13,3 +13,4 @@
 - 2026-07-15 04:28:45 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
 - 2026-07-15 04:28:45 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
 - 2026-07-15 04:28:49 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-15 04:28:50 === project watch: 監視中（charter 更新/フィードバック待ち）===
