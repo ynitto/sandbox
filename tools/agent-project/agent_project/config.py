@@ -116,7 +116,7 @@ class Config:
     reject_recur: int = 2           # 同種の gitlab 却下がこの回数に達したら、silent 積み直しをやめ「系の再考」で人へ（0/負で無効）
     intake_recall: bool = True      # 投入/triage 時に過去の hold 判断（avoid）と照合し類似は inbox（人へ）へ寄せる
     learn_threshold: float = 0.5    # タイトル類似度（Jaccard）のしきい値
-    auto_adjudicate: bool = True    # needs に落とす前に kiro-cli が積み直し可否を裁定（既定 on）
+    auto_adjudicate: bool = True    # needs に落とす前に エージェント CLI が積み直し可否を裁定（既定 on）
     adjudicate_max: int = 1         # 1タスクあたりの自律裁定の上限回数（有限停止のため）
     max_spawn: int = 20             # 1 run で生成できる派生タスク数の上限（0 で生成無効。暴走防止）
     regression_cmd: "str | None" = None  # done 確定前に走らせるグローバル回帰検査（巻き込み事故の検知）
@@ -230,7 +230,7 @@ def extract_delivery_ref(act_msg: str, cfg: Config,
         if head1 and head1 != head0:                      # baseline 以降の新規コミット
             line = _git_out(cfg.workdir, "log", "-1", "--format=%h %s").strip()
             return f"git: {line}" if line else f"commit {head1[:8]}"
-        if meaningful_changes(cfg, baseline):             # 未コミットの作業ツリー変更（kiro 状態は除外）
+        if meaningful_changes(cfg, baseline):             # 未コミットの作業ツリー変更（プロジェクト状態は除外）
             return "git: 未コミットの変更あり"
         return "(変更なし)"                               # ← 既存コミットを成果物として報告しない
     try:

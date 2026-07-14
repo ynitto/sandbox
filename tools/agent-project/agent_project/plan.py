@@ -29,7 +29,7 @@ def _repo_head_sha(url: str, branch: str = "") -> "str | None":
 
 def _repo_map_generate(cfg: "Config", spec: dict) -> str:
     """repo を一時 worktree に用意してエージェントに理解を要約させる（有界・失敗は空）。"""
-    tmp = tempfile.mkdtemp(prefix="kiro-repomap-")
+    tmp = tempfile.mkdtemp(prefix="agent-repomap-")
     dest = str(Path(tmp) / "repo")
     try:
         _clone_repo_shallow(spec["url"], spec.get("base") or "", dest)
@@ -38,7 +38,7 @@ def _repo_map_generate(cfg: "Config", spec: dict) -> str:
             "- 構造（主要ディレクトリと役割）\n- 主要モジュールと責務\n"
             "- ビルド・テスト・リンタの実行コマンド\n- 命名・実装の規約（読み取れる範囲で）\n"
             "出力は要約本文のみ（前置き・後書きなし）。")
-        return _run_kiro_cli(prompt, cfg.model, purpose="repo_map").strip()[:4000]
+        return _run_agent_cli(prompt, cfg.model, purpose="repo_map").strip()[:4000]
     except Exception:  # noqa: BLE001  clone 失敗・エージェント不在・タイムアウトは生成なし
         return ""
     finally:
@@ -158,12 +158,12 @@ def assign_plan_workspace(charter: "Charter", spec: dict) -> dict:
 
 
 def plan_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
-    """charter をエージェント（agent-flow/kiro-cli）に分解させ、[{title, verify}, ...] を得る。
+    """charter をエージェント（agent-flow/エージェント CLI）に分解させ、[{title, verify}, ...] を得る。
     知能は委譲し、取り込み（enqueue）は本体が決定的に行う。失敗時は空（plan を諦め人へ）。
     各タスクには書込先 workspace を必ず明示する（verify が操作するパスの owns を持つ repo）。"""
     ctx = "\n\n".join(x for x in (project_rules_context(cfg), repo_map_context(cfg)) if x)
     try:
-        out = _run_kiro_cli(_plan_decompose_prompt(charter, cfg.granularity,
+        out = _run_agent_cli(_plan_decompose_prompt(charter, cfg.granularity,
                                                    context=ctx), cfg.model, purpose="plan")
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project plan: 分解に失敗（{e}）")
@@ -225,7 +225,7 @@ def review_via_agent(cfg: "Config", charter: "Charter") -> "list[dict]":
     """敵対的レビュー（opt-in）。成果物 vs 目標の不足を改善タスク [{title, verify}] として返す。
     plan と同様、各タスクに書込先 workspace を必ず明示する。"""
     try:
-        out = _run_kiro_cli(_review_prompt(charter, cfg.granularity), cfg.model, purpose="review")
+        out = _run_agent_cli(_review_prompt(charter, cfg.granularity), cfg.model, purpose="review")
     except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         append_journal(cfg.journal, f"project review: レビューに失敗（{e}）")
         return []

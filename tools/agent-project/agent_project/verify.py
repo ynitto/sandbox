@@ -57,7 +57,7 @@ def run_verify_at_rev(cmd: str, workdir: Path, rev: str, timeout: float,
     KIRO_BASE_REV は rev 自身に固定（差分基準 verify は base==HEAD で空差分＝正しく fail する）。"""
     if not cmd.strip() or not rev or not (workdir / ".git").exists():
         return None
-    wt = tempfile.mkdtemp(prefix="kiro-redgreen-")
+    wt = tempfile.mkdtemp(prefix="agent-redgreen-")
     try:
         add = subprocess.run(["git", "-C", str(workdir), "worktree", "add", "--detach", wt, rev],
                              capture_output=True, text=True, timeout=timeout)
@@ -118,7 +118,7 @@ def _task_verify_cwd(cfg: "Config", task: "Task") -> "tuple[Path, str | None]":
         return resolve_verify_cwd(cfg), None
     spec = _workspace_spec_for(cfg, task)
     if spec and spec.get("url"):
-        tmp = tempfile.mkdtemp(prefix="kiro-verify-")
+        tmp = tempfile.mkdtemp(prefix="agent-verify-")
         dest = str(Path(tmp) / "repo")
         # worker の push 先は task_branch 時の `branch`（ap/<task-id>）。無ければ MR の
         # target、さらに無ければ base。ここを target/base だけにすると、成果は ap/ に
@@ -407,7 +407,7 @@ def _first_command_line(out: str) -> Optional[str]:
     コマンドと同一行の両形式）は判定前に剥がす（LLM がプロンプト付き・ラベル付きで
     コマンド例を返す出力に対応するため）。
 
-    ANSI エスケープは入口で落とす。kiro-cli はカラーコード付きで返すことがあり、
+    ANSI エスケープは入口で落とす。エージェント CLI はカラーコード付きで返すことがあり、
     残したままだとフェンス開始の ``` も先頭トークン（`\x1b[36mgrep` → 既知コマンド語に
     一致しない）も認識できず、候補が 1 つも残らない。
     """
@@ -427,19 +427,19 @@ def _first_command_line(out: str) -> Optional[str]:
     )
 
 
-def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
+def synth_verify(cfg: "Config", title: str, accept: str, agent_run=None,
                  hint: str = "", repo_ctx: str = "", attempts: int = 2) -> str:
-    """自然言語の完了条件 accept からエージェント（kiro-cli）が決定的 verify を合成する。
-    失敗・不能・kiro-cli 不在は空文字（→ verify 未定義のまま人へ）。テストは kiro_run を注入する。
+    """自然言語の完了条件 accept からエージェント（エージェント CLI）が決定的 verify を合成する。
+    失敗・不能・エージェント CLI 不在は空文字（→ verify 未定義のまま人へ）。テストは agent_run を注入する。
     hint（過去の類似 learn）・repo_ctx（検出したテスト/ビルド基盤）で grep 退化を抑える。
     **自己修復（多候補）**: 散文/シェル非妥当/恒真式に退化した候補は不採用とし、理由を添えて最大
     attempts 回まで再合成させる（1 回で諦めず、より良い候補を引き出す）。"""
-    run = kiro_run or (lambda p, m: _run_kiro_cli(p, m, purpose="verify"))
+    run = agent_run or (lambda p, m: _run_agent_cli(p, m, purpose="verify"))
     retry_note = ""
     for _ in range(max(1, attempts)):
         try:
             out = run(_synth_verify_prompt(title, accept, hint, repo_ctx, retry_note), cfg.model)
-        except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等は合成せず人へ
+        except Exception:  # noqa: BLE001  エージェント CLI 不在・タイムアウト等は合成せず人へ
             return ""
         cand = _first_command_line(out)
         if not cand:
@@ -455,7 +455,7 @@ def synth_verify(cfg: "Config", title: str, accept: str, kiro_run=None,
     return ""
 
 
-def ensure_verify(cfg: "Config", task: "Task", kiro_run=None) -> bool:
+def ensure_verify(cfg: "Config", task: "Task", agent_run=None) -> bool:
     """task に concrete な verify が無ければ `verify_template`（決定的）→ `accept`（合成）の順で用意する。
     用意できたら task.verify を埋め `verify_source` を記録して True を返す（呼び出し側が persist する）。"""
     if task.verify:
@@ -487,7 +487,7 @@ def ensure_verify(cfg: "Config", task: "Task", kiro_run=None) -> bool:
         pr = project_rules_context(cfg, limit=400)      # 恒常ルール（テスト実行方法等）も合成に効かせる
         if pr:
             repo_ctx = (repo_ctx + "\n" if repo_ctx else "") + pr
-        cmd = synth_verify(cfg, task.title, accept, kiro_run, hint=hint, repo_ctx=repo_ctx)
+        cmd = synth_verify(cfg, task.title, accept, agent_run, hint=hint, repo_ctx=repo_ctx)
         if cmd:
             task.verify = cmd
             task.extra.append(("verify_source", "synth"))

@@ -196,7 +196,7 @@ def service_waits(bus: Bus, args, only_runs: "list | None" = None,
                   daemon_id: str = "service_waits") -> int:
     """監視主体（daemon/run）が park 済みノードをバッチ再確認する単一ポーラ。処理した run 数を返す。
     起動モード非依存（daemon でも cmd_run でも同じこれを回す）。executor が poll() を持たない
-    （kiro/stub）なら何もしない＝park & poll は deferring executor（gitlab）だけで働き、他は不変。
+    （agent/stub）なら何もしない＝park & poll は deferring executor（gitlab）だけで働き、他は不変。
 
     分散（git バス）で監視を**公平に分担**するため、`only_runs` に「この監視主体が担当する run」を
     渡す（daemon は自分が orchestrator を駆動している run、cmd_run は自分の run 1 件）。渡すと

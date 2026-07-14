@@ -48,7 +48,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 def strip_ansi(text: str) -> str:
     """端末カラー等の ANSI エスケープを除去する。
-    kiro-cli の出力にはカラーコードが混ざるため、合成した verify を
+    エージェント CLI の出力にはカラーコードが混ざるため、合成した verify を
     シェルで実行する前に正規化しないと `\\x1b[..m` が混入してコマンドが壊れる。"""
     return _ANSI_RE.sub("", text or "")
 

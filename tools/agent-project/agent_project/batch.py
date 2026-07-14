@@ -114,7 +114,7 @@ def _revert_workdir(cfg) -> None:
 
 def _escalate(cfg, task, reason, reasons, cycle, evidence: str = ""):
     """ループ内で人の判断(needs)へ回す直前のフック。auto_adjudicate が有効なら、人へ送る前に
-    kiro-cli へ『自律的に積み直して解けるか』を諮り、可能なら needs を作らず ready に戻して回し続ける。
+    エージェント CLI へ『自律的に積み直して解けるか』を諮り、可能なら needs を作らず ready に戻して回し続ける。
     verify を持たないタスク（acceptance 未定義）は対象外＝必ず人へ。adjudicate_max で有限回に制限。"""
     if cfg.auto_adjudicate and not cfg.dry_run and task.verify:
         done_n = int(task.get("adjudicated", "0") or "0")
@@ -130,8 +130,8 @@ def _escalate(cfg, task, reason, reasons, cycle, evidence: str = ""):
                 append_decision(cfg, task.id, "auto",
                                 context=f"{task.id}（{task.title}）を人の判断前に自律裁定",
                                 action="auto-adjudicate",
-                                reason=(f"kiro-cli: requeue — {guide[:120]}" if guide
-                                        else "kiro-cli: requeue"),
+                                reason=(f"エージェント CLI: requeue — {guide[:120]}" if guide
+                                        else "エージェント CLI: requeue"),
                                 affects=f"{task.id} → ready")
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} 自律裁定で積み直し"
                                             f"（人の判断を回避 {done_n + 1}/{cfg.adjudicate_max}）")

@@ -24,7 +24,7 @@ PATTERNS = {
 #            split=リスト化（データ駆動 fan-out の起点）/ map=要素ごとの処理
 PATTERN_LIST = list(PATTERNS)
 
-# 有効なノード kind。planner（kiro）が未知 kind を出したら work に丸める。
+# 有効なノード kind。planner（エージェント）が未知 kind を出したら work に丸める。
 VALID_KINDS = {"work", "generate", "classify", "synthesize", "verify",
                "filter", "judge", "reduce", "split", "map"}
 
@@ -35,7 +35,7 @@ STRUCTURED_KINDS = {"split", "map", "reduce", "filter", "judge", "verify"}
 
 
 def _coerce_tasks(raw, existing=()):
-    """planner/評価役（kiro）の生出力をタスク dict に正規化する。
+    """planner/評価役（エージェント）の生出力をタスク dict に正規化する。
     id 重複除去・既存 id 回避・不正 kind の work 丸め・deps の文字列化を行う。"""
     seen = set(existing)
     out = []
@@ -211,7 +211,7 @@ def _strategy_to_graph(pattern: str, request: str, par: int, review: bool = Fals
 
 
 def plan_strategy_stub(request: str, review="auto", granularity="finest"):
-    """要求からパターンと並列数を選び、初期グラフを作る（kiro 無し版）。
+    """要求からパターンと並列数を選び、初期グラフを作る（LLM 無し版）。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
     granularity で並列ノード数（=分解の細かさ）をスケールする。"""
     pattern = _detect_pattern(request)
@@ -227,7 +227,7 @@ def plan_strategy_stub(request: str, review="auto", granularity="finest"):
     return strategy, tasks
 
 
-def plan_strategy_kiro(request: str, model: str | None, review="auto", granularity="finest"):
+def plan_strategy_agent(request: str, model: str | None, review="auto", granularity="finest"):
     """kiro-cli にパターン選択・並列数・初期グラフを決めさせる。
     review は 'auto'（既定）/True/False の三値。auto は集約パターンで自動有効。
     granularity で分解の細かさを指示し、返ってきた並列数も粒度倍率でスケールする。
@@ -262,7 +262,7 @@ def plan_strategy_kiro(request: str, model: str | None, review="auto", granulari
         f"要求: {request}"
     )
     try:
-        data = extract_json(run_kiro(prompt, model, purpose="planner"))
+        data = extract_json(run_agent(prompt, model, purpose="planner"))
         # planner がオブジェクトでなくベア配列を返すことがある → tasks とみなす
         if isinstance(data, list):
             data = {"tasks": data}
@@ -328,12 +328,12 @@ def _find_flow_planner_script():
 
 def plan_strategy_flow_planner(request: str, model: str | None, review="auto", granularity="finest"):
     """flow-planner スキルの3段パイプラインを呼び出す。
-    スキルが見つからない / 失敗した場合は plan_strategy_kiro にフォールバック。
+    スキルが見つからない / 失敗した場合は plan_strategy_agent にフォールバック。
     granularity はスキルへ `--granularity` で渡し、返ってきた並列数も粒度倍率でスケールする。"""
     script = _find_flow_planner_script()
     if not script:
-        # flow-planner スキル未インストール → kiro planner にフォールバック
-        return plan_strategy_kiro(request, model, review, granularity)
+        # flow-planner スキル未インストール → エージェント planner にフォールバック
+        return plan_strategy_agent(request, model, review, granularity)
     # 計画に使う CLI/モデルは planner の設定（agents: planner: {agent_cli, model}）に従わせる。
     # スキル側の既定は kiro-cli だが、それを黙って使うと agent_cli を claude/codex にしていても
     # 計画だけ kiro-cli で走り、kiro-cli が使えない環境では毎回失敗して stub へ落ちていた。
@@ -366,6 +366,6 @@ def plan_strategy_flow_planner(request: str, model: str | None, review="auto", g
             "reason": f"[flow-planner] {strategy.get('reason', '')}（粒度 {granularity}）",
         }
         return final_strategy, tasks
-    except Exception:  # noqa: BLE001 — flow-planner 失敗時は kiro にフォールバック
-        return plan_strategy_kiro(request, model, review, granularity)
+    except Exception:  # noqa: BLE001 — flow-planner 失敗時はエージェント planner にフォールバック
+        return plan_strategy_agent(request, model, review, granularity)
 

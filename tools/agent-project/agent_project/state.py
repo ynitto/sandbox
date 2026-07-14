@@ -303,7 +303,7 @@ def backup_state(cfg: "Config") -> bool:
     # 本体の index（人のステージ）を汚さないため GIT_INDEX_FILE を切り替える。
     tmp_index = None
     try:
-        fd, tmp_index = tempfile.mkstemp(prefix="kiro-backup-idx-")
+        fd, tmp_index = tempfile.mkstemp(prefix="agent-backup-idx-")
         os.close(fd)
         os.unlink(tmp_index)               # git に作らせる（空ファイルだと read-tree が拒む）
         env = {**os.environ, "GIT_INDEX_FILE": tmp_index}

@@ -102,6 +102,6 @@ MR は自動マージ対象から除外して差し戻す（`# 差し戻し` コ
 
 ## 関連設定
 
-- agent-project: `route_planner`（kiro/none）, `default_workspace`, `policy.md` の `route:`,
+- agent-project: `route_planner`（agent/none）, `default_workspace`, `policy.md` の `route:`,
   charter `## repos` の `owns:`、タスクの `- workspace:` / `- paths:` / `- refs:` / `- routed_by:`
 - agent-flow: `--workspace`（CLI/submit、run 毎に1つ）

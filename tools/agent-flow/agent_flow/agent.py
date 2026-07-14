@@ -2,30 +2,31 @@ from __future__ import annotations
 # agent.py — 元 agent-flow.py の 2926-3481 行目（機械分割・内容無改変）。
 # 単体 import しない。agent_flow/__init__.py が共有名前空間へ順に exec 合成する。
 # --------------------------------------------------------------------------
-# Executor — タスク実行（kiro-cli or stub）
+# Executor — タスク実行（エージェント CLI or stub）
 # --------------------------------------------------------------------------
-def _kiro_timeout() -> float | None:
-    """kiro-cli 1 呼び出しのタイムアウト秒。設定ファイル `kiro_timeout` で調整、0/負で無効化。
-    設定が無ければ環境変数 AGENT_FLOW_KIRO_TIMEOUT → 既定 600 にフォールバックする。
-    心拍が lease を延長し続けるため、ハングした kiro-cli はこのタイムアウトでしか
-    止められない（無いと worker が無限ブロックし run 全体が停止する）。"""
-    to = _KIRO_TIMEOUT
+def _agent_timeout() -> float | None:
+    """エージェント CLI 1 呼び出しのタイムアウト秒。設定ファイル `agent_timeout` で調整、0/負で無効化。
+    設定が無ければ環境変数 AGENT_FLOW_TIMEOUT（旧名 AGENT_FLOW_KIRO_TIMEOUT も後方互換で受理）
+    → 既定 600 にフォールバックする。心拍が lease を延長し続けるため、ハングしたエージェント CLI は
+    このタイムアウトでしか止められない（無いと worker が無限ブロックし run 全体が停止する）。"""
+    to = _AGENT_TIMEOUT
     if to is None:
+        raw = os.environ.get("AGENT_FLOW_TIMEOUT") or os.environ.get("AGENT_FLOW_KIRO_TIMEOUT") or "600"
         try:
-            to = float(os.environ.get("AGENT_FLOW_KIRO_TIMEOUT", "600"))
+            to = float(raw)
         except ValueError:
             to = 600.0
     return to if to > 0 else None
 
 
-# 設定ファイル/CLI で解決した閾値を、args を持たない free 関数（run_kiro 等）が参照できる
+# 設定ファイル/CLI で解決した閾値を、args を持たない free 関数（run_agent 等）が参照できる
 # よう、main の resolve 後に _configure_thresholds がここへ反映する（既定は CONFIG_DEFAULTS）。
 _ARGV_LIMIT = CONFIG_DEFAULTS["argv_limit"]
 # executor プラグインの追加検索ディレクトリ（設定 executor_dir）。
 _EXECUTOR_DIR: "str | None" = None
-# kiro-cli タイムアウト秒 / stub スリープ上限秒（設定 kiro_timeout / stub_sleep_max）。
-# None のままなら _kiro_timeout / _stub_sleep が環境変数→組み込み既定にフォールバックする。
-_KIRO_TIMEOUT: "float | None" = None
+# エージェント CLI タイムアウト秒 / stub スリープ上限秒（設定 agent_timeout / stub_sleep_max）。
+# None のままなら _agent_timeout / _stub_sleep が環境変数→組み込み既定にフォールバックする。
+_AGENT_TIMEOUT: "float | None" = None
 _STUB_SLEEP_MAX: "float | None" = None
 # LLM 実行に使うエージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）。
 _AGENT_CLI: str = str(CONFIG_DEFAULTS["agent_cli"])
@@ -75,8 +76,8 @@ def _agent_for(purpose: str) -> "tuple[str, str | None]":
 
 def _configure_thresholds(args) -> None:
     """設定ファイル/CLI（resolve_config 済み）の閾値をモジュール変数へ確定させる。
-    run_kiro / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
-    global _ARGV_LIMIT, _EXECUTOR_DIR, _KIRO_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI, _AGENT_OVERRIDES
+    run_agent / executor 解決は args を受け取らないため、プロセス起動時に一度だけ値を固定する。"""
+    global _ARGV_LIMIT, _EXECUTOR_DIR, _AGENT_TIMEOUT, _STUB_SLEEP_MAX, _AGENT_CLI, _AGENT_OVERRIDES
     global _WORKER_SKILL
     ac = getattr(args, "agent_cli", None)
     if ac:
@@ -94,10 +95,10 @@ def _configure_thresholds(args) -> None:
     d = getattr(args, "executor_dir", None)
     if d:
         _EXECUTOR_DIR = str(d)
-    kt = getattr(args, "kiro_timeout", None)
+    kt = getattr(args, "agent_timeout", None)
     if kt is not None:
         try:
-            _KIRO_TIMEOUT = float(kt)
+            _AGENT_TIMEOUT = float(kt)
         except (TypeError, ValueError):
             pass
     ss = getattr(args, "stub_sleep_max", None)
@@ -108,8 +109,8 @@ def _configure_thresholds(args) -> None:
             pass
 
 
-def _kiro_argv_limit() -> int:
-    """kiro-cli へ argv（コマンドライン）で渡すプロンプトの最大バイト数。
+def _agent_argv_limit() -> int:
+    """エージェント CLI へ argv（コマンドライン）で渡すプロンプトの最大バイト数。
     これを超えるプロンプトは一時ファイルへ退避し参照渡しに切り替える。依存タスクの
     成果物が大きいとプロンプトが肥大し、OS の ARG_MAX（コマンドライン長制限）に達して
     プロセス起動自体が失敗するため。設定 argv_limit / CLI --argv-limit で調整（既定 100000）。"""
@@ -196,7 +197,7 @@ def _plugin_agent_cmd(plug: dict, model: "str | None", prompt: str):
     for part in plug["command"]:
         if "{output_file}" in part:
             if out_file is None:
-                fd, out_file = tempfile.mkstemp(prefix=f"kiro-agent-{plug['name']}-", suffix=".txt")
+                fd, out_file = tempfile.mkstemp(prefix=f"agent-flow-agent-{plug['name']}-", suffix=".txt")
                 os.close(fd)
             part = part.replace("{output_file}", out_file)
         if "{model}" in part:
@@ -280,7 +281,7 @@ def _agent_failure(cli: str, rc: int, out: str, err: str) -> str:
     return f"{head}\n{tail[-500:]}" if tail else head
 
 
-def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
+def run_agent(prompt: str, model: str | None, purpose: str = "") -> str:
     """エージェント CLI（設定 agent_cli: kiro/claude/copilot/codex）を 1 回呼び出してテキスト応答を返す。
     このツールの LLM 呼び出しはすべてここを通る（planner / executor / verify / 裁定）。
     purpose（planner / evaluator / ノード kind）を渡すと設定 agents: の役割毎上書きが効く
@@ -313,7 +314,7 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
         if cli == "copilot":
             # GitHub Copilot CLI ヘッドレス。-s で応答本文のみ、--allow-all-tools は
             # 非対話モードの必須フラグ（--allow-all-paths はファイル読み書きの許可）。
-            # プロンプトは -p の引数（argv）なので kiro と同じスピル退避を適用する。
+            # プロンプトは -p の引数（argv）なので argv 渡しと同じスピル退避を適用する。
             cmd = ["copilot", "-s", "--allow-all-tools", "--allow-all-paths", "--no-color"]
         else:
             cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
@@ -321,7 +322,7 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
             cmd += ["--model", model]
         # プロンプトが大きすぎて argv 長制限に達する恐れがあれば、一時ファイルへ退避して
         # 「そのファイルを読んで実行」する短い指示に置き換える（成果物の受け渡しを参照渡しに）。
-        if len(prompt.encode("utf-8")) > _kiro_argv_limit():
+        if len(prompt.encode("utf-8")) > _agent_argv_limit():
             fd, spill = tempfile.mkstemp(prefix="agent-flow-prompt-", suffix=".txt")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(prompt)
@@ -337,7 +338,7 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
                 f"未知の agent_cli です: {cli!r}（組み込みは kiro/claude/copilot/codex。"
                 f"それ以外は agents/{cli}.json 定義が必要です — 契約: schemas/agent-cli.schema.json・"
                 f"探索順: $KIRO_AGENTS_DIR → <cwd>/agents → ~/.agent/agents → ~/.kiro/agents）")
-        if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > _kiro_argv_limit():
+        if plug["prompt_via"] == "argv" and len(prompt.encode("utf-8")) > _agent_argv_limit():
             fd, spill = tempfile.mkstemp(prefix="agent-flow-prompt-", suffix=".txt")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(prompt)
@@ -348,13 +349,13 @@ def run_kiro(prompt: str, model: str | None, purpose: str = "") -> str:
     env = {**os.environ, **((plug or {}).get("env") or {})}
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, input=stdin_text,
-                              timeout=(plug or {}).get("timeout") or _kiro_timeout(), env=env)
+                              timeout=(plug or {}).get("timeout") or _agent_timeout(), env=env)
     except subprocess.TimeoutExpired:
         # 失敗として上位へ。タスクは failed 記録 → 再計画で retry に回り、run は前進する
         if out_file:
             with contextlib.suppress(OSError):
                 os.remove(out_file)
-        raise RuntimeError(f"{cmd[0]} タイムアウト（{_kiro_timeout():.0f}s 超過）")
+        raise RuntimeError(f"{cmd[0]} タイムアウト（{_agent_timeout():.0f}s 超過）")
     finally:
         if spill:
             with contextlib.suppress(OSError):
@@ -470,7 +471,7 @@ def _flow_worker_prompt(payload: dict) -> "str | None":
     flow-planner と同じ作戦: スキル未インストール・生成失敗なら None を返し、
     呼び出し側は組み込みプロンプトへフォールバックする（run を止めない）。
     ビルダーは決定的（LLM 無し）で、LLM 呼び出し・役割別ルーティングは従来どおり
-    run_kiro が担う。payload は stdin JSON 渡し（依存成果が大きくても ARG_MAX に当たらない）。"""
+    run_agent が担う。payload は stdin JSON 渡し（依存成果が大きくても ARG_MAX に当たらない）。"""
     skill = (_WORKER_SKILL or "").strip().lower()
     if not skill or skill in ("none", "builtin", "off"):
         return None
@@ -490,7 +491,7 @@ def _flow_worker_prompt(payload: dict) -> "str | None":
         return None
 
 
-def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
+def execute_agent(kind: str, goal: str, dep_results: dict, model: str | None,
                  art_dir: "str | None" = None, dep_arts: "dict | None" = None,
                  repo_instruction: str = "", workspace: "dict | None" = None,
                  references: "list[dict] | None" = None, request: str = ""):
@@ -543,7 +544,7 @@ def execute_kiro(kind: str, goal: str, dep_results: dict, model: str | None,
                 lines.append(line)
             prompt += "\n依存タスクの成果:\n" + "\n".join(lines) + "\n"
         prompt += "\n成果物を簡潔に直接出力してください。"
-    text = run_kiro(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
+    text = run_agent(prompt, model, purpose=kind)   # agents: の kind 別上書き（無ければ worker）
     # 構造化データを意図する kind のみ JSON を抽出（自由記述の本文から JSON 風断片を
     # data に誤昇格させない）。
     data = None

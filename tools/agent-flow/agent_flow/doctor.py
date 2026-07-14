@@ -176,9 +176,9 @@ def _parse_doctor_findings(text: str) -> "list[dict] | None":
 
 
 def diagnose_with_agent(args, signals: dict, deterministic: "list[dict]",
-                        kiro_run=None) -> "list[dict] | None":
+                        agent_run=None) -> "list[dict] | None":
     """kiro-cli に稼働を診断させ、分類済み finding を得る。kiro-cli 不在・解析不能は None。"""
-    run = kiro_run or run_kiro
+    run = agent_run or run_agent
     try:
         out = run(_doctor_prompt(signals, deterministic), getattr(args, "model", None))
     except Exception:  # noqa: BLE001  kiro-cli 不在・タイムアウト等
@@ -230,9 +230,9 @@ def apply_doctor_fix(args, finding: dict) -> str:
 
 
 def file_issues_via_gitlab_idd(args, program: "list[dict]", skill_dir: str,
-                               kiro_run=None) -> bool:
+                               agent_run=None) -> bool:
     """program カテゴリの不具合を gitlab-idd スキルのリクエスター役で起票させる（kiro-cli 委譲）。"""
-    run = kiro_run or run_kiro
+    run = agent_run or run_agent
     items = "\n".join(
         f"{i}. {f['title']}\n   - 根拠: {f.get('evidence', '')}\n   - 詳細: {f.get('fix', '')}"
         for i, f in enumerate(program, 1))
@@ -249,7 +249,7 @@ def file_issues_via_gitlab_idd(args, program: "list[dict]", skill_dir: str,
         return False
 
 
-def cmd_doctor(args, kiro_run=None, skill_finder=find_skill) -> int:
+def cmd_doctor(args, agent_run=None, skill_finder=find_skill) -> int:
     """稼働を診断し env/config を（--fix で）修正、program は gitlab-idd で起票する。
     終了コード: 0=健康 / 1=未解決の所見あり / 2=未解決の critical あり。"""
     fix = bool(getattr(args, "fix", False))
@@ -258,7 +258,7 @@ def cmd_doctor(args, kiro_run=None, skill_finder=find_skill) -> int:
     for f in deterministic:
         f["source"] = "check"
     signals = collect_doctor_signals(args)
-    agent = diagnose_with_agent(args, signals, deterministic, kiro_run=kiro_run)
+    agent = diagnose_with_agent(args, signals, deterministic, agent_run=agent_run)
     findings = _dedupe_findings(deterministic + (agent or []))
 
     applied: list = []
@@ -281,7 +281,7 @@ def cmd_doctor(args, kiro_run=None, skill_finder=find_skill) -> int:
     filed = False
     if fix and program:
         if skill_dir:
-            filed = file_issues_via_gitlab_idd(args, program, skill_dir, kiro_run=kiro_run)
+            filed = file_issues_via_gitlab_idd(args, program, skill_dir, agent_run=agent_run)
             if filed:
                 for f in program:
                     f["resolved"] = f"gitlab-idd で起票（{os.path.basename(skill_dir)}）"

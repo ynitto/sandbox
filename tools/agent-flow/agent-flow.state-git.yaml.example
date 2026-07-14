@@ -19,7 +19,7 @@
 # 1 本に共有すれば混線が消え、agent-project からの daemon 検知（location=auto/daemon）も効く。
 # daemon をプロジェクトルートで起動するなら既定同士（agent-flow ./bus = agent-project <root>/bus）で
 # 一致するので指定不要。プロジェクト外に共有バスを置くときだけ両側で同じ絶対パスを明示する:
-# bus: /home/me/kiro/proj/bus
+# bus: /home/me/agent/proj/bus
 
 # --- 実行（作業は GitLab イシューで各 PC へ分散。従来どおり）---
 executor: gitlab

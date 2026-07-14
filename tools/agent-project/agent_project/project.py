@@ -9,7 +9,7 @@ def _acceptance_cwd(cfg: "Config", charter: "Charter") -> "tuple[Path, str | Non
         return resolve_verify_cwd(cfg), None
     spec = _charter_single_repo(charter)
     if spec:
-        tmp = tempfile.mkdtemp(prefix="kiro-accept-")
+        tmp = tempfile.mkdtemp(prefix="agent-accept-")
         dest = str(Path(tmp) / "repo")
         branch = spec.get("target") or spec.get("base") or ""
         try:
@@ -67,7 +67,7 @@ def _acceptance_kind(line: str) -> "tuple[str, str]":
 
 
 def resolve_charter_acceptance(cfg: "Config", charter: "Charter", state: "dict | None" = None,
-                               kiro_run=None) -> "tuple[list[str], list[str]]":
+                               agent_run=None) -> "tuple[list[str], list[str]]":
     """charter.acceptance の各行を実行可能なシェルコマンドへ解決し (resolved, unresolved) を返す。
     決定的コマンドはそのまま、自然言語（`accept:` 接頭辞 or 散文）はエージェントが決定的 verify を合成する
     （タスクの synth_verify を流用＝偽 done 防止規則を織込）。合成結果は state['acceptance_synth'] に
@@ -83,7 +83,7 @@ def resolve_charter_acceptance(cfg: "Config", charter: "Charter", state: "dict |
             continue
         cmd = cache.get(text)
         if not cmd:
-            cmd = synth_verify(cfg, charter.name or "project", text, kiro_run)
+            cmd = synth_verify(cfg, charter.name or "project", text, agent_run)
             if cmd:
                 cache[text] = cmd
         if cmd:
@@ -283,10 +283,10 @@ def _project_evaluate(cfg: "Config", charter: "Charter", pid: str, state: dict,
 
 
 def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, heartbeat=None,
-                kiro_run=None, charter_name: "str | None" = None) -> int:
+                agent_run=None, charter_name: "str | None" = None) -> int:
     """charter 駆動の plan→execute→evaluate ループ（1 charter の 1 パス。`run` が charter 検出時に呼ぶ）。
     charter_name（charters/<name>.md）を渡すとその charter だけを回す（複数 charter 運用）。
-    planner/reviewer/runner/kiro_run は テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
+    planner/reviewer/runner/agent_run は テストのため注入可能（既定はエージェント委譲＋正準ループ）。"""
     ensure_dirs(cfg)
     charter = _load_named_charter(cfg, charter_name)
     multi = _is_multi_charter(cfg, charter_name)
@@ -367,7 +367,7 @@ def cmd_project(cfg: "Config", planner=None, reviewer=None, runner=run_loop, hea
         return project_exit_code(REASON_PROJECT_ACCEPTED)
     # acceptance を実行可能なコマンドへ解決（自然言語は決定的 verify へ合成し、結果を state にキャッシュ）。
     # 合成できない自然言語が残れば done 判定不能＝人へ（acceptance を書けないプロジェクトは人へ回す鉄則）。
-    resolved, unresolved = resolve_charter_acceptance(cfg, charter, state, kiro_run)
+    resolved, unresolved = resolve_charter_acceptance(cfg, charter, state, agent_run)
     if unresolved:
         state["status"] = REASON_PROJECT_NO_ACCEPTANCE          # viewer/GC が status を正に読める
         save_charter_state(cfg, state, charter_name if multi else None)   # 合成済みキャッシュも残す

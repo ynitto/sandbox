@@ -121,19 +121,19 @@ class TestPrioritize(unittest.TestCase):
 
     def test_agent_fallback(self):
         ready = [km.Task(id="T0", title="a"), km.Task(id="T1", title="b")]
-        r = km.rank_agent(ready, None, kiro_run=lambda p, m: '["T1","T0"]')
+        r = km.rank_agent(ready, None, agent_run=lambda p, m: '["T1","T0"]')
         self.assertEqual([t.id for t in r], ["T1", "T0"])
         self.assertIsNone(km.rank_agent(
-            ready, None, kiro_run=lambda p, m: (_ for _ in ()).throw(RuntimeError())))
+            ready, None, agent_run=lambda p, m: (_ for _ in ()).throw(RuntimeError())))
 
     def test_rank_agent_skips_llm_for_zero_or_one(self):
         # 0/1 件は並べ替えの余地が無い＝kiro-cli（LLM）を呼ばずに即返す
         def boom(p, m):
             raise AssertionError("LLM は呼ばれないはず")
 
-        self.assertEqual(km.rank_agent([], None, kiro_run=boom), [])
+        self.assertEqual(km.rank_agent([], None, agent_run=boom), [])
         one = [km.Task(id="only", title="x")]
-        self.assertEqual([t.id for t in km.rank_agent(one, None, kiro_run=boom)], ["only"])
+        self.assertEqual([t.id for t in km.rank_agent(one, None, agent_run=boom)], ["only"])
 
     def test_prioritize_skips_llm_for_single_task(self):
         # prioritize（planner=kiro）でも ready が 1 件なら ranker（LLM）を呼ばない。
@@ -957,7 +957,7 @@ class TestDoctor(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = self._cfg(d)
             boom = lambda p, m: (_ for _ in ()).throw(RuntimeError("no kiro-cli"))
-            self.assertIsNone(km.diagnose_with_agent(cfg, {}, [], kiro_run=boom))
+            self.assertIsNone(km.diagnose_with_agent(cfg, {}, [], agent_run=boom))
 
     def test_apply_fix_create_dirs_and_policy_protect(self):
         with tempfile.TemporaryDirectory() as d:
@@ -994,7 +994,7 @@ class TestDoctor(unittest.TestCase):
             with tempfile.TemporaryDirectory() as sk:
                 home = Path(sk)
                 (home / "gitlab-idd").mkdir(parents=True)
-                rc = km.cmd_doctor(cfg, fix=True, as_json=True, kiro_run=agent,
+                rc = km.cmd_doctor(cfg, fix=True, as_json=True, agent_run=agent,
                                    skill_finder=lambda n: km.find_skill(n, home=str(home)))
             self.assertEqual(calls, ["file"])               # gitlab-idd へ委譲した
             self.assertEqual(rc, 1)                          # critical は起票で解消・残りは warn → 1
@@ -1012,7 +1012,7 @@ class TestDoctor(unittest.TestCase):
                 calls.append("file")
                 return "x"
 
-            rc = km.cmd_doctor(cfg, fix=True, kiro_run=agent,
+            rc = km.cmd_doctor(cfg, fix=True, agent_run=agent,
                                skill_finder=lambda _n: None)   # スキル無し
             self.assertEqual(calls, [])                      # 起票は呼ばない（出力のみ）
             self.assertEqual(rc, 2)                          # 未解決の critical program → 2
@@ -1070,7 +1070,7 @@ class TestDoctor(unittest.TestCase):
                 import contextlib as _ctx
                 buf = io.StringIO()
                 with _ctx.redirect_stdout(buf):
-                    rc = km.cmd_doctor(cfg, fix=True, as_json=True, kiro_run=agent,
+                    rc = km.cmd_doctor(cfg, fix=True, as_json=True, agent_run=agent,
                                        skill_finder=lambda n: km.find_skill(n, home=str(home)),
                                        flow_finder=flow_finder)
                 captured = json.loads(buf.getvalue())
@@ -1089,7 +1089,7 @@ class TestDoctor(unittest.TestCase):
             cfg = self._cfg(d, with_flow=False)        # 既定 off（直接 Config 構築）
             km.ensure_dirs(cfg)
             called = []
-            km.cmd_doctor(cfg, fix=False, kiro_run=lambda p, m: "[]",
+            km.cmd_doctor(cfg, fix=False, agent_run=lambda p, m: "[]",
                           flow_finder=lambda c, fix: called.append(1) or [])
             self.assertEqual(called, [])               # with_flow=False なら呼ばれない
 
@@ -2771,22 +2771,22 @@ class TestAgentCliAndGranularity(unittest.TestCase):
             return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
         return calls, fake_run
 
-    def test_run_kiro_cli_default_kiro_argv(self):
+    def test_run_agent_cli_default_agent_argv(self):
         calls, fake = self._capture_run()
         with mock.patch.object(km, "_AGENT_CLI", "kiro"), \
              mock.patch.object(km.subprocess, "run", side_effect=fake):
-            out = km._run_kiro_cli("プロンプト", None)
+            out = km._run_agent_cli("プロンプト", None)
         self.assertEqual(out, "ok")
         self.assertEqual(calls["cmd"][:4],
                          ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"])
         self.assertEqual(calls["cmd"][-1], "プロンプト")   # 従来どおり argv 渡し
         self.assertIsNone(calls["input"])
 
-    def test_run_kiro_cli_claude_uses_stdin(self):
+    def test_run_agent_cli_claude_uses_stdin(self):
         calls, fake = self._capture_run()
         with mock.patch.object(km, "_AGENT_CLI", "claude"), \
              mock.patch.object(km.subprocess, "run", side_effect=fake):
-            out = km._run_kiro_cli("プロンプト", "claude-sonnet")
+            out = km._run_agent_cli("プロンプト", "claude-sonnet")
         self.assertEqual(out, "ok")
         self.assertEqual(calls["cmd"][0], "claude")
         self.assertIn("-p", calls["cmd"])
@@ -2794,11 +2794,11 @@ class TestAgentCliAndGranularity(unittest.TestCase):
         self.assertEqual(calls["input"], "プロンプト")     # stdin 渡し
         self.assertNotIn("プロンプト", calls["cmd"])       # argv には載せない
 
-    def test_run_kiro_cli_copilot_uses_prompt_flag(self):
+    def test_run_agent_cli_copilot_uses_prompt_flag(self):
         calls, fake = self._capture_run()
         with mock.patch.object(km, "_AGENT_CLI", "copilot"), \
              mock.patch.object(km.subprocess, "run", side_effect=fake):
-            out = km._run_kiro_cli("プロンプト", "gpt-5")
+            out = km._run_agent_cli("プロンプト", "gpt-5")
         self.assertEqual(out, "ok")
         self.assertEqual(calls["cmd"][0], "copilot")
         self.assertIn("-s", calls["cmd"])                  # 応答本文のみ
@@ -2808,7 +2808,7 @@ class TestAgentCliAndGranularity(unittest.TestCase):
         self.assertIn("--model", calls["cmd"])
         self.assertIsNone(calls["input"])
 
-    def test_run_kiro_cli_codex_uses_exec_and_last_message_file(self):
+    def test_run_agent_cli_codex_uses_exec_and_last_message_file(self):
         calls = {}
         def fake_run(cmd, **kw):
             calls["cmd"] = list(cmd)
@@ -2820,7 +2820,7 @@ class TestAgentCliAndGranularity(unittest.TestCase):
             return types.SimpleNamespace(returncode=0, stdout="イベントログ...", stderr="")
         with mock.patch.object(km, "_AGENT_CLI", "codex"), \
              mock.patch.object(km.subprocess, "run", side_effect=fake_run):
-            out = km._run_kiro_cli("プロンプト", "gpt-5-codex")
+            out = km._run_agent_cli("プロンプト", "gpt-5-codex")
         self.assertEqual(out, "最終応答")                  # stdout のログではなくファイルの中身
         self.assertEqual(calls["cmd"][:2], ["codex", "exec"])
         self.assertIn("--skip-git-repo-check", calls["cmd"])
@@ -2831,11 +2831,11 @@ class TestAgentCliAndGranularity(unittest.TestCase):
         i = calls["cmd"].index("--output-last-message")
         self.assertFalse(os.path.exists(calls["cmd"][i + 1]))  # 一時ファイルは掃除される
 
-    def test_run_kiro_cli_codex_falls_back_to_stdout(self):
+    def test_run_agent_cli_codex_falls_back_to_stdout(self):
         calls, fake = self._capture_run()                  # ファイルへ何も書かない
         with mock.patch.object(km, "_AGENT_CLI", "codex"), \
              mock.patch.object(km.subprocess, "run", side_effect=fake):
-            out = km._run_kiro_cli("プロンプト", None)
+            out = km._run_agent_cli("プロンプト", None)
         self.assertEqual(out, "ok")                        # stdout へフォールバック
 
     def test_build_config_sets_agent_globals_and_fields(self):
@@ -3652,17 +3652,17 @@ class TestAutoAdjudicate(unittest.TestCase):
     """needs に落とす前の kiro-cli 自律裁定ゲート（既定 off・有限回・人 policy 不介入）。"""
 
     def setUp(self):
-        self._orig = km._run_kiro_cli
+        self._orig = km._run_agent_cli
         self.calls = []
 
     def tearDown(self):
-        km._run_kiro_cli = self._orig
+        km._run_agent_cli = self._orig
 
     def _stub(self, payload):
         def run(prompt, model, purpose=""):
             self.calls.append(prompt)
             return payload
-        km._run_kiro_cli = run
+        km._run_agent_cli = run
 
     def _cfg(self, d, **kw):
         base = dict(dry_run=False, learn=False, max_retries=0, max_cycles=5)
@@ -3677,19 +3677,19 @@ class TestAutoAdjudicate(unittest.TestCase):
             cfg = cfg_for(d)
             self.assertEqual(
                 km.adjudicate_escalation(cfg, task, "ng",
-                                         kiro_run=lambda p, m: '{"decision":"requeue","guidance":"G"}'),
+                                         agent_run=lambda p, m: '{"decision":"requeue","guidance":"G"}'),
                 ("requeue", "G"))
             self.assertEqual(
                 km.adjudicate_escalation(cfg, task, "ng",
-                                         kiro_run=lambda p, m: '{"decision":"escalate"}')[0],
+                                         agent_run=lambda p, m: '{"decision":"escalate"}')[0],
                 "escalate")
             # 不正 JSON・例外は安全側（人へ）にフォールバック
-            self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", kiro_run=lambda p, m: "??")[0],
+            self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", agent_run=lambda p, m: "??")[0],
                              "escalate")
 
             def boom(p, m):
                 raise RuntimeError("kiro 不在")
-            self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", kiro_run=boom)[0], "escalate")
+            self.assertEqual(km.adjudicate_escalation(cfg, task, "ng", agent_run=boom)[0], "escalate")
 
     def test_context_gathers_journal_decisions_feedback(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3722,7 +3722,7 @@ class TestAutoAdjudicate(unittest.TestCase):
                 seen["p"] = prompt
                 return '{"decision":"escalate"}'
 
-            km.adjudicate_escalation(cfg, task, "ng", kiro_run=run)
+            km.adjudicate_escalation(cfg, task, "ng", agent_run=run)
             self.assertIn("参考文脈", seen["p"])
             self.assertIn("過去の試行ログ", seen["p"])
 
@@ -4335,17 +4335,17 @@ class TestProjectLayer(unittest.TestCase):
                           "- lib = https://git/lib.git\n  - owns: packages/**\n  - base: main\n")
             cfg = cfg_for(d)
             ch = km.load_charter(cfg)
-            orig = km._run_kiro_cli
-            km._run_kiro_cli = lambda prompt, model, purpose="": (
+            orig = km._run_agent_cli
+            km._run_agent_cli = lambda prompt, model, purpose="": (
                 '[{"title":"lib に型追加","verify":"test -f packages/t.ts"}]')
             try:
                 specs = km.plan_via_agent(cfg, ch)
             finally:
-                km._run_kiro_cli = orig
+                km._run_agent_cli = orig
             self.assertEqual(specs[0]["workspace"], "lib")  # verify=packages/** → lib（必ず明示される）
 
     def test_plan_via_stub_enqueues_charter_acceptance(self):
-        # executor: stub の既定 planner（plan_via_stub）は _run_kiro_cli を一切呼ばず、charter の
+        # executor: stub の既定 planner（plan_via_stub）は _run_agent_cli を一切呼ばず、charter の
         # acceptance をそのまま初期タスクにする。verify は人が書いた受入条件そのもの。
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -4394,16 +4394,16 @@ class TestProjectLayer(unittest.TestCase):
             flag = d / "flag"                      # 存在しない → acceptance 未達のまま
             write_charter(d, CHARTER.replace("{flag}", str(flag)))
             cfg = cfg_for(d, max_project_cycles=1)  # executor="stub"（既定）。planner は注入しない
-            orig = km._run_kiro_cli
+            orig = km._run_agent_cli
 
             def _boom(prompt, model):
-                raise AssertionError("stub モードなのにエージェント（_run_kiro_cli）が呼ばれた")
+                raise AssertionError("stub モードなのにエージェント（_run_agent_cli）が呼ばれた")
 
-            km._run_kiro_cli = _boom
+            km._run_agent_cli = _boom
             try:
                 km.cmd_project(cfg, runner=lambda c: _drained())
             finally:
-                km._run_kiro_cli = orig
+                km._run_agent_cli = orig
             titles = [t.title for t in km.load_tasks(cfg.backlog)]
             self.assertTrue(any("受入条件を満たす" in t for t in titles))  # 決定的 stub planner の出力
 
@@ -4415,17 +4415,17 @@ class TestProjectLayer(unittest.TestCase):
             write_charter(d, CHARTER.replace("{flag}", str(flag)))
             cfg = cfg_for(d, executor="agent", max_project_cycles=1)
             calls = {"n": 0}
-            orig = km._run_kiro_cli
+            orig = km._run_agent_cli
 
             def fake(prompt, model, purpose=""):
                 calls["n"] += 1
                 return '[{"title":"エージェント生成タスク","verify":"true"}]'
 
-            km._run_kiro_cli = fake
+            km._run_agent_cli = fake
             try:
                 km.cmd_project(cfg, runner=lambda c: _drained())
             finally:
-                km._run_kiro_cli = orig
+                km._run_agent_cli = orig
             self.assertGreaterEqual(calls["n"], 1)
             titles = [t.title for t in km.load_tasks(cfg.backlog)]
             self.assertIn("エージェント生成タスク", titles)
@@ -4438,16 +4438,16 @@ class TestProjectLayer(unittest.TestCase):
             flag = d / "flag"; flag.write_text("x")   # acceptance 全 PASS（敵対的レビューの発火条件）
             write_charter(d, CHARTER.replace("{flag}", str(flag)))
             cfg = cfg_for(d, review_project=True, max_project_cycles=1)  # executor="stub"（既定）
-            orig = km._run_kiro_cli
+            orig = km._run_agent_cli
 
             def _boom(prompt, model):
-                raise AssertionError("stub モードなのにエージェント（_run_kiro_cli）が呼ばれた")
+                raise AssertionError("stub モードなのにエージェント（_run_agent_cli）が呼ばれた")
 
-            km._run_kiro_cli = _boom
+            km._run_agent_cli = _boom
             try:
                 km.cmd_project(cfg, planner=lambda ch: [], runner=lambda c: _drained())
             finally:
-                km._run_kiro_cli = orig
+                km._run_agent_cli = orig
             self.assertEqual(km.load_project_state(cfg)["status"], km.REASON_PROJECT_CONVERGED)
             self.assertEqual(km.load_tasks(cfg.backlog), [])
 
@@ -4545,14 +4545,14 @@ class TestProjectLayer(unittest.TestCase):
                                   "- `test -f keep`\n- accept: README に概要がある\n")
             state = {}
             resolved, unresolved = km.resolve_charter_acceptance(
-                cfg, ch, state, kiro_run=lambda p, m: "grep -q 概要 README.md")
+                cfg, ch, state, agent_run=lambda p, m: "grep -q 概要 README.md")
             self.assertEqual(resolved, ["test -f keep", "grep -q 概要 README.md"])
             self.assertEqual(unresolved, [])
             # 合成結果は原文キーでキャッシュされ、再実行で安定する（再合成不要）
             self.assertEqual(state["acceptance_synth"]["README に概要がある"],
                              "grep -q 概要 README.md")
             again, _ = km.resolve_charter_acceptance(
-                cfg, ch, state, kiro_run=lambda p, m: self.fail("再合成された"))
+                cfg, ch, state, agent_run=lambda p, m: self.fail("再合成された"))
             self.assertEqual(again, ["test -f keep", "grep -q 概要 README.md"])
 
     def test_resolve_acceptance_unresolved_when_synth_fails(self):
@@ -4562,7 +4562,7 @@ class TestProjectLayer(unittest.TestCase):
             ch = km.parse_charter("# Charter: x\n## goal\nやる\n## acceptance\n"
                                   "- accept: 曖昧で検証できない\n")
             resolved, unresolved = km.resolve_charter_acceptance(
-                cfg, ch, {}, kiro_run=lambda p, m: "やはり検証できません。")  # 散文 → 合成失敗
+                cfg, ch, {}, agent_run=lambda p, m: "やはり検証できません。")  # 散文 → 合成失敗
             self.assertEqual(resolved, [])
             self.assertEqual(unresolved, ["曖昧で検証できない"])
 
@@ -4574,7 +4574,7 @@ class TestProjectLayer(unittest.TestCase):
                              f"- accept: flag ファイルが存在する\n")
             code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
                                   runner=lambda c: (flag.write_text("x"), _drained())[1],
-                                  kiro_run=lambda p, m: f"test -f {flag}")
+                                  agent_run=lambda p, m: f"test -f {flag}")
             self.assertEqual(code, 1)            # converged → 人の承認待ち
             self.assertEqual(km.load_project_state(cfg_for(d))["status"],
                              km.REASON_PROJECT_CONVERGED)
@@ -4586,7 +4586,7 @@ class TestProjectLayer(unittest.TestCase):
                              "- accept: 曖昧な完了条件\n")
             code = km.cmd_project(cfg_for(d), planner=lambda ch: [],
                                   runner=lambda c: _drained(),
-                                  kiro_run=lambda p, m: "")   # 合成不能
+                                  agent_run=lambda p, m: "")   # 合成不能
             self.assertEqual(code, 1)            # done 判定不能 → 人へ
             self.assertTrue((d / "needs" / "nl.md").exists())
 
@@ -5543,13 +5543,13 @@ class TestVerifyAssist(unittest.TestCase):
             t = km.enqueue_task(cfg, {"title": "概要を書く", "accept": "README に ## 概要 がある"})
             self.assertEqual(t.norm_status(), "ready")
             self.assertEqual(t.verify, "")
-            # run_loop の S0 で synth_verify（kiro_run を差し替え）により verify が用意される
-            orig = km._run_kiro_cli
-            km._run_kiro_cli = lambda prompt, model, purpose="": "grep -q '## 概要' README.md"
+            # run_loop の S0 で synth_verify（agent_run を差し替え）により verify が用意される
+            orig = km._run_agent_cli
+            km._run_agent_cli = lambda prompt, model, purpose="": "grep -q '## 概要' README.md"
             try:
                 km.run_loop(cfg_for(d, dry_run=True, max_cycles=1))
             finally:
-                km._run_kiro_cli = orig
+                km._run_agent_cli = orig
             reloaded = km.parse_task((cfg.backlog / f"{t.id}.md").read_text(), t.id)
             self.assertEqual(reloaded.verify, "grep -q '## 概要' README.md")
             self.assertEqual(dict(reloaded.extra).get("verify_source"), "synth")
@@ -5561,7 +5561,7 @@ class TestVerifyAssist(unittest.TestCase):
             t = km.Task(id="T1", title="x", verify="", extra=[("accept", "曖昧な条件")])
             def boom(prompt, model):
                 raise RuntimeError("no kiro-cli")
-            self.assertFalse(km.ensure_verify(cfg, t, kiro_run=boom))   # 合成不能→verify 空のまま
+            self.assertFalse(km.ensure_verify(cfg, t, agent_run=boom))   # 合成不能→verify 空のまま
             self.assertEqual(t.verify, "")
 
     def test_strip_ansi_removes_escapes(self):
@@ -5573,7 +5573,7 @@ class TestVerifyAssist(unittest.TestCase):
         # kiro-cli の色付き出力に ANSI が混ざっても、合成した verify は素のコマンドになる
         cfg = cfg_for(Path("."))
         ansi_out = "\x1b[2K\x1b[36mgrep -q '## 概要' README.md\x1b[0m"
-        cmd = km.synth_verify(cfg, "概要を書く", "README に概要", kiro_run=lambda p, m: ansi_out)
+        cmd = km.synth_verify(cfg, "概要を書く", "README に概要", agent_run=lambda p, m: ansi_out)
         self.assertEqual(cmd, "grep -q '## 概要' README.md")
         self.assertNotIn("\x1b", cmd)
 
@@ -5731,7 +5731,7 @@ echo this-later-command-must-not-be-selected
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             self.assertEqual(
-                km.synth_verify(cfg, "x", "曖昧", kiro_run=prose_only, attempts=2),
+                km.synth_verify(cfg, "x", "曖昧", agent_run=prose_only, attempts=2),
                 "",
             )
         self.assertEqual(len(calls), 2)
@@ -5743,13 +5743,13 @@ echo this-later-command-must-not-be-selected
         # バグ修正: エージェントが自然言語（説明/拒否文）を返しても shell へ流さない
         cfg = cfg_for(Path("."))
         prose = "この完了条件は曖昧なため、決定的な検証コマンドに変換できません。"
-        self.assertEqual(km.synth_verify(cfg, "x", "曖昧", kiro_run=lambda p, m: prose), "")
+        self.assertEqual(km.synth_verify(cfg, "x", "曖昧", agent_run=lambda p, m: prose), "")
 
     def test_synth_verify_rejects_malformed_shell_prose(self):
         # 不完全なシェル構文（散文）も弾く（sh -n が syntax error にする）
         cfg = cfg_for(Path("."))
         prose = "Run the tests; if they pass, you are done"
-        self.assertEqual(km.synth_verify(cfg, "x", "tests", kiro_run=lambda p, m: prose), "")
+        self.assertEqual(km.synth_verify(cfg, "x", "tests", agent_run=lambda p, m: prose), "")
 
     def test_looks_like_shell_command(self):
         self.assertTrue(km._looks_like_shell_command("grep -q foo bar.txt"))
@@ -7581,14 +7581,14 @@ class FeedbackReductionTests(unittest.TestCase):
             cfg = cfg_for(Path(d))
             got = km.distill_learn(cfg, "ログイン画面の e2e",
                                    "実サーバでなく localhost で検証していてダメ",
-                                   kiro_run=lambda p, m: "e2e/統合テスト系 :: 実サーバ配備で実施すること")
+                                   agent_run=lambda p, m: "e2e/統合テスト系 :: 実サーバ配備で実施すること")
             self.assertEqual(got, ("e2e/統合テスト系", "実サーバ配備で実施すること"))
 
     def test_distill_learn_verbatim_fallback_on_error(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d))
             def boom(p, m): raise RuntimeError("no kiro-cli")
-            title, guide = km.distill_learn(cfg, "T", "実サーバで検証", kiro_run=boom)
+            title, guide = km.distill_learn(cfg, "T", "実サーバで検証", agent_run=boom)
             self.assertEqual(title, "T")
             self.assertIn("実サーバで検証", guide)
 
@@ -7596,7 +7596,7 @@ class FeedbackReductionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), distill_learn=False)
             got = km.distill_learn(cfg, "T", "生の指摘",
-                                   kiro_run=lambda p, m: self.fail("蒸留された"))
+                                   agent_run=lambda p, m: self.fail("蒸留された"))
             self.assertEqual(got, ("T", "生の指摘"))
 
     def test_verify_degenerate_screen(self):
@@ -7609,9 +7609,9 @@ class FeedbackReductionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d))
             self.assertEqual(km.synth_verify(cfg, "T", "何かする",
-                                             kiro_run=lambda p, m: "true"), "")
+                                             agent_run=lambda p, m: "true"), "")
             self.assertEqual(km.synth_verify(cfg, "T", "概要見出し",
-                             kiro_run=lambda p, m: "grep -q 概要 README.md"),
+                             agent_run=lambda p, m: "grep -q 概要 README.md"),
                              "grep -q 概要 README.md")
 
     def test_synth_self_repair_retries_on_degenerate(self):
@@ -7622,7 +7622,7 @@ class FeedbackReductionTests(unittest.TestCase):
                 calls["n"] += 1
                 calls["prompts"].append(prompt)
                 return "true" if calls["n"] == 1 else "pytest -q tests/login"
-            got = km.synth_verify(cfg, "T", "ログインが通る", kiro_run=flaky)
+            got = km.synth_verify(cfg, "T", "ログインが通る", agent_run=flaky)
             self.assertEqual(got, "pytest -q tests/login")   # 1回目の恒真式を捨て 2回目を採用
             self.assertEqual(calls["n"], 2)
             self.assertIn("恒真式", calls["prompts"][1])       # 再合成プロンプトに不採用理由
@@ -7630,7 +7630,7 @@ class FeedbackReductionTests(unittest.TestCase):
     def test_synth_self_repair_gives_up_after_attempts(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d))
-            got = km.synth_verify(cfg, "T", "x", kiro_run=lambda p, m: "true", attempts=3)
+            got = km.synth_verify(cfg, "T", "x", agent_run=lambda p, m: "true", attempts=3)
             self.assertEqual(got, "")                         # 全て恒真式 → 合成失敗（人へ）
 
     def test_expand_verify_template_additions(self):
@@ -7719,7 +7719,7 @@ class FeedbackReductionTests(unittest.TestCase):
             def fake_kiro(prompt, model):
                 seen["prompt"] = prompt
                 return "npx playwright test"
-            km.ensure_verify(cfg, task, kiro_run=fake_kiro)
+            km.ensure_verify(cfg, task, agent_run=fake_kiro)
             self.assertIn("実サーバ配備で検証すること", seen["prompt"])   # learn ヒント注入
             self.assertIn("package.json", seen["prompt"])                # リポジトリ文脈注入
             self.assertEqual(task.verify, "npx playwright test")
@@ -7734,7 +7734,7 @@ class FeedbackReductionTests(unittest.TestCase):
             # 類似タイトルの新タスクは合成前に検証済み verify を再利用する
             new = km.Task(id="B", title="ログイン e2e B")
             new.extra.append(("accept", "e2e が通る"))
-            km.ensure_verify(cfg, new, kiro_run=lambda p, m: self.fail("再合成された"))
+            km.ensure_verify(cfg, new, agent_run=lambda p, m: self.fail("再合成された"))
             self.assertEqual(new.verify, "npx playwright test")
             self.assertEqual(dict(new.extra).get("verify_source"), "reused")
 
@@ -8733,7 +8733,7 @@ class TestPlanReview(unittest.TestCase):
             body = body.replace(km.DECISION_MARKER, km.DECISION_MARKER + "\n\n実サーバ基準の verify にして\n")
             nf.write_text(body, encoding="utf-8")
             fake = '{"title": "新タイトル", "verify": "curl -fsS https://x/health", "after": "", "note": ""}'
-            with mock.patch.object(km, "_run_kiro_cli", return_value=fake):
+            with mock.patch.object(km, "_run_agent_cli", return_value=fake):
                 tasks = km.load_tasks(cfg.backlog)
                 km.ingest_feedback(cfg, tasks)
             got = km.load_tasks(cfg.backlog)[0]
@@ -8755,7 +8755,7 @@ class TestPlanReview(unittest.TestCase):
             body = nf.read_text(encoding="utf-8").replace("- [ ]", "- [x]")
             body = body.replace(km.DECISION_MARKER, km.DECISION_MARKER + "\n\nもっと細かく分けて\n")
             nf.write_text(body, encoding="utf-8")
-            with mock.patch.object(km, "_run_kiro_cli", side_effect=RuntimeError("kiro-cli 不在")):
+            with mock.patch.object(km, "_run_agent_cli", side_effect=RuntimeError("kiro-cli 不在")):
                 tasks = km.load_tasks(cfg.backlog)
                 km.ingest_feedback(cfg, tasks)
             got = km.load_tasks(cfg.backlog)[0]
@@ -9531,15 +9531,15 @@ class AssessTests(unittest.TestCase):
             d = Path(d)
             cfg = cfg_for(d, executor="kiro")           # 非 stub → エージェント採点
             t = km.Task(id="T1", title="x", verify="true")
-            val = km.assess_task(cfg, t, kiro_run=lambda p, m: '{"c": 9, "r": 0, "a": 2}')
+            val = km.assess_task(cfg, t, agent_run=lambda p, m: '{"c": 9, "r": 0, "a": 2}')
             self.assertEqual(val, "c=3 r=1 a=2")        # 1-3 にクランプ
             # 非 JSON・例外はヒューリスティックへフォールバック
             t2 = km.Task(id="T2", title="y", verify="true")
-            val = km.assess_task(cfg, t2, kiro_run=lambda p, m: "説明文だけ")
+            val = km.assess_task(cfg, t2, agent_run=lambda p, m: "説明文だけ")
             self.assertEqual(val, "c=1 r=1 a=1")
             t3 = km.Task(id="T3", title="z", verify="true")
             val = km.assess_task(cfg, t3,
-                                 kiro_run=lambda p, m: (_ for _ in ()).throw(RuntimeError()))
+                                 agent_run=lambda p, m: (_ for _ in ()).throw(RuntimeError()))
             self.assertEqual(val, "c=1 r=1 a=1")
 
     def test_assess_is_idempotent(self):
@@ -9771,7 +9771,7 @@ class PlanAfterTests(unittest.TestCase):
             out = ('[{"title": "モデルを作る", "verify": "test -f m.py"},'
                    ' {"title": "API を作る", "verify": "test -f api.py",'
                    '  "after": ["モデルを作る"]}]')
-            with mock.patch.object(km, "_run_kiro_cli", return_value=out):
+            with mock.patch.object(km, "_run_agent_cli", return_value=out):
                 specs = km.plan_via_agent(cfg, charter)
             self.assertEqual(specs[1]["after_titles"], ["モデルを作る"])
             self.assertNotIn("after_titles", specs[0].get("after_titles") or [])
@@ -10051,7 +10051,7 @@ class AgentOverrideTests(unittest.TestCase):
             if out_file:
                 os.remove(out_file)
 
-    def test_run_kiro_cli_uses_purpose_override(self):
+    def test_run_agent_cli_uses_purpose_override(self):
         km._AGENT_CLI = "kiro"
         km._AGENT_OVERRIDES = {"plan": {"agent_cli": "claude", "model": "opus"}}
         calls = []
@@ -10061,8 +10061,8 @@ class AgentOverrideTests(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="ok", stderr="")
 
         with mock.patch.object(km.subprocess, "run", side_effect=fake_run):
-            km._run_kiro_cli("x", "global-model", purpose="plan")
-            km._run_kiro_cli("x", "global-model", purpose="assess")
+            km._run_agent_cli("x", "global-model", purpose="plan")
+            km._run_agent_cli("x", "global-model", purpose="assess")
         self.assertEqual(calls[0][0], "claude")
         self.assertIn("opus", calls[0])                           # 上書き model が勝つ
         self.assertEqual(calls[1][0], "kiro-cli")

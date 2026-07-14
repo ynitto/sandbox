@@ -7,8 +7,8 @@
 #
 # ── 推奨レイアウト（direct モード・state_git 設定不要）──
 #   プロジェクトルート自体を GitLab の「状態リポジトリ」の clone にする:
-#     git clone git@gitlab.example.com:team/proj-state.git ~/kiro/proj
-#     cd ~/kiro/proj && vi charter.md          # 入力（charter / repos.json / policy.md）を書く
+#     git clone git@gitlab.example.com:team/proj-state.git ~/projects/proj
+#     cd ~/projects/proj && vi charter.md          # 入力（charter / repos.json / policy.md）を書く
 #     agent-project start                       # このディレクトリを常駐監視（run --watch を detached）
 #   agent-project はルートの変更（backlog/needs/decisions/journal/…）をそのままコミットして
 #   origin へ push し、viewer 側の commit（指示・検収）を pull で取り込む。

@@ -84,7 +84,7 @@ def main(argv=None) -> int:
     _add_common(rl); rl.add_argument("--json", action="store_true", help="JSON で出力")
     rl.add_argument("--tail", type=int, default=10, help="表示する直近の件数（既定 10・0 で全件）")
 
-    dr = sub.add_parser("doctor", help="ログ/状態/環境から稼働を診断（kiro-cli）。env/config は "
+    dr = sub.add_parser("doctor", help="ログ/状態/環境から稼働を診断（エージェント CLI）。env/config は "
                                        "--fix で修正・program は gitlab-idd でイシュー起票")
     _add_common(dr); dr.add_argument("--json", action="store_true", help="JSON で出力")
     dr.add_argument("--fix", action="store_true",

@@ -93,7 +93,7 @@ def cmd_work(args) -> int:
         # throttle（バックプレッシャ）: 同時未決着イシューが上限に達していたら、起票せず
         # throttled park して claim を解放する。エラーにはしない＝人のレビュー速度に発行を
         # ペーシングするだけ（枠が空けば service_waits が解除 → 通常起票）。deferring executor
-        # かつ max_open_issues>0 のときだけ働く（kiro/stub 等は waits が空なので発火しない）。
+        # かつ max_open_issues>0 のときだけ働く（agent/stub 等は waits が空なので発火しない）。
         if defer_enabled and issue_cap > 0 and bus.open_wait_count() >= issue_cap:
             rec = build_wait_record(nid, who, kind,
                                     {"executor": args.executor, "issue": None,

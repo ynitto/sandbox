@@ -237,7 +237,7 @@ def changed_paths_since(workdir: "Path", baseline: "tuple[str, frozenset] | None
     return changed
 
 
-def _kiro_managed_rels(cfg: "Config") -> "set[str]":
+def _agent_managed_rels(cfg: "Config") -> "set[str]":
     """agent-project 自身の状態ファイル/ディレクトリの、workdir からの相対パス集合。
     backlog/needs/decisions/archive/claims/inbox/bus・journal/DELIVERY/run-log/policy は
     『成果物』ではなく運用状態なので、進捗判定（no-progress）や成果参照から除外する。"""
@@ -259,7 +259,7 @@ def _kiro_managed_rels(cfg: "Config") -> "set[str]":
 def meaningful_changes(cfg: "Config", baseline: "tuple[str, frozenset] | None") -> "set[str]":
     """act が生んだ『成果物としての』変更（agent-project 自身の状態ファイルを除いた差分）。"""
     changed = changed_paths_since(cfg.workdir, baseline)
-    managed = _kiro_managed_rels(cfg)
+    managed = _agent_managed_rels(cfg)
     return {c for c in changed
             if not any(c == r or c.startswith(r + "/") for r in managed)}
 

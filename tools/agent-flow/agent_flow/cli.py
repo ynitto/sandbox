@@ -224,7 +224,7 @@ def main() -> int:
     args = p.parse_args()
     # CLI 未指定の設定値を設定ファイル→組み込み既定で確定（CLI > config > 既定）
     resolve_config(args)
-    # args を持たない free 関数（run_kiro 等）が読む閾値をモジュール変数へ確定させる
+    # args を持たない free 関数（run_agent 等）が読む閾値をモジュール変数へ確定させる
     _configure_thresholds(args)
     # ワークスペース clone の削除を二重化（main の finally に加え、想定外の早期 exit でも回収）
     atexit.register(cleanup_workspace)
@@ -236,7 +236,7 @@ def main() -> int:
     spec = getattr(args, "executor", None)
     if spec and spec not in BUILTIN_EXECUTORS and _resolve_executor_plugin(spec) is None:
         dirs = "、".join(_executor_search_dirs())
-        print(f"[agent-flow] executor '{spec}' を解決できません。組み込み（kiro/stub）か、"
+        print(f"[agent-flow] executor '{spec}' を解決できません。組み込み（agent/stub）か、"
               f"プラグイン .py（検索: {dirs}）か、明示パスを指定してください。", file=sys.stderr)
         return 2
     # 起動初回にバスフォルダが無ければ作成する（git バスでは .gitkeep も置く）。

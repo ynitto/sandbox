@@ -89,12 +89,13 @@ CONFIG_DEFAULTS = {
     # 数え直すため、毎日シャットダウンされる PC 上の長期 run は何日でも再開を継続できる。
     # 0 以下で自動再開を無効化（従来どおり孤児は即 failed）。
     "max_resumes": 3,
-    # kiro-cli へ argv で渡すプロンプトの最大バイト数。超過分は一時ファイルへ退避し参照渡しに
+    # エージェント CLI へ argv で渡すプロンプトの最大バイト数。超過分は一時ファイルへ退避し参照渡しに
     # 切り替える（依存成果物が大きいときに OS の ARG_MAX に達して起動失敗するのを防ぐ）。
     "argv_limit": 100000,
-    # kiro-cli 1 呼び出しのタイムアウト秒（既定 600、0/負で無効化）。None なら環境変数
-    # AGENT_FLOW_KIRO_TIMEOUT → 600 にフォールバック。ハングした kiro-cli を止める唯一の手段。
-    "kiro_timeout": None,
+    # エージェント CLI 1 呼び出しのタイムアウト秒（既定 600、0/負で無効化）。None なら環境変数
+    # AGENT_FLOW_TIMEOUT（旧名 AGENT_FLOW_KIRO_TIMEOUT も後方互換で受理）→ 600 にフォールバック。
+    # ハングしたエージェント CLI を止める唯一の手段。
+    "agent_timeout": None,
     # stub executor の擬似実行スリープ上限秒（既定 1〜5 秒）。None なら環境変数
     # AGENT_FLOW_STUB_SLEEP_MAX → 5 にフォールバック。テスト/動作確認では 0 で高速化できる。
     "stub_sleep_max": None,
@@ -216,6 +217,9 @@ def resolve_config(args):
     path = _find_config(getattr(args, "config", None))
     cfg = _load_config_file(path) if path else {}
     args._config_path = path
+    # 後方互換: 旧キー kiro_timeout は agent_timeout の別名として受理する（新キー未指定時のみ）。
+    if "agent_timeout" not in cfg and "kiro_timeout" in cfg:
+        cfg["agent_timeout"] = cfg["kiro_timeout"]
     for key, dflt in CONFIG_DEFAULTS.items():
         if getattr(args, key, None) is None:
             setattr(args, key, cfg.get(key, dflt))
