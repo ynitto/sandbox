@@ -22,6 +22,7 @@ import unittest
 from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
+# 黒箱 CLI e2e が実プロセス起動する薄いエントリポイント（kiro_flow/ を起動する shim）。
 SCRIPT = HERE.parent / "kiro-flow.py"
 
 # stub の擬似実行スリープを無効化してテストを高速化（子プロセスにも継承される）
@@ -45,15 +46,14 @@ os.environ["KIRO_SKILL_REGISTRY"] = os.path.join(
 # テストと同じ護り。テストは絶対パスだけを使うので cwd に依存しない）。
 os.chdir(tempfile.mkdtemp(prefix="kf-tests-cwd-"))
 
-
-def _load_module():
-    spec = importlib.util.spec_from_file_location("kiroflow", SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-kf = _load_module()
+# 実体は kiro_flow/ パッケージ（断片の共有名前空間合成）。単一ファイル時代と同じく
+# kf.<name> へのモンキーパッチがそのまま効く。
+_PKG = HERE.parent / "kiro_flow"
+_spec = importlib.util.spec_from_file_location(
+    "kiro_flow", _PKG / "__init__.py", submodule_search_locations=[str(_PKG)])
+kf = importlib.util.module_from_spec(_spec)
+sys.modules["kiro_flow"] = kf
+_spec.loader.exec_module(kf)
 
 
 def _zero_loose_objects(clone) -> int:

@@ -403,8 +403,29 @@ bash tools/kiro-flow/install.sh --prefix /usr/local/bin   # 任意の場所へ
 ```
 
 標準ライブラリのみで動作（pip 依存なし）。git は分散モードで必要、kiro-cli は実運用で必要
-（無くても `--planner stub --executor stub` で動作確認できる）。以降の例は `kiro-flow`
-コマンド前提（未インストールなら `python3 tools/kiro-flow/kiro-flow.py` で代用可）。
+（無くても `--planner stub --executor stub` で動作確認できる）。
+
+本体の実体は `kiro_flow/` パッケージ（kiro-project と同じ「断片の共有名前空間合成」）。
+`install.sh` はこれを **zipapp 単一ファイル**にまとめて `~/.local/bin/kiro-flow` へ置く
+（CLI 呼び出し可能・配布は1ファイルのまま）。開発・テストはリポジトリ内の薄い shim:
+
+```bash
+python3 tools/kiro-flow/kiro-flow.py …   # → kiro_flow パッケージを起動
+```
+
+以降の例は `kiro-flow` コマンド前提（未インストールなら上記 shim で代用可）。
+
+### 開発時の構成
+
+```
+tools/kiro-flow/
+  kiro-flow.py          # 薄いエントリ（後方互換・テスト e2e）
+  kiro_flow/            # 実体（断片 *.py。__init__.py が共有名前空間へ exec）
+  executors/            # executor プラグイン（install 時に prefix 隣へ）
+  install.sh            # zipapp 化して ~/.local/bin/kiro-flow へ
+```
+
+編集は `kiro_flow/<断片>.py` を触る。配布後も `--help` / `run` / `daemon` は従来どおり。
 
 ## 設定ファイル
 

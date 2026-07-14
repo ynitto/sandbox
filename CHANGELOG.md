@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: モジュール分割（kiro-project と同じ断片合成）＋ zipapp 単一 CLI 配布
+
+- **背景**: 単一 `kiro-flow.py`（約 6,800 行）は LLM ワーカーが丸ごと読むと context を圧迫する。
+  kiro-project は既に「編集用の断片パッケージ + install 時 zipapp」へ移行済み。
+- **構成**: `tools/kiro-flow/kiro_flow/` に 23 断片（`_head` … `cli`）を置き、`__init__.py` が
+  依存順に共有名前空間へ `exec` 合成する（モンキーパッチ・private 参照は単一ファイル時代と同一）。
+  リポジトリ内の `kiro-flow.py` は薄い shim。`install.sh` は zipapp で
+  `~/.local/bin/kiro-flow`（CLI 呼び出し可能・単一ファイル）を生成し、`executors/` は従来どおり
+  prefix 隣へ配置。
+- **自己パス**: `self_path()` は shim → zipapp（`sys.argv[0]`）の順で解決（子プロセス起動・再起動・
+  executor 検索がパッケージ化後も壊れない）。
+- **テスト**: パッケージローダへ追随。419 件パス。zipapp インストールの `--help` も確認。
+
 ### kiro-project / kiro-flow: 検証ブランチ取り違え・空パス無限起床・park 再開打ち切り等を修正
 
 - **kiro-project: verify が `kp/<task-id>` ではなく `target`/`base`（main）を clone していた** —
