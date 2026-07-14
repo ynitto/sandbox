@@ -1,5 +1,5 @@
 ## agent-project-codd-gate--042729: agent-projectにcodd-gate自動検出とregression/intake結線を完成させ連携を有効化する
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `grep -E '^[[:space:]]*regression_cmd:.*codd-gate verify --base' .agent/agent-project.yaml && grep -E '^[[:space:]]*intake_cmd:.*codd-gate tasks' .agent/agent-project.yaml && PYTHONPATH=tools/agent-project python3 -c 'from codd_gate_status import detect_status; s=detect_status(); assert s.usable and s.command("verify", "--base", "HEAD")' && python3 -m pytest tools/agent-project/tests/test_codd_gate_detect.py tools/agent-project/tests/test_codd_gate_routing.py -q`
