@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: 隣接 agent-flow の解決パスを修正
+
+- **パッケージ分割後の `resolve_agent_flow` が誤った相対パスを見ていた** —
+  `agent_project/request.py` から parent×2 だと `tools/agent-project/agent-flow`（存在しない）。
+  正しくは tools 配下の隣接 `tools/agent-flow/agent-flow.py`。act 起動失敗が verify 成功で
+  偽 done になっていた穴とセットで顕在化した。
+
 ### agent-project: daemon 再開・act 失敗・result run-id 連携を修正
 
 - **resume-run / 失敗 run の続きが daemon 経路で効かなかった** — submit は `run_exists` で無視され
