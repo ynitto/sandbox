@@ -223,6 +223,7 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "") -> "str | None"
         pass
     run_dir = bus / "runs" / rid
     meta_path = run_dir / "meta.json"
+    applied = False
     try:
         if meta_path.is_file():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -233,6 +234,7 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "") -> "str | None"
                 meta["cancel_reason"] = why
                 meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                                      encoding="utf-8")
+            applied = True  # meta がある＝適用済み（既終端でもマーカーは消してよい）
         waits = run_dir / "waits"
         if waits.is_dir():
             for f in list(waits.glob("*.json")):
@@ -242,12 +244,13 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "") -> "str | None"
                     pass
     except (OSError, ValueError, json.JSONDecodeError):
         pass
-    # meta を canceled にしたあとマーカーを消す（daemon 不在でも sticky cancel を残さない）。
-    # orch は meta=canceled でも停止する。
-    try:
-        (cancels / f"{rid}.json").unlink(missing_ok=True)
-    except OSError:
-        pass
+    # meta を触れたときだけマーカーを消す。meta 無し（まだ submit 前）は残し、
+    # daemon の run 化前 cancel（cancel_request_run）へ渡す。
+    if applied:
+        try:
+            (cancels / f"{rid}.json").unlink(missing_ok=True)
+        except OSError:
+            pass
     append_journal(cfg.journal, f"flow detach: {task.id} の run {rid} を canceled（{why}）")
     return rid
 
@@ -265,6 +268,9 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
     inherit = "" if resuming else (_inherit_from_run(task, rid, cfg) or "")
     cmd = build_agent_flow_cmd(task, cfg, use_git, run_id=rid, inherit_from=inherit)
     _pin_last_run(cfg, task, rid)
+    # 同期待ち中も approve/hold が detach できるようピン（submit 経路と同じ）
+    task.set("flow_run", rid)
+    persist_task(cfg, task)
     if resuming:
         append_journal(cfg.journal,
                        f"run 再開: {task.id} は {rid} の失敗ノードだけをやり直します（done は温存）")
@@ -273,6 +279,8 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
         proc = subprocess.Popen(cmd, cwd=str(cfg.workdir),
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     except FileNotFoundError as e:
+        task.drop("flow_run", "flow_loc")
+        persist_task(cfg, task)
         return (False, f"agent-flow を起動できません: {e}")
     # PIPE が満杯になると agent-flow が書き込みブロックするので、待機中に吐き出す。
     out_chunks: "list[str]" = []
@@ -294,9 +302,11 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
             if rc is not None:
                 drainer.join(timeout=2.0)
                 break
-            if _task_file_revised(cfg, task):
+            abort = _wait_abort_reason(cfg, task, rid)
+            if abort:
+                why = abort
                 task.set("flow_run", rid)
-                detach_flow_run(cfg, task, "revise により同期 run を中断")
+                detach_flow_run(cfg, task, f"{why} により同期 run を中断")
                 try:
                     proc.terminate()
                     proc.wait(timeout=5)
@@ -307,7 +317,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                         pass
                 # 刈り残した orch/worker は daemon を残して止める（外部 daemon 全滅を避ける）
                 reap_orphan_flow(cfg, include_daemon=False)
-                return (False, f"daemon run {rid} の結果待ちを中断（人の revise を検知）")
+                return (False, f"daemon run {rid} の結果待ちを中断（{why} を検知）")
             if deadline is not None and time.time() >= deadline:
                 try:
                     proc.terminate()
@@ -335,6 +345,7 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
             except OSError:
                 pass
     out = "".join(out_chunks)
+    task.drop("flow_run", "flow_loc")
     # 同期 run の canceled は exit≠0 でもメッセージが日本語のため、meta で確定して
     # 上位の canceled 特別扱い（リトライ非消費で ready）へ乗せる。
     try:
@@ -360,6 +371,28 @@ def _task_file_revised(cfg: "Config", task: Task) -> bool:
     act の結果待ちループから毎ポーリング呼ばれるため、小さなファイル読みだけで判定する。"""
     fresh = _load_task_file(cfg, task.id)
     return fresh is not None and bool(fresh.get("revised"))
+
+
+def _wait_abort_reason(cfg: "Config", task: Task, run_id: str) -> "str | None":
+    """同期結果待ちを打ち切るべき人操作があればその理由、無ければ None。
+
+    revise 以外（approve / hold / reject / feedback）は `revised` 無しで status / flow_run
+    だけ変える。flow_run を待ち開始時にピンしておき、外れたら中断する。
+    status だけで中断しない（ピン時点の status 揺れや ready 表記残りを false-positive にしない）。
+    flow_run が残ったまま status だけ変わるのは、人が別操作で上書きしたケースとして
+    flow_run 不一致・欠落と合わせて検知する。"""
+    fresh = _load_task_file(cfg, task.id)
+    if fresh is None:
+        return None
+    if fresh.get("revised"):
+        return "revise"
+    pinned = str(run_id or "").strip()
+    fr = str(fresh.get("flow_run") or "").strip()
+    if pinned and not fr:
+        return "detach"
+    if pinned and fr and fr != pinned:
+        return "flow_run 変更"
+    return None
 
 
 def _adopt_task(task: Task, fresh: Task) -> None:
@@ -512,6 +545,9 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
     if got != run_id:
         _pin_last_run(cfg, task, got)
         run_id = got
+    # 待ちのあいだ approve/hold が detach できるよう flow_run をピン（offloaded と同じ契約）。
+    task.set("flow_run", run_id)
+    persist_task(cfg, task)
     # act_timeout=0（以下）はタイムアウト無効＝終端に達するまで待つ。gitlab 等の長時間委譲
     # （人のレビュー往復で数日かかりうる）で、待ち切れずに retry を空増やしする事故を防ぐ。
     deadline = (time.time() + cfg.act_timeout) if cfg.act_timeout > 0 else None
@@ -526,6 +562,7 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
                 # orchestrator がクラッシュして daemon が failed に確定した場合もここで即検知でき、
                 # act_timeout までの永久待機を避けられる。
                 st = str(data.get("status") or "")
+                task.drop("flow_run", "flow_loc")
                 if st == "failed":
                     return (False, f"daemon run {run_id} failed")
                 if st == "canceled":
@@ -533,13 +570,17 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
                 return (True, f"daemon run {run_id} done")
         except Exception:  # noqa: BLE001 — 取得失敗は次ポーリングで再試行
             pass
-        if _task_file_revised(cfg, task):
-            # 実行中に人が revise（軌道修正）→ 結果待ちを打ち切り、settle 側の積み直しへ。
-            # 放置すると完走して二重書き込みしうるので、offload と同じく cancel で切り離す。
-            # 次の試行は rev 世代で新しい req_id になるため、この古い run に合流することもない。
-            task.set("flow_run", run_id)
-            detach_flow_run(cfg, task, "revise により結果待ちを中断")
-            return (False, f"daemon run {run_id} の結果待ちを中断（人の revise を検知）")
+        abort = _wait_abort_reason(cfg, task, run_id)
+        if abort:
+            # 人が既に detach 済み（flow_run 無し）なら二重 cancel しない。revise はこちらで止める。
+            fresh = _load_task_file(cfg, task.id)
+            still = fresh is not None and str(fresh.get("flow_run") or "").strip() == run_id
+            if still or abort == "revise":
+                task.set("flow_run", run_id)
+                detach_flow_run(cfg, task, f"{abort} により結果待ちを中断")
+            else:
+                task.drop("flow_run", "flow_loc")
+            return (False, f"daemon run {run_id} の結果待ちを中断（{abort} を検知）")
         time.sleep(2.0)
     # daemon 自体は他 run / park 監視のオーナーなので殺さない。この run だけ cancel して止める。
     task.set("flow_run", run_id)

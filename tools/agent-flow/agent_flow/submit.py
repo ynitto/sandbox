@@ -72,9 +72,9 @@ def cmd_cancel(args) -> int:
         _apply_on_cancel(bus, args, rid)
     cleared = bus.clear_waits_for_run(rid)     # park 済みノードの再ポーリングを止める
     marked = bus.mark_canceled(rid, reason)    # run が存在すれば即終端化（監視主体が居なくても止まる）
-    # run が存在するなら適用済みマーカーを消す。orch は meta=canceled で停まる。
-    # run 化前の cancel はマーカーを残し、daemon が cancel_request_run で拾う。
-    if bus.run_meta(rid):
+    # run 化済みなら適用後にクリア。run_meta() は欠落時 {} を返すので truthy 判定しない
+    # （空 dict は真扱いとなり、run 化前 cancel のマーカーを誤って消してしまう）。
+    if bus.run_exists(rid):
         bus.clear_cancel(rid)
     bus.sync_push(f"cancel run {rid}: {reason}")
     tail = "・status=canceled 確定" if marked else "（daemon が受理して終端化します）"

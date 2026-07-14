@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: Set4 individual バグ修正
+
+- **run 化前 cancel マーカーを空 meta（{}）判定で消し、要求が起動していた** —
+  daemon/cmd_cancel は `run_exists`、detach は meta 適用時だけ clear。
+- **同期結果待ちが revise 以外の人操作（approve/hold）を無視** —
+  flow_run ピン＋ status/detach 検知で中断。
+- **sync `run` / alreadyTerminal が sticky cancel を残す** — 適用後に clear。
+
 ### agent-flow / agent-project / agent-dashboard: Set3 integration 手つなぎ修正
 
 - **canceled を `--inherit-from` すると停止した行が蘇る** — flow/project とも canceled は引き継がない。

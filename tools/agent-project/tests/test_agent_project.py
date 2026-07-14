@@ -1650,30 +1650,51 @@ class TestActRunMidRevise(unittest.TestCase):
                 def wait(self, timeout=None):
                     return self.returncode
 
-            # revise: 初回 False、2 回目以降 True（1 秒 sleep のあとに検知）
+            # revise: 初回 None、2 回目以降 revise
             checks = [False]
 
-            def revised(_cfg, _task):
+            def abort_reason(_cfg, _task, _rid):
                 if not checks[0]:
                     checks[0] = True
-                    return False
-                # ディスクにもマーカーを書いて _task_file_revised の本番経路を通す
-                live = km.parse_task((cfg.backlog / "T1.md").read_text(encoding="utf-8"), "T1")
-                live.set("revised", "now")
-                (cfg.backlog / "T1.md").write_text(km.serialize_task(live), encoding="utf-8")
-                return True
+                    return None
+                return "revise"
 
             with mock.patch.object(km.subprocess, "Popen", return_value=FakeProc()), \
-                 mock.patch.object(km, "_task_file_revised", side_effect=revised), \
+                 mock.patch.object(km, "_wait_abort_reason", side_effect=abort_reason), \
                  mock.patch.object(km.time, "sleep", lambda *_: None), \
                  mock.patch.object(km, "reap_orphan_flow", return_value=0):
                 ok, msg = km._act_run(t, cfg, use_git=False)
             self.assertFalse(ok)
             self.assertIn("revise", msg)
             self.assertIsNone(t.get("flow_run"), "detach で flow_run を外す")
-            cancels = list((cfg.bus / "inbox" / "cancels").glob("*.json")) if (cfg.bus / "inbox" / "cancels").exists() else []
-            self.assertEqual(cancels, [], "適用済み（または meta 無し）cancel マーカーは残さない")
 
+    def test_detach_keeps_cancel_marker_when_no_meta(self):
+        """submit 前 detach: マーカーを残し daemon の run 化前 cancel へ渡す。"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            t.set("flow_run", "req-not-yet")
+            rid = km.detach_flow_run(cfg, t, "事前キャンセル")
+            self.assertEqual(rid, "req-not-yet")
+            self.assertTrue((cfg.bus / "inbox" / "cancels" / "req-not-yet.json").is_file())
+
+    def test_wait_abort_reason_sees_approve_detach(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            cfg = cfg_for(d)
+            km.ensure_dirs(cfg)
+            t = km.Task(id="T1", title="x", verify="true", status="doing")
+            t.set("flow_run", "run-X")
+            (cfg.backlog / "T1.md").write_text(km.serialize_task(t), encoding="utf-8")
+            self.assertIsNone(km._wait_abort_reason(cfg, t, "run-X"))
+            # approve 相当: flow_run を外して ready
+            live = km.parse_task((cfg.backlog / "T1.md").read_text(encoding="utf-8"), "T1")
+            live.drop("flow_run")
+            live.status = "ready"
+            (cfg.backlog / "T1.md").write_text(km.serialize_task(live), encoding="utf-8")
+            self.assertEqual(km._wait_abort_reason(cfg, t, "run-X"), "detach")
 
     def test_inherit_skips_canceled_last_run(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1685,11 +1706,11 @@ class TestActRunMidRevise(unittest.TestCase):
             t = km.Task(id="T1", title="x", verify="true", retries=1)
             t.extra.append(("last_run", old))
             self.assertIsNone(km._inherit_from_run(t, "req-ab-T1-r1", cfg))
-            # last_run があるときの _prev_req_id フォールバックも踏まない
             prev = km._inherit_from_run(t, "req-ab-T1-r1", cfg)
             if prev is None and not str(t.get("last_run") or "").strip():
                 prev = km._prev_req_id(t, cfg)
             self.assertIsNone(prev)
+
 
 class TestActTimeoutZeroAndInherit(unittest.TestCase):
     """act_timeout=0（無制限待ち）と、リトライ時の先行 run 引き継ぎ（--inherit-from）の配線。

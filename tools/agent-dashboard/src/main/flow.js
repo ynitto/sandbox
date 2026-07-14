@@ -543,7 +543,7 @@ function cancelRun(busDir, runId, { reason } = {}) {
     if (iss && iss.iid != null) issues.push(iss);
   }
   if (meta && TERMINAL.has(curStatus)) {
-    // 既に終端でも残 waits を掃除（daemon が markers 無しだと park が残り、UI が公園表示し続ける）。
+    // 既に終端でも残 waits / sticky cancel を掃除（cmd_cancel の terminal 経路と同契約）。
     let cleared = 0;
     for (const f of safeList(waitsDir)) {
       if (!f.endsWith('.json')) continue;
@@ -553,6 +553,11 @@ function cancelRun(busDir, runId, { reason } = {}) {
       } catch {
         /* 消せなくても致命的でない */
       }
+    }
+    try {
+      fs.unlinkSync(path.join(busDir, 'inbox', 'cancels', `${id}.json`));
+    } catch {
+      /* 無ければ no-op */
     }
     return { status: curStatus, alreadyTerminal: true, marked: false, cleared, issues };
   }

@@ -371,6 +371,7 @@ def cmd_run(args) -> int:
                 # 子（orchestrator/worker）を停止する。--close-issues は cmd_cancel 側で実施済み。
                 bus.mark_canceled(run_id, bus.cancel_info(run_id).get("reason") or "cancel 指示")
                 bus.clear_waits_for_run(run_id)
+                bus.clear_cancel(run_id)
                 bus.sync_push(f"cancel run {run_id}")
                 print(f"\n>>> run {run_id} は cancel されました。停止します。", flush=True)
                 break

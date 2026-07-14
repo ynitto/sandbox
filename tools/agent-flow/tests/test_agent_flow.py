@@ -5539,6 +5539,20 @@ class CancelTests(unittest.TestCase):
         self.assertFalse(self.bus.is_canceled_requested("run1"))
         self.assertFalse(self.bus.clear_cancel("run1"))  # 冪等
 
+    def test_cmd_cancel_keeps_marker_before_run_exists(self):
+        # run 化前 cancel: マーカーを残し daemon の cancel_request_run に渡す
+        # （run_meta() の {} を truthy と誤判定して消さない）
+        b = kf.Bus(self.tmp, "req-pre")
+        b.submit_request("req-pre", "やること", "submitter")
+        args = argparse.Namespace(bus=self.tmp, run_id="req-pre", reason="取り下げ",
+                                  close_issues=False, git=None, executor="stub",
+                                  config=None, lease=30.0)
+        with mock.patch.object(kf, "make_bus", return_value=b):
+            rc = kf.cmd_cancel(args)
+        self.assertEqual(rc, 0)
+        self.assertTrue(b.is_canceled_requested("req-pre"), "run 化前はマーカーを残す")
+        self.assertFalse(b.run_exists("req-pre"))
+
     def test_set_status_refuses_to_resurrect_terminal(self):
         self.bus.mark_canceled("run1", "止める")
         self.bus.set_status("running")

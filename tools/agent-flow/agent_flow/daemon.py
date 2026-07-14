@@ -88,9 +88,13 @@ def cmd_daemon(args) -> int:
             meta = bus.run_meta(rid)
             info = bus.cancel_info(rid)
             reason = info.get("reason") or "cancel 指示"
+            # run 化前: マーカーを残し、下の inbox ループの cancel_request_run に任せる。
+            # ここで clear すると受理前にマーカーが消え、要求がそのまま起動してしまう。
+            if not bus.run_exists(rid):
+                continue
             # 既に終端でも waits 掃除は行う（orchestrator が先に mark_canceled した場合、
             # ここをスキップすると park が残り service_waits が動き続ける）。
-            if meta and meta.get("status") in TERMINAL:
+            if meta.get("status") in TERMINAL:
                 # close_issues 要求があるのに orch が先に終端＋waits を消す前にここに来た場合、
                 # waits が残っていれば先に on_cancel してから掃除する。
                 if info.get("close_issues"):
@@ -110,7 +114,8 @@ def cmd_daemon(args) -> int:
                 if wp.poll() is None:
                     wp.terminate()
             marked = bus.mark_canceled(rid, reason)
-            bus.clear_cancel(rid)
+            if marked:
+                bus.clear_cancel(rid)
             bus.run_view(rid).event(daemon_id, "canceled", run=rid, reason=reason)
             bus.sync_push(f"cancel run {rid}: {reason}")
             if marked:
@@ -221,6 +226,7 @@ def cmd_daemon(args) -> int:
             if bus.is_canceled_requested(req_id):
                 # run 化前に cancel された要求は起動せず canceled で終端化する（＝受理しない）。
                 if bus.cancel_request_run(req_id, bus.cancel_info(req_id).get("reason") or ""):
+                    bus.clear_cancel(req_id)
                     bus.sync_push(f"cancel request {req_id}（run 化前）")
                     log(daemon_id, f"cancel: 要求 {req_id} を run 化前に canceled で終端化")
                 continue
