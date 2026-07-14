@@ -15,14 +15,12 @@
         <h1>Agent Dashboard</h1>
         <div class="row sidebar-actions">
           <button id="btn-new-project" aria-label="プロジェクトを作成" title="プロジェクトを作成">＋</button>
-          <button id="btn-git-pull" aria-label="最新の状態を取得" title="最新の状態を取得">⇣</button>
-          <button id="btn-refresh" aria-label="表示を更新" title="表示を更新">⟳</button>
+          <button id="btn-refresh" aria-label="表示を更新" title="表示を更新（このPCのファイルを読み直す）">⟳</button>
           <button id="btn-settings" aria-label="アプリ設定" title="アプリ設定">⚙</button>
         </div>
       </div>
       <div class="doctor-tools" aria-label="Doctor">
         <span>Doctor</span>
-        <button id="btn-git-heal" aria-label="同期を修復">同期を修復</button>
         <button id="btn-doctor" aria-label="現在の画面をAIに相談" disabled>AIに相談</button>
       </div>
       <div id="tree"></div>
@@ -39,7 +37,7 @@
           </div>
           <button id="btn-project-settings" class="hidden">プロジェクト設定</button>
         </div>
-        <div id="project-meta" class="muted"></div>
+        <div id="project-meta" class="muted" aria-live="polite"></div>
       </header>
 
       <nav id="tabs">

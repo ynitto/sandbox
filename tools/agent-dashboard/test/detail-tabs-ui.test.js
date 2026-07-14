@@ -247,9 +247,11 @@ assert.match(renderer, /data-flow-back/);
 assert.match(css, /\.master-detail/);
 assert.match(css, /\.flow-view-tabs/);
 assert.match(css, /\.mobile-master-back/);
-for (const id of ['btn-git-heal', 'btn-doctor', 'dlg-doctor', 'dlg-need-output', 'dlg-delivery-review']) {
+for (const id of ['btn-doctor', 'dlg-doctor', 'dlg-need-output', 'dlg-delivery-review']) {
   assert.ok(html.includes(`id="${id}"`), `${id} が画面に必要です`);
 }
+assert.ok(!html.includes('id="btn-git-heal"'), '同期修復は Doctor の固定操作にしない');
+assert.ok(renderer.includes('id="btn-sync-now"'), '同期状態の横に文脈付き操作を表示する');
 for (const cli of ['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']) {
   assert.ok(html.includes(`<option value="${cli}"`), `${cli} を設定で選択できる必要があります`);
 }

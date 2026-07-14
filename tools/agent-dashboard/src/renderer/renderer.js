@@ -512,9 +512,17 @@ function renderHeader() {
   if (gh && !gh.notRepo) {
     const icon = gh.level === 'error' ? '🔴' : gh.level === 'warn' ? '🟡' : '🟢';
     const cls = gh.level === 'error' ? 'sync-error' : gh.level === 'warn' ? 'sync-warn' : 'sync-ok';
-    metaBits.push(`<span class="${cls}" title="${esc(gh.summary)}">${icon} 同期: ${esc(gh.summary)}</span>`);
+    let action = '';
+    if (gh.level === 'error') {
+      action = '<button id="btn-sync-now" class="sync-action">同期を修復</button>';
+    } else if (gh.level === 'warn' && !(gh.behind > 0 && gh.dirty > 0)) {
+      action = '<button id="btn-sync-now" class="sync-action">共有先と同期</button>';
+    }
+    metaBits.push(`<span class="sync-status ${cls}" title="${esc(gh.summary)}">${icon} 同期: ${esc(gh.summary)} ${action}</span>`);
   }
   $('project-meta').innerHTML = metaBits.join(' ｜ ');
+  const syncButton = $('btn-sync-now');
+  if (syncButton) syncButton.addEventListener('click', manualGitHeal);
   const needsBadge = $('needs-badge');
   const undecided = p.needs.filter((n) => !n.decided).length;
   needsBadge.textContent = undecided;
@@ -4719,28 +4727,17 @@ function gitPushBusOp(message, paths) {
   return gitPushAfterWrite(message, busDir, { kind: 'bus', paths });
 }
 
-// 手動（⇣ ボタン）: スロットリングを無視して即 pull し、結果をトーストで知らせる
-async function manualGitPull() {
-  const pullDir = gitStateDir();
-  if (!pullDir) return toast('プロジェクトを選択してください');
-  const res = await guard('git pull', () => api.gitPull(pullDir, true));
-  if (!res) return;
-  lastGitPullError = null;
-  toast(`git pull: ${res.output || '完了'}`, true);
-  await refreshAll();
-}
-
-// 手動（🩺 ボタン）: 同期の詰まり（中断 rebase・ロック残骸・履歴の食い違い・未送信）を
+// 同期状態の横に必要な場合だけ出す操作。取り込み・履歴修復・送信を一つにまとめる。
 // まとめて自動修復し、やったことを平易な文で知らせる。force push はせず人の作業は壊さない
 async function manualGitHeal() {
   const healDir = gitStateDir();
   if (!healDir) return toast('プロジェクトを選択してください');
-  const res = await guard('同期の修復', () => api.gitHeal(healDir));
+  const res = await guard('共有先との同期', () => api.gitHeal(healDir));
   if (!res) return;
   uiLog('gitHeal', res);
   const steps = (res.steps || []).join(' → ');
-  toast(`同期の修復: ${res.summary}${steps ? `（${steps}）` : ''}`, res.level !== 'error');
-  await refreshAll();
+  toast(`${res.summary}${steps ? `（${steps}）` : ''}`, res.level !== 'error');
+  await refreshAll({ sync: false });
 }
 
 function activeTabName() {
@@ -4842,11 +4839,11 @@ async function askDoctor() {
   }
 }
 
-async function refreshAll() {
+async function refreshAll({ sync = true } = {}) {
   if (state.busy) return;
   state.busy = true;
   try {
-    await maybeAutoGitPull();
+    if (sync) await maybeAutoGitPull();
     await refreshDiscovery();
     if (state.selectedDir) await reloadProject();
   } finally {
@@ -4914,9 +4911,7 @@ function handleOpenTarget({ url }) {
 async function init() {
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
-  $('btn-refresh').addEventListener('click', refreshAll);
-  $('btn-git-pull').addEventListener('click', manualGitPull);
-  $('btn-git-heal').addEventListener('click', manualGitHeal);
+  $('btn-refresh').addEventListener('click', () => refreshAll({ sync: false }));
   $('btn-doctor').addEventListener('click', askDoctor);
   $('btn-doctor-close').addEventListener('click', () => $('dlg-doctor').close());
   $('btn-need-output-close').addEventListener('click', () => $('dlg-need-output').close());

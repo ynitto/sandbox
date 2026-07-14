@@ -34,6 +34,9 @@ const LOCK_STALE_SEC = 30;
 const PUSH_RETRIES = 3;
 
 const lastRemoteAt = new Map(); // toplevel -> リモートへ触れた最終時刻 epoch ms（失敗も含む）
+// 健康状態表示用の fetch は pull の律速と分ける。作業ツリーが汚れて pull を見送っても、
+// 共有先の追跡情報だけは安全に更新し、古い「正常」判定を残さないため。
+const healthRemoteChecks = new Map(); // toplevel -> { attemptedAt, checkedAt, error }
 const queues = new Map(); // toplevel -> 直列化キューの末尾 Promise
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -354,9 +357,52 @@ async function rebasing(toplevel) {
   return false;
 }
 
+// 作業ツリーが agent-project / 人の編集で汚れていても、コミット済み履歴だけなら安全に
+// 合流できる。一時 worktree で HEAD と共有先を merge して push し、本体のファイル・index・
+// ブランチは一切動かさない。ローカル本体は共有先より behind になるため、書き込みが止まった
+// 後の通常 pull で fast-forward できる。
+async function mergeDivergenceIsolated(top, up) {
+  const wt = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-dashboard-heal-'));
+  fs.rmSync(wt, { recursive: true, force: true });
+  let added = false;
+  try {
+    const add = await git(top, ['worktree', 'add', '--detach', wt, 'HEAD'], 60000);
+    if (add.code !== 0) return { ok: false, detail: fail(add, '隔離 worktree の作成').message };
+    added = true;
+    const merge = await git(wt, ['merge', '--no-edit', `${up.remote}/${up.branch}`], 180000);
+    if (merge.code !== 0) {
+      await git(wt, ['merge', '--abort'], 30000);
+      return { ok: false, conflict: true };
+    }
+    const push = await git(wt, ['push', up.remote, `HEAD:${up.branch}`], 120000);
+    if (push.code !== 0) return { ok: false, detail: fail(push, '隔離 worktree からの送信').message };
+    return { ok: true };
+  } finally {
+    if (added) await git(top, ['worktree', 'remove', '--force', wt], 30000);
+    fs.rmSync(wt, { recursive: true, force: true });
+  }
+}
+
 // 同期の健康状態（ローカル参照のみ・リモートへは触らない＝ポーリングに載せても無害）。
 // summary は技術用語を避けた一文。level: ok | warn | error。
-async function health(dir) {
+async function refreshHealthRemote(top, up, { intervalSec = MIN_INTERVAL_SEC, force = false } = {}) {
+  const previous = healthRemoteChecks.get(top) || { attemptedAt: 0, checkedAt: null, error: null };
+  const min = Math.max(MIN_INTERVAL_SEC, Number(intervalSec) || 0);
+  if (!force && Date.now() - previous.attemptedAt < min * 1000) return previous;
+  const attemptedAt = Date.now();
+  const fetched = await git(top, ['fetch', up.remote, up.branch], 120000);
+  const check = fetched.code === 0
+    ? { attemptedAt, checkedAt: attemptedAt, error: null }
+    : {
+        attemptedAt,
+        checkedAt: previous.checkedAt,
+        error: (fetched.err || fetched.out || '原因不明').slice(-200),
+      };
+  healthRemoteChecks.set(top, check);
+  return check;
+}
+
+async function health(dir, { refreshRemote = false, intervalSec = MIN_INTERVAL_SEC, force = false } = {}) {
   let top;
   try {
     top = await toplevelOf(dir);
@@ -364,6 +410,10 @@ async function health(dir) {
     return { notRepo: true, level: 'ok', summary: 'git 同期なし（このフォルダだけで動いています）' };
   }
   const up = await upstreamOf(top);
+  let remoteCheck = healthRemoteChecks.get(top) || { attemptedAt: null, checkedAt: null, error: null };
+  if (up && refreshRemote) {
+    remoteCheck = await refreshHealthRemote(top, up, { intervalSec, force });
+  }
   const dirtyRes = await git(top, ['status', '--porcelain'], 30000);
   const dirty = dirtyRes.code === 0 ? dirtyRes.out.split('\n').filter(Boolean).length : 0;
   const midRebase = await rebasing(top);
@@ -380,21 +430,43 @@ async function health(dir) {
   // rebase 中は HEAD が detached になり追跡ブランチも読めないため、必ず先に判定する
   if (midRebase) {
     level = 'error';
-    summary = '前回の同期が途中で止まっています（🩺 同期を修復 で直せます）';
+    summary = '前回の同期が途中で止まっています';
   } else if (!up) {
     level = 'warn';
     summary = '共有先（origin の追跡ブランチ）が未設定のため、この PC の中だけで動いています';
   } else if (ahead > 0 && behind > 0) {
     level = 'error';
-    summary = `この PC と共有先の履歴が食い違っています（こちら ${ahead} 件・向こう ${behind} 件。🩺 同期を修復 で合流できます）`;
+    summary = `この PC と共有先の履歴が食い違っています（こちら ${ahead} 件・向こう ${behind} 件）`;
+  } else if (behind > 0 && dirty > 0) {
+    level = 'warn';
+    summary = `共有先との履歴は整合しました。書き込みが終わり次第、更新 ${behind} 件を表示へ反映します`;
   } else if (behind > 0) {
     level = 'warn';
-    summary = `共有先に未取得の更新が ${behind} 件あります（⇣ で取り込めます）`;
+    summary = `共有先に未取得の更新が ${behind} 件あります`;
   } else if (ahead > 0) {
     level = 'warn';
-    summary = `この PC に未送信の変更が ${ahead} 件あります（次の操作か 🩺 で送信されます）`;
+    summary = `この PC に未送信の変更が ${ahead} 件あります`;
   }
-  return { notRepo: false, toplevel: top, upstream: up, ahead, behind, dirty, midRebase, level, summary };
+  if (remoteCheck.error) {
+    if (level === 'ok') level = 'warn';
+    summary += remoteCheck.checkedAt
+      ? '。共有先を再確認できないため、前回確認時点の表示です'
+      : '。共有先を確認できないため、この PC に残っている情報を表示しています';
+  }
+  return {
+    notRepo: false,
+    toplevel: top,
+    upstream: up,
+    ahead,
+    behind,
+    dirty,
+    midRebase,
+    level,
+    summary,
+    remoteCheckedAt: remoteCheck.checkedAt,
+    remoteCheckAttemptedAt: remoteCheck.attemptedAt,
+    remoteCheckError: remoteCheck.error,
+  };
 }
 
 // 一発修復: 詰まりの残骸を除去 → 取り込み → 送信、をまとめて行い、やったことを平易な文で返す。
@@ -428,6 +500,15 @@ async function heal(dir) {
     const behind = b.code === 0 ? parseInt(b.out, 10) || 0 : 0;
     if (behind > 0) {
       if (ahead === 0) {
+        const dirtyRes = await git(top, ['status', '--porcelain'], 30000);
+        if (dirtyRes.code === 0 && dirtyRes.out.trim()) {
+          return {
+            steps,
+            level: 'warn',
+            pendingLocalApply: true,
+            summary: '共有先の最新状態を確認しました。書き込みが終わり次第、この画面へ反映します',
+          };
+        }
         const res = await git(top, ['merge', '--ff-only', `${up.remote}/${up.branch}`], 120000);
         if (res.code !== 0) {
           return {
@@ -445,12 +526,22 @@ async function heal(dir) {
         //  書き込んだ前科がある）。通らなければ巻き戻して報告する（人の作業は壊さない）。
         const dirtyRes = await git(top, ['status', '--porcelain'], 30000);
         if (dirtyRes.code === 0 && dirtyRes.out.trim()) {
+          const isolated = await mergeDivergenceIsolated(top, up);
+          if (!isolated.ok) {
+            return {
+              steps,
+              level: 'error',
+              summary: isolated.conflict
+                ? '同じファイルが共有先でも変更されているため、自動合流できませんでした。書き込み中のファイルは変更していません'
+                : `隔離した同期処理に失敗しました。書き込み中のファイルは変更していません: ${isolated.detail}`,
+            };
+          }
+          steps.push(`書き込み中のファイルから隔離して履歴を合流しました（こちら ${ahead} 件・向こう ${behind} 件）`);
           return {
             steps,
             level: 'warn',
-            summary:
-              '書き込み中のファイルがあるため合流を見送りました。agent-project 本体が動いていれば' +
-              '数分内に本体側が自動で合流させます（急ぐ場合は少し待って 🩺 を再度押してください）',
+            pendingLocalApply: true,
+            summary: '共有先の履歴は修復しました。書き込みが終わり次第、最新状態をこの画面へ反映します',
           };
         }
         const res = await git(top, ['rebase', `${up.remote}/${up.branch}`], 180000);

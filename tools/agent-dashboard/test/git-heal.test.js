@@ -80,6 +80,22 @@ const git_health_of = (dir) => git.health(dir);
     assert.match(h.summary, /食い違って/);
   });
 
+  await test('health: 共有先を再確認し、fetch 前の古い正常判定を更新する', async () => {
+    const { work, other } = scaffold();
+    fs.writeFileSync(path.join(other, 'remote.md'), 'r\n');
+    G(other, 'add', '-A');
+    G(other, 'commit', '-m', 'remote change');
+    G(other, 'push', 'origin', 'main');
+
+    const stale = await git.health(work);
+    assert.strictEqual(stale.behind, 0, 'fetch 前の追跡情報は古い');
+    const fresh = await git.health(work, { refreshRemote: true, force: true });
+    assert.strictEqual(fresh.behind, 1, JSON.stringify(fresh));
+    assert.strictEqual(fresh.level, 'warn');
+    assert.ok(fresh.remoteCheckedAt, JSON.stringify(fresh));
+    assert.strictEqual(fresh.remoteCheckError, null);
+  });
+
   await test('heal: 遅れは取り込み・未送信は送信し、正常へ戻す', async () => {
     const { work, other } = scaffold();
     fs.writeFileSync(path.join(other, 'remote.md'), 'r\n');
@@ -125,7 +141,7 @@ const git_health_of = (dir) => git.health(dir);
     assert.ok(!after.midRebase, 'rebase の残骸が残らない');
   });
 
-  await test('heal: 書き込み中（dirty）の食い違いは合流を見送り、理由を言う', async () => {
+  await test('heal: 書き込み中でも隔離 worktree で履歴を修復し、ローカル反映待ちにする', async () => {
     const { work, other } = scaffold();
     fs.writeFileSync(path.join(other, 'remote.md'), 'r\n');
     G(other, 'add', '-A');
@@ -138,9 +154,17 @@ const git_health_of = (dir) => git.health(dir);
 
     const res = await git.heal(work);
     assert.strictEqual(res.level, 'warn');
-    assert.match(res.summary, /見送り/);
+    assert.strictEqual(res.pendingLocalApply, true, JSON.stringify(res));
+    assert.match(res.summary, /履歴は修復/);
+    assert.ok(res.steps.some((s) => /隔離して履歴を合流/.test(s)), JSON.stringify(res));
     // 人の未コミット変更は無傷
     assert.strictEqual(fs.readFileSync(path.join(work, 'journal.md'), 'utf8'), 'writing...\n');
+    // リモート上の分岐は解消済み。ローカルは書き込み終了後に fast-forward できる状態。
+    const h = await git.health(work);
+    assert.strictEqual(h.ahead, 0, JSON.stringify(h));
+    assert.ok(h.behind > 0, JSON.stringify(h));
+    assert.strictEqual(h.level, 'warn');
+    assert.match(h.summary, /書き込みが終わり次第/);
   });
 
   await test('worktree の中断 rebase も検知して巻き戻せる（.git がファイルの地雷）', async () => {

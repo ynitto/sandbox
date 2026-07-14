@@ -59,6 +59,16 @@ assert.match(html, /data-tab="overview">概要/);
 assert.match(html, /data-tab="backlog">タスク/);
 assert.match(html, /data-tab="flow">実行/);
 assert.match(html, /id="btn-project-settings"/);
+assert.ok(!html.includes('id="btn-git-pull"'), '最新取得の単独ボタンを残さない');
+assert.ok(!html.includes('id="btn-git-heal"'), '同期修復を Doctor の固定ボタンとして残さない');
+assert.match(html, /表示を更新（このPCのファイルを読み直す）/);
+assert.match(html, /id="project-meta"[^>]+aria-live="polite"/);
+assert.match(renderer, /id="btn-sync-now"/);
+assert.match(renderer, /共有先と同期/);
+assert.match(renderer, /同期を修復/);
+assert.match(renderer, /共有先確認:/);
+assert.match(renderer, /remoteCheckedAt/);
+assert.match(renderer, /refreshAll\(\{ sync: false \}\)/);
 
 for (const label of ['現在の状態', 'あなたの対応', '進捗', '成果', '対応する', 'タスクを見る', '実行を見る', '成果を見る']) {
   assert.ok(renderer.includes(label), `概要に「${label}」が必要です`);
