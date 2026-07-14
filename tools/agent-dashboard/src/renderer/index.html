@@ -25,12 +25,19 @@
         </div>
       </div>
       <div id="tree" class="navigation-tree">
-        <section class="nav-group" aria-labelledby="projects-group-title">
+        <section class="nav-group" data-feature="agent-stack" aria-labelledby="projects-group-title">
           <div class="nav-group-header">
             <h2 id="projects-group-title">プロジェクト</h2>
             <button id="btn-new-project" aria-label="プロジェクトを作成" title="プロジェクトを作成">＋</button>
           </div>
           <div id="project-list"></div>
+        </section>
+        <!-- kiro-loop 制御面の差し込み口（src/features/kiro-loop/）。実装まで非表示。 -->
+        <section id="kiro-loop-nav" class="nav-group hidden" data-feature="kiro-loop" aria-labelledby="kiro-loop-group-title" hidden>
+          <div class="nav-group-header">
+            <h2 id="kiro-loop-group-title">kiro-loop</h2>
+          </div>
+          <div id="kiro-loop-list"></div>
         </section>
       </div>
       <div id="sidebar-footer" class="muted"></div>
@@ -50,19 +57,19 @@
       </header>
 
       <nav id="tabs">
-        <button class="tab active" data-tab="overview">概要</button>
-        <button class="tab" data-tab="backlog">タスク</button>
-        <button class="tab" data-tab="needs">要対応 <span id="needs-badge" class="badge hidden"></span></button>
-        <button class="tab" data-tab="flow">実行</button>
-        <button class="tab" data-tab="history">成果・履歴</button>
+        <button class="tab active" data-tab="overview" data-feature="agent-stack">概要</button>
+        <button class="tab" data-tab="backlog" data-feature="agent-stack">タスク</button>
+        <button class="tab" data-tab="needs" data-feature="agent-stack">要対応 <span id="needs-badge" class="badge hidden"></span></button>
+        <button class="tab" data-tab="flow" data-feature="agent-stack">実行</button>
+        <button class="tab" data-tab="history" data-feature="agent-stack">成果・履歴</button>
       </nav>
 
       <section id="content">
-        <div id="tab-overview" class="tabpane active"></div>
-        <div id="tab-backlog" class="tabpane"></div>
-        <div id="tab-needs" class="tabpane"></div>
-        <div id="tab-flow" class="tabpane"></div>
-        <div id="tab-history" class="tabpane"></div>
+        <div id="tab-overview" class="tabpane active" data-feature="agent-stack"></div>
+        <div id="tab-backlog" class="tabpane" data-feature="agent-stack"></div>
+        <div id="tab-needs" class="tabpane" data-feature="agent-stack"></div>
+        <div id="tab-flow" class="tabpane" data-feature="agent-stack"></div>
+        <div id="tab-history" class="tabpane" data-feature="agent-stack"></div>
       </section>
     </main>
   </div>

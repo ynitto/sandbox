@@ -1,0 +1,67 @@
+'use strict';
+
+// agent-project / agent-flow 制御面の既定設定。
+// base の DEFAULT_CONFIG に deepMerge される（features/index 経由）。
+
+module.exports = {
+  projects: {
+    // 監視する agent-project プロジェクトルートの一覧（1 行 1 プロジェクト。
+    // 通常は状態共有リポジトリの clone）。
+    // 例: ["C:\\clones\\payments", "/home/me/clones/webapp"]
+    // プロジェクトでないフォルダを登録すると「プロジェクトを束ねる親フォルダ」と
+    // みなし、配下から agent-project.yaml（または charter.md / backlog/ 等）を持つ
+    // ディレクトリを自動発見して、それぞれ 1 プロジェクトとして追加する。
+    roots: [],
+    // 親フォルダ登録時に配下を探索する深さ（既定 2 階層）。
+    scanDepth: 2,
+    // ~/.agent-project/instances/*.json（稼働発見レコード）から
+    // 稼働中プロジェクトを自動発見して roots に加える。
+    autoDiscover: true,
+    // 自動リロードの間隔（秒）。0 で無効（手動リロードのみ）。
+    refreshSec: 5,
+    // 選択中プロジェクトのリポジトリを git pull で最新化する間隔（秒）。
+    // 0 で自動 pull なし（サイドバーの ⇣ ボタンで手動 pull は常にできる）。
+    // ポーリング（refreshSec）よりずっと長い間隔にしてリモートへの負荷を抑える。
+    // 60 秒未満は 60 秒に切り上げる。
+    gitPullSec: 300,
+    // 状態共有 git 同期の push 側: ユーザー操作（指示ドロップ・inbox 投入・
+    // needs 記入・削除）のたびに、操作したディレクトリだけをコミットして push する。
+    // 「プロジェクトルート = 状態共有リポジトリの clone」を一次経路とするため既定 on。
+    // 非 git のパスでは commitPush が notRepo で無害にスキップされる。
+    // 有効時は pull も --rebase で取り込む。
+    gitAutoPush: true,
+    // approve / hold / reprioritize（決定記録を残す人の操作）に使う
+    // agent-project CLI。PATH に無い場合はフルパスや
+    // "python3 /path/to/agent-project.py" 形式でも指定できる。
+    command: 'agent-project',
+    // 人の指示（approve / hold / pin / defer）の届け方。
+    //   auto … 本体が稼働中なら commands/<name>.json のファイルドロップ
+    //          （WSL 内の本体にも届く）、稼働していなければ CLI、
+    //          CLI も使えなければファイルドロップにフォールバック
+    //   file … 常にファイルドロップ（次回の watch/起動が取り込む）
+    //   cli  … 常に CLI（従来の挙動）
+    actionMode: 'auto',
+    // agent-flow の明示バス（agent-project を --bus / 設定 bus: 付きで運用している
+    // 場合）のパス。空なら <root>/bus → agent-project 設定ファイル（.agent/）の bus: の
+    // 順にファイルから自動発見する。
+    flowBus: '',
+    // プロジェクト名 → agent-flow バスパスの写像。pure-remote（clone のみ・ローカル daemon
+    // 無し）で agent-flow の鏡写し先 clone を各プロジェクトに割り当てる。例:
+    //   { "alpha": "C:\\clones\\alpha\\agent-flow", "beta": "/home/me/clones/beta/agent-flow" }
+    // <root>/bus が実在（runs/ あり）ならそちらが優先される。
+    flowBusByProject: {},
+    // agent-flow daemon ロック（daemon-<sha1>.lock）の置き場。空なら ~/.agent の
+    // 設定ファイル lock_dir → 両ツール既定の $TMPDIR/agent-flow-locks を使う。
+    flowLockDir: '',
+  },
+  agent: {
+    // charter の AI 下書き・補完と読み取り専用 Doctor に共通で使うエージェント CLI。
+    //   kiro / claude / copilot / codex / cursor / ollama
+    cli: 'kiro',
+    // エージェント CLI に渡すモデル（空 = CLI / プロジェクト設定の既定）。
+    // 例: claude は sonnet・opus、copilot は claude-sonnet-4.5・gpt-5 等。
+    model: '',
+    // 1 回の補完呼び出しのタイムアウト秒（下限 30 秒）
+    timeoutSec: 180,
+  },
+};
