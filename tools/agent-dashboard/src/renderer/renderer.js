@@ -3204,7 +3204,8 @@ function runAdvice(run, group) {
     const lastRun = String((task.extra && task.extra.last_run) || '');
     const doneCount = (run.counts && run.counts.done) || 0;
     if (['ready', 'doing', 'offloaded', 'inbox'].includes(task.status)) {
-      const resume = !lastRun || lastRun === run.runId;
+      // canceled は続きから再開できない（新 run 固定）。failed/stalled だけ部分やり直し。
+      const resume = st !== 'canceled' && (!lastRun || lastRun === run.runId);
       const how = resume
         ? `失敗・未実行の工程だけをやり直します（完了済み ${doneCount} 件は温存）`
         : '新しい実行としてやり直します';

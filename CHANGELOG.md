@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard: canceled やり直しの文言を本体契約に合わせる
+
+- 助言・確認ダイアログ・トーストが「部分やり直し／同一 run 再開」と書いていた。
+  canceled は新 run 固定なので文言を修正（ボタンラベルと一致）。
+
 ### agent-project / agent-dashboard: canceled 後の同一 run-id 再突入を防ぐ
 
 - **cancel → ready のとき retries を進めなかった** — 次の `_new_run_id` が同じ id を生成し、
