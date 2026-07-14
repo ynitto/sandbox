@@ -205,6 +205,17 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
         dtok, dusd = parse_cost(msg)
         tokens += dtok
         cost += dusd
+        # 人が dashboard 等から run を中止したとき: verify=true でも done にしない。
+        # リトライを焼かず ready へ戻し、次パスで新しい run（または人が resume-run）を選べる。
+        if not ok and msg.rstrip().endswith("canceled"):
+            task.status = "ready"
+            persist_task(cfg, task)
+            append_journal(cfg.journal,
+                           f"cycle {cycle0 + settled + 1}: {task.id} offload run が canceled → "
+                           f"ready（人が中止・リトライ消費なし）")
+            release_claim(cfg, task)
+            settled += 1
+            continue
         res = _settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
                            policy, autonomy_cache, reasons)
         archived += res["archived"]
@@ -336,6 +347,14 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             if dtok or dusd:
                 append_journal(cfg.journal, f"cycle {cycle}: {task.id} cost tokens={dtok} usd={dusd:.4f}"
                                             f"（累計 tokens={tokens_used} usd={cost_used:.4f}）")
+            # 人が run を中止したとき: verify=true でも done にしない（リトライ消費なしで ready）。
+            if str(act_msg or "").rstrip().endswith("canceled"):
+                task.status = "ready"
+                persist_task(cfg, task)
+                append_journal(cfg.journal,
+                               f"cycle {cycle}: {task.id} run が canceled → ready（人が中止・リトライ消費なし）")
+                release_claim(cfg, task)
+                continue
             res = _settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,
                                verify_env, policy, autonomy_cache, reasons)
             archived += res["archived"]

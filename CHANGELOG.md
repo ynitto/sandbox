@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-dashboard / agent-project / agent-flow: 連携まわりの回帰バグを修正
+
+- **agent-dashboard: `taskIdOfRun` が改名後の `ap/<task-id>` ブランチを見ていなかった** —
+  コメントとテストは `ap/` なのに正規表現が旧 `kp/` のまま。旧形式 `run-<ts>-<rand>` の
+  「やり直し」がタスク逆引きに失敗し、`bus/inbox` 投入（daemon 無しでは誰も拾わない）へ
+  落ちていた。`ap/` を受け、旧データ互換で `kp/` も残す。
+- **agent-dashboard: やり直しがワークスペース（`selectedDir`）へ `resume-run` を書いていた** —
+  状態は `project.dir`（状態 worktree / `root:`）にある。`selectedDir` には backlog が無く
+  タスク経路に乗れない／乗っても本体が監視しないツリーへ命令が落ちる。`project.dir` に統一。
+- **agent-dashboard: `nodeTaskToken` が世代接尾辞を落としていなかった** —
+  agent-flow gitlab executor は `-rN`/`-vM` を落として安定化する。viewer が全文ハッシュすると
+  リトライ後のイシュー突合が外れ、クローズ済みが「実行中」のまま見える。executor と同契約に揃える。
+- **agent-dashboard: git pull / 同期修復が状態 worktree ではなくワークスペースを見ていた** —
+  リモートの backlog・commands・bus が画面に入らない。`project.dir` を pull/heal の対象にする。
+- **agent-dashboard: cancel の git 反映から `waits/` 削除が抜けていた** — リモートで park 表示が
+  一瞬復活しうる。`runs/<id>/waits` も pathspec に含める。
+- **agent-project: 同期 run と daemon submit の run-id ハッシュが割れていた** —
+  `_new_run_id`（hash(task.id)）と `_req_id_for`（hash(backlog)）が別系統。同一タスクが
+  UI 上で別 lineage に見える。`_new_run_id` を `_req_id_for` に統一。
+- **agent-project: canceled run を success 扱いにしていた** — `_flow_result_once` /
+  `_act_submit` が `canceled` を ok とし、offload 回収が `verify=true` で done 確定し得た。
+  canceled は失敗扱いし、reap / 同期 settle ではリトライを焼かず ready へ戻す。
+
 ### kiro-flow: モジュール分割（kiro-project と同じ断片合成）＋ zipapp 単一 CLI 配布
 
 - **背景**: 単一 `kiro-flow.py`（約 6,800 行）は LLM ワーカーが丸ごと読むと context を圧迫する。

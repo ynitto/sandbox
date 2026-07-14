@@ -79,11 +79,16 @@ function claimWinner(claimDir, now) {
 // gitlab executor が output に残すイシュー URL（却下時は data が無いため output から拾う）
 const ISSUE_URL_RE = /https?:\/\/[^\s)）」』]+\/-\/issues\/\d+/;
 
-// gitlab executor の決定的タスクトークン（_task_token と同一導出）。
+// gitlab executor の決定的タスクトークン（executors/gitlab.py `_task_token` と同一導出）。
 // 実行中（result 未確定）のノードでも、このトークンでイシュー本文の隠しマーカー
 // `<!-- agent-flow:task-token:kf-... -->` を検索すれば関連イシューへたどり着ける。
+// 世代接尾辞（-rN / -rN-vM）は落とす。リトライ／リバイズで run-id が変わっても同一
+// イシューへ再アタッチできる（executor と同じ安定化）。落とさないと viewer の突合が外れ、
+// クローズ済みイシューを「実行中」のまま表示し続ける。
 function nodeTaskToken(runId, nodeId) {
-  return 'kf-' + crypto.createHash('sha1').update(`${runId}/${nodeId}`).digest('hex').slice(0, 12);
+  const stableRun = String(runId || '').replace(/-r\d+(?:-v\d+)?$/, '');
+  const key = stableRun ? `${stableRun}/${nodeId}` : String(nodeId || '');
+  return 'kf-' + crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,11 +190,12 @@ function readRunMeta(busDir, runId) {
 // いないので、agent-project が付ける作業ブランチ ap/<task-id> から逆引きする。これが無いと
 // 旧形式の run は「どのタスクのものか」を viewer が言えず、再実行が inbox 投入（＝誰も
 // 拾わない無反応ボタン）へ落ちる。
+// 旧データ互換で kp/<task-id>（kiro 改名前）も受ける。
 function taskIdOfRun(runId, meta) {
   const fromId = parseRunId(runId).taskId;
   if (fromId) return fromId;
   const branch = String((meta && meta.workspace && meta.workspace.branch) || '');
-  const m = /^kp\/(.+)$/.exec(branch);
+  const m = /^(?:ap|kp)\/(.+)$/.exec(branch);
   return m ? m[1] : null;
 }
 

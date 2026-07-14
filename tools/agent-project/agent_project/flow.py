@@ -1,11 +1,13 @@
 from __future__ import annotations
 # flow.py — 元 agent-project.py の 4100-4640 行目（機械分割・内容無改変）。
 # 単体 import しない。agent_project/__init__.py が共有名前空間へ順に exec 合成する。
-def _new_run_id(task: "Task") -> str:
+def _new_run_id(task: "Task", cfg: "Config") -> str:
     """この試行の run-id。viewer が run ↔ タスクを突き合わせられる形にする
-    （req-<hash>-<task-id>-r<retries>。agent-flow の parseRunId / lineage もこの形を前提にしている）。"""
-    h = hashlib.sha1(task.id.encode("utf-8")).hexdigest()[:8]
-    return f"req-{h}-{task.id}-r{task.retries}"
+    （req-<hash>-<task-id>-r<retries>[-v<rev>]。dashboard の parseRunId / lineage もこの形を前提）。
+
+    daemon submit（_req_id_for）と同一導出にする。かつては hash(task.id) だったため、
+    同期 run と daemon/offload で同じタスクが別 lineage に割れて UI の系統まとめが壊れていた。"""
+    return _req_id_for(task, cfg, task.retries)
 
 
 _FLOW_TERMINAL = ("done", "failed", "canceled")
@@ -70,7 +72,7 @@ def run_id_for(cfg: "Config", task: "Task") -> str:
     rid = str(task.get("last_run") or "").strip()
     if rid and not task.get("feedback") and not task.get("revised") and _run_resumable(cfg, rid):
         return rid                        # 失敗・停滞した所だけやり直す（done は温存）
-    return _new_run_id(task)
+    return _new_run_id(task, cfg)
 
 
 def build_agent_flow_cmd(task: Task, cfg: "Config", use_git: bool = False,
@@ -275,7 +277,10 @@ class _Pending:
 
 def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool, bool, str]":
     """agent-flow result を1回だけ読む（待たない）。(terminal, ok, msg) を返す。
-    terminal=run が done/failed に達したか、ok=failed でないか。取得不能は (False,...) で継続待ち扱い。"""
+    terminal=run が終端（done/failed/canceled）に達したか。
+    ok=成功終端（done）か。failed / canceled は ok=False（canceled を success と取り違えない —
+    dashboard から人が中止した run を verify=true で done 確定させないため）。
+    取得不能は (False,...) で継続待ち扱い。"""
     base = _kf_base(cfg, use_git)
     try:
         res = subprocess.run(base + ["result", "--run-id", run_id, "--json"],
@@ -285,8 +290,11 @@ def _flow_result_once(cfg: "Config", use_git: bool, run_id: str) -> "tuple[bool,
         return (False, False, "")
     if not data.get("done"):
         return (False, False, "")
-    if data.get("status") == "failed":
+    status = str(data.get("status") or "")
+    if status == "failed":
         return (True, False, f"daemon run {run_id} failed")
+    if status == "canceled":
+        return (True, False, f"daemon run {run_id} canceled")
     return (True, True, f"daemon run {run_id} done")
 
 
@@ -342,12 +350,15 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
                                 cwd=str(cfg.workdir), timeout=60, capture_output=True, text=True)
             data = json.loads(res.stdout)
             if data.get("done"):
-                # done=True は終端（done/failed の両方）を意味する。failed は act 失敗として
-                # 扱い（verify=NG 相当で後段が retry/エスカレーション）、success と取り違えない。
+                # done=True は終端（done/failed/canceled）を意味する。failed / canceled は act
+                # 失敗として扱い（canceled を success と取り違えない）、success と区別する。
                 # orchestrator がクラッシュして daemon が failed に確定した場合もここで即検知でき、
                 # act_timeout までの永久待機を避けられる。
-                if data.get("status") == "failed":
+                st = str(data.get("status") or "")
+                if st == "failed":
                     return (False, f"daemon run {run_id} failed")
+                if st == "canceled":
+                    return (False, f"daemon run {run_id} canceled")
                 return (True, f"daemon run {run_id} done")
         except Exception:  # noqa: BLE001 — 取得失敗は次ポーリングで再試行
             pass

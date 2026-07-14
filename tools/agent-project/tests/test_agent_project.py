@@ -1544,6 +1544,17 @@ class TestActSubmitTerminal(unittest.TestCase):
             self.assertFalse(ok)              # failed を success と取り違えない
             self.assertIn("failed", msg)
 
+    def test_canceled_run_reported_as_failure(self):
+        # dashboard からの手動キャンセルを done（成功）と取り違えない
+        with tempfile.TemporaryDirectory() as d:
+            cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
+            with mock.patch.object(km.subprocess, "run",
+                                   self._fake_run({"done": True, "status": "canceled"})), \
+                 mock.patch.object(km.time, "sleep", lambda *_: None):
+                ok, msg = km._act_submit(self._task(), cfg, use_git=False)
+            self.assertFalse(ok)
+            self.assertIn("canceled", msg)
+
     def test_done_run_reported_as_success(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = cfg_for(Path(d), dry_run=False, act_timeout=30.0)
@@ -7120,6 +7131,25 @@ class TestAsyncOffload(unittest.TestCase):
                 km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
             self.assertNotEqual(km._load_task_file(cfg, "T1").norm_status(), "done")
 
+    def test_reap_canceled_run_does_not_mark_done(self):
+        # verify=true でも人が中止した run を done にしない（リトライも焼かない）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            self._offloaded(d, "T1", "run-T1", verify="true")
+            cfg = self._cfg(d)
+            km.ensure_dirs(cfg)
+            tasks = km.load_tasks(cfg.backlog)
+            with mock.patch.object(
+                    km, "_flow_result_once",
+                    return_value=(True, False, "daemon run run-T1 canceled")):
+                deltas = km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
+            self.assertEqual(deltas["settled"], 1)
+            self.assertEqual(deltas["archived"], 0)
+            t = km._load_task_file(cfg, "T1")
+            self.assertEqual(t.norm_status(), "ready")
+            self.assertEqual(t.retries, 0, "中止はリトライ消費なし")
+            self.assertFalse(t.get("flow_run"))
+
     def test_has_work_true_for_offloaded(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
@@ -7617,11 +7647,15 @@ class RunResumeTests(unittest.TestCase):
 
     def test_new_run_id_carries_the_task_and_retry(self):
         # viewer が run ↔ タスクを突き合わせられる形（req-<hash>-<task-id>-r<n>）
-        t = km.Task(id="TASK-9", title="x", status="ready", verify="true", retries=2)
-        rid = km._new_run_id(t)
-        self.assertTrue(rid.startswith("req-"))
-        self.assertIn("TASK-9", rid)
-        self.assertTrue(rid.endswith("-r2"))
+        # 同期 run と daemon submit は同一導出（lineage が割れない）
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(d)
+            t = km.Task(id="TASK-9", title="x", status="ready", verify="true", retries=2)
+            rid = km._new_run_id(t, cfg)
+            self.assertTrue(rid.startswith("req-"))
+            self.assertIn("TASK-9", rid)
+            self.assertTrue(rid.endswith("-r2"))
+            self.assertEqual(rid, km._req_id_for(t, cfg, 2), "同期 run と submit で同じ id")
 
     def test_cmd_passes_run_id_before_the_subcommand(self):
         # --run-id は agent-flow のグローバル引数（run サブコマンドより前）

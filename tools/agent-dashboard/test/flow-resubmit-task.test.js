@@ -143,6 +143,44 @@ const hoursAgo = (h) => new Date(Date.now() - h * 3600_000).toISOString().replac
     assert.ok(!/last_run/.test(md), 'viewer は backlog を直接書き換えない');
   });
 
+  await test('改名前の kp/<task-id> ブランチからもタスクを逆引きする', async () => {
+    const { root, busDir, runId } = scaffold({
+      runId: 'run-20260712-213419-legacy',
+      meta: {
+        status: 'failed', request: 'do it',
+        workspace: { branch: 'kp/TASK-9' },
+      },
+    });
+    const res = await resubmit({ dir: root, busDir, runId });
+    assert.strictEqual(res.viaTask, true);
+    assert.strictEqual(res.taskId, 'TASK-9');
+  });
+
+  await test('状態ルートとワークスペースが異なるとき、状態ルート側の backlog で続きから再開する', async () => {
+    // renderer は state.project.dir（状態 worktree）を flowResubmit に渡す。
+    // selectedDir（ワークスペース）を渡すと backlog が無く inbox へ落ちる。
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'kpv-resub-root-'));
+    const workspace = path.join(base, 'ws');
+    const stateRoot = path.join(base, 'state');
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(path.join(stateRoot, 'backlog'), { recursive: true });
+    fs.writeFileSync(path.join(stateRoot, 'backlog', 'TASK-9.md'),
+      '## TASK-9: 何かする\n- status: blocked\n- retries: 1\n');
+    const runId = 'req-a1b2c3d4-TASK-9-r1';
+    const busDir = path.join(stateRoot, 'bus');
+    const runDir = path.join(busDir, 'runs', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'meta.json'),
+      JSON.stringify({ status: 'failed', request: 'do it' }));
+
+    const wrong = await resubmit({ dir: workspace, busDir, runId });
+    assert.ok(!wrong.viaTask, 'ワークスペースには backlog が無い → タスク経路に乗らない');
+
+    const right = await resubmit({ dir: stateRoot, busDir, runId });
+    assert.strictEqual(right.viaTask, true, '状態ルートなら resume-run');
+    assert.ok(fs.existsSync(path.join(stateRoot, 'commands')));
+  });
+
   await test('実行中（リース生存）の run は拒否する', async () => {
     const { root, busDir, runId } = scaffold({
       withTask: false,
