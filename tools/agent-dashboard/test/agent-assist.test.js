@@ -9,8 +9,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const agent = require('../src/main/agent');
-const ipcSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8');
-const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
+const ipcSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'agent-project', 'main', 'ipc.js'),
+  'utf8'
+);
+const preloadSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'agent-project', 'preload.js'),
+  'utf8'
+);
 
 let passed = 0;
 function test(name, fn) {
@@ -214,7 +220,10 @@ test('doctorPrompt: 任意の補足文を画面データと分離して渡す', 
 
 test('Doctorはpreloadの限定APIから専用IPCだけを呼び出す', () => {
   assert.ok(ipcSource.includes("handle('agent:doctor'"));
-  assert.ok(preloadSource.includes("agentDoctor: (args) => invoke('agent:doctor', args)"));
+  assert.ok(
+    preloadSource.includes("agentDoctor: (invoke) => (args) => invoke('agent:doctor', args)"),
+    'agent-project preload が agent:doctor だけを露出する'
+  );
   const start = ipcSource.indexOf("handle('agent:doctor'");
   const end = ipcSource.indexOf("handle('agent:resolve'", start);
   const handler = ipcSource.slice(start, end);

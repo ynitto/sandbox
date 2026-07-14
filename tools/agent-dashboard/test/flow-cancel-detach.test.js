@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ipcSource = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'main', 'ipc.js'),
+  path.join(__dirname, '..', 'src', 'features', 'agent-project', 'main', 'ipc.js'),
   'utf8'
 );
 

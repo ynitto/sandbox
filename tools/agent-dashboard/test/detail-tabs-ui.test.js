@@ -132,6 +132,7 @@ assert.ok(
 const renderNeedDetailWithVerifyRevision = new Function(
   'isNeedSent', 'esc', 'needKindLabel', 'riskBadgeHtml', 'needDisplayTitle', 'NEED_ASK',
   'renderNeedFacts', 'needActionsHtml', 'specFilesHtml', 'mdToHtml', 'needVerifyRevisionHtml',
+  'taskForNeed', 'taskCompletionHint', 'runsForTask',
   `${grab('renderNeedDetail')}; return renderNeedDetail;`
 )(
   () => false,
@@ -144,7 +145,10 @@ const renderNeedDetailWithVerifyRevision = new Function(
   () => '<div>回答欄</div>',
   () => '',
   (value) => value,
-  needVerifyRevisionHtml
+  needVerifyRevisionHtml,
+  taskForNeed,
+  () => null,
+  () => []
 );
 assert.ok(
   renderNeedDetailWithVerifyRevision(

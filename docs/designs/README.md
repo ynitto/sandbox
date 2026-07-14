@@ -11,7 +11,7 @@
 3. [`codd-gate-design.md`](./codd-gate-design.md) — ドキュメント・コード・テストの一貫性を「受け入れ前ゲート」と「負債棚卸し→タスク化」で維持する決定的ツールの設計正典。agent-project に依存しない独立ツールで、結合点は `schemas/` の共通データ契約のみ。
 4. [`agent-tools-rename-design.md`](./agent-tools-rename-design.md) — 旧 `kiro-*` 系統を `agent-*` へクローン移行・改称する方針と新旧名称対応表。agent-project/agent-flow/agent-dashboard の移行は完了、`kiro-loop → agent-loop` の移行のみ未了で、現行の指針であり続けている（詳細は次節「ループ拡張」の注記）。
 
-> **補足**: agent-dashboard（フロントエンド）の設計書は本ディレクトリには無く、`docs/plans/2026-07-14-agent-dashboard-*-design.md` 等に分散している（棚卸し中に判明。本 README のスコープ外のためリンクは追加していない）。
+> **補足**: agent-dashboard の画面設計は主に `docs/plans/2026-07-14-agent-dashboard-*-design.md` 等に分散。本ディレクトリには制御面分離の正典 [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) を置く。
 
 ---
 
@@ -41,6 +41,7 @@
 
 | ファイル | 要旨 |
 |---|---|
+| [`agent-dashboard-feature-split-design.md`](./agent-dashboard-feature-split-design.md) | agent-dashboard を base / agent-project / kiro-loop にソース分離し、フルプラグインなしで他グループが kiro-loop 制御面を差し込めるようにする設計。 |
 | [`agent-cli-plugin-design.md`](./agent-cli-plugin-design.md) | agent-project/agent-flow の LLM 実行 CLI をプラグイン化しデータ契約のみで拡張可能にし、失敗を quota/auth/env/transient で決定的にトリアージする設計。 |
 | [`agent-flow-retry-inheritance-design.md`](./agent-flow-retry-inheritance-design.md) | agent-flow のリトライ時に先行 run の結果・成果物・作業ブランチを再利用し先行 run を安全削除する設計。 |
 | [`git-gitlab-circuit-breaker-pattern.md`](./git-gitlab-circuit-breaker-pattern.md) | git/GitLab へアクセスする任意ツール向けの汎用サーキットブレーカー＋監視パターン。 |

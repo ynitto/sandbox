@@ -10,6 +10,12 @@
 [gitlab-review-viewer](../gitlab-review-viewer/) と同じ構成（プレーン Electron・
 ランタイム依存なし・main / preload / renderer の 3 層）で作られている。
 
+**ソース構成（制御面分離）**: Electron シェル等の共通部は `src/base/`、
+agent-project / agent-flow の制御は `src/features/agent-project/` に置き、
+将来の kiro-loop 制御は `src/features/kiro-loop/` へ差し込めるようにしている
+（動的プラグインではない。列挙合成のみ。詳細は
+[`docs/designs/agent-dashboard-feature-split-design.md`](../../docs/designs/agent-dashboard-feature-split-design.md)）。
+
 **概要から詳細へ**: 最初の画面で「現在の状態／あなたの対応／進捗／成果」を把握し、
 必要な箇所だけ「タスクを見る」「実行を見る」「成果を見る」から深掘りできる。
 プロジェクト定義の編集やリセットは「プロジェクト設定」にまとめ、日常の確認画面から分離している。
