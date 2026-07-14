@@ -661,7 +661,8 @@ function listArchivedRuns(projectDir) {
   return out;
 }
 
-// バス配下の run を新しい順に一覧する（各 run はサマリのみ）
+// バス配下の run を新しい順に一覧する（各 run はサマリのみ）。
+// limit<=0 は件数制限なし（live 集合の判定用）。
 function listRuns(busDir, limit = 30) {
   const runsDir = path.join(busDir, 'runs');
   const entries = [];
@@ -676,6 +677,7 @@ function listRuns(busDir, limit = 30) {
     entries.push(run);
   }
   entries.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  if (!limit || limit <= 0) return entries;
   return entries.slice(0, limit);
 }
 

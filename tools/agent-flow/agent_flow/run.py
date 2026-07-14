@@ -369,6 +369,10 @@ def cmd_run(args) -> int:
                 break
             if orch.poll() is not None and bus.get_status() not in TERMINAL:
                 print("\n>>> orchestrator が終了しました。停止します。", flush=True)
+                # 非終端のまま放置すると上位が exit 0 を success と誤読する。failed に確定する。
+                if bus.get_status() not in TERMINAL:
+                    bus.mark_run_failed(run_id, "orchestrator が非終端のまま終了")
+                    bus.sync_push(f"fail run {run_id}: orchestrator exited")
                 break
             time.sleep(max(args.poll, 1))
     finally:
@@ -382,10 +386,10 @@ def cmd_run(args) -> int:
         print(final.get("summary", ""))
     # run が failed/canceled で終端したら非 0 を返す。failed は上位＝agent-project が
     # act 失敗として検知しリトライできるようにする。canceled も 0 だと verify=true で偽 done
-    # になる（agent-project は戻り値で成否を見る）。done は 0。
+    # になる（agent-project は戻り値で成否を見る）。done は 0。非終端のままなら failed 扱い。
     st = bus.get_status()
-    if st == "failed":
-        return 1
+    if st == "done":
+        return 0
     if st == "canceled":
         return 2
-    return 0
+    return 1

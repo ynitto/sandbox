@@ -4881,7 +4881,10 @@ function handleOpenTarget({ url }) {
     const name = u.searchParams.get('project');
     await refreshDiscovery();
     const p =
-      (root && state.discovery.projects.find((x) => x.dir === root)) ||
+      (root &&
+        state.discovery.projects.find(
+          (x) => x.dir === root || x.root === root
+        )) ||
       (name && state.discovery.projects.find((x) => x.name === name)) ||
       null;
     if (p) {

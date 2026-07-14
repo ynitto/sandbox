@@ -2296,6 +2296,41 @@ class GitlabAutoMergeTests(unittest.TestCase):
                                           gl_plugin._config(), False)
         self.assertIsNone(r["decision"])                     # 未決着のまま（人の介入も可能）
 
+    def test_midflight_rework_rejects_without_closing_issue(self):
+        # 人の `# 差し戻し` 見出し → rejected だがイシューは open のまま（終端却下と違う）
+        issue = {"labels": ["status:open"], "state": "opened"}
+        notes = [{"id": 42, "body": "# 差し戻し\nlocalhost ではなく実サーバで",
+                  "system": False, "author": {"username": "alice", "id": 1}}]
+        calls = []
+
+        def api(host, token, method, path, data=None, params=None):
+            calls.append((method, path, data))
+            if method == "GET" and "/issues/42" in path:
+                return issue
+            return {"ok": True}
+
+        def list_side(host, token, path, params=None):
+            if path.endswith("/related_merge_requests"):
+                return []
+            return []
+
+        with mock.patch.object(gl_plugin, "gl_api", side_effect=api), \
+             mock.patch.object(gl_plugin, "gl_api_list", side_effect=list_side), \
+             mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            r = gl_plugin._check_decision("gitlab.com", "tok", "group/repo", 42, "u42",
+                                          gl_plugin._config(), False)
+        self.assertEqual(r["decision"], "rejected")
+        self.assertFalse(r["data"]["closed"])
+        self.assertTrue(r["data"].get("rework"))
+        self.assertIn("実サーバ", r["data"]["guidance"])
+        # state_event=close していない
+        self.assertFalse(any(
+            c[0] == "PUT" and (c[2] or {}).get("state_event") == "close" for c in calls))
+        # needs-rework ラベル付け替えはある
+        relabel = next(c for c in calls if c[0] == "PUT" and "/issues/42" in c[1]
+                       and c[2] and "labels" in c[2])
+        self.assertIn("status:needs-rework", relabel[2]["labels"])
+
     # --- close_issues: manual（クローズは人。人のクローズを監視して決着） ---
 
     def _check_manual(self, issue, mrs, notes=None):
@@ -5686,6 +5721,46 @@ class GitlabHumanAgentDiscriminationTests(unittest.TestCase):
         # エージェント（gitlab-idd マーカー）の差し戻し見出しは人でないので拾わない
         notes = [{"body": "# 差し戻し\n<!-- gitlab-idd:non-requester-reviewed:z -->",
                   "system": False, "author": {"username": "rev-bot"}}]
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
+            self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
+                             {"rework_heading": "差し戻し"}), "")
+
+    def test_rework_payload_keeps_issue_open_and_consumes_note(self):
+        # 途中差し戻しはイシューを閉じず、note を消費して再アタッチ即却下を防ぐ
+        notes = [{"id": 77, "body": "# 差し戻し\n実サーバで", "system": False,
+                  "author": {"username": "alice"}}]
+        calls = []
+
+        def api(host, token, method, path, data=None, params=None):
+            calls.append((method, path, data))
+            return {"ok": True}
+
+        with mock.patch.object(gl_plugin, "_get_comments", return_value=notes), \
+             mock.patch.object(gl_plugin, "gl_api", side_effect=api):
+            text, data = gl_plugin._rework_payload(
+                "h", "t", "p", 1, "u1", [], {"status:open"},
+                {"rework_heading": "差し戻し", "rework_label": "status:needs-rework",
+                 "approved_label": "status:approved"},
+                "差し戻し（人コメントの見出し）")
+        self.assertFalse(data["closed"])
+        self.assertTrue(data.get("rework"))
+        self.assertIn("実サーバで", data["guidance"])
+        self.assertIn("[gitlab-reject]", text)
+        # close していない
+        self.assertFalse(any(c[0] == "PUT" and "state_event" in str(c[2] or {})
+                             for c in calls))
+        # 消費マーカーを投稿
+        note_posts = [c for c in calls if c[0] == "POST" and "/notes" in c[1]]
+        self.assertEqual(len(note_posts), 1)
+        self.assertIn("rework-consumed:77", note_posts[0][2]["body"])
+
+    def test_rework_requested_skips_consumed_note(self):
+        notes = [
+            {"id": 77, "body": "# 差し戻し\n古い", "system": False,
+             "author": {"username": "alice"}},
+            {"id": 80, "body": "agent-flow: done <!-- gitlab-idd:rework-consumed:77 -->",
+             "system": False, "author": {"username": "bot"}},
+        ]
         with mock.patch.object(gl_plugin, "_get_comments", return_value=notes):
             self.assertEqual(gl_plugin._rework_requested("h", "t", "p", 1,
                              {"rework_heading": "差し戻し"}), "")

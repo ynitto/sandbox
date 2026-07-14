@@ -87,7 +87,10 @@ def append_runlog(path: "Path | None", record: dict) -> None:
 def _block(cfg, task, reason, reasons, evidence: str = ""):
     # offloaded のまま blocked にすると、走っている flow が放置され reap も拾えない。
     if task.norm_status() == "offloaded" or task.get("flow_run"):
-        detach_flow_run(cfg, task, reason[:120] or "hold/block により委譲から切り離し")
+        detached = detach_flow_run(cfg, task, reason[:120] or "hold/block により委譲から切り離し")
+        if detached:
+            # canceled な同一 run-id を approve 後に作り直さない（cancel→ready と同じく retries を進める）
+            task.retries += 1
     task.status = "blocked"
     reasons[task.id] = reason
     _remember_needs_reason(task, reason)  # 票を失っても ensure_needs が同じ理由で作り直せるように

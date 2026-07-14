@@ -328,6 +328,8 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
     if triage and triage[0] in AGENT_ERROR_ENV_CLASSES:
         cls, hint = triage
         label = {"quota": "利用上限", "auth": "認証切れ", "env": "実行環境の問題"}[cls]
+        # needs にメモを書いて [x] しても run_id_for が新 run を作らないよう、再開約束を残す。
+        task.set("env_resume", "1")
         _block(cfg, task, f"[agent-error:{cls}] 環境の問題（{label}）: {hint} "
                           "タスクの内容の問題ではないため、リトライ回数は消費していません。"
                           "環境を直してから approve すると、同じ run の続き（失敗した工程だけ）"

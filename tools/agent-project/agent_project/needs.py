@@ -188,8 +188,16 @@ def read_feedback(path: Path) -> str:
 
 
 def feedback_submitted(path: Path) -> bool:
-    """確定チェックボックスが [x] かどうか（= 人が編集を終えた明示シグナル）。"""
-    return any(CHECKED_RE.match(ln) for ln in path.read_text(encoding="utf-8").splitlines())
+    """確定チェックボックスが [x] かどうか（= 人が編集を終えた明示シグナル）。
+    Decision Outcome / フィードバック欄配下だけを見る（本文のチェックリスト誤発火を防ぐ）。"""
+    text = path.read_text(encoding="utf-8")
+    hits = [(text.find(m), m) for m in FEEDBACK_MARKERS]
+    hits = [(i, m) for i, m in hits if i >= 0]
+    if not hits:
+        return False
+    i, marker = min(hits)
+    body = text[i + len(marker):]
+    return any(CHECKED_RE.match(ln) for ln in body.splitlines())
 
 
 def settled(cfg: "Config", f: Path) -> bool:

@@ -6220,6 +6220,39 @@ class TestFailureTriage(unittest.TestCase):
             body = needs[0].read_text(encoding="utf-8")
             self.assertIn("認証", body)                         # 何を直すかが書いてある
             self.assertIn("続き", body)                         # 直せば続きから、と言い切る
+            self.assertEqual(t.get("env_resume"), "1")
+
+    def test_env_resume_ignores_feedback_for_run_id(self):
+        # needs にメモを書いて feedback が付いても、env_resume なら同じ failed run を再開する
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: ready\n- verify: `true`\n"
+                "- last_run: run-env\n- env_resume: 1\n"
+                "- feedback: トークンを入れ直した\n",
+                encoding="utf-8")
+            cfg = cfg_for(d)
+            (cfg.bus / "runs" / "run-env").mkdir(parents=True)
+            (cfg.bus / "runs" / "run-env" / "meta.json").write_text(
+                json.dumps({"status": "failed", "updated_at": "2026-07-01T00:00:00Z"}),
+                encoding="utf-8")
+            t = km.load_tasks(cfg.backlog)[0]
+            self.assertEqual(km.run_id_for(cfg, t), "run-env")
+
+    def test_feedback_submitted_ignores_body_checkbox(self):
+        # 本文のチェックリスト [x] だけでは確定扱いにしない（Decision Outcome 配下だけ）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            nf = Path(d) / "n.md"
+            nf.write_text(
+                "# 要対応\n\n- [x] 手順1は済\n\n## Decision Outcome\n\n- [ ] 確定\n",
+                encoding="utf-8")
+            self.assertFalse(km.feedback_submitted(nf))
+            nf.write_text(
+                "# 要対応\n\n- [x] 手順1は済\n\n## Decision Outcome\n\n- [x] 確定\n",
+                encoding="utf-8")
+            self.assertTrue(km.feedback_submitted(nf))
 
     def test_settle_failure_content_class_retries_as_before(self):
         with tempfile.TemporaryDirectory() as d:

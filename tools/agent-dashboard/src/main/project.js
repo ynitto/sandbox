@@ -503,7 +503,12 @@ function parseNeeds(text, id) {
   }
   const title = body.match(/^#\s+(.+)$/m);
   if (title) need.title = title[1].trim();
-  need.decided = /-\s*\[x\]/i.test(body);
+  need.decided = (() => {
+    // 確定 [x] は Decision Outcome 配下だけ（本文のチェックリストは対象外）
+    const parts = body.split(/^##\s+Decision Outcome\s*$/m);
+    if (parts.length < 2) return false;
+    return /-\s*\[x\]/i.test(parts[1]);
+  })();
   need.body = body.trim();
 
   // 記入用の足場より前（本文）だけを対象に要点を抽出する

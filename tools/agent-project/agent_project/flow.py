@@ -68,9 +68,12 @@ def run_id_for(cfg: "Config", task: "Task") -> str:
     全部やり直すことになる（コストも時間も N 倍）。
 
     ただし人がタスクを触ったとき（revise / 差し戻しの feedback）は計画そのものが変わるので、
-    続きからではなく新しい run を作る。"""
+    続きからではなく新しい run を作る。環境要因ブロック（env_resume）からの復帰は、人が
+    needs にメモを書いても計画変更ではない——同じ run の続きを約束しているので feedback を無視する。"""
     rid = str(task.get("last_run") or "").strip()
-    if rid and not task.get("feedback") and not task.get("revised") and _run_resumable(cfg, rid):
+    plan_changed = bool(task.get("revised")) or (
+        bool(task.get("feedback")) and not task.get("env_resume"))
+    if rid and not plan_changed and _run_resumable(cfg, rid):
         return rid                        # 失敗・停滞した所だけやり直す（done は温存）
     return _new_run_id(task, cfg)
 
@@ -178,11 +181,12 @@ def daemon_running(cfg: "Config", use_git: bool = False) -> bool:
 def _pin_last_run(cfg: "Config", task: Task, run_id: str) -> None:
     """この試行で使った run-id をタスクへ残す（再開判断・viewer 突合・作業ブランチ解決用）。
     同期 run 以外（submit/offload）でも必ず書く。書いていないと offload 回収後に last_run が無く、
-    delivery / protect / resume が状態 worktree のノイズ差分を見てしまう。"""
+    delivery / protect / resume が状態 worktree のノイズ差分を見てしまう。
+    再開（または新 run）を掴んだ時点で env_resume は消化する。"""
     rid = str(run_id or "").strip()
     if not rid:
         return
-    task.drop("last_run")
+    task.drop("last_run", "env_resume")
     task.extra.append(("last_run", rid))
     persist_task(cfg, task)
 
@@ -439,8 +443,10 @@ def _act_submit(task: Task, cfg: "Config", use_git: bool) -> "tuple[bool, str]":
             pass
         if _task_file_revised(cfg, task):
             # 実行中に人が revise（軌道修正）→ 結果待ちを打ち切り、settle 側の積み直しへ。
-            # daemon 側の run は完走しうるが結果は確定させない。次の試行は rev 世代で
-            # 新しい req_id になるため、この古い run に合流することもない。
+            # 放置すると完走して二重書き込みしうるので、offload と同じく cancel で切り離す。
+            # 次の試行は rev 世代で新しい req_id になるため、この古い run に合流することもない。
+            task.set("flow_run", run_id)
+            detach_flow_run(cfg, task, "revise により結果待ちを中断")
             return (False, f"daemon run {run_id} の結果待ちを中断（人の revise を検知）")
         time.sleep(2.0)
     # _act_run と同様、タイムアウト後に daemon 側 run を残すと次試行が二重実行になる。

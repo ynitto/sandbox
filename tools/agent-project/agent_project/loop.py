@@ -365,6 +365,13 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             # 人が run を中止したとき: verify=true でも done にしない（リトライ非消費で ready）。
             # retries は上げる＝次の run-id を変える。上げないと canceled な同一 id を作り直し、
             # agent-flow は終端 run を再開できず永久 no-op になる。
+            # act 中の revise（軌道修正）は失敗/canceled より優先——結果を確定せず積み直す。
+            if str(act_msg or "").rstrip().endswith("canceled") or act_ok is False:
+                fresh = _load_task_file(cfg, task.id)
+                if fresh is not None and fresh.get("revised"):
+                    _requeue_revised(cfg, task, fresh, cycle)
+                    release_claim(cfg, task)
+                    continue
             if str(act_msg or "").rstrip().endswith("canceled"):
                 task.retries += 1
                 task.status = "ready"

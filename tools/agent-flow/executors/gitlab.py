@@ -1062,8 +1062,10 @@ def _check_decision(host, token, project, iid, url, cfg, active_seen,
             host, token, project, iid, labels_now, approved, done_label)
     # 途中の差し戻し（イシューを閉じない要修正）: 人コメントの見出しに差し戻し語があれば却下級として拾う。
     # 汎用コントラクト（decision=rejected + guidance）へ変換＝上位（本体）に gitlab 固有分岐を作らない。
+    rework = False
     if not decision and _rework_requested(host, token, project, iid, cfg):
         decision, reason = "rejected", "差し戻し（人コメントの見出し）"
+        rework = True
     if decision == "approved" and not issue_closed and \
             str(cfg.get("close_issues") or "auto").strip().lower() == "manual":
         # クローズは人（manual）: 承認条件（全 MR マージ）は揃ったがクローズしない。
@@ -1078,8 +1080,14 @@ def _check_decision(host, token, project, iid, url, cfg, active_seen,
         return {"decision": "approved", "text": text, "data": data,
                 "active_seen": active_seen, "mrs": len(mrs)}
     if decision == "rejected":
-        text, data = _rejected_payload(host, token, project, iid, url, mrs,
-                                       labels_now, done_label, reason)
+        # 途中差し戻しはイシューを閉じない（docstring / rework_heading 契約）。
+        # 終端の却下（未マージクローズ等）だけ _rejected_payload でクローズする。
+        if rework:
+            text, data = _rework_payload(host, token, project, iid, url, mrs,
+                                         labels_now, cfg, reason)
+        else:
+            text, data = _rejected_payload(host, token, project, iid, url, mrs,
+                                           labels_now, done_label, reason)
         return {"decision": "rejected", "text": text, "data": data,
                 "active_seen": active_seen, "mrs": len(mrs)}
     # 未決着。人が動き出した兆候（MR 出現 or approved/done ラベル）を検知したら active_seen を上げる。
@@ -1205,18 +1213,53 @@ def _heading_has(body: str, kw: str) -> bool:
     return False
 
 
+_REWORK_CONSUMED_RE = re.compile(r"<!--\s*gitlab-idd:rework-consumed:(\d+)\s*-->")
+
+
+def _consumed_rework_ids(host, token, project, iid) -> set:
+    """本体へ伝えた差し戻し note_id（agent-flow が残す消費マーカー）の集合。
+    イシューを閉じずに rejected にしたあと、同じ見出しで再アタッチ即却下にならないようにする。"""
+    try:
+        notes = _get_comments(host, token, project, iid)
+    except RuntimeError:
+        return set()
+    out: set = set()
+    for n in notes if isinstance(notes, list) else []:
+        for m in _REWORK_CONSUMED_RE.finditer(str(n.get("body") or "")):
+            try:
+                out.add(int(m.group(1)))
+            except ValueError:
+                pass
+    return out
+
+
+def _rework_note(host, token, project, iid, cfg=None) -> "dict | None":
+    """未消費の差し戻し見出しを持つ人コメントを返す（新しいものを優先。無ければ None）。"""
+    cfg = cfg if cfg is not None else _config()
+    kw = str(cfg.get("rework_heading") or "").strip()
+    if not kw:
+        return None
+    consumed = _consumed_rework_ids(host, token, project, iid)
+    for n in reversed(_human_notes(host, token, project, iid, cfg)):
+        nid = n.get("id")
+        try:
+            if nid is not None and int(nid) in consumed:
+                continue
+        except (TypeError, ValueError):
+            pass
+        if _heading_has(str(n.get("body") or ""), kw):
+            return n
+    return None
+
+
 def _rework_requested(host, token, project, iid, cfg=None) -> str:
     """人コメントの**見出し**に差し戻しキーワードがあれば、その差し戻し指示（本文）を返す（無ければ ""）。
     途中の差し戻し（イシューを閉じずの要修正）を、終端の approve/reject を待たず拾うためのプラグイン内検知。
     本体へは汎用コントラクト（decision=rejected + guidance）に変換して返す＝gitlab 固有の分岐を上位に作らない。"""
-    cfg = cfg if cfg is not None else _config()
-    kw = str(cfg.get("rework_heading") or "").strip()
-    if not kw:
+    n = _rework_note(host, token, project, iid, cfg)
+    if not n:
         return ""
-    for n in reversed(_human_notes(host, token, project, iid, cfg)):   # 新しい差し戻しを優先
-        if _heading_has(str(n.get("body") or ""), kw):
-            return str(n.get("body") or "").strip()[:2000]
-    return ""
+    return str(n.get("body") or "").strip()[:2000]
 
 
 def _decision_from_comments(host, token, project, iid) -> str:
@@ -1291,6 +1334,48 @@ def _deleted_payload(iid, url):
             "merged_mrs": [], "closed": True}
     text = (f"[gitlab-reject] 却下されました（イシューが削除された＝取り下げ）（{url}）。"
             "人コメントは読めないため自動で原因を判断してやり直してください。")
+    return text, data
+
+
+def _rework_payload(host, token, project, iid, url, mrs, labels_now, cfg=None, reason=""):
+    """途中の差し戻し: 人コメントを取り込み、**イシューは閉じず**却下ペイロードを作る。
+    ワーカーが同じイシュー上で直せるように open のまま残し、拾った note は消費マーカーを付けて
+    再アタッチ直後の即却下ループを防ぐ。ラベルは needs-rework へ寄せる（自動チェック差し戻しと同型）。"""
+    cfg = cfg if cfg is not None else _config()
+    why = reason or "差し戻し（人コメントの見出し）"
+    note = _rework_note(host, token, project, iid, cfg)
+    guidance = str((note or {}).get("body") or "").strip()[:2000]
+    if not guidance:
+        notes = _human_notes_payload(host, token, project, iid)
+        guidance = "\n\n".join(n["body"] for n in notes if n.get("body"))[:2000]
+    else:
+        notes = _human_notes_payload(host, token, project, iid)
+    approved = str(cfg.get("approved_label") or "status:approved")
+    rework_label = str(cfg.get("rework_label") or "status:needs-rework")
+    try:
+        new_labels = sorted((set(labels_now) - {approved}) | {rework_label})
+        _set_issue_labels(host, token, project, iid, new_labels)
+    except RuntimeError as e:
+        _log(f"イシュー #{iid} の差し戻しラベル付け替えに失敗（無視）: {e}")
+    nid = (note or {}).get("id")
+    if nid is not None:
+        try:
+            _add_note(host, token, project, iid,
+                      f"差し戻しを本体へ伝えました <!-- gitlab-idd:rework-consumed:{int(nid)} -->")
+        except (RuntimeError, TypeError, ValueError) as e:
+            _log(f"イシュー #{iid}: 差し戻し消費マーカーの投稿に失敗（無視）: {e}")
+    data = {"issue_iid": iid, "web_url": url, "decision": "rejected", "reason": why,
+            "guidance": guidance or "",
+            "merged_mrs": [m.get("iid") for m in mrs if str(m.get("state") or "") == "merged"],
+            "closed": False, "rework": True}
+    if notes:
+        data["notes"] = notes
+    _log(f"イシュー #{iid}: 途中差し戻し（{why}）。イシューは open のまま。")
+    if guidance:
+        text = f"[gitlab-reject] 差し戻し（{why}）（{url}）。やり直し指示: {guidance}"
+    else:
+        text = (f"[gitlab-reject] 差し戻し（{why}）（{url}）。"
+                "人コメントが無いため自動で原因を判断してやり直してください。")
     return text, data
 
 

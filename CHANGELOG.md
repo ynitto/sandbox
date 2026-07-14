@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: Set1 individual バグ修正
+
+- **agent-flow: 途中「差し戻し」がイシューをクローズしていた** — docstring は閉じないとあるのに
+  `_rejected_payload` 経由で閉じていた。`_rework_payload` で open のまま guidance を返し、
+  note 消費マーカーで再アタッチ即却下ループを防ぐ。
+- **agent-flow: 同期 run が非終端 orch 死で exit 0 になり得た** — failed 確定＋非 0。
+  orch cancel は `close_issues` 時 waits を残し、daemon 終端時に on_cancel してから掃除。
+- **agent-project: act 失敗/canceled が revise 予約を踏み潰した** — 先に `revised` を見て積み直し。
+- **agent-project: submit 結果待ち中の revise が daemon run を放置した** — `detach_flow_run` で止める。
+- **agent-project: doctor の orphan reap が watch 限定だった** — 単発 run でも刈る。
+- **agent-project: hold/block 切り離し後に同一 run-id を再生成し得た** — detach 時に retries を進める。
+- **agent-project: 環境ブロック復帰が feedback で新 run になっていた** — `env_resume` で同 run 再開。
+- **agent-project / dashboard: 本文チェックリストの [x] で確定扱い** — Decision Outcome 配下のみ。
+- **agent-dashboard: live 判定が listRuns(30) だけだった** — 31 件目以降が archived 誤表示。
+- **agent-dashboard: ディープリンクが状態ルート（`root`）を見逃した** — `x.root` も照合。
+
 ### agent-dashboard: canceled やり直しの文言を本体契約に合わせる
 
 - 助言・確認ダイアログ・トーストが「部分やり直し／同一 run 再開」と書いていた。

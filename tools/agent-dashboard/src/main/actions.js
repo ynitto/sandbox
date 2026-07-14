@@ -73,8 +73,21 @@ function submitFeedback(needsFile, feedback, stub) {
     // 除いたマーカー以降すべてを人の記入として読む）
     text = text.replace(DECISION_MARKER, `${DECISION_MARKER}\n\n${fb}\n`);
   }
-  if (/^\s*-\s*\[x\]/im.test(text)) {
-    // すでに確定済み
+  // 確定 [x] は Decision Outcome 配下だけを触る（本文チェックリストを潰さない）
+  const outcomeIdx = text.search(/^##\s+Decision Outcome\s*$/m);
+  if (outcomeIdx >= 0) {
+    const head = text.slice(0, outcomeIdx);
+    let tail = text.slice(outcomeIdx);
+    if (/^\s*-\s*\[x\]/im.test(tail)) {
+      // すでに確定済み
+    } else if (/-\s*\[ \]/.test(tail)) {
+      tail = tail.replace(/-\s*\[ \]/, '- [x]');
+    } else {
+      tail = `${tail.replace(/\n*$/, '\n')}\n- [x] 確定\n`;
+    }
+    text = head + tail;
+  } else if (/^\s*-\s*\[x\]/im.test(text)) {
+    // マーカー無しのレガシー票: 既存 [x] があれば触らない
   } else if (/-\s*\[ \]/.test(text)) {
     text = text.replace(/-\s*\[ \]/, '- [x]');
   } else {

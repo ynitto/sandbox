@@ -125,9 +125,13 @@ function registerIpcHandlers() {
   // bus の run はポーリングのたびにプロジェクト配下（<dir>/flow-archive/）へスナップショットし、
   // 掃除で bus から消えた run も archived: true 付きで一覧に残す（完了直後に表示が消える問題の対策）。
   handle('flow:runs', ({ dir, busDir, limit }) => {
-    const runs = flow.listRuns(busDir, limit || 30);
+    // live 判定はバス上の全 run で行う。limit 適用後の短い一覧だけだと、
+    // 31 件目以降の生きた run が archived 扱いになり UI が誤表示する。
+    const allLive = flow.listRuns(busDir, 0);
+    const lim = Math.max(0, Number(limit) || 30);
+    const runs = lim > 0 ? allLive.slice(0, lim) : allLive;
     if (dir) {
-      for (const r of runs) {
+      for (const r of allLive) {
         try {
           flow.archiveRunSnapshot(dir, busDir, r);
         } catch {
@@ -135,7 +139,7 @@ function registerIpcHandlers() {
         }
       }
     }
-    const live = new Set(runs.map((r) => r.runId));
+    const live = new Set(allLive.map((r) => r.runId));
     const archived = dir
       ? flow.listArchivedRuns(dir).filter((a) => !live.has(a.runId))
       : [];

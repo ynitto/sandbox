@@ -91,8 +91,12 @@ def cmd_daemon(args) -> int:
             # 既に終端でも waits 掃除は行う（orchestrator が先に mark_canceled した場合、
             # ここをスキップすると park が残り service_waits が動き続ける）。
             if meta and meta.get("status") in TERMINAL:
+                # close_issues 要求があるのに orch が先に終端＋waits を消す前にここに来た場合、
+                # waits が残っていれば先に on_cancel してから掃除する。
+                if info.get("close_issues"):
+                    _apply_on_cancel(bus, args, rid)
                 cleared = bus.clear_waits_for_run(rid)
-                if cleared:
+                if cleared or info.get("close_issues"):
                     bus.sync_push(f"cancel cleanup waits {rid}")
                 continue
             if info.get("close_issues"):
