@@ -7,11 +7,22 @@ def needs_path(cfg: "Config", tid: str) -> Path:
     return cfg.needs / f"{tid}.md"
 
 
-def _madr_frontmatter(rec_id: str, kind: str, risk: str = "") -> str:
+def _madr_frontmatter(rec_id: str, kind: str, risk: str = "",
+                      mr_url: str = "", delivery: "list | None" = None) -> str:
     """needs/<id>.md の MADR（Markdown Any Decision Records）互換 frontmatter。
     status は常に proposed で生成し、人の確定（[x]）＝決定。ファイル自体は取り込み時に
     消費され、恒久の決定記録は decisions/<id>.md（DR）に残る。
-    risk（low/med/high）は検収票のリスクダイジェスト総合値（viewer のバッジ用）。"""
+    risk（low/med/high）は検収票のリスクダイジェスト総合値（viewer のバッジ用）。
+    mr-url / delivery は検収サブ画面向け（GitLab MR を開く・複数リポジトリの差分一覧）。"""
+    extra = ""
+    if risk:
+        extra += f"risk: {risk}\n"
+    if mr_url:
+        # URL に空白は来ない想定。frontmatter は1行キーだけを viewer が読む。
+        extra += f"mr-url: {mr_url}\n"
+    if delivery:
+        # JSON 1 行（viewer がパース）。複数リポジトリの書込/参照を構造化する。
+        extra += f"delivery: {json.dumps(delivery, ensure_ascii=False, separators=(',', ':'))}\n"
     return (
         "---\n"
         "status: proposed\n"
@@ -19,14 +30,15 @@ def _madr_frontmatter(rec_id: str, kind: str, risk: str = "") -> str:
         "decision-makers: [human]\n"
         f"task-id: {rec_id}\n"
         f"kind: {kind}\n"
-        + (f"risk: {risk}\n" if risk else "")
+        + extra
         + "---\n\n"
     )
 
 
 def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = False,
                      evidence: str = "", kind: str = "",
-                     risk: "tuple[str, str] | None" = None) -> None:
+                     risk: "tuple[str, str] | None" = None,
+                     mr_url: str = "", delivery: "list | None" = None) -> None:
     cfg.needs.mkdir(parents=True, exist_ok=True)
     if kind == "plan-review":   # 実行前レビュー（proposed。承認されるまで実行しない）
         state = "proposed（実行前レビュー待ち・未実行）"
@@ -63,8 +75,11 @@ def write_needs_file(cfg: "Config", task: Task, reason: str, review: bool = Fals
     evidence_block = f"\n## 判断材料（成果物の所在・差分・検証）\n{evidence}\n" if evidence else ""
     # リスクダイジェスト（検収票のみ・決定的な材料のみ）。総合値は frontmatter（viewer バッジ用）にも載せる。
     risk_block = f"\n## リスク\n{risk[1]}\n" if risk else ""
+    # 検収サブ画面向け: MR URL とリポジトリ単位の構造化ペイロード（無ければ空）。
+    fm_mr = str(mr_url or (task.get("mr_url") if review else "") or "").strip()
+    fm_delivery = delivery if delivery is not None else None
     body = (
-        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '')}"
+        f"{_madr_frontmatter(task.id, kind, risk=risk[0] if risk else '', mr_url=fm_mr if review else '', delivery=fm_delivery if review else None)}"
         f"# 要対応: {task.id} — {task.title}\n\n"
         f"## Context and Problem Statement\n\n"
         f"- なぜ: {reason}\n"
@@ -129,8 +144,15 @@ def ensure_needs(cfg: "Config", tasks: "list[Task]") -> "list[str]":
             write_needs_file(cfg, t, why or "新規タスクの実行前レビュー（承認されるまで実行しません）",
                              evidence=ev, kind="plan-review")
         elif st == "review":
+            # 再生成時も検収サブ画面向けに成果差分・MR を載せる（タスク定義だけだと差分が無い）。
+            mr = str(t.get("mr_url") or "").strip()
+            try:
+                ev_review = delivery_evidence(cfg, "", None, "local", task=t, mr_url=mr)
+                delivery = delivery_entries(cfg, t, mr_url=mr)
+            except Exception:  # noqa: BLE001 — 再生成は失敗しても票自体は起こす
+                ev_review, delivery = ev, None
             write_needs_file(cfg, t, why or "成果物の検収待ち（承認すると完了になります）",
-                             review=True, evidence=ev)
+                             review=True, evidence=ev_review, mr_url=mr, delivery=delivery)
         else:  # blocked
             write_needs_file(cfg, t, why or f"実行が止まっています（retries={t.retries}）。"
                                             "指示を送るか、そのまま再実行してください。",

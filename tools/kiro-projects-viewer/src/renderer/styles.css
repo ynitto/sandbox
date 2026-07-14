@@ -782,7 +782,7 @@ dialog h2 { margin-top: 0; font-size: 15px; }
 dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .dialog-heading h2 { margin: 2px 0 0; }
-.output-dialog, .doctor-dialog { width: min(1000px, 80vw); }
+.output-dialog, .doctor-dialog, .delivery-dialog { width: min(1000px, 80vw); }
 .full-output {
   height: min(68vh, 720px);
   overflow: auto;
@@ -792,6 +792,53 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
   padding: 14px;
 }
 .need-output-button { margin-top: 12px; min-height: 40px; }
+.delivery-review-body { max-height: 72vh; overflow: auto; }
+.delivery-mr-banner {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent2);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+.delivery-mr-banner p { margin: 0 0 8px; }
+.delivery-repo {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.delivery-repo-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.delivery-repo-head h3 { margin: 0; font-size: 15px; }
+.delivery-repo-meta { margin: 6px 0 8px; font-size: 12px; }
+.delivery-files { margin: 0; padding-left: 18px; }
+.delivery-files li { margin: 4px 0; }
+.delivery-files button { margin-left: 6px; }
+.delivery-cmd {
+  margin-top: 8px;
+  padding: 8px;
+  font-size: 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+.delivery-diff-view {
+  margin-top: 12px;
+  max-height: 36vh;
+  overflow: auto;
+  padding: 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.need-delivery-cta { gap: 8px; align-items: center; margin-top: 6px; }
 .doctor-status { min-height: 24px; margin: 8px 0 12px; color: var(--muted); }
 .doctor-response { line-height: 1.65; max-width: 75ch; }
 .doctor-response h2 { margin: 18px 0 6px; color: var(--fg); font-size: 16px; }
@@ -1035,7 +1082,7 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   .project-header-main { align-items: flex-start; }
   #project-title { flex-wrap: wrap; }
   dialog, dialog.wide { min-width: 0; width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
-  .output-dialog, .doctor-dialog { width: calc(100vw - 24px); }
+  .output-dialog, .doctor-dialog, .delivery-dialog { width: calc(100vw - 24px); }
   .full-output { height: 64vh; }
   .doctor-tools { grid-template-columns: auto 1fr 1fr; }
   .row2 { flex-direction: column; gap: 0; }
