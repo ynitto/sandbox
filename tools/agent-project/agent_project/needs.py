@@ -241,6 +241,12 @@ def ingest_feedback(cfg: "Config", tasks: "list[Task]") -> "list[str]":
             ingested.append(t.id)
             continue
         was_review = t.norm_status() == "review"     # 検収待ちからの復帰か（自律度の clean/手戻り判定用）
+        # 委譲中の needs [x] も approve と同じく flow を止めてから ready（二重書き込み防止）
+        if t.norm_status() == "offloaded" or t.get("flow_run"):
+            detached = detach_flow_run(cfg, t, (fb or "feedback")[:120] or "feedback により委譲から切り離し")
+            if detached and not fb:
+                # 空 [x] でも id 衝突を避ける（メモ付きは下で retries+=1）
+                t.retries += 1
         t.status = "ready"
         t.drop("feedback")
         if fb:

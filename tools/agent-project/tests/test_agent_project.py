@@ -2336,6 +2336,30 @@ class TestRevise(unittest.TestCase):
             self.assertEqual(meta["status"], "canceled")
             self.assertFalse((run_dir / "waits" / "n1.json").exists())
 
+    def test_approve_offloaded_detaches_and_requeues(self):
+        # 委譲中の approve（CLI/commands）: flow を止めてから ready（二重書き込み防止）
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "backlog").mkdir()
+            (d / "backlog" / "T1.md").write_text(
+                "## T1: x\n- status: offloaded\n- verify: true\n"
+                "- flow_run: run-old\n- flow_loc: daemon\n- retries: 0\n",
+                encoding="utf-8")
+            c = cfg_for(d, learn=False)
+            km.ensure_dirs(c)
+            run_dir = c.bus / "runs" / "run-old"
+            run_dir.mkdir(parents=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps({"status": "running", "request": "x"}), encoding="utf-8")
+            self.assertEqual(km.cmd_approve(c, "T1", "委譲中だが進める"), 0)
+            t = km.load_tasks(c.backlog)[0]
+            self.assertEqual(t.status, "ready")
+            self.assertIsNone(t.get("flow_run"))
+            self.assertEqual(t.retries, 1)
+            self.assertTrue((c.bus / "inbox" / "cancels" / "run-old.json").is_file())
+            meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["status"], "canceled")
+
     def test_midpass_command_applies_before_next_task(self):
         # パス途中の commands/ ドロップが、後続タスクの実行前に取り込まれること
         with tempfile.TemporaryDirectory() as d:

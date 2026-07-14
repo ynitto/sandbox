@@ -503,6 +503,23 @@ class OrphanRecoveryTests(unittest.TestCase):
             self.assertEqual(failed, [])
             self.assertEqual(self.bus.run_meta("run1")["resume_count"], 1)
 
+    def test_resume_count_resets_on_expired_park_lease(self):
+        # 一晩電源断で wait_lease だけ切れても、wait ファイルが残れば進捗あり＝数え直し
+        self.bus.submit_request("run1", "req", "submitter")
+        self.bus.write_graph({"nodes": {"n1": {"id": "n1", "kind": "task", "deps": []}}})
+        for i in range(4):
+            self.bus.write_wait("n1", {
+                "id": "n1", "who": "w1",
+                "wait_lease_until": time.time() - 10,
+                "next_poll_at": time.time() - 5,
+            })
+            self.bus.set_status("running")
+            self._set_meta(orch_lease_until=time.time() - 1.0)
+            adopted, failed, _ = self._adopt(max_resumes=2)
+            self.assertEqual(list(adopted), ["run1"], f"expired-park resume #{i+1}")
+            self.assertEqual(failed, [])
+            self.assertEqual(self.bus.run_meta("run1")["resume_count"], 1)
+
     def test_orphan_failed_when_resume_disabled(self):
         # max_resumes<=0 は従来動作（孤児は即 failed）へのオプトアウト
         self.bus.submit_request("run1", "req", "submitter")
@@ -665,12 +682,12 @@ class RunSlotTests(unittest.TestCase):
         self.assertTrue(v.try_claim("a", "w1", 300))
         self.assertFalse(kf._run_fully_parked(self.bus, "run1"))
 
-    def test_park_lease_expiry_returns_to_busy(self):
-        # wait_lease 失効は pending へ縮退（再アタッチ対象）＝また枠を使う実行中扱いに戻る
+    def test_park_lease_expiry_still_frees_slot(self):
+        # wait_lease 失効でも wait ファイルが残れば枠を使わない（一晩の再起動で枠を食い潰さない）
         v = self.bus.run_view("run1")
         self._graph(v, {"a": []})
         self._park(v, "a", live=False)
-        self.assertFalse(kf._run_fully_parked(self.bus, "run1"))
+        self.assertTrue(kf._run_fully_parked(self.bus, "run1"))
 
     def test_graphless_run_counts_as_busy(self):
         # グラフ未作成（計画中）の run は実行中扱い（計画エージェントが走っている）

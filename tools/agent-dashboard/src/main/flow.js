@@ -224,6 +224,8 @@ function readRun(runDir) {
   const finalJson = readJson(path.join(runDir, 'final.json'));
   const nodesIn = (graph && typeof graph.nodes === 'object' && graph.nodes) || {};
   const now = Date.now() / 1000;
+  const runStatus = String(meta.status || 'unknown');
+  const runTerminal = TERMINAL.has(runStatus);
 
   const nodes = {};
   // output のテキストから拾ったイシュー URL の候補（nodeId → url）。executor の証跡が
@@ -248,7 +250,7 @@ function readRun(runDir) {
       finishedAt = result.finished_at || null;
       output = typeof result.output === 'string' ? result.output : null;
       data = result.data !== undefined ? result.data : null;
-    } else {
+    } else if (!runTerminal) {
       const winner = claimWinner(path.join(runDir, 'claims', id), now);
       if (winner) {
         state = 'claimed';
@@ -258,6 +260,7 @@ function readRun(runDir) {
       } else {
         // park 記録（承認待ち）。agent-flow と同じく wait_lease_until が生存なら waiting 相当。
         // 失効していれば pending へ縮退（full worker が再アタッチで拾い直す）＝ここでは park 扱いにしない。
+        // run が終端なら残 waits でも park 表示しない（cancel/orphan fail の残骸で誤表示しない）。
         const wrec = readJson(path.join(runDir, 'waits', `${id}.json`));
         if (wrec && Number(wrec.wait_lease_until || 0) >= now) {
           parked = true;
@@ -465,7 +468,13 @@ function resubmitRun(busDir, runId) {
   }
   const request = String(meta.request || '').trim();
   if (!request) throw new Error('meta.json に request がありません（再投入できません）');
-  const newId = `${runId}-retry-${Date.now()}`.slice(-80);
+  // 末尾スライスだと長い req-… の接頭辞が落ちる。末尾に retry 接尾辞を足し、長すぎれば中央を落とす。
+  const stamp = `retry-${Date.now()}`;
+  let newId = `${runId}-${stamp}`;
+  if (newId.length > 80) {
+    const keep = 80 - stamp.length - 1;
+    newId = `${runId.slice(0, Math.max(8, keep))}-${stamp}`;
+  }
   const inbox = path.join(busDir, 'inbox');
   fs.mkdirSync(inbox, { recursive: true });
   const rec = {
@@ -529,8 +538,18 @@ function cancelRun(busDir, runId, { reason } = {}) {
     if (iss && iss.iid != null) issues.push(iss);
   }
   if (meta && TERMINAL.has(curStatus)) {
-    // 既に終端（done/failed/canceled）＝ cancel は不要（不可逆）。
-    return { status: curStatus, alreadyTerminal: true, marked: false, cleared: 0, issues };
+    // 既に終端でも残 waits を掃除（daemon が markers 無しだと park が残り、UI が公園表示し続ける）。
+    let cleared = 0;
+    for (const f of safeList(waitsDir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        fs.unlinkSync(path.join(waitsDir, f));
+        cleared += 1;
+      } catch {
+        /* 消せなくても致命的でない */
+      }
+    }
+    return { status: curStatus, alreadyTerminal: true, marked: false, cleared, issues };
   }
   // (1) cancel マーカー（close_issues は viewer 側で閉じるため false で置く＝daemon の二重クローズを避ける）
   writeJsonAtomic(path.join(busDir, 'inbox', 'cancels', `${id}.json`), {

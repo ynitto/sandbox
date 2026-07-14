@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: Set2 individual バグ修正
+
+- **agent-flow: 一晩再起動で park の wait_lease 失効だけを「進捗なし」扱いし max_resumes で failed** —
+  wait ファイル残存を進捗と数え、枠消費も park 継続扱い。orphan fail 時は waits 掃除。
+- **agent-flow: in-flight 差し戻しの冪等キーが文字数だけで同じ長さの別指摘を落とした** — 内容ハッシュへ。
+- **agent-project: offloaded の approve / feedback が flow を止めなかった** — detach＋retries。
+- **agent-project: reap が revise 後の ready を奪って settle し得た** — claim 後に offloaded 再確認。
+- **agent-dashboard: 終端 run の残 waits を park 表示し、cancel も掃除しなかった** — 表示抑制＋掃除。
+- **agent-dashboard: 長い run-id の resubmit が末尾スライスで接頭辞を落とした** — 中央切り詰め。
+
 ### agent-flow / agent-project / agent-dashboard: Set1 integration 手つなぎ修正
 
 - **feedback 差し戻しが同じ run-id を再生成し agent-flow が旧 request で再開した** —

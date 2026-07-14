@@ -197,6 +197,11 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             continue                       # まだ実行中 → 次パスで再確認（ブロックしない）
         if not claim_task(cfg, task):      # 実行権を取ってから確定（他インスタンスと競合しない）
             continue
+        # claim 後にディスク上で既に offloaded でなければ、他経路（revise/hold）が先に進めた。
+        # ここで settle すると canceled を確定して revise 内容を踏み潰しうる。
+        if task.norm_status() != "offloaded":
+            release_claim(cfg, task)
+            continue
         gb = git_change_baseline(cfg.workdir)   # 完了時点の基準（remote/daemon 委譲は local 差分なし）
         venv = {"KIRO_BASE_REV": gb[0]} if gb[0] else None
         # settle 前に last_run を残す（delivery / protect / resume）。flow_run を落とす前に移す。

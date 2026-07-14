@@ -87,6 +87,12 @@ def cmd_approve(cfg: Config, tid: str, reason: str) -> int:
                 print(f"cohort {t.get('cohort')}: 残り {len(members)} 件を生成しました "
                       f"（{', '.join(m.id for m in members[:6])}{' …' if len(members) > 6 else ''}）。")
         return 0
+    # 委譲中の approve = 人は「このまま続行」ではなく「ブロックを解いてやり直す／進める」。
+    # flow を止めないと ap/<task-id> へ二重書き込みし、次の act と競合する。
+    if t.norm_status() == "offloaded" or t.get("flow_run"):
+        detached = detach_flow_run(cfg, t, reason[:120] or "approve により委譲から切り離し")
+        if detached:
+            t.retries += 1
     t.status = "ready"
     # hold が積んだ deny を解除する。これをしないと承認が一方通行で無効になる: status を ready に
     # 戻しても policy の deny が残り続け、次の triage が policy:deny を見て即 blocked へ引き戻す。

@@ -104,13 +104,34 @@ test('cancelRun: マーカー設置＋meta canceled＋waits 掃除', () => {
   assert.strictEqual(fs.existsSync(path.join(runDir, 'waits', 'n1.json')), false);
 });
 
-test('cancelRun: 既に終端した run には効かない（不可逆）', () => {
+test('cancelRun: 既に終端した run には効かない（不可逆）が残 waits は掃除', () => {
   const runDir = makeRun(bus, 'run-f');
   writeJson(path.join(runDir, 'meta.json'), { request: 'r', status: 'done', created_at: '2026-01-01T00:00:00Z' });
+  writeJson(path.join(runDir, 'waits', 'n1.json'), {
+    id: 'n1', wait_lease_until: Date.now() / 1000 + 1000,
+  });
   const res = flow.cancelRun(bus, 'run-f', {});
   assert.strictEqual(res.alreadyTerminal, true);
   assert.strictEqual(res.status, 'done');
+  assert.strictEqual(res.cleared, 1);
   assert.strictEqual(fs.existsSync(path.join(bus, 'inbox', 'cancels', 'run-f.json')), false); // マーカーを置かない
+  assert.strictEqual(fs.existsSync(path.join(runDir, 'waits', 'n1.json')), false);
+});
+
+test('canceled run は残 waits があっても park 表示しない', () => {
+  const runDir = makeRun(bus, 'run-park-term');
+  writeJson(path.join(runDir, 'meta.json'), {
+    request: 'r', status: 'canceled', created_at: '2026-01-01T00:00:00Z',
+  });
+  writeJson(path.join(runDir, 'waits', 'n1.json'), {
+    id: 'n1', wait_lease_until: Date.now() / 1000 + 1000,
+    issue: { host: 'h', project: 'p', iid: 1, url: 'u' },
+  });
+  const run = flow.readRun(runDir);
+  assert.strictEqual(run.status, 'canceled');
+  assert.strictEqual(run.nodes.n1.state, 'pending');
+  assert.strictEqual(run.nodes.n1.parked, false);
+  assert.strictEqual(run.counts.parked || 0, 0);
 });
 
 test('canceled run は readRun で終端扱い（alive=null＝応答なしにしない）', () => {
@@ -119,6 +140,18 @@ test('canceled run は readRun で終端扱い（alive=null＝応答なしにし
   const run = flow.readRun(runDir);
   assert.strictEqual(run.status, 'canceled');
   assert.strictEqual(run.alive, null); // TERMINAL に含む＝孤児（応答なし）判定の対象外
+});
+
+test('resubmitRun は長い run-id でも接頭辞を落とさない', () => {
+  const longId = `req-${'a'.repeat(40)}-TASK-LONG-NAME-r0`;
+  const runDir = makeRun(bus, longId);
+  writeJson(path.join(runDir, 'meta.json'), {
+    request: 'do it', status: 'failed', created_at: '2026-01-01T00:00:00Z',
+  });
+  const res = flow.resubmitRun(bus, longId);
+  assert.ok(res.runId.startsWith('req-'), res.runId);
+  assert.ok(res.runId.includes('retry-'), res.runId);
+  assert.ok(res.runId.length <= 80, String(res.runId.length));
 });
 
 console.log(`\n${passed} passed`);

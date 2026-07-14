@@ -651,23 +651,24 @@ class Bus:
         増える壊れた run だけが max_resumes に達して failed に確定される。
 
         生存中の park（承認待ち wait）も「健全な進捗」とみなす。gitlab の人レビューは
-        数日〜数週間かかる前提で、結果が増えないまま毎晩再起動しても orphaned にしない。"""
+        数日〜数週間かかる前提で、結果が増えないまま毎晩再起動しても orphaned にしない。
+        wait_lease 失効だけでは進捗無しにしない（一晩の電源断で lease だけ切れ、wait ファイル
+        と未決着イシューは残る）。throttled（イシュー未作成）は枠待ちなので除外。"""
         v = self.run_view(run_id)
         meta = read_json(v.meta_path) or {}
         try:
             done_now = sum(1 for f in os.listdir(v.results_dir) if f.endswith(".json"))
         except OSError:
             done_now = 0
-        live_waits = sum(1 for rec in v.list_waits()
-                         if float(rec.get("wait_lease_until", 0) or 0) >= time.time())
+        open_waits = sum(1 for rec in v.list_waits() if not rec.get("throttled"))
         prev = meta.get("resume_progress")
-        if prev is None or done_now > int(prev) or live_waits > 0:
-            n = 1                                     # 進捗あり / park 生存 / 初回 → 数え直し
+        if prev is None or done_now > int(prev) or open_waits > 0:
+            n = 1                                     # 進捗あり / park 残存 / 初回 → 数え直し
         else:
             n = int(meta.get("resume_count", 0) or 0) + 1
         meta["resume_count"] = n
         meta["resume_progress"] = done_now
-        meta["resume_live_waits"] = live_waits
+        meta["resume_live_waits"] = open_waits
         meta["resumed_at"] = now_iso()
         meta["updated_at"] = now_iso()
         write_json_atomic(v.meta_path, meta)
