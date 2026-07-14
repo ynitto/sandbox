@@ -1,0 +1,6 @@
+{
+  "id": "t3",
+  "goal": "tools/kiro-project/kiro_project/__init__.py の _FRAGMENTS 合成機構（共有名前空間への順次 exec、断片コーディング規約、先頭の from __future__ import annotations）を読み解き、\"coddgate\" の挿入位置が \"verify\" より前であることと断片の書き方の制約を確定する",
+  "deps": [],
+  "kind": "work"
+}
