@@ -25,6 +25,8 @@ function grab(name) {
 
 // eslint-disable-next-line no-new-func
 const overviewSummary = new Function(`${grab('overviewSummary')}; return overviewSummary;`)();
+// eslint-disable-next-line no-new-func
+const appDoctorSummary = new Function(`${grab('appDoctorSummary')}; return appDoctorSummary;`)();
 
 const project = {
   liveness: { running: true, paused: false },
@@ -54,11 +56,29 @@ assert.strictEqual(summary.total, 7);
 assert.strictEqual(summary.progress, 29);
 assert.strictEqual(summary.activeRuns, 1);
 
+const appSummary = appDoctorSummary({
+  projects: [
+    { running: true, needsCount: 2 },
+    { running: false, needsCount: 1 },
+  ],
+});
+assert.deepStrictEqual(appSummary, { projects: 2, running: 1, needs: 3 });
+
 assert.ok(!html.includes('id="btn-mode"'), '表示モード切替を残さない');
 assert.match(html, /data-tab="overview">概要/);
 assert.match(html, /data-tab="backlog">タスク/);
 assert.match(html, /data-tab="flow">実行/);
 assert.match(html, /id="btn-project-settings"/);
+assert.match(html, /class="nav-group"[^>]+aria-labelledby="projects-group-title"/);
+assert.match(html, /id="projects-group-title"[^>]*>プロジェクト</);
+assert.match(html, /id="project-list"/);
+const commonHeader = html.slice(html.indexOf('class="sidebar-header"'), html.indexOf('</div>\n      </div>', html.indexOf('class="sidebar-header"')));
+assert.ok(commonHeader.includes('id="btn-doctor"'), 'AI相談は共通ヘッダーに置く');
+assert.ok(commonHeader.includes('id="btn-refresh"') && commonHeader.includes('id="btn-settings"'));
+assert.ok(!commonHeader.includes('id="btn-new-project"'), '新規作成は共通ヘッダーに置かない');
+const projectGroup = html.slice(html.indexOf('id="projects-group-title"'), html.indexOf('id="project-list"'));
+assert.ok(projectGroup.includes('id="btn-new-project"'), '新規作成はプロジェクトグループに置く');
+assert.ok(!html.includes('class="doctor-tools"'), 'AI相談専用の中間グループを残さない');
 assert.ok(!html.includes('id="btn-git-pull"'), '最新取得の単独ボタンを残さない');
 assert.ok(!html.includes('id="btn-git-heal"'), '同期修復を Doctor の固定ボタンとして残さない');
 assert.match(html, /表示を更新（このPCのファイルを読み直す）/);
@@ -77,5 +97,6 @@ for (const label of ['現在の状態', 'あなたの対応', '進捗', '成果'
 }
 assert.match(css, /button:focus-visible/);
 assert.match(css, /@media \(max-width: 680px\)/);
+assert.match(css, /\.sidebar-actions button,[\s\S]*?min-width: 44px; height: 44px;/);
 
 console.log('overview-ui: all tests passed');

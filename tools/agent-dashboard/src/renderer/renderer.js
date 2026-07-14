@@ -375,8 +375,9 @@ async function removeProject(dir) {
 }
 
 function renderTree() {
-  const tree = $('tree');
-  const prevScroll = tree.scrollTop; // 再描画（ポーリング）でサイドバーのスクロールを失わない
+  const navigation = $('tree');
+  const tree = $('project-list');
+  const prevScroll = navigation.scrollTop; // 再描画（ポーリング）でサイドバーのスクロールを失わない
   const { instances } = state.discovery;
   // 実体が無い登録（exists:false）はここで弾く。過去に登録した config.roots のゴーストパスや、
   // 稼働していない/実在しないホストの instances/*.json（自動発見）が典型で、直せる見込みが無い
@@ -428,7 +429,7 @@ function renderTree() {
       })
       .join('');
   }
-  tree.scrollTop = prevScroll;
+  navigation.scrollTop = prevScroll;
   const live = instances.filter((i) => i.fresh).length;
   $('sidebar-footer').textContent = `稼働インスタンス: ${live} ／ 最終更新 ${new Date().toLocaleTimeString('ja-JP')}`;
 
@@ -487,7 +488,6 @@ function renderHeader() {
   const p = state.project;
   if (!p) return;
   $('btn-project-settings').classList.remove('hidden');
-  $('btn-doctor').disabled = false;
   const charterName = p.charter && p.charter.name ? p.charter.name : '';
   $('project-name').textContent = charterName && charterName !== p.name
     ? `${charterName} (${p.name})`
@@ -4757,8 +4757,26 @@ function activeTabName() {
   return tab ? tab.dataset.tab : 'overview';
 }
 
+function appDoctorSummary(discovery) {
+  const projects = ((discovery && discovery.projects) || []).filter((p) => p.exists !== false);
+  return {
+    projects: projects.length,
+    running: projects.filter((p) => p.running).length,
+    needs: projects.reduce((sum, p) => sum + (Number(p.needsCount) || 0), 0),
+  };
+}
+
 async function buildDoctorContext() {
   const p = state.project;
+  if (!p) {
+    return {
+      capturedAt: new Date().toISOString(),
+      tab: 'app',
+      scope: 'app',
+      app: appDoctorSummary(state.discovery),
+      selected: null,
+    };
+  }
   const tab = activeTabName();
   const context = {
     capturedAt: new Date().toISOString(),
@@ -4828,19 +4846,34 @@ async function buildDoctorContext() {
   return context;
 }
 
+function openDoctor() {
+  $('doctor-status').textContent = state.project
+    ? '現在の画面を読み取って相談できます。'
+    : 'プロジェクト未選択のため、アプリ全体の状態について相談します。';
+  $('doctor-response').innerHTML = '';
+  if (!$('dlg-doctor').open) $('dlg-doctor').showModal();
+  $('doctor-prompt').focus();
+}
+
 async function askDoctor() {
   if (state.doctorBusy) return;
-  if (!state.project) return toast('プロジェクトを選択してください');
   state.doctorBusy = true;
   $('btn-doctor').disabled = true;
+  $('doctor-prompt').disabled = true;
+  $('btn-doctor-submit').disabled = true;
   $('doctor-status').textContent = '現在の画面を読み取り、助言を作成しています…';
   $('doctor-response').innerHTML = '';
-  $('dlg-doctor').showModal();
   try {
     const context = await buildDoctorContext();
-    const res = await api.agentDoctor({ dir: state.project.dir, context });
+    const userPrompt = $('doctor-prompt').value;
+    const res = await api.agentDoctor({
+      dir: state.project ? state.project.dir : null,
+      context,
+      userPrompt,
+    });
     const model = res.model ? ` / ${res.model}` : '';
-    $('doctor-status').textContent = `${res.cli}${model} の助言 — ${context.tab} 画面を分析`;
+    const target = context.scope === 'app' ? 'アプリ全体' : `${context.tab} 画面`;
+    $('doctor-status').textContent = `${res.cli}${model} の助言 — ${target}を分析`;
     $('doctor-response').innerHTML = mdToHtml(res.content || '助言はありませんでした。');
   } catch (err) {
     $('doctor-status').textContent = 'Doctorを実行できませんでした';
@@ -4848,6 +4881,8 @@ async function askDoctor() {
   } finally {
     state.doctorBusy = false;
     $('btn-doctor').disabled = false;
+    $('doctor-prompt').disabled = false;
+    $('btn-doctor-submit').disabled = false;
   }
 }
 
@@ -4924,7 +4959,8 @@ async function init() {
   state.config = await guard('設定読込', () => api.getConfig());
   initTabs();
   $('btn-refresh').addEventListener('click', () => refreshAll({ sync: false }));
-  $('btn-doctor').addEventListener('click', askDoctor);
+  $('btn-doctor').addEventListener('click', openDoctor);
+  $('btn-doctor-submit').addEventListener('click', askDoctor);
   $('btn-doctor-close').addEventListener('click', () => $('dlg-doctor').close());
   $('btn-need-output-close').addEventListener('click', () => $('dlg-need-output').close());
   $('btn-delivery-review-close').addEventListener('click', () => $('dlg-delivery-review').close());

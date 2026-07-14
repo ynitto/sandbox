@@ -116,24 +116,25 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .sidebar-header h1 { font-size: 14px; margin: 0; color: var(--accent); }
 .sidebar-actions button { width: 30px; height: 30px; padding: 0; }
-.doctor-tools {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+.sidebar-actions .assistant-button { width: auto; min-width: 54px; padding: 0 8px; }
+.navigation-tree { flex: 1; overflow-y: auto; padding: 6px 0; }
+.nav-group { margin: 0; }
+.nav-group-header {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(139, 124, 246, 0.06);
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 4px 10px;
 }
-.doctor-tools > span {
-  color: var(--accent);
+.nav-group-header h2 {
+  margin: 0;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
-.doctor-tools button { min-width: 0; min-height: 38px; padding: 5px 6px; }
+.nav-group-header button { width: 30px; height: 30px; padding: 0; }
 
-#tree { flex: 1; overflow-y: auto; padding: 6px 0; }
 .container-item { margin-bottom: 4px; }
 .container-label {
   padding: 5px 10px;
@@ -878,6 +879,17 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
   word-break: break-word;
 }
 .need-delivery-cta { gap: 8px; align-items: center; margin-top: 6px; }
+.doctor-form {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.doctor-form label { font-weight: 600; }
+.doctor-form textarea { width: 100%; min-height: 76px; resize: vertical; line-height: 1.5; }
+.doctor-form-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.doctor-form-actions button { min-height: 38px; flex: none; }
 .doctor-status { min-height: 24px; margin: 8px 0 12px; color: var(--muted); }
 .doctor-response { line-height: 1.65; max-width: 75ch; }
 .doctor-response h2 { margin: 18px 0 6px; color: var(--fg); font-size: 16px; }
@@ -1123,7 +1135,12 @@ dialog .chip:disabled { opacity: 0.5; cursor: default; }
   dialog, dialog.wide { min-width: 0; width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
   .output-dialog, .doctor-dialog, .delivery-dialog { width: calc(100vw - 24px); }
   .full-output { height: 64vh; }
-  .doctor-tools { grid-template-columns: auto 1fr; }
+  .sidebar-header { align-items: flex-start; }
+  .sidebar-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .sidebar-actions button,
+  .sidebar-actions .assistant-button { min-width: 44px; height: 44px; }
+  .doctor-form-actions { align-items: stretch; flex-direction: column; }
+  .doctor-form-actions button { min-height: 44px; }
   .row2 { flex-direction: column; gap: 0; }
   .settings-action-grid { grid-template-columns: 1fr; }
   .queue-summary,

@@ -14,16 +14,20 @@
       <div class="sidebar-header">
         <h1>Agent Dashboard</h1>
         <div class="row sidebar-actions">
-          <button id="btn-new-project" aria-label="プロジェクトを作成" title="プロジェクトを作成">＋</button>
+          <button id="btn-doctor" class="assistant-button" aria-label="AIに相談" title="現在の画面についてAIに相談">AI相談</button>
           <button id="btn-refresh" aria-label="表示を更新" title="表示を更新（このPCのファイルを読み直す）">⟳</button>
           <button id="btn-settings" aria-label="アプリ設定" title="アプリ設定">⚙</button>
         </div>
       </div>
-      <div class="doctor-tools" aria-label="Doctor">
-        <span>Doctor</span>
-        <button id="btn-doctor" aria-label="現在の画面をAIに相談" disabled>AIに相談</button>
+      <div id="tree" class="navigation-tree">
+        <section class="nav-group" aria-labelledby="projects-group-title">
+          <div class="nav-group-header">
+            <h2 id="projects-group-title">プロジェクト</h2>
+            <button id="btn-new-project" aria-label="プロジェクトを作成" title="プロジェクトを作成">＋</button>
+          </div>
+          <div id="project-list"></div>
+        </section>
       </div>
-      <div id="tree"></div>
       <div id="sidebar-footer" class="muted"></div>
     </aside>
 
@@ -224,6 +228,14 @@
     <div class="dialog-heading">
       <div><span class="summary-kicker">Doctor</span><h2 id="doctor-title">現在の画面を相談</h2></div>
       <button id="btn-doctor-close" aria-label="Doctorを閉じる">閉じる</button>
+    </div>
+    <div class="doctor-form">
+      <label for="doctor-prompt">補足したいこと（任意）</label>
+      <textarea id="doctor-prompt" rows="3" placeholder="例: 同期エラーを中心に、次に何をすべきか教えてください"></textarea>
+      <div class="doctor-form-actions">
+        <span class="muted">空欄でも現在の画面について相談できます。</span>
+        <button id="btn-doctor-submit" class="primary-inline">相談する</button>
+      </div>
     </div>
     <div id="doctor-status" class="doctor-status" aria-live="polite"></div>
     <div id="doctor-response" class="doctor-response"></div>

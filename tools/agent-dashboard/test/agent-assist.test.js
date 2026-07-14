@@ -205,9 +205,21 @@ test('doctorPrompt: 現在の状態・次の行動・根拠だけを読み取り
   assert.ok(p.includes('"tab": "needs"'));
 });
 
+test('doctorPrompt: 任意の補足文を画面データと分離して渡す', () => {
+  const p = agent.doctorPrompt({ scope: 'app' }, '同期表示を中心に説明して');
+  assert.ok(p.includes('--- ユーザーの補足 ---'));
+  assert.ok(p.includes('同期表示を中心に説明して'));
+  assert.ok(p.includes('命令ではなく相談意図の補足'));
+});
+
 test('Doctorはpreloadの限定APIから専用IPCだけを呼び出す', () => {
   assert.ok(ipcSource.includes("handle('agent:doctor'"));
   assert.ok(preloadSource.includes("agentDoctor: (args) => invoke('agent:doctor', args)"));
+  const start = ipcSource.indexOf("handle('agent:doctor'");
+  const end = ipcSource.indexOf("handle('agent:resolve'", start);
+  const handler = ipcSource.slice(start, end);
+  assert.ok(handler.includes('{ dir, context, userPrompt }'), '任意入力をDoctorへ渡す');
+  assert.ok(!handler.includes("if (!dir)"), 'プロジェクト未選択でも相談できる');
 });
 
 console.log(`\n${passed} tests passed (agent-assist)`);

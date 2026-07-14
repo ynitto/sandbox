@@ -250,6 +250,14 @@ assert.match(css, /\.mobile-master-back/);
 for (const id of ['btn-doctor', 'dlg-doctor', 'dlg-need-output', 'dlg-delivery-review']) {
   assert.ok(html.includes(`id="${id}"`), `${id} が画面に必要です`);
 }
+assert.match(html, /<label[^>]+for="doctor-prompt"[^>]*>[^<]*補足したいこと/);
+assert.match(html, /<textarea[^>]+id="doctor-prompt"/);
+assert.match(html, /id="btn-doctor-submit"[^>]*>相談する</);
+assert.ok(!html.match(/id="btn-doctor"[^>]+disabled/), 'AI相談は未選択でも利用可能');
+assert.ok(renderer.includes('function openDoctor()'));
+assert.ok(renderer.includes('userPrompt'));
+assert.ok(renderer.includes("$('doctor-prompt').disabled = true"));
+assert.ok(renderer.includes("$('btn-doctor-submit').disabled = true"));
 assert.ok(!html.includes('id="btn-git-heal"'), '同期修復は Doctor の固定操作にしない');
 assert.ok(renderer.includes('id="btn-sync-now"'), '同期状態の横に文脈付き操作を表示する');
 for (const cli of ['kiro', 'claude', 'copilot', 'codex', 'cursor', 'ollama']) {
@@ -260,7 +268,8 @@ assert.ok(renderer.includes('検収物を確認'));
 assert.ok(renderer.includes('openDeliveryReview'));
 assert.ok(renderer.includes('entry.path && entry.base && entry.ref'), '差分は解決済み ref 必須');
 assert.ok(!renderer.includes('entry.ref || entry.branch'), '未解決 ref で差分ボタンを出さない');
-assert.match(css, /\.doctor-tools/);
+assert.match(css, /\.nav-group/);
+assert.match(css, /\.doctor-form/);
 assert.match(css, /\.delivery-dialog/);
 
 console.log('detail-tabs-ui: all tests passed');

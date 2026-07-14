@@ -24,6 +24,12 @@ root: .agent-project
 # spec_track: true       # spec ルーティング（採点/policy で spec 前段を前置）。agent-project の設定
                        # （agent-flow.yaml に書いても効かない）
 
+# 一貫性ゲート（codd-gate 連携）: done 確定前の差分ゲート（regression）と
+# 負債の修復タスク自動投入（intake）。repos.json は agent-project が charter から
+# <root>/repos.json に自動生成する（tools/agent-project/README.md 参照）。
+regression_cmd: 'codd-gate verify --base "$KIRO_BASE_REV" --repos .agent-project/repos.json'
+intake_cmd: 'codd-gate tasks --debt --repos .agent-project/repos.json'
+
 # グローバル既定
 agent_cli: claude
 model: auto

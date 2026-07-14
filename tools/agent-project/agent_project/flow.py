@@ -194,13 +194,16 @@ def _pin_last_run(cfg: "Config", task: Task, run_id: str) -> None:
     persist_task(cfg, task)
 
 
-def detach_flow_run(cfg: "Config", task: Task, reason: str = "") -> "str | None":
+def detach_flow_run(cfg: "Config", task: Task, reason: str = "",
+                    *, failed: bool = False) -> "str | None":
     """委譲中（offloaded）の agent-flow run を切り離して止める（best-effort）。
 
     revise / hold / reject でタスクを別方向へ進めるとき、旧 run を放置すると
     ap/<task-id> へ二重書き込みし、reap も古結果を settle しうる。cancel マーカー＋
-    meta canceled＋waits 掃除は agent-flow cmd_cancel / dashboard cancelRun と同契約。
-    戻り値は止めた run-id（無ければ None）。"""
+    waits 掃除は agent-flow cmd_cancel / dashboard cancelRun と同契約。
+    既定の終端は canceled（人の停止・軌道修正＝次 run は inherit しない）。
+    タイムアウトなど一時失敗は failed=True（failure_reason 付き）にし、次 run が
+    done ノードを引き継げるようにする。戻り値は止めた run-id（無ければ None）。"""
     rid = str(task.get("flow_run") or "").strip()
     task.drop("flow_run", "flow_loc")
     if not rid:
@@ -224,14 +227,18 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "") -> "str | None"
     run_dir = bus / "runs" / rid
     meta_path = run_dir / "meta.json"
     applied = False
+    end_status = "failed" if failed else "canceled"
     try:
         if meta_path.is_file():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             st = str(meta.get("status") or "")
             if st not in _FLOW_TERMINAL:
-                meta["status"] = "canceled"
+                meta["status"] = end_status
                 meta["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                meta["cancel_reason"] = why
+                if failed:
+                    meta["failure_reason"] = why
+                else:
+                    meta["cancel_reason"] = why
                 meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                                      encoding="utf-8")
             applied = True  # meta がある＝適用済み（既終端でもマーカーは消してよい）
@@ -251,7 +258,7 @@ def detach_flow_run(cfg: "Config", task: Task, reason: str = "") -> "str | None"
             (cancels / f"{rid}.json").unlink(missing_ok=True)
         except OSError:
             pass
-    append_journal(cfg.journal, f"flow detach: {task.id} の run {rid} を canceled（{why}）")
+    append_journal(cfg.journal, f"flow detach: {task.id} の run {rid} を {end_status}（{why}）")
     return rid
 
 
@@ -327,9 +334,11 @@ def _act_run(task: Task, cfg: "Config", use_git: bool = False) -> "tuple[bool, s
                         proc.kill()
                     except OSError:
                         pass
-                # submit タイムアウトと同じ: 対象 run を cancel して外部 daemon 採用を防ぐ。
+                # submit タイムアウトと同じ: 対象 run を止めて外部 daemon 採用を防ぐ。
+                # failed（canceled ではない）＝次リトライで done ノードを inherit できる。
                 task.set("flow_run", rid)
-                detach_flow_run(cfg, task, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
+                detach_flow_run(cfg, task, f"agent-flow run タイムアウト（{cfg.act_timeout}s）",
+                                failed=True)
                 reap_orphan_flow(cfg, include_daemon=False)
                 return (False, f"agent-flow run タイムアウト（{cfg.act_timeout}s）")
             time.sleep(1.0)

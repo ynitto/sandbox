@@ -8,6 +8,7 @@ subprocess は起動せず、`which=`/`run=` の依存性注入（agent-project.
 
     python -m unittest discover -s tools/agent-project/tests
 """
+import os
 import subprocess
 import sys
 import unittest
@@ -119,6 +120,26 @@ class TestCoddGateStatusNoOpDegradation(unittest.TestCase):
         integrated = status.detect_status(which=which)
         self.assertTrue(integrated.usable)
         self.assertEqual(integrated.binary, binary)
+
+    def test_command_builds_verify_base_head_argv(self):
+        # 完了条件のシェルコマンドが直接検証する引数の組み合わせ
+        # （`s.command("verify", "--base", "HEAD")`）そのものを再現する。
+        which = lambda name: "/usr/local/bin/codd-gate" if name == detect.BINARY_NAME else None
+        result = status.detect_status(which=which)
+        self.assertTrue(result.usable)
+        self.assertEqual(
+            result.command("verify", "--base", "HEAD"),
+            ["/usr/local/bin/codd-gate", "verify", "--base", "HEAD"],
+        )
+
+    def test_empty_path_env_with_real_which_degrades_to_noop(self):
+        # デフォルト which（実 shutil.which）のまま PATH を空にした実環境に近い経路。
+        # 同梱パスも無ければ「未検出」へ縮退し、例外を出さず usable=False になる。
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            with mock.patch.object(detect.Path, "exists", return_value=False):
+                result = status.detect_status()
+        self.assertFalse(result.usable)
+        self.assertIsNone(result.command("verify", "--base", "HEAD"))
 
     def test_cli_absent_degrades_to_noop(self):
         which = lambda _name: None

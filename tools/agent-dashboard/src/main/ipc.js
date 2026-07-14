@@ -495,10 +495,9 @@ function registerIpcHandlers() {
   );
 
   // 現在画面のスナップショットを読み取り専用CLIへ渡し、助言本文だけを返す。
-  handle('agent:doctor', ({ dir, context }) => {
-    if (!dir) throw new Error('プロジェクトディレクトリが指定されていません');
+  handle('agent:doctor', ({ dir, context, userPrompt }) => {
     if (!context || typeof context !== 'object') throw new Error('画面の状態が指定されていません');
-    return agent.completeDoctor(loadConfig(), { dir, context });
+    return agent.completeDoctor(loadConfig(), { dir: dir || null, context, userPrompt });
   });
 
   // ⚙ 設定画面の表示用: 今どの CLI / モデルで補完するかの解決結果（実行はしない）
