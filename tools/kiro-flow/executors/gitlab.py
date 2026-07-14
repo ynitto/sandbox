@@ -409,7 +409,11 @@ def _creator_tag() -> str:
 def _task_token(art_dir: "str | None") -> "str | None":
     """art_dir（`runs/<run_id>/artifacts/<node_id>`）から (run_id, node_id) を割り出し、
     決定的な検索トークン `kf-<hex12>` を作る。再 claim でも同じ art_dir が渡るため同一トークンに
-    なり、既存イシューへ再アタッチできる。想定形でなければ None（＝従来どおり毎回新規起票）。"""
+    なり、既存イシューへ再アタッチできる。想定形でなければ None（＝従来どおり毎回新規起票）。
+
+    run_id 末尾の世代接尾辞（`-rN` / `-rN-vM`。kiro-project のリトライ/revise）は落とす。
+    inherit_from で新 run_id になっても、未決着の open イシューへ再アタッチできるようにする
+    （閉じた後の新規試行は open 検索に掛からない＝新しいイシューになる＝意図どおり）。"""
     if not art_dir:
         return None
     parts = os.path.normpath(str(art_dir)).split(os.sep)
@@ -421,7 +425,9 @@ def _task_token(art_dir: "str | None") -> "str | None":
     run_id = parts[i - 1] if i - 1 >= 0 else ""
     if not node_id:
         return None
-    return "kf-" + hashlib.sha1(f"{run_id}/{node_id}".encode("utf-8")).hexdigest()[:12]
+    stable_run = re.sub(r"-r\d+(?:-v\d+)?$", "", run_id) if run_id else ""
+    key = f"{stable_run}/{node_id}" if stable_run else node_id
+    return "kf-" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
 def _task_marker(task_token: str) -> str:

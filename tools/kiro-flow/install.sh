@@ -4,6 +4,9 @@
 #
 # デフォルトのインストール先: ~/.local/bin/kiro-flow
 # kiro-flow は標準ライブラリのみ（pip 依存なし）。git は分散モードで必要。
+#
+# 実体は kiro_flow/ パッケージ（LLM が編集できる大きさの断片へ分割済み）。
+# 配布は kiro-project と同じく zipapp で「パッケージ + ルート __main__.py」を1実行ファイルへまとめる。
 
 set -euo pipefail
 
@@ -46,6 +49,7 @@ done
 
 INSTALL_PATH="${INSTALL_PREFIX}/kiro-flow"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG="${SCRIPT_DIR}/kiro_flow"
 
 echo ""
 echo "========================================"
@@ -138,48 +142,42 @@ info "PyYAML を確認しています（任意）..."
 if "$PYTHON_CMD" -c "import yaml" &>/dev/null 2>&1; then
   ok "PyYAML はインストール済みです（kiro-flow.yaml が使えます）。"
 else
-  warn "PyYAML が見つかりません（YAML 設定ファイルを使う場合のみ必要）。"
-  read -r -p "  PyYAML をインストールしますか？ [y/N] " yn
-  case "${yn:-N}" in
-    [Yy]*)
-      if "$PYTHON_CMD" -m pip install --user pyyaml; then
-        ok "PyYAML のインストールが完了しました。"
-      else
-        warn "PyYAML のインストールに失敗しました。JSON 設定ファイル（kiro-flow.json）を使えば不要です。"
-      fi
-      ;;
-    *)
-      warn "PyYAML をスキップしました。設定ファイルは JSON（kiro-flow.json）形式を使用してください。"
-      ;;
-  esac
+  warn "PyYAML が見つかりません（YAML 設定ファイルを使う場合のみ必要）。
+  pip install --user pyyaml で入れられます。JSON 設定（kiro-flow.json）なら不要です。"
 fi
 
 # ---------------------------------------------------------------------------
-# 6. スクリプトのインストール
+# 6. zipapp でインストール（単一ファイル配布を維持・実体はパッケージ）
 # ---------------------------------------------------------------------------
-info "kiro-flow.py をインストールしています..."
+info "kiro_flow パッケージを zipapp にまとめてインストールしています..."
 
-SRC="${SCRIPT_DIR}/kiro-flow.py"
-[[ -f "$SRC" ]] || die "kiro-flow.py が見つかりません: $SRC"
+[[ -d "${PKG}" ]] || die "kiro_flow パッケージが見つかりません: ${PKG}"
 
 mkdir -p "$INSTALL_PREFIX"
-cp "$SRC" "$INSTALL_PATH"
-chmod +x "$INSTALL_PATH"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kiro-flow-build.XXXXXX")"
+trap 'rm -rf "${BUILD_DIR}"' EXIT
+mkdir -p "${BUILD_DIR}/kiro_flow"
+# __pycache__ を除いてパッケージをコピー（zipapp に .pyc を含めない）。
+( cd "${PKG}" && find . -name '*.py' -print0 | while IFS= read -r -d '' f; do
+    mkdir -p "${BUILD_DIR}/kiro_flow/$(dirname "$f")"
+    cp "$f" "${BUILD_DIR}/kiro_flow/$f"
+  done )
+cat > "${BUILD_DIR}/__main__.py" <<'EOF'
+from kiro_flow import main
 
-# shebang を環境の python コマンドに書き換える（BSD sed と GNU sed の差異を吸収）
-if [[ "$OS" == "Darwin" ]]; then
-  sed -i '' "1s|.*|#!/usr/bin/env ${PYTHON_CMD}|" "$INSTALL_PATH"
-else
-  sed -i "1s|.*|#!/usr/bin/env ${PYTHON_CMD}|" "$INSTALL_PATH"
-fi
+if __name__ == "__main__":
+    raise SystemExit(main())
+EOF
 
-ok "インストールしました: $INSTALL_PATH"
+"$PYTHON_CMD" -m zipapp "${BUILD_DIR}" -o "${INSTALL_PATH}" -p "/usr/bin/env ${PYTHON_CMD}"
+chmod +x "${INSTALL_PATH}"
+ok "インストールしました: ${INSTALL_PATH}（zipapp）"
 
 # ---------------------------------------------------------------------------
 # 6.5 executor プラグインのインストール
 # ---------------------------------------------------------------------------
 # kiro-loop の hooks と同じ流儀で、executor をプラグイン（executors/<name>.py）として
-# 管理する。本体は単一ファイルで配布されるため、同梱プラグインを「本体と同じフォルダ」
+# 管理する。本体は zipapp 単一ファイルで配布されるため、同梱プラグインを「本体と同じフォルダ」
 # （${INSTALL_PREFIX}/executors/）に配置し、`--executor <name>` がインストール後も名前で
 # 解決できるようにする（kiro-flow の検索順 #1「スクリプト同階層の executors/」に一致）。
 info "executor プラグインをインストールしています..."
@@ -263,4 +261,6 @@ echo ""
 echo "  環境ごとの設定（bus/git/planner/max_workers 等）はファイル化できます:"
 echo "    cp ${SCRIPT_DIR}/kiro-flow.yaml.example ~/.kiro/kiro-flow.yaml   # 自動検出される"
 echo "    # CLI 引数 > 設定ファイル > 既定。--config で明示指定も可"
+echo ""
+echo "  開発時の編集は tools/kiro-flow/kiro_flow/*.py（断片）。配布は zipapp 単一ファイル。"
 echo ""

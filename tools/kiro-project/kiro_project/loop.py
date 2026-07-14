@@ -432,10 +432,23 @@ def has_work(cfg: Config) -> bool:
 
     起床の条件は「そのパスで実際に処理できる仕事があるか」でなければならない。commands/ を
     ingest_commands と同じ述語（_read_command）で見るのはそのため: 取り込めない指示で起こすと、
-    何も処理しないまま charter を再評価するパスが生まれ、承認済みマイルストーンが復活する。"""
-    for t in load_tasks(cfg.backlog):
-        # offloaded は「機械が委譲実行中・結果待ち」＝次パスでポーリングして回収するため起こす
-        if t.norm_status() in CONSUMABLE or t.norm_status() in ("inbox", "offloaded"):
+    何も処理しないまま charter を再評価するパスが生まれ、承認済みマイルストーンが復活する。
+
+    ready でも after 依存未達は消化できない。それを CONSUMABLE だけで起こすと、blocked/doing の
+    後ろに dep-gated ready が並ぶだけで project_watch が空パスを無限に回す（実害: cycles が
+    数千まで増え、journal が秒単位で埋まる）。dependents が ready でも ready_after_deps が
+    空なら起こさない。"""
+    tasks = load_tasks(cfg.backlog)
+    if ready_after_deps(tasks):
+        return True
+    for t in tasks:
+        st = t.norm_status()
+        # offloaded は「機械が委譲実行中・結果待ち」＝次パスでポーリングして回収するため起こす。
+        # inbox は triage 待ち。doing は「実行者が失踪した stale」だけ起こす（alive な doing を
+        # 起こすとクレーム中タスクで毎 poll 空パスになる）。
+        if st in ("inbox", "offloaded"):
+            return True
+        if st == "doing" and not _claim_alive(cfg, t.id):
             return True
     if cfg.inbox and cfg.inbox.exists() and any(cfg.inbox.glob("*")):
         return True               # 外部ドロップ(inbox/)が来たら起こす

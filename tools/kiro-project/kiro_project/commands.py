@@ -208,13 +208,14 @@ _CLEAR_VALUES = ("", "-", "none")      # フィールド削除の明示値（rev
 
 
 def _claim_fresh(cfg: "Config", tid: str) -> bool:
-    """claims/<id>.lock が新鮮（= 誰かが実行中）か。stale/欠損は False（実行者不在）。"""
-    p = _claims_dir(cfg) / f"{tid}.lock"
-    try:
-        rec = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    return (time.time() - float(rec.get("ts", 0) or 0)) <= _claim_ttl(cfg)
+    """claims/<id>.lock が生きている（= 誰かが実行中）か。stale/欠損は False（実行者不在）。
+
+    `_claim_alive` に寄せる: 同一ホストは pid の生死で即断し、別ホストだけ TTL に従う。
+    かつての TTL 専用判定は、クラッシュ直後でも最大 act_timeout+verify_timeout+60
+    （~41 分、さらに act_timeout=0 なら永久）「実行中」と誤認し、revise が
+    revised 予約だけして ready へ積み直せなかった（死んだ owner の claim 居座り修正の
+    取りこぼし）。"""
+    return _claim_alive(cfg, tid)
 
 
 def _after_introduces_cycle(tasks: "list[Task]", start: "Task") -> bool:

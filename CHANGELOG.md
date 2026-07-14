@@ -7,6 +7,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### kiro-flow: モジュール分割（kiro-project と同じ断片合成）＋ zipapp 単一 CLI 配布
+
+- **背景**: 単一 `kiro-flow.py`（約 6,800 行）は LLM ワーカーが丸ごと読むと context を圧迫する。
+  kiro-project は既に「編集用の断片パッケージ + install 時 zipapp」へ移行済み。
+- **構成**: `tools/kiro-flow/kiro_flow/` に 23 断片（`_head` … `cli`）を置き、`__init__.py` が
+  依存順に共有名前空間へ `exec` 合成する（モンキーパッチ・private 参照は単一ファイル時代と同一）。
+  リポジトリ内の `kiro-flow.py` は薄い shim。`install.sh` は zipapp で
+  `~/.local/bin/kiro-flow`（CLI 呼び出し可能・単一ファイル）を生成し、`executors/` は従来どおり
+  prefix 隣へ配置。
+- **自己パス**: `self_path()` は shim → zipapp（`sys.argv[0]`）の順で解決（子プロセス起動・再起動・
+  executor 検索がパッケージ化後も壊れない）。
+- **テスト**: パッケージローダへ追随。419 件パス。zipapp インストールの `--help` も確認。
+
+### kiro-project / kiro-flow: 検証ブランチ取り違え・空パス無限起床・park 再開打ち切り等を修正
+
+- **kiro-project: verify が `kp/<task-id>` ではなく `target`/`base`（main）を clone していた** —
+  `task_branch`（既定 on）では worker が成果を `kp/<task-id>` に積む。`_task_verify_cwd` は
+  これを無視して MR の target/base を clone しており、journal に `@main のクローン内で検証` と
+  出たあと永久 NG（retries 尽きたら blocked）になっていた。`branch` → `target` → `base` の順で
+  clone するようにした。
+- **kiro-project: `has_work` が依存未達の ready だけで起床し、空パスを無限に回していた** —
+  blocked/doing の後ろに `after:` 待ちの ready が並ぶだけで `project_watch` が毎 poll 起きる
+  （cycles が数千まで増え journal が秒単位で埋まる）。`ready_after_deps` が空なら起こさず、
+  生存 claim の無い stale doing と offloaded/inbox だけ起こす。
+- **kiro-project: daemon submit のタイムアウト後に孤児 run を刈らなかった** — `_act_run` と同様に
+  `reap_orphan_flow` して二重実行を防ぐ。
+- **kiro-project: revise が死んだ owner の claim を TTL だけで「実行中」と誤認していた** —
+  `_claim_fresh` を `_claim_alive`（同一ホストは pid 生死）に寄せ、クラッシュ直後でも ready へ
+  即積み直す。
+- **kiro-flow: 生存 park だけの run が `max_resumes` で orphaned になっていた** — `record_resume` の
+  「進捗」が results 数だけだったため、承認待ち（結果が増えない）の健康な run が毎晩の PC 再起動で
+  failed に確定していた。生存 `wait_lease` を進捗として数え直す。
+- **kiro-flow: `service_waits` がバックオフ中に wait_lease を更新しなかった** — poll を飛ばす枝で
+  lease が切れ、監視主体が生きているのに node が pending へ縮退していた。skip 枝でも lease を更新。
+- **kiro-flow: claim 敗者がファイルを残し、勝者 release 後に zombie claimed になっていた** —
+  git 分散で両者が書けた場合、負けた自分の claim だけ消す（withdraw）。
+- **kiro-flow: flock 非対応環境で daemon 二重起動を許していた** — PID 生存チェックで singleton を守る。
+- **kiro-flow: 計画（LLM）中に orch heartbeat が止まっていた** — lease 切れ誤 adopt を防ぐため
+  計画中も短間隔で heartbeat。
+- **kiro-flow gitlab: inherit/revise で run_id が変わるとイシュー二重起票していた** —
+  `_task_token` が世代接尾辞（`-rN`/`-vM`）を落として安定化し、open イシューへ再アタッチする。
+
 ### kiro-flow gitlab executor: self-host（http/別ポート）で「GitLab API へ接続できません」になるバグを修正
 
 - **症状**: タスクノードが「GitLab API … へ接続できません」で failed になる。エラーに出るパスの
