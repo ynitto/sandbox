@@ -1,0 +1,8 @@
+{
+  "host": "Mac",
+  "watch": true,
+  "level": "unattended",
+  "paused": false,
+  "updated_iso": "2026-07-15 04:28:45",
+  "fresh_after_sec": 600.0
+}
