@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-flow / agent-project / agent-dashboard: Set4 integration — CONVERGED
+
+individual → integration で Set4 まで実施。手つなぎの新規バグは見当たらず停止。残差のみ:
+- cancel 時 `close_issues=false` による GitLab イシュー再アタッチ
+- remote `--git` bus への detach 伝播
+- park lease UI（失効=pending）と flow 枠計算（wait 残=parked）の見え方差
+
 ### agent-flow / agent-project / agent-dashboard: Set4 individual バグ修正
 
 - **run 化前 cancel マーカーを空 meta（{}）判定で消し、要求が起動していた** —
