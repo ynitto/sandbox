@@ -1,6 +1,0 @@
-{
-  "id": "t2",
-  "goal": "tools/kiro-project/codd_gate_debt.py / codd_gate_routing.py / codd_gate_status.py を読み、負債ラチェット・ルーティング・ステータス出力の公開 API と依存関係を一覧化する",
-  "deps": [],
-  "kind": "work"
-}

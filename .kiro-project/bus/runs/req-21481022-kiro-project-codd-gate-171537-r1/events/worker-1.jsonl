@@ -1,7 +1,0 @@
-{"ts": "2026-07-13T08:50:30Z", "who": "worker-1", "kind": "claimed", "node": "t2"}
-{"ts": "2026-07-13T08:53:31Z", "who": "worker-1", "kind": "result", "node": "t2", "status": "done"}
-{"ts": "2026-07-13T08:53:32Z", "who": "worker-1", "kind": "claimed", "node": "t1"}
-{"ts": "2026-07-13T08:56:38Z", "who": "worker-1", "kind": "result", "node": "t1", "status": "done"}
-{"ts": "2026-07-13T08:56:39Z", "who": "worker-1", "kind": "claimed", "node": "t5"}
-{"ts": "2026-07-13T09:06:39Z", "who": "worker-1", "kind": "result", "node": "t5", "status": "failed"}
-{"ts": "2026-07-13T09:07:11Z", "who": "worker-1", "kind": "claimed", "node": "coddgate-package-wiring-fix-r10"}

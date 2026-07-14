@@ -1,8 +1,0 @@
-{
-  "id": "t6",
-  "goal": "既存テストのうち subprocess 経由で外部コマンド（git / gh / 外部 CLI）を実際に実行して失敗・不安定になっているものを特定し、subprocess.run を monkeypatch でスタブ化してネットワーク・外部依存を排除する",
-  "deps": [
-    "t2"
-  ],
-  "kind": "work"
-}

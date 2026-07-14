@@ -1,9 +1,0 @@
-{
-  "id": "t11",
-  "goal": "旧 tools/kiro-project/codd_gate_{base,debt,detect,routing,status}.py を削除し、リポジトリ全体にこれら旧ファイルへの参照が残っていないことを grep で確認する",
-  "deps": [
-    "t5",
-    "t10"
-  ],
-  "kind": "work"
-}

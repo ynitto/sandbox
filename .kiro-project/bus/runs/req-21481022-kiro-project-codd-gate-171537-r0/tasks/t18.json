@@ -1,8 +1,0 @@
-{
-  "id": "t18",
-  "goal": "tests/test_codd_gate_wiring_model.py を追加する。model.py の enqueue 経由でドリフト項目が backlog タスクとして投入されること、および同一安定キーの項目を二度投入しても重複が生まれないことを検証する統合テストを書く",
-  "deps": [
-    "t15"
-  ],
-  "kind": "generate"
-}
