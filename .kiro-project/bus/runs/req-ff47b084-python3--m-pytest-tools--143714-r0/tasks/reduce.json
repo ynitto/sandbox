@@ -1,8 +1,0 @@
-{
-  "id": "reduce",
-  "goal": "REDUCE / LOOP-UNTIL-DONE: 受入コマンド `python3 -m pytest tools/kiro-project/tests tools/kiro-flow/tests -q --cov=tools/kiro-project --cov=tools/kiro-flow --cov-fail-under=70` を実行する。終了コード 0 なら完了。未達（カバレッジ 70% 未満 or テスト失敗）なら未カバー行を再集計して不足分のモジュールを特定し、split → map → gate へ戻して反復する。各反復のカバレッジ推移を記録し、改善が頭打ちになった場合は原因（到達不能コード・要リファクタ箇所）を明示する",
-  "deps": [
-    "gate"
-  ],
-  "kind": "reduce"
-}

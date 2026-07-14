@@ -1,8 +1,0 @@
-{
-  "name": "ashigaru",
-  "description": "multi-agent-shogun ashigaru role for Kiro CLI",
-    "prompt": "file:///path/to/Workspace/sandbox/multi-agent-shogun/instructions/generated/kiro-ashigaru.md",
-  "tools": ["*"],
-  "includeMcpJson": true,
-  "welcomeMessage": "ashigaru role loaded for multi-agent-shogun"
-}

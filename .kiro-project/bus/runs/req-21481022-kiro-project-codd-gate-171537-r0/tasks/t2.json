@@ -1,6 +1,0 @@
-{
-  "id": "t2",
-  "goal": "tools/kiro-project/codd_gate_base.py を読み、共通ヘルパ（subprocess 実行・パス解決・設定/repos.json 読込など）の関数名・シグネチャ・依存を棚卸しし、coddgate.py へ移送する要素と破棄する要素を一覧化する",
-  "deps": [],
-  "kind": "work"
-}

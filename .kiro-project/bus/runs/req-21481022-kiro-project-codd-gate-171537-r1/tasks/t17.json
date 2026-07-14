@@ -1,8 +1,0 @@
-{
-  "id": "t17",
-  "goal": "tools/kiro-project/tests に統合テストを追加し、model.enqueue 経路でドリフト項目が backlog タスクとして投入されること、および同じドリフトで2回実行しても安定キーにより重複投入されないことを検証する",
-  "deps": [
-    "t14"
-  ],
-  "kind": "work"
-}

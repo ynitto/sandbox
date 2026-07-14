@@ -1,9 +1,0 @@
-{
-  "id": "t10",
-  "goal": "環境変数・HOME・CWD をテストごとに隔離する autouse fixture を定義し、tools/kiro-project と tools/kiro-flow の両 conftest.py から同一実装を共有する（重複定義を作らず、共通ヘルパーモジュールに一本化する）",
-  "deps": [
-    "t8",
-    "t9"
-  ],
-  "kind": "work"
-}

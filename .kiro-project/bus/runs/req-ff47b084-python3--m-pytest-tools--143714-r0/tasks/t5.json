@@ -1,8 +1,0 @@
-{
-  "id": "t5",
-  "goal": "既存テストのうち CWD・HOME・実ファイルシステム・実 git リポジトリに依存して落ちる／順序依存で落ちるものを特定し、tmp_path と monkeypatch で隔離して決定的に green にする",
-  "deps": [
-    "t2"
-  ],
-  "kind": "work"
-}

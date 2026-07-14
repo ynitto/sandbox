@@ -1,8 +1,0 @@
-{
-  "id": "t20",
-  "goal": "tests/test_codd_gate_fragment.py を追加する。_FRAGMENTS に \"coddgate\" が含まれること、その位置が \"verify\" より前であること、合成後の名前空間に codd_gate_* 関数が定義されていることを検証し、断片未登録という過去の失敗を再発時に必ず赤くする",
-  "deps": [
-    "t10"
-  ],
-  "kind": "generate"
-}
