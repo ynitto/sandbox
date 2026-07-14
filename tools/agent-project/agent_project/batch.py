@@ -277,14 +277,17 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
         persist_task(cfg, t)
     locs = {t.id: decide_location(t, policy, cfg) for t in claimed}
     if cfg.dry_run:
-        return {t.id: (locs[t.id], None, "(dry-run)") for t in claimed}
+        return {t.id: (locs[t.id], None, "(dry-run)", True) for t in claimed}
     if not claimed:
         return {}
 
     def _one(t):
         # act は (bool|_Pending, msg)。_Pending は「非ブロッキング submit 済み・未終端」＝offload。
+        # bool は「act 自体の成否」。捨てると失敗 run でも verify=true で done になり得る。
         status, msg = act(t, cfg, locs[t.id])
-        return (locs[t.id], status if isinstance(status, _Pending) else None, msg)
+        if isinstance(status, _Pending):
+            return (locs[t.id], status, msg, None)
+        return (locs[t.id], None, msg, bool(status))
 
     if len(claimed) == 1:
         return {claimed[0].id: _one(claimed[0])}
@@ -295,7 +298,7 @@ def _act_batch(batch: "list[Task]", cfg: "Config", act, policy) -> "dict[str, tu
             try:
                 results[t.id] = fut.result()
             except Exception as e:     # noqa: BLE001 — act 失敗は verify=NG 相当として後段で扱う
-                results[t.id] = (locs[t.id], None, f"act 失敗: {e}")
+                results[t.id] = (locs[t.id], None, f"act 失敗: {e}", False)
     return results
 
 

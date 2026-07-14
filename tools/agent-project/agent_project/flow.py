@@ -395,7 +395,14 @@ def act_via_agent_flow(task: Task, cfg: "Config", location: str = "local") -> "t
       local  → run（単発）
       daemon → ローカル daemon に submit＋結果待ち（daemon が無ければ run にフォールバック）
       remote → git バスの remote daemon に submit＋結果待ち（オフロード。フォールバックしない）
+
+    例外: resume-run / 失敗・停滞 run の「続きから」は submit では効かない
+    （daemon は run_exists で無視し、retry_failed は cmd_run だけ）。再開可能な
+    last_run があるときは location によらず run（同期）へ寄せる。
     """
+    last = str(task.get("last_run") or "").strip()
+    if last and run_id_for(cfg, task) == last and _run_resumable(cfg, last):
+        return _act_run(task, cfg, use_git=(location == "remote"))
     async_ok = bool(getattr(cfg, "act_async", False))
     if location == "remote":
         return _act_offload(task, cfg, True) if async_ok else _act_submit(task, cfg, use_git=True)
@@ -424,15 +431,19 @@ def executor_delegates(cfg: "Config") -> bool:
     return cfg.executor not in ("agent", "stub")
 
 
-def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
-    """直近 run のノード結果から却下のやり直し指示（人コメント）を取り出す。
+def read_reject_guidance(cfg: "Config", use_git: bool, run_id: str = "") -> str:
+    """指定 run（無ければ直近）のノード結果から却下のやり直し指示（人コメント）を取り出す。
     `agent-flow result --json` を読むだけ（決定的）。まず構造化 data
     （decision=rejected の guidance。gitlab executor が却下例外に載せる）を見て、
     無ければ従来どおり output の `[gitlab-reject]` マーカーから取り出す（後方互換）。
-    見つからなければ空（＝自動判断）。"""
+    見つからなければ空（＝自動判断）。run_id を渡さないと共有バスで別タスクの結果を
+    拾い得るので、settle 側は last_run を渡す。"""
     if not executor_delegates(cfg):
         return ""
     cmd = _kf_base(cfg, use_git) + ["result", "--json"]
+    rid = str(run_id or "").strip()
+    if rid:
+        cmd += ["--run-id", rid]
     try:
         proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
                               capture_output=True, text=True)
@@ -453,13 +464,16 @@ def read_reject_guidance(cfg: "Config", use_git: bool) -> str:
     return ""
 
 
-def read_result_notes(cfg: "Config", use_git: bool) -> "list[dict]":
-    """直近 run のノード結果 data.notes（gitlab executor が載せる**人コメント**の構造化列）を集める。
+def read_result_notes(cfg: "Config", use_git: bool, run_id: str = "") -> "list[dict]":
+    """指定 run（無ければ直近）のノード結果 data.notes（gitlab executor が載せる**人コメント**）を集める。
     承認/却下いずれの決着でも、人/エージェント判別済みの人コメントだけが載っている（判別は executor 側）。
     重複排除は note_id で行う。agent-flow result --json を読むだけ（決定的）。"""
     if not executor_delegates(cfg):
         return []
     cmd = _kf_base(cfg, use_git) + ["result", "--json"]
+    rid = str(run_id or "").strip()
+    if rid:
+        cmd += ["--run-id", rid]
     try:
         proc = subprocess.run(cmd, cwd=str(cfg.workdir), timeout=60,
                               capture_output=True, text=True)
@@ -523,7 +537,8 @@ def capture_approve_learn(cfg: "Config", task: "Task", location: str) -> None:
     if not (cfg.learn_capture and executor_delegates(cfg)):
         return
     bodies = [str(n.get("body") or "").strip()
-              for n in read_result_notes(cfg, location == "remote")]
+              for n in read_result_notes(cfg, location == "remote",
+                                         run_id=str(task.get("last_run") or ""))]
     guidance = "\n".join(b for b in bodies if b)[:1500]
     if not guidance:
         return

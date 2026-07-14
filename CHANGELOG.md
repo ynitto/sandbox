@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) — vers
 
 ## [Unreleased]
 
+### agent-project: daemon 再開・act 失敗・result run-id 連携を修正
+
+- **resume-run / 失敗 run の続きが daemon 経路で効かなかった** — submit は `run_exists` で無視され
+  `retry_failed` は `run` だけ。再開可能な `last_run` があるときは `_act_run` へ寄せる。
+- **act 失敗 bool が捨てられ verify=true で偽 done になり得た** — `_act_batch` が ok を伝搬し、
+  失敗時は `_settle_failure`（reap も同様）。
+- **却下 guidance / approve notes が `--run-id` 無し** — 共有バスで別タスクの result を拾い得た。
+  `last_run` を渡す。
+
 ### agent-flow / agent-project / agent-dashboard: 個別のキャンセル・再開まわりを修正
 
 - **agent-flow: cancel 後も worker が pending を claim し続けた** — 終端判定を「仕事が無いとき」だけにしていた。TERMINAL なら claim 前に退出。

@@ -218,6 +218,16 @@ def _reap_offloaded(cfg: "Config", tasks: "list[Task]", policy: "Policy",
             release_claim(cfg, task)
             settled += 1
             continue
+        # act/flow 失敗: verify=true で偽 done にしない（canceled 以外の not ok）
+        if not ok:
+            ev = delivery_evidence(cfg, msg, gb, loc,
+                                   verify=task.verify, vmsg=str(msg or ""),
+                                   ok=False, task=task)
+            _settle_failure(cfg, task, str(msg or "daemon run failed")[:500],
+                            cycle0 + settled + 1, ev, reasons, loc)
+            release_claim(cfg, task)
+            settled += 1
+            continue
         res = _settle_task(cfg, task, loc, msg, cycle0 + settled + 1, dtok, dusd, gb, venv,
                            policy, autonomy_cache, reasons)
         archived += res["archived"]
@@ -334,7 +344,9 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
             if task.id not in act_results:        # クレームできなかった分はこの run では飛ばす
                 unavailable.add(task.id)
                 continue
-            location, pend, act_msg = act_results[task.id]
+            packed = act_results[task.id]
+            location, pend, act_msg = packed[0], packed[1], packed[2]
+            act_ok = packed[3] if len(packed) > 3 else True
             if pend is not None:                  # 非ブロッキング委譲（offload）: 待たず offloaded に退避
                 _mark_offloaded(cfg, task, location, pend.run_id)
                 release_claim(cfg, task)          # 実行権は解放（次パスでポーリングして終端したら settle）
@@ -355,6 +367,15 @@ def run_loop(cfg: Config, act=act_via_agent_flow, ranker=None, sleeper=time.slee
                 persist_task(cfg, task)
                 append_journal(cfg.journal,
                                f"cycle {cycle}: {task.id} run が canceled → ready（人が中止・リトライ消費なし）")
+                release_claim(cfg, task)
+                continue
+            # act 失敗（daemon failed 等）: verify=true の偽 done/review を防ぐ。失敗経路へ。
+            if act_ok is False:
+                ev = delivery_evidence(cfg, act_msg, git_base, location,
+                                       verify=task.verify, vmsg=str(act_msg or ""),
+                                       ok=False, task=task)
+                _settle_failure(cfg, task, str(act_msg or "act failed")[:500], cycle, ev,
+                                reasons, location)
                 release_claim(cfg, task)
                 continue
             res = _settle_task(cfg, task, location, act_msg, cycle, dtok, dusd, git_base,

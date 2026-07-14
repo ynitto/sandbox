@@ -7141,13 +7141,18 @@ class TestAsyncOffload(unittest.TestCase):
     def test_reap_failed_run_does_not_mark_done(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            self._offloaded(d, "T1", "run-T1", verify="false")   # verify も失敗
+            # verify=true でも act/flow 失敗は偽 done にしない
+            self._offloaded(d, "T1", "run-T1", verify="true")
             cfg = self._cfg(d)
             km.ensure_dirs(cfg)
             tasks = km.load_tasks(cfg.backlog)
-            with mock.patch.object(km, "_flow_result_once", return_value=(True, False, "failed")):
+            with mock.patch.object(km, "_flow_result_once",
+                                   return_value=(True, False, "daemon run run-T1 failed")):
                 km._reap_offloaded(cfg, tasks, km.Policy(), {}, {}, 0, 20)
-            self.assertNotEqual(km._load_task_file(cfg, "T1").norm_status(), "done")
+            t = km._load_task_file(cfg, "T1")
+            self.assertIsNotNone(t)
+            self.assertNotEqual(t.norm_status(), "done")
+            self.assertNotEqual(t.norm_status(), "review")
 
     def test_reap_canceled_run_does_not_mark_done(self):
         # verify=true でも人が中止した run を done にしない（リトライも焼かない）

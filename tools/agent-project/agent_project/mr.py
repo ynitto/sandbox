@@ -364,7 +364,8 @@ def _settle_failure(cfg, task, vmsg, cycle, ev, reasons, location="local"):
         # 委譲 executor の却下: 人コメント（やり直し指示）を feedback に載せて次 act で活かす。
         # コメントが無ければ空＝注入なし（ワーカーが自動で原因判断してやり直す）。
         if executor_delegates(cfg):
-            guidance = read_reject_guidance(cfg, location == "remote")
+            guidance = read_reject_guidance(cfg, location == "remote",
+                                            run_id=str(task.get("last_run") or ""))
             if guidance:
                 task.drop("feedback")
                 task.extra.append(("feedback", guidance.replace("\n", " ⏎ ")))
