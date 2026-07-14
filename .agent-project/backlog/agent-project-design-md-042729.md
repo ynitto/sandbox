@@ -1,5 +1,5 @@
 ## agent-project-design-md-042729: 設計書 agent-project-design.md を正典ヘッダ付きで整理しインデックスから辿れるようにする
-- status: proposed
+- status: ready
 - source: charter
 - priority: 0
 - verify: `grep -q 'agent-project-design.md' docs/designs/README.md && test -f docs/designs/agent-project-design.md && awk 'NR<=20 && /^> /{found=1} END{exit !found}' docs/designs/agent-project-design.md`

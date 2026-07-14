@@ -12,3 +12,15 @@
 - 2026-07-15 04:28:45 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
 - 2026-07-15 04:28:45 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
 - 2026-07-15 04:28:45 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===
+- 2026-07-15 04:28:49 === project 停止 reason=blocked cycles=1 cost=0.0000 ===
+- 2026-07-15 04:28:50 === project watch: 監視中（charter 更新/フィードバック待ち）===
+- 2026-07-15 04:28:55 plan-review 承認: agent-dashboard-codd-gat-042729 → ready
+- 2026-07-15 04:28:55 commands 取り込み: approve agent-dashboard-codd-gat-042729（viewer-approve-agent-dashboard-codd-gat-042729-1784057317444.json）
+- 2026-07-15 04:28:55 plan-review 承認: agent-project-codd-gate--042729 → ready
+- 2026-07-15 04:28:55 commands 取り込み: approve agent-project-codd-gate--042729（viewer-approve-agent-project-codd-gate--042729-1784057320576.json）
+- 2026-07-15 04:28:55 plan-review 承認: agent-project-design-md-042729 → ready
+- 2026-07-15 04:28:55 commands 取り込み: approve agent-project-design-md-042729（viewer-approve-agent-project-design-md-042729-1784057324759.json）
+- 2026-07-15 04:28:55 === project 開始 v1 acceptance=2 ===
+- 2026-07-15 04:28:55 === agent-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-15 04:28:55 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-15 04:28:55 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
