@@ -8,3 +8,4 @@
 - cohort: item
 - cohort_role: pilot
 - after: docs-designs-README-042729
+- assess: c=2 r=1 a=1

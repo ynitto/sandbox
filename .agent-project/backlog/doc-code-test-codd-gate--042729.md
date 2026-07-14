@@ -7,3 +7,4 @@
 - workspace: sandbox
 - charter: v1
 - after: verify-codd-gate-042729, agent-project-codd-gate--042729, agent-dashboard-codd-gat-042729
+- assess: c=2 r=1 a=1

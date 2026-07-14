@@ -2,3 +2,13 @@
 - 2026-07-15 04:24:03 === project 開始 v1 acceptance=2 ===
 - 2026-07-15 04:27:29 cohort item: pilot agent-project-design-md-042729 を作成（残り 4 件は承認後に生成）
 - 2026-07-15 04:27:29 project cycle 1: plan cycle 1 で 6 件投入 ['verify-codd-gate-042729', 'agent-project-codd-gate--042729', 'docs-designs-README-042729', 'agent-project-design-md-042729', 'agent-dashboard-codd-gat-042729', 'doc-code-test-codd-gate--042729']
+- 2026-07-15 04:28:45 needs 再生成: verify-codd-gate-042729（proposed）
+- 2026-07-15 04:28:45 needs 再生成: agent-project-codd-gate--042729（proposed）
+- 2026-07-15 04:28:45 needs 再生成: docs-designs-README-042729（proposed）
+- 2026-07-15 04:28:45 needs 再生成: agent-project-design-md-042729（proposed）
+- 2026-07-15 04:28:45 needs 再生成: agent-dashboard-codd-gat-042729（proposed）
+- 2026-07-15 04:28:45 needs 再生成: doc-code-test-codd-gate--042729（proposed）
+- 2026-07-15 04:28:45 === agent-project 開始 tasks=6 ingested=0 planner=agent executor=agent dry_run=False ===
+- 2026-07-15 04:28:45 state-git: direct モード → /Users/nitto/Workspace/sandbox-agent-state/.agent-project 自体の git リポジトリへ直接コミット/push interval=300.0s
+- 2026-07-15 04:28:45 警告: origin へ未 push のコミットが 1 件ある（main）。worker と verify は origin から clone するため、これらの成果は彼らから 見えない（ローカルでは通るのに verify が落ち続ける）。`git -C /Users/nitto/Workspace/sandbox push origin main` を検討すること
+- 2026-07-15 04:28:45 === agent-project 停止 reason=drained cycles=0 done=0 blocked=0 notified=False promoted=0 ===

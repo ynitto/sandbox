@@ -6,3 +6,4 @@
 - retries: 0
 - workspace: sandbox
 - charter: v1
+- assess: c=1 r=1 a=1
